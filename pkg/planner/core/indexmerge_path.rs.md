@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate，是 Rust 侧 IndexMerge 候选访问路径的生成与清理模块。crate 根在 [`lib.rs`](lib.rs) 中以 `pub mod indexmerge_path` 暴露该模块；[`Cargo.toml`](Cargo.toml) 的 `[package.metadata.porting]` 将整个 crate 对应到 Go `pkg/planner/core`。
-
-它位于“已有普通表/索引 `AccessPath`”与“后续从候选中选择物理任务”之间：输入是 [`find_best_task.rs`](find_best_task.rs) 定义的简化 `DataSource`、`AccessPath`、`IndexInfo` 和 `Range`，输出仍写回 `DataSource.paths`。文件既处理普通索引，也处理多值索引（MV Index）的 `MEMBER OF`、`JSON_CONTAINS`、`JSON_OVERLAPS` 模型，并对 Hint 和全文索引（FTS）约束做末端裁剪。
-
-当前接线状态必须区别于 Go：Rust 的公开入口 `generateIndexMergePath` 在仓库 Rust 生产代码中没有调用点（对 `generateIndexMergePath(` 和 `IndexMergeDataSource` 的 Rust 搜索只命中定义、测试及 `indexmerge_unfinished_path.rs` 的辅助调用）；[`operator/logicalop/logical_datasource.rs`](operator/logicalop/logical_datasource.rs) 约第 1117 行另有一段直接生成顶层 DNF union 候选的逻辑。因此，本文件是可测试、被相邻 OR 模块复用的移植实现，但尚不能等同于 Go 规划主链已经整体接入。
+`collectFilters4MVIndex`、`checkAccessFilter4IdxCol`、`jsonArrayExpr2Exprs` 等函数负责识别和转换简化表达式协议。
 
 ## 核心职责
 
@@ -95,7 +91,7 @@
 
 ## 与 Go 版本的对应关系
 
-对应文件是 [`indexmerge_path.go`](indexmerge_path.go)。Rust 保留了主要函数族和大体顺序：总入口生成其他/单 MV/组合 AND 路径，必要时修正统计，Hint 成功后裁剪；MV 路径仍围绕过滤分类、值展开、安全类型转换、局部路径及剩余过滤展开。Go 独立测试 [`casetest/indexmerge/indexmerge_path_test.go`](casetest/indexmerge/indexmerge_path_test.go) 验证真实 SQL 规划、过滤 mutation、随机 MV 数据、Hint 与 prepared statement；Rust 对应测试文件保留了其中一部分稳定核心。
+Rust 保留了主要函数族和大体顺序：总入口生成其他/单 MV/组合 AND 路径，必要时修正统计，Hint 成功后裁剪；MV 路径仍围绕过滤分类、值展开、安全类型转换、局部路径及剩余过滤展开。
 
 关键差异如下：
 
@@ -118,18 +114,3 @@
 - 调整行数估算或 union/intersection 表示时，应给 `AccessPath` 增加明确语义字段，并同步下游成本选择；当前仅靠最小值/求和不足以承载 Go 的直方图选择率。
 - 修改 FTS 清理应覆盖“混合 TiKV/TiFlash”“只有 TiKV”“无 FTS 标记”三种情况，并考虑错误前是否允许破坏原候选集合。
 - 性能风险集中在条件/路径的多次克隆、MV 值展开造成的局部路径乘积、递归索引检查以及组合候选膨胀；正确性风险集中在未覆盖过滤丢失、union/intersection 混淆、空数组和不安全类型转换。
-
-## 验证依据
-
-本说明基于以下直接证据编写：
-
-- 目标源码 [`indexmerge_path.rs`](indexmerge_path.rs) 全部 667 行；RustCodeGraph `node --file` 分段读取确认常量、结构体、公开/私有函数及内部调用。
-- RustCodeGraph `status`：索引存在，包含 11,467 个文件、307,296 个节点、1,848,419 条边；`query generateIndexMergePath --json` 同时定位 Go 第 47 行与 Rust 第 57 行；对组合生成、MV 构造、过滤收集和清理函数的查询确认两种语言中的对应符号。
-- RustCodeGraph 文件关系显示目标文件与 `indexmerge_unfinished_path.rs`、`indexmerge_path_test.rs`、`indexmerge_unfinished_path_test.rs` 相互关联；随后以源码节点核对了 OR 模块对本文件辅助函数的直接调用。通用名称的 `callers`/`callees` 输出出现跨仓库同名污染，因此没有把其模糊结果当作调用事实，而以限定文件节点和精确源码引用复核。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的包名、库根、feature、依赖及 Go 包映射；[`lib.rs`](lib.rs) 的模块声明和独立测试挂载。
-- 数据模型：[`find_best_task.rs`](find_best_task.rs) 的 `Datum`、`Range`、`IndexInfo`、`AccessPath`、`DataSource`；[`task.rs`](task.rs) 的 `StoreType`、`TypeCode`、`FieldType`、`Expression`、`StatsInfo`。
-- Go 对照：[`indexmerge_path.go`](indexmerge_path.go) 的入口、普通/MV/组合路径、过滤、Hint 与 FTS 清理；[`stats.go`](stats.go) 的实际入口调用顺序。
-- Rust 测试：[`indexmerge_path_test.rs`](indexmerge_path_test.rs) 覆盖单元素/空 MV 数组分类、类型家族、嵌套路径递归、MV Hint 保守清理及 FTS；[`casetest/indexmerge/indexmerge_path_test.rs`](casetest/indexmerge/indexmerge_path_test.rs) 覆盖过滤分类/收集、多个 MV 值展开和 SQL 结果骨架。Go 对照测试为 [`casetest/indexmerge/indexmerge_path_test.go`](casetest/indexmerge/indexmerge_path_test.go)。
-- 仓库搜索确认 Rust 总入口无生产调用，并定位 `logical_datasource.rs` 的独立 DNF union 实现；这构成“尚未接线”结论的直接证据。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试。结构验收使用任务指定命令，要求文件存在且恰有上述 11 个固定二级标题。

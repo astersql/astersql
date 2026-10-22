@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文对应源码 [`physical_union_scan.rs`](./physical_union_scan.rs)。该文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`，包入口在 `pkg/planner/core/operator/physicalop/lib.rs` 中声明并公开重导出 `physical_union_scan` 模块。它实现逻辑 `LogicalUnionScan` 对应的物理计划节点 `PhysicalUnionScan`：该节点位于规划器与执行器之间，用来描述“读取底层快照后，还必须合并当前事务内未提交行”的 root 侧算子。
-
-物理计划枚举的统一路由位于 `base_physical_plan.rs`：识别到 `logicalop::LogicalUnionScan` 后调用本文件的 `ExhaustPhysicalPlans4LogicalUnionScan`。执行阶段则由 `pkg/executor/physical_plan_runtime.rs` 对 `PhysicalUnionScan` 做类型分派，分别取得子节点快照行和 `PhysicalTableSource::UnionScanRows` 提供的事务本地行，再按 handle 合并。
+提供构造、初始化、克隆、相关列提取、 Explain、索引解析、任务附着、代价委托、禁止下推及内存估算等物理计划协议实现。
 
 ## 核心职责
 
@@ -89,14 +87,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/physicalop/physical_union_scan.go`。两版都包含公共物理计划、`Conditions`、`HandleCols`，都拒绝 Flash 属性、通过 `admitIndexJoinProp` 传递孩子属性，并实现相关列提取、Explain、内存估算、任务附着和索引解析。
-
 需要注意的表达差异：
 
 - Go `ExhaustPhysicalPlans4LogicalUnionScan` 返回 `([]base.PhysicalPlan, bool, error)`；Rust 返回 `Vec<Box<dyn PhysicalPlan>>`，以空向量表示此处无候选，未携带 Go 的 `hintCanWork` 与 error 通道。Rust 额外防守 `SCtx()` 缺失。
 - Go 构造字面量后调用 `Init`，Rust 分为 `New` 与消费式 `Init`；测试证明 Rust 不因这两步重复分配计划 ID。
 - Go 条件赋值在源码中直接复用 slice/接口值；Rust 在逻辑转物理及 `Clone` 中显式深克隆表达式和 handle，以满足所有权和独立可变索引状态。
-- Go 的任务附着与索引解析通过 `utilfuncp` 接线；Rust 本文件暴露方法并由 trait/任务框架委托到对应实现。Projection 重排和逐项索引解析语义有独立 Rust 测试覆盖。
 - Rust 显式提供 `ExplainNormalizedInfo`、两个代价委托和拒绝 `ToPB` 的实现；Go 文件中的相应公共能力部分来自嵌入的 `BasePhysicalPlan` 或仓库其他接线，而非都写在该文件内。
 - Go `MemoryUsage` 支持 nil receiver 和 nil `HandleCols`；Rust 值始终存在，并将 `Vec<ExprBox>` 头、表达式和 handle 的估算全部计入。`physical_union_scan_test.rs::memory_usage_includes_go_conditions_slice_header` 验证空条件时的基线。
 
@@ -107,12 +102,3 @@
 - 修改合并或过滤语义时，不应只改本文件；真实执行路径在 `pkg/executor/physical_plan_runtime.rs`。需同步验证升/降序、common handle、多条件、NULL、重复 handle、脏行覆盖、缺失孩子和越界列。
 - 修改附着形状时同步更新独立的 `pkg/planner/core/task_test.rs`；修改索引解析时同步更新 `pkg/planner/core/resolve_indices_test.rs`；修改构造、克隆、内存或物理执行时分别扩展 `physical_union_scan_test.rs`、`unary_aster_unit_test.rs`、`cache_snapshot_test.rs` 或 `pkg/executor/physical_plan_runtime_test.rs`。Rust 测试应继续保存在独立测试文件，不嵌入生产源文件。
 - 兼容性风险集中在事务内读一致性、Projection 列位置、handle 去重和 MPP 禁用边界；性能风险集中在表达式深克隆、内存估算遗漏以及执行器当前对两侧行向量排序/合并的成本。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；使用 `node --file` 阅读了目标文件全部 245 行，并查询 `PhysicalUnionScan` 与 `ExhaustPhysicalPlans4LogicalUnionScan`。图查询未返回该枚举函数的直接 callers/callees，因此以已索引文件节点和精确仓库引用搜索补足调用证据。
-- 生产源码：`pkg/planner/core/operator/physicalop/physical_union_scan.rs`；模块/trait 接线：`pkg/planner/core/operator/physicalop/lib.rs`、`base_physical_plan.rs`；任务与索引接线：`pkg/planner/core/task.rs`、`pkg/planner/core/resolve_indices.rs`；执行实现：`pkg/executor/physical_plan_runtime.rs`；缓存实现：`pkg/planner/core/operator/physicalop/cache_snapshot.rs`。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`，包名为 `astersql-planner-core-operator-physicalop`，并声明上述路径依赖和 `tipb` 依赖。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_union_scan.go`；相关 Go 任务接线/测试位于 `pkg/planner/core/task.go`、`pkg/planner/core/task_test.go`，索引解析位于 `pkg/planner/core/resolve_indices.go`。
-- 独立 Rust 测试：`physical_union_scan_test.rs`（计划 ID、内存基线）、`unary_aster_unit_test.rs`（trait 与 clone）、`cache_snapshot_test.rs`（条件/handle/孩子 round trip）、`pkg/planner/core/task_test.rs`（Projection 重排和 task 元数据）、`pkg/planner/core/resolve_indices_test.rs`（部分解析后错误）、`pkg/executor/physical_plan_runtime_test.rs::union_scan_merges_by_handle_and_dirty_rows_shadow_snapshot_rows`（有序合并与脏行覆盖）。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令确认目标文档存在且恰有 11 个固定二级章节，并人工复核文档未把执行器逻辑误写为本文件内部实现。

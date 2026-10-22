@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（见 `pkg/ddl/Cargo.toml`），并由 `pkg/ddl/lib.rs` 以 `pub mod sequence` 公开。它提供一套自包含的 Rust SEQUENCE 元数据模型、CREATE/ALTER 选项归并与校验逻辑，以及一个进程内目录模型。
-
-当前接线程度有限：仓库调用检索只发现 `pkg/ddl/sequence_test.rs` 使用这些公开符号，没有发现 SQL executor、DDL job worker、`meta::Mutator` 或持久化系统表调用它们。因此它不是当前完整应用中实际执行 SEQUENCE DDL 的作业处理器。实际 Go 主链位于 `pkg/ddl/sequence.go`：`onCreateSequence`、`onAlterSequence` 通过 DDL job、元数据事务和 schema version 更新完成持久化操作。本文件应理解为移植中的领域逻辑模型，而非已接线的生产 DDL 通路。
+不生成序列的下一个值，不实现 `nextval`/`lastval`/`setval`，不管理缓存区间，也不提交 DDL job、更新 schema version 或写入 KV。
 
 ## 核心职责
 
@@ -78,17 +76,14 @@ Go 对照主链则是：DDL worker 调用 `onCreateSequence`/`onAlterSequence`�
 
 ## 与 Go 版本的对应关系
 
-`sequence_defaults`、`build_sequence_info` 和 `validate_sequence_options` 对应 `pkg/ddl/sequence.go` 的默认填充、`buildSequenceInfo` 和 `validateSequenceOptions`；`apply_sequence_options(..., true)` 对应 `alterSequenceOptions`；`restart_sequence_base` 对应 `restartSequenceValue` 中的基数计算。Rust 的 ALTER 复制后提交与 Go `onAlterSequence` 的 `copySequenceInfo := *tblInfo.Sequence` 意图一致。
-
 两者并非完整等价：
 
-- Go 的 CREATE 会在所有选项扫描后根据最终步长及“是否显式设置”补默认 min/max/start；例如只提高 `MINVALUE` 时，默认 START 会取 `max(min, 1)`。Rust 先构造默认值再逐项覆盖，可能使同类输入因旧默认 START 越界而失败。
 - Go 用 `Cache` 布尔值加 `CacheValue` 表达 NOCACHE；Rust 折叠为 `cache = 1`，因此无法保留这两个元数据字段的区别。
 - Go CREATE 接受 AST 和 table options，并拒绝不支持的表选项；Rust 只接受 `SequenceOption`，没有 AST、标识符、权限或 table option 错误上下文。
 - Go 错误映射到带 schema/name 的 TiDB `dbterror`；Rust 错误无上下文，仅打印枚举名。
 - Go 主链持久化 `TableInfo.Sequence`、推进 job 状态并更新 schema version；Rust `SequenceCatalog` 仅为内存模型，DROP 也没有对应 Go DDL job 行为。
 
-`pkg/ddl/sequence_test.go` 的 `TestCreateSequence`、`TestSequenceFunction` 和 `BenchmarkInsertCacheDefaultExpr` 是完整 SQL 行为基准。Rust 测试中的前两个大型 `*_draft_structure` 仅记录 SQL 步骤数量和期望文字，不驱动真实 SQL 引擎；只有末尾四个测试直接执行本文件逻辑。
+Rust 测试中的前两个大型 `*_draft_structure` 仅记录 SQL 步骤数量和期望文字，不驱动真实 SQL 引擎；只有末尾四个测试直接执行本文件逻辑。
 
 ## 扩展指南
 
@@ -99,12 +94,3 @@ Go 对照主链则是：DDL worker 调用 `onCreateSequence`/`onAlterSequence`�
 新增错误时应决定其属于输入校验还是目录操作，并保留 `Result` 边界；若要兼容 SQL 层，还需在更高层映射为带对象名的 TiDB 错误码。任何直接调用 `apply_sequence_options` 的新路径都应先复制旧值，避免失败后残留部分修改。
 
 性能方面，`BTreeMap` 提供有序的对数复杂度查找，但当前无遍历顺序契约；若替换容器或引入共享锁，需补充名称规范化、锁粒度和跨 schema 隔离测试。真实缓存区间分配应检查乘法溢出和持久化原子性，不能把当前 `cache` 字段误当成已实现的缓存分配器。
-
-## 验证依据
-
-- 生产源：`pkg/ddl/sequence.rs`，核对全部两个数据类型、两个枚举、五个自由函数/trait 实现相关逻辑，以及 `SequenceCatalog` 的三个方法。
-- 模块与 crate：`pkg/ddl/lib.rs` 的 `pub mod sequence`、测试期 `mod sequence_test`；`pkg/ddl/Cargo.toml` 的 crate 名、`[lib]` 路径和依赖边界。
-- Rust 测试：`pkg/ddl/sequence_test.rs`；直接行为证据为 `sequence_rejects_i64_endpoint_bounds_like_go`、`sequence_rejects_cache_increment_overflow_like_go`、`failed_alter_does_not_mutate_sequence_like_go`、`restart_value_and_base_arithmetic_match_go`。其余 SQL 步骤测试被标明为迁移草稿而非执行引擎验证。
-- Go 对照：`pkg/ddl/sequence.go` 的 `onCreateSequence`、`createSequenceWithCheck`、`handleSequenceOptions`、`validateSequenceOptions`、`buildSequenceInfo`、`alterSequenceOptions`、`onAlterSequence`、`restartSequenceValue`；`pkg/ddl/sequence_test.go` 的两个测试和一个 benchmark。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`query` 定位 `SequenceCatalog`（第 228 行）和 `build_sequence_info`（第 124 行）；`node build_sequence_info` 与 `callees` 确认其四条内部调用边，`callees apply_sequence_options` 确认校验与重启基数两条边。调用方图查询未给出生产调用者，随后以仓库文本检索确认只有测试引用。
-- 本任务是文档分析，依计划不运行 Cargo。结构验证要求目标文档存在并且恰有固定的十一个二级标题。

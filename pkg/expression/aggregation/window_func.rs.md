@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-aggregation` crate，是窗口函数在规划期使用的描述层，而不是逐行执行窗口计算的执行器。它把函数名、参数表达式和推导出的返回类型封装为 `WindowFuncDesc`，同时提供窗口帧分类、TiFlash 下推资格检查以及 `tipb::Expr` 序列化。crate 入口 `pkg/expression/aggregation/lib.rs` 通过 `mod window_func` 装配并以 `pub use window_func::*` 导出这些 API；`pkg/expression/aggregation/Cargo.toml` 将本 crate 的库入口设为 `lib.rs`，并声明其对 `expression`、`kv`、parser AST/MySQL 类型和 `tipb` 的依赖。
-
-在已索引的 Rust 生产代码中，最明确的应用主链位于 `pkg/planner/core/operator/physicalop/physical_window.rs` 的 `PhysicalWindow::ToPB`：它为每个物理窗口函数调用 `NewWindowFuncDesc`，再调用 `WindowFuncToPBExpr`，最终把结果写入 `tipb::Window.func_desc`。窗口实际如何按分区、排序和帧执行不在本文件内，而由 planner/executor 的窗口模块承担。
+这些职责都只处理元数据、能力判断和协议对象构造；本文件不保存窗口分区数据，也不计算 `RANK`、`LEAD`、聚合值等运行期结果。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ TiFlash 资格判断是另一条流程。`CanPushDownToTiFlash` 递归检查参�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/aggregation/window_func.go`。Rust 保留了 Go 的主要结构和语义：规划期 `WindowFuncDesc`、窗口专属常量参数检查、无帧函数集合、`ROW_NUMBER` 默认帧、深拷贝、PB 转换和 TiFlash 函数白名单均一一对应。
-
 可见差异如下：
 
 - Rust 构造器返回 `Result<Option<_>, Error>` 来表达 Go 的 `(*WindowFuncDesc, error)` 中“nil 且无 error”的参数拒绝结果。
@@ -98,14 +94,3 @@ TiFlash 资格判断是另一条流程。`CanPushDownToTiFlash` 递归检查参�
 - 扩展 TiFlash 下推时，必须同时验证参数类型、嵌套标量函数的裸名与 signature 黑名单、PB 可编码性、客户端支持的 ExprType，以及窗口函数白名单。只改 `CanPushDownToTiFlash` 不会改变 `WindowFuncToPBExpr` 的生产序列化路径；若需要统一门禁，应先确认 planner 的调用契约。
 - 修改 PB 结构时，应更新 `WindowFuncToPBExpr` 及 `PhysicalWindow::ToPB` 的相关独立测试，覆盖客户端不支持、子表达式转换失败和返回字段类型。测试逻辑应继续放在 `window_func_test.rs` 或其他独立测试文件中，不嵌入生产源文件。
 - 性能上，`UseDefaultFrame` 当前每次分配一个 `HashMap`；若默认帧种类或调用频率增加，可在保持返回独立帧值和线程安全的前提下评估静态匹配或惰性只读表。递归下推检查也会为每个节点创建 PB converter/编码结果，改变时需避免放宽语义门禁。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/aggregation/window_func.rs`，RustCodeGraph `node --file` 显示 275 行、17 个符号，并列出 5 个 Rust 使用文件。
-- 调用链：`pkg/planner/core/operator/physicalop/physical_window.rs:603` 附近的 `PhysicalWindow::ToPB`，明确调用 `NewWindowFuncDesc` 和 `WindowFuncToPBExpr`。
-- 基础实现：RustCodeGraph `node newBaseFuncDesc` 显示 Rust 版本调用 `baseFuncDesc::TypeInfer` 并通过 `Result` 返回。
-- crate 边界：`pkg/expression/aggregation/Cargo.toml` 与 `pkg/expression/aggregation/lib.rs`。
-- Go 对照：`pkg/expression/aggregation/window_func.go`。
-- 独立 Rust 测试：`pkg/expression/aggregation/window_func_test.rs::window_pushdown_honors_tiflash_specific_scalar_blacklist`；`pkg/expression/aggregation/aggregation_aster_unit_test.rs::pushdown_and_frame_classification_matches_go_lists` 和 `window_pushdown_rejects_enum_for_tiflash`。
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标文件在索引中。宽泛 `explore` 的同名跨语言结果经过目标文件、明确调用点和 `rg` 复核后才写入本文。
-- 未运行 Cargo：本任务仅新增说明文档，计划明确禁止 Cargo。结构检查和文档差异复核作为交付验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。crate 入口 `pkg/expression/lib.rs:308-309` 以 `explicit_collation` 私有模块挂载它，并在 `pkg/expression/lib.rs:375` 通过 `pub use explicit_collation::*` 将其唯一公开函数重新导出。`pkg/expression/Cargo.toml` 指定该 crate 的库入口为 `lib.rs`，并声明了本文件直接使用的 `astersql-util-collate`、解析器字符集/MySQL 常量和类型系统等依赖。
-
-它承载“把 SQL `COLLATE` 子句应用到已经构造出的表达式”这一表达式层操作。当前 RustCodeGraph 索引没有找到生产代码对该函数的调用边；直接调用者仅为 `pkg/expression/explicit_collation_test.rs` 中的五个测试。因此，它已经由 crate 根公开，但尚不能据此断言 Rust SQL 规划主链已接线。当前生产语义的 Go 基准位于 `pkg/planner/core/expression_rewriter.go:1848-1889` 的 `*ast.SetCollationExpr` 分支。
+新排序规则模式下查找用户给出的排序规则，并校验它与参数字符集匹配；JSON 按 `utf8mb4` 而非其字段元数据中的 `binary` 字符集校验。
 
 ## 核心职责
 
@@ -75,16 +73,7 @@ RustCodeGraph 的 `callees SetCollationToExpression` 没有生成边；这是索
 
 ## 与 Go 版本的对应关系
 
-Go 没有同路径、同名独立函数；逐句语义来源是 `pkg/planner/core/expression_rewriter.go:1848-1889` 的 `*ast.SetCollationExpr` 分支：
-
-- 两边都只在新 collation 模式下查名并校验 charset，且把 JSON 视为 `utf8mb4`。
-- 两边都对列/JSON 包 CAST，克隆列类型以避免修改共享 `FieldType`，并把 JSON 转为 `TypeLongBlob + utf8mb4`。
-- 两边都拒绝 ENUM/SET 列，对常量和标量函数等其他表达式直接设置 collation。
-- 两边最后都设置 `CoercibilityExplicit`，并从最终类型同步 charset/collation。
-
 可见差异是 Rust 将会话状态抽成 `use_new_collation` 参数并把操作做成可复用函数；Go 直接读取 `er.sctx.NewCollationEnabled()` 并更新规划器的 `ctxStack`。Go 使用 `plannererrors.ErrNotSupportedYet` 表示 ENUM/SET 不支持，Rust 当前只创建通用错误文本。此外，Rust 函数虽已公开再导出，但索引未显示它已替换 Rust 规划器中的对应分支。
-
-Go 的直接逻辑证据是上述 rewriter 分支。相关 SQL 级测试 `pkg/planner/core/operator/logicalop/logicalop_test/logical_mem_table_predicate_extractor_test.go:2047-2052` 断言 `table_name collate utf8mb4_bin` 被改写为带 `utf8mb4_bin` 的 CAST；仓库搜索未发现专门逐项覆盖该 Go 分支全部错误边界的单一测试文件。Rust 的五个聚焦测试补足了名称/charset 错误、列不污染、JSON、ENUM/SET 与旧模式元数据行为。
 
 ## 扩展指南
 
@@ -94,13 +83,3 @@ Go 的直接逻辑证据是上述 rewriter 分支。相关 SQL 级测试 `pkg/pl
 - 若修改 JSON、ENUM 或 SET 行为，应补充新旧 collation 模式、列与非列表达式的矩阵测试；当前测试只证明 ENUM/SET 列被拒绝。
 - 若改变 `BuildCastFunction` 的 collation 继承或常量折叠行为，需要重新验证本函数在 CAST 后读取到的 charset/collation，以及原列类型不污染属性。
 - 性能风险主要来自新增 CAST 节点及其可能触发的常量折叠；兼容风险集中在旧模式允许未注册名称、JSON 的强制 `utf8mb4` 语义和结构化错误类别。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件完整索引为 92 行。
-- RustCodeGraph 精确查询：`query/node/callers/callees SetCollationToExpression`。定义位于 `pkg/expression/explicit_collation.rs:32`；调用者为 `explicit_collation_test.rs` 中五个测试；`callees` 未产出边，因此下游依赖另按源文件逐项核验。
-- 已读 Rust 源与装配：`pkg/expression/explicit_collation.rs`、`pkg/expression/lib.rs:305-418`、`pkg/expression/builtin.rs:7291-7333`。
-- 已读 crate 声明：`pkg/expression/Cargo.toml`，确认 crate 名、`lib.rs` 入口、`autotests = false` 以及相关 path 依赖。
-- 已读独立 Rust 测试：`pkg/expression/explicit_collation_test.rs` 全文，五项测试分别覆盖新模式错误、列 CAST/不污染、JSON 转换、ENUM/SET 列拒绝和旧模式常量元数据。
-- 已读 Go 对照：`pkg/planner/core/expression_rewriter.go:1848-1889`；已读相关 Go SQL 测试：`pkg/planner/core/operator/logicalop/logicalop_test/logical_mem_table_predicate_extractor_test.go:2028-2052`。
-- 人工复核结论：该文件存在是为了把 Go 规划器内嵌的显式 `COLLATE` 语义抽成 Rust 表达式层函数；当前运行过程、分支、不变量和安全扩展位置均能由上述符号与测试反查，同时明确记录了尚未发现生产调用边这一接线限制。

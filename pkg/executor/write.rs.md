@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`write.rs` 是 `astersql-executor` crate 中的 DML 写路径公共算法模块。crate 根由 [`pkg/executor/Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 指定，[`pkg/executor/lib.rs`](lib.rs) 通过 `pub mod write` 公开本模块，并只在 `cfg(test)` 下挂载独立测试 [`pkg/executor/write_test.rs`](write_test.rs)。文件对应 Go 实现 [`pkg/executor/write.go`](write.go)，主要抽取 UPDATE/`ON DUPLICATE KEY UPDATE` 单行写回过程中可共享的比较、自动值回填、外键/分区校验和统计顺序。
-
-当前 Rust 模块是“泛型算法 + 运行时边界”，不是已经接入具体 session/table/transaction 的完整生产实现：`WriteRuntime` 把所有 TiDB/AsterSQL 实体能力抽象为关联类型与方法。仓库搜索只找到 `write_test.rs` 对该 trait 的实现和对 Rust `updateRecord` 的直接调用；RustCodeGraph 虽给出若干文件级使用者，但精确符号搜索没有找到生产 runtime 或生产调用边。因此本文件目前可验证为公开、可单测的写行协议，不能据此声称 Rust SQL UPDATE/INSERT 已经通过它落到存储。
+`updateRecord` 按 Go 版顺序编排一行更新：比较非生成列、处理无变化行、刷新 `ON UPDATE CURRENT_TIMESTAMP`、求值赋值/生成列、处理 NULL/外键/交换分区、选择 replace 或 update、最后执行外键动作并记账。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@ Go 上游则已接线：[`pkg/executor/update.go`](update.go) 和 [`pkg/executor
 
 ## 与 Go 版本的对应关系
 
-Rust `updateRecord` 的阶段顺序、两个返回布尔值、`CLIENT_FOUND_ROWS`、`ON DUPLICATE` affected=2、二进制比较、ON UPDATE、生成列赋值、坏 NULL、FK ignore、交换分区、handle replace、未触及索引优化及 FK 后处理，都直接对应 `write.go` 的同名函数。四个辅助入口也保留 Go 命名和核心分支。
+Rust `updateRecord` 的阶段顺序、两个返回布尔值、`CLIENT_FOUND_ROWS`、`ON DUPLICATE` affected=2、二进制比较、ON UPDATE、生成列赋值、坏 NULL、FK ignore、交换分区、handle replace、未触及索引优化及 FK 后处理，都直接对应 `write.go` 的同名函数。
 
 但抽象后的语义并非全部由 Rust 文件自身实现：
 
@@ -96,11 +94,3 @@ Go 测试提供迁移目标而非 Rust 覆盖证明：[`pkg/executor/update_test
 修改比较或赋值顺序时，必须保持 ON UPDATE 与生成列依赖关系，并验证 `changed`、`modified`、`handle_changed` 三者在“值先变后恢复”、多表 offset 和 common handle 场景的行为。修改未变化键逻辑时，应优先在 runtime 层实现 Go 的分区/global-index细节，不把 tablecodec 依赖硬塞回泛型算法。修改错误模型时要决定是否引入错误码/cause，以免只匹配文本。
 
 Rust 测试必须继续放在独立 [`pkg/executor/write_test.rs`](write_test.rs)，不要写回生产文件。建议补齐：完全无变化及 `CLIENT_FOUND_ROWS`、悲观/非悲观锁位组合、AUTO_INCREMENT/AUTO_RANDOM 正负 ID 与掩码、赋值求值/转换/error-handler 分支、FK ignore、坏 NULL、交换分区、replace/update 错误映射、`skip_untouched_indices` 的所有事务/FK组合、affected/updated/copied 计数及 `DataTooLongError`。生产接线后还需移植 Go 的 SQL 级回归，尤其是 global unique index NULL、ON UPDATE 生成列索引和分区交换。兼容风险集中在 MySQL 行计数、warning/IGNORE、错误码与锁键；性能风险集中在每行 `columns()`/向量分配、Datum clone、未触及索引策略和 staging。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认仓库已有索引；`node --file pkg/executor/write.rs --offset 1 --limit 500` 读取目标文件完整 496 行，并报告文件级使用者；`query` 定位 `WriteRuntime`、`addUnchangedKeysForLockByRow`、`rebaseAutoRandomValue`、`resetErrDataTooLong`、`checkRowForExchangePartition` 的 Rust/Go定义；`callees pkg/executor/write.rs:updateRecord` 验证 runtime 调用和三个辅助函数调用边。由于精确 callers 没有给出生产 Rust 边，本文没有推断生产接线。
-- 已读 Rust 文件：[`pkg/executor/write.rs`](write.rs)、[`pkg/executor/write_test.rs`](write_test.rs)、[`pkg/executor/lib.rs`](lib.rs)、[`pkg/executor/Cargo.toml`](Cargo.toml)，并搜索 `pkg/executor` 下所有 Rust `WriteRuntime` 实现和 `updateRecord` 引用；结果只有独立测试实现/调用。
-- 已读 Go 对照：[`pkg/executor/write.go`](write.go) 全文件，以及直接调用点 [`pkg/executor/update.go`](update.go)、[`pkg/executor/insert.go`](insert.go)、[`pkg/executor/insert_common.go`](insert_common.go) 的符号搜索结果。
-- 已读相关测试：Rust [`pkg/executor/write_test.rs`](write_test.rs)；Go [`pkg/executor/update_test.go`](update_test.go) 的未变化锁与 ON UPDATE/生成列用例，以及 [`pkg/executor/executor_pkg_test.go`](executor_pkg_test.go) 对 `addUnchangedKeysForLockByRow` 的直接断言。
-- 人工复核：文档区分了 trait 契约、Rust 已执行逻辑和仅由 Go 证明的迁移目标；未把 RustCodeGraph 粗粒度文件引用当作生产调用；测试建议均指向独立测试文件。

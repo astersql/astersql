@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义表和分区 `ENGINE_ATTRIBUTE` 中存储类（storage class）部分的 Rust 元数据模型及少量无状态辅助逻辑。它不是 DDL 校验器，也不直接读写元数据：DDL 对输入的严格校验、规范化和把定义投影到表/分区的工作位于 `pkg/ddl/storage_class.rs`；本文件负责保留顶层原始 JSON、表达规范化后的结构，以及生成对外展示用的存储类字符串。
-
-编译边界并不只是表面上的 `pkg/meta/model/Cargo.toml`。`pkg/meta/model/internal/group1/lib.rs:468-470` 通过 `#[path = "../../engine_attribute.rs"]` 把本文件编入 `astersql-meta-model-group1` 并公开再导出；`pkg/meta/model/lib.rs` 又以 `pub use ::group_1::*` 从聚合 crate `astersql-meta-model` 导出这些符号。聚合 crate 的 `Cargo.toml` 只依赖四个内部 group，而实际所需的 `serde` 和带 `raw_value` feature 的 `serde_json` 声明在 `pkg/meta/model/internal/group1/Cargo.toml`。
+`HasNoScopeDef` 判定一个定义是否为表级默认定义；`TotalSeconds` 统一迁移等待时间；`buildStorageClassString` 为 `TableInfo::StorageClassString` 和 `PartitionDefinition::StorageClassString` 生成紧凑表示。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ RustCodeGraph 的文件节点将直接使用者列为 `pkg/ddl/persistent_action
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/model/engine_attribute.go`。Rust 保留了相同的公开概念、JSON 字段名、tier 常量、无作用域判定、秒数换算以及“无 transitions 时返回裸 tier，否则返回 JSON”的输出策略。`StorageClassTransitRule` 的 Rust `u64` 对应 Go 在当前平台使用的 `uint`；Rust 以回绕操作固定了 release/debug 一致性，而 Go 无符号算术本身按机器字宽回绕，因此极值宽度并非跨架构完全相同。
+`StorageClassTransitRule` 的 Rust `u64` 对应 Go 在当前平台使用的 `uint`；Rust 以回绕操作固定了 release/debug 一致性，而 Go 无符号算术本身按机器字宽回绕，因此极值宽度并非跨架构完全相同。
 
 有几项实现层差异需要在扩展时保留意识：
 
@@ -82,7 +80,7 @@ RustCodeGraph 的文件节点将直接使用者列为 `pkg/ddl/persistent_action
 - Go 的切片和指针天然表示 `nil`；Rust 用 `Option<Vec<_>>`、`Option<String>` 和 `Vec<Option<_>>` 保留相应形状。`HasNoScopeDef` 将 nil 与空切片视为相同，但不把非 nil 的空 `LessThan` 当成缺失，与 Go `*string != nil` 一致。
 - Go `buildStorageClassString` 忽略 `json.Marshal` 错误；Rust 用 `unwrap_or_default` 对应地降级为空串。
 
-Rust 回归证据位于独立测试文件 `pkg/meta/model/go_merge_15_test.rs`、`pkg/meta/model/go_merge_18_test.rs` 和 `pkg/ddl/storage_class_test.rs`；Go 对照证据包括 `pkg/meta/model/table_test.go` 以及 DDL 的 `pkg/ddl/storage_class_test.go`。测试没有内嵌到生产源文件，符合仓库约束。
+Rust 回归证据位于独立测试文件 `pkg/meta/model/go_merge_15_test.rs`、`pkg/meta/model/go_merge_18_test.rs` 和 `pkg/ddl/storage_class_test.rs`；Go 对照证据包括 `pkg/meta/model/table_test.go` 以及 DDL 的 `pkg/ddl/storage_class_test.go`。
 
 ## 扩展指南
 
@@ -93,12 +91,3 @@ Rust 回归证据位于独立测试文件 `pkg/meta/model/go_merge_15_test.rs`�
 新增迁移规则字段时，应同时检查 `StorageClassTransitRule` 的 Go 对照、序列化零值要求、`TotalSeconds` 的溢出语义、`normalize` 的合法迁移限制以及 `table.rs` 的展示输出。若改变 `buildStorageClassString` 的格式，会影响表/分区 `StorageClassString` 的外部表示，存在元数据兼容和字符串比较风险；应更新 Rust 的 `go_merge_15_test.rs`、`go_merge_18_test.rs` 与 Go 的 `table_test.go` 对照用例。
 
 性能上，`ParseEngineAttributeFromString` 会分配顶层键字符串并拥有化原始字段，展示函数也会分配新字符串；当前属性很小，这比引入共享生命周期更简单。若将来配置显著增大，应先用真实元数据负载度量，再考虑优化，不能破坏 `RawValue` 的原文保真和聚合 crate 的公开类型身份。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/meta/model/engine_attribute.rs` 报告目标文件含 20 个符号。
-- RustCodeGraph 源码/符号查询：`node --file pkg/meta/model/engine_attribute.rs --offset 1 --limit 400`；`query EngineAttribute`、`query HasNoScopeDef`、`query TotalSeconds`、`query buildStorageClassString`；以及对 `ParseEngineAttributeFromString`、`HasNoScopeDef`、`TotalSeconds`、`buildStorageClassString` 的精确 `node` 查询。精确 `callers` 查询在 60 秒内无结果后中止，因此调用边另由以下直接源码引用核验。
-- 已读生产与装配路径：`pkg/meta/model/engine_attribute.rs`、`pkg/meta/model/engine_attribute.go`、`pkg/meta/model/Cargo.toml`、`pkg/meta/model/internal/group1/Cargo.toml`、`pkg/meta/model/internal/group1/lib.rs`、`pkg/meta/model/lib.rs`、`pkg/meta/model/table.rs`、`pkg/ddl/storage_class.rs`、`pkg/ddl/persistent_actions.rs`。
-- 已读测试路径：`pkg/meta/model/go_merge_15_test.rs`、`pkg/meta/model/go_merge_18_test.rs`、`pkg/meta/model/table_test.go`、`pkg/ddl/storage_class_test.rs`、`pkg/ddl/storage_class_test.go`；并检查 `pkg/meta/model/index_test.rs` 后确认其没有具体调用目标符号。
-- 关键测试事实：非法 JSON 报错；空串和顶层 `null` 为零值；`storage_class` 原始文本保真；空/缺失列表与 `LessThan: Some("")` 的范围判定不同；两天三秒等于 172,803 秒；无 transitions 返回裸 tier；有 transitions 输出紧凑 JSON；`after_seconds: 0` 仍序列化；表和分区克隆不会共享迁移规则容器。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前另运行任务指定的 11 标题结构命令，并人工检查唯一生产物、源码链接、无行为修改和无无依据的支持性结论。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer-opts` library crate。crate 根在 [`lightning/pkg/importer/opts/lib.rs`](./lib.rs)，通过 `mod get_pre_info_opts` 加载本文件并用 `pub use get_pre_info_opts::*` 将其公开 API 重导出；[`lightning/pkg/importer/opts/Cargo.toml`](./Cargo.toml) 的 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `lightning/pkg/importer/opts`。文件本身不采集预导入信息，而是定义传给 importer getter 的配置值及函数式选项。
-
-直接消费方是 [`lightning/pkg/importer/get_pre_info.rs`](../get_pre_info.rs) 中的 `PreImportInfoGetter` 接口与 `PreImportInfoGetterImpl`：`GetAllTableStructures` 和 `EstimateSourceDataSize` 接收 `&[ropts::GetPreInfoOption]`，并调用 `ropts::ApplyGetPreInfoOptions(None, opts)`。相邻的 [`precheck_opts.rs`](./precheck_opts.rs) 还会将一组 `GetPreInfoOption` 克隆进 `PrecheckItemBuilderConfig::PreInfoGetterOptions`，因此本文件也是 precheck 组装链的底层选项定义。
+用 `GetPreInfoOption` 表示可组合的配置变换，并由 `WithIgnoreDBNotExist`、`ForceReloadCache` 构造只写一个字段的变换。
 
 ## 核心职责
 
@@ -84,13 +82,12 @@ RustCodeGraph 的 `explore` 还报告 `ForceReloadCache` 被 `test_get_pre_info_
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`get_pre_info_opts.go`](./get_pre_info_opts.go)。字段名、两个默认值、nil/`None` 克隆语义，以及两个 option 对单字段的覆写均与 Go 对齐。Rust 使用 `Box<GetPreInfoConfig>` 表达独立堆分配配置，使用 `Arc<dyn Fn + Send + Sync>` 代替 Go 的 `func(*GetPreInfoConfig)`；`Arc` 是为了支持 option 切片克隆和 Rust 并发 trait 约束。
+Rust 使用 `Box<GetPreInfoConfig>` 表达独立堆分配配置，使用 `Arc<dyn Fn + Send + Sync>` 代替 Go 的 `func(*GetPreInfoConfig)`；`Arc` 是为了支持 option 切片克隆和 Rust 并发 trait 约束。
 
-`ApplyGetPreInfoOptions` 是 Rust 为收敛 Go 调用点中“克隆配置并循环应用 option”的重复代码而增加的辅助函数，Go 同路径文件没有同名函数。它的 `Some(base)` 路径可表达 Go 的 `p.getPreInfoCfg.Clone()` 后叠加调用期 options。
+`ApplyGetPreInfoOptions` 是 Rust 为收敛 Go 调用点中“克隆配置并循环应用 option”的重复代码而增加的辅助函数，Go 同路径文件没有同名函数。
 
 当前调用接线尚未完全对齐：
 
-- Go `NewPreImportInfoGetter` 把构造期 options 应用到 `getPreInfoCfg` 并存入 getter；每次方法调用先克隆该基线，再叠加调用期 options。
 - Rust `NewPreImportInfoGetter` 当前把参数命名为 `_opts` 且没有在 `PreImportInfoGetterImpl` 保存基线；`GetAllTableStructures` 和 `EstimateSourceDataSize` 调用 `ApplyGetPreInfoOptions(None, opts)`。因此构造期 option 不会成为后续方法的基线。
 - Go `getTableStructuresByFileMeta` 仅在错误文本匹配数据库不存在时、且 `IgnoreDBNotExist` 为真时转入源端 schema 流程；Rust 当前远端调用错误会直接传播，后面的 `IgnoreDBNotExist` 分支与 `else` 分支又产生相同占位表。
 
@@ -107,15 +104,3 @@ RustCodeGraph 的 `explore` 还报告 `ForceReloadCache` 被 `test_get_pre_info_
 5. 在独立测试文件 [`parity_test.rs`](./parity_test.rs) 增加默认值、覆盖顺序、`Clone(None)`、非空基线和资源释放契约；涉及缓存/schema 行为时，还应同步 [`get_pre_info_test.rs`](../get_pre_info_test.rs) 及对应 Go 测试意图。不要把 Rust 单元测试内嵌到本生产文件。
 
 兼容风险主要是更改默认值或 option 顺序导致历史调用行为改变；正确性风险主要是 option 已暴露但消费点未接线，或把 `IgnoreDBNotExist` 扩成忽略无关错误；性能风险主要来自错误地默认启用 `ForceReloadCache`，使 schema/大小估算反复执行。该配置目前极小，`Box`/`Arc` 的成本相对 I/O 很低，但高频新增大型捕获值时应重新评估克隆成本。
-
-## 验证依据
-
-本说明基于以下证据（均为本次只读检查，未运行 Cargo）：
-
-- 目标源码 [`get_pre_info_opts.rs`](./get_pre_info_opts.rs)：7 个主要符号、默认值、闭包类型和 option 应用顺序。
-- crate 声明 [`Cargo.toml`](./Cargo.toml) 与模块入口 [`lib.rs`](./lib.rs)：crate 名、Go 包映射、无外部依赖以及公开重导出关系。
-- Go 对照 [`get_pre_info_opts.go`](./get_pre_info_opts.go) 和调用实现 [`get_pre_info.go`](../get_pre_info.go)：原始函数式 option 契约、构造期基线保存、缓存与数据库不存在错误的消费语义。
-- Rust 调用实现 [`get_pre_info.rs`](../get_pre_info.rs)：接口参数、`ApplyGetPreInfoOptions(None, opts)` 调用、`ForceReloadCache` 缓存分支，以及当前 `IgnoreDBNotExist` 接线状态。
-- 独立 Rust 测试 [`parity_test.rs`](./parity_test.rs) 与 [`get_pre_info_test.rs`](../get_pre_info_test.rs)：默认值、独立克隆、空 options、最后写入生效、重复应用/drop，以及两个上层缓存重载场景。Go 同目录没有 `get_pre_info_opts_test.go`；相关 Go 行为覆盖位于 [`get_pre_info_test.go`](../get_pre_info_test.go) 和 `table_import_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 7 个文件；`explore "lightning/pkg/importer/opts/get_pre_info_opts.rs GetPreInfoOptions get_pre_info_opts"` 返回目标源、Go 对照和 blast radius；`query ApplyGetPreInfoOptions --kind function` 定位到本文件第 83 行；`callees ApplyGetPreInfoOptions --file ...` 返回 `Clone`。上游边随后以 `rg` 和源码读取复核。
-- 仓库中未找到 importer package 的 `doc.go`，因此没有额外包级契约可读。结构验收使用任务规定的命令，验证本文件存在且恰有 11 个固定二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session-txninfo` crate，crate 入口 `pkg/session/txninfo/lib.rs` 以 `pub mod txn_info` 暴露它；`pkg/session/txninfo/Cargo.toml` 通过 `[package.metadata.porting].go-package = "pkg/session/txninfo"` 明确它是 Go 包 `pkg/session/txninfo` 的迁移实现。它定义单笔活跃事务的诊断快照、向 `Datum` 的列值转换，以及事务状态 Prometheus 指标的标签选择接口。
-
-Rust 当前已有三类直接接线：`pkg/session/sessmgr/lib.rs::txninfo` 重新导出本文件类型，`pkg/server/server.rs::ShowTxnList` 构造 `TxnInfo` 快照，`pkg/util/metricsutil/common.rs::initMetricsVars` 调用 `InitMetricsVars`。相邻的 `pkg/session/txninfo/summary.rs::TrxHistoryRecorder::OnTrxEnd` 还以 `TxnInfo` 的 `StartTS` 和 `AllSQLDigests` 生成事务历史摘要。代码搜索未发现 Rust 信息模式读取器直接调用 `TxnInfo::ToDatum`；因此，本文件保留了 Go `TIDB_TRX` 数据源的列转换契约，但不能据此断言 Rust 端已经完整接通该表的读取链路。
+定义单笔活跃事务的诊断快照、向 `Datum` 的列值转换，以及事务状态 Prometheus 指标的标签选择接口。
 
 ## 核心职责
 
@@ -86,14 +84,11 @@ crate 依赖由 `pkg/session/txninfo/Cargo.toml` 限定：`types` 提供 `Datum`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/session/txninfo/txn_info.go`。状态数值、两套状态文本、`TxnInfo`/`ProcessInfo` 字段、`TIDB_TRX` 列常量和绝大多数 `ToDatum` 缺省语义保持一致。Go `oracle.ExtractPhysical(StartTS)` 对应 Rust 的 `StartTS >> 18`；Go `time.Since` 对应 Rust 对 `duration_since` 正反两个分支的秒数计算；Go 的 `nil` digest slice 会先变为空数组，Rust 的 `Vec` 天然以空向量表示并序列化为 `[]`。
-
 已确认的差异与迁移限制：
 
 - Go `init()` 自动调用 `InitMetricsVars` 并预绑定二维句柄数组，还校验数组长度等于 `TxnStateCounter`；Rust 由全局 `pkg/util/metricsutil/common.rs::initMetricsVars` 显式触发向量初始化，访问器按需取标签句柄，没有等价的长度断言。
 - Go `StateStr` 通过 `types.ParseEnumValue` 校验枚举，错误时以“不应发生”为由 panic；Rust 直接索引 `TxnRunningStateStrs` 并构造 `Enum`，非法状态同样会因越界 panic。
 - Go JSON 序列化失败会记录包含 `txnStartTS` 的警告；Rust 只返回 `NULL`。
-- Go `RELATED_TABLE_IDS` 与 Rust 都遍历无序 map，因此两边均不承诺 ID 顺序。
 - Go 信息模式测试 `pkg/infoschema/test/clustertablestest/tables_test.go::TestTiDBTrx` 验证了完整 SQL 表链路，包括 digest 文本和来自 session 内存跟踪器的字节数；Rust 本文件既不生成 digest 文本也不存储字节数，且未检索到生产 Rust `ToDatum` 调用，不能把该 Go 端到端覆盖等同于 Rust 接线完成。
 
 ## 扩展指南
@@ -105,13 +100,3 @@ crate 依赖由 `pkg/session/txninfo/Cargo.toml` 限定：`types` 提供 `Datum`
 若上游开始并发更新 `TxnInfo`，应在拥有者层生成不可变快照，或明确引入同步模型；不要仅在 `ToDatum` getter 内局部加锁。若需要稳定输出 `RELATED_TABLE_IDS`，排序会增加 `O(n log n)` 成本且改变现有无序协议，必须同步 Go 兼容决策和测试。
 
 所有测试逻辑继续放在独立的 `pkg/session/txninfo/migration_aster_unit_test.rs`，不要内嵌进生产文件。改动字段或公共导出时，还要核对 `pkg/server/server.rs::ShowTxnList`、`pkg/session/sessmgr/processinfo.rs::Manager::ShowTxnList`、`pkg/session/sessionapi/lib.rs::txninfo` 和 `pkg/session/txninfo/summary.rs::TrxHistoryRecorder::OnTrxEnd`。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引有效，包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/session/txninfo` 列出本 crate 的 Rust/Go 实现与独立测试。
-- RustCodeGraph `node --file pkg/session/txninfo/txn_info.rs --offset 1 --limit 400`：读取目标文件全部 348 行，核对状态常量、3 个结构、指标访问器、列 getter 和 `ToDatum`。
-- RustCodeGraph `query TxnInfo`、`query TxnDurationHistogram`、`query columnValueGetterMap`：核对 Rust/Go 同名定义和相邻会话入口；`callers/callees` 对 `TxnInfo::ToDatum` 未返回生产调用边，随后用精确 Rust 文本搜索确认直接调用仅在独立测试。
-- RustCodeGraph `node`：读取 `pkg/session/txninfo/txn_info.go`、`pkg/session/txninfo/migration_aster_unit_test.rs`、`pkg/session/txninfo/lib.rs`、`pkg/session/txninfo/summary.rs`、`pkg/util/metricsutil/common.rs`、`pkg/server/server.rs` 和 `pkg/session/sessmgr/lib.rs` 的相关定义与调用位置。
-- 配置与门面：读取 `pkg/session/txninfo/Cargo.toml`；检查 `pkg/session/sessionapi/lib.rs`、`pkg/session/sessionapi/session.rs`、`pkg/session/sessmgr/processinfo.rs` 的 re-export 和接口签名。该目录没有 `doc.go`。
-- Go 行为测试：读取 `pkg/infoschema/test/clustertablestest/tables_test.go::TestTiDBTrx`，核对 `TIDB_TRX` 的列形状、锁等待、空值、digest JSON 和 digest 解码语义。
-- Rust 独立测试：`pkg/session/txninfo/migration_aster_unit_test.rs::txn_info_columns_match_go_datum_shapes_and_defaults` 覆盖所有已注册 getter、两个未注册列和未知列；`metric_accessors_select_the_go_state_and_lock_labels` 覆盖计数器/直方图标签选择。依任务约束，本次纯文档分析未运行 Cargo。

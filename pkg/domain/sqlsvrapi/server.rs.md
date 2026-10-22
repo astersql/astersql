@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-sqlsvrapi` crate 的核心接口契约，源码见 [`server.rs`](server.rs)。它不创建监听器，也不处理 MySQL 协议；这里的 “SQL Server” 指向 Domain 暴露给 SQL 执行及分布式任务框架的运行时能力集合。crate 入口 [`lib.rs`](lib.rs) 将本模块公开为 `server`，并把 KV `Storage`、元数据 `AlterTableModeTarget`、DDL owner `Manager` 与系统 session pool `DestroyableSessionPool` 从各自 crate 重新导出。
-
-[`Cargo.toml`](Cargo.toml) 表明该 crate 没有 feature 分支：生产依赖仅为 `astersql-kv`、`astersql-meta-model`、`astersql-owner`、`astersql-util` 和 `tokio-util 0.7`。本文件自身没有条件编译项、常量、结构体或具体函数实现，只有两个类型别名与三个公开 trait。
-
-仓库当前的 Rust 接线要分两层理解：接口已被 mock crate 和 DXF 工具使用，例如 [`pkg/dxf/framework/dxfutil/util.rs`](../../dxf/framework/dxfutil/util.rs) 通过 `Server` 获取任务 Runtime；但对全仓 Rust 源码搜索未找到 Domain 或跨 keyspace 生产类型对本文件三个 trait 的实现。相应的完整生产实现目前可在 Go 的 [`domain.go`](../domain.go) 与 [`cross_ks.go`](../crossks/cross_ks.go) 中看到。因此本文件是迁移中的稳定边界，不能单凭 trait 声明推断 Rust 主程序已经完成生产接线。
+用 `Server` 同时提供当前实例 Runtime、目标 keyspace Runtime handle，以及 DDL owner 管理器。
 
 ## 核心职责
 
@@ -89,13 +85,10 @@ Runtime 不拥有其所有下游资源的关闭权：`KSRuntimeHandle` 注释明
 
 ## 与 Go 版本的对应关系
 
-[`server.go`](server.go) 是逐项对照来源：Go 的 `Runtime`、嵌入 `Runtime` 的 `KSRuntimeHandle`、以及 `Server` 分别映射为 Rust 同名 trait；方法顺序与名称保持一致。主要类型映射为：Go `context.Context` → Rust `CancellationToken`，Go `error` → boxed 标准错误，Go 接口值 → `Arc<dyn Trait>`，Go interface embedding → Rust supertrait。
-
 语义上的重要差异是：
 
 - Rust `Context` 只覆盖取消，不完整等价于 Go context 的 deadline/value/cause。
 - Go 接口返回值依赖垃圾回收管理引用，Rust 显式用 `Arc`；但两者都仍要求业务层调用 `Release`。
-- Go `Domain` 已实现 `Server` 和当前 keyspace `Runtime`：`GetRuntime` 返回自身，`GetDDLOwnerMgr` 返回 DDL owner，`AcquireKSRuntime` 委托跨 keyspace manager，`AlterTableMode` 使用本地系统 session 与 DDL executor。
 - Go `crossks.runtimeHandle` 已实现跨 keyspace Runtime 与幂等释放，并由 `cross_ks_test.go` 覆盖目标 store/session pool、DDL 提交、等待取消和 `defer Release`。Rust 同名接口目前只有测试实现/mock 与消费者，未检索到对应生产 trait impl。
 - Rust trait 的 `AlterTableMode` 明确接收完整 `AlterTableModeTarget`，与当前 Go 接口一致；不能把独立 `crossks` Rust crate 中形状相似但类型不同的 target/cancellation 自动视为可互换。
 
@@ -111,12 +104,3 @@ Runtime 不拥有其所有下游资源的关闭权：`KSRuntimeHandle` 注释明
 6. 若需要可判别的恢复策略，优先引入稳定错误枚举或辅助分类 API；继续使用字符串匹配会使兼容性脆弱。若改变 `Context`，需评估 deadline、取消原因与同步/异步等待的兼容影响。
 
 性能风险主要来自每次调用克隆 `Arc`、跨 keyspace Runtime 的重复创建/持有、系统 session 借用，以及 `AlterTableMode` 的阻塞等待；兼容风险集中于 Go 风格公开方法名、trait object 对象安全和所有实现者必须同步新增方法。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`pkg/domain/sqlsvrapi/server.rs` 被识别为 109 行、11 个符号。`query` 精确定位了本文件的 `Runtime`、`KSRuntimeHandle`、`Server`，`node --file` 复核了完整源码。
-- RustCodeGraph 调用查询：`Runtime` 定义无内部 callee；`AlterTableMode` 的直接结果包含本 crate 的 `runtime_uses_real_dependencies_and_preserves_context_target_and_error`；`AcquireKSRuntime` 的直接 Rust 结果包含 `server_acquires_keyspace_handle_reports_errors_and_exposes_owner`。常见方法名的跨语言结果存在噪声，因此实际 Rust 消费边又由 crate 依赖和源码读取核实。
-- 已读 Rust 边界：[`server.rs`](server.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、三个 [`mock`](mock/) 实现、[`dxfutil/util.rs`](../../dxf/framework/dxfutil/util.rs) 及其 [`util_test.rs`](../../dxf/framework/dxfutil/util_test.rs)。
-- 已读 Go 对照与测试：[`server.go`](server.go)、[`domain.go`](../domain.go) 的 Server/Runtime 实现、[`cross_ks.go`](../crossks/cross_ks.go) 的 handle 实现，以及 [`cross_ks_test.go`](../crossks/cross_ks_test.go) 的获取、释放与取消场景。
-- 生产接线限制：对全仓 Rust 的 `impl Runtime/Server/KSRuntimeHandle`、crate 名和 `sqlsvrapi` 引用进行搜索，只发现本 crate 测试、mock 与 DXF 消费层相关实现，未发现 Domain/跨 keyspace 的生产 trait impl；该结论描述的是当前仓库搜索结果，而不是未来设计保证。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核文档区分了接口事实、Go 生产行为和 Rust 当前迁移状态。

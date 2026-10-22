@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是新 Cascades 逻辑优化器的规则契约层，属于 Cargo crate `astersql-planner-cascades-rule`。crate 入口 `pkg/planner/cascades/rule/lib.rs` 将本文件的公开项全部再导出，因此调度器、规则集合和具体规则通常通过 `cascades_rule::{Rule, BaseRule, NewBaseRule, RuleError}` 使用它们，而不直接引用私有模块 `rule`。
-
-它位于规则模式与任务调度之间：`Pattern` 描述候选计划的结构，`BoundPlan` 表示 Binder 已绑定到 Memo 组表达式的结果，`Rule::XForm` 则产出可重新写入 Memo 的 `LogicalPlanRef`。真实主链见 `pkg/planner/cascades/task/task_opt_group_expression.rs` 和 `pkg/planner/cascades/task/task_apply_rule.rs`。
+用 `BaseRule` 保存所有简单规则共享的 `Type` 与 `Pattern`，并提供与 Go `BaseRule` 相同的保守默认行为：ID 为 0、检查通过、变换不产生替代计划且不删除原表达式。
 
 ## 核心职责
 
@@ -85,16 +83,13 @@ Memo 的插入、移除和探索标记都发生在本文件之外。规则实现
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/rule/rule.go`，Rust 保留了 Go 风格符号名和方法顺序，核心默认语义一致：
-
-- Go `Rule` 的 `ID/String/Pattern/PreCheck/Match/XForm` 对应 Rust 同名 trait 方法。
 - Go `BaseRule` 保存 `Type` 与 `*pattern.Pattern`；Rust `BaseRule` 保存 `Type` 与拥有型 `Pattern`，通过借用返回模式，避免空指针状态。
 - Go `NewBaseRule` 返回指针；Rust 返回按值对象，具体规则再组合或装入 `Rc`/`Box`。
 - Go `XForm` 返回 `([]LogicalPlan, bool, error)`；Rust 用 `Result<(Vec<LogicalPlanRef>, bool), RuleError>` 把错误放入类型化结果。
 - Go 默认 `XForm` 返回 `nil, false, nil`；Rust 返回空 `Vec`、`false` 和 `Ok`，调度效果相同。
 - Go `ID` 是 `uint`，Rust 是 `usize`；两者都被规则掩码和探索状态使用。
 
-`pkg/planner/cascades/task/task_apply_rule.go` 也只在 Binder 绑定后调用 `PreCheck` 与 `XForm`，没有调用 `Match`；Rust 当前行为并非额外删减。`rule_type.rs` 与 `rule_type.go` 共同证明 `BaseRule::String` 的映射：`XFJoinToApply` 为 `join_to_apply`，其他当前类型回落为 `default_none`。
+`pkg/planner/cascades/task/task_apply_rule.go` 也只在 Binder 绑定后调用 `PreCheck` 与 `XForm`，没有调用 `Match`；Rust 当前行为并非额外删减。
 
 ## 扩展指南
 
@@ -111,12 +106,3 @@ Memo 的插入、移除和探索标记都发生在本文件之外。规则实现
 - 优化器注册、掩码与探索状态：`pkg/planner/cascades/cascades_test.rs`。
 
 主要兼容风险是改变 ID、规则名称或默认返回语义；正确性风险是产生不等价计划或错误设置 `remove`；性能风险是过宽 pattern、昂贵 `PreCheck/XForm` 或生成大量重复候选。若计划让 `Match` 进入主链，应同时核对 Go 行为并新增能证明调用顺序与过滤效果的任务级回归测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/planner/cascades/rule` 确认目标与邻接 Go/Rust/测试文件；`node --file pkg/planner/cascades/rule/rule.rs` 读取完整 91 行源码并报告直接使用文件；`query/node NewBaseRule` 确认 Rust/Go 定义及 Rust 测试调用者。宽泛 `explore` 结果存在同名符号噪声，因此调用链结论以精确节点和下列源码为准。
-- 目标与 crate 边界：`pkg/planner/cascades/rule/rule.rs`、`lib.rs`、`Cargo.toml`、`rule_type.rs`。
-- Go 对照：`pkg/planner/cascades/rule/rule.go`、`rule_type.go`、`pkg/planner/cascades/task/task_apply_rule.go`。
-- 生产调用链：`pkg/planner/cascades/cascades.rs`、`task/task_opt_group_expression.rs`、`task/task_apply_rule.rs`、`rule/ruleset/rule_set.rs`、`rule/join/join_to_apply.rs`。
-- 独立测试：`pkg/planner/cascades/rule/binder_test.rs` 验证 BaseRule 默认 ID、Pattern 和类型字符串；`rule/ruleset/rule_set_aster_unit_test.rs` 验证 trait object、规则 ID/顺序与真实 XForm；`task/task_test.rs` 验证 Binder、XForm、Memo 写回和探索标记；`cascades_test.rs` 验证注册规则经优化器调度。
-- 人工复核结论：本文件存在于“规则定义”与“调度执行”边界；安全扩展的关键是唯一 ID、准确 Pattern、在 `PreCheck`/`XForm` 实现真实逻辑、保持 Go 协议，并通过独立规则测试和任务链测试验证。

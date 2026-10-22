@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util` crate。`pkg/planner/util/Cargo.toml` 将该 crate 的入口设为 `lib.rs`，并直接依赖表达式层 `astersql-expression`、表达式上下文、Parser AST、Planner `PlanContext`、错误上下文、MySQL 类型标志和 chunk 行等 crate。`pkg/planner/util/lib.rs` 以私有模块 `null_misc` 装载本文件，再通过 `pub use null_misc::*` 导出两个公开函数：`IsNullRejected` 和 `ResetNotNullFlag`。
-
-它位于逻辑规划优化与表达式求值之间：一部分代码证明谓词在外连接内侧列被补成 SQL `NULL` 后不可能为真，供外连接简化、谓词下推和函数依赖推导使用；另一部分代码在外连接输出 Schema 上清除不再成立的 `NotNull` 类型标志。它不执行查询，也不持有计划节点。
+`ResetNotNullFlag` 对 Schema 的指定半开区间执行写时克隆，清除字段类型的 `NotNullFlag`，使外连接产生的可空列在类型元数据中得到反映。
 
 ## 核心职责
 
@@ -84,11 +82,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/util/null_misc.go`，Go 测试是 `pkg/planner/util/null_misc_test.go`。Rust 保留了 Go 的整体算法与符号分层：`nullRejectProof`/`NullRejectProof`、`allConstants`、`IsNullRejected`、递归符号证明、`IN` 规则、置 NULL 折叠、`COALESCE`/`IFNULL`/`IF` 特判、常量分类、截断错误忽略上下文和 `ResetNotNullFlag` 均一一对应。
+Rust 保留了 Go 的整体算法与符号分层：`nullRejectProof`/`NullRejectProof`、`allConstants`、`IsNullRejected`、递归符号证明、`IN` 规则、置 NULL 折叠、`COALESCE`/`IFNULL`/`IF` 特判、常量分类、截断错误忽略上下文和 `ResetNotNullFlag` 均一一对应。
 
-两版的语义重点一致：区分 `nonTrue` 与 `mustNull`，对未知 builtin 保守返回无证明，避免计划缓存相关动态常量被提前折叠，并保留列类型后删除非空标志。Go 的函数属性使用 map，Rust 将其移到 `null_misc_builtins.rs` 的静态切片并通过查询函数访问；Rust 中少数尚无 AST 常量的名称以字符串保留，这属于登记表适配而非本文件逻辑变化。
+Go 的函数属性使用 map，Rust 将其移到 `null_misc_builtins.rs` 的静态切片并通过查询函数访问；Rust 中少数尚无 AST 常量的名称以字符串保留，这属于登记表适配而非本文件逻辑变化。
 
-实现细节上，Go 的普通函数置 NULL 折叠会遍历全部参数、记录 `allConstantArgs` 和 `hasNullArg`；Rust 在循环中用 `?`，遇到首个不可折叠参数即退出该折叠路径。对于 NULL 传递函数，后续符号证明仍会依据任一 `must_null` 子式得出结论，因此整体设计保持保守，但若调整折叠顺序或加入新特殊函数，应同时对照两版并增加等价测试。Rust 当前独立测试覆盖核心逻辑组合与 `IN`，Go 测试覆盖更广的 builtin、`COALESCE`/`IF`、延迟表达式、JSON/AES/WEEK 特例；不能把 Go 的广覆盖误认为这些边界已经全部由 Rust 测试直接验证。
+实现细节上，Go 的普通函数置 NULL 折叠会遍历全部参数、记录 `allConstantArgs` 和 `hasNullArg`；Rust 在循环中用 `?`，遇到首个不可折叠参数即退出该折叠路径。Rust 当前独立测试覆盖核心逻辑组合与 `IN`，Go 测试覆盖更广的 builtin、`COALESCE`/`IF`、延迟表达式、JSON/AES/WEEK 特例；不能把 Go 的广覆盖误认为这些边界已经全部由 Rust 测试直接验证。
 
 ## 扩展指南
 
@@ -100,14 +98,3 @@
 - 修改 Schema 可空性处理时应在 `ResetNotNullFlag` 保持克隆后替换，并检查 `logical_join.rs` 与 `logical_max_one_row.rs` 的区间边界。
 - Rust 测试逻辑必须继续放在独立的 `pkg/planner/util/null_misc_test.rs`，不要内嵌到生产源文件。至少同步验证正反例；若移植 Go 的广泛回归场景，应保持 Go 测试的实际分支与预期，而不是用简化桩代替。
 - 兼容风险主要是 SQL 三值逻辑或 MySQL builtin NULL 语义漂移；正确性风险高于性能收益。性能改动需避免重复克隆/折叠，但不能用缓存绕过 `PlanContext`、SQL mode、类型上下文或计划缓存保护。
-
-## 验证依据
-
-- 源码：`pkg/planner/util/null_misc.rs`，完整检查了 453 行及其中所有结构体、公开函数和私有辅助函数；文件没有 trait、impl、模块级常量或条件编译项。
-- crate 与模块接线：`pkg/planner/util/Cargo.toml`、`pkg/planner/util/lib.rs`；确认 crate 名、依赖、`mod null_misc`、公开再导出和独立测试模块声明。目录内不存在更近的 `doc.go`。
-- builtin 直接依赖：`pkg/planner/util/null_misc_builtins.rs`；确认两类登记表、`NullRejectTestMode` 和查询函数。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`explore "pkg/planner/util/null_misc.rs IsNullRejected proveNullRejected"` 确认 `IsNullRejected -> proveNullRejected`、递归证明/折叠辅助链，以及来自 `logical_join.rs`、`logical_projection.rs`、`funcdep_misc.rs` 和 `null_misc_test.rs` 的调用；按文件读取节点确认目标源和调用点。
-- Rust 调用者：`pkg/planner/core/operator/logicalop/logical_join.rs`、`logical_projection.rs`、`logical_max_one_row.rs`、`pkg/planner/util/funcdep_misc.rs`；另用精确源码搜索复核 `IsNullRejected` 与 `ResetNotNullFlag` 的生产调用位置。
-- Rust 测试：`pkg/planner/util/null_misc_test.rs`；`test_is_null_rejected_proof_modes` 覆盖内/外侧列、真/假常量、`IS NULL`、NULL 测试函数、`NOT`、`AND`、`OR` 和 `IN`，登记表快照测试覆盖数量、去重与代表函数。
-- Go 对照：`pkg/planner/util/null_misc.go` 与 `pkg/planner/util/null_misc_test.go`；逐段核对算法分层、保守失败策略、动态常量限制、特殊 builtin 和更广回归矩阵。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务规定的 11 章节结构检查，并人工复核上述路径和符号均可从当前仓库定位。

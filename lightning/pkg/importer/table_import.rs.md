@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` library crate。crate 根 `lightning/pkg/importer/lib.rs` 通过 `#[path = "table_import.rs"] mod table_import; pub use table_import::*;` 将其公开；`lightning/pkg/importer/Cargo.toml` 的 `package.metadata.porting.go-package = "lightning/pkg/importer"` 表明它直接移植自同目录 Go 包。任务级上游是 `lightning/pkg/importer/import.rs::Controller::importTables`：它为每张 dump 表构造 `TableImporter`，创建默认 `TableCheckpoint`，调用 `TableImporter::importTable`，再广播最终 checkpoint。
-
-它是单表导入边界，保存表结构、dump 元数据、编码表、auto-ID/storage/meta-manager 句柄，并提供 checkpoint 状态推进、列置换、校验和、DDL/统计辅助及重复检测入口。不过当前 Rust 文件明确是 slim port：`populateChunks` 不读取真实文件区域，`preprocessEngine`/`importEngine` 只推进状态，`importKV` 直接成功，`getDDLStatus` 固定返回 `synced`。因此不能把 `lightning/pkg/importer/table_import.go` 的完整引擎、TiKV、DDL 轮询和后处理能力视为 Rust 已实现能力。
+维护列映射：`initializeColumns`、`createColumnPermutation`、`parseColumnPermutations` 把输入列顺序映射到目标表列顺序，以 `-1` 表示忽略列、生成列、缺失列或未提供的 `_tidb_rowid`。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@ RustCodeGraph 对 Go/Rust 同名符号存在交叉语言误配：例如 Rust `im
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `lightning/pkg/importer/table_import.go`。Rust 保留了同名类型、函数和大致阶段次序，列置换、row-ID 平移、checksum 三元组比较、Parquet 大小乘二、`stats_meta` SQL、确定性重复键分类及 DDL query 精确匹配等局部语义与 Go 基本一致。
-
 重要差异如下：
 
 - Go `NewTableImporter` 接收 tableName、checkpoint、ignore columns、KV store、etcd client，构造真实 allocator/encoding table；Rust 参数和初始化明显更少，`initializeColumns` 也固定使用空 ignore set。
@@ -115,13 +111,3 @@ RustCodeGraph 对 Go/Rust 同名符号存在交叉语言误配：例如 Rust `im
 - 恢复 DDL 流程时，围绕 `executeDDL`、`isDeterminedError`、`getDDLStatus`、`getDDLJobIDByQuery` 补齐取消、轮询间隔、create-time 过滤、subjob row count、确定/不确定错误及逐索引降级；兼容风险是误判已完成或重复执行 DDL。
 - 新增持有资源的字段时，同时更新构造器、`clone_light`、`Close` 和所有测试夹具；若资源需可靠释放，应优先使用 RAII/`Drop`，不要只扩展 `closed` 标记。
 - 性能敏感点是 engine/chunk 并发、sorter 磁盘空间、Parquet 估算、DDL 长轮询和 checkpoint flush；补实现时应保持 Go 的并发上限与取消/清理顺序。
-
-## 验证依据
-
-- RustCodeGraph 索引可用：`status` 报告 11467 个文件、307296 个节点、1848419 条边；`files --filter lightning/pkg/importer/table_import.rs` 确认目标文件 658 行、57 个符号，并列出 `import.rs`、`chunk_process.rs`、测试等使用者。
-- 通过 RustCodeGraph `node --file` 完整读取 `lightning/pkg/importer/table_import.rs` 第 1–658 行，并读取 `import.rs::Controller::importTables`、`chunk_process.rs` 与 `dup_detect.rs` 的直接接线段落。
-- 对 `TableImporter`、`NewTableImporter`、`importTable`、`createColumnPermutation`、`estimateCompactionThreshold`、`updateStatsMeta`、`parseColumnPermutations`、`isDeterminedError`、`getDDLJobIDByQuery` 执行 `query`；对主要入口执行带目标文件限定的 `callers/callees`。因同名跨语言边有噪声，又以 `rg` 核对 `import.rs`、`chunk_process.rs`、`dup_detect.rs`、`meta_manager.rs` 的真实引用。
-- 读取 `lightning/pkg/importer/Cargo.toml` 与 `lib.rs`，确认 crate、Go package 映射、模块再导出、独立测试模块和依赖边界；目标包不存在 `doc.go`。
-- Go 对照证据来自 `lightning/pkg/importer/table_import.go` 的 `TableImporter`、构造器、主链、engine、post-process、列映射、统计、KV 导入、checksum、索引 DDL、DDL 状态和预去重实现。
-- Rust 独立测试证据来自 `lightning/pkg/importer/table_import_test.rs`：覆盖 engine 状态、缺失索引 engine、列映射/生成列/未知列、checksum 三元组、ANALYZE、stats SQL、空 `importKV`、完整 slim 主链、row-ID、阈值、DDL query 与错误类别；`parity_test.rs` 和 `chunk_process_test.rs` 另覆盖构造失败、未知列及 ignore-columns 接线。Go 测试 `table_import_test.go` 用于核对原测试意图。
-- 本任务只新增文档，按计划未运行 Cargo。交付时运行任务指定的 shell 结构检查，确认文件存在且恰含 11 个固定二级标题，并人工复核所有能力描述都区分 Rust 当前实现与 Go 对照。

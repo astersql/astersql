@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-disk` crate 的磁盘用量跟踪兼容门面。模块入口 `pkg/util/disk/lib.rs` 以 `pub mod tracker` 声明它，并通过 `pub use tracker::*` 把这里的三个公开名字提升到 crate 根，因此调用者可以写 `disk::Tracker`、`disk::NewTracker` 和 `disk::NewGlobalTracker`。它不实现独立的磁盘计量算法，而是复用 `astersql-util-memory` 的跟踪器实现；`pkg/util/disk/Cargo.toml` 中的 `tidb-memory = { package = "astersql-util-memory", path = "../memory" }` 以及 `lib.rs` 的 `memory` 转发模块共同建立了这条依赖。
-
-该门面的意义是保留“磁盘用量”这一领域名称，同时让内存与磁盘计量共享同一套树形记账、配额和并发语义。真实使用点包括 `pkg/util/chunk/row_in_disk.rs::DataInDiskByRows::New`、`pkg/util/chunk/row_container.rs::RowContainer::New`、`pkg/util/chunk/chunk_in_disk.rs::NewDataInDiskByChunks`，以及 `pkg/util/cteutil/storage.rs::GetDiskTracker` 所在的 CTE 存储接口。
+因此，“磁盘”只表示调用场景。
 
 ## 核心职责
 
@@ -76,13 +74,7 @@ tracker 的销毁也不会自动删除临时文件或把剩余计数归零。临
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/disk/tracker.go`。两边结构逐项对应：
-
-- Go `type Tracker = memory.Tracker` 对应 Rust `pub type Tracker = crate::memory::tracker::Tracker`，均为真正的类型别名。
-- Go `var NewTracker = memory.NewTracker` 对应 Rust 的函数再导出 `pub use ...::NewTracker`。
-- Go `var NewGlobalTracker = memory.NewGlobalTracker` 对应 Rust 的函数再导出 `pub use ...::NewGlobalTracker`。
-
-Rust 没有复制或简化 Go 的磁盘算法，因为 Go 文件本来也没有独立算法。语言层面的差异是 Go 构造函数以函数变量别名暴露，Rust 以 `pub use` 建立同一函数项的公开路径；Rust 返回 `Box<Tracker>`，调用者常显式转换为 `Arc`，而 Go 指针天然可由多个持有者共享。`pkg/util/disk/migration_aster_unit_test.rs::check_and_create_dir_and_tracker_aliases_match_go_behavior` 对构造后的 label、正配额和零配额归一化进行了 Rust 侧回归验证。
+Rust 没有复制或简化 Go 的磁盘算法，因为 Go 文件本来也没有独立算法。语言层面的差异是 Go 构造函数以函数变量别名暴露，Rust 以 `pub use` 建立同一函数项的公开路径；Rust 返回 `Box<Tracker>`，调用者常显式转换为 `Arc`，而 Go 指针天然可由多个持有者共享。
 
 ## 扩展指南
 
@@ -91,12 +83,3 @@ Rust 没有复制或简化 Go 的磁盘算法，因为 Go 文件本来也没有�
 若要新增公开构造器或别名，需要同时检查四处：`pkg/util/memory/tracker.rs` 的真实实现、`pkg/util/disk/tracker.rs` 的再导出、`pkg/util/disk/lib.rs` 的 crate 根暴露，以及 `pkg/util/disk/tracker.go` 的 Go 对照。还应更新 `pkg/util/disk/migration_aster_unit_test.rs` 验证别名没有改变 label、配额或全局/普通节点语义。
 
 需要重点评估的风险包括：类型别名导致的 API 全量暴露、普通/全局节点选择错误引起的锁竞争或树统计偏差、写入与释放不对称导致的长期虚高/负值，以及用 tracker 配额误代替真实磁盘容量检查。磁盘容量探测、临时目录管理和 I/O 错误处理应放在各自模块，而不是塞入该兼容门面。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/util/disk` 确认模块、Go 对照与独立测试；`node --file pkg/util/disk/tracker.rs` 核对本文件全部 27 行及文件级使用边。
-- RustCodeGraph 源码节点：`pkg/util/memory/tracker.rs` 的 `Tracker`、`NewTracker`、`NewGlobalTracker`；`pkg/util/disk/lib.rs` 的模块声明和再导出；`pkg/util/chunk/row_in_disk.rs`、`row_container.rs`、`chunk_in_disk.rs` 及 `pkg/util/cteutil/storage.rs` 的真实使用链。
-- crate 边界：`pkg/util/disk/Cargo.toml` 的 package、lib path、`tidb-memory` 依赖和无专属 feature 配置。
-- Go 对照：`pkg/util/disk/tracker.go` 的类型别名及两个函数别名。
-- 独立 Rust 测试：`pkg/util/disk/migration_aster_unit_test.rs::check_and_create_dir_and_tracker_aliases_match_go_behavior`；底层详细行为另由 `pkg/util/memory/tracker_test.rs` 和 `pkg/util/memory/tracker_4_aster_unit_test.rs` 覆盖。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以固定 11 个二级标题的结构命令校验文档形状，并人工复核所有“已支持”陈述均可回指上述源码或测试。

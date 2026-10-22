@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-join` crate 的 Hash Join 测试辅助层。`pkg/executor/join/lib.rs` 以公开模块 `hash_join_test_util` 装配它，而其直接使用方是同 crate 的 `hash_join_test_util_test.rs`、`hash_join_v1_test.rs`，以及 `pkg/executor/test/jointest/hashjoin/hash_join_test.rs`。它不属于 SQL 请求的生产入口，也不实现哈希表或连接算法；它把测试参数转换成 `HashJoinV1Exec`，构造确定性输入，驱动执行器生命周期并规范化结果，供测试聚焦连接语义。
-
-`pkg/executor/join/Cargo.toml` 表明该文件归属 `astersql-executor-join`，crate 根为同目录 `lib.rs`，Go 对照包为 `pkg/executor/join`。目标文件自身没有条件编译项；尽管模块名称带 `test_util`，`lib.rs` 对它使用的是无 `#[cfg(test)]` 的 `pub mod`，因此它会进入常规 crate API，而独立测试模块才受 `#[cfg(test)]` 限制。
+比较与排序函数把并发或执行策略造成的不稳定输出顺序转为可重复断言；数据构造函数提供简单、确定性的 `(Int, Text)` 行与 schema 下标。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/join/hash_join_test_util.go`。两者保留了相同的辅助角色和主要命名族：参数包、执行器构造、比较/排序、键数据与数据源构造、执行/取错/随机失败、排序结果与结果检查。
-
 当前 Rust 并非逐类型等价复刻：
 
 - Go `hashJoinInfo` 携带 session context、schema、plan ID、真实子执行器、表达式列/类型与 v2 特有字段；Rust `HashJoinInfo` 使用简化的本地 `Row`/`Chunk`、列下标和 `Predicate`，主要装配 v1，也供 jointest 构造 v2。
@@ -96,8 +92,6 @@
 - Go 执行辅助用 `testing.T` 立即断言错误，并操作真实 `chunk.Chunk`；Rust 返回 `Result`/`Option`，把断言策略交给调用者。两版都在完整拉取后关闭执行器，Rust 另有独立测试显式固定这一契约。
 - Rust 的 `fail_after_chunks` 提供确定性取消注入；Go 的同名 random-fail 辅助本身只持续拉取，失败通常由外围 failpoint 注入。
 
-因此扩展时应保持“意图对齐”，但不能假设字段或比较语义已经覆盖 Go 的全部生产能力。
-
 ## 扩展指南
 
 - 新增 v1 构造参数时，先把字段加入 `HashJoinInfo`，再在 `build_hash_join_v1_exec` 中明确接入 `HashJoinCtxV1`、`Joiner` 或执行器构造器；同步更新 `hash_join_test_util_test.rs`、`hash_join_v1_test.rs` 和 jointest 中的结构体字面量。避免只添加字段而未下传。
@@ -106,16 +100,3 @@
 - 改动执行辅助时，必须保持成功打开后的所有退出路径调用 `close`，并为正常、错误、取消至少各保留一个状态断言。若未来 `close` 可失败，需要定义原执行错误与关闭错误的优先级。
 - 扩充数据生成器时保持确定性，除非测试明确控制随机种子；大数据或 NDV/selection 行为应对照 Go 工具另设专用构造器，避免让轻量单元测试默认承担昂贵数据量。
 - 若新增 v2 通用装配能力，应先检查 jointest 现有 `execute_hash_join_v2`，避免在此建立与 v1 字段含义不一致的第二套路径。兼容风险集中在 outer/null-aware 方向、列投影、默认内表行布局和 SQL 类型比较；性能风险集中在深克隆大 chunk 与对全部输出排序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件；`files --filter pkg/executor/join/hash_join_test_util.rs` 确认目标含 23 个符号。
-- RustCodeGraph 文件节点 `hash_join_test_util.rs:1-267`：确认所有类型、函数、私有比较器及 3 个直接使用文件；精确 `callers/callees` 查询未返回额外可用边，因此调用关系又以直接引用和下游源码核验。
-- RustCodeGraph 文件节点 `hash_join_v1.rs:1465-1964`：核验 `HashJoinCtxV1::validate`、`HashJoinV1Exec::{new,open,next,close}` 的状态、错误和资源生命周期。
-- RustCodeGraph 文件节点 `joiner.rs:1340-1439`：核验 `Joiner::new` 的 chunk/null-aware 校验及匹配职责。
-- `pkg/executor/join/Cargo.toml`、`pkg/executor/join/lib.rs`：核验 crate 名称、crate 根、Go 包映射、公开模块和测试模块边界；`pkg/executor` 下没有 `doc.go`。
-- `pkg/executor/join/hash_join_test_util.go`：核验 Go 对照的参数、v2 构造、类型感知比较、数据生成与执行辅助语义。
-- `pkg/executor/join/hash_join_test_util_test.rs`：核验正常/取消执行均关闭、阈值零触发取消错误。
-- `pkg/executor/join/hash_join_v1_test.rs`：核验 v1 helper 的直接使用、inner/outer 行语义、重复打开与统计场景。
-- `pkg/executor/test/jointest/hashjoin/hash_join_test.rs`：核验同一参数包用于 v1/v2 结果对照。
-- 本任务只新增说明文档，未运行 Cargo；交付前以任务指定命令验证恰有 11 个固定二级章节，并人工复核文件定位、执行链、边界和安全扩展入口均有上述源码证据。

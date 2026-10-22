@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-backend-encode` crate 的核心协议文件。crate 入口 `pkg/lightning/backend/encode/lib.rs` 将本文件的全部公开项重新导出；`pkg/lightning/backend/encode/Cargo.toml` 则把 crate 映射到 Go 包 `pkg/lightning/backend/encode`，并只直接依赖 `astersql-lightning-verification` 来取得 `KVChecksum`。
-
-它位于 Lightning “解析后的 SQL 行”与“具体后端可写行”之间：调用方通过 `EncodingBuilder` 创建 `Encoder`，再把 `Datum` 序列编码成不透明的 `Row`；后端通过 `Row::ClassifyAndAppend` 把结果并入 `Rows` 缓冲并累计校验和。本文件只定义边界、配置和值类型，不实现实际 KV/SQL 编码。已确认的具体实现位于 `pkg/lightning/backend/kv/sql2kv.rs` 和 `pkg/lightning/backend/tidb/tidb.rs`。
+只定义边界、配置和值类型，不实现实际 KV/SQL 编码。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ KV 实现的实证流程是：`tableKVEncoder::Encode` 按置换填列、处理�
 
 ## 与 Go 版本的对应关系
 
-Go 基准文件是 `pkg/lightning/backend/encode/encode.go`。Rust 保留了 `EncodingConfig`、`EncodingBuilder`、`Encoder`、`SessionOptions`、`Rows`、`Row` 的整体分层和 Go 风格方法名，也保留了 `Clear` 的“返回新 Rows、可共享旧容量”合同、`ClassifyAndAppend` 的双缓冲/双校验和合同，以及 `Size() uint64` 的语义。
+Rust 保留了 `EncodingConfig`、`EncodingBuilder`、`Encoder`、`SessionOptions`、`Rows`、`Row` 的整体分层和 Go 风格方法名，也保留了 `Clear` 的“返回新 Rows、可共享旧容量”合同、`ClassifyAndAppend` 的双缓冲/双校验和合同，以及 `Size() uint64` 的语义。
 
 主要适配差异如下：
 
@@ -98,12 +96,3 @@ Go 基准文件是 `pkg/lightning/backend/encode/encode.go`。Rust 保留了 `En
 - 修改取消语义时，优先保持 `Context::is_cancelled` 轻量且无副作用，并为立即取消、零/已过期超时、回调翻转和 `Debug` 输出增加同目录独立测试文件；当前目标 crate 尚无自己的 `encode_test.rs`。
 - 修改 `Clear` 或 `ClassifyAndAppend` 合同时，要同步 `pkg/lightning/backend/backend_test.rs`、`pkg/lightning/backend/kv/sql2kv_test.rs`、`pkg/lightning/backend/tidb/tidb_test.rs` 及相应 Go 测试。尤其不要默默把当前明确不支持的 `GroupedPairs::Clear` 当作通用可用能力。
 - 若要引入结构化错误，需同时调整所有 `EncodeError(...)` 构造和字符串断言，并决定是否保留 Go 侧可观察的错误文本；若要自动清理编码器，应先审计现有显式 `Close` 顺序和 Session 副作用。
-
-## 验证依据
-
-- 目标与 crate 边界：`pkg/lightning/backend/encode/encode.rs`、`pkg/lightning/backend/encode/lib.rs`、`pkg/lightning/backend/encode/Cargo.toml`、根 `Cargo.toml` 以及各直接消费者的 Cargo manifest。
-- Go 对照：`pkg/lightning/backend/encode/encode.go`；其接口、字段及注释用于核对迁移语义，而非推测 Rust 实现已支持的能力。
-- 具体实现：`pkg/lightning/backend/kv/sql2kv.rs`、`pkg/lightning/backend/kv/base.rs`、`pkg/lightning/backend/tidb/tidb.rs`。
-- 独立 Rust 测试：`pkg/lightning/backend/backend_test.rs::TestMakeEmptyRows`、`TestNewEncoder`；`pkg/lightning/backend/kv/sql2kv_test.rs::TestClassifyAndAppend`、`classify_does_not_treat_embedded_record_marker_as_a_record_key`、`grouped_pairs_*_remains_unsupported`；更完整的后端语义覆盖位于 `pkg/lightning/backend/tidb/tidb_test.rs`。Go 对照测试包括 `pkg/lightning/backend/backend_test.go`、`pkg/lightning/backend/kv/sql2kv_test.go` 和 `pkg/lightning/backend/tidb/tidb_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/lightning/backend/encode` 找到 `encode.rs`、`lib.rs` 和 Go 对照；对目标文件执行 `node --file` 完整读取 251 行；`query` 确认 `EncodingBuilder`、`Encoder`、`Rows`、`Row` 及 `NewEncoder`、`ClassifyAndAppend` 的声明和具体实现。trait callers/callees 查询无静态输出，已用具体实现、Cargo 引用和测试补证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定命令验证目标文件存在且固定二级标题恰好为 11 个，并人工检查没有把 stub、未实现分支或字段载荷描述成已接线能力。

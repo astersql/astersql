@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`optimizer_runtime.rs` 是 `astersql-planner-core` crate 中把逻辑计划变成可执行物理计划的运行时实现。模块由 `pkg/planner/core/lib.rs` 私有声明为 `mod optimizer_runtime`，但 `DoOptimize`、`LogicalOptimizeForMpp`、`PhysicalOptimizeForMpp`、AST 优化入口安装函数和超长列 chunk 复用判断会从 crate 根重新导出。常规 SQL 的直接上游包括 `planbuilder_runtime.rs` 和 `expression_rewriter.rs`；测试夹具也从 crate 根调用这些入口。
-
-该文件属于 Volcano 风格优化主链，而不是只有声明的兼容门面：它执行按位掩码控制的逻辑重写、调用 `physicalop::FindBestTask` 枚举物理任务、计算代价，并做 MPP 边界、投影、索引解析、计划 ID 等后处理。Go 对照主体是同目录 `optimizer.go`。Rust 另有较小的 `optimizer.rs` 紧凑接口；它不是本文件实现的替代入口，二者的参数模型和覆盖范围不同。
+实现 `ShouldSkipReuseChunkForPhysicalPlan` 和 `ShouldSkipReuseChunkForPointGet`，依据字段类型、主机内存、可信直方图、行数上界及单 chunk 最大行数，保守决定超长列是否禁用 chunk 复用。
 
 ## 核心职责
 
@@ -86,11 +84,11 @@ MPP CTE 路径先由 `LogicalOptimizeForMpp` 复用同一逻辑规则流水线�
 
 ## 与 Go 版本的对应关系
 
-Go `optimizer.go` 的 `DoOptimize → doOptimize → VolcanoOptimize → logicalOptimize/physicalOptimize → postOptimize` 是主对照。Rust `DoOptimize` 将 Volcano 主链和多项 `postOptimize` 行为集中在本文件；Go 还包含 Cascades 分支和 `adjustOptimizationFlags` 等外围逻辑，因此不能假定两个单文件逐行同构。规则数组的次序与 flag 映射明确要求对齐 Go `optRuleList`/`optRuleFlags`，Rust 测试会观测实际执行次序。
+Rust `DoOptimize` 将 Volcano 主链和多项 `postOptimize` 行为集中在本文件；Go 还包含 Cascades 分支和 `adjustOptimizationFlags` 等外围逻辑，因此不能假定两个单文件逐行同构。规则数组的次序与 flag 映射明确要求对齐 Go `optRuleList`/`optRuleFlags`，Rust 测试会观测实际执行次序。
 
-两侧超长列规则都以 120 GiB 主机内存为放宽门槛、以 `MaxBlobWidth * 2` 为单 chunk 阈值，并对无界类型保持保守。Rust 额外提供只接收 `FieldType` 的 point-get 桥接入口；真实物理计划入口则与 Go 一样利用 reader、行数和直方图信息。
+Rust 额外提供只接收 `FieldType` 的 point-get 桥接入口；真实物理计划入口则与 Go 一样利用 reader、行数和直方图信息。
 
-Rust 的 `OnceLock`/原子/RwLock 是对 Go 包级变量并发语义的显式实现；`Result`/`?` 对应 Go error 返回。Rust MPP/投影/plan-ID 处理中存在为当前移植树形补齐的局部规范化，不应仅因 Go 函数名不同就删除。当前 crate 的 `package.metadata.porting.go-package = "pkg/planner/core"` 也明确了对照包边界。
+Rust 的 `OnceLock`/原子/RwLock 是对 Go 包级变量并发语义的显式实现；`Result`/`?` 对应 Go error 返回。Rust MPP/投影/plan-ID 处理中存在为当前移植树形补齐的局部规范化，不应仅因 Go 函数名不同就删除。
 
 ## 扩展指南
 
@@ -100,12 +98,3 @@ Rust 的 `OnceLock`/原子/RwLock 是对 Go 包级变量并发语义的显式实
 - 修改超长列复用时同步 Go `shouldSkipReuseChunkForPhysicalPlan`，覆盖低内存/未知内存、无界类型、point/batch point get、pseudo/缺失统计、NULL-only 列和最大 chunk 行数；这是 executor 内存风险，不宜只凭声明 `flen` 做乐观放宽。
 - 修改 `prepare_tiflash_availability` 时保持共享 CTE 去重和后序语义，并专门检查裸指针安全前提；`optimizer_runtime_tiflash_test.rs` 是最近的独立测试入口。
 - 新 API 只有确需跨 crate 使用时才在 `lib.rs` 再导出。测试专用函数保持 `pub(crate)`/`cfg(test)`，避免扩大稳定公共面。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件已索引为 12,592 行。查询确认 `DoOptimize` 位于第 8231 行、`LogicalOptimizeForMpp` 位于第 9312 行、`PhysicalOptimizeForMpp` 位于第 9472 行、`ShouldSkipReuseChunkForPhysicalPlan` 位于第 200 行。
-- RustCodeGraph 节点/调用轨迹：`DoOptimize → do_optimize_with_update_projection_policy`；`LogicalOptimizeForMpp → logical_optimize_in_place`，其已索引调用者包括 CTE seed 回调和 `PhysicalOptimizeForMpp` 的嵌套 seed 路径；超长列入口调用 `classify_overlong_schema`、`trusted_histograms`、`has_usable_overlong_type_size_stats`、`physical_reader_row_bound` 与磁盘平均行大小估计。
-- 已读生产与装配文件：`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`、`pkg/planner/core/planbuilder_runtime.rs`、`pkg/planner/core/expression_rewriter.rs`。
-- Go 对照：`pkg/planner/core/optimizer.go` 的 `DoOptimize`、Volcano/逻辑/物理/后处理链、`LogicalOptimizeTest` 和 `shouldSkipReuseChunkForPhysicalPlan`。
-- Rust 测试证据：`optimizer_logical_entry_aster_unit_test.rs` 验证逻辑规则实际顺序和多类语义屏障；`optimizer_runtime_tiflash_test.rs` 验证共享 CTE seed 的 TiFlash 可用性传播；`plan_replayer_capture_test.rs` 验证开关、表级捕获和重复表；`main_test.rs`/`integration_test.rs` 覆盖完整 `DoOptimize`、正有限代价、非空 schema、MPP/window 等路径。生产文件仅通过 `#[path]` 装配独立测试文件。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终仅运行固定 11 章节结构检查，并人工核对本文件未把测试写入生产 Rust、未声称未由源码/测试支持的能力。

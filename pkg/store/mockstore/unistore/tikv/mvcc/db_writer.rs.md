@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-store-mockstore-unistore-tikv-mvcc`，由同目录 `lib.rs` 以 `pub mod db_writer` 挂载，并通过 `pub use db_writer::*` 向 crate 使用方再导出。它位于 mock TiKV 的 MVCC 边界：定义持久化写入、锁存、事务写批和读快照所需的抽象，而不包含具体存储引擎或写队列实现。
-
-当前 Rust 接线必须与 Go 主链区分开来。Go 的 `tikv/mvcc.go` 将 `mvcc.DBWriter` 保存为 `MVCCStore.dbWriter`，事务请求通过该接口创建并提交写批；Rust 的 `tikv/write.rs` 已有具体 `DbWriter` 和 `WriteBatch`，但仓库搜索未发现它们对本文件 `DBWriter`、`WriteBatch` 或 `LatchHandle` trait 的 `impl`。因此，本文件目前实际执行的 Rust 行为只有泛型快照构造 `NewDBSnapshot`；三个写路径 trait 仍主要承担 Go API 的迁移契约和未来接线边界。
+位于 mock TiKV 的 MVCC 边界：定义持久化写入、锁存、事务写批和读快照所需的抽象，而不包含具体存储引擎或写队列实现。
 
 ## 核心职责
 
@@ -66,11 +64,9 @@ Go 侧的直接上游是 `tikv/mvcc.go::MVCCStore`，直接下游实现是 `tikv
 
 ## 与 Go 版本的对应关系
 
-`db_writer.rs` 基本逐项对应同路径 `db_writer.go`：`DBWriter`、`LatchHandle`、`WriteBatch` 的方法集合一致；泛型 `DBBundle<D>` 对应固定 `*badger.DB`；`DBSnapshot<S>` 对应固定 `*badger.Txn`；`Arc<MemStore>` 对应 Go 指针共享；`Mutex<()>` 对应 `sync.Mutex`；`NewDBSnapshot` 对应 `db.DB.NewTransaction(false)` 加共享 `LockStore`。
+Rust 为避免把 MVCC crate 绑定到尚未选定的 Badger 类型，增加了 Go 中不存在的 `DBSnapshotSource` 与关联类型。
 
-Rust 为避免把 MVCC crate 绑定到尚未选定的 Badger 类型，增加了 Go 中不存在的 `DBSnapshotSource` 与关联类型。Rust 还把可空 Go `*kvrpcpb.Context` 表达为 `Option<&Context>`，把接口值写批表达为 `Box<dyn WriteBatch>`，把错误统一为 `anyhow::Result`。字段和方法保留大写 Go 命名以方便迁移对照。
-
-迁移尚不完整：Go 的 `dbWriter` 明确实现本接口并由 `MVCCStore` 使用；Rust `tikv/write.rs::DbWriter`/`WriteBatch` 使用惯用小写方法，未实现本文件 trait，Rust 的 store 主链也未出现这些 trait 的调用。已验证对齐的是 `NewDBSnapshot`：`migration_aster_unit_test.rs` 证明每次创建新的读视图且锁表仍由同一 `Arc` 共享。
+迁移尚不完整：Go 的 `dbWriter` 明确实现本接口并由 `MVCCStore` 使用；Rust `tikv/write.rs::DbWriter`/`WriteBatch` 使用惯用小写方法，未实现本文件 trait，Rust 的 store 主链也未出现这些 trait 的调用。
 
 ## 扩展指南
 
@@ -79,12 +75,3 @@ Rust 为避免把 MVCC crate 绑定到尚未选定的 Badger 类型，增加了 
 修改写批语义时，应同步核对 Go `tikv/write.go` 中的先 DB 后锁顺序、悲观锁和 `Op::Lock` 分支、rollback 状态记录及最新时间戳规则。修改范围删除时，应保留半开区间、空结束键处理、4096 批量上限、按用户键加 latch、错误时释放 latch等约束。性能风险主要是过度克隆锁数据、长时间持有锁、范围删除一次性收集大量键和将批处理退化为逐键写入。
 
 测试必须放在独立文件。快照变化应扩展 `mvcc/migration_aster_unit_test.rs`；具体内存写实现变化应扩展 `tikv/main_test.rs` 或相应同目录独立测试；接口接线与端到端事务行为应参考 Rust `tikv/mvcc_test.rs` 的现有测试面，并与 Go `tikv/mvcc_test.go`/`write_test.go` 的边界案例对照。若改变公开签名，还需检查 `mvcc/lib.rs` 的再导出和所有 Cargo 使用方。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标文件含 21 个符号；`node --file .../db_writer.rs` 读取了完整 115 行；对 `DBWriter`、`LatchHandle`、`WriteBatch`、`DBSnapshotSource`、`DBBundle`、`DBSnapshot`、`NewDBSnapshot` 的 `query --json` 定位了 Rust/Go 对应符号。`callers`/`callees` 查询两次在 30 秒内未返回，因此没有据此推断调用边。
-- 生产源码：`pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs`、`mvcc/lib.rs`、`tikv/write.rs`、`tikv/mvcc.rs`；后两者用于确认邻近 Rust 实现及当前是否接线。
-- 包边界：`pkg/store/mockstore/unistore/tikv/mvcc/Cargo.toml`，确认 crate 名、库入口、`anyhow`/`kvproto`/本地依赖和无 feature 条件。
-- Go 对照：`mvcc/db_writer.go` 给出一一对应的接口与快照结构；`tikv/write.go` 给出写批、顺序提交、时间戳和范围删除的实现；`tikv/mvcc.go` 给出 `MVCCStore` 上游调用主链。
-- 测试证据：Rust `mvcc/migration_aster_unit_test.rs::db_snapshot_creates_read_view_and_shares_lock_store`；Rust `tikv/main_test.rs::memory_db_writer_preserves_lock_then_commit_order`（邻近具体实现，不是本 trait 的直接测试）；Go `tikv/mvcc_test.go::NewTestStore` 的接口组装。仓库搜索未发现同名独立 `db_writer` Rust 测试。
-- 人工复核结论：本文件存在是为了稳定 Go MVCC 写/快照边界并解除快照对具体引擎的绑定；其唯一已验证的本地执行体是 `NewDBSnapshot`，安全扩展必须同时处理 trait 接线、独立测试、锁释放和 DB-before-lock 顺序，不能把未实现的接口当作已运行能力。

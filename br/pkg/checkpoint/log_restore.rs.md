@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`log_restore.rs` 是 `astersql-br-pkg-checkpoint` crate 面向日志恢复场景的适配层。crate 入口 `br/pkg/checkpoint/lib.rs` 以 `pub mod log_restore` 装载本文件，并通过 `pub use log_restore::*` 展平公开符号；`br/pkg/checkpoint/Cargo.toml` 则把该 crate 标记为对齐 Go 包 `br/pkg/checkpoint` 的 library。它不实现 SQL 表或对象存储后端，而是在通用 `CheckpointRunner`、`LogMetaManager`/`SnapshotMetaManager` 与日志恢复所需的数据格式之间建立契约。
-
-RustCodeGraph 的文件节点显示本文件被 `br/pkg/checkpoint/checkpoint_test.rs`、`br/pkg/restore/log_client/client.rs` 和 `br/pkg/task/stream_test.rs` 使用。仓库文本检索还显示 `br/pkg/checkpoint/parity_test.rs` 和独立的 `log_restore_test.rs` 直接覆盖其 API。生产侧当前可确认的直接使用集中在 `client.rs` 构造 `CheckpointMetadataForLogRestore`；Runner 启动和 `AppendRangeForLogRestore` 的 Rust 证据来自独立测试，不能据此宣称 Rust 生产主链已经调用这两个入口。
+边界也很明确：实际的通道、线程、批量刷盘和收尾在 `checkpoint.rs`；SQL 表与外部存储的读写、存在性判断和清理在 `manager.rs`；本文件只负责日志恢复特有的类型和薄适配。
 
 ## 核心职责
 
@@ -75,11 +73,11 @@ manager 决定资源所有权。表后端在首次启动 Runner 时取走专用 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/checkpoint/log_restore.go`。Rust 保留了 Go 的公开类型和函数命名、JSON 字段名、稀疏到压缩形态的两级聚合、Runner 配置方式、任务信息读取顺序，以及 `RestoreProgress` 的数值含义。`newTableCheckpointStorage` 在 Go 返回指针，在 Rust 返回拥有 session 的具体值；随后均由 Runner/manager 管理生命周期。
+`newTableCheckpointStorage` 在 Go 返回指针，在 Rust 返回拥有 session 的具体值；随后均由 Runner/manager 管理生命周期。
 
-主要语言差异有三点。第一，Go 的 `Goff`/`Foff` 是 `int`，Rust 使用 `i64`；跨语言数据需要避免超出实际索引范围。第二，Go 枚举由 `int` 的默认 JSON 编码得到数值，Rust 用手写 serde 明确固定为 `0/1` 并拒绝未知值，兼容性更严格。第三，Go 的 `nil` snapshot manager 对应 Rust 的 `Option<&dyn SnapshotMetaManager>`，Go 的 metadata 指针对应 Rust 的 `Option<CheckpointMetadataForLogRestore>`。
+主要语言差异有三点。第一，Go 的 `Goff`/`Foff` 是 `int`，Rust 使用 `i64`；跨语言数据需要避免超出实际索引范围。第二，Go 枚举由 `int` 的默认 JSON 编码得到数值，Rust 用手写 serde 明确固定为 `0/1` 并拒绝未知值，兼容性更严格。
 
-Go 测试 `br/pkg/checkpoint/checkpoint_test.go` 验证 metadata/progress/修复 SQL 往返、`GetCheckpointTaskInfo` 和嵌套偏移的 Runner 写入；Rust 的 `checkpoint_test.rs` 保留相同测试意图并覆盖表/外部存储两类 manager。`log_restore_test.rs` 额外锁定数值 JSON。当前 Rust 结构为实实现而非空桩，但生产调用覆盖并不等同于 Go：仓库检索未发现 Rust 生产代码直接调用正式 Runner 启动或 append 入口，因此不能将 Go 的完整运行接线自动推断为 Rust 现状。
+`log_restore_test.rs` 额外锁定数值 JSON。当前 Rust 结构为实实现而非空桩，但生产调用覆盖并不等同于 Go：仓库检索未发现 Rust 生产代码直接调用正式 Runner 启动或 append 入口，因此不能将 Go 的完整运行接线自动推断为 Rust 现状。
 
 ## 扩展指南
 
@@ -90,17 +88,3 @@ Go 测试 `br/pkg/checkpoint/checkpoint_test.go` 验证 metadata/progress/修复
 扩展任务信息聚合应从 `GetCheckpointTaskInfo` 接入，并保留“存在性检查后再加载”和首错返回语义；如需一致快照，应先扩展 manager 抽象。新增 Runner 入口应继续把具体存储留给 `LogMetaManager`，不要在本文件复制表/对象存储实现。测试逻辑应放在独立的 `log_restore_test.rs`、`checkpoint_test.rs` 或 `parity_test.rs`，不得嵌入生产源文件。
 
 性能上重点关注每批 `HashMap`/`Vec` 分配、重复 Foff、无界 append 通道和 JSON 体积；正确性上重点关注 id-map 相位不可回退、未知进度值拒绝、跨语言字段名及可选字段兼容；资源上需覆盖取消、刷盘失败、重复启动和 `WaitForFinish` 收尾。
-
-## 验证依据
-
-- 源码：`br/pkg/checkpoint/log_restore.rs`（全部 334 行）、`br/pkg/checkpoint/checkpoint.rs`（消息、Runner、Append、收尾）、`br/pkg/checkpoint/manager.rs`（traits 与两种 manager 实现）、`br/pkg/checkpoint/lib.rs`（模块与测试挂载）。
-- 边界配置：`br/pkg/checkpoint/Cargo.toml`（crate 类型、Go 包映射、serde/serde_json 等依赖）。
-- Go 对照：`br/pkg/checkpoint/log_restore.go`；Go 测试证据来自 `br/pkg/checkpoint/checkpoint_test.go`。
-- Rust 测试：`br/pkg/checkpoint/log_restore_test.rs`、`br/pkg/checkpoint/checkpoint_test.rs`、`br/pkg/checkpoint/parity_test.rs`；生产/上层引用还核对了 `br/pkg/restore/log_client/client.rs`、`br/pkg/task/stream.rs` 和 `br/pkg/task/stream_test.rs` 的文本调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的结构命令，确保文件存在且恰有十一个固定二级标题；人工复核重点是区分本文件职责、通用 Runner/manager 职责和当前 Rust 生产接线证据。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/checkpoint/log_restore.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/checkpoint/log_restore.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-既有 `checkpoint_test.rs` 覆盖元数据往返，`log_restore_test.rs::test_restore_progress_uses_go_compatible_numeric_json` 只验证进度编码；未见该字段的独立直接回归。Go `log_restore.go` 也有对应路由指纹字段。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

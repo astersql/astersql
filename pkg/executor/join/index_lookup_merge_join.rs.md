@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate；`pkg/executor/join/Cargo.toml` 以 `lib.rs` 为库入口，`lib.rs` 通过公开模块 `index_lookup_merge_join` 暴露这里的 API。当前可执行 Rust 代码从源文件第 565 行附近开始，提供一个基于内存 `Row` 的同步 Index LookUp Merge Join：外表分批生成 lookup key，调用 `IndexJoinExecutorBuilder` 拉取内表行，再按连接键执行归并连接。
-
-文件前半段（约第 16—564 行）是被块注释包住的 Go 对照设计草图，其中出现通道、worker、context、内存 tracker 和 chunk 池等结构；这些内容不参与 Rust 编译，不能当作当前已实现能力。当前真实调用证据主要来自同 crate 单元测试 `pkg/executor/join/index_lookup_merge_join_test.rs`、独立测试 crate `pkg/executor/join/test/indexjoin/index_lookup_merge_join_test.rs` 和 `pkg/executor/benchmark_test.rs`。虽然 `pkg/executor/builder.rs::buildIndexLookUpMergeJoin` 会选择 `ExecutorKind::IndexLookupMergeJoin`，真正的构造由 `ExecutorBuilderDependencies::build_index_join_executor` 间接完成，未发现它直接构造本文件的 `IndexLookUpMergeJoin`。
+当前可执行 Rust 代码从源文件第 565 行附近开始，提供一个基于内存 `Row` 的同步 Index LookUp Merge Join：外表分批生成 lookup key，调用 `IndexJoinExecutorBuilder` 拉取内表行，再按连接键执行归并连接。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ Go 版 `IndexLookUpMergeJoin` 则启动一个 outer worker 和多个 inner worke
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `IndexLookUpMergeJoin`、`OuterMergeWorker`、`InnerMergeWorker`、`LookUpMergeJoinTask` 和 `IndexMergeJoinResult` 分别对应 `pkg/executor/join/index_lookup_merge_join.go` 的同类概念。两版共享的核心意图是：外表按 key 有序、由外表 key 驱动索引 lookup、内表有序后按相同 key 组归并、通过 joiner 处理匹配和 miss；Rust 独立测试也对应 Go 的 `TestIssue18068` 与 `TestIssue54064`。
-
 但当前语义覆盖并不等价：
 
 - Go `Open/startWorkers/Next/Close` 是并发、流式、chunk 化且可取消的；Rust 首次 `next` 同步计算并缓存全部结果。
@@ -103,12 +99,3 @@ Rust 的 `IndexLookUpMergeJoin`、`OuterMergeWorker`、`InnerMergeWorker`、`Loo
 - 若修改 `OuterMergeWorker::build_task`，必须保持“同 key 组不跨批”的不变量，否则同一 inner key 的推进状态可能导致漏匹配。还应覆盖超大重复 key 组可能突破批上限的内存风险。
 - 若修改 `InnerMergeWorker::do_merge_join` 或 `Joiner` 调用，需覆盖 inner、outer/semi/anti 及 NULL-aware 行为；当前只显式传递 `NaajType::Unknown`，不能据此假设所有 join 类型已与 Go 对齐。
 - 若要让 `IndexMergeJoinResult.error` 承载错误，应统一 `next` 的 `Result` 与字段语义，避免双重错误通道；否则可考虑移除未使用字段，但这属于行为/API 变更，不是本文档任务范围。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query IndexLookUpMergeJoin` 定位 Rust 结构于本文件及 Go 对照结构，`query handle_task` 定位 `InnerMergeWorker::handle_task`，其图中 callees 为 `construct_lookup_keys`、`compare_keys`、`do_merge_join`；文件节点报告直接使用者为 `pkg/executor/benchmark_test.rs` 和 `pkg/executor/join/index_lookup_merge_join_test.rs`。
-- 生产源码：`pkg/executor/join/index_lookup_merge_join.rs` 的生效符号区（`LookUpMergeJoinTask` 至 `compare_keys`）；`pkg/executor/join/index_lookup_join.rs` 的 builder/key 抽象；`pkg/executor/join/joiner.rs` 的匹配与 miss 语义；`pkg/executor/builder.rs::{buildIndexLookUpMergeJoin,build_index_join_kind}` 的计划构建入口。
-- crate/模块：`pkg/executor/join/Cargo.toml` 与 `pkg/executor/join/lib.rs`。
-- Rust 测试：`pkg/executor/join/index_lookup_merge_join_test.rs`；`pkg/executor/join/test/indexjoin/index_lookup_merge_join_test.rs`；性能/路径使用证据 `pkg/executor/benchmark_test.rs`。
-- Go 对照：`pkg/executor/join/index_lookup_merge_join.go`；`pkg/executor/join/test/indexjoin/index_lookup_merge_join_test.go::{TestIssue18068,TestIssue54064}`。
-- 按任务约束未运行 Cargo；本文档交付仅执行章节结构、文件存在性和链接路径检查。

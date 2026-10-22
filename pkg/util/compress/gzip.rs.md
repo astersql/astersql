@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-compress` crate 的 gzip 对象池与编解码封装实现。crate 入口 `pkg/util/compress/lib.rs` 通过 `pub mod gzip` 声明模块，并用 `pub use gzip::*` 将本文件的公开符号再导出。`pkg/util/compress/Cargo.toml` 将 crate 命名为 `astersql-util-compress`，只声明 `flate2 = "1"` 这一个直接依赖，并用 `package.metadata.porting.go-package = "pkg/util/compress"` 标记 Go 对照包。
-
-当前已确认的生产上游是 `pkg/ingestor/ingestctrl/compress.rs`：其 `gzipCompressor::Do` 和 `gzipDecompressor::Do` 分别从两个全局池获取对象，用于 ingest 控制面的 gzip 压缩和解压。本文件不处理文件路径、网络协议协商或存储 I/O，只提供内存中的 gzip 字节转换和对象存取。
+不处理文件路径、网络协议协商或存储 I/O，只提供内存中的 gzip 字节转换和对象存取。
 
 ## 核心职责
 
@@ -86,9 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 基准文件是 `pkg/util/compress/gzip.go`。符号对应为：Go `GzipWriterPool` ↔ Rust `GzipWriterPool`，Go `GzipReaderPool` ↔ Rust `GzipReaderPool`，Go `sync.Pool.New` ↔ Rust `ReusablePool::new` 保存的工厂函数。Go writer 工厂返回 `gzip.NewWriter(io.Discard)`，Rust `GzipWriter::new` 则以空 `Vec` 创建占位 encoder；Go reader 工厂返回 `&gzip.Reader{}`，Rust 以 `decoder: None` 表示类似的未绑定状态。
-
-实际使用语义不是逐项完全等价：
+Go writer 工厂返回 `gzip.NewWriter(io.Discard)`，Rust `GzipWriter::new` 则以空 `Vec` 创建占位 encoder；Go reader 工厂返回 `&gzip.Reader{}`，Rust 以 `decoder: None` 表示类似的未绑定状态。
 
 - Go `sync.Pool` 允许运行时在 GC 时丢弃缓存对象；Rust `Mutex<Vec<T>>` 会强持有所有已归还对象，且无上限。
 - Go writer 由上游 `gzipCompressor::Do` 调用 `Reset(w)` 复用 writer，再 `Write` 和 `Close`；Rust `GzipWriter::compress` 每次重建 encoder，压缩到内存 `Vec`，之后由上游再写入目标。
@@ -96,7 +92,7 @@ Go 基准文件是 `pkg/util/compress/gzip.go`。符号对应为：Go `GzipWrite
 - Go ingest 解压器在成功 reset 后会在 defer 中 `Close` reader 再归还；Rust wrapper 没有显式 close 方法，`reset` 或 drop 时替换/释放 decoder。
 - Go 包本身只定义两个池，实际的 `Reset`/`Write`/`Close` 流程在 `pkg/ingestor/ingestctrl/compress.go`；Rust 为了提供所有权友好的 API，在本文件内增加了 `GzipWriter`/`GzipReader` 封装和 `ReusablePool<T>` 实现。
 
-对照测试是 `pkg/ingestor/ingestctrl/compress_test.go` 和 `pkg/ingestor/ingestctrl/compress_test.rs`：两者都验证 `"gzip"` 类型标识、压缩结果可解码以及解压往返一致。Rust crate 还有 `pkg/util/compress/migration_aster_unit_test.rs`，覆盖 gzip 魔数、包含空字节/非 ASCII 载荷的往返，以及归还后处理不同载荷。
+Rust crate 还有 `pkg/util/compress/migration_aster_unit_test.rs`，覆盖 gzip 魔数、包含空字节/非 ASCII 载荷的往返，以及归还后处理不同载荷。
 
 ## 扩展指南
 
@@ -106,12 +102,3 @@ Go 基准文件是 `pkg/util/compress/gzip.go`。符号对应为：Go `GzipWrite
 - 要改变无效头的报错时机、未 reset 读取语义或多 member 行为，应改动 `GzipReader::reset`/`Read::read` 并先在独立测试文件中增加无效、截断、空输入和连接 member 用例，同时检查 Go `gzip.Reader.Reset` 和 ingest 调用方的兼容期望。
 - 要限制长寿命进程的池内存，接入点是 `ReusablePool::put`，可考虑容量上限或丢弃策略。需添加并发取还、超容量和 panic/锁中毒后行为测试，并明确与 Go `sync.Pool` 的语义差异。
 - 任何公开 API 改动都要同步检查 `pkg/util/compress/lib.rs` 的全量再导出、`pkg/ingestor/ingestctrl/Cargo.toml` 的 crate 依赖和上述两个 Rust 独立测试文件。性能变更还应对照 `pkg/ingestor/ingestctrl/compress_test.go` 保留的 benchmark 意图。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引可用，包含 7,032 个 Rust 文件；`files --filter pkg/util/compress` 确认本 crate 的 `gzip.rs`、`lib.rs`、`migration_aster_unit_test.rs` 和 Go 对照 `gzip.go`。
-- RustCodeGraph `node --file pkg/util/compress/gzip.rs --offset 1 --limit 260`：核对全部 126 行源码、`ReusablePool<T>`、`GzipWriter`、`GzipReader`、`Read` 实现和两个全局池。
-- RustCodeGraph `query GzipReader`、`query GzipWriter` 以及对 `pkg/ingestor/ingestctrl/compress.rs` / `compress_test.rs` 的 file node 查询：用于消除 objstore 同名类型歧义，并确认 ingest 上游的 get/compress/reset/read/put 调用链。图对 `LazyLock` static 的 `callers` 无法直接解析，因此按计划用精确 Rust 引用搜索补齐这两条边。
-- 已读生产/装配/配置路径：`pkg/util/compress/gzip.rs`、`pkg/util/compress/lib.rs`、`pkg/util/compress/Cargo.toml`、`pkg/ingestor/ingestctrl/compress.rs`、`pkg/ingestor/ingestctrl/Cargo.toml`。
-- 已读 Go 对照路径：`pkg/util/compress/gzip.go`、`pkg/ingestor/ingestctrl/compress.go`。
-- 已读独立测试路径：`pkg/util/compress/migration_aster_unit_test.rs`、`pkg/ingestor/ingestctrl/compress_test.rs`、`pkg/ingestor/ingestctrl/compress_test.go`。它们提供往返、gzip 魔数、对象归还后再用和 ingest 协议类型标识的行为证据；本文档任务按明确范围未运行 Cargo 测试。

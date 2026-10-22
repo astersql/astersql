@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`safepoint.rs` 属于 `astersql-br-pkg-gc` library crate；crate 入口 `br/pkg/gc/lib.rs` 以 `pub mod safepoint` 装载它，并重导出其中的安全点数据结构、四个默认 TTL、上下文、检查函数、ID 生成函数和 Keeper 启动函数。`br/pkg/gc/Cargo.toml` 表明该 crate 的生产依赖只有 `astersql-br-pkg-errors`，PD/global/keyspace 差异则被同 crate 的 `Manager` trait 隔离。
-
-它位于 BR 快照读取与 PD GC 机制之间：调用方先用 `CheckGCSafePoint` 确认历史版本尚可读，再用 `StartServiceSafePointKeeper` 注册并续约服务安全点，阻止 GC 在备份存续期间越过 `BackupTS`。实际的 global service safepoint 或 keyspace barrier 写入由 `manager_global.rs`、`manager_keyspace.rs` 实现，不在本文件中直接发起 RPC。
-
-已接线的 Rust 入口包括：`br/pkg/task/backup.rs:379-399` 在备份开始前构造 `BRServiceSafePoint` 并启动 Keeper；`br/pkg/backup/client.rs:434-466` 分别调用检查、生成 ID，并为非法 TTL 回落到默认值。RustCodeGraph 对重导出后的精确 `callers` 没有返回边，因此这些上游关系由源码引用补证，而不是把图查询空结果解释为“无人调用”。
+还提供迁移期基础设施：`Context` 只模拟 Go `context.Context` 的取消信号；`SharedError`、`AnnotatedError` 和 `Trace` 提供可跨线程的错误边界及 cause 链。
 
 ## 核心职责
 
@@ -95,7 +91,7 @@ RustCodeGraph 显示 `safepoint.rs` 被 crate 内 Manager/测试等文件引用�
 
 ## 与 Go 版本的对应关系
 
-Rust 直接对照 `br/pkg/gc/safepoint.go`：四个 TTL、`BRServiceSafePoint` 字段、严格 `ts > safepoint` 判定、首次同步 Set、`TTL/3` 续约、5 秒复检、续约失败只告警及取消退出均保持一致。`br/pkg/gc/safepoint_test.go` 和 Rust 独立测试用相同的 global/keyspace 参数化场景覆盖空 ID、非正 TTL、落后/相等 TSO、首次写失败、周期刷新、取消与读错误忽略。
+Rust 直接对照 `br/pkg/gc/safepoint.go`：四个 TTL、`BRServiceSafePoint` 字段、严格 `ts > safepoint` 判定、首次同步 Set、`TTL/3` 续约、5 秒复检、续约失败只告警及取消退出均保持一致。
 
 实现形态的差异包括：
 
@@ -114,16 +110,3 @@ Rust 直接对照 `br/pkg/gc/safepoint.go`：四个 TTL、`BRServiceSafePoint` �
 - 若要让周期复检真正中止任务/进程，应设计可观测的错误通道、join handle 或受控 abort 策略，不能假设 detached thread panic 与 Go 完全等价。
 - 若提高 ID 安全性，应在独立上游依赖仓库按仓库规则移植并发布带 tag 的依赖，或使用已批准的系统随机接口；同时保留 `br-` 与 RFC 4122 格式兼容。
 - 若替换轮询为条件变量、channel 或异步定时器，应保持 Manager 的 `Send + Sync` 约束、取消后不再续约，以及不会并发堆积多个 Set 的性质，并评估大量 Keeper 的线程/唤醒性能。
-
-## 验证依据
-
-本说明读取并核对了以下直接证据：
-
-- 生产源码：`br/pkg/gc/safepoint.rs`（RustCodeGraph file node，完整 337 行）、`br/pkg/gc/manager.rs`、`br/pkg/gc/lib.rs`。
-- crate 边界：`br/pkg/gc/Cargo.toml`，确认 library 路径、Go 包映射及唯一生产依赖。
-- Go 对照：`br/pkg/gc/safepoint.go`、`br/pkg/gc/safepoint_test.go`。
-- Rust 测试：`br/pkg/gc/safepoint_test.rs`；补充公开契约证据 `br/pkg/gc/parity_test.rs:288-504`。
-- 实际上游：`br/pkg/task/backup.rs:379-399`、`br/pkg/backup/client.rs:434-466`。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/gc` 找到目标及同目录实现/测试；`explore` 确认 `StartServiceSafePointKeeper -> CheckGCSafePoint`；对 `MakeSafePointID`、`CheckGCSafePoint`、`StartServiceSafePointKeeper` 做了精确 `query`，并对目标 ID 执行 `callers/callees`（无输出，故以上游源码引用补证）。
-
-人工复核结论：本文件存在于备份历史版本读取与 GC 之间，先同步建立保护、后后台续约；安全扩展必须同时维持严格 TSO 边界、首次写入无空窗、取消生命周期与 global/keyspace Manager 抽象。任务为纯文档分析，按计划不运行 Cargo。

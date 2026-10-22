@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-`config.rs` 是 `astersql-dumpling-export` crate 的配置装配中心。该 crate 在 [`Cargo.toml`](./Cargo.toml) 中声明为库，入口是 [`lib.rs`](./lib.rs)；`lib.rs` 不是用独立子模块隔离本文件，而是在 crate 根作用域执行 `include!("config.rs")`，因此这里的公开类型和函数直接成为 crate 级 API，并与同样被 `include!` 的 `prepare.rs`、`column_filter.rs`、`dump.rs` 等文件共享符号。
-
-在完整导出链中，本文件处于“用户输入/程序化配置”与“导出运行时”之间：`DefaultConfig` 建立可运行的基线，`Config::DefineFlags` 与 `Config::ParseFromFlags` 把命令行值写回配置，`dump.rs::NewDumper` 再依次调用 `buildTLSConfig`、`validateSpecifiedSQL`、`adjustFileFormat` 和 `validateIncludeGeneratedColumns`，之后才创建上下文、指标、存储、数据库连接等资源。它不是实际写文件或查询数据库的实现；这些职责分别在 `writer.rs`、`dump.rs`、`conn.rs` 等文件中。
-
-当前 Rust 文件是迁移期实现而非 Go 版本的无差别复刻。源码明确保留了 arm64-safe 的轻量替身路径；例如 `buildTLSConfig` 目前是空操作，`createExternalStorage` 使用 `MemStorage`，内置 `FlagSet` 也只覆盖配置测试需要的 pflag 子集。阅读或扩展时必须以这些当前事实为准，不能把 Go 版完整能力视为 Rust 已支持。
+定义总配置状态：`Security` 保存 TLS 路径和证书字节，`Config` 聚合连接、筛选、输出、模板、监控、存储、PD/GC、Parquet 等选项。
 
 ## 核心职责
 
@@ -104,11 +100,8 @@
 
 ## 与 Go 版本的对应关系
 
-主要对齐点来自 [`config.go`](./config.go) 与 [`config_test.go`](./config_test.go)：
-
 - 枚举、核心字段、默认主机/端口/用户/线程、默认过滤器、statement size、CSV 字符、输出模板、一致性、Parquet 默认值和生成列默认模式基本一一对应。Go 的 `DialectBinaryFormatMap` 是静态 map，Rust 用纯函数表达相同映射。
 - Rust 的 `ParseFromFlags` 保留了 Go 主流程的字段复制、列过滤冲突、表/过滤器构造、split 模板保护、压缩/方言/Parquet 解析；Rust 与 Go 测试都覆盖 MySQL 版本开区间、表名错误、Parquet 默认与尺寸、大小写方言、模板独立 Index 和生成列模式。
-- Go `NewDumper` 与 Rust `NewDumper` 都在资源初始化前运行 TLS、SQL/格式/生成列校验；生成列 stored 模式的错误顺序与允许格式也保持一致。
 
 已确认的差异/未完成迁移点：
 
@@ -131,10 +124,3 @@
 - 修改 split 模板规则时，从“是否可能覆盖已有 chunk”出发，更新 `outputTemplateUsesIndex` 和 rows/filesize 两组测试；复杂 Go template 语法可能需要替换当前字符串启发式实现，而非继续叠加脆弱替换。
 - 扩展生成列能力时，依次检查 `parseGeneratedColumnsMode`、`validateIncludeGeneratedColumns`、`includeStoredGeneratedColumns`、`dump.rs::buildColumnProjection` 及 schema/data 一致性。`config_test.rs` 负责 flag/模式，`prepare_test.rs` 负责校验次序，`dump_test.rs` 负责最终数据列变化；三类证据不可互相替代。
 - 性能风险集中在配置派生时的大 map/vector/证书字节克隆和模板/过滤器重复解析；兼容风险集中在默认值、错误优先级、大小写、flag 显式性及 Go/Rust 差异。修改前应先复用同路径 Go 测试意图，不要删减边界来让 Rust 测试通过。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`Config::String`、`ServerInfoUnknown`、PD 字段及 flags；`config_test.rs::test_config_string_redacts_credentials` 检查输出不含凭据且原值保留。Go 对照 `config.go::String`。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl` crate 中普通表 `MODIFY/CHANGE COLUMN` 持久化执行器，模块由 `pkg/ddl/lib.rs` 公开。会话侧在 `pkg/session/runtime/normal_ddl_submit.rs` 构造动作号 12（`ACTION_MODIFY_COLUMN`）的 `Job`，并预置 `need_reorg`、SQL mode、时区及 analyze 会话变量；owner worker 的 `pkg/ddl/table_mode.rs::NormalJobPolicy::step` 在可回滚的 statement stage 内调用 `pkg/ddl/persistent_actions.rs::step`，后者把动作 12 分派到本文件的 `step`。
-
-它不是 SQL 语法检查或建 job 的入口，而是 job 已持久化以后、可跨重试继续执行的运行时状态机。所属 crate 由 `pkg/ddl/Cargo.toml` 定义为 `astersql-ddl`；本文件直接依赖 metadata mutation、parser AST、collation/type、table codec、KV key、DDL notifier、session variable 等同 workspace crate。DDL 总体仍是 job-based/owner-driven 路径，不是 metadata-only 快捷旁路（`docs/agents/ddl/README.md`、`docs/agents/ddl/07-modify-column.md`）。
+在事务中生成 schema version、记录 schema diff、更新 `TableInfo`；在 reorg 中维护 `mysql.tidb_ddl_reorg` 的物理表范围游标（`write_table`、`initialize_cursor`）。
 
 ## 核心职责
 
@@ -83,13 +81,9 @@ changing column/index 从创建、在线双写、回填、发布到旧对象清�
 
 ## 与 Go 版本的对应关系
 
-主要对照是 `pkg/ddl/modify_column.go`：Rust `choose_type` 对应 `getModifyColumnType`，`no_reorg_data_strict` 对应 `noReorgDataStrict`，`step` 对应 `onModifyColumn` 加无 reorg/回滚/完成分支，`advance_reorg` 对应 `doModifyColumnIndexReorg` 与 `doModifyColumnTypeWithData`，批量行回填对应 `doReorgWorkForModifyColumn`，完成参数对应 Go `model.ModifyColumnArgs`。
+需要谨慎看待的差异：Rust 使用通用 `JobExecutionContext` 的同步 batch 调用和显式 SQL checkpoint，而 Go 通过 session pool、reorg handler、`runReorgJob` 及更细的 retry/error 分类；Go handler 的前置约束更多。
 
-已对齐的核心语义包括：五类策略及旧版本兼容值、VARCHAR→CHAR 预检、分区/TiFlash/非 strict 强制完整 reorg、changing column/index 状态机、`ReorgStageModifyColumn*` 三阶段、NULL 防写、可选 analyze、old object 延迟移除及 finished args 交给 delete-range。
-
-需要谨慎看待的差异：Rust 使用通用 `JobExecutionContext` 的同步 batch 调用和显式 SQL checkpoint，而 Go 通过 session pool、reorg handler、`runReorgJob` 及更细的 retry/error 分类；Go handler 的前置约束更多。Rust `Args` 的字段名也不是 Go struct 的逐字段拼写（例如 `removed_idxs` 对应 redundant/removed index 语义）。扩展时应按行为、不按表面函数形状对齐，并同时核对 `pkg/meta/model/job_args.go`、`pkg/meta/model/reorg.go`。
-
-测试证据分两类：Go 的 `pkg/ddl/modify_column_test.go`、`column_modify_test.go`、`column_change_test.go` 和 partition modify tests 定义广泛兼容矩阵；Rust `pkg/session/runtime/normal_ddl_masking_policy_test.rs` 是本持久执行器的直接运行时证据。`pkg/ddl/modify_column_test.rs` 大量内容是 Go 测试语义记录/迁移辅助，不能单独视为本 handler 的端到端执行证明。
+测试证据分两类：Go 的 `pkg/ddl/modify_column_test.go`、`column_modify_test.go`、`column_change_test.go` 和 partition modify tests 定义广泛兼容矩阵；Rust `pkg/session/runtime/normal_ddl_masking_policy_test.rs` 是本持久执行器的直接运行时证据。
 
 ## 扩展指南
 
@@ -99,12 +93,3 @@ changing column/index 从创建、在线双写、回填、发布到旧对象清�
 - 改列发布内容时同步检查普通/临时索引、外键、TTL、masking policy、notifier、offset 和 GC ID。masking expression 变换应扩展 `rewrite/sync_policy` 的独立测试，禁止用字符串替换代替 AST visitor。
 - 回滚或 GC 变化应同时检查 `step` rollingback 分支、成功后的 old-object 删除分支、`temporary_gc_ids`、`delete_range.rs`；测试文件必须保持独立，优先扩展 `pkg/session/runtime/normal_ddl_masking_policy_test.rs` 或新增同目录 `*_test.rs`，不要把测试嵌入生产文件。
 - 与 Go 对齐时以 `modify_column.go` 当前行为为基准，但只移植对应增量；若前置校验由提交层承担，应以调用证据标注，避免在 durable handler 重复或遗漏。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 文件、307,296 节点；`files --filter pkg/ddl/persistent_modify_column.rs` 确认目标文件含 28 个符号；`node --file ...` 完整读取 1–1341 行；`query persistent_modify_column` 列出 `Args`、`step`、`advance_reorg` 等主要符号；`callees step` 确认本地 helper 调用，并显示 `persistent_actions::step → persistent_modify_column::step` 静态边。
-- 入口/下游：`pkg/ddl/lib.rs`（模块公开）、`pkg/session/runtime/normal_ddl_submit.rs`（动作 12 job 与 `need_reorg`）、`pkg/ddl/table_mode.rs`（statement stage 和 durable 单步）、`pkg/ddl/persistent_actions.rs`（动作分派）、`pkg/ddl/delete_range.rs`（完成 ID → GC task）。
-- crate/设计：`pkg/ddl/Cargo.toml`、`docs/agents/ddl/README.md`、`docs/agents/ddl/07-modify-column.md`。
-- Go 对照：`pkg/ddl/modify_column.go` 的 `getModifyColumnType`、`onModifyColumn`、rollback helpers、`doModifyColumnTypeWithData`、`doReorgWorkForModifyColumn`、`noReorgDataStrict`；广泛回归入口为 `pkg/ddl/modify_column_test.go` 等。
-- Rust 直接测试：`pkg/session/runtime/normal_ddl_masking_policy_test.rs::{modify_column_persistent_syncs_nonempty_masking_policy,modify_column_persistent_missing_policy_table_rolls_back,modify_column_persistent_reorg_final_syncs_new_column_id,modify_column_persistent_reorg_advances_real_rows,modify_column_check_rejects_null_and_clears_temporary_flags,modify_column_reorg_rollback_removes_changing_column}`。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；交付验证仅检查固定十一节、文件范围和差异。上述测试是读取到的行为证据，不代表本轮重新执行结果。

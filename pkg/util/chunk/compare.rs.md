@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-chunk` crate 的行值排序语义实现，源码由 [`lib.rs`](./lib.rs) 的私有 `compare_impl` 模块通过 `include!("compare.rs")` 注入，再以 `pub use compare_impl::*` 从 crate 根导出。它位于列式 `Chunk` 存储与上层排序、连接、统计搜索之间：一方面按 `FieldType` 生成“两行两列”的比较函数，另一方面将 `Row` 中的列值与 `Datum` 比较，并为有序 `Chunk` 提供上下界搜索。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，包名为 `astersql-util-chunk`。本文件直接使用 crate 根导入的 `Row`、`Chunk`、`mysql` 与 `types`；其中 MySQL 类型码来自 `astersql-parser-mysql`，`FieldType`、`Datum` 及具体标量比较能力来自 `astersql-types-datum` 等类型 crate。当前文件没有条件编译项，也不定义持久化格式。
+位于列式 `Chunk` 存储与上层排序、连接、统计搜索之间：一方面按 `FieldType` 生成“两行两列”的比较函数，另一方面将 `Row` 中的列值与 `Datum` 比较，并为有序 `Chunk` 提供上下界搜索。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ RustCodeGraph 对 `compare.rs` 的文件节点显示它被规划器的 `physical
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`compare.go`](./compare.go)。Rust 保留了 Go 的 API 分层、类型分派、NULL/NaN 顺序、Set/Enum 按 Value 比较、Datum Kind switch，以及 `sort.Search` 的上下界定义。Rust 用 `Box<dyn Fn + Send + Sync>` 代替 Go 函数值，以 `Option<CompareFunc>` 表达 Go 的 `nil`，并把 `sort.Search` 闭包展开为显式 `while` 二分循环。
+Rust 用 `Box<dyn Fn + Send + Sync>` 代替 Go 函数值，以 `Option<CompareFunc>` 表达 Go 的 `nil`，并把 `sort.Search` 闭包展开为显式 `while` 二分循环。
 
-已核对的细节差异包括：Rust 下标为 `usize`，Go 为 `int`；Rust 字符串闭包拥有 collation 副本；Rust 字节比较通过 slice 的 `cmp` 再转成 `i32`；Rust Decimal 分支因底层返回类型进行了 `as i32`。这些改变没有意图改变顺序语义。两版 `LowerBound` 都先读取末行，因而共享非空前置条件；两版 `Compare` 都对未知 Kind 返回 `0`。
+已核对的细节差异包括：Rust 下标为 `usize`，Go 为 `int`；Rust 字符串闭包拥有 collation 副本；Rust 字节比较通过 slice 的 `cmp` 再转成 `i32`；Rust Decimal 分支因底层返回类型进行了 `as i32`。
 
-Go `pkg/util/chunk/chunk_test.go` 的比较测试覆盖完整类型集合、NULL 与小/大值的七种相对关系，并在 Chunk 复制后验证逐列相等。Rust 当前最近的独立测试 `codec_2_aster_unit_test.rs::comparison_handles_null_nan_and_binary_search_like_go` 聚焦 NaN、NULL 和重复整数的上下界，覆盖面小于 Go 测试；扩展类型或修改比较语义时应保持两边测试意图同步，而不是仅满足现有 Rust 样例。
+Rust 当前最近的独立测试 `codec_2_aster_unit_test.rs::comparison_handles_null_nan_and_binary_search_like_go` 聚焦 NaN、NULL 和重复整数的上下界，覆盖面小于 Go 测试；扩展类型或修改比较语义时应保持两边测试意图同步，而不是仅满足现有 Rust 样例。
 
 ## 扩展指南
 
@@ -83,10 +81,3 @@ Go `pkg/util/chunk/chunk_test.go` 的比较测试覆盖完整类型集合、NULL
 修改 `Compare` 后必须重新审查 `LowerBound`/`UpperBound` 的单调性前提及 Go `pkg/statistics/histogram.go` 的边界语义。若要支持空 Chunk，最小安全接入点是 `LowerBound` 的末行快速路径之前，并应添加空输入回归测试；这属于行为修改，不应只靠文档假设。若把未知 Kind 的兜底改为错误，需要重新设计公开签名并迁移所有搜索调用者，兼容风险较高。
 
 测试应放在独立文件而非 `compare.rs` 内：Rust 优先扩展 `pkg/util/chunk/codec_2_aster_unit_test.rs` 或新建由 `lib.rs` 在 `#[cfg(test)]` 下挂接的独立测试文件；Go 对照更新 `pkg/util/chunk/chunk_test.go`。至少覆盖所有支持类型、signed/unsigned、不同 collation、左右 NULL、NaN、特殊 Datum 哨兵、重复元素、目标位于首尾之外，以及空 Chunk 契约。性能评估应关注每列闭包分配、字符串 collation 捕获和二分过程中 `GetRow/Get*` 的调用次数。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/chunk` 确认目标与同目录测试；`node --file pkg/util/chunk/compare.rs --offset 1 --limit 260` 及 `--offset 239 --limit 180` 覆盖全部 350 行并给出关联使用文件；`query` 分别确认 Rust/Go 的 `GetCompareFunc`、`LowerBound`、`UpperBound` 定义。精确 `callers/callees` 查询在 30 秒内未返回，故用下述局部源码检索补证。
-- 已读生产源码与配置：`pkg/util/chunk/compare.rs`、`pkg/util/chunk/lib.rs`、`pkg/util/chunk/Cargo.toml`、`pkg/util/ranger/lib.rs`、`pkg/planner/core/operator/physicalop/physical_merge_join.rs`、`physical_index_join.rs` 及该 crate 的 `Cargo.toml`。
-- 已读对照与测试：`pkg/util/chunk/compare.go`、`pkg/util/chunk/chunk_test.go`、`pkg/util/chunk/codec_2_aster_unit_test.rs`；并检索 `pkg/statistics/histogram.go` 以确认 Go 上层边界搜索用法。
-- 源码检索证据：Rust 生产调用点目前集中在两个物理 Join 文件的 `GetCompareFunc`；Rust 独立测试对 `[1,2,2,2,5]` 验证下界 `(1,true)`、上界 `4`，并验证 NaN 和 NULL 顺序。未运行 Cargo，符合本纯文档任务约束。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate（见 `pkg/session/Cargo.toml` 的 `[package]` 与 `[lib] path = "lib.rs"`），负责描述并初始化 DDL 子系统依赖的 `mysql` 系统表。`pkg/session/lib.rs` 通过 `pub mod ddl_tables` 装配该模块，并在 crate 根重导出 `InitDDLTables`、四组表常量和 `TableBasicInfo`。
-
-当前 Rust 生产代码中没有找到 `InitDDLTables` 的调用点；直接调用只出现在 `pkg/session/test/meta/session_test.rs`。因此，本文件目前提供了公开且经过独立测试的初始化能力，但不能据此断言它已经接入 Rust 的生产 bootstrap 主链。Go 对应入口位于 `pkg/session/session.go:InitDDLTables`，并由 Go bootstrap 流程调用。
+`InitDDLTables` 读取持久化的 DDL 表版本，仅创建比该版本新的组，并在所有所需组创建成功后推进版本。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/session/session.go:TableBasicInfo`、四组同名表定义、`ddlTableVersionTables`、`InitDDLTables` 和 `createAndSplitTables`。两版一致的核心意图是：固定 ID/名称/SQL、按四个版本阶段补建、跳过不高于当前版本的阶段，以及最后推进版本。Go 测试 `pkg/session/test/meta/session_test.go:TestInitDDLTables` 与 Rust 测试采用相同五种起始版本和相同的期望切片边界（0、3、4、6、7）。
+Go 测试 `pkg/session/test/meta/session_test.go:TestInitDDLTables` 与 Rust 测试采用相同五种起始版本和相同的期望切片边界（0、3、4、6、7）。
 
 尚未对齐之处包括：
 
@@ -97,11 +95,3 @@
 若要达到 Go 等价行为，最关键的修改点是 `create_tables`：应持久化 `built` 的完整元数据、设置公开状态/时间戳、执行系统表约束检查，并明确 split/scatter 的实现归属。生产接线还需要在 Rust bootstrap 的事务拥有者处调用 `InitDDLTables`，保证表创建与版本写入同事务提交；不要在本文件内另造隐式事务而破坏调用者的原子性设计。
 
 兼容性风险主要是保留 ID 冲突、版本顺序错误、旧集群升级时漏建或重复建表，以及默认 `TableInfo` 导致运行时读到不完整模式。性能风险集中在 bootstrap 时逐表解析与写入，以及未来引入 split/scatter 后的等待策略。Rust 单元测试和生产源码应继续分文件维护，不要把回归测试嵌入 `ddl_tables.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/session/ddl_tables.rs` 核对了 143 行完整实现；`query InitDDLTables` 定位 Rust/Go 对应符号；`callees InitDDLTables` 确认四组常量与 `create_tables` 调用；`callers InitDDLTables` 未返回 Rust 调用边。
-- 模块与依赖：`pkg/session/lib.rs`、`pkg/session/Cargo.toml`、`pkg/session/bootstrap.rs:TableBasicInfo`。
-- Go 对照：`pkg/session/session.go:4220-4430`，重点为 `InitDDLTables`、`createAndSplitTables` 与 split/scatter 辅助逻辑。
-- 独立测试：`pkg/session/test/meta/session_test.rs:init_ddl_tables_creates_only_tables_newer_than_the_stored_version`、`ddl_system_table_reserved_ids_are_distinct_and_within_bounds`；Go 对照为 `pkg/session/test/meta/session_test.go:TestInitDDLTables`。仓库搜索还确认没有与目标源同文件内嵌的测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证文档恰有十一个固定二级章节，并人工复核“位置、运行方式、安全扩展”均有源码或测试依据。

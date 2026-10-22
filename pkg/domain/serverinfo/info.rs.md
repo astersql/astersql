@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-serverinfo` crate 的数据模型与 JSON 编解码层。crate 入口 `pkg/domain/serverinfo/lib.rs` 通过 `pub use info::*` 对外重导出这里的类型、常量和方法；同 crate 的 `syncer.rs` 负责把这些值写入或读出 etcd。`pkg/domain/serverinfo/Cargo.toml` 将 Go 对照包标为 `pkg/domain/serverinfo`，而本文件自身只使用 Rust 标准库；etcd、Tokio、配置等依赖由同 crate 的同步层使用。
-
-在应用主链中，`pkg/domain/domain.rs` 的服务器注册流程创建 `Syncer`，随后调用 `NewSessionAndStoreServerInfo` 和 `NewTopologySessionAndStoreServerInfo`。前者最终把 `ServerInfo` 写入 `/tidb/server/info/<id>`，后者把 `TopologyInfo` 写入 `/topology/tidb/<ip:port>/info`。因此本文件不负责网络 I/O 或租约管理，而是定义这两个持久化值的形状和 Go 兼容编解码语义。
+通过 `ServerInfo::Marshal`/`Unmarshal` 和 `TopologyInfo::Marshal`/`Unmarshal` 生成或解析稳定 JSON；实现重点是复现 Go `encoding/json` 在字段名、空值、部分更新、首个类型错误和字符串转义方面的行为。
 
 ## 核心职责
 
@@ -76,11 +74,3 @@ etcd 资源生命周期由 `Syncer` 管理：完整服务器信息绑定 45 秒 
 修改 JSON 行为时要保留三个兼容点：字段名大小写、对已有对象的部分更新、遇到首个类型错误后继续处理后续字段。给 `Json`/`JsonParser` 增加语法能力时，应在 `info_test.rs` 同时覆盖有效值、非法边界、Unicode 和未知字段嵌套；若要替换为外部 JSON crate，需逐项证明上述 Go 兼容行为而不能只验证正常往返。
 
 修改路径、TTL 或刷新常量会影响 `syncer.rs` 的 etcd 键布局和资源时序，应同步检查 `syncer_test.rs` 与 Go `syncer_test.go`。修改 getter 或克隆策略时，还需检查锁持有范围、闭包的 `Send + Sync` 能力和标签是否仍为深拷贝。版本占位值若被真实构建元数据替换，应优先接入统一版本来源，避免 `ServerInfo` 与 `TopologyInfo` 发布不一致的版本。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/serverinfo/info.rs` 差异及目标 blob `8be7784b6a9ee938d0e74462752cddb9e81a2ebe` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/serverinfo/info.rs` 和 `git show 2c944fb:pkg/domain/serverinfo/info.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/serverinfo/info_test.rs`，Go 对照为 `pkg/domain/serverinfo/info.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

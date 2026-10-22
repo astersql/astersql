@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-memory` crate。crate 根 `pkg/util/memory/lib.rs` 以 `pub mod tracker` 暴露它；`pkg/util/memory/Cargo.toml` 声明默认无 feature，并用可选的 `mem-arbitrator` feature 编译全局内存仲裁路径。
-
-它是查询执行期内存记账的基础实现：`Tracker` 把执行器、语句和 session 的局部用量组织成父子树，向祖先累计消费，维护软/硬配额和峰值，并在超限时执行动作链。上层真实入口包括 `pkg/session/runtime/dispatch.rs` 创建 session/statement tracker，`pkg/session/runtime/planning.rs` 为 SQL 文本创建 tracker，`pkg/sessionctx/stmtctx/stmtctx.rs` 初始化 statement context 的 `MemTracker`；执行期消费者如 `pkg/statistics/runtime_stats_builder.rs`、`pkg/util/chunk/list.rs` 和 `pkg/util/chunk/row_container.rs` 调用 `Consume` 更新用量。
+查询执行期内存记账的基础实现：`Tracker` 把执行器、语句和 session 的局部用量组织成父子树，向祖先累计消费，维护软/硬配额和峰值，并在超限时执行动作链。
 
 ## 核心职责
 
@@ -102,9 +100,7 @@ RustCodeGraph 辅助定位到清理记账的两个独立 tracker 测试及 sessi
 
 ## 与 Go 版本的对应关系
 
-冻结 Go 同样新增 `ReplaceBytesUsedForCleanup` 并拆出 `consume(bytes, enforce)`，保留记账而延后 kill/动作与预算增长；Rust 用布尔参数保持相同局部策略。该入口已在独立 tracker 测试及 session txn 回归中使用，不能仅据 API 存在就推断所有 Rust 语句清理入口都已切换。
-
-结构和命名有意贴近 `pkg/util/memory/tracker.go`：Go 的 `Tracker`、`InitTracker`、`NewTracker`、树操作、`Consume`、动作链、格式化、label、进程级全局量和 `memArbitrator` 在 Rust 中均有直接对应。`tracker_test.rs` 也按 Go 测试名称覆盖 SetLabel、Consume/Release、OOM action、Attach/Detach/Replace、ToString、峰值、global tracker 和 FormatBytes；`tracker_4_aster_unit_test.rs` 追加树统计、并发记账与仲裁清理回归。
+冻结 Go 同样新增 `ReplaceBytesUsedForCleanup` 并拆出 `consume(bytes, enforce)`，保留记账而延后 kill/动作与预算增长；Rust 用布尔参数保持相同局部策略。
 
 需要特别注意的迁移差异：
 
@@ -128,11 +124,3 @@ RustCodeGraph 辅助定位到清理记账的两个独立 tracker 测试及 sessi
 修改 `Release` 时必须同时对照 Go finalizer 语义和 Rust 所有权边界，验证 `bytesConsumed + bytesReleased` 的配额判断不会漏算实际存活内存。若引入真正异步回收通知，需要独立测试等待与竞态，而不是把测试逻辑放入 `tracker.rs`。
 
 扩展 `mem-arbitrator` 时应从 `InitMemArbitratorWithSharedKiller`、`intoBigBudget`、`growBigBudget` 和 `reset` 四个状态边界接入，并验证申请失败、已有 kill、detach 竞争、digest cache 更新和所有配额归还。feature 相关测试必须带 `#[cfg(feature = "mem-arbitrator")]`，同时保留默认 feature 下的基础 tracker 行为。
-
-## 验证依据
-
-- 冻结 `tracker.rs` 的 `Consume/consume`、`ReplaceBytesUsed/ReplaceBytesUsedForCleanup`、`lib.rs` 与 `Cargo.toml` 核对差额传播、feature 和装配；Go 对照 `tracker.go` 使用相同 enforce 分界。
-- 独立 `tracker_test.rs::replace_bytes_used_for_cleanup_preserves_kill_and_resumes_enforcement` 验证 leaf/root=200、动作不触发、kill 保留及后续普通消费 panic；feature 测试 `replace_bytes_used_for_cleanup_defers_arbitrator_growth` 验证越过 small limit 仍不转 big，清除 kill 后普通消费才转 big。邻接 `pkg/session/test/txn/txn_test.rs` 有语句清理记账回归；本次不运行这些测试。
-- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/memory/tracker.rs` 审计增量，并以 `git show 2c944fb:pkg/util/memory/tracker.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
-- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
-- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

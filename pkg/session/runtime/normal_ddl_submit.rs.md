@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应源文件](normal_ddl_submit.rs)属于 `astersql-session` crate（见 `pkg/session/Cargo.toml`），由 `pkg/session/runtime.rs` 以私有模块 `normal_ddl_submit` 装配。它位于普通 SQL DDL 的会话入口与 durable DDL owner 队列之间：`pkg/session/runtime/ddl.rs` 先解析、校验 SQL 并构造动作参数，本文件把参数转换为 `astersql_ddl_jobsubmit::JobSpec`、提交到系统表、等待历史任务终态，最后刷新当前会话看到的 schema 版本。
-
-直接接线有两条：`ConcreteSession::submit_normal_action` 被 `ddl.rs` 的持久化动作分支调用；`submit_and_wait` 被 `NormalDdlService::submit_persistent_job`（`pkg/session/runtime/normal_ddl_service.rs`）调用。该模块不负责 owner 选举、后台调度或具体 schema 变更；这些分别由 normal DDL service、scheduler 和 `astersql_ddl::persistent_actions` 一侧承担。
+`ConcreteSession::persistent_actions_enabled` 只在 Domain 已安装且其 DDL service 明确支持 durable actions 时开启该路径，避免把默认 trait 实现误当成可用服务。
 
 ## 核心职责
 
@@ -85,14 +83,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 的核心对应不是 `pkg/session` 下的同名文件，而是 DDL executor 与 jobsubmit 两层：
-
 - `pkg/ddl/executor.go::DoDDLJobWrapper` 同样先提交 job，再等待 history/完成通知，并在成功或失败时返回最终结果。Go 版本还包含 trace、metrics、session killer 驱动的 cancel-job、table lock、动态 ticker 与通知 channel；本 Rust 文件目前采用 cancellation context、30 ms history 轮询的较窄适配，不能宣称覆盖这些旁路能力。
 - `pkg/ddl/jobsubmit/submit.go::SubmitBatch` 与 Rust `pkg/ddl/jobsubmit/submit.rs::submit_batch` 都执行 flashback 检查、读取 BDR role/start TS、校验 involving schemas、应用升级期暂停、分配全局 ID并插入系统表。本文件只负责构造它所需的 options/spec。
 - `pkg/ddl/executor.go::NewDDLReorgMeta` 与 action 12 分支都快照 SQL mode、时区、resource group、collation 版本；Rust 额外在本入口写入 concurrency、batch size、max write speed 以及 fast/dist 配置，这些对应 Go 在 reorg 初始化路径读取的会话/全局参数。
-- Go `SubmitBatch` 的 truncate ID 计数与分配规则要求新 table ID 和每个旧 partition 对应的新 ID；本文件以 typed `TruncateTable` args 暂存旧 ID，再用回调恢复 Go opaque job args，保证 durable worker 读取的格式不变。
 
-当前 Rust 路径是有真实系统表、owner worker 和 history 的已接线路径，不是桩；但它只覆盖 `ddl.rs` 明确路由到 `submit_normal_action` 的动作集合。其他 SQL DDL 仍可能走 runtime 的本地实现或专用持久化入口。
+当前 Rust 路径是有真实系统表、owner worker 和 history 的已接线路径，不是桩；但它只覆盖 `ddl.rs` 明确路由到 `submit_normal_action` 的动作集合。
 
 ## 扩展指南
 
@@ -102,11 +97,3 @@ Go 的核心对应不是 `pkg/session` 下的同名文件，而是 DDL executor 
 - 改变等待策略时必须保留“入队后用实际 job ID 查 history、仅 Synced 成功、service stop 可退出”的不变量。若引入通知 channel、超时或主动取消，需要核对 Go `DoDDLJobWrapper` 的 killer、retry 和终态处理，避免把调用者超时错误误当作 job 已取消。
 - 重点风险：JSON args 与 Go 编码不兼容会让 worker 无法解码；错误的 ID 分配会破坏表/分区身份；漏快照 session vars 会造成 owner 节点执行语义漂移；错误放宽 fast/dist 组合会引入不受支持的回填路径；增加更短轮询会提高系统表读取压力。
 - 应同步/扩展的独立测试首选 `pkg/session/runtime/normal_ddl_masking_policy_test.rs`（SQL 到 durable history 的端到端动作与 reorg 快照）、`pkg/session/runtime/normal_ddl_test.rs`（service/scheduler 生命周期），以及 `pkg/ddl/jobsubmit/submit_test.rs`（提交、ID 与策略边界）。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/session/runtime` 确认目标及独立测试布局；`node --file pkg/session/runtime/normal_ddl_submit.rs` 读取全部 274 行并确认该文件被 `ddl.rs`、`normal_ddl_service.rs` 使用；对 `submit_and_wait`、`submit_normal_action`、`persistent_actions_enabled` 执行了 `query`/`callers`/`callees`。图对 impl method 的 callers 信息不完整，因此用精确 `rg` 引用补齐上游边。
-- 源码与模块边界：`pkg/session/runtime.rs`、`pkg/session/runtime/ddl.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/session/runtime/system_session.rs`、`pkg/domain/domain.rs`、`pkg/session/Cargo.toml`。
-- 下游提交实现：Rust `pkg/ddl/jobsubmit/submit.rs`；Go 对照 `pkg/ddl/jobsubmit/submit.go` 与 `pkg/ddl/executor.go`。
-- 独立 Rust 测试：`pkg/session/runtime/normal_ddl_masking_policy_test.rs` 验证 action 4/6/11/12/14/47 的 SQL durable history、truncate 表/分区新 ID、rename 链单 job、修改列真实行回填，以及 SQL mode/时区/concurrency/batch/write-speed reorg snapshot；`pkg/session/runtime/normal_ddl_test.rs` 验证 normal service 消费 durable queue、幂等 stop 和 pool 生命周期。Go 的 `pkg/ddl/jobsubmit/submit_test.go` 覆盖 SubmitBatch 入队、全局 ID 分配与相关错误分支。
-- 本任务是只读代码分析与 Markdown 新增，按计划不运行 Cargo。交付验证以固定章节结构检查、链接/路径存在性检查和上述源码事实人工复核为准。

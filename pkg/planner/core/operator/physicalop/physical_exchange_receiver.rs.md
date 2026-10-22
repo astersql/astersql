@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 MPP 物理计划中的网络接收边界 `PhysicalExchangeReceiver`。它属于 crate `astersql-planner-core-operator-physicalop`（同目录 `Cargo.toml`），由 `lib.rs` 的 `mod physical_exchange_receiver` 纳入 crate，再经 `pub use physical_exchange_receiver::*` 对上层规划器公开。`lib.rs` 中的 `direct_operator_core!(PhysicalExchangeReceiver, PhysicalSchemaProducer)` 还把本文件的方法接入统一的 `base::Plan` 与 `base::PhysicalPlan` 动态分发接口。
-
-Receiver 在同一个内存计划树里仍保留一个 `PhysicalExchangeSender` 孩子，供 MPP 拓扑生成器发现下游片段；但在生成 TiFlash protobuf 时，`PhysicalExchangeReceiver::ToPB` 只编码接收端本身，不递归编码这个 Sender。因此它同时是“规划树中的连接点”和“下推执行器树的片段叶子”。直接的拓扑证据见 `fragment.rs::collect_receivers_into`、`MppTaskGenerator::build_sender` 与本文件 `GetExchangeSender`/`ToPB`。
+不建立网络连接，也不接收运行时数据；它描述计划与 MPP 调度元数据，实际执行发生在下游 TiFlash 执行环境。
 
 ## 核心职责
 
@@ -79,9 +77,6 @@ RustCodeGraph `status` 显示目标文件已索引；文件查询报告 23 个�
 
 ## 与 Go 版本的对应关系
 
-同路径 `physical_exchange_receiver.go` 是直接语义对照，crate 的 `package.metadata.porting.go-package` 也指向同一 Go package。
-
-- 两版都把 Receiver 作为被动接收边界，孩子保持 Sender，并编码任务元数据、字段类型、executor ID 与细粒度 shuffle 参数。
 - Go `Init(ctx, stats)` 同时设置类型与统计；Rust `New(ctx)` 只设置类型，调用点另行设置 Schema/统计。这是构造 API 差异，不代表统计语义可以省略。
 - Go 公开 `Tasks []*kv.MPPTask` 并另有私有 `frags []*Fragment`；Rust 只保留受锁保护的 `Vec<kv::MPPTask>`，没有 `frags` 字段。Rust 的 fragment 拓扑由 `fragment.rs` 的返回结构持有，不能假定 Go 的 `frags` 生命周期仍存在于 Receiver 内。
 - 两版克隆都不复制运行时任务：Go 的 `CloneWithSelf` 只克隆基类，Rust 明确新建空任务锁；Rust 独立测试直接验证这一点。
@@ -90,7 +85,7 @@ RustCodeGraph `status` 显示目标文件已索引；文件查询报告 23 个�
 - Go `MemoryUsage` 对 nil Receiver 返回零，并统计两个 slice、指针容量及 fragment 内存；Rust 值方法不存在 nil 接收者，只统计 schema producer 与任务值向量容量。两者受数据表示差异影响，数值不应直接逐字节比较。
 - Go 字段类型转换直接接收 `column.RetType`；Rust 在调用转换前显式拒绝缺失的返回类型。PB 序列化失败在两版都会作为错误返回。
 
-相关 Go 测试 `fragment_test.go::TestFragmentInitSingleton` 验证 PassThrough Receiver 的 singleton 语义；Rust 对照测试在 `fragment_test.rs::fragment_init_tracks_pass_through_singleton_semantics`。Rust 的 `fragment_aster_unit_test.rs::receiver_boundary_creates_child_fragment_and_links_tasks` 还验证 Receiver 会拆出子片段并关联目标任务。
+相关 Go 测试 `fragment_test.go::TestFragmentInitSingleton` 验证 PassThrough Receiver 的 singleton 语义；Rust 对照测试在 `fragment_test.rs::fragment_init_tracks_pass_through_singleton_semantics`。
 
 ## 扩展指南
 
@@ -102,14 +97,3 @@ RustCodeGraph `status` 显示目标文件已索引；文件查询报告 23 个�
 - 测试继续放在独立文件：Receiver 自身行为扩展 `physical_exchange_receiver_test.rs`；拓扑/资源生命周期行为扩展 `fragment_test.rs` 或 `fragment_aster_unit_test.rs`；成本行为放在 planner core 的独立成本测试。不要把测试嵌入本生产源文件。
 
 兼容风险主要是 protobuf 字段与 Go 行为漂移、计划克隆误带旧任务、Receiver 边界被错误穿透；性能风险主要是频繁克隆大任务列表、锁竞争以及重复网络 Exchange；正确性风险主要是 Schema 字段类型/顺序与实际发送数据不一致。
-
-## 验证依据
-
-- 目标实现：`pkg/planner/core/operator/physicalop/physical_exchange_receiver.rs`，逐行核对结构体及 14 个公开方法、错误分支、锁和 PB 字段。
-- crate 与 trait 接线：`pkg/planner/core/operator/physicalop/Cargo.toml`；`lib.rs` 的模块声明、再导出、`ConcretePhysicalOperator`、`direct_operator_core!` 和 `impl_concrete_physical_plan!`。
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`files --filter ...physical_exchange_receiver.rs` 报告目标文件含 23 个符号并被 33 个文件使用；`query PhysicalExchangeReceiver --kind struct` 同时定位 Rust/Go 定义；限定方法节点和调用边查询没有结果，故使用精确源码搜索补足方法级证据。
-- 直接调用与拓扑：`fragment.rs::Fragment::init`、`MppTaskGenerator::build_sender`、`collect_receivers_into`、`collect_table_scans_into`；`base_physical_plan.rs` 中 Receiver/Sender 构造路径。
-- Go 对照：`physical_exchange_receiver.go`；成本实现 `pkg/planner/core/plan_cost_ver1.go::getPlanCostVer1PhysicalExchangeReceiver` 与 `plan_cost_ver2.go::getPlanCostVer2PhysicalExchangeReceiver`；Rust core 成本分支 `plan_cost_ver1.rs`、`plan_cost_ver2.rs`。
-- 独立测试：`physical_exchange_receiver_test.rs::clone_does_not_copy_runtime_tasks_like_go`；`fragment_test.rs::fragment_init_tracks_pass_through_singleton_semantics`；`fragment_aster_unit_test.rs::receiver_boundary_creates_child_fragment_and_links_tasks`；Go `fragment_test.go::TestFragmentInitSingleton`。
-- 目标目录不存在 `doc.go`，因此没有可读取的包级 Go 合约文件；包边界以 Cargo、`lib.rs`、直接实现和测试为准。
-- 本任务是只新增说明文档的分析任务，按计划不运行 Cargo。交付前执行任务文件指定的 11 章节结构命令，并人工复核唯一生产物、链接路径、事实来源及未验证边界。

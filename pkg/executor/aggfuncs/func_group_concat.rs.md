@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-aggfuncs` crate，由 `pkg/executor/aggfuncs/lib.rs` 以 `pub mod func_group_concat` 暴露。它定义一个可克隆的 `GroupConcat` 部分状态，用字节序列表示 SQL `GROUP_CONCAT` 的输入、分隔符和结果，并为 DISTINCT 合并及 spill 恢复保留去重键。
-
-当前生产接线比 Go 的完整 `GROUP_CONCAT` 实现窄：`builder.rs::build_group_concat` 会选择普通、DISTINCT、ORDER BY、DISTINCT+ORDER BY 四类 `AggImplementation`，但 `aggfuncs.rs::BuiltAggFunc::spill_function` 仅将 `GroupConcatDistinctOriginal` 和 `GroupConcatDistinctPartial` 绑定到本文件的 `GroupConcat`。因此，本类型当前主要是 DISTINCT partial state 及其 spill/merge 载体，不应视为已经覆盖 Go 文件中的表达式求值、排序、警告生成和全部执行器接口。
-
-`pkg/executor/aggfuncs/Cargo.toml` 声明该目录是独立库 crate，入口为 `lib.rs`。本文件自身只直接使用标准库 `std::collections::HashMap`，没有条件编译项，也没有直接引用 Cargo 中列出的其他 workspace crate；序列化能力由相邻的 `spill_serialize_helper.rs` 通过外部 trait impl 补上。
+`GroupConcat::update_keyed` 允许调用者分别提供 collation key 和展示值，使恢复或上游表达式求值能够按比较键去重、按原值输出。
 
 ## 核心职责
 
@@ -95,15 +91,13 @@ spill 生命周期是“模板复制 -> 从字节恢复 -> 与内存中的目标
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/executor/aggfuncs/func_group_concat.go`。本文件保留了以下核心语义：跳过 NULL、多参数求值后的字节结果拼接、行间 separator、`maxLen == 0` 无限制、全 NULL 返回 NULL、非 NULL 空串返回空结果、普通 partial 合并、DISTINCT partial 合并以及跨分组保留截断哨兵。
+本文件保留了以下核心语义：跳过 NULL、多参数求值后的字节结果拼接、行间 separator、`maxLen == 0` 无限制、全 NULL 返回 NULL、非 NULL 空串返回空结果、普通 partial 合并、DISTINCT partial 合并以及跨分组保留截断哨兵。
 
 对应关系并非结构同构：
 
 - Rust 的一个 `GroupConcat` 同时用 `Option<HashMap<...>>` 表达普通与 DISTINCT；Go 分为 `groupConcat`、`baseGroupConcatDistinct4String`、`groupPartialConcatDistinct` 等类型。
-- Rust 输入已经是求值完成的单个 `Vec<u8>`。Go `UpdatePartialResult` 会遍历 `e.args`，任一参数为 NULL 就跳过整行，并把多个字符串参数直接连接。Rust 测试把多参数行表示为预先连接好的字节串。
 - Go DISTINCT 以每个参数的 collator key 经 codec 编码后组成联合键，同时保存原始拼接值；Rust 的 `update_keyed` 能承载这种“键和值分离”的结果，但本文件不负责生成 collation key。
 - Go 完整实现含 ORDER BY 的 `topNRows`/`groupConcatOrder`、内存 delta 统计、chunk 输出、spill helper、类型上下文错误/警告和原子截断标志；本文件均未实现。ORDER BY 对应的 `AggImplementation` 也没有在此类型的 spill 绑定中出现。
-- Go DISTINCT 最终遍历映射值，因此同样不承诺无 ORDER BY 的固定输出顺序。Rust 的并行 DISTINCT 测试接受 `a,b` 与 `b,a` 两种排列。
 
 Go 测试 `func_group_concat_test.go` 还覆盖普通/多参数/ORDER BY/DISTINCT+ORDER BY、长度 4 至 7 的截断以及精确内存增量；这些是 Go 完整实现证据，不应误算成本文件已覆盖的 Rust 能力。
 
@@ -118,16 +112,3 @@ Go 测试 `func_group_concat_test.go` 还覆盖普通/多参数/ORDER BY/DISTINC
 - 修改 spill 格式：必须同步 `SpillState::write_spill/read_spill` 及 `spill_group_concat_keeps_binary_collation_keys_and_allocates_result_buffer`；格式没有版本字段，改变字段顺序或编码会带来兼容风险。
 
 性能风险集中在每行 clone、`HashMap<Vec<u8>, Vec<u8>>` 双份字节保存、merge 重放以及 `reset` 放弃容量。若优化分配，必须保留空串/NULL 区分、collation key 和截断时机，并重新核对内存计量口径。正确性风险集中在 UTF-8 字节截断、配置不一致的 partial 合并，以及将 HashMap 顺序误当成 SQL 顺序保证。
-
-## 验证依据
-
-本说明以以下直接证据为准：
-
-- 源文件：`pkg/executor/aggfuncs/func_group_concat.rs`，完整核对 `GroupConcat` 的 6 个字段及 7 个方法。
-- crate 边界：`pkg/executor/aggfuncs/Cargo.toml` 和 `pkg/executor/aggfuncs/lib.rs`，确认库入口、公开模块、依赖范围与独立测试模块。
-- 构建/接线：`pkg/executor/aggfuncs/builder.rs::{build, build_group_concat}`、`pkg/executor/aggfuncs/aggfuncs.rs::{BuiltAggFunc::spill_function, merge_spilled_partial_result}`、`pkg/executor/aggfuncs/spill_serialize_helper.rs` 中的 `impl SpillState for GroupConcat`。
-- Rust 测试：`pkg/executor/aggfuncs/func_group_concat_test.rs`（NULL、空串、separator、长度上限、reset/truncated）、`func_distinct_agg_test.rs` 与 `go_scenario_coverage_test.rs`（并行 DISTINCT merge 和非确定顺序）、`spill_helper_test.rs::spill_group_concat_keeps_binary_collation_keys_and_allocates_result_buffer`（二进制 key、恢复内存和重复合并）。
-- Go 对照：`pkg/executor/aggfuncs/func_group_concat.go` 的 `baseGroupConcat4String`、`groupConcat`、DISTINCT 与 ORDER BY 类型，以及 `pkg/executor/aggfuncs/func_group_concat_test.go` 的功能和内存测试。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件并包含目标；`files --filter pkg/executor/aggfuncs` 确认源、Go 对照及测试均在索引中；文件限定 `node` 读取了目标、builder、公共聚合状态、spill trait impl 与测试。通用 `explore`/方法名 callers 查询存在同名符号噪声，因此最终调用边以文件限定节点和精确引用交叉核对。
-
-人工复核结论：该文件存在的理由是为 GROUP_CONCAT 提供可复制、可合并、可 spill 的字节 partial state；真实运行核心是 `update/update_keyed/merge`；安全扩展必须同时维护 spill codec、独立测试以及与 Go 在 NULL、collation、截断和无序 DISTINCT 上的兼容边界。

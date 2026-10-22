@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。模块入口在 `pkg/expression/lib.rs`，它通过 `#[path = "builtin_ilike_vec.rs"] mod builtin_ilike_vec_kernel;` 将本文件作为私有模块编入 crate；同一入口还把 `builtin_ilike_vec_test.rs` 和 `builtin_ilike_vec_12_aster_unit_test.rs` 作为独立测试模块编入。`pkg/expression/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认了这一 crate 边界，并声明本文件直接使用的 `stringutil-dependency`（工作区包 `astersql-util-stringutil`）。
-
-它是 Rust ILIKE 的批量求值辅助层：定义批量字符串参数、escape 参数、ASCII 折叠辅助函数，并为 `pkg/expression/builtin_ilike.rs` 中的 `IlikeSig` 增加 `vectorized` 与 `vec_eval_int` 方法。需要注意当前接线状态：生产表达式注册器位于 `pkg/expression/builtin.rs`，其中 `CoreBuiltinKind::Ilike` 的逐行执行会调用 `IlikeSig::eval_int`，但 `CoreBuiltin` 的 `builtinFunc::vectorized()` 当前固定返回 `false`，且没有调用本文件的 `vec_eval_int`。因此本文件的批量入口目前由 Rust 独立测试直接覆盖，尚未接入统一表达式向量调度；不能仅凭本文件的 `IlikeSig::vectorized() == true` 推断生产调度已经启用。
+提供 `LowerAlphaASCII` 与 `LowerAlphaASCIIExcludeEscapeChar` 两个公开辅助函数，对应 Go 文件的同名函数。
 
 ## 核心职责
 
@@ -87,14 +85,9 @@ SQL NULL 的表示保持一致：字符串常量或行值使用 `Option<String>`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/builtin_ilike_vec.go`，测试对照是 `pkg/expression/builtin_ilike_test.go`。
-
 - 同名 `LowerAlphaASCII` 与 `LowerAlphaASCIIExcludeEscapeChar` 保留了“只折叠 ASCII”和“保护 escape”的算法意图；Go 操作 `chunk.Column` 的字符串内存，Rust 操作 `&mut [Option<String>]` 并重建字符串。
 - Go `funcParam` 通过是否持有列区分常量/列；Rust 将状态显式化为 `StringParam`。Go 的 `buildStringParam`、buffer pool 和 `releaseBuffers` 没有逐项移植，因为 Rust 输入由调用方持有且通过所有权自动回收。
 - Go `getEscape` 检查第三参数必须为 `ConstStrict`，NULL 时填充整列 NULL；Rust 用 `EscapeParam` 在类型层建模相同分支。
-- Go 会先复制列再小写化，并针对四种常量/列组合选择专门函数。Rust `vec_eval_int` 不预先改写输入，而让每行 `matches` 完成规范化，并用统一循环覆盖四种组合。
-- Go 仅在 pattern 是常量时通过 `patternCache` 记忆已编译模式。Rust 将 `pattern.is_constant()` 作为 `matches` 的 `cacheable` 参数，并由 `CachedPattern` 的 source/escape 键保证复用安全。
-- 两版都逐行传播 expression/pattern NULL，返回 0/1 整数，并保持 ASCII-only 的大小写不敏感语义。Go 测试 `TestVectorizedBuiltinIlikeFunc` 和 `TestVectorizedBuiltinIlikeForConstants` 对应 Rust 的 `test_vectorized_builtin_ilike_func`、`test_vectorized_builtin_ilike_for_constants` 及综合向量测试。
 - 接线存在差异：Go 的 `builtinIlikeSig.vectorized()` 与 `vecEvalInt` 已实现标准 `builtinFunc` 调度；Rust 本文件虽提供同等内核，`pkg/expression/builtin.rs::CoreBuiltin::vectorized()` 目前仍返回 `false`，所以尚不能宣称 Rust 生产调度已与 Go 完全对齐。
 
 ## 扩展指南
@@ -105,13 +98,3 @@ SQL NULL 的表示保持一致：字符串常量或行值使用 `Option<String>`
 - 改变缓存策略时，应修改 `vec_eval_int` 的 `cacheable` 决策及 `builtin_ilike.rs::cached_pattern` 的键/锁语义，并测试常量 pattern 命中、列 pattern 不缓存、不同 escape 不误复用以及 clone 清空缓存。错误缓存会带来跨行错误结果；过度编译则是性能风险。
 - 真正接入生产向量调度不能只改本文件：还需在 `pkg/expression/builtin.rs` 的 `builtinFunc` 向量接口中把 chunk/表达式参数安全适配为本文件类型，处理排序规则和错误映射，并将 `CoreBuiltin::vectorized()` 按 kind 返回能力；随后应增加通过公共表达式调度入口而非直接调用 `IlikeSig` 的回归测试。
 - 若为了性能改成原地折叠列，必须复制上游列或证明独占所有权，避免污染后续表达式；还应基准比较当前逐行分配/编译路径与 Go 的列预处理路径。
-
-## 验证依据
-
-- 源文件：`pkg/expression/builtin_ilike_vec.rs`，共 152 行；RustCodeGraph `files --filter` 报告 16 个符号，`node --file ... --offset 1 --limit 260` 展示了完整源码和直接使用文件。
-- 核心实现：`pkg/expression/builtin_ilike.rs` 的 `ExpressionError`、`IlikeSig`、`matches`、`cached_pattern` 与 `normalize_ilike`。
-- crate 与装配：`pkg/expression/Cargo.toml` 的包名、lib 入口和 `stringutil-dependency`；`pkg/expression/lib.rs` 的生产/测试模块声明。
-- 生产调用边：`pkg/expression/builtin.rs` 的 `CoreBuiltinKind::Ilike`、`core_builtin_factory`、`CoreBuiltin::evalInt` 和 `builtinFunc::vectorized`。仓库搜索确认生产路径调用 `eval_int`，未发现对本文件 `vec_eval_int` 或两个折叠辅助函数的生产调用。
-- Rust 测试：`pkg/expression/builtin_ilike_vec_test.rs` 验证常量 NULL 的短路顺序；`pkg/expression/builtin_ilike_test.rs` 验证排序规则、ASCII/escape、标量与向量一致性以及常量/列组合；`pkg/expression/builtin_ilike_vec_12_aster_unit_test.rs` 验证缓存、行级 NULL、NULL escape 和非常量 escape 错误。
-- Go 对照：`pkg/expression/builtin_ilike_vec.go` 的完整向量流程及 `pkg/expression/builtin_ilike_test.go` 的 `TestIlike`、`TestVectorizedBuiltinIlikeFunc`、`TestVectorizedBuiltinIlikeForConstants`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰好包含 11 个固定二级章节，并人工复核“文件为何存在、如何运行、如何安全扩展”以及“尚未接入统一向量调度”的限制均有源码依据。

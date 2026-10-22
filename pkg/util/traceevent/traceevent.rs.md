@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-traceevent` crate 的结构化追踪事件核心，定义事件类别、事件与字段模型、进程级模式和 sink、内存环形缓冲，以及面向 Chrome Trace Event/Perfetto 的渲染结构。crate 入口 `pkg/util/traceevent/lib.rs` 公开 `traceevent` 模块并重导出本文件的 API；`pkg/util/traceevent/Cargo.toml` 表明该 crate 只直接依赖 `log`、`rand`、`serde` 和 `serde_json`。
-
-它位于两条链路的交汇处：上游生产者通过 `trace_event` 写事件，例如 `pkg/session/runtime/dispatch.rs` 在每条可执行语句开始时调用 `generate_trace_id`，再发出 `STMT_LIFECYCLE` 类别的 `stmt.start`；`pkg/util/traceevent/adapter.rs::handle_client_go_trace_event` 则把 client-go 类别映射为内部类别后调用同一入口。下游由进程级 `RingBufferSink`、`Context` 携带的会话 `Trace`（定义于 `flightrecorder.rs`）和全局 `Sink` 共同承接事件。
+提供 `MultiSink` 与线程安全的 `RingBufferSink`，支持多目标扇出、定容覆盖、清空和按旧到新快照。
 
 ## 核心职责
 
@@ -88,15 +86,12 @@
 
 ## 与 Go 版本的对应关系
 
-总体结构与 `pkg/util/traceevent/traceevent.go` 对齐：三种模式、类别过滤、事件模型、全局 sink、进程环形缓冲、20 字节 trace ID、10 秒 dump 冷却、MultiSink，以及 Trace Event 渲染均有一一对应实现。`pkg/util/traceevent/traceevent_test.rs` 也复现了 Go 测试对模式、类别、trace ID、环形覆盖顺序、字段保留和冷却期的断言。
-
 当前可见差异必须在后续对齐时保留关注：
 
 - Go `IsEnabled` 在 classic kernel 且非测试时直接禁用；Rust `is_enabled` 本身没有 kernel 判断，限制目前由 `pkg/sessionctx/variable/sysvar_builtins.rs` 的系统变量验证承担，并非所有调用入口都受同一保护。
 - Go 包 `init` 会设置默认 sink/模式并调用 `RegisterWithClientGo`；Rust 依靠静态初值和 `OnceLock` 达到 base 默认值，但本文件不会主动调用 `adapter.rs::register_with_client_go`。该适配函数当前也只记录注册状态，注释说明真实 client-go 接线由包级集成任务负责。
 - Go 事件字段是 `zap.Field` 并预留三项追加容量；Rust 使用拥有的 JSON 值，没有对应容量协议。Rust 重复键在转为对象时会覆盖，Go logger 可保留重复字段语义。
 - Go dump 会输出含 `reason`、事件数和冷却摘要的专用日志，并返回 `()`；Rust 忽略 `reason`、冷却时静默返回，并返回输出条数，逐条复用普通 `[trace-event]` 格式。
-- Go 渲染会记录错误长度、同批随机后缀不一致以及全零 tid；Rust 不记录这些诊断。两端都从 trace ID 的第 16 至 20 字节按本机字节序解释 `tid`，而 ID 生成使用大端，因此该数值是平台相关的字节解释，不能当作原始大端后缀数值。
 - Go 的 `Event`、`TraceCategory`、`Sink` 是 `pkg/util/tracing` 的别名，并通过 client-go context API 存取 ID；Rust 在本文件内拥有独立类型和轻量 `Context`。
 
 ## 扩展指南
@@ -108,13 +103,3 @@
 - 完善 dump 行为时，应决定是否对齐 Go 的 reason/摘要日志、是否成功后清空、以及如何用 compare-exchange 防止并发重复 dump，并为冷却边界写确定性测试，避免依赖 11 秒真实睡眠。
 - 接入真实 client-go 回调属于 `adapter.rs` 的边界，不应在本文件复制外部客户端逻辑；classic kernel 的统一禁用策略也应在公共入口或上层配置边界做一致化设计。
 - 修改 trace ID 格式时必须同步 `generate_trace_id`、`extract_rand_from_trace_id`、会话 previous-trace 使用方、Go 实现及任何外部消费者；这是兼容性风险最高的接口之一。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标 `pkg/util/traceevent/traceevent.rs` 已索引，按行读取覆盖 1–621 行。
-- RustCodeGraph 符号查询确认目标文件中的 `trace_event`（345 行）、`generate_trace_id`（378 行）、`dump_flight_recorder_to_logger`（493 行）、`convert_events_for_rendering`（543 行）；精确 callers/callees 查询未返回静态边，该限制已在“依赖与调用关系”中说明。
-- 已读取直接 Rust 证据：`pkg/util/traceevent/lib.rs`、`adapter.rs`、`flightrecorder.rs`、`traceevent_test.rs`、`test/integration_test.rs`，以及实际调用点 `pkg/session/runtime/dispatch.rs`、`pkg/sessionctx/variable/sysvar_builtins.rs`、`pkg/util/util.rs`。
-- 已读取边界声明：`pkg/util/traceevent/Cargo.toml` 的 crate 名、入口、四项直接依赖和 `go-package = "pkg/util/traceevent"` 移植元数据。
-- 已读取 Go 对照：`pkg/util/traceevent/traceevent.go` 与 `traceevent_test.go`，用于核对模式、事件扇出、ID 格式、环形缓冲、dump、渲染及测试意图。
-- Rust 独立测试证据：`test_suite` 覆盖类别过滤、事件/字段、trace ID、base/full 和冷却；`test_trace_event_modes` 覆盖合法/非法模式；`test_ring_buffer_snapshot_order` 覆盖覆盖顺序；`rendering_rejects_oversized_trace_id` 覆盖严格 20 字节边界；集成测试覆盖会话 sink、采样/触发器以及 SQL 变量产生 `stmt.start`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核本文仅描述有上述源码或测试支持的当前行为。

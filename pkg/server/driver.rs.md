@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/driver.rs` 属于 `astersql-server` crate；`pkg/server/Cargo.toml` 将该 crate 的根设为 `pkg/server/lib.rs`，后者以 `pub mod driver` 导出本文件。它定义 MySQL 服务端与会话驱动之间的一组 Rust 抽象：连接打开、结果逐行拉取、预处理语句参数与游标状态、以及相关资源的显式关闭。
-
-当前文件是**契约层而不是生产实现层**。仓库搜索只发现 `pkg/server/driver_test.rs` 直接导入并实现这些 trait；生产 Rust 路径没有 `impl IDriver`、`impl DriverContext` 或 `impl PreparedStatement for ...`。当前实际连接与 COM_STMT 流程使用 `pkg/server/conn.rs`、`pkg/server/conn_stmt.rs` 和 `pkg/server/driver_tidb.rs` 中另一套具体类型及 trait。因此，本文件表达了 Go `pkg/server/driver.go` 的移植边界，但尚未接入完整应用主链。
-
-文件没有条件编译项、全局变量或模块级常量；全部条目均为公开类型或公开 trait。源码顶部保留 PingCAP Apache License，并标记为 AsterSQL 已处理文件。
+这些职责只规定方法形状，不提供参数解析、SQL 执行、限额检查、锁策略或资源清理次序的默认实现；这些语义必须由实现者保证。
 
 ## 核心职责
 
@@ -101,8 +97,6 @@ Go 的 `TiDBStatement::Reset`/`Close` 会报告游标 RU、关闭迭代器、分
 
 ## 与 Go 版本的对应关系
 
-主要原型是 `pkg/server/driver.go`：Rust `IDriver` 和 `PreparedStatement` 基本按方法逐项映射，`pkg/server/driver_tidb.go` 的 `TiDBDriver`/`TiDBStatement` 提供 Go 侧真实实现证据。
-
 关键差异如下：
 
 - Go `IDriver::OpenCtx` 返回具体 `*TiDBContext`；Rust 返回 `Box<dyn DriverContext>`，隐藏具体会话能力。目前 Rust `DriverContext` 只有 `close`，不足以表达 Go `TiDBContext` 的查询、Prepare、警告和状态迁移接口。
@@ -114,8 +108,6 @@ Go 的 `TiDBStatement::Reset`/`Close` 会报告游标 RU、关闭迭代器、分
 - Go `BoundParams() [][]byte` 以 nil slice 表达未绑定；Rust用 `Option<Vec<u8>>` 明确区分未绑定与空字节。
 - Go `TiDBStatement` 已实现长数据 packet 上限、内存配额记账、游标 RU 和 plan cache 清理；本文件只声明入口，不实现这些行为。
 
-Go 测试 `pkg/server/conn_stmt_test.go` 覆盖 RESET 后 FETCH 失败、长数据超过 `max_allowed_packet` 延迟到 EXECUTE 报错、内存配额拒绝及 CLOSE 归还记账；`pkg/server/conn_test.go` 覆盖真实 `OpenCtx` 和 TLS 状态。这些是未来接线时的兼容基线，不是当前 `driver.rs` 已通过的 Rust 行为。
-
 ## 扩展指南
 
 - 新增协议值类型时，优先扩展 `Expression`，并同步所有实现、编码/解码边界和独立测试；同时检查当前生产路径 `driver_tidb.rs::Expression`，避免两套枚举继续漂移。需评估 SQL 类型精度、字符集、无符号范围与复制成本。
@@ -125,14 +117,3 @@ Go 测试 `pkg/server/conn_stmt_test.go` 覆盖 RESET 后 FETCH 失败、长数�
 - 长数据实现应复现 Go 的延迟错误、单参数上限、会话内存记账和 RESET/EXECUTE/CLOSE 释放不变量；重点回归 `pkg/server/conn_stmt_test.go` 中相应场景，并在 Rust 的独立测试文件中添加等价测试。
 - 游标实现应保证结果集、迭代器、行容器和资源计量按一致顺序完成，且错误路径不会泄漏；需要评估物化行的内存/磁盘占用和每行 `Vec<Expression>` 分配开销。
 - 若改变线程安全界限（例如要求共享结果集），应审慎考虑是否从 `Send` 提升到 `Send + Sync`，并用锁策略和并发测试证明 `next`/`finish`/`close` 的互斥与幂等性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/server/driver.rs` 确认目标文件已索引；`node --file pkg/server/driver.rs --offset 1 --limit 500` 读取到全文件 130 行和 41 个符号，并报告 9 个宽松使用关系。精确 caller 查询未在限定时间内返回，因此没有把未解析的图边当作事实。
-- 目标源码：`pkg/server/driver.rs`，核对全部公开结构、枚举、trait、方法签名、派生实现及无条件编译项。
-- crate 边界：`pkg/server/Cargo.toml`、`pkg/server/lib.rs`，核对 crate 名、根文件、`pub mod driver` 和独立测试挂载方式。
-- Rust 直接测试：`pkg/server/driver_test.rs`，核对取消传播和 `None` 会话扩展语义；仓库精确搜索确认它是当前唯一直接导入/实现本文件 trait 的 Rust 文件。
-- Rust 相邻生产路径：`pkg/server/conn.rs`、`pkg/server/conn_stmt.rs`、`pkg/server/driver_tidb.rs`、`pkg/server/internal/resultset/cursor.rs`，核对当前连接、COM_STMT、驱动与游标实际使用的独立类型。
-- Go 对照：`pkg/server/driver.go`、`pkg/server/driver_tidb.go`、`pkg/server/internal/resultset/resultset.go`、`pkg/server/internal/resultset/cursor.go`，核对接口原型、具体实现、结果集和资源生命周期差异。
-- Go 回归证据：`pkg/server/conn_stmt_test.go`、`pkg/server/conn_test.go`，核对游标 RESET、长数据上限/内存配额、CLOSE 释放、`OpenCtx` 与 TLS 行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；验证只包含事实搜索、人工交叉核对和任务指定的 11 章节结构检查。

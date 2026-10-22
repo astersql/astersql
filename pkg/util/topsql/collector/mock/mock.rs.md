@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-topsql-collector-mock` crate 的核心逻辑，是 TopSQL 测试链路中的内存型 collector，而不是生产环境的远端 reporter。crate 入口 `pkg/util/topsql/collector/mock/lib.rs` 通过 `mod mock; pub use mock::*;` 导出这里的公开 API；`pkg/util/topsql/collector/mock/Cargo.toml` 则声明它依赖真实的 `collector`、`stmtstats`、`parser` 和 `logutil` crate，因此测试使用的是正式接口和正式 SQL digest 算法，而非另造一套类型。
-
-它位于“SQL/Plan 元数据注册及 CPU 采样结果”与“测试断言”之间：被测 TopSQL 链路可把统计送入 `collector::Collector::Collect`，测试随后通过 `GetSQLStatsBySQL*`、`GetSQLCPUTimeBySQL`、`GetSQL` 和 `GetPlan` 读取内存快照。当前 Rust 直接接线证据包括 `pkg/server/tests/servertestkit/testkit.rs` 对 `TopSQLCollector` 的使用，以及本 crate 的独立测试 `pkg/util/topsql/collector/mock/migration_aster_unit_test.rs`；Go 版本还广泛用于 `pkg/util/topsql/topsql_test.go`、`pkg/server/tests/commontest/tidb_test.go` 和 `pkg/executor/adapter_internal_test.go`。
+`Reset` 提供测试用例之间的状态隔离；`Start`、`Close`、`BindProcessCPUTimeUpdater`、`BindKeyspaceName` 和 `CollectStmtStatsMap` 以无副作用实现满足测试所需接口表面。
 
 ## 核心职责
 
@@ -94,12 +92,7 @@ RustCodeGraph 的直接内部调用边为：`Collect -> hash`，trait `Collector
 
 ## 与 Go 版本的对应关系
 
-同目录 `mock.go` 是直接语义基线，Rust 实现保留了其公开的 Go 风格命名（文件级 `#![allow(non_snake_case)]`）和主要行为：
-
-- Go 的三张 map 加嵌入式 `sync.Mutex` 对应 Rust 的单个 `Mutex<CollectorState>`；Go `atomic.Int64` 对应 `AtomicI64`。
 - Go 用字符串承载 digest 字节，Rust 用 `Vec<u8>`，避免非 UTF-8 digest 的有损转换；独立 Rust 测试以 `0x80/0xff` 等字节验证该差异仍保持语义等价。
-- Go `defer c.collectCnt.Inc()` 使空批次也计数；Rust 在空/非空分支分别递增，并保持非空路径先解锁、后计数。
-- Go map 的“先检查是否存在”对应 Rust `entry(...).or_insert(...)`；二者均保留首个 SQL/plan 文本。
 - Go 的 `uint32` 自然回绕对应 Rust 显式 `wrapping_add`。
 - Go 返回内部记录指针切片，Rust 返回克隆后的 `Vec<SQLCPUTimeRecord>`，所有权更安全，但测试观察到的字段值相同。
 - Go `time.After` 加 sleep 对应 Rust `Instant` deadline 加 `thread::sleep`；两者都以约十秒为界且没有错误返回。
@@ -116,17 +109,3 @@ Go 集成测试补充了用途证据：`pkg/util/topsql/topsql_test.go::TestTopS
 - 若改变 SQL/plan 注册覆盖规则、大 plan 处理、CPU 溢出或空值语义，应同步 `pkg/util/topsql/collector/mock/migration_aster_unit_test.rs`，并核对 `pkg/util/topsql/topsql_test.go`、`pkg/server/tests/commontest/tidb_test.go` 与 `pkg/executor/adapter_internal_test.go` 的原始意图。
 - Rust 单元测试必须继续放在独立文件，不要嵌入 `mock.rs`。新测试优先追加到现有 `migration_aster_unit_test.rs`，由 `lib.rs` 的 `#[cfg(test)]` 接线。
 - 性能风险主要来自单全局 mutex、逐记录日志和十毫秒轮询；它们对测试 mock 通常可接受，但批量或高并发扩展前应量化，不应把该类型误用作生产 collector。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标实现：`pkg/util/topsql/collector/mock/mock.rs`（RustCodeGraph 文件节点显示完整 307 行、24 个符号）。
-- crate 边界：`pkg/util/topsql/collector/mock/Cargo.toml`；模块导出与测试接线：`pkg/util/topsql/collector/mock/lib.rs`。
-- Rust 独立测试：`pkg/util/topsql/collector/mock/migration_aster_unit_test.rs`，覆盖二进制 digest、首次注册、大 plan、CPU 聚合、plan 过滤、空批次计数、拼接碰撞、reset、真实 digest 依赖和空接口方法。
-- Go 对照：`pkg/util/topsql/collector/mock/mock.go`。
-- Go 调用与测试：`pkg/util/topsql/topsql_test.go`、`pkg/server/tests/commontest/tidb_test.go`、`pkg/executor/adapter_internal_test.go`。
-- Rust 上游接线：`pkg/server/tests/servertestkit/testkit.rs` 及其 Cargo 清单；工作区依赖搜索还命中根 `Cargo.toml`、`pkg/server/tests/commontest/Cargo.toml` 和 `pkg/executor/Cargo.toml`。
-- RustCodeGraph 状态：索引覆盖 11,467 个文件，目标目录包含 `lib.rs`、`migration_aster_unit_test.rs`、`mock.go`、`mock.rs`；`node/query/callees` 核实了本文列出的核心符号和内部调用边。精确 `callers/callees` 对重名 `Collect` 的结果存在名称扩张，因此上游调用结论同时以 Cargo 和 `rg` 的精确 crate/符号引用核验，未把不相干同名结果计入。
-
-本任务是纯文档分析，按计划不运行 Cargo。最终结构检查要求本文恰好包含规定的十一个二级标题；人工复核重点是所有“已支持”陈述均能回指上述源文件、调用边或测试，且未把尚未迁移的 Go 集成场景描述为 Rust 现状。

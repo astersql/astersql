@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo 包 `astersql-br-pkg-restore-split`。包入口 `br/pkg/restore/split/lib.rs` 通过 `#[path = "region.rs"] pub mod region` 装配模块，并用 `pub use region::*` 把这里的符号提升到 crate 根。这个 crate 对应 Go 包 `br/pkg/restore/split`，其职责是在 BR 恢复写入 SST 前提供 Region 扫描、分裂和 scatter 辅助；`region.rs` 是其中很小但基础的数据模型与键区间判定层。
-
-文件只依赖 crate 内的 `stubs::metapb`，没有条件编译项，也不发起 PD/RPC 请求。`br/pkg/restore/split/Cargo.toml` 将本包声明为 library，入口为 `lib.rs`，未声明 feature；因此这里的 `RegionInfo` 会被 `client.rs`、`split.rs`、`splitter.rs`、`mock_pd_client.rs` 以及包外的恢复逻辑复用，而不是独立运行。
+用 `beforeEnd` 集中表达“严格小于结束键，或结束键为空”的 PD Region 上界约定。
 
 ## 核心职责
 
@@ -81,11 +79,6 @@ RustCodeGraph 的文件节点将 `region.rs` 标为被 12 个文件使用，并�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `br/pkg/restore/split/region.go`：
-
-- 字段一一对应：Go 的 `*metapb.Region`、`*metapb.Peer` 和 peer 指针切片在 Rust 中分别表示为 `Option<Region>`、`Option<Peer>` 和拥有值的 `Vec<Peer>`。
-- `ContainsInterior` 保留 Go 的两次严格比较：`bytes.Compare(key, start) > 0` 与 `beforeEnd`。Rust 使用切片字典序运算符实现相同排序意图。
-- `beforeEnd` 保留 Go 的“`key < end || len(end) == 0`”顺序无关布尔语义，空结束键仍代表无限上界。
 - nil Region 的行为被 Rust 显式兼容：Go 代码经生成 protobuf getter 得到空键，Rust 在 `None` 分支返回空切片；`region_test.rs` 专门覆盖了这一点。
 - 日志接口尚未完全等价。Go `(*RegionInfo).ToZapFields() zap.Field` 在 nil receiver 时返回 `zap.Skip()`，否则调用真实 `logutil.Region`；Rust 使用关联函数 `ToZapFields(Option<&RegionInfo>) -> String`，并调用返回固定占位串的 `stubs::logutil::Region`。它只保留 nil-safe/有无值分支，不具备结构化 zap 字段的类型和内容。
 
@@ -99,12 +92,3 @@ RustCodeGraph 的文件节点将 `region.rs` 标为被 12 个文件使用，并�
 - 若完成日志移植，应让 `ToZapFields` 的返回类型和字段内容与 Go `zap.Field` 等价，并同步调整全部调用方和 `to_zap_fields_is_nil_safe`。在此之前，应把空字符串视为“跳过日志字段”的桩约定。
 - 若给 `RegionInfo` 增加字段，应同步 Go 对照、所有构造字面量、client/mock 转换逻辑和独立测试；公开字段及 `Default` 是当前调用方广泛依赖的兼容面。
 - 性能上应维持热路径无分配的键判定。不要为了便利把 `GetStartKey`/`GetEndKey` 转成新 `Vec`，也不要在逐键映射中增加日志或线性复制。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/restore/split` 确认 `region.rs`、Go 对照、独立测试和调用模块均被索引；`node --file br/pkg/restore/split/region.rs --offset 1 --limit 100` 读取了 59 行完整源码，并报告该文件被 12 个文件使用；`query` 分别定位了 `RegionInfo`、`ContainsInterior`、`beforeEnd`、`ToZapFields` 的 Rust/Go 定义。
-- RustCodeGraph 限制：`callers ContainsInterior --file br/pkg/restore/split/region.rs` 连续 60 秒无输出后被终止，没有把未返回结果当作调用关系证据；随后通过 `rg` 精确搜索并读取上下文确认生产调用点。
-- 已读生产文件：`br/pkg/restore/split/region.rs`、`lib.rs`、`Cargo.toml`、`stubs.rs`、`split.rs`、`client.rs`、`mock_pd_client.rs`，以及包外消费者 `br/pkg/restore/misc.rs` 的 Region 缓存片段。
-- 已读 Go 对照：`br/pkg/restore/split/region.go`；并用同目录 Go/Rust 精确符号搜索核对 `RegionInfo` 在 split/client/splitter 链中的用途。
-- 已读独立测试：`br/pkg/restore/split/region_test.rs`；补充核对 `br/pkg/restore/split/parity_test.rs` 的半开区间与内部键断言。任务是纯文档分析，按计划未运行 Cargo。
-- 结构验收使用任务指定命令，要求目标文件存在且上述固定二级标题恰好出现 11 个；提交前另做链接/路径与事实人工复核。

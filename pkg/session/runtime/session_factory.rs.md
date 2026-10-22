@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的 `runtime::session_factory` 模块；模块由 `pkg/session/runtime.rs` 的 `pub mod session_factory` 暴露，crate 边界与 `nextgen` feature 见 `pkg/session/Cargo.toml`。它位于 Session、Domain、InfoSchema 同步和 DDL 服务的装配边界，负责把已有组件组装成三类运行时：目标 keyspace 的跨 keyspace `SessionManager`、当前 serving Domain 的普通 schema runtime，以及真正拥有 DDL worker 的普通 DDL service。
-
-文件头注释给出的关键边界是：目标 keyspace 工厂只负责 store 与公共系统会话组件，DDL 执行仍属于目标 keyspace 的普通 DDL service。这个边界在 `KeyspaceSessionFactory::create_with_server_info` 中体现为构造 `SubmitOnlyBackend` 和 `DdlClient`，但不启动目标 keyspace 的 DDL worker；真正的 worker 由 `install_serving_ddl_runtime` 安装。
-
-生产入口位于 `pkg/session/runtime/session.rs`：会话/Domain 初始化时构造 `KeyspaceSessionFactory::new` 并调用 `install_on_domain`；当 serving DDL 的 etcd、owner 和运行时准备好后调用 `install_serving_ddl_runtime`。因此，本文件不是 SQL 请求处理入口，而是 Domain 启动阶段的基础设施装配点。
+`TargetSessionStore` 把 `StorageHandle` 适配为 `astersql_domain_crossks::Store`，记录 keyspace 名称和底层 store 是否归本运行时所有，并提供幂等关闭。
 
 ## 核心职责
 
@@ -106,11 +102,9 @@ normal schema runtime 不在构造函数中启动循环，只完成 Init 与首�
 
 Rust 跨 keyspace 主流程对应 `pkg/domain/crossks/cross_ks.go::Manager.createSessionManager`：两者都先打开目标 store，再创建 coordinator、validator 和系统会话池，注册虚拟 server，初始化 schema-version/server-state syncer，首次 reload InfoSchema，创建 system-table manager/min-job refresher，最后组装只负责提交的 DDL client，并启动 schema/MDL/min-job 循环。
 
-`TargetSessionStore` 的 SYSTEM 特例对应 Go `getOrCreateStore`：SYSTEM 返回 `kvstore.GetSystemStorage()`，其他 keyspace 初始化独立 storage。Rust 用显式 `owned` 表达 Go failpoint/清理代码中的“共享 SYSTEM store 不应随 runtime 关闭”规则。
+Rust 用显式 `owned` 表达 Go failpoint/清理代码中的“共享 SYSTEM store 不应随 runtime 关闭”规则。
 
-`SystemSchemaLoader` 与 cross-KS syncer 对应 `pkg/infoschema/issyncer/loader.go::NewLoaderForCrossKS` 和 `syncer.go::NewCrossKSSyncer`：使用 full load、设置 crossKS 标志，并把 coordinator、schema-version syncer、pool、validator 和 min-job refresher接到同一链路。
-
-系统会话池回调对应 Go `util.NewSessionPool` 的借出、归还和销毁回调。Rust 通过 `transaction_mdl` 提取可注册的事务 MDL，而 Go 直接把 `sessionctx.Context` 存入 coordinator；两者共同保证借出的内部事务参与 schema barrier，归还/销毁后取消登记。
+Rust 通过 `transaction_mdl` 提取可注册的事务 MDL，而 Go 直接把 `sessionctx.Context` 存入 coordinator；两者共同保证借出的内部事务参与 schema barrier，归还/销毁后取消登记。
 
 Rust 的系统会话初始化语义还应与 `pkg/session/session.go::getSessionFactoryInternal` 和 `createCrossKSSession` 一起理解：Go 工厂设置 autocommit、执行超时和 packet 限制，并创建 `dom == nil` 的 cross-KS session；Rust 的具体会话配置封装在 `SystemSessionPool`/`ConcreteSession`，本文件只负责共享 pool、validator、Domain 与目标 store 的接线。
 
@@ -126,13 +120,3 @@ Rust 相比当前 Go 实现把创建拆成 `prepare`、虚拟 server registratio
 - 修改 schema lease、cache 或 validator 时，同时检查 `SystemSchemaLoader`、cross-KS `NewCrossKSSyncer` 和普通 `schema::New` 的语义，并同步 `normal_ddl_test.rs` 中构造失败、刷新和 lifecycle 测试。
 - 对运行期 loop 错误增加可观测性时，应设计明确的 channel/status API；当前仅 `eprintln!`，直接改成 panic 或提前 drop 会改变清理与服务可用性语义。
 - 兼容性风险主要在 keyspace 隔离、SYSTEM store 所有权、etcd namespace、DDL 只提交/消费分工；性能风险主要在每个 target 的线程、连接、完整 schema load 和系统会话池数量。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime/session_factory.rs` 确认目标文件在索引中，`node --file ...` 完整读取了 698 行源码及 49 个符号。精确 `query` 确认 `KeyspaceSessionFactory`、`prepare_normal_schema_runtime`、`install_serving_ddl_runtime`、`install_on_domain` 和 `registration_failed` 的定义；图的 callers/callees 对这些 impl/trait 方法未返回有效边，因此调用点改用下列直接源码引用核验，没有据此虚构图关系。
-- 目标源码：`pkg/session/runtime/session_factory.rs`，重点为 `TargetSessionStore`、`SystemSchemaLoader`、`PreparedTarget::drop`、`KeyspaceSessionFactory::{new, install_on_domain}`、`RuntimeFactory` 实现、`RuntimeLifetime::close`、`prepare_normal_schema_runtime`、`install_serving_ddl_runtime`。
-- crate 与模块：`pkg/session/Cargo.toml`、`pkg/session/runtime.rs`；前者确认 crate、feature 和直接依赖，后者确认公开模块声明。
-- Rust 上游：`pkg/session/runtime/session.rs` 中的 `KeyspaceSessionFactory::new/install_on_domain` 与 `install_serving_ddl_runtime` 调用点。
-- Rust 独立测试：`pkg/session/runtime/lifecycle_test.rs` 覆盖 store-before-registration、公共组件加载/单次关闭、跳过 refresher、共享 SYSTEM store、transport/schema/server-state/registration/reload 失败清理、submit-only 和自动 GC；`pkg/session/runtime/normal_ddl_test.rs` 覆盖 normal schema runtime 的用户 KV 刷新、循环归属、构造失败清理、取消和 barrier；`pkg/session/runtime/normal_ddl_masking_policy_test.rs` 覆盖真实 cross-KS runtime 接线与 nextgen serving DDL 安装。
-- Go 对照：`pkg/domain/crossks/cross_ks.go` 的 `createSessionManager`、`getOrCreateStore` 与 manager lifecycle；`pkg/infoschema/issyncer/loader.go::NewLoaderForCrossKS`；`pkg/infoschema/issyncer/syncer.go::NewCrossKSSyncer/SetMinJobIDRefresher`；`pkg/session/session.go::getSessionFactoryInternal/createCrossKSSession`。Go 测试证据位于 `pkg/domain/crossks/cross_ks_test.go`、`cross_ks_internal_test.go` 和 `pkg/infoschema/issyncer/{loader_test.go,syncer_test.go}`。
-- 本任务只生成文档，未修改 Rust、Go 或 Cargo，也按计划未运行 Cargo。结构验证应确认文件存在且恰好包含规定的十一个二级标题；人工复核重点是 submit-only/serving worker 边界、两阶段资源所有权和失败回收链均有源码或测试依据。

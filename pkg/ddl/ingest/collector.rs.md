@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate；crate 入口 `pkg/ddl/ingest/lib.rs` 以 `pub mod collector` 公开它。它保存 DDL ingest 临时索引操作的进程内统计模型：写入按“连接 ID → 表 ID”分层，扫描与合并按表 ID 汇总，并可生成与 Go 指标标签兼容的快照。
-
-这里不是 DDL job、schema state 或 checkpoint 的持久化点，也不参与回填调度。当前 Rust 仓库中，它尚未像 `pkg/ddl/ingest/collector.go` 那样注册到 Prometheus 或替换 `pkg/metrics/ddl.rs` 的全局回调；除 `pkg/ddl/ingest/collector_test.rs` 外未检索到直接使用者。因此它目前是已公开、已单测的迁移组件，而不是完整接入运行主链的指标端点。
+保存 DDL ingest 临时索引操作的进程内统计模型：写入按“连接 ID → 表 ID”分层，扫描与合并按表 ID 汇总，并可生成与 Go 指标标签兼容的快照。
 
 ## 核心职责
 
@@ -68,7 +66,7 @@ Go 运行链则由 `pkg/ddl/ingest/collector.go::init` 把 `metrics.DDLAddOneTem
 
 ## 与 Go 版本的对应关系
 
-Rust 的状态维度、四个标签、commit/rollback/reset/clear 语义、scan/merge 参数顺序以及采集时只统计 total 的规则，都直接对应 `pkg/ddl/ingest/collector.go`。`collector_test.rs` 的前三个测试分别覆盖 Go 的事务生命周期、连接/表清理范围与 scan/merge 标签顺序。
+Rust 的状态维度、四个标签、commit/rollback/reset/clear 语义、scan/merge 参数顺序以及采集时只统计 total 的规则，都直接对应 `pkg/ddl/ingest/collector.go`。
 
 存在以下明确差异：
 
@@ -86,12 +84,3 @@ Rust 的状态维度、四个标签、commit/rollback/reset/clear 语义、scan/
 - 若优化锁粒度，应特别验证 reset 与 collect 并发、锁中毒策略和弱一致快照边界；避免形成 write/read 反向加锁导致死锁。
 - 若引入错误返回或溢出策略，必须评估与 Go 无返回回调接口的兼容性，并添加接近 `u64::MAX` 的独立回归测试。
 - Rust 测试必须继续放在 `collector_test.rs`，不要内嵌回生产源文件。
-
-## 验证依据
-
-- 源码：`pkg/ddl/ingest/collector.rs`（常量、`MetricSample`、内部状态、`lock`、`Collector` 七个方法）。
-- crate 边界：`pkg/ddl/ingest/lib.rs` 的 `pub mod collector` 与 `#[cfg(test)] mod collector_test`；`pkg/ddl/ingest/Cargo.toml` 的包名、库入口和依赖声明。
-- Go 对照：`pkg/ddl/ingest/collector.go` 的 `init`、`collector`、`newCollector`、`Describe`、`Collect`；回调声明位于 `pkg/metrics/ddl.go`，Rust 空操作声明位于 `pkg/metrics/ddl.rs`。
-- 独立 Rust 测试：`pkg/ddl/ingest/collector_test.rs` 的 `write_counts_follow_go_commit_and_rollback_lifecycle`、`reset_and_clear_match_go_connection_and_table_scopes`、`scan_and_merge_accumulate_with_go_label_order`、`concurrent_connections_aggregate_without_losing_counts`。
-- RustCodeGraph：`status` 显示索引覆盖 11467 个文件；`files --filter pkg/ddl/ingest` 列出目标 Rust/Go/测试文件；`query Collector` 定位 `collector.rs:57`，对主要方法的 query 定位 `add_temp_index_write:72`、`commit_temp_index_write:87`、`set_temp_index_scan_and_merge:130`。图查询未给出生产调用边，仓库 `rg` 检索仅发现 Rust 测试调用，因此本文将生产接线明确标为尚未验证/尚未实现。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前只执行固定 11 章节结构检查和文档差异自审。

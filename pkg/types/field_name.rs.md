@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 SQL 规划阶段使用的结果列命名元数据。它保存一列的原始表/列名、解析后的库/表/列名以及可见性标志，并提供列名列表的复制和 AST 列名匹配能力。源码不是由顶层 `pkg/types/lib.rs` 直接声明，而是由 `pkg/types/internal/metadata/lib.rs` 的 `field_name_defs` 通过 `include!("../../field_name.rs")` 编译进 `astersql-types-metadata`；随后顶层 `astersql-types` 将该子 crate 再导出为 `metadata`。因此常见调用路径是 `types::metadata::{FieldName, NameSlice, EmptyName}`，而 `pkg/expression/lib.rs` 又把这些符号暴露给表达式和规划器代码。
-
-直接所属 crate 是 `pkg/types/internal/metadata/Cargo.toml` 中的 `astersql-types-metadata`，其 `parser-ast` 和 `tidb-size` 依赖分别提供 `ast::CIStr`、`ast::ColumnName` 与内存大小常量。`pkg/types/Cargo.toml` 则以 `types-group-4` 路径依赖组装该子 crate，并记录 Go 包对照为 `pkg/types`。
+保存一列的原始表/列名、解析后的库/表/列名以及可见性标志，并提供列名列表的复制和 AST 列名匹配能力。
 
 ## 核心职责
 
@@ -58,21 +56,12 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/field_name.go`。字段集合、隐藏名称字符串、限定名拼接顺序、内存估算组成、外层切片浅拷贝、空限定符匹配规则及 `EmptyName` 的用途均与 Go 实现一致。Rust 用 `Option<Arc<FieldName>>` 对应 Go 的 `[]*FieldName`，用 `LazyLock<Arc<_>>` 对应包级 `*FieldName` 变量。
+Rust 用 `Option<Arc<FieldName>>` 对应 Go 的 `[]*FieldName`，用 `LazyLock<Arc<_>>` 对应包级 `*FieldName` 变量。
 
-存在三项需要保持清醒的语言边界差异。第一，Go `MemoryUsage` 对 nil receiver 返回 0；Rust 方法接收 `&self`，安全 Rust 中不能以空引用调用。第二，Go `FindAstColName` 若切片含 nil 且扫描到该元素会解引用失败；Rust 使用 `flatten()` 安全跳过 `None`。第三，Go 注释称 `Clone` 为浅拷贝，因为 `CIStr` 是值字段；Rust 显式克隆其中的字符串，当前测试要求克隆后 `DBName.L` 的存储指针不同，因此是内容独立的深拷贝。扩展时应保持可观察 SQL 语义一致，不应为了逐字翻译而撤销这些 Rust 所有权边界。
+存在三项需要保持清醒的语言边界差异。第一，Go `MemoryUsage` 对 nil receiver 返回 0；Rust 方法接收 `&self`，安全 Rust 中不能以空引用调用。第二，Go `FindAstColName` 若切片含 nil 且扫描到该元素会解引用失败；Rust 使用 `flatten()` 安全跳过 `None`。第三，Go 注释称 `Clone` 为浅拷贝，因为 `CIStr` 是值字段；Rust 显式克隆其中的字符串，当前测试要求克隆后 `DBName.L` 的存储指针不同，因此是内容独立的深拷贝。
 
 ## 扩展指南
 
 新增字段时，应同步修改 `FieldName`、`Clone`、`MemoryUsage`（若字段拥有堆内存）、`EmptyName` 默认构造以及 `pkg/expression/cache_snapshot.rs::CachedFieldName::{capture,restore}`，并核对 Go `pkg/types/field_name.go` 的对应增量。新增名称匹配规则时，入口是 `FindAstColName`；必须明确空限定符、大小写规范化、`None` 和隐藏字段的语义，并检查 `pkg/planner/core/planbuilder_runtime.rs` 的 ON DUPLICATE 使用场景。
 
 测试逻辑应继续放在独立文件，而不是嵌入本源文件。基础行为应扩展 `pkg/types/enum_4_aster_unit_test.rs::field_names_match_rendering_memory_clone_shallow_and_lookup_semantics`；快照字段变化应扩展 `pkg/expression/cache_snapshot_test.rs`；计划内存计费变化应扩展 `pkg/planner/core/operator/physicalop/physical_schema_producer_test.rs`；名称解析流程变化还应覆盖 `pkg/expression/simple_rewriter_test.rs` 或对应规划器独立测试。性能风险主要来自 `FindAstColName` 的 O(n) 扫描、`String` 的分配以及 `Clone` 对五组字符串的复制；兼容风险主要是字段位置对齐、隐藏列可见性和别名/原名混用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件且目标文件已索引；`files --filter pkg/types/field_name.rs` 显示 9 个符号；`node --file pkg/types/field_name.rs --offset 1 --limit 400` 完整读取 117 行并报告 9 个使用文件；`query FieldName --kind struct`、`query NameSlice --kind struct` 核对 Rust/Go 定义及相关消费者。精确 callers/callees 查询无输出，未将其当作不存在调用者的证据。
-- 源码与接线：`pkg/types/field_name.rs`、`pkg/types/internal/metadata/lib.rs`、`pkg/types/internal/metadata/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`。
-- Go 对照：`pkg/types/field_name.go`。
-- 直接调用证据：`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/planbuilder_runtime.rs`、`pkg/expression/cache_snapshot.rs`。
-- 独立测试证据：`pkg/types/enum_4_aster_unit_test.rs` 覆盖显示、内存估算、深拷贝、Arc 浅拷贝、通配匹配和隐藏名；`pkg/expression/cache_snapshot_test.rs` 覆盖全部状态字段及 `None`/隐藏占位往返；`pkg/planner/core/operator/physicalop/physical_schema_producer_test.rs` 覆盖字段名进入计划内存估算。
-- 本任务是纯文档分析，按计划未运行 Cargo，也未修改 Rust、Go、Cargo 或只读总计划；交付前使用任务指定命令检查文档恰有 11 个固定二级章节。

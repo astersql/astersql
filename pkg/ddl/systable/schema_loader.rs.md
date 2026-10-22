@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-ddl-systable` crate，定义 DDL 调度侧触发 InfoSchema 重载时使用的最小公共抽象。模块入口 `pkg/ddl/systable/lib.rs` 通过 `pub mod schema_loader` 和 `pub use schema_loader::*` 导出它，DDL 主 crate 又在 `pkg/ddl/lib.rs` 中重新导出 `SchemaLoader` 与 `SchemaLoaderError`，因此调用者通常可以从 `astersql_ddl` 使用这两个类型。
-
-尽管文件位于 `systable` 目录，它本身不查询 `mysql.*` 系统表，也不实现 InfoSchema 的读取或缓存替换；这些工作由 trait 的具体实现完成。本文件是 DDL owner/调度逻辑与 Domain、InfoSchema syncer 等真实加载设施之间的依赖倒置边界。按 DDL 执行模型分类，它服务于 owner 接管时的元数据刷新保护，不创建或持久化 DDL job，不推进 schema state，不执行 reorg/backfill，也不直接更新 schema version 或 schema diff。
+以 `SchemaLoaderError` 保留实现方转换后的诊断文本，并提供标准的 `Display` 与 `std::error::Error` 接口。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ RustCodeGraph 的 `query` 将目标 trait、错误类型、`with_schema_loader`�
 
 ## 与 Go 版本的对应关系
 
-Go 原型位于 `pkg/ddl/ddl.go`：`type SchemaLoader interface { Reload() error }`，并注明当前实现来自 Domain；`pkg/ddl/options.go::WithSchemaLoader` 将其注入 DDL `Options`。Rust 保留了相同的单方法、无参数、同步成功/失败契约，并通过 `pkg/ddl/options.rs::with_schema_loader` 对齐 functional option 接线。
-
 Rust 的显式差异包括：方法名采用 `reload`；错误收敛为 `SchemaLoaderError`，而不是任意 Go `error`；trait 额外要求 `Send + Sync`；生产选项使用 `Arc<dyn SchemaLoader>` 表达共享所有权。
 
-Go `pkg/ddl/job_scheduler.go::mustReloadSchemas` 在 owner 开始调度前持续调用 `Reload`，失败则记录日志并等待重试或 context 取消；`pkg/ddl/job_scheduler_test.go::TestMustReloadSchemas` 覆盖直接成功、失败后成功，以及取消后不能发布 storage-class-transition readiness。Rust `must_reload_schemas_with` 已对齐成功、失败重试和失败后取消的基本控制流，相关独立测试位于 `pkg/ddl/job_scheduler_test.rs`。但 readiness channel 的发布逻辑不在本 trait 中，Rust 这项独立测试也不声称覆盖 Go 测试的 readiness 断言；扩展 owner 接管行为时应在调度层核对，而不是塞入本接口。
+但 readiness channel 的发布逻辑不在本 trait 中，Rust 这项独立测试也不声称覆盖 Go 测试的 readiness 断言；扩展 owner 接管行为时应在调度层核对，而不是塞入本接口。
 
 ## 扩展指南
 
@@ -88,14 +84,3 @@ Go `pkg/ddl/job_scheduler.go::mustReloadSchemas` 在 owner 开始调度前持续
 - 增加取消或超时：由于当前调用是同步且无 context 参数，只修改外层重试循环不能中断正在执行的加载；需要一起设计 trait 契约和各具体实现。并发风险是实现持锁期间阻塞 owner 接管。
 - 增加版本确认：若返回已加载 schema version，必须核对 Domain/syncer 的真实返回语义，以及 Go `Reload() error` 的兼容策略，避免仅凭 `Ok(())` 推断目标版本。
 - 最小同步测试集合：`pkg/ddl/job_scheduler_test.rs` 验证重试/取消，`pkg/ddl/schema_loader_contract_aster_unit_test.rs` 验证生产注入，`pkg/ddl/options_test.rs` 验证选项保存，`pkg/ddl/mock/mock_aster_unit_test.rs` 验证 mock 的生产 trait 与错误转换；生产实现变化还应在 `pkg/session/runtime/normal_ddl_*_test.rs` 中选择对应 owner/runtime 场景。
-
-## 验证依据
-
-- 目标源码：`pkg/ddl/systable/schema_loader.rs`，确认全部公开符号、签名、派生 trait 和标准错误实现。
-- crate/模块边界：`pkg/ddl/systable/Cargo.toml`、`pkg/ddl/systable/lib.rs`、`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、根 `Cargo.toml`。
-- RustCodeGraph：`status` 显示索引包含目标 Rust 文件；`explore "pkg/ddl/systable/schema_loader.rs SchemaLoader SchemaLoaderError reload callers implementations"`；`query SchemaLoader`、`query SchemaLoaderError`；`node SchemaLoader`、`node SchemaLoaderError`、`node must_reload_schemas_with`。图查询确认目标定义、再导出、调度调用点、实现和测试候选；同名歧义再用路径限定的源码搜索收窄。
-- Rust 调用与实现：`pkg/ddl/options.rs`、`pkg/ddl/job_scheduler.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/ddl/mock/schema_loader_mock.rs`。
-- 独立 Rust 测试：`pkg/ddl/job_scheduler_test.rs`、`pkg/ddl/options_test.rs`、`pkg/ddl/schema_loader_contract_aster_unit_test.rs`、`pkg/ddl/mock/mock_aster_unit_test.rs`。
-- Go 对照：`pkg/ddl/ddl.go::SchemaLoader`、`pkg/ddl/options.go::WithSchemaLoader`、`pkg/ddl/job_scheduler.go::mustReloadSchemas`、`pkg/ddl/job_scheduler_test.go::TestMustReloadSchemas`、`pkg/domain/domain.go` 的 DDL 构造注入。
-- 人工边界复核：本文没有把 trait 描述成加载算法或系统表访问实现；没有声称它处理 job 持久化、schema state、backfill、版本同步或取消中断；Go readiness 行为被明确留在调度层。
-- 结构验证使用任务规定的命令，只检查目标文档存在且恰好包含十一个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。

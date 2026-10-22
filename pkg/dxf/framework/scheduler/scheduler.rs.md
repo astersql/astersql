@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 DXF（Distributed eXecution Framework）Owner 侧的单任务调度状态机 `BaseScheduler`。crate 入口 `pkg/dxf/framework/scheduler/lib.rs` 将其作为 `scheduler` 模块公开并再导出；`pkg/dxf/framework/scheduler/Cargo.toml` 表明它属于 `astersql-dxf-framework-scheduler` crate，直接依赖协议、调度状态、存储和指标四个相邻 crate。
-
-在完整调度链中，`scheduler_manager.rs` 的 `Manager::start_scheduler` 根据任务类型工厂构造 `Arc<dyn Scheduler>`，`Manager::drive_schedulers` 对每个实例调用一次 `Scheduler::schedule_once`。因此本文件不拥有常驻轮询线程：它只完成一个可持久化的状态迁移，循环、资源预留和实例回收由 `Manager` 负责；任务类型差异则由 `interface.rs` 中的 `Extension` trait 注入。
+因此本文件不拥有常驻轮询线程：它只完成一个可持久化的状态迁移，循环、资源预留和实例回收由 `Manager` 负责；任务类型差异则由 `interface.rs` 中的 `Extension` trait 注入。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 的文件节点显示 `scheduler.rs` 被 11 个文件使用，并�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/scheduler/scheduler.go`。Rust 的 `BaseScheduler`、`refresh_task_if_needed`、各 `on_*`、`switch_to_next_step`、`schedule_subtasks`、回滚辅助和 `TaskHandle` 实现，分别对应 Go 的 `BaseScheduler`、`refreshTaskIfNeeded`、各状态处理器、`switch2NextStep`、`scheduleSubTask`、`revertTask*` 与 `GetPreviousSubtask*`；核心状态迁移、Prepare 后同 tick 继续、节点上限、轮询分派、批量持久化、人工恢复和结束指标意图保持一致。
-
 当前可验证差异如下：
 
 - Go 的 `ScheduleTask` 自带 ticker/context 循环；Rust 将循环拆到 `Manager::tick`，`schedule_once` 每次只推进一轮，更适合确定性测试。
@@ -103,11 +99,3 @@ Go 测试 `scheduler_test.go` 与 `scheduler_nokit_test.go` 是移植语义参�
 - 改变并发或修改协议：`modify_concurrency` 必须继续触发调度器重建，以便 Manager 释放旧 slot 并按新值预留；修改 `max_node_count` 或自定义 meta 时验证 previous_state 恢复和 modifications 清空。
 - 调整批量阈值/重试：要评估单事务限制、数据库压力和忙等性能；如向 Go 行为收敛，应引入可配置阈值、类型化不可重试错误和可取消退避，并将测试放在独立 `*_test.rs` 文件。
 - 任一 Rust 行为变更都应与 `scheduler.go` 和相应 Go 测试重新对照；若有意偏离，需记录原因与兼容性影响，而不是只以编译或零测试证明完成。
-
-## 验证依据
-
-- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/scheduler.rs`，不采用工作区未提交源码。
-- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
-- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
-- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
-- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

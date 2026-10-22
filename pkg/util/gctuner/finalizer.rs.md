@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-util-gctuner`，由 `pkg/util/gctuner/lib.rs` 以 `pub mod finalizer` 暴露。它不是数据库请求链上的独立服务，而是 GC 调谐基础设施：为 `tuner.rs` 的 GOGC 调谐和 `memory_limit_tuner.rs` 的运行时内存上限调谐提供可停止、可重复触发的周期回调。
-
-Rust 没有 Go `runtime.SetFinalizer` 对应的 tracing-GC 钩子，因此本文件不是逐句复刻，而是在保持“每个回收边界通知一次、通知后继续武装、停止后不再通知”的可观察契约下提供运行时适配。其下游真实回收边界由 `crate::mem::releaseUnusedMemory` 提供。
+`Finalizer::stop` 原子地封锁后续执行并唤醒等待线程，使其尽快退出；`isStopped` 提供状态观测。
 
 ## 核心职责
 
@@ -74,11 +72,7 @@ Rust 没有 Go `runtime.SetFinalizer` 对应的 tracing-GC 钩子，因此本文
 
 ## 与 Go 版本的对应关系
 
-Go `finalizer.go` 的 `newFinalizer` 创建 `finalizerRef`，用 `runtime.SetFinalizer` 注册 `finalizerHandler`，再清空持有引用来让每次 GC 触发 handler；handler 执行回调后再次 `SetFinalizer`，形成重挂。`stop` 通过原子整数令后续 handler 直接返回。Go 测试以多次 `runtime.GC()` 验证每次 GC 通知以及停止后的计数冻结。
-
 Rust 保留了重复通知、串行回调和停止闸门，但触发语义不是“语言运行时完成一次 tracing GC”，而是固定 300 ms 定时器先请求系统分配器归还空闲页、再通知回调。Rust 新增了显式 `run`、`isStopped`、条件变量唤醒和 `Weak` 线程生命周期控制；Go 的 `finalizerRef`、`runtime.SetFinalizer` 与引用清空在 Rust 中不存在。
-
-因此，扩展或排障时不能假设一次 Rust 回调严格对应一次 Rust 语言级 GC，也不能把 300 ms 当成 Go runtime 的保证。当前测试验证的是适配后的行为契约，而非触发时刻与 Go 完全一致。
 
 ## 扩展指南
 
@@ -88,13 +82,3 @@ Rust 保留了重复通知、串行回调和停止闸门，但触发语义不是
 - 若放宽回调锁范围或允许并发，必须同时审计 `Tuner::tuning` 和 `MemoryLimitTuner::tuning` 的共享状态不变量；当前上层依赖串行通知。
 - 若要传播分配器回收失败或回调失败，需要设计新的错误通道。直接改变 `run -> bool` 的含义会影响两个调谐器的 `runFinalizer` 及现有断言。
 - 性能上，每个实例一条线程且 300 ms 唤醒一次；若实例数量增长，优先评估共享调度器，同时保持各实例的停止隔离、回调串行和弱引用释放语义。
-
-## 验证依据
-
-- 源码与符号：`pkg/util/gctuner/finalizer.rs` 的 `finalizerCallback`、`Finalizer`、`newFinalizer`、`startRuntimeDriver`、`run`、`stop`、`isStopped`；下游回收实现为 `pkg/util/gctuner/mem.rs::releaseUnusedMemory`。
-- crate 边界：`pkg/util/gctuner/Cargo.toml` 与 `pkg/util/gctuner/lib.rs`；前者确认包名、crate 根、依赖和 `autotests = false`，后者确认模块与独立测试接线。
-- 上游调用：`pkg/util/gctuner/tuner.rs::{newTuner,Tuner::stop,Tuner::runFinalizer}` 和 `pkg/util/gctuner/memory_limit_tuner.rs::{withResetInterval,Start,Stop,runFinalizer}`。
-- Go 对照：`pkg/util/gctuner/finalizer.go`、`finalizer_test.go`，以及调谐接线 `tuner.go::newTuner`、`memory_limit_tuner.go::Start/Stop`。
-- Rust 测试：`pkg/util/gctuner/finalizer_test.rs::{test_finalizer,finalizer_runs_without_manual_notification}`、`migration_aster_unit_test.rs::migration_finalizer_rearms_until_stopped`；相关上层显式入口还由 `tuner_test.rs`、`memory_limit_tuner_test.rs` 使用。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；文件节点确认 `finalizer.rs` 共 117 行，并被 `finalizer_test.rs`、`memory_limit_tuner.rs`、`migration_aster_unit_test.rs`、`tuner.rs` 使用；精确 `query newFinalizer` 同时定位 Go/Rust 构造函数，`query Finalizer` 定位结构体、方法、测试和两个 `runFinalizer`。精确 `callers/callees` 查询在本地无输出并于约 30 秒超时，因此调用边又以索引文件节点和上述调用点源码交叉核验，未把超时解释为“没有调用边”。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令验证，并人工检查文档未把定时回调描述成 Go runtime GC 的精确等价物。

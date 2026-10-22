@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/types/etc.rs` 属于 Cargo 包 `astersql-parser-types`（`pkg/parser/types/Cargo.toml`），由 crate 根 `pkg/parser/types/lib.rs` 的 `types::etc` 模块通过 `include!("etc.rs")` 装入，并经 `pub use etc::*`、`pub use types::*` 对外再导出。它位于 parser 的字段类型基础层：不负责解析 SQL token，而是为 `FieldType` 等上层类型提供 MySQL/TiDB 类型码分类、名称转换、十进制存储参数和标准类型错误。
-
-该文件的直接 Go 对照是 `pkg/parser/types/etc.go`。Rust 源文件已经带有 AsterSQL 处理标记，并保留了原有 ql BSD 与 PingCAP Apache License 注释。
+`type2Str`/`str2Type` 以及 `TypeStr`、`TypeToStr`、`StrToType` 维护类型码与规范名称的双向转换，并实现 binary 字符集下 `text -> blob`、`char -> binary` 的显示别名。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ RustCodeGraph 的直接调用边为：
 
 ## 与 Go 版本的对应关系
 
-`pkg/parser/types/etc.rs` 按 `pkg/parser/types/etc.go` 的声明顺序保留三类判定、双向映射、三个 DECIMAL 参数和四个标准错误。`u8` 对应 Go `byte`；Rust `matches!`/布尔表达式对应 Go `switch`/比较；`LazyLock<HashMap<...>>` 对应 Go 包级 map；`replacen(..., 1)` 对应 `strings.Replace(..., 1)`。
+`pkg/parser/types/etc_test.go::TestStrToType` 验证 Go 表项往返及两个基础别名；Rust `etc_test.rs::test_str_to_type` 通过扫描完整 `u8` 域复现同一测试意图，避免为测试暴露私有表。
 
-可观察语义保持一致：未知类型码在 `TypeStr` 中得到空字符串，未知名称在 `StrToType` 中得到 `TypeUnspecified`，BLOB/BINARY 只是显示与输入别名，binary 字符集下 `TypeNull` 显示为 `binary`。`pkg/parser/types/etc_test.go::TestStrToType` 验证 Go 表项往返及两个基础别名；Rust `etc_test.rs::test_str_to_type` 通过扫描完整 `u8` 域复现同一测试意图，避免为测试暴露私有表。
-
-Rust 的额外接线是 `initialize_standard_errors` 与 `lib.rs` 平台启动段：Go 包级变量天然在导入时构造，Rust 用显式启动钩子和 `LazyLock::force` 模拟该时序。`etc_test.rs::standard_errors_are_registered_during_package_initialization` 是对应的 Rust 独立回归测试。`migration_aster_unit_test.rs::type_names_and_eval_types_match_go` 还覆盖 binary 显示、`longblob`、`TypeNull`、向量名称、未知输入和四个错误码。
+Rust 的额外接线是 `initialize_standard_errors` 与 `lib.rs` 平台启动段：Go 包级变量天然在导入时构造，Rust 用显式启动钩子和 `LazyLock::force` 模拟该时序。
 
 ## 扩展指南
 
@@ -88,13 +84,3 @@ Rust 的额外接线是 `initialize_standard_errors` 与 `lib.rs` 平台启动�
 修改 DECIMAL 编码参数时，应在 `FieldType::StorageLength` 的独立测试中覆盖 word 边界、余数边界、precision/scale 组合，不能只改查表。新增标准类型错误时，应在错误静态量旁定义、按 Go 声明顺序加入 `initialize_standard_errors`，并在 `etc_test.rs` 的子进程注册测试和错误码断言中同步覆盖。
 
 测试必须继续放在独立文件：直接的名称/别名/初始化测试放入 `pkg/parser/types/etc_test.rs`；跨 `FieldType` 显示和存储长度的行为放入 `field_type_test.rs` 或现有 `migration_aster_unit_test.rs`。兼容风险主要是 SQL 显示文本与错误码身份；性能风险主要来自热路径中新增长字符串分配或扩大懒加载表，但当前查询为常数规模 HashMap 读取。
-
-## 验证依据
-
-- Rust 源与装配：`pkg/parser/types/etc.rs`、`pkg/parser/types/lib.rs`。
-- crate 边界：`pkg/parser/types/Cargo.toml`，包名为 `astersql-parser-types`，直接路径依赖包含 `mysql` 与 `terror`。
-- Go 对照：`pkg/parser/types/etc.go`；Go 测试：`pkg/parser/types/etc_test.go::TestStrToType`。
-- Rust 独立测试：`pkg/parser/types/etc_test.rs::test_str_to_type`、`standard_errors_are_registered_during_package_initialization`；补充迁移证据：`pkg/parser/types/migration_aster_unit_test.rs::type_names_and_eval_types_match_go`。
-- 直接实现调用方：`pkg/parser/types/field_type.rs` 中的 `CompactStr`、`String`、`Restore`、`StorageLength`。
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/parser/types/etc.rs` 核对了 161 行完整源码；对带路径符号执行 `node`，确认 `TypeToStr` 调用 `TypeStr`/`IsTypeBlob`/`IsTypeChar` 且由 `CompactStr`/`Restore` 调用，确认 BLOB/CHAR 判定还由 `String` 调用；`IsTypeVector`、`StrToType` 和 `initialize_standard_errors` 未显示额外直接调用边。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构由任务指定的 11 标题检查验证，内容则通过上述源码、调用图、Go 对照和独立测试交叉复核。

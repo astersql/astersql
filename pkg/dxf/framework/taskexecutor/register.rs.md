@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-taskexecutor` crate，是 DXF 节点侧任务执行器的“任务类型到执行器工厂”注册表。crate 入口 `pkg/dxf/framework/taskexecutor/lib.rs` 通过 `mod register` 装入本模块，并用 `pub use register::*` 对外再导出公开 API。仓库的 `pkg/dxf/framework/doc.go` 将 task executor manager、slot manager 和 task executor 定义为所有 DXF 节点都会运行的组件；本注册表位于 manager 创建具体 task executor 的接线点。
-
-直接消费入口是 `pkg/dxf/framework/taskexecutor/manager.rs` 的 `Manager::startTaskExecutor`：它取得完整 `Task`、分配 slot 和 task runtime 后，以 `Task.TaskBase.Type` 调用 `GetTaskExecutorFactory`；查找成功才构造并初始化执行器，未注册则调用 `failSubtask` 并释放 slot。因而本文件只负责进程内类型分派，不负责任务持久化、资源分配、执行器初始化或线程启动。
+仅在 `cfg(test)` 下提供 `RegistryLockForTest`，使所有会直接或间接触碰全局注册表的 Rust 单元测试串行执行。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ RustCodeGraph 的关键边为：
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/dxf/framework/taskexecutor/register.go`。两版保留相同的三项核心行为：类型到工厂的进程级映射、重复 key 覆盖、测试用全量清理；工厂参数也对应 `context`、task 和 `Param`，返回 `TaskExecutor`。
-
 主要差异如下：
 
 - Go 使用包级 `map[proto.TaskType]FactoryFn`，没有内部锁；Rust 使用 `OnceLock<RwLock<HashMap<...>>>` 支持跨线程安全访问。
@@ -89,7 +85,7 @@ Go 对照文件是 `pkg/dxf/framework/taskexecutor/register.go`。两版保留�
 - Go 的 `ClearTaskExecutors` 用新 map 替换旧 map；Rust 在持写锁时清空原 map，并保持静态容器不变。
 - Rust 增加了 `RegistryLockForTest`，补偿 Rust 测试默认在同一进程并发运行的隔离需求；Go 对照测试依赖包测试的顺序化状态使用方式，没有对应 API。
 
-`register_test.go::TestRegisterTaskType` 验证两种类型注册和重复注册后 map 长度不增加。Rust 的 `register_test.rs::test_register_task_type` 保留这些意图，并额外从公开 API 验证存在/缺失和清理结果；`test_get_task_executor_factory_invokes_registered_factory` 进一步证明取出的工厂可创建、初始化并运行执行器。
+Rust 的 `register_test.rs::test_register_task_type` 保留这些意图，并额外从公开 API 验证存在/缺失和清理结果；`test_get_task_executor_factory_invokes_registered_factory` 进一步证明取出的工厂可创建、初始化并运行执行器。
 
 ## 扩展指南
 
@@ -100,18 +96,3 @@ Go 对照文件是 `pkg/dxf/framework/taskexecutor/register.go`。两版保留�
 - 新增会使用 manager 或注册表的 crate 内测试必须取得 `RegistryLockForTest`，并在开始/结束清理注册表。相关测试继续放在 `register_test.rs`；涉及 manager 的失败与资源释放应同步 `manager_test.rs`。
 - 性能风险主要是高频动态注册/清理导致写锁阻塞查找。正常模型应是启动期注册、运行期读多写少；如改变这一模型，需要基准或并发测试证明新的锁策略不会放大任务启动延迟。
 - 兼容性风险集中在 `FactoryFn` 签名、缺项行为和重复注册语义；修改时应同时核对 Go 文件，避免 Rust 版本无意偏离 Go 的任务分派行为。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/dxf/framework/taskexecutor/register.rs` 的 `FactoryFn`、`factories`、`RegisterTaskType`、`GetTaskExecutorFactory`、`ClearTaskExecutors`、`RegistryLockForTest`。
-- crate 与模块边界：`pkg/dxf/framework/taskexecutor/Cargo.toml`、`pkg/dxf/framework/taskexecutor/lib.rs`。
-- DXF 包契约：`pkg/dxf/framework/doc.go`。
-- 生产消费链：`pkg/dxf/framework/taskexecutor/manager.rs::Manager::startTaskExecutor`。
-- 关联类型：`pkg/dxf/framework/taskexecutor/interface.rs` 的 `Context`、`TaskType`、`Task`，以及 `pkg/dxf/framework/taskexecutor/task_executor.rs` 的 `Param`。
-- Go 对照：`pkg/dxf/framework/taskexecutor/register.go`、`pkg/dxf/framework/taskexecutor/register_test.go`。
-- 独立 Rust 测试：`pkg/dxf/framework/taskexecutor/register_test.rs`；跨文件测试锁调用还由 `manager_test.rs`、`task_executor_testkit_test.rs` 的 RustCodeGraph 调用边确认。
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；精确 `node` 查询确认 `RegisterTaskType -> factories`、`GetTaskExecutorFactory -> factories`、`ClearTaskExecutors -> factories` 以及上述调用者关系。
-
-任务规定的结构检查用于确认文档存在且恰含十一个固定二级标题。由于这是纯文档分析，没有修改 Rust/Go/Cargo 行为，也没有运行 Cargo 或代码测试。人工复核重点是：所有“已支持”陈述均落到上述源码、调用边或测试证据；Rust 生产注册入口未被直接证据确认的部分已明确标为未验证。

@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-resourcemanager-pool-workerpool` crate 的通用、可动态调容的线程池。crate 入口 `pkg/resourcemanager/pool/workerpool/lib.rs` 通过 `#[path = "workerpool.rs"]` 声明模块并再导出全部公开 API；`Cargo.toml` 声明的运行时依赖只有 `crossbeam-channel`、带 `failpoints` feature 的 `fail` 和 `log`。它不是一个调度策略模块，而是供上层流水线复用的并发执行原语：上层定义任务、worker 和通道生命周期，本文件负责启动线程、分发任务、传播取消和错误、回收 worker。
-
-已确认的生产使用包括：
-
-- `pkg/ingestor/globalsort/merge.rs` 用 `WorkerPool<MergeTask, (usize, String)>` 并发执行全局排序合并，保存运行中池以支持调容。
-- `pkg/ingestor/ingestctrl/import_pipeline.rs` 用 `NewWorkerPoolWithFallibleFactory` 执行 region job，并通过 `ImportPoolTuner` 将 `Tune(..., true)` 暴露给外部调度。
-- `pkg/session/runtime/modify_column_pipeline.rs` 分别创建读取池 `WorkerPool<ReadTask, None>` 和写入池 `WorkerPool<WriteTask, Ack>`，组成修改列流水线。
-- `pkg/dxf/importinto/task_executor.rs`、`encode_and_sort_operator.rs` 复用这里的 `Context`/`Channel` 作为导入任务的取消与通道边界。
-
-RustCodeGraph 对目标文件报告 88 个符号，并给出 `pkg/dxf/importinto/write_ingest_backend.rs`、`pkg/ingestor/globalsort/merge.rs`、`pkg/ingestor/ingestctrl/import_pipeline.rs`、`pkg/planner/core/planbuilder.rs` 四个文件级使用者；其中精确 Rust `callers`/`callees` 查询未返回函数边，因此本文对具体调用关系以实际引用位置为准，不把文件级关系推断成函数调用。
+定义 `TaskMayPanic`、`Worker<T, R>`、`Tuner` 和 `PoolOption<T, R>`，把任务恢复信息、任务处理、资源关闭和动态调容划分为独立契约。
 
 ## 核心职责
 
@@ -107,13 +98,8 @@ RustCodeGraph 的 `query NewWorkerPool` 能定位本文件构造函数及 Go 对
 
 ## 与 Go 版本的对应关系
 
-`pkg/resourcemanager/pool/workerpool/workerpool.go` 是直接语义基线，Rust 名称刻意保留 Go 风格。对应关系如下：
-
-- Go `context.WithCancel` + `atomic.Pointer[error]` 对应 Rust 父子 `Context`、done 通道和 `Mutex<Option<Error>>`；两者都保留首错并广播取消。
 - Go 原生 channel 对应 Rust `Channel<T>`。Rust 必须增加显式 `closed` 和独立 close 信号，才能在句柄被多方克隆时表达 Go 的共享 close 语义。
-- Go `WaitGroupWrapper` 对应 `Vec<JoinHandle<()>>`；缩容使用的临时 `sync.WaitGroup` 对应 `Countdown`。
 - Go `util.Recover` 对应 `catch_unwind`。Rust 只捕获 `HandleTask` 内 panic，恢复错误仍来自 `TaskMayPanic::RecoverArgs`。
-- Go `Option` 对应 Rust `PoolOption`（避免遮蔽标准库 `Option`）；Go 可变参数对应 `Vec<Box<dyn PoolOption<...>>>`。
 - Go 工厂可返回 nil；Rust 普通构造器的工厂必须返回 worker，另由 `NewWorkerPoolWithFallibleFactory` 显式表达 `Option<W>` 分支。
 - Go 用池内 `mu`、atomic `started`/时间支持共享指针上的并发访问；Rust 调容和生命周期方法要求 `&mut self`，需要共享时由调用者使用 `Mutex`，如 `RunningPool` 和 globalsort 的 `running_pool`。
 - Go error 可携带任意具体错误和包装链；本文件的 `Error` 只保留共享字符串。Rust 的 `AddTask` 还返回发送是否成功，Go 版本则无返回值。
@@ -130,16 +116,3 @@ Go 测试 `workpool_test.go` 的任务累加、扩缩容、`None` 结果、自�
 - 新增生命周期 API：明确它是“等待自然退出”还是“主动取消后等待”，避免模糊 `Release` 与 `CloseAndWait` 的区别；还要决定线程外 panic 是否通过 `OperatorErr` 暴露。
 - 增加生产消费者时，优先遵循现有的外部任务通道模式，并确保每条路径最终关闭输入或取消 context、持续消费结果直到关闭。否则无缓冲发送或 `Release` 可能永久等待。
 - 兼容风险主要是 Go/Rust 取消与 close 的竞态次序；性能风险主要是每 worker 一个 OS 线程、全局顺序一致原子操作、每次调容保留旧 `JoinHandle`，以及无缓冲通道产生的同步等待。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 完整读取 `pkg/resourcemanager/pool/workerpool/workerpool.rs`：`Error`、`Context`、`Channel`、四个公开 trait、`Countdown`、`RunningGuard`、`WorkerPool` 的构造/启动/执行/调容/释放实现。
-- 读取 `pkg/resourcemanager/pool/workerpool/Cargo.toml` 与 `lib.rs`：确认 crate 名、依赖、移植元数据、公开再导出及三份独立 Rust 测试模块。
-- 读取 Go 对照 `workerpool.go`、`workpool_test.go`、`main_test.go`：确认原接口、通道/WaitGroup/锁语义、测试意图和 goroutine 泄漏检查背景。
-- 读取 Rust 测试 `workerpool_test.rs`、`migration_aster_unit_test.rs`、`workpool_test.rs`：确认关闭后排空、timeout 区分、缩容握手、首错与父子取消、错误/panic、`Close` 等待、`None`、自定义通道及取消解除结果发送阻塞。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/resourcemanager/pool/workerpool` 枚举本 crate 的 Rust/Go 源与测试；目标文件节点报告 88 个符号及四个文件级使用者；`query NewWorkerPool` 同时定位 Rust 与 Go 构造入口。精确 Rust `callers`/`callees` 无输出，故未将其当作函数级证据。
-- 用源码搜索核对真实消费者：`pkg/ingestor/globalsort/merge.rs`、`pkg/ingestor/ingestctrl/import_pipeline.rs`、`pkg/session/runtime/modify_column_pipeline.rs`、`pkg/dxf/importinto/task_executor.rs` 和 `encode_and_sort_operator.rs`；并核对各消费 crate 的 Cargo 依赖声明。
-
-本任务为纯文档分析，按计划不运行 Cargo。结构验收要求本文恰有“文件定位”到“验证依据”的 11 个固定二级标题；行为判断的验证限于静态源码、索引和既有测试意图，不声称本轮重新执行了这些测试。

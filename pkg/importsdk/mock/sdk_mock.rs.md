@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-importsdk-mock` 的核心实现。crate 入口 [`lib.rs`](lib.rs) 声明 `sdk_mock` 模块并重导出其公开项；[`Cargo.toml`](Cargo.toml) 表明它只直接依赖 `astersql-errors` 与 `astersql-importsdk`，后者提供被替代的 `FileScanner`、`JobManager`、`SQLGenerator`、`SDK` trait 及其数据类型。工作区根 `Cargo.toml` 将该 crate 注册为成员和 `facade_importsdk_mock` 依赖，`pkg/lib.rs` 再从 facade 模块重导出它。
-
-它是测试替身而非生产导入实现：通过内存中的期望队列模拟导入 SDK 的扫描、作业管理、SQL 生成与关闭能力，使调用方无需对象存储或数据库即可验证编排。当前仓库中可确认的直接 Rust 行为验证位于 [`sdk_mock_test.rs`](sdk_mock_test.rs)；名称相同的 `lightning/pkg/importinto/stubs.rs::MockSDK` 是另一套局部 stub，不能视为本文件类型的调用者。文件没有条件编译项；仅测试模块由 `lib.rs` 的 `#[cfg(test)]` 接入。
+测试替身而非生产导入实现：通过内存中的期望队列模拟导入 SDK 的扫描、作业管理、SQL 生成与关闭能力，使调用方无需对象存储或数据库即可验证编排。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@
 
 ## 与 Go 版本的对应关系
 
-[`sdk_mock.go`](sdk_mock.go) 是 MockGen 生成文件，包含同名的四组 mock/recorder 和相同接口方法。Rust 版本保留了 `NewMock*`、`EXPECT` 以及方法的大写命名，以降低 Go 测试迁移成本，同时提供 snake_case 构造与小写 `expect` 别名。
-
 Go 版本把匹配、次数、顺序、回调和完成时验证交给 `gomock.Controller`/`gomock.Call`；Rust 版本没有引入 gomock 依赖，而是在 `MockQueue`、`Expectation`、`MockExpectation` 中实现等价的聚焦子集。Go recorder 把 context 也作为普通参数交给 gomock；Rust 的 `MockCall` 刻意不保存 context，而由可选 `ContextMatching` 单独校验。
 
-Go 的指针返回与 `(value, error)` 双返回可同时携带非空值和错误。Rust trait 的主方法通常使用拥有值和 `Result`，同时通过 `GetTableMetasParts`、`SubmitJobParts`、`GenerateImportSQLParts` 等兼容方法及 `ReturnParts`/`DoAndReturn` 保留迁移测试需要的双返回位。独立测试 `go_return_slots_preserve_value_even_when_error_is_present`、`table_metas_can_return_value_and_error_together`、`trait_objects_forward_go_return_parts` 和 `callback_can_return_nonzero_id_with_error_through_trait` 验证了这一差异。
+独立测试 `go_return_slots_preserve_value_even_when_error_is_present`、`table_metas_can_return_value_and_error_together`、`trait_objects_forward_go_return_parts` 和 `callback_can_return_nonzero_id_with_error_through_trait` 验证了这一差异。
 
 GoMock 支持更广的 matcher/action 与 controller 生命周期行为；本文件只能声称支持源码中明确实现的次数、依赖、参数/context 匹配、固定/动态响应和显式验证，不能推断为完整 GoMock 兼容实现。
 
@@ -91,12 +87,3 @@ GoMock 支持更广的 matcher/action 与 controller 生命周期行为；本文
 - 调整次数或 `After` 语义时重点维护“不匹配不消费”“重复相同期望按登记顺序”“前置达到完成条件后才放行”“可选重复期望不导致 verify 失败”等不变量。
 - 测试逻辑必须继续放在独立 [`sdk_mock_test.rs`](sdk_mock_test.rs)，不要内嵌回生产源文件。至少为新方法覆盖固定成功/错误响应、参数不匹配、聚合 `MockSDK` trait 转发；涉及 Go 双返回、context、动态回调或并发时增加相应专项用例。
 - 兼容风险主要来自公开 Go 风格 API、返回位形状和 panic 边界；性能风险主要来自锁内 matcher、线性扫描期望队列、克隆调用/响应以及 `Debug` 字符串签名。该 mock 面向测试，应优先保证确定性与诊断质量，但仍应避免让用户回调在锁内执行。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件和 307,296 个节点；`files --filter pkg/importsdk/mock` 找到 `lib.rs`、`sdk_mock.rs`、`sdk_mock_test.rs` 与 Go 对照；`node --file pkg/importsdk/mock/sdk_mock.rs` 完整读取 1–1745 行并报告 164 个符号；另用 `node` 读取 `lib.rs`、四个上游 trait 文件、独立 Rust 测试和 Go 对照。精确 `callers`/`callees` 查询超时，无结果未被当作调用关系证据。
-- 源与边界：[`sdk_mock.rs`](sdk_mock.rs) 的 `MockCall`、`MockResponse`、`Expectation`、`MockQueue::dispatch_internal`、四组 mock/recorder、trait impl 和 `dispatch_*`；[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs) 的 crate 依赖、模块与重导出；工作区根 `Cargo.toml` 和 `pkg/lib.rs` 的成员/facade 接线。
-- 上游接口：[`file_scanner.rs`](../file_scanner.rs) 的 `FileScanner`、[`job_manager.rs`](../job_manager.rs) 的 `JobManager`、[`sql_generator.rs`](../sql_generator.rs) 的 `SQLGenerator`、[`sdk.rs`](../sdk.rs) 的 `SDK`。
-- Go 对照：[`sdk_mock.go`](sdk_mock.go) 的 MockGen 来源注释、四组同名 mock/recorder、controller 派发和双返回位。
-- 独立测试：[`sdk_mock_test.rs`](sdk_mock_test.rs) 覆盖乱序参数匹配、错误调用不消费期望、双返回位、次数与 `After`、`AnyTimes`、强类型 SQL 回调、自定义/context matcher、trait 对象转发及动态作业回调。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令检查目标存在且恰有 11 个固定二级标题，并人工复核链接、当前实现边界与扩展入口。

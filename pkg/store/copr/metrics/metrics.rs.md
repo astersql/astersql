@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-store-copr-metrics`，crate 根由同目录的 [`lib.rs`](lib.rs) 指定并通过 `copr_metrics` 模块加载本文件。它位于 DistSQL/Coprocessor 缓存的可观测性边界：上游创建一个带 `type` label 的 Prometheus `CounterVec`，本文件再把 `evict`、`hit`、`miss` 三个固定 label 绑定成调用方可直接递增的 `Counter`。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，运行时仅直接依赖 `prometheus = "0.14"`。工作区根 `Cargo.toml` 以 `facade_store_copr_metrics` 暴露该 crate；`pkg/util/metricsutil/Cargo.toml` 直接依赖它，`pkg/store/copr/Cargo.toml` 则把它列为可选依赖。
+不创建或注册 Prometheus collector，也不实现缓存策略。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ Go 生产调用边是 `coprocessor_cache.go::newCoprCache -> CoprCacheCounterEvi
 
 ## 与 Go 版本的对应关系
 
-同目录 `metrics.go` 定义三个 `prometheus.Counter` 包变量，Go `init()` 调用 `InitMetricsVars()`，后者分别执行 `metrics.DistSQLCoprCacheCounter.WithLabelValues("evict"|"hit"|"miss")`。Rust 保留了三个变量名、`InitMetricsVars` 名称、初始化顺序和 label 字符串；`init` 是对 Go 包初始化语义的显式入口。
+Rust 保留了三个变量名、`InitMetricsVars` 名称、初始化顺序和 label 字符串；`init` 是对 Go 包初始化语义的显式入口。
 
 主要实现差异是：Go 在包初始化时给可变包变量赋值，Rust 则以 `LazyLock` 延迟且一次性地生成句柄。Rust 的父 collector 是本地 crate 中的 `Option<CounterVec>`，需由 `metricsutil` 显式先初始化；Go 的中央 `pkg/metrics` 初始化与注册流程负责其父变量。Rust 当前还没有找到与 Go `handleCopCache`/`OnEvict` 等价的生产递增调用，所以迁移状态应描述为“指标定义和启动绑定已接线，Rust 缓存事件消费尚未由直接证据确认”。
 
@@ -85,13 +83,3 @@ Go 生产调用边是 `coprocessor_cache.go::newCoprCache -> CoprCacheCounterEvi
 - 不应把单元测试嵌入本文件。指标绑定测试继续放在同 crate 的 `migration_aster_unit_test.rs`；缓存触发语义应放在 `pkg/store/copr` 的独立测试文件中，并分别覆盖 hit、miss、evict 及初始化顺序失败边界。
 - 修改初始化协议时需同时审查 `pkg/util/metricsutil/common.rs` 中父 collector 与子句柄的调用顺序。若要支持父向量重建，现有 `LazyLock` 设计无法重绑，必须先定义并发访问、注册冲突和旧句柄存活的兼容策略。
 - 性能上，正常事件路径只应执行计数器原子增量；避免在热路径重复查 `CounterVec` label。兼容性上必须保留现有指标全名和 `type={evict,hit,miss}`，否则监控面板和告警会断裂。
-
-## 验证依据
-
-- 目标源码：`pkg/store/copr/metrics/metrics.rs`，完整核对三个 `LazyLock`、`init`、`InitMetricsVars` 和 `copr_cache_counter`。
-- crate 与模块边界：`pkg/store/copr/metrics/Cargo.toml`、`pkg/store/copr/metrics/lib.rs`、工作区根 `Cargo.toml`、`pkg/store/copr/Cargo.toml`、`pkg/util/metricsutil/Cargo.toml`。
-- Rust 启动调用链：`pkg/util/metricsutil/common.rs::initParentMetricsCollectors` 与 `initMetrics`。
-- Rust 独立测试：`pkg/store/copr/metrics/migration_aster_unit_test.rs::migration_initializes_distinct_copr_cache_label_counters`，覆盖三条 label 的独立增量和与父向量共享状态。
-- Go 对照与业务触发点：`pkg/store/copr/metrics/metrics.go`、`pkg/store/copr/coprocessor.go::handleCopCache`、`pkg/store/copr/coprocessor_cache.go::newCoprCache`；缓存相关边界另见独立的 `coprocessor_cache_test.go`。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/store/copr/metrics` 返回 `lib.rs`、`metrics.go`、`metrics.rs`、`migration_aster_unit_test.rs`；`node --file` 核对目标源码与 `metricsutil` 初始化片段；`query`/`callers`/`callees` 因 `InitMetricsVars` 重名存在歧义，故以路径限定的文件节点和 `rg` 精确引用搜索补证。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按计划以源代码、调用图、对照实现和结构检查作为验证证据。

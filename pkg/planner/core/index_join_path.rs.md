@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`index_join_path.rs`](index_join_path.rs) 属于 `astersql-planner-core` crate，crate 边界由同目录 [`Cargo.toml`](Cargo.toml) 声明：库入口是 `lib.rs`，自动测试发现关闭，默认 feature 为空，`nextgen` feature 不改变本文件的编译条件。[`lib.rs`](lib.rs) 通过 `pub mod index_join_path` 公开模块，并在 `#[cfg(test)]` 下把独立的 [`index_join_path_test.rs`](index_join_path_test.rs) 装入同一 crate。本文件自身没有条件编译项，也没有内嵌测试。
-
-本文件实现 Index Join 内侧访问路径的轻量 Rust 模型：把外侧运行时连接键、内侧静态 EQ/IN 或区间谓词按索引列顺序合成为模板 `Range`，记录已用/剩余谓词、索引偏移与连接键偏移的映射，再在多条候选路径之间择优。它还实现 range 内存上限回退、计划缓存范围重建、唯一索引至多一行判定和整数主键快捷候选。
-
-当前接线边界必须明确：仓库级 Rust 符号检索只发现 [`index_join_path_test.rs`](index_join_path_test.rs) 和 [`exhaust_physical_plans_test.rs`](exhaust_physical_plans_test.rs) 直接调用本文件 API，没有发现生产 Rust 文件调用 `indexJoinPathBuild`、`getBestIndexJoinPathResultByProp` 或 `getBestIndexJoinInnerTaskByProp`。因此本文件是已公开、已有行为测试的迁移实现，但不能据此声称已进入 Rust SQL 规划主链。Go 对照实现则已由 `exhaust_physical_plans.go` 和 `find_best_task.go` 调用。
+实现 Index Join 内侧访问路径的轻量 Rust 模型：把外侧运行时连接键、内侧静态 EQ/IN 或区间谓词按索引列顺序合成为模板 `Range`，记录已用/剩余谓词、索引偏移与连接键偏移的映射，再在多条候选路径之间择优。
 
 ## 核心职责
 
@@ -94,11 +90,7 @@ Go 生产调用边则明确存在：`exhaust_physical_plans.go` 两处调用 `ge
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`index_join_path.go`](index_join_path.go)，直接 Go 单元测试是 [`exhaust_physical_plans_test.go`](exhaust_physical_plans_test.go)，计划缓存的用户可见回归还见 [`integration_test.go`](integration_test.go) 的 `TestPlanCacheForIndexJoinRangeFallback`。Rust [`exhaust_physical_plans_test.rs`](exhaust_physical_plans_test.rs) 复刻了 Go lookup-filter 夹具意图：连续/非连续 join key、EQ/IN 补齐、相关尾列、cast 排除、前缀重检、多字节字符截断、IN 笛卡尔积以及逐级 fallback。
-
-Rust 与 Go 的结构对应清晰：`mutableIndexJoinRange`、两类构建输入/结果、临时映射、范围帮助函数、NDV 比较、range info、整数主键快捷路径和最佳路径遍历均有同名或同职责实现。`Rebuild` 同样在重用缓存计划前忽略普通范围内存上限，并拒绝空范围及形状变化；fallback 同样保留可用前缀而不是丢弃全部访问能力。
-
-但 Rust 目前是有意简化的迁移模型。Go 使用真实 `expression.Expression`、`ranger.BuildColumnRange`、collation/type 检查、statement memory tracker、统计直方图与 `cardinality.EstimateColsNDVWithMatchedLen`；Rust 用字符串表达式、简化 `Datum/Range`、固定内存估算及按列最大 NDV。Go `indexJoinPathTmpInit` 会拒绝 collation 不兼容的连接键，Rust 未实现该检查。Go 相关条件会识别左右操作数、对称操作符、外部列以及 inner schema，Rust 主要按目标列和名字过滤。Go range info 会按日志脱敏规则打印真实表达式，Rust 输出列编号和表达式名。
+但 Rust 目前是有意简化的迁移模型。Go 使用真实 `expression.Expression`、`ranger.BuildColumnRange`、collation/type 检查、statement memory tracker、统计直方图与 `cardinality.EstimateColsNDVWithMatchedLen`；Rust 用字符串表达式、简化 `Datum/Range`、固定内存估算及按列最大 NDV。Go `indexJoinPathTmpInit` 会拒绝 collation 不兼容的连接键，Rust 未实现该检查。Go range info 会按日志脱敏规则打印真实表达式，Rust 输出列编号和表达式名。
 
 另一个关键差异是接线状态：Go 最佳路径函数已进入物理计划枚举和 `findBestTask`；Rust 函数当前仅在测试中直接使用。新增文档或测试不能把这种差异描述为完成迁移，真正接线需要在 Rust 物理计划/任务选择入口建立调用边并验证端到端计划行为。
 
@@ -112,15 +104,3 @@ Rust 与 Go 的结构对应清晰：`mutableIndexJoinRange`、两类构建输入
 - 当前若修改 `indexJoinPathUpdateTmpRange` 等未调用的分步帮助函数，不会影响主构建路径。应先决定删除重复实现还是让主流程重新复用，并以调用边和回归测试证明；不能只改死代码后宣称行为变化。
 
 正确性风险集中在索引前缀连续性、前缀谓词重检、动态/静态尾列的互斥顺序、计划缓存形状稳定性和 `None/empty` 语义。兼容风险集中在 Go 的表达式、collation、range info 与统计语义差异。性能风险集中在 IN 笛卡尔积、范围深拷贝和过于粗糙的内存估算。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust/Go 文件均在索引覆盖范围内。
-- RustCodeGraph `node --file pkg/planner/core/index_join_path.rs --offset ... --limit ...`：分四段读取完整 1,090 行，核对所有类型、函数、分支、注释和文件级使用关系。
-- RustCodeGraph `query indexJoinPathBuild` 与 `query getBestIndexJoinPathResultByProp --json`：确认同名 Go/Rust 定义及其精确文件位置。带 `--file` 的 `callers/callees` 查询在 30 秒内未返回，因此没有把缺失图输出当作调用证据。
-- 仓库级 `rg` 精确检索所有公开入口和核心函数：Rust 直接调用只见 `index_join_path_test.rs` 与 `exhaust_physical_plans_test.rs`；Go 生产调用见 `exhaust_physical_plans.go` 和 `find_best_task.go`。
-- [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)：核对 crate 名称、`lib.rs` 入口、feature、Go 包迁移元数据、公开模块和独立测试装配；目标包根目录没有 `doc.go`，因此无额外包契约可读。
-- [`index_join_path_test.rs`](index_join_path_test.rs)：核对 NDV 接近阈值、tail fallback 原样返回、不可比较候选排序、唯一索引最多一行、范围尾列不计 NDV、单 join key 行数折算及不稳定 key 形状拒绝。
-- [`exhaust_physical_plans_test.rs`](exhaust_physical_plans_test.rs)：核对连续前缀、相关条件、cast 排除、前缀重检、ASCII/多字节截断、IN 笛卡尔积和逐级 range fallback；对应 Go 夹具来自 [`exhaust_physical_plans_test.go`](exhaust_physical_plans_test.go)。
-- [`index_join_path.go`](index_join_path.go) 与 [`integration_test.go`](integration_test.go)：核对真实 Go 算法、生产接线、计划缓存重建和用户可见 warning 行为，并据此明确 Rust 的简化点与未接线边界。
-- 本任务是纯文档分析，未运行 Cargo；交付验证仅执行任务文件规定的 11 章节结构检查，并人工复核“为何存在、如何运行、如何安全扩展”三项问题均可由上述直接证据回答。

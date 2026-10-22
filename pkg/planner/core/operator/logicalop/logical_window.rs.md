@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件说明的真实源文件是 [`logical_window.rs`](./logical_window.rs)。它定义 Rust 规划器中的逻辑窗口算子及其窗口帧数据模型，对应 SQL 的 `OVER (PARTITION BY ... ORDER BY ... frame)`。它属于 crate `astersql-planner-core-operator-logicalop`；`pkg/planner/core/operator/logicalop/lib.rs` 以私有模块 `logical_window` 装配，并通过 `pub use logical_window::*` 向规划器其余部分导出类型。该 crate 的 `Cargo.toml` 没有 feature 开关，依赖通过 `crate::*` 间接提供表达式、逻辑计划基类、属性和错误类型。
-
-在完整链路中，`pkg/planner/core/logical_plan_builder_runtime.rs` 的窗口构建逻辑把 AST 帧边界转为本文件的 `FrameBound`/`WindowFrame`，为每个窗口函数创建 `WindowFuncDesc` 和结果列，再构造 `LogicalWindow`。优化器通过 `LogicalPlan` trait 调用其谓词下推、列裁剪和统计推导；`pkg/planner/core/operator/physicalop/physical_window.rs::ExhaustPhysicalPlans4LogicalWindow` 再读取逻辑窗口的函数、分区、排序、帧和 TiFlash 检查结果，枚举物理窗口计划。
-
-本文件不是执行器：它保存并改写逻辑计划信息，不逐行计算窗口函数。真正的物理计划和 tipb 帧序列化位于 `physical_window.rs`；Rust 本文件的 `WindowPB`/`ToPB` 只是轻量摘要，不等同于 Go 版本 `FrameBound.ToPB` 的 tipb 转换。
+当前实现有意保留的事实边界是：`WindowPB` 仅含函数名、列 ID 和帧类型；`PreparePossibleProperties` 仅委托基类传播子节点 TiFlash 标记；`GetPartitionKeys` 返回普通 `Column`，并未像 Go 版本一样构造带 collation ID 的 MPP 分区列。
 
 ## 核心职责
 
@@ -90,7 +86,7 @@ RustCodeGraph 将目标文件识别为含 66 个符号的已索引文件，并�
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照为 `pkg/planner/core/operator/logicalop/logical_window.go`。Rust 已对应的主干语义包括：窗口节点及帧模型、只下推分区列谓词、裁剪后恢复“子列 + 窗口结果列”的 schema、结果列 NDV 取行数、分区集合相等、排序逐项相等、相关列提取和列替换。
+Rust 已对应的主干语义包括：窗口节点及帧模型、只下推分区列谓词、裁剪后恢复“子列 + 窗口结果列”的 schema、结果列 NDV 取行数、分区集合相等、排序逐项相等、相关列提取和列替换。
 
 已经由直接源码确认的差异包括：
 
@@ -103,8 +99,6 @@ Go 权威对照为 `pkg/planner/core/operator/logicalop/logical_window.go`。Rus
 - Rust 拒绝下推不引用列的谓词；Go 使用 `ExprFromSchema` 判断，行为不能仅凭本文件假定完全相同。
 - Go TiFlash 检查聚焦 Duration/DateTime 组合；Rust聚焦显式 RANGE 是否具有受支持的 `CmpDataType`。
 
-测试对应关系也保持独立文件：Rust 的 `logical_window_test.rs` 验证分区集合语义；`logical_relational_aster_unit_test.rs` 验证谓词下推及帧/排序比较；`logicalop_test/hash64_equals_test.rs` 和 `logicalop_test/logical_operator_test.rs` 验证哈希、相等和深克隆。相应 Go 测试位于 `logicalop_test/hash64_equals_test.go` 与 `logicalop_test/logical_operator_test.go`。
-
 ## 扩展指南
 
 - 新增帧字段时，同时修改 `Default`/`Clone`、`FrameBound::Hash64`、`FrameBound::Equals`、`option_bound_equals`、`WindowFrame` 的哈希/相等、生成的 `LogicalWindow::Equals` 接线以及物理层 tipb 转换；应增加独立 Rust 测试，不能把测试嵌入本源文件。
@@ -115,14 +109,3 @@ Go 权威对照为 `pkg/planner/core/operator/logicalop/logical_window.go`。Rus
 - 若增加窗口函数元数据，需同步 builder 中从 aggregation 描述符到 `WindowFuncDesc` 的映射、物理窗口构造、哈希/相等及序列化；性能上关注表达式重复克隆、列集合排序去重和大窗口函数列表的哈希成本。
 
 建议同步扩展 `logical_window_test.rs` 作为本文件的聚焦测试，并按行为选择 `logical_relational_aster_unit_test.rs`、`logicalop_test/hash64_equals_test.rs`、`logicalop_test/logical_operator_test.rs` 或 `physical_window_test.rs`。仓库约定要求 Rust 测试保持在独立文件中。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter .../logical_window.rs` 确认目标已索引；`node --file ... --offset 1/521` 读取目标 598 行；`query LogicalWindow --kind struct --json`、`query replace_window_expr --json`、`query extractUsedCols --json` 核对 Rust/Go 符号。图命令对目标方法未给出 callers/callees，调用边改由源码搜索验证。
-- 目标源码：`pkg/planner/core/operator/logicalop/logical_window.rs`，核对全部枚举、结构体、固有方法、两个内部辅助函数和 `LogicalPlan` impl。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml` 与 `lib.rs`；该目录没有 `doc.go`，因此不存在可额外读取的包级 Go 契约文件。
-- 构建与优化调用：`pkg/planner/core/logical_plan_builder_runtime.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/operator/logicalop/logical_selection.rs`、`pkg/planner/cascades/memo/group_expr.rs`。
-- 物理化证据：`pkg/planner/core/operator/physicalop/physical_window.rs`，尤其是 `contains_virtual_window_expression` 和 `ExhaustPhysicalPlans4LogicalWindow`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_window.go` 全部 627 行；Cargo 的 `[package.metadata.porting]` 也明确声明 Go package 为同一路径。
-- 测试证据：`logical_window_test.rs`、`logical_relational_aster_unit_test.rs`、`logicalop_test/hash64_equals_test.rs`、`logicalop_test/logical_operator_test.rs`，并对照同目录两个 Go 测试文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核所有能力陈述均能回指上述符号或文件。

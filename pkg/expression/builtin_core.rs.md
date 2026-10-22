@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 的内置标量函数核心契约层。`pkg/expression/lib.rs:192-193` 以私有模块 `builtin_core` 装配它，并在 `pkg/expression/lib.rs:364-367` 将其中条目从 crate 根再导出；因此外部模块通常通过 `crate::builtinFunc` 等名称使用它，而不是直接访问模块路径。crate 边界由 `pkg/expression/Cargo.toml` 的 `[package] name = "astersql-expression"` 与 `[lib] path = "lib.rs"` 确认。
-
-文件只有三个顶层生产符号：公开 trait `builtinFunc`，以及 crate 内可见的 `is_core_cache_snapshot_builtin`、`rebuild_core_cache_snapshot_builtin`。前者规定一个具体内置函数签名如何求值、克隆、比较、携带类型/校对/下推元数据；后两者把实例级计划缓存的表达式快照限制在核心函数注册表内。具体函数实现、注册表和 `ScalarFunction` 包装分别位于 `builtin_*.rs`、`pkg/expression/builtin.rs` 与 `pkg/expression/scalar_function.rs`，不在本文件实现。
+为同样八种类型提供默认列式适配器（`builtin_core.rs:130-274`）：遍历 `chunk::Chunk` 的每一行，调用对应 `eval*`，并将值或 NULL 追加到结果 `chunk::Column`。
 
 ## 核心职责
 
@@ -74,11 +72,11 @@ trait 没有 `Send`/`Sync` 超约束；跨线程能力取决于具体实现及�
 
 ## 与 Go 版本的对应关系
 
-Go 的直接对照位于 `pkg/expression/builtin.go:508-585`：`vecBuiltinFunc` 加 `builtinFunc` 覆盖相同八类行式/列式求值、参数、返回类型、pb code、collator、metadata、Clone、MemoryUsage、CollationInfo、可选属性与跨会话共享语义。Rust 将这些接口合并为一个 trait，并增加 `as_any`、`getArgsMut`、扩展函数与 GROUPING 快照钩子，以及计划缓存快照的两个 crate 内函数。
+Rust 将这些接口合并为一个 trait，并增加 `as_any`、`getArgsMut`、扩展函数与 GROUPING 快照钩子，以及计划缓存快照的两个 crate 内函数。
 
 两版的重要实现差异必须保留：Go `baseBuiltinFunc` 的 `vecEval*` 和错误类型 `eval*` 均报告“should never be called”（`builtin.go:321-385`），真正的逐行向量回退在 Go 的其他辅助逻辑中；Rust trait 自身的 `vecEval*` 默认逐行适配。Go `isChildrenVectorized` 在 `builtin.go:389-403` 用 `sync.Once` 缓存并在全为真时初始化列池；Rust 每次遍历子表达式且不分配池。Rust 的 Decimal 行式返回拥有的 `MyDecimal`，Go 返回指针；Rust `metadata` 是已编码 `Vec<u8>`，Go 是 `proto.Message`；Rust pb code 暂以 `i32` 表示，Go 使用 `tipb.ScalarFuncSig`。
 
-`SafeToShareAcrossSession`、可选属性和校对契约仍应尽量与 Go 语义一致。计划缓存稳定 ID/核心白名单是当前 Rust 快照层的接线，Go 同路径文件中未发现 `builtin:v1:` 或 `CachedBuiltinId` 直接对应物，不能宣称这是逐函数同构移植。
+计划缓存稳定 ID/核心白名单是当前 Rust 快照层的接线，Go 同路径文件中未发现 `builtin:v1:` 或 `CachedBuiltinId` 直接对应物，不能宣称这是逐函数同构移植。
 
 ## 扩展指南
 
@@ -89,12 +87,3 @@ Go 的直接对照位于 `pkg/expression/builtin.go:508-585`：`vecBuiltinFunc` 
 若新增的核心函数进入 `crate::funcs`，它会自动进入快照白名单；若属于像 Cast/GetVar 一样由构造器特殊处理且不在注册表中，必须审查是否将其加入 `is_core_cache_snapshot_builtin` 的显式列表，并确认 `NewFunctionBase` 能规范重建。同步扩展 `cache_snapshot_test.rs::every_core_snapshot_builtin_has_a_stable_id` 或增加拒绝/往返用例。扩展函数不要加入核心快照白名单，除非同时设计稳定身份、无运行时捕获状态的重建协议。
 
 修改默认列式适配器时，应为所有受影响类型补充独立回归测试，至少覆盖空 Chunk、普通值、NULL、首行/中途错误、结果列预存内容和输出顺序。修改 `isChildrenVectorized` 或共享判定时，还要验证参数重写后的结果与跨会话隔离，避免引入 Go `sync.Once` 式缓存却未处理 `getArgsMut()` 带来的失效问题。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/expression/builtin_core.rs` 确认目标文件与 43 个符号；`node --file ... --offset 1 --limit 520` 读取完整 333 行；`query builtinFunc --kind trait`、`query is_core_cache_snapshot_builtin`、`query rebuild_core_cache_snapshot_builtin`、`node NewFunctionBase`、`node funcs` 核对符号与工厂/注册表关系。精确 `callers/callees` 查询无输出，调用边另以直接引用搜索补齐，未将无输出解释为“无调用者”。
-- Rust 源与装配：`pkg/expression/builtin_core.rs`、`pkg/expression/lib.rs:192-207,364-379`、`pkg/expression/scalar_function.rs:746-760`、`pkg/expression/builtin.rs:6820`、`pkg/expression/cache_snapshot.rs:113-163,165-305`。
-- crate 声明：`pkg/expression/Cargo.toml`，确认 crate 名称、`lib.rs` 入口、工作区依赖与 `autotests = false`；测试由 `lib.rs` 的 `#[cfg(test)]` 模块或显式 `[[test]]` 装配。
-- Rust 独立测试：`pkg/expression/context_test.rs:106-260` 验证 trait 实现及 Required/Allowed 属性；`pkg/expression/cache_snapshot_test.rs:20-26,123-190` 验证快照线程安全、稳定 ID、未知 ID 拒绝和全部核心函数覆盖。未发现与 `builtin_core.rs` 同名的独立测试。
-- Go 对照：`pkg/expression/builtin.go:321-403,508-585`；直接引用搜索确认 Go 侧无 `builtin:v1:`/`CachedBuiltinId` 同名实现。仓库中不存在 `pkg/expression/doc.go`，因此无可读取的包级 `doc.go` 合同。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核没有把默认回退、快照白名单或 Go 差异写成未经验证的推断。

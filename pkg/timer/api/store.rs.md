@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-timer-api` crate 的存储契约层。`pkg/timer/api/lib.rs` 将 `store` 声明为公共模块并再导出其 API；`pkg/timer/api/Cargo.toml` 则表明该 crate 直接依赖 `crossbeam-channel`（Watch 通道）与 `chrono`（时区回退），并以 `pkg/timer/api` 为对应 Go 包。
-
-它位于领域模型 `timer.rs` 与具体存储之间：上游 `DefaultTimerClient` 把客户端选项组装成 `TimerCond`/`TimerUpdate` 后调用 `TimerStore`，timer runtime 通过 `Watch` 接收增量事件；下游 `MemoryStoreCore` 和 `TableTimerStoreCore` 实现 `TimerStoreCore`，内存及 etcd 通知器实现 `TimerWatchEventNotifier`。因此本文件定义“存储能做什么”和通用的条件/补丁语义，但不负责真正的内存加锁、SQL 持久化或 etcd 通信。
+用 `TimerUpdate` 表示部分更新，并在 `apply` 中先执行版本与事件 ID 的乐观并发检查，再克隆记录并应用补丁。
 
 ## 核心职责
 
@@ -78,13 +76,10 @@ Watch 响应只传 ID，不传完整记录；消费方必须重新读取 Create/
 
 ## 与 Go 版本的对应关系
 
-总体结构逐项对应 `pkg/timer/api/store.go`：OptionalVal、TimerCond、TimerUpdate、组合条件、Watch 数据、TimerStoreCore、TimerStore 便利查询和通知接口均保留；`pkg/timer/api/store_test.rs` 也复现 `store_test.go` 对存在性、字段枚举、匹配真值表、并发检查及不修改原记录的测试意图。
-
 明确差异如下：
 
 - Go `OptionalVal<T>` 以“零值 + present bool”实现，Rust 以 `Option<T>` 实现；Rust 的 `Get` 返回 `Option<&T>`。两者都能表达“present 的空/假值”。
 - Go 的 `FieldsSet` 通过反射和字段地址排除，Rust 使用字段名切片与固定表。Rust 更静态，但新增字段必须手工同步，且排除接口不是地址身份。
-- Go `SchedPolicyType`/`SchedEventStatus` 是命名字符串类型；Rust `TimerUpdate` 对应字段存 `String`。类型约束更弱，最终合法性依赖领域校验/后端。
 - Rust 的 `EventStart`、`Watermark` 是 `OptionalVal<Option<Timestamp>>`，能够显式写入 `None`；Go 对应 `OptionalVal<time.Time>` 用零时间表达清空，表示方式不同。
 - Go `apply` 将空 Tags 规范化为 nil；Rust 保留空 `Vec`。过滤语义相同，但内存表示与直接相等比较可能不同。
 - Go 用真正的 `context.Context`；Rust `Context` 只有布尔取消标志，且 CRUD 实现当前不消费取消。
@@ -102,14 +97,3 @@ Watch 响应只传 ID，不传完整记录；消费方必须重新读取 Create/
 实现新存储后端时，通过 `TimerStore::from_core` 接入，并保证 ID/命名空间键唯一性、更新前置条件、版本策略、Watch 成功通知时机、Context/Close 资源语义与现有实现一致。若后端不支持 Watch，应让 `WatchSupported` 返回 false，runtime 会选择永不触发的通道。
 
 兼容风险主要是 Go/Rust 可选值表示、空 Tags、字符串枚举和时区回退；正确性风险集中于漏同步 FieldsSet/SQL 翻译、错误的通知时机和 CAS 检查；性能风险集中于大条件树递归动态分派、List 后取一条以及 Watch 线程/通道背压。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录的 Rust/Go 源与测试均已索引。
-- 目标源码：`pkg/timer/api/store.rs`（501 行），核对了全部公开类型、trait、常量、函数、impl 与私有 `TimerUpdate::apply`/`TimerStore::getOneRecord`；文件没有条件编译项。
-- crate 与入口：`pkg/timer/api/Cargo.toml`、`pkg/timer/api/lib.rs`；确认 crate 名、直接依赖、Go 包元数据、模块声明和公共再导出。
-- Go 对照：`pkg/timer/api/store.go`；逐段核对 OptionalVal、条件、更新、组合运算、Watch 和存储接口。
-- 独立测试：`pkg/timer/api/store_test.rs` 与 `pkg/timer/api/store_test.go`；核对显式 None/空值、字段顺序与排除、Key 前缀、Tags 全包含、And/Or/Not、CAS 错误、全字段更新及输入不变性。
-- 直接调用和实现：RustCodeGraph 查询以及图未精确解析 trait 实现时的 `rg` 复核，定位到 `pkg/timer/api/client.rs`、`pkg/timer/api/mem_store.rs`、`pkg/timer/tablestore/store.rs`、`pkg/timer/tablestore/notifier.rs`、`pkg/timer/runtime/runtime.rs`、`pkg/timer/runtime/worker.rs`。
-- 领域与错误：`pkg/timer/api/timer.rs`、`pkg/timer/api/error.rs`；核对 Timestamp、记录字段、时区解析及错误常量。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证固定的 11 个二级章节，并人工复查仅新增本说明和删除完成后的任务文件。

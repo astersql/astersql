@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-infoschema` crate 中 INFORMATION_SCHEMA 静态元数据和若干元数据辅助能力的集中实现。crate 根模块 [`lib.rs`](lib.rs) 通过 `pub mod tables` 装配它，并只在根级额外再导出版本格式化和 TiFlash 标签判定函数；其余 API 由调用者经 `astersql_infoschema::tables` 使用。crate 边界和直接依赖由 [`Cargo.toml`](Cargo.toml) 声明：表元数据转换依赖 `astersql-meta-model`、`astersql-meta-autoid`、parser AST/charset/mysql，运行期开关依赖 `astersql-config`。
-
-在应用主链中，`Builder::init_information_schema_tables`（[`builder.rs`](builder.rs)）调用 `information_schema_db_with_storage_class`，把这里构造的 `DBInfo` 和 `TableInfo` 放入 V1 的 `databases` 以及可选的 V2 `info_data`。因此本文件决定 Rust InfoSchema 快照中有哪些 INFORMATION_SCHEMA 表、它们的稳定 ID 和静态列元数据；它不负责 SQL 执行器按查询动态生成各表的业务行。
-
-文件还承载三组与静态注册表相邻的辅助能力：通过 `ServerDiscovery` 汇总集群节点、格式化版本和识别 TiFlash 标签；用 `infoschemaTable` 表达只读内存虚拟表；用 `GetShardingInfo` 生成人类可读的行 ID 分片说明。这些能力在 Go 的同名文件中也存在，但 Rust 当前实现范围明显小于 Go，差异见后文。
+** `columnInfo` 是静态、可常量构造的简化描述；`default_columns` 为一部分关键表给出逐列定义，并把 `SLOW_QUERY`、语句摘要委托给 `catalog_columns_go45`；未单独移植的注册表项由 `fallback_columns` 暂时得到 `INSTANCE/NAME/VALUE` 三列。
 
 ## 核心职责
 
@@ -117,13 +113,6 @@ RustCodeGraph 的文件节点把本文件标为被 20 个文件使用，并成�
 
 ## 与 Go 版本的对应关系
 
-保持一致的核心语义：
-
-- `table_id_offset` 对齐 Go `tableIDMap` 中当前移植表的固定偏移；例如存储类迁移表为 `INFORMATION_SCHEMA_DB_ID + 102`，集群索引用量表为 `+94`。
-- `columnInfo` 到模型字段的类型、UTF8MB4/binary 选择、Blob 长度、decimal、flag、默认值和注释转换基本对应 Go `buildColumnInfo`；`buildTableMeta` 设置同样的表名、公开状态及默认字符集/排序规则。
-- `GetShardingInfo` 的分支顺序和输出文本、版本格式化、TiFlash 标签精确匹配、过滤的空集合语义均有 Rust 测试与 Go 源码相互印证。
-- `infoschemaTable` 的可见/隐藏列、元数据、物理 ID 和拒绝写入语义对应 Go 的只读虚拟表。
-
 尚未等价或刻意简化的事实：
 
 - Go `tableNameToColumns` 为几乎所有表提供专用列数组；Rust `default_columns` 只覆盖一部分目录/权限/约束/诊断表和两个大列集，其他项落入 `fallback_columns`。
@@ -143,11 +132,3 @@ RustCodeGraph 的文件节点把本文件标为被 20 个文件使用，并成�
 - **扩展虚拟表接口：** 先确认应修改本文件私有 `infoschemaTable` 还是 `crate::infoschema::Table`；当前 `createInfoSchemaTable` 返回后者。新增写接口必须尊重 INFORMATION_SCHEMA 只读契约。
 - **改变分片文本：** 同步 Go `GetShardingInfo`、系统库判定和 [`test/clustertablestest/tables_test.rs`](test/clustertablestest/tables_test.rs) 的用户可见结果，避免破坏客户端解析或兼容性。
 - 性能风险主要来自注册表/快照重复构造、超大列向量克隆和串行拓扑发现；兼容风险主要来自稳定表 ID、列顺序/类型以及精确输出文本。新增逻辑应优先扩展现有独立测试文件。
-
-## 验证依据
-
-- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/infoschema/tables.rs`，并用 `git show 2c944fb:pkg/infoschema/tables.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
-- Go `tables.go::GetTiDBServerInfo` 用 `node.IsDisableRPC()` 跳过相应节点；Rust 将该能力作为发现结果字段传入，并不自行读取 infosync。`tables_test.rs::tidb_server_info_skips_rpc_disabled_processes` 构造普通 TiDB 与 standalone BR，断言仅保留前者；聚合复用 getter 的事实由 `GetClusterServerInfo` 源码证明。
-- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
-- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
-- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

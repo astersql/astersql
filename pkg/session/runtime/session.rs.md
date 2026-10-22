@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/session/runtime/session.rs` 是 `astersql-session` crate 内具体会话运行时的聚合文件。模块入口 `pkg/session/runtime.rs` 以私有 `mod session` 装入它，再公开导出 `ConcreteSession`、`CanonicalSessionFactory`、`ConcreteRecordSet`、`BootstrapCanonicalDomain`、`CreateAnalyzeSession` 等生产和测试入口。crate 边界由 `pkg/session/Cargo.toml` 定义，`nextgen` feature 会同步打开 deploy-mode 与 kernel-type 的 NextGen 分支。
-
-生产主链从 `cmd/tidb-server/main.rs` 调用 `CanonicalSessionFactory::from_tikv_store`，再由 `pkg/server/runtime.rs::ConcreteSessionDriver` 持有工厂的共享 `Domain`；每条 MySQL 连接在独立 worker 线程中建立会话。SQL 的解析、规划、执行主体分散在同一 `runtime` 模块的 `dispatch.rs`、`planning.rs`、`query.rs`、`dml.rs`、`transaction.rs` 等文件，本文件负责把这些能力所依赖的会话状态、Domain 生命周期和结果集边界装配起来，而不是单独实现完整 SQL 引擎。
+定义生产会话和协议边界：`ConcreteSession`、`ConcreteProtocolState`、`ConcretePreparedArgument`、`ConcreteResultField` 与 `ConcreteRecordSet` 为服务器适配层提供连接状态、参数字面量化、列元数据和逐行消费接口。
 
 ## 核心职责
 
@@ -95,11 +93,9 @@ MDL 生命周期以事务为界：首次真实表访问调用 `TransactionMDL::b
 
 主要 Go 对照是 `pkg/session/session.go`：Go `session` 同样持有 txn、Domain/store、`SessionVars`、schema validator、计划缓存、统计 collector、session manager 和异步提交资源；Rust 将大量散布在 Go session/context 中的兼容状态集中进 `SessionState` 与 `ConcreteSessionInner`。Go `bootstrapSessionImpl` 的“检查版本—bootstrap/upgrade—初始化全局变量—创建会话—启动 Domain/后台循环”被 Rust 的 `CanonicalSessionFactory::from_tikv_store_with_server_info_options` 与 `BootstrapCanonicalDomain` 共同承接，但不是逐字段一一复刻：Rust runtime 仍是独立的 concrete ABI，`pkg/session/runtime.rs` 明确说明完整 `sessionapi::Session` 是另一边界。
 
-Go `createSessionWithOpt` 为每个 session 创建变量、表达式/计划/表上下文和事务状态；Rust `ConcreteSession::new` 对应地创建独立状态，同时通过 `Arc<Domain>` 共享存储和 catalog。`pkg/session/runtime_test/session.rs::canonical_factory_shares_domain_and_store_but_isolates_session_state` 验证两个 Rust 会话共享 Domain/数据但保持独立当前库。
+Rust 的 `pkg/session/runtime/session_test.rs::fixed_time_zone_range_matches_go_parse_time_zone` 额外验证边界及畸形符号。
 
-时区语义以 `pkg/util/timeutil/time_zone.go::ParseTimeZone` 和 `time_zone_test.go::TestParseTimeZone` 为直接依据：`SYSTEM`、命名时区和 UTC 偏移均受支持，负偏移下限为 `-12:59`、正偏移上限为 `+14:00`。Rust 的 `pkg/session/runtime/session_test.rs::fixed_time_zone_range_matches_go_parse_time_zone` 额外验证边界及畸形符号。
-
-Bootstrap 语义以 `pkg/session/session.go::BootstrapSession`、`bootstrapSessionImpl`、`createSessionsImpl`、`createSessionWithOpt` 为对照。Rust 当前实现聚焦 canonical Domain、系统元数据与已移植后台组件；没有证据表明 Go session 的所有 collector、extension、cursor 或异步 commit 等字段均由本文件完整实现，因此不能把两者描述为完全等价。
+Rust 当前实现聚焦 canonical Domain、系统元数据与已移植后台组件；没有证据表明 Go session 的所有 collector、extension、cursor 或异步 commit 等字段均由本文件完整实现，因此不能把两者描述为完全等价。
 
 ## 扩展指南
 
@@ -111,11 +107,3 @@ Bootstrap 语义以 `pkg/session/session.go::BootstrapSession`、`bootstrapSessi
 - 修改共享/局部状态边界时，保持 `ConcreteSession` 单线程归属和 `CanonicalSessionFactory` 跨会话共享边界；不要仅为可跨线程而把 `Rc<RefCell<_>>` 机械替换为锁，这会改变借用失败、性能与生命周期语义。
 
 兼容风险主要是 Go session 行为漂移、系统表版本不一致和协议状态差异；正确性风险主要是 bootstrap 部分成功、MDL 固定错误或会话状态串扰；性能风险主要是扩大锁范围、重复扫描系统表、在热路径克隆大状态或错误地串行化共享 Domain 操作。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/session.rs` 与 `git show 2c944fb:pkg/session/runtime/session.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：`pkg/session/dml_runtime_test.rs::start_diagnostic_preserves_persisted_bootstrap_versions` 覆盖旧版本只读启动；`pkg/session/diagnostic.rs` 核对验证/reader 调用次序。`load_diagnostic_metadata_readers` 的逐表解码、binding digest 与缺失表分支由冻结源码复核，不冒充已运行测试。
-
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

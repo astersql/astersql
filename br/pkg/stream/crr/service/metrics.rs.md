@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-stream-crr-service` library crate 的私有指标适配层。crate 入口 [`lib.rs`](lib.rs) 以 `mod metrics` 挂载它，但不向 crate 外导出；状态层 [`status.rs`](status.rs) 才是生产调用方。它把 `StatusSnapshot` 的当前值投影到默认 Prometheus registry，形成 `tidb_br_crr_*` 指标，供监控系统抓取；自身不推进 checkpoint、不维护 CRR 状态机，也不提供 HTTP endpoint。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：本 crate 直接依赖 `prometheus = "0.14"`，并从相邻的 `astersql-br-pkg-stream-crr-internal-checkpoint` crate 引入 `EventType`。目录下没有 `doc.go`；Rust crate 入口 `lib.rs` 和 Go 同路径实现 [`metrics.go`](metrics.go) 是最近的模块契约证据。
+把 `StatusSnapshot` 的当前值投影到默认 Prometheus registry，形成 `tidb_br_crr_*` 指标，供监控系统抓取；自身不推进 checkpoint、不维护 CRR 状态机，也不提供 HTTP endpoint。
 
 ## 核心职责
 
@@ -95,11 +93,11 @@ collector 和已经出现过的 task 标签序列存活到进程结束。服务 
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`metrics.go`](metrics.go)。两端都有相同的 16 个指标名、help 文本、namespace/subsystem、标签集合、四个 state 和七个 phase，也都在每次状态变化后全量写指标。Rust 的 `GaugeMap` 只是把 Go 的 16 个包级变量集中放进短名 map；`bool_to_float` 对应 `boolToFloat`，`observe_status_metrics` 对应 `observeStatusMetrics`。
+Rust 的 `GaugeMap` 只是把 Go 的 16 个包级变量集中放进短名 map；`bool_to_float` 对应 `boolToFloat`，`observe_status_metrics` 对应 `observeStatusMetrics`。
 
 已确认的实现差异是注册时机：Go `init()` 在包初始化时 `MustRegister`；Rust 在 `metrics()` 首次被调用时通过 `OnceLock` 向默认 registry 惰性注册。由于 `new_status_store` 构造时立即观察一次，正常服务构造后指标仍会注册；但仅链接 crate 而从不创建/观察状态时，Rust 不会注册这些指标，而 Go 会。
 
-Go `service_test.go::TestStatusStoreTracksFileStatistic` 用 `promtest.ToFloat64` 验证 skipped 值为 4；Rust 的同名语义测试使用本模块测试辅助函数做相同断言。Rust 另外以 `test_status_metrics_are_registered_for_prometheus_gathering` 明确验证 `tidb_br_crr_service_live` 能被默认 gatherer 收集。`parity_test.rs::contract_resource_cleanup_on_shutdown` 也验证 RoundPlanned 的 skipped 统计能更新指标，并随后核对 stopped 生命周期状态。
+Go `service_test.go::TestStatusStoreTracksFileStatistic` 用 `promtest.ToFloat64` 验证 skipped 值为 4；Rust 的同名语义测试使用本模块测试辅助函数做相同断言。
 
 ## 扩展指南
 
@@ -112,14 +110,3 @@ Go `service_test.go::TestStatusStoreTracksFileStatistic` 用 `promtest.ToFloat64
 5. 在独立测试文件 `service_test.rs` 或 `parity_test.rs` 增加断言；Rust 测试不要内嵌到 `metrics.rs`。对应 Go 行为应在 `service_test.go` 保持一致。
 
 修改 state/phase 枚举时，必须同时更新 one-hot 候选、checkpoint `EventType::as_str()` 或状态常量、Go 候选清单及测试。修改指标名、help、namespace、subsystem 或标签属于监控 API 兼容变化，可能破坏 dashboard/告警；修改惰性注册策略则需评估默认 registry 重复注册和测试进程共享 registry 的风险。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；目标 `metrics.rs` 已索引为 9 个符号。
-- RustCodeGraph `node --file br/pkg/stream/crr/service/metrics.rs`：核对完整 286 行源码、16 项 Gauge 定义和全部写入字段。
-- RustCodeGraph `node observe_status_metrics`：核对 callees 为 `metrics`、`GaugeMap::set`、`bool_to_float`，callers 为 `status.rs` 的模块引用、`new_status_store` 及 `start/stop/set_persistent_state/clear_failure/begin_round/apply_event`。
-- 源码/配置：[`metrics.rs`](metrics.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`status.rs`](status.rs)、[`http.rs`](http.rs)。
-- Go 对照：[`metrics.go`](metrics.go)、[`status.go`](status.go)、[`service_test.go`](service_test.go)。
-- Rust 独立测试：[`service_test.rs`](service_test.rs) 中 `test_status_store_tracks_file_statistic`、`test_status_metrics_are_registered_for_prometheus_gathering`；[`parity_test.rs`](parity_test.rs) 中 `contract_resource_cleanup_on_shutdown`。
-- checkpoint 统计来源：[`../internal/checkpoint/progress.rs`](../internal/checkpoint/progress.rs) 增加 skipped 计数，[`../internal/checkpoint/calculator.rs`](../internal/checkpoint/calculator.rs) 将其放入 `FileStatistic`；对应 Rust 测试位于 [`../internal/checkpoint/checkpoint_calculator_test.rs`](../internal/checkpoint/checkpoint_calculator_test.rs)。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；结构验证命令及退出状态在交付前单独执行并记录。

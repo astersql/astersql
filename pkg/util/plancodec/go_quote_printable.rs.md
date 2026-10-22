@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-plancodec` crate 内部的一份生成数据表。crate 边界由 `pkg/util/plancodec/Cargo.toml` 定义，入口 `pkg/util/plancodec/lib.rs` 将 `codec.rs` 包装为私有 `codec` 模块并再导出其公开 API；`pkg/util/plancodec/codec.rs:633` 又通过 `include!("go_quote_printable.rs")` 把本文件文本纳入同一个模块。因此，它不是可单独调用的模块，也不导出公共 API，而是计划解码错误兼容逻辑的编译期数据依赖。
-
-它位于文本执行计划的解码路径上，但不参与成功计划的树构造。只有数值字段解析失败、需要生成与 Go `strconv.Atoi` 一致的诊断文本时，`codec.rs` 中的 `go_atoi`、`quote_go_bytes` 才会间接读取该表。
+这份固定集合尤其用于区分“原样放入双引号”与“写成 `\u`/`\U` 转义”的 Unicode 字符。
 
 ## 核心职责
 
@@ -61,9 +59,7 @@ RustCodeGraph 能定位本常量和 `quote_go_bytes`/`go_atoi` 的源码，并�
 
 ## 与 Go 版本的对应关系
 
-Go 同路径 `pkg/util/plancodec/codec.go` 没有对应数据文件。Go 的 `decodePlanInfo` 和 `decodeTaskType` 直接调用标准库 `strconv.Atoi`，并通过 `%v` 把标准库错误写入 plancodec 错误；字符引用形式由 Go 的 `strconv` 实现及其 `IsPrint` Unicode 表决定。
-
-Rust 不能依赖自身 Unicode 版本来复现这一诊断，因此把 Go 1.25/Unicode 15.0.0 的 `strconv.IsPrint` 快照移植为本文件，再由 `go_atoi`/`quote_go_bytes` 模拟 Go 错误。两端成功解析逻辑不依赖本表，差异仅在失败诊断的引用表示。相关 Rust 回归位于独立文件 `pkg/util/plancodec/codec_test.rs`，符合测试与生产源文件分离要求；Go 的一般解码测试位于 `pkg/util/plancodec/codec_test.go`，当前未包含这份 Unicode 版本锁定用例。
+两端成功解析逻辑不依赖本表，差异仅在失败诊断的引用表示。相关 Rust 回归位于独立文件 `pkg/util/plancodec/codec_test.rs`，符合测试与生产源文件分离要求；Go 的一般解码测试位于 `pkg/util/plancodec/codec_test.go`，当前未包含这份 Unicode 版本锁定用例。
 
 ## 扩展指南
 
@@ -72,13 +68,3 @@ Rust 不能依赖自身 Unicode 版本来复现这一诊断，因此把 Go 1.25/
 修改后至少应在独立的 `pkg/util/plancodec/codec_test.rs` 中同步：旧版本与新版本分界码点、区间首尾内外各一点、ASCII 空格与 DEL、BMP/补充平面转义、非法 UTF-8。若改变 `quote_go_bytes` 的输出，还要核对 `decodePlanInfo` 的完整 `Error::GoMessage` 字节，避免只验证经 `Display` 有损转换后的文本。
 
 兼容性风险高于实现复杂度：诊断文本可能被测试、日志比较或跨语言一致性检查依赖。性能风险主要是区间数量和排序；保持合并区间可维持较小只读体积与对数查找。该文件不是通用引用 API，新增其他引用场景应优先复用或抽取消费函数，并为新调用路径建立独立测试，而不是公开常量。
-
-## 验证依据
-
-- 源码与装配：`pkg/util/plancodec/go_quote_printable.rs`；`pkg/util/plancodec/codec.rs` 中的 `go_atoi`、`include!`、`quote_go_bytes`、`decodePlanInfo`、`decodeTaskType`；`pkg/util/plancodec/lib.rs` 的 codec 模块装配与再导出。
-- crate 边界：`pkg/util/plancodec/Cargo.toml`，package 名为 `astersql-util-plancodec`，`[lib] path = "lib.rs"`；其 porting metadata 指向 Go package `pkg/util/plancodec`。
-- Go 对照：`pkg/util/plancodec/codec.go` 的 `decodePlanInfo` 与 `decodeTaskType` 均调用 `strconv.Atoi`；错误由 `errors.Errorf(... %v ...)` 传播。
-- 独立测试：`pkg/util/plancodec/codec_test.rs::error_quotes_use_go_unicode_version` 锁定 U+31E4 的 Go Unicode 版本行为；`signed_depth_matches_go_atoi_and_panic_boundary` 覆盖相邻的 Atoi/解码边界；`pkg/util/plancodec/codec_test.go` 提供 Go 解码基线。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；查询定位 `GO_PRINTABLE_RANGES` 于本文件第 7 行、`quote_go_bytes` 于 `codec.rs:635`、`go_atoi` 于 `codec.rs:600`，并给出 `decodePlanInfo`、`decodeTaskType` → `go_atoi` 调用边。图未解析本次 `include!` 常量使用，已用 `rg` 对 `codec.rs:633-665` 补证。
-- 数据不变量检查：脚本解析出 711 个区间，验证所有端点合法、区间严格递增且不重叠，并确认首尾为 U+0020..U+007E 与 U+E0100..U+E01EF。
-- 本包没有 `doc.go`；未运行 Cargo，符合本纯文档任务约束。交付前另执行任务指定的 11 章节结构验证与文档 diff 检查。

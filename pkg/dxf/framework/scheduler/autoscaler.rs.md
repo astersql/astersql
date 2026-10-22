@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-scheduler` crate，是 DXF（Distributed eXecution Framework）调度侧的资源估算模块。crate 入口 `pkg/dxf/framework/scheduler/lib.rs` 通过 `pub mod autoscaler` 声明模块，并用 `pub use autoscaler::*` 再导出其公共 API；因此调用方可以直接通过 `astersql_dxf_framework_scheduler` 使用这些符号。
-
-它虽沿用 Go 文件名 `autoscaler.go` 的 “autoscaler”，但当前职责不是持续监控负载或直接增删节点，而是做无副作用的容量换算：根据数据量、单节点 CPU、索引体积比和调优因子，给出任务节点上限、槽位数及 DistSQL 扫描并发度。Rust 生产链中的直接使用者是 `pkg/executor/importer/production_resource.rs::calculate_go_import_resources`。
+只计算建议值，不创建调度器、不预留槽位、不访问任务元数据，也不执行扩缩容动作；实际结果如何持久化和消费由上层负责。
 
 ## 核心职责
 
@@ -98,7 +96,7 @@ RustCodeGraph 的直接生产证据为：`production_resource.rs::calculate_go_i
 
 ## 与 Go 版本的对应关系
 
-`pkg/dxf/framework/scheduler/autoscaler.go` 是直接语义基线。Rust 保留了相同的 8 核、200 GiB、25 GiB、30/32 节点和每核 32 并发常量，并用 `f64::round` 对齐 Go 的 `math.Round`。`ResourceCalc` 的有效数据量、两种节点估算、槽位估算和 DistSQL 插值公式均逐项对应；`pkg/dxf/framework/scheduler/autoscaler_test.rs` 的表驱动边界也与 `autoscaler_test.go` 对齐。
+Rust 保留了相同的 8 核、200 GiB、25 GiB、30/32 节点和每核 32 并发常量，并用 `f64::round` 对齐 Go 的 `math.Round`。
 
 已确认的接口差异：
 
@@ -117,16 +115,3 @@ RustCodeGraph 的直接生产证据为：`production_resource.rs::calculate_go_i
 - 若扩展 `GetExecCPUNode` 到非 Windows，必须先核对目标平台 Cargo 依赖是否可用，并新增独立运行测试；不要只扩大 `cfg` 范围。
 - 测试逻辑应继续放在同目录独立文件 `pkg/dxf/framework/scheduler/autoscaler_test.rs`，不要嵌入生产源文件。
 - 性能上这些公式均为常数时间；扩展时应避免把 PD/元数据网络访问偷偷引入频繁调用的纯计算方法。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的 Rust、Go 和测试文件均已索引。
-- RustCodeGraph `files --filter pkg/dxf/framework/scheduler`：确认目标、模块入口、Rust/Go 对照和独立测试的目录关系。
-- RustCodeGraph `node --file pkg/dxf/framework/scheduler/autoscaler.rs`：核对全部常量、`ResourceCalc`、方法、包装函数和 Windows 条件编译项。
-- RustCodeGraph `callers/callees` 与聚焦 `explore`：确认 `required_slots → amplified_data_size`、`CalcDistSQLConcurrency → calc_dist_sql_concurrency`，以及 `production_resource.rs::calculate_go_import_resources` 的生产调用链；图中未发现 add-index 和 store 换算的 Rust 生产调用者。
-- `pkg/dxf/framework/scheduler/lib.rs`：确认模块声明、公共再导出及 `#[cfg(test)] mod autoscaler_test` 的独立测试接线。
-- `pkg/dxf/framework/scheduler/Cargo.toml`：确认 crate 名、`lib.rs` 入口、Go 包映射、`schstatus` 直接依赖和 Windows 专用依赖边界。
-- `pkg/executor/importer/production_resource.rs`：确认 import-into 资源估算如何消费本文件结果并生成 `ResourceParams`。
-- `pkg/dxf/framework/scheduler/autoscaler.go` 与 `autoscaler_test.go`：核对原始公式、PD store 查询、CPU 查询错误语义及表驱动期望。
-- `pkg/dxf/framework/scheduler/autoscaler_test.rs`：核对节点数、槽位、索引比、放大因子、DistSQL 插值和 `GetExecCPUNode` 源码契约覆盖；该测试文件没有嵌入生产源文件。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行任务指定的 11 章节结构验证。

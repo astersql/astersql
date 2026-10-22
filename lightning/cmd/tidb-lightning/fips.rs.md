@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-lightning-cmd-tidb-lightning` crate，是 Lightning 命令行进程的 FIPS/TLS 初始化接线点。`lib.rs` 通过 `#[path = "fips.rs"] pub mod fips` 将它公开为 crate 模块；`main.rs::main` 在解析命令行参数和执行导入流程之前调用这里的唯一函数。crate 的二进制入口 `bin_main.rs::main` 只转发到库入口，因此生产启动链为 `bin_main.rs::main -> lib.rs::main -> main.rs::main -> fips::init_fips_only_tls_for_boringcrypto_build`。
-
-`Cargo.toml` 将这个 crate 标记为 `kind = "binary"`，并声明库入口 `lib.rs` 与二进制入口 `bin_main.rs`。当前依赖只有 Lightning 的 `progress` 和 `server` 两个本地 crate，没有 FIPS TLS 提供方依赖，也没有声明与 `boringcrypto` 对应的 Cargo feature；因此本文件当前是迁移锚点，不是可工作的 FIPS 实现。
+为 Rust 进程保留一个稳定、可无条件调用的 FIPS 初始化位置，使入口层无需在以后接入 TLS 提供方时改变启动顺序。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@ RustCodeGraph 对精确符号给出的直接调用轨迹是 `main`（`main.rs:77
 
 ## 与 Go 版本的对应关系
 
-Go 文件 `fips.go` 带有 `//go:build boringcrypto`，只在该构建标签成立时进入 `package main`，并以 `_ "crypto/tls/fipsonly"` 空白导入依赖其包初始化副作用。Go 的普通构建不会编译这个文件，`main.go::main` 也没有显式 FIPS 初始化调用。
-
 Rust 没有复制这种条件编译：`lib.rs` 始终挂载 `fips.rs`，`main.rs::main` 始终显式调用函数，而函数始终为空。因此当前可观察行为只与 Go 的非 `boringcrypto` 构建相近；它保留了一个未来承载 Go 空白导入副作用的显式位置，但尚未实现 Go `boringcrypto` 分支的安全能力。`parity_test.rs` 只证明该挂点可调用并与正常启动流程兼容，不证明 TLS 算法限制、provider 注册或 FIPS 合规性。
 
 ## 扩展指南
@@ -84,17 +80,3 @@ Rust 没有复制这种条件编译：`lib.rs` 始终挂载 `fips.rs`，`main.rs
 5. 对照 `fips.go` 和目标 Go 工具链的 `boringcrypto` 行为，记录 Rust 与 Go 在算法限制、证书验证、客户端/服务端覆盖范围和启动失败策略上的兼容差异。
 
 主要风险是错误地把“存在初始化函数”当成“已经合规”；其次是全局 provider 被其他 TLS 对象抢先初始化、重复初始化竞态，以及 feature 组合造成普通构建行为变化。初始化本身应只执行一次，性能影响应集中在启动阶段，不能进入每次请求或每个连接的热路径。
-
-## 验证依据
-
-- `lightning/cmd/tidb-lightning/fips.rs`：确认唯一公开函数、空函数体、无条件编译项及迁移说明。
-- `lightning/cmd/tidb-lightning/lib.rs`：确认 `pub mod fips`、入口模块装配和测试模块位置。
-- `lightning/cmd/tidb-lightning/main.rs`：确认生产调用位于 `main` 第一项操作，之后才读取参数并进入 `run`。
-- `lightning/cmd/tidb-lightning/bin_main.rs`：确认二进制入口只转发到库入口。
-- `lightning/cmd/tidb-lightning/Cargo.toml`：确认 crate 边界、二进制性质、入口文件以及当前没有 FIPS feature/依赖。
-- `lightning/cmd/tidb-lightning/fips.go` 与 `main.go`：确认 Go 仅通过 `boringcrypto` 条件文件空白导入 `crypto/tls/fipsonly`，普通 `main` 无显式调用。
-- `lightning/cmd/tidb-lightning/parity_test.rs::contract_normal_run_once_success`：确认现有独立 Rust 测试只覆盖初始化挂点可调用和正常运行场景兼容性。
-- RustCodeGraph：索引状态为 7,032 个 Rust 文件；精确查询定位函数于 `fips.rs:25`，`node` 调用轨迹列出生产调用者 `main.rs::main` 和测试调用者 `parity_test.rs::contract_normal_run_once_success`。独立 `callers/callees` 查询在 30 秒内未返回输出，因此调用边另以 `node` 轨迹和源码引用搜索交叉核验。
-- 引用搜索：`rg` 只在 `main.rs`、`parity_test.rs` 和目标定义中发现 Rust 函数名；同目录没有同名独立测试文件，相关测试位于 `parity_test.rs`，`main_test.rs` 仅说明其 `run` 路径位于 FIPS 初始化之后。
-
-本任务是纯文档分析，未运行 Cargo。结构检查应确认本文存在，并且固定的十一个二级标题各出现一次。

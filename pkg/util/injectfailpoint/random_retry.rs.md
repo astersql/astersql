@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-injectfailpoint` crate 的随机故障注入实现。crate 入口 `pkg/util/injectfailpoint/lib.rs` 公开 `random_retry` 模块并再导出其全部公开项；`pkg/util/injectfailpoint/Cargo.toml` 声明该 crate 直接依赖 `fail`、`rand` 和 `backtrace`，并以 Go 包 `pkg/util/injectfailpoint` 为移植来源。
-
-它位于正常业务调用与测试故障之间：failpoint 未开启时，公开包装函数保持原成功值或原错误；名为 `DXFRandomError` 的 failpoint 开启后，函数才按概率制造错误或截短读取结果。当前 Rust 生产代码中，经确认的真实接线是 `pkg/dxf/importinto/jobhistory/lib.rs::injectfailpoint::DXFRandomErrorWithOnePercent` 对本文件同名函数的适配，随后由 `pkg/dxf/importinto/jobhistory/history.rs::GetFromHistory` 调用。`pkg/dxf/framework/storage/lib.rs` 中也有同名函数，但它们是该 crate 内“默认恒成功”的本地占位，不是本文件的调用者。
+为读取操作模拟两种 `UnexpectedEof`：约 20% 的命中分支返回零字节，其余命中分支返回 `[0, n)` 范围内的短读长度。
 
 ## 核心职责
 
@@ -70,13 +68,11 @@ Go 版本的生产调用面更广：DXF storage/history 调用两个返回 `erro
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/injectfailpoint/random_retry.go` 是逐项对照源：Rust 保留相同公开名称、`DXFRandomError` failpoint 名、`0.01/0.001` 概率、严格小于比较、wrapper 的已有错误优先级，以及读注入的 1% 总概率、20% 零长度分支和 `[0,n)` 部分读取范围。
-
-类型映射为 Go `error` 对 Rust `Box<dyn Error + Send + Sync>`，Go `nil` 对 Rust `Option::None` 或 `Result::Ok(())`，`io.ErrUnexpectedEOF` 对 `io::ErrorKind::UnexpectedEof`。Go 使用进程级 `math/rand`，Rust 公开入口使用线程本地 RNG，并额外拆出可注入 RNG 的 crate 内函数以实现确定性测试。
+Go 使用进程级 `math/rand`，Rust 公开入口使用线程本地 RNG，并额外拆出可注入 RNG 的 crate 内函数以实现确定性测试。
 
 调用方名称获取方式存在实现差异：Go 固定使用 `runtime.Caller(2)`，Rust 因 backtrace 帧布局不同而扫描到自身后第一个非 `backtrace::` 帧，并在解析失败时返回 `unknown`。错误文本保持 `injected random error, caller: ...` 格式，但 Rust 不承诺符号字符串与 Go 完全相同。
 
-迁移尚未覆盖 Go 的全部接线面。当前 Rust jobhistory 已使用真实实现；DXF framework storage 仍使用本地恒成功占位，Rust ingestor/taskexecutor 仅在 Cargo 中声明依赖，objstore 读路径也未找到本函数调用。扩展时应按具体 Go 调用点逐处接线和验证，而不是因为依赖存在便认为行为已经启用。
+迁移尚未覆盖 Go 的全部接线面。当前 Rust jobhistory 已使用真实实现；DXF framework storage 仍使用本地恒成功占位，Rust ingestor/taskexecutor 仅在 Cargo 中声明依赖，objstore 读路径也未找到本函数调用。
 
 ## 扩展指南
 
@@ -87,13 +83,3 @@ Go 版本的生产调用面更广：DXF storage/history 调用两个返回 `erro
 扩展 Rust 生产接线前，应先确认调用处使用的是本 crate，而非局部同名 `injectfailpoint` 模块。DXF storage 的同名占位尤其容易造成误判；替换它会改变大量存储操作的测试行为，必须配套独立回归。jobhistory 的适配层还会把动态错误转换为该 crate 的 `Error::new(error.to_string())`，新增结构化错误信息可能在这里丢失类型，仅保留文本。
 
 若改变 failpoint 名称、错误文本或调用方解析，应同步检查依赖这些字符串的 failpoint 配置、日志/指标与测试。若改变全局 failpoint 的测试方式，继续使用串行锁和作用域清理，避免并行测试互相污染。
-
-## 验证依据
-
-- 源实现：`pkg/util/injectfailpoint/random_retry.rs`，RustCodeGraph `node --file` 确认全文件 144 行及 10 个符号；内部调用与所有权、概率、错误分支均由此核对。
-- crate 边界：`pkg/util/injectfailpoint/lib.rs` 的模块公开与测试装配；`pkg/util/injectfailpoint/Cargo.toml` 的 `backtrace`、`fail`、`rand` 依赖和 Go 包映射。
-- Go 对照：`pkg/util/injectfailpoint/random_retry.go`；另以 `pkg/objstore/s3like/io.go`、`pkg/ingestor/ingestctrl/job_worker.go` 和 DXF storage Go 文件的调用点确认原始应用场景。
-- Rust 生产调用：`pkg/dxf/importinto/jobhistory/lib.rs` 的错误适配与 `pkg/dxf/importinto/jobhistory/history.rs::GetFromHistory`；Cargo 精确搜索确认该 crate 还被 ingestor/taskexecutor 声明，但对应 Rust API 引用未出现。
-- 独立测试：`pkg/util/injectfailpoint/migration_aster_unit_test.rs`，覆盖概率 0/1/NaN、严格小于、已有错误优先、禁用透传、启用回调、零长度/已有读错误、完整及部分 `UnexpectedEof`。
-- RustCodeGraph 查询：`status` 显示索引包含 11,467 文件、307,296 节点；`files --filter pkg/util/injectfailpoint` 找到 crate 的 4 个索引文件；`query` 找到本文件公开/内部符号；`node` 核对目标、Go 对照和测试。精确调用图对路径限定符号出现同名污染，故调用边结论由 RustCodeGraph 文件级线索再结合 `rg` 和源码/Cargo 复核，不采用其误匹配结果。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构检查，并人工复核唯一产物、真实符号、当前接线与迁移缺口。

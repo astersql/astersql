@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo workspace 成员 `astersql-br-pkg-restore-tiflashrec` 的核心实现；`br/pkg/restore/tiflashrec/Cargo.toml` 将 `lib.rs` 声明为库入口，`lib.rs` 再以 `pub mod tiflash_recorder` 挂载本文件并用 `pub use tiflash_recorder::*` 扁平导出其 API。该 crate 没有声明第三方或仓库内 Cargo 依赖，模型与 InfoSchema 边界均由本文件内的最小 Rust 类型表达。
-
-它对照 Go `br/pkg/restore/tiflashrec/tiflash_recorder.go`，保存恢复期间暂时移除的 TiFlash 表副本配置，并把记录转成恢复副本所需的 `ALTER TABLE ... SET TIFLASH REPLICA ...`。Go 注释给出的设计背景是：PiTR 期间不能让表持续向 TiFlash 复制，因此先记录并移除副本信息，表 ID 改写后继续按 ID 跟踪，最后再生成 DDL 恢复配置。
-
-当前 Rust 接线状态比 Go 窄。RustCodeGraph 能确认本文件内部调用边和独立测试，但 Cargo/源码搜索未找到其他 crate 对 `astersql-br-pkg-restore-tiflashrec` 的依赖，也未找到目标类型的 Rust 生产调用者。`br/pkg/task/restore.rs` 定义了独立的 `TiFlashReplicaRecorder` trait，却没有为本文件的 `TiFlashRecorder` 提供实现；`br/pkg/restore/log_client/client.rs::LoadOrCreateCheckpointMetadataForLogRestore` 直接接收 checkpoint 模型的 `HashMap`，而不是本录制器。因此本文件目前应视为已移植、可独立验证但尚未证明接入 Rust 完整恢复主链的库实现。
+`TiFlashRecorder` 负责三件事：以 table ID 为键保存 `TiFlashReplicaInfo`；在恢复产生新 table ID 时迁移记录；从最新 InfoSchema 解析库表名并生成普通恢复 DDL或“先清零、再恢复”的成对 DDL。
 
 ## 核心职责
 
@@ -76,9 +72,9 @@ Go 生产主链则有可验证调用者：`br/pkg/task/restore.go::PreCheckTable
 
 ## 与 Go 版本的对应关系
 
-Rust 的 map 结构、New/Load/Get/Add/Delete/Iterate/Rewrite 语义、按 table ID 延迟解析名称、缺表跳过、普通 DDL 和 reset 成对 DDL，都直接对应 `tiflash_recorder.go`。`tiflash_recorder_test.rs::{TestRecorder, TestGenSql, TestGenResetSql}` 镜像 Go 同名测试，覆盖增删、链式 ID 改写、无/单/多/特殊标签，以及 reset 先清零再恢复；`parity_test.rs::go_rust_public_contract_matches` 额外覆盖同 ID Rewrite、Load 全量替换、GetItems 与缺表跳过。
+`tiflash_recorder_test.rs::{TestRecorder, TestGenSql, TestGenResetSql}` 镜像 Go 同名测试，覆盖增删、链式 ID 改写、无/单/多/特殊标签，以及 reset 先清零再恢复；`parity_test.rs::go_rust_public_contract_matches` 额外覆盖同 ID Rewrite、Load 全量替换、GetItems 与缺表跳过。
 
-两者仍有可观察差异。Go `New` 返回指针，Rust返回值；Go `GetItems` 返回可修改 map，Rust 返回共享引用。Go 使用真实 `model.TiFlashReplicaInfo`、`infoschema.InfoSchema` 和 parser AST，Rust 使用本地最小类型并手写 SQL。Go 分别执行 `TableByID` 与 `SchemaByTable` 并记录 warning，Rust合并为一次 `Option` 查询且静默跳过。Go `AddTable`/`Rewrite` 记录日志，Rust没有日志。Go reset 向量初始容量为 `len(items)`，Rust为 `2 * len(items)`，只影响分配策略。
+两者仍有可观察差异。Go `New` 返回指针，Rust返回值；Go `GetItems` 返回可修改 map，Rust 返回共享引用。Go 使用真实 `model.TiFlashReplicaInfo`、`infoschema.InfoSchema` 和 parser AST，Rust 使用本地最小类型并手写 SQL。Go `AddTable`/`Rewrite` 记录日志，Rust没有日志。Go reset 向量初始容量为 `len(items)`，Rust为 `2 * len(items)`，只影响分配策略。
 
 Go 的 `model.TiFlashReplicaInfo` 还含可用性相关字段，而 Rust本地类型仅保留生成 DDL 所需的 `Count` 和 `LocationLabels`。更关键的是，Go 类型已接入生产恢复链，Rust本地类型尚未与 task/checkpoint 模型适配；API 同名和测试对齐不能替代生产接线证据。
 
@@ -89,14 +85,3 @@ Go 的 `model.TiFlashReplicaInfo` 还含可用性相关字段，而 Rust本地�
 新增字段时应判断它是否影响最终 DDL；仅运行期状态不应无依据地塞进最小 `TiFlashReplicaInfo`。修改 `Rewrite` 时要为目标 ID 冲突定义明确策略，并在独立 `tiflash_recorder_test.rs` 增加旧 ID 缺失、同 ID、多对一覆盖测试。修改 SQL 格式化时必须同步 Go `alterTableSpecOf` 的 Restore flags，覆盖反引号、单引号、反斜杠、空字符串和多标签，并保持测试不内嵌到生产文件。
 
 如果让 `alterTableSpecOf` 真正返回错误，应把生成 API 改为可向上游传播错误，或至少保证 reset 的两条语句按表原子地产生，避免只返回清零语句。若调用方需要稳定 DDL 顺序，应在生成层按 table ID 排序或在外层排序，不能依赖 `HashMap`。兼容性风险集中在 Go/Rust parser 转义差异和本地模型漂移；性能风险主要是大量表与长 labels 造成的字符串分配，但当前算法本身为线性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/restore/tiflashrec` 找到本目录的 Rust/Go 实现、入口和测试。
-- RustCodeGraph `node --file br/pkg/restore/tiflashrec/tiflash_recorder.rs --offset 1 --limit 400`：核对完整 185 行源码、类型、公开方法、两个 DDL 生成分支及转义实现。
-- RustCodeGraph `query TiFlashRecorder`、`query GenerateResetAlterTableDDLs`、`query GenerateAlterTableDDLs`、`query alterTableSpecOf` 与精确 `explore`：核对 Rust/Go 同名符号，并确认生成方法到 `Iterate`、`TableByID`、`EncloseDBAndTable`、`alterTableSpecOf` 的调用边。
-- 读取 `br/pkg/restore/tiflashrec/Cargo.toml`、根 `Cargo.toml` 与同目录 `lib.rs`：核对 workspace 成员、crate 名、无依赖声明、模块挂载、扁平导出和独立测试接线；目标目录不存在 `doc.go`。
-- RustCodeGraph 读取 `tiflash_recorder.go` 和 `tiflash_recorder_test.go`：核对 Go 设计背景、生产 API、AST Restore flags、日志/缺 schema 分支与三组对照测试。
-- RustCodeGraph 读取 `tiflash_recorder_test.rs` 和 `parity_test.rs`：核对增删改写、Load/GetItems、HashMap 顺序无关、标签转义、reset 顺序和缺表跳过。
-- RustCodeGraph `node PreCheckTableTiFlashReplica`、`node LoadOrCreateCheckpointMetadataForLogRestore`，以及 Cargo/源码定向搜索：核对 Go 生产调用边和 Rust task/checkpoint 的不同接口；未找到目标 Rust 类型实现 task trait或被其他 Cargo 包依赖的证据。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；交付仅运行任务指定的 11 章节结构检查，并人工复核所有“当前已接线”结论均有直接证据。

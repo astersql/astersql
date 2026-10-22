@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；`pkg/planner/core/Cargo.toml` 将 crate 根设为 `lib.rs`，而 `pkg/planner/core/lib.rs` 以 `pub mod rule_correlate` 公开本模块。它在 `rule_join_reorder.rs` 定义的紧凑 `JoinPlan`/`JoinNode` 模型上实现“相关化”：把带有 correlate 偏好的半连接重新构造成 `Apply`，为逐外层行的相关索引访问提供计划形态。
-
-需要区分两个实现层次：本文件的 `CorrelateSolver` 是紧凑计划模型的公开实现，RustCodeGraph 与源码搜索发现其直接使用者是 `rule_correlate_test.rs` 和 `casetest/rule/rule_correlate_test.rs`；完整 Rust 逻辑优化流水线中的 `LogicalRule::Correlate` 实际接到 `optimizer_runtime.rs::correlate_descendants`。因此，本文件承载可执行的移植语义与独立测试契约，但不是完整 `logicalop::LogicalPlan` 主链的直接执行体。
+在 `rule_join_reorder.rs` 定义的紧凑 `JoinPlan`/`JoinNode` 模型上实现“相关化”：把带有 correlate 偏好的半连接重新构造成 `Apply`，为逐外层行的相关索引访问提供计划形态。
 
 ## 核心职责
 
@@ -65,11 +63,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/core/rule_correlate.go` 是同名、面向完整 `base.LogicalPlan` 的 Go 实现；两者共同遵守“后序遍历、跳过已有 Apply、仅相关化带偏好的半连接、把等值条件变成相关谓词、重新处理内侧条件与统计、最终生成 Apply”的核心方向，`Name()` 也都返回 `correlate`。
-
 Rust 本文件是明显收窄的紧凑模型移植：Go 会捕获 panic 并转错、跳过 CTE、校验更多条件类别和外半连接 NULL 语义、克隆完整内子树、重新运行 PPD、重建 access paths/清空沿途统计、补 `Limit 1`，并保留 hint、schema 与 output names；本文件只合并直接 `Selection -> Leaf`、添加占位 `Expression`、将已带 `correlated_columns` 的 Leaf 行数下限设为 1，也只接受两种半连接类型。完整 Rust 主链中的 `optimizer_runtime.rs::correlate_descendants` 更接近 Go 数据模型与规则接线，因此评估线上行为时应以该实现及其测试为准。
-
-`rule_correlate_test.rs` 验证紧凑实现的方向校正、成功改写、null-equal/其它条件安全跳过和已有 Apply 保持；`casetest/rule/rule_correlate_test.rs` 进一步验证辅助条件、Selection 合并、统计调整及 Go fixture 清单对齐。Go 的 `casetest/rule/rule_correlate_test.go` 还覆盖 cost factor、真实 SQL 结果以及 parallel apply 交互，这些不由本文件的紧凑测试直接证明。
 
 ## 扩展指南
 
@@ -78,11 +72,3 @@ Rust 本文件是明显收窄的紧凑模型移植：Go 会捕获 panic 并转�
 - 若允许一个内层列出现在多个 `UnionAll` 分支，需重新审视当前 `any` 的短路行为；若语义要求每个分支都收到谓词，应改为全分支验证并保持失败原子性。
 - 若要接入真实 SQL 优化主链，不能仅注册此 `JoinPlan` 求解器；必须与 `optimizer_runtime.rs::correlate_descendants`、`LogicalRule::Correlate`、`FLAG_CORRELATE` 和 `logicalop` 数据结构一起设计，避免形成两套漂移实现。
 - 与 Go 扩展保持一致时，优先补齐明确的语义缺口（NULL 三值逻辑、PPD、Limit、统计/access path、hint/输出元数据），而不是仅让紧凑测试通过。主要风险是错误结果（尤其 NULL/NOT IN）、候选计划条件丢失和代价估算陈旧；性能风险来自右子树克隆和按连接边重复遍历。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`node --file pkg/planner/core/rule_correlate.rs` 读取完整 257 行；`query CorrelateSolver`、`node CorrelateSolver`、`node JoinPlan`、`node JoinNode`、`node JoinEdge` 和 `node rule_join_reorder.rs::Result` 核对符号、类型与引用 trail。`explore`/部分 `callers` 查询未返回额外调用边，随后用精确节点查询与 `rg` 补证。
-- 源码与边界：`pkg/planner/core/rule_correlate.rs`、`pkg/planner/core/rule_join_reorder.rs`、`pkg/planner/core/task.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`。
-- 完整 Rust 接线：`pkg/planner/core/optimizer_runtime.rs` 中 `LogicalRule::Correlate` 与 `correlate_descendants`，以及 `pkg/planner/core/expression_rewriter.rs` 中 `PreferCorrelate` 标记逻辑。
-- Go 对照：`pkg/planner/core/rule_correlate.go`；测试证据：`pkg/planner/core/rule_correlate_test.rs`、`pkg/planner/core/casetest/rule/rule_correlate_test.rs`、`pkg/planner/core/casetest/rule/rule_correlate_test.go`。
-- 按任务约束未运行 Cargo；本任务仅生成说明文档。任务指定的结构检查已执行，目标文件存在、固定二级标题恰好 11 个，退出码为 0；`git diff --check -- pkg/planner/core/rule_correlate.rs.md` 退出码亦为 0。

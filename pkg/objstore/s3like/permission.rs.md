@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-objstore-s3like` crate 中，是 S3、OSS、KS3 等 S3-like 后端共用的权限分派层。crate 根 `pkg/objstore/s3like/lib.rs` 以 `mod permission` 装入本文件并通过 `pub use permission::*` 公开其 API；`pkg/objstore/s3like/Cargo.toml` 则声明 crate 根为 `lib.rs`，并直接依赖提供错误链的 `anyhow` 和提供权限枚举、上下文的 `astersql-objstore-storeapi`。
-
-它不实现云厂商 SDK 请求，也不持有存储对象。它位于后端构造流程与 `PrefixClient` 实现之间：`pkg/objstore/ossstore/store.rs::NewOSSStorage` 和 `pkg/objstore/s3store/store.rs::NewS3Storage` 在客户端创建后、返回可用 `Storage` 前调用 `CheckPermissions`。因此，调用方配置的权限探测失败会阻止对应存储实例完成构造。
+位于后端构造流程与 `PrefixClient` 实现之间：`pkg/objstore/ossstore/store.rs::NewOSSStorage` 和 `pkg/objstore/s3store/store.rs::NewS3Storage` 在客户端创建后、返回可用 `Storage` 前调用 `CheckPermissions`。
 
 ## 核心职责
 
@@ -75,11 +73,11 @@ RustCodeGraph 对 `permission.rs::CheckPermissions` 的结果确认了 OSS/S3 �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/objstore/s3like/permission.go::CheckPermissions`。Rust 版本保留了 Go 的关键语义：按切片顺序遍历、四种权限到同名客户端方法的一一映射、首错短路、未知权限立即报错，以及用权限名包装底层错误。
+Rust 版本保留了 Go 的关键语义：按切片顺序遍历、四种权限到同名客户端方法的一一映射、首错短路、未知权限立即报错，以及用权限名包装底层错误。
 
 语言层差异如下：Go 接受 `context.Context` 与 `PrefixClient` 接口值，Rust 接受 `&storeapi::Context` 与 `&dyn PrefixClient`；Go 用 `errors.Annotatef`，Rust 用 `anyhow::Context` 保留错误链；Go 权限是字符串别名并通过 `default` 接纳任意未知字符串，Rust 权限是枚举，因此当前未知分支主要覆盖已存在但不被本函数支持的 `PutObject`，并为未来新增 variant 提供拒绝路径。
 
-`pkg/objstore/s3like/permission_test.go::TestCheckPermissions` 与 `pkg/objstore/s3like/permission_test.rs::test_check_permissions` 使用相同用例结构：逐一验证四种失败映射、拒绝 `PutObject`、以及四项全部成功。Rust 测试额外检查了 `anyhow` 错误链，从而验证其确实对齐 Go `Annotatef` 的“增加上下文但保留原因”语义。
+Rust 测试额外检查了 `anyhow` 错误链，从而验证其确实对齐 Go `Annotatef` 的“增加上下文但保留原因”语义。
 
 ## 扩展指南
 
@@ -88,13 +86,3 @@ RustCodeGraph 对 `permission.rs::CheckPermissions` 的结果确认了 OSS/S3 �
 - 不应把测试嵌入 `permission.rs`。仓库约束要求 Rust 源与测试分离，最近的专用测试文件是 `permission_test.rs`，更具体的 SDK 行为应放到对应后端的独立 `client_test.rs`。
 - 修改检查顺序、改为并行或改为错误聚合会改变首错、调用次数和可能产生副作用的探测顺序；必须先更新 Go 对照意图，并新增明确的顺序、短路和资源清理回归测试。
 - 错误文案可能被上层包装和测试匹配；变更 `Permission::as_str` 或上下文格式时需要同时评估 OSS/S3 构造错误的兼容性。性能风险主要来自新增网络探测次数，而不是本文件的循环开销。
-
-## 验证依据
-
-- 目标源码：`pkg/objstore/s3like/permission.rs`，确认唯一公开符号、四路映射、未知分支和错误包装。
-- 模块与 crate：`pkg/objstore/s3like/lib.rs`、`pkg/objstore/s3like/Cargo.toml`、`pkg/objstore/s3like/interface.rs`、`pkg/objstore/storeapi/storage.rs`，确认再导出、依赖边界、trait 契约和权限字符串。
-- 生产调用点：`pkg/objstore/ossstore/store.rs::NewOSSStorage`、`pkg/objstore/s3store/store.rs::NewS3Storage`。
-- Rust 测试：`pkg/objstore/s3like/permission_test.rs::test_check_permissions`、`pkg/objstore/s3like/migration_aster_unit_test.rs::permissions_preserve_go_order_short_circuit_and_error_context`，并参考 `pkg/objstore/s3store/client_test.rs::test_client_permission` 的真实后端行为覆盖。
-- Go 对照：`pkg/objstore/s3like/permission.go::CheckPermissions`、`pkg/objstore/s3like/permission_test.go::TestCheckPermissions`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/objstore/s3like` 覆盖目标及相关测试，`query CheckPermissions --kind function` 区分 Go/Rust 同名定义，`explore` 与 `node CheckPermissions` 确认 Rust 源码及 OSS/S3/测试调用关系。精确限定符的后续 `callers` 查询未在 60 秒内返回，已终止；所需调用事实由前述成功图查询和直接入口源码交叉验证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求本文恰有十一个固定二级标题，并通过任务文件指定的 `test`/`rg` 命令检查。

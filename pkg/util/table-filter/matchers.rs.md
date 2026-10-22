@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-table-filter` crate 的底层名称匹配层，源码见 [`matchers.rs`](matchers.rs)。crate 入口 [`lib.rs`](lib.rs) 将本模块公开并再导出其符号；[`Cargo.toml`](Cargo.toml) 表明该 crate 对应 Go 包 `pkg/util/table-filter`，直接依赖 `regex 1.11` 与 `regex-syntax 0.8`。
-
-它不负责解析完整规则列表或决定规则优先级，而是提供“一个模式如何匹配一个名称”的统一接口，以及承载表规则、列规则所需的数据结构。上层 [`parser.rs`](parser.rs) 将字面量、通配符和 `/regex/` 构造成这里的 matcher；[`table_filter.rs`](table_filter.rs) 与 [`column_filter.rs`](column_filter.rs) 再组合 matcher 完成 schema、table、column 的过滤判断。
+为大小写不敏感包装生成规则侧变体：字符串按 Go `strings.ToLower` 的单 rune 简单映射处理，正则通过前置 `(?i)` 启用不区分大小写。
 
 ## 核心职责
 
@@ -77,14 +75,13 @@ crate 外部通过 `lib.rs` 再导出的 `Filter`、`Parse`、列过滤等高层
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`matchers.go`](matchers.go)。Rust 保留了 Go 的 `tableRule`、`columnRule`、`matcher`、`stringMatcher`、`trueMatcher`、`regexpMatcher` 和 `newRegexpMatcher` 分工：精确比较、`*` 特例、正则匹配、`matchAllStrings` 与 `toLower` 的总体语义一致。
+Rust 保留了 Go 的 `tableRule`、`columnRule`、`matcher`、`stringMatcher`、`trueMatcher`、`regexpMatcher` 和 `newRegexpMatcher` 分工：精确比较、`*` 特例、正则匹配、`matchAllStrings` 与 `toLower` 的总体语义一致。
 
 主要实现差异如下：
 
 - Go 使用 interface 值，Rust 使用 `Box<dyn matcher>`，并额外要求 `Debug + Send + Sync`。
 - Go `regexp.Compile` 直接返回 Go 风格错误；Rust 用 `regex` 执行匹配，并由 `regex-syntax` 的 `ErrorKind`/span 重建兼容诊断。
 - Go `strings.ToLower` 是简单 rune 映射。Rust 标准 `char::to_lowercase` 可能产生多个字符，因此 `goToLower` 明确只取首字符；[`matchers_test.rs`](matchers_test.rs) 用 `U+0130` 验证结果是 `i` 而不是 `i` 加组合点。
-- 两端都将唯一规范模式 `(?s)^.*$` 优化为恒真 matcher；不会把任意语义等价的正则自动判为 `matchAllStrings`。
 - Go 用 `regexp.MustCompile` 构造大小写不敏感正则；Rust 用 `Regex::new(...).expect(...)` 表达同一“原正则有效且加 flag 后仍有效”的不变量。
 
 Go 的 [`table_filter_test.go`](table_filter_test.go)、[`column_filter_test.go`](column_filter_test.go) 和 [`compat_test.go`](compat_test.go) 提供集成语义基线；Rust 的独立 [`matchers_test.rs`](matchers_test.rs) 聚焦 Rust/Go 差异最大的 Unicode 小写与正则错误文本，表级组合行为另由 [`table_filter_test.rs`](table_filter_test.rs) 覆盖。
@@ -97,12 +94,3 @@ Go 的 [`table_filter_test.go`](table_filter_test.go)、[`column_filter_test.go`
 - 扩展 `regexp_error` 映射时，应依据 `regex_syntax::ast::ErrorKind` 和 span 编写表驱动用例，并与 Go `regexp.Compile` 的实际消息核对。风险在于 `regex`/`regex-syntax` 版本升级改变错误分类或 span；未知类别应继续安全回退而不是伪造兼容消息。
 - 若改变 `newRegexpMatcher` 的 `*` 优化，需同步验证 `tableFilter::MatchSchema` 的 schema 级否定行为，以及 Go/Rust 表过滤测试中的 `foo.*`、`!foo.*`、具体表否定等用例。
 - 性能敏感点是正则编译与匹配。保持“构造时编译、匹配时复用”，避免在 `matchString` 内编译或分配；新增全局缓存则会引入当前不存在的并发和生命周期复杂度。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/table-filter` 确认目标及相邻实现/测试已索引。
-- RustCodeGraph `node --file pkg/util/table-filter/matchers.rs`：核对了本文件 162 行源码及全部类型、trait、函数和实现；`query` 确认 `matcher::{matchString, matchAllStrings, toLower}` 与 `newRegexpMatcher` 的精确符号。
-- RustCodeGraph `explore`：得到关键调用边：`tableFilter::{MatchSchema, MatchTable}` 和 `ColumnFilterRules::match_rule` 调用 `matchString`，`MatchSchema` 调用 `matchAllStrings`，`toLower` 由过滤器/解析路径使用；精确 `callers` 查询在本地索引上 30 秒内未返回，已停止，未据此添加额外结论。
-- 已阅读生产证据：[`matchers.rs`](matchers.rs)、[`parser.rs`](parser.rs)、[`table_filter.rs`](table_filter.rs)、[`column_filter.rs`](column_filter.rs)、[`compat.rs`](compat.rs)、[`lib.rs`](lib.rs) 与 [`Cargo.toml`](Cargo.toml)。
-- 已阅读对照与测试证据：[`matchers.go`](matchers.go)、[`matchers_test.rs`](matchers_test.rs)、[`table_filter_test.rs`](table_filter_test.rs)，并核对 Go 的 [`table_filter_test.go`](table_filter_test.go)、[`column_filter_test.go`](column_filter_test.go)、[`compat_test.go`](compat_test.go) 中匹配、大小写、通配与错误行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用固定 11 章节结构命令，并人工检查关键结论均能回溯到上述符号、调用边或对照文件。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ingestor-ingestctrl` crate；crate 根在 [`lib.rs`](lib.rs)，并通过 `pub mod checksum` 无条件公开本模块。它描述导入完成后的两类远端校验路径：通过 TiDB SQL 执行 `ADMIN CHECKSUM TABLE`，或在取得 PD TSO 后通过抽象的 TiKV 扫描源计算校验和。同时，它提供本地 KV 校验累积、全局 GC lifetime 保护和 PD Service GC Safe Point 保护所需的数据结构。
-
-当前接线必须与实现能力区分开看。RustCodeGraph 对构造器的查询以及仓库内精确引用搜索表明，`NewTiDBChecksumExecutor`、`NewTiKVChecksumManager` 和具体 manager 在 Rust 侧只由 [`checksum_test.rs`](checksum_test.rs) 直接使用；生产 Rust 文件目前只从本模块引用 `MinDistSQLScanConcurrency` 与 `DefaultBackoffWeight`（`pkg/executor/importer/table_import.rs`）。因此，本文件已有可测试的核心抽象和算法，但还不是 Rust 生产导入链实际使用的完整 checksum 后端。Go 生产调用则仍由 `pkg/ingestor/ingestctrl/checksum.go` 及其调用者完成。
-
-`Cargo.toml` 将 crate 的 Go 对照包声明为 `pkg/ingestor/ingestctrl`。本文件自身只依赖标准库和 crate 根的 `CancellationToken`、`Error`、`KvPair`、`Result`，没有直接使用该 manifest 中的平台依赖或外部 Rust crate。
+`ChecksumManager` 统一“按表计算远端校验和”和“关闭资源”两个操作，`TiDBChecksumExecutor` 与 `TiKVChecksumManager` 分别实现 SQL 和 TiKV 扫描策略。
 
 ## 核心职责
 
@@ -82,7 +78,7 @@ TiKV manager 的 `Close` 不关闭 source 或 PD client，只将自身标记为�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`checksum.go`](checksum.go)，测试为 [`checksum_test.go`](checksum_test.go)。Rust 保留了 Go 的主要概念：`RemoteChecksum`、`ChecksumManager`、TiDB/TiKV 两种 manager、100 小时默认 GC lifetime、三次扫描预算、最小活动 TSO 以及关闭时用 `ttl=0` 删除 Service GC Safe Point。Rust 测试还锁定了 Go 对齐点：构造器保留调用方给出的初始扫描并发（即使小于 4）、扫描可重试错误执行三次、TSO 成功获取一次，以及同表多任务只移除一个。
+Rust 保留了 Go 的主要概念：`RemoteChecksum`、`ChecksumManager`、TiDB/TiKV 两种 manager、100 小时默认 GC lifetime、三次扫描预算、最小活动 TSO 以及关闭时用 `ttl=0` 删除 Service GC Safe Point。Rust 测试还锁定了 Go 对齐点：构造器保留调用方给出的初始扫描并发（即使小于 4）、扫描可重试错误执行三次、TSO 成功获取一次，以及同表多任务只移除一个。
 
 但当前不是等价移植，主要差异如下：
 
@@ -102,12 +98,3 @@ TiKV manager 的 `Close` 不关闭 source 或 PD client，只将自身标记为�
 补齐 Go parity 时，最关键的修改点是 `GCTTLManager`：采用唯一 service ID，增加可取消、可 join 的周期续租任务，保证 add 失败回滚，并明确 `Close` 与在途 `Checksum` 的同步协议。扫描重试应在 `TiKVChecksumManager::Checksum` 或具体 source 层实现 Go 的并发减半策略；SQL 路径则需恢复 backoff、重试、连接关闭和可观测性语义。
 
 任何逻辑变更都应同步更新独立测试 [`checksum_test.rs`](checksum_test.rs)，不要把测试内嵌到生产文件。至少增加：PD 更新失败后的 jobs 回滚、超过 TTL 的周期续租、同进程多 manager 的 service ID 唯一性、Close/Checksum 生命周期、并发降低、取 TSO 错误分类、logical 溢出边界，以及 SQL 查询失败仍恢复 lifetime。Go 对照测试在 [`checksum_test.go`](checksum_test.go)，涉及 parity 改动时应核对其 GC lifetime、单/多任务 TTL、service ID、扫描错误和并发行为。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件被完整读取为 414 行。
-- RustCodeGraph 查询/导航：`query Checksum`、`query TiKVChecksumManager`、`query NewTiKVChecksumManager`、`query GCTTLManager`、`query TiDBChecksumExecutor`、`query NewTiDBChecksumExecutor`；并对构造器、`TiKVChecksumManager::Checksum`、`GCTTLManager::addOneJob` 执行 callers/callees 查询。图确认了本节“依赖与调用关系”列出的内部边；常见名称存在多义性时，以文件路径限定的 node 输出和精确仓库引用搜索消歧。
-- 源码与边界：[`checksum.rs`](checksum.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。`lib.rs` 证明模块导出、错误/取消/KV 类型和独立测试挂载；Cargo manifest 证明 crate 名称、入口和 Go package 映射。
-- 测试证据：[`checksum_test.rs`](checksum_test.rs) 的五个测试覆盖 SQL 标识符转义与 lifetime 恢复、本地计数/严格相等/取消、同表 GC jobs、不可重试扫描，以及三次重试与单次 TSO；[`checksum_test.go`](checksum_test.go) 提供 Go 的 GC lifetime、TiKV checksum、周期 TTL、多任务和 service ID 行为基准。
-- Go 与生产接线：[`checksum.go`](checksum.go)；另以精确引用搜索检查 `pkg/dxf/importinto/subtask_executor.go`、`pkg/executor/importer/table_import.go`、`pkg/ingestor/ingestctrl/engine_mgr.go`、`job_worker.go`、`localhelper.go`，并检查 Rust 侧 `pkg/executor/importer/table_import.rs` 与 `lightning/pkg/importer/checksum_helper.rs`，据此确认当前 Rust manager 尚未接入生产调用链。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证仅执行任务规定的 11 章节结构检查，并人工复核链接、符号名、已实现/未接线边界及上述 Go 差异。

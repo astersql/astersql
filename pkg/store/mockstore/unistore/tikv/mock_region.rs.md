@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-store-mockstore-unistore-tikv`，由同目录 `lib.rs` 以 `pub mod mock_region` 暴露。它是进程内 mock TiKV/PD 的元数据控制面：保存 Store、Peer、Region 路由和纪元，提供 Region 分裂与扫描，同时实现 Mock PD 所需的 ID/TSO、外部时间戳和按 keyspace 隔离的 GC safe point 状态。真正的 KV/MVCC 数据不存放在这里；`server/server.rs::new_mock` 创建本管理器并把它经 `MockRegionAdapter` 接到请求路径，数据引擎则由 server 侧的 `EngineBundle` 持有。
-
-同路径 `Cargo.toml` 指定 `lib.rs` 为 crate 根，并用 `package.metadata.porting.go-package` 指向 `pkg/store/mockstore/unistore/tikv`。当前依赖表主要是 Windows 目标下的相邻 AsterSQL crate 和通用 `fail` 依赖；本文件自身只使用标准库集合、同步原语和系统时间。
+进程内 mock TiKV/PD 的元数据控制面：保存 Store、Peer、Region 路由和纪元，提供 Region 分裂与扫描，同时实现 Mock PD 所需的 ID/TSO、外部时间戳和按 keyspace 隔离的 GC safe point 状态。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ GC 的全部 keyspace 共用一把 `Mutex`，单次 barrier/safe-point 操作原
 
 ## 与 Go 版本的对应关系
 
-直接对照 `pkg/store/mockstore/unistore/tikv/mock_region.go`：Rust 的 `MockRegionManager`、按键/末键查询、bootstrap、ID 分配、分裂、Store/Peer 操作、`MockPD`、外部时间戳、全局 TSO 和 GC 状态机，都有同名或等价的 Go 来源。半开区间判断、分裂时左半 version 加一/右半纪元重置、候选键的商余分配、外部时间戳 CAS、最小 barrier 阻塞 txn safe point，以及 GC 不得越过 txn safe point等关键规则保持一致。
-
 Rust 版本有以下明确差异和迁移边界：
 
 - Go 构造器从 `mvcc.DBBundle` 加载 Region，并在 bootstrap/分裂时把元数据写入 Badger；Rust 本文件只有内存表，重启不恢复。
@@ -108,13 +104,3 @@ Rust 版本有以下明确差异和迁移边界：
 测试逻辑必须继续放在独立文件：分裂点与 external timestamp 回归扩展 `mock_region_test.rs`；GC barrier/safe-point 扩展 `mock_pd_test.rs`；请求上下文和纪元兼容性可扩展 `region_test.rs` 或 server 侧独立测试。需要同步对照 Go 的 `mock_region.go`、`mock_pd_test.go`，但不要把 Go 的持久化/完整接口能力当成 Rust 当前事实。
 
 兼容性风险主要是键编码、纪元比较方向、原 Region ID 落在哪一半、错误映射和 GC 单调性；性能风险主要是 `scan_regions` 对 HashMap 全表扫描、`split_keys` 的逐键加锁以及所有 keyspace 共用一把 GC mutex。
-
-## 验证依据
-
-- 源码全量读取：`pkg/store/mockstore/unistore/tikv/mock_region.rs`，覆盖其中 82 个索引符号及所有 783 行；主要事实落在 `MockRegionManager`、`MockPd`、`get_ts`、`GcStatesManager` 及其方法。
-- crate 与模块边界：`pkg/store/mockstore/unistore/tikv/Cargo.toml`、`pkg/store/mockstore/unistore/tikv/lib.rs`。
-- RustCodeGraph：`status` 显示目标目录已索引；`files --filter pkg/store/mockstore/unistore/tikv` 列出目标 Rust/Go/测试文件；`query MockRegionManager --kind struct`、`query GcStatesManager --kind struct` 同时定位 Rust 与 Go 对照。`explore`/`node --file` 本次无正文输出，调用点改用 `rg` 和直接读取核验。
-- Rust 上游：`pkg/store/mockstore/unistore/cluster.rs`、`pkg/store/mockstore/unistore/server/server.rs`、`pkg/store/mockstore/unistore/pd.rs`；同 crate 类型使用处还包括 `region.rs`、`server.rs`、`server_batch.rs`。
-- Go 对照：`pkg/store/mockstore/unistore/tikv/mock_region.go`，重点核对构造/持久化、路由、bootstrap、分裂、外部时间戳、TSO 和 GC 状态机。
-- 独立测试：`pkg/store/mockstore/unistore/tikv/mock_region_test.rs` 验证商余分裂点和 external timestamp；`mock_pd_test.rs` 验证三个 keyspace、safe-point 单调性、最小 barrier 与错误；`region_test.rs` 提供纪元/分裂兼容证据。Go 的 `mock_pd_test.go` 提供 GC API 原始语义对照。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。交付前另以指定 shell 命令验证目标文档存在且恰有十一个固定二级标题，并人工复核没有把 Go 独有能力写成 Rust 已支持。

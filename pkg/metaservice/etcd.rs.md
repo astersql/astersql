@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/metaservice/etcd.rs` 是 `astersql-metaservice` crate 的 PD 成员发现与服务 URL 适配层。crate 根模块 `pkg/metaservice/lib.rs` 公开 `etcd` 模块并重新导出其符号，因此调用方可直接使用 `astersql_metaservice::Context`、`parse_url` 等接口。该文件不创建真实 PD/etcd 连接：PD 查询由调用方实现的 `PdClient` 完成，etcd 对象也只通过 `EtcdClient` trait object 保存；实际 keyspace/meta-service-group 拨号流程位于相邻的 `dial.rs`，分组配置解析位于 `metamanager.rs`。
-
-所属 crate 由 `pkg/metaservice/Cargo.toml` 定义，名称为 `astersql-metaservice`。本文件依赖 client-rust 拦截器、proto、tonic 和诊断配置，并使用标准库同步原语，以及 `astersql-util` 提供的 `service_url::ParseServiceURL`；错误类型和 `ServiceClient` 接口来自 `metamanager.rs`。
+不创建真实 PD/etcd 连接：PD 查询由调用方实现的 `PdClient` 完成，etcd 对象也只通过 `EtcdClient` trait object 保存；实际 keyspace/meta-service-group 拨号流程位于相邻的 `dial.rs`，分组配置解析位于 `metamanager.rs`。
 
 ## 核心职责
 
@@ -94,11 +92,7 @@ guard 直接使用 `tikv_client::rpc_interceptor`、其 proto 类型和 `tonic::
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metaservice/etcd.go`，Rust 对应关系如下：
-
 - Go `client` / `newClient` / `NewEtcdMetaServiceClient` 对应 Rust `Client` / `new_client` / `new_etcd_meta_service_client` 及兼容别名；两端都在 etcd 与 PD 均为空时返回 nil/`None`，也都允许仅 PD 客户端存在。
-- Go `GetPDAddrs` 与 `client.GetPDAddrs`/`GetPDServiceURLs` 对应 Rust `get_pd_addrs` 与 `ServiceClient for Client`。Rust 明确复现 `BoRegionMiss` 的 2 ms 起点、500 ms 上限、无抖动及 5000 ms 休眠预算。
-- Go `ParseURL` 对应 Rust `parse_url`/`ParseURL`，两端都委托统一服务 URL 解析逻辑。
 - Go 直接保存具体 `*clientv3.Client` 和 `pd.Client`；Rust 用最小 trait object 解耦 SDK，故 `EtcdClient` 只是所有权/类型擦除边界，`PdMember` 也只保留 URL。
 - Go 使用 `context.Context` 与 TiKV backoffer；Rust 使用同步 `Context`、条件变量和显式退避循环。Rust 的外部取消检查器是连接现有上层上下文的适配机制。
 - 当前 Go `etcd.go` 还包含 `resolveEtcdDialInfo`、`NewEtcdClientFromPDClient`、`DialEtcdClient`、keyspace 元数据加载和 namespace 设置；这些不在 Rust `etcd.rs` 中。Rust 对应能力应到 `pkg/metaservice/dial.rs` 与 `metamanager.rs` 核验，不能把该文件描述为 Go 文件的完整逐函数镜像。
@@ -118,10 +112,3 @@ guard 直接使用 `tikv_client::rpc_interceptor`、其 proto 类型和 `tonic::
 - 兼容风险主要是地址格式、错误文案/变体和重试时延；性能风险主要是同步 RPC、每次重新发现成员以及外部取消检查器的轮询。修改前应同时核对 Go `pkg/metaservice/etcd.go` 与其测试。
 
 新增诊断允许项须同步审查 PD 方法路径或 KV proto 类型，并在独立 `diagnostic_rpc_test.rs` 增加允许和拒绝断言；保留未知请求拒绝及普通模式放行。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/metaservice/etcd.rs` 定位增量、`git show 2c944fb:pkg/metaservice/etcd.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：`pkg/metaservice/lib.rs` / `Cargo.toml`、Go `etcd.go`；独立 `diagnostic_rpc_test.rs::diagnostic_rpc_guards_match_go_allowlists` 覆盖普通放行、PD 允许清单、KV 类型、未知请求和 PermissionDenied。生产 guard 调用见 `pkg/store/driver/tikv_driver.rs`、`pkg/util/metricsutil/common.rs`。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

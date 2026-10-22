@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 workspace 成员 crate `astersql-util-nocopy` 的唯一行为实现文件，源码入口为 [`pkg/util/nocopy/lib.rs`](./lib.rs)：入口声明 `pub mod nocopy`，随后用 `pub use nocopy::*` 再导出本文件的公开 API。crate 由 [`pkg/util/nocopy/Cargo.toml`](./Cargo.toml) 定义，根 [`Cargo.toml`](../../../Cargo.toml) 将它列为 workspace 成员，并以 `facade_util_nocopy` 依赖名接入根 `pkg` crate；[`pkg/lib.rs`](../../lib.rs) 又通过 `pkg::util::nocopy` 门面再导出。
-
-它位于通用工具层，不参与 SQL 解析、规划、执行或存储请求的运行时主链。RustCodeGraph 对本文件的精确查询只识别出 `NoCopy` 及四个方法，且未找到生产调用边；仓库文本检索也只找到模块声明、门面再导出和独立测试。因此，当前 Rust 代码的实际角色是提供已接线但尚无生产 Rust 使用者的兼容标记 API，而不是一个运行时锁实现。
+把 `NoCopy` 字段嵌入另一个 Rust 结构，只有在该结构的复制实现受字段 trait 约束时才形成编译期限制；手写复制逻辑仍可绕过这种意图。
 
 ## 核心职责
 
@@ -59,9 +57,7 @@ Go 上游不同：[`pkg/sessionctx/stmtctx/stmtctx.go`](../../sessionctx/stmtctx
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`nocopy.go`](./nocopy.go)：同样定义空结构 `NoCopy`，并用指针接收者实现空的 `Lock` 与 `Unlock`。这样该类型满足 `sync.Locker` 的方法集合，Go 工具链可通过 `go vet -copylocks` 识别包含它的值被意外复制；`StatementContext` 的空白字段就是这一模式的实际使用点。
-
-Rust 版本保留了零大小、无运行时副作用及大写方法名这三部分形状，同时增加符合 Rust 风格的小写方法和 `Default`。语义差异在于 Rust 没有实现一个对应 `sync.Locker` 的 trait，也没有仓库证据表明 lint 会按 Go 的方式检查包含 `NoCopy` 的外层值。Rust 侧以“不实现 `Clone`/`Copy`”近似表达意图，独立测试明确验证这一点；因此文档不能把两边的静态检查能力描述为完全等价。
+Rust 版本保留了零大小、无运行时副作用及大写方法名这三部分形状，同时增加符合 Rust 风格的小写方法和 `Default`。语义差异在于 Rust 没有实现一个对应 `sync.Locker` 的 trait，也没有仓库证据表明 lint 会按 Go 的方式检查包含 `NoCopy` 的外层值。
 
 ## 扩展指南
 
@@ -70,13 +66,3 @@ Rust 版本保留了零大小、无运行时副作用及大写方法名这三部
 - 若要调整方法兼容性，应同时审查 `lock`、`unlock`、`Lock`、`Unlock` 四个入口。删除大写入口可能破坏机械移植或遗留调用代码；给空方法增加真实锁状态则会改变 ZST、可重复调用和资源生命周期等既有不变量。
 - 若未来出现生产 Rust 使用者，应为实际外层类型增加回归测试，而不能只依赖本 crate 的零大小测试。尤其需要验证外层类型的复制 API、线程边界和性能布局是否符合预期。
 - 不应为了获得 Go `copylocks` 效果而把本类型改造成真实互斥锁；若需求是并发同步，应在调用方显式选择标准或项目既有同步原语，并单独验证死锁与生命周期。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的 `nocopy.rs` 被识别为含 6 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/util/nocopy/nocopy.rs`：核对 `NoCopy`、`impl` 和四个公开方法的完整实现；精确 `query NoCopy` 区分了 Go/Rust 同名符号。
-- RustCodeGraph 对 `pkg/util/nocopy/nocopy.rs::NoCopy`、`lock`、`unlock`、`Lock`、`Unlock` 的 `callers`/`callees` 查询：未返回调用边；随后用限定 Rust 文件的 `rg` 复核，未发现独立测试之外的使用者。
-- [`pkg/util/nocopy/Cargo.toml`](./Cargo.toml)、[`pkg/util/nocopy/lib.rs`](./lib.rs)、根 [`Cargo.toml`](../../../Cargo.toml) 与 [`pkg/lib.rs`](../../lib.rs)：核对 crate 名、workspace 成员、门面依赖、模块再导出及唯一测试依赖。
-- [`pkg/util/nocopy/nocopy.go`](./nocopy.go) 与 [`pkg/sessionctx/stmtctx/stmtctx.go`](../../sessionctx/stmtctx/stmtctx.go)：核对 Go 的 Locker 方法形状及 `StatementContext` 中禁止复制的真实原因。
-- [`pkg/util/nocopy/migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)：核对 ZST、非 `Clone`/`Copy` 和小写空操作可重复调用；未发现对大写兼容方法的现有测试。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；交付结构通过任务指定的 11 章节命令验证，并另行检查变更范围只包含本文档与任务文件删除。

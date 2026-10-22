@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/kv/key.rs` 属于 `astersql-kv` crate，是 SQL 层与存储层共同使用的“键与行标识”基础实现。`pkg/kv/lib.rs` 在 `pub mod key` 中通过 `include!("key.rs")` 装入该文件，并以 `pub use key::*` 从 crate 根导出，因此调用方通常写作 `astersql_kv::Key`、`kv::NewCommonHandle` 等，而不需要显式经过 `key` 子模块。
-
-该文件位于存储访问主链的公共数据模型层：`Key`/`KeyRange` 描述按字节序扫描的边界，`Handle` 及其实现描述表行标识，`HandleMap` 系列按行标识保存临时状态。实际调用可见于 `pkg/tablecodec/tablecodec.rs`（编码键与行句柄互转）、`pkg/planner/util/handle_cols.rs`（构造复合或分区句柄）、`pkg/session/runtime/relational_scan.rs`（生成前缀扫描上界）和 `pkg/executor/index_merge_reader.rs`（句柄内存计量）。本文件不执行事务、RPC 或磁盘 I/O，也不拥有存储连接。
-
-crate 边界由 `pkg/kv/Cargo.toml` 定义：包名为 `astersql-kv`，默认不启用 feature，`nextgen` 仅向 `kerneltype` 和 `keyspace` 透传；本文件本身没有条件编译分支。与本文件直接相关的 crate 内再导出包括 `codec`（`astersql-util-codec`）、`hack::MemAwareMap`（`astersql-util-hack`）、`size`（`astersql-util-size`）和 `types::Datum`。
+以 `Handle` trait 统一整数主键、复合主键和分区行标识；负责编码、列切片、解码、比较、复制和内存计量。
 
 ## 核心职责
 
@@ -81,7 +77,7 @@ RustCodeGraph 的宽泛 `explore` 会把仓库内许多同名 `Key`/`Next` 符�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/kv/key.go`，测试对照为 `pkg/kv/key_test.go` 与 `pkg/kv/key_test.rs`。Rust 基本逐项保留 Go 的公开命名和分支：`Key` 操作、`KeyRange::IsPoint`、`Handle` 方法集、三种句柄、四路 `HandleMap`、不支持删除的 `MemAwareHandleMap`，以及 `Range` 的提前终止顺序均可一一对应。
+Rust 基本逐项保留 Go 的公开命名和分支：`Key` 操作、`KeyRange::IsPoint`、`Handle` 方法集、三种句柄、四路 `HandleMap`、不支持删除的 `MemAwareHandleMap`，以及 `Range` 的提前终止顺序均可一一对应。
 
 语言表示上的差异包括：Go `Key` 是 `[]byte`，Rust 是拥有型 `Vec<u8>` 新类型；Go 接口值由运行时携带动态类型，Rust 通过 `Any::downcast_ref` 识别 `PartitionHandle`；Go `any` 值对应 Rust `Box<dyn Any>`，泛型值则直接存为 `V`；Go map key 将复合编码转为 `string`，Rust 直接使用 `Vec<u8>`；Rust 返回值常为深拷贝以满足所有权规则。
 
@@ -98,12 +94,3 @@ Rust `CommonHandle::Copy` 不需要处理 Go 的 nil receiver；Rust `Encoded`/`
 改变 `CommonHandle` 编码时，应从 `NewCommonHandle`、`EncodedCol`、`Data` 三处成组修改，并与 `codec::CutOne`/`DecodeOne` 的格式契约及 `pkg/tablecodec/tablecodec.rs` 的构造点联合验证。尤其要保护短编码补零但列偏移基于原输入这一不变量，以及复合编码位于整数句柄最小/最大编码之间的排序性质。
 
 修改内存统计时要区分三个口径：Rust 结构体静态大小、map/键的估算大小、值指向对象的外部追踪；不得把 `HashMap` 实际容量或 `V` 的深层对象无依据地混入现有 Go 兼容公式。测试应继续放在独立的 `pkg/kv/key_test.rs`，不要内嵌回生产源文件；若要补性能证据，可另行对齐 Go 的三个 benchmark，但这不属于当前文档任务。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`node --file pkg/kv/key.rs --offset 1 --limit 400` 与 `--offset 400 --limit 400` 读取了 697 行完整实现，并报告该文件被 92 个文件使用。
-- RustCodeGraph 精确查询：`query NewCommonHandle --kind function`、`query NewHandleMap --kind function`、`query NewMemAwareHandleMap --kind function`、`query NewPartitionHandle --kind function`，确认目标 Rust 定义及对应 Go 定义；对 `NewCommonHandle` 的 `callees` 未形成 codec 边，故下游关系以已索引源码体核实。
-- Rust 源与模块边界：`pkg/kv/key.rs`、`pkg/kv/lib.rs`、`pkg/kv/Cargo.toml`。`pkg/kv` 不存在 `doc.go`，因此包契约以 `lib.rs` 顶部说明和模块接线为准。
-- 直接调用证据：`pkg/tablecodec/tablecodec.rs`、`pkg/planner/util/handle_cols.rs`、`pkg/planner/core/operator/physicalop/physical_batch_point_get.rs`、`pkg/session/runtime/row_codec.rs`、`pkg/session/runtime/relational_scan.rs`、`pkg/structure/hash.rs`、`pkg/executor/index_merge_reader.rs`。
-- Go 对照：`pkg/kv/key.go`；独立测试：`pkg/kv/key_test.rs` 与 `pkg/kv/key_test.go`。两者共同验证 PrefixNext/IsPoint 边界、句柄编码比较、短编码补零、映射覆盖与删除、分区隔离、Range 提前终止、内存估算及复合编码排序。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证本文恰有 11 个固定二级章节，并人工复核未把 Go 的 unsafe `KeyRange` 布局承诺误写为 Rust 现状。

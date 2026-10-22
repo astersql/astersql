@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-restore-split`。该包由同目录的 `Cargo.toml` 定义为 library crate，入口是 `lib.rs`；`lib.rs` 以 `pub mod mock_pd_client` 装入本文件，并通过 `pub use mock_pd_client::*` 将其中的公开符号提升到 crate 根。它不是 BR 恢复的真实 PD 网络客户端，而是一组供 region 分裂、scatter、PD HTTP 配置及重试测试使用的进程内替身。真实业务契约由 `client.rs` 中的 `PdBackend`、`PdHttpBackend`、`SplitClient` 抽象，本文件实现这些抽象来驱动 `client.rs`、`split.rs` 和 `splitter.rs` 的测试路径。
-
-尽管文件名含 `mock`，它不是独立测试文件：它作为生产候选模块参与 crate 编译，并被 `client_test.rs`、`split_test.rs`、`mock_pd_client_test.rs`、`parity_test.rs` 以及相邻 restore 模块引用。模块注释明确说明其对照对象为同目录 `mock_pd_client.go`，且不连接真实 PD gRPC。
+`TestClient` 与 `TestClientMut` 实现 `SplitClient`，维护 store、region 和递增 region ID，用于验证编码后的 split key 如何改写两个相邻 region。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ split keys 不会在本文件内排序或去重，`split_region_inner` 直接按
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/restore/split/mock_pd_client.go`。Rust 保留了 Go 的主要类型分工与可观察语义：`TestClient` 的编码 split、`MockPDClientForSplit` 的 scan/split/scatter/operator 脚本、`FakePDHTTPClient` 的 placement rules、`FakePDClient` 和 `FakeSplitClient` 的窄替身都可找到同名实现。
-
 需要明确记录的当前差异包括：
 
 - Go `TestClient` 用一个 `RWMutex`；Rust 将主要状态放入 `TestClientMut::Mutex`，顶层扫描注入另用原子字段，并未复刻 Go 的 `scattered` map。
@@ -98,12 +94,3 @@ split keys 不会在本文件内排序或去重，`split_region_inner` 直接按
 修改 region 分裂时重点维护三个不变量：输入 key 的 raw/encoded 模式、原 region ID 保留给 origin、`RegionTree` 与 ID map 同步。修改扫描时必须统一说明空 end、零/负 limit、空成功结果和 FIFO 错误注入的语义。修改 hook 时必须继续在锁外执行用户闭包。
 
 测试必须放在独立文件，不能内嵌到本源文件。最直接的同步位置是 `mock_pd_client_test.rs`；若影响 `Client` 的重试/兼容策略，应扩展 `client_test.rs`；若影响批量 split、scatter 或等待 operator，应扩展 `split_test.rs`；公开 Go/Rust 契约变化还应更新 `parity_test.rs` 并核对 `client_test.go`、`split_test.go` 的对应场景。兼容风险集中在错误文本/分类、空 end 解释、hook 消费方式和计数时机；性能风险主要是扩大持锁区或在锁内引入回调。
-
-## 验证依据
-
-- Rust 源：`br/pkg/restore/split/mock_pd_client.rs`，核对了 `RegionTree`、`TestClient{,Mut}`、`MockPDClientForSplit`、`MockPDInner`、`FakePDHTTPClient`、`FakePDClient`、`FakeSplitClient` 的完整定义及 trait 实现。
-- crate 边界：`br/pkg/restore/split/Cargo.toml` 与 `br/pkg/restore/split/lib.rs`，确认 library 名称、入口、依赖、模块公开方式及独立测试挂载位置；该目录没有 `doc.go`。
-- Rust 独立测试：`br/pkg/restore/split/mock_pd_client_test.rs`、`client_test.rs`、`split_test.rs`、`parity_test.rs`，确认直接构造点、错误/空结果注入、split hijack、scatter/operator 脚本及边界断言。
-- Go 对照：`br/pkg/restore/split/mock_pd_client.go`、`client_test.go`、`split_test.go`，确认同名 mock 的来源语义与 Rust 当前裁剪范围。
-- RustCodeGraph：执行了 `status`、`files --filter br/pkg/restore/split`、目标文件 `explore`、按文件分段 `node`、`query MockPDClientForSplit --json` 以及构造函数 callers/callees 查询；图确认目标文件共 1501 行、由 22 个文件使用，并定位 Rust/Go 同名符号。精确 callers 输出未展开时，以 `rg` 对 Rust 构造函数和配置方法调用点补齐。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核未把 mock 行为描述成生产 PD 能力。

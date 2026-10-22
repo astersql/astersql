@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-importer` crate；crate 根 `pkg/executor/importer/lib.rs` 通过 `mod table_import` 挂载并用 `pub use table_import::*` 对外再导出这里的公共类型和函数。它位于 IMPORT INTO / LOAD DATA 的单表执行层：上接 `LoadDataController`、分布式导入执行器和 `IMPORT FROM SELECT`，下接 Lightning 编码、local backend 引擎、mydump parser、TiKV Region 切分、校验和与元数据服务。
-
-RustCodeGraph 将该文件列为 `pkg/dxf/importinto/task_executor.rs`、`pkg/executor/importer/import.rs` 等文件的依赖；其中分布式任务通过 `NewTableImporter`、`OpenDataEngine`、`OpenIndexEngine`、`ImportAndCleanup` 和失败时的 `CleanupAllLocalEngines` 驱动引擎生命周期，选行导入则经 `pkg/executor/import_into.rs` 调用 `ImportSelectedRows`。文件不是进程入口，也不负责 SQL 解析或任务持久化，而是把已经形成的 `Plan` 和数据源切片落实为本地排序、引擎导入及后处理。
+该边界使本文件保留 Go 版编排语义，同时由宿主提供 backend、parser、容量查询、Region 规划、统计刷新和远端 checksum 等能力。
 
 ## 核心职责
 
@@ -115,8 +113,6 @@ RustCodeGraph 将该文件列为 `pkg/dxf/importinto/task_executor.rs`、`pkg/ex
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/importer/table_import.go`，Rust 基本保留了以下结构：`Chunk`、排序目录准备、Region 参数读取、`TableImporter` 构造、子任务/engine 大小计算、`PopulateChunks`、双引擎打开、导入清理、配额循环、选行导入、allocator rebase、checksum 策略与统计刷新。`pkg/executor/importer/table_import_test.go` 的排序目录、子任务计算和 Region 错误用例，在 Rust 独立测试中有对应覆盖。
-
 当前可见差异必须按现实理解，而不能假定完全等价：
 
 - Go 直接持有 TiDB session、KV storage、logger 和 concrete ingest backend；Rust 通过 `TableImporterService` 注入宿主能力，并将具体网络、日志、session 及错误分类留在服务实现。
@@ -137,13 +133,3 @@ RustCodeGraph 将该文件列为 `pkg/dxf/importinto/task_executor.rs`、`pkg/ex
 - 调整 checksum：`VerifyChecksum` 负责级别策略，`RemoteChecksumTableBySQL` 负责重试/并发退避，服务方法负责一次真实查询。三层职责应保持分离，并覆盖 Optional/Required、不可重试、三次耗尽和最低并发。
 - 调整 allocator rebase：先核对 `DesiredTableInfo` 的 AutoRowID/AutoIncrement/AutoRandom 判定，再同步服务实现中的 etcd 生命周期；需要测试连接关闭后执行一次 `ResetConnection` 的顺序。
 - 新增公共 API 后还应检查 `lib.rs` 的再导出是否仍合适；crate 依赖变化才修改 `Cargo.toml`。任何 Rust 行为修改都应同步同目录独立测试，并尽量与 Go 的控制流和测试意图一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file pkg/executor/importer/table_import.rs` 读取了完整 1,101 行并确认该文件被 `pkg/dxf/importinto/task_executor.rs`、`pkg/executor/importer/import.rs` 等使用。
-- RustCodeGraph 主要查询：`explore "pkg/executor/importer/table_import.rs main symbols callers callees table import"`；`callers/callees NewTableImporter`；`callers ImportSelectedRows`；`callers ImportAndCleanup`。这些查询确认构造器的内部调用和分布式/选行入口关系。
-- 已读生产与装配文件：`pkg/executor/importer/table_import.rs`、`pkg/executor/importer/lib.rs`、`pkg/executor/importer/Cargo.toml`。
-- 已读 Go 对照：`pkg/executor/importer/table_import.go`；重点核对 `NewTableImporter`、`calculateSubtaskCnt`、`PopulateChunks`、`ImportAndCleanup`、`CheckDiskQuota`、`ImportSelectedRows`、`PostProcess`、`VerifyChecksum` 和 `RemoteChecksumTableBySQL`。
-- 已读独立测试：`pkg/executor/importer/table_import_test.rs`、`pkg/executor/importer/table_import_test.go`、`pkg/executor/importer/table_import_testkit_test.rs`。Rust 测试验证配额失败会重试且停止不挂起、排序目录的文件系统分支、子任务/调整后 engine 大小、Region 参数错误透传，以及 Parquet/非 Parquet 的 chunk 大小语义；testkit 文件保留 IMPORT FROM SELECT 出错后的目录清理契约参考。
-- `pkg/executor` 下没有 `doc.go`，因此没有可额外引用的包级契约文件。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；只执行任务指定的 11 章节结构验证，并人工复核本说明能够回答文件存在原因、执行主链、资源/错误边界和安全扩展位置。

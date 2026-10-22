@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`region.rs` 属于 `astersql-domain-infosync` crate，是全局 `InfoSyncer` 与 PD HTTP Region/调度接口之间的一层轻量门面。模块由 `pkg/domain/infosync/lib.rs` 以 `mod region; pub use region::*;` 纳入并重导出；crate 的边界和依赖由 `pkg/domain/infosync/Cargo.toml` 定义。文件不负责建立网络连接、编码表键或解释 SQL，而是接收已经准备好的字节 key range、引擎名或调度器参数，从全局同步器取得 `PdHttpClient` 后转发请求。
-
-当前 Rust 仓库中，五个公开函数除 `pkg/domain/infosync/region_test.rs` 外没有直接调用点；因此它们是已实现、已重导出的移植 API，但不能据此声称 Rust SQL 执行链已经接线。Go 对照实现则由 `pkg/executor/show_placement.go`、`pkg/executor/show.go` 和 `pkg/executor/distribute.go` 调用。
+`PlacementScheduleState` 把 PD 返回的复制状态字符串压缩成三态领域值，并为 SQL 展示提供稳定字符串。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/domain/infosync/region.go`。Rust 保留了 Go 的公开名称和主要分支：三态枚举、展示字符串、PD 客户端缺失时复制状态回退、状态字符串映射，以及四个调度/分布转发入口。
-
 主要差异如下：
 
 - Go 每个函数显式接收 `context.Context`；Rust API 没有 context 参数，因此本层不能表达调用级取消或 deadline。
@@ -95,8 +91,6 @@
 - Go 的复制状态在请求错误或空状态时返回 `Pending` 加原错误；Rust 使用 `?` 传播错误，并仅对成功返回的字符串映射，空字符串会成为 `Ok(Pending)`。
 - Go 的客户端缺失错误由 PD `errs.ErrClientGetLeader.FastGenByArgs(...)` 构造，部分函数参数不同；Rust 统一为 `Error::PdHttpClientMissing`。
 - Go 生产调用链已经接线：`show_placement.go` 查询复制状态，`show.go` 查询分布和 job 配置，`distribute.go` 创建与取消 job。Rust 当前未发现对应生产调用者，不能把 Go 的完整 SQL 行为视作 Rust 已接线行为。
-
-相关 Go 行为测试主要位于 `pkg/executor/distribute_table_test.go`，覆盖调度器配置、创建、取消和 Region 分布在 SQL 执行器中的使用；目标目录没有直接命中这些 API 的 `*_test.go`。Rust 独立测试 `pkg/domain/infosync/region_test.rs` 聚焦本门面的转发、缺失客户端语义和锁生命周期。
 
 ## 扩展指南
 
@@ -107,12 +101,3 @@
 测试应继续放在独立文件 `pkg/domain/infosync/region_test.rs`，不要嵌入生产源文件。至少覆盖：参数完整转发、客户端错误传播、缺失客户端的差异化策略、未知 PD 状态、锁在回调前释放，以及新增 `ConfigValue` 形态。若把 API 接入 Rust executor，还应在对应 executor 的独立测试中覆盖 SQL 可见行为，并与 `pkg/executor/distribute_table_test.go` 等 Go 测试意图对齐。
 
 兼容性风险主要来自 PD 状态字符串和调度 JSON schema；正确性风险来自把未知状态误判为完成、错误的 key range 编码或持锁调用；性能风险较小，但每次调用都经过全局锁读取和一次 `Arc` 克隆，且实际网络延迟完全由客户端承担。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，覆盖 11,467 个文件；`files --filter pkg/domain/infosync` 确认 `region.rs`、`region_test.rs`、Go 对照和模块文件均被索引。
-- RustCodeGraph `node --file pkg/domain/infosync/region.rs`：读取完整 114 行源码并确认 13 个符号；`query` 分别定位 `PlacementScheduleState`、`GetReplicationState`、`GetRegionDistributionByKeyRange`、`GetSchedulerConfig`、`CreateSchedulerConfigWithInput`、`CancelSchedulerJob`。`callers/callees` 精确查询在本仓库超时，因此具体边以源码视图和定向 `rg` 复核，未把超时结果当作“无调用”。
-- 源码与模块边界：`pkg/domain/infosync/region.rs`、`pkg/domain/infosync/lib.rs`、`pkg/domain/infosync/info.rs`、`pkg/domain/infosync/types.rs`、`pkg/domain/infosync/error.rs`、`pkg/domain/infosync/Cargo.toml`。
-- Rust 测试：`pkg/domain/infosync/region_test.rs`，覆盖五个 trait 转发、key range/engine/name/input/job ID、缺失客户端分支、默认展示值和回调期间锁已释放。
-- Go 对照与调用证据：`pkg/domain/infosync/region.go`、`pkg/executor/show_placement.go`、`pkg/executor/show.go`、`pkg/executor/distribute.go`、`pkg/executor/distribute_table_test.go`。
-- 定向 Rust 调用搜索未发现测试之外的五个函数调用点；该限制已在“文件定位”“依赖与调用关系”和“与 Go 版本的对应关系”中明确记录。

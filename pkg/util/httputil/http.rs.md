@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-httputil` crate 的 HTTP 客户端辅助实现，源文件为 [`http.rs`](http.rs)。crate 入口 [`lib.rs`](lib.rs) 声明 `pub mod http` 并通过 `pub use http::*` 再导出这里的公开 API；根工作区 `Cargo.toml` 将该 crate 注册为成员和 `facade_util_httputil` 依赖，随后 `pkg/lib.rs` 又在 `util::httputil` 下再导出。因此它位于通用工具层，提供阻塞式 HTTP GET 能力，而不属于 SQL 规划、执行或存储主链。
-
-当前 Rust 仓库中，通过符号限定搜索能确认的直接调用来自同目录独立测试 [`http_test.rs`](http_test.rs) 和 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)；未发现生产 Rust 文件调用这些 API。这说明 crate 已接入工作区和总门面，但不能据此宣称业务主链已经采用它。
+只提供客户端侧同步辅助函数，不实现重试、鉴权头、请求体、异步执行、状态码范围策略或业务级响应校验。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`http.go`](http.go)，测试对照是 [`http_test.go`](http_test.go)。共同语义包括：默认请求超时 30 秒、GET 请求、仅接受 200、非 200 时读取 body 并采用相同主干错误文案、JSON 只解码首个值，以及返回前释放响应体。
-
 需要保留的差异如下：
 
 - Go `GetJSON` 接受 `context.Context` 并写入调用方提供的目标；Rust 版没有逐请求 context，而是以泛型返回新值。
@@ -97,7 +93,6 @@ Go 对照文件是 [`http.go`](http.go)，测试对照是 [`http_test.go`](http_
 - Rust 无论是否传 builder 都将池空闲超时设为 30 秒；Go 代码仅在 `tlsConf != nil`、创建自定义 transport 时显式设置 30 秒。不能把两者描述为所有路径完全一致。
 - Go 使用 `http.NewRequestWithContext`，因此无效 URL 可在执行前形成请求构造错误；Rust 通过 reqwest builder/send 报错，错误分类统一为 `Request`。
 - Go `GetText` 的 `string(data)` 保留任意字节序列；Rust 使用有损 UTF-8 转换，非法序列会被替换。
-- 两边对非 200 body 都整体读取；两边的流式 JSON decode 都只要求第一个值可解码。
 
 ## 扩展指南
 
@@ -108,12 +103,3 @@ Go 对照文件是 [`http.go`](http.go)，测试对照是 [`http_test.go`](http_
 - 若要严格保留原始文本字节，应新增返回 `Vec<u8>` 的 API，而不是悄然改变 `GetText` 的 UTF-8 契约。
 - 修改生产逻辑时，测试必须继续放在独立文件中：基础行为同步更新 [`http_test.rs`](http_test.rs)，Go 迁移契约同步更新 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，并与 [`http_test.go`](http_test.go) 的意图复核。不要把 Rust 测试内嵌进 `http.rs`。
 - 性能风险主要来自阻塞线程和无限制整体缓冲；兼容风险主要来自公开错误枚举、Go 风格函数名、严格 200 策略、错误文本以及 builder 覆盖顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、索引时间戳 `1791342965170`；`files --filter pkg/util/httputil` 列出 Go/Rust 实现和测试；`node --file pkg/util/httputil/http.rs --offset 1 --limit 240` 返回目标文件完整 133 行与 10 个符号。
-- RustCodeGraph 符号查询确认 `GetJSON`、`GetText`、`doGet` 的 Go/Rust定义；对 `NewClient`、`GetJSON`、`GetText`、`doGet` 执行带 `--file pkg/util/httputil/http.rs` 的 `callers`/`callees`，没有函数级结果，因此没有将文件级“used by”列表误写成真实调用关系。
-- 已读生产与装配文件：[`http.rs`](http.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、根 `Cargo.toml` 的 workspace/依赖条目、`pkg/lib.rs` 的 `util::httputil` 门面。
-- 已读 Go 对照与独立测试：[`http.go`](http.go)、[`http_test.go`](http_test.go)、[`http_test.rs`](http_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。
-- 文本引用搜索确认当前生产 Rust 中未发现对该 crate 名、`util_httputil` 路径或这些 API 的直接消费；这一结论只覆盖当前检出的仓库源码，不代表外部 crate 没有消费者。
-- 按任务要求未运行 Cargo。交付前以固定标题结构命令确认本文恰有 11 个二级章节，并人工复核文件定位、运行流程、安全扩展点及未验证范围。

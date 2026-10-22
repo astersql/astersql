@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/inference/nvidia.rs` 是 `astersql-inference` crate 中的 NVIDIA NIM embedding provider 适配器。模块由 `pkg/inference/lib.rs` 公开为 `astersql_inference::nvidia`；`pkg/domain/domain.rs::init_inference_providers` 构造 `NvidiaEmbedder`，并以 provider 名 `nvidia_nim` 注册到 Domain 持有的 `EmbedFn`。因此它位于 SQL embedding 调用链的外部服务边界：上游负责 provider 选择、合批与缓存，本文件负责把一次批量 embedding 请求转换成 NVIDIA NIM 的 HTTP 协议并解码结果。
-
-该 crate 的边界由 `pkg/inference/Cargo.toml` 定义，包名为 `astersql-inference`，`lib.rs` 是库入口。本文涉及的直接依赖包括 `reqwest`（HTTP client/URL）、`serde_json`（请求与响应 JSON）和 `base64`（经 `openai.rs` 的兼容解码器间接使用）；HTTP 客户端启用 `rustls-tls` 且关闭 `reqwest` 默认 feature。
+因此它位于 SQL embedding 调用链的外部服务边界：上游负责 provider 选择、合批与缓存，本文件负责把一次批量 embedding 请求转换成 NVIDIA NIM 的 HTTP 协议并解码结果。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@ endpoint 会 trim 外层空白，只接受带 host 的绝对 `http`/`https` URL�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/inference/embedding/nvidia/nvidia.go`。类型映射为 Go `Embedder` ↔ Rust `NvidiaEmbedder`，`NewNvidiaEmbedder` ↔ `new`/`with_config`，`embeddingsEndpoint` ↔ `endpoint`，`validateEmbeddingType` ↔ `create_embeddings_with_context` 的内联校验，`decodeErrorMessage` ↔ 错误消息 closure，`decodeEmbeddings` ↔ Rust 私有同名函数，`CreateEmbeddings` ↔ `Embedder` 实现。
-
-两版保持的行为包括：默认完整 endpoint；空 texts短路；model 必填；只允许 float embedding type；固定字段覆盖同名 options；Bearer key；401/403/404 特定错误；多种 NVIDIA 错误 schema；按 index 重排并解码 base64 little-endian float32。Rust 的 `pkg/inference/nvidia_test.rs` 以独立测试覆盖这些协议，并复用 `cohere_test::provider_contract` 验证取消、响应体上限、transport cause 和 secret 脱敏；Go 的 `pkg/inference/embedding/nvidia/nvidia_test.go` 覆盖相同主干及错误边界。
+Rust 的 `pkg/inference/nvidia_test.rs` 以独立测试覆盖这些协议，并复用 `cohere_test::provider_contract` 验证取消、响应体上限、transport cause 和 secret 脱敏；Go 的 `pkg/inference/embedding/nvidia/nvidia_test.go` 覆盖相同主干及错误边界。
 
 可见差异是 Rust `decode_embeddings` 在进入共享 `data` 解码前显式检查 `object`、`usage` 和 token 字段类型，而当前 Go `decodeEmbeddings` 直接反序列化 `Response.Data`。Rust 使用 `ProviderContext` 保留取消 cause，并在共享 async 执行器中轮询 `AtomicBool`；Go 直接使用 `context.Context`。这些是运行时表达方式与额外校验差异，不应在后续改动中擅自删减以追求表面一致。
 
@@ -94,15 +90,3 @@ endpoint 会 trim 外层空白，只接受带 host 的绝对 `http`/`https` URL�
 - 改动响应格式时，优先在私有 `decode_embeddings` 加 NVIDIA 外层验证；只有确实共享的 index/base64 格式才修改 `openai.rs::decode_indexed_base64_embeddings`，因为 Jina、TiDB Cloud 等调用者也受影响。
 - 测试必须继续放在独立的 `pkg/inference/nvidia_test.rs`，不要嵌入生产源文件。同步覆盖请求 payload、校验先后、所有 status/schema、响应字段类型、索引/字节边界、取消 cause、响应体上限和 secret 脱敏；若改变跨语言契约，还应同步核对 `pkg/inference/embedding/nvidia/nvidia_test.go`。
 - 兼容性风险主要是配置 URL 含义、错误字符串和 option 覆盖顺序；性能风险主要来自每请求 runtime、响应体大小与上层批量尺寸。任何优化都应保留取消、超时、限额、脱敏和精确条数/索引验证。
-
-## 验证依据
-
-- RustCodeGraph `status`：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录及 `nvidia.rs` 均在索引内。
-- RustCodeGraph 完整读取：`pkg/inference/nvidia.rs`（143 行），确认 `DEFAULT_BASE_URL`、`NvidiaEmbedder`、两个构造器、`endpoint`、两个 trait 方法与 `decode_embeddings`。
-- RustCodeGraph 精确查询/调用证据：`NvidiaEmbedder` 位于 `nvidia.rs:22`，`decode_embeddings` 位于 `nvidia.rs:131`；查询确认 `create_embeddings_with_context` 调用 `base.rs::execute_json_embedding_call`，并确认 `nvidia.rs::decode_embeddings` 调用 `openai.rs::decode_indexed_base64_embeddings`。
-- 上游接线：`pkg/inference/lib.rs`；`pkg/domain/domain.rs::init_inference_providers` 中 `nvidia_nim` 注册及 `tidb_exp_embed_nvidia_nim_api_key` getter；`pkg/inference/embed_fn.rs` 的 `Embedder` trait、`EmbedFn::register` 及请求入口。
-- 下游实现：`pkg/inference/base.rs` 的配置、URL/header、HTTP/取消/限额/脱敏生命周期；`pkg/inference/openai.rs::decode_indexed_base64_embeddings` 的长度、索引和 float32 解码规则。
-- crate 边界：`pkg/inference/Cargo.toml`；模块/测试装配：`pkg/inference/lib.rs`。
-- 独立 Rust 测试：`pkg/inference/nvidia_test.rs`，覆盖请求、float option、共享 provider contract、状态码/错误 schema、默认与非法 endpoint。
-- Go 对照与测试：`pkg/inference/embedding/nvidia/nvidia.go`、`pkg/inference/embedding/nvidia/nvidia_test.go`。
-- 本任务只新增说明文档；依照计划不运行 Cargo。交付前另以任务给定命令验证本文恰有十一个固定二级标题，并人工检查所有行为陈述均可回溯到上述符号或文件。

@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-util-dbutil`（见 `pkg/util/dbutil/Cargo.toml`），由 crate 入口 `pkg/util/dbutil/lib.rs` 通过 `pub mod retry` 公开。它位于 dbutil 的 SQL 执行辅助层：自身不连接数据库、不执行 SQL，也不实施重试，只把一个已经规范化为 `crate::interface::DbError` 的数据库错误分类为“可由上层直接重试”或“不可直接重试”。当前生产调用点是 `pkg/util/dbutil/common.rs` 的 `ExecSQLWithRetry`。
+只回答分类问题；重试次数、等待时间、SQL 再执行和最终错误返回均由 `common.rs::ExecSQLWithRetry` 负责。
 
 ## 核心职责
 
@@ -58,9 +58,7 @@ Rust 入口要求调用者已经得到 `DbError`，所以不存在 Go 测试中�
 
 ## 与 Go 版本的对应关系
 
-Rust 的两个消息、10 个无条件重试错误码、1105 子串匹配顺序和大小写语义与 `pkg/util/dbutil/retry.go::IsRetryableError` 对齐。`pkg/util/dbutil/retry_test.rs` 还把 Go 中“条件性/不可/未知”错误的排除策略编码成独立回归测试。
-
-主要边界差异在输入模型：Go 接收任意 `error`，先用 `errors.Cause` 解包，再只接受 `*mysql.MySQLError`，因而自然覆盖 `nil`、普通错误和连接哨兵错误；Rust 接收非空的 `&DbError`，没有错误链或运行时类型判断。另一个维护差异是 Go 通过 `pkg/errno` 常量表达错误码，Rust 当前在 `RETRYABLE_ERROR_CODES` 中使用带注释的数值字面量。修改列表时必须同时核对 Go 常量的数值，避免错误码漂移。
+主要边界差异在输入模型：Go 接收任意 `error`，先用 `errors.Cause` 解包，再只接受 `*mysql.MySQLError`，因而自然覆盖 `nil`、普通错误和连接哨兵错误；Rust 接收非空的 `&DbError`，没有错误链或运行时类型判断。另一个维护差异是 Go 通过 `pkg/errno` 常量表达错误码，Rust 当前在 `RETRYABLE_ERROR_CODES` 中使用带注释的数值字面量。
 
 ## 扩展指南
 
@@ -69,10 +67,3 @@ Rust 的两个消息、10 个无条件重试错误码、1105 子串匹配顺序�
 - 若要支持任意驱动错误或错误链，应在 `interface.rs::DbError` 的转换边界设计明确的解包/映射合同，不应在本函数里用文本猜测所有错误类型。
 - 若要改变次数、间隔、退避、取消或超时，应修改 `common.rs::ExecSQLWithRetry` 及其独立测试，而不是把执行策略塞入本分类文件。
 - 所有更改都应继续保持生产逻辑与测试逻辑分文件；除分类测试外，还应同步 `common_test.rs` 中 `ExecSQLWithRetry` 的集成式单元场景，验证重试次数、停止条件和最终错误。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 `pkg/util/dbutil/retry.rs`；`files --filter pkg/util/dbutil` 定位 Rust/Go 源与独立测试；`node --file pkg/util/dbutil/retry.rs` 核对 53 行完整实现，并报告该文件被 `common.rs`、`retry_test.rs` 使用；`query IsRetryableError` 定位目标函数及同路径 Go 函数；`query RETRYABLE_ERROR_CODES`、`query Retryable1105Msgs` 定位两个常量。精确 `callers`/`callees` 未返回可用输出，因此调用细节又由局部源码搜索核验。
-- 已读生产与接线文件：`pkg/util/dbutil/retry.rs`、`common.rs`（尤其 `ExecSQLWithRetry`）、`interface.rs`（`DbError`/`DBExecutor`）、`lib.rs`、`Cargo.toml`，以及根 `Cargo.toml` 的 workspace/facade 声明。
-- 已读 Go 对照：`pkg/util/dbutil/retry.go`；已读测试：`pkg/util/dbutil/retry_test.rs`、`retry_test.go`、`common_test.rs` 中的 `ExecSQLWithRetry` 场景。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付时使用任务给定的 11 章节结构命令验证，并人工复核本文只陈述上述源码、调用边和测试能够支持的事实。

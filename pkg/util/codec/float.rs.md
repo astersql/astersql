@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-codec` crate（`pkg/util/codec/Cargo.toml`）。crate 入口 `pkg/util/codec/lib.rs` 以私有 `mod float` 声明模块，再用 `pub use float::*` 将四个公开函数导出到 crate 根：`EncodeFloat`、`DecodeFloat`、`EncodeFloatDesc` 和 `DecodeFloatDesc`。因此调用方通常写成 `codec::EncodeFloat`，不直接依赖 `float` 模块路径。
-
-它位于 SQL 值与稳定字节表示的边界：把 `f64` 转换为固定 8 字节、可按字节字典序比较的形式，供 Datum 编解码、表达式 protobuf 常量、rowcodec 行格式和规划属性指纹复用。文件不负责类型标签；例如 `pkg/util/codec/codec.rs` 的 `Encoder::encode` 先写入 `floatFlag`，再调用这里的编码函数。
+`EncodeFloat` / `DecodeFloat` 借助大端无符号整数编解码，提供升序 mem-comparable 表示。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ RustCodeGraph 将 `float.rs` 标为被 9 个文件使用，但对经 crate 根�
 
 `pkg/util/codec/float.go` 是逐函数对照：Rust 的 `f64::to_bits` / `f64::from_bits` 对应 Go 的 `math.Float64bits` / `math.Float64frombits`，`!`、`signMask` 分支以及升序/降序整数复用逻辑一致。API 形态差异来自语言：Go 使用可追加的 `[]byte` 并以三元组返回解码错误；Rust 获取 `Vec<u8>` 所有权，并用 `Result<(&[u8], f64), SharedError>` 表达成功或失败。
 
-Go 的 `pkg/util/codec/codec_test.go::TestFloatCodec` 验证普通值、最值、最小正数和正负无穷的往返与排序。Rust 的 `pkg/util/codec/codec_test.rs::TestFloatCodec` 移植同类向量；独立的 `pkg/util/codec/float_2_aster_unit_test.rs` 进一步验证后缀保留、短输入错误、更多严格序列，以及 Go `f >= 0` 语义导致的 `±0` 和 NaN 行为。现有 Rust 逻辑没有自行“修正”这些 Go 边界，因此跨语言字节兼容性优先于 IEEE 位模式全面保真。
+Rust 的 `pkg/util/codec/codec_test.rs::TestFloatCodec` 移植同类向量；独立的 `pkg/util/codec/float_2_aster_unit_test.rs` 进一步验证后缀保留、短输入错误、更多严格序列，以及 Go `f >= 0` 语义导致的 `±0` 和 NaN 行为。现有 Rust 逻辑没有自行“修正”这些 Go 边界，因此跨语言字节兼容性优先于 IEEE 位模式全面保真。
 
 ## 扩展指南
 
@@ -82,12 +80,3 @@ Go 的 `pkg/util/codec/codec_test.go::TestFloatCodec` 验证普通值、最值�
 - 新增行为测试应放在独立测试文件 `pkg/util/codec/float_2_aster_unit_test.rs`，不要嵌入 `float.rs`。至少同步覆盖升序/降序往返、字节序、后缀推进、少于 8 字节的错误、`±0`、两类符号 NaN、无穷与相邻极小值；若要求与 Go 对齐，也应同步评估 `pkg/util/codec/codec_test.go`。
 - 调整错误类型或错误消息时，应审查 `pkg/expression/distsql_builtin.rs` 的错误转换、`pkg/util/codec/codec.rs` 的 `?` 传播及 rowcodec 调用方。
 - 性能变更应保留固定宽度、常数时间和缓冲区追加模式；避免为单个浮点引入临时堆分配。涉及 planner 指纹时还要验证相同属性产生稳定字节，避免缓存键兼容性变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/util/codec` 确认实现、Go 对照和独立测试；`node --file pkg/util/codec/float.rs` 读取完整 80 行实现；对六个符号执行 `query`，对四个公开 API 和两个私有变换执行 `callers` / `callees`；另以 `node` 核验 `number.rs` 的四个整数 API。
-- 源码与装配：`pkg/util/codec/float.rs`、`pkg/util/codec/lib.rs`、`pkg/util/codec/number.rs`、`pkg/util/codec/Cargo.toml`。
-- Go 对照：`pkg/util/codec/float.go`、`pkg/util/codec/codec_test.go::TestFloatCodec`。
-- Rust 测试：`pkg/util/codec/float_2_aster_unit_test.rs::floats_round_trip_and_encode_in_go_memcomparable_order`、`float_bit_edges_follow_go_sign_transform`，以及 `pkg/util/codec/codec_test.rs::TestFloatCodec`。
-- 上游调用：`pkg/util/codec/codec.rs`、`pkg/expression/expr_to_pb.rs`、`pkg/expression/pb_to_expr_runtime.rs`、`pkg/expression/distsql_builtin.rs`、`pkg/util/rowcodec/encoder.rs`、`pkg/util/rowcodec/decoder.rs`、`pkg/planner/property/physical_property.rs`。
-- 本任务只新增说明文档，不运行 Cargo。交付结构检查要求目标文件存在，并且十一个固定二级标题各出现一次。

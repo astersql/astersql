@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessionctx-variable` crate；crate 入口 `pkg/sessionctx/variable/lib.rs` 以公开模块 `pub mod statusvar` 暴露它，并把 `vardef` 与 `tls_dependency::tls` 分别再导出为本文件使用的作用域/原子计数器定义和 TLS 名称转换工具。`pkg/sessionctx/variable/Cargo.toml` 的 `[lib] path = "lib.rs"` 与依赖项 `vardef`、`tls_dependency` 确认了这一边界。
-
-它实现的是状态变量的“提供者注册 + 快照聚合”层：调用者向全局注册表加入实现 `Statistics` 的提供者，再由 `GetStatusVars` 把各提供者的名称、动态值和作用域合并为一个快照。Go 完整应用中，`pkg/executor/show.go:ShowExec.fetchShowStatus` 调用同包 Go 版本的 `GetStatusVars`，因此该抽象服务于 `SHOW STATUS`。但是当前 Rust 生产代码搜索未发现对 `statusvar::GetStatusVars`、`RegisterStatistics` 或 `UnregisterStatistics` 的调用，且 `pkg/executor/show.rs:ShowExec.fetchShowStatus` 仍委托 `ShowOperation::Status`；因此本文件目前是可独立测试的迁移实现，不能据此声称 Rust SQL 主链已经接入。
+`Statistics` 定义状态提供者协议：`Stats` 产生名称到值的映射，`GetScope` 为其中每个名称给出 `vardef::ScopeFlag`。
 
 ## 核心职责
 
@@ -81,11 +79,8 @@ Go 对照提供了完整应用位置：`pkg/executor/show.go` 在 `SHOW STATUS` 
 
 ## 与 Go 版本的对应关系
 
-Rust 主要逐项对应 `pkg/sessionctx/variable/statusvar.go`：`Statistics`、`StatusVal`、默认作用域、注册表锁、追加注册、从后查找并 swap 删除、聚合时错误短路、25 个 TLS cipher、默认状态集合及会话覆盖规则均保持一致。`pkg/sessionctx/variable/statusvar_test.go:TestStatusVar` 的 mock 注册和作用域断言由 `statusvar_test.rs:test_status_var` 对齐。
-
 语言层差异包括：
 
-- Go 的 `any` 在 Rust 中成为受 `Debug + Display + Send + Sync + Any` 约束的 `StatusValue`，读取具体类型需 `downcast_ref`。
 - Go 用接口值相等查找提供者；Rust 只接受 `Arc` 句柄并以 `Arc::ptr_eq` 比较身份。对重复注册同一句柄，两边都删除最后一个匹配项；两个内容相同但分配不同的 Rust 提供者不会互相注销。
 - Go 在 `init()` 中先生成 cipher 字符串并调用 `RegisterStatistics(defaultStatusStat)`；Rust 分别通过 `TLS_SUPPORTED_CIPHERS: LazyLock` 和 `STATISTICS_LIST` 初值实现惰性等效初始化。
 - Go `GetStatusVars` 返回 `map[string]*StatusVal`，Rust 返回拥有值的 `HashMap<String, StatusVal>`；空会话由 Go `nil` 对应 Rust `None`。
@@ -101,13 +96,3 @@ Rust 主要逐项对应 `pkg/sessionctx/variable/statusvar.go`：`Statistics`、
 测试逻辑必须继续放在独立文件：基础 Go 对齐用例在 `pkg/sessionctx/variable/statusvar_test.rs`，Rust 补充边界在 `statusvar_2_aster_unit_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] #[path = ...]` 挂载。涉及全局注册表或原子计数器的测试应使用 `#[serial]`，在所有退出路径清理已注册句柄并恢复计数器。未来接入 Rust `SHOW STATUS` 时，还需在 executor 独立测试中覆盖作用域过滤、权限和字符串转换；不要把这些展示策略塞回本文件。
 
 兼容风险主要是状态名、具体值类型、作用域和 Go 的 TLS 命名；性能风险主要是每次聚合分配两个映射以及在读锁内调用所有提供者；并发风险主要是回调重入写锁和遗漏注销导致 `Arc` 长期存活。优化分配或缩短锁区间时必须先保持提供者快照、覆盖顺序和错误时不返回部分结果这三项语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/sessionctx/variable/statusvar.rs --offset 1 --limit 400` 返回目标文件 331 行全貌并报告文件级 `used by 33 files`；`query GetStatusVars`、`query RegisterStatistics`、`query UnregisterStatistics` 定位到 Rust/Go 定义及同名符号。精确 `callers/callees` 查询未返回可用函数边，因此未以它证明生产调用。
-- Rust 源与模块边界：`pkg/sessionctx/variable/statusvar.rs`、`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/Cargo.toml`。
-- 直接依赖：`pkg/sessionctx/vardef/tidb_vars.rs` 的 `ScopeFlag`、`ScopeGlobal`、`ScopeSession`、`ConnectAttrsLongestSeen`、`ConnectAttrsLost`；`pkg/util/tls/tls.rs` 的 `CipherSuiteName`、`VersionName`。
-- 独立 Rust 测试：`pkg/sessionctx/variable/statusvar_test.rs` 与 `pkg/sessionctx/variable/statusvar_2_aster_unit_test.rs`，覆盖基础 Go 对齐、重复注册、动态默认状态、空会话和提供者错误。
-- Go 对照与应用接线：`pkg/sessionctx/variable/statusvar.go`、`statusvar_test.go`、`pkg/executor/show.go`、`pkg/server/server.go`、`pkg/server/conn.go`、`pkg/ddl/ddl.go`、`pkg/domain/domain.go`、`pkg/bindinfo/binding_handle.go`、`pkg/store/gcworker/gc_worker.go`。
-- Rust 接线边界复核：`rg` 仅找到 `pkg/executor/show.rs:ShowExec.fetchShowStatus -> ShowOperation::Status`，且生产 Rust 中没有找到本文件三个公开操作的直接调用或额外 `Statistics` 实现；因此文档把完整应用链标为 Go 现状、Rust 待接线事实。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行任务指定的 11 章节结构验证，并人工复核所有“已实现/已接线”表述均有上述路径或符号支持。仓库说明所指的 `.agents/skills/tidb-verify-profile` 在当前工作区不存在，故无法执行其 Ready 文档检查；这不影响任务明确要求且已可运行的结构验证。

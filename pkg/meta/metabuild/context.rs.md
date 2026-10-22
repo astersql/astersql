@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-meta-metabuild` crate 的元数据构建上下文。crate 根模块 `pkg/meta/metabuild/lib.rs` 将私有的 `context` 模块整体 `pub use`，所以这里的 `Context`、`NewContext`、`NewNonStrictContext` 和全部 `With*` 构造器构成该 crate 的公开 API。它位于解析完成的 `CREATE TABLE` AST 与 `TableInfo`/`IndexInfo` 等元数据对象之间：调用方先把会话或工具侧配置装入 `Context`，DDL 构建代码再通过只读访问器决定字符集、聚簇主键、主键约束和预分裂参数。
-
-Rust 生产接线的直接证据包括 `pkg/session/runtime/ddl.rs`：普通 `CREATE TABLE` 路径用 `NewContext` 注入 `WithClusteredIndexDefMode`、`WithShardRowIDBits`、`WithPreSplitRegions`，随后调用 `astersql_ddl::BuildTableInfoFromAST`。`pkg/ddl/create_table.rs` 接收 `&metabuild::Context<C, E>`，并读取其中多个配置。其他直接创建默认上下文的生产位置包括 `pkg/session/fts_runtime.rs`、`pkg/session/runtime/mview_ddl.rs`、`pkg/session/runtime/session.rs`、`pkg/session/ddl_tables.rs` 和 `pkg/importsdk/file_scanner.rs`。
+提供 `NewNonStrictContext`，显式以 `mysql::ModeNone` 构造用于宽松元数据解析/比较的上下文。
 
 ## 核心职责
 
@@ -85,10 +83,6 @@ RustCodeGraph 已索引 `pkg/meta/metabuild/context.rs` 的 29 个符号，并�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/metabuild/context.go`，公开概念与字段保持一一对应：Go `Option.applyCtx` 对应 Rust `Option::apply_ctx`；Go `funcCtxOption`/`funcOpt` 对应 Rust 私有闭包适配器；八个 `With*`、`Context` 八个状态以及全部访问器名称和主要语义均被保留。
-
-关键语言映射如下：
-
 - Go 返回 `*Context`，Rust 返回按值的 `Context<C, E>`，调用方在 DDL 边界借用它。
 - Go interface 引用由 Rust `Arc<dyn Trait>` 表达；InfoSchema 的 Go `nil` 由 Rust `Option<Arc<...>>` 表达。
 - Go `opts ...Option` 由 Rust `Vec<Box<dyn Option<C, E>>>` 表达，二者都保证声明顺序应用。
@@ -110,13 +104,3 @@ RustCodeGraph 已索引 `pkg/meta/metabuild/context.rs` 的 29 个符号，并�
 6. 若新增 crate 依赖，更新 `pkg/meta/metabuild/Cargo.toml` 和根工作区依赖接线；当前文件没有 feature 门控，除非确有多实现需求，不应仅为选项增加条件编译。
 
 兼容性风险主要是默认值变化导致建表元数据漂移、选项顺序变化破坏调用方覆盖、Go/Rust 会话注入不对称，以及将 `Arc` 改为深拷贝后丢失共享身份。性能上本文件仅有线性应用选项和少量 `Arc` 引用计数操作；新增昂贵计算或 I/O 应留在下游构建阶段，而不是 getter 中。
-
-## 验证依据
-
-- 源实现：`pkg/meta/metabuild/context.rs`，核对了全部类型别名、trait、私有适配器、八个选项、`Context` 八个字段、两个构造器和十二个访问/转发方法；文件无条件编译项。
-- crate 边界：`pkg/meta/metabuild/Cargo.toml`、`pkg/meta/metabuild/lib.rs`，确认 crate 名称、六个工作区内部依赖、公开再导出和两个独立 Rust 测试模块。
-- Go 对照：`pkg/meta/metabuild/context.go`、`pkg/meta/metabuild/context_test.go`、`pkg/ddl/metabuild.go`，核对 functional options、默认值、nil/ok 语义、字段覆盖表和会话注入顺序。
-- Rust 测试：`pkg/meta/metabuild/context_test.rs` 的 `context_defaults_match_session_defaults`、`context_options_override_in_declaration_order`；`pkg/meta/metabuild/migration_aster_unit_test.rs` 的 `defaults_and_forwarded_expression_behavior_match_go`、`options_override_in_order_and_preserve_shared_interfaces`、`warnings_notes_and_non_strict_context_match_go`。这些用例覆盖默认表达式行为、全部选项、覆盖顺序、`Arc` 身份、InfoSchema 清空、warning/note 和非严格 SQL mode。
-- 生产调用与消费：`pkg/session/runtime/ddl.rs`、`pkg/session/fts_runtime.rs`、`pkg/session/runtime/mview_ddl.rs`、`pkg/session/runtime/session.rs`、`pkg/session/ddl_tables.rs`、`pkg/importsdk/file_scanner.rs`、`pkg/ddl/create_table.rs`；Cargo 使用方还包括 `pkg/session/Cargo.toml`、`pkg/ddl/Cargo.toml`、`pkg/importsdk/Cargo.toml` 等。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/meta/metabuild` 确认同目录 Rust/Go 源与测试；`node --file pkg/meta/metabuild/context.rs` 返回完整 273 行和 29 个符号；`query` 定位了 Rust/Go 的 `NewContext`、`NewNonStrictContext`、`WithExprCtx`。精确 `callers/callees` 无输出，跨文件关系据精确引用搜索与源码读取复核。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付前执行固定十一章节结构检查，并人工复核本文没有把 Go 接线或测试覆盖误写成 Rust 生产支持。

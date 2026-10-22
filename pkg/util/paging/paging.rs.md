@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`paging.rs` 是 `astersql-util-paging` crate 的算法实现文件，属于 `pkg/util` 下的分布式 SQL 分页工具。crate 根 [`pkg/util/paging/lib.rs`](lib.rs) 通过 `pub mod paging` 加载本文件，再用 `pub use paging::*` 对外再导出公开常量和函数。[`pkg/util/paging/Cargo.toml`](Cargo.toml) 声明的 crate 名为 `astersql-util-paging`，没有额外 feature 或直接依赖，并将 Go 对照包记为 `pkg/util/paging`。
-
-分页策略的用意是将大范围扫描拆成多批请求：首批较小，未耗尽数据时逐步放大 page size，以更早交付首批结果。本文件只计算“下一页大小”和“预估 seek 次数”，不发送请求，也不保存扫描进度。
+定义与 Go 包对齐的分页默认值与策略阈值：`MinPagingSize` (128)、`MinAllowedMaxPagingSize` (50,000) 和 `Threshold` (960)。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ Go 对照主链提供了该算法在完整应用中的位置证据：`pkg/store/
 
 ## 与 Go 版本的对应关系
 
-Rust 的直接对照文件是 [`pkg/util/paging/paging.go`](paging.go)。常量名称与数值、两个公开函数的分支顺序、几何公式及返回类型一一对应。Rust 用 `#![allow(...)]` 保留 `GrowPagingSize` 等 Go 风格名称，避免迁移后 API 语义被 snake_case 改名掩盖。
+Rust 用 `#![allow(...)]` 保留 `GrowPagingSize` 等 Go 风格名称，避免迁移后 API 语义被 snake_case 改名掩盖。
 
 具体语言映射为：Go `size <<= 1` 直接映射为 Rust `u64` 左移；Go 的 `float64(int(math.Log(...)/math.Log(...)))` 映射为 Rust 的 `ln` 比值、`as u64` 截断再转 `f64`；Go 超额分支的无符号加法环绕则用 Rust `wrapping_add` 显式表达。
-
-[`pkg/util/paging/paging_test.rs`](paging_test.rs) 复刻 Go [`paging_test.go`](paging_test.go) 的基本增长、封顶和 seek 边界用例，并保留 `0.1` 的浮点误差窗口。[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步覆盖 `maxv = 0`、`u64::MAX` 左移、增长区间边界以及 `CalculateSeekCnt(u64::MAX)` 的环绕行为。
 
 ## 扩展指南
 
@@ -90,11 +86,3 @@ Rust 的直接对照文件是 [`pkg/util/paging/paging.go`](paging.go)。常量�
 - 改变 `CalculateSeekCnt` 时，应在两个区间分界（0、128、32,640、32,641）和每个 50,000 增量附近增加用例，并显式决定是否继续兼容 Go 的极值环绕。
 - 修改任一公开常量或函数前，需同步核对 `paging.go`、`paging_test.go` 以及 Go 主链中 planner 代价、coprocessor 续扫、会话变量默认值的兼容性。风险主要是规划选择变化、请求批次/延迟变化和 Go/Rust 行为漂移。
 - 若要让 Rust 主链真正使用该 crate，应在已声明依赖的 planner/distsql/copr 边界接入公开 API，并为实际请求续扫或代价计算增加跨 crate 测试；仅有 Cargo 依赖不能证明运行时已接线。
-
-## 验证依据
-
-- RustCodeGraph `status` 确认索引可用；`files --filter pkg/util/paging` 确认本 crate 的 Rust/Go 源与独立测试集合；`node --file pkg/util/paging/paging.rs --offset 1 --limit 260` 读取了目标文件全部 99 行。
-- RustCodeGraph `query GrowPagingSize --kind function` 和 `query CalculateSeekCnt --kind function` 分别定位了 Rust 实现、Go 实现与 Go 测试。`callers/callees` 对这两个 Rust 符号的精确查询在本地持续无输出，因此调用边改用局部 `rg` 核对，没有将该无输出解读为“无调用”。
-- 已读取的直接证据：`pkg/util/paging/Cargo.toml`、`lib.rs`、`paging.go`、`paging_test.rs`、`paging_test.go` 和 `migration_aster_unit_test.rs`。
-- `rg` 核对了 Go 调用点 `pkg/store/copr/coprocessor.go`、`pkg/planner/core/task.go`、`plan_cost_ver1.go`、`plan_cost_ver2.go` 与 `pkg/sessionctx/vardef/tidb_vars.go`，也核对了 Rust 依赖声明、`pkg/lib.rs` 的门面再导出，以及 Rust 生产源中尚无该函数实际调用的现状。
-- 按任务约束，本次为纯文档分析，未运行 Cargo；结构验证只检查文档存在且恰有 11 个规定二级标题。

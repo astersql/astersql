@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`integration.rs` 是 `astersql-parser-ast` crate 的历史兼容视图，而不是一套独立的 AST 实现。crate 入口在 [`pkg/parser/ast/lib.rs`](lib.rs) 中通过 `pub mod integration;` 暴露该模块；本文件唯一的生产代码 `pub use crate::*;` 将 crate 根部的公开 AST 类型、trait、函数、常量和公开子模块重新导出到 `parser_ast::integration` 路径下。
-
-该文件存在的目的，是让旧的集成代码可以继续从 `integration::...` 取用 AST API，同时所有路径仍指向 `lib.rs` 中的规范定义。它不参与 SQL 文本解析、AST 遍历或 SQL 恢复的运行时步骤，也不会生成第二份 AST 类型。
+`pkg/parser/ast/canonical_contract_test.rs` 用同一泛型参数检查根部与 `integration` 路径的 `CIStr`，并比较 `dyn Node` 的 `TypeId`，防止兼容路径演变成独立定义。
 
 ## 核心职责
 
@@ -63,16 +61,9 @@ RustCodeGraph 的 `node --file pkg/parser/ast/integration.rs` 显示文件完整
 
 ## 与 Go 版本的对应关系
 
-Go 的 `pkg/parser/ast` 天然只有一个包级公开命名空间，没有与 `integration.rs` 一一对应的 `integration.go`。Rust 为迁移期/历史调用方额外提供 `integration` 子模块，再把同一套根类型重导出；因此该文件对应的是 Go 单一 `ast` 包公开面的兼容适配，而不是某个 Go 算法文件。
+Rust 为迁移期/历史调用方额外提供 `integration` 子模块，再把同一套根类型重导出；因此该文件对应的是 Go 单一 `ast` 包公开面的兼容适配，而不是某个 Go 算法文件。
 
-相关语义的直接 Go 证据包括：
-
-- `pkg/parser/ast/model.go` 定义 `CIStr` 与 `NewCIStr`；Rust 的兼容路径仍指向根部同名实现。
-- `pkg/parser/ast/dml.go` 定义 `IndexHintType`、`IndexHintScope` 及其常量。
-- `pkg/parser/ast/ddl.go` 定义 `MaskingPolicyRestrictOps` 位掩码常量。
-- `pkg/parser/ast/misc.go` 定义 `LeadingList` 与 `FlattenLeadingList`。
-
-`pkg/parser/ast/integration_9_aster_unit_test.rs` 验证上述代表性 Rust 根符号的 Go 字段/常量语义；它通过 `use super::*` 测试规范实现，而 `canonical_contract_test.rs` 另外证明 `integration` 路径引用的正是该规范实现。两类测试合起来分别覆盖“实现与 Go 对齐”和“兼容路径不复制类型”。
+`pkg/parser/ast/integration_9_aster_unit_test.rs` 验证上述代表性 Rust 根符号的 Go 字段/常量语义；它通过 `use super::*` 测试规范实现，而 `canonical_contract_test.rs` 另外证明 `integration` 路径引用的正是该规范实现。
 
 ## 扩展指南
 
@@ -81,16 +72,3 @@ Go 的 `pkg/parser/ast` 天然只有一个包级公开命名空间，没有与 `
 - 若新增逻辑复刻 Go 行为，应把语义测试放在独立的 `*_test.rs` 文件，并在 `lib.rs` 的 `#[cfg(test)]` 区域接线；不要把测试内嵌到本生产文件。Go 对照测试应优先来自相应的 `model_test.go`、`dml_test.go`、`ddl_test.go`、`misc_test.go` 等同职责文件。
 - 修改 `pub use crate::*` 为选择性导出，或在 `integration` 中增加同名包装类型，可能造成源码兼容破坏、类型身份分裂以及后续 API 漂移；必须同步更新契约测试并审计所有 `integration::` 使用者。
 - 当前重导出没有运行时性能成本。扩展时加入转换、克隆或包装层会改变这一特性，应单独评估兼容性和性能。
-
-## 验证依据
-
-事实核验使用了以下证据：
-
-- RustCodeGraph：`status`（索引包含 11,467 个文件，目标文件已索引）、`files --filter pkg/parser/ast/integration.rs`、`node --file pkg/parser/ast/integration.rs --offset 1 --limit 500`、`query integration --kind file --limit 20`。文件节点显示完整 21 行源码及唯一重导出；因为没有函数符号，本文件无可用的函数 callers/callees。
-- Rust 源与接线：`pkg/parser/ast/integration.rs`、`pkg/parser/ast/lib.rs`。
-- crate 声明：`pkg/parser/ast/Cargo.toml`。
-- 独立 Rust 测试：`pkg/parser/ast/canonical_contract_test.rs`、`pkg/parser/ast/integration_9_aster_unit_test.rs`；二者均由 `lib.rs` 的 `#[cfg(test)]` 模块声明接线。
-- Go 对照：`pkg/parser/ast/model.go`、`pkg/parser/ast/dml.go`、`pkg/parser/ast/ddl.go`、`pkg/parser/ast/misc.go`。
-- 仓库引用搜索：除契约测试外，未发现其他 Rust 文件直接使用 `parser_ast::integration`、`astersql_parser_ast::integration` 或 `integration::NewCIStr`/`integration::Node`；这说明当前可见直接消费者主要是兼容契约测试，不代表外部仓库没有依赖该公开路径。
-
-本任务是纯文档分析，按计划不运行 Cargo 或 parser 构建测试。交付前以任务指定命令验证文档存在且恰含十一个固定二级章节，并人工复核“为何存在、如何运行、如何安全扩展”均有源码或测试依据。

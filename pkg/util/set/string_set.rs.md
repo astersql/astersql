@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-set`（见 [`Cargo.toml`](./Cargo.toml)），实现与 Go `pkg/util/set/string_set.go` 对应的字符串集合。crate 入口 [`lib.rs`](./lib.rs) 将 `string_set` 声明为公开模块，并把其中的公开项重导出，因此使用者既可从 `astersql_util_set::string_set` 访问，也可从 crate 根访问 `StringSet` 和 `NewStringSet`。
-
-它是一个通用工具层组件，不参与 SQL 解析或执行调度；当前源码确认的生产接线是 `pkg/util/stmtsummary/lib.rs` 再次重导出该类型，`pkg/util/stmtsummary/reader.rs::stmtSummaryChecker` 用它保存允许读取的 statement digest，并在 `isDigestValid` 中调用 `Exist` 做白名单判断。`pkg/executor/test/oomtest/oom_test.rs::OomCapture` 也直接从 crate 根导入它，用作测试日志消息过滤集合。
+提供构造、成员查询、插入、计数、判空、清空和回调遍历等 Go 风格 API：`NewStringSet`、`Exist`、`Insert`、`Count`、`Empty`、`Clear`、`IterateWith`。
 
 ## 核心职责
 
@@ -79,13 +77,13 @@ RustCodeGraph 的文件节点报告该文件被多个文件使用，但对 `Stri
 
 ## 与 Go 版本的对应关系
 
-Go 文件 `pkg/util/set/string_set.go` 用 `type StringSet map[string]struct{}`；Rust 用带私有字段的 `HashSet<String>`。两者都表达唯一键集合，并保持无序遍历、重复插入幂等、原地清空和新建交集的语义。
+Go 文件 `pkg/util/set/string_set.go` 用 `type StringSet map[string]struct{}`；Rust 用带私有字段的 `HashSet<String>`。
 
 API 对应关系为：Go 可变参数 `NewStringSet(ss ...string)` 对应 Rust `NewStringSet(&[&str])`；Go 的 `int` 计数对应 Rust `usize`；Go map 可直接取 `len` 和写键，而 Rust 通过公开方法封装私有容器；Go 回调接收字符串值，Rust `IterateWith` 通过克隆传递拥有所有权的 `String`。
 
-大小写行为是移植中的非直译点。Go `strings.ToUpper`/`ToLower` 基于逐 rune 简单映射；Rust `char::to_uppercase`/`to_lowercase` 暴露可能包含多个标量的完整映射。因此 Rust 使用两个辅助函数抑制扩展，`string_set_test.rs::intersection_with_lower_uses_go_simple_unicode_case_mapping` 以 `ß` 和 `İ` 锁定兼容行为。
+Go `strings.ToUpper`/`ToLower` 基于逐 rune 简单映射；Rust `char::to_uppercase`/`to_lowercase` 暴露可能包含多个标量的完整映射。
 
-Go 的 `string_set_test.go::TestStringSet` 覆盖去重、存在性、构造和连续交集；Rust `string_set_test.rs::TestStringSet` 保持相同场景。Rust 另有上述 Unicode 回归测试，并在 `migration_aster_unit_test.rs::string_set_operations_case_conversion_clear_and_iteration_match_go` 覆盖 Go 原测试未覆盖的大小写交集、遍历、清空与判空。
+Rust 另有上述 Unicode 回归测试，并在 `migration_aster_unit_test.rs::string_set_operations_case_conversion_clear_and_iteration_match_go` 覆盖 Go 原测试未覆盖的大小写交集、遍历、清空与判空。
 
 ## 扩展指南
 
@@ -96,13 +94,3 @@ Go 的 `string_set_test.go::TestStringSet` 覆盖去重、存在性、构造和�
 若需要借用式遍历以避免克隆，可以新增显式接受 `&str` 的 API，但这是公开签名和生命周期契约变化，需保留现有 `IterateWith(FnMut(String))` 的兼容性并评估所有调用者。若需要内存计量，应扩展 `set_with_memory_usage.rs` 对应类型，不应让此轻量类型隐式依赖 tracker。任何依赖遍历顺序的功能都应在调用方排序，或另建有序集合类型，不能改变当前 `HashSet` 契约。
 
 同步验证位置为 `pkg/util/set/string_set_test.rs`、`pkg/util/set/migration_aster_unit_test.rs` 和 Go 对照 `pkg/util/set/string_set_test.go`。跨 crate 行为变化还应检查 `pkg/util/stmtsummary/reader.rs` 的 digest 过滤，以及直接使用集合的 OOM 测试辅助逻辑。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/util/set/string_set.rs`；`files --filter pkg/util/set` 确认源、Go 对照及独立测试均被索引；`node --file pkg/util/set/string_set.rs --offset 1 --limit 240` 读取全部 171 行及文件使用概览；`node --file pkg/util/set/string_set_test.rs --offset 1 --limit 240` 读取全部 84 行测试。
-- RustCodeGraph 符号查询：`query StringSet --kind struct --json`、`query NewStringSet --kind function --json`、`query IntersectionWithLower --json`、`query IterateWith --json` 确认目标符号与签名；`callees string_set.rs::NewStringSet` 输出确认本文件内 `NewStringSet -> Insert`、`Intersection -> NewStringSet/Exist/Insert`、`IntersectionWithLower -> 大小写辅助函数/NewStringSet/Exist/Insert`。图对常见名称存在过匹配，跨文件结论另以精确源码搜索复核。
-- 已读实现与边界文件：`pkg/util/set/string_set.rs`、`pkg/util/set/Cargo.toml`、`pkg/util/set/lib.rs`、工作区根 `Cargo.toml`。
-- 已读 Go 对照与测试：`pkg/util/set/string_set.go`、`pkg/util/set/string_set_test.go`。
-- 已读 Rust 测试：`pkg/util/set/string_set_test.rs`、`pkg/util/set/migration_aster_unit_test.rs`。
-- 已读直接调用证据：`pkg/util/stmtsummary/lib.rs`、`pkg/util/stmtsummary/reader.rs`、`pkg/executor/test/oomtest/oom_test.rs`；并用 `rg` 对 `NewStringSet`、`StringSet`、`IntersectionWithLower`、`IterateWith` 及依赖别名做限定搜索。
-- 本任务只新增说明文档，未修改 Rust、Go、Cargo 或总计划；按任务要求不运行 Cargo。结构验收命令及限定 diff 自审在交付前执行。

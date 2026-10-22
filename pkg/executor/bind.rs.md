@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/executor/bind.rs`](bind.rs) 位于 `astersql-executor` crate。`pkg/executor/Cargo.toml` 将该 crate 的根设为 `lib.rs`；`pkg/executor/lib.rs` 通过 `pub mod bind` 暴露本模块，并仅在测试构建中通过 `mod bind_test` 挂载独立测试文件 [`pkg/executor/bind_test.rs`](bind_test.rs)。文件承担 SQL Plan Binding 管理语句的执行逻辑，而不是普通查询算子的逐行计算：`SQLBindExec::Next` 总是先清空输出 chunk，再执行创建、删除、刷新、重载、集群重载或状态变更，成功时不产生结果行。
-
-当前 Rust 生产接线需要谨慎理解。`pkg/executor/builder.rs::build` 能把 `Plan::SqlBind` 分派给 `buildSQLBindExec`，但后者只是调用 `build_leaf(ExecutorKind::SqlBind, plan)`；仓库搜索到的 `SQLBindBackend` 实现只有测试中的 `PanicBackend`，也没有发现生产代码直接构造本文件的 `SQLBindExec`。因此可以确认模块已纳入 crate 且内部逻辑可独立使用/测试，但不能据此声称这里的泛型执行器已经由生产后端实例化。Go 生产接线则明确位于 `pkg/executor/builder.go::buildSQLBindExec`。
+`dropSQLBind` 与 `dropSQLBindByDigest` 分别处理单条详情和 digest 列表；全局删除还把后端返回的影响行数计入 statement context。
 
 ## 核心职责
 
@@ -68,11 +66,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/executor/bind.go`](bind.go)。Rust 的 `Next` 分派、单详情限制、空 digest 拒绝、会话/全局分流、全局删除影响行数、无匹配状态修改 warning、flush/reload 参数和集群广播 SQL 均保持 Go 语义。`createSQLBind` 也保留了 Go 注释所述审计语义：内部 explain 不应把外层 create binding 记录成 explain，并且必须带回 `SetVarHintRestore`。
+Rust 的 `Next` 分派、单详情限制、空 digest 拒绝、会话/全局分流、全局删除影响行数、无匹配状态修改 warning、flush/reload 参数和集群广播 SQL 均保持 Go 语义。
 
 实现形式有三项显著差异。第一，Go 直接依赖 `BaseExecutor`、session binding handle、domain binding handle、parser 和 `chunk.Chunk`；Rust 把这些能力抽象到 `SQLBindBackend`/`ResettableChunk`。第二，Go 的 `defer` 天然覆盖正常返回和 panic；Rust 使用 `catch_unwind`、恢复 context、再 `resume_unwind` 明确复刻该行为，`pkg/executor/bind_test.rs::create_binding_restores_statement_context_when_backend_panics` 专门验证这一点。第三，Go builder 明确把 `SQLBindPlan` 字段复制进 `SQLBindExec`，而 Rust builder 当前只走通用 `ExecutorKind::SqlBind` 工厂；Rust 生产后端与规划类型转换尚未由本文件及直接调用证据证实。
 
-Go 的端到端行为还由 `pkg/bindinfo/tests/bind_test.go`、`pkg/bindinfo/tests/cross_db_binding_test.go`、`pkg/bindinfo/session_handle_test.go` 等测试覆盖创建、删除、session/global 隔离、digest 删除和 reload。它们能证明 Go 基线语义，但不能替代 Rust 本文件的生产接线测试。
+它们能证明 Go 基线语义，但不能替代 Rust 本文件的生产接线测试。
 
 ## 扩展指南
 
@@ -81,12 +79,3 @@ Go 的端到端行为还由 `pkg/bindinfo/tests/bind_test.go`、`pkg/bindinfo/te
 - 修改 statement context 处理时，必须保留正常错误和 panic 两条路径的恢复保证，并把 Rust 回归测试放在独立的 `pkg/executor/bind_test.rs`，不要内嵌到生产文件。建议补充正常成功、普通 `Err`、带 `SET_VAR` 恢复项及全局/会话两种路径。
 - 修改删除逻辑时，应覆盖零/一/多详情、空 digest、全局影响行数及后端错误顺序；修改状态逻辑时，应覆盖 digest 计算、显式 digest、`changed=false` warning 和后端错误不告警。
 - 若完成生产接线，应为真实 `SQLBindBackend` 实现增加集成测试，并核实 builder 的 `ExecutorKind::SqlBind` 最终产物确实调用本文件 `Next`。主要正确性风险是规划 DTO 转换遗漏；兼容性风险是 Go 错误/warning/影响行数语义漂移；性能风险主要在批量详情复制、缓存全量 reload 和集群广播，当前本层没有并行或限流。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/executor/bind.rs`；`node --file pkg/executor/bind.rs` 读取了 304 行完整源码；`query SQLBindExec/createSQLBind/dropSQLBind/reloadClusterBindings` 定位 Rust/Go 对照符号；对关键 Rust 函数执行 `callers`/`callees` 未得到调用边，因此再用文本搜索核对直接接线。
-- Rust 源与接线：`pkg/executor/bind.rs`（全部类型、trait 和流程）、`pkg/executor/lib.rs`（`pub mod bind` 与独立 `bind_test`）、`pkg/executor/builder.rs`（`Plan::SqlBind -> buildSQLBindExec -> build_leaf(ExecutorKind::SqlBind, ...)`）、`pkg/planner/core/common_plans.rs`（规划侧同名但不等价的 DTO）。
-- crate 边界：`pkg/executor/Cargo.toml`（crate 名 `astersql-executor`、根 `lib.rs`、workspace 依赖与 `nextgen` feature；本文件没有条件编译项）。
-- Rust 测试：`pkg/executor/bind_test.rs` 的 `PanicBackend` 是搜索到的唯一 `SQLBindBackend` 实现；`create_binding_restores_statement_context_when_backend_panics` 验证 panic 后 context 已恢复。
-- Go 对照与测试：`pkg/executor/bind.go`、`pkg/executor/builder.go::buildSQLBindExec`；相关端到端测试见 `pkg/bindinfo/tests/bind_test.go`、`pkg/bindinfo/tests/cross_db_binding_test.go`、`pkg/bindinfo/session_handle_test.go`，`pkg/executor/explainfor_test.go` 也覆盖 create/reload 后 binding 生效。
-- 本任务是纯文档分析，按计划不运行 Cargo 或运行时测试；验收使用任务指定的 11 章节结构命令，并人工复核文档对定位、流程、扩展点及未验证生产接线的表述。

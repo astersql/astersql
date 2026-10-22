@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo crate `astersql-privilege-privileges-ldap`，由同目录 `lib.rs` 通过 `#[path = "const.rs"] pub mod constants;` 公开为 `astersql_privilege_ldap::constants`。它位于 LDAP 权限认证子系统的协议词汇层，只定义 LDAP SASL 机制名称，不建立连接、不执行认证，也不保存运行时配置。
-
-crate 边界由 `pkg/privilege/privileges/ldap/Cargo.toml` 确认；该清单声明 LDAP、TLS 和连接池依赖，但本文件自身只使用 Rust 内建的 `&str`，不直接调用这些依赖。文件顶部保留 PingCAP Apache License 声明，并已有 AsterSQL 处理标记。
+位于 LDAP 权限认证子系统的协议词汇层，只定义 LDAP SASL 机制名称，不建立连接、不执行认证，也不保存运行时配置。
 
 ## 核心职责
 
@@ -64,21 +62,10 @@ Go 对照的生产调用方是 `pkg/sessionctx/variable/sysvar.go`：它以三�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件 `pkg/privilege/privileges/ldap/const.go` 定义了同名、同值的三个包级常量。Rust 保留 Go 风格名称并通过 `allow(non_upper_case_globals)` 消除命名 lint，属于一对一移植；`migration_aster_unit_test.rs::sasl_method_constants_match_go` 为这种对应提供回归断言。
-
-差异主要在接线状态和类型表达：Go 的 `pkg/sessionctx/variable/sysvar.go` 已直接用这些常量构建系统变量 `PossibleValues`，Rust 仓库搜索只发现测试引用；Rust 常量显式声明为 `&str`，Go 使用未显式标注类型的字符串常量。两边都没有在常量文件中实现协议协商或能力探测。
+差异主要在接线状态和类型表达：Go 的 `pkg/sessionctx/variable/sysvar.go` 已直接用这些常量构建系统变量 `PossibleValues`，Rust 仓库搜索只发现测试引用；Rust 常量显式声明为 `&str`，Go 使用未显式标注类型的字符串常量。
 
 ## 扩展指南
 
 新增 SASL 机制时，应首先确认 LDAP 客户端依赖与实际服务端链路支持该机制，再在本文件增加公开常量，并同步 `const.go` 或明确记录迁移差异。若该机制应成为用户可配置值，还必须更新真正负责枚举校验的配置/系统变量注册处；只增加常量不会自动生效。
 
 测试应放在独立文件而非 `const.rs` 中。至少同步扩展 `pkg/privilege/privileges/ldap/migration_aster_unit_test.rs::sasl_method_constants_match_go`；若机制进入认证流程，还应在该测试文件或同目录独立测试中验证方法名确实传给 `SaslSession::server_bind_step`。Go 接线改变时，应同步对应的 Go 系统变量和 LDAP 测试。兼容审查应覆盖默认值、旧配置可读性、客户端/服务端支持矩阵和凭据要求；常量读取本身没有性能风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件且数据库可用；`files --filter pkg/privilege/privileges/ldap` 列出本 crate 的 Rust/Go 实现和测试；`node --file pkg/privilege/privileges/ldap/const.rs --offset 1 --limit 200` 核对了完整 25 行源码。
-- RustCodeGraph：对 `SASLAuthMethodSCRAMSHA256` 的 `node` 定位到 `migration_aster_unit_test.rs` 的导入；`callers`/`callees` 未找到常量定义节点，因此没有把缺失图边解释为“无人使用”，而是用文本搜索补证。
-- 源码与 crate：读取 `pkg/privilege/privileges/ldap/const.rs`、`lib.rs`、`Cargo.toml` 和 `sasl.rs`，确认模块公开方式、crate 依赖边界、常量内容及认证方法的数据流。
-- Go 对照：读取 `pkg/privilege/privileges/ldap/const.go`、`sasl.go` 和 `pkg/sessionctx/variable/sysvar.go` 的 LDAP SASL 系统变量注册段，确认名称、取值与 Go 生产接线。
-- 测试：读取 `pkg/privilege/privileges/ldap/migration_aster_unit_test.rs`；`sasl_method_constants_match_go` 覆盖三个精确值，`sasl_loop_sends_final_credential_before_success` 覆盖 SHA-256 方法向模拟会话的传递。仓库搜索未发现其他 Rust 直接引用。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另运行任务指定的 11 章节结构检查。

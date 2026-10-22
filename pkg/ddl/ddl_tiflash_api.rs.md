@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl` crate；`pkg/ddl/Cargo.toml` 的 `[lib]` 指向 `lib.rs`，而 `pkg/ddl/lib.rs` 以 `pub mod ddl_tiflash_api` 将其公开，并在 `cfg(test)` 下把同目录的 `ddl_tiflash_api_test.rs` 作为独立测试模块接入。
-
-它提供 DDL 侧 TiFlash 副本轮询的内存模型和纯计算工具，而不是完整的生产轮询服务。文件中没有会话、InfoSchema、PD HTTP client、DDL owner、定时器或持久化依赖，源码仅导入 `std::collections::{BTreeMap, BTreeSet, VecDeque}`。RustCodeGraph 对主要纯函数未找到 Rust 生产调用者；当前直接使用者是 `pkg/ddl/ddl_tiflash_api_test.rs` 和 `pkg/ddl/tests/tiflash/ddl_tiflash_test.rs`。完整运行时链仍位于 Go 的 `pkg/ddl/ddl_tiflash_api.go`：`pkg/ddl/ddl.go` 的 `(*ddl).Start` 启动 `PollTiFlashRoutine`，后者仅在 owner 上调用 `refreshTiFlashTicker`，访问 InfoSchema/PD、更新进度缓存和表元数据，并按周期修复 placement rule。
-
-因此，从 DDL 框架问题看，本文件自身不是新的 job 状态机、schema-state 转换或 reorg/backfill 实现，也不直接改变 schema version；Go 侧规则修复才会提交 `ActionSetTiFlashReplica` job。Rust 文件当前承担可复用算法和迁移契约，而非完整应用接线。
+`PollTiFlashContext` 与一组 snake_case 纯函数构成较类型化的 Rust 模型：展开逻辑表为物理表状态、筛选可写 TiFlash store、校验并更新进度、计算 placement-rule 差异，以及按物理 ID 执行一轮带退避的轮询。
 
 ## 核心职责
 
@@ -93,8 +89,6 @@ RustCodeGraph 索引包含本文件 46 个符号，并显示：
 
 ## 与 Go 版本的对应关系
 
-`TiFlashTick`、`PollTiFlashBackoffElement`、`PollTiFlashBackoffContext`、`NewPollTiFlashBackoffElement`、`NewPollTiFlashBackoffContext` 以及 `Tick/NeedGrow/doGrow/MaybeGrow/Remove/Get/Put/Len` 与 `pkg/ddl/ddl_tiflash_api.go` 前半段逐项对应。关键语义包括：初始阈值固定为 1 而非构造器的 `MinThreshold`；增长发生在本次计数递增之前；容量满不淘汰；浮点倍率可为 1.5；错误文本和校验次序保持一致。`pkg/ddl/tests/tiflash/ddl_tiflash_test.go::TestTiFlashBackoffer` 与 Rust 集成测试中的对应断言覆盖增长序列、封顶、容量、删除和非法参数。
-
 Rust 的 `TiFlashReplicaStatus` 并非 Go 同名结构的字段级复刻。Go 结构记录 ID、标签、逻辑表可用性、优先级和分区标记；Rust 简化模型改为显式逻辑/物理 ID 和数值进度。类似地，`PollTiFlashContext`、`TiFlashTableReplica`、`PlacementRule` 及 snake_case 函数是为可测试算法抽取出的 Rust 模型，没有对应 Go 同名 API。
 
 Go 的完整文件还实现 `TiFlashManagementContext`、store 刷新、InfoSchema 扫描、已可用表进度缓存、failpoint、ticker、DDL owner 限制、PD placement rule 查询与 job 修复；这些均未移植到本 Rust 文件。Rust 的 `load_tiflash_replica_status` 也只展开 `partition_ids`，未覆盖 Go `LoadTiFlashReplicaInfo` 的 adding partitions、high priority、logical-table availability 等字段。文档或调用方不得据纯函数测试推断完整 Go 运行时已经由 Rust 替代。
@@ -108,14 +102,3 @@ Go 的完整文件还实现 `TiFlashManagementContext`、store 刷新、InfoSche
 若目标是接入真实运行时，则不能只调用这些纯函数后宣称完成。至少需要明确映射 InfoSchema/`model.TableInfo`、PD store/rule、infosync 进度缓存、owner-only 调度、session pool、错误重试和 `ActionSetTiFlashReplica` job；还要决定 Go 中 adding partition、高优先级、逻辑表可用性与 NextGen write-node 过滤如何表示。此类接线会跨出本文件，应按 DDL job 生命周期和兼容性要求另立范围，并增加独立集成测试。
 
 性能方面，表展开和规则比较会克隆分区 ID/位置标签；`maybe_grow` 每次用 `VecDeque::retain` 移动项目，复杂度为池大小线性；规则差异依赖树结构，为对数查询且结果稳定排序。扩大默认容量或高频调用前应评估这些成本。兼容方面，公共 Go 风格名称、错误字符串和裸指针可观察行为已经被测试依赖，不应无迁移方案地改动。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ddl/ddl_tiflash_api.rs` 确认目标文件已索引且含 46 个符号。
-- RustCodeGraph：`node --file pkg/ddl/ddl_tiflash_api.rs --offset 1 --limit 1200` 阅读了 528 行完整源码；`query` 唯一定位 `poll_replica_status` 和 `refresh_tiflash_placement_rules`，并区分 Go/Rust 两个 `NewPollTiFlashBackoffContext`。
-- RustCodeGraph：`callees poll_replica_status` 与 `callees refresh_tiflash_placement_rules` 核对了内部调用边；`callers poll_replica_status` 无输出，随后以仓库 `rg` 交叉确认 Rust 上游引用仅在测试中。
-- 源码与 crate 边界：`pkg/ddl/ddl_tiflash_api.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- Go 对照与生产入口：`pkg/ddl/ddl_tiflash_api.go`、`pkg/ddl/ddl.go`；前者包含 `PollTiFlashRoutine`、`refreshTiFlashTicker`、`refreshTiFlashPlacementRules`，后者启动轮询 routine。
-- 独立 Rust 测试：`pkg/ddl/ddl_tiflash_api_test.rs`；另读 `pkg/ddl/tests/tiflash/ddl_tiflash_test.rs` 中 backoffer、placement-rule 和 progress/backoff 场景。
-- Go 测试：`pkg/ddl/tests/tiflash/ddl_tiflash_test.go::TestTiFlashBackoffer` 及相邻 TiFlash 轮询场景。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文件存在且恰好包含上述 11 个固定二级标题，并人工检查唯一生产物、源码链接、未接线声明和测试位置。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-utils` crate 中的备份内容解密辅助模块，由 [`br/pkg/utils/lib.rs`](lib.rs) 以 `pub mod encryption` 暴露。它位于 BR 公共工具层，不负责读取对象存储、解析备份元数据或管理主密钥，只把调用方已经取得的内容、`brpb::CipherInfo` 和 IV 转换为“原样内容或 AES-CTR 解密结果”。crate 边界与依赖声明见 [`br/pkg/utils/Cargo.toml`](Cargo.toml)：协议类型来自本 crate 的 `kvproto` 桩模块，密码运算委托给 `astersql-util-encrypt`，错误类型分别来自 `astersql-br-pkg-errors` 和 `astersql-errors`。
-
-当前 Rust 生产调用集中在 `br/pkg/metautil`：[`br/pkg/metautil/metafile.rs`](../metautil/metafile.rs) 解密完整 backup meta 和索引树子文件，[`br/pkg/metautil/statsfile.rs`](../metautil/statsfile.rs) 解密统计文件，[`br/pkg/metautil/debug.rs`](../metautil/debug.rs) 在调试导出时解密 meta/stats 内容。`br/pkg/metautil/Cargo.toml` 通过路径依赖引入本 crate，证明这些调用跨 crate 使用公开 API，而不是同文件内部辅助逻辑。
+`Decrypt` 根据 `CipherInfo.CipherType` 决定是否解密：空内容、缺少 cipher 或 `Plaintext` 都直接透传；三种 AES-CTR 枚举均调用同一个底层 CTR 实现；未知或本模块不支持的方法返回参数错误。
 
 ## 核心职责
 
@@ -67,14 +65,6 @@ RustCodeGraph 的文件节点报告 `br/pkg/utils/encryption.rs` 被 `br/pkg/uti
 
 在 `metafile.rs` 的索引遍历中，上游会在 scoped worker 线程内并行调用 `Decrypt`，随后汇总结果；本文件既不创建线程，也不处理取消。CPU 和内存开销主要为 AES-CTR 对内容的线性扫描以及加密分支的一次内容复制，峰值内存随单次输入大小线性增长。密钥字节由 `CipherInfo` 所有，本文件不主动清零；如需敏感内存擦除，应在协议/密钥所有权层统一设计，不能只改此借用函数。
 
-## 与 Go 版本的对应关系
-
-直接对照文件是 [`br/pkg/utils/encryption.go`](encryption.go)。Rust 保留了 Go 的分支顺序和支持集合：空内容或 nil/None cipher 透传，Plaintext 透传，AES-128/192/256-CTR 委托公共 AES 工具，其他类型返回 `ErrInvalidArgument`；有效加密判定同样只排除 UNKNOWN 和 PLAINTEXT。
-
-主要语言适配有三点：Go 的 `[]byte`/`*CipherInfo` 映射为拥有所有权的 `Vec<u8>`/`Option<&CipherInfo>`；Go 的 `(content, error)` 映射为 `Result<Vec<u8>, SharedError>`；Go `errors.Annotatef` 映射为 `Annotate` 加格式化后的枚举调试名。协议枚举拼写由 Go 的 `EncryptionMethod_AES128_CTR` 变为 Rust 的 `EncryptionMethod::Aes128Ctr`，不改变 wire 值意图。
-
-独立 Rust 测试 [`br/pkg/utils/parity_test.rs`](parity_test.rs) 验证无 cipher 透传、Plaintext 非有效加密、Unknown 解密失败。底层 [`pkg/util/encrypt/aes_test.rs`](../../../pkg/util/encrypt/aes_test.rs) 的 `test_aes_decrypt_with_ctr` 用 Go 对齐向量覆盖成功解密和非法密钥长度。仓库未发现 `br/pkg/utils/encryption_test.go`；Go 侧行为证据来自同路径实现以及通过该工具函数的 `br/pkg/metautil/metafile_test.go`。
-
 ## 扩展指南
 
 - 新增一种内容加密方法时，应先明确它是否属于本工具的对称内容解密范围，再同步修改 `Decrypt` 的 match 支持集和 `IsEffectiveEncryptionMethod` 的策略；不要只改谓词，否则会出现“判定有效但无法解密”。
@@ -82,11 +72,3 @@ RustCodeGraph 的文件节点报告 `br/pkg/utils/encryption.rs` 被 `br/pkg/uti
 - 若收紧 AES 枚举与密钥长度的一致性，必须先对照 Go 行为和历史备份兼容性，因为当前两端都由实际密钥长度选择 AES 变体。
 - 回归测试应继续放在独立测试文件中。优先扩展 `br/pkg/utils/parity_test.rs`，至少覆盖空内容、None、Plaintext、三种 CTR、非法 key/IV、Unknown 和其他未支持枚举；底层算法向量应同步放在 `pkg/util/encrypt/aes_test.rs`。涉及完整 backup meta 布局或摘要校验时，应扩展 `br/pkg/metautil/metafile_test.rs`，而不是把测试内嵌进本源文件。
 - 修改错误包装时需保留 `ErrInvalidArgument` 根因和足以诊断 cipher 类型的上下文，避免破坏上层错误分类；修改所有权签名时需评估大文件额外复制和 `br/pkg/metautil` 三个调用方。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用；`node --file br/pkg/utils/encryption.rs --offset 1 --limit 400` 返回完整 57 行源码并报告使用文件；`query Decrypt --kind function --json` 与 `query IsEffectiveEncryptionMethod --kind function --json` 精确定位两个符号；对精确符号运行 `callers/callees` 未得到边输出，故未把图缺失当成“无生产调用”。
-- Rust 源与 crate：`br/pkg/utils/encryption.rs`、`br/pkg/utils/lib.rs`、`br/pkg/utils/Cargo.toml`、`pkg/util/encrypt/aes.rs`、`br/pkg/metautil/{metafile.rs,statsfile.rs,debug.rs,Cargo.toml}`。
-- Go 对照：`br/pkg/utils/encryption.go`；集成行为参考 `br/pkg/metautil/metafile_test.go`。
-- Rust 独立测试：`br/pkg/utils/parity_test.rs`、`pkg/util/encrypt/aes_test.rs`，并抽查 `br/pkg/metautil/metafile_test.rs` 的实际解密调用。
-- 结构检查按任务命令验证本文恰好包含规定的 11 个二级章节。本任务只新增文档，依计划不运行 Cargo；人工复核重点为支持枚举、短路顺序、AES 长度边界、完整性责任和实际调用点。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-chunk` crate 内的 `Chunk`/`Column` 对象池。它不是独立模块：`pkg/util/chunk/internal/group1/lib.rs` 的 `alloc_impl` 通过 `include!("../../alloc.rs")` 编译本文件，再由 `pub use alloc_impl::*` 和 crate 根 `pkg/util/chunk/lib.rs` 的 `pub use group_1::*` 对外导出。crate 的包名、入口和本地类型依赖分别由 `pkg/util/chunk/Cargo.toml` 中的 `name = "astersql-util-chunk"`、`[lib] path = "lib.rs"`、`types = .../types/internal/datum` 声明。
-
-在完整程序中，已核实的生产接线是 `cmd/tidb-server/main.rs::setGlobalVars`（其所在初始化流程）调用 `chunk::InitChunkAllocSize`，把 `TiDBMaxReuseChunk` 和 `TiDBMaxReuseColumn` 写入本文件的全局默认上限。RustCodeGraph 将本文件识别为 57 个符号、被 31 个文件经模块/符号关系使用；但仓库内对 `chunk::NewAllocator()` 的精确 Rust 文本引用目前只出现在测试中。因此，本文件提供执行器热路径可用的池化基础设施，但不能仅凭 crate 被众多模块依赖，就断言 Rust SQL 主链已经广泛实例化该分配器。
+`syncAllocator` 用互斥锁串行化同一个底层分配器的三个接口操作；`reuseHookAllocator` 在底层首次报告“具有复用配额”时执行一次 hook；`emptyAllocator` 提供完全不缓存的替代实现。
 
 ## 核心职责
 
@@ -78,13 +76,13 @@ Rust 的 `Chunk` 按值保存 `Column`，与 Go 的 `[]*Column` 不同。本文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/chunk/alloc.go`，Rust 保留了 Go 的 `Allocator` 三方法协议、64/256 默认上限、16 KiB 列阈值、按 `typeSize` 分桶、LIFO 复用、Chunk/Column 分层回收、`sync.Mutex` 包装、`sync.Once` hook 和空分配器。`InitChunkAllocSize` 也保留 Go 对 `math.MaxInt32` 的钳制。
+直接对照文件是 `pkg/util/chunk/alloc.go`，Rust 保留了 Go 的 `Allocator` 三方法协议、64/256 默认上限、16 KiB 列阈值、按 `typeSize` 分桶、LIFO 复用、Chunk/Column 分层回收、`sync.Mutex` 包装、`sync.Once` hook 和空分配器。
 
-关键表示差异如下：Go 返回 `*Chunk` 并在 Chunk 中保存 `[]*Column`；Rust 返回 `Arc<Mutex<Chunk>>`，Chunk 内保存 `Vec<Column>`。因此 Rust 的 `Reset` 不能直接照搬 Go 的指针列表，而要先从被追踪 Chunk 中取出实际列，再按 `reference_id` 与分配时快照合并。该适配保持 Go 的两项重要语义：引用列不会被重复缓存，使用期间改变类型的列仍按原始分桶接受校验而不会迁桶。
+关键表示差异如下：Go 返回 `*Chunk` 并在 Chunk 中保存 `[]*Column`；Rust 返回 `Arc<Mutex<Chunk>>`，Chunk 内保存 `Vec<Column>`。因此 Rust 的 `Reset` 不能直接照搬 Go 的指针列表，而要先从被追踪 Chunk 中取出实际列，再按 `reference_id` 与分配时快照合并。
 
 Go 的 `emptyAllocator.Alloc` 直接调用 `New(fields, capacity, maxChunkSize)`；Rust 内联了等价构造过程并返回共享互斥引用。Go `NewSyncAllocator` 返回接口类型，Rust 返回具体 `Box<syncAllocator>`，同时为该类型实现 `Allocator`。Rust 还增加了缓存计数、容量和地址观测方法，主要服务测试。
 
-测试覆盖并非完全对称。Go `alloc_test.go` 覆盖多字段物理布局、Chunk/Column 数量上限、`avoidReusing`、类型变化、hook 和 1000 goroutine 的同步包装压力；Rust `alloc_test.rs` 与 `alloc_1_aster_unit_test.rs` 覆盖基础/地址/容量复用、引用去重、类型变化、超大变长列和 hook，但当前没有读到与 Go `TestSyncAllocator`、完整多类型布局、`avoidReusing` 解码路径同等级的 Rust 用例。这些是测试证据缺口，不应描述成实现缺失。
+测试覆盖并非完全对称。Go `alloc_test.go` 覆盖多字段物理布局、Chunk/Column 数量上限、`avoidReusing`、类型变化、hook 和 1000 goroutine 的同步包装压力；Rust `alloc_test.rs` 与 `alloc_1_aster_unit_test.rs` 覆盖基础/地址/容量复用、引用去重、类型变化、超大变长列和 hook，但当前没有读到与 Go `TestSyncAllocator`、完整多类型布局、`avoidReusing` 解码路径同等级的 Rust 用例。
 
 ## 扩展指南
 
@@ -94,11 +92,3 @@ Go 的 `emptyAllocator.Alloc` 直接调用 `New(fields, capacity, maxChunkSize)`
 - 若要支持运行期动态调参或真正并发共享默认配置，应先把三个 `static mut` 改造成有同步语义的状态，并决定既有分配器是否即时生效；这会改变当前 Go 对齐行为和性能模型，不能只局部修改 setter。
 - 若要扩大 Rust 主链使用，调用点应在拥有明确批次生命周期的位置构造分配器，并在所有借用结束后调用 `Reset`；跨线程共享则使用 `syncAllocator` 或提供同等串行化。新增接线需要独立测试证明对象复用不会早于消费者结束。
 - 对齐 Go 测试时，优先补 `syncAllocator` 并发压力、`avoidReusing` 解码路径、缓存上限和多字段物理布局；不要用仅检查编译或零断言测试替代行为证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标 `pkg/util/chunk/alloc.rs` 含 57 个符号；`files --filter pkg/util/chunk` 确认 Rust/Go 源与独立测试；`node --file pkg/util/chunk/alloc.rs --offset 1 --limit 500` 及 `--offset 494 --limit 80` 覆盖全部 538 行；精确 `query` 确认 `Allocator`、`NewAllocator`、`NewSyncAllocator`、`NewReuseHookAllocator` 和 `checkColumnType` 的目标定义。`callers/callees` 对目标符号在 30 秒内未返回，因此调用点改用精确 `rg` 核验，未把超时结果当作调用图证据。
-- 源码与装配：`pkg/util/chunk/alloc.rs`；`pkg/util/chunk/internal/group1/lib.rs` 的 `alloc_impl`/测试模块；`pkg/util/chunk/lib.rs` 的 crate 导出；`pkg/util/chunk/chunk.rs::Chunk::resetForReuse`；`pkg/util/chunk/column.rs` 的 `ColumnAllocator`、列构造、类型尺寸和引用身份方法。
-- crate 与生产入口：`pkg/util/chunk/Cargo.toml`；`cmd/tidb-server/main.rs` 中对 `chunk::InitChunkAllocSize` 的启动配置调用。仓库中不存在 `pkg/util/chunk/doc.go`，因此没有额外的目标包 `doc.go` 契约可读。
-- Go 对照：`pkg/util/chunk/alloc.go` 与 `pkg/util/chunk/alloc_test.go`，逐项核对接口、阈值、分桶、Reset、同步包装、hook、空实现及边界测试意图。
-- Rust 测试：`pkg/util/chunk/alloc_test.rs`、`pkg/util/chunk/alloc_1_aster_unit_test.rs`，以及直接使用入口的 `pkg/util/sqlexec/migration_aster_unit_test.rs`、`pkg/sessionctx/variable/tests/session_test.rs`。本任务是纯文档分析，按计划未运行 Cargo；文档结构由任务指定命令验证。

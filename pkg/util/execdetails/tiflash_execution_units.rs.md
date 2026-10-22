@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现按执行计划节点汇总 TiFlash/MPP 原始执行证据的 Rust 版本。它不是独立模块：`pkg/util/execdetails/internal/group1/lib.rs` 的 `runtime_stats_impl` 在包含 `runtime_stats.rs` 后紧接着 `include!("../../tiflash_execution_units.rs")`，因此本文件可以直接为 `RuntimeStatsColl` 增加方法，并使用同一作用域中的 `HashSet`、`tipb`、`getPlanIDFromExecutionSummary` 等名字。`astersql-util-execdetails-group1` 随后由 `pkg/util/execdetails/lib.rs` 通过 `execdetails` 模块统一重导出。
-
-顶层 `pkg/util/execdetails/Cargo.toml` 声明的 crate 是 `astersql-util-execdetails`，其依赖 `internal/group1` 对应的 `astersql-util-execdetails-group1`。当前目标文件实际编入后者；`internal/group1/lib.rs` 还定义了一组简化的 `tipb` 兼容类型，因此当前 Rust 实现并未在这个 crate 中直接依赖生成的 TiDB protobuf 类型。这是理解其接线与迁移成熟度时必须保留的边界。
+对不可信汇总打上粘性的 `Invalid` 标记，包括同一批次出现重复 plan ID、任意 `u64` 累加溢出，以及总行数无法安全转换为下游使用的 `i64`。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ TiFlash map 有独立 `Mutex`，记录与读取都持锁；`GetTiFlashExecutionU
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/execdetails/tiflash_execution_units.go` 是直接语义对照：常量位、数据字段、摘要提取优先级、`Missing` 计算、checked accumulation、`Rows > MaxInt64` 校验、gather 过滤、本批重复标 invalid 和值快照读取均一一对应。Rust 用 `Option` 表示 protobuf presence，用 `checked_add` 对应 Go 的 `n > MaxUint64-*dst`，用 `Mutex<HashMap<...>>` 对应 Go 在 `RuntimeStatsColl.mu` 下维护的 map。
+Rust 用 `Option` 表示 protobuf presence，用 `checked_add` 对应 Go 的 `n > MaxUint64-*dst`，用 `Mutex<HashMap<...>>` 对应 Go 在 `RuntimeStatsColl.mu` 下维护的 map。
 
 需要注意两点当前实现差异。第一，Go 使用 `github.com/pingcap/tipb/go-tipb` 生成类型，Rust 当前使用 `internal/group1/lib.rs` 中标注为“简化版”的兼容结构；因此本文只能确认已声明字段的语义对齐，不能推断真实 protobuf oneof、编码或未知字段行为已经端到端对齐。第二，Go 生产代码同时有响应采集与 MPP coordinator 直接报告入口；当前 Rust 生产搜索仅确认响应采集入口，直接报告路线仍未验证。
 
@@ -94,14 +92,3 @@ TiFlash map 有独立 `Mutex`，记录与读取都持锁；`GetTiFlashExecutionU
 若替换简化 `tipb` 类型为真实 Rust protobuf，需在独立依赖仓库按仓库规则完成移植和带 tag 引用，并重点验证 presence、oneof scan context、未知 enum 以及整数范围；不可在本 crate 内复制 vendor。任何行为修改应保留测试与源文件分离，并同步 `pkg/util/execdetails/tiflash_execution_units_test.rs`，不要把测试嵌入生产文件。
 
 兼容风险主要是 presence 位含义、同批重复策略和 Go/Rust 字段形态漂移；正确性风险是溢出后误用保留值或忽略 `Invalid`；性能风险集中在持锁遍历和 `planIDs.contains` 的线性过滤。扩展完成后应先证明 Go/Rust 边界测试一致，再验证上游采集和下游 RU 快照。
-
-## 验证依据
-
-- RustCodeGraph `status`：本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录与文件已索引。
-- RustCodeGraph `node --file pkg/util/execdetails/tiflash_execution_units.rs --offset 1 --limit 260`：读取目标文件全部 165 行，确认常量、结构体、解析器、合并器及两个公开方法。
-- RustCodeGraph `query TiFlashExecutionUnits`、`query RecordTiFlashExecutionSummaries`、`query GetTiFlashExecutionUnits`：确认 Rust/Go 对应定义；`explore` 确认目标方法的测试调用摘要。精确 `callers/callees` CLI 对这些同名 impl 方法未返回可用边，因此调用关系另由已索引源码节点和精确 `rg` 使用点交叉核验，未采用模糊同名 `Merge` 结果。
-- RustCodeGraph 节点：`runtime_stats.rs` 的 `RuntimeStatsColl`、`NewRuntimeStatsColl`、`getPlanIDFromExecutionSummary`；`internal/group1/lib.rs` 的简化 `tipb` 与 include 接线；`distsql/select_result.rs::consume_response`；`statement_ru_plan_walk.rs::snapshot_statement_ru_runtime_evidence`。
-- 配置与模块：`pkg/util/execdetails/Cargo.toml`、`pkg/util/execdetails/internal/group1/Cargo.toml`、`pkg/util/execdetails/lib.rs`、`pkg/util/execdetails/internal/group1/lib.rs`。
-- Go 对照：`pkg/util/execdetails/tiflash_execution_units.go`、`pkg/util/execdetails/runtime_stats.go`。
-- 独立测试：`pkg/util/execdetails/tiflash_execution_units_test.rs`、`pkg/util/execdetails/tiflash_execution_units_test.go`；另核对上游使用点 `pkg/distsql/distsql_test.rs` 与 `pkg/executor/statement_ru_plan_walk_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构检查要求目标文件存在且恰有十一个固定二级标题。

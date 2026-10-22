@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-objstore-s3like`；crate 根 `pkg/objstore/s3like/lib.rs` 通过 `mod metrics` 装入本模块，并用 `pub use metrics::*` 把公开常量、`S3_API_CALL_COUNTER`/`S3APICallCounter`、`init` 和 `RecordAPICall` 提升为 crate 级 API。`Cargo.toml` 表明指标实现直接依赖 `prometheus`，并通过本地 crate `astersql-metrics-common`（代码中的 `metricscommon`）复用全局常量标签规则。
-
-它位于 S3-like 对象存储的观测边界：S3 与 OSS 客户端在真正调用后端 API 前记录 API 尝试次数，重试判定与读取恢复路径则在确认将要重试时记录错误文本。文件不执行对象存储 I/O，也不决定一次调用是否成功或是否应重试。
+定义稳定的后端标签值 `s3`、`oss`、`ks3`，以及 API 标签值 `ListObjects`、`HeadObjects`、`PutObject`。
 
 ## 核心职责
 
@@ -72,9 +70,9 @@ API 计数在请求之前递增，因此不能据此推导成功率，也不会�
 
 ## 与 Go 版本的对应关系
 
-`pkg/objstore/s3like/metrics.go` 是 API 调用计数的直接对照：三种 backend、三种 API 值、指标 Namespace `tidb`、Subsystem `br_s3`、Name `api_call_total`、Help 文案以及标签顺序 `backend, api` 均一致。Go 的 `RecordAPICall` 和 Rust 的同名函数都在目标标签序列上加一；Rust 额外提供全大写惯用名，并保留 Go 名作为兼容别名。
+Go 的 `RecordAPICall` 和 Rust 的同名函数都在目标标签序列上加一；Rust 额外提供全大写惯用名，并保留 Go 名作为兼容别名。
 
-初始化机制存在实现差异：Go 包的 `init()` 在包加载时调用 `prometheus.MustRegister`；Rust 用 `LazyLock`，`init()` 只负责 force，而首次 `RecordAPICall` 或直接访问静态量也会触发注册。因仓库内未找到显式生产 `init()` 调用，Rust 指标可能直到第一笔相关调用才出现在默认 registry。`pkg/objstore/s3like/metrics_test.rs` 正是通过先调用 `RecordAPICall` 再 gather 来验证这一行为。
+初始化机制存在实现差异：Go 包的 `init()` 在包加载时调用 `prometheus.MustRegister`；Rust 用 `LazyLock`，`init()` 只负责 force，而首次 `RecordAPICall` 或直接访问静态量也会触发注册。
 
 `RETRYABLE_ERROR_COUNTER` 与 `RecordRetryableError` 没有出现在同路径 Go 文件中，是 Rust 读取/重试路径的附加实现；且当前未注册，不能把它描述为 Go 已有指标的完整移植。Go 的 S3 client 测试验证 Head/List/Put 在成功和错误返回时都按尝试次数递增，支持 Rust 将计数放在远端调用之前的语义。
 
@@ -86,13 +84,3 @@ API 计数在请求之前递增，因此不能据此推导成功率，也不会�
 - 若调整懒初始化，应保持“同一 collector 只注册一次”和 Go 包加载后可见性的兼容目标，并增加“未发生 API 调用时 gather 是否可见”的回归测试。
 - 测试逻辑应继续放在独立文件：基本注册行为放在 `pkg/objstore/s3like/metrics_test.rs`，标签值、Go 兼容别名及增量行为放在 `pkg/objstore/s3like/migration_aster_unit_test.rs`；具体 S3/OSS 调用覆盖则在各自 client 测试中验证。不要把测试内嵌进 `metrics.rs`。
 - 修改指标名、Help、标签顺序或公开别名属于监控兼容性变更，会影响 dashboard、告警与查询；修改计数时点则会改变“尝试次数”的业务语义，均需与 Go 对照和下游查询一起评估。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 `pkg/objstore/s3like/metrics.rs`；`node --file` 核对了该文件全部 87 行及 19 个符号；针对 `RecordAPICall`、`RecordRetryableError`、`init` 的 callers/callees/explore 查询确认了计数器引用及 S3、OSS、retry、io、store 调用边。
-- 源码与装配：`pkg/objstore/s3like/metrics.rs`；`pkg/objstore/s3like/lib.rs` 的模块声明、公开再导出和独立测试装配；`pkg/metrics/common/wrapper.rs::NewCounterVec` 的常量标签合并逻辑。
-- crate 边界：`pkg/objstore/s3like/Cargo.toml` 的 `astersql-objstore-s3like` 包声明、`lib.rs` 入口，以及 `metricscommon`、`prometheus` 依赖。
-- 生产调用点：`pkg/objstore/s3store/client.rs`、`pkg/objstore/ossstore/client.rs`、`pkg/objstore/s3like/retry.rs`、`pkg/objstore/s3like/io.rs`、`pkg/objstore/s3like/store.rs`。
-- Go 对照：`pkg/objstore/s3like/metrics.go`；`pkg/objstore/s3store/client.go`、`pkg/objstore/ossstore/client.go`、`pkg/objstore/s3store/ks3.go` 的计数调用；`pkg/objstore/s3store/client_test.go` 对成功/失败调用仍累计尝试次数的断言。
-- Rust 独立测试：`pkg/objstore/s3like/metrics_test.rs::record_api_call_registers_metric_with_default_registry` 验证完整指标名已注册；`pkg/objstore/s3like/migration_aster_unit_test.rs::go_metric_public_names_remain_available` 验证兼容别名；`api_call_metric_uses_backend_and_api_labels` 验证指定标签序列恰好加一。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以固定十一个二级标题的结构命令校验，并人工复核文档未把未注册的 retry collector 或尚未接线的 Rust KS3 路径写成已支持事实。

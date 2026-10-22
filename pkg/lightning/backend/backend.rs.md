@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-backend` crate 的后端协议与引擎生命周期门面。`pkg/lightning/backend/lib.rs` 将 `backend` 模块整体再导出，因此调用方通常直接从 crate 根使用这里的 `Backend`、`EngineManager`、`OpenedEngine`、`ClosedEngine` 和 `EngineWriter`。`pkg/lightning/backend/Cargo.toml` 声明该 crate 只直接依赖同目录的 `encode` crate 与启用 `v4`/`v5` 的 `uuid`，并用 `package.metadata.porting.go-package` 指向 Go 包 `pkg/lightning/backend`。
-
-它位于 Lightning/IMPORT 数据通路的“编排与具体存储实现”之间：上层通过统一状态句柄执行打开、写入、关闭、导入、清理，下层实现 `Backend` 和 `EngineWriter`。例如 `pkg/executor/importer/table_import.rs::NewTableImporter` 创建 `EngineManager`，`OpenDataEngine`/`OpenIndexEngine` 打开引擎，`ImportAndCleanup` 导入后清理；`pkg/session/runtime/import_query.rs` 也按相同流程处理 `IMPORT FROM SELECT`。具体物理 SST 适配见 `pkg/session/runtime/import_sst.rs`，逻辑 SQL 后端见 `pkg/lightning/backend/tidb/tidb.rs`。
+用 `Backend` 和 `EngineWriter` 定义后端必须提供的线程安全生命周期及写入能力，并用 `TargetInfoGetter` 定义导入前远端元数据/要求检查能力。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ RustCodeGraph 对目标文件识别出 64 个符号，并确认 `MakeEngineManag
 
 ## 与 Go 版本的对应关系
 
-总体结构直接对应 `pkg/lightning/backend/backend.go`：固定命名空间、三次导入尝试、`Backend`/`TargetInfoGetter`/`EngineWriter` 接口、管理器和打开/关闭句柄均保留；Rust 独立测试与 `backend_test.go` 使用同名场景验证生命周期和重试意图。
-
 当前可见差异必须在扩展时考虑：
 
 - Go `MakeUUID` 使用 `uuid.NewSHA1(namespace, tag)`；Rust `Uuid::new_v5` 同样使用 SHA-1 的 UUID v5，固定测试值相同。
@@ -107,14 +103,3 @@ RustCodeGraph 对目标文件识别出 64 个符号，并确认 `MakeEngineManag
 - 修改导入重试时，应覆盖：立即成功、不可重试只调用一次、失败后恢复、耗尽三次、分类位保留，以及最后一次失败是否等待。还应评估同步 sleep 对运行时线程和取消延迟的性能影响。
 - 新增可观测性不能只扩充 `Logger` 字段；应先确认 Rust 上层实际消费方式，并对照 Go 的 open/closed 指标、任务日志和 failpoint，避免表面同名而无真实输出。
 - 与真实导入链有关的回归优先扩展独立的 `pkg/lightning/backend/backend_test.rs`，再按具体实现扩展 `pkg/lightning/backend/tidb/tidb_test.rs`、`pkg/session/runtime` 或 `pkg/executor/importer` 的相邻独立测试。
-
-## 验证依据
-
-- 目标源码：`pkg/lightning/backend/backend.rs`（550 行；RustCodeGraph 文件节点报告 64 个符号）。
-- crate 边界：`pkg/lightning/backend/Cargo.toml`、`pkg/lightning/backend/lib.rs`；根 workspace 与多个调用 crate 的 Cargo manifest 也引用 `astersql-lightning-backend`。
-- Go 对照：`pkg/lightning/backend/backend.go`；Go 测试：`pkg/lightning/backend/backend_test.go`。
-- Rust 独立测试：`pkg/lightning/backend/backend_test.rs`，覆盖稳定 UUID、Open/Close/Import/Cleanup、两种 unsafe close、writer 成功/空输入/失败、不可重试、重试耗尽、重试恢复和 backend 关闭。
-- 生产调用：`pkg/executor/importer/table_import.rs::{NewTableImporter, OpenIndexEngine, OpenDataEngine, ImportAndCleanup}`，`pkg/session/runtime/import_query.rs` 的引擎闭环。
-- 具体实现：`pkg/session/runtime/import_sst.rs` 的 `impl backend::Backend for Backend` 与 writer，`pkg/lightning/backend/tidb/tidb.rs` 的 `impl Backend for tidbBackend`、`impl EngineWriter for Writer`。
-- RustCodeGraph：执行了 `status`、目标目录 `files`、目标/Go/测试/调用方/实现文件的 `node`、主要符号 `query`，并尝试核心符号 `callers`/`callees`；索引可用但后两类精确查询无输出，故以已索引源码配合定向文本检索补足直接调用证据。
-- 按任务约束未运行 Cargo；本任务只新增说明文档，验证采用固定章节结构检查与人工事实复核。

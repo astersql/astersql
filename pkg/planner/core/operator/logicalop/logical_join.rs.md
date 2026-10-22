@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑优化阶段的二元连接节点 `LogicalJoin`。它位于 `astersql-planner-core-operator-logicalop` crate，由同目录 `lib.rs` 声明为 `mod logical_join` 并整体 `pub use`，因此 planner builder、优化规则和物理计划枚举代码都通过 logicalop crate 使用它。其职责处在“逻辑计划已建成、物理连接尚未选择”的中间层：维护连接语义和条件，接受谓词下推、列裁剪、键/统计/函数依赖推导，并保存后续物理化需要的 hint 与属性。
-
-RustCodeGraph 将该文件标为 1,577 行、112 个符号，并显示它被 `pkg/planner/core/logical_plan_builder_runtime.rs`、`pkg/planner/core/operator/logicalop/logical_datasource.rs`、`pkg/planner/core/lateral_join_test.rs` 等 9 个文件直接使用。文件末尾的 `impl LogicalPlan for LogicalJoin` 把本地实现接到统一 `LogicalPlan` trait；`PredicatePushDown`、`PruneColumns`、`BuildKeyInfo` 和 `DeriveStats` 均从这里进入递归优化主链。
+在 `PredicatePushDown` 中进行外连接简化、DNF 公因子/宽松谓词提取、两侧分流、`IS NOT NULL` 派生、子树递归下推和等值条件/键刷新；`PredicatePushDownRoot` 还处理 NOT 下推、谓词简化与恒假 `LogicalTableDual` 替换。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@ Schema 状态分两层：`Schema()` 是当前可见输出，`FullSchema` 可保�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/logicalop/logical_join.go`，Cargo 的 `[package.metadata.porting]` 也将 go-package 指向同一目录。字段、核心方法名和总体算法沿用 Go：条件分组、outer-to-inner、谓词下推、列裁剪、键推导、join 基数、关联列/FD、hint 与冗余列映射均可找到对应项。Rust 中关于 IN/EXISTS、pseudo NDV、重复 UniqueID、full outer nullability 的注释明确说明了为保持 Go 语义而设置的分支。
+字段、核心方法名和总体算法沿用 Go：条件分组、outer-to-inner、谓词下推、列裁剪、键推导、join 基数、关联列/FD、hint 与冗余列映射均可找到对应项。Rust 中关于 IN/EXISTS、pseudo NDV、重复 UniqueID、full outer nullability 的注释明确说明了为保持 Go 语义而设置的分支。
 
-两边并非逐方法等量移植。Go 的 `ExtractOnCondition` 接收 `deriveLeft/deriveRight` 并同时处理 mutable-effect、常量推送和更完整的派生；Rust 把部分非空派生拆到 `derive_inner_join_not_null_conditions`，接口也更窄。Go 的 `SetPreferredJoinTypeAndOrder` 从完整 `PlanHints` 和表别名计算左右偏好，Rust 当前只接受 bit mask 与布尔 order。Rust 的 `ConstantPropagation`、`PushDownTopN`、`ExtractFDForOuterJoin`、`ExtractFDForSemiJoin`、`SemiJoinRewrite` 等入口多为基类委托或保守实现，不能据此宣称已覆盖 Go 中对应方法的全部规则。Go 侧仍有更丰富的 TopN 下推、hint 类型、常量传播及 semi-join rewrite 结构变换。
+两边并非逐方法等量移植。Go 的 `ExtractOnCondition` 接收 `deriveLeft/deriveRight` 并同时处理 mutable-effect、常量推送和更完整的派生；Rust 把部分非空派生拆到 `derive_inner_join_not_null_conditions`，接口也更窄。Go 的 `SetPreferredJoinTypeAndOrder` 从完整 `PlanHints` 和表别名计算左右偏好，Rust 当前只接受 bit mask 与布尔 order。Rust 的 `ConstantPropagation`、`PushDownTopN`、`ExtractFDForOuterJoin`、`ExtractFDForSemiJoin`、`SemiJoinRewrite` 等入口多为基类委托或保守实现，不能据此宣称已覆盖 Go 中对应方法的全部规则。
 
-测试对应关系分层存在：`logical_join_test.rs` 独立验证冗余列映射守卫；`logical_relational_aster_unit_test.rs` 验证外连接空值供给侧不下推、inner/outer 基数边界、semi NDV 缩放和 pseudo NDV 回退；`logical_plans_test.rs` 通过 fixture 验证 join predicate、NOT NULL 派生、outer WHERE 下推和 outer join 简化。Go 的同目录及 planner 测试仍是扩展复杂规则时的语义基准。
+测试对应关系分层存在：`logical_join_test.rs` 独立验证冗余列映射守卫；`logical_relational_aster_unit_test.rs` 验证外连接空值供给侧不下推、inner/outer 基数边界、semi NDV 缩放和 pseudo NDV 回退；`logical_plans_test.rs` 通过 fixture 验证 join predicate、NOT NULL 派生、outer WHERE 下推和 outer join 简化。
 
 ## 扩展指南
 
@@ -97,12 +95,3 @@ Schema 状态分两层：`Schema()` 是当前可见输出，`FullSchema` 可保�
 - 补齐当前保守入口时，应以同路径 Go 的对应方法为基准，避免把 `ConstantPropagation`、TopN、FD 或 semi rewrite 做成仅能通过局部测试的简化版本。
 - Rust 单测必须保持在独立文件。局部数据结构守卫放在 `logical_join_test.rs`；跨算子细节可扩展 `logical_relational_aster_unit_test.rs`；用户可见计划形状与 Go fixture 对齐应扩展 `logical_plans_test.rs` 或相应 planner 独立测试，不能把测试内嵌进 `logical_join.rs`。
 - 性能风险集中在表达式反复 clone、DNF 展开、重复 Schema 扫描、统计 HashMap 构造和 FD 合并；正确性风险集中在 NULL/outer/semi 语义与条件移动顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点；`files --filter pkg/planner/core/operator/logicalop` 确认目标、Go 对照及独立测试均已索引。
-- RustCodeGraph：`query LogicalJoin` 定位 Rust `LogicalJoin`（第 69 行）和 Go 对照（第 46 行）；按文件 `node` 分段读取了目标 1–1,577 行并取得 112 个符号、9 个直接使用文件；`callers/callees PredicatePushDown`、`callers/callees DeriveStats` 核对统一 trait 入口和 expression/base/cardinality 下游调用。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml` 的 package、lib、dependencies 与 porting metadata；模块装配：同目录 `lib.rs` 的 `mod logical_join`、`pub use logical_join::*` 和独立 `#[cfg(test)] mod logical_join_test`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_join.go` 的结构字段和 `PredicatePushDown`、`PruneColumns`、`BuildKeyInfo`、`DeriveStats`、`ExtractFD*`、`ExtractOnCondition`、hint/TopN/semi rewrite 等方法。
-- Rust 测试：`pkg/planner/core/operator/logicalop/logical_join_test.rs`、`pkg/planner/core/operator/logicalop/logical_relational_aster_unit_test.rs`、`pkg/planner/core/logical_plans_test.rs`；另由搜索确认 builder、optimizer entry、lateral join 和 main planner 测试也直接检查 `LogicalJoin`。
-- 本任务是纯文档分析，按任务要求未运行 Cargo；结构验证用于确认本文存在且恰含规定的 11 个二级章节。

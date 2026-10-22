@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util` crate（见 `pkg/planner/util/Cargo.toml`），位于逻辑计划与表达式/函数依赖实现之间：它把过滤条件中的语义事实转换成 `funcdep::FDSet` 能消费的列 ID 集合。`pkg/planner/util/lib.rs` 将 `funcdep_misc` 声明为私有模块，再通过 `pub use funcdep_misc::*` 导出三个公开提取函数；内部的 `hashCodeKey` 仅在 crate 内可见。
-
-当前 Rust 主链的直接使用点是 `pkg/planner/core/operator/logicalop/logical_selection.rs` 的 `LogicalSelection::ExtractFD`。该调用者先继承子计划的 FD，调用本文件提取非空列、常量列和等价对，再依次执行 `MakeNotNull`、`AddConstants`、`AddEquivalence`，最后把 FD 投影到 Selection 的输出列。Go 版本还由 DataSource、Selection 和 Join 的 `ExtractFD` 路径调用；不能据此推断这些 Rust 算子均已完成同样接线。
+该调用者先继承子计划的 FD，调用本文件提取非空列、常量列和等价对，再依次执行 `MakeNotNull`、`AddConstants`、`AddEquivalence`，最后把 FD 投影到 Selection 的输出列。
 
 ## 核心职责
 
@@ -76,9 +74,9 @@ null-reject 是按“条件中的每一列 + 完整条件”验证，而不是�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/util/funcdep_misc.go`。三个公开函数的目的与处理顺序保持一致：逐列做 null-reject；抽取常量列/标量；抽取等价两端；非列表达式通过哈希在 FDSet 中复用或分配 ID。Rust 的 `PlanContext` 参数替代 Go 中 `LogicalPlan`/`PlanContext` 的接口传递，计划列分配则从 `GetExprCtx()` 取得，而 Go 从 SessionVars 分配。
+Rust 的 `PlanContext` 参数替代 Go 中 `LogicalPlan`/`PlanContext` 的接口传递，计划列分配则从 `GetExprCtx()` 取得，而 Go 从 SessionVars 分配。
 
-Rust 针对类型和内存模型做了三处显式化：等价结果用 `[FastIntSet; 2]` 表示固定二元关系；`pair.len() != 2` 时安全跳过；任意 Go `string(x.HashCode())` 字节键改为十六进制 UTF-8 字符串。十六进制会改变键的文本表示，但保持字节序列的一一对应关系，符合 FDSet 只需要稳定映射键的用途。
+Rust 针对类型和内存模型做了三处显式化：等价结果用 `[FastIntSet; 2]` 表示固定二元关系；`pair.len() != 2` 时安全跳过；任意 Go `string(x.HashCode())` 字节键改为十六进制 UTF-8 字符串。
 
 Go 注释明确指出当前常量抽取尚不能从组合约束（如 `x <= 1 AND x >= 1`）推导常量；Rust 复用相同形态的表达式提取器，也没有在本文件补充这种区间推理。Go 的 DataSource/Join/Selection 均有调用，Rust 搜索到的直接调用目前只有 Selection；这是接线覆盖差异，不应在本文档任务中扩张实现范围。
 
@@ -89,13 +87,3 @@ Go 注释明确指出当前常量抽取尚不能从组合约束（如 `x <= 1 AN
 - 若扩展 null-reject 规则，应在 `pkg/planner/util/null_misc.rs` 及其独立测试中完成证明逻辑；本文件只负责逐列调用并汇总 ID。
 - 若把这组事实接入新的逻辑算子，调用顺序应参考 `LogicalSelection::ExtractFD`：基于子计划 FD 提取并写入事实，最后按输出 schema 投影。必须同时核对对应 Go 算子的增量，避免把尚未移植的完整子系统纳入单次改动。
 - 性能上，非空提取会对每个条件中的每个去重列运行一次 null-reject 证明；新增更复杂规则时应避免重复遍历或不必要克隆。兼容性上尤其要防止错误扩大常量、等价或非空集合，因为错误 FD 会允许上层执行不安全的优化。
-
-## 验证依据
-
-- 源文件：`pkg/planner/util/funcdep_misc.rs`；确认三个公开函数、两个内部辅助函数、可见性、数据流与无条件编译项。
-- crate/模块：`pkg/planner/util/Cargo.toml`、`pkg/planner/util/lib.rs`；确认 crate 名、直接依赖、模块私有声明、公开再导出及独立测试挂载。
-- Rust 上下游：`pkg/planner/core/operator/logicalop/logical_selection.rs`、`pkg/expression/util.rs`、`pkg/planner/util/null_misc.rs`、`pkg/planner/funcdep/fd_graph.rs`、`pkg/expression/exprctx/context.rs`；确认调用位置、谓词形态、FD 哈希注册和 ID 分配语义。
-- Go 对照：`pkg/planner/util/funcdep_misc.go`，以及其中函数在 `logical_datasource.go`、`logical_selection.go`、`logical_join.go` 的调用搜索结果；确认原始算法与当前 Rust 接线差异。
-- 测试：`pkg/planner/util/funcdep_misc_test.rs`；当前直接覆盖 `hashCodeKey` 对任意字节的区分能力。`pkg/planner/funcdep/extract_fd_test.rs` 说明了完整 LogicalPlan FD 链路测试受 crate 依赖环限制，并以 FDSet API 序列验证其它算子传播；它不是本文件三个提取函数的直接单元覆盖。
-- RustCodeGraph：`status` 显示索引含 Rust/Go 文件；`query` 找到三个公开函数及两个 expression 提取函数的 Rust/Go 符号。文件过滤和调用边查询没有返回可靠边，故调用关系又以源码搜索和局部实现读取验证。
-- 按任务约束未运行 Cargo；最终仅执行文档固定十一章节的结构验证，并人工复核没有把 Go 调用点误写成已存在的 Rust 接线。

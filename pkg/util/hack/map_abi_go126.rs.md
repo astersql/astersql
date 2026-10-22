@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-hack`（`pkg/util/hack/Cargo.toml` 的 `[lib]` 指向 `lib.rs`），是 Go 1.26 Swiss map 的 Rust 对照实现。`pkg/util/hack/lib.rs` 通过 `pub mod map_abi_go126` 声明模块，并用 `pub use map_abi_go126::*` 将该版本作为 crate 根的当前公开 API；Go 1.25 兼容实现仍保留在独立的 `map_abi` 模块中。
-
-它同时承担两类职责，但两类对象不能混用：`mapTable`、`mapData`、`abiType`、`mapType`、`SwissMapWrap` 镜像 Go runtime ABI，供布局核验或由 Go/FFI 提供真实裸指针时读取；业务可运行的 `MemAwareMap<K, V>` 则持有 `crate::swiss_map::SwissMap<K, V>`，不把 Rust `HashMap` 内存冒充为 Go runtime map。`pkg/util/hack/hack.rs::init` 调用本文件的 `checkMapABI`，但当前 Rust 函数为空，不会查询 Go runtime 版本。
+提供 `MemAwareMap<K, V>` 的创建、读写、存在性检查、元素计数与内存记账 API。
 
 ## 核心职责
 
@@ -70,8 +68,6 @@ Go 的 `Init(nil)` 会 panic；Rust 的 `Init` 接受 `Into<SwissMap<K, V>>`，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/hack/map_abi_go126.go`，其 build tag 为 `go1.26 && !go1.27`。Rust 保留了常量、ABI 字段、`Size`/`Cap`、group 地址公式、近似比例、checkpoint 算法以及 `MemAwareMap` API 名称。Go 1.26 将早期变体的 table/Map 命名对应为 `mapTable`/`mapData`；本文件据此与 `pkg/util/hack/map_abi.rs` 的 Go 1.25 变体并存。
-
 关键迁移差异是存储实现：Go `ToSwissMap` 和 `unwrap` 可以借助 `unsafe.Pointer` 直接解释真实 Go map；Rust 标准 `HashMap` 布局不兼容，因此这两个入口被改为明确 panic，日常 `MemAwareMap` 改用安全的 `SwissMap` 模拟 Go Swiss-table 的分配历史并按 Go ABI 口径计费。Go `NewMemAwareMap` 返回指针，当前 Go 1.26 Rust 变体返回值类型 `MemAwareMap`；调用方无需空值检查。Go 的 `SetExt` 通过 `Used` 变化判断插入，Rust 在写入前用 `contains_key` 得出等价业务语义。
 
 Go 测试 `pkg/util/hack/map_abi_test.go` 验证真实 runtime 的目录扫描、seed、精确字节值、clear 与 benchmark；Rust 将可移植部分拆到 `map_abi_go126_test.rs`、`map_abi_test.rs`、`migration_aster_unit_test.rs`，其中安全存储的主要 workload 仍通过共享/Go 1.25 API 测试覆盖，并额外对 Go 1.26 镜像做字段偏移与合成目录验证。
@@ -83,11 +79,3 @@ Go 测试 `pkg/util/hack/map_abi_test.go` 验证真实 runtime 的目录扫描�
 - 新增 `MemAwareMap` 行为优先接在 `SwissMap` 的安全 API 上；不要调用 `unwrap` 或尝试实现对 Rust `HashMap` 的内存重解释。若确需读取 Go runtime 对象，应只在明确 FFI 边界使用 `SwissMapWrap::from_raw_parts`，为所有权、线程隔离、版本和生命周期建立外部保证并增加独立测试文件。
 - 若要让 `checkMapABI` 成为真实防线，需要先定义可获得 Go runtime 版本的 FFI/构建契约；在此之前应保留“占位”描述，不能声称运行时版本已校验。
 - 测试逻辑须继续放在独立文件，不嵌入本生产文件。至少同步 `map_abi_go126_test.rs`（ABI 布局）、`map_abi_test.rs`（行为/workload）和 `migration_aster_unit_test.rs`（Go 1.26 直接 API、合成布局与 crate 根导出）。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/util/hack` 找到目标、Go 对照、模块入口与测试；`node --file pkg/util/hack/map_abi_go126.rs` 读取 562 行完整源码，并报告直接使用方 `map_abi_test.rs`、`migration_aster_unit_test.rs`；`query MemAwareMap`/`query NewMemAwareMap` 确认 Go 1.25、Go 1.26 同名变体，故调用关系按模块路径消歧。
-- 源码与模块边界：`pkg/util/hack/map_abi_go126.rs`、`pkg/util/hack/swiss_map.rs`、`pkg/util/hack/lib.rs`、`pkg/util/hack/hack.rs`、`pkg/util/hack/Cargo.toml`。
-- Go 对照：`pkg/util/hack/map_abi_go126.go`；真实 runtime 行为测试：`pkg/util/hack/map_abi_test.go`。
-- Rust 独立测试：`pkg/util/hack/map_abi_go126_test.rs`（64 位字段大小/偏移）、`pkg/util/hack/map_abi_test.rs`（布局公式、增长、clear、checkpoint、精确字节与 workload）、`pkg/util/hack/migration_aster_unit_test.rs`（Go 1.26 CRUD、合成 `Cap/Size`、第九项扩容、crate 根导出和混合对齐）。
-- 仓库引用搜索：`rg` 确认 `hack.rs::init` 调用 `checkMapABI`，crate 根重导出 Go 1.26 API，并区分业务侧对 crate 根当前版本和 `map_abi` 兼容版本的引用。任务为纯文档分析，按计划不运行 Cargo。

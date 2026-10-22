@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-signal` crate 的 POSIX/Unix 实现，只在 `pkg/util/signal/lib.rs` 的 `#[cfg(unix)]` 分支中编译并由该入口重导出。crate 边界由 `pkg/util/signal/Cargo.toml` 定义：库入口是 `lib.rs`，Unix 目标专用依赖为 `libc` 与 `signal-hook`。它把操作系统信号转换为两个进程级能力：收到 `SIGUSR1` 时输出诊断栈，以及收到关闭信号时把原始信号号交给上层关机回调。
-
-应用侧的直接接线位于 `cmd/tidb-server/stubs.rs` 的 `signal` 模块。非测试构建中，该门面调用本 crate 的 `SetupUSR1Handler` 和 `SetupSignalHandler`；`cmd/tidb-server/main.rs` 在主要后台组件启动前注册 USR1 处理器，并在 server、storage、domain 创建后注册关闭处理器。因此本文件位于“Unix 信号来源”与“服务端退出编排”之间，不负责实现资源清理本身。
+`handle_usr1_signal` 与 `dispatch_shutdown_signal` 将容易单测的判断、格式化和回调转发从后台监听线程中拆出；二者虽为公开符号，但以 `#[doc(hidden)]` 隐藏于生成文档，主要服务于内部实现与独立回归测试。
 
 ## 核心职责
 
@@ -84,13 +82,11 @@ USR1 处理是单线程串行的，捕获 backtrace 和写标准错误期间不�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/signal/signal_posix.go`。两版保留了相同的两个公开入口与信号集合：USR1 路径持续处理，关闭路径收到第一项后调用一次回调。Go 的 channel/goroutine 对应 Rust 的 `Signals` 阻塞迭代器/OS 线程；Go 的 `os.Signal` 接口值对应 Rust 的 `libc::c_int`。
-
 诊断语义并非等价移植。Go `getGoroutineStacks` 从 1 MiB 缓冲区开始调用 `runtime.Stack(buf, true)`，按需翻倍到最多 64 MiB，从而尝试包含所有 goroutine；Rust `get_goroutine_stacks` 只用 `Backtrace::force_capture` 捕获当前信号监听线程。Rust 保留了 Go 输出的开始和结束标记，但信号显示为整数，内容前缀为 `stack backtrace:`。
 
 日志设施也不同：Go 的 USR1 路径使用标准 `log.Printf`，关闭路径使用 `logutil.BgLogger().Info` 和 zap 字段；Rust 两条路径都直接写标准错误，未提供结构化字段。Go `signal.Notify` 与 Rust `Signals::new` 都完成注册，但 Rust 额外显式面对注册失败并静默降级；Go 函数签名不返回注册错误。Rust 用 `FnOnce + Send + 'static` 在类型层表达关闭回调的单次、跨线程所有权，Go 由 goroutine 只接收一次的控制流保证单次调用。
 
-独立 Rust 回归位于 `pkg/util/signal/migration_aster_unit_test.rs`：它验证非 USR1 不产生 dump、USR1 文本含三类约定标记，以及关机分发保留 `SIGQUIT` 编号。当前同目录未发现对应 Go 单元测试；因此关于 Go 行为的依据来自生产实现本身，而不是 Go 测试断言。
+当前同目录未发现对应 Go 单元测试；因此关于 Go 行为的依据来自生产实现本身，而不是 Go 测试断言。
 
 ## 扩展指南
 
@@ -102,13 +98,3 @@ USR1 处理是单线程串行的，捕获 backtrace 和写标准错误期间不�
 - 若改用结构化日志，应确认信号处理器注册发生在 `setupLog()` 之前这一启动顺序：早期 USR1 仍需可靠输出，不能无条件依赖尚未初始化的日志子系统。
 
 兼容性风险主要是信号编号和跨平台 API 一致性；正确性风险集中在重复注册、回调只执行一次及注册失败后的降级；性能风险主要来自每次 USR1 强制捕获 backtrace、分配格式化字符串并同步写标准错误。扩展后应保持源文件与独立测试文件分离，并同步核对 Go 行为，避免无意将近似实现描述为完全等价。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标区域列出 `signal_posix.rs`、`lib.rs`、`migration_aster_unit_test.rs` 及 Go/Windows/WASM 对照文件。
-- RustCodeGraph 源码与调用边：`handle_usr1_signal -> get_goroutine_stacks`；`SetupUSR1Handler -> handle_usr1_signal`；`SetupSignalHandler -> dispatch_shutdown_signal`；测试 `diagnostic_dump_is_only_created_for_usr1 -> handle_usr1_signal`；测试 `shutdown_dispatch_preserves_the_received_signal -> dispatch_shutdown_signal`。
-- 已读生产源码：`pkg/util/signal/signal_posix.rs`、`pkg/util/signal/lib.rs`、`cmd/tidb-server/stubs.rs` 的 signal 门面、`cmd/tidb-server/main.rs` 的注册与退出闭包。
-- 已读配置与对照：`pkg/util/signal/Cargo.toml`、`pkg/util/signal/signal_posix.go`。
-- 已读独立测试：`pkg/util/signal/migration_aster_unit_test.rs`。其中第三个测试覆盖 `exit.rs::send_to_current_process` 的非法信号错误，不属于本文件自身逻辑；本文只将前两个测试作为本文件的直接行为证据。
-- 使用 `rg` 检索 Rust/Go 调用与测试引用，确认公开入口的生产接线和同目录测试范围；包目录中不存在 `doc.go`，包级装配契约由 `lib.rs` 提供。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定章节结构命令和人工事实复核验证文档。

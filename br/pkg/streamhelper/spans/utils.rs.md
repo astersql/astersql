@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-streamhelper-spans` library crate 的区间工具层。`br/pkg/streamhelper/spans/Cargo.toml` 将 `lib.rs` 声明为 crate 入口，`lib.rs` 通过 `#[path = "utils.rs"] pub mod utils` 挂载本模块，再用 `pub use utils::*` 将符号扁平导出。crate 的 porting 元数据指向 Go 包 `br/pkg/streamhelper/spans`；对应实现是同路径 `utils.go`。
-
-它不是独立数据结构，而是 `sorted.rs` 和 `value_sorted.rs` 共享的几何与校验基础：定义半开区间的重叠判定、空键的无穷端点比较、范围并集折叠、全键空间占位，以及带值区间集的覆盖等价判定。这些符号进一步被 `br/pkg/streamhelper/advancer.rs` 用于检查点范围初始化和采集前去重。
+这些符号进一步被 `br/pkg/streamhelper/advancer.rs` 用于检查点范围初始化和采集前去重。
 
 ## 核心职责
 
@@ -86,17 +84,10 @@ RustCodeGraph 的文件节点标记 `utils.rs` 被 9 个文件使用，但批量
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `br/pkg/streamhelper/spans/utils.go`。Rust 的 `Overlaps`、`Debug`、`Collapse`、`Full`、`Valued::Equals` 和 `ValuedSetEquals` 都保留了 Go 命名与主要分支结构，crate 级 `allow(non_snake_case)` 为这种迁移命名提供兼容。
-
-主要语义是逐项对齐的：
-
-- 两版 `Overlaps` 均将空 `EndKey` 视为右无穷，有限区间使用严格不等式保留半开边界。
 - Go `Collapse(length, getRange)` 通过长度和回调抽取输入；Rust 为更自然的所有权 API 改为 `Collapse(&[Span])`。排序、相邻/重叠合并、空右端扩张逻辑相同。
 - Go 使用 `br/pkg/utils.CompareBytesExt`；Rust 在本文件内提供同语义的 `CompareBytesExt`，供 spans crate 内部与测试集群使用。
 - Go `ValuedSetEquals` 原地排序传入的 slice；Rust 按值消费 `Vec`，因而将排序副作用限定在函数所有的向量内。双指针、值相等、相邻性与同时耗尽判定对齐。
 - Go `Debug` 使用 `fmt.Printf` 和 `math.MaxUint64`；Rust 使用 `println!` 与 `u64::MAX`，都遍历键序主树和全部值序索引。具体字符串格式不完全一致，不应将输出文本当作稳定协议。
-
-`utils_test.rs` 对应 Go `utils_test.go::TestValuedEquals`，保留 9 组数据与双向对称断言。`parity_test.rs` 另外锁定了 Go 公开契约中的重叠、相邻折叠、空输入、无穷右端和严格 `Equals` 语义。
 
 ## 扩展指南
 
@@ -107,13 +98,3 @@ Go 对照文件是 `br/pkg/streamhelper/spans/utils.go`。Rust 的 `Overlaps`、
 若要扩展 `ValuedSetEquals`，不要把“单个 `Valued` 严格相等”与“集合覆盖等价”混合。任何对重叠分段、重复段或非法反向范围的新规则都应先在 API 文档中定义，不应仅凭当前排序顺序推测。
 
 测试必须继续放在独立 Rust 文件中：`utils_test.rs` 用于对齐 Go 同名集合等价测试，`parity_test.rs` 用于公开契约边界，涉及树 Merge 则同步扩展 `sorted_test.rs`，涉及值索引则扩展 `value_sorted_test.rs`。不要将 `#[cfg(test)]` 测试嵌入 `utils.rs`。每次语义变更都应对照 `utils.go` 和 `utils_test.go`；有意的 Rust 差异应在 parity 测试和本文档中说明。
-
-## 验证依据
-
-- RustCodeGraph 索引：`status` 报告 7032 个 Rust 文件和 4415 个 Go 文件；`files --filter br/pkg/streamhelper/spans` 列出 14 个目标、对照与测试文件；`node --file br/pkg/streamhelper/spans/utils.rs` 确认 187 行源码、8 个索引符号及 9 个使用文件。
-- 主要符号查询：`query` 确认 Rust/Go `Overlaps`、`Collapse`、`CompareBytesExt` 和 `ValuedSetEquals` 的精确文件与签名。批量 `callers/callees` 查询超时且无可用输出，因此调用边用 RustCodeGraph 文件节点和 `rg` 引用结果交叉复核。
-- Rust 源码与入口：`br/pkg/streamhelper/spans/utils.rs`、`lib.rs`、`sorted.rs`、`value_sorted.rs`、`br/pkg/streamhelper/advancer.rs`、`basic_lib_for_test.rs` 以及 `br/pkg/utiltest/fakecluster/core.rs`。
-- crate 声明：`br/pkg/streamhelper/spans/Cargo.toml` 确认 library 边界和 Go 包对应；`br/pkg/streamhelper/Cargo.toml` 与 `br/pkg/utiltest/fakecluster/Cargo.toml` 确认直接路径依赖。
-- Go 对照：`br/pkg/streamhelper/spans/utils.go` 的六组公开行为和内部比较，以及 `utils_test.go::TestValuedEquals` 的 9 组数据。
-- 独立 Rust 测试：`br/pkg/streamhelper/spans/utils_test.rs`、`parity_test.rs`、`sorted_test.rs` 和 `value_sorted_test.rs`。其中直接边界证据包括空集、乱序输入、相邻折叠、有限端点相接不重叠、空右端无穷、同值不同切分等价、取值/覆盖不一致与中间空洞。
-- 本任务仅新增文档，按总计划不运行 Cargo。交付前使用任务指定的结构命令确认文件存在且恰好含有 11 个固定二级章节。

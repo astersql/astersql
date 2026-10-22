@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust Dumpling 命令行程序的控制流入口，源码见 [`main.rs`](main.rs)。Cargo 包 `astersql-dumpling-cmd-dumpling` 在 [`Cargo.toml`](Cargo.toml) 中同时声明了库入口 `lib.rs` 和二进制入口 `bin_main.rs`，并将迁移来源标为 Go 包 `dumpling/cmd/dumpling`、类型标为 `binary`。
-
-真实启动链为 `bin_main.rs::main` → `lib.rs::main` → `entry::main`。`lib.rs` 通过 `#[path = "main.rs"] pub mod entry` 纳入本文件，因此本文件不是 Cargo 直接指定的 bin 文件，而是可由二进制壳层和 crate 内测试共同调用的可测试入口模块。该目录没有 `doc.go`；最近的包级说明是 `lib.rs` 的 crate 文档。
+建立本地 `FlagSet`，安装 usage，并注册 `--version/-V` 与 Dumpling 参数。
 
 ## 核心职责
 
@@ -97,7 +95,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`main.go`](main.go)。Rust 与 Go 保持的主序列为：安装 usage → 注册版本参数 → 默认配置/定义参数 → 解析 → help → 打印版本 → version 提前返回 → 配置回填 → 拒绝位置参数 → 注册 collector/default gatherer → `NewDumper` → `Dump` → 无条件 `Close` → 失败/成功日志。
+Rust 与 Go 保持的主序列为：安装 usage → 注册版本参数 → 默认配置/定义参数 → 解析 → help → 打印版本 → version 提前返回 → 配置回填 → 拒绝位置参数 → 注册 collector/default gatherer → `NewDumper` → `Dump` → 无条件 `Close` → 失败/成功日志。
 
 主要实现差异如下：
 
@@ -117,16 +115,3 @@
 - 改变资源清理时，应明确构造失败是否拥有可清理资源、Dump 失败时的清理顺序、Close 错误是否影响退出码，并补对应计数/状态断言。
 - 改变 registry 行为时，应同时检查 `stubs.rs` 的全局槽和 collector stub。若要提供真实 Prometheus 指标，需要处理 Cargo 依赖与平台边界，不能只修改本文件的注册调用。
 - 兼容风险主要是脚本依赖的退出码/输出、Go/Rust 参数行为漂移和 Close 错误策略；性能风险主要来自真实 Dumper 下游，而本文件新增工作应避免在 help/version 提前返回前建立昂贵资源。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引可用，覆盖 11,467 个文件、7,032 个 Rust 文件；`files --filter dumpling/cmd/dumpling` 找到 `main.rs` 及入口、参数、stub 和测试文件。
-- RustCodeGraph `node --file dumpling/cmd/dumpling/main.rs`：读取完整 177 行并确认 `DumpSession`、`main`、`run`、`run_with_factory`、`long_version_output`、`reset_cli_globals` 的定义。
-- RustCodeGraph 精确 `query`：确认 `run_with_factory`、`DumpSession`、`long_version_output`、`reset_cli_globals` 位于本文件；确认 `NewDumper`/`DefaultConfig` 位于 `dumpling/export`，collector/gatherer 辅助函数位于 `stubs.rs`。
-- RustCodeGraph 文件节点：核对 `config_flags.rs` 的参数职责、`stubs.rs` 的 `OnceLock<Mutex<Option<Arc<dyn Registry>>>>` 与 collector 注册顺序，以及 `dump.rs::NewDumper/Dump/Close` 的真实资源职责。
-- 直接读取 [`Cargo.toml`](Cargo.toml)、[`bin_main.rs`](bin_main.rs)、[`lib.rs`](lib.rs)、[`main.go`](main.go)、[`parity_test.rs`](parity_test.rs) 和 [`config_flags_test.rs`](config_flags_test.rs)。`rg` 还确认本目录入口调用和测试引用，并确认 `dumpling` 下没有 `doc.go`。
-- `parity_test.rs` 的契约测试覆盖 help/version、默认参数、pflag 解析错误码、位置参数、配置错误、Dumper 构造失败、Dump 失败、成功路径、gatherer 设置/清理，以及 Dump 失败后仍 Close；`config_flags_test.rs` 补充压缩、column filter 和 session 参数等参数层边界。
-
-RustCodeGraph 的 `callers/callees` 查询本次未在等待窗口内返回，因此调用边以已索引源码节点和上述入口/测试文件的直接调用语句核验。任务是纯文档分析，按计划未运行 Cargo；最终只执行任务规定的 11 章节结构检查，并人工复核没有把 stub 或下游行为夸大为本文件能力。

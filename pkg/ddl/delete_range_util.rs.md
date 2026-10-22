@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`delete_range_util.rs` 属于 `astersql-ddl` crate，由 [`pkg/ddl/lib.rs`](lib.rs) 以公开模块 `delete_range_util` 装配。它不是 DDL 作业调度器，也不执行 KV 删除；它是 [`pkg/ddl/delete_range.rs`](delete_range.rs) 的一个内存态辅助模块，为同一轮删除范围生成过程中的“整张物理表”和“某物理表上的某个索引”分配稳定、互不重复的 `element_id`。
-
-生成出的编号最终进入 `DeleteRangeTask.element_id`。在持久化路径中，`delete_range.rs::persist_job_ranges` 将它写入 `mysql.gc_delete_range` 的 `element_id` 列，与 `job_id`、起止 key 和时间戳一起描述待 GC 的键范围。因此，本文件解决的是删除范围记录的对象身份编号问题，范围计算、作业参数解码、SQL 持久化和实际 GC 均在其他模块完成。
+`ElementIdAllocator` 在一个分配器实例的生命周期内维护两类对象到编号的映射：物理表整体，以及 `(physical_id, index_id)` 索引对象。
 
 ## 核心职责
 
@@ -79,16 +77,11 @@ RustCodeGraph 将目标文件标记为仅被 `pkg/ddl/delete_range.rs` 使用；
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/ddl/delete_range_util.go`](delete_range_util.go)：
-
-- Rust `TableIndexId` 对应 Go `tblIdxID`，字段分别对应 `physicalID` 与 `indexID`。
-- Rust `ElementIdAllocator` 对应 Go `elementIDAlloc`，两张 `BTreeMap` 对应两张 Go `map`。
-- `alloc_for_index_id` 与 `allocForIndexID`、`alloc_for_physical_id` 与 `allocForPhysicalID` 的命中复用、共享计数和从 `1` 起算的行为一致。
 - Go 通过首次调用时判断 `nil` 延迟创建对应 map；Rust 的 `Default` 直接创建空 `BTreeMap`。这是初始化机制差异，不改变可观察的编号语义。
 - Go 类型和方法是包内私有；Rust 类型和方法为 `pub`，但字段映射仍为私有。Rust 的公开面更宽，当前实际业务调用者仍只有 `delete_range.rs`。
 - Go 的调用点位于 `delete_range.go::doBatchDeleteIndiceRange` 和 `doBatchDeleteTablesRange`；Rust 将等价编号行为接入 `delete_range.rs::index_tasks`、`table_tasks`，并在持久化批次生成中复用。
 
-Go 测试 `pkg/ddl/delete_range_test.go::TestDoBatchDeleteTablesRangeSkipsRewrittenIDs` 通过 `elementIDAlloc` 覆盖整表删除批处理的上层接线，但没有单独断言编号序列或索引复合键。Rust 独立测试 `pkg/ddl/delete_range_test.rs` 验证范围尾键回绕、多 schema 父作业身份和列存索引过滤，也没有针对分配器的直接单元测试。
+Rust 独立测试 `pkg/ddl/delete_range_test.rs` 验证范围尾键回绕、多 schema 父作业身份和列存索引过滤，也没有针对分配器的直接单元测试。
 
 ## 扩展指南
 
@@ -98,12 +91,3 @@ Go 测试 `pkg/ddl/delete_range_test.go::TestDoBatchDeleteTablesRangeSkipsRewrit
 - 建议在同目录的独立测试文件 `pkg/ddl/delete_range_test.rs` 增加测试，而不要把测试内嵌进本生产文件。最小用例应覆盖：两类对象共享序列、重复调用幂等、相同索引 ID 在不同物理表下不复用、物理表与索引数字碰撞不混淆，以及克隆后状态独立。
 - 不要让分配器承担 key 编码、系统表 I/O 或实际 GC；这些职责应继续留在 `delete_range.rs` 及存储 GC 子系统，以保持本模块为无 I/O 的确定性状态机。
 - 性能方面每次分配是 `BTreeMap` 的对数复杂度；若改用其他容器，需要同时考虑 Go 对齐、确定性、哈希依赖和一次作业可能包含的大量分区/索引对象。
-
-## 验证依据
-
-- Rust 源：[`pkg/ddl/delete_range_util.rs`](delete_range_util.rs)；核对了全部 79 行、两个结构体、两个公开分配方法及派生 trait。
-- 模块与 crate：[`pkg/ddl/lib.rs`](lib.rs) 的 `pub mod delete_range_util`；[`pkg/ddl/Cargo.toml`](Cargo.toml) 的 `astersql-ddl` 包、`lib.rs` 入口与 Go 包迁移元数据。
-- Rust 调用方：[`pkg/ddl/delete_range.rs`](delete_range.rs) 中的 `add_delete_range_job`、`insert_job_into_delete_range`、`table_tasks`、`index_tasks`、`add_persistent_delete_range_job`、`persist_job_ranges`、`finished_range_batches`。
-- Go 对照：[`pkg/ddl/delete_range_util.go`](delete_range_util.go) 的 `tblIdxID`、`elementIDAlloc`、`allocForIndexID`、`allocForPhysicalID`；[`pkg/ddl/delete_range.go`](delete_range.go) 的两个批量范围生成调用点。
-- 测试证据：[`pkg/ddl/delete_range_test.rs`](delete_range_test.rs) 与 [`pkg/ddl/delete_range_test.go`](delete_range_test.go)。两者提供上层接线与边界背景，但当前没有直接覆盖分配器全部不变量，本文已明确该验证缺口。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件且目标文件有 5 个符号；`files --filter pkg/ddl/delete_range_util.rs` 确认目标已索引；`node --file ...` 核对全文件；`query` 定位 `ElementIdAllocator`、`TableIndexId` 和两个分配函数；`node table_tasks`、`node index_tasks`、`node persist_job_ranges`、`node finished_range_batches` 核对上下游边；两个分配函数的 `callees` 查询均返回无下游调用。精确 `callers` 查询超时，调用者结论由上述调用方节点和精确文本引用交叉验证。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的运行时层，由 `pkg/session/runtime.rs` 以公开模块 `ttl_timer_store` 装配。它不是 Timer 表存储本身，而是 `pkg/timer/tablestore/store.rs` 与 session 运行时之间的适配层：把持有 `Domain` 的真实 `ConcreteSession` 包装成 `astersql_session_syssession::SessionContext`，再构造可供 `NewTableTimerStore` 使用的 `AdvancedSessionPool`。
-
-当前生产入口只有 `pkg/session/runtime/ttl_runtime.rs`：TTL manager 成为 owner 并完成 timer 元数据同步后，在 `timer_runtime` 尚未创建时调用 `new_ttl_timer_session_pool(domain, 8)`，随后把池传给 `NewTableTimerStore(1, ..., "mysql", "tidb_timers", notifier)`。因此本文件处在“TTL 调度运行时 → 通用表式 TimerStore → SQL session”链路上，不负责 TTL 扫描、删除或 timer 调度策略本身。
-
-`pkg/session/Cargo.toml` 将该文件归入包 `astersql-session`，其直接使用的 crate 依赖包括 `astersql-domain`、`astersql-session-syssession`、`astersql-timer-tablestore` 与 `chrono`；文件内没有 feature gate 或条件编译项。
+`bind_parameters` 把通用 TimerStore 生成的 `%?` 参数 SQL 转换为当前 session 可执行的完整 SQL文本，包括字符串转义、字节十六进制字面量、布尔/整数/NULL，以及 `FROM_UNIXTIME(%?)` 的时间转换。
 
 ## 核心职责
 
@@ -94,7 +90,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 仓库没有与本文件同路径的一一对应实现。Go 的 `pkg/ttl/ttlworker/job_manager.go::jobLoopWithSession` 直接把 `m.sessPool`（Domain 提供的 `AdvancedSysSessionPool`）传给 `pkg/timer/tablestore/store.go::NewTableTimerStore`；Go session 原生实现 `syssession` 所需接口，无需额外线程和字符串类型桥接。
+Go 的 `pkg/ttl/ttlworker/job_manager.go::jobLoopWithSession` 直接把 `m.sessPool`（Domain 提供的 `AdvancedSysSessionPool`）传给 `pkg/timer/tablestore/store.go::NewTableTimerStore`；Go session 原生实现 `syssession` 所需接口，无需额外线程和字符串类型桥接。
 
 Rust 的对应主链保持了 Go 语义：owner 生命周期内创建 table timer store，数据库/表为 `mysql.tidb_timers`，存储层借用系统 session，先回滚、切换 UTC，执行操作后回滚并恢复时区；更新使用事务和 VERSION 约束，成功的 Create/Update/Delete 触发 notifier。Rust 本文件是为现有 `ConcreteSession` 接口补上的局部接线，不替代 `pkg/timer/tablestore/store.rs` 对 Go `store.go` 的主体移植。
 
@@ -112,14 +108,3 @@ Rust 的对应主链保持了 Go 语义：owner 生命周期内创建 table time
 - 二进制编码协议变更应同时修改 `pkg/session/runtime/row_codec.rs` 与本文件，并保留包含 `0x00`、`0xff` 等非文本字节的往返测试。
 - 测试逻辑继续放在 `pkg/session/runtime/ttl_timer_store_test.rs`，不要内嵌到生产文件。优先扩展现有真实 SQL roundtrip，另以小型独立用例覆盖参数数量、时间越界、奇数十六进制、错误 SQL 形状和事务清理。
 - 兼容风险主要是 Go SQL/typed-row 语义漂移；性能风险主要是每个池 session 一个 OS 线程、无界命令通道、以及每次查询的字符串物化与类型二次解析。扩容前应以实际 TTL 并发量和池容量评估线程数与内存。
-
-## 验证依据
-
-- 目标源码：`pkg/session/runtime/ttl_timer_store.rs`，核对了全部常量、枚举、结构体、impl、公开函数及无条件编译事实。
-- 模块与调用入口：`pkg/session/runtime.rs`、`pkg/session/runtime/ttl_runtime.rs`；生产调用点以容量 8 创建池并接入 `NewTableTimerStore`。
-- crate 边界：`pkg/session/Cargo.toml`，核对 `astersql-session` 包及 domain、syssession、timer-tablestore、chrono 依赖。
-- 下游契约：`pkg/session/syssession/pool.rs`、`pkg/session/syssession/session.rs`、`pkg/timer/tablestore/store.rs`、`pkg/timer/tablestore/sql.rs`、`pkg/session/runtime/row_codec.rs`。
-- Rust 回归：`pkg/session/runtime/ttl_timer_store_test.rs`，覆盖真实 SQL Create/List/Update/Delete、watch 事件、bytes 与 timestamp 往返、store/pool 关闭；测试与生产文件分离。
-- Go 对照：`pkg/ttl/ttlworker/job_manager.go`、`pkg/timer/tablestore/store.go`、`pkg/timer/tablestore/sql.go`、`pkg/timer/store_intergartion_test.go`、`pkg/timer/tablestore/sql_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query` 唯一定位 `new_ttl_timer_session_pool`、`TimerSessionContext` 及目标文件内的 `bind_parameters`、`decode_row`；`node new_ttl_timer_session_pool` 给出 `ttl_runtime.rs` 的上游 trail。按原始文件路径的 `files/explore` 未准确收敛，因此调用细节以精确符号节点和上述直接源码证据补足。
-- 本任务是纯文档分析，按任务约束未运行 Cargo、代码测试或构建；交付验证只检查文档结构、范围与事实可追溯性。

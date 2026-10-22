@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-infosync` crate，由 `pkg/domain/infosync/lib.rs` 以 `mod tiflash_manager` 装配并全量重导出。它定义 TiFlash 副本管理抽象、两个内存实现、PD placement rule 构造工具以及测试用 TiFlash/PD 替身。上层 `pkg/domain/infosync/info.rs` 把这些能力包装为全局 InfoSyncer API，DDL 和 GC 等路径再通过这些 API 配置或删除 TiFlash 规则。
-
-需特别区分“接口意图”与“当前 Rust 接线”：Go 版 `TiFlashReplicaManagerCtx` 调用真实 PD HTTP 和 TiFlash status HTTP；Rust 版同名类型只维护内存 map/list，而且 `GlobalInfoSyncerInit` 当前始终将 `mockTiFlashReplicaManagerCtx` 注入 `InfoSyncer.tiflashReplicaManager`，即使传入了 `PdHttpClient` 也不会切换到真实 TiFlash 管理器（`info.rs:163-224`）。
+定义 TiFlash 副本管理抽象、两个内存实现、PD placement rule 构造工具以及测试用 TiFlash/PD 替身。
 
 ## 核心职责
 
@@ -74,7 +72,6 @@
 
 ## 与 Go 版本的对应关系
 
-- trait 方法集、`makeBaseRule`、`MakeNewRule`、`MakeRuleID`、mock 类型和缓存 API 与 `pkg/domain/infosync/tiflash_manager.go` 同名符号一一对应。Rust 独立测试证明表 record/下一表键前缀编码与 Go `tablecodec` 意图对齐。
 - Go `TiFlashReplicaManagerCtx` 持有 `pd.Client` 和 TiKV codec：写规则前确保 rule group，对 keyspace 编码，通过 PD HTTP 增删查规则、加速调度、查 Region/Store，并向各 TiFlash Store 同步 schema。Rust `TiFlashReplicaManagerCtx` 未移植这些网络行为，只是内存容器。
 - Go `calculateTiFlashProgress` 以 PD 报告的总 Region 数作分母，逐 TiFlash Store 通过 HTTP 收集无滞后 peer，区分存活和离线 Store 的错误，并保留 context 取消错误。Rust 仅依赖预先填入的 label，对无 Region 返回成功 `(0,0)`，对 `replica_count==0` 返回 `(1,1)`；这是简化语义，不是 Go 生产实现的完整移植。
 - Go `MockTiFlash` 启动 `httptest.Server`，模拟 sync-status/config/accelerate/region-stats/stores 等 HTTP 路由，还有 delay、not-available 和 network-error 行为。Rust 保留了部分字段和直接 handler 语义，但 HTTP server 为空占位，不支持延迟/可用性模拟。
@@ -89,13 +86,3 @@
 - 若扩展 mock，保持其与 Go 测试契约的意图，而不要让它反向定义生产语义。新增 HTTP server/后台线程时，应让 `Close` 可幂等地停止资源，并在 `tiflash_manager_test.rs` 而非生产文件内新增测试。
 - 若改变分区或删除语义，除本文件外还必须同步检查 `info.rs::{DeleteTiFlashPlacementRules, ConfigureTiFlashPDForTable, ConfigureTiFlashPDForPartitions}` 及 `info_test.rs::test_tiflash_manager`。批量路径应明确部分成功时的处理契约。
 - 性能风险主要在大批规则逐条锁定/克隆、`GetGroupRules` 全表扫描以及 Store label 中 Region 列表的字符串拆分。引入真实网络后还要评估超时、批量上限、重试和并发度，不能保留当前“静默成功”的 mock 边界作为生产行为。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点；`files --filter pkg/domain/infosync` 确认目标 Rust/Go/测试文件均已索引。
-- 源码全貌：`rustcodegraph node --file pkg/domain/infosync/tiflash_manager.rs --offset 1 --limit 500` 和 `--offset 500 --limit 220`，覆盖该文件 658 行的 trait、两个 manager context、规则/进度工具与 mock。
-- 符号/调用图：`query MakeNewRule`、`query calculateTiFlashProgress`、`query mockTiFlashReplicaManagerCtx`以及 `explore "MakeNewRule ConfigureTiFlashPDForTable ConfigureTiFlashPDForPartitions SetTiFlashPlacementRule DeleteTiFlashPlacementRules Rust callers"`。图证据显示 Rust `MakeNewRule` 被 `info.rs` 的整表配置、分区配置和删除入口调用，并列出相关 Rust 测试调用者。精确 `callers/callees` 命令本次未产生额外文本输出，因此没有用它推导更多边。
-- Rust 入口与测试：读取 `pkg/domain/infosync/info.rs:1-260,600-879`、`pkg/domain/infosync/tiflash_manager_test.rs:1-62` 和 `pkg/domain/infosync/info_test.rs:1-250`。关键证据包括 `GlobalInfoSyncerInit` 当前固定注入 mock manager，以及规则 CRUD/分区加速的独立测试。
-- Go 对照：通过 RustCodeGraph 读取 `pkg/domain/infosync/tiflash_manager.go:1-351,350-479,650-939`，核对真实 PD/TiFlash HTTP 行为、keyspace 编码、进度分母、mock HTTP 服务器和关闭语义。
-- crate 与模块边界：读取 `pkg/domain/infosync/Cargo.toml` 和 `pkg/domain/infosync/lib.rs`，确认 crate 名、path 依赖、tagged `tikv-client` 依赖、模块重导出及独立测试文件装配。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查文档存在且恰好包含 11 个固定二级标题，并人工复核本文未将 Go 的完整生产能力写成 Rust 当前事实。

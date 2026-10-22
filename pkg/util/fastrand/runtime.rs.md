@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`runtime.rs` 是 `astersql-util-fastrand` crate 的最低层快速随机源。crate 入口 `pkg/util/fastrand/lib.rs` 以 `pub mod runtime` 装配本模块，并通过 `pub use runtime::*` 将唯一公开函数 `Uint32` 提升到 crate 根；同一 crate 的 `random.rs` 再以它为种子或原始随机字来源，构造 `Buf`、`Uint32N` 和 `Uint64N` 等高层 API。
-
-该文件不是数据库 SQL 主链中的独立服务，也不拥有网络、存储或事务资源。它存在的目的，是为需要高频非加密随机值的工具代码提供一个与 Go `pkg/util/fastrand/runtime.go` 同形的 `u32` 入口。`pkg/util/fastrand/Cargo.toml` 将 crate 名定义为 `astersql-util-fastrand`，库入口为 `lib.rs`，并声明运行时依赖 `fastrand = "2"`；根 `Cargo.lock` 当前将其解析为 `fastrand 2.5.0`。
+为 Go 版本依赖的 `runtime.cheaprand` 能力提供 Rust 迁移边界，使 `random.rs` 不必感知 Go 的 `//go:linkname` 或 Rust 生成器细节。
 
 ## 核心职责
 
@@ -73,9 +71,7 @@ RustCodeGraph 将 `runtime.rs` 索引为 2 个节点（文件与函数），能�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/util/fastrand/runtime.go` 只声明 `func Uint32() uint32`，并借助 `//go:linkname Uint32 runtime.cheaprand` 将符号绑定到 Go runtime；空导入 `unsafe` 是启用 `go:linkname` 所需。Rust 没有对应的链接属性，因此 `runtime.rs` 保留相同的零参数/32 位返回 API，但以 `fastrand::u32(..)` 提供真实函数体。
-
-两者保持的语义是：面向高频工具用途、返回无显式错误的 `uint32`/`u32` 快速随机值，并作为 `random.go`/`random.rs` 高层算法的底层来源。实现来源并不相同：Go 序列和状态由 Go runtime 决定，Rust 序列和状态由 `fastrand` 2.x 决定，因此不应期待跨语言逐值一致。
+Rust 没有对应的链接属性，因此 `runtime.rs` 保留相同的零参数/32 位返回 API，但以 `fastrand::u32(..)` 提供真实函数体。
 
 Go `random_test.go` 通过 `BenchmarkFastRand` 并行调用 `Uint32`，并通过 `Uint32N` 的范围和桶覆盖间接观察随机源；Rust `random_test.rs` 保留相同测试意图。Rust 额外的 `migration_aster_unit_test.rs:57-61` 明确检查该源不是恒定值。Go `main_test.go` 还有公共测试初始化和 goroutine 泄漏检查；Rust `main_test.rs` 仅提供 `Once` 驱动的幂等空初始化，不能视为 Go 泄漏检查的等价实现。
 
@@ -91,13 +87,3 @@ Go `random_test.go` 通过 `BenchmarkFastRand` 并行调用 `Uint32`，并通过
 - 若升级 `fastrand` 主版本，同步检查 `pkg/util/fastrand/Cargo.toml` 与根 `Cargo.lock`，并复核上游 crate 对范围语法和线程局部状态的契约。
 
 若只是新增有界分布、缓冲区格式或确定性 PRNG 功能，应优先接入 `random.rs` 的对应高层符号，而不是让 `runtime.rs` 承担超出“原始 `u32` 来源”的职责。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳为 `1791342965170`；`files --filter pkg/util/fastrand` 确认本 crate 的 10 个已索引 Go/Rust 文件；`node --file pkg/util/fastrand/runtime.rs` 和 `node pkg/util/fastrand/runtime.rs::Uint32` 确认唯一函数及其三行实现；对该符号的 `callers --json`、`callees --json` 均得到 `[]`，随后以精确源码搜索补足调用边。
-- 生产源码：`pkg/util/fastrand/runtime.rs`、`pkg/util/fastrand/lib.rs`、`pkg/util/fastrand/random.rs`。
-- crate 与依赖：`pkg/util/fastrand/Cargo.toml`、根 `Cargo.toml` 的 workspace/facade 项、根 `Cargo.lock` 中的 `astersql-util-fastrand 0.1.0` 与 `fastrand 2.5.0` 条目。
-- Go 对照：`pkg/util/fastrand/runtime.go`、`pkg/util/fastrand/random.go`。
-- 独立测试：`pkg/util/fastrand/migration_aster_unit_test.rs`、`pkg/util/fastrand/random_test.rs`、`pkg/util/fastrand/main_test.rs`，以及 Go 对照 `random_test.go`、`main_test.go`。
-- 精确引用搜索：`rg --glob '*.rs' 'Uint32\\('` 确认本 crate 的生产调用点和测试调用点；`rg` 搜索 crate 名确认当前仓库外层只在 `pkg/util/misc_test.rs` 直接调用高层 `Buf`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另执行固定 11 章结构检查，并人工确认没有把未解析的图边、统计性质或密码学安全性写成已验证事实。

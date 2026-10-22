@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-driver` crate 内 TiKV 驱动的一个私有网络适配模块，负责经由 PD 找到可用的 TiKV 节点，再从 TiKV status HTTP API 读取 coprocessor Region 拆分阈值。它不直接由 crate 根 `lib.rs` 导出，而是由 `kv_adapter.rs` 通过 `#[path = "region_split_config.rs"] mod region_split_config;` 挂载；唯一生产入口 `get_region_split_config` 的可见性为 `pub(super)`，因此只向父模块开放（`kv_adapter.rs:36-37`、`region_split_config.rs:70-74`）。
-
-在完整应用中，`TikvStore` 对 `astersql_kv::Storage::DDLRegionSplitConfig` 的实现取得 client runtime、PD 地址和 TLS 配置，随后在 Tokio runtime 上同步等待本文件的异步查询完成（`kv_adapter.rs:1988-2005`）。目前确认的上游消费点是全局排序 INGEST 规划：`modify_column_cloud_planner.rs:161-180` 先设置默认 Region 大小和键数，再读取该配置并分别取最大值，查询失败仅记录错误并保留默认值。
+将 PD 地址列表转换为 `/pd/api/v1/stores` 请求，并按顺序尝试地址，直到拿到结构有效的 `stores` 数组（`get_region_split_config`，`region_split_config.rs:88-110`）。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ crate 边界由 `pkg/store/driver/Cargo.toml` 定义：包名为 `astersql-store
 
 ## 与 Go 版本的对应关系
 
-仓库中没有同路径 `pkg/store/driver/region_split_config.go`。最接近且承担相同业务语义的 Go 实现是 `pkg/ingestor/ingestctrl/local.go:1991-2038`：`GetRegionSplitSizeKeys` 通过 PD 取得排除 tombstone 的 stores，跳过空 status 地址和 TiFlash，调用 `ServerInfo.ResolveLoopBackAddr` 修正地址，逐个读取 `/config`，解析 region split size/keys，并返回第一个成功结果；全部失败时返回同名统一错误。
-
 对应关系与差异如下：
 
 - Rust 复用了 Go 的“过滤后串行尝试、第一个成功、单节点失败继续、全部失败报错”控制流；Rust 独立测试的三次 `/config` 请求（HTTP 500、非法 size、成功）直接固定了该语义（`region_split_config_test.rs:10-83`）。Go 测试则让前两个节点失败、第三个成功，验证同一顺序回退语义（`local_check_test.go:86-117`）。
@@ -101,13 +97,3 @@ crate 边界由 `pkg/store/driver/Cargo.toml` 定义：包名为 `astersql-store
 - 改变 TLS/URL 行为：同时验证无 scheme/显式 scheme 的 PD 地址、TiKV status 地址、CA 错误、证书/私钥错误和 mTLS identity。尤其要明确 PD 显式 scheme 与 TiKV scheme 是否应继续采用当前不同来源。
 - 若需要向 crate 外暴露能力，应先经 `Storage` trait 或 `kv_adapter` 设计稳定接口；不要直接把本模块改成 `pub mod`，否则会泄漏当前基于动态 JSON 和 reqwest 的实现细节。
 - 性能风险主要来自每次调用重建 client、同步读取 TLS 文件、同步地址解析和串行节点探测；兼容风险集中在 PD JSON 字段、TiKV config 字段、大小单位、负/零键数、地址与 TLS scheme。任何缓存都必须定义配置刷新和证书轮换时机。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标 `region_split_config.rs` 被识别为 162 行、10 个符号的 Rust 文件。
-- RustCodeGraph 源码/调用查询：`node --file pkg/store/driver/region_split_config.rs`；`query get_region_split_config --kind function`；`node region_split_config.rs::{get_region_split_config,json,status_address,resolve}`；`node kv_adapter.rs::DDLRegionSplitConfig`。查询确认 `DDLRegionSplitConfig → get_region_split_config → json/status_address → resolve`。
-- 已核对生产源码：`pkg/store/driver/region_split_config.rs`、`pkg/store/driver/kv_adapter.rs:36-37,1988-2005`、`pkg/kv/kv.rs:771-780`、`pkg/session/runtime/modify_column_cloud_planner.rs:161-180`、`pkg/store/driver/lib.rs`。
-- 已核对 crate 声明：`pkg/store/driver/Cargo.toml`，确认包/库入口及 `astersql-kv`、`astersql-config-configtypes`、`reqwest`、`futures`、`serde_json`、Tokio 等边界。
-- 已核对独立 Rust 测试：`pkg/store/driver/region_split_config_test.rs`，覆盖 store 过滤与逐节点回退、HTTP 状态错误、非法/合法大小解析、负键数、请求路径、请求体读取期间取消、IPv4/IPv6 status 地址修正与解析失败回退。
-- 已核对 Go 对照及测试：`pkg/ingestor/ingestctrl/local.go:1991-2038`、`pkg/ingestor/ingestctrl/local_check_test.go:86-117`；同时定位 `pkg/infoschema/tables.go:1991` 的 `ServerInfo.ResolveLoopBackAddr` 作为地址修正来源。
-- 本任务为纯文档分析，按总计划与任务要求未运行 Cargo。完成前使用任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核本文区分了源码事实、Go 对照和扩展风险。

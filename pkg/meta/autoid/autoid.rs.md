@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`autoid.rs`](./autoid.rs) 是 `astersql-meta-autoid` crate 的核心实现文件。crate 入口 `pkg/meta/autoid/lib.rs` 将本模块公开并重新导出其 API；`pkg/meta/autoid/Cargo.toml` 指明该 crate 对应 Go 包 `pkg/meta/autoid`，运行时依赖只有 `thiserror`，说明具体 KV 接入被刻意隔离在本文件定义的存储 trait 之外。
-
-在完整应用中，生产接线点之一是 `pkg/session/runtime/create_table_resources.rs`：该文件用真实元数据事务实现 `IdTransaction`、`IdStore` 和 `Requirement`，把表模型转换为本文件的 `TableInfo`，调用 `new_allocators_from_table_info`，再用表中已有的 `AutoIncID`/`AutoRandID` 对所得分配器执行 `rebase`。因此本文件位于“表资源创建/恢复 → AutoID 分配器构造 → 元数据水位事务”链路中，负责策略与状态机，不直接依赖具体 KV 类型。
-
-同一 crate 内，`autoid_service.rs` 实现可由 `Requirement::single_point_allocator` 提供的远程单点 `AUTO_INCREMENT` 分配器，`memid.rs` 复用这里的 `Allocator`、`AllocatorType` 和批大小算法实现纯内存版本，`errors.rs` 提供统一错误类型。`pkg/ddl/split_region.rs` 则直接使用 `ShardIdFormat` 计算 `AUTO_RANDOM` 分片边界。
+因此本文件位于“表资源创建/恢复 → AutoID 分配器构造 → 元数据水位事务”链路中，负责策略与状态机，不直接依赖具体 KV 类型。
 
 ## 核心职责
 
@@ -104,13 +100,11 @@ RustCodeGraph 索引显示本文件包含 94 个符号，并能精确定位 `new
 
 ## 与 Go 版本的对应关系
 
-Rust 文件以 `pkg/meta/autoid/autoid.go` 为直接语义基准。主要一一对应关系为：Go `Allocator`/`Allocators` ↔ Rust 同名 trait/struct，Go `allocator` ↔ `DefaultAllocator`，`NewAllocator` ↔ `new_allocator`，`NewAllocatorsFromTblInfo` ↔ `new_allocators_from_table_info`，`alloc4Signed/alloc4Unsigned` ↔ 两个 `alloc_*_locked`，`rebase4Signed/rebase4Unsigned` ↔ 两个 `rebase_*_locked`，以及批大小、寻值、保序编码、`ShardIDFormat` 等纯算法。
+Rust 为解除 TiDB Go 类型耦合，引入了精简 `TableInfo`/`SequenceInfo` 和 `AutoIdKey`，并以 `IdStore`/`IdTransaction` 替代 Go 中直接使用 `kv.RunInNewTxn`、`meta.AutoIDAccessor` 的方式；具体映射下沉到 session 接线层。
 
-Rust 为解除 TiDB Go 类型耦合，引入了精简 `TableInfo`/`SequenceInfo` 和 `AutoIdKey`，并以 `IdStore`/`IdTransaction` 替代 Go 中直接使用 `kv.RunInNewTxn`、`meta.AutoIDAccessor` 的方式；具体映射下沉到 session 接线层。Go `context.Context` 被替换成最小 `Context`。这些是边界适配，不改变核心分配规则。
+当前 Rust 并非 Go 文件所有观测能力的完整等价实现。Go 的分配事务包含 internal-source 标记、tracing、metrics、snapshot/commit detail 收集和事务统计注入；Rust `DefaultAllocator` 当前没有接入这些设施。Rust `AllocatorRuntimeStats` 只保存字符串和计数，`merge` 仅用非空字符串覆盖且不会合并计数，而 Go 版本会 clone/merge 结构化 runtime stats。
 
-当前 Rust 并非 Go 文件所有观测能力的完整等价实现。Go 的分配事务包含 internal-source 标记、tracing、metrics、snapshot/commit detail 收集和事务统计注入；Rust `DefaultAllocator` 当前没有接入这些设施。Rust `AllocatorRuntimeStats` 只保存字符串和计数，`merge` 仅用非空字符串覆盖且不会合并计数，而 Go 版本会 clone/merge 结构化 runtime stats。文档或后续功能不能据此声称 Rust 已具备 Go 的完整可观测性。
-
-测试对应关系明确：`autoid_test.rs` 标注移植自 `autoid_test.go`，覆盖 signed/unsigned、并发、回滚、动态 step、计算边界和取消控制流；`seq_autoid_test.rs` 对应 `seq_autoid_test.go`，覆盖正负 increment、cache/cycle 和并发序列。Rust 还增加了 `row_id_ignores_auto_id_cache_one_since_table_info_v5`、Go wrapping 边界和纯 helper 对照等聚焦回归。
+Rust 还增加了 `row_id_ignores_auto_id_cache_one_since_table_info_v5`、Go wrapping 边界和纯 helper 对照等聚焦回归。
 
 ## 扩展指南
 
@@ -123,12 +117,3 @@ Rust 为解除 TiDB Go 类型耦合，引入了精简 `TableInfo`/`SequenceInfo`
 修改 `ShardIdFormat` 或 AUTO_RANDOM 规范化时，应同时核对 `pkg/ddl/split_region.rs` 和字段类型上游校验，测试 0/64 位、signed/unsigned、最大 shard bits 与容量溢出边界。`compose` 当前不验证 id 是否越过 incremental mask；若要新增验证，属于 API/错误语义变化，需与 Go 行为和所有调用者共同设计，不能只在 Rust 中静默截断。
 
 若要补齐 Go 可观测性，应在存储抽象与调用上下文层设计结构化统计传递，不能仅扩展 `AllocatorRuntimeStats` 字符串字段；同时要明确重试事务下 alloc/rebase 计数、快照与 commit detail 的合并时机。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认项目索引含 7,032 个 Rust 文件，`files --filter pkg/meta/autoid` 确认目标及对照文件已索引；`node --file pkg/meta/autoid/autoid.rs` 完整读取 1,290 行源码；`query` 精确定位 `new_allocators_from_table_info`、`alloc_signed_locked`、`calc_sequence_batch_size` 和 Rust `ShardIdFormat`。针对前三个符号执行了 `callers`/`callees`，未得到可用调用边，因此没有把空结果当作“无调用者”。
-- 源与 crate 边界：`pkg/meta/autoid/autoid.rs`、`pkg/meta/autoid/Cargo.toml`、`pkg/meta/autoid/lib.rs`、`pkg/meta/autoid/errors.rs`。
-- 直接生产接线：`pkg/session/runtime/create_table_resources.rs`（事务/store/requirement 实现、表级工厂调用与 rebase）、`pkg/meta/autoid/autoid_service.rs`、`pkg/meta/autoid/memid.rs`、`pkg/infoschema/builder.rs`、`pkg/table/table.rs`、`pkg/ddl/split_region.rs`。
-- Go 对照：`pkg/meta/autoid/autoid.go`，重点核对 allocator/rebase、表级工厂、sequence、寻值/编码、shard 格式与 runtime stats。
-- 独立测试：`pkg/meta/autoid/autoid_test.rs`、`pkg/meta/autoid/seq_autoid_test.rs`；并对照 `pkg/meta/autoid/autoid_test.go`、`pkg/meta/autoid/seq_autoid_test.go`、`pkg/meta/autoid/bench_test.go` 的测试范围。未运行 Cargo，符合本纯文档任务约束。
-- 人工复核结论：文件存在是为了把四类 AutoID 的策略、缓存与数学规则从具体 KV 后端中抽离；运行时由表资源创建路径注入事务存储并构造/恢复分配器；安全扩展必须维持水位事务原子性、`(min, max]` 契约、signed/unsigned 固定宽度语义，并在独立 Rust 测试及 Go 对照中同步验证。

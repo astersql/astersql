@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-session` crate 中 canonical `ConcreteSession` 的 `LOAD DATA` 执行实现。模块由 [`pkg/session/runtime.rs`](../runtime.rs) 以私有 `mod load_data` 装配；SQL 经解析并进入 [`ConcreteSession::execute_statement`](dispatch.rs) 后，`LoadDataStmt` 分支调用本文件的 `ConcreteSession::execute_load_data`。它不是 `pkg/executor/load_data.rs` 中通用导入执行器的包装层，而是 canonical session 为真实 SQL、KV mutation 和 Go testutil 兼容路径提供的一套独立接线。
-
-crate 边界由 [`pkg/session/Cargo.toml`](../Cargo.toml) 确认：该实现直接依赖 `astersql-lightning-mydump` 解析 CSV，依赖 `astersql-objstore` 访问外部对象，依赖 `astersql-objstore-compressedio` 解压 gzip，并通过同 crate 的 `dml_runtime` 规划表达式和 INSERT。文件没有条件编译项；相关测试则在 crate 根或 `runtime.rs` 中用 `#[cfg(test)]` 独立装配，没有内嵌在生产文件中。
+将 CSV 字段映射到普通列或用户变量，计算列赋值，执行 NULL、定长字符串、整数前缀和 DATE 的兼容转换，并按 SQL mode 决定报错还是记录 warning。
 
 ## 核心职责
 
@@ -81,11 +79,7 @@ crate 边界由 [`pkg/session/Cargo.toml`](../Cargo.toml) 确认：该实现直�
 
 ## 与 Go 版本的对应关系
 
-Go 的正式对照位于 [`pkg/executor/load_data.go`](../../executor/load_data.go)：`LoadDataExec::Open/Next/Close` 管理 local reader，`LoadDataWorker::loadRemote/LoadLocal/load` 通过 importer controller 建立 reader，并以 `errgroup`、`readerInfoCh`、encoder 和 committer 并行流式处理；`setResult` 生成同样的 `Records/Deleted/Skipped/Warnings` 消息。Rust 本文件对应的是这些行为在 canonical session 上的聚焦实现，而不是逐类型直译。
-
-已对齐的外部语义包括：LOCAL 与 remote 分支、压缩读取、字段/用户变量和 `SET`、strict/IGNORE warning 策略、REPLACE/重复键计数、LOW_PRIORITY 传递、reader 清理以及 OK 消息格式。相关 Rust 证据见 `pkg/session/load_data_runtime_test.rs` 和 `pkg/executor/test/loaddatatest/load_data_test.rs`。
-
-仍有结构性差异：Go 使用 importer 的数据文件发现、并行编码/提交、批次事务和 controller 生命周期；Rust 当前把输入与 AST 行全部缓存在内存，远端实际只接线 GCS，并通过通用关系 INSERT 完成写入。扩展时应以当前事实为基线，不应把 Go 的并发、存储覆盖面或流式内存上限描述成 Rust 已具备能力。
+仍有结构性差异：Go 使用 importer 的数据文件发现、并行编码/提交、批次事务和 controller 生命周期；Rust 当前把输入与 AST 行全部缓存在内存，远端实际只接线 GCS，并通过通用关系 INSERT 完成写入。
 
 ## 扩展指南
 
@@ -96,11 +90,3 @@ Go 的正式对照位于 [`pkg/executor/load_data.go`](../../executor/load_data.
 - 改善大文件性能：需要重构 `source_files`、拼接 `bytes` 和 `rows` 三层全量缓冲，设计流式 parser 与批次 mutation；这会影响事务原子性、重试、warning/计数、reader 生命周期和 Go 对齐，不能只局部替换容器。
 - 修改列映射或转换：保持“输入物理位置”和“最终可写列”分离，并同步验证生成列占位、隐藏列、用户变量大小写、重复列、NOT NULL、字符串截断、整数前缀及 DATE 零值。
 - 相关测试应优先扩展 `pkg/session/load_data_runtime_test.rs`；关系写入、REPLACE、LOW_PRIORITY 和共享 store 行为可扩展 `pkg/executor/test/loaddatatest/load_data_test.rs`；RU terminal/reader 清理可扩展 `pkg/session/runtime/scan_adapter_runtime_test.rs`；生成列/embedding 联动分别有 `pkg/session/dml_runtime_test.rs` 和 `pkg/session/runtime/inference_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标仓库索引可用；`files --filter pkg/session/runtime/load_data.rs` 确认文件含 27 个符号；两次 `node --file` 读取 1–779 行；`query/node/callees` 核对 `execute_load_data`、`execute_with_load_data_reader`、`load_assignment_value` 及其 CSV、对象存储、表达式和 INSERT 调用边。caller 图对 impl 方法无结果，故用源码引用补证。
-- 生产源码：`pkg/session/runtime/load_data.rs`；模块与包契约：`pkg/session/runtime.rs`、`pkg/session/lib.rs`；上游分派：`pkg/session/runtime/dispatch.rs`；RU/reader 桥：`pkg/session/runtime/typed_adapter_bridge.rs`；crate 依赖：`pkg/session/Cargo.toml`。
-- Go 对照：`pkg/executor/load_data.go` 中的 `LoadDataExec`、`LoadDataWorker::{loadRemote, LoadLocal, load, setResult, Close}`。
-- 独立 Rust 测试：`pkg/session/load_data_runtime_test.rs` 覆盖 LOCAL/server 文件边界、缺失文件、用户变量、view/sequence、整数前缀、IGNORE LINES 和死锁后的 reader/连接；`pkg/executor/test/loaddatatest/load_data_test.rs` 覆盖格式、NULL、REPLACE、重复键计数、LOW_PRIORITY 和 reader drop；`pkg/session/runtime/scan_adapter_runtime_test.rs` 覆盖文件传输 RU terminal 清理；`pkg/session/dml_runtime_test.rs` 与 `pkg/session/runtime/inference_test.rs` 覆盖共享 mutation、生成列和行号诊断。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付验证使用任务文件给定的 11 章节结构命令，并人工检查所有“已支持”结论均有限定和源码/测试依据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/errors.rs` 属于 `astersql-util` crate；crate 根 `pkg/util/lib.rs` 通过 `pub mod errors` 将它公开为 `astersql_util::errors`。文件只依赖 Rust 标准库的 `std::error::Error`，不使用 `pkg/util/Cargo.toml` 中列出的第三方依赖。它是 Go `pkg/util/errors.go` 的 Rust 对照实现，提供从错误包装链取得最深根因的通用辅助函数。
-
-当前仓库的 Rust 生产代码没有检索到 `OriginError` 调用；已确认的调用只在 `pkg/util/errors_test.rs` 和 `pkg/util/cpu_posix_1_aster_unit_test.rs`。因此它目前是已经公开接线、已有测试覆盖，但尚无生产调用证据的工具 API，而不是 SQL 请求主链上的必经节点。
+Go `pkg/util/errors.go` 的 Rust 对照实现，提供从错误包装链取得最深根因的通用辅助函数。
 
 ## 核心职责
 
@@ -58,9 +56,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go `pkg/util/errors.go::OriginError` 从输入 `error` 开始，反复调用 `errors.Cause(err)`，直到 `Cause` 返回与当前错误相同的接口值。Rust 版本把这一协议映射为标准库 `Error::source()`：`Some` 表示还可解包，`None` 表示到达叶子。
-
-两侧测试意图一致：`pkg/util/errors_test.go::TestOriginError` 和 `pkg/util/errors_test.rs::test_origin_error` 都覆盖 nil/`None`、叶子、一层包装、两层包装，并要求最终得到最初的 `err1`。差异在于 Go 依赖 `pingcap/errors` 的 `Cause` 约定并返回拥有接口值；Rust 依赖标准库 source 链并返回借用的 trait object。Rust 版本没有复刻 `pingcap/errors` 的全部包装、堆栈或类型匹配能力。
+差异在于 Go 依赖 `pingcap/errors` 的 `Cause` 约定并返回拥有接口值；Rust 依赖标准库 source 链并返回借用的 trait object。Rust 版本没有复刻 `pingcap/errors` 的全部包装、堆栈或类型匹配能力。
 
 ## 扩展指南
 
@@ -69,12 +65,3 @@ Go `pkg/util/errors.go::OriginError` 从输入 `error` 开始，反复调用 `er
 - 若生产代码开始使用该 API，应从 `astersql_util::errors::OriginError` 接入，并确认丢弃外层上下文是否符合日志、重试或分类需求。
 - 若计划增加循环保护、深度限制或返回拥有值，应先评估 API 兼容性和 O(d) 遍历成本；当前无分配、O(1) 额外空间是值得保持的性质。
 - 不要仅因 Go 调用很多就机械迁移调用点；应逐个确认相应 Rust 错误类型确实用 `source()` 表达与 Go `Cause` 相同的包装关系。
-
-## 验证依据
-
-- Rust 源与符号：`pkg/util/errors.rs`；RustCodeGraph `node --file` 确认文件共 33 行且唯一函数为 `OriginError`，`query OriginError --kind function` 区分出 Go/Rust 同名定义。
-- 模块与 crate：`pkg/util/lib.rs` 的 `pub mod errors`、独立测试模块接线，以及 `pkg/util/Cargo.toml` 的包名、库入口和依赖声明。
-- Rust 测试：`pkg/util/errors_test.rs::test_origin_error`；补充回归 `pkg/util/cpu_posix_1_aster_unit_test.rs::origin_error_follows_the_complete_source_chain`。
-- Go 对照：`pkg/util/errors.go::OriginError` 与 `pkg/util/errors_test.go::TestOriginError`。
-- 调用关系：RustCodeGraph 的文件使用关系和 `OriginError` 节点 trail，加上 `rg` 对 Rust 源的直接引用核验；未发现生产 Rust 调用者，未把 Go 侧广泛调用误记为 Rust 调用。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证检查文档存在且恰有 11 个规定二级标题，并人工复核路径、符号、边界与扩展说明均可回溯到上述证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`common.rs` 是 `astersql-util-rowcodec` crate 的公共基础实现，由 [`lib.rs`](lib.rs) 的 `rowcodec_impl` 通过 `include!("common.rs")` 与 `row.rs`、`encoder.rs`、`decoder.rs` 合并到同一模块，再由 crate 根和 `rowcodec` 命名空间公开。它不是独立模块文件，因此其中的私有函数也能被另外三个实现文件直接调用。
-
-该文件位于行值编解码链的底层：定义新行格式版本和 Datum flag，提供紧凑整数编解码、行键/格式判断、行 checksum 输入编码、CRC32 更新和 next-gen keyspace 前缀处理。直接执行路径可见于 [`encoder.rs`](encoder.rs)（写入整数和 raw-handle checksum）、[`decoder.rs`](decoder.rs)（读取紧凑整数）、[`row.rs`](row.rs)（解析/序列化头部并校验版本）以及 `pkg/tablecodec/tablecodec.rs`（识别新格式、移除 keyspace 前缀）。
+位于行值编解码链的底层：定义新行格式版本和 Datum flag，提供紧凑整数编解码、行键/格式判断、行 checksum 输入编码、CRC32 更新和 next-gen keyspace 前缀处理。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ RustCodeGraph 报告 `common.rs` 被 23 个索引文件关联；精确符号查�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`common.go`](common.go)。常量、整数宽度、排序不变量、row key 判定、checksum 类型分支和 keyspace 条件总体保持同一协议。Rust 特意保留了 Go 风格符号名，便于逐项对照。
-
 已经确认的实现差异：
 
 - Go 的四个 slice 转换通过 `unsafe.Slice` 与原内存共享；Rust 按小端复制成新 `Vec`，安全但增加分配并失去别名写回语义。
@@ -93,8 +89,6 @@ RustCodeGraph 报告 `common.rs` 被 23 个索引文件关联；精确符号查�
 - Go 以 panic/recover 处理 Datum/type 错配；Rust 先检查 kind 并返回错误。错误文字与 Go 的 Datum/类型名称格式并不完全相同。
 - Go slice append 原地复用容量；Rust `RowData` 每列传递 `self.Data.clone()`，语义相同但有额外复制成本。
 - BIT 的 Go `ToInt` 忽略截断错误并使用返回值；Rust 手动实现去前导零和超长饱和，目标是复现该数值结果。
-
-对应测试包括 [`common_test.go`](common_test.go) / [`common_test.rs`](common_test.rs) 的 keyspace 分支，以及 `rowcodec_test.go` / `rowcodec_test.rs` 的 Datum checksum、NULL、时区、排序与整行 checksum 用例。`common_1_aster_unit_test.rs` 另覆盖整数宽度、small/large 排序布局、raw handle checksum、行键和新格式判断。
 
 ## 扩展指南
 
@@ -105,11 +99,3 @@ RustCodeGraph 报告 `common.rs` 被 23 个索引文件关联；精确符号查�
 调整 keyspace 逻辑应扩充 `common_test.rs::TestRemoveKeyspacePrefix` 的 classic/nextgen、测试态、standalone、短 key、非 `x` key 矩阵，并保持全局开关恢复。若希望重新启用四个 sorter，应先确认它们与当前 `Encoder` 字段布局和 borrow 规则一致，并避免同时维护两条排序路径。
 
 性能风险集中在 `Vec` 转换和 `RowData` 的逐列 clone；兼容风险集中在 checksum 字节、时间标准化、NaN/Inf/BIT 特例和线上 row header。任何改动都应先以 Go 测试夹具或跨语言固定字节作为证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/rowcodec` 找到目标及 Rust/Go 对照；`node --file pkg/util/rowcodec/common.rs` 读取 582 行完整实现；精确查询/节点读取核对 `RemoveKeyspacePrefix`、`appendDatumForChecksum`、`IsNewFormat`、`FieldTypeFromModelColumn` 和相邻实现。
-- 源码与边界：[`common.rs`](common.rs)、[`lib.rs`](lib.rs)、[`row.rs`](row.rs)、[`encoder.rs`](encoder.rs)、[`decoder.rs`](decoder.rs)、[`Cargo.toml`](Cargo.toml) 及 `pkg/tablecodec/tablecodec.rs`。
-- Go 对照：[`common.go`](common.go)、[`common_test.go`](common_test.go)、`rowcodec_test.go`。
-- Rust 测试：[`common_test.rs`](common_test.rs)、[`common_1_aster_unit_test.rs`](common_1_aster_unit_test.rs)、`rowcodec_test.rs`；重点证据为整数最短宽度、空输入格式判断、checksum Datum 类型矩阵、列排序后 `hash(Encode) == Checksum`、keyspace 模式矩阵和 raw-handle checksum。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行固定 11 章节结构检查，并人工核对本文区分了当前真实路径、Go 对照结构和尚未等价的实现差异。

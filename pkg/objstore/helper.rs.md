@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`helper.rs` 属于 `astersql-objstore` crate（见 `pkg/objstore/Cargo.toml`），由 `pkg/objstore/lib.rs` 以 `pub mod helper` 暴露。它不是具体对象存储后端，而是把三类横切能力集中在一起：云存储 URI 校验器注册与执行、GCS 上传 worker 计数读取、以及对目录中元数据文件的并行读取和反序列化。
-
-当前 Rust 接线程度需要与 Go 区分：仓库搜索只发现 `UnmarshalDir` 被 Rust 独立测试调用，未发现生产 Rust 调用 `helper::init`、`registered_cloud_storage_uri_validator`、`ValidateCloudStorageURI`、`GetActiveUploadWorkerCount` 或 `UnmarshalDir`。因此这些接口目前是已实现、可公开访问的迁移能力，但不能据此断言它们已经进入 Rust 应用主链。Go 对应实现则已接入系统变量、DXF 指标和 BR 元数据读取链。
+当前 Rust GCS 实现未搜索到对该计数的增减操作，所以读取值通常仍为初始值 `0`。
 
 ## 核心职责
 
@@ -111,11 +109,3 @@ worker 数上限为 128，与 Go 的 `util.NewWorkerPool(128, "metadata")` 对�
 - 对齐上传指标时，应在 Rust GCS 真正执行每个分片上传的最小作用域内成对增减 `activeUploadWorkerCnt`，保证错误、取消和 panic 路径不会永久抬高计数；测试应独立放在 `gcs_test.rs` 或相邻测试文件，并覆盖并发与失败清理。
 - 扩展 `UnmarshalDir` 时，优先保持四个已验证不变量：最大并行度 128、结果可无序、遍历错误优先、发布终止错误前等待已提交 worker。若改为有界通道或异步 runtime，需要专门分析背压和死锁，尤其是“遍历线程同时负责消费/等待”的循环依赖。
 - 若要改变错误策略（收集多错、worker 错误优先或 panic 转错误），应修改 `failed`/`worker_error`/`terminal_error` 三处协调逻辑，并同步 `helper_test.rs`、`storage_test.rs`、`helper_2_aster_unit_test.rs` 以及 Go 对照测试意图。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/objstore/helper.rs` 确认目标文件有 23 个符号；`query`/`node` 确认 `ValidateCloudStorageURI`、`UnmarshalDir`、`GetActiveUploadWorkerCount`、`registered_cloud_storage_uri_validator` 的定义，及 `ValidateCloudStorageURI` 到 `ParseBackend`、`New`、`Close` 的调用边。`callers/callees` 对泛型和常见文件名解析存在噪声，因此生产调用结论另以精确 `rg` 复核。
-- Rust 源码：`pkg/objstore/helper.rs`；模块入口：`pkg/objstore/lib.rs`；crate 清单：`pkg/objstore/Cargo.toml`；直接依赖：`pkg/objstore/parse.rs`、`pkg/objstore/storage.rs`；指标实现对照：`pkg/objstore/gcs_extra.rs`。
-- Rust 独立测试：`pkg/objstore/helper_test.rs`、`pkg/objstore/storage_test.rs`、`pkg/objstore/helper_2_aster_unit_test.rs`。
-- Go 对照：`pkg/objstore/helper.go`、`pkg/objstore/gcs_extra.go`、`pkg/objstore/storage_test.go`；生产调用搜索覆盖 `pkg/sessionctx/variable/sysvar.go`、`pkg/dxf/framework/taskexecutor/manager.go`、`br/pkg/stream/stream_metas.go`、`br/pkg/restore/log_client/log_file_manager.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核所有“当前已接线/未接线”结论均由源码或精确搜索支撑。

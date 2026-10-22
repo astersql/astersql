@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`builtin_cast.rs` 是 `astersql-expression` crate 内的一套可执行、类型自包含的标量 CAST 内核。`pkg/expression/lib.rs:173-174` 通过 `#[path = "builtin_cast.rs"] mod builtin_cast_kernel;` 将它作为私有模块编入 crate；它没有从 crate 根公开再导出。crate 根对生产表达式代码公开的同名 `BuildCastFunction` 来自 `expression_builtin::formal_registry`（`pkg/expression/lib.rs:374-381`），并非本文件的函数。因此，本文件当前不是完整 SQL 执行主链中 Go CAST 签名体系的替代入口，而是一个与 Go 语义对齐、由独立测试和基准直接驱动的 Rust 标量内核。
-
-直接使用者是 `pkg/expression/builtin_cast_test.rs`（再导出内核供 `builtin_cast_4_aster_unit_test.rs` 使用）和 `pkg/expression/builtin_cast_bench_test.rs`。Cargo 边界由 `pkg/expression/Cargo.toml` 定义；本文件直接使用其中的 `chrono`、`rust_decimal`、`serde_json`、`thiserror`，基准另使用开发/普通依赖 `rand`。
+用 `Value` 统一承载整数、浮点、DECIMAL、字符串/字节、日期时间、时长、JSON、`VectorFloat32` 和数组运行时值，并由 `Expression::eval` 延迟执行转换。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ RustCodeGraph 对 `builtin_cast.rs::BuildCastFunction` 的调用轨迹确认其�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `BuildCastFunction*`、`WrapWithCastAs*`、`TryPushCastIntoControlFunctionForHybridType`、`ConvertJSON2Tp` 及字段长度辅助，名称和意图直接对应 `pkg/expression/builtin_cast.go`。Rust 把 Go 按源/目标 `EvalType` 展开的众多 `builtinCastXAsYSig` 合并为 `Value` + `cast_value` 的目标分派；`CastContext` 则以精简警告列表模拟 Go `StatementContext` 的部分行为。
+Rust 把 Go 按源/目标 `EvalType` 展开的众多 `builtinCastXAsYSig` 合并为 `Value` + `cast_value` 的目标分派；`CastContext` 则以精简警告列表模拟 Go `StatementContext` 的部分行为。
 
 已保留的主要语义包括：源可空则目标可空；普通与 UNION unsigned 转换差异；字符长度与二进制字节长度的区别；DECIMAL 舍入/钳制；日期时间和时长 FSP；`parse_to_json`；JSON array 元素转换；字符串↔`VectorFloat32` 支持路径；混合类型 IF/CASE/ELT 结果分支提前 CAST；字段显示长度推导。
 
-仍未覆盖或明显简化的 Go 能力包括：每个签名的 protobuf code 与 TiKV 下推、向量化签名、真实 charset/collation 校验、BIT/binary literal 特例、session SQL mode 与细粒度错误策略、时区、零日期、完整 MySQL 时间解析、常量折叠、Go ARRAY 的目标类型限制、完整 JSON 转换，以及 Go 的精密 DECIMAL 范围。`pkg/expression/builtin_cast_4_aster_unit_test.rs` 只覆盖选定对齐案例，不能作为全量等价证明。
+仍未覆盖或明显简化的 Go 能力包括：每个签名的 protobuf code 与 TiKV 下推、向量化签名、真实 charset/collation 校验、BIT/binary literal 特例、session SQL mode 与细粒度错误策略、时区、零日期、完整 MySQL 时间解析、常量折叠、Go ARRAY 的目标类型限制、完整 JSON 转换，以及 Go 的精密 DECIMAL 范围。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Rust 的 `BuildCastFunction*`、`WrapWithCastAs*`、`TryPushCastIntoControlFunct
 - 修改字符/二进制行为：重点核对字符数与字节数、固定宽度零填充、`max_allowed_packet`、charset/collation 元数据；若要补齐 Go 行为，应先明确本内核是否将接入生产 `formal_registry`，不要形成第三套隐式入口。
 - 修改时间或 DECIMAL：记录 `chrono`/`rust_decimal` 与 TiDB 类型能力的差距，避免把库限制误当 MySQL 规则；同步覆盖边界值、FSP 进位、负时长和精度溢出。
 - 测试必须继续放在独立文件：标量语义放 `pkg/expression/builtin_cast_4_aster_unit_test.rs`（由 `builtin_cast_test.rs` 挂载）；性能对照放 `builtin_cast_bench_test.rs`；Go 语义基准参考 `builtin_cast_test.go`。不要把测试内嵌回本源文件。
-
-## 验证依据
-
-- 源码全读：`pkg/expression/builtin_cast.rs`（1759 行），核对常量、类型、公开构建器、转换分派、警告/错误和元数据辅助。
-- RustCodeGraph：`status` 显示索引可用（11467 文件、307296 节点、1848419 边）；精确 `node builtin_cast.rs::BuildCastFunction`、`node builtin_cast.rs::BuildCastFunctionWithCheck`、`node builtin_cast.rs::cast_value`、`node builtin_cast.rs::TryPushCastIntoControlFunctionForHybridType` 验证核心调用边。索引对 `Expression::eval` 的限定名查询未命中，且散列 ID 存在歧义，因此其余事实以源码和限定路径搜索复核。
-- crate/入口：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`；确认直接库依赖、私有模块挂载、测试挂载，以及生产公开 CAST 入口来自 `formal_registry`。
-- Rust 测试：`pkg/expression/builtin_cast_test.rs`、`pkg/expression/builtin_cast_4_aster_unit_test.rs`、`pkg/expression/builtin_cast_bench_test.rs`；覆盖字符/二进制、数值 warning、DECIMAL、时间/时长、JSON/ARRAY、向量、NULL、元数据和行/列路径对照。
-- Go 对照：`pkg/expression/builtin_cast.go`、`pkg/expression/builtin_cast_test.go`、`pkg/expression/builtin_cast_bench_test.go`；核对构建器、类型矩阵、包装器、控制流下推、字段长度、数组及测试意图。
-- 跨文件搜索：只有测试/基准显式引用 `builtin_cast_kernel`；生产侧未限定 `BuildCastFunction` 来自 crate 根 `formal_registry` 再导出。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；交付验证仅执行任务指定的 11 章节结构检查并人工复核上述事实链。

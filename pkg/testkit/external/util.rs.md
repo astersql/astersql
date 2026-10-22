@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`util.rs` 属于 Cargo crate `astersql-testkit-external`（见 `pkg/testkit/external/Cargo.toml`），是 Go 包 `pkg/testkit/external` 的 Rust 语义边界。它不执行 SQL，而是把测试会话后的 Domain、InfoSchema 和表元数据压缩成小型 trait，再提供按库表查表、查 ALTER TABLE 过渡列和查索引 ID 的测试辅助函数。`pkg/testkit/external/lib.rs` 将本文件的全部公开类型、trait、类型别名和三个函数重新导出为 crate API。
-
-当前接线状态需要与 API 定义分开理解：Cargo workspace 和多个 Rust 测试 crate 已声明 `astersql-testkit-external` 依赖，但代码搜索只在 `pkg/testkit/external/util_aster_unit_test.rs` 找到本文件四个 trait 的实现。因此，已验证的是辅助函数在 mock 边界上的 Go 语义；“真实 Rust `TestKit` 已能直接调用”未由生产 adapter 证据支持。
+将 Go `testing.T`/`require` 的立即失败方式转换为 `ExternalResult<T>`，让 Rust 调用者决定用 `?`、`expect` 或自定义断言终止测试。
 
 ## 核心职责
 
@@ -73,16 +71,6 @@ trait 返回 slice 引用，所以列和索引容器的存储与顺序由 `Table
 
 `GetTableByName` 在一个共享 Domain 引用上先 reload 后取 InfoSchema，两步间的原子性、并发刷新排序和 snapshot 稳定性均由未来 `Domain` 实现者承担，本文件不加锁。`InfoSchema::Table` 按值返回，`GetModifyColumn` 又 clone 列，因此返回结果不借用 Domain 或 InfoSchema。单元测试中的 `Arc<Mutex<_>>` 只用来记录 reload 和 lookup 副作，不是生产实现的并发策略。
 
-## 与 Go 版本的对应关系
-
-Go 对照文件是 `pkg/testkit/external/util.go`。Rust `GetTableByName` 对应 Go 的 `domain.GetDomain(tk.Session()) -> dom.Reload() -> dom.InfoSchema().TableByName(...)`；Rust 用 `TestKitDomain` 等 trait 代替具体类型，用 `ExternalResult` 代替 `require.NoError` 对 `testing.T` 的立即终止。
-
-Rust `GetModifyColumn` 保留 Go 的先刷新、列名小写匹配和首个命中结果。Go 在 `allColumn` 分支中把 `table.Table` 断言为 `*tables.TableCommon` 并读其 `Columns`，Rust 改由 `TableMetadata::all_columns` 显式表达这项能力。Go 返回指针或 `nil`，Rust 返回拥有的 `Option<Column>`。
-
-Rust `GetIndexID` 与 Go 一样直接使用当前 InfoSchema，不 reload。Go 在缺失时 `require.FailNow` 并保留一个实际不可达的 `return -1`；Rust 返回 `Err(ExternalError)`，不使用 `-1` 哨兵值。两者的错误文本格式对齐。
-
-`pkg/testkit/external/util_aster_unit_test.rs` 是直接 Rust 回归证据：覆盖 reload 顺序、reload/lookup 错误短路、公开/全量列集、列名大小写、不存在列、索引查询不 reload、索引名大小写以及查表/缺索引错误。它不证明真实 Domain/TestKit adapter 的存在或集成行为。
-
 ## 扩展指南
 
 1. 要让这些 API 服务真实 Rust `TestKit`，应在适当的独立生产文件中实现 `TestKitDomain`、`Domain`、`InfoSchema` 和 `TableMetadata`，不要把适配器或测试塞进 `util.rs`。必须保证 `all_columns` 真的包含 Go `TableCommon.Columns` 可见的 DDL 过渡列，且 `reload` 与真实 Domain 刷新契约一致。
@@ -91,14 +79,3 @@ Rust `GetIndexID` 与 Go 一样直接使用当前 InfoSchema，不 reload。Go �
 4. 修改名称匹配规则前，先以 Go `ast.CIStr`/`Name.L` 与真实 Rust parser 标识符规范化语义建立对照证据，覆盖 ASCII、非 ASCII 和索引名大小写。不要因为列查询不区分大小写就顺手改变当前索引精确比较契约。
 5. 修改错误时保持 `ExternalError::message` 可稳定断言，并保留查询错误的原始上下文。如要增加错误枚举或 source chain，需同步检查 Go 失败文本兼容性。
 6. Rust 源码和测试逻辑应继续分文件放置：生产修改落在 `util.rs` 或新的 adapter 文件，回归测试同步落在 `util_aster_unit_test.rs`。真实接线完成后，除 mock 单元测试外还应增加最小集成测试，证明真实 TestKit 能刷新并读取 DDL 后元数据。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：`status` 报告 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/testkit/external` 识别 `lib.rs`、`util.go`、`util.rs` 和 `util_aster_unit_test.rs`。
-- RustCodeGraph 符号查询：`query` 定位 Rust/Go 同名的 `GetTableByName`、`GetModifyColumn`、`GetIndexID`，并定位 `ExternalError`、`TableMetadata`、`TestKitDomain`。
-- RustCodeGraph `node` 调用边：`GetTableByName` 调用 `domain/reload/info_schema/table_by_name` 并被 `GetModifyColumn` 与直接测试调用；`GetModifyColumn` 调用 `GetTableByName/columns/all_columns`；`GetIndexID` 调用 `domain/info_schema/table_by_name/indices/index_not_found` 并被错误契约测试调用。独立 `callers/callees` CLI 在本次查询中未在 30 秒内返回，因此不将其当作额外证据。
-- 已读源与边界：`pkg/testkit/external/util.rs`、`pkg/testkit/external/lib.rs`、`pkg/testkit/external/Cargo.toml`、`pkg/testkit/external/BUILD.bazel`。Cargo 工作区成员和若干测试 crate 的 manifest 引用通过 `rg` 核对。
-- 已读 Go 对照：`pkg/testkit/external/util.go`，核对了 reload 时机、`TableCommon.Columns`/`Cols()` 分支、`Name.L` 匹配、InfoSchema 直读和 `require.FailNow` 文本。
-- 已读独立 Rust 测试：`pkg/testkit/external/util_aster_unit_test.rs`，其五个测试覆盖刷新顺序与错误、列集分支、索引查询的当前 schema 语义和缺失错误。
-- 生产 adapter 搜索：对 `impl (TableMetadata|InfoSchema|Domain|TestKitDomain) for` 的 Rust 搜索只在 `util_aster_unit_test.rs` 命中本文件的四个 trait；其他同名 `Domain`/`InfoSchema` 实现属于不同模块的 trait，不是这个 crate 的适配。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` 加固定二级标题计数命令做结构验证，并人工复核文档不把 Cargo 依赖声明误写为已完成的真实接线。

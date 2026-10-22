@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-[`proto.rs`](proto.rs) 位于 `astersql-dxf-importinto` crate（见 [`Cargo.toml`](Cargo.toml)），是 `IMPORT INTO` 分布式任务的元数据协议层。它不执行 SQL、文件扫描或 SST ingest，而是定义任务级与步骤级状态的 Rust 表示、Go 兼容 JSON 线格式，以及编码/排序阶段共享的少量运行时状态。
-
-该文件处于两条链路的交界处：
-
-- 控制面：[`planner.rs`](planner.rs) 用 `TaskMeta` 和各 `*StepMeta` 生成持久化任务/子任务 payload；[`scheduler.rs`](scheduler.rs)、[`job.rs`](job.rs) 和 [`task_executor.rs`](task_executor.rs) 再解码这些 payload。
-- 数据面：[`encode_and_sort_operator.rs`](encode_and_sort_operator.rs) 创建 `SharedVars` 和 `importStepMinimalTask`，writer 结果经 `SortedKVMeta` 汇总后回填步骤元数据。
-
-模块由 [`lib.rs`](lib.rs) 中的 `mod proto;` 装配并再导出。文件头已有 `// Copyright 2026 AsterSQL.`，表明这份 Rust 实现已进入实际移植维护范围，而非仅保存 Go 草稿。
+文件头已有 `// Copyright 2026 AsterSQL.`，表明这份 Rust 实现已进入实际移植维护范围，而非仅保存 Go 草稿。
 
 ## 核心职责
 
@@ -119,8 +112,6 @@ RustCodeGraph 的同名符号查询存在限制：`Marshal`/`Merge` 同时出现
 - Go `SharedVars` 依靠 `sync.Mutex`/`atomic.Int64`，Rust 对应 `Mutex<()>`/`AtomicI64`，engine 与 store 用 `Arc` 表达共享所有权。
 - Go `importStepMinimalTask` 持有 `*SharedVars`；Rust 当前按值持有并由 worker 在每次处理前后搬移。
 
-[`proto_test.go`](proto_test.go) 只验证 KV group 冲突聚合。独立 Rust 测试 [`proto_test.rs`](proto_test.rs) 保留该 Go 测试的草稿，同时可执行地覆盖冲突计数、checksum 往返、import meta round trip、`i32` 溢出、非法 chunk type、空 summary 与无符号计数回绕，覆盖面比当前 Go 单测更广。
-
 ## 扩展指南
 
 - 新增 `TaskMeta`/`importer::Plan` 字段时，应同步修改对应 wire struct、双向 `From`/`TryFrom`、字段 alias/default 与 [`proto.go`](proto.go) JSON 语义；在 [`proto_test.rs`](proto_test.rs) 添加新旧 payload 往返和缺省值测试。
@@ -132,12 +123,3 @@ RustCodeGraph 的同名符号查询存在限制：`Marshal`/`Merge` 同时出现
 - 协议字段名属于持久化兼容面。重命名应保留旧 alias，并用真实 Go JSON fixture 验证双向读取，避免只验证 Rust 自身 round trip。
 
 主要风险是 wire 兼容（字段大小写、null/省略、枚举编号）、外置元数据丢字段、键范围边界和并发汇总遗漏；性能风险集中在大 map/vector 的 clone、JSON value 中间分配和错误地内联本应外置的数据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/dxf/importinto` 定位目标、Go 对照和独立测试；`node --file` 完整读取 `proto.rs`，并读取 `planner.rs`、`task_executor.rs`、`scheduler.rs`、`encode_and_sort_operator.rs` 的直接调用片段。
-- RustCodeGraph 符号查询：确认 `TaskMeta`、`SortedKVMeta`、`ImportStepMeta`、`SharedVars` 的 Rust/Go 定义及 `read_meta`、`previous_import_metas`、operator 构造等唯一使用点；同名方法的图查询歧义已在“依赖与调用关系”记录。
-- 源与边界：[`proto.rs`](proto.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)。
-- Go 对照：[`proto.go`](proto.go)、[`proto_test.go`](proto_test.go)，以及 globalsort 类型来源的 `pkg/ingestor/globalsort/util.go`（由符号查询确认）。
-- Rust 测试：[`proto_test.rs`](proto_test.rs)；调用面还通过 `rg` 核对 `planner.rs`、`scheduler.rs`、`job.rs`、`task_executor.rs`、`encode_and_sort_operator.rs`、`conflict_resolution.rs` 及其独立测试引用。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求本文恰有十一个固定二级标题，并由指定 shell 命令检查。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 crate `astersql-executor-internal-calibrateresource`，crate 入口 `pkg/executor/internal/calibrateresource/lib.rs` 将其声明为公开模块 `calibrate_resource`。`pkg/executor/Cargo.toml` 把该 crate 列为执行器层依赖，仓库根 `pkg/lib.rs` 又经 `executor::internal::calibrateresource` facade 对外再导出。
-
-当前 Rust 文件不是完整 SQL 执行链的等价替代：第 22—643 行是整块注释的 Go 迁移草稿；第 644 行之后才是可编译实现。可编译部分提供静态/动态 RU 估算、时间序列对齐、metrics 文本解析与一个单次产出的精简 `Executor`，但没有会话上下文、restricted SQL、domain resource-group controller 或真实 HTTP client。仓库搜索只发现独立 Rust 测试直接调用这些 API，没有发现 Rust 生产 builder 构造该 `Executor`。完整线上接线仍见 Go `pkg/executor/builder.go` 的 `*ast.CalibrateResourceStmt` 分支及本目录 `calibrate_resource.go::Executor.Next`。
+`fetch_store_metrics`、`fetch_server_cpu_quota`、`get_values_from_metrics` 与四个 SQL 构造函数：以注入闭包/纯数据形式保留 metrics 获取和解析语义，便于脱离网络与 SQL 运行时测试。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ metrics 辅助流程中，四个 `get_*_query` 仅生成与 Go 相同的 `METRIC
 
 数值常量、四种 OLTP/TPCC 基准、TPCH10 常量、1 分钟/24 小时时间边界、10 秒严格对齐、0.1/0.2 利用率阈值、10% 双端裁剪，以及“两路动态结果至少一路成功即可”均直接对应 `calibrate_resource.go`。
 
-Rust 对 Go 的拆分关系为：`staticCalibrate`/`staticCalibrateTpch10` 对应 `static_calibrate`；`getTiDBQuota` 和 `getTiFlashQuota` 的纯计算部分对应 `dynamic_tidb_quota` 与 `dynamic_tiflash_quota`；`timeSeriesValues` 对应 `TimeSeriesValues`；`fetchStoreMetrics`/`fetchServerCPUQuota` 对应两个闭包化 helper；metrics SQL 读取被拆成查询字符串构造和 `get_values_from_metrics`。
+重要差异是 Rust `Executor` 不持有 `BaseExecutor`、AST option list 或 session context，不执行 `CalculateAsOfTsExpr`、restricted SQL、cluster-info 查询、domain controller 获取、内部事务来源标记、failpoint 和真实 HTTP；它要求调用者预先提供时间、采样、CPU 核数和 RU 配置。
 
-重要差异是 Rust `Executor` 不持有 `BaseExecutor`、AST option list 或 session context，不执行 `CalculateAsOfTsExpr`、restricted SQL、cluster-info 查询、domain controller 获取、内部事务来源标记、failpoint 和真实 HTTP；它要求调用者预先提供时间、采样、CPU 核数和 RU 配置。因此当前 Rust 是核心算法与边界行为的可测试移植，不是已接入 SQL 主链的完整端到端 executor。文件上半部注释草稿记录了完整目标形态，但不参与编译，不能作为“已支持”的证据。
-
-独立 Rust 测试 `calibrate_resource_test.rs` 的活跃部分验证 Go fixture 的静态结果、TiDB 瓶颈、首实例配额语义、时长边界、极值裁剪、低负载、严格 10 秒对齐、TiFlash、单次产出、资源控制错误、metrics 查询文本、坏行忽略和多实例请求回退；其 `#[cfg(any())]` 部分仅保存不可执行的 Go 测试草稿。Go `calibrate_resource_test.go` 则通过 testkit、failpoint、mock cluster/metrics 和 resource-group controller 覆盖真实 SQL 路径。
+独立 Rust 测试 `calibrate_resource_test.rs` 的活跃部分验证 Go fixture 的静态结果、TiDB 瓶颈、首实例配额语义、时长边界、极值裁剪、低负载、严格 10 秒对齐、TiFlash、单次产出、资源控制错误、metrics 查询文本、坏行忽略和多实例请求回退；其 `#[cfg(any())]` 部分仅保存不可执行的 Go 测试草稿。
 
 ## 扩展指南
 
@@ -90,14 +86,3 @@ Rust 对 Go 的拆分关系为：`staticCalibrate`/`staticCalibrateTpch10` 对�
 - 接入真实 Rust SQL 主链时，扩展点是 `Executor`：需要引入 AST options、会话时区、restricted SQL、cluster info、resource-group config 和网络 metrics adapter，并在 Rust builder 中构造它。应保留 `done` 设置顺序、内部请求标记、两路动态错误合并与响应关闭语义；这会扩大依赖与生命周期范围，必须在独立测试中补真实 builder/执行器集成覆盖。
 - 修改 metrics 获取时保持 `fetch_store_metrics` 的“跳过无状态地址、请求错误继续、首个响应即返回”顺序，以及 `get_values_from_metrics` 的“查询错误传播、坏行忽略”边界。真实 I/O 接入还需评估超时、取消、TLS 和响应体关闭。
 - 性能风险主要来自动态路径对每条输入序列的克隆和排序（约为 `O(n log n)`）以及每次静态调用重建成本表；当前数据规模未在文件中声明，优化前应先测量，且不得改变稳定排序无关的时间对齐语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录中 `calibrate_resource.rs` 有 48 个符号。
-- RustCodeGraph `node --file pkg/executor/internal/calibrateresource/calibrate_resource.rs`：读取全部 1,204 行，确认注释草稿与第 644 行后活跃实现、所有常量/类型/函数/impl。
-- RustCodeGraph 精确 `query`：定位 `calibrate_resource.rs::next_dynamic`、`static_calibrate`、`dynamic_tidb_quota`、`fetch_server_cpu_quota`。本次 `callers/callees` 命令在 30 秒内无输出，故调用边由文件内直接调用和下述测试/接线文件交叉核对，不声称图已返回这些边。
-- RustCodeGraph `node` 读取 `pkg/executor/internal/calibrateresource/calibrate_resource_test.rs` 的活跃测试区；直接调用证据位于该文件第 1028 行后的导入与测试。
-- crate/导出证据：`pkg/executor/internal/calibrateresource/Cargo.toml`、同目录 `lib.rs`、`pkg/executor/Cargo.toml`、根 `Cargo.toml` 与 `pkg/lib.rs`。
-- Go 对照与生产入口：`pkg/executor/internal/calibrateresource/calibrate_resource.go`、`calibrate_resource_test.go`、`pkg/executor/builder.go`。
-- 仓库搜索未发现 Rust 生产文件调用 `calibrate_resource` API，只发现 crate 依赖与 facade 再导出；因此本文将当前迁移状态标为“算法可编译并有独立测试，SQL 生产接线未验证/未发现”。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰有 11 个固定二级标题。

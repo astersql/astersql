@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor` crate。crate 根在 `pkg/executor/lib.rs`，其中以 `pub mod inspection_profile` 公开本模块；`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 证明其 crate 边界。本文件不是 CPU pprof 实现，而是把 `metrics_schema` 中一段时间窗内的指标聚合成 Graphviz DOT 文本，用于展示 TiDB 查询链和 GC 链各阶段的耗时或次数占比（`profileBuilder::Collect`、`profileBuilder::Build`）。
-
-RustCodeGraph 将该文件识别为 932 行的 Rust 源文件，并列出 `pkg/executor/compiler.rs`、`pkg/executor/inspection_profile_test.rs` 和 `pkg/executor/statement_ru_result_test.rs` 三个“used by”文件；但对仓库 Rust 源码做精确符号搜索后，只有 `inspection_profile_test.rs` 实际调用 `NewProfileBuilder`。因此当前可确认的事实是：模块已公开且逻辑完整，Rust 生产调用接线尚未在仓库中找到。在线 HTTP 入口仍可在 Go 路径 `pkg/server/handler/tikvhandler/tikv_handler.go:1979-1989` 看到，它调用的是 Go 版 executor 实现。
+用 `ProfileDataSource` 抽象指标 SQL 执行、指标注释读取和时间格式化，使核心逻辑不直接依赖具体 session/executor。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@ RustCodeGraph 将该文件识别为 932 行的 Rust 源文件，并列出 `pkg/e
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/inspection_profile.go`。Rust 基本保留了 Go 的类型和方法分层、固定指标树、查询语句、0.01% 裁剪、pprof 风格配色、空类型回退、共享 KV 子树和 DOT 格式，方法名也刻意保留 Go 风格以方便逐项核对。
+Rust 基本保留了 Go 的类型和方法分层、固定指标树、查询语句、0.01% 裁剪、pprof 风格配色、空类型回退、共享 KV 子树和 DOT 格式，方法名也刻意保留 Go 风格以方便逐项核对。
 
 主要适配差异为：
 
@@ -104,13 +102,3 @@ Go 测试未发现同名 `inspection_profile_test.go`；当前直接回归证据
 - 改变 DOT 输出：重点同步 `init`、`traversal`、`addNode*`、`addEdge`、`dotColor` 和 `formatValueByTp`，补充完整字符串或可解析 DOT 的回归测试。若标签/注释来源扩大，先实现统一 DOT 转义。
 - 改变时间语义：同步 `format_system_time_difference` 与 `format_go_duration_nanos` 的 Go 兼容测试，尤其覆盖负值、零、纳秒/微秒/毫秒边界和超过一分钟/一小时的组合格式。
 - 性能注意：一项非空节点最多发起 count、sum 和三次 quantile 查询；扩大树会线性增加同步 SQL 次数。新增节点前应评估 HTTP 请求延迟和 metrics_schema 压力，必要时在保持结果语义的前提下讨论批量查询，而不是悄然改变采样口径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/executor/inspection_profile.rs --offset 1 --limit 500` 与 `--offset 501 --limit 500` 覆盖源码 1-932 行，并报告三个文件级使用方；`query NewProfileBuilder --kind function` 同时定位 Go `:300` 与 Rust `:329` 定义。`callers/callees` 的组合查询在 30 秒内没有返回结果，因此调用关系又以精确仓库搜索核验，没有将超时当作“无调用者”的单独证据。
-- Rust 源与装配：`pkg/executor/inspection_profile.rs`、`pkg/executor/lib.rs:125-130`。
-- crate 边界：`pkg/executor/Cargo.toml` 的 package、lib、features 和依赖声明。
-- Rust 独立测试：`pkg/executor/inspection_profile_test.rs`，覆盖 Go 风格零 duration、毫秒精度和结束时间早于开始时间时的负 duration 标题。
-- Go 语义对照：`pkg/executor/inspection_profile.go`；生产入口证据：`pkg/server/handler/tikvhandler/tikv_handler.go:1969-1989`。
-- 仓库精确搜索：`rg "NewProfileBuilder\\(" --glob '*.go' --glob '*.rs'` 只找到两份定义、Rust 测试调用和 Go HTTP handler 调用；据此将 Rust 生产接线标为“未找到”，而非推测其已启用。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节的结构命令和人工事实复核验收。

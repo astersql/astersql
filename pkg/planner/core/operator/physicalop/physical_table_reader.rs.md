@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-core-operator-physicalop`（同目录 `Cargo.toml`），定义根任务中的物理表读取边界 `PhysicalTableReader`：它把一棵可下推到 TiKV/TiFlash 的 `TablePlan` 包装成 planner 可统一处理的物理算子，并把输出 schema、统计、代价、解释信息和 protobuf 编码能力暴露给优化器与执行器。
-
-`lib.rs` 以 `mod physical_table_reader` 和 `pub use physical_table_reader::*` 导出本文件，并通过 `ConcretePhysicalOperator for PhysicalTableReader` 与 `impl_concrete_physical_plan!` 接入 `base::PhysicalPlan`。这里的真实孩子保存在 `TablePlan`，不是 `BasePhysicalPlan.Children`；适配层的 `children_operator`、`set_children_operator` 和 `attach_operator_to_task` 负责让通用计划树操作仍看到这棵子树。
+遍历下推树定位 `PhysicalTableScan`，为访问对象、单扫描约束、MPP 标志检查等功能提供依据。
 
 ## 核心职责
 
@@ -102,7 +100,7 @@ RustCodeGraph 的 `node` 结果确认 `GetPhysicalTableReader` 被 `implementati
 
 ## 与 Go 版本的对应关系
 
-同路径 `physical_table_reader.go` 是语义基准，`Cargo.toml` 的 `[package.metadata.porting]` 也把 Go package 指向 `pkg/planner/core/operator/physicalop`。主要对应与差异如下：
+主要对应与差异如下：
 
 - 两边都有 `TablePlan`、`StoreType`、`ReadReqType`、`IsCommonHandle` 和 `PlanPartInfo`；Go 另有扁平 `TablePlans` 与多 scan 分区映射 `TableScanAndPartitionInfos`，Rust 改用递归遍历且没有后一状态。
 - Go `Init` 会扁平化计划、同步 schema、选择请求类型，并为 MPP/BatchCop 递归标记 scan；Rust `Init` 只选择 Cop/MPP，Rust `SetChildren` 才含 BatchCop 形状判定，scan 标记由更早的候选构建阶段负责。
@@ -111,8 +109,6 @@ RustCodeGraph 的 `node` 结果确认 `GetPhysicalTableReader` 被 `implementati
 - Go `LoadTableStats` 通过首个扁平 scan 的表和物理表 ID 真正加载统计；Rust只收集 scan。Go `AccessObject` 实现动态分区裁剪、别名和多 scan 分区对象；Rust只连接各 scan 的字符串描述。
 - clone、相关列、单 scan 约束、explain/operator info、下标解析的大体意图一致；Rust对可选子树更宽容。Go `SetChildren` 直接索引第一个孩子，空输入会 panic；Rust空输入会清空子树。
 - Go 工厂接收 `TiKVSingleGather` 并填充 `PlanPartInfo`、query block offset；Rust工厂直接接收 context/schema/stats/props，默认 offset 为 0，也不创建分区信息。调用链若需要这些语义必须另行补齐。
-
-独立 Rust 测试 `physical_table_reader_test.rs` 覆盖 TiFlash + ExchangeSender 选择 MPP、单 scan 的 MPP 标志，以及 `OperatorInfo` 不含 MPP 版本前缀。它没有覆盖 BatchCop、空/多 scan、clone、PB、cost、分区和统计加载。Go 没有同名 `_test.go`；相关 Go 行为只在 `physical_utils_test.go` 等邻近测试中零散覆盖 reader 分类。
 
 ## 扩展指南
 
@@ -123,13 +119,3 @@ RustCodeGraph 的 `node` 结果确认 `GetPhysicalTableReader` 被 `implementati
 - 扩展多 scan/MPP 时保留 `GetTableScan` 的单扫描显式错误，并为 `GetTableScans` 的遍历顺序、访问对象组合、分区信息映射和 PB 编码定义清楚规则。
 - 更改构造工厂时检查 cascades 与传统 planner 两条调用链，尤其是 query block offset 与 `PlanPartInfo`；更改执行边界时同步 `pkg/executor/builder.rs` 的空计划和子树类型验证。
 - Rust 测试必须继续放在独立测试文件，不应内嵌进生产源文件；涉及计划缓存、规范路由或执行器接线时分别补充 `cache_snapshot_test.rs`、`canonical_router_aster_unit_test.rs` 和 executor 的相关独立测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter` 确认目标文件已索引；`node --file ... --offset 1 --limit 1000` 读取完整 367 行并报告被 76 个文件使用；`query`/`node` 定位 Rust/Go 类型、工厂及上游调用边。`explore`、`callers`、`callees` 本次未返回明细，相关关系进一步由精确源码搜索核验。
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_table_reader.rs`，核对枚举、结构体、公开方法、三个局部/私有递归辅助逻辑和工厂。
-- crate 与模块：`pkg/planner/core/operator/physicalop/Cargo.toml`、`pkg/planner/core/operator/physicalop/lib.rs`，核对依赖、Go porting 元数据、导出、统一 trait、孩子模型和 attach 生命周期；包内不存在 `doc.go`。
-- 上下游源码：`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/core/operator/physicalop/base_physical_plan.rs`、`pkg/planner/core/operator/physicalop/cache_snapshot.rs`、`pkg/executor/builder.rs`。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_table_reader.go`；邻近 Go 测试证据来自 `pkg/planner/core/operator/physicalop/physical_utils_test.go`。
-- Rust 测试：`pkg/planner/core/operator/physicalop/physical_table_reader_test.rs`；补充接线证据来自 `cache_snapshot_test.rs`、`canonical_router_aster_unit_test.rs`、`physical_utils_test.rs` 和 `readers_scans_aster_unit_test.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工复核唯一生产物、源码引用、Go 差异和无运行时代码修改。

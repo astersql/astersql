@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`schema.rs` 属于 `astersql-expression` crate，crate 边界由 `pkg/expression/Cargo.toml` 定义。`pkg/expression/lib.rs:328-329` 以 `expression_schema` 私有模块挂载本文件，并在 `pkg/expression/lib.rs:390` 将其 API 整体再导出，因此规划器可以通过 `expression::Schema`、`expression::MergeSchema` 等名称使用它。
-
-这里的 `Schema` 不是数据库目录中的“数据库模式”，而是一个关系算子输出行的表达式模式：它保存有序输出列，以及能够证明输出唯一性的键元数据。它位于表达式层与规划器之间；例如物理连接在 `pkg/planner/core/operator/physicalop/physical_hash_join.rs:630` 合并左右输出，投影在 `pkg/planner/core/operator/logicalop/logical_projection.rs:138` 计算仍被上层使用的列，基数估算在 `pkg/planner/cardinality/ndv.rs:163,189` 将列映射为 schema 下标。
+以 `Column::UniqueID` 为身份执行列检索、包含判断和批量下标映射，并对同一 `UniqueID` 同时出现前缀列与完整列的情况优先选择完整列（`Schema::ColumnIndex`）。
 
 ## 核心职责
 
@@ -81,13 +79,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/schema.go`，独立测试分别是 `pkg/expression/schema_test.go` 与 `pkg/expression/schema_test.rs`。Rust 保留了 Go 的三字段模型、键分类、按 `UniqueID` 定位、前缀列回退、表达式递归、组筛选、内存估算、extra handle 两个候选位置、合并时不传播双侧键，以及 `GetUsedList` 的生成列表达式扩散规则。
+Rust 保留了 Go 的三字段模型、键分类、按 `UniqueID` 定位、前缀列回退、表达式递归、组筛选、内存估算、extra handle 两个候选位置、合并时不传播双侧键，以及 `GetUsedList` 的生成列表达式扩散规则。
 
 表示层差异是 Go 使用 `*Column`、`*Schema` 和 `nil`，Rust 使用拥有型 `Column`/`Schema`，只在可空 schema 边界使用 `Option<&Schema>`/`Option<Schema>`。因此 Rust 的 `Schema::Clone` 无需处理空接收者，`NullableUK` 也不能区分 Go 的 `nil slice` 与空 slice；`ExtractColGroups` 对空输入返回两个空 `Vec`，而 Go 返回两个 `nil`，对长度和迭代语义等价但空值形状不同。
 
 Rust 的 `ColumnsByIndices` 只接受 `usize`，从类型层排除了 Go 文档所说的负 offset，但大于等于列数仍会 panic。Rust `RetType` 使用结构相等判断来约束生成列扩散；Go 调用 `FieldType.Equal`。`ToCacheSnapshot`/`CachedSchema` 是 Rust 为实例计划缓存增加的拥有型边界，在 `schema.go` 中没有同名实现。
-
-当前 Rust 测试覆盖克隆/字符串、前缀列优先、强弱唯一键、批量下标、列组筛选、三种 schema 合并形状、外部及重复 used column、extra handle 三个分支。Go 测试提供相同主体行为的来源证据；快照的键顺序与重复形状由 `pkg/expression/cache_snapshot_test.rs:234-235` 等测试补充验证。
 
 ## 扩展指南
 
@@ -97,11 +93,3 @@ Rust 的 `ColumnsByIndices` 只接受 `usize`，从类型层排除了 Go 文档�
 - 改变键传播时，不要只修改 `MergeSchema`。双侧合并后键由后续 key-info 阶段重建是现有契约；直接拼接输入键可能在 join 改变唯一性时产生错误优化。
 - 扩展 `GetUsedList` 的等价生成列规则时，应同时核对虚拟表达式相等、返回类型、重复 used column 和 schema 外列。这里是按 schema 二次扫描，新增更宽泛等价规则还需评估大 schema 上的二次复杂度。
 - 若让 `ToCacheSnapshot` 接入生产缓存主链，应先验证所有可能出现的虚拟表达式都被快照白名单覆盖，并保持失败可回退，不能吞掉 `CacheSnapshotError`。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；文件节点读取了 `pkg/expression/schema.rs` 全部 304 行，并报告该文件被 53 个文件使用。
-- RustCodeGraph 源码节点：`pkg/expression/lib.rs:310-414` 确认模块挂载与公开再导出；`pkg/expression/cache_snapshot.rs:330-400` 确认 schema 快照捕获和恢复；对 `MergeSchema`、`ExprFromSchema`、`ExprReferenceSchema`、`GetUsedList`、`ToCacheSnapshot`、`GetExtraHandleColumn` 执行了精确符号查询。图的 `callers/callees` 对这些符号未返回结果，已用限定 `*.rs` 的文本调用搜索补证，未把缺失边推断为无调用。
-- 读取的边界与对照：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`、`pkg/expression/schema.go`、`pkg/expression/schema_test.go`、`pkg/expression/schema_test.rs`、`pkg/expression/cache_snapshot.rs`、`pkg/expression/cache_snapshot_test.rs` 的相关调用/断言。
-- 代表性调用点：`pkg/planner/core/operator/logicalop/logical_projection.rs:138,203,297`，`pkg/planner/core/operator/physicalop/physical_hash_join.rs:630`，`pkg/planner/core/expression_rewriter.rs:2405-2508`，`pkg/planner/cardinality/ndv.rs:163,189`，`pkg/expression/constant_propagation.rs:1103-1152`。
-- 人工复核结论：本文区分了“当前有生产调用”“仅公开但未检出外部调用”和“Go 对照行为”；未把 `Schema` 误写成数据库目录 schema，未声称合并会保留双侧键，也未建议把 Rust 测试放入生产源文件。

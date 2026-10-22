@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-hack` crate。crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，入口 [`lib.rs`](lib.rs) 将它声明为公开的 `map_abi` 模块；包根当前默认重导出的是 Go 1.26 对应的 `map_abi_go126`，因此本文件的 Go 1.25 兼容 API 通常经 `astersql_util_hack::map_abi::*` 显式访问。
-
-它位于业务容器与内存记账之间：上层使用 `MemAwareMap<K, V>` 获得 map 操作及插入时的内存增量，底层 [`swiss_map.rs`](swiss_map.rs) 用安全的 Rust 所有权模型模拟 Swiss table 的目录、table、group、seed 和 clear 序列。本文件同时保留 Go 1.25 runtime ABI 的结构镜像，供语义对照、布局公式和潜在 FFI 边界使用，但 Rust `HashMap` 不能直接重解释为 Go runtime map。
-
-可见的直接使用者包括 [`pkg/kv/key.rs`](../../kv/key.rs) 的 `MemAwareHandleMap`、[`pkg/executor/aggfuncs/aggfuncs.rs`](../../executor/aggfuncs/aggfuncs.rs) 的 `AggPartialResultMapper`，以及 [`pkg/util/set/set_with_memory_usage.rs`](../set/set_with_memory_usage.rs) 的多种带内存追踪集合。
+用 `MemAwareMap<K, V>` 包装安全的 `SwissMap<K, V>`，提供构造、插入、查询、长度判断、固定测试 seed 和内存统计。
 
 ## 核心职责
 
@@ -77,11 +73,9 @@ FFI 路径完全不同：`SwissMapWrap`、`groupsReference` 和 `groupReference`
 
 ## 与 Go 版本的对应关系
 
-对应源文件是 [`map_abi.go`](map_abi.go)，其 build tag 为 `go1.25 && !go1.26`。常量、ABI 结构字段、目录去重统计、group slot 地址公式、204/1000 估算系数、checkpoint 规则以及 `MemAwareMap` 的公开方法均按 Go 结构保留。
-
 关键差异在存储实现：Go 的 `ToSwissMap` 可把 `map[K]V` 接口重解释为 runtime 指针，`unwrap` 也能取得真实 map header；Rust 标准 `HashMap` 与 Go ABI 无关，所以这两个入口显式 panic。Rust 的 `MemAwareMap` 改用 [`swiss_map.rs`](swiss_map.rs) 模拟 Go Swiss table 的增长与内存布局，`RealBytes` 因而是该模型的实际分配量，而不是读取 Rust `HashMap` 内部实现。
 
-Go 的 `SetExt` 比较写入前后的 `Used`，Rust 则在写入前调用 `contains_key`，对满足 `Eq + Hash` 的键保持“新键/覆盖”的外部语义。Go `Init` 拒绝 nil map；Rust 类型系统消除了 nil。Go `checkMapABI` 在启动时验证 runtime 版本，Rust 版本为空函数，因为本文件的业务存储不依赖运行中的 Go runtime。
+Go 的 `SetExt` 比较写入前后的 `Used`，Rust 则在写入前调用 `contains_key`，对满足 `Eq + Hash` 的键保持“新键/覆盖”的外部语义。Go `Init` 拒绝 nil map；Rust 类型系统消除了 nil。
 
 Go 1.26 的布局变化由相邻 [`map_abi_go126.rs`](map_abi_go126.rs) 单独维护；修改 ABI 镜像时不能假定两个版本字段完全相同。
 
@@ -94,12 +88,3 @@ Go 1.26 的布局变化由相邻 [`map_abi_go126.rs`](map_abi_go126.rs) 单独�
 测试必须放在独立文件。首选扩展 [`map_abi_test.rs`](map_abi_test.rs) 覆盖公开行为和 Go 对照 workload；版本特定类型别名放在 [`map_abi_test_type_go125_test.rs`](map_abi_test_type_go125_test.rs)；跨版本迁移回归可放在 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。至少覆盖空 map、小 map 跨 8→9 元素、重复键、checkpoint 边界、clear 后复用、大容量增长以及 seed 不变量。涉及裸指针时还需覆盖空指针、错误版本、越界与生命周期契约，且不应把 unsafe 测试逻辑嵌入生产源文件。
 
 性能风险主要来自把 `RealBytes` 放进热路径、缩短 checkpoint 间隔或重复扫描目录；兼容风险主要来自 Go runtime ABI 漂移；正确性风险主要来自内存 delta 被上层重复消费或遗漏消费。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/util/hack` 确认目标、两个版本实现和独立测试均已索引；`node --file pkg/util/hack/map_abi.rs` 读取完整 522 行并显示 51 个符号；`query MemAwareMap` 与 `query NewMemAwareMap` 确认同名版本实现和仓库调用候选。通用方法名的 callers/callees 查询存在名称歧义，因此调用边又以文件限定搜索核实。
-- 生产源码：[`map_abi.rs`](map_abi.rs) 的 ABI 镜像、裸指针方法、`MemAwareMap` 和构造器；[`swiss_map.rs`](swiss_map.rs) 的安全存储、增长与 size 模型；[`lib.rs`](lib.rs) 的模块公开及默认重导出；[`Cargo.toml`](Cargo.toml) 的 crate 与依赖边界。
-- 上游调用：[`pkg/kv/key.rs`](../../kv/key.rs) 的句柄映射、[`pkg/executor/aggfuncs/aggfuncs.rs`](../../executor/aggfuncs/aggfuncs.rs) 的聚合部分结果映射、[`pkg/util/set/set_with_memory_usage.rs`](../set/set_with_memory_usage.rs) 的集合与 tracker 记账。
-- Go 对照：[`map_abi.go`](map_abi.go) 的 Go 1.25 build tag、runtime ABI 转换、内存公式、checkpoint 和 panic 条件；[`map_abi_test.go`](map_abi_test.go) 的布局、目录扫描、精确字节数和 benchmark workload。
-- Rust 测试：[`map_abi_test.rs`](map_abi_test.rs) 覆盖五种 key/value 布局、1024/2000/51199 次插入、8→9 元素增长、覆盖写、`SetExt`、clear/seed/checkpoint 和原生 map workload 对照；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 覆盖 Go 1.25/1.26 公开行为、目录增长和精确初始字节数。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行任务指定的 11 章节结构检查，并人工复核链接、符号、边界和“如何安全扩展”的说明。

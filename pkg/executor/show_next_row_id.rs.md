@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs:215-216` 以公开模块 `show_next_row_id` 导出它，`pkg/executor/Cargo.toml` 则把 crate 根指定为 `lib.rs`。它实现的是 `SHOW TABLE ... NEXT_ROW_ID` 结果行的编码核心：把上游提供的分配器快照写入 `astersql_util_chunk::Chunk`，而不是自行访问 domain、information schema、表对象或持久化的 AutoID 存储。
-
-当前接线必须按事实区分：`pkg/executor/builder.rs:2406,2495-2497` 会把 `Plan::ShowNextRowId` 降为通用的 `ExecutorKind::ShowNextRowId` 叶节点，但全仓 Rust 引用搜索未找到 `ShowNextRowIDExec`、`NextRowIdSource` 或 `AllocatorSnapshot` 在本文件之外的构造/实现。因此，本文件的公开 API 已存在，尚无直接证据表明这个泛型执行器已经被 Rust builder 实例化并进入运行时执行主链。
+当前接线必须按事实区分：`pkg/executor/builder.rs:2406,2495-2497` 会把 `Plan::ShowNextRowId` 降为通用的 `ExecutorKind::ShowNextRowId` 叶节点，但全仓 Rust 引用搜索未找到 `ShowNextRowIDExec`、`NextRowIdSource` 或 `AllocatorSnapshot` 在本文件之外的构造/实现。
 
 ## 核心职责
 
@@ -65,8 +63,6 @@ Rust 的 `AllocatorType` 是闭合枚举，所以 `match` 穷尽四种类型，�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/show_next_row_id.go`。两版共同保留了：每次先 Reset、`done` 的一次性语义、逐分配器输出五列、四种标签、RowId/AutoIncrement 对 PK handle 的列名选择、AutoRandom 主键名与 Sequence 空列名。
-
 主要差异如下：
 
 - Go 结构嵌入 `exec.BaseExecutor` 并保存 `*ast.TableName`；Rust 结构保存字符串和泛型 source，不实现仓库通用 Executor trait。
@@ -74,7 +70,7 @@ Go 对照文件是 `pkg/executor/show_next_row_id.go`。两版共同保留了：
 - Go 对缺失的自增列信息保持空列名，Rust 用 `Option::unwrap_or_default` 对齐这一结果；Go 未知 allocator 返回 `ErrInvalidAllocatorType`，Rust 以闭合枚举在类型层排除该分支。
 - Go 的 `context.Context` 参与表查找；Rust 的泛型 `_ctx` 完全未使用，所以当前文件本身没有取消或超时传播。
 
-直接行为回归位于 `pkg/executor/test/seqtest/seq_executor_test.go:774-872` 的 `TestAdminShowNextID`/`HelperTestAdminShowNextID`：它验证普通隐藏 RowID、PK handle、分离 AUTO_INCREMENT、非聚簇自增主键、AUTO_RANDOM、SEQUENCE、表重命名，以及 cache/rebase 后的下一 ID。未发现对应的独立 Rust 测试或对本文件类型的 Rust 测试引用，因此这些 Go 用例是语义基准，并非 Rust 路径已经通过测试的证据。
+未发现对应的独立 Rust 测试或对本文件类型的 Rust 测试引用，因此这些 Go 用例是语义基准，并非 Rust 路径已经通过测试的证据。
 
 ## 扩展指南
 
@@ -83,12 +79,3 @@ Go 对照文件是 `pkg/executor/show_next_row_id.go`。两版共同保留了：
 - 若调整五列布局或类型，必须同步 planner 的结果 schema、chunk 写入索引以及 SQL 回归期望。不能只改 `Append*` 顺序，否则会产生静默错列或类型不匹配。
 - 建议新增同目录独立测试文件（例如 `pkg/executor/show_next_row_id_test.rs`，并在 `lib.rs` 以 `#[cfg(test)] mod show_next_row_id_test;` 装配），用可注入 mock source 覆盖四个映射、第二次调用为空、空 allocator 列表、source 错误后 `done == false`、错误前清空旧 chunk，以及 PK handle 缺列名的空字符串行为。测试逻辑不要内嵌回生产源文件。
 - 性能上当前一次收集完整 `Vec<AllocatorSnapshot>` 并一次写完所有行，适合单表少量 allocator；若未来扩展为大量对象，需重新评估批量上限和流式接口，但不得在没有测量数据时改变当前一次性协议。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、索引时间戳 `1791342965170`；`node --file pkg/executor/show_next_row_id.rs --offset 1 --limit 260` 完整读取 108 行源码；`query` 确认 `ShowNextRowIDExec`、`NextRowIdSource`、`AllocatorSnapshot`、本地 `AllocatorType` 的定义位置。针对全限定泛型符号的 `callers/callees` 未返回边，因此没有把缺失的静态边写成已接线事实。
-- Rust 源与装配：`pkg/executor/show_next_row_id.rs:23-107`、`pkg/executor/lib.rs:215-216`、`pkg/executor/builder.rs:2406,2495-2497`、`pkg/util/chunk/chunk.rs:411,640,668`。
-- crate 配置：`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`、`[package.metadata.porting] go-package = "pkg/executor"`、`astersql-util-chunk` 路径依赖；该模块不受 `nextgen` feature 条件控制。
-- Go 对照与接线：`pkg/executor/show_next_row_id.go:28-91`、`pkg/executor/builder.go:413-418`。
-- 行为测试：`pkg/executor/test/seqtest/seq_executor_test.go:774-872`。全仓 `rg` 未找到本文件公开类型在其他 Rust 文件中的使用，也未找到 `seqtest` 中对应的 Rust `NEXT_ROW_ID` 用例。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前另行执行任务指定的 11 章节结构检查，并人工复核本文将已实现逻辑、Go 语义基准和未接线限制分别陈述。

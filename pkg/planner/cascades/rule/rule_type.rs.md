@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-rule` crate，是 Cascades 逻辑变换规则的类型目录。crate 入口 `pkg/planner/cascades/rule/lib.rs` 以私有模块 `rule_type` 装入它，再通过 `pub use rule_type::*` 对外再导出，因此其他 crate 通常以 `cascades_rule::Type`、`cascades_rule::XFJoinToApply` 等路径使用这些定义，而不是直接引用模块路径。
-
-`pkg/planner/cascades/rule/Cargo.toml` 指明该 crate 的 Go 对照包为 `pkg/planner/cascades/rule`，并关闭自动测试发现（`autotests = false`）。本文件本身只定义规则枚举、Go 风格同名常量和名称转换，不包含 Pattern 匹配、Memo 操作或计划变换；这些行为位于同 crate 的 `rule.rs` 及具体规则 crate 中。
+`Type::String` 提供与 Go 当前实现一致的稳定跟踪名称：仅 `XFJoinToApply` 返回 `"join_to_apply"`，其他所有值都返回 `"default_none"`。
 
 ## 核心职责
 
@@ -77,11 +75,11 @@ RustCodeGraph 已索引本文件并报告 3 个符号，但对通用名称 `Type
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/rule/rule_type.go`。两侧都按相同顺序声明 12 个名称：0 是 `DefaultNone`，1..10 是规则类型，11 是 `XFMaximumRuleLength`。Go 以 `type Type int` 和 `iota` 递增；Rust 以 `#[repr(usize)]` 和显式数值表达相同序数，显式值降低了单个声明被移动时不易察觉的风险，但维护者仍须同步修改两侧。
+Go 以 `type Type int` 和 `iota` 递增；Rust 以 `#[repr(usize)]` 和显式数值表达相同序数，显式值降低了单个声明被移动时不易察觉的风险，但维护者仍须同步修改两侧。
 
 Go 的 `func (tp *Type) String() string` 与 Rust 的 `Type::String(&self) -> &'static str` 分支语义相同：只特化 `XFJoinToApply`，其余返回 `default_none`。差异在于 Go 返回普通 `string` 且方法接收指针，Rust 返回静态字符串切片且共享借用；对当前固定字面量而言没有所有权开销差异所导致的行为变化。
 
-Rust 额外提供每个变体的同名包级 `pub const`，以模拟 Go 包常量的使用体验；Rust 枚举变体本身也可用 `Type::...` 访问。Rust 还派生了可复制、调试和相等比较能力。两侧的 `BaseRule` 都保存规则类型并用它生成名称，但 ID 接线仍由 `Rule` 实现决定：两侧基础实现当前都固定返回 0。
+Rust 额外提供每个变体的同名包级 `pub const`，以模拟 Go 包常量的使用体验；Rust 枚举变体本身也可用 `Type::...` 访问。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Rust 额外提供每个变体的同名包级 `pub const`，以模拟 Go 包常�
 具体规则实现必须在自己的 crate/文件中实现 `Rule` 并明确返回正确 ID。不要假设把 `Type` 传入 `NewBaseRule` 就会自动让 `BaseRule::ID` 返回该判别值：当前基础实现固定为 0。可参考简单 Apply 解相关规则显式返回 `CascadesRuleType as usize` 的接线，并为该具体规则增加独立 `*_test.rs`，不要把测试嵌入生产源文件。
 
 扩展前还应检查规则注册点、Pattern、规则集过滤和 `RuleMask` 行为。仅增加枚举槽位不会让规则进入优化器，也不证明相应变换已实现。兼容性风险主要是 ID 重排和跟踪名变化；性能风险主要来自上界扩大后的规则探索数量，而非本文件的常量或字符串匹配本身。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库，报告 11,467 个文件；`files --filter pkg/planner/cascades/rule` 确认目标、Go 对照、规则实现和测试均在索引内。
-- RustCodeGraph `node --file pkg/planner/cascades/rule/rule_type.rs`：核对完整 77 行源码、12 个枚举值、12 个同名常量及 `String` 分支。
-- RustCodeGraph 源码节点：`pkg/planner/cascades/rule/lib.rs`、`rule.rs`、`join/join_to_apply.rs`、`apply/decorrelateapply/xf_decorrelate_simple_apply.rs`、`pkg/planner/cascades/cascades.rs`，分别证明再导出、`BaseRule` 名称调用、具体规则构造/ID 和掩码上界关系。
-- RustCodeGraph Go 节点：`pkg/planner/cascades/rule/rule_type.go`、`rule.go`，核对枚举顺序、名称回落和基础规则行为。
-- 独立 Rust 测试：`pkg/planner/cascades/rule/binder_test.rs::rule_type_and_base_rule_keep_go_defaults` 验证名称与基础 ID；`pkg/planner/cascades/cascades_test.rs::cascades_context_rule_mask_respects_go_bitset_length` 验证严格上界；`pkg/planner/cascades/rule/join/join_to_apply_aster_unit_test.rs::join_to_apply_keeps_go_pattern_and_todo_result` 验证具体规则当前 ID/Pattern；`pkg/planner/cascades/rule/ruleset/rule_set_aster_unit_test.rs` 证明规则过滤消费 `usize` ID。
-- Cargo 边界：`pkg/planner/cascades/rule/Cargo.toml` 定义 `astersql-planner-cascades-rule`、`lib.rs` 入口、直接依赖和 Go 包映射；`pkg/planner/cascades/Cargo.toml` 证明上层 Cascades crate 以路径依赖消费 `cascades-rule`。
-- RustCodeGraph 对本文件通用符号的调用图未能可靠消歧；为此运行限定目录和精确标识符的 `rg` 搜索补齐调用证据。未运行 Cargo，符合本纯文档任务约束。

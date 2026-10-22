@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；`pkg/executor/Cargo.toml` 将库入口设为 `lib.rs`，而 `pkg/executor/lib.rs:231-232` 以 `pub mod split` 公开本模块。它承载两组相关能力：一组是 `SPLIT TABLE` / `SPLIT TABLE ... INDEX ...` 的切分键生成、Region 切分与 scatter 等待；另一组是加载 Region、补齐统计与 scatter 状态、把 TiKV 键格式化为可读字符串的查询辅助逻辑（`pkg/executor/split.rs:178-425,459-728`）。
-
-在完整 SQL 链路中，规划结果会在 `pkg/executor/builder.rs:2443` 进入 `buildSplitRegion`，该函数按 `SplitRegionPlanData::has_index` 选择 `ExecutorKind::SplitIndexRegion` 或 `ExecutorKind::SplitTableRegion`，再交给通用依赖工厂构造（`pkg/executor/builder.rs:3852-3865`）。需要注意：仓库生产 Rust 代码中未找到 `SplitRuntime` 的实现，也未找到 `SplitIndexRegionExec` / `SplitTableRegionExec` 的直接实例化；因此本文件当前提供的是完整、可测试的泛型算法边界，但不能仅凭本文件证明 builder 已把真实 TiKV/PD runtime 接到这些泛型执行器上。
+`getPhysicalTableRegions` / `getPhysicalIndexRegions` 负责查询键范围内的 Region。
 
 ## 核心职责
 
@@ -71,16 +69,14 @@ Region 展示数据的去重状态不藏在模块全局变量中，而由调用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/split.go`。Rust 保留了 Go 的两种执行器、值列表/边界两类键生成、分区展开、一次性 `Next`、split 失败只告警、可选等待 scatter、两列结果、Region 去重、状态/统计填充和键解码结构。主要算法对应关系是：
+Rust 保留了 Go 的两种执行器、值列表/边界两类键生成、分区展开、一次性 `Next`、split 失败只告警、可选等待 scatter、两列结果、Region 去重、状态/统计填充和键解码结构。
 
-- Go `SplitIndexRegionExec` / `SplitTableRegionExec` 对应同名 Rust 泛型结构；Go 的 TiDB 具体字段被收敛到 `SplitRuntime`。
 - Go `tables.FindPartitionByName` 的循环被统一为 `selectedPhysicalIDs`；Rust 测试证明忽略 ASCII 大小写并保持语句顺序，但错误文本是 Rust 自有字符串。
-- Go `regionsplit.GetSplitIndexKeys` / `GetSplitTableKeys`、index key 和 record key 编码被委托给 runtime，使本文件不复制这些算法。
 - Go 的 `kv.SplittableStore` 类型断言、session variables、日志器、region cache 和 PD client 被 runtime 方法取代。Rust 没有在本文件内表达“不支持 SplittableStore 时静默返回”的具体分支；具体实现必须自行保持该兼容行为。
 - Go `getRegionInfo` 在存储不是 `kv.EtcdBackend`、无 PD 地址时返回原数据；Rust 将这一选择下放给 `region_statistics -> Result<Option<_>>`，其中 `None` 表示没有统计。
 - Go 在表 split 上为 context 标注 `kv.InternalTxnDDL`，Rust 本文件未直接设置此标记；是否等价由未来生产 runtime/context 接线决定，当前未验证。
 
-独立 Rust 单元测试 `pkg/executor/split_test.rs` 覆盖记录/索引/无符号 handle 解码、分区顺序和未知分区错误。更完整的 `pkg/executor/test/splittest/split_table_test.rs` 覆盖上下界和值列表表切分、索引切分、跨记录/索引范围去重、无符号 handle、统计/状态以及显式分区过滤，并在注释和断言中对照 `pkg/executor/split_test.go` 的期望。
+独立 Rust 单元测试 `pkg/executor/split_test.rs` 覆盖记录/索引/无符号 handle 解码、分区顺序和未知分区错误。
 
 ## 扩展指南
 
@@ -91,13 +87,3 @@ Region 展示数据的去重状态不藏在模块全局变量中，而由调用�
 改变 scatter 语义应集中修改 `waitScatterRegionFinish`，同步验证总超时、已取消 context、部分成功、告警参数与比例计算。改变 Region 展示应同步检查 `getPhysicalTableRegions`、`getRegionMeta` 和 `regionKeyDecoder`，特别关注跨索引去重、无符号 handle、非整型/common handle、未知前缀与缺失 PD 统计。
 
 测试逻辑应继续放在独立文件：窄单元测试放 `pkg/executor/split_test.rs`，端到端 mock Region 行为放 `pkg/executor/test/splittest/split_table_test.rs`；不要把测试内嵌回 `split.rs`。兼容性风险主要来自键编码/显示文本与 Go 不一致，正确性风险来自重复或遗漏物理分区和 Region，性能风险来自对每个 Region 串行进行统计及 scatter 状态 RPC。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`query SplitTableRegion`、`query SplitIndexRegion` 和 `query SplitRegion` 定位到 Rust/Go 实现、planner 与 builder。对限定符号执行 `explore`、`callers`、`callees` 未返回可用边，因此调用接线又以源码检索核验，并明确保留“生产 runtime 未接线”的限制。
-- 生产源码：完整阅读 `pkg/executor/split.rs`；读取 `pkg/executor/lib.rs:231-232,572-574` 的模块/测试声明和 `pkg/executor/builder.rs:2443,3852-3865` 的规划入口。
-- crate 配置：读取 `pkg/executor/Cargo.toml`，确认包名 `astersql-executor`、`lib.rs` 入口、`nextgen` feature 以及 `pkg/executor` 的 Go 移植元数据；`split.rs` 自身不受 feature 条件控制。
-- Go 对照：读取 `pkg/executor/split.go` 的执行器、scatter、结果输出、Region 加载/去重、统计和键解码实现，并检索 `pkg/executor/split_test.go` 的 `TestSplitIndex`、`TestSplitTable`、步长边界与 clustered index 场景。
-- Rust 测试：完整阅读 `pkg/executor/split_test.rs`；阅读 `pkg/executor/test/splittest/split_table_test.rs:823-1019` 的表/索引、值列表、去重和分区过滤回归，并检索该文件其余覆盖点。
-- 静态接线检查：在生产 Rust 文件中检索 `impl SplitRuntime`、两个执行器实例化以及 `getPhysical*Regions` 调用，除本文件外无匹配；因此没有声称真实 PD/TiKV 生产接线已完成。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付结构检查要求本文恰有十一个固定二级标题。

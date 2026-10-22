@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/errors.rs` 是 `astersql-types` crate 的类型系统错误目录。`pkg/types/lib.rs` 以 `#[path = "errors.rs"] pub mod errors` 挂载它，随后用 `pub use errors::*` 将本文件的符号重导出到 crate 根；因此类型转换、时间、枚举、JSON 和统计等上层代码可以通过 `types::ErrWrongValue` 或 `types::errors::ErrWrongValue` 使用同一错误模板。
-
-crate 边界由 `pkg/types/Cargo.toml` 确定：包名为 `astersql-types`，本文件直接依赖 `astersql-util-dbterror` 和 `astersql-parser-types`，前者提供错误类、MySQL errno 与 `terror::Error`，后者提供需保留对象身份的 `ErrInvalidDefault`。本文件不执行 SQL，而是为实际转换和求值路径提供可稳定识别、生成参数化消息并转为 MySQL 协议错误的模板。
+不执行 SQL，而是为实际转换和求值路径提供可稳定识别、生成参数化消息并转为 MySQL 协议错误的模板。
 
 ## 核心职责
 
@@ -74,15 +72,13 @@ RustCodeGraph 能正确索引文件和四个显式静态量，但 `standard_erro
 
 ## 与 Go 版本的对应关系
 
-`pkg/types/errors.go` 是逐项语义对照：四个类型名常量的名称与值相同；34 个错误符号的错误类、errno 与特殊消息选择相同；`ErrInvalidDefault = parser_types.ErrInvalidDefault` 在 Rust 中对应为 `pub use`。
-
 主要实现差异如下：
 
 - Go 的 `var` 块在包初始化时按顺序调用 `NewStd` / `NewStdErr`；Rust 因非 `const` 构造而使用每项独立的 `LazyLock`，在首次访问时构造。对外模板语义一致，初始化/注册时机不同。
 - Go 通过重复的包级赋值声明各错误；Rust 用 `standard_error!` 去除 29 个同形声明的重复，特殊 errno/消息组合仍显式保留。
 - Go 错误变量是 `*terror.Error`；Rust 是 `LazyLock<Box<terror::Error>>`，使用处通过 deref 获得 `terror::Error` 引用。
 
-`pkg/types/errors_test.go::TestError` 和 `pkg/types/errors_test.rs::test_error` 覆盖相同的常用错误子集，都校验 `ToSQLError(...).Code == error.Code()`。Rust 额外的 `invalid_default_reuses_parser_types_error` 校验指针身份；`pkg/types/enum_4_aster_unit_test.rs` 还对所有 34 个错误与四个字符串执行了全量对照。
+Rust 额外的 `invalid_default_reuses_parser_types_error` 校验指针身份；`pkg/types/enum_4_aster_unit_test.rs` 还对所有 34 个错误与四个字符串执行了全量对照。
 
 ## 扩展指南
 
@@ -92,13 +88,3 @@ RustCodeGraph 能正确索引文件和四个显式静态量，但 `standard_erro
 4. 同步更新独立测试 `pkg/types/errors_test.rs`；若是新公开模板，还应纳入 `pkg/types/enum_4_aster_unit_test.rs` 的全量 code 映射表。不应把测试内嵌到 `errors.rs`。
 5. 在真实调用者的独立测试中验证消息参数、strict/warning 分支和 `ErrorEqual` 身份；仅检查编译或 `Code()` 不能证明格式化语义完整。
 6. 兼容风险集中在 MySQL code、RFC class、消息模板及全局注册时机；性能风险很小，但新增 `LazyLock` 仍有一次性初始化和注册开销。新错误必须确认在 `terror` 注册表冻结前完成首次初始化。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/types/errors.rs` 确认目标文件存在且有 11 个索引符号。
-- RustCodeGraph 源码/符号查询：`node --file pkg/types/errors.rs --offset 1 --limit 400`；`query ErrSyntax`、`query ErrWrongValue`、`query ErrWrongValue2`、`query ErrWrongValueForType`、`query DateTimeStr`；索引确认四个显式静态量与类型名常量的定义位置。
-- RustCodeGraph 下游查询：`query NewStd`、`query NewStdErr`、`query ToSQLError`；`node --file pkg/util/dbterror/terror.rs --offset 1 --limit 164` 和 `node --file pkg/parser/terror/terror.rs --offset 280 --limit 135` 核对错误类、标准消息构造、注册冻结边界与 SQL 错误转换。
-- 已读 Rust 源码/配置：`pkg/types/errors.rs`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`、`pkg/types/datum.rs` 的精确引用点。目标包下未找到 `doc.go`，因此以 crate 根 `lib.rs` 作为最近的模块合约。
-- 已读 Rust 测试：`pkg/types/errors_test.rs`、`pkg/types/enum_4_aster_unit_test.rs`；并用精确搜索核对 `pkg/types/truncate_12_aster_unit_test.rs`、`pkg/expression/errors_35_aster_unit_test.rs`、`pkg/errctx/migration_aster_unit_test.rs` 中的相关边界证据。
-- 已读 Go 对照：`pkg/types/errors.go` 和 `pkg/types/errors_test.go`，确认字符串、符号、错误类、errno、特殊消息以及常用 code 转换测试的对应关系。
-- 文档结构按任务规定的 11 个二级标题组织；本任务是纯文档分析，按总计划不运行 Cargo。

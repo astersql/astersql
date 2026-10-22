@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-slice` crate 的业务实现，提供与 Go 包 `pkg/util/slice` 对齐的通用切片操作。crate 入口 `pkg/util/slice/lib.rs` 通过 `pub mod slice` 声明该模块，并以 `pub use slice::*` 将其公开项提升到 crate 根；工作区根 crate 又在 `pkg/lib.rs` 的 `util::slice` 模块中通过 `facade_util_slice::*` 再导出，因此调用方既可直接依赖 `astersql-util-slice`，也可经根 facade 的 `crate::util::slice` 访问。
-
-`pkg/util/slice/Cargo.toml` 将库入口指定为 `lib.rs`，没有声明普通依赖或 feature；其移植元数据把 Go 来源标为 `pkg/util/slice`。本文件不是 SQL 请求主链上的状态组件，而是供 DDL、统计、规划等上层模块复用的无状态基础工具。当前 Rust 仓库中可确认的应用接线是 `pkg/lib_test.rs::independent_util_modules_are_wired` 经根 facade 调用 `AllOf`；大量业务使用仍位于 Go 文件，例如 `pkg/ddl/partition.go`、`pkg/statistics/handle/bootstrap.go` 和 `pkg/planner/**`。
+`DeepCloneItem` 抽象 Go 元素类型的 `Clone() T` 能力；其 blanket implementation 让所有实现标准 `Clone` 的 Rust 类型自动满足该约束。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ API 不返回 `Result`，也没有显式错误分支。`AllOf` 对空输入返�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/util/slice/slice.go`。三组 API 的控制流保持一致：Go `AllOf` 以 `!slices.ContainsFunc(s, !p)` 表达“找不到反例”，Rust 使用 `!iter().any(!p)`；两者都对空切片返回真并短路。Go 谓词按值接收 `T`，Rust 为避免不必要复制而接收 `&T`，这是调用签名差异而非判定语义变化。
+三组 API 的控制流保持一致：Go `AllOf` 以 `!slices.ContainsFunc(s, !p)` 表达“找不到反例”，Rust 使用 `!iter().any(!p)`；两者都对空切片返回真并短路。Go 谓词按值接收 `T`，Rust 为避免不必要复制而接收 `&T`，这是调用签名差异而非判定语义变化。
 
-Go `Int64sToStrings` 先按长度创建 `[]string` 再按索引写入 `strconv.FormatInt(v, 10)`；Rust 使用 `map`/`collect` 和 `i64::to_string()`。二者都生成十进制表示并保持顺序。Go 的 nil `[]int64` 会得到长度为零但非 nil 的结果切片；Rust 输入没有 nil 切片表示，因此只覆盖空切片结果。
-
-Go `DeepClone` 的约束是 `interface{ Clone() T }`，nil 输入返回 nil，随后以输入长度为容量逐项调用 `Clone()`。Rust 以 `DeepCloneItem` 表达该协议，以 `Option<&[T]>` 显式表达 nil，并为 `T: Clone` 提供适配。`pkg/util/slice/slice_test.rs` 覆盖显式 `DeepCloneItem` 实现，`migration_aster_unit_test.rs` 还覆盖标准 `Clone` 类型；这比现有 Go `slice_test.go`（仅直接测试 `AllOf`）的本地覆盖更广，但并不改变 Go API 的语义基线。
+Go `Int64sToStrings` 先按长度创建 `[]string` 再按索引写入 `strconv.FormatInt(v, 10)`；Rust 使用 `map`/`collect` 和 `i64::to_string()`。Go 的 nil `[]int64` 会得到长度为零但非 nil 的结果切片；Rust 输入没有 nil 切片表示，因此只覆盖空切片结果。
 
 ## 扩展指南
 
@@ -87,11 +83,3 @@ Go `DeepClone` 的约束是 `interface{ Clone() T }`，nil 输入返回 nil，�
 行为测试应放在独立的 `pkg/util/slice/slice_test.rs`，迁移语义的补充回归可延续 `pkg/util/slice/migration_aster_unit_test.rs`，不要把测试嵌入生产源文件。至少覆盖空输入、边界值、顺序/重复值和可观察的短路；涉及复制时还需验证 nil 与空集合的区别，并根据元素类型验证所有权或地址独立性。若改变公开面，还要确认 `pkg/util/slice/lib.rs` 与根 `pkg/lib.rs::util::slice` 的 facade 仍可访问，必要时扩展 `pkg/lib_test.rs` 的接线烟测。
 
 修改 `DeepCloneItem` 或 blanket implementation 风险最高：可能造成 trait 实现冲突、改变方法解析，或让调用者误判资源是否真正独立。性能修改应保留单次线性遍历和合理预分配；不要为了复用而引入中间集合。与 Go 版本共同维护时，应同步检查 `slice.go`、`slice_test.go` 及真实 Go 调用点，避免只让 Rust 单测通过却偏离原始业务语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件且目标目录已收录；`files --filter pkg/util/slice` 列出 `slice.rs`、crate 入口、Go 对照及独立测试；`node --file pkg/util/slice/slice.rs --offset 1 --limit 240` 展示完整 81 行和 7 个符号；`query` 分别确认 `AllOf`、`Int64sToStrings`、`DeepClone`、`DeepCloneItem` 的定义。`callers AllOf`/聚合 callers、callees 查询在本次环境中未在 30 秒内返回，因此未据此虚构精确 Rust 调用边，改用索引文件关联结果与下列直接源码搜索交叉核验。
-- 实现与装配：`pkg/util/slice/slice.rs`、`pkg/util/slice/lib.rs`、`pkg/util/slice/Cargo.toml`、根 `Cargo.toml` 的 `facade_util_slice` 路径依赖、`pkg/lib.rs::util::slice`。
-- Rust 测试：`pkg/util/slice/slice_test.rs` 验证空切片全称真、非 `Clone` 元素、整数边界、自定义深拷贝和 nil/空区别；`pkg/util/slice/migration_aster_unit_test.rs` 验证短路访问序列、十进制极值和标准 `Clone` 类型的独立堆对象；`pkg/lib_test.rs` 验证根 facade 接线。
-- Go 对照：`pkg/util/slice/slice.go`、`pkg/util/slice/slice_test.go`、`pkg/util/slice/main_test.go`。生产用途通过 `pkg/ddl/partition.go`、`pkg/statistics/handle/bootstrap.go`、`pkg/util/workloadrepo/table.go`、`pkg/planner/util/path.go` 和 `pkg/planner/core/operator/physicalop/*.go` 的直接搜索核验。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定十一个二级标题的结构命令以及人工事实复核作为验收证据。

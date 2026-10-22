@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源文件 [`pkg/metrics/globalsort.rs`](./globalsort.rs) 属于 `astersql-metrics` crate；crate 入口 `pkg/metrics/lib.rs` 以公开模块 `globalsort` 暴露它。该文件只负责定义并初始化全局排序（global sort）和归并排序（merge sort）的 Prometheus collector，不执行排序、云存储 I/O 或 worker 调度。包级中枢 `pkg/metrics/metrics.rs` 的 `InitMetrics` 调用 `InitGlobalSortMetrics`，随后 `RegisterMetrics` 将本文件的九个 collector 注册到默认 Prometheus registry。
-
-`pkg/metrics/Cargo.toml` 表明该 crate 的库入口是 `lib.rs`，并直接依赖 `prometheus = "0.14"` 和本地 `astersql-metrics-common`；本文件实际经 `crate::bindinfo` 中的兼容层使用这两类能力。文件没有 feature gate、条件编译项、类型、trait 或局部辅助函数。
+只负责定义并初始化全局排序（global sort）和归并排序（merge sort）的 Prometheus collector，不执行排序、云存储 I/O 或 worker 调度。
 
 ## 核心职责
 
@@ -90,17 +88,9 @@ collector 是进程级长生命周期对象：初始化后由静态量持有，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metrics/globalsort.go`。Rust 与 Go 均保留原有八个包级变量，并在同名 `InitGlobalSortMetrics` 中使用相同 namespace（`tidb`）、subsystem（`global_sort`）、name、help、桶参数和 `type` 标签。主要表示差异是 Go 使用指针/接口零值，Rust 使用 `Option`；Rust 还增加 `unsafe`、初始化互斥锁以及兼容 API 别名。
+Rust 与 Go 均保留原有八个包级变量，并在同名 `InitGlobalSortMetrics` 中使用相同 namespace（`tidb`）、subsystem（`global_sort`）、name、help、桶参数和 `type` 标签。主要表示差异是 Go 使用指针/接口零值，Rust 使用 `Option`；Rust 还增加 `unsafe`、初始化互斥锁以及兼容 API 别名。
 
-Go 的真实采样位置给出了各标签语义和生命周期证据：
-
-- `pkg/ingestor/simplesst/writer.go` 使用 `sort`、`sort_and_write`、`write` 标签记录写入侧耗时和 MiB/s 速率。
-- `pkg/ingestor/globalsort/reader.go` 与 `engine.go` 使用 `read_one_file`、`read_and_sort`、`read`、`sort` 标签记录读取侧耗时和速率。
-- `pkg/ingestor/ingestctrl/job_worker.go` 对 `execute job` 标签执行 worker gauge 的 `Inc`、`Dec` 和兜底 `Set(0)`。
-- `pkg/dxf/framework/taskexecutor/manager.go` 用活跃上传 worker 数覆盖设置上传 gauge。
-- `pkg/ingestor/simplesst/onefile_writer.go` 与 `iter.go` 分别累计 merge-sort 写入和读取字节。
-
-Rust 搜索未发现上述八个符号在业务文件中的引用，只有 `pkg/ingestor/simplesst/onefile_writer.rs` 的注释提到 Go 的 `MergeSortWriteBytes` 行为。因此指标定义和注册已经迁移，但业务采样接线仍未由当前代码证实。
+Rust 搜索未发现上述八个符号在业务文件中的引用，只有 `pkg/ingestor/simplesst/onefile_writer.rs` 的注释提到 Go 的 `MergeSortWriteBytes` 行为。
 
 Go `globalsort.go` 同样定义无可变标签的孤儿数据 GaugeVec 并在初始化中构造；Rust 采用 `LazyLock`。Go 监视器在 `pkg/ingestor/globalsort/orphandata/monitor.go`，Rust 对应 `orphandata.rs`；两端 reset 都表达未测量，而非零字节。
 
@@ -113,10 +103,3 @@ Go `globalsort.go` 同样定义无可变标签的孤儿数据 GaugeVec 并在初
 兼容性风险主要来自重命名指标或标签、修改桶边界以及遗漏注册；这些变化会破坏 dashboard、告警或 time series 连续性。性能风险主要来自无界扩张 `type` 标签值和在热点路径重复计算/记录；并发风险则来自直接访问 `static mut`。若未来不再要求保持 Go 迁移形状，优先考虑一次性线程安全容器和安全访问函数，但这属于跨文件设计变更，不应只改本文件。
 
 新增惰性指标不必强制接入 `InitGlobalSortMetrics` 的可变静态赋值，但仍须明确注册和业务更新点；孤儿 gauge 必须保持 reset 与零值的区别。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/metrics/globalsort.rs` 定位增量、`git show 2c944fb:pkg/metrics/globalsort.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：`pkg/metrics/lib.rs`、`Cargo.toml`、`metrics.rs` 和 Go `globalsort.go` / `metrics.go`；业务更新见 `pkg/ingestor/globalsort/orphandata.rs`，独立 `orphandata_test.rs` 的 `orphan_monitor_keeps_old_value_when_a_producer_appears_after_scan` 与 `orphan_monitor_first_gate_skips_storage_and_reset_removes_series` 固定旧值和 reset 语义。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

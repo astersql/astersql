@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 Rust 物理计划中的 `PhysicalIndexLookUpReader`，表示“先通过索引侧找到 handle，再由表侧按 handle 回表”的双读 reader。它属于 `astersql-planner-core-operator-physicalop` crate；`Cargo.toml` 将该 crate 的入口设为同目录 `lib.rs`，后者通过 `mod physical_indexlookup_reader` 纳入实现，再用 `pub use physical_indexlookup_reader::*` 对外导出类型。
-
-`lib.rs` 中的 `ConcretePhysicalOperator for PhysicalIndexLookUpReader` 和 `impl_concrete_physical_plan!` 把该结构注册为 `base::PhysicalPlan`：计划树观察到的孩子顺序固定为 `IndexPlan`、`TablePlan`。`pkg/planner/core/flat_plan.rs` 因此把第一个孩子标记为 build side，把第二个孩子标记为 probe side，并把表侧标记为 index-lookup probe child。执行阶段的直接入口之一是 `pkg/executor/physical_plan_runtime.rs::execute_node`；当前 Rust 行执行器会从 reader 下钻到 `TablePlan`，而不是在本文件内执行真正的两阶段 KV 查询。
+并不完整实现 Go 版的 index-lookup pushdown、flattened plan、动态分区访问对象或统计预加载；这些差异是当前迁移状态，不应被解释为已支持。
 
 ## 核心职责
 
@@ -120,13 +118,3 @@ RustCodeGraph 的 file node 报告目标文件被 18 个文件使用；对精确
 6. 测试必须继续放在独立文件。优先扩展 `physical_indexlookup_reader_test.rs`；跨模块行为分别使用 `pkg/planner/core/resolve_indices_test.rs`、`pkg/executor/typed_index_lookup_test.rs` 或相关成本/执行器测试。需要新增的最低边界包括：两侧 clone 错误、相关列合并顺序、缺子计划的 `ToPB`、递归 limit 提取、孩子替换后的 schema/stats，以及未来 pushdown/统计加载路径。
 
 兼容风险集中在 EXPLAIN 文本、孩子位置、schema/统计同步和 Go/Rust 行为差异；性能风险集中在行宽近似、分页/保序成本以及未来若重复递归遍历或重复克隆子计划。扩展时不应为了通过单元测试继续简化 Go 分支。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`node --file pkg/planner/core/operator/physicalop/physical_indexlookup_reader.rs --offset 1 --limit 400` 返回完整 280 行实现并报告 18 个使用文件；`query PhysicalIndexLookUpReader --limit 20 --json` 定位 Rust/Go 类型及成本、构建、索引解析相关符号；精确 struct 的 `callers`/`callees` 查询无输出，故调用关系由文件节点与直接源码引用补证。
-- 目标实现：`pkg/planner/core/operator/physicalop/physical_indexlookup_reader.rs`，核对 1 个公开 struct、17 个固有方法、无条件编译项。
-- crate/装配：`pkg/planner/core/operator/physicalop/Cargo.toml`、`pkg/planner/core/operator/physicalop/lib.rs`，核对 crate 名、依赖、模块导出、trait 注册和孩子顺序。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_indexlookup_reader.go`，核对字段、pushdown、flatten、统计加载、访问对象、成本及任务构建差异。
-- 独立 Rust 测试：`pkg/planner/core/operator/physicalop/physical_indexlookup_reader_test.rs`，现有三个测试分别验证 EXPLAIN limit 文本、固定内存与 pushed-limit 增量、`Init` 复制表侧 stats。
-- 直接调用/消费证据：`pkg/planner/core/operator/physicalop/index_join_probe.rs`、`pkg/planner/core/flat_plan.rs`、`pkg/planner/core/plan_cost_ver1.rs`、`pkg/planner/core/plan_cost_ver2.rs`、`pkg/executor/physical_plan_runtime.rs`、`pkg/planner/core/resolve_indices.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo；完成前执行任务规定的 11 章节结构命令，并以 `git diff --check` 检查 Markdown whitespace。

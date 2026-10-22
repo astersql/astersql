@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`mdl_check.rs` 位于 `astersql-infoschema-issyncer` crate。crate 入口 `pkg/infoschema/issyncer/lib.rs` 通过私有模块 `mod mdl_check` 装配它，再以 `pub use mdl_check::*` 导出其公开项；因此外部代码通常使用 crate 根上的 `JobMDL` 和 `MDLCheckTableInfo`，而不是直接引用模块路径。`pkg/infoschema/issyncer/Cargo.toml` 指定 `lib.rs` 为库入口，并把该 crate 标记为 Go 包 `pkg/infoschema/issyncer` 的移植单元。
-
-该文件不是 MDL 后台循环本身，而是循环与刷新路径共享的内存快照容器。拥有者是 `pkg/infoschema/issyncer/syncer.rs` 中的 `Syncer::mdlCheckTableInfo` 字段：SQL 刷新路径写入它，MDL 检查路径读取它。文件没有条件编译项、异步任务、I/O 或 Cargo feature 分支。
+向 `Syncer` 提供整体替换、复制快照和按表 ID 查询三个小型操作；实际读取 `mysql.tidb_mdl_info`、跨 keyspace 过滤、旧事务检查和 schema 版本发布均在 `syncer.rs` 中完成。
 
 ## 核心职责
 
@@ -85,15 +83,12 @@ RustCodeGraph 将目标文件识别为 7 个符号，并定位到 `syncer.rs` �
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/infoschema/issyncer/mdl_check.go` 只定义 `mdlCheckTableInfo`，字段为 `sync.Mutex`、`newestVer int64` 和 `map[int64]*mdldef.JobMDL`。Rust 保留了同样的“单锁保护版本与作业映射”布局意图，但存在以下明确差异：
+Rust 保留了同样的“单锁保护版本与作业映射”布局意图，但存在以下明确差异：
 
 - Go 在 `syncer.go:181-195` 直接持锁、更新字段并构造 `mdldef.JobMDL`；Rust 把整体替换封装为 `replace`。
 - Go 的检查循环在 `syncer.go:234-252` 手工锁定、用 `maps.Clone` 浅克隆 `map[int64]*JobMDL` 后解锁；Rust 的 `snapshot` 克隆 `HashMap<i64, JobMDL>` 及其中集合，是独立深层值快照。
-- Go 的表集合类型是 `map[int64]struct{}`，Rust 对应为 `HashSet<i64>`；两者都表达无序去重集合。
 - Go 的 `JobMDL` 定义来自子包 `issyncer/mdldef`；当前 Rust 主 crate 在本文件中另行公开定义 `JobMDL`。仓库同时存在 `pkg/infoschema/issyncer/mdldef/mdl.rs` 的同名类型，但活动 `issyncer` Cargo 依赖未启用该 mdldef crate，二者不是可互换的 Rust 类型。
 - `snapshot`、`contains` 和 `MDLCheckTableInfo` 别名是 Rust 为封装与调用便利增加的 API，不是 Go 文件中的同名方法或别名。
-
-行为对照还需结合 `pkg/infoschema/issyncer/syncer.go`：Rust 的跨 keyspace 过滤、旧事务检查、无变化轮次跳过、作业发布缓存等逻辑仍位于 `syncer.rs`，不应归因于本文件。
 
 ## 扩展指南
 
@@ -104,13 +99,3 @@ Go 对照文件 `pkg/infoschema/issyncer/mdl_check.go` 只定义 `mdlCheckTableI
 若改变 `JobMDL` 的字段或语义，需要同步检查 `MDLSessionPool::ReadMDLRows`、`InfoSchemaCoordinator::CheckOldRunningTxn`、`refreshMDLCheckTableInfoWithJobs`、`check_mdl_with_context`，以及 `pkg/domain/crossks/coordinator.rs` 和 server/session 集成边界。还应明确与 `issyncer/mdldef/mdl.rs` 的类型关系，避免两个同名模型继续漂移。
 
 若要把 poisoned mutex 改为可恢复错误，必须连同三个方法及 `Syncer` 转发 API 设计错误传播；静默忽略 poisoned 状态会掩盖可能的中途 panic 和状态不变量破坏。性能变更需重点衡量 `snapshot` 深克隆成本与锁持有时间之间的取舍。
-
-## 验证依据
-
-- 目标实现：`pkg/infoschema/issyncer/mdl_check.rs`，完整读取 59 行，确认 3 个类型、3 个方法和 1 个类型别名，无条件编译项。
-- crate 装配：`pkg/infoschema/issyncer/lib.rs` 的 `mod mdl_check` / `pub use mdl_check::*`；`pkg/infoschema/issyncer/Cargo.toml` 的库入口、移植元数据和依赖声明。
-- Rust 调用方：`pkg/infoschema/issyncer/syncer.rs` 的 `newSyncer`、`RefreshMDLFromSQL`、`check_mdl_with_context`、`refreshMDLCheckTableInfo`、`refreshMDLCheckTableInfoWithJobs`、`mdlCheckSnapshot`、`mdlCheckContains`。
-- Rust 测试：`pkg/infoschema/issyncer/syncer_test.rs::test_syncer_skip_mdl_check` 验证跨 keyspace 过滤、版本/作业快照及表查询；`pkg/session/runtime/normal_ddl_test.rs` 中 MDL publication 回归段验证后台 SyncLoop 从 `mysql.tidb_mdl_info` 刷新目标表和版本，并最终发布 job schema 版本。
-- Go 对照：`pkg/infoschema/issyncer/mdl_check.go` 的锁保护状态；`pkg/infoschema/issyncer/syncer.go` 的 `refreshMDLCheckTableInfo`、`skipMDLCheck` 与 `MDLCheckLoop`；`pkg/infoschema/issyncer/syncer_test.go::TestSyncerSkipMDLCheck` 的普通/跨 keyspace 分支。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件和 307,296 个节点；`files --filter pkg/infoschema/issyncer` 识别目标文件 7 个符号；`node --file ...` 返回完整源码；`query JobMDL` / `query mdlCheckTableInfo` 定位目标符号及 `syncer.rs` 刷新入口。目标方法的 callers/callees 未由图返回，因此用直接引用搜索补证。
-- 本任务只新增说明文档，未运行 Cargo 或代码测试；行为结论来自已有源代码与测试，不把“测试文件存在”表述为本轮已执行通过。

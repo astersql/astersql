@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-backup-prepare-snap`。包入口 [`lib.rs`](lib.rs) 以 `pub mod stream` 挂载它；[`Cargo.toml`](Cargo.toml) 将 `lib.rs` 指定为库入口，并以 `package.metadata.porting.go-package = "br/pkg/backup/prepare_snap"` 标明 Go 对照包。该 crate 的依赖表为空，文件所用的 `brpb`、`metapb`、上下文和客户端接口均由同 crate 的 [`env.rs`](env.rs) 提供的本地适配类型承载。
-
-它位于快照备份准备链路的“每个 TiKV store 一条 PrepareSnapshot 双向流”这一层：上游 [`prepare.rs`](prepare.rs) 的 `Preparer` 负责枚举 store、按 leader 聚合 region 和维护整体状态机；本文件负责单条 store 流的初始化、请求转发、响应事件化、lease 续约与关闭。它不是进程入口，也不负责 region 覆盖/空洞判断。
-
-直接 Go 原型是 [`stream.go`](stream.go)；Rust 文件已有 `// Copyright 2026 AsterSQL.`，表明该移植文件已进入 AsterSQL 处理范围。
+边界由 `PrepareClient` trait 刻意隔开：本文件只依赖并发安全的 `Send`/`Recv`，不直接创建真实 gRPC 连接；连接建立和测试替身均由 `Env`/`PrepareClient` 的实现负责。
 
 ## 核心职责
 
@@ -110,8 +106,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 实现逐项对应 [`stream.go`](stream.go) 的 `eventType`、`event`、`prepareStream`、`InitConn`、`Finalize`、`GoLeaseLoop`、`onResponse`、`stopClientLoop`、`clientLoop`、`sendErr` 和 `convertToEvent`。事件编号、初始 lease 握手、每 `dur/4` 续约、失败超过 lease 后报错、`WaitApplyDone`/`UpdateLeaseResult` 的映射以及 `Finish` 后排空的意图均保持一致。
-
 主要机制差异如下：
 
 - Go 使用 channel、`context.CancelFunc`、`errgroup.Group` 和 ticker；Rust 使用 `sync_channel`、`AtomicBool`、`JoinHandle` 与 `Instant`/`recv_timeout`。
@@ -119,8 +113,6 @@ Rust 实现逐项对应 [`stream.go`](stream.go) 的 `eventType`、`event`、`pr
 - Go 在 `stopClientLoop` 中先取消，再发 `Finish`、排空，最后 `errgroup.Wait()`；Rust 先停止并 join `client_loop`，再发 `Finish`、排空，并在末尾返回保存的 loop 错误。二者目标都是关闭返回前不再向 `output` 追加消息，但 Rust 顺序明确消除了关闭阶段的接收竞争。
 - Go 可接收 nil protobuf 指针并忽略；Rust 响应按值传递，不存在 nil 消息。
 - Go 带有结构化日志；Rust 当前主要通过带上下文的错误和 `Display` 提供诊断，没有等价日志调用。
-
-Go 回归测试 [`prepare_test.go`](prepare_test.go) 的 `TestLeaseTimeout`、`TestLeaseTimeoutWhileTakingSnapshot`、`TestHooks`、`TestManyMessagesWhenFinalizing` 分别有对应 Rust 场景。Rust 测试对取消竞态、错误文案及清 lease 又给出了更显式的断言。
 
 ## 扩展指南
 
@@ -132,12 +124,3 @@ Go 回归测试 [`prepare_test.go`](prepare_test.go) 的 `TestLeaseTimeout`、`T
 - 所有测试继续放在同目录独立测试文件，优先扩展 `prepare_test.rs` 的行为场景和 `parity_test.rs` 的 Go/Rust 契约，不把测试内嵌进 `stream.rs`。
 
 兼容风险主要是事件编号、错误文案、首包类型和 `LastLeaseIsValid` 语义；正确性风险主要是关闭次序、错误重复/丢失和同步 channel 死锁；性能风险主要是每 store 两个线程、50ms 轮询以及固定 channel 容量。改动这些位置时应同时观察多 store 和大量 region 场景。
-
-## 验证依据
-
-- Rust 生产源码：[`stream.rs`](stream.rs) 的 `AsyncStreamBy`、`prepareStream`、`InitConn`、`GoLeaseLoop`、`stopClientLoop`、`client_loop`、`convert_to_event`；[`prepare.rs`](prepare.rs) 的 `createAndCacheStream`、`sendWaitApply`、`onEvent`、`Finalize`；[`env.rs`](env.rs) 的 `PrepareClient` trait；[`errors.rs`](errors.rs) 的错误转换/构造器；[`lib.rs`](lib.rs) 的模块装配。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的包名、`lib.path`、Go porting 元数据和空依赖表。
-- Go 对照：[`stream.go`](stream.go) 全部 221 行，以及 [`prepare_test.go`](prepare_test.go) 的 `TestLeaseTimeout`、`TestLeaseTimeoutWhileTakingSnapshot`、`TestHooks`、`TestManyMessagesWhenFinalizing`。
-- Rust 独立测试：[`prepare_test.rs`](prepare_test.rs) 的 `MockStore::Send/Recv`、`test_lease_timeout`、`test_lease_timeout_while_taking_snapshot`、`test_many_messages_when_finalizing`；[`parity_test.rs`](parity_test.rs) 的 `contract_normal_basic_prepare`、`contract_resource_finalize_clears_lease`。
-- RustCodeGraph：索引状态为 11,467 文件（其中 Rust 7,032）；目标目录共识别 14 个 Go/Rust 文件。查询确认 `stream.rs` 的 446 行源码和 `prepare.rs` 主链，并给出 `createAndCacheStream`、`streamOf`、`sendWaitApply`、`Finalize` 及 lease 相关测试的调用/引用关系。精确 method callers 查询未返回 Rust impl method 边，因此这些方法级调用边又由 RustCodeGraph 的文件节点源码交叉核对。
-- 本任务只新增说明文档，不修改运行时代码；按计划不运行 Cargo。交付前以任务指定命令确认本文恰有 11 个固定二级章节，并人工复核链接、符号名、Go/Rust 差异和扩展风险。

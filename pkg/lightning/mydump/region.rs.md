@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-mydump` crate；crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，模块由 [`lib.rs`](./lib.rs) 的 `mod region; pub use region::*;` 接入并公开。这里的 `Region` 是 Lightning 导入计划中的文件分片：它把一个源文件的字节范围、估算行号范围、表身份和目标 engine 绑定在一起，并不是 TiKV 的键范围 Region。
-
-它处在“dump 元数据 → 可执行导入 chunk”的中间层。上游把 [`loader.rs`](./loader.rs) 的 `MDTableMeta`、目标列数和切分策略交给 `MakeTableRegions`；本文件按文件类型决定整文件处理或 CSV 切分，连续化跨文件 row ID，再通过 `AllocateEngineIDs` 分组。下游会把结果转成 importer chunk：`pkg/session/runtime/import_file.rs` 直接按 `engine_id` 分组，`pkg/executor/importer/production_regions.rs` 则把本文件的 `TableRegion` 转成 importer 自己的 `TableRegion`，最终由 `LoadDataController::PopulateChunks` 展开为执行 chunk。
-
-该文件是已有 Go 实现 [`region.go`](./region.go) 的 Rust 移植，但并非完整等价：当前 Rust 版本采用同步串行处理，CSV 打开时把整个输入读入内存，Parquet 行数仅使用已有元数据或文件大小回退；Go 版本还具有 context 取消、文件/切分点并行、I/O worker 限流、Parquet 行数读取和大文件告警等机制。
+`openCSVParser` 和 `getHeaderColumn` 负责为切分流程建立字符集感知的 CSV parser，并精确确定表头后的首个数据偏移。
 
 ## 核心职责
 
@@ -114,7 +110,7 @@ crate 内直接依赖包括：
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`region.go`](./region.go)，测试对照是 [`region_test.go`](./region_test.go)。Rust 保留了 `TableRegion` 访问器、10 TiB 压缩终点、压缩行号放大、110% 大 CSV 阈值、Beta/lgamma engine 分桶、默认 batch 选择、表头列名、终止符对齐、row ID 重基和 `real_size` 容量规划等核心语义。Rust [`region_test.rs`](./region_test.rs) 用与 Go 相同的 engine 桶计数和主要切分 offset 证明这些行为。
+Rust [`region_test.rs`](./region_test.rs) 用与 Go 相同的 engine 桶计数和主要切分 offset 证明这些行为。
 
 已确认的差异如下：
 
@@ -127,8 +123,6 @@ crate 内直接依赖包括：
 - Go Region 直接从 `cfg.TableMeta` 填充 DB/Table；Rust先构造空名称，再由 `MakeTableRegions` 统一回填。独立调用 `MakeSourceFileRegion`、`makeParquetFileRegion` 或 `SplitLargeCSV` 会得到空 DB/Table，这是当前 API 的真实行为。
 - Go 的错误路径包括 context 取消、并行 worker 和 parser close；Rust 的错误集合较窄，但增加了由 Rust `Storage`/字符集转换器产生的 `MydumpError` 传播。
 
-因此不能仅凭函数同名推断功能完全对等。若要补齐并行、流式或 Parquet 读取，必须保持现有分片顺序、row ID 范围、engine 大小输入和错误传播语义，而不是只让测试样例通过。
-
 ## 扩展指南
 
 新增或修改文件类型分支时，主要接入点是 `MakeTableRegions` 的 `SourceType` match；需要同步决定三件事：实际读取终点、row ID 上界来源、传给 `AllocateEngineIDs` 的大小度量。若类型不可高效 seek，应参考 Parquet 的整文件策略，但不能未经证据假设 `file_size` 等于行数或 `real_size`。
@@ -140,15 +134,3 @@ crate 内直接依赖包括：
 若补齐 Go 的并行/流式能力，应先设计资源所有权与确定性结果合并：允许并行发现边界，但最终仍需按 `table.data_files` 与文件内 offset 排序后重基 row ID。还应真正接入或移除 `io_workers`，避免配置看似生效但实际无效。若增加输入校验，最安全的入口是 `MakeTableRegions` 与 `SplitLargeCSV` 开始处，并使用 `MydumpError::Configuration` 覆盖零列、非正 region、非法比例和空数据区。
 
 兼容性上应重点关注 Go/Rust 表头条件、空 DB/Table 的独立构造 API、压缩/Parquet 哨兵；正确性上关注 row ID 不重叠和记录边界；性能上关注重复整文件读取及 Region 数量。任何公开字段或 Go 风格函数名变更还需同步 session、executor importer 和 crate 的公开再导出调用者。
-
-## 验证依据
-
-- 目标源码：[`region.rs`](./region.rs) 全部 387 行；逐项核对常量、`TableRegion`/`DataDivideConfig`、`AllocateEngineIDs`、`MakeTableRegions`、`CalculateBatchSize`、两个整文件构造器以及 CSV parser/切分函数。
-- crate/模块：[`Cargo.toml`](./Cargo.toml) 确认 crate 名、`lib.rs` 入口、`libm = "0.2"` 和 Go 包映射；[`lib.rs`](./lib.rs) 确认 `region` 的公开再导出及独立 `region_test.rs` 挂载。根 `Cargo.toml` 与 session/executor/importer manifests 确认路径依赖关系。
-- 数据与错误定义：[`common.rs`](./common.rs) 的 `MydumpError`、`FileInfo`、`ExtendColumnData`；[`loader.rs`](./loader.rs) 的 `MDTableMeta`/`SourceFileMeta`；[`parser.rs`](./parser.rs) 的 `Chunk`；[`router.rs`](./router.rs) 的 `SourceType`/`Compression`；[`reader.rs`](./reader.rs) 的 `Storage`/`WorkerPool`。
-- 生产调用链：`pkg/session/runtime/import_file.rs` 的 `dump::MakeTableRegions`；`pkg/executor/importer/production_regions.rs::HostTableImporterService::MakeTableRegions`；`pkg/executor/importer/table_import.rs::LoadDataController::PopulateChunks`；`pkg/session/runtime/import_sst.rs::Runtime::GetParser` 对 `openCSVParser` 和 chunk offset 的消费。
-- Rust 单元测试：[`region_test.rs`](./region_test.rs) 的 15 个测试覆盖访问器、engine 分桶/default batch、strict/110% 阈值、多文件 row ID 重基、`real_size`、压缩/Parquet、非法字符集、表头、EOF、自定义终止符、单分片和 CRLF seek。
-- Rust 集成证据：`tests/realtikvtest/importintotest4/split_file_test.rs` 验证 `IMPORT INTO ... WITH split_file` 的 CRLF 边界、row ID 起点及缺失对象错误传播；该文件仅作为行为证据，本纯文档任务未运行 RealTiKV。
-- Go 对照：[`region.go`](./region.go) 的同名类型和函数，以及 [`region_test.go`](./region_test.go) 的 engine、CSV、压缩和 Parquet 场景；用于区分已移植核心语义与尚未移植的 context、并行、流式、Parquet 行数读取和告警。
-- RustCodeGraph：运行 `status` 成功，索引报告 11,467 个文件、307,296 个节点和 1,848,419 条边；随后运行 `files --filter pkg/lightning/mydump/region` 与 `explore "pkg/lightning/mydump/region.rs Region EngineRegion get_region contains intersect"`，目标文件未出现在索引查询结果中。依照导航技能规则，调用边改由精确 `rg` 搜索上述唯一符号并读取直接调用点建立；没有把缺失的图结果伪装成调用证据。
-- 结构验证按任务给定命令执行；同时人工核对本文回答了文件存在原因、表级/CSV/engine 流程、状态不变量、Go 差异和安全扩展位置，且未声称运行 Cargo 或代码测试。

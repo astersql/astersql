@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-signal` crate（见 `pkg/util/signal/Cargo.toml`），是 `wasm32` 目标的信号兼容桩。`pkg/util/signal/lib.rs` 只在 `#[cfg(target_arch = "wasm32")]` 下声明 `mod signal_wasm` 并 `pub use signal_wasm::*`；因此外部使用的是 `astersql_util_signal::SetupUSR1Handler`、`astersql_util_signal::SetupSignalHandler` 和 `astersql_util_signal::Signal`，而不是直接访问私有模块。
-
-该文件不模拟操作系统信号，也不承担真正的关机动作。它存在的目的，是让依赖统一信号 API 的上层代码在通常没有 POSIX 进程信号的 WASM 环境中仍能通过条件编译。Unix 和 Windows 的真实平台实现分别位于 `signal_posix.rs`、`exit.rs` 与 `signal_windows.rs`。
+只有两项运行时职责：为 WASM 定义一个与其他平台可对接的信号编号占位类型，以及提供两个保持公开 API 形状的空操作函数。
 
 ## 核心职责
 
@@ -66,11 +64,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/signal/signal_wasm.go`。Go 通过文件名 `_wasm.go` 选择 WASM 实现，Rust 通过 `lib.rs` 的 `cfg(target_arch = "wasm32")` 选择本文件。两侧的 `SetupUSR1Handler` 都是空操作，`SetupSignalHandler` 都接收回调但从不调用它，核心运行语义一致。
+类型形状存在语言差异：Go 回调参数是 `os.Signal` 接口，Rust 使用 `i32` 别名 `Signal`；Go 函数参数无需声明线程安全和生命周期，Rust 明确要求 `FnOnce + Send + 'static`。
 
-类型形状存在语言差异：Go 回调参数是 `os.Signal` 接口，Rust 使用 `i32` 别名 `Signal`；Go 函数参数无需声明线程安全和生命周期，Rust 明确要求 `FnOnce + Send + 'static`。Rust 的约束更接近相邻平台异步持有一次性关机回调的实现形状，但在当前 WASM 函数体内不会使用这些能力。
-
-同目录 Go/Rust 独立测试没有覆盖 WASM 桩：`migration_aster_unit_test.rs` 整个测试模块受 `#[cfg(unix)]` 限制，只验证 POSIX 诊断、关机分发和发送失败；仓库搜索也未发现针对 `signal_wasm.go` 的 Go 测试。因此目前的 WASM 一致性证据来自两个实现本身及模块选择规则，而不是运行时回归测试。
+同目录 Go/Rust 独立测试没有覆盖 WASM 桩：`migration_aster_unit_test.rs` 整个测试模块受 `#[cfg(unix)]` 限制，只验证 POSIX 诊断、关机分发和发送失败；仓库搜索也未发现针对 `signal_wasm.go` 的 Go 测试。
 
 ## 扩展指南
 
@@ -79,12 +75,3 @@
 - 回归测试应放在同目录独立测试文件中，不要内嵌到 `signal_wasm.rs`。WASM 专属行为应以 `wasm32` 可执行的独立测试验证“回调未被调用”和“捕获资源按预期释放”；现有 Unix-only `migration_aster_unit_test.rs` 不能提供该覆盖。
 - 若仍保持 no-op，文档和调用者应明确上层需要替代退出路径。若改为保存回调，则必须定义注册失败、重复注册、触发次数、并发安全和注销时机，不能仅为测试方便调用一次回调。
 - 性能风险接近于零；主要风险是兼容性与正确性，包括误把空操作当作已安装处理器、跨平台泛型签名漂移，以及完整 server 在 WASM 上的其他依赖并未由本文件保证可用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 Rust/Go 文件；`files --filter pkg/util/signal` 定位本 crate 的平台实现；`node --file pkg/util/signal/signal_wasm.rs` 核对 37 行源码、三个公开符号及 `used by 0 files` 结果；`query SetupUSR1Handler`、`query SetupSignalHandler` 定位各平台同名实现。精确 callers/callees 查询出现名称消歧噪声，未将其泛化结果作为调用关系证据。
-- Rust 源与装配：`pkg/util/signal/signal_wasm.rs`、`pkg/util/signal/lib.rs`、`pkg/util/signal/migration_aster_unit_test.rs`、`cmd/tidb-server/stubs.rs`、`cmd/tidb-server/main.rs`。
-- Cargo 边界：`pkg/util/signal/Cargo.toml`、workspace 根 `Cargo.toml`、`cmd/tidb-server/Cargo.toml`、`pkg/standby/Cargo.toml`。
-- Go 对照：`pkg/util/signal/signal_wasm.go`；相邻 `signal_posix.go` 与 `signal_windows.go` 用于确认跨平台 API 的行为差异。
-- 引用与测试核对：全仓搜索 `SetupUSR1Handler`、`SetupSignalHandler`、`astersql_util_signal`、`signal_wasm` 和 `wasm32`，确认 Rust 主链入口、条件重导出以及缺少 WASM 专属测试的现状。
-- 本任务只新增说明文档，按计划未运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有十一个固定二级标题，并人工复核没有把统一 API、Cargo 依赖或 Go 行为误写成 WASM 已具有真实信号能力。

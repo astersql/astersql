@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-globalstats` crate 中的同步分区统计合并核心。crate 入口 `pkg/statistics/handle/globalstats/lib.rs` 公开 `global_stats` 模块并再导出其 API；相邻的 `global_stats_async.rs` 通过 `AsyncMergePartitionStats::merge` 复用这里的 `merge_partition_stats_to_global`。目标是把同一分区表的多个 `PartitionStats` 合并成按列或索引项排列的 `GlobalStats`，供动态分区裁剪场景使用。
-
-当前 Rust 接线应按实际状态理解：根 `Cargo.toml` 把该 crate 列为工作区 facade，`pkg/statistics/handle/Cargo.toml` 对它的依赖以及本 crate 中大部分 Go 对照依赖均置于永假条件 `target.'cfg(any())'.dependencies`。代码图中非测试的直接调用者是同 crate 的异步包装；尚未发现它替代 Go `statsGlobalImpl`、会话上下文、InfoSchema 与持久化 StatsHandle 的完整生产入口。因此本文件是可独立测试的合并模型，不等同于 Go 生产路径已经全部迁移。
+用 `PartitionStatsProvider` 隔离分区统计的取得方式，并在合并开始前及长循环边界检查协作取消。
 
 ## 核心职责
 
@@ -98,16 +96,13 @@ Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入�
 
 ## 与 Go 版本的对应关系
 
-主要对应关系如下：
-
 - Rust `GlobalStats` 对应 Go `GlobalStats` 的 `Hg`、`Cms`、`TopN`、`Fms`、`MissingPartitionStats`、`Count`、`ModifyCount`；Rust 用向量长度代替 Go 的显式 `Num`。
-- Rust `merge_partition_stats_to_global` 对应 Go `blockingMergePartitionStats2GlobalStats` 的核心收集与合并阶段：逐分区取得统计、判断缺失、计数一次、合并 FM/CMS/TopN/Histogram，并把全局 NDV 写到直方图。
 - Rust `write_global_stats` 对应 Go `WriteGlobalStatsToStorage` 的逐项写入、跳过空直方图、继续尝试并返回最后错误。
 - `global_stats_async.rs` 复用 Rust 核心；Go `MergePartitionStats2GlobalStats` 则根据会话变量在完整异步 worker 与 blocking 路径间选择。
 
-未完全对应之处必须保留：Go 从 `TableInfo`/InfoSchema/StatsHandle 解析分区和 hist ID，跳过虚拟生成列，支持外部缓存，生成带表、列或索引名的类型化错误，读取会话默认参数，记录日志和 warning，并把统计版本及历史来源写入 KV。Rust provider 直接返回已解析的扁平快照，诊断只有分区名与项下标；writer 也没有 Go 持久化参数。Go 使用 `MergePartTopNAndHistToGlobal` 的完整直方图边界语义，而 Rust 当前模型明确不携带边界，只保留输入顺序并截断。
+Rust provider 直接返回已解析的扁平快照，诊断只有分区名与项下标；writer 也没有 Go 持久化参数。Go 使用 `MergePartTopNAndHistToGlobal` 的完整直方图边界语义，而 Rust 当前模型明确不携带边界，只保留输入顺序并截断。
 
-冻结 Go 同样使用 `PartitionNDVMerger`、本地唯一性求和与 sampled 上限，但 Go 从 schema 实体识别唯一性，且 sampled 上限基于合并后的 TopN/直方图与 `missedNotNull`。Rust 使用显式元数据和合并前分区观测值；有行但空 TopN/桶的项仍可能在缺失检查时被拒绝或跳过，因此 `NotNullRows()` 回退不能证明所有 Go 空样本路径已贯通。Go 写回明确传 nil FMSketch，Rust 输出 FM 槽也保持 `None`。
+Rust 使用显式元数据和合并前分区观测值；有行但空 TopN/桶的项仍可能在缺失检查时被拒绝或跳过，因此 `NotNullRows()` 回退不能证明所有 Go 空样本路径已贯通。
 
 测试语义来源包括 Go `global_stats_test.go`/`global_stats_internal_test.go` 中的同步与异步展示、错误注入、健康度、NDV、DDL、问题 #24349、空直方图及路径一致性场景；Rust 独立测试把其中可由当前模型表达的计数、缺失、取消、串并行一致性、TopN/精确计数和最后写错误行为固化下来，但不能证明上述未接线的生产能力已经迁移。
 
@@ -122,11 +117,3 @@ Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入�
 - 接入真实生产路径时，不应继续扩大字符串 trait。应在上层适配 InfoSchema/StatsHandle、类型化错误、会话参数、日志/告警和持久化元数据，并保持本文件作为纯合并核心；同时新增独立集成测试证明 SQL/DDL 主链实际调用。
 - 改动 `write_global_stats` 时要明确部分写入策略。若要求原子性，应由 writer 或更高层事务接口提供，不能假定当前循环会回滚。
 - 性能评估应关注 `PartitionItemStats`、Histogram 与 TopN 的多次克隆和全分区驻留；优化所有权或流式处理时，需与 Go 的结果顺序和错误时机保持一致。
-
-## 验证依据
-
-- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
-- 冻结 `global_stats.rs`、`Cargo.toml`、`lib.rs`、`topn.rs` 和 Go `global_stats.go`：核对 NDV 三分支、sampled 非空行上限、唯一索引条件、FM 输出清空与顺序 worker 边界。
-- 冻结 `global_stats_test.rs::global_stats_sampled_ndv` 断言 NDV 为 7；`schema_unique_ndv_sums_local_partition_ndvs_but_not_global_unique_ndvs` 断言本地唯一项为 8、global unique 为 4，并覆盖异步包装复用。仅阅读测试，未执行。
-- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。

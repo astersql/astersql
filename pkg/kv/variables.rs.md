@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 `astersql-kv` crate 中供 KV 重试与锁冲突退避使用的会话侧兼容变量。模块入口 [`pkg/kv/lib.rs`](lib.rs) 以 `#[path = "variables.rs"] mod variables_impl` 纳入文件，并通过 `pub use variables_impl::*` 从 crate 根重新导出 `Variables`、`NewVariables`、`DefBackoffLockFast` 和 `DefBackOffWeight`。[`pkg/kv/Cargo.toml`](Cargo.toml) 表明该 crate 的库入口为 `lib.rs`；本文件自身只使用标准库原子类型，不受 `nextgen` feature 影响，也不直接依赖 TiKV 客户端 crate。
-
-它处于 SQL 会话配置和存储驱动退避器之间：会话层保存同名退避参数，DistSQL 上下文携带参数及 kill 信号，`pkg/store/driver/backoff` 再读取这些值计算退避上限、选择快速锁退避基数并在睡眠后检查中止信号。本文件只定义这组跨层数据契约和一个中止查询方法，不负责系统变量解析、重试调度、睡眠、错误转换或事务提交。
+处于 SQL 会话配置和存储驱动退避器之间：会话层保存同名退避参数，DistSQL 上下文携带参数及 kill 信号，`pkg/store/driver/backoff` 再读取这些值计算退避上限、选择快速锁退避基数并在睡眠后检查中止信号。
 
 ## 核心职责
 
@@ -76,12 +74,9 @@ RustCodeGraph 的 `node variables.rs::NewVariables` 给出两条测试调用边�
 
 ## 与 Go 版本的对应关系
 
-仓库同路径 [`pkg/kv/variables.go`](variables.go) 只是门面：`Variables` 是 `github.com/tikv/client-go/v2/kv.Variables` 的类型别名，`NewVariables` 直接委托 client-go。`go.mod` 固定的 client-go 版本中，默认常量同样为 10 和 2，构造函数同样保存调用方的 kill 指针，并约定 0/非 0 表示未中止/已中止。
-
-Rust 保持的语义包括两个字段名和类型宽度意图、默认值、非零 kill 判断，以及共享而非快照式的信号连接。差异如下：
+差异如下：
 
 - Go 构造函数返回指针，Rust 返回按值结构；Rust 内部仍通过引用共享 kill 信号。
-- Go kill 指针可以为 `nil`，Rust `&AtomicU32` 不可为空。
 - Go 的原子读取对应顺序一致语义，`IsKilled` 因而使用 `SeqCst`；但 Rust 存储退避器的直接字段读取当前使用 `Relaxed`。
 - 当前 client-go 结构还包含 `DisableTxnFile`、`TxnFileMinMutationSize`、`KillSignalHandler`，并提供 `DefaultVars`；本 Rust 文件均未移植。会话层虽有 txn-file 配置字段，但它们不属于此 `Variables` 类型，不能认为已经通过本契约传到存储退避器。
 - Go 同路径没有独立行为测试；Rust 回归位于单独的 [`pkg/kv/variables_test.rs`](variables_test.rs)，符合测试与源文件分离要求。
@@ -93,16 +88,3 @@ Rust 保持的语义包括两个字段名和类型宽度意图、默认值、非
 新增 kill handler 或改变内存顺序时，必须明确优先级、并发初始化时机和错误传播位置，并统一审查 `IsKilled` 与存储退避器的直接 `Killed.load`，避免同一信号出现不同可见性保证。新增默认实例时，应使用具有足够生命周期的静态原子量，不能用临时局部值伪造 `'static`。
 
 测试应继续放在独立文件，不得内嵌进 `variables.rs`。至少同步扩展 [`pkg/kv/variables_test.rs`](variables_test.rs)，覆盖默认值、共享信号、全部新增字段及边界；涉及退避消费时同步 [`pkg/store/driver/backoff/backoff_test.rs`](../store/driver/backoff/backoff_test.rs)；涉及 detach/clone 时同步 [`pkg/distsql/context/context_test.rs`](../distsql/context/context_test.rs)。兼容性风险集中在默认值和字段传播不一致，并发风险集中在信号生命周期与原子顺序，性能风险较低但每次退避检查处于重试热路径。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/kv` 确认目标、Go 对照和独立测试均已索引。
-- RustCodeGraph `query DefBackoffLockFast`、`query IsKilled`、`query NewVariables --json`：定位目标常量与 `variables.rs::IsKilled`、`variables.rs::NewVariables`；`node variables.rs::NewVariables` 显示它构造 `Variables`、引用两个默认常量，并由两个 Rust 测试调用。
-- 目标与入口：[`pkg/kv/variables.rs`](variables.rs)、[`pkg/kv/lib.rs`](lib.rs)、[`pkg/kv/Cargo.toml`](Cargo.toml)。目标文件共两个常量、一个结构体、一个方法和一个自由函数，无条件编译项。
-- Go 对照：[`pkg/kv/variables.go`](variables.go)、`go.mod` 固定版本对应的 client-go `kv/variables.go`。
-- 直接生产链：[`pkg/sessionctx/variable/variable.rs`](../sessionctx/variable/variable.rs)、[`pkg/sessionctx/variable/sysvar_builtins.rs`](../sessionctx/variable/sysvar_builtins.rs)、[`pkg/distsql/context/context.rs`](../distsql/context/context.rs)、[`pkg/store/driver/backoff/backoff.rs`](../store/driver/backoff/backoff.rs)。
-- 独立测试：[`pkg/kv/variables_test.rs`](variables_test.rs) 的 `new_variables_matches_client_go_defaults_and_kill_reasons`，以及 [`pkg/kv/mpp_2_aster_unit_test.rs`](mpp_2_aster_unit_test.rs) 的 `mpp_2_versions_and_client_variables_match_go`。
-
-本任务是纯文档分析，按计划未运行 Cargo。交付验证只检查目标文档存在、固定二级标题恰好为 11 个，并人工复核链接、符号与当前代码事实。

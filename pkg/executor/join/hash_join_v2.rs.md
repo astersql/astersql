@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate；crate 根由 `pkg/executor/join/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/join/lib.rs` 通过 `pub mod hash_join_v2` 将它公开为连接执行器的一条实现路径。它实现分区式 Hash Join v2：把 build 侧行按连接键散列到分区、建立 `HashTableV2`，再用 probe 侧行查表并交给 `Joiner` 生成各种连接语义的结果；达到内存阈值时，还会把部分分区暂存在 spill helper 中并在本轮末恢复。
-
-需要特别区分文件中的两层内容：第 13–1571 行是用注释保留的 Go 迁移草稿，不参与 Rust 编译；真正的 Rust 实现从导入 `crate::hash_join_base` 的第 1572 行开始。本文描述的是后者，并只把前者作为 Go 设计对照证据，不能把注释中的 goroutine、channel、failpoint 或磁盘临时文件当成当前 Rust 已实现能力。
-
-上层可直接构造 `HashJoinCtxV2`、`Joiner` 和 `HashJoinV2Exec`，再调用 `next` 或 `execute_all`。仓库内的直接用例见 `pkg/executor/join/hash_join_v2_test.rs`、`pkg/executor/join/inner_join_spill_test.rs`、`pkg/executor/join/right_outer_join_probe_test.rs`、`pkg/executor/test/jointest/hashjoin/hash_join_test.rs`、`pkg/executor/join_pkg_test.rs` 与 `pkg/executor/benchmark_test.rs`。当前未发现生产 builder 把 SQL 物理计划接到这个 Rust 类型上的直接引用，因此它已具备可独立执行和测试的实现，但完整 SQL 主链接线不应据此文档宣称已经完成。
+实现分区式 Hash Join v2：把 build 侧行按连接键散列到分区、建立 `HashTableV2`，再用 probe 侧行查表并交给 `Joiner` 生成各种连接语义的结果；达到内存阈值时，还会把部分分区暂存在 spill helper 中并在本轮末恢复。
 
 ## 核心职责
 
@@ -86,7 +82,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/join/hash_join_v2.go` 是直接语义对照。Rust 保留了 `HashJoinCtxV2`、`BuildWorkerV2`、`ProbeWorkerV2`、`ProbeSideTupleFetcherV2`、`HashJoinV2Exec`、分区辅助函数，以及 open/build/probe/restore/close 的主阶段；空哈希表跳过矩阵与 Go `canSkipProbeIfHashTableIsEmpty` 一致，`hash_join_v2_test.rs` 对该矩阵和单分区 mask 进行了显式回归。
+Rust 保留了 `HashJoinCtxV2`、`BuildWorkerV2`、`ProbeWorkerV2`、`ProbeSideTupleFetcherV2`、`HashJoinV2Exec`、分区辅助函数，以及 open/build/probe/restore/close 的主阶段；空哈希表跳过矩阵与 Go `canSkipProbeIfHashTableIsEmpty` 一致，`hash_join_v2_test.rs` 对该矩阵和单分区 mask 进行了显式回归。
 
 当前 Rust 与 Go 的重要差异如下：
 
@@ -109,12 +105,3 @@
 - 改变生命周期或统计：审查 `open`、`next`、`close`、`with_runtime_stats` 和失败后的 `context.base.fail`。重复 open 的累计行数、失败使统计 invalid、锁注册时机由 `inner_join_spill_test.rs` 固定。
 - 将实现接入完整 SQL executor builder 时，应新增明确的生产调用证据，并验证 schema、左右 build side、filters、session tracker、取消和物理计划版本选择；当前仅有测试/基准构造，不能仅复用 `new` 就认为接线完成。
 - 性能风险主要是 `original_row` 为计算 segment 偏移反复遍历全表、每行 probe 都扫描 build 表判断是否有 NULL、首次取数物化全部输出，以及内存 spill 并不释放进程占用。优化这些位置必须先固定结果语义和统计契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/join/hash_join_v2.rs` 确认目标文件已索引并含 77 个符号；`query HashJoin`、`query HashJoinV2`、`query Probe` 找到本文件的 `HashJoinCtxV2`、`HashJoinSpillHelper`、`HashJoinV2Exec` 与 `probe_row`。按文件 `node --file ... --offset/--limit` 阅读了全文件。精确 `callers/callees` 查询两次在 30 秒内无返回，因此调用边另由下列源码引用核验。
-- 源码与装配：`pkg/executor/join/hash_join_v2.rs`（尤其实际 Rust 的 1572–2494 行）、`pkg/executor/join/lib.rs`、`pkg/executor/join/Cargo.toml`。
-- 下游直接实现：`pkg/executor/join/hash_join_base.rs`、`hash_table_v2.rs`、`join_row_table.rs`、`join_table_meta.rs`、`row_table_builder.rs`、`joiner.rs`、`hash_join_stats.rs`（由本文件导入和调用符号确认）。
-- Rust 测试与调用者：`pkg/executor/join/hash_join_v2_test.rs`、`pkg/executor/join/inner_join_spill_test.rs`、`pkg/executor/join/right_outer_join_probe_test.rs`、`pkg/executor/test/jointest/hashjoin/hash_join_test.rs`、`pkg/executor/join_pkg_test.rs`、`pkg/executor/benchmark_test.rs`。它们分别提供空表/分区边界、spill 与复用、outer 未匹配、v1/v2 对照、包级及基准构造证据。
-- Go 对照：`pkg/executor/join/hash_join_v2.go` 的同名类型、`Open/Close/Next`、build/probe/restore、分区和 task 函数；相关 Go 回归入口包括 `inner_join_spill_test.go`、`outer_join_spill_test.go`、各 join probe 测试和 `hash_table_v2_test.go`。
-- 本任务是只新增说明文档的静态分析，按计划不运行 Cargo。结构验收使用任务指定的 `test -f` 加 11 个固定二级标题计数命令；最终退出码另行记录。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ema.rs` 属于 `astersql-store-copr` crate；crate 根在 `pkg/store/copr/lib.rs` 中以 `pub mod ema` 声明模块并通过 `pub use ema::*` 再导出其公开项。文件实现 coprocessor 分页读取链路使用的、按观测时间衰减的读取字节数指数移动平均（EMA）。它不负责发送请求或解析响应，而是由 `pkg/store/copr/coprocessor.rs` 中的 `CopIterator` 和 `CopTaskWorker` 持有并调用：估计值在发请求前成为 `CopWireRequest::predicted_read_bytes`，实际读取量在具有后续范围的响应到达后反馈给 EMA。
-
-`pkg/store/copr/Cargo.toml` 将该目录定义为库 crate（`[lib] path = "lib.rs"`）。本文件只依赖 Rust 标准库的 `Mutex`、`Duration` 和 `Instant`，不直接使用该 manifest 中的外部依赖，也没有 feature 或条件编译分支。
+文件实现 coprocessor 分页读取链路使用的、按观测时间衰减的读取字节数指数移动平均（EMA）。
 
 ## 核心职责
 
@@ -65,11 +63,9 @@ EMA 的生命周期由 `Arc` 所有权管理，文件本身没有全局变量、
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/copr/ema.go`。Rust `RuEma` 对应 Go 私有类型 `ruEMA`，`new/observe/predict` 分别对应 `newRUEMA/Observe/Predict`，两者均采用一秒 `tau`、同一指数公式、mutex 保护以及不倒拨最后观测时间的规则。Rust 将 Go 的 `value`、`lastObsAt` 合并到一个 mutex 元组中，并用 `Option<Instant>` 表示 Go 的零值 `time.Time`。
+Rust `RuEma` 对应 Go 私有类型 `ruEMA`，`new/observe/predict` 分别对应 `newRUEMA/Observe/Predict`，两者均采用一秒 `tau`、同一指数公式、mutex 保护以及不倒拨最后观测时间的规则。Rust 将 Go 的 `value`、`lastObsAt` 合并到一个 mutex 元组中，并用 `Option<Instant>` 表示 Go 的零值 `time.Time`。
 
-首样本语义等价但实现更明确：Go 从零时间计算一个极大间隔，使 `alpha` 数值上约等于一；Rust 在 `last == None` 时直接选择 `1.0`。负时间差方面，Go 显式把 `dt < 0` 设为零，Rust 使用 `saturating_duration_since` 得到同样结果。两边预测都在锁内把浮点值转换为 `uint64/u64`。
-
-构造时两边都不接收预算种子，首个响应前预测为零。生产接线也保持同一意图：Go `copIterator.ema` 注释说明每个逻辑扫描一个 EMA、跨 worker 共享；`predictedReadBytes` 仅在非零字节预算场景读取预测，`handleCopPagingResult` 仅对存在后续分页范围的非零读取量调用 `Observe`。Rust 把等价逻辑并入 `CopTaskWorker::handle_task_once`。Rust 独立测试 `pkg/store/copr/ema_test.rs` 与 Go `pkg/store/copr/ema_test.go` 对齐五类行为：零初值与首样本、工作负载迁移、大时间间隔、非单调时间、并发读写。
+首样本语义等价但实现更明确：Go 从零时间计算一个极大间隔，使 `alpha` 数值上约等于一；Rust 在 `last == None` 时直接选择 `1.0`。负时间差方面，Go 显式把 `dt < 0` 设为零，Rust 使用 `saturating_duration_since` 得到同样结果。
 
 ## 扩展指南
 
@@ -78,15 +74,3 @@ EMA 的生命周期由 `Arc` 所有权管理，文件本身没有全局变量、
 - 增加统计字段、置信度或快照时间时，应让相关字段仍在同一锁域内读取/更新，避免值与时间分离造成撕裂；不要把测试内嵌回 `ema.rs`，继续放在独立的 `pkg/store/copr/ema_test.rs`。
 - 若要降低高并发锁竞争，需先保留“值与最后时间原子更新”和乱序时间不倒拨两个不变量，再评估原子浮点或分片方案。并发测试应扩展为可重复的顺序/边界断言，而不只验证无 panic。
 - 任何 Go/Rust 对齐修改都应同时复查 `pkg/store/copr/ema.go`、`ema_test.go`、`coprocessor.go` 及 Rust 对应文件，特别关注首样本精确替换与整数截断差异。
-
-## 验证依据
-
-本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
-
-- 目标源码：`pkg/store/copr/ema.rs`，核对常量 `DEFAULT_RU_EMA_TAU`、类型 `RuEma` 及 `new/observe/predict` 的完整实现；文件无条件编译项。
-- crate 边界：`pkg/store/copr/Cargo.toml` 与 `pkg/store/copr/lib.rs`，确认库名、模块声明、公开再导出和独立测试模块；目标包没有 `doc.go`。
-- Rust 生产调用：`pkg/store/copr/coprocessor.rs` 中 `CopIterator::new/open`、`CopTaskWorker::new/with_ema/handle_task_once`、`CopWireRequest::predicted_read_bytes` 以及请求/响应 RU 结算代码。
-- Go 对照：`pkg/store/copr/ema.go` 的 `ruEMA/newRUEMA/Observe/Predict`，以及 `pkg/store/copr/coprocessor.go` 的扫描级共享、预测与反馈调用点。
-- 测试证据：`pkg/store/copr/ema_test.rs` 与 `pkg/store/copr/ema_test.go`，覆盖零初值与首样本、稳定值、负载迁移、大间隔、乱序及并发访问。
-- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前运行任务指定的 11 章节结构命令，并人工复核关键结论均可回溯到上述符号或文件。

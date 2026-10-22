@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`telemetry.rs`](telemetry.rs) 是 `astersql-metrics` crate 的遥测指标定义与快照算术模块，由 [`lib.rs`](lib.rs) 以 `pub mod telemetry` 公开。它处在“业务路径累计 Prometheus Counter”与“遥测周期读取累计值、计算增量”之间：文件本身构造并持有 CTE、分区、DDL、Index Merge、Store Batch Copr 等功能计数器，同时提供与 Go `pkg/metrics/telemetry.go` 同名的兼容入口和快照类型。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名为 `astersql-metrics`，本文件直接使用 `prometheus = "0.14"`，没有本文件专属 feature。包级 [`metrics.rs`](metrics.rs) 的 `InitMetrics` 调用 `telemetry::InitTelemetryMetrics`；[`../../session/metrics/metrics.rs`](../session/metrics/metrics.rs) 再从同一 `TelemetryMetrics` 克隆句柄，供 Session/执行路径累计用量。目标包没有 `doc.go`，因此模块入口 `lib.rs`、Cargo 清单与代码调用边是这里的边界依据。
+`TELEMETRY_METRICS` 与 `init_telemetry_metrics` 提供进程级惰性单例，使包级初始化、Session 指标别名和 DDL 写入路径共享同一批 collector 对象。
 
 ## 核心职责
 
@@ -84,15 +82,9 @@ Prometheus `Counter`/`CounterVec` 的 clone 是共享底层状态的句柄，这
 
 ## 与 Go 版本的对应关系
 
-Rust 主要镜像 [`telemetry.go`](telemetry.go)：指标名、namespace/subsystem、标签值、公开 getter、快照字段和逐字段差分都能一一对应。`snapshot!` 是 Rust 为消除重复而引入的实现手段，不改变 Go 的逐字段减法意图。
+`snapshot!` 是 Rust 为消除重复而引入的实现手段，不改变 Go 的逐字段减法意图。
 
-已验证的特殊等价规则包括：
-
-- `TablePartitionUsageCounter::cal/Cal` 的 `TablePartitionMaxPartitionsCnt` 取“当前减基准”和“基准历史峰值”中的较大者。
 - `ResetTablePartitionCounter` 不携带 Go 返回字面量中省略的 interval create/add/drop 与 compact 值，Rust 通过清零数组索引 10..14（不含 14）实现；reorganize 保留当前值。
-- `DDLUsageCounter::sub` 不携带 `MetadataLockUsed`，固定为 false。
-- `StoreBatchCoprCounter::sub` 不携带 `BatchSize`，固定为 0；getter 的 BatchSize 也固定为 0。
-- Fair Locking 的 used/effective 两项都参与差分。
 
 实现差异需要保留关注：Go 使用包级可变 collector 变量，Rust 聚合为 `TelemetryMetrics + OnceLock`；Go `InitTelemetryMetrics` 无返回值，Rust 返回 `Result<&'static TelemetryMetrics, Error>`；Go `readCounter` 可能返回 `-1`，Rust 直接 `get()`；Rust 为共享所有权指标增加“优先读 Session/Executor，未初始化再 fallback”的分支。Rust 快照结构没有 Go 的 serde/JSON tag 等价物，因此本文件只提供内存模型，不证明 JSON 输出兼容。
 
@@ -107,13 +99,3 @@ Rust 主要镜像 [`telemetry.go`](telemetry.go)：指标名、namespace/subsyst
 5. 测试必须放在独立文件：共享 owner 路径/fallback 用 [`telemetry_test.rs`](telemetry_test.rs)，快照算术、标签和构造行为用 [`metrics_2_aster_unit_test.rs`](metrics_2_aster_unit_test.rs)；不要把 `#[cfg(test)]` 测试内嵌到本生产文件。
 
 兼容风险主要是 Prometheus 全名或标签变化导致仪表盘/采集断裂、重复注册导致初始化失败、共享 owner 与备用 collector 分叉、分区数组错位、以及 Go/Rust 差分结果不一致。性能上 getter 会创建/查找 label child 并逐项读取，新增高基数标签会放大内存和采集成本；遥测标签应继续保持固定低基数。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点、1,848,419 条边；通过 `node --file pkg/metrics/telemetry.rs` 阅读 1--682 行，通过 `query GetCTECounter` 同时定位 Rust/Go 定义，通过 `explore "pkg/metrics/telemetry.rs symbols callers callees telemetry metrics"` 核对 `init_telemetry_metrics -> metrics`、`InitTelemetryMetrics -> init_telemetry_metrics` 以及 getter/测试调用关系。
-- 目标源码：[`telemetry.rs`](telemetry.rs)；crate 与模块入口：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`metrics.rs`](metrics.rs)。`pkg/metrics/doc.go` 在当前仓库不存在。
-- 上游直接证据：[`../../session/metrics/metrics.rs`](../session/metrics/metrics.rs) 的遥测句柄绑定；[`../ddl/index.rs`](../ddl/index.rs) 的 add-index ingest 递增路径；RustCodeGraph 与 `rg` 对 `InitTelemetryMetrics`、`TELEMETRY_METRICS` 和各字段引用的交叉核对。
-- Go 对照：[`telemetry.go`](telemetry.go) 的 `InitTelemetryMetrics`、`readCounter`、全部快照/getter 及特殊 `Cal`/`Reset`/`Sub` 规则。
-- 独立测试：[`telemetry_test.rs`](telemetry_test.rs) 验证四类 getter 读取共享 Session/Executor 指标；[`metrics_2_aster_unit_test.rs`](metrics_2_aster_unit_test.rs) 验证普通差分、分区最大值规则、被省略字段归零、Fair Locking 双字段差分和 Go 标签值。
-- 消费边界复核：`rg` 对全部 `Get*Counter`/`ResetTablePartitionCounter` 的 Rust 引用仅命中本文件与 `telemetry_test.rs`；`pkg/telemetry/data_feature_usage.rs` 只作为相邻架构边界阅读，未据此宣称已存在调用边。
-- 本任务是纯文档分析，按任务要求未运行 Cargo。交付结构检查要求文档存在且恰有十一个固定二级标题；同时人工复核了源文件角色、运行流程、状态/并发、Go 差异、扩展点和独立测试位置。

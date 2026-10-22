@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-checkpoint`（见 [`Cargo.toml`](./Cargo.toml)），是通用 `checkpoint.rs` 与“备份”场景之间的薄适配层。它不实现刷盘算法，而是把备份使用的键值类型、对象存储路径、序列化函数和元数据结构绑定到通用 `CheckpointRunner`。crate 入口 [`lib.rs`](./lib.rs) 通过 `pub mod backup` 加载本文件，并用 `pub use backup::*` 展平公开 API。
-
-需要区分实现能力与整仓接线状态：RustCodeGraph 的文件关系显示当前直接使用本文件的 Rust 文件是 [`checkpoint_test.rs`](./checkpoint_test.rs)；Rust 备份客户端 [`../backup/client.rs`](../backup/client.rs) 当前调用的是其本 crate 的 [`../backup/stubs.rs`](../backup/stubs.rs) 中同名接口，而 `br/pkg/backup/Cargo.toml` 也尚未依赖 `astersql-br-pkg-checkpoint`。因此，本文件已有真实的异步落盘与锁适配实现，但尚不是 Rust 备份客户端主链实际使用的实现。
+用 `WalkCheckpointFileForBackup` 回放 data 分片，用 `LoadCheckpointMetadata`/`SaveCheckpointMetadata` 管理元数据并在加载时合并 checksum 分片。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ runner 的可变状态位于 `checkpoint.rs` 的 `RunnerShared`：待刷 data ma
 
 ## 与 Go 版本的对应关系
 
-本文件逐项对应 [`backup.go`](./backup.go)：类型别名、五个路径、`flushPathForBackup`、JSON marshaler、两个 runner 启动入口、append/walk、元数据结构及 load/save/remove API 均保持同形。Rust 用 `Arc<dyn Storage>`/`Option<CipherInfo>` 表达 Go interface/指针，用 `Vec<u8>` 和 `Vec<File>` 取得数据所有权；Go 的 `[]byte` 和 `[]*backuppb.File` 则由调用方共享底层对象。
+Rust 用 `Arc<dyn Storage>`/`Option<CipherInfo>` 表达 Go interface/指针，用 `Vec<u8>` 和 `Vec<File>` 取得数据所有权；Go 的 `[]byte` 和 `[]*backuppb.File` 则由调用方共享底层对象。
 
-序列化契约保持一致：三个 meta JSON 字段使用相同的连字符名称，checksum 与回放标志都不落盘。Go `AppendForBackup` 未显式填写 `GroupKey`，其字符串零值为空；Rust 明确写 `String::new()`。Go load 返回 metadata 指针并在 checksum 失败时连同错误返回；Rust 使用值返回，任何失败直接返回 `Err`。
+Go `AppendForBackup` 未显式填写 `GroupKey`，其字符串零值为空；Rust 明确写 `String::new()`。Go load 返回 metadata 指针并在 checksum 失败时连同错误返回；Rust 使用值返回，任何失败直接返回 `Err`。
 
-通用 Rust 实现也保留 Go 的关键生命周期语义，包括独立 flush/checksum/lock/retry 周期、结束时排空尾消息、锁复检、4 worker 清理与 16 次失败阈值。不过当前应用接线并不对等：Go 备份客户端使用真实 checkpoint 包，Rust 备份客户端仍使用本地简化 stub（其 `AppendForBackup` 是空操作、walk 直接返回零耗时、runner 不启动后台刷盘）。这属于迁移状态，不能据本文件的实现推断 Rust BR 备份主链已经获得持久化续跑能力。
+不过当前应用接线并不对等：Go 备份客户端使用真实 checkpoint 包，Rust 备份客户端仍使用本地简化 stub（其 `AppendForBackup` 是空操作、walk 直接返回零耗时、runner 不启动后台刷盘）。
 
 ## 扩展指南
 
@@ -90,16 +88,3 @@ runner 的可变状态位于 `checkpoint.rs` 的 `RunnerShared`：待刷 data ma
 - 修改启动/结束语义时，应在独立测试文件中覆盖锁冲突、context 取消、后台刷写错误、尾消息 drain 与 `flush=false/true`；不要把测试内嵌到 `backup.rs`。
 - 若要把本实现接入 Rust 备份客户端，需要在 `br/pkg/backup` 的 Cargo 依赖和类型边界上做独立迁移，替换 `backup/stubs.rs::checkpoint` 的同名桩，并验证 client 的续跑、响应追加、checksum 合并和资源收尾。该工作超出本文件文档任务，不能通过复制实现或保留两套权威 API 来完成。
 - 性能风险主要是空 `GroupKey` 带来的单组积累、无界通道的突发内存增长、JSON/加密开销和对象存储小文件数量；兼容风险主要是路径、JSON 字段、cipher 与 Go 版本不一致。
-
-## 验证依据
-
-- crate 与模块边界：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)；当前备份客户端边界：[`../backup/Cargo.toml`](../backup/Cargo.toml)、[`../backup/client.rs`](../backup/client.rs)、[`../backup/stubs.rs`](../backup/stubs.rs)。
-- Go 对照：[`backup.go`](./backup.go)；Go 应用调用证据：[`../backup/client.go`](../backup/client.go)。
-- Rust 测试：[`checkpoint_test.rs`](./checkpoint_test.rs) 中 `test_checkpoint_meta_for_backup`、`test_checkpoint_backup_runner`、`test_checkpoint_runner_lock`；[`parity_test.rs`](./parity_test.rs) 中 `go_rust_public_contract_matches`。Go 对照测试位于 [`checkpoint_test.go`](./checkpoint_test.go)，对应 `TestCheckpointMetaForBackup`、`TestCheckpointBackupRunner`、`TestCheckpointRunnerLock`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令检查文件存在且恰有 11 个固定二级章节，并人工复核实现事实与“尚未接线”结论没有混淆。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/checkpoint/backup.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/checkpoint/backup.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-`checkpoint_test.rs::test_checkpoint_meta_for_backup` 与 `parity_test.rs::go_rust_public_contract_matches` 是既有读写证据；没有把它们视为新增非零 `backup-id` 的专用回归。Go `backup.go` 的对应元数据同样承载 BackupID。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`state.rs` 位于 `astersql-session-cursor` crate，crate 根由 [`pkg/session/cursor/lib.rs`](lib.rs) 声明 `pub mod state`，并通过 `pub use state::*` 重导出本文件的公开类型。该 crate 的边界由 [`pkg/session/cursor/Cargo.toml`](Cargo.toml) 定义；它没有直接依赖项，说明本文件刻意保持为轻量的会话游标状态模型。
-
-在当前 Rust 实现中，本文件不负责打开、读取或关闭游标，只定义交给 [`tracker.rs`](tracker.rs) 保存的状态值。`pkg/session/sessmgr/processinfo.rs::ProcessInfo::CursorTracker` 允许进程快照携带游标跟踪器，但代码搜索未发现 Rust 生产路径构造 `State`；因此，Go 中从 SQL 执行到 GC 安全点上报的完整接线尚不能视为已在 Rust 中落地。
+创建者负责提供语义正确的时间戳，消费者负责解释 `0`、过旧时间戳以及 TSO 编码等业务含义。
 
 ## 核心职责
 
@@ -75,9 +73,9 @@ Go 侧 `sync.Map` 中同样按值保存 `State`。Rust 的互斥映射实现与 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/session/cursor/state.go`](state.go)：Go `type State struct { StartTS uint64 }` 与 Rust `pub struct State { pub StartTS: u64 }` 在字段数量、名称、可见性和位宽上逐项对应。Rust 额外显式派生了值复制、默认值、调试与相等比较能力；这些是语言适配，不改变数据内容。
+Rust 额外显式派生了值复制、默认值、调试与相等比较能力；这些是语言适配，不改变数据内容。
 
-Go 测试 `pkg/session/cursor/tracker_test.go` 主要使用零值 `State{}`，验证 ID、查询、遍历、关闭和并发。Rust 的 `tracker_test.rs` 对齐这些测试；额外的 `migration_aster_unit_test.rs::state_and_cursor_ids_match_go_behavior` 以 `42`、`84` 验证 `StartTS` 不在跟踪过程中丢失。
+Rust 的 `tracker_test.rs` 对齐这些测试；额外的 `migration_aster_unit_test.rs::state_and_cursor_ids_match_go_behavior` 以 `42`、`84` 验证 `StartTS` 不在跟踪过程中丢失。
 
 迁移状态存在明确差异：Go `session.go::execStmtResult.TryDetach` 会用事务 `StartTS` 创建游标，Go `domain/infosync/info.go::InfoSyncer.ReportMinStartTS` 会读取所有活跃游标的 `StartTS`。当前 Rust 的 `domain/infosync/info.rs::InfoSyncer::ReportMinStartTS` 只取 store 与 infoschema 时间戳的较小值，而 `domain/serverinfo/syncer.rs::NoopMinStartTSReporter` 不执行上报；因此 Rust 文件已对齐数据模型，但完整生产消费链仍未由直接证据证明。
 
@@ -88,15 +86,3 @@ Go 测试 `pkg/session/cursor/tracker_test.go` 主要使用零值 `State{}`，�
 若要完成生产接线，应分别在 Rust 会话的结果集分离入口写入真实事务 `StartTS`，并在 min-start-TS 汇总路径读取活跃游标状态；这属于其他文件的实现范围，不应在 `state.rs` 中加入会话或 domain 依赖。接线时应以 Go `execStmtResult.TryDetach` 和 `InfoSyncer.ReportMinStartTS` 为行为基线，并覆盖失败清理、游标关闭、过旧时间戳过滤和 GC 安全边界。
 
 兼容性风险主要来自公开结构字面量：新增必填字段会破坏现有 `State { StartTS: ... }` 调用点。性能风险目前很低；若未来状态变大或失去 `Copy`，频繁的 `NewCursor`/`GetState` 复制成本及 API 变化需要评估。不要把锁或资源所有权塞入这个值对象，除非同步重审句柄生命周期与并发模型。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引覆盖本仓库，并列出 `pkg/session/cursor/state.rs`、`tracker.rs`、`tracker_test.rs` 等文件。
-- RustCodeGraph `node --file pkg/session/cursor/state.rs`：确认文件仅有公开 `State` 及 `StartTS` 字段；`node pkg/session/cursor/state.rs::State` 显示 `tracker.rs`、`tracker_test.rs` 的导入边。
-- RustCodeGraph `node --file`：阅读 `cursor/lib.rs`、`tracker.rs`、`tracker_test.rs`、`migration_aster_unit_test.rs`、`session/sessmgr/processinfo.rs`、`domain/infosync/info.rs`、`domain/serverinfo/syncer.rs` 与 `executor/staticrecordset/cursorrecordset.rs` 的相关源码。
-- Cargo/Go 原文：阅读 `pkg/session/cursor/Cargo.toml`、`pkg/session/cursor/state.go`、`tracker.go`、`tracker_test.go`、`pkg/session/session.go::execStmtResult.TryDetach` 和 `pkg/domain/infosync/info.go::InfoSyncer.ReportMinStartTS`。
-- `rg` 交叉检查：确认 Rust 中非测试 `State` 的直接保存/返回点集中在 `tracker.rs`，Cargo 引用来自 session、sessmgr、facade 与 Windows 条件下的 staticrecordset，并确认当前 Rust 生产代码未出现 `State { StartTS: ... }` 构造点。
-
-未运行 Cargo 或代码测试：本任务只新增说明文档，按任务计划以事实核对和文档结构检查替代构建测试。

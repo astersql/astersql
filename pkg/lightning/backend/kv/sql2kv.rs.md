@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-backend-kv` crate，是 Lightning/IMPORT INTO 导入链中“SQL 行值到 TiKV record/index KV”的通用编码层。crate 入口 `pkg/lightning/backend/kv/lib.rs` 以 `pub use sql2kv::*` 对外重导出这里的类型和函数；`pkg/lightning/backend/kv/Cargo.toml` 声明它直接依赖 `encode` 的行/编码器接口、`verification` 的 `KvPair` 与校验和，以及 `tablecodec` 的 canonical 行解码能力。
-
-该文件不是完整的导入控制器。字段映射、SET 表达式和 parser 输入整理位于 `pkg/executor/importer/kv_encode.rs`；本文件从已经形成的 `Datum` 行、`rowID` 和列置换出发，复用 `BaseKVEncoder` 完成类型处理、生成列求值以及 record/index KV 生成。生成后的 `Rows` 可被 `pkg/executor/importer/chunk_process.rs::DataDeliver::deliverLoop` 和 `pkg/dxf/importinto/encode_and_sort_operator.rs::GlobalDataEngineWriter::AppendRows` 等写入路径消费。
+`Pairs` 同时实现 `Row` 和 `Rows`，承载一行或一批扁平 `KvPair`；`GroupedPairs` 用有序的 `BTreeMap<i64, Vec<KvPair>>` 按索引 ID 承载分组结果。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/lightning/backend/kv/sql2kv.go`，主要名称和职责一一保留：`tableKVEncoder`、构造/关闭、生成列收集、`Pairs`/`GroupedPairs`、Rows/Row 转换、编码、AutoID 辅助、大小统计以及 KV 分类。
-
 当前 Rust 实现的可见差异必须在扩展时保留或明确评估：
 
 - Go 构造器接收可选 `metric.Metrics` 并记录 open/close；Rust 构造器没有 metrics 参数或计数逻辑，但增加了 `closed` 检查。
@@ -101,13 +97,3 @@ Rust 独立测试覆盖主链行为，但比 Go `sql2kv_test.go` 的严格/非�
 - 修改编码结果必须做 encode/decode 往返，并覆盖普通索引、唯一索引、row format v1/v2、Null/Bytes/时间、自增缺值、生成列、AUTO_RANDOM/分片 RowID。Go 对照用例是兼容性基线，但 Rust 测试应保持在独立 `sql2kv_test.rs`。
 - 引入并行共享前，必须明确 Session、allocator 和 record 缓冲的隔离方式；当前 `&mut self` 是重要的不并发不变量。
 - 性能敏感改动重点观察 `Row2KvPairs` / `Rows2KvPairs` / `ClassifyAndAppend` 的全量 clone，以及 `BTreeMap` 扁平化；API 兼容性重点观察 trait object downcast 和 panic 行为。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录中识别到 `sql2kv.rs` 与独立 `sql2kv_test.rs`。
-- RustCodeGraph `node --file pkg/lightning/backend/kv/sql2kv.rs`：核对了全文件 335 行及上述 41 个符号；`callees Encode --file ...` 明确识别 `comparableI64`，`callees ClassifyAndAppend --file ...` 明确识别 `isRecordKey`；`explore` 还识别了 `MakeRowsFromKvPairs`、`Rows2KvPairs` 的导入链调用者。
-- 源与 crate 边界：`pkg/lightning/backend/kv/sql2kv.rs`、`pkg/lightning/backend/kv/lib.rs`、`pkg/lightning/backend/kv/Cargo.toml`。
-- 直接上游证据：`pkg/executor/importer/chunk_process.rs::DataDeliver::deliverLoop`、`pkg/dxf/importinto/encode_and_sort_operator.rs::GlobalDataEngineWriter::AppendRows`、`pkg/executor/importer/kv_encode.rs::TableKVEncoder`。
-- Rust 测试：`pkg/lightning/backend/kv/sql2kv_test.rs` 的 `TestEncode`、`TestDecode`、`TestDecodeIndex`、`TestDecodeUniqueIndex`、`TestEncodeRowFormatV2`、`TestEncodeTimestamp`、`TestEncodeDoubleAutoIncrement`、`TestEncodeMissingAutoValue`、`TestEncodeExpressionColumn`、`TestDefaultAutoRandoms`、`TestShardRowId`、`TestClassifyAndAppend`，以及 record marker 和 `GroupedPairs` panic 回归测试。
-- Go 对照：`pkg/lightning/backend/kv/sql2kv.go` 与 `pkg/lightning/backend/kv/sql2kv_test.go`；重点核对编码步骤、buffer 生命周期、metrics、SQL mode 错误、AutoID/allocator 与分类校验和语义。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终结构验证要求本文恰好包含上述十一个固定二级标题。

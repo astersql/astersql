@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-schemaver` crate 的 etcd 版 schema 版本同步协议实现。crate 入口 `pkg/ddl/schemaver/lib.rs` 将本模块与 `mem_syncer.rs` 一并重导出；`pkg/ddl/schemaver/Cargo.toml` 声明直接依赖 `etcd-client`、`tokio` 和 `astersql-domain-serverinfo`。生产环境由 `pkg/session/runtime/session_factory.rs` 把 `serverinfo::RealEtcdClient` 包装为本文件的 `RealEtcdClient`，再通过 `NewEtcdSyncer` 建立协议对象；内存后端则用于测试和不接真实 etcd 的运行路径。
-
-在完整 DDL 链路中，它处于“owner 发布版本/等待全员追上”和“follower 观察版本/上报本机进度”的协调边界。owner 侧 `pkg/ddl/schema_version.rs::NormalDdlSchemaBarrier::{wait,recover}` 调用 `OwnerUpdateGlobalVersion` 与 `WaitVersionSynced`；info schema 同步器由 `pkg/infoschema/issyncer/syncer.rs::InitRequiredFields` 接收同一个 `Syncer`，并同步 MDL/next-gen 开关。它不执行 DDL 元数据变更，也不加载 info schema；它只传递版本、跟踪参与节点并提供等待屏障。
+不执行 DDL 元数据变更，也不加载 info schema；它只传递版本、跟踪参与节点并提供等待屏障。
 
 ## 核心职责
 
@@ -92,13 +90,7 @@ RustCodeGraph 对目标文件给出 77 个引用文件，并确认 `WaitVersionS
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/schemaver/syncer.go`，Rust 基本保留同名结构和流程：`Syncer`、`nodeVersions`、`etcdSyncer`、`Init/Restart/UpdateSelfVersion/OwnerUpdateGlobalVersion/WaitVersionSynced`、MDL job watch、事件解码、实例去重及关闭清理均有一一对应入口。`pkg/ddl/schemaver/Cargo.toml` 的 `package.metadata.porting.go-package` 也明确指向该 Go 包。
-
-关键保持项包括：全局键只在不存在时初始化；非 MDL 上报绑定 lease 且无限重试；MDL `jobID == 0` 跳过；MDL 写使用单调 CAS；快照后从 revision+1 watch；compaction 后全量重建；按 `ip:port` 保留最新启动实例；next-gen 可排除 assumed server；等待判定使用 `>= latestVer`。
-
 已确认的实现差异：Rust 自建 `Context`、watch/channel 和同步 `EtcdClient` 抽象，并在 `RealEtcdClient` 内桥接 tokio；Go 直接使用 clientv3、concurrency session、failpoint、metrics 与 zap。Go 的非 MDL Get 失败会立即继续循环而不 sleep，Rust 当前同样忽略错误，但随后走 20ms `Context::Wait`；Rust 的取消等待因而更可控。Go 会周期打印未同步节点并记录指标，Rust 的 `isUpdatedLatestVersion` 保留参数形状但没有日志/指标。Rust `Close` 还显式关闭 session 和 watcher，而 Go 此文件只删除 self path。Rust 的 `MemoryEtcdClient`、`SessionCleanup` 和真实适配层是移植所需的额外基础设施，不是 Go 文件中的独立同名实现。
-
-独立测试对应关系：`syncer_test.rs::etcd_syncer_simple_flow_matches_go` 对齐 Go `TestSyncerSimple`；`monotonic_put_path_preserves_values_and_context_errors` 对齐 `TestPutKVToEtcdMono`；`syncer_nokit_test.rs` 分别对齐 Go `TestNodeVersions`、`TestDecodeJobVersionEvent`、`TestSyncJobSchemaVerLoop`、`TestCalculateUpdatedMap` 与 `TestGetServersForISSync`。Rust 另有后端 session 恢复、幂等 cleanup、子上下文 deadline 和 scheduler 取消传播测试。
 
 ## 扩展指南
 
@@ -109,13 +101,3 @@ RustCodeGraph 对目标文件给出 77 个引用文件，并确认 `WaitVersionS
 - 改变 session/取消：同步检查 `Context::{Child,WithTimeout,Cancelled,DeadlineExceeded}`、`Session::WithLease`、`Watcher::Rewatch` 和 `RealEtcdClient::{run,NewSession,Watch}`；owner 退休必须中断等待，不能被误判为允许非 MDL fallback 的 deadline。
 - 测试必须放在独立文件。纯协议流程与真实后端抽象测试扩展 `pkg/ddl/schemaver/syncer_test.rs`；无需外部 kit 的节点缓存、解码、compaction、serverinfo/MDL 测试扩展 `syncer_nokit_test.rs`；同时核对同路径 Go 测试意图，不在 `syncer.rs` 内嵌测试。
 - 性能风险主要来自短间隔轮询、持锁回调、每个真实适配器自建双线程 tokio runtime 以及 watch 重连的全量扫描；兼容风险主要来自 etcd 路径、lease 绑定和等待参与集合的改变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/ddl/schemaver` 找到目标及两份独立 Rust 测试；`node --file pkg/ddl/schemaver/syncer.rs` 分段读取全部 1729 行；`callees WaitVersionSynced` 和 `callees Init` 核对核心下游边。图中同名符号存在歧义，因此上游再用精确搜索核验。
-- 目标源码：`pkg/ddl/schemaver/syncer.rs`，重点符号为 `Context`、`EtcdClient`、`MemoryEtcdClient`、`Session`、`Watcher`、`Syncer`、`nodeVersions`、`etcdSyncer`、`WaitVersionSynced`、`syncJobSchemaVer`、`RealEtcdClient`。
-- crate 与模块：`pkg/ddl/schemaver/Cargo.toml`、`pkg/ddl/schemaver/lib.rs`、根 `Cargo.toml` workspace 成员与 facade 声明。
-- 生产接线：`pkg/session/runtime/session_factory.rs`、`pkg/ddl/schema_version.rs`、`pkg/infoschema/issyncer/syncer.rs`。
-- Go 对照：`pkg/ddl/schemaver/syncer.go`；Go 测试为 `syncer_test.go`、`syncer_nokit_test.go`。
-- Rust 测试：`pkg/ddl/schemaver/syncer_test.rs`、`pkg/ddl/schemaver/syncer_nokit_test.rs`，覆盖普通/MDL 流程、CAS、session 恢复、watch 重建、事件解码、节点去重、assumed 过滤和取消/deadline 传播。
-- 本任务是只读分析加文档，不运行 Cargo；交付结构检查要求文档存在且恰有十一个固定二级标题。

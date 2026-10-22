@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-br-pkg-streamhelper` crate 内，由 `br/pkg/streamhelper/lib.rs` 以 `pub mod advancer_daemon` 挂载并用 `pub use advancer_daemon::*` 重新导出。它不是独立的守护循环实现，而是把同 crate 中的 `CheckpointAdvancer` 补充为一组与 Go `daemon.Interface` 同名的生命周期方法，并提供日志备份 owner 的固定标识与可观测状态。
-
-真正负责竞选、定时 tick 和失主取消的 Rust 实现在独立 crate `br/pkg/streamhelper/daemon`。截至当前代码，本文件没有依赖该 crate，也没有为 `CheckpointAdvancer` 实现 `daemon::Interface`；仓库搜索只发现测试直接调用这些固有方法。因此，它目前是生命周期适配层的局部移植，而不是已经接入完整应用守护链的证明。
+不实现 region 扫描、检查点聚合、元数据监听细节或 owner 竞选循环；这些逻辑分别位于 `advancer.rs`、`advancer_cliext.rs`、`flush_subscriber.rs` 和 `daemon/owner_daemon.rs`。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ owner 标志的 `SeqCst` 原子访问适合跨线程读取，但它是全局单�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `ownerPrompt`、`ownerPath`、`Name` 以及四个生命周期方法与 `advancer_daemon.go` 同名并保持主要顺序。`OnTick` 都执行实际 `tick`，`OnStart` 都启动任务监听，成为 owner 都启动订阅与配置刷新，停止都关闭检查点存储和订阅。
-
 当前仍有明确差异：
 
 - Go `OnTick(ctx)` 记录 tick 耗时并用 `PanicToErr` 恢复 panic；Rust 无 context、指标与 panic 转换，并额外在每轮同步刷新配置。
@@ -93,13 +89,3 @@ Rust 的 `ownerPrompt`、`ownerPath`、`Name` 以及四个生命周期方法与 
 - 修改 `OnTick` 错误策略时，同时核对 `CheckpointAdvancer::tick` 的“无任务/暂停成功空转”和 optional/important 错误合并语义，以及 Go 的 panic 恢复与 daemon 循环“记录错误但继续”契约。
 - 引入后台配置刷新或上下文取消时，需规定重复 `OnBecomeOwner`、多次 `OnStop`、旧会话迟到取消和线程退出的幂等性；资源必须在停止返回前可证明已清理。
 - 改动两个协议字符串会影响 owner 竞选兼容性；除非有迁移方案，不应把它们当作普通展示文本修改。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；`node --file br/pkg/streamhelper/advancer_daemon.rs` 覆盖目标文件 74 行，并报告使用者为 `advancer_daemon_test.rs` 与 `parity_test.rs`。
-- RustCodeGraph `node/callers/callees`：`IsAdvancerOwner` 读取 `ADVANCER_OWNER`，调用者为生命周期测试；`OwnerManagerForLogBackupId` 的调用者为 UUID 契约测试，并调用 `Uuid::new_v4`。
-- 源码：`br/pkg/streamhelper/advancer_daemon.rs`、`advancer.rs`、`advancer_cliext.rs`、`lib.rs`、`daemon/interface.rs`、`daemon/owner_daemon.rs`。
-- crate 配置：`br/pkg/streamhelper/Cargo.toml` 声明库入口和 `uuid` v4 依赖；`br/pkg/streamhelper/daemon/Cargo.toml` 证明守护框架是独立 crate，主 streamhelper manifest 当前不依赖它。
-- Go 对照：`br/pkg/streamhelper/advancer_daemon.go`、`daemon/interface.go`、`daemon/owner_daemon.go`；相关 Go 回归见 `advancer_test.go::TestOwnerDropped` 及生命周期调用段落。
-- Rust 测试：`advancer_daemon_test.rs` 验证任务快照、owner 标志、订阅清理、协议字符串和 UUID；`parity_test.rs` 验证名称、tick、owner 生命周期与协议值；`advancer_test.rs::test_owner_dropped` 验证停止等待进行中的订阅 tick。
-- 本任务为纯文档分析，按计划未运行 Cargo；交付结构验证只检查目标文档存在且固定二级标题恰为 11 个。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util` crate 的 `service_url` 模块，由 [`pkg/util/lib.rs`](lib.rs) 通过 `pub mod service_url` 对外暴露。它位于服务发现和具体网络客户端之间：把用户配置、PD 成员列表或 mock 配置中的端点字符串解析成统一的 `ServiceURL`，但自身不建立连接、不解析 DNS，也不持有客户端状态。
-
-直接生产使用点包括：[`pkg/util/urls.rs`](urls.rs) 的逗号分隔地址列表解析、[`pkg/metaservice/etcd.rs`](../metaservice/etcd.rs) 的 PD 成员地址筛选与拆解，以及 [`pkg/store/mockstore/unistore/pd.rs`](../store/mockstore/unistore/pd.rs) 的 mock PD 地址规范化和有效性判断。
+为调用者提供协议前缀、无协议地址、按需保留协议的 endpoint 和规范化字符串。
 
 ## 核心职责
 
@@ -85,11 +83,9 @@ HTTP(S) 的 query 和 fragment 被接受后丢弃；路径只要 authority 后�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/service_url.go`](service_url.go)，测试是 [`pkg/util/service_url_test.go`](service_url_test.go)。Rust 保留了 Go 的四个协议常量、`ServiceURL` 数据模型、公开函数名和方法语义；`Display` 对应 Go 的 `String()`。
-
 主要实现差异来自标准库：Go 使用 `net/url.Parse` 和 `net.SplitHostPort`，Rust 使用 `url::Url` 加自定义 `split_host_port`。Rust 在 `Url::parse` 返回 `InvalidPort` 时继续做结构检查，以保留 Go 接受 `host:service` 的行为；方括号 IPv6 也由自定义拆分器覆盖。Rust 还显式从 authority 中剥离 userinfo，以得到与 Go `u.Host` 相同的 host/port 部分。
 
-独立 Rust 测试 [`pkg/util/go_merge_34_service_url_test.rs`](go_merge_34_service_url_test.rs) 覆盖了 Go 测试中的 HTTP、HTTPS、Unix、空输入、不支持协议、缺端口、路径和空 Unix 地址，并额外覆盖 IPv6、`unixs`、服务名端口与 query 丢弃。两侧当前共同约束 Unix endpoint 必须保留 scheme。
+独立 Rust 测试 [`pkg/util/go_merge_34_service_url_test.rs`](go_merge_34_service_url_test.rs) 覆盖了 Go 测试中的 HTTP、HTTPS、Unix、空输入、不支持协议、缺端口、路径和空 Unix 地址，并额外覆盖 IPv6、`unixs`、服务名端口与 query 丢弃。
 
 ## 扩展指南
 
@@ -100,12 +96,3 @@ HTTP(S) 的 query 和 fragment 被接受后丢弃；路径只要 authority 后�
 - 测试逻辑应继续放在独立文件 [`pkg/util/go_merge_34_service_url_test.rs`](go_merge_34_service_url_test.rs)，并由 [`pkg/util/lib.rs`](lib.rs) 的 `#[cfg(test)]` 模块声明接线，不要内嵌到生产源文件。
 
 兼容风险主要是改变既有输入的接受集合或规范化文本；性能风险较低，但把 Unix/裸地址也统一交给通用 URL 解析器会增加分配并可能破坏 Go 兼容语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；使用 `status`、`explore`、`query`、`node`、`callers` 和 `callees` 核对目标文件符号、源码与调用边。精确查询确认 Rust `ParseServiceURL` 的生产调用者为 `get_pd_addrs`、`parse_url`，`NormalizeServiceURL` 的生产调用者为 `normalize_mock_pd_addrs`、`valid_url`；`parse_service_url` 另由 `ParseHostPortAddr` 直接调用。
-- 生产源码：[`pkg/util/service_url.rs`](service_url.rs)、[`pkg/util/lib.rs`](lib.rs)、[`pkg/util/urls.rs`](urls.rs)、[`pkg/metaservice/etcd.rs`](../metaservice/etcd.rs)、[`pkg/store/mockstore/unistore/pd.rs`](../store/mockstore/unistore/pd.rs)。
-- crate 配置：[`pkg/util/Cargo.toml`](Cargo.toml)，核对 `astersql-util`、`lib.rs`、`anyhow` 与 `url` 依赖。
-- Go 对照：[`pkg/util/service_url.go`](service_url.go) 与 [`pkg/util/service_url_test.go`](service_url_test.go)。
-- Rust 独立测试：[`pkg/util/go_merge_34_service_url_test.rs`](go_merge_34_service_url_test.rs)，并由 [`pkg/util/lib.rs`](lib.rs) 的 `go_merge_34_service_url_test` 测试模块接入。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节结构、链接所指路径与差异范围。

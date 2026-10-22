@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-logutil` crate；crate 入口 `pkg/util/logutil/lib.rs` 以 `pub mod slow_query_logger` 暴露该模块，`pkg/util/logutil/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认其编译边界。它位于通用 `Logger` 与 SQL 执行器生成的完整慢日志文本之间：本文件负责从普通日志配置/实例派生慢查询 logger，并定义最终文件编码格式；是否应记录某条查询、慢日志正文包含哪些字段，则由 `pkg/executor/adapter_slow_log.rs` 等上游决定。
-
-当前全局接线在 `pkg/util/logutil/log.rs::initialize_loggers`：慢查询文件非空且不同于主日志文件时调用 `new_slow_query_logger`；路径为空或与主日志文件相同时直接克隆 background logger。写出侧由 `pkg/executor/adapter_slow_log.rs::WriteForcedSlowLog` 取得 `log::slow_query_logger()` 后调用 `Logger::warn`。
+位于通用 `Logger` 与 SQL 执行器生成的完整慢日志文本之间：本文件负责从普通日志配置/实例派生慢查询 logger，并定义最终文件编码格式；是否应记录某条查询、慢日志正文包含哪些字段，则由 `pkg/executor/adapter_slow_log.rs` 等上游决定。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@ logger 的同步和资源生命周期由 `log.rs` 管理：sink 由 `Arc<Mutex<_
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/util/logutil/slow_query_logger.go`。两端共同保持以下语义：配置先复制而不修改原值；全局 level 不控制专用慢日志 logger；指定慢日志文件时继承主文件的滚动/保留配置并替换 filename；编码只输出 `# Time:` 行和消息，忽略所有结构化字段。
-
 实现机制并非一一同构。Go `newSlowQueryLogger` 返回 `(*zap.Logger, *log.ZapProperties, error)`，用 `log.NewTextCore`、`zap.WrapCore` 替换 core，并更新 `prop.Core`；Rust 返回 `Result<Logger, String>`，没有 properties 返回值，而是在自有 `Logger` 克隆上设置布尔编码标志。Go `slowLogEncoder` 实现完整 `zapcore.Encoder` 接口并从 buffer pool 取得缓冲区；Rust `SlowLogEncoder` 只有单个 `encode` 方法，每次分配 `String`。Go 的 from-Zap 工厂还接收 properties 以复用 syncer/level；Rust 同名别名只接收 `&Logger`，通过 `Arc` 克隆共享 sink/level。
 
-此外，Go 全局初始化的共享文件分支会调用 `newSlowQueryLoggerFromZapLogger` 替换编码 core；当前 Rust `initialize_loggers` 在慢日志路径为空或等于主文件时仅克隆 background。`log_test.rs::TestSlowQueryLoggerAndGeneralUseSameLogFileName` 只验证内容共同可见，没有断言共享分支仍使用两行慢日志编码，因此不能宣称该分支与 Go 编码完全等价。
+此外，Go 全局初始化的共享文件分支会调用 `newSlowQueryLoggerFromZapLogger` 替换编码 core；当前 Rust `initialize_loggers` 在慢日志路径为空或等于主文件时仅克隆 background。
 
 ## 扩展指南
 
@@ -80,12 +76,3 @@ Go 对照文件为 `pkg/util/logutil/slow_query_logger.go`。两端共同保持�
 - 修改 logger 构造或共享策略时，应联合检查 `new_slow_query_logger`、`new_slow_query_logger_from_logger`、`log.rs::initialize_loggers` 和 `Logger::with_slow_log_encoding`。尤其要决定“共享主文件”分支应使用普通还是慢日志编码，并新增能精确断言文件格式的独立测试，不能只断言消息存在。
 - 若引入缓冲池、持久文件句柄或异步写入，资源所有权、flush/关闭、锁顺序和写失败传播将成为新契约；当前零状态编码器和按次打开文件的假设不能直接沿用。
 - 测试逻辑应继续放在相邻的独立 `*_test.rs` 文件中，不要内嵌到生产源文件。兼容风险集中在日志解析格式和 Go API 名称；性能风险集中在每条记录的字符串分配、时间格式化和文件 I/O。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/util/logutil` 找到目标 Rust/Go/测试文件。`node --file pkg/util/logutil/slow_query_logger.rs` 核对了 65 行完整实现，显示该文件被 `log.rs` 与 `slow_query_logger_test.rs` 使用。
-- RustCodeGraph 符号/调用查询：`query slow_query_logger` 找到三个 snake_case 工厂/配置函数、`SlowLogEncoder::encode` 与 `log.rs::slow_query_logger`；`callees new_slow_query_logger` 确认 `new_slow_query_logger -> new_slow_query_log_config`。其余 callers/callees 结果为空或不完整，本文用相邻源码明确标注补证，没有把缺失图边当作无调用。
-- 已读生产与配置证据：`pkg/util/logutil/slow_query_logger.rs`、`pkg/util/logutil/log.rs`、`pkg/util/logutil/lib.rs`、`pkg/util/logutil/Cargo.toml`、`pkg/executor/adapter_slow_log.rs`。
-- 已读 Go 对照：`pkg/util/logutil/slow_query_logger.go`、`pkg/util/logutil/log.go` 的调用检索，以及 `pkg/util/logutil/log_test.go::TestSlowQueryLoggerAndGeneralLoggerCreation` 和共享文件测试片段。
-- 已读 Rust 测试：`pkg/util/logutil/slow_query_logger_test.rs`、`pkg/util/logutil/migration_aster_unit_test.rs::test_slow_encoder_ignores_fields_and_writes_two_lines`、`pkg/util/logutil/log_test.rs` 中专用 logger 与共享文件测试。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅运行任务规定的 11 章节结构检查，并人工复核结论均能回指上述符号或文件。

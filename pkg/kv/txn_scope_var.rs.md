@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-kv` crate：`pkg/kv/Cargo.toml` 将 `lib.rs` 设为 crate 根，`pkg/kv/lib.rs:547-550` 再以 `txn_scope_var_impl` 私有模块装入本文件并公开重导出其符号。它把会话变量 `@@txn_scope` 的外部取值与向 PD/TSO 请求时使用的真实作用域封装在一起，是配置层与事务时间戳调用层之间的值对象。
-
-当前 Rust 接线边界需要特别说明：全仓 Rust 引用搜索只发现 `pkg/kv/mpp_2_aster_unit_test.rs:174-187` 直接使用这些 API，尚未发现生产 Rust 调用者。完整应用中对应的生产接线仍可在 Go 的 `pkg/sessionctx/variable/session.go:2140-2148,2472,2593` 看到。因此，本文件已经提供并测试了 Rust API，但不能据此声称 Rust 会话主链已经使用它。
+`GlobalTxnScope` 与 `LocalTxnScope` 给调用者提供稳定的协议字符串（`pkg/kv/txn_scope_var.rs:80-84`）。
 
 ## 核心职责
 
@@ -71,15 +69,11 @@ Go 对照中的直接上游是 `pkg/sessionctx/variable/session.go`：新建 `Se
 
 ## 与 Go 版本的对应关系
 
-`pkg/kv/txn_scope_var.go:22-76` 是逐符号对照来源。Rust 保留了 `TxnScopeVar`、三个公开构造器、两个 getter、私有构造器以及两个常量的名称和分支逻辑；字段含义与赋值顺序也一致。
-
 存在三点实现层差异：
 
 - Go getter 按值返回 `string`，而 Rust getter 返回 `&str`，避免只读访问时复制，同时引入与 `self` 绑定的借用生命周期。
 - Go 的 `GlobalTxnScope` 直接别名到 `client-go/oracle.GlobalTxnScope`；Rust 本文件把它写成字面量 `"global"`。`pkg/kv/lib.rs:365-367` 的 Rust oracle 桩也定义了同值常量，但本文件并未引用它，因此两处值需要人工保持同步。
 - Go 的配置薄封装最终委托 client-go 的 `tikvcfg`；当前 Rust `astersql-config` 在仓库内自行读取全局配置的 zone 标签。这能覆盖默认全局和指定 zone 的基本语义，但依赖实现并非同一个上游库。
-
-Rust 独立测试 `pkg/kv/mpp_2_aster_unit_test.rs:174-187` 验证了默认配置下的全局对象、显式全局对象，以及 `zone-a` 本地对象的显示值/真实值分离。未发现 Go 中专门以 `TxnScopeVar` 命名的独立测试；Go 会话代码提供了生产使用证据。
 
 ## 扩展指南
 
@@ -89,13 +83,3 @@ Rust 独立测试 `pkg/kv/mpp_2_aster_unit_test.rs:174-187` 验证了默认配�
 - 若接入 Rust 会话主链，应对照 `pkg/sessionctx/variable/session.go:2140-2148,2472,2593` 完成默认初始化、功能开关强制全局以及读取策略，而不是只调用 `GetTxnScope` 绕过显示值和开关判断。
 - 测试必须继续放在独立文件。优先扩展 `pkg/kv/mpp_2_aster_unit_test.rs`，补充配置 zone 驱动的默认本地分支、空值/异常标签策略和常量一致性；若生产会话层完成 Rust 接线，还应在对应 `pkg/sessionctx/variable/*_test.rs` 中覆盖受限 SQL及本地事务开关分支。
 - 该对象只在会话初始化或显式重置时分配两个小字符串，当前没有明显性能热点。扩展时的主要风险是兼容性与正确性：显示值和真实 zone 混淆会导致错误的 TSO 路由。
-
-## 验证依据
-
-- 源文件与符号：`pkg/kv/txn_scope_var.rs:27-84`；RustCodeGraph `files --filter pkg/kv/txn_scope_var.rs` 报告该文件含 8 个符号，`node --file ...` 核对了完整 84 行源码。
-- crate 边界：`pkg/kv/Cargo.toml` 的 `[lib] path = "lib.rs"`、`config-dependency`；`pkg/kv/lib.rs:547-550` 的模块装入与公开重导出。
-- 配置下游：`pkg/config/config_util.rs:224-232`、`pkg/config/lib.rs:23-35`。
-- Go 对照及完整应用接线：`pkg/kv/txn_scope_var.go:22-76`、`pkg/sessionctx/variable/session.go:2140-2148,2472,2593`。
-- Rust 独立测试：`pkg/kv/mpp_2_aster_unit_test.rs:174-187`。该测试验证默认/显式全局构造以及本地显示值与真实 zone 的分离；未运行 Cargo，符合本纯文档任务约束。
-- 调用关系核验：RustCodeGraph 的宽查询定位到目标符号与直接测试；精确图查询超时无输出，随后以 `rg` 对全仓 `.rs` 做精确引用搜索，确认当前没有生产 Rust 调用者。该限制已明确保留，未把 Go 主链误述为 Rust 主链。
-- 交付结构以任务指定命令检查，要求目标文件存在且恰有 11 个固定二级标题；另人工复核本文明确回答文件存在目的、默认/显式执行流程、边界以及安全扩展入口。

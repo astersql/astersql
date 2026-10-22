@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-mydump` crate 内部的 SQL dump 词法扫描器。crate 由 `pkg/lightning/mydump/Cargo.toml` 定义，`lib.rs` 以私有模块 `mod parser_generated` 装配它；因此文件唯一公开给 crate 外部的函数 `lex` 实际仍受模块可见性限制，只由同 crate 的行解析逻辑使用。
-
-它位于 Lightning 读取 mydumper SQL 文件的前半段：`OpenReader`/`NewChunkParser` 创建 `ChunkParser`，`ChunkParser::ReadRow` 反复调用 `parser_generated::lex` 得到 token，再在 `parser.rs` 中把 token 转成 `Datum` 和 `Row`。文件头明确说明实现由 `parser.rl` 的 Ragel 规则语义迁移而来；它保留生成文件的命名和状态常量，但用可读的 Rust 游标函数表达状态机，而不是复制 Go 的大段跳转表。
+从 `ChunkParser.block_parser.buf` 的开头识别一个 token，并返回 token 及其未经解码的原始字节。
 
 ## 核心职责
 
@@ -89,17 +87,11 @@ RustCodeGraph 已索引目标文件并列出 28 个符号；精确文件节点�
 
 ## 与 Go 版本的对应关系
 
-Go 语义来源是 `pkg/lightning/mydump/parser.rl`，生成物是 `parser_generated.go`。两端共享以下契约：
-
-- 相同的忽略规则、括号、四个关键字、整数、进制字面量和三类引号规则。
-- 相同的状态编号常量 `21/21/0/21`。
-- token 成功后都消费到 token 终点并增加逻辑位置；块不足时都保留未定型 token、续读后恢复扫描。
 - 状态错误先记录语法上下文；真实 EOF 与意外 EOF 使用不同错误路径。
-- Ragel 扫描器的最长匹配由 Rust 的 `prefer_over_unquoted` 显式表达，等长时保持专用规则顺序。
 
 实现形态不同：Go 文件是真正由 Ragel 生成的跳转状态机，使用 `cs/ts/te/act/p` 恢复游标；Rust 文件用 `ScanResult` 和多个辅助函数重新表达同一规则。Go 在续读前消费 `ts` 之前的已确认前缀，而 Rust 的单次规则从缓冲开头重扫并只在 `Skip`/`Token` 后消费；二者外部结果应一致，但 Rust 对很长跨块 token 可能重复扫描已有前缀，存在潜在的时间复杂度风险。
 
-独立 Rust 测试 `parser_generated_test.rs` 专门固定 `valuesx`、`123abc`、`0x12g` 等最长匹配以及等长专用规则。`parser_test.rs` 和 Go `parser_test.go` 则从完整行解析层覆盖块大小为 1 的续读、注释、`CONVERT` 包装、引号、进制字面量、伪关键字和语法错误。
+独立 Rust 测试 `parser_generated_test.rs` 专门固定 `valuesx`、`123abc`、`0x12g` 等最长匹配以及等长专用规则。
 
 ## 扩展指南
 
@@ -110,18 +102,3 @@ Go 语义来源是 `pkg/lightning/mydump/parser.rl`，生成物是 `parser_gener
 - 修改分隔符集合时必须同时审查注释起始字符、`scan_unquoted` 与 Go `unquoted` 规则，否则专用规则和普通文本会产生不同切分。
 - 性能优化应优先避免跨块重扫和 `drain` 搬移，但不能让返回的原始 token 借用随后会变化的缓冲；需要用独立基准或大 token 测试证明内存和时间改进。
 - 测试逻辑继续放在独立文件 `parser_generated_test.rs`/`parser_test.rs`，不要内嵌进生产源文件。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- `pkg/lightning/mydump/parser_generated.rs`：`lex`、`scan_one`、全部扫描辅助函数与状态常量的完整实现。
-- `pkg/lightning/mydump/parser.rs`：`BlockParser`/`ChunkParser`/`Token` 数据结构，`ReadRow` 第 339 行的直接调用，以及上层 `ReadChunks`、`ReadUntil`、`OpenReader` 链路。
-- `pkg/lightning/mydump/lib.rs`：私有模块装配和 `parser_generated_test.rs` 的独立测试挂载。
-- `pkg/lightning/mydump/Cargo.toml`：crate 名称、`lib.rs` 入口、无 feature 条件以及 Go 包移植元数据。
-- `pkg/lightning/mydump/parser.rl` 与 `parser_generated.go`：Ragel 规则、状态编号、成功消费、续读、EOF 和错误分支的 Go 基准语义。
-- `pkg/lightning/mydump/parser_generated_test.rs`：专用规则与普通文本之间的最长匹配、等长优先级。
-- `pkg/lightning/mydump/parser_test.rs`、`pkg/lightning/mydump/parser_test.go`：完整行解析、最小块续读、注释/包装剥离、字面量与错误边界。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/lightning/mydump` 确认目标、入口、Go 对照和测试均已索引；精确 `node --file` 查询读取目标 371 行及上述调用文件。由于本任务是纯文档分析，按计划未运行 Cargo。
-
-人工复核结论：该文件存在是为了以 Rust 实现 mydumper INSERT 输入的 Ragel 词法契约；它通过 `lex → scan_one → 辅助扫描函数` 运行，并由 `ChunkParser::ReadRow` 消费；安全扩展必须同步语义源、token 消费者、最长匹配及跨块独立测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-dumpling-cmd-dumpling` crate 的命令行配置适配层。`dumpling/cmd/dumpling/lib.rs` 以 `config_flags` 模块公开它；真正的进程控制流位于 `dumpling/cmd/dumpling/main.rs`。后者在 `run_with_factory` 中创建本地 `FlagSet`，依次调用本文件的 `DefineFlags`、`FlagSet::Parse` 和 `ParseFromFlags`，再把得到的 `astersql_dumpling_export::Config` 交给 `export::NewDumper`。
-
-`dumpling/cmd/dumpling/Cargo.toml` 将该目录声明为同时具有 library 和 binary 的 crate，并直接依赖 `astersql-dumpling-cli`、`astersql-dumpling-export` 和 `astersql-dumpling-log`。本文件只使用 export crate 和本 crate 的 `stubs::FlagSet`；它不是导出器实现，也不建立数据库连接。
+`ParseFromFlags(&mut Config, &FlagSet)` 从已解析的 flag 集合构造可供导出器消费的配置：先逐字段回填，再执行过滤器、文件尺寸、输出模板、压缩、CSV 方言和 Parquet 尺寸等派生解析及组合约束。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 将目标文件识别为含 66 个符号的已索引 Rust 文件�
 
 ## 与 Go 版本的对应关系
 
-主要 Go 对照是 `dumpling/export/config.go` 的 `timestampDirName`、`(*Config).DefineFlags` 和 `(*Config).ParseFromFlags`，应用入口对照是 `dumpling/cmd/dumpling/main.go`。Rust 保留了 Go 的总体顺序、绝大多数 flag 默认值、隐藏参数、字段回填、过滤器/模板/压缩/方言/Parquet 解析以及 params 键小写化语义。
-
 已确认的差异与迁移状态如下：
 
 - Go 默认目录使用本地时区的 RFC3339；Rust 固定输出 UTC `Z`。二者形状兼容，但具体时区文本不保证相同。
@@ -100,12 +96,3 @@ RustCodeGraph 将目标文件识别为含 66 个符号的已索引 Rust 文件�
 涉及 Go 对齐时，应以 `dumpling/export/config.go` 的实际增量及 `dumpling/export/config_test.go` 为依据，同时核对 export crate 的 `Config` 是否已经具备字段和领域解析器。对象存储参数不能只在此处注册：需要先补齐可复用的 BackendOptions surface，再恢复 `DefineFlags`/`ParseFromFlags` 两端接线。移植 `include-generated-columns` 时也应复用 export 层已有的模式解析和冲突校验，而不是在 CLI 层另造简化规则。
 
 修改表过滤时需特别保护 pflag `StringSlice` 的“首次显式赋值替换默认值”语义及 tables-list 的大小写路径；修改输出模板时需保留 split 防覆盖不变量；新增 map 参数时需明确键规范化与覆盖规则。性能风险主要来自引入文件读取或昂贵解析到 CLI 热路径；兼容风险则集中在默认值、错误文案、短参数、隐藏状态和接受别名集合变化。
-
-## 验证依据
-
-- 源文件：`dumpling/cmd/dumpling/config_flags.rs`，完整检查了 628 行、54 个 `FLAG_*` 常量、两个公开函数和五个内部函数（含日期转换辅助函数）。
-- crate 与入口：`dumpling/cmd/dumpling/Cargo.toml`、`lib.rs`、`main.rs`、`main.go`；确认 cmd crate 边界和 `run_with_factory` 的实际调用顺序。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter dumpling/cmd/dumpling` 确认目标及相邻入口/测试已入图；`node --file` 与 `query` 确认主要符号签名。精确 callers/callees 查询超时，调用边改由源码直接调用点复核。
-- Rust 独立测试：`dumpling/cmd/dumpling/config_flags_test.rs` 验证压缩别名、重复 column-filter 优先级、inline/file/SQL 冲突和 session 参数键规范化；`parity_test.rs` 验证 pflag slice/短参数/duration/bool 契约、RFC3339 目录形状、默认值、tables-list 过滤和错误路径。
-- Go 对照与测试：`dumpling/export/config.go`、`dumpling/export/config_test.go`，以及 Rust export 侧 `dumpling/export/config.rs`、`dumpling/export/config_test.rs`；它们支持上述共同语义与迁移差异结论。
-- 本任务是只新增说明文档的静态分析，按计划不运行 Cargo。交付验证使用任务文件规定的 11 章节结构检查，并人工检查文档只描述有源码或测试依据的现状。

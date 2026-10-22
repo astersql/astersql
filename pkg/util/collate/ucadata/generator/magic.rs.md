@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo package `astersql-util-collate-ucadata-generator`，package 边界由同目录 `Cargo.toml` 定义，库入口是 `lib.rs`，命令行入口是 `bin.rs`。`lib.rs` 以 `pub mod magic` 装入本文件并通过 `pub use magic::*` 重导出其内容；生成器实现 `main.rs` 则通过 `use super::magic::{LongRune8, reverseHexTable}` 直接消费两个常量。
-
-它不负责运行生成器、解析命令行或持有完整 UCA 表，而是把两项会影响解析和表编码协议的固定值集中起来：十六进制字符反查表，以及“该码点的一级权重存放在长表中”的哨兵值。最终调用链从 `bin.rs::main` 进入 `runGenerator`，再由 `main.rs` 的 CET 解析和权重表构造逻辑使用这些常量。
+两个定义逐值对应 `magic.go`，使 Rust 生成器保持 Go 生成器的数据格式和解析语义。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ RustCodeGraph 能确认 `magic.rs`、`main.rs`、`lib.rs` 位于同一生成器�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/ucadata/generator/magic.go`。Go 的常量块定义无类型的 `LongRune8 = 0xFFFD` 和由 16 段连接而成的 256 字节字符串 `reverseHexTable`；Rust 分别使用显式 `u64` 和 `&[u8; 256]`，数值与逐字节内容保持一致。
+Go 的常量块定义无类型的 `LongRune8 = 0xFFFD` 和由 16 段连接而成的 256 字节字符串 `reverseHexTable`；Rust 分别使用显式 `u64` 和 `&[u8; 256]`，数值与逐字节内容保持一致。
 
-消费逻辑也一一对应：Go `main.go::parseCETHex` 以输入 rune/字节值索引字符串，Rust `main.rs::parseCETHex` 以 `input.bytes()` 的结果索引数组；两边均以 `<= 0xf` 判断有效项。Go `cet.insertWeights`/`calcImplicitWeight` 与 Rust 同名方法均在长权重路径写 `LongRune8`，并把实际权重放入 `LongRuneMap`。
-
-Rust 的差异主要是类型约束更显式：固定数组在编译期保证表长，按字节迭代保证索引可落入 256 项，哨兵类型直接匹配 `Vec<u64>`。这些差异没有改变现有 Go 数据格式。`pkg/util/collate/ucadata/data.rs` 另有运行时侧的同值常量，但它属于另一个 crate/模块，不能替代生成器内的协议同步检查。
+Rust 的差异主要是类型约束更显式：固定数组在编译期保证表长，按字节迭代保证索引可落入 256 项，哨兵类型直接匹配 `Vec<u64>`。这些差异没有改变现有 Go 数据格式。
 
 ## 扩展指南
 
@@ -80,13 +76,3 @@ Rust 的差异主要是类型约束更显式：固定数组在编译期保证表
 - 修改长权重容量或布局时，不能只改 `LongRune8`：必须同步审查 `main.rs::cet::insertWeights`、`calcImplicitWeight`、生成模板、生成后的运行时表读取逻辑及 Go 对照。重点风险是哨兵与真实权重碰撞、短长表不一致和既有生成数据不兼容。
 - 若希望常量不再公开，应先检查 `lib.rs` 的 `pub use magic::*` 和独立测试通过 crate 根访问 `LongRune8` 的方式；缩小可见性会改变 crate API。
 - 性能相关修改应保留 O(1) 查表和只读静态存储特征。用分支或运行时初始化替代反查表前，应以生成器实际输入衡量收益，并确保 Go/Rust 解析结果逐项一致。
-
-## 验证依据
-
-- 源文件：`pkg/util/collate/ucadata/generator/magic.rs`，确认只有 `LongRune8` 与 `reverseHexTable` 两个公开常量，无条件编译或运行时逻辑。
-- crate 与入口：`pkg/util/collate/ucadata/generator/Cargo.toml`、`lib.rs`、`bin.rs`，确认 package 名、库/二进制入口、模块公开方式和生成器启动链；同目录不存在 `doc.go`。
-- Rust 消费者：`pkg/util/collate/ucadata/generator/main.rs`，确认 `parseCETHex` 的查表逻辑，以及 `insertWeights`、`calcImplicitWeight` 的哨兵/长表写入路径。
-- Go 对照：`pkg/util/collate/ucadata/generator/magic.go` 与 `main.go`，确认两个常量的值、表内容和消费语义一致。
-- 独立测试：`pkg/util/collate/ucadata/generator/migration_aster_unit_test.rs`。`parses_hex_weights_and_entries_like_go` 覆盖大小写十六进制、非法首字符、权重和 CET 条目解析；`packs_short_and_long_weights_like_go` 覆盖 `LongRune8` 与 `LongRuneMap` 的联合布局。同目录未发现 Go `*_test.go` 对生成器常量的直接测试。
-- RustCodeGraph：`status` 显示索引包含本区域；`files --filter pkg/util/collate/ucadata/generator` 确认相关 Rust/Go 文件；`explore "pkg/util/collate/ucadata/generator/magic.rs LongRune8 reverseHexTable parseCETHex"` 返回文件源码、Rust/Go `parseCETHex` 上游影响和 Rust 消费上下文。`query` 能找到 `main.rs` 的导入，但 `callers/callees` 对两个常量报告无定义，因此又用 `rg` 精确核对所有引用。
-- 本任务是纯文档分析，按任务约束不运行 Cargo；交付前使用任务指定命令验证目标文档存在且固定二级标题恰为 11 个，并人工复核所有重要结论均可回指上述源码、对照文件或独立测试。

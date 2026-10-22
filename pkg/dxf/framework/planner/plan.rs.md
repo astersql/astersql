@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明的源码是 [`plan.rs`](./plan.rs)。它属于 `astersql-dxf-framework-planner` crate，是 DXF（Distributed eXecution Framework）规划层的通用数据模型与抽象契约。crate 根 `pkg/dxf/framework/planner/lib.rs` 以 `pub mod plan` 声明本模块，并通过 `pub use plan::*` 向 crate 使用者重新导出这里的类型；同一 crate 的 `planner.rs` 则消费 `LogicalPlan` 与 `PlanCtx`，完成任务 meta 序列化和任务创建。
-
-它描述的是“逻辑计划 → 任务 meta / 物理计划 → 按 step 的子任务 meta”这条转换链，不负责执行子任务、调度节点、验证 DAG 或持久化任务。对应 Go 基线是 `pkg/dxf/framework/planner/plan.go`。Cargo 元数据还把 Go 包路径登记为 `pkg/dxf/framework/planner`。
+`ProcessorSpec`、`InputSpec`、`OutputSpec` 与 `LinkSpec` 表达处理器节点和节点间链接；本文件只承载规格，不解释或执行链接。
 
 ## 核心职责
 
@@ -98,13 +96,3 @@
 - 若让计划跨线程或并行生成 meta，需要给 trait 对象补充适当的 `Send`/`Sync` 约束，定义确定性输出顺序，并避免无意共享可变底层资源。
 - 若要把 Import Into 接到这套通用协议，应显式实现本文件的 trait 或增加适配层；不能仅依赖同名类型。变更需联合检查 `pkg/dxf/importinto/planner.rs` 及其独立测试，而不是删除其现有完整逻辑。
 - Rust 测试必须继续放在同目录的独立 `plan_test.rs`，不要内嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；目标 `plan.rs` 被识别为 202 行、19 个符号，并显示被 7 个文件引用。
-- RustCodeGraph 源码与符号查询：`node --file pkg/dxf/framework/planner/plan.rs`；`query PhysicalPlan --kind struct`、`query PlanCtx --kind struct`、`query LogicalPlan --kind trait`、`query PipelineSpec --kind trait`、`query to_subtask_metas`。
-- RustCodeGraph 调用证据：`callees` 对 `to_subtask_metas` 记录到 `PipelineSpec::to_subtask_meta`；动态 callers 结果不完整，因此又用精确文本检索核对实现和接线点。
-- 已读生产与边界文件：`pkg/dxf/framework/planner/plan.rs`、`lib.rs`、`planner.rs`、`Cargo.toml`，以及 `pkg/dxf/framework/storage/lib.rs`、`pkg/dxf/framework/mock/plan_mock.rs`、`pkg/dxf/importinto/planner.rs` 的直接相关定义/引用。
-- 已读 Go 对照：`pkg/dxf/framework/planner/plan.go`。
-- 已读独立测试：`pkg/dxf/framework/planner/plan_test.rs`、`plan_test.go`，以及 mock 上下文转发测试 `pkg/dxf/framework/mock/migration_aster_unit_test.rs::plan_mock_forwards_plan_context_to_pipeline_handler`。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构校验用于确认目标文件存在且恰有规定的十一个二级章节。

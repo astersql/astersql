@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-目标源码是 [`api.rs`](./api.rs)。本文件属于 `astersql-store-pdtypes` crate（`pkg/store/pdtypes/Cargo.toml`），由 crate 根 `pkg/store/pdtypes/lib.rs` 以 `pub mod api` 暴露，并经工作区依赖别名 `facade_store_pdtypes`、`pkg/lib.rs` 的 `store::pdtypes` 门面再次导出。它不是 PD 客户端，也不发起网络请求；它是 TiDB/AsterSQL 消费 PD HTTP API 时使用的 Store、Region JSON 数据传输对象（DTO）及其兼容序列化层。
-
-RustCodeGraph 将本文件识别为 46 个符号、758 行，并只找到 `pkg/store/pdtypes/migration_aster_unit_test.rs` 与 `pkg/store/pdtypes/statistics_test.rs` 两个文件级使用者；进一步用 `rg` 搜索 `astersql_store_pdtypes`、`pdtypes::api` 和 `crate::api` 时，仓库内只有迁移测试直接导入这些 API 类型。因而当前仓库内可确认的接线是“公开门面 + 契约测试”，没有证据表明某条 Rust 生产执行链已经实例化这些 DTO；对工作区外部使用者则未验证。
+把 Rust/Protobuf 的表示转换成 Go `encoding/json` 兼容形状：空列表按 Go `nil` slice 编码为 `null`，零值字段按 Go 的 `omitempty` 规则省略，容量、时长和 UTC 时间沿用 Go 格式，并把嵌入的 protobuf Store/Peer/PeerStats 展平成 JSON 字段。
 
 ## 核心职责
 
@@ -71,11 +69,11 @@ protobuf 对象使用 `Option<Box<T>>` 表示 Go 指针可空性。列表使用 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/pdtypes/api.go`。九个公开 Rust 结构分别对应同名 Go 类型，JSON tag 和字段含义保持一致；Go 文件说明该包主要从 PD 仓库复制，以避免直接依赖 PD，Rust crate 继续采用本地 DTO + `kvproto` 的边界。
+九个公开 Rust 结构分别对应同名 Go 类型，JSON tag 和字段含义保持一致；Go 文件说明该包主要从 PD 仓库复制，以避免直接依赖 PD，Rust crate 继续采用本地 DTO + `kvproto` 的边界。
 
-关键表示差异是：Go 的匿名嵌入 `*metapb.Store`、`*metapb.Peer`、`*pdpb.PeerStats` 由 Rust 的可选 boxed protobuf 加手工 `flatten` 适配器实现；Go `nil` slice 与 Rust 空 `Vec` 由 `nil_if_empty_vec` 对齐；Go `*time.Time`/`*Duration` 由 Rust `Option` 对齐；Go `omitempty` 由 `skip_serializing_if` 对齐。`MetaPeer.RoleName` 与 `IsLearner` 保留 Go 注释中的兼容目的：让角色可读，并兼容 kvproto 5.0 从 learner 标志迁移到 role 枚举后的 API。
+关键表示差异是：Go 的匿名嵌入 `*metapb.Store`、`*metapb.Peer`、`*pdpb.PeerStats` 由 Rust 的可选 boxed protobuf 加手工 `flatten` 适配器实现；Go `nil` slice 与 Rust 空 `Vec` 由 `nil_if_empty_vec` 对齐；Go `*time.Time`/`*Duration` 由 Rust `Option` 对齐；Go `omitempty` 由 `skip_serializing_if` 对齐。
 
-存在两项应明确的迁移边界。第一，Rust 的 `Count` 仍为 `i32`，而 Go `int` 在支持的 64 位平台范围更大；当前 API 测试没有覆盖超出 `i32` 的 count。第二，Go protobuf 的 JSON 展平行为随生成类型而定，Rust 版本是字段白名单式手工映射；新增 protobuf 字段不会自动同步。现有 `migration_aster_unit_test.rs` 已验证零值列表、容量/时长/时间、Store state、epoch、Peer role、down seconds 和复制状态的代表性契约，但不是全字段穷举。
+存在两项应明确的迁移边界。第一，Rust 的 `Count` 仍为 `i32`，而 Go `int` 在支持的 64 位平台范围更大；当前 API 测试没有覆盖超出 `i32` 的 count。第二，Go protobuf 的 JSON 展平行为随生成类型而定，Rust 版本是字段白名单式手工映射；新增 protobuf 字段不会自动同步。
 
 ## 扩展指南
 
@@ -84,12 +82,3 @@ protobuf 对象使用 `Option<Box<T>>` 表示 Go 指针可空性。列表使用 
 新增或升级 protobuf 字段时，必须同时检查 `StoreJson`/`PeerJson`/`RegionEpochJson`/`StoreLabelJson`/`PDPeerStatsJson` 的字段定义、`From` 转换、`into_store`/`into_peer` 和自定义 serde 实现。枚举扩展必须显式增加合法值映射并测试未知值仍可产生清晰错误。新增容量、时长或时间字段应复用已有适配模块，避免产生与 Go 不一致的单位或格式。
 
 若要把这些 DTO 接入生产 PD HTTP 客户端，应从 `pkg/lib.rs::store::pdtypes` 的公开门面导入，并增加调用方独立测试，覆盖真实响应、`null`/缺失字段、非法枚举、未知字段以及大数边界。兼容风险主要是 JSON 形状或零值改变；性能风险主要来自大 Store/Region 列表的完整拥有型分配和 clone。改动后还应核对 `pkg/store/pdtypes/Cargo.toml` 的依赖是否仍最小，并保持所有 Rust 测试逻辑在独立测试文件中。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件（其中 Rust 7,032 个）；`files --filter pkg/store/pdtypes` 定位本 crate 的 Rust/Go 对照与测试；两次 `node --file pkg/store/pdtypes/api.rs` 覆盖 1--758 行；对九个公开结构执行 `query`/`callers`，并对转换入口执行 `callees`，确认符号定义、测试实例化关系及未发现生产调用边。
-- 源码与装配：`pkg/store/pdtypes/api.rs`、`pkg/store/pdtypes/lib.rs`、根 `Cargo.toml` 的 `facade_store_pdtypes` 声明、`pkg/lib.rs` 的门面再导出。
-- crate 边界：`pkg/store/pdtypes/Cargo.toml`，确认 `serde`、`serde_json`、`chrono`、`kvproto`、`astersql-config-configtypes` 依赖及 `protobuf-codec` feature。
-- Go 对照：`pkg/store/pdtypes/api.go`，逐项核对同名结构、JSON tag、匿名 protobuf 嵌入与兼容注释；同目录没有 `api_test.go`。
-- Rust 测试：`pkg/store/pdtypes/migration_aster_unit_test.rs` 的 `migration_api_types_keep_go_json_contract`、`migration_nested_api_types_keep_go_json_contract`；另读 `pkg/store/pdtypes/statistics_test.rs`，确认它不直接覆盖本文件。
-- 文本交叉检查：`rg` 搜索 `astersql_store_pdtypes|pdtypes::api|store_pdtypes`、`api::{...}` 及九个公开类型，确认当前工作区直接导入点和测试范围。按任务约束未运行 Cargo，也未修改 Rust、Go、Cargo 或总计划。

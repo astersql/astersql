@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件实现 crate `astersql-statistics-handle-cache-internal-testutil` 的 mock 统计表构造逻辑。crate 入口 `pkg/statistics/handle/cache/internal/testutil/lib.rs` 以 `mod testutil` 装载本文件，并通过 `pub use testutil::*` 再导出公开函数；因此使用方以 `cache_testutil::NewMockStatisticsTable` 或 `testutil::NewMockStatisticsTable` 调用，而不是直接依赖本文件的模块路径。
-
-它位于统计信息缓存的 `internal/testutil` 边界，服务于 Rust 单元测试与基准：缓存 crate、LFU 子 crate 和 `handle/internal` 的测试依赖均在各自 `Cargo.toml` 中以路径依赖引入此 crate。它不在 SQL 请求、统计信息采集或缓存运行时主链上，也不会从存储读取真实统计信息；其作用是按可预测形状构造 `statistics::Table`，供缓存淘汰、刷新、相等性和内存成本等测试使用。
+`blob_type`、`mock_histogram`、`mock_top_n` 集中封装 Go helper 的默认载荷，使列和索引沿用完全相同的构造规则。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ RustCodeGraph 对本文件的索引列出 7 个符号，并给出 `pkg/statistic
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/cache/internal/testutil/testutil.go`。Rust 保留了三个公开函数名、参数顺序、列/索引的 1 起始 ID、CMSketch 参数 `(1, 1)`、TopN 的空编码/频次 1、直方图构造参数及追加函数的“当前数量 + 1”策略。
-
 两种实现的表示形式有所不同：Go 用指针或 `nil` 表示可选 CMSketch/TopN，Rust 用 `Option`；Go 未启用直方图时依赖 `statistics.Histogram` 零值，Rust 通过 `NewHistogram` 显式构造对应零值形态；Go 的 `model.ColumnInfo`/`IndexInfo` 未填写字段自然为零值，Rust 必须列出结构体字段并显式填写空值。Rust 完整构造路径同时显式设置 `FMSketch`、`PhysicalID`、`StatsVer` 等字段，以复现 Go 默认值。
 
 Go 注释称每个列和索引消耗 4 字节，这是原 helper 面向 Go 内存成本测试的说明；Rust 实际成本由 Rust 数据结构的 `MemoryUsage()` 计算，不能把该注释当作 Rust 固定布局保证。Rust 单测只断言总内存占用为正，没有承诺固定字节数。
@@ -88,12 +84,3 @@ Go 注释称每个列和索引消耗 4 字节，这是原 helper 面向 Go 内�
 - 若改变追加规则，应同步覆盖列与索引，并考虑增加稀疏 ID 或冲突场景测试；测试逻辑继续放在独立的 `testutil_test.rs`，不要内嵌进生产源文件。
 - 若新增公开 helper，需要确认 `lib.rs` 的通配再导出是否仍合适，并在所有消费 crate 的 `Cargo.toml` 边界内使用，避免把测试工具接入生产运行链。
 - 兼容风险主要是破坏 Go/Rust 夹具等价性以及改变 `MemoryUsage`，从而影响 LFU 配额/淘汰测试；性能风险来自按列和索引重复分配大载荷。扩展后至少应复核同目录单测、`statscache_test.rs`、`lfu_cache_test.rs` 和 `handle/internal/testutil_test.rs` 的相关场景。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含目标文件；`files --filter pkg/statistics/handle/cache/internal/testutil` 列出 `lib.rs`、Go/Rust 实现与 Rust 独立测试；`node --file .../testutil.rs --offset 1 --limit 320` 读取了 154 行完整实现；`query` 核对了 `NewMockStatisticsTable`、`MockTableAppendColumn`、`MockTableAppendIndex`、`mock_histogram`、`mock_top_n` 的定义。精确 `callers`/`callees` 子命令未输出文本，且文件级结果包含一个因 `blob_type` 同名产生的伪引用，因此真实调用边由定向符号搜索和消费源码交叉核验。
-- 源码与 crate 边界：`pkg/statistics/handle/cache/internal/testutil/testutil.rs`、`pkg/statistics/handle/cache/internal/testutil/lib.rs`、`pkg/statistics/handle/cache/internal/testutil/Cargo.toml`。
-- Go 对照：`pkg/statistics/handle/cache/internal/testutil/testutil.go`。
-- 独立 Rust 测试：`pkg/statistics/handle/cache/internal/testutil/testutil_test.rs`；相关消费证据来自 `pkg/statistics/handle/cache/statscache_test.rs`、`pkg/statistics/handle/cache/internal/lfu/lfu_cache_test.rs`、`pkg/statistics/handle/cache/bench_test.rs`、`pkg/statistics/handle/internal/testutil_test.rs`。
-- Cargo 上游边界：`pkg/statistics/handle/cache/Cargo.toml`、`pkg/statistics/handle/cache/internal/lfu/Cargo.toml`、`pkg/statistics/handle/internal/Cargo.toml` 均声明该 testutil crate 的路径依赖。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务规定的命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核源码链接、符号、流程、边界和安全扩展入口。

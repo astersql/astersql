@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-resolve` crate，是解析器 AST 与计划器之间的名称解析状态载体。crate 入口 `pkg/planner/core/resolve/lib.rs` 将解析器 AST 重新导出为 `ast`，将 `DBInfo`、`TableInfo` 重新导出为 `model`，并公开本文件的 `Context`、`NodeW`、`TableNameW`。`pkg/planner/core/resolve/Cargo.toml` 表明该 crate 只直接依赖 `astersql-parser-ast` 与 `astersql-meta-model`，没有 feature 分支。
-
-它不执行 SQL 解析、InfoSchema 查找或逻辑计划构建；它保存这些阶段之间共享的“某个 AST 表名节点已绑定到哪些数据库/表元数据”这一结果。Rust 计划器接口已经以 `&resolve::NodeW` 接收语句，例如 `pkg/planner/optimize.rs::buildPlan` 和 `pkg/planner/core/planbuilder_runtime.rs::PlanBuilder::Build`；后者当前只把 `NodeW.node` 交给 `BuildNodeRef`。仓库搜索未发现本文件之外的非测试 Rust 代码调用 `NewNodeW`、`NewNodeWWithCtx` 或 `NodeW::new`，因此完整的 Rust 预处理填充链目前不能从生产调用点得到验证，不能把 Go 已有主链视为 Rust 已接通。
+不执行 SQL 解析、InfoSchema 查找或逻辑计划构建；它保存这些阶段之间共享的“某个 AST 表名节点已绑定到哪些数据库/表元数据”这一结果。
 
 ## 核心职责
 
@@ -105,8 +103,6 @@ RustCodeGraph 将目标文件列为被 18 个文件使用，并能确认 `NodeW:
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/resolve/resolve.go`。字段和行为基本逐项对应：
-
 | Go | Rust | 语义说明 |
 | --- | --- | --- |
 | `*ast.TableName` | `Rc<ast::TableName>` | 保留可共享的 AST 对象身份 |
@@ -117,9 +113,7 @@ RustCodeGraph 将目标文件列为被 18 个文件使用，并能确认 `NodeW:
 | map miss 返回 `nil` | `get_table_name` 返回 `None` | 缺失绑定的语言惯用表达不同 |
 | `GetTableNames` 返回内部 map | 返回 `RefMut<TableNameMap>` | 都允许直接修改；Rust 额外受动态借用检查约束 |
 
-Rust 额外提供 snake_case API，同时保留 Go 风格名称以降低迁移接线成本。返回 `RefMut` 比 Go map 引用更严格：借用期间重入访问会 panic。另一方面，Rust 使用 `Option` 明示可空元数据和查询失败。
-
-迁移测试 `pkg/planner/core/resolve/migration_aster_unit_test.rs` 验证了指针身份、覆盖、内部 map 可变性、共享/独立上下文和 Go 风格门面。Go 侧没有同目录专门的 `resolve_test.go`；其行为由 `pkg/planner/core/preprocess_test.go`、`planbuilder_test.go`、`logical_plans_test.go`、`physical_plan_test.go` 等规划器测试间接覆盖。
+Rust 额外提供 snake_case API，同时保留 Go 风格名称以降低迁移接线成本。
 
 ## 扩展指南
 
@@ -130,13 +124,3 @@ Rust 额外提供 snake_case API，同时保留 Go 风格名称以降低迁移�
 - 若要收紧不变量，优先减少 `get_table_names` 的可变暴露或提供受控的遍历/删除 API；但这会改变 Go 兼容语义，必须同时审查所有 Go/Rust 调用者。
 - 生产接线应从 Rust 预处理入口开始：创建 `NodeW`，解析时使用同一 `Rc<TableName>` 填充 `Context`，再让计划构建和点查路径消费它。不能以测试中的手工填充替代真实 InfoSchema 解析。
 - 测试逻辑继续放在独立的 `migration_aster_unit_test.rs`，不要内嵌到 `resolve.rs`。兼容性风险主要是对象身份、共享上下文和 Go 的可变 map 语义；性能风险主要是 `Rc` 克隆、哈希表增长与不受控的上下文保留。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/resolve/resolve.rs`，共 161 行；RustCodeGraph `node --file` 核对了全部类型、方法、工厂和无条件编译结构。
-- crate 边界：`pkg/planner/core/resolve/Cargo.toml` 与 `pkg/planner/core/resolve/lib.rs`；确认包名、两项直接依赖、模块和公开再导出。
-- Rust 调用证据：RustCodeGraph 节点读取 `pkg/planner/core/planbuilder_runtime.rs::PlanBuilder::Build`、`pkg/planner/optimize.rs::{buildPlan,optimize}`、`pkg/planner/core/optimizer_runtime.rs::OptimizeAstNodeFn`；限定非测试 `.rs` 的引用搜索确认类型已用于接口，但本文件的构造/填充 API尚无外部生产调用。
-- Go 对照：`pkg/planner/core/resolve/resolve.go`；引用搜索进一步核对 `pkg/planner/core/preprocess.go`、`logical_plan_builder.go`、`point_get_plan.go`、`optimizer.go`、`plan_cache.go` 的写入、读取与传播位置。
-- 独立 Rust 测试：`pkg/planner/core/resolve/migration_aster_unit_test.rs`，覆盖对象身份、重复覆盖、可变内部 map、共享与独立上下文、兼容入口；相邻 `result.rs` 只补充同 crate 的列绑定结构，不改变本文对象的行为。
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的六个 Rust/Go 文件均在索引中。自然语言 `explore` 命中噪声较多，精确 callers/callees 又受同名符号歧义影响，故跨文件结论使用路径限定搜索复核，并在本文明确区分已接入类型与未验证的生产构造链。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有十一个固定二级标题，并人工复查没有把 Go 行为误称为 Rust 已支持行为。

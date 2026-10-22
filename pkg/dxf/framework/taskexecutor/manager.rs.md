@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`manager.rs` 实现 DXF（Distributed eXecution Framework）在单个执行节点上的任务执行器管理器。仓库的 `pkg/dxf/framework/doc.go` 将 task executor manager、slot manager 和 task executor 列为所有 DXF 节点都运行的组件；其中本文件位于 `astersql-dxf-framework-taskexecutor` crate，由 `lib.rs` 的 `mod manager` 纳入并通过 `pub use manager::*` 对外再导出。
-
-当前 Rust 主链中的直接生产入口是 `pkg/session/runtime/modify_column_dist_backfill.rs` 的 `NodeService::start` 路径：它先注册 Backfill 类型工厂，再调用 `NewManager`，随后依次调用 `InitMeta` 和 `Start`；`NodeService::stop`/`Drop` 最终调用 `Manager::Stop`。因此本文件负责“节点级调度与生命周期编排”，具体 subtask 的循环和业务执行仍由 `TaskExecutor`（通常为 `BaseTaskExecutor`）负责。
-
-`pkg/dxf/framework/taskexecutor/Cargo.toml` 声明 crate 名为 `astersql-dxf-framework-taskexecutor`、库入口为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/dxf/framework/taskexecutor"` 标明 Go 对照包。当前 manifest 中只有 `astersql-lightning-log` 是普通依赖，其余大量依赖位于 `target.'cfg(any())'`，该条件恒假；本文件自身实际使用 `std` 和 crate 内再导出的接口，不应根据那组禁用依赖推断运行时接线。
+因此本文件负责“节点级调度与生命周期编排”，具体 subtask 的循环和业务执行仍由 `TaskExecutor`（通常为 `BaseTaskExecutor`）负责。
 
 ## 核心职责
 
@@ -104,7 +100,7 @@ RustCodeGraph 对 `manager.rs` 的文件节点报告一个文件级使用方 `pk
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/dxf/framework/taskexecutor/manager.go` 的 `Manager`、`NewManager`、元数据循环、任务分派、抢占、启动和失败处理，并由同目录的 `manager_test.go`/`manager_test.rs` 保持主要测试意图。共同语义包括：任务按 rank 顺序处理；需要抢占时取消低排名任务并中断本轮；不能直接分配但无需抢占时允许继续尝试低排名小任务；暂停与回滚走不同取消接口；未注册类型和不可重试初始化错误标记失败；成功 executor 退出时关闭、注销并释放 slot。
+共同语义包括：任务按 rank 顺序处理；需要抢占时取消低排名任务并中断本轮；不能直接分配但无需抢占时允许继续尝试低排名小任务；暂停与回滚走不同取消接口；未注册类型和不可重试初始化错误标记失败；成功 executor 退出时关闭、注销并释放 slot。
 
 已确认的 Rust 差异如下：
 
@@ -116,7 +112,7 @@ Rust 文件逐项对应 `pkg/dxf/framework/taskexecutor/manager.go` 的 `Manager
 - Go `Stop` 先等待 executor group 再等待管理循环，正常 executor 清理由 goroutine 内 defer 完成；Rust 把所有线程句柄放在一个向量中循环 join，随后再关闭残余登记项。
 - Go `TaskCheckInterval` 是可直接重赋值的包变量；Rust 用 `AtomicU64` 和 getter/setter 模拟可跨测试修改的语义。
 
-这些差异应视为当前移植状态，而不是自动判定为缺陷。若未来要求严格行为对齐，应分别补测试证明可观测性、重试时序、service scope 和 panic/停止清理语义，再修改生产代码。
+这些差异应视为当前移植状态，而不是自动判定为缺陷。
 
 ## 扩展指南
 
@@ -127,14 +123,3 @@ Rust 文件逐项对应 `pkg/dxf/framework/taskexecutor/manager.go` 的 `Manager
 - 改变停止语义：必须明确管理循环、executor 线程、`Close` 和 join 的先后关系，避免让 `Stop` 等待只能由稍后 `Close` 才能解除的线程。建议新增一个只在 `Close` 后退出的测试 executor 来验证设计。
 - 对齐 Go 行为：以 `manager.go` 与 `manager_test.go` 的具体差异为依据，不能只补桩或删减逻辑。尤其关注 service scope、日志/指标/trace、panic 恢复和统一退避策略。
 - 性能风险：当前每个任务一个 OS 线程，轮询最短可被测试 setter 降得很低，注册表和 workers 都是单锁；扩展时应避免在持锁区做 I/O 或长时间等待，并用压测或并发测试评估任务数增长后的线程与锁开销。
-
-## 验证依据
-
-- 目标源码：`pkg/dxf/framework/taskexecutor/manager.rs`，已核对全部 378 行，包括常量、`RuntimeLease`、`Manager`、全部方法和 `DefaultExtension`。
-- 包边界：`pkg/dxf/framework/taskexecutor/Cargo.toml`、`pkg/dxf/framework/taskexecutor/lib.rs`；框架定位：`pkg/dxf/framework/doc.go`。
-- 直接依赖：`interface.rs` 的 `TaskTable`/`TaskExecutor`/`Extension`，`slot.rs` 的 slot 分配与抢占，`register.rs` 的工厂注册表，`task_executor.rs` 的 `TaskRuntime`/`Param`。
-- Rust 生产入口：`pkg/session/runtime/modify_column_dist_backfill.rs` 的 `NodeService` 构造、初始化、启动和停止路径。
-- Go 对照：`pkg/dxf/framework/taskexecutor/manager.go`；Go 测试：`manager_test.go` 中的管理、状态处理、slot 抢占、cross-keyspace runtime 和 InitMeta 重试用例。
-- Rust 独立测试：`pkg/dxf/framework/taskexecutor/manager_test.rs`，覆盖注册表操作、暂停/回滚、未知类型、可重试与不可重试 Init 失败、完整 Run/Close 生命周期、无法分配时继续扫描、去重、抢占、三次重试、取消中断、Stop 唤醒、runtime 获取失败重试和 holder 释放；`main_test.rs` 覆盖测试周期守卫。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file .../manager.rs` 返回完整源码；`query` 找到 `NewManager`、`InitMeta`、`handleTasks`、`handleExecutableTasks`、`startTaskExecutor`、`failSubtask`、`runWithRetry`；`callees` 确认了前述内部主链。精确 `callers` 对这些 Rust impl 方法未返回调用者，因此上游入口另以源码搜索和调用点读取核验，未把空结果解释为“无人调用”。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核上述结论均可回溯到列出的符号或文件。

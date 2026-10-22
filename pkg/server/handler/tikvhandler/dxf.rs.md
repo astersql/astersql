@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-handler-tikvhandler` crate 中 DXF（Distributed eXecution Framework）运维 HTTP 接口的业务层。模块由 `pkg/server/handler/tikvhandler/lib.rs` 公开导出；`pkg/server/http_status.rs` 将服务器请求转换为本文件的 `Request`，构造 handler，最后把 `JsonValue`/`DxfError` 转回 HTTP 响应。当前接线覆盖 `/dxf/schedule/status`、`/dxf/task/active`、`/dxf/nodes`、`/dxf/task/history`、`/dxf/schedule`、`/dxf/schedule/task_cleanup_batch_size`、`/dxf/schedule/max_concurrent_task`、`/dxf/import-into/history/job/{keyspace}/{job_id}`、`/dxf/schedule/tune` 和 `/dxf/task/{taskID}/max_runtime_slots`（`pkg/server/http_status.rs:2153-2202`）。
-
-本文件不直接拥有 HTTP socket、路由表或 DXF 存储实现。它负责方法检查、输入解析、业务约束、上下文标记、响应形状和错误到状态码的局部映射；除 cleanup batch size 直接调用 proto 的进程级配置外，其余外部副作用经 `DxfRuntime` 注入。crate 边界及所需 DXF、KV、meta、naming、logutil 依赖见 `pkg/server/handler/tikvhandler/Cargo.toml`。
+负责方法检查、输入解析、业务约束、上下文标记、响应形状和错误到状态码的局部映射；除 cleanup batch size 直接调用 proto 的进程级配置外，其余外部副作用经 `DxfRuntime` 注入。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/server/handler/tikvhandler/dxf.go`。Rust 保留了 Go 的 handler 分组、方法限制、默认一小时 TTL、十秒超时意图、历史分页规则、keyspace/job ID 校验、404/500 分支、tune factor 范围、新事务写入、进程内配置响应和运行槽位不变量。
+Rust 保留了 Go 的 handler 分组、方法限制、默认一小时 TTL、十秒超时意图、历史分页规则、keyspace/job ID 校验、404/500 分支、tune factor 范围、新事务写入、进程内配置响应和运行槽位不变量。
 
 Rust 的主要结构性差异是把 Go 中对 `handle`、`storage`、`meta`、`proto`、PD 和 logger 的直接调用集中到 `DxfRuntime`，便于 `pkg/server/http_status.rs` 注入 domain 运行时和测试替身；cleanup batch size 仍与 Go 一样直接调用 proto 全局配置。Go 的 `http.Request.FormValue` 语义由 Rust 上层 `dxf_request` 合并 query/body 来模拟，多值 `target_step` 则保留 body 列表。
 
-Go 使用 `context.WithTimeout` 并显式 cancel，Rust 只传递 deadline 数据。Go `DXFNodesHandler` 继承 `req.Context()`，Rust 对应地从 `request.context` 创建 timed context。Go 的 `schstatus.TTLFlag`/`TTLTuneFactors` 通过嵌入字段序列化为扁平 JSON，Rust 由 `ttl_flag_json`/`tune_factors_json` 显式构造同形响应。`pkg/server/handler/tikvhandler/dxf_test.go` 与 Rust 单元测试共同验证节点错误/取消和 pause TTL；更完整的 Rust HTTP/运行时对齐覆盖在 `pkg/server/handler/tests/dxf_test.rs`。
+Go 使用 `context.WithTimeout` 并显式 cancel，Rust 只传递 deadline 数据。Go 的 `schstatus.TTLFlag`/`TTLTuneFactors` 通过嵌入字段序列化为扁平 JSON，Rust 由 `ttl_flag_json`/`tune_factors_json` 显式构造同形响应。
 
 ## 扩展指南
 
@@ -86,11 +84,3 @@ Go 使用 `context.WithTimeout` 并显式 cancel，Rust 只传递 deadline 数�
 修改已有参数时应同步核查三处：本文件的解析与不变量、`http_status.rs:dxf_request` 的参数来源/优先级、Go `dxf.go` 的可观察语义。修改 JSON 字段时还要同步 `ttl_flag_json`/`tune_factors_json` 或对应 `JsonValue` 构造，以及 HTTP 端到端字符串断言。新增运行时调用必须明确是否继承请求 context、是否设置 `internal_dist_task`、是否要求新事务，以及失败应映射 400、404 还是 500。
 
 性能风险主要在分页上限、节点/任务列表大小、额外的 PD 加载和事务次数；兼容风险主要在错误文案、字段名/扁平结构、form/query 优先级和 `memory_only` 作用域。涉及进程级配置的测试需序列化并恢复旧值。若改变 Rust 行为，应先与 `dxf.go` 和相邻 Go 测试确认差异确属移植目标，而不是为通过测试而简化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/server/handler/tikvhandler` 确认目标、Go 对照和测试均已索引；`node --file pkg/server/handler/tikvhandler/dxf.rs` 读取 932 行完整实现；`callees parseTaskHistoryQuery` 确认 Rust 入口调用两个运行时校验方法和共享解析函数。自然语言 `explore` 对同名宽泛词结果噪声较大，宏生成构造器又与 Go 同名，因此生产调用边以索引文件引用提示和 `http_status.rs` 的精确构造器引用交叉核验。
-- 源码与 crate：`pkg/server/handler/tikvhandler/dxf.rs`、`pkg/server/handler/tikvhandler/lib.rs`、`pkg/server/handler/tikvhandler/Cargo.toml`、`pkg/server/http_status.rs`。
-- Go 对照：`pkg/server/handler/tikvhandler/dxf.go`；Go 测试 `pkg/server/handler/tikvhandler/dxf_test.go` 覆盖节点读取错误/请求取消及 pause TTL 的非法、默认和显式值。
-- Rust 独立测试：`pkg/server/handler/tikvhandler/dxf_test.rs` 覆盖 pause/resume TTL、扁平 JSON 和 cleanup 非法方法不改值；`pkg/server/handler/tests/dxf_test.rs` 覆盖路由、状态/节点、调参、最大并发、运行槽位、历史分页/keyspace、IMPORT INTO 聚合/404 和 cleanup 的进程内语义。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且固定二级标题恰好为 11 个。

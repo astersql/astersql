@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-autoanalyze-priorityqueue` crate 的作业公共契约层。crate 入口 `pkg/statistics/handle/autoanalyze/priorityqueue/lib.rs` 以私有模块 `job` 装入它，再通过 `pub use job::*` 对外重导出。它不负责维护堆或扫描统计信息，而是定义队列、作业工厂、三类具体作业与执行环境之间共享的类型和辅助逻辑。
-
-`pkg/statistics/handle/autoanalyze/priorityqueue/Cargo.toml` 表明该 crate 的直接外部依赖只有 `astersql-statistics-handle-logutil`；本文件另外只使用标准库的 `Any`、`HashMap`、格式化、`Arc` 和时间类型。当前 Rust 文件已经带有 AsterSQL 处理标记，并保留 PingCAP Apache License。
+在 `IsValidToAnalyze` 中实现失败后的再分析冷却策略，避免刚失败或仍处于等待期的对象反复占用队列。
 
 ## 核心职责
 
@@ -82,7 +80,7 @@ RustCodeGraph 对目标文件识别出 60 个符号；精确图查询对通用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/autoanalyze/priorityqueue/job.go`。Rust 的 `Indicators`、成功/失败钩子、`AnalysisJob` 方法、四个校验原因、30 分钟默认等待、冷却查询顺序和严格比较均对应 Go 定义。`IsDynamicPartitionedTableAnalysisJob` 在 Go 中用类型断言，在 Rust 中用 `Any` 向下类型检查；`asJSONIndicators` 对应 Rust 的公开 `AsJSONIndicators`。
+`IsDynamicPartitionedTableAnalysisJob` 在 Go 中用类型断言，在 Rust 中用 `Any` 向下类型检查；`asJSONIndicators` 对应 Rust 的公开 `AsJSONIndicators`。
 
 Rust 为可独立运行的移植边界增加了 Go 文件中没有的 `AnalysisRuntime` 和精简元数据结构：Go 接口直接接收 `sessionctx.Context`、`StatsHandle` 与 `sysproctrack.Tracker`，Rust 把这些能力收敛为可模拟的 trait。Rust 的 `AnalysisJobJSON`/`IndicatorsJSON` 在本 crate 内定义，而 Go 使用 `statistics/handle/types` 中的视图类型。
 
@@ -98,12 +96,3 @@ Rust 还显式实现 Go 格式细节：有符号纳秒 `AnalysisDuration`、时�
 - 修改索引解析时，应保持元数据顺序和缺失 ID 的既有处理，并同步 `index_names_preserves_metadata_order_and_skips_missing_ids` 及具体作业测试。
 
 主要兼容风险是日志/原因文本或 JSON 字符串变化影响运维观测；正确性风险集中在冷却边界和错误短路；性能风险较低，但动态分派、克隆日志字段和格式化发生在队列/日志路径，扩展时不应引入不受控的元数据扫描或锁等待。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter .../job.rs` 确认目标文件已索引且含 60 个符号；`node --file .../job.rs` 阅读了完整 418 行；`query AnalysisJob`、`query Indicators` 定位 trait、结构、三个具体实现的方法和测试引用。精确 `explore` 受仓库大量同名符号干扰，故目录内直接引用由 `rg` 补充核验。
-- Rust 源与入口：`pkg/statistics/handle/autoanalyze/priorityqueue/job.rs`、`lib.rs`、`analysis_job_factory.rs`、`queue.rs`、`heap.rs`、`calculator.rs`、三个 `*_analysis_job.rs`。
-- crate 边界：`pkg/statistics/handle/autoanalyze/priorityqueue/Cargo.toml`，确认库入口、logutil 依赖和 Go package 移植元数据。
-- Go 对照：`pkg/statistics/handle/autoanalyze/priorityqueue/job.go`；Go 测试 `job_test.go`。
-- Rust 独立测试：`pkg/statistics/handle/autoanalyze/priorityqueue/job_test.rs`，覆盖字符串、动态类型、冷却、日志、JSON/时长/map、索引顺序、回调与负时长；其他具体作业测试提供 `AnalysisRuntime` 实现和校验/执行路径证据。
-- 人工复核结论：本文件存在的原因是稳定自动分析作业的跨类型契约与 Go 兼容公共语义；它经工厂、队列/堆、具体作业和运行时边界参与执行；安全扩展点及应同步的独立测试已在“扩展指南”列明。

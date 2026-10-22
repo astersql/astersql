@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`domain.rs`](domain.rs) 是 `astersql-metrics` crate 中 Domain 子系统的 Prometheus collector 定义文件。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod domain` 暴露它；包级入口 [`metrics.rs`](metrics.rs) 的 `InitMetrics` 调用 `crate::domain::InitDomainMetrics`，随后 `RegisterMetrics` 将其中多数 collector 注册到默认 Prometheus registry。这里的 “Domain” 指 schema、权限、系统变量和 schema validator 等全局状态相关的观测面，并不是这些业务状态本身的实现。
-
-[`Cargo.toml`](Cargo.toml) 将该目录定义为 `astersql-metrics`，库入口为 `lib.rs`；本文件直接使用 crate 内的 Go API 兼容层，最终 collector 类型来自 `prometheus = "0.14"`。文件没有 feature 或条件编译分支，也不定义类型、trait 或 `impl`。
+声明 7 个可变包级 collector 槽位：租约过期时间、schema 加载次数与耗时、InfoCache 读取/命中次数、权限加载次数、系统变量缓存加载次数、schema validator 处理次数。
 
 ## 核心职责
 
@@ -84,11 +82,11 @@ collector 槽位是进程级 `pub static mut Option<T>`：初始为 `None`，初
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`domain.go`](domain.go)。Rust 保留了 Go 的 7 个 collector、7 个标签字符串、完整指标名/help、标签排列，以及 `LoadSchemaDuration` 的 `0.001 × 2^n`、20 桶配置。Go 使用已初始化的包级具体值/指针；Rust 为配合分阶段初始化，改为 `static mut Option<T>`，并增加 `PACKAGE_INIT_LOCK` 和集中 `unsafe` 写入。
+Go 使用已初始化的包级具体值/指针；Rust 为配合分阶段初始化，改为 `static mut Option<T>`，并增加 `PACKAGE_INIT_LOCK` 和集中 `unsafe` 写入。
 
 Go 包的 `init()` 自动调用 `InitMetrics`；Rust 没有等价的自动包初始化，必须由 Rust 应用入口显式调用 `InitMetrics`。Go `RegisterMetrics` 注册 `InfoCacheCounters`，当前 Rust `RegisterMetrics` 未列出它，但 Rust 简化模式切换仍操作它。这一差异影响默认 registry 可见性，扩展或修正时需先确认期望，而不能仅机械复制调用。
 
-Go 业务侧真实使用包括：Domain 加载权限/系统变量后的成功失败计数，schema validator 的状态计数和 lease 时间设置，schema syncer 的成功失败计数，以及 InfoSchema 的缓存与 schema 加载耗时句柄。当前 Rust 对应业务接线主要迁入独立 `astersql-infoschema-metrics` crate；本文件的多数 collector 暂未被 Rust 业务代码直接采样。
+当前 Rust 对应业务接线主要迁入独立 `astersql-infoschema-metrics` crate；本文件的多数 collector 暂未被 Rust 业务代码直接采样。
 
 ## 扩展指南
 
@@ -97,12 +95,3 @@ Go 业务侧真实使用包括：Domain 加载权限/系统变量后的成功失
 修改现有指标时必须保持 Prometheus 兼容性：namespace/subsystem/name 决定全名，label 名称及顺序决定时序，桶边界决定直方图聚合语义。名称、标签或桶的变化都可能破坏 dashboard、告警和历史数据连续性。新增标签还会增加基数，必须评估内存和采集成本。
 
 测试逻辑应继续放在独立测试文件，不要内嵌到 `domain.rs`。构造/初始化冒烟测试可扩展 [`bindinfo_1_aster_unit_test.rs`](bindinfo_1_aster_unit_test.rs)；指标全名、标签和桶的语义测试可参考或扩展 [`../infoschema/metrics/lib_test.rs`](../infoschema/metrics/lib_test.rs) 与 [`../infoschema/metrics/migration_aster_unit_test.rs`](../infoschema/metrics/migration_aster_unit_test.rs)。若修正 `InfoCacheCounters` 注册差异，应在 `pkg/metrics` 的独立测试中验证 `InitMetrics` → `RegisterMetrics` → `gather` 以及简化模式往返，避免只验证对象构造。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 `pkg/metrics/domain.rs` 已收录；文件节点读取了完整 158 行，并报告使用者为 `pkg/metrics/metrics.rs` 与 `pkg/metrics/bindinfo_1_aster_unit_test.rs`。
-- RustCodeGraph 精确查询：`InitDomainMetrics` 在 Go/Rust 对照文件中各有一个定义；目标节点确认本文件包含 7 个 collector 槽位、7 个标签常量和 1 个初始化函数。通用名称的 `callers/callees` 查询未在时限内返回，因此调用边又由索引文件节点及下列源码位置交叉验证。
-- Rust 源码：[`domain.rs`](domain.rs)、[`lib.rs`](lib.rs)、[`metrics.rs`](metrics.rs)、[`bindinfo.rs`](bindinfo.rs)、[`common/wrapper.rs`](common/wrapper.rs)、[`bindinfo_1_aster_unit_test.rs`](bindinfo_1_aster_unit_test.rs)。
-- crate/迁移边界：[`Cargo.toml`](Cargo.toml)；InfoSchema 独立实现与测试为 [`../infoschema/metrics/metrics.rs`](../infoschema/metrics/metrics.rs)、[`../infoschema/metrics/lib_test.rs`](../infoschema/metrics/lib_test.rs)、[`../infoschema/metrics/migration_aster_unit_test.rs`](../infoschema/metrics/migration_aster_unit_test.rs)。
-- Go 对照与真实调用：[`domain.go`](domain.go)、[`metrics.go`](metrics.go)、`pkg/domain/domain.go`、`pkg/infoschema/isvalidator/validator.go`、`pkg/infoschema/issyncer/syncer.go`、`pkg/infoschema/metrics/metrics.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行固定 11 章节结构检查和人工事实复核。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`descriptor.rs` 属于 `astersql-expression-aggregation` crate，是规划器侧聚合函数描述与行式聚合运行时之间的桥梁。crate 入口 `pkg/expression/aggregation/lib.rs` 以 `mod descriptor` 装配本文件，并通过 `pub use descriptor::*` 对外导出 `AggFuncDesc`、`NewAggFuncDesc` 和 `NewAggFuncDescForWindowFunc`。`pkg/expression/aggregation/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/expression/aggregation`；直接语义基准是同目录的 `descriptor.go`。
-
-在完整 SQL 链路中，`pkg/planner/core/logical_plan_builder_runtime.rs` 的聚合构建流程先改写 SQL 聚合参数，再调用 `NewAggFuncDesc`，随后填充 `OrderByItems` 并把描述符放入逻辑聚合节点。描述符之后可用于计划等价判断、分布式/并行聚合拆分、外连接简化、下推转换和运行时聚合器实例化。它不是聚合状态本身；实际逐行状态及 `Update`/`GetResult` 契约位于 `aggregation.rs` 的 `Aggregation` 与 `AggEvaluateContext`。
+通过 `EvalNullValueInOuterJoin`、`UpdateNotNullFlag4RetType` 和 `GetAggFunc` 分别处理外连接无匹配行的可折叠结果、返回类型可空性，以及描述符到具体行式 `Aggregation` 实现的分派。
 
 ## 核心职责
 
@@ -99,7 +97,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/aggregation/descriptor.go` 是直接对照。Rust 保留了 Go 的字段、构造、hash/equality、格式化、深拷贝、拆分、外连接默认值、运行时分派、非空标志更新和内存估算主流程；函数名及字段命名也刻意维持 Go 风格。
+Rust 保留了 Go 的字段、构造、hash/equality、格式化、深拷贝、拆分、外连接默认值、运行时分派、非空标志更新和内存估算主流程；函数名及字段命名也刻意维持 Go 风格。
 
 需要注意的实现差异：
 
@@ -109,8 +107,6 @@
 - Rust 在 MAX_COUNT/MIN_COUNT 的拆分中用静态求值上下文取得首参类型；Go 用 `GetType(nil)`。两者都为执行器内部单槽局部结果保留原值类型。
 - Rust 的 `EvalNullValueInOuterJoin` 把 Go 的三返回值 `(Datum, bool, error)` 表达为 `Result<(Datum, bool), Error>`。
 - Rust `MemoryUsage` 以 `size_of::<isize>()`/`size_of::<bool>()` 计固定字段并累计排序项；Go 使用 `size.SizeOfInt`/`size.SizeOfBool`。两者都属于估算口径。
-
-`pkg/expression/aggregation/go_merge_44_test.rs` 是当前最集中验证新增 MAX_COUNT/MIN_COUNT 对齐语义的 Rust 独立测试；其他具体聚合由 `aggregation_aster_unit_test.rs`、`avg_test.rs`、`count_test.rs`、`concat_test.rs`、`first_row_test.rs`、`bit_xor_test.rs` 等独立文件覆盖，符合测试不内嵌生产文件的仓库约束。
 
 ## 扩展指南
 
@@ -125,15 +121,3 @@
 7. 测试放在独立文件。描述符协议优先扩展 `go_merge_44_test.rs` 或新增同目录独立 `*_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 模块接入；具体聚合运行时扩展相应的 `avg_test.rs`、`count_test.rs` 等。规划调用变化还应同步逻辑聚合/计划构建的独立测试。
 
 兼容性风险集中在中间结果列形状、模式转换和返回类型标志；这些变化可能影响 MPP/下推、并行 HashAgg、计划缓存等价性以及 spill/restore。性能风险主要是无意的深拷贝扩大、指纹遗漏造成错误复用，以及 GROUP_CONCAT 缓冲限制未从上下文传递。
-
-## 验证依据
-
-本说明基于以下直接证据，未运行 Cargo（任务明确为纯文档分析）：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录的文件清单包含 `descriptor.rs`、Go 对照及独立测试。
-- RustCodeGraph `node --file pkg/expression/aggregation/descriptor.rs --offset 1 --limit 420` 与 `--offset 420 --limit 100`：核对目标文件全部 472 行、27 个索引符号及被规划器/执行器/测试引用的事实。
-- RustCodeGraph `query AggFuncDesc`、`query NewAggFuncDesc`、`query EvalNullValueInOuterJoin`、`query UpdateNotNullFlag4RetType`：核对 Rust/Go 同名符号和直接对照位置。通用名称 `Split` 的 explore 结果存在跨仓库同名噪声，因此调用点另以文件限定节点和 `rg` 交叉核对，没有把无关结果当作证据。
-- RustCodeGraph 文件节点：`base_func.rs` 核对标准构造、深拷贝和 `TypeInfer`；`aggregation.rs` 核对分布式构造、`Aggregation` trait 与 `AggEvaluateContext`；`logical_plan_builder_runtime.rs` 核对 SQL 规划主入口。
-- 原始文件读取：`pkg/expression/aggregation/Cargo.toml`、`lib.rs`、`descriptor.go`、`go_merge_44_test.rs`；并用 `rg` 核对 `logical_aggregation.rs`、`typed_hash_agg.rs`、`physical_plan_runtime.rs` 以及同目录独立测试中的构造、拆分、外连接、非空标志和运行时分派引用。
-- Go/Rust 测试证据：`go_merge_44_test.rs` 验证 MAX_COUNT/MIN_COUNT 的返回类型、Split、Complete/Final 聚合、外连接常量结果和 NotNullFlag；`aggregation_aster_unit_test.rs` 验证普通 COUNT 拆分及多种 `GetAggFunc` 分派；具体聚合测试验证对应运行时行为。
-- 人工复核结论：本文能回答该文件为何存在、标准构造及两阶段执行如何运行、状态由谁拥有、哪些路径返回错误或 panic，以及新增聚合时必须同步的符号和独立测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-importer` crate，是 Rust `IMPORT INTO` 导入流程的前置条件判断层。模块由 `pkg/executor/importer/lib.rs` 声明并公开再导出，crate 根与依赖由 `pkg/executor/importer/Cargo.toml` 定义。它不负责查询数据库、访问 etcd 或创建对象存储客户端，而是通过 `ImportPrecheckService` 把这些外部动作抽象为边界接口，再对 `LoadDataController` 中的导入计划、目标表元数据和已统计文件大小执行有序校验。
-
-当前接线状态必须分开看：`CheckImportTableTTL` 已由 `pkg/session/runtime/dispatch.rs` 的 `IMPORT INTO` 分派路径直接调用；`CheckImportDataSizeWithLimit` 已由 `pkg/dxf/importinto/scheduler.rs::prepareImportTask` 在 `InitDataFiles` 后调用。完整的 `CheckRequirements` / `CheckRequirementsBeforeInitDataFiles` 及 `ImportPrecheckService` 生产实现，在本次全仓搜索中未发现生产调用方或实现方，现有直接实现仅在 `pkg/executor/importer/precheck_test.rs::PrecheckBoundary`。因此，本文件包含完整 Rust 逻辑和测试，但不能据此声称完整 precheck 已全部接入 Rust 生产主链。
+定义 `ImportPrecheckService`，隔离活跃导入 job、目标表行探测、Starter 部署参数、PiTR/CDC 状态和 Global Sort 云存储权限等外部依赖。
 
 ## 核心职责
 
@@ -79,13 +77,11 @@ TTL 检查特别处理的是本文件之外的并发风险：TTL job 异步运�
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/executor/importer/precheck.go` 是主要语义基准。两版的完整顺序一致：TTL；文件源活跃 job 与可选文件大小；空表；未禁用时的 PiTR/CDC；Global Sort URI 与权限。两版早期入口都跳过总文件大小并在文件源上执行 `CheckDataSourceAccess`；两版都返回首个错误。
-
 Rust 将 Go 对 session、SQL executor、etcd、部署全局配置和对象存储构造器的直接访问抽成 `ImportPrecheckService`。这提升了纯逻辑可测试性，但当前仓库只看到测试实现，尚未证实完整 Go 会话边界已经生产移植。Rust 另提供 `CheckImportDataSizeWithLimit`，供 DXF scheduler 显式传入 `deploymode::IsStarter()` 与全局上限；Go `CheckImportDataSize` 则在方法内部直接读取部署模式和全局配置。
 
-Go 的 `checkTableEmpty` 自行构造 `SELECT 1 ... USE INDEX() LIMIT 1` 并关闭结果集，`checkCDCPiTRTasks` 自行创建和关闭 etcd client，`checkGlobalSortStorePrivilege` 自行创建带权限选项的对象存储。Rust 把这些副作用交给 trait；因此 Go 的资源清理证据不能自动证明未来 Rust 服务实现正确清理。
+Rust 把这些副作用交给 trait；因此 Go 的资源清理证据不能自动证明未来 Rust 服务实现正确清理。
 
-错误类型并非完全等价：Go 大多数业务拒绝直接返回 `ErrLoadDataPreCheckFailed`；Rust 只有独立 TTL 函数保留类型化错误，其余编排多为字符串。大小错误文本通过 `display_bytes` 对齐 Go `units.BytesSize`，Rust 独立测试覆盖 `0B`、`KiB`、`MiB` 与四位有效数字示例。Go 测试 `TestCheckRequirements` 还覆盖真实 SQL、etcd PiTR/CDC、Global Sort 后端与权限；对应 Rust 测试目前重点覆盖纯辅助函数、TTL 顺序及早期数据源访问，并未覆盖生产服务实现。
+错误类型并非完全等价：Go 大多数业务拒绝直接返回 `ErrLoadDataPreCheckFailed`；Rust 只有独立 TTL 函数保留类型化错误，其余编排多为字符串。Go 测试 `TestCheckRequirements` 还覆盖真实 SQL、etcd PiTR/CDC、Global Sort 后端与权限；对应 Rust 测试目前重点覆盖纯辅助函数、TTL 顺序及早期数据源访问，并未覆盖生产服务实现。
 
 ## 扩展指南
 
@@ -95,12 +91,3 @@ Go 的 `checkTableEmpty` 自行构造 `SELECT 1 ... USE INDEX() LIMIT 1` 并关�
 - 扩展云存储后端时，应更新 `validate_global_sort_uri` 的 `StorageBackend` 匹配和 `GlobalSortPermission` 需求；只有测试辅助需要时才同步 `is_supported_cloud_uri`。要新增脱敏、缺 bucket、不支持 scheme 和权限拒绝测试，避免把轻量字符串判断当成真实解析。
 - 修改 Starter 体量规则或单位格式时，应同时审查 `CheckImportDataSizeWithLimit`、`check_import_size_limit`、`display_bytes`、DXF scheduler 调用点和 Go `checkStarterMaxImportDataSize`。正确性风险是错误放行超限数据或把未知真实体量误判为超限，兼容风险是改变用户可见错误文本，性能影响主要来自错误地放行过大导入。
 - 所有 Rust 回归继续放在同目录独立文件 `pkg/executor/importer/precheck_test.rs`，不要内嵌到生产源；涉及 Go 对齐时同步核对 `precheck_test.go` 的现有边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件且目标文件已索引；`files --filter pkg/executor/importer` 确认目标、Go 对照和独立测试；`node --file pkg/executor/importer/precheck.rs` 读取 274 行全貌；`query` 核对 `ImportPrecheckService`、`CheckImportTableTTL`、`validate_global_sort_uri`、`check_import_size_limit`、`display_bytes` 与 `is_supported_cloud_uri`；精确 `explore` 核对内部调用链和 trait 方法边。单独 `callers/callees` 命令未返回可用文本，因此生产调用点以图的文件级 `used by`、精确 `explore` 和相邻源码补证。
-- Rust 源与接线：`pkg/executor/importer/precheck.rs`、`lib.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/dxf/importinto/scheduler.rs`；分别核对全部逻辑、模块再导出、SQL 分派 TTL 入口和 DXF 文件体量入口。全仓 `rg` 精确搜索用于确认没有其他 `ImportPrecheckService` 实现和完整入口调用。
-- crate 声明：`pkg/executor/importer/Cargo.toml`，核对 crate 名、`lib.rs` 根、运行时依赖与测试依赖；目标目录没有 `doc.go`。
-- Rust 测试：`pkg/executor/importer/precheck_test.rs` 共 450 行，覆盖 Starter 大小边界、Go 单位格式、支持/拒绝 URI、凭证脱敏、TTL 在两入口和两数据源上的优先级，以及早期文件访问不负责通配符匹配结果。
-- Go 对照：`pkg/executor/importer/precheck.go` 与 `precheck_test.go`，核对完整检查顺序、SQL/etcd/对象存储副作用、TTL、空表、活跃 job、PiTR/CDC、Starter 上限和 Global Sort 行为。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行任务指定的 11 章节结构验证，并人工复核只新增本说明文件、没有把测试覆盖误写成生产接线、没有修改只读 `plan.md`。

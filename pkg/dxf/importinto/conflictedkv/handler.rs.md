@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-importinto-conflictedkv` crate 的冲突 KV 处理核心。crate 入口 `pkg/dxf/importinto/conflictedkv/lib.rs` 将 `handler` 声明为内部模块并整体再导出；`Cargo.toml` 的 `package.metadata.porting.go-package` 指向同路径 Go 包，说明它是 `pkg/dxf/importinto/conflictedkv/handler.go` 的 Rust 移植面。
-
-在 IMPORT INTO 的冲突处理阶段，已记录的重复 KV 分为两类：data KV 可以直接解码出一行；唯一索引 KV 只能先得到行 handle，再从集群快照回查 data KV。该文件把这两条路径统一为 `Handler` 生命周期，并把重编码后的整行交给调用方提供的 `EncodedRowHandler`。上游生产构造点是 `collector.rs::NewCollector` 和 `deleter.rs::NewDeleter`：前者收集冲突行及校验信息，后者据重编码结果安排删除。
+用 `ConflictContext`、`ConflictStore`、`ConflictSnapshot`、`ConflictRowCodec` 等 trait 隔离 KV 存储、快照、事务、keyspace 和行编解码实现。
 
 ## 核心职责
 
@@ -135,7 +133,7 @@
 - Go 通过 `errors.Trace` 保留错误栈并用 `common.OnceError` 取首个 Close 错误；Rust 使用字符串错误，`buffered_result.and(close_result)` 达到“仍关闭且优先冲刷错误”的结果顺序。
 - Rust `ConflictStore` 同时容纳 deleter 所需事务接口，因此比本文件的只读快照需求更宽；这是 crate 内共享边界，不表示 handler 的 data/index 运行都会开启事务。
 
-测试语义保持对齐：Go `handler_test.go::TestHandler` 使用真实 mock TiDB store/table 生成 KV；Rust `handler_test.rs` 用 fake codec/store 驱动真实调度逻辑。两边都验证 data KV 重复 10 次（聚簇 30 对、非聚簇 40 对）、index 仅处理 handle 2/4/5（聚簇 9 对、非聚簇 12 对）、读流量非零和进度计数。Go 还以真实表覆盖函数索引后的可见列重编码与多值索引跨批去重；Rust 的直接 handler 测试覆盖跨批重复输入及“回调成功后才能加入本地集合”，而完整可见列回归位于 `pkg/dxf/importinto/conflict_resolution_test.rs::data_handler_reencodes_visible_columns_after_functional_index`。
+测试语义保持对齐：Go `handler_test.go::TestHandler` 使用真实 mock TiDB store/table 生成 KV；Rust `handler_test.rs` 用 fake codec/store 驱动真实调度逻辑。Go 还以真实表覆盖函数索引后的可见列重编码与多值索引跨批去重；Rust 的直接 handler 测试覆盖跨批重复输入及“回调成功后才能加入本地集合”，而完整可见列回归位于 `pkg/dxf/importinto/conflict_resolution_test.rs::data_handler_reencodes_visible_columns_after_functional_index`。
 
 ## 扩展指南
 
@@ -146,14 +144,3 @@
 - 若结构化错误或重试策略扩展，应让 `ConflictStore::IsRetryableError`/`IsTxnRetryableError` 与 deleter 的事务重试共同演进，不能只改本文件错误文本。
 - 性能调优应关注 `BufferedHandleLimit`、handle/key 的复制、HashMap 容量和快照返回量；增大批次降低 RPC 次数但提高内存及失败重试范围。全局原子阈值会同时影响所有 handler，若需租户/任务隔离应改为实例配置。
 - 测试必须放在独立文件 `handler_test.rs`，不要嵌入生产源。至少同步覆盖 data/index 两类表、聚簇/非聚簇、未知索引、零表 ID、快照缺失行、跨批重复、回调失败后重试、取消及 codec Close 错误；涉及真实表编解码时还应更新 `conflict_resolution_test.rs` 和 Go 对照测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/importinto/conflictedkv` 找到 Rust/Go 的 handler、collector、deleter、row_handle 及独立测试。
-- RustCodeGraph `node --file pkg/dxf/importinto/conflictedkv/handler.rs`：核对本文件 506 行全部源码、公开 trait/构造函数、两类 handler、缓冲回查和快照刷新逻辑。
-- RustCodeGraph `node NewDataKVHandler`、`node NewIndexKVHandler`、`node NewLazyRefreshedSnapshot`：Rust 调用边均指向 `collector.rs::NewCollector` 与 `deleter.rs::NewDeleter`；data handler 另由 `conflict_resolution_test.rs` 的函数索引回归直接构造。
-- RustCodeGraph `node NewCollector`、`node NewDeleter`：核对 data/index KV 组的生产分派，以及 collector 配置 filter、deleter 不配置 filter 的差异。
-- RustCodeGraph `node --file pkg/dxf/importinto/conflictedkv/row_handle.rs`：核对完整 row key、全局/本地集合、共享内存界限和 Mutex 生命周期。
-- 已读 crate/模块边界：`pkg/dxf/importinto/conflictedkv/Cargo.toml`、`lib.rs`；已按仓库协议先读 `doc.go`，核对冲突收集、解决和校验在完整 IMPORT INTO 流程中的位置。
-- 已读 Go 对照：`pkg/dxf/importinto/conflictedkv/handler.go`；已读测试：`handler_test.rs`、`handler_test.go`，并从 RustCodeGraph 调用边核对 `conflict_resolution_test.rs` 的可见列回归入口。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级章节，并人工复核源码链接、符号名、错误边界、Go 差异和扩展建议均有上述直接证据。

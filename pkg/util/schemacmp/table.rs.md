@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件（[Rust 源码](./table.rs)）是 `astersql-util-schemacmp` crate 的表级 schema 适配层：它把 `meta_model::TableInfo` 编码成 `lattice.rs` 定义的格元素，并向外提供比较、求上确界（join）、字段类型解码和调试 SQL 还原能力。模块由 `pkg/util/schemacmp/lib.rs` 的 `mod table; pub use table::*;` 导出；crate 又通过根 `Cargo.toml` 的 workspace 成员和 `facade_util_schemacmp` 依赖进入仓库门面（`pkg/lib.rs`）。
-
-当前 Rust 仓库中可检索到的直接使用主要位于独立测试：`pkg/util/schemacmp/table_test.rs`、`pkg/util/schemacmp/charset_collation_1_aster_unit_test.rs` 和 `pkg/util/dbutil/table_test.rs`。因此它已具备与 Go 实现对应的表比较/合并能力，但代码搜索没有证明它已接入 Rust 运行时 SQL/DDL 主链；不能把测试覆盖等同于生产接线。
+`Table::Compare` 把整个表元组的偏序比较委托给格实现；`Table::Join` 在通用 join 后重新从存活索引推导列的主键、唯一键和普通键标志，并拒绝失去所有键约束的 `AUTO_INCREMENT` 列。
 
 ## 核心职责
 
@@ -74,11 +72,11 @@ RustCodeGraph 对目标文件报告 47 个符号，并识别 `EncodeWithOptions`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/schemacmp/table.go`，核心布局和算法逐项对应：Go 的 `columnMap` / `indexMap` 缺项规则、隐式主键合成、八维表 tuple、`Compare`/`Join`、键标志回填、无键自增拒绝和按名称排序恢复，都在 Rust 中保留。`pkg/util/schemacmp/Cargo.toml` 的 `[package.metadata.porting]` 也明确记录 `go-package = "pkg/util/schemacmp"`。
+直接对照文件是 `pkg/util/schemacmp/table.go`，核心布局和算法逐项对应：Go 的 `columnMap` / `indexMap` 缺项规则、隐式主键合成、八维表 tuple、`Compare`/`Join`、键标志回填、无键自增拒绝和按名称排序恢复，都在 Rust 中保留。
 
-可见差异包括：Rust 新增公开 `TableOptions` 与 `EncodeWithOptions`，允许不修改 `TableInfo` 就覆盖表级编码选项；Go 只提供直接读取 `TableInfo` 的 `Encode`。Rust 的 `DecodeColumnFieldTypes` 返回拥有所有权的 `FieldType` 克隆，Go 返回 `*FieldType` 指针。Rust 恢复函数内联在 `Table::Restore`，Go 通过 `restoreTableInfoFromUnwrapped` 和 `sortedMap` 辅助函数完成；结果顺序语义相同。
+可见差异包括：Rust 新增公开 `TableOptions` 与 `EncodeWithOptions`，允许不修改 `TableInfo` 就覆盖表级编码选项；Go 只提供直接读取 `TableInfo` 的 `Encode`。Rust 的 `DecodeColumnFieldTypes` 返回拥有所有权的 `FieldType` 克隆，Go 返回 `*FieldType` 指针。
 
-Rust `table_test.rs` 基本复刻 Go `table_test.go` 的 join/compare/string 案例，包括 DM 编号案例、缺失 `NOT NULL` 列、字段类型不兼容、生成列、索引差异和自增键约束。当前 Rust 用例未包含 Go 用例中的 `latin1_to_utf8mb4` 以及若干 2020 日期/BLOB 变体；同时 Rust 测试采用子串错误断言而 Go 使用正则。扩展或修复时应检查两套用例，不能仅凭 Rust 当前集合认定语义已全部覆盖。
+Rust `table_test.rs` 基本复刻 Go `table_test.go` 的 join/compare/string 案例，包括 DM 编号案例、缺失 `NOT NULL` 列、字段类型不兼容、生成列、索引差异和自增键约束。当前 Rust 用例未包含 Go 用例中的 `latin1_to_utf8mb4` 以及若干 2020 日期/BLOB 变体；同时 Rust 测试采用子串错误断言而 Go 使用正则。
 
 ## 扩展指南
 
@@ -90,12 +88,3 @@ Rust `table_test.rs` 基本复刻 Go `table_test.go` 的 join/compare/string 案
 - Rust 单元测试必须继续放在独立的 `table_test.rs`（或同目录其他独立测试文件），不要嵌入 `table.rs`。若行为来自 Go 移植，应同步比较 `table_test.go`，避免为了通过 Rust 测试而缩减 Go 逻辑。
 
 主要风险是固定 tuple 下标错位造成运行时 downcast panic；其次是 join 后索引与列键标志不一致，导致错误接受/拒绝自增列；兼容性风险集中在字符集、默认值、字段类型和未建模表属性；性能风险主要来自大表上的克隆和恢复排序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/schemacmp` 显示目标、Go 对照和独立测试均已索引；`node --file pkg/util/schemacmp/table.rs` 完整读取 599 行源码并报告 47 个符号；`node EncodeWithOptions` 确认 `Encode -> EncodeWithOptions -> encodeTableInfoToLattice` 调用链。限定名 callers/callees 查询无额外输出，因此文件外调用点用精确仓库搜索补证。
-- 源码：`pkg/util/schemacmp/table.rs`，重点符号为三个编码函数、`ColumnMap`/`IndexMap` 的 `LatticeMap` 实现、`TableOptions`、`Encode*`、`DecodeColumnFieldTypes`、`Table::{Restore,Compare,Join,String}`。
-- crate 边界：`pkg/util/schemacmp/Cargo.toml`、`pkg/util/schemacmp/lib.rs`、根 `Cargo.toml` 和 `pkg/lib.rs`；它们证明路径依赖、模块导出、workspace 归属及门面再导出。
-- Go 对照：`pkg/util/schemacmp/table.go`；核对了 tuple 布局、缺项规则、索引 join、键标志修复、错误和恢复流程。
-- 独立测试：`pkg/util/schemacmp/table_test.rs`、`pkg/util/schemacmp/charset_collation_1_aster_unit_test.rs`、`pkg/util/dbutil/table_test.rs`，并与 `pkg/util/schemacmp/table_test.go` 的案例清单和断言方式对照。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文件存在且恰有十一个固定二级标题，并人工复核唯一新增生产物、源文件链接、事实边界和扩展测试位置。

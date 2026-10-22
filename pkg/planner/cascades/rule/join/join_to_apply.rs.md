@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-rule-join` crate，是 Cascades 优化器 Join 变换规则子模块中的 Rust 实现。模块入口 `pkg/planner/cascades/rule/join/lib.rs` 私有声明 `join_to_apply` 后公开再导出其符号；`pkg/planner/cascades/rule/join/Cargo.toml` 声明该 crate 直接依赖 Pattern、Rule、Cascades 工具层和逻辑算子层。
-
-它对照同目录 Go 文件 `join_to_apply.go` 移植 `XFJoinToApply` 和 `NewJoinToApply`。当前文件并没有真正生成 Apply：它只建立规则元数据和匹配形状，并保持 Go 侧尚未实现的空变换行为。`pkg/planner/cascades/rule/ruleset/rule_set.rs::DefaultRuleSets` 当前返回空映射，因此该规则也没有注册进默认优化流程；现阶段的直接使用者是独立单元测试，而不是生产规则集。
+实现 `Rule` 契约中的 `Match` 与 `XForm`，但目前仅保留占位语义：`Match` 恒为 `true`，`XForm` 成功返回“无候选计划、不要移除原表达式”。
 
 ## 核心职责
 
@@ -73,14 +71,6 @@ Pattern 的关键不变量是：
 
 实际调度器用 `Rc<dyn Rule>` 在单线程任务与 Context 间共享规则实例，而不是 `Arc`；这表明当前规则生命周期面向本地任务栈，不提供跨线程共享保证。本规则自身没有内部可变状态，因此重复调用不会改变对象，但“是否已探索”记录在 Memo 的 GroupExpression 中，由 `ApplyRuleTask` 管理，不属于本文件。
 
-## 与 Go 版本的对应关系
-
-Rust 与 `pkg/planner/cascades/rule/join/join_to_apply.go` 保持以下语义一致：类型名和构造器名相同；Pattern 都是 `Join@TiDBOnly(Any@EngineAll, Join@TiDBOnly)`；`Match` 都恒真；`XForm` 都不返回候选、不移除原计划且不报错。Go 用嵌入的 `*rule.BaseRule`，Rust 用拥有字段 `BaseRule` 并显式委托 trait 方法；Go 的 `nil` 候选对应 Rust 的空 `Vec`。
-
-Go 注释描述了目标方向：把 Join 转为 Apply，使运行时标量属性传入 probe side，从而增加使用更好索引扫描的机会；但 Go `XForm` 仍有 TODO。因此 Rust 明确保持空实现是忠实移植，不代表上述优化已可用。
-
-当前 Rust 独立测试比 Go 同文件提供了更明确的回归契约：`join_to_apply_aster_unit_test.rs::join_to_apply_keeps_go_pattern_and_todo_result` 检查完整 Pattern、当前 ID 为 0、`Match == true`、空候选及 `remove == false`。未发现同名 Go 测试；相关 Binder 行为由 `pkg/planner/cascades/rule/binder_test.rs` 等独立测试覆盖。
-
 ## 扩展指南
 
 实现真正转换时，最可能修改 `XFJoinToApply::Match` 和 `XFJoinToApply::XForm`；若结构要求变化，再同步修改 `NewJoinToApply`。实现前应先确认调度器是否应补上 `Match` 调用，否则将必要检查放在 `Match` 中不会影响生产路径。还应确认规则 ID 是否应由 `BaseRule` 的 `tp` 派生，并在默认 `OperandJoin` 规则集中显式注册，否则实现仍不会生效。
@@ -88,13 +78,3 @@ Go 注释描述了目标方向：把 Join 转为 Apply，使运行时标量属�
 测试必须继续放在独立文件 `pkg/planner/cascades/rule/join/join_to_apply_aster_unit_test.rs`，不要嵌入生产源文件。至少应新增：可转换与不可转换 Join、左右孩子顺序、不同 Join 类型/条件、相关列传递、输出 Apply 属性、`remove` 语义、错误传播，以及通过真实 `ApplyRuleTask` 和规则集的端到端接线测试。若同步 Go 行为，也应在同目录新增或扩展独立 Go 测试。
 
 兼容性风险主要是错误改写导致 SQL 语义变化；性能风险包括对不适合的 Join 生成 Apply、扩大候选空间或阻碍索引选择；基础设施风险包括 ID 冲突、规则重复探索和 `Match` 未执行。扩展时应以 Go 的实际增量为准，不凭目标注释补建完整子系统。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录查询识别出源文件、Go 对照、独立 Rust 测试及模块入口。
-- RustCodeGraph `node --file pkg/planner/cascades/rule/join/join_to_apply.rs`：核对全部 69 行、8 个符号和两个文件级使用关系。
-- RustCodeGraph `query NewJoinToApply` / `query XFJoinToApply`：分别找到 Rust/Go 构造器和类型，并定位独立测试调用。
-- 已读生产与装配文件：`join_to_apply.rs`、`join/lib.rs`、`join/Cargo.toml`、`rule/rule.rs`、`rule/rule_type.rs`、`rule/ruleset/rule_set.rs`、`task/task_apply_rule.rs`。
-- 已读对照与测试：`join_to_apply.go`、`join_to_apply_aster_unit_test.rs`、`rule/binder_test.rs`、`rule/ruleset/rule_set_aster_unit_test.rs`；`rg` 复核仓库内 `NewJoinToApply`、`XFJoinToApply`、`.XForm` 和默认规则集引用。
-- 人工复核结论：文件当前是未注册的占位变换；构造、Pattern、空结果和 Go 对齐均有直接源码/测试依据；尚未实现的 Join→Apply 判定与生成逻辑没有被描述为已支持。
-- 本任务为纯文档分析，依计划不运行 Cargo。结构验证命令及结果记录在任务交付证据中。

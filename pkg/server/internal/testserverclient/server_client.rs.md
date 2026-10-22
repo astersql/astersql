@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-internal-testserverclient` crate 的主体实现，crate 根模块在 [`lib.rs`](lib.rs) 中声明 `server_client` 并再导出主要类型与辅助函数。它服务于 server 层集成测试：一端描述如何连接已启动的 AsterSQL/TiDB 测试服务器（MySQL 协议端口及 status HTTP 端口），另一端把 Go `server_client.go` 中的回归场景移植成可注入、可由 Rust 测试替身或真实 session 执行的逻辑。
-
-该文件不是线上 server 请求处理链的一部分，也不是单纯的 mock。实际调用者位于 server 测试设施和测试用例，例如 `pkg/server/tests/servertestkit/testkit.rs` 用它生成 DSN、等待测试服务器上线，`pkg/server/tests/commontest/tidb_part4_aster_unit_test.rs` 调用 `run_named_scenario`，`pkg/server/tests/standby/standby_test.rs` 与 `pkg/server/handler/tests/http_handler_test.rs` 调用就绪探测。
-
-[`Cargo.toml`](Cargo.toml) 将 crate 的 Go 对照包标为 `pkg/server/internal/testserverclient`，入口为 `lib.rs`。manifest 列出的 `astersql-server`、`astersql-testkit` 等 workspace 依赖属于整个 crate；本文件本身只直接使用 Rust 标准库，SQL/server 实现通过本文件定义的 trait 注入。
+场景驱动：`run_tests`、`run_tests_on_new_database`、`run_named_scenario` 提供通用编排；大量 `run_test_*` 方法逐项承载 Go 文件的回归、prepared statement、LOAD DATA、认证、错误码、指标、TLS、DDL schema-state 等测试语义。
 
 ## 核心职责
 
@@ -90,13 +86,10 @@ RustCodeGraph 将目标文件、Go 文件、测试文件和 `lib.rs` 均纳入�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`server_client.go`](server_client.go)，Rust 独立测试是 [`server_client_test.rs`](server_client_test.rs)。`Cargo.toml` 的 `package.metadata.porting.go-package` 也明确指向同一 Go 包。
-
 - `TestServerClient`、`NewTestServerClient`、`Addr`、`StatusURL`、HTTP 方法、`GetDSN*`、`RunTests*` 与 `WaitUntilServer*` 均有直接 Rust 对应；Rust 以 `Result` 传播错误，而 Go 多通过 `testing.T`/testkit 的 must 风格终止测试。
 - Go 使用 `database/sql`、mysql driver、`http.Client` 和具体 server/testkit；Rust 将这些能力拆为 trait，使移植逻辑可被记录型 executor 与 canonical session 验证。Rust 的手写 HTTP 客户端只覆盖本测试所需的明文子集。
 - `GO_SCENARIO_NAMES` 按 Go 文件顺序列出 41 个 `RunTest*`，独立测试 `go_run_test_inventory_is_complete_and_ordered` 检查清单。多数入口在 Rust 中是同名 snake_case 方法；部分能力需要额外注入 connector/schema controller。
 - Rust 的 `Scenario` 只抽取 11 个可静态描述的小场景；Go 的完整行为主要对应各 `run_test_*` 方法，不能仅凭 `Scenario` 枚举判断移植覆盖率。
-- Rust 测试覆盖 DSN 编码与 nil overrider、HTTP chunked/form、online 顺序、临时库清理、行列语义、LOAD DATA 全系列、错误码、认证、指标、send-long-data、DDL schema-state，并用真实解析/规划/执行链复核若干基础场景。
 - 已知保留差异是 `run_test_db_stmt_count`：Go 源因不稳定而 `t.Skip`，Rust 明确 no-op 返回 `Ok(())`，且测试 `db_statement_count_remains_explicitly_skipped_like_go` 固化该状态。
 
 ## 扩展指南
@@ -108,12 +101,3 @@ Go 对照文件是 [`server_client.go`](server_client.go)，Rust 独立测试是
 - 扩展 LOAD DATA：沿用唯一临时路径和 `finish_file_cleanup` 模式，确保 SQL/断言失败后仍恢复全局变量、表、事务与文件；涉及多 session 时要求 executor 明确支持 `fork`。
 - 修改值展示或错误格式时，评估 `check_rows`、`mysql_error_number`、精确连接错误及所有 adapter；非 UTF-8 数据应使用 `SqlValue::Bytes` 的字节级测试，避免有损展示掩盖差异。
 - 性能方面，本工具偏重确定性和可诊断性而非吞吐；避免在高频轮询中加入无界分配或无 timeout I/O，metrics/HTTP body 若用于非测试环境则必须增加大小限制。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/server/internal/testserverclient` 返回 `lib.rs`、`server_client.rs`、`server_client.go`、`server_client_test.rs`；`query` 定位了 Rust/Go `TestServerClient` 及 Rust `run_named_scenario`、`wait_until_server_online`、`get_dsn`；`node --file ... --offset 1 --limit 260` 核验文件开头的配置、DSN、HTTP 与客户端实现。`callers/callees` 查询超时并被中止，调用边改由直接调用点搜索验证。
-- 已读实现与边界：`pkg/server/internal/testserverclient/server_client.rs`、同目录 `lib.rs` 与 `Cargo.toml`；该目录及上级没有 `doc.go`，因此无额外 package contract 可读。
-- Go 对照：`pkg/server/internal/testserverclient/server_client.go`，核对构造、DSN/status、41 个 `RunTest*`、等待逻辑、metrics 与明确 skip 的场景。
-- 独立 Rust 测试：`pkg/server/internal/testserverclient/server_client_test.rs`，核对 HTTP/DSN/online、失败清理、LOAD DATA、认证/错误码、指标、协议字节、DDL 状态及 canonical store 串行测试。
-- 上游调用点：`pkg/server/tests/servertestkit/testkit.rs`、`pkg/server/tests/standby/standby_test.rs`、`pkg/server/tests/commontest/tidb_part1_aster_unit_test.rs`、`pkg/server/tests/commontest/tidb_part4_aster_unit_test.rs`、`pkg/server/handler/tests/http_handler_test.rs`、`pkg/server/handler/optimizor/plan_replayer_test.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务文件规定的 11 章节结构命令，并检查 Markdown 只引用真实路径、没有把测试工具描述成线上 server 主链。

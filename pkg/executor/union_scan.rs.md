@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；对应源码为 [`union_scan.rs`](./union_scan.rs)。`pkg/executor/Cargo.toml` 将 crate 根设为 `lib.rs`，`pkg/executor/lib.rs` 通过 `pub mod union_scan;` 公开本模块，并在测试配置中用独立文件 `union_scan_test.rs` 注册单元测试。它提供 UnionScan 的运行时无关核心：把事务内存脏表中的新增行与底层 MVCC 快照扫描结果按键序归并，以实现“读己之写”。直接的数据容器依赖只有 `astersql_util_chunk::Chunk`。
-
-当前 Rust 接线仍需区分“核心已实现”和“生产运行时已接入”：仓库搜索仅发现 `pkg/executor/union_scan_test.rs` 为 `UnionScanRuntime` 提供实现，未发现生产实现或生产代码直接构造 `UnionScanExec<R>`。生产构建入口 `pkg/executor/builder.rs::buildUnionScanExec` 会构建子 reader，再委托 `ExecutorBuilderDependencies::build_union_scan_from_reader`，但该依赖接口与本文件的泛型类型之间没有可见的直接接线。因此，本文件是可执行、已测试的归并核心与适配协议，不能据现有证据宣称它已被 Rust 生产链直接实例化。
+`compareExec` 实现“索引列优先、handle 破同键、降序整体翻转”的比较策略；`need_extra_sorting` 仅保存与 Go 对齐的配置，本文件内不读取它。
 
 ## 核心职责
 
@@ -66,13 +64,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `UnionScanExec::{Open,open,Next,Close,getOneRow,getSnapshotRow,getAddedRow}` 与 `pkg/executor/union_scan.go` 的同名流程逐项对应；`compareExec::compare` 也保持先索引列、再 handle、最后按降序翻转的顺序。两版都让新增行在键相等时胜出，都跳过事务缓冲中已有键的快照行，并把冲突插入留给提交期一致性检查。
-
-Rust 版本把 Go 具体字段和操作压缩为 `UnionScanRuntime` 边界：Go 的 `memBuf/memBufSnap`、条件和虚拟列、各类 reader、handle 构造及 `chunk.MutRow` 均不在本文件实现。Go `open` 会剥掉特定 `SelectionExec`、从事务取 MemBuffer、根据 Table/Index/IndexLookup/IndexMerge/MPP reader 构造不同脏行迭代器，并报告未知 child；这些生产适配逻辑在本 Rust 文件中尚无对应具体实现证据。
+Go `open` 会剥掉特定 `SelectionExec`、从事务取 MemBuffer、根据 Table/Index/IndexLookup/IndexMerge/MPP reader 构造不同脏行迭代器，并报告未知 child；这些生产适配逻辑在本 Rust 文件中尚无对应具体实现证据。
 
 Go `Next` 对 MemBuffer 加读锁，逐个计算虚拟列并做类型转换、非空零值修正和 `EvalBool`；Rust 只调用一个合并后的求值钩子。Go `getSnapshotRow` 从行构造 handle 和物理表记录键后查询 `memBufSnap`；Rust 只调用布尔钩子。Go `compareExec` 自带 `handleCols`，Rust 改为由闭包注入 handle 比较。Rust 的 `need_extra_sorting` 与 Go 字段对齐但当前未参与 `compare`。
-
-Go 回归 `pkg/executor/union_scan_test.go` 覆盖普通表/分区表上的删除、更新、索引读取与降序、唯一索引、复合主键、虚拟列、缓存表、并发写快照及性能基准。Rust 独立测试当前聚焦归并、遮蔽、过滤、缓存表、关闭、比较器和比较错误保序，覆盖面小于 Go 集成回归。
 
 ## 扩展指南
 
@@ -81,11 +75,3 @@ Go 回归 `pkg/executor/union_scan_test.go` 覆盖普通表/分区表上的删�
 - 修改排序语义时同步检查 `compareExec::compare`、运行时 `compare_rows`、相等键的脏行优先规则，以及 `need_extra_sorting` 的实际使用位置。collator 与 `used_index` 的形状必须由构建阶段验证，避免运行期越界。
 - 修改过滤或生成列顺序时，保持“归并后求值”的 Go 语义，并覆盖类型转换、NULL 约束、过滤掉多行后仍填满批次等场景。
 - Rust 回归应继续放在独立的 `pkg/executor/union_scan_test.rs`，不可内嵌到生产源文件；生产接线完成后补充与 `pkg/executor/union_scan_test.go` 对齐的表/索引/分区/缓存表集成测试。性能敏感点是逐行克隆、逐行遮蔽查询、整批全遮蔽时的循环，以及比较闭包和虚拟列求值开销。
-
-## 验证依据
-
-- RustCodeGraph 状态：SQLite 索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；通过 `node --file pkg/executor/union_scan.rs` 核对了完整 256 行源码，通过 `query` 核对 `UnionScanRuntime`、`UnionScanExec`、`compareExec`，并通过 `explore`/调用边结果核对内部调用关系。
-- 生产与 crate 证据：`pkg/executor/Cargo.toml`（crate 名、`lib.rs` 根、`astersql-util-chunk` 路径依赖）、`pkg/executor/lib.rs:269,545-546`（模块导出与独立测试注册）、`pkg/executor/builder.rs:3325-3351`（计划构建入口及依赖委托）、`pkg/executor/builder.rs:1936-1941`（构建依赖接口）。
-- Rust 行为证据：`pkg/executor/union_scan.rs`；独立测试 `pkg/executor/union_scan_test.rs` 的四个测试分别验证比较顺序/降序、归并遮蔽与过滤、缓存表和关闭生命周期、比较错误不消费行。
-- Go 对照证据：`pkg/executor/union_scan.go` 的具体执行器全流程；`pkg/executor/union_scan_test.go` 的 `TestUnionScanForMemBufferReader`、`TestIssue53951`、`TestIssue32422`、`TestSnapshotWithConcurrentWrite` 及四个 UnionScan benchmark。
-- 仓库搜索 `impl .*UnionScanRuntime` 和 `UnionScanExec<` 仅命中本文件及 `union_scan_test.rs`；这是“尚无生产适配实现”结论的直接证据。未运行 Cargo，符合本纯文档任务约束。

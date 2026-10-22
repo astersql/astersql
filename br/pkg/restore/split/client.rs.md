@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-restore-split`（见 `br/pkg/restore/split/Cargo.toml`），由 `lib.rs` 以 `pub mod client` 装配并通过 `pub use client::*` 暴露。它位于 BR 恢复链路的 Region 准备层：上层 `RegionSplitter` 在导入数据前调用 `SplitClient`，本文件把“按 key 查找 Region、请求分裂、等待新 Region 可用、发起 scatter、等待 scatter 完成”组织成一个接口和默认实现。它不负责 SST 导入，也不直接定义 Region 分组与分页扫描算法；后两者来自同 crate 的 `split.rs`。
-
-RustCodeGraph 将该文件识别为 116 个符号，并显示它被 `br/pkg/restore/split/split_test.rs`、恢复日志/快照测试及 BR 测试桩等文件使用。生产侧最直接的入口证据是 `br/pkg/restore/split/split.rs`：`RegionSplitter::splitKeys` 调用 `SplitKeysAndScatter`/`SplitKeys`，`WaitForScatterRegionsTimeout` 调用 `WaitRegionsScattered`。
+`SplitClient` 定义 RegionSplitter 所需的最小能力面：PD 元数据查询、Region 扫描与分裂、scatter 状态查询、placement rule 和 store label 管理。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ RustCodeGraph 将该文件识别为 116 个符号，并显示它被 `br/pkg/rest
 
 ## 与 Go 版本的对应关系
 
-Rust 的公开概念和主流程直接对应 `br/pkg/restore/split/client.go`：`SplitClient`、`pdClient`、两个构造器、option、split 扫描/切批、批量 scatter 降级、operator 状态解释及错误字符串分类均保留了同名结构。Rust 独立测试 `client_test.rs` 对照 Go 的 `client_test.go`，覆盖 codec client、批大小、Txn/RawKV 编码、空上界、空扫描、失败重试和 PD 错误分类。
-
 已核实的差异如下：
 
 - Go 的 `pdClient` 持有真实 `pd.Client`、HTTP client、TLS 配置，并在 `sendSplitRegionRequest` 中选择 peer、连接 TiKV、发 RPC；Rust 把这些职责压入 `PdBackend::SplitRegion`，本文件自身没有 TLS/连接生命周期。
@@ -88,7 +84,7 @@ Rust 的公开概念和主流程直接对应 `br/pkg/restore/split/client.go`：
 - Go 对任意批量 scatter RPC `Unimplemented` 错误在 `isUnsupportedError` 中判断；Rust `tryScatterRegions` 对后端错误做同样文本识别。两者对旧 PD 完成百分比不足都降级逐个 scatter。
 - Rust 新增 `WaitRegionsScatteredCount` 便利适配和 `ForceNeedScatter` 测试口；Go 接口没有这两个同名成员。
 
-这些差异是当前代码事实，不应在文档任务中解释为等价实现。若继续迁移，应以 Go 文件的并发、重试、真实 RPC 和错误判定为基准，不通过删减语义来换取测试通过。
+这些差异是当前代码事实，不应在文档任务中解释为等价实现。
 
 ## 扩展指南
 
@@ -99,12 +95,3 @@ Rust 的公开概念和主流程直接对应 `br/pkg/restore/split/client.go`：
 - 改 scatter 兼容性时，保持批量失败 ID 的缩小重试、旧 PD 降级、非重试错误跳过和部分成功可观察性；优先增加结构化错误判断，避免扩大字符串匹配。
 - 改 store/副本配置缓存时，明确失效时机；当前 `Once` 与永久 `storeCache` 假设客户端生命周期内拓扑基本稳定。
 - `PdBackend` 接入真实实现时必须补齐 leader/peer 选择、TLS、连接关闭、RegionError 分类和 failpoint 等 Go 版仍在本文件承担的行为，并以独立集成测试证明，不能把 stub 成功当成生产可用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/restore/split` 确认本 crate 的 Rust/Go 源与测试；`node --file br/pkg/restore/split/client.rs` 分段读取 1–1182 行；`query` 核对 `PdClient`、`SplitKeysAndScatter`、`WaitRegionsScattered`、`splitKeys`、`isScatterRegionFinished` 的位置与签名。
-- Rust 生产代码：`br/pkg/restore/split/client.rs`；直接上游与算法依赖：`br/pkg/restore/split/split.rs`；数据类型：`br/pkg/restore/split/region.rs`；后端/重试/codec 替身：`br/pkg/restore/split/stubs.rs`；模块入口：`br/pkg/restore/split/lib.rs`。
-- crate 边界：`br/pkg/restore/split/Cargo.toml`，确认包名、library 入口、Go package 映射和直接依赖。
-- Go 对照：`br/pkg/restore/split/client.go`，重点核对接口、构造、split 扫描/切批、真实 TiKV RPC、worker pool、scatter 降级与 operator 状态机。
-- 独立测试：Rust `br/pkg/restore/split/client_test.rs` 及 `br/pkg/restore/split/split_test.rs`；Go `br/pkg/restore/split/client_test.go`。Rust 直接覆盖的测试包括 `test_get_codec_pd_client`、`test_batch_split`、`test_split_scatter`、`test_split_scatter_raw_kv`、`test_split_scatter_empty_end_key`、`test_scan_region_empty_result`、`test_split_meet_error_and_retry`、`test_pd_error_can_retry` 及 batch scatter 降级判断。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工检查关键陈述均能回到以上符号或文件。

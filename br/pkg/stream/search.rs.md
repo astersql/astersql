@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-stream`（`br/pkg/stream/Cargo.toml`），由 `br/pkg/stream/lib.rs` 以 `pub mod search` 装入并通过 `pub use search::*` 扁平导出。它实现对日志备份外部存储的按键检索：从 `v1/backupmeta` 找出候选元数据，定位可能覆盖目标键和时间窗的数据文件，读取并校验文件，再解析 Default CF 与 Write CF 记录。
-
-当前接线必须区分“库实现”和“命令实现”。Rust 库及其独立测试直接使用本文件；但 `br/cmd/br/debug.rs` 的搜索命令导入的是 `br/cmd/br/stubs.rs::stream_search`，该桩只回显搜索键，并未调用 `astersql-br-pkg-stream`。因此不能把本文件描述成当前 Rust BR CLI 已经实际执行的搜索后端。Go 的 `br/cmd/br/debug.go` 则直接调用 `br/pkg/stream/search.go` 的真实实现。
+`StreamBackupSearch::Search` 负责完整编排：列举并解析元数据、文件级粗过滤、逐文件搜索、跨文件汇集两个 CF，最后合并与排序。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@
 
 ## 与 Go 版本的对应关系
 
-主要结构逐项对应 `br/pkg/stream/search.go`：`Comparator`、前缀比较器、`StreamKVInfo`、搜索器构造与时间 setter、元数据筛选、单文件搜索、CF 合并和按 commit TS 排序都保留了相同意图。`br/pkg/stream/search_test.rs` 对照 `search_test.go` 覆盖前缀比较、文件搜索和 Write/Default 合并；Rust 额外通过完整 `Search` 路径验证跨文件大值回填，而测试辅助仍位于独立的 `export_test.rs`。
+`br/pkg/stream/search_test.rs` 对照 `search_test.go` 覆盖前缀比较、文件搜索和 Write/Default 合并；Rust 额外通过完整 `Search` 路径验证跨文件大值回填，而测试辅助仍位于独立的 `export_test.rs`。
 
 已验证的迁移差异包括：
 
@@ -102,13 +100,3 @@
 - 引入并发或流式处理时，必须保留“所有文件结果汇集后再跨文件合并”的不变量；同时限制候选/结果内存并保证错误发生时工作单元能够停止。
 - 强化健壮性时，应在截取时间戳前验证键长，在构造或搜索前校验 `startTs <= endTs`，并决定未知 CF、重复完整键及合并键 hex 失败应报错、告警还是保留现状。
 - 任何行为修改都应同步 `br/pkg/stream/search_test.rs`；crate 级接线/编码约束可在 `br/pkg/stream/parity_test.rs` 补充。Go 对照变化则同时核验 `br/pkg/stream/search.go`、`search_test.go` 与 `export_test.go`，测试逻辑不要移入 `search.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`node --file br/pkg/stream/search.rs --offset 1/221` 读取了完整 331 行并报告测试使用点；`query StreamBackupSearch`、`query NewStreamBackupSearch` 定位 Rust/Go/命令桩同名符号。对 `NewStreamBackupSearch`、`StreamBackupSearch`、`EncodeSearchKey` 和 `Search` 的精确 `callers/callees` 未返回可用生产边，因此调用接线另以仓库文本核验。
-- 生产实现：`br/pkg/stream/search.rs`、`br/pkg/stream/lib.rs`、`br/pkg/stream/Cargo.toml`、`br/pkg/stream/decode_kv.rs`、`br/pkg/stream/meta_kv.rs`、`br/pkg/stream/stubs.rs`。
-- Rust 调用与测试：`br/pkg/stream/search_test.rs`、`br/pkg/stream/export_test.rs`、`br/pkg/stream/parity_test.rs`；它们验证前缀比较、SHA-256、事件解码、跨文件 CF 合并、Base64 值和未配对 Default 保留。
-- Go 语义对照：`br/pkg/stream/search.go`、`br/pkg/stream/search_test.go`、`br/pkg/stream/export_test.go`；生产入口对照为 `br/cmd/br/debug.go`。
-- Rust CLI 接线限制：`br/cmd/br/debug.rs` 与 `br/cmd/br/stubs.rs::stream_search`。
-- 包目录没有 `br/pkg/stream/doc.go`；本次未发现需要额外读取的包级 Go contract 文件。
-- 本任务只新增说明文档，不运行 Cargo。结构验证应确认文件存在且恰有十一个规定的二级标题。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`stmtsummary.rs` 是 crate `astersql-util-stmtsummary-v2` 的窗口聚合与生命周期核心。crate 根 `pkg/util/stmtsummary/v2/lib.rs` 将本模块整体再导出，并与 `record.rs`、`logger.rs`、`reader.rs`、`column.rs` 共同组成 v2 语句摘要：本文件负责接收单次执行、按摘要键聚合、LRU 驱逐、窗口轮转、文件追加写以及 v1/v2 全局代理；记录字段怎样累加由 `record.rs::StmtRecord` 实现，查询行怎样生成则由 `reader.rs` 和 `column.rs` 实现。
-
-生产入口有两条直接证据：`cmd/tidb-server/main.rs::setupStmtSummary` 根据实例配置构造本文件的 `Config` 并调用 `Setup`；`pkg/session/runtime/scan_adapter_runtime.rs` 在语句完成时构造 `StmtExecInfo`，补入 RU 明细后调用 crate 级 `Add`。`reader.rs::MemorySummarySource` 则是当前内存窗口的读取边界，本文件为 `StmtSummary` 实现该 trait。
-
-`pkg/util/stmtsummary/v2/Cargo.toml` 声明该目录是独立 library crate，入口为 `lib.rs`、禁用自动测试发现；主要直接依赖是 `lru`、`crossbeam-channel`、`parking_lot`、`chrono`/`chrono-tz`，以及提供 `StmtExecInfo`、摘要键池和 v1 回退对象的 `astersql-util-stmtsummary`（代码别名 `task_stmtsummary`）。Cargo 的 `package.metadata.porting.go-package` 指向同目录 Go 包，说明这是 `stmtsummary.go` 的移植边界。
+维护一个以 `digestKey` 结果为键的有界 `LruCache`，同键执行合并到 `StmtRecord`，容量不足时通过 `onEvict` 生成驱逐统计。
 
 ## 核心职责
 
@@ -96,8 +92,6 @@ RustCodeGraph 对目标文件的索引显示 115 个符号；精确查询确认 
 
 ## 与 Go 版本的对应关系
 
-Rust 的默认值、运行时选项、LRU 键维度、缩容驱逐、内部记录清理、按用户分组切换清窗、逐条驱逐的非阻塞队列与批处理、`other`/`otherForPersist` 去重语义、v1/v2 全局代理，均直接对应 `pkg/util/stmtsummary/v2/stmtsummary.go` 的同名结构和函数。Rust 测试 `test_stmt_window`、`test_stmt_summary`、`test_stmt_summary_persist_evicted`、`test_stmt_summary_persist_evicted_does_not_persist_logged_records_as_aggregate`、`test_stmt_summary_group_by_user`、`test_window_evicted_count_reset_on_rotate`、`test_stmt_summary_flush`、`test_default_config` 与 Go 测试的同名场景相互对照。
-
 当前仍有以下可观察差异：
 
 - Go 用 `newStmtLogStorage` 接入完整日志配置和滚动；Rust 的 `fileStmtStorage` 只是一个追加文件，忽略 `FileMaxSize`、`FileMaxDays`、`FileMaxBackups`。
@@ -120,13 +114,3 @@ Rust 的默认值、运行时选项、LRU 键维度、缩容驱逐、内部记�
 调整并发结构时，必须保持窗口/LRU 锁与记录锁的顺序，继续保证 `Add` 不受驱逐文件 I/O 阻塞，并维护 `Close` 的“停止接收新写入 → 排空逐条队列 → 刷当前窗口 → sync”顺序。相关回归集中在 `pkg/util/stmtsummary/v2/stmtsummary_test.rs`；吞吐或锁竞争变化可同步 `stmtsummary_benchmark_test.rs`。Rust 单元测试应继续保留在独立测试文件，不嵌入本生产文件。
 
 若补齐 Go 的 metrics、日志滚动或异步轮转，不应只为通过现有 Rust 测试做简化：需以 `stmtsummary.go` 的 `updateMetrics`、`newStmtLogStorage`、`rotate`/`closeWg` 为语义基线，并评估兼容性（日志格式与全局代理）、正确性（重复/遗漏持久化）和性能（热路径锁、通道容量、磁盘背压）。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用（目标目录已索引，`stmtsummary.rs` 为 115 个符号）；`files --filter pkg/util/stmtsummary/v2` 核对同目录 Rust/Go/测试集合；`query`/`node` 精确定位并读取 `StmtSummary`、`Setup`、`rotateLoop`、`evictedLogLoop` 及完整目标源码；`query setupStmtSummary` 定位 Rust 服务入口。对 `callers`/`callees` 的精确命令曾执行但在当前 CLI/索引上超时无输出，因此关键边均另由路径限定的调用点源码核验，没有采用模糊同名结果。
-- 生产源码：`pkg/util/stmtsummary/v2/stmtsummary.rs`；模块边界 `pkg/util/stmtsummary/v2/lib.rs`；记录、编码与读取接口分别核对 `record.rs`、`logger.rs`、`reader.rs`；生产调用点核对 `cmd/tidb-server/main.rs::setupStmtSummary`、`closeStmtSummary` 和 `pkg/session/runtime/scan_adapter_runtime.rs` 的全局 `Add` 调用。
-- crate 配置：`pkg/util/stmtsummary/v2/Cargo.toml`，用于确认 crate 名称、入口、依赖、测试装配和 Go 移植元数据。
-- Go 对照：`pkg/util/stmtsummary/v2/stmtsummary.go`，逐项核对默认值、公开方法、锁顺序、LRU 驱逐、轮转、异步驱逐日志、全局代理和迁移差异。
-- 测试证据：`pkg/util/stmtsummary/v2/stmtsummary_test.rs` 与 `stmtsummary_benchmark_test.rs`；Go 对照测试为 `stmtsummary_test.go` 与 `stmtsummary_benchmark_test.go`。重点场景包括容量与 LRU、轮转重置、逐条驱逐无重复、按用户分组、关闭刷盘、默认配置、初始化失败回退及并发清理/轮转。
-- 人工复核结论：本文件存在的原因是把语句完成事件变成有界、可读取、可持久化的时间窗口，并在 v2 不可用时维持 v1 服务；安全扩展的核心约束是键语义一致、锁顺序固定、热路径非阻塞、驱逐不重不漏、显式关闭完成持久化。本文没有把尚未接入的文件滚动、指标或错误上报写成已支持。
-- 任务要求的结构验证命令应在文档落盘后执行；本节不以 Cargo 测试作为证据，因为任务明确是纯文档分析且禁止运行 Cargo。

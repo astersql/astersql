@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-该文件定义规划器物理属性使用的“执行任务落点”标识，属于 Cargo crate `astersql-planner-property`（[`Cargo.toml`](Cargo.toml)）。模块在 [`lib.rs`](lib.rs) 中以私有 `mod task_type` 声明，再通过 `pub use task_type::*` 把本文件的类型、常量和方法暴露为 crate 公开 API。它本身不创建或执行计划，而是为 `PhysicalProperty::TaskTp` 以及规划器的任务枚举、代价计算与 MPP 分支提供稳定的值域。
+通过 `TaskType::String` 和 `fmt::Display` 提供稳定文本表示，同时保留 Go 版本对非法/未来数值回退到 `UnknownTaskType` 的兼容行为。
 
 ## 核心职责
 
@@ -50,21 +50,12 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`task_type.go`](task_type.go)。Go `type TaskType int` 对应 Rust `TaskType(pub i32)`；Go 的 `iota` 依次产生 0、1、2、3，Rust 显式写出相同数值。四个名称、执行层语义、已知字符串以及默认 `UnknownTaskType` 文本完全对齐。Rust 额外提供了关联常量和 `Display`，并派生了比较、哈希、排序与 `Default`；这些是 Rust API 便利性，不改变 Go 核心判别值和格式化契约。
+Go `type TaskType int` 对应 Rust `TaskType(pub i32)`；Go 的 `iota` 依次产生 0、1、2、3，Rust 显式写出相同数值。Rust 额外提供了关联常量和 `Display`，并派生了比较、哈希、排序与 `Default`；这些是 Rust API 便利性，不改变 Go 核心判别值和格式化契约。
 
-Go 代码的 `int` 宽度随平台，Rust 固定为 `i32`；在当前 0–3 值域内没有语义差异。没有发现专门只验证 Go `String` 的同目录测试；Rust 对应回归在 [`physical_property_test.rs`](physical_property_test.rs) 的 `task_type_keeps_known_and_unknown_strings`。
+Go 代码的 `int` 宽度随平台，Rust 固定为 `i32`；在当前 0–3 值域内没有语义差异。
 
 ## 扩展指南
 
 新增任务类型时，至少要同步：（1）以不改动既有 0–3 值的方式新增模块常量；（2）如果保留关联常量 API，添加对应别名；（3）在 `TaskType::String` 增加稳定文本；（4）核对 `physical_property.rs` 中 `wholeTaskTypes`、`GetAllPossibleChildTaskTypes`、MPP 专用判定和指纹编码；（5）搜索 planner 中按任务类型穷举的代价与物理计划分支；（6）同步 Go 对照语义或清楚记录有意差异。
 
 测试不应内嵌到 `task_type.rs`。应在独立的 `physical_property_test.rs` 扩展 `task_type_keeps_known_and_unknown_strings`，同时为子任务枚举、属性哈希或新执行层的计划选择增加针对性独立测试。主要兼容风险是判别值变动、遗漏穷举分支和指纹编码变化；性能风险不在这个常量封装本身，而在新任务层导致的计划空间扩张、Exchange 或远程执行决策。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/planner/property/task_type.rs --offset 1 --limit 220` 返回完整 64 行源文件及符号。
-- RustCodeGraph `query TaskType --kind struct --limit 20` 将目标解析为 `pkg/planner/property/task_type.rs:27`；全库 `String` callers/callees 因同名符号存在歧义，未将无路径的宽查询当作直接调用证据。
-- 已读源与模块路径：[`task_type.rs`](task_type.rs)、[`lib.rs`](lib.rs)、[`physical_property.rs`](physical_property.rs) 和 [`Cargo.toml`](Cargo.toml)。
-- 已读 Go 对照与测试：[`task_type.go`](task_type.go)、[`physical_property_test.rs`](physical_property_test.rs)；后者的 `task_type_keeps_known_and_unknown_strings` 断言四个已知值和 `TaskType(99)` 回退。
-- 主要调用边由局部源引用复核：`lib.rs -> task_type::*`，`PhysicalProperty::TaskTp -> TaskType`，`GetAllPossibleChildTaskTypes -> wholeTaskTypes/TaskTp`，`IsFlashProp/buildHashCode -> MppTaskType`，`Display::fmt -> TaskType::String`。
-- 本任务只新增文档，按计划不运行 Cargo。交付前使用任务指定的命令验证文件存在且恰有 11 个固定二级章节，并人工复核未把未知值的显示回退夸大为规划器整体支持。

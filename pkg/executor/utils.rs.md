@@ -2,17 +2,7 @@
 
 ## 文件定位
 
-`pkg/executor/utils.rs` 是 `astersql-executor` crate 的执行器通用工具模块，由
-`pkg/executor/lib.rs` 中的 `pub mod utils` 公开。它不是某一种 SQL 算子的实现，而是把
-Go 版 `pkg/executor/utils.go` 中若干相互独立、但由执行层共享的辅助能力迁移到 Rust：
-集合字符串编解码、DML 子 `Chunk` 初始容量估算、已知总行数的分批遍历、用户认证密码
-编码，以及轻量按需线程池。
-
-当前生产接线并不均匀。RustCodeGraph 的符号边显示
-`pkg/session/runtime/control.rs` 的 `ConcreteSession::execute_create_user` 会调用
-`encodePasswordWithPlugin`；其余主要 API 当前没有查到 Rust 生产调用者，直接证据主要来自
-`pkg/executor/utils_test.rs`。因此本文件既包含已进入建用户主链的认证逻辑，也保留了尚待其他
-执行器迁入后复用的 Go 对齐工具，不能把后者描述为已经覆盖全部执行路径。
+`growWorkerStack16K` 保留 Go 版扩栈兼容/测试钩子的意图；Rust 实现通过不可内联函数、。
 
 ## 核心职责
 
@@ -164,23 +154,15 @@ worker；这不等于永久线程，而是按需线程，队列清空后立即�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐段对应 `pkg/executor/utils.go`，名称刻意保留 Go 风格。集合、256 KiB 容量目标、
-半开批区间、认证插件分支及 worker 扩容谓词的语义基本一致；
-`pkg/executor/utils_test.go` 的 `TestBatchRetrieverHelper`、`TestEncodePasswordWithPlugin`、
-`TestWorkerPool` 和 `TestEncodedPassword` 是原始行为依据，Rust 的独立
-`pkg/executor/utils_test.rs` 对这些场景做了直接移植。
-
 实现层面的主要差异是：Go 空集合返回 `nil []string`，Rust 用 `Option<Vec<String>>` 表达；
 Go 的 DML helper 直接接受 `exec.Executor`，Rust 以 `DMLChildChunkExecutor` trait 隔离所需能力；
 Go 的链表队列和 `sync.Pool` 在 Rust 中分别变为 `VecDeque` 与
-`OnceLock<Mutex<Vec<workerTask>>>`；goroutine 变成未保留句柄的 `std::thread`。Rust worker
-计数不再单独存储 tasks 计数，而是读取队列长度。
+`OnceLock<Mutex<Vec<workerTask>>>`；goroutine 变成未保留句柄的 `std::thread`。
 
 存在测试覆盖差异：Go `TestWorkerPool` 还包含“允许一个任务积压后再扩容”的
 `TolerateOnePendingTask` 场景，当前 Rust 测试覆盖单 worker、立即第二 worker 和启动超时路径，
 未逐字复制该第三个谓词场景。Go 容量估算通过实际执行器接口使用，当前 Rust 测试只直接验证
-估算函数，尚未为 `newDMLChildChunk` 提供 mock trait 实现。以上属于迁移覆盖现状，不应据此
-宣称生产接线已完全对齐。
+估算函数，尚未为 `newDMLChildChunk` 提供 mock trait 实现。
 
 ## 扩展指南
 
@@ -200,21 +182,3 @@ Go 的链表队列和 `sync.Pool` 在 Rust 中分别变为 `VecDeque` 与
   推断调度顺序。
 - 本文件已经带有 `// Copyright 2026 AsterSQL.`，任何后续源码修改都应保留该标记及原有
   PingCAP Apache License 注释。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点与 1,848,419 条边；通过
-  `node --file pkg/executor/utils.rs` 阅读了 323 行完整源文件。
-- RustCodeGraph 符号节点：`SetFromString`、`newDMLChildChunk`、
-  `estimateDMLChildChunkInitCap`、`encodePasswordWithPlugin`、`encodedPassword`、
-  `run_worker`、`growWorkerStack16K`。关键边包括
-  `newDMLChildChunk → estimateDMLChildChunkInitCap`、`submit → run_worker`、
-  `run_worker → global_task_pool`，以及
-  `execute_create_user → encodePasswordWithPlugin → encodedPassword`。
-- 读取的 crate/装配文件：`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`；前者确认直接依赖，
-  后者确认公开模块和 `#[cfg(test)] #[path = "utils_test.rs"]` 的独立测试挂载。
-- 读取的 Rust 生产/测试证据：`pkg/executor/utils.rs`、
-  `pkg/session/runtime/control.rs` 中的 `execute_create_user`、`pkg/executor/utils_test.rs`。
-- 读取的 Go 对照证据：`pkg/executor/utils.go` 与 `pkg/executor/utils_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前用任务规定的 `rg -c` 命令验证固定的十一个
-  二级章节，并人工复核未把无生产调用边的符号写成已接线能力。

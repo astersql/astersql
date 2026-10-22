@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义列级数据脱敏策略的持久化元数据模型，不负责解析 SQL、校验脱敏表达式或执行结果改写。它实际编译在 `astersql-meta-model-group3` crate 中：`pkg/meta/model/internal/group3/lib.rs` 的 `masking_policy` 子模块用 `include!("../../masking_policy.rs")` 引入本文件，并以 `pub use masking_policy::*` 对外再导出；顶层 `astersql-meta-model` crate 再通过 `pkg/meta/model/lib.rs` 暴露 group3。
-
-`pkg/meta/model/Cargo.toml` 表明顶层 crate 是 group1–group4 的聚合门面；实际编译单元 `pkg/meta/model/internal/group3/Cargo.toml` 依赖 group1 和 `serde`。本文件从 group1 使用 `Time`，并通过 group3 模块注入的 `ast`、`SchemaState` 使用标识符、限制操作位图和 DDL schema 状态。
+`Clone` 提供与 Go 同名的值拷贝入口；本文件只描述和传输状态，不判断策略是否适用于某次查询。
 
 ## 核心职责
 
@@ -72,13 +70,11 @@ Rust 的 `MaskingPolicyInfo::Clone` 只能在有效引用上调用，返回值�
 
 直接对照 `pkg/meta/model/masking_policy.go`：状态的 `byte` 对应 Rust 的 `u8` 新类型，数值 `0/1`、旧名称别名和未知状态空字符串行为一致；五个类型字符串及四个旧别名逐项一致；`MaskingPolicyInfo` 的字段集合和 JSON 名称逐项对应。
 
-需要注意三处语言适配：
-
 - Go 的 `MaskingPolicyType` 是拥有值语义的命名 `string`，Rust 常量别名是 `&'static str`，但结构字段使用 `String`，因此可保存动态或未知值。
 - Go `time.Time` 的零值由语言提供；Rust 用 `default_go_time` 显式构造同一时刻。尽管 Go 标签对时间写有 `omitempty`，结构体零值通常仍被编码；Rust 测试固定要求两个时间字段存在。
 - Go `Clone` 对 nil 接收者返回 nil，非 nil 时进行结构体浅拷贝；Rust 不存在 nil 引用并返回 `Self`。当前字段没有指针式共享内容，所以派生 `Clone` 得到等价的独立值快照。
 
-`pkg/meta/model/masking_policy_test.rs` 验证 Rust JSON 使用小写字段名、状态编码为数字、零限制操作被省略以及零时间文本；`pkg/meta/model/job_3_aster_unit_test.rs` 验证状态字符串、类型常量、克隆和 `id` JSON 字段。Go 侧模型本身没有同名独立测试，CRUD 行为由 `pkg/meta/meta_test.go::TestMaskingPolicy` 覆盖。
+`pkg/meta/model/masking_policy_test.rs` 验证 Rust JSON 使用小写字段名、状态编码为数字、零限制操作被省略以及零时间文本；`pkg/meta/model/job_3_aster_unit_test.rs` 验证状态字符串、类型常量、克隆和 `id` JSON 字段。
 
 ## 扩展指南
 
@@ -87,13 +83,3 @@ Rust 的 `MaskingPolicyInfo::Clone` 只能在有效引用上调用，返回值�
 新增状态值时，固定新的数值判别并扩展 `String` 与状态 round-trip 测试；不可重排既有 `0/1`。新增脱敏类型时，同步正式常量、必要的兼容别名、Go 常量，以及解析/DDL/执行层的语义处理；仅在本文件加字符串不会自动使查询执行支持该类型。
 
 改变 `RestrictOps`、时间字段或省略规则会改变持久化 JSON，需同步检查 `pkg/meta/meta.rs` 的 CRUD、`pkg/meta/model/masking_policy_test.rs` 和 Go 兼容数据。改变 `Clone` 前应搜索 infoschema 缓存与 DDL Job 参数调用点，防止引入共享可变状态或破坏快照语义。性能上该模型的主要成本是拥有型字符串克隆和 JSON 编解码；扩展大字段时应评估缓存复制与元数据存储开销。
-
-## 验证依据
-
-- 源文件：`pkg/meta/model/masking_policy.rs`，核对全部常量、类型、serde 属性、辅助函数及 impl；文件无条件编译分支。
-- 编译边界：`pkg/meta/model/Cargo.toml`、`pkg/meta/model/internal/group3/Cargo.toml`、`pkg/meta/model/internal/group3/lib.rs`、`pkg/meta/model/lib.rs`。
-- Go 对照：`pkg/meta/model/masking_policy.go`；限制操作底层定义：`pkg/parser/ast/lib.rs`。
-- Rust 调用与持久化：`pkg/meta/meta.rs`、`pkg/meta/reader.rs`、`pkg/meta/model/job_args.rs`、`pkg/ddl/masking_policy.rs`、`pkg/infoschema/infoschema.rs`。
-- 独立测试：`pkg/meta/model/masking_policy_test.rs`、`pkg/meta/model/job_3_aster_unit_test.rs`、`pkg/meta/meta_test.rs`；Go 行为参考 `pkg/meta/meta_test.go::TestMaskingPolicy`。
-- RustCodeGraph：`status` 确认索引含 Rust/Go 文件；`query MaskingPolicyInfo --kind struct` 定位 Rust/Go 定义及 DDL、infoschema 相关符号；随后按限定路径搜索消除同名符号歧义。
-- 按任务约束未运行 Cargo；本纯文档任务以事实复核和固定十一章节结构检查作为验收。

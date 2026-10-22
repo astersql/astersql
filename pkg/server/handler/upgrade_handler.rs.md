@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-handler` crate 中的集群升级状态 HTTP 处理器，源码入口为 [`upgrade_handler.rs`](upgrade_handler.rs)，由 [`lib.rs`](lib.rs) 通过 `pub mod upgrade_handler` 导出。它保留 Go `pkg/server/handler/upgrade_handler.go` 的公开命名和三类操作：`start` 进入升级态、`finish` 恢复普通运行态、`show` 查询升级进度。
-
-在当前 Rust 应用中的直接接线位于 `pkg/server/http_status.rs`：`build_status_router` 创建一个本地 `Storage`，构造 `ClusterUpgradeHandler`，并把它注册到 `/upgrade/{op}`；`upgrade_response` 再把 status server 的 `Request`/`Response` 适配成本文件的 `Request` 与 `crate::util::ResponseWriter`。因此本文件已经进入 Rust status HTTP 请求链，但当前接线使用的是独立内存状态，并不是 `Server` 的真实 KV storage。
-
-`pkg/server/handler/Cargo.toml` 将本目录声明为 `astersql-server-handler`，并列出了 `astersql-kv`、`astersql-session`、`astersql-domain-infosync`、`astersql-domain-serverinfo` 等迁移目标依赖；本文件当前实际只导入 `std::sync::{Arc, Mutex}` 和同 crate 的 `util`，尚未使用这些真实依赖。文件没有条件编译项；测试模块由 `lib.rs` 的 `#[cfg(test)]` 和独立文件 `upgrade_handler_test.rs` 接入。
+`StartUpgrade` 与 `FinishUpgrade` 在共享 `ClusterState.upgrading` 上实现两态转换，并通过返回的 `bool` 区分“已经完成过的重复操作”和“本次完成了状态切换”。
 
 ## 核心职责
 
@@ -81,7 +77,7 @@ status server 自身为每个连接启动线程，但本文件不创建线程或
 
 结构和主要分支直接对应 `pkg/server/handler/upgrade_handler.go`：构造器、POST 校验、`start`/`finish`/`show` 分派、重复操作文案、10 秒升级同步参数、3 秒 owner 查询参数、版本字典序、整数百分比、差异节点返回条件及 JSON 字段名均被保留。Go `TestUpgrade` 还验证了 GET 返回 bad request、重复 start/finish 的幂等文案、状态切换，以及普通态 show 产生“状态提示 + success”拼接；`testUpgradeShow` 验证 1 节点 100%、3 个不同版本 33% 且返回三条详情、3 个相同版本 100% 且不返回详情。
 
-当前迁移差异同样关键：Go handler 持有 `kv.Storage`，用 `session.CreateSession`、`session.IsUpgradingClusterState`、`session.SyncUpgradeState`、`session.SyncNormalRunning`、`session.GetDomain`、`infosync.GetAllServerInfo` 和 DDL owner manager 操作真实集群；Rust 文件把这些全部实现为本地替身。Go context 的 deadline/cancel 和 zap 日志在 Rust 中为空壳。Go 假设至少一个 server，Rust为空列表提供了安全回退。Rust 的独立测试只覆盖“相同 version、不同 git hash 必须分桶”的 50% 场景，没有完整承接 Go `TestUpgrade` 的 HTTP、错误、幂等和多版本矩阵。
+当前迁移差异同样关键：Go handler 持有 `kv.Storage`，用 `session.CreateSession`、`session.IsUpgradingClusterState`、`session.SyncUpgradeState`、`session.SyncNormalRunning`、`session.GetDomain`、`infosync.GetAllServerInfo` 和 DDL owner manager 操作真实集群；Rust 文件把这些全部实现为本地替身。Rust 的独立测试只覆盖“相同 version、不同 git hash 必须分桶”的 50% 场景，没有完整承接 Go `TestUpgrade` 的 HTTP、错误、幂等和多版本矩阵。
 
 `pkg/server/http_status.rs` 的生产接线进一步体现迁移未完成：它创建本地空 server 列表并硬编码 owner 为 `handler-test-owner`，没有从 `Server`/`Domain` 注入真实 storage。因此本文件当前可用于本进程状态机和协议形状验证，不能据此宣称已经协调多 TiDB 节点升级或暂停真实 DDL。
 
@@ -94,14 +90,3 @@ status server 自身为每个连接启动线程，但本文件不创建线程或
 测试必须继续放在独立文件，优先扩展 `pkg/server/handler/upgrade_handler_test.rs`，不要内嵌进生产源文件。至少应补齐非 POST、未知 op、start/finish 首次与重复调用、普通态 show、空节点、单节点、多版本/同版本不同 hash、JSON 转义和并发状态转换；真实 status 接线则同步扩展 `pkg/server/http_status_test.rs`。若完成真实 Go 语义移植，还应以 `pkg/server/handler/tests/http_handler_test.go::TestUpgrade` 和 `testUpgradeShow` 的矩阵为逐项依据。
 
 兼容风险主要在响应 body 的双写、400/200 状态码、字段省略和重复操作文案；正确性风险主要在非原子状态转换、非一致快照、字符串版本排序和空集语义；性能风险主要是复制完整 server 列表、版本线性计数以及进程内互斥锁，在替换为真实 RPC 后还需评估超时与阻塞。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件、307,296 个节点和 1,848,419 条边；索引包含目标 Rust/Go 文件及测试。
-- RustCodeGraph `explore "pkg/server/handler/upgrade_handler.rs UpgradeHandler handle_upgrade is_upgrade_requested"`：读取目标文件全貌与 Go 对照，并确认 `NewClusterUpgradeHandler` 的调用者包含 `build_status_router` 和独立 Rust 测试。
-- RustCodeGraph `explore "build_status_router NewClusterUpgradeHandler ServeHTTP StartUpgrade FinishUpgrade showUpgrade pkg/server/http_status.rs"`：确认构造、路由、适配、分派和测试调用边；通用符号存在重名，结论仅采用结果中明确标注目标路径的边。
-- RustCodeGraph `node --file`：分段核对 `upgrade_handler.rs`、`upgrade_handler_test.rs`、`http_status.rs` 与 `util.rs` 的实际源码，包含状态模型、JSON、路由挂载、`upgrade_response`、线程入口和 `WriteData`/`WriteError` 状态码语义。
-- 直接读取 `pkg/server/handler/Cargo.toml`、`pkg/server/handler/lib.rs`：核对 crate 边界、crate 级依赖、模块导出和独立测试接线；本目录不存在 `doc.go`。
-- 直接读取 `pkg/server/handler/upgrade_handler.go` 与 `pkg/server/handler/tests/http_handler_test.go` 的 `TestUpgrade`/`testUpgradeShow`：核对 Go 状态机、HTTP 文案、owner/版本进度和测试边界。
-- 独立 Rust 测试 `pkg/server/handler/upgrade_handler_test.rs::show_treats_different_git_hashes_as_different_version_info`：确认同版本字符串但不同 git hash 的两个节点得到 50%，返回差异列表且不标记全一致。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前只执行任务指定的 11 章节结构校验并人工复查链接、事实限定和扩展建议。

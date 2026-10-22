@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`canonical.rs` 位于 `astersql-lightning-backend-kv` crate 内，是 Lightning 自有的轻量数据模型与 `astersql-tablecodec` 所使用的 TiDB canonical 数据模型之间的适配层。crate 入口 `pkg/lightning/backend/kv/lib.rs` 以私有模块 `mod canonical` 装配本文件，再通过 `pub use canonical::*` 导出其中的公开项；crate 归属和直接依赖由 `pkg/lightning/backend/kv/Cargo.toml` 确认，其中 `encode` 提供 Lightning 的 `Datum`、`Column` 和 `ColumnType`，`tablecodec` 提供正式的行、索引、Handle 和 MySQL 类型编解码能力。
-
-该文件处在两条主链的交界处：写入方向由 `pkg/lightning/backend/kv/base.rs` 的 `BaseKVEncoder::AddRecord` 调用本文件构造 Handle、行值、表元数据和索引元数据，再交给 `tablecodec` 生成 TiKV 兼容 KV；读取方向由 `pkg/lightning/backend/kv/kv2sql.rs` 的 `TableKVDecoder` 调用本文件解码行值和 canonical Datum。公开的 `toCanonicalDatum`、`fromCanonicalDatum` 还被 `pkg/dxf/importinto/conflict_resolution.rs` 跨 crate 用于冲突行重编码。
-
-本文件不是独立存储引擎，也不持有会话或事务。它只完成确定性的值/元数据转换并调用 `tablecodec`；真正的 KV 写入由 `BaseKVEncoder::AddRecord` 通过 `Session::Txn().Set` 完成。
+当 `TableDefinition::source_meta` 存在时，写行路径会优先使用真实持久化列 ID 和列属性；只有轻量定义可用时才使用本文件构造的最小元数据（见 `BaseKVEncoder::AddRecord`）。
 
 ## 核心职责
 
@@ -112,15 +108,10 @@ RustCodeGraph 对目标文件报告 26 个符号，并显示它被 `pkg/lightnin
 
 ## 与 Go 版本的对应关系
 
-Go 同目录没有 `canonical.go`，因此本文件不是逐文件一一翻译，而是把 Go 版本由原生 TiDB 类型和表层隐式提供的行为显式化：
-
-- Go `pkg/lightning/backend/kv/base.go::BaseKVEncoder.AddRecord` 直接调用 `e.table.AddRecord(...)`；表实现内部负责 Handle、记录行和索引 KV。Rust `BaseKVEncoder::AddRecord` 展开了这条路径，本文件的 `canonicalHandle`、行编解码和元数据构造承担其中的类型适配部分。
 - Go `pkg/lightning/backend/kv/kv2sql.go::DecodeRawRowData` 委托 `tables.DecodeRawRowData`，并直接使用原生 `types.Datum`；Rust `TableKVDecoder::DecodeRawRowData` 通过 `decodeCanonicalRow` / `fromCanonicalDatum` 恢复 Lightning datum，再补默认值、Handle 和生成列。
 - Go `DecodeHandleFromRowKey` / `DecodeHandleFromIndex` 直接返回 `kv.Handle`；Rust 的 `kv2sql.rs` 在 `tablecodec` Handle 与轻量 `Handle`/`DatumKey` 间还需经过本文件的 Datum 转换。
 - Go 的列类型、真实列 ID、生成列属性和索引元数据来自 `model.TableInfo` / `table.Table`。Rust 在 `source_meta` 存在时同样优先采用真实元数据；`canonicalTableInfo`、`canonicalIndexInfo` 与连续 1-based ID 只为轻量 `TableDefinition` 提供最小兼容模型。
 - Go 测试 `sql2kv_test.go::TestEncode`、`TestDecode`、`TestEncodeRowFormatV2` 和 `TestEncodeTimestamp` 证明的目标语义是 TiDB 记录键值、行格式版本和时间编码兼容；Rust 对应测试分散在 `canonical_test.rs`、`sql2kv_test.rs`、`kv2sql_test.rs`，而非同名 Go 文件的逐测试机械翻译。
-
-因此，安全对齐 Go 行为时应比较最终 `tablecodec` 字节、Handle 选择、缺失列/default/generated-column 恢复和错误分支，不应仅比较函数名称或文件布局。尤其不要把轻量连续列 ID 路径误认为完整 `TableInfo` 路径的替代品。
 
 ## 扩展指南
 
@@ -136,17 +127,3 @@ Go 同目录没有 `canonical.go`，因此本文件不是逐文件一一翻译�
 修改 Handle 时，首要接入点是 `canonicalHandle`，同时检查 `kv2sql.rs::{Handle, DatumKey, fromCanonicalHandle}` 和 `pkg/dxf/importinto/conflict_resolution.rs`。需要覆盖：联合主键列顺序、缺失列、整数符号/溢出、Common Handle 编码字节、普通隐式 RowID，以及 clustered primary index 是否被跳过。
 
 当前值得优先补强但不属于本文档任务的测试包括：非法 JSON/DECIMAL/TIME/DURATION、非 UTF-8 文本列、真实非连续列 ID、stored/virtual generated columns、`UInt > i64::MAX` 的 PK Handle、超过 64 个 SET 元素，以及 `encodeCanonicalRowWithMeta` 的 Offset 越界行为。若要改变这些边界，需先用 Go 实现或 `tablecodec` 契约确认期望，不能仅为避免错误而静默降级。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/lightning/backend/kv/canonical.rs`（完整 419 行；RustCodeGraph `node --file` 返回文件用途与源码）。
-- crate 边界：`pkg/lightning/backend/kv/Cargo.toml`、`pkg/lightning/backend/kv/lib.rs`。
-- Rust 上游调用：`pkg/lightning/backend/kv/base.rs`、`pkg/lightning/backend/kv/kv2sql.rs`、`pkg/lightning/backend/kv/sql2kv.rs`、`pkg/dxf/importinto/conflict_resolution.rs`。
-- Rust 独立测试：`pkg/lightning/backend/kv/canonical_test.rs`、`pkg/lightning/backend/kv/sql2kv_test.rs`、`pkg/lightning/backend/kv/kv2sql_test.rs`、`pkg/dxf/importinto/conflict_resolution_test.rs`。
-- Go 对照：`pkg/lightning/backend/kv/base.go`、`pkg/lightning/backend/kv/kv2sql.go`、`pkg/lightning/backend/kv/sql2kv.go`，以及 `sql2kv_test.go` / `kv2sql_test.go`。目录中不存在同名 `canonical.go`，因此按真实调用职责对照。
-- 下游 API 定义：`pkg/tablecodec/tablecodec.rs` 中的 `EncodeRow`、`DecodeRowToDatumMap`、记录键与索引键函数，以及 `pkg/lightning/backend/encode/encode.rs` 中的 `Datum`、`ColumnType`、`Column`。
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录中 `canonical.rs` 被识别为含 26 个符号，并报告被 `base.rs`、import-into 冲突处理和相关测试等文件使用。精确 `query` 唯一定位 `toCanonicalDatum` 与 `fromCanonicalDatum`；单符号 `callers` 命令在有限等待后无输出并被终止，因此调用边另由索引文件上下文和精确调用点检索复核。
-
-人工复核结论：该文件存在是为了弥合 Lightning 轻量模型与 TiDB `tablecodec` 的类型/元数据差异；其运行路径覆盖记录 Handle、行值和索引元数据的写入适配，以及 KV→SQL 和冲突处理的反向适配。安全扩展必须同时维护双向 Datum、FieldType、真实/轻量元数据、Handle 与独立测试五个表面。

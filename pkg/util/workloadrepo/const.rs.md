@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`const.rs` 是 `astersql-util-workloadrepo` crate 的共享常量表。模块入口 `pkg/util/workloadrepo/lib.rs` 通过 `#[path = "const.rs"] mod consts;` 装载它，并以 `pub use consts::*;` 将其中的 16 个 `pub const` 重新导出为 crate 级 API。该文件本身没有函数、类型、trait、`impl` 或条件编译项，也不执行初始化逻辑；真正消费这些值的是 `worker.rs`、`snapshot.rs`、`sampling.rs`、`table.rs`、`housekeeper.rs` 和 `utils.rs`。
-
-crate 边界由 `pkg/util/workloadrepo/Cargo.toml` 确定：库入口是同目录 `lib.rs`，Go 对照包是 `pkg/util/workloadrepo`，唯一声明的第三方依赖为 `chrono`。`const.rs` 只定义整数和静态字符串，不直接使用 `chrono` 或其他外部依赖。
+三个 `err*` 常量提供跨实现分支比较或返回的稳定文本。
 
 ## 核心职责
 
@@ -99,18 +97,15 @@ RustCodeGraph 的 `node` 查询识别到 `snapshot.rs::takeSnapshot` 调用 `get
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/workloadrepo/const.go` 是主要对照。Rust 对 `ownerKey`、`promptKey`、`snapIDKey`、`snapshotRetries`、三个默认值、`histSnapshotsTable` 以及三条错误文案保持同值；四个 `repository*` 名称来自 Go `worker.go:61-66`。
-
 当前差异需要明确保留在理解和扩展中：
 
-- Go 的 `etcdOpTimeout = 5 * time.Second`、`workloadSchemaCIStr`、`zeroTime`、`errWrongValueForVar` 和 `errCouldNotStartSnapshot` 没有移植到本 Rust 常量文件。不能据此推断 Rust 已实现对应超时、CIStr、零时间或错误包装语义。
 - Go SQL 通过 `mysql.WorkloadSchema` 获得 schema 名；Rust 用本文件的字符串 `workloadSchema` 直接拼接。
 - Go 的 `errUnsupportedEtcdRequired`、`errWorkloadNotStarted` 是 `dbterror` 标准错误，分别带 TiDB 错误码；Rust 对应项是普通字符串，错误分类和堆栈语义尚不等价。
 - Go `init` 注册四个系统变量并把手工快照入口接到 executor（`worker.go:150-197`）；Rust `worker.rs::init` 当前为空。因此常量名称已对齐，不代表系统变量注册链已经对齐。
 - Go `initializeWorker` 创建并停止 ticker、准备 wait group，并保留 owner/etcd/session 资源；Rust 只初始化后端、表和受锁状态。常量默认值相同，但资源模型不同。
 - Go 和 Rust 都保留拼写 `defRententionDays`，这是源码兼容名称而不是新的英文约定。
 
-Go `worker_test.go:495-562` 验证系统变量范围、目的地枚举及变量名对应关系；Go `worker_test.go:1035-1055` 验证快照键读写与缺键错误。Rust 的对应独立测试分布在 `sampling_test.rs`、`snapshot_test.rs`、`utils_test.rs` 和 `worker_test.rs`，未把测试嵌入生产源文件。
+Rust 的对应独立测试分布在 `sampling_test.rs`、`snapshot_test.rs`、`utils_test.rs` 和 `worker_test.rs`，未把测试嵌入生产源文件。
 
 ## 扩展指南
 
@@ -124,15 +119,3 @@ Go `worker_test.go:495-562` 验证系统变量范围、目的地枚举及变量�
 6. 测试应继续放在同目录独立文件：快照键与重试放在 `snapshot_test.rs` 或 `worker_test.rs`，默认状态/启动错误放在 `worker_test.rs`，采样变量放在 `sampling_test.rs`，保留天数和目的地放在 `utils_test.rs`。不要把测试模块内嵌回 `const.rs`。
 
 主要风险分别是：协议/持久化键改变导致兼容性故障；重试或间隔增大带来后端负载和延迟；错误文本变化破坏 `errKeyNotFound` 的控制流判断；只改 Rust 或只改 Go 导致双实现语义漂移。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标与装配：`pkg/util/workloadrepo/const.rs:1-41`、`pkg/util/workloadrepo/lib.rs:1-44`、`pkg/util/workloadrepo/Cargo.toml`。
-- Rust 消费链：`worker.rs:107-193,275-287`、`snapshot.rs:39-200`、`sampling.rs:72-85`、`table.rs:23-92`、`housekeeper.rs:27-90`、`utils.rs:123-149`。
-- Rust 独立测试：`worker_test.rs:558-566` 验证缺键时从 SQL 最大值恢复并写入 `snapIDKey`；`snapshot_test.rs:127-134` 验证快照间隔 hook 不额外钳制；`sampling_test.rs:8-21` 验证采样 hook 与变量名错误；`utils_test.rs:45-69` 验证保留天数解析和目的地错误文本。
-- Go 对照：`const.go:28-51`、`worker.go:61-66,132-215,370-373`、`snapshot.go:81-200`、`worker_test.go:495-562,1035-1055`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/util/workloadrepo` 定位 22 个 Go/Rust 文件；`node --file pkg/util/workloadrepo/const.rs` 核对完整 41 行；`node snapshot.rs::takeSnapshot` 核对其五条下游调用边。常量级 `query/callers/callees` 不能可靠解析本文件，已用 `rg` 的逐符号引用结果补证并在“依赖与调用关系”中注明限制。
-
-结构验证应使用任务指定命令，确认文件存在且恰好含有上述 11 个固定二级标题。本任务是纯文档分析，按计划不运行 Cargo，也未通过编译或测试执行推断额外运行时能力。

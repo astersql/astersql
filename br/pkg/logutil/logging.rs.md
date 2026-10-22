@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`logging.rs` 是 Cargo 包 `astersql-br-pkg-logutil` 的结构化日志主体；包入口 [`lib.rs`](lib.rs) 以 `pub mod logging` 装配该文件，并把日志字段构造器、logger、marshaler、脱敏和区间展示 API 再导出给调用方。包清单 [`Cargo.toml`](Cargo.toml) 将它定义为库 crate，直接依赖 `tracing`、`prometheus`、`uuid`、`astersql-lightning-metric` 等。当前实现面向 BR 的 Rust 移植层：备份文件、Region、SST 与脱敏接口来自 [`stubs.rs`](stubs.rs)，不是直接链接完整 kvproto/redact 子系统。
-
-在完整应用中，本文件位于“业务对象/错误/指标 → 稳定结构化字段 → tracing 或测试捕获后端”的边界。RustCodeGraph 将目标文件识别为被大量仓库文件使用的日志公共面；仓库搜索进一步确认真实 Rust 消费者包括 `br/pkg/utils/*.rs`、`br/pkg/conn/util/util.rs`、`br/pkg/rtree/logging.rs` 和 `br/pkg/metautil/metafile.rs`。其中不少调用只使用 `Field`、`ShortError`、`log` 或区间格式化，而不是每个导出函数都已有生产调用。
+用 `EncodedValue`、`Field`、`ObjectEncoder`、`ArrayEncoder` 和两个 marshaler trait 提供一个与 Go zap 常用子集相似的内存表示，并通过 `encode_fields_json` 输出稳定 JSON。
 
 ## 核心职责
 
@@ -64,7 +62,7 @@ RustCodeGraph 对同名 Go/Rust 符号会产生歧义；精确 `query --json` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`logging.go`](logging.go)，独立测试是 [`logging_test.go`](logging_test.go) 与 [`logging_test.rs`](logging_test.rs)，另有 [`parity_test.rs`](parity_test.rs) 做 crate 根公开契约冒烟。Rust 保留了 Go 的公共函数命名、字段键、列表缩略文本、Region/Peer 文本、无效 UUID 回退、短错误省略、范围格式和 histogram bucket 命名。Rust 测试逐字复用了 Go 的 File、Files、Key(s)、RewriteRule、Region、Leader、SSTMeta、ShortError 期望，并增加 `RedactAny` 类型保持和 histogram 六位小数检查。
+Rust 保留了 Go 的公共函数命名、字段键、列表缩略文本、Region/Peer 文本、无效 UUID 回退、短错误省略、范围格式和 histogram bucket 命名。Rust 测试逐字复用了 Go 的 File、Files、Key(s)、RewriteRule、Region、Leader、SSTMeta、ShortError 期望，并增加 `RedactAny` 类型保持和 histogram 六位小数检查。
 
 实现差异主要来自运行时适配：Go 返回 `zap.Field` 并让 zap encoder 报错，Rust 使用自有 `Field`/`EncodedValue` 且 marshaler 无错误返回；Go 的全局 logger 来自 PingCAP log，Rust 映射到 `tracing`；Go protobuf/redact 是真实依赖，Rust Cargo 注释明确当前使用本地 stubs；Go `OverrideLevelForTest(t, lvl)` 通过 `t.Cleanup` 恢复，Rust 返回必须持有到作用域末尾的 `LevelGuard`；Rust `MarshalHistogram` 接受 `Option<Histogram>` 表达 Go 的 nil。
 
@@ -77,10 +75,3 @@ RustCodeGraph 对同名 Go/Rust 符号会产生歧义；精确 `query --json` �
 修改 logger 时应从 `Logger::log`、`emit_tracing`、`log` 模块和 `WarnTerm` 接入，并评估全局锁、字段克隆成本、双写重复和 tracing 消费格式。修改脱敏时必须覆盖 `RedactKey`、`RedactValue`、`RedactAny`、`Redact` 的不同语义，防止嵌套对象或 rewrite prefix 意外泄漏或过度遮罩。修改聚合算法时应保留单次遍历和缩略输出，特别关注 `u64` 累加溢出、大列表分配及空 end key 的兼容含义。
 
 若将本 crate 从 stubs 接到真实 kvproto/redact，上游依赖必须按仓库规则在独立上游仓库移植并以已发布 tag 引用；同时重新验证 getter 的缺省语义、所有权签名、protobuf `String()` 格式和脱敏全局状态。该变更不应仅以当前 stubs 测试通过作为兼容证据。
-
-## 验证依据
-
-- RustCodeGraph：运行 `status`，索引报告 7,032 个 Rust 文件；运行 `files --filter br/pkg/logutil`，确认源、入口、stubs、Rust/Go 测试均在图中；运行 `explore "br/pkg/logutil/logging.rs logging LogConfig init_log init_logger"` 获取文件使用关系和符号上下文；使用 `query --json` 精确区分 Go/Rust 的 `WarnTerm`、`BriefSSTMetas`、`RedactAny`、`MarshalHistogram`。
-- 完整阅读的实现与边界文件：[`logging.rs`](logging.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`logging.go`](logging.go)、[`logging_test.rs`](logging_test.rs)、[`logging_test.go`](logging_test.go)、[`parity_test.rs`](parity_test.rs)；并通过仓库搜索核对 Rust 消费者和 Cargo 反向依赖。
-- 测试证据：`logging_test.rs` 覆盖 Files/Keys 的 0、4、5、1024 边界，非法 UUID，短错误，上下文 logger，`RedactAny` 类型和 histogram key；`parity_test.rs` 覆盖 crate 根再导出、Go/Rust 关键公开契约与级别/上下文生命周期。
-- 本任务是纯文档分析，按任务约束未运行 Cargo，也未修改 Rust、Go、Cargo 或 `plan.md`。交付前以任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核链接、关键符号、调用边、迁移限制和扩展风险。

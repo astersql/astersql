@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
-
-该文件是 `astersql-br-pkg-restore-log-client` library crate 的核心编排层。crate 根 [`lib.rs`](lib.rs) 以 `pub mod client` 挂载它，并通过 `pub use client::*` 将其公开 API 扁平再导出；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/restore/log_client`。它服务于 BR 的日志恢复/PiTR 链路，把 PD、外部存储、日志文件管理、MetaKV 处理、日志文件导入、压缩 SST 恢复、检查点和内部 SQL session 汇总到 `LogClient`。
-
-生产调用已经接入两条明确主链：[`br/pkg/task/stream.rs`](../../task/stream.rs) 在启用检查点时调用 `LogClient::LoadOrCreateCheckpointMetadataForLogRestore`；[`br/pkg/task/restore_lifecycle.rs`](../../task/restore_lifecycle.rs) 的 `RestoreCompactedSST` 依次调用 `InitSSTFileRestorer` 和 `RestoreSSTFileSets`。MetaKV 子链则由 [`batch_meta_processor.rs`](batch_meta_processor.rs) 调用 `SeparateAndSortFilesByCF`、`LoadAndProcessMetaKVFilesInBatch`、`RestoreBatchMetaKVFiles` 等入口。
-
-该文件不是所有 `LogClient` 行为的唯一实现位置：ID map/迁移存储相关的同类型 `impl` 位于 [`id_map.rs`](id_map.rs)，压缩 SST 流控估算与配置位于 [`flow_control.rs`](flow_control.rs)。同时，当前 Rust 移植仍依赖 [`stubs.rs`](stubs.rs) 提供 PD、RawKV、session、protobuf 风格数据结构等本地边界；因此本文严格区分“已执行真实逻辑”“委托给 trait/客户端”和“只记录状态或直接成功的桩”。
+定义 `LogClient`、`LogRestoreManager`、`SstRestoreManager` 和 `restoreStatistics`，集中保存一次日志恢复所需的服务句柄、时间戳、检查点开关、ID、进度缓存与统计。
 
 ## 核心职责
 
@@ -134,9 +128,8 @@ Cargo 直接依赖包括 `astersql-br-pkg-stream`、`utils`、`restore`、`check
 
 冻结增量新增 owner/路由兼容保护；基础映射的布尔参数分支与 None 语义必须按 Rust 实码解释，不能从 Go 主链推断已有生产调用。
 
-直接对照文件为 [`client.go`](client.go)，测试意图来自 [`client_test.go`](client_test.go)。主要一致点与差异如下：
+主要一致点与差异如下：
 
-- 常量数值、核心类型名称、setter、资源关闭顺序、MetaKV 双 CF 批处理、Put-before-Delete、replica config 默认 3、检查点字段和 SST 统计字段均按 Go 形状移植。
 - Go `NewLogClient` 还保存 TLS/keepalive 并创建 delete-range channel；Rust 构造器没有这些字段。Go `Init` 创建 session 与 domain，Rust 只创建 session 并缓存 PD cluster ID。
 - Go `InitClients` 自行创建 split/import clients，执行能力探测、速率限制回调、snapshot importer、checkpoint runner，并选择 batch/simple restorer；Rust 接收已建的 split/import client，只装配日志 importer 和尚无 restorer 的 SST manager，之后由 `InitSSTFileRestorer` 固定创建 simple restorer。
 - Go `LogRestoreManager`/`SstRestoreManager` 会等待 checkpoint runner 收尾；Rust 对应结构没有 runner，构造参数也尚未接线。
@@ -160,16 +153,3 @@ Rust 独立测试 [`client_test.rs`](client_test.rs) 覆盖 operation hint、GC 
 - 修改 SST 生命周期时，应联合检查 `InitClients`、`InitSSTFileRestorer`、`RestoreSSTFileSets`、`SstRestoreManager::Close` 与 `flow_control.rs`；重点风险是 pool 规模、store 过滤、副本估算、取消桥接、import mode 必须复原和统计溢出。
 - 修改检查点字段或重试语义时，需同步 `stream.rs` 的调用、checkpoint crate 数据结构和 Go `LoadOrCreateCheckpointMetadataForLogRestore`；旧元数据兼容、空 jobs 的回退规则以及 `useCheckpoint` 设置时机都属于持久化兼容契约。
 - 所有 Rust 行为修复都应与 `client.go`/`client_test.go` 的对应增量保持一致，并同步同目录独立 Rust 测试；不能通过删减逻辑或只保留成功桩来让测试通过。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 本次对上述新增参数、GetBaseIDMapAndMerge 全分支、checkpoint 指纹比较和保存进行了冻结 blob 复核；`git grep 2c944fb` 确认 `stream.rs` 传入配置指纹。RustCodeGraph 本次仅检查索引状态，调用关系由冻结 git grep 核对。未执行 Cargo。
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/restore/log_client` 确认目标、Go 对照、模块和测试均被索引。
-- RustCodeGraph `node --file br/pkg/restore/log_client/client.rs --offset ...`：分段读取 1,103 行目标源码，核对 6 个常量、4 个主要状态类型、构造/setter、生命周期、MetaKV、apply、checkpoint 和 SST 流程。
-- RustCodeGraph `query`：定位 Rust/Go 的 `NewLogClient`、`InitClients`、`InstallLogFileManager`、`PreSplitRegions`、`LoadAndProcessMetaKVFilesInBatch`、`ApplyKVFilesWithBatchMethod`、`RestoreSSTFileSets`、`LoadOrCreateCheckpointMetadataForLogRestore`。
-- RustCodeGraph `callees`：确认 `InitClients` → `NewLogRestoreManager`/`NewLogFileImporter`/`liveTiKVStoreCount`/`getMaxReplica`，`InstallLogFileManager` → `CreateLogFileManager`，`PreSplitRegions` → `NewLogSplitStrategy`/`ShouldSkip`/`Accumulate`/`ShouldSplit`/`ResetAccumulations`，以及 SST 恢复的 flow-control/restorer 下游。`callers` 对这些方法未返回结果，因此使用源码精确检索补齐上游证据。
-- 直接读取的 Rust 文件：`Cargo.toml`、`lib.rs`、`batch_meta_processor.rs`、`flow_control.rs`、`id_map.rs`、`client_test.rs`、`flow_control_test.rs`、`parity_test.rs`、`br/pkg/task/stream.rs`、`br/pkg/task/restore_lifecycle.rs`。
-- 直接读取的 Go 对照：`client.go` 的类型/构造、SST 恢复、Init/InitClients、checkpoint、LogFileManager、apply、MetaKV batch、PreSplitRegions；并以 `client_test.go` 的同路径测试作为原始测试意图来源。
-- 人工复核结论：本文区分了生产接线、trait 委托与边界桩，明确记录了 Rust 相对 Go 的功能差异、资源生命周期和扩展测试位置，没有把预期设计写成当前已支持行为。
-- 结构验证按任务要求检查目标文件存在且恰有十一个固定二级标题。本任务只新增文档，按计划不运行 Cargo。

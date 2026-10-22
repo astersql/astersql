@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/user_connections.rs` 属于 `astersql-server` crate。`pkg/server/Cargo.toml` 以 `lib.rs` 为 crate 根，`pkg/server/lib.rs` 通过公开模块 `user_connections` 暴露本文件，并仅在 `cfg(test)` 下挂载独立测试 `pkg/server/user_connections_test.rs`。
-
-本文件移植 Go 的 `pkg/server/user_connections.go`，提供按认证账号统计和限制 MySQL 客户端连接数所需的数据结构与算法。当前 Rust 仓库中的生产代码没有调用本文件的公开函数；RustCodeGraph 只识别到 `pkg/server/user_connections_test.rs` 使用它。因此它是“已公开、已单测，但尚未接入 Rust 建连主链”的迁移模块。完整应用中的预期位置可由 Go 主链直接核对：`pkg/server/conn.go` 的鉴权流程调用 `checkUserConnectionCount`，`pkg/server/server.go` 在运行连接前调用 `increaseUserConnectionsCount`，并以 `defer` 保证退出时调用 `decreaseUserConnectionCount`。这些 Go 调用边是移植语义的参照，不是 Rust 已接线的证明。
+`increaseUserConnectionsCount` 在连接真正建立时再次读取限额，并在持锁区内检查和递增，避免并发连接都通过预检后突破限额。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ Go 对照主链为 `pkg/server/conn.go:checkUserConnectionCount` → `pkg/server
 
 ## 与 Go 版本的对应关系
 
-Rust 函数逐一对应 `pkg/server/user_connections.go` 中的同名函数，限额优先级、零值语义、认证身份计数键、达到上限时拒绝、归零删除等核心行为保持一致。`pkg/server/user_connections_test.rs` 还将 Go `TestUserConnectionCount` 的五类限额组合和跨客户端主机共享认证账号计数的意图拆成多个独立测试。
-
 实现形态存在以下差异：
 
 - Go 在 `Server` 上持有 `userResource map` 和 `userResLock`，方法绑定完整 `clientConn`；Rust 抽出可克隆的 `UserConnectionRegistry` 和最小 `ClientConn`，未与 Rust 生产连接类型集成。
@@ -95,8 +91,6 @@ Rust 函数逐一对应 `pkg/server/user_connections.go` 中的同名函数，�
 - Go 的递减不返回错误；Rust 必须表达互斥锁中毒，因此返回 `Result`。
 - Go 返回带 MySQL server 错误码/消息的 `servererr.ErrTooManyUserConnections`；Rust 当前是轻量 `ConnectionError`，尚未证明已映射到协议层错误码。
 - Rust `increaseUserConnectionsCount` 在首次插入前也执行统一的上限判断；Go 首次键不存在时直接插入 1。由于有效正限额最小为 1，两者可观察结果一致。
-
-因此，本文只能确认算法层移植和单元测试对应，不能宣称 Rust 已具备 Go 生产链中的权限管理器适配、协议错误映射或自动生命周期接线。
 
 ## 扩展指南
 
@@ -107,11 +101,3 @@ Rust 函数逐一对应 `pkg/server/user_connections.go` 中的同名函数，�
 若新增协议级错误兼容，不能只改 `Display` 文本；应在调用边验证 MySQL 错误码 1203 及客户端可见消息，并保持 `Resource`、身份匹配和锁错误的传播区别。若为性能分片计数表，必须保证单个认证键的检查加递增仍原子，并验证递减删除不会与并发递增丢失更新。若引入 RAII 守卫，应测试正常断开、认证后启动失败、运行循环报错和重复关闭，避免漏减或双减。
 
 相关 Rust 测试应继续放在独立文件 `pkg/server/user_connections_test.rs`，不应内嵌到生产源文件。生产接线后还需在服务器连接层增加集成测试，因为当前单元测试无法证明实际 runtime、共享 registry 和所有退出路径已正确组合。
-
-## 验证依据
-
-事实依据包括：目标实现 `pkg/server/user_connections.rs`；crate 声明 `pkg/server/Cargo.toml`；模块入口 `pkg/server/lib.rs`；独立 Rust 测试 `pkg/server/user_connections_test.rs`；Go 对照实现与测试 `pkg/server/user_connections.go`、`pkg/server/user_connections_test.go`；Go 生产调用点 `pkg/server/conn.go` 和 `pkg/server/server.go`。
-
-RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。`node --file pkg/server/user_connections.rs` 返回完整 188 行源码，并报告该文件仅被 `pkg/server/user_connections_test.rs` 使用；对五个公开函数的 `query` 均找到了 Rust/Go 同名定义。`callers`/`callees` 未返回额外 Rust 生产调用边，随后仓库级 Rust 搜索也确认测试外没有这些符号、`UserConnectionRegistry` 或 `UserConnectionRuntime` 的引用。
-
-人工核对的测试证据为：用户限额覆盖全局且递减释放槽位；预检超限记录匹配后的登录串；双零限额不限流；认证身份为空时回退登录身份；仅全局限额及高于全局的用户限额；不同客户端主机共享同一认证账号计数。本文没有运行 Cargo，符合纯文档任务约束；验证范围是静态代码、索引调用边、Go 对照和既有测试意图，不包含运行时执行证明。

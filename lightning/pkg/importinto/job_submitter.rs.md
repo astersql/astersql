@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-importinto` crate 的“单表 IMPORT INTO 作业提交”边界。模块由 [`lib.rs`](lib.rs) 通过 `mod job_submitter` 装配并整体重导出；上游 [`importer.rs`](importer.rs) 的 `Importer::buildOrchestrator` 创建提交器，再把它作为 `OrchestratorConfig::Submitter` 交给 [`job_orchestrator.rs`](job_orchestrator.rs)。因此它位于“Lightning 配置与表元数据”到“import SDK 生成 SQL 并向 TiDB 提交异步作业”的转换点，而不负责轮询、取消或 checkpoint 持久化。
-
-crate 元数据在 [`Cargo.toml`](Cargo.toml) 中声明 Go 包对应关系为 `lightning/pkg/importinto`、库入口为 `lib.rs`。当前 Rust crate 仅直接声明 `url` 等少量依赖，`config`、`importsdk`、`objstore`、`ast`、日志和错误类型来自同 crate 的 [`stubs.rs`](stubs.rs)，所以这里的主流程与 Go 对齐，但 SDK、URL 脱敏和 S3-like 判断的完备性受这些本地适配层限制。
+用 `JobSubmitter` trait 隔离编排器与具体提交实现，使编排器和测试替身只依赖 `SubmitTable`、`GetGroupKey` 两个契约。
 
 ## 核心职责
 
@@ -79,13 +77,9 @@ logger 被克隆并添加字段，不需要显式关闭。构造 option 是 `FnO
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐段对应 [`job_submitter.go`](job_submitter.go)：`ImportJob`、接口/trait、默认实现、functional option、构造器、提交主流程、选项映射、S3 external-id 过滤和日志 SQL 生成的顺序一致。Rust 用 `Arc<dyn Trait>` 表达 Go interface 共享，用 `Option<TableMeta>` 表达 Go 指针可空性，用 owned clone 代替 Go 指针字段。
+Rust 用 `Arc<dyn Trait>` 表达 Go interface 共享，用 `Option<TableMeta>` 表达 Go 指针可空性，用 owned clone 代替 Go 指针字段。
 
-重要语义对齐点：配置开关先应用、显式 option 后覆盖；S3-like 判断后才过滤；归一化键可匹配 `external-id`、`External_ID` 和编码后下划线形式；实际过滤后按键字典序编码；原始 source dir 不变；日志脱敏失败不影响提交；错误上下文分别是 `generate import SQL` 与 `submit job`。
-
-[`job_submitter_test.rs`](job_submitter_test.rs) 是独立 Rust 测试文件，对齐 [`job_submitter_test.go`](job_submitter_test.go)，覆盖成功返回 job ID/组键、生成 SQL 失败、提交失败、默认保留 S3 external-id、option 与配置两种开启方式、OSS 作为 S3-like、GCS 参数保留、`GetGroupKey` 和日志凭据脱敏。Rust 另由 [`parity_test.rs`](parity_test.rs) 通过 `strip_s3_external_id_for_test` 做 crate 级兼容抽查。
-
-当前差异主要来自移植边界：Go 连接真实 `pkg/importsdk`、对象存储与 parser AST；Rust 在本 crate 内使用精简 stubs，`ImportOptions` 只保留当前消费字段，mock SQL generator 也不等价于完整生产 generator。因此可以确认本文件控制流和已测试契约对齐，不能据此宣称所有真实 SDK/URI 行为已完整移植。
+当前差异主要来自移植边界：Go 连接真实 `pkg/importsdk`、对象存储与 parser AST；Rust 在本 crate 内使用精简 stubs，`ImportOptions` 只保留当前消费字段，mock SQL generator 也不等价于完整生产 generator。
 
 ## 扩展指南
 
@@ -95,12 +89,3 @@ Rust 文件逐段对应 [`job_submitter.go`](job_submitter.go)：`ImportJob`、�
 - 调整 external-id 兼容逻辑时保留三个不变量：不改源配置、只处理 S3-like、未发生删除时返回原始 query。重新编码会改变顺序和转义，必须有 Go `url.Values.Encode` 对齐证据。
 - 若需要把当前 crate 接到真实 Rust importsdk，应在独立上游仓库移植、提交并打 tag，再让本仓库 Cargo manifest 统一引用该 tag；不得把依赖复制进 vendor/third_party 或用本地 `[patch]`。
 - 性能风险主要是每次提交都会克隆 `TableMeta`/`ImportOptions` 并额外生成一次日志 SQL；正确性风险主要是选项默认值、URL 重编码和脱敏覆盖不足；兼容性风险主要是 Go/Rust SDK 字段和 S3-like scheme 集合漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件；`files --filter lightning/pkg/importinto` 包含目标文件；`query` 确认目标 Rust 符号；`node --file ... --offset 1 --limit 400` 读取了目标文件完整 287 行。callers/callees 查询超时，未把空输出作为调用关系证据。
-- 生产源码：[`job_submitter.rs`](job_submitter.rs)、[`importer.rs`](importer.rs) 的 `buildOrchestrator`、[`job_orchestrator.rs`](job_orchestrator.rs) 的 `getGroupKey` 与提交闭包、[`lib.rs`](lib.rs) 的模块装配、[`stubs.rs`](stubs.rs) 的 SDK/选项/对象存储/脱敏边界。
-- crate 配置：[`Cargo.toml`](Cargo.toml) 的包名、库入口、Go 包映射和直接依赖。
-- Go 对照：[`job_submitter.go`](job_submitter.go) 的全部同名生产逻辑。
-- 测试证据：[`job_submitter_test.rs`](job_submitter_test.rs)、[`job_submitter_test.go`](job_submitter_test.go) 和 [`parity_test.rs`](parity_test.rs) 的 external-id 抽查；测试未运行，因为本计划明确是纯文档分析且禁止运行 Cargo。
-- 人工复核结论：本文件存在于导入编排器与 SDK 之间，负责从单表配置生成/提交 SQL，并以独立脱敏 SQL提供安全日志；安全扩展应从 `buildImportOptions`、trait/返回对象或脱敏辅助函数切入，同时同步独立 Rust/Go 测试与 stubs/真实 SDK 契约。

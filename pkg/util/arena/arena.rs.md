@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-arena` crate 的核心逻辑：一个面向短生命周期字节缓冲的线性 arena 分配器，以及在 arena 容量不足时退回普通堆分配的兼容路径。crate 边界由 `pkg/util/arena/Cargo.toml` 定义，`pkg/util/arena/lib.rs` 公开 `arena` 模块并再导出本文件全部公开项；根 workspace 的 `Cargo.toml` 将它登记为成员并以 `facade_util_arena` 引入，`pkg/lib.rs::util::arena` 再做统一门面导出。
-
-当前 Rust 接线状态需要与 Go 生产链区分：`pkg/server/Cargo.toml` 已声明 `astersql-util-arena` 依赖，但仓库内 Rust server 源码尚未检出对本 crate API 的调用；可确认的 Rust 调用者位于同 crate 的独立测试。Go 对照实现则由 `pkg/server/conn.go::clientConn.alloc` 实际用于连接级协议包缓冲，初始化容量为 32 KiB，并在命令处理循环中复位。
+Go 对照实现则由 `pkg/server/conn.go::clientConn.alloc` 实际用于连接级协议包缓冲，初始化容量为 32 KiB，并在命令处理循环中复位。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ arena-backed `ArenaBuffer<'a>` 的生命周期绑定到对 `SimpleAllocator` 的
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/arena/arena.go` 是直接语义基线：Rust `Allocator` 对应 Go 接口，`SimpleAllocator`/`stdAllocator`、`NewAllocator`、三项 trait 方法分别对应同名 Go 定义。严格小于容量才走 arena、回退不推进 `off`、`Reset` 只归零偏移均保持一致。
-
 关键表示差异如下：
 
 - Go 以三索引切片 `arena[off:off:off+capacity]` 表达长度零、固定容量；Rust 不能直接返回同形态的裸切片，因此以 `ArenaBuffer { len, capacity, storage }` 模拟。
@@ -96,12 +92,3 @@ arena-backed `ArenaBuffer<'a>` 的生命周期绑定到对 `SimpleAllocator` 的
 - 新增线程共享能力不能只增加 `Send/Sync` 声明；需要重新设计可变借用、偏移同步和返回缓冲生命周期，并评估锁竞争。当前单连接、顺序复用模型不提供并发承诺。
 - 将 Rust server 真正接入此 crate 时，应从 Go 的 `clientConn.alloc` 生命周期核对：连接创建、每个协议编码点、写出完成与 `Reset` 时机；仅保留 Cargo 依赖不能视为完成接线。
 - API 命名若 Rust 化会影响 Go 对齐和门面用户；变更前需搜索 `pkg/lib.rs::util::arena` 的外部消费者，并保留兼容层或明确迁移计划。
-
-## 验证依据
-
-- 源码：`pkg/util/arena/arena.rs`，RustCodeGraph `node --file ... --offset 1/238` 覆盖全部 270 行；索引报告该文件有 30 个符号。
-- 图查询：RustCodeGraph `explore`、对 `Arena`/`NewAllocator`/`StdAllocator`/`AllocWithLen`/`Reset` 的 `query`，以及关键符号的 `callers/callees`；后两类调用边查询无输出，故未把图中“used by 318 files”的粗粒度文件关系解释为真实 API 调用。
-- crate/装配：`pkg/util/arena/Cargo.toml`、`pkg/util/arena/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs::util::arena`、`pkg/server/Cargo.toml`。
-- Go 对照与生产调用：`pkg/util/arena/arena.go`、`pkg/server/conn.go::{newClientConn, clientConn}` 以及其中 `cc.alloc.AllocWithLen`/`Reset` 调用点。
-- 独立测试：`pkg/util/arena/arena_test.rs`、`pkg/util/arena/migration_aster_unit_test.rs`、`pkg/util/arena/arena_test.go`；`main_test.rs` 仅负责测试初始化，不是分配逻辑证据。
-- 人工复核结论：本文件存在是为了为短生命周期字节缓冲提供连接/请求级线性复用模型；运行时在 arena 借用与 owned 回退间切换；安全扩展必须维护长度不超过容量、成功分配区间不重叠、回退不推进偏移、复位前旧借用已结束四项约束。

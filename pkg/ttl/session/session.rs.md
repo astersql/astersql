@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ttl/session/session.rs` 是 `astersql-ttl-session` crate 的唯一业务实现文件；`pkg/ttl/session/lib.rs` 声明 `pub mod session` 并把其中符号全部重新导出。根 `Cargo.toml` 以 `facade_ttl_session` 指向该 crate，因此它目前承担 TTL 专用会话 API 的 Rust 门面：在宿主提供的 `SessionContext` 与 `SqlExecutor` 之上统一 SQL 执行、显式事务、时区读取、语句打断和连接复用控制。
-
-该 crate 当前仍处于隔离移植阶段。`pkg/ttl/session/Cargo.toml` 的正常 `[dependencies]` 为空，面向真实 TiDB 子系统的依赖只列在永不成立的 `target.'cfg(any())'.dependencies` 中；仓库搜索也未发现生产 Rust 代码直接构造 `TtlSession` 或调用本文件的 `new_session`。因此，本文件已有可由独立测试运行的行为模型，但不能据此声称它已经接入 TTL worker 的生产主链。当前生产侧的 TTL worker 抽象另见 `pkg/ttl/ttlworker/session.rs`，两者尚未在代码中桥接。
+`TtlSession` 将 `SessionContext` 提供的存储、会话变量、最新/事务 InfoSchema 和内部 SQL 执行器收束为 `Session` trait。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ Cargo 边界也印证未接线状态：常规依赖为空；`astersql-sessionctx
 
 ## 与 Go 版本的对应关系
 
-主要映射是：Rust `Session`/`TtlSession` 对应 `pkg/ttl/session/session.go` 的 `Session`/`session`；`new_session` 对应 `NewSession`；`ExecutionContext::with_ttl_job` 对应 `WithJobContext`；`execute_sql`、`run_in_transaction`、`global_time_zone`、`kill_statement`、`now`、`avoid_reuse` 分别对应 Go 的同职责方法。
+`pkg/ttl/session/session_test.rs` 的 `TestSessionRunInTxn` 与 `TestSessionKill` 镜像 Go 同名测试，另外补充 job 归因恢复及 panic 展开回滚的直接验证；Go 的 `pkg/ttl/session/session_test.go::TestSessionTTLJobRU` 还验证真实 RU 指标归因和提交发布，这部分没有被 Rust 内存 mock 完整覆盖。
 
-核心顺序保持一致：SQL 执行临时设置 TTL job ID、标记 TTL 内部请求、以 8 为批大小 drain 并关闭结果集；事务进入 begin/other/commit/other 相位，失败时用独立 1 秒上下文回滚，并恢复进入前相位。`pkg/ttl/session/session_test.rs` 的 `TestSessionRunInTxn` 与 `TestSessionKill` 镜像 Go 同名测试，另外补充 job 归因恢复及 panic 展开回滚的直接验证；Go 的 `pkg/ttl/session/session_test.go::TestSessionTTLJobRU` 还验证真实 RU 指标归因和提交发布，这部分没有被 Rust 内存 mock 完整覆盖。
-
-差异也必须保留：Go 直接使用 `sessionctx.Context`、事务管理器、`sqlexec`、metrics tracer、SQLKiller 和真实时区库；Rust 当前用本地 trait/结构替代。Go `timeutil.ParseTimeZone` 验证命名时区并返回真实 location，Rust 只保留命名区名称。Go `Now` 直接返回已套用 location 的 `time.Time`，Rust 返回 `(SystemTime, TimeZone)`。Go 的 `AvoidReuse` 容忍 nil 回调，Rust 构造 API 不允许缺省回调。这些都是迁移/接线时要处理的兼容点。
+差异也必须保留：Go 直接使用 `sessionctx.Context`、事务管理器、`sqlexec`、metrics tracer、SQLKiller 和真实时区库；Rust 当前用本地 trait/结构替代。Go `timeutil.ParseTimeZone` 验证命名时区并返回真实 location，Rust 只保留命名区名称。Go `Now` 直接返回已套用 location 的 `time.Time`，Rust 返回 `(SystemTime, TimeZone)`。
 
 ## 扩展指南
 
@@ -87,13 +83,3 @@ Cargo 边界也印证未接线状态：常规依赖为空；`astersql-sessionctx
 若接入生产 Rust 主链，最可能修改的边界是 `SessionContext`、`SessionVariables`、`SqlExecutor` 和 `new_session` 的适配层，以及 `pkg/ttl/ttlworker/session.rs` 的 `WorkerSession` 桥接。必须先决定真实 session 类型的并发模型，并确保池化会话不会重叠执行导致 TTL job ID 串扰；同时对齐 Go 的真实 InfoSchema、SQL killer、RU 指标、时区数据库和事务 phase tracer。此类接线应移出 `cfg(any())` 依赖并增加真实集成测试，不能只依赖当前内存 mock。
 
 若调整资源/错误策略，应为 close 错误、rollback 错误、取消与 deadline、poisoned mutex 和 killed 状态重置作出明确契约。性能风险主要来自每次 SQL 克隆字符串 job ID、频繁获取多个 mutex、一次性 drain 全部结果行，以及在锁内运行 `avoid_reuse` 回调；优化时不能破坏 Go 版本的归因和清理顺序。
-
-## 验证依据
-
-- 源码全貌与符号：`pkg/ttl/session/session.rs`，重点为 `ExecutionContext`、`SessionVariables`、`SessionContext`、`Session`、`TtlSession`、`TransactionCleanup`、`new_session`。
-- crate/工作区边界：`pkg/ttl/session/Cargo.toml`、`pkg/ttl/session/lib.rs`、根 `Cargo.toml` 的 `facade_ttl_session` 条目。
-- Go 对照：`pkg/ttl/session/session.go`；真实行为测试：`pkg/ttl/session/session_test.go` 的 `TestSessionTTLJobRU`、`TestSessionRunInTxn`、`TestSessionKill`。
-- Rust 独立测试：`pkg/ttl/session/session_test.rs` 的 `TestSessionRunInTxn`、`ttl_job_attribution_covers_transaction_boundaries_and_is_restored`、`run_in_transaction_rolls_back_and_restores_phase_on_panic`、`TestSessionKill`。
-- 相邻但独立的 worker 会话链：`pkg/ttl/ttlworker/session.rs`、`pkg/ttl/ttlworker/scan.rs`、`pkg/ttl/ttlworker/del.rs`，用于确认当前没有把同名/同职责接口误记为本文件调用边。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`files --filter pkg/ttl/session` 覆盖目标、Go 对照与测试；`node --file pkg/ttl/session/session.rs` 读取完整 552 行并显示 99 个符号。精确 `query` 找到本文件的 `Session`、`execute_sql`、`run_in_transaction`、`new_session`；callers/callees 查询未返回可用边，因此调用关系又以精确仓库引用搜索复核，并在本文中保留“尚未生产接线”的限制。
-- 结构验证使用任务指定命令，确认本文恰含 11 个固定二级标题；本任务为纯文档分析，按要求未运行 Cargo。

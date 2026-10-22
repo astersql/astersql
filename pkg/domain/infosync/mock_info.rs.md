@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-infosync` crate；crate 入口 `pkg/domain/infosync/lib.rs` 以 `mod mock_info; pub use mock_info::*;` 将这里的类型和函数重新导出。它不是 etcd/PD 上的生产节点注册实现，而是一个进程内的 mock 注册表：`GlobalInfoSyncerInit` 在完成 `InfoSyncer` 初始化后调用 `MockGlobalServerInfoManagerEntry().Add(...)`，供无远端注册表或测试辅助路径按节点 ID 查询服务器信息。
-
-`pkg/domain/infosync/Cargo.toml` 将 Go 对照包声明为 `pkg/domain/infosync`，并直接依赖 `serde`（derive）和 `serde_json`；本文件实际直接使用 `serde`，错误返回复用 crate 根导出的 `Error` 与 `Result`。源文件已由 `pkg/domain/infosync/lib.rs` 纳入编译，相关单元测试则独立放在 `pkg/domain/infosync/info_test.rs`，没有把测试嵌入生产源文件。
+`MockGlobalServerInfoManagerEntry` 用 `OnceLock` 提供进程级唯一管理器，避免每个调用者各自维护注册表。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/domain/infosync/mock_info.go`。两版都维护受互斥锁保护的顺序条目，从端口 4000 开始逐次分配，支持按下标/执行器 ID 删除、生成 ID 到节点的映射，并在 `Close` 后清空且复位端口。
-
 当前可验证差异如下：
 
 - Go `getServerInfo` 从全局配置填充 advertise address、status port、lease、keyspace、labels，并填入 TiDB 版本与 Git hash；Rust `Add` 固定 `127.0.0.1`，只主动填充 ID、SQL 端口、启动时间和 server ID，其余字段保持默认值。因此不能把 Rust mock 文档化为完整复刻生产拓扑元数据。
@@ -100,11 +96,3 @@
 - 若要改变动态 server ID 语义，应同时检查 `Add` 与 `GetAllServerInfo` 的 getter 调用时机，并新增“回调值变化后快照刷新”、panic/重入约束或明确的错误转换测试。
 - 若允许并发规模扩大或 getter 执行变重，可考虑先在锁内复制条目、锁外调用 getter；但必须验证 `Close`/删除与快照的一致性语义，不能无意把单一原子快照变成混合时点结果。
 - 删除或重命名公开符号前需同步 `info.rs`、`pkg/util/disttask/idservice.rs` 及各自独立测试。尤其不要把 mock `GetAllServerInfo` 与生产集群 `info.rs::GetAllServerInfo` 合并为含糊接口。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/infosync/mock_info.rs` 差异及目标 blob `aa40e7b8a40cff445e38fa56955b3cbe256e95c8` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/infosync/mock_info.rs` 和 `git show 2c944fb:pkg/domain/infosync/mock_info.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/infosync/info_test.rs`，Go 对照为 `pkg/domain/infosync/mock_info.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

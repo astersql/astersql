@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-driver-txn` crate（见 `pkg/store/driver/txn/Cargo.toml`），是事务驱动层的键值扫描器适配器。`pkg/store/driver/txn/lib.rs` 以 `mod scanner` 装配该模块，并通过 `pub use scanner::*` 导出其中的 `tikvScanner`。它把调用方已经按扫描顺序物化好的 `Vec<(Key, Vec<u8>)>` 暴露为 crate 统一的 `KvIterator` trait，而不负责访问 TiKV、计算扫描边界或排序。
-
-在当前 Rust 调用链中，`tikvSnapshot::Iter` / `IterReverse`、`memBuffer::Iter` / `IterReverse` / `SnapshotIter` / `SnapshotIterReverse` 会先在各自模块中选择并排列行，再构造本文件的扫描器；`tikvTxn::Iter` / `IterReverse` 随后把快照扫描器与 dirty memBuffer 扫描器交给 `NewUnionIter` 合并。因此，本文件位于“范围行已生成”和“事务层合并/消费迭代器”之间。
+不决定正向/反向顺序、不解释空值为删除标记、不合并 dirty/snapshot 数据，也不把 TiKV 客户端错误转换为 `DriverError`；这些职责分别位于构造者、`union_iter.rs` 和更外层驱动代码。
 
 ## 核心职责
 
@@ -80,11 +78,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/store/driver/txn/scanner.go`。两者都定义私有命名风格的 `tikvScanner`，向上层提供迭代器接口，并让 `Key` 返回 TiDB 键类型。
+实现方式存在重要差异：Go 结构体内嵌 `*txnsnapshot.Scanner`，`Next()` 调用真实 client-go scanner 并通过 `extractKeyErr` 转换错误；`Key()` 直接转换底层 scanner 的当前键，其余 `Value`、`Valid`、`Close` 行为来自内嵌类型。
 
-实现方式存在重要差异：Go 结构体内嵌 `*txnsnapshot.Scanner`，`Next()` 调用真实 client-go scanner 并通过 `extractKeyErr` 转换错误；`Key()` 直接转换底层 scanner 的当前键，其余 `Value`、`Valid`、`Close` 行为来自内嵌类型。Go 的 `snapshot.go::Iter` / `IterReverse` 调用 `KVSnapshot` 创建底层 scanner 后再包装。
-
-Rust 版本则保存已经物化的 `Vec`，所有迭代操作都在内存中同步完成；它没有包裹 `tikv-client` 的 scanner，也没有在 `next` 中执行远端请求或等价的 `extractKeyErr`。Rust 的 `snapshot.rs` 与 `unionstore_driver.rs` 在构造前完成范围选择和排序。`with_next_error` 是 Rust 额外提供的确定性错误注入能力，Go 文件没有同名机制。故当前 Rust 行为对齐的是上层 `KvIterator` 消费协议和扫描结果语义，而不是 Go 底层 scanner 的惰性网络执行模型。
+Rust 版本则保存已经物化的 `Vec`，所有迭代操作都在内存中同步完成；它没有包裹 `tikv-client` 的 scanner，也没有在 `next` 中执行远端请求或等价的 `extractKeyErr`。`with_next_error` 是 Rust 额外提供的确定性错误注入能力，Go 文件没有同名机制。故当前 Rust 行为对齐的是上层 `KvIterator` 消费协议和扫描结果语义，而不是 Go 底层 scanner 的惰性网络执行模型。
 
 ## 扩展指南
 
@@ -94,13 +90,3 @@ Rust 版本则保存已经物化的 `Vec`，所有迭代操作都在内存中同
 - 若修改关闭语义，应同步检查 `union_iter.rs` 的双侧关闭和错误路径，确保幂等关闭及部分初始化失败时的资源释放。
 - 若改变 `Key` / `Value` 的所有权行为，应评估复制成本与 Go 风格公开 API 的兼容性；trait 借用方法和 Go 风格复制方法目前服务于不同调用习惯。
 - 重点风险包括：把初始位置误改为“首行之前”造成跳过首行；在最后一次 `next` 上错误报 invalid 破坏现有循环；以空值代表无效而吞掉合法空值行；让注入错误推进游标导致重试丢行；为惰性扫描引入锁或网络资源后仍保留当前无操作式关闭。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，本文件在索引中有 14 个符号；`node --file pkg/store/driver/txn/scanner.rs` 读取了完整 108 行源码；对 `tikvScanner`、`with_next_error` 的 `callers` / `callees` / `impact` 精确查询未返回图边，因此调用关系另以源码引用核对。
-- 目标实现：`pkg/store/driver/txn/scanner.rs`，重点符号为 `tikvScanner`、`new`、`with_next_error` 和 `impl KvIterator`。
-- crate 边界：`pkg/store/driver/txn/Cargo.toml`；模块装配与接口契约：`pkg/store/driver/txn/lib.rs` 的 `mod scanner`、`pub use scanner::*`、`KvIterator`。
-- 直接构造与主链：`pkg/store/driver/txn/snapshot.rs` 的 `tikvSnapshot::Iter/IterReverse`，`pkg/store/driver/txn/unionstore_driver.rs` 的 `memBuffer::Iter/IterReverse/SnapshotIter/SnapshotIterReverse`，`pkg/store/driver/txn/txn_driver.rs` 的 `tikvTxn::Iter/IterReverse`，以及 `pkg/store/driver/txn/union_iter.rs`。
-- Go 对照：`pkg/store/driver/txn/scanner.go` 与 `pkg/store/driver/txn/snapshot.go`。
-- Rust 测试证据：`pkg/store/driver/txn/snapshot_test.rs::TestSnapshotWithoutInterceptor`，`pkg/store/driver/snap_interceptor_test.rs::check_iter` 及扫描边界用例，`pkg/store/driver/txn_test.rs::TestTxnScan`，`pkg/store/driver/txn/union_iter_test.rs` 的遍历、错误传播和关闭契约用例。仓库搜索未发现直接构造 `tikvScanner` 或调用本类型 `with_next_error` 的独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构检查和人工事实复核作为验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-executor-internal-util`；包边界由 `pkg/executor/internal/util/Cargo.toml` 的 `[lib] path = "lib.rs"` 定义。`pkg/executor/internal/util/lib.rs` 将私有模块 `partition_table` 的公开项全部重导出，根 facade 又在 `pkg/lib.rs` 的 `executor::internal::util` 下重导出该 crate。因此，它提供的是 executor 内部可复用的 Rust API，而不是进程入口或独立执行器。
-
-文件建立了一套只覆盖 ID 改写所需字段的最小 tipb Executor 树模型，并实现 `UpdateExecutorTableID`。仓库搜索未发现该 Rust 函数被 Rust 生产代码调用；当前 Rust 直接调用者只有同 crate 的独立测试 `pkg/executor/internal/util/migration_aster_unit_test.rs` 和函数自身的递归调用。因此应把它描述为“已经实现并有迁移测试、但尚未接入 Rust 生产执行链”的移植边界，不能把 Go 调用链当作 Rust 已接线事实。
+文件建立了一套只覆盖 ID 改写所需字段的最小 tipb Executor 树模型，并实现 `UpdateExecutorTableID`。
 
 ## 核心职责
 
@@ -84,11 +82,3 @@ Go `PartitionIds = partitionIDs` 赋切片头，Rust 将切片复制进自有 `V
 - 改变空 `partition_ids` 行为前必须评估 Go 兼容性。若改成返回错误，需要同时调整错误枚举及 `migration_aster_unit_test.rs` 中对 panic 的断言，不能静默“安全化”而造成语义漂移。
 - 修改递归规则时，在独立测试 `pkg/executor/internal/util/migration_aster_unit_test.rs` 扩展 `update_executor_table_id_matches_recursive_go_paths`；扫描与 context 行为对应 `update_executor_table_id_handles_scan_variants_and_context`；终端、未知协议与 None 对应 `update_executor_table_id_covers_terminal_unknown_and_nil`；空 ID 边界对应 `update_executor_table_id_matches_go_partition_id_boundaries`。测试逻辑应继续留在独立文件，不能内嵌进生产源文件。
 - 性能敏感点是分区 ID 向量复制与递归深度；兼容敏感点是 Join outer-side 选择、终端停止集合、TableScan 专属记录行为及错误文本。新增 recording 行为时还要确认 HashSet 去重是否仍符合 Go map 语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 7,032 个 Rust 文件；`files --filter pkg/executor/internal/util` 列出目标源、Go 对照、crate 入口与独立测试；`node --file pkg/executor/internal/util/partition_table.rs --offset 1 --limit 420` 读取到完整 295 行并报告 17 个符号；`query UpdateExecutorTableID --json` 同时定位 Rust `partition_table.rs:221` 与 Go `partition_table.go:26`。限定符号的 `callers/callees` 未返回可用边，因此调用关系另以文本搜索核验，未把空结果推断为完整调用图。
-- Rust 源与模块边界：`pkg/executor/internal/util/partition_table.rs`、`pkg/executor/internal/util/lib.rs`、`pkg/executor/internal/util/Cargo.toml`、根 `Cargo.toml` 和 `pkg/lib.rs`。
-- Go 对照与生产入口：`pkg/executor/internal/util/partition_table.go`、`pkg/executor/table_reader.go`、`pkg/executor/internal/mpp/local_mpp_coordinator.go`。
-- 独立 Rust 测试：`pkg/executor/internal/util/migration_aster_unit_test.rs`，覆盖扫描变体、recording context、全部一元节点、递归开关、Join 两种 inner 下标、终端、None、未知协议以及空 ID 边界。仓库搜索未发现直接针对该函数的 Go `*_test.go`；Go 行为依据来自实现和上述生产调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令确认目标文件存在且恰有十一个固定二级标题；人工复核重点为当前 Rust 未接线事实、Go/Rust 所有分支对应、错误与 panic 边界、扩展测试位置。

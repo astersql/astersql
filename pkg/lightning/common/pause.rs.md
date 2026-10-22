@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-common` crate；crate 边界由 `pkg/lightning/common/Cargo.toml` 定义，`pkg/lightning/common/lib.rs` 以 `mod pause` 装入模块，并通过 `pub use pause::*` 将其 API 暴露给依赖者。它提供一个进程内、线程安全的暂停门闩，以及供门闩等待使用的轻量取消/超时上下文。
-
-当前接线状态需要与设计用途区分：仓库搜索没有发现目标 Rust `Pauser` 的生产调用点。Rust `lightning/pkg/importer` 使用其 `stubs.rs::common_ext::Pauser`，`lightning/pkg/server` 也沿该 importer/common 路径建立暂停控制；因此本文件目前是已导出的公共实现和 Go 移植候选，而不是 Rust Lightning 导入主链已经采用的暂停器。Go 主链的真实对应接线位于 `lightning/pkg/importer/import.go` 和 `lightning/pkg/importer/chunk_process.go`。
+`pauseStateRunning`、`pauseStatePaused`、`pauseStateLocked` 保留 Go 枚举的公开名称和值，但 Rust 的 `Mutex<PauseData>` 实现不使用这三个常量驱动内部状态机。
 
 ## 核心职责
 
@@ -69,13 +67,11 @@ Go 侧调用链是 `lightning/pkg/importer/import.go::Controller.Pause/Resume ->
 
 ## 与 Go 版本的对应关系
 
-`pkg/lightning/common/pause.go` 是直接语义对照。两版都提供 `NewPauser`、`Pause`、`Resume`、`IsPaused`、`Wait`，都要求运行态快速放行、暂停态登记等待者、恢复时释放当期全部等待者、取消时只移除当前等待者而不改变全局暂停状态。
-
-实现机制不同。Go 版用原子三态 `Running/Paused/Locked` 作为自旋锁，并用 `map[chan<- struct{}]struct{}` 保存每个等待者；`Resume` 交换整张 map 后关闭旧 channel。Rust 版用 `Mutex + Condvar + generation`，其中代际承担“恢复当期等待者”的 channel 批次语义。Rust 的三个状态常量没有参与算法。
+实现机制不同。Rust 的三个状态常量没有参与算法。
 
 上下文也不是完整等价：Go 接受标准 `context.Context`，可由父上下文、显式取消或多种 deadline 机制结束，并由 channel 即时通知；Rust `Context` 仅支持一个共享布尔取消位和可选 deadline，且以至多 20ms 的轮询观察结束。Go `NewPauser` 返回指针，Rust 返回值；共享 Rust 值需要调用方显式使用 `Arc`。
 
-`pkg/lightning/common/pause_test.go::TestPause` 与 Rust `pause_test.rs::test_pause` 都验证初始放行、暂停阻塞、恢复广播、取消报错和取消不恢复门闩。Rust 另有代际回归测试，覆盖 `Resume` 后立即 `Pause` 时旧等待者仍必须获释。Go 文件还有三类 benchmark，Rust 独立测试当前没有对应性能基准。
+Go 文件还有三类 benchmark，Rust 独立测试当前没有对应性能基准。
 
 ## 扩展指南
 
@@ -84,14 +80,3 @@ Go 侧调用链是 `lightning/pkg/importer/import.go::Controller.Pause/Resume ->
 - 若要降低取消延迟，需让取消动作能够唤醒条件变量，或采用可选择的通知原语；同时验证无 deadline 后台等待、并发 `Resume/Pause` 和虚假唤醒，避免以忙等换取响应速度。
 - 若扩充 `Context`（父子取消、原因传播或 deadline 查询），应先决定是否直接复用仓库已有上下文抽象，并同步核对 Go `context.Context` 契约。保持“门闩运行时不因已取消上下文报错”的现有 `Wait` 边界，除非调用方迁移计划明确改变它。
 - 性能改动应补齐 Rust 基准，重点测运行态热路径、已取消暂停路径和 Pause/Resume 竞争；Go benchmark 可作为场景清单，但不能充当 Rust 性能结论。
-
-## 验证依据
-
-- 生产实现：`pkg/lightning/common/pause.rs`，核对了全部常量、结构体、构造函数、方法、锁域和等待循环。
-- crate 边界：`pkg/lightning/common/Cargo.toml`、`pkg/lightning/common/lib.rs`、workspace 根 `Cargo.toml` 与 `pkg/lib.rs`。
-- Rust 独立测试：`pkg/lightning/common/pause_test.rs`，包括 `test_pause` 和 `resume_releases_waiters_from_the_current_pause_generation`。
-- Go 对照与测试：`pkg/lightning/common/pause.go`、`pkg/lightning/common/pause_test.go`。
-- 真实 Go 接线：`lightning/pkg/importer/import.go`、`lightning/pkg/importer/chunk_process.go`、`lightning/pkg/server/lightning.go`。
-- Rust 接线边界：`lightning/pkg/importer/import.rs`、`lightning/pkg/importer/stubs.rs`、`lightning/pkg/server/lightning.rs`；它们证明同名 API 当前来自另一实现，未形成到本文件的调用边。
-- RustCodeGraph：`status` 显示索引可用（11,467 个文件），但 `files --filter pkg/lightning/common/pause` 与 `files --filter lightning/common` 均返回无匹配；依照技能规则，对该未索引目录使用 `rg` 和直接文件读取。宽泛 `explore` 只用于发现 Lightning 同名路径，最终均以精确源码消歧。
-- 本任务仅新增说明文档，不修改运行时代码，也不运行 Cargo；结构完整性由任务指定的 11 章节命令验证。

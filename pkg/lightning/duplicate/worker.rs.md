@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Lightning 重复键检测器的并行扫描执行层。上游 `pkg/lightning/duplicate/detector.rs` 先通过 `Detector::detect_inner` 对写入 `ExternalSorter` 的内部键排序，取得首尾边界，再创建一个 `TaskQueue` 初始区间并启动多个 `Worker`；本文件随后把已排序的内部键流按半开区间 `[start_key, end_key)` 扫描，将相邻且业务键相同的记录汇成重复组，通过 `Handler` 回调交给调用方处理。
-
-该文件属于 Cargo 包 `astersql-lightning-duplicate`（`pkg/lightning/duplicate/Cargo.toml`），由 `pkg/lightning/duplicate/lib.rs` 的私有 `mod worker` 纳入 crate，并通过 `pub use worker::*` 再导出其中的公开项。当前只有 `gen_split_key` 是对 crate 外公开的函数；`Task`、`TaskQueue` 和 `Worker` 均为 `pub(crate)`，其余状态和辅助方法仅在本模块内部可见。
+长任务每处理 1000 个键检查一次取消状态并尝试从剩余区间生成新任务，使空闲 Worker 能参与扫描。
 
 ## 核心职责
 
@@ -81,11 +79,9 @@ Cargo 清单还声明 `goish` 与 codec 依赖，但本文件不直接使用；�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/lightning/duplicate/worker.go`。Rust `Task`/`Worker`、`run`、`run_task`、1000 项检查周期、相邻键状态机、重复组计数、迭代器关闭、Handler 关闭和拆分算法均按 Go 对应结构实现。
+主要表示差异是并发原语：Go 使用容量为 1 的 `chan task` 与 `sync.WaitGroup`，Rust 用 `TaskQueue { Mutex<QueueState>, Condvar }` 合并实现相同的队列和待完成记账。Go `select` 同时等待 channel 与 `ctx.Done()`；Rust 在 `receive` 中用条件变量短超时观察 `CancellationToken`。
 
-主要表示差异是并发原语：Go 使用容量为 1 的 `chan task` 与 `sync.WaitGroup`，Rust 用 `TaskQueue { Mutex<QueueState>, Condvar }` 合并实现相同的队列和待完成记账。Go `select` 同时等待 channel 与 `ctx.Done()`；Rust 在 `receive` 中用条件变量短超时观察 `CancellationToken`。Go `errgroup` 的协调语义由 `detector.rs` 的 scoped threads、首错槽、派生令牌和 `abort` 组合实现。
-
-Rust `gen_split_key` 额外把 Go `uint8` 算术显式写成 wrapping 运算，避免 debug 构建中的整数溢出 panic；`worker_test.rs::split_key_preserves_go_byte_overflow` 覆盖了 Go 测试之外的降序输入。其余六组标准边界与 `worker_test.go::TestGenSplitKey` 一一对应，并同时出现在 Rust `worker_test.rs::test_gen_split_key` 与 `migration_aster_unit_test.rs::split_key_matches_go_cases`。
+Rust `gen_split_key` 额外把 Go `uint8` 算术显式写成 wrapping 运算，避免 debug 构建中的整数溢出 panic；`worker_test.rs::split_key_preserves_go_byte_overflow` 覆盖了 Go 测试之外的降序输入。
 
 ## 扩展指南
 
@@ -95,13 +91,3 @@ Rust `gen_split_key` 额外把 Go `uint8` 算术显式写成 wrapping 运算，�
 - 修改清理策略时，应保留 Go 的错误优先级：扫描错误优先于 Handler 关闭错误，并明确决定是否继续忽略迭代器关闭错误。`detector_test.rs::test_detector_failure_contracts` 是最接近的回归面。
 - 调整 `CHECK_INTERVAL` 或增加更频繁的同步会改变取消延迟、锁竞争和任务拆分开销；性能验证应使用足够大的已排序输入，并观察多 Worker 的负载均衡，而不能只依赖 `gen_split_key` 单测。
 - 若改变公开接口，注意当前 crate 通过 `lib.rs` 通配再导出 `gen_split_key`；`TaskQueue` 与 `Worker` 的 crate 内可见性则有意把调度细节限制在实现层。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/lightning/duplicate` 确认目标源、Go 对照和独立测试均已索引。
-- RustCodeGraph 源码/结构查询：`node --file pkg/lightning/duplicate/worker.rs --offset 1 --limit 260`、`node --file pkg/lightning/duplicate/worker.rs --offset 245 --limit 180`，核对本文件全部 364 行；`node --file pkg/lightning/duplicate/detector.rs --offset 1 --limit 260`，核对直接上游构造、调用、等待、关闭和中止关系。
-- RustCodeGraph 符号查询：`query gen_split_key --kind function`、`query TaskQueue --kind struct`、`query Worker --kind struct`，定位目标实现及测试符号；宽泛 `Worker`/`callers` 查询存在跨仓库同名歧义，最终调用边以精确文件节点为准。
-- crate 与模块依据：`pkg/lightning/duplicate/Cargo.toml`、`pkg/lightning/duplicate/lib.rs`；目标目录不存在 `doc.go`。
-- 实现与 Go 对照：`pkg/lightning/duplicate/worker.rs`、`pkg/lightning/duplicate/worker.go`、`pkg/lightning/duplicate/internal.rs`、`pkg/lightning/duplicate/detector.rs`。
-- 测试依据：`pkg/lightning/duplicate/worker_test.rs`、`pkg/lightning/duplicate/worker_test.go`、`pkg/lightning/duplicate/detector_test.rs`、`pkg/lightning/duplicate/detector_test.go`、`pkg/lightning/duplicate/migration_aster_unit_test.rs`。其中 `test_detector`/`verify_results` 验证大规模并发输入、重复组完整性和 key_id 顺序；`test_detector_failure_contracts` 验证扫描/回调错误身份与清理次数；取消及构造失败测试验证派生上下文和 abort 收敛。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令验证文件存在性和章节数，并人工复核上述符号、调用边、边界与扩展点均有直接来源。

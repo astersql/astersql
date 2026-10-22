@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`varsutil.rs` 属于 `astersql-sessionctx-variable` crate，是系统变量子系统的公共转换、校验和副作用适配层。crate 入口 `pkg/sessionctx/variable/lib.rs` 以私有模块 `mod varsutil` 装入本文件，再通过 `pub use varsutil::*` 将其中的公开项暴露给本 crate 及上层模块。`pkg/sessionctx/variable/Cargo.toml` 声明该 crate 对 `vardef`、`parser-charset`、`chrono` 和 `sysinfo` 的直接依赖，分别支撑变量常量、字符集/排序规则元数据、时间解析和主机内存探测。
-
-它位于“字符串形式的系统变量值”与“`SessionVars`/进程级配置”之间：`pkg/sessionctx/variable/sysvar_builtins.rs` 将这里的校验器和 setter 接到具体 `SysVar`，而会话、DDL、表达式、HTTP 状态等模块直接复用 `BoolToOnOff`、`TiDBOptOn`、`TiDBOptOnOffWarn` 等无状态助手。本文件不负责 SQL `SET` 的语法解析、变量注册表查找或持久化事务。
+维护时间旅行读取状态：设置 `SnapshotTS`、`TxnReadTS`、`ReadStaleness`，执行互斥检查并清理关联状态。
 
 ## 核心职责
 
@@ -84,7 +82,7 @@ RustCodeGraph 对精确同名符号能够区分 Rust/Go 节点（例如 Rust `pa
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/sessionctx/variable/varsutil.go`，Rust 保留了主要函数名、常量和流程，独立 Go 测试位于 `pkg/sessionctx/variable/varsutil_test.go`。已核对的对应关系包括 ON/OFF 助手、隔离级别/noop 校验、旧 `mysql.tidb` 兼容读写、容量解析、历史读状态、owner 开关、表达式索引白名单、ANALYZE 类型白名单和 Schema 缓存裁剪。
+已核对的对应关系包括 ON/OFF 助手、隔离级别/noop 校验、旧 `mysql.tidb` 兼容读写、容量解析、历史读状态、owner 开关、表达式索引白名单、ANALYZE 类型白名单和 Schema 缓存裁剪。
 
 实现层差异必须视为兼容审查点：Go 排序规则走 `util/collate`，Rust 走 `parser-charset`；Go 时间解析使用 TiDB `types.ParseTime` 与 `oracle.GoTimeToTS`，Rust 使用 `chrono` 并手工左移 18 位，因此 SQL 时间语法、时区/DST 和错误分类不天然等价；Go 的 owner 函数指针为 `nil` 时直接成功，Rust 的等价行为委托给 `call_*_hook`；Go 表达式函数白名单以 AST 常量为键，Rust 当前保存字符串字面量；Go 内存总量来自 `memory.GetMemTotalIgnoreErr`，Rust 还受会话内存探测字段控制。
 
@@ -98,12 +96,3 @@ RustCodeGraph 对精确同名符号能够区分 Rust/Go 节点（例如 Rust `pa
 - 扩展 `GAFunction4ExpressionIndex` 时，应同步展示字符串和查找映射的测试，并核对 Go AST 常量对应的稳定名称；扩展 ANALYZE 类型时同时更新校验器和宽容解析器。
 - 新增全局副作用应延续“外部写入成功后再发布进程内状态”的顺序，并评估失败原子性、重试和启动恢复；不要在本文件中实现 owner 的具体生命周期。
 - 若修改公共符号，应检查 `lib.rs` 的整体再导出所形成的跨 crate API 面，以及 RustCodeGraph/全仓搜索列出的 `pkg/session/runtime`、`pkg/expression`、`pkg/server`、`pkg/ddl` 等调用方。
-
-## 验证依据
-
-- 源码与装配：`pkg/sessionctx/variable/varsutil.rs`（610 行、56 个索引符号）、`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/Cargo.toml`。
-- Rust 调用与注册：`pkg/sessionctx/variable/sysvar_builtins.rs`、`pkg/sessionctx/variable/session.rs`、`pkg/sessionctx/variable/variable.rs`，以及全仓对公开助手的 Rust 引用搜索。
-- Rust 独立测试：`pkg/sessionctx/variable/varsutil_test.rs` 覆盖开关、字符集/排序规则、带小数秒 timestamp 和错误后的时间状态；`pkg/sessionctx/variable/tidb_vars_4_aster_unit_test.rs` 覆盖容量、白名单、时间状态互斥和可注入 owner 钩子。
-- Go 对照：`pkg/sessionctx/variable/varsutil.go` 与 `pkg/sessionctx/variable/varsutil_test.go`。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/sessionctx/variable/varsutil.rs` 找到目标文件；`node --file ...` 读取完整源码；`query --json` 区分了 Rust/Go 的 `parseMemoryLimit`、`setSnapshotTS`、`ValidAnalyzeSkipColumnTypes`、`collectAllowFuncName4ExpressionIndex` 节点。精确 `callers`/`callees` 未产生可用输出，调用关系因此由模块注册和文本引用补证。
-- 按任务约束，本次是纯文档分析，不运行 Cargo；结构验证要求目标文件存在且恰好包含上述 11 个固定二级标题。

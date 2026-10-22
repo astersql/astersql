@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-objstore-s3like` crate（`pkg/objstore/s3like/Cargo.toml`），是 S3 协议兼容对象存储的高层存储适配器。模块入口 `pkg/objstore/s3like/lib.rs` 将本文件声明为私有 `store` 模块后完整再导出，因此 `Storage`、`NewStorage`、`S3BackendOptions`、`ParseRangeInfo` 等成为 crate 的公共 API。
-
-它处在两层抽象之间：下层是 `pkg/objstore/s3like/interface.rs` 定义的 `PrefixClient`，由 AWS S3、阿里云 OSS 等具体客户端实现；上层是 `pkg/objstore/storeapi/storage.rs` 定义的统一 `storeapi::Storage`。RustCodeGraph 对本文件的文件节点显示直接使用方包括 `pkg/objstore/s3store/store.rs`、`pkg/objstore/ossstore/store.rs`、`pkg/objstore/s3store/s3_test.rs`、`pkg/objstore/objectio/writer_test.rs` 和 `pkg/dxf/importinto/collect_conflicts.rs`。其中前两个生产调用方分别在创建真实 SDK 客户端、完成权限检查或凭证初始化后调用 `s3like::NewStorage`，所以本文件不负责网络客户端的构造与鉴权，而负责统一对象语义、范围校验、分页、重试、缓冲和配置转换。
-
-文件没有 feature 或平台条件编译项；测试由 `lib.rs` 通过 `#[cfg(test)]` 引入独立文件，未与生产实现混写。
+处在两层抽象之间：下层是 `pkg/objstore/s3like/interface.rs` 定义的 `PrefixClient`，由 AWS S3、阿里云 OSS 等具体客户端实现；上层是 `pkg/objstore/storeapi/storage.rs` 定义的统一 `storeapi::Storage`。
 
 ## 核心职责
 
@@ -102,8 +98,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/objstore/s3like/store.go`。Rust 保留了 Go 的公开命名和主流程：`Storage`/`NewStorage`、三层读重试意图、每批 1000 个删除、复制状态映射、`WalkDir` 的 StartAfter/ContinuationToken 切换、Range 解析与校验、同步/并发 multipart 分支、读写删式 `Rename`、path-style 决策以及 flag 到 protobuf 配置的映射。
-
 为匹配 Go 的边界语义，Rust `RangeInfo::RangeSize` 明确使用 wrapping 算术；`S3BackendOptions::Apply` 区分缺 scheme 和缺 host；profile 非空时跳过静态密钥成对校验；endpoint 只去掉一个末尾 `/`，与 Go `strings.TrimSuffix` 一致。
 
 当前实现存在以下语言适配差异，需要按事实理解而非推断为等价源码：
@@ -111,11 +105,8 @@
 - Go `CopyFrom` 接受任意 `storeapi.Storage` 并运行时检查 `GetBucketPrefix`；Rust 直接要求 `&dyn BucketPrefixProvider`，通过类型边界提前限制调用者，但没有复刻 Go 的“错误类型 + 实际类型”失败分支。
 - Go 保存 `*backuppb.S3`，Rust 保存克隆后的 `backuppb::S3` 值；构造后外部修改原配置不会反映到 Rust `Storage`。
 - Go 的预签名通过运行时可选接口断言，Rust 将默认不支持实现放到 `PrefixClient::PresignObject`，所以本文件可以直接调用。
-- Go 的异步上传在本文件内以 pipe、wait group 启动；Rust 把对应机制封装进 crate 的 `AsyncWriter`。行为入口仍由 `Concurrency > 1` 选择。
 - Go 会记录 HTTP/2 重试 warning，并包含 DXF 随机错误注入；Rust 本文件保留固定重试与 failpoint，但没有等价日志和随机注入。
 - Go 错误带 PingCAP error 类别；Rust统一为 `anyhow::Error` 文本和上下文，因此调用方不应假设可进行完全相同的错误类型匹配。
-
-`pkg/objstore/s3like/store_test.rs` 单独验证 endpoint 缺 scheme/host 的精确错误；`migration_aster_unit_test.rs` 验证 Go 迁移语义；具体 AWS 适配的更完整回归位于 `pkg/objstore/s3store/s3_test.rs` 和 `s3_flags_test.rs`。Go 同目录没有独立 `store_test.go`，相关 Go 行为测试主要位于具体后端目录；`permission_test.go` 只覆盖权限模块。
 
 ## 扩展指南
 
@@ -127,12 +118,3 @@
 - 增加 flag/配置字段：同步 `S3BackendOptions`、`DefineS3Flags`、`ParseFromFlags`、`Apply`、`backuppb::S3` 适配结构、具体后端配置转换和 `s3_flags_test.rs`。确认字段究竟是共享 protobuf 字段还是仅影响构造阶段，避免像 `UseAccelerateEndpoint` 一样误写到无对应字段的目标。
 - 修改列举：保留首轮 `StartAfter` 与后续 continuation token 的互斥关系、公共前缀裁剪以及目录占位过滤；补充分页中途错误和回调错误的停止行为。
 - 若要允许动态修改默认块大小，应先消除 `static mut`，设计实例级或原子配置，并评估公共 API 兼容性和并发性能。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/objstore/s3like` 确认 Rust/Go 源与测试均已索引；`node --file pkg/objstore/s3like/store.rs --offset 1 --limit 500` 和 `--offset 500 --limit 260` 读取完整 716 行及 79 个符号，文件节点给出五个直接使用文件；`query NewStorage`、`query ParseRangeInfo`、`query S3BackendOptions`、`query isCancelError` 用于消歧 Rust/Go 对应符号。当前 CLI 的 `callers`/`callees` 查询未返回可用明细，因此调用关系又以索引文件节点和直接入口源码核验，没有把空图结果写成事实。
-- 生产源码：完整阅读 `pkg/objstore/s3like/store.rs`；读取 `interface.rs` 核对 `PrefixClient`、响应和上传抽象；读取 `lib.rs` 核对模块再导出和独立测试装配；读取 `pkg/objstore/storeapi/storage.rs` 的统一 trait 与选项定义；读取 `pkg/objstore/s3store/store.rs`、`pkg/objstore/ossstore/store.rs` 中 `NewStorage` 的生产接线。
-- crate 边界：读取 `pkg/objstore/s3like/Cargo.toml`，确认 crate 名、`lib.rs` 入口、直接依赖、mock dev-dependency 与 Go 包迁移元数据；未发现 feature 声明。
-- Go 对照：阅读 `pkg/objstore/s3like/store.go` 的构造、配置、CRUD、重试、列举、Range、Create、Rename、Presign 和 Close 实现，逐项核对 Rust 迁移行为与差异。
-- Rust 测试：读取 `pkg/objstore/s3like/store_test.rs`；读取 `migration_aster_unit_test.rs` 中 Range/配置、wrapping、flags/path-style、1000 分批删除、复制状态、分页、Open 重试/seek、同步与并发上传用例；读取 `pkg/objstore/s3store/s3_test.rs` 和 `s3_flags_test.rs` 中真实适配的 URI、请求参数、统计、错误、Range、WalkDir、上传和配置覆盖。测试证据说明这些行为已有独立测试，但本次是纯文档任务，按计划未运行 Cargo。
-- 人工复核：本文分别回答了文件存在目的、构造与读写运行链、状态/资源生命周期、Go 对齐差异、错误边界及安全扩展时需修改的符号和独立测试位置；所有“当前支持”结论均可回溯到上述符号或测试。

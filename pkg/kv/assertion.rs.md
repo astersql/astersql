@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `pkg/kv/assertion.rs`](assertion.rs) 属于 `astersql-kv` crate（`pkg/kv/Cargo.toml`），定义事务内键存在性断言的值类型和位标志转换函数。`pkg/kv/lib.rs` 通过 `pub mod assertion { use crate::*; include!("assertion.rs"); }` 编入源码，并以 `pub use assertion::*` 从 crate 根重新导出，因此调用方使用 `kv::AssertionOp` 和 `kv::ApplyAssertionOp`，而不是直接依赖子模块路径。该模块没有 feature 条件；`default`/`nextgen` 的选择不会改变这里的类型或算法。
-
-它位于“上层选择断言语义—`MemBuffer::UpdateAssertionFlags` 更新键元数据—后续事务预写消费断言位”链路的值转换位置。文件本身只负责把操作编码成 `KeyFlags` 的两个位，不负责决定何时设置断言，也不直接发送 prewrite 请求。`KeyFlags` 及断言位 `flagAssertExists`、`flagAssertNotExists` 定义在相邻的 `pkg/kv/keyflags.rs`。
+这里不实现“同一事务中断言一旦设置便不可改变”的策略。
 
 ## 核心职责
 
@@ -67,8 +65,6 @@ RustCodeGraph 的静态调用图只识别到直接单元测试调用边，未完
 
 ## 与 Go 版本的对应关系
 
-`pkg/kv/assertion.go` 是直接对照文件。Rust 的透明 `u8` 新类型对应 Go 的 `type AssertionOp uint8`，四个关联常量对应 Go `iota` 的 0、1、2、3。`ApplyAssertionOp` 的三个实质分支与 Go 位运算逐项一致：存在/不存在分支设置目标位并清除互斥位，unknown 分支同时设置两位，none 不操作。
-
 Rust 使用通配分支同时覆盖 `AssertNone` 和未知值；Go 仅显式列出 `AssertNone`，但没有 `default`，所以未知值同样保持输入。`pkg/kv/assertion_test.rs::assertion_operations_cover_go_uint8_domain` 枚举全部 256 个 origin 和全部 256 个 op，验证这一差异只在语法表达上而非行为上。
 
 Go 的 `pkg/table/tables/assertion_test.go::TestSetAssertion` 还验证上层语义：首次设置后断言不可改变，`AssertNone` 初次使用仍允许之后设置真实断言，普通 flag 更新不能破坏断言。这些是链路级约束，不全由本文件单独保证；Rust 的局部测试只验证这里负责的位转换。
@@ -80,11 +76,3 @@ Go 的 `pkg/table/tables/assertion_test.go::TestSetAssertion` 还验证上层语
 - 若要加入“清除断言”，不能复用 `AssertNone`，因为当前 Go/Rust 契约明确为 no-op；需要新增显式操作并评估事务不可变性规则。
 - 测试应继续放在独立文件：穷举转换规则更新 `pkg/kv/assertion_test.rs`，跨标志位状态迁移更新 `pkg/kv/assertion_1_aster_unit_test.rs`；若更改业务不可变策略，还应同步表层独立测试及 Go 对照测试意图。
 - 注意 `Default` 当前产生 `AssertExist`。若希望默认表示 none，应采用显式构造或先完成跨语言兼容评估，不能只更改派生实现。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/kv/assertion.rs`、`pkg/kv/keyflags.rs`、`pkg/kv/kv.rs`、`pkg/kv/lib.rs`、`pkg/kv/Cargo.toml`。
-- Rust 生产调用点：`pkg/store/driver/kv_adapter.rs::UpdateAssertionFlags`、`pkg/store/mockstore/mockstorage/canonical_storage.rs::UpdateAssertionFlags`。
-- Go 对照：`pkg/kv/assertion.go::AssertionOp`/`ApplyAssertionOp`、`pkg/table/tables/assertion.go::setAssertion`、`pkg/store/driver/txn/unionstore_driver.go::getTiDBKeyFlags`。
-- 独立测试：`pkg/kv/assertion_test.rs::assertion_operations_cover_go_uint8_domain` 覆盖整个 `u8` 输入域；`pkg/kv/assertion_1_aster_unit_test.rs::assertion_and_key_flag_transitions_match_go` 覆盖非断言位保留和四种操作；`pkg/table/tables/assertion_test.go::TestSetAssertion` 提供上层不可变语义证据。
-- RustCodeGraph：`status` 显示目标索引包含 `pkg/kv/assertion.rs`（7 个符号）；`query/node AssertionOp` 确认公开类型与同名驱动类型；`query/node/callers/callees ApplyAssertionOp` 确认 Go/Rust 定义、函数体及测试调用边。图未识别出的 trait 实现调用由上述源码路径补证。

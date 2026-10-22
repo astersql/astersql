@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-store-mockstore-unistore-pd` 的主体实现；crate 入口 `pkg/store/mockstore/unistore/pd/lib.rs` 公开 `client` 模块并再导出其全部符号，根 `Cargo.toml` 又以 `facade_store_mockstore_unistore_pd` 引入它，最终由 `pkg/lib.rs` 暴露在 `store::mockstore::unistore::pd` 路径下。它对接真实或外部 PD，负责成员发现、leader 切换、元数据 RPC、TSO 和 Region 心跳流，不是 `pkg/store/mockstore/unistore/pd.rs` 中进程内 mock PD 的实现。
-
-当前接线应按事实理解：RustCodeGraph 将本文件纳入索引，但对关键方法查询不到调用边；精确搜索只找到根 facade 再导出，没有找到 Rust 业务代码直接调用 `NewClient` 或本文件的 `PdClient`。`server/Cargo.toml` 对本 crate 的依赖位于永不启用的 `cfg(any())` 下，`tikv/Cargo.toml` 的依赖只在 Windows 目标下声明。因而它目前是已经实现并可独立测试的移植边界，不能据此断言已进入默认 UniStore 运行主链。
+`do_request` 为一元 RPC 统一提供 1 秒超时、最多 10 次尝试以及失败后异步触发 leader 刷新的策略。
 
 ## 核心职责
 
@@ -76,9 +74,9 @@ Region 请求队列是有界 crossbeam channel（容量 64），leader 刷新通
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/pd/client.go`。Rust 保留了 Go 的无 scheme 补 `http://`、非 leader URL 在前而 leader 在后、1 秒 RPC 超时、1 秒重试间隔、10 次上限、容量 1 的 leader 通知、容量 64 的 Region 队列、每分钟刷新 leader、失败心跳优先重放及 nil/`None` handler 退化为空实现。
+Rust 保留了 Go 的无 scheme 补 `http://`、非 leader URL 在前而 leader 在后、1 秒 RPC 超时、1 秒重试间隔、10 次上限、容量 1 的 leader 通知、容量 64 的 Region 队列、每分钟刷新 leader、失败心跳优先重放及 nil/`None` handler 退化为空实现。
 
-并发模型做了等价的语言适配：Go 的 `context + cancel + WaitGroup + goroutine` 对应 Rust 的 `AtomicBool + JoinHandle + thread`；Go `sync.RWMutex`/`atomic.Value` 对应 Rust `RwLock` 与 `Arc` handler；Go gRPC 对应 `grpcio`。Rust `Client` 方法不接收 `context` 或可选查询参数，因此调用级取消只能由内部固定超时和全局 `close` 控制；这是一项接口差异，而非已验证的完全替代。
+Rust `Client` 方法不接收 `context` 或可选查询参数，因此调用级取消只能由内部固定超时和全局 `close` 控制；这是一项接口差异，而非已验证的完全替代。
 
 Rust 的 `Region` 自行替代 Go `router.Region`。Rust 额外公开 `PdError` 和若干可测试辅助函数；`get_all_stores`、`get_cluster_config` 与 Go 的具体 `client` 方法对应，但两边都没有把它们列入本文件顶部的 `Client` 接口。Rust 清空缓存时依赖 channel drop，Go `Close` 会逐个调用连接的 `Close`。真实 PD 互操作和上述资源释放差异未由当前迁移单测覆盖。
 
@@ -91,12 +89,3 @@ Rust 的 `Region` 自行替代 Go `router.Region`。Rust 额外公开 `PdError` 
 - 改变关闭语义时，需要同时处理两个 worker、正在进行的双向流、重试等待、队列生产者和所有 clone；如引入自动清理，应避免任一 clone 的 `Drop` 提前关闭共享客户端。
 - 测试必须继续放在独立文件 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。辅助逻辑可扩展现有单测；真实请求、leader 切换、TSO、关闭/背压和心跳重连需要独立的可控 gRPC 服务测试。若未来完成业务接线，还应在实际调用 crate 的独立测试中覆盖接口集成。
 - 兼容风险集中在 Go/Rust 接口差异、响应头检查和错误折叠；性能风险集中在阻塞 `thread::sleep`、20ms 心跳轮询、每次 TSO 新建流及 channel 竞争创建。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/store/mockstore/unistore/pd` 找到 `client.rs`、`lib.rs`、`client.go` 和独立迁移测试；`node --file ... --offset 1/501` 完整读取 `client.rs` 1--876 行。对 `NewClient`、`report_region`、`get_ts`、`get_all_stores` 的 callers/callees 查询无结果，故没有把图中不存在的调用边写成事实。
-- 生产源码：`client.rs` 的 `PdClient::new`、`update_leader`、`do_request`、`run_heartbeat_stream`、`impl Client for PdClient` 和 `close` 是初始化、RPC、心跳与生命周期结论的直接依据。
-- crate 与装配：`pd/Cargo.toml`、`pd/lib.rs`、根 `Cargo.toml` 的 facade 依赖和 `pkg/lib.rs` 的再导出验证 crate 边界；`server/Cargo.toml`、`tikv/Cargo.toml` 与仓库精确搜索验证当前有限接线状态。
-- Go 对照：`pd/client.go` 验证接口、重试、leader、心跳、TSO、响应头与关闭语义；`tikv/region.go` 的 `ReportRegion` 调用只用于说明 Go 主链位置。
-- 独立 Rust 测试：`pd/migration_aster_unit_test.rs` 覆盖 URL 规范化、leader URL 排序、10 次重试与提前成功、pending 心跳优先级、协议错误 message/type 保留；它没有覆盖真实网络 RPC、TSO、线程关闭或背压。
-- 最近的目标目录及其 `pkg/store` 上级范围内未找到 `doc.go`，因此没有额外包契约可引用。本文为纯文档分析，按任务约束未运行 Cargo；最终仅执行固定 11 章节的结构验证。

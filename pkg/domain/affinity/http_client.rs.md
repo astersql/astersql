@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-affinity` crate 面向真实 PD 的同步 HTTP 传输实现。模块由 `pkg/domain/affinity/lib.rs` 以 `pub mod http_client` 暴露；上层在 `pkg/session/runtime/create_table_resources.rs::pd_client` 中读取存储返回的 PD endpoints 和全局 TLS 配置后构造 `HttpClient`。它一方面实现 `pkg/domain/affinity/manager.rs::PdClient`，供 `PdManager` 完成 affinity group 的创建、删除和查询，另一方面公开通用的 `HttpClient::request_json`，供同一调用方访问 placement rule、TiFlash rule 与 accelerate-schedule 等 PD HTTP API。
-
-该文件只负责传输、协议编解码和基础端点故障切换，不负责 affinity 的幂等创建、旧 PD 兼容回退、重试或结果过滤；这些策略位于 `manager.rs::PdManager` 与 `interface.rs`。crate 边界由 `pkg/domain/affinity/Cargo.toml` 定义，当前没有 feature 条件；运行时依赖 `reqwest`（blocking/json/rustls-tls）、`serde_json`、`base64` 和 `url`。
+一方面实现 `pkg/domain/affinity/manager.rs::PdClient`，供 `PdManager` 完成 affinity group 的创建、删除和查询，另一方面公开通用的 `HttpClient::request_json`，供同一调用方访问 placement rule、TiFlash rule 与 accelerate-schedule 等 PD HTTP API。
 
 ## 核心职责
 
@@ -64,9 +62,9 @@ RustCodeGraph 的符号查询定位到 `pkg/domain/affinity/http_client.rs::Http
 
 ## 与 Go 版本的对应关系
 
-Go 同目录没有自有 `http_client.go`；`interface.go` 与 `manager.go` 直接依赖上游 `github.com/tikv/pd/client/http.Client`。Rust 的 `manager.rs::PdClient` 对齐该外部接口中本包使用的四个方法，而本文件补齐了 Rust 侧真实 HTTP 实现，因此是 Go 外部 PD client 的本地替代层，并非逐文件翻译。
+Rust 的 `manager.rs::PdClient` 对齐该外部接口中本包使用的四个方法，而本文件补齐了 Rust 侧真实 HTTP 实现，因此是 Go 外部 PD client 的本地替代层，并非逐文件翻译。
 
-协议语义保持与 Go manager 的调用预期一致：创建支持 `WithSkipExistCheck` 对应的 `skip_exist_check=true`，删除传递 `force=true`，按 ID 查询与全量查询分别映射到 `GetAffinityGroups`/`GetAllAffinityGroups`。Go `manager.go` 中的幂等回退、URI 长度阈值、旧 PD 返回全量结果后的过滤不在本文件实现，而在 Rust `manager.rs` 对齐。Rust 额外暴露 `request_json` 给 session 的其他 PD API 调用；Go 侧这些能力由既有 PD HTTP client 或其他包路径承载。
+Go `manager.go` 中的幂等回退、URI 长度阈值、旧 PD 返回全量结果后的过滤不在本文件实现，而在 Rust `manager.rs` 对齐。Rust 额外暴露 `request_json` 给 session 的其他 PD API 调用；Go 侧这些能力由既有 PD HTTP client 或其他包路径承载。
 
 Go `context.Context` 能直接驱动底层请求取消；Rust 这里只抽象取消标记和 deadline。当前实现对预先取消及 deadline 有明确处理，但在 blocking send 期间不能响应之后发生的纯取消，这是需要保持可见的语义差异。
 
@@ -78,14 +76,3 @@ Go `context.Context` 能直接驱动底层请求取消；Rust 这里只抽象取
 - 改动 TLS 时需同时检查仅 CA、完整 mTLS、残缺 cert/key、显式 `http://` 与 `https://` endpoint 的组合。目前 scheme 由“是否传入 TLS tuple”决定，而显式 scheme 优先；改变规则可能影响已有部署兼容性。
 - 将 `request_json` 用于新 PD API 前，应确认该 API 是否允许成功的空 body 或文本 body，以及是否需要响应大小限制、重试或幂等保证。这里的 endpoint 轮询只处理发送失败，不等同于业务重试。
 - 性能风险主要来自 blocking I/O、串行 endpoint 尝试、完整缓冲响应和每次领域调用的 JSON 中间值；若引入批量大响应，应先评估内存与线程占用。
-
-## 验证依据
-
-- 生产源码：`pkg/domain/affinity/http_client.rs`，核对 `API`、`HttpClient::{new,request_json,states}`、`err` 和 `impl PdClient for HttpClient` 的完整实现。
-- crate 与模块：`pkg/domain/affinity/Cargo.toml`、`pkg/domain/affinity/lib.rs`，核对 crate 名、依赖、无 feature 条件以及公开模块接线。
-- 领域契约：`pkg/domain/affinity/manager.rs`、`pkg/domain/affinity/interface.rs`，核对 `Context`、`PdClient`、`AffinityError`、状态类型、manager 回退策略及包级调用边界。
-- 生产调用：`pkg/session/runtime/create_table_resources.rs`，核对 endpoint/TLS 来源、`new_pd_manager` 接线，以及 `request_json` 在 placement、TiFlash 和调度 API 中的直接复用。
-- Rust 独立测试：`pkg/domain/affinity/http_client_test.rs::normal_ddl_plan_create_table_affinity_http_wire`，核对 POST create、GET by IDs、POST delete、GET all 四个请求，Base64 key 编码、`skip_exist_check`、`force` 与状态解析。该测试未覆盖 TLS、多 endpoint、错误状态、取消和 deadline。
-- Go 对照：`pkg/domain/affinity/interface.go`、`pkg/domain/affinity/manager.go`、`pkg/domain/affinity/manager_test.go`，确认 Go 依赖外部 PD HTTP client，兼容回退属于 manager 而非传输层。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query HttpClient --kind struct --json` 定位到本文件第 11 行。`explore`、文件 `node` 与 `query request_json --kind method` 未返回该方法的调用图，因此调用关系以精确源码搜索补证，未将空图结果推断为“没有调用者”。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定的命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核未把测试代码放入生产源文件、未改动 Rust/Go/Cargo 或只读总计划。

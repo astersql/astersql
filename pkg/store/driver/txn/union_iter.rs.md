@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-driver-txn` crate（`pkg/store/driver/txn/Cargo.toml`），实现事务读取路径中的联合迭代器。crate 根 `pkg/store/driver/txn/lib.rs` 通过 `mod union_iter` 装配模块、以 `pub use union_iter::*` 导出公开符号，并定义两侧共同遵循的 `KvIterator: Send` 接口。
-
-它位于事务扫描的合并层：`txn_driver.rs::tikvTxn::Iter` 和 `IterReverse` 分别从事务 `mem_buffer` 与开始时快照取得两个已经按同一方向有序的 `Box<dyn KvIterator>`，再调用 `NewUnionIter`。本文件不访问 TiKV、不计算范围边界，也不负责给子迭代器排序；它只把“当前事务未提交写入”和“不可变快照数据”合并成一个读己之写、去重且过滤删除标记的有序视图。
+负责已成功构造实例持有的两个子迭代器的关闭：显式 `close` 和 Rust `Drop` 都会关闭两侧，且重复关闭安全。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@ RustCodeGraph 识别了本文件 20 个符号，并给出以下内部调用边�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/driver/txn/union_iter.go`，测试对照是 `union_iter_test.go`。Rust 基本逐分支保留 Go 的结构与语义：相同的两侧迭代器、有效性缓存、当前来源、反向标志；相同的 dirty 优先、同键去重、空 dirty 删除、正反向比较；相同的构造期与推进期错误透传；以及 snapshot 后 dirty 的幂等关闭顺序。Rust 测试数据和错误案例也与 Go 测试逐项对应。
-
 实现层面的差异如下：
 
 - Go 保存可空接口字段；Rust 用 `Option<Box<dyn KvIterator>>` 表达打开/已关闭状态，并通过 `take` 实现一次性关闭。
@@ -98,7 +94,7 @@ RustCodeGraph 识别了本文件 20 个符号，并给出以下内部调用边�
 - Rust 实现 `Drop` 自动关闭成功构造的实例，Go 依赖调用方显式 `Close`。为避免自动析构破坏 Go 的构造失败契约，Rust 在 `NewUnionIter` 出错前先移出两侧。
 - Rust 的 trait object 要求 `Send`，但这只保证可转移，不表示可并发共享。
 
-当前 Rust 不是桩或未接线门面：`tikvTxn::Iter/IterReverse` 已实际使用它。不过子扫描器目前主要基于内存物化数据，因此它对齐的是 Go 上层联合迭代行为，不等同于 Go/client-go 底层扫描资源模型。
+当前 Rust 不是桩或未接线门面：`tikvTxn::Iter/IterReverse` 已实际使用它。
 
 ## 扩展指南
 
@@ -109,14 +105,3 @@ RustCodeGraph 识别了本文件 20 个符号，并给出以下内部调用边�
 - 若公开 API 改为借用或零拷贝，应区分 `KvIterator::key/value` 与 Go 风格 `Key/Value`，评估现有调用者的所有权和性能预期。
 - 测试应继续放在独立的 `pkg/store/driver/txn/union_iter_test.rs`，不要嵌入生产源文件；Go 语义变化还应同步核对 `union_iter_test.go`。建议新增的边界包括：两侧初始都空、扫描结束后再次 `Next`、`Close` 后读取/推进、方向不一致的防御策略，以及底层返回错误后是否允许重试。
 - 主要兼容风险是误改 dirty 优先级或 tombstone 处理导致读到旧快照值；主要正确性风险是反向比较或相等键推进侧错误造成乱序、重复或漏行；主要性能风险是在归并热路径增加键值复制或重复比较。
-
-## 验证依据
-
-- RustCodeGraph 索引检查：`rustcodegraph status` 显示项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/driver/txn` 确认目标 Rust/Go/测试文件均在索引中。
-- 目标实现：RustCodeGraph `node --file pkg/store/driver/txn/union_iter.rs --offset 1 --limit 260` 读取完整 249 行；`query UnionIter`、`query NewUnionIter` 与 `callees` 核对了 `UnionIter`、`NewUnionIter`、`update_cur`、trait 方法和 `Drop` 的内部关系。外部 callers 为空的图查询结果以源码引用补充，而未据此作否定结论。
-- crate 与接口边界：`pkg/store/driver/txn/Cargo.toml`；`pkg/store/driver/txn/lib.rs` 的 `mod union_iter`、`pub use union_iter::*` 和 `KvIterator`。
-- 生产调用链：`pkg/store/driver/txn/txn_driver.rs::tikvTxn::Iter/IterReverse`，其中分别以 `false/true` 构造联合迭代器；精确 `rg` 搜索确认这些是同目录 Rust 生产代码中的直接构造点。
-- Go 对照：`pkg/store/driver/txn/union_iter.go` 与构造入口 `txn_driver.go::Iter/IterReverse`。
-- Rust 独立测试：`pkg/store/driver/txn/union_iter_test.rs::TestUnionIter` 覆盖仅 dirty、仅 snapshot、双路归并、覆盖、删除及正反向；`TestUnionIterErrors` 覆盖构造期/推进期两侧错误和不自动关闭；`assertClose` 覆盖双侧关闭及重复关闭。
-- Go 测试：`pkg/store/driver/txn/union_iter_test.go::TestUnionIter`、`TestUnionIterErrors`、`assertClose`，用于确认 Rust 测试数据、错误场景和资源契约与 Go 原意一致。
-- 本任务只新增文档，按总计划不运行 Cargo。交付验证采用固定十一章节结构命令，并人工复核文档能解释文件存在原因、执行流程、安全扩展点以及已知语义差异。

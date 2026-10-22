@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust crate `astersql-ddl-logutil` 的核心实现文件，由同目录 `lib.rs` 以 `#[path = "logutil.rs"] pub mod ddl_logutil` 装入并在 crate 根重新导出。它位于 DDL 子系统的可观测性边界：为调用方从全局后台日志器派生带固定 `category` 的日志器，但不创建或执行 DDL job，不读写 DDL 系统表，也不参与 schema state、schema version、回填或回滚流程。
-
-`pkg/ddl/logutil/Cargo.toml` 将 crate 的 Go 对照包声明为 `pkg/ddl/logutil`，直接 Rust 依赖为 `astersql-util-logutil` 和 `chrono`；本文件只使用前者以及标准库的 `OnceLock`、`Duration`，未直接使用 `chrono`。根工作区以 `facade_ddl_logutil` 登记该 crate，`pkg/ddl`、`pkg/ddl/jobsubmit`、`pkg/ddl/ingest`、`pkg/ddl/schemaver`、`pkg/ddl/serverstate`、`pkg/ddl/testutil` 和若干 DDL 测试 crate 在各自 Cargo manifest 中声明依赖。不过，仓库内 Rust 源码对四个公开函数的直接调用目前只出现在 `pkg/ddl/logutil/migration_aster_unit_test.rs`；“manifest 已接入”不等于“生产调用已迁移”。
+`SampleLogger` 提供带 `category=ddl` 的进程内共享采样器，对同一“日志级别 + 消息文本”在 60 秒窗口内只放行前 3 条，防止轮询和重试路径大量重复输出。
 
 ## 核心职责
 
@@ -64,11 +62,11 @@ DDL 完整应用中的位置是“业务路径的输出端”：Go 代码在 `pk
 
 ## 与 Go 版本的对应关系
 
-同路径 `logutil.go` 定义相同四个公开函数和三个 category 值。三类普通入口语义直接对应：Go 返回 `*zap.Logger` 并调用 `BgLogger().With(zap.String(...))`，Rust 返回可克隆 `Logger` 并调用 `with_fields`。两者都共享底层日志输出，而不是为每次调用创建独立文件或缓冲区。
+三类普通入口语义直接对应：Go 返回 `*zap.Logger` 并调用 `BgLogger().With(zap.String(...))`，Rust 返回可克隆 `Logger` 并调用 `with_fields`。
 
-Go 在包初始化时创建 `sampleLoggerFactory = SampleLoggerFactory(time.Minute, 3, category)`；工厂内部通过 `sync.Once` 首次构造并始终返回同一 `*zap.Logger`。Rust 将一次初始化折叠到 `SampleLogger` 的 `OnceLock`，并返回共享内部状态的 clone。两边均附加 `sampled` 字段，按相同级别和消息在一分钟内保留前三条。Rust 独立迁移测试还验证不同消息不互相占用额度。
+Rust 独立迁移测试还验证不同消息不互相占用额度。
 
-迁移差异必须如实保留：Go 生产调用已广泛接线，Rust 当前只有测试调用；Go zap sampler 文档注释给出最多 4096 类日志，Rust实现使用无显式上限的 `HashMap`；Rust 缓存首次取得的后台日志器，在运行时替换全局日志器后的行为需要单独验证。不能仅凭 API 和 Cargo 依赖一致宣称 DDL 主链迁移完成。
+迁移差异必须如实保留：Go 生产调用已广泛接线，Rust 当前只有测试调用；Go zap sampler 文档注释给出最多 4096 类日志，Rust实现使用无显式上限的 `HashMap`；Rust 缓存首次取得的后台日志器，在运行时替换全局日志器后的行为需要单独验证。
 
 ## 扩展指南
 
@@ -77,11 +75,3 @@ Go 在包初始化时创建 `sampleLoggerFactory = SampleLoggerFactory(time.Minu
 调整采样窗口、上限或计数键属于可观测性兼容变更，应同时修改 `SampleLogger`、DDL 迁移测试以及底层 `pkg/util/logutil/log_test.rs` 的相关预期，并评估告警丢失、日志量和动态消息导致的计数表增长。若要支持全局 logger 热替换，应优先明确 `SampleLogger` 是随替换重建还是保持旧 sink，再修改生命周期设计；简单地移除 `OnceLock` 会让每次调用获得独立 sampler，从而破坏限流。
 
 把 Rust 生产模块接到这些入口时，应按语义选择：通用 DDL 使用 `DDLLogger`，升级暂停/恢复使用 `DDLUpgradingLogger`，ingest/backfill 使用 `DDLIngestLogger`，高频重复告警才使用 `SampleLogger`。扩展不应把日志工具耦合进 job 状态机或用日志替代错误传播。兼容风险主要是 category 值和采样语义，性能风险主要是高频克隆、锁竞争及无界消息键；正确性风险是误分类或在必须保留的事件上错误采样。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标目录的 `lib.rs`、`logutil.rs`、`logutil.go`、`migration_aster_unit_test.rs`；目标文件共有 6 个索引符号，并显示测试文件为直接使用者。
-- RustCodeGraph `node --file`：阅读 `pkg/ddl/logutil/logutil.rs` 全部 84 行、Go 对照 `pkg/ddl/logutil/logutil.go` 全部 49 行、独立测试 `pkg/ddl/logutil/migration_aster_unit_test.rs` 全部 86 行，以及底层 `pkg/util/logutil/log.rs` 的 `Logger`、采样和全局日志器实现。
-- RustCodeGraph `query` 及 `callers`/`callees`：精确查询四个公开入口和 `logger_with_category`；图的 callers/callees 子命令未为这些轻量工厂返回边，因此又以 Rust 文本引用搜索核验，未发现生产 `.rs` 调用，只有迁移测试调用。
-- 配置与装配：阅读 `pkg/ddl/logutil/Cargo.toml`、`pkg/ddl/logutil/lib.rs`、根 `Cargo.toml` 和各 DDL crate manifest 的依赖声明；阅读 `pkg/ddl/doc.go`，确认本工具只是 DDL 可观测性辅助，不承担在线 DDL 不变量。
-- 语义与测试：`pkg/ddl/logutil/migration_aster_unit_test.rs` 验证三类 category 和采样上限/消息隔离；`pkg/util/logutil/log_test.rs::TestSampleLoggerFactory` 与 Go `pkg/util/logutil/log_test.go::TestSampleLoggerFactory` 验证一分钟窗口内 100 次同消息只保留 3 次。按照任务约束，本次纯文档分析未运行 Cargo。

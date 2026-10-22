@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-源文件：[`load_dump.rs`](load_dump.rs)。
-
-本文件属于 Cargo crate `astersql-store-mockstore-unistore-lockstore`，为内存锁存储 `MemStore` 提供二进制持久化与恢复能力。crate 入口 `pkg/store/mockstore/unistore/lockstore/lib.rs` 以 `pub mod load_dump` 声明本模块，并通过 `pub use load_dump::*` 再导出这里的公开项；核心存储类型本身定义在同 crate 的 `lockstore.rs`，有序遍历能力定义在 `iterator.rs`。
-
-它位于 mock TiKV 的 UniStore 锁存储边界，不负责锁的事务语义、跳表查找或 arena 分配，只把当前 `MemStore` 的有序键值快照编码到文件，或从相同格式的文件向一个可变 `MemStore` 填充数据。仓库文本搜索没有找到生产 Rust 调用者；当前可核实的直接使用点是同 crate 的独立测试 `migration_aster_unit_test.rs` 和 `load_dump_test.rs`，因此不能据现有证据声称它已接入生产启动/关闭主链。
+定义固定的小端长度编码：每一项均为 `4` 字节 little-endian `u32` 长度，紧随对应字节内容（`littleEndian::{Uint32, PutUint32}`）。
 
 ## 核心职责
 
@@ -85,14 +81,10 @@ RustCodeGraph 核实的内部调用边为 `LoadFromFile -> readItem` 和 `DumpTo
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/lockstore/load_dump.go`。Rust 保留了相同的 item 格式、meta 先行、key/value 成对、有序迭代、`0600` 临时文件、flush/sync/close/rename 顺序，以及缺失文件返回空结果的语义。
-
 主要表达差异如下：
 
 - Go 返回 `(meta []byte, err error)`；Rust 用 `io::Result<Option<Vec<u8>>>` 区分成功 meta、无 meta 和打开错误。
-- Go `readItem` 用 `io.ReadFull`，在边界 EOF 也先返回错误；`LoadFromFile` 只把读取下一个 key 时的 `io.EOF` 当结束。Rust `readItem` 直接用 `None` 表示项边界 EOF，截断仍为错误，最终循环效果一致。
 - Go 复用 `[]byte` 的 capacity；Rust 复用 `Option<Vec<u8>>` 的 allocation。两者写入存储前都会复用临时 key/value 缓冲，但 `Put` 承担持久复制。
-- Go 的 deferred `f.Close()` 无条件覆盖命名返回 `err`，导致打开成功后的读取错误在正常 close 时消失。Rust 在读取闭包失败时返回 `Ok(None)` 明确模拟这一现有行为；`load_dump_test.rs` 与 migration 测试对此有注释和断言。
 - Go 记录加载/转储条目数日志；Rust 只累加 dump 的 `cnt` 后丢弃，也没有 load 计数日志。计数不影响文件或存储语义，但可观测性并未完全移植。
 - Rust 使用 `std::os::unix` 设置权限，当前没有 Go 所具有的跨平台 `os.OpenFile` 抽象范围。
 
@@ -104,13 +96,3 @@ RustCodeGraph 核实的内部调用边为 `LoadFromFile -> readItem` 和 `DumpTo
 - 若要支持并发或多进程 dump，同一固定 `.tmp` 名不够安全；应设计唯一临时名、冲突策略与清理路径，并验证 rename 的平台语义。若要求崩溃持久性，还需评估父目录同步。
 - 若要支持非 Unix 目标，应将 `OpenOptionsExt::mode` 隔离到条件编译实现，并为权限/替换行为提供平台独立契约。
 - 测试应继续放在独立文件：格式、I/O 错误和临时文件生命周期优先扩展 `load_dump_test.rs`；Go/Rust 移植一致性场景可扩展 `migration_aster_unit_test.rs`，不要把测试模块写入 `load_dump.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/store/mockstore/unistore/lockstore` 确认模块文件集合；`node --file .../load_dump.rs` 阅读了完整 158 行；`query` 定位 `LoadFromFile`、`DumpToFile`、`readItem`、`writeItem`、`littleEndian`；`callees` 核实两条核心内部调用边。`callers` 未给出公开方法调用者，因此又以仓库文本搜索确认直接使用点。
-- 目标源码：`pkg/store/mockstore/unistore/lockstore/load_dump.rs`，核实格式、错误折叠、缓冲复用和落盘顺序。
-- crate 与模块边界：`pkg/store/mockstore/unistore/lockstore/Cargo.toml`、`lib.rs`；该目录没有 `doc.go`。
-- 核心直接依赖：RustCodeGraph 读取 `lockstore.rs` 的 `MemStore`/`Put`/`Send`/`Sync` 定义，以及 `iterator.rs` 的 `Iterator`/`NewIterator`/遍历方法。
-- Go 对照：`pkg/store/mockstore/unistore/lockstore/load_dump.go`，核实 wire format、缓冲复用、日志和 deferred close 行为。
-- 独立 Rust 测试：`pkg/store/mockstore/unistore/lockstore/load_dump_test.rs` 覆盖读取错误被成功 close 结果覆盖；`migration_aster_unit_test.rs` 覆盖 dump/load 往返、键值恢复、缺失文件、临时文件消失与截断输入。
-- 仓库搜索：`rg` 仅在上述 Rust 测试中发现 `LoadFromFile`/`DumpToFile` 的 Rust 调用，未发现可确认的生产调用；这也是本文将接线状态限定为“测试可核实”的依据。

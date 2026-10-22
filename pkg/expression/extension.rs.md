@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-对应源码：[extension.rs](extension.rs)。本文件属于 `pkg/expression/Cargo.toml` 定义的 `astersql-expression` crate，由 [lib.rs](lib.rs) 以私有模块 `extension_kernel` 挂载。它位于扩展框架与表达式运行时之间：上游接收 `astersql-extension`（Cargo 中别名 `extension-dependency`）的 `FunctionDef`，下游把定义适配成表达式注册表使用的 `functionClass` 和 `builtinFunc`。
-
-SQL 表达式构建时，[scalar_function.rs](scalar_function.rs) 会先查询内建 `funcs`，再查询 `extensionFuncs`；因此一旦注册成功，扩展函数沿普通标量函数构建路径进入求值。常量等级判断也通过 `builtinFunc::isExtensionFunction` 把它视为不可折叠函数，[cache_snapshot.rs](cache_snapshot.rs) 则显式拒绝为扩展 builtin 制作缓存快照。
-
-必须区分“安装入口存在”和“生产启动已接线”：本文件公开的 `init()` 会把注册/删除闭包安装到 `astersql-extension` 的全局钩子，但 `extension_kernel` 在 crate 根是私有模块；仓库检索只发现独立测试调用 `crate::extension_kernel::init()`，没有生产 Rust 调用边。因此当前源码能证明注册适配和安装机制已经实现，不能证明应用启动时一定自动安装了该钩子。
+`extensionFuncSig` 在每次求值前重新取得权限检查器和会话变量，然后调用扩展提供的字符串或整数回调；它还把会话上下文和参数求值能力暴露为 `extension::FunctionContext`。
 
 ## 核心职责
 
@@ -104,10 +100,6 @@ RustCodeGraph 精确确认了文件内部边：`registerExtensionFunc -> newExte
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [extension.go](extension.go)。Rust 保留了 Go 的主结构与命名：`registerExtensionFunc`、`removeExtensionFunc`、`extensionFuncClass`、`newExtensionFuncClass`、`getFunction`、`checkPrivileges`、`extensionFuncSig`、`extensionFnContext`、`EvalArgs` 和初始化钩子都有一一对应项。
-
-一致语义包括：注册名前转小写、拒绝内建/扩展重名、只支持 String/Int 返回、按可选参数数计算范围、构建期和求值期双重权限检查、非 SEM 提示包含 `SUPER`、参数按声明类型转换、跳过计划缓存、每行回调可取用户/角色/当前库/连接信息和参数 Datum。
-
 实现形态差异如下：
 
 - Go 包 `init()` 自动给全局函数变量赋值；Rust 把钩子放入 `OnceLock<RwLock<_>>`，并要求显式调用本文件 `init()`。当前未找到生产 Rust 调用点。
@@ -117,7 +109,7 @@ RustCodeGraph 精确确认了文件内部边：`registerExtensionFunc -> newExte
 - Go `extensionFnContext` 内嵌 `context.TODO()`；Rust 的 `ExtensionContext` 是空 trait，没有对应的取消/deadline 上下文。
 - Go 零参数 `EvalArgs` 返回 `nil` slice；Rust 返回空 `Vec`。
 
-Go 测试 `pkg/extension/function_test.go` 覆盖批量 setup 的 nil、空名、内建冲突、同/跨扩展重名，以及非 SEM/SEM 下构建（prepare）和运行权限行为。Rust 独立测试目前直接覆盖空定义、缺回调、内建冲突、成功/重复注册、精确键删除和 `init` 幂等；不能据此声称 Go 的完整 SQL/权限集成用例已经在 Rust 中全部回归。
+Rust 独立测试目前直接覆盖空定义、缺回调、内建冲突、成功/重复注册、精确键删除和 `init` 幂等；不能据此声称 Go 的完整 SQL/权限集成用例已经在 Rust 中全部回归。
 
 ## 扩展指南
 
@@ -130,14 +122,3 @@ Go 测试 `pkg/extension/function_test.go` 覆盖批量 setup 的 nil、空名�
 若补齐生产安装接线，应在明确的 crate/进程初始化位置调用并暴露 `extension_kernel::init`，添加独立集成测试证明 `extension::Setup` 能从启动路径到达 `extensionFuncs`，而不只是直接在 crate 内测试私有函数。还应验证 teardown/Reset 的删除回调、部分注册回滚和再次 setup 行为。
 
 主要兼容风险是 Go/Rust 初始化时机差异、精确删除键遗留、权限错误消息差异、可选参数与 cast 类型漂移、Arc 指针相等语义和扩展回调错误类型被字符串化。性能风险集中在每次求值的权限/会话属性读取、参数逐项 Eval 与扩展回调自身；扩展签名明确非向量化且禁用计划缓存，不能在没有行为证明时放宽。
-
-## 验证依据
-
-- 目标源码：[extension.rs](extension.rs)，完整核对 424 行以及 `registerExtensionFunc`、`newExtensionFuncClass`、`getFunction`、`checkPrivileges`、`extensionFuncSig`、`extensionFnContext` 和 `init`。
-- crate 与装配：[Cargo.toml](Cargo.toml) 的 `astersql-expression`、`extension-dependency`、`sem-dependency`、`expropt` 声明；[lib.rs](lib.rs) 的私有 `extension_kernel` 和独立测试挂载。包目录无 `doc.go`，因此没有可读取的 Go 包契约文件。
-- 运行时接线：[scalar_function.rs](scalar_function.rs) 的 `extensionFuncs.Load`，`builtin.rs` 的线程安全注册表和扩展函数列表，[cache_snapshot.rs](cache_snapshot.rs) 的扩展 cache-snapshot 拒绝，以及 `scalar_function.rs::ConstLevel` 的不可折叠判断。
-- 扩展边界：`pkg/extension/function.rs` 的 `FunctionContext`、`FunctionDef::Validate`、钩子锁、注册/删除转发；限定检索确认 `InstallExtensionFunctionHooks` 的生产实现位置和本文件 `init` 当前没有生产调用点。
-- Rust 独立测试：[extension_runtime_aster_unit_test.rs](extension_runtime_aster_unit_test.rs)，覆盖注册验证/原子重复、大小写精确删除和钩子幂等安装；该文件还含相邻 BuildSimpleExpr 工厂并发测试，后者不是本文件行为证据。
-- Go 对照：[extension.go](extension.go) 和 `pkg/extension/function_test.go`，用于核对注册、构建、权限、求值上下文、SEM 错误与 setup 回滚测试意图。
-- RustCodeGraph：`status` 显示索引有 11,467 个文件、307,296 个节点、1,848,419 条边；使用 `node --file` 完整读取目标文件，查询 `registerExtensionFunc`、`removeExtensionFunc`、`extensionFuncSig`、`extensionFnContext`，并对关键入口运行 callers/callees。图确认了上述内部调用链；跨 trait/闭包的动态边由源码与 `rg` 补证。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付前仅运行任务指定的 11 章节结构验证，并人工复核唯一产物、源码链接、未接线事实和测试文件分离建议。

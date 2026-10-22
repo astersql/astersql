@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` crate；crate 入口 `lightning/pkg/importer/lib.rs` 以 `mod chunk_process` 装载它并通过 `pub use chunk_process::*` 重导出公开项。它处在 Lightning 导入流程的“源文件分块解析 → 行编码 → 交付进度”边界，同时也向重复键预检测和预信息读取提供解析器能力。
-
-当前 Rust 接线需要分两层理解：`openParser` 已被 `lightning/pkg/importer/dup_detect.rs::dupDetector::addKeysByChunk` 用于生产路径，`parquet_source` 也被 `lightning/pkg/importer/get_pre_info.rs::ReadFirstNRowsByFileMeta` 复用；但 `newChunkProcessor`、`chunkProcessor::process`、`encodeLoop` 和 `deliverLoop` 在非测试 Rust 文件中没有调用者，现阶段主要由 `lightning/pkg/importer/chunk_process_test.rs` 验证。Go 版本的完整导入主链则从 `lightning/pkg/importer/table_import.go` 创建处理器并调用 `process`。
+`MydumpParser` 把 `astersql_lightning_mydump::Parser` 适配为本文件的 `DataParser`，包括错误类型转换、行数据类型转换、列名透传和行对象回收。
 
 ## 核心职责
 
@@ -83,10 +81,6 @@ RustCodeGraph 的 `callees` 确认 `openParser → {getColumnNames, parquet_sour
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `lightning/pkg/importer/chunk_process.go`，测试对照为同目录 `chunk_process_test.go`。
-
-已对齐的语义包括：按 CSV/SQL/Parquet 选择 parser；从 checkpoint 恢复 offset 与 row ID；按 permutation 生成源列名并支持 `_tidb_rowid`；编码配置使用 SQL mode、timestamp、sys vars 和稳定的 auto-random seed；EOF 正常结束、其他解析错误传播；取消优先于继续读行；仅有进度时保存 checkpoint；关闭 parser。
-
 Rust 当前的关键差异/缺口：
 
 - Go `newChunkProcessor` 自行 `openParser` 并记录 file index；Rust 接收已经创建的 parser，且没有 index。
@@ -108,12 +102,3 @@ Rust 当前的关键差异/缺口：
 - 若补齐 Rust/Go 等价实现，需逐项对照 `chunk_process.go` 的 encode/deliver 主循环，不应删除 AddIndexBySQL、扩展列、忽略列、重复键信息、指标、配额锁和 checkpoint 同步逻辑来做简化版本。
 
 兼容性风险主要在 checkpoint 恢复语义、列排列和 EOF 分类；性能风险主要在全文件读取/解压和无上限 `pending`；正确性风险主要在当前交付未写 EngineWriter、`RealOffset` 简化以及关闭错误被忽略。
-
-## 验证依据
-
-- 生产源码：`lightning/pkg/importer/chunk_process.rs`（全部 509 行）；模块入口：`lightning/pkg/importer/lib.rs`；crate 声明：`lightning/pkg/importer/Cargo.toml`。
-- 直接 Rust 调用证据：`lightning/pkg/importer/dup_detect.rs::addKeysByChunk` 调用 `openParser`；`lightning/pkg/importer/get_pre_info.rs::ReadFirstNRowsByFileMeta` 调用 `parquet_source`；`lightning/pkg/importer/import.rs` 定义 `saveCheckpoint`、`deliveredKVs`、`deliverResult`。
-- Rust 独立测试：`lightning/pkg/importer/chunk_process_test.rs`，覆盖取消发生在读行前、精确 EOF 分类、错误传播、空交付不写 checkpoint、三行处理后的 offset/row ID/checkpoint、列排列/忽略列、gzip CSV、Parquet 从 offset 恢复及 `file_size` 为 0 的探测路径。
-- Go 对照：`lightning/pkg/importer/chunk_process.go`、`lightning/pkg/importer/chunk_process_test.go`，以及主链调用 `lightning/pkg/importer/table_import.go::{newChunkProcessor, process}`。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点、1,848,419 边；`query` 定位 `newChunkProcessor`、`openParser`、`getColumnNames`、`parquet_source` 及 Rust/Go 同名符号；`callees` 验证上述主要内部调用边。路径过滤和 `callers` 未能返回本文件的完整上游边，故调用者以源码搜索复核。
-- 本任务为纯文档分析，按计划不运行 Cargo 或代码测试；最终使用任务指定命令验证文档存在且恰有 11 个固定二级章节，并人工复查没有把 Go 的完整行为写成 Rust 已支持能力。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-mydump` crate 的文件发现与分类层。crate 根在 `pkg/lightning/mydump/Cargo.toml`，由 `lib.rs` 以 `mod router; pub use router::*;` 纳入并重导出；该 crate 的直接依赖中，路由实现使用 `regex` 编译/展开规则、使用 `percent-encoding` 解码库表名，并以 crate 根定义的 `MydumpError::Routing` 统一返回路由错误。
-
-它位于“存储枚举出路径”与“loader 组装库表元数据”之间：`loader.rs::NewLoaderWithStore` 从 `LoaderConfig.file_routes` 调用 `NewFileRouter`，随后对每个路径调用 `FileRouter::Route`；得到的 `RouteResult` 决定文件是库级 schema、表/视图 schema、SQL/CSV/Parquet 数据还是应忽略，并把 schema、表名、分片 key 与整体压缩格式交给后续元数据构造。该文件只解释路径，不读取文件内容，也不负责表路由、过滤或解压。
+定义路由输入、输出和枚举契约：`FileRouteRule`、`RouteResult`、`SourceType`、`Compression`、`CompressType` 与 `FileRouter`。
 
 ## 核心职责
 
@@ -97,11 +95,6 @@ RustCodeGraph 的 `files --filter pkg/lightning/mydump` 确认 `router.rs`、`lo
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/mydump/router.go`，对应测试是 `router_test.go`。核心语义保持一致：
-
-- `SourceType`/`Compression` 判别顺序、字符串映射和 `ToStorageCompressType` 支持集合一致。
-- `default_file_route_rules` 的七条规则及顺序一致，包括备份忽略、schema/view、内部压缩 Parquet 和通用数据文件。
-- Go `FileRouter.Route` 的 `nil, nil` 对应 Rust `Ok(None)`；Go `chainRouters` 与 Rust `ChainRouters` 都是首个命中优先。
 - Go `regexRouterParser.Parse` 与 Rust `RegexRouterParser::parse` 的字段解析顺序、库 schema 不要求 table、ignore 提前返回、模板捕获校验和全文件压缩 Parquet 拒绝一致。
 - Go 的 `patExpander` 保存 `applyFn` 闭包；Rust 用闭合枚举 `Setter` 表达同一组赋值行为。Go 的嵌入 `filter.Table` 在 Rust 中拆为 `RouteResult.schema/name`。
 
@@ -113,8 +106,6 @@ RustCodeGraph 的 `files --filter pkg/lightning/mydump` 确认 `router.rs`、`lo
 - Go `ToStorageCompressType` 的错误分支同时返回 `NoCompression` 和 error；Rust 用 `Result` 只返回 `Err`，调用者不能读取伴随的默认值。
 - Go 文件还包含 Aurora router；Rust 将对应逻辑放在 `loader.rs::newAuroraFileRouter`，但生成的规则仍由本文件编译执行。
 
-Rust `router_test.rs` 的 `TestRouteParser`、`TestDefaultRouter`、`TestInvalidRouteRule`、`TestSingleRouteRule`、`TestMultiRouteRule`、`TestRouteExpanding`、`parsing_contract_matches_go`、`TestRouteWithPath` 和 `TestRouteWithCompressedParquet` 与 Go 测试覆盖的主要契约相呼应。
-
 ## 扩展指南
 
 - 新增来源类型：同步修改 `SourceType`、字符串常量、`parse_source_type`、`SourceType::as_str`，确认 `RouteResult` 消费端（特别是 `loader.rs` 的跳过逻辑与 `insert_meta`）如何处理，并在独立 `router_test.rs` 与必要的 loader 测试中增加 Go 对照用例。
@@ -124,13 +115,3 @@ Rust `router_test.rs` 的 `TestRouteParser`、`TestDefaultRouter`、`TestInvalid
 - 改变 URL 解码或日志：修改 `set_routed_value`/`Logger`，明确失败是保留原值还是终止；若 logger 需要跨线程/高吞吐，评估无限增长的消息 Vec 与全局 mutex 争用。
 - 新增测试必须继续放在独立 `pkg/lightning/mydump/router_test.rs`，不要嵌入生产源文件；Go 迁移语义变化同时更新 `router_test.go` 或记录有意差异。
 - 性能敏感扩展应把固定正则（如模板变量扫描）改为一次初始化或构造器级复用，并用大规则集/大文件清单基准验证；当前文档没有性能基准证据，不能宣称路由成本可忽略。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/lightning/mydump` 列出目标、模块入口、loader、Go/Rust 对照和测试；`node --file pkg/lightning/mydump/router.rs --offset 1 --limit 500` 与 `--offset 501 --limit 200` 覆盖目标 641 行；`query new_file_router --kind function`、`query default_file_route_rules --kind function` 均定位到本文件。对相同符号执行的 `callers/callees` 无返回，已用直接引用搜索补证。
-- 生产源码：`pkg/lightning/mydump/router.rs`（全部类型、规则编译、模板展开、错误边界）；`pkg/lightning/mydump/lib.rs`（模块装配和重导出）；`pkg/lightning/mydump/loader.rs`（`LoaderConfig::default`、`NewLoaderWithStore`、`newAuroraFileRouter`、`insert_meta`、自由函数 `route`）。该目录不存在 `doc.go`，因此最近的包级入口证据取自 `lib.rs` 和 `Cargo.toml`。
-- crate 边界：`pkg/lightning/mydump/Cargo.toml` 声明包名 `astersql-lightning-mydump`、入口 `lib.rs`、`percent-encoding`/`regex`/`thiserror` 等依赖，以及 `go-package = "pkg/lightning/mydump"` 移植对应关系。
-- Go 对照：`pkg/lightning/mydump/router.go`（同名枚举、默认规则、router/parser/expander/result）；`pkg/lightning/mydump/router_test.go`（规则编译、默认路由、非法规则、展开、常量 path、压缩 Parquet）。
-- Rust 独立测试：`pkg/lightning/mydump/router_test.rs` 覆盖九个上述契约测试；本任务按计划是纯文档分析，没有运行 Cargo，也没有把测试写入生产文件。
-- 调用引用搜索：在 `pkg/lightning` 与 `lightning` 的 Rust/Go 文件中检索 `NewFileRouter`、`FileRouter`、`RouteResult`、`default_file_route_rules` 和 `ToStorageCompressType`，确认 Rust 生产调用集中于 `loader.rs`，并确认 Go importer/loader/reader/parser 的对应消费链。
-- 结构验收使用任务指定命令，要求目标存在且固定二级标题恰好为 11 个；交付前还人工复核唯一新增生产物、未修改 `plan.md`、没有把未验证的 Unicode 等价或性能结论写成已支持事实。

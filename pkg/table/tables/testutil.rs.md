@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table-tables` crate，是 `pkg/table/tables` 中专门服务于分区重组测试的辅助模块。crate 根模块在 `pkg/table/tables/lib.rs` 中以 `pub mod testutil` 无条件公开它，因此函数可以被 crate 内测试和外部依赖者引用；当前 Rust 仓库中唯一实际引用位于 `pkg/table/tables/tables_test.rs`。
-
-它不参与 SQL 请求、分区路由或 DDL 的生产执行链，也不创建表。它的作用是在测试中模拟“当前 schema 视图”和“上一 schema 视图”之间的分区重组状态切换，以便验证过渡期读写行为。该定位与同路径 Go 文件 `pkg/table/tables/testutil.go` 的注释“used in tests”一致。
+成功返回前交换 `PartitionedTable` 当前定义的全部五个字段，避免产生“定义来自一个 schema、路由状态来自另一个 schema”的混合对象。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/table/tables/testutil.go` 的 `SwapReorgPartFields(src, dst table.Table) bool`。两版共同语义是：先对两侧执行具体分区表类型检查，任一失败则返回 `false`；成功时原地交换分区重组所需状态并返回 `true`。
+Go 的 `partitionedTable` 嵌入 `TableCommon`，对照函数交换 `meta`、`partitionExpr`、`reorgPartitionExpr`、`partitions`、`reorganizePartitions`、`doubleWritePartitions` 六组状态；Rust 的轻量 `PartitionedTable` 将当前模型表达为 `definitions`、单一 `expression` 和三个分区映射，共五个字段。因此 Rust 实现保持的是“交换 Rust 表对象的全部分区定义与过渡态”的行为意图，而不是复制 Go 的内部布局。
 
-字段不是机械的一一对应。Go 的 `partitionedTable` 嵌入 `TableCommon`，对照函数交换 `meta`、`partitionExpr`、`reorgPartitionExpr`、`partitions`、`reorganizePartitions`、`doubleWritePartitions` 六组状态；Rust 的轻量 `PartitionedTable` 将当前模型表达为 `definitions`、单一 `expression` 和三个分区映射，共五个字段。因此 Rust 实现保持的是“交换 Rust 表对象的全部分区定义与过渡态”的行为意图，而不是复制 Go 的内部布局。
-
-Go 的真实使用证据位于 `pkg/table/tables/test/partition/partition_test.go`：`beforeRunOneJobStep` failpoint 回调在分区重组的多个 schema 状态中反复调用该函数，在当前/上一 schema 视图之间交替执行插入、更新、删除并检查两张表的数据一致性。Rust 的 `pkg/table/tables/test/partition/partition_test.rs` 目前只以场景清单和 Go 源映射记录这一行为，直接可执行回归由 `pkg/table/tables/tables_test.rs` 的单元测试覆盖；这说明 Rust 尚未复刻该 Go 端到端 failpoint 场景。
+Rust 的 `pkg/table/tables/test/partition/partition_test.rs` 目前只以场景清单和 Go 源映射记录这一行为，直接可执行回归由 `pkg/table/tables/tables_test.rs` 的单元测试覆盖；这说明 Rust 尚未复刻该 Go 端到端 failpoint 场景。
 
 ## 扩展指南
 
@@ -87,15 +83,3 @@ Go 的真实使用证据位于 `pkg/table/tables/test/partition/partition_test.g
 - 若 Rust 模型以后拆分常态与重组专用表达式，应按 Go `partitionExpr`/`reorgPartitionExpr` 的语义同时交换两者，并增加路由行为断言，而不只是字段相等断言。
 - 测试逻辑应继续放在独立的 `pkg/table/tables/tables_test.rs`，不要内嵌到本源文件。需要补齐 Go 的 DDL 过渡场景时，应扩展独立的分区测试文件，并保留 failpoint 各 schema 状态下的插入、更新、删除和一致性检查意图。
 - 性能风险很低：现实现为常数次所有权交换。扩展时应避免深拷贝大型分区映射；兼容风险主要来自遗漏新字段或改变 `false` 的动态类型失败契约。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 `pkg/table/tables/testutil.rs`；文件节点显示 50 行、2 个符号节点，并标识 `pkg/table/tables/tables_test.rs` 为唯一使用文件。
-- RustCodeGraph `node --file pkg/table/tables/testutil.rs` 与 `node pkg/table/tables/testutil.rs::swap_reorg_part_fields`：确认函数签名、两次动态下转型、五次字段交换和成功返回路径。
-- RustCodeGraph `node partition.rs::PartitionedTable`：确认结构定义及五个被交换字段，位置为 `pkg/table/tables/partition.rs`。
-- `pkg/table/tables/lib.rs`：确认 `testutil` 的公开模块接线以及 crate 内测试模块的独立文件组织。
-- `pkg/table/tables/Cargo.toml`：确认 crate 名称、库入口、默认 feature 和依赖边界。
-- `pkg/table/tables/tables_test.rs`：确认直接回归测试 `reorganization_swap_exchanges_all_fields_and_checks_dynamic_type` 同时覆盖完整状态交换与动态类型失败。
-- `pkg/table/tables/testutil.go`、`pkg/table/tables/partition.go`：确认 Go 类型断言、交换字段及 Go/Rust 数据模型差异。
-- `pkg/table/tables/test/partition/partition_test.go` 与 `pkg/table/tables/test/partition/partition_test.rs`：确认 Go 端 DDL 重组中的真实使用场景，以及 Rust 当前对该场景的映射程度。
-- 人工复核结论：本文件是测试专用的分区重组状态交换原语；安全扩展的关键是让交换字段与 `PartitionedTable` 的重组相关状态持续保持完整同步，并在独立测试中同时覆盖成功后的完整对象状态和类型失败的不修改行为。

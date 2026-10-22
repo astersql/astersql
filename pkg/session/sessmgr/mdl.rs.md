@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session-sessmgr` crate（`pkg/session/sessmgr/Cargo.toml`），实现单个真实 SQL 会话在事务期间持有的元数据锁（MDL）可共享状态。`pkg/session/sessmgr/lib.rs` 将私有模块 `mdl` 中的 `TransactionMDL` 公开再导出；因此 Server、session runtime 和跨 keyspace 内部会话协调器只依赖 sessmgr 的公开类型，而不需要借用线程局部的完整会话对象。
-
-它位于两条链路的交界处：事务读取表时由 `pkg/session/runtime/session.rs::mdl_stats_table` 登记表及 schema 版本；DDL schema 检查循环则经 `InfoSchemaCoordinator::CheckOldRunningTxn`，最终由 `pkg/server/server.rs` 或 `pkg/domain/crossks/coordinator.rs::RegisteredMDLSession::remove_lock_ddl_jobs` 调用 `TransactionMDL::check_jobs`，筛掉仍被旧事务阻塞的作业。
+让 DDL 协调线程在不访问会话内部 `RefCell` 状态的情况下检查候选作业：若作业涉及的任一表被本事务以更低版本访问，`check_jobs` 就从传入集合删除该作业。
 
 ## 核心职责
 
@@ -72,11 +70,11 @@ RustCodeGraph 将 `mdl.rs` 识别为 12 个符号，并显示该文件被 Server
 
 ## 与 Go 版本的对应关系
 
-最直接的 Go 语义来源是 `pkg/sessionctx/variable/session.go::RemoveLockDDLJobs`：它跳过 `InRestrictedSQL` 会话，锁住事务上下文，遍历 `GetRelatedTableForMDL()`，并在表相交且会话版本小于作业版本时从 `jobs` 删除作业。Go 的 `pkg/server/server.go::CheckOldRunningTxn` 遍历客户端并对每个 SessionVars 调用该函数；Rust 则把最小必要状态抽成可 `Arc` 共享的 `TransactionMDL`，避免 schema 线程借用线程局部会话。
+Go 的 `pkg/server/server.go::CheckOldRunningTxn` 遍历客户端并对每个 SessionVars 调用该函数；Rust 则把最小必要状态抽成可 `Arc` 共享的 `TransactionMDL`，避免 schema 线程借用线程局部会话。
 
-Rust 保留了 restricted 旁路、表交集和严格版本比较，但没有移植 Go 的事务开始时间、连接 ID与节流日志参数；因此本文件不会输出“old running transaction block DDL”日志。Rust 还显式加入 `begin_table(0)`/`finish_table(version)` 两阶段协议，以覆盖读取最新元数据期间的竞态，并由上层在事务边界清理。
+Rust 保留了 restricted 旁路、表交集和严格版本比较，但没有移植 Go 的事务开始时间、连接 ID与节流日志参数；因此本文件不会输出“old running transaction block DDL”日志。
 
-`JobMDL` 的 Rust/Go 定义分别位于 `pkg/infoschema/issyncer/mdldef/mdl.rs` 与 `.go`：字段语义一致；Rust 使用 `HashSet<i64>` 和 snake_case 字段，Go 使用 `map[int64]struct{}` 和导出字段。二者都把定义放在独立包/crate 以避免上层循环依赖。
+`JobMDL` 的 Rust/Go 定义分别位于 `pkg/infoschema/issyncer/mdldef/mdl.rs` 与 `.go`：字段语义一致；Rust 使用 `HashSet<i64>` 和 snake_case 字段，Go 使用 `map[int64]struct{}` 和导出字段。
 
 ## 扩展指南
 
@@ -87,12 +85,3 @@ Rust 保留了 restricted 旁路、表交集和严格版本比较，但没有移
 - Rust 测试逻辑应继续放在独立测试文件，不内嵌到 `mdl.rs`。优先扩展 `pkg/session/tests/system_session.rs`（真实事务登记/释放、prepared read、版本兼容）、`pkg/server/runtime_test.rs`（连接生命周期与用户/内部事务）或 `pkg/session/runtime/normal_ddl_test.rs`（协调器聚合、restricted 会话）；纯数据结构边界若需新增可放入 sessmgr 同目录独立 `*_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 接入。
 
 兼容风险主要是误放行 DDL 或永久阻塞；性能风险主要来自每个会话对全部候选作业执行“作业 × 相关表”扫描，以及检查期间持有版本 mutex。任何改变都应与 Go 的 `RemoveLockDDLJobs` 过滤语义对照，并覆盖版本相等、无交集、版本 `0`、restricted、重复检查和清理后放行。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`files --filter pkg/session/sessmgr` 确认目标及相邻文件；`node --file pkg/session/sessmgr/mdl.rs` 读取 44 行完整实现；`query TransactionMDL`、`query check_jobs` 及其余方法确认结构与签名。方法级 `callers/callees` 对精确符号返回空结果，故调用关系另由源码搜索核验。
-- 目标与 crate：`pkg/session/sessmgr/mdl.rs`、`pkg/session/sessmgr/lib.rs`、`pkg/session/sessmgr/Cargo.toml`。
-- 数据定义与 Go 对照：`pkg/infoschema/issyncer/mdldef/mdl.rs`、`pkg/infoschema/issyncer/mdldef/mdl.go`、`pkg/sessionctx/variable/session.go::RemoveLockDDLJobs`、`pkg/server/server.go::CheckOldRunningTxn`。
-- Rust 上游与生命周期：`pkg/session/runtime/session.rs::mdl_stats_table`、`pkg/session/runtime/control.rs::SetInRestrictedSQL`/`finish_transaction_with_retry`、`pkg/session/runtime/dispatch.rs::StatementMDL`/`ConcreteSessionInner::drop`、`pkg/server/server.rs::CheckOldRunningTxn`、`pkg/domain/crossks/coordinator.rs::RegisteredMDLSession`。
-- 独立测试：`pkg/session/tests/system_session.rs::crossks_align_infoschema_real_system_table_old_transaction` 与 `crossks_align_infoschema_prepared_read_and_transaction_cleanup`；`pkg/server/runtime_test.rs::normal_ddl_plan_user_mdl_real_driver_and_domain_lifecycle`；`pkg/session/runtime/normal_ddl_test.rs::crossks_align_normal_ddl_coordinator_fences_user_and_internal_transactions` 及 `normal_ddl_plan_user_mdl_real_internal_pool_preserves_go_restricted_bypass`。这些测试分别覆盖真实表读取、prepared 路径、提交/回滚/关闭释放、用户与内部事务聚合、重复检查不释放和 restricted 旁路。
-- 按任务约束未运行 Cargo；本次只新增说明文档，验证采用固定章节结构检查与人工事实复核。

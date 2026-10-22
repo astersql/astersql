@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-common` crate 的连接复用层。crate 入口 `pkg/lightning/common/lib.rs` 通过 `mod conn` 编译本模块，并以 `pub use conn::*` 将其公开类型和函数再导出；`pkg/lightning/common/Cargo.toml` 则把该 crate 映射到 Go 包 `pkg/lightning/common`。本文件不负责真实拨号或 RPC：当前 `ClientConn` 只保存目标字符串和关闭标志，是 `*grpc.ClientConn` 的轻量本地替身。
-
-RustCodeGraph 的文件查询显示 `conn.rs` 已被索引并包含 21 个符号；精确符号查询能定位 `ClientConn`、`ConnPool`、`GRPCConns`、`NewConnPool`、`GetGrpcConn` 和 `NewGRPCConns`。仓库范围的精确名称检索未发现独立 Rust 生产模块调用这些 API，当前可确认的直接 Rust 使用者是 `pkg/lightning/common/conn_test.rs`，因此不能把它描述为已经接入真实 Lightning/TiKV gRPC 主链。
+这些职责对应 `pkg/lightning/common/conn.go` 的 `ConnPool`/`GRPCConns` 设计，但当前 Rust 层只实现池和生命周期语义，不包含地址解析、TLS、负载均衡、健康检查或网络 I/O。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ Go 对照的直接调用关系同样封闭在 `pkg/lightning/common/conn.go` 内
 
 ## 与 Go 版本的对应关系
 
-`pkg/lightning/common/conn.go` 是直接语义基准。两边都采用：按 store ID 懒建池、池未满时创建、满后 round-robin、取走全部连接时重置游标、关闭后保留 store 映射。Rust 用 `Arc` 替代 Go 指针共享，用 `Mutex<ConnPoolState>` 把 Go 的 `mu + conns + next` 聚合为受保护状态，用 `ConnFactory` trait object 替代 Go 函数值。
+Rust 用 `Arc` 替代 Go 指针共享，用 `Mutex<ConnPoolState>` 把 Go 的 `mu + conns + next` 聚合为受保护状态，用 `ConnFactory` trait object 替代 Go 函数值。
 
 已验证的差异如下：
 
@@ -96,12 +94,3 @@ Go 对照的直接调用关系同样封闭在 `pkg/lightning/common/conn.go` 内
 若要定义严格的并发关闭协议，应同时审查 `GRPCConns::GetGrpcConn` 与 `GRPCConns::Close` 的锁顺序。至少新增“既有池上 Close 先取得池锁、Get 随后进入”的回归测试，并决定是禁止 Close 后 Get、允许重开，还是用全局 closing/closed 状态阻止漏关连接。锁顺序必须固定为外层映射锁后内层池锁，避免反向获取造成死锁。
 
 任何语义变化都应与 `pkg/lightning/common/conn.go` 对照：若是 Rust 特有优化，要记录并发、兼容与性能理由；若最终接入生产调用，还需从真实调用方验证 `tcpConcurrency > 0`，因为当前 API 对零容量获取没有可恢复错误。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/lightning/common` 确认 `conn.rs`、`conn_test.rs`、`conn.go` 与 crate 同目录；`node --file pkg/lightning/common/conn.rs --offset 1 --limit 400` 读取完整 165 行源码；`query` 精确定位 `ClientConn`、`ConnPool`、`GRPCConns`、`NewConnPool`、`TakeConns`、`GetGrpcConn` 和 `NewGRPCConns`。精确 ID 的 callers/callees 命令未返回可靠限定结果（callees 将 ID 当成模糊名称并产生无关结果），因此调用边又用仓库精确名称检索核验，未将噪声当作证据。
-- 源码与模块边界：`pkg/lightning/common/conn.rs`、`pkg/lightning/common/lib.rs`、`pkg/lightning/common/Cargo.toml`、`pkg/lightning/common/pause.rs`、`pkg/lightning/common/errors.rs`。
-- Go 对照：`pkg/lightning/common/conn.go`；仓库中没有同目录 `conn_test.go`，精确检索也未发现其他 Go 测试调用这些 API。
-- Rust 独立测试：`pkg/lightning/common/conn_test.rs`，覆盖零容量构造，以及首次获取正在工厂内执行时 Close 等待并最终关闭该连接。
-- 调用检索：对 `pkg/lightning`、`lightning` 和 `br` 下 Rust/Go 文件检索 `NewGRPCConns|GetGrpcConn|NewConnPool|TakeConns|ClientConn|GRPCConns|ConnPool`，并对 crate 名称/导入形式做补充检索；除本实现、Go 对照和 Rust 测试外，未确认本模块 API 的 Rust 生产调用方。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前另运行任务指定的 11 章节结构校验，并人工复核文档对定位、运行流程和安全扩展入口的回答。

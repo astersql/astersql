@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。`pkg/expression/Cargo.toml` 以 `lib.rs` 为 crate 入口，`lib.rs:181-182` 再用 `#[path = "builtin_compare_vec.rs"] mod builtin_compare_vec_kernel;` 将它编译为私有模块。它不是 SQL 表达式注册入口，也没有直接操作正式的 `Expression`、`Chunk` 或求值上下文；它把 Go 文件 `pkg/expression/builtin_compare_vec.go` 中最容易独立验证的列式比较算法抽成 Rust 数据结构和纯函数。
-
-当前接线状态必须与“完整应用中的设计位置”区分：概念上它对应表达式执行链中的比较、`GREATEST`/`LEAST` 和 `INTERVAL` 向量内核；但仓库搜索只发现这些 API 被 `builtin_compare_vec_6_aster_unit_test.rs` 和 `builtin_compare_vec_test.rs` 调用，`builtin_compare_vec_kernel` 也只在 `lib.rs` 声明而未被生产模块再导出。因此当前事实是“随 crate 编译、用于迁移语义和独立测试的内核”，尚不能据此声称正式 Rust 表达式求值器会调用它。另一个私有模块 `builtin_compare_vec_generated_kernel` 承担生成式通用比较逻辑，二者不是互相调用关系。
+用 `NullableColumn<T>` 和 `IntColumn` 表示固定宽度值与 SQL NULL 位图，并在构造时检查 NULL 下标。
 
 ## 核心职责
 
@@ -74,15 +72,13 @@ Go 对照的真实主链是 builtin 签名的 `vecEval*`：它先让参数表达
 
 ## 与 Go 版本的对应关系
 
-`greatest_*`/`least_*` 对应 `builtin_compare_vec.go` 中各 `builtinGreatest*Sig.vecEval*`、`builtinLeast*Sig.vecEval*`：共同点是先取首参数、合并任意参数的 NULL、只在严格大于或小于时替换。字符串版本对相等值选后一个参数，来自 Go 中“不严格胜出就 append arg”的分支；独立测试 `collation_equal_string_extrema_choose_later_argument_like_go` 专门固定该语义。
+Rust 比 Go 多出显式等长错误，因为纯向量 API 没有 `Chunk.NumRows()` 提供统一长度保证。
 
-`compare_int_at` 对应 Go `vecCompareInt` 调用的 `types.VecCompareUU/UI/IU/II`，`map_compare_results` 对应 `vecResOfLT/LE/EQ/NE/GT/GE`。`compare_int_columns` 的 `NullEq` 分支逐项复刻 `builtinNullEQIntSig.vecEvalInt` 的两 NULL、一 NULL和非 NULL判断。Rust 比 Go 多出显式等长错误，因为纯向量 API 没有 `Chunk.NumRows()` 提供统一长度保证。
+Rust 为便于独立测试把所有边界预先表示成列；Go 则对当前 row 调用参数表达式的搜索方法，后者可能返回求值错误。
 
-`interval_int`/`interval_real` 对应两个 `builtinInterval*Sig.vecEvalInt`：目标 NULL 清除 NULL 标志并写 `-1`，`hasNullable` 决定 `linearSearch` 或 `binSearch`。Rust 为便于独立测试把所有边界预先表示成列；Go 则对当前 row 调用参数表达式的搜索方法，后者可能返回求值错误。
+23 个标记签名逐一对应 Go 文件内返回 `true` 的 `vectorized()` 方法，但 Rust 标记没有 Go 签名对象的字段或 `vecEval*` 方法。
 
-`greatest_string_as_time`/`least_string_as_time` 对应 `doTimeConversionForGL` 后的字符串字典序比较；`greatest_time_by`/`least_time_by` 对应先比较 `Time`、再对所有结果槽调用 `Convert`。duration 对应 Go duration 的直接大小比较。23 个标记签名逐一对应 Go 文件内返回 `true` 的 `vectorized()` 方法，但 Rust 标记没有 Go 签名对象的字段或 `vecEval*` 方法。
-
-Go 测试 `builtin_compare_vec_test.go` 通过 `testVectorizedEvalOneVec` 和 `testVectorizedBuiltinFunc` 覆盖比较、极值、`INTERVAL` 及混合 unsigned 类型的完整表达式框架；Rust 的 `builtin_compare_vec_6_aster_unit_test.rs` 覆盖纯内核等价边界，`builtin_compare_vec_test.rs` 补充 collation 相等时选择后参数。两类测试的层级不同，Rust 测试不能证明 Go 式 chunk/allocator 接线已经移植。
+两类测试的层级不同，Rust 测试不能证明 Go 式 chunk/allocator 接线已经移植。
 
 ## 扩展指南
 
@@ -93,13 +89,3 @@ Go 测试 `builtin_compare_vec_test.go` 通过 `testVectorizedEvalOneVec` 和 `t
 修改 `INTERVAL` 必须维护“首个严格大于目标的有效边界”以及等值向右的 upper-bound 语义，并分别测试 nullable 线性路径、非 nullable 二分路径、空边界、目标 NULL、混合 signed/unsigned 和未排序输入的契约处理。若引入自动检测 nullable，应消除目前由调用方保证 `has_nullable` 正确的风险。
 
 时间和字符串扩展需同步 `builtin_compare_vec.go` 的转换顺序、collation 规则与错误传播，尤其不要为了跳过无效值而擅自停止转换 NULL 槽，否则会改变 Go 可观察错误。涉及性能时应测量克隆和分配，并考虑正式 chunk allocator 的生命周期；不能仅凭纯函数正确就宣称生产向量化路径可用。
-
-## 验证依据
-
-- 源码全读：`pkg/expression/builtin_compare_vec.rs`，核对了错误、列模型、极值、整数比较、`INTERVAL`、时间转换、23 个签名及无条件编译事实。
-- crate/装配：`pkg/expression/Cargo.toml`（`astersql-expression`、`lib.rs`、`rust_decimal = "1.37"`）和 `pkg/expression/lib.rs:179-182,453-463`（生成式模块、本模块及独立测试模块声明）。
-- Rust 测试：`pkg/expression/builtin_compare_vec_6_aster_unit_test.rs` 与 `pkg/expression/builtin_compare_vec_test.rs`，覆盖数值/字符串极值、signed/unsigned、六种结果映射、`<=>`、两条 `INTERVAL` 路径、转换错误、时间/duration、非法输入及 vectorized 标记。
-- Go 对照：`pkg/expression/builtin_compare_vec.go` 与 `pkg/expression/builtin_compare_vec_test.go`；前者提供 `vecEval*`、`vecCompareInt`、`vecResOf*`、allocator 和转换顺序，后者列出完整向量表达式用例并调用统一向量测试框架。
-- 调用边搜索：`rg` 结果表明 `compare_int_columns`、`interval_*`、各极值函数只在上述 Rust 独立测试出现；排除目标源和测试后，`builtin_compare_vec_kernel` 仅在 `lib.rs` 声明，未发现生产调用或再导出。因此文档将“尚未接入正式 Rust 求值主链”列为当前限制。
-- RustCodeGraph：执行了 `rustcodegraph status`，索引可用（11,467 files、307,296 nodes、1,848,419 edges）；但 `files --filter pkg/expression/builtin_compare_vec`、`explore "pkg/expression/builtin_compare_vec.rs vectorized comparison builtins"` 和 `query builtin_compare_vec` 均未返回目标文件/符号，故按技能规则对该未覆盖文件使用直接源码与 `rg` 取证，不能声称获得图调用边。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令检查目标存在且恰有 11 个固定二级标题，并人工复核上述定位、运行方式和安全扩展建议都能回指真实符号或文件。

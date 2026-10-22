@@ -2,17 +2,7 @@
 
 ## 文件定位
 
-`mirror.rs` 是 `astersql-cmd-mirror` crate 的核心实现文件。该 crate 在 `cmd/mirror/Cargo.toml` 中声明为迁移自 Go 包 `cmd/mirror` 的 binary crate；`cmd/mirror/bin_main.rs::main` 调用 `astersql_cmd_mirror::main`，再由 `cmd/mirror/lib.rs::main` 单跳进入本文件的 `main`。因此，本文件既包含命令入口，也包含从 Go module 元数据生成 Bazel `go_repository` 定义的完整业务流程。
-
-本文件不是 TiDB SQL 请求链的一部分，而是构建依赖生成工具：它读取根模块和 `pkg/parser` 的 `go.mod`/`go.sum`，调用 runfiles 中的 Go 工具列举并下载模块，最后把新的 `deps.bzl` 内容写到标准输出。真实 Bazel、子进程和文件系统操作通过 `cmd/mirror/stubs.rs` 中的 `Bazel`、`Runner`、`Fs` trait 注入；这既是生产边界，也是独立测试能够不访问真实网络和磁盘的原因。
-
-直接相关文件如下：
-
-- `cmd/mirror/Cargo.toml`：定义库、二进制目标以及仅有的 `serde`、`serde_json` 依赖。
-- `cmd/mirror/lib.rs`：公开 `stubs` 和 `mirror` 模块，并挂接两份独立 Rust 测试。
-- `cmd/mirror/bin_main.rs`：进程级薄入口。
-- `cmd/mirror/mirror.go`：逐函数对齐的原始 Go 实现。
-- `cmd/mirror/mirror_test.rs`、`cmd/mirror/parity_test.rs`：输出错误、清理错误与 Go/Rust 公共契约的回归测试。
+由 `mirror_with` 编排流程并确保临时目录回收；由 `run_main_with`/`main` 处理旧 flags、标准输出/错误和 Go 风格的子进程失败包装。
 
 ## 核心职责
 
@@ -123,14 +113,9 @@
 
 ## 与 Go 版本的对应关系
 
-`cmd/mirror/mirror.go` 与本文件基本逐函数对应：
-
-- Go 的两个 module struct 对应 Rust 的 `DownloadedModule`、`ListedModule`。
-- `copyFile`、`createTmpDir`、`downloadZips`、`listAllModules`、名称转换和各 dump helper 均有同名 snake_case Rust 实现。
 - Go 的 `exec.Command(...).Output()`、Bazel runfile API 和 `os` 操作被拆成 `Runner`、`Bazel`、`Fs` trait；这是为测试引入的结构差异，不改变业务步骤。
 - Go 通过 `strings.Builder` 按行拼 JSON；Rust 的 `split_json_objects` 先形成对象字符串，再交给 serde，刷新条件仍是行首 `}`。
 - Go 对 map 生成的仓库名排序；Rust 同样先排序 `Vec<String>`，再输出。
-- Go `defer os.RemoveAll(tmpdir)` 对应 Rust `TmpDirGuard::drop`；成功和错误路径都清理，清理失败都 panic。
 - Go 的包级 bool 由 `flag.BoolVar` 写入；Rust 通过 `parse_flags_checked` 和线程局部 Cell 保留旧参数与提示语义。
 - Go 直接向 stdout 调用 `fmt.Print*`；Rust 传入 `dyn Write` 以便测试，但刻意忽略写错误以保持外观一致。
 - Go 用 `errors.As(err, *exec.ExitError)` 取 stderr；Rust 依赖 `Error.is_exit`/`stderr` 复制同一 panic 文本。
@@ -151,18 +136,3 @@
 - 新增外部能力：把边界加到 `stubs.rs` 的 trait 及生产/脚本实现中，本文件只编排；同步修改不能放进本文件的测试模块，因为仓库要求 Rust 测试与源文件分离。
 
 兼容风险主要是生成文本、Bazel repo name、replace/patch 选择和错误文本漂移；正确性风险主要是下载映射缺失、错误过滤根模块或漏清理；性能风险相对有限，主要来自模块数量增长时的子进程与排序成本。本文件属于构建工具，修改 Go imports、Go 测试入口或 Bazel 元数据时还需遵守仓库的 `bazel_prepare` 触发规则。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- `cmd/mirror/mirror.rs`：完整读取 531 行，核对全部结构体、线程局部状态、公开/私有函数、`TmpDirGuard` 及其 `Drop` 实现。
-- `cmd/mirror/Cargo.toml`：核对 crate 名称、library/binary 入口、porting metadata 和 `serde`/`serde_json` 依赖。
-- `cmd/mirror/bin_main.rs`、`cmd/mirror/lib.rs`：核对生产入口链和独立测试挂接方式。
-- `cmd/mirror/stubs.rs`：核对 `Error`、`Flags`、`Bazel`、`Runner`、`Fs` 以及生产/测试实现的真实语义。
-- `cmd/mirror/mirror.go`：完整读取 334 行，逐段核对函数顺序、命令参数、JSON 切分、输出例外、错误包装和 defer 清理。
-- `cmd/mirror/mirror_test.rs`：核对忽略 writer 错误、保留后续业务错误和 cleanup panic 文本。
-- `cmd/mirror/parity_test.rs`：核对命名、proto mode、稳定排序、特殊 build 配置、本地/远端 replace、patch、只读 list 参数、废弃 flags、坏 JSON、ExitError stderr 以及临时目录生命周期。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter cmd/mirror` 定位 7 个相关源文件；目标文件关系显示被 `mirror_test.rs`、`parity_test.rs` 使用；`query` 定位 `Bazel`、`Runner`、`Fs`、`ProdRunner`、`mirror_with`、`dump_new_deps_bzl` 等符号；并对关键入口执行了 `callers`/`callees` 查询，未得到额外文本调用边。
-
-结构验证应保证本文存在且恰有上述十一个固定二级标题。由于任务为纯文档分析，按计划不运行 Cargo；行为结论来自源码、Go 对照、RustCodeGraph 和现有独立测试内容，未在本任务中执行运行时测试。

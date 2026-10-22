@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore` crate 的 Google Cloud Storage（GCS）后端实现。crate 根模块在 [`lib.rs`](./lib.rs) 中以 `pub mod gcs` 暴露它；统一接口来自独立子 crate [`storeapi/storage.rs`](./storeapi/storage.rs) 的 `storeapi::Storage` 与 `storeapi::StrongConsistency`。它位于 URI/后端配置解析与 `object_store` GCP 客户端之间：调用者提交 `GCSConfig` 和相对对象名，本文件负责构造客户端、规范化对象键，并把统一存储操作转成 `object_store::ObjectStore` 调用。
-
-当前可确认的应用入口是 [`pkg/session/runtime/load_data.rs`](../session/runtime/load_data.rs) 的远端 `LOAD DATA` GCS 分支：`ParseBackend` 产生 `StorageBackend::Gcs` 后，代码调用 `new_gcs_storage`，再用 `WalkDir` 和 `ReadFile` 枚举、读取输入对象。RustCodeGraph 还显示本文件被 `pkg/objstore/parse_test.rs` 和 `tests/realtikvtest/importintotest4/recorded_summary_harness.rs` 引用。该实现不是门面或桩，但通用 [`storage.rs`](./storage.rs) 的另一套兼容工厂通过 `external_factory` 注入云后端，不能据此假定所有 Rust 云存储构造路径都会自动进入本文件。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义：包名为 `astersql-objstore`，依赖开启 `gcp` feature 的 `object_store = 0.14`，并依赖本地 `objectio`、`storeapi` 子 crate；异步 GCS API 由本文件持有的 `ObjectStorageCore` runtime 同步等待。
+`GCSStorage` 实现完整 `storeapi::Storage` 操作面：整对象读写、存在性检查、幂等删除、范围读取、遍历、流式创建、重命名、URI 与预签名 URL。
 
 ## 核心职责
 
@@ -100,8 +96,6 @@ multipart 资源的真正生命周期在 [`gcs_extra.rs`](./gcs_extra.rs)：正�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`gcs.go`](./gcs.go)，测试对照是 [`gcs_test.go`](./gcs_test.go)。两版都提供 GCS 配置、前缀拼接、完整读写、存在检查、幂等删除、范围 reader、排序/过滤后的遍历、流式 writer、读写删式 rename、预签名 GET、强一致 marker、重试分类和访问统计；Rust 的 [`gcs_test.rs`](./gcs_test.rs) 延续了读写删、1000 对象遍历、seek/range、multipart、并行访问、context 取消、批量删除、统计和重试判定意图。
-
 已验证差异如下：
 
 - Go `GCSStorage` 并行创建 16 个 `storage.Client`/`BucketHandle` 并轮询使用，`Reset` 会关闭并重建它们，`Close` 会取消 client context 并关闭客户端；Rust 依赖 `object_store` 的共享 HTTP 池，`client_count` 只保留数值语义，`reset` 不重建，`Close` 无操作。
@@ -123,17 +117,3 @@ multipart 资源的真正生命周期在 [`gcs_extra.rs`](./gcs_extra.rs)：正�
 - 与 Go 对齐的新行为应先从 [`gcs.go`](./gcs.go) 和 [`gcs_test.go`](./gcs_test.go) 提取原测试意图，再在独立 Rust 测试中覆盖；真实 GCS 专属行为不能只靠 `InMemory` 证明。
 
 主要兼容风险是 ACL、凭据发现、HTTP/权限选项、prefetch 和客户端生命周期仍与 Go 不完全等价；主要性能风险是 `WalkDir` 全量收集排序、跨 store copy 与 rename 整对象入内存；主要正确性风险是 rename 部分完成、字符串式 retry 分类以及范围参数未在本层完整校验。
-
-## 验证依据
-
-本说明依据以下直接证据完成：
-
-- RustCodeGraph `status`：索引包含 11467 个文件、307296 个节点和 1848419 条边；目标 `pkg/objstore/gcs.rs` 与 Rust/Go 对照文件均在索引中。
-- RustCodeGraph `files --filter pkg/objstore`：确认 `gcs.rs`、`gcs_extra.rs`、`gcs_test.rs`、`gcs.go`、`gcs_test.go`、crate 入口和两个接口子 crate 的文件布局。
-- RustCodeGraph `node --file pkg/objstore/gcs.rs --offset 1 --limit 500` 及 `--offset 480 --limit 90`：阅读全文 542 行，核对全部常量、结构体、impl、trait 方法和 `should_retry`，确认无条件编译项。
-- RustCodeGraph `query GCSStorage --kind struct` 与 `query new_gcs_storage --kind function`：区分 Rust/Go 同名实现并定位真实构造函数与测试。
-- RustCodeGraph 对 [`lib.rs`](./lib.rs)、[`gcs_extra.rs`](./gcs_extra.rs)、[`storeapi/storage.rs`](./storeapi/storage.rs)、[`parse.rs`](./parse.rs) 和 [`pkg/session/runtime/load_data.rs`](../session/runtime/load_data.rs) 的精确 `node` 读取：核对模块暴露、下游 multipart 生命周期、trait 契约、URI 配置和生产调用点。
-- [`Cargo.toml`](./Cargo.toml)：核对 crate 名、`object_store` 的 `gcp` feature、本地 `objectio`/`storeapi` 依赖以及测试不自动发现的边界；目标包不存在 `doc.go`。
-- RustCodeGraph 分段读取 [`gcs_test.rs`](./gcs_test.rs) 全部 652 行：核对基本 I/O、范围与 seek、multipart、并行读写、context、批量删除、统计、失败 abort、空上传、取消和最大分片数边界。
-- RustCodeGraph 分段读取 [`gcs.go`](./gcs.go) 与 [`gcs_test.go`](./gcs_test.go)：核对 Go 的 16 客户端轮询/重置/关闭、ACL、凭据、prefetch、遍历、rename、预签名、retry 和 fake server 测试语义。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的正则结构检查，要求目标文件存在且恰好包含上述 11 个固定二级标题；同时人工复查文档没有把未接线能力、Go 行为或测试替身行为写成 Rust 已实现事实。

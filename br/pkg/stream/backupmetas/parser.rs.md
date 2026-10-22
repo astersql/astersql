@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`parser.rs`](./parser.rs) 是 `astersql-br-pkg-stream-backupmetas` crate 的实际解析实现。crate 根 [`lib.rs`](./lib.rs) 通过 `#[path = "parser.rs"] pub mod parser` 装入本文件并 `pub use parser::*`，因此这里的公开类型、常量和函数同时构成 crate 的公开接口。该 crate 的 [`Cargo.toml`](./Cargo.toml) 将 Go 包映射到 `br/pkg/stream/backupmetas`，库入口为 `lib.rs`，运行时仅直接依赖 `regex`。
-
-本文件位于 BR 日志备份/PiTR 链路：它不读取对象存储或 protobuf 内容，只把 backupmeta 对象的文件名转换为时间范围、store 标识和 flags。上层再据此筛选 checkpoint 元文件、计算恢复窗口的 shift TS、跳过空 meta，以及判断是否需要加载 DDL 文件。它不是门面、生成文件或桩；对应门面是同目录 `lib.rs`。
+只负责纯解析和派生判断，不验证 `FlushTS`、`MinTS`、`MaxTS` 之间所有业务次序，也不访问网络、磁盘、全局配置或备份内容。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@ tagged-only 路径由 [`stream_metas.rs`](../stream_metas.rs) 的 `TryParseTagge
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`parser.go`](./parser.go)。Rust 保留了 Go 的公开命名、字段顺序、两种正则、tag/flag 数值、解析优先级、`CalculateShiftTS` 分支、flags 缺省语义、必需标签检查和未知标签前向兼容行为。`ShiftTSStatus` 的 `repr(u8)` 与 Go 的 `type ShiftTSStatus uint8` 及 `iota` 数值对齐。
+Rust 保留了 Go 的公开命名、字段顺序、两种正则、tag/flag 数值、解析优先级、`CalculateShiftTS` 分支、flags 缺省语义、必需标签检查和未知标签前向兼容行为。
 
 实现层面的语言差异包括：Go 返回 `errors.Errorf/Annotatef`，Rust 返回普通 `String`；Go 方法接收 `*ParsedName`，Rust 使用不可变 `&self`；Go 的包级 `regexp.MustCompile` 对应 Rust 的 `LazyLock<Regex>` 加 `expect`；Go 用 `strings.Cut`，Rust用 `split_once`；Go 的 `[256]bool` 以 byte 索引，Rust同样以 `u8 as usize` 索引。
 
-独立 Rust 测试 [`parity_test.rs`](./parity_test.rs) 验证 public contract、窗口端点和非法统计、flags 存在性、重复/缺失/未知 tag 及空标志组合；[`stream_mgr_fuzz_test.rs`](../stream_mgr_fuzz_test.rs) 对照 Go [`stream_mgr_fuzz_test.go`](../stream_mgr_fuzz_test.go) 覆盖多组 `u64`、大小写十六进制、额外 tag、flags 和缺标签错误。checkpoint 的组合接线还由 [`crr/internal/checkpoint/storage_internal_test.rs`](../crr/internal/checkpoint/storage_internal_test.rs) 使用真实风格长文件名覆盖。
+独立 Rust 测试 [`parity_test.rs`](./parity_test.rs) 验证 public contract、窗口端点和非法统计、flags 存在性、重复/缺失/未知 tag 及空标志组合；[`stream_mgr_fuzz_test.rs`](../stream_mgr_fuzz_test.rs) 对照 Go [`stream_mgr_fuzz_test.go`](../stream_mgr_fuzz_test.go) 覆盖多组 `u64`、大小写十六进制、额外 tag、flags 和缺标签错误。
 
 ## 扩展指南
 
@@ -94,11 +92,3 @@ tagged-only 路径由 [`stream_metas.rs`](../stream_metas.rs) 的 `TryParseTagge
 - 修改 shift TS 规则时，应同时检查 `stream_metas.rs::UpdateShiftTS`、restore `log_file_manager.rs` 的消费方式及 Go `stream_metas_test.go::TestCalculateShiftTS` 的意图，尤其关注闭区间端点和非法统计与“不相交”的优先级。
 - 测试逻辑应继续放在独立文件，不嵌入 `parser.rs`。最直接的同步位置是 `parity_test.rs`；跨 crate 接线用 `stream_mgr_fuzz_test.rs`、`stream_misc_test.rs` 或 checkpoint 的 `storage_internal_test.rs`。
 - 性能修改需保持整体校验与重复标签检测。该解析器可能用于对象列表扫描；应避免按 tag 数量做二次扫描或引入 I/O，同时用基准或代表性长后缀证明收益。
-
-## 验证依据
-
-- 源码与 crate 边界：`br/pkg/stream/backupmetas/parser.rs`、`lib.rs`、`Cargo.toml`。
-- Go 语义对照：`br/pkg/stream/backupmetas/parser.go`；上层 Go 消费证据来自 `br/pkg/stream/stream_metas.go`、`br/pkg/restore/log_client/log_file_manager.go`、`br/pkg/stream/crr/internal/checkpoint/storage.go`。
-- Rust 调用与测试证据：`br/pkg/stream/stream_metas.rs`、`br/pkg/stream/stream_mgr.rs`、`br/pkg/restore/log_client/log_file_manager.rs`、`br/pkg/stream/crr/internal/checkpoint/storage.rs`、`parity_test.rs`、`stream_mgr_fuzz_test.rs`、`crr/internal/checkpoint/storage_internal_test.rs`。
-- RustCodeGraph：索引状态为 7032 个 Rust 文件；`files --filter br/pkg/stream/backupmetas` 确认 `lib.rs`、`parser.rs`、`parity_test.rs` 和 Go 对照文件；`query`/`node parser.rs::ParseName` 确认签名、对 `parseTaggedBackupMetaFileName` 与 `parseLegacyBackupMetaFileName` 的调用，以及 parity/fuzz 测试调用者；`explore` 还确认 checkpoint、stream wrapper、restore manager 的上游链路。单独 `callers` 查询在本机 30 秒内未返回输出，因此未把其作为唯一证据。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。交付前使用任务指定命令确认目标文档存在且恰有 11 个固定二级章节，并人工复核文档只陈述上述代码与测试能支持的当前事实。

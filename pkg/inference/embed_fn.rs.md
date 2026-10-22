@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-inference` crate 中面向 Domain 的嵌入运行时核心。`pkg/inference/lib.rs` 将模块公开，并重导出 `EmbedFn`、`Embedder` 和 `Options`；crate 边界及依赖见 `pkg/inference/Cargo.toml`。它位于 SQL `EMBED_TEXT()` 求值与具体供应商实现之间：`pkg/domain/domain.rs::init_inference_providers` 创建一个 Domain 级 `EmbedFn` 并注册供应商，`pkg/expression/builtin_inference.rs::EvalEmbedTextArgsToDatum` 再从会话取得该运行时并调用 `embed_with_context_values`。
-
-该文件不是具体 HTTP 供应商实现。OpenAI、Jina、Cohere、HuggingFace、NVIDIA、Gemini 和 TiDB Cloud 的协议与请求逻辑位于同 crate 的对应模块；本文件负责统一的注册、请求合并、短时批处理、单文本缓存、取消和关闭生命周期。
+以 `Embedder` trait 定义供应商边界，并为只实现基础 `create_embeddings` 的供应商提供上下文值和 `ProviderContext` 兼容适配。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 的文件节点显示本文件被 Domain、表达式会话上下�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/inference/sqlembed.go`，相关 Go 测试是 `pkg/inference/sqlembed_test.go`。两版共同语义包括：Domain 所有、供应商注册与查找、相同单文本在途请求共享、调用者独立取消、最后等待者取消供应商、缓存结果克隆、配置版本隔离缓存、维度校验和关闭等待在途工作。
-
 结构上并非逐字段复刻。Go `EmbedFn` 把跨文本批处理委托给 `embedding/batcher.Batch`，缓存使用 Ristretto，并用 `context.Context`/goroutine/`WaitGroupWrapper` 管理生命周期；Rust 在本文件中以内建 `Batch`、FIFO 容量缓存、线程、条件变量和原子标志实现同一类行为。Rust 的供应商由 Domain 显式注册，而 Go `NewEmbedFn` 自行注册标准供应商。
 
 选项模型也不同：Go 接受 `map[string]any`，需深拷贝并把运行时类型签名纳入缓存键；Rust 使用 `BTreeMap<String, serde_json::Value>`，天然拥有克隆快照和确定性键顺序，以 JSON 值差异区分选项。Rust 额外公开多文本 `create_embeddings` 并在此文件内负责批次切块。因这些表示与组件边界不同，扩展时应对齐可观察行为和测试意图，不应机械复制 Go 内部字段。
@@ -96,11 +92,3 @@ RustCodeGraph 的文件节点显示本文件被 Domain、表达式会话上下�
 - 修改取消或关闭时首先维护 waiter 计数、只在最后等待者离开时取消，以及锁外 join 三项不变量；同步扩展 `batch_provider_cancels_only_after_all_callers_cancel`、`batch_cancellation_filters_private_texts_and_skips_empty_batches` 和关闭测试。
 - 修改批量大小或返回拆分时保留调用者边界、输入顺序、每个供应商分块不超过上限及返回数量校验；对应测试为 `batch_multi_text_chunks_preserve_caller_boundaries_and_isolation` 和 `batch_exact_limit_and_large_single_request_dispatch_immediately`。
 - 性能上重点观察每批一个 OS 线程、10ms 取消轮询、全局状态锁和向量克隆；任何优化都需维持取消优先级、错误广播和 Domain 关闭的确定性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/inference` 确认目标及相邻文件；`node --file pkg/inference/embed_fn.rs --offset 1/390` 读取全部 636 行并给出 Domain/表达式相关使用者；`query EmbedFn/run_batch/new_batch_key` 定位主要符号。独立 callers/callees 查询超时无输出，未据此臆造调用边。
-- 源码：完整阅读 `pkg/inference/embed_fn.rs`；读取 `pkg/inference/lib.rs`、`pkg/inference/Cargo.toml`、`pkg/domain/domain.rs`、`pkg/expression/builtin_inference.rs`、`pkg/expression/expropt/sessioncontext.rs`、`pkg/expression/sessionexpr/sessionctx.rs` 的直接接线。
-- Rust 测试：`pkg/inference/embed_fn_test.rs` 覆盖共享/缓存、分批与切块、分区、输入快照、取消、关闭、供应商 panic/错误/数量异常、注册验证、选项摘要、上下文值与取消原因。
-- Go 对照：读取 `pkg/inference/sqlembed.go` 的 `EmbedFn`、`EmbedWithContext`、获取/完成/释放调用、缓存键及 `Close`，并读取 `pkg/inference/sqlembed_test.go` 的供应商错误、缓存失效、共享取消和关闭场景。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证本文恰有 11 个固定二级章节，并人工复核所有运行时结论均可追溯到上述符号或测试。

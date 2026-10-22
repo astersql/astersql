@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo 包 `astersql-statistics-handle-autoanalyze-priorityqueue`，由同目录 `lib.rs` 以 `mod interval` 纳入，并通过 `pub use interval::*` 把公开常量、`AnalysisHistoryReader` trait 及两个查询函数重新导出。Cargo 清单 `pkg/statistics/handle/autoanalyze/priorityqueue/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/statistics/handle/autoanalyze/priorityqueue`；本文件本身只使用标准库 `std::time::Duration` 和同 crate 的 `job::DEFAULT_FAILED_ANALYSIS_WAIT_TIME`，没有新增外部依赖或 feature 条件。
-
-它不是“允许自动分析的每日时间窗口”实现；这里的 interval 指分析历史记录中的耗时/距上次失败的间隔。文件负责把 `mysql.analyze_jobs` 查询抽象成两类时长，供优先队列在调度分析作业前执行失败冷却判断。Go 生产链已经由 `job.go::isValidToAnalyze` 调用两个函数；精确 Rust 引用搜索显示当前 Rust 生产代码尚未调用它们，只有 `interval_test.rs` 和 `intervaltimezone/interval_timezone_test.rs` 使用该 API，因此当前 Rust 状态应描述为“查询适配层已实现并测试，但尚未接入生产调度链”。
+文件负责把 `mysql.analyze_jobs` 查询抽象成两类时长，供优先队列在调度分析作业前执行失败冷却判断。
 
 ## 核心职责
 
@@ -67,13 +65,13 @@ trait 没有要求 `Send` 或 `Sync`，因此本模块本身不保证同一 read
 
 ## 与 Go 版本的对应关系
 
-四段 SQL 的筛选与排序意图和 `interval.go` 对齐：普通表用空分区名，分区表使用指定列表，成功平均值取跨目标集合的最近五条，失败分区查询取各分区最后一次失败后的最短间隔。Rust 将 Go 直接依赖的 `sessionctx.Context + util.ExecRows` 改为 `AnalysisHistoryReader`，便于不启动数据库地验证映射逻辑。
+Rust 将 Go 直接依赖的 `sessionctx.Context + util.ExecRows` 改为 `AnalysisHistoryReader`，便于不启动数据库地验证映射逻辑。
 
-返回类型是主要表示差异。Go 用 `time.Duration(-1)` 表示无记录；Rust 用 `None`，避免构造不存在的负 `std::time::Duration`。Go 的刚失败值为零，Rust 用 `Some(Duration::ZERO)`。Go 的负失败间隔回退 `defaultFailedAnalysisWaitTime`，Rust 对应 `DEFAULT_FAILED_ANALYSIS_WAIT_TIME`。Go 把非负浮点平均值转换为整数秒时会截断小数；Rust 显式 `floor()`，在已拒绝负数的前提下结果一致。
+返回类型是主要表示差异。Go 用 `time.Duration(-1)` 表示无记录；Rust 用 `None`，避免构造不存在的负 `std::time::Duration`。Go 的刚失败值为零，Rust 用 `Some(Duration::ZERO)`。Go 把非负浮点平均值转换为整数秒时会截断小数；Rust 显式 `floor()`，在已拒绝负数的前提下结果一致。
 
 参数形态存在适配边界：Go 把 `partitionNames` 切片作为一个参数传给支持 `%?` 列表展开的执行器；Rust `query_parts` 把每个分区名依次展开进 `Vec<String>`。因此生产 `AnalysisHistoryReader` 必须按该约定处理分区占位，不能机械照搬 Go 参数容器。
 
-测试覆盖层级也不同：Go `interval_test.go` 通过 mock store 和真实 SQL 行验证空表、最近五条、表/多分区、负平均值、负失败间隔；Rust `interval_test.rs` 是 reader 契约单元测试，验证 SQL 选择、参数顺序、数值映射与错误传播。Rust `intervaltimezone/interval_timezone_test.rs` 使用内存作业存储验证失败间隔受正确会话时区驱动，但它不是对真实 SQL/会话池的集成测试。
+测试覆盖层级也不同：Go `interval_test.go` 通过 mock store 和真实 SQL 行验证空表、最近五条、表/多分区、负平均值、负失败间隔；Rust `interval_test.rs` 是 reader 契约单元测试，验证 SQL 选择、参数顺序、数值映射与错误传播。
 
 ## 扩展指南
 
@@ -83,12 +81,3 @@ trait 没有要求 `Send` 或 `Sync`，因此本模块本身不保证同一 read
 - 新增边界防御时，优先覆盖 `NaN`、正无穷、超大浮点秒数、空/重复分区及 reader 绑定错误；Rust 测试必须继续放在同目录独立测试文件，不能内嵌进 `interval.rs`。
 - 若引入缓存或并发 reader，需先定义时效性、锁粒度、会话归还和时区清理契约；当前 trait 不承诺 `Send + Sync`，不能默认跨线程安全。
 - 性能风险主要在 `mysql.analyze_jobs` 的筛选、排序、分组和 join，而非 Rust 映射代码。调整查询时应确认相关索引和大分区列表的执行计划，且保持“最新五条”和“最近失败优先”的语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter .../interval.rs` 报告该文件有 7 个符号；`node --file .../interval.rs` 读取 1–124 行；精确 `query` 找到 `AnalysisHistoryReader`、`query_parts`、两个公开函数；对三个函数执行 `callers`/`callees` 未得到边，目标文件节点只报告 `interval_test.rs` 使用。
-- Rust 源与装配：`pkg/statistics/handle/autoanalyze/priorityqueue/interval.rs`、`lib.rs`、`job.rs`（默认等待时间和 `is_valid_to_analyze` 冷却逻辑）、`Cargo.toml`。
-- Rust 独立测试：`interval_test.rs` 验证表/分区 SQL 选择、参数顺序、平均值向下取整、无值/负值/零值/正值映射及原样错误传播；`intervaltimezone/interval_timezone_test.rs::test_last_failed_analysis_duration_use_correct_timezone` 验证受污染系统时区下的正且小于一分钟的失败间隔。
-- Go 对照与测试：`interval.go`、`job.go::isValidToAnalyze`、`interval_test.go`、`intervaltimezone/interval_timezone_test.go`。
-- 精确引用核验：`rg` 在全部 Rust/Go 文件中确认 Go 生产调用边及 Rust 仅测试引用，弥补 RustCodeGraph 对本文件调用边为空的限制。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；交付验证仅执行任务指定的 11 章节结构检查和文档范围/差异人工复核。

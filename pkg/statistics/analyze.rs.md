@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics` crate（见 `pkg/statistics/Cargo.toml`），定义 ANALYZE 任务在统计模块边界上的表标识和结果容器。`pkg/statistics/lib.rs` 通过 `mod analyze` 编入该模块，并以 `pub use analyze::*` 将全部公开项重导出到 crate 根。
-
-它是 Go 文件 `pkg/statistics/analyze.go` 的同路径移植，但当前 Rust 接线尚未等同于 Go：仓库搜索显示本文件的类型由 `pkg/statistics/analyze_test.rs`、`pkg/statistics/statistics_test.rs` 和 `pkg/statistics/integration_test.rs` 直接构造或调用；Go 版本则由 `pkg/executor/analyze*.go`、`pkg/planner/core/common_plans.go` 和 statistics storage 路径使用。Rust 的 `pkg/statistics/handle/storage/stats_read_writer.rs` 另行定义了一个 snake_case 字段的 `AnalyzeResults`，因此不能把该 storage 路径视为本文件 `AnalyzeResults` 的调用者。
+用 `AnalyzeTableID::{GetStatisticsID, IsPartitionTable, String, Equals}` 集中实现物理统计 ID 选择、分区判定、日志展示和 Go 指针相等语义。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@ crate 内部依赖通过 `use crate::{AnalyzeJob, CMSketch, FMSketch, Histogram,
 
 ## 与 Go 版本的对应关系
 
-Rust 的常量、三个结构、五个方法及字段顺序基本逐项对应 `pkg/statistics/analyze.go`。`GetStatisticsID`、`IsPartitionTable`、`String`、值相等规则，以及两层销毁顺序均保持 Go 行为。Rust 用 `Option<&AnalyzeTableID>` 表达 Go 的 nil receiver/参数组合，并先比较引用地址，复现 `h == t` 的快速路径。
+Rust 用 `Option<&AnalyzeTableID>` 表达 Go 的 nil receiver/参数组合，并先比较引用地址，复现 `h == t` 的快速路径。
 
-资源释放有一项有意实现细节：Go 通过 `a.Fms = nil` 允许 backing array 被 GC；Rust 不能用 `Vec::clear`，因为它会保留容量，因此使用 `std::mem::take`。独立测试专门锁定了零容量结果。
+资源释放有一项有意实现细节：Go 通过 `a.Fms = nil` 允许 backing array 被 GC；Rust 不能用 `Vec::clear`，因为它会保留容量，因此使用 `std::mem::take`。
 
-语义尚未完整接线：Go 的 executor 创建这些结果并通过 channel 交给保存 worker，异常路径调用 `DestroyAndPutToPool`；Go storage 用 `TableID.GetStatisticsID()` 和 `ForMVIndexOrGlobalIndex` 决定持久化行为。当前 Rust executor 中存在其他局部同名结果类型，Rust statistics storage 也使用独立 `AnalyzeResults`，所以本文件目前更接近公开数据契约和迁移基线，而非已经贯通的应用主链。
+语义尚未完整接线：Go 的 executor 创建这些结果并通过 channel 交给保存 worker，异常路径调用 `DestroyAndPutToPool`；Go storage 用 `TableID.GetStatisticsID()` 和 `ForMVIndexOrGlobalIndex` 决定持久化行为。
 
 测试对应也不完全等价：Rust `integration_test.rs::analyze_snapshot_metadata_is_retained` 只验证字段保留；Go `integration_test.go::TestAnalyzeSnapshot` 会执行 SQL、读取 `mysql.stats_meta`，验证 count、snapshot 与 histogram version。后者的端到端行为不能由当前 Rust 测试替代。
 
@@ -89,12 +87,3 @@ Rust 的常量、三个结构、五个方法及字段顺序基本逐项对应 `p
 - 修改 `Snapshot`、`BaseCount`、`BaseModifyCnt` 或 `ForMVIndexOrGlobalIndex` 时，必须同时审查 Go storage 的过期判断/表级更新分支，以及 Rust 当前独立的 `pkg/statistics/handle/storage/stats_read_writer.rs::AnalyzeResults`，防止两套契约继续漂移。
 - 若要完成 Rust 主链接线，优先复用并统一本文件类型，而不是再增加同名结构；随后增加独立 executor/storage 测试，覆盖正常表、分区表、过期 snapshot、MV 索引、全局索引、错误结果和销毁路径。该工作超出本说明任务范围。
 - 性能风险主要来自大向量的额外复制、清理时的线性遍历和过早/过晚释放；兼容风险主要来自 `-1` 哨兵、Go `int` 到 Rust `i32` 的宽度、以及字段/序列化边界变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/statistics/analyze.rs` 读取了 107 行完整实现；对 `AnalyzeTableID`、`AnalyzeResult(s)`、`GetStatisticsID`、`IsPartitionTable`、`DestroyAndPutToPool`、`NonPartitionTableID` 执行了符号查询。精确 ID 的 callers/callees 查询未能正确消歧并产生噪声，因此没有把其输出作为调用关系结论，而用文件级 used-by 和仓库搜索补证。
-- 模块与 crate：`pkg/statistics/lib.rs`（模块声明、公开重导出、独立测试注册），`pkg/statistics/Cargo.toml`（crate 名、lib 入口、`astersql-errors` 依赖、Go 包映射）。该目录不存在 `doc.go`。
-- Go 对照：`pkg/statistics/analyze.go`；直接应用主链由 `rg` 在 `pkg/executor/analyze.go`、`analyze_col.go`、`analyze_col_sampling.go`、`analyze_idx.go`、`analyze_worker.go`、`pkg/planner/core/common_plans.go` 和 statistics storage Go 文件中核对。
-- Rust 测试：`pkg/statistics/analyze_test.rs`、`pkg/statistics/statistics_test.rs`、`pkg/statistics/integration_test.rs`。Go 端到端对照：`pkg/statistics/integration_test.go::TestAnalyzeSnapshot`。
-- 资源下游：`pkg/statistics/histogram.rs::Histogram::DestroyAndPutToPool`。同名类型边界：`pkg/statistics/handle/storage/stats_read_writer.rs::AnalyzeResults` 及其 storage 测试。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令和人工事实复核验收。

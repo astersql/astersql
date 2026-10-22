@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文说明对应源码 [`memtable_reader.rs`](./memtable_reader.rs)。该文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod memtable_reader` 暴露该模块，`pkg/executor/Cargo.toml` 则声明该 crate 对应 Go 包 `pkg/executor`。它移植了 Go 文件 `pkg/executor/memtable_reader.go` 中集群类内存表的执行和取数算法，覆盖 `cluster_config`、`cluster_load`、`cluster_systeminfo`、`cluster_hardware`、`cluster_log`、热点 Region 历史以及 `tikv_region_peers`。
-
-这里的“内存表”不是把用户表数据常驻内存，而是把集群发现、HTTP/gRPC、PD 和 TiKV 元数据即时转换成 SQL 行的虚拟表。Rust 文件通过 `memTableRuntime` trait 隔离会话权限、事务、网络和存储访问；文件自身实现筛选、并发汇集、批量归并和行编码。
-
-当前接线状态需要特别注意：仓库搜索只找到测试中的 `memTableRuntime` 实现，也没有发现生产 Rust 代码构造 `MemTableReaderExec` 或各 Retriever。因而本文件是公开、可测试的移植模块，但不能仅据此断言 Rust SQL 执行主链已经使用它；线上 Go 主链仍由同路径 Go 实现提供完整会话和网络接线。
+`MemTableReaderExec` 提供 `Open`、`Next`、`Close` 生命周期，把统一执行器接口委托给具体 Retriever，并为五类巡检表实现会话级快照缓存。
 
 ## 核心职责
 
@@ -84,8 +80,6 @@ RustCodeGraph 对文件给出的关键内部边包括：`MemTableReaderExec::Nex
 
 ## 与 Go 版本的对应关系
 
-Rust 的类型和函数名大体逐一对应 `pkg/executor/memtable_reader.go`：两个批量常量、`MemTableReaderExec`、五种 Retriever、两种最小堆、热点 DTO 和 Region Peer 打包逻辑都保留了 Go 命名（包括 `hotRegionsHistoryRetriver` 的拼写）。权限、过滤、稳定排序、日志/热点多路归并、巡检缓存和关闭取消的主要语义也保持一致。
-
 主要差异如下：
 
 - Go 的 `memTableRetriever` 是接口，Rust 用闭合枚举分派；新增 Retriever 必须同时修改枚举以及 `read`、`shutdown`、`runtime_stats` 三处分支。
@@ -93,7 +87,6 @@ Rust 的类型和函数名大体逐一对应 `pkg/executor/memtable_reader.go`�
 - Go `Next` 把 datum 行拷贝进 `chunk.Chunk`；Rust `Next` 直接返回 `datumRowSet`，说明它尚未接入 Go 等价的 Rust executor/chunk ABI。
 - Go 日志使用 goroutine 和 channel 持续接收流，Rust 使用 `logStream::next_messages` 的拉取接口和作用域线程打开流。
 - Go 的 failpoint 解析假定字段完整；Rust 返回 `MemTableError`，防止短输入越界。
-- Rust 配置 URL 逻辑与当前 Go 一致，覆盖 PD、TiKV、TiDB、TiFlash、TiCDC、TiProxy、TSO 和 Scheduling；隐藏项过滤及键排序也对应 Go 行为。
 - Go 是当前完整生产实现；Rust 只有公开模块和测试接线。文档中的“支持”均指本文件已表达相应算法，不代表生产 Rust 服务路径已启用。
 
 ## 扩展指南
@@ -105,13 +98,3 @@ Rust 的类型和函数名大体逐一对应 `pkg/executor/memtable_reader.go`�
 - 修改权限、时间窗、warning 或错误传播时必须与 `memtable_reader.go` 逐分支对照；Rust 测试应继续放在独立 `*_test.rs` 文件，不要内嵌到生产源文件。
 - 若要完成生产接线，需要新增真实 `memTableRuntime` 实现、在 Rust executor builder 构造 `MemTableReaderExec`、适配 chunk/会话上下文，并验证取消和连接释放；这些工作不属于当前纯文档任务，也不能用现有测试 fixture 代替。
 - 性能风险集中在每次节点/PD 扇出的 OS 线程数量、`Vec::remove(0)` 的线性搬移、热点一对多展开突破目标批量以及全量 Region 扫描；扩展规模前应建立对应基准或限流策略。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；通过 `explore "MemTableReaderExec"`、`query MemTableReaderExec/memTableRetriever/clusterConfigRetriever` 以及 `node --file pkg/executor/memtable_reader.rs` 分段读取全部 1,325 行。
-- 调用边查询：对 `MemTableReaderExec.Next`、`clusterLogRetriever.retrieve`、`hotRegionsHistoryRetriver.retrieve`、`tikvRegionPeersRetriever.retrieve` 执行 `callees`；图在重名时优先解析到 Go 符号，因此 Rust 内部精确边同时由文件级索引源码核对。`callers` 未给出 Rust 生产构造点，与仓库 `rg` 搜索结果一致。
-- crate 与模块边界：读取 `pkg/executor/Cargo.toml`，并核对 `pkg/executor/lib.rs:146` 的公开模块声明和 `pkg/executor/lib.rs:539-540` 的独立测试模块声明。
-- Go 对照：通过 RustCodeGraph 分段读取 `pkg/executor/memtable_reader.go` 全部相关实现，重点核对 `MemTableReaderExec`、配置/节点信息、日志、热点历史和 Region Peer 流程。
-- Rust 测试：读取完整 `pkg/executor/memtable_reader_test.rs`；同时核对 `pkg/executor/cluster_table_test.rs`、`pkg/executor/hot_regions_history_table_test.rs`、`pkg/executor/tikv_regions_peers_table_test.rs` 的测试入口与 runtime fixture。它们分别覆盖 failpoint 解析、ILIKE 日志过滤及关闭、日志堆、热点权限/时间窗/扇出/归并/warning、Region 查询组合和 Peer 状态。
-- Go 测试：核对 `pkg/executor/memtable_reader_test.go` 中 `TestTiDBClusterConfig`、`TestTiDBClusterLog` 和 `TestTiDBClusterLogError` 等回归入口。它是 Go 生产路径的行为证据，不等同于 Rust 生产接线证据。
-- 人工范围检查：仓库搜索未发现生产 Rust `impl memTableRuntime` 或 `MemTableReaderExec` 构造点；因此本文明确标注当前迁移边界，没有把测试适配器描述为线上实现。

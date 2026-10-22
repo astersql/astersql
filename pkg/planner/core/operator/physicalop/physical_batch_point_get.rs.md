@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件定义 planner 物理算子 crate 中的单点查与批量点查数据结构：`PointGetPlan` 表示按一个整数 handle 或一组唯一索引值直接定位一行，`BatchPointGetPlan` 在前者之上保存多组键并完成批量键清理和分区裁剪。它属于 Cargo 包 `astersql-planner-core-operator-physicalop`；包清单 `pkg/planner/core/operator/physicalop/Cargo.toml` 的 `[package.metadata.porting]` 将其对应到 Go 包 `pkg/planner/core/operator/physicalop`。
-
-模块入口 `pkg/planner/core/operator/physicalop/lib.rs` 以 `mod physical_batch_point_get` 声明本文件，并通过 `pub use physical_batch_point_get::*` 导出类型。该入口还为两个类型接入 `ConcretePhysicalOperator`/`PhysicalPlan`：`PointGetPlan` 直接使用自身的 `PhysicalSchemaProducer`，`BatchPointGetPlan` 复用内嵌 `PointGetPlan` 的 schema producer。因此本文件负责算子自身的数据和算法，统一物理计划 trait 的转接位于 `lib.rs`。
-
-已找到的生产入口包括 `pkg/planner/core/point_get_plan_runtime.rs` 创建快速 `PointGetPlan`，以及 `pkg/planner/core/planbuilder_runtime.rs` 为部分计划构造 `PointGetPlan`/`BatchPointGetPlan`。下游会在 `pkg/executor/statement_ru_result.rs`、`pkg/executor/statement_ru_plan_walk.rs`、`pkg/planner/core/optimizer_runtime.rs` 和 `physical_utils.rs` 中按具体类型识别它们；缓存快照在 `cache_snapshot.rs` 捕获和恢复二者。`pkg/executor/builder.rs` 另有 `BatchPointGetPlanData` 抽象，但仓库搜索没有发现本文件类型对该 trait 的直接实现，不能据此声称 Rust 批量算子已完整接入该执行器构建路径。
+准备并描述快速访问计划；真正的计划构建、执行器构造、类型识别和缓存生命周期分散在上述调用方中。
 
 ## 核心职责
 
@@ -109,8 +105,6 @@ RustCodeGraph 的文件节点报告本文件被 7 个文件使用，其中点名
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/physicalop/physical_batch_point_get.go`，独立 Go 回归是同目录 `physical_batch_point_get_test.go`。类型名称、PointGet/BatchPointGet 的职责、唯一索引 NULL 过滤、公共主键编码去重、显式/单分区筛选、重叠分区处理、EXPLAIN 标志以及 TableDual 返回意图均来自该 Go 实现。
-
 Rust 的 `common_primary_duplicate_values_keep_first_occurrence` 与 Go 的 `TestPruneCommonHandleDuplicateValues` 使用同样的空输入、无重复、重复加 NULL、全重复、全 NULL 用例，验证保留首次出现且 handle 数量与索引值行一致。Rust 独立测试还覆盖 Go 流程中的更多局部不变量：公共 handle/值同步压缩、整数去重、二级索引 NULL 过滤但不去重、枚举转换、索引列数错误、单分区筛选和空压缩。
 
 仍存在显著结构/行为差异：
@@ -119,10 +113,7 @@ Rust 的 `common_primary_duplicate_values_keep_first_occurrence` 与 Go 的 `Tes
 - Go 的单点 `PrunePartitions`、真实 `LoadTableStats`、基于统计直方图的平均行宽、日志脱敏策略和更完整 `AccessObject` 尚未在本 Rust 文件等价实现。
 - Go 的 `BatchPointGetPlan::Init` 同时安装 schema 和输出名；Rust `Init` 仅安装上下文/统计/offset 并改 plan type，schema 和名称由其他 setter/构造方负责。
 - Go 的 `Attach2Task`/`ToPB` 返回 nil，`Clone` 报不支持；Rust 提供 RootTask 包装、TableScan PB 占位和深克隆。二者都不是“完整点查下推已经实现”的证据。
-- Rust 把 session 依赖显式拆成 `BatchPointGetPruningContext`，且以 `Vec<i64>` 保存整数 handle；公共 handle 必须经返回值传递。Go 直接接受完整 session context 并以 `[]kv.Handle` 保存 handle。
 - Go 的内存统计覆盖更多字段和容器容量；Rust 当前为较粗估算。
-
-因此安全移植应以具体方法逐项对齐，而不是仅凭同名类型认定功能等价。
 
 ## 扩展指南
 
@@ -133,17 +124,3 @@ Rust 的 `common_primary_duplicate_values_keep_first_occurrence` 与 Go 的 `Tes
 增强类型转换时修改 `BatchPointGetPruningContext::encode_unique_values`，并区分“键不可能存在”（`Ok(None)`）与真正执行错误。增加新分区模式时同时检查全局索引跳过逻辑、`SinglePartition`、`PartitionNames`、重叠分区修正和 TableDual 早退顺序。
 
 增强 EXPLAIN/脱敏时修改 `OperatorInfo`、`AccessObject` 及规范化方法，并注意当前 Rust 非规范化输出没有读取 Go 的 session redaction mode。实现真实 PB 或执行器接线时，应从 `ToPB`、`pkg/executor/builder.rs` 的数据 trait 和实际构建入口一起核验，不能只把占位 TableScan 扩写后就宣称端到端完成。改动 Rust 源码时还必须遵循仓库要求先同步独立测试、完成后运行 `cargo fmt --all`；本次仅写文档，没有修改源码或运行 Cargo。
-
-## 验证依据
-
-本说明使用了以下可复核证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `explore "pkg/planner/core/operator/physicalop/physical_batch_point_get.rs PhysicalBatchPointGetPlan"`：返回目标文件上下文；随后 `query PointGetPlan`、`query BatchPointGetPlan` 定位 Rust/Go 同名定义和相关构造符号。
-- RustCodeGraph `node --file pkg/planner/core/operator/physicalop/physical_batch_point_get.rs --offset 1 --limit 1200`：读取完整 839 行目标源码，并报告文件级使用者。
-- RustCodeGraph 精确 `callers/callees` 查询曾执行，但后端长时间无返回后被终止；因此具体上游/下游使用以 `rg` 对本文件符号的仓库搜索补证，没有伪造图边。
-- 已读源码/配置：目标 `.rs`、同目录 `Cargo.toml`、`lib.rs` 的模块导出和两个 trait 接线、Go 对照 `physical_batch_point_get.go`。
-- 已读测试：`physical_batch_point_get_test.rs` 与 `physical_batch_point_get_test.go`。Rust 测试覆盖固定基数/空相关列、EXPLAIN、公共句柄稳定去重和编码、数组对齐、整数去重、二级索引 NULL、枚举转换错误及单分区压缩；Go 测试提供公共句柄重复值的原始语义基线。
-- 调用关系补证来自对 `point_get_plan_runtime.rs`、`planbuilder_runtime.rs`、`optimizer_runtime.rs`、`cache_snapshot.rs`、`physical_utils.rs`、executor 和 session runtime 中具体类型名的搜索。
-
-本任务是纯文档分析，按计划不运行 Cargo 或代码测试。交付验证仅检查目标文档存在且恰好含有规定的十一个二级标题，并人工复核重要结论均指向上述源码符号、调用位置、Cargo 边界或测试证据。

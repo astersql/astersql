@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sys-linux` crate 在“非 Linux 且非 Windows”目标上的平台实现，源码入口见 `pkg/util/sys/linux/lib.rs` 中受 `cfg(all(not(target_os = "linux"), not(target_os = "windows")))` 约束的 `sys_other` 模块及其公开再导出。crate 的清单是 `pkg/util/sys/linux/Cargo.toml`，根工作区通过 `facade_util_sys_linux` 引入它，`pkg/lib.rs` 再把它暴露为 `util::sys::linux`。因此，上层代码可以使用统一的 `linux::{OSVersion, SetAffinity, GetSockUID}` API，而不需要自行选择平台文件。
-
-尽管模块条件写成“非 Linux/Windows”，本文件直接使用 `std::os::unix::net::UnixStream`，Cargo 依赖也按 `cfg(unix)` 声明；它实际面向的是 macOS、FreeBSD、DragonFly 等类 Unix 目标，不是任意非 Unix 目标。
+`OSVersion` 生成与 Go `runtime.GOOS + "." + runtime.GOARCH` 一致的标识，并通过 `go_os`、`go_arch` 修正 Rust 与 Go 的命名差异。
 
 ## 核心职责
 
@@ -70,13 +68,9 @@ RustCodeGraph 对目标文件的精确节点显示 `OSVersion` 调用 `go_os` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/sys/linux/sys_other.go`，其构建条件同样是 `!linux && !windows`。
-
 - Go `OSVersion` 使用 `runtime.GOOS + "." + runtime.GOARCH`；Rust 通过 `go_os`、`go_arch` 显式补齐常见命名差异，语义一致。
 - Go `SetAffinity` 忽略 `[]int` 并返回 `nil`；Rust 忽略 `&[i32]` 并返回 `Ok(())`，语义一致。
 - Go `GetSockUID` 先通过 `net.UnixConn.SyscallConn` 取得受控 fd，再调用 `unix.GetsockoptXucred(SOL_LOCAL, LOCAL_PEERCRED)`；Rust 接收 `std::os::unix::net::UnixStream` 并通过 `nix::sockopt::LocalPeerCred` 调用 `getsockopt`。两者都返回凭证 UID并传播系统错误，但 Rust 额外以 cfg 明确限制受支持平台，并在其他 Unix 目标返回 `Unsupported`。
-
-Go 的 `pkg/util/sys/linux/sys_test.go::TestGetOSVersion` 只断言版本查询无错误且非空。Rust 的 `pkg/util/sys/linux/sys_test.rs` 保留该冒烟意图，`migration_aster_unit_test.rs::other_unix_tests` 进一步验证 Go 命名、亲和性空操作，以及在支持平台上的 peer UID。
 
 ## 扩展指南
 
@@ -85,15 +79,3 @@ Go 的 `pkg/util/sys/linux/sys_test.go::TestGetOSVersion` 只断言版本查询�
 扩展 peer credential 支持时，应先核对目标 OS 的 socket option、返回凭证类型和 UID 含义，再同步修改两个互斥 cfg、`Cargo.toml` 的目标依赖条件和 `other_unix_tests`。不要把所有 Unix 平台直接并入 `LocalPeerCred` 分支，因为 API/常量并非跨 Unix 统一。系统调用仍应保留原始 OS 错误码，socket 所有权应继续留给调用方。
 
 性能风险很低：版本函数只有一次小字符串分配，凭证函数只有一次系统调用。主要兼容风险来自目标三元组条件、Go/Rust 平台命名漂移和把空操作误解为亲和性已实际生效。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 源码与装配：`pkg/util/sys/linux/sys_other.rs`、`pkg/util/sys/linux/lib.rs`、根 `pkg/lib.rs`。
-- crate 与依赖：`pkg/util/sys/linux/Cargo.toml`、根 `Cargo.toml`、`pkg/server/Cargo.toml`。
-- Go 对照：`pkg/util/sys/linux/sys_other.go`、`pkg/util/sys/linux/sys_test.go`、`pkg/util/sys/linux/main_test.go`。
-- Rust 独立测试：`pkg/util/sys/linux/sys_test.rs`、`pkg/util/sys/linux/migration_aster_unit_test.rs`、`pkg/util/sys/linux/main_test.rs`。
-- 上游调用：`cmd/tidb-server/main.rs::setCPUAffinity` 及其启动阶段调用点。
-- RustCodeGraph：索引状态为 11,467 个文件；目标目录列出 12 个已索引源码文件；`query` 找到本文件的 `go_os`、`go_arch`、`OSVersion`、`SetAffinity` 和两个 cfg 互斥的 `GetSockUID`；精确 `node pkg/util/sys/linux/sys_other.rs::OSVersion` 确认其到 `go_os`、`go_arch` 的调用边。精确 `callers` 查询在 30 秒观察窗口内未返回，因此上游关系另以全仓精确引用搜索和模块再导出核对，未把超时当作“无调用者”证据。
-- 测试说明只来自现有测试源码；按任务约束未运行 Cargo。结构完整性由任务规定的 11 标题命令单独验证。

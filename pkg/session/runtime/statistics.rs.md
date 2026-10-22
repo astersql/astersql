@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate（`pkg/session/Cargo.toml` 的包名），由 `pkg/session/runtime.rs:117` 以私有模块 `statistics` 装配。它是会话层连接 SQL AST、Domain 统计上下文和执行器统计接口的适配层，集中承接四类工作：执行 `ANALYZE`、呈现 `SHOW STATS_*`/`SHOW ANALYZE STATUS`、生成常规 `SHOW COLUMNS/INDEX/CREATE TABLE/TABLE STATUS` 元数据，以及代理 `mysql.stats_*`、`mysql.analyze_jobs` 等受限系统表访问（`statistics.rs:614-1169, 1340-1567, 1569-3569`）。
-
-上游主入口来自 `pkg/session/runtime/dispatch.rs`：普通 `ANALYZE` 调用 `execute_analyze`，`FLUSH STATS_DELTA` 调用 `execute_flush_stats_delta`，各类 `SHOW` 调用对应 `execute_show_*`，系统统计表 `SELECT` 调用 `execute_stats_system_select`；`pkg/session/runtime/control.rs` 分派统计表 `UPDATE`/`DELETE`。DDL 内部分析和类型化分析执行器还分别从 `pkg/session/runtime/ddl.rs:1879`、`pkg/session/runtime/typed_analyze_executor.rs:107` 进入本文件。
+提供只用于独立测试的暂停、取消和保存错误注入守卫，复现 ANALYZE 构建/发布时序（`AnalyzePauseGuard`、`AnalyzeSaveErrorGuard`）。
 
 ## 核心职责
 
@@ -92,10 +90,7 @@ SHOW 主流程是：`execute_show_stats` 以 Domain context 构造 `SessionShowS
 
 ## 与 Go 版本的对应关系
 
-crate 元数据把本 crate 对应到 Go `pkg/session`，但此文件的行为跨越多个 Go 文件，而不是存在一个同路径 `pkg/session/runtime/statistics.go`：
-
 - Go `pkg/executor/analyze.go` 的 `AnalyzeExec` worker、结果处理、global stats 合并、job info 与 analyze option 保存，对应 Rust 的 `execute_analyze_with_context` 和 `CanonicalAnalyzeRuntime` 实现。Rust 注释还明确引用 Go `prepareAnalyzeColumnsJobInfo`、`prepareIndexes`、`prepareColumns` 语义。
-- Go `pkg/executor/show_stats.go` 的 `fetchShowStatsMeta/Histogram/Buckets/TopN/Healthy/Locked/AnalyzeStatus/ColumnStatsUsage`，对应 `SessionShowStatsRuntime` 和 `execute_show_stats`。两边都区分动态分区模式下的 global 行、分区行、伪统计和初始化/加载状态。
 - Go 通过真实系统表与 Domain/StatsHandle 持久化 analyze jobs、options 和统计记录；当前 Rust runtime 部分通过 stats handle 内存状态及 restricted backend 桥接，`execute_analyze_jobs_select` 明确物化 Go `metadef.CreateAnalyzeJobsTable` 的 13 列布局。
 - Go 的并发由 goroutine、channel、errgroup 和 wait group 管理；Rust 使用 scoped OS threads、原子任务下标、mutex 和 barrier，但保留取消、失败不发布、等待全部 worker、动态全局合并等核心不变量。
 - Rust 的本地会话行读取、分区表达式求值、内存估算及受限系统 SQL 是当前移植层的具体实现，不能据此宣称覆盖 Go 完整存储执行、表达式或 SQL 能力。
@@ -108,11 +103,3 @@ crate 元数据把本 crate 对应到 Go `pkg/session`，但此文件的行为�
 - 扩展统计系统表 SQL 时，修改白名单、字面量引用和 AST 形状检查，并明确事务路径；避免把用户表达式字符串直接拼接到 restricted SQL。
 - 新增并发或失败阶段时，应扩展独立测试文件 `pkg/session/runtime/statistics_test.rs`（或相邻专用 `*_test.rs`），不要把测试嵌入本生产文件；暂停/失败守卫必须保持 RAII 清理和会话隔离。
 - 兼容风险集中在 Go 输出列顺序/大小写/NULL 表示、warning/error 文本、global/partition 行选择和任务状态时序；性能风险集中在全量行复制、分区重复扫描、worker 数量以及持锁期间的数据转换。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/session/runtime/statistics.rs` 确认目标已索引；`node --file ...` 读取了目标文件全部 3,570 行并报告其被 `runtime/ddl.rs`、`runtime/dispatch.rs` 等 15 个文件使用。对常见方法名的直接 `callers/callees` 查询没有返回可区分的 impl-method 边，因此调用边用精确源码搜索补齐，未据此虚构图关系。
-- 已读生产与装配文件：`pkg/session/runtime/statistics.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/control.rs`、`pkg/session/runtime/ddl.rs`、`pkg/session/runtime/typed_analyze_executor.rs`、`pkg/session/Cargo.toml`。
-- 已读 Go 对照：`pkg/executor/analyze.go`、`pkg/executor/show_stats.go`、`pkg/statistics/analyze.go` 的相关符号/路径；仓库不存在同路径 Go `pkg/session/runtime/statistics.go`。
-- 已读独立 Rust 测试 `pkg/session/runtime/statistics_test.rs`：覆盖 lite 与完整直方图加载、Unicode `_` LIKE、无符号边界和单行统计、默认选项重置、动态分区 global TopN/bucket、全局索引估算、大数据与 53 分区重复一致性。
-- 本任务为纯文档分析，按任务要求不运行 Cargo。最终结构检查要求文档存在且恰好包含本页 11 个固定二级标题。

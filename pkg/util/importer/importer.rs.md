@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`importer.rs` 是 `astersql-util-importer` crate 的顶层编排文件。它不实现 SQL 解析、连接、数据生成或线程调度细节，而是用唯一的公开函数 `process` 把这些子模块串成一次完整导入：解析 DDL、建立每个 worker 所需的连接、执行建表与建索引语句、并发生成和插入数据，最后关闭全部连接（`pkg/util/importer/importer.rs:21-57`）。
-
-crate 边界由 `pkg/util/importer/Cargo.toml` 定义，库入口是 `pkg/util/importer/lib.rs`；后者声明 `pub mod importer` 并通过 `pub use importer::*` 再导出 `process`。根 workspace 又以 `facade_util_importer` 引入该 crate（根 `Cargo.toml:1474`），并由 `pkg/lib.rs:1917` 继续公开。仓库引用搜索没有发现 `process` 的 Rust 生产调用点，因此当前事实是“API 已公开但仓库内尚未接入实际入口”，不能把它描述为已进入 `tidb-server` 主链。
+不实现 SQL 解析、连接、数据生成或线程调度细节，而是用唯一的公开函数 `process` 把这些子模块串成一次完整导入：解析 DDL、建立每个 worker 所需的连接、执行建表与建索引语句、并发生成和插入数据，最后关闭全部连接（`pkg/util/importer/importer.rs:21-57`）。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ crate 边界由 `pkg/util/importer/Cargo.toml` 定义，库入口是 `pkg/util/i
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/importer/importer.go` 的 `DoProcess`：两者都先 `newTable`/`Table::new`，依次解析建表和建索引 SQL，按 worker 数创建连接，先执行表 DDL 再执行索引 DDL，最后把表、连接、job 数、worker 数和 batch 交给作业调度。
-
 主要差异如下：
 
 - Go `DoProcess` 无返回值，错误路径调用 `log.Fatal` 终止进程；Rust `process` 返回 `Result`，把错误处置交给尚未出现的上层调用者。
@@ -97,7 +93,7 @@ crate 边界由 `pkg/util/importer/Cargo.toml` 定义，库入口是 `pkg/util/i
 - Go `doProcess` 只打印统计结果；Rust `process_jobs` 返回结构化 `ProcessReport`。
 - Rust 的 trait 注入替代 Go 对 `*sql.DB` 和 MySQL 驱动的直接依赖，使独立测试可以观察执行、提交与关闭动作。
 
-同目录没有 Go `*_test.go`。Go 语义依据来自 `importer.go`、`db.go`、`job.go` 和 `parser.go` 本身；Rust 分层回归测试位于独立的 `tests.rs`、`db_test.rs`、`job_test.rs`、`parser_test.rs`，符合测试不内嵌生产文件的仓库约束。
+Go 语义依据来自 `importer.go`、`db.go`、`job.go` 和 `parser.go` 本身；Rust 分层回归测试位于独立的 `tests.rs`、`db_test.rs`、`job_test.rs`、`parser_test.rs`，符合测试不内嵌生产文件的仓库约束。
 
 ## 扩展指南
 
@@ -109,14 +105,3 @@ crate 边界由 `pkg/util/importer/Cargo.toml` 定义，库入口是 `pkg/util/i
 - 建议在独立测试文件中增加对 `process` 的端到端替身测试，至少覆盖：完整成功及 DDL 顺序、表解析失败时零连接、第二条 DDL 失败仍关闭全部连接、`process_jobs` 失败仍关闭、关闭失败不覆盖主体结果、零 worker 在任何连接前失败。目前 `tests.rs` 已覆盖解析/作业组合和部分建连失败清理，但没有直接调用 `process`。
 
 兼容风险集中在错误处置差异（Go 终止、Rust 返回）、DDL 已产生的不可回滚副作用和关闭错误的优先级；性能风险主要来自 worker/连接一一对应、固定通道容量以及首连接承担 DDL。修改时应同步检查 `pkg/util/importer/tests.rs`、`db_test.rs`、`job_test.rs` 和 `parser_test.rs`，不要把测试写回 `importer.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 7,032 个 Rust 文件；`files --filter pkg/util/importer` 列出目标、Go 对照和独立测试。
-- RustCodeGraph `node --file pkg/util/importer/importer.rs --offset 1 --limit 260`：读取完整 58 行，确认唯一函数及其直接调用顺序。
-- RustCodeGraph `query process --kind function --limit 5000 --json`：定位精确节点 `pkg/util/importer/importer.rs:30:function:process`。常见符号名导致宽泛 `explore` 混入无关结果；精确 `callers/callees` 在 30 秒窗口内无输出，因此调用关系另由目标源码和全仓库引用搜索复核。
-- 已读 Rust 文件：`pkg/util/importer/importer.rs`、`lib.rs`、`config.rs`、`db.rs`、`job.rs`、`parser.rs`、`tests.rs`；测试入口还通过文件/符号搜索核对了 `config_test.rs`、`data_test.rs`、`db_test.rs`、`job_test.rs`、`parser_test.rs`、`rand_test.rs`。
-- 已读配置/装配：`pkg/util/importer/Cargo.toml`、根 `Cargo.toml:1474`、`pkg/lib.rs:1917`；未发现该目录的 `doc.go`。
-- 已读 Go 对照：`pkg/util/importer/importer.go`、`db.go`、`job.go`，并通过引用搜索核对 `parser.go` 的解析入口；同目录不存在 Go 测试文件。
-- 全仓库 `rg` 仅找到 crate 的 workspace/facade 接线与函数定义，没有找到 `process` 的 Rust 调用点；这只能证明当前检出版本的静态引用情况，不证明外部 crate 不会调用公开 API。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且固定二级标题恰好为 11 个，并人工检查没有把未接线 API描述为已运行功能。

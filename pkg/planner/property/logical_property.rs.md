@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-property` crate，定义规划器 memo 中与具体物理实现无关的输出属性载体。`pkg/planner/property/lib.rs` 以私有模块 `logical_property` 装入本文件，再通过 `pub use logical_property::*` 将 `LogicalProperty` 和 `NewLogicalProp` 暴露为 crate 公共 API。`pkg/planner/property/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认了这一 crate 边界；同一 manifest 还声明了它所需的 expression、funcdep、统计与属性辅助依赖。
-
-该类型同时服务两套 memo：`pkg/planner/cascades/memo/group_expr.rs::DeriveLogicalProp` 为新 Cascades Group 一次性派生完整属性，`pkg/planner/memo/group.rs::NewGroupWithSchema` 及其后续推导流程则在旧 memo 的 `Group::Prop` 中分阶段填充属性。文件自身只定义数据结构和空值构造器，不负责计算统计信息、Schema、函数依赖或物理候选顺序。
+`NewLogicalProp` 提供与 Go 构造函数同名的堆分配入口，返回装箱后的默认实例。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/property/logical_property.go`。两端均有相同名称与顺序语义的六个字段，并提供空逻辑属性构造器：Go 用可空指针表示 Stats、Schema、FD，用 `[][]*expression.Column` 表示候选列；Rust 分别使用 `Option<Box<_>>` 和拥有值的 `Vec<Vec<Column>>`。Go 的零值与 Rust 的 `Default` 在可选字段、布尔值和空集合上语义一致。
+两端均有相同名称与顺序语义的六个字段，并提供空逻辑属性构造器：Go 用可空指针表示 Stats、Schema、FD，用 `[][]*expression.Column` 表示候选列；Rust 分别使用 `Option<Box<_>>` 和拥有值的 `Vec<Vec<Column>>`。
 
-主要接线差异位于 `pkg/planner/cascades/memo/group_expr.go::DeriveLogicalProp` 与对应 Rust 函数：Go 先调用 `NewLogicalProp`，再执行 Stats/Schema/FD/possible-properties 派生并逐字段写入，且函数可返回派生错误；当前 Rust 从逻辑计划已有的缓存/接口取值并一次性构造属性，函数签名不返回错误。文档仅记录现状，不据此宣称两端完整优化流程已经等价。
+主要接线差异位于 `pkg/planner/cascades/memo/group_expr.go::DeriveLogicalProp` 与对应 Rust 函数：Go 先调用 `NewLogicalProp`，再执行 Stats/Schema/FD/possible-properties 派生并逐字段写入，且函数可返回派生错误；当前 Rust 从逻辑计划已有的缓存/接口取值并一次性构造属性，函数签名不返回错误。
 
-旧 memo 的 `pkg/planner/memo/group.go::BuildKeyInfo` 及 Rust `pkg/planner/memo/group.rs::BuildKeyInfo` 都把 Schema 键与 `MaxOneRow` 作为后续推导状态。Go 测试 `pkg/planner/memo/group_test.go::TestBuildKeyInfo` 验证主键、聚合、Selection 与 Limit 场景；Rust 独立测试 `pkg/planner/memo/group_test.rs::build_key_info_inherits_pk_and_max_one_row_per_operand_rules` 验证对应传播规则，并额外明确 Join、SemiJoin 与不继承算子的边界。
+Go 测试 `pkg/planner/memo/group_test.go::TestBuildKeyInfo` 验证主键、聚合、Selection 与 Limit 场景；Rust 独立测试 `pkg/planner/memo/group_test.rs::build_key_info_inherits_pk_and_max_one_row_per_operand_rules` 验证对应传播规则，并额外明确 Join、SemiJoin 与不继承算子的边界。
 
 ## 扩展指南
 
@@ -90,14 +88,3 @@
 5. 测试逻辑必须保留在独立测试文件。结构与派生字段优先扩展 `pkg/planner/cascades/memo/group_and_expr_test.rs`、`pkg/planner/core/casetest/cascades/memo_test.rs`、`pkg/planner/memo/group_test.rs` 和 `pkg/planner/cascades/old/optimize_test.rs`；不要把测试内嵌到本生产源文件。
 
 兼容风险集中在公共字段类型和默认语义，正确性风险集中在 Schema/FD/Stats/顺序之间失配，性能风险集中在扩大 `Column`、Schema 或统计对象的克隆量。新增字段后还应检查调试格式与计划枚举读取者是否需要展示或消费它。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，可用于本次 Rust/Go 符号与文件关系核验。
-- RustCodeGraph `node --file pkg/planner/property/logical_property.rs`：确认文件仅含 `LogicalProperty`、六个公开字段和 `NewLogicalProp`，并报告直接使用文件为 `pkg/planner/cascades/memo/group_expr.rs` 与 `pkg/planner/memo/group.rs`。
-- RustCodeGraph `explore "pkg/planner/property/logical_property.rs LogicalProperty NewLogicalProp"`：确认属性进入 Cascades Group，并定位 `GroupExpression::DeriveLogicalProp`、Group 存取接口和 memo 格式化测试。
-- RustCodeGraph 对 `pkg/planner/cascades/memo/group_expr.rs`、`pkg/planner/memo/group.rs` 及相关测试的精确 `node --file` 查询：确认新 memo 的一次性六字段派生、旧 memo 的阶段性初始化，以及测试覆盖的传播边界。
-- 已读取生产与装配文件：`pkg/planner/property/logical_property.rs`、`pkg/planner/property/lib.rs`、`pkg/planner/property/Cargo.toml`、`pkg/planner/cascades/memo/group_expr.rs`、`pkg/planner/cascades/memo/group.rs`、`pkg/planner/memo/group.rs`、`pkg/planner/cascades/old/optimize.rs`。
-- 已读取 Go 对照：`pkg/planner/property/logical_property.go`、`pkg/planner/cascades/memo/group_expr.go`、`pkg/planner/cascades/memo/memo.go`、`pkg/planner/memo/group.go`。
-- 已核对独立测试：`pkg/planner/cascades/memo/group_and_expr_test.rs::TestDeriveLogicalPropPreservesFD` 验证 Stats/Schema/FD；`pkg/planner/core/casetest/cascades/memo_test.rs` 验证逻辑属性格式与 GroupNDV；`pkg/planner/cascades/old/optimize_test.rs::test_prepare_possible_properties` 验证 PossibleProps；`pkg/planner/memo/group_test.rs::build_key_info_inherits_pk_and_max_one_row_per_operand_rules` 验证 MaxOneRow；逻辑算子独立测试覆盖 HasTiFlash 的叶子与传播行为。Go 侧还核对了 `pkg/planner/memo/group_test.go::TestBuildKeyInfo` 和 `pkg/planner/core/casetest/cascades/memo_test.go`。
-- 仓库级 `rg` 确认 Rust `NewLogicalProp` 没有定义之外的调用；Go 构造器由 Cascades `DeriveLogicalProp` 调用。本文没有把未观察到的 Rust 调用关系写成已接线事实。

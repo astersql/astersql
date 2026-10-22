@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于独立库 crate `astersql-server-handler`，crate 根由 `pkg/server/handler/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，模块入口 `pkg/server/handler/lib.rs` 通过 `pub mod auto_id_owner_handler` 对外暴露它。它把“实例健康检查”和“Auto ID 服务 owner 身份查询”收敛成一个很小的、与具体 HTTP 框架解耦的处理核心。
-
-需要区分 Rust 与 Go 的接线状态：Go 生产服务器在 `pkg/server/http_status.go` 中仅于 `deploymode.IsStarter()` 为真时把 `/owner_manager/auto_id_service` 注册到 `handler.NewAutoIDOwnerHandler(s)`；Rust 仓库搜索到的直接使用者是测试，尚未发现 Rust 生产状态服务器注册该路由。因此，本文件当前提供了可复用处理逻辑和抽象边界，但不能单凭它断言 Rust 服务器已经对外提供该端点。
+在 `AutoIDOwnerHandler::ServeHTTP` 中执行固定顺序的判定：先检查健康状态；不健康时只写 500，健康时才查询 owner 状态并写出 `autoIDOwnerStatus`。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ writer 在一次调用期间以 `&mut W` 独占借用，防止同一响应对象
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/server/handler/auto_id_owner_handler.go`：checker 接口的两个方法、持有 checker 的 handler、含 `IsOwner` 的状态对象、构造函数，以及“先健康检查、后 owner 查询”的处理顺序均一致。`pkg/server/handler/auto_id_owner_handler_test.go` 与 Rust 独立测试都覆盖 `false -> true -> unhealthy` 三种状态。
-
 关键差异如下：
 
 - Go handler 直接实现 `net/http` 的 `ServeHTTP(http.ResponseWriter, *http.Request)`；Rust 用 `AutoIDOwnerResponse` 抽象 writer，并完全省略未使用的 request 参数。
@@ -98,12 +94,3 @@ Rust 文件逐项对应 `pkg/server/handler/auto_id_owner_handler.go`：checker 
 若新增响应字段，应修改 `autoIDOwnerStatus`、`AutoIDOwnerResponse::write_owner_status` 的实现及 Go 对照语义，并覆盖字段命名和兼容性测试。由于 Rust 类型本身没有序列化标签，不能只增加字段而假设 JSON 自动正确。
 
 若要完成 Rust 生产接线，需要在状态服务器路由层实现 `AutoIDOwnerChecker` 与 `AutoIDOwnerResponse` 适配器，并复现 Go 的 Starter 模式注册条件；随后应把 `pkg/server/handler/tests/http_handler_serial_test.rs` 中当前 404 断言更新为针对实际模式的端到端断言。这属于本文件之外的接线工作。性能风险主要在 checker 实现：请求路径应保持无阻塞或使用廉价的原子/租约状态读取；本处理器本身没有分配集合或循环。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/server/handler` 找到目标、Go 对照和相关测试；`node --file pkg/server/handler/auto_id_owner_handler.rs` 核对 76 行源码及“由 `pkg/server/handler/tests/http_handler_test.rs` 使用”的关系；`query AutoIDOwnerHandler`、`query NewAutoIDOwnerHandler`、`query IsAutoIDOwner` 核对 Rust/Go 对应符号。
-- 生产源码：`pkg/server/handler/auto_id_owner_handler.rs`、`pkg/server/handler/lib.rs`、`pkg/server/handler/Cargo.toml`。
-- Go 对照与接线：`pkg/server/handler/auto_id_owner_handler.go`、`pkg/server/http_status.go`、`pkg/server/server.go`。
-- 独立测试：`pkg/server/handler/auto_id_owner_handler_test.rs`、`pkg/server/handler/auto_id_owner_handler_test.go`、`pkg/server/handler/tests/http_handler_test.rs`、`pkg/server/handler/tests/http_handler_serial_test.rs`，以及测试 crate 声明 `pkg/server/handler/tests/Cargo.toml`。
-- 仓库引用搜索确认包级自由函数没有直接调用者，并确认 Rust 生产代码中未找到 `/owner_manager/auto_id_service` 路由注册；这些结论仅描述当前检出的仓库状态。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核未把测试或 Go 路由误写为 Rust 生产接线。

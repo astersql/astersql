@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 UniStore 的内存 mock TiKV crate `astersql-store-mockstore-unistore-tikv` 中，说明对象是同目录的 [`server_batch.rs`](./server_batch.rs)。crate 入口 `pkg/store/mockstore/unistore/tikv/lib.rs` 通过 `pub mod server_batch` 公开此模块；`Cargo.toml` 的 `[package.metadata.porting]` 又将该 crate 对应到 Go 包 `pkg/store/mockstore/unistore/tikv`。它不是网络协议实现，而是把一组 Rust 内存命令并发转调到同 crate 的 `server::Server`，再组装为便于测试的批响应。
-
-仓库搜索只发现测试代码调用 `BatchRequestHandler::dispatch_batch`，没有生产 Rust 调用方或 gRPC 流接线。因此当前事实是“可公开调用的 mock 批处理门面”，不能把它描述成已经替代 Go `Server.BatchCommands` 的线上流式入口。目标源文件没有条件编译项；crate 的大量内部路径依赖在 `Cargo.toml` 中仅声明于 `cfg(target_os = "windows")` 段，这是 crate 级构建边界，不改变本文件自身的控制流。
+用 `BatchCommand` 表示 12 类事务 KV、Raw KV 请求及其完整参数。
 
 ## 核心职责
 
@@ -80,11 +78,9 @@ Raw 命令没有 Region 错误通道；Raw 写删也没有可返回错误的接�
 
 ## 与 Go 版本的对应关系
 
-Go `server_batch.go` 的 `respIDPair.appendTo` 对应 Rust `ResponseIdPair::append_to`，`batchRequestHandler.handleRequest`/`Server.handleBatchRequest` 对应 Rust 的线程闭包/`handle_batch_request`，`respChanSize = 1024` 对应 `RESPONSE_CHANNEL_SIZE`。两版都允许子请求乱序完成，并依靠 ID 与响应一起传递来恢复关联。
+差异同样重要：Go `Server.BatchCommands` 接收真正的双向 gRPC stream，`start` 建立取消上下文，`dispatchBatchRequest` 循环 `Recv`，`collectAndSendResponse` 把当前通道积压聚成多个批次并逐次 `Send`；Rust 接受一个已物化 `Vec`，只返回一个完整 `BatchResponse`，没有流、取消和 I/O 错误。Go 单请求处理失败时记录日志且不发送该响应，Rust 则把服务端业务错误折叠成 `Error(String)`；Rust 线程 panic 仍会传播。
 
-差异同样重要：Go `Server.BatchCommands` 接收真正的双向 gRPC stream，`start` 建立取消上下文，`dispatchBatchRequest` 循环 `Recv`，`collectAndSendResponse` 把当前通道积压聚成多个批次并逐次 `Send`；Rust 接受一个已物化 `Vec`，只返回一个完整 `BatchResponse`，没有流、取消和 I/O 错误。Go 单请求处理失败时记录日志且不发送该响应，Rust 则把服务端业务错误折叠成 `Error(String)`；Rust 线程 panic 仍会传播。Go 分支覆盖范围也明显更广。
-
-仓库内没有搜索到直接覆盖这些 Go batch 函数的 `*_test.go`；Rust 的直接证据来自 `server_batch_test.rs` 与 `main_test.rs`。因此文档只声明控制流对应关系，不宣称两版协议能力完全等价。
+仓库内没有搜索到直接覆盖这些 Go batch 函数的 `*_test.go`；Rust 的直接证据来自 `server_batch_test.rs` 与 `main_test.rs`。
 
 ## 扩展指南
 
@@ -93,13 +89,3 @@ Go `server_batch.go` 的 `respIDPair.appendTo` 对应 Rust `ResponseIdPair::appe
 若要接近 Go 的流式协议，应在独立传输/适配层增加 protobuf 转换、Recv/Send 循环、取消和 I/O 错误策略，再复用单命令分派；不能仅把 `dispatch_batch` 命名成 stream handler。若要提高大批次可伸缩性，最可能修改 `BatchRequestHandler::dispatch_batch`，需明确并发上限、背压、公平性、panic 隔离及完成顺序约定，并增加超过 1024 条请求、慢请求与 panic/关闭场景测试。
 
 若需要保留 TiKV 错误兼容性，应优先扩展 `BatchCommandResponse` 的结构化错误表示并检查 `unit_rpc`/`error`，同时验证 KeyError 与 RegionError 的优先级。修改 ID/响应存储方式时必须维持逐项关联不变量，并继续覆盖乱序完成。`REQUEST_CHANNEL_SIZE` 当前未接线；使用或删除前需先确认未来传输层设计，不能把它误当现有容量控制。
-
-## 验证依据
-
-- 源码：`pkg/store/mockstore/unistore/tikv/server_batch.rs`（全部 292 行），核对所有常量、类型、impl、函数、12 个命令分支及无条件编译事实。
-- crate 边界：`pkg/store/mockstore/unistore/tikv/lib.rs` 的 `pub mod server_batch` 和独立测试模块声明；`pkg/store/mockstore/unistore/tikv/Cargo.toml` 的包名、lib 路径、Go porting 元数据及目标条件依赖。
-- 下游实现：`pkg/store/mockstore/unistore/tikv/server.rs` 的 `RpcContext`、`KeyError`、`RpcResponse`、`Server` 及被调用的 `kv_*`/`raw_*` 方法；`mock_region.rs::RegionError` 的显示实现。
-- Rust 测试：`pkg/store/mockstore/unistore/tikv/server_batch_test.rs::collected_responses_preserve_channel_arrival_order_like_go`；`pkg/store/mockstore/unistore/tikv/main_test.rs::batch_handler_preserves_response_id_association`。
-- Go 对照：`pkg/store/mockstore/unistore/tikv/server_batch.go` 的 `Server.BatchCommands`、`batchRequestHandler::{start,handleRequest,dispatchBatchRequest,collectAndSendResponse}`、`Server.handleBatchRequest`；仓库范围未找到相关 Go `*_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query` 找到 `BatchRequestHandler`、`dispatch_batch`、`handle_batch_request`、`collect_batch_response`；`callees` 确认 `dispatch_batch`→`collect_batch_response`、`collect_batch_response`→`append_to`、`handle_batch_request`→`unit_rpc`/`error`。调用者和部分同名方法边缺失或误归属，已用精确仓库搜索与源码分支补证。
-- 本任务只新增说明文档，不改变 Rust/Go/Cargo 行为，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令验证。

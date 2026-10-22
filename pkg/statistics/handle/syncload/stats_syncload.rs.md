@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现按需同步加载列/索引统计信息的核心调度器。它位于 `astersql-statistics-handle-syncload` crate 中，由同目录 `lib.rs` 以 `pub use stats_syncload::*` 再导出；`Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `package.metadata.porting.go-package = "pkg/statistics/handle/syncload"` 表明它是 Go 同路径包的 Rust 移植边界。该 crate 当前没有声明外部 Cargo 依赖，通道、锁、原子量、超时与 panic 隔离均使用标准库实现。
-
-应用中的直接接线不在本文件内，而在 `pkg/session/runtime/planning.rs`：`SessionStatsSyncLoadAdapter::new_with_domain` 创建并按 Domain 共享 `statsSyncLoad`，依据全局配置计算队列大小与 worker 数量，启动 `SubLoadWorker`；其 `StatsLoadWaiter::SyncWaitStatsLoad` 实现把语句上下文中的 `astersql_meta_model::StatsLoadItem` 转成本文类型，调用 `SendLoadRequests` 和 `SyncWaitStatsLoad`。规划器的 `pkg/planner/core/optimizer_runtime.rs::sync_wait_stats_load_point` 在发现待加载项后取得该 waiter，使代价估计在统计加载完成或按配置退化到 pseudo statistics 后继续。
+用 `handleOneItemTaskWithSCtx` 判定列/索引是否还需要加载，处理跳过类型和未 ANALYZE 列，再由 `readStatsForOneItem` 从 `StatsStorage` 读取元数据、桶、CMSketch 与 TopN。
 
 ## 核心职责
 
@@ -98,13 +96,3 @@ Domain 级 worker 的生命周期由 `pkg/session/runtime/planning.rs::DomainSta
 - 改变缓存合并时集中修改 `updateCachedItem`，继续在互斥区内重新读取最新快照，并验证列/索引、meta/full、已分析/未分析及并发更新。适配层的 `DomainStatsSyncLoadHandle::UpdateStatsCache` 也需同步审查。
 - 若把更多真实系统类型移入该 crate，应先调整 `Cargo.toml` 和适配边界，避免并存的轻量类型与 `astersql_meta_model`/`astersql_statistics_handle` 类型发生静默语义漂移。
 - 回归测试首选同目录 `stats_syncload_test.rs`；跨规划链行为还应覆盖 `pkg/session/runtime_test/session.rs` 和 `pkg/planner/core/casetest/planstats/plan_stats_test.rs`。测试逻辑不要嵌入本生产文件。
-
-## 验证依据
-
-- Rust 源码：`pkg/statistics/handle/syncload/stats_syncload.rs`，重点核对 `SendLoadRequests`、`SyncWaitStatsLoad`、`SubLoadWorker`、`HandleOneTask`、`handleOneItemTaskWithSCtx`、`readStatsForOneItem`、`drainColTask`、`updateCachedItem`、`complete_waiters`。
-- crate 边界：`pkg/statistics/handle/syncload/Cargo.toml` 与 `pkg/statistics/handle/syncload/lib.rs`。
-- 直接应用接线：`pkg/session/runtime/planning.rs` 的 `DomainStatsLoadWorkers`、`SessionStatsSyncLoadAdapter`、`DomainStatsSyncLoadHandle`；规划入口为 `pkg/planner/core/optimizer_runtime.rs::sync_wait_stats_load_point`，接口为 `pkg/planner/core/base/plan_base.rs::StatsLoadWaiter`。
-- Go 对照：`pkg/statistics/handle/syncload/stats_syncload.go` 中同名类型/函数；重点比较全局 singleflight、system session、高优先级读、双队列和缓存更新。
-- 测试证据：Rust `pkg/statistics/handle/syncload/stats_syncload_test.rs` 覆盖并发加载、零超时、panic/失败后重试、重试耗尽、leader 等待超时、零容量队列、存储无对象、CPU 分档、请求层失败与 worker 错误分类及混合结果；Go `pkg/statistics/handle/syncload/stats_syncload_test.go` 覆盖对应端到端 SQL 行为和 issue #67629 的竞态回归。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件、目标文件有 93 个符号；`files --filter pkg/statistics/handle/syncload` 确认 Rust/Go 源与测试；`query SyncLoad`、`query StatsLoad` 定位上述关键符号。`explore` 和精确 callers/callees 查询在本次限定时间内未返回有效边，因此上游/下游边改由已索引符号位置和直接源码引用交叉验证，不采用未返回结果作为结论。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令验证文档形态，并人工复核所有“已支持”陈述均能回指上述源码或测试。

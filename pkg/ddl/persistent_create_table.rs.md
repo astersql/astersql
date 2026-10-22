@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[package] name = "astersql-ddl"`），实现普通 DDL worker 在持久事务路径上执行 `CREATE TABLE` 与批量建表的核心步骤。上游统一入口是 `persistent_actions::step`：动作号 `3` 分派给 `step`，动作号 `60` 分派给 `batch_step`（`pkg/ddl/persistent_actions.rs:59-100`）。它不是 SQL AST 构造层，也不负责提交/调度 DDL job；它消费已持久化到 `Job.raw_args` 的表元数据，在 owner worker 上创建目录元数据、生成 schema version/diff，并完成外部资源通知。
-
-RustCodeGraph 将本文件识别为 22 个符号，并报告其被 `executor.rs`、`job_worker.rs`、`partition.rs`、`persistent_actions.rs`、`persistent_create_materialized_view.rs` 等 6 个文件使用。精确调用边查询在当前索引上把 symbol id 错当成普通名称，因而直接调用关系又以源码引用核验；可确认 `create_table` 还被物化视图、物化视图日志和 shadow-table 持久路径复用（`persistent_create_materialized_view*.rs`）。
-
-从 DDL 生命周期看，这是 job-based、owner-driven 路径，不是 metadata-only 快速通道。普通无外键表直接发布 `Public`；含外键表跨两次 worker step 经 `DeleteOnly` 到 `Public`。文件不做 reorg/backfill。取消通常通过把 `job.state` 设为 `Cancelled` 后返回错误；已写入的表元数据和外部 PD/TTL 资源是否清理由更高层 job 生命周期及对应补偿接口负责，本文件只对批量 TTL 注册实现显式逆序补偿。
+取消通常通过把 `job.state` 设为 `Cancelled` 后返回错误；已写入的表元数据和外部 PD/TTL 资源是否清理由更高层 job 生命周期及对应补偿接口负责，本文件只对批量 TTL 注册实现显式逆序补偿。
 
 ## 核心职责
 
@@ -94,15 +90,9 @@ RustCodeGraph 将本文件识别为 22 个符号，并报告其被 `executor.rs`
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/ddl/create_table.go` 与 `pkg/ddl/foreign_key.go`：
-
-- Rust `create_table` 对应 Go `createTable`。两者都声明为单表/批量共享内部函数，不负责更新 schema version、结束 job 或发送事件；都依次检查列存、名称与外键，写表元数据，处理 TiFlash、placement、affinity 和 auto-ID。
-- Rust `step` 对应 Go `onCreateTable` 加 `createTableWithForeignKeys`。无外键一次完成；有外键先 `None/Public → DeleteOnly`，再兼容 `DeleteOnly/WriteOnly → Public`，只在最终公开时通知、注册 TTL 和结束 job。
 - Rust `batch_step` 对应 Go `onCreateTables` 与 `registerTTLTablesToExternalWorkload`：共享一个版本、逐表通知、TTL 失败逆序补偿。Rust 直接构造 `Diff:{version}`，而 Go 通过 `updateSchemaVersion`；Rust 未包含 Go 的 sequence 分支。
 - Rust `check_foreign_keys` / `check_foreign_key` 对应 Go `checkTableForeignKeyValidInOwner` / `checkTableForeignKey`，核心禁止项与类型/索引规则一致。Go 使用 infoschema 最新快照，Rust 从 `TransactionMutator` 枚举数据库及公开表构造目录。
 - Go 对部分错误区分可重试与不可重试，再决定是否取消；Rust 当前多数校验与外部资源错误直接经过 `cancel`。扩展错误处理时应对照 Go 的 retryable 语义，不应仅复制错误文本。
-
-独立 Rust 测试证据主要位于 `pkg/ddl/tests/fk/foreign_key_test.rs`，覆盖父表缺失、关闭 foreign-key checks、自引用及临时表/TTL/分区/列兼容矩阵；`pkg/ddl/db_table_test.rs` 覆盖普通与批量创建的 ID、重复名和 on-exist 行为；`pkg/ddl/tests/fastcreatetable/fastcreatetable_test.rs` 覆盖合并批量 job；`pkg/ddl/tests/fail/fail_db_test.rs` 覆盖快速建表失败场景。未发现以 `persistent_create_table` 命名的独立单元测试文件。
 
 ## 扩展指南
 
@@ -113,12 +103,3 @@ RustCodeGraph 将本文件识别为 22 个符号，并报告其被 `executor.rs`
 - 修改批量逻辑要保留“一个 schema version + 每表 affected option + 每表 notifier”的契约，并给部分成功、通知失败、TTL 中途失败及补偿失败增加独立测试。若补齐 sequence 支持，应明确移植 Go `createSequenceWithCheck`，而不是让 sequence 走普通 `create_table`。
 - placement、TiFlash、affinity、TTL 或 auto-ID 变化可能引入 PD/控制器兼容与失败恢复风险；外键目录全量枚举还具有随库表数量增长的性能风险。优化时须保持只接受 `Public` 元数据与错误码语义。
 - 按仓库约定，Rust 测试继续放在独立 `*_test.rs` 或 `tests/` 文件中，不把测试内嵌进本生产文件。
-
-## 验证依据
-
-- 源码：`pkg/ddl/persistent_create_table.rs` 全部 441 行；直接入口 `pkg/ddl/persistent_actions.rs:59-100`；资源接口 `pkg/ddl/job_worker.rs`；复用者 `pkg/ddl/persistent_create_materialized_view.rs`、`persistent_create_materialized_view_log.rs`、`persistent_create_materialized_view_shadow.rs`。
-- crate 边界：`pkg/ddl/Cargo.toml`，确认 crate 名、`[lib] path = "lib.rs"`，以及 `astersql-meta`、`astersql-meta-model`、`astersql-ddl-placement`、`astersql-ddl-notifier`、`astersql-sessionctx-vardef`、`astersql-util-dbterror`、`serde_json` 等直接依赖。
-- Go 对照：`pkg/ddl/create_table.go` 的 `createTable`、`onCreateTable`、`createTableWithForeignKeys`、`onCreateTables`、`registerTTLTablesToExternalWorkload`；`pkg/ddl/foreign_key.go` 的 `checkTableForeignKeyValidInOwner` 与 `checkTableForeignKey`。
-- 测试：`pkg/ddl/tests/fk/foreign_key_test.rs`、`pkg/ddl/db_table_test.rs`、`pkg/ddl/tests/fastcreatetable/fastcreatetable_test.rs`、`pkg/ddl/tests/fail/fail_db_test.rs`。这些是相关行为证据；本任务按计划不运行 Cargo，也不声称执行了测试。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 边；`files --filter pkg/ddl/persistent_create_table.rs` 定位目标；`node --file ... --offset 1 --limit 460` 返回全文件和 22 个符号；`query persistent_create_table --json` 核对 `cancel`、`decode(_optional)`、`save_args`、`Policies::GetPolicy`、`create_table`、`step`、两级外键检查与 `batch_step` 的签名。精确 callers/callees 命令在当前 CLI 中误将 symbol id 解释成名称并返回无关候选，因此直接边由上述源码引用补证，未据此虚构图关系。
-- 结构验证按任务指定命令执行；人工复核重点为固定 11 个二级标题、真实符号/调用关系、Go 差异、错误与事务边界，以及未把批量 sequence 或自动回滚描述为已支持。

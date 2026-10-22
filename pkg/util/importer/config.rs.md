@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-importer` crate 的配置与公共错误边界。crate 入口 `pkg/util/importer/lib.rs` 以 `pub mod config` 声明模块，并通过 `pub use config::*` 将这里的 `DbConfig`、`Config` 和 `ImporterError` 暴露到 crate 根。`pkg/util/importer/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认该归属；其 `[package.metadata.porting]` 又把本 crate 对应到 Go 包 `pkg/util/importer`。
-
-它不负责读取 TOML/JSON、建立连接或执行导入，而是保存这些阶段共享的输入数据、生成 MySQL 风格 DSN，并为 Rust 版各子模块定义统一的可传播错误。完整运行入口在 `pkg/util/importer/importer.rs::process`，该入口读取 `Config` 后调用解析、数据库和并发调度模块。
+不负责读取 TOML/JSON、建立连接或执行导入，而是保存这些阶段共享的输入数据、生成 MySQL 风格 DSN，并为 Rust 版各子模块定义统一的可传播错误。
 
 ## 核心职责
 
@@ -77,11 +75,11 @@ RustCodeGraph 的文件节点报告 `config.rs` 被 11 个文件使用，并能�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/importer/config.go`。Rust `Config` 与 Go `Config` 的七个业务字段一一对应：`TableSQL`/`table_sql`、`IndexSQL`/`index_sql`、`LogLevel`/`log_level`、`DBCfg`/`db_config`、`WorkerCount`/`worker_count`、`JobCount`/`job_count`、`Batch`/`batch`。Rust `DbConfig` 对应 Go 的 `pkg/util/dbutil.DBConfig` 在该工具实际使用的 User、Password、Host、Port、Schema 子集；Go 格式化文本还展示 `Snapshot` 字段，而 Rust 为保持输出形状固定输出空 `Snapshot:`。
+Rust `DbConfig` 对应 Go 的 `pkg/util/dbutil.DBConfig` 在该工具实际使用的 User、Password、Host、Port、Schema 子集；Go 格式化文本还展示 `Snapshot` 字段，而 Rust 为保持输出形状固定输出空 `Snapshot:`。
 
 Go 字段带 TOML/JSON 标签，Rust 结构当前没有 `serde` 派生，crate 的正常依赖也为空，所以不能直接从同样的 TOML/JSON 反序列化。Go 计数类型是 `int`，Rust 使用 `usize`；Go 数据库端口的通用配置类型与 Rust 的 `u16` 也应在外部输入转换处检查范围。
 
-Go `(*Config).String` 对 nil receiver 返回 `"<nil>"`，否则执行 `fmt.Sprintf("Config(%+v)", *c)`；Rust 以 `Config::string(Option<&Config>)` 显式保留 nil 分支，并用固定模板复刻当前字段名、顺序和嵌套 DB 形状。`config_test.rs::config_string_matches_go_fmt_shape_and_nil_contract` 覆盖这三条路径。
+Go `(*Config).String` 对 nil receiver 返回 `"<nil>"`，否则执行 `fmt.Sprintf("Config(%+v)", *c)`；Rust 以 `Config::string(Option<&Config>)` 显式保留 nil 分支，并用固定模板复刻当前字段名、顺序和嵌套 DB 形状。
 
 `ImporterError` 是 Rust 迁移层新增的统一错误模型，并非 `config.go` 中的对应声明。Go 主流程常用返回的 `error`，并在 `importer.go`/`job.go` 多处 `log.Fatal`；Rust `importer.rs::process` 返回 `Result<ProcessReport, ImporterError>`，让调用者决定如何处理错误。这是控制流表达差异，不应误写成 Go 枚举的机械翻译。
 
@@ -93,12 +91,3 @@ Go `(*Config).String` 对 nil receiver 返回 `"<nil>"`，否则执行 `fmt.Spri
 - 调整 worker/job/batch 语义时，校验必须放在最早能掌握完整不变量的运行入口，并同步 `job_test.rs` 或 `tests.rs`；仅改变默认值不能替代运行时校验。
 - 改动 `Config` 文本格式要考虑兼容性和泄露风险：现有测试把 Go 字段顺序和明文 password 固定为契约。若要脱敏，需明确这是有意的兼容性变化并同步 Go/Rust 期望。
 - 性能上，本文件主要成本是格式化时的字符串分配；真正敏感参数是 `worker_count` 对连接/线程数量的线性放大，以及 `batch` 对单事务体积的影响，扩展配置时应在消费方评估资源上限。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳 `1791342965170`；`files --filter pkg/util/importer` 列出目标及同目录 Rust/Go 文件；`node --file pkg/util/importer/config.rs --offset 1 --limit 400` 返回目标 115 行源码和“used by 11 files”；`query DbConfig`、`query ImporterError` 精确定位本文件符号。精确 callers/callees 查询无可用输出，因此调用边另由源码核验。
-- 目标与 crate 边界：`pkg/util/importer/config.rs`、`pkg/util/importer/Cargo.toml`、`pkg/util/importer/lib.rs`。
-- Rust 直接消费方：`pkg/util/importer/importer.rs`、`pkg/util/importer/db.rs`、`pkg/util/importer/job.rs`；错误变体的其他直接使用由 `pkg/util/importer/parser.rs`、`pkg/util/importer/rand.rs` 核验。
-- Go 对照：`pkg/util/importer/config.go`、`pkg/util/importer/importer.go`、`pkg/util/importer/db.go`、`pkg/util/importer/job.go`；同目录不存在 `config_test.go`。
-- 独立 Rust 测试：`pkg/util/importer/config_test.rs` 验证字段化输出、`Display` 委托和 nil 契约；`job_test.rs` 与 `tests.rs` 提供配置错误和数据库错误在运行链中的补充证据。
-- 人工复核结论：文件存在的原因是统一承载导入输入、DSN 格式与 Rust 错误边界；它通过 `process -> create_databases/process_jobs` 进入运行主链；安全扩展需要同步结构、格式化契约、消费方校验、Go 对照及独立测试。

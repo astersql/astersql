@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-workloadrepo` crate 中主动采样逻辑的实现，crate 入口 `pkg/util/workloadrepo/lib.rs` 以私有模块 `mod sampling` 装入它。文件没有定义新类型，而是为 `pkg/util/workloadrepo/worker.rs` 的 `worker`（在 crate 根以 `WorkloadRepoWorker` 类型别名公开）补充四个公开方法：`samplingTable`、`startSample`、`resetSamplingInterval` 和 `changeSamplingInterval`。
-
-这里的“采样”是把 `repositoryTable.tableType == samplingTable` 的瞬时 INFORMATION_SCHEMA 视图写入 WORKLOAD_SCHEMA 历史表。默认清单由 `worker.rs::defaultWorkloadTables` 提供，当前包含 `PROCESSLIST`、`DATA_LOCK_WAITS`、`TIDB_TRX`、`MEMORY_USAGE` 和 `DEADLOCKS`。与 Go 实现不同，Rust 的 `worker.rs::startRepository` 当前只完成建表、就绪检查和实例 ID 初始化，没有把 `startSample` 接入常驻调度主链；仓库内 Rust 调用点目前位于 `sampling_test.rs` 和 `worker_test.rs`。
+`Worker::samplingTable` 完成单张表的一次 `INSERT ... SELECT`：需要时通过 `table.rs::buildInsertQuery` 惰性生成并缓存 SQL，再通过 `worker.rs::runQuery` 执行，并绑定当前实例 ID。
 
 ## 核心职责
 
@@ -67,8 +65,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/workloadrepo/sampling.go`。两版都按 `samplingTable` 类型过滤表、惰性构建 `INSERT ... SELECT`、绑定实例 ID、并发处理各表，并让单表失败不阻断其他表。Rust 的 `table.rs::buildInsertQuery` 延续了采样表 SQL 使用 `now(), %?` 的核心语义。
-
 差异必须视为当前迁移状态，而非等价实现：
 
 - Go `startSample` 会先重置 ticker，随后循环等待 ticker 或 context 取消；Rust `startSample` 只返回执行一次采样的闭包。
@@ -77,8 +73,6 @@
 - Go `changeSamplingInterval` 在 ticker 已存在时立即应用新周期，并可通过 failpoint 制造解析错误；Rust 无 ticker 和该 failpoint。两版都把范围限制留给上层系统变量定义，而 hook 本身只做整数解析。
 - Go 单表失败会写日志，且会从 session pool 获取/归还会话；Rust 使用抽象 `RepositoryBackend`，单表错误在聚合闭包中被静默忽略。
 
-Go 的持续调度接线证据位于 `worker.go::startRepository`，配置范围证据位于 `worker.go::init` 注册的 `repositorySamplingInterval`（最小 0、最大 600）。
-
 ## 扩展指南
 
 若新增采样表，优先修改 `worker.rs::defaultWorkloadTables`，将其标记为 `samplingTable`，并确认 `table.rs::buildInsertQuery` 能根据源表列生成兼容 SQL；应在独立的 `sampling_test.rs` 或 `worker_test.rs` 增加过滤、参数绑定和失败隔离测试，不要把测试写进生产文件。
@@ -86,12 +80,3 @@ Go 的持续调度接线证据位于 `worker.go::startRepository`，配置范围
 若要补齐 Go 版的周期调度，接入点应是 `worker.rs::startRepository/start/stop` 与本文件的 `startSample/resetSamplingInterval/changeSamplingInterval`。设计必须同时定义定时器所有权、取消与 join 生命周期、0 间隔语义、并发更新规则及 panic/错误可观测性，不能仅循环调用现有闭包。还应保持 Go 的系统变量范围校验与 hook 解析职责分离。
 
 若改变错误策略，需要特别评估“尝试所有表”的既有不变量：可以收集并汇报各表错误，但不应因首个错误跳过剩余表。若允许运行时修改 `workloadTables`，应消除“先存下标、后重新索引”造成的竞态语义，例如为一轮采样建立稳定任务快照。性能变更需关注每表一线程、SQL 缓存失效、后端并发度和共享锁竞争。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/util/workloadrepo` 列出目标源、Go 对照、模块入口和独立测试；`node --file pkg/util/workloadrepo/sampling.rs --offset 1 --limit 260` 返回目标文件完整 86 行；同样读取了 `sampling_test.rs` 完整 149 行。精确 `query samplingTable/startSample/resetSamplingInterval/changeSamplingInterval --kind method` 只返回 Go 符号，故 Rust 上游调用关系由 `rg` 调用点搜索补齐，并在正文明确索引限制。
-- 生产源码：`pkg/util/workloadrepo/sampling.rs`（四个方法及线程/锁逻辑）、`table.rs::buildInsertQuery`（SQL 生成和缓存）、`worker.rs::{RepositoryBackend, WorkerState, worker, defaultWorkloadTables, runQuery, startRepository}`（状态、后端与启动链）、`const.rs::repositorySamplingInterval`、`lib.rs::mod sampling`。
-- crate 声明：`pkg/util/workloadrepo/Cargo.toml` 的包名、`lib.rs` 入口、`chrono` 依赖和 `package.metadata.porting.go-package`。
-- Rust 独立测试：`sampling_test.rs::change_sampling_interval_matches_go_hook_contract`、`sampling_test.rs::sampling_round_attempts_all_sampling_tables_and_ignores_table_errors`；`worker_test.rs::{TestMultipleWorker, TestSamplingTimingWorker, TestSettingSQLVariables}`。
-- Go 对照与测试：`sampling.go::{samplingTable, startSample, resetSamplingInterval, changeSamplingInterval}`、`worker.go::{init, initializeWorker, startRepository}`、`table.go::buildInsertQuery`，以及 `worker_test.go` 中的采样间隔、启动和恢复相关用例。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务文件指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复查了当前接线、迁移差异、错误边界和扩展入口均有上述源码或测试依据。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate。该 crate 以 `pkg/executor/aggfuncs/lib.rs` 为入口，`lib.rs` 通过 `pub mod func_count` 公开本模块；`pkg/executor/aggfuncs/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/executor/aggfuncs"` 分别确认了 crate 边界与 Go 移植来源。
-
-它提供普通 `COUNT` 的轻量状态机，而不是 `COUNT(DISTINCT ...)`；后者位于 `func_count_distinct.rs`。当前文件只依赖公共部分结果类型 `aggfuncs::PartialResult4Count` 和错误类型 `aggfuncs::AggError`，没有表达式求值、chunk 写出或 spill 序列化代码。
-
-需要区分实现与接线现状：`builder.rs::build_count` 会把非 DISTINCT 的 `Complete`/`Partial1` 模式选为 `AggImplementation::CountOriginal(ValueKind)`，把 `Partial2`/`Final` 选为 `AggImplementation::CountPartial`；但本文件的 `CountAggregator` 没有实现 `AggFunc` 或 `SlidingWindowAggFunc`。仓库内对 `CountAggregator` 的直接引用目前均在独立 Rust 测试中，因而仅凭本文件不能断言这些 builder 枚举已实例化为生产执行器对象。
+用一个 `i64` 保存 COUNT 部分结果，空状态和 reset 后状态均为 `0`（`CountAggregator::default`、`reset`）。
 
 ## 核心职责
 
@@ -76,13 +72,13 @@ RustCodeGraph 把本文件列为被 8 个文件使用，但对 `CountAggregator:
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/executor/aggfuncs/func_count.go`。两端都以 `int64` 保存 `partialResult4Count`，零值是空状态，并把 NULL 排除在 COUNT 之外。Rust 的 `DEF_PARTIAL_RESULT_4_COUNT_SIZE` 对应 Go 的 `DefPartialResult4CountSize`；`reset` 对应 `baseCount.ResetPartialResult`；`value` 表达 Go 最终读取 `*partialResult4Count` 的状态，但不包含 Go 的 chunk 写出。
+Rust 的 `DEF_PARTIAL_RESULT_4_COUNT_SIZE` 对应 Go 的 `DefPartialResult4CountSize`；`reset` 对应 `baseCount.ResetPartialResult`；`value` 表达 Go 最终读取 `*partialResult4Count` 的状态，但不包含 Go 的 chunk 写出。
 
 Go 为 Int、Real、Decimal、Time、Duration、JSON、VectorFloat32 和 String 分别定义结构及 `UpdatePartialResult`/`Slide`，因为每种实现要调用不同的 `Eval*`。Rust 注释明确说明求值发生在进入累加器之前，所以各 `CountOriginal4*` 只是同一 `CountAggregator` 的别名。该抽象保留 NULL/计数/滑动算法，却没有复制 Go 的表达式错误传播：Go 的 `Eval*` 可能返回错误，Rust 当前收到的已经是 `Option<T>`。
 
-Go `countPartial.UpdatePartialResult` 对非 NULL 的 `EvalInt` 结果求和，`MergePartialResult` 把来源计数加到目标；对应 Rust 的 `update_partial` 与 `merge`。Go 使用普通 `int64` 加减，Rust 用显式 wrapping 运算固定补码回绕语义，并由 `func_count_test.rs` 覆盖边界。
+Go 使用普通 `int64` 加减，Rust 用显式 wrapping 运算固定补码回绕语义，并由 `func_count_test.rs` 覆盖边界。
 
-Rust 当前文件未移植 Go `baseCount` 的 `AllocPartialResult`、最终 chunk 写出、spill 序列化/反序列化，也未实现 Go 的聚合 trait 接口。扩展或接线时不能把这些职责误认为已经由 `CountAggregator` 提供。
+Rust 当前文件未移植 Go `baseCount` 的 `AllocPartialResult`、最终 chunk 写出、spill 序列化/反序列化，也未实现 Go 的聚合 trait 接口。
 
 ## 扩展指南
 
@@ -93,14 +89,3 @@ Rust 当前文件未移植 Go `baseCount` 的 `AllocPartialResult`、最终 chun
 行为变更必须同步独立测试文件，不能把测试内嵌进 `func_count.rs`。核心目标为 `func_count_test.rs`；通用 update/merge/reset 契约在 `aggfunc_test.rs`，Go 场景映射在 `go_scenario_coverage_test.rs`，builder 模式选择在 `builder_test.rs`。应覆盖 NULL、空输入、partial 的 NULL 和负值、多个 partial 合并、reset 后复用、滑动窗口移入/移出不对称以及 `i64` 边界回绕。
 
 兼容性风险主要是改变 NULL 跳过规则、阶段选择或回绕语义；正确性风险主要是窗口调用者传入与当前状态不一致的 outgoing 集合；性能风险主要来自把当前零分配线性扫描改成额外收集或动态分派。若增加错误分支，还要检查现有调用者的 `unwrap`/传播策略。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/aggfuncs/func_count.rs` 确认目标文件已索引且含 20 个符号。
-- RustCodeGraph `node --file pkg/executor/aggfuncs/func_count.rs`：核对常量、结构体、九个类型别名及五个方法的完整实现。
-- RustCodeGraph `query CountOriginal4Int64`/`query CountPartial4Int64`：前者按近似名定位到 Rust `CountOriginal4Int` 和 Go `countOriginal4Int`，后者无结果，促使改用精确源码符号；`query PartialResult4Count` 定位到 `aggfuncs.rs` 的 `i64` 别名。
-- RustCodeGraph `callers`/`callees` 对 `CountAggregator` 及其 `update`、`update_partial`、`merge`、`slide` 未返回静态边；随后以索引的 used-by 信息和 `rg` 直接引用交叉核验，未把缺失图边解释成生产接线。
-- 已读 Rust 路径：`func_count.rs`、`aggfuncs.rs`（`PartialResult4Count` 和公共 trait）、`builder.rs`（`build`/`build_count`）、`lib.rs`、`func_count_test.rs`、`aggfunc_test.rs`、`go_scenario_coverage_test.rs`、`main_test.rs`。
-- 已读配置与 Go 对照：`pkg/executor/aggfuncs/Cargo.toml`、`pkg/executor/aggfuncs/func_count.go`。目标包不存在 `doc.go`。
-- 关键测试事实：`func_count_test.rs::count_handles_null_partial_merge_slide_and_multi_distinct` 覆盖 NULL、partial 和 slide；`count_wraps_like_go_int64_arithmetic` 覆盖加减回绕；`aggfunc_test.rs::generic_aggregate_partial_final_and_reset_contract_matches_go` 覆盖 update/merge/reset；`go_scenario_coverage_test.rs::test_merge_partial_result4_count` 覆盖 Go 命名场景。
-- 本任务是纯文档分析，按计划未运行 Cargo。最终仅用任务规定的 shell 命令验证文档存在且固定二级标题恰好为 11 个。

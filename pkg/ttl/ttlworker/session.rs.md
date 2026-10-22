@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-ttl-ttlworker`，由同目录 `lib.rs` 的 `pub mod session` 暴露。它定义 TTL worker 与 SQL 会话之间的轻量边界：参数/结果值、物理表快照、可变会话状态、执行 trait、会话准备与恢复，以及执行后的 TTL 元数据有效性校验。该 crate 的直接常规依赖只有 `astersql-ttl-cache`；`Cargo.toml` 中大量真实 TiDB 组件依赖受 `cfg(windows)` 限定，因此本文件当前实现主要是自包含的迁移抽象，而不是 Go `session.go` 中系统会话池和完整 TiDB session 的直接封装。
-
-Rust 生产侧已确认的直接使用点是 `scan.rs` 与 `del.rs` 对 `WorkerSession::expiration_predicate`、`WorkerSession::execute_with_ttl_job` 的调用。RustCodeGraph 对本文件标为 47 个符号，但精确 `callers/callees` 查询没有返回这些 trait/方法的静态调用边；上述接线由文本引用和相邻源码核实。`prepare_session_checked`、`prepare_scan_session_checked`、`TableSession::execute_sql_with_check` 和 `validate_ttl_work` 在当前 Rust crate 内只发现测试引用，不能据此声称它们已接入生产调度主链。
+提供内存态的 `prepare_session`/`restore_session` 与 `prepare_scan_session`/`restore_scan_session`，以及会真实执行 SET/SELECT/ROLLBACK、可失败并清理的 `*_checked` 版本。
 
 ## 核心职责
 
@@ -78,9 +76,7 @@ checked 准备/恢复遵循“SET 即使报错也可能已生效”的保守策�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `prepare_session_checked`/`restore_session_checked` 对应 Go `prepareSession` 返回的 restore 闭包，保留关闭重试、开启 1PC/异步提交、ROLLBACK、UTC 时区和完整读引擎集合的次序，也对齐失败时尽力恢复、合并错误和 `AvoidReuse`。Rust `prepare_scan_session_checked`/`restore_scan_session_checked` 对应 Go `NewScanSession` 中的三项状态改写与 restore 闭包。
-
-Rust `TableSession`、`execute_sql_with_check`、`validate_ttl_work` 分别对应 Go `ttlTableSession`、`ExecuteSQLWithCheck`、`validateTTLWork`。二者都要求 SQL 执行后再校验，因为此时才能确定事务实际使用的元数据快照；二者也都让元数据变化优先覆盖 SQL 执行错误。
+Rust 的 `prepare_session_checked`/`restore_session_checked` 对应 Go `prepareSession` 返回的 restore 闭包，保留关闭重试、开启 1PC/异步提交、ROLLBACK、UTC 时区和完整读引擎集合的次序，也对齐失败时尽力恢复、合并错误和 `AvoidReuse`。
 
 差异必须保留为当前事实：Go `withSession` 已把系统会话池、统计收集器挂接、准备、defer 恢复和业务闭包串成生产路径；Rust 本文件没有 `with_session` 等池入口，checked 生命周期 API 当前只见于测试。Go `validateTTLWork` 自行访问 InfoSchema、重建分区物理表、检查分区名并按实际 TTL 表达式求新过期时间；Rust 接收已构造的 `current` 和整数秒数，校验范围更窄。Go 用 phase tracer、乐观事务和独立 retryable 布尔值；Rust 抽象未包含 tracer/事务模式，并主要靠 `SessionError` 分类。Go 的时间是带时区的 `time.Time`，Rust 当前使用 `u64` Unix 秒和显式时区偏移字段。
 
@@ -93,13 +89,3 @@ Rust `TableSession`、`execute_sql_with_check`、`validate_ttl_work` 分别对�
 - 调整作业归属：修改 `execute_with_ttl_job` 时必须验证嵌套调用、错误以及 panic 后的恢复策略；Go 集成测试 `TestTTLJobRUAttribution` 是资源归属语义的重要对照。
 - 变更 `TableSession` 返回契约：需要同时检查 scan/del 的重试分类。当前生产 Rust 未直接调用它，接线时不能把“测试通过”等同于完整 Go 主链已迁移。
 - 测试继续放在独立文件 `session_test.rs` 或 `session_integration_test.rs`，不要放回 `session.rs`。
-
-## 验证依据
-
-- 目标源码：`pkg/ttl/ttlworker/session.rs`，通过 RustCodeGraph `node --file` 完整读取 510 行并核对 47 个索引符号。
-- 索引状态：RustCodeGraph 数据库包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ttl/ttlworker` 确认本模块 58 个 Go/Rust 文件。对 `session.rs::prepare_session_checked`、`prepare_scan_session_checked`、`execute_sql_with_check`、`validate_ttl_work` 执行精确 callers/callees 查询均未产生静态边，故以直接源码引用补证。
-- 模块与 Cargo：读取 `pkg/ttl/ttlworker/lib.rs` 和 `pkg/ttl/ttlworker/Cargo.toml`，确认模块导出、独立测试模块、crate 名、常规依赖和 Windows 条件依赖。
-- Rust 上游：读取 `pkg/ttl/ttlworker/scan.rs::ScanTask::execute_with_checkpoint` 与 `pkg/ttl/ttlworker/del.rs::DeleteTask::do_delete`，确认过期谓词捕获、作业 ID 归属和错误分类的实际生产引用。
-- Rust 测试：读取 `pkg/ttl/ttlworker/session_test.rs` 与 `session_integration_test.rs`。覆盖 TTL 关闭、ID/时间列/区间变化、安全元数据变化、精确状态恢复、每个准备/恢复失败点、panic 丢弃和继续清理。
-- Go 对照：读取 `pkg/ttl/ttlworker/session.go`，并参考 `session_test.go`、`session_integration_test.go`；核对 `withSession`、`prepareSession`、`NewScanSession`、`ttlTableSession.ExecuteSQLWithCheck`、`validateTTLWork` 以及故障注入、分区变化和作业 RU 归属测试。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。交付前执行固定 11 章节结构检查，并人工复核文档没有把未接线 API 写成已接入生产。

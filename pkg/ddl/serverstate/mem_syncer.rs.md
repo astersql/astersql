@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`mem_syncer.rs`](./mem_syncer.rs) 属于 `astersql-ddl-serverstate` crate。crate 入口 [`lib.rs`](./lib.rs) 公开 `mem_syncer` 与 `syncer` 两个模块并重新导出其公开项；[`Cargo.toml`](./Cargo.toml) 将 Go 对照包标为 `pkg/ddl/serverstate`，唯一常规依赖是 `astersql-ddl-schemaver`（由同 crate 的 `syncer.rs` 用于同步上下文和 etcd transport）。
-
-该文件提供 `Syncer` trait 的进程内实现，定位是单进程测试/本地替身，不是 schema 版本同步器 `pkg/ddl/schemaver/mem_syncer.rs`。当前 Rust 生产接线在 `pkg/session/runtime/session_factory.rs:371-378` 构造 `EtcdSyncer::with_client`；仓库内直接构造 `new_mem_syncer` 的 Rust 调用点只有独立测试 `syncer_test.rs:107-123`。因此不能把本实现描述为已经接入 Rust 正常 session 主链。
+实现 `syncer.rs:512-530` 定义的全部 `Syncer` 方法，使依赖方可以通过 `Arc<dyn Syncer>` 在内存实现和 `EtcdSyncer` 之间替换。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ Go 主链在 `pkg/ddl/ddl.go:747-764` 有额外接线：`newDDL` 遇到 nil etcd
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`mem_syncer.go`](./mem_syncer.go)。两版都使用跨实例全局状态、容量 1 的 watch 通道、独立构造与 `Init`、通知后更新状态、升级态字符串比较，以及空操作 `Rewatch`。Rust 的 `set_mock_upgrading_state` 对应 Go failpoint `mockUpgradingState` 的“只写状态、不通知”分支。
+Rust 的 `set_mock_upgrading_state` 对应 Go failpoint `mockUpgradingState` 的“只写状态、不通知”分支。
 
 已确认的差异如下：
 
@@ -89,10 +87,3 @@ Go 的 `syncer_test.go:42-123` 主要验证 etcd 实现的 watch 与缓存刷新
 - 若接入 Rust localstore 主链，应在 session/DDL 装配层显式选择后端，并补一条证明选型和升级准入行为的独立测试；不要在本文件中隐藏环境判断。
 - 测试必须放在独立的 `syncer_test.rs`（或新的同目录 `*_test.rs`）中，不要把 `#[cfg(test)]` 测试嵌入本生产文件。最低补测建议包括：未初始化错误、mock 无事件且状态改变、重复 init、多实例共享、容量 1 背压与开关清理。
 - 改动静态状态或 mock 开关时要评估测试并行性；改动通道容量/阻塞方式时要评估死锁、事件丢失和 Go 行为兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ddl/serverstate` 确认目标、Go 对照与独立测试；`node --file pkg/ddl/serverstate/mem_syncer.rs` 读取完整 120 行及 12 个符号；对 `new_mem_syncer`、`cluster_state`、`update_global_state`、`set_mock_upgrading_state` 执行 `query`，并对关键符号执行 `callers`/`callees`（动态 trait 边无输出，已用源码引用补证）。
-- 已读生产/边界文件：`pkg/ddl/serverstate/mem_syncer.rs`、`syncer.rs:37-40,443-530`、`lib.rs`、`Cargo.toml`、`pkg/ddl/normal_policy.rs:24-70`、`pkg/session/runtime/session_factory.rs:350-439`、`pkg/ddl/ddl.go:747-764`、`pkg/ddl/doc.go`。
-- 已读对照与测试：`pkg/ddl/serverstate/mem_syncer.go`、`syncer_test.rs:95-123`、`syncer_test.go:42-123`；全仓 Rust 引用搜索用于区分 `MemSyncer` 和实际接线的 `EtcdSyncer`。
-- 人工复核结论：本文件存在的原因是为 `Syncer` 提供单进程内存替身；运行核心是“共享状态 + 单接收队列”；安全扩展必须同时处理全局状态隔离、阻塞/通知顺序、trait 两种实现与 Go 对照。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate：`pkg/planner/core/Cargo.toml` 将库根指定为 `lib.rs`，而 `pkg/planner/core/lib.rs` 以私有模块 `property_cols_prune` 装载它，并通过 `pub use property_cols_prune::*` 重导出公开入口。
-
-文件名沿用 Go 的 `property_cols_prune.go`，但这里实现的不是删除无用输出列的 `ColumnPruner` 规则，而是为逻辑计划树收集“可能物理属性”（主要是可利用的列顺序，并携带 TiFlash 可用性信号）。真正的逻辑列裁剪规则位于 `pkg/planner/core/rule/rule_column_pruning.rs`。
+只负责遍历和结果传递。
 
 ## 核心职责
 
@@ -62,8 +60,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `preparePossibleProperties` 对应 `pkg/planner/core/property_cols_prune.go::preparePossibleProperties`：两者都以后序方式递归 `Children`，把当前 `Schema` 和全部子结果交给算子接口，再返回当前节点属性。
-
 主要差异如下：
 
 - Go 直接写循环，Rust 将递归抽成可单测的 `prepare_possible_properties_for`，公开适配器只负责绑定 trait 方法。
@@ -78,14 +74,3 @@ Rust `preparePossibleProperties` 对应 `pkg/planner/core/property_cols_prune.go
 - 若把公开入口接入 Rust 物理优化主链，应对照 Go `optimizer.go::physicalOptimize` 的调用时机：统计推导之后、根物理属性和最优任务搜索之前；同时增加主链级测试，证明算子准备结果确实影响候选物理属性，而不只证明递归器可调用。
 - 若引入可失败计算，应设计 `Result<PossiblePropertiesInfo, E>` 并保持首个失败的上下文；若为性能改写为显式栈，应保留后序语义和兄弟顺序，并用宽树、深树回归测试内存与栈行为。
 - 不要把 Rust 单元测试内嵌到生产文件；继续使用同目录独立的 `property_cols_prune_test.rs`，并保留 `lib.rs` 中的 `#[cfg(test)] mod property_cols_prune_test;` 接线。
-
-## 验证依据
-
-- 源码：`pkg/planner/core/property_cols_prune.rs`（两个函数及其完整控制流）。
-- crate 与模块边界：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。
-- trait 与数据模型：`pkg/planner/core/base/plan_base.rs::LogicalPlan::prepare_possible_properties`、`PossiblePropertiesInfo`。
-- Go 对照与生产调用：`pkg/planner/core/property_cols_prune.go::preparePossibleProperties`、`pkg/planner/core/optimizer.go::physicalOptimize`。
-- 独立 Rust 测试：`pkg/planner/core/property_cols_prune_test.rs::possible_properties_are_prepared_post_order_from_child_results`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点；`query prepare_possible_properties_for` 定位唯一实现；`node property_cols_prune.rs::preparePossibleProperties` 给出到泛型递归器的调用边；`node prepare_possible_properties_for` 给出自递归、公开包装器和测试调用边；`node LogicalPlan::prepare_possible_properties` 核对 trait 签名。
-- 全仓文本核验：`rg` 确认 Rust 生产源码中没有 `preparePossibleProperties` 的外部调用点，而 Go `optimizer.go` 有明确调用；因此文档将 Rust 生产接线标为未发现，不推测其运行效果。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 章节的结构命令和人工事实复核验收。

@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件由 `pkg/domain/lib.rs` 的 public diagnostic 模块加载，属于 `astersql-domain`（`pkg/domain/Cargo.toml`），为既有 Domain 添加诊断启动和统计加载方法。它不创建独立 Domain 类型。
+启动查询侧 schema reader，复用已有统计缓存初始化；不从正常 Domain::start 继承 DDL、server/topology 或其他维护 worker。
 
 ## 核心职责
 
@@ -39,9 +39,3 @@ begin_start 返回 NotInitialized、Closed 或 AlreadyStarted。schema reader �
 ## 扩展指南
 
 保持与正常 start 共享状态检查；如增加 reader，必须证明其不引入写入、owner、GC 或自动分析。扩展 server-ID 或周期统计属额外行为，应单独实现和验证，不能从 Go 方法名推定已支持。测试保持独立文件，并检查 worker 集合及关闭收敛。
-
-## 验证依据
-
-冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`。经 `git diff ad0a6f4..2c944fb -- pkg/domain/diagnostic.rs`、`git show 2c944fb:pkg/domain/diagnostic.rs` 核对，目标 blob 为 `7b248f5c77588dd9292e39e8e7d981a760bb1a13`。模块入口及 Cargo 声明均以同一提交读取。独立测试 `pkg/domain/diagnostic_test.rs` 和 Go 对照 `pkg/domain/diagnostic.go` 为静态证据，未运行测试。
-
-RustCodeGraph 当前索引包含 Rust，但不是冻结快照；本篇结论以 Git blob 为准。Ready 文档校验确认 11 章节、引用存在和差异无空白错误；按计划不运行 Cargo，不验证真实网络或存储。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-table-filter` crate 的表级过滤核心。crate 入口 `pkg/util/table-filter/lib.rs` 公开重导出本模块，因此调用方可直接使用 `Filter`、`Parse`、`CaseInsensitive` 和 `All`。`pkg/util/table-filter/Cargo.toml` 将 crate 的 Go 对照包标为 `pkg/util/table-filter`，直接依赖只有 `regex` 与 `regex-syntax`；正则的构造实际由相邻 `matchers.rs` 承担，本文件只组合解析器和匹配器。
-
-已确认的生产接线包括：`dumpling/export/column_filter.rs` 的列过滤参数解析先调用 `Parse` 构造表过滤器，并在配置要求大小写不敏感时调用 `CaseInsensitive`；`pkg/util/table-filter/compat.rs::ParseMySQLReplicationRules` 在未提供旧式复制规则时调用 `All`。其他 crate 也可通过公开 trait `Filter` 持有过滤器，例如 `br/pkg/utils/filter.rs` 引入该 trait；不能仅凭同名符号把 `br` 中的本地桩实现视为本文件调用者。
+`tableFilter`：按优先级有序保存 `tableRule`，执行 schema/table 规则匹配。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ RustCodeGraph 对目标文件识别出 24 个符号，但同名的 Go 方法、B
 - Go `loweredFilter.toLower` 返回自身；Rust 因所有权和 trait object 生命周期，在该方法中克隆 `Arc`，保持同一个已转换内层对象。`case_insensitive_repeated_wrapper_preserves_lowered_filter` 验证重复包装不会重复调用原过滤器的转换逻辑。
 - Go 输入侧调用 `strings.ToLower`；Rust 用专门的 `go_lowercase` 避免 Unicode 展开差异。Rust 测试在 Go 原有表驱动测试之外补充了该兼容回归。
 
-`table_filter_test.rs` 是独立 Rust 测试文件，通过 `lib.rs` 的 `#[cfg(test)]` 模块接入；它对照 `table_filter_test.go` 覆盖表匹配、schema 匹配、解析失败、文件导入、递归导入拒绝和 `All`。这满足测试逻辑不内嵌生产源文件的仓库约束。
-
 ## 扩展指南
 
 - 新增规则优先级或默认策略时，修改焦点是 `Parse` 的反转约定及 `tableFilter::{MatchTable, MatchSchema}` 的首次命中逻辑；必须同步 `table_filter_test.rs` 的重叠正/负规则案例，并与 `table_filter_test.go` 的可观察行为核对。
@@ -93,17 +89,3 @@ RustCodeGraph 对目标文件识别出 24 个符号，但同名的 Go 方法、B
 - 新增公开过滤器实现必须满足 `Debug + Send + Sync`，让 `toLower` 保持幂等或至少保证重复 `CaseInsensitive` 不改变语义。相关测试继续放在独立 `*_test.rs` 文件，由 `lib.rs` 条件引入，不应放回本生产文件。
 - 性能上，`MatchTable`/`MatchSchema` 是按优先级线性扫描，大小写包装每次匹配都会分配一到两个 `String`。若引入索引或缓存，必须保留“原始后写规则优先”和 matcher 顺序，且应评估共享缓存所需同步成本，不能以重排规则换取速度。
 - 变更 `Parse` 的错误包装时，应保留文件名、行号和底层原因，以免 Dumpling 等上层再次包装后丢失定位信息。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 生产源码：`pkg/util/table-filter/table_filter.rs`（`Filter`、`tableFilter`、`Parse`、`CaseInsensitive`、`go_lowercase`、`loweredFilter`、`allFilter`、`All`）。
-- crate 边界：`pkg/util/table-filter/Cargo.toml` 与 `pkg/util/table-filter/lib.rs`；确认 crate 名、依赖、Go 包映射、公开重导出及独立测试模块接线。
-- 下游实现：`pkg/util/table-filter/parser.rs`、`matchers.rs` 与 `compat.rs`；确认解析入口、matcher 契约、`FilterError`、`matchAllStrings` 和 `All` 的兼容层调用。
-- 上游调用：`dumpling/export/column_filter.rs`；确认 `Parse`、条件性 `CaseInsensitive` 及错误上下文的生产使用。
-- Go 对照：`pkg/util/table-filter/table_filter.go` 与 `table_filter_test.go`。
-- Rust 测试：`pkg/util/table-filter/table_filter_test.rs`，包括 `test_match_tables`、`test_match_schemas`、`test_parse_failures2`、`test_import2`、`test_recursive_import2`、`test_all`、`case_insensitive_uses_go_simple_unicode_lowercase` 和 `case_insensitive_repeated_wrapper_preserves_lowered_filter`。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/util/table-filter` 列出同目录 20 个已索引 Go/Rust 文件；`node --file .../table_filter.rs` 返回完整 144 行及 24 个符号；`query TableFilter`、`query CaseInsensitive` 用于识别同名候选并避免错误归并调用边。
-
-本任务是纯文档分析，按计划未运行 Cargo。最终结构校验应确认该文件存在并且恰有本页列出的 11 个固定二级标题；人工复核重点是规则反转、`MatchSchema` 的负规则门槛、Go 兼容小写及独立测试位置均有源码依据。

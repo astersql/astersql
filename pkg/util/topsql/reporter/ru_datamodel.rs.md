@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-topsql-reporter` crate 的 TopRU 内存数据模型。`pkg/util/topsql/reporter/lib.rs` 以私有模块 `ru_datamodel` 装入它，再用 `pub use ru_datamodel::*` 对 crate 使用者重新导出公开符号。它位于语句 RU 增量与线上 protobuf 之间：输入是 `stmtstats::RUKey`、`RUIncrement`、`RUIncrementMap`，输出是 `tipb::TopRuRecord`。
-
-应用内的直接上游是 `pkg/util/topsql/reporter/ru_window_aggregator.rs`：`RUWindowAggregator::addBatch` 把批次写入 `ruCollecting::addBatch`；桶轮转调用 `compactWithLimits`；构造上报窗口时通过 `mergeFrom` 合并桶并由 `toTopRURecords` 编码。更上游的 `pkg/util/topsql/reporter/reporter.rs` 在收集 worker 中调用 `RUWindowAggregator::addBatch`。本文件不负责定时、网络发送、版本切换或迟到数据策略。
+用 `ruItem` 表示一个时间戳上的 RU、执行次数与执行时长，用 `ruRecord` 保存同一 SQL digest/Plan digest 的时间序列和用于 Top-N 排序的 `totalRU`。
 
 ## 核心职责
 
@@ -65,9 +63,7 @@ crate 边界由 `pkg/util/topsql/reporter/Cargo.toml` 定义，包名为 `asters
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/topsql/reporter/ru_datamodel.go`，同名常量、结构、构造器、收集、压缩、合并和 protobuf 转换构成一一对应的移植主干；`pkg/util/topsql/reporter/ru_datamodel_test.go` 与 Rust 独立测试覆盖相同的累加、Top-N、others、take、时间排序和空输入场景。
-
-当前可见差异需要在后续同步时保留意识：Go 的 `ruCollecting` 内含 `sync.Mutex`，其 `take` 自行加锁；Rust 模型没有内部锁，由 `RUWindowAggregator` 的状态锁提供生产同步。Go Top-N 使用 quickselect，失败时记录警告并返回未裁剪集合；Rust 使用全量 `sort_by(...total_cmp...)`，没有错误分支。Go 的 `getReportRecordsWithLimit` 和 `compactWithLimits` 有少分配快路径，后者可能直接返回原对象；Rust 总是收集/克隆并构造新的压缩结果。Go 对非正整数容量回退默认值，Rust 参数是 `usize`，只需处理零值。两者在线路语义、others 身份以及时间戳合并规则上保持一致。
+当前可见差异需要在后续同步时保留意识：Go 的 `ruCollecting` 内含 `sync.Mutex`，其 `take` 自行加锁；Rust 模型没有内部锁，由 `RUWindowAggregator` 的状态锁提供生产同步。Go Top-N 使用 quickselect，失败时记录警告并返回未裁剪集合；Rust 使用全量 `sort_by(...total_cmp...)`，没有错误分支。Go 的 `getReportRecordsWithLimit` 和 `compactWithLimits` 有少分配快路径，后者可能直接返回原对象；Rust 总是收集/克隆并构造新的压缩结果。Go 对非正整数容量回退默认值，Rust 参数是 `usize`，只需处理零值。
 
 ## 扩展指南
 
@@ -76,10 +72,3 @@ crate 边界由 `pkg/util/topsql/reporter/Cargo.toml` 定义，包名为 `asters
 - 修改 others 表示时，必须同时检查 `othersKey`、`addOthers` 的遗留键迁移、`othersUser` 独立字段和 `othersUserWireLabel`；空用户名是合法真实用户，不能重新引入基于空字符串推断合成用户的逻辑。
 - 改动 `toTopRURecords` 时要保持 item 按时间戳排序、keyspace 逐记录复制、digest 字节不变以及全局 others 线标签兼容性。若需要稳定的记录间顺序，应显式定义并补测试，不能依赖 `HashMap`。
 - Rust 测试逻辑应继续放在同目录独立文件 `pkg/util/topsql/reporter/ru_datamodel_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] mod ru_datamodel_test` 接入；Go 对照测试是 `ru_datamodel_test.go`。不要把测试嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件，目标 `ru_datamodel.rs` 有 50 个符号；通过 `files`、`node --file`、`query ruCollecting`、`query toTopRURecords` 以及关键方法的 `callers`/`callees` 查询核对。由于同名方法较多，callers 查询未能可靠消歧，上游边改由相邻源码的定向引用搜索确认；callees 明确显示了 `compactWithLimits`、`mergeFrom`、`toTopRURecords` 等到本文件辅助函数的边。
-- 已读生产证据：`pkg/util/topsql/reporter/ru_datamodel.rs`（完整 625 行）、`pkg/util/topsql/reporter/ru_window_aggregator.rs`（收集、桶轮转、合并和输出主链）、`pkg/util/topsql/reporter/reporter.rs` 的 `ruAggregator.addBatch` 调用点、`pkg/util/topsql/reporter/lib.rs`（模块可见性和重导出）、`pkg/util/topsql/reporter/Cargo.toml`（crate、feature 与依赖边界）。目标包没有 `doc.go`，因此无额外包契约文件可读。
-- 已读对照与测试：`pkg/util/topsql/reporter/ru_datamodel.go`、`pkg/util/topsql/reporter/ru_datamodel_test.go`、`pkg/util/topsql/reporter/ru_datamodel_test.rs`；Rust 测试覆盖字段映射、同/异时间戳累加、空源忽略、两级容量、Top-N/others、空用户名隔离、合并、take、排序和空收集器。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以计划给出的命令确认目标文件存在且恰好包含上述 11 个固定二级标题，并人工复核唯一生产物、源码链接、调用链和 Go 差异。

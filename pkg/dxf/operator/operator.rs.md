@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-operator` crate 的基础算子层，源码入口为 [`operator.rs`](operator.rs)，crate 边界由 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs) 确认。它位于通道组合层 [`compose.rs`](compose.rs) 与管道编排层 [`pipeline.rs`](pipeline.rs) 之间：前者把相邻算子的输出、输入接到同一条通道，后者只依赖本文件的 `Operator`/`TunableOperator` 接口管理生命周期。
-
-文件同时提供一个通用的 `AsyncOperator<T, R>` 实现，把输入任务 `T` 交给 `astersql-resourcemanager-pool-workerpool` 的真实 `WorkerPool<T, R>` 并产出 `R`。当前仓库中它最直接的生产使用者是 [`wrapper.rs`](wrapper.rs) 的 `SimpleOperator<T, R>`；更专用的 DXF 算子也实现同一个 `Operator` trait，例如 [`../importinto/encode_and_sort_operator.rs`](../importinto/encode_and_sort_operator.rs) 中的 `AsyncEncodeSortOperator`，但不复用本文件的 `AsyncOperator`。
+私有 `asyncWorker<T, R>` 将单项处理限定为“调用 transform，再调用结果发送回调”；线程循环、panic 恢复、取消和通道关闭均交由 workerpool 实现。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ transform 以 `Arc` 共享给所有 worker，因此它必须实现 `Send + Sync 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`operator.go`](operator.go)，Rust 保留了 `Operator`、`TunableOperator`、`AsyncOperator`、两个构造器、通道绑定、动态调节及 `asyncWorker` 的一一对应职责。Go 的 `Open`/`Close` 同样只启动/释放池并返回 `nil`，`HandleTask` 同样执行一次 transform、发送一次结果并返回 `nil`。
-
 需要注意的语义/表示差异：
 
 - Go 通过运行期类型断言 `op.(TunableOperator)` 探测调节能力；Rust 无法直接在 `dyn Operator` 上做该断言，因此增加 `as_tunable_operator` 和 `as_tunable_operator_mut`，默认 `None`，可调实现显式返回 `Some(self)`。
@@ -98,13 +94,3 @@ transform 以 `Arc` 共享给所有 worker，因此它必须实现 `Send + Sync 
 - 改动 `Open`/`Close` 时要保持 workerpool 的单次启动、输入终结、join、context 取消和结果通道关闭顺序；尤其避免在仍可能阻塞接收时直接 join。
 - 改动 transform 并发约束或输出顺序时，要评估闭包共享状态的同步成本、无缓冲通道的背压以及乱序兼容性。
 - 测试应继续放在独立文件：通用算子/生命周期回归放入 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，多段流水线与诊断字符串放入 [`pipeline_test.rs`](pipeline_test.rs)，并与 [`operator.go`](operator.go) 及 [`pipeline_test.go`](pipeline_test.go) 的行为保持一致。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/dxf/operator` 确认目标、Go 对照、包装器及两份独立 Rust 测试均已索引。
-- RustCodeGraph `node --file pkg/dxf/operator/operator.rs`：完整读取 208 行，核对全部 trait、struct、函数、impl、泛型约束和无条件编译事实。
-- RustCodeGraph `node NewAsyncOperatorWithTransform`：确认它调用 `newAsyncWorkerCtor` 与 `NewAsyncOperator`，并由 Rust `wrapper.rs::newSimpleOperator` 调用。
-- RustCodeGraph 文件节点：读取 [`compose.rs`](compose.rs)、[`pipeline.rs`](pipeline.rs)、[`wrapper.rs`](wrapper.rs) 及下层 [`../../resourcemanager/pool/workerpool/workerpool.rs`](../../resourcemanager/pool/workerpool/workerpool.rs)，核对接线、生命周期、线程循环、错误恢复、调节与释放行为。
-- crate/移植证据：读取 [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs) 和 Go 对照 [`operator.go`](operator.go)，核对 crate 名、模块导出、workerpool 依赖和 Go/Rust 差异。
-- 测试证据：读取 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的可调接口、真实 Source→Transform→Sink、取消测试，以及 [`pipeline_test.rs`](pipeline_test.rs) 的多算子、并发共享状态、错误注入和字符串测试；同目录不存在 `operator_test.rs`/`operator_test.go`，Go 侧最近的行为测试为 [`pipeline_test.go`](pipeline_test.go)。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定命令验证文档恰含 11 个固定二级章节，并人工复核本文每项行为结论均可回溯到上述源码、调用边或测试。

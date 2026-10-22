@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parsergen` crate 的自动机构造阶段，位于“文法解析/校验”和“action/goto 表生成”之间。crate 入口 `pkg/parser/parsergen/lib.rs` 公开 `automaton` 模块并重导出其 API；`pkg/parser/parsergen/Cargo.toml` 将该目录同时声明为库和 `astersql-parsergen` 命令行程序，且没有外部 Rust 依赖。
-
-完整生成链路是：`generate::generate_parser_output` 读取 `.astergram` 并调用 `Grammar::parse`，`render::GeneratedParser::build` 调用本文件的 `Automaton::build`，随后把结果交给 `table::ParseTable::build` 生成 action/goto 表并编码。因而本文件只负责从已校验的 `Grammar` 构造确定性的 LALR(1) 项目图，不负责解析文法文本、冲突消解、整数表编码、文件 I/O 或运行时语义动作。
+全过程使用 `BTreeMap`/`BTreeSet` 固定符号、项目、转换和状态发现顺序，使相同文法得到可重复的状态编号和生成结果。
 
 ## 核心职责
 
@@ -82,9 +80,9 @@
 
 ## 与 Go 版本的对应关系
 
-仓库没有与 `pkg/parser/parsergen/automaton.rs` 同路径或同符号布局的 Go 自动机实现，因此不能声称 `FirstSets`、`Lr0Automaton` 等是逐函数翻译。现有 Go 入口 `pkg/parser/goyacc/main.go` 调用外部 `y.ProcessFile(..., &y.Options{...})` 获得包含 `Table`、规则和冲突计数的处理结果，然后渲染 Go 解析表；该文件的 `-c`/`-la` 选项也表明底层工具能够报告状态闭包和 lookahead，但核心算法位于外部 `github.com/cznic/y` 实现，不在本仓库中。
+仓库没有与 `pkg/parser/parsergen/automaton.rs` 同路径或同符号布局的 Go 自动机实现，因此不能声称 `FirstSets`、`Lr0Automaton` 等是逐函数翻译。
 
-两条路径的可比目标是：从 yacc 风格文法得到状态表、lookahead 驱动的归约、shift/reduce/goto/accept 行为以及稳定的生成产物。Rust 路径将关键阶段拆成本仓库可审阅的 `grammar.rs → automaton.rs → table.rs → render.rs`，并由 `RuleId` 和有序集合强化确定性；Go 路径由外部处理器构表，再在 `goyacc/main.go` 中编码和生成运行时解析器。当前证据支持“职责和产物角色对应”，不支持状态编号、内部数据结构或冲突算法逐项相同；这类兼容性应通过相同文法的生成表或解析行为基线验证，而不能仅凭符号名称推断。
+Rust 路径将关键阶段拆成本仓库可审阅的 `grammar.rs → automaton.rs → table.rs → render.rs`，并由 `RuleId` 和有序集合强化确定性；Go 路径由外部处理器构表，再在 `goyacc/main.go` 中编码和生成运行时解析器。当前证据支持“职责和产物角色对应”，不支持状态编号、内部数据结构或冲突算法逐项相同；这类兼容性应通过相同文法的生成表或解析行为基线验证，而不能仅凭符号名称推断。
 
 ## 扩展指南
 
@@ -95,13 +93,3 @@
 - 公开结构字段被 `table.rs` 和测试直接消费；改变 `dot` 口径、增广规则位置或状态编号策略会影响完成项目、accept 状态、表编码和已提交生成物，应作为跨文件兼容变更处理。
 - 测试必须继续放在独立文件 `pkg/parser/parsergen/automaton_aster_unit_test.rs`，不要内嵌到生产源文件。算法变化还应同步运行 `table_aster_unit_test.rs` 和生成/渲染相关独立测试；涉及最终产物时核对 `pkg/parser/generated/*.rs` 防漂移。
 - 性能改动需关注大型文法下的状态数、闭包大小、传播轮数和集合克隆；确定性是生成器的外部合同，不能用无固定遍历顺序的容器替换而不增加排序边界及回归证据。
-
-## 验证依据
-
-- 源文件全貌：`pkg/parser/parsergen/automaton.rs`，重点符号为 `Automaton::build`、`NormalizedGrammar::new`、`FirstSets::compute`、`FirstSets::sequence_with_lookahead`、`Lr0Automaton::{build, propagate_lookaheads}`、`lr0_closure`、`lr0_goto`、`extend`、`symbol_after_dot`。
-- crate 与入口：`pkg/parser/parsergen/Cargo.toml`、`pkg/parser/parsergen/lib.rs`、`pkg/parser/parsergen/main.rs`。
-- 上下游实现：`pkg/parser/parsergen/grammar.rs`、`pkg/parser/parsergen/table.rs`、`pkg/parser/parsergen/render.rs`、`pkg/parser/parsergen/generate.rs`。
-- RustCodeGraph：索引包含 `pkg/parser/parsergen/automaton.rs` 的 26 个符号；精确查询确认 `propagate_lookaheads` 调用 `sequence_with_lookahead`，并通过文件节点核对了全部 456 行源码。宽泛符号（如 `build`、`state`）存在大量跨仓库同名噪声，生产调用者因此另用限定目录文本引用核验为 `render.rs::GeneratedParser::build`。
-- 独立 Rust 测试：`pkg/parser/parsergen/automaton_aster_unit_test.rs` 验证跨层 nullable/FIRST 和动作忽略、可空后缀的闭包 lookahead、相同 LR(0) 核心合并、固定状态/转移快照，以及重复 32 次构造的确定性；`table_aster_unit_test.rs` 进一步通过 `Automaton::build` 验证构表、冲突和编码消费者契约。
-- Go 对照：`pkg/parser/goyacc/main.go` 中 `y.ProcessFile` 调用、`-c`/`-la` 选项、`p.Table`/`p.Rules` 的编码流程。仓库未发现本地 Go `automaton.go` 或 FIRST/closure 核心实现，因此实现级逐符号对应明确标记为不存在。
-- 按任务约束未运行 Cargo；本任务只新增说明文档，采用任务文件指定的 11 章节结构检查作为交付验证。

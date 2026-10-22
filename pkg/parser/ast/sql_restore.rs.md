@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-ast` crate 的结构化 SQL 还原适配层。模块由 [`lib.rs`](lib.rs) 的 `pub mod sql_restore` 公开，crate 边界和依赖声明位于 [`Cargo.toml`](Cargo.toml)：它只使用 AST crate 自身及已经进入该 crate 的 `parser-mysql`、`parser-types` 等类型，没有单独的 feature 开关。
-
-它解决的是“手工构造或改写后的规范 AST 可能没有原始 SQL 文本，但调用方仍需得到 SQL”这一问题。公开入口 `restore_expr`、`restore_node` 和 `restore_select_stmt` 先对已支持结构进行递归序列化；对于多数尚未结构化覆盖的 `Node`，`restore_node` 回退到 `Node::Text()`。因此它是 Rust 迁移期间的规范 AST 恢复桥，而不是 Go `format.RestoreCtx` 全部能力的通用替代品。
-
-直接生产使用包括：`dumpling/export/schema_projection_restore.rs` 在替换表达式字面量和生成建表查询时恢复 SQL；`pkg/session/runtime/mview_ddl.rs` 恢复物化视图日志调度表达式；`pkg/ddl/persistent_modify_column.rs` 在列重命名后重新生成 masking policy 表达式；`pkg/parser/ast/stats.rs` 恢复统计选项值；[`materialized.rs`](materialized.rs) 将两个公开入口复用为物化视图语句的内部恢复器。
+文件显式保护当前结构化实现无法无损表达的情况：复杂 SELECT 优先退回原文；既无结构化支持又无原文的节点返回错误，避免生成看似合法但语义被删减的 SQL。
 
 ## 核心职责
 
@@ -91,16 +87,9 @@ RustCodeGraph 将本文件识别为 27 个符号，并报告被 15 个文件使�
 
 ## 与 Go 版本的对应关系
 
-Go 没有同名 `sql_restore.go`；对应逻辑分散在各 AST 类型的 `Restore(*format.RestoreCtx)`：表达式位于 `pkg/parser/ast/expressions.go` 和 `functions.go`，SELECT/CTE/join/window/set operation 位于 `dml.go`，角色及授权位于 `misc.go`，统计语句位于 `stats.go`，物化视图扩展在相应 AST 实现中。
-
-已核对的对应关系包括：
-
-- Rust `restore_expr` 的 BETWEEN、LIKE/ILIKE、MATCH AGAINST 分支对应 Go `BetweenExpr.Restore`、`PatternLikeOrIlikeExpr.Restore`、`MatchAgainst.Restore`；BOOLEAN 与 QUERY EXPANSION 互斥错误文本一致。
-- Rust `restore_join`、`restore_with_clause`、`restore_select_stmt`、`restore_setopr_stmt` 分别对应 Go `Join.Restore`、`WithClause/CommonTableExpression.Restore`、`SelectStmt.Restore`、`SetOprStmt/SetOprSelectList.Restore` 的主要输出顺序。
-- Rust `restore_node` 对 `SHOW STORAGE_CLASS TRANSITIONS` 的专门分支对应 Go `ShowStmt.Restore`；委托 `AnalyzeTableStmt::restore()` 和物化视图 `restore()`，避免在总入口复制这些类型的完整逻辑。
 - 两端并非完全等价：Go 以每种节点的 `RestoreCtx` 为主，支持 flags、错误上下文和更完整的语法；Rust 仅对当前调用链需要的规范 AST 子集做结构化恢复，其余依赖原始 `Text()`。Go 的 join 恢复还含逗号连接特例，而当前 Rust `restore_join` 总是输出显式 `JOIN`；这类差异在扩大无文本恢复范围前必须先补兼容测试。
 
-Rust 直接回归证据在 [`materialized_test.rs`](materialized_test.rs)、[`go_merge_13_test.rs`](go_merge_13_test.rs) 和 [`go_merge_16_test.rs`](go_merge_16_test.rs)；Go 的广泛恢复基线在 `expressions_test.go`、`functions_test.go`、`dml_test.go` 及 `util_test.go` 的 `runNodeRestoreTest*` 工具中。测试逻辑应继续保留在这些独立测试文件，不应嵌入本生产文件。
+Rust 直接回归证据在 [`materialized_test.rs`](materialized_test.rs)、[`go_merge_13_test.rs`](go_merge_13_test.rs) 和 [`go_merge_16_test.rs`](go_merge_16_test.rs)；Go 的广泛恢复基线在 `expressions_test.go`、`functions_test.go`、`dml_test.go` 及 `util_test.go` 的 `runNodeRestoreTest*` 工具中。
 
 ## 扩展指南
 
@@ -111,12 +100,3 @@ Rust 直接回归证据在 [`materialized_test.rs`](materialized_test.rs)、[`go
 兼容性检查至少覆盖：Go 同类 `Restore` 的关键字与间距、标识符和字符串转义、括号及优先级、CTE 作用域、index/table hints、错误文本，以及解析—恢复—再解析的 AST 等价性。性能变更应特别审查深树递归和大型列表的 `collect/join` 分配。
 
 建议同步测试位置：通用表达式放在 `expressions_test.rs`/`functions_test.rs` 或相应 Aster 单元测试文件；SELECT、join、窗口和 set operation 放在 `dml_test.rs`；本模块当前无同名测试文件，直接规范 AST 的集成恢复回归集中在 `materialized_test.rs` 与 `go_merge_*_test.rs`。遵循仓库约束，生产逻辑和测试逻辑保持分文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含目标文件；`files --filter pkg/parser/ast/sql_restore.rs` 确认文件及 27 个符号；`node --file ... --offset 1/500` 读取全部 1034 行；`query restore_node/restore_expr/restore_select_stmt --kind function` 定位公开入口。`callers`/`callees` 两次在 30 秒内无输出，故调用边改由源码搜索验证。
-- Rust 源码：[`sql_restore.rs`](sql_restore.rs) 全文；[`lib.rs`](lib.rs) 的模块导出、`Node` 和 `NodeRef` 契约；[`materialized.rs`](materialized.rs)、`stats.rs` 以及 Dumpling、session、DDL 的直接调用点。
-- crate 配置：[`Cargo.toml`](Cargo.toml) 确认包名 `astersql-parser-ast`、`lib.rs` 入口、无 feature 表及 parser 子 crate 依赖。
-- Rust 独立测试：[`materialized_test.rs`](materialized_test.rs) 覆盖无源文本 SELECT、表达式、CTE、集合运算、子查询、CAST 与全文检索错误；[`go_merge_13_test.rs`](go_merge_13_test.rs) 覆盖 storage-class SHOW；[`go_merge_16_test.rs`](go_merge_16_test.rs) 覆盖 `AnalyzeTableStmt` 委托一致性。
-- Go 对照：`pkg/parser/ast/expressions.go`、`functions.go`、`dml.go`、`misc.go`、`stats.go`，以及 `expressions_test.go`、`functions_test.go`、`dml_test.go`、`util_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查，并人工复核文档覆盖定位、运行流程和安全扩展入口。

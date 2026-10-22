@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`retry.rs` 属于 `astersql-dumpling-export` library crate。crate 入口 [lib.rs](./lib.rs) 通过 `include!("retry.rs")` 将它并入与 Go `dumpling/export` 包相近的单包作用域；因此文件本身没有 `use` 或 `mod` 声明，`Duration`、`HashMap`、`tcontext`、`Field` 和桩类型均来自 `lib.rs` 的共享导入或 [stubs.rs](./stubs.rs)。[Cargo.toml](./Cargo.toml) 将该 crate 标记为 `kind = "library"`、Go 包为 `dumpling/export`，并直接依赖 dumpling 的 `cli/context/log` 等本地 crate。
-
-本文件不是通用重试执行器，而是为导出流程提供两组领域策略：`BaseConn` 的连接重建重试，以及 `LOCK TABLES` 遇到表消失时的收敛重试。真正驱动循环的是 [stubs.rs](./stubs.rs) 中的 `WithRetry`，或 [consistency.rs](./consistency.rs) 中的显式循环。
+用 `getTableFromMySQLError` 实现与 Go 版本一致的、刻意受限的 `db.table` 文本解析；复杂限定名不被猜测性拆分，而是返回错误并终止锁表重试。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ RustCodeGraph 对 `retry.rs` 报告的使用文件为 `conn.rs`、`consistency.r
 
 ## 与 Go 版本的对应关系
 
-Rust [retry.rs](./retry.rs) 按符号一一对应 Go [retry.go](./retry.go)：四个常量、`backOfferResettable`、两个连接策略、锁表策略及 `getTableFromMySQLError` 的预算、翻倍顺序、封顶值、1146 分类和字符串拆分逻辑均保持一致。Rust 用 `Box<dyn ...>` 对应 Go interface，用 `HashMap<String, HashMap<String, ()>>` 对应 `map[string]map[string]any`，用 `Result<(String, String)>` 对应 Go 的命名多返回值。
+Rust 用 `Box<dyn ...>` 对应 Go interface，用 `HashMap<String, HashMap<String, ()>>` 对应 `map[string]map[string]any`，用 `Result<(String, String)>` 对应 Go 的命名多返回值。
 
 主要接线差异是 Go 的 `newLockTablesBackoffer` 接收调用方共享的 `blockList` map，而 Rust 将 map 移入具体策略，并由 `consistency_lock_setup` 直接从策略读取；结果仍是每次 1146 后用累积排除集重建 SQL。Go 的连接路径在 `conn.go` 使用相同构造器，`writer.go` 负责决定是否允许重建；Rust 当前由 crate 内 `newBaseConn` 的调用点传入 `should_retry`。
 
@@ -97,12 +95,3 @@ Go 的 `br/pkg/utils.WithRetryV2` 会等待 `NextBackoff` 返回的时长并收�
 - 若要支持带点号/转义符的标识符，需替换 `getTableFromMySQLError` 的简单 split 契约，并同步 Go 实现或明确迁移差异。至少更新 [parity_test.rs](./parity_test.rs) 的正常/拒绝用例及 [consistency_test.rs](./consistency_test.rs) 的端到端锁表重试。
 - 连接路径回归应放在独立的 [conn_test.rs](./conn_test.rs)；锁表路径放在 [consistency_test.rs](./consistency_test.rs)；跨语言契约放在 [parity_test.rs](./parity_test.rs)。不要把 Rust 测试内嵌进 `retry.rs`。
 - 变更预算时要注意 `SpecifiedTables` 的单次语义、`RemainingAttempts` 的前后双检查，以及延迟“先翻倍再返回”的既有顺序；这些细节会影响尝试次数与首轮等待。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter dumpling/export` 确认目标及对照/测试文件；`node --file dumpling/export/retry.rs` 读取 175 行全貌并报告 5 个使用文件；`query` 分辨 Rust/Go 同名符号；对 `conn.rs`、`consistency.rs`、`stubs.rs`、`lib.rs` 和相关测试执行按文件 `node`。精确 `callers newRebuildConnBackOffer` 在本地挂起后被中止，调用边改由索引使用关系和 `rg` 双重核验。
-- Rust 源与接线：[retry.rs](./retry.rs)、[lib.rs](./lib.rs)、[conn.rs](./conn.rs)、[consistency.rs](./consistency.rs)、[stubs.rs](./stubs.rs)、[config.rs](./config.rs)；crate 边界：[Cargo.toml](./Cargo.toml)。
-- Go 对照：[retry.go](./retry.go)、[conn.go](./conn.go)、[consistency.go](./consistency.go)、[writer.go](./writer.go) 及 `br/pkg/utils/retry.go`。
-- 独立 Rust 测试：[conn_test.rs](./conn_test.rs) 验证失败后重建、清理部分结果和策略复位；[sql_test.rs](./sql_test.rs) 验证失败元数据被丢弃且预算复位；[consistency_test.rs](./consistency_test.rs) 验证 1146 触发恰好一次重试、缺失表从第二条 SQL 和最终配置消失，以及唯一基表消失后的空锁路径；[parity_test.rs](./parity_test.rs) 验证 `pingcap.t1` 解析成功和 `a.b.c` 被拒绝。
-- Go 测试：[consistency_test.go](./consistency_test.go) 覆盖 1146 后去除缺失表及唯一表消失；未发现同名 `retry_test.go`/`retry_test.rs`，策略通过上述调用方独立测试间接覆盖。
-- 结构验证按任务命令执行；人工复核重点为：文件存在原因、两条运行路径、可变状态、错误终止条件、Go 差异和安全扩展位置均有直接源码或测试依据。

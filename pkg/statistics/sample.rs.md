@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`sample.rs` 属于 `astersql-statistics` crate；crate 由 `pkg/statistics/Cargo.toml` 定义，`pkg/statistics/lib.rs` 通过 `mod sample` 纳入模块并以 `pub use sample::*` 重导出本文件的公开符号。它位于统计信息构建链的样本层：把输入 `Datum` 汇总为计数、FM Sketch、可选 CM Sketch 和固定容量样本，随后由 `pkg/statistics/builder.rs::BuildColumn` 或 `BuildHistAndTopN` 消费这些结果来生成直方图与 TopN。
-
-当前 Rust 主链的直接证据是 `pkg/statistics/runtime_stats_builder.rs`：运行时统计构建器创建 `SampleCollector`、逐行调用 `Collect`、维护 `Ordinal` 和内存记账，再调用 `BuildHistAndTopN`。本文件还提供较窄的批量入口 `SampleBuilder::CollectColumnStats`，其直接使用目前只在 `pkg/statistics/integration_test.rs` 中可见；它不是 Go 版本完整 `RecordSet` ANALYZE 扫描器的等价替代。
+`SampleItem` 保存一个样本值、句柄占位和进入收集器时的位置；`Ordinal` 之后被 `BuildHistAndTopN` 用于列相关性估计。
 
 ## 核心职责
 
@@ -95,11 +93,9 @@ Rust 文件逐项对应 `pkg/statistics/sample.go` 的 `SampleItem`、`SampleCol
 
 - Go `SampleItem.Handle` 是 `kv.Handle`，Rust 暂为 `i64` 且本文件创建时固定为零；Go 的快速 ANALYZE 句柄语义在这里没有完整表达。
 - Go `sortSampleItems` 接收调用方 statement context，Rust 使用克隆的默认无警告 context；两者都用二进制 collator，但警告/类型上下文来源不同。
-- Go 采样会深拷贝 `Datum` 以避免保留底层大 slice；Rust 把拥有的 `Datum` 移入样本或在合并时 clone，需按 Rust `Datum` 所有权实现理解，不能直接声称与 Go 的 GC 规避策略完全相同。
 - Rust `MergeSampleCollector` 自行临时进入 merger 模式并返回错误；Go 方法依赖收集器既有 `IsMerger` 状态，且只记录 CM/collect 错误而不返回。Rust 的错误传播更显式，但存在错误路径不恢复 `IsMerger` 的风险。
 - Go `SampleBuilder` 驱动 `sqlexec.RecordSet`，处理 PK builder、collation 解码/重编码、字段为空错误和 chunk 分批读取；Rust 版本只接受已物化且假定行宽一致的二维 `Datum`，没有这些生产语义。文档把它标为简化入口，不将 Go 能力归于当前 Rust 实现。
 - Go `ExtractTopN` 根据字段类型和时区把旧样本编码解码后重编码，并返回转换错误；Rust 直接沿用样本 bytes，按样本出现次数选候选，且无字段类型、时区或错误返回。因此复杂类型/编码兼容仍有差距。
-- Rust 的长度上限常量直接写为 `32_767`，数值对应 Go 的 `mysql.MaxFieldVarCharLength / 2`；两边都在 FromProto 时丢弃超长样本。
 - Go protobuf 解码直接构造部分初始化对象；Rust 先 `New(0, MaxSketchSize)`，所以缺失 FM Sketch 时得到空 sketch，但临时采样容量仍为零。`pkg/statistics/sample_test.rs::destroy_and_proto_restore_reset_transient_collector_state` 明确验证该状态。
 
 ## 扩展指南
@@ -111,11 +107,3 @@ Rust 文件逐项对应 `pkg/statistics/sample.go` 的 `SampleItem`、`SampleCol
 - 若要把 `SampleBuilder` 接入完整 ANALYZE 扫描，不能只扩充二维输入循环；还需对齐 Go 的 RecordSet/chunk 生命周期、PK 列处理、collation key、字段数量检查和错误上下文，并在独立集成测试中覆盖。当前生产路径更多由 `runtime_stats_builder.rs` 承担，接线前应避免形成两套语义分叉。
 - 修改 `SampleItem` 或内存统计时，同步审查 `EmptySampleItemSize`、`runtime_stats_builder.rs::collector_memory` 和 tracker 释放测试，防止性能记账漂移。
 - 修改排序或 `Ordinal` 时，同步验证 `builder.rs::BuildHistAndTopN` 的相关性计算；排序错误、NULL 行位置和替换后追加都会影响相关性，不应只验证直方图桶数。
-
-## 验证依据
-
-本次增量为 `SampleCollector.Unique` 字段及构造、销毁复位。完整读取 `sample.rs`、`builder.rs`，对照 `sample.go` 与 Go executor 唯一性赋值，核对 `lib.rs` 和 `Cargo.toml`。`builder_test.rs::schema_unique_ndv_uses_non_null_row_count_instead_of_the_sketch_estimate`、`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 静态覆盖唯一列行数覆盖草图估计；没有运行测试，也不把这些测试赋值描述成生产接线。
-
-本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/sample.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
-
-纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

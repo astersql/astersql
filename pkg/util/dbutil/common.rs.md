@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`common.rs` 是 `astersql-util-dbutil` crate 的通用数据库辅助层，与 Go 的 `pkg/util/dbutil/common.go` 对应。它不持有真实驱动连接，而是通过 `interface.rs` 定义的 `QueryExecutor` / `DBExecutor` / `Transaction` trait 组装 SQL、解析驱动无关的 `QueryResult`，并统一返回 `DbError`。crate 边界由 `pkg/util/dbutil/Cargo.toml` 声明：包名为 `astersql-util-dbutil`，库入口是 `lib.rs`，直接生产依赖仅有 `astersql-infoschema`。
-
-`lib.rs` 公开 `common` 模块，并在 crate 根再导出 `ColumnName`、`DBConfig` 和 `TableName`。workspace 根又以 `facade_util_dbutil` 引入该 crate，`pkg/lib.rs` 将它放入 facade 导出面。当前仓库中可明确复核的生产调用是 `pkg/util/dbutil/index.rs::ShowIndex -> common::TableName`；其余本文公开函数虽已实现并有独立 Rust 测试覆盖，但未在当前 Rust 生产源中找到稳定的直接调用点。
+读取 TSO、数据库版本、会话变量和时区偏移，提供 TiDB 判定与 SQL mode 封装。
 
 ## 核心职责
 
@@ -66,8 +64,6 @@ SQL 安全边界需要由调用方理解：schema/table/column 会做反引号�
 
 ## 与 Go 版本的对应关系
 
-Rust 的常量、`DBConfig`、大部分查询函数、标识符转义、校验和、统计桶、时区、重试、事务和分批删除均与 `common.go` 同名逻辑对应。`common_test.go` 中的标识符转义、可忽略 DDL 错误、两批删除、parser mode、统计桶时间值和时区格式化场景，在独立 `common_test.rs` 的可执行测试区域中有对应断言；文件前半的 `GO_REFERENCE` 仅是未编译的迁移参考字符串。
-
 已验证的重要差异如下：
 
 - Go `OpenDB` / `CloseDB` 使用 mysql connector、Ping 和 Close；Rust 只有 `BuildDSN` 和执行器 trait，不打开真实连接。
@@ -88,12 +84,3 @@ Rust 的常量、`DBConfig`、大部分查询函数、标识符转义、校验�
 - 修改 packed 时间时需同步 `AnalyzeValuesFromBuckets`、`DecodeTimeInBucket`、`is_time_string`，并保留 `common_test.rs::bucket_time_decoding_matches_go_cases` 与 `common_test.go::TestAnalyzeValuesFromBuckets` 的六个 DATETIME/TIMESTAMP/DATE 场景。
 - 修改事务路径时需补充 `common_test.rs` 中 commit 失败、exec 失败后 rollback、rollback 失败和 SQL/参数数量不等的独立测试；Rust 单元测试继续放在 `common_test.rs`，不内嵌到生产源文件。
 - 任何与 Go 行为对齐的变更都应同时核对 `common.go` 和 `common_test.go`；不要为了编译或测试通过而删减 context、错误、parser 或结果集语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库已索引 11,467 个文件；使用 `rustcodegraph files --filter pkg/util/dbutil`确认 `common.rs`、`common_test.rs`、Go 对照与同 crate 模块均在索引中。
-- 符号与源码：用 `rustcodegraph node --file pkg/util/dbutil/common.rs --offset 1 --limit 500` 和 `--offset 501 --limit 500` 读取全部 804 行；用 `query --kind function` 分辨 `GetBucketsInfo`、`AnalyzeValuesFromBuckets`、`ExecSQLWithRetry`、`ExecuteSQLs`、`DeleteRows`、`GetParserForDB`、`GetCRC32Checksum` 的 Go/Rust 同名定义。
-- 直接依赖：用 RustCodeGraph 读取 `interface.rs`、`retry.rs`、`types.rs`，确认 trait 边界、错误分类和时间类型判定；读取 `index.rs` 确认 `ShowIndex -> TableName` 调用边。
-- crate 与导出：读取 `pkg/util/dbutil/Cargo.toml`、`pkg/util/dbutil/lib.rs`、根 `Cargo.toml` 的 `facade_util_dbutil` 声明及 `pkg/lib.rs` facade 再导出；用 Cargo 声明搜索确认其他依赖 crate。
-- Go 对照：读取 `pkg/util/dbutil/common.go` 和 `pkg/util/dbutil/common_test.go`，逐类核对配置、查询、统计桶、时区、重试、事务、删除和 parser 语义。
-- Rust 测试：读取独立 `pkg/util/dbutil/common_test.rs`；其可执行区域覆盖查询结果形状、DSN/配置、时区、统计桶时间解码、DDL 错误忽略、重试、分批删除与基本事务成功路径。本任务按计划为纯文档分析，未运行 Cargo。

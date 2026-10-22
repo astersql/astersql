@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义物理规划阶段的 `NominalSort`。它不是无条件执行排序的算子，而是把 `ORDER BY` 推导出的排序要求交给子计划：当排序键全是列时，已有物理属性可以满足要求，节点在挂接任务时直接消失；当排序键包含可接受的标量函数时，节点保留排序项和输出 Schema，供 Root 任务及后续投影改写处理。直接入口是 `physical_sort.rs::ExhaustPhysicalPlans4LogicalSort`，crate 根通过 `lib.rs` 的 `mod nominal_sort`、`pub use nominal_sort::*` 和 `impl_concrete_physical_plan!(NominalSort)` 将它接入 `base::PhysicalPlan`。
-
-该文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`（`pkg/planner/core/operator/physicalop/Cargo.toml`，库入口为 `lib.rs`）。直接使用的内部依赖包括 `base`、`costusage`、`logicalop`、`property`、`planner_util`、`expression` 与 `plancodec`；Cargo 元数据把 Go 对照包声明为 `pkg/planner/core/operator/physicalop`。
+`Clone`、`MemoryUsage` 和两个代价接口提供物理计划框架需要的复制、记账和成本委托能力。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@ MPP 路径调用 `FromLogical(logical, required, true)`，只接受 `only_column
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/planner/core/operator/physicalop/nominal_sort.go`。字段语义一致：两者都保存基础物理计划、`ByItems` 与 `OnlyColumn`；`Init` 都安装 TypeSort、统计信息、偏移和子属性；`MemoryUsage` 都计算基础计划、slice 头部、容量指针槽、元素和布尔值。
+Go `ResolveIndices` 委托 `resolveIndicesForSort(&p.BasePhysicalPlan)`；Rust 展开为先解析 `PhysicalSchemaProducer`，再逐个按首个孩子 Schema 解析 `ByItems.Expr`。Go `Attach2Task` 通过 `utilfuncp.Attach2Task4NominalSort` 跨包回调，Rust 则在本类型上直接实现任务挂接。
 
-Go `ResolveIndices` 委托 `resolveIndicesForSort(&p.BasePhysicalPlan)`；Rust 展开为先解析 `PhysicalSchemaProducer`，再逐个按首个孩子 Schema 解析 `ByItems.Expr`。Go `Attach2Task` 通过 `utilfuncp.Attach2Task4NominalSort` 跨包回调，Rust 则在本类型上直接实现任务挂接。Rust 还把 Go `physical_sort.go` 中 `getNominalSort` 与 `getNominalSortSimple` 的共同逻辑收敛进 `FromLogical(mpp_only_columns)`：Root 复制 `ExpectedCnt`/`NoCopPushDown`，MPP 克隆必要字段且拒绝非纯列排序，与 Go 两函数的分支意图一致。
-
-需要注意当前 Rust 文件的非纯列 `Attach2Task` 会把克隆的 `NominalSort` 包装进 `RootTask`，并未在该方法内把类型改成 `PhysicalSort`；标量表达式物化的可观察结构应结合后续 `TurnNominalSortIntoProj` 检查。文档因此不把文件头注释中的“真实排序计划”扩大解释为此方法已经构造 `PhysicalSort`。
+需要注意当前 Rust 文件的非纯列 `Attach2Task` 会把克隆的 `NominalSort` 包装进 `RootTask`，并未在该方法内把类型改成 `PhysicalSort`；标量表达式物化的可观察结构应结合后续 `TurnNominalSortIntoProj` 检查。
 
 ## 扩展指南
 
@@ -100,12 +96,3 @@ Go `ResolveIndices` 委托 `resolveIndicesForSort(&p.BasePhysicalPlan)`；Rust �
 - `rule_inject_extra_projection_test.rs`：补充标量键物化、输出 Schema 保持和多排序项顺序。
 
 兼容风险集中在 Go 语义漂移、MPP 属性丢失及错误地消去排序；正确性测试应验证输出顺序和 Schema，而非只验证候选类型。性能风险主要是非纯列路径克隆所有孩子计划、Projection 物化额外表达式，以及 `ExpectedCnt` 改变造成的成本选择变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 报告本仓库索引含 11,467 个文件；`node --file pkg/planner/core/operator/physicalop/nominal_sort.rs --offset 1 --limit 400` 返回目标文件完整 209 行；`query NominalSort`、`query FromLogical`、`query Attach2Task` 定位 Rust/Go 对照符号、`TurnNominalSortIntoProj`、`PlanKind::NominalSort` 与 `NewNominalSortImpl`。精确哈希 ID 的 `callers/callees` 查询产生全库同名歧义，因此未把其噪声结果作为调用边证据，未覆盖边改由下列源码搜索核实。
-- 目标实现：`pkg/planner/core/operator/physicalop/nominal_sort.rs` 的 `NominalSort::{New, Init, FromLogical, Clone, ResolveIndices, MemoryUsage, Attach2Task, GetPlanCostVer1, GetPlanCostVer2}`。
-- crate 与 trait 接线：`pkg/planner/core/operator/physicalop/Cargo.toml`；`pkg/planner/core/operator/physicalop/lib.rs` 的模块声明、再导出、`ConcretePhysicalOperator for NominalSort` 和 `impl_concrete_physical_plan!`。
-- 上下游：`physical_sort.rs::ExhaustPhysicalPlans4LogicalSort`、`GetPropByOrderByItemsContainScalarFunc`；`cascades/old/implementation_rules.rs::ImplSort`；`core/rule_inject_extra_projection.rs::TurnNominalSortIntoProj`；`core/task.rs::attach2Task4NominalSort`。
-- Go 对照：`pkg/planner/core/operator/physicalop/nominal_sort.go` 与 `physical_sort.go::{getNominalSort, getNominalSortSimple, GetPropByOrderByItemsContainScalarFunc}`。
-- 独立 Rust 测试：`nominal_sort_test.rs::memory_usage_counts_go_slice_storage_for_by_items` 验证容量记账；`physical_sort_test.rs::root_sort_enumerates_physical_and_nominal_candidates_like_go` 验证 Root 枚举两个候选；`core/rule_inject_extra_projection_test.rs::nominal_sort_matches_go_passthrough_and_two_projection_paths` 验证透传和双 Projection 路径。现有测试未直接覆盖本文件 `Attach2Task`、`ResolveIndices`、`Clone` 或 MPP 拒绝分支，属于后续扩展时应补的验证缺口。

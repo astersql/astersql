@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于独立 library crate `astersql-expression-generator`。同目录 [`lib.rs`](lib.rs) 通过 `pub mod other_vec` 公开模块，并把 [`other_vec_test.rs`](other_vec_test.rs) 作为独立测试模块接入；[`Cargo.toml`](Cargo.toml) 声明 Rust 2024 edition、`publish = false`，并用 `package.metadata.porting.go-package = "pkg/expression/generator"` 标记 Go 移植来源。同目录不存在 `doc.go`。
-
-它是离线的 Go 源码生成器移植件：把 SQL `IN` 的七种向量签名渲染成 Go 实现和生成式测试源码。它自身不执行 SQL 表达式，也不属于服务运行时求值链。当前真实的 Go 生成入口仍是 [`pkg/expression/builtin.go`](../builtin.go) 中的 `//go:generate go run generator/other_vec.go`，由 [`other_vec.go`](other_vec.go) 写出 `builtin_other_vec_generated.go` 与对应测试文件；Rust 模块只有 library API，不含 binary/main，也不写盘，尚未替换该入口。
+当前实现是迁移中的生成器，而非已验证可替换 Go 生成器的成品。
 
 ## 核心职责
 
@@ -101,17 +99,12 @@ Rust 生成过程是同步纯内存计算，没有线程、异步任务、锁、
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`other_vec.go`](other_vec.go)：
-
-- 七个 Rust `TYPE_*`/`IN_SIGS_TMPL` 项对应 Go helper 的类型上下文和 `inSigsTmpl`，名称与顺序一致；`FUNCTIONS`/`TMPL_VAL` 对应 Go 测试模板的 `function`/`tmplVal`。
-- `BUILTIN_IN_TEMPLATE` 对应 Go `builtinInTmpl`，保留双 buffer、常量哈希优化、`nonConstArgsIdx` 重建、逐参数比较、NULL 收束及 `vectorized() == true` 的整体结构。
-- `hash_lookup` 对应 Go 模板的 `$InputInt`、`$UseHashKey`、`$InputString`、`$InputTime` 分支；`compare_expression` 对应 Go `Compare` 子模板。
 - `generate_dot_go`/`generate_test_dot_go` 对应 Go 同名函数，`generate_one_file` 对应成对生成顺序，`default_outputs` 则是 Rust 为默认路径增加的便捷封装。
 - Go 版本使用 `text/template` 渲染、`format.Source` 格式化并以 0644 权限写盘；格式化失败时告警并写原始内容。Rust 使用字符串替换，只返回内存字节和路径，不格式化、不写盘，也没有 Go `main` 对应的可执行入口。
 - Go 模板在固定长值进入哈希分支前声明 `args0`，整数比较在模板中内联；Rust 当前分别漏掉哈希前的 `buf0Values` 声明并改成未定义 helper，因此不能声称行为完全对齐或可直接替换。
 - Go 生成物 [`builtin_other_vec_generated.go`](../builtin_other_vec_generated.go) 是当前可构建的真实实现证据；Rust 的测试只检查文本特征和 `gofmt` 解析，未把 Rust 输出与该文件做完整 diff 或编译。
 
-独立 [`other_vec_test.rs`](other_vec_test.rs) 验证七个签名各生成两个方法、JSON 不含哈希/`b.hasNull` 分支、错误传播文本、类型比较表达式、测试常量和四个测试/benchmark 入口。跨模块 [`builtin_threadsafe_1_aster_unit_test.rs`](builtin_threadsafe_1_aster_unit_test.rs) 还验证默认 `.go`/`_test.go` 路径、非空内容、无残留 `{{` 以及 `gofmt` 可解析。它们是生成结构回归，不等价于 Go 编译或 SQL 行为回归。
+它们是生成结构回归，不等价于 Go 编译或 SQL 行为回归。
 
 ## 扩展指南
 
@@ -122,13 +115,3 @@ Rust 生成过程是同步纯内存计算，没有线程、异步任务、锁、
 - 修改 Int 时同时覆盖四种左右 signed/unsigned 组合与负值边界；修改 String 时验证 collation key 和动态 `CompareString` 一致；修改 Decimal/JSON 时验证 `ToHashKey` 错误传播；修改 Time 时验证 `CoreTime` 与 `Compare` 的一致性。
 - 若将 Rust 生成器接入 `go:generate`，需要另行提供稳定的 Cargo binary/命令、格式化和原子写盘策略，并修改 [`builtin.go`](../builtin.go)。接入前应与 Go 生成物做语义/编译对比，而不是只检查若干字符串。
 - 性能风险集中在 Rust 模板的连续全串 `replace` 和生成 Go 代码的 `行数 × 动态参数数` 扫描；兼容风险集中在签名名称、三值逻辑、signed/unsigned、collation、哈希键与比较等价性以及生成文件格式。
-
-## 验证依据
-
-- 目标源码：[`other_vec.rs`](other_vec.rs)，通过 RustCodeGraph `node --file` 完整核对 451 行中的静态矩阵、模板、三个私有渲染函数和四个公开生成函数。
-- crate/模块边界：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)，确认独立 library crate、公开模块、依赖清单和独立测试接线；同目录没有 `doc.go`。
-- Go 对照与真实入口：[`other_vec.go`](other_vec.go)、[`pkg/expression/builtin.go`](../builtin.go)、[`builtin_other_vec_generated.go`](../builtin_other_vec_generated.go) 和 `pkg/expression/BUILD.bazel`，确认 Go 模板、写盘/main、当前 `go:generate` 主链和构建中的生成物。
-- Rust 测试：[`other_vec_test.rs`](other_vec_test.rs) 与 [`builtin_threadsafe_1_aster_unit_test.rs`](builtin_threadsafe_1_aster_unit_test.rs)，确认文本分支、生成用例、默认路径和 `gofmt` 检查的实际覆盖范围。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/generator` 确认目标、Go 对照、模块入口和测试均已索引；`query` 定位 `generate_dot_go`、`render_in_sig`、`hash_lookup`、`compare_expression`、`default_outputs`；`node --file` 提供源码和文件级引用证据。精确 callers/callees 未返回可靠边，故调用关系另以完整源码与 `rg` 调用点验证。
-- 迁移缺口证据：仓库范围 `rg` 显示 `compareSignedAndUnsignedInts` 只出现在本 Rust 生成器及其测试中，没有 Go 定义；模板顺序显示固定长 `buf0Values` 仅在常量哈希块之后声明。两项均明确记录为未通过 Go 编译验证的限制。
-- 本任务是纯文档分析，依照总计划不运行 Cargo。交付只运行任务规定的 11 章节结构检查、变更范围检查与人工事实复核。

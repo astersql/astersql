@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session-txninfo` crate；crate 入口 `pkg/session/txninfo/lib.rs` 公开 `summary` 与 `txn_info` 两个模块，当前文件负责“已结束事务的 SQL digest 序列摘要”，相邻的 `txn_info.rs` 提供输入类型 `TxnInfo` 与输出单元 `Datum`。它实现的是进程内、固定容量的历史 LRU，而不是持久化存储。
-
-Rust 生产接线目前只确认到 `cmd/tidb-server/main.rs:1783-1786`：启动时把配置中的容量和最短事务时长写入全局 `Recorder`。仓库内 Rust 调用搜索没有找到生产代码调用 `Recorder.OnTrxEnd` 或 `Recorder.DumpTrxSummary`；`pkg/executor/infoschema_reader.rs:811-817` 仅把 `TRX_SUMMARY` 请求转成 `DataRequest::TransactionSummary`，没有直接调用本记录器。因此，“记录器算法已实现”和“Rust 端事务结束、信息模式读取链路已完整接通”必须分开理解。
+因此，“记录器算法已实现”和“Rust 端事务结束、信息模式读取链路已完整接通”必须分开理解。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ Go 的完整生产上游可作为迁移目标证据：`pkg/session/txn.go:180,34
 
 ## 与 Go 版本的对应关系
 
-Rust 基本逐项对应 `pkg/session/txninfo/summary.go`：同样使用 FNV-1a 64 位哈希、同样按事务 digest 序列判重、同样维护最近使用顺序、默认 1 秒阈值、全局实例默认容量 0，并输出十六进制指纹及 JSON 数组。Rust 用 `HashMap + VecDeque` 替代 Go 的 `map + container/list`，用 `StartTS >> 18` 直接对应 Go `oracle.ExtractPhysical`。
+Rust 用 `HashMap + VecDeque` 替代 Go 的 `map + container/list`，用 `StartTS >> 18` 直接对应 Go `oracle.ExtractPhysical`。
 
 两版都保留 `Clean` 只重建/清空链表而不清空判重 map 的可观察语义；Rust 测试明确固定了“旧指纹清理后不能重新进入缓存”。Rust 还把阈值与摘要集合放在同一 `Mutex` 状态中，且 `Clean` 也持锁；Go 的 `Clean` 当前没有加锁。Rust 对未来开始时间显式跳过，而 Go 的 `now.Sub(future)` 得到负时长，在非负阈值下同样会跳过。
 
@@ -85,13 +83,3 @@ Rust 基本逐项对应 `pkg/session/txninfo/summary.go`：同样使用 FNV-1a 6
 - 若改变时间过滤，应修改 `OnTrxEnd` 并扩展 `recorder_applies_go_physical_timestamp_duration_threshold`，覆盖小于、等于阈值、未来时间、零 `StartTS` 与 TSO 边界。
 - 若补齐生产接线，入口应分别落在 Rust 事务结束路径和 `DataRequest::TransactionSummary` 的数据提供路径，并新增独立的端到端测试；测试逻辑不得内嵌进本生产文件。
 - 若增大默认容量、允许更长 digest 历史或在导出时做昂贵转换，应评估单锁竞争、持锁 JSON 序列化开销及无单条大小上限带来的内存风险。
-
-## 验证依据
-
-- Rust 源与模块：`pkg/session/txninfo/summary.rs`、`pkg/session/txninfo/lib.rs`、`pkg/session/txninfo/txn_info.rs`。
-- crate 边界：`pkg/session/txninfo/Cargo.toml`，package 为 `astersql-session-txninfo`，`lib.rs` 为 crate 根。
-- Go 对照：`pkg/session/txninfo/summary.go`、`pkg/session/txninfo/txn_info.go`、`pkg/session/txn.go:180,348`、`pkg/executor/infoschema_reader.go:3008`、`cmd/tidb-server/main.go:1215-1216`。
-- Rust 接线：`cmd/tidb-server/main.rs:1783-1786`、`pkg/executor/infoschema_reader.rs:811-817`；全仓 `rg` 未发现 Rust 生产代码对 `Recorder.OnTrxEnd` 或 `Recorder.DumpTrxSummary` 的调用。
-- 独立 Rust 测试：`pkg/session/txninfo/migration_aster_unit_test.rs:64-162` 覆盖 LRU 命中提升、JSON、缩容、特殊 Clean 语义、零容量、并发访问、持续时间阈值与未来时间；`pkg/infoschema/test/clustertablestest/tables_test.rs:776-807` 仅覆盖期望 JSON 形状，不是记录器端到端测试。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；查询确认 `summary.rs` 含 17 个符号，并得到 `newTrxHistoryRecorder -> newTrxSummaries`、`OnTrxEnd -> onTrxEnd -> digest` 等调用边。对公开方法的 callers 查询未返回 Rust 生产调用者，随后用精确 `rg` 复核接线边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构验证并人工复核事实与范围。

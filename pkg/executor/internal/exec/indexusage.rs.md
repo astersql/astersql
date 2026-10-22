@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-internal-exec` crate；crate 根 `pkg/executor/internal/exec/lib.rs` 通过 `pub mod indexusage` 暴露它，并把同目录的 `indexusage_test.rs` 作为 `#[cfg(test)]` 独立测试模块编译。`Cargo.toml` 将 Go 对照包标为 `pkg/executor/internal/exec`，当前依赖表只在 Windows 目标下声明执行器相关 workspace crate；本文件自身仅直接使用标准库的 `HashMap`、`Arc` 和 `Mutex`。
-
-它实现一套执行器侧索引使用量采样模型：把 Coprocessor 扫描或 Point Get 得到的请求数、访问行数与表统计行数组合成 `IndexUsageSample`，再交给语句级收集器。需要特别区分“本文件提供的具体类型”和“执行器主链中的同名接口”：RustCodeGraph 与 `rg` 复核表明，生产 Rust 代码中的 `pkg/executor/point_get.rs::IndexUsageReporter` 和 `pkg/executor/builder.rs::IndexUsageReporter` 是各自定义的 trait，目前没有实现适配到本文件的 `IndexUsageReporter`；对本文件具体 API 的 Rust 调用目前只见于 `indexusage_test.rs`。因此它是已实现、可测试的 Go 语义移植单元，但尚不能据此声称已接入完整 Rust 执行主链。
+需要特别区分“本文件提供的具体类型”和“执行器主链中的同名接口”：RustCodeGraph 与 `rg` 复核表明，生产 Rust 代码中的 `pkg/executor/point_get.rs::IndexUsageReporter` 和 `pkg/executor/builder.rs::IndexUsageReporter` 是各自定义的 trait，目前没有实现适配到本文件的 `IndexUsageReporter`；对本文件具体 API 的 Rust 调用目前只见于 `indexusage_test.rs`。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ Go 生产侧则已广泛接线：RustCodeGraph 显示 `indexusage.go` 被 `batch
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/internal/exec/indexusage.go`。Rust 的 `IndexUsageReporter` 三个依赖分别对应 Go 的 `reporter`、`runtimeStatsColl` 和 `statsMap`；两个 Cop 便利入口、两个 Point Get 入口、`getTableRowCount` 及 `getClusterIndexID` 保持同样的分支顺序和逻辑/物理表 ID 分工。
-
-Go 用 `statistics.PseudoVersion`，Rust 在本文件用值为 `0` 的 `PSEUDO_VERSION`；Go 用 `indexusage.NewSample`，Rust显式构造等价的四字段 `IndexUsageSample`。Go 的 `math.MaxInt32` 对应 Rust 的 `i32::MAX as i64`。Go 的 `uint64(...)` 转换由 `goUint64` 明确保留，而不是对负数做校验或饱和。
+Go 用 `statistics.PseudoVersion`，Rust 在本文件用值为 `0` 的 `PSEUDO_VERSION`；Go 用 `indexusage.NewSample`，Rust显式构造等价的四字段 `IndexUsageSample`。
 
 Rust 为可独立测试而引入了最小 trait/数据模型及 `InMemoryIndexUsageCollector`，这些并非 Go 文件中的生产类型本体。Rust 独立测试覆盖核心分支；Go 测试还覆盖真实 SQL、预处理语句、分区、全局索引、禁用执行信息收集和多种聚簇/非聚簇索引场景。由于当前 Rust 具体 Reporter 尚未适配到 Rust 执行器主链接口，Go 集成测试所证明的端到端接线不能直接算作 Rust 的端到端证据。
 
@@ -84,13 +80,3 @@ Rust 为可独立测试而引入了最小 trait/数据模型及 `InMemoryIndexUs
 - 接入 Rust 生产主链时，应在 `point_get.rs::IndexUsageReporter` 的具体实现及 `PointGetDependencies::build_index_usage_reporter` 构建路径中增加显式适配；分布式扫描还需把 `builder.rs` 的报告器边界接到本文件的 Cop API。必须避免仅因名称相同就强制转换两个无继承关系的类型/trait。
 - 若生产化 `InMemoryIndexUsageCollector`，需解决锁中毒可观测性、无界样本增长、全局锁竞争和读取全量克隆问题；否则保持它只作为测试辅助。
 - Rust 测试逻辑继续放在同目录独立文件 `pkg/executor/internal/exec/indexusage_test.rs`，不要内嵌到生产源文件；端到端接线完成后还应补充执行器侧独立集成测试，对齐 `indexusage_test.go` 的真实 SQL 场景。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/internal/exec/indexusage.rs`，核对全部 246 行、公开数据类型/trait、Reporter 方法、`goUint64` 和 `getClusterIndexID`。
-- crate 边界：`pkg/executor/internal/exec/lib.rs` 与 `pkg/executor/internal/exec/Cargo.toml`，核对模块导出、独立测试模块、Go 包元数据及条件依赖。
-- Rust 独立测试：`pkg/executor/internal/exec/indexusage_test.rs`，核对聚簇索引三类分支、公共句柄缺主索引、物理表统计、伪统计、零访问、Point Get 兜底与负数转换。
-- Go 对照：`pkg/executor/internal/exec/indexusage.go` 和 `pkg/executor/internal/exec/indexusage_test.go`，核对逐函数语义及真实 SQL、分区、全局索引、开关与聚簇索引场景。
-- Rust 上游边界：`pkg/executor/point_get.rs`（trait、构建注入、`Close` 中的 `report_index/report_handle`）与 `pkg/executor/builder.rs`（同名 trait 和构建委托），用于确认当前适配缺口。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/internal/exec` 确认目标、Go 对照、crate 根和独立测试均已索引；`explore`、`query IndexUsageReporter/ReportCopIndexUsage/ReportPointGetIndexUsage/getClusterIndexID` 与目标文件 `node` 查询用于核对符号、文件内调用和测试调用。图查询对常见同名 `reporter` 产生跨模块噪声，因此又以限定 `*.rs` 的精确引用检索确认本文件具体 API 尚无测试外 Rust 调用。
-- 结构验证按任务指定命令执行；本任务为纯文档分析，按计划不运行 Cargo。

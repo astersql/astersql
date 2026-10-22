@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate；crate 入口 `pkg/executor/aggfuncs/lib.rs` 以公开模块 `func_count_distinct` 暴露它，`pkg/executor/aggfuncs/Cargo.toml` 则把该 crate 对应到 Go 包 `pkg/executor/aggfuncs`。它保存 SQL 精确 `COUNT(DISTINCT ...)` 与 `APPROX_COUNT_DISTINCT` 的可合并部分状态，不负责解析 SQL、选择聚合模式或驱动分组执行。
-
-上游 `builder.rs::build`/`build_approx_count_distinct` 根据函数名、参数类型和 `Complete`、`Partial1`、`Partial2`、`Final` 模式选择实现枚举；`aggfuncs.rs::spill_function` 再把这些实现枚举绑定到本文件的具体状态。因而本文件位于“表达式已求值之后、聚合结果输出之前”，是串行聚合、并行 partial merge 和 spill 恢复共同使用的状态层。
+`CountDistinct<T>` 用 `HashSet<T>` 实现单列精确去重，忽略 `None`，提供清空、计数、批量更新和跨分区合并，并返回集合扩容的近似内存增量。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ RustCodeGraph 将 `func_count_distinct.rs::CountDistinct`、`CountDistinctMulti`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/aggfuncs/func_count_distinct.go`。Go 为 Int、Real、Decimal、Duration、String 和 MultiArgs 分别定义 partial-result 结构、更新/合并/输出/序列化方法；Rust 用泛型 `CountDistinct<T>`、类型别名和 `CountDistinctMulti` 压缩重复结构，但保留 NULL 过滤、跨分区集合并集、校对键、多参数整行 NULL 排除及内存增量意图。
+Go 为 Int、Real、Decimal、Duration、String 和 MultiArgs 分别定义 partial-result 结构、更新/合并/输出/序列化方法；Rust 用泛型 `CountDistinct<T>`、类型别名和 `CountDistinctMulti` 压缩重复结构，但保留 NULL 过滤、跨分区集合并集、校对键、多参数整行 NULL 排除及内存增量意图。
 
-Go 的 Real 路径使用 `map[float64]struct{}`。Rust 不能直接用 `f64` 作为 `HashSet` 键，因此 `update_distinct_real` 将其映射为 `u64`：正负零归一化，而 NaN 通过未占用 payload 保持 Go 中 `NaN != NaN` 的逐次计数行为。`func_count_distinct_test.rs` 专门固定这两个兼容边界。
+Rust 不能直接用 `f64` 作为 `HashSet` 键，因此 `update_distinct_real` 将其映射为 `u64`：正负零归一化，而 NaN 通过未占用 payload 保持 Go 中 `NaN != NaN` 的逐次计数行为。
 
-Go 的 `partialResult4ApproxCountDistinct` 同样包含 `size`、`sizeDegree`、`skipDegree`、零哈希标记和开放寻址缓冲区，并提供 `InsertHash64`、扩缩容、rehash、merge、Serialize、readAndMerge。Rust 对应实现保留最大样本量、skip 抽样、序列化字段次序和阶段别名；不过上层 Go 类型求值、chunk 输出与 Rust 状态适配由各自框架承担，不能仅凭本文件断言两个完整执行器已在所有输入编码上逐字节等价。
+Rust 对应实现保留最大样本量、skip 抽样、序列化字段次序和阶段别名；不过上层 Go 类型求值、chunk 输出与 Rust 状态适配由各自框架承担，不能仅凭本文件断言两个完整执行器已在所有输入编码上逐字节等价。
 
 ## 扩展指南
 
@@ -85,12 +83,3 @@ Go 的 `partialResult4ApproxCountDistinct` 同样包含 `size`、`sizeDegree`、
 修改浮点键规则时须同时保护 `+0/-0`、多个 NaN、不同 NaN payload、普通重复值及 spill 后合并；最直接的测试位置是 `func_count_distinct_test.rs` 和 `func_distinct_agg_test.rs`。修改近似算法或序列化时，应同步 Go 对照、四种聚合模式、畸形输入错误、最大容量/rehash、不同行为阶段合并，以及 `spill_helper_test.rs::spill_approximate_count_and_variance_preserve_full_partial_state`。
 
 性能风险主要来自克隆大字节键、HashSet 扩容、线性探测聚簇和 rehash；正确性风险主要来自复合键碰撞、校对规则遗漏、特殊浮点值及不同 skip 状态合并。优化时应保留返回内存增量的含义，并用串行结果与分区 merge 结果等价性作为基本不变量。
-
-## 验证依据
-
-- 源码与 crate 边界：`pkg/executor/aggfuncs/func_count_distinct.rs`、`lib.rs`、`Cargo.toml`。
-- 上游与状态接线：`pkg/executor/aggfuncs/builder.rs::build_approx_count_distinct`，`aggfuncs.rs::spill_function`、`merge_partial_result`，`spill_serialize_helper.rs` 的 `SpillState` 实现。
-- Rust 独立测试：`func_count_distinct_test.rs` 验证有符号零与 NaN；`func_distinct_agg_test.rs::test_parallel_distinct_count` 验证空/NULL/重复/类型/校对/多列与分区合并；`go_scenario_coverage_test.rs::test_parallel_distinct_count` 和 `test_decimal_distinct_sum_and_multi_distinct_nulls` 验证合并与整行 NULL；`spill_helper_test.rs::spill_distinct_count_preserves_int_real_decimal_duration_string_and_multi_keys`、`spill_approximate_count_and_variance_preserve_full_partial_state` 验证 spill 往返。
-- Go 对照：`pkg/executor/aggfuncs/func_count_distinct.go` 中各 `baseCountDistinct4*`、`baseCountDistinct4MultiArgs`、`partialResult4ApproxCountDistinct` 及其 update/merge/serialize/readAndMerge 方法；相关 Go 测试为 `pkg/executor/aggfuncs/func_count_test.go`。
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`explore "pkg/executor/aggfuncs/func_count_distinct.rs CountDistinct count distinct aggregate"` 定位 `update_distinct_real`、`encode_distinct_value` 与 spill/aggregate 引用；`query CountDistinct --kind struct --json`、`query ApproxCountDistinct --kind struct --json` 将 Rust 结构分别解析到本文件第 30、213、278 行，并同时暴露同路径 Go 对照符号，故后续以文件限定结果消除了同名噪声。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令确认目标文档存在且恰有 11 个固定二级章节，并人工复核所有关键结论均可回指上述源、接线、测试或 Go 对照。

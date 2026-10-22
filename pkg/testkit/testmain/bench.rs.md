@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-testkit-testmain` crate；crate 根由 `pkg/testkit/testmain/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 `pkg/testkit/testmain/lib.rs`。`lib.rs` 将 `bench` 声明为公开模块并通过 `pub use bench::*` 再导出其公开函数，因此调用方可从 `astersql_testkit_testmain` crate 根直接使用 `benchmark_exit_code` 和 `ShortCircuitForBench`。
-
-它位于测试进程入口层，而不是数据库 SQL、事务或存储执行链中。其职责是复刻 Go 测试框架在 `TestMain` 开头的 benchmark 短路：检测非空 `test.bench` 过滤条件时，先运行测试运行器，再把运行器的退出码作为进程退出码；没有有效 benchmark 条件时，把控制权留给调用方继续执行普通测试初始化。Go 侧直接入口是同目录的 `pkg/testkit/testmain/bench.go::ShortCircuitForBench`。
+这些后续阶段由各测试 harness 负责；例如 `pkg/session/test/main_test.go::TestMain` 把 Go 版 `ShortCircuitForBench` 放在 `SetupForCommonTest` 和 `flag.Parse` 之前。
 
 ## 核心职责
 
@@ -74,9 +72,9 @@ RustCodeGraph 给出的文件内调用链为 `ShortCircuitForBench → benchmark
 
 Go `pkg/testkit/testmain/bench.go::ShortCircuitForBench` 在 flag 尚未解析时调用 `flag.Parse()`，随后通过 `flag.Lookup("test.bench")` 读取最终值；值非空时执行 `os.Exit(m.Run())`。Rust 版保持三个核心行为：只对非空 benchmark 过滤串短路、调用运行器并透传退出码、进程入口立即退出。
 
-Rust 为可测试性额外拆出 `benchmark_exit_code`，并手工扫描参数来近似 Go `flag` 的顺序语义。它显式支持单横线/双横线、等号/分离值、重复设置、解析终止符，以及已列出的 testing 值标志。与 Go 全局 flag 注册表不同，Rust 不查询动态注册的 flag，也没有“已解析”状态；兼容性取决于本文件的标志白名单与 Go testing 标志保持同步。Go 入口接收具体 `*testing.M`，Rust 则通过 `TestingM` trait 支持真实或伪运行器。
+Rust 为可测试性额外拆出 `benchmark_exit_code`，并手工扫描参数来近似 Go `flag` 的顺序语义。与 Go 全局 flag 注册表不同，Rust 不查询动态注册的 flag，也没有“已解析”状态；兼容性取决于本文件的标志白名单与 Go testing 标志保持同步。Go 入口接收具体 `*testing.M`，Rust 则通过 `TestingM` trait 支持真实或伪运行器。
 
-独立 Rust 测试 `pkg/testkit/testmain/bench_test.rs` 覆盖重复值、解析终止和跨其他值标志继续扫描；`pkg/testkit/testmain/migration_aster_unit_test.rs` 覆盖无标志、空过滤串、分离非空过滤串及退出码透传。当前目录没有 `bench_test.go`，Go 行为的直接依据是 `bench.go` 和调用它的各 `main_test.go`。
+当前目录没有 `bench_test.go`，Go 行为的直接依据是 `bench.go` 和调用它的各 `main_test.go`。
 
 ## 扩展指南
 
@@ -85,12 +83,3 @@ Rust 为可测试性额外拆出 `benchmark_exit_code`，并手工扫描参数�
 - 扩展运行器行为时优先修改 `pkg/testkit/testmain/wrapper.rs::TestingM` 或包装器，并同步其独立测试 `wrapper_test.rs`；不要让本文件耦合具体 session、配置或 failpoint 类型。
 - 若要验证 `std::process::exit` 本身，只能使用隔离子进程测试，避免在普通单元测试进程中调用 `ShortCircuitForBench` 的命中路径。
 - 兼容性风险主要来自 Go flag 语义漂移和未知值标志；性能风险很低，扫描为参数数量的线性复杂度且不保留集合。安全修改应同时复查 Go `bench.go`、Rust 两个 bench 测试文件以及至少一个真实 harness 的调用顺序。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 `pkg/testkit/testmain/bench.rs` 的 6 个索引节点；文件查询显示 136 行源码，并列出 `pkg/session/test/bootstraptest/main_test.rs`、`pkg/session/test/main_test.rs`、`pkg/session/test/variable/main_test.rs`、`pkg/testkit/testmain/bench_test.rs` 等使用方。
-- RustCodeGraph 精确符号：`bench.rs::test_flag_takes_value`（第 25 行）、`bench.rs::benchmark_exit_code`（第 84 行）、`bench.rs::ShortCircuitForBench`（第 132 行）。节点调用轨迹确认 `ShortCircuitForBench` 调用 `benchmark_exit_code`，后者调用 `test_flag_takes_value` 和运行器 `run`。
-- 源码与边界：[`bench.rs`](./bench.rs)；crate 声明：[`Cargo.toml`](./Cargo.toml)；公开模块与测试装配：[`lib.rs`](./lib.rs)；运行器 trait：[`wrapper.rs`](./wrapper.rs)。
-- Go 对照与真实入口：[`bench.go::ShortCircuitForBench`](./bench.go)、[`pkg/session/test/main_test.go::TestMain`](../../session/test/main_test.go)。
-- 独立测试：[`bench_test.rs`](./bench_test.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；补充 harness 证据：[`pkg/session/test/main_test.rs`](../../session/test/main_test.rs)、[`pkg/session/test/bootstraptest/main_test.rs`](../../session/test/bootstraptest/main_test.rs)、[`pkg/session/test/variable/main_test.rs`](../../session/test/variable/main_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务文件指定的结构命令验证目标文档存在且固定二级标题恰好为 11 个，并人工复核唯一输出、源码链接、调用边、边界条件和扩展测试位置。

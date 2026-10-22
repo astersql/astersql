@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-intest` crate 的断言公共内核，归属 `pkg/util/intest`。crate 入口 `pkg/util/intest/lib.rs` 无条件声明 `assert_common`，再根据 `test`、`intest`、`enableassert` 条件编译 `assert.rs` 或 `no_assert.rs`；因此，本文件不决定一次断言是否执行，而负责保存公共开关、承载断言参数、执行已经获准的检查并生成失败消息。
-
-`pkg/util/intest/Cargo.toml` 表明该 crate 没有外部依赖，声明了空的 `intest` 与 `enableassert` feature。`lib.rs` 对外再导出 `AssertArg` 和 `EnableInternalCheck`，但 `doAssert`、`doAssertNoError`、`doAssertNotNil`、`doAssertFunc`、`assertionFailedMsg` 与 `sprintf` 都不会成为 crate 的公共 API。除正式 crate 外，`pkg/util/mathutil/lib.rs` 还通过 `#[path = "../intest/assert_common.rs"]` 复用本文件作为其内部模块，这是修改可见性、条件编译或模块相对路径时必须考虑的第二个编译上下文。
+只处理“检查被执行以后”的语义。
 
 ## 核心职责
 
@@ -86,9 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/intest/assert_common.go`。Rust 保留了 Go 的 `EnableInternalCheck`、`doAssert`、`doAssertNoError`、`doAssertNotNil`、`doAssertFunc`、`doPanic` 和 `assertionFailedMsg` 职责，并以 `AssertArg` 加局部 `sprintf` 替代 `...any` 与 `fmt.Sprintf`。
-
-主要一致点：失败前缀为 `assert failed`；用户参数首项充当格式串/消息；错误说明插在用户消息后；函数断言先检查 nil 再调用；函数内部 panic 不拦截；常用 `%s`、`%d`、`%v`、`%+v` 以及缺参、错型、多参诊断对齐目标测试。
+Rust 保留了 Go 的 `EnableInternalCheck`、`doAssert`、`doAssertNoError`、`doAssertNotNil`、`doAssertFunc`、`doPanic` 和 `assertionFailedMsg` 职责，并以 `AssertArg` 加局部 `sprintf` 替代 `...any` 与 `fmt.Sprintf`。
 
 已确认的差异与迁移边界：
 
@@ -97,8 +93,6 @@
 - Go `doAssertNotNil` 通过反射识别接口中函数、通道、映射、指针、切片等 typed nil；Rust API 用 `Option<T>` 表示空值，只检查 `None`。
 - Go 接受任意 `func() bool` 值；Rust 签名是 `Option<fn() -> bool>` 函数指针，不直接容纳捕获闭包。
 - Rust `sprintf` 只实现当前断言所需子集。Go `fmt.Sprintf` 的全部格式语义不属于现有 Rust 实现。
-
-Go 行为测试 `pkg/util/intest/assert_test.go::TestAssert` 覆盖条件、消息插值、非空、函数及错误断言；Rust 对应覆盖分布在 `pkg/util/intest/assert_test.rs` 和 `pkg/util/intest/assert_common_test.rs`，测试逻辑与源文件分离。
 
 ## 扩展指南
 
@@ -109,12 +103,3 @@ Go 行为测试 `pkg/util/intest/assert_test.go::TestAssert` 覆盖条件、消�
 新增断言种类时，推荐保持现有分层：在 `assert.rs` 与 `no_assert.rs` 提供同签名外层 API 并处理开关，在本文件增加 crate 私有的 `doAssert*` 公共行为，再由 `lib.rs` 按两个变体一致地导出。相关测试放在独立的 `*_test.rs` 文件，不嵌入生产源文件；同时核对 Go `assert_common.go` 与 `assert_test.go` 的语义。
 
 修改 `EnableInternalCheck` 时要评估默认 feature、运行期原子访问以及测试隔离。修改本文件还必须验证 `astersql-util-intest` 和 `pkg/util/mathutil/lib.rs` 的路径复用上下文。兼容性风险集中在 panic 文本、公开 `AssertArg` 枚举和开关默认值；性能风险较低，但失败路径会分配字符串，成功路径应继续保持只做条件判断而不格式化消息。
-
-## 验证依据
-
-- 生产源码：`pkg/util/intest/assert_common.rs`（全部 230 行）、`pkg/util/intest/assert.rs`、`pkg/util/intest/no_assert.rs`、`pkg/util/intest/lib.rs`。
-- crate 与复用边界：`pkg/util/intest/Cargo.toml`、`pkg/util/mathutil/lib.rs`、`pkg/util/mathutil/math.rs::Divide2Batches`。
-- Rust 独立测试：`pkg/util/intest/assert_common_test.rs` 验证格式缺参、类型错误与多余参数；`pkg/util/intest/assert_test.rs` 验证四类断言、panic 透传与双开关行为；`pkg/util/intest/not_in_unittest_test.rs` 提供普通构建开关状态的补充证据。
-- Go 对照：`pkg/util/intest/assert_common.go` 与 `pkg/util/intest/assert_test.go::TestAssert`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/intest` 找到 16 个相关源文件；`node --file pkg/util/intest/assert_common.rs --offset 1 --limit 260` 返回完整源码并报告该文件被 9 个文件使用；`query` 分别定位 Rust 的 `doAssert*`、`assertionFailedMsg` 和 `EnableInternalCheck`。精确 `callers/callees` 命令在 30 秒窗口内未返回，因此调用边进一步由上述模块源码及 `rg` 局部搜索交叉核对，未把超时结果当作调用事实。
-- 人工复核结论：该文件存在的原因是让启用/禁用断言变体共享检查和消息语义；运行路径是外层开关判断后进入 `doAssert*`，最终统一格式化并 panic；安全扩展必须同步公共参数表示、格式诊断、两个外层变体、路径复用上下文及独立测试。

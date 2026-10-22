@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo crate `astersql-planner-core-operator-logicalop`，crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 以 `mod logical_show` 编译本模块并通过 `pub use logical_show::*` 导出其公开符号。它实现 `SHOW` 语句的叶子逻辑算子及 `SHOW STATS_META` 的专用谓词抽取，而不负责读取系统表或生成最终结果行。
-
-上游 `pkg/planner/core/logical_plan_builder_runtime.rs::build_show_runtime` 把解析器的 `ShowStmt` 转成 `LogicalShow`，设置输出 `Schema`/`OutputNames`，并在存在 `WHERE` 时先包一层 `LogicalSelection`。优化器随后经 `LogicalPlan::PredicatePushDown` 调用本文件的专用逻辑。下游 `pkg/planner/cascades/old/implementation_rules.rs::ImplShow::OnImplement` 把 `ShowContents` 与 `Extractor` 克隆到 `PhysicalShow`；物理节点定义在 `pkg/planner/core/operator/physicalop/physical_show.rs`。
+用 `ShowContents` 保存当前 Rust 规划链实际承载的 SHOW 参数，包括类型、库/分区/索引/资源组、标志位以及导入和分布任务标识。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ RustCodeGraph 的文件查询确认目标文件已索引（358 行、42 个符�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/logicalop/logical_show.go`。核心行为基本逐项对应：StatsMeta 才抽取；先 DB 后 Table；DB 转小写；多个谓词取交集；矛盾交集保留原谓词；EQ/IN/OR 的安全识别；参数标记按当前求值上下文读取；统计固定为 1；抽取器通用接口仍返回 Go 侧的空/false stub 值。
+核心行为基本逐项对应：StatsMeta 才抽取；先 DB 后 Table；DB 转小写；多个谓词取交集；矛盾交集保留原谓词；EQ/IN/OR 的安全识别；参数标记按当前求值上下文读取；统计固定为 1；抽取器通用接口仍返回 Go 侧的空/false stub 值。
 
 Rust 侧存在需要明确记录的移植差异：
 
@@ -91,7 +89,6 @@ Rust 侧存在需要明确记录的移植差异：
 - Go 结构还包含 `Table`、`Column`、`User`、`Roles`、`Limit` 等字段；当前 Rust `ShowContents` 未承载这些字段。现有 Rust 构建器也只复制 Rust 已声明字段，不能据 Go 版本推断这些能力已移植。
 - Go `MemoryUsage` 计入 `Roles` 容量，但没有计入所有字符串；Rust 没有 Roles，并额外显式计算 `CIStr` 的 O/L 字符串长度。两者都是近似估算而非完整堆占用。
 - Go helper 用 `(value, ok)`，Rust 用 `Option`；语义均是失败时保留谓词。Rust 的 `PredicatePushDown` 简化了 Go 接口返回的 self plan，只返回剩余谓词，因为计划对象由 Rust trait 调用者原地持有。
-- Go 的生成哈希目前同样只纳入 `LogicalSchemaProducer`；Rust 生成实现保持这一行为。这意味着仅修改 SHOW 内容不会改变 memo 相等性，扩展时不可擅自单边改变。
 
 Go 测试的同目录哈希用例 `logicalop_test/hash64_equals_test.go::TestLogicalShowHash64Equals` 与 Rust 对应测试共同证明 schema 参与哈希/相等性；目标文件自身的细粒度 Rust 行为测试位于独立的 `logical_show_test.rs`。
 
@@ -104,12 +101,3 @@ Go 测试的同目录哈希用例 `logicalop_test/hash64_equals_test.go::TestLog
 - 改变 `ShowContents` 或 Extractor 的语义身份前，必须同时审查 `hash64_equals_generated.rs` 的生成器与 Go 生成规则；当前 memo 身份刻意只看 schema，单独手改生成文件会被再生成覆盖。
 - 任何错误传播改动都要区分“无法优化”与“查询本身非法”：前者应保留谓词而非报错，参数求值的真实 SQL 错误是否应提前暴露则需与 Go 行为和执行阶段共同验证。
 - 性能上关注大 IN/OR 的集合构建及交集复制；如需优化，应保持去重、全分支可抽取和矛盾保留这三个语义不变量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/planner/core/operator/logicalop/logical_show.rs` 定位到目标文件；`node --file ... --offset 1 --limit 1200` 读取全部 358 行；`query LogicalShow`、`query ShowStatsMetaPredicateExtractor`、`query ShowContents` 核对主要符号；`explore "LogicalShow PredicatePushDown extractStatsMetaFilters"` 核对目标内部调用及测试引用。
-- Rust 源：`pkg/planner/core/operator/logicalop/logical_show.rs`；模块装配：`pkg/planner/core/operator/logicalop/lib.rs`；crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml`。
-- 上下游源码：`pkg/planner/core/logical_plan_builder_runtime.rs::build_show_runtime`、`pkg/planner/cascades/pattern/pattern.rs`、`pkg/planner/cascades/old/implementation_rules.rs::ImplShow`、`pkg/planner/core/operator/physicalop/physical_show.rs`、`pkg/planner/core/operator/logicalop/hash64_equals_generated.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_show.go`；Go/Rust 哈希对照测试：`pkg/planner/core/operator/logicalop/logicalop_test/hash64_equals_test.go` 与 `.rs`。
-- 独立 Rust 测试：`pkg/planner/core/operator/logicalop/logical_show_test.rs`，覆盖矛盾过滤保留、参数标记当前值、抽取器接口和内存计数；`logical_datasource_aster_unit_test.rs` 另有 `findShowColumnIDs`/`getFakeStats` 的直接验证。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 章结构命令、路径范围检查和人工事实复核作为交付验证。

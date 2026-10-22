@@ -2,10 +2,6 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate；crate 入口在 [`lib.rs`](lib.rs) 中以 `pub mod backend` 暴露它，包边界由 [`Cargo.toml`](Cargo.toml) 定义。它位于 DDL add-index/reorg 的本地 ingest 路径中：上层按一个 DDL job 构造 `BackendContext`，为该 job 的每个索引维护一个本地 `EngineInfo`，并在写入过程中根据磁盘压力或周期执行 flush、推进 checkpoint，最后关闭和注销引擎。
-
-从 DDL 全局流程看，它不是 SQL 入口、DDL job 状态机或 schema-version 推进器，而是 reorg/backfill 阶段的局部资源与进度上下文。直接装配入口是 [`BackendContextBuilder::build`](backend_mgr.rs)，便捷注册/注销入口是 [`register_engines` 与 `finish_and_unregister_engines`](engine_mgr.rs)，流水线侧通过 [`IndexWriter::ingest_if_quota_exceeded`](../backfilling_operators.rs) 表达相同的配额检查契约。
-
 当前 Rust 实现是 Go `pkg/ddl/ingest` 的局部移植，不应被理解为完整的 Lightning/TiKV ingest 后端：本文件的 `ingest` 只 flush 本地抽象、累计次数并推进 checkpoint，没有直接执行 Go 版本的 TiKV import/reset 流程。
 
 ## 核心职责
@@ -99,10 +95,6 @@ RustCodeGraph 将目标文件标为被 15 个文件使用，并识别到 `backen
 
 ## 与 Go 版本的对应关系
 
-主要对应如下：Rust `BackendContext` 对应 Go `litBackendCtx`，`FlushDecision` 展开了 Go `checkFlush() (shouldFlush, shouldImport)` 的两个布尔值，checkpoint 转发方法对应 Go `CheckpointOperator`，十分钟间隔与 Go `checkpointUpdateInterval` 一致。Rust `register` 保留 Go 的整组幂等与部分重叠报错，相关 Rust 回归测试明确锁定该行为。
-
-仍未等价的关键点：
-
 - Go `Register` 先刷新/检查内存、通过 Lightning engine manager 打开真实 engine，并在部分创建失败时清理；Rust 只构造内存 `EngineInfo`，writer 创建时才检查内存。
 - Go `IngestIfQuotaExceeded` 先 `FinishChunk(taskID, count)`，用 atomic 保证单次 flush，并在 import 前取得分布式锁；Rust 方法没有 task 参数、原子 flush gate 或分布式锁。
 - Go `Ingest` 调用 `SetTSBeforeImportEngine`、closed-engine `Import`、`ResetEngineSkipAllocTS` 并转换 duplicate-key 错误；Rust `ingest` 不访问 TiKV，仅 flush、计数和推进 checkpoint。因此文档中的“Import”是当前 Rust 决策名称，不代表已完成 Go 的远端导入行为。
@@ -111,8 +103,6 @@ RustCodeGraph 将目标文件标为被 15 个文件使用，并识别到 `backen
 - Go `FinishAndUnregisterEngines` 用 mutex 保证可重复并发调用，先 close 后远端查重；Rust 本文件的方法先 flush/查重后 close，且不并发安全。Rust [`engine_mgr.rs`](engine_mgr.rs) 的另一路实现更接近 Go 的 close-then-check 顺序，但仍没有 mutex。
 - Go 无 checkpoint 时 `GetImportTS` 返回独立的 `importTS`；Rust 无 checkpoint 时返回 0。
 - Go `Close` 负责从全局 disk root 移除 job 并更新测试计数，不直接关闭 `engines`；Rust `close` 关闭 engine 并禁止新注册，但不移除 `DiskRoot` tracker。
-
-因此移植状态应描述为“保留核心形状、注册策略、flush 决策与 checkpoint 接口的可测试局部实现”，不能标记为完整 Go 行为对齐。
 
 ## 扩展指南
 
@@ -123,12 +113,3 @@ RustCodeGraph 将目标文件标为被 15 个文件使用，并识别到 `backen
 - 若改变 flush 策略，应同步检查 `DiskRoot::update_usage/should_import`、checkpoint 周期和 `memory_pressure_alone_does_not_trigger_go_flush_policy`；不要擅自把内存压力加入 Go 未定义的决策路径。
 - 若调整 checkpoint 接口，必须保持 task ID 连续推进、本地数据有效性判定、local/global 水位线顺序以及无 checkpoint 的零值契约，并同步 [`checkpoint_test.rs`](checkpoint_test.rs) 与 [`backend_test.rs`](backend_test.rs)。
 - 兼容性风险集中在恢复起点与 import TS；正确性风险集中在提前推进 watermark、查重遗漏和部分注册；性能风险集中在逐次克隆全部 rows、串行 flush 全部引擎以及过粗锁导致的 ingest 停顿。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共 11,467 个文件、目标 `pkg/ddl/ingest/backend.rs` 已索引，目标文件报告 30 个符号、15 个引用文件；完整读取目标 1–285 行，并查询 `BackendContext`、`ingest_if_quota_exceeded`、`finish_and_unregister`、`collect_remote_duplicate_rows`、`advance_watermark`。精确 `callers/callees` 无返回，已在“依赖与调用关系”中限定证据边界。
-- 已读 Rust 直接证据：[`backend.rs`](backend.rs)、[`backend_mgr.rs`](backend_mgr.rs)、[`engine_mgr.rs`](engine_mgr.rs)、[`engine.rs`](engine.rs)、[`checkpoint.rs`](checkpoint.rs)、[`disk_root.rs`](disk_root.rs)、[`lib.rs`](lib.rs)、[`backfilling_operators.rs`](../backfilling_operators.rs)。
-- crate 证据：[`Cargo.toml`](Cargo.toml) 声明包名 `astersql-ddl-ingest`、库入口 `lib.rs` 和 Go 包映射 `pkg/ddl/ingest`；目标文件直接使用的是本 crate 模块与标准库，未受 Cargo 中 Windows 条件依赖改变语义。
-- Go 对照证据：[`backend.go`](backend.go) 的 `BackendCtx`/`CheckpointOperator`/`litBackendCtx`、`IngestIfQuotaExceeded`、`Ingest`、`checkFlush`、checkpoint 转发与 `Close`；[`backend_mgr.go`](backend_mgr.go) 的构造与十分钟间隔；[`engine_mgr.go`](engine_mgr.go) 的整组注册和注销逻辑。
-- 测试证据：[`backend_test.rs`](backend_test.rs) 覆盖整组重复注册复用、部分重叠拒绝，以及“仅内存压力不触发 Go flush 策略”；Go [`checkpoint_test.go`](checkpoint_test.go) 覆盖 local/global watermark 推进和恢复，[`integration_test.go`](integration_test.go) 覆盖 ingest duplicate message、job conflict 与 partition checkpoint 等完整 Go 路径。后两者证明 Go 语义背景，不证明 Rust 已实现完整集成能力。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题；另人工复核本文明确回答文件存在原因、运行流程、安全扩展点与未移植边界。

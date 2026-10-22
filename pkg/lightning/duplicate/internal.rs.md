@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-duplicate` crate，定义 Lightning 重复键检测流水线内部使用的可排序复合键及其编解码规则。crate 入口 `pkg/lightning/duplicate/lib.rs` 通过 `mod internal; pub use internal::*;` 将这些符号重新导出，仓库根 `pkg/lib.rs` 又通过 `facade_lightning_duplicate` 暴露该 crate；不过当前直接使用者集中在同 crate 的 `detector.rs` 与 `worker.rs`。
-
-它位于“接收待检测键 -> 写入外部排序器 -> 排序 -> 并行扫描相邻项 -> 汇报重复组”链路的键表示层。`detector.rs::KeyAdder::add` 在写入排序器前调用 `encode_internal_key`，`detector.rs::Detector::get_range_bounds` 与 `worker.rs::Worker::scan_iterator` 从排序结果调用 `decode_internal_key`，后两处再用 `compare_internal_key` 判断扫描区间边界。
+提供诊断展示格式：`Display` 将两段打印成大写十六进制，并仅在 `key_id` 非空时输出 `@` 分隔符。
 
 ## 核心职责
 
@@ -95,17 +93,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/duplicate/internal.go`：
-
-- Rust `InternalKey` 对应 Go `internalKey`，`key_id` 对应 `keyID`。
-- Rust `Display` 对应 Go `String()`，格式均为大写十六进制 `KEY` 或 `KEY@KEYID`。
-- `compare_internal_key` 对应 `compareInternalKey`，均先比较 key 再比较 key ID。Go `bytes.Compare` 只承诺负/零/正；Rust 将结果规范化为 `-1/0/1`，与现有测试向编码字节比较转换后的值一致。
-- `encode_internal_key` 对应 `encodeInternalKey`：都在调用方已有缓冲区末尾追加 memcomparable key，再追加原始 key ID。
-- `decode_internal_key` 对应 `decodeInternalKey`：都把 codec 剩余字节复制/复用为 key ID。
-
 两种语言的所有权模型不同。Go 直接把 `ikey.key[:0]` 交给 decoder，错误前的 append 可能改变原后备数组；Rust 先用临时缓冲区解码，并仅在错误分支重放 Go 可观察到的原数组写入。这一差异已有专门 Rust 回归测试，不能简化为“失败时目标完全不变”。
 
-`internal_test.go::TestInternalKey` 的 11 组输入在 `internal_test.rs::test_internal_key` 和 `migration_aster_unit_test.rs::internal_key_round_trip_preserves_go_ordering` 中均有对应覆盖。Rust 额外测试了格式化、已有输出前缀、更多 8 字节分组边界、缓冲区复用和错误状态兼容。
+Rust 额外测试了格式化、已有输出前缀、更多 8 字节分组边界、缓冲区复用和错误状态兼容。
 
 ## 扩展指南
 
@@ -115,15 +105,3 @@
 - 若优化分配，应优先维持 `append_to`、`internal_key.key` 和 `internal_key.key_id` 的现有复用接口，并在 `internal_test.rs::internal_key_format_append_and_reuse` 增加跨 8 字节分组、空 ID 和非空前缀用例。
 - 若改变展示格式，只影响诊断文本而不应影响编码；相应修改 `Display`/`write_upper_hex` 并更新独立的 `internal_test.rs`。
 - 行为变更还应与 `internal.go`、`internal_test.go` 核对，必要时同步 Go/Rust 两端。重点风险是磁盘排序兼容性、重复组漏报/错报和热路径额外分配；当前文件不涉及锁竞争或网络兼容。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 源码：`pkg/lightning/duplicate/internal.rs`（完整 119 行）；crate 入口 `pkg/lightning/duplicate/lib.rs`；直接调用者 `detector.rs::{detect_inner,get_range_bounds,KeyAdder::add}` 与 `worker.rs::Worker::scan_iterator`。
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/lightning/duplicate` 确认同目录生产/测试文件；`node internal.rs::{InternalKey,compare_internal_key,encode_internal_key,decode_internal_key}` 核对定义与调用边；`node detector.rs::{detect_inner,add,get_range_bounds}`、`node worker.rs::scan_iterator` 核对应用链；`node bytes.rs::{EncodeBytes,DecodeBytes}` 核对编解码分组和错误来源。
-- crate 声明：`pkg/lightning/duplicate/Cargo.toml`；workspace 成员与 facade 依赖：根 `Cargo.toml`；根再导出：`pkg/lib.rs`。
-- Go 对照：`pkg/lightning/duplicate/internal.go`、`pkg/lightning/duplicate/internal_test.go`。
-- Rust 测试：`pkg/lightning/duplicate/internal_test.rs`、`pkg/lightning/duplicate/migration_aster_unit_test.rs::internal_key_round_trip_preserves_go_ordering`。
-
-本任务只新增说明文档，按计划不运行 Cargo。结构验收要求本文恰含上述 11 个固定二级标题；行为描述通过源码、调用图、Cargo、Go 对照和独立测试交叉复核。

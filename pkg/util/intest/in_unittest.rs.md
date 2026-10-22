@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-intest` crate 的“内部测试模式已启用”变体。它不独立决定何时进入测试模式，而是由 [`lib.rs`](lib.rs) 的条件编译分支选择：当当前 crate 满足 `cfg(test)`，或启用 Cargo feature `intest` 时，`mod in_unittest` 被编译并将本文件的 `InTest` 再导出为 crate 的公开 API；其余构建改用 [`not_in_unittest.rs`](not_in_unittest.rs) 中初值为 `false` 的同名定义。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 声明：库入口是 `lib.rs`，`intest` 是无附加依赖的开关型 feature。因而本文件位于测试/内部检查基础设施层，而不属于 SQL 请求、规划或存储执行主链；业务模块只在需要测试专用校验或行为分支时读取它暴露的进程级状态。
+只有一项职责：为启用变体提供一个初始值为 `true`、可跨线程安全读取和覆盖的全局状态 `InTest`。
 
 ## 核心职责
 
@@ -66,11 +64,9 @@ crate 外调用方必须依赖 `astersql-util-intest`，并在希望依赖 crate
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 [`in_unittest.go`](in_unittest.go)：`//go:build intest` 选择文件，包级 `var InTest = true` 提供可读写状态。Rust 以 `lib.rs` 的 `cfg(any(test, feature = "intest"))` 和本文件的 `AtomicBool::new(true)` 对应这两部分语义。禁用侧分别是 Go 的 [`not_in_unittest.go`](not_in_unittest.go)（`//go:build !intest`、初值 `false`）和 Rust 的 [`not_in_unittest.rs`](not_in_unittest.rs)。
-
 两版的主要差异是：Go 直接读写普通 `bool`，Rust 调用方必须明确使用原子 `load`/`store`/`swap` 及内存序；Rust 因而支持无数据竞争的跨线程访问，但仍需测试层管理全局状态恢复。Rust 还把 crate 自身的 `cfg(test)` 视为启用条件，使单元测试无需额外 feature 即得到 `true`；跨 crate 测试则仍需 feature 传播或像具体调用方那样结合自己的 `cfg!(test)`。
 
-Go 行为调用点与 Rust 对照一致：`rowcodec/common.go`/`.rs` 用它区分 keyspace 前缀处理，`codec/codec.go`/`.rs` 用它启用测试期容量校验，`expression/scalar_function.go`/`.rs` 用它启用哈希一致性检查。本文只据此说明已接线的直接语义，不推断所有 Go 调用点均已完整移植。
+Go 行为调用点与 Rust 对照一致：`rowcodec/common.go`/`.rs` 用它区分 keyspace 前缀处理，`codec/codec.go`/`.rs` 用它启用测试期容量校验，`expression/scalar_function.go`/`.rs` 用它启用哈希一致性检查。
 
 ## 扩展指南
 
@@ -85,11 +81,3 @@ Go 行为调用点与 Rust 对照一致：`rowcodec/common.go`/`.rs` 用它区�
 - [`pkg/util/rowcodec/common_test.rs`](../rowcodec/common_test.rs)：业务消费者在 `InTest=true/false` 下的差异。
 
 性能上，新增热路径读取会产生原子操作成本；正确性上，最大的风险是 feature 未传播、错误理解 `cfg(test)` 的 crate 边界，以及测试未恢复全局状态。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/intest` 列出本文件、入口、Go 对照和相关测试；`node --file pkg/util/intest/in_unittest.rs --offset 1 --limit 200` 确认文件全貌与唯一静态符号；`node --file pkg/util/intest/lib.rs --offset 1 --limit 200` 确认互斥 cfg 和再导出。一次宽泛 callers/explore 查询超时，因此没有用其未返回结果支撑结论，静态量的数据使用边改由索引的 used-by 列表和精确 `rg` 交叉验证。
-- Rust 源与配置：[`in_unittest.rs`](in_unittest.rs)、[`not_in_unittest.rs`](not_in_unittest.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- Rust 测试：[`assert_test.rs`](assert_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`not_in_unittest_test.rs`](not_in_unittest_test.rs)、[`pkg/util/rowcodec/common_test.rs`](../rowcodec/common_test.rs)。
-- Go 对照：[`in_unittest.go`](in_unittest.go)、[`not_in_unittest.go`](not_in_unittest.go)、[`assert_test.go`](assert_test.go)、[`pkg/util/rowcodec/common.go`](../rowcodec/common.go)、[`pkg/util/codec/codec.go`](../codec/codec.go)、[`pkg/expression/scalar_function.go`](../../expression/scalar_function.go)。
-- 已人工复核：文件存在原因是为启用构建变体提供可覆盖的测试态标志；运行方式是入口条件编译、静态初始化、调用方原子读取/写入；安全扩展要求保持启用/禁用变体对称、正确传播 feature，并隔离和恢复进程级测试状态。

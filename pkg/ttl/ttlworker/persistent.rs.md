@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-ttl-ttlworker` crate，由 [`lib.rs`](lib.rs) 以 `pub mod persistent` 公开。它是 Rust TTL worker 的 SQL 持久化边界：把表级 TTL job 的领取、租约续期、超时接管和完成状态写入 `mysql.tidb_ttl_table_status`、`mysql.tidb_ttl_job_history` 与 `mysql.tidb_ttl_task`。系统表是跨节点协调的权威状态，内存 job 映射只承担 worker 侧缓存，见模块注释和 `PersistentJobStore`。
-
-crate 清单 [`Cargo.toml`](Cargo.toml) 将该包映射到 Go 包 `pkg/ttl/ttlworker`。本文件直接使用同 crate 的 `session`、`job`、`job_manager` 模块，并通过唯一的常规外部依赖 `astersql-ttl-cache` 编解码扫描范围；清单中大量额外依赖仅在 `cfg(windows)` 下声明，不是本文件当前接口的直接依赖。
+这些操作只管理 job 元数据，不扫描或删除用户数据；实际调度、扫描和删除主链位于 [`pkg/session/runtime/ttl_runtime.rs`](../../session/runtime/ttl_runtime.rs) 的 `run_ttl_tick_inner`。
 
 ## 核心职责
 
@@ -91,13 +89,13 @@ RustCodeGraph 能定位目标文件、上述类型和下游 `execute` 调用，�
 
 ## 与 Go 版本的对应关系
 
-[`job_manager.go`](job_manager.go) 的 `lockNewJob` 对应 Rust 的 `start_job_with_ranges`/`start_job_in_transaction`：二者都在悲观事务中锁/创建状态行、校验是否可调度、计算过期水位、写 history，并为拆分范围逐一写 task。Rust 将已由运行时生成的 ranges 作为参数传入；Go 在事务回调内选择索引或主键范围。
+Rust 将已由运行时生成的 ranges 作为参数传入；Go 在事务回调内选择索引或主键范围。
 
-Go 的 `lockHBTimeoutJob` 对应 `takeover_timeout_for_job`：均锁定状态行并保留既有 job 身份与水位后更换 owner。Rust 的 timer-event 入口额外用 `expected_job_id` 防止陈旧事件接管另一 job，专用测试 [`persistent_test.rs`](persistent_test.rs) 验证不匹配事件不会更新 owner。
+Rust 的 timer-event 入口额外用 `expected_job_id` 防止陈旧事件接管另一 job，专用测试 [`persistent_test.rs`](persistent_test.rs) 验证不匹配事件不会更新 owner。
 
-Go 的 `updateHeartBeatForJob` 与 Rust `heartbeat` 都用 owner 条件保护续租。Rust 还显式查询所有权以处理 MySQL “相同时间值导致 changed rows 为 0” 的情况。Go 方法还负责 job 总超时后的汇总和完成；Rust 此文件不承接该上层策略。
+Go 的 `updateHeartBeatForJob` 与 Rust `heartbeat` 都用 owner 条件保护续租。Go 方法还负责 job 总超时后的汇总和完成；Rust 此文件不承接该上层策略。
 
-[`job.go`](job.go) 的 `ttlJob.finish` 对应 Rust `finish_job` 的三步顺序：迁移 status、删除 task、完成 history，且都放在悲观事务中。Rust 额外校验 owner，摘要文本则由运行时构造后同时写入 status/history；Go 的 `TTLSummary` 自带 `SummaryText`。
+Rust 额外校验 owner，摘要文本则由运行时构造后同时写入 status/history；Go 的 `TTLSummary` 自带 `SummaryText`。
 
 因此这是行为对齐后的 Rust 持久化实现，但不是 Go `JobManager` 的逐字段复制：缓存刷新、通知 scan manager、本地 runningJobs 管理、超时策略和 failpoint 仍属于各自上层，不应误写成本文件已实现。
 
@@ -109,13 +107,3 @@ Go 的 `updateHeartBeatForJob` 与 Rust `heartbeat` 都用 owner 条件保护续
 - 修改事务步骤：新增失败点测试，确认错误时 status/history/task 全部回滚，并确认 commit/rollback 失败会 `avoid_reuse`。不要把 Rust 单元测试内嵌回本源文件；本 crate 已通过 `lib.rs` 的 `#[cfg(test)] mod persistent_test` 保持生产代码与测试分离。
 - 修改调度间隔语义：保留 Go `couldLockJobForCreate` 的时间边界意图，特别核对严格比较符和 `saturating_sub`；扩展同一会话级测试中的“过早拒绝/间隔后允许”用例。
 - 性能上，ranges 数量决定同一事务内 INSERT 次数和锁持有时间；批量化或提前计算必须在不破坏原子性、scan ID 顺序和 Go 行为的前提下评估。
-
-## 验证依据
-
-- 目标实现：[`persistent.rs`](persistent.rs)，完整检查了 `PersistentJobStore` 的 6 个公开关联函数、1 个私有事务函数、全部 SQL 分支和事务终结路径。
-- crate/模块边界：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`session.rs`](session.rs)、[`job.rs`](job.rs)、[`job_manager.rs`](job_manager.rs)。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ttl/ttlworker` 确认目标与独立测试均被索引；`node --file ...persistent.rs`、`node PersistentJobStore`、`node WorkerSession`、`node TtlSummary`、`callees heartbeat`、`callees finish_job` 和 `callees start_job_in_transaction` 用于核对符号及直接下游。
-- 生产调用边：精确搜索确认 [`pkg/session/runtime/ttl_runtime.rs`](../../session/runtime/ttl_runtime.rs) 调用 `takeover_timeout_for_job`、`start_job_with_ranges`、`heartbeat` 和 `finish_job`。
-- Rust 测试：[`persistent_test.rs`](persistent_test.rs) 覆盖 timer event 精确接管；[`ttl_worker_session_test.rs`](../../session/runtime/ttl_worker_session_test.rs) 覆盖跨会话持久化、并发领取、心跳、接管、旧 owner 完成失败、最终清理与调度间隔；[`ttl_runtime_test.rs`](../../session/runtime/ttl_runtime_test.rs) 覆盖周期心跳丢失所有权、Region ranges 持久化和持久游标/多范围恢复。
-- Go 对照：[`job_manager.go`](job_manager.go) 的 `lockNewJob`、`lockHBTimeoutJob`、`updateHeartBeatForJob`，以及 [`job.go`](job.go) 的 `ttlJob.finish`。
-- 本任务为只新增说明文档，按计划未运行 Cargo。最终结构检查要求本文恰有 11 个规定的二级标题。

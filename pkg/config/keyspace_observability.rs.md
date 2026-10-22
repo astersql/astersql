@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-config` crate；crate 根 `pkg/config/lib.rs` 以私有模块 `mod keyspace_observability` 装载它，再通过 `pub use keyspace_observability::*` 导出其公开类型、常量和方法。crate 边界及依赖见 `pkg/config/Cargo.toml`：本文件直接使用标准库 `HashMap`/`HashSet` 和 `serde` 派生，不启动任务，也不访问网络或存储。
-
-它把配置中的 keyspace metadata 映射规则分成两个阶段：`KeyspaceObservability::Valid` 校验静态规则；`Config::ResolveKeyspaceObservability` 用一次实际 metadata 快照计算运行时值并存入 `Config::keyspace_observability_values`。`Config` 中配置字段、运行时缓存和默认值分别定义在 `pkg/config/config.rs:1049-1052`、`pkg/config/config.rs:1126-1127`；模块自身不负责取得 metadata，也不直接写指标或日志。
-
-当前 Rust 应用入口是 `cmd/tidb-server/main.rs::prepareKeyspaceObservabilityForStarter`：TiKV starter 启动路径复制全局配置、调用解析方法，再把结果与内置 `keyspace_name` 指标标签合并并通过 `config::UpdateGlobal` 发布。非 TiKV store 在入口层跳过这一流程。
+三个 `GetKeyspaceObservability*` 方法提供缓存只读借用；`KeyspaceObservabilityValues::Clone`提供与 Go 显式深拷贝 API 对应的独立副本。
 
 ## 核心职责
 
@@ -98,11 +94,11 @@ Go 完整消费端还包括 `pkg/util/metricsutil/common.go`（指标标签）�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/config/keyspace_observability.go`。四个结构、两个前缀常量、校验顺序、错误文本、解析分支、稳定排序、深拷贝和三个 getter 均有一一对应实现。Rust `HashMap`/`HashSet` 对应 Go map，`Vec` 对应 slice；Rust getter 返回借用，而 Go 返回 map/slice 句柄，这是所有权接口差异。
+Rust `HashMap`/`HashSet` 对应 Go map，`Vec` 对应 slice；Rust getter 返回借用，而 Go 返回 map/slice 句柄，这是所有权接口差异。
 
-Go 的 `validPrometheusLabelName` 同时调用 Prometheus `LabelName.IsValid()` 与 `IsValidLegacy()`；两者交集在当前 Go 实现中落到 legacy ASCII 文法。Rust 直接逐字节实现该交集，避免引入 Prometheus crate。Go 使用 `sort.SliceStable`，Rust 使用稳定的 slice `sort_by` 并按 `Name` 比较；即使合法配置因去重而不会出现同名慢日志字段，排序语义仍保持一致。
+Go 使用 `sort.SliceStable`，Rust 使用稳定的 slice `sort_by` 并按 `Name` 比较；即使合法配置因去重而不会出现同名慢日志字段，排序语义仍保持一致。
 
-Go 的运行时消费者证据见 `pkg/util/metricsutil/common.go:119`、`pkg/sessionctx/variable/slow_log.go:586`、`pkg/util/stmtsummary/v2/logger.go:136`。Rust 当前已验证 starter 构造/发布路径，但没有从本次直接证据确认上述最终消费链全部移植，因此该差异应视为当前接线状态，而不是由本文件补齐的职责。
+Rust 当前已验证 starter 构造/发布路径，但没有从本次直接证据确认上述最终消费链全部移植，因此该差异应视为当前接线状态，而不是由本文件补齐的职责。
 
 ## 扩展指南
 
@@ -112,11 +108,3 @@ Go 的运行时消费者证据见 `pkg/util/metricsutil/common.go:119`、`pkg/se
 - 修改排序或容器类型时，应保留慢日志确定顺序，并评估 API 从借用到复制的兼容性与额外分配。
 - 调整 starter 接线时，应同步 `cmd/tidb-server/main_test.rs` 中 TiKV 和非 TiKV 两组测试，并确认内置 `keyspace_name` 与显式 label 的覆盖优先级。
 - 若继续接通最终消费端，应以 Go 三个消费文件为行为依据，分别新增独立 Rust 测试验证指标注册、slow log 字段和 statement log 字段；这属于消费模块任务，不应把逻辑塞回本配置文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、目标文件已索引；`files --filter pkg/config/keyspace_observability.rs` 报告 13 个符号；`node --file ... --offset 1/229` 核对完整 323 行实现；`query`/`explore` 确认 Go/Rust 同名符号以及 `prepareKeyspaceObservabilityForStarter`、配置测试和 getter 的引用。精确 `callers`/`callees` 命令在本环境 30 秒内未返回，调用边因此又用直接引用检索复核。
-- Rust 源与装配：`pkg/config/keyspace_observability.rs`、`pkg/config/lib.rs`、`pkg/config/config.rs`、`pkg/config/Cargo.toml`、`cmd/tidb-server/main.rs`。
-- Rust 独立测试：`pkg/config/const_3_aster_unit_test.rs` 覆盖命名、前缀、大小写去重、解析、排序、必填缺失和深拷贝；`pkg/config/config_test.rs` 覆盖 TOML 与配置层限制；`cmd/tidb-server/main_test.rs` 覆盖 TiKV starter 合并及非 TiKV 跳过。
-- Go 对照与测试：`pkg/config/keyspace_observability.go`、`pkg/config/config_test.go`、`cmd/tidb-server/main.go`、`cmd/tidb-server/main_test.go`；消费端引用由 `pkg/util/metricsutil/common.go`、`pkg/sessionctx/variable/slow_log.go`、`pkg/util/stmtsummary/v2/logger.go` 复核。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付时执行固定十一章节结构校验，并人工复核本文没有把未确认的 Rust 最终消费链描述为已支持。

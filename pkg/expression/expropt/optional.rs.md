@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-expression-expropt`（`pkg/expression/expropt/Cargo.toml`），由 `pkg/expression/expropt/lib.rs` 的私有模块 `optional` 纳入并通过 `pub use optional::*` 对外再导出。它位于表达式求值上下文与具体可选能力之间：`exprctx` 定义属性键、描述、位集合和 Provider 基础 trait，本文件负责保存 Provider、声明 Reader 所需属性，并按具体 Rust 类型取回 Provider；`current_user.rs`、`sessionvars.rs`、`infoschema.rs` 等文件在此基础上实现具体属性。
-
-应用侧有两类直接装配者。`pkg/expression/sessionexpr/sessionctx.rs::NewEvalContext` 从活动会话构造并注册全部十种属性，最后以 `IsFull()` 断言完整；`pkg/expression/exprstatic/evalctx.rs::WithOptionalProperty` 为静态求值上下文按调用方传入的 Provider 构造注册表。表达式 Reader 随后通过本文件的 `get_prop_provider` 读取能力，而不是直接依赖具体 session 实现。
+位于表达式求值上下文与具体可选能力之间：`exprctx` 定义属性键、描述、位集合和 Provider 基础 trait，本文件负责保存 Provider、声明 Reader 所需属性，并按具体 Rust 类型取回 Provider；`current_user.rs`、`sessionvars.rs`、`infoschema.rs` 等文件在此基础上实现具体属性。
 
 ## 核心职责
 
@@ -82,17 +80,11 @@ Provider 的生命周期由槽位中的 `Box` 管理，注册表销毁或覆盖�
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/expression/expropt/optional.go`，测试为 `optional_test.go`。核心语义对应如下：
-
-- Go `RequireOptionalEvalProps.RequiredOptionalEvalProps` 对应 Rust trait 的 snake_case 方法。
 - Go `[exprctx.OptPropsCnt]exprctx.OptionalEvalPropProvider` 是编译期定长数组；Rust 用创建时填满 `None` 的 `Vec` 模拟固定槽数，长度不向外暴露或改变。
-- Go `Contains`、`Get`、`Add`、`PropKeySet` 分别对应 Rust 同名 snake_case 方法。两边都按描述键定位，并从所有非空 Provider 汇总位集合。
 - Go `Get` 明确检查负数和上界；Rust `usize` 消除了负数表示，仅用 `Vec::get` 处理上界。
 - Go `Add` 在 `intest.AssertFunc` 中按每个键断言具体 Provider 类型；Rust `add` 只校验键范围，具体类型在 `get_prop_provider` 的 `Any::downcast_ref` 阶段校验。因此错误暴露时机不同，但正常 Reader 路径仍保持键/类型契约。
 - Go 泛型读取先在断言模式检查泛型零值描述键，再进行运行时类型断言；Rust 无相同零值约束，改为取得 Provider 后比较实际描述键，并安全下转。
 - 两边对缺失属性和类型转换失败保留不同错误分支。Rust 另外显式返回“Provider 键与请求键不一致”错误。
-
-`optional_test.go::TestOptionalEvalPropProviders` 与 Rust `optional_test.rs::TestOptionalEvalPropProviders` 都按键顺序覆盖十种属性，验证注册前缺失、注册后可读、Reader 声明键一致以及最终集合为满集。Rust 测试按独立文件组织，符合生产逻辑与测试逻辑分离要求。
 
 ## 扩展指南
 
@@ -105,13 +97,3 @@ Go 对照为 `pkg/expression/expropt/optional.go`，测试为 `optional_test.go`
 5. 若希望禁止覆盖，应在所有装配入口统一做重复检查，而不是只依赖会话层的 `set_optional_prop`。若更改 Provider trait 的 `Send + Sync` 或借用能力，应评估静态上下文的 `Arc` 共享和 `Any` 的 `'static` 限制。
 
 兼容风险集中在键编号、描述数组顺序和位图宽度；改变它们会影响声明集合与所有上下文装配。性能上当前键读取为 O(1)，集合汇总为 O(N) 且 N=10；增加属性通常影响很小，但频繁调用 `prop_key_set` 时仍应避免引入额外分配或改成无界扫描。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/expropt` 确认目标及相邻实现、Go 对照和独立测试均在图中。
-- RustCodeGraph 源码节点：`pkg/expression/expropt/optional.rs`（完整 157 行）、`pkg/expression/exprctx/optional.rs`、`pkg/expression/sessionexpr/sessionctx.rs`、`pkg/expression/exprstatic/evalctx.rs`、`pkg/expression/context.rs`、`pkg/expression/expropt/current_user.rs`、`pkg/expression/expropt/sessionvars.rs`。
-- RustCodeGraph/文本调用证据：具体 Reader 从十个相邻属性文件调用 `get_prop_provider`；会话和静态上下文调用 `new`、`add`、`get`、`prop_key_set`；builtin 和断言上下文消费属性声明。
-- crate 与模块证据：`pkg/expression/expropt/Cargo.toml`、`pkg/expression/expropt/lib.rs`。
-- Go 语义证据：`pkg/expression/expropt/optional.go`、`pkg/expression/expropt/optional_test.go`。
-- Rust 测试证据：`pkg/expression/expropt/optional_test.rs` 的 `TestOptionalEvalPropProviders`、`assert_before_add`、`assert_after_add` 及十种 `verify_*`；另参考 `migration_aster_unit_test.rs` 的注册表使用。依任务约束未运行 Cargo。
-- 人工复核结论：文档覆盖了文件存在原因、注册与读取流程、真实上下游、三类读取错误、覆盖/越界边界、资源生命周期、Go 差异和安全扩展位置；未把测试桩行为描述为生产能力。

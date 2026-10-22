@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-chunk` crate 的多块行列表。crate 入口 [`pkg/util/chunk/lib.rs`](lib.rs) 以 `pub mod list` 挂载该模块，并在 crate 根重导出 `List`、`RowPtr`；[`pkg/util/chunk/Cargo.toml`](Cargo.toml) 指定 crate 名为 `astersql-util-chunk`、库入口为 `lib.rs`，且用 `package.metadata.porting.go-package = "pkg/util/chunk"` 标明 Go 对照包。
-
-它位于单个列式 [`Chunk`](chunk.rs) 与更高层容器之间：`List` 负责在多个 `Chunk` 间追加、定位、遍历和复用内存；[`row_container.rs`](row_container.rs) 将它作为未落盘时的存储层，并在 spill 后切换到 `DataInDiskByRows`；[`iterator.rs`](iterator.rs) 则基于 `List` 或 `RowPtr` 提供顺序/指定行迭代。
+位于单个列式 [`Chunk`](chunk.rs) 与更高层容器之间：`List` 负责在多个 `Chunk` 间追加、定位、遍历和复用内存；[`row_container.rs`](row_container.rs) 将它作为未落盘时的存储层，并在 spill 后切换到 `DataInDiskByRows`；[`iterator.rs`](iterator.rs) 则基于 `List` 或 `RowPtr` 提供顺序/指定行迭代。
 
 ## 核心职责
 
@@ -86,11 +84,3 @@ RustCodeGraph 状态显示本文件已被 32 个文件使用，但索引没有�
 - 若改变 `RowPtr` 表示或大小，应审查 `RowPtrSize`、迭代器、行容器、磁盘行存储以及使用其进行内存估算/序列化的上层代码，并关注 `usize`/`u32` 转换和兼容性。
 - 若希望并发修改列表，应在上层建立清晰锁边界；直接向 `List` 植入内部锁会影响 `Row` 生命周期、Tracker 借用和现有 `&mut self` API，不能视为局部改动。
 - 性能回归重点是块分配次数、freelist 命中、Tracker 更新频率、`Box` 地址稳定性和 `Walk` 的逐行动态派发。与 Go 对齐时保留 Go benchmark 所表达的 Add/GetRow/Tracker 查询成本关注点。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、目标 `list.rs` 有 20 个符号；`node --file pkg/util/chunk/list.rs --offset 1 --limit 260` 读取完整 231 行并报告 32 个使用文件；`query NewListWithMemTracker --kind function --json` 区分出 Go 与 Rust 两个同名构造器。针对 `impl List` 方法的精确 `callers`/`callees` 未返回边，已明确记录为图覆盖限制，并以直接引用搜索补证。
-- 源码与 crate 边界：[`list.rs`](list.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。目标文件没有条件编译项；测试模块由 `lib.rs` 的 `#[cfg(test)] #[path = "list_test.rs"]` 独立挂载。
-- 直接 Rust 上下游：[`row_container.rs`](row_container.rs)、[`iterator.rs`](iterator.rs)、[`pkg/executor/internal/applycache/apply_cache.rs`](../../executor/internal/applycache/apply_cache.rs)。
-- Go 对照与测试：[`list.go`](list.go)、[`list_test.go`](list_test.go)；Rust 独立测试：[`list_test.rs`](list_test.rs)。
-- 人工复核的问题均可由以上符号回答：文件为多 Chunk 可复用行列表而存在；追加、整块接管、定位、遍历、重置和记账流程由 `AppendRow`/`Add`/`GetRow`/`Walk`/`Reset` 驱动；安全扩展需维护地址稳定、指针有效期、延迟记账和外部同步边界。

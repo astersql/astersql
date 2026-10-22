@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-cgmon` crate 的核心实现，负责把主机与 Linux cgroup 的 CPU、内存资源信息折算成进程可用上限，并维护对应的 Prometheus Gauge。crate 入口 `pkg/util/cgmon/lib.rs` 将本模块的公开项全部重新导出；`pkg/util/cgmon/Cargo.toml` 则声明它依赖相邻的 `astersql-util-cgroup`、`prometheus`、`sysinfo`、`anyhow` 和 `log`。
-
-在完整服务生命周期中，`cmd/tidb-server/main.rs::runServer` 于全局配置和 CPU affinity 设置完成后调用 `cgmon::StartCgroupMonitor`，`cmd/tidb-server/main.rs::cleanup` 在 Domain、存储等组件关闭后调用 `cgmon::StopCgroupMonitor`。因此它是服务级资源观测后台任务，不参与 SQL 请求执行本身。
+`start`/`stop` 管理单一后台线程，首次启动后立即刷新，之后默认每 10 秒刷新，停止时发送取消信号并等待线程退出。
 
 ## 核心职责
 
@@ -82,13 +80,11 @@ worker 只持有 `Weak<MonitorInner>`，不会反向延长监控器生命周期�
 
 ## 与 Go 版本的对应关系
 
-Rust 版本对应 `pkg/util/cgmon/cgmon.go`：默认周期同为 10 秒；CPU 都以主机核数为默认值，并对较小的正 cgroup 比率向上取整；内存都取主机总量与有效 cgroup 上限的较小者；首次错误用 warn、后续错误用 debug；启动时立即刷新，停止时等待后台执行单元结束。
-
-Go 通过包级 `started`、context/cancel、WaitGroup、`lastCPU` 和 `lastMemoryLimit` 保存状态，并以可替换包变量注入两个 cgroup 探针。Rust 将这些状态收拢进 `CgroupMonitor`，用 Mutex、MPSC、JoinHandle 和四个构造时探针实现更完整的测试隔离；Go 注释明确 Start/Stop 非线程安全，Rust 虽保留调用方串行化警告，但内部已避免数据竞争。
+Rust 将这些状态收拢进 `CgroupMonitor`，用 Mutex、MPSC、JoinHandle 和四个构造时探针实现更完整的测试隔离；Go 注释明确 Start/Stop 非线程安全，Rust 虽保留调用方串行化警告，但内部已避免数据竞争。
 
 指标实现也有结构差异：Go 直接写 `pkg/metrics` 的全局 `MaxProcs` 和 `MemoryLimit`，Rust 在每个监控器内创建同名语义的 Gauge。当前文件未调用 registry 注册，因此“更新 Gauge 对象”有源码证据，“已由默认 registry 对外抓取”没有本文件证据，扩展或接线时需单独核验。
 
-`pkg/util/cgmon/cgmon_test.go::TestUploadDefaultValueWithoutCgroup` 验证 cgroup 探针报错后仍保存主机默认值。Rust 的 `pkg/util/cgmon/cgmon_test.rs` 保留该意图；`migration_aster_unit_test.rs` 进一步验证错误返回、Gauge 值、CPU ceil、无/超额限制、内存较小值以及启动立即刷新和幂等启停。
+Rust 的 `pkg/util/cgmon/cgmon_test.rs` 保留该意图；`migration_aster_unit_test.rs` 进一步验证错误返回、Gauge 值、CPU ceil、无/超额限制、内存较小值以及启动立即刷新和幂等启停。
 
 ## 扩展指南
 
@@ -99,13 +95,3 @@ Go 通过包级 `started`、context/cancel、WaitGroup、`lastCPU` 和 `lastMemo
 - 缩短刷新周期或增加耗时探针时，应评估单线程串行刷新延迟、日志频率和 `stop` 等待时间。当前 `stop` 没有超时，阻塞探针会延迟服务清理。
 - 若强化 start/stop 的严格线性化，需要处理“stop 取走旧 worker并 join 时允许新 start”的窗口，并增加并发回归测试；不要仅依靠现有 bool 幂等断言。
 - 保持 Go/Rust 语义对齐时，重点比较错误发生后是否仍发布默认值、首次与周期日志级别、无 cgroup 限制的判定以及停止等待保证。
-
-## 验证依据
-
-- 实现与符号：`pkg/util/cgmon/cgmon.rs`；RustCodeGraph 文件节点覆盖 312 行并识别 20 个符号，精确查询确认 `CgroupMonitor`、`with_probes`、`refresh_cgroup_cpu`、`refresh_cgroup_memory`、`refresh_cgroup_loop`、`refresh_once`、`StartCgroupMonitor`、`StopCgroupMonitor`。
-- crate 边界：`pkg/util/cgmon/lib.rs` 与 `pkg/util/cgmon/Cargo.toml`；确认公开重导出、测试模块挂载、依赖和 `go-package = "pkg/util/cgmon"` 移植元数据。
-- 生产调用：`cmd/tidb-server/main.rs::runServer` 第 762 行附近和 `cleanup` 第 2090 行附近；另以 `rg` 核对 Rust 调用点。
-- Go 对照：`pkg/util/cgmon/cgmon.go` 与 `pkg/util/cgmon/cgmon_test.go`。
-- Rust 测试：`pkg/util/cgmon/cgmon_test.rs` 与 `pkg/util/cgmon/migration_aster_unit_test.rs`。这些是独立测试文件，本任务未运行 Cargo，符合纯文档任务约束。
-- RustCodeGraph 状态：索引包含 11,467 个文件，目标目录的 Go/Rust 实现与测试均在索引中；`callers/callees` 查询曾超时，相关调用边已由源码节点和文本搜索交叉验证。
-- 人工复核范围：已核对文件存在理由、CPU/内存刷新算法、错误后的回退行为、worker 生命周期、Go 差异和安全扩展位置；未声称本文件已完成 Prometheus registry 接线。

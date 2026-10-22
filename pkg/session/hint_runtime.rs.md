@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`hint_runtime.rs` 属于 `astersql-session` crate，由 `pkg/session/lib.rs` 以公开模块 `pub mod hint_runtime` 挂载。它位于会话执行入口与 `astersql-util-hint`、`astersql-bindinfo`、`astersql-sessionctx-variable` 之间：在一条文本 SQL、预处理语句或 EXPLAIN 进入实际执行前，选择用于匹配的 AST/SQL，解析查询自身的语句级 Hint，匹配会话级或全局 SQL Binding，再把最终 Hint 及 `SET_VAR` 效果放入本会话的 statement context；语句结束时负责恢复临时系统变量。
-
-crate 边界由 `pkg/session/Cargo.toml` 确认。该文件直接使用 `astersql-parser`/`astersql-parser-ast`、`astersql-util-hint`、`astersql-util-parser`、`astersql-bindinfo`、`astersql-sessionctx-variable`/`vardef`、`astersql-util-sem-v2`、`astersql-errors` 和 planner error 定义。`pkg/session` 没有 `doc.go`；模块契约来自 `pkg/session/lib.rs`、运行时调用点和独立测试。
+位于会话执行入口与 `astersql-util-hint`、`astersql-bindinfo`、`astersql-sessionctx-variable` 之间：在一条文本 SQL、预处理语句或 EXPLAIN 进入实际执行前，选择用于匹配的 AST/SQL，解析查询自身的语句级 Hint，匹配会话级或全局 SQL Binding，再把最终 Hint 及 `SET_VAR` 效果放入本会话的 statement context；语句结束时负责恢复临时系统变量。
 
 ## 核心职责
 
@@ -104,8 +102,6 @@ Binding SQL 无法解析时不会报致命错误：它记录错误字符串、�
 
 仓库不存在同名 `pkg/session/hint_runtime.go`；Rust 文件把分散在 Go planner、bindinfo、hint 和 session variable 中的行为接到 Rust session 主链：
 
-- `pkg/planner/optimize.go::optimizeNoCache` 先 `ExtractTableHintsFromStmtNode`/`ParseStmtHints`，应用查询 `SET_VAR`，再 `MatchSQLBinding`；命中后绑定 Hint 替换 `StmtCtx.StmtHints` 并再次应用 `SET_VAR`。Rust 的 `StartStatementHints` 保留这一“查询先应用、binding 后覆盖”的顺序。
-- Go 的 `pkg/bindinfo/binding.go::MatchSQLBindingWithCache`/`matchSQLBindingCore` 先检查 plan baseline 和缓存，再按 session 优先、global 次之匹配，并用 digest 与表名支持跨库 binding。Rust 通过 `BindingMatchContext` 与 `SessionBindingCatalog` 提供同类顺序和数据，但 catalog 是 Rust 会话持有的快照。
 - Go 的 `crossDBMatchBindings` 在 fuzzy 开关关闭时排除含通配 schema 的候选，并在匹配者中选择通配符最少者；Rust 下调 `crossDBMatchBindingsWithFuzzy`，且允许本条 SQL 的 `SET_VAR(tidb_opt_enable_fuzzy_binding=...)` 影响匹配资格。
 - Go 的 `StmtCtx.AddSetVarHintRestore` 保存需恢复的旧值；Rust 的 restore map 保留同名变量首次旧值。Go 在执行收尾把 `FoundInBinding` 推进到 `PrevFoundInBinding`（例如 `pkg/executor/select.go`），Rust 由 `FinishHintStatement` 同时完成恢复和标志推进。
 - Go `pkg/util/hint/hint.go::ParseStmtHints` 定义重复 Hint、SET_VAR 冲突、SEM 过滤、资源组、慢日志、NTH_PLAN 等解析语义；Rust 复用对应的 Rust hint crate，而本文件只提供 session 所需 checker 和生命周期。
@@ -120,12 +116,3 @@ Binding SQL 无法解析时不会报致命错误：它记录错误字符串、�
 - 扩展 Binding 支持的 AST 形状时，同时检查 `BindingStatementFromAST`、bindinfo `CollectTableNames`/`hasParam` 与 Go `NormalizeStmtForBinding`。表顺序、schema/alias、表达式子查询和字符串中的 `?` 都是兼容风险。
 - 修改 binding catalog 时保持 session 优先 global、disabled 过滤、最少通配、缓存失效和稳定 SHOW 排序；全局快照更新还要复核 `runtime/dispatch.rs::sync_global_bindings`。
 - 所有 Rust 回归测试应继续放在独立的 `pkg/session/hint_runtime_test.rs` 或对应集成测试 crate，不应嵌入生产文件。直接测试至少覆盖 binding 优先与还原、fuzzy 开关导致的缓存失效、AST 表/参数事实、SEM warning；底层恢复语义还应同步 `pkg/sessionctx/variable/session_hint_bridge_aster_unit_test.rs`。性能风险集中在每条语句预解析查询 Hint、逐 binding 重算无库 digest、BindSQL 重解析和缓存频繁失效；兼容风险集中在 Go/Rust warning 文本、匹配优先级和收尾时点。
-
-## 验证依据
-
-- 生产源码：`pkg/session/hint_runtime.rs`（完整 594 行）；crate/module 边界：`pkg/session/Cargo.toml`、`pkg/session/lib.rs`。`pkg/session` 下未找到 `doc.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/session/hint_runtime.rs` 读取全部源码并报告该文件被 `runtime/dispatch.rs`、`runtime/planning.rs`、`runtime/session.rs`、`runtime/system_session.rs` 等使用；精确 `callers/callees` 未返回明细，故用直接调用点搜索补齐证据。
-- Rust 运行时调用点：`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/planning.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/control.rs`、`pkg/session/runtime/explain_select.rs`、`pkg/session/runtime/explain_query.rs`。
-- Rust 独立测试：`pkg/session/hint_runtime_test.rs` 覆盖 binding 覆盖查询 Hint并恢复、fuzzy binding sysvar 开关、表达式子查询表收集与字符串问号、SEM 限制；`pkg/sessionctx/variable/session_hint_bridge_aster_unit_test.rs` 覆盖首次旧值恢复及 binding 标志在 Finish 时推进；`pkg/session/test/resourcegrouptest/resource_group_test.rs` 覆盖 SELECT 的 RESOURCE_GROUP 可见性。
-- Go 对照：`pkg/planner/optimize.go::optimizeNoCache`、`pkg/bindinfo/binding.go::MatchSQLBindingWithCache`/`matchSQLBindingCore`/`crossDBMatchBindings`、`pkg/util/hint/hint.go::ParseStmtHints`、`pkg/sessionctx/stmtctx/stmtctx.go::AddSetVarHintRestore`、`pkg/executor/select.go`、`pkg/sessionctx/variable/session.go`。
-- 本任务只新增说明文档，按计划不运行 Cargo。结构验证用于确认目标文件存在且固定的 11 个二级标题各出现一次；人工复核用于确认定位、主流程、边界、生命周期、Go 差异和安全扩展入口均有上述直接证据。

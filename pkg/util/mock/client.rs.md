@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/mock/client.rs` 属于 `astersql-util-mock` crate。该 crate 由 `pkg/util/mock/Cargo.toml` 定义，并以 `pkg/util/mock/lib.rs` 为入口；入口通过私有 `mod client` 装载本文件，再以 `pub use client::*` 导出其中的 `Client` 和 `SharedResponse`。它是测试辅助实现，不发送真实 TiKV/DistSQL 请求，而是把预先注入的 `kv::Response` 作为 `kv::Client::Send` 的结果返回。
-
-本文件直接依赖同 crate 入口再导出的 `kv`（实际 Cargo 包为路径依赖 `astersql-kv`，位于 `pkg/kv`）。当前仓库内对本文件具体类型的直接 Rust 使用集中在 `pkg/util/mock/migration_aster_unit_test.rs`；`pkg/util/mock/store.rs` 则提供可保存 `Arc<dyn kv::Client + Send + Sync>` 的相邻装配点。没有条件编译项、模块级常量或独立同名测试文件。
+`Client` 实现 `kv::Client`，忽略 `Send` 的上下文、请求、会话变量和发送选项，固定返回配置的 mock 响应；未配置时返回 `None`。
 
 ## 核心职责
 
@@ -65,9 +63,7 @@ RustCodeGraph 的 `node pkg/util/mock/client.rs::SendMockResponse` 给出的直�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/mock/client.go`。两端都有 `Client`、嵌入/持有的 `RequestTypeSupportedChecker`、可空 mock 响应，以及忽略全部参数并返回固定响应的 `Send`。
-
-Rust 为适应所有权与 trait object 增加了 `SharedResponse`、`Client::new` 和 `SendMockResponse`：Go 的接口值可以在多次 `Send` 中直接返回同一对象，Rust 的 `Box<dyn Response>` 不能复制，因此通过 `Arc<Mutex<_>>` 为同一对象生成多个独立句柄。Rust 的 `Option` 对应 Go 的 `nil`；`Default` 对应 Go `Client{}` 的零值。Go 依靠匿名嵌入获得 `IsRequestTypeSupported`，Rust 则在 `impl kv::Client` 中显式转发。
+Rust 为适应所有权与 trait object 增加了 `SharedResponse`、`Client::new` 和 `SendMockResponse`：Go 的接口值可以在多次 `Send` 中直接返回同一对象，Rust 的 `Box<dyn Response>` 不能复制，因此通过 `Arc<Mutex<_>>` 为同一对象生成多个独立句柄。Go 依靠匿名嵌入获得 `IsRequestTypeSupported`，Rust 则在 `impl kv::Client` 中显式转发。
 
 值得注意的语义收紧是：Rust 构造函数只接受 `Box<dyn kv::Response + Send>`，并对共享访问进行串行化；Go 文件自身没有写出等价锁。除此之外，Rust 没有按请求复制响应或加入真实网络行为。Go 同目录测试未直接覆盖 `Client`；迁移后的专门证据位于 Rust 的 `migration_aster_unit_test.rs`。
 
@@ -79,11 +75,3 @@ Rust 为适应所有权与 trait object 增加了 `SharedResponse`、`Client::ne
 - 若扩展请求类型支持，只应修改权威实现 `pkg/kv/checker.rs::RequestTypeSupportedChecker` 及其独立测试；本文件保持转发，避免白名单漂移。
 - 测试逻辑应继续放在独立的 `*_test.rs` 文件，不能内嵌进 `client.rs`。最接近的现有落点是 `pkg/util/mock/migration_aster_unit_test.rs`，并由 `pkg/util/mock/lib.rs` 的 `#[cfg(test)]` 模块声明接入。
 - 兼容风险主要是 Go/Rust 空值和共享状态语义漂移；性能风险主要是全响应级互斥造成的串行化。mock 默认不进入真实 I/O 主链，因此不要把这里的行为外推为真实 TiKV 客户端性能特征。
-
-## 验证依据
-
-- RustCodeGraph：`status`（索引覆盖 11,467 个文件，`pkg/util/mock/client.rs` 被识别为 12 个符号）；`files --filter pkg/util/mock`；`query SharedResponse`、`query SendMockResponse`、`query RequestTypeSupportedChecker`、`query Response --kind trait`、`query IsRequestTypeSupported`、`query GetClient`；`node SharedResponse`；`node pkg/util/mock/client.rs::SendMockResponse`；`node --file pkg/util/mock/client.rs --offset 20 --limit 110`。精确节点 trail 证实 `Send` 调用 `SendMockResponse`。
-- 源码与配置：`pkg/util/mock/client.rs`、`pkg/util/mock/lib.rs`、`pkg/util/mock/Cargo.toml`、`pkg/kv/kv.rs`、`pkg/kv/checker.rs`、`pkg/util/mock/store.rs`、`pkg/util/mock/context.rs`。
-- Go 对照：`pkg/util/mock/client.go`，并用 `pkg/util/mock/store.go`、`pkg/util/mock/context.go` 核对相邻装配关系。
-- 独立测试：`pkg/util/mock/migration_aster_unit_test.rs` 中的 `CountingResponse`、`client_returns_handles_to_the_same_configured_response` 和 `default_client_send_returns_none`。前者证明多个句柄共享底层可变响应，后者证明默认客户端为空；同目录 Go 测试未找到直接 Client 用例。
-- 引用复核：`rg` 对 `Client`、`SharedResponse`、`SendMockResponse` 的精确搜索确认目标模块内的直接使用范围。本文只记录已由上述代码、索引和测试支持的当前事实；纯文档任务未运行 Cargo。

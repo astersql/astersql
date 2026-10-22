@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文同步基于冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`，增量比较基点为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9`。
-
-本文件是 `astersql-executor` crate 内一个自包含的列统计行采样实现。crate 根模块通过 `pkg/executor/lib.rs` 的 `pub mod analyze_col_sampling` 将它公开；crate 根中的 `#[cfg(test)] mod analyze_col_sampling_test` 挂载独立测试。实现只依赖 Rust 标准库，并借助 `AnalyzeSamplingBackend` 抽象存储读取、响应解码、虚拟列计算、handle 构造、索引编码与取消检查，因此 `pkg/executor/Cargo.toml` 没有为本文件增加专用 feature 或第三方依赖。
-
-当前接线边界需要特别说明：仓库搜索和 RustCodeGraph 的调用者查询没有找到生产代码调用本文件的 `AnalyzeColumnsExec::analyzeColumnsPushDown`；`pkg/executor/analyze_col.rs` 另有生产侧同名执行器类型。因而本文件目前是可公开、可独立测试的移植实现，而不是已经接入 SQL `ANALYZE` 主链的证明。Go 的生产实现位于 `pkg/executor/analyze_col_sampling.go`。
+`buildSamplingStats` 把后端原始包读取、并行解码/合并、样本后处理和并行直方图/TopN 构建串成两级 worker 流水线。
 
 ## 核心职责
 
@@ -79,9 +75,7 @@ RustCodeGraph 确认的文件内主调用边为：`analyzeColumnsPushDown -> han
 
 ## 与 Go 版本的对应关系
 
-结构上，Rust 的 `analyzeColumnsPushDown`、`decodeSampleDataWithVirtualColumn`、`buildSamplingStats`、`handleNDVForSpecialIndexes`、`subIndexWorkerForNDV`、`buildSubIndexJobForSpecialIndex`、`subMergeWorker`、`subBuildWorker`、`drainPendingSamplingMergeTasks` 和 `readDataAndSendTask` 均对应 `pkg/executor/analyze_col_sampling.go` 中的同名逻辑。两者都采用特殊索引 NDV 下推、行样本合并、按 handle 排序、并行构建列/索引统计的总体次序，也都按源列而非最终复合键过滤超长索引样本。
-
-Rust 版本目前是明显收敛的领域模型：后端 trait 代替 Go 的 distsql/session/statistics/job/protobuf 依赖；直方图与 FM Sketch 算法为本地简化实现；没有 Go 版的 context cause、全局 worker pool、failpoint、panic 指标、AnalyzeJob 进度、对象池、内存超限动作、prefix datum 截断、statement error context、结果内存计费等完整行为。`buildSubIndexJobForSpecialIndex` 也只是把 `IndexInfo` 包装成任务，而 Go 版会创建索引执行器和统计任务。故文档中的“对应”表示流程与意图可追踪，不表示生产等价或迁移完成。
+Rust 版本目前是明显收敛的领域模型：后端 trait 代替 Go 的 distsql/session/statistics/job/protobuf 依赖；直方图与 FM Sketch 算法为本地简化实现；没有 Go 版的 context cause、全局 worker pool、failpoint、panic 指标、AnalyzeJob 进度、对象池、内存超限动作、prefix datum 截断、statement error context、结果内存计费等完整行为。
 
 测试方面，Rust 独立测试包含三个聚焦回归：`schema_unique_ndv_uses_row_count_for_the_column_and_local_index` 用一条样本和仅一个 sketch 哈希、总行数 32,768，断言列/索引 NDV 都为 32,768 且 TopN 为空；`composite_index_keeps_value_when_each_component_is_within_limit` 对应 Go `subBuildWorker` 的逐索引列长度过滤意图；`build_error_releases_root_collector_memory` 对应 Go 的 collector 错误清理约束。本次唯一性分支对应 Go `statistics.UniqueBySchema` 和设置 `collector.Unique=true` 后的统计构建意图；Rust 在本地直接选择 NDV，仍没有因此补全 Go 统计库算法。Go 的更广泛并发、panic、取消、内存与虚拟列覆盖散布在 executor 的 analyze 测试中，Rust 当前没有同等覆盖。
 
@@ -93,12 +87,3 @@ Rust 版本目前是明显收敛的领域模型：后端 trait 代替 Go 的 dis
 - 对齐 Go 行为时，优先补全真实统计算法、prefix 截断、取消/panic 传播和细粒度内存记账，而不是仅扩展本地数据结构；每一项都应以 `pkg/executor/analyze_col_sampling.go` 的对应增量和独立 Rust 测试为依据。
 - 调整采样值过滤必须保留复合索引“逐组件检查”的规则，并同步 `composite_index_keeps_value_when_each_component_is_within_limit`。调整错误或资源释放则同步 `build_error_releases_root_collector_memory`，并建议补生产者失败、解码失败、worker panic、close 失败和构建 worker panic 测试。
 - 性能风险集中在每次执行创建线程、带锁的共享 receiver、样本合并排序、`Datum::bytes` 的重复分配以及 BTree 集合操作；优化时必须同时验证统计语义和 tracker 归零，不应仅以吞吐量作为完成条件。
-
-## 验证依据
-
-- 冻结增量：`git diff ad0a6f4..2c944fb -- pkg/executor/analyze_col_sampling.rs`，新增 IndexInfo public/condition，移除 ColumnInfo.unique_single_column，并以 schema 唯一性同时选择精确 NDV 与关闭 TopN；`git show 2c944fb:pkg/executor/analyze_col_sampling.rs` 分段核对完整采样链。
-- 冻结 `lib.rs`、`Cargo.toml` 和目标提交 `git grep` 显示此模块后端实现/直接导入仅在 `analyze_col_sampling_test.rs`；不能据公开模块声明推断 SQL 主链。`pkg/executor/doc.go` 不存在。
-- 独立测试：静态读取冻结 `analyze_col_sampling_test.rs` 的 schema 唯一 NDV、复合索引逐组件长度及构建失败后内存归零三个测试；新增测试没有证明 NULL、非 Public、条件索引等所有负例，本文资格条件来自生产函数本身。未运行测试。
-- Go 对照：冻结 `analyze_col_sampling.go::subBuildWorker` 的 `statistics.UniqueBySchema`、`collector.Unique` 和 TopN 分支；列下推请求类型与本采样泛型执行器分开核对。
-- 人工复核取消标志、raw 包/collector 记账、失败后释放与简化统计算法边界。本次不扩大修复未接线或 Go 独有能力。
-- RustCodeGraph status/explore 用于定位，当前索引已有 Rust，但不提供冻结快照保证；事实均以 `2c944fb` blob 为准。Ready 使用固定 11 节与 diff 空白检查；profile 技能缺失，按计划采用等价检查，不运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-log-client` library crate；crate 入口 `br/pkg/restore/log_client/lib.rs` 以 `#[path = "ssts.rs"] pub mod ssts` 挂载模块，并通过 `pub use ssts::*` 把这里的公开常量、trait 和结构体提升到 crate 根。`br/pkg/restore/log_client/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `br/pkg/restore/log_client`，直接语义基线是同目录的 `ssts.go`。
-
-它位于日志恢复（PITR）的“备份元数据/文件迭代器”与“分裂、过滤、导入编排”之间：`LogFileManager::GetCompactionIter` 把压缩日志备份产物包装成 `CompactedSSTs`，`LogFileManager::GetIngestedSSTs` 把直接复制的 SST 逐文件包装成 `CopiedSST`；下游通过统一的 `dyn SSTs` 接口读取表 ID 和文件集合，而不必区分两种来源（`log_file_manager.rs:61,439-456`）。本文件只定义集合模型与访问契约，不负责读取对象存储、生成 rewrite rule、切分 region 或发起 ingest。
+用 `RewrittenSSTs` 与 `SSTs::as_rewritten` 提供对象安全的可选扩展，使下游能区分 SST 的物理内容表（`TableID`）与过滤/规则查找时应视作的逻辑表（`RewrittenTo`）。
 
 ## 核心职责
 
@@ -74,11 +72,7 @@ RustCodeGraph 的 `explore` 结果确认 Rust 侧调用边包括：`RewrittenTo`
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `RewrittenSSTs`/`SSTs`、`CompactedSSTs`、`CopiedSST`、两个类型常量以及各方法逐项对应 `br/pkg/restore/log_client/ssts.go`。关键一致性包括：压缩集合从 meta 取表 ID；复制集合从起止键取物理表 ID；`Upstream > 0` 优先作为逻辑目标；缓存不因 `SetSSTs` 失效；0/1/多文件分支及跨表范围的 panic 策略均保留。
-
-语言适配差异如下：Go 的 `*backuppb.File`/nil 在 Rust 中是 `Option<File>`，`[]*backuppb.File` 在 Rust 中是拥有所有权的 `Vec<File>`；Go 嵌入 `*LogFileSubcompaction`，Rust 用命名字段 `inner`；Go 的 `fmt.Stringer` 对应 Rust 的 `fmt::Display`；Go 用类型断言识别 `RewrittenSSTs`，Rust 通过 `SSTs::as_rewritten` 显式返回可选 trait 对象；Go 的 `atomic.Int64` 对应 Rust `AtomicI64`。Rust 的 `Display` 在空 `CopiedSST` 时稳定输出 `<nil>`，而非解引用文件。
-
-相关 Go 测试没有单独的 `ssts_test.go`；Go 侧 `client_test.go` 构造 `CompactedSSTs` 覆盖上层恢复场景。Rust 侧把直接契约回归独立放在 `ssts_test.rs`，并在 `parity_test.rs::go_rust_public_contract_matches`、`compacted_file_strategy_test.rs::rewritten_ssts_match_rules_by_logical_target_and_accumulate_there` 中覆盖跨组件接线。
+语言适配差异如下：Go 的 `*backuppb.File`/nil 在 Rust 中是 `Option<File>`，`[]*backuppb.File` 在 Rust 中是拥有所有权的 `Vec<File>`；Go 嵌入 `*LogFileSubcompaction`，Rust 用命名字段 `inner`；Go 的 `fmt.Stringer` 对应 Rust 的 `fmt::Display`；Go 用类型断言识别 `RewrittenSSTs`，Rust 通过 `SSTs::as_rewritten` 显式返回可选 trait 对象；Go 的 `atomic.Int64` 对应 Rust `AtomicI64`。
 
 ## 扩展指南
 
@@ -88,12 +82,3 @@ Rust 的 `RewrittenSSTs`/`SSTs`、`CompactedSSTs`、`CopiedSST`、两个类型�
 - 若要支持一个 `CopiedSST` 持有多个文件，不能只放宽 `SetSSTs`：还需重新设计字段、`TableID` 的跨文件一致性、`Display`、`GetSSTs`、上游构造和 checkpoint 部分过滤语义。
 - 若把本地 `stubs::backuppb` 替换为真实 protobuf 类型，应检查 `File` clone 成本、字段命名、`LogFileSubcompactionMeta` 的显示格式与 `Send` 能力，并保持 Cargo 依赖可复现；不要在本文件偷偷引入本地 `[patch]` 或 vendor 副本。
 - 性能敏感改动应特别评估 `GetSSTs` 的全量 clone 与 `SeqCst` 开销。若改成借用切片，会改变 trait 对象和调用方可变过滤接口，必须联动所有消费者而非局部替换。
-
-## 验证依据
-
-- 目标实现：`br/pkg/restore/log_client/ssts.rs`。RustCodeGraph `node --file ... --symbols-only` 识别 2 个常量、2 个 trait、2 个结构体及其构造、显示和 trait 方法；源码人工复核了全部 169 行逻辑。
-- 索引证据：`rustcodegraph status` 报告索引包含 11,467 个文件、7,032 个 Rust 文件；`query CompactedSSTs/CopiedSST/SSTs/RewrittenTo` 定位到本文件与 Go 对照；`explore "... CompactedSSTs CopiedSST SSTs RewrittenSSTs callers callees"` 给出 `client.rs`、`log_file_manager.rs`、`compacted_file_strategy.rs` 和各测试的调用关系。对重名方法运行的精确 `callers` 无结果，已以 `explore` 和源码搜索补证。
-- crate/模块证据：`br/pkg/restore/log_client/Cargo.toml`、`br/pkg/restore/log_client/lib.rs`；前者确认 crate、Go 包映射和 `hex` 依赖，后者确认模块挂载、公开再导出及 `ssts_test.rs` 的独立测试挂载。
-- Go 对照：`br/pkg/restore/log_client/ssts.go`；上层 Go 接线参考 `client.go`、`log_file_manager.go`、`compacted_file_strategy.go` 和 `client_test.go`。
-- Rust 调用方：`br/pkg/restore/log_client/log_file_manager.rs::{SSTIter, GetCompactionIter, GetIngestedSSTs, CountExtraSSTTotalKVs}`、`compacted_file_strategy.rs::{inspect, Accumulate, ShouldSkip, hasRule}`、`client.rs::rewriteRulesFor`。
-- 测试证据：`ssts_test.rs` 覆盖空文件 panic、压缩集合读写、重写优先/回退、缓存保留、跨表 panic 和多文件 panic；`compacted_file_strategy_test.rs` 覆盖逻辑目标表 70 与物理表 7 的策略接线；`parity_test.rs` 覆盖 Go/Rust 公开契约。本任务是纯文档分析，按计划不运行 Cargo。

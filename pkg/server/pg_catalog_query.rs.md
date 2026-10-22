@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pg_catalog_query.rs` 是 `astersql-server` crate 内部的 PostgreSQL catalog 查询前端。它由根模块 [`pkg/server/lib.rs`](lib.rs) 以私有模块 `pg_catalog_query` 装配，不对 crate 外公开；[`pkg/server/Cargo.toml`](Cargo.toml) 将该 crate 定义为 `astersql-server`，入口为 `lib.rs`，并通过 `package.metadata.porting.go-package = "pkg/server"` 说明包级移植归属。
-
-该文件处在 PostgreSQL 协议接入与 catalog 执行器之间：它只负责识别 catalog SQL、词法分析并构造一个有意受限的 AST，不读取 catalog 行，也不执行查询。AST 随后由 [`pkg/server/pg_catalog.rs`](pg_catalog.rs) 中的 `CatalogQuery` 完成参数、名称和类型绑定并执行。文件级注释“Parsing builds expressions, never freezes catalog rows at Parse time”对应这一边界，因此 Parse 阶段不会把当时的模式快照固化进语句。
+处在 PostgreSQL 协议接入与 catalog 执行器之间：它只负责识别 catalog SQL、词法分析并构造一个有意受限的 AST，不读取 catalog 行，也不执行查询。
 
 ## 核心职责
 
@@ -77,9 +75,7 @@ RustCodeGraph 对 `pg_catalog_query.rs::parse_shadowed` 的节点记录确认其
 
 ## 与 Go 版本的对应关系
 
-[`pkg/server/Cargo.toml`](Cargo.toml) 只提供包级映射 `go-package = "pkg/server"`。当前仓库的 `pkg/server` 下没有 `doc.go` 或与 `pg_catalog_query.rs` 同路径/同名的 Go 文件；对全仓库 Go 文件搜索 `pg_catalog`、`CatalogQuery`、`implicit_relations`、`parse_shadowed` 也未找到直接实现。因此，本文件是 AsterSQL Rust PostgreSQL 兼容层的专用实现，没有可逐函数对照的 TiDB Go 版本。
-
-可对齐的是外部语义而非源码结构：普通 TiDB SQL必须继续由原生引擎拥有，catalog introspection 查询才进入该白名单解析/执行链；SQLSTATE、search path 遮蔽、prepared 参数和协议可见类型由 Rust 侧独立测试约束。后续修改不得凭 Go 包级映射推断存在同名逻辑，应以本文件、`pg_catalog.rs` 及独立 Rust 测试为事实来源。
+当前仓库的 `pkg/server` 下没有 `doc.go` 或与 `pg_catalog_query.rs` 同路径/同名的 Go 文件；对全仓库 Go 文件搜索 `pg_catalog`、`CatalogQuery`、`implicit_relations`、`parse_shadowed` 也未找到直接实现。因此，本文件是 AsterSQL Rust PostgreSQL 兼容层的专用实现，没有可逐函数对照的 TiDB Go 版本。
 
 ## 扩展指南
 
@@ -89,13 +85,3 @@ RustCodeGraph 对 `pg_catalog_query.rs::parse_shadowed` 的节点记录确认其
 - 新增查询 clause、JOIN 或表函数时修改 `Parser::select`/`relation`，保持复杂度预算并评估笛卡尔积、AST内存和 catalog 执行成本。必要时在 `pg_catalog.rs` 增加相应执行支持后才宣称功能可用。
 - 修改所有权启发式时同时审查 `parse_shadowed` 与 `implicit_positions`，确保字符串/注释、嵌套 FROM、逗号 JOIN、显式 `pg_catalog` 和 `shadowed` 的优先级不回归。
 - 回归至少扩展 `pg_catalog_query_test.rs` 的结构/边界测试；若影响绑定与执行，再同步 `pg_catalog_test.rs`；若影响简单或扩展协议路由，再同步 `pg_conn_test.rs`、`pg_extended_test.rs` 或 `pg_client_integration_test.rs`。兼容风险主要是误接管普通 SQL、改变 SQLSTATE/列类型；性能风险主要是放宽预算后带来的深递归、AST膨胀或高代价 catalog JOIN。
-
-## 验证依据
-
-- 生产源码：[`pkg/server/pg_catalog_query.rs`](pg_catalog_query.rs)；重点符号为 `Token`、`Expr`、`Select`、`Parser`、`lex`、`parse`、`parse_shadowed`、`implicit_relations` 与 `is_catalog_relation`。
-- crate 与装配：[`pkg/server/Cargo.toml`](Cargo.toml)、[`pkg/server/lib.rs`](lib.rs)；确认 crate 名、入口、Go 包级元数据、私有模块及独立测试模块。
-- 直接调用链：[`pkg/server/pg_catalog.rs`](pg_catalog.rs)、[`pkg/server/pg_conn.rs`](pg_conn.rs)、[`pkg/server/pg_extended.rs`](pg_extended.rs)、[`pkg/server/pg_session.rs`](pg_session.rs)、[`pkg/server/pg_oid.rs`](pg_oid.rs)。
-- 独立测试：[`pkg/server/pg_catalog_query_test.rs`](pg_catalog_query_test.rs) 验证 AST形状、注释/引号归属、SQLSTATE、表达式/cast/查询/CTE预算、参数节点、标量探针、表函数及 live OID行为；更完整执行语义由 `pg_catalog_test.rs`、协议路由由 `pg_conn_test.rs`/`pg_extended_test.rs` 覆盖。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点；`query parse_shadowed`、`query implicit_relations`、`node pg_catalog_query.rs::parse`、`node parse_shadowed` 确认符号位置与上述关键调用边。初始 `files --filter pkg/server/pg_catalog_query` 和 `explore` 无输出，随后精确符号查询成功，因此没有用自然语言探索结果替代源码事实。
-- Go 对照检查：当前 `pkg/server` 无 `doc.go` 和同路径 Go 文件；全仓库 Go 文件中未检出上述 Rust 专用符号或 `pg_catalog` 实现，故文档明确标记无直接 Go 对照。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 章节结构命令，并人工检查所有链接、边界数字、调用关系与“解析不等于可执行”的分层说明。

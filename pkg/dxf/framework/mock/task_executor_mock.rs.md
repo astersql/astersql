@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明的源码是 [`task_executor_mock.rs`](./task_executor_mock.rs)。它属于 `astersql-dxf-framework-mock` crate，是 DXF（Distributed eXecution Framework）执行侧的手写 Rust mock 集合。crate 入口 `pkg/dxf/framework/mock/lib.rs` 将本模块私有装载后通过 `pub use task_executor_mock::*` 公开其类型与构造函数；`pkg/dxf/framework/mock/Cargo.toml` 则声明它依赖 `proto`、`storage` 和 `taskexecutor/execute` 三个直接参与本文件签名的本地 crate。
-
-它对照同目录由 MockGen 生成的 `task_executor_mock.go`，覆盖三组边界：持久化任务表 `MockTaskTable`、单任务执行器 `MockTaskExecutor`、步骤执行扩展 `MockExtension`。需要特别注意：这些 Rust 类型目前只是 GoMock 风格的回调替身，源码中没有实现 `pkg/dxf/framework/taskexecutor/interface.rs` 的同名 `TaskTable`、`TaskExecutor`、`Extension` trait，且若干参数/返回类型也不同。因此它们不能仅凭同名方法就作为这些 trait 的对象直接注入生产执行链。
+提供 `EXPECT`、`ISGOMOCK`、`*MockRecorder` 别名以及 `NewMock*` 构造函数，保留 GoMock 使用方式的命名外观，方便移植测试逐步替换调用点。
 
 ## 核心职责
 
@@ -86,15 +84,3 @@ Go 的 `TaskExecInfo` 来自 storage 包；Rust mock 在文件内另建了含 `S
 测试应放在独立的 `pkg/dxf/framework/mock/migration_aster_unit_test.rs`，不要内嵌到生产源文件。至少覆盖参数与返回值透传、错误透传、未设期望的 panic、重复调用、回调内重设期望以及新增生命周期分支；若增加 trait 实现，还应加入编译期 trait 约束和通过 trait object 调用的回归测试。并发测试要区分已验证的“回调期间不持锁”和尚不支持的“同一 Handler 并行调用”。
 
 兼容风险主要来自 Go/Rust 接口漂移及动态 `Any` 类型约定；正确性风险来自错误的所有权转换或把未实现 trait 的替身用于生产链；性能通常不是该测试辅助模块的目标，但长时间回调会占用闭包本身，导致同字段并发调用 panic。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录及目标文件均已索引。
-- RustCodeGraph `files --filter pkg/dxf/framework/mock`：确认目标、Go 对照、crate 入口与独立迁移测试位于同一模块边界。
-- RustCodeGraph `node --file pkg/dxf/framework/mock/task_executor_mock.rs --offset 1 --limit 260`：核对完整 255 行源码、21 个符号及目标文件的索引使用关系。
-- RustCodeGraph `query MockTaskExecutor --kind struct`、`query NewMockTaskExecutor --kind function`：区分 Rust/Go 同名符号；查询结果确认 Rust 构造函数及测试调用点。
-- 已读源码/配置：`pkg/dxf/framework/mock/lib.rs`、`pkg/dxf/framework/mock/Cargo.toml`、`pkg/dxf/framework/taskexecutor/interface.rs`、`pkg/session/runtime/modify_column_dist_backfill.rs`。
-- 已读 Go 对照：`pkg/dxf/framework/mock/task_executor_mock.go`，包括生成来源、三组 mock 及其方法签名。
-- 已读独立 Rust 测试：`pkg/dxf/framework/mock/migration_aster_unit_test.rs`；其中 `task_executor_mock_dispatches_cancel_handler` 是本文件的直接行为回归，`handler_does_not_hold_callback_lock_during_callback` 验证共享 `Handler` 的锁生命周期。
-- 仓库 `rg` 检索三组 mock 的类型与构造函数：确认 Rust 直接使用范围，并确认生产执行 trait 与 `TaskExecInfo` 的其他定义位置。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证目标文件存在且恰有 11 个固定二级章节。

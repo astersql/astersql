@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-cascades-memo`，模块入口是同目录的 `lib.rs`，并由该入口公开再导出 `GroupExpression`、`GroupExpressionRef`、`hash_logical_plan` 和 `equal_logical_plans`。`Cargo.toml` 表明它直接依赖 `cascades-base`、`logicalop`、`property` 等本地 crate；其中 `cascades-base` 提供 Go `HashEqualer` 对应的哈希接口，`logicalop` 提供逻辑算子及 `LogicalPlan` trait，`property` 提供组级逻辑属性。
-
-它位于 Cascades Memo 的核心边界：`Memo` 把一棵逻辑计划拆成若干等价类 `Group`，本文件中的 `GroupExpression` 则表示“一项逻辑算子 + 按位置排列的子 Group”。因此它既是 Memo 去重、合组和规则探索的身份单元，也是规划器在不恢复完整计划树时读取子组 schema、统计信息和逻辑属性的适配器。直接依据是 `group_expr.rs::GroupExpression`、`memo.rs::CopyIn`、`group.rs::Insert` 和 `task/task_apply_rule.rs::ApplyRuleTask::Execute`。
+提供组级逻辑信息：`GetInputSchema`、`GetChildStatsAndSchema`、`GetJoinChildStatsAndSchema` 从子 Group 读取属性，`DeriveLogicalProp` 把当前算子的 schema、stats、FD、单行性质、可能排序和 TiFlash 可用性写入所属 Group。
 
 ## 核心职责
 
@@ -85,11 +83,11 @@ RustCodeGraph 的文件节点确认本文件共 451 行，并识别出 `GroupExp
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/cascades/memo/group_expr.go`。字段语义基本逐项对应：Go 的 `base.LogicalPlan` 嵌入字段对应 Rust 的 `LogicalPlanRef + impl LogicalPlan`，`[]*Group` 对应 `Vec<GroupRef>`，bitset mask 对应 `BTreeSet<usize>`，布尔 abandoned 保持一致。Go 依赖垃圾回收处理指针图；Rust 显式采用 owner/parent 弱回边，避免 `Rc` 环，并用 `RefCell` 支持原 Go 指针对象的共享可变行为。
+Go 依赖垃圾回收处理指针图；Rust 显式采用 owner/parent 弱回边，避免 `Rc` 环，并用 `RefCell` 支持原 Go 指针对象的共享可变行为。
 
-哈希与相等的目标语义一致：都比较算子语义和有序子 Group，owner 不参与。实现机制不同：Go 直接调用每个逻辑计划的 `Hash64`/`Equals` 并用 operand 先判型；Rust 的 trait 当前没有统一提供相同接口，所以 `hash_logical_plan`、`equal_logical_plans` 显式枚举已支持算子并为未知算子提供回退。新增算子时必须审查这一分派表，这是 Rust 独有的同步点。
+实现机制不同：Go 直接调用每个逻辑计划的 `Hash64`/`Equals` 并用 operand 先判型；Rust 的 trait 当前没有统一提供相同接口，所以 `hash_logical_plan`、`equal_logical_plans` 显式枚举已支持算子并为未知算子提供回退。
 
-属性派生流程也有结构差异。Go `DeriveLogicalProp` 在函数内收集 child stats/schema，调用 `DeriveStats`、`ExtractFD` 和 `PreparePossibleProperties`，并可通过测试 failpoint 跳过；Rust `Memo::CopyIn` 在拆孩子前先以 `derive_tree` 对完整树执行统计派生，本文件随后读取包装算子缓存的 stats/schema/FD 并组装 Group 属性。Rust 还显式写入 `MaxOneRow`。因此不能仅按 Go 函数体逐行修改 Rust，必须同时检查 `memo.rs::derive_tree/CopyIn` 的前置工作。
+属性派生流程也有结构差异。Go `DeriveLogicalProp` 在函数内收集 child stats/schema，调用 `DeriveStats`、`ExtractFD` 和 `PreparePossibleProperties`，并可通过测试 failpoint 跳过；Rust `Memo::CopyIn` 在拆孩子前先以 `derive_tree` 对完整树执行统计派生，本文件随后读取包装算子缓存的 stats/schema/FD 并组装 Group 属性。
 
 Go `mergeTo` 自己先从 owner Group 删除 source；Rust 调用点已在 `Group::mergeTo` 或 `Memo::mergeGroup` 中完成相应删除，本函数只合并 mask、清父回边和断开 source。Go 子属性访问器返回内部指针，Rust 为避免借用越界返回克隆的 `StatsInfo`/`Schema`。Go 后半文件还包含物理计划枚举与最佳任务逻辑；这些职责在当前 Rust 架构中不属于本文件，不能据此声称 Rust 此处已移植那些函数。
 
@@ -102,12 +100,3 @@ Go `mergeTo` 自己先从 owner Group 删除 source；Rust 调用点已在 `Grou
 增加规则状态时，应保持合并语义明确：探索完成集合需要在 `mergeTo` 中并集，过期状态应与 `ApplyRuleTask` 的跳过条件共同更新。增加逻辑属性字段时，应同步检查 `DeriveLogicalProp`、`property::LogicalProperty`、叶子/非叶子的派生来源，以及 Go `GroupExpression.DeriveLogicalProp`；不能用默认值掩盖尚未移植的派生。
 
 测试必须继续放在独立文件。身份、父回边、派生与合并的综合用例宜扩展 `group_and_expr_test.rs` 或 `memo_test.rs`；孩子访问器的类型/数量边界宜扩展 `group_expr_test.rs`。应同步参照 `group_and_expr_test.go` 的原始意图，但 Rust 特有的弱引用释放、零哈希规范化和回退分派需要 Rust 独立断言。兼容风险主要是错误去重或漏去重，性能风险主要是回退哈希调用解释文本/复制 schema 相关数据，以及属性访问器的克隆成本。
-
-## 验证依据
-
-- 源码与结构：`pkg/planner/cascades/memo/group_expr.rs`（451 行）、`lib.rs`、`Cargo.toml`。
-- 上游和图维护：`memo.rs::{CopyIn, CopyInWithGroupChildren, InsertGroupExpression, RemoveOut, NewGroupExpression, mergeGroup, replaceGEChild}`，`group.rs::{Insert, Delete, addParentGEs, removeParentGEs, mergeTo, Clear, Check}`，`task/task_apply_rule.rs::ApplyRuleTask::Execute`。
-- Go 对照：`group_expr.go::{GroupExpression, Hash64, Equals, mergeTo, GetChildStatsAndSchema, GetJoinChildStatsAndSchema, DeriveLogicalProp}`，以及 `group_and_expr_test.go`。
-- Rust 测试：`group_and_expr_test.rs::{TestRawHashMap, TestGroupExpressionHashCollision, TestGroupExpressionDelete, TestGroupExpressionHashEquals, TestGroupParentGERefs, TestDeriveLogicalPropPreservesFD}`；`group_expr_test.rs::{single_child_accessor_rejects_join_by_operator_type, join_child_accessor_rejects_non_join_by_operator_type}`；`memo_test.rs::TestInsertGE`。
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/planner/cascades/memo/group_expr.rs` 复核了目标文件全貌；`query GroupExpression/DeriveLogicalProp/mergeTo` 确认 Rust 与 Go 同名符号。associated function 调用边因索引消歧异常改用精确 `rg` 及命中源码复核，未把异常输出用作架构结论。
-- 本任务是纯文档分析，未运行 Cargo。交付结构以任务指定命令验证，人工复核重点是：11 个固定章节齐全、所有行为结论能回指上述符号、未把 Go 独有物理枚举逻辑描述为当前 Rust 实现。

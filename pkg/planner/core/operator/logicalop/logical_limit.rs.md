@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑优化阶段的 `LogicalLimit` 节点，表达 SQL `LIMIT count OFFSET offset`（以及增强 TopN 优化使用的可选分区键），位于 SQL AST 已构造成逻辑计划、但尚未枚举物理执行计划的中间层。crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 通过 `mod logical_limit` 编译该模块，并用 `pub use logical_limit::*` 将类型导出；crate 边界由同目录 `Cargo.toml` 的包 `astersql-planner-core-operator-logicalop` 定义。
-
-常规入口是 `pkg/planner/core/logical_plan_builder_runtime.rs::build_limit_runtime`：它读取 AST 中的 offset/count 和预处理参数位置，设置 `FLAG_PUSH_DOWN_TOP_N`，在结果恒为空时直接生成 `LogicalTableDual`，否则初始化 `LogicalLimit`、复制子节点 schema/输出名并挂接唯一子节点。下游 `pkg/planner/core/operator/physicalop/physical_limit.rs::ExhaustPhysicalPlans4LogicalLimit` 和 `pkg/planner/cascades/old/implementation_rules.rs::ImplLimit` 将该逻辑节点实现为物理 Limit。
+保存 Limit 的窗口参数：`Offset` 是跳过行数，`Count` 是最多返回行数；`OffsetParam`/`CountParam` 记录预处理语句参数索引。
 
 ## 核心职责
 
@@ -91,14 +89,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_limit.go`。Rust 保留了 Go 的 `LogicalSchemaProducer`、`PartitionBy`、offset/count、cop 下推偏好、部分 Limit 标志，以及 `Init`、explain、24 字节哈希、谓词屏障、列裁剪、MaxOneRow、TopN 转换、统计推导和分区键访问器。
-
-已经核实的对应点：
-
-- 两端 `HashCode` 都是物理类型、query block、offset、count 的 24 字节大端布局。
-- 两端都不把父谓词穿过 Limit；都让子树用空谓词继续处理。
-- 两端都在 `Count == 1` 时设置 `MaxOneRow`，并调用 `DeriveLimitStats(child, Count)`。
-- 两端 `convertToTopN` 都不复制 `PartitionBy`；Rust 测试 `limit_to_top_n_matches_go_field_mapping` 明确锁定该行为。
+Rust 保留了 Go 的 `LogicalSchemaProducer`、`PartitionBy`、offset/count、cop 下推偏好、部分 Limit 标志，以及 `Init`、explain、24 字节哈希、谓词屏障、列裁剪、MaxOneRow、TopN 转换、统计推导和分区键访问器。
 
 可见差异与迁移扩展：
 
@@ -116,18 +107,3 @@
 - 改变统计时同时核对 `property::DeriveLimitStats`、缓存 reload 语义和物理 child `ExpectedCnt`；offset 是否进入基数估计必须与 Go 版本和代价模型共同决定。
 - Rust 单元测试必须放在独立文件。直接扩展 `pkg/planner/core/operator/logicalop/logical_limit_test.rs`；哈希/统计公共契约现由 `logical_d_aster_unit_test.rs` 覆盖。构建入口变化还应更新 `logical_plan_builder_runtime_aster_unit_test.rs`，物理化变化应更新 physicalop/Cascades 对应独立测试。
 - 兼容风险集中在 plan hash/cache 命中、prepared LIMIT 参数、explain 输出和 Go/Rust 计划等价性；性能风险集中在 `ExpectedCnt`、统计基数以及能否下推到 Cop/MPP。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标实现：`pkg/planner/core/operator/logicalop/logical_limit.rs`（`LogicalLimit` 及其 `LogicalPlan` 实现）。
-- crate/模块边界：`pkg/planner/core/operator/logicalop/Cargo.toml`、`pkg/planner/core/operator/logicalop/lib.rs`。
-- 公共契约：`base_logical_plan.rs::{LogicalPlan, PredicatePushDownPlan, AttachSelectionToPlan, BaseLogicalPlan}`、`logical_schema_producer.rs`。
-- 构建与反向转换：`logical_plan_builder_runtime.rs::build_limit_runtime`、`logical_top_n.rs::LogicalTopN::AttachChild`。
-- 统计与物理化：`pkg/planner/property/stats_info.rs::DeriveLimitStats`、`physical_limit.rs::ExhaustPhysicalPlans4LogicalLimit`、`implementation_rules.rs::ImplLimit`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_limit.go`。
-- 独立 Rust 测试：`logical_limit_test.rs::{limit_to_top_n_matches_go_field_mapping, logical_plan_hash_code_dispatches_to_limit_semantic_hash}`；`logical_d_aster_unit_test.rs::{limit_hash_covers_offset_count_and_query_block_layout, limit_trait_statistics_respect_count}`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query LogicalLimit --kind struct` 定位 Rust/Go 定义；`node --file ...logical_limit.rs`、`node --file ...logical_limit.go` 和 `node --file ...lib.rs` 核对源码与模块；`explore` 给出 builder、memo、物理计划和测试的使用范围。精确 `callers/callees` 命令在本次环境中超时且没有输出，因此具体构造/消费点又使用 `rg` 和定点文件读取复核，没有把超时结果当作证据。
-
-人工复核结论：该文件存在于逻辑计划层，用窗口语义约束优化器变换，并把必要字段交给 TopN 下推、统计估算和物理 Limit 枚举；安全扩展需要同时维护 trait 接线、双向 Limit/TopN 字段映射、哈希/缓存与独立测试。本文没有把未接线的 `IsPartial` 或未覆盖的 explain/schema 等价性写成已支持事实。

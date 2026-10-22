@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/testkit/result.rs` 属于 `astersql-testkit` crate。`pkg/testkit/Cargo.toml` 以 `lib.rs` 为 crate 根，`pkg/testkit/lib.rs` 通过 `pub mod result` 暴露模块，并在 crate 根再导出 `Result`、`Rows`、`RowsWithSep`。本文件不参与数据库服务端的 SQL 执行主链；它处在测试查询链的末端，把已经物化、字符串化的查询结果包装成可重复读取和断言的值对象。
-
-主要入口来自三条测试工具链：`pkg/testkit/testkit.rs::TestKit::MustQuery` 用 `Result::with_comment` 保存查询行和 TestKit 注释；`pkg/testkit/asynctestkit.rs::AsyncTestKit::new` 的 worker 查询分支用 `Result::new` 回传行集；`pkg/testkit/stepped.rs::SteppedTestKit::SteppedMustQuery` 用 `Result::new` 保存分步查询的最后结果。RustCodeGraph 对目标文件的索引还显示它被 67 个文件引用，说明其公开断言接口是跨子系统 Rust 测试共用的基础设施，而不是仅供 `pkg/testkit` 自测。
+只处理已经字符串化的数据，不执行 SQL、不转换数据库值、不管理结果集游标，也不持有 session、事务或存储资源。
 
 ## 核心职责
 
@@ -91,17 +89,6 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/testkit/result.go` 是直接语义基准。Rust 保留了 `Result`、`Check`、`Equal`、`AddComment`、`CheckWithFunc`、`Sort`、`Rows`、`RowsWithSep`、`CheckAt`、包含性方法和 `String` 等 Go 风格名称，并让 `render_rows` 明确复刻 Go 对每行执行 `fmt.Fprintf(..., "%s\n", row)` 的比较结果。
-
-已对齐的关键行为包括：
-
-- `AddComment` 对第一条和后续注释都先加换行。
-- `Check`/`Equal` 按渲染行文本比较，忽略产生同一文本的单元格边界；`result_test.rs` 用 EXPLAIN 风格行直接覆盖该行为。
-- `CheckWithFunc` 在逐行比较前要求行数一致。
-- `Sort` 原地按整行字典序排序并返回自身。
-- `CheckAt` 保留选列顺序并做行文本比较。
-- 单值包含检查按单元格搜索，多值包含检查按整张表的 `String` 搜索。
-
 当前实现差异和迁移边界包括：
 
 - Go `Result` 还持有 testify 的 `require`/`assert` 对象；Rust 直接使用标准 `assert!`/`assert_eq!`，因此失败消息、调用栈和断言归属格式不会逐字一致。
@@ -119,16 +106,3 @@
 - 新增排序模式应另增方法或显式比较器，避免改变 `Sort` 现有字符串字典序；数值排序、NULL 次序和 SQL collation 都需要独立设计。
 - 所有 Rust 测试继续放在同目录独立文件 `pkg/testkit/result_test.rs`，并由 `lib.rs` 的 `#[cfg(test)]` 模块接线；不要把测试内嵌进 `result.rs`。涉及 Go 对齐的修改还应同步阅读 `pkg/testkit/result.go`，必要时补充能锁定差异意图的测试。
 - 若新增断言失败上下文，注意 `with_comment` 接收的初始注释当前不自动补换行，而 `AddComment` 每次都补；不要让两种构造路径产生意外双换行或丢失 SQL 上下文。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引目标仓库，包含 11,467 个文件、307,296 个节点和 1,848,419 条边，其中 Rust 文件 7,032 个。
-- RustCodeGraph `files --filter pkg/testkit`：确认目标、crate 根、Go 对照、独立测试以及同步/异步/分步 TestKit 文件均在索引中。
-- RustCodeGraph `node --file pkg/testkit/result.rs --offset 1 --limit 260`：读取目标文件 242 行全貌，核对 `Result`、全部方法、私有 `render_rows`、`Rows`、`RowsWithSep`；索引报告该文件被 67 个文件使用。
-- RustCodeGraph `query`：定位 `result.rs::with_comment`、`AddComment`、`CheckWithFunc`、`CheckAt`、包含性方法、`render_rows` 与 `RowsWithSep` 等主要符号；对 `RowsWithSep` 同时定位到 Go `pkg/testkit/result.go::RowsWithSep`。
-- RustCodeGraph `node` 读取 `pkg/testkit/testkit.rs`、`asynctestkit.rs`、`stepped.rs`：核对三条直接构造链 `MustQuery → Result::with_comment`、异步 Query worker `→ Result::new`、`SteppedMustQuery → Result::new`，以及 `Rows()` 在计划检查中的调用。
-- 读取 `pkg/testkit/Cargo.toml` 和 RustCodeGraph `node` 对 `pkg/testkit/lib.rs` 的结果：核对 crate 名、根路径、公开再导出、无模块 feature gate，以及独立 `result_test.rs` 的 `#[cfg(test)]` 挂载。
-- RustCodeGraph `node --file pkg/testkit/result.go` 与 `testkit.go`：核对 Go 的行渲染比较、注释追加、排序、投影、包含检查、`MustQuery` 和 `ResultSetToResultWithCtx` 语义。
-- RustCodeGraph `node --file pkg/testkit/result_test.rs`：核对六组直接边界证据，包括注释换行、`CheckAt` 宽度前置检查、跨单元格边界的渲染等价、多值整表包含检查及空分隔符 Unicode 行为。
-- 使用 `rg` 补充图命令未完整枚举的构造调用点：确认 `Result::with_comment` 位于 `testkit.rs`，`Result::new` 位于 `asynctestkit.rs`、`stepped.rs` 和独立测试；未把同名的其他 crate `Result` 误认作调用者。
-- 本任务是纯文档分析，未运行 Cargo；结构校验按任务文件给定命令执行。

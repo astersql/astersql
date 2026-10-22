@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-属于 `astersql-server-internal-util`，由 `pkg/server/internal/util/lib.rs` 重导出；`Cargo.toml` 声明 crate。它提供缓冲读取包装及可被生产 TcpPacketIo 单独调用的非消费 TCP 探针。
+提供缓冲读取包装及可被生产 TcpPacketIo 单独调用的非消费 TCP 探针。
 
 ## 核心职责
 
@@ -39,9 +39,3 @@ Go `pkg/server/internal/util/buffered_read_conn.go` 也将探活从共享 bufio.
 ## 扩展指南
 
 新增 TLS/PROXY 读取包装器时显式实现 net_stream，不能强行探测未知 Read 对象。维护探活不改变 deadline/flags、不消费字节的合同；独立回归包含 pending data、并发 Read/IsAlive、exposed stream 和 NetConn wrapper。修改平台 errno 映射时同步平台测试。
-
-## 验证依据
-
-冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`。经 `git diff ad0a6f4..2c944fb -- pkg/server/internal/util/buffered_read_conn.rs`、`git show 2c944fb:pkg/server/internal/util/buffered_read_conn.rs` 核对，目标 blob 为 `c77d748cd24b8a01c796c8fc8e99e3e1534e2c7e`。模块入口及 Cargo 声明均以同一提交读取。独立测试 `pkg/server/internal/util/buffered_read_conn_test.rs` 和 Go 对照 `pkg/server/internal/util/buffered_read_conn.go` 为静态证据，未运行测试。
-
-RustCodeGraph 当前索引包含 Rust，但不是冻结快照；本篇结论以 Git blob 为准。Ready 文档校验确认 11 章节、引用存在和差异无空白错误；按计划不运行 Cargo，不验证真实网络或存储。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dumpformat-parquetfile` crate 的 SQL 列元数据到 Parquet 列描述的类型边界。crate 根模块 [`lib.rs`](./lib.rs) 以 `pub mod column_type` 暴露本模块，并重新导出 `Column`、`ColumnInfo`、`ColumnType`、`LogicalType`、`PhysicalType`、`TimeUnit`。生产写出链为 `writer::ParquetWriter::new` → `schema_builder::build_parquet_schema_from_columns` → `to_column_type`：前者接收查询结果的 `ColumnInfo`，本文件决定 Parquet physical/logical type，后两层再构造 schema、列缓冲和实际 Arrow Parquet writer。
-
-[`Cargo.toml`](./Cargo.toml) 将本目录定义为独立 crate `astersql-dumpformat-parquetfile`，入口是 `lib.rs`；实际 Arrow `parquet` 类型是在 [`writer.rs`](./writer.rs) 中从本文件的中间表示转换而来。本文件自身只使用标准库，没有直接调用 Cargo 中的 `parquet` Git 依赖。
+保留 `toColumnType`、`decimalColumnType`、`decimalFixedLengthBytesForPrecision` 三个 Go 风格别名；它们仅转发到 snake_case 实现，没有第二套逻辑。
 
 ## 核心职责
 
@@ -65,11 +63,9 @@ DECIMAL scale 合法性不在 `decimal_column_type` 内检查；生产入口 `sc
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`column_type.go`](./column_type.go)。Rust 的 `to_column_type`、`decimal_column_type`、`decimal_fixed_length_bytes_for_precision` 分别逐分支对应 Go 的 `toColumnType`、`decimalColumnType`、`decimalFixedLengthBytesForPrecision`；Rust 额外提供同名风格转发函数，便于移植期调用。核心语义一致：driver 类型名先 trim/大写；未知别名退回 `BYTE_ARRAY`；时间戳总是微秒且 `isAdjustedToUTC=false`；FLOAT 写 DOUBLE；无符号 BIGINT 写 9 字节 `DECIMAL(20,0)`；DECIMAL 使用 9/18/38 位边界及相同宽度公式。
+Rust 的 `to_column_type`、`decimal_column_type`、`decimal_fixed_length_bytes_for_precision` 分别逐分支对应 Go 的 `toColumnType`、`decimalColumnType`、`decimalFixedLengthBytesForPrecision`；Rust 额外提供同名风格转发函数，便于移植期调用。
 
 表示层存在语言差异：Go 的 `columnType.Logical` 是 Arrow schema 接口值且可为 `nil`，Rust 用封闭的 `LogicalType::None` 枚举；Go 的 `ColumnInfo` 和 `columnType` 定义在 `writer.go`，Rust 将这些数据结构集中在本文件并由 `lib.rs` 公开再导出；Rust 先生成自有中间表示，再在 `writer::parquet_schema` 中转换为 Arrow Rust 类型。
-
-独立回归测试 [`column_type_mapping_test.rs`](./column_type_mapping_test.rs) 与 Go 的 [`column_type_mapping_test.go`](./column_type_mapping_test.go) 对齐，覆盖常用类型、明确不支持的别名、未知类型、时间单位、`UNSIGNED BIGINT`、DECIMAL 9/18/19/38 位边界以及 precision 0/39 的兜底。Rust 测试还直接验证宽度函数在 precision 0 与 2 时分别返回 `-1` 和 `1`。
 
 ## 扩展指南
 
@@ -78,10 +74,3 @@ DECIMAL scale 合法性不在 `decimal_column_type` 内检查；生产入口 `sc
 - 调整 DECIMAL 边界或宽度公式时，同时验证 `decimal_column_type`、`decimal_fixed_length_bytes_for_precision`、定长二进制值编码和跨引擎兼容性。风险包括溢出、符号位宽不足、schema precision/scale 不一致以及旧 reader 无法读取超过 38 位的 DECIMAL。
 - 调整时间类型时，要同步 `schema_builder` 的强制可空策略、`Column.timestamp_unit`、`column_value.rs` 的编码及 writer 的 Arrow logical type；改变 `adjusted_to_utc` 或单位会造成兼容性和时区语义变化。
 - 测试必须继续放在独立的 `column_type_mapping_test.rs`，并由 `lib.rs` 的 `#[cfg(test)]` 模块声明接入；不要把测试内嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/dumpformat/parquetfile` 确认源、Go 对照和独立测试；`explore` 及精确 `query/node` 确认 `to_column_type`（第 268 行）、`decimal_column_type`（第 313 行）、`decimal_fixed_length_bytes_for_precision`（第 345 行）的定义与调用链。精确 `callers/callees` 子命令未输出边记录，因此调用关系又由已索引的 `explore` 结果和直接引用搜索交叉核对。
-- 已读生产与边界文件：[`column_type.rs`](./column_type.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`schema_builder.rs`](./schema_builder.rs)、[`writer.rs`](./writer.rs)、[`column_buffer.rs`](./column_buffer.rs) 的直接符号引用。
-- 已读 Go 对照与测试：[`column_type.go`](./column_type.go)、[`column_type_mapping_test.go`](./column_type_mapping_test.go)、[`column_type_mapping_test.rs`](./column_type_mapping_test.rs)。
-- 本任务只生成文档，按计划不运行 Cargo。结构验证要求文档存在且恰好包含本页列出的 11 个固定二级标题；交付前另行运行该命令并检查退出码。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate（见同目录 `Cargo.toml`），实现逻辑窗口向物理窗口的枚举、窗口算子的公共物理计划行为、TiFlash protobuf 下推，以及 TiDB Root 窗口并行化所需的 Shuffle 边界。模块由 `lib.rs` 的 `mod physical_window` 装配并通过 `pub use physical_window::*` 导出；`lib.rs` 中的 `ConcretePhysicalOperator` 实现再把 `ExplainInfo`、`ResolveIndices`、内存统计、相关列抽取、成本计算和 `ToPB` 接入统一 `PhysicalPlan` 接口。
-
-它位于 SQL 规划主链的逻辑/物理分界处：上游是 `logicalop::LogicalWindow` 与父节点要求的 `property::PhysicalProperty`，核心枚举入口是 `ExhaustPhysicalPlans4LogicalWindow`；下游要么形成 TiDB Root `PhysicalWindow`，要么形成 `StoreTp == TiFlash` 的 MPP 窗口并由物理计划任务挂接及 protobuf 构造继续处理。Root 计划的后优化还可能由 `pkg/planner/core/optimizer_runtime.rs::optimize_by_shuffle_for_window` 包装成 `PhysicalShuffle`。
+`PhysicalWindow` 保存窗口函数描述、`PARTITION BY`、`ORDER BY`、窗框及执行存储类型，并实现构造、克隆、Explain、列下标解析、相关列抽取、内存估算、成本委托、任务挂接和 TiFlash PB 序列化。
 
 ## 核心职责
 
@@ -83,9 +81,9 @@ MPP 分区状态存在 `PhysicalProperty` 中：有分区键时优先为 Hash，
 
 ## 与 Go 版本的对应关系
 
-Go 主对照是同目录 `physical_window.go`；Shuffle 对照是 `physical_shuffle.go`，插入入口是 `pkg/planner/core/plan.go::optimizeByShuffle4Window`。字段与主要方法保持一一对应：`PhysicalWindow`、`Init`、`Clone`、`ExtractCorrelatedCols`、`MemoryUsage`、`ExplainInfo`、`ResolveIndices`、`Attach2Task`、`ToPB` 和 `ExhaustPhysicalPlans4LogicalWindow` 均有对应实现；Rust 将 Go 指针/切片改为 `Option`/`Vec`/trait object，并用 `Result` 显式传播错误。
+字段与主要方法保持一一对应：`PhysicalWindow`、`Init`、`Clone`、`ExtractCorrelatedCols`、`MemoryUsage`、`ExplainInfo`、`ResolveIndices`、`Attach2Task`、`ToPB` 和 `ExhaustPhysicalPlans4LogicalWindow` 均有对应实现；Rust 将 Go 指针/切片改为 `Option`/`Vec`/trait object，并用 `Result` 显式传播错误。
 
-Rust 把 Go `tryToGetMppWindows` 的核心分支内联到 `ExhaustPhysicalPlans4LogicalWindow`，并通过 `contains_virtual_window_expression` 明确拒绝窗口参数、排序项和窗框中的虚拟列/相关列。Go 当前实现还会逐函数检查 `CanPushDownToTiFlash`、表达式下推黑名单及 RANGE frame 表达式 PB/下推能力，并在强制 MPP 时产生警告；Rust 枚举处可见的检查集合不同，部分错误推迟到 `ToPB`。因此新增下推能力或拒绝规则时，必须同时核对 Go 的预检查、Rust 枚举条件和 Rust `ToPB`，不能只以“最终序列化会失败”替代候选阶段语义。
+Go 当前实现还会逐函数检查 `CanPushDownToTiFlash`、表达式下推黑名单及 RANGE frame 表达式 PB/下推能力，并在强制 MPP 时产生警告；Rust 枚举处可见的检查集合不同，部分错误推迟到 `ToPB`。因此新增下推能力或拒绝规则时，必须同时核对 Go 的预检查、Rust 枚举条件和 Rust `ToPB`，不能只以“最终序列化会失败”替代候选阶段语义。
 
 Rust 的 `PhysicalShuffle`/receiver 与窗口实现同文件，而 Go 独立放在 `physical_shuffle.go`。Rust 还保存 typed `DataSources` 和 `ByItemArrays`，供列解析和 statement-RU splitter 公式使用；仅 ExplainID 不足以恢复这些信息。
 
@@ -97,12 +95,3 @@ Rust 的 `PhysicalShuffle`/receiver 与窗口实现同文件，而 Go 独立放�
 - 改变 Shuffle 拓扑：维护 `DataSources` 与 `ByItemArrays` 等长不变量，核对 `optimizer_runtime.rs::optimize_by_shuffle_for_window`、RU 遍历和 Clone 深拷贝；相关测试应放在独立的 `physical_window_test.rs`、规划器集成测试或 RU 测试中，不要内嵌到生产文件。
 - 改变 Explain 或日志值输出：覆盖关闭、标记、完全脱敏三种模式，并与 Go golden 输出兼容；特别注意 interval RANGE 边界格式。
 - 性能风险集中在额外排序/Exchange、错误分区导致的数据倾斜、过高 Shuffle 并发和重复深克隆；兼容风险集中在 Explain 文本、PB 字段、collation ID 和 MPP 强制模式的候选选择。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`node --file ...physical_window.rs` 阅读完整 892 行；`query PhysicalWindow`、`query ExhaustPhysicalPlans4LogicalWindow`、`node`/`explore` 确认符号、分派入口及 `base_physical_plan.rs`、`optimizer_runtime.rs` 等调用关系。
-- Rust 源与装配：`pkg/planner/core/operator/physicalop/physical_window.rs`、`lib.rs`、`base_physical_plan.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/task.rs`、`pkg/executor/statement_ru_plan_walk.rs`。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`，包名为 `astersql-planner-core-operator-physicalop`，`lib.rs` 为库入口，`autotests = false`，测试由模块显式装配。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_window.go`、`physical_shuffle.go` 和 `pkg/planner/core/plan.go`。
-- 独立 Rust 测试：`physical_window_test.rs` 覆盖 ID 保持、TiFlash PB executor ID、透传 Schema 下标解析、Shuffle 深克隆/分区键解析/长度错误；更高层 MPP 与窗口计划覆盖见 `pkg/planner/core/enforce_mpp_test.rs`、`integration_test.rs`、`plan_test.rs` 和 `pkg/executor/statement_ru_plan_walk_test.rs`。Go 相关回归入口包括 `pkg/planner/core/plan_test.go`、`explain_ru_test.go` 与 `casetest/windows/window_push_down_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务指定的 11 章节结构命令，并人工核对本文可回答文件定位、运行路径、状态不变量、失败边界和安全扩展入口。

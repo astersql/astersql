@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo 包 `astersql-br-pkg-glue`（`br/pkg/glue/Cargo.toml`），由 crate 根 `br/pkg/glue/lib.rs` 以 `pub mod console_glue` 挂载并通过 `pub use console_glue::*` 再导出。它是 BR 与控制台之间的端口和表现层：一端接收 `Glue::AsConsoleGlue` 提供的 I/O 能力，另一端向 BR 调用方提供提示、列表、表格、定宽换行和彩色文本等操作。
-
-它不是进度条状态机本身。`ConsoleOperations::ShowTask` 会调用同 crate 的 `progressing.rs` 中实现的 `ConsoleOperations::StartProgressBar`；后者再按输出是否为 TTY 选择终端进度或 dummy 日志进度。RustCodeGraph 将本文件识别为被 `glue.rs`、`progressing.rs`、`console_glue_test.rs`、`parity_test.rs`、`br/cmd/br/stubs.rs` 等文件使用。
-
-当前 Rust 生产接线的直接证据是 `br/pkg/gluetikv/glue.rs`：其 `Glue::AsConsoleGlue` 返回内嵌 `StdIOGlue`。`GetConsole` 在实现方不提供控制台时退化为 `NoOPConsoleGlue`，因此 SQL/嵌入式调用不会向用户终端输出。目标目录没有 `doc.go`；包边界由 `lib.rs`、Cargo 元数据和 Go 同路径实现共同确定。
+提供三种端口实现：真实标准输入输出 `StdIOGlue`、完全丢弃 I/O 的 `NoOPConsoleGlue`，以及可预置输入和捕获输出的 `BufferConsoleGlue`。
 
 ## 核心职责
 
@@ -89,11 +85,11 @@ Unix `terminal_width_from_fd` 仅以 `ioctl` 返回码判断成功；若调用�
 
 ## 与 Go 版本的对应关系
 
-主要结构逐项对应 `br/pkg/glue/console_glue.go`：`ConsoleOperations`、三类 ExtraField 构造器、`ShowTask`、`PrintList`、提示与扫描、`Table`、`ConsoleGlue`/NoOP/StdIO、`PrettyString` 和 `Frame` 均保留了 Go 名称和总体分支。`console_glue_test.rs` 复刻 Go `console_glue_test.go` 的彩色文本长度、切片一致性和 Frame 折行金标准；额外 Rust 测试补充了 `Scanln` 单 token、额外 token、毫秒取整和 ANSI 正则语法。
+`console_glue_test.rs` 复刻 Go `console_glue_test.go` 的彩色文本长度、切片一致性和 Frame 折行金标准；额外 Rust 测试补充了 `Scanln` 单 token、额外 token、毫秒取整和 ANSI 正则语法。
 
-Rust 用 `Glue::AsConsoleGlue` 替代 Go 的运行时类型断言；用显式 `in_is_terminal/out_is_terminal/terminal_width` trait 方法替代对 `*os.File` 和 `x/term` 的检查；用 `Result<Box<dyn Read/Write + Send>>` 表达获取端口失败，而 Go 接口直接返回 reader/writer。Go 的 `fmt.Fscanln` 被逐字节扫描逻辑模拟。
+Rust 用 `Glue::AsConsoleGlue` 替代 Go 的运行时类型断言；用显式 `in_is_terminal/out_is_terminal/terminal_width` trait 方法替代对 `*os.File` 和 `x/term` 的检查；用 `Result<Box<dyn Read/Write + Send>>` 表达获取端口失败，而 Go 接口直接返回 reader/writer。
 
-着色方面，Rust 内置最小 SGR 实现而非依赖 `fatih/color`。Go 的 `color.NoColor` 是库全局布尔值，Rust 对应为 `AtomicBool`。终端宽度方面，Go 调用 `term.GetSize`；Rust 在 Unix 直接调用 `ioctl`，非 Unix 固定回退 80。
+终端宽度方面，Go 调用 `term.GetSize`；Rust 在 Unix 直接调用 `ioctl`，非 Unix 固定回退 80。
 
 存在应谨慎对待的实现差异：Rust `PrintList<T>` 要求 `Display + Debug`，并以 stderr 代替 Go 结构化日志；Rust 打印 API接收字符串切片/已格式化文本，不支持 Go `...any` 的通用格式化；Rust 的 UTF-8 字符串切片会在非字符边界 panic，而 Go 字符串切片是任意字节切片。当前证据表明 ASCII/ANSI 主路径与 Go 测试一致，不能据此宣称完整 Unicode 终端布局等价。
 
@@ -108,15 +104,3 @@ Rust 用 `Glue::AsConsoleGlue` 替代 Go 的运行时类型断言；用显式 `i
 修改交互/错误策略时扩展 `Scanln`、`PromptBool` 和失败 I/O 替身测试；尤其要决定非 TTY 默认 true 是否仍满足自动化安全要求，以及输出错误是否继续被吞掉。修改共享缓冲时需测试并发追加顺序和锁中毒策略。所有 Rust 测试仍应保持在独立 `*_test.rs` 文件中，不应内嵌回生产源文件。
 
 兼容性风险主要是 CLI 文案和默认确认语义；正确性风险集中在 ANSI/UTF-8 下标、窄终端和 I/O 错误；性能风险较低，但当前 `PrettyString::SplitAt` 会克隆字符串和区间，长文本反复折行可能产生二次方级复制，优化时必须保持颜色边界与 Go 输出兼容。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter br/pkg/glue` 确认目标 Rust/Go、独立测试、模块入口和进度文件均已索引。
-- RustCodeGraph：`node --file br/pkg/glue/console_glue.rs` 分段读取 1–928 行，核对全部常量、类型、函数、trait、impl、Unix 条件编译和注释；文件关系报告目标被 15 个文件使用。
-- RustCodeGraph：`query ConsoleGlue`、`query GetConsole`、`query StartProgressBar` 确认 Rust/Go 同名入口及 `StartProgressBar` 位于 `progressing.rs:394`。精确 `callers/callees` 查询未产生可消费输出，因此未把缺失的符号级边作为事实。
-- 已读 Rust 边界与接线：`br/pkg/glue/lib.rs`、`br/pkg/glue/glue.rs`、`br/pkg/glue/progressing.rs`、`br/pkg/gluetikv/glue.rs`。
-- 已读 crate 声明：`br/pkg/glue/Cargo.toml`，确认包名、库入口、Go 包映射和依赖边界。
-- 已读 Go 对照：`br/pkg/glue/console_glue.go`；已读 Go 测试：`br/pkg/glue/console_glue_test.go`。
-- 已读 Rust 独立测试：`br/pkg/glue/console_glue_test.rs`、`br/pkg/glue/parity_test.rs`。后者覆盖列表截断、非 TTY 默认确认、GetConsole NoOP 回退、ShowTask 生命周期和公开常量。
-- 用 `rg` 补查图命令未给出的直接 Rust 调用：当前 `GetConsole`、`ShowTask`、`PrintList` 的明确调用分别位于 `br/pkg/glue/parity_test.rs:272`、`:279`、`:222`；`AsConsoleGlue` 的生产覆盖位于 `br/pkg/gluetikv/glue.rs:306`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰含 11 个固定二级标题，并人工复核未修改 Rust、Go、Cargo 或 `plan.md`。

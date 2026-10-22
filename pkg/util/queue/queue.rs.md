@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源码链接：[queue.rs](./queue.rs)。`queue.rs` 是 `astersql-util-queue` crate 的业务实现文件，提供一个泛型、可扩容的环形 FIFO 队列。crate 边界由同目录 `Cargo.toml` 定义，`[lib] path = "lib.rs"`；`lib.rs` 公开 `queue` 模块并以 `pub use queue::*` 再导出本文件的公开符号。仓库根 `pkg/lib.rs` 又通过 `facade_util_queue` 将该 crate 暴露为 `crate::util::queue`，`pkg/lib_test.rs::independent_util_modules_are_wired` 验证该门面可以构造队列。
-
-该实现移植自同目录 `queue.go`。Go 版本当前由 `pkg/executor/join/base_semi_join.go::resetProbeState` 用于保存仍需处理的 probe 行下标；对应 Rust 文件 `pkg/executor/join/base_semi_join.rs` 中的队列接线仍位于注释代码内。虽然 `pkg/executor/join/Cargo.toml` 已声明 `astersql-util-queue` 依赖，现有可检索 Rust 生产源码没有对 `NewQueue` 的有效调用，因此不能把它描述为已经进入 Rust 执行器运行主链。
+Go 版本当前由 `pkg/executor/join/base_semi_join.go::resetProbeState` 用于保存仍需处理的 probe 行下标；对应 Rust 文件 `pkg/executor/join/base_semi_join.rs` 中的队列接线仍位于注释代码内。
 
 ## 核心职责
 
@@ -105,12 +103,9 @@ Rust 的 `Queue<T>`、`NewQueue`、`Push`、`Pop`、`Len`、`IsEmpty`、`Clear`�
 
 - Go 使用 `[]T`；Rust 使用 `Option<Vec<Option<T>>>` 同时表达 nil slice、定长未占用槽以及可移出所有权的元素。
 - Go 构造器返回 `*Queue[T]`；Rust 返回拥有所有权的 `Box<Queue<T>>`。
-- Go 的 `int` 映射为公开容量参数的 `isize`，内部下标和计数使用 `usize`；负参数由显式分支/转换条件保持相应边界。
 - Go 扩容时对元素赋值；Rust 用 `Option::take` 移动元素，因此无需 `T: Clone`。
 - Go `Pop` 返回槽位值但不清零旧引用；Rust `Pop` 必须清空槽位才能移出 `T`。对于队列可观察的值序列二者等价，但资源释放时机可能不同。
 - Rust 以 `Default` 显式提供 Go 零值语义；`NewQueue(0)` 则保留 Go 构造零长度 slice 后首次写入 panic 的行为。
-
-`queue_test.go::TestQueue` 覆盖基础 FIFO、扩容、清空、空弹出和环形游标；`queue_test.rs` 在此基础上增加非 `Copy` 值、绕回后扩容、零值与零容量边界。`migration_aster_unit_test.rs` 进一步固定负容量和负扩容参数行为。
 
 ## 扩展指南
 
@@ -121,13 +116,3 @@ Rust 的 `Queue<T>`、`NewQueue`、`Push`、`Pop`、`Len`、`IsEmpty`、`Clear`�
 - 若把该队列接入 Rust 半连接执行器，应修改真正的调用方而非本容器，并用执行器独立测试证明 reset、复用、扩容和消费顺序；当前注释中的 `base_semi_join.rs` 只能作为迁移意图线索。
 - 若需要并发队列、阻塞语义、容量上限或无 panic API，宜在调用层封装或设计新的明确接口，不应在不评估现有 Go 兼容性的情况下改变这些公开方法。
 - 性能审查应关注满队列扩容的 O(n) 移动、`Clear` 对大对象的延迟释放以及 `Box` 的额外堆分配；普通 `Push`、`Pop` 和观察方法均为摊销 O(1)。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引覆盖 `pkg/util/queue`，其中 `queue.rs` 识别出 12 个符号；通过 `node --file pkg/util/queue/queue.rs` 阅读了完整 180 行实现。
-- RustCodeGraph 符号/调用查询：`query Queue --kind struct`、`query NewQueue --kind function`、`node NewQueue`、`callees NewQueue --file pkg/util/queue/queue.rs --json`、`callees ClearAndExpandIfNeed --file pkg/util/queue/queue.rs --json`、`callers make_slots --file pkg/util/queue/queue.rs --json`。这些查询确认构造器、清空扩容方法和私有分配函数的直接边；通用方法名的 callers/callees 查询存在跨仓库重载歧义，因此外部接线结论另以限定路径的 `rg` 复核，未把歧义结果当作调用事实。
-- 已读 Rust 路径：`pkg/util/queue/queue.rs`、`pkg/util/queue/lib.rs`、`pkg/util/queue/queue_test.rs`、`pkg/util/queue/migration_aster_unit_test.rs`、`pkg/lib.rs`、`pkg/lib_test.rs`、`pkg/executor/join/base_semi_join.rs`。
-- 已读配置路径：`pkg/util/queue/Cargo.toml`、根 `Cargo.toml`、`pkg/executor/join/Cargo.toml`；据此核对独立 crate、workspace 成员、facade 和执行器依赖声明。目标目录没有 `doc.go`。
-- 已读 Go 对照：`pkg/util/queue/queue.go`、`pkg/util/queue/queue_test.go`，并以 `pkg/executor/join/base_semi_join.go` 的导入与 `resetProbeState` 调用确认 Go 生产用途。
-- 行为测试证据（本任务按计划不运行 Cargo）：`queue_test.rs` 覆盖 FIFO、2→4 扩容、绕回后 3→6 扩容、`Clear` 保容量、仅扩不缩、默认零值、空 `Pop` 文案和零容量 `Push` panic；`migration_aster_unit_test.rs` 覆盖重用、负构造容量 panic 与负目标容量只清空不扩容。
-- 结构验证使用任务指定命令，要求本文档存在且固定二级标题恰好为 11 个；验证结果在任务交付时记录。

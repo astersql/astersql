@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/table/constraint.rs` 属于 `astersql-table` crate 的 CHECK 约束边界模块。`pkg/table/lib.rs` 以 `pub mod constraint` 挂载该模块，并通过 `pub use constraint::*` 将公共类型和函数提升到 crate 根。它位于解析器 AST、表元数据与表达式运行时之间：一部分函数清理并包装已经持久化的 `TableInfo.Constraints`，另一部分函数在 DDL 校验阶段检查 CHECK 表达式、AUTO_INCREMENT 和外键引用动作，还提供把约束 SQL 文本构建成可执行表达式的入口。
-
-当前 Rust 生产接线并不等同于 Go 的完整调用面。`pkg/table/tables/tables.rs::table_from_meta` 已调用 `constraint::LoadCheckConstraint`，把清理后的约束装入运行时表对象；代码搜索未发现 `IsSupportedExpr`、`ContainsAutoIncrementCol`、`HasForeignKeyRefAction` 或 `IfCheckConstraintExprBoolType` 的 Rust 生产调用者，它们目前主要由独立 Rust 测试验证。Go 侧则在 `pkg/ddl/create_table.go` 和 `pkg/ddl/executor.go` 中串联这些校验。因此，本文件既包含已接线的元数据加载逻辑，也包含待 Rust DDL 主链消费的 Go 对齐 API。
+该模块不执行行级 CHECK 求值、不维护 DDL 状态机，也不写入持久化存储；它提供的是元数据修复、表达式构建和 DDL 合法性校验原语。
 
 ## 核心职责
 
@@ -98,18 +96,14 @@ RustCodeGraph 的文件节点报告 `pkg/table/constraint.rs` 被 7 个文件使
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/table/constraint.go`。Rust 保留了 Go 的 `Constraint`、六个公开函数以及主要内部辅助的职责和命名，核心语义对应如下：
-
 - 两版 `LoadCheckConstraint` 都先惰性删除引用不到 Public 列的约束，再生成运行时包装。Rust 模型使用值向量，因此通过克隆构造独立 boxed 值；Go 使用指针切片。
 - 两版表达式构建都调用 `ParseSimpleExpr` 并附带 `WithTableInfo`。Go 会对失败执行 `errors.Trace` 并记录“wrong check constraint expression”日志；Rust 只包装并返回错误，这是可观测性差异。
 - Go 通过 `ast.Walk` 的 visitor 检查禁止节点；Rust 对 `ExprKind` 做显式递归。禁止函数集合与 Go 对齐，并由 `pkg/table/go_merge_49_test.rs::go_merge_49_rejects_embed_text_in_check_constraint` 特别覆盖 `embed_text`。
 - Go 只需处理其 AST 中的子查询节点；Rust 同时明确拒绝 `Subquery`、`CompareSubquery`、`InSubquery`、`ExistsSubquery`，使本地枚举的所有子查询形态落入同一错误语义。
 - Go 用 `nil fkInfos` 在 AST 路径和元数据路径之间切换；Rust 用 `Option<Vec<Box<FKInfo>>>` 精确保留该语义。`None` 对应 nil，`Some(empty)` 对应非 nil 空切片。
-- 两版都按规范化小写名比较列，并以 ON DELETE/ON UPDATE 是否为零或 NoOption 判定有无引用动作。
 - Go 通过 `GetAutoIncrementColInfo` 获取自增列；Rust直接扫描 `Columns` 的标志。两者在合法表元数据下等价。
-- 两版布尔检查都使用当前数据库构建表达式，再检查 MySQL 的布尔类型标志。
 
-最大的迁移状态差异不在本文件内部，而在上游接线：Go 的 `pkg/ddl/create_table.go` 和 `pkg/ddl/executor.go` 会依次使用支持性、自增、外键动作和布尔类型检查；当前 Rust 搜索只确认这些函数的测试调用，没有确认等价生产调用。扩展或宣称 DDL CHECK 完整支持前，应先补齐并验证这条上游链路，而不是仅依据这些 API 已存在。
+最大的迁移状态差异不在本文件内部，而在上游接线：Go 的 `pkg/ddl/create_table.go` 和 `pkg/ddl/executor.go` 会依次使用支持性、自增、外键动作和布尔类型检查；当前 Rust 搜索只确认这些函数的测试调用，没有确认等价生产调用。
 
 ## 扩展指南
 
@@ -120,16 +114,3 @@ RustCodeGraph 的文件节点报告 `pkg/table/constraint.rs` 被 7 个文件使
 - 修改无效约束清理时，注意函数会原地改变 `TableInfo`；应同时验证返回包装和源元数据的结果，并覆盖缺失列、非 Public 列、空依赖和多个依赖列。
 - 若将校验 API 接入 Rust DDL，最可能的接入点是创建/变更 CHECK 元数据的 Rust DDL 构建流程。应逐项对照 Go `pkg/ddl/create_table.go` 与 `pkg/ddl/executor.go` 的调用顺序，并增加独立 DDL 测试，覆盖禁止表达式、自增列、FK 引用动作和非布尔表达式；不可只靠本模块单测声称端到端完成。
 - 性能改动应重点衡量表达式重复解析、约束元数据克隆与 FK 嵌套扫描；兼容性改动则需保持错误码、错误参数顺序、`CIStr.L/O` 的选择和 Go nil 语义。
-
-## 验证依据
-
-本说明使用了以下直接证据：
-
-- RustCodeGraph：`status` 确认索引包含 7032 个 Rust 文件且索引时间晚于目标源文件；`node --file pkg/table/constraint.rs --offset 1 --limit 500` 读取完整 400 行源码并报告文件级使用者；对六个公开函数执行 `query`，确认 Rust/Go 同名定义；对精确符号执行 `callers/callees` 未返回边，因此按技能规则用源码搜索补齐调用证据。
-- 源码与装配：`pkg/table/constraint.rs`、`pkg/table/lib.rs`、`pkg/table/tables/tables.rs`。
-- crate 声明：`pkg/table/Cargo.toml`，确认 crate 名、库入口、直接依赖别名与 Go 包迁移元数据。
-- Go 对照：`pkg/table/constraint.go`；上游调用证据来自 `pkg/ddl/create_table.go`、`pkg/ddl/executor.go`、`pkg/table/table.go` 和 `pkg/table/tables/tables.go`。
-- Rust 独立测试：`pkg/table/constraint_test.rs` 验证表达式构建返回可执行表达式；`pkg/table/constraint_migration_aster_unit_test.rs` 验证无效列清理、大小写不敏感自增列匹配、FK 元数据动作冲突及 `None`/`Some(empty)` 分支；`pkg/table/go_merge_49_test.rs` 验证 `embed_text` 被拒绝。
-- 人工复核：文档已区分已接线行为、公开但未发现生产调用的 API 和 Go 侧完整主链；没有把文件级依赖误写成符号调用，也没有把测试覆盖误写成端到端支持。
-
-本任务是纯文档分析，依计划不运行 Cargo。交付前使用任务规定的正则结构检查，要求本文件存在且恰有 11 个固定二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor` crate 中 `LOAD STATS` 的 Rust 侧核心模型，模块由 [`pkg/executor/lib.rs`](lib.rs) 的 `pub mod load_stats` 对外导出。它把“执行器登记一个待上传的统计文件”和“取得文件字节后解码并写入统计系统”拆成两个阶段，并以 `LoadStatsRuntime` trait 隔离会话值存储、JSON 解码、Domain/StatsHandle 查询及 InfoSchema 选择等基础设施。
-
-当前接线状态需要特别区分：本文件已经实现 `LoadStatsExec::{Open,Next,Close}` 与 `LoadStatsInfo::Update` 的分支逻辑，但仓库搜索没有发现 `LoadStatsRuntime` 的实现、Rust 侧 `LoadStatsExec`/`LoadStatsInfo` 的构造点或直接调用测试。Rust [`pkg/executor/builder.rs`](builder.rs) 的 `buildLoadStats` 只通过 `build_leaf(ExecutorKind::LoadStats, plan)` 构造通用叶执行器，并未实例化这里的类型。因此这里是已导出的、可供适配器接入的移植核心，不应描述为当前 Rust 主执行链已经完整连通。完整生产语义可由同路径 Go 实现 [`pkg/executor/load_stats.go`](load_stats.go) 及其构建器、文件传输处理器核对。
+当前接线状态需要特别区分：本文件已经实现 `LoadStatsExec::{Open,Next,Close}` 与 `LoadStatsInfo::Update` 的分支逻辑，但仓库搜索没有发现 `LoadStatsRuntime` 的实现、Rust 侧 `LoadStatsExec`/`LoadStatsInfo` 的构造点或直接调用测试。
 
 ## 核心职责
 
@@ -78,7 +76,6 @@ Go 生产链的直接证据是：[`pkg/executor/builder.go`](builder.go) 的 `bu
 
 ## 与 Go 版本的对应关系
 
-- `LoadStatsExec`、`LoadStatsInfo.path`、`Open`、`Next`、`Close`、`Update` 的主要分支和错误文本与 [`pkg/executor/load_stats.go`](load_stats.go) 对齐：先重置 chunk；空路径报错；遗留会话选项清理并报错；JSON null no-op；句柄为空报错；其余载荷交给统计句柄。
 - Go 将 `exec.BaseExecutor` 和 `sessionctx.Context` 直接嵌入/保存，Rust 改用 `LoadStatsRuntime` 与不透明 `LoadStatsContext`。这是依赖反转，不代表真实 session/domain 适配已经存在。
 - Go 的 `loadStatsVarKeyType` 是独立命名类型并实现 `Stringer`，可避免 context key 碰撞；Rust 目前只是 `i32` 类型别名加独立字符串函数，类型系统不能阻止与其他 `i32` 键混用。
 - Go 的 `LoadStatsInfo.Update` 直接构造 `util.JSONTable` 并选择当前 InfoSchema；Rust 的 `DecodedStats.value` 把具体 JSON 类型擦除，这些语义必须由 `LoadStatsRuntime` 实现补齐。
@@ -92,13 +89,3 @@ Go 生产链的直接证据是：[`pkg/executor/builder.go`](builder.go) 的 `bu
 - 调整 `Next` 时应保持 chunk 重置发生在校验之前、遗留状态清理发生在返回错误之前。改变这两个顺序会产生兼容性差异。
 - 测试必须放在独立 Rust 文件（建议 `pkg/executor/load_stats_test.rs`，并在 `lib.rs` 用 `#[cfg(test)] mod load_stats_test;` 接入），不要内嵌进生产源文件。至少覆盖：空路径仍重置 chunk；遗留选项被清理且不安装新值；正常安装路径副本；解码错误短路；null no-op 不查句柄；无句柄错误；最终加载成功/失败传播。完整接线还应覆盖空文件 no-op 和文件读取失败后的会话状态。
 - 性能风险主要在路径克隆、JSON 解码与统计载荷大小；本核心只发生一次路径克隆，不应在这里增加第二次解析或大对象复制。兼容性风险集中于固定错误文本、null 判定、InfoSchema 时点和最终加载参数。
-
-## 验证依据
-
-- 源码：[`pkg/executor/load_stats.rs`](load_stats.rs)，逐项核对全部类型、trait、常量、方法及分支；文件无条件编译项，只有模块级 `allow(non_snake_case)`。
-- 模块与依赖：[`pkg/executor/lib.rs`](lib.rs) 的 `pub mod load_stats`；[`pkg/executor/Cargo.toml`](Cargo.toml) 的 crate 定义以及 `astersql-errors`、`astersql-util-chunk` 路径依赖。`pkg/executor/doc.go` 不存在，故无额外包级契约可读。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`explore "pkg/executor/load_stats.rs LoadStatsExec LoadStatsInfo LoadStatsRuntime"` 返回本文件完整源码及 `Next`/`Update` 到 trait 方法的边。对 `Next`/`Update` 的全局 callers 查询受同名符号歧义影响，未作为调用证据。
-- Rust 接线搜索：对 `impl LoadStatsRuntime`、`LoadStatsExec {`、`LoadStatsInfo {`、`LOAD_STATS_VAR_KEY`、`DecodeStatsJSON` 等执行仓库级 `rg`；除本文件外未发现运行时实现或本类型的 Rust 构造/调用点。[`pkg/executor/builder.rs`](builder.rs) 仅显示通用 `ExecutorKind::LoadStats` 叶节点构建。
-- Go 对照：[`pkg/executor/load_stats.go`](load_stats.go)、[`pkg/executor/builder.go`](builder.go)、[`pkg/executor/plan_replayer.go`](plan_replayer.go)，共同证明构造、会话登记、文件读取、空文件处理、JSON null、StatsHandle 与 InfoSchema 语义。
-- 测试证据：未发现本文件对应的独立 Rust 单元测试。Go [`pkg/executor/statement_ru_plan_walk_integration_test.go`](statement_ru_plan_walk_integration_test.go) 覆盖 `LoadStatsVarKey` 遗留文件传输状态对语句完成流程的影响；[`pkg/server/handler/optimizor/statistics_handler_test.go`](../server/handler/optimizor/statistics_handler_test.go) 包含实际 `load stats` SQL 使用；parser 测试仅证明语法接受，不能证明本执行器运行语义。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级标题，并人工复核所有“已接线/未接线”结论均有上述源码或搜索证据。

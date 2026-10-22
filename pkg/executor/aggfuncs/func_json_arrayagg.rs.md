@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-aggfuncs` crate，由 `pkg/executor/aggfuncs/lib.rs` 以 `pub mod func_json_arrayagg` 公开。它提供 Rust 侧 `JSON_ARRAYAGG(expr)` 的一个轻量有序部分状态 `JsonArrayAgg`：收集已经转换成 `SpillValue` 的元素、合并两份状态、重置状态并暴露结果切片。
-
-需要区分“模块已公开”和“完整执行链已接通”。`pkg/executor/aggfuncs/builder.rs::build` 会把 `FunctionName::JsonArrayAgg` 选择为 `AggImplementation::JsonArrayAgg`，但当前生产代码没有把该枚举分支构造成或调用本文件的 `JsonArrayAgg`；RustCodeGraph 显示该结构体的直接使用者是测试文件。因此，本文件目前是可执行、受测试的状态逻辑，而不是 Go `jsonArrayagg` 执行器接口的完整替代品。
+提供 Rust 侧 `JSON_ARRAYAGG(expr)` 的一个轻量有序部分状态 `JsonArrayAgg`：收集已经转换成 `SpillValue` 的元素、合并两份状态、重置状态并暴露结果切片。
 
 ## 核心职责
 
@@ -68,17 +66,14 @@ Go 实现会传播表达式求值、JSON 值转换、最终 JSON 构造及不支
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_json_arrayagg.go`。`partialResult4JsonArrayagg.entries []any` 对应 Rust 的有序元素向量；`ResetPartialResult` 对应 `reset`；`MergePartialResult` 的 `dst = append(dst, src...)` 对应目标调用 `merge(source)`；空 partial 最终写 `NULL` 的判断对应 `result() == None`；`getValMemDelta` 的值统计意图对应 `value_memory_delta`。
-
 Rust 当前只覆盖上述状态核心，未等价覆盖以下 Go 行为：
 
-- `AllocPartialResult` 返回 partial 结构和切片基础内存；Rust `Default` 不返回该内存增量。
 - `UpdatePartialResult` 逐 row 求值、调用 `getRealJSONValue`、接受 `nil` 并传播转换/类型错误；Rust `update` 只接受已转换且非 null 的 `SpillValue`。
 - `AppendFinalResult2Chunk` 调用 `CreateBinaryJSONWithCheck` 并写 chunk；Rust `result` 只返回切片。
 - `SerializePartialResult`、`DeserializePartialResult` 和 `deserializeForSpill` 由 Go 类型直接实现；Rust spill helper 当前接到另一个 `JsonArrayPartialResult`。
 - Go merge 返回零内存增量且通常只复制 interface 槽位；Rust merge 深克隆拥有型 `String`/字节缓冲，实际成本不同但同样不报告增量。
 
-Go 测试 `func_json_arrayagg_test.go` 覆盖整数、浮点、字符串、JSON、日期、时长、decimal 转换、NULL、合并和内存统计。Rust 独立测试覆盖现有 `SpillValue` 变体的计量、顺序、合并和重置，但没有证明上述完整 Go 执行器接口已经移植。
+Rust 独立测试覆盖现有 `SpillValue` 变体的计量、顺序、合并和重置，但没有证明上述完整 Go 执行器接口已经移植。
 
 ## 扩展指南
 
@@ -89,16 +84,3 @@ Go 测试 `func_json_arrayagg_test.go` 覆盖整数、浮点、字符串、JSON�
 若调整 merge，必须保留分区合并的顺序契约，并决定克隆成本是否计入内存跟踪；若调整计量口径，应与 Go `getValMemDelta` 和 `func_json_arrayagg_test.go::jsonArrayaggMemDeltaGens` 对齐，特别关注 `len`/`capacity`、JSON 类型码、NULL、decimal 到浮点转换和向量容量。
 
 兼容性风险主要是 SQL NULL/JSON null 区分、输入顺序、跨 partial 合并顺序和类型转换；性能风险主要是逐元素深克隆、向量扩容以及计量值与实际容量偏差。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/aggfuncs/func_json_arrayagg.rs`，符号 `JsonArrayAgg::{update, merge, reset, result}` 与 `value_memory_delta`。
-- crate/模块边界：`pkg/executor/aggfuncs/Cargo.toml`、`pkg/executor/aggfuncs/lib.rs`。
-- 公共状态类型：`pkg/executor/aggfuncs/aggfuncs.rs::SpillValue`、`JsonArrayPartialResult`。
-- 构建入口：`pkg/executor/aggfuncs/builder.rs::build`、`AggImplementation::JsonArrayAgg`；`builder_test.rs::build_rejects_dedup_json_and_invalid_percentile_modes`。
-- Rust 独立测试：`pkg/executor/aggfuncs/func_json_arrayagg_test.rs`；补充场景位于 `pkg/executor/aggfuncs/go_scenario_coverage_test.rs`。
-- Go 对照与测试：`pkg/executor/aggfuncs/func_json_arrayagg.go`、`pkg/executor/aggfuncs/func_json_arrayagg_test.go`。
-- spill 邻接证据：`pkg/executor/aggfuncs/spill_serialize_helper.rs::serialize_json_array`、`spill_deserialize_helper.rs::deserialize_json_array`。
-- RustCodeGraph 查询：`status` 确认索引含 11,467 个文件；`query JsonArrayAgg`、`query json_arrayagg`、`node` 读取上述符号/文件，调用关系未发现生产代码到本结构体方法的静态边，直接使用落在测试文件。由于方法名 `update`/`merge` 在全仓高度重载，结论以带文件的节点、精确文本引用和模块入口交叉核验。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工核对文档未把未接线能力写成已支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-chunk` crate（`pkg/util/chunk/Cargo.toml`），由 `pkg/util/chunk/internal/group1/lib.rs:473` 通过 `include!("../../codec.rs")` 注入内部聚合模块，再由 `pkg/util/chunk/lib.rs:110-113` 公开重导出。它处在 Chunk 列式内存表示与字节传输格式之间：`Codec` 负责完整 Chunk/Column 的序列化与反序列化，`Decoder` 负责把一次解出的中间 Chunk 分批搬入调用方 Chunk，`GetFixedLen`、`EstimateTypeWidth` 则把同一套物理类型宽度知识提供给规划和执行层。
-
-从当前 Rust 调用证据看，宽度接口已经进入生产链：`pkg/executor/utils.rs:103` 用 `EstimateTypeWidth` 估算行宽，`pkg/planner/cardinality/row_size.rs:125,135,191,213`、`pkg/planner/core/plan_cost_ver2.rs:62,119,131,223` 和 `pkg/planner/core/operator/physicalop/physical_sort.rs:166` 用它们估算基数、成本或排序内存。对 `NewCodec`、`NewDecoder` 的 Rust 文本引用目前位于本文件及 `codec_test.rs`、`codec_2_aster_unit_test.rs`；因此 Chunk 字节格式和增量解码逻辑已经实现并被独立测试覆盖，但未从搜索结果确认到这些构造器的生产调用者。
+处在 Chunk 列式内存表示与字节传输格式之间：`Codec` 负责完整 Chunk/Column 的序列化与反序列化，`Decoder` 负责把一次解出的中间 Chunk 分批搬入调用方 Chunk，`GetFixedLen`、`EstimateTypeWidth` 则把同一套物理类型宽度知识提供给规划和执行层。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ crate 边界由 `pkg/util/chunk/Cargo.toml` 定义，crate 名为 `astersql-util
 
 Rust 文件逐段移植自 `pkg/util/chunk/codec.go`：列帧字段顺序、固定宽类型表、宽度估算公式、Decoder 的 8 行对齐、变长 offset 平移、bitmap 移位拼接及列交换语义均保持一致。Rust 使用 `usize::MAX` 表示 Go 的 `VarElemLen = -1`；分支仅做相等判断，所以在本文件内语义等价（`codec.rs:182-208`；`codec.go:162-185`）。
 
-关键实现差异是内存安全策略。Go 用 `unsafe.Slice` 零拷贝重解释 offsets，并让解码列切片直接引用输入；Rust 用 `to_vec` 和逐项本机端序转换建立自有存储，因此通常增加分配/复制，但避免输入切片悬垂。Rust 的 `allNotNullBitmap` 在静态定义处直接初始化为 `0xff`，对应 Go 的零值数组加 `init()` 填充（`codec.rs:155-180`；`codec.go:143-160,218-222`）。
+关键实现差异是内存安全策略。Go 用 `unsafe.Slice` 零拷贝重解释 offsets，并让解码列切片直接引用输入；Rust 用 `to_vec` 和逐项本机端序转换建立自有存储，因此通常增加分配/复制，但避免输入切片悬垂。
 
 测试对应关系如下：`codec_test.rs:35-100` 对齐 Go `TestCodec` 和 `TestEstimateTypeWidth` 的混合固定/变长/NULL 往返与宽度边界；`codec_2_aster_unit_test.rs:49-131` 增补完整 `Decode` 重编码一致性和 Decoder 跨 bitmap 边界的分批消费；Go 基准位于 `codec_test.go:98-191`，当前 Rust 独立测试中没有对应性能基准。因此功能语义有证据，Rust 相对 Go 的分配成本没有本任务内的基准证据。
 
@@ -85,12 +83,3 @@ Rust 文件逐段移植自 `pkg/util/chunk/codec.go`：列帧字段顺序、固�
 优化 Decoder 时，主要接入点是 `Reset`、`Decode`、`decodeColumn` 和 `ReuseIntermChk`。必须维持三项不变量：各列搬运相同行数；变长 offset 在目标中连续且源首 offset 可归零；bitmap 末字节无超出有效行数的置位。若要减少 Rust 当前的 `to_vec` 前缀裁剪成本，可考虑保存游标而非反复复制，但需同步调整交换路径和所有相关测试，不能改变 Go 可观察语义。
 
 若要为不可信输入增加错误返回，应设计新的 fallible API 或兼容包装层，明确旧 panic API 的迁移策略；不要悄悄吞掉格式错误。若要声明跨架构线格式，则还必须把 offsets 从本机端序改成明确端序，并提供 Go/Rust 兼容迁移与版本识别方案。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/chunk` 确认目标、Go 对照和独立测试均在索引内。
-- RustCodeGraph `node --file pkg/util/chunk/codec.rs`：读取完整 352 行生产实现；`query NewCodec/NewDecoder/GetFixedLen/EstimateTypeWidth` 确认 Rust/Go 同名符号及路径；精确 `callers` 未产出边，因此未据此扩张生产调用结论。
-- RustCodeGraph 读取：`pkg/util/chunk/codec.go`、`pkg/util/chunk/codec_test.rs`、`pkg/util/chunk/codec_2_aster_unit_test.rs`、`pkg/util/chunk/codec_test.go`、`pkg/util/chunk/lib.rs`。
-- 配置与装配读取：`pkg/util/chunk/Cargo.toml`、`pkg/util/chunk/internal/group1/lib.rs:473`；文本调用核验覆盖 `pkg/executor/utils.rs`、`pkg/planner/cardinality/row_size.rs`、`pkg/planner/core/plan_cost_ver2.rs`、`pkg/planner/core/operator/physicalop/physical_sort.rs`。
-- 行为测试证据：混合列 Encode/DecodeToChunk 往返和宽度分段见 `codec_test.rs:35-100`；完整 Decode、NULL 槽、重编码一致性、Decoder 分批追加及 bitmap 边界见 `codec_2_aster_unit_test.rs:49-131`；Go 原始语义及基准见 `codec_test.go:26-191`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前另执行固定 11 章节结构检查，并人工核对本文件只陈述上述源码、图查询、Cargo、Go 与测试能够支持的事实。

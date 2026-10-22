@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-distsql` crate，由 [`pkg/distsql/lib.rs`](lib.rs) 以公开模块 `select_result` 导出。它位于 DistSQL 请求发送与上层执行消费之间：[`pkg/distsql/distsql.rs`](distsql.rs) 的 `Select`、`SelectWithRuntimeStats`、`Analyze`、`Checksum` 和 `GenSelectResultFromMPPResponse` 先从 `KvClient` 得到 `ResponseSource`，再构造本文件的 `selectResult`；调用方随后通过 `SelectResult` trait 拉取原始字节或行，并在关闭时归集协处理器运行时统计。
-
-这是一个明确标注为“精简版”的 Rust 移植。它已经接入 Rust DistSQL 发送入口和 `astersql-util-execdetails` 统计集合，但并不等同于 Go [`pkg/distsql/select_result.go`](select_result.go) 的完整实现：Rust 使用仓库内简化的 `SelectResponse`/`ResponseSource`，没有在本文件中完成 protobuf 解码、真实 TiDB `chunk.Chunk` 解码、SQL killer、内存 tracker、telemetry、backoff/RPC 明细和完整 intermediate-output 通道处理。
-
-crate 边界由 [`pkg/distsql/Cargo.toml`](Cargo.toml) 确认：本文件直接依赖本 crate 的响应/错误类型、`astersql-config` 的全局 copr-cache 配置，以及 `astersql-util-execdetails` 的执行统计类型；这些依赖均为工作区路径依赖。文件没有条件编译项。
+定义结果消费协议：`SelectResult` 支持 `NextRaw`、批量 `Next`、所有权转换 `IntoIter`、`Close` 和可选并发度；`SelectResultIter` 支持逐行 `Next` 与 `Close`。
 
 ## 核心职责
 
@@ -109,8 +105,6 @@ RustCodeGraph 对公开串行/排序构造函数没有找到生产调用者；�
 
 ## 与 Go 版本的对应关系
 
-对照文件是 [`pkg/distsql/select_result.go`](select_result.go)，Rust 保留了主要名称和高层意图：`SelectResult`/`SelectResultIter`、串行拼接、有序归并、`selectResult` 拉取与关闭、execution summaries 归集、runtime stats 合并/显示及 cache-hit 计算。独立 Rust 测试中的 `go_merge_42_*` 用例特别覆盖了缺失/畸形 summary、TiFlash executor ID、read-pool details、limiter wait 和关闭错误重放。
-
 仍存在重要语义差异：
 
 - Go 消费真实 `kv.Response`/protobuf `tipb.SelectResponse`，并按 Default/Chunk 两种编码解码到 TiDB `chunk.Chunk`；Rust 接收已简化的字符串行或 `raw_data`，所有行转为 `Scalar::String`。
@@ -122,8 +116,6 @@ RustCodeGraph 对公开串行/排序构造函数没有找到生产调用者；�
 - Go sorted close 遇到第一个错误即返回，并回收已遍历输入的内存；Rust同样首错返回，但没有内存 tracker。Go serial close 与 Rust一致，遍历全部输入并保留最后错误。
 - Go runtime stats 还包含并发度、build/fetch duration、backoff 和更丰富 RPC 统计；Rust `request_stats` 只是命令到次数的 map，且本文件没有填充路径，只支持克隆/合并已提供的数据。
 
-因此，本文件适合被描述为 Go 结果消费与统计主干的可运行子集，而不是功能等价完成版。
-
 ## 扩展指南
 
 - 增加真实类型/编码支持时，优先扩展 `Scalar`、响应模型及 `consume_response`，并避免用 Debug 字符串定义跨类型 SQL 顺序；若接入 TiDB 类型系统，应同步替换 `compare_rows` 的比较依据。
@@ -134,16 +126,3 @@ RustCodeGraph 对公开串行/排序构造函数没有找到生产调用者；�
 - 优化排序性能时，可把 `heads` 的线性选择替换为堆，但必须保留降序、多键、空/缺列和相等 key 语义，并为每路补充/关闭失败编写回归测试。
 - 若新增上层使用点，应从 `pkg/distsql/distsql.rs` 的 `DistSQLSelectResult` 委托或明确的组合器构造入口接线，并用 RustCodeGraph/源码搜索确认调用边；不要仅因 Go 版本有调用就宣称 Rust 已接线。
 - 对齐 Go 完整语义时要把未移植项拆成独立工作：上下文取消、protobuf/chunk 解码、内存/metrics/telemetry、intermediate outputs、完整请求统计。一次局部修改不应把这些差异隐式视作已解决。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 Rust 7,032 个；本文件被识别为 854 行、75 个符号。
-- RustCodeGraph `node --file pkg/distsql/select_result.rs`：逐段读取全部 1–854 行，核对 traits、结构体、所有 impl、排序/串行流程、统计与关闭实现；未发现条件编译项。
-- RustCodeGraph `callees NewSortedSelectResults`：Rust 构造器调用各输入的 `IntoIter` 并实例化 `sortedSelectResults`；同名 Go 构造器还初始化比较函数、key columns 和 heap。
-- RustCodeGraph `callees fetchResp` / `callees consume_response`：确认 `fetchResp -> next_response_with_error -> consume_response`，以及 `consume_response -> record_cop_evidence` 的核心下游边。泛型/trait 动态分派使若干 `callers` 查询没有返回结果，因此又以精确导入和构造源码核对上游。
-- [`pkg/distsql/distsql.rs`](distsql.rs)：核对 `DistSQLSelectResult` 的 trait 委托，以及 `Select`、`SelectWithRuntimeStats`、`Analyze`、`Checksum`、`GenSelectResultFromMPPResponse` 的生产构造与统计上下文接线。
-- [`pkg/distsql/lib.rs`](lib.rs)：核对公开模块边界及 `DistSqlError`、`DistSqlResult`、`StoreType` 等 crate 根类型；[`pkg/distsql/Cargo.toml`](Cargo.toml) 核对 crate 名称、lib 入口和直接工作区依赖。
-- [`pkg/distsql/select_result.go`](select_result.go)：读取接口、sorted/serial、核心 fetch/Next/NextRaw、summary 归集、关闭、通道迭代和 runtime stats 实现，逐项区分 Rust 已有行为与未移植能力。
-- [`pkg/distsql/select_result_test.rs`](select_result_test.rs)：核对 raw/row 共享消费、串行推进、升序归并、通道 0、cache ratio、summary 校验、read-pool 合并、Close 幂等/错误重放及组合器 `IntoIter` 不支持等边界。
-- [`pkg/distsql/select_result_test.go`](select_result_test.go)：核对 Go 的未消费统计关闭顺序、limiter wait、intermediate-output 多通道、转换后失效和 MPP summary 路由等对照语义。
-- 未运行 Cargo 或代码测试：本任务是纯文档分析，任务计划明确禁止 Cargo；交付只执行文档结构验证和人工事实复核。

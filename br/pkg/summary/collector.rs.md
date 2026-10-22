@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-br-pkg-summary` 的核心聚合实现，crate 根 `br/pkg/summary/lib.rs` 通过 `#[path = "collector.rs"] pub mod collector` 挂载它，并重新导出常量、字段类型、`LogCollector`、构造/初始化函数和格式化辅助函数。相邻的 `br/pkg/summary/summary.rs` 提供包级薄包装，业务调用通常经这些包装访问本文件维护的全局收集器，而不是直接操作具体类型 `logCollector`。
-
-`br/pkg/summary/Cargo.toml` 将该 crate 声明为 library，并用 `package.metadata.porting.go-package = "br/pkg/summary"` 标明 Go 来源。目标文件直接对应 `br/pkg/summary/collector.go`，职责是为 BR 备份、恢复及相关工具聚合 range 成败、阶段耗时、整数计数和数据量，最终生成一条 success/failed summary 结构化日志。它不是备份或恢复执行器，也不拥有任务取消、重试或存储资源。
+提供轻量的 `Field` / `FieldValue` / `zap` 构造器和十进制 `units::HumanSize`，复现本模块实际用到的 Go zap 与 `docker/go-units` 行为子集。
 
 ## 核心职责
 
@@ -96,8 +94,6 @@ RustCodeGraph 将 `collector.rs` 标为被 13 个文件使用，并识别到直�
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/summary/collector.go` 是最直接的语义基线：常量、`LogCollector` 方法集、状态字段、按键累加、失败去重、摘要分支、字段名规范化和部分清理集合均逐项对应。`br/pkg/summary/summary.go` 与 Rust `summary.rs` 都把包级函数转发到 collector，并另存最近成功状态。
-
 主要实现差异如下：
 
 - Go 的 `CollectSuccessUnit` 接受 `any` 并忽略未知动态类型；Rust 用 `SummaryValue` 封闭枚举，使调用期只能提供 `Duration` 或 `UInt64`。
@@ -107,7 +103,7 @@ RustCodeGraph 将 `collector.rs` 标为被 13 个文件使用，并识别到直�
 - Go 全局变量赋值本身未在 `SetLogCollector` 中加锁；Rust 替换全局 collector 时也走同一个 mutex。
 - Go `time.Time.Add(-t)` 可表达向前调整；Rust 用 `Instant -= t`，类型与异常边界不同，但正常时长下语义一致。
 
-`br/pkg/summary/collector_test.go::TestSumDurationInt` 与 Rust `collector_test.rs::test_sum_duration_int` 都验证同名 duration/int 的累加和七字段成功摘要。Rust `parity_test.rs::go_rust_public_contract_matches` 进一步验证失败去重、取消分流、同文案不同类型不视作取消、部分 map 重置、键格式化和 human-size 行为。
+Rust `parity_test.rs::go_rust_public_contract_matches` 进一步验证失败去重、取消分流、同文案不同类型不视作取消、部分 map 重置、键格式化和 human-size 行为。
 
 ## 扩展指南
 
@@ -119,16 +115,3 @@ RustCodeGraph 将 `collector.rs` 标为被 13 个文件使用，并识别到直�
 - 测试必须继续放在独立文件：Go 对照核心场景在 `br/pkg/summary/collector_test.rs`，更全面的跨语言契约在 `br/pkg/summary/parity_test.rs`，crate 测试挂载位于 `br/pkg/summary/lib.rs`。不要把测试模块内嵌回 `collector.rs`。
 
 兼容风险集中在日志 key/值类型、失败去重、清理集合和公开 Go 风格符号；性能风险集中在全局锁、锁内日志回调、map 增长和错误 `Arc` 的保留时间。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；目标区域被索引。
-- RustCodeGraph `files --filter br/pkg/summary`：确认 `collector.rs`、`summary.rs`、crate 根及三个独立 Rust 测试文件的模块范围。
-- RustCodeGraph `explore "br/pkg/summary/collector.rs LogCollector Field InitCollector NewLogCollector SetLogCollector CollectSuccessUnit Summary"`：确认目标文件 81 个符号、包级包装调用和 BR 恢复/工具调用边；图中目标文件被 13 个文件使用。
-- RustCodeGraph `query LogCollector --kind struct`、`query NewLogCollector --kind function`、`query SetLogCollector --kind function`：消除 Go/Rust 同名符号歧义并定位 Rust 定义。
-- RustCodeGraph `node --file br/pkg/summary/collector.rs`：逐段核验全部 581 行实现，重点复核 `LogCollector`、`logCollector`、`COLLECTOR`、`InitCollector`、`NewLogCollector`、`Summary`、`SetLogCollector` 和 `is_context_canceled`。
-- RustCodeGraph `node` 读取 `br/pkg/summary/summary.rs`、`collector_test.rs`、`parity_test.rs`：核验包级转发、原子成功状态与测试覆盖。
-- 直接读取 `br/pkg/summary/Cargo.toml`、`lib.rs`：核验 crate 边界、模块挂载、公开 re-export 和依赖声明。
-- 直接读取 Go `br/pkg/summary/collector.go`、`summary.go`、`collector_test.go`、`main_test.go`：核验移植字段、方法、摘要分支、清理语义及原始测试意图。
-- `rg` 搜索 `br/cmd/br`、`br/pkg/backup`、`br/pkg/restore`、`br/pkg/utils` 的 Rust 调用：抽样核验 `SummaryFiles`、恢复收尾、snap import/tikv sender 与 log client 的真实业务入口。
-- 结构验证要求：目标文件必须存在，且固定的十一个二级标题各出现一次；本任务是纯文档分析，按任务约束不运行 Cargo。

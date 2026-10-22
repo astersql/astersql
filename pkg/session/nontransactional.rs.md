@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate：`pkg/session/Cargo.toml` 将 crate 根设为 `pkg/session/lib.rs`，后者通过 `pub mod nontransactional` 公开本模块。它是 Rust 侧非事务 DML（SQL 语法中的 `BATCH ... LIMIT ...`）核心算法实现：把一条可能影响大量行的 DML 按有序分片列切成多个闭区间作业，每个作业独立执行，从而避免形成一个超大事务。
-
-文件公开了完整的算法入口 `HandleNonTransactionalDML`、运行时抽象 `NonTransactionalRuntime`、输入模型和结果模型，但仓库搜索没有找到 Rust 生产代码对入口的调用，也没有找到生产类型实现该 trait；直接实现者只有 `pkg/session/nontransactional_test.rs:ScanRuntime` 和 `pkg/session/test/nontransactionaltest/nontransactional_test.rs:StubRuntime`。因此当前事实是“算法和局部测试已存在并由 crate 导出”，不能断言它已经接入 Rust server 的 SQL 执行主链。对应的 Go 入口 `pkg/session/nontransactional.go:HandleNonTransactionalDML` 则由 `pkg/server/driver_tidb.go:TiDBContext.ExecuteStmt` 和 `pkg/testkit/testkit.go` 调用。
-
-本文件没有条件编译项；`pkg/session/lib.rs` 仅用 `#[cfg(test)] mod nontransactional_test` 将独立单元测试接入测试构建。源码没有内嵌测试，符合生产逻辑与测试逻辑分文件的仓库约定。
+用 `runJobs` 串行处理作业；`doOneJob` 构造分片范围条件，与原始条件合取，恢复 DML SQL，并通过运行时执行。
 
 ## 核心职责
 
@@ -101,8 +97,6 @@ Go 生产调用链更完整：`pkg/server/driver_tidb.go:TiDBContext.ExecuteStmt
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/session/nontransactional.go`。两版的核心结构和顺序基本一致：入口临时关闭 read staleness/bulk DML；预处理与约束；选分片列并生成 NULL-first 扫描；忽略 select limit/max execution time；相等键不跨 batch；作业串行执行；首作业失败提前退出；ignore-error 继续后汇总；dry-run query/split 两种结果；成功返回 job 数和 `all succeeded`。
-
 Rust 用显式数据模型和 trait 取代 Go 的真实对象：Go 输入是 parser AST，借助 resolve context、InfoSchema 和 `table.Table` 获取表信息，通过 `sessionapi.Session.Execute/ExecuteStmt` 执行，并使用 session metrics、memory tracker、logutil、context 和 failpoint；Rust 输入是已经转换的 `DmlStatement`/`TableInfo`，副作用全部由 `NonTransactionalRuntime` 提供。这使算法可独立测试，但生产 adapter 尚未找到。
 
 可见差异与迁移限制包括：
@@ -115,7 +109,7 @@ Rust 用显式数据模型和 trait 取代 Go 的真实对象：Go 输入是 par
 - Go 通过 failpoint 覆盖 batch DML 错误和 max-execution-time 恢复；Rust 源码不含 failpoint，独立测试用 stub 验证局部契约。
 - Go 的错误预览按字节截取；Rust 按 Unicode 字符截取。Rust 在 detach tracker 失败时可返回错误，而 Go 的 `Detach` 没有返回值。
 
-Go 测试 `pkg/session/test/nontransactionaltest/nontransactional_test.go` 覆盖真实 SQL 分片、错误文本、check constraint、外键、指标和 max execution time。对应 Rust 文件开头把大部分 Go 测试保存在 `_GO_DRAFT_ARCHIVE` 字符串中；真正可执行的 Rust 用例从文件后半开始，主要验证纯函数/桩逻辑，并用逐点 update/delete 模拟可见性，不能等同于完整 batch SQL 端到端覆盖。
+对应 Rust 文件开头把大部分 Go 测试保存在 `_GO_DRAFT_ARCHIVE` 字符串中；真正可执行的 Rust 用例从文件后半开始，主要验证纯函数/桩逻辑，并用逐点 update/delete 模拟可见性，不能等同于完整 batch SQL 端到端覆盖。
 
 ## 扩展指南
 
@@ -126,12 +120,3 @@ Go 测试 `pkg/session/test/nontransactionaltest/nontransactional_test.go` 覆�
 修改切分算法时必须保留三个不变量：NULL 排序和范围覆盖完整、相等分片值不得跨相邻闭区间、原始 WHERE 对每个作业都只合取一次。性能优化若改为流式扫描，可避免 `Vec<Datum>` 峰值，但需要把 record set 生命周期、chunk 边界 clone 和错误时关闭资源纳入 trait；若尝试并行执行，则会改变当前确定的错误顺序、首作业短路和 session 可变状态模型，不能作为局部优化直接加入。
 
 兼容性风险集中在 SQL 恢复格式、错误消息、结果字段名、脱敏方式以及 Go/Rust collation 差异；性能风险集中在全量值物化、单线程作业执行和大量失败字符串汇总。回归至少应覆盖空表、NULL、重复键超过 limit、文本/二进制/十进制边界、多表别名、复合聚簇键、取消、首/中间作业失败、两种 dry-run 和所有状态恢复路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/session/nontransactional.rs --offset ...` 分段读取并核对了 1,330 行完整实现；`query HandleNonTransactionalDML --kind function --json` 精确定位 Rust 与 Go 两个同名入口。`callers nontransactional.rs::HandleNonTransactionalDML` 未返回可用调用边，因此又用仓库精确搜索核对接线状态。
-- Rust 模块与 crate：`pkg/session/lib.rs`、`pkg/session/Cargo.toml`。目标包没有 `doc.go`；因此以 crate 根注释和 Cargo 元数据作为最近的 Rust 包契约。
-- Rust 直接测试：`pkg/session/nontransactional_test.rs:invalid_batch_size_is_checked_after_the_go_equivalent_scan` 验证零 batch 在扫描后才报错，且扫描期间临时变量与返回后的恢复值正确；`pkg/session/test/nontransactionaltest/nontransactional_test.rs` 的可执行用例验证切分数量公式、读子句拒绝、Datum 比较/字面量、执行与 dry-run 结果形状、脱敏错误及轻量存储可见性。
-- Go 对照：`pkg/session/nontransactional.go` 的 `HandleNonTransactionalDML`、`runJobs`、`doOneJob`、`buildShardJobs`、`buildSelectSQL`、`selectShardColumn*`、结果构造函数；生产调用者为 `pkg/server/driver_tidb.go:TiDBContext.ExecuteStmt` 和 `pkg/testkit/testkit.go`。
-- Go 测试：`pkg/session/test/nontransactionaltest/nontransactional_test.go` 的 `TestNonTransactionalDMLSharding`、`TestNonTransactionalDMLErrorMessage`、`TestNonTransactionalWithCheckConstraint`、`TestNonTransactionalDMLWorkWithForeignKey`、`TestNonTransactionalMetrics`、`TestNonTransactionalDmlIgnoreMaxExecutionTime`。
-- 本任务仅新增说明文档，按计划没有运行 Cargo。交付前执行任务指定的结构命令，要求文件存在且固定二级章节恰好为 11 个；另人工核对本文明确回答了文件为何存在、当前如何运行、真实接线限制以及如何安全扩展。

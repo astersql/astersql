@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`relational_value.rs` 是 `astersql-session` crate 内部“窄关系运行时”的值层实现。模块由 `pkg/session/runtime.rs:81` 私有声明，并由 `runtime.rs:172` 通过 `use relational_value::*` 提供给同一运行时的查询、DML、系统查询和解释计划代码；只有 `relational_compare` 与 `relational_window_value` 在 `runtime.rs:82` 被提升为 `pub(crate)`，其余 API 大多限制为 `pub(super)`。
-
-它不等同于完整的 TiDB planner/executor 表达式引擎。`pkg/session/runtime.rs` 的模块注释把这一层定义为基于规范 parser、Domain 与 KV 接口的可执行会话运行时，用于 ConcreteSession/Go testutil 流程；本文件在该边界内直接处理以 `HashMap<String, Option<String>>` 表示的已解码关系行。
-
-crate 归属由 `pkg/session/Cargo.toml` 的 `[package] name = "astersql-session"` 和 `[lib] path = "lib.rs"` 确认。与本文件直接相关的依赖包括 `astersql-parser-ast`、`astersql-parser-mysql`、`astersql-parser-types`、`astersql-meta-model`、`astersql-types`、`astersql-expression`、`astersql-expression-exprstatic`、`astersql-util-collate`、`chrono`、`serde_json` 与 `rust_decimal`。`nextgen` feature 没有在本文件形成条件编译分支；唯一条件编译项是测试模块 `#[cfg(test)] #[path = "relational_value_test.rs"] mod tests`。
+`pkg/session/runtime.rs` 的模块注释把这一层定义为基于规范 parser、Domain 与 KV 接口的可执行会话运行时，用于 ConcreteSession/Go testutil 流程；本文件在该边界内直接处理以 `HashMap<String, Option<String>>` 表示的已解码关系行。
 
 ## 核心职责
 
@@ -137,15 +133,10 @@ RustCodeGraph 的 `query` 能定位上述核心符号与 `runtime.rs:82` 的再�
 
 ## 与 Go 版本的对应关系
 
-仓库中没有 `pkg/session/runtime/relational_value.go`，因此不存在逐函数的一对一 Go 文件。Rust 文件把 Go 主线中分散的能力聚合到了 ConcreteSession 的窄运行时：
-
-- 通用表达式与 builtin 语义对应 `pkg/expression` 的 `Expression.Eval*`、`EvalBool`、各 `builtin_*.go` 以及类型化 eval context；例如 Go 的 DECIMAL 除法在 `pkg/expression/builtin_arithmetic.go` 使用 `ctx.GetDivPrecisionIncrement()`。
-- `BuildDivisionPrecision` 对齐 Go eval context 暴露的 `GetDivPrecisionIncrement`/`WithDivPrecisionIncrement`（`pkg/expression/exprstatic/evalctx.go`），但这里用线程局部 guard 把物化视图定义精度送入窄求值器；接线点是 `system_session.rs:1119`。
-- 投影职责在 Go 主线由 `pkg/executor/projection.go` 的 `ProjectionExec` 和 `expression.EvaluatorSuite` 承担；窗口由 `pkg/executor/windows` 与 aggfuncs 承担。Rust 本文件是字符串行上的同步局部实现，不具备 Go ProjectionExec 的 chunk/vectorized/parallel pipeline。
 - 排序规则比较对应 Go 中 datum/type 比较时传入 `collate.GetCollator(...)` 的模式；Rust 的表感知入口显式从 `ColumnInfo.GetCollate()` 取 collator。
 - Rust 使用相同的 parser AST、MySQL type、decimal、JSON、time 和 vector 移植 crate，以复用语义实现；但本文件仅支持源码枚举的 AST 与函数子集。不能由“名称相同”推断完整 Go 功能等价。
 
-独立 Rust 测试 `pkg/session/runtime/relational_value_test.rs` 目前只直接验证 LIKE：下划线按一个 Unicode 字符匹配，以及反斜杠转义 `_`/`%`。更广泛的行为证据来自上游 runtime 测试和 Go 的 expression/executor 测试，而不是本文件测试中的完整逐函数覆盖。
+独立 Rust 测试 `pkg/session/runtime/relational_value_test.rs` 目前只直接验证 LIKE：下划线按一个 Unicode 字符匹配，以及反斜杠转义 `_`/`%`。
 
 ## 扩展指南
 
@@ -157,14 +148,3 @@ RustCodeGraph 的 `query` 能定位上述核心符号与 `runtime.rs:82` 的再�
 6. 修改 `/` 或物化视图定义求值时，保持 `BuildDivisionPrecision` 的 `0..=30` 验证与 Drop 恢复，并对照 Go `builtin_arithmetic.go`、eval context 及 `pkg/executor/test/executor/executor_test.go:2486` 的精度意图。
 7. 测试必须保留在独立文件 `pkg/session/runtime/relational_value_test.rs`，不要内嵌到生产文件。当前直接测试覆盖很窄；至少为新增分支补充 NULL、错误、边界数值、Unicode/collation 与 Go 对照案例。若行为通过 query/source 接线触发，还应在相邻独立 runtime 测试中加入端到端断言。
 8. 性能敏感扩展要避免在逐行窗口或投影内重复解析同一 AST/JSON/VECTOR；如引入缓存，应明确其 statement/session 生命周期，不能放入无边界全局状态。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `pkg/session/runtime/relational_value.rs` 已索引，共 3,319 行、355 个符号。
-- RustCodeGraph 源码读取：按 `node --file pkg/session/runtime/relational_value.rs` 分段读取 1-3319 行，核对模块常量、类型、函数、impl 和测试条件编译项。
-- RustCodeGraph 符号查询：查询了 `relational_expression_value`、`relational_table_expression_value`、`sort_relational_rows`、`resolve_select_order_by`、`resolve_select_group_by`、`relational_window_value`、`project_relational_rows`、`BuildDivisionPrecision`；图的 caller/callee 结果对这些符号不完整，调用关系改由下列源码引用验证。
-- 模块与调用路径：`pkg/session/runtime.rs:81-82,172,1495`，`pkg/session/runtime/query.rs:3190-3191,3330`，`pkg/session/runtime/source.rs:1694,1705`，`pkg/session/runtime/system_session.rs:1119`，以及 `runtime/{control,dml,explain_select,system_query}.rs` 中的直接调用点。
-- crate 边界：`pkg/session/Cargo.toml` 的 package/lib/feature/依赖声明；目标文件没有 feature 分支。
-- 独立 Rust 测试：`pkg/session/runtime/relational_value_test.rs` 的 `like_underscore_matches_one_unicode_character` 与 `like_backslash_escapes_wildcards`。
-- Go 对照：不存在同路径 Go 文件；读取/搜索了 `pkg/expression/exprstatic/evalctx.go`、`pkg/expression/builtin_arithmetic.go`、`pkg/executor/projection.go`、`pkg/executor/windows/` 与 `pkg/executor/test/executor/executor_test.go:2486` 的对应职责和精度契约。
-- 人工复核结论：该文件存在于 ConcreteSession 的窄关系执行链中；主运行路径是“解码关系行 → 解析排序/分组引用 → 标量/窗口求值 → 投影和字段元数据”；安全扩展必须同步值语义、表 collation、类型推导、独立测试和上游接线。

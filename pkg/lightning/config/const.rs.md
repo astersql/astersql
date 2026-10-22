@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-lightning-config`（见 `pkg/lightning/config/Cargo.toml`），集中保存 Lightning 配置层使用的容量阈值、比例默认值和 gRPC keepalive 参数描述。模块入口 `pkg/lightning/config/lib.rs` 以 `pub mod r#const` 声明它，并通过 `pub use r#const::*` 把公开符号再导出到 crate 根；使用方通常写 `astersql_lightning_config::READ_BLOCK_SIZE` 或在 crate 内写 `crate::READ_BLOCK_SIZE`，无需直接引用原始标识符 `r#const`。
-
-文件只声明值和一个数据结构，不加载配置、不建立网络连接，也不执行 Region 切分。真正把部分默认值装配进任务配置的是 `pkg/lightning/config/config.rs::new_config` 与 `MydumperRuntime::adjust`；Go 版本中其余常量的运行时消费者分布在 Lightning importer、TiKV 客户端、mydump parser、DDL ingest 和 IMPORT INTO 等路径。
+为 mydumper 配置提供默认读取块大小、批大小、最大 Region 大小和批导入比例；`config.rs` 会在构造配置或修正非法输入时使用这些值。
 
 ## 核心职责
 
@@ -78,15 +76,13 @@ Rust 尚无同名独立 `const_test.rs`。现有间接测试 `pkg/lightning/conf
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/config/const.go`。数值上，Rust 的批导入比例、64 KiB 读取块、96 MiB Region 大小、960000 键、10 倍上限、64 MiB packet、60/120 秒 keepalive、倍率 5、100 GiB 批大小和 256 MiB Region 上限均与 Go 一致。
-
 表示方式存在三类差异：
 
 - Go 使用 `github.com/docker/go-units` 构造容量，Rust 用私有 `KIB/MIB/GIB`；结果同为 1024 进制字节数。
 - Go 的 `DefaultGrpcKeepaliveParams` 已是 `grpc.DialOption`，可直接传给 `grpc.DialContext`；Rust 常量只是 `GrpcKeepaliveParams` 数据，且没有客户端适配代码。
 - Go 的可变包级 `var` 可被测试或运行时代码替换；Rust 的 `pub static` 不可变，默认值不能在安全代码中重赋。Rust 把 keepalive 设为 `const`，也没有 Go 接口值的动态类型。
 
-迁移完整度并不等同于数值完整度。Rust 已接入配置构造和调整的默认值，但 Region 切分、keepalive、`BUFFER_SIZE_SCALE` 仍未接入对应业务链。Rust parser 的局部倍率为 `2`，与 Go 通过本模块取得的 `5` 不一致；在没有进一步性能和内存行为验证前，不应把它们强行统一。
+Rust 已接入配置构造和调整的默认值，但 Region 切分、keepalive、`BUFFER_SIZE_SCALE` 仍未接入对应业务链。Rust parser 的局部倍率为 `2`，与 Go 通过本模块取得的 `5` 不一致；在没有进一步性能和内存行为验证前，不应把它们强行统一。
 
 ## 扩展指南
 
@@ -96,11 +92,3 @@ Rust 尚无同名独立 `const_test.rs`。现有间接测试 `pkg/lightning/conf
 - 接入 keepalive 时，应在具体 gRPC 客户端层显式把三个字段映射为客户端选项，并新增独立测试覆盖默认值、覆盖值、无活跃流行为和连接关闭；不要让配置 crate 为此反向依赖具体网络实现，除非 crate 边界经过评审。
 - 若决定让 Rust parser 使用 `BUFFER_SIZE_SCALE`，需先解释当前局部值 `2` 与 Go 值 `5` 的差异，并验证峰值内存和吞吐；不要保留两个看似权威的同名常量。
 - 修改 Go/Rust 共有契约时同步检查 `pkg/lightning/config/const.go` 及相关 Go 测试。兼容风险主要是默认资源占用、Region 数量、连接保活策略和 MySQL packet 上限；性能风险集中在批大小、块大小、Region 阈值与缓冲倍率。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11467 个文件；`files --filter pkg/lightning/config` 确认目标、模块入口、Go 对照和独立测试集合；`node --file pkg/lightning/config/const.rs --offset 1 --limit 240` 读取完整 68 行源码；`query/node/callers/callees` 核对 `GrpcKeepaliveParams`；`node bytesize.rs::ByteSize` 核对容量包装类型及 `new_config` 实例化关系。常量符号未被索引查询命中，按技能规则用精确文本搜索补充。
-- Rust 源码与边界：`pkg/lightning/config/const.rs`、`pkg/lightning/config/lib.rs`、`pkg/lightning/config/config.rs`、`pkg/lightning/config/bytesize.rs`、`pkg/lightning/config/Cargo.toml`。
-- Rust 测试：`pkg/lightning/config/config_test.rs`、`pkg/lightning/config/toml_codec_test.rs`；同目录不存在 `const_test.rs`，也未发现测试逐项覆盖全部常量。
-- Go 对照与消费者：`pkg/lightning/config/const.go`、`pkg/lightning/config/config.go`、`pkg/lightning/config/config_test.go`、`pkg/lightning/mydump/parser.go`、`lightning/pkg/importer/table_import.go`、`lightning/pkg/importer/import.go`、`pkg/lightning/tikv/tikv.go`、`lightning/pkg/importer/precheck_impl.go`、`br/pkg/restore/split/client.go`，以及相邻 importer/mydump/ingestor 测试中的引用。
-- 全仓精确搜索确认 Rust 侧只有 `config.rs` 消费上述 5 个默认值，且 `SPLIT_REGION_*`、`MAX_SPLIT_REGION_SIZE_RATIO`、`DEFAULT_GRPC_KEEPALIVE_PARAMS`、本文件的 `BUFFER_SIZE_SCALE` 没有 Rust 消费者。本文不运行 Cargo；最终仅执行任务规定的 11 章节结构检查并人工复核结论可追溯性。

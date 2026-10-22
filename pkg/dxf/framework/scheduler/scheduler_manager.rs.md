@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 DXF（Distributed eXecution Framework）在 owner 节点上的调度管理器，是 `astersql-dxf-framework-scheduler` crate 对多个单任务 `Scheduler` 的编排层。crate 入口 `pkg/dxf/framework/scheduler/lib.rs` 将本模块公开为 `scheduler_manager` 并再导出其公共项；`pkg/dxf/framework/scheduler/Cargo.toml` 表明它直接依赖 proto、schstatus、storage 与 dxfmetric 四个相邻 crate。文件自身不实现具体任务的状态机，而是借助 `interface.rs` 中的 `TaskManager`、`Scheduler`、`Cleaner` 及工厂注册表，把持久化任务、节点视图、slot 资源和具体调度器串起来。
-
-当前 Rust 版本把一次 owner 调度循环抽象为同步的 `Manager::tick`，不在本文件中选择异步运行时或创建后台线程。仓库内 Rust 生产代码搜索未发现建立长期 owner 循环的直接调用者；当前明确的构造/驱动证据主要来自同 crate 独立测试以及 `pkg/dxf/framework/handle/handle_test.rs`、`pkg/dxf/importinto/clean_up_test.rs`。因此它是可复用且已测试的管理器实现，但“由完整 Rust 服务持续调用 `tick`”在本次证据范围内未验证。
+`start_scheduler` 通过任务类型工厂构造 `Scheduler`，只在初始化成功后预留资源并登记到运行表；`drive_schedulers` 负责单步推进、正常完成时关闭并释放预留。
 
 ## 核心职责
 
@@ -93,14 +91,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 在 `cleanTaskLoop` 初次清理和定时清理后 Trigger，并在 owner 变化 Stop 时 Reset；Rust 已接入 start/tick/stop，但没有 Go ticker 清理 goroutine，也没有同等 logger。NextGen gate、保留冲突对象命名空间与活动表计数的保守判断意图一致。
-
-共同语义（依据 `pkg/dxf/framework/scheduler/scheduler_manager.go`）：
-
-- 两版都按 `TaskBase` 排名维护调度顺序；达到并发上限后都改取无需资源的任务，保证取消/回滚/暂停/修改能继续推进。
-- 两版都仅为 Pending/Running/Resuming 预留 slot，启动前刷新已用量并再次核对上限；调度器初始化失败都将任务标记 failed。
-- 两版终态清理都按 task type 聚合 batch cleaner、顺序运行普通 cleaner、在首错处停止，并把已经成功清理或无需清理的子集迁入历史；迁移计数决定是否继续 drain。
-- 两版都支持 owner 范围的 `ExpiredFileCleaner`，取消后停止处理，并以 task ID `"-"` 记录非任务特定失败指标。
+Go 在 `cleanTaskLoop` 初次清理和定时清理后 Trigger，并在 owner 变化 Stop 时 Reset；Rust 已接入 start/tick/stop，但没有 Go ticker 清理 goroutine，也没有同等 logger。
 
 当前差异与迁移状态：
 
@@ -120,11 +111,3 @@ Go 在 `cleanTaskLoop` 初次清理和定时清理后 Trigger，并在 owner 变
 - 新增 cleaner 能力时，要维持“工厂快照不持注册表锁执行”“同 task type 一个 batch cleaner 实例”“清理与历史迁移非原子”的约束，并要求外部副作用幂等。相关测试应放在 `scheduler_manager_test.rs` 或 `scheduler_manager_nokit_test.rs`。
 - 扩展 `MetricsSnapshot` 时，需要核对 Go `collect`/`collectWorkerMetrics`、dxfmetric label 契约和所有构造点；大表全量读取可能带来存储与内存成本，必要时先定义采样/分页边界。
 - 若把本管理器接入 Rust 生产服务，应先确定唯一 owner、串行 tick/balance/stop、tick 触发机制和 owner 迁移后的清理策略，并为真实接线新增集成测试；当前文档没有把尚未找到的生产调用链描述为已支持。
-
-## 验证依据
-
-- 固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的本文件 diff 与完整 `git show 2c944fb:pkg/dxf/framework/scheduler/scheduler_manager.rs`。
-- 冻结接线：`scheduler/Cargo.toml` 的 kerneltype、handle、globalsort、objstore 依赖，`scheduler/lib.rs` 公共模块；`interface.rs::active_task_count` 与 `storage_adapter.rs` 的存储计数覆盖。
-- `scheduler_manager_nokit_test.rs::orphan_monitor_runs_with_scheduler_cleanup_and_resets_on_stop` 注入记录器验证 start/tick 触发和 stop 重置；`scheduler_manager_test.rs` 验证清理批次推进与失败边界。这些是源码证据，本轮未执行测试。
-- Go 对照：`scheduler_manager.go::newOrphanDataMonitor`、`cleanTaskLoop`、`Stop`；globalsort 的 `orphandata.rs` 和 `orphandata/monitor.go` 用于复核只读扫描、双门检查和资源关闭。
-- RustCodeGraph status 的当前索引不保证冻结版本关系，以目标 blob 为准。Ready 等价文档校验采用任务指定的七篇 11 节结构、空白和 diff 检查；未运行 Cargo/Go、真实对象存储或 owner 切换测试。

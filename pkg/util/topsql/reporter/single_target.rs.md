@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 TopSQL Reporter 的“单一接收端”数据汇：把 Reporter 生成的一批 TopSQL 记录、SQL 元数据和执行计划元数据，通过 tonic gRPC 发给当前配置的唯一接收端。模块由 [`lib.rs`](./lib.rs) 以 `pub mod single_target` 挂载并整体再导出；crate 名为 `astersql-util-topsql-reporter`，其边界、构建脚本和依赖见 [`Cargo.toml`](./Cargo.toml)。
-
-生产主链在 `pkg/util/topsql/topsql.rs`：`default_pipeline` 用 `NewSingleTargetDataSink(reporter.clone())` 创建实例，`SetupTopProfiling` 在启动 `RemoteTopSQLReporter` 后调用 sink 的 `Start`。Reporter 的 `trySend` 再通过 `DataSink::try_send` 将同一个 `Arc<ReportData>` 分发给所有已注册 sink。因此，本文件位于“周期聚合结果”与“外部 TopSQL Agent gRPC 服务”之间，而不是采样、聚合或生成摘要的入口。
+实现 TopSQL Reporter 的“单一接收端”数据汇：把 Reporter 生成的一批 TopSQL 记录、SQL 元数据和执行计划元数据，通过 tonic gRPC 发给当前配置的唯一接收端。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 能索引目标文件、构造函数和 `sendTopRURecords`，但�
 
 ## 与 Go 版本的对应关系
 
-主要语义与同目录 `single_target.go` 对齐：5 秒拨号超时、1 GiB stream/connection 初始窗口、容量 1 的非阻塞队列、地址轮询注册、同地址连接复用、三路真实 client-streaming 上报、四分支并行、panic 恢复、TopRU 空操作，以及 `sendTopRURecords` 对 `Unimplemented` 的兼容。Rust 的 `single_target_test.rs` 对照 Go 主测试和 TopRU 兼容测试，`single_target_3_aster_unit_test.rs` 另补容量/关闭和地址切换覆盖。
-
 实现机制存在以下可见差异：
 
 - Go 直接读取 `config.GetGlobalConfig().TopSQL.ReceiverAddress`；Rust 通过 `ReceiverAddressProvider`，生产默认值必须由 `SetGlobalReceiverAddress` 写入进程级对象。
@@ -99,16 +95,3 @@ RustCodeGraph 能索引目标文件、构造函数和 `sendTopRURecords`，但�
 - 要调整连接安全性、backoff 或消息大小，从 `tryEstablishConnection` 修改 `Endpoint`/client 配置，并覆盖 URI 带/不带 scheme、deadline、连接失败和换址重连。启用 TLS 会改变当前 `http://` 默认兼容行为。
 - 要增加新的批次数据种类，应同步 `datasink.rs::ReportData`、protobuf→prost 转换、`doSend` 并发汇总、子流指标、mock server 和两个独立 Rust 测试文件；注意 `tokio::join!` 的任一错误会使整批报告失败。
 - 所有 Rust 测试继续放在独立的 `single_target_test.rs` 或迁移补充测试文件中，不把测试内嵌回生产源文件。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中的 Rust/Go 文件均在索引中。
-- RustCodeGraph `node --file pkg/util/topsql/reporter/single_target.rs`：读取目标文件 1–698 行，核对全部常量、类型、trait、函数、`impl`、状态机、发送路径和指标逻辑。
-- RustCodeGraph `query`：确认 Rust `SingleTargetDataSink`、`NewSingleTargetDataSink`、`NewSingleTargetDataSinkWithReceiver` 和 `sendTopRURecords` 的符号位置；调用图未暴露多数 Rust `impl` 方法节点，此限制已在“依赖与调用关系”中说明。
-- RustCodeGraph 文件节点：读取 `lib.rs`、`datasink.rs`、`pkg/util/topsql/topsql.rs`、`reporter.rs`、`single_target.go`、`single_target_test.go`、`single_target_test.rs`、`single_target_3_aster_unit_test.rs` 的相关范围，核对模块挂载、生产入口、分发/关闭链、Go 语义及测试断言。
-- 直接读取未由代码图覆盖的 `Cargo.toml`，核对 crate、feature、build 脚本及外部/本地依赖；用 `rg` 定位 Rust 构造、启动和 trait 分发调用点以补足图索引缺口。
-- 人工复核结论：该文件存在是为了把 Reporter 批次非阻塞地送往一个动态配置的 gRPC 接收端；其运行依赖注册、worker、连接复用和并发子流；安全扩展必须同时维护背压、deadline、关闭、旧 Agent 兼容及独立测试边界。
-
-本任务为纯文档分析，按计划不运行 Cargo 或运行时代码测试；交付验证仅检查文档存在且恰含规定的十一个二级章节。

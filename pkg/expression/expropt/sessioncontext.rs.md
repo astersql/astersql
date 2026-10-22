@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate，是表达式“可选求值属性”体系中会话上下文这一项的适配层。`pkg/expression/expropt/lib.rs` 以私有模块 `sessioncontext` 装入它，再通过 `pub use sessioncontext::*` 导出其公开类型。它不拥有完整 SQL 会话，也不直接完成向量推理；其职责是把 `EMBED_TEXT` 所需的最小会话能力放入 `exprctx::OptPropSessionContext` 槽位，并让表达式在求值时按类型安全地取回这些能力。
-
-crate 边界由 `pkg/expression/expropt/Cargo.toml` 给出：本文件直接使用同 crate 的 `exprctx`、`OptionalEvalPropContext`、`RequireOptionalEvalProps` 和 `get_prop_provider`，并通过依赖 `astersql-inference` 暴露嵌入运行时类型。运行时注入点在 `pkg/expression/sessionexpr/sessionctx.rs::NewEvalContext`，当前主要消费点在 `pkg/expression/builtin_inference.rs::builtinEmbedTextSig::evaluate`。
+`SessionContextPropProvider` 持有一个 `Arc<dyn SessionContext>`，把它注册为键 `OptPropSessionContext` 对应的 Provider，并提供 `Any` 视图供安全向下转型。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ Provider 构造器没有执行运行时可用性校验。即使属性存在，`e
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/expropt/sessioncontext.go`。两侧保留相同的三段结构：`SessionContext` 能力接口、`SessionContextPropProvider`、`SessionContextPropReader`；Provider 描述符和 Reader 所需键都使用 `OptPropSessionContext`，缺少 Provider 时都返回错误。Go 的生产注入点同样是 `pkg/expression/sessionexpr/sessionctx.go::NewEvalContext`，消费点同样是 `pkg/expression/builtin_inference.go`。
+两侧保留相同的三段结构：`SessionContext` 能力接口、`SessionContextPropProvider`、`SessionContextPropReader`；Provider 描述符和 Reader 所需键都使用 `OptPropSessionContext`，缺少 Provider 时都返回错误。
 
 当前 Rust 并非机械复刻类型形状，而是针对已移植推理运行时做了窄化：
 
@@ -87,7 +85,7 @@ Provider 构造器没有执行运行时可用性校验。即使属性存在，`e
 - Go 的上下文取消使用 `context.Context` 和 `SQLKiller`；Rust 将取消状态抽象为按需调用的 `Option<String>`，并额外传递 `ContextValues`。默认上下文值是 Rust 侧新增的兼容便利。
 - Go 通过运行时类型断言取得 Provider；Rust 通过 `Any::downcast_ref` 完成同等检查，并显式报告类型不匹配。
 
-这些差异是当前代码事实。扩展时应保持 SQL 可见行为与 Go 测试意图一致，但不能假设两侧会话接口可以逐方法直接替换。
+这些差异是当前代码事实。
 
 ## 扩展指南
 
@@ -96,13 +94,3 @@ Provider 构造器没有执行运行时可用性校验。即使属性存在，`e
 - 不要把推理执行、部署模式判断或参数解析塞入本文件；它们应继续留在 `pkg/expression/builtin_inference.rs`，以保持 Provider 只是依赖注入边界。
 - 测试必须放在独立文件。Provider/Reader 的缺失与成功路径应扩展 `pkg/expression/expropt/optional_test.rs`；真实 `EMBED_TEXT` 调用、runtime 缺失、取消和上下文值传播应扩展 `pkg/expression/builtin_inference_test.rs`；生产会话适配变更还应同步 `pkg/expression/sessionexpr/migration_aster_unit_test.rs`。不得在 `sessioncontext.rs` 内嵌 `#[cfg(test)]` 测试模块。
 - 同步检查 Go 的 `pkg/expression/expropt/sessioncontext.go`、`pkg/expression/builtin_inference.go` 及 `pkg/expression/expropt/optional_test.go`。重点风险是 SQL 错误文本兼容、取消语义、Domain runtime 生命周期，以及在没有显式 `Send`/`Sync` 契约时误引入跨线程使用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/expression/expropt` 确认 Rust/Go 对照和独立测试；`explore "pkg/expression/expropt/sessioncontext.rs symbols callers callees session context"` 读取了目标文件 1–63 行并列出三个直接使用文件；`query SessionContextPropProvider`、`query embedding_runtime` 和 `node OptionalEvalPropProvider` 核实了 Provider、trait 方法与类型擦除契约。
-- 目标源码：`pkg/expression/expropt/sessioncontext.rs`，符号 `SessionContext`、`SessionContextPropProvider`、`SessionContextPropReader`、`get_session_context`。
-- crate 与模块装配：`pkg/expression/expropt/Cargo.toml`、`pkg/expression/expropt/lib.rs`、`pkg/expression/expropt/optional.rs`、`pkg/expression/exprctx/optional.rs`。
-- 生产调用链：`pkg/expression/sessionexpr/sessionctx.rs::NewEvalContext`、`EmbeddingSession<C>`；`pkg/expression/builtin_inference.rs::builtinEmbedTextSig::evaluate`、`EvalEmbedTextArgsToDatum`。
-- Rust 独立测试：`pkg/expression/expropt/optional_test.rs::verify_session_context` 验证注册前失败与注册后读取；`pkg/expression/builtin_inference_test.rs::context` 及 `embedding_factory_starter_options_nulls_and_errors` 验证 mock runtime 注入和实际读取使用。
-- Go 对照：`pkg/expression/expropt/sessioncontext.go`、`pkg/expression/sessionexpr/sessionctx.go::NewEvalContext`、`pkg/expression/builtin_inference.go`、`pkg/expression/expropt/optional_test.go`。
-- 本任务是纯文档分析，依计划不运行 Cargo；交付前仅执行固定十一章节结构校验，并人工复核文档未把本文件描述成推理执行层或并发安全保证层。

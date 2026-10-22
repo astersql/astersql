@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-helper` crate 的主体，由 [Cargo.toml](./Cargo.toml) 声明为以 `lib.rs` 为入口的独立库，并由 `lib.rs` 的 `pub mod helper; pub use helper::*;` 对外再导出。它位于 TiDB 上层诊断/管理逻辑与 TiKV、PD 状态接口之间，集中承担四类工作：MVCC 查询与锁解析、PD Region/热点查询、Region 键范围到库表/索引元数据的映射，以及 TiFlash/TiKV 内部 HTTP 状态采集。
-
-当前生产接线并不覆盖文件中的全部公开 API。`pkg/domain/infosync/info.rs::CalculateColumnarIndexProgress` 调用 `CollectColumnarStatus` 汇总列存索引进度；`pkg/session/runtime/normal_ddl_service.rs` 调用 `CollectStorageClassStatus` 汇总 storage-class transition 进度。`pkg/lib.rs` 还通过 `store::helper` facade 再导出本 crate。RustCodeGraph 将目标文件识别为 191 个符号，并显示它被 `pkg/session/runtime/normal_ddl_service.rs`、`pkg/store/mockstore/mockstorage/canonical_storage.rs`、若干运行时测试及本 crate 测试引用；未发现生产侧对 MVCC/热点映射入口的直接调用，因此这些入口应理解为已实现且有测试的公共移植面，而不是已经贯穿全部应用主链。
+`Helper` 缓存 `Store`、`RegionCache` 和惰性初始化的 PD HTTP 客户端，提供 Region 全量查询、按键或事务时间戳的 MVCC 查询、热点 Region 查询及表/索引归属解析。
 
 ## 核心职责
 
@@ -90,13 +88,11 @@ blocking HTTP 函数依赖 reqwest response/`BufReader` 的作用域析构关闭
 
 ## 与 Go 版本的对应关系
 
-Rust 文件明确以同目录 `helper.go` 为移植基线，公开命名也保留 Go 风格。核心路径逐项对应：`Storage`/`Helper` 结构、PD caller ID、keyspace 范围编码、MVCC 锁转换和 `Lite=true, ForRead=false`、跨 Region start-ts 扫描、热点表映射、Region frame 哨兵、分区与全局索引规则、半开区间求交、TiFlash/Columnar/storage-class endpoint 均有同名 Go 实现。
-
 Rust 为脱离 Go 客户端类型而新增了 transport trait、响应 enum 和占位句柄；因此 `Storage` 的方法签名并非 ABI 级复刻，而是算法可测试的 Rust 边界。Go `Storage::Closed` 返回 channel，Rust 当前只返回 `bool`；Go 的真实 `Transaction`、`Snapshot`、KV/MPP client 在 Rust 中仍是零尺寸占位。这些差异意味着不能仅凭 trait 方法存在就宣称完整存储接入。
 
-Rust `FetchHotRegion` 对未知类型返回错误，而 Go 当前没有 default 分支。Rust `FetchRegionTableIndex` 的 `_filter` 参数和 Go 的 `filter` 参数一样未在该方法内使用；真正的 schema filter 只由 `GetTablesInfoWithKeyRange` 应用。Rust 的 `GetRecordFrame` 在 common handle 分支同步更新边界缓存中的 `IndexName`，以保持随后读取的一致性。
+Rust `FetchHotRegion` 对未知类型返回错误，而 Go 当前没有 default 分支。Rust `FetchRegionTableIndex` 的 `_filter` 参数和 Go 的 `filter` 参数一样未在该方法内使用；真正的 schema filter 只由 `GetTablesInfoWithKeyRange` 应用。
 
-`helper_1_aster_unit_test.rs` 是额外的 Rust 对齐测试，覆盖 Go 测试未直接表达的移植契约；`helper_test.rs` 则对应同目录 Go 测试的主要行为面。测试逻辑与生产源分文件存放，符合仓库约束。
+`helper_1_aster_unit_test.rs` 是额外的 Rust 对齐测试，覆盖 Go 测试未直接表达的移植契约；`helper_test.rs` 则对应同目录 Go 测试的主要行为面。
 
 ## 扩展指南
 
@@ -107,14 +103,3 @@ Rust `FetchHotRegion` 对未知类型返回错误，而 Go 当前没有 default 
 - 扩展 `ColumnarStatusResp` 的可选字段时，应像 `HasFtsIndexReady` 一样区分“缺失”和“零值”，避免上层把版本不兼容误判为进度为零。
 - 改动 `TryGetPDHTTPClient` 缓存或让 Helper 跨线程共享时，需先定义同步策略；当前 `&mut self` 已保证单次访问互斥，但没有内部锁。
 - 保持 Go 同路径行为同步；若刻意修正 Go 中的兼容怪异点（例如 frame 高位哨兵的重复 TableID 赋值），应先建立 Go/Rust 双侧回归，而不是单边“清理”。
-
-## 验证依据
-
-事实来源如下：
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/store/helper` 确认 `helper.rs`、两份 Rust 测试、Go 源与 Go 测试均已索引；`node --file pkg/store/helper/helper.rs` 分段读取全部 1,836 行；对 `NewHelper`、MVCC、热点、Region 映射和三类 HTTP 状态函数执行了 `query`、`callers`、`callees`。`callers` 对这些 Rust 方法未给出可靠输出，因此上游入口另以精确引用搜索核对，未据此臆造调用关系。
-- 源与边界：`pkg/store/helper/helper.rs`、`pkg/store/helper/lib.rs`、`pkg/store/helper/Cargo.toml`、`pkg/lib.rs`。
-- Go 对照：`pkg/store/helper/helper.go`；Go 测试：`pkg/store/helper/helper_test.go`。
-- Rust 独立测试：`pkg/store/helper/helper_test.rs` 覆盖 Region/表映射、keyspace、热点、PD stats、TiFlash、取消和范围判断；`pkg/store/helper/helper_1_aster_unit_test.rs` 覆盖 MVCC 锁解析、Go 对齐的分区/全局索引、frame 解码、HTTP 路径、可选 FTS 字段、错误状态及 storage-class 不变量。
-- 生产调用证据：`pkg/domain/infosync/info.rs`、`pkg/session/runtime/normal_ddl_service.rs`；适配/消费证据：`pkg/store/mockstore/mockstorage/canonical_storage.rs`、`pkg/server/handler/tests/http_handler_test.rs`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前运行任务指定的结构命令，要求目标文档存在且恰好包含上述 11 个固定二级标题；并人工复核本文能够回答文件为何存在、主要流程、当前接线状态、失败边界与安全扩展位置。

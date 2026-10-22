@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate 的 `gc_worker` 公共模块；模块由 `pkg/metrics/lib.rs` 的 `pub mod gc_worker` 暴露。它不是 GC 算法或 MVCC 清理实现，而是 GC Worker 的 Prometheus 指标定义与初始化适配层：负责构造 collector，并将它们发布到包级静态槽位，供后续 GC 业务代码记录动作、耗时、配置和失败情况。
-
-全局指标初始化入口 `pkg/metrics/metrics.rs::InitMetrics` 在 `Once` 保护的初始化序列中调用 `gc_worker::InitGCWorkerMetrics`。当前 Rust `RegisterMetrics` 的 collector 列表没有包含本文件的 GC 指标；全仓 Rust 引用检索也只找到初始化/测试引用，没有找到 GC 业务侧写入这些 collector 的调用。因此，本文件已经具备描述符和初始化语义，但不能仅凭本文件认定指标已在 Rust 服务中完成注册与采样接线。
+不是 GC 算法或 MVCC 清理实现，而是 GC Worker 的 Prometheus 指标定义与初始化适配层：负责构造 collector，并将它们发布到包级静态槽位，供后续 GC 业务代码记录动作、耗时、配置和失败情况。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ collector 随进程存活，没有显式释放逻辑。初始化覆盖会 drop �
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/gc_worker.go` 是直接语义基准。Rust 保留了六个 Go 初始化 collector 的名称、namespace、subsystem、帮助文本、标签键以及直方图桶 `ExponentialBuckets(1, 2, 20)`；`StageTotal = "total"` 也完全一致。Rust 使用 `Option<Collector>` 表达 Go 的 nil 指针初始态，且额外使用 `PACKAGE_INIT_LOCK` 和总入口 `Once` 约束测试及并发初始化。
+Rust 使用 `Option<Collector>` 表达 Go 的 nil 指针初始态，且额外使用 `PACKAGE_INIT_LOCK` 和总入口 `Once` 约束测试及并发初始化。
 
-主要差异是 unsafe-destroy-range collector 的来源。Go 的包级 `init()` 直接把 `github.com/tikv/client-go/v2/metrics.TiKVUnsafeDestroyRangeFailuresCounterVec` 赋给本包变量；Rust 没有相应 client crate 导出，所以 `InitGCWorkerMetrics` 创建同名、同标签的本地 collector，并额外提供 `init_gc_unsafe_destroy_range_metric` 作为注入点。这保证描述符兼容，不等同于已经接入 TiKV client 内部的失败事件。
+主要差异是 unsafe-destroy-range collector 的来源。Go 的包级 `init()` 直接把 `github.com/tikv/client-go/v2/metrics.TiKVUnsafeDestroyRangeFailuresCounterVec` 赋给本包变量；Rust 没有相应 client crate 导出，所以 `InitGCWorkerMetrics` 创建同名、同标签的本地 collector，并额外提供 `init_gc_unsafe_destroy_range_metric` 作为注入点。
 
-另一个当前差异是注册接线：Go `pkg/metrics/metrics.go::RegisterMetrics` 显式注册 `GCActionRegionResultCounter`、`GCConfigGauge`、`GCHistogram`、`GCJobFailureCounter`、`GCRegionTooManyLocksCounter` 和 `GCWorkerCounter`；Rust `pkg/metrics/metrics.rs::RegisterMetrics` 当前未列出这些项。Go 也没有在该列表中注册 client-go 拥有的 unsafe-destroy-range collector。
+另一个当前差异是注册接线：Go `pkg/metrics/metrics.go::RegisterMetrics` 显式注册 `GCActionRegionResultCounter`、`GCConfigGauge`、`GCHistogram`、`GCJobFailureCounter`、`GCRegionTooManyLocksCounter` 和 `GCWorkerCounter`；Rust `pkg/metrics/metrics.rs::RegisterMetrics` 当前未列出这些项。
 
 ## 扩展指南
 
@@ -92,12 +90,3 @@ collector 随进程存活，没有显式释放逻辑。初始化覆盖会 drop �
 - 接入上游 unsafe-destroy-range collector 时，最可能修改 `init_gc_unsafe_destroy_range_metric` 及启动初始化调用点。需要验证传入 collector 的全名和 `type` 标签，并避免与 `InitGCWorkerMetrics` 并发替换。
 - 同步扩展独立测试 `pkg/metrics/gc_worker_test.rs`，覆盖描述符、标签、桶边界、初始化后非空，以及新增的注入/注册行为；Rust 单元测试不要内嵌回生产源文件。
 - 兼容风险主要是 Prometheus 时间序列重命名、标签变化和重复注册；性能风险主要是无界标签值造成基数膨胀，以及重复初始化造成 collector 状态割裂。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/metrics/gc_worker.rs` 报告本文件 13 个符号。
-- RustCodeGraph `node --file pkg/metrics/gc_worker.rs`：核对了七个静态槽位、`InitGCWorkerMetrics`、`StageTotal` 和注入函数的完整源码；图中 `InitGCWorkerMetrics` 的测试调用边指向 `gc_worker_test.rs`，并列出对各槽位和 Prometheus 选项的引用。
-- RustCodeGraph `node InitGCWorkerMetrics`：同时显示 Go/Rust 两个定义；Go 图边显示 `metrics.go::InitMetrics` 调用 Go 版本。Rust 文件级查询及 `metrics.rs` 源码确认 Rust 总入口的直接调用。
-- 已读 crate/模块与适配证据：`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`、`pkg/metrics/bindinfo.rs`、`pkg/metrics/common/wrapper.rs`。
-- 已读对照与测试：`pkg/metrics/gc_worker.go`、`pkg/metrics/gc_worker_test.rs`；另以全仓 Rust/Go 引用搜索核对生产调用、注册列表和缺失接线。
-- `gc_worker_test.rs::gc_worker_metrics_match_go_descriptors_and_initialization` 验证七个 collector 的全名/变量标签及 `StageTotal`；`gc_histogram_uses_go_exponential_buckets` 验证 20 个桶、首桶 1 秒、末桶 524,288 秒。本文档任务不运行 Cargo，未重新执行这些单元测试。

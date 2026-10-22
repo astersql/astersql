@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate。`pkg/ingestor/ingestctrl/Cargo.toml` 将 `lib.rs` 指定为库入口，并用 `package.metadata.porting.go-package = "pkg/ingestor/ingestctrl"` 标明 Go 对照包；`pkg/ingestor/ingestctrl/lib.rs` 通过 `pub mod iterator` 公开本模块。本文件自身只使用标准库的 `Arc`、`Mutex` 和 crate 根的 `Error`、`KvPair`、`Result`，没有条件编译项，也不直接依赖 Cargo 中声明的外部 crate。
-
-它位于本地 ingest Engine 的有序 KV 读取边界：`PebbleIter` 把拥有型 `Vec<KvPair>` 变成支持半开区间扫描的 `IngestLocalEngineIter`；`KeyAdapter` 在业务键与可排序存储键之间转换；`DupDetectIter` 在扫描时按解码后的业务键合并重复组并收集所有冲突项；`DupDBIter` 读取已编码的重复结果并对外暴露业务键。
-
-当前生产接线并不完全等同于 Go：`pkg/ingestor/ingestctrl/engine.rs::Engine::newKVIter` 确实构造 `PebbleIter`；`pkg/ingestor/ingestctrl/engine_mgr.rs::newEngineManager` 确实选择 `DupDetectKeyAdapter` 或 `NoopKeyAdapter`，该适配器也进入 `duplicate.rs` 的重复流。但仓库搜索显示 `DupDetectIter::new` 和 `DupDBIter::new` 的直接 Rust 使用点仅在 `iterator_test.rs`，生产重复检测当前主要走 `pkg/ingestor/ingestctrl/duplicate.rs` 的 `DupKVStreamImpl`/`DupeController`，不能把 Go 的 Pebble/dupDB 接线描述成 Rust 已接线事实。
+定义统一的前向迭代协议 `Iter`，以及增加首条、末条定位和缓冲释放能力的 `IngestLocalEngineIter`。
 
 ## 核心职责
 
@@ -92,9 +88,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/ingestor/ingestctrl/iterator.go`，测试对照为 `iterator_test.go`。接口层面，Rust `Iter` 对应 Go `Iter`，Rust `IngestLocalEngineIter` 对应 Go 同名接口；Rust 额外把 `First` 纳入扩展 trait，而 Go 从嵌入的 Pebble/forward iterator 获得该能力。
+接口层面，Rust `Iter` 对应 Go `Iter`，Rust `IngestLocalEngineIter` 对应 Go 同名接口；Rust 额外把 `First` 纳入扩展 trait，而 Go 从嵌入的 Pebble/forward iterator 获得该能力。
 
-主要语义保持为：编码后的键按业务键和 row ID 排序；上下界先经 key adapter 转换；重复扫描每个业务键只暴露一次，却收集重复组的全部成员；重复库读取时再解码业务键。Rust 测试用 20 个唯一键、20 个二重组、10 个三重组验证最终只有 50 个对外键且收集 70 个重复记录，并验证 100,000 项规模下的唯一键与重复数。
+Rust 测试用 20 个唯一键、20 个二重组、10 个三重组验证最终只有 50 个对外键且收集 70 个重复记录，并验证 100,000 项规模下的唯一键与重复数。
 
 关键实现差异如下：
 
@@ -116,13 +112,3 @@
 - 新测试继续放在独立的 `iterator_test.rs`，不要内嵌到生产源文件；若行为要求 Go parity，也同步核对 `iterator.go` 和 `iterator_test.go`。
 
 正确性风险集中在编码排序、范围端点、尾部重复组和 poisoned 锁；兼容风险集中在修改已编码键格式或扩大 row ID 类型；性能风险来自构造时复制/排序全部 KV、扫描时逐项解码复制，以及每个重复组临时分配 `Vec<KvPair>`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ingestor/ingestctrl/iterator.rs` 确认目标文件已索引且有 59 个符号。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/iterator.rs --offset 1 --limit 500`：核对完整 438 行源文件、全部 trait/结构体/实现与条件编译情况。
-- RustCodeGraph `query/node`：核对 `KeyAdapter`、`PebbleIter`、`DupDetectIter`、`DupDBIter`、`fill`、`decode`、`encode_memcomparable_bytes`、`decode_memcomparable_bytes` 和 `Next` 的定义及调用轨迹。精确 `callers/callees` 对同名 trait 方法部分无输出或产生歧义，本文未把歧义边作为事实。
-- crate 与模块边界：`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ingestor/ingestctrl/lib.rs`。
-- 直接生产证据：`pkg/ingestor/ingestctrl/engine.rs`、`pkg/ingestor/ingestctrl/engine_mgr.rs`、`pkg/ingestor/ingestctrl/local.rs`、`pkg/ingestor/ingestctrl/duplicate.rs`。
-- Go 对照：`pkg/ingestor/ingestctrl/iterator.go`；测试证据：`pkg/ingestor/ingestctrl/iterator_test.rs` 与 `pkg/ingestor/ingestctrl/iterator_test.go`。
-- 人工复核结论：本文件存在是为了统一本地有序读取和重复键编码/分组语义；当前实际运行链中 `PebbleIter` 与适配器已接线，而两个重复包装迭代器只由独立测试直接覆盖；安全扩展必须同步编码、范围、错误/资源契约及独立 parity 测试。

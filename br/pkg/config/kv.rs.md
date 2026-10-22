@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-br-pkg-config` library crate，是 Go 包 `br/pkg/config` 中 `kv.go` 的 Rust 移植文件。crate 入口 `br/pkg/config/lib.rs` 通过 `pub mod kv` 挂载本模块，并以 `pub use kv::*` 将类型和解析函数提升到 crate 根；`br/pkg/config/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认了这一边界。
-
-它面向 TiKV `/config` 返回的 JSON，只抽取 BR 恢复流程关心的少量字段，不负责请求 TiKV、遍历 store 或聚合多节点结果。需要特别注意当前接线状态：仓库内没有其他 Cargo manifest 依赖 `astersql-br-pkg-config`；Rust 的连接主链 `br/pkg/conn/conn.rs` 当前使用自己的私有 `parse_*` 函数。因此，本文件目前是可独立验证的移植 API 和配置数据模型，而不是 Rust `Mgr::ProcessTiKVConfigs`/`Mgr::IsLogBackupEnabled` 的实际解析实现。Go 主链则在 `br/pkg/conn/conn.go` 中直接调用同路径 Go 包的三个公开解析函数。
+用 `ConfigTerm<T>` 表达“配置值 + 是否由外部显式修改”，并用 `KVConfig` 聚合导入并发、region 尺寸和 region 键数三个 BR 参数。
 
 ## 核心职责
 
@@ -74,13 +72,13 @@
 
 ## 与 Go 版本的对应关系
 
-`ConfigTerm`、`KVConfig` 和三个 PascalCase 解析函数逐项对应 `br/pkg/config/kv.go`。Rust 保留 Go 风格公开命名，并由 crate 根 re-export，以降低迁移期间的符号差异。主要类型映射为 Go `uint` ↔ Rust `usize`、Go `uint64` ↔ Rust `u64`；在仓库支持的 64 位目标上，`parity_test.rs` 用 `4294967296` 验证线程数没有被收窄到 32 位。
+Rust 保留 Go 风格公开命名，并由 crate 根 re-export，以降低迁移期间的符号差异。主要类型映射为 Go `uint` ↔ Rust `usize`、Go `uint64` ↔ Rust `u64`；在仓库支持的 64 位目标上，`parity_test.rs` 用 `4294967296` 验证线程数没有被收窄到 32 位。
 
-Go 通过 `encoding/json.Unmarshal` 将缺失嵌套结构保留为零值。Rust 对 `import` 和 `log-backup` 使用 `Option<T> + unwrap_or_default()`，额外接受显式 JSON `null` 并仍返回零值；测试明确将其作为当前兼容契约。`coprocessor` 使用非可选默认结构，与 Go 零值结构一致，随后两端都会把空尺寸交给单位解析并报错。
+Rust 对 `import` 和 `log-backup` 使用 `Option<T> + unwrap_or_default()`，额外接受显式 JSON `null` 并仍返回零值；测试明确将其作为当前兼容契约。
 
 Go 直接调用 `github.com/docker/go-units.RAMInBytes`；Rust 的 `units` 模块移植其 v0.5.0 核心规则。Rust parity 测试对二进制倍率、小数、指数、空格和负值做了定点核验，但并非上游 go-units 的穷举测试集合。
 
-最大的迁移差异不是单个解析函数，而是接线：Go `conn.go` 直接依赖 `br/pkg/config`；Rust `conn.rs` 当前拥有 `u32` 线程字段和私有解析副本，且其 crate manifest 未依赖 `astersql-br-pkg-config`。因此不能仅凭本文件存在就断言生产 Rust 路径使用了这里的实现。
+最大的迁移差异不是单个解析函数，而是接线：Go `conn.go` 直接依赖 `br/pkg/config`；Rust `conn.rs` 当前拥有 `u32` 线程字段和私有解析副本，且其 crate manifest 未依赖 `astersql-br-pkg-config`。
 
 ## 扩展指南
 
@@ -91,13 +89,3 @@ Go 直接调用 `github.com/docker/go-units.RAMInBytes`；Rust 的 `units` 模�
 若要消除 Rust 连接层的重复实现，应作为单独接线工作：给 `br/pkg/conn` 增加带 tag/工作区规范允许的 crate 依赖，统一 `usize` 与其当前 `u32` 的线程类型和错误类型，再让 `Mgr` 调用本文件的公开解析器。必须同步 `br/pkg/conn/conn_test.rs` 中的多 store 聚合、默认回退和日志备份测试，且不能只删除私有函数而忽略错误包装或行为差异。
 
 对 `ConfigTerm` 或 `KVConfig` 的结构性修改会影响序列化以外的调用者数据模型；当前它们未派生 `PartialEq`/serde traits。除非确有跨 crate 契约需要，不应随意扩大派生能力或把业务默认值塞进通用 `Default`，以免混淆“语言零值”和“BR 默认配置”。
-
-## 验证依据
-
-- 源文件与符号：`br/pkg/config/kv.rs`（`ConfigTerm`、`KVConfig`、三个 `Parse*` 函数、`units::RAMInBytes`、`parse_size`）。
-- crate 边界：`br/pkg/config/lib.rs`（模块声明及 re-export）、`br/pkg/config/Cargo.toml`（library 名称、入口、porting metadata、serde 依赖）。
-- Go 对照：`br/pkg/config/kv.go`（数据结构和三个解析器）；`br/pkg/conn/conn.go`（生产调用、跨节点聚合与默认回退）。
-- Rust 当前接线：`br/pkg/conn/conn.rs:792-849`（`ProcessTiKVConfigs`、`IsLogBackupEnabled`）及 `br/pkg/conn/conn.rs:1047-1100`（私有解析副本）；`br/pkg/task/stream.rs:941-973` 使用的是 `astersql_br_pkg_conn::{ConfigTerm, KVConfig}`，不是本 crate 类型。
-- 独立测试：`br/pkg/config/parity_test.rs:162-224` 直接覆盖本文件公开解析 API；`br/pkg/conn/conn_test.rs:793-894` 与其后日志备份用例覆盖当前 Rust 连接层的聚合行为；Go 对照测试位于 `br/pkg/conn/conn_test.go::TestGetMergeRegionSizeAndCount` 等用例。
-- RustCodeGraph：索引状态为 7032 个 Rust 文件；文件查询确认 `kv.rs` 有 14 个符号；调用图确认 `ParseMergeRegionSizeFromConfig → RAMInBytes → parse_size`，并显示本 crate 的公开 JSON 解析器没有生产 Rust 调用边。原始 `callers` 命令在本索引上超时无输出，因此又以精确 `explore`、文件节点、Cargo manifest 搜索和调用点搜索交叉核验。
-- 人工复核结论：该文件存在是为了保留 Go `br/pkg/config/kv.go` 的公开数据模型、JSON 解析和容量单位语义；运行时接线、跨节点决策及安全扩展边界已分别说明，没有把未接线 API 表述为生产主链。

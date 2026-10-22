@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-`basepool.rs` 属于 `astersql-resourcemanager-pool` crate；该 crate 的入口是
-`pkg/resourcemanager/pool/lib.rs`，它声明 `pub mod basepool` 并将本文件的公开项全部再导出。
-`pkg/resourcemanager/pool/Cargo.toml` 没有运行时依赖或 feature，说明这里刻意只依赖 Rust
-标准库，承担资源池实现之间可共享的最小元数据层，而不是完整线程池。
-
-当前实际消费者是 `pkg/resourcemanager/pool/spool/spool.rs`。spool crate 通过
-`pkg/resourcemanager/pool/spool/lib.rs` 的 `#[path = "../basepool.rs"]` 将同一源文件编译为
-自己的 `pool` 模块，再把 `BasePool` 放入 `PoolInner::base`。因此本文件既能作为独立
-`astersql-resourcemanager-pool` crate 的 API 编译，也被 spool 直接复用；它不负责 worker
-创建、容量控制、任务通道或资源管理器注册。
+为多线程读取/更新任务 ID 和调谐时间提供同步。
 
 ## 核心职责
 
@@ -126,19 +117,10 @@ RustCodeGraph 将 `basepool.rs` 识别为含 12 个符号的文件，并显示�
 
 ## 与 Go 版本的对应关系
 
-Rust `BasePool` 逐项对应 `pkg/resourcemanager/pool/basepool.go::BasePool`：
-
-- Go `atomicutil.Time` 对应 `RwLock<SystemTime>`；`Load`/`Store` 对应读锁/写锁访问器。
-- Go `string` 对应 Rust `String`，`NewBasePool`/`SetName`/`Name` 对应
-  `new`/`set_name`/`name`。
-- Go `atomic.Uint64.Add(1)` 对应 Rust `fetch_add(1, SeqCst).wrapping_add(1)`，包括从 1
-  开始和无符号溢出回绕。
 - Go 的三个 `error` 哨兵在 Rust 中是 `&str` 常量，不具备 Go 侧错误值身份；真正的 Rust
   错误类型是 spool 的 `Error` 枚举。这是表示方式差异，调用方应匹配枚举而不是字符串。
 
-两版的调谐语义由外层 spool 保持：零容量 tune 被忽略，有效 tune 在容量比较前更新时间。
-Go 通过匿名嵌入 `pool.BasePool` 提升方法，Rust 通过 `PoolInner::base` 和显式委托暴露能力。
-Go `basepool.go` 没有独立同名测试文件；Rust 的直接测试证据来自
+Go 通过匿名嵌入 `pool.BasePool` 提升方法，Rust 通过 `PoolInner::base` 和显式委托暴露能力。Go `basepool.go` 没有独立同名测试文件；Rust 的直接测试证据来自
 `basepool_test.rs` 与 `migration_aster_unit_test.rs`，Go 的集成行为则可在
 `pkg/resourcemanager/pool/spool/spool_test.go` 及 spool 实现中核对。
 
@@ -159,26 +141,3 @@ Go `basepool.go` 没有独立同名测试文件；Rust 的直接测试证据来�
   同步方式、资源管理器注册键与 Prometheus label 的一致更新，不能只给 `name` 加锁。
 - Rust 单元测试继续放在独立的 `basepool_test.rs` 或 crate 级
   `migration_aster_unit_test.rs`，不要内嵌到生产源文件；生产文件只保留 `#[path]` 测试模块接线。
-
-## 验证依据
-
-- 源码与模块：`pkg/resourcemanager/pool/basepool.rs`、`pkg/resourcemanager/pool/lib.rs`、
-  `pkg/resourcemanager/pool/Cargo.toml`。
-- 直接生产调用：`pkg/resourcemanager/pool/spool/lib.rs`、
-  `pkg/resourcemanager/pool/spool/spool.rs`、`pkg/resourcemanager/pool/spool/Cargo.toml`。
-- 调度下游：`pkg/resourcemanager/util/util.rs::GoroutinePool`、
-  `pkg/resourcemanager/schedule.rs::ResourceManager::Exec`、
-  `pkg/resourcemanager/scheduler/cpu_scheduler.rs::CPUScheduler::Tune`。
-- Go 对照：`pkg/resourcemanager/pool/basepool.go`、
-  `pkg/resourcemanager/pool/spool/spool.go`、`pkg/resourcemanager/schedule.go`。
-- 独立测试：`pkg/resourcemanager/pool/basepool_test.rs` 验证溢出回绕；
-  `pkg/resourcemanager/pool/migration_aster_unit_test.rs` 验证错误文案、初始名称与时间、
-  `Send + Sync`、并发 ID 唯一且连续；
-  `pkg/resourcemanager/pool/spool/migration_aster_unit_test.rs` 验证零容量 tune 不更新时间、
-  有效扩容更新时间。
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter` 与
-  `node --file ... --offset 1 --limit 500` 确认 93 行源文件、12 个符号及测试文件使用关系；
-  `query BasePool --kind struct` 定位 Rust/Go 类型和相关方法；方法级 `callers/callees`
-  无输出，故跨文件边另由精确符号引用搜索核验。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前以任务规定的命令验证本文恰有 11 个固定
-  二级标题，并人工复核每个行为结论都能回溯到上述源码、调用点或测试。

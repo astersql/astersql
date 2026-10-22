@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`fd_graph.rs` 是 `astersql-planner-funcdep` crate 的函数依赖（Functional Dependency，FD）核心实现。crate 入口 `pkg/planner/funcdep/lib.rs` 以 `funcdep` 模块加载并重新导出本文件；`pkg/planner/funcdep/Cargo.toml` 表明其生产依赖只有 `astersql-util-intset`，列集合统一由 `FastIntSet` 表示。
-
-它位于逻辑优化阶段的属性推导层，而不是表达式求值或物理执行层。逻辑算子把列的 unique id、常量约束、等值条件、非空信息和分组信息写入 `FDSet`；后续算子再合并、投影或查询这些信息。已接线的 Rust 调用点包括 `base_logical_plan.rs` 的子节点合并、`logical_projection.rs` 的重命名/非空/投影、`logical_selection.rs` 的非空提升与投影、`logical_aggregation.rs` 的分组依赖、`logical_join.rs` 的合并与裁剪，以及 `logical_union_all.rs` 的公共等价类求交。
-
-理论背景及 AsterSQL 对 Lax FD、外连接和 Cond-FD 的约定在 `pkg/planner/funcdep/doc.go`。本文件只维护推导状态，不拥有 schema、行数据或执行器资源。
+对非空推导、笛卡尔积、外连接、最多一行和列投影执行 FD 状态变换。
 
 ## 核心职责
 
@@ -105,8 +101,6 @@ RustCodeGraph 的文件使用关系还包含测试及若干同名通用符号产
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/funcdep/fd_graph.go`，理论约定在同目录 `doc.go`，Go 单元测试在 `fd_graph_test.go`。Rust 保留了 Go 的公开方法命名、`fdEdge`/`FDSet`/`ArgOpts` 结构、Strict/Lax/Equivalence/Cond-FD 分类，以及闭包、约简、常量、非空、外连接、投影和公共等价类算法。`fd_graph_test.rs` 逐项复刻 Go 的严格边合并、闭包、决定端约简、常量传播、Lax 蕴含、等价合并和公共等价类案例。
-
 语言层差异主要是：Go 边使用指针切片，Rust 使用拥有所有权的 `Vec<fdEdge>`；Go 的 `*FastIntSet`/可变集合语义在 Rust 中通过值传递、`Copy` 和显式克隆实现；Go 的 `nil` map/切片对应 Rust 的默认空 `HashMap`/`Vec`；Rust `conditionNC` 用 `Option<FastIntSet>` 表达是否存在条件。
 
 可观察差异是告警：Go 在空 hash、重复 hash 或 `AddFrom` 遇到重复表达式映射时写日志；Rust `RegisterUniqueID` 对空 hash 静默忽略，对重复 key 通过 `or_insert` 保留旧值，`AddFrom` 也静默保留当前集合的旧值。两者的数据结果一致，但 Rust 不产生 Go 的诊断日志。Rust `String` 对不支持的 Lax 等价只返回错误文本，同样没有 Go 版本的日志副作用。
@@ -124,12 +118,3 @@ Rust 的 `ProjectCols` 明确保留 null-constraint 与投影列无交集的 Con
 新增元数据字段时，需要决定其在 `Default`、`Clone`、`AddFrom`、`MakeCartesianProduct`、`MakeOuterJoin`、`MaxOneRow` 和 `ProjectCols` 中的传播或清理规则。新增表达式映射行为时，应明确重复 key 与空 key 是否仍保持 Go 数据语义，以及是否需要补足 Rust 的诊断机制。
 
 性能方面，闭包是按边反复扫描，投影和外连接还会克隆图；若边规模显著增长，应先用现有蕴含消除保持图最小，再考虑索引化，且必须验证结果顺序变化不会破坏依赖字符串测试。正确性方面，应继续把测试放在独立 `*_test.rs` 文件，并通过 `#[cfg(test)] #[path = ...]` 接入。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认仓库索引含 11,467 个文件，目标目录和 `fd_graph.rs` 已索引；`files --filter pkg/planner/funcdep` 确认源、Go 对照与测试集合；`explore 'pkg/planner/funcdep/fd_graph.rs ...'` 确认目标符号、内部调用链和精确上游候选；`node --file pkg/planner/funcdep/fd_graph.rs --offset 1 --limit 900` 完整读取 795 行实现。方法级 `callers/callees` 未返回内容，因此对该图缺口使用精确路径 `rg` 补证。
-- 源与 crate 边界：`pkg/planner/funcdep/fd_graph.rs`、`pkg/planner/funcdep/lib.rs`、`pkg/planner/funcdep/Cargo.toml`、包契约 `pkg/planner/funcdep/doc.go`。
-- Go 对照：`pkg/planner/funcdep/fd_graph.go` 与 `pkg/planner/funcdep/fd_graph_test.go`；类型、公开方法、算法分支和测试意图逐项比对。
-- Rust 独立测试：`pkg/planner/funcdep/fd_graph_test.rs`、`pkg/planner/funcdep/doc_1_aster_unit_test.rs`、`pkg/planner/funcdep/extract_fd_test.rs`。它们覆盖基本图不变量、Go 对齐补充案例和算子级 API 调用序列；本纯文档任务按计划未运行 Cargo。
-- 真实调用点通过 `rg` 核对：`pkg/planner/core/operator/logicalop/{base_logical_plan,logical_projection,logical_selection,logical_aggregation,logical_join,logical_union_all}.rs` 与 `pkg/planner/cascades/old/implementation_rules.rs`。
-- 人工复核结论：本文件存在是为了把 SQL 逻辑属性压缩为可组合的列级 FD 图；运行方式是由逻辑算子增量写入约束，再通过闭包、规范插入、连接和投影变换传播；安全扩展必须守住边规范、Lax/NULL 语义、unique id 身份和独立测试同步四个边界。

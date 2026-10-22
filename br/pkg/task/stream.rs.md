@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`stream.rs` 是 `astersql-br-pkg-task` crate 的日志备份（Log Backup）与时间点恢复（PiTR）任务层实现，对照 Go 文件 [`br/pkg/task/stream.go`](./stream.go)。crate 根 [`br/pkg/task/lib.rs`](./lib.rs) 以 `pub mod stream` 挂载本文件并通过 `pub use stream::*` 平铺公开符号；直接的 CLI 上游是 [`br/cmd/br/stream.rs`](../../cmd/br/stream.rs) 中的 `streamCommand`，它解析各子命令旗标、把命令名映射为短名，再调用 `RunStreamCommand`。
-
-本文件不是单纯的 stream 命令门面。它还承担三组工作：读取对象存储中的 backup meta、truncate safepoint 与 checkpoint；为 PiTR 构造重写规则和 scheduler 暂停 key range；在流式恢复前后调整 TiKV/SQL 配置、持久化 checkpoint 元数据并恢复全局配置。Cargo 包名和边界由 [`br/pkg/task/Cargo.toml`](./Cargo.toml) 的 `astersql-br-pkg-task`、`[lib] path = "lib.rs"` 以及 `package.metadata.porting.go-package = "br/pkg/task"` 确认。
-
-当前实现处于分阶段移植状态。文件头和具体函数均明确指出 `StreamMgr` 的 etcd/streamhelper 管理、多个 stream 控制命令和 advancer 仍是可运行桩；`restoreStreamWithTiKVConfigControl` 及其配置恢复路径则已经接入 `conn`、`registry`、`checkpoint`、`restore/log_client` 和 `utils` 等独立 crate。不能把 Go 版本的完整能力等同于 Rust 当前能力。
+**日志任务控制**：`NewStreamMgr`、`RunStreamStart` 等提供 stream 生命周期外壳，包括存储构造、起始 TS 校验、进度与成功状态。
 
 ## 核心职责
 
@@ -88,8 +84,6 @@ checkpoint 模式下，失败或 `RestorePhase == 1` 时保留 GC/background-job
 
 ## 与 Go 版本的对应关系
 
-名称和基本数据流主要一一对应 `stream.go`：旗标与解析、`StreamConfig`、命令分发、日志区间、checkpoint 优先级、rewrite/key-range、`ShiftTS`、GC/background-jobs 配置和恢复清理都能找到同名 Go 符号。独立的 [`stream_test.rs`](./stream_test.rs) 对照 [`stream_test.go`](./stream_test.go)，覆盖旗标默认值、安全配置、TS 偏移、范围校验、checkpoint、日志目录、key range 和配置生命周期。
-
 重要差异如下：
 
 - Go `streamMgr` 创建 etcd、PD、streamhelper 客户端并管理锁、safepoint、schema 与 observe range；Rust `StreamMgr` 是存储加状态位的桩。
@@ -106,10 +100,3 @@ checkpoint 模式下，失败或 `RestorePhase == 1` 时保留 GC/background-job
 - 修改 scheduler pause 范围时，应同时审查 `buildKeyRangesFromSchemasReplace`、`isValidSnapshotRange`、`verifyContiguousIDs` 与 Go 的 `LogRestoreConfig.tableMappingManager/metadata` 取值逻辑。`maxID + 1` 还需防止 `i64::MAX` 溢出，当前代码未处理。
 - 新增跨 crate 依赖前先确认 `br/pkg/task/Cargo.toml` 的 arm64 限制注释；外部 Rust 依赖必须按仓库规则在上游发布 tag，不得本地 patch/vendor。
 - 所有 Rust 行为修复都应保留文件顶部两段版权，并在同目录独立测试文件增加回归；完成后按仓库要求先 `cargo fmt --all`，但本次纯文档任务不运行 Cargo。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/task/stream_test.rs`、`restore_lifecycle_test.rs` 以及 `retain_latest_mvcc_test.rs::retain_latest_mvcc_controls_rocksdb_background_jobs`，后者断言 flag 关闭时 jobs SQL 调用为零、开启时为三次并恢复原值。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

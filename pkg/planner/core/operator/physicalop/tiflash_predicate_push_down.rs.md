@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`，模块由 [`lib.rs`](lib.rs) 以 `pub mod tiflash_predicate_push_down` 暴露。它位于 TiFlash 物理表扫描生成 Selection 的路径上，负责在规划期根据统计信息挑选值得提前执行的过滤条件；它不执行 SQL，也不访问 TiFlash 数据。
-
-当前 Rust 文件包含两个层次。生产主链使用 `handle_physical_tiflash_late_materialization(&mut crate::PhysicalTableScan)`，其调用点在 [`base_physical_plan.rs`](base_physical_plan.rs) 的表扫描 Selection 构造流程中。文件后半部分的 `TiFlashTableScan`、`ColumnarIndex`、`IndexHint` 以及 `handle_tiflash_predicate_push_down` 是可独立测试的轻量兼容模型，覆盖 Go 的倒排索引提示与晚期物化决策，但仓库搜索未发现生产代码调用这个模型入口；不能把它描述成真实扫描节点已完整接入的倒排索引实现。
+位于 TiFlash 物理表扫描生成 Selection 的路径上，负责在规划期根据统计信息挑选值得提前执行的过滤条件；它不执行 SQL，也不访问 TiFlash 数据。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ RustCodeGraph 对真实入口识别到 `CloneExpr`、`HashCode`、三个阈值�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`tiflash_predicate_push_down.go`](tiflash_predicate_push_down.go)。常量、按列分组、0.6 选择率门槛、8192 行 pack 门槛、高代价函数清单、贪心收益公式、简单比较递归规则和稳定排序意图均来自 Go 实现。
+Rust 当前生产调用点位于 `base_physical_plan.rs`，只调用真实节点入口 `handle_physical_tiflash_late_materialization`；完整提示/倒排索引算法只在轻量 `TiFlashTableScan` 入口中复刻并被测试。因此，迁移状态是“真实晚期物化已局部接线，完整 Go 入口尚未以真实 Rust 扫描类型接线”。
 
-Go 的 `handleTiFlashPredicatePushDown` 由 `PhysicalTableScan.BuildPushedDownSelection` 直接调用，完整处理倒排索引提示、晚期物化、统计缩放和索引排序。Rust 当前生产调用点位于 `base_physical_plan.rs`，只调用真实节点入口 `handle_physical_tiflash_late_materialization`；完整提示/倒排索引算法只在轻量 `TiFlashTableScan` 入口中复刻并被测试。因此，迁移状态是“真实晚期物化已局部接线，完整 Go 入口尚未以真实 Rust 扫描类型接线”。
-
-另有两点可观察差异：Go 对选择率错误写日志，真实 Rust 入口静默跳过；Go 主入口遇到向量索引加谓词会 panic，轻量 Rust 入口返回 `Result::Err`。独立集成对照位于 `pkg/planner/core/casetest/tiflash_predicate_push_down_test.go` 和同目录 Rust 测试，覆盖 `TestTiFlashLateMaterialization`、`TestInvertedIndex` 的标准/Cascades 规范化计划；这些测试验证整体计划表现，不等于证明轻量模型已进入生产路径。
+另有两点可观察差异：Go 对选择率错误写日志，真实 Rust 入口静默跳过；Go 主入口遇到向量索引加谓词会 panic，轻量 Rust 入口返回 `Result::Err`。
 
 ## 扩展指南
 
@@ -88,11 +84,3 @@ Go 的 `handleTiFlashPredicatePushDown` 由 `PhysicalTableScan.BuildPushedDownSe
 - 修改阈值、收益公式或排序平局规则会改变计划稳定性与性能，应覆盖 pack 边界、0.6 边界、相同选择率/组大小、估算失败、重复/同列索引以及列数超过 3 的用例。
 - 增减高代价函数必须同步真实表达式与 `PhysicalExpr` 两个检查器，并与 Go `withHeavyCostFunctionForTiFlashPrefetch` 核对；不要把 Rust 测试内嵌进生产文件。
 - 改动索引提示时需保持大小写归一化、`FORCE` 优先级、仅扫描作用域、公开单列倒排索引和同列后者覆盖等兼容规则，并评估重复索引是否仍需保留。
-
-## 验证依据
-
-- RustCodeGraph 状态：本仓库索引包含目标文件；`node --file ... --offset 420 --limit 700` 核对了全部实际 Rust 定义，`query` 定位两个公开入口与私有辅助函数，`callees` 核对了上述主要下游。调用者查询未返回有效上游边，故用源码搜索补证。
-- 已读生产与装配文件：`pkg/planner/core/operator/physicalop/tiflash_predicate_push_down.rs`、`Cargo.toml`、`lib.rs`、`base_physical_plan.rs` 的直接调用点，以及 `physical_table_scan.rs`/`cache_snapshot.rs` 对晚期物化字段的消费者。该目录不存在 `doc.go`。
-- 已读 Go 对照：`pkg/planner/core/operator/physicalop/tiflash_predicate_push_down.go` 和 `physical_table_scan.go` 的 `BuildPushedDownSelection` 调用点。
-- 已读测试：`pkg/planner/core/operator/physicalop/tiflash_predicate_push_down_test.rs` 验证大表选择、小表/有序/无过滤门槛、高代价函数集合、同列索引覆盖和重复追加；`pkg/planner/core/casetest/tiflash_predicate_push_down_test.go` 与 `.rs` 验证晚期物化及倒排索引的规范化计划。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核生产入口与轻量模型没有混写。

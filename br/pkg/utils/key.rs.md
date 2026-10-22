@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`key.rs`](key.rs) 是 `astersql-br-pkg-utils` crate 中的键工具模块，由 [`lib.rs`](lib.rs) 通过 `#[path = "key.rs"] pub mod key` 挂载。它移植自同目录的 [`key.go`](key.go)，集中提供用户键解析、半开键区间比较与求交、时间显示、TiDB meta 键识别，以及备份元数据所需的十六进制编解码。
-
-当前 Rust 接线需要与 Go 包级可见性区别看待：crate 根没有 `pub use key::*`，因此外部 crate 必须经 `astersql_br_pkg_utils::key::...` 访问。仓库内已确认的生产调用是 [`json.rs`](json.rs) 通过 `super::key::{hex_decode_string, hex_encode}` 读写备份 JSON 中的 `sha256`、`start_key` 和 `end_key`；其余多数公开函数目前主要由 [`key_test.rs`](key_test.rs) 验证。部分 BR 子 crate 仍在自己的 `stubs.rs` 中保留同名实现，不能据 Go 调用关系推断它们已经接到本文件。
+`CompareEndKey`、`CompareBytesExt`、`clamp_in_one_range` 和 `IntersectAll` 实现备份半开区间 `[start, end)` 的比较与两路有序区间集合求交，其中空 `end` 表示正无穷。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ RustCodeGraph 将本文件标为被 `br/pkg/utils/json.rs`、`br/pkg/utils/key_t
 
 ## 与 Go 版本的对应关系
 
-[`key.go`](key.go) 是逐项语义基准：Rust 保留了 `ParseKey` 三格式、转义扫描、空 end 为正无穷、`IntersectAll` 双指针裁剪、三个 meta 前缀、事务 meta 键编码次序和 AutoID/Sequence 判定。[`key_test.go`](key_test.go) 的 ParseKey、CompareEndKey、区间求交、日期和前缀用例在 [`key_test.rs`](key_test.rs) 中有对应覆盖。
+[`key.go`](key.go) 是逐项语义基准：Rust 保留了 `ParseKey` 三格式、转义扫描、空 end 为正无穷、`IntersectAll` 双指针裁剪、三个 meta 前缀、事务 meta 键编码次序和 AutoID/Sequence 判定。
 
 已确认的语言适配差异如下：
 
@@ -96,12 +94,3 @@ RustCodeGraph 将本文件标为被 `br/pkg/utils/json.rs`、`br/pkg/utils/key_t
 - 修改日期行为时补充负时间、闰日、世纪年、纳秒去尾零、负偏移和非整小时偏移；若需求涉及命名时区，应引入明确的时区语义，而不是继续扩张固定偏移函数。
 - 调整公开路径前先决定是继续使用 `astersql_br_pkg_utils::key::X`，还是在 `lib.rs` 增加再导出；后者会扩大 crate 根 API，并可能与现有同名再导出冲突。
 - 性能优化应以长键、大 JSON 元数据和大区间集为基准，重点检查 `KeyRange` 克隆和不可达日志的全量格式化，不得牺牲空终点的正无穷语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；目标 `br/pkg/utils/key.rs` 已索引为 35 个符号。通过 `node --file` 阅读全文件，并对 `ParseKey`、`CompareEndKey`、`CompareBytesExt`、`IntersectAll`、`FormatDate`、三个前缀函数、`EncodeTxnMetaKey`、`IsMetaAutoIDKey`、`hex_decode_string`、`hex_encode` 执行了 `callers`/`callees` 查询。
-- 实现与 crate 证据：[`key.rs`](key.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`json.rs`](json.rs)。
-- Go 对照证据：[`key.go`](key.go)、[`key_test.go`](key_test.go)。
-- Rust 测试证据：[`key_test.rs`](key_test.rs)；它覆盖三类解析及错误、Go 扫描前缀、空 end 比较、双向区间求交、固定 `+0800` 日期、epoch 前日期和 meta 前缀，同时明确未直接覆盖事务 meta 键的编码/识别。
-- 接线核对：全仓库检索了 `astersql-br-pkg-utils` 依赖、`key::` 导入及所有主要符号；确认 `json.rs` 的直接生产边，并确认高层 `backup_raw.rs`、`stream` 等仍存在局部 stub 同名实现，未把这些调用错误归到本文件。
-- 本任务是纯文档分析，未运行 Cargo。结构验收以任务规定的 11 个固定二级标题检查为准。

@@ -6,9 +6,7 @@ Go 对照：[`scalar_function.go`](./scalar_function.go)
 
 ## 文件定位
 
-本文件实现 Rust 表达式树中的标量函数节点 `ScalarFunction`，位于 `astersql-expression` crate。`pkg/expression/lib.rs` 以 `expression_scalar_function` 模块装载它并公开再导出，因此 planner、ranger、DDL、PB 反序列化等上层代码都通过 `astersql_expression::NewFunction*`、`ScalarFunction` 或动态 `Expression` 接口使用这里的能力。
-
-它处于“函数注册表/具体 builtin”和“通用表达式树”之间：构造阶段从 `funcs` 或 `extensionFuncs` 取得 `functionClass` 并生成 `Box<dyn builtinFunc>`；运行阶段按返回类型选择标量或向量入口，再把实际计算委托给该 builtin。`pkg/expression/core_impl.rs` 中的 `impl Expression for ScalarFunction` 是动态表达式接口到本文件固有方法的桥梁；`pkg/expression/pb_to_expr_runtime.rs::PBToExpr` 则是一个明确上游入口，它用 `NewFunctionBase` 恢复下推表达式而不立即折叠。
+保存函数身份、返回类型与实现：`FuncName: ast::CIStr`、`RetType: Option<FieldType>`、`Function: Box<dyn builtinFunc>`。
 
 ## 核心职责
 
@@ -109,13 +107,11 @@ Go 对照：[`scalar_function.go`](./scalar_function.go)
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐段对应 `pkg/expression/scalar_function.go`：字段、八类标量/向量入口、NULL 推导、`NewFunction*` 策略、折叠 warning 回退、哈希规范化、索引解析、列重映射、排序键识别及字符集元数据接口均保持同一控制流。
-
 语言层差异主要是所有权和错误表示：Go 的接口/指针切片映射为 `Box<dyn ...>` 与 `Vec`，可空 `*FieldType` 映射为 `Option<FieldType>`，三返回值求值映射为 `Result<(T, bool), Error>`。Go 回调可返回替换后的 `*ScalarFunction`，Rust `ScalarFunctionCallBack` 原地修改 `&mut ScalarFunction`；当前默认检查和初始化用途仍能表达，但若未来 Go 回调需要用完全不同节点替换对象，Rust 签名需要同步扩展。
 
 Go `typeInferForNull` 仅在原类型不已经满足特定条件时克隆；Rust 对所有匹配的 NULL 常量都克隆并设置推导类型。结果不变量相同：NULL 采用非 NULL 操作数类型且清除 `NotNullFlag`，但分配细节可能不同。
 
-Rust `Eval` 对未知 `EvalType` 返回错误，而当前 Go `switch` 没有显式 default；这是更明确的边界失败。Rust `NewFunctionInternal` 用 `Option` 表示 Go 的可能 nil 表达式。Rust `RemapColumn` 使用 `clone_scalar`，现有回归测试确认字符集、coercibility 和 repertoire 能通过 builtin 克隆保留；修改克隆策略时应继续以该测试为约束。
+Rust `Eval` 对未知 `EvalType` 返回错误，而当前 Go `switch` 没有显式 default；这是更明确的边界失败。Rust `NewFunctionInternal` 用 `Option` 表示 Go 的可能 nil 表达式。
 
 ## 扩展指南
 
@@ -127,12 +123,3 @@ Rust `Eval` 对未知 `EvalType` 返回错误，而当前 Go `switch` 没有显�
 - 扩展排序键归约时修改 `GetSingleColumn` 及两个私有辅助函数，并在 `scalar_function_37_aster_unit_test.rs` 添加方向、常量位置、嵌套与拒绝案例。
 - 构造/折叠行为测试应放在独立测试文件，不要嵌入生产源文件。核心哈希和转换可扩展 `scalar_function_test.rs`；构造上下文、NULL 推导和排序键行为可扩展 `scalar_function_37_aster_unit_test.rs`；PB 无折叠恢复应扩展 `pb_to_expr_runtime_test.rs`。
 - 保持 Go 对照：先核对 `scalar_function.go` 的同名逻辑与测试意图，再做最小 Rust 变更；不得为测试通过而删减 warning、NULL、哈希或元数据分支。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/expression/scalar_function.rs` 确认目标文件已索引且含 72 个符号；`node --file ... --offset/--limit` 分段核对了 981 行完整源码；`query` 精确定位了 Rust/Go 两侧的 `newFunctionImpl`、`ReHashCode` 和 `ExpressionsSemanticEqual`。
-- RustCodeGraph 调用图：执行了目标符号的 `callers`/`callees` 查询，但当前索引未返回可展示的 Rust 边；因此调用关系结论改由实际调用点交叉核验，不据此声称“无调用者”。
-- crate/入口证据：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`；动态 trait 桥接：`pkg/expression/core_impl.rs`；PB 入口：`pkg/expression/pb_to_expr_runtime.rs`。
-- Go 对照：`pkg/expression/scalar_function.go`，逐段核对了构造、求值、哈希、改写、排序键和元数据路径。
-- Rust 独立测试：`pkg/expression/scalar_function_test.rs` 覆盖规范语义相等、常量值/类型区分、空转换、重映射元数据和 NOT 非比较 fallback；`pkg/expression/scalar_function_37_aster_unit_test.rs` 覆盖单列减法方向和 NULL 类型推导。本任务只做文档分析，按计划不运行 Cargo。
-- 人工复核重点：文档区分本文件的编排职责和 builtin 算法职责，说明了构造/求值/改写/哈希流程，明确了可空类型、参数元数、缓存失效、warning 回退和规范哈希适用边界，并给出安全扩展位置及对应独立测试文件。

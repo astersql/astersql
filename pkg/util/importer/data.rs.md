@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-[`data.rs`](data.rs) 属于 `astersql-util-importer` crate；crate 入口 [`lib.rs`](lib.rs) 公开 `data` 模块并重导出其公开项。它不是数据库通用的 `Datum` 值类型，而是导入/压测数据生成器使用的“每列唯一值游标”。DDL 解析器在 [`parser.rs`](parser.rs) 的 `parse_table_sql` 中为每个 `Column` 创建一个 `Arc<Datum>`，行生成逻辑再由 [`db.rs`](db.rs) 的 `generate_column_data` 按列类型调用这里的生成方法。
-
-该文件位于如下局部主链中：
-
-`parse_table_sql` 创建列及 `Arc<Datum>` → `generate_row_data`/`generate_column_data` 判断该列是否属于唯一索引 → `Datum` 生成确定性递进值 → 上层把结果拼成 `INSERT` SQL。
-
-[`Cargo.toml`](Cargo.toml) 将该目录定义为独立库 `astersql-util-importer`，库入口是 `lib.rs`；当前普通 `[dependencies]` 为空。本文件只依赖标准库，以及同 crate 的 `rand::{ALPHABET, civil_from_days, days_from_civil}`。
+维护整数游标、步长和可选上界，用于唯一整数及浮点值生成（`DatumState`、`set_init_int64_value`、`unique_i64`、`unique_f64`）。
 
 ## 核心职责
 
@@ -100,17 +94,11 @@ RustCodeGraph 的文件节点确认 `data.rs` 被 `data_test.rs`、`db.rs`、`pa
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 [`data.go`](data.go)。Rust 的 `Datum`/`DatumState` 对应 Go 的 `datum`，`Mutex<DatumState>` 对应结构体内嵌的 `sync.Mutex`，公开 snake_case 方法逐一对应 Go 的 `newDatum`、`setInitInt64Value`、`uniqInt64`、`uniqFloat64`、`uniqString`、`uniqTime`、`uniqDate`、`uniqTimestamp`、`uniqYear`。
-
-已保持的关键语义包括：默认整数值 `-1`、默认步长 `1`、初始化只执行一次、`-1` 下界哨兵、仅 `min < max` 时启用范围、返回当前整数后再推进、字符串先递增再编码，以及整数在 `i64` 边界按补码回卷。Rust 独立测试明确覆盖这些行为中的整数、字符串和并发部分。
-
 存在必须知晓的实现差异：
 
 - Go `time.Now()`/格式化使用 `time.Time` 的本地 location；Rust 从 Unix 秒直接换算 civil date/time，等价于不带时区偏移的 UTC 计算。在非 UTC 环境中，首个日期和时钟文本可能与 Go 不同。
 - Go 日期/年份使用 `time.AddDate` 的日历规则；Rust 日期用固定 `86_400` 秒步进，年份用自有 civil 换算。DST 边界以及闰日跨年需要单独兼容测试，当前 [`data_test.rs`](data_test.rs) 只验证形状和相邻步长，没有证明这些边界完全等价。
 - Go 整数算术自然回卷；Rust 只在整数序列中显式 wrapping，而字符串和时间为避免 debug/release 差异采用 saturating。极值之后的重复行为因此不是 Go 源码的逐运算复刻。
-
-同目录未发现专门的 `data_test.go`；Go 对齐依据来自 [`data.go`](data.go) 的实现及 Rust 的 [`data_test.rs`](data_test.rs)，不能据此宣称所有时区/日历边界都已验证。
 
 ## 扩展指南
 
@@ -120,13 +108,3 @@ RustCodeGraph 的文件节点确认 `data.rs` 被 `data_test.rs`、`db.rs`、`pa
 - 修改时间逻辑前先决定目标是严格追随 Go 本地时区/`AddDate`，还是维持当前 UTC/固定秒模型；随后为非 UTC 时区、DST、闰年 2 月 29 日、负 Unix 秒和算术极值增加独立回归测试。
 - 若要报告范围耗尽或锁毒化错误，返回类型将从纯值变为 `Result`，会影响 `db.rs::generate_column_data` 的错误传播以及全部直接调用者，不能只改本文件。
 - 性能调整应保留“每次状态推进原子化”的不变量。可以把格式化留在临界区外，但不能把读值和写回拆成两次加锁，否则并发调用会重复。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳为 `1791342965170`；`files --filter pkg/util/importer` 确认目标、模块入口、Go 对照和独立测试均在索引中。
-- RustCodeGraph：`node --file pkg/util/importer/data.rs --offset 1 --limit 500` 读取完整 188 行源码并报告 17 个符号、6 个引用文件；同样读取了 `data_test.rs`、`data.go`、`lib.rs`、`db.rs` 和 `parser.rs` 的相关内容。
-- 调用点核对：[`parser.rs`](parser.rs) 的 `Column.data`/`parse_table_sql`，以及 [`db.rs`](db.rs) 的 `unique_integer`/`generate_column_data`，构成从列解析到各 `Datum` 方法的直接调用证据。
-- crate 边界核对：[`Cargo.toml`](Cargo.toml) 的包名、`[lib] path = "lib.rs"`、移植元数据和依赖节；[`lib.rs`](lib.rs) 的模块声明、重导出及 `#[cfg(test)] mod data_test`。
-- 行为测试核对：[`data_test.rs`](data_test.rs) 覆盖 `i64` 溢出、初始化幂等和范围停驻、浮点转换、base62 序列及长度上限、16 线程共享状态、时间/日期步长与时间戳格式。
-- Go 语义核对：[`data.go`](data.go) 的同名状态字段和九个对应构造/生成方法；仓库搜索未发现同目录 `data_test.go`，因此时区和日历差异保留为未验证兼容风险。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证本文恰有 11 个固定二级章节。

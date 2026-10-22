@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-gc` library crate 的 GC 管理契约与实现选择入口。crate 根文件 [`br/pkg/gc/lib.rs`](./lib.rs) 通过 `#[path = "manager.rs"]` 挂载本模块，并重导出这里的 `KeyspaceID`、`NullspaceID`、GC 状态类型、三个 trait 以及 `NewManager`。crate 的 [`Cargo.toml`](./Cargo.toml) 将 Go 包来源标为 `br/pkg/gc`，当前生产依赖只有 `astersql-br-pkg-errors`；PD 能力没有在此绑定到某个网络客户端，而是被压缩为 trait，便于上层接入真实客户端或测试替身。
-
-文件本身不执行 RPC，也不维护后台任务。它把公共操作面交给 `Manager`，把 PD 的两组最小能力分别抽象为 `PdClient` 与 `GCStatesClient`，最后由 `NewManager` 在 [`manager_global.rs`](./manager_global.rs) 和 [`manager_keyspace.rs`](./manager_keyspace.rs) 之间选择。仓库搜索时未发现非测试 Rust 代码直接调用本文件的 `NewManager`；当前生产接线更多是通过 `Arc<dyn astersql_br_pkg_gc::Manager>` 消费已经构造好的管理器，例如 `br/pkg/task/backup.rs`，因此不能仅凭本工厂推断所有 BR 入口已经在 Rust 侧完成实例化。
+`NewManager` 只依据 keyspace ID 选择实现：等于 `NullspaceID` 时构造 global manager，否则构造绑定指定 keyspace 的 keyspace manager。
 
 ## 核心职责
 
@@ -59,21 +57,14 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件 [`manager.go`](./manager.go) 定义同名 `Manager` 接口和 `NewManager`。两端均以 Nullspace 哨兵选择 global，否则选择 keyspace；三个 Manager 方法的业务含义和 `TTL <= 0` 删除约定一致。Rust 用 `&Context` 代替 Go `context.Context`，用 `Result<_, SharedError>` 代替 `(value, error)`，用 `Arc<dyn Manager>` 代替 Go interface 的垃圾回收共享语义。
+Rust 用 `&Context` 代替 Go `context.Context`，用 `Result<_, SharedError>` 代替 `(value, error)`，用 `Arc<dyn Manager>` 代替 Go interface 的垃圾回收共享语义。
 
 Rust 额外在本文件显式定义 `GCState`、`GCBarrierInfo`、`GCStatesClient` 和 `PdClient` 子集；Go 直接使用 `pd.Client`、`gc.GCStatesClient` 与 TiKV 类型。这是为隔离尚未直接依赖的外部 SDK 所做的端口边界，不是新增业务行为。Rust `NullspaceID` 写死为 `0xffff_ffff`，对应 Go 的 `tikv.NullspaceID`；升级 SDK 或协议时应验证该常量没有漂移。
 
-[`manager_test.rs`](./manager_test.rs) 对齐 [`manager_test.go`](./manager_test.go) 的 `TestNewManager`、global manager 与 keyspace manager场景：验证写入作用域互不泄漏、设置后删除、keyspace 的 TTL=0 删除，以及两种模式初始查询返回 mock 的 0。Rust 用线程局部配置和 Drop 守卫恢复测试状态，而 Go 用 `t.Cleanup` 恢复全局配置；这属于测试隔离机制差异。
+Rust 用线程局部配置和 Drop 守卫恢复测试状态，而 Go 用 `t.Cleanup` 恢复全局配置；这属于测试隔离机制差异。
 
 ## 扩展指南
 
 新增上层 GC 操作时，先判断它是否必须同时适用于 global 和 keyspace。若是，应在 `Manager` 增加最小方法，并在 `manager_global.rs`、`manager_keyspace.rs` 同步实现，在独立的 `manager_test.rs` 增加两条作用域测试，同时核对 Go `manager.go` 及其两个实现；不要把测试内嵌进生产源文件。若只是 PD 适配需要的新原语，应优先扩展 `PdClient` 或 `GCStatesClient`，避免把 SDK 类型泄露到业务调用方。
 
 新增第三种作用域或改变分派规则时，修改点是 `KeyspaceID`/哨兵定义与 `NewManager`，并必须加入工厂路由的正反测试。修改 TTL、`BackupTS - 1` 或“不存在时删除”的语义会影响备份可恢复性与 Go 兼容性，应同步检查 `safepoint.rs` 的 keeper/校验流程、两份具体实现、`manager_test.rs`、`safepoint_test.rs` 和同路径 Go 测试。为真实 PD SDK 增加适配时，要保持 `Send + Sync`、错误因果、context 取消以及 keyspace client 的绑定生命周期，并评估 RPC 重试与并发调用是否会放大 PD 压力。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/gc` 确认 manager、global/keyspace 实现、safepoint 和独立测试均已索引；`node --file br/pkg/gc/manager.rs` 核对 117 行源码与 16 个符号；`explore`、`query NewManager` 以及 callers/callees 查询用于检查工厂和调用关系。精确 callers/callees 命令对含冒号的节点 ID 出现名称解析泛化，因此上游直接调用又以 `rg` 交叉核验。
-- 已读生产与配置路径：`br/pkg/gc/manager.rs`、`br/pkg/gc/lib.rs`、`br/pkg/gc/manager_global.rs`、`br/pkg/gc/manager_keyspace.rs`、`br/pkg/gc/safepoint.rs`、`br/pkg/gc/Cargo.toml`、`br/pkg/task/backup.rs`。目标目录没有 `doc.go`。
-- 已读对照与测试：`br/pkg/gc/manager.go`、`br/pkg/gc/manager_test.go`、`br/pkg/gc/manager_test.rs`；测试证据覆盖工厂分派、作用域隔离、设置/删除、TTL=0 和查询路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 章节结构命令，并人工复核相对链接、符号名、无整段源码复制及未接线事实说明。

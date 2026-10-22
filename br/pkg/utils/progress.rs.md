@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`progress.rs` 属于 `astersql-br-pkg-utils` library crate；crate 根 `br/pkg/utils/lib.rs` 通过 `#[path = "progress.rs"] pub mod progress` 将它编入，并在 `cfg(test)` 下另行挂载 `progress_test.rs`。它移植自同目录 `progress.go`，目标是提供一个可跨线程递增、定时输出、可由取消或显式关闭终止的 BR 进度打印器。
-
-当前接线状态需要与设计目标区分：RustCodeGraph 能确认本文件内部链路及独立测试调用，但没有找到来自其他 Rust 生产文件的 `StartProgress`/`ProgressPrinter` 调用。相邻的 `br/pkg/gluetikv/glue.rs::StartProgress` 还明确使用本地 `CounterProgress`，注释说明这是为避免 utils/logutil 依赖而保留的替代实现。因此，本文件当前是已编入 utils crate、具备行为测试的移植实现，尚不是 Rust BR Glue 主链实际使用的进度实现。Go 生产链则由 `br/pkg/gluetikv/glue.go::StartProgress` 调用 `utils.StartProgress`。
+只负责内存计数、展示和生命周期同步，不保存业务 checkpoint，不决定任务成功或失败，也不把取消转换成可返回的业务错误。
 
 ## 核心职责
 
@@ -91,13 +89,11 @@ StartProgress / StartProgressWithWriter
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `ProgressPrinter`、构造函数、四个公开方法以及 `StartProgress` 与 `progress.go` 同名语义对齐。两边都使用原子 i64 累计；每秒把原子值复制到展示层；超额值封顶；Context 取消保留当前已渲染位置；`Close` 强制到 100% 并等待打印协程/线程收尾。Rust 独立测试复刻 Go `TestProgress` 的 50%、100%、超额封顶、Close 抬满和 cancel 保留 25% 场景。
-
 实现方式存在明确差异：Go 使用 `cheggaaa/pb` 处理模板、刷新和终端检测，Rust 自行计算百分比、速度、剩余时间并组装 JSON。Go 非终端 bar 的 refresh rate 是两分钟、测试 writer 是两秒，但原子值由独立一秒 ticker更新；Rust每个一秒 tick 都直接发出一帧。Rust `is_terminal_output` 当前恒为 `false`，所以没有实际终端进度条；Go 会用 `term.IsTerminal(stdout)` 检测 TTY。Rust 终端分支即使未来启用，其 20 字符条和 Go pb 模板也不是逐字符等价。
 
-Go `wrappedWriter::Write` 的 JSON 反序列化失败会返回错误，Rust 的同类转换失败会静默丢帧。Go `Close` 在 `closeCh != nil` 时不会把通道字段清空，重复 Close 可能继续发送并等待；Rust 用 `Option::take` 将关闭做成单次握手，重复调用会告警。Rust 还新增了 `StartProgressWithWriter`、首 tick 前取消回归测试和 Close 立即唤醒测试，这些是为精确锁定 Go 可观察语义的测试设施。
+Go `wrappedWriter::Write` 的 JSON 反序列化失败会返回错误，Rust 的同类转换失败会静默丢帧。Go `Close` 在 `closeCh != nil` 时不会把通道字段清空，重复 Close 可能继续发送并等待；Rust 用 `Option::take` 将关闭做成单次握手，重复调用会告警。
 
-最重要的迁移差距不是算法，而是接线：Go `gluetikv` 调用 `utils.StartProgress`；Rust `gluetikv` 目前返回本地 `CounterProgress`，不打印、不记录名称/总量，也没有关闭线程。因此本文档描述的是本文件自身真实行为，不能据此声称 Rust BR 命令已经获得同等进度输出。
+最重要的迁移差距不是算法，而是接线：Go `gluetikv` 调用 `utils.StartProgress`；Rust `gluetikv` 目前返回本地 `CounterProgress`，不打印、不记录名称/总量，也没有关闭线程。
 
 ## 扩展指南
 
@@ -108,15 +104,3 @@ Go `wrappedWriter::Write` 的 JSON 反序列化失败会返回错误，Rust 的�
 - 若允许多次启动或自动 drop 收尾，需要显式管理 `JoinHandle` 与线程所有权，避免覆盖通道和遗留线程。任何改动都应保持 `Close` 的一次性同步收尾不变量。
 - 若调整百分比、计数或日志字段，需保持 Go 消费者依赖的 `P/C/E/R/S` 与结构化字段名称兼容，并同步 `br/pkg/utils/progress_test.rs`、`progress_test.go` 的对应断言。
 - 性能风险主要来自刷新频率、每帧 JSON 分配和日志写入；正确性风险集中于取消/关闭竞态、负计数、重复启动及最终帧顺序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；目标源码被完整读取为 345 行。
-- RustCodeGraph `node --file br/pkg/utils/progress.rs`：核对全部类型、函数、方法、字段和执行分支。
-- RustCodeGraph `explore`：核对 `StartProgress -> goPrintProgress -> emit_progress` 流程；确认 `NewProgressPrinter`、`goPrintProgress`、`Inc`、`Close` 的调用者包括三个独立 Rust 测试，并确认 `emit_progress -> estimate_remaining`。
-- `br/pkg/utils/lib.rs`：确认生产模块挂载和独立 `progress_test.rs` 测试挂载；不存在测试逻辑内嵌。
-- `br/pkg/utils/Cargo.toml`：确认 crate 名称、library 边界、Go package 元数据及 logutil/errors/serde_json 依赖。
-- `br/pkg/utils/progress.go`、`br/pkg/utils/progress_test.go`：核对原始 Go API、ticker、终端/日志输出、取消与 Close 语义，以及 50%/100%/封顶/取消测试意图。
-- `br/pkg/utils/progress_test.rs`：核对移植测试，并额外确认首 tick 延迟、Close 立即输出、首 tick 前取消保留 0% 三项边界。
-- `br/pkg/gluetikv/glue.rs:134-153,258-273` 与 `br/pkg/gluetidb/glue.rs:370-380`：确认 Rust 生产 Glue 当前使用本地计数器及委托关系，未调用本文件。
-- 按任务约束未运行 Cargo；交付验证只执行固定十一章节的结构检查，并人工复核文档未把未接线实现描述为已在生产主链使用。

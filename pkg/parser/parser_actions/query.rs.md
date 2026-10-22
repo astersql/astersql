@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`query.rs` 是 `astersql-parser` crate 的查询语法语义动作模块。crate 入口由 `pkg/parser/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定；本文件经 `pkg/parser/parser_actions/mod.rs` 中的私有 `mod query` 接入总语义动作分派器，不是独立解析入口。生成的主解析器完成一次归约时，`parser_actions::apply` 按模块顺序询问 `query::owns(rule_id)`；若该稳定规则 ID 属于查询语法，再调用 `query::apply` 把归约右部 `Rhs` 转换为 `yySymType` 中的 AST、表达式或中间语义值。
-
-文件覆盖 `Field`、`SelectStmt`、`TableRefs`、窗口函数、CTE、集合运算、排序/分组/限制/锁、表采样及优化器 Hint 等查询非终结符。它不是 SQL 执行器，也不负责词法扫描或语法表生成；输入来自解析栈，输出是 `parser_ast` 节点，后续才会进入 planner/executor。直接证据是 `pkg/parser/parser_actions/mod.rs::{apply,has_semantic_action}`、本文件的 `owns`/`apply`，以及 `pkg/parser/grammar/main.astergram`（Rust 稳定 RuleId 的来源）；Go 对照语义位于 `pkg/parser/parser.y`。
+**构造查询 AST。
 
 ## 核心职责
 
@@ -71,15 +69,12 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件不是 Go 同路径文件的逐行翻译；其直接语义来源是 `pkg/parser/parser.y` 的同名非终结符动作，生成后的 Go 展开代码位于 `pkg/parser/parser.go`。对应关系包括：
+Rust 文件不是 Go 同路径文件的逐行翻译；其直接语义来源是 `pkg/parser/parser.y` 的同名非终结符动作，生成后的 Go 展开代码位于 `pkg/parser/parser.go`。
 
-- Go `Field`/`FieldList` 构造通配符或表达式字段并保存原始文本；Rust 对应 `FieldAlt01..04`、`FieldListAlt01/02`。
 - Go `SelectStmtBasic`、`SelectStmtFromDualTable`、`SelectStmtFromTable` 和 `SelectStmt` 分阶段组装 SELECT；Rust 对应同名前缀规则，并额外通过 `GroupBySemantic`、动态 `item` 与专用 `statement` 槽适配 Rust 类型系统。
-- Go `TableSampleOpt`、`WindowFuncCall`、`TableFactor`、`JoinTable`、`SelectLockOpt` 的枚举与字段在 Rust 中逐项映射为 `TableSample`、`ExprKind::WindowFunction`、`TableSource`、`Join`、`SelectLockInfo`。
-- Go `SetOprStmt*` 会在 SELECT、子查询和集合列表之间重新归属 `WITH`/`ORDER BY`/`LIMIT`；Rust 通过 `SetOprSemantic` 和 `SetOprSelectList` 保留相同结构意图。`pkg/parser/parser_test.rs::test_union_order_by` 专门检查内外层排序归属。
 - Go 使用接口断言和 panic 风格的生成动作类型约定；Rust 用 `Box<dyn Any>` downcast、`Option` 和 `Result<bool,isize>` 表达同一边界。Rust 当前在类型不匹配时通常返回 `Ok(false)`，这是承载方式差异，不代表可以删减 Go 分支。
 
-行为对照测试同时存在：Go 的 `pkg/parser/parser_test.go` 包含 `TestSubquery`、`TestSetOperator`、`TestUnionOrderBy`、`TestWithRollup`、`TestIndexHint`、`TestWindowFunctions`、`TestCTE` 等；Rust 的独立 `pkg/parser/parser_test.rs` 包含 `test_subquery`、`test_union_order_by`、`test_table_sample`、`test_window_functions`、`test_cte_bindings` 等，并通过 contract table 复用 Go 用例。本文只做静态分析，未声称这些测试在本次会话运行通过。
+行为对照测试同时存在：Go 的 `pkg/parser/parser_test.go` 包含 `TestSubquery`、`TestSetOperator`、`TestUnionOrderBy`、`TestWithRollup`、`TestIndexHint`、`TestWindowFunctions`、`TestCTE` 等；Rust 的独立 `pkg/parser/parser_test.rs` 包含 `test_subquery`、`test_union_order_by`、`test_table_sample`、`test_window_functions`、`test_cte_bindings` 等，并通过 contract table 复用 Go 用例。
 
 ## 扩展指南
 
@@ -92,12 +87,3 @@ Rust 文件不是 Go 同路径文件的逐行翻译；其直接语义来源是 `
 5. 测试放在独立文件。规则所有权/结构测试优先扩展 `pkg/parser/parser_actions/query_expression_aster_unit_test.rs`；端到端 AST 行为优先扩展 `pkg/parser/parser_test.rs`，并与 `pkg/parser/parser_test.go` 对应测试或 contract table 保持一致。不要在 `query.rs` 内加入 `#[cfg(test)]` 测试模块。
 
 兼容风险主要是 AST 字段遗漏、默认值变化和集合运算层级改变；性能风险主要来自列表分支不必要的深拷贝及大查询中的反复向量扩容；诊断兼容风险来自把 warning 升级为 error 或改变错误码/参数。扩展后应检查稳定 RuleId 唯一所有权与 235 库存基线是否按预期变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/parser/parser_actions/query.rs` 显示本文件有 242 个符号；`query QueryRule` 定位枚举、`identify`、`apply_rule`；`query apply_rule --kind function --json` 确认本函数签名和第 741 行位置。私有函数的 `callers/callees` 查询在时限内没有产生可用输出，因此调用边改由入口源码验证，未把空图结果当成“无调用者”。
-- Rust 源与 crate 边界：`pkg/parser/parser_actions/query.rs`、`pkg/parser/parser_actions/mod.rs`、`pkg/parser/parser_semantic_support.rs`、`pkg/parser/Cargo.toml`、`pkg/parser/grammar/main.astergram`。
-- Go 对照：`pkg/parser/parser.y` 的 `Field`、`SelectStmt*`、`TableSample*`、窗口、表引用/连接、锁和 `SetOpr*` 动作；生成展开可在 `pkg/parser/parser.go` 追溯。
-- 独立 Rust 测试：`pkg/parser/parser_actions/query_expression_aster_unit_test.rs`（235 条规则库存、唯一归属及无数字回退）、`pkg/parser/parser_actions/remaining_aster_unit_test.rs`（全动作规则唯一所有者）、`pkg/parser/parser_test.rs`（Hint、子查询、UNION 排序、TABLESAMPLE、窗口函数、CTE 等行为）。
-- Go 回归测试：`pkg/parser/parser_test.go` 中的 `TestHintError`、`TestOptimizerHints`、`TestSubquery`、`TestSetOperator`、`TestUnionOrderBy`、`TestWithRollup`、`TestIndexHint`、`TestWindowFunctions`、`TestCTE`、`TestCTEBindings`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付时仅执行任务指定的 11 章节结构检查，并人工复核文档回答了文件存在原因、运行路径和安全扩展点。

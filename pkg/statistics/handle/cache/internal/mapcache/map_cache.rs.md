@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应真实源文件 [`map_cache.rs`](./map_cache.rs)。该文件实现统计信息缓存的无淘汰后端 `MapCache`，位于独立 crate `astersql-statistics-handle-cache-internal-mapcache` 中；该 crate 的入口 [`lib.rs`](./lib.rs) 通过 `pub use map_cache::*` 导出本文件的公开项。[`Cargo.toml`](./Cargo.toml) 只直接依赖内部缓存抽象 crate `cache-internal` 和统计信息 crate `statistics`，分别提供 `StatsCacheInner` trait 与 `Table` 类型。
-
-在完整缓存链路中，`pkg/statistics/handle/cache/statscacheinner.rs::NewStatsCacheWithCapacity` 根据 `quota` 选择后端：启用内存配额时构造 LFU，关闭配额时调用本文件的 `NewMapCache`。之后上层 `StatsCache` 只通过 `Box<dyn StatsCacheInner>` 使用该实现，因此本文件是“保留所有表统计、不按容量淘汰”的具体策略，而不是对外缓存门面。
+在写入时读取 `Table::MemoryUsage().TotalMemUsage`，将成本快照保存在 `CacheItem::cost`，并通过 `MapCache::memUsage` 维护所有当前条目的累计成本。
 
 ## 核心职责
 
@@ -73,13 +71,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/cache/internal/mapcache/map_cache.go`。两版都以表 ID 为键、保存表指针/共享引用与写入成本、在替换时按新旧成本差更新总成本、删除时扣减成本，并将容量及异步生命周期方法实现为空操作。
-
-Rust `Arc<Table>` 对应 Go `*statistics.Table` 的共享对象语义。Go `cacheItem` 额外保存 `key`，但读取、删除和枚举都以 map 键为准；Rust 删除了这个未参与行为的冗余字段。Go `cacheItem.copy` 逐字段复制，Rust 用派生的 `Clone` 完成等价容器复制；两者都共享底层表对象，不深拷贝表统计。
+Go `cacheItem` 额外保存 `key`，但读取、删除和枚举都以 map 键为准；Rust 删除了这个未参与行为的冗余字段。Go `cacheItem.copy` 逐字段复制，Rust 用派生的 `Clone` 完成等价容器复制；两者都共享底层表对象，不深拷贝表统计。
 
 接口形态存在语言差异：Go `Get` 返回 `(*Table, bool)`，Rust 返回 `Option<Arc<Table>>`；Go `NewMapCache` 返回指针，Rust 返回拥有值后再由上层装箱；Go `Len` 返回 `int`，Rust 返回 `usize`。这些差异不改变命中、替换、删除、复制和无淘汰语义。
 
-同目录没有 `map_cache_test.go`。当前直接回归证据来自 Rust 独立测试 `map_cache_test.rs::put_replace_copy_and_delete_match_the_go_map_cache`，它以 Go 行为为契约，覆盖同键替换、长度不增长、返回替换后的同一 `Arc`、副本长度、删除后未命中以及成本归零。
+当前直接回归证据来自 Rust 独立测试 `map_cache_test.rs::put_replace_copy_and_delete_match_the_go_map_cache`，它以 Go 行为为契约，覆盖同键替换、长度不增长、返回替换后的同一 `Arc`、副本长度、删除后未命中以及成本归零。
 
 ## 扩展指南
 
@@ -90,13 +86,3 @@ Rust `Arc<Table>` 对应 Go `*statistics.Table` 的共享对象语义。Go `cach
 若扩展公开 API，需要同步检查 `lib.rs` 的导出、`Cargo.toml` 的最小依赖，以及上层 `statscacheinner.rs` 的 trait-object 接线。测试应继续放在 `pkg/statistics/handle/cache/internal/mapcache/map_cache_test.rs`，不要嵌入生产文件；涉及 Go 对齐时还应检查 `map_cache.go` 和上层 `statscacheinner.go`。
 
 性能方面，`Get` 是平均常数时间并只克隆 `Arc`；`Keys`、`Values` 和 `Copy` 都遍历全部条目，其中 `Copy` 还分配新的映射。扩展时不应在热路径上无意增加全表扫描、深拷贝或持锁时间。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 11,467 个文件，目标目录的 `map_cache.rs`、`lib.rs`、`map_cache_test.rs` 及 Go 对照文件均已索引；`map_cache.rs` 识别出 16 个符号。
-- RustCodeGraph `node --file pkg/statistics/handle/cache/internal/mapcache/map_cache.rs`：核对 `CacheItem`、`MapCache`、构造函数、全部 trait 方法及其完整实现。
-- RustCodeGraph `explore "NewMapCache NewStatsCacheWithCapacity map_cache.rs stats cache"`：确认直接调用边 `NewStatsCacheWithCapacity → NewMapCache`。
-- RustCodeGraph 对 `lib.rs`、`internal/inner.rs`、`statscacheinner.rs` 和 `map_cache_test.rs` 的文件节点：核对 crate 导出、trait 边界、外层互斥与调用方式，以及独立测试覆盖。
-- `pkg/statistics/handle/cache/internal/mapcache/Cargo.toml`：核对 crate 名、`lib.rs` 入口、两个路径依赖和 Go 包迁移元数据。
-- `pkg/statistics/handle/cache/internal/mapcache/map_cache.go`、`pkg/statistics/handle/cache/internal/inner.go`、`pkg/statistics/handle/cache/statscacheinner.go`：核对 Go 实现、接口契约与上层选择路径。仓库搜索确认同目录没有 Go 专属测试文件。
-- 人工复核结论：本文件存在的理由是为关闭统计缓存内存配额的场景提供简单、同步、无淘汰后端；安全扩展的关键是保持成本记账、容器复制与外层锁契约一致，并在独立测试文件覆盖新边界。

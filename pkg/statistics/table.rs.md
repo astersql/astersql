@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`table.rs` 是 `astersql-statistics` crate 的表级统计容器层：它把列统计 `Column`、索引统计 `Index`、实时行数/修改量、加载状态与表级版本组合成 `HistColl` 和 `Table`。模块由 `pkg/statistics/lib.rs` 以私有 `mod table` 声明，再通过 `pub use table::*` 重导出，因而规划器、session 规划接线、统计缓存和同步加载器均通过 crate 根 API 使用它（`pkg/statistics/lib.rs`；`Table`、`HistColl`）。
-
-`pkg/statistics/Cargo.toml` 将该 crate 声明为 `astersql-statistics`，并用 `package.metadata.porting.go-package = "pkg/statistics"` 指明 Go 对照包。本文件没有条件编译项；独立 Rust 测试由 `lib.rs` 的 `#[cfg(test)] #[path = "table_test.rs"] mod table_test` 接入，测试未内嵌在生产源文件中。
+提供选择率与维护决策所需的派生量：MV 索引缩放计数、分析时行数、过期判定、健康度、自动 ANALYZE 资格、加载需求和内存占用。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ RustCodeGraph 的精确 impl 方法 `callers`/`callees` 查询本次没有返回
 
 ## 与 Go 版本的对应关系
 
-Go 主对照文件是 `pkg/statistics/table.go`，Go 回归是 `pkg/statistics/table_test.go`。常量、`Table`/`HistColl`/存在图的主体字段，加载判定、分析行数、MV 索引缩放、健康度、过期判定和版本匹配的主要分支与 Go 保持对应。`pkg/statistics/table_test.rs` 实际覆盖存在/已分析三态、伪行数、自动分析阈值、加载需求、分析行数过期、内存跟踪不计 FM sketch、版本匹配和健康度取整。
-
 已核对的迁移差异与限制如下：
 
 - Go `CopyAs` 根据 intent 共享 map、只 clone 容器或深拷贝元素；Rust 五个 intent 都是完整 `clone`。Rust 测试只验证了各 intent 的副本独立，而 Go `TestCopyAs` 明确验证 `MetaOnly` 共享两个 map，其他意图也有不同共享策略。这是性能/别名语义差异，不应在新调用点中假设 Rust 已有 Go 的共享行为。
@@ -93,12 +89,3 @@ Go 主对照文件是 `pkg/statistics/table.go`，Go 回归是 `pkg/statistics/t
 改动加载决策时，必须保留 `Has` 和 `HasAnalyzed` 区分的三态，并同步检查 `pkg/statistics/handle/syncload/stats_syncload.rs` 的解构与任务构建。改动行数/过期/健康度时，要检查分析行数优先级、MV 索引缩放、零行与阈值等号边界，以及 `pkg/planner/cardinality` 和 statscache 调用方。
 
 任何生产修改都应继续在独立 `pkg/statistics/table_test.rs` 中增加 Rust 回归，并与 `pkg/statistics/table_test.go` 及 `table.go` 相同分支对照；不应把测试写回 `table.rs`。如要对齐 `CopyIntent` 性能语义，需要先明确 Rust 所有权容器（例如 `Arc` 或 copy-on-write）的快照设计，不能只把 clone 删掉；同时必须验证 `statscache.rs` 的发布后不可变假设和 LFU 裁剪的独立性。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/statistics/table.rs` 完整读取了 898 行源文件，并报告 38 个使用文件。
-- RustCodeGraph 符号查询：查询了 `PseudoTable`、`AnalyzeVersionMatchesForTableStats`、`GetStatsHealthy`、`ColumnIsLoadNeeded`、`GenerateHistCollFromColumnInfo`、`IsOutdated`、`GetScaledRealtimeAndModifyCnt` 和 `CopyAs`；同名 Go/Rust 符号均被定位。精确 impl 方法 callers/callees 未返回边，其缺口由限定 `pkg/**/*.rs` 的同名调用搜索补足。
-- 已读生产与装配证据：`pkg/statistics/table.rs`、`pkg/statistics/lib.rs`、`pkg/statistics/Cargo.toml`。该目录下无 `doc.go`，crate 顶层职责由 `lib.rs` 的模块注释和声明核对。
-- 已读 Go 对照与测试证据：`pkg/statistics/table.go`、`pkg/statistics/table_test.go`、`pkg/statistics/table_test.rs`。Rust 独立测试明确验证存在图、伪统计、加载分支、过期、健康度、版本匹配、内存跟踪和当前 Rust 拷贝独立性。
-- 已核对直接调用证据：`pkg/session/runtime/planning.rs`、`pkg/planner/cardinality/row_count_index.rs`、`pkg/planner/cardinality/selectivity.rs`、`pkg/statistics/handle/syncload/stats_syncload.rs`、`pkg/statistics/handle/cache/statscache.rs`、`pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs`、`pkg/planner/core/operator/logicalop/logical_datasource.rs`、`logical_mem_table.rs` 与 `pkg/planner/core/operator/physicalop/base_physical_plan.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在，且上述十一个固定二级标题各出现一次。

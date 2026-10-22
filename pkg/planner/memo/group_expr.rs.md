@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-`group_expr.rs` 属于 `astersql-planner-memo` crate，是旧 Cascades 优化器 Memo 数据结构中连接“逻辑算子”和“子等价类”的节点实现。crate 根 `pkg/planner/memo/lib.rs` 将本模块的公开项整体再导出；`pkg/planner/memo/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/planner/memo`。
-
-普通逻辑计划树的边连接逻辑计划节点，而这里的 `GroupExpr.Children` 连接 `GroupRef`：每个子 Group 可以包含多个逻辑等价表达式。因此一个 `GroupExpr` 描述的是一个根逻辑算子以及其每个输入位置可选择的等价类，是 `Group` 去重、规则探索和 `ExprIter` 模式绑定的基本单元。它不同于 `pkg/planner/cascades/memo/group_expr.rs` 中的新 Cascades `GroupExpression`，本文只描述 `pkg/planner/memo` 这套旧 Memo API。
-
-直接装配入口是 `pkg/planner/memo/group.rs::Convert2GroupExpr`：它从逻辑计划节点取走孩子，递归转换成 Group，再调用本文件的 `NewGroupExpr` 和 `SetChildren`。随后 `Convert2Group` 用原计划的 Schema 创建并插入所属 Group。旧优化器 `pkg/planner/cascades/old/optimize.rs::exploreGroup` 和规则实现 `pkg/planner/cascades/old/transformation_rules.rs` 消费这里保存的探索状态、子 Group、所属 Group 和已应用规则集合。
+用 `GroupExpr` 保存一个 `LogicalPlanRef` 根算子及有序的 `Vec<GroupRef>` 子输入，把逻辑计划树转换为 Memo 图。
 
 ## 核心职责
 
@@ -104,15 +100,13 @@ crate 内依赖：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/memo/group_expr.go`，对应测试为 `group_expr_test.go` 和 `group_expr_test.rs`。主要语义保持一致：都保存根逻辑计划、子 Group、所属 Group、探索标记、惰性指纹和已应用规则集合；构造器都从空孩子和未探索状态开始；指纹格式都是两字节大端孩子数、每个孩子八字节身份、最后追加计划哈希。
-
 有三项明确差异：
 
 1. Go 用 `reflect.ValueOf(child).Pointer()` 编码子 Group 指针地址；Rust 用 `Group::ID()` 的稳定自增 `u64`。两者都区分当前 Memo 中的子 Group 身份，但 Rust 字节值不应与同次 Go 进程逐字节比较。`group_expr_test.rs::group_expr_fingerprint_encodes_child_count_child_group_id_and_plan_hash` 专门验证 Rust 编码。
 2. Go 的 `Group *Group` 可为 `nil` 但 `Schema()` 直接解引用，前置条件违反时会 panic；Rust 用 `Weak<RefCell<Group>>` 并返回 `Option<Schema>`，同时避免强引用环。调用方必须处理可空返回。
 3. Go 的 `SetChildren` 没有清除 `selfFingerprint`，因为 Go 注释规定孩子创建后永不改变；Rust 主动清缓存，对构造辅助更稳健，但依然不能自动修复所属 Group 的外部索引。因此这不是对已入组表达式可随意变异的授权。
 
-规则集合的参数形态也做了 Rust 化：Go 接收任意规则对象并以反射指针为 ID，Rust 直接接收由 `Transformation::rule_id()` 产生的 `u64`。这避免保存 trait 对象和导入循环，并使测试可以直接用确定的 ID 验证。
+规则集合的参数形态也做了 Rust 化：Go 接收任意规则对象并以反射指针为 ID，Rust 直接接收由 `Transformation::rule_id()` 产生的 `u64`。
 
 ## 扩展指南
 
@@ -123,13 +117,3 @@ crate 内依赖：
 - 扩大探索轮次数或改变轮次语义时，应修改 `ExploreMark` 的定义与测试，而不是只改本文件的委托方法；同步检查 `old/optimize.rs::onPhaseExploration/exploreGroup`。
 - 性能修改应关注 `FingerPrint` 返回克隆、频繁 `RefCell` 借用以及 `HashSet<u64>` 查询。任何减少复制的 API 都必须明确借用期，避免在 Group 可变操作期间持有表达式内部缓冲区引用。
 - 修改公开 API 后需核对 `lib.rs` 的再导出以及 `Cargo.toml` 的 crate 边界；Go 对齐修改还需同步阅读 `group_expr.go` 和 `group_expr_test.go`，不得为了 Rust 测试便利删减 Go 行为。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/memo` 列出目标 Rust/Go 源及独立测试，`node --file pkg/planner/memo/group_expr.rs` 展示目标文件 1--113 行及其 11 个符号。
-- RustCodeGraph 符号/调用证据：`query GroupExpr`、`query NewGroupExpr`、`query FingerPrint` 定位 Rust/Go 对应符号；索引 flow 显示 `group.rs::Convert2GroupExpr -> group_expr.rs::NewGroupExpr`，并列出 `group.rs`、`expr_iterator_test.rs`、`group_expr_test.rs` 和旧 Cascades 文件等使用者。
-- 已核对生产源码：`pkg/planner/memo/group_expr.rs`、`group.rs`、`expr_iterator.rs`、`lib.rs`、`pkg/planner/cascades/old/optimize.rs`、`pkg/planner/cascades/old/transformation_rules.rs`。
-- 已核对 crate 配置：`pkg/planner/memo/Cargo.toml`，确认 crate 名、Go 包映射及 `astersql-expression`、`astersql-planner-core-operator-logicalop` 等直接依赖。
-- 已核对 Go 对照：`pkg/planner/memo/group_expr.go`、`group_expr_test.go`，确认字段、构造、指纹布局、Schema 和规则去重语义。
-- 已核对 Rust 独立测试：`pkg/planner/memo/group_expr_test.rs` 验证初始状态与指纹布局；`memo_aster_unit_test.rs::fingerprint_uses_child_group_identity_and_rule_ids` 验证子 Group 身份和规则 ID 集合；`group_test.rs` 覆盖 Group 插入/删除/去重、探索轮次和指纹边界；`expr_iterator_test.rs` 覆盖以 `Children` 进行 Pattern 枚举。
-- 本任务为纯文档分析，按计划未运行 Cargo 或代码测试。交付前执行任务指定的 11 章结构验证，并人工复核本文只陈述上述源码、图索引、Cargo、Go 对照和测试可支持的事实。

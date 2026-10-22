@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`urls.rs`](urls.rs) 属于 `astersql-util` crate；[`lib.rs`](lib.rs) 通过 `pub mod urls` 将它公开为 `astersql_util::urls`。文件只提供服务端点列表的解析门面，具体的单个 URL 校验和格式化由同一 crate 的 [`service_url.rs`](service_url.rs) 完成。
-
-当前 Rust 仓库中没有检索到生产代码调用 `ParseHostPortAddr`。RustCodeGraph 的 `node ParseHostPortAddr` 反向边只指向 [`urls_test.rs`](urls_test.rs)，文本检索还找到独立测试目标 [`security_2_aster_unit_test.rs`](security_2_aster_unit_test.rs)；因此它是已公开、已有测试的工具 API，但不能据此声称已经接入某条 Rust 生产请求主链。
+将一个逗号分隔的字符串拆成有序的服务端点列表；每项在解析前去除首尾空白。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`urls.go`](urls.go)，对应测试是 [`urls_test.go`](urls_test.go)。两版主流程一致：按逗号拆分、逐项 `TrimSpace`/`trim`、以 HTTP 为默认 scheme 调用 service URL 解析器、依据原项是否含 `://` 选择输出形式，并在首个错误处返回整批失败。
-
 Rust 使用 iterator 的 `map(...).collect::<Result<Vec<_>>>()` 表达 Go 的显式循环、`append` 与错误早退；这是控制流写法差异，不改变列表顺序或全有全无语义。Rust 的 [`urls_test.rs`](urls_test.rs) 覆盖了 Go 表格中的裸地址、多地址、HTTP(S) 和 Unix URL，并增加了 query、空 host/port、服务名/越界数值端口和畸形括号等边界。
 
-实际解析一致性还依赖 [`service_url.rs`](service_url.rs) 对 [`service_url.go`](service_url.go) 的移植。特别是 Rust 使用 WHATWG `url` crate，但为 Go 接受服务名端口的行为处理了 `InvalidPort`；若修改本文件的默认 scheme 或输出策略，应同时复核两侧 service URL 实现，不能只比较这两个薄门面。
+特别是 Rust 使用 WHATWG `url` crate，但为 Go 接受服务名端口的行为处理了 `InvalidPort`；若修改本文件的默认 scheme 或输出策略，应同时复核两侧 service URL 实现，不能只比较这两个薄门面。
 
 ## 扩展指南
 
@@ -81,13 +77,3 @@ Rust 使用 iterator 的 `map(...).collect::<Result<Vec<_>>>()` 表达 Go 的显
 - 新增生产调用者前，应决定调用方需要整批原子失败还是容忍部分有效地址；当前 API 只支持前者。若改变为部分成功，需要新的返回契约而不是静默丢弃错误。
 - 性能扩展应保留单次线性扫描和有序输出；对大列表做额外规范化或去重会增加分配并改变兼容语义，应先增加针对顺序、重复项和失败位置的测试。
 - 当前没有 Rust 生产调用边，接线时应在实际所属子系统增加集成层验证，不能仅依赖 util 单元测试证明应用级可达性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`query ParseHostPortAddr` 找到 Rust/Go 两个定义和 Rust 测试导入。
-- RustCodeGraph `node --file pkg/util/urls.rs --offset 1 --limit 240` 与 `node ParseHostPortAddr`：核对完整 29 行源文件、唯一公开函数、测试反向边，以及 `parse_service_url`/`Endpoint` 下游边。
-- RustCodeGraph `callees ParseHostPortAddr --limit 50`：确认 Rust 实现的两个直接被调用符号。独立 `callers` 查询未在 60 秒内返回，已中止；调用方结论由节点反向边与全仓 Rust 文本检索交叉验证。
-- 已阅读生产/边界文件：[`urls.rs`](urls.rs)、[`service_url.rs`](service_url.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。`pkg/util` 下没有 `doc.go`，因此以 crate 入口 `lib.rs` 作为最近模块契约。
-- 已阅读 Go 对照：[`urls.go`](urls.go)、[`service_url.go`](service_url.go)；已阅读独立测试：[`urls_test.rs`](urls_test.rs)、[`security_2_aster_unit_test.rs`](security_2_aster_unit_test.rs)、[`urls_test.go`](urls_test.go)。
-- 仓库文本检索 `rg -n 'ParseHostPortAddr' --glob '*.rs' --glob '!pkg/util/urls.rs'` 仅命中上述两个 Rust 测试文件，支持“当前无 Rust 生产调用者”的限定结论。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证文档存在且恰有 11 个固定二级章节，并人工复核没有把未观察到的生产接线描述为已支持。

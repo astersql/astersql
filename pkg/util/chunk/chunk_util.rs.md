@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应 Rust 源文件](chunk_util.rs) 属于 `astersql-util-chunk` crate。crate 入口 `pkg/util/chunk/lib.rs` 经 `pkg/util/chunk/internal/group1/lib.rs` 的 `chunk_util_impl` 使用 `include!("../../chunk_util.rs")` 注入并重新导出这里的符号，因此调用方以 `chunk::...` 使用这些 API。文件承担三类辅助能力：按选择向量复制列式行、为 Chunk spill 提供临时文件读写层、为纯列投影提供零拷贝列交换。它不是独立执行入口，也不定义常量、trait 或条件编译项。
-
-`pkg/util/chunk/Cargo.toml` 将该目录声明为 `astersql-util-chunk`，并标记 Go 对照包为 `pkg/util/chunk`。本文件直接依赖 crate 内的 `Chunk`、`Column`、Go 风格 `io`/`os`/`errors` 适配，以及配置、checksum、encrypt、disjointset、intest 和 atomic 适配；相应 crate 依赖由 `Cargo.toml` 中的 `config-crate`、`checksum-crate`、`encrypt-crate`、`disjointset-crate` 与 `intest-crate` 提供。
+`CopySelectedRows`、`CopySelectedRowsWithRowIDFunc`、`CopyExpectedRowsWithRowIDFunc` 与 `CopyRows` 提供列级复制原语，分别支持布尔选择、逻辑下标到物理下标映射、反向条件及显式物理行号列表。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@ spill 初始化时，`initWithFileName` 在全局 `TempStoragePath` 下创建随
 
 直接对照 `pkg/util/chunk/chunk_util.go`，Rust 文件保留了同名 API、分支顺序和数据布局操作：固定/变长列分别复制、零列只累计虚拟行、同 outer 行批量复制、checksum 包在可选 encrypt writer 外、读侧按 encrypt 后 checksum 的次序恢复、并查集合并同源列后 CAS 发布。`pkg/util/chunk/chunk_in_disk.go` 也确认 `Add` 在 `dataFile.write` 后再次增加 `offWrite`，Rust 当前行为不是本次移植单独引入的简化。
 
-语言层差异主要是：Go 的指针、slice 与 `atomic.Pointer[map[int][]int]` 被映射为 Rust 引用、slice、`HashMap<usize, Vec<usize>>` 和 crate 的 `atomic::Pointer`；Go 的 `error` 被映射为 `Result<_, errors::Error>`；Go 的 `nil` writer/file 状态映射为 `Option`。Rust `rowIDFunc` 使用泛型闭包而非 Go 函数值。`Column::same_ref` 替代 Go 的列指针相等判断，以表达共享底层列引用。
-
-测试对应关系：Rust `selected_join_rows_copy_fixed_variable_null_and_virtual_rows` 覆盖 Go `TestCopySelectedJoinRowsDirect` 的核心路径并补 selection 错误；`selected_join_rows_with_same_outer_rows_match_go` 对应 `TestCopySelectedJoinRows`；`selected_virtual_rows_match_go_edge_cases` 对应 `TestCopySelectedVirtualNum`；`column_swap_merges_referred_input_columns_like_go` 对应 `TestMergeInputIdxToOutputIdxes`。Go 测试还包含 1024 行随机/多类型对比与 benchmark，Rust 独立测试目前是更小的确定性样例，不能宣称覆盖强度完全相同。
+语言层差异主要是：Go 的指针、slice 与 `atomic.Pointer[map[int][]int]` 被映射为 Rust 引用、slice、`HashMap<usize, Vec<usize>>` 和 crate 的 `atomic::Pointer`；Go 的 `error` 被映射为 `Result<_, errors::Error>`；Go 的 `nil` writer/file 状态映射为 `Option`。Rust `rowIDFunc` 使用泛型闭包而非 Go 函数值。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ spill 初始化时，`initWithFileName` 在全局 `TempStoragePath` 下创建随
 修改 spill 包装层时，必须维持写侧“可选 encrypt → checksum”和读侧相匹配的缓存/offset 恢复顺序，并联动检查 `pkg/util/chunk/chunk_in_disk.rs`、`chunk_in_disk_test.rs` 及 Go 对照文件。特别关注部分写、初始化中途失败、`offWrite` 口径、plaintext/AES 两种配置、checksum 损坏和 `Close` 后行为；当前 Rust 独立测试未在本文件测试中直接覆盖所有这些分支。
 
 修改列交换时，应保持“先合并同源输入，再交换一次并建立多个引用”的不变量。若输入引用拓扑可能随调用变化，需要重新设计一次性缓存，而不是继续复用首次映射。还应为 CAS 竞争、helper 析构/指针回收、空映射、非法列下标和多批次不同拓扑增加独立测试；性能上避免把零拷贝路径退化为逐值复制。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标 `pkg/util/chunk/chunk_util.rs` 已索引且有 21 个符号；`files --filter` 确认目标在图中；`node --file ... --offset 1 --limit 400` 与后续 401 行读取覆盖完整 434 行源码。精确 `query CopySelectedJoinRowsDirect` 同时定位 Go/Rust 定义和 Go 测试；`query SwapColumns`/`initWithFileName` 未能区分或返回 Rust impl，`callers`/`callees` 亦未给出可用边，因此没有把缺失图边包装成结论。
-- 已读生产与装配文件：`pkg/util/chunk/chunk_util.rs`、`pkg/util/chunk/Cargo.toml`、`pkg/util/chunk/lib.rs`、`pkg/util/chunk/internal/group1/lib.rs`、`pkg/util/chunk/chunk_in_disk.rs`、`pkg/expression/evaluator.rs`。
-- 已读 Go 对照：`pkg/util/chunk/chunk_util.go`、`pkg/util/chunk/chunk_in_disk.go`。
-- 已读测试：`pkg/util/chunk/chunk_util_test.rs`、`pkg/util/chunk/chunk_util_test.go`；并检查 `pkg/util/chunk/chunk_in_disk_test.rs`/`.go` 中 `DataInDiskByChunks` 的写入、`GetChunk`、`FillChunk` 与 `Close` 覆盖位置。
-- 调用搜索：非测试 Rust 中确认 `EvaluatorSuite::Run → ColumnSwapHelper::SwapColumns` 和 `DataInDiskByChunks → diskFileReaderWriter`；复制 API 在 executor join 文件中的命中为注释，已明确标为尚无生产接线证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查目标存在且固定二级标题恰为 11 个，并人工复核文档能够回答文件存在原因、运行路径与安全扩展点。

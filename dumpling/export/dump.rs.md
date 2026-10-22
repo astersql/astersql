@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`dump.rs` 是 `astersql-dumpling-export` crate 的导出编排层。该 crate 的入口是 [`lib.rs`](lib.rs)，它用 `include!("dump.rs")` 将本文件与 `prepare.rs`、`sql.rs`、`consistency.rs`、`metadata.rs`、`writer.rs` 等文件拼成接近 Go `dumpling/export` 包的单一命名空间；因此本文件没有自己的 `use` 列表，所用的 `Config`、`DB`、`BaseConn`、`TaskEnum`、`Writer` 等符号由 crate 入口和相邻实现共同提供。
-
-应用入口位于 [`../cmd/dumpling/main.rs`](../cmd/dumpling/main.rs)：`run` 将 `export::NewDumper` 作为工厂传入 `run_with_factory`，后者依次调用 `Dump` 和 `Close`。所以本文件既负责把静态配置初始化成一次 `Dumper` 会话，也负责把库表元数据转换为 writer 可消费的任务。
-
-[`Cargo.toml`](Cargo.toml) 将该目录声明为 `astersql-dumpling-export` library，并以 `package.metadata.porting.go-package = "dumpling/export"` 标出 Go 对照包。直接依赖包括 dumpling 的 `cli/context/log`、CSV/SQL/Parquet 格式、对象存储接口、表过滤器与 schema parser；SQL、PD、HTTP、metrics 等迁移期接口还大量来自同 crate 的 [`stubs.rs`](stubs.rs)。本文件没有条件编译项，测试由 `lib.rs` 中独立的 `#[cfg(test)] #[path = "dump_test.rs"] mod dump_test;` 接入。
+所以本文件既负责把静态配置初始化成一次 `Dumper` 会话，也负责把库表元数据转换为 writer 可消费的任务。
 
 ## 核心职责
 
@@ -112,8 +108,6 @@ GC 保护函数本身是阻塞循环，预期由调用方放入后台线程/任�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`dump.go`](dump.go)，相关 Go 回归是 [`dump_test.go`](dump_test.go)。Rust 保留了这些核心语义：初始化步骤串联、auto consistency 的基本类型映射、lock 模式提前列表、consistency setup/teardown、metadata 记录、schema/data 任务分类、column projection、外键在所有 schema 建立后验证、GC 保护点使用 `snapshotTS-1`、11 次重试和取消清理，以及 TiDB 6.2+ 的 paging 默认参数。
-
 已确认的主要差异如下：
 
 - Rust `NewDumper` 已串联 keyspace 元数据解析与 `tidbSetPDClientForGC`，但尚未接入 Go 的 `tidbGetSnapshot`、`tidbStartGCSavepointUpdateService`。Rust PD 选择没有 Go 的最低版本守卫和 classical 集群 PD 发现，`stubs.rs::PdClient::new_keyspace` 仅保存 endpoints/API context，不建立真实 PD 连接。
@@ -136,10 +130,3 @@ GC 保护函数本身是阻塞循环，预期由调用方放入后台线程/任�
 - 实现 collation 兼容：不能只改两个 `adjust*Collation` 钩子，还需把调用接回 schema 生成主链，并对照 Go parser AST 变换；需要覆盖数据库、表、列已有/缺省 charset/collation 和解析失败。
 - 改变公开 helper 时要注意 crate 的 `include!` 单包结构：这些 `pub fn` 可能被同 crate 任意实现文件和测试直接引用。先用带文件限定的 RustCodeGraph 查询或 `rg` 消歧，再改签名。
 - 性能风险集中在无界任务积压、逐表 `SHOW`/`SELECT ... LIMIT 1`、schema parser 全量解析以及原子/锁更新；正确性风险集中在 consistency 生命周期、投影后约束、生成列和 GC 保护清理。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`NewDumper`、两个 keyspace 初始化函数、Close，以及 `stubs.rs::PdClient::new_keyspace`；`dump_test.rs::test_tidb_resolve_keyspace_meta_for_gc` 与 `test_resolve_keyspace_meta_gc_api_choice`；Go `dump.go`/`dump_test.go` 对照 strict/fallback、PD 可选及端点错误。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

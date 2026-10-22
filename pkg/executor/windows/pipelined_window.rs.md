@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-executor-windows` crate 中的流水线窗口执行器，源文件是 [`pipelined_window.rs`](pipelined_window.rs)，crate 边界由 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs) 确定。`lib.rs` 公开 `pipelined_window` 模块并再导出其符号；`builder.rs::build` 在 `force_pipelined || plan.pipelined_enabled` 时构造 `PipelinedWindowExec`，`builder.rs::build_ordered` 则强制走流水线路径并包装成 `OrderedWindowExec`。
-
-它的输入契约是：子执行器已按 `PARTITION BY`/窗口 `ORDER BY` 所需顺序产生 `Chunk`。本文件不负责排序、解析 SQL 或构造窗口函数，而是在按分区读取行的同时，判定每行的帧、维护窗口函数部分状态，并将结果追加到保留了输入列的输出块。
-
-`Cargo.toml` 将 crate 命名为 `astersql-executor-windows`，并用 `package.metadata.porting.go-package = "pkg/executor/windows"` 指向 Go 对照包。其列出的跨 crate 依赖位于 `target.'cfg(any())'.dependencies`；`cfg(any())` 恒为 false，所以当前 Rust 文件实际使用的是本 crate `window.rs` 中的本地执行、帧、函数和内存跟踪抽象，不能把该依赖清单解读为当前已直接接入所有外部 crate。
+**按需拉取并切分分区**：`get_rows_in_partition` 通过 `GroupChecker` 将子 `Chunk` 分成连续的分区组，使跨 Chunk 的同一分区可继续处理，并用 `new_partition`/`done` 表示分区或数据源边界。
 
 ## 核心职责
 
@@ -98,19 +94,6 @@ RustCodeGraph 精确符号查询确认：`open_self` 的调用者是本文件 `o
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pipelined_window.go`](pipelined_window.go)。主要一一对应如下：
-
-| Rust | Go | 对应语义 |
-| --- | --- | --- |
-| `DataInfo` | `dataInfo` | 待回填 Chunk、剩余行数、累计水位 |
-| `PipelinedWindowExec` | `PipelinedWindowExec` | 分区/帧/水位/缓冲状态机 |
-| `OrderedWindowExec { inner }` | `OrderedWindowExec { *PipelinedWindowExec }` | 有序流水线薄包装 |
-| `open_self`, `first_result_chunk_not_ready`, `next` | `OpenSelf`, `firstResultChunkNotReady`, `Next` | 初始化、队首水位门禁、主调度循环 |
-| `get_rows_in_partition`, `fetch_child` | `getRowsInPartition`, `fetchChild` | 按分区切片拉取并建立待输出 Chunk |
-| `start_row`, `end_row` | `getStart`, `getEnd` | ROWS/RANGE 帧边界与 staged 单调扫描 |
-| `produce`, `enough_to_produce` | `produce`, `enoughToProduce` | 帧计算、滑动/重建、产出就绪判断 |
-| `reset_partition` | `reset` | 分区边界清理与部分结果释放 |
-
 两版保留的核心不变量包括：队首块必须结果填完且内部不再引用才可返回；新分区行可预取但须先结束/重置旧分区；未读完分区时不提前产出未能确定的帧；空帧只在进入时 reset；滑动不可用时全量重建；通过前缀裁剪控制内存。
 
 当前 Rust 适配层的主要差异也必须保持可见：
@@ -121,7 +104,7 @@ RustCodeGraph 精确符号查询确认：`open_self` 的调用者是本文件 `o
 - Rust `WindowFunction::ignores_frame` 显式让按分区位置计算的函数跳过帧 reset/update；Go 由其聚合/窗口函数实现与构建装配维持等价语义。
 - Rust 在前缀 `drain` 后强制取消滑动初始化，因为它的 `slide` 接口接收相对 `rows` 的下标；Go 滑动接口使用绝对帧位置和 `getRow` 回调，不需要这一 Rust 适配步骤。
 
-Go 回归面主要在 `window_executor_test.go` 与 `window_sql_test.go`；Rust 对应的独立测试文件是 `window_executor_test.rs`、`window_sql_test.rs`、`window_memory_test.rs` 和 `window_test.rs`。Rust 测试同时跑 buffered/pipelined 并比较分区行号、ROWS/RANGE、滑动函数、非对称/空帧、跨 Chunk `LAG`、有序构建和内存释放，但它基于本地简化执行模型，不等同于 Go SQL 层所有类型、planner 与 session 集成已由 Rust 端完整覆盖。
+Rust 测试同时跑 buffered/pipelined 并比较分区行号、ROWS/RANGE、滑动函数、非对称/空帧、跨 Chunk `LAG`、有序构建和内存释放，但它基于本地简化执行模型，不等同于 Go SQL 层所有类型、planner 与 session 集成已由 Rust 端完整覆盖。
 
 ## 扩展指南
 
@@ -133,27 +116,3 @@ Go 回归面主要在 `window_executor_test.go` 与 `window_sql_test.go`；Rust 
 - **改变生命周期**：`open`/`close` 必须保持 child 与 statement tracker 成对。错误路径若新增持有资源，要明确由调用者仍然调用 `close` 清理，或在返回错误前就地回滚。
 - **测试放置**：不要在本生产文件内内嵌测试。执行器状态机/有序构建回归放在 `window_executor_test.rs`；ROWS/RANGE、函数与空帧语义放在 `window_sql_test.rs`；内存归属放在 `window_memory_test.rs`；底层帧比较可放在 `window_test.rs`。同时核对并必要时扩展对应 Go 独立测试，避免 Rust 适配逻辑偏离 Go 行为。
 - **风险重点**：正确性风险集中在分区跨 Chunk、空帧、RANGE 比较和裁剪后偏移；兼容性风险集中在 Go/TiDB 表达式与简化 Rust `Value` 语义差异；性能风险集中在 `projected`/`extend_from_slice` clone、`Vec::drain` 前缀移动以及频繁全量重建。
-
-## 验证依据
-
-**RustCodeGraph 证据**
-
-- `rustcodegraph status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/windows` 列出本文件及相关 Rust/Go/测试文件。
-- `node --file pkg/executor/windows/pipelined_window.rs --offset 1 --limit 420` 与 `--offset 421 --limit 180`：覆盖目标文件全部 518 行、两个结构体与所有方法。
-- `query PipelinedWindowExec`、`query open_self/get_rows_in_partition/start_row/end_row/reset_partition/memory_bytes`：确认 Rust 定义及 Go 同名对照。
-- `node open_self`：确认其由 `open` 调用；`node get_rows_in_partition`：确认由 `next` 调用，下游含 `fetch_child`、`GroupChecker::split_into_groups/next_group`、`refresh_rows_memory`。
-- `node start_row` 与 `node end_row`：确认上游均为 `produce`/`enough_to_produce`，下游分别为 `FrameBound::before_start`/`beyond_end`。
-- `node pipelined_window.rs::next`、`node produce`、`node enough_to_produce`、`node reset_partition`、`node pipelined_window.rs::fetch_child`：确认主调度边、帧计算与函数调用边、分区重置边和 child 拉取边。
-- `node --file builder.rs`、`node --file window.rs`：核对构建条件、RANGE 元数据绑定、`Chunk`、`FrameBound`、`WindowFunction`、`WindowMemoryTracker`、`GroupChecker` 与部分结果辅助函数。
-
-**直接读取的配置、Go 和测试证据**
-
-- `pkg/executor/windows/Cargo.toml`：crate 名、`lib.rs` 入口、Go 对照包和 `cfg(any())` 下的移植依赖清单。
-- `pkg/executor/windows/lib.rs`：模块公开/再导出关系以及四个独立 Rust 测试模块的声明。
-- `pkg/executor/windows/pipelined_window.go`：Go 实现的完整状态机，包括队首引用安全注释、拉取/分区、ROWS/RANGE、滑动、空帧、裁剪与 reset。
-- `pkg/executor/windows/window_executor_test.rs` 与 `.go`：分区 `ROW_NUMBER`、滑动 `SUM`、buffered/pipelined 等价、强制 ordered pipeline 以及空帧可空性/默认结果。
-- `pkg/executor/windows/window_sql_test.rs` 与 `.go`：跨 Chunk `LAG`、ROWS/RANGE 滑动函数、非对称与反向边界、ASC/DESC 及 issue 45964/46050 的空帧回归。
-- `pkg/executor/windows/window_memory_test.rs`：流水线与缓冲执行器对 statement tracker 的记账、输出所有权移交和 close 释放。
-- `pkg/executor/windows/window_test.rs`：RANGE `CURRENT ROW` 对相邻大整数 peer group 的比较回归，支撑边界比较不应通过损失精度的简化路径改写。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文件存在且恰好含有上述 11 个固定二级标题；验证命令与退出码记录于任务交付。

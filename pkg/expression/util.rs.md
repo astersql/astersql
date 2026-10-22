@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/expression/util.rs` 属于 `astersql-expression` crate。`pkg/expression/lib.rs` 通过 `#[path = "util.rs"] mod util_kernel` 装载它，再用 `pub use util_kernel::*` 将其 API 暴露到 `expression::...` 命名空间。它不是独立执行入口，而是表达式层与规划器共享的工具集合，位于表达式节点（`Expression`、`Column`、`Constant`、`CorrelatedColumn`、`ScalarFunction`）之上，为优化改写、计划缓存、预处理语句和诊断展示提供通用原语。
-
-该文件的直接 Go 对照是 `pkg/expression/util.go`。RustCodeGraph 对当前文件识别出 139 个符号；调用证据显示 `ExtractColumns`、`ColumnSubstitute`、`PushDownNot`、`ExtractFiltersFromDNFs` 等被 `pkg/expression/constant_propagation.rs`、`pkg/planner/core/operator/logicalop/*`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/util/ranger/detacher.rs` 等规划路径使用，因此它处在 SQL 优化主链的表达式操作层，而非仅供测试使用。
+列依赖提取：`ExtractDependentColumns` 展开虚拟列定义；`ExtractColumns*` 按 `UniqueID` 去重或写入调用方提供的 `HashMap`、切片、`FastIntSet`；`ExtractCorColumns` 和 `extractColumnsAndCorColumns` 处理关联列。
 
 ## 核心职责
 
@@ -99,15 +97,12 @@ RustCodeGraph 的 `ExtractColumns` 节点显示其下游为本文件 `extractCol
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按符号顺序大体对应 `pkg/expression/util.go`：Go 的 `cowExprRef`、Filter、列提取、ColumnSubstitute、NOT/DNF、参数标记、计划缓存、格式化、`SQLDigestTextRetriever`、`ExecBinaryParam` 和末端比较辅助在 Rust 中均有同名或直接等价入口。`pkg/expression/Cargo.toml` 的 `[package.metadata.porting] go-package = "pkg/expression"` 也声明了该移植边界。
-
 需要注意的实现层差异：
 
 - Go `uniqueIDToColumnMapPool` 是 `sync.Pool`，Rust 因 `Column` 非 `Send` 改为线程局部池；复用范围变窄，但避免跨线程传递节点。
 - Go map 迭代无序；Rust 的 `ExtractColumns`、多表达式列提取和 DNF 公因子输出显式排序，以维持稳定结果。
 - Go 接口值和切片替换对应 Rust trait object、所有权 clone 与 `cowExprRef`；语义重点是“未变化保留原树、变化后清缓存并重建”，而不是逐语句机械相同。
 - Go `strconv.FormatFloat` 的 Inf 和指数拼写由 Rust `formatFloatLikeGo` 显式模拟。
-- digest SQL 的 current/history union、本地后全局顺序、512 阈值、只填空文本均与 Go `SQLDigestTextRetriever` 对齐；Rust 通过泛型 `expropt::SQLExecutor` 注入执行器。
 - Rust `ParamMarkerInPrepareChecker` 的通用 `enter`/`leave` 基本放行，核心状态只在 `enter_param_marker` 更新；扩展 AST visitor 时应继续以 Go 的 prepare/execute 语义为准。
 
 Go 测试 `pkg/expression/util_test.go` 是完整参考；Rust 独立测试 `pkg/expression/util_test.rs` 覆盖列表顺序、数值前缀、二进制时间、格式化、时区和校对边界，`pkg/expression/util_runtime_parity_aster_unit_test.rs` 补充 digest 查询及更多运行时对等场景。Rust 测试仍少于 Go 文件的 695 行覆盖面，因此未被现有 Rust 测试点名的分支不能仅凭移植关系宣称已充分验证。
@@ -123,13 +118,3 @@ Go 测试 `pkg/expression/util_test.go` 是完整参考；Rust 独立测试 `pkg
 扩展 MySQL 参数类型时，在 `ExecBinaryParam` 增加分支并核对 `pkg/expression/util.go`、协议长度、null 表现、符号扩展和最终 `InferParamTypeFromDatum`。固定长度 helper 不做完整边界检查，因此所有外部入口必须先验证 buffer 长度；回归测试应放在独立 Rust 测试文件，并包含 malformed packet。
 
 改变 digest 策略时需保持内部请求来源、current/history 合并、已有文本不覆盖和大集合 fetch-all 行为；`fetchAllLimit` 改动必须同步 Go 语义与 `test_digest_retriever_matches_go_partial_and_fetch_all_contract`。性能风险主要来自表达式深递归、无必要 clone、HashCode 重算和全量 statements summary 查询；兼容风险主要来自 collation、SQL 三值逻辑、计划缓存可变常量和二进制协议边界。
-
-## 验证依据
-
-- 源码全貌：`pkg/expression/util.rs`（2,098 行），符号清单覆盖类型别名、`cowExprRef`、线程局部池、四个惰性规则表、列/谓词/缓存/digest/协议相关函数。
-- crate 与模块装配：`pkg/expression/Cargo.toml`；`pkg/expression/lib.rs` 中 `#[path = "util.rs"] mod util_kernel`、`pub use util_kernel::*` 及两个 `#[cfg(test)]` 测试模块挂载。
-- Go 对照：`pkg/expression/util.go`（2,388 行）与 `pkg/expression/util_test.go`（695 行）。
-- Rust 测试：`pkg/expression/util_test.rs`；`pkg/expression/util_runtime_parity_aster_unit_test.rs`。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 边；`files --filter pkg/expression/util.rs` 显示目标文件有 139 个符号；`query/node ExtractColumns` 确认 Rust 定义位于第 113 行、调用 `extractColumns`，并被 expression constant propagation 和 planner 多处调用；另对 `ColumnSubstituteImpl`、`PushDownNot`、`ExtractFiltersFromDNFs`、`RemoveMutableConst`、`SQLDigestTextRetriever.RetrieveGlobal`、`ExecBinaryParam` 执行了 query/callers/callees 查询。部分常见名称的全局 explore 结果噪声较高，因此上游边同时用精确源码搜索复核。
-- 结构验证要求：文档必须存在且恰好含“文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据”十一个二级标题。
-- 本任务是纯文档分析，未运行 Cargo；行为判断来自源码、调用边、Go 对照和已有独立测试，不把未执行的测试描述为本次运行结果。

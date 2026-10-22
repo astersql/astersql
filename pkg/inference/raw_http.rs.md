@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`raw_http.rs` 是 `astersql-inference` crate 内部的特殊 HTTP 传输实现，由 [`lib.rs`](lib.rs) 以私有模块 `raw_http` 装配。它不替代常规 `reqwest::Client`：只有 [`base.rs`](base.rs) 中 `ProviderEndpoint::raw_url()` 发现预先转义的路径（特别是完整的 `%2E` / `%2E%2E` 点段）会被 WHATWG URL 规范化改变时，`execute_json_embedding_call` 才调用本文件的 `post_json`；普通端点仍走已配置的 `reqwest` 客户端。
-
-该旁路位于 provider 适配器与远端推理 HTTP 服务之间。当前会生成这种 `ProviderEndpoint::with_path` 的 Rust provider 是 `gemini.rs`、`huggingface.rs` 和 `tidbcloud.rs`。文件只负责构造并发送 JSON POST、代理连接、超时和有界读取；状态码解释、错误响应解码、凭据脱敏日志及 embedding 解码仍由 `base.rs::execute_json_embedding_call` 负责。
+文件只负责构造并发送 JSON POST、代理连接、超时和有界读取；状态码解释、错误响应解码、凭据脱敏日志及 embedding 解码仍由 `base.rs::execute_json_embedding_call` 负责。
 
 ## 核心职责
 
@@ -65,11 +63,7 @@ RustCodeGraph 能定位文件及 `post_json`、`post_json_with_matcher`、`Forwa
 
 ## 与 Go 版本的对应关系
 
-Go 没有单独的 `raw_http.go`；对应行为分布在 `pkg/inference/embedding/base/base.go`：`SetEscapedURLPath` 同时设置 `url.URL.Path` 与 `RawPath`，`PostJSON` 构造 JSON 请求，`DoRequest` 使用标准 `http.Client`（自然支持环境代理、HTTP absolute-form 和 HTTPS CONNECT）并调用 `ReadResponseBody` 做有界读取。
-
-Rust 的 `ProviderEndpoint` 保存 `escaped_path`，当 `reqwest::Url` 的当前 path 与它不一致时才转到本文件，弥补 Rust 常规客户端对 WHATWG 点段规范化的差异。两版保持的语义包括：JSON Content-Type 覆盖调用方冲突值、返回原始状态码和响应体、负上限报错、上限恰好可接受、超限报错、默认 30 秒请求超时以及安全的 provider 请求错误。Rust 特有代码显式实现了代理 connector 和 TLS 隧道；这是传输栈差异，不代表 Go 缺少代理能力。
-
-Go 的直接测试位于 `pkg/inference/embedding/base/base_test.go`，覆盖 `SetEscapedURLPath`、`PostJSON`、`DoRequest` 与 `ReadResponseBody`。Rust 的代理 absolute target、CONNECT 认证和超时细节则由 `pkg/inference/base_test.rs` 独立覆盖。
+Rust 的 `ProviderEndpoint` 保存 `escaped_path`，当 `reqwest::Url` 的当前 path 与它不一致时才转到本文件，弥补 Rust 常规客户端对 WHATWG 点段规范化的差异。Rust 特有代码显式实现了代理 connector 和 TLS 隧道；这是传输栈差异，不代表 Go 缺少代理能力。
 
 ## 扩展指南
 
@@ -79,12 +73,3 @@ Go 的直接测试位于 `pkg/inference/embedding/base/base_test.go`，覆盖 `S
 - 修改超时或错误包装时，应检查 `ProviderError` 的 source 链及上层 `ProviderContext` 取消优先级，避免将 endpoint、query token 或代理凭据暴露到错误文本。
 - 若希望复用连接池或统一普通/特殊传输，需要先证明不会重新规范化原始 URI，并评估每次新建 TLS/client 的性能与环境代理兼容性；这属于跨 `raw_http.rs`、`base.rs` 及 provider 测试的行为变更。
 - 测试逻辑必须继续放在独立 `base_test.rs`（或新的独立 `*_test.rs`）中，不应内嵌到生产源文件。
-
-## 验证依据
-
-- 源码：`pkg/inference/raw_http.rs` 全部 205 行；`pkg/inference/base.rs` 中 `ProviderEndpoint::{with_path, raw_url}`、`DEFAULT_HTTP_TIMEOUT`、`ProviderError` 与 `execute_json_embedding_call`；`pkg/inference/lib.rs` 的私有模块声明。
-- crate/依赖：`pkg/inference/Cargo.toml` 的 `[lib]`、HTTP/TLS/Tokio/JSON 依赖和 `package.metadata.porting.go-package = "pkg/inference"`。
-- Rust 入口与测试：`pkg/inference/gemini.rs`、`huggingface.rs`、`tidbcloud.rs` 对 `ProviderEndpoint::with_path` 的调用；`pkg/inference/base_test.rs::escaped_paths_preserve_proxy_absolute_targets_and_connect_authentication` 与 `escaped_request_timeouts_and_body_bounds_keep_the_real_error_lifecycle`。
-- Go 对照：`pkg/inference/embedding/base/base.go::{SetEscapedURLPath, NewJSONRequest, DoRequest, PostJSON, ReadResponseBody}`；`pkg/inference/embedding/base/base_test.go::{TestReadResponseBody, TestHTTPHelpers}`。
-- RustCodeGraph：索引状态为已初始化（查询时 11,467 个文件）；`node --file pkg/inference/raw_http.rs` 读取完整源码，`query` 唯一定位两个函数和两个结构体；精确 callers/callees 查询为空，故再以 `rg` 验证 `base.rs`、`base_test.rs` 和 provider 的实际引用。
-- 本任务是纯文档分析，未运行 Cargo；交付前使用任务指定命令验证本文恰有 11 个固定二级章节，并人工检查唯一新增生产物、链接、符号名和边界描述。

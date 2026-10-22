@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-infoschema` crate（入口与依赖见 `pkg/infoschema/Cargo.toml`、`pkg/infoschema/lib.rs`），实现 `InfoSchema` trait 的 V2 版本。它把多个 schema 版本的库、表、分区和反向外键元数据保存在共享的 `Data` 中，再由 `infoschemaV2` 固定 `schema_meta_version` 与 `start_ts`，形成可并存的只读快照。
-
-`pkg/infoschema/lib.rs` 将 `Data` 以 `V2Data`、将 `NewData` 以 `NewV2Data` 对外再导出，同时直接导出 `infoschemaV2`、`NewInfoSchemaV2`、`IsV2` 与 `IsSpecialDB`。生产接线有两条直接证据：`pkg/infoschema/builder.rs` 在全量加载和 schema diff 应用时更新共享 `Data`；`pkg/domain/canonical_domain.rs::KvInfoSchemaLoader::new_v2` 与 `build_info_schema_v2` 使用同一 `Arc<Data>` 构造不同 KV 时间点的快照。
+实现 `InfoSchema` 查询面。
 
 ## 核心职责
 
@@ -73,9 +71,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/infoschema_v2.go`。概念映射如下：Go 的 `Data`、`infoschemaV2`、`tableItem`/`schemaItem`/`partitionItem`/`referredForeignKeyItem` 分别对应 Rust 的 `Data`、`infoschemaV2` 与四类 `*Record`；Go 的多个 BTree 比较器和 `search` 在 Rust 中由按版本降序的 `Vec` 加 `visible_*` 线性选择替代。
-
-保留的语义包括：版本可见性与 tomb、ID/名称双索引、分区反查、反向外键增删、全量加载前的索引遮蔽、每轮最多 1024 条表历史 GC、SIEVE 缓存、特殊库优先查询、placement/masking 透传以及特殊属性表按降序分组。`pkg/infoschema/infoschema_v2_test.rs` 中的 reset 与全局 GC 上限用例，以及 `pkg/infoschema/infoschemav2_cache_test.rs` 的命中/未命中/驱逐计数，为这些行为提供 Rust 回归证据。
+概念映射如下：Go 的 `Data`、`infoschemaV2`、`tableItem`/`schemaItem`/`partitionItem`/`referredForeignKeyItem` 分别对应 Rust 的 `Data`、`infoschemaV2` 与四类 `*Record`；Go 的多个 BTree 比较器和 `search` 在 Rust 中由按版本降序的 `Vec` 加 `visible_*` 线性选择替代。
 
 尚未一一移植的 Go 行为也必须视为边界：Go `NewInfoSchemaV2` 接受 autoid requirement 与 resource factory；Go `loadTableInfo` 可按需读取 meta 并由 `singleflight` 合并并发加载；Go `WithRefillOption` 返回携带 context value 的新 context；Go 文件还包含更多 Builder V2 辅助与缓存指标路径。Rust 构造器直接接收版本和时间戳，表数据随 `TableRecord` 保存，`RefillOption` 只是值类型。两者 API 和性能模型并非完全等价。
 
@@ -89,12 +85,3 @@
 - 增加 `InfoSchema` 能力时，应先更新 `pkg/infoschema/infoschema.rs` 的 trait，再在 V1/V2 分别实现；V2 专属方法则应评估是否需要通过 `pkg/infoschema/lib.rs` 再导出。
 - Rust 测试必须继续放在独立测试文件：核心版本行为放 `pkg/infoschema/infoschema_v2_test.rs`，缓存事件放 `pkg/infoschema/infoschemav2_cache_test.rs`，跨 loader/DDL 的场景放 `pkg/infoschema/test/infoschemav2test/v2_test.rs`；同时对照对应 Go 测试，不能用简化断言替代 Go 的实际语义。
 - 性能风险集中在单一 `RwLock`、历史向量线性扫描和 `HashMap` 全量遍历；任何优化都需保留快照隔离、tomb 遮蔽、双索引一致性及旧快照在 reset/GC 前后的可读性。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/infoschema` 确认目标及 Go/Rust 测试均在图中。
-- RustCodeGraph 源码读取：`node --file pkg/infoschema/infoschema_v2.rs --offset 1/261/521/781` 覆盖目标文件全部 956 行，并列出其被 `pkg/domain/canonical_domain.rs`、`pkg/infoschema/builder.rs` 等文件使用。
-- RustCodeGraph 符号/调用查询：`query NewInfoSchemaV2`、`query infoschemaV2`、`query GCOldVersion`；`callees TableByName` 验证 Rust 查表路径通向 `keep_alive`、`visible_table`、`TableCacheKey` 和 SIEVE `Get`。图对部分 Rust callers 未返回结果，因此直接读取上述生产接线文件补证。
-- crate 与入口：`pkg/infoschema/Cargo.toml`、`pkg/infoschema/lib.rs`；trait 契约：`pkg/infoschema/infoschema.rs`；生产调用：`pkg/infoschema/builder.rs`、`pkg/domain/canonical_domain.rs`。
-- Go 对照：`pkg/infoschema/infoschema_v2.go`；测试证据：`pkg/infoschema/infoschema_v2_test.rs`、`pkg/infoschema/infoschemav2_cache_test.rs`、`pkg/infoschema/test/infoschemav2test/v2_test.rs` 及同路径三个 Go 测试文件。
-- 本任务仅新增说明文档，未运行 Cargo。交付前以任务给定命令验证文件存在且恰有 11 个固定二级标题，并人工复核符号名、路径、当前限制与扩展接入点均有上述源码证据。

@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-[`fips.rs`](./fips.rs) 属于 `astersql-br-cmd-br` crate。[`lib.rs`](./lib.rs) 通过 `pub mod fips` 将它公开为 `astersql_br_cmd_br::fips`；该 crate 同时由 [`bin_main.rs`](./bin_main.rs) 包装成 `astersql-br-cmd-br` 二进制。该文件不参与命令树组装，而是 Go `boringcrypto` 构建语义在 Rust 默认构建中的最小能力查询适配层。
+不参与命令树组装，而是 Go `boringcrypto` 构建语义在 Rust 默认构建中的最小能力查询适配层。
 
 ## 核心职责
 
@@ -42,9 +42,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 [`fips.go`](./fips.go) 只在 `boringcrypto` 构建标签成立时参与编译，并以空白导入 `_ "crypto/tls/fipsonly"` 触发 Go TLS 的 FIPS-only 初始化副作用。Rust 文件没有复制该副作用；它只对齐未选中 Go `boringcrypto` 文件时的默认能力边界，即返回 `false`。
-
-因此这是部分语义对齐，而不是 Go FIPS 构建路径的完整移植。对齐测试 [`parity_test.rs`](./parity_test.rs) 明确断言 `!fips_only_enabled()`，保护的是默认非 FIPS-only 契约；仓库搜索未发现 BR 中针对 FIPS 启用路径的独立 Rust 测试。
+Rust 文件没有复制该副作用；它只对齐未选中 Go `boringcrypto` 文件时的默认能力边界，即返回 `false`。
 
 ## 扩展指南
 
@@ -52,12 +50,3 @@ Go 对照文件 [`fips.go`](./fips.go) 只在 `boringcrypto` 构建标签成立�
 - 若引入构建时分支，要同步检查 `Cargo.toml`、`lib.rs` 和 `main.rs`，确保能力报告与实际初始化路径一致，并且在请求 FIPS 但 provider 不可用时避免静默降级。
 - 测试逻辑应继续位于独立文件：默认构建契约可扩展 `parity_test.rs`；如果新增可测的 FIPS 初始化分支，应在同目录新增或扩展独立 `*_test.rs` 文件，覆盖默认路径、启用成功和不可用时的失败路径，不把测试内嵌进 `fips.rs`。
 - 兼容风险主要是错报能力导致合规性判断偏差；性能风险不在当前常量返回路径中，而在未来 TLS provider 选择和初始化实现中。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 7,032 个 Rust 文件；`files --filter br/cmd/br` 确认目标文件、Go 对照文件和独立测试都在索引中。
-- RustCodeGraph `explore "br/cmd/br/fips.rs FipsCheckVerify FIPS"`：返回 `fips.rs` 全文，并给出 `fips_only_enabled -> parity_test.rs::contract_normal_command_tree_and_filters` 的唯一 blast-radius 调用关系。
-- RustCodeGraph `query fips_only_enabled --kind function --limit 10 --json` 和 `node --file br/cmd/br/fips.rs --offset 1 --limit 80`：确认签名、公开性、实现和文件总长度。单独的 `callers/callees` 命令在 30 秒内未返回文本，因此调用关系又用 `rg` 直接引用搜索交叉验证。
-- 已读源与配置：`br/cmd/br/fips.rs`、`br/cmd/br/lib.rs`、`br/cmd/br/main.rs`、`br/cmd/br/bin_main.rs`、`br/cmd/br/Cargo.toml`。目录中不存在 `doc.go`。
-- 已读对照与测试：`br/cmd/br/fips.go`、`br/cmd/br/parity_test.rs`；`rg` 未找到其他 BR Rust/Go 测试对 FIPS 的引用。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的 11 章结构命令验证文档。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`pkg/standby/idle_watcher.rs` 属于 `astersql-standby` crate；crate 根 `pkg/standby/lib.rs` 公开模块 `idle_watcher`，并再导出 `IdleWatcherConfig` 与 `start_idle_watcher`。它把 Go 版 `LoadKeyspaceController.OnServerCreated` 中的空闲退出判断拆成可配置的 Rust 后台线程，依赖 `astersql-server::server::Server` 读取连接和关闭状态，依赖同 crate 的 `LoadKeyspaceController` 保存重启原因并发出退出请求。
-
-RustCodeGraph 对 `start_idle_watcher` 的调用者查询只找到 `pkg/standby/idle_watcher_test.rs::in_transaction_sleep_connection_prevents_idle_exit`，全仓精确搜索也没有找到生产调用者。因此当前可确认的是“API 已从 crate 根导出且测试可调用”，不能据此声称它已接入服务器启动主链。Go 版则把同类逻辑放在 `pkg/standby/idle_watcher.go::LoadKeyspaceController.OnServerCreated` 生命周期回调中，并由 `cmd/tidb-server/main.go` 在创建 Server 后调用。
+`IdleWatcherConfig` 集中表达空闲阈值、检查周期、starter 部署模式和零后端开关，避免循环直接读取全局配置。
 
 ## 核心职责
 
@@ -92,17 +90,10 @@ Server 内部对连接集合使用读锁生成各次快照；controller 的最�
 
 ## 与 Go 版本的对应关系
 
-Rust 逻辑直接对应 `pkg/standby/idle_watcher.go`：
-
-- Go 的 `OnConnActive` 原子 CAS 循环对应 Rust `LoadKeyspaceController::on_connection_active_now` 的 `fetch_update`，都保证 `lastActive` 不向后移动。
 - Go `OnServerCreated` 从全局配置读取 `MaxIdleSeconds`、starter 模式和零后端开关，并固定使用 10 秒 ticker；Rust 将它们显式放入 `IdleWatcherConfig`，便于注入与测试，默认检查间隔仍为 10 秒。
-- 两版都在空闲时间严格大于阈值后，计算连接数、非 Sleep 进程数、事务中进程数和交互式连接数；两版的业务空闲表达式及分支优先级相同。
-- Go starter + zero-backend 分支设置 Manager 回收标记并发送 `SIGTERM`；Rust 对应 `set_need_request_manager_free` 加 `ExitSignal::Terminate`。普通分支 Go 发送 `SIGINT`；Rust 对应 `ExitSignal::Interrupt`。
 - Go 每次超过阈值都会记录包含四种计数的 info 日志；Rust 文件没有等价日志调用。Rust 只保存正常重启原因，且静默忽略保存错误。
 - Go goroutine 使用 `time.Ticker` 并在 goroutine 返回时 stop；但发送进程信号后源码没有显式 `return`。Rust 在线程内发出退出请求后立即 `break`，并额外以 `force_shutdown` 作为循环条件。
 - Go 生命周期方法由 `pkg/server/standby.go::StandbyController` 声明，并在 `cmd/tidb-server/main.go` 接线；Rust 目前只从 crate 根导出显式启动函数，而 `pkg/standby/standby.rs::on_server_created` 仅刷新活跃时间。RustCodeGraph 与全仓精确搜索均未发现生产调用边，这是迁移接线差异，不应误报为完整等价集成。
-
-Go 同目录没有独立 `idle_watcher_test.go`；本任务可见的直接 Go 事实来源是生产文件本身。Rust 在独立的 `idle_watcher_test.rs` 中补有一项事务保护回归测试。
 
 ## 扩展指南
 
@@ -113,13 +104,3 @@ Go 同目录没有独立 `idle_watcher_test.go`；本任务可见的直接 Go �
 - 若改变时间精度或阈值比较，需关注 `Duration::as_secs` 截断、严格 `>` 条件和系统时钟回拨；可考虑注入时钟以获得确定性测试。
 - 测试必须继续放在独立的 `pkg/standby/idle_watcher_test.rs`，不要嵌入生产文件。现有测试只覆盖“事务中的 Sleep 连接阻止退出”；建议分别补齐：零阈值不建线程、普通 `Interrupt`、starter 零后端 `Terminate` 与 Manager 标记、交互式连接保护、重启日志失败不阻断退出、force-shutdown 停止，以及重复启动策略。
 - 兼容性风险集中在信号类型、事务状态位和交互 capability；性能风险集中在过短 `check_interval` 导致频繁克隆连接快照，以及每次调用创建一个 OS 线程。
-
-## 验证依据
-
-- 目标源码：`pkg/standby/idle_watcher.rs`，核对全部 132 行、常量、配置结构、默认实现、3 个函数及所有分支；文件无条件编译项。
-- crate 边界：`pkg/standby/lib.rs` 的模块声明、再导出和独立测试声明；`pkg/standby/Cargo.toml` 的 `[lib]`、porting metadata 与路径依赖。
-- RustCodeGraph：`status` 显示索引包含 `pkg/standby/idle_watcher.rs`；`query/node` 定位 `IdleWatcherConfig`、`start_idle_watcher`、`idle_loop`、`unix_seconds`；符号 trail 得到测试到启动入口、启动入口到循环、循环到时间函数，以及相邻 Rust `on_server_created -> on_connection_active_now` 的边。对重载 Server 方法的图边再以其定义源码核验。
-- 直接依赖实现：`pkg/standby/standby.rs::on_connection_active_now`、`last_active`、`save_normal_restart_info`、`request_exit` 与 `ExitSignal`；`pkg/server/server.rs::user_process_list`、`client_capability_list`；`pkg/server/standby.rs::StandbyShutdownServer`。
-- Go 对照：`pkg/standby/idle_watcher.go::OnConnActive` 和 `LoadKeyspaceController.OnServerCreated`，核对计数、判据、部署分支与信号；`pkg/server/standby.go` 和 `cmd/tidb-server/main.go` 核对接口与生产调用点。
-- 独立 Rust 测试：`pkg/standby/idle_watcher_test.rs::in_transaction_sleep_connection_prevents_idle_exit`，证明 `Sleep` 连接的 `ProcessInfo.state` 含 `ServerStatusInTrans` 时不会请求退出，并通过设置 force-shutdown 后 join 回收线程。
-- 当前验证限制：没有运行 Cargo（任务明确禁止）；没有找到独立 Go idle-watcher 测试；RustCodeGraph 没有检出生产调用者，因此生产接线状态只报告为“未发现”，不作已接入推断。

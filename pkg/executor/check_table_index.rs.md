@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod check_table_index` 公开该模块，`pkg/executor/Cargo.toml` 将库入口设为 `lib.rs`。文件直接依赖 `astersql-errors` 提供共享错误，以及 `astersql-util-chunk` 提供执行器 `Next` 接口使用的空结果批；其余表、索引、会话和查询能力都抽象成本文件内 trait，因而核心算法可以脱离具体存储实现测试。
-
-它承载 `ADMIN CHECK TABLE` / `ADMIN CHECK INDEX` 的两套一致性检查算法：`CheckTableExec` 是逐索引回表并补做表侧检查的慢路径，`FastCheckTableExec` 是通过内部 SQL 的全局 checksum、递归分桶和最终逐行比对定位差异的快路径。两者都是“检查型”执行器，`Next` 不向传入的 `chunk::Chunk` 追加结果行，只以成功或错误表示检查结果。
-
-当前 Rust 生产接线需要谨慎理解：`pkg/executor/builder.rs` 的 `buildCheckTable` 只根据 `fast_check_enabled()` 和 `indexes_support_fast_check()` 选择通用的 `ExecutorKind::FastCheckTable` 或 `ExecutorKind::CheckTable`，仓库内除本模块及其独立测试外，没有搜索到 `CheckTableExec` / `FastCheckTableExec` 的直接构造点。因此本文件提供了可注入运行时的算法实现，但“通用 kind 到本文件具体类型”的完整生产适配在现有直接证据中未验证，不能仅凭 Go 版本接线推定 Rust 已经走到这里。
+文件直接依赖 `astersql-errors` 提供共享错误，以及 `astersql-util-chunk` 提供执行器 `Next` 接口使用的空结果批；其余表、索引、会话和查询能力都抽象成本文件内 trait，因而核心算法可以脱离具体存储实现测试。
 
 ## 核心职责
 
@@ -69,13 +65,11 @@ Cargo 层面，本文件实际使用 `astersql-errors` 和 `astersql-util-chunk`
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/check_table_index.go`。Rust 保留了主要结构与命名：`CheckTableExec`、`FastCheckTableExec`、`checkIndexWorker`、会话变量备份/恢复、全局 checksum 快速通过、最多 3 worker、最多 10 层限制意图、100 行细查阈值、SQL 标识符转义、执行计划验证和表/索引明细报告。Go 的 `builder.go::buildCheckTable` 会直接构造两种执行器；Rust `builder.rs` 目前只选择通用 kind，这是最重要的接线差异。
+Rust 保留了主要结构与命名：`CheckTableExec`、`FastCheckTableExec`、`checkIndexWorker`、会话变量备份/恢复、全局 checksum 快速通过、最多 3 worker、最多 10 层限制意图、100 行细查阈值、SQL 标识符转义、执行计划验证和表/索引明细报告。Go 的 `builder.go::buildCheckTable` 会直接构造两种执行器；Rust `builder.rs` 目前只选择通用 kind，这是最重要的接线差异。
 
 Rust 用 `CheckTableRuntime` / `FastCheckRuntime` / `FastCheckSession` trait 取代 Go 对 TiDB session、KV、table、workerpool 和 consistency reporter 的直接依赖，并用标准 scoped thread、`Mutex<VecDeque<_>>` 与 `mpsc` 取代 Go 的 channel/operator workerpool。Rust 的错误文本是普通 `astersql_errors::SharedError`；Go 的部分索引错误使用具备 MySQL 错误码的 `errCheckPartialIndexWithoutFastCheck`，因此对外错误码兼容性不能由本文件单独证明。
 
 快路径细节也有可见差异：Go 在 `getCheckSum` 中为并发内部 SQL 初始化独立 `ExecDetails` 并负责关闭 record set，Rust 把查询/资源管理下放到 `FastCheckSession::Query`；Go 通过 failpoint 强制分桶，Rust 通过 `FastCheckRuntime::ForceBucketedCheck` 注入；Rust 明确把 checksum 为 `NULL` 归零，并对偏移/模数溢出报错。Go 的行比对包含 `lastTableRecord` 回看逻辑，Rust `report_row_mismatch` 使用标准双游标排序归并，语义目标相同但实现并非逐句翻译。
-
-Go 回归测试 `pkg/executor/test/admintest/admin_test.go` 证明了多值索引固定走慢路径、部分索引在无可用快路径时报错、分区表损坏可检测、全局 checksum 相等时跳过分桶、不一致时进入分桶、PointGet/BatchPointGet 二级索引计划可接受、并发检查以及用户会话变量传播。它们是算法意图证据，不等同于 Rust 生产接线或 Rust 集成测试已通过。
 
 ## 扩展指南
 
@@ -85,11 +79,3 @@ Go 回归测试 `pkg/executor/test/admintest/admin_test.go` 证明了多值索�
 - 修改分桶算法时，保持全局 checksum 的快速通过、checksum 与 count 双重比较、桶排序、最大轮数、候选行阈值和 checked arithmetic；增加空结果、缺桶、同桶不同计数、偏移/模数溢出及强制分桶的独立 Rust 测试。
 - 修改行级报告时，应围绕 `FastCheckRuntime::DecodeRecord` / `ReportInconsistency` 和 `report_row_mismatch` 扩展，覆盖同 handle 值不同、仅表侧、仅索引侧、复合 handle 和重复/排序边界，并核对 Go `consistency.Reporter` 的编码与脱敏语义。
 - 若要让本实现进入完整 Rust SQL 主链，需要先找到或新增 `ExecutorKind::{CheckTable, FastCheckTable}` 到具体执行器及 runtime adapter 的构造点，并用 Rust 端 SQL 集成测试证明；不能只修改本算法文件后宣称已接线。兼容风险主要是 MySQL 错误码、snapshot 与部分索引语义，性能风险主要是固定 3 并发、内部 SQL 物化、分桶轮数和候选行内存。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`node --file pkg/executor/check_table_index.rs --offset 1 --limit 2000` 核对了 1,168 行完整源码及文件级使用者；`explore "check_table_index.rs CheckTableIndexExecutor CheckIndexRange"` 给出了本文件的内部调用流与主要符号。对具体生产构造点的符号查询未得到可靠直接边，因此文档将其标为未验证而非推断。
-- Rust 源与边界：`pkg/executor/check_table_index.rs`；模块入口 `pkg/executor/lib.rs`；通用构建选择 `pkg/executor/builder.rs::buildCheckTable`；crate 声明和直接依赖 `pkg/executor/Cargo.toml`。
-- Rust 独立测试：`pkg/executor/check_table_index_test.rs`，覆盖 snapshot 设置失败仍继续，以及慢路径在计数/扫描前拒绝部分索引；测试由 `pkg/executor/lib.rs` 的 `#[cfg(test)] mod check_table_index_test` 独立装配。
-- Go 对照：`pkg/executor/check_table_index.go` 和 `pkg/executor/builder.go::buildCheckTable`；相关回归证据来自 `pkg/executor/test/admintest/admin_test.go` 中多值/部分索引、分区损坏、快速通过与强制分桶、PointGet/BatchPointGet、并发及会话变量传播用例。
-- 本任务是纯文档分析，按计划不运行 Cargo，也不把 Go 测试结果当作 Rust 运行证据。结构验收要求目标文件存在且恰含本页 11 个固定二级标题；最终交付前另行执行该命令并报告退出码。

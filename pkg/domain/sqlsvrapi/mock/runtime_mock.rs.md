@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`runtime_mock.rs`](runtime_mock.rs) 位于 `astersql-domain-sqlsvrapi-mock` crate 中，是 `pkg/domain/sqlsvrapi` 的测试替身层，而不是 SQL Server 的生产运行时实现。crate 入口 [`lib.rs`](lib.rs) 以 `runtime_mock` 模块加载本文件，并在 `domain::sqlsvrapi::mock` 下再导出其公开项，使迁移代码可以沿用接近 Go 包 `pkg/domain/sqlsvrapi/mock` 的导入路径。
-
-文件头的 MockGen 标记说明它对齐 Go 生成文件 [`runtime_mock.go`](runtime_mock.go) 中的 `Runtime` mock；Rust 侧用 `mockall::mock!` 重建相同接口能力。它直接实现的契约定义在上级 crate 的 [`server.rs`](../server.rs) 中：`Runtime: Send + Sync` 表示一个 keyspace 作用域的 KV 存储、系统 session 池和 table-mode DDL 提交视图。
+只负责构造“可编程的 `Runtime` 测试替身”，不持有真实 Domain、KV 连接、session 池或 DDL 执行器，也不实现 table-mode 变更业务。
 
 ## 核心职责
 
@@ -75,15 +73,12 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 明确：运行依赖只有 `mockall 
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`runtime_mock.go`](runtime_mock.go)，两边覆盖相同的 `Runtime` 三方法：`Store`、`SysSessionPool`、`AlterTableMode`，并都允许测试指定参数、次数和返回结果。
-
 关键差异如下：
 
 - Go `MockRuntime` 显式保存 `*gomock.Controller` 和 `*MockRuntimeMockRecorder`；Rust 状态由 mockall 宏生成，没有公开 recorder 结构。
 - Go `NewMockRuntime` 必须接收 controller 并把 recorder 与 mock 关联；Rust 的泛型 controller 参数被忽略，每个实例由 mockall 独立校验。
 - Go `EXPECT()` 返回独立 recorder；Rust `EXPECT()` 返回 `&mut MockRuntime`，再使用生成的 `expect_*` 方法。
 - Go 接口返回 `kv.Storage`/`DestroyableSessionPool` 接口值；Rust 用 `Arc<dyn ...>` 表达共享 trait object 与所有权。
-- Go `context.Context` 对应 Rust `CancellationToken` 别名；Go `error` 对应装箱且满足 `Send + Sync + 'static` 的动态错误。
 - Go controller 调用通过 `reflect.TypeOf` 录制方法；Rust 在编译期由宏生成分派。二者的测试失败呈现与精确调用时机可能不同，因此不能假定 panic 文本或 recorder 类型兼容。
 
 `ISGOMOCK` 和生成标记是迁移兼容面，不代表本 Rust 文件仍由 Go MockGen 自动生成；修改时应以 Rust trait 与 mockall 宏语法为准，同时人工核对 Go 接口增量。
@@ -100,15 +95,3 @@ Go 对照文件是 [`runtime_mock.go`](runtime_mock.go)，两边覆盖相同的 
 4. 若兼容门面需要扩展，优先保持 `NewMockRuntime`/`EXPECT` 的现有调用形态；不要虚构 Go recorder 类型。只有确有迁移调用者需要时才添加薄适配。
 
 主要风险是接口漂移造成编译失败、把拥有所有权的对象错误改成借用或非共享值、漏配新方法导致测试 panic，以及用 mock 参数匹配代替真实 table-mode 业务验证。性能通常不是此测试替身的目标；若在高并发或大量调用测试中使用，复杂 `.withf` 谓词和克隆大型返回值可能增加测试成本，但不应据此弱化行为断言。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 `pkg/domain/sqlsvrapi/mock/runtime_mock.rs` 已收录。
-- RustCodeGraph `files --filter pkg/domain/sqlsvrapi/mock`：确认 mock crate 的 Rust/Go 源、入口与独立迁移测试集合。
-- RustCodeGraph `node --file pkg/domain/sqlsvrapi/mock/runtime_mock.rs --offset 1 --limit 240`：核对本文件 70 行完整源码、宏定义、兼容方法和构造器；索引报告该文件静态 `used by 0 files`。
-- RustCodeGraph `node --file pkg/domain/sqlsvrapi/server.rs --offset 1 --limit 220`：核对 `Context`、`SqlSvrError`、`Runtime` 三方法以及 `Send + Sync`/keyspace 契约。
-- RustCodeGraph `node --file pkg/domain/sqlsvrapi/mock/migration_aster_unit_test.rs --offset 160 --limit 105`：核对期望配置、参数谓词、错误转发、资源使用和 `checkpoint()`。
-- 读取 [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)：核对 crate 名、`mockall`/上游路径依赖、模块装配和公开再导出路径。
-- 读取 Go 对照 [`runtime_mock.go`](runtime_mock.go)：核对 GoMock controller/recorder、构造器、marker 和三个方法的对应关系。
-- `rg` 搜索 `NewMockRuntime|MockRuntime|expect_(Store|SysSessionPool|AlterTableMode)|runtime_mock`：确认同 crate 测试及 `pkg/dxf/framework/dxfutil/util_test.rs`、`pkg/dxf/importinto/scheduler_testkit_test.rs` 等直接使用点，并排除仓库中无关的同名局部 mock。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构校验应确认目标文件存在且恰有上述 11 个固定二级标题。

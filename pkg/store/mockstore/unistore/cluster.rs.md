@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-store-mockstore-unistore` crate 的集群控制层。crate 入口 `pkg/store/mockstore/unistore/lib.rs` 以 `pub mod cluster` 声明本模块并通过 `pub use cluster::*` 再导出其公开符号；`pkg/store/mockstore/unistore/Cargo.toml` 则把该 crate 映射到 Go 包 `pkg/store/mockstore/unistore`，并依赖实际定义 Region 类型及管理器的 `astersql-store-mockstore-unistore-tikv` 子 crate。
-
-在完整的嵌入式 UniStore 启动链中，`pkg/store/mockstore/unistore/mock.rs::New` 从 `server::new_mock` 取得共享的 `MockRegionManager`，构造 `Arc<Cluster>`，再把同一个 `Cluster` 交给 `RPCClient` 并返回给测试调用方。因此本文件不是数据读写引擎：它是 Region/Store 元数据管理器的薄控制门面，同时承载用于事务并发测试的一次性 RPC 延迟表。最近目录没有 `doc.go`；本说明以模块入口、Rust 实现、同路径 Go 实现和独立测试为事实来源。
+`pkg/store/mockstore/unistore/rpc.rs::RPCClient::dispatch` 在 Prewrite、PessimisticLock 和 Flush 请求进入 server 前调用 `handle_delay`，从而为测试提供确定性的请求时序控制。
 
 ## 核心职责
 
@@ -71,11 +69,11 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `cluster.go` 是直接对照。`DelayKey`/`Cluster` 字段、一次性延迟的“锁内删除、锁外 sleep”、单/多 Store 与多 Region 引导的 ID 分配顺序均保持一致；Rust 用 `Arc<MockRegionManager>` 代替 Go 的匿名嵌入指针，用 snake_case 方法配合 crate 根再导出，兼容工厂和 bootstrap 函数仍保留 Go 风格命名。
+`DelayKey`/`Cluster` 字段、一次性延迟的“锁内删除、锁外 sleep”、单/多 Store 与多 Region 引导的 ID 分配顺序均保持一致；Rust 用 `Arc<MockRegionManager>` 代替 Go 的匿名嵌入指针，用 snake_case 方法配合 crate 根再导出，兼容工厂和 bootstrap 函数仍保留 Go 风格命名。
 
-存在三项应显式记录的差异。第一，Go `SplitRaw` 调用 manager 的 `SplitRaw`，Rust `split_raw` 和 `split` 都直接编码一次再调用 `MockRegionManager::split`，且忽略 `leader_peer_id`。第二，Go `Cluster.SplitKeys(start,end,count)` 由 manager/Badger 自行扫描数据；Rust 为避免隐藏存储访问，把候选 `data_keys` 作为额外参数传入，在本文件中排序、按同样商余算法选点后再调用 manager。`cluster_test.rs::split_keys_uses_storage_key_order_like_go` 专门验证无序输入仍按存储键序选择 `c`。第三，Go bootstrap 遇错 panic 且多 Store 假定 `n > 0`；Rust 返回 `Result` 并显式处理 `count == 0`。
+存在三项应显式记录的差异。第一，Go `SplitRaw` 调用 manager 的 `SplitRaw`，Rust `split_raw` 和 `split` 都直接编码一次再调用 `MockRegionManager::split`，且忽略 `leader_peer_id`。第二，Go `Cluster.SplitKeys(start,end,count)` 由 manager/Badger 自行扫描数据；Rust 为避免隐藏存储访问，把候选 `data_keys` 作为额外参数传入，在本文件中排序、按同样商余算法选点后再调用 manager。第三，Go bootstrap 遇错 panic 且多 Store 假定 `n > 0`；Rust 返回 `Result` 并显式处理 `count == 0`。
 
-`main_test.rs::test_cluster_split_raw_encodes_user_key` 验证 Rust 的 `split_raw` 与 `split` 都只编码一次并写入正确右 Region 边界。Go 目录没有 cluster 专属测试文件；相关 Go 行为主要由 `cluster.go`、`tikv/mock_region.go` 及上层 mockstore/coprocessor 测试间接覆盖。
+`main_test.rs::test_cluster_split_raw_encodes_user_key` 验证 Rust 的 `split_raw` 与 `split` 都只编码一次并写入正确右 Region 边界。
 
 ## 扩展指南
 
@@ -84,11 +82,3 @@
 - 扩展 `split_keys` 时，应保持 `[start,end)`、稳定排序、商余分配以及“只在数据键处切分”的契约。建议补充 `count <= 1`、空范围、重复键、端点键、数据少于 count、manager 部分失败等独立用例。
 - 增加延迟适用的 RPC 类型时，在 `RPCClient::dispatch` 的 server 调用之前接入，并用独立 RPC 测试证明键匹配、只消费一次和不同 Region 不互扰。若需要非阻塞/可取消等待，不应在持锁区等待，并需设计关闭时唤醒机制。
 - 改变 bootstrap 返回值或错误策略会影响 crate 根公开 API；应同步核对 `lib.rs` 再导出、`mock.rs::New`、同路径 Go 实现和外部 mockstore 适配层。性能风险主要来自大 `data_keys` 快照的克隆与排序，以及同步 sleep 占用 RPC 线程。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/store/mockstore/unistore` 确认目标、模块及对照文件；`node --file pkg/store/mockstore/unistore/cluster.rs --offset 1 --limit 500` 读取目标全部 287 行并报告 21 个符号；`query BootstrapWithSingleStore/BootstrapWithMultiStores/BootstrapWithMultiRegions` 消除了 Go/Rust 同名符号歧义。精确 `explore`、`callers`、`callees` 未返回可用内容，故调用边用下列源码搜索补证。
-- 源码与 crate 边界：`pkg/store/mockstore/unistore/cluster.rs`、`pkg/store/mockstore/unistore/lib.rs`、`pkg/store/mockstore/unistore/Cargo.toml`、`pkg/store/mockstore/unistore/mock.rs`、`pkg/store/mockstore/unistore/rpc.rs`、`pkg/store/mockstore/unistore/tikv/mock_region.rs`。
-- Go 对照：`pkg/store/mockstore/unistore/cluster.go`、`pkg/store/mockstore/unistore/mock.go`、`pkg/store/mockstore/unistore/rpc.go`、`pkg/store/mockstore/unistore/tikv/mock_region.go`。
-- 独立测试：`pkg/store/mockstore/unistore/cluster_test.rs` 验证无序候选键的排序/均匀切分；`pkg/store/mockstore/unistore/main_test.rs` 验证 `split_raw` 与 `split` 的编码边界。仓库 `rg` 还确认 `rpc.rs` 在三类请求中调用 `handle_delay`。
-- 本任务是纯文档分析，未运行 Cargo。交付前按任务指定命令检查目标文件存在且固定二级标题恰好为 11 个，并人工复核没有把未找到的调用者或理想设计写成已实现事实。

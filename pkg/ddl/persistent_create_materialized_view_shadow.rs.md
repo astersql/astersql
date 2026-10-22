@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源码：[persistent_create_materialized_view_shadow.rs](./persistent_create_materialized_view_shadow.rs)。本文件属于 `astersql-ddl` crate（见 `pkg/ddl/Cargo.toml`），是普通 DDL worker 持久化事务路径中“创建物化视图影子表”的 Rust 动作处理器。模块由 `pkg/ddl/lib.rs` 公开装配；`pkg/ddl/persistent_actions.rs::step` 在 `job.tp == 93`（`ActionCreateMaterializedViewShadow`）时调用本文件的 `step`。上游 Go 接口 `pkg/ddl/materialized_view.go::CreateMaterializedViewShadowTable` 创建该类型的 DDL job，用于 `REFRESH MATERIALIZED VIEW ... COMPLETE OUT OF PLACE` 的构建目标。
-
-它不是完整的物化视图刷新或切换实现：本文件只创建受保护的物理影子表。将影子表原子提升为正式物化视图由 `pkg/ddl/persistent_mview_out_of_place_cutover.rs` 负责，清理由独立的 drop-shadow 动作负责。
+将影子表原子提升为正式物化视图由 `pkg/ddl/persistent_mview_out_of_place_cutover.rs` 负责，清理由独立的 drop-shadow 动作负责。
 
 ## 核心职责
 
@@ -82,11 +80,7 @@ KV 生命周期由 worker 管理：动作运行在已开始的持久化 DDL 会�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/ddl/create_table.go::(*worker).onCreateMaterializedViewShadow`。两者都：解码 `CreateTableArgs`；拒绝缺失 shadow 信息、混合对象身份和零源 ID；校验源物化视图存在、类型正确且为 `Public`；复用普通物理建表逻辑；更新 schema version；最后以 `Done/Public` 完成 job。
-
-Rust 将 Go 的 `getTableInfo` 展开为 `TransactionMutator::{get_database,get_table}`，将 `createTable` 拆分复用为 `persistent_create_table::create_table`，并显式调用 `set_create_table_schema_diff` 与 `save_args`。Go 的 `updateSchemaVersion` 在统一 schema-diff 路径中对该 action 使用 create-table diff；Rust在本文件内直接写同类 diff。Go executor 的 job 构造、查询字符串伪装和建表后处理仍位于 Go `materialized_view.go`，不属于本 Rust 文件。
-
-现有 Go 测试 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go` 多次直接创建 shadow，并覆盖成功 cutover、cutover 失败保持旧元数据、外部 affinity 生命周期以及“用户不可读写/直接删除，只能内部清理”。`pkg/ddl/ddl_test.go::TestGetJobCheckIntervalForCreateMaterializedView` 还确认 shadow action 使用 fast DDL 轮询策略。仓库中未找到直接调用本 Rust `step` 的独立 Rust 测试，因此异常分支目前主要由 Go 实现和共享建表测试间接约束。
+Rust 将 Go 的 `getTableInfo` 展开为 `TransactionMutator::{get_database,get_table}`，将 `createTable` 拆分复用为 `persistent_create_table::create_table`，并显式调用 `set_create_table_schema_diff` 与 `save_args`。Go 的 `updateSchemaVersion` 在统一 schema-diff 路径中对该 action 使用 create-table diff；Rust在本文件内直接写同类 diff。
 
 ## 扩展指南
 
@@ -96,13 +90,3 @@ Rust 将 Go 的 `getTableInfo` 展开为 `TransactionMutator::{get_database,get_
 - 引入多阶段状态或可重组工作会改变当前“一步 Public、无 checkpoint”的模型，需要同步设计取消/回滚、owner failover、schema sync 和持久化恢复，不能只在本函数增加分支。
 - 增加外部资源操作时必须明确其事务边界和补偿方式；statement rollback 只保证活动 KV stage，不自动撤销已经成功的 PD/affinity 等外部副作用。
 - 性能上应保持源对象校验为按 ID 点查，避免在此引入全 schema 扫描；兼容性上必须维持 action 93、错误类别、历史表快照和 create-table schema diff 的 Go wire 语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标仓库索引可用（目标文件包含 10 个索引符号）；`query persistent_create_materialized_view_shadow --json` 确认 `cancel`、`invalid`、`step` 及导入；`query createMaterializedView --json` 定位 Go handler、executor 和相关测试。索引未返回本地函数的 callers/callees，因此调用边用下列精确源码搜索补齐。
-- 目标与接线：`pkg/ddl/persistent_create_materialized_view_shadow.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/table_mode.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/lib.rs`。
-- 共享实现与模型：`pkg/ddl/persistent_create_table.rs`、`pkg/meta/reader.rs::set_create_table_schema_diff`、`pkg/meta/model/job.rs::finish_table_job`。
-- crate 边界：`pkg/ddl/Cargo.toml`。
-- Go 对照：`pkg/ddl/create_table.go::onCreateMaterializedViewShadow`、`pkg/ddl/materialized_view.go::CreateMaterializedViewShadowTable`、`pkg/ddl/schema_version.go`、`pkg/ddl/rollingback.go`。
-- 测试证据：`pkg/ddl/tests/materializedview/materialized_view_basic_test.go`（out-of-place cutover、失败原子性、affinity、shadow 保护与内部清理），以及 `pkg/ddl/ddl_test.go::TestGetJobCheckIntervalForCreateMaterializedView`。未发现本文件同名或直接调用 `step` 的独立 Rust 测试。
-- 结构校验使用任务指定命令，要求目标文件存在且恰好包含本文 11 个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

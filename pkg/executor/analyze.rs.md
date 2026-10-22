@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文同步基于冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`，增量比较基点为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9`。
-
-`pkg/executor/analyze.rs` 属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod analyze` 暴露它，`pkg/executor/Cargo.toml` 声明该 crate，并直接依赖 `astersql-statistics-handle` 和带 `failpoints` feature 的 `fail`。本文件是 ANALYZE 统计收集的编排与边界层：它不实现列采样、索引扫描或统计存储细节，而是定义任务、结果、取消和运行时 trait，并规定预刷 delta、构建/保存、发布、作业收尾及全局统计合并的顺序。
-
-当前应用接线要区分两条路径。会话层 `pkg/session/runtime/statistics.rs` 的 `ConcreteSession::execute_analyze_with_context` 构造 `SessionAnalyzeRuntime`，调用 `AnalyzeExec::RunCanonicalWithContext`；这是 SQL 会话实际使用的规范批次路径。`AnalyzeExec::Next` 则保留与 `pkg/executor/analyze.go` 的 `AnalyzeExec.Next` 对齐的显式任务/worker 管线，RustCodeGraph 当前找到的直接构造者是 `pkg/executor/analyze_test.rs::executor`。因此不能仅凭 `Next` 的完整实现断言生产会话正从该入口运行。
+ANALYZE 统计收集的编排与边界层：它不实现列采样、索引扫描或统计存储细节，而是定义任务、结果、取消和运行时 trait，并规定预刷 delta、构建/保存、发布、作业收尾及全局统计合并的顺序。
 
 ## 核心职责
 
@@ -76,15 +72,11 @@ canonical 路径在每个有副作用的主要阶段前检查 kill，并在预�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/analyze.go`。Rust 的 `flushStatsDeltaForAnalyze`、广播兼容降级、测试环境 RPC 探测和目标 ID 收集与 Go 同名函数保持阶段和边界一致；差异是 Go 用 AST restore SQL、`context.Context` 和真实 infosync/domain，Rust 通过轻量数据结构与 `analyzeRuntime` 注入这些能力。
+Rust 的 `flushStatsDeltaForAnalyze`、广播兼容降级、测试环境 RPC 探测和目标 ID 收集与 Go 同名函数保持阶段和边界一致；差异是 Go 用 AST restore SQL、`context.Context` 和真实 infosync/domain，Rust 通过轻量数据结构与 `analyzeRuntime` 注入这些能力。
 
-Rust `Next`、`filterAndCollectTasks`、`saveAnalyzeOptions`、`handleResultsErrorWithConcurrency`、`buildAnalyzeKillCtx`、`analyzeWorker`、`finishJobWithLog`、`handleGlobalStats` 对应 Go 同名逻辑。线程、`mpsc`、`AtomicBool`/`Mutex` 分别替代 goroutine、channel close、context/errgroup 和 map；关键语义仍是有界并发、失败时停止派发、作业完整收尾、保存错误去重、历史统计 best-effort、动态分区全局统计合并和选项持久化。
-
-NDVRATE 增量与 Go `warnUnusedNDVRate`、`writeSavedAnalyzeOption` 及分区 reset 同步：提示复用请求中是否存在采样率，持久化按浮点位模式还原并使用数据库默认值。Rust 通过 `ndvRate: Option<f64>` 表达 Go protobuf 的可选 `NdvRate`；本增量位于 `Next` 管线，不能据此宣称 canonical 入口已经执行这段提示或选项保存。
+Rust 通过 `ndvRate: Option<f64>` 表达 Go protobuf 的可选 `NdvRate`；本增量位于 `Next` 管线，不能据此宣称 canonical 入口已经执行这段提示或选项保存。
 
 仍需注意当前接线差异：Go `AnalyzeExec.Next` 是执行器入口；Rust SQL 会话目前走 `RunCanonicalWithContext`，由 `SessionAnalyzeRuntime` 自行准备、保存和发布 `CanonicalAnalyzeBatch`。因此扩展生产 ANALYZE 行为时必须先判断变化属于 canonical runtime、批次顺序，还是仅属于尚未成为会话入口的 Go 对齐 worker 管线，不能只改同名 Rust `Next`。
-
-`pkg/executor/analyze_test.rs` 与 Go `pkg/executor/analyze_test.go` 共享多组测试意图：索引全局统计拆键、动态分区构建并发上限、保存失败不挂起、预刷使用语句 context、kill 中断不挂起、列 tracker 及时释放。Rust 另外直接验证了动态/静态分区选项过滤、缺省值写 `DEFAULT` 和 reset 分区覆盖；panic/OOM 的集成覆盖位于 `pkg/executor/test/analyzetest/panictest/panic_test.rs`。
 
 ## 扩展指南
 
@@ -95,12 +87,3 @@ NDVRATE 增量与 Go `warnUnusedNDVRate`、`writeSavedAnalyzeOption` 及分区 r
 - 修改选项持久化时同步 reader 的 unset sentinel、`mysql.analyze_options` 默认值以及 Go `writeSavedAnalyzeOption`/`resetAnalyzeOptionsForPartitions`。兼容风险包括把未设置值固定化、动态/静态裁剪切换后旧分区覆盖复活，以及 SQL 转义错误。
 - 修改取消或 panic 处理时保留原始 cause，确保 dropped result、未发送任务和当前作业各自只完成一次；同步 `pkg/executor/test/analyzetest/panictest/panic_test.rs` 与不挂起测试。
 - 修改预刷逻辑时同步 `collectStatsDeltaFlushObjectsForAnalyze`、测试回退目标 ID 和滚动升级兼容判断；50ms 探测只用于测试路径，不应被误用为生产健康检查。
-
-## 验证依据
-
-- 冻结范围：逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/executor/analyze.rs`，并用 `git show 2c944fb:pkg/executor/analyze.rs` 分段核对完整源码；说明不采纳工作区未提交 Rust 变化。增量为 NDVRate 枚举、任务 opts/ndvRate、过滤后提示及选项保存/reset。
-- 接线：冻结版本 `pkg/session/runtime/statistics.rs` 的 `SessionAnalyzeRuntime` 和 `execute_analyze_with_context -> RunCanonicalWithContext`，以及 `pkg/executor/lib.rs`、`Cargo.toml`；`pkg/executor/doc.go` 不存在。
-- Go 对照：冻结版本 `pkg/executor/analyze.go` 的 `warnUnusedNDVRate`、`writeSavedAnalyzeOption`、`saveAnalyzeOptions`；已核对 requested/used、阈值关闭、DEFAULT 与浮点位模式。
-- 独立 Rust 测试：冻结 `pkg/executor/analyze_test.rs::analyze_ndv_rate_matches_go_validation_sampling_persistence_and_bootstrap_contract`，静态核对未使用提示、有实际 rate 时不提示及 REPLACE 的 `ndv_rate=0.5`；同时保留并发、取消、内存 detach 与选项缺省测试作为既有边界证据。未运行这些测试。
-- RustCodeGraph `status` 当前已含 Rust；`explore 'warnUnusedNDVRate set_mpp_encode_type unique_by_schema'` 辅助定位符号，但索引对应工作区且输出截断，不能作为冻结版本事实来源。权威依据为上述目标提交 blob。
-- Ready 文档验证使用任务指定的 11 章节检查与 `git diff --check`；`.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划采用此等价检查。纯文档任务不运行 Cargo 或代码测试。

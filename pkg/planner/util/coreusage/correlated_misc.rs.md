@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文档对应源码 [`correlated_misc.rs`](./correlated_misc.rs)。该文件属于 `astersql-planner-util-coreusage` crate，是规划器中“从计划树发现关联列，并按给定 Schema 规范化关联列”的公共工具。crate 根 `pkg/planner/util/coreusage/lib.rs` 通过 `pub use correlated_misc::*` 再导出这里的公开函数；`pkg/planner/util/coreusage/Cargo.toml` 表明它直接依赖计划基类 `base`、逻辑算子 `logicalop`、表达式 `expression` 和数据类型 `types`。
-
-关联列表示内层子查询对外层查询列的引用。这里不负责构造、执行或解相关整个计划，而是为子查询重写、LATERAL/APPLY 构建、解相关规则和 Cascades 变换提供统一的“关联列发现与归一化”结果。目标源码没有模块级常量、结构体、枚举、trait 或条件 feature；它包含 2 个内部辅助函数、4 个公开函数，以及 1 个仅测试编译的辅助函数。
+`LogicalCTE` 是特殊边界：`extract_correlated_cols_from_cte` 读取 `SeedPartLogicalPlan` 和可选的 `RecursivePartLogicalPlan`，分别递归收集。
 
 ## 核心职责
 
@@ -85,10 +83,6 @@ CTE 读取期间持有 `RefCell` 的不可变借用，并在 `extract_correlated
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/util/coreusage/correlated_misc.go`。两版共同语义包括：递归前序收集、按 Schema 过滤、以 Schema 顺序返回唯一列、首次命中时创建 datum、让同列的所有出现共享 datum，以及仅在物理包装入口解析列下标。
-
-Rust 为适配类型系统和 crate 边界做了以下显式转换：
-
 - Go 递归直接调用接口的 `ExtractCorrelatedCols`；Rust 逻辑 trait 的具体算子行为需要在 `own` 中向下转型派发，并对未命中类型调用基类实现。
 - Go 的 `LogicalCTE.ExtractCorrelatedCols` 位于算子实现内；Rust 因 crate 依赖方向在本文件用 `extract_correlated_cols_from_cte` 补接种子与递归计划。
 - Go 用 `*types.Datum` 表示共享槽；Rust 用 `Arc<RwLock<Datum>>`，克隆 `Arc` 对齐指针共享，同时提供线程安全的内部可变性。
@@ -107,15 +101,3 @@ Rust 为适配类型系统和 crate 边界做了以下显式转换：
 - 递归深度随计划高度增长。若未来支持极深或可能成环的计划图，应在此文件的递归骨架处统一引入显式栈或访问控制，并补充顺序与终止性测试。
 
 兼容性风险主要是 Go/Rust 顺序、CTE 特殊边和 datum 共享语义漂移；正确性风险是新逻辑算子漏加入显式派发；性能风险集中在深递归和 `ColumnIndex` 的乘积复杂度。本任务只记录这些扩展点，不修改行为。
-
-## 验证依据
-
-- 目标实现：`pkg/planner/util/coreusage/correlated_misc.rs`，RustCodeGraph `node --file` 核实了全部 162 行和 10 个索引符号。
-- crate 边界：`pkg/planner/util/coreusage/Cargo.toml`；模块导出与测试装配：`pkg/planner/util/coreusage/lib.rs`。
-- Go 对照：`pkg/planner/util/coreusage/correlated_misc.go`。
-- 数据语义：`pkg/expression/column.rs` 中的 `CorrelatedColumn`、`CorrelatedDatum`、`NewCorrelatedDatum`；`pkg/expression/schema.rs` 中的 `Schema::ColumnIndex`。
-- trait 契约：`pkg/planner/core/base/plan_base.rs` 的 `PhysicalPlan`；`pkg/planner/core/operator/logicalop/base_logical_plan.rs` 的 `LogicalPlan`。
-- 独立 Rust 测试：`pkg/planner/util/coreusage/coreusage_aster_unit_test.rs`。`recursive_collection_keeps_go_preorder` 验证前序顺序；`cte_collection_includes_seed_and_recursive_parts` 验证 CTE 两部分；`schema_deduplication_shares_datum_and_resolves_physical_index` 验证 Schema 顺序、去重、槽位共享、非匹配列不变和物理下标。
-- 上游调用证据：`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/logical_plan_builder_runtime.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/cascades/old/transformation_rules.rs`、`pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_simple_apply.rs`。
-- RustCodeGraph 已执行 `status`、目标目录 `files`、目标文件与调用点 `node`、主要符号 `query`、`explore` 及 `callers`/`callees`。精确调用搜索用于消除同名图查询噪声，并确认物理入口没有有效外部 Rust 调用。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收以任务文件给定的 11 个固定二级标题检查为准。

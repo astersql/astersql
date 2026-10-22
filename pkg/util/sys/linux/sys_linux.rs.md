@@ -2,18 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-sys-linux` crate 在 Linux 目标上的系统调用实现，源码由
-[`lib.rs`](./lib.rs) 通过 `#[cfg(target_os = "linux")] pub mod sys_linux` 选择并将公开 API
-再导出。crate 的 [`Cargo.toml`](./Cargo.toml) 把库入口设为 `lib.rs`，仅在 Unix 目标引入
-`libc = "0.2"`；因此这里直接面向 Linux libc ABI，而不是一个跨平台通用实现。
-
-文件提供三项公开能力：读取内核版本信息、设置当前进程 CPU 亲和性、读取 Unix domain
-socket 对端的有效 UID；另有一个 crate 内可见的 C 字符数组转换辅助函数。它对应 Go 包
-`pkg/util/sys/linux` 的 Linux 实现，但当前 Rust 生产接线并不完整：工作区根清单以
-`facade_util_sys_linux` 登记该 crate，`pkg/server/Cargo.toml` 也声明依赖；代码搜索却未发现
-Rust `pkg/server` 对这些 API 的调用，`cmd/tidb-server/main.rs` 的绑核路径仍调用
-`cmd/tidb-server/stubs.rs` 中的同名 `linux::SetAffinity` 桩。因而本文件目前是可独立测试的
-真实 Linux 实现，不能据此断言所有 Go 生产调用链已经迁移。
+`std::io::Result` 暴露操作系统错误，使调用方能够决定失败是否阻塞启动或连接处理。
 
 ## 核心职责
 
@@ -130,21 +119,11 @@ Go 生产链提供迁移意图证据：`cmd/tidb-server/main.go::setCPUAffinity`
 
 ## 与 Go 版本的对应关系
 
-[`sys_linux.go`](./sys_linux.go) 是直接语义基线。两端均在 NUL 处截断 `utsname` 字段，输出
-`Sysname Release.Machine`；均构造 CPU 位图并对当前进程调用调度接口；均通过
-`SOL_SOCKET/SO_PEERCRED` 获取对端 UID。
-
 存在几处语言和边界实现差异：Go `charsToString` 对整数字节直接构造字符串，Rust 使用
 `from_utf8_lossy`，所以无效 UTF-8 的具体表现不同；Go 通过 `net.UnixConn.SyscallConn` 的
 `Control` 闭包协调 fd 访问，Rust 依靠 `&UnixStream` 和 `AsRawFd` 的借用生命周期；Rust 额外
 校验 `getsockopt` 返回的结构尺寸。Go 的 `SetAffinity` 由 `x/sys/unix.CPUSet` 隐式处理越界，
 Rust 在调用 `CPU_SET` 前显式检查上下界。
-
-测试对齐方面，Go [`sys_test.go`](./sys_test.go) 只验证 `OSVersion` 成功且非空；Rust
-[`sys_test.rs`](./sys_test.rs) 复刻这项冒烟测试，
-[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 进一步验证 NUL 截断、版本串
-形状、空 affinity 掩码的内核错误，以及 socket pair 的对端 UID 等于当前有效 UID。
-[`main_test.rs`](./main_test.rs) 处理 crate 测试环境初始化，不直接验证本文件行为。
 
 ## 扩展指南
 
@@ -166,21 +145,3 @@ Rust 服务启动链时，还需把 `cmd/tidb-server/stubs.rs::linux::SetAffinit
 性能风险主要是系统调用本身和 `OSVersion` 的小额分配；这些函数不在数据行处理热路径。
 兼容性风险主要来自 Linux ABI、公开符号名、版本串形状与 affinity 作用域。修改公开签名时还
 应检查工作区根依赖别名和 `pkg/server/Cargo.toml` 的 crate 边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引含本目录；`files --filter pkg/util/sys/linux` 列出目标、
-  平台实现与测试；`node --file pkg/util/sys/linux/sys_linux.rs` 展示完整 109 行及引用文件；对
-  `OSVersion`、`SetAffinity`、`GetSockUID`、`charsToString` 的 `query --kind function` 核对符号。
-- 实现与装配：[`sys_linux.rs`](./sys_linux.rs)、[`lib.rs`](./lib.rs)、
-  [`Cargo.toml`](./Cargo.toml)、工作区根 `Cargo.toml`、`pkg/server/Cargo.toml`。
-- Go 对照与生产调用：[`sys_linux.go`](./sys_linux.go)、`cmd/tidb-server/main.go`、
-  `pkg/server/server.go`。
-- Rust 当前接线：`cmd/tidb-server/main.rs::setCPUAffinity` 与
-  `cmd/tidb-server/stubs.rs::linux::SetAffinity`；全仓 Rust 符号搜索未发现本文件三个公开 API
-  的其他生产调用。
-- 测试证据：[`sys_test.go`](./sys_test.go)、[`sys_test.rs`](./sys_test.rs)、
-  [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)、[`main_test.go`](./main_test.go)、
-  [`main_test.rs`](./main_test.rs)。本任务依约不运行 Cargo；测试文件仅作为行为证据读取。
-- 结构验收使用任务指定命令，要求目标存在且固定二级标题恰好为 11 个；同时人工复核相对链接、
-  Rust/Go 调用边区分、错误边界、资源生命周期和扩展入口。

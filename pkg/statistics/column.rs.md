@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`column.rs` 位于 `astersql-statistics` crate 内。`pkg/statistics/lib.rs` 以私有模块 `mod column` 装配它，再通过 `pub use column::*` 把本文件的公开类型、方法和函数重导出为 crate 级 API。`pkg/statistics/Cargo.toml` 指定 crate 根为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/statistics"` 标明其 Go 对照包。
-
-本文件定义“单列统计”的聚合对象，而不是负责生成、持久化或异步加载统计的服务。它把 `Histogram`、`CMSketch`、`TopN`、`FMSketch`、列元数据、统计版本和加载/驱逐状态收拢到 `Column`，供表级统计缓存、同步加载器和优化器基数估算读取。实际直方图算法与加载状态定义分别在 `pkg/statistics/histogram.rs`，表级容器在 `pkg/statistics/table.rs`。
+统一提供行数、非空行数、增长因子、内存占用、统计可用性与加载状态查询。
 
 ## 核心职责
 
@@ -96,8 +94,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/statistics/column.go`。主要保持一致的语义包括：Column 聚合结构、V2 计数叠加 TopN、零行数增长因子、按版本驱逐 CMSketch、加载状态代理、分析/合成统计判断，以及空列骨架的用途。
-
 已验证的当前差异如下：
 
 - Rust `ColumnStatsIsInvalid(Option<&Column>, bool)` 是纯判断；Go 版本还接收 `PlanContext`、`HistColl`、列 ID，在统计缺失/未初始化/需加载时可能登记异步加载，并处理 restricted SQL、内部列 ID 与 `CanNotTriggerLoad`。这些副作用不能视为已移植到本文件。
@@ -118,12 +114,3 @@
 - 修改 V2 TopN 口径时，必须同时核对 `index.rs` 的平行实现和所有直接读取 `Histogram::TotalRowCount` 的调用者，防止漏加或重复加 TopN。
 - 回归测试应放在独立测试文件，不放回 `column.rs`。优先扩展 `pkg/statistics/integration_test.rs`（计数与加载生命周期）、`pkg/statistics/table_test.rs`（表级装配/驱逐）或新增同目录独立 `column_test.rs` 并在 `lib.rs` 的 `#[cfg(test)]` 区域注册。涉及规划结果时同步扩展 `pkg/planner/cardinality/*_test.rs`；涉及真实异步加载时参考 `pkg/statistics/handle/storage/read_test.rs` 与 `tests/realtikvtest/statisticstest/statistics_test.rs`。
 - 重点风险是 V1/V2 兼容、TopN 重复计数、驱逐后误用空桶、合成统计被误判无效，以及把 Go 的异步副作用遗漏或错误放入基础层。性能风险集中在克隆大型直方图/草图和内存估算遗漏新增字段。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/statistics/column.rs` 确认目标文件含 27 个符号；`node --file pkg/statistics/column.rs` 阅读了完整 231 行并显示该文件被 26 个文件使用；`query` 分别定位了 Rust/Go 的 `ColumnStatsIsInvalid`、`EmptyColumn`、`DropUnnecessaryData`、`TotalRowCount`；`node` 核验了 `histogram.rs::StatsLoadedStatus`、`IsColumnAnalyzedOrSynthesized` 及其状态谓词。
-- 源与装配：`pkg/statistics/column.rs`、`pkg/statistics/lib.rs`、`pkg/statistics/Cargo.toml`。
-- 直接调用链：`pkg/statistics/table.rs`、`pkg/planner/core/operator/logicalop/logical_datasource.rs`、`pkg/planner/cardinality/row_count_column.rs`、`pkg/planner/cardinality/selectivity.rs`、`pkg/statistics/handle/syncload/stats_syncload.rs`、`pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs`。
-- Go 对照：`pkg/statistics/column.go`；加载状态的 Go 定义位于 `pkg/statistics/histogram.go`。
-- 独立 Rust 测试：`pkg/statistics/integration_test.rs` 覆盖列总行数与懒加载状态切换；`pkg/statistics/histogram_test.rs` 覆盖加载/驱逐状态谓词；`pkg/statistics/table_test.rs` 覆盖列是否需要加载；`pkg/statistics/handle/storage/read_test.rs` 记录 Go 异步加载契约在 Rust 测试层的对应场景；`tests/realtikvtest/statisticstest/statistics_test.rs` 覆盖真实统计加载/驱逐状态。当前未发现同名独立 `column_test.rs`。
-- 人工核对结果：文档区分了本文件的纯数据结构职责与上层加载/规划职责；对 Go 扩展语义均明确标注为差异，没有将未接线能力写成已支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 内的信息类标量函数内核。`pkg/expression/lib.rs:222-225` 通过 `#[path = "builtin_info.rs"] mod builtin_info_kernel;` 私有挂载它，并由相邻的 `builtin_info_vec.rs` 复用一部分函数构造批量结果。它覆盖会话信息、身份与角色、版本、DDL Owner、`BENCHMARK`、表达式字符集元数据、键编解码、MVCC、SQL digest、计划解码、序列和人类可读单位格式化等语义。
-
-这里不是 Go `pkg/expression/builtin_info.go` 的完整结构复刻：Rust 文件不包含 function class、参数类型推导、SQL 函数注册或真实 session/infoschema/store/executor 的获取逻辑，而是把环境相关能力压缩成 `SessionInfo` 快照和若干 trait 注入点。当前 crate 内可确认的生产侧直接适配是 `pkg/expression/builtin_info_vec.rs`；SQL 名称/参数个数另见 `pkg/expression/builtin.rs:6805-6817`。因此应把本文件理解为可测试的语义内核，而非已经独立完成所有运行时接线的执行入口。
+实现无外部状态的兼容逻辑：`benchmark`、字符集/排序规则元数据读取、版本字符串、DDL Owner 布尔转整数、SQL digest 哈希、序列名拆分、字节数/纳秒格式化。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ Go digest 实现会创建带超时的 context 并执行全局检索；Rust 内�
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/builtin_info.go` 是主要语义来源。Rust 的 `database`、身份/角色、资源组、行数、连接 id、两种 LAST_INSERT_ID、版本、DDL Owner、BENCHMARK、元数据、键处理、MVCC、digest、plan、sequence 及格式化函数，分别对应 Go 文件中的同名 function class / `builtin*Sig.eval*` 路径。`pkg/expression/builtin_info_test.go` 覆盖基础信息函数、`BENCHMARK`、LAST_INSERT_ID 和格式化；Rust 的 `pkg/expression/builtin_info_test.rs` 复核了相同边界。
-
 主要结构差异如下：
 
 - Go 在 function class 构建阶段验证参数、设置返回 FieldType/字符集/长度并声明 OptionalEvalProps；Rust 本文件只接受已求值参数与最小状态，不负责这些构建职责。
@@ -98,8 +94,6 @@ Go digest 实现会创建带超时的 context 并执行全局检索；Rust 内�
 - Go digest 检索创建最长 20 秒的 context；Rust 不管理超时，只保留“取消传播、普通失败警告化”的结果契约。
 - Go 计划函数调用真实 `plancodec`；Rust 默认解码器明确不可用，只在调用者提供 `PlanDecoder` 时才有真实解码行为。
 - Go 的标量函数还有完整类型分派和注册；Rust 当前明确可见的生产消费主要是 `builtin_info_vec.rs`。这属于迁移/接线状态限制，不应从单元测试通过推断所有 SQL 路径已经可用。
-
-Rust 独立测试 `pkg/expression/builtin_ilike_vec_12_aster_unit_test.rs` 进一步覆盖 key/MVCC/digest/plan/sequence 与向量能力，虽然其文件名来自组合迁移测试；它验证了这里描述的注入边界和错误契约。`pkg/expression/builtin_info_vec_test.rs` 则验证标量值批量复制、带参 LAST_INSERT_ID 取最后一个非 NULL、以及不可向量化矩阵。
 
 ## 扩展指南
 
@@ -110,12 +104,3 @@ Rust 独立测试 `pkg/expression/builtin_ilike_vec_12_aster_unit_test.rs` 进�
 - 接入真实计划解码器应在上层提供 `PlanDecoder`，并分别保留文本失败回原文与二进制失败 warning + 空串的契约；若要替换默认包装，需先证明所有调用点都能取得实现。
 - 修改序列逻辑要同步检查 `resolve_sequence_name`、INSERT/SELECT 权限、sequence id 以及会话 `sequence_state`。`NEXTVAL` 更新 LASTVAL 状态，而 `SETVAL` 不更新，是当前 Go 对齐行为。
 - 修改格式化阈值或显示格式时同步 `builtin_info_test.rs` 和 Go `builtin_info_test.go` 的单位边界、负值和科学计数法案例，并考虑 `f64` 极值风险。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件查询确认 `pkg/expression/builtin_info.rs` 共 745 行并列出模块符号。
-- RustCodeGraph 精确查询：`decode_sql_digests_with_warnings` 定位于 441 行，`next_val` 定位于 620 行，`tidb_mvcc_info` 定位于 378 行。callees 输出确认本文件内部及 trait 边，包括 digest wrapper/retriever、MVCC provider、sequence service 和格式化 helper；其中若干常见方法名的跨文件候选存在歧义，因此文档仅采用可由目标源码直接复核的边。
-- 已读生产路径：`pkg/expression/builtin_info.rs`、`pkg/expression/builtin_info_vec.rs`、`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`、`pkg/expression/builtin.rs`。
-- 已读 Rust 测试：`pkg/expression/builtin_info_test.rs`、`pkg/expression/builtin_info_vec_test.rs` 的相关片段、`pkg/expression/builtin_ilike_vec_12_aster_unit_test.rs` 的 key/MVCC/digest/plan/sequence/format 片段。
-- 已读 Go 对照：`pkg/expression/builtin_info.go` 的相应 `builtin*Sig.eval*`、注入变量、digest、plan、sequence、format 路径，以及 `pkg/expression/builtin_info_test.go` 的测试目录与相关用例。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求本文恰好包含约定的十一个二级标题。

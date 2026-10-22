@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 内的生成式线程安全策略内核。crate 根在 `pkg/expression/lib.rs` 通过 `#[path = "builtin_threadsafe_generated.rs"] mod builtin_threadsafe_generated_kernel;` 私有挂载它；因此它不是独立 crate，也不直接形成外部公共模块，而是供同一 crate 的内建函数运行时、正式工厂包装和测试使用。`pkg/expression/Cargo.toml` 指定该 crate 的库入口为 `lib.rs`，本文件自身只使用标准库原子类型以及 crate 内的 `expression_builtin`、unsafe 签名清单。
-
-文件顶部明确标注其为生成代码。与 Go 为每个具体签名生成一个方法不同，Rust 用一套动态内建运行时承载所有正式签名，本文件保留 Rust 正式运行时的完整安全签名清单并集中实现 Go 同形的递归共享判定。这里的“线程安全”具体指表达式树能否跨会话共享，目的在于避免把会话敏感状态泄漏到另一个会话，并非对函数求值正确性的全面证明。清单并非与当前 Go 生成文件逐项相同：Rust 将 `builtinUncompressSig` 归为递归安全，而 Go 将其归为 unsafe，详见“与 Go 版本的对应关系”。
+与 Go 为每个具体签名生成一个方法不同，Rust 用一套动态内建运行时承载所有正式签名，本文件保留 Rust 正式运行时的完整安全签名清单并集中实现 Go 同形的递归共享判定。
 
 ## 核心职责
 
@@ -90,15 +88,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/expression/builtin_threadsafe_generated.go`，生成器是 `pkg/expression/generator/builtin_threadsafe.go`：
-
-- Go 的 `safeToShareAcrossSession` 同样读取 `uint32`，以 `0/1/2` 表示未缓存/安全/不安全，顺序遍历 `args`、遇到不安全立即短路，并用原子写回结果。Rust 的 `safeToShareAcrossSession` 在控制流和三态语义上对应它。
-- Go 生成器扫描 `builtin_*.go` 中以 `builtin` 开头、`Sig` 结尾的 struct；只有单字段且嵌入 `baseBuiltinFunc`/`baseBuiltinCastFunc` 的类型以及 `specialSafeFuncs` 才归入安全集合，其余进入 unsafe 集合。
 - Go 输出为每个安全具体类型生成一个 `SafeToShareAcrossSession` 方法，当前对照文件包含 509 个这类方法、共 2585 行；Rust 不复制具体类型方法，而以 510 项签名字符串清单加动态策略入口表达分类，目标文件为 620 行。
 - 509 个签名的安全分类及三态递归算法与 Go 对应。唯一直接清单差异是 `builtinUncompressSig`：`builtin_threadunsafe_generated.go` 对它返回 `false`，Rust 安全清单却包含它；`builtin.rs::allowedOptionalEvalPropsForSignature` 还为该签名单独允许（但不要求）`OptPropSessionVars`，`context_test.rs::uncompress_allows_session_vars_without_requiring_them` 验证这项接线。现有直接证据能确认差异存在及其可选属性规则，但不能仅凭这些文件证明改变分类的历史理由，因此该理由标记为“未验证”。
 - Rust 还显式建模 `Recursive/Never/None`，并联合 Rust unsafe 清单验证未知输入；这是适配正式动态运行时的接线差异。不能把 Rust 测试中的 safe/unsafe 互斥结论外推为与 Go 两份生成清单逐项相同。
 
-Go 生成文件是 Go 侧分类事实的来源，Rust 清单和正式注册表是 Rust 侧运行时事实的来源。Rust 独立测试固定安全签名数量为 510、验证首尾代表项和去重，并把 Rust 的安全、unsafe 清单逐项送入正式注册表验证。修改分类时应同时核对 Go 生成器规则、Go 生成结果、Rust 两份清单、`builtinUncompressSig` 的特殊可选属性接线及相关测试，不能只改某一侧以通过局部检查。
+Rust 独立测试固定安全签名数量为 510、验证首尾代表项和去重，并把 Rust 的安全、unsafe 清单逐项送入正式注册表验证。修改分类时应同时核对 Go 生成器规则、Go 生成结果、Rust 两份清单、`builtinUncompressSig` 的特殊可选属性接线及相关测试，不能只改某一侧以通过局部检查。
 
 ## 扩展指南
 
@@ -111,15 +105,3 @@ Go 生成文件是 Go 侧分类事实的来源，Rust 清单和正式注册表�
 5. 性能优化清单查询时，应保留静态、确定且可审计的生成结果，并重新验证 510 项覆盖、去重、safe/unsafe 不重叠及正式注册表覆盖。引入哈希结构会增加初始化和生成确定性方面的权衡。
 
 兼容风险主要是错误分类导致会话状态泄漏或不必要地禁止计划共享；正确性风险集中在漏重置缓存和不稳定的子判定；性能风险集中在首次递归遍历、并发重复探测以及线性签名查找。此类修改需要同步 Go 对照语义和独立 Rust 测试，但本分析任务不修改运行时代码。
-
-## 验证依据
-
-- 源文件：`pkg/expression/builtin_threadsafe_generated.rs`，核对了 7 个 RustCodeGraph 符号、510 项清单、三态算法和 `baseBuiltinFunc` 适配器。
-- crate/模块边界：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`；确认库入口、私有 `#[path]` 模块挂载和独立测试挂载。
-- Rust 调用入口：`pkg/expression/builtin.rs`；确认 `baseBuiltinFunc` 字段、`SetGeneratedSignature` 的校验/清零、`GeneratedPolicyBuiltin` 包装以及另一运行时策略对缓存原语的复用。
-- 接口契约：`pkg/expression/builtin_core.rs`、`pkg/expression/expression.rs`；确认内建函数和表达式层的 `SafeToShareAcrossSession` 边界。
-- Go 对照：`pkg/expression/builtin_threadsafe_generated.go`、`pkg/expression/builtin_threadunsafe_generated.go`、`pkg/expression/generator/builtin_threadsafe.go`；确认原子缓存算法、生成分类规则、509 个安全具体类型方法，以及 Go 把 `builtinUncompressSig` 归为 unsafe 的差异。
-- 特殊签名接线：`pkg/expression/builtin.rs`、`pkg/expression/context_test.rs`；确认 Rust 为 `builtinUncompressSig` 允许但不要求 `OptPropSessionVars`，同时保留其分类理由“未验证”的边界。
-- 独立 Rust 测试：`pkg/expression/builtin_threadsafe_generated_26_aster_unit_test.rs`；覆盖全安全、短路失败、缓存命中、基类路径、未知/unsafe 拒绝、并发发布、510 项去重及策略全集互斥。
-- RustCodeGraph：`status` 显示索引包含目标文件且识别 7 个符号；`query/node/callers/callees` 确认 `generatedSignatureSafeToShareAcrossSession` 由 `builtin.rs` 的共享判定和本文件适配器调用，它下调 `safeToShareAcrossSession`，而 `IsGeneratedThreadsafeSignature` 由策略查询和覆盖测试调用。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；最终仅执行任务指定的 11 章节结构检查并人工复核上述事实链。

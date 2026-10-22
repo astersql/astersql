@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/parsergen/main.rs` 是 Cargo 二进制目标 `astersql-parsergen` 的进程入口。`pkg/parser/parsergen/Cargo.toml` 同时把 `lib.rs` 声明为库目标、把本文件声明为 `[[bin]]`；因此本文件只负责命令行协议和退出状态，生成算法位于同一 crate 的库模块中。根 `Cargo.toml` 将 `pkg/parser/parsergen` 纳入 workspace，`pkg/parser/Cargo.toml` 又以路径依赖使用该库。
-
-该工具是显式维护命令，不在普通 parser crate 编译或数据库启动时自动运行。它以 `pkg/parser` 为根读取 `grammar/main.astergram`、`grammar/hint.astergram`，并生成或校验 `generated/main_tables.rs`、`generated/hint_tables.rs`、`generated/lexer_tokens.rs`。这些路径由 `main` 传入的 `parser_root` 和 `generate.rs` 中的 `GENERATED_OUTPUT_NAMES` 共同确定。
+不解析 `.astergram`、不构造 LALR(1) 自动机、不渲染表，也不决定三个输出文件的内容。
 
 ## 核心职责
 
@@ -61,11 +59,9 @@ RustCodeGraph `query` 将两个导入解析到 `pkg/parser/parsergen/generate.rs
 
 ## 与 Go 版本的对应关系
 
-Go 侧最接近的生成器入口是 `pkg/parser/goyacc/main.go`，它同样是命令行程序，负责参数检查、错误输出和调用实际生成流程。但两者不是逐函数移植：Go `goyacc` 接受大量 yacc 兼容 flag、零或一个输入、可读标准输入，并生成 Go parser；Rust `astersql-parsergen` 只接受一个子命令，读取仓库固定的 `.astergram`，生成三份 Rust 静态表或检查其漂移。
+但两者不是逐函数移植：Go `goyacc` 接受大量 yacc 兼容 flag、零或一个输入、可读标准输入，并生成 Go parser；Rust `astersql-parsergen` 只接受一个子命令，读取仓库固定的 `.astergram`，生成三份 Rust 静态表或检查其漂移。
 
 `pkg/parser/generate.go` 只包含 `go:generate ./genkeyword`，与本文件的 parser table 命令没有直接等价关系。当前 Rust 维护路径刻意使用已提交静态产物；`pkg/parser/parser_generated_sources_aster_unit_test.rs` 验证 parser crate 直接 `include!` 三份产物、没有 `build.rs` 和 `[build-dependencies]`。因此不能把 Go 的自动/通用 yacc 工作流描述成 Rust 当前行为。
-
-语义对齐主要由产物和解析轨迹验证，而非 CLI 形状对齐：`pkg/parser/parsergen_baseline_aster_unit_test.rs` 将 Rust 生成的 main/hint 表与现有 Rust 基准行为比较；parser action 的独立测试继续验证消费这些表后的语义动作。
 
 ## 扩展指南
 
@@ -74,12 +70,3 @@ Go 侧最接近的生成器入口是 `pkg/parser/goyacc/main.go`，它同样是�
 移动 crate 或改变目录布局时，必须同步审查 `env!("CARGO_MANIFEST_DIR").parent()` 这一不变量以及测试中同样的根目录推导。若需要可配置根目录，优先增加明确参数并验证路径，而不是依赖当前工作目录。
 
 兼容风险集中在命令名、诊断文本、退出码和固定产物路径，CI 脚本可能依赖它们。正确性风险集中在 `check` 是否保持只读、生成结果是否确定、三个产物是否全部覆盖；性能主要取决于每次从两份文法完整重建分析表，当前入口没有增量或缓存。若要并行或原子更新，应在库层设计临时文件与提交策略，并增加失败注入/并发测试。
-
-## 验证依据
-
-- 源与清单：`pkg/parser/parsergen/main.rs`、`pkg/parser/parsergen/Cargo.toml`、`pkg/parser/parsergen/lib.rs`、根 `Cargo.toml`、`pkg/parser/Cargo.toml`。
-- 直接实现：`pkg/parser/parsergen/generate.rs`，重点是 `GENERATED_OUTPUT_NAMES`、`generate_outputs`、`write_generated_outputs`、`check_generated_outputs`、`generate_parser_output`。
-- 独立 Rust 测试：`pkg/parser/parsergen/generate_aster_unit_test.rs` 验证确定性、三个输出名、missing/stale 分类、`check` 不写入和已提交产物同步；`pkg/parser/parser_generated_sources_aster_unit_test.rs` 验证静态产物消费；`pkg/parser/parser_no_legacy_dependency_aster_unit_test.rs` 验证维护命令契约；`pkg/parser/parsergen_baseline_aster_unit_test.rs` 验证生成表的解析行为基准。未发现直接启动该二进制并断言 CLI 输出/退出码的独立测试。
-- Go 对照：`pkg/parser/goyacc/main.go` 和 `pkg/parser/generate.go`；前者是旧 Go yacc 工具入口，后者仅生成关键字，均不是本文件的一对一实现。
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件；`files --filter pkg/parser/parsergen` 列出本 crate 的 14 个 Rust 文件；`node --file pkg/parser/parsergen/main.rs --offset 1 --limit 200` 返回完整 60 行；`query write_generated_outputs` 与 `query check_generated_outputs` 定位到 `generate.rs:141`、`:162`。精确 `callers`/`callees` 查询未产生可用输出，调用边因此以源码调用点复核。
-- 本任务是纯文档分析，按任务约束不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本说明没有把 Go 工具、库内部生成逻辑或未来设计误写成本文件现状。

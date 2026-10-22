@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-infoschema-internal` crate。crate 入口 `pkg/infoschema/internal/lib.rs` 以 `pub mod sizer` 声明模块，并以 `pub use sizer::*` 再导出其公开项；因此下游既可以通过 `sizer` 模块，也可以从 crate 根访问 `SizeCache`、`MemoryUsage`、`sizeof` 和 `Sizeof`。`pkg/infoschema/internal/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/infoschema/internal`；本文件自身只依赖 Rust 标准库，不使用 Cargo 中的 mockstore 或 Windows 条件依赖。
-
-它提供的是与 Go `pkg/infoschema/internal/sizer.go` 相对应的内存占用估算基础设施，不是 SQL 请求、InfoSchema 元数据装载或 DDL 执行主链的一环。RustCodeGraph 对该文件的直接使用关系只列出 `pkg/infoschema/internal/sizer_test.rs` 和 `pkg/planner/core/operator/physicalop/base_physical_join_test.rs`；后者只是使用标准库 `size_of` 的测试，未导入本模块，所以目前可确认的真实 API 调用者是本 crate 的独立 sizer 测试。不能据此宣称估算器已经接入生产时内存记账。
+为标量、字符串、引用、顺序容器、智能指针、可选值、映射、二元组和裸指针提供通用实现，尽量复现 Go `Sizeof` 的头部、容量、padding 和 map bucket 估算口径。
 
 ## 核心职责
 
@@ -69,21 +67,12 @@ Rust 版本没有 Go 反射的“未知 Kind 最终返回 -1”入口：未实�
 
 ## 与 Go 版本的对应关系
 
-Go `Sizeof(any)` 先 `reflect.Indirect`，再由私有 `sizeOf(reflect.Value, cache)` 按 Kind 递归；Rust `sizeof<T: MemoryUsage>` 则通过 trait 静态分派。两者共同保留了数组逐项、slice/`Vec` 预留容量、字符串头和内容、结构 padding、共享指针去重、map 键值与 `10.79` 经验开销、失败返回负数等核心记账意图。Rust 测试 `test_size` 逐项复刻 Go `TestSize` 的期望值：数组 12、空字符串数组 80、预留容量切片 64、字符串切片 126、字符串 22、map 84、嵌套结构 75。
+Go `Sizeof(any)` 先 `reflect.Indirect`，再由私有 `sizeOf(reflect.Value, cache)` 按 Kind 递归；Rust `sizeof<T: MemoryUsage>` 则通过 trait 静态分派。
 
-差异是有意且必须显式维护的：Rust 无字段反射，领域结构体要自行实现 trait；`String`、`Arc`、`Rc`、`Option`、`BTreeMap`、元组和裸指针是 Rust 侧扩展。`Arc`/`Rc` 按 Go `reflect.Ptr` 只计句柄与首次 pointee，不计引用计数；`test_shared_pointers_match_go_pointer_accounting` 固定了该行为。`test_owned_string_uses_length_not_capacity` 固定了 Go string 的长度口径。另一方面，Go 的 interface 特判、nil pointer、channel/function/complex/unsafe pointer 分类并未完整映射，因此不能把当前 trait 覆盖范围描述成 Go 反射器的全类型等价替代。
+差异是有意且必须显式维护的：Rust 无字段反射，领域结构体要自行实现 trait；`String`、`Arc`、`Rc`、`Option`、`BTreeMap`、元组和裸指针是 Rust 侧扩展。
 
 ## 扩展指南
 
 为新的领域结构增加估算时，应在领域源文件中实现 `MemoryUsage`：逐字段复用现有实现，遇到负值立即返回 `-1`，最后补上 `size_of::<Self>()` 相对于字段静态尺寸之和的 padding。不要把测试实现写入生产文件；应在同目录独立 `*_test.rs` 中增加用例。若类型包含共享所有权或可能成环，必须复用同一个 `&mut SizeCache`，并为稳定、非零的分配地址定义“首次展开、重复节点计多少”的规则。
 
 修改已有容器口径时，最先应同步 `pkg/infoschema/internal/sizer_test.rs`，并与 `pkg/infoschema/internal/sizer.go`、`sizer_test.go` 的手算期望核对。新增 Go 已支持的类型时，要决定是精确复刻 Go 头部还是采用 Rust 实际布局，并把差异写入测试；尤其要关注 32/64 位平台、空值、共享缓冲、capacity、padding、map 浮点截断和加法溢出。若要支持任意 trait object 或自动结构遍历，需要新的显式抽象或 derive 机制，不能假定现有 trait 会像 Go reflect 一样自动枚举字段。
-
-## 验证依据
-
-- Rust 源码：`pkg/infoschema/internal/sizer.rs`，核对了全部 297 行、27 个索引符号、公开 API、所有 `MemoryUsage` 实现及无条件编译项。
-- crate 边界：`pkg/infoschema/internal/Cargo.toml` 与 `pkg/infoschema/internal/lib.rs`，核对 crate 名、Go 包映射、模块公开与根级再导出；`pkg/infoschema` 下未找到适用于该包的 `doc.go`。
-- Go 对照：`pkg/infoschema/internal/sizer.go` 与 `pkg/infoschema/internal/sizer_test.go`，核对 reflect Kind 分支、缓存规则、interface 特判及表驱动期望。
-- Rust 测试：`pkg/infoschema/internal/sizer_test.rs`，核对 Go 用例复刻、`String` 长度口径、负值传播、`Arc`/`Rc` 共享 pointee 去重。RustCodeGraph 另列出 `pkg/planner/core/operator/physicalop/base_physical_join_test.rs` 为文件级使用者；人工读取确认它未调用本模块，只使用标准库 `size_of`。
-- RustCodeGraph：运行 `status` 确认索引含 11,467 个文件；运行目标文件 `files`/`node`，确认 297 行、27 个符号及文件级使用关系；运行 `query SizeCache`、`query MemoryUsage --kind trait`、`query sizeof --kind function`、`query Sizeof --kind function`；运行精确 `callers`/`callees`，泛型入口和 trait 方法未产生可用静态边，因此调用关系同时用模块入口、测试源码和仓库文本检索验证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好具有任务规定的十一个二级章节。

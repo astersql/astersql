@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-cascades-task`，crate 根为同目录的 `lib.rs`。`lib.rs` 将本文件的公开项连同任务基类、规则任务、Group/GroupExpression 优化任务和调度器一起再导出，因此 `Stack`、`TaskError`、`newTaskStack`、`newTaskStackWithCap` 是该任务 crate 的公开 API；`takeTaskStack` 只在 crate 内可见，`putTaskStack` 还仅在测试编译中存在。
-
-它提供两类基础设施：一是装载 `Box<dyn cascades_base::Task>` 的 LIFO 栈及线程本地复用池，二是把字符串消息包装为标准 Rust 错误的 `TaskError`。直接消费栈的生产代码是 `task_scheduler.rs` 中的 `SimpleTaskScheduler`。需要注意，`pkg/planner/cascades/cascades.rs` 当前优化器入口使用自己定义的 `SharedTaskScheduler`（内部为 `Rc<RefCell<Vec<Box<dyn Task>>>>`），并不直接持有本文件的 `Stack`；本文件的栈仍由公开的 `NewSimpleTaskScheduler` 路径实际使用，而不是整个 Cascades 主链唯一的栈实现。
+`TaskError` 为 Memo/规则任务之间提供轻量、可显示且实现 `std::error::Error` 的错误类型；其内容只有一条字符串消息，不保留结构化来源或错误链。
 
 ## 核心职责
 
@@ -92,9 +90,6 @@ RustCodeGraph 已索引目标目录的 17 个 Go/Rust 文件，并识别 `task.r
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/task/task.go`，测试对照是 `task_test.go`，调度消费方对照是 `task_scheduler.go` / `task_scheduler_test.go`。
-
-- Rust `Stack { Vec<Box<dyn Task>> }` 对应 Go `Stack { []base.Task }`；两者都从尾部压弹并保持 LIFO。64 位测试分别确认 Rust `Vec`/Go slice 为 24 字节、Rust trait object box/Go interface 为 16 字节。
 - Rust 默认容量 4、指定容量构造器、`Len`、`Pop`、`Push`、`Empty` 和逐项 `Desc` 加换行均保持 Go 行为。Rust 空栈返回 `Option::None`，对应 Go `nil`。
 - Go 用全局并发安全 `sync.Pool`，可跨 goroutine/线程使用且运行时可丢弃缓存；Rust 用每线程 `RefCell<Vec<Stack>>`，缓存确定地留在本线程直到取走或线程结束。二者目标相同但缓存可见范围与回收策略不同。
 - Go `Destroy` 清空切片后把同一个 `*Stack` 放入池；Rust 不能在仍借用 `&mut self` 时移动该值，因此先清空，再用新默认栈替换 `self`，把旧值入池。正常调度器销毁路径的外部效果相同，但直接调用后 Go 指针同时已进入池、不应再用，Rust 原变量则成为新的空栈。
@@ -111,14 +106,3 @@ RustCodeGraph 已索引目标目录的 17 个 Go/Rust 文件，并识别 `task.r
 - 若要扩充 `TaskError` 为结构化错误，应优先修改 `TaskError` 及其 `Display/Error::source`，再同步 `base.rs` 的 Context 契约、`task_apply_rule.rs` 和 `cascades.rs` 的字符串映射点，以及相应错误断言。避免只增加字段却继续在所有入口调用 `to_string()`。
 - 若要增加栈观测/调试输出，保持 `Desc` 不消费任务和不隐式刷新写入器的现有契约；新增格式必须考虑每项尾随换行的兼容性。
 - Rust 单元测试继续放在独立的 `task_test.rs` / `task_scheduler_test.rs`，通过 `lib.rs` 的 `#[path] mod` 接入，不应把测试嵌入生产 `task.rs`。
-
-## 验证依据
-
-- 目标实现：`pkg/planner/cascades/task/task.rs`，逐项核对 `TaskError`、`STACK_POOL`、`Stack`、两个构造器、池函数及全部 `Stack` 方法。
-- crate 边界：`pkg/planner/cascades/task/Cargo.toml` 与 `pkg/planner/cascades/task/lib.rs`，确认 crate 名、path 依赖、公开再导出和独立测试模块接线。
-- 生产调用：`pkg/planner/cascades/task/task_scheduler.rs`，确认取池、LIFO 循环、错误短路和销毁归还；`pkg/planner/cascades/cascades.rs`，确认当前优化器主入口另用 `SharedTaskScheduler`，并确认 `TaskError` 的上游传播点。
-- 契约与任务链：`pkg/planner/cascades/base/task_stack_base.rs`、`pkg/planner/cascades/task/base.rs`、`task_apply_rule.rs`、`task_opt_group.rs`、`task_opt_group_expression.rs`，确认动态 Task/调度契约与派生任务入栈关系。
-- Rust 独立测试：`pkg/planner/cascades/task/task_test.rs` 验证布局、默认容量、LIFO、空弹栈、脏栈复用、Destroy 清空、指定容量循环及真实 Memo/规则任务链；`task_scheduler_test.rs` 验证 3→2 的 LIFO 执行顺序和任务 2 出错后短路。
-- Go 对照：`pkg/planner/cascades/task/task.go`、`task_test.go`、`task_scheduler.go`、`task_scheduler_test.go`，确认 API、池化目的、边界行为和测试意图，并明确 `sync.Pool` 与线程本地池的实现差异。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、目标目录 17 个文件，`task.rs` 含 16 个符号；`query` 确认目标符号定义及 `TaskError` 在 `cascades.rs` 等处的引用。带 `--file` 的 callers/callees 查询本次未在 30 秒内返回，故调用边均由精确源码引用搜索和文件阅读补证。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构验证要求目标文件存在，并且固定的十一个二级标题各出现一次。

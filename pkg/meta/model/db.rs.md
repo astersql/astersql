@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义持久化层使用的数据库（SQL schema）元数据模型，而不是 `pkg/infoschema/infoschema.rs` 中面向查询期缓存的同名 `DBInfo`。它由 `pkg/meta/model/internal/group1/lib.rs` 通过 `#[path = "../../db.rs"] mod db` 编入 `astersql-meta-model-group1`，再经 group1 和根 `pkg/meta/model/lib.rs` 的公开再导出成为 `astersql_meta_model::DBInfo`。`pkg/meta/model/Cargo.toml` 表明根 crate 名为 `astersql-meta-model`，并以内部 group1–group4 crate 组织 Go 模型的移植边界；其中本文件属于拥有完整表模型身份的 group1。
-
-在完整应用中，`DBInfo` 是数据库记录在元存储、DDL 参数和 InfoSchema 装载链之间传递的库级载体。直接证据包括：`pkg/meta/model/metadata_codec.rs::{EncodeDBInfo, DecodeDBInfo}` 负责 JSON 字节转换；`pkg/meta/reader.rs::{get_database, list_databases, create_database, update_database}` 从 `DBs` hash 读写它；`pkg/domain/canonical_domain.rs`、`pkg/infoschema/issyncer/loader.rs` 和 `pkg/ddl/persistent_actions.rs` 继续消费该模型。
+`DBInfo::Clone` 为历史表列表提供表对象级深拷贝；`DBInfo::Copy` 提供共享 `Arc<TableInfo>` 的拷贝；`LessDBInfo` 以规范化小写库名提供三路比较结果。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ RustCodeGraph 的文件节点报告 `pkg/meta/model/db.rs` 被 9 个文件使用
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/model/db.go`。字段和 JSON 名称逐项对应：`ID/id`、`Name/db_name`、`Charset/charset`、`Collate/collate`、`State/state`、`PlacementPolicyRef/policy_ref_info`；Go 的 `Deprecated.Tables` 与 `TableName2ID` 使用 `json:"-"`，Rust 对应字段使用 `serde(skip)`。Go `strings.Compare(a.Name.L, b.Name.L)` 与 Rust `cmp` 后映射为 `-1/0/1` 的结果一致。
+字段和 JSON 名称逐项对应：`ID/id`、`Name/db_name`、`Charset/charset`、`Collate/collate`、`State/state`、`PlacementPolicyRef/policy_ref_info`；Go 的 `Deprecated.Tables` 与 `TableName2ID` 使用 `json:"-"`，Rust 对应字段使用 `serde(skip)`。
 
-`Clone` 对历史表列表的意图一致：都分配新列表并逐表调用表级 `Clone`。Rust 测试进一步用 `Arc::ptr_eq` 验证表对象不共享；Go `pkg/meta/model/table_test.go` 验证克隆值相等。`Copy` 的表列表语义也对应：容器被复制而表对象仍共享。
+Rust 测试进一步用 `Arc::ptr_eq` 验证表对象不共享；Go `pkg/meta/model/table_test.go` 验证克隆值相等。
 
-仍需注意语言所有权造成的精确差异。Go 的结构体浅复制会共享 `TableName2ID` map 和 `PlacementPolicyRef` 指针；Rust 的 `self.clone()` 会复制 `HashMap` 内容并按值复制 `Option<PolicyRefInfo>`。Rust 字符串也拥有独立缓冲，而 Go 字符串值复制可共享不可变底层数据。因此 Rust `Copy` 的可靠契约应表述为“历史表 `Arc` 浅共享”，不能扩大为所有字段都具备 Go 指针级浅共享。当前测试覆盖 JSON、表深/浅复制和大小写无关比较，未直接覆盖这一跨语言引用身份差异。
+仍需注意语言所有权造成的精确差异。Go 的结构体浅复制会共享 `TableName2ID` map 和 `PlacementPolicyRef` 指针；Rust 的 `self.clone()` 会复制 `HashMap` 内容并按值复制 `Option<PolicyRefInfo>`。Rust 字符串也拥有独立缓冲，而 Go 字符串值复制可共享不可变底层数据。当前测试覆盖 JSON、表深/浅复制和大小写无关比较，未直接覆盖这一跨语言引用身份差异。
 
 ## 扩展指南
 
@@ -90,13 +88,3 @@ RustCodeGraph 的文件节点报告 `pkg/meta/model/db.rs` 被 9 个文件使用
 - 改动排序时应修改 `LessDBInfo` 并覆盖小于、等于、大于和仅大小写不同的名称。若增加平局键，必须先确认 Go 调用方和稳定排序约定，避免破坏跨语言顺序。
 - 改动 JSON 形状后应检查 `metadata_codec.rs`、`meta/reader.rs`、`domain/canonical_domain.rs` 和 `infoschema/issyncer` 的编解码消费者；持久化兼容性风险高于本地结构调整。
 - 大量数据库或含历史表列表的对象执行 `Clone` 会逐表深拷贝，成本与表元数据总量相关；若性能敏感，应先确认调用者是否只需要 `Copy` 或只读 `Arc`，不能为了性能把深拷贝契约静默改浅。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/meta/model/db.rs` 定位目标并报告 9 个符号；`query` 定位 `DBInfo`、`DeprecatedDBInfo`、`Clone`、`Copy`、`LessDBInfo`。精确调用边查询的限制已在“依赖与调用关系”中披露。
-- 目标源码：`pkg/meta/model/db.rs`（全部 88 行），用于核实字段、serde 属性、复制流程和比较逻辑。
-- crate 与模块边界：`pkg/meta/model/Cargo.toml`、`pkg/meta/model/lib.rs`、`pkg/meta/model/internal/group1/{Cargo.toml,lib.rs}`；目标包不存在 `pkg/meta/model/doc.go`，因此没有可读取的 Go 包级契约文件。
-- Go 对照：`pkg/meta/model/db.go`；补充 Go 克隆断言来自 `pkg/meta/model/table_test.go`。
-- 独立 Rust 测试：`pkg/meta/model/db_test.rs` 验证 JSON 字段、跳过项和缺字段默认值；`pkg/meta/model/bdr_1_aster_unit_test.rs` 验证深/浅表引用与小写名称比较；`pkg/meta/model/table_test.rs` 再验证深克隆表引用。
-- 直接集成证据：`pkg/meta/model/metadata_codec.rs`、`pkg/meta/reader.rs`，以及源码检索确认的 `pkg/domain/canonical_domain.rs`、`pkg/infoschema/issyncer/{lib.rs,loader.rs}`、`pkg/meta/model/{job.rs,job_args.rs}` 引用。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核本文只描述有上述文件或符号支持的当前行为。

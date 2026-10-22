@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`expression.rs` 是 `astersql-parser` crate 中主 SQL 文法的“表达式语义动作”实现。crate 边界由 `pkg/parser/Cargo.toml` 定义，库入口是 `pkg/parser/lib.rs`；本文件作为私有模块由 `pkg/parser/parser_actions/mod.rs` 声明，不直接向 crate 外导出 API。
-
-它处在生成式解析器和 AST 之间：`pkg/parser/parser_runtime.rs` 在 LR 归约时取得稳定的 `RuleId`、右部语义值 `Rhs`、待写入的 `yySymType`、`Parser` 状态与 `yyLexer`，然后调用 `parser_actions::apply`。总分派器按 `mview → ddl → dml → expression → query → security → admin → misc` 的顺序检查所有权，表达式规则命中后才进入本文件的 `owns`/`apply`/`apply_rule`。
-
-这里不是词法分析器，也不执行表达式。它只把 `pkg/parser/grammar/main.astergram`（Rust 当前文法）或同源的 Go `pkg/parser/parser.y` 中一次归约的语义值，构造成 `parser_ast::ExprNode`、`parser_types::types::FieldType` 或供后续归约消费的中间值。最终 AST 会被 planner、expression 等上层模块使用，但那些消费者不是本文件的直接调用者。
+以 `apply_rule` 实现表达式文法的 AST 构造：列名、字面量、变量、算术/逻辑/比较谓词、子查询、函数和聚合、CASE、CAST、日期时间单位、JSON 运算等。
 
 ## 核心职责
 
@@ -99,7 +95,7 @@ AST 多数节点拥有子节点（`Box`/`Vec`），因此归约完成后不再�
 
 ## 与 Go 版本的对应关系
 
-Go 对照的权威文件是 `pkg/parser/parser.y`。Rust 的 `ExpressionRule` 候选与其中同名非终结符对应，`query_expression_rule_coverage` 又从 Rust 的 `grammar/main.astergram` 验证当前 action 清单，因此扩展时需要同时确认“当前 Rust 文法”与“Go 原语义动作”，不能只看枚举名。
+Rust 的 `ExpressionRule` 候选与其中同名非终结符对应，`query_expression_rule_coverage` 又从 Rust 的 `grammar/main.astergram` 验证当前 action 清单，因此扩展时需要同时确认“当前 Rust 文法”与“Go 原语义动作”，不能只看枚举名。
 
 已核对的等价语义包括：逻辑/算术/比较操作符；`IS [NOT] NULL/TRUE/FALSE`；`IN`、BETWEEN、LIKE/ILIKE/REGEXP；ANY/SOME/ALL 子查询；系统变量作用域；DATE_ADD/DATE_SUB；CAST 默认长度、array charset；字符集 introducer；FLOAT/VECTOR 限制；以及 SignedNum 最小值特例。Rust 将 Go 的大量具体 AST struct 统一表示为 `ExprNode`/`ExprKind`，并把 Go interface 语义值改为 `Box<dyn Any>`，这是表示方式差异而不是有意删减语法。
 
@@ -124,16 +120,3 @@ Go 回归可参考 `pkg/parser/parser_test.go` 和 `pkg/parser/ast/expressions_t
 6. 至少更新 `query_expression_rule_coverage` 的清单/数量（若非终结符或 action 数变化），并在独立 Rust 测试文件中增加端到端 `ParseOneStmt` 断言。源文件与单元测试不得合并。
 
 最常修改的符号是 `ExpressionRule`、`identify` 和 `apply_rule`，三者必须作为原子改动。高风险点是语法优先级、RHS 偏移、动态类型、NOT 布尔反转、字符集/SQL mode、AST flag 传播和 Go restore 文本兼容；性能风险主要来自在递归列表动作中额外克隆。若只变更 grammar 而漏掉映射，覆盖测试应报告未拥有的规则；若映射命中却 action 缺值，runtime 会把语义标记为不完整，不能把“解析返回节点”当作充分验证。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/parser/parser_actions` 确认本模块与独立测试位置。
-- RustCodeGraph `node --file pkg/parser/parser_actions/expression.rs` 分段读取完整 1–3089 行；`query ExpressionRule/identify/apply_rule` 定位枚举和三层分派。`callers/callees` 对重名私有 `apply` 未给出有效结果，这一缺口由真实调用点补证，而未推测图中不存在调用。
-- 源与装配：`pkg/parser/parser_actions/expression.rs`、`pkg/parser/parser_actions/mod.rs`、`pkg/parser/parser_runtime.rs`、`pkg/parser/Cargo.toml`、`pkg/parser/grammar/main.astergram`（由覆盖测试读取）。`pkg/parser` 下不存在 `doc.go`，因此无额外 package contract 可读。
-- Go 对照：`pkg/parser/parser.y` 的 `Expression`、`BoolPri`、`PredicateExpr`、`Literal`、`BitExpr`、`SimpleExpr`、`CastType`、`SystemVariable`、`UserVariable`、`SignedNum` 等动作。
-- Rust 测试：`pkg/parser/parser_actions/query_expression_aster_unit_test.rs`（288 个 expression RuleId、模块互斥、无数字回退）、`pkg/parser/parser_3_aster_unit_test.rs`（2153 个需要 action 的主文法规则全部注册）、`pkg/parser/parser_runtime_aster_unit_test.rs`（稳定 RuleId 调度）、`pkg/parser/yy_parser_test.rs`（表达式 flag、聚合/子查询/变量/默认值/谓词）以及 `pkg/parser/parser_test.rs` 的端到端解析集合。
-- Go 测试：`pkg/parser/parser_test.go` 与 `pkg/parser/ast/expressions_test.go`，用于确认 Go parser/AST 的既有语义面；本次是纯文档分析，按任务约束未运行 Cargo 或测试二进制。
-
-结构验收使用任务指定命令，要求文档存在且固定的十一个二级标题恰好各出现一次。人工复核重点是：文件为何存在、runtime 如何进入它、每种输出/错误如何传播、Go 对照何在，以及扩展时需同步哪些符号与独立测试。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-privilege-privileges` crate。crate 入口 `pkg/privilege/privileges/lib.rs` 以私有模块 `mod tidb_auth_token` 纳入该文件，再用 `pub use tidb_auth_token::*` 对外导出其公开项。`pkg/privilege/privileges/Cargo.toml` 的 `[package.metadata.porting]` 将整个 crate 对应到 Go 包 `pkg/privilege/privileges`；本文件的直接 Go 对照是同目录的 `tidb_auth_token.go`。
-
-它实现 TiDB Auth Token 的底层 JWT/JWKS 能力：从本地 JSON Web Key Set 文件加载公钥、按 JWT header 选择公钥并验签、在可能发生密钥轮换时重新加载并重试，以及可选的后台定时刷新。JWT 中 `sub`、`email`、`iat`、`exp`、`iss` 等业务 claims 的语义校验不在本文件中，而在 `pkg/privilege/privileges/privileges.rs::checkAuthTokenClaims`。
-
-当前接线状态必须与 Go 区分：RustCodeGraph 与精确源码搜索均未找到这些公开 API 在生产 Rust 文件中的调用者；`JWKSImpl`、`LoadJWKS4AuthToken` 和 `checkSigWithRetry` 当前只被 `tidb_auth_token_test.rs` 直接使用。Rust 服务端 `pkg/server/conn.rs` 能识别字符串插件名 `tidb_auth_token`，但尚无证据表明握手路径已调用本文件完成验签。Go 版本则已由 `privileges.go` 的连接验证逻辑调用全局 JWKS。因此，本文件是已实现、已测试但尚未在 Rust 生产鉴权主链中接线的底层组件。
+`JWKSImpl::checkSigWithRetry` 先检查 JWT 是否恰为三段，再执行验签；验签失败时从文件重载 JWKS 后重试，用于覆盖密钥刚轮换的窗口。
 
 ## 核心职责
 
@@ -100,8 +96,6 @@ crate 边界与第三方依赖由 `pkg/privilege/privileges/Cargo.toml` 确认�
 
 ## 与 Go 版本的对应关系
 
-主要语义保持一致：两端都有 `JWKSImpl`、文件路径、进程级全局 JWKS、初始同步加载、可选后台刷新、三段 JWT 检查、验签失败后 reload-and-retry，以及“加载失败不替换旧集合”的行为。Rust 测试 `test_auth_token_claims` 和 `test_jwksimpl` 分别移植 Go 的 `TestAuthTokenClaims`、`TestJWKSImpl`。
-
 关键实现差异如下：
 
 - Go 用 `unsafe.Pointer` 配合 atomic load/store 发布 `jwk.Set`；Rust 用 `Arc<RwLock<Option<JwkSet>>>`。
@@ -110,7 +104,6 @@ crate 边界与第三方依赖由 `pkg/privilege/privileges/Cargo.toml` 确认�
 - Go `jws.Verify(WithKeySet)` 负责从 key set 选钥；Rust 明确实现 `kid` 选择，并允许“无 kid 且恰好单钥”的回退。
 - Go 的 jwx 把标准时间 claims 解码成 `time.Time`；Rust 返回普通 `serde_json::Value` 数字。因此 Go 测试中的类型错误文案在 Rust 没有等价表面，Rust 的上层校验会把非数字 `iat/exp` 归入缺失类错误。
 - Rust 的 `verify` 显式关闭 `jsonwebtoken` 的内置 `exp`、`nbf` 和 required-claims 校验，让 `privileges.rs::checkAuthTokenClaims` 承担时效与身份策略；Go 同样在之后执行该业务校验，但底层库的 payload 表示不同。
-- Rust 新增了“首次同步加载失败后，已启动线程仍可恢复”的专门回归测试；该行为源自两端都先启动刷新任务、再首次加载的顺序。
 - 最重要的迁移状态差异是接线：Go 已在 `ConnectionVerification` 使用 `GlobalJWKS`；Rust 当前尚无生产调用者。
 
 ## 扩展指南
@@ -124,14 +117,3 @@ crate 边界与第三方依赖由 `pkg/privilege/privileges/Cargo.toml` 确认�
 修改重试语义时，应注意 `retry_time` 当前表示“失败后的额外重试次数”，所以总验签次数为 `retry_time + 1`。应保持“验签错误触发 reload、reload 错误立即返回”的顺序，除非 Go 行为也同步变化，并补齐精确次数和最后错误保留测试。
 
 若要提高可观测性，可为后台刷新失败增加日志或指标，但不能在失败时清空旧 key；同时避免记录 JWT、claims 或密钥内容。若要改善并发，应先量化全局 `Mutex` 与内部 `RwLock` 的锁范围，不要绕过整体替换不变量。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust、Go、测试与邻近权限文件均可由索引读取。
-- 目标源码：`pkg/privilege/privileges/tidb_auth_token.rs`，核对了 `CancellationToken`、`JWKSImpl`、`load`、`verify`、`LoadJWKS4AuthToken`、`checkSigWithRetry`、`GlobalJWKS` 的完整实现。
-- 图查询：`query tidb_auth_token` 定位 Rust/Go 文件和全部主要符号；`callees LoadJWKS4AuthToken` 确认 Rust 边到 `is_cancelled`、`load`；`callees checkSigWithRetry` 确认 Rust 边到 `verify`、`load` 及错误枚举。`callers` 没有返回生产 Rust 调用者，随后以精确 `rg` 搜索复核，调用仅位于独立 Rust 测试。
-- crate 证据：`pkg/privilege/privileges/Cargo.toml` 与 `pkg/privilege/privileges/lib.rs`，确认 crate 名、依赖、Go 包映射、模块声明、公开再导出和独立测试模块。
-- Go 对照：`pkg/privilege/privileges/tidb_auth_token.go`、`pkg/privilege/privileges/privileges.go`、`pkg/server/conn.go`，确认 Go 的 JWKS 实现和已接线认证主链。
-- Rust 邻接证据：`pkg/privilege/privileges/privileges.rs::checkAuthTokenClaims`、`pkg/privilege/privileges/errors.rs::PrivilegeError`、`pkg/server/conn.rs::handshake`，确认 claims 校验、错误映射与当前服务端插件识别边界。
-- 测试证据：`pkg/privilege/privileges/tidb_auth_token_test.rs` 覆盖有效 claims、缺失/错误 claims、错误路径、非法 JWT 段数、篡改签名、reload 失败、未知 `kid`、密钥集轮换和首次加载失败后的后台恢复；`tidb_auth_token_test.go` 用于核对原始测试意图和库差异。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务给定命令验证本文档存在且恰好包含 11 个固定二级标题，并人工复核没有把未接线能力描述成生产现状。

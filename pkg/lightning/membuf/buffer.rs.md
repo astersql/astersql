@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Lightning/导入链路使用的定长内存块池和块内顺序分配器，是独立 crate `astersql-lightning-membuf` 的主要实现文件。crate 入口 `pkg/lightning/membuf/lib.rs` 公开 `buffer`、`limiter` 两个模块并重新导出其 API；`pkg/lightning/membuf/Cargo.toml` 将该 crate 标记为 Go 包 `pkg/lightning/membuf` 的移植，运行时依赖只有 `log`（日志实际由相邻的 `limiter.rs` 使用），测试额外依赖 `rand`。
-
-在应用侧，根 `pkg/lib.rs` 通过 `facade_lightning_membuf` 暴露该 crate，`pkg/ingestor/engineapi/ingest_data.rs::IngestData::NewIter` 把 `&mut membuf::Pool` 作为迭代器创建参数；`pkg/session/runtime/import_sst.rs` 创建 `NewPool(Vec::new())` 并把唯一 `Arc` 解包成可变 `Pool` 传入该接口。当前检查到的 `pkg/ingestor/globalsort/engine_api.rs::DataAdapter::NewIter` 和 `pkg/ingestor/ingestctrl/import_pipeline.rs` 中的实现尚未使用该参数，因此文件提供的是已经接入接口边界、但在这些适配器中仍预留给批量 KV 内存复用的基础设施。RustCodeGraph 将本文件标为被 6 个文件引用；直接代码检索确认生产类型边界还包括 `pkg/ingestor/engineapi`、`pkg/ingestor/ingestctrl`、`pkg/ingestor/globalsort` 和 `pkg/ingestor/simplesst` 的 Cargo 依赖或再导出。
+`AllocBytes`/`AddBytes` 提供阻塞分配，`TryAllocBytes`/`TryAddBytes` 提供配额不足时立即失败且不改变状态的分配。
 
 ## 核心职责
 
@@ -92,11 +90,9 @@ Limiter 统计的是“借给 Buffer 的固定块”，不是 Pool 缓存：`acq
 
 ## 与 Go 版本的对应关系
 
-直接对照 `pkg/lightning/membuf/buffer.go`，Rust 保留了默认值、functional options、块数向上对齐、Pool/Buffer 的 Reset/Destroy/TotalSize、阻塞与 Try 分配、256 KiB 元数据批次以及 SliceLocation 三字段模型。
-
 主要实现映射如下：Go 的有界 `chan []byte` 对应 `Mutex<VecDeque<Vec<u8>>> + blockCacheCapacity`，仍为非阻塞取块和 FIFO 复用；Go 的 `curBlock []byte` 在 Rust 中由 `curBlockIdx` 每次索引 `blocks`，避免保存自引用可变切片；Go 统一返回 `[]byte`，Rust 用 `AllocatedBytes::Owned/Borrowed` 区分大对象所有权；Go 的 `nil` 对应 Rust `Option::None`，Go 的 `ErrCannotAcquireMemory` 对应 Rust 固定错误字符串。
 
-Rust 的 `TryAllocBytes` 将 Go `tryAllocBytes` 的状态机拆为 `tryAllocLocation` 后再借用切片，关键不变量仍是 TryAcquire 失败前不修改块、指针或元数据账本。`buffer_test.rs::test_pool_mem_limit` 和 `migration_aster_unit_test.rs::migration_try_allocation_is_nonblocking_and_failure_is_atomic` 均验证这一点。
+Rust 的 `TryAllocBytes` 将 Go `tryAllocBytes` 的状态机拆为 `tryAllocLocation` 后再借用切片，关键不变量仍是 TryAcquire 失败前不修改块、指针或元数据账本。
 
 需要注意的差异：Go Pool::Destroy 关闭 channel，Rust 只排空 VecDeque；Go 切片可在 Buffer 后续方法调用期间被保存，Rust `Borrowed` 受可变借用约束；Go `GetSlice` 返回普通切片，Rust 返回绑定到本次 `&mut self` 借用的切片；Go 的运行时 GC 是 SliceLocation 优化的主要背景，而 Rust 没有扫描式 GC，但紧凑句柄仍减少元数据大小并保留跨语言布局意图。Rust `buffer_test.rs` 还显式验证 FIFO 块复用，而 Go channel 的 FIFO 行为是实现机制本身。
 
@@ -110,13 +106,3 @@ Rust 的 `TryAllocBytes` 将 Go `tryAllocBytes` 的状态机拆为 `tryAllocLoca
 - 若把当前预留的 `IngestData::NewIter` Pool 参数真正用于 Rust KV 批处理，需要在使用方显式设计 Buffer Destroy/迭代器 Close/ReleaseBuf 的配对，且在独立测试文件中验证取消、错误和正常结束均归还配额。不要把测试写入 `buffer.rs`。
 - 与 Go 行为对齐的修改应同时审阅 `buffer.go`、`buffer_test.go` 和 Rust 的 `buffer_test.rs`、`migration_aster_unit_test.rs`；若有意产生语义差异，应在 API 注释和对齐测试中明确记录。
 - 性能敏感点包括缓存锁竞争、每块清零分配、256 KiB 配额批处理、块索引容量和 SliceLocation 重建；不要以通过测试为由把固定块路径简化为逐对象 Vec 分配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点、1,848,419 条边；`files --filter pkg/lightning/membuf` 确认 `buffer.rs` 有 44 个符号；`node --file pkg/lightning/membuf/buffer.rs --offset 1 --limit 500` 与尾段查询覆盖全部 507 行；精确 `query` 定位了 Rust/Go 的 `NewPool`、`NewBuffer`、`AllocBytes`、`TryAllocBytes`、`allocateLocation`。图查询核对了本文件内部主调用边，文件关系报告本文件被 6 个文件使用。由于 CLI 对带路径的 callers 查询出现同名扩展噪声，上游生产接线另以精确路径代码检索复核，未据噪声输出推断调用者。
-- 源码与 crate 边界：`pkg/lightning/membuf/buffer.rs`、`pkg/lightning/membuf/lib.rs`、`pkg/lightning/membuf/Cargo.toml`、根 `Cargo.toml` 与 `pkg/lib.rs`。
-- 相邻依赖：`pkg/lightning/membuf/limiter.rs`，确认 Acquire/TryAcquire/Release 的阻塞、FIFO 和错误常量语义。
-- Go 对照：`pkg/lightning/membuf/buffer.go`、`pkg/lightning/membuf/buffer_test.go`；Bazel 目标由 `pkg/lightning/membuf/BUILD.bazel` 核对。
-- Rust 独立测试：`pkg/lightning/membuf/buffer_test.rs` 覆盖块复用与溢出释放、FIFO、Limiter 阻塞与 Try 失败原子性、位置隔离、块数上限、对齐和并发获取；`pkg/lightning/membuf/migration_aster_unit_test.rs` 补充 Go 对齐的零长分配、Reset 覆盖位置、非阻塞失败与 FIFO Limiter 行为。
-- 应用接线：`pkg/session/runtime/import_sst.rs`、`pkg/ingestor/engineapi/ingest_data.rs`、`pkg/ingestor/globalsort/engine_api.rs`、`pkg/ingestor/ingestctrl/import_pipeline.rs`、`pkg/ingestor/ingestctrl/local.rs` 及相关 Cargo manifests。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验收另以任务指定命令确认目标文档存在且恰好具有上述 11 个固定二级标题。

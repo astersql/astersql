@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应源文件 [backfilling_operators.rs](backfilling_operators.rs)。它位于 `astersql-ddl` crate，模块由 `pkg/ddl/lib.rs` 以 `pub mod backfilling_operators` 公开。文件把在线 `ADD INDEX` 的存量数据回填拆成“范围切分 → 行扫描 → 索引写入 → 结果汇总”四段，并同时提供临时索引增量合并所需的任务、存储抽象和 worker。这里处理的是 DDL reorg 阶段的数据路径，不负责创建 DDL job、推进 schema state、更新 schema version 或持久化 reorg checkpoint。
-
-当前 Rust 接线范围需要特别区分：`MergeTemporaryIndexWorker` 已被 `pkg/ddl/backfilling_merge_temp.rs::MergeTemporaryIndexExecutor::run_subtask` 调用；`run_add_index_pipeline` 和 `NewAddIndexIngestPipeline` 在 Rust 树中的直接调用者是独立测试 `backfilling_operators_async_test.rs`，尚未接到与 Go `ddlCtx.addIndexWithLocalIngest` 等价的完整生产入口。`MemoryIndexWriter` 也是测试/演示后端，不代表真实 TiKV 或 Lightning 引擎。
+这些职责由文件内真实符号支撑，但 Rust 实现以预先提供的 ranges/rows 和抽象 writer/store 为边界；Region 加载、事务 session、表达式求值、checkpoint 持久化、指标和真实 ingest 引擎仍只存在于 Go 对照或其他模块中。
 
 ## 核心职责
 
@@ -105,8 +103,6 @@ Go 侧真实上游包括 `backfilling.go::ddlCtx.addIndexWithLocalIngest` 和 `b
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/backfilling_operators.go` 是主要语义来源。双方都保留了 task source、table scan、index ingest、result sink、临时索引 merge 以及 reader/writer 并发调优的分段模型。已对齐的细节包括：越界 checkpoint 回退、checkpoint 等于 end 表示完成；partial-index 条件下推只在单索引时允许跳过 TiDB 侧复查；进度采用过滤前 `tableScanRowCount`；sink 在结果耗尽后做 ingest/flush；临时索引按正式键变更后删除临时键，并在可重试事务错误时缩小 batch。
-
 Rust 并非 Go 生产实现的等量替代：
 
 - Go `TableScanTaskSource` 自行通过 store 加载 Region，关联真实 physical table 与 checkpoint operator；Rust 接收预制 `KeyRange`，`physical_table_id` 当前不参与加载。
@@ -115,8 +111,6 @@ Rust 并非 Go 生产实现的等量替代：
 - Go pipeline 使用通用 `operator.AsyncPipeline` 与 worker pool，并由真实 local-ingest / dist-task 入口构建；Rust 自建 OS thread 和无界队列，ADD INDEX pipeline 当前只有测试直接调用。
 - Go merge worker 在 `kv.RunInNewTxn` 内读取临时键、校验唯一键、退避重试并记录指标；Rust 要求调用者预先提供记录，只把 mutation 的原子应用交给 `TemporaryIndexStore`，没有退避计时和唯一键检查。Go 成功事务用 `txn.Size()` 填充 `writtenBytes`，Rust 由 store 成功返回值提供相同统计边界，不能用扫描条数代替事务字节。
 - Go failpoint 是进程级注入点；Rust 用每 pipeline 配置的同路径常量模拟一次性触发，便于并发测试但不是 Go failpoint 框架接线。
-
-因此扩展时应以 Go 行为和 Rust 独立测试共同校验语义，不能因为同名 API 就假设存储、事务、checkpoint 或生产接线已经等价。
 
 ## 扩展指南
 
@@ -128,12 +122,3 @@ Rust 并非 Go 生产实现的等量替代：
 - 接入真实 Rust ADD INDEX 主链前，需要另行设计 store/session/Region/checkpoint/ingest adapter，并从 DDL job 的 reorg 生命周期调用；不能把 `MemoryIndexWriter` 当作生产后端。兼容风险集中在 checkpoint 编码、partial-index 表达式、多索引条件、Go 错误分类和重启幂等性；性能风险集中在无界队列、预先装载全部 rows/tasks、OS thread 数及全局 writer mutex。
 
 测试逻辑应继续放在同目录独立 `*_test.rs` 文件，并由 `lib.rs` 的 `cfg(test)` 模块装配，不应嵌入生产源文件。
-
-## 验证依据
-
-- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/backfilling_operators.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
-- Rust 源与配置：`pkg/ddl/backfilling_operators.rs`、`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、`pkg/ddl/backfilling.rs`、`pkg/ddl/backfilling_txn_executor.rs`、`pkg/ddl/backfilling_merge_temp.rs`。
-- Rust 独立测试：`pkg/ddl/backfilling_operators_test.rs` 验证越界 checkpoint 回退和 partial-index 过滤后仍报告扫描行数；`pkg/ddl/backfilling_operators_async_test.rs` 验证并发调优、完整执行、quota/flush/summary 以及五个故障边界；`pkg/ddl/backfilling_merge_temp_test.rs` 验证上层临时索引初始化、全局/分区选择及 collector 语义。
-- Go 对照：`pkg/ddl/backfilling_operators.go`；生产入口由 `pkg/ddl/backfilling.go::ddlCtx.addIndexWithLocalIngest` 和 `pkg/ddl/backfilling_read_index.go` 核验，相关故障注入测试入口见 `pkg/ddl/ingest/integration_test.go`。
-- DDL 架构上下文：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`、`docs/agents/ddl/03-reorg-backfill.md`。这些文档只作导航，本文行为结论以源码和测试为准。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前执行任务规定的 11 章节结构检查，并人工复核链接、现状/Go 对照边界和未接线声明。

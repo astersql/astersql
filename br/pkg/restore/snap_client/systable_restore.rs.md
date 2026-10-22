@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
-
-该文件属于 `astersql-br-pkg-restore-snap-client` library crate；crate 入口 `br/pkg/restore/snap_client/lib.rs` 以 `pub mod systable_restore` 装载它，并通过 `pub use systable_restore::*` 扁平重导出公开符号。`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/restore/snap_client`，且依赖说明明确当前 Rust 端在 arm64 Darwin 使用本地 trait/stub，而不是直接连接 `kv/domain/kvproto/grpcio`。
-
-在恢复主链中，本文件是“系统表特殊规则与表替换辅助层”，不是完整的快照恢复控制器。直接生产调用位于 `pipeline_items.rs`：`SnapClient::replaceTables` 用 `TemporaryTableChecker` 筛选临时表，随后依次调用 `updateStatsTableSchema`、`GenerateMoveRenamedTableSQLPair`/`moveRenamedTable` 和 `notifyUpdateAllUsersPrivilege`；`updateTemporaryUserTable` 调用 `removeUserResourceGroup`。`client.rs` 的 `SnapClient` 则持有恢复配置及数据库、Domain 等可注入资源。
+用表集合定义三类策略：统计表（`stats_tables`）、可物理重命名的系统表（`renameable_sys_tables`）、禁止恢复的 schema/表（`unrecoverable_schema`、`unrecoverable_table`）；另以 `plan_replayer_tables` 标识计划回放内部表。
 
 ## 核心职责
 
@@ -83,9 +79,7 @@
 
 ## 与 Go 版本的对应关系
 
-集合、临时库识别、两段式重命名、资源组清理、权限刷新触发条件、版本字符串和 collation 白名单均直接对应 `systable_restore.go` 的同名符号。Rust 独立测试 `systable_restore_test.rs` 复现了 Go 测试的重要边界：`mysql.user` 新旧列差异、列顺序无关、唯一允许的 collation 迁移方向、临时前缀判定、两个装载开关、不可恢复表、重命名 SQL和权限刷新错误。
-
-当前迁移不是一比一完整复刻：
+Rust 独立测试 `systable_restore_test.rs` 复现了 Go 测试的重要边界：`mysql.user` 新旧列差异、列顺序无关、唯一允许的 collation 迁移方向、临时前缀判定、两个装载开关、不可恢复表、重命名 SQL和权限刷新错误。
 
 - Go `CheckSysTableCompatibility` 从 Domain 和备份元数据中筛选权限表，并同时调用 `IsTypeCompatible` 检查类型与 collation；Rust 接收已准备好的上下游 `TableInfo` 切片，也执行类型/collation 检查。
 - Go `checkPrivilegeTableRowsCollateCompatibility` 校验列集合后执行两条受限 SQL，用计数差识别在目标 collation 下折叠的重复权限行；Rust 仅保留 SQL/列集合和列级白名单，没有对应执行方法。
@@ -102,7 +96,3 @@
 - 修改 `CheckSysTableCompatibility` 时保持现有类型兼容语义和配置化补列；回归测试覆盖字段类型、mysql.user 双向缺列、补值依赖缺失及 can_load=false 的降级含义。
 - 调整重命名逻辑时关注标识符 quoting、空集合、多表顺序、目标备份名冲突和执行失败后的恢复策略。若需要确定性 SQL，应先改用排序后的键序列并同步 Go/测试，而不是依赖 `HashMap` 迭代顺序。
 - 修改错误分类或旧版本容错时避免继续依赖错误字符串；若引入结构化错误，需保持“仅缺 `User_attributes` 可忽略”的兼容边界。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 完整 blob 为 754 行；本次复核 IsTypeCompatible 调用、缺列白名单、SQL 构造及引用。独立测试 `system_table_compatibility_only_allows_configured_missing_columns`、`system_table_replace_columns_match_go_compatibility_expressions` 覆盖补列依赖、表达式与反向缺列。调用关系由冻结 git grep 核对；未运行 Cargo。

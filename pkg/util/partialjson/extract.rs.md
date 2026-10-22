@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-partialjson` crate 的核心实现，crate 边界由 `pkg/util/partialjson/Cargo.toml` 定义，唯一外部依赖是 `serde_json = "1"`。`pkg/util/partialjson/lib.rs` 通过 `pub mod extract` 和 `pub use extract::*` 暴露本文件的公共符号；根 `Cargo.toml` 将该 crate 纳入 workspace，并以 `facade_util_partialjson` 依赖名接入，`pkg/lib.rs::util::partialjson` 再做统一门面导出。
-
-它对应 Go 的 `pkg/util/partialjson/extract.go`，解决“大 JSON 顶层对象中只需要少数成员”时的按需扫描问题：不先把完整文档构造成树，而是顺序读取 token，收集目标成员、跳过非目标成员。全仓精确引用搜索显示，当前 Rust 生产代码尚未调用 `ExtractTopLevelMembers`、`newTopLevelJSONTokenIter` 或 `topLevelJSONTokenIter`；直接调用者仅位于同 crate 的独立测试 `extract_test.rs` 和 `migration_aster_unit_test.rs`。因此当前状态是“workspace 与门面已接线、实现和测试已存在，但尚无生产消费方”。
+对应 Go 的 `pkg/util/partialjson/extract.go`，解决“大 JSON 顶层对象中只需要少数成员”时的按需扫描问题：不先把完整文档构造成树，而是顺序读取 token，收集目标成员、跳过非目标成员。
 
 ## 核心职责
 
@@ -76,9 +74,7 @@ RustCodeGraph 的文件查询确认本文件已索引且含 43 个符号；精�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `topLevelJSONTokenIter`、`newTopLevelJSONTokenIter`、`readName`、`readOrDiscardValue`、`next` 和 `ExtractTopLevelMembers` 与 `extract.go` 中的同名符号一一对应；主协议、嵌套深度处理、丢弃模式、目标全部命中后提前停止以及缺失成员返回 EOF 的语义保持一致。`extract_test.rs::test_iter` 直接复刻 Go `extract_test.go::TestIter` 的成功与失败表。
-
-实现机制存在明确差异：Go 直接使用 `encoding/json.Decoder.Token` 和 `UseNumber`，token 是 `json.Token` 接口值；Rust 用 `TokenDecoder`、`State`、`Frame` 自行维护结构状态，只把标量交给 `serde_json`，并用强类型 `Token` 表示结果。Go 的数字是 `json.Number`，Rust 是保留原字节文本的 `String`。Go 以 `io.EOF` / `io.ErrUnexpectedEOF` 表示边界，Rust 用 `PartialJsonError` 内部分类并公开 `is_eof`。
+实现机制存在明确差异：Go 直接使用 `encoding/json.Decoder.Token` 和 `UseNumber`，token 是 `json.Token` 接口值；Rust 用 `TokenDecoder`、`State`、`Frame` 自行维护结构状态，只把标量交给 `serde_json`，并用强类型 `Token` 表示结果。Go 以 `io.EOF` / `io.ErrUnexpectedEOF` 表示边界，Rust 用 `PartialJsonError` 内部分类并公开 `is_eof`。
 
 Rust 对错误文案不承诺逐字等同 Go：例如非法 `{a}` 和 `{]` 的具体消息来自不同解析机制，测试只校验对应语义片段。Rust 还通过显式匹配闭合符和标准空白测试固定了边界。`migration_aster_unit_test.rs` 补充验证了 Go 测试未覆盖的批量抽取、跳过深层非目标值、提前返回、空请求及缺失键行为。
 
@@ -91,12 +87,3 @@ Rust 对错误文案不承诺逐字等同 Go：例如非法 `{a}` 和 `{]` 的�
 - 若优化丢弃路径，必须保持完整推进嵌套结构与语法状态，不能仅搜索下一个逗号或括号；字符串转义和深层容器会使这种简化失效。
 - 若把本 crate 接入生产调用，优先通过 `pkg/lib.rs::util::partialjson` 门面导入，并新增调用方目录中的独立测试；不要把 Rust 测试嵌入生产源文件。还应验证调用方是否期望缺失键返回错误、是否接受首个重复键以及是否依赖提前停止。
 - 任何行为调整都应对照 `extract.go` / `extract_test.go`，除非任务明确要求产生跨语言差异；性能改动应重点关注扫描字节数、嵌套深度栈和被保留 token 的分配量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/util/partialjson` 列出 Rust/Go 实现和测试；`node --file pkg/util/partialjson/extract.rs --offset 1 --limit 260` 与 `--offset 261 --limit 220` 覆盖完整 412 行；`query topLevelJSONTokenIter`、`query ExtractTopLevelMembers` 定位 Rust/Go 同名符号；对关键符号执行的 `callers` / `callees` 未返回边，已用精确文本引用搜索补证。
-- Rust 源与装配：`pkg/util/partialjson/extract.rs`、`pkg/util/partialjson/lib.rs`、`pkg/util/partialjson/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照与构建边界：`pkg/util/partialjson/extract.go`、`pkg/util/partialjson/extract_test.go`、`pkg/util/partialjson/BUILD.bazel`。
-- 独立 Rust 测试：`pkg/util/partialjson/extract_test.rs` 覆盖迭代顺序、嵌套 token、错误和空白边界；`pkg/util/partialjson/migration_aster_unit_test.rs` 覆盖批量抽取、丢弃、提前停止、空请求和缺失成员。
-- 全仓精确搜索：生产 `.rs` 中没有 `ExtractTopLevelMembers` 或 `newTopLevelJSONTokenIter` 的调用；根 workspace 和 facade 引用证明 crate 已装配但尚未生产接线。
-- 本任务只创建说明文档，按计划不运行 Cargo；结构验证要求目标文件存在且恰有 11 个固定二级章节。

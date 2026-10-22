@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-stmtsummary` crate。crate 入口 `pkg/util/stmtsummary/lib.rs` 将它声明为私有模块 `evicted`，再公开重导出其中符号；`pkg/util/stmtsummary/Cargo.toml` 指定库入口为 `lib.rs`，且以 `package.metadata.porting.go-package = "pkg/util/stmtsummary"` 标明 Go 对照包。它位于语句摘要 LRU 的淘汰支路：`stmtSummaryByDigestMap::AddStatement` 在 `summaryMap.push` 返回旧条目时调用 `self.other.AddEvicted(...)`（`statement_summary.rs:649-654`），把无法继续按 digest 单独保存的数据按时间窗口汇总为 “other/evicted” 记录。
-
-该文件同时提供两类读出数据：`stmtSummaryByDigestEvicted::ToEvictedCountDatum` 返回每个窗口的淘汰 digest 数，`otherSummary` 则由 `reader.rs` 的 `getStmtEvictedOtherRow` / `getStmtEvictedOtherHistoryRow` 转换成语句摘要表的聚合行。它不是 LRU 容器本身，也不决定何时淘汰；淘汰决定来自 `statement_summary.rs`。
+同时提供两类读出数据：`stmtSummaryByDigestEvicted::ToEvictedCountDatum` 返回每个窗口的淘汰 digest 数，`otherSummary` 则由 `reader.rs` 的 `getStmtEvictedOtherRow` / `getStmtEvictedOtherHistoryRow` 转换成语句摘要表的聚合行。
 
 ## 核心职责
 
@@ -75,9 +73,9 @@ Go 版本在淘汰容器、被淘汰 digest 和聚合元素内部持有互斥锁
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/util/stmtsummary/evicted.go`：Go 的 `list.List` 映射为 `VecDeque`，`PushFront`/`InsertAfter`/移除 Front 分别映射为 `push_front`/`insert(index + 1)`/`pop_front`；`AddEvicted` 都从来源最新窗口向旧窗口遍历，并按目标窗口从新到旧匹配。`collectHistorySummaries` 两边都选择最新 N 项后按升序返回；Rust 用 `skip(len.saturating_sub(N))`，Go 从 Back 收集后 `slices.Reverse`。
+`collectHistorySummaries` 两边都选择最新 N 项后按升序返回；Rust 用 `skip(len.saturating_sub(N))`，Go 从 Back 收集后 `slices.Reverse`。
 
-聚合规则与 Go `addInfo` 保持一致，包括 IA 指标、RU `Merge` 和资源组覆盖。`go_merge_34_test.rs` 专门验证最新窗口选择与 IA 求和/最大值。Rust 将 Go 的 nil 指针表达为 `Option<&...>`，但没有“nil receiver”概念；Go `matchAndAdd` 对 `seElement == nil` 返回 `isTooYoung` 的分支在 Rust 中由类型系统排除。
+Rust 将 Go 的 nil 指针表达为 `Option<&...>`，但没有“nil receiver”概念；Go `matchAndAdd` 对 `seElement == nil` 返回 `isTooYoung` 的分支在 Rust 中由类型系统排除。
 
 主要实现差异是同步方式：Go 在结构内部加锁并在计数读出时先复制快照再解锁，Rust 依赖外层 map 互斥锁和借用规则。另一个细节是 Rust 的元素级 `toEvictedCountDatum` 内联时间转换，而 Go 抽出 `evictedCountToDatum`；输出列语义相同。文档只陈述当前 Rust 接线，不据此声称所有 Go 并发调用模式都可无修改迁移。
 
@@ -88,13 +86,3 @@ Rust 文件逐项对应 `pkg/util/stmtsummary/evicted.go`：Go 的 `list.List` �
 改变窗口匹配或容量策略时，应修改 `AddEvicted` / `matchAndAdd`，并同步覆盖：同窗合并、乱序插入、相邻边界、部分重叠、多个来源窗口、`historySize` 为 0 和缩容只保留最新窗口。测试应继续放在独立的 `evicted_test.rs` 或迁移测试文件，不能内嵌到生产源文件。
 
 新增淘汰计数列时需要同时检查元素与容器的 Datum 转换、`stmtSummaryByDigestMap` 转发接口以及上层执行/信息模式表的列契约。改变并发模型时必须审计全局 `StmtSummaryByDigestMap` 的外层锁和所有局部 map 调用点；不要只在本结构内局部加锁造成重复锁或不一致快照。时间转换变化需与 Go 的 `time.Unix`、MySQL TIMESTAMP 时区/精度行为共同验证。
-
-## 验证依据
-
-- 目标实现：`pkg/util/stmtsummary/evicted.rs`，RustCodeGraph `node --file` 完整读取 1-372 行；主要符号查询覆盖 `stmtSummaryByDigestEvicted`、`AddEvicted`、`matchAndAdd`、`ToEvictedCountDatum`、`collectHistorySummaries`、`addInfo`。
-- 调用图：RustCodeGraph `callers`/`callees`（用 `--file pkg/util/stmtsummary/evicted.rs` 消歧）确认本文件内部调用及 reader/测试关系；`rg` 补充确认索引未解析出的 Rust 生产边 `statement_summary.rs:653`。
-- crate 边界：`pkg/util/stmtsummary/Cargo.toml`、`pkg/util/stmtsummary/lib.rs`；本目录没有 `doc.go`。
-- Rust 生产上下文：`pkg/util/stmtsummary/statement_summary.rs:193-194, 577-671`，`pkg/util/stmtsummary/reader.rs:232-279`。
-- Go 对照：`pkg/util/stmtsummary/evicted.go:28-430`，核对容器、锁、窗口算法、Datum 顺序和全部统计合并规则。
-- 独立 Rust 测试：`pkg/util/stmtsummary/evicted_test.rs`（nil、排序、裁剪、Datum、全字段合并、外层锁并发），`pkg/util/stmtsummary/evicted_1_aster_unit_test.rs`（迁移边界），`pkg/util/stmtsummary/go_merge_34_test.rs`（最新窗口与 IA 指标）。Go 测试入口由 RustCodeGraph caller 结果确认在 `pkg/util/stmtsummary/evicted_test.go`。
-- 本任务仅新增说明文档，按计划不运行 Cargo；最终以固定 11 章节结构命令和人工事实复核验收。

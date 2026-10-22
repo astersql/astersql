@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`point_get_plan.rs` 属于 `astersql-planner-core` crate；`pkg/planner/core/Cargo.toml` 以 `lib.rs` 为 crate 根，`pkg/planner/core/lib.rs` 通过 `pub mod point_get_plan` 将本模块公开。文件实现的是一套以 `FastQuery` 为输入的简化点查计划构造器：把已经规整为单表、投影字段、谓词和锁选项的数据转换为 `FastPlan::{Point,Batch,Update,Delete}`，而不是直接解析 SQL AST。
-
-这条简化路径应与真实规划主链区分开。RustCodeGraph 对 `point_get_plan.rs::TryFastPlan` 的调用边显示，直接生产调用者只在本文件的 `tryUpdatePointPlan`、`tryDeletePointPlan`，另有 `pkg/planner/core/integration_test.rs` 和 `pkg/planner/core/point_get_plan_test.rs` 测试调用；`pkg/planner/optimize.rs` 的 `OptimizeRuntimeService::try_fast_plan` 是由运行时注入的抽象入口，并没有静态调用本文件的 `TryFastPlan`。此外，`pkg/planner/core/point_get_plan_runtime.rs` 提供另一条面向真实逻辑计划的 `TryFastIntegerPointGet` 路径，不能与本文件的简化模型混为一谈。
+`choose_index`、`checkTblIndexForPointPlan`、`getNameValuePairs`、`getPointGetValue` 和 `getIndexValues` 负责唯一键完备性、索引提示、常量类型转换和键值顺序。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ Go 实现的 `subQueryChecker` 使用 `sync.Pool` 复用 visitor 并在归还前
 
 ## 与 Go 版本的对应关系
 
-名称和高层意图来自 `pkg/planner/core/point_get_plan.go`：两边都有 `TryFastPlan`、锁等待计算、单点/批量点查、唯一索引键抽取、schema 构造、点更新/删除、子查询排除和辅助常量。`pkg/planner/core/Cargo.toml` 的 `[package.metadata.porting].go-package = "pkg/planner/core"` 也声明了该 crate 的 Go 对照包。
-
 但 Rust 文件是显著简化的移植层，差异至少包括：
 
 - Go `TryFastPlan` 接收 `PlanContext` 与解析/解析后 AST，负责 fix-control、稳定结果模式、PlanID 重置、`sql_select_limit`、MemDB、权限和语句类型分派；Rust 接收预构造 `FastQuery`、布尔权限结果和等待值。
@@ -93,11 +89,3 @@ Go 实现的 `subQueryChecker` 使用 `sync.Pool` 复用 visitor 并在归还前
 若要把该简化层接入完整应用，应先明确它与 `point_get_plan_runtime.rs`、`OptimizeRuntimeService::try_fast_plan` 的职责边界，补齐 AST/会话到 `FastQuery` 的可信转换，并确保权限、InfoSchema 最新索引、分区、事务锁资格、计划 ID、fix-control、TableDual 和回退行为不会遗漏。不要仅增加静态调用就宣称完成 Go 等价移植。
 
 测试应至少同步 `pkg/planner/core/point_get_plan_test.rs`（值转换和谓词拒绝的聚焦测试）与 `pkg/planner/core/integration_test.rs::test_point_get_with_select_lock`（OR/IN/复合唯一键、锁等待和访问条件）。若变化影响真实 SQL、计划缓存或执行器，再同步 `pkg/planner/core/tests/pointget/point_get_plan_test.rs` 及对应 Go 测试 `pkg/planner/core/tests/pointget/point_get_plan_test.go`；若改的是另一条真实逻辑计划入口，则还需检查 `point_get_plan_runtime_test.rs`。主要风险是错误接受非唯一/不完整键导致错误行定位、值转换差异导致结果不兼容、OR 展开导致规划时间/内存膨胀，以及锁/分区/计划缓存元数据遗漏。
-
-## 验证依据
-
-- 源码全量检查：`pkg/planner/core/point_get_plan.rs`；模块和 crate 边界：`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`。目标包根目录没有 `doc.go`，因此无同包 package contract 可读。
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边。执行了 `query` 查找 Rust/Go 的 `TryFastPlan`、`tryOr2BatchPointGet`、`tryWhereIn2BatchPointGet`、`tryPointGetPlan`，并对 `point_get_plan.rs::TryFastPlan` 及三个关键分支执行 `node`/`callers`/`callees`。精确 `node` 的 Trail 证实入口的五条主要下游边以及更新、删除和测试调用者；独立 `callers` 子命令未输出调用者，因此以上游 Trail 与仓库引用搜索交叉核对。
-- 直接测试证据：`pkg/planner/core/point_get_plan_test.rs`；锁、OR、IN、复合唯一索引证据：`pkg/planner/core/integration_test.rs::test_point_get_with_select_lock`；真实 SQL/计划缓存对照：`pkg/planner/core/tests/pointget/point_get_plan_test.rs`；相邻但不同入口的边界证据：`pkg/planner/core/point_get_plan_runtime_test.rs`。
-- Go 语义基线：`pkg/planner/core/point_get_plan.go`；Go SQL 测试索引：`pkg/planner/core/tests/pointget/point_get_plan_test.go`。应用入口边界参考 `pkg/planner/optimize.rs::OptimizeRuntimeService::try_fast_plan` 与 `tryFastPlanIfTiKV`。
-- 本任务是纯文档分析，按计划未运行 Cargo。人工复核确认本文区分当前接线与未验证能力，说明文件存在原因、主流程、失败回退、扩展位置及兼容/性能风险；固定章节结构另由任务指定命令验证。

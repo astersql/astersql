@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-infoschema-validatorapi` crate 的公共契约文件，定义 InfoSchema 版本校验的三态结果 `Result` 和实现方必须提供的 `Validator` trait。crate 根 `pkg/infoschema/validatorapi/lib.rs` 通过 `pub mod interface` 声明模块，并用 `pub use interface::*` 在 crate 根重导出这两个符号；`Cargo.toml` 将 `lib.rs` 指定为库入口，并以 `package.metadata.porting.go-package = "pkg/infoschema/validatorapi"` 记录对应 Go 包。
-
-它本身不保存租约、schema 版本或变更历史，也不执行校验算法。真实 Rust 状态机位于 `pkg/infoschema/isvalidator/validator.rs`，其中 `impl ValidatorApi for Validator` 实现本文件的 trait。当前生产接线并不都经由 `dyn validatorapi::Validator`：例如 `pkg/session/runtime/schema_validation.rs` 直接包装具体的 `isvalidator::Validator` 并调用其固有 `check`，`pkg/infoschema/issyncer/syncer.rs` 也定义了本地 `SchemaValidator` 适配层。因此本文件的主要作用是固定 Go 兼容 API 和跨实现边界，而不是充当完整应用中的唯一动态分派入口。
+固定更新、检查和生命周期方法的参数顺序与返回形状，使实现可以登记租约窗口及 schema 增量，并让事务提交检查区分成功、确定失败和暂时未知。
 
 ## 核心职责
 
@@ -73,13 +71,9 @@ RustCodeGraph 对 trait 节点 `pkg/infoschema/validatorapi/interface.rs::Valida
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/validatorapi/interface.go`：Go 的 `type Result int` 与三个 `iota` 常量对应 Rust 的 `#[repr(i32)] Result`；Go `Validator` 的七个方法在 Rust trait 中逐项保留，参数顺序和 Go 风格方法名也一致。
-
 主要类型映射如下：Go `*transaction.RelatedSchemaChange` 输入映射为 `Option<&Self::RelatedSchemaChange>`，返回指针映射为 `Option<Self::RelatedSchemaChange>`；Go `[]int64` 映射为 `Option<&[i64]>`，特意保留 nil slice 与非 nil 空 slice；Go `bool`、`uint64`、`int64` 分别映射为 Rust 同语义标量。
 
-语义核验还来自 `pkg/infoschema/isvalidator/validator.go` 与 `validator_test.go`：Go 实现用 `sync.RWMutex` 保护 started、租约、版本和 delta 队列；测试覆盖正常租约、停止/重启、超时、nil 表集合、相关表变更和队列压缩。Rust 的实际状态机及独立测试位于相邻 `isvalidator` crate。本 API 文件不应复制这些算法，只应保持足以表达它们的稳定契约。
-
-当前存在有意的 Rust 抽象差异：关联类型解除对 `client-go` 的直接依赖；trait 未强制 `Send + Sync`；Rust `Result` 明确固定为 `i32`，而 Go `int` 的机器字长依平台而定。数值 0/1/2 的语义相同，但不应据此宣称二进制 ABI 完全相同。
+当前存在有意的 Rust 抽象差异：关联类型解除对 `client-go` 的直接依赖；trait 未强制 `Send + Sync`；Rust `Result` 明确固定为 `i32`，而 Go `int` 的机器字长依平台而定。
 
 ## 扩展指南
 
@@ -90,14 +84,3 @@ RustCodeGraph 对 trait 节点 `pkg/infoschema/validatorapi/interface.rs::Valida
 - 若要返回 `Some(RelatedSchemaChange)`，需要补充实现级测试和 domain 映射测试，验证所有权、action 类型转换及错误携带行为。
 - 性能关注点不在本文件的零成本声明，而在实现的锁持有时间、delta 扫描和 `Unknown` 重试。扩展契约时应避免迫使高频 `Check` 分配；目前表 ID 使用借用切片正是这一边界的一部分。
 - Rust 测试继续放在独立的 `interface_test.rs` 或 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件，目标目录的 `interface.rs`、`interface_test.rs`、`migration_aster_unit_test.rs`、`lib.rs` 均已索引；`interface.rs` 识别出 10 个符号。
-- RustCodeGraph `node --file pkg/infoschema/validatorapi/interface.rs`：核对 `Result`、`Validator`、关联类型和七个方法的完整声明；`node pkg/infoschema/validatorapi/interface.rs::Validator` 再次核对 trait 源码。
-- RustCodeGraph `callers` / `callees` 查询 trait 节点未产生方法级边，已如实记录该索引限制；随后通过精确源码/符号搜索核对真实实现和接线，不把泛化的同名搜索结果当作调用证据。
-- 读取的 crate 边界文件：`pkg/infoschema/validatorapi/Cargo.toml`、`pkg/infoschema/validatorapi/lib.rs`。
-- 读取的直接 Go 对照：`pkg/infoschema/validatorapi/interface.go`；实现与 Go 测试证据：`pkg/infoschema/isvalidator/validator.go`、`pkg/infoschema/isvalidator/validator_test.go`。
-- 读取的 Rust 实现/调用证据：`pkg/infoschema/isvalidator/validator.rs`、`pkg/infoschema/issyncer/syncer.rs`、`pkg/session/runtime/schema_validation.rs`、`pkg/domain/schema_checker.rs`。
-- 读取的独立 Rust 测试：`pkg/infoschema/validatorapi/interface_test.rs`、`pkg/infoschema/validatorapi/migration_aster_unit_test.rs`；它们覆盖 nil/empty 区分、枚举值、全部 trait 参数与生命周期方法的可实现边界。
-- `pkg/infoschema/doc.go` 不存在，因此没有可读取的目标包 Go 包级契约；本说明以最近的 crate 根、同路径 Go 文件、实际实现和测试为权威证据。

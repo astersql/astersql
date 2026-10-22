@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`gemini.rs` 是 `astersql-inference` crate 中的 Gemini 文本嵌入提供者适配器。crate 由 `pkg/inference/Cargo.toml` 声明，库入口 `pkg/inference/lib.rs` 通过 `pub mod gemini` 公开此模块，并从 `embed_fn` 重导出共享的 `Embedder` 和 `Options`。
-
-应用接线位于 `pkg/domain/domain.rs` 的 embedding provider 初始化段：它以名称 `"gemini"` 向 `EmbedFn::register` 注册 `GeminiEmbedder::new` 创建的对象，API key 闭包每次从 Domain 的全局系统变量 `tidb_exp_embed_gemini_api_key` 取值，base URL 闭包返回空字符串，因而使用本文件的 Gemini 默认地址。这个文件不负责 SQL 函数解析、跨调用合批、缓存或 provider 选择；这些由 `pkg/inference/embed_fn.rs` 的 `EmbedFn` 负责。
+在 `Embedder::create_embeddings_with_context` 中为每条文本构造 Gemini `requests` 元素，并调用共享 HTTP 执行层。
 
 ## 核心职责
 
@@ -65,14 +63,6 @@
 
 每次 provider 请求在 `base::execute_json_embedding_call` 中创建 current-thread Tokio runtime，并在同步调用内 `block_on` 网络 future。该 future 与每 5 ms 轮询 `ProviderContext::cause()` 的取消 future 竞争；取消获胜时请求 future 被丢弃并返回 caller cause 或 `request canceled`。HTTP client 跟随 `GeminiEmbedder` 存活，单次 payload、runtime 和 response body 在调用结束时释放。
 
-## 与 Go 版本的对应关系
-
-Go 对照实现是 `pkg/inference/embedding/gemini/gemini.go`。Rust 的 `GeminiEmbedder`/`new`/`endpoint`/`decode_embeddings`/`create_embeddings_with_context` 分别对应 Go 的 `Embedder`/`NewGeminiEmbedder`/`batchEmbeddingsEndpoint`/`decodeEmbeddings`/`CreateEmbeddings`。两者共享以下语义：默认 URL，`batchEmbedContents` 路由，模型 path 转义，每文本一个 request，必需字段不可被 options 覆盖，`x-goog-api-key` 认证，响应数量严格匹配，以及错误 message 提取。
-
-Rust 版将 Go `context.Context` 的取消语义映射为 `ProviderContext` + `AtomicBool`，并用 `ProviderError` 单独保留 cause；兼容 trait 入口仍返回字符串。Rust 的 JSON 解码是基于 `serde_json::Value` 的显式形状/数值检查，Go 则解码到 `BatchResponse`/`ErrorResponse` 结构。Rust 还统一继承 `base.rs` 的响应体上限、secret 脱敏、transport cause 和取消检查。
-
-Go 独立测试 `pkg/inference/embedding/gemini/gemini_test.go` 覆盖成功请求、options、路径转义、无效 key/model、缺失 key、endpoint 校验、数量不匹配和共享 provider contract。Rust 独立测试 `pkg/inference/gemini_test.rs` 保留了这些协议要点，并通过 `pkg/inference/cohere_test.rs` 的共享帮助器校验限额、取消、cause 和端点错误。
-
 ## 扩展指南
 
 - 新增 Gemini 请求选项时，优先保持 `Options` 透传，并确认 `json_fields_with_options` 的“必需字段最后写入”不变；在 `pkg/inference/gemini_test.rs` 增加独立回归，必要时同步 Go 对照测试。不应把 Rust 单元测试内嵌到本生产文件。
@@ -80,13 +70,3 @@ Go 独立测试 `pkg/inference/embedding/gemini/gemini_test.go` 覆盖成功请�
 - 修改响应协议时聚焦 `decode_embeddings` 和错误解码闭包，保留输入/输出数量不变量、`f32` 溢出检查、错误体脱敏和 401 自定义错误。若 Gemini API 增加部分成功语义，需先明确 `EmbedFn` 对“每个输入必有一行”的依赖。
 - 修改 key/base URL 来源时需同步 `GeminiEmbedder::new` 与 `pkg/domain/domain.rs` 的注册闭包，并评估动态全局变量、锁中毒 panic 及 secret 生命周期。
 - 重试、并发限制、长期 runtime 复用或传输层改造不应只改本文件；它们属于 `base::execute_json_embedding_call` 或 `EmbedFn` 的共享契约，会影响其他 provider。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/inference` 确认 `gemini.rs`、`gemini_test.rs`、`lib.rs`、`base.rs` 和 `embed_fn.rs` 均在索引中。
-- RustCodeGraph `node --file pkg/inference/gemini.rs` 读取了全部 161 行；`query Gemini` 定位 `GeminiEmbedder`、`new`、`with_config`、`endpoint`、`create_embeddings`、`create_embeddings_with_context` 和 `decode_embeddings`。
-- RustCodeGraph `query create_embeddings_with_context --json`、`query execute_json_embedding_call --json`、`query provider_auth_headers --json`、`query json_fields_with_options --json`、`query APIKeyProviderConfig --json` 和 `query ProviderContext --json` 确认了关键符号及所在文件。`callers`/`callees` 尝试未在 30 秒内返回结果，因此未把其当作调用边证据。
-- RustCodeGraph 文件节点读取了 `pkg/inference/lib.rs`、`pkg/inference/embed_fn.rs`、`pkg/inference/base.rs`、`pkg/domain/domain.rs`、`pkg/inference/gemini_test.rs`、`pkg/inference/embedding/gemini/gemini.go` 和 `pkg/inference/embedding/gemini/gemini_test.go`。其中 Domain 注册、`run_batch` trait 调用、共享 HTTP 生命周期与独立测试共同构成调用链和边界证据。
-- 直接读取 `pkg/inference/Cargo.toml` 核对 crate 名、`lib.rs` 入口、依赖和 `package.metadata.porting.go-package = "pkg/inference"`；该目录下没有 `doc.go`。
-- 仓库引用搜索补足了 RustCodeGraph 未及时返回的边：`pkg/domain/domain.rs` 是生产代码中 `GeminiEmbedder::new` 的注册点，`pkg/inference/gemini_test.rs` 是 Rust 独立测试面，Go 生产接线在 `pkg/inference/sqlembed.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` + 11 个固定二级标题计数命令做结构验证。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的运行时 DDL 路径，由 [`pkg/session/runtime.rs`](../runtime.rs) 以私有模块 `mview_ddl` 装配。它不是完整的物化视图实现，而是 `CREATE MATERIALIZED VIEW LOG` 在会话层的语义检查、日志表元数据构造和首次清理时间计算入口；实际的持久化与模式发布交给 `Domain`。
-
-SQL 入口位于 `pkg/session/runtime/dispatch.rs::execute_statement`：AST 被识别为 `ast::CreateMaterializedViewLogStmt` 后调用 `ConcreteSession::execute_create_materialized_view_log` 并返回空结果集。文件还提供两个包内时间表达式求值函数，分别服务于建表语句和后续系统会话中的 MLog/MView 调度维护。
-
-`pkg/session/Cargo.toml` 表明该文件编入 `astersql-session`；其直接使用的能力来自本 crate 已声明的 `astersql-parser-*`、`astersql-planner-core(-base)`、`astersql-expression(-exprstatic)`、`astersql-meta-model`、`astersql-meta-metabuild`、`astersql-ddl`、`chrono` 与 `chrono-tz` 等依赖。目标文件没有条件编译项，也没有独立公开 API；三个函数都是 `pub(super)`。
+追加 `_MLOG$_DML_TYPE` 与 `_MLOG$_OLD_NEW` 两个非空内部列，构造 `CreateTableStmt`，再经 `BuildTableInfoFromAST` 生成日志表 `TableInfo`。
 
 ## 核心职责
 
@@ -86,11 +82,9 @@ DDL 的原子性边界在 `Domain::ddl_create_materialized_view_log` 下游：`p
 
 ## 与 Go 版本的对应关系
 
-最接近的 Go 对照是 `pkg/ddl/materialized_view.go` 中的 `BuildMaterializedViewLogTableInfo`、`isValidMaterializedViewLogBaseTable` 和 `executor.CreateMaterializedViewLog`，以及 `pkg/ddl/mview_schedule_expr.go::deriveCreateMaterializedViewLogNextUnixSeconds`。
-
 Rust 与 Go 保持的主要语义包括：只接受普通非分区基础表；跟踪列去重并禁止内部元列冲突；拒绝 JSON/二进制 BLOB；复制列类型时移除键、自增和自动更新标志；追加两个内部列；PURGE 只支持 DEFERRED 且要求 NEXT；保存恢复后的调度表达式、SQL mode、基础表 ID、跟踪列和 ALERT ROWS。
 
-实现分层存在差异：Go `executor.CreateMaterializedViewLog` 显式检查功能开关、当前数据库/schema、系统库、日志表重名，并创建异步 DDL job，之后执行建表后处理；Rust 会话入口构造 `TableInfo` 后直接调用 Domain 的 metadata API。Go 的下一次清理时间由 DDL worker 通过系统会话派生，Rust 创建入口先求值并把结果传给 Domain。Rust 的 `mlog_schedule_unix_seconds_with_mode` 同时被刷新调度复用，这属于当前 Rust 模块边界，不等于 Go 文件的函数归属。
+实现分层存在差异：Go `executor.CreateMaterializedViewLog` 显式检查功能开关、当前数据库/schema、系统库、日志表重名，并创建异步 DDL job，之后执行建表后处理；Rust 会话入口构造 `TableInfo` 后直接调用 Domain 的 metadata API。Rust 的 `mlog_schedule_unix_seconds_with_mode` 同时被刷新调度复用，这属于当前 Rust 模块边界，不等于 Go 文件的函数归属。
 
 Go 测试 `pkg/ddl/tests/materializedviewlog/materialized_view_basic_test.go` 和 `materialized_view_create_test.go` 覆盖重复/保留列、字段类型、PURGE 类型、非基础对象、UTC/DST、回滚、placement 与告警阈值，适合作为兼容性基线；只有 Rust 测试或实现证实的行为才应宣称已移植。
 
@@ -102,12 +96,3 @@ Go 测试 `pkg/ddl/tests/materializedviewlog/materialized_view_basic_test.go` �
 - 修改日志列生成时必须保持内部列顺序、类型/长度/非空约束和被清除的字段标志，并验证 text 与 generated column 不被误判为 BLOB/不支持列。
 - 测试逻辑应继续放在独立文件。最近的 Rust 测试是 `pkg/session/runtime/normal_ddl_create_materialized_view_log_test.rs`；会话级新增回归可扩展该文件，后台系统会话行为则同步检查 `pkg/session/tests/system_session.rs`。不要把测试内嵌进本生产文件。
 - 兼容风险集中在错误码/消息、对象合法性、时区与 SQL mode；正确性风险集中在基础表—日志表关联和失败回滚；性能风险主要是每次创建/调度重算都会构建并执行表达式，但此文件不在逐行 DML 热路径上。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/session/runtime` 确认目标文件已索引；`node --file pkg/session/runtime/mview_ddl.rs` 阅读全部 281 行；`query` 确认 `mlog_schedule_unix_seconds`、`mlog_schedule_unix_seconds_with_mode`、`execute_create_materialized_view_log`。`callers/callees` 对这些函数无输出，故用精确文本搜索补齐调用边。
-- Rust 生产代码：`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/mlog_purge.rs`、`pkg/session/runtime/system_session.rs`、`pkg/session/runtime/relational_value.rs`、`pkg/session/runtime/planning.rs`、`pkg/domain/domain.rs`。
-- crate 边界：`pkg/session/Cargo.toml` 的 package、lib、features 与 dependencies；目标逻辑未受 feature gate 包围。
-- Rust 独立测试：`pkg/session/runtime/normal_ddl_create_materialized_view_log_test.rs`，覆盖 V1/V2 job、元数据与参数、非法元数据、调度矩阵、清理表缺失回滚、调度错误无孤儿、提交冲突恢复、UTC/SQL mode/会话变量保持和 `DATE_ADD(NOW())`。
-- Go 对照与测试：`pkg/ddl/materialized_view.go`、`pkg/ddl/mview_schedule_expr.go`、`pkg/ddl/tests/materializedviewlog/materialized_view_basic_test.go`、`pkg/ddl/tests/materializedviewlog/materialized_view_create_test.go`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务给定命令确认目标文件存在且恰有 11 个固定二级章节，并人工复核文档明确回答文件为何存在、运行路径及安全扩展位置。

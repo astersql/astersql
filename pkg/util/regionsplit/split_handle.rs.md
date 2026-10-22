@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`split_handle.rs` 是 `astersql-util-regionsplit` crate 中的 Region 切分键核心实现。crate 入口 `pkg/util/regionsplit/lib.rs` 将本文件的公开项全部再导出，同时再导出 `model_handle.rs` 中面向真实 `model::TableInfo` 与 `types::Datum` 的适配 API。Cargo 边界由 `pkg/util/regionsplit/Cargo.toml` 定义；本文件自身只使用 `std`，而真实模型适配层使用清单中的 `astersql-kv`、`astersql-meta-model`、`astersql-tablecodec`、`astersql-types` 和 `astersql-util-codec` 等依赖。
-
-本文件不是 TiKV RPC 或 Region 调度器：它只把表/索引元信息、上下界和目标段数转换成有序键。生产 DDL 的策略路径在 `pkg/ddl/split_region.rs` 中调用 `GetSplitTableKeysForModel` / `GetSplitIndexKeysForModel`，由同 crate 的 `model_handle.rs` 复用本文件的 `MinRegionStepValue`、`encode_i64`、`gen_table_record_prefix` 和 `get_values_list`。本文件公开的简化 `TableInfo`、`Datum` 与 `GetSplit*Keys` 主要承载核心算法及编码兼容性测试，不等同于完整 SQL 类型系统。
+用 `SplitHandleCols` 抽象整数 handle 与 common handle 的构造差异，并由 `BuildHandleColsForSplit` 根据 `TableInfo::is_common_handle` 选择策略。
 
 ## 核心职责
 
@@ -72,11 +70,11 @@ RustCodeGraph 对本文件的文件关系显示直接使用者包括 `pkg/util/r
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/regionsplit/split_handle.go`。两边都有 `MinRegionStepValue`、`SplitHandleCols`、整数范围计算、表/索引切分入口、索引物理边界函数、整数/common handle 策略和 `BuildHandleColsForSplit`。关键相同行为包括：整数路径生成 `num-1` 个内部点；common handle 单索引表不额外插入记录前缀；非首索引加入自身前缀且所有索引加入下一 id 前缀；索引上下界都使用最小整数 handle；非法顺序与过小步长返回错误。
+关键相同行为包括：整数路径生成 `num-1` 个内部点；common handle 单索引表不额外插入记录前缀；非首索引加入自身前缀且所有索引加入下一 id 前缀；索引上下界都使用最小整数 handle；非法顺序与过小步长返回错误。
 
 Rust 文件刻意是简化核心，不是 Go API 的类型级一比一替换。Go 版本使用 `model.TableInfo`、`types.Datum`、`stmtctx.StatementContext`、`tablecodec`、`codec` 和 `kv.Handle`，并由 `terror.Error` 生成 SQL 错误；Rust 的完整模型接线在 `model_handle.rs`。尤其是 Go `commonHandleCols` 会复制输入并按主索引前缀长度调用 `TruncateIndexValues`，而本文件的 `commonHandleCols` 仅编码整行；Rust 对应的前缀截断在 `ModelHandleCols::BuildHandleByDatumsAt` 中实现。Go 的 `GetSplitIndexKeys` 使用真实 `tables.NewIndex(...).GenIndexKey`，Rust 简化入口使用局部编码器，而生产适配入口 `GetSplitIndexKeysForModel` 使用 `astersql_tablecodec::GenIndexKey`。
 
-`pkg/util/regionsplit/tests/split_handle_test.rs` 验证简化实现与 Go 键布局兼容：整数记录键、复合 handle 的 memcomparable 编码、索引值与 handle 标志位置。`pkg/util/regionsplit/tests/go_merge_32_test.rs` 验证真实模型路径的主键列选择、common handle 前缀截断且不修改输入，以及转换错误归一化。Go 的更高层回归位于 `pkg/ddl/split_region_test.go`，覆盖策略边界解析及 `regionsplit.GetSplitIndexKeys` 等接线；这些测试是语义参照，但本纯文档任务未运行测试。
+`pkg/util/regionsplit/tests/split_handle_test.rs` 验证简化实现与 Go 键布局兼容：整数记录键、复合 handle 的 memcomparable 编码、索引值与 handle 标志位置。
 
 ## 扩展指南
 
@@ -87,13 +85,3 @@ Rust 文件刻意是简化核心，不是 Go API 的类型级一比一替换。G
 修改插值或最小步长规则时，需要同时审查 `model_handle.rs` 的生产适配实现，因为它直接复用了部分原语、又复制了整数范围逻辑。修改索引键布局时应同步真实 `tablecodec::GenIndexKey` 路径。测试逻辑必须继续放在独立文件：核心编码回归扩展 `pkg/util/regionsplit/tests/split_handle_test.rs`，完整模型/前缀主键回归扩展 `pkg/util/regionsplit/tests/go_merge_32_test.rs`，DDL 可见行为则扩展 `pkg/ddl/split_region_test.go` 或对应独立 Rust DDL 测试，不能内嵌到本源文件。
 
 兼容性风险主要是键字节变化会把切分点放到错误的 Region；正确性风险包括上下界排序、无符号/极值溢出、零步长和索引结束前缀；性能风险集中在每个 datum 和每个切分点的新向量分配。任何优化都必须保持输出字典序及 Go 字节兼容，而不能只比较结果数量。
-
-## 验证依据
-
-- 源码全貌：`pkg/util/regionsplit/split_handle.rs`，核对了所有公开/私有类型、trait、函数、常量与 impl；文件无条件编译项。
-- crate 边界：`pkg/util/regionsplit/Cargo.toml` 与 `pkg/util/regionsplit/lib.rs`，确认 crate 名、模块声明、再导出和 workspace 依赖。
-- 生产接线：`pkg/util/regionsplit/model_handle.rs`、`pkg/ddl/split_region.rs`，确认简化原语如何进入真实模型路径，以及生成键如何交给 DDL split 流程。
-- Go 对照：`pkg/util/regionsplit/split_handle.go` 与 `pkg/ddl/split_region.go`，核对整数/common handle、索引边界、最小 handle、错误和调用位置。
-- 独立测试：`pkg/util/regionsplit/tests/split_handle_test.rs`、`pkg/util/regionsplit/tests/go_merge_32_test.rs`、`pkg/ddl/split_region_test.go`。前两者分别覆盖简化编码与真实模型适配；Go DDL 测试提供上层策略语义证据。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`explore "pkg/util/regionsplit/split_handle.rs splitHandle SplitHandle"` 定位 Go/Rust 对照符号；`node --file pkg/util/regionsplit/split_handle.rs --offset 195 --limit 420` 核对表、索引入口及全部编码辅助函数。图的 blast-radius 结果同时表明同名 Go 调用边较完整，而 Rust 生产路径经 `*ForModel` 适配层间接复用本文件原语。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构校验应确认目标文件存在且恰有十一个规定的二级标题；人工复核重点是简化 API 与生产适配层边界、Go 差异和安全扩展位置均有直接路径或符号依据。

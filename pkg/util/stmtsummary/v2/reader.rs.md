@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`reader.rs`](reader.rs) 是 `astersql-util-stmtsummary-v2` crate 的语句摘要读取层。crate 根在 [`lib.rs`](lib.rs) 中以私有 `mod reader` 装配并用 `pub use reader::*` 重新导出本文件的公开 API；[`Cargo.toml`](Cargo.toml) 声明该 crate 是 `pkg/util/stmtsummary/v2` 的 Rust 移植单元。本文件位于摘要记录与展示列之间：上游从内存中的 `StmtSummary` 窗口或 `tidb-statements*.log` 历史文件取得 `StmtRecord`，下游通过 [`column.rs`](column.rs) 的 `ColumnFactory` 把记录投影为查询所需的 `types::Datum`。
-
-RustCodeGraph 对当前索引未给出 `NewMemReader`、`NewHistoryReader` 的非测试生产调用者；可以确认的使用点包括 [`stmtsummary.rs`](stmtsummary.rs) 对 `MemorySummarySource` 的实现、[`reader_test.rs`](reader_test.rs) 的独立单元测试，以及 [`tests/harness.rs`](tests/harness.rs) 和 [`tests/table_test.rs`](tests/table_test.rs) 的表级测试路径。因此，本文件提供了可供应用层接线的公开读取 API，但其生产调用链在当前 Rust 仓库中未验证，不能据此声称已经接入完整的 `INFORMATION_SCHEMA` 查询链。
+`openStmtFile`、`StmtFiles`、`readLine`/`readLines` 处理日志发现、轮转竞态、时间元数据和输入上限；`HistoryReader::Close`、`Drop` 与 `sendCancelable` 负责取消及线程回收。
 
 ## 核心职责
 
@@ -67,9 +65,9 @@ crate 内部依赖中，`StmtRecord` 来自 [`record.rs`](record.rs)，`ColumnCo
 
 ## 与 Go 版本的对应关系
 
-同目录 [`reader.go`](reader.go) 是直接语义对照。Rust 保留了 Go 的两个 reader、`stmtChecker` 四个判断、活动 inode 钉住和延迟打开、半数 worker 先 scan 后 parse、64 行批次、损坏 JSON 跳过、历史 evicted 跳过、列工厂投影和包含端点的区间重叠公式。[`reader_test.rs`](reader_test.rs) 也对应 Go 的时间区间、文件解析、文件枚举、checker、内存读取、历史过滤和非法行用例，并额外覆盖开放区间、轮转竞态、文件描述符上界与 `ia_exec_count` 保存。
+[`reader_test.rs`](reader_test.rs) 也对应 Go 的时间区间、文件解析、文件枚举、checker、内存读取、历史过滤和非法行用例，并额外覆盖开放区间、轮转竞态、文件描述符上界与 `ia_exec_count` 保存。
 
-Rust 的资源表达与 Go 不同：Go 使用 `context.CancelFunc`、`WaitGroup`、显式关闭文件和 monitor select；Rust 用原子取消、有界 crossbeam 通道、线程 join 与 `File` 的 RAII 达到相同流水线生命周期。Go 的 `MemReader` 在读窗口后逐个锁定记录，Rust 通过 `MemorySummarySource` 先克隆完整快照，隔离了读取器与摘要内部锁结构。Go 从全局 config 读取文件名，Rust 当前由 `STMT_SUMMARY_FILENAME`/`setStmtSummaryFilename` 管理；生产配置如何写入该全局路径在本文件和已确认调用边中未验证。
+Rust 的资源表达与 Go 不同：Go 使用 `context.CancelFunc`、`WaitGroup`、显式关闭文件和 monitor select；Rust 用原子取消、有界 crossbeam 通道、线程 join 与 `File` 的 RAII 达到相同流水线生命周期。Go 从全局 config 读取文件名，Rust 当前由 `STMT_SUMMARY_FILENAME`/`setStmtSummaryFilename` 管理；生产配置如何写入该全局路径在本文件和已确认调用边中未验证。
 
 Go 注释把 `StmtTimeRange` 描述为 `[Begin, End)`，但 Go/Rust 实现及两边测试都使用包含端点的重叠公式；本文以实际行为“闭区间端点相交，0/逆序 end 表示开放右端”为准。Rust 还将历史 `Rows` 的结束状态显式建模为 `Result<Option<...>, ReaderError>`，对应 Go 的 `(nil, nil)`。
 
@@ -81,11 +79,3 @@ Go 注释把 `StmtTimeRange` 描述为 `[Begin, End)`，但 Go/Rust 实现及两
 - 改变日志命名或配置来源时，修改 `parseEndTs` 与 `StmtFiles::newWithReadDir`，并覆盖绝对路径、扩展名、DST/非法时间戳、轮转前后相同 inode 及活动文件缺失。配置接线还需从真实生产入口补证。
 - 调整并发和通道容量时，保持“scan 完成后才关闭 lines”“所有 parser 退出后 rows sender 才释放”“取消可突破背压”三个不变量；重点回归 `go_merge_37_history_reader_bounds_open_files`、轮转钉住测试以及提前 `Close`。
 - 性能风险主要是 1 GiB 单行上限带来的内存峰值、快照克隆全部 `StmtRecord`、列工厂逐字段构造，以及过高并发造成的批次/线程占用；兼容风险主要是区间端点、用户名匹配、全局路径和历史 JSON 语义。不要为了简化实现而偏离 Go 的过滤与生命周期逻辑。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标目录的 `reader.rs`、`reader_test.rs`、`reader.go` 均已索引；`node --file pkg/util/stmtsummary/v2/reader.rs` 阅读了 1–812 行；对 `NewMemReader`、`NewHistoryReader`、`scheduleTasks`、`scanWorker`、`parseWorker`、`Rows`、`Close` 执行了 query/callers/callees，其中关键调用边记录于“依赖与调用关系”，公开构造器未返回非测试生产 callers。
-- 源码与 crate 边界：完整核对 [`reader.rs`](reader.rs)、[`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)；读取 [`stmtsummary.rs`](stmtsummary.rs) 的 `MemorySummarySource` 实现及 [`tests/harness.rs`](tests/harness.rs) 的 reader 使用点。
-- Go 对照：完整核对 [`reader.go`](reader.go) 的两个 reader、checker、文件发现、scan/parse worker、取消和辅助读取函数。
-- 测试证据：完整核对 [`reader_test.rs`](reader_test.rs) 的 10 个测试，涵盖开放/闭合时间范围、首行损坏、活动 inode 轮转、打开文件数、IA 执行计数、文件裁剪、权限/digest、内存淘汰行、历史 evicted 跳过及损坏行跳过；测试由 [`lib.rs`](lib.rs) 的独立 `#[path = "reader_test.rs"] mod reader_test` 装配。
-- 本任务仅新增说明文档，按计划不运行 Cargo；交付检查使用任务指定的固定 11 章节结构命令，并人工复核所有链接、符号名、未验证声明和变更范围。

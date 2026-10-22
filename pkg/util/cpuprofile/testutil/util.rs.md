@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 CPU 剖析测试负载生成器：它主动创建持续占用 CPU 的线程，并为每个线程保存一组预期的 pprof 标签，供剖析器、采集器和 TopSQL 相关测试构造稳定的采样输入。它不参与数据库线上请求处理，也不负责启动或解析 CPU profile；实际使用者先启动剖析器，再用这里的 worker 制造可采样负载。
-
-同一实现有两条装配路径。`pkg/util/cpuprofile/testutil/Cargo.toml` 以 `lib.rs` 为入口建立独立 crate `astersql-util-cpuprofile-testutil`，`lib.rs` 公开重导出本文件的全部公共符号；`pkg/util/cpuprofile/lib.rs` 又以 `#[path = "testutil/util.rs"]` 将它编入 `astersql-util-cpuprofile` 主 crate 并重导出。因此扩展公共 API 时必须同时考虑独立 testutil crate 和主 crate 内嵌模块两种消费者。
+Rust 标准库没有对应 Go `runtime/pprof.SetGoroutineLabels` 的线程标签 API，所以当前实现并未把这些键值写入原生 pprof 运行时；`black_box(labels)` 只保证标签参数参与执行、不会被优化器直接删除。
 
 ## 核心职责
 
@@ -86,15 +84,11 @@ RustCodeGraph 将本文件识别为含 16 个符号、被 13 个文件使用。�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/cpuprofile/testutil/util.go`：
-
-- Go `MockCPULoad` 对每个标签启动一个 goroutine，并启动一个包含全部标签的 goroutine；Rust `mock_cpu_load` 保留相同分组数量和顺序。两者都把 `"{label} value"` 的字节编码成小写十六进制作为预期标签值。
-- Go `MockCPULoadV2` 固定键 `sql_global_uid`，对每个值与全值组合启动 goroutine；Rust 版本保持相同标签结构。
 - Go 通过 `context.Context` 取消，通过 `pprof.WithLabels` 与 `pprof.SetGoroutineLabels` 把标签实际绑定到 goroutine；Rust 以自定义 `CancellationToken` 取消，并只保留 `LabelSet`、线程名和 `black_box` 引用，没有等价的运行时 pprof 标签绑定。这是当前移植的重要能力差异。
 - Go API 启动后不返回 worker 容器，也不提供 join；Rust 返回 `CpuLoad`，使测试能够检查标签分组并有界回收线程。
 - 两端忙循环均按一百万项执行 `sum += i * 2`。Rust 用 `u64::wrapping_add` 明确溢出语义，并用 `black_box` 防止优化；Go 代码没有对应显式屏障。
 
-Go 侧调用证据包括 `pkg/util/cpuprofile/cpuprofile_test.go::TestGetCPUProfile`、`pkg/util/topsql/collector/main_test.go::TestPProfCPUProfile` 和 `TestProcessProfCPUProfile`。Rust 目前在 cpuprofile 测试中直接消费本工具；TopSQL 的 Go 场景说明了 V2 标签的原始用途，但不能据此声称 Rust TopSQL 已经接入本工具。
+Rust 目前在 cpuprofile 测试中直接消费本工具；TopSQL 的 Go 场景说明了 V2 标签的原始用途，但不能据此声称 Rust TopSQL 已经接入本工具。
 
 ## 扩展指南
 
@@ -105,11 +99,3 @@ Go 侧调用证据包括 `pkg/util/cpuprofile/cpuprofile_test.go::TestGetCPUProf
 若改进回收语义，可考虑让超时错误可区分、为 `CpuLoad` 增加显式取消所有权，或设计安全的 `Drop` 策略；但自动 join 可能阻塞析构，必须先定义清晰契约。若改变取消检查粒度或忙循环规模，应评估测试稳定性、CPU 占用和采样命中率。公共 API 变更还要同时验证独立 crate、`pkg/util/cpuprofile/lib.rs` 的路径包含以及根 facade 的重导出。
 
 Rust 测试逻辑应继续放在同目录独立的 `migration_aster_unit_test.rs`，不要内嵌进本源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件并已覆盖本路径；`files --filter pkg/util/cpuprofile/testutil` 列出 `lib.rs`、`migration_aster_unit_test.rs`、`util.go`、`util.rs`；`node --file pkg/util/cpuprofile/testutil/util.rs --offset 1 --limit 260` 返回完整 198 行、16 个符号及“used by 13 files”。精确 callers 查询因仓库大量同名符号未在合理时间内返回，直接调用关系随后用限定路径的 `rg` 补齐。
-- 源码与装配：`pkg/util/cpuprofile/testutil/util.rs`、`pkg/util/cpuprofile/testutil/lib.rs`、`pkg/util/cpuprofile/testutil/Cargo.toml`、`pkg/util/cpuprofile/lib.rs`、根 `Cargo.toml` 与 `pkg/lib.rs`。
-- Rust 独立测试：`pkg/util/cpuprofile/testutil/migration_aster_unit_test.rs` 覆盖单项/合并分组、十六进制值、V2 固定键、空输入、取消与成功 join；`pkg/util/cpuprofile/cpuprofile_test.rs::TestGetCPUProfile` 和 `pkg/util/cpuprofile/migration_aster_unit_test.rs::global_profiler_matches_go_start_stop_registration_and_delivery` 证明其被真实剖析流程测试消费。
-- Go 对照：`pkg/util/cpuprofile/testutil/util.go` 定义原始 goroutine、context 和 pprof 标签行为；`pkg/util/cpuprofile/cpuprofile_test.go::TestGetCPUProfile`、`pkg/util/topsql/collector/main_test.go::TestPProfCPUProfile`、`TestProcessProfCPUProfile` 给出直接调用场景。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核本文没有把 Rust 当前未实现的运行时标签绑定描述为已支持。

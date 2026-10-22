@@ -2,18 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-storage` crate。crate 入口
-`pkg/statistics/handle/storage/lib.rs` 以 `pub mod read` 声明模块，并通过
-`pub use read::*` 将本文件的公开函数重导出。它位于统计信息读路径的存储边界：上层
-`StatsReadWriter` 从 `StatsHandler` 取得 `SqlStore`，本文件把对
-`mysql.stats_*` 系统表的查询结果组装为 `TableStats`、`ColumnStats`、
-`Histogram`、`Bucket` 和 `TopNItem`（这些类型定义在同 crate 的
-`stats_read_writer.rs`）。
-
-`pkg/statistics/handle/storage/Cargo.toml` 将该目录定义为独立 crate，并以
-`package.metadata.porting.go-package = "pkg/statistics/handle/storage"` 标明 Go
-对照包。当前 manifest 的依赖全部位于 `cfg(any())` 下；本文件实际只使用 crate
-内的简化存储抽象和统计结构，没有直接引入外部 crate。
+`FOR UPDATE` 加入查询，由外层事务提供锁语义。
 
 ## 核心职责
 
@@ -141,14 +130,6 @@ meta 计数接口用 `is_null` 标识，直方图用 `None`，FM Sketch 用 `Non
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/storage/read.go`。Rust 保留了以下核心语义：
-
-- `StatsMetaCountAndModifyCount` 的无行标志和可选 `FOR UPDATE`；
-- histogram 桶按增量 count 累积、按 `bucket_id` 排序；
-- stats version 2 及以上不读取 CMSketch；
-- FM Sketch、分区统计存在性检查、表级统计组合和 snapshot 为零表示当前行；
-- `StatsMetaByTableIDFromStorage` 的缺失行返回零值。
-
 但当前 Rust API 是有意简化的移植面，不能视为 Go 实现完全等价。Go 版本使用真实
 `sessionctx`、参数绑定和 `execRowsAtSnapshot`，并处理字段类型/排序规则转换、统计
 解码对象、内存 tracker、SQL kill 信号、按 schema 过滤已删除列、懒加载状态及 lease
@@ -173,26 +154,3 @@ CMSketch 分支、空/合法/非法 hex、分区两种缺失错误、snapshot �
 兼容风险主要在 SQL 形状、`Row` 列序、Go/Rust 类型解码差异和 snapshot 一致性；性能
 风险主要来自每个 histogram 当前需要三次附属查询，形成随列/索引数量线性增长的往返。
 若进行批量读取优化，应保留逐项错误语义、稳定的桶顺序和表级最大 stats version。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph 状态：索引包含 11,467 个文件；目标 `read.rs` 已索引为 238 行、9 个
-  符号节点，并报告两个测试使用者；`explore/node/query/callers/callees` 用于核对符号、
-  源码和调用边；
-- 生产源码：`pkg/statistics/handle/storage/read.rs`、
-  `pkg/statistics/handle/storage/stats_read_writer.rs`、
-  `pkg/statistics/handle/storage/lib.rs`；
-- crate 边界：`pkg/statistics/handle/storage/Cargo.toml`；
-- Go 对照：`pkg/statistics/handle/storage/read.go` 和
-  `pkg/statistics/handle/storage/stats_read_writer.go`；
-- 独立 Rust 测试：`read_test.rs` 的 `canonical_storage_row_conversions_match_sql_value_coercions`
-  与 `stats_meta_snapshot_zero_reads_current_row`，以及 `stats_read_writer_test.rs` 的
-  `table_stats_load_drops_histograms_missing_from_storage`；
-- 独立 Go 测试位置：`pkg/statistics/handle/storage/read_test.go` 与
-  `stats_read_writer_test.go`，用于确认完整 Go 路径的测试边界。
-
-结构验证要求文档恰有本文列出的十一个固定二级标题；本任务是纯文档分析，未运行
-Cargo 或代码测试。人工复核重点为：文件存在原因、主执行链、无数据与错误边界、缓存
-替换不变量、Go 移植差异和安全扩展位置均能追溯到上述符号或文件。

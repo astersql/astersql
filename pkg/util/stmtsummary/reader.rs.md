@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-stmtsummary` crate（见 `pkg/util/stmtsummary/Cargo.toml`），由 `pkg/util/stmtsummary/lib.rs` 的 `mod reader; pub use reader::*;` 对外导出。它位于语句摘要写入/聚合逻辑与信息模式表结果之间：读取全局 `StmtSummaryByDigestMap` 中按 digest 聚合的累计、当前窗口和历史窗口数据，并按照调用者请求的列顺序物化为 `Vec<Vec<types::Datum>>`。
-
-完整应用中的对应入口目前在 Go 侧 `pkg/executor/stmtsummary.go:initSummaryRowsReader`：它创建 reader、可选设置 digest checker，再根据 cumulative/current/history 表类型选择读取方法。对 Rust 生产代码的仓库级搜索只发现 `reader.rs` 自身定义；当前 Rust 直接使用者位于同 crate 的独立测试中，因此该文件是已导出、已测试但尚未在 Rust executor 查询路径直接接线的迁移实现。
+`NewStmtSummaryReader` 绑定全局摘要 map、用户与 `PROCESS` 权限、实例地址、时区和请求列，并把每个列名预解析为 `columnValueFactory`；未知列立即 panic，防止表定义与列实现静默错位。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@ Rust reader 的三个公开读取方法在取得 `ssMap` mutex 后，持锁遍�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项移植 `pkg/util/stmtsummary/reader.go`：reader/checker 结构、三种读取模式、权限与 digest 过滤、evicted `other` 规则、列名常量和列工厂语义均有直接对应。Go 的 `any` 工厂返回值在 Rust 中由 `StmtSummaryValue` 显式建模；Go 的 `types.NewDatum` 由 `into_datum` 替代；Go `time.Location` 对应 `chrono_tz::Tz`。
+Go 的 `any` 工厂返回值在 Rust 中由 `StmtSummaryValue` 显式建模；Go 的 `types.NewDatum` 由 `into_datum` 替代；Go `time.Location` 对应 `chrono_tz::Tz`。
 
-数值对应关系保留了 Go 的关键分母：执行期指标按 `execCount`，事务提交指标按 `commitCount`；unsigned 累计量需要浮点列时先转 `f64`。Go string 可含任意字节，Rust 通过 `From<Vec<u8>>` 在 UTF-8 失败时构造 bytes-as-string Datum。计划解码失败两侧都记录错误并返回空字符串/字节，而不丢弃整行。
-
-已确认的实现差异是锁模型：Go 使用全局快照加对象级锁，Rust持有全局 mutex 完成读取。另一个迁移状态差异是 Go executor 已直接消费 reader，而 Rust executor 尚未检索到对应读取调用。两点都应视为当前事实，不应把 Go 的生产接线或细锁粒度假定为 Rust 已具备。
+已确认的实现差异是锁模型：Go 使用全局快照加对象级锁，Rust持有全局 mutex 完成读取。另一个迁移状态差异是 Go executor 已直接消费 reader，而 Rust executor 尚未检索到对应读取调用。
 
 ## 扩展指南
 
@@ -91,11 +87,3 @@ Rust 文件逐项移植 `pkg/util/stmtsummary/reader.go`：reader/checker 结构
 选择平均值分母前应核对 Go 工厂：执行观测通常使用 `execCount`，仅提交时产生的指标使用 `commitCount`。涉及 `u64` 大值时避免先压到 `i64`；时间字段要明确单位并沿用时区转换。新增可能失败的转换时，应决定是列级降级（类似 `PLAN`）、跳过行还是传播错误，并与 Go 行为保持一致。
 
 测试应优先扩展 `pkg/util/stmtsummary/reader_test.rs`（列工厂类型/字节边界）或 `pkg/util/stmtsummary/statement_summary_test.rs`（当前/历史/淘汰/权限的端到端聚合）；同时对照 `statement_summary_test.go`。若将 Rust reader 接入 executor，应另补 executor 层针对 cumulative/current/history 表选择、digest 下推和列顺序的测试，并关注全局锁内计划解码的性能风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 文件；`files --filter pkg/util/stmtsummary` 确认目标、Go 对照和测试均被索引；`node --file pkg/util/stmtsummary/reader.rs --offset 1/421/921` 阅读完整 1,332 行；`query NewStmtSummaryReader`、`callees NewStmtSummaryReader`、`query/callees GetStmtSummaryCurrentRows` 核对构造与当前行调用链。`explore` 和部分 `callers` 查询在 30 秒内无输出，因此上游接线用精确 `rg` 补证。
-- 源码与边界：`pkg/util/stmtsummary/reader.rs`、`pkg/util/stmtsummary/lib.rs`、`pkg/util/stmtsummary/Cargo.toml`、`pkg/util/stmtsummary/reader.go`、`pkg/executor/stmtsummary.go`。
-- Rust 独立测试：`pkg/util/stmtsummary/reader_test.rs` 覆盖大 unsigned 浮点指标、执行次数分母、零分母和非 UTF-8 plan bytes；`pkg/util/stmtsummary/statement_summary_test.rs` 覆盖当前/历史行、上一窗口 evicted 排除、权限、时间列和 IA 指标；`pkg/util/stmtsummary/evicted_1_aster_unit_test.rs` 也直接构造 reader 验证淘汰聚合。
-- Go 对照测试：`pkg/util/stmtsummary/statement_summary_test.go` 的 reader 构造、`TestToDatum`、权限/current/history/evicted 与列工厂用例提供原语义证据。
-- 本任务是纯文档分析，依任务计划不运行 Cargo；交付结构以任务指定的 11 标题检查，并人工复核“为何存在、如何运行、如何安全扩展”。

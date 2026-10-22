@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-testkit-ddlhelper` crate 的唯一业务实现文件，为测试代码提供“从已解析的 `CREATE TABLE` AST 构造 `model::TableInfo`”的窄门面。crate 根 `pkg/testkit/ddlhelper/lib.rs` 将这里的 `BuildTableInfoFromASTForTest` 重新导出；`pkg/testkit/ddlhelper/Cargo.toml` 则声明该 crate 属于 Go 包 `pkg/testkit/ddlhelper` 的 Rust 移植，并依赖 DDL、metabuild、meta model、parser 及 parser AST crate。
-
-它位于测试辅助层，而不是线上 SQL DDL 执行链。函数只构造并校验尚未分配持久化标识的表元数据，不提交 DDL job，不更新 schema version，也不触发 owner、worker、回填或 schema sync。实际构造与校验逻辑位于 `pkg/ddl/create_table.rs` 的 `BuildTableInfoFromAST` 及其下游。
+不自行解释列、索引、分区或表选项；这些语义由 DDL builder 统一实现，避免测试辅助路径与正式构造路径分叉。
 
 ## 核心职责
 
@@ -89,13 +87,7 @@ Cargo 依赖全部是仓库内路径依赖；本文件没有 feature gate。工�
 
 ## 与 Go 版本的对应关系
 
-`pkg/testkit/ddlhelper/helper.go::BuildTableInfoFromASTForTest` 的实现是：以 `metabuild.NewContext()` 创建默认上下文，再直接调用 `ddl.BuildTableInfoFromAST`。Rust 版本保持相同的两步转发形状：
-
-- Go 的空可变参数对应 Rust 的 `Vec::new()`。
-- Go 的 `*ast.CreateTableStmt` 对应 Rust 的 `&ast::CreateTableStmt`。
 - Go 的 `*model.TableInfo` 对应 Rust 按值返回的 `model::TableInfo`，由调用者获得所有权。
-- Go 的 `error` 对应 Rust 的 `parser::errors::Error`。
-- 两个版本都不在 helper 中分配 TableID 或 PartitionID。
 
 Rust 的显式泛型 `::<(), Infallible>` 是对 Go 接口/错误动态形状的静态表达，并非额外业务分支。`helper_builds_the_same_table_metadata_as_the_ddl_entry_point` 验证 helper 与 Rust DDL 正式入口在表名、列、索引、注释等代表性字段上一致；`helper_leaves_partition_ids_uninitialized` 则覆盖 Go 注释明确承诺的分区 ID 语义。
 
@@ -106,15 +98,3 @@ Rust 的显式泛型 `::<(), Infallible>` 是对 Go 接口/错误动态形状的
 - 若新增消费者需要数据库级 charset/collation、infoschema 或 placement policy，应先确认是否应直接使用 DDL 的更完整入口。改变这个共享 helper 的默认上下文可能影响所有测试，并造成与 Go 版本不一致。
 - 若未来接入真实 DDL job 执行，本 helper 的职责边界应保持为 AST → metadata；job 提交、ID 分配、schema state 和事务生命周期应由 DDL/session 测试设施负责。
 - 兼容性风险主要是 Go/Rust 默认值或错误类型漂移；正确性风险集中在绕过正式校验或意外分配 ID；性能风险很低，但在高频测试中每次重建默认表达式上下文仍是固定成本，不应在没有证据时引入全局缓存。
-
-## 验证依据
-
-- 目标实现：`pkg/testkit/ddlhelper/helper.rs`，RustCodeGraph 文件节点确认共 39 行、仅一个公开函数。
-- crate 边界：`pkg/testkit/ddlhelper/Cargo.toml` 与 `pkg/testkit/ddlhelper/lib.rs`；根 `Cargo.toml` 确认 workspace member 和 facade dependency。
-- Go 对照：`pkg/testkit/ddlhelper/helper.go::BuildTableInfoFromASTForTest`。
-- Rust 调用与行为测试：`pkg/testkit/ddlhelper/helper_aster_unit_test.rs::helper_builds_the_same_table_metadata_as_the_ddl_entry_point`、`helper_leaves_partition_ids_uninitialized`。
-- Go 使用证据：`pkg/planner/core/rule/rule_partition_pruning_test.go` 中两处 `ddlhelper.BuildTableInfoFromASTForTest` 调用。
-- 上下文构造：RustCodeGraph 节点 `pkg/meta/metabuild/context.rs::NewContext`，确认默认字段、option 应用顺序与缺省静态表达式上下文。
-- DDL 下游：RustCodeGraph 节点 `create_table.rs::BuildTableInfoFromAST` 和 `create_table.rs::build_table_info_with_check`，确认默认 charset/collation/policy 参数以及“构造后执行两层校验”的调用链。
-- DDL 架构边界：`docs/agents/ddl/README.md` 仅作为入口说明，并以以上源码和测试核验；本 helper 没有进入其中的持久化 job 执行链。
-- 本任务是纯文档分析，未修改或运行 Rust 代码，也未运行 Cargo。交付前按任务指定命令验证文档恰有 11 个固定二级标题，并人工复核重要结论均可回溯到上述符号或文件。

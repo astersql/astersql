@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-infoschema-metrics`，crate 根是同目录的 `lib.rs`，后者通过 `#[path = "../../../pkg/infoschema/metrics/metrics.rs"]` 装入本文件并公开重导出其符号。`Cargo.toml` 表明该 crate 只有 `prometheus = "0.14"` 一个直接外部依赖，并以 `pkg/infoschema/metrics` 作为 Go 对照包。
-
-它位于“父指标向量”与 InfoSchema 业务调用之间：父级 `CounterVec`/`HistogramVec` 定义在 `pkg/infoschema/metrics/lib.rs::metrics`，本文件把固定 label 组合绑定成可复用的全局句柄。全局指标初始化链 `pkg/util/metricsutil/common.rs::initMetrics` 会在父 collector 初始化后调用 `infoschema_metrics::InitMetricsVars`。本文件不是 `INFORMATION_SCHEMA.METRICS_*` 虚拟表定义；后者位于 `pkg/infoschema/metrics_schema.rs`。
-
-当前迁移状态需要特别区分：Rust 全局初始化和句柄行为已有实现及独立测试，但仓库内生产 Rust 代码没有直接引用这些十个固定句柄；对应的业务消费点仍能在 Go 的 `pkg/domain/domain.go` 与 `pkg/infoschema/issyncer/loader.go` 中看到。因此这些句柄目前主要提供 Go API 对齐和后续 Rust 业务接线边界。
+当前迁移状态需要特别区分：Rust 全局初始化和句柄行为已有实现及独立测试，但仓库内生产 Rust 代码没有直接引用这些十个固定句柄；对应的业务消费点仍能在 Go 的 `pkg/domain/domain.go` 与 `pkg/infoschema/issyncer/loader.go` 中看到。
 
 ## 核心职责
 
@@ -90,12 +86,10 @@ crate 边界由 `pkg/infoschema/metrics/Cargo.toml` 确认。该 crate 被 `pkg/
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/metrics/metrics.go`：Go 也声明六个 InfoCache counter、一个 snapshot counter 和三个 duration observer，并在包 `init` 中调用 `InitMetricsVars`。Rust 的固定 label 字符串和绑定顺序与 Go 第 45—57 行一致。
+Rust 的固定 label 字符串和绑定顺序与 Go 第 45—57 行一致。
 
 主要实现差异是生命周期表达方式：
 
-- Go 的包变量先为空接口值，再由 `InitMetricsVars` 赋值；再次初始化会重新赋句柄。
-- Rust 用不可变 `static` 包裹 `LazyLock`，首次访问绑定句柄，重复初始化保持原对象身份，避免 `static mut`。测试证明这仍指向父向量的同一 time series。
 - Go 直接使用 `prometheus.Counter`/`Observer` 接口；Rust 通过 `Counter`/`Observer` 包装补出 Go 风格方法名，并提供 `Deref` 访问具体类型。
 - Go 父指标定义位于 `pkg/metrics/domain.go` 并由中心 registry 注册；该 Rust 子 crate 在 `lib.rs` 中持有本地父向量，仓库注释说明这是 Rust 拆分 owner crate 后的当前结构。
 
@@ -111,13 +105,3 @@ Go 测试没有为本薄绑定文件设置同名独立测试；Rust 的 `migrati
 4. 新增生产 Rust 消费点时，应接入真实业务阶段并保持单位契约。例如 duration 必须传秒；计数器分支必须与 Go 的 snapshot/get/hit 语义一致。
 5. 兼容风险包括 dashboard/告警依赖的完整指标名和 label 值变化；正确性风险包括 label 顺序错位或漏 force；性能风险主要是高基数 label 或热路径额外观测。本文件当前只使用有限固定 label，不应引入请求 ID、表名等无界值。
 6. 若改变初始化模型，应继续保证并发首次访问安全与重复初始化不丢失已有序列，并同步 `pkg/util/metricsutil/common.rs::initMetrics` 的全局顺序假设。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件；`files --filter pkg/infoschema/metrics` 确认目标 crate 的 `lib.rs`、`metrics.rs`、Go 对照和两个独立 Rust 测试均已索引。
-- RustCodeGraph `node --file pkg/infoschema/metrics/metrics.rs`：读取目标文件完整 156 行，确认 `Counter`、`Observer`、十个构造函数、十个静态句柄、`init` 与 `InitMetricsVars`。
-- RustCodeGraph `node`：读取 `pkg/infoschema/metrics/lib.rs`、`metrics.go`、`lib_test.rs`、`migration_aster_unit_test.rs`，核对父向量、重导出、Go 绑定和测试不变量。
-- RustCodeGraph `node --file pkg/util/metricsutil/common.rs --offset 280`：确认 `initMetrics` 在父 collector 初始化后调用 `infoschema_metrics::InitMetricsVars`。
-- RustCodeGraph `callers` 对公开静态名报告“定义未找到”，说明当前索引不能为这些 static 产生符号调用边；因此使用精确 `rg` 搜索补充直接引用证据。搜索确认生产 Rust 仅有全局初始化调用，固定句柄引用集中在独立测试；Go 业务消费位于 `pkg/domain/domain.go` 和 `pkg/infoschema/issyncer/loader.go`。
-- `pkg/infoschema/metrics/Cargo.toml` 及相关 Cargo manifest：确认 crate 名、唯一直接外部依赖和上游 crate 依赖边。
-- 未运行 Cargo：任务是纯文档分析，计划明确要求不运行 Cargo。最终只执行固定 11 章节的结构检查和文档差异自审。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 `astersql-objstore-objectio` crate 的最小流式对象 I/O 契约。模块入口 [`lib.rs`](lib.rs) 将这里的 `Context`、`Reader`、`Writer`、`IOWriter` 和 `NewIOWriter` 全部公开重导出，因此对象存储后端与上层调用者通常通过 crate 根使用它们，而不直接引用私有 `interface` 模块。crate 边界由 [`Cargo.toml`](Cargo.toml) 声明；本文件自身只直接依赖标准库和 Tokio 的时间能力。
-
-它位于 `storeapi::Storage` 与具体后端之间：[`../storeapi/storage.rs`](../storeapi/storage.rs) 的 `Open`/`Create` 一类接口以 `Box<dyn objectio::Reader>`、`Box<dyn objectio::Writer>` 交付流对象，GCS、Azure、S3、OSS、本地文件和压缩包装等实现再履行本文件定义的契约。本文件不选择后端、不创建对象，也不实现分块上传策略。
+`Writer` 规定每次写入都显式接收取消上下文，并把“写入可能上传满块、关闭负责尾块及最终提交”的生命周期交给实现者。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ RustCodeGraph 将目标文件列为被 11 个文件使用，并识别到 GCS、�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`interface.go`](interface.go)。`Reader` 对应 Go `Reader interface { io.ReadSeekCloser; GetFileSize() }`；Rust 用 `Read + Seek` 超 trait 加显式 `close`/`file_size` 表达同一能力，并提供 `Close`/`GetFileSize` 兼容别名。Rust 不依赖 `Drop` 代替 Go 的显式关闭。
+`Reader` 对应 Go `Reader interface { io.ReadSeekCloser; GetFileSize() }`；Rust 用 `Read + Seek` 超 trait 加显式 `close`/`file_size` 表达同一能力，并提供 `Close`/`GetFileSize` 兼容别名。Rust 不依赖 `Drop` 代替 Go 的显式关闭。
 
-`Writer` 的两个核心方法与 Go `Write(context.Context, []byte)`、`Close(context.Context)` 对齐。Go 使用功能完整的 `context.Context`；Rust `Context` 只移植了本对象 I/O 所需的共享取消能力，没有 deadline、value 或取消原因，这是明确的能力差异。
+Go 使用功能完整的 `context.Context`；Rust `Context` 只移植了本对象 I/O 所需的共享取消能力，没有 deadline、value 或取消原因，这是明确的能力差异。
 
-Go `NewIOWriter` 返回 `io.Writer`，内部 `ioWriter` 绑定 context 并仅实现 `Write`。Rust 返回具体 `IOWriter` 并实现 `io::Write`；两者都只转发写入，不拥有关闭职责。Rust 额外提供固定成功的 `flush`，是满足 `io::Write` trait 的必要方法，不表示远端已刷新。
+Rust 返回具体 `IOWriter` 并实现 `io::Write`；两者都只转发写入，不拥有关闭职责。Rust 额外提供固定成功的 `flush`，是满足 `io::Write` trait 的必要方法，不表示远端已刷新。
 
 Go [`writer_test.go`](writer_test.go) 通过存储创建、逐段 `Write`、最后 `Close` 验证对象内容以及压缩包装链；Rust [`interface_test.rs`](interface_test.rs) 更聚焦适配器边界，验证上下文绑定、取消错误、短写和错误透传。两组证据共同确认接口意图，但不应把 Go 后端测试结果当成 Rust 后端已通过测试的替代品。
 
@@ -92,11 +90,3 @@ Go [`writer_test.go`](writer_test.go) 通过存储创建、逐段 `Write`、最�
 - 若扩展 `Context`，必须保持克隆共享、取消单向与现有 `Interrupted` 映射兼容，并评估所有 `select!` 分支；若改成事件驱动通知，应为多等待者和“先取消后等待”增加独立测试。
 - 若修改 `IOWriter`，保持“不隐式关闭底层对象”的所有权边界。需要提交语义时应设计单独的适配器或显式完成方法，不宜让 `flush` 或 `Drop` 悄然改变远端对象状态。
 - 测试仍应放在独立文件 [`interface_test.rs`](interface_test.rs)，不要内嵌进生产源文件；后端行为应同步到各自独立测试。重点覆盖未取消/已取消、在途取消、短写、底层错误、显式关闭、不可用文件大小以及资源回收。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标工程；`files --filter pkg/objstore/objectio` 找到 9 个相关 Go/Rust 文件；`node --file pkg/objstore/objectio/interface.rs --offset 1 --limit 260` 读取了目标文件全部 131 行并报告 11 个使用文件；另读取 `writer.rs`、`gcs.rs`、`azblob.rs` 的直接实现片段。
-- RustCodeGraph：查询 `NewIOWriter` 得到 Go 与 Rust 两个精确节点；对 Rust 节点运行 callers、callees、impact 未返回边，故以 `rg` 补充调用/实现证据，并在“依赖与调用关系”中保留该限制。
-- 已读生产与声明文件：[`interface.rs`](interface.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`interface.go`](interface.go)、[`writer.rs`](writer.rs)、[`../storeapi/storage.rs`](../storeapi/storage.rs)，以及 Azure/GCS/S3/OSS/本地/压缩相关的局部实现与引用。
-- 已读测试：[`interface_test.rs`](interface_test.rs) 验证适配器上下文、取消、短写、错误和无操作 flush；[`writer_test.go`](writer_test.go) 验证 Go 侧 writer 的写入—关闭生命周期及压缩包装。目标目录不存在 `doc.go`。
-- 文档只描述已核实的接口与直接调用证据；未运行 Cargo，符合本任务纯文档且明确禁止 Cargo 的约束。

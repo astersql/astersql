@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-set` crate（`pkg/util/set/Cargo.toml`），实现与 Go 包 `pkg/util/set` 中 `Float64Set` 对应的 Rust 浮点集合。crate 入口 `pkg/util/set/lib.rs` 以 `pub mod float64_set` 挂载该文件，并通过 `pub use float64_set::*` 将 `Float64Set` 与 `NewFloat64Set` 重导出给 crate 使用者。
-
-它是通用工具层的数据结构，不直接参与 SQL 解析、规划或存储协议。除了提供普通浮点集合，文件内 crate 可见的 `FloatKey` 还被 `pkg/util/set/set_with_memory_usage.rs` 复用，以保证普通集合和带内存统计集合采用同一套 Go `float64` map 键语义。
+用 `HashMap<FloatKey, ()>` 表示只关心键存在性的集合，并公开构造、插入、存在性查询和计数接口（`Float64Set`、`NewFloat64Set`、`Insert`、`Exist`、`Count`）。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@ NaN payload 的可用范围是 `1..=0x000f_ffff_ffff_ffff`。当计数器超出�
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/util/set/float64_set.go`。公开概念逐项对应：Go 的 `type Float64Set map[float64]struct{}` 对应 Rust 的 `Float64Set` 包装结构；Go 变参构造 `NewFloat64Set(fs ...float64)` 对应 Rust 切片构造 `NewFloat64Set(fs: &[f64])`；`Exist`、`Insert`、`Count` 的名称和成员语义保持一致。返回计数类型因语言习惯从 Go `int` 变为 Rust `usize`。
+Rust 不能直接以 `f64` 作为满足 `Eq + Hash` 的 `HashMap` 键，因此增加了 Go 文件中不需要的 `FloatKey` 和 `next_nan_payload`。
 
-Rust 不能直接以 `f64` 作为满足 `Eq + Hash` 的 `HashMap` 键，因此增加了 Go 文件中不需要的 `FloatKey` 和 `next_nan_payload`。这层适配保留两项容易丢失的 Go 行为：`-0.0 == +0.0` 导致同键，以及 NaN 与包括自身在内的任何值都不相等，导致重复写入 NaN 产生多个不可按 NaN 查回的 map 条目。
-
-`pkg/util/set/float64_set_test.go::TestFloat64Set` 与 `pkg/util/set/float64_set_test.rs::TestFloat64Set` 都验证普通浮点数的重复插入去重、计数、命中和未命中。Rust 额外的迁移回归 `pkg/util/set/migration_aster_unit_test.rs::primitive_sets_match_go_membership_and_float_key_semantics` 明确覆盖有符号零、无穷、重复 NaN 插入及 NaN 查询，作为 Rust 适配层语义的直接证据。
+Rust 额外的迁移回归 `pkg/util/set/migration_aster_unit_test.rs::primitive_sets_match_go_membership_and_float_key_semantics` 明确覆盖有符号零、无穷、重复 NaN 插入及 NaN 查询，作为 Rust 适配层语义的直接证据。
 
 ## 扩展指南
 
@@ -84,13 +80,3 @@ Rust 不能直接以 `f64` 作为满足 `Eq + Hash` 的 `HashMap` 键，因此�
 新增或修改测试应放在独立文件，而不是嵌入生产源文件。普通 API 回归应更新 `pkg/util/set/float64_set_test.rs`；Go 特有边界及迁移契约应更新 `pkg/util/set/migration_aster_unit_test.rs`，并与 `pkg/util/set/float64_set_test.go` 或新的 Go 对照用例核对。若新增删除、清空、迭代等 API，还应决定 NaN 条目是否可枚举或删除，并为多种 NaN 位模式、`±0`、无穷及普通重复值补充确定性测试。
 
 兼容性风险集中在公开的 PascalCase API、`Count` 返回类型和 Go 键语义；性能风险集中在构造容量、哈希表扩容以及每个 NaN 都占独立条目。若改变 `FloatKey` 的可见性或布局，还需检查 `Float64SetWithMemoryUsage` 的编译与行为。本文档任务不改变运行时代码，因此未执行 Cargo 或代码测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/util/set` 确认目标 Rust/Go 源码及独立测试均在图中。
-- RustCodeGraph 源码与调用查询：`node pkg/util/set/float64_set.rs::Float64Set`、`NewFloat64Set`、`Exist`、`Insert`、`Count`、`for_lookup`、`for_insert`；查询确认本文所列内部调用边以及 `set_with_memory_usage.rs` 对两个 `FloatKey` 转换函数的调用。
-- crate 与模块边界：`pkg/util/set/Cargo.toml`、`pkg/util/set/lib.rs`、`pkg/lib.rs`。
-- Rust 实现与直接复用点：`pkg/util/set/float64_set.rs`、`pkg/util/set/set_with_memory_usage.rs`。
-- Go 对照：`pkg/util/set/float64_set.go`。
-- 独立测试：`pkg/util/set/float64_set_test.rs`、`pkg/util/set/float64_set_test.go`、`pkg/util/set/migration_aster_unit_test.rs`。
-- 人工复核结论：本文件存在是为了在 Rust `HashMap` 上提供与 Go 浮点 map 一致的轻量集合；运行时所有公开路径都汇入统一键转换；安全扩展必须同时维护普通集合、带内存统计集合及独立边界测试的一致性。

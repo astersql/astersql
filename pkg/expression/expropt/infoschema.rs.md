@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate，是表达式“可选求值属性”体系中 InfoSchema 元数据快照的适配层。模块入口 [`lib.rs`](lib.rs) 将它以 `infoschema_provider` 私有模块装入，并公开再导出其中的 Provider 与 Reader；[`Cargo.toml`](Cargo.toml) 则通过 `astersql-expression-exprctx` 和 `astersql-infoschema-context` 两个路径依赖提供属性协议与 `MetaOnlyInfoSchema` 契约。本文件不实现 InfoSchema 本身，也不缓存或更新模式数据，而是把上层会话提供的两类快照接入表达式求值上下文。
-
-生产侧直接装配入口在 [`../sessionexpr/sessionctx.rs`](../sessionexpr/sessionctx.rs) 的 `NewEvalContext`：它构造 `InfoSchemaPropProvider<C::InfoSchema>`，并约定闭包参数为 `true` 时调用 `SessionContext::latest_info_schema()`，为 `false` 时调用 `SessionContext::info_schema()`。当前 Rust 仓库中 Reader 的直接使用主要见独立测试；这意味着文件已接入求值上下文的 provider 注册链，但尚未看到与 Go `builtin_info.go` 相同规模的 Rust 表达式消费者。
+不实现 InfoSchema 本身，也不缓存或更新模式数据，而是把上层会话提供的两类快照接入表达式求值上下文。
 
 ## 核心职责
 
@@ -87,14 +85,7 @@ Provider 自身没有锁、异步任务、通道、事务或显式清理逻辑�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`infoschema.go`](infoschema.go)。两边保持以下语义一致：
-
-- Go `InfoSchemaPropProvider func(bool) MetaOnlyInfoSchema` 对应 Rust 装箱闭包；布尔值 `true` 代表 Domain 最新快照，`false` 代表会话快照。
-- 两边 `Desc` 都返回 `OptPropInfoSchema.Desc()`，Reader 都声明 `OptPropInfoSchema.AsPropKeySet()`。
-- `GetSessionInfoSchema`/`get_session_info_schema` 取 provider 后传 `false`；`GetLatestInfoSchema`/`get_latest_info_schema` 传 `true`。
-- provider 缺失时，两边都先返回错误而不调用 provider；Go 行为由 [`optional_test.go`](optional_test.go) 的 `OptPropInfoSchema` 分支验证。
-
-Rust 为所有权与类型安全做了结构性调整：Go provider 是函数类型并返回接口，Rust provider 是泛型结构体并返回 `Arc<T>`；Go 依赖运行时类型断言，Rust 通过 `as_any` 和 `downcast_ref::<InfoSchemaPropProvider<T>>()` 恢复具体类型。Rust 还显式要求 `Send + Sync + 'static`，以适应 trait object 和共享上下文。已读测试表明分支选择、错误路径与对象身份保持对齐，未发现本文件语义上的刻意简化。
+Rust 为所有权与类型安全做了结构性调整：Go provider 是函数类型并返回接口，Rust provider 是泛型结构体并返回 `Arc<T>`；Go 依赖运行时类型断言，Rust 通过 `as_any` 和 `downcast_ref::<InfoSchemaPropProvider<T>>()` 恢复具体类型。已读测试表明分支选择、错误路径与对象身份保持对齐，未发现本文件语义上的刻意简化。
 
 ## 扩展指南
 
@@ -104,11 +95,3 @@ Rust 为所有权与类型安全做了结构性调整：Go provider 是函数类
 - 修改键或描述时，必须同步 [`../exprctx/optional.rs`](../exprctx/optional.rs) 的编号/描述表、[`optional.rs`](optional.rs) 的注册表行为以及 Go `optional.go`。键顺序影响固定槽位与位集合，属于兼容性风险。
 - 回归测试应放在独立测试文件而不是 `infoschema.rs`：局部 provider/reader 边界扩展 [`optional_test.rs`](optional_test.rs)，迁移对齐扩展 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，完整生产装配扩展 [`../sessionexpr/migration_aster_unit_test.rs`](../sessionexpr/migration_aster_unit_test.rs)，Go 语义同步扩展 [`optional_test.go`](optional_test.go)。
 - 性能上，本层每次读取包含一次按键查找、描述检查、`Any` downcast 和闭包调用；新增逻辑不应在这里扫描元数据或持有额外锁。正确性风险主要是颠倒布尔分支、请求错误泛型类型或漏报必需属性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点，目标目录中的 `infoschema.rs` 含 11 个符号；`query` 定位 `InfoSchemaPropProvider`、`get_session_info_schema`、`get_latest_info_schema` 和该文件的 `required_optional_eval_props`。对这些泛型符号执行 `callers`/`callees` 未返回边，因此没有把“无图边”等同于“无调用”。
-- 源码与装配：已读 [`infoschema.rs`](infoschema.rs)、[`lib.rs`](lib.rs)、[`optional.rs`](optional.rs)、[`../exprctx/optional.rs`](../exprctx/optional.rs)、[`../sessionexpr/sessionctx.rs`](../sessionexpr/sessionctx.rs) 和 [`Cargo.toml`](Cargo.toml)。这些文件共同证明公开导出、键定义、查找错误语义、生产注册方式和 crate 依赖边界。
-- Rust 独立测试：已读 [`optional_test.rs`](optional_test.rs) 的 `verify_info_schema`、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `infoschema_and_kv_readers_choose_and_preserve_provider_objects`，以及 [`../sessionexpr/migration_aster_unit_test.rs`](../sessionexpr/migration_aster_unit_test.rs) 的 `migration_optional_props_privilege_and_sequence_match_go`。它们覆盖缺失 provider、两个布尔分支、对象身份保持和完整装配链。
-- Go 对照：已读 [`infoschema.go`](infoschema.go) 与 [`optional_test.go`](optional_test.go) 的 `OptPropInfoSchema` 分支；另由精确搜索确认 Go 表达式消费者位于 `pkg/expression/builtin_info.go`/`builtin_info_vec.go`，而当前 Rust Reader 的直接引用集中在上述测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证命令及最终退出状态在任务交付时记录；人工复核重点为 11 个固定章节、真实符号/路径、无测试内嵌建议，以及对未被调用图覆盖事实的明确标注。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-lockstats` 子 crate 中的 LOCK STATS 实现。crate 入口 `pkg/executor/lockstats/lib.rs` 以 `pub mod lock_stats_executor` 导出本模块，并把独立测试文件 `lock_stats_executor_test.rs` 挂到测试构建中；`pkg/executor/lockstats/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/executor/lockstats`。文件的直接业务目标是把 SQL 计划携带的表/分区名称解析为统计子系统需要的物理 ID 和显示名，再请求统计句柄写入锁定元数据，使后续自动统计更新能够识别这些锁。
-
-当前 Rust 实现是自包含的移植边界：`LockExec`、`Runtime`、`InfoSchema`、`StatsHandle` 以及元数据 DTO 都在本文件定义，源码只直接依赖 `std`。工作区根 `Cargo.toml` 和 `pkg/executor/Cargo.toml` 已声明 `astersql-executor-lockstats`，但对 Rust 源码的精确引用搜索只发现本 crate 的模块、测试以及 `unlock_stats_executor.rs` 的复用，未发现 Rust executor builder 构造 `LockExec`。因此，可以确认本地执行逻辑存在，不能据此宣称它已经接入 Rust SQL 请求主链。Go 主链的对应入口是 `pkg/executor/builder.go::buildLockStats`。
+当前 Rust 实现是自包含的移植边界：`LockExec`、`Runtime`、`InfoSchema`、`StatsHandle` 以及元数据 DTO 都在本文件定义，源码只直接依赖 `std`。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `LockExec::Next` 基本逐分支对应 `pkg/executor/lockstats/lock_stats_executor.go::(*LockExec).Next`：先从 domain/runtime 获取统计句柄，拒绝 nil/空表，再选择 `LockPartitions` 或 `LockTables`，最后把非空返回消息追加为 warning。`onlyLockPartitions` 的条件完全一致；`populatePartitionIDAndNames`、`populateTableAndPartitionIDs` 和 `genFullPartitionName` 的输出形状与名称格式也保持一致。
-
 主要结构差异如下：
 
 - Go `LockExec` 嵌入 `exec.BaseExecutor` 并有编译期 `exec.Executor` 断言；Rust `LockExec` 使用本地 `Runtime` trait，未实现仓库通用 executor trait，也未发现 Rust builder 构造引用。
@@ -100,14 +96,3 @@ Rust `LockExec::Next` 基本逐分支对应 `pkg/executor/lockstats/lock_stats_e
 安全扩展时应保持三个不变量：所有元数据解析成功后才调用一次锁句柄；非空句柄消息只作为 warning 而非错误；单表显式分区与整表/多表路径不能混用。若要真正接入 Rust SQL 主链，还需要在 Rust executor builder 和通用 executor trait 处做最小接线，并用真实统计句柄替换或适配本地抽象；这属于本文件当前事实之外的后续工作，不能仅通过修改 Cargo 依赖宣称完成。
 
 测试必须放在独立的 `pkg/executor/lockstats/lock_stats_executor_test.rs`，不要内嵌到生产文件。扩展解析规则时补充成功、未知分区、非分区表、重复输入和元数据错误用例；扩展 `Next` 时应增加 mock `Runtime` / `StatsHandle`，验证分支调用次数、参数、错误短路、空消息与非空 warning。若改变与 Go 共有的语义，应同步对照 `lock_stats_executor_test.go`，并明确记录有意差异。性能上应关注大批表/分区时的元数据查询次数、Unicode 小写分配和映射容量；兼容性上应关注错误文本、名称大小写以及重复键覆盖规则。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust、Go 与测试文件均已索引。
-- RustCodeGraph `files --filter pkg/executor/lockstats`：确认模块包含 `lib.rs`、锁定/解锁 Rust 与 Go 实现及两种语言的独立测试。
-- RustCodeGraph `node --file pkg/executor/lockstats/lock_stats_executor.rs --offset 1 --limit 420`：读取并核对目标文件全部 224 行、公开符号与控制流。
-- RustCodeGraph 对 `LockExec`、`populatePartitionIDAndNames`、`populateTableAndPartitionIDs`、`genFullPartitionName`、`onlyLockPartitions` 的精确查询，以及围绕目标文件的 `explore`：确认 Rust/Go 对应符号、`Next` 的主要调用边、`populateTableAndPartitionIDs -> genFullPartitionName` 和独立 Rust 测试调用边。通用方法名存在索引重名噪声，故未据其推断外部接线。
-- 已读源码/配置：`pkg/executor/lockstats/lock_stats_executor.rs`、`pkg/executor/lockstats/Cargo.toml`、`pkg/executor/lockstats/lib.rs`、`pkg/executor/lockstats/unlock_stats_executor.rs`、工作区根 `Cargo.toml`、`pkg/executor/Cargo.toml`。
-- 已读对照/测试：`pkg/executor/lockstats/lock_stats_executor.go`、`pkg/executor/lockstats/lock_stats_executor_test.rs`、`pkg/executor/lockstats/lock_stats_executor_test.go`，以及 Go 构造入口 `pkg/executor/builder.go::buildLockStats`。目标包不存在 `doc.go`。
-- 精确文本引用搜索：Rust 外部引用仅发现模块入口、独立测试和解锁实现复用；Go 引用确认 builder 构造 `lockstats.LockExec`。因此本文把 Rust 主链接线标为“未发现”，没有把 Cargo 声明当作运行时接线证据。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前另执行任务指定的 11 章节结构命令，并人工复核本文可回答文件存在原因、执行方式与安全扩展点。

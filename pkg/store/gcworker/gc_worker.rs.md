@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-gcworker` crate 的核心实现，crate 入口 `pkg/store/gcworker/lib.rs` 以 `pub mod gc_worker` 导出它。它把 TiDB/AsterSQL 侧 GC 的调度策略与外部设施隔离开：`GCWorker` 实现领导者竞选、周期调度、安全点计算、锁解析和 delete-range 编排，`GCWorkerRuntime`/`GCSession` 则把 PD、Oracle、系统表、TiKV RPC、DDL delete-range 表和外部工作负载控制器抽象成可替换边界。
-
-`pkg/store/gcworker/Cargo.toml` 声明 crate 名为 `astersql-store-gcworker`，并用 `[package.metadata.porting].go-package = "pkg/store/gcworker"` 标明对应 Go 包。当前 Rust 文件不是薄门面：后台线程、状态机、并发删除、格式兼容和主要公共 API 都在这里；具体生产运行时如何实现两个 trait 不在本文件中。仓库顶层 `pkg/lib.rs` 通过 `facade_store_gcworker` 再导出该 crate，但当前 Rust 仓库内除本 crate 的 `lib.rs` 和独立测试外，没有检索到构造 `GCWorker` 的生产调用点，因此“已由完整服务器启动链实际接线”不能从本文件证实。
+把 TiDB/AsterSQL 侧 GC 的调度策略与外部设施隔离开：`GCWorker` 实现领导者竞选、周期调度、安全点计算、锁解析和 delete-range 编排，`GCWorkerRuntime`/`GCSession` 则把 PD、Oracle、系统表、TiKV RPC、DDL delete-range 表和外部工作负载控制器抽象成可替换边界。
 
 ## 核心职责
 
@@ -100,11 +98,9 @@ RustCodeGraph 将该文件索引为 197 个符号，并标出 11 个使用文件
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/store/gcworker/gc_worker.go`，Rust 保留了 Go 风格符号名、系统表键、默认值以及主流程：`NewGCWorker`、`start/tick/leaderTick`、`prepare/checkPrepare`、安全点推进、`runGCJob`、delete-range/redo、`resolveLocks`、`checkLeader` 和三个公开一次性 API 均有直接对应。Rust 用 `GCWorkerRuntime` 集中代替 Go 版散落的 `kv.Storage`、PD client、session、DDL util 和 TiKV client 调用，以便独立测试。
+Rust 用 `GCWorkerRuntime` 集中代替 Go 版散落的 `kv.Storage`、PD client、session、DDL util 和 TiKV client 调用，以便独立测试。
 
-关键语义保持包括：leader lease 和系统表事务、10 分钟 lifetime 下限、自动/固定并发、RaftKV v2 与 UnsafeDestroyRange 分支、null/multi-keyspace 锁解析、GCV2 通知角色顺序，以及 Go 时间/`time.Duration` 文本格式。`gc_worker_test.rs` 的测试名大量沿用 Go `gc_worker_test.go`，例如 `TestPrepareGC`、`TestLeaderTick`、`TestConcurrentDeleteRanges`、keyspace 批处理系列、`TestRunGCJobAPI` 和 `TestCalcDeleteRangeConcurrency`。
-
-不能把 Rust 视为逐行等价。Go 文件约 2011 行，包含具体 region GC、placement/label SQL 操作和生产组件接线；Rust 文件约 1660 行，把这些动作折叠到 runtime trait。Go 的 `RunGCJob` 与中心化路径历史细节更丰富，而当前 Rust `RunGCJob` 直接调用 `RunDistributedGCJob`；Rust `checkUseDistributedGC` 也恒真。上述差异是当前实现事实，新增兼容行为时应先对照 Go 同名函数，而不是仅扩充 trait mock 或用简化逻辑让测试通过。
+Go 文件约 2011 行，包含具体 region GC、placement/label SQL 操作和生产组件接线；Rust 文件约 1660 行，把这些动作折叠到 runtime trait。Go 的 `RunGCJob` 与中心化路径历史细节更丰富，而当前 Rust `RunGCJob` 直接调用 `RunDistributedGCJob`；Rust `checkUseDistributedGC` 也恒真。上述差异是当前实现事实，新增兼容行为时应先对照 Go 同名函数，而不是仅扩充 trait mock 或用简化逻辑让测试通过。
 
 ## 扩展指南
 
@@ -115,11 +111,3 @@ Go 对照文件是 `pkg/store/gcworker/gc_worker.go`，Rust 保留了 Go 风格�
 - 调整 keyspace 枚举时覆盖空列表、禁用空间、keyspace-level GC、恰好 50 条、跨批次以及 `u32::MAX`；对应独立测试已集中在 `pkg/store/gcworker/gc_worker_test.rs`，不要把测试内嵌回生产文件。
 - 改动系统表时间/时长格式时必须同时验证 Go 兼容格式和旧 Rust 数字时间的读取路径，避免升级后无法读取已有行。
 - 公开行为要与 `pkg/store/gcworker/gc_worker.go` 和 `pkg/store/gcworker/gc_worker_test.go` 对齐。若 Rust 选择不同抽象，应记录差异，但不能删减 Go 的安全、错误或生命周期语义。
-
-## 验证依据
-
-- 源码：`pkg/store/gcworker/gc_worker.rs`（1660 行），核对了常量、数据类型、两个 trait、`GCWorker` 全部调度/GC 路径、公开便捷 API、时间与时长解析函数。
-- crate 边界：`pkg/store/gcworker/Cargo.toml`、`pkg/store/gcworker/lib.rs`；确认 crate 名、Go 包映射、直接导出、依赖清单和独立测试模块声明。
-- RustCodeGraph：`status` 显示索引含 11467 个文件/307296 个节点/1848419 条边；`files --filter pkg/store/gcworker` 确认目标 Rust、Go 和测试文件被索引；`node --file ...` 分段读取目标与测试源码；`query` 核对 `NewGCWorker`、`leaderTick`、`runGCJob`、`resolveLocks`、`deleteRanges`、`checkLeader`、`RunDistributedGCJob`。自然语言 `explore` 和限定 callers/callees 在 30 秒窗口内未返回，因此调用关系以已索引源码节点及精确符号查询交叉确认。
-- Rust 测试：`pkg/store/gcworker/gc_worker_test.rs` 验证配置准备、状态变量、Store 过滤、并发删除、RaftKV v2 分支、leader、null/multi-keyspace 锁解析、公开 API、pending txn、placement/label 规则、并发计算和 GCV2 成功/失败顺序；`pkg/store/gcworker/main_test.rs` 验证测试环境默认常量。
-- Go 对照：`pkg/store/gcworker/gc_worker.go` 与 `pkg/store/gcworker/gc_worker_test.go`，核对同名流程、常量、边界与测试意图。本文未运行 Cargo，符合纯文档任务约束；结构校验结果在任务交付时单独记录。

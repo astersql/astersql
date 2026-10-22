@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-context` crate。crate 入口 `pkg/util/context/lib.rs` 以 `pub mod context` 暴露本模块；`pkg/util/context/Cargo.toml` 将 `lib.rs` 指定为库入口，并以 `package.metadata.porting.go-package = "pkg/util/context"` 记录对应 Go 包。
-
-它包含两类基础能力：一是定义可由会话/规划上下文实现的动态值存取契约 `ValueStoreContext`，二是通过进程内全局原子计数器生成上下文 ID。当前文件不保存任何会话值，也不创建 Domain；具体存储和 Domain 生命周期由 trait 的实现者负责。
-
-在已接线的 Rust 主链中，`GenContextID` 被 `pkg/sessionctx/stmtctx/stmtctx.rs::StatementContext::build`、`pkg/expression/exprstatic/evalctx.rs::NewEvalContext` 和 `EvalContext::Apply` 使用，分别给语句上下文和静态表达式求值上下文分配标识。`ValueStoreContext` 还由 `pkg/planner/planctx/lib.rs` 重导出，供规划上下文接口组合使用；`pkg/util/breakpoint/breakpoint.rs::Inject` 则以它约束会话参数并读取动态断点回调。
+当前文件不保存任何会话值，也不创建 Domain；具体存储和 Domain 生命周期由 trait 的实现者负责。
 
 ## 核心职责
 
@@ -102,16 +98,13 @@ ID 生成不使用锁、不分配堆内存，也没有显式资源清理；静�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/context/context.go`：
-
-- Go `ValueStoreContext` 的四个方法与 Rust trait 一一对应；`fmt.Stringer` 映射为 `dyn fmt::Display`，`any` 映射为 `dyn Any`，Go `nil` 映射为 `Option::None`。
 - Rust `SetValue` 使用 `Box<dyn Any>` 明确转移所有权，`Value`/`GetDomain` 返回受上下文借用约束的引用；这比 Go interface value 的复制/共享语义更严格。
 - Go 包级 `atomic.Uint64` 映射为 Rust `AtomicU64`。Go `Add(1)` 返回新值，Rust `fetch_add(1)` 返回旧值，所以 Rust 还要 `wrapping_add(1)`。
 - Go 无符号原子加法会回绕；Rust 显式 wrapping 保持相同边界行为。`migration_context_id_wraps_like_go_atomic_uint64` 验证最大值后的返回值为零。
 
-Go 调用面还包括 `pkg/expression/exprstatic/evalctx.go` 的创建与 `Apply`、`pkg/sessionctx/stmtctx/stmtctx.go` 的创建与 `Reset`。Rust 已对齐静态求值上下文的创建/Apply，以及语句上下文的构造；本文件只提供生成器，是否在其他生命周期点重新分配由各消费者决定。
+Rust 已对齐静态求值上下文的创建/Apply，以及语句上下文的构造；本文件只提供生成器，是否在其他生命周期点重新分配由各消费者决定。
 
-Go `pkg/domain/domainctx.go::GetDomain` 会对 `ValueStoreContext::GetDomain` 返回值做 `*Domain` 类型断言；这印证了 trait 的动态返回值用途。Rust 侧当前未在本文件提供等价的强类型辅助函数。
+Rust 侧当前未在本文件提供等价的强类型辅助函数。
 
 ## 扩展指南
 
@@ -122,14 +115,3 @@ Go `pkg/domain/domainctx.go::GetDomain` 会对 `ValueStoreContext::GetDomain` �
 - ID 相关回归应扩展 `pkg/util/context/migration_aster_unit_test.rs`；消费者何时分配新 ID 的语义应在各自独立测试（如 expression/stmtctx 测试）中验证。
 
 兼容风险主要是公开 trait 签名和回绕语义；正确性风险主要来自外部直接修改公开计数器、错误假设 ID 永不回绕，以及对 `Any` 做未检查的具体类型转换。当前原子路径成本固定且很小，但 `SeqCst` 是全局同步热点；若因性能改用更弱内存序，必须先证明调用者只依赖原子唯一分配而不依赖全序，并增加相应并发验证。
-
-## 验证依据
-
-- 生产源码：`pkg/util/context/context.rs`，核对 `ValueStoreContext`、`contextIDGenerator`、`GenContextID` 的完整定义。
-- crate 边界：`pkg/util/context/lib.rs`、`pkg/util/context/Cargo.toml`，核对模块公开方式、库入口、依赖和 Go 包迁移元数据。
-- Rust 调用点：`pkg/sessionctx/stmtctx/stmtctx.rs::StatementContext::build`；`pkg/expression/exprstatic/evalctx.rs::NewEvalContext`、`EvalContext::Apply`。
-- Rust trait 接线：`pkg/planner/planctx/lib.rs` 与 `pkg/planner/planctx/Cargo.toml`，核对 `ValueStoreContext` 的依赖和重导出。
-- Rust 独立测试：`pkg/util/context/migration_aster_unit_test.rs::migration_context_ids_are_unique_across_threads`、`migration_context_id_wraps_like_go_atomic_uint64`；`pkg/util/breakpoint/migration_aster_unit_test.rs::MockSessionContext` 及其断点测试覆盖 trait 的具体存取/向下转型用法。同目录 `warn_test.rs` 不测试本文件。
-- Go 对照：`pkg/util/context/context.go`；调用/语义证据来自 `pkg/expression/exprstatic/evalctx.go`、`evalctx_test.go`、`exprctx_test.go`、`pkg/sessionctx/stmtctx/stmtctx.go`、`pkg/domain/domainctx.go` 和 `pkg/planner/planctx/context.go`。
-- RustCodeGraph：运行 `status`（索引包含 11,467 文件、307,296 节点和 1,848,419 边）、`files --filter pkg/util/context`、目标文件 `node --file`、`query ValueStoreContext`、`query GenContextID` 及限定 `callers`。调用者查询超时的部分由上述直接 Rust 引用补证。
-- 文档结构按任务命令验证：目标文件存在，且固定二级标题恰好 11 个。纯文档任务未运行 Cargo。

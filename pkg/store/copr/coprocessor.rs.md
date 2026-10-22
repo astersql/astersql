@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-copr` crate 的标准 Coprocessor 客户端核心。`pkg/store/copr/lib.rs` 将其作为 `coprocessor` 模块公开并再导出全部公开项；`pkg/store/copr/store.rs::Store::get_client` 和 `pkg/store/driver/tikv_driver.rs::TikvStore::GetClient` 是生产侧构造 `CopClient` 的直接入口。它位于 SQL 执行产生的 DAG/Analyze/Checksum 请求与 TiKV、TiFlash 或 TiDB 内存协处理器之间，负责把逻辑 key ranges 定位、拆分成任务，调度 RPC，并把重试、分页和批处理结果重新组织成响应流。
-
-crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-copr`，本文件直接依赖同 crate 的 `batch_coprocessor`、`batch_request_sender`、`coprocessor_cache`、`ema`、`range_diagnostics`，并通过已发布 tag `v0.4.2-aster.13` 的 `tikv-client`、`astersql-kv`、`kvproto` 和 `protobuf` 承载读统计、限流器及锁协议。该文件没有条件编译项；测试由 `lib.rs` 以独立的 `coprocessor_test.rs` 模块接入，符合生产代码与测试分文件的布局。
+位于 SQL 执行产生的 DAG/Analyze/Checksum 请求与 TiKV、TiFlash 或 TiDB 内存协处理器之间，负责把逻辑 key ranges 定位、拆分成任务，调度 RPC，并把重试、分页和批处理结果重新组织成响应流。
 
 ## 核心职责
 
@@ -74,13 +72,9 @@ crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-c
 
 ## 与 Go 版本的对应关系
 
-冻结 Go `buildTiDBMemCopTasks` 的 `IsDisableRPC` 过滤对应 Rust 的 `TiDBRPCServer::disable_rpc`；Rust 额外显式排除空地址。Go `predictedReadBytes` 同样仅以 `PagingSizeBytes` 为预扣开关，`newRUEMA()` 同样从零开始。
+冻结 Go `buildTiDBMemCopTasks` 的 `IsDisableRPC` 过滤对应 Rust 的 `TiDBRPCServer::disable_rpc`；Rust 额外显式排除空地址。
 
-直接对照文件为 `pkg/store/copr/coprocessor.go`。Rust 的 `CopClient::send`/`build_cop_iterator` 对应 Go `(*CopClient).Send`/`BuildCopIterator`；`CopTask`、`BatchedCopTask`、`CopIterator`、`CopTaskWorker::handle_task_once` 分别对应 `copTask`、`batchedCopTask`、`copIterator`、`copIteratorWorker.handleTaskOnce`。`build_cop_tasks`、`is_small_task`、`small_task_concurrency`、`calculate_retry`、`calculate_remain`、`check_store_batch_coprocessor` 和优先级/隔离级别映射均有同名或直接语义对应。
-
-两版共同保留 Region/bucket 切分、store batch、大小任务并发、lite worker、keep-order、分页续作、缓存、锁解析、限流、runaway/RU 和 store-batch 统计等核心意图。Rust 将 Go 的 context/channel/goroutine 改为 `AtomicBool`、标准线程和 `std::sync::mpsc`，并通过 `CopBackend` 把 Region cache 与 transport 隔离；因此 API 形状不是逐行翻译。Go 文件还包含更丰富的日志、内存 tracker、execution detail 收集与 TiDB 专用错误处理；本 Rust 文件当前没有等价的全部细节，文档不将这些 Go 能力宣称为 Rust 已支持。
-
-`pkg/store/copr/coprocessor_test.rs` 中带 `go_merge_48_` 前缀的回归直接记录迁移对齐点，包括合并协议、per-store limiter、锁 hint、批指标、子响应错误和 paging EMA。Rust 另有 `pkg/store/copr/copr_test/coprocessor_test.rs` 的 crate 外测试面；本任务主要依据任务指定的同目录独立测试。
+Rust 将 Go 的 context/channel/goroutine 改为 `AtomicBool`、标准线程和 `std::sync::mpsc`，并通过 `CopBackend` 把 Region cache 与 transport 隔离；因此 API 形状不是逐行翻译。Go 文件还包含更丰富的日志、内存 tracker、execution detail 收集与 TiDB 专用错误处理；本 Rust 文件当前没有等价的全部细节，文档不将这些 Go 能力宣称为 Rust 已支持。
 
 ## 扩展指南
 
@@ -90,14 +84,3 @@ crate 边界由 `pkg/store/copr/Cargo.toml` 定义：包名为 `astersql-store-c
 - 调整分页：同步 `grow_paging_size`、`calculate_remain`、EMA 预测、maximum keys 预算和缓存 page start/end；必须覆盖升/降序、最终页、byte budget 与小 limit。
 - 扩展后端：实现 `CopBackend` 时必须定义 Region 失效、bucket 更新、锁解析和 `check_visibility` 的真实行为；TiFlash batch 能力需显式覆盖默认报错方法。
 - 测试必须继续放在独立的 `pkg/store/copr/coprocessor_test.rs`（必要时再覆盖 `copr_test/coprocessor_test.rs`），不要嵌入本生产源文件。兼容性重点是 Go 行为、wire 字段与已发布 `tikv-client` tag；性能重点是 range 复制、线程/通道数、缓存键构造和 limiter 等待。
-
-## 验证依据
-
-- 增量直接测试：冻结 `coprocessor_test.rs::skip_empty_tidb_nodes` 同时覆盖空地址、禁用 RPC 与正常节点；`paging_size_bytes_is_the_only_precharge_gate` 覆盖已学习样本的纯行分页仍发零预测和非零预算首请求为零；`go_merge_48_paging_ema_precharge_updates_only_for_continuation`、`paging_observation_error_zero_final_and_remain_order` 证明续页学习与错误/最终页边界。
-
-本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
-
-- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
-- 已读生产/配置路径：`pkg/store/copr/coprocessor.rs`、`pkg/store/copr/Cargo.toml`、`pkg/store/copr/lib.rs`、`pkg/store/copr/store.rs`、`pkg/store/copr/network_backend.rs`、`pkg/store/driver/tikv_driver.rs`。
-- 已读对照与测试路径：`pkg/store/copr/coprocessor.go`、`pkg/store/copr/coprocessor_test.rs`；测试名覆盖 range 单调性与 Region/bucket 切分、分页、大小任务并发、store batch、限流、锁、RU/runaway、batch 错误/指标及有界通道。
-- 结构验证使用任务指定命令，要求文件存在且恰好包含本文 11 个固定二级标题。本文为静态分析文档，按计划不运行 Cargo，也不声称执行了运行时测试。

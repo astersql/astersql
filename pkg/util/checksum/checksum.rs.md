@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-checksum` crate 的核心实现，由同目录 `lib.rs` 声明为 `checksum` 模块并整体再导出。crate 在 `pkg/util/checksum/Cargo.toml` 中仅以 `crc32fast = "1"` 作为运行时外部依赖，同时由根 `Cargo.toml` 的 `facade_util_checksum` 和 `pkg/lib.rs` 的 `pkg::util::checksum` 门面暴露给工作区其他模块。
-
-它位于临时落盘 I/O 的数据完整性层：`pkg/util/chunk/chunk_util.rs` 的 `diskFileReaderWriter::initWithFileName` 用 `checksum::NewWriter` 包装临时文件（可先叠加 CTR 加密），`getReader` 则用 `checksum::NewReader` 和 `NewReaderWithCache` 拼接已刷盘前缀与 Writer 尚未刷出的尾部缓存。更底层的适配接线位于 `pkg/util/chunk/internal/group1/lib.rs`：该文件把项目的 `io::WriteCloser`/`io::ReaderAt` 转换为这里的草稿 trait，再将字符串错误映射回项目错误类型。
+`Writer::GetCache` 与 `Writer::GetCacheDataOffset` 暴露未刷盘尾部及其用户逻辑起点，供 `pkg/util/chunk/chunk_util.rs::getReader` 在文件仍打开写入时构造一致的读取视图。
 
 ## 核心职责
 
@@ -84,11 +82,9 @@ Writer 拥有底层 `W`，但没有 `Drop` 自动关闭语义；调用者必须�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/checksum/checksum.go`，测试对照为 `checksum_test.go` 与 Rust 的 `checksum_test.rs`、`migration_aster_unit_test.rs`。常量、块布局、IEEE CRC-32、小端字段、写满/刷出循环、错误锁存、缓存偏移、部分 EOF 校验和读偏移换算均按 Go 控制流保留；`errChecksumFail` 和 `"short write"` 文案也保持兼容。
-
 主要语言差异是：Go 直接使用 `io.WriteCloser`/`io.ReaderAt` 和 `error`，Rust 暂以 `WriteCloserDraft`/`ReaderAtDraft` 及 `Option<String>` 表示；Go 使用 `zeropool.New` 管理读缓冲，Rust 使用 `Mutex<Vec<Vec<u8>>>` 与 `ReaderBuffer::Drop`；Go Writer 的 payload 借用编码缓冲尾部，Rust 为避免自引用结构而使用两个独立 `Vec<u8>`，在 Flush 时复制。Go 构造函数返回指针，Rust 返回拥有泛型底层对象的值。
 
-`checksum_test.rs` 对齐 Go 的嵌套层、插入/删除/修改损坏、空文件、跨块读写、缓存偏移和加密组合；`migration_aster_unit_test.rs` 额外明确验证小端 CRC 磁盘布局、尾部 EOF、short write 锁存及空切片不触达底层。生产接线 `pkg/util/chunk/chunk_util.rs` 与 Go 同路径 `chunk_util.go` 的包装顺序和缓存桥接一致。
+`checksum_test.rs` 对齐 Go 的嵌套层、插入/删除/修改损坏、空文件、跨块读写、缓存偏移和加密组合；`migration_aster_unit_test.rs` 额外明确验证小端 CRC 磁盘布局、尾部 EOF、short write 锁存及空切片不触达底层。
 
 ## 扩展指南
 
@@ -98,12 +94,3 @@ Writer 拥有底层 `W`，但没有 `Drop` 自动关闭语义；调用者必须�
 - 优化池或并发行为时，应保留提前返回也归还缓冲、锁中毒恢复和每次调用独占缓冲的性质；新增并发测试应放在独立测试文件中，不应内嵌到 `checksum.rs`。
 - 若要支持负偏移、异常底层返回长度或更严格 short write 判定，应先确定是否继续逐字对齐 Go；这些改变可能是行为兼容变更，需在 Rust 独立测试和 Go 对照测试中明确期望，而不能仅靠编译通过。
 - 新增正常/异常读写行为优先扩展同目录 `checksum_test.rs` 或 `migration_aster_unit_test.rs`；涉及与加密层组合时同步检查 `pkg/util/encrypt/aes_layer_test.rs`，涉及 spill 在线读取时检查 `pkg/util/chunk` 的独立测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7032 个 Rust 文件；`files --filter pkg/util/checksum` 找到目标、Go 对照、模块入口和三份相关测试；`node --file pkg/util/checksum/checksum.rs --offset 1 --limit 400` 读取了目标全部 296 行；`query NewWriter`、`query NewReader` 精确确认 Rust/Go 同路径符号。callers/callees 查询在 30 秒窗口内未返回内容，生产调用边改由下列源码检索验证。
-- 核心源码与 crate 边界：`pkg/util/checksum/checksum.rs`、`pkg/util/checksum/lib.rs`、`pkg/util/checksum/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- 生产调用与适配：`pkg/util/chunk/chunk_util.rs`、`pkg/util/chunk/internal/group1/lib.rs`；对应 Go 调用为 `pkg/util/chunk/chunk_util.go`。
-- Go 语义：`pkg/util/checksum/checksum.go`、`pkg/util/checksum/checksum_test.go`。
-- Rust 独立测试：`pkg/util/checksum/checksum_test.rs`、`pkg/util/checksum/migration_aster_unit_test.rs`；组合层证据为 `pkg/util/encrypt/aes_layer_test.rs::test_read_at`。
-- 本任务是纯文档分析，按任务约束不运行 Cargo。交付前只执行任务指定的 11 章节结构检查，并人工复核标题、符号、调用边、错误边界和独立测试位置。

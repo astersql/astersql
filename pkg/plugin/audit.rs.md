@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/plugin/audit.rs` 属于 `astersql-plugin` crate（见 `pkg/plugin/Cargo.toml`），由 crate 根 `pkg/plugin/lib.rs` 以 `pub mod audit` 声明并用 `pub use audit::*` 对外重导出。它是审计插件的 SPI（Service Provider Interface）模型层：定义审计事件、传给回调的最小会话快照、四类回调签名、专用清单，以及审计上下文的类型化键；它本身不负责插件发现、生命周期调度或遍历执行。
-
-通用 `Manifest`、`Context`、`ContextKey` 和 `ExportManifest` 位于 `pkg/plugin/spi.rs`，加载和 `Ready` 状态管理位于 `pkg/plugin/plugin.rs`。当前可确认的 Rust 应用主链接线位于 `pkg/session/runtime/scan_adapter_runtime.rs` 的 `Audit` 实现：该路径遍历 `Kind::Audit` 插件并触发 `on_general_event`。连接、全局变量和解析回调在本文件中有完整类型定义，但本次搜索未发现对应的非测试 Rust 主链调用点；不能据此宣称它们已经像 Go 版本一样全部接线。
+通过实现 `ContextKey` 的零大小键，将拒绝原因、执行开始时间、预处理语句 ID 和重试状态以确定的 Rust 类型传入插件回调。
 
 ## 核心职责
 
@@ -77,13 +75,13 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/plugin/audit.go` 是直接语义基准。Rust 的 `GeneralEvent` 数值、`GeneralEventCount`（对应 `COUNT`）、字符串输出和大小写不敏感解析与 Go 一致；Rust 通过封闭枚举加 `from_u8` 拒绝未知数值，而 Go 的 byte 别名本身可承载任意值。`ConnectionEvent` 刻意使用 `u8` 新类型，保留 Go 的未知值边界和空字符串格式化结果。`ParseEvent` 从 1 开始，对齐 Go 的 `PreParse ParseEvent = 1 + iota`。
+Rust 的 `GeneralEvent` 数值、`GeneralEventCount`（对应 `COUNT`）、字符串输出和大小写不敏感解析与 Go 一致；Rust 通过封闭枚举加 `from_u8` 拒绝未知数值，而 Go 的 byte 别名本身可承载任意值。
 
 Go `AuditManifest` 直接嵌入 `Manifest` 并保存函数字段；Rust 使用 `manifest: Manifest` 字段和 `Arc` 回调，并因通用加载接口需要，把专用回调装入 `Manifest.extension`。这是表达方式差异，`pkg/plugin/spi_test.rs::test_export_manifest` 与 `pkg/plugin/helper_test.rs::test_plugin_declare` 验证了导出/恢复行为。
 
-Rust `ConnectionInfo`、`SessionVars` 是 Go `variable.ConnectionInfo` / `variable.SessionVars` 的最小审计视图，不是完整结构体复刻。Go 主链在 `pkg/server/server.go` 触发连接事件，在 `pkg/executor/set.go` 触发全局变量事件，并在 `pkg/server/conn.go`、`pkg/executor/adapter.go` 触发通用事件；当前 Rust 非测试搜索只确认 session adapter 的 `Completed` 通用事件接线。因此四类回调的类型兼容已建立，不代表所有 Go 触发点均已迁移。
+Go 主链在 `pkg/server/server.go` 触发连接事件，在 `pkg/executor/set.go` 触发全局变量事件，并在 `pkg/server/conn.go`、`pkg/executor/adapter.go` 触发通用事件；当前 Rust 非测试搜索只确认 session adapter 的 `Completed` 通用事件接线。
 
-上下文键按 Go 值类型映射：`RejectReasonCtxValue{}` → `RejectReasonContextKey/String`，`ExecStartTimeCtxKey` → `SystemTime`，`PrepareStmtIDCtxKey` → `u32`，`IsRetryingCtxKey` → `bool`。Rust 用 `ContextKey` 在编译期绑定键和值类型，比 Go `context.Value` 的运行时断言更严格。
+Rust 用 `ContextKey` 在编译期绑定键和值类型，比 Go `context.Value` 的运行时断言更严格。
 
 ## 扩展指南
 
@@ -94,12 +92,3 @@ Rust `ConnectionInfo`、`SessionVars` 是 Go `variable.ConnectionInfo` / `variab
 扩展 `SessionVars`/`ConnectionInfo` 字段时，应在构造它们的运行时适配器同步赋值，并更新 `pkg/session/runtime_test/typed_adapter_bridge.rs` 等独立测试验证真实值，而不是只依赖 `Default`。字段类型或事件数值属于插件兼容面，修改前应核对 Go 字段语义、空值含义和已有插件消费方式。
 
 新增审计上下文值时，应定义独立零大小键并实现 `ContextKey`，明确唯一的 `Value` 类型；常用键可提供大写常量单例。测试应放在独立的 `pkg/plugin/audit_test.rs` 或 `pkg/plugin/spi_test.rs`，验证父子上下文、遮蔽和类型正确性，不应把测试嵌入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/plugin` 确认 `audit.rs` 及其 Go/测试邻接文件；`node --file pkg/plugin/audit.rs` 核对全部 271 行、事件、回调、导出实现和上下文键；`query AuditManifest`、`query GeneralEvent`、`query audit_callbacks` 定位 Rust/Go 定义及辅助入口。
-- RustCodeGraph 源码节点：`pkg/plugin/helper.rs:31-46` 验证回调恢复；`pkg/session/runtime/scan_adapter_runtime.rs:1300-1356` 验证 `Completed` 事件、session 快照、上下文值和错误记录；`pkg/plugin/spi.rs:33-81,98-125` 验证类型化 `Context` 与 `Manifest.extension`；`pkg/plugin/plugin.rs` 验证加载/生命周期职责位于其他模块。
-- crate 与模块边界：`pkg/plugin/Cargo.toml`、`pkg/plugin/lib.rs`。
-- Go 对照与调用面：`pkg/plugin/audit.go`，以及搜索到的 `pkg/server/server.go`、`pkg/server/conn.go`、`pkg/executor/adapter.go`、`pkg/executor/set.go`。
-- Rust 独立测试：`pkg/plugin/audit_test.rs` 验证三个常量键的值类型；`pkg/plugin/const_test.rs` 验证事件字符串、数值往返和非法解析；`pkg/plugin/spi_test.rs` 验证上下文派生/遮蔽/取消传播及清单往返；`pkg/plugin/helper_test.rs` 验证 declare/export；`pkg/plugin/conn_ip_example/conn_ip_example_test.rs` 验证加载后回调；`pkg/session/runtime_test/typed_adapter_bridge.rs` 验证生产 adapter 传入规范 session 视图。
-- 本任务是纯文档分析，按计划未运行 Cargo。最终结构检查要求本文恰好包含规定的十一个二级标题。

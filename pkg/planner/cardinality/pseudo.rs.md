@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cardinality` crate。`pkg/planner/cardinality/Cargo.toml` 将 `lib.rs` 设为库入口且关闭自动测试发现；`lib.rs` 以私有模块 `mod pseudo` 装配本文件，再通过 `pub use pseudo::*` 导出其中的公开项。它位于优化器基数估算的兜底层：当直方图、TopN、CM Sketch 或索引统计缺失/无效时，为选择率、列范围和索引范围提供确定性的伪统计估算，而不负责收集或持久化统计信息。
-
-直接入口分别来自 `selectivity.rs::Selectivity`、`row_count_column.rs::GetRowCountByColumnRanges` 和 `row_count_index.rs::GetRowCountByIndexRanges`。因此它处在“谓词/Range 已构造完成、真实统计不可用”与“向规划器返回估算行数或选择率”之间。
+这些函数给出的是启发式估算，不承诺反映真实数据分布；其意义是让代价优化在统计缺失时仍能继续工作并保持与 Go 实现一致的相对选择性。
 
 ## 核心职责
 
@@ -84,7 +82,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/cardinality/pseudo.go`。三个经验分母、平均频次、选择率分支、整数边界映射、范围宽度限制、复合索引每列除以 100、总量超过全表后回退 1/3，以及 Datum 比较错误追踪均保持 Go 算法顺序和数值语义。
+三个经验分母、平均频次、选择率分支、整数边界映射、范围宽度限制、复合索引每列除以 100、总量超过全表后回退 1/3，以及 Datum 比较错误追踪均保持 Go 算法顺序和数值语义。
 
 可见差异如下：
 
@@ -93,7 +91,7 @@
 - Rust 用 `Result<_, errors::Error>` 和 `map_err/errors::Trace` 表达 Go 的 `(value, error)`；用 `wrapping_sub` 明确模拟有符号极值相减的溢出效果。
 - Rust 参数以借用切片和 trait object 表达，算法没有复制 Range 或统计对象；这属于语言层表示差异，不改变估算规则。
 
-Go 的 `selectivity_test.go` 通过公开的列/索引估算入口覆盖多种真实统计与伪统计场景，但未发现直接点名这些私有 pseudo 函数的同名测试。Rust 当前直接测试仅覆盖唯一键辅助判断；其他分支主要由 `selectivity_test.rs`、`row_count_index_test.rs` 经公开入口间接触达，不能把存在调用断言等同于每个伪分支已有完整单元覆盖。
+Rust 当前直接测试仅覆盖唯一键辅助判断；其他分支主要由 `selectivity_test.rs`、`row_count_index_test.rs` 经公开入口间接触达，不能把存在调用断言等同于每个伪分支已有完整单元覆盖。
 
 ## 扩展指南
 
@@ -103,12 +101,3 @@ Go 的 `selectivity_test.go` 通过公开的列/索引估算入口覆盖多种�
 - 扩展 Range Kind 或复合索引算法时，优先复用 `getPseudoRowCountByColumnRanges`，同时维护 `colIdx`、`LowVal/HighVal/Collators` 长度不变量。任何新增可失败比较都应继续返回并追踪错误，而非静默降级。
 - 若允许直接对零行集合调用 `pseudoSelectivity`，需先定义零行表的选择率契约，避免唯一键分支除零；当前契约由 `Selectivity` 上游短路保证。
 - 测试应优先补到 `pkg/planner/cardinality/selectivity_test.rs` 或与入口对应的 `row_count_column_test.rs` / `row_count_index_test.rs` 独立文件；对照 Go 时同步检查 `pseudo.go` 和 `selectivity_test.go`，尤其关注 NULL、无穷端点、唯一复合索引、重叠多 Range、比较错误及极值溢出。
-
-## 验证依据
-
-- RustCodeGraph：索引状态检查后读取了 `pseudo.rs` 全部 261 行；查询确认 `pseudoSelectivity`、`getPseudoRowCountByIndexRanges`、`getPseudoRowCountByColumnRanges` 及 `pseudoColumnHasUniqueKey`，并报告本文件被 `row_count_column.rs`、`row_count_index.rs`、`selectivity.rs`、`selectivity_test.rs` 使用。
-- 装配与调用源码：`pkg/planner/cardinality/lib.rs`、`selectivity.rs::Selectivity`、`row_count_column.rs::GetRowCountByColumnRanges`、`row_count_index.rs::GetRowCountByIndexRanges`。
-- crate 边界：`pkg/planner/cardinality/Cargo.toml`，确认包名、`lib.rs` 入口、依赖别名、开发依赖和 `go-package` 映射。
-- Go 对照：完整读取 `pkg/planner/cardinality/pseudo.go`；相关公开入口测试位于 `pkg/planner/cardinality/selectivity_test.go`。
-- Rust 测试：读取 `pkg/planner/cardinality/selectivity_test.rs::test_pseudo_unique_key_uses_unique_key_flag`，并检索 `selectivity_test.rs`、`row_count_index_test.rs` 中公开估算入口的调用。目录中不存在 `doc.go`，因此没有额外的 Go package contract 文件可读。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核所有行为结论均可回指上述符号或文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`expression.rs` 是 `astersql-expression` crate 的标量表达式核心协议与通用算法层。crate 根在 `pkg/expression/lib.rs` 中以 `#[path = "expression.rs"] mod expression_core` 挂载它，再用 `pub use expression_core::*` 向外暴露 API。因此，调用者通常以 `expression::Expression`、`expression::EvalExpr` 等 crate 根路径使用这些符号，而不直接引用 `expression_core`。
-
-该文件位于 SQL 规划与执行共用的边界：上游规划器创建、改写、拆分或折叠表达式，下游执行器在 `chunk::Row` 或整个 `chunk::Chunk` 上求值。RustCodeGraph 将该文件标记为被 134 个文件使用；具体直接证据包括 `pkg/expression/chunk_executor.rs::vectorizedFilter`、`pkg/expression/aggregation/descriptor.rs::evalNullValueInOuterJoin4Count` 和 `pkg/planner/core/planbuilder_runtime.rs` 的 INSERT 目标表构建路径。
+把表元数据转换为规划器可用的 `Schema`/`FieldName`，同时构建唯一键信息并解析虚拟生成列：`TableInfo2SchemaAndNames` 与 `ColumnInfos2ColumnsAndNamesWithCollate`。
 
 ## 核心职责
 
@@ -73,7 +71,6 @@
 
 ## 与 Go 版本的对应关系
 
-- 主要对照文件是 `pkg/expression/expression.go`。Hash 标记、`BuildOptions`、`VecExpr`、`Expression`、`ConstLevel`、CNF/DNF 辅助、标量/向量求值、空拒绝折叠、表元数据转换、VALUES 函数、类型传播和测试辅助的控制流均与 Go 同名符号对应。
 - Go `Expression` 是 interface，Rust 使用组合多个 trait 的 `dyn Expression`；Go 类型断言换成 `Any` downcast，nil interface/指针换成 `Option` 或明确 NULL 布尔值，`Clone()` 换成 `CloneExpr()` 以避免与 Rust `Clone` 混淆。
 - Go `BuildSimpleExpr` 是由 planner init 直接赋值的全局函数；Rust 因无 Go 式包 init，使用 `OnceLock` 和规划器公开入口的幂等安装。Rust `BuildOptions` 另有 `UseNewCollate`，并在生成列路径显式传给 `WithUseNewCollate`；当前 Go 结构中没有该字段，而是由 context 获取开关。
 - Go `CNFExprs.Shallow` 复制 interface 切片但共享节点；Rust 当前与 `Clone` 一样逐节点 `CloneExpr`。逻辑结果一致，但所有权与分配成本不同。
@@ -89,12 +86,3 @@
 - 扩展 `BuildOptions` 时，同步修改 `pkg/planner/core/expression_rewriter.rs::buildSimpleExpr` 的应用逻辑和规划器独立测试 `pkg/planner/core/expression_test.rs`。若改变工厂安装策略，必须保留同工厂幂等、异工厂拒绝的并发契约，并扩展 `extension_runtime_aster_unit_test.rs`。
 - 修改 Schema 转换时，同时核对 unique/public/NOT NULL 键筛选、`PKIsHandle`、隐藏列、UniqueID 分配和虚拟生成列的 parse/resolve/index 三阶段。直接相关测试位于 `pkg/expression/expression_test.rs`、`pkg/planner/core/expression_test.rs` 和 Go `pkg/expression/expression_test.go`。
 - 将占位池替换为真实复用实现时，修改点在 `pkg/expression/core_support.rs`，但必须回归本文件的所有早返回/错误路径，确保临时列、selection 和 zero slice 均被归还，且不保留过大分配。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/expression/expression.rs` 完整核对了 1–1197 行，并报告该文件被 134 个文件使用。
-- 已读生产源：`pkg/expression/expression.rs`、`pkg/expression/lib.rs`、`pkg/expression/core_support.rs`、`pkg/expression/chunk_executor.rs`、`pkg/expression/aggregation/descriptor.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/planbuilder_runtime.rs`。
-- 已读 crate/Go 对照：`pkg/expression/Cargo.toml` 和 `pkg/expression/expression.go`。Cargo 元数据明确 `go-package = "pkg/expression"`，且 `lib.rs` 将本文件挂载并公开再导出。
-- 已读独立测试：`pkg/expression/expression_test.rs`、`pkg/expression/extension_runtime_aster_unit_test.rs` 和 Go `pkg/expression/expression_test.go`。Rust 测试证实选项应用、切片容量、测试 Datum 转换、truncate context 隔离及工厂并发安装；Go 测试提供空拒绝、类型传播和标量/向量结果一致性的对照语义。
-- 已核对关键边：`PlannerBuildSimpleExpr -> InstallPlannerExpressionFactory -> InstallBuildSimpleExpr`；`ColumnInfos2ColumnsAndNamesWithCollate -> BuildSimpleExpr -> planner expression_rewriter::buildSimpleExpr`；`chunk_executor::vectorizedFilter -> VecEvalBool -> EvalExpr/implicitEvalReal -> Expression::{VecEval*, Eval*}`；`aggregation::descriptor -> EvaluateExprWithNull`；`planbuilder_runtime -> TableInfo2SchemaAndNames -> ColumnInfos2ColumnsAndNames`。
-- 人工事实复核：本文档仅声明源码可见的当前行为；对 `EvalSimpleAst` 的并发安装以及占位资源池的性能效果未作未经验证的支持性声明。本任务是纯文档分析，按计划不运行 Cargo。

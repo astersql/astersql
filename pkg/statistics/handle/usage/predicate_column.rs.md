@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-statistics-handle-usage`（`pkg/statistics/handle/usage/Cargo.toml`），由同目录 `lib.rs` 以 `pub mod predicate_column` 声明并整体再导出。它位于会话统计采集与持久化存储之间：接收 `SessionStatsList` 聚合出的表增量和谓词列最近使用时间，通过可注入的 `UsageStore`、`SchemaState` 决定何时以及如何写入存储。
-
-需要注意当前接线状态：仓库内对 `StatsUsageImpl` 及其方法的直接 Rust 引用只出现在 `predicate_column_test.rs` 和测试导出代码中；`Cargo.toml` 中面向完整 TiDB 子系统的依赖全部位于恒假条件 `target.'cfg(any())'` 下。因而这里是具有真实内存聚合、阈值判断和失败回补逻辑的可测试实现，但尚无证据表明它已接入 Rust 生产运行主链。生产侧类似调度目前由 `pkg/domain/domain.rs`、`pkg/statistics/handle/handle.rs` 的另一套接口承担。
+通过 `load_column_stats_usage`、`get_predicate_columns` 提供列使用时间和谓词列 ID 的只读查询门面。
 
 ## 核心职责
 
@@ -85,10 +83,6 @@ take/merge 模式使持久层 I/O 期间不占用全局 map 的 mutex，其他�
 
 ## 与 Go 版本的对应关系
 
-Go 对照不是单一文件：`pkg/statistics/handle/usage/predicate_column.go` 定义 `statsUsageImpl`、构造函数及列 usage/谓词列查询门面；`session_stats_collect.go` 定义 delta 和列 usage 的 sweep、筛选与持久化。
-
-已对齐的核心语义包括：默认比例 `1/10000`、最长一小时、按修改次数 `Count` 判断比例、缺失/空 stats 触发刷盘、空目标处理全部 pending、确定性排序、会话 sweep，以及写失败后保留待处理数据。Rust 测试分别覆盖低比例保持 pending、force 刷盘、缺 stats 刷盘、不存在表保留、使用 `count` 而非 `delta`、空 usage 跳过写入和失败回补。
-
 Rust 当前是明显缩小后的端口化实现，不能等同于 Go 生产能力。Go 版还通过 session pool/事务执行 SQL，过滤内存库和系统库，按十万表分批，处理分区/全局统计与统计锁，记录历史 stats meta、指标和慢操作日志，并对 panic/failpoint 等做专门处理；列 usage 写入也包含节流和批量 SQL 细节。这些在本文件中由抽象 store 接口代替或完全未实现。此外，Go 的查询方法用 `predicatecolumn` 子包执行真实 SQL；Rust 这里只转发给 `UsageStore`。扩展或接线时必须重新评估这些差异，而不能仅凭现有单元测试宣称完整移植。
 
 ## 扩展指南
@@ -100,13 +94,3 @@ Rust 当前是明显缩小后的端口化实现，不能等同于 Go 生产能�
 调整列 usage 时应保持“空批次不写、稳定排序、失败不丢、同列取最新时间”的不变量，并在独立测试文件 `pkg/statistics/handle/usage/predicate_column_test.rs` 添加回归测试；不要把测试嵌入生产源文件。若 `ColumnTimeInfo` 或 `TableItemId` 的语义变化，还需同步 store 实现、`session_stats_collect.rs` 和 `predicatecolumn/` 子包的 SQL 映射。
 
 性能风险集中在单次把全部 pending map 取出并排序、逐表调用 `stats_meta_count/update_delta` 以及一次性保存全部列条目。兼容风险集中在阈值的严格比较、`None/0` stats 的即时刷盘、锁标志传递和失败回补合并规则。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/statistics/handle/usage` 确认目标、同目录测试和 Go 对照均在图中；`node --file pkg/statistics/handle/usage/predicate_column.rs` 读取完整 176 行源码；`query` 确认 `StatsUsageImpl`、`dump_stats_delta_to_kv`、`dump_column_stats_usage_to_kv`、`get_predicate_columns`、`new_session_stats_item` 的符号节点。精确 caller/callee 子命令对内部函数 ID 返回了歧义结果，因此没有把该结果当作调用边证据，改以源码及引用搜索核验。
-- Rust 源与模块边界：`pkg/statistics/handle/usage/predicate_column.rs`、`session_stats_collect.rs`、`index_usage.rs`、`lib.rs`。
-- Cargo 边界：`pkg/statistics/handle/usage/Cargo.toml`；包名与 `lib.rs` 入口已核对，完整子系统依赖位于 `cfg(any())`。
-- Go 对照：`pkg/statistics/handle/usage/predicate_column.go`、`session_stats_collect.go`；真实 SQL 子层位于 `predicatecolumn/predicate_column.go`。
-- 独立测试：`pkg/statistics/handle/usage/predicate_column_test.rs`；同时参考 Go 行为测试 `predicate_column_test.go` 和 `session_stats_collect_test.go` 的覆盖范围，但未把 Go 集成测试通过状态作为本次证据。
-- 仓库引用搜索确认当前 Rust 直接调用集中在上述独立测试；生产主链中同名 dump 调用落到 `domain.rs`/`handle.rs` 的另一实现。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定 11 章节结构命令和人工事实复核验收。

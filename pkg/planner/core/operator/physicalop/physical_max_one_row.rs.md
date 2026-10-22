@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-core-operator-physicalop`，crate 根为同目录的 `lib.rs`；`Cargo.toml` 的 `package.metadata.porting.go-package` 将它映射到 Go 包 `pkg/planner/core/operator/physicalop`。`lib.rs` 通过 `mod physical_max_one_row` 纳入模块，并以 `pub use physical_max_one_row::*` 公开本文件的类型与枚举函数。
-
-它位于“逻辑标量子查询约束”到“可执行的一元物理计划”的转换位置：`LogicalMaxOneRow` 表示结果最多一行的逻辑要求，本文件生成 `PhysicalMaxOneRow`；执行阶段则由 `pkg/executor/builder.rs::buildMaxOneRow` 构造 `pkg/executor/select.rs::MaxOneRowExec`。因此，本文件负责规划形态、属性和元数据，不直接读取行或抛出“子查询多于一行”的运行时错误。
-
-目标包没有 `doc.go`；包边界以 `Cargo.toml`、`lib.rs` 和相邻实现为准。
+位于“逻辑标量子查询约束”到“可执行的一元物理计划”的转换位置：`LogicalMaxOneRow` 表示结果最多一行的逻辑要求，本文件生成 `PhysicalMaxOneRow`；执行阶段则由 `pkg/executor/builder.rs::buildMaxOneRow` 构造 `pkg/executor/select.rs::MaxOneRowExec`。
 
 ## 核心职责
 
@@ -72,10 +68,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/physicalop/physical_max_one_row.go`。
-
-- 两版都定义 `PhysicalMaxOneRow`，以通用基础计划承载状态；都把类型设为 `plancodec.TypeMaxOneRow`，保存统计和查询块偏移，并把子节点 `ExpectedCnt` 设为 `2`。
-- 两版枚举都拒绝非空排序项和 Flash 属性，并使用相同的 MPP 阻塞警告文本；都传播 `CTEProducerStatus` 与 `NoCopPushDown`。
 - Go 的 `Init` 接受可变数量的子属性并返回指针；Rust `Init` 消费值且只接受一个子属性，更直接地表达一元不变量。Go 枚举返回“计划列表、hintCanWork、error”三元组，Rust 路由使用计划向量表达候选存在与否，不在该函数签名中返回 hint 标记或错误。
 - Go `MemoryUsage` 对 nil 接收者返回零；Rust 方法借用有效引用，类型系统排除了 nil 接收者。Go 的 `CloneWithSelf` 保留具体动态类型；Rust 使用 `CloneWithNewCtx` 后显式复制 Schema。
 - Rust 文件另有 `ExplainInfo` 空字符串实现；Go 对照文件没有同名专属方法。
@@ -89,15 +81,3 @@
 - 若改变排序或 MPP 支持范围，应补充接受与拒绝两类属性测试，并核对警告只在强制 MPP 时出现；同时检查 `base_physical_plan.rs` 的统一枚举路由和旧 Cascades 规则。
 - 若改变运行时零/一/多行行为，实际修改点在 `pkg/executor/select.rs::MaxOneRowExec`，还需同步 `pkg/executor/test/executor/executor_test.rs::scalar_subquery_rejects_more_than_one_row` 及 Go `TestMaxOneRow`。不能用 `LIMIT 1` 作为性能简化，因为那会丢失多行错误语义。
 - 性能关注点主要是第二次取数和 Schema/计划克隆；兼容性关注点是计划类型标识、EXPLAIN 形态、MPP 警告文本和错误语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，Rust 与 Go 均已纳入。
-- RustCodeGraph `query PhysicalMaxOneRow`：定位到 Rust `physical_max_one_row.rs::PhysicalMaxOneRow` 与 Go 同名结构。
-- RustCodeGraph `query ExhaustPhysicalPlans4LogicalMaxOneRow`：定位到 Rust/Go 两版枚举函数；`node --file pkg/planner/core/operator/physicalop/physical_max_one_row.rs` 读取了完整 126 行，并报告五个使用文件。图的 `callers/callees` 精确查询在本次运行中超时，因此调用边又由下列源码接线逐一核对，未把超时解释成“无调用者”。
-- 源与 crate：`pkg/planner/core/operator/physicalop/physical_max_one_row.rs`、`Cargo.toml`、`lib.rs`、`base_physical_plan.rs`。
-- 直接规划路径：`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/implementation/simple_plans.rs`、`pkg/planner/core/plan_cost_ver2.rs`。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_max_one_row.go`。
-- 独立规划测试：`pkg/planner/core/operator/physicalop/physical_max_one_row_test.rs`，验证强制 MPP 拒绝和警告文本。
-- 运行时及回归边界：`pkg/executor/builder.rs`、`pkg/executor/select.rs`、`pkg/executor/test/executor/executor_test.rs`、`pkg/executor/test/executor/executor_test.go`、`pkg/executor/statement_ru_plan_walk.rs`。
-- 人工复核结论：该文件存在是为了把 `LogicalMaxOneRow` 转换为可挂接、可计价、可构建执行器的物理计划；它通过二行期望值保留运行时多行检测能力，并以属性拒绝、上下文缺失和克隆错误传播覆盖规划边界。扩展时必须同步统一枚举、旧 Cascades、独立 Rust 测试和 Go 语义基线。

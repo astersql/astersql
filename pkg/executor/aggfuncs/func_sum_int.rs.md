@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate 的整数 `SUM` 状态实现。crate 入口 `pkg/executor/aggfuncs/lib.rs` 以 `pub mod func_sum_int` 注册本模块；`pkg/executor/aggfuncs/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `package.metadata.porting.go-package = "pkg/executor/aggfuncs"` 表明它是 Go `pkg/executor/aggfuncs` 的 Rust 移植边界之一。
-
-这里处理已经求值为 `Option<i64>` 或 `Option<u64>` 的输入流，不负责表达式求值、从 `chunk.Row` 取值或向结果 chunk 写列。普通与 `DISTINCT` 状态会被 `pkg/executor/aggfuncs/builder.rs` 的 `build_sum_int` 选择为 `AggImplementation::{SumInt, SumUint, SumDistinctInt, SumDistinctUint}`；但当前通用 spill 工厂 `BuiltAggFunc::spill_function` 只将两个 `DISTINCT` 变体绑定到本文件的具体类型。因而应把本文件理解为整数求和算法和部分状态的实现，而不是 Go 聚合接口的完整逐方法复刻。
+`SumInt` 与 `SumUint` 保存普通整数和及非 `NULL` 行数，支持重置、批量更新、部分结果合并和滑动窗口更新。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@ RustCodeGraph 的文件节点显示本文件被 `aggfuncs.rs`、`spill_serialize
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_sum_int.go`。Rust 的 `SumInt`/`SumUint` 对应 Go 的 `sumInt`/`sumUint` 及其 `partialResult4Sum*`；两个 DISTINCT 结构对应 `sumDistinctInt64`/`sumDistinctUint64` 的集合状态。固定大小常量、跳过 `NULL`、首值赋值、检查加减、空结果写 `NULL`、DISTINCT 合并以及无符号值用 `int64` 比特模式去重等语义保持一致。
+Rust 与 Go 的职责边界尚不完全相同。Rust 本文件接收已经变成 `Option<i64/u64>` 的值，不读取行、不写 chunk；普通状态也未在此处接入 spill。
 
-Rust 与 Go 的职责边界尚不完全相同。Go 类型直接实现 `AllocPartialResult`、`ResetPartialResult`、`UpdatePartialResult`、`MergePartialResult`、`AppendFinalResult2Chunk`、spill 序列化/反序列化和普通 SUM 的 `SlidingWindowAggFunc`，其中表达式求值错误会直接传播。Rust 本文件接收已经变成 `Option<i64/u64>` 的值，不读取行、不写 chunk；普通状态也未在此处接入 spill。Rust 的 DISTINCT spill 由 `spill_serialize_helper.rs` 和 `aggfuncs.rs` 的通用适配层承担。
-
-Go 集合使用 `set.Int64SetWithMemoryUsage` 返回实现定义的内存变化；Rust 用 `HashSet` capacity 乘键大小近似。两者都在 reset 时创建新集合，但内存数值口径不保证逐字节相等。Rust 独立测试覆盖结构固定大小和 reset 容量行为，其他测试覆盖跨部分去重、无符号 `u64::MAX` 比特模式与 spill 往返。
+Go 集合使用 `set.Int64SetWithMemoryUsage` 返回实现定义的内存变化；Rust 用 `HashSet` capacity 乘键大小近似。Rust 独立测试覆盖结构固定大小和 reset 容量行为，其他测试覆盖跨部分去重、无符号 `u64::MAX` 比特模式与 spill 往返。
 
 ## 扩展指南
 
@@ -80,11 +76,3 @@ Go 集合使用 `set.Int64SetWithMemoryUsage` 返回实现定义的内存变化�
 若修改 DISTINCT，需同步检查 `update`、`merge`、`value`、两个固定大小常量，以及 `spill_serialize_helper.rs` 的 `SpillState` 实现和 `aggfuncs.rs` 的恢复合并分派。改变无符号键表示会影响已有 spill 数据格式和 `u64::MAX -> -1` 契约，属于兼容性风险；改变内存增量算法会影响上层内存追踪，属于资源控制风险。
 
 若要补齐普通状态的执行器接线，应以 Go 完整接口为行为依据，在现有通用聚合抽象中接入，而不是仅在本文件增加表面方法。需要同时核对 builder 选择、行值求值、最终结果类型、spill 编解码、滑窗调度及内存记账，并扩展独立测试。性能上应避免为非 DISTINCT 路径引入集合或额外分配，也不要为了确定遍历顺序而对 DISTINCT 集合排序，除非 SQL 语义确有要求。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可被完整定位。
-- RustCodeGraph 文件节点：读取 `pkg/executor/aggfuncs/func_sum_int.rs` 全部 272 行，并确认使用者为 `aggfuncs.rs`、`spill_serialize_helper.rs`、`spill_helper_test.rs`；精确 `slide` 符号查询定位到有符号第 103 行和无符号第 175 行。对精确符号运行 `callers`/`callees` 未返回调用边，因此本文没有虚构函数级调用者。
-- crate 与入口：`pkg/executor/aggfuncs/Cargo.toml`、`pkg/executor/aggfuncs/lib.rs`；共享状态与接线：`pkg/executor/aggfuncs/aggfuncs.rs`；实现选择：`pkg/executor/aggfuncs/builder.rs`；DISTINCT spill：`pkg/executor/aggfuncs/spill_serialize_helper.rs`。
-- Go 对照：`pkg/executor/aggfuncs/func_sum_int.go` 全部 480 行；滑窗回归：`pkg/executor/aggfuncs/func_sum_test.go` 的两个 `TestSlideSum*ProcessOutWindowFirstToAvoidOverflow`。
-- Rust 测试证据：`pkg/executor/aggfuncs/func_sum_int_test.rs`（固定大小、reset 容量）；`func_distinct_agg_test.rs`（跨部分去重合并）；`go_scenario_coverage_test.rs`（普通部分和合并、DISTINCT）；`spill_helper_test.rs`（DISTINCT spill 往返与无符号比特模式）。本任务按计划不运行 Cargo，结论来自静态源码、索引关系和既有测试意图。

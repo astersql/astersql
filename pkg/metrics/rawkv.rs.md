@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate，是 RawKV 批量写入 Prometheus 指标的定义与初始化模块。crate 由 [`pkg/metrics/Cargo.toml`](Cargo.toml) 定义，入口 [`pkg/metrics/lib.rs`](lib.rs) 通过 `pub mod rawkv` 公开本模块；包级中枢 [`metrics.rs`](metrics.rs) 的 `InitMetrics` 调用 `rawkv::init_raw_kv_metrics`，`RegisterMetrics` 再注册这里创建的两个 collector。
-
-这里的 RawKV 指绕过 SQL 层、直接对 TiKV 原始键值接口执行的操作。本文件不执行 BatchPut，也不持有键值批次；它只描述并创建“批量写耗时”和“每批条目数”两个直方图。Go 生产消费路径位于 [`br/pkg/restore/internal/rawkv/rawkv_client.go`](../../br/pkg/restore/internal/rawkv/rawkv_client.go)。当前对应 Rust 客户端 [`br/pkg/restore/internal/rawkv/rawkv_client.rs`](../../br/pkg/restore/internal/rawkv/rawkv_client.rs) 使用其文件内的轻量观测桩，而不是这里的 `astersql-metrics` collector，因此 Rust 当前事实是“指标定义、初始化和注册已存在，真实 BR 写入路径尚未接线到本模块”。
+为包级 [`metrics::InitMetrics`](metrics.rs) 与 [`metrics::RegisterMetrics`](metrics.rs) 提供初始化和注册对象。
 
 ## 核心职责
 
@@ -73,11 +71,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/metrics/rawkv.go`](rawkv.go)。Rust 与 Go 保持以下一致：两个变量的 collector 类型、namespace `tidb`、subsystem `rawkv`、metric 名称、help、唯一标签 `cf`，以及耗时 17 桶和批大小 9 桶的指数配置。Rust 的 `Option<HistogramVec>` 对应 Go 初始化前可能为 nil 的 `*prometheus.HistogramVec`；`init_raw_kv_metrics` 对应 `InitRawKVMetrics`。
-
-包级调用顺序也一致：Go [`metrics.go`](metrics.go) 在 `InitMetrics` 中初始化 rawkv，并在 `RegisterMetrics` 中注册两项；Rust [`metrics.rs`](metrics.rs) 在相应流程中做同样接线。差异是 Rust 的全包初始化增加 `Once` 和错误保存状态，但本文件自身仍以可替换的 `static mut Option` 表达迁移形状。
-
-Go BR 客户端已直接调用 `metrics.RawKVBatchPutBatchSize.WithLabelValues(c.cf).Observe(...)` 与耗时指标。Rust BR 客户端当前为了无 Prometheus 依赖的契约测试，定义并调用自己的同名观测函数；[`br/pkg/restore/internal/rawkv/parity_test.rs`](../../br/pkg/restore/internal/rawkv/parity_test.rs) 验证 `default` CF 的 batch size=3 和存在耗时样本，但这不验证本文件 collector 的业务接线。现有 `metrics_2_aster_unit_test.rs` 只直接验证耗时向量初始化和 17 个桶，未直接断言批大小桶、两项完整描述符或 BR 到本模块的连接。
+差异是 Rust 的全包初始化增加 `Once` 和错误保存状态，但本文件自身仍以可替换的 `static mut Option` 表达迁移形状。
 
 ## 扩展指南
 
@@ -87,12 +81,3 @@ Go BR 客户端已直接调用 `metrics.RawKVBatchPutBatchSize.WithLabelValues(c
 - 要补齐真实 Rust 消费链，应在 [`br/pkg/restore/internal/rawkv/rawkv_client.rs`](../../br/pkg/restore/internal/rawkv/rawkv_client.rs) 的满批 `Put` 和 `PutRest` 路径接入 `astersql-metrics`，同时决定是否保留或替换局部观测桩。接线必须保持现有“底层调用结束后、错误判断前观测”的 Go 时序，并避免引入依赖环或让 BR 测试依赖全局 registry。
 - 测试必须放在独立文件中。可扩展 [`metrics_2_aster_unit_test.rs`](metrics_2_aster_unit_test.rs) 验证两项全名、标签和完整桶；业务接线则扩展 [`br/pkg/restore/internal/rawkv/parity_test.rs`](../../br/pkg/restore/internal/rawkv/parity_test.rs) 或同目录独立测试，证明实际 collector 收到成功与失败批次观测。
 - 若重构全局状态，优先使用能安全发布且不会替换已注册 handle 的一次初始化结构；同时保留测试环境需要的初始化顺序，避免在并发测试中创建两个同名 collector。
-
-## 验证依据
-
-- RustCodeGraph 索引：`status` 报告 11,467 个文件、7,032 个 Rust 文件；`node --file pkg/metrics/rawkv.rs --offset 1 --limit 300` 读取完整 59 行，并显示该文件由 `pkg/metrics/metrics.rs` 使用。精确 `query RawKV` 同时定位 Rust/Go 文件、`init_raw_kv_metrics`、`InitRawKVMetrics` 以及 BR RawKV 客户端相关符号。
-- RustCodeGraph 源码/调用证据：读取 [`rawkv.rs`](rawkv.rs)、[`lib.rs`](lib.rs)、[`metrics.rs`](metrics.rs)、[`bindinfo.rs`](bindinfo.rs) 和 Rust BR [`rawkv_client.rs`](../../br/pkg/restore/internal/rawkv/rawkv_client.rs)，核对模块公开、初始化、注册、兼容构造和实际观测边界。索引对宽泛 `explore` 未给出目标符号间静态路径，因此调用边又由这些精确源码引用交叉确认，没有把缺失图边当成不存在调用。
-- crate 配置：[`Cargo.toml`](Cargo.toml) 确认 crate 名、`lib.rs` 入口、`prometheus = "0.14"` 与 `astersql-metrics-common` 路径依赖；`pkg/metrics` 当前没有 `doc.go`，也没有 rawkv 专属 feature。
-- Go 对照：读取 [`rawkv.go`](rawkv.go) 与 [`metrics.go`](metrics.go)，核对两个定义、初始化顺序、注册项、名称、标签和桶；读取 Go BR [`rawkv_client.go`](../../br/pkg/restore/internal/rawkv/rawkv_client.go) 确认满批与残余批的实际观测时机。
-- 测试证据：读取 [`metrics_2_aster_unit_test.rs`](metrics_2_aster_unit_test.rs)，确认 Rust 包级初始化、`default` 标签写入和耗时 17 桶断言；读取 [`br/pkg/restore/internal/rawkv/parity_test.rs`](../../br/pkg/restore/internal/rawkv/parity_test.rs)，确认 BR 局部观测桩记录 batch size=3 与耗时，但不连接本模块。全仓 `rg` 未发现其他直接引用这两个 Rust 静态量或 `init_raw_kv_metrics` 的测试/生产消费者。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付使用任务指定命令验证本文存在且恰好包含十一个固定二级标题，并人工复核每项现状、差异与扩展建议均能回溯到上述源码、Cargo、Go 或独立测试。

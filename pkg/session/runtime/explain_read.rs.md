@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-目标源码 [`explain_read.rs`](explain_read.rs) 属于 `astersql-session` crate 的具体会话运行时，由 `pkg/session/runtime.rs` 以私有模块 `mod explain_read` 装配。文件只为 `ConcreteSession` 增加一个 `pub(super)` 方法 `execute_native_explain_read`；没有模块级常量、独立类型、trait、条件编译项或对 crate 外公开的 API。
-
-它位于 `EXPLAIN ANALYZE SELECT` 的“真实读取”边界：直接上游 `pkg/session/runtime/explain_analyze.rs` 创建 `ReadStats`，调用本方法取得行和实际 KV/Coprocessor 派发统计，再继续生成执行信息。该方法不是完整查询执行器，也不负责渲染 EXPLAIN 行；当事务、分区表或非 TiKV 存储使本快路径不适用时，它以 `Ok(None)` 通知调用者回退到 `scan_registered_table_at_with_index_window` 或 `scan_registered_table_with_limit`。
+位于 `EXPLAIN ANALYZE SELECT` 的“真实读取”边界：直接上游 `pkg/session/runtime/explain_analyze.rs` 创建 `ReadStats`，调用本方法取得行和实际 KV/Coprocessor 派发统计，再继续生成执行信息。
 
 ## 核心职责
 
@@ -79,10 +77,9 @@ PointGet/BatchGet 的 Snapshot 是闭包内局部对象，选项随 Snapshot 生
 
 ## 与 Go 版本的对应关系
 
-`pkg/session` 下没有与 `runtime/explain_read.rs` 同路径、同名单文件的 Go 实现；Rust 文件是为具体会话运行时拆出的适配层。最接近的 Go 语义分布在执行器和 DistSQL 边界，而不是一个一一对应函数中。
+`pkg/session` 下没有与 `runtime/explain_read.rs` 同路径、同名单文件的 Go 实现；Rust 文件是为具体会话运行时拆出的适配层。
 
 - Go `pkg/executor/point_get.go::PointGetExecutor` 在有 runtime stats 时给 Snapshot 设置 `kv.CollectRuntimeStats`，并在 `Close` 把 scan/read-pool/time details 合入语句上下文；`pkg/executor/batch_point_get.go::BatchPointGetExec::Close` 做同类合并。Rust 点查分支复用同一类 Snapshot 选项，但直接返回 `RelationalRow`，未实现 Go 执行器完整的 Open/Next/Close、索引使用报告、锁与事务语义。
-- Go `pkg/distsql/request_builder.go::RequestBuilder.Build` 从 `DistSQLContext` 写入 `TiKVClientReadTimeout`，`pkg/distsql/distsql.go::Select` 建立 `ClientSendOption`，`pkg/distsql/select_result.go` 在拉取 subset 时合并 read-pool details。Rust Coprocessor 分支在一个同步函数中完成这三段最小接线。
 - Go 的查询计划/DAG 由 planner/executor 生成并可包含过滤、聚合、索引、分区、TiFlash 等算子；本文件只生成单 TableScan。活动事务与分区表被显式交给 Rust 上游回退，不可据此文件宣称 Go 全部 EXPLAIN ANALYZE 读取能力已移植。
 - Go `pkg/executor/explain_test.go::TestCheckActRowsWithUnistore` 验证 EXPLAIN ANALYZE 的实际行数；Rust `pkg/session/runtime_pessimistic_test.rs::explain_analyze_select_reports_scan_rows_process_keys_and_rpc_info` 对应验证 Limit、索引查找、Point_Get、process keys 与 RPC 信息，但它覆盖的是完整会话路径而非直接调用本方法。
 
@@ -95,12 +92,3 @@ PointGet/BatchGet 的 Snapshot 是闭包内局部对象，选项随 Snapshot 生
 - 修改统计与生命周期时，同步核对 `explain_analyze.rs` 的 `native_stats` 消费、store-driver `read_pool_task_details` 转换及 Go `PointGetExecutor`/`BatchPointGetExec`/`selectResult` 的合并时机。重点风险是重试 RPC 数丢失、read-pool 重复累计和错误路径未关闭 response。
 - 回归测试应继续放在独立文件。优先扩展 `pkg/session/runtime_pessimistic_test.rs`，覆盖单点、`IN` 批点、not-found、超时重试、全表 Coprocessor、事务/分区/非 TiKV 回退、显式与会话 stale TS、response/close/decode 错误；与 EXPLAIN 输出拼装有关的断言可放在 `pkg/session/runtime/explain_query_test.rs` 或现有 EXPLAIN 独立测试中。
 - 性能关注点包括每行 `HashMap` 分配、Coprocessor 全表物化、每列 `DecodeOne`、点查 field map 克隆及 `BatchGet` 后逐 key map 查询。任何减少物化的优化都必须保留“统计来自真实已派发请求”的职责。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime/explain_read.rs` 确认目标文件已索引并识别 19 个符号；`node --file ... --offset 1 --limit 260` 读取全部 124 行；`node execute_native_explain_read` 确认唯一函数定义。精确 `callers` 未返回可用结果，宽泛 `explore` 存在 `read`/`explain` 同名碰撞，因此直接调用点用 `rg -n 'execute_native_explain_read' pkg/session` 核对为 `pkg/session/runtime/explain_analyze.rs`。
-- RustCodeGraph 下游符号：`evaluate_stale_read_ts`（`pkg/session/runtime/control.rs`）、`primary_point_get_value`（`pkg/session/runtime.rs`）、`relational_handle_key`/`datum_to_runtime_value`（`pkg/session/runtime/row_codec.rs`）、`relational_scan_column`/`relational_coprocessor_request`/`decode_relational_row_value`（`pkg/session/runtime/relational_scan.rs`）。
-- Rust 源与 crate 边界：`pkg/session/runtime/explain_read.rs`、调用者 `pkg/session/runtime/explain_analyze.rs`、模块入口 `pkg/session/runtime.rs`、`pkg/session/Cargo.toml`。`pkg/session` 未发现 `doc.go`，因此没有额外的目标包 Go 契约文件可读。
-- Rust 独立测试：`pkg/session/runtime_pessimistic_test.rs::explain_analyze_select_reports_scan_rows_process_keys_and_rpc_info` 验证 Limit/TableFullScan、IndexRangeScan、Point_Get 和 RPC/process-key 信息；同文件 `topology_and_runtime_faults_drive_cluster_rows_rpc_counts_and_commit_retries` 验证 Coprocessor region/RPC 统计及 `tikv_client_read_timeout` 延迟注入导致的 PointGet 重试计数。未发现以 `execute_native_explain_read` 命名的直接单元测试。
-- Go 对照：`pkg/executor/point_get.go`、`pkg/executor/batch_point_get.go`、`pkg/distsql/distsql.go`、`pkg/distsql/request_builder.go`、`pkg/distsql/select_result.go`、`pkg/executor/explain_test.go::TestCheckActRowsWithUnistore`。这些文件提供分散的执行统计、请求超时、响应合并和 EXPLAIN 行数语义；没有同路径 Go 文件。
-- 本任务只新增说明文档，按计划不运行 Cargo。结构验证命令及最终退出码在任务交付记录中给出；人工复核重点为适用 guard、两条读取分支、错误/Close 顺序、统计合并、Go 非一一对应关系和安全扩展边界。

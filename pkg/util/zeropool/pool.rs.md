@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是独立 crate `astersql-util-zeropool` 的对象池实现。crate 边界由 `pkg/util/zeropool/Cargo.toml` 定义，入口 `pkg/util/zeropool/lib.rs` 以 `pub mod pool` 声明本模块并通过 `pub use pool::*` 再导出 `Pool` 和 `New`。根 crate 又在 `pkg/lib.rs` 的 `util::zeropool` 门面中再导出该 crate；`benches/zeropool_standalone.rs::canonical_zeropool_is_available_through_the_root_facade` 验证了这条兼容入口。
-
-它对应 Go 包 `pkg/util/zeropool`，目标是为 `sync.Pool` 的常见“存值会引入指针分配”问题提供类型安全、热路径尽量不分配的替代实现。当前检索到的 Rust 直接使用者是本 crate 的独立测试和根门面测试；未检索到生产 Rust 代码将表达式等业务缓冲区接到这里。尤其 `pkg/expression/core_support.rs` 仍使用会丢弃归还值的 `DropPool` 占位，因此不能把 Go 侧的广泛接线描述成 Rust 已完成的生产接线。
+对应 Go 包 `pkg/util/zeropool`，目标是为 `sync.Pool` 的常见“存值会引入指针分配”问题提供类型安全、热路径尽量不分配的替代实现。
 
 ## 核心职责
 
@@ -104,7 +102,7 @@ RustCodeGraph 能识别本文件的 `Pool/default/New/Get/Put/lock` 七个符号
 - Go 用接口值和运行时类型断言，Rust 用泛型与所有权在编译期保证类型安全。
 - Go 注释中的可并发调用由 `sync.Pool` 提供；Rust 由两把 `Mutex` 和线程安全工厂约束提供。
 
-测试意图保持对齐：`pool_test.go::TestPool` 的正确取值、并发、预热后平均分配小于 1、零值可用四个子场景，均在 `pool_test.rs::test_pool` 中保留；Rust 的 `migration_aster_unit_test.rs` 又拆分出工厂调用次数、零值、分配和并发回归。Go 生产调用见 expression、planner、dumpformat、lightning 等目录；当前 Rust 生产接线不能据此推定，且 expression 仍明确是 `DropPool` 占位。
+Go 生产调用见 expression、planner、dumpformat、lightning 等目录；当前 Rust 生产接线不能据此推定，且 expression 仍明确是 `DropPool` 占位。
 
 ## 扩展指南
 
@@ -113,13 +111,3 @@ RustCodeGraph 能识别本文件的 `Pool/default/New/Get/Put/lock` 七个符号
 若增加容量限制、淘汰、统计或清理 API，需要同时决定 `items` 与 `pointers` 的处理方式，并评估与 Go `sync.Pool` 的 GC 淘汰差异、额外原子/锁开销以及大对象保留风险。若改变 `T: Default` 约束或工厂表示，应同步检查零值池语义、`mem::take` 的替代方案和公开 API 兼容性。
 
 测试必须继续放在独立文件中：Go 对齐场景更新 `pkg/util/zeropool/pool_test.rs`，Rust 特有回归更新 `pkg/util/zeropool/migration_aster_unit_test.rs`；根门面变化才需要调整 `benches/zeropool_standalone.rs`。若将生产 Rust 模块从 `DropPool` 接到该实现，应在对应业务 crate 中新增独立测试，确认借还前的清空/容量规则，且不能仅用本 crate 的算法测试代替业务接线验证。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,305 个节点和 1,849,011 条边；`files --filter pkg/util/zeropool` 找到本 crate 的 Rust/Go 源与测试。
-- RustCodeGraph 符号证据：`query`/`node` 确认 `Pool`（第 36 行）、`default`（第 50 行）、`New`（第 62 行）、`Get`（第 78 行）、`Put`（第 102 行）和 `lock`（第 113 行）；`callers`/`callees` 未返回边，故未把图中不存在的调用关系写成事实。
-- 实现与边界：`pkg/util/zeropool/pool.rs`；crate 声明与导出：`pkg/util/zeropool/Cargo.toml`、`pkg/util/zeropool/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照：`pkg/util/zeropool/pool.go`；Go 测试：`pkg/util/zeropool/pool_test.go`。
-- Rust 测试：`pkg/util/zeropool/pool_test.rs`、`pkg/util/zeropool/migration_aster_unit_test.rs`；根门面证据：`benches/zeropool_standalone.rs`。
-- 接线现状补证：`rg` 仅发现上述 Rust 测试/门面直接调用；`pkg/expression/core_support.rs` 明确将池声明为 `DropPool` 占位，`pkg/dumpformat/parquetfile/parser.rs` 中 zeropool 使用仍为注释。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构检查并人工复核结论与证据。

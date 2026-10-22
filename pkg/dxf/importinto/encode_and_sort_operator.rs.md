@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto` crate；crate 入口 `pkg/dxf/importinto/lib.rs` 以 `pub mod encode_and_sort_operator` 声明模块并公开再导出其符号。它位于 IMPORT INTO 分布式任务的 encode-and-sort 步骤：上游 `pkg/dxf/importinto/task_executor.rs` 的子任务执行路径计算 writer 内存和 block 大小、准备本地 engine 或对象存储，然后调用 `RunEncodeSortChunks`；全局排序产物随后以 `subtaskPrefix` 作为文件前缀进入 merge/write-ingest 流程。
-
-`pkg/dxf/importinto/Cargo.toml` 将该目录定义为 `astersql-dxf-importinto`，并直接依赖 DXF operator/workerpool、executor importer、Lightning backend/encode/KV、simple-SST、object-store、auto-ID 和 table 等 crate。`nextgen` feature 只转发给 `astersql-config-kerneltype/nextgen`，本文件没有条件编译分支。
+`getWriterMemorySizeLimit` 与 `subtaskPrefix` 提供与 Go 版本一致的资源分配和对象路径约定。
 
 ## 核心职责
 
@@ -90,11 +88,11 @@ writer 关闭严格有序：先 data、后 index；data 关闭失败立即返回
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/dxf/importinto/encode_and_sort_operator.go`，测试是同目录 `encode_and_sort_operator_test.go`。Rust 保留了 Go 的核心语义：每个 subtask 内并行处理多个 chunk；global sort 为每个 worker 生成 UUID；data/index 使用相同路径层次；index writer 懒创建；重复键策略分 data/index 计算；取消后用新 30 秒 context 关闭 writer；data 关闭错误优先；writer 内存按 `3 : 1` 份额分配。
+Rust 保留了 Go 的核心语义：每个 subtask 内并行处理多个 chunk；global sort 为每个 worker 生成 UUID；data/index 使用相同路径层次；index writer 懒创建；重复键策略分 data/index 计算；取消后用新 30 秒 context 关闭 writer；data 关闭错误优先；writer 内存按 `3 : 1` 份额分配。
 
-实现结构有所不同。Go 用通用 `AsyncOperator`/`WorkerPool` 和指向共享 `SharedVars` 的 worker；Rust 以 `AsyncEncodeSortOperator`、显式 thread/channel 和 factory 实现，并把 importer 状态限制在线程内。Go 的 `simplesst.EngineWriter` 直接连接 global store；Rust 增加 `ObjectStoreWriterSink`、`GlobalDataEngineWriter` 和 `GlobalIndexSstWriter` 适配现有 Rust trait。Rust 还在 `RunEncodeSortChunks` 中显式把多 worker checksum、allocator 最大值和 writer summary 汇总回 step meta。
+实现结构有所不同。Go 用通用 `AsyncOperator`/`WorkerPool` 和指向共享 `SharedVars` 的 worker；Rust 以 `AsyncEncodeSortOperator`、显式 thread/channel 和 factory 实现，并把 importer 状态限制在线程内。Go 的 `simplesst.EngineWriter` 直接连接 global store；Rust 增加 `ObjectStoreWriterSink`、`GlobalDataEngineWriter` 和 `GlobalIndexSstWriter` 适配现有 Rust trait。
 
-`encode_and_sort_operator_test.go::TestEncodeAndSortOperator` 验证取消与并发错误，`TestGetWriterMemorySizeLimit` 固定资源分配样例。Rust 的独立 `encode_and_sort_operator_test.rs` 覆盖这些意图，并额外覆盖共享 writer 跨 chunk 生命周期、对象存储真实文件、按 index 路由、keyspace 前缀、取消传播、初始化错误和聚合规则。
+Rust 的独立 `encode_and_sort_operator_test.rs` 覆盖这些意图，并额外覆盖共享 writer 跨 chunk 生命周期、对象存储真实文件、按 index 路由、keyspace 前缀、取消传播、初始化错误和聚合规则。
 
 ## 扩展指南
 
@@ -105,12 +103,3 @@ Go 对照文件是 `pkg/dxf/importinto/encode_and_sort_operator.go`，测试是�
 - 新增重复键模式时，应同步 `duplicate_mode`、`getOnDupForConflictedKV`/`getOnDupForIndex` 的映射及 Go 对照；未知值当前回退为 `Ignore`，改变默认值会影响兼容性与数据安全。
 - 调整内存公式时，应同步 Go 的 `getWriterMemorySizeLimit` 与两端测试样例，并评估并发数乘以单 worker data/index 总预算后的峰值；浮点截断也是兼容行为的一部分。
 - 改变取消/关闭逻辑时，应同时验证阻塞对象存储写、已取消 context 下的 flush、data-first 失败短路和 store 所有权；不能仅验证内存存储的快速成功路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`node --file pkg/dxf/importinto/encode_and_sort_operator.rs --offset 1 --limit 500` 与 `--offset 500 --limit 500` 完整读取 972 行；`query EncodeAndSortOperator`、`query newEncodeAndSortOperator`、`query RunEncodeSortChunks` 定位 Rust 与 Go 符号。精确 `callers` 查询超时，调用点改由 `rg` 核验。
-- 生产源码：`pkg/dxf/importinto/encode_and_sort_operator.rs`、`pkg/dxf/importinto/task_executor.rs`、`pkg/dxf/importinto/lib.rs`。
-- crate/包契约：`pkg/dxf/importinto/Cargo.toml`、`pkg/dxf/importinto/job_doc.go`。后者描述 IMPORT INTO/DXF 的作业事务边界；本文件处理的是已进入分布式子任务后的编码排序阶段，不负责提交或取消作业记录。
-- Go 对照：`pkg/dxf/importinto/encode_and_sort_operator.go`、`pkg/dxf/importinto/task_executor.go`。
-- 独立测试：`pkg/dxf/importinto/encode_and_sort_operator_test.rs`、`pkg/dxf/importinto/encode_and_sort_operator_test.go`。已人工核对关闭顺序、跨 chunk writer 生命周期、对象存储文件、index 路由、取消传播、首错、初始化失败、checksum/allocator 汇总、路径与内存份额。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；结构验证要求本文恰有 11 个固定二级标题，并在交付前以任务文件给定命令执行。

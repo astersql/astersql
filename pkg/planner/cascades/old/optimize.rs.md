@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-cascades-old` crate 的旧版 Cascades 优化主循环。crate 根 `pkg/planner/cascades/old/lib.rs` 以 `mod optimize` 装配本模块并通过 `pub use optimize::*` 再导出其公开项；`pkg/planner/cascades/old/Cargo.toml` 将 crate 映射到 Go 包 `pkg/planner/cascades/old`，没有声明可改变本文件行为的 feature。
-
-对外的主要入口是线程局部的 `DefaultOptimizer`、`Optimizer`、`Optimizer::FindBestPlan` 和 `preparePossibleProperties`。`FindBestPlan` 接收已经构造好的 `LogicalPlanRef`，输出物理计划及总代价，不负责 SQL 解析、逻辑计划构建或执行。全仓 Rust 调用搜索目前只在 `pkg/planner/cascades/old/optimize_test.rs` 找到对本文件内部能力的使用，没有找到生产代码调用 `FindBestPlan` 或 `DefaultOptimizer`；因此本模块已被 crate 导出并可直接调用，但不能据此声称它已接入当前 Rust SQL 请求主链。Go 版本的权威同路径对照是 `pkg/planner/cascades/old/optimize.go`。
+还承担两项实现阶段的辅助工作：`fillGroupStats` 自底向上填充 memo group 统计信息，`preparePossibleProperties` 汇总每个 group 可提供的有序列组合与 `HasTiFlash`。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@ memo 使用单线程的 `Rc<RefCell<_>>`，本文件没有 `Arc`、互斥锁、�
 
 ## 与 Go 版本的对应关系
 
-整体阶段和关键算法与 `pkg/planner/cascades/old/optimize.go` 一一对应：`FindBestPlan` 的预处理—探索—实现顺序、按轮 explored 标记、变换规则的 erase 语义、统计填充、按属性缓存实现、代价上限剪枝、enforcer 兜底以及可能属性递归均被保留。
-
 已核对的实现差异如下：
 
 - Go 的 `DefaultOptimizer` 是进程级可变指针；Rust 改为每线程 `RefCell<Optimizer>`，并发可见性不同。
@@ -102,7 +98,7 @@ memo 使用单线程的 `Rc<RefCell<_>>`，本文件没有 `Arc`、互斥锁、�
 - Go 通过虚方法统一调用各逻辑算子的 `PreparePossibleProperties`；Rust 因当前 trait/移植边界在 `prepare_expression_properties` 中对 `DataSource`、扫描、CTE、Gather、Selection、Projection、Sort、TopN、Aggregation 做显式 downcast，并为其余算子使用基类回退。
 - Go 返回 memo 中实现持有的计划并在末尾 `ResolveIndices`；Rust 先从实现中取计划，以原 `PlanContext` 调用 `clone_physical`，再解析索引。
 
-测试意图保持在独立文件 `pkg/planner/cascades/old/optimize_test.rs`：覆盖 group schema 初始化但 stats 尚空、零代价上限返回无实现、统计递归填充、聚合排序属性准备、每轮每表达式只应用一次规则。对应 Go 测试位于 `pkg/planner/cascades/old/optimize_test.go`；Rust 测试用最小手工逻辑计划替代 Go 的 SQL parser/`BuildLogicalPlanForTest` 管线，因此证明的是本文件阶段逻辑，不是完整 SQL 接入链。
+对应 Go 测试位于 `pkg/planner/cascades/old/optimize_test.go`；Rust 测试用最小手工逻辑计划替代 Go 的 SQL parser/`BuildLogicalPlanForTest` 管线，因此证明的是本文件阶段逻辑，不是完整 SQL 接入链。
 
 ## 扩展指南
 
@@ -113,13 +109,3 @@ memo 使用单线程的 `Rc<RefCell<_>>`，本文件没有 `Arc`、互斥锁、�
 - 改动实现选择时，要保持属性缓存键、`ExpectedCnt` 截断、等于代价上限可接受、无限代价不可缓存以及 enforcer 放宽属性后递归回到同一 group 等不变量。
 - 测试应继续放在独立的 `pkg/planner/cascades/old/optimize_test.rs`，不要嵌入生产源文件；若验证 Go 行为差异，还应同步对照 `optimize_test.go`。建议至少添加目标规则命中/不命中、孩子实现失败、缓存命中且超限、enforcer 胜出、空 group 错误和新增算子属性传播用例。
 - 若要把旧优化器接入 Rust 生产主链，应先在调用侧明确选择条件、`PlanContext` 生命周期和线程局部规则配置；这属于本文件之外的接线工作，不能仅凭 `lib.rs` 的公开再导出认定已经完成。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/planner/cascades/old/optimize.rs`；主要符号为 `Optimizer::{FindBestPlan,onPhasePreprocessing,onPhaseExploration,exploreGroup,findMoreEquiv,fillGroupStats,onPhaseImplementation,implGroup,implGroupExpr}`、`preparePossibleProperties`、`prepare_expression_properties`。
-- crate 与模块边界：`pkg/planner/cascades/old/Cargo.toml`、`pkg/planner/cascades/old/lib.rs`；本目录未发现需要额外遵循的 `doc.go`。
-- 规则与 memo 直接证据：`pkg/planner/cascades/old/{transformation_rules.rs,implementation_rules.rs,enforcer_rules.rs}`，以及 `pkg/planner/memo/{group.rs,group_expr.rs,implementation.rs}` 中的 trait、引用类型、探索标记和缓存接口。
-- Go 对照：`pkg/planner/cascades/old/optimize.go`；测试对照：`pkg/planner/cascades/old/optimize_test.rs` 与 `pkg/planner/cascades/old/optimize_test.go`。
-- RustCodeGraph：状态显示索引包含 `optimize.rs`（17 个符号）；`query FindBestPlan`、`query implGroup`、`query preparePossibleProperties` 同时定位到 Rust 与 Go 对应实现。对 Rust `FindBestPlan`/`preparePossibleProperties` 的 callers/callees 查询返回空边，因此调用关系由 crate 再导出、源码内调用和全仓文本调用搜索补证，并在本文明确保留生产接线限制。
-- 全仓调用搜索：除本文件外，Rust 只在 `optimize_test.rs` 调用 `preparePossibleProperties`，未检出生产端的 `DefaultOptimizer`/`FindBestPlan` 调用；Go 调用与内部链位于同路径 `optimize.go`，旧优化器入口未据此推断为 Rust 主链入口。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令检查文件存在且恰有 11 个固定二级章节，并人工复核上述结论均可回溯到列出的源码、图查询或测试。

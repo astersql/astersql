@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`points.rs` 是 `astersql-util-ranger` crate 内“SQL 谓词 → 有序区间端点”的实现文件。crate 根 `pkg/util/ranger/lib.rs` 以 `points_impl` 私有模块装入本文件，并重新导出其中的公开全范围工厂；内部的 `builder`、`point` 则由同 crate 的 `ranger.rs` 和 `detacher.rs` 直接使用。它位于表达式分析和最终 `Range` 物化之间：上游交给它单列比较、`IN`、`LIKE`、真假判断及其否定形式，下游 `ranger.rs` 再把成对端点转换为表范围或索引/列范围。
-
-该 crate 的边界由 `pkg/util/ranger/Cargo.toml` 定义，包名为 `astersql-util-ranger`，Go 对照包元数据为 `pkg/util/ranger`。本文件直接使用 crate 根重导出的 `expression` 能力，以及 `rangerctx`、`plannererrors`、`types`、collation/MySQL 类型常量；它不是独立入口，也不负责选择哪些谓词能成为 access condition，那部分主要由 `checker.rs`、`detacher.rs` 完成。
+在构造过程中保持 MySQL/TiDB 语义：处理 NULL、unsigned 负常量、整数/float 越界、YEAR 修正、ENUM 枚举值、字符串 collation、前缀索引以及新 collation sort key。
 
 ## 核心职责
 
@@ -86,11 +84,9 @@ collator 以 trait object 借用传递；`RangerContext` 的表达式与类型�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/ranger/points.go`。Rust 文件保留了 Go 的主要符号划分与流程：`point`、`builder`、全范围工厂、二元比较/IN/LIKE/NOT 构造、端点比较和扫描线交并均可逐名对应；`RangeType` 常量也保持 Go `iota` 的 0/1/2 值。
-
 语言层差异主要是所有权表达，而非算法简化：Go 使用 `[]*point`，Rust 使用 `Vec<point>` 并在需要保留值时 clone；Go 的 `builder.err error` 对应 `Option<errors::Error>`；Go 在 `buildFromBinOp` 内的 `refineValueAndOp` 闭包被 Rust 提升为文件级函数；Go 的 comparator 返回 `(int,error)`，Rust 排序闭包把错误记录到 builder 后暂以 Equal 继续，随后由上层检查 `err`。
 
-Go 测试 `ranger_test.go` 提供广泛的行为基线，包括 `TestTableRange` 的左右操作数与 NE/大小比较、`TestIndexRangeForUnsignedAndOverflow`、`TestIndexRangeForYear`、`TestPrefixIndexRangeScan` 和 `TestBinCollationRangeForIndex`。Rust 对应测试分散在独立文件：`points_test.rs` 固定二元比较求值失败的错误状态，`ranger_test.rs::test_index_range_for_unsigned_and_overflow` 等覆盖全范围和部分构造链。目前不能仅凭 Rust 测试数量宣称 Go 的所有边界都已有一一回归覆盖。
+Rust 对应测试分散在独立文件：`points_test.rs` 固定二元比较求值失败的错误状态，`ranger_test.rs::test_index_range_for_unsigned_and_overflow` 等覆盖全范围和部分构造链。
 
 ## 扩展指南
 
@@ -103,13 +99,3 @@ Go 测试 `ranger_test.go` 提供广泛的行为基线，包括 `TestTableRange`
 改变前缀裁剪或 sort-key 时，重点保持两个顺序约束：普通比较/IN 在产生点后裁剪和转换；`NOT IN` 必须先取完整值补集再裁剪/转换。相关回归应放在独立测试文件，并参考 Go 的 `TestPrefixIndexRangeScan` 与 `TestBinCollationRangeForIndex`。
 
 性能方面应避免无界复制或把 ENUM/IN 的点数进一步放大；正确性方面始终允许保守扩大扫描范围，但不能缩窄到漏数据。任何新增错误路径都要决定是写入 `builder.err`、返回空范围还是保守全范围，并用上游残留条件行为证明选择与 Go 一致。
-
-## 验证依据
-
-- 源码全貌：`pkg/util/ranger/points.rs`，核对了 1591 行中的类型、常量、结构体、全部函数/impl 和无条件编译项事实。
-- RustCodeGraph：`status` 显示索引包含 11467 文件、307296 节点、1848419 边；`files --filter pkg/util/ranger` 显示本模块 27 个 Go/Rust 文件；`node --file pkg/util/ranger/points.rs` 显示本文件 39 个符号及文件级使用关系；`query` 核对了 `rangePointCmp`、`buildFromScalarFunc`、`FullIntRange` 等 Rust/Go 对应符号。对 Rust 方法/工厂运行 callers/callees 未得到函数边，因此改以直接源码引用验证调用链。
-- crate 与模块边界：`pkg/util/ranger/Cargo.toml`、`pkg/util/ranger/lib.rs`；目标包没有 `doc.go`。
-- 直接调用证据：`pkg/util/ranger/ranger.rs` 的 `points2TableRanges`、`buildColumnRange`，以及 `pkg/util/ranger/detacher.rs` 的 `ExtractEqAndInCondition`。
-- Go 对照：`pkg/util/ranger/points.go`，逐项核对主要符号和构造/交并流程；行为测试参考 `pkg/util/ranger/ranger_test.go` 中的 `TestTableRange`、`TestIndexRangeForUnsignedAndOverflow`、`TestIndexRangeForYear`、`TestPrefixIndexRangeScan`、`TestBinCollationRangeForIndex`。
-- Rust 独立测试：`pkg/util/ranger/points_test.rs::binary_comparison_eval_error_does_not_set_builder_error`；补充参考 `pkg/util/ranger/ranger_test.rs::test_index_range_for_unsigned_and_overflow` 及同文件的列/索引范围测试。
-- 本任务是只读分析加 Markdown 产出，按任务约束未运行 Cargo。交付结构以任务指定命令验证文档存在且恰有 11 个固定二级标题；人工复核覆盖“为何存在、如何运行、如何安全扩展”，并避免把未获得的图调用边或未运行的测试写成已验证事实。

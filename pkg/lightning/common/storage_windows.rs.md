@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-common` crate 的 Windows 磁盘信息后端。crate 入口 `pkg/lightning/common/lib.rs` 仅在 `cfg(windows)` 或单元测试构建时声明 `storage_windows` 私有模块；业务侧使用的是 `pkg/lightning/common/storage.rs` 再导出的公共 `GetStorageSize` 与 `SameDisk`，该门面只在 Windows 条件分支进入本文件。因此，本文件不是 Lightning 的独立入口，而是平台分发层下的 Win32 适配器。
-
-`pkg/lightning/common/Cargo.toml` 将 crate 名定义为 `astersql-lightning-common`，库入口为 `lib.rs`。本实现只使用标准库、crate 内的 `CommonError`/`StorageSize` 和 Windows 系统库 `kernel32`，没有引入 Cargo 中的额外 Windows 第三方依赖。
+非 Windows 编译下的同名 `GetStorageSize` 是测试/可移植编译用的明确失败分支，不会替代公共门面在 Unix 上选择的 `storage_unix` 实现。
 
 ## 核心职责
 
@@ -57,11 +55,9 @@ Win32 返回零是容量查询的唯一系统失败判据。`io::Error::last_os_
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/common/storage_windows.go`。两版都调用 `GetDiskFreeSpaceExW`，把调用者可用字节写入 `Available`、卷总字节写入 `Capacity`，忽略第四个总空闲字节输出，并在返回值为零时用 `cannot get disk capacity at <path>` 增加上下文。两版的 `SameDisk` 也都保留 FIXME 语义并返回 `false`、无错误。
-
 实现方式存在三点可见差异。第一，Go 用 `MustLoadDLL`/`MustFindProc` 动态取得过程，Rust 通过 `#[link(name = "kernel32")] extern "system"` 声明链接符号。第二，Go 包含名为 `GetStorageSize` 的 failpoint，可直接注入容量；Rust 没有对应 failpoint，而以 `GetStorageSizeWith` 闭包作为单元测试接缝，二者不是运行时等价能力。第三，Rust 的公开输入是 UTF-8 `&str` 后再宽字符编码，Go 使用 `StringToUTF16Ptr`；文档不能把 Rust 接口描述成支持任意非 UTF-8 Windows 路径。
 
-Go 的 `pkg/lightning/common/storage_test.go::TestGetStorageSize` 只验证临时目录能返回正容量，且受 `//go:build windows` 的实现选择影响。Rust 的 `storage_windows_test.rs` 更聚焦于字段接线、路径保留、错误注释和占位同盘契约；它没有在真实 Windows 上直接断言 FFI 成功。
+Rust 的 `storage_windows_test.rs` 更聚焦于字段接线、路径保留、错误注释和占位同盘契约；它没有在真实 Windows 上直接断言 FFI 成功。
 
 ## 扩展指南
 
@@ -70,12 +66,3 @@ Go 的 `pkg/lightning/common/storage_test.go::TestGetStorageSize` 只验证临�
 涉及 FFI 时应继续保证宽字符串在调用期间存活、NUL 终止、输出指针非空且可写，并在失败后立即读取 last-error。若需要支持非 UTF-8 Windows 路径，单改编码代码不够：公共 `storage.rs` 接口及所有调用者的 `&str` 边界也必须一并评估。若引入新的外部 crate，还需同步 `Cargo.toml`；当前实现不需要 Cargo feature。
 
 兼容性风险主要是错误文本、`CommonError.Kind`、字段含义和 `SameDisk` 的保守返回值；性能风险主要来自每次调用分配宽字符 `Vec<u16>`，但当前没有测量证据表明需要缓存。任何缓存都必须先处理路径多样性、卷状态变化和并发生命周期问题。
-
-## 验证依据
-
-- 源码与接线：`pkg/lightning/common/storage_windows.rs`、`pkg/lightning/common/storage.rs`、`pkg/lightning/common/lib.rs`、`pkg/lightning/common/errors.rs`。
-- crate 边界：`pkg/lightning/common/Cargo.toml`（package `astersql-lightning-common`，库入口 `lib.rs`）。
-- Rust 独立测试：`pkg/lightning/common/storage_windows_test.rs`；补充公共冒烟面为 `pkg/lightning/common/storage_test.rs`。
-- Go 对照与测试：`pkg/lightning/common/storage_windows.go`、`pkg/lightning/common/storage.go`、`pkg/lightning/common/storage_test.go`。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`explore "pkg/lightning/common/storage_windows.rs GetStorageSizeWith GetStorageSize SameDisk"` 给出 `GetStorageSize -> GetStorageSizeWith` 两条条件编译调用边、公共 `storage.rs` 源码和测试调用者；`query` 分别定位到目标文件的两个 `GetStorageSize` 条件实现、`GetStorageSizeWith` 与 `SameDisk`。单独的 `callers GetStorageSizeWith` 查询在本机未能及时返回，已终止，调用关系改由上述 `explore` 结果和源码/测试交叉确认。
-- 人工复核结论：本文件存在于 Windows 平台分发边界；容量路径执行一次同步 Win32 查询并统一包装错误；同盘路径仍是保守占位；安全扩展必须维护 FFI 生命周期、字段顺序、Go 对照语义与独立测试。

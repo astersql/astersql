@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-crossks` crate（见 `pkg/domain/crossks/Cargo.toml`），实现跨 Keyspace 与普通 Domain 共用的“内部 SQL Session—InfoSchema MDL 屏障”适配层。模块由 `pkg/domain/crossks/lib.rs` 公开导出；生产侧在 `pkg/session/runtime/session_factory.rs` 创建 `SchemaCoordinator`，把系统会话池借出的真实 Session 包装成 `RegisteredMDLSession`，再由 `pkg/infoschema/issyncer/syncer.rs::Syncer::check_mdl_with_context` 通过 `InfoSchemaCoordinator` 调用它。
-
-它不负责执行 DDL、加载 InfoSchema 或持有 Session worker，也不主动释放事务锁。它只维护当前借出的内部 Session 视图，并从“本轮可推进的 DDL Job”集合中剔除仍受旧事务 MDL 约束的 Job。
+`RegisteredMDLSession` 把协调器本地的 `JobMdl` 转换为 `astersql_session_sessmgr::mdldef::JobMDL`，复用真实事务的 `TransactionMDL::check_jobs`，再把过滤结果映射回调用方集合。
 
 ## 核心职责
 
@@ -77,7 +75,6 @@
 - Go 的 `StoreInternalSession`/`DeleteInternalSession`/`ContainsInternalSession` 接受 `any` 后断言为 `sessionctx.Context`；Rust 把类型约束前移为 `Arc<dyn InternalSession>` 和 ID，避免运行时类型断言。
 - Go `CheckOldRunningTxn` 在持有 `RLock` 时遍历 Session，并调用 `variable.RemoveLockDDLJobs`；Rust 保留锁覆盖范围与十秒日志节流，并通过 `InternalSession` trait/`TransactionMDL::check_jobs` 表达相同过滤职责。
 - Go 直接修改 `map[int64]*mdldef.JobMDL`；Rust 因 InfoSchema crate 与 session-sessmgr crate 的 Job 类型不同，使用两层临时 map 并按键回写删除结果。行为目标仍是删除受阻 Job，而非释放事务锁。
-- 两端 `KillNonFlashbackClusterConn` 在 crossKS 协调器上都是空实现。普通连接的 kill 行为由外层普通 Domain 协调器承担，不应添加到本文件的 crossKS 空实现中。
 - `pkg/domain/crossks/cross_ks_test.go` 覆盖内部 Session 数量、包含关系及最终清理；Rust 对应覆盖分布在 `cross_ks_test.rs`、`coordinator_test.rs` 和 `pkg/session/runtime/normal_ddl_test.rs`。Rust 额外显式测试了真实 `TransactionMDL`、restricted SQL 绕过和系统 Session 池生命周期。
 
 ## 扩展指南
@@ -88,12 +85,3 @@
 - 新增并发行为时必须保持“检查期间不能注销正在回调的 Session”这一不变量，或同时更新 Go 对齐依据和阻塞回归测试。不要在 Session 回调内回入同一协调器的写操作。
 - 若要让 Rust 真实 MDL 路径输出限流日志，需要设计 `TransactionMDL` 或上层观察接口；不能仅使用当前被忽略的 `_print_log` 参数宣称已经支持。还需评估全局十秒窗口是否应继续由协调器统一维护。
 - 性能优化可减少 Job 类型转换和 `table_ids` 克隆，但必须保持多 Session 过滤的交集语义、restricted SQL 绕过以及原始 InfoSchema map 只删除不改写的边界。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件；`files --filter pkg/domain/crossks` 确认目标、Go 对照与独立测试均已索引；`node --file pkg/domain/crossks/coordinator.rs` 读取全部 155 行及 21 个符号；`query` 定位 `SchemaCoordinator`、`new_schema_coordinator`、`check_old_running_transaction`、`RegisteredMDLSession`；`callees check_old_running_transaction` 确认其调用 `remove_lock_ddl_jobs`。
-- 生产源码：`pkg/domain/crossks/coordinator.rs`；模块/Cargo 边界：`pkg/domain/crossks/lib.rs`、`pkg/domain/crossks/Cargo.toml`；实际 MDL 判定：`pkg/session/sessmgr/mdl.rs`。
-- 上游调用：`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/infoschema/issyncer/syncer.rs`；RustCodeGraph 未返回的部分上游边使用 `rg` 按符号名补齐。
-- Go 对照：`pkg/domain/crossks/coordinator.go`；Go 生命周期测试：`pkg/domain/crossks/cross_ks_test.go`。
-- Rust 测试：`pkg/domain/crossks/coordinator_test.rs` 验证读锁覆盖回调；`pkg/domain/crossks/cross_ks_test.rs` 验证登记 API；`pkg/session/runtime/normal_ddl_test.rs` 验证用户/内部事务联合过滤、restricted SQL 绕过与池生命周期；`pkg/server/runtime_test.rs` 验证真实 MDL 过滤适配。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文件存在且恰有十一个固定二级章节，并人工复核文档只描述上述源码和测试能够支持的现状。

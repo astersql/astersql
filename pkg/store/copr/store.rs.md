@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`store.rs` 是 `astersql-store-copr` crate 的组装与适配层。crate 入口 `pkg/store/copr/lib.rs` 以 `pub mod store` 声明本模块，并通过 `pub use store::*` 导出其公开 API；`pkg/store/copr/Cargo.toml` 将 crate 根设为 `lib.rs`，没有为本文件设置独立 feature 或条件编译项。本文件本身也没有 `#[cfg(...)]` 分支。
-
-它不实现具体的 PD、TiKV 或 TiFlash 网络协议，而是用 `StoreBackend` 抽象这些能力，将一个后端和一份共享 `RegionCache` 组装成三类客户端表面：通用 RPC 的 `TikvClient`、Coprocessor 的 `CopClient`、MPP 的 `MppClient`。生产实现来自 `pkg/store/copr/network_backend.rs` 的 `impl StoreBackend for NetworkBackend`；生产接线位于 `pkg/store/driver/tikv_driver.rs`，其中先建立 `NetworkBackend`，再调用 `astersql_store_copr::Store::new`。
+用 `Store` 管理 Coprocessor 缓存、副本读种子、CPU 并行度、TiFlash 部署模式和事件监听器所有权，并提供客户端工厂。
 
 ## 核心职责
 
@@ -86,10 +84,6 @@ RustCodeGraph 对本文件记录了 82 个符号，并能精确定位上述关�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/copr/store.go`。Rust 的 `KvStore` 对应 Go `kvStore`，`TikvClient` 对应 Go `tikvClient`，`Store::new`/`NewStore` 对应 Go `NewStore`，`get_client`、`get_mpp_client`、`next_replica_read_seed` 和 `endpoint_type` 分别对应 `GetClient`、`GetMPPClient`、`nextReplicaReadSeed` 和 `getEndPointType`。
-
-保持一致的语义包括：构造 Store 时建立 Coprocessor cache；种子使用原子先加后返回；获取 Cop 与 MPP 客户端时共享底层 store；`Close` 不关闭底层 KV store；TiFlash 在存算分离模式下映射为 `TiFlashCompute`。Go 测试 `pkg/store/copr/coprocessor_test.go` 通过 `NewStore` 和 `GetRegionCache` 覆盖 Region split、bucket 版本更新、锁处理和 store-batch 超时等实际行为，为 Rust 适配层的迁移语义提供对照。
-
 当前实现也有明确差异。Go `NewStore` 接收具体 `*tikv.KVStore`，Rust 接收可注入的 `Arc<dyn StoreBackend>` 并显式传入两个 TiFlash 配置布尔值；Go 从全局配置读取存算分离状态。Go `GetClient` 把新种子存入 `CopClient.replicaReadSeed`，而 Rust 当前只推进种子，未传入 `CopClient::new`。Go 异步请求复用 client-go 的 async callback 和调用者 context；Rust 每次新建线程且使用默认 cancellation token。Go `getEndPointType` 对未知值回退 TiKV，Rust 因枚举穷尽而没有运行时回退。Go cache 的 `Close` 被显式调用；Rust 通过从 `Option<Arc<_>>` 取走引用并依赖 `Arc`/`Drop` 生命周期释放，若客户端仍持有缓存引用，实际析构会延后。
 
 ## 扩展指南
@@ -101,13 +95,3 @@ RustCodeGraph 对本文件记录了 82 个符号，并能精确定位上述关�
 修改构造或关闭时，必须保留“Coprocessor Store 不拥有底层 KV store”的边界，或明确同步调整外层 `pkg/store/driver/tikv_driver.rs` 的关闭顺序及相关集成测试。若让 `closed` 真正禁止创建新客户端，应补独立 Rust 回归测试并决定 API 是否改为返回 `Result`；不能只增加检查后保留当前无错误返回类型。
 
 副本读种子的 Rust 消费路径是当前最需要谨慎核对的扩展点：若恢复 Go 语义，应修改 `Store::get_client` 与 `CopClient` 构造/状态，并用独立测试证明连续客户端得到不同种子及其负载均衡效果。异步请求若改用 Tokio 或共享线程池，则需同时定义取消、回调 panic、运行时关闭和 `JoinHandle` 兼容策略，并评估高并发下的资源与性能变化。
-
-## 验证依据
-
-- 源码全貌：`pkg/store/copr/store.rs`，核对了全部 634 行、公开/私有类型、trait、impl、函数、别名和无条件编译事实。
-- crate 边界：`pkg/store/copr/Cargo.toml` 与 `pkg/store/copr/lib.rs`，确认 crate 名、根模块、依赖、模块声明和公开再导出。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/copr` 确认本模块及测试面；`node --file pkg/store/copr/store.rs` 读取全文件；`query` 精确定位 `StoreBackend`、`NewStore`、`get_client`、`get_mpp_client`、`split_key_ranges`、`endpoint_type`。对这些节点运行 `callers`/`callees` 得到空边，故改用仓库引用搜索补证且未把空边解释为未使用。
-- 生产调用与实现：`pkg/store/copr/network_backend.rs` 的 `impl StoreBackend for NetworkBackend`；`pkg/store/driver/tikv_driver.rs` 的 `NetworkBackend::connect` 和 `Store::new` 接线。
-- Rust 测试证据：`pkg/store/copr/network_backend_test.rs` 直接验证 trait 后端的超时、Region 失效、流关闭和锁解析；`pkg/store/driver/coprocessor_adapter_test.rs` 验证用本 `Store` 组装后的 DAG 路由、重试、关闭传播和资源控制；`pkg/session/tests/paging_rpc.rs` 验证 Session 查询链中的真实接入。当前未发现同目录 `store_test.rs` 或直接覆盖 `endpoint_type`、`next_replica_read_seed`、`add_event_listener`、`Store::close` 单体语义的 Rust 测试，这是后续行为修改时应补的测试缺口。
-- Go 对照：`pkg/store/copr/store.go`；相关行为测试位于 `pkg/store/copr/coprocessor_test.go` 与 `pkg/store/copr/copr_test/coprocessor_test.go`。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；验收使用任务指定的 11 章结构命令，并人工复核所有现状结论均能回指上述符号或文件。

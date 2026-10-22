@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-lightning-membuf`。crate 边界由 `pkg/lightning/membuf/Cargo.toml` 定义，入口 `pkg/lightning/membuf/lib.rs` 通过 `pub mod limiter` 声明模块并用 `pub use limiter::*` 重导出其公开项。它为同 crate 的块池与顺序分配器提供共享内存配额控制：`pkg/lightning/membuf/buffer.rs` 的 `Pool` 可持有 `Arc<Limiter>`，在借出固定块、归还固定块以及记录小对象元数据开销时使用该限制器。
-
-该文件不是独立进程入口，也不直接分配业务内存；它只维护“尚可获取的配额”和等待队列。工作区中 `astersql-ingestor-engineapi`、`astersql-ingestor-globalsort`、`astersql-ingestor-ingestctrl`、`astersql-ingestor-simplesst` 的 Cargo 清单依赖该 crate，但当前 Rust 生产代码搜索到的外部使用主要面向 `Pool`，限制器的直接生产调用位于同 crate 的 `buffer.rs`。
+`ErrCannotAcquireMemory` 为上层非阻塞分配失败提供稳定文本；限制器自身的 `TryAcquire` 返回 `bool`，实际把该文本转换成 `String` 错误的是 `buffer.rs` 的 `Buffer::tryAllocLocation`。
 
 ## 核心职责
 
@@ -82,18 +80,15 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/membuf/limiter.go`，公开概念和算法保持一致：`NewLimiter` 初始化余额与初始上限；`Acquire` 余额不足时 FIFO 排队；`TryAcquire` 在有等待者或余额不足时失败；`Release` 从队首连续满足请求；超量归还记录余额、初始上限和调用栈。
-
 Rust 的主要表达差异如下：
 
 - Go 使用 `int`，Rust 使用 `usize`；两者都依赖调用者传入非负且单位一致的数量，但整数边界并不完全相同。
 - Go 用 `mu` 同时保护 `limit`、`waitNums`、`waitChs`；Rust 用 `Mutex<LimiterState>` 保护余额和 `VecDeque<Waiter>`，将数量与通知对象绑定，消除了两个切片错位的可能。
 - Go 每个等待者创建无缓冲 channel，`Release` 通过 `close` 一次性放行；Rust 使用私有 `Mutex<bool> + Condvar`，必须循环检查标志以处理伪唤醒。
 - Go 构造函数返回 `*Limiter`，Rust 返回 `Arc<Limiter>`，把跨线程共享所有权显式纳入 API。
-- Go 的 `ErrCannotAcquireMemory` 是 `error` 值，Rust 当前是 `&str` 常量，并由 Buffer 层按需复制成 `String`。
 - Go 在持有限制器互斥锁时关闭等待 channel；Rust 先完成配额扣减和出队，再释放全局锁并通知，以减少锁竞争，但对调用方保持“醒来即已获得配额”的语义。
 
-`pkg/lightning/membuf/limiter_test.go` 的 `TestLimiter` 与 `TestWaitUpMultipleCaller` 分别验证并发持有量不超限和一次释放连续唤醒多个等待者；Rust 的 `limiter_test.rs` 保留这两项意图，并额外验证超量归还日志回溯。`migration_aster_unit_test.rs::migration_limiter_blocks_and_preserves_fifo_against_try_acquire` 补充验证了等待者存在时 `TryAcquire(0)` 也不能插队。
+`pkg/lightning/membuf/limiter_test.go` 的 `TestLimiter` 与 `TestWaitUpMultipleCaller` 分别验证并发持有量不超限和一次释放连续唤醒多个等待者；Rust 的 `limiter_test.rs` 保留这两项意图，并额外验证超量归还日志回溯。
 
 ## 扩展指南
 
@@ -102,13 +97,3 @@ Rust 的主要表达差异如下：
 若改变公平策略，应同时审查 `TryAcquire` 的“有等待者即失败”条件和 `Release` 的只看队首逻辑，并同步 Go 对照语义；允许跳过大请求可提高利用率，但会引入饥饿和 Rust/Go 行为差异。性能调整要保留“锁内预扣、锁外通知”的不变量，并测量大量小请求下每等待者一组 `Arc/Mutex/Condvar` 的成本。
 
 若修改错误类型或溢出策略，应同步 `ErrCannotAcquireMemory`、`buffer.rs::Buffer::tryAllocLocation`、`buffer_test.rs` 及迁移测试。把超量释放从日志改为拒绝或 panic 属于兼容性变化；引入 checked arithmetic 时也需定义溢出的公开行为。任何新增公开符号还需通过 `lib.rs` 当前的通配重导出评估 API 暴露面。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/lightning/membuf` 列出目标源、Go 对照和独立测试；`node --file pkg/lightning/membuf/limiter.rs --offset 1 --limit 260` 返回完整 138 行源码；`query Limiter --kind struct` 定位 Rust/Go 定义；`node NewLimiter` 给出构造关系以及来自三个 Rust limiter 测试的反向调用边。
-- 生产源码：`pkg/lightning/membuf/limiter.rs`（目标实现）、`pkg/lightning/membuf/lib.rs`（模块声明与重导出）、`pkg/lightning/membuf/buffer.rs`（直接生产调用与错误转换）。
-- crate 与上游边界：`pkg/lightning/membuf/Cargo.toml`；工作区根 `Cargo.toml` 的 `facade_lightning_membuf`；以及 `pkg/ingestor/{engineapi,globalsort,ingestctrl,simplesst}/Cargo.toml` 对该 crate 的路径依赖。
-- Go 对照：`pkg/lightning/membuf/limiter.go` 与 `pkg/lightning/membuf/limiter_test.go`。
-- Rust 测试证据：`pkg/lightning/membuf/limiter_test.rs`、`pkg/lightning/membuf/buffer_test.rs`、`pkg/lightning/membuf/migration_aster_unit_test.rs`。这些文件覆盖并发上限、批量唤醒、真实回溯日志、非阻塞失败原子性和 FIFO 防插队。
-- 限定路径 `rg` 搜索核实 `Acquire`、`TryAcquire`、`Release`、`NewLimiter`、`WithPoolMemoryLimiter` 及 crate 名的直接引用；没有发现外部 Rust 生产文件直接构造本限制器，因此文中只把外部模块描述为 membuf/Pool 的上游使用者。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前使用任务文件规定的命令验证目标文档存在且恰好包含 11 个固定二级标题，并人工复核没有把未发现的直接接线表述为已支持事实。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），实现 `ActionMViewRefreshOutOfPlaceCutover`（动作值 92）的持久化 DDL worker 步骤。模块由 `pkg/ddl/lib.rs` 公开声明；普通持久化动作入口 `pkg/ddl/persistent_actions.rs::step` 在 `job.tp == ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER` 时调用本文件的 `step`。
-
-它处理的是完整刷新已经在独立 shadow table 中构建完毕后的“切换”阶段，而不是构建数据本身：旧物化视图从元数据中删除，shadow table 被提升为同名的新物化视图，同时修正基表、可选 MLog、刷新调度行和 schema diff。旧表物理数据的后续清理由 `pkg/ddl/delete_range.rs` 对该动作读取 `OldMViewID` 后生成 delete-range 任务。
-
-目标文件没有条件编译项、模块级常量、自定义类型或 trait；其运行时 API 是公开的 `step`，另有四个文件内/`pub(crate)` 辅助函数。测试独立放在 `pkg/ddl/persistent_mview_out_of_place_cutover_test.rs`，没有内嵌到生产文件。
+将 shadow table 复制成提升对象：继承旧 MV 的名称、注释和 `MaterializedView` 定义，清除 `MaterializedViewShadow` 标记；再删除旧表、更新相关表、生成 schema version/diff、发通知并结束 job。
 
 ## 核心职责
 
@@ -87,13 +83,9 @@ job 在任何参数/元数据校验失败时变为 `Cancelled`；成功时变为
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/ddl/table.go::onRefreshMaterializedViewCompleteOutOfPlaceCutover`，辅助函数对应 `replaceMaterializedViewID` 与 `rewriteMaterializedViewBaseForOutOfPlaceCutover`。Rust 保留了 Go 的主次序和核心不变量：解码参数、验证旧/新对象、改写基表和 MLog、迁移刷新信息、删除旧对象、提升 shadow、更新 schema version、通知、完成 job。
-
-Go 入口和涉及对象锁定信息位于 `pkg/ddl/materialized_view.go::RefreshMaterializedViewCompleteOutOfPlaceCutover` / `buildMViewRefreshOutOfPlaceCutoverInvolvingSchemaInfo`；Go schema diff 特化位于 `pkg/ddl/schema_version.go::SetSchemaDiffForMViewRefreshOutOfPlaceCutover`。Rust 把 diff 构造下沉到 `pkg/meta/reader.rs`，并显式附加基表/MLog affected options。
-
 Go 实现还显式设置各 `TableInfo.UpdateTS`、用 `repairTableOrViewWithCheck` 更新表，并提供两个 cutover failpoint；目标 Rust 文件没有这些显式步骤或 failpoint。Go 的 `migrateMViewRefreshInfoForOutOfPlaceCutover` 使用 table API 原地维护四列系统表；Rust 的 session 实现使用 SELECT/UPDATE SQL。以上是可观察的迁移实现差异，不能写成“Rust 已与 Go 完全等价”。
 
-Go 集成测试 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go` 验证 MLog 依赖替换、迁移后错误回滚、通知错误原子性和提交前错误保留 affinity group。Rust 独立测试目前只覆盖 ID 替换/去重、基表改写错误、事件携带新旧元数据和动作分派，不覆盖完整 `step` 的事务与失败恢复。
+Rust 独立测试目前只覆盖 ID 替换/去重、基表改写错误、事件携带新旧元数据和动作分派，不覆盖完整 `step` 的事务与失败恢复。
 
 ## 扩展指南
 
@@ -104,12 +96,3 @@ Go 集成测试 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go`
 测试应继续放在独立文件：纯 helper/分派测试扩展 `pkg/ddl/persistent_mview_out_of_place_cutover_test.rs`；完整事务、failpoint、InfoSchema 和 GC 行为应对照并扩展 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go` 或新增同目录独立 Rust 测试文件。建议优先补齐：缺失 MLog、错误类型兼容、revision/刷新 TSO 竞争、通知失败回滚、schema diff affected options、旧 ID delete-range。
 
 性能方面，列表替换是线性遍历并使用与唯一 ID 数量同阶的 `HashSet`；通常列表很小。更值得关注的是多次元数据读取和 SQL 系统表访问的事务往返。优化时不能用减少校验或拆分独立提交换取吞吐，否则会破坏 cutover 的原子发布语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query replace_materialized_view_id` 与 `query rewrite_materialized_view_base` 均唯一命中本文件；`node --file pkg/ddl/persistent_mview_out_of_place_cutover.rs --offset 1 --limit 500` 返回完整 215 行源码及三个直接使用文件。`explore` 和随后 `callers/callees` 未返回文本，因此调用关系又由直接源码搜索核验，没有把空结果当作无调用证据。
-- 目标及装配：`pkg/ddl/persistent_mview_out_of_place_cutover.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/Cargo.toml`。
-- 下游实现：`pkg/session/runtime/system_session.rs`、`pkg/meta/reader.rs`、`pkg/meta/model/job_args.rs`、`pkg/ddl/delete_range.rs`、`pkg/ddl/notifier/events.rs`。
-- Go 对照：`pkg/ddl/table.go`、`pkg/ddl/materialized_view.go`、`pkg/ddl/schema_version.go`、`pkg/meta/model/job_args.go`。
-- 测试证据：`pkg/ddl/persistent_mview_out_of_place_cutover_test.rs`；Go 集成测试 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go`；事件契约另有 `pkg/ddl/notifier/events_test.go`。
-- 人工复核结论：文件存在是为了在持久 DDL worker 中原子推广已构建 shadow；运行路径、状态改写、引用修复、schema diff、通知和旧数据 GC 均能追溯到上述符号；安全扩展的关键是保持参数兼容、双向引用、缓存失效与失败回滚一致。按任务约束，本次是纯文档分析，未运行 Cargo 或代码测试。

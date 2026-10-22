@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-server-internal` crate；crate 根在 `pkg/server/internal/lib.rs`，其中用 `#[path = "advertisedstatus/checker.rs"] pub mod advertisedstatus` 将本文件公开给上层 server crate。它实现的是一次性、仅告警的 advertised status endpoint 身份校验：TiDB 状态 HTTP 服务启动后，请求配置所宣告地址上的 `/info`，确认该地址最终返回当前实例的 DDL ID，而不是另一实例、代理或错误服务。
-
-生产入口位于 `pkg/server/server.rs` 的 `Server::run`：状态 HTTP、MySQL 和 PostgreSQL 接受循环启动成功后，代码从有效状态监听地址、`advertise_address`、`Domain::local_ddl_id()` 和状态 TLS 配置组装 `advertisedstatus::Options`，再调用 `advertisedstatus::start`。返回的 `CheckHandle` 保存在 `Server::advertised_status_check` 中；`Server::close_listeners` 在关闭各监听器之前先丢弃它，从而取消并回收诊断任务。
+`Options::endpoint` 判断检查所需前提是否齐全，并用实际状态监听端口、配置的宣告主机及 TLS 状态构造 `/info` URL；IPv6 主机自动加方括号。
 
 ## 核心职责
 
@@ -90,8 +88,6 @@ reqwest 请求 future 被取消后连接资源随之释放。runtime 使用 `shu
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/server/internal/advertisedstatus/checker.go`，两者保持相同的外部语义：前提检查、使用有效 listener 端口、`/info` GET、5 秒超时、1 MiB 正文上限、禁止代理和跳转、复用 `serverinfo.StaticInfo` 的 `ddl_id`、五类失败原因、成功静默、取消不告警及一次性结构化告警。独立对照测试分别位于 `checker_test.go` 和 `checker_test.rs`。
-
 Rust 为适配所有权与异步运行时做了局部接线差异：
 
 - Go `Options` 持有 `net.Listener` 并从其 `Addr()` 取端口；Rust 为避免跨 crate 传递 listener，持有 `Option<SocketAddr>`。
@@ -110,14 +106,3 @@ Rust 为适配所有权与异步运行时做了局部接线差异：
 - 调整正文读取必须保持有界内存和“恰好上限可接受”的边界，测试 `endpoint_responses_match_go_identity_and_body_limits` 应同步更新。
 - 改动取消/线程模型时必须维护三个性质：启动不阻塞、server 正常关闭不告警、drop 不等待不可中止 DNS；对应 Rust 测试为 `endpoint_cancellation_closes_the_request_and_suppresses_warning`、`inflight_cancellation_returns_request_failure_and_closes_connection`、`lifecycle_cancellation_does_not_wait_for_a_blocking_dns_job`。
 - 生产 Rust 测试继续放在独立的 `checker_test.rs`，不要内嵌回本文件；Go 行为变化也应同步 `checker_test.go`。性能风险主要来自每次启动一个 OS 线程、TLS/证书读取和 1 MiB 缓冲，但当前每次 server Run 只执行一次，不能在未评估资源上限时扩展为周期轮询。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/server/internal/advertisedstatus` 确认目标 Rust/Go 源及两套独立测试均在图中。
-- RustCodeGraph 文件与符号读取：`checker.rs` 中的 `TlsOptions`、`Options`、`CheckResult`、`new_http_client`、`check_endpoint`、`check_response`、`warning_*`、`CheckHandle` 和 `start*`；精确查询确认 `checker.rs::check_endpoint` 位于第 126 行。
-- 上游及生命周期证据：`pkg/server/server.rs` 的 `Server::advertised_status_check`、`Server::run`（调用 `advertisedstatus::start`）和 `Server::close_listeners`（先 `take` 句柄）；server 级测试见 `pkg/server/http_status_test.rs` 的 `advertised_status_info_returns_the_local_ddl_identity`、`advertised_status_start_requests_configured_host_and_close_cancels_inflight_request`、`advertised_status_disabled_does_not_read_domain_identity`。
-- crate 与依赖证据：`pkg/server/internal/lib.rs` 的公开模块接线；`pkg/server/internal/Cargo.toml` 的 `reqwest`、`hyper`、`tokio`、`astersql-domain-serverinfo`、`astersql-util-logutil` 和测试用 `openssl` 声明。
-- 协议证据：RustCodeGraph 的 `pkg/domain/serverinfo/info.rs::StaticInfo` 定义确认 `ID` 为 DDL/节点唯一 ID；目标实现通过其 `Unmarshal` 读取 `/info`。
-- Go 对照：`pkg/server/internal/advertisedstatus/checker.go` 的 `Start`、`newEndpointHTTPClient`、`checkEndpoint`、`endpointWarningAction` 和 `logEndpointCheckWarning`；Go 测试为同目录 `checker_test.go`。
-- Rust 边界测试：`pkg/server/internal/advertisedstatus/checker_test.rs` 覆盖前提、IPv4/IPv6、状态与正文边界、重定向、代理、TLS/mTLS、请求错误、结构化诊断、取消、连接释放和阻塞 DNS 生命周期。
-- 本任务为纯文档分析，依计划不运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题。

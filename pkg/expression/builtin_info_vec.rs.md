@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate，是信息类 SQL 内置函数的向量化求值内核。模块由 [`lib.rs`](lib.rs) 以 `#[path = "builtin_info_vec.rs"] mod builtin_info_vec_kernel;` 私有装配，复用 [`builtin_info.rs`](builtin_info.rs) 中的会话模型、标量语义和键解码接口，而不是重新实现 SQL 规则。它接收一个批次的行数或已求值参数列，返回 `Vec<T>` 形式的结果列。
-
-当前 RustCodeGraph 索引显示这些公开函数的直接调用者主要位于独立测试，未发现从生产表达式派发器到本模块的调用边。因此，本文件是已经实现并受测试约束的移植内核，但不能仅凭现有代码断言它已经接入完整 SQL 执行主链。Go 对照实现 [`builtin_info_vec.go`](builtin_info_vec.go) 则直接实现各 `builtin*Sig` 的 `vectorized` 与 `vecEval*` 方法。
+`vec_decode_key` 必须逐行处理，因为每行输入可能不同；它保留 NULL、支持无 codec 时原文回退，并传播 codec 的首个错误。
 
 ## 核心职责
 
@@ -65,15 +63,12 @@
 
 ## 与 Go 版本的对应关系
 
-[`builtin_info_vec.go`](builtin_info_vec.go) 是直接语义基准：数据库空串转 NULL、会话标量整列广播、角色排序拼接、DDL owner 转 0/1、带参 `LAST_INSERT_ID` 从后向前取最后一个非 NULL、解码逐行保留 NULL，均在 Rust 标量内核与本向量包装层分工复现。
-
 主要结构差异如下：
 
 - Go 每个具体签名都有 `vectorized()`；Rust 用集中式 `InfoBuiltinKind` 矩阵表达能力，三个不可向量化的 MVCC/编码键变体没有对应向量求值函数。
 - Go 直接读 `EvalContext`/session variables 并写 `chunk.Column`；Rust 从显式 `SessionInfo` 快照读写并返回 `Vec`，DDL owner 状态和 `KeyCodec` 也由调用者注入。
 - Go `BENCHMARK` 只有 `constLoopCount > 0` 才报告可向量化，按子表达式求值类型选择 `VecEval*`，并借还缓冲列；Rust 入口由闭包统一代表一次整列求值，并用错误保护确保调用者不会把零或负循环次数送入向量路径。
 - Go `TIDB_DECODE_KEY` 的默认解码函数可结合 infoschema，且 Go 回调返回字符串；Rust `KeyCodec` 可返回 `ExpressionError`，因此额外具有显式的逐行失败路径。
-- [`builtin_info_vec_test.go`](builtin_info_vec_test.go) 通过通用向量/标量一致性框架覆盖 SQL 类型和 `BENCHMARK` 的多种子表达式类型；Rust [`builtin_info_vec_test.rs`](builtin_info_vec_test.rs) 更直接地验证广播、错误、状态写回、能力矩阵与 codec 注入。
 
 ## 扩展指南
 
@@ -84,13 +79,3 @@
 测试应同步修改独立文件 [`builtin_info_vec_test.rs`](builtin_info_vec_test.rs)，至少覆盖零行、缺失会话、NULL、错误传播、状态副作用和能力矩阵；Go 对齐变化还应核对 [`builtin_info_vec.go`](builtin_info_vec.go) 与 [`builtin_info_vec_test.go`](builtin_info_vec_test.go)。Rust 单元测试不得写入生产源文件。
 
 兼容性风险主要是 MySQL/TiDB 返回格式、NULL/错误差异和会话副作用；性能风险主要是大 `rows` 的字符串克隆、过大 `loop_count` 的同步循环、逐行动态分派 codec，以及未来若重复调用本应广播的昂贵标量函数。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖当前仓库，包含 `pkg/expression/builtin_info_vec.rs`；`node --file ...` 读取到完整 172 行源码。
-- RustCodeGraph `query/node`：确认 `InfoBuiltinKind`、`vec_benchmark`、`vec_last_insert_id_with_id`、`vec_decode_key` 的定义；`node` 的调用 trail 将关键入口指向 `builtin_info_vec_test.rs` 或综合 Aster 单元测试，未给出生产调用边。
-- 源码：[`builtin_info_vec.rs`](builtin_info_vec.rs)（能力矩阵、广播、循环、状态更新、逐行解码）；[`builtin_info.rs`](builtin_info.rs)（`SessionInfo`、标量函数、`KeyCodec` 与 `ExpressionError` 传播语义）；[`lib.rs`](lib.rs)（模块与测试装配）。
-- crate 配置：[`Cargo.toml`](Cargo.toml)（`astersql-expression` 包、`lib.rs` 入口、`autotests = false`、无本文件专属 feature）。
-- Rust 测试：[`builtin_info_vec_test.rs`](builtin_info_vec_test.rs)（广播和零行、缺失会话、BENCHMARK 次数/错误、LAST_INSERT_ID 最后非 NULL 与负值、能力矩阵、解码 NULL/回退/错误、DDL owner 0/1）。
-- Go 对照：[`builtin_info_vec.go`](builtin_info_vec.go)（各 signature 的向量实现与三个不可向量化例外）；[`builtin_info_vec_test.go`](builtin_info_vec_test.go)（通用向量一致性和 benchmark 覆盖）。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证用于确认目标文件存在且恰含 11 个固定二级章节。

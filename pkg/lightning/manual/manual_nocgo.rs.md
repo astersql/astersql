@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-lightning-manual`（见 [`Cargo.toml`](Cargo.toml)），是 `manual` crate 在未启用 `cgo` feature 时提供的纯 Rust 字节缓冲兼容实现。文件级 `#![cfg(not(feature = "cgo"))]` 控制本文件中的项目是否参与编译；crate 默认 feature 为空，因此默认构建可见 `manual_nocgo::New` 和 `manual_nocgo::Free`，启用 `cgo` 后该模块声明仍在，但这两个函数不再存在。
-
-[`lib.rs`](lib.rs) 通过 `pub mod manual_nocgo` 暴露该子模块，但 crate 根导出的 `New`、`Free` 来自 `manual.rs`，不是本文件。因此当前实现是可显式调用的无 cgo 对照入口，并未像 Go 的构建标签那样自动替换 crate 根 API。RustCodeGraph 的文件关系也将本文件报告为 `used by 0 files`；源码搜索确认生产代码没有直接调用，直接使用只出现在 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。
+文件只提供上述两个函数，没有常量、类型、trait、`impl`、全局状态或其他条件编译分支。
 
 ## 核心职责
 
@@ -67,7 +65,7 @@ RustCodeGraph `query manual_nocgo --json` 精确定位了文件节点和这两�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`manual_nocgo.go`](manual_nocgo.go)。Go 用 `//go:build !cgo` 让 `New(n int) []byte` 与空操作 `Free(b []byte)` 在无 cgo 构建中成为包级实现；Rust 用文件级 `cfg(not(feature = "cgo"))` 提供 `New(n: isize) -> Vec<u8>` 与消费所有权的 `Free(Vec<u8>)`。两者的共同语义是：分配长度为 `n` 的零值字节序列，且不调用 C 的 `malloc`/`free`。
+Go 用 `//go:build !cgo` 让 `New(n int) []byte` 与空操作 `Free(b []byte)` 在无 cgo 构建中成为包级实现；Rust 用文件级 `cfg(not(feature = "cgo"))` 提供 `New(n: isize) -> Vec<u8>` 与消费所有权的 `Free(Vec<u8>)`。
 
 需要保留的差异有：
 
@@ -85,11 +83,3 @@ Go 同目录没有独立的 `manual_nocgo_test.go`；当前移植语义由 Rust 
 若要调整长度边界，应修改 `New` 的转换/上限逻辑，并明确是否需要与 [`manual.rs`](manual.rs) 的 `MaxArrayLen` 完全一致。测试至少应放在独立的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 或新增同目录独立 `*_test.rs` 文件中，覆盖 `0`、负数、正常长度和选定上限；不要把测试写回生产源文件。
 
 若要改变释放策略，应修改 `Free` 的所有权签名和实现，并同步核对所有调用者是否仍能保证单次释放。兼容风险主要是公开 API 路径及 panic/所有权语义；性能风险主要是大缓冲的清零成本和分配峰值。任何引入复用池、共享所有权或延迟释放的方案都需要另外说明并发同步与容量回收策略。
-
-## 验证依据
-
-本说明核对了以下文件：目标 [`manual_nocgo.rs`](manual_nocgo.rs)、模块入口 [`lib.rs`](lib.rs)、默认实现 [`manual.rs`](manual.rs)、分配器 [`allocator.rs`](allocator.rs)、crate 声明 [`Cargo.toml`](Cargo.toml)、Go 对照 [`manual_nocgo.go`](manual_nocgo.go) 与 [`manual.go`](manual.go)，以及独立 Rust 测试 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 和 [`allocator_test.rs`](allocator_test.rs)。[`BUILD.bazel`](BUILD.bazel) 仅描述 Go library，未为本 Rust 文件提供额外接线。
-
-执行过的 RustCodeGraph 证据包括：`status`（索引含 11,467 个文件，目标目录的 9 个 Go/Rust 文件均已索引）、`files --filter pkg/lightning/manual`、`query manual_nocgo --json`、目标及相邻文件的 `node --file`，以及 `New`/`Free` 的 `callers`/`callees` 尝试。文件图报告目标 `used by 0 files`；同名函数图查询存在消歧污染，因此又用 `rg` 精确核对 `manual_nocgo` 和 `astersql_lightning_manual` 引用，结果只发现模块声明和上述迁移测试调用。
-
-任务是纯文档分析，按计划未运行 Cargo。结构验收以目标文档存在且固定标题恰好为十一个为准；人工复核重点是模块没有自动替换根 API、feature 边界、负数 panic、无 `MaxArrayLen` 限制以及 `Vec` 所有权释放语义均有源码或测试依据。

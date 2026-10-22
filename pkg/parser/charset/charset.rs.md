@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-charset` crate 的字符集与排序规则元数据注册表。crate 入口 [`lib.rs`](./lib.rs) 通过 `include!("charset.rs")` 将其置于 `charset` 模块，并只在 crate 根重导出少量常用字符集常量；完整 API 通过 `parser_charset::charset::*` 使用。它不负责字节编码转换，后者位于同 crate 的 `encoding*.rs`。`Cargo.toml` 表明该 crate 直接依赖 `astersql-errors`、`astersql-parser-mysql`、`astersql-parser-terror` 和 `log`，分别为错误值、MySQL 常量/错误码、类型化错误与告警日志提供边界。
+第四，提供大小写归一化、`utf8mb3` 别名、默认值查询以及自定义字符集/排序规则注册接口。
 
 ## 核心职责
 
@@ -51,20 +51,12 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/parser/charset/charset.go`，Rust 保留了结构字段、常量、两层字符集目录、静态排序规则内容、公开函数命名和主要分支。Go 在 `init()` 中立即填表；Rust 改为 `Once` 惰性填表，但任何公开查询/变更入口都会先初始化。Go 返回共享指针，Rust 返回克隆值，并用 `RwLock` 替代无锁 package map，以适应 Rust 全局可变状态约束。
+Go 在 `init()` 中立即填表；Rust 改为 `Once` 惰性填表，但任何公开查询/变更入口都会先初始化。Go 返回共享指针，Rust 返回克隆值，并用 `RwLock` 替代无锁 package map，以适应 Rust 全局可变状态约束。
 
-Rust 额外提供 `GetCharsetInfoForIntroducer`，用于保持扫描器对已知但不支持 introducer 的报错路径；Go 扫描器可直接利用 `GetCharsetInfo` 返回的对象与错误。Rust 的 `RemoveCharset` 保留 Go 按 `supportedCollations[i].Name == c` 删除的现状，文档不把它描述成按 `CharsetName` 级联清理。独立 Rust 测试 `charset_test.rs` 对齐 `charset_test.go` 的合法组合、默认值、未知错误、全量排序规则、自定义注册和 `utf8mb3` 别名；`charset_1_aster_unit_test.rs` 另验证 7 项排序、7 个受支持排序规则及 unsupported/unknown 区分。
+Rust 额外提供 `GetCharsetInfoForIntroducer`，用于保持扫描器对已知但不支持 introducer 的报错路径；Go 扫描器可直接利用 `GetCharsetInfo` 返回的对象与错误。独立 Rust 测试 `charset_test.rs` 对齐 `charset_test.go` 的合法组合、默认值、未知错误、全量排序规则、自定义注册和 `utf8mb3` 别名；`charset_1_aster_unit_test.rs` 另验证 7 项排序、7 个受支持排序规则及 unsupported/unknown 区分。
 
 ## 扩展指南
 
 新增“当前支持”的字符集时，应同步 `CharacterSetInfos`、相关 `Charset*`/默认 `Collation*` 常量、`supportedCollationNames` 和必要的编码实现；若 TiFlash 也支持，再更新 `TiFlashSupportedCharsets`。仅增加兼容目录项时修改 `charsets`，不要错误宣称已有编码支持。新增排序规则时维护 `collations` 的唯一 ID/名称、正确 `CharsetName`、默认标记、`Sortlen` 和 `PadAttribute`，并决定是否加入公开支持白名单。
 
 修改归一化或错误语义时，优先检查 `GetCharsetInfo`、`GetCharsetInfoForIntroducer`、`utf8Alias`、`GetCollationByName` 和 `GetCharsetInfoByID` 的调用者。同步测试应放在独立文件 `pkg/parser/charset/charset_test.rs` 或相应集成测试中，不要嵌入生产源文件；同时核对 Go 的 `charset.go`/`charset_test.go`，避免 Rust 逻辑被简化。兼容风险主要是协议 ID、默认排序规则与错误文本，性能风险主要是扩大静态表克隆或增加锁竞争；自定义删除若要改为级联语义，则属于行为变更，必须新增回归测试并审查既有 Go 兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/parser/charset` 找到目标源码、crate 入口及独立测试；`node --file pkg/parser/charset/charset.rs --offset 1 --limit 500` 与 `--offset 480 --limit 300` 覆盖全部 726 行，并报告 51 个使用文件。对重名函数的裸 `callers/callees` 无法在 Go/Rust 候选间消歧，因此调用点以限定 `.rs` 的 `rg` 结果补充。
-- 源码与边界：`pkg/parser/charset/charset.rs`、`pkg/parser/charset/lib.rs`、`pkg/parser/charset/Cargo.toml`；表项计数由对 `charset_row`/`collation_row` 构造行的限定检索获得（7 + 41 个字符集构造、273 个排序规则构造）。
-- Go 对照与测试：`pkg/parser/charset/charset.go`、`pkg/parser/charset/charset_test.go`、`pkg/parser/charset/charset_test.rs`、`pkg/parser/charset/charset_1_aster_unit_test.rs`。
-- 调用证据：`pkg/parser/lexer.rs`、`pkg/parser/parser_actions/expression.rs`、`pkg/ddl/create_table.rs`、`pkg/sessionctx/variable/varsutil.rs`、`pkg/format/textrow/result_encoder.rs`、`pkg/server/internal/column/convert.rs`、`pkg/types/datum.rs`、`pkg/util/collate/collate.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收以目标文件存在且固定二级标题恰好 11 个为准。

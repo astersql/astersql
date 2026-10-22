@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/etcd.rs` 属于 `astersql-util` crate，由 `pkg/util/lib.rs` 的 `pub mod etcd` 对外公开。它复刻 Go 文件 `pkg/util/etcd.go` 中“创建 etcd concurrency session 时按预算重试”和“按 etcdctl 形式展示 lease ID”的通用能力，但用可注入的 `SessionFactory` 隔离了具体 etcd 客户端。
-
-当前仓库中能确认的 Rust 调用者只有独立测试 `pkg/util/etcd_test.rs` 和 `pkg/util/cpu_posix_1_aster_unit_test.rs`；未检索到 Rust 生产模块调用此文件。对应 Go API 则被 owner、DDL schema 同步、server-info 同步等生产路径使用，例如 `pkg/owner/manager.go`、`pkg/ddl/schemaver/syncer.go`、`pkg/ddl/serverstate/syncer.go` 和 `pkg/domain/serverinfo/syncer.go`。因此本文件目前是公开且可测试的移植接口，不应描述成已经接入 Rust 的 owner/DDL 主链。
+`CancellationContext` 提供 Go `context.Context` 的一个小型子集：可跨克隆共享显式取消标记，并可携带绝对截止时间。
 
 ## 核心职责
 
@@ -68,11 +66,7 @@ Go 对照的生产调用关系包括：`pkg/owner/manager.go` 创建 owner sessi
 
 ## 与 Go 版本的对应关系
 
-共同语义来自 `pkg/util/etcd.go`：200 ms 间隔、15 次日志周期、默认 3 次、最大整数表示无限预算；每轮建连前检查 context/上一错误；取消、deadline 和 client connection closing 停止后续尝试；失败后休眠；lease ID 使用 16 位小写十六进制。
-
-Rust 为可移植和可测试做了类型替换：`CancellationContext` 代替完整 `context.Context`，`SessionFactory` 代替 `*clientv3.Client` 与 `concurrency.NewSession`，关联类型代替 `*concurrency.Session`，三个 Rust 错误类型代替 Go/context/grpc 错误，`Result<Option<_>>` 表达 Go 的 session 指针可能为 nil。
-
-尚未对齐或未接入的 Go 行为必须明确保留为差异：Rust 没有 `closeClient`/`closeGrpc` failpoint；没有 `metrics.NewSessionHistogram` 观测；日志使用 `log` 而不是 TiDB 的结构化 logger；没有直接调用 etcd SDK；也没有在 Rust owner、DDL 或 domain 路径发现调用。Go 侧相关行为测试位于 `pkg/owner/fail_test.go`；顶层 `pkg/util` 没有对应 `etcd_test.go`，Rust 的直接回归测试是独立文件 `pkg/util/etcd_test.rs`，另有聚合测试 `pkg/util/cpu_posix_1_aster_unit_test.rs`。`pkg/util/etcd/` 是另一个独立 crate/模块，不能与本文件混为同一实现。
+尚未对齐或未接入的 Go 行为必须明确保留为差异：Rust 没有 `closeClient`/`closeGrpc` failpoint；没有 `metrics.NewSessionHistogram` 观测；日志使用 `log` 而不是 TiDB 的结构化 logger；没有直接调用 etcd SDK；也没有在 Rust owner、DDL 或 domain 路径发现调用。
 
 ## 扩展指南
 
@@ -82,12 +76,3 @@ Rust 为可移植和可测试做了类型替换：`CancellationContext` 代替�
 - 扩展 `CancellationContext` 时要维持克隆间取消共享、不依赖墙上时钟，以及取消优先于 deadline 的现有判定顺序；新增错误类别需同时更新 `contextDone` 与独立测试。
 - 若将 Rust API 接入 owner/DDL/domain，需逐个确认调用点的 session 类型、生命周期、指标与 failpoint 要求，不能仅因 Go 调用链存在就假定 Rust 接口可直接替换。
 - `FormatLeaseID` 若要覆盖负数、高位值或与 etcdctl 完全一致的位级格式，应先增加与 Go 输出对照的边界测试。
-
-## 验证依据
-
-- 生产源码：`pkg/util/etcd.rs`（全部常量、`CancellationContext`、三个错误类型、`SessionFactory`、`NewSession`、`contextDone`、`FormatLeaseID`）。
-- crate 与模块入口：`pkg/util/Cargo.toml`、`pkg/util/lib.rs`；该目录没有 `doc.go`。
-- Rust 独立测试：`pkg/util/etcd_test.rs` 验证连接关闭错误保留类型且只尝试一次；`pkg/util/cpu_posix_1_aster_unit_test.rs` 验证临时失败后成功、预取消不调用工厂及 lease ID 格式。
-- Go 对照：`pkg/util/etcd.go`；生产调用证据来自 `pkg/owner/manager.go`、`pkg/ddl/schemaver/syncer.go`、`pkg/ddl/serverstate/syncer.go`、`pkg/domain/serverinfo/syncer.go`，相关 failpoint 测试位于 `pkg/owner/fail_test.go`。
-- RustCodeGraph：索引状态为 11,467 个文件；`query` 定位 `etcd.rs::NewSession`、`etcd.rs::FormatLeaseID` 和 `etcd.rs::contextDone`；`callers 'etcd.rs::NewSession'` 返回两个 Rust 测试；`callees` 返回 `contextDone` 与 `SessionFactory::new_session`；`FormatLeaseID` 的图调用边为空，随后用源码检索补充测试调用证据。
-- 人工边界复核：确认零/负预算、最后一次失败后的休眠、上下文优先级、终止错误检查时点、无 Rust 生产调用者以及 `pkg/util/etcd/` 为不同模块等结论均直接来自上述代码和调用搜索；未运行 Cargo，符合本纯文档任务约束。

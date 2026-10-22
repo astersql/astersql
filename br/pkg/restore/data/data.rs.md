@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`data.rs` 是 `astersql-br-pkg-restore-data` crate 中 TiKV 数据恢复流程的 Rust 移植实现，由同目录 `lib.rs` 以 `pub mod data` 装配并通过 `pub use data::*` 重导出。`br/pkg/restore/data/Cargo.toml` 将它声明为 library crate，`package.metadata.porting.go-package` 指向 Go 包 `br/pkg/restore/data`；根 `Cargo.toml` 将该 crate 列为 workspace 成员。
-
-当前 Rust 侧的边界必须如实理解：该 crate 的 `[dependencies]` 为空，源文件通过同 crate 的 `stubs.rs` 获得 `Mgr`、`RecoverDataClient`、`FlashbackRpc`、`WorkerPool` 等接口或本地模型。仓库 Rust 搜索中，`RecoverData` 只由本 crate 的 `parity_test.rs` 引用，未找到 Rust BR 命令主链的生产调用者。因此它已承载恢复算法和可测试契约，但不能仅凭当前代码声称已接管 Go BR 的实际生产恢复路径。
+用 `RecoveryStage`、`recoveryError`、`stage_err`、`atStage` 把错误与失败阶段关联，供 `isRetryErr` 判定整体流程是否可重试。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ watcher 线程持有 clone 后的 context、计划和 manager，以 `watcher_tic
 
 ## 与 Go 版本的对应关系
 
-Rust 的类型、方法名、六步顺序、阶段重试分类、`MaxAllocID` 计算、leader/tombstone 计划、store 重启后重放、以及 flashback 的 `commitTS-1` 边界均直接对应 `br/pkg/restore/data/data.go`。`data_test.rs` 复制 Go `data_test.go` 的三 store/三 region 数据，同样断言 3 个唯一 region、`MaxAllocID == 0x176f` 和 2 个计划 store。
-
 实现上的重要差异为：
 
 - Go `newRecoveryClient` 直接配置 gRPC backoff、TLS 和 keepalive；Rust 从 `Mgr::ClientFactory` 获取 trait object 客户端和连接，具体传输由注入者负责。
@@ -107,12 +103,3 @@ Rust 的类型、方法名、六步顺序、阶段重试分类、`MaxAllocID` �
 - 将 flashback 扩展为真实 region 调度时，最可能修改 `run_on_full_range`、`PrepareFlashbackToVersion`、`FlashbackToVersion` 和 `FlashbackRpc`。应为范围分片、并发上限、部分完成计数、取消及重试边界增加独立测试，并与 Go `rangetask` 行为对照。
 - 改动并发代码时，保留 `ConnCloser` / `CancelOnDrop` 的异常路径释放保证，并在 `parity_test.rs` 中继续断言连接关闭次数、取消传播方向和进度推进。watcher 的 tick 与启停钩子只用于可测试性，不应改变默认 30 秒生产语义。
 - 任何语义改动都应对照 `data.go` 和 `data_test.go`；若有意与 Go 分歧，需在文档和 parity 测试中明确记录可观测差异，而不是为了让测试通过而简化流程。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库索引包含 7,032 个 Rust 文件；`files --filter br/pkg/restore/data` 确认该目录的 Rust/Go 源文件、测试和模块边界。
-- RustCodeGraph `node --file br/pkg/restore/data/data.rs` 用于阅读目标文件全部 774 行与 32 个符号；`explore` 确认 `RecoverData -> doRecoveryData`、`doRecoveryData -> ReadRegionMeta/MakeRecoveryPlan/RecoverRegions/PrepareFlashbackToVersion/FlashbackToVersion` 以及 `RecoverRegionOfStore` 的主要内部调用边。精确 `callers/callees` 对部分 Go 风格 Rust `impl` 方法未返回可解析结果，本文档对这些边以文件内源码复核，没有推测外部调用者。
-- crate 与装配证据：`br/pkg/restore/data/Cargo.toml`、`br/pkg/restore/data/lib.rs`、根 `Cargo.toml`。这些文件确认 library crate、空依赖集、Go 包映射、workspace 成员身份和 `data::*` 重导出。
-- Go 对照：`br/pkg/restore/data/data.go`（六步顺序、gRPC、errgroup、watcher、rangetask、计划算法）与 `br/pkg/restore/data/data_test.go`（唯一 region 数、最大 ID、计划 store 数）。
-- Rust 测试证据：`br/pkg/restore/data/data_test.rs` 验证 Go 基础用例和错误文本/阶段保留；`br/pkg/restore/data/parity_test.rs` 验证退避重试、`uint64` 回绕、子 context 取消、EOF 哨兵、一致性检查、恢复计划、连接关闭、RPC 调用、进度和取消错误。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证仅要求目标文档存在且上述固定二级章节恰好为 11 个。

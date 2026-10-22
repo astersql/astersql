@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑计划中的表叶节点 `DataSource`：它位于 SQL 已解析、表与列元数据已经绑定之后，物理扫描计划尚未确定之前，集中保存表元数据、过滤条件、候选访问路径和统计信息。crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 以 `mod logical_datasource` 装配本模块并通过 `pub use logical_datasource::*` 对外导出；`pkg/planner/core/operator/logicalop/Cargo.toml` 将该 crate 定义为 `astersql-planner-core-operator-logicalop`，并声明它直接依赖表达式、cardinality、ranger、statistics、planner property/util、KV、元数据和规则工具等本地 crate。
-
-`DataSource` 不是最终执行器，也不直接读取 KV。它把一个未物理化的表访问表示成逻辑叶子，经过谓词下推、列裁剪、Range/行数推导后，再由 `Convert2Gathers` 变成 `LogicalTableScan` 或 `LogicalIndexScan`，外包一层 `TiKVSingleGather`，供 cascades 转换和物理计划路由继续处理。直接接线证据包括 `pkg/planner/cascades/old/transformation_rules.rs:1351` 和 `pkg/planner/core/operator/physicalop/base_physical_plan.rs:8955` 对 `DataSource::Convert2Gathers` 的调用。
+把一个未物理化的表访问表示成逻辑叶子，经过谓词下推、列裁剪、Range/行数推导后，再由 `Convert2Gathers` 变成 `LogicalTableScan` 或 `LogicalIndexScan`，外包一层 `TiKVSingleGather`，供 cascades 转换和物理计划路由继续处理。
 
 ## 核心职责
 
@@ -89,10 +87,6 @@ RustCodeGraph 的文件节点还显示 `memtable_infoschema_extractor.rs`、`phy
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_datasource.go`，Cargo metadata 也声明同一 Go package。类型字段和主要方法名称总体对应：`DataSource`、`ExplainInfo`、`PredicatePushDown`、`PruneColumns`、`BuildKeyInfo`、`DeriveStats`、`PreparePossibleProperties`、`ExtractCorrelatedCols`、`ExtractFD`、Gather 构造、句柄追加、覆盖索引和部分索引检查均能找到同名来源。
-
-已保持的关键语义包括：空投影仍保留句柄列；索引等值前缀之后的后缀可提供排序；common handle 只在符合 TiKV 物理键布局时追加；前缀索引可以独立判断 `IS NULL`；部分索引必须被下推条件满足，计划缓存只对安全的 `IS NOT NULL` 情形视为恒成立；伪统计和关联列选择率会影响访问路径行数。
-
 需要明确记录的差异：
 
 - Go 的 `PredicatePushDown` 还调用 shard-index 前缀补全及通用 `PushDownExprs`；Rust 以本地 Schema/可编码性判断替代，并在本文件直接派生 Range。
@@ -100,7 +94,6 @@ RustCodeGraph 的文件节点还显示 `memtable_infoschema_extractor.rs`、`phy
 - Go 当前 `Convert2Gathers` 只为覆盖索引生成 index gather，并保留 index lookup TODO；Rust 会生成索引候选并用 `IsDoubleRead` 表示需要回表。
 - Go `BuildKeyInfo`/`ExtractFD` 含读取最新索引状态和完整 FD 图逻辑；Rust 仅处理公开索引键，并将 FD 提取委托给基类，不能宣称完全对齐。
 - Go 的 `HasTiFlash` 包括 session 中的假设副本；Rust `HasTiFlash` 只看真实 `TableInfo`，同文件的 `UsedHypoTiFlashReplicas` 也没有 session 参数。
-- Rust `FTSPushDown`、`IndexMergeHints` 等字段在本文件主要是状态载体；它们的产生/消费需要在 builder 或其他规则中继续追踪，不能从字段存在推断本文件已完成端到端功能。
 
 ## 扩展指南
 
@@ -113,12 +106,3 @@ RustCodeGraph 的文件节点还显示 `memtable_infoschema_extractor.rs`、`phy
 修改统计时，必须一起维护点估计及 min/max 风险边界，并避免原地修改共享 `HistColl`。修改物理候选构造时，检查 Range、过滤条件、`StoreType`、`NoncacheableReason`、单扫/双读标志在 Scan 与 Gather 间是否完整传递。
 
 测试必须放在独立文件，不内嵌到生产 `.rs`。首选扩展 `logical_datasource_test.rs`（Range、句柄布局、统计风险）和 `logical_datasource_aster_unit_test.rs`（键、裁剪、属性）；涉及物理转换时还应同步 `logical_table_scan_test.rs`、`logical_index_scan_test.rs`、`logical_tikv_single_gather_test.rs` 或 physicalop 路由测试。Go 对照回归可参考 `pkg/planner/core/logical_plans_test.go` 的谓词下推/列裁剪，以及 `pkg/planner/core/casetest/index/index_test.go` 的部分索引计划缓存/裁剪用例。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标文件节点完整覆盖 2,205 行，并报告 5 个直接使用文件。
-- RustCodeGraph `query/node`：核对了 `DataSource` 文件全貌、`deriveAccessPathsFromPredicates`（572 行）、`PredicatePushDown`（1246 行）、`DeriveStats`（1470 行）、`Convert2Gathers`（1672 行）、`PredicatePushDownRoot`（2091 行）与 `BuildPseudoHistColl`（91 行）。
-- RustCodeGraph 精确调用查询：`callers deriveAccessPathsFromPredicates --file ...` 返回 `PredicatePushDown` 和 `DeriveStats`；`callers BuildPseudoHistColl --file ...` 返回 `DeriveStats`；`callees Convert2Gathers --file ...` 确认 Gather 构造与覆盖判断关系。未限定文件的同名查询会混入 Go 节点，本文未把这些噪声作为 Rust 调用事实。
-- 已读源码/配置：`logical_datasource.rs`、`logicalop/lib.rs`、`logicalop/Cargo.toml`、`logical_datasource.go`，以及直接生产调用点 `transformation_rules.rs`、`base_physical_plan.rs`、`logical_plan_builder_runtime.rs`、`session/runtime/session.rs`、`rule/rule_init.rs` 的搜索结果。目标 Rust package 目录没有 `doc.go`；最近的 `pkg/planner/core/base/doc.go` 属于另一 package，未用它替代本模块事实。
-- 已读独立 Rust 测试：`logical_datasource_test.rs` 与 `logical_datasource_aster_unit_test.rs`。覆盖证据包括额外句柄、空列裁剪、Range 回退残余条件、common-handle NDV/映射/布局守卫、追加句柄估计、关联选择率风险区间、主键/唯一键和索引后缀排序。相关 Go 测试位置通过仓库搜索核对为 `pkg/planner/core/logical_plans_test.go` 与 `pkg/planner/core/casetest/index/index_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构以任务指定命令验证：目标文件存在且恰有 11 个固定二级章节。

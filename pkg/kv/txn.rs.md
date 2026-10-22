@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/kv/txn.rs` 属于 `astersql-kv` crate，是 KV 抽象层的“内部事务辅助”实现。它不定义底层事务协议，而是组合本 crate 已有的 `Storage`、`Transaction`、`Context` 和事务选项，提供以下横切能力：在独立事务中执行回调并按策略重试、记录活跃内部事务的原始 startTS、检测长时间内部事务、生成提交重试退避，以及向事务写入请求来源和资源组信息。
-
-模块由 `pkg/kv/lib.rs` 以 `#[path = "txn.rs"] mod txn_impl;` 装入，并通过 `pub use txn_impl::*;` 从 crate 根重新导出，因此外部调用通常写作 `astersql_kv::RunInNewTxn` 或别名 `kv::RunInNewTxn`，而不是引用私有的 `txn_impl` 模块。`pkg/kv/Cargo.toml` 表明该 crate 的库入口是 `lib.rs`；本文件直接使用的外部 crate 是 `fail`、`log` 和 `rand`，它们均为 `astersql-kv` 的普通依赖，不受 `nextgen` feature 条件控制。本文件没有条件编译项。
-
-它位于“上层元数据/会话逻辑—KV 接口—具体存储实现”链路的中间：例如 `pkg/session/runtime/bootstrap_wait.rs`、`pkg/session/starter_bootstrap_file.rs`、`pkg/domain/autoid_store.rs` 会把元数据读写闭包交给 `RunInNewTxn`；本文件再调用动态分派的 `Storage::Begin` 和 `Transaction::{Commit,Rollback,SetOption,...}`。它不负责 SQL 事务状态、两阶段提交实现或具体 TiKV RPC。
+`PrintLongTimeInternalTxn` 把 TSO 的物理毫秒部分转换为 `SystemTime`；超过五分钟才记 info 日志，并区分 `RunInNewTxn` 与内部 session 两类来源。
 
 ## 核心职责
 
@@ -101,9 +97,7 @@ RustCodeGraph 还确认 `GetMinInnerTxnStartTS -> InnerTxnStartTsBox::getMinStar
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/kv/txn.go`，测试是 `pkg/kv/txn_test.go`。Rust 保留了 Go 的主要结构和分支：五分钟阈值、互斥集合、严格 lower-limit 过滤、首次 startTS 登记与退出删除、每轮重新 Begin、回调失败先 Rollback、仅提交重试退避、最大尝试数 100、full jitter 上限 100、请求来源选项以及三种资源组 RPC 的校验。
-
-语言层面的对应替换包括：Go 的全局 map+mutex 对应 `LazyLock<InnerTxnStartTsBox>`；defer 删除对应 `InnerTxnGuard::drop`；`uint` 全局计数对应 `AtomicU32`；`oracle.GetTimeFromTS` 在 Rust 中以内联的右移 18 位完成；Go interface 对应 `dyn Storage`/`dyn Transaction`；Go failpoint 注入对应 `fail::eval`。
+Rust 保留了 Go 的主要结构和分支：五分钟阈值、互斥集合、严格 lower-limit 过滤、首次 startTS 登记与退出删除、每轮重新 Begin、回调失败先 Rollback、仅提交重试退避、最大尝试数 100、full jitter 上限 100、请求来源选项以及三种资源组 RPC 的校验。
 
 需要注意的已核实差异：
 
@@ -121,13 +115,3 @@ RustCodeGraph 还确认 `GetMinInnerTxnStartTS -> InnerTxnStartTsBox::getMinStar
 - 改变 startTS 登记模型时，必须维护“首次成功 Begin 才登记、所有退出路径清理、下限严格排除”的不变量，并更新 `pkg/kv/txn_test.rs::test_inner_txn_start_ts_box`。若允许重复 startTS，应把 `HashSet` 改成引用计数结构，否则一个 guard 会过早删除共享值。
 - 把最小 startTS 或资源组功能接入 Rust 生产链路时，应从 Go 的 `pkg/domain/infosync/info.go` 或相应 session 资源组路径追踪调用时机，而不是仅因公开函数存在就推断已接线。
 - 性能风险主要是全局锁扫描、同步退避和高重试次数；兼容风险主要是错误优先级、回调重复执行、TSO 位布局、事务选项值类型及 Go/Rust failpoint 行为。修改这些位置应先补回归测试，再验证 Go 对照。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库索引包含 `pkg/kv/txn.rs`，该文件报告 16 个符号；使用 `node --file pkg/kv/txn.rs --offset 1 --limit 500` 读取了完整 283 行源码。
-- RustCodeGraph 精确符号查询：`query RunInNewTxn --kind function --json` 定位 `pkg/kv/txn.rs:141`；`node pkg/kv/txn.rs::RunInNewTxn` 给出其对 `storeInnerTxnTS`、`setRequestSourceForInnerTxn`、`logRetry`、`BackOff` 的调用边及已识别调用者。另对 `GetMinInnerTxnStartTS`、`PrintLongTimeInternalTxn`、`BackOff`、`SetTxnResourceGroup` 执行 `node`，核对各自源码和图中调用关系。宽泛的 `callers RunInNewTxn` 因同名符号过多未在限定时间内返回，因此生产调用覆盖以精确符号 trail 加仓库源码搜索补齐，不把不完整图结果当作完整调用清单。
-- crate 与装配证据：`pkg/kv/Cargo.toml`；`pkg/kv/lib.rs` 中 `txn_impl` 的 path 声明、根级再导出和独立 `txn_test` 声明。
-- Rust 源码和调用证据：`pkg/kv/txn.rs`、`pkg/session/runtime/bootstrap_wait.rs`、`pkg/session/starter_bootstrap_file.rs`、`pkg/domain/autoid_store.rs`，以及仓库内对五个公开符号的搜索结果。
-- Go 对照证据：`pkg/kv/txn.go`、`pkg/domain/infosync/info.go`。
-- 测试证据：`pkg/kv/txn_test.rs`、`pkg/kv/txn_test.go`、`pkg/kv/mpp_2_aster_unit_test.rs`、`pkg/session/test/resourcegrouptest/resource_group_test.rs`。本任务只写文档，按计划未运行 Cargo 或代码测试。
-- 人工复核结论：本文分别说明了该文件为何存在（内部事务横切能力）、如何运行（Begin/回调/Rollback/Commit/重试及 guard 生命周期）、当前接线边界，以及安全扩展时要修改的符号、独立测试和兼容/性能风险。

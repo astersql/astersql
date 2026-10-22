@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-schemacmp` crate（入口为 [`lib.rs`](lib.rs)，清单为 [`Cargo.toml`](Cargo.toml)），实现字符集和排序规则两个 `Lattice` 元素。它不解析 SQL，也不查询字符集注册表；它把已经存在于字段类型或表选项中的名称编码为小型偏序格，供 schema 兼容性比较和合并使用。
-
-直接接线有两处：[`type.rs`](type.rs) 的 `encodeFieldTypeToLattice` 把 `FieldType::GetCollate()` 包装为 `Collation`，其 `Compare`/`Join` 会随列类型元组一起执行；[`table.rs`](table.rs) 的 `encodeTableInfoToLattice` 把 `TableOptions::Collate` 包装为 `Collation`，其结果由 `EncodeWithOptions` 纳入整表格。`lib.rs` 通过私有模块 `charset_collation` 和 `pub use charset_collation::*` 把本文件的公开项再导出。
+两种格均实现动态类型擦除、克隆和 `Unwrap`，从而能嵌入 `Tuple`、`Map` 等通用格结构。
 
 ## 核心职责
 
@@ -88,7 +86,7 @@
 
 实现形态上的差异来自语言边界：Go 的 `Lattice` 通过接口类型断言并按值返回；Rust 的 `Lattice` 通过 `Any` 下转型、`AnyValue` 解包和 `Box<dyn Lattice>` 返回。Go 直接引用 `pkg/parser/charset` 常量，Rust 在本文件内定义四个字符串常量；因此新增或改名时必须人工保持两边一致。Rust `Charset`/`Collation` 接受 `impl AsRef<str>`，调用形式比 Go 的固定 `string` 参数更宽，但不改变规范化结果。
 
-[`charset_collation_test.go`](charset_collation_test.go) 与 [`charset_collation_test.rs`](charset_collation_test.rs) 覆盖同名核心用例；[`charset_collation_1_aster_unit_test.rs`](charset_collation_1_aster_unit_test.rs) 还把这些规则放入更广的格与表编码路径中验证。当前读取范围内未发现 Rust 版本有意删减 Go 的本文件行为。
+当前读取范围内未发现 Rust 版本有意删减 Go 的本文件行为。
 
 ## 扩展指南
 
@@ -98,14 +96,3 @@
 - 若改变 `charsetLattice::Join` 的返回动态类型，必须消除或更新 `collationLattice::Join` 中的具体类型下转型；否则会引入 panic。
 - 测试必须保留在独立文件中。核心对齐用例同步更新 [`charset_collation_test.rs`](charset_collation_test.rs) 与 Go 的 [`charset_collation_test.go`](charset_collation_test.go)；涉及复合格/表编码的回归放入现有独立 Rust 测试（例如 [`charset_collation_1_aster_unit_test.rs`](charset_collation_1_aster_unit_test.rs)、[`type_test.rs`](type_test.rs) 或 [`table_test.rs`](table_test.rs)），不要嵌入生产源文件。
 - 兼容风险集中在现有 schema 比较结果和错误分类；性能风险主要是扩大规则后增加分支或额外字符串规范化。修改后应验证比较的反对称方向、join 的交换性/上界性质、未知值行为及 Go/Rust 一致性。
-
-## 验证依据
-
-- 生产实现：[`charset_collation.rs`](charset_collation.rs) 的常量、两个构造函数、两个格类型及其 `Lattice` 实现。
-- crate 边界：[`lib.rs`](lib.rs) 的模块声明/再导出与测试模块接线；[`Cargo.toml`](Cargo.toml) 的 `astersql-util-schemacmp` 包、`lib.rs` 入口和依赖声明。
-- 上游接线：[`type.rs`](type.rs) 的 `encodeFieldTypeToLattice`、`decodeFieldTypeFromLattice`、`Type`/`typ`；[`table.rs`](table.rs) 的 `encodeTableInfoToLattice`、`EncodeWithOptions`。
-- 通用契约与错误：[`lattice.rs`](lattice.rs) 的 `Lattice`、`LatticeRef`、`LatticeBox`、`typeMismatchError`、`incompatibleCharsetError`、`incompatibleCollationError`。
-- Go 对照：[`charset_collation.go`](charset_collation.go)；Go 测试 [`charset_collation_test.go`](charset_collation_test.go)。
-- Rust 测试：[`charset_collation_test.rs`](charset_collation_test.rs)；补充集成覆盖 [`charset_collation_1_aster_unit_test.rs`](charset_collation_1_aster_unit_test.rs)。
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；精确节点查询确认 `Charset` 位于本文件第 45 行、`Collation` 位于第 123 行，`Charset` 被本文件 `Join`/`Collation` 与 `type.rs::decodeFieldTypeFromLattice` 调用；`encodeFieldTypeToLattice` 被 `Type`、`Compare`、`Join` 调用，`encodeTableInfoToLattice` 被 `EncodeWithOptions` 调用。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前另运行任务指定的 11 章节结构检查，并人工复核所有行为陈述均可由上述源码、调用边或测试定位。

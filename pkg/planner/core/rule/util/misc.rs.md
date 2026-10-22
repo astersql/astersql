@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 crate `astersql-planner-core-rule-util` 的杂项公共能力，并由同目录的 [`lib.rs`](lib.rs) 以 `pub use misc::*` 全量再导出。crate 边界和依赖由 [`Cargo.toml`](Cargo.toml) 定义：它直接依赖逻辑计划抽象 `base`、表达式与 schema 模型 `expression`、整数集合 `intset`、元数据模型 `model` 和 MySQL 列标志 `mysql`。因此它位于“逻辑算子/优化规则”与“表达式、表索引元数据”之间，不负责选择优化规则或执行 SQL。
-
-当前 Rust 生产调用点分成四组：排序类算子用列替换同步表达式（`logical_sort.rs`、`logical_top_n.rs`）；Selection 和索引扫描用 schema/唯一键信息推导性质（`logical_selection.rs`、`logical_index_scan.rs`、`logical_datasource.rs`）；旧 Cascades 规则用投影替换与外表列归属判断（`pkg/planner/cascades/old/transformation_rules.rs`）；逻辑算子与规则初始化通过三组回调跨 crate 调用谓词简化实现（`logical_datasource.rs`、`rule_init.rs` 等）。截至本次检索，`BuildKeyInfoPortal` 仅有文件内递归调用，`IsColFromInnerTable` 仅有测试调用，不能据 Go 侧用途宣称二者已接入 Rust 生产主链。
+根据 `UniqueID` 判断列全部来自外表或至少一列来自内表，并判断等值条件是否覆盖某个主键/唯一键，从而支持连接消除和“最多一行”性质推导。
 
 ## 核心职责
 
@@ -87,15 +85,13 @@ RustCodeGraph 的文件关系报告 `misc.rs` 被 7 个逻辑算子文件使用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 [`misc.go`](misc.go)，crate 元数据也声明 `go-package = "pkg/planner/core/rule/util"`。Rust 的列/表达式替换、外内表判断、最大一行判断、索引分类和后序构键总体保留 Go 的分支顺序与语义。
-
 主要表示差异如下：Go 的列替换键是由 `HashCode()` 字节转成的 `string`，Rust 直接使用 `Vec<u8>`，避免文本假设；Go 返回指针并用对象身份判断变化，Rust 返回拥有所有权的值并显式携带 `changed`。Go 的投影替换直接返回 `exprs[idx]`，Rust 用 `CloneExpr` 满足所有权与共享约束。Go 的相关列克隆还显式保留 `Data`；Rust 的 `CorrelatedColumn::Clone` 后只覆盖内嵌列，`Data` 是否保留依赖该 Clone 实现，本文件不另行操作。
 
-Go 的三个 hook 是可赋值包变量；Rust 将其拆成 hook 类型、`OnceLock`、注册函数和调用门面，并增加 `RuleInitHooksRegistered` 供显式初始化验证。Go 若未初始化会因调用 nil 函数而 panic，Rust 用具名 `expect` 提供更明确的 panic 信息。Rust 初始化发生在 `rule_init::init` 及 logicalop 的安装函数，不依赖 Go 的包 `init`。
+Go 的三个 hook 是可赋值包变量；Rust 将其拆成 hook 类型、`OnceLock`、注册函数和调用门面，并增加 `RuleInitHooksRegistered` 供显式初始化验证。Go 若未初始化会因调用 nil 函数而 panic，Rust 用具名 `expect` 提供更明确的 panic 信息。
 
 Go 的 `BuildKeyInfoPortal` 使用 `zeropool` 复用子 schema slice，并把计划/schema 指针传给 `BuildKeyInfo`；Rust 为满足借用规则克隆 self/child schema 快照，且当前没有生产调用点。Go 当前在构键规则、Join 和聚合下推路径中调用该门户，Rust 对应接线尚未在本次检索中出现，应记录为迁移状态差异而非已支持行为。
 
-测试对应方面，Rust 的 [`misc_aster_unit_test.rs`](misc_aster_unit_test.rs) 覆盖类型标志保留、基础表达式/投影替换、空列集与唯一键边界、索引可空/缺列分类；[`misc_test.rs`](misc_test.rs) 验证二进制哈希键能区分高位字节。Go 的 `logicalop_test/logical_operator_test.go` 还直接验证两类标量函数改写的写时复制和原树不变；Rust 源码实现了这一分支，但现有同目录 Rust 测试没有等价的嵌套标量函数断言。
+Go 的 `logicalop_test/logical_operator_test.go` 还直接验证两类标量函数改写的写时复制和原树不变；Rust 源码实现了这一分支，但现有同目录 Rust 测试没有等价的嵌套标量函数断言。
 
 ## 扩展指南
 
@@ -106,11 +102,3 @@ Go 的 `BuildKeyInfoPortal` 使用 `zeropool` 复用子 schema slice，并把计
 增加第四种跨 crate 回调时，应仿照现有模式同时定义函数指针类型、私有 `OnceLock`、注册函数、调用门面和完整性检查，并在真正的 planner 初始化入口安装。若回调需要捕获状态，现有 `fn` 类型不适用，需要审慎选择带线程安全约束的 trait object，并评估全局生命周期与测试隔离。
 
 若要接通 `BuildKeyInfoPortal` 或 `IsColFromInnerTable`，应从对应 Go 调用点的具体提交增量出发，在相应 Rust 规则/算子中做最小接线，并补独立测试证明后序顺序或连接消除条件；不能仅因函数已存在就认为功能完整。`BuildKeyInfoPortal` 的 schema 克隆可能在大计划树上产生额外成本，接线前应同时评估正确性与性能。
-
-## 验证依据
-
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/core/rule/util` 找到 `misc.rs`、`misc.go`、`lib.rs` 及两份 Rust 测试；`node --file .../misc.rs` 读取了完整 374 行并报告其被 7 个文件使用；对主要公开符号执行了 `query`、`callers` 和 `callees`。图能确认文件内递归/辅助调用，但未返回这些符号的跨文件 callers，故用精确源码搜索补证。
-- 已阅读全文：`pkg/planner/core/rule/util/misc.rs`、`misc.go`、`Cargo.toml`、`lib.rs`、`misc_test.rs`、`misc_aster_unit_test.rs`；目标目录不存在 `doc.go`。
-- 已核对直接调用证据：`logical_sort.rs`、`logical_top_n.rs`、`logical_selection.rs`、`logical_index_scan.rs`、`logical_datasource.rs`、`logical_join.rs`、`logical_cte.rs`、`logical_plans_misc.rs`、`rule_init.rs`、`rule_init_test.rs`、`pkg/planner/cascades/old/transformation_rules.rs`，以及 Go 的 `logicalop_test/logical_operator_test.go` 和生产调用检索结果。
-- 行为边界来自独立 Rust 测试：二进制哈希键、列类型标志、schema 下标替换、外/内表空集及成员关系、PK/UK/nullable UK、非空/可空/缺列索引。Go 测试额外证明标量函数改写应保持原共享树不变。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令、路径/链接存在性检查和 `git diff --check`；结果在最终回复中记录。

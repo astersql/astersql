@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/lexer.rs` 是 `astersql-parser` crate 的 SQL 词法扫描实现。它不是独立模块：`pkg/parser/lib.rs` 在私有的 `parser_impl::lexer_support` 中依次 `include!` 生成 token、Hint 解析器、关键字表、本文件和 `misc.rs`，因此本文件可以直接使用 `yySymType`、`yyLexer`、`token`、`ruleTable`、`toInt` 等同一模块内符号。crate 边界由 `pkg/parser/Cargo.toml` 定义，字符集、MySQL SQL Mode、错误体系、AST 驱动值分别来自 `parser-charset`、`parser-mysql`、`parser-terror`、`parser-test-driver` 等依赖。
-
-应用主链中的位置是 `Parser::ParseSQL`（`pkg/parser/yy_parser.rs`）重置 `Scanner`、应用连接参数和解析配置，再把扫描器交给 `yyParse`；生成的语法分析器通过 `yyLexer::Lex` 逐个取得 token 和语义值。`Scanner` 位于私有 `lexer_support` 中且没有从 crate 根重新导出，正常外部入口是 `Parser`；`Pos` 则由 `parser_impl` 重新导出，供 Hint 位置等接口使用。
+`Scanner::Lex` 在原始 token 上叠加语法相关语义：关键字识别、复合 token 合并、SQL Mode 改写、括号深度限制、字面量值构造、字符集转换，并填写 `yySymType`。
 
 ## 核心职责
 
@@ -87,7 +85,7 @@ RustCodeGraph 的文件查询确认 `lexer.rs` 被 `lib.rs`/`yy_parser.rs` 所�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/lexer.go`，测试基线是 `pkg/parser/lexer_test.go`。Rust 保留了 Go 的主要符号顺序和行为：`Pos`/`Scanner` 字段、`Lex` 两层扫描、规则 trie、注释和 Hint 状态机、SQL Mode、字符集转换、变量扫描、版本/特性注释、动态字面量类型以及 10,000 层括号限制。`pkg/parser/lexer_5_aster_unit_test.rs` 逐表复刻 Go token、值、位置和模式用例；`pkg/parser/lexer_test.rs` 通过公开 `Parser`/digester 做集成覆盖；`pkg/parser/go_merge_29_lexer_test.rs` 验证后续 Go 合并带来的括号深度与 token 映射。
+Rust 保留了 Go 的主要符号顺序和行为：`Pos`/`Scanner` 字段、`Lex` 两层扫描、规则 trie、注释和 Hint 状态机、SQL Mode、字符集转换、变量扫描、版本/特性注释、动态字面量类型以及 10,000 层括号限制。
 
 需要明确的实现差异：
 
@@ -95,7 +93,6 @@ RustCodeGraph 的文件查询确认 `lexer.rs` 被 `lib.rs`/`yy_parser.rs` 所�
 - Go 输入字符串允许任意字节并由编码器决定 rune 宽度；Rust 输入是合法 UTF-8 `String`。Rust `reader::skipRune` 增加字符边界回退，相关测试覆盖 GBK/GB18030 配置下不切裂 UTF-8 输入。
 - Go 的复用缓冲是 `bytes.Buffer`，Rust 对应为 `Vec<u8>`；两端当前 `scanString` 都走各自的扫描器缓冲。两份文件虽都定义 `lazyBuf`，但它不在当前活跃调用路径上。
 - Go 用 `parserDepthLimitError` 类型识别不可降级错误；Rust 用 `depthLimitError: Option<usize>` 并辅以错误消息检查，保证深度错误保持 fatal。
-- Rust 的公开集成测试因 `Scanner` 所在模块私有，部分断言通过 `Parser` 和 digester 间接验证；精确 token/offset/type 断言放在 `lexer_5_aster_unit_test.rs` 等独立测试文件中，而不是嵌入生产源码。
 
 ## 扩展指南
 
@@ -108,12 +105,3 @@ RustCodeGraph 的文件查询确认 `lexer.rs` 被 `lib.rs`/`yy_parser.rs` 所�
 - 测试必须放在独立文件。首选同步 `pkg/parser/lexer_5_aster_unit_test.rs` 的精确内部断言及 `pkg/parser/lexer_test.rs` 的公开入口回归；Go 语义变化还要对照 `pkg/parser/lexer_test.go`，深度/token 合并场景检查 `pkg/parser/go_merge_29_lexer_test.rs`。本仓库规则禁止把测试模块写入 `lexer.rs`。
 
 兼容性风险集中在 token 编号/分类、语义值具体类型、字节位置、warning/error 等级及 SQL Mode 分支；性能风险集中在输入字符串克隆、每 token 分配、字符集转换和 trie/关键字查找。扩展后应优先添加最小的 token 序列、语义值类型、offset 和诊断顺序断言。
-
-## 验证依据
-
-- 完整阅读：`pkg/parser/lexer.rs`（1157 行）；模块与 crate 边界：`pkg/parser/lib.rs`、`pkg/parser/Cargo.toml`。
-- 主链与字面量转换：`pkg/parser/yy_parser.rs::check_expression_depth_before_parse`、`Parser::ParseSQL`、`toInt`、`toDecimal`、`toFloat`、`toHex`、`toBit`；分派与字符分类：`pkg/parser/misc.rs::buildRuleTable`、`ruleTable`、`isTokenIdentifier`。
-- Go 对照：`pkg/parser/lexer.go`、`pkg/parser/lexer_test.go`；Rust 独立测试：`pkg/parser/lexer_test.rs`、`pkg/parser/lexer_5_aster_unit_test.rs`、`pkg/parser/go_merge_29_lexer_test.rs`。
-- RustCodeGraph：`status` 显示索引含目标文件；`node --file pkg/parser/lexer.rs --symbols-only` 枚举 `Pos`、`Scanner`、`Lex`、所有扫描分支、`reader` 等符号；分段 `node --file` 核对全部源码；`callees Lex --file pkg/parser/lexer.rs` 验证到 `scan`、前瞻、编码转换、括号深度及 `yy_parser.rs::to*` 的边；`callees NewScanner` 验证构造后调用 `reset`。图未解析出的同名 trait caller 以 `lib.rs` 与 `yy_parser.rs` 源码补证。
-- 人工核对的边界用例来自上述测试：变量前缀、字符串转义、ANSI_QUOTES/NO_BACKSLASH_ESCAPES、非法未闭合 token、普通/版本/特性注释、Hint 合法位置、Unicode/客户端编码、数值类型与 10,001 层括号错误。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构验收使用任务文件指定的 11 章节检查命令。

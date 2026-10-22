@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo crate `astersql-lightning-log`，crate 根由 `pkg/lightning/log/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 `pkg/lightning/log/lib.rs`。`lib.rs` 公开声明 `pub mod testlogger`，因此使用方可通过 `astersql_lightning_log::testlogger` 取得这里的 API；与 `filter`、`log` 不同，`testlogger` 的符号没有在 crate 根通配再导出。
-
-它位于 Lightning 日志抽象的测试适配层：生产侧 `pkg/lightning/log/log.rs::Logger` 只依赖 `Arc<dyn Core>`，本文件提供一个写入内存而非 stdout/文件的 `MemoryCore`，并把可读取的共享缓冲区连同 `Logger` 一起返回。它不初始化进程级全局 logger，也不参与 `InitLogger` 的输出目的地选择。
-
-尽管文件名是 `testlogger.rs`，它不是内嵌测试文件，而是 crate 的公开模块；独立 Rust 测试位于 `filter_test.rs`、`log_test.rs` 和 `migration_aster_unit_test.rs`。
+只用于提供可观测 sink；日志级别解析、调用方过滤、全局 logger、文件输出和任务结束策略分别由 `filter.rs` 与 `log.rs` 负责。
 
 ## 核心职责
 
@@ -80,8 +76,6 @@ RustCodeGraph 将目标文件标记为被多个文件使用，且精确索引了
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/log/testlogger.go::MakeTestLogger`。两者都返回 Logger 与共享缓冲，启用 Debug 及以上全部日志，并输出可直接断言的 JSON；`log_test.go::TestTestLogger` 与 Rust `log_test.rs::test_test_logger` 使用相同消息、整数、整数数组和期望字符串，确认 `$lvl`/`$msg` 及字段顺序对齐。
-
 Go 版本用 `zapcore.NewJSONEncoder`、`zapcore.NewCore` 和 `zaptest.Buffer` 组合完成这些行为；Rust 版本用仓库内 `Core`、`MemoryCore`、`encode_json` 和 `Buffer` 自行实现等价测试边界。Go encoder 显式配置大写级别与字符串 duration；Rust 的大写级别和 duration 格式分别由 `Level::capital` 与 `Field`/`filter.rs` 编码逻辑负责。
 
 尚未完全对齐的是 options：Go 将任意 `zap.Option` 传给 `zap.New`，`filter_test.go` 借此使用 `zap.WrapCore` 和 `zap.AddCaller`；Rust 的 `TestLoggerOption` 为空且 `_opts` 被忽略，Rust `filter_test.rs` 改为显式取得 `logger.core()` 后包装 `FilterCore`。这是当前代码事实，不应把 Rust 占位签名描述为已支持 Go 选项。
@@ -97,14 +91,3 @@ Go 版本用 `zapcore.NewJSONEncoder`、`zapcore.NewCore` 和 `zaptest.Buffer` �
 - 若要暴露写入失败，不仅要修改 `MemoryCore::write`，还需评估 `log.rs::Logger::log` 当前丢弃 `Result` 的公共行为。直接改变它可能影响所有 Core，而非仅本文件。
 
 主要兼容风险是破坏与 Go JSON 输出或 options 语义的对齐；主要正确性风险是字段合并顺序、锁 poison 策略和派生 Logger 状态共享发生变化；主要性能风险是无界缓冲以及 `lines`/`stripped` 的全量复制。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件，目标 `pkg/lightning/log/testlogger.rs` 被完整读取为 107 行、11 个符号；精确查询确认 `MakeTestLogger`、`MemoryCore`、`Buffer` 节点，`encode_json` 与 `Core` 位于 `filter.rs`。图的 callers/callees 查询未返回可用边，故未据此臆造调用关系。
-- 目标源码：`pkg/lightning/log/testlogger.rs`，核对 `Buffer::{lines,stripped}`、`TestLoggerOption`、`MemoryCore` 的全部 Core 实现及 `MakeTestLogger`。
-- crate 与模块边界：`pkg/lightning/log/Cargo.toml`、`pkg/lightning/log/lib.rs`；同时检查 `BUILD.bazel`，确认 Go 包与 Go 测试文件集合。
-- Rust 下游契约：`pkg/lightning/log/filter.rs::{Core,Entry,encode_json}`、`pkg/lightning/log/log.rs::Logger`。
-- Rust 独立测试：`pkg/lightning/log/filter_test.rs::test_filter`、`pkg/lightning/log/log_test.rs::test_test_logger`、`pkg/lightning/log/migration_aster_unit_test.rs::{migration_test_logger_emits_go_compatible_json,migration_logger_with_and_named_share_the_same_sink}`。
-- Go 对照与测试：`pkg/lightning/log/testlogger.go::MakeTestLogger`、`pkg/lightning/log/filter_test.go::TestFilter`、`pkg/lightning/log/log_test.go::TestTestLogger`。
-- 调用点补查：`rg` 搜索 `MakeTestLogger`、`testlogger::` 与 `Buffer`，确认本 crate 独立测试是目标 Rust API 的直接使用方，并区分其他目录的同名 stub。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时执行任务指定的 11 章节结构验证；仓库说明引用的 `.agents/skills/tidb-verify-profile` 在当前工作区不存在，因此无法加载额外 Ready profile，未将其视为代码行为验证。

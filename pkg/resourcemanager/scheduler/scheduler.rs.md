@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-resourcemanager-scheduler` crate 的调度协议定义层：它只定义调度决策 `Command` 和调度器抽象 `Scheduler`，不采样资源、不计算具体策略，也不直接调整池容量。`pkg/resourcemanager/scheduler/lib.rs` 将 `scheduler` 声明为公开模块并用 `pub use scheduler::*` 在 crate 根重导出这两个 API。
-
-`pkg/resourcemanager/scheduler/Cargo.toml` 声明的 crate 名为 `astersql-resourcemanager-scheduler`，库入口是 `lib.rs`，移植元数据指向 Go 包 `pkg/resourcemanager/scheduler`。上层 `pkg/resourcemanager/Cargo.toml` 以本地路径依赖 `scheduler_dependency`引入该 crate。
+在决策层和执行层之间建立窄边界：实现者只返回命令，上层资源管理器负责过滤命令并调用池的 `Tune`。
 
 ## 核心职责
 
@@ -63,8 +61,6 @@ RustCodeGraph 能定位本文件的 `Command` 和 `Scheduler`，但未返回 tra
 
 ## 与 Go 版本的对应关系
 
-`pkg/resourcemanager/scheduler/scheduler.go` 是直接对照文件：Go 的 `type Command int` 及三个 `iota` 常量对应 Rust 的三变体枚举；Go 的 `Scheduler` interface 及 `Tune(component util.Component, p util.GoroutinePool) Command` 对应 Rust trait 的同名方法。
-
 关键差异是：
 
 - Go `Command` 是整数别名并有明确 `iota` 数值；Rust 使用类型安全的枚举，当前未声明 C 表示或序列化形式。
@@ -72,7 +68,7 @@ RustCodeGraph 能定位本文件的 `Command` 和 `Scheduler`，但未返回 tra
 - Go interface 本身不写并发 marker；Rust trait 本身同样没有 `Send + Sync` 超 trait，但生产持有点为后台调度显式追加这两个约束。
 - `pkg/resourcemanager/scheduler/cpu_scheduler.go` 和 `.rs` 中的当前 CPU 实现都忽略 `component`，并使用相同的冷却、不支持状态及 0.5/0.7 阈值语义。
 
-Go 目录下没有 scheduler 专属 `*_test.go`；`pkg/resourcemanager/schedule_test.go` 只通过 `scheduler.Overclock` 覆盖命令执行上限。Rust 已在独立的 `pkg/resourcemanager/scheduler/migration_aster_unit_test.rs` 中增加调度器协议和 CPU 决策覆盖，并在 `pkg/resourcemanager/migration_aster_unit_test.rs` 覆盖命令过滤与执行。
+Rust 已在独立的 `pkg/resourcemanager/scheduler/migration_aster_unit_test.rs` 中增加调度器协议和 CPU 决策覆盖，并在 `pkg/resourcemanager/migration_aster_unit_test.rs` 覆盖命令过滤与执行。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ Go 目录下没有 scheduler 专属 `*_test.go`；`pkg/resourcemanager/schedule_
 - 保持 Rust 生产逻辑和 Go 语义对齐，且将 Rust 测试逻辑放在独立测试文件；不要把 `#[cfg(test)] mod tests` 内嵌回该生产文件。
 
 兼容风险主要是命令含义或枚举表示变更，正确性风险是新策略绕过冷却/容量边界或错误地将不可用数据当作扩容信号，性能风险是 `Tune` 在周期串行调用路径中阻塞。
-
-## 验证依据
-
-- 目标与模块：`pkg/resourcemanager/scheduler/scheduler.rs`、`pkg/resourcemanager/scheduler/lib.rs`、`pkg/resourcemanager/scheduler/Cargo.toml`、`pkg/resourcemanager/Cargo.toml`。
-- 实现与主链：`pkg/resourcemanager/scheduler/cpu_scheduler.rs` 的 `impl Scheduler for CPUScheduler`，`pkg/resourcemanager/rm.rs` 的 `ResourceManagerInner::scheduler`/`NewResourceManger`，`pkg/resourcemanager/schedule.rs` 的 `schedule`/`schedulePool`/`Exec`，`pkg/resourcemanager/util/util.rs` 的 `Component`/`GoroutinePool`。
-- Go 对照：`pkg/resourcemanager/scheduler/scheduler.go`、`pkg/resourcemanager/scheduler/cpu_scheduler.go`、`pkg/resourcemanager/schedule_test.go`。
-- Rust 测试：`pkg/resourcemanager/scheduler/migration_aster_unit_test.rs` 覆盖命令阈值、调度冷却和 `dyn Scheduler` 分派；`pkg/resourcemanager/scheduler/tests/cpu_failpoint_integration.rs` 覆盖 CPU 不受支持时返回 `Hold`；`pkg/resourcemanager/migration_aster_unit_test.rs` 覆盖多调度器顺序、缩容防护、命令执行和 `DistTask` 跳过。
-- RustCodeGraph：`status` 显示本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/resourcemanager/scheduler` 列出本 crate 的 7 个已索引源/测试文件；`query`/`node` 定位 `scheduler.rs::Command` 于第 28 行、`scheduler.rs::Scheduler` 于第 42 行；由于 trait 动态调用边未被图输出，又用 `rg` 核对了实现、持有点、调用点和测试引用。
-- 结构验证使用任务指定命令，确认本文件存在且恰好包含 11 个固定二级标题。本任务为纯文档分析，按计划不运行 Cargo。

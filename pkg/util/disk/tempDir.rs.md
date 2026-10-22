@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-disk` crate，是临时存储根目录及通用目录创建的生命周期实现。crate 入口 `pkg/util/disk/lib.rs` 将 `tempDir` 声明为公开模块，并通过 `pub use tempDir::*` 导出本文件的公开函数；`checkTempDirExist` 只在 crate 内可见。
-
-它处于 SQL 执行的磁盘溢写辅助链上：`pkg/util/chunk/chunk_in_disk.rs` 的 `DataInDiskByChunks::initDiskFile` 在创建 Chunk 落盘文件前调用 `CheckAndInitTempDir`。它也提供与临时根无关的 `CheckAndCreateDir`，当前可见调用包括 `pkg/util/memoryusagealarm/memoryusagealarm.rs` 创建 `oom_record` 根目录和单次告警记录目录。
-
-`pkg/util/disk/Cargo.toml` 将该 crate 定义为 `astersql-util-disk`，直接依赖 `astersql-config` 读取全局配置、依赖 `fs2` 获取文件排他锁，并依赖 `astersql-util-memory` 提供同 crate 的磁盘 `Tracker` 再导出。工作区还以 `facade_util_disk` 为它登记别名；Chunk 和 memoryusagealarm 分别以 `disk-crate`、`task-disk` 依赖它。
+这些职责分别位于全局配置、Chunk 落盘实现、`tracker.rs` 和调用方。
 
 ## 核心职责
 
@@ -104,8 +100,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/util/disk/tempDir.go`：公开函数名、`_dir.lock` / `record` 常量、`0750` Unix 创建权限、条目数大于 2 才异步清理，以及保留两个名称的规则均保持一致。`pkg/util/disk/tempDir_test.go::TestRemoveDir` 的核心场景由 Rust 同名测试复刻：删除配置目录后并发调用 10 次并确认恢复。
-
 主要实现差异如下：
 
 - Go 使用 `singleflight.Group.Do("tempDir", ...)`；Rust 使用无 key 的 `Mutex<()>`。对当前唯一共享临时根，两者都合并/串行化并发初始化，但 Rust 等待者不会复用首个调用的返回值，而是取得锁后重新检查路径。
@@ -124,15 +118,3 @@ Rust 文件直接对应 `pkg/util/disk/tempDir.go`：公开函数名、`_dir.loc
 - 若接入服务启动/退出生命周期，应在真实 server 依赖图中显式引用 `astersql-util-disk`，并用启动失败、双实例锁冲突、正常退出解锁的独立集成测试证明；不要把当前 `cmd/tidb-server/stubs.rs` 事件桩当成完成证据。
 - 若修改全局锁顺序或增加新锁，应保持清晰的一致顺序并检查 `sf`、`tempDirLock` 与配置锁之间的死锁风险。若允许运行期切换 `temp_storage_path`，还需把路径版本与锁句柄绑定，避免检查和初始化使用不同配置快照。
 - 性能上，初始化会完整收集顶层 `read_dir` 结果后才返回；超大临时目录可能产生线性内存和扫描成本。优化时必须保留锁先取得、保留项不删除、错误边界可观测这些约束。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件、7,032 个 Rust 文件；目标位于已索引集合。
-- RustCodeGraph `files --filter pkg/util/disk`：确认 `tempDir.rs`、`lib.rs`、Go 对照和两份 Rust 测试均在图内。
-- RustCodeGraph `node --file pkg/util/disk/tempDir.rs --offset 1 --limit 260`：读取目标文件全部 147 行，核对所有常量、静态状态、函数、条件编译分支及源码注释。
-- RustCodeGraph `explore 'pkg/util/disk/tempDir.rs TempDir create_temp_dir'`：确认 `CheckAndInitTempDir -> InitializeTempDir`、测试调用以及 `CheckAndCreateDir` 的 memoryusagealarm 调用边；精确 `callers/callees` 子命令本次在 30 秒内未返回输出，因此未将其作为额外完成证据。
-- RustCodeGraph `node`：读取 `pkg/util/chunk/chunk_in_disk.rs` 的 `DataInDiskByChunks::initDiskFile`，以及 `pkg/util/memoryusagealarm/memoryusagealarm.rs` 两处目录创建调用，核实应用位置。
-- crate 与装配：读取 `pkg/util/disk/Cargo.toml`、`pkg/util/disk/lib.rs`、工作区 `Cargo.toml`、`pkg/util/chunk/Cargo.toml`、`pkg/util/memoryusagealarm/Cargo.toml` 及 Chunk 两个再导出入口。
-- Go 对照：读取 `pkg/util/disk/tempDir.go`、`pkg/util/disk/tempDir_test.go`。
-- Rust 测试：读取 `pkg/util/disk/tempDir_test.rs`、`pkg/util/disk/migration_aster_unit_test.rs`；未运行 Cargo，符合本纯文档任务约束。
-- 人工复核重点：惰性初始化与直接初始化的区别、锁句柄持有期、`len > 2` 清理阈值、异步错误不可传播、普通文件边界，以及真实调用与 server stubs 的区分。

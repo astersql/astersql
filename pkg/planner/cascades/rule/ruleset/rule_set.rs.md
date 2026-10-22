@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Cascades 变换规则的“按算子归组、按子集选择、按规则 ID 过滤”数据结构，是 Go 包 `pkg/planner/cascades/rule/ruleset` 的 Rust 对照实现。crate 入口 `pkg/planner/cascades/rule/ruleset/lib.rs` 私有加载 `rule_set` 模块并公开再导出全部符号；`Cargo.toml` 将其定义为 `astersql-planner-cascades-rule-ruleset`，依赖 memo、pattern、rule、Apply 解相关规则和逻辑算子五个相邻 crate。
-
-当前接线状态必须与功能实现分开理解：该文件的类型、工厂函数和行为测试均已存在，但仓库内生产 Rust 代码没有引用这个 crate；根 `Cargo.toml` 仅用 `facade_planner_cascades_rule_ruleset` 将其列为 workspace facade。Rust 的 `pkg/planner/cascades/task/task_opt_group_expression.rs::getValidRules` 目前通过 `Context::RulesFor` 和 `RuleEnabled` 选规则，并未走这里的 `DefaultRuleSets`/`OperandRules::Filter`。相对地，Go 的 `pkg/planner/cascades/task/task_opt_group_expression.go::getValidRules` 直接消费本包的默认映射与两级过滤。
+用 `ListRules` 拥有 `Box<dyn Rule>` 的有序列表，提供长度、借用迭代和按 `RuleMask` 过滤，过滤结果保持注册顺序。
 
 ## 核心职责
 
@@ -80,9 +78,9 @@ RustCodeGraph 对精确符号和仓库文本搜索都表明，当前直接上游
 
 所有权实现有意不同。Go 使用包级 `var`、slice 和接口引用，共享 `OperandApplyRulesMap/List`；Rust 用函数每次返回拥有型 `HashMap`/`BTreeMap`/`ListRules`，避免全局可变状态。Rust `ListRules::Filter` 返回 `Vec<&dyn Rule>`，而 Go 返回新的接口 slice；二者都不克隆具体规则。
 
-默认注册状态一致：Go `DefaultRuleSets` 的 `OperandApply` 行被注释，Rust `DefaultRuleSets()` 返回空 map。不过主链迁移状态不同：Go `OptGroupExpressionTask.getValidRules` 确实读取 ruleset；Rust 同名任务改读 Context，且本 crate 没有生产调用方。因此本文件目前是可测试的移植组件/边界实现，不是 Rust 优化器实际规则分派的唯一事实来源。
+默认注册状态一致：Go `DefaultRuleSets` 的 `OperandApply` 行被注释，Rust `DefaultRuleSets()` 返回空 map。不过主链迁移状态不同：Go `OptGroupExpressionTask.getValidRules` 确实读取 ruleset；Rust 同名任务改读 Context，且本 crate 没有生产调用方。
 
-测试对应方面，Rust 独立测试 `rule_set_aster_unit_test.rs` 覆盖了 Go 文件自身没有专门测试覆盖的容器不变量，并进一步调用注册规则完成一次无相关列 Apply 到 Join 的真实改写。具体解相关行为还分别由 `xf_decorrelate_apply_test.go` 和 `xf_decorrelate_apply_test.rs` 覆盖，但它们测试的是下游规则而非本文件的集合接线。
+测试对应方面，Rust 独立测试 `rule_set_aster_unit_test.rs` 覆盖了 Go 文件自身没有专门测试覆盖的容器不变量，并进一步调用注册规则完成一次无相关列 Apply 到 Join 的真实改写。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ RustCodeGraph 对精确符号和仓库文本搜索都表明，当前直接上游
 - 修改 mask 语义时要避免名称误导：当前集合表示允许 ID。若改为排除掩码，会影响筛选结果和 Go 对齐，必须同步 `list_filter_preserves_order_and_rule_ids` 及任务层测试。
 - 若允许并行优化，需要先在 `Rule` trait、规则实现、memo 引用类型和集合缓存层整体证明 `Send`/`Sync`；不能只在此处替换容器。
 - 测试继续放在独立文件 `pkg/planner/cascades/rule/ruleset/rule_set_aster_unit_test.rs`，不要嵌入生产源文件。具体规则变换的边界测试则同步到 `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；索引包含 `rule_set.rs`、`lib.rs`、Go 对照和独立 Rust 测试。
-- RustCodeGraph 源码/符号核验：`rule_set.rs` 全部 141 行；主要符号为 `DefaultRuleSets`、`OperandApplyRulesMap`、`OperandApplyRulesList`、`RuleMask`、`ListRules`、`OperandRules`、`NewOperandRules`、`OperandApplyRules` 和两个 `Filter` 实现。
-- crate 边界：`pkg/planner/cascades/rule/ruleset/Cargo.toml`、`lib.rs`、根 `Cargo.toml` 的 facade 条目。
-- Go 对照与生产调用链：`pkg/planner/cascades/rule/ruleset/rule_set.go`、`pkg/planner/cascades/task/task_opt_group_expression.go::getValidRules`。
-- Rust 当前生产选择链：`pkg/planner/cascades/task/task_opt_group_expression.rs::getValidRules`；仓库搜索未发现生产 Rust 对本文件公开符号或 ruleset crate 的引用。
-- 下游状态与行为：`pkg/planner/core/operator/logicalop/base_logical_plan.rs::APPLY_GEN_FROM_XF_DECORRELATE_RULE_FLAG`、`pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_simple_apply.rs::NewXFDeCorrelateSimpleApply`/`Rule::XForm`。
-- 独立测试：`pkg/planner/cascades/rule/ruleset/rule_set_aster_unit_test.rs` 的四个测试分别验证顺序与 mask、普通/中间 Apply 分流、map/list 注册一致性、实际 Apply→Join 改写。按任务约束，本次是纯文档分析，未运行 Cargo；仅将测试源码作为行为证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-cost` crate 的参数定义文件，由同目录的 [`lib.rs`](lib.rs) 公开为 `factors_thresholds` 模块。crate 自身只依赖 `astersql-parser-ast`，并在 `lib.rs` 中把其聚合函数名模块再导出为 `ast`，因此这里能够用与 Go 版相同的函数名作为成本表键。它位于规划器的“共享估算参数”边界：不执行计划枚举或成本计算，只给基数估算、逻辑算子和实现选择代码提供统一常量。
-
-当前 Rust 接线尚未覆盖 Go 版的全部用途。精确引用搜索显示，生产代码直接读取了 `SelectionFactor` 和 `ToleranceFactor`；`DistinctFactor`、`AggFuncFactor`、`SmallScanThreshold` 目前只有独立迁移测试直接读取，其中流式聚合仍以字面量 `0.8` 注明对应 Go `cost.DistinctFactor`。因此不能把 Go 版完整成本模型视为已经在 Rust 中接通。
+位于规划器的“共享估算参数”边界：不执行计划枚举或成本计算，只给基数估算、逻辑算子和实现选择代码提供统一常量。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@ RustCodeGraph 的文件节点还报告逻辑选择、连接、数据源及其测
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`factors_thresholds.go`](factors_thresholds.go)。五个公开名称、四个标量值及聚合权重条目与 Go 定义对齐；Rust 额外用 `LazyLock<HashMap<&'static str, f64>>` 代替 Go 的包级 `map[string]float64`，并保留 Go 风格名称。
+五个公开名称、四个标量值及聚合权重条目与 Go 定义对齐；Rust 额外用 `LazyLock<HashMap<&'static str, f64>>` 代替 Go 的包级 `map[string]float64`，并保留 Go 风格名称。
 
-语义差异主要在接线完整度而非定义值：Go 的 `plan_cost_ver1.go` 使用 `SmallScanThreshold`、`DistinctFactor`、`SelectionFactor`，物理聚合用 `AggFuncFactor`，多个规划入口也使用这些参数；当前 Rust 只有部分 `SelectionFactor`/`ToleranceFactor` 调用边。`physical_stream_agg.rs` 仍写死 `0.8 // Go cost.DistinctFactor`，而 `AggFuncFactor` 与 `SmallScanThreshold` 没有生产读取者。因此本文件是对齐后的参数来源，但不是 Go 成本消费链的完整移植证明。
+语义差异主要在接线完整度而非定义值：Go 的 `plan_cost_ver1.go` 使用 `SmallScanThreshold`、`DistinctFactor`、`SelectionFactor`，物理聚合用 `AggFuncFactor`，多个规划入口也使用这些参数；当前 Rust 只有部分 `SelectionFactor`/`ToleranceFactor` 调用边。
 
-Go 的 map 可在包内被修改，而 Rust 静态值只通过不可变共享引用暴露；这收紧了运行时可变性。两版对未知聚合键的底层查找都会产生“未命中”，但默认权重是否应用仍属于调用方逻辑。
+Go 的 map 可在包内被修改，而 Rust 静态值只通过不可变共享引用暴露；这收紧了运行时可变性。
 
 ## 扩展指南
 
@@ -87,12 +85,3 @@ Go 的 map 可在包内被修改，而 Rust 静态值只通过不可变共享引
 - 将 `DistinctFactor` 或 `SmallScanThreshold` 接入生产路径时，应从对应 Go 成本函数逐分支迁移，并在物理算子或成本模型的独立 `*_test.rs` 中覆盖阈值两侧、等于阈值和 LIMIT/无 LIMIT 情况。不要为方便而把测试嵌入本源文件。
 - 变更 `ToleranceFactor` 时，应同步验证 `logical_datasource_test.rs` 的容差边界，并为 cardinality 的全范围/out-of-range 分支选择现有独立测试文件扩展用例；风险是微小数值变化导致计划路径翻转。
 - 若需要可配置因子，应新建显式配置/会话变量读取层，而不是把本静态表改成可变全局；还需评估跨线程一致性和计划缓存兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引包含 11,467 个文件；`node --file pkg/planner/core/cost/factors_thresholds.rs --offset 1 --limit 240` 读取全部 69 行并报告直接使用文件；`query` 分别确认五个公开符号及其 Go/测试对应项。符号级 `callers/callees` 查询超时且没有返回可用边，故调用关系以精确源码引用搜索补足。
-- 源码与装配：[`factors_thresholds.rs`](factors_thresholds.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- Go 对照：[`factors_thresholds.go`](factors_thresholds.go)，并通过 `rg` 核对 `plan_cost_ver1.go`、物理聚合和其他规划调用点。
-- 独立 Rust 测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 覆盖四个标量、常见聚合权重、未知键返回 `None`，并单独覆盖 `max_count`/`min_count`。但 `aggregation_factors_match_go_entries` 的 `expected` 只有 16 项、实际表有 18 项，其长度断言按当前源码不成立；本任务遵守纯文档范围，未修改或运行该测试。相关消费边界还见 `pkg/planner/core/operator/logicalop/logical_datasource_test.rs`。
-- Rust 生产调用证据：`logical_selection.rs`、`logical_join.rs`、`logical_datasource.rs`、`implementation/simple_plans.rs`、`cardinality/row_count_column.rs`、`cardinality/row_count_index.rs`；`physical_stream_agg.rs` 证明 `DistinctFactor` 仍是字面量替代状态。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工复核公开符号、数值、调用边、未接线状态、错误边界及独立测试建议。

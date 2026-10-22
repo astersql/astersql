@@ -2,20 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore` crate 的一站式构造入口。crate 在
-`pkg/store/mockstore/unistore/Cargo.toml` 中声明，入口 `lib.rs` 以 `pub mod mock`
-加载本文件并通过 `pub use mock::*` 再导出其公开项。它位于上层 mockstore 适配层和
-底层嵌入式 UniStore 组件之间：
-
-1. `pkg/store/mockstore/unistore.rs::build_embedded` 把 `MockOptions` 转换成这里的
-   `New` 参数；
-2. `New` 创建并配置本地引擎、单节点模拟服务、Region 集群控制器、进程内 RPC
-   客户端和 PD 门面；
-3. 上层再应用 cluster/client/PD hijacker，最终构造成 `MockStorage`。
-
-因此，这个文件负责“同时把一组彼此一致的测试组件启动起来”，而不负责处理具体
-KV、Region、PD 或 RPC 请求。实际行为分别位于 `server/server.rs`、`cluster.rs`、
-`pd.rs` 和 `rpc.rs`。
+不实现真实 Raft，也不建立网络连接。
 
 ## 核心职责
 
@@ -195,10 +182,6 @@ RustCodeGraph 的文件关系把 `mock.rs` 标记为被 `mock_test.rs`、`pd_tes
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/mock.go`，总体流程保持一致：空路径建
-临时目录、以 `tidb-unistore-temp` 字符串前缀判断易失性、创建目录、覆盖同一组引擎
-配置、以 cluster ID 1 启动 mock server、构造 cluster/RPC/PD 并返回。
-
 需要注意的表示与实现差异：
 
 - Go 返回 `(*RPCClient, pd.Client, *Cluster, error)`；Rust 返回具体 `PdClient` 和
@@ -207,8 +190,6 @@ RustCodeGraph 的文件关系把 `mock.rs` 标记为被 `mock_test.rs`、`pd_tes
   `create_dir_all`。
 - Go 用 `strings.HasPrefix(path, path.Join(os.TempDir(), ...))`；Rust明确采用
   `to_string_lossy().starts_with(...)` 保持这种文本前缀语义。
-- Go 把 `RPCClient` 字段逐项初始化并将 `srv.RPCClient = client`；Rust 封装为
-  `RPCClient::new`，其 server 调度模型不需要同样的回指赋值。
 - Go 的 `newPDClient` 接口本身不返回错误；Rust `PdClient::new` 会验证初始
   keyspace，因此 `NewError` 多出 `Pd` 分支。
 - 上层 Go `pkg/store/mockstore/unistore.go::newUnistore` 会进一步包装 PD client、按
@@ -242,28 +223,3 @@ Rust 独立测试 `mock_test.rs::temp_prefixed_path_is_volatile_and_removed_on_c
 - 性能风险主要来自易失配置、compactor 数量、memtable/value-log 大小和同步写；
   正确性风险主要来自路径误删、初始化半失败泄漏及 server/cluster/PD 使用不同元数据
   实例；兼容风险主要来自 Go 前缀规则和错误可见性的差异。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标目录和 `mock.rs` 已被
-  索引；`files --filter pkg/store/mockstore/unistore` 确认相关源/测试集合。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore/mock.rs`：核对
-  `NewError`、`New`、`create_temp_directory` 的完整实现和目标文件的文件级使用者。
-- RustCodeGraph `query`：精确定位 `mock.rs::New`（第 71 行）与
-  `mock.rs::create_temp_directory`（第 125 行）；通用 callers/callees 对 `New` 重名
-  消歧不稳定，未把噪声结果当成调用事实。
-- RustCodeGraph `node`：核对 `unistore.rs::build_embedded` 的上游调用；核对
-  `server.rs::new_mock/create_db`、`cluster.rs::Cluster::new`、
-  `rpc.rs::RPCClient::new/close/Drop`、`pd.rs::PdClient::new` 与
-  `MockKeyspaceManager::new` 的下游语义。
-- Cargo 边界：`pkg/store/mockstore/unistore/Cargo.toml` 和 `lib.rs`。
-- Go 对照：`pkg/store/mockstore/unistore/mock.go` 与上层
-  `pkg/store/mockstore/unistore.go`。
-- Rust 独立测试：`pkg/store/mockstore/unistore/mock_test.rs`；调用覆盖补充参考
-  `pd_test.rs` 和 `rpc_test.rs`。Go 的 PD 套件也通过同包 `New` 建立测试环境。
-
-本任务是纯文档分析，未修改 Rust/Go/Cargo，未运行 Cargo。结构验收通过固定标题
-命令检查；人工复核重点为构造顺序、路径删除条件、共享对象关系、Go 差异和失败清理
-边界均能回溯到上述符号或文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dumpformat-testutils` crate 的 Parquet 测试数据写入夹具，而不是数据库运行时或逻辑导出的生产写入器。`pkg/dumpformat/testutils/lib.rs` 将本模块的公开项全部再导出；`pkg/dumpformat/testutils/Cargo.toml` 表明它直接依赖 `astersql-objstore`、`anyhow`，以及固定 tag `astersql-parquet-v60.0.0-streaming-pages.1` 的 `parquet` crate。真正的导出实现位于 `pkg/dumpformat/parquetfile`，本文件只为解析器、导入器和对象存储等测试生成可控的真实 Parquet 文件。
-
-RustCodeGraph 的文件关系显示该文件包含 73 个索引符号。Rust 侧直接行为测试位于 `pkg/dumpformat/testutils/migration_aster_unit_test.rs`；Go 原文件 `pkg/dumpformat/testutils/parquet_writer.go` 则被 `pkg/dumpformat/parquetfile/parser_test.go`、`pkg/executor/importer/import_test.go`、`pkg/lightning/mydump/loader_test.go` 等测试夹具调用。源码没有条件编译项；测试模块由 `lib.rs` 通过 `#[cfg(test)]` 独立挂载，符合源码与测试分文件的仓库约定。
+用 `ParquetColumn` 描述列名、物理类型、转换/逻辑类型、长度、精度、小数位和数据生成器，并由 `make_schema` 建出 required 根节点与 optional 叶子列。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ Go 对照文件的直接使用方体现了该夹具的用途：parser 测试覆�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐段对应 `pkg/dumpformat/testutils/parquet_writer.go`：`ParquetColumn`、`calcValueRange`、`sliceColumnData`、物理 writer type switch、`writeWrapper`、`getStore` 与 `WriteParquetFile` 都有等价实现。共同语义包括：叶子列均为 optional、逻辑类型优先于 converted type、每列默认字典加 Snappy、选项按类型分类、按最大 row-group 行数切分、NULL 值不占紧凑值缓冲、Seek/Read 是空操作，以及负行数仍传给生成器但不产生 row group。
-
 Rust 的主要差异是用枚举代替 `any`，因此 API 只能接收已列举类型；同时增加了行区间、属性非零、生成缓冲类型/长度和 schema 列数校验。Go 的切片越界通常 panic，错误类型断言可能得到 nil 切片后由下游失败；Rust 将这些情况转换为 `Result`。Rust 还显式关闭 `SerializedFileWriter` 并传播其错误，但与 Go 一样忽略最终 deferred/包装器关闭错误。
 
 Go 的函数接收 `...any`，Rust 接收 `Vec<ParquetWriterOption>`；新增 Arrow Go 选项不会自动在 Rust 生效，必须扩充封闭枚举及 `apply_writer_property`/`build_writer_properties`。Go 当前有多个成熟调用场景，而 Rust 当前可确认的覆盖重点来自本 crate 的迁移测试，不能把 Go 测试覆盖直接等同于 Rust 覆盖。
@@ -96,11 +92,3 @@ Go 的函数接收 `...any`，Rust 接收 `Vec<ParquetWriterOption>`；新增 Ar
 - 若要用于大文件，应另建生产级流式实现，而不是让本夹具一次生成全部列；需要评估内存峰值、切片复制、对象写入失败清理、取消传播和 close 错误可见性。
 - 若改变资源关闭策略，必须分别覆盖 file writer 关闭失败与 object writer 关闭失败，并明确是否保留 Go 兼容行为；不可只依赖幂等标记。
 - 测试应继续放在独立的 `pkg/dumpformat/testutils/migration_aster_unit_test.rs`，不要内嵌到本源文件。跨模块消费行为可在 `pkg/dumpformat/parquetfile` 的独立测试中补充。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/dumpformat/testutils` 确认目标 Rust/Go/测试模块均已索引；`node --file pkg/dumpformat/testutils/parquet_writer.rs` 分段读取了 622 行完整源码；精确查询定位 `build_writer_properties`（第 395 行）和 `write_parquet_file`（第 520 行）。自然语言 `explore` 的同名 `write_file`/`write_row` 结果存在跨包符号碰撞，因此未把那些无关边当作本文件调用关系证据。
-- 源与边界：`pkg/dumpformat/testutils/parquet_writer.rs`、`pkg/dumpformat/testutils/lib.rs`、`pkg/dumpformat/testutils/Cargo.toml`、`pkg/dumpformat/parquetfile/Cargo.toml`。
-- Go 对照：`pkg/dumpformat/testutils/parquet_writer.go` 全文；并检索其在 `pkg/dumpformat/parquetfile/parser_test.go`、`pkg/executor/importer/import_test.go`、`pkg/lightning/mydump/loader_test.go` 等位置的调用。
-- Rust 独立测试：`pkg/dumpformat/testutils/migration_aster_unit_test.rs` 覆盖 definition-level 切片、八种缓冲切片、真实 Snappy 文件、row-group 覆盖、全部 Go 物理 writer 类型、负行数、非法区间/选项/生成长度和 FLOAT NULL 跨组写入。
-- 人工复核结论：该文件存在的原因是为测试产生精确可控的真实 Parquet 输入；运行核心是 schema/属性构造、全列生成、按 definition level 映射 row group、经 objstore 流式落盘；安全扩展必须同步封闭类型分派、独立迁移测试和资源关闭/内存边界。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util` crate 中的有界并发令牌池实现，由 [`pkg/util/lib.rs`](lib.rs) 以 `pub mod worker_pool` 导出。它不复用 `threadpool` crate 的常驻线程，而是预先创建固定数量的 `Worker` 令牌：提交者先取得令牌，再创建一次性线程；因此限制的是同时在途的任务数量，而不是复用操作系统线程。
-
-当前仓库的 Rust 生产代码中没有检索到对本模块公开 API 的调用。RustCodeGraph 对 `NewWorkerPool` 的调用方查询只返回独立测试 `security_2_aster_unit_test.rs::worker_pool_limits_and_recycles_workers`。这说明该文件目前是已导出的通用迁移能力，但尚未接入 Rust 应用主链；不能据此宣称 Go 侧所有使用场景已经迁移。
+该模块只负责并发配额和任务启动，不提供任务取消、超时、排队公平性、线程复用或普通 `Apply` 任务的 join/wait 接口。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ bounded channel 同时承担配额计数和跨线程同步。获取令牌发生�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/worker_pool.go`](worker_pool.go)。两边都预填 `limit` 个从 1 开始编号的 worker，都在调用者侧先借令牌，再异步运行并 defer/RAII 归还；`IdleCount`、`Limit`、`HasWorker` 以及四个提交入口在意图和阻塞行为上逐项对应。
-
 主要实现差异如下：
 
 - Go 使用单个 buffered `chan *Worker`；Rust 的 crossbeam channel 将 `Sender`、`Receiver` 同时保存在共享 inner 中。
@@ -94,13 +90,3 @@ Go 生产调用点分布在 BR backup/stream、streamhelper 等路径，但当�
 - 若加入 `limit > 0` 校验，应同步 Go 版本或记录明确的语义偏差，并增加零容量回归测试。
 - 测试应放在独立文件，不嵌入 `worker_pool.rs`。现有覆盖位于 [`pkg/util/security_2_aster_unit_test.rs`](security_2_aster_unit_test.rs)；扩展时至少补充容量耗尽会阻塞、panic 后回收、ErrorGroup 的 `Ok`/`Err`/panic、多个池克隆共享配额、错误归还/重复归还策略等场景。若新增独立测试文件，还需在 `Cargo.toml` 的显式 test target 或 `lib.rs` 测试模块接线中注册。
 - 性能修改必须保留“启动任务前取得配额”的背压性质，并评估从每任务线程切换为常驻池后对调度、公平性和 shutdown 的影响。
-
-## 验证依据
-
-- 源码全量阅读：[`pkg/util/worker_pool.rs`](worker_pool.rs)，核对 `WorkerPool`、`WorkerPoolInner`、`Worker`、`RecycleGuard`、构造函数和全部九个公开方法；文件中没有 trait、常量或条件编译项。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，`files --filter pkg/util/worker_pool.rs` 显示目标文件含 16 个符号；`query` 精确定位 Rust/Go 两个 `NewWorkerPool`、`ApplyWorker`、`ApplyOnErrorGroup`；`callers pkg/util/worker_pool.rs::NewWorkerPool` 仅返回 `worker_pool_limits_and_recycles_workers`；`callers ApplyOnErrorGroup` 为空；`callees ApplyOnErrorGroup` 返回本文件的 `ApplyWorker`。
-- crate 与入口：[`pkg/util/Cargo.toml`](Cargo.toml) 和 [`pkg/util/lib.rs`](lib.rs)，核对依赖、crate 名、模块导出及显式测试目标 `security_2_aster_unit_test.rs`。
-- 相邻实现：[`pkg/util/wait_group_wrapper.rs`](wait_group_wrapper.rs)，核对 `ErrorGroupWithRecover::Go`/`Wait` 的线程、panic、结果与取消生命周期。
-- Go 对照：[`pkg/util/worker_pool.go`](worker_pool.go)，逐项核对构造、借还、四类提交、状态查询和零容量阻塞语义；同目录未发现专门的 Go `worker_pool_test.go`。
-- Rust 测试：[`pkg/util/security_2_aster_unit_test.rs`](security_2_aster_unit_test.rs) 的 `worker_pool_limits_and_recycles_workers` 验证容量、不同 ID、耗尽状态、手工回收、带 ID 提交及最终归还；目前未覆盖零容量、阻塞等待、panic 和 ErrorGroup 路径。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行固定章节结构检查，并人工复核文档没有把未接线能力描述为生产主链现状。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 AsterSQL Rust 元数据模型中的“索引”部分：持久化的索引描述、列存索引附加信息、全局索引格式版本开关，以及 DDL 和外键校验需要的查找/覆盖判定。它不是物理索引读写实现；其职责是提供跨 DDL、会话、规划等模块共享的结构和纯判定逻辑。
-
-编译归属并非由同目录顶层 `Cargo.toml` 直接逐文件声明。`pkg/meta/model/internal/group1/lib.rs:446-451` 以 `#[path = "../../index.rs"] mod index; pub use index::*;` 把本文件编入 `astersql-meta-model-group1`；`pkg/meta/model/lib.rs` 再通过 `pub use ::group_1::*` 对外暴露同一套类型。顶层 `pkg/meta/model/Cargo.toml` 说明公开 crate 是 `astersql-meta-model`，并以路径依赖聚合 group1–group4；其中 group1 拥有 column/index/table 的正式定义。
+为 DDL 提供元数据辅助逻辑：生成修改列期间不冲突的临时索引名，识别 changing/removing 名称，判断索引状态和类型，解析 partial index 条件。
 
 ## 核心职责
 
@@ -103,12 +101,3 @@ RustCodeGraph 的文件节点报告本文件被 22 个文件使用，并点名 `
 - 新增 `IndexInfo` 持久化字段时，应给出 serde 名称和旧元数据默认值，核对 Clone、Go JSON tag、模型身份是否受影响，并评估 infoschema/domain/DDL 消费者的兼容性。
 - 修改全局索引版本时，本文件只适合承载常量与能力边界；选择策略在 `pkg/ddl/index.rs:set_global_index_version`。需同步评估滚动升级兼容、键格式读写路径和共享原子测试隔离。
 - Region split 字段变化需保持旧 JSON 可读，并确认 `TimeZone` 缺省时的历史行为；范围上下界是字符串表示，解释逻辑不在本文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/meta/model` 覆盖 `index.rs`、`index_test.rs`、`index.go`、`index_test.go`；`node --file pkg/meta/model/index.rs --offset 1/421` 读取完整 553 行并报告 22 个使用文件；`query` 定位 `IndexInfo`、`IndexColumn`、`FieldTypeToInvertedIndexInfo`、`GenUniqueChangingIndexName`、`IsIndexPrefixCovered`。`callers/callees` 精确查询超时且无输出，未将其当作否定证据。
-- 源与装配：`pkg/meta/model/index.rs`；`pkg/meta/model/internal/group1/lib.rs:446-451`；`pkg/meta/model/internal/group1/Cargo.toml`；`pkg/meta/model/lib.rs`；`pkg/meta/model/Cargo.toml`。
-- Rust 调用点：`pkg/ddl/create_table.rs`、`pkg/ddl/index.rs`、`pkg/ddl/persistent_create_table.rs`、`pkg/ddl/persistent_modify_column.rs`、`pkg/session/runtime/ddl.rs`、`pkg/session/runtime/query.rs`。
-- Rust 独立测试：`pkg/meta/model/index_test.rs` 覆盖索引左前缀、外键 partial 条件、全局能力位恢复、列存类型 JSON、HNSW 与旧向量元数据；`pkg/meta/model/bdr_1_aster_unit_test.rs` 和 `pkg/meta/model/dependency_tests.rs` 提供额外模型集成断言。
-- Go 对照：`pkg/meta/model/index.go` 与 `pkg/meta/model/index_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核未修改 Rust、Go、Cargo 或总计划。

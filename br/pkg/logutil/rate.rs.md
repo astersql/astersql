@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-logutil` library crate；crate 根是 [`br/pkg/logutil/lib.rs`](lib.rs)，其以 `pub mod rate` 装配本模块，并再次导出 `RateTracer` 与 `TraceRateOver`。[`br/pkg/logutil/Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/logutil`，因此本文件的直接语义基准是同目录的 [`rate.go`](rate.go)，而不是一个独立的 Rust 限流子系统。
-
-它位于 BR 日志辅助层：接收 Prometheus `Counter`，记录构造时的基线与单调时钟起点，提供从构造以来的平均 ops/s，并把该速率包装为日志字段。RustCodeGraph 对本文件列出 8 个符号；仓库检索只发现 crate 导出和测试引用，未发现 Rust 生产调用点。因此当前事实是“Rust API 已实现并测试，但尚无可确认的 Rust 业务接线”；Go 版本则已用于恢复建表进度日志。
+因此当前事实是“Rust API 已实现并测试，但尚无可确认的 Rust 业务接线”；Go 版本则已用于恢复建表进度日志。
 
 ## 核心职责
 
@@ -76,9 +74,9 @@ Go 业务链的直接证据位于 `br/pkg/restore/snap_client/client.go`：`crea
 
 ## 与 Go 版本的对应关系
 
-Rust `RateTracer` 对齐 [`rate.go`](rate.go) 的 `start`、`base` 和嵌入式 `prometheus.Counter`；Rust 用 `Option<Counter>` 显式表达 Go 接口可能为 nil。`TraceRateOver`、`Rate`、`RateAt` 与 `L` 保留 Go 命名，crate 级 `allow(non_snake_case)` 支持这种迁移 API。
+Rust `RateTracer` 对齐 [`rate.go`](rate.go) 的 `start`、`base` 和嵌入式 `prometheus.Counter`；Rust 用 `Option<Counter>` 显式表达 Go 接口可能为 nil。
 
-核心公式一致：两端都忽略构造前的计数值，读取调用时的当前计数，再除以从创建到指定时刻的秒数。Go 通过 `time.Time.Sub` 自然得到负 duration；Rust 因 `Instant::duration_since` 不接受反向差值，使用比较加显式负号恢复该语义。两端在零分母时都保留 IEEE 浮点结果，在空 Counter 时都返回 `NaN`。
+Go 通过 `time.Time.Sub` 自然得到负 duration；Rust 因 `Instant::duration_since` 不接受反向差值，使用比较加显式负号恢复该语义。
 
 差异有三点：第一，Go 通过嵌入 Counter 自动暴露 `Inc`/`Add`，Rust 显式写了同名包装方法；第二，Go 的字段不导出，Rust 字段公开以支持当前独立测试构造；第三，Go `L` 返回 zap logger，Rust 返回本 crate 的 tracing/capture 适配 `Logger`。Go `logging_test.go::TestRater` 验证三个正常采样点；Rust 在此基础上增加了零时长和负时长边界测试。Rust 生产接线尚未由仓库证据确认，因此迁移状态不能表述为完整替代 Go 调用链。
 
@@ -90,13 +88,3 @@ Rust `RateTracer` 对齐 [`rate.go`](rate.go) 的 `start`、`base` 和嵌入式 
 - 若调整 `L` 的字段名或格式，需保持 `speed`、两位小数和 `ops/s` 的兼容性，或同步日志消费者与独立测试。日志后端的扩展位置在 [`logging.rs`](logging.rs) 的 `Logger::With`/`log::L`，不应把后端逻辑塞进本文件。
 - 若收紧三个字段的可见性，应先为测试提供独立构造辅助或可控时钟；Rust 测试必须继续放在 `logging_test.rs`/`parity_test.rs` 等独立文件中，不能内嵌回 `rate.rs`。
 - 性能上，`Rate` 每次读取指标，`L` 还会分配格式化字符串和派生 Logger；高频热路径如需优化，应先测量，并保持可观察输出语义。
-
-## 验证依据
-
-- Rust 源码：[`rate.rs`](rate.rs)；确认 `RateTracer`、`TraceRateOver`、`Inc`、`Add`、`Rate`、`RateAt`、`L` 的签名与分支。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)；确认 library 根、Go 包映射、`prometheus 0.14`/metric 依赖、模块声明及 re-export。
-- 下游实现：`pkg/lightning/metric/metric.rs::read_counter` 与 [`logging.rs`](logging.rs) 的 `Logger::With`、`default_logger`、`log::L`。
-- Go 对照与生产接线：[`rate.go`](rate.go)、[`logging_test.go`](logging_test.go) 的 `TestRater`，以及 `br/pkg/restore/snap_client/client.go` 的 `createTablesBatch`/`createTables`。
-- Rust 独立测试：[`logging_test.rs`](logging_test.rs) 的 `test_rater`、`test_rater_go_time_boundaries`；[`parity_test.rs`](parity_test.rs) 的速率对齐段落。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/logutil` 找到 `rate.rs`/`rate.go` 及测试；`query RateTracer --kind struct`、`query TraceRateOver --kind function` 同时定位 Go/Rust 定义；`node --file br/pkg/logutil/rate.rs --offset 1 --limit 220` 列出完整 85 行与“used by 0 files”。通用名调用图查询未返回可区分的直接调用边，因此调用关系另以精确文本检索和上述源文件核验，未据此推断 Rust 生产调用。
-- 任务为纯文档分析，未运行 Cargo；交付时运行任务指定的 11 章节结构检查，并人工复核链接、事实边界和 Rust/Go 接线差异。

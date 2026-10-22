@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`iter.rs`](iter.rs) 属于 `astersql-kv` crate（`pkg/kv/Cargo.toml`，库入口为 `pkg/kv/lib.rs`）。`pkg/kv/lib.rs:529-534` 在公开 `iter` 模块中以 `include!("iter.rs")` 纳入本文件，并通过 `pub use iter::*` 把唯一入口 `NextUntil` 重导出到 crate 根；调用方因此使用 `kv::NextUntil` 或 `astersql_kv::NextUntil`。
-
-它位于 KV 游标抽象与上层扫描循环之间，是一个同步的“按谓词推进游标”助手：逐项检查当前键，在谓词首次命中、迭代器失效或推进失败时停止。它不创建迭代器、不读取值、不决定扫描上下界，也不拥有关闭游标的责任。
+关闭及后续使用仍由拥有游标的外层代码负责。
 
 ## 核心职责
 
@@ -72,13 +70,11 @@ RustCodeGraph 对精确 Rust 函数节点的 `callers`/`callees` 返回空数组
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/kv/iter.go:17-29`，接口对照位于 `pkg/kv/kv.go:926-938`。两边循环条件和错误顺序一致：先 `Valid`，再对 `Key` 应用谓词，未命中才 `Next`；`Next` 出错立即返回，命中或耗尽返回成功；都不访问 `Value`，也不调用 `Close`。
+接口表达存在两点语言差异：Go 参数类型是命名函数类型 `FnKeyCmp func(Key) bool`，Rust `pkg/kv/kv.rs` 虽保留 `FnKeyCmp = fn(Key) -> bool`，`NextUntil` 实际接受 `impl FnMut(Key) -> bool`。Go 的 `error` 可为 `nil`，Rust 用 `Result<(), Error>` 分别表达成功和失败。
 
-接口表达存在两点语言差异：Go 参数类型是命名函数类型 `FnKeyCmp func(Key) bool`，Rust `pkg/kv/kv.rs` 虽保留 `FnKeyCmp = fn(Key) -> bool`，`NextUntil` 实际接受 `impl FnMut(Key) -> bool`。这允许 Rust 调用方传入捕获并修改状态的闭包，能力严格宽于函数指针；`pkg/kv/iter_test.rs` 专门覆盖这一点。Go 的 `error` 可为 `nil`，Rust 用 `Result<(), Error>` 分别表达成功和失败。
+Rust 只有 `system_session.rs` 两处直接调用；`admin.rs` 已以内联数组位置推进实现同一效果，不能据 Go 调用清单声称所有链路都已通过本 Rust 函数接线。
 
-Go 当前生产调用还包括 `pkg/util/admin/admin.go:256`、`pkg/ddl/backfilling.go:1202` 和 `pkg/table/tables/tables.go:1401`，均用于跳过共享记录键前缀的 KV 项。Rust 只有 `system_session.rs` 两处直接调用；`admin.rs` 已以内联数组位置推进实现同一效果，不能据 Go 调用清单声称所有链路都已通过本 Rust 函数接线。
-
-仓库没有 `pkg/kv/iter_test.go`；Go 行为依据来自生产实现与这些真实调用点，Rust 边界由独立的 `.rs` 测试覆盖。本任务是纯文档分析，未运行 Cargo，不能把源码阅读等同于测试已执行。
+仓库没有 `pkg/kv/iter_test.go`；Go 行为依据来自生产实现与这些真实调用点，Rust 边界由独立的 `.rs` 测试覆盖。
 
 ## 扩展指南
 
@@ -88,13 +84,3 @@ Go 当前生产调用还包括 `pkg/util/admin/admin.go:256`、`pkg/ddl/backfill
 - 若想减少 `Key` 克隆，必须先调整 `Iterator::Key` 的 crate 级 trait 契约及所有实现，影响范围远超本文件；不能只把谓词改成借用，因为当前键已经由 trait 按值返回。
 - 若新增取消、最大推进次数或异步推进，应明确谁拥有 `Close`，并为错误、取消、耗尽和命中各自验证资源清理。现有函数应保持轻量、同步和 Go 对齐，避免把扫描策略或重试逻辑塞入通用 KV 助手。
 - 性能审查应关注动态分派次数、每项键克隆以及底层 `Next` I/O；兼容性审查应保持“命中项不被越过”“先验证再取键”“错误立即返回”三个不变量。
-
-## 验证依据
-
-- 目标源码与公共类型：`pkg/kv/iter.rs::NextUntil`、`pkg/kv/kv.rs::Iterator`/`FnKeyCmp`、`pkg/kv/key.rs::Key`、`pkg/kv/error.rs::Error`。
-- crate 边界与装配：`pkg/kv/Cargo.toml`；`pkg/kv/lib.rs:529-537` 的 `include!`、重导出和独立 `iter_test` 装配。
-- Rust 生产调用：`pkg/session/runtime/system_session.rs:2043-2044,2205-2207`；资源关闭证据为同文件 `2215-2217`。
-- Rust 独立测试：`pkg/kv/iter_test.rs::next_until_accepts_a_state_capturing_predicate`；`pkg/kv/assertion_1_aster_unit_test.rs::next_until_stops_on_match_and_propagates_next_error`，覆盖命中、空输入、立即命中、耗尽和推进错误。
-- Go 对照与调用：`pkg/kv/iter.go::NextUntil`、`pkg/kv/kv.go::FnKeyCmp`/`Iterator`、`pkg/util/admin/admin.go`、`pkg/ddl/backfilling.go`、`pkg/table/tables/tables.go`。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件、4415 个 Go 文件；`node --file pkg/kv/iter.rs` 确认 34 行源码及唯一函数；`query NextUntil` 区分 Go/Rust 两个定义；精确 Rust 节点的 `callers`/`callees` 均为空，故调用关系再用上述源码引用交叉验证。
-- 本次按任务约束不运行 Cargo。交付结构以固定 11 个二级标题检查，并人工复核文档能说明文件存在原因、执行顺序、真实接线、错误/资源边界和安全扩展点。

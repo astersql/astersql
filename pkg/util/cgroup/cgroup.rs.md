@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cgroup.rs` 是 `astersql-util-cgroup` crate 的共享基础层。crate 入口 `pkg/util/cgroup/lib.rs` 将本文件声明为私有模块并重导出其公开项；Linux 与非 Linux 的 CPU、内存实现均复用这里的数据类型、cgroup 路径常量、挂载探测和文件解析函数。crate 的 `Cargo.toml` 只为生产代码引入 `anyhow`，说明本文件直接依赖的能力集中在标准库文件系统/I/O与带上下文的错误传播，而不是 SQL、存储或网络子系统。
-
-该文件本身不决定完整的 CPU 或内存策略。`pkg/util/cgroup/cgroup_cpu.rs` 负责把这里的探测原语组合成 CPU 采样，`pkg/util/cgroup/cgroup_memory.rs` 负责组合内存查询，`pkg/util/cgroup/cgroup_cpu_linux.rs` 再提供面向应用的 Linux 公开入口。因而它位于“读取 `/proc` 和 cgroup 控制文件”与“上层资源配额决策”之间。
+解析 cgroup v1 的 `cpu.cfs_*`、`cpuacct.usage_*`，以及 v2 的 `cpu.max`、`cpu.stat`；为内存实现提供 `readInt64Value` 和共享文件名/键名。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@ RustCodeGraph 的文件节点确认 `cgroup.rs` 被 crate 内 CPU、内存实现
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/util/cgroup/cgroup.go` 是主要语义基准。Rust 保留了 Go 的公开枚举/结构字段、控制器集合匹配、cgroup 路径冒号恢复、mountinfo v1/v2 识别、namespace 相对路径、CPU 文件格式、`max` 哨兵以及错误上下文的大体契约。`pkg/util/cgroup/cgroup_mock_test.go` 与 Rust 的 `cgroup_mock_test.rs` 都以表驱动覆盖缺文件、缺控制器、namespace 映射、控制器顺序反转、v1/v2 和混合挂载。
+关键差异是 `SetGOMAXPROCS`：Go 调用 `runtime.GOMAXPROCS`，记录日志，并在新值与旧值相同时返回 no-op；Rust 因无等价进程级调度器旋钮，只维护不可公开读取的 `MAX_PROCS`，也不记录日志，且有效配额下无论值是否相同都会交换并返回恢复闭包。
 
-关键差异是 `SetGOMAXPROCS`：Go 调用 `runtime.GOMAXPROCS`，记录日志，并在新值与旧值相同时返回 no-op；Rust 因无等价进程级调度器旋钮，只维护不可公开读取的 `MAX_PROCS`，也不记录日志，且有效配额下无论值是否相同都会交换并返回恢复闭包。因此它保留 API 形状和撤销动作，但不能宣称改变了 Rust 应用实际并行度。
-
-另一处需明确的当前事实是 v2 usage 的单位：Go 结构注释笼统称 `Stime/Utime` 为纳秒，但 `cpu.stat` 提供 `*_usec`，Rust 与 Go 都直接保存原始数值而未换算。Rust `detectCPUUsageInV2` 的解析错误消息还写有 “cgroup v1”，这是与 Go 现有消息一致的兼容文本，不表示实际读取 v1。
+另一处需明确的当前事实是 v2 usage 的单位：Go 结构注释笼统称 `Stime/Utime` 为纳秒，但 `cpu.stat` 提供 `*_usec`，Rust 与 Go 都直接保存原始数值而未换算。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ RustCodeGraph 的文件节点确认 `cgroup.rs` 被 crate 内 CPU、内存实现
 - 修改数值格式：分别覆盖 v1 的带符号 quota、v2 `max`、缺失 period、空文件、非法整数和未知 `cpu.stat` 键；相关聚焦测试位于 `cgroup_test.rs`、`cgroup_cpu_linux_1_aster_unit_test.rs` 和 `cgroup_mock_test.rs`。
 - 若要真正控制 Rust 并行度，不能只扩展 `MAX_PROCS`；需要先确定实际 runtime/线程池的拥有者，并显式接线。该变化会超出此基础解析文件的当前职责，且需评估全局兼容性、嵌套恢复和并发竞态。
 - 性能上这些 API 每次都会同步打开并扫描 proc/cgroup 文件；若新增高频调用或缓存，必须同时定义 cgroup 动态更新后的失效策略，不能默认路径、配额或挂载在进程生命周期内恒定。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/util/cgroup/cgroup.rs`（46 个符号）；`files --filter pkg/util/cgroup` 确认同目录 Rust/Go 文件集合；`node --file pkg/util/cgroup/cgroup.rs --offset 1/240` 阅读全部 373 行；`query` 精确核对 `SetGOMAXPROCS`、`detectControlPath`、`getCgroupDetails`、`detectCPUQuotaInV1` 的 Rust/Go 定义。`callers/callees` 查询未给出可用输出，直接边改由下列相邻源码调用点验证。
-- Rust 源与装配：`pkg/util/cgroup/cgroup.rs`、`lib.rs`、`cgroup_cpu.rs`、`cgroup_cpu_linux.rs`、`cgroup_memory.rs`、`cgroup_memory_unsupport.rs`。
-- crate 声明：`pkg/util/cgroup/Cargo.toml`。
-- Go 对照：`pkg/util/cgroup/cgroup.go`、`cgroup_mock_test.go`、`cgroup_cpu_test.go`。
-- 独立 Rust 测试：`pkg/util/cgroup/cgroup_test.rs` 验证 v2 三段字段与空单值文件；`cgroup_cpu_linux_1_aster_unit_test.rs` 验证控制器匹配、v1/v2 CPU 文件、端到端 v2、`max` 与错误上下文；`cgroup_mock_test.rs` 验证 CPU/内存路径、失败和混合挂载矩阵。
-- 本任务是纯文档分析，按计划未运行 Cargo；交付前另执行固定 11 章节结构检查和文档 diff 自审。

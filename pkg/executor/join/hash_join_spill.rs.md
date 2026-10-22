@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate（见 [`Cargo.toml`](Cargo.toml) 的 `[package]` 与 `[lib]`），由 [`lib.rs`](lib.rs) 以公开模块 `hash_join_spill` 导出。它位于 Hash Join 内存跟踪器与实际分区落盘实现之间：接收“内存已超过配额”的通知，判断本轮是否值得且允许 spill，然后只把共享辅助器的状态置为 `NeedSpill`；具体的磁盘写入、分区恢复和清理由 [`hash_join_spill_helper.rs`](hash_join_spill_helper.rs) 负责。
-
-当前 Rust 迁移状态需要特别区分：本文件的动作、阈值判断和单元测试已经存在，但生产侧 [`hash_join_v2.rs`](hash_join_v2.rs) 中创建并注册 spill action 的 `OpenSelf` 逻辑仍是注释形式的 Go 迁移稿。仓库内对 `HashJoinSpillAction` 的实际 Rust 使用目前来自 [`hash_join_spill_test.rs`](hash_join_spill_test.rs) 和 [`inner_join_spill_test.rs`](inner_join_spill_test.rs)，不能据此声称 Rust Hash Join 主链已经注册该 OOM action。
+位于 Hash Join 内存跟踪器与实际分区落盘实现之间：接收“内存已超过配额”的通知，判断本轮是否值得且允许 spill，然后只把共享辅助器的状态置为 `NeedSpill`；具体的磁盘写入、分区恢复和清理由 [`hash_join_spill_helper.rs`](hash_join_spill_helper.rs) 负责。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ fallback 是可选项：在不能或不值得 spill 的超限场景中，如果�
 
 ## 与 Go 版本的对应关系
 
-[`hash_join_spill.go`](hash_join_spill.go) 是直接语义基线。Rust `HashJoinSpillAction` 对应 Go `hashJoinSpillAction`，`new` 对应 `newHashJoinSpillAction`，`priority` 对应 `GetPriority`，`action` / `action_impl` / `trigger_fallback_action` 和阈值函数也逐项对应。优先级 2、`1/20` 阈值、等待正在 spill、成功置位后不 fallback、不能或不值得 spill 时 fallback 等关键分支保持一致。
-
 实现形态存在几处明确差异：Go 通过嵌入 `memory.BaseOOMAction` 管理 fallback，Rust 直接保存 `Option<Arc<dyn OomAction>>`；Go 使用 helper 的同一条件变量锁覆盖等待与无锁状态检查，Rust 增加 `action_lock` 串行化 action，再调用 helper 的锁封装方法；Go 分别置状态并写两个原子快照，Rust 将三步封装到 `set_need_spill`；Go 的可变 `spillChunkSize` 和状态常量位于本文件，Rust 的分块及状态定义位于 helper。本文件顶部的大段注释保留了早期 Go 形状，但有效实现以第 109 行之后的 Rust 定义为准。
 
 最大的迁移差异是接线：Go `hash_join_v2.go` 已在 `OpenSelf` 注册该动作；Rust `hash_join_v2.rs` 只保留对应注释稿。因此该组件的局部语义已对齐，完整应用主链尚未对齐。
@@ -89,14 +85,3 @@ fallback 是可选项：在不能或不值得 spill 的超限场景中，如果�
 - 改动 fallback 协议时要维持 `Send + Sync` 和对象安全，明确多个 action 的优先级排序及 fallback 是否可能重入；相关并发测试应继续验证一次状态周期只成功置位一次。
 - 若增加日志，应使用 `SPILL_INFO` 与 helper 保存的触发快照，而不是日志打印时的即时 tracker 值；热路径上避免在 action 锁内引入磁盘 I/O 或长耗时工作。
 - 性能风险主要来自 OOM 高频触发下的串行锁、条件变量等待和重复原子读取；兼容风险主要来自门槛、优先级、fallback 条件或 Go/Rust 状态机差异。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为含 17 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/executor/join/hash_join_spill.rs`：核对了 208 行有效源码、全部模块级常量、trait、结构体、实现和函数；文件没有条件编译项。
-- RustCodeGraph `node action_impl`、`node has_enough_data_to_spill`、`node HashJoinSpillHelper`、`node wait_while_spilling`、`node set_need_spill`、`node can_spill`、`node check_exceed`、`node set_not_spilled` 与 `node set_in_spilling`：核对关键调用边、锁/条件变量、阈值、状态转换和快照写入。
-- 读取 [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)：确认 crate 名称、模块公开性、测试装配、依赖边界和无目标文件专属 feature。
-- 读取 [`hash_join_spill.go`](hash_join_spill.go) 与 [`hash_join_v2.go`](hash_join_v2.go)：核对 Go 动作逻辑、优先级、阈值、fallback 和生产注册条件。
-- 读取 [`hash_join_spill_test.rs`](hash_join_spill_test.rs)：核对优先级 2、4/5 字节阈值分支、fallback 调用以及 16 线程只成功置位一次。读取 [`inner_join_spill_test.rs`](inner_join_spill_test.rs) 的 `spill_action_transitions_need_spill_and_falls_back_when_spill_disabled`：核对允许 spill 时进入 `NeedSpill`、禁用时 fallback。
-- 精确搜索 `HashJoinSpillAction`、`OomAction` 和 `has_enough_data_to_spill`：除测试外未发现 Rust 生产构造者；[`hash_join_v2.rs`](hash_join_v2.rs) 的对应注册逻辑仍位于注释稿。
-- 本任务是只增说明文档的分析任务，按计划不运行 Cargo；交付时以任务指定的 11 章节结构命令、链接与差异人工复核为验证。

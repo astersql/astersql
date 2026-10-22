@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core-operator-logicalop` crate；crate 边界由同目录的 `Cargo.toml` 定义，模块由 `lib.rs` 中的 `mod expression_util` 纳入，并通过 `pub use expression_util::*` 向逻辑算子 crate 的调用方公开。它位于逻辑优化阶段的表达式判定边界：判断一组过滤条件是否已经足以证明结果集为空，但不直接创建或改写逻辑计划。
-
-当前文件只有 3 个函数，没有类型、常量、trait、`impl` 或条件编译项：公开函数 `Conds2TableDual`、`IsConstFalse`，以及私有辅助函数 `is_mutable_constant`（`expression_util.rs:26,40,47`）。
+`LogicalTableDual` 的构造、schema/name 继承或零基数写入由各调用点负责，不在本文件内完成。
 
 ## 核心职责
 
@@ -94,8 +92,6 @@ RustCodeGraph 将目标文件识别为 5 个索引符号，并报告被 7 个文
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是同目录 `expression_util.go`。核心语义保持一致：空条件不处理；比较结果恒 NULL 可触发 Dual；普通恒假只检查单条件；`Datum.ToBool` 成功且为 0 才算假；计划缓存相关值不能导致过度优化。
-
 两侧结构差异如下：
 
 - Go `Conds2TableDual(p, conds)` 接收 `base.LogicalPlan` 并直接创建、初始化、复制 schema 后返回计划；Rust `Conds2TableDual(conds)` 只返回 `bool`，由每个调用方按自身上下文构造 Dual 或写零统计。
@@ -115,18 +111,3 @@ Go 对照文件是同目录 `expression_util.go`。核心语义保持一致：�
 4. 测试逻辑继续放在独立文件，至少同步 `expression_util_test.rs`；涉及整个逻辑算子行为时同步 `logical_d_aster_unit_test.rs` 及具体调用方测试，不把测试内嵌进生产 `.rs`。
 
 建议覆盖：空条件；单个 0/1/NULL/非法字符串；多个普通常量；比较表达式右侧 NULL；`DeferredExpr`；`ParamMarker`；嵌套可变常量；使用非默认类型上下文时与 Go 的差异。性能上该函数当前为单次线性扫描加至多一次布尔转换，新增递归检查会增加与表达式树大小相关的成本。
-
-## 验证依据
-
-已读取并交叉核对：
-
-- 目标源码：`pkg/planner/core/operator/logicalop/expression_util.rs`（完整 64 行）。
-- crate 边界与模块出口：`pkg/planner/core/operator/logicalop/Cargo.toml`、`lib.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/expression_util.go`、`pkg/expression/util.go`、`pkg/expression/constant.go`。
-- Rust 下游语义：`pkg/expression/util.rs`、`pkg/expression/core_support.rs`、`pkg/types/context.rs`。
-- Rust 调用点：`logical_selection.rs`、`logical_join.rs`、`logical_datasource.rs`、`logical_plans_misc.rs`、`pkg/planner/core/logical_plan_builder_runtime.rs`。
-- 独立测试：`pkg/planner/core/operator/logicalop/expression_util_test.rs`、`logical_d_aster_unit_test.rs`。
-
-RustCodeGraph 证据：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter` 确认目标文件含 5 个索引符号；`node --file` 读取了目标源码及主要调用点；`query` 分别定位 Rust/Go `Conds2TableDual`、`IsConstFalse` 以及 Rust 私有 `is_mutable_constant`。精确 `callers/callees` 没有输出函数级边，因此调用清单使用 `rg` 对图缺口补证，并由上述调用文件源码复核。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验证要求目标文档存在，且上述 11 个固定二级标题各出现一次；人工复核重点是：职责边界、单条件/多条件分支、计划缓存保护、调用方改写方式及 Go/Rust 差异均有真实符号或文件依据。

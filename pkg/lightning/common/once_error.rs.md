@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-lightning-common` crate。crate 入口 `pkg/lightning/common/lib.rs` 以 `mod once_error;` 装入模块，再通过 `pub use once_error::*;` 将 `OnceError` 暴露给下游。`pkg/lightning/common/Cargo.toml` 指定库入口为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/lightning/common"` 标明它对齐 Go 包 `pkg/lightning/common`。
-
-当前 Rust 仓库中，`OnceError` 的直接使用点只有独立测试 `pkg/lightning/common/once_error_test.rs`；未检索到生产 Rust 调用者。它是已经公开的 Lightning 公共能力，但 Go 导入主链中已有的生产用途尚未在 Rust 主链中出现。Go 侧的直接入口位于 `lightning/pkg/importer/table_import.go` 和 `lightning/pkg/importer/import.go`，用于并发 engine、chunk 和 table 任务的首错汇总。
+这个抽象把“首错胜出”与互斥同步集中在一个类型中。
 
 ## 核心职责
 
@@ -61,8 +59,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/common/once_error.go`，测试对照是 `pkg/lightning/common/once_error_test.go`。两版都具备默认空状态、忽略空错误、互斥保护、首次非空写入生效和读取首错的核心语义；Rust 测试逐项复现了 Go 测试的断言与跨执行单元访问场景。
-
 表示方式存在明确差异：Go 用结构体内嵌 `sync.Mutex` 与 `error` 接口，零值可直接使用，通常以指针接收者共享；Rust 用 `Arc<Mutex<Option<CommonError>>>`，通过 `Default` 获得空值，并通过 `Clone` 显式共享。Go `Get` 返回原错误接口值，Rust `Get` 返回 `CommonError` 的深层字段副本。Rust 版本因此只接受该 crate 的具体 `CommonError`，不像 Go 的 `error` 接口可容纳任意错误实现。
 
 Go 生产调用点证明该抽象在 Lightning importer 中的目标角色，但当前 Rust 搜索没有对应生产调用，故迁移状态应描述为“公共容器和独立测试已移植，生产接线未在 Rust 侧找到”，而非宣称 Rust 导入流程已经使用它。
@@ -74,13 +70,3 @@ Go 生产调用点证明该抽象在 Lightning importer 中的目标角色，但
 若要把该类型接入 Rust Lightning 并发导入流程，应从真实 worker 汇合点调用 `Set(Some(error))`，在发起取消后仍等待共享资源使用者退出，再调用 `Get` 返回首错；Go 的 `table_import.go` 中 engine/chunk 流程可作为语义参考，但 Rust 入口必须通过当时的实际调用图确认。
 
 兼容风险包括把 `Option<CommonError>` 泛化后改变公开签名、改变 Go 风格方法名、或把 `Get` 改为消费值而破坏重复读取。正确性风险集中在锁中毒策略和竞争胜者不可预测；性能风险集中在每次读取都加互斥锁并克隆完整错误。新增并发测试应只断言单次占用和所有克隆观察一致，不应断言某个线程固定获胜。
-
-## 验证依据
-
-- 源码与装配：[once_error.rs](once_error.rs)、[lib.rs](lib.rs)、[errors.rs](errors.rs)。
-- crate 边界：[Cargo.toml](Cargo.toml)；工作区继承的版本、edition 和 publish 设置来自[根 Cargo.toml](../../../Cargo.toml)。
-- Rust 独立测试：[once_error_test.rs](once_error_test.rs) 中的 `test_once_error`。
-- Go 对照与测试：[once_error.go](once_error.go)、[once_error_test.go](once_error_test.go) 中的 `TestOnceError`。
-- Go 生产调用证据：[table_import.go](../../../lightning/pkg/importer/table_import.go) 中 `engineErr`、`chunkErr`，以及 [import.go](../../../lightning/pkg/importer/import.go) 中 `restoreErr`。
-- RustCodeGraph：`status` 显示本仓库索引可用；`query OnceError --kind struct` 和 `node pkg/lightning/common/once_error.rs::OnceError` 定位类型及实现；对精确目标执行 `callers`/`callees` 未得到调用边。随后用 `rg` 核验 Rust 使用点，仅发现 crate 装配与独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务文件给定的十一章节结构命令，并人工复核上述事实、限制和扩展入口。

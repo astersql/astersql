@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/executor/show_stats.rs` 属于 `astersql-executor` crate；crate 由 `pkg/executor/Cargo.toml` 定义，`pkg/executor/lib.rs:224` 以公开模块 `show_stats` 暴露本文件。它不是 SQL 解析器或统计信息存储实现，而是 `SHOW STATS_*`、`SHOW ANALYZE STATUS`、`SHOW COLUMN_STATS_USAGE` 的领域执行核心：输入一组与具体会话解耦的统计快照，输出 `Vec<Row>`。
-
-完整应用中的上游入口是 `ConcreteSession::execute_show_stats`（`pkg/session/runtime/statistics.rs:2215` 附近）。该入口按 `ast::ShowStmtType` 选择本文件的 `fetchShowStatsMeta`、`fetchShowStatsHistogram`、`fetchShowStatsTopN`、`fetchShowStatsBuckets`、`fetchShowStatsHealthy`、`fetchShowStatsLocked`、`fetchShowHistogramsInFlight`、`fetchShowAnalyzeStatus` 或 `fetchShowColumnStatsUsage`，再把 `Cell` 转成协议层字符串并应用 SQL `LIKE`/`WHERE` 条件。
-
-生产数据桥接由 `SessionShowStatsRuntime`（`pkg/session/runtime/statistics.rs:1178`）实现 `ShowStatsRuntime`。因此本文件只规定遍历、排序、分区展开、行结构和错误传播；目录、统计缓存、锁表集合、编码值解码等由会话/Domain 层提供。
+不更新统计、不触发 analyze、不管理事务，也不直接访问存储；这些均在 `ShowStatsRuntime` 的实现侧完成。
 
 ## 核心职责
 
@@ -85,9 +81,7 @@ Meta 与 Healthy 的 `schema_simple_table_infos` 特意返回“数据 + 可选�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/executor/show_stats.go`。Rust 基本保留同名方法与主要分支：动态/静态分区展开、伪统计跳过、稳定列/索引顺序、TSO 时间转换、桶与 TopN 的 `ValueToString`、列使用同时展示 global/partition、锁表查询以及分析状态行转发。
-
-主要结构差异是 Go 方法直接依赖 `ShowExec` 的 session/domain/stats handle，而 Rust 把这些依赖抽成 `ShowStatsRuntime` 并将展示数据复制为轻量结构。这使独立测试可注入 runtime，也明确了 executor 与 session 的 crate 边界。
+主要结构差异是 Go 方法直接依赖 `ShowExec` 的 session/domain/stats handle，而 Rust 把这些依赖抽成 `ShowStatsRuntime` 并将展示数据复制为轻量结构。
 
 当前已验证的语义差异/简化包括：
 
@@ -109,12 +103,3 @@ Go 对照文件为 `pkg/executor/show_stats.go`。Rust 基本保留同名方法�
 增加过滤下推时需明确 SQL 层后过滤与 `ShowFilters` 的职责，避免两处大小写/LIKE 规则不一致。若把分页改成流式，必须重构当前“全部写入 `rows` 后切片”的所有权模型，并评估错误发生后的部分结果行为。
 
 测试应继续放在独立的 `pkg/executor/show_stats_test.rs`，优先扩展已有 `TestShowStatsMeta`、`TestShowStatsLocked`、`TestShowStatsHistograms`、`TestShowStatsBuckets`、`TestShowStatsBucketWithDateNullValue`、`TestShowStatsHasNullValue`、`TestShowColumnStatsUsage`、`TestShowAnalyzeStatus`；还应同步核对 Go `pkg/executor/show_stats_test.go`。兼容风险集中在结果列顺序、分区名、稳定排序、时间/NULL 格式和错误传播；性能风险集中在全 schema 扫描、统计结构克隆、全量物化及每个编码边界的重复解码。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 Rust/Go 文件；文件节点 `node --file pkg/executor/show_stats.rs --offset 1 --limit 1000` 返回目标文件完整 919 行，并报告该文件的引用面。
-- RustCodeGraph `query ShowStatsRuntime --kind trait` 与 `node ShowStatsRuntime`：定位 trait 于 `pkg/executor/show_stats.rs:212`；`query SessionShowStatsRuntime --kind struct` 与 `node SessionShowStatsRuntime`：定位生产适配器于 `pkg/session/runtime/statistics.rs:1178`。当前索引未能按泛型 impl 方法名解析 `ShowExec::fetchShowStatsMeta`/`fetchShowStatsBuckets` 的 callers/callees，因此方法级边由精确源码引用补齐，而未臆造图边。
-- 读过的生产边界：`pkg/executor/show_stats.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`、`pkg/session/runtime/statistics.rs`。
-- Go 对照：`pkg/executor/show_stats.go`；同名 fetch/append/转换方法逐项核对。
-- 测试证据：`pkg/executor/show_stats_test.rs` 和 `pkg/executor/show_stats_test.go`。Rust 测试覆盖 meta 过滤与动态/静态分区、锁、直方图、整数/日期桶、NULL 单列与复合索引、truncate、列使用 global/partition、分析任务状态；`TestShowStatusSnapshot` 属于相邻 SHOW 行为而非本文件的直接入口。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。结构验收使用任务指定命令，要求本文件存在且恰好包含上述 11 个固定二级章节。

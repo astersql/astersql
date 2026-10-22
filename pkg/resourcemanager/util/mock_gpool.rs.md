@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-resourcemanager-util` crate。crate 入口 `pkg/resourcemanager/util/lib.rs` 通过 `pub mod mock_gpool` 声明模块，并用 `pub use mock_gpool::*` 导出其公开符号；`pkg/resourcemanager/util/Cargo.toml` 将 `lib.rs` 指定为库入口，且没有为本模块声明额外 feature 或第三方依赖。
-
-这是资源管理器测试支持层中的内存 Mock，而不是真正执行任务的线程池。它以最小状态实现 `pkg/resourcemanager/util/util.rs` 中的 `GoroutinePool` trait，使调度器可以通过统一的 `Arc<dyn GoroutinePool>` 边界读取名称和容量、执行调容并检查原始并发度。当前 Rust 直接使用点包括 `pkg/resourcemanager/schedule_test.rs`、`pkg/resourcemanager/util/migration_aster_unit_test.rs` 和 `pkg/resourcemanager/util/shard_pool_map_test.rs`。
+以最小状态实现 `pkg/resourcemanager/util/util.rs` 中的 `GoroutinePool` trait，使调度器可以通过统一的 `Arc<dyn GoroutinePool>` 边界读取名称和容量、执行调容并检查原始并发度。
 
 ## 核心职责
 
@@ -64,16 +62,10 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/resourcemanager/util/mock_gpool.go`。Rust 保留了 Go 的类型名、构造器名和 CamelCase 方法名，并通过 `#![allow(non_snake_case)]` 接受这种迁移命名。
-
-- 两版都保存 `name`、`concurrency`、`originConcurrency`/`origin_concurrency`，构造时两个并发字段取同一值，`Tune` 只更新当前容量。
-- 两版 `LastTunerTs` 都返回当前时间减 10 秒；两版相同的统计与生命周期方法都以 `"implement me"` panic。
 - Go 构造器返回 `*MockGPool`，Rust 返回拥有所有权的 `MockGPool`，由调用者按需包装 `Arc`。
 - Go 的 `concurrency` 是普通 `int32`；Rust 使用 `AtomicI32`，以满足 `GoroutinePool: Send + Sync` 下共享 trait object 的并发安全要求。这是表示方式差异，不改变测试可见的 Tune/Cap 语义。
 - Go `Name` 返回 `string` 值；Rust 返回借用的 `&str`，避免复制并把生命周期绑定到池对象。
 - Go 类型以方法集隐式满足接口；Rust 需要显式 `impl GoroutinePool`，且该 trait 只包含资源管理器实际使用的七个方法。其他统计方法仍作为固有方法保留，以对齐 Go 表面 API，但当前不属于 Rust trait 契约。
-
-相关 Go 证据包括 `pkg/resourcemanager/schedule_test.go` 的超频上限测试，以及 `pkg/resourcemanager/util/shard_pool_map_test.go` 中用 Mock 填充池映射的测试。Rust 对应测试分别位于 `pkg/resourcemanager/schedule_test.rs`、`pkg/resourcemanager/util/shard_pool_map_test.rs`，另有 `pkg/resourcemanager/util/migration_aster_unit_test.rs` 补充直接语义验证。
 
 ## 扩展指南
 
@@ -83,13 +75,3 @@
 - 若改变共享状态，继续保证 `MockGPool` 满足 `Send + Sync`。新增多个相关状态时需明确是否要求一致快照；单独原子字段只能保证各字段自身的原子性。
 - 若要记录真实最近调容时间，应明确并发更新方式，并调整当前“始终绕过 200 毫秒间隔”的测试假设；否则可能让连续两次 `Exec` 的现有测试不再进入第二次上限判断。
 - 不应把本 Mock 当作生产池扩展入口。真实 worker 生命周期和指标实现位于 `pkg/resourcemanager/pool/workerpool/workerpool.rs`、`pkg/resourcemanager/pool/spool/spool.rs` 等实现中。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录中的 `mock_gpool.rs`、Go 对照和相关 Rust 测试均已索引。
-- RustCodeGraph 文件节点：`pkg/resourcemanager/util/mock_gpool.rs` 共 158 行、25 个索引符号，并显示 `pkg/resourcemanager/schedule_test.rs` 的使用关系；文件源码确认所有字段、方法、panic 桩和 trait 转发。
-- RustCodeGraph 文件节点：`pkg/resourcemanager/util/util.rs` 确认 `GoroutinePool: Send + Sync` 的七个方法，以及 `MinSchedulerInterval = 200ms`、`MaxOverclockCount = 1`。
-- RustCodeGraph 文件节点：`pkg/resourcemanager/schedule.rs` 确认 `Exec` 的间隔检查、当前容量读取、原始容量上限判断和 `Tune` 调用链。
-- RustCodeGraph 文件节点：`pkg/resourcemanager/util/mock_gpool.go`、`pkg/resourcemanager/schedule_test.go`、`pkg/resourcemanager/util/shard_pool_map_test.go` 用于核对 Go 字段、方法、panic 和测试意图。
-- Rust 独立测试：`pkg/resourcemanager/util/migration_aster_unit_test.rs::mock_pool_preserves_name_origin_and_tuning_behavior` 验证名称、Tune/Cap、原始容量不变以及至少约 9 秒的时间偏移；`pkg/resourcemanager/schedule_test.rs::TestSchedulerOverloadTooMuch` 验证超频上限；`pkg/resourcemanager/util/shard_pool_map_test.rs::TestShardPoolMap` 验证 Mock 可作为池容器成员参与映射操作。
-- crate 边界：`pkg/resourcemanager/util/Cargo.toml` 与 `pkg/resourcemanager/util/lib.rs` 确认库入口、模块声明和公开再导出。本任务是纯文档分析，按任务要求未运行 Cargo。

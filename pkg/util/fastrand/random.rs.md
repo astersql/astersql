@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`random.rs` 属于独立 crate `astersql-util-fastrand`，提供基于快速伪随机源的高层 API。crate 入口 `pkg/util/fastrand/lib.rs` 将本文件的公开项全部重导出；工作区根 `Cargo.toml` 以 `facade_util_fastrand` 引入该 crate，`pkg/lib.rs` 又在 `util::fastrand` 门面下重导出。因此调用者既可直接依赖 `astersql-util-fastrand`，也可经工作区门面访问这些接口。
-
-本文件不是 SQL 请求主链中的状态管理组件，而是服务器握手随机盐、统计采样等场景可复用的底层工具。当前 Rust 源码搜索只确认了测试侧调用（例如 `pkg/util/misc_test.rs::TestBasicFuncRandomBuf`）；对应 Go 包的生产调用包括 `pkg/server/server.go` 中生成 20 字节 salt，以及 `pkg/statistics/sample.go` 中进行蓄水池采样。不能仅由这些 Go 调用推断对应 Rust 生产路径已经接线。
+`wyrand`、`wyrand::Next` 与 `_wymix` 实现一个可显式持有种子的轻量 PRNG，用固定的 wrapping 状态推进和 128 位乘积混合生成 `u64`。
 
 ## 核心职责
 
@@ -68,7 +66,7 @@ Rust 文件逐项对应 `pkg/util/fastrand/random.go`：Go `type wyrand uint64` 
 
 有两处语言层差异需要注意。Rust `Buf` 接受 `usize`，不存在 Go `int` 的负数输入；Go 负长度会在分配时失败，而 Rust 调用者必须在调用前把有符号长度安全转换为 `usize`。Rust 在 `Next` 和 `Uint64N` 中显式使用 `wrapping_add`/`wrapping_sub`，把 Go 无符号整数天然回绕语义固定下来。
 
-`random_test.rs::test_rand` 对应 Go `TestRand`，验证有界结果并抽样检查 256 个桶的覆盖；同文件四个 `benchmark_*` 被实现为 `#[test]` 的并行工作负载，而非 Rust benchmark harness。额外的 `migration_aster_unit_test.rs` 用固定向量和边界断言补强 Go 对齐证据。测试逻辑保持在独立文件，由 `lib.rs` 的 `#[path]` 测试模块接入，没有内嵌进生产源文件。
+`random_test.rs::test_rand` 对应 Go `TestRand`，验证有界结果并抽样检查 256 个桶的覆盖；同文件四个 `benchmark_*` 被实现为 `#[test]` 的并行工作负载，而非 Rust benchmark harness。额外的 `migration_aster_unit_test.rs` 用固定向量和边界断言补强 Go 对齐证据。
 
 ## 扩展指南
 
@@ -77,10 +75,3 @@ Rust 文件逐项对应 `pkg/util/fastrand/random.go`：Go `type wyrand uint64` 
 修改 `_wymix`、推进常数、位截断顺序或 `Uint64N(0)` 分支会改变 Go 兼容序列或边界契约；修改 `Buf` 字符映射会影响服务器 salt 等 Go 端既有语义。此类变化应先同步核对 `random.go`，保留固定向量，并检查 `pkg/server/server.go`、`pkg/statistics/sample.go` 的兼容需求。若需求是密码学安全、严格无偏或稳定跨线程复现，应提供命名清楚的新 API，不能在无迁移计划时替换现有快速接口。
 
 接入新的 Rust 生产调用者时，应在调用 crate 的 `Cargo.toml` 声明依赖，或使用现有 facade；同时增加调用场景自己的独立测试。特别要明确上界是否可能为零、是否接受取模偏差，以及随机值是否会进入安全边界或持久化格式。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/util/fastrand`；`files --filter pkg/util/fastrand` 列出目标、入口、运行时、Go 对照和测试；`node --file` 核读了 `random.rs`、`lib.rs`、`runtime.rs`、`random_test.rs`、`migration_aster_unit_test.rs`、`random.go`、`random_test.go`。对 `Buf`、`Uint32N`、`Uint64N` 的精确 callers/callees 查询未产生可用输出，已用仓库搜索补齐上游证据。
-- crate/装配：`pkg/util/fastrand/Cargo.toml` 确认 crate 名、`fastrand = "2"`、仅测试使用的 `rand = "0.8"` 及 Go 包映射；根 `Cargo.toml`、`pkg/lib.rs`、`pkg/util/Cargo.toml`、`pkg/server/Cargo.toml` 用于核对 workspace、facade、测试依赖和服务器依赖边界。
-- Go 对照与生产位置：`pkg/util/fastrand/random.go`、`pkg/util/fastrand/random_test.go`、`pkg/server/server.go`、`pkg/statistics/sample.go`。
-- Rust 测试：`pkg/util/fastrand/random_test.rs`、`pkg/util/fastrand/migration_aster_unit_test.rs`、`pkg/util/misc_test.rs`。未运行 Cargo，符合本纯文档任务约束；结论来自源码、索引和结构检查，不声称执行了测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`retry.rs` 是 `astersql-br-pkg-utils` crate 中的通用重试执行层。crate 入口 `br/pkg/utils/lib.rs` 通过 `#[path = "retry.rs"] pub mod retry` 挂载它，并在 crate 根再导出 `WithRetry`、`WithRetryV2`、`WithRetryReturnLastErr`、`FallBack2CreateTable`、`VerboseRetry` 和 `GiveUpRetryOn`。退避策略本身不在本文件定义，而由相邻的 `br/pkg/utils/backoff.rs::BackoffStrategy` 提供；本文件负责消费策略、等待、聚合错误，并提供 TiKV Backoffer 适配器和策略装饰器。
-
-该模块对应 Go 文件 `br/pkg/utils/retry.go`，但 Rust 当前接线仍处于迁移期：RustCodeGraph 将生产文件的直接使用面主要识别为 crate 入口，仓库检索也显示不少 BR 子模块仍使用各自 `stubs.rs` 中的局部 `WithRetry` 实现。因而本文件当前最明确的可执行契约来自同 crate 的独立测试 `br/pkg/utils/retry_test.rs` 与 `br/pkg/utils/backoff_test.rs`，不能把 Go 侧所有生产调用者直接视作 Rust 调用者。
+退避策略本身不在本文件定义，而由相邻的 `br/pkg/utils/backoff.rs::BackoffStrategy` 提供；本文件负责消费策略、等待、聚合错误，并提供 TiKV Backoffer 适配器和策略装饰器。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@
 
 ## 与 Go 版本的对应关系
 
-主循环、零尝试成功、错误聚合、末错模式、DDL 错误识别、混合退避的最大请求合并，以及致命错误装饰器均以 `br/pkg/utils/retry.go` 为语义来源。`br/pkg/utils/retry_test.go` 的两个用例在 Rust `retry_test.rs` 中分别对应 `test_retry_adapter` 和 `test_fail_now_if`，包括约 100ms 内层睡眠、并发请求取 48ms、跨过 200ms 上限后下一次失败，以及多层 annotate 后仍能识别致命错误。
-
 需要注意的差异如下：
 
 - Go `WithRetryV2[T any]` 可为任意类型生成零值；Rust 以 `T: Default` 近似这一能力。
@@ -98,13 +94,3 @@
 - 若增强并发使用，需把 `bo`、`totalBackoff` 与 `nextBackoff` 作为一个一致状态整体设计；当前只锁下一次请求值，不能安全支持多个消费者同时执行 `BackOff`。
 - 新增公开入口后同时更新 `br/pkg/utils/lib.rs` 的再导出列表，并用仓库检索确认调用者没有误用同名局部桩。
 - 性能风险主要来自同步 sleep、错误向量随尝试次数线性增长以及逐次日志；高频或高尝试次数场景应评估内存、线程占用和日志量。
-
-## 验证依据
-
-- Rust 源码：`br/pkg/utils/retry.rs`（完整 377 行），核对全部类型别名、函数、结构体、trait 实现和边界分支。
-- crate 边界：`br/pkg/utils/Cargo.toml` 与 `br/pkg/utils/lib.rs`，确认 crate 名、依赖、模块声明、公开再导出及独立测试挂载。
-- 策略与取消：`br/pkg/utils/backoff.rs::BackoffStrategy`、`RetryState`，以及 `br/pkg/utils/stubs.rs::context::Context::wait_cancelled_timeout` / `cancel_state`。
-- Rust 测试：`br/pkg/utils/retry_test.rs`（适配器、致命错误、零尝试、取消中断）与 `br/pkg/utils/backoff_test.rs`（成功、致命错误、耗尽、Join 顺序和末错模式）。
-- Go 对照：`br/pkg/utils/retry.go`、`br/pkg/utils/retry_test.go`；两者用于核对 API 意图和可观察差异，而非推断 Rust 已完成全部生产接线。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`node --file br/pkg/utils/retry.rs` 确认文件全貌及使用文件；对 `WithRetryV2`、`WithRetry`、`WithRetryReturnLastErr`、`AdaptTiKVBackoffer`、`FallBack2CreateTable`、`VerboseRetry`、`GiveUpRetryOn` 执行带 `--file` 的 callers/callees 查询。图中 callees 确认 `WithRetry -> WithRetryV2`、末错版本调用 `sample_log_retry`、三个公开工厂分别构造其包装类型；callers 未返回可靠的生产调用边，因此另用精确仓库检索核对当前接线，并在本文明确这一限制。
-- 本任务是纯文档分析，按计划未运行 Cargo；结构验证应确认目标文件存在且恰有 11 个固定二级标题。

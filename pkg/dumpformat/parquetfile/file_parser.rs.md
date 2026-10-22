@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dumpformat-parquetfile` crate 中面向真实 Parquet 数据页的流式行解码器，也是 Parquet 解码结果接入 Lightning/mydump `Parser` 接口的适配层。模块由 `pkg/dumpformat/parquetfile/lib.rs` 公开为 `file_parser`；crate 边界、`parquet`、`chrono`、`chrono-tz` 与 `astersql-lightning-mydump` 依赖见 `pkg/dumpformat/parquetfile/Cargo.toml`。
-
-在应用链路中，上游先把对象存储或本地数据包装成 `SourceReader`，再构造 `FileParser`，最后按需要包成 `ImportParser`。直接生产调用包括 `lightning/pkg/importer/chunk_process.rs` 的分块导入恢复、`lightning/pkg/importer/get_pre_info.rs` 的预检查采样，以及 `pkg/executor/importer/import.rs::{OpenParquetFile, open_parquet_file}`。因此本文件不是通用 schema 构造器，也不负责打开对象存储连接；它负责在已经具备随机范围读取能力的源上校验 schema、逐行解码，并维持导入检查点语义。
+`Column::next` 以有限批次调用 parquet-rs `read_records`，把六类物理列读取器转换成内部 `Datum`，同时还原 definition level 表示的 NULL。
 
 ## 核心职责
 
@@ -91,17 +89,14 @@ RustCodeGraph 索引将本文件识别为 44 个符号，并显示其被 `parser
 
 ## 与 Go 版本的对应关系
 
-新增检查承接 Go `parser.go::ReadRow` 的 `rowSize > maxRowSize` 和共享 `ErrRowTooLarge` 意图；Rust 以原子上限和 Configuration 变体表达，Go 使用共享 error 值。`parser_test.rs::parquet_parser_too_large_row` 通过真实 Parquet 文件和 ImportParser 验证拒绝意图。
+新增检查承接 Go `parser.go::ReadRow` 的 `rowSize > maxRowSize` 和共享 `ErrRowTooLarge` 意图；Rust 以原子上限和 Configuration 变体表达，Go 使用共享 error 值。
 
-直接对照文件是 `pkg/dumpformat/parquetfile/parser.go`。Rust 的 `FileParser` 对应 Go `Parser` 的 schema 校验、row-group 推进、列批读、行数/进度、Spark rebase 和预加载内存语义；Rust `ImportParser` 则把这些能力适配回 Go 侧 `parsedef.Parser`/mydump 风格接口。
-
-保持一致的关键行为包括：列名转小写；拒绝 nested/repeated schema；logical type 优先、legacy converted type 回退；`SetPos` 通过读弃而不是随机 seek；`ScannedPos` 按已读行比例估算；读行前递增 RowID；NULL/字节串/其他值的行大小估算；跨 row group 与 EOF；DATE、TIMESTAMP、INT96 的 Spark legacy 处理；整文件预加载替换第一 row-group 内存计费。
+Rust 的 `FileParser` 对应 Go `Parser` 的 schema 校验、row-group 推进、列批读、行数/进度、Spark rebase 和预加载内存语义；Rust `ImportParser` 则把这些能力适配回 Go 侧 `parsedef.Parser`/mydump 风格接口。
 
 当前实现差异必须在扩展时显式评估：
 
 - Go `Init(nil)` 使用系统时区，Rust `new` 和空 location 使用 `UTC`；需要本地时区语义的调用者必须用 `new_with_location`。
 - Go 为每列创建独立 reader，并最多并发 8 个；Rust 在同一个 `SerializedFileReader<SourceReader>` 上顺序取得列读取器。
-- Go `SetColumns` 是 no-op，Rust `ImportParser::SetColumns` 会替换适配器持有的列名。
 - Go row pool 预先按列数分配 `types.Datum` 槽，Rust pool 保存可变长 `Vec<mydump::Datum>` 并在复用前 `clear`。
 - Go `Close` 还关闭 allocator/row-group readers 并聚合 close error；Rust `close` 无返回值，只清列并关闭共享 source。
 
@@ -116,10 +111,3 @@ RustCodeGraph 索引将本文件识别为 44 个符号，并显示其被 `parser
 改变 row-group、批大小或预加载策略时，应保持“最多当前 row group 加每列一个有限批次”的资源边界，复核 `SourceReader::set_ranges` 与 `reader_wrapper::row_group_range_from_meta` 的 offset 不变量，并运行 `tests/page_streaming_peak.rs` 和 `tests/whole_file_preload.rs`。改变检查点语义时，应同步验证 `Pos/SetPos/ScannedPos/ReadRow/SetRowID`，尤其是错误后 RowID 和只向前读弃行为。
 
 兼容风险主要来自 Go/Rust 默认时区、错误字符串到 `MydumpError::Eof` 的精确映射及 `SetColumns` 差异；性能风险主要来自批大小、每列缓存、列读取器构建顺序和预加载计费。外部 parquet 依赖若升级，必须重新验证 logical type builder、页流式读取和 column reader API，而不能仅以编译通过作为行为证据。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`ImportParser::ReadRow` 的消耗、估值、超限与行池次序；`parser_test.rs::parquet_parser_too_large_row` 真实 Parquet 测试；Go `parser.go::ReadRow` 及 `parser_test.go` 超限用例。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

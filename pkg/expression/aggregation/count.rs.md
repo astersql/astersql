@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现行式 `COUNT` 聚合器 `countFunction`，属于 Cargo crate `astersql-expression-aggregation`（`pkg/expression/aggregation/Cargo.toml`），由 `pkg/expression/aggregation/lib.rs` 的 `mod count` 纳入并通过 `pub use count::*` 导出。它不是描述符构造或类型推断入口；规划阶段的 `AggFuncDesc` 在执行前由 `AggFuncDesc::GetAggFunc`（`descriptor.rs`）实例化成本类型，分布式 PB 路径则由 `NewDistAggFunc`（`aggregation.rs`）实例化。
-
-在完整执行链中，本文件处于“参数表达式已经构造、聚合模式已经确定”之后：调用者逐行调用 `Aggregation::Update` 更新某一分组的 `AggEvaluateContext`，再通过 `GetPartialResult` 输出可合并的局部计数，或通过 `GetResult` 输出最终计数。`COUNT` 的返回类型推断、Complete/Partial 拆分及外连接空值折叠位于 `base_func.rs`、`descriptor.rs`，不在本文件内完成。
+在 `CompleteMode`、`Partial1Mode` 中，对通过 NULL 与 DISTINCT 检查的输入把 `AggEvaluateContext::Count` 加一。
 
 ## 核心职责
 
@@ -78,9 +76,9 @@
 
 直接对照 `pkg/expression/aggregation/count.go`，Rust 保留了 Go 的核心顺序和语义：逐参数 Eval、任一 NULL 跳过、Final/Partial2 累加 `GetInt64`、DISTINCT 对完整参数元组判重、Complete/Partial1 加一、空集返回 0、部分结果为单元素切片/向量。字段嵌入在 Rust 中改为显式 `aggFunction` 字段，trait 实现对应 Go 的 `Aggregation` 接口方法。
 
-可见实现差异有两点。第一，Go 仅在 DISTINCT 时分配 `datumBuf`，Rust 当前无条件以参数个数创建 `Vec`，但只有 DISTINCT 时才 push，属于分配策略差异而非结果语义差异。第二，Go 的 COUNT Reset 只恢复 DISTINCT、Ctx 和 Count；Rust 委托共享 `aggFunction::ResetContext`，还清理通用 Value/Buffer/GotFirstRow 字段。这些字段不参与 COUNT 结果，因而对合法 COUNT 上下文等价，同时让通用上下文恢复更彻底。
+可见实现差异有两点。第一，Go 仅在 DISTINCT 时分配 `datumBuf`，Rust 当前无条件以参数个数创建 `Vec`，但只有 DISTINCT 时才 push，属于分配策略差异而非结果语义差异。第二，Go 的 COUNT Reset 只恢复 DISTINCT、Ctx 和 Count；Rust 委托共享 `aggFunction::ResetContext`，还清理通用 Value/Buffer/GotFirstRow 字段。
 
-测试对照也保持一致：Go `aggregation_test.go::TestCount` 验证初值 0、加权输入 5050、NULL 不改变结果、部分结果 5050 与 DISTINCT 结果 100；Rust `aggregation_aster_unit_test.rs::count_matches_go_null_distinct_and_final_mode_cases` 覆盖相同核心场景并额外验证 FinalMode 合并为 31，`aggregation_test.rs::TestCount` 转发该共享用例。`count_test.rs` 另验证 Rust 当前 DedupMode 行为。
+测试对照也保持一致：Go `aggregation_test.go::TestCount` 验证初值 0、加权输入 5050、NULL 不改变结果、部分结果 5050 与 DISTINCT 结果 100；Rust `aggregation_aster_unit_test.rs::count_matches_go_null_distinct_and_final_mode_cases` 覆盖相同核心场景并额外验证 FinalMode 合并为 31，`aggregation_test.rs::TestCount` 转发该共享用例。
 
 ## 扩展指南
 
@@ -90,13 +88,3 @@
 - 修改 DISTINCT 表示或比较语义应在 `util.rs::distinctChecker` 完成，并增加多参数、NULL、编码错误和排序规则相关的独立测试；不要在 COUNT 内另建一套判重规则。
 - 增加聚合模式时，应在 `AggFunctionMode`、PB 映射、描述符 Split、本文件 Update 和测试中形成闭环，特别验证新模式是否输出局部值、合并值或只执行去重。
 - 性能修改需关注非 DISTINCT 路径当前的临时 Vec 分配、每参数表达式求值和 DISTINCT 编码/MVMap 内存增长；任何优化都必须保持参数求值次序、错误传播和 Go 兼容语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/expression/aggregation/count.rs` 确认目标有 8 个符号，`node --file ...` 读取完整 83 行实现。
-- RustCodeGraph 调用证据：`node countFunction` 给出 Rust 构造调用者 `aggregation.rs::NewDistAggFunc` 与 `descriptor.rs::GetAggFunc`；目标文件的文件级使用者还包括 `avg.rs`，其共享的是 COUNT 类型/逻辑组合关系，而 COUNT 的两个直接构造边以上述调用者为准。
-- 已核对生产代码：`count.rs`、`aggregation.rs`、`descriptor.rs`、`base_func.rs`、`util.rs`、`lib.rs`。
-- 已核对 crate 配置：`pkg/expression/aggregation/Cargo.toml`，包括本地表达式、行、编码、MVMap、语句上下文与类型依赖，以及 `package.metadata.porting.go-package = "pkg/expression/aggregation"`。
-- 已核对 Go 对照：`pkg/expression/aggregation/count.go`、`pkg/expression/aggregation/aggregation_test.go::TestCount`。
-- 已核对 Rust 独立测试：`count_test.rs::dedup_mode_does_not_produce_a_count`、`aggregation_aster_unit_test.rs::count_matches_go_null_distinct_and_final_mode_cases`、`split_count_builds_owned_partial_and_final_descriptors`、`aggregate_type_inference_matches_go_contract`，以及转发入口 `aggregation_test.rs::TestCount`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证本文恰好包含 11 个固定二级章节，并人工复核关键陈述均能回溯到上述符号或文件。

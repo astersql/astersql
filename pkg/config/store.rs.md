@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/config/store.rs` 属于 `astersql-config` crate（见 `pkg/config/Cargo.toml`），定义进程级“存储后端名称”的轻量值类型。模块在 `pkg/config/lib.rs` 中以私有 `mod store` 装配，再通过 `pub use store::*` 对外重导出，因此调用方通常从 `astersql_config` 根路径使用这些符号。
-
-该类型表达的是启动、配置和驱动注册层面的后端名称，不应与 `pkg/kv/kv.rs`、`pkg/store/copr/coprocessor.rs` 等文件中表示请求目标或 coprocessor endpoint 的同名 `StoreType` 混淆。它保留在 config 包而非 store 包，是为了延续 Go 文件所注明的避免循环依赖约束（`pkg/config/store.rs:30-37`、`pkg/config/store.go:17-19`）。
+支持从拥有所有权的 `String` 和静态 `&'static str` 构造类型，以覆盖配置解析/URI scheme 与编译期常量两类来源（`pkg/config/store.rs:67-79`）。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/config/store.go` 定义同名字符串类型、相同三个常量、`String`、`Valid` 和 `StoreTypeList`；Rust 保持了名称、合法集合、列表顺序和“任意字符串可先构造、再校验”的行为。`pkg/config/store_test.go::TestStoreType` 与 Rust 的 `pkg/config/store_test.rs::test_store_type` 都断言列表长度为 3 且每项合法。
+语言映射差异是：Go 的 `type StoreType string` 可直接转换任意字符串；Rust 用 `Cow<'static, str>` newtype，并提供 `From<String>`/`From<&'static str>`。Go `String()` 按值返回新的 string header，Rust `String()` 借用 `&str`。
 
-语言映射差异是：Go 的 `type StoreType string` 可直接转换任意字符串；Rust 用 `Cow<'static, str>` newtype，并提供 `From<String>`/`From<&'static str>`。Go `String()` 按值返回新的 string header，Rust `String()` 借用 `&str`。Go 的 switch 校验在 Rust 中写成三个相等比较，当前结果一致。
-
-还存在迁移层差异：Go `Config.Store` 直接使用 `StoreType`（`pkg/config/config.go:220`），Rust `Config.store` 使用普通 `String`。因此不能假设 Rust 已在 serde 配置边界自动获得 `StoreType::Valid`；目前配置校验由 `Config::Valid` 的独立字符串匹配承担。
+还存在迁移层差异：Go `Config.Store` 直接使用 `StoreType`（`pkg/config/config.go:220`），Rust `Config.store` 使用普通 `String`。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@
 4. 在 `cmd/tidb-server/main.rs` 注册真实驱动，并在 `pkg/store/store_test.rs` 或 server 的独立测试中覆盖合法注册、重复注册、URI scheme 查找和实际 driver 类型。不要把测试嵌入 `store.rs`。
 
 兼容性风险主要是修改现有字符串值或列表顺序会影响配置文件、CLI 和 URI scheme；正确性风险是枚举、校验、配置校验和驱动注册漏改任一处；性能风险很低，但高频调用 `StoreTypeList` 会重复分配 `Vec`。若未来把 `Config.store` 改为 `StoreType`，需要单独评估 serde 表示、默认值以及现有字符串比较的迁移，不能只替换字段类型。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件；`files --filter pkg/config/store.rs` 报告目标文件含 7 个符号。
-- RustCodeGraph `node --file pkg/config/store.rs --offset 1 --limit 400`：读取完整 86 行源码，并报告该文件被 13 个文件使用。
-- RustCodeGraph `query StoreType --kind struct --json` 与 `query StoreTypeList --kind function --json`：定位到 `pkg/config/store.rs::StoreType` 和 `pkg/config/store.rs::StoreTypeList`。精确 `callers`/`callees` 查询两次在约 30 秒内没有返回结果，因此直接调用证据由限定范围的 `rg` 和下列源码复核补齐。
-- 已读实现/边界：`pkg/config/store.rs`、`pkg/config/lib.rs`、`pkg/config/Cargo.toml`、`pkg/config/config.rs`、`pkg/store/store.rs`、`cmd/tidb-server/main.rs`。
-- 已读对照与测试：`pkg/config/store.go`、`pkg/config/store_test.rs`、`pkg/config/store_test.go`、`pkg/config/const_3_aster_unit_test.rs`；另以 `pkg/config/config.go` 和 `cmd/tidb-server/main.go` 的直接引用核对 Go 接线。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证命令及退出码在任务交付时记录。

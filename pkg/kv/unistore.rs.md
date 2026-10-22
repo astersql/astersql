@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `pkg/kv/unistore.rs`](unistore.rs) 属于 `astersql-kv` crate（`pkg/kv/Cargo.toml`），是 UniStore 单机运行模式在 KV 公共接口层的一项进程级状态声明。`pkg/kv/lib.rs` 以 `#[path = "unistore.rs"] mod unistore_impl;` 编入该文件，再用 `pub use unistore_impl::*;` 从 crate 根导出，因此外部代码通过 `kv::StandAloneTiDB` 访问它，而不是直接访问私有的 `unistore_impl` 模块。
-
-该文件当前只有一个 26 行的公开静态量，没有存储引擎实现、构造函数、trait、条件编译项或 I/O。真正的嵌入式 UniStore 驱动位于 `pkg/store/mockstore/unistore.rs` 及其子目录；这里仅把“当前 TiDB 进程是否选择 UniStore”暴露给需要修正键编码行为的公共层。`pkg/kv/Cargo.toml` 的 `nextgen` feature 负责联动 `kerneltype/nextgen` 与 `keyspace/nextgen`，但本文件本身不受 `#[cfg]` 控制，在 classic 和 nextgen 构建中都存在。
+为 nextgen 键处理提供判定依据：UniStore 路径没有 client-go 替调用方移除 keyspace 前缀，因此 `pkg/util/rowcodec/common.rs::RemoveKeyspacePrefix` 在非测试运行时仅于该标志为 `true` 时自行去前缀。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@ RustCodeGraph 能确认目标文件被纳入索引、`lib.rs` 的装配位置及
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/kv/unistore.go`。Go 定义 `var StandAloneTiDB bool`，注释说明该标志只为 nextgen 引入，因为 UniStore 不会从键中移除 keyspace 前缀；Rust 保留同名和相同默认值，仅把表示类型改成 `AtomicBool` 以适配并发安全。
+Go 定义 `var StandAloneTiDB bool`，注释说明该标志只为 nextgen 引入，因为 UniStore 不会从键中移除 keyspace 前缀；Rust 保留同名和相同默认值，仅把表示类型改成 `AtomicBool` 以适配并发安全。
 
-写入语义与 `cmd/tidb-server/main.go::createStoreDDLOwnerMgrAndDomain` 一致：当全局 store 类型为 UniStore 时设为 `true`。消费语义与 `pkg/util/rowcodec/common.go::RemoveKeyspacePrefix` 一致：classic 不处理；nextgen 的常规非 standalone 生产路径依赖 client-go 去前缀；测试或 standalone 路径由 row codec 检查并移除 API V2 的 4 字节前缀。
-
-Rust 与 Go 的可观察差异是访问语法和同步机制：Go 直接赋值/读取普通 `bool`，Rust 必须显式指定原子内存顺序。Rust 启动写入用了 `SeqCst`，实际消费读取用了 `Relaxed`；这不改变当前单向初始化后的布尔判定结果。Go 测试 `pkg/util/rowcodec/common_test.go::TestRemoveKeyspacePrefix` 与 Rust 同名独立测试覆盖相同四象限意图。
+Rust 与 Go 的可观察差异是访问语法和同步机制：Go 直接赋值/读取普通 `bool`，Rust 必须显式指定原子内存顺序。
 
 ## 扩展指南
 
@@ -80,11 +76,3 @@ Rust 与 Go 的可观察差异是访问语法和同步机制：Go 直接赋值/�
 - 如需支持复位或运行时切换，应把 storage/Domain 生命周期和在途请求纳入设计，增加显式 API 与同步协议；不应把公开 `AtomicBool` 的任意 `store(false)` 当成安全切换。
 - 新增测试不得写进 `unistore.rs`。原子标志自身契约应放在 `pkg/kv` 的独立测试文件；与键编码有关的分支应扩展 `pkg/util/rowcodec/common_test.rs`，并继续使用恢复 guard。若改动 Go/Rust 对齐语义，还应同步 `pkg/util/rowcodec/common_test.go` 的测试意图。
 - 若新增更多消费者，应明确各自需要的原子顺序。仅做模式分支可沿用 `Relaxed`；若试图借此发布其他状态，则必须建立并证明相应 happens-before 关系，而不是凭全局布尔量推断资源已就绪。
-
-## 验证依据
-
-- 目标源码与 crate 边界：`pkg/kv/unistore.rs::StandAloneTiDB`、`pkg/kv/lib.rs` 第 555–558 行的模块装配、`pkg/kv/Cargo.toml` 的 crate 与 `nextgen` feature 声明。
-- Rust 生产链：`cmd/tidb-server/main.rs::createStoreDDLOwnerMgrAndDomain` 写入标志；`pkg/util/rowcodec/common.rs::RemoveKeyspacePrefix` 读取标志并执行键前缀分支。
-- Go 对照：`pkg/kv/unistore.go::StandAloneTiDB`、`cmd/tidb-server/main.go::createStoreDDLOwnerMgrAndDomain`、`pkg/util/rowcodec/common.go::RemoveKeyspacePrefix`。
-- 独立测试：`pkg/kv/mpp_2_aster_unit_test.rs::mpp_2_scope_variables_and_process_flags_match_go`；`pkg/util/rowcodec/common_test.rs::TestRemoveKeyspacePrefix`；Go 对照测试 `pkg/util/rowcodec/common_test.go::TestRemoveKeyspacePrefix`。
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件且目标文件在列；`files --filter pkg/kv/unistore.rs` 与 `node --file` 确认文件及源码；对 `pkg/kv/lib.rs`、`cmd/tidb-server/main.rs`、`pkg/util/rowcodec/common.rs` 和两份 Rust 测试执行文件节点读取。由于索引未为目标静态量建立节点，`query/node/callers/callees StandAloneTiDB` 无法可靠区分它与桩中同名量，故使用精确仓库搜索核对全部读写点并人工阅读命中函数。

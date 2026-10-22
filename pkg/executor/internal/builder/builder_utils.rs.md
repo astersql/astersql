@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 workspace crate `astersql-executor-internal-builder`，crate 入口 `pkg/executor/internal/builder/lib.rs` 将 `builder_utils` 的公共项全部再导出。`pkg/executor/internal/builder/Cargo.toml` 的 `package.metadata.porting.go-package` 指向同目录 Go 包，说明这里是 `builder_utils.go` 的 Rust 移植边界。根 `Cargo.toml` 把它登记为 workspace member 和 facade 依赖，`pkg/lib.rs` 再通过 `facade_executor_internal_builder::*` 暴露其 API；`pkg/executor/Cargo.toml` 与 `pkg/executor/internal/mpp/Cargo.toml` 也声明了路径依赖。
-
-当前接线必须区分“Cargo 已装配”与“生产逻辑已调用”：仓库 Rust 源码搜索只找到 `pkg/lib.rs` 的再导出和本 crate 的独立测试，未找到 Rust 生产代码调用这些构造函数。相反，Go 实现在 `pkg/executor/builder.go`、`pkg/executor/distsql.go` 和 `pkg/executor/internal/mpp/local_mpp_coordinator.go` 中有真实调用。因此本文件目前是可编译、可测试的迁移 API/数据模型，不应被描述成已承接 SQL 执行主链。
+通过 `PhysicalPlan::ToPB` 把计划节点转换为 `Executor`，并根据目标选择 `StoreType::TiKV` 或 `StoreType::TiFlash`。
 
 ## 核心职责
 
@@ -87,10 +85,6 @@ TiFlash 的非自然顺序包装没有防护：`ConstructDAGReqForUnNatureOrderP
 
 ## 与 Go 版本的对应关系
 
-五个 Rust 构造函数逐一对应 `pkg/executor/internal/builder/builder_utils.go` 的同名函数，主要控制流一致：TiFlash 使用单根、TiKV 顺序转换、非自然顺序写 `ParentIdx`、DAG 复制会话元数据，并在结尾设置 encode type。
-
-关键语义对齐包括：列表遇首个错误立即停止；runtime statistics 只有启用时才显式写 true；默认除法精度不下发；`SetEncodeType`/`distsql.SetEncodeType` 即使在计划转换失败时仍执行；非自然顺序映射方向为 child→parent。
-
 当前差异主要来自迁移阶段的数据边界。Go 直接使用 `tipb.Executor`、`tipb.DAGRequest`、planner/sessionctx/distsql 的真实类型，并从 `timeutil.Zone(Location())` 计算时区；Rust 使用本地简化结构，由 `SessionVars` 直接提供时区名称和偏移，`BuildPBContext` 还是占位，`Payload` 也只是字节向量。Go 树形函数即使 `ToPB` 报错也返回包含 `execPB` 的切片，而 Rust `Result` 在错误时不返回执行器；其上层目前只消费错误，因此独立测试只固定了错误与 encode-type 副作用，未证明错误时部分执行器的等价性。
 
 Go 的直接相关测试搜索只找到 `pkg/executor/table_readers_required_rows_test.go` 通过 `buildMockDAGRequest` 间接使用普通 TiKV DAG 构造器；细粒度等价性由独立 Rust 测试 `builder_utils_aster_unit_test.rs` 覆盖。
@@ -104,14 +98,3 @@ Go 的直接相关测试搜索只找到 `pkg/executor/table_readers_required_row
 修改非自然顺序逻辑时，需保持 child→parent 方向，并为越界、TiFlash 误用、`usize`→`u32` 范围策略补独立测试；测试逻辑继续放在 `builder_utils_aster_unit_test.rs`，不要嵌入生产源文件。修改错误流程时必须保留或有意更新“构建失败仍调用一次 `SetEncodeType`”的回归测试，并核对 Go 的返回顺序。
 
 兼容风险集中在 optional 字段的“缺省”和显式 false/default 的差异、整数转换，以及错误时副作用顺序；性能风险主要是执行器 payload/时区字符串的拥有型复制和列表预分配是否仍适用于真实 protobuf。当前顺序循环是线性的，贸然并行化会改变 `ToPB` 调用顺序和首错语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点，目标 Rust、Go 与独立 Rust 测试均在索引内。
-- RustCodeGraph `files --filter pkg/executor/internal/builder`：确认目录内索引到 `builder_utils.rs`、`builder_utils.go`、`builder_utils_aster_unit_test.rs` 和 `lib.rs`。
-- RustCodeGraph `node --file`：完整读取 `builder_utils.rs`（1–210 行）、Go 对照（1–105 行）和独立 Rust 测试（1–285 行）。
-- RustCodeGraph `query/callers/callees`：核对 `ConstructDAGReq`、`ConstructDAGReqForUnNatureOrderPlans`、`ConstructListBasedDistExecForUnNatureOrderPlans` 的包装边、trait 方法边与测试调用者；结果中的同名 Go 节点按语言分别解释。
-- crate/装配证据：`pkg/executor/internal/builder/Cargo.toml`、`lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/executor/Cargo.toml`、`pkg/executor/internal/mpp/Cargo.toml`。
-- Go 生产入口证据：`pkg/executor/builder.go`、`pkg/executor/distsql.go`、`pkg/executor/internal/mpp/local_mpp_coordinator.go`。
-- 测试证据：`pkg/executor/internal/builder/builder_utils_aster_unit_test.rs` 覆盖存储类型、顺序/首错、父索引、元数据、默认缺省和错误时编码副作用；`pkg/executor/table_readers_required_rows_test.go` 提供 Go 侧间接使用证据。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，计划明确禁止运行 Cargo；验证采用源码/调用图事实复核与任务规定的 Markdown 结构检查。

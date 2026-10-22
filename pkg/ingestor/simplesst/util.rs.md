@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ingestor-simplesst` crate（见同目录 `Cargo.toml` 的 `package.name` 与 `package.metadata.porting.go-package`），由 `lib.rs` 以 `pub mod util` 暴露。它不负责 SST 编解码本身，而是为简单 SST 写入、按统计属性定位读取起点，以及全局排序任务清理对象提供通用算法。当前 Rust 实现的存储边界是 crate 内的 `MemoryStorage`；跨 crate 的生产调用证据是 `pkg/ingestor/globalsort/util.rs::CleanUpFilesInDirectories` 调用 `GetAllFileNamesFromScan`，写入侧则由 `pkg/ingestor/simplesst/writer.rs` 调用 `get_max_overlapping`。
+`get_read_range_from_props` 批量读取统计文件，为多个升序 job key 生成 `[job_key][stat_path]` 偏移矩阵，使数据读取者能从不晚于目标 key 的位置开始 seek。
 
 ## 核心职责
 
@@ -63,7 +63,7 @@ RustCodeGraph 将该文件标为被 `pkg/ingestor/globalsort/util.rs` 与 `pkg/i
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/ingestor/simplesst/util.go`。端点枚举的 iota 顺序、原地端点排序及加减顺序与 Go `GetMaxOverlapping` 一致。去重的分组语义、`keep = 0/2` 和第三返回值含义一致，但 Go `doRemoveDuplicates` 在输入切片内压缩并复用元素，Rust 为满足所有权安全而克隆到新向量；此外 Go 用 `intest.Assert` 限制 keep 值，Rust 私有核心只由两个固定包装调用。
+去重的分组语义、`keep = 0/2` 和第三返回值含义一致，但 Go `doRemoveDuplicates` 在输入切片内压缩并复用元素，Rust 为满足所有权安全而克隆到新向量；此外 Go 用 `intest.Assert` 限制 keep 值，Rust 私有核心只由两个固定包装调用。
 
 Go `GetReadRangeFromProps` 使用带 context 的 error group、并发上限 64、真实 `storeapi.Storage` 和日志任务；Rust 保留 64 上限、每路径并发和偏移算法，但使用同步 scoped threads、`MemoryStorage`，没有 context 取消与任务日志。这是接口/运行环境差异，不应推断 Rust 已具备 Go 的取消传播能力。
 
@@ -78,11 +78,3 @@ Go `GetAllFileNames` 直接 `WalkDir` 并接受可变数量目录；Rust 将匹�
 把偏移扫描接到真实对象存储前，需要在调用边界补足 Go 版本已有的 context 取消、日志和通用 storage 抽象，同时保持结果矩阵索引、EOF、提前停止和 64 并发预算。新增错误分支应同步 `pkg/ingestor/simplesst/util_test.rs`，尤其验证 reader 关闭和部分批次失败语义。
 
 改变目录规则时，应以 `GetAllFileNamesFromScan` 为唯一匹配核心，并同步检查 `writer::IsValidPartition`、`globalsort::CleanUpFilesInDirectories` 及扫描一次/错误透传测试；宽化匹配可能误删其他任务对象，是最高兼容性风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`node --file pkg/ingestor/simplesst/util.rs` 读取 23 个符号及“被 2 个文件使用”的文件级关系；对核心函数执行 `query`、`callers`、`callees`，函数级 callers 多数未建边，因此又以精确仓库搜索补齐直接调用证据。
-- Rust 源码：`pkg/ingestor/simplesst/util.rs`、`lib.rs`、`writer.rs`、`stat_reader.rs`，以及跨 crate 调用 `pkg/ingestor/globalsort/util.rs::CleanUpFilesInDirectories`。
-- crate 配置：`pkg/ingestor/simplesst/Cargo.toml` 和根 `Cargo.toml` 的 workspace/facade 条目，确认 crate 名、Go 包映射和工作区归属。
-- 对照与测试：`pkg/ingestor/simplesst/util.go`、`util_test.go`、独立 Rust 测试 `util_test.rs`。Rust 测试覆盖端点语义、首/中/尾重复组、偏移矩阵、空 key 不读取、并发上限为 2、全部 key 确定后不解析损坏尾部、目录去重、单次扫描和错误原样传播。
-- 本任务只生成文档，按总计划不运行 Cargo；交付前使用任务指定命令确认目标文件存在且恰有 11 个固定二级章节，并人工检查未声称尚无生产调用证据的接口已完成接线。

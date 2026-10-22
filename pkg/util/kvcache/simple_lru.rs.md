@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`simple_lru.rs` 是 `astersql-util-kvcache` crate 的核心实现文件，提供按字节哈希寻址、按最近使用顺序淘汰的通用内存缓存。crate 入口 `pkg/util/kvcache/lib.rs` 通过 `mod simple_lru` 装入本文件，并用 `pub use simple_lru::*` 重导出其公开 API；`pkg/util/kvcache/Cargo.toml` 表明该 crate 的唯一直接依赖是同仓库的 `astersql-util-memory`，用于读取实例内存和创建全局内存 Tracker。
-
-它位于 SQL 执行路径可复用的工具层，而不是一个自带锁或后台任务的缓存服务。已核实的 Rust 生产调用者 `pkg/executor/internal/applycache/apply_cache.rs` 用它缓存相关子查询的内层 `chunk::List`：`NewApplyCache` 构造 `SimpleLRUCache`，查询和写入分别调用 `Get`、`Put`，外层内存配额回收调用 `RemoveOldest`。该调用者用 `syncutil::Mutex` 串行化所有访问，正好对应本文件“非线程安全”的契约。
+在自动淘汰路径上提供 `onEvict` 回调，并提供显式删除、清空、调整容量和弹出最旧项等管理 API。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ RustCodeGraph 对通用名称 `Put`、`Get` 等存在跨语言同名歧义，因
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对照 `pkg/util/kvcache/simple_lru.go`：Go 的 `map[string]*list.Element` 对应 Rust 的 `HashMap<Vec<u8>, usize> + entries`；Go `container/list` 对应索引双向链表；Go `Key`/`any` 对应 Rust `Key`/`Arc<dyn Any + Send + Sync>`；公开方法、回调触发范围、MRU→LRU 枚举顺序、容量错误消息、quota/guard 淘汰条件及 `ProfileName` 均保持同一意图。
-
 需要注意的实现层差异：
 
 - Go 包 `init()` 在包加载时建立 Tracker；Rust 没有同等包初始化机制，因此 `NewSimpleLRUCache` 显式调用 `init`，也允许调用方提前调用公开 `init`。
@@ -104,14 +100,3 @@ Rust 文件逐项对照 `pkg/util/kvcache/simple_lru.go`：Go 的 `map[string]*l
 - 修改键协议前先评估哈希碰撞和可变哈希风险；若要支持“哈希相同但逻辑键不同”，需要同时更改索引结构和 Go 兼容语义，不能只在单个查询方法补比较。
 - 调整 `guard` 合法范围或浮点转换时，应同步 `simple_lru.go` 的行为与 `migration_aster_unit_test.rs::guard_above_one_preserves_go_unsigned_threshold_conversion`，并评估已有调用方传入边界值的兼容风险。
 - 扩展线程安全能力前先检查 `ApplyCache` 等现有外层锁，避免形成重复锁或改变复合记账操作的锁粒度；更合适的默认仍是让通用缓存保持轻量，由调用者选择同步策略。
-
-## 验证依据
-
-- 生产实现：`pkg/util/kvcache/simple_lru.rs`，核对了全部 353 行以及 `Key`、`CacheEntry`、`SimpleLRUCache`、构造函数、12 个公开方法/函数和 6 个私有辅助函数；文件无条件编译分支。
-- crate 边界：`pkg/util/kvcache/Cargo.toml`、`pkg/util/kvcache/lib.rs`；确认 crate 名、唯一直接依赖、内存符号桥接、公开重导出和独立测试装配。
-- Go 对照：`pkg/util/kvcache/simple_lru.go`、`pkg/util/kvcache/simple_lru_test.go`；核对公开 API、链表顺序、回调范围、容量和 OOM 守卫语义。
-- Rust 测试：`pkg/util/kvcache/simple_lru_test.rs`、`pkg/util/kvcache/migration_aster_unit_test.rs`；覆盖容量淘汰、零配额、guard 阈值、Get/Peek 顺序、更新不增容、删除/清空/弹出、错误容量、二进制哈希、Tracker 初始化、原生字宽和 profile 名称。
-- 直接调用方：`pkg/executor/internal/applycache/apply_cache.rs`、`pkg/executor/internal/applycache/lib.rs`；确认外层互斥、构造、查询、写入和最旧项淘汰调用链。
-- 内存标签：`pkg/util/memory/tracker.rs::LabelForGlobalSimpleLRUCache`，确认标签值由 memory crate 提供。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/kvcache` 确认目标、模块入口和两份 Rust 测试均被索引；`node --file pkg/util/kvcache/simple_lru.rs --offset 1 --limit 360` 读取全文件；文件限定的 `callers/callees` 核实 `Put -> evict_oldest`、`SetCapacity -> evict_oldest` 等内部边。对同名符号产生的跨语言噪声未作为结论。
-- 人工复核：本文能回答文件存在原因、构造/查询/淘汰流程、状态不变量、错误与回调边界、并发责任、Go 对应关系以及安全扩展位置；未将预期架构写成当前事实。

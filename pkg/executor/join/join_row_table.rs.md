@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate；crate 入口 `pkg/executor/join/lib.rs` 以 `pub mod join_row_table` 导出它。它位于 Hash Join V2 的构建侧数据链路中：`row_table_builder.rs::RowTableBuilder::process_chunk` 把输入行编码并按分区组成 `RowTableSegment`，`hash_table_v2.rs::SubTable` 再持有 `RowTable`、按有效 join key 建桶，并在 probe 或扫描阶段通过行位置取回 `EncodedRow`。`pkg/executor/join/Cargo.toml` 的 `[package.metadata.porting]` 将整个 crate 对应到 Go 包 `pkg/executor/join`。
-
-源码第 16—227 行是一段全部被 `//` 注释掉的早期 unsafe 移植草稿，不参与编译。实际可执行定义从 `use crate::join_table_meta::EncodedRow` 开始，采用拥有所有权的 `Vec<EncodedRow>`、索引和 `Option<TaggedPtr>`；理解当前行为时不能把注释稿中的裸指针 API 当成已启用实现。
+`RowTable` 把多个 segment 组合成一张逻辑行表，提供跨段计数、全局行访问、有效键序号到全局行号的换算、合并和清空。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/join/join_row_table.go`。类型层次与聚合语义一致：Go `rowTableSegment`/`rowTable` 对应 Rust `RowTableSegment`/`RowTable`，两端都提供内存估算、行数、有效键数、跨段定位、merge 与 clear。
-
 关键差异如下：
 
 - Go 把整行存入 `rawData`，用 `rowStartOffset` 和 `unsafe.Pointer` 切片/定位；Rust 活跃实现额外保存 `Vec<EncodedRow>`，以安全索引返回 `Option`，并没有活跃的 `rowStartOffset`。
@@ -88,11 +84,3 @@ Go 测试 `join_row_table_test.go` 覆盖堆对象不移动、固定宽度、端
 - 修改 tagged pointer 语义时，应联动 `tagged_ptr.rs`、`row_table_builder.rs::fill_next_row_pointer` 和本文件的 set/get 方法，特别验证空槽、错误 tag、向量迁移后重新初始化等边界。
 - 改变行布局或内存统计时，应同步 `join_table_meta.rs::EncodedRow`、`row_table_builder.rs::encode_row/check_max_element_size`、spill 序列化路径及 Go 对照语义，并说明统计是 capacity 估算还是精确账单。
 - 回归测试应放在独立文件 `pkg/executor/join/join_row_table_test.rs`；涉及建桶位置的行为还应扩展 `hash_table_v2_test.rs`，涉及构建编码则扩展 `row_table_builder_test.rs`。不要把测试嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引包含 11,467 个文件；`files --filter pkg/executor/join` 确认 Rust/Go 对照、模块与测试集合；`explore "pkg/executor/join/join_row_table.rs JoinRowTable JoinRowTableBuilder"` 与后续包含 `RowTableSegment`、`row_table_builder`、`hash_table_v2` 的查询用于核对文件主体、构建/建桶链和使用面。
-- RustCodeGraph 精确查询：`query RowTableSegment --kind struct`、`query RowTable --kind struct`、`query EncodedRow --kind struct`，以及目标文件、`row_table_builder.rs`、`hash_table_v2.rs` 的 `node --file` 输出；已核对 `EncodedRow` 定义和 `process_chunk -> SubTable::build -> get_row` 的数据流。
-- 读取路径：`pkg/executor/join/join_row_table.rs`、`lib.rs`、`Cargo.toml`、`join_row_table.go`、`join_row_table_test.rs`、`join_row_table_test.go`；直接证据还包括 `row_table_builder.rs`、`hash_table_v2.rs`、`join_table_meta.rs` 与 `hash_join_spill_helper.rs` 的相关符号/引用。
-- 测试证据：`join_row_table_test.rs` 验证字段宽度、段计数、内存非零、原子 used、merge 后全局定位、有效位置和 clear；`hash_table_v2_test.rs` 的引用与调用面验证非连续有效位置、分区清理和内存关系。任务是纯文档分析，按计划未运行 Cargo。
-- 人工复核结论：本文分别描述了可执行实现和注释化旧稿，所有“已支持”陈述均可回指上述符号；未把 Go 的端序全局量、运行时堆移动检查或裸指针链误写为当前 Rust 已启用行为。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-internal-parse` crate 的协议载荷解析实现，crate 边界由同目录 `Cargo.toml` 定义，`lib.rs` 通过 `pub mod parse; pub use parse::*;` 导出其接口。上层 `pkg/server/lib.rs` 又在 `internal::parse` 下再导出整个 crate。它处理两类 MySQL 协议输入：`COM_STMT_FETCH` 的固定 8 字节命令体，以及 Protocol 4.1 的 SSLRequest/HandshakeResponse41。
-
-仓库搜索只发现 Rust 生产层的再导出，没有发现这些函数的非测试 Rust 调用点；当前可验证的 Rust 调用者位于 `handshake_test.rs`、`parse_test.rs` 和 `migration_aster_unit_test.rs`。完整应用中的生产入口仍可由 Go 对照链路确认：`pkg/server/conn.go` 的 `readOptionalSSLRequestAndHandshakeResponse` 调用 `HandshakeResponseHeader`/`HandshakeResponseBody`，`pkg/server/conn_stmt.go` 的 `handleStmtFetch` 调用 `StmtFetchCmd`。因此，本文件是已经实现和测试的 Rust 移植单元，但仅凭当前仓库证据不能声称 Rust 服务运行时已经调用它。
+`parse_attrs` 将长度编码的连接属性行解码为原始字节键值，应用大小策略，生成弃用/截断警告，并维护 `ConnectAttrsLost` 与 `ConnectAttrsLongestSeen`。
 
 ## 核心职责
 
@@ -96,11 +94,3 @@ Rust 的安全实现替代了 Go 的 `defer recover`：每个索引、范围和 
 - 改动白名单、`_truncated` 或警告文案时同步核对 Go `standardConnAttrs`、`reservedConnAttrTruncated` 和两端测试；这些文本与覆盖规则可能被日志分析或兼容测试依赖。
 - 真正接入 Rust 服务主链时，需要在连接握手和 prepared-statement cursor 分派处调用公开入口，并定义 `ParseError` 到服务端 MySQL 错误的映射；接线前不能仅因 `pkg/server/lib.rs` 已再导出就认为功能已启用。
 - 性能风险主要在客户端声明的属性区复制和 HashMap 分配；1 MiB 硬上限不可在没有资源评估与 Go 对齐的情况下放宽。并发风险集中于全局指标更新，若 vardef 改为提供原子 `fetch_add`/CAS，应整体替换锁方案并加入并发回归测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标目录已索引；`files --filter pkg/server/internal/parse` 列出 `parse.rs` 及独立测试；`node --file pkg/server/internal/parse/parse.rs --offset 1 --limit 500` 返回完整 402 行、19 个符号；`query` 分别唯一定位 `stmt_fetch_cmd`、`handshake_response_header`、`handshake_response_body`、`parse_attrs`。callers/callees 命令未产生可用文本，因此调用结论又用全仓库具名搜索核验。
-- 源码与 crate：`pkg/server/internal/parse/parse.rs`、`pkg/server/internal/parse/Cargo.toml`、`pkg/server/internal/parse/lib.rs`、`pkg/server/internal/handshake/handshake.rs`、`pkg/server/Cargo.toml`、`pkg/server/lib.rs`。
-- Rust 独立测试：`pkg/server/internal/parse/parse_test.rs`（fetch、下划线警告、截断/Lost），`pkg/server/internal/parse/handshake_test.rs`（MySQL 8.0 抓包），`pkg/server/internal/parse/migration_aster_unit_test.rs`（全部 capability、畸形边界、非 UTF-8、硬上限、禁用收集及 LongestSeen）。
-- Go 对照与生产入口：`pkg/server/internal/parse/parse.go`、`pkg/server/internal/parse/parse_test.go`、`pkg/server/internal/parse/handshake_test.go`、`pkg/server/conn.go`、`pkg/server/conn_stmt.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核唯一新增生产物、真实路径、符号名称、Go/Rust 接线边界和扩展建议。

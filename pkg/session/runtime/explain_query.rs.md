@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的具体会话运行时。crate 入口是 `pkg/session/lib.rs`，`pkg/session/runtime.rs` 以私有模块 `mod explain_query;` 装入本文件，并通过 `use explain_query::*;` 把其中的 `pub(super)` 辅助函数提供给同一 `runtime` 模块的其他实现文件。它不是独立执行器，也不定义 SQL 语法；它位于解析后的 AST、会话状态、优化器物理计划与 EXPLAIN 文本结果之间。
-
-直接入口可从三个位置复核：`pkg/session/runtime/explain_select.rs::explain_relational_select` 对点查调用 `explain_point_get_select`，对禁止求值的标量子查询调用 `explain_scalar_subquery_plan`；`pkg/session/runtime/explain_analyze.rs::explain_analyze_relational_select` 复用标量子查询路径；`pkg/session/runtime/dispatch.rs` 分别为 UPDATE/DELETE 点查调用 `explain_point_get_dml`，并从通用 EXPLAIN 分派进入关系 SELECT。复杂关系查询最终由本文件的 `ConcreteSession::explain_optimized_relational_select` 构建真实逻辑/物理计划。
+处理 CTE、标量子查询、LATERAL、索引连接和点查等特殊形态，并将最终字符串交给 `explain_plan_tree_rows` 转成 `ConcreteRecordSet`。
 
 ## 核心职责
 
@@ -98,14 +96,11 @@ RustCodeGraph 的文件索引确认 `pkg/session/runtime/explain_query.rs` 已�
 
 ## 与 Go 版本的对应关系
 
-`pkg/session/Cargo.toml` 的 `[package.metadata.porting]` 明确把该 crate 对应到 Go 包 `pkg/session`，但本文件没有一个同路径、同粒度的 Go 文件。语义由多个 Go 层共同承担：
+`pkg/session/Cargo.toml` 的 `[package.metadata.porting]` 明确把该 crate 对应到 Go 包 `pkg/session`，但本文件没有一个同路径、同粒度的 Go 文件。
 
-- `pkg/planner/core/planbuilder.go::buildExplain` 对 EXPLAIN 子语句调用真实优化器，再由 `buildExplainPlan` 构造 `core.Explain`；Rust 的 `explain_optimized_relational_select`/`explain_scalar_subquery_plan` 对应“构建真实目标计划”这一职责。
 - `pkg/executor/explain.go::ExplainExec` 在 `Next` 首次生成结果；EXPLAIN ANALYZE 先完整驱动并关闭目标执行器，再调用 `RenderResult`。Rust 普通复杂 EXPLAIN主要复用规划器并渲染物理树；标量 EXPLAIN ANALYZE 只在本文件范围内预取标量子查询首行，完整执行统计的其他部分位于 `explain_analyze.rs`，不能把本文件单独等同于 Go `ExplainExec`。
-- `pkg/planner/core/scalar_subq_expression.go::ScalarSubQueryExpr::String` 和 `ScalarSubqueryEvalCtx::ExplainInfo` 产生 `ScalarQueryCol#<id>` 与 `Output: ...`；Rust 的 ID 规范化与 ScalarSubQueries 遍历以这些公开文本契约为对齐目标。
-- Go 物理算子的 `ExplainInfo` 分散在 `pkg/planner/core/operator/physicalop/*.go`；Rust 递归器读取对应 Rust `PhysicalPlan::explain_info()`，再补任务、角色、成本、访问对象和稳定化处理。
 
-差异点是 Rust 文件仍包含较多按 SQL/计划形态进行的兼容输出和 ID 修正，而 Go 通常由 `core.Explain.RenderResult` 与各物理算子直接生成。维护时应优先扩大真实 planner/renderer 的一般能力，不能把这些兼容分支误写成新的优化规则。
+差异点是 Rust 文件仍包含较多按 SQL/计划形态进行的兼容输出和 ID 修正，而 Go 通常由 `core.Explain.RenderResult` 与各物理算子直接生成。
 
 ## 扩展指南
 
@@ -115,12 +110,3 @@ RustCodeGraph 的文件索引确认 `pkg/session/runtime/explain_query.rs` 已�
 - 新增点查代际差异：接入 `explain_point_get_select`/`explain_point_get_dml`，明确与 optimizer fix control 和 `IsNextGen` 的交互。
 - 测试应继续放在独立文件 `pkg/session/runtime/explain_query_test.rs`，不要内嵌到生产源文件；跨模块 EXPLAIN/ANALYZE 行为还应同步相邻 Rust 测试或 Go 的 `pkg/executor/explain_test.go`、`pkg/executor/explain_unit_test.go` 与相关 planner casetest。
 - 性能风险主要来自重复解析/重复规划、深树递归克隆、统计锁读取和大量字符串替换；兼容性风险主要是输出列号、树形缩进、Build/Probe 顺序、CTE producer 顺序和 Go golden 文本漂移。
-
-## 验证依据
-
-- 源文件与模块：`pkg/session/runtime/explain_query.rs`（完整函数清单及关键实现）、`pkg/session/runtime.rs`（模块声明和可见性）、`pkg/session/runtime/explain_select.rs`、`pkg/session/runtime/explain_analyze.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/source.rs`（直接调用点）。目标目录不存在 `doc.go`，因此没有额外包契约文件可读。
-- crate 边界：`pkg/session/Cargo.toml` 的 package、`nextgen` feature、`package.metadata.porting.go-package` 及 planner/expression/parser/infoschema/meta/bindinfo/hint 直接依赖。
-- 独立 Rust 测试：`pkg/session/runtime/explain_query_test.rs` 覆盖计划树列拆分与缩进、HashJoin 键顺序、`i64` 全域严格区间不溢出、任务范围内的等值条件换序和生成列键顺序；同文件也调用相邻 `explain_analyze` 的 read-pool/RU 辅助测试。
-- Go 对照：`pkg/planner/core/planbuilder.go::{buildExplain,buildExplainPlan}`、`pkg/executor/explain.go::{ExplainExec,generateExplainInfo}`、`pkg/planner/core/scalar_subq_expression.go::{ScalarSubQueryExpr::String,ScalarSubqueryEvalCtx::ExplainInfo}`，以及 `pkg/executor/explain_test.go`、`pkg/executor/explain_unit_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标文件有 832 个符号；`files --filter pkg/session/runtime` 确认目标和独立测试均被索引；`query explain_scalar_subquery_plan --json` 返回本文件定义及 `explain_select.rs` 调用位置。自然语言 `explore` 与 `callers/callees` 在本次运行中无输出超时，故未将缺失图边当作事实。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认本文恰有规定的 11 个二级标题；交付前还需检查 Git 差异只包含本文，并人工复核每个主要结论可追溯到上述符号或路径。

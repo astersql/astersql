@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-encrypt`，crate 入口是 [`pkg/util/encrypt/lib.rs`](lib.rs)，其中以 `pub mod aes_layer` 声明本模块并通过 `pub use aes_layer::*` 再导出公开 API。依赖边界由 [`pkg/util/encrypt/Cargo.toml`](Cargo.toml) 定义：本层直接使用 `aes`、`cipher`、`ctr` 和 `rand`；同一 crate 中的 `cbc`、`cfb-mode`、`ofb` 并非本文件的执行依赖。
-
-它是一个可组合的 AES-128-CTR I/O 层，而不是通用密钥管理组件：创建时在进程内生成随机 128 位密钥和 nonce，写侧把明文加密后交给抽象的 `WriteCloser`，读侧从抽象的 `ReaderAt` 按明文偏移随机读取并解密。当前可见的生产接线位于 [`pkg/util/chunk/internal/group1/lib.rs`](../chunk/internal/group1/lib.rs)：`encrypt::NewWriter`、`encrypt::NewReader` 将本层包装到 spill 临时文件读写链；对应 Go 接线在 [`pkg/util/chunk/chunk_util.go`](../chunk/chunk_util.go)，仅在 spilled-file 加密配置不是 `plaintext` 时启用。
+`WriteCloser`、`ReaderAt` 以及 `GoError = String` 提供与 Go `io.WriteCloser`、`io.ReaderAt` 和 `error` 形态相近的移植边界，便于与 checksum 层和 chunk I/O 适配器组合。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-主要结构和算法逐项对应 [`pkg/util/encrypt/aes_layer.go`](aes_layer.go)：`CtrCipher` 四项状态、默认 1024 字节块、nonce+counter 的大端 IV、writer 的缓冲/粘性错误/短写规则、reader 的块对齐计数器换算，以及 `GetCache`/`GetCacheDataOffset` 给未落盘读取层补缓存的协议均保持一致。Rust 使用泛型 trait 代替 Go interface，并以 `(usize, Option<String>)` 表达 Go 的 `(n, error)`。
+Rust 使用泛型 trait 代替 Go interface，并以 `(usize, Option<String>)` 表达 Go 的 `(n, error)`。
 
 已确认的差异如下：
 
@@ -101,13 +99,3 @@
 - 增加并发共享时，应在外层像 chunk wrapper 一样加锁，而不是让多个 writer 共享同一 CTR stream；并发写乱序会破坏计数器与文件偏移的一一对应。
 - 若要持久化或跨进程恢复，应设计显式、安全的 key/nonce 元数据格式和密钥生命周期；仅序列化 nonce 不足以解密。若安全目标包含防篡改，应采用带认证的格式，不能把 checksum 当作密码学认证。
 - 修改公开 API 或 Go 对齐语义时，同步检查 [`aes_layer.go`](aes_layer.go)、[`aes_layer_test.go`](aes_layer_test.go)、[`aes_layer_test.rs`](aes_layer_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 以及 [`pkg/util/chunk/internal/group1/lib.rs`](../chunk/internal/group1/lib.rs)。性能相关变更还应补充可运行的 Rust benchmark，而不是只更新当前名称占位。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，目标文件被完整索引为 266 行。
-- RustCodeGraph `node --file pkg/util/encrypt/aes_layer.rs`：核对了全部常量、trait、结构、函数和 impl；精确节点查询确认 `NewCtrCipher -> NewCtrCipherWithBlockSize`、`NewWriter -> CtrCipher::stream`、`Write -> AvailableSize/Flush`、`Flush -> WriteCloser::write`、`Close -> Flush/WriteCloser::close`、`ReadAt -> ReaderAt::read_at/CtrCipher::stream`。
-- 读取的实现与边界文件：[`pkg/util/encrypt/aes_layer.rs`](aes_layer.rs)、[`pkg/util/encrypt/Cargo.toml`](Cargo.toml)、[`pkg/util/encrypt/lib.rs`](lib.rs)、[`pkg/util/encrypt/aes_layer.go`](aes_layer.go)。
-- 读取的测试证据：[`pkg/util/encrypt/aes_layer_test.rs`](aes_layer_test.rs)、[`pkg/util/encrypt/aes_layer_test.go`](aes_layer_test.go)、[`pkg/util/encrypt/migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。
-- 读取的生产接线：[`pkg/util/chunk/internal/group1/lib.rs`](../chunk/internal/group1/lib.rs)、[`pkg/util/chunk/chunk_util.go`](../chunk/chunk_util.go)、`pkg/util/chunk/Cargo.toml`。
-- 人工复核结论：文件存在是为了给顺序 spill 写入和随机读取提供长度不变、可与 checksum/缓存层组合的 AES-CTR 变换；安全扩展必须维持 key/nonce/counter、逻辑块与明文偏移的对应关系，并同步独立测试与 chunk 适配层。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构检查要求本文恰好包含规定的 11 个二级标题。

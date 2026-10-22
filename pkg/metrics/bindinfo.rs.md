@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate。crate 由 [`pkg/metrics/Cargo.toml`](Cargo.toml) 定义，入口 [`pkg/metrics/lib.rs`](lib.rs) 以私有 `mod bindinfo` 装载本模块，再用 `pub use bindinfo::*` 将其公开项提升到 crate 根。它同时承担两类职责：定义执行计划绑定缓存的五个 Prometheus 指标，以及为仍保持 Go API 形状的 sibling metrics 移植代码提供 `compat_prometheus`、`compat_metricscommon` 兼容层。
-
-应用侧初始化入口是 [`metrics::InitMetrics`](metrics.rs)：该函数在其一次性初始化序列中调用 `crate::bindinfo::init_bind_info_metrics()`。这说明本文件处于指标基础设施的初始化链，而不是 SQL 绑定选择、匹配或淘汰算法本身；真正的 Go 业务写入点可见 [`pkg/bindinfo/binding_cache.go`](../bindinfo/binding_cache.go)。
+`binding_cache_*` 五个访问器返回进程生命周期内稳定的 `&'static Counter/Gauge`，即使调用方没有先执行初始化，也会通过相同构造路径完成惰性初始化。
 
 ## 核心职责
 
@@ -84,11 +82,11 @@ collector 构造时会快照 [`common/wrapper.rs`](common/wrapper.rs) 的包级�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/metrics/bindinfo.go`](bindinfo.go)。两侧保持完全相同的五组 namespace、subsystem、name、help 和 Counter/Gauge 类型。Go 使用可重新赋值的包级变量，由 `InitBindInfoMetrics` 每次覆盖；Rust 用私有 `OnceLock` 加访问器，初始化后不可替换，并额外提供 snake_case 与 Go 风格两个入口。
+Go 使用可重新赋值的包级变量，由 `InitBindInfoMetrics` 每次覆盖；Rust 用私有 `OnceLock` 加访问器，初始化后不可替换，并额外提供 snake_case 与 Go 风格两个入口。
 
 Go 的 `metrics.InitMetrics` 调用 `InitBindInfoMetrics`，Rust 的 `metrics::InitMetrics` 调用 `init_bind_info_metrics`，初始化顺序一致。Go `metrics.RegisterMetrics` 显式注册五个 collector，Rust 当前注册清单缺少对应项。Go `pkg/bindinfo/binding_cache.go` 会更新三个 Gauge；Rust 全仓生产代码未找到五个访问器的调用，因此目前只能确认“collector 定义与元数据已迁移”，不能确认“业务更新和暴露链已完整迁移”。
 
-两个 `compat_*` 模块不是 Go `bindinfo.go` 的逐行内容，而是为更广泛 Go-to-Rust metrics 移植增加的局部基础设施。其中 SummaryVec 到 HistogramVec 的映射是语义降级，必须在新增指标时显式评估。
+两个 `compat_*` 模块不是 Go `bindinfo.go` 的逐行内容，而是为更广泛 Go-to-Rust metrics 移植增加的局部基础设施。
 
 ## 扩展指南
 
@@ -98,12 +96,3 @@ Go 的 `metrics.InitMetrics` 调用 `InitBindInfoMetrics`，Rust 的 `metrics::I
 - 修改 `compat_prometheus` 或 `compat_metricscommon` 前，应搜索所有 sibling metrics 调用者；其公开构造器和 trait 是 crate 内迁移兼容面，标签类型、panic 行为或 Summary 降级的变化可能广泛影响指标元数据。
 - 测试应继续放在独立文件 [`bindinfo_1_aster_unit_test.rs`](bindinfo_1_aster_unit_test.rs)，不要内嵌进生产源。新增 collector 至少验证全名、类型行为、重复初始化和注册可见性；新增业务接线则在 `pkg/bindinfo` 的独立测试中验证状态变化。
 - 性能上不要在热路径重复拼装标签名或创建 collector；复用静态访问器。兼容性上保持现有 Prometheus 全名和标签集合，否则会破坏仪表盘、告警和查询。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，`files --filter pkg/metrics` 确认 `bindinfo.rs`、Go 对照和独立测试均被索引；`node --file pkg/metrics/bindinfo.rs --offset 1 --limit 500` 读取了完整 372 行与 52 个符号。
-- RustCodeGraph 精确查询：`query InitBindInfoMetrics` 同时定位 Go `bindinfo.go:32` 与 Rust `bindinfo.rs:370`；`query init_bind_info_metrics`、`query binding_cache_hit_counter`、`query binding_cache_mem_usage` 定位 Rust 公开入口。目标文件调用图确认 `InitBindInfoMetrics -> init_bind_info_metrics`、初始化函数到 `counter/gauge`、构造器到 `counter_opts/histogram_opts/metricscommon::New*` 的边。
-- 已读 Rust/Cargo 路径：[`bindinfo.rs`](bindinfo.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`metrics.rs`](metrics.rs)、[`common/wrapper.rs`](common/wrapper.rs)。`pkg/metrics` 当前没有 `doc.go`。
-- 已读对照与测试：[`bindinfo.go`](bindinfo.go)、[`metrics.go`](metrics.go)、[`../bindinfo/binding_cache.go`](../bindinfo/binding_cache.go)、[`bindinfo_1_aster_unit_test.rs`](bindinfo_1_aster_unit_test.rs)。独立 Rust 测试验证五个 `tidb_server_*` 全名及 Counter/Gauge 写入读回；Go 搜索确认三个 Gauge 的业务写入和五个 collector 的注册位置。
-- 全仓直接引用搜索：五个 Rust `binding_cache_*` 访问器仅出现在定义与 `bindinfo_1_aster_unit_test.rs`；`compat_*` 被多个 `pkg/metrics/*.rs` 生产模块导入；`metrics::InitMetrics` 被 server/session/statistics 等测试初始化入口调用。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构以任务指定命令验证，确保本文恰有十一个固定二级标题；行为陈述则由上述源码、调用边、Cargo 和 Go/测试对照人工复核。

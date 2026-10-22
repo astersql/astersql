@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-dumpling-export`（`dumpling/export/Cargo.toml`），不是独立 Rust 模块：crate 根 `dumpling/export/lib.rs:37-48` 先导入并公开 `stubs.rs`，再用 `include!("metrics.rs")` 将本文件拼入 crate 根作用域。因此这里直接使用的 `Factory`、`Registry`、`Labels`、`CounterVec` 和 `GaugeVec` 均来自 `dumpling/export/stubs.rs:885-1127`，`Arc`、`AtomicBool`、`AtomicI64` 与 `Ordering` 则由 `lib.rs:25-31` 引入同一作用域。
-
-它位于 Dumpling 导出运行时的观测边界：`Dumper` 持有 `Arc<metrics>`（`dumpling/export/dump.rs:14-34`），构造导出会话时调用 `newMetrics`，执行时注册指标，关闭时注销；写入器和状态采样代码通过本文件的包装函数更新或读取这些指标。该文件当前接入的是 crate 内本地指标桩，不是完整 Prometheus client。
+用 `registerTo`/`unregisterFrom` 管理六个指标在抽象 `Registry` 中的生命周期，并为可 gather 的默认注册表提供 Prometheus 文本样本闭包。
 
 ## 核心职责
 
@@ -95,13 +93,3 @@ Registry 对名称和样本分别用 `Mutex` 保护；`Gather` 先克隆样本 m
 - 若并行 writer 会并发更新 gauge，应优先修复 `Gauge::Add/Sub` 的 CAS 语义或切换到完整指标后端，并用独立并发测试证明不会丢增量。
 - 调整 chunk 进度时必须保持“先累计所有 total、后发布 ready”的顺序，并同步 `dumpling/export/status_test.rs`，覆盖零 chunk、完成数越界以及状态刷新线程。
 - 本仓库要求 Rust 测试与源文件分离；新增回归应放在 `metrics_test.rs`，跨模块行为则放在相应的 `status_test.rs`、`writer_util_test.rs`、`dump_test.rs` 或 `http_handler_test.rs`，不要把 `#[cfg(test)]` 测试嵌入本文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter dumpling/export/metrics.rs` 确认目标文件含 14 个符号；`query` 精确定位 Rust `newMetrics`、`ReadCounter`、`AddGauge`；`explore` 给出 Rust `NewDumper → newMetrics`、`RefreshStatus → ReadCounter/ReadGauge`、`dumpSQL → AddCounter` 等调用者。图对 include 后 impl 方法的解析不完整，注册/注销边以直接源码核验补足。
-- 目标与 crate：`dumpling/export/metrics.rs`、`dumpling/export/lib.rs:1-150`、`dumpling/export/Cargo.toml`。
-- 指标底座：`dumpling/export/stubs.rs:885-1127`，核对 Factory、Vec、原子值、Registry、Gather 和 Unregister 的实际语义。
-- Rust 调用链：`dumpling/export/dump.rs:14-114,175-205,334-375`、`dumpling/export/status.rs:1-190`、`dumpling/export/writer_util.rs:135-197,300-344,680-700`。
-- Go 对照：`dumpling/export/metrics.go:1-170`、`dumpling/export/dump.go:96-149`。
-- 独立测试：`dumpling/export/metrics_test.rs:1-36`、`dumpling/export/metrics_test.go:1-16`；相关跨模块测试入口还包括 `status_test.rs`、`writer_util_test.rs`、`dump_test.rs` 和 `http_handler_test.rs`。
-- 人工复核结论：本文件存在于导出会话的共享观测层；运行路径是构造、注册、业务更新、状态读取、注销；安全扩展必须同步容器、构造、注册生命周期、调用点与独立测试，并正视本地桩相对 Go Prometheus 的语义缺口。

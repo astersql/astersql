@@ -6,11 +6,7 @@ Go 对照：[`sync_upgrade.go`](./sync_upgrade.go)
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate。crate 根 [`lib.rs`](./lib.rs) 通过 `pub mod sync_upgrade` 公开该模块，并在 `cfg(test)` 下单独挂载 `sync_upgrade_test`；[`Cargo.toml`](./Cargo.toml) 指定 `lib.rs` 为库入口。文件没有条件编译项，也不直接使用 crate 的外部依赖，只依赖 `std::time::{Duration, Instant}`。
-
-它移植 Go 会话层滚动升级状态编排：开始升级时发布 `Upgrading` 并等待 DDL owner 确认，结束升级时恢复暂停工作并发布 `NormalRunning`，同时提供全局升级状态查询及带重试的版本日志记录。不过当前仓库中的 Rust 生产代码没有 `SyncUpgradeRuntime` 实现，也没有调用四个编排函数的生产 Rust 调用者；实际副作用仅在独立测试的 `TestRuntime` 中模拟。因此当前事实是“编排逻辑和测试已存在、生产接线尚未建立”，不能把 trait 方法视为已经连接 etcd、DDL 或分布式任务。
-
-Go 生产主链则已经接线：[`pkg/server/handler/upgrade_handler.go`](../server/handler/upgrade_handler.go) 的 `ClusterUpgradeHandler.StartUpgrade`/`FinishUpgrade` 分别调用 Go `SyncUpgradeState`/`SyncNormalRunning`；[`upgrade_run.go`](./upgrade_run.go) 的 `printClusterState` 在版本达到 `SupportUpgradeHTTPOpVer` 后调用 Go 的重试查询。
+移植 Go 会话层滚动升级状态编排：开始升级时发布 `Upgrading` 并等待 DDL owner 确认，结束升级时恢复暂停工作并发布 `NormalRunning`，同时提供全局升级状态查询及带重试的版本日志记录。
 
 ## 核心职责
 
@@ -83,11 +79,7 @@ Go 对照实现的具体依赖包括 `domain.GetDomain(s).DDL().StateSyncer()`�
 
 ## 与 Go 版本的对应关系
 
-Rust 四个函数逐一对应 [`sync_upgrade.go`](./sync_upgrade.go) 的同名函数，主要控制流、200 ms 轮询、owner 每 10 次告警、状态读取每 25 次告警、owner 单次 3 秒上限以及正常状态写回的 3 秒超时均得到保留。
-
-主要适配是把 Go 的 `sessionctx.Context` 和 `domain` 全局查找改成泛型 `SyncUpgradeRuntime`；把字符串状态改成 `ServerState`；把 `owner.OpType` 改成 `OwnerOp`；把 Go context 截止/取消改成 `Instant` 截止检查。这样便于单元测试，但也使生产集成、状态编码、取消语义和日志后端成为尚待实现的边界。
-
-Go 端到端测试 [`test/bootstraptest/bootstrap_upgrade_test.go`](./test/bootstraptest/bootstrap_upgrade_test.go) 验证 HTTP start/finish 前后的全局状态、无 HTTP 操作时状态保持正常，以及升级结束后暂停 DDL job 可恢复。Rust 独立测试目前只验证：未同步 owner 的首次告警和重试、恢复错误全部记录且仍写回正常状态、查询使用 3 秒超时、读取失败后重试成功并记录版本状态；它没有覆盖总超时、初始/最终状态写入失败、owner 查询错误分支、无 task manager 分支或真实 etcd/DDL 集成。
+Rust 独立测试目前只验证：未同步 owner 的首次告警和重试、恢复错误全部记录且仍写回正常状态、查询使用 3 秒超时、读取失败后重试成功并记录版本状态；它没有覆盖总超时、初始/最终状态写入失败、owner 查询错误分支、无 task manager 分支或真实 etcd/DDL 集成。
 
 ## 扩展指南
 
@@ -96,13 +88,3 @@ Go 端到端测试 [`test/bootstraptest/bootstrap_upgrade_test.go`](./test/boots
 修改轮询或错误策略时，应同时更新 [`sync_upgrade_test.rs`](./sync_upgrade_test.rs)，并新增总超时、写入失败、owner 错误节流（0、10 次）、状态读取节流（0、25 次）及边界超时用例。测试逻辑继续放在独立测试文件，不内嵌到生产源文件。涉及真实集群行为时，还需补与 Go `bootstrap_upgrade_test.go` 同意图的集成覆盖。
 
 兼容性风险集中在状态持久化映射、日志文本/频率、context 取消差异和 Go failpoint 语义；正确性风险是部分恢复失败被降级后仍切回正常状态，以及开始升级超时不回滚；性能风险主要来自同步 200 ms 轮询占用执行线程。新增枚举状态、异步接口或退避策略都属于协议变化，需同步审查所有运行时实现和调用者。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 Rust 7,032 个；目标源和测试均可按文件读取。
-- RustCodeGraph `node --file pkg/session/sync_upgrade.rs`：核对 173 行生产源中的全部枚举、结构体、trait、函数和分支。
-- RustCodeGraph `callers`/`callees`（限定 `--file pkg/session/sync_upgrade.rs`）：确认四个入口的下游调用边，且未返回生产 Rust 调用者。
-- RustCodeGraph `node --file pkg/session/sync_upgrade_test.rs`：核对 `TestRuntime` 是仓库搜索到的唯一 trait 实现及四个现有单元测试的断言。
-- [`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)：确认 crate 名、库入口、公开模块和独立测试模块装配；本文件没有 feature gate。
-- RustCodeGraph 读取 [`sync_upgrade.go`](./sync_upgrade.go)、[`upgrade_run.go`](./upgrade_run.go)、[`pkg/server/handler/upgrade_handler.go`](../server/handler/upgrade_handler.go) 和 [`test/bootstraptest/bootstrap_upgrade_test.go`](./test/bootstraptest/bootstrap_upgrade_test.go)：核对 Go 控制流、生产入口和端到端测试意图。
-- 按任务约束未运行 Cargo；本次为纯文档分析，行为事实通过源码、调用图、Cargo/模块装配和现有测试源码交叉验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate；crate 根由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 指向 [`lib.rs`](lib.rs)，后者用 `#[path = "builtin_threadunsafe_generated.rs"] mod builtin_threadunsafe_generated_kernel;` 将本文件作为私有子模块接入。模块没有被 crate 根公开再导出，因此这里的 `pub` 常量和函数主要是 crate 内部接口，而不是稳定的外部 API。
-
-文件头标明它是 `expression/generator` 生成体系对应的产物，职责不是执行某个 SQL 内建函数，而是给 Rust 的统一动态 builtin 运行时提供“不可跨会话共享”的签名分类表。直接消费方是 [`builtin_threadsafe_generated.rs`](builtin_threadsafe_generated.rs) 中的 `GeneratedThreadSafetyPolicyForSignature`；测试接线位于 [`lib.rs`](lib.rs) 的 `#[cfg(test)]` 模块声明。
+只负责分类，不实现签名对应的 SQL 求值，也不保存会话对象。
 
 ## 核心职责
 
@@ -61,8 +59,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 的权威生成逻辑位于 [`generator/builtin_threadsafe.go`](generator/builtin_threadsafe.go)：它扫描非测试 `builtin_*.go`，收集名称为 `builtin*Sig` 的结构体；除 `specialSafeFuncs` 外，只有恰好包含一个 `baseBuiltinFunc` 或 `baseBuiltinCastFunc` 字段的结构体归入 safe，其余生成一个恒返回 `false` 的 `SafeToShareAcrossSession` 方法。Go 产物 [`builtin_threadunsafe_generated.go`](builtin_threadunsafe_generated.go) 因而为每个 unsafe concrete signature 生成独立方法。
-
 Rust 没有为全部 Go concrete signature 重复生成类型方法，而是以本文件的名称清单加统一策略分发实现等价的 `Never` 分类。Rust 的生成器移植位于 [`generator/builtin_threadsafe.rs`](generator/builtin_threadsafe.rs)，其 `collect_thread_safe_builtin_funcs`、`gen_builtin_thread_safe_code` 和 `UNSAFE_FUNC_TEMPLATE` 保留了 Go 的分类与输出语义；不过该生成器当前输出的是 Go 源码，并不是自动重写本 Rust 清单的入口。
 
 以当前工作树直接比较，同路径 Go unsafe 产物有 90 个唯一签名，Rust 本清单有 88 个；Go 独有 `builtinUncompressSig` 和 `builtinEmbedTextSig`。Rust 当前把 `builtinUncompressSig` 放在 [`builtin_threadsafe_generated.rs`](builtin_threadsafe_generated.rs) 的 safe 清单中，而 `builtinEmbedTextSig` 在 [`builtin_inference.rs`](builtin_inference.rs) 中走独立 concrete 实现。因此“Rust 清单与当前 Go unsafe 产物完全相同”尚未得到支持；扩展或同步时必须先判断这是有意的运行时建模差异还是待修复漂移，不能仅凭本文件头注释推断。
@@ -74,11 +70,3 @@ Rust 没有为全部 Go concrete signature 重复生成类型方法，而是以�
 若需要增加 unsafe 名称，最直接接入点是 `GENERATED_THREADUNSAFE_SIGNATURES`，同时必须从 safe 清单排除同名项，并更新独立测试 [`builtin_threadunsafe_generated_27_aster_unit_test.rs`](builtin_threadunsafe_generated_27_aster_unit_test.rs) 的期望顺序和数量。还应保留 [`builtin_threadsafe_generated_26_aster_unit_test.rs`](builtin_threadsafe_generated_26_aster_unit_test.rs) 的正式注册、覆盖和互斥检查；生成器行为变更则同步更新 [`generator/builtin_threadsafe_test.rs`](generator/builtin_threadsafe_test.rs) 或其独立 Aster 测试文件，而不要把测试嵌入生产源文件。
 
 兼容风险主要是错误地把会话敏感函数标为 safe，可能导致跨会话状态泄漏；反向误标为 unsafe 通常只损失共享和 Plan Cache 性能。性能修改需注意当前查询是 O(n) 且无分配；替换结构不能破坏确定性生成、精确名称协议或无锁只读特性。该文件标注为生成物，长期修订应优先修正生成源并重新生成，而不是只手工改产物。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标仓库；`node --file pkg/expression/builtin_threadunsafe_generated.rs` 读取了 124 行全貌，并报告直接使用者为 `builtin_threadsafe_generated.rs` 与 `builtin_threadunsafe_generated_27_aster_unit_test.rs`；`query IsGeneratedThreadunsafeSignature` 定位唯一函数定义；`explore` 确认策略分发和测试调用边。
-- Rust 源与接线：[`builtin_threadunsafe_generated.rs`](builtin_threadunsafe_generated.rs)、[`builtin_threadsafe_generated.rs`](builtin_threadsafe_generated.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。目标包不存在 `pkg/expression/doc.go`，因此没有额外包级 Go 契约可读。
-- Rust 测试：[`builtin_threadunsafe_generated_27_aster_unit_test.rs`](builtin_threadunsafe_generated_27_aster_unit_test.rs)、[`builtin_threadsafe_generated_26_aster_unit_test.rs`](builtin_threadsafe_generated_26_aster_unit_test.rs)、[`generator/builtin_threadsafe_test.rs`](generator/builtin_threadsafe_test.rs)、[`generator/builtin_threadsafe_1_aster_unit_test.rs`](generator/builtin_threadsafe_1_aster_unit_test.rs)。
-- Go 对照：[`builtin_threadunsafe_generated.go`](builtin_threadunsafe_generated.go)、[`generator/builtin_threadsafe.go`](generator/builtin_threadsafe.go)、[`builtin.go`](builtin.go) 与 [`expression.go`](expression.go)。通过精确提取并排序 `builtin*Sig` 名称核对到 Go 90 项、Rust 88 项，以及两个 Go-only 名称。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行固定 11 章结构命令，并人工复核文档只描述已由上述代码、调用边与测试支持的现状。

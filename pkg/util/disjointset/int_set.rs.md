@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-util-disjointset`，crate 边界由 `pkg/util/disjointset/Cargo.toml` 定义，入口 `pkg/util/disjointset/lib.rs` 以 `mod int_set` 加载本文件并用 `pub use int_set::*` 公开其 API。根 facade 又在 `pkg/lib.rs` 的 `util::disjointset` 中再导出该 crate；`pkg/util/chunk/internal/group1/lib.rs` 也提供一层同名再导出。因此这里是“连续整数”并查集的可复用实现，而不是 SQL 请求链上的独立服务或有状态组件。
-
-仓库限定搜索目前没有找到非测试 Rust 代码直接构造这里的 `SimpleIntSet`；可见的 Rust 使用是 `pkg/lib_test.rs::independent_util_modules_are_wired` 以及本 crate 的独立测试。尤其是 `pkg/expression/constant_propagation.rs` 当前定义了自己的私有 `SimpleIntSet`，不能把它的运行时调用误认为本文件的调用。Go 对照实现则已用于表达式常量传播与 planner 投影索引修正，详见后文。
+Go 对照实现则已用于表达式常量传播与 planner 投影索引修正，详见后文。
 
 ## 核心职责
 
@@ -64,11 +62,7 @@ API 不返回 `Result` 或 `Option`，也不主动校验输入。`a` 或 `b` 若
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/disjointset/int_set.go`。两版具有同名的 `SimpleIntSet`、`NewIntSet`、`Union`、`FindRoot`、`Clear`、`GrowNewIntSet`，父数组初始化、左根挂右根、清空和重建语义一致。`pkg/util/disjointset/int_set_test.go::TestIntDisjointSet` 的主要合并序列与 Rust 的 `int_set_test.rs::test_int_disjoint_set` 一致。
-
-实现差异如下：Go 元素和父下标类型为 `int`，构造函数返回 `*SimpleIntSet`；Rust 使用 `usize` 并按值返回。Go `FindRoot` 递归压缩路径，Rust 分成寻根与回写两个迭代循环，避免深链递归栈风险。Go `GrowNewIntSet` 使用 `slices.Grow` 保证容量后追加身份映射，Rust 用 `reserve` 后 `extend(0..n)`；两者都保留可复用容量且最终长度为 `n`。Rust 独立测试比 Go 同名测试额外覆盖同组/自合并、`Clear`/`GrowNewIntSet`，迁移补充测试还覆盖十万级深链。
-
-Go 当前生产接线不等同于 Rust 当前生产接线：Go 的表达式常量传播直接依赖本包，Rust 对应文件保留了一份私有实现。若要消除重复，必须单独评估 crate 依赖方向、可见性与测试，而不能仅凭接口相似就宣称迁移完成。
+实现差异如下：Go 元素和父下标类型为 `int`，构造函数返回 `*SimpleIntSet`；Rust 使用 `usize` 并按值返回。Go `GrowNewIntSet` 使用 `slices.Grow` 保证容量后追加身份映射，Rust 用 `reserve` 后 `extend(0..n)`；两者都保留可复用容量且最终长度为 `n`。Rust 独立测试比 Go 同名测试额外覆盖同组/自合并、`Clear`/`GrowNewIntSet`，迁移补充测试还覆盖十万级深链。
 
 ## 扩展指南
 
@@ -78,13 +72,3 @@ Go 当前生产接线不等同于 Rust 当前生产接线：Go 的表达式常�
 - 若需要可恢复的越界错误，需设计新的 checked API；直接改变现有方法的 panic 行为或签名会影响 facade 兼容性。性能改动应继续覆盖长链、重复查找和重复合并。
 - Rust 测试逻辑必须放在独立文件。主要同步位置是 `pkg/util/disjointset/int_set_test.rs`；Go 语义变化还应核对 `int_set.go` 与 `int_set_test.go`，迁移/压力边界核对 `migration_aster_unit_test.rs`，根 facade 可访问性核对 `pkg/lib_test.rs`。
 - 若让 `pkg/expression/constant_propagation.rs` 改用本 crate，应先确认依赖图不会形成环，并验证常量传播的完整等价类行为；该接线属于调用方任务，不应通过在本文件中复制业务逻辑完成。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/util/disjointset` 列出本 crate 的 Rust/Go 源与独立测试。
-- RustCodeGraph `node --file pkg/util/disjointset/int_set.rs --offset 1 --limit 260`：读取本文件 83 行全貌，确认 1 个结构体、1 个自由函数、4 个方法及无条件编译项；调用图确认 `Union` 调用 `FindRoot`。
-- RustCodeGraph 精确 `query`：确认 Rust/Go 两侧 `SimpleIntSet`、`NewIntSet`、`GrowNewIntSet` 定义。对 `Union`、`FindRoot` 等常见名称的 callers/callees 消歧会混入无关符号，精确目标 callers 为空，因此未据此声称存在生产 Rust 调用。
-- 读取的边界与接线路径：`pkg/util/disjointset/Cargo.toml`、`pkg/util/disjointset/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/util/chunk/Cargo.toml`、`pkg/util/chunk/internal/group1/lib.rs`、`pkg/lib_test.rs`。
-- 读取的 Go 对照与生产证据：`pkg/util/disjointset/int_set.go`、`pkg/expression/constant_propagation.go`、`pkg/planner/core/resolve_indices.go`；读取的 Rust现状对照：`pkg/expression/constant_propagation.rs`。
-- 读取的测试证据：`pkg/util/disjointset/int_set_test.rs`、`pkg/util/disjointset/int_set_test.go`、`pkg/util/disjointset/migration_aster_unit_test.rs`。
-- 限定路径 `rg` 核对了 `NewIntSet`、`SimpleIntSet`、`GrowNewIntSet`、crate 别名及 facade 的引用；结论仅覆盖当前检出的仓库状态。按任务约束未运行 Cargo 或代码测试，最终以固定十一章节结构检查和人工事实复核验收。

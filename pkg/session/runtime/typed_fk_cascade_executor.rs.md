@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的 `runtime` 模块中，由 [`pkg/session/runtime.rs`](../runtime.rs) 的 `mod typed_fk_cascade_executor` 私有装配。它不是外键级联算法本体，而是会话层与 [`astersql_executor::adapter`](../../executor/adapter.rs) 执行器协议之间的适配层：把一次已暂存的父表删除级联描述包装成 `CascadeBatch`，再构建一个无结果集、一次性执行的 `ExecExecutor`。
-
-直接上游是 [`SessionTypedDMLExecutor::TakeForeignKeyCascades`](typed_dml_executor.rs)：普通 typed DML 执行结束后，它从会话状态取走 `pending_fk_delete_cascades`，逐项构造本文件的 `SessionForeignKeyDeleteCascadeBatch`。执行器框架随后由 [`ExecStmt::handleForeignKeyTrigger`](../../executor/adapter.rs) 和 `ExecStmt::handleForeignKeyCascade` 消费这些批次。真正的递归 DELETE/SET NULL/RESTRICT 语义仍在 [`ConcreteSession::execute_pending_fk_delete_cascade`](dml.rs) 及其下游 `cascade_foreign_key_deletes_at_depth` 中。
-
-[`pkg/session/Cargo.toml`](../Cargo.toml) 将该目录编入包名 `astersql-session`、库入口 `lib.rs`；本文件直接使用其中声明的 `astersql-errors`、`astersql-executor`、`astersql-util-chunk` 和 `astersql-parser-types` 依赖。文件内没有 feature gate 或条件编译项。
+刻意不重复实现外键匹配、递归深度、SET NULL、RESTRICT、事务写入或索引维护。
 
 ## 核心职责
 
@@ -84,9 +80,7 @@ RustCodeGraph 的文件节点报告本文件由 `typed_dml_executor.rs` 使用�
 
 最接近的 Go 对照不是 `pkg/session` 同路径文件，而是 [`pkg/executor/foreign_key.go`](../../executor/foreign_key.go) 的 `FKCascadeExec` 和 [`pkg/executor/adapter.go`](../../executor/adapter.go) 的 `handleForeignKeyCascade`：Go 同样先积累被引用键值，再为级联构建执行计划/执行器，按批执行、`StmtCommit`，随后递归处理新触发器，并受 15 层深度限制。
 
-Rust 的 `CascadeBatch` 对应 Go `FKCascadeExec` 的“仍有待处理值、构建 executor、成功后清理已处理值”职责；Rust adapter 的 `handleForeignKeyCascade` 保留了 Go 的打开、执行、关闭、逐级 statement commit 和递归顺序。`SessionForeignKeyDeleteCascadeExecutor` 则是 AsterSQL 当前会话运行时的局部桥接：它不调用 planner 构造 SQL 子计划，而把克隆的父表和删除行交给 `dml.rs` 的关系行扫描/mutation 算法一次处理完。
-
-因此两者的协议意图和事务阶段相近，但内部表示并非逐字段一一对应。Go `FKCascadeExec` 区分 delete/update、维护 `fkValues`/`fkUpdatedValuesMap` 并收集运行时统计；本文件只包装“delete cascade pending”，不记录级联统计，更新级联由会话 DML 的其他路径直接递归处理。文档不能据此声称 Rust 已完整复刻 Go `FKCascadeExec` 的规划器、分批上限或统计能力。
+因此两者的协议意图和事务阶段相近，但内部表示并非逐字段一一对应。Go `FKCascadeExec` 区分 delete/update、维护 `fkValues`/`fkUpdatedValuesMap` 并收集运行时统计；本文件只包装“delete cascade pending”，不记录级联统计，更新级联由会话 DML 的其他路径直接递归处理。
 
 相关 Go 行为测试集中在 [`pkg/executor/test/fktest/foreign_key_test.go`](../../executor/test/fktest/foreign_key_test.go)，覆盖深度限制、级联间 `StmtCommit` 和错误；Rust 侧最直接的 adapter 回归位于 [`runtime/scan_adapter_runtime_test.rs`](scan_adapter_runtime_test.rs) 的 `adapter_dml_preserves_canonical_fk_parent_check_and_delete_cascade` 与 `adapter_real_fk_trigger_error_restores_parent_delete_and_keeps_transaction_active`。
 
@@ -97,12 +91,3 @@ Rust 的 `CascadeBatch` 对应 Go `FKCascadeExec` 的“仍有待处理值、构
 - 若改变锁延迟策略，应联合检查本文件与 `typed_dml_executor.rs` 中两个同名 `FKLockDeferGuard`，以及 `dml.rs` 使用 `adapter_dml_defer_fk_locks` 的分支。guard 应保存/恢复明确的前值或保持当前“进入前由调用点拥有、退出统一 false”的契约，不能让错误路径泄漏状态。
 - 若让 executor 可跨线程或可 detach，`Rc`、`RefCell` 和 `ConcreteSession` 的线程亲和性必须整体重审；仅把 `Detach` 改为返回对象不足以安全化。
 - 推荐同步扩展 [`runtime/scan_adapter_runtime_test.rs`](scan_adapter_runtime_test.rs) 的 adapter 端到端测试；算法边界应放在 [`dml_runtime_test.rs`](../dml_runtime_test.rs)，悲观事务共享性应放在 [`runtime_pessimistic_test.rs`](../runtime_pessimistic_test.rs)。重点风险是事务原子性、保存点恢复、锁获取时序、自引用终止、DELETE/SET NULL 冲突优先级和 15 层兼容性；性能风险主要是载荷克隆与对子表目录/行的扫描。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含本文件；`files --filter pkg/session/runtime` 定位该文件；`node --file pkg/session/runtime/typed_fk_cascade_executor.rs` 读取 1–140 行并报告直接使用文件；`query` 定位 `SessionForeignKeyDeleteCascadeBatch`、`SessionForeignKeyDeleteCascadeExecutor`、`FKLockDeferGuard` 和 `execute_pending_fk_delete_cascade`；`callers`/`callees` 对动态 trait 调用未给出完整边，因此未把缺失边误写为“无调用者”。
-- Rust 源码：[`typed_fk_cascade_executor.rs`](typed_fk_cascade_executor.rs)、[`typed_dml_executor.rs`](typed_dml_executor.rs)、[`dml.rs`](dml.rs)、[`session.rs`](session.rs)、[`scan_adapter_runtime.rs`](scan_adapter_runtime.rs)、[`pkg/executor/adapter.rs`](../../executor/adapter.rs) 和 [`pkg/session/runtime.rs`](../runtime.rs)。
-- crate 配置：[`pkg/session/Cargo.toml`](../Cargo.toml) 的 `[package]`、`[lib]`、`[features]` 与直接依赖声明。目标包未找到 `pkg/session/doc.go`，因此没有可读取的包级 `doc.go` 契约。
-- Rust 测试：[`runtime/scan_adapter_runtime_test.rs`](scan_adapter_runtime_test.rs) 验证 adapter 两阶段删除级联、每级 statement commit 和失败保存点恢复；[`dml_runtime_test.rs`](../dml_runtime_test.rs) 验证自引用、RESTRICT、检查关闭和 15 层边界；[`runtime_pessimistic_test.rs`](../runtime_pessimistic_test.rs) 验证级联与显式事务共享。未发现本文件同名独立测试。
-- Go 对照：[`pkg/executor/foreign_key.go`](../../executor/foreign_key.go) 的 `FKCascadeExec`、`onDeleteRow`、`buildExecutor`，以及 [`pkg/executor/adapter.go`](../../executor/adapter.go) 的 `handleStmtForeignKeyTrigger`、`handleForeignKeyTrigger`、`handleForeignKeyCascade`、`prepareFKCascadeContext`；相关测试位于 `pkg/executor/test/fktest/foreign_key_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰有十一个规定的二级标题；事实复核以以上符号、调用协议和测试路径为界，未验证运行时性能数据或未执行测试。

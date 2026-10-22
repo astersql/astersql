@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`handle.rs` 是 `astersql-statistics-handle` crate 的核心运行时实现。crate 根 `pkg/statistics/handle/lib.rs` 以 `pub mod handle` 声明本模块并用 `pub use handle::*` 再导出其公开 API；`pkg/statistics/handle/Cargo.toml` 则把该 crate 归入 Go 包 `pkg/statistics/handle` 的移植范围，并直接依赖 `history`、`storage`、`lockstats`、`types`、`util` 等统计子 crate。
-
-文件中的 `Handle<B: HandleBackend>` 汇聚物理表统计缓存、DDL 事件队列、列使用记录、ANALYZE 作业、历史快照和统计版本号。应用侧的主要持有者是 `pkg/domain/domain.rs`：它用 `Arc<Mutex<Handle<DomainStatsBackend>>>` 共享句柄，并在 SQL/DML、ANALYZE、历史统计转储和启动加载路径上调用这里的 API。`pkg/statistics/handle/restricted_sql.rs` 负责持久层读写，再通过 `reconcile_cache_profiles` 或 `merge_cache_profiles` 把持久化视图合并回本句柄。
-
-本文件不是纯门面：它包含可运行的缓存、增量、发布、历史编码/解码和生命周期逻辑。但 `attach_stats_collector`、`detach_stats_collector` 与 `StatsCache::wait_for_async_updates` 仍是兼容 Go API 的透传/空实现；私有的旧版文本 JSON 编解码函数目前只在本文件内部互相引用，没有生产入口调用，实际历史统计路径使用 storage crate 的 gzip `JsonTable` blocks。
+`TableStats` 保存行数、修改计数、版本、列/索引直方图、TopN、NDV、FMSketch 等；`StatsCache` 用物理表 ID 索引这些快照并提供容量及粗略内存计量。
 
 ## 核心职责
 
@@ -114,8 +110,6 @@ Cargo 中还有多个 `cfg(any())` 依赖，按 Rust 条件编译语义该条件
 ## 与 Go 版本的对应关系
 
 - Rust `Handle<B>` 对应 `pkg/statistics/handle/handle.go::Handle`，但 Go 通过嵌入 `StatsGC`、`StatsUsage`、`StatsHistory`、`StatsAnalyze`、`StatsReadWriter`、`StatsCache` 等接口组合多个子系统；Rust 当前把一部分核心运行时状态直接收拢在单一泛型对象中，并通过 backend/storage/history crate 接线。
-- `STATS_OWNER_KEY`、`STATS_PROMPT`、collector attach/detach、`Clear`、`NewHandle`、物理表查询、系统库判定、`FlushStats`、`StartWorker`、`Close` 都有直接 Go 对照。
-- 伪统计缓存规则与 Go 一致：非分区表可缓存；分区伪统计缓存上限为 64；临时表与系统表不缓存；系统库 ID 缓存避免重复借 session。Rust 把 Go 的 InfoSchema/session 查询收敛到 `HandleBackend::system_schema`。
 - Rust `clear` 保留 usage/analyze/history 状态，符合 Go `Clear` 只清 StatsCache、DDL channel、session delta collector 和 system DB cache 的语义；独立 Rust 测试专门防止误做“全量清空”。
 - Go `NewHandle` 逐个构造所有嵌入服务和 DDL handler；Rust `new` 只初始化当前迁移所需状态并通过 backend 注册 handler。Cargo 中恒 false 的 `cfg(any())` 依赖显示其余子系统尚未进入当前编译接线，不能据此宣称完整等价。
 - Rust 新增了面向当前运行时的批量原子发布、内存历史快照和 storage `JsonTable` 映射；这些行为在 Go 中分散于 analyze、history、storage 和 Domain 流程，并非 `handle.go` 单文件逐函数翻译。
@@ -131,13 +125,3 @@ Cargo 中还有多个 `cfg(any())` 依赖，按 Rust 条件编译语义该条件
 - 修改 `clear`/`remove_tables`/`close` 时区分缓存状态、嵌入服务状态、历史持久化生命周期和真实 backend 资源，避免提前丢失历史或关闭顺序倒置。
 - 实现 `wait_for_async_updates` 或 collector attach/detach 前，应先定位 Go 注册点和调用者契约；当前空实现是已知迁移边界，不能只为测试通过加入无行为桩。
 - 性能风险主要来自批量 clone cache/history、历史编码时的大块内存、线性倒序历史查找和粗略缓存计量；扩大数据规模前应增加基准或大对象测试，而非假设计量值等于真实堆占用。
-
-## 验证依据
-
-- 源码：`pkg/statistics/handle/handle.rs` 全部 1756 行；主要证据符号包括 `Handle`、`StatsCache`、`TableStats`、`publish_runtime_stats_with_source`、`flush_runtime_stats_deltas`、`stats_by_physical_id`、`dump_historical_stats` 和 `DecodeHistoricalJsonBlocks`。
-- crate 边界：`pkg/statistics/handle/Cargo.toml`、`pkg/statistics/handle/lib.rs`。目标目录及其 `pkg/statistics` 父层没有 `doc.go`。
-- Go 对照：`pkg/statistics/handle/handle.go`；集成行为参考 `pkg/statistics/handle/handletest/handle_test.go` 中的真实 Domain/SQL 统计读取与版本更新场景。
-- Rust 独立测试：`pkg/statistics/handle/handle_test.rs::clear_preserves_embedded_service_state`；`pkg/statistics/handle/analyze_runtime_aster_unit_test.rs::handle_exposes_lease_and_forced_delta_flush` 与 `canonical_handle_context_observes_live_analyze_and_history_state`；`pkg/testkit/stats_runtime_aster_unit_test.rs::publish_rejects_unknown_profile_without_partial_cache_history_or_jobs`。
-- 真实调用点：`pkg/domain/domain.rs` 的历史转储、解码、delta flush 与 ANALYZE 路径；`pkg/statistics/handle/restricted_sql.rs::reconcile_tables_impl` 的事务后缓存对账。
-- RustCodeGraph：索引状态为 11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/statistics/handle` 和分段 `node --file pkg/statistics/handle/handle.rs` 用于读取全貌，`query` 定位关键入口。核心方法的 `callers/callees` 查询未返回边，因而用上述精确 `rg` 调用点作为补充证据。
-- 本任务只新增说明文档，未修改 Rust/Go/Cargo，也未运行 Cargo。交付前以任务指定命令确认目标文档恰有 11 个固定二级章节，并人工检查占位、未接线路径与 Go 差异均已明确标注。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate（见 `pkg/planner/core/Cargo.toml`），负责把规划阶段已经确定的向量索引查询参数组装成列存索引扫描使用的元数据。模块在 `pkg/planner/core/lib.rs` 中以私有模块 `columnar_index_utils` 声明，并通过 `pub use columnar_index_utils::*` 将其公开函数提升到 crate 根。
-
-它位于“选择访问路径”与“物理表扫描携带下推载荷”之间：返回值 `physicalop_dependency::ColumnarIndexExtra` 对应 `pkg/planner/core/operator/physicalop/physical_table_scan.rs` 中的结构，并可进入 `PhysicalTableScan::UsedColumnarIndexes`。当前 Rust 仓库中没有发现生产代码调用该函数，直接调用仅见独立测试 `pkg/planner/core/columnar_index_utils_test.rs`；因此 Rust 侧目前可确认的是构造与导出能力，不能据此声称已接入 Rust 访问路径选择主链。
+也不解析 `ref_vec` 的浮点编码、不检查列与索引是否匹配、不判断距离函数是否受支持。
 
 ## 核心职责
 
@@ -61,11 +59,9 @@ RustCodeGraph 对 Rust 符号未给出生产调用者，仓库精确搜索也只
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现是 `pkg/planner/core/columnar_index_utils.go::buildVectorIndexExtra`。两者保持相同的七项输入和相同的嵌套载荷：完整索引信息、固定向量索引类型，以及 ANN 查询中的查询类型、距离度量、Top-K、列名、索引 ID、参考向量和列描述。
-
 所有权表达不同但语义对齐：Go 返回指针并在结构中保存 `indexInfo` 指针、`refVec` 切片以及列值副本；Rust 的 `ColumnarIndexExtra` 使用拥有所有权的值，因此克隆索引、参考向量和列描述。Rust 使用 protobuf setter 构造 oneof 对应的 ANN 载荷，Go 使用 `ColumnarIndexInfo_AnnQueryInfo` 包装器；两者最终都设置 ANN 分支。
 
-Go 生产主链已在 `find_best_task.go` 使用该函数，Go 测试 `pkg/planner/core/task_heavy_function_optimize_test.go` 也用它构造向量索引扫描场景。Rust 当前仅由 `columnar_index_utils_test.rs` 验证字段映射和“不校验 Top-K”的兼容行为，尚未发现与 Go `find_best_task.go` 对应的 Rust 生产调用，因此迁移接线状态不完全等价。
+Rust 当前仅由 `columnar_index_utils_test.rs` 验证字段映射和“不校验 Top-K”的兼容行为，尚未发现与 Go `find_best_task.go` 对应的 Rust 生产调用，因此迁移接线状态不完全等价。
 
 ## 扩展指南
 
@@ -75,13 +71,3 @@ Go 生产主链已在 `find_best_task.go` 使用该函数，Go 测试 `pkg/plann
 - 若要引入校验，应先确认 Go 行为和调用契约；直接拒绝 `top_k == 0` 会破坏现有 Rust 回归测试所固定的无校验语义。
 - 性能修改应保留载荷所有权安全，同时评估 `IndexInfo`、`ColumnInfo` 和大 `ref_vec` 的复制成本；任何借用化设计都会影响 `PhysicalTableScan` 的生命周期和公开类型边界。
 - 兼容性风险主要来自 TiPB schema/oneof 表达、距离度量枚举值和参考向量编码。更新 `tipb` revision 时应重新核对 setter 与字段名称。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含本仓库 Rust/Go 文件；`query buildVectorIndexExtra --kind function` 定位 Go/Rust 同名实现；`node --file pkg/planner/core/columnar_index_utils.rs` 核对完整 53 行源码；`callers/callees buildVectorIndexExtra` 未发现 Rust 生产调用或可解析的内部调用；`query ColumnarIndexExtra --kind struct` 与 `node --file pkg/planner/core/operator/physicalop/physical_table_scan.rs` 核对返回类型及其在 `UsedColumnarIndexes` 中的位置。
-- Rust 源与模块入口：`pkg/planner/core/columnar_index_utils.rs`、`pkg/planner/core/lib.rs`。
-- crate 与依赖：`pkg/planner/core/Cargo.toml`。
-- Go 对照与生产调用：`pkg/planner/core/columnar_index_utils.go`、`pkg/planner/core/find_best_task.go`。
-- 独立测试：`pkg/planner/core/columnar_index_utils_test.rs`；补充的 Go 使用场景为 `pkg/planner/core/task_heavy_function_optimize_test.go`。
-- 相关载荷定义：`pkg/planner/core/operator/physicalop/physical_table_scan.rs`。该文件的测试另行覆盖 `UsedColumnarIndexes` 克隆及计划缓存拒绝行为，但不属于本构造器的直接测试。
-- 未运行 Cargo 或代码测试：本任务只生成说明文档，按计划以事实查询、源文件对照和固定章节结构检查验收。

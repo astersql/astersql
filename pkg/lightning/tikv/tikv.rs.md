@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-tikv` crate 的集群管控部分。`pkg/lightning/tikv/lib.rs` 以 `mod tikv` 装入本文件并通过 `pub use tikv::*` 公开其 API；同一 crate 还包含本地 SST 写入和属性收集，但本文件不参与 SST 编码。
-
-它位于 Lightning 与 PD/TiKV 远端能力之间：定义可注入的 PD、TiKV 和 schema 客户端接口，并实现 Store 遍历、模式切换、压缩、模式探测和版本兼容检查。当前 Rust 文件本身不创建真实 gRPC/TLS/HTTP 客户端；网络连接、超时、认证和连接释放由 `PdClient`、`TiKvConnector`、`TiKvClient`、`RemoteSchema` 的实现者负责。因此它是可复用的业务编排与协议抽象层，不等同于 Go 文件中的完整网络实现。
-
-crate 边界由 `pkg/lightning/tikv/Cargo.toml` 确认：库入口是 `lib.rs`，直接依赖仅为 `regex`、`semver`、`thiserror`，移植元数据指向 Go 包 `pkg/lightning/tikv`。
+当前 Rust 文件本身不创建真实 gRPC/TLS/HTTP 客户端；网络连接、超时、认证和连接释放由 `PdClient`、`TiKvConnector`、`TiKvClient`、`RemoteSchema` 的实现者负责。
 
 ## 核心职责
 
@@ -90,8 +86,6 @@ Go 侧对应调用链来自 `pkg/lightning/tikv/tikv.go`：`CheckTiKVVersion` �
 
 ## 与 Go 版本的对应关系
 
-Rust 符号基本逐项对应 `pkg/lightning/tikv/tikv.go`：Store 过滤、Unimplemented 容错、模式切换、压缩、指标判定、远端 schema 获取、PD/TiKV 版本检查均保留。`pkg/lightning/tikv/tikv_test.go` 与 Rust 独立测试共同验证 Offline 包含/Tombstone 排除、指标值 `0`、版本过旧/过新以及最大 major 的 beta 拒绝。
-
 但当前移植不是完整生产网络等价物，主要差异如下：
 
 - Go `withTiKVConnection` 使用 `grpc.DialContext`、keepalive、TLS dial option，并 `defer conn.Close()`；Rust 只操作注入 connector，未提供真实 gRPC 实现。
@@ -102,7 +96,7 @@ Rust 符号基本逐项对应 `pkg/lightning/tikv/tikv.go`：Store 过滤、Unim
 - Go schema 函数通过 TLS HTTP GET 访问 `/schema` 与 `/schema/<schema>`，失败时增加上下文；Rust 仅委托最小 `RemoteSchema`，且 `DBInfo`/`TableInfo` 只保留名称。
 - Go 的 PD 版本通过 `pdutil.FetchPDVersion`、区间通过公共 `version.CheckVersion`；Rust 本地解析。Rust 使用 `semver` crate，测试覆盖一个前导 `v`、非法版本和最大 major beta。
 
-因此安全维护原则是：保持已覆盖的可观察契约，同时不要把 trait 替身当作真实网络层已完成的证据。若目标是生产接线，应在独立适配器/上游依赖中实现传输和协议细节，而不是把测试桩逻辑塞入本文件。
+若目标是生产接线，应在独立适配器/上游依赖中实现传输和协议细节，而不是把测试桩逻辑塞入本文件。
 
 ## 扩展指南
 
@@ -115,16 +109,3 @@ Rust 符号基本逐项对应 `pkg/lightning/tikv/tikv.go`：Store 过滤、Unim
 - 扩展 schema 模型：当前 `DBInfo`/`TableInfo` 只有 `name`。增加字段前要确认 Go `model` 序列化兼容和调用者需求，并为错误上下文、schema 名编码和不完整响应添加独立测试。
 
 兼容风险集中在状态排序、严格指标字符串、版本 major 上界、Unimplemented 容错和错误文本；性能风险集中在每 Store 一个 OS 线程及无并发上限；正确性风险集中在适配器是否真正实现连接关闭、RPC 状态映射和 Go 请求元数据。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引存在，共 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录包含 `tikv.rs`、`tikv.go` 和两份独立测试。
-- RustCodeGraph `node --file pkg/lightning/tikv/tikv.rs`：完整读取 319 行，核对全部错误、模型、trait、函数、惰性正则与版本逻辑。
-- RustCodeGraph `explore "pkg/lightning/tikv/tikv.rs ForAllStores CheckTiKVVersion FetchRemoteDBModelsFromTLS FetchRemoteTableModelsFromTLS"`：确认 `CheckTiKVVersion` → `ForTiKVVersions` → `ForAllStores`，并识别 `lightning/pkg/server/lightning.rs` 和 `tikv_test.rs` 的调用证据。
-- RustCodeGraph `query`：核对 `TiKvClient`、`withTiKVConnection`、`SwitchModeOnStore`、`FetchMode`、`Compact` 的定义与 Go/Rust同名候选。精确 `callers/callees` 查询因共享工作区已有多项 RustCodeGraph 长查询而未稳定返回；已使用 `explore` 的调用流作为图证据，并把限制明确记录在本文。
-- `pkg/lightning/tikv/lib.rs`：确认模块装载、公开再导出及 `#[path = "tikv_test.rs"]` 独立测试接线。
-- `pkg/lightning/tikv/Cargo.toml`：确认 crate 名、入口、三项直接依赖和 Go 包移植元数据；该目录无 `doc.go`。
-- `pkg/lightning/tikv/tikv.go`：核对真实 gRPC/TLS/HTTP、errgroup、指标、版本与错误注解语义。
-- `pkg/lightning/tikv/tikv_test.rs`：核对状态过滤、失败后全部回调、严格指标值、非法/重复版本前缀、最大 major beta 与地址化错误。
-- `pkg/lightning/tikv/tikv_test.go`：核对 Go 原测试的 Store 集合、模式指标和版本边界意图。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。交付前另运行任务规定的 11 章节结构检查，并人工复核仅新增本文件、未修改 Rust/Go/Cargo/总计划。

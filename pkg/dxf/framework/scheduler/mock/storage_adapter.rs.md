@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-dxf-framework-scheduler-mock`，由同目录的 `lib.rs` 通过 `#[path = "storage_adapter.rs"]` 私有装入，再公开导出 `Error`、`SessionExecutor`、`TaskHandle`、`execute` 和 `sessionctx`。它不是 DXF 存储层的实现，而是给 `scheduler_mock.rs` 中 `MockExtension<H>` 提供一组最小、可独立编译的 Go 风格存储接口和数据类型。
-
-这层适配存在于测试边界：`scheduler_mock.rs::MockExtension` 用 `H: storage::TaskHandle + Send + Sync + 'static` 约束回调句柄，但该 mock crate 的 `Cargo.toml` 只依赖 `anyhow`、`mockall` 和 proto crate，并不依赖 `astersql-dxf-framework-storage`。因此，本文件在 crate 内复刻了 mock 所需的接口形状，避免把完整存储 crate 引入生成 mock。生产 Rust 调度器使用的是 `pkg/dxf/framework/scheduler/interface.rs::TaskHandle`，真实存储契约则位于 `pkg/dxf/framework/storage/task_table.rs`；它们与本文件中的同名 trait 是不同的 Rust 类型。
+以 `execute::Progress` 和 `execute::SubtaskSummary` 保留扩展回调可能读取的前序子任务汇总数据形状，包括原子计数器和进度历史。
 
 ## 核心职责
 
@@ -84,17 +82,12 @@ RustCodeGraph 将本文件标记为被 `mock/lib.rs`、`scheduler_mock.rs`、相
 
 ## 与 Go 版本的对应关系
 
-`storage/task_table.go` 是接口语义的直接 Go 对照：其 `SessionExecutor` 同样提供 `WithNewSession` 和 `WithNewTxn`，`TaskHandle` 同样嵌入会话执行能力并读取前序步骤的 metas 与 summaries。本文件保留方法名、参数顺序和错误返回形状；Rust 用 `FnOnce` 表达一次性回调，用 `Vec<Vec<u8>>` 表达 `[][]byte`，用 `Result` 表达“值加 error”。Go 的 `context.Context` 在 mock crate 中退化为 `()`，Go 的 `sessionctx.Context` 退化为空 struct。
+字段逐一对应，但有以下已核验差异：
 
-`taskexecutor/execute/interface.go` 是数据形状的直接 Go 对照。字段逐一对应，但有以下已核验差异：
-
-- Go 的 `time.Time` 对应 Rust `SystemTime`；Go 原子类型对应标准库原子类型。
 - Go summary 返回 `[]*execute.SubtaskSummary`，本文件返回拥有所有权的 `Vec<SubtaskSummary>`，没有可空元素或共享指针语义。
 - Go 字段带持久化兼容所需 JSON 标签，尤其 `Processed` 仍使用 `"bytes"`；本文件没有序列化派生或标签。
 - Go 类型实现请求数合并、采样保留上限、区间速率、最后更新时间和 reset；这些逻辑存在于完整 Rust `taskexecutor/execute/interface.rs`，但不在本 mock 适配类型中。
 - Go `scheduler/mock/scheduler_mock.go` 直接导入生产 `storage.TaskHandle`；Rust mock crate 为保持较小依赖面，改用本文件的平行 trait，并以泛型句柄绕过非对象安全限制。
-
-因此迁移状态应描述为“足以支撑当前 Extension mock 与契约测试的最小适配”，而不是完整替代 Go storage/execute 实现。
 
 ## 扩展指南
 
@@ -107,12 +100,3 @@ RustCodeGraph 将本文件标记为被 `mock/lib.rs`、`scheduler_mock.rs`、相
 5. 若需要以 `dyn TaskHandle` 传递句柄，必须重新设计泛型回调（例如引入对象安全的擦除边界），不能只把 `dyn` 加到现有 trait 上。
 
 主要风险是三套同名接口漂移、mock 数据类型与生产类型被误混用、给原子计数器附加不存在的整体快照保证，以及扩张本 mock crate 依赖导致循环依赖或编译面增大。性能上，当前 meta/summary 均整批分配并返回；若历史数据变大，应先在真实接口中定义分页或流式语义，而不是只优化 mock。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/dxf/framework/scheduler/mock` 确认目标、入口、生成 mock 与两个独立测试；`node --file pkg/dxf/framework/scheduler/mock/storage_adapter.rs` 核对全部 81 行和符号；`query` 核对本文件的 `SessionExecutor`、`TaskHandle`、`SubtaskSummary` 与仓库同名类型。对目标 trait 执行 `callers`/`callees` 未返回静态边，故未把缺失的图边当作“没有调用者”。
-- Rust 源码：`scheduler/mock/lib.rs`（路径装入、再导出、`Context = ()`、测试挂载）、`scheduler/mock/scheduler_mock.rs`（`MockExtension<H>` 泛型界限和 handle 回调）、`scheduler/mock/migration_aster_unit_test.rs::TestHandle`（trait 实现与同步回调行为）、`scheduler/mock/storage_adapter_test.rs::subtask_summary_preserves_the_go_execute_contract`（字段保存契约）。
-- 相邻真实实现：`storage/task_table.rs`（生产侧同名 trait）、`storage/lib.rs`（`TaskManager` 的 `SessionExecutor` 实现）、`scheduler/interface.rs` 与 `scheduler/scheduler.rs`（当前生产调度侧对象安全接口及 `BaseScheduler` 委托）。
-- Cargo：`scheduler/mock/Cargo.toml` 确认独立 crate、`lib.rs` 入口、三个直接依赖和 Go 包映射；`scheduler/Cargo.toml` 确认该 mock crate 是 Windows 目标下的 dev-dependency，而生产 scheduler 依赖真实 storage crate。
-- Go 对照：`storage/task_table.go`（`SessionExecutor`/`TaskHandle`）、`taskexecutor/execute/interface.go`（`Progress`/`SubtaskSummary` 字段与完整方法）、`scheduler/scheduler.go::BaseScheduler.GetPreviousSubtaskMetas/GetPreviousSubtaskSummary/WithNewSession/WithNewTxn`（真实委托行为）、`scheduler/mock/scheduler_mock.go`（生成 mock 对生产 `storage.TaskHandle` 的直接引用）。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工检查：本文明确回答了文件存在原因、mock 调用方式、数据/错误/并发边界、Go 差异和安全扩展位置，且没有把占位接口描述为真实存储实现。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-handle` crate 的任务控制实现；`pkg/dxf/framework/handle/lib.rs` 将它声明为私有 `handle` 模块，再通过 `pub use handle::*` 暴露其 API。所在的 DXF（Distributed eXecution Framework）负责统一调度、分布式任务执行和资源管理；框架在所有 TiDB 节点运行，由 owner 负责调度，其余节点执行任务（`pkg/dxf/framework/doc.go`）。
-
-crate 的直接必需依赖只有 `proto`、`schstatus`、`storage` 三个 DXF crate；`Cargo.toml` 中其余 Go 对应组件多为 optional 依赖。与 Go 版直接取得全局任务管理器、配置和对象存储组件不同，Rust 文件通过进程级 `Runtime` trait 将这些集成点集中注入。因此它既是对外的便捷 API 层，也是 Rust 移植中隔离底层实现差异的适配边界，并非任务调度器或任务存储本身。
+所在的 DXF（Distributed eXecution Framework）负责统一调度、分布式任务执行和资源管理；框架在所有 TiDB 节点运行，由 owner 负责调度，其余节点执行任务（`pkg/dxf/framework/doc.go`）。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ crate 的直接必需依赖只有 `proto`、`schstatus`、`storage` 三个 DXF c
 
 ## 与 Go 版本的对应关系
 
-Rust 文件以 `pkg/dxf/framework/handle/handle.go` 为直接对照，任务提交、等待状态判定、取消幂等、暂停/恢复结果、重试上限、Region 阈值、target scope、URI 前缀、TTL 调优回退、对象存储和计量字段均保持 Go 的核心语义。`handle_test.rs` 还对照 `handle_test.go` 覆盖任务键唯一性、历史任务去重、重试、Next-gen 配置和 URI 矩阵。
-
 主要实现差异如下：
 
 - Go 直接使用 `storage.Get*TaskMgr`、全局配置、SEM、objstore、metering 和 logger；Rust 将这些能力收敛到 `Runtime`，所以部分 Cargo 依赖保持 optional，实际集成由 Runtime 实现决定。
@@ -114,12 +110,3 @@ Rust 文件以 `pkg/dxf/framework/handle/handle.go` 为直接对照，任务提�
 - 修改 URI 规则时优先扩展纯函数 `resolve_cloud_storage_uri`，补齐多层 path、query、fragment、SEM 开关、无 path、无 cluster ID 的矩阵，并检查 `pkg/ddl/index.rs` 再导出消费者。
 - 修改计量字段时同步 Go 常量/SDK约定，保留分钟对齐与稳定 key 的幂等语义；评估字段缺失与零值兼容性。对象存储和计量 API 当前缺少生产 Rust 调用者，接线前还应确认 Runtime 的真实实现位置。
 - 性能敏感点主要是 300 ms 轮询频率、Context 最多 10 ms 的取消检查、全局锁和同步计量写入；变更前应先测量，而不是只为了减少代码而偏离 Go 行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`files --filter pkg/dxf/framework/handle` 覆盖 `handle.rs`、Go 对照及两套测试；`node --file ...handle.rs` 完整读取 688 行并显示被 31 个文件使用；`query` 精确定位 Rust/Go 的 `SubmitTaskWithExtraParams`、`WaitTask`、`RunWithRetry`、`GetCloudStorageURI`、`SendRowAndSizeMeterData`；callee 结果确认提交、等待等内部边。`callers` 对同名跨语言符号未能正确消歧，故没有将其异常结果作为上游结论。
-- 已读生产与边界文件：`pkg/dxf/framework/handle/handle.rs`、`pkg/dxf/framework/handle/lib.rs`、`pkg/dxf/framework/handle/Cargo.toml`、`pkg/dxf/framework/doc.go`。
-- 已读 Go 对照与测试：`pkg/dxf/framework/handle/handle.go`、`pkg/dxf/framework/handle/handle_test.go`、`pkg/dxf/framework/handle/handle_test.rs`。
-- 上游文本证据：`pkg/executor/import_into_storage.rs`、`pkg/dxf/importinto/job.rs`、`pkg/dxf/framework/planner/planner.rs`、`pkg/dxf/framework/scheduler/autoscaler.rs`、`pkg/executor/importer/production_resource.rs`、`pkg/ddl/index.rs`、`pkg/session/runtime/system_session.rs` 中的限定名调用或再导出。
-- 测试证明的边界：真实 SQL task manager 的提交/失败/历史去重，`ErrTaskNotFound` 的提交与取消兼容，三类重试结果和取消，Classic/Next-gen 配置，SEM/路径 URI 矩阵，对象存储记录，分钟计量与负时长，以及外部原子取消标志及时中断等待。
-- 本任务按计划只做文档分析，不运行 Cargo。交付结构检查要求目标文件存在且恰有十一个固定二级标题；其实际命令和退出码在任务交付时记录。

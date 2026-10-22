@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-notifier` crate 的订阅与分发实现。crate 入口 `pkg/ddl/notifier/lib.rs` 以 `mod subscribe; pub use subscribe::*;` 将这里的 API 暴露给调用方；同 crate 的 `publish.rs` 负责写入 schema change，`store.rs` 提供事件存储、会话和事务抽象，`events.rs` 定义 `SchemaChange` 与 `SchemaChangeEvent`。
-
-从完整产品链看，它位于“DDL 完成后持久化事件”与“统计信息等订阅者消费事件”之间：轮询 `Store::List`，逐 handler 处理事件并更新 `processedByFlag`，所有已登记 handler 都完成后再删除事件。当前 Rust 生产代码已经通过 `pkg/ddl/persistent_actions.rs` 等文件使用发布侧 API，但仓库搜索显示 `NewDDLNotifier` 的 Rust 调用只在 `pkg/ddl/notifier/testkit_test.rs`；与 owner、Domain 和统计模块的生产装配仍见 Go 的 `pkg/domain/domain.go`、`pkg/statistics/handle/handle.go` 和 `pkg/statistics/handle/autoanalyze/refresher/refresher.go`。因此，本文件的机制已有 Rust 实现和独立测试，但不能据此声称 Rust 主程序已完成订阅侧接线。
-
-`pkg/ddl/notifier/Cargo.toml` 将它归入 `astersql-ddl-notifier`，直接依赖 `astersql-ddl-session`、元数据 model、parser AST、Serde/JSON 与 `thiserror`；没有 feature 条件。本文件也没有条件编译项，只有运行时使用的 `cfg!(test)` 分支。
+定义订阅回调 `SchemaChangeHandler`、稳定的 `HandlerID` 及内置 ID。
 
 ## 核心职责
 
@@ -100,8 +96,6 @@ list session 在游标完整生命周期内持有，process session 在整轮扫
 
 ## 与 Go 版本的对应关系
 
-主要结构与 `pkg/ddl/notifier/subscribe.go` 对齐：相同的 64 位 HandlerID 契约、启动时位图、周期轮询、每轮失败 handler 跳过后续事件、悲观事务、旧 flag 更新、全部完成后删除，以及测试模式零 handler 不删除。
-
 已验证的差异包括：
 
 - Go handler 接收 `context.Context` 和 `sessionctx.Context`；Rust handler 接收自有 `Session` 克隆，没有取消 context。
@@ -125,11 +119,3 @@ list session 在游标完整生命周期内持有，process session 在整轮扫
 - 若补齐 Rust 生产接线，应在 Domain/owner 层复用单一发布 store、在启动前完成 stats/priority handler 注册，并补充独立集成测试；这属于本文件之外的接线工作。
 - 若实现慢 handler 日志、tracing 或 panic recovery，应以 Go 行为为基准，而不是删除保留常量或简化生命周期。
 - Rust 测试继续放在独立的 `testkit_test.rs`，不要把测试嵌入 `subscribe.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/ddl/notifier/subscribe.rs` 确认目标有 20 个符号；`node --file ... --offset 1/261` 读取并核对完整 310 行源码；`query` 唯一定位 Rust 的 `process_events`、`process_event_for_handler`，并同时定位 Go/Rust 两个 `NewDDLNotifier`。精确 `callers/callees` 查询在 30 秒内未返回输出，因此调用边又用仓库引用搜索核验。
-- Rust 源码：`pkg/ddl/notifier/subscribe.rs`；crate 边界与再导出：`pkg/ddl/notifier/Cargo.toml`、`pkg/ddl/notifier/lib.rs`；事务和存储语义：`pkg/ddl/notifier/store.rs`；发布侧生产使用：`pkg/ddl/persistent_actions.rs` 及相邻 persistent DDL 文件。
-- Rust 独立测试：`pkg/ddl/notifier/testkit_test.rs`，覆盖基本重试和顺序、多 handler 清理、事件类型、短时双 owner、分页、悲观事务、handler 错误与 commit 失败。
-- Go 对照：`pkg/ddl/notifier/subscribe.go`；生产装配与调用：`pkg/domain/domain.go`、`pkg/statistics/handle/handle.go`、`pkg/statistics/handle/autoanalyze/refresher/refresher.go`；Go 测试：`pkg/ddl/notifier/testkit_test.go`。
-- 本任务是纯文档分析，未运行 Cargo。结构验收应确认本文恰有任务要求的 11 个固定二级标题，并人工复核所有“当前已接线/未接线”结论都有上述搜索或文件证据。

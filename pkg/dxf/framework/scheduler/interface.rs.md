@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-scheduler` crate 的公共契约层，定义 DXF owner 侧调度所使用的状态名称、任务/子任务数据模型、存储边界、业务扩展点、单任务调度器接口和任务类型工厂注册表。crate 入口 [`lib.rs`](lib.rs) 通过 `pub mod interface` 和 `pub use interface::*` 将这些定义再导出；所属 crate 及路径依赖见 [`Cargo.toml`](Cargo.toml)。仓库级 [`pkg/dxf/framework/doc.go`](../doc.go) 将 scheduler manager、task scheduler、node manager 和 balancer 定义为 owner 节点组件，而 executor/slot manager 分布在所有节点，因此本文件连接“持久化任务状态—owner 调度循环—具体任务类型实现”，但自身不运行循环、访问数据库或执行子任务。
-
-目标源码是 [`interface.rs`](interface.rs)。它不是桩或纯装配文件：除接口外还实现了任务排序、终态判断、运行时槽位计算、可取消等待、清理批次截断和并发安全的全局工厂注册表。不过完整状态迁移位于 [`scheduler.rs`](scheduler.rs)，多任务选择、资源预留和清理驱动位于 [`scheduler_manager.rs`](scheduler_manager.rs)。
+仓库级 [`pkg/dxf/framework/doc.go`](../doc.go) 将 scheduler manager、task scheduler、node manager 和 balancer 定义为 owner 节点组件，而 executor/slot manager 分布在所有节点，因此本文件连接“持久化任务状态—owner 调度循环—具体任务类型实现”，但自身不运行循环、访问数据库或执行子任务。
 
 ## 核心职责
 
@@ -78,13 +76,13 @@ trait 均要求 `Send + Sync`，工厂闭包也要求 `Send + Sync + 'static`，
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`interface.go`](interface.go)。两版都定义 `TaskManager`、`Extension`、`Param`、scheduler factory、scheduler/cleaner 注册表以及 `Cleaner`/`BatchCleaner`/`ExpiredFileCleaner`，注册表都以读写锁保护，按任务类型覆盖注册并提供测试清空入口；清理批次失败后的幂等要求一致。Rust 的状态模型内聚在本文件，而 Go 主要复用 `proto.Task`/`proto.TaskBase`。
+Rust 的状态模型内聚在本文件，而 Go 主要复用 `proto.Task`/`proto.TaskBase`。
 
 Rust 并非逐签名复刻 Go。Go `TaskManager` 的方法普遍显式接收 `context.Context`，并包含 `CancelTask`、`PauseTask`、按 step/state 读取完整 subtasks、`WithNewSession`/`WithNewTxn` 等能力；Rust trait 采用同步方法和更窄的 scheduler 所需集合，另以 `Context` 只覆盖扩展回调/退避/外部清理取消。Go `Param` 还有非拥有的 keyspace `TaskRuntime`，Rust `Param` 当前没有该字段。Go scheduler factory 接收 context 与指针任务，Rust 工厂接收拥有的 `Task` 和 `Param`。因此扩展 Rust 接口前必须验证实际 storage adapter 与 keyspace runtime 的归属，不能仅按 Go 名称机械添加方法。
 
 Go `Extension` 直接把 context 放入每个回调；Rust 为兼容旧实现保留无 context 必选方法，并提供默认 `*_with_context` 包装。Go 的方法注释还明确：`OnTick` 不应做重工作、规划回调不得修改 task state、到 `StepDone` 应返回空 meta、`GetNextStep` 不应依赖 meta、`OnPrepare` 只可改 meta/required slots/max node count。这些仍是 Rust 实现应遵循的移植契约，但 Rust 类型系统没有强制执行。
 
-Rust 还提供 `Context::cancellation_flag` 以连接 Rust 对象存储上下文，并将 `TaskBase::compare`/`runtime_slots` 等 proto 语义移到本 crate。当前 Rust `Scheduler` trait 对应 Go [`scheduler.go`](scheduler.go) 中的生命周期接口；不要误认为它对应 `interface.go` 的所有内容。
+Rust 还提供 `Context::cancellation_flag` 以连接 Rust 对象存储上下文，并将 `TaskBase::compare`/`runtime_slots` 等 proto 语义移到本 crate。
 
 ## 扩展指南
 
@@ -96,11 +94,3 @@ Rust 还提供 `Context::cancellation_flag` 以连接 Rust 对象存储上下文
 - 新增 cleaner 能力：普通清理实现 `Cleaner`；需要同类型批处理时同时实现 `BatchCleaner` 并从 `batch_cleaner` 返回 `Some(self)`；需要 owner 侧外部文件回收时类似暴露 `ExpiredFileCleaner`。所有副作用必须幂等，并测试“清理成功、历史迁移失败后重试”及部分失败。
 - 修改注册表：保留查询时克隆 `Arc`、回调时不持锁的性质；若引入注销或重复注册检查，要补并发与测试隔离用例。全局注册会影响同进程测试，测试类型名应唯一或串行保护。
 - 性能关注点：`Task`/meta 与工厂快照会 clone；大 meta、高频 tick 或大量注册 cleaner 时应测量分配。不要为减少 clone 而让回调持有注册表锁或 manager 内部锁。
-
-## 验证依据
-
-- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/interface.rs`，不采用工作区未提交源码。
-- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
-- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
-- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
-- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

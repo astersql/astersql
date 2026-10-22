@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`hook.rs` 属于 `astersql-timer-api` crate，是定时器框架与业务调度逻辑之间的公共契约层。crate 根模块 `pkg/timer/api/lib.rs` 以 `pub mod hook` 声明本模块，并通过 `pub use hook::*` 再导出这里的 API；`pkg/timer/api/Cargo.toml` 则确认该 crate 对应 Go 包 `pkg/timer/api`。本文件只定义事件视图、前置回调结果、生命周期 trait 和工厂类型，不负责选择到期定时器、更新存储或执行具体业务。
-
-运行时的直接承接者位于 `pkg/timer/runtime/runtime.rs` 与 `pkg/timer/runtime/worker.rs`：前者按 `HookClass` 注册和查找 `HookFactory`，后者把实际定时器记录包装成 `TimerEvent`，再通过动态分派调用 `Hook`。一个真实业务实现是 `pkg/session/runtime/ttl_timer.rs` 的 `SqlTtlTimerHook`。
+`HookFactory` 把 hook class 和具备存储访问能力的 `TimerClient` 交给业务方，用于构造独立 hook 实例（`hook.rs:63-65`）。
 
 ## 核心职责
 
@@ -94,8 +92,6 @@ RustCodeGraph 对 trait 动态调用的精确 `callers` 查询未产生边，但
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/timer/api/hook.go`，四个公共概念一一对应：`TimerShedEvent`、`PreSchedEventResult`、`Hook`、`HookFactory`。Rust runtime 的前置延迟、`EventData` 落库、后置回调和按 hook class 复用 worker，也与 `pkg/timer/runtime/worker.go`、`runtime.go` 的流程一致。
-
 需要注意的语言映射差异：
 
 - Go 的 `Timer() *TimerRecord` 用 `nil` 表达缺失；Rust 显式使用 `Option<TimerRecord>`，同时返回拥有型克隆而非指针。
@@ -118,14 +114,3 @@ RustCodeGraph 对 trait 动态调用的精确 `callers` 查询未产生边，但
 6. `EventData` 新格式需定义版本/兼容策略，并在 worker 成功、延迟、前置错误、后置错误及重复调用路径补测试。最接近的回归位置是 `pkg/timer/runtime/worker_test.rs`；工厂类型行为在 `pkg/timer/api/hook_test.rs`；具体 TTL 行为应在 session/TTL 对应的独立测试中覆盖。
 
 性能上，`EventID()` 与 `Timer()` 每次都会克隆，尤其 `TimerRecord` 可能包含二进制数据；高频实现应避免重复调用。若要改成借用返回，必须评估 trait object 生命周期和所有调用者，不能只改本文件。
-
-## 验证依据
-
-- 目标定义：`pkg/timer/api/hook.rs:20-65`。
-- crate 边界与再导出：`pkg/timer/api/Cargo.toml`、`pkg/timer/api/lib.rs`。
-- Go 语义来源：`pkg/timer/api/hook.go`；运行时对照为 `pkg/timer/runtime/runtime.go::ensureWorker`、`pkg/timer/runtime/worker.go::triggerEvent`。
-- Rust 主调用链：`pkg/timer/runtime/runtime.rs:117-125,414-459`；`pkg/timer/runtime/worker.rs:155-168,251-280,296-337,368-477,501-525`。
-- 真实实现：`pkg/session/runtime/ttl_timer.rs:24-43,97-250`。
-- 独立测试：`pkg/timer/api/hook_test.rs::hook_factory_accepts_capturing_closures_like_go`；`pkg/timer/runtime/worker_test.rs::TestWorkerStartStop`、`TestWorkerProcessIdleTimerSuccess`、`TestWorkerProcessTriggeredTimerSuccess`、`TestWorkerProcessDelayOrErr`、`TestHookWorkerLoopPanicRecover`。这些测试分别覆盖工厂捕获、生命周期、前置结果落库、跳过前置回调、延迟/错误重试及 panic 恢复。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标文件 17 个符号；`query TimerShedEvent/PreSchedEventResult/Hook/HookFactory/OnPreSchedEvent/OnSchedEvent` 定位公共定义、TTL 实现、runtime 与测试；`callees` 确认 `runWorkerSession` 调用 `Start`/`Stop`，并定位各业务实现的下游调用。动态 trait 的 `callers` 输出为空，因此调用结论进一步以 runtime 精确源码位置核验。
-- 本任务是纯文档分析，未运行 Cargo；交付前另以任务指定命令校验目标文件存在且固定二级章节恰为 11 个。

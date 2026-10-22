@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore` crate 中的嵌入式 UniStore 构造适配层。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod unistore` 声明它；上游 [`mockstore.rs`](mockstore.rs) 的 `NewMockStore` 在 `StoreType::EmbedUnistore` 分支调用 `new_unistore`，而 [`tikv.rs`](tikv.rs) 的 MockTiKV 分支也复用本文件的 `build_embedded`。因此它不是 KV/MVCC 实现本身，而是把通用 `MockOptions` 转换为嵌入式服务参数，再组装统一的 `MockStorage` 门面。
-
-[`Cargo.toml`](Cargo.toml) 确认该 crate 直接依赖 `astersql-store-mockstore-unistore`；后者由 `lib.rs` 重导出为 `crate::embedded_unistore`，实际启动入口位于 [`unistore/mock.rs`](unistore/mock.rs)。目标文件没有类型、常量、trait、条件编译项或内嵌测试，只有三个函数级入口。相关测试均位于独立文件，符合生产逻辑与测试分离的仓库约定。
+在底层集群创建成功后，按固定顺序执行 cluster inspector、RPC client hijacker 和 PD client hijacker。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs) 共同确定�
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`unistore.go`](unistore.go) 的 `newUnistore`。两版都调用 UniStore `New`，传入路径、PD 地址、当前 keyspace 与 keyspace 清单；都在创建集群后执行 inspector，并最终返回 mock storage 门面。两者也都把创建错误立即向上传播。
-
 已验证的差异如下：
 
 - Go 在 `unistore.New` 后先用 `util.InterceptedPDClient` 包装 PD，再根据当前 ID 是否为 `constants.NullKeyspaceID`，分别调用 `tikv.NewTestTiKVStore` 或 `tikv.NewTestKeyspaceTiKVStore`；Rust 不构造 client-go KVStore，而是直接把嵌入式 RPC/PD 客户端装入自己的 `MockStorage`。
@@ -96,14 +92,3 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs) 共同确定�
 - 若要让 `StoreType::MockTiKv` 使用独立实现，应改变 `tikv.rs::new_mock_tikv_store` 的下游，而不是在 `build_embedded` 内仅凭标签分支；同时更新门面测试与 Go 差异说明。
 - 改进错误类型时，要评估依赖 `StoreError` 文本的调用者，并为 IO、server、PD、配置不变量及回调失败分别提供回归覆盖。
 - 正确性风险集中在 keyspace ID/列表一致性、回调顺序和 hijacker 的关闭转发；兼容风险集中在 Go client-go 选项尚未等价接线；性能成本主要是每次构造启动完整进程内服务、克隆地址/keyspace 向量及额外客户端包装。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore` 确认目标文件已索引。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore.rs --offset 1 --limit 160`：读取目标全部 66 行，并报告它被 `mockstore.rs` 与 `tikv.rs` 使用。
-- RustCodeGraph `node new_unistore` 与 `node build_embedded`：确认 `NewMockStore -> new_unistore -> build_embedded`、`newUnistore -> new_unistore` 和 `new_mock_tikv_store -> build_embedded` 的调用边；目标文件的三个函数及完整实现均已核对。
-- crate 与模块边界：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`mockstore.rs`](mockstore.rs) 和 [`tikv.rs`](tikv.rs)，用于核对依赖、再导出、选项定义、返回门面和两后端分派。
-- 下游实现：[`unistore/Cargo.toml`](unistore/Cargo.toml)、[`unistore/mock.rs`](unistore/mock.rs) 与 [`unistore/rpc.rs`](unistore/rpc.rs)，用于核对 `New` 的启动步骤、路径持久性以及 RPC 关闭/析构语义。
-- Go 对照：[`unistore.go`](unistore.go)，用于核对 UniStore 创建、inspector、NullKeyspace 分支、client-go 构造参数、错误传播和最终 mockstorage 包装。
-- 独立测试：[`mockstore_test.rs`](mockstore_test.rs) 验证本构造器消费的 keyspace 配置；[`unistore/mock_test.rs`](unistore/mock_test.rs) 验证下游临时路径的易失与关闭清理。目录检索未发现 Rust 或 Go 测试直接点名本文件的三个函数，因此回调顺序与门面组装目前主要由生产源码和代码图作证。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的固定十一章节结构检查，并人工复核文档只陈述上述源码、调用图、Cargo、Go 和测试能够支持的事实。

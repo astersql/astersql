@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-common` crate 的本地文件系统容量与同盘判断公共门面。`pkg/lightning/common/lib.rs` 以私有模块 `mod storage` 装入它，并通过 `pub use storage::*` 将 `StorageSize`、`GetStorageSize` 和 `SameDisk` 暴露到 crate 根。平台相关系统调用不在本文件实现，而由条件编译分派到 `storage_unix.rs` 或 `storage_windows.rs`。
-
-当前 RustCodeGraph 索引显示，本文件由平台实现和测试模块引用，未发现生产 Rust 调用者；仓库中同类生产调用仍位于 Go 侧，例如 Lightning 预检查的 `lightning/pkg/importer/precheck_impl.go`、DDL ingest 的 `pkg/ddl/ingest/disk_root.go`、导入执行的 `pkg/executor/importer/table_import.go` 和 domain 初始化的 `pkg/domain/domain.go`。因此本文件是已经公开的 Rust 移植边界，但不能据此声称 Rust 生产主链已接线。
+为非 Unix、非 Windows 目标定义显式退化行为：容量查询返回 `CommonError`，同盘判断返回 `Ok(false)`。
 
 ## 核心职责
 
@@ -68,7 +66,6 @@ Unix 的 `CString`、未初始化的 `statvfs` 输出缓冲区和文件元数据
 
 ## 与 Go 版本的对应关系
 
-- 数据模型对应 `pkg/lightning/common/storage.go` 的 `StorageSize`，字段名称、类型和字节单位一致。
 - Unix 语义对应 `pkg/lightning/common/storage_unix.go`：都查询文件系统总量/可用量并按设备号判断同盘。Rust 使用 `statvfs.f_frsize`；Go 使用 `unix.Statfs`，并在平台结构存在 `Frsize` 时采用它，否则回退到 `Bsize`。Rust 当前没有 Go 的反射式回退，也没有 `GetStorageSize` failpoint。
 - Windows 语义对应 `pkg/lightning/common/storage_windows.go`：都调用 `GetDiskFreeSpaceExW`，并且 `SameDisk` 都保留为无条件 `false` 的占位。Rust 同样没有 Go 的 failpoint。
 - Go 公共结构体与平台函数分散在 `storage.go`、`storage_unix.go`、`storage_windows.go`；Rust 增加本文件作为稳定的跨平台分发门面，具体平台实现仍分文件维护。
@@ -82,15 +79,3 @@ Unix 的 `CString`、未初始化的 `statvfs` 输出缓冲区和文件元数据
 - 若改为接受原生路径，应综合修改公共签名与平台签名，避免只在一个平台支持非 UTF-8 路径。
 - 若补接 Rust 生产调用链，应在调用者层实现容量阈值、退化策略和用户可见错误；不要把业务策略下沉到这个平台门面。
 - 测试逻辑应继续放在同目录独立测试文件中，不嵌入 `storage.rs`。兼容性风险集中在公开字段/错误文字和 Windows `false` 合约；性能风险主要来自调用频率，因为每次调用都会触发文件系统查询且无缓存。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件已索引；`files --filter pkg/lightning/common/storage.rs` 报告该文件含 4 个符号。
-- RustCodeGraph `node --file pkg/lightning/common/storage.rs --offset 1 --limit 400`：核对 `StorageSize`、两个公共函数及全部条件编译分支。
-- RustCodeGraph `query GetStorageSize` / `query SameDisk`：核对 Go/Rust 平台实现和测试中的同名符号；`node --file` 分别核对 `storage_unix.rs`、`storage_windows.rs` 与 `lib.rs` 的具体实现和再导出关系。
-- RustCodeGraph `query CommonError --kind struct` 与 `node CommonError`：核对错误载体位于 `pkg/lightning/common/errors.rs`，包含 `Kind`、`Message` 等字段。
-- 读取的 crate/模块证据：`pkg/lightning/common/Cargo.toml`、`pkg/lightning/common/lib.rs`。
-- 读取的 Go 对照：`pkg/lightning/common/storage.go`、`pkg/lightning/common/storage_unix.go`、`pkg/lightning/common/storage_windows.go`、`pkg/lightning/common/storage_test.go`。
-- 读取的 Rust 测试：`pkg/lightning/common/storage_test.rs`、`pkg/lightning/common/storage_unix_test.rs`、`pkg/lightning/common/storage_windows_test.rs`。
-- 上游搜索：对仓库 Rust/Go 文件搜索 `GetStorageSize` 与 `SameDisk`，确认 Rust 仅见实现/测试调用，Go 生产调用点包括 Lightning 预检查、DDL ingest、executor importer 与 domain。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证文档存在且恰有 11 个固定二级章节。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/domain/runaway.rs` 属于 `astersql-domain` crate，由 `pkg/domain/lib.rs` 以公开模块 `runaway` 装配。它位于 Domain 生命周期与资源组/Runaway 子系统的交界处：一方面为资源控制器和 Runaway 管理器定义轻量的组合抽象，另一方面把 `tikv-client` 的资源组查询控制器保存到 `Domain`，并将该控制器适配成 `astersql-resourcegroup-runaway` 所需的资源组目录接口。
-
-当前 Rust 主启动链只接入了 `Domain::init_resource_groups_controller`：`cmd/tidb-server/main.rs` 创建 `GrpcResourceGroupProvider` 后调用它。`ResourceGroupRuntime::initialize` 及本文件自定义的 `ResourceGroupController`、`RunawayManager` trait 目前只在独立测试 `pkg/domain/runaway_test.rs` 中使用，不能据此认为生产入口已经用这套抽象启动 Runaway 后台循环。
+位于 Domain 生命周期与资源组/Runaway 子系统的交界处：一方面为资源控制器和 Runaway 管理器定义轻量的组合抽象，另一方面把 `tikv-client` 的资源组查询控制器保存到 `Domain`，并将该控制器适配成 `astersql-resourcegroup-runaway` 所需的资源组目录接口。
 
 ## 核心职责
 
@@ -85,11 +83,11 @@ Go 的完整生命周期更宽：`initResourceGroupsController` 会立即 `contr
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 `pkg/domain/runaway.go`：两版都把“无 PD provider”视为静默成功，并依据 keyspace 构造资源组 controller。Rust 将 Go 隐式读取进程部署模式/全局配置的 `newResourceGroupsControllerOptions()` 改成显式布尔参数；相同的 fallback 数值及语义由 `pkg/domain/resource_group_controller_options.rs` 与 `.go` 对照实现。
+Rust 将 Go 隐式读取进程部署模式/全局配置的 `newResourceGroupsControllerOptions()` 改成显式布尔参数；相同的 fallback 数值及语义由 `pkg/domain/resource_group_controller_options.rs` 与 `.go` 对照实现。
 
 Rust 尚未完整复刻 Go 初始化：没有在该入口读取 server info/拼接 server address，没有创建 `runaway.NewRunawayManager`，没有保存 manager，也没有安装 `tikv.SetResourceControlInterceptor`。此外，Go 从 Store codec 推导 keyspace ID，而 Rust 由 `cmd/tidb-server/main.rs` 调用方传入；Go controller 的 `Start(ctx)` 有上下文和显式停止契约，Rust lookup controller 的具体后台生命周期由 client 库封装。
 
-`ControllerResourceGroupCatalog` 是 Rust 特有的边界适配：Go 的 PD controller 直接满足 Runaway manager 需要的接口，Rust 则把 client protobuf 映射到 `astersql-resourcegroup-runaway` 的本地类型。`pkg/domain/runaway_test.go` 和 `.rs` 都验证 Starter fallback、恢复后不缓存降级组、配置开关，以及 `SwitchGroup` 能把请求切到目标组；Rust 还明确覆盖 `None` provider 和 Domain 关闭后清空 controller。
+`ControllerResourceGroupCatalog` 是 Rust 特有的边界适配：Go 的 PD controller 直接满足 Runaway manager 需要的接口，Rust 则把 client protobuf 映射到 `astersql-resourcegroup-runaway` 的本地类型。
 
 ## 扩展指南
 
@@ -98,14 +96,3 @@ Rust 尚未完整复刻 Go 初始化：没有在该入口读取 server info/拼�
 - 若改变 fallback 行为，应同步检查 `pkg/domain/resource_group_controller_options.rs`、对应 `.go` 文件及两种语言的 `runaway_test`；特别要保留“只在 Starter 且开关开启时覆盖 provider 设置”和“降级组不进入正常缓存”的不变量。
 - 若需要重初始化或动态切换 provider，应先定义旧 controller 的停止/排空契约以及 RU 版本与 controller 发布的一致性；当前两个状态分别写入，读者可能观察到短暂的版本/对象交错。性能上应避免在 `GetResourceGroup` 转换路径增加阻塞锁或额外远程查询。
 - `ResourceGroupController`/`RunawayManager`/`ResourceGroupRuntime` 当前不是生产主链。若保留它们，应接入真实实现并补充停止语义；若调整抽象，先核对是否仍需承载 Go 生命周期意图，不能仅因当前调用少而删减。
-
-## 验证依据
-
-- 目标源码：`pkg/domain/runaway.rs`，核对全部公开结构、trait、impl、重导出、转换分支及无条件编译事实。
-- crate 与装配：`pkg/domain/Cargo.toml`、`pkg/domain/lib.rs`；确认 `astersql-domain` 边界、`tikv-client` tag、Runaway crate 依赖和独立测试模块。
-- Rust 直接入口与状态：`cmd/tidb-server/main.rs`、`pkg/domain/domain.rs`、`pkg/domain/resource_group_controller_options.rs`。
-- Rust 独立测试：`pkg/domain/runaway_test.rs`；覆盖抽象 controller 启动、Starter 降级/恢复、option 保留、SwitchGroup、无 provider 和关闭清理。
-- Go 对照：`pkg/domain/runaway.go`、`pkg/domain/resource_group_controller_options.go`、`pkg/domain/domain.go`、`pkg/domain/runaway_test.go`。
-- Runaway 接口定义：`pkg/resourcegroup/runaway/lib.rs` 中的 `ResourceGroupCatalog`、`ResourceGroup`、`RunawaySettings`、`RunawayRule` 与 `RunawayWatch`。
-- RustCodeGraph：`status` 显示索引可用；路径过滤未命中，但 `query ControllerResourceGroupCatalog --kind struct` 与 `node --file pkg/domain/runaway.rs --offset 80 --limit 120` 成功定位源码，`query init_resource_groups_controller --kind method` 未返回结果。缺失的调用边用上述直接源码和精确 `rg` 搜索核验。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构用任务指定的 11 章节命令验证。

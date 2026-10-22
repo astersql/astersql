@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-mock` crate，是 DDL 系统表访问接口 `ddl_systable::Manager` 的 GoMock 风格测试替身。crate 入口 `pkg/ddl/mock/lib.rs:10-16` 声明该模块并重新导出 `MockManager`、`MockManagerRecorder`、`new_mock_manager` 以及生产接口类型；`pkg/ddl/mock/Cargo.toml:14-15` 表明它只直接依赖同仓库的 `astersql-ddl-systable` crate。
-
-它不读取 `mysql.tidb_ddl_job` 或 `mysql.tidb_mdl_info`，也不参与 DDL job 的持久化、状态迁移、reorg 或 schema version 同步。真实 SQL 和会话池生命周期位于 `pkg/ddl/systable/manager.rs:115-190` 的 `SystemTableManager`；本文件只让测试预先登记调用期望并经生产 `Manager` trait 注入可控结果。
+以 `MockManager` 实现生产 `Manager` trait 的五个查询：按 ID 取 Job、用已有 Session 取 Job 字节、取 MDL 版本、取最小 Job ID、检查 Flashback Cluster Job（`systable_manager_mock.rs:81-195`）。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/ddl/mock/systable_manager_mock.go`，由 MockGen 针对 `systable.Manager` 生成。主要一一对应关系为：
-
 | Go | Rust | 说明 |
 | --- | --- | --- |
 | `MockManager` / `MockManagerMockRecorder` | `MockManager` / `MockManagerRecorder` | 被调用对象与期望录制对象分离 |
@@ -103,16 +99,3 @@ Rust 版本是手写的强类型替身，不是生成代码：它复用 crate �
 4. 对照 `pkg/ddl/mock/systable_manager_mock.go` 和生产 Go `pkg/ddl/systable/manager.go` 的接口增量，保持方法语义与错误边界一致；若 Go 生成文件尚未包含新方法，应以生产 trait 为准并明确迁移状态。
 
 修改共享控制器时需关注所有 DDL Mock 的兼容性。增加严格顺序、调用次数或 Session 身份匹配会改变现有默认无序语义，属于测试兼容风险；在热路径中扩展复杂 matcher 还会增加锁内搜索成本。生产正确性风险主要是方法字符串、参数顺序或 `ReturnValue` 映射写错，可能让测试错误匹配或把预期生产错误变成解码错误。
-
-## 验证依据
-
-- 源文件：`pkg/ddl/mock/systable_manager_mock.rs`，核对两个辅助函数、两个结构体、构造器、固有实现、生产 trait 的五个方法和 recorder 的五个方法。
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`query MockManager --kind struct`、`query new_mock_manager --kind function`、`node new_mock_manager`、`node manager_return`、`callers manager_return`、`callees manager_return` 与 `explore` 确认符号位置、五条 recorder 调用边及共享 `call`/`manager_return` 关系。常见方法名存在歧义，调用者结论因此同时用源码与测试交叉核验。
-- crate/模块边界：`pkg/ddl/mock/Cargo.toml`、`pkg/ddl/mock/lib.rs`、`pkg/ddl/mock/BUILD.bazel`。Cargo 侧只有 `ddl-systable` 直接依赖；Bazel 文件描述的是同目录 Go library，不是 Rust crate 构建证据。
-- 生产契约与真实实现：`pkg/ddl/systable/manager.rs:26-43,90-137,140-190`，确认 `Context`、`Error`、`Session`、`Manager`、真实会话池归还与系统表 SQL。
-- 共享控制器：`pkg/ddl/mock/schema_loader_mock.rs:27-137`，确认参数/匹配器/返回枚举、`Arc<Mutex<_>>`、默认无序消费、错误和 `verify` 语义。
-- Rust 独立测试：`pkg/ddl/mock/mock_aster_unit_test.rs:104-182`，确认生产 trait 动态分派、Job 解码、Session 不被执行、五个返回映射、期望消费和 `Error::NotFound` 保真。
-- Go 对照与测试：`pkg/ddl/mock/systable_manager_mock.go`、`pkg/ddl/index_nokit_test.go`、`pkg/ddl/systable/min_job_id_test.go`；前者确认 MockGen API，后两者证明 Go 测试中的实际使用场景，但不作为 Rust 接线证据。
-- 人工边界复核：本文件是 metadata/system-table 查询的测试替身，不是 job-based DDL 执行步骤；不负责 schema 状态、reorg、取消/回滚、schema diff、MDL 协调或 durable metadata 写入。
-
-本任务为纯文档分析，未运行 Cargo 或代码测试。交付前仅执行任务指定的 11 章节结构检查和文档差异自审。

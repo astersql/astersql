@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 crate 根，而 `pkg/ddl/lib.rs` 通过 `pub mod reorg_util;` 无条件公开本模块。它提供两类纯内存辅助逻辑：把重组（reorg）运行参数校验并冻结为元数据快照，以及汇总表/Region 的近似大小。
-
-这里必须区分模块可见性与生产接线状态。RustCodeGraph 能定位本文件全部公开符号，但文件级反向引用只来自 `pkg/ddl/reorg_util_test.rs` 和 `pkg/ddl/backfilling_txn_executor_test.rs`，三个公开函数的 `callers`/`callees` 查询均没有返回生产调用边。因此当前 Rust 模块是可公开调用的独立模型，尚不能据此声称它已经进入 DDL job 提交、回填调度或 PD 查询主链。真实的 Go 生产主链在同路径 `pkg/ddl/reorg_util.go`。
-
-从 DDL 语义看，这些值面向需要 reorg/backfill 的 job：Go 版本在建 job 时初始化 `job.ReorgMeta`，供后续 worker 或分布式任务消费；Rust 文件自身不创建 job、不驱动 schema state、不保存 checkpoint，也不更新 schema version。
+`ReorgVariables` 表示调用侧提供的并发度、批大小、写入限速、云存储和分布式开关，并给出确定的默认值。
 
 ## 核心职责
 
@@ -84,14 +80,9 @@ Go 对照的生产关系更完整：`pkg/ddl/reorg_util.go::initJobReorgMetaFrom
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/reorg_util.go` 是权威对照，但当前 Rust 不是逐函数完整复刻：
-
 - Rust `init_job_reorg_meta_from_variables` 对应 Go `initJobReorgMetaFromVariables` 的“读取配置并形成 reorg 元数据”概念，仅保留参数校验与快照。Go 还依据 job 类型设置 reorg/dist 参数，处理多 schema 子任务、bootstrap/system DB 限制、NextGen 资源估算、fast reorg、target scope、最大节点数、failpoint、日志和 `job.ReorgMeta` 写入。
-- Rust `estimate_table_size_by_regions` 对应 Go `estimateTableSizeByID` 的核心聚合公式：每个 Region 取 `max(ApproximateSize, ApproximateKvSize)`，按 MiB 转字节并累加。Rust 不构造表 handle key range、不编码 Region range、不分页访问 PD，也不推进 `EndKey`。
 - Rust `get_table_size_by_id` 只复刻 Go `getTableSizeByID` 的最终分区求和性质。Go 函数自己识别分区表、逐物理 ID 估算、记录错误，并在估算为 0 时查询 region stats 回退。
 - Rust 当前新增了 Go 函数没有以同形 API 暴露的三个参数错误；反过来，Go 的零并发/零 batch 值会交给 `DDLReorgMeta` setter 及既有配置语义处理，因此接入前必须核实是否真的应拒绝 0，不能把当前简化验证直接替换 Go 行为。
-
-`pkg/ddl/reorg_util_test.go` 验证真实 PD 分页适配层使用 128 的 limit、正确的表 key range、两种 Region 大小取大值，以及相邻的行大小采样逻辑。`pkg/ddl/reorg_util_test.rs` 用本地 mock 重建了分页/采样场景，并直接验证 Rust 聚合、回绕和参数快照；其中分页 client 与行大小函数属于测试侧模型，不是本 Rust 生产文件提供的 API。
 
 ## 扩展指南
 
@@ -102,13 +93,3 @@ Go 对照的生产关系更完整：`pkg/ddl/reorg_util.go::initJobReorgMetaFrom
 若移植 PD 查询，应把“查询/分页”和“纯聚合”分层：保留 `estimate_table_size_by_regions` 作为可测试核心，在新适配层中实现 table handle key range、codec、128 条分页、空页/终止 key 判断和错误传播，并同步 `pkg/ddl/reorg_util_test.go` 的范围及分页断言。需要警惕一次性物化所有页的内存成本；生产实现更适合流式累加。
 
 若调整数值语义，必须同步 `production_size_aggregation_preserves_go_signed_arithmetic` 和 `production_region_aggregation_uses_each_regions_larger_estimate`。从 wrapping 改为 checked/saturating 会改变 Go 对齐行为，应作为显式兼容决策，而不是普通重构。
-
-## 验证依据
-
-- 源码：`pkg/ddl/reorg_util.rs`，完整读取 132 行，核对 4 个公开结构/枚举、3 个公开函数、默认实现和所有运算分支。
-- 模块与 crate：`pkg/ddl/lib.rs` 的 `pub mod reorg_util`、`#[cfg(test)] mod reorg_util_test`；`pkg/ddl/Cargo.toml` 的 crate 名、lib 路径和 Go package porting 元数据。
-- Rust 测试：`pkg/ddl/reorg_util_test.rs`，覆盖两种估计值取大、MiB 换算、负数与溢出回绕、三个输入错误、完整快照及禁用云存储时清空 URI。
-- Go 对照：`pkg/ddl/reorg_util.go` 的 `initJobReorgMetaFromVariables`、`getTableSizeByID`、`estimateTableSizeByID`；`pkg/ddl/reorg_util_test.go::TestEstimateTableSizeByIDUsesMaxApproximateSizes` 的 key range、分页 limit、聚合和采样断言。
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`node --file` 读取目标 Rust/Go/测试/模块源码；`query` 定位三个函数及三类主要数据符号；对三个函数运行 `callers`/`callees` 未得到生产调用边；目标文件的索引反向引用为两个 Rust 测试文件。
-- DDL 背景边界：读取 `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`，仅用其定位 job/owner/reorg 框架，并以本文件及测试确认实际实现，没有把背景文档当作生产接线证据。
-- 本任务是纯文档分析，按任务约束不运行 Cargo；最终以固定 11 章节结构检查和人工事实复核为验收。

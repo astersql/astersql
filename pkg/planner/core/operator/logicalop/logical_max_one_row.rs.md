@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-logicalop` crate（见同目录 `Cargo.toml`），定义标量子查询使用的逻辑算子 `LogicalMaxOneRow`。`lib.rs` 以 `mod logical_max_one_row` 纳入模块并通过 `pub use logical_max_one_row::*` 对外导出。它位于表达式重写与物理计划枚举之间：`pkg/planner/core/expression_rewriter.rs::handleScalarSubquery` 调用 `PlanBuilder::buildMaxOneRow` 包装标量子查询，`pkg/planner/core/operator/physicalop/physical_max_one_row.rs::ExhaustPhysicalPlans4LogicalMaxOneRow` 再为该逻辑节点生成根任务的物理算子。
-
-这不是实际执行多行检查的文件；它保存逻辑树节点、阻断不安全的谓词下推、描述输出 schema 与估算统计。运行时“第二行触发标量子查询多行错误”的能力属于物理 `PhysicalMaxOneRow` 及执行器链路。
+固有 `DeriveStats` 与 `getSingletonStats` 把输出估为一行、每个输出列 NDV 为 1，并支持已有统计缓存；但当前固有签名没有覆盖 `LogicalPlan::DeriveStats(bool)`，详见“错误处理与边界”和“与 Go 版本的对应关系”。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 对 `logical_max_one_row.rs::LogicalMaxOneRow` 的节点查询仅�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `logical_max_one_row.go`。两端均以基座作为唯一字段，初始化类型为 MaxOneRow，schema 克隆子节点并清除 NOT NULL，谓词下推时禁止父谓词越过屏障，并提供一行/每列 NDV 为 1 的统计辅助。
-
 目前有三项明确差异：
 
 1. Go `DeriveStats` 正式实现 `base.LogicalPlan` 接口；Rust 的 Go 风格固有 `DeriveStats(&Schema, &[bool])` 没有桥接到当前 trait 签名 `DeriveStats(bool) -> Result<...>`，trait 分派行为不同。
@@ -91,14 +87,3 @@ RustCodeGraph 对 `logical_max_one_row.rs::LogicalMaxOneRow` 的节点查询仅�
 - 放宽谓词下推前必须证明对空集物化 NULL 和多行错误均语义等价；通常只能优化子树自身已有谓词，不能传入父谓词。测试需覆盖空子查询、单行、多行和含 NULL 条件。
 - 修改 hash/equality 时应同时对照 Go 的计划 ID 语义和 Rust memo/规则使用方式，并同步 `hash64_equals_generated.rs` 的独立测试；避免 schema 访问两条路径造成 hash 在子树变更后陈旧。
 - 修改 decorrelation 或物理属性支持时，应联动 `optimizer_runtime.rs` 的屏障判定及 `physical_max_one_row.rs::ExhaustPhysicalPlans4LogicalMaxOneRow`，保留“第二行用于报错”的 `ExpectedCnt=2.0` 约束，并验证 MPP/排序兼容性。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/logicalop/logical_max_one_row.rs`，核对结构、全部固有方法、trait 实现和 singleton 统计。
-- crate/模块边界：同目录 `Cargo.toml`、`lib.rs`；确认 crate 名、Go 包映射、模块声明、公开重导出和独立测试装配。
-- RustCodeGraph：`status` 显示索引可用；`query LogicalMaxOneRow --json` 定位 Rust/Go 定义、hash 测试和物理枚举；`node logical_max_one_row.rs::LogicalMaxOneRow` 确认结构源码及测试实例化边。文件过滤/探索未返回完整目标调用边，生产链改用精确源码检索核验。
-- 构建与入口：读取 `logical_plan_builder_runtime.rs::buildMaxOneRow`、`expression_rewriter.rs::handleScalarSubquery`、`optimizer_runtime.rs` 的 MaxOneRow 分支、`physicalop/physical_max_one_row.rs::ExhaustPhysicalPlans4LogicalMaxOneRow`。
-- 基座契约：读取 `base_logical_plan.rs` 的 `LogicalPlan` trait、`BaseLogicalPlan::BuildKeyInfo`、`RecursiveDeriveStats` 和 `DeriveStats`，据此确认 schema/统计的 trait 分派差异。
-- Go 对照：读取同目录 `logical_max_one_row.go` 与 `hash64_equals_generated.go`。
-- 测试证据：读取 `logical_max_one_row_test.rs`（无子节点 schema panic）、`logical_d_aster_unit_test.rs::singleton_statistics_keep_one_row_and_one_ndv_per_column`、Rust/Go `logicalop_test/hash64_equals_test.*`，以及 `optimizer_logical_entry_aster_unit_test.rs` 中保留 decorrelation 屏障的断言位置。
-- 本任务是纯文档分析，按总计划不运行 Cargo；最终以任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复查上述每项结论均可回指到真实符号或文件。

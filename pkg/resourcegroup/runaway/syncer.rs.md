@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 runaway 子系统的系统表读取与增量同步边界。它属于 `astersql-resourcegroup-runaway` crate；crate 入口在 [`lib.rs`](./lib.rs) 中以 `pub mod syncer` 暴露模块，并由 [`manager.rs`](./manager.rs) 的 `ManagerInner::syncer` 持有。数据源是 `mysql.tidb_runaway_watch` 与 `mysql.tidb_runaway_watch_done`，前者提供新增监视，后者提供已完成、应从节点本地监视列表移除的记录。
-
-在应用链路中，`Manager::UpdateNewAndDoneWatch` 是增量扫描的直接上游：它先拉取 watch 并调用 `AddWatch`，再拉取 watch_done 并调用 `removeWatch`。`Manager::RemoveRunawayWatch` 和 `Manager::RemoveRunawayResourceGroupWatch` 则使用本文件的点查 API 查出待移动到 done 表的记录。因此本文件只负责“构造读取、执行读取、解码和维护扫描游标”，不负责本地列表去重、系统表写入或定时调度。
+`WATCH_SYNC_INTERVAL_MICROS` 只是与 Go 的一秒同步周期对齐并用于推导三秒重叠窗口；实际何时调用 `UpdateNewAndDoneWatch` 由文件外的运行时负责。
 
 ## 核心职责
 
@@ -104,8 +102,6 @@ manager 接线顺序见 `Manager::UpdateNewAndDoneWatch`：先确认 watch 表�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`syncer.go`](./syncer.go)，Rust 保留了以下核心语义：两张表和各自列布局、`start_time`/`done_time` 分页键、半开时间窗口、2048 行上限、三倍同步周期重叠、满批推进到最后有效键、同键防活锁回退、部分批次回退、空/坏行/错误保持 checkpoint，以及点查不改变扫描游标。
-
 主要实现差异如下：
 
 - Go 通过 `util.SessionPool` 和 `ExecRCRestrictedSQL` 获得受限 session；Rust 将其收敛为 `RestrictedSqlExecutor` trait，直接返回 `SqlRow`。
@@ -125,12 +121,3 @@ Rust 独立测试 [`syncer_test.rs`](./syncer_test.rs) 的可执行部分覆盖 
 - 接入真实目录或执行器应在 crate 外实现 `SystemTableCatalog` / `RestrictedSqlExecutor`，不要把 infoschema/session 细节重新硬编码进 reader。
 - 若补齐 Go 的指标，应在 manager 调度边界测量同步间隔、耗时、成功/失败和两个 checkpoint，避免仅在 `scan` 内计时而遗漏表不存在或 done 阶段失败的分支。
 - 所有 Rust 测试继续放在同目录独立的 [`syncer_test.rs`](./syncer_test.rs)，不要嵌入生产源文件；语义变化还应同步核对 [`syncer_test.go`](./syncer_test.go) 的原始意图。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust/Go 源与测试均在索引内。
-- RustCodeGraph `node --file pkg/resourcegroup/runaway/syncer.rs` 核对了完整 320 行源码及模块符号；精确查询确认 `scan` 被两个增量入口调用，`readQuarantineRecords` 被两个点查入口调用，`decodeQuarantineRecord` 被扫描、点查及 Rust 测试调用。
-- RustCodeGraph 对 [`manager.rs`](./manager.rs) 的读取确认生产接线：构造、增量同步顺序、首次 done checkpoint 初始化，以及两个删除 API 的点查调用。
-- [`Cargo.toml`](./Cargo.toml) 核对 crate 名称、`lib.rs` 入口、Go 包映射和条件依赖边界；[`lib.rs`](./lib.rs) 核对模块导出、`Timestamp`、公共错误、枚举、`RestrictedSqlExecutor` 与 `ExecutorRef`。
-- [`syncer.go`](./syncer.go) 与 [`syncer_test.go`](./syncer_test.go) 核对 Go 的扫描算法、重叠窗口理由、同键限制、列布局和回归意图；[`syncer_test.rs`](./syncer_test.rs) 核对 Rust 当前实际覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求文档存在，且上述十一个固定二级标题各出现一次。

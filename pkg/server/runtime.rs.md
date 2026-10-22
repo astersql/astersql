@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`runtime.rs` 属于 `astersql-server` crate（`pkg/server/Cargo.toml` 的库入口为 `pkg/server/lib.rs`），是 Rust 版 MySQL server 与 canonical `astersql-domain` / `astersql-session` 实现之间的生产适配层。它不负责监听端口或解析完整命令循环；上游 `pkg/server/server.rs`、`pkg/server/conn.rs` 定义 server/connection 抽象，本文件为其中的 `PacketIo`、`ServerDomain`、`ConnectionDomain`、`ServerDriver`、`SessionDriver` 和 `TiDBContext` trait 提供真实实现。`cmd/tidb-server/main.rs::assembleCanonicalServer` 将 `CanonicalServerDomain`、`CanonicalConnectionDomain`、`CanonicalServerDriver` 与 `ConcreteSessionDriver` 装配进应用入口。
-
-Go 版本没有同名 `runtime.go`：对应职责分散在 `pkg/server/internal/packetio/packetio.go`、`pkg/server/conn.go`、`pkg/server/driver_tidb.go` 和 `pkg/server/server.go`。因此本文件是迁移边界，而非某一个 Go 文件的逐行翻译。
+`TcpPacketIo` / Unix 平台下的 `UnixPacketIo` 把 socket 接到既有 MySQL 包编解码器，处理序号、压缩、超时、关闭、地址、TCP TLS 与 PROXY protocol 延迟探测。
 
 ## 核心职责
 
@@ -75,10 +73,8 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 
 ## 与 Go 版本的对应关系
 
-- `TcpPacketIo` / `UnixPacketIo` 对应 `pkg/server/internal/packetio/packetio.go` 与 `conn.go` 中 packet、TLS、PROXY、地址和 socket 生命周期，但 Rust 把能力收敛到 `PacketIo` trait。
 - `ConcreteSessionDriver::open_ctx` 与 `ConcreteTiDBContext` 对应 `pkg/server/driver_tidb.go::{TiDBDriver.OpenCtx, TiDBContext}`；Rust 用单连接 worker 解决 canonical session 的线程约束，Go 依靠 goroutine/session 对象直接调用。
 - `prepared_argument`、执行/关闭 prepared statement、long-data 计费和结果转换对应 `TiDBStatement` / `TiDBContext` 的协议职责；具体长数据缓存主要仍由 `conn_stmt` 与 session 实现承担，本文件只代理配额快照/计费和执行。
-- `CanonicalConnectionDomain` 对应 Go `Server`/`Domain` 的连接 ID 分配释放；`CanonicalServerDomain` 汇聚 Go `server.go` 从 Domain 读取的状态能力。
 - Rust 当前 bootstrap 鉴权仅是受限模式，不能等同 Go `conn.go` 的完整用户插件、密码、锁定、过期密码与 change-user 流程。Go 的 `Server.Run` 还负责 listener/status server/goroutine 编排，这些在 Rust 的 `server.rs` 与命令入口，不属于本文件。
 
 ## 扩展指南
@@ -89,11 +85,3 @@ socket/codec/rustls/channel 错误统一映射为 `ConnError`；transport 的读
 - 扩展 prepared 类型需修改 `prepared_argument` / `decode_binary_temporal`，对照 MySQL binary protocol 的有符号性、长度和编码，并在独立的 `pkg/server/runtime_test.rs` 增加畸形包和边界值回归。
 - 实现安全鉴权或 change-user 时，应替换 `BootstrapAuthMode` 的明确限制并对齐 Go `conn.go`，不能仅放宽 root 条件；需要覆盖插件协商、用户主机匹配、权限、TLS 状态和 session reset。
 - 扩展 Domain status API 应优先在 `CanonicalServerDomain` 代理真实 Domain 能力，保留输入验证与错误映射；涉及 handler 的测试应放在现有独立测试文件，不能内嵌进 `runtime.rs`。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/server/runtime.rs` 差异及目标 blob `1c941b37cc5d9cd36d5366535e865c5acf3bd1a3` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/server/runtime.rs` 和 `git show 2c944fb:pkg/server/runtime.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/server/runtime_test.rs`，Go 对照为 `pkg/server/conn.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

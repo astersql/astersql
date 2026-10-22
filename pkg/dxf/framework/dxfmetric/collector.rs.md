@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-dxf-framework-dxfmetric` crate，是 DXF（Distributed eXecution Framework）任务与子任务状态的 Prometheus 自定义采集器实现。DXF 的整体职责和 owner/follower 分工由 [`pkg/dxf/framework/doc.go`](../doc.go) 定义；本采集器对应 owner 侧周期读取任务元数据后暴露聚合指标的观测面。
-
-crate 根模块 [`lib.rs`](lib.rs) 公开 `collector` 模块并再导出其公共 API。[`Cargo.toml`](Cargo.toml) 表明实现直接依赖 `prometheus`、DXF `proto`、`metricscommon` 和 `uuid`。当前 Rust 仓库中，`Collector` 的直接使用只在 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 得到验证；虽然 scheduler crate 声明了 dxfmetric 依赖，但未检索到 Rust 生产代码调用本文件的 `NewCollector` 或 `UpdateInfo`。相应的完整生产接线可在 Go 的 [`scheduler_manager.go`](../scheduler/scheduler_manager.go) `Manager.collectLoop`/`Manager.collect` 中看到，不能据此声称 Rust 侧已完成相同接线。
+`Collector` 保存最近一次任务和子任务快照，并实现 `prometheus::core::Collector`，供 registry 在 scrape 时动态生成指标族。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ duration 不存入快照外的累计状态，而在每次 scrape 时根据 `Syst
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对照 [`collector.go`](collector.go)：三个指标名、help、动态标签顺序、任务/子任务聚合维度以及 pending/running duration 起点均保持一致。Rust 的 `NewCollector` 保留 Go 风格名称，`lib.rs` 通过 `#![allow(non_snake_case)]` 允许迁移期 API 命名。
-
 主要实现差异是并发存储：Go 用两个 `atomic.Pointer` 分别发布任务和子任务切片，Rust 用一个 `RwLock<Snapshot>` 同时发布两组数据。Rust 因而明确提供跨两组数据的 scrape 一致性，但 scrape 聚合期间会阻塞更新；Go 的两个原子 load/store 无锁，不过任务和子任务可能来自相邻发布时刻。Rust 初始值是空快照，Go 在任一指针尚为 `nil` 时让对应收集函数直接返回，最终空数据行为相同。
 
 另一个差异是测试标签入口：Go `NewCollector` 读取全局 `intest.InTest`，Rust 把该选择变成 `Collector::new(in_test)` 参数，而兼容函数 `NewCollector()` 固定为非测试模式。Rust 独立测试直接调用 `Collector::new(false)`；当前测试没有覆盖 `true` 时 UUID `server_id` 的存在或隔离效果。
@@ -92,12 +88,3 @@ Go 文件中 `setDistSubtaskDuration` 是独立方法；Rust 将分支内联到 
 - 若要减少写锁等待，可在读锁下克隆或以 `Arc<Snapshot>` 快速取得快照后释放锁，但应先保持任务/子任务原子发布和单次 scrape 一致性，并增加并发更新测试；不要退化为两个独立锁而不说明一致性语义。
 - 若接入 Rust 生产调度链，应在 scheduler manager 的生命周期中完成创建、registry 注册、定时查询、`UpdateInfo` 与退出注销，并增加独立 scheduler 集成测试；不能只依赖本 crate 的聚合单测证明接线有效。
 - 测试逻辑应继续放在独立的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，不要内嵌到生产文件。建议补充 `Collector::new(true)` 的常量标签测试、未来时间产生负 duration 的边界测试、同一 task ID 出现不一致类型时的契约测试，以及更新与 scrape 并发时的一致性测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/framework/dxfmetric` 确认目标 Rust/Go 文件、crate 入口和迁移测试均已索引。
-- RustCodeGraph `node --file pkg/dxf/framework/dxfmetric/collector.rs --offset 1 --limit 260`：读取完整 237 行源文件及其 16 个索引符号；`node NewCollector` 确认本文件 `NewCollector` 调用 `Collector::new`。
-- 直接读取：[`collector.rs`](collector.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`collector.go`](collector.go)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`pkg/dxf/framework/doc.go`](../doc.go)、[`scheduler_manager.go`](../scheduler/scheduler_manager.go) 和 [`pkg/metrics/common/wrapper.rs`](../../../metrics/common/wrapper.rs)。
-- 仓库引用检索：Rust 侧 `Collector::new`/`UpdateInfo` 仅命中迁移测试与定义；Go 侧命中 scheduler manager 的创建、注册和快照更新。Cargo 检索确认 scheduler、taskexecutor、metering、importinto、DDL 和 metrics 等 crate 依赖 dxfmetric，但依赖声明本身不等于调用本采集器。
-- [`migration_collector_aggregates_go_dimensions_and_durations`](migration_aster_unit_test.rs) 覆盖任务计数、子任务计数、pending/running duration 及 failed duration 排除；[`migration_collector_replaces_snapshot_atomically`](migration_aster_unit_test.rs) 覆盖整快照替换。按任务约束未运行 Cargo，测试结论来自已有测试代码审阅而非本轮执行。
-- 文档交付使用任务文件指定的结构命令检查目标存在且恰有 11 个固定二级章节，并在交付前检查仅新增本说明、未修改 Rust/Go/Cargo 或只读的总体计划。

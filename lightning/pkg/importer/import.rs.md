@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-importer` crate 的顶层导入编排模块。crate 根在 `lightning/pkg/importer/lib.rs` 中以 `#[path = "import.rs"] mod import; pub use import::*;` 暴露这里的 API；`lightning/pkg/importer/Cargo.toml` 将该 crate 标为 Go 包 `lightning/pkg/importer` 的 Rust library 移植。上层真实入口是 `lightning/pkg/server/lightning.rs` 的 `LegacyImporter::Run`：它把 server 配置转换成 `ControllerParam`，依次调用 `NewImportController`、`Controller::Run` 和 `Controller::Close`。因此，本文件连接 Lightning server 与 schema 恢复、前置检查、checkpoint、逐表导入、压缩和清理等子模块。
-
-该文件不是薄门面：它定义控制器状态、任务主链、local/TiDB backend 分支、checkpoint 兼容性、扩展列和列过滤等逻辑。不过当前 Rust 迁移仍有明确占位：`restoreSchema` 仅从 dump 元数据补齐最小 `dbInfos`，`loadDesiredTableInfos`、`estimateChunkCountIntoMetrics`、`doCompact` 基本为空，`enforceDiskQuota` 只维护原子状态，`cleanCheckpoints` 尚未真正移动或删除 checkpoint。阅读时不能把对应 Go 文件的完整能力视为 Rust 已实现能力。
+`errorSummaries` 按表保存最后一个错误；`verifyCheckpoint` 检查恢复兼容性；`saveCheckpoint` 将 chunk 合并信息放入待保存队列。
 
 ## 核心职责
 
@@ -109,8 +107,6 @@ RustCodeGraph 对 Go/Rust 同名符号会返回两组节点，例如 `NewImportC
 
 本次 source-dir 错误与 Go `verifyCheckpoint` 同样先比较原值、再脱敏展示，并在遮盖后相等时追加提示；Rust `import_test.rs::test_verify_checkpoint_redacts_source_dir` 对凭据不出现和提示保留提供静态回归证据。
 
-`lightning/pkg/importer/import.go` 是直接语义来源，Rust 保留了大量 Go 风格符号名和主流程顺序。已对齐的可观察行为包括：全局 pauser 注入；backend/requirements 分支；错误按表汇总；checkpoint backend/版本/源目录/sorted-KV 兼容检查；route extractor 产生扩展列；`filterColumns` 对 header、ignore、hidden 和 extend 列的组合规则；TLS 字段写入全局配置；server 端构造、运行、关闭的生命周期。
-
 主要差异和迁移缺口如下：
 
 - Go 构造器打开 checkpoint、读取并验证已有任务、初始化 error manager/TLS/PD/backend/pre-info/check builder，并在失败时回滚资源；Rust 构造器大多使用内存或 noop 实现。
@@ -121,7 +117,7 @@ RustCodeGraph 对 Go/Rust 同名符号会返回两组节点，例如 `NewImportC
 - Go `cleanCheckpoints` 等待异步写入并按配置 rename/remove；Rust 尚未执行清理。
 - Go `addExtendDataForCheckpoint` 输入整张表 checkpoint 并遍历所有 chunks；Rust 输入单一 chunk，且以点号切分文件名，覆盖面更窄。
 
-独立 Rust 测试 `lightning/pkg/importer/import_test.rs` 与 Go 测试 `import_test.go` 都覆盖 error summary、checkpoint 校验、预检失败、扩展列、列过滤和全局 TLS 配置。Rust 测试还明确断言 TaskID 不参与 checkpoint 兼容判断。不要以 Rust 测试名称与 Go 对齐为理由推断未断言的完整等价性。
+不要以 Rust 测试名称与 Go 对齐为理由推断未断言的完整等价性。
 
 ## 扩展指南
 
@@ -133,10 +129,3 @@ RustCodeGraph 对 Go/Rust 同名符号会返回两组节点，例如 `NewImportC
 - 改 checkpoint 数据结构时，同时检查 `saveCp`、`saveCheckpoint` 和 `chunk_process.rs` 的两个调用点；若恢复异步 channel，必须定义 sender 关闭、listener drain、确认消息和 `Close/cleanCheckpoints` 等待顺序。
 - 改列映射时，同时更新 `addExtendDataForCheckpoint`、`filterColumns`、`dup_detect.rs` 和 `chunk_process_test.rs`/`import_test.rs`，覆盖大小写、hidden 列、空 header、ignore 与 extend 重名、非法路径；兼容风险是列与 Datum 错位导致静默写错数据。
 - 新增 Controller 资源字段时，必须同时更新构造器、`Close` 或 RAII guard、server bridge 参数映射及测试中手工构造的 `Controller`。保持 Rust 源文件与测试文件分离。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`verifyCheckpoint` 原始目录比较及脱敏诊断；`import_test.rs::test_verify_checkpoint_redacts_source_dir` 与 Go `import.go`/`import_test.go` 的等文案提示。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

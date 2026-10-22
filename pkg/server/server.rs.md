@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`server.rs` 属于 `astersql-server` crate（`pkg/server/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/server/lib.rs::server` 暴露。它是 SQL 服务端的进程级生命周期与连接管理核心：在上游接收 `cmd/tidb-server/main.rs::assembleCanonicalServer` 装配的配置、session driver 和 domain，在下游连接 `conn.rs::ClientConn`、`runtime.rs::{TcpPacketIo, UnixPacketIo}`、`http_status.rs::Server::start_status_http`、PostgreSQL `PgService`、standby 控制器及 `astersql-session-sessmgr`。
-
-该文件不是协议命令状态机本身。MySQL 握手和命令循环由 `ClientConn::{handshake, Run}` 承担，真实 session 由 `SessionDriver` 打开，status 路由由 `http_status.rs` 构造；本文件负责监听、接入、登记、观察、终止和回收这些对象。Go 的直接对照文件是 `pkg/server/server.go`。
+作为 `SessionManager`、`InfoSchemaCoordinator`、`NormalCloseKiller` 和 `ConnectionServer` 的适配器，把 server 状态提供给 session/DDL/连接层。
 
 ## 核心职责
 
@@ -85,7 +83,6 @@ listener worker 和每连接 worker 都是命名 OS 线程。listener 被设为�
 - `Server`、`NewServer/Run/Close`、listener 与连接表直接对应 `pkg/server/server.go::Server` 及其同名方法；Rust 把 Go 的 goroutine/wait group 改为显式 `JoinHandle`，并把 MySQL、PostgreSQL、status listener 的地址分别保存。
 - `ManagedConnection` 与 `SessionManager` 实现对应 Go `clientConn` 和 server 的 process/KILL/TLS 接口。Rust 明确拆分 `kill_query` 与 `close`；非 query KILL 仍会二者都调用，对齐 Go `kill` 最终总会执行 `killQuery` 的行为。
 - `drain_clients` 保留“自然退出、取消执行、关闭残余连接”的三阶段意图，但 Rust 用 `Condvar` 等待连接表归零；Go 版还等待每个 session 的 commit wait group，并检查连接状态/事务，这部分在 Rust 本文件中尚无等价逻辑。
-- Go `ShowTxnList` 从真实 session 读取事务，`UpdateProcessCPUTime` 合并 SQL CPU，内部 session start TS 会排除 auto-analyze；Rust 的对应路径目前分别为空事务、CPU no-op 和登记值（协调接口写入 0），不能宣称完全迁移。
 - Go `KillSysProcesses` 直接操作 domain 的系统进程追踪器；Rust `kill_system_processes` 只关闭 `clients` 中标记为 system 的连接，而找不到 ID 的单次 `SessionManager::Kill` 才调用 `Domain::kill_system_process`。
 - Go server 还包含 audit plugin、extension 回调、指标、认证 token、gRPC/status 等更宽职责；Rust 将部分能力拆到 `conn.rs`、`http_status.rs`、`rpc_server.rs`，部分尚未在此文件实现。Rust 额外提供独立 PostgreSQL listener。
 
@@ -97,11 +94,3 @@ listener worker 和每连接 worker 都是命名 OS 线程。listener 被设为�
 - TLS/PROXY 修改应分别落在 `build_sql_tls_*`、`reload_tls`、`proxy_source_addr` 与 `runtime.rs::TcpPacketIo` 接线处，并同步 `pkg/server/tests/tls/tls_test.rs`、`runtime_test.rs` 的证书、畸形 header、fallback 和 secure-transport 用例。
 - 扩展 `Domain`/`SessionManager` 时不要依赖默认空实现来伪造成功；生产 `CanonicalServerDomain` 必须提供真实能力，并补独立测试验证错误传播。实现事务/CPU/internal start TS 时应对照 Go `server.go` 而不是只让 trait 编译通过。
 - 测试逻辑继续放在 `pkg/server/server_test.rs` 或对应独立集成测试，不应内嵌进本生产文件；若改变 HTTP API，还必须遵循 `pkg/server/AGENTS.md` 同步 `docs/tidb_http_api.md`。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/server/server.rs` 差异及目标 blob `31b78abb7d79515045497a533721e300425efbe0` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/server/server.rs` 和 `git show 2c944fb:pkg/server/server.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/server/diagnostic_http_test.rs`，Go 对照为 `pkg/server/server.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的具体会话运行时，由 `pkg/session/runtime.rs:55` 以私有模块 `explain_analyze` 装配。它不是 SQL 解析器或通用物理计划实现，而是 `ConcreteSession` 在收到 `EXPLAIN ANALYZE` 后的执行与结果整形层：`pkg/session/runtime/dispatch.rs:3148-3172` 识别 SELECT 或 DML 子语句，SELECT 调用 `explain_analyze_relational_select`，`FORMAT='ru'` 再调用 `explain_analyze_ru_rows`。
-
-`pkg/session/Cargo.toml` 将本 crate 映射到 Go 包 `pkg/session`，并直接依赖 executor、planner、parser、KV、store、tablecodec、types 等内部 crate。本文件通过 `use super::*` 使用 `runtime.rs` 聚合的这些类型；其职责横跨会话调度、真实执行器适配、KV 读取统计和 MySQL 结果元数据，但 API 可见性均限制在 `runtime` 父模块内。
+通过 `use super::*` 使用 `runtime.rs` 聚合的这些类型；其职责横跨会话调度、真实执行器适配、KV 读取统计和 MySQL 结果元数据，但 API 可见性均限制在 `runtime` 父模块内。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ RustCodeGraph 的精确 flow 确认 `explain_analyze_relational_select` 调用 `
 
 ## 与 Go 版本的对应关系
 
-Rust 文件没有同路径的一对一 Go 文件；语义主要对应 `pkg/executor/explain.go` 的 `ExplainExec`，入口仍从 Rust session dispatch 汇合。Go `ExplainExec::executeAnalyzeExec`（`explain.go:98-168`）打开并耗尽 analyze executor、确保 Close、收集 RU runtime stats，再由 `generateExplainInfo` 调用 `RenderResult`（`explain.go:213-222`）。Rust typed 快路径保持“真实执行、拉到 EOF、关闭/终结后渲染”的生命周期意图，并通过 `PendingStatementRU` 延迟最终 session 结算。
+Rust 文件没有同路径的一对一 Go 文件；语义主要对应 `pkg/executor/explain.go` 的 `ExplainExec`，入口仍从 Rust session dispatch 汇合。
 
 Go 的 RU 路径通过 `registerExplainRUOperatorStats` 和 `calculateStatementRUWithOperators` 填充真实 `selfRU/cumRU/cumRU%/detail`（`pkg/executor/explain.go:170-211`）；Rust `explain_analyze_ru_rows` 目前只对齐列顺序、行顺序、字段元数据和过滤 `_0`，数值列为空，是尚未完全移植的部分。
 
-Go 的普通 EXPLAIN ANALYZE 输出由真实 executor 的 runtime stats 与 planner `RenderResult` 产生。Rust 对简单 typed SELECT 已使用真实物理计划和实际读取；但通用回退分支仍会依据 AST、表元数据、hint、region 数和 failpoint 构造部分统计，CTE/LATERAL 只汇总根行。因此兼容性结论必须按分支说明，不能笼统声称与 Go 完全一致。
+Rust 对简单 typed SELECT 已使用真实物理计划和实际读取；但通用回退分支仍会依据 AST、表元数据、hint、region 数和 failpoint 构造部分统计，CTE/LATERAL 只汇总根行。
 
 Go 的 `TestExplainAnalyzeInvokeNextAndClose`（`pkg/executor/explain_unit_test.go:112-210`）确认 Next 错误或 panic 时 Close 仍执行，并覆盖 RU snapshot 时序；Rust 的对应资源终态证据来自 `scan_adapter_runtime_test.rs` 的 terminal cases，而输出形态证据来自下列 Rust 独立测试。
 
@@ -94,11 +92,3 @@ Go 的 `TestExplainAnalyzeInvokeNextAndClose`（`pkg/executor/explain_unit_test.
 - 调整字符串 plan-tree 解析时同步测试 task marker、树缩进、`table:` 提取、`MaxOneRow` 以及包含空格/逗号的 operator info。若能获得结构化计划，应逐步替代 `scalar_plan_to_explain_analyze` 的文本启发式。
 - 修改资源终态时必须覆盖成功、Next/Finish 错误、panic、嵌套 session scope 和文件传输延迟终态，确保一次且仅一次记录 outcome/关闭底层 record set。
 - 兼容性风险集中在 Go 输出列与格式、真实与模拟统计混用、事务可见性和 RU 终态时序；性能风险集中在回退整表物化、重复 parse/prepare 以及 region 数放大的模拟统计。任何变更都应先用已有小范围测试固定分支行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 条边；`files --filter pkg/session/runtime/explain_analyze.rs` 确认目标文件已索引且有 35 个符号；`node --file ... --offset 1/401` 读取完整 906 行；精确 `query` 将主入口解析为 `explain_analyze.rs::explain_analyze_relational_select`；`explore` 确认 dispatch 调用主入口以及主入口调用 typed helper 的 flow。精确 `callers/callees` 命令在本地长时间无输出后中止，故调用边同时由索引 explore 和源码位置交叉验证。
-- 生产源码：`pkg/session/runtime/explain_analyze.rs`、`runtime.rs`、`dispatch.rs:3125-3180`、`explain_read.rs`、`typed_adapter_bridge.rs:1130-1235`、`session.rs:570-610,1640-1695`；crate 边界与依赖来自 `pkg/session/Cargo.toml`。
-- Rust 独立测试：`pkg/session/runtime/explain_query_test.rs:96-168` 覆盖 read-pool 追加及 RU 行/空输入；`dispatch_test.rs:37-151` 覆盖 RU 七列字段元数据、实际行数、必须搭配 ANALYZE 与 plan-cache 上下文；`runtime_pessimistic_test.rs:720-835` 覆盖 LIMIT、IndexLookUp、Point_Get、process keys、region/RPC 与超时重试；`scan_adapter_runtime_test.rs:3100-3235` 覆盖 RU 终态成功、错误、panic 和资源清理。
-- Go 对照：`pkg/executor/explain.go:34-238`、`pkg/executor/explain_unit_test.go:112-210`；它们提供执行器耗尽/关闭、结果渲染和真实 RU 归因的权威语义参照。
-- 本任务是纯文档分析，按计划未运行 Cargo。已执行任务指定的 11 章节结构命令，并人工检查所有“已支持”结论均限定到真实分支与上述证据。

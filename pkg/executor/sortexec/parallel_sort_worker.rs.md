@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-sortexec` crate 的并行全排序路径。crate 由同目录 `Cargo.toml` 定义、以 `lib.rs` 为入口；`lib.rs` 公开声明 `parallel_sort_worker` 模块，但没有在 crate 根重导出 worker 类型。该 crate 在当前清单中只为 `cfg(windows)` 声明其 AsterSQL 依赖，表明这组 Rust 移植代码当前按 Windows 目标接线。
-
-在应用内的直接位置是：`sort.rs::SortExec::fetchParallel` 按执行并发度创建多个 `Arc<Mutex<parallelSortWorker>>`，轮询把 `DataChunk` 交给 `saveChunk`；`parallel_sort_spill_helper.rs::parallelSortSpillHelper::{spill, mergeAll}` 随后锁住各 worker，调用 `multiWayMerge` 取得每个 worker 的有序结果，再与磁盘 run 做最终归并。因此，本文件负责的是“一个 worker 内”的缓存、本地排序、取消检查和内存归并，不负责拉取执行器子节点、线程调度或磁盘 I/O。
+提供清理、显式归还内存和行数统计能力（`reset`、`releaseMemory`、`rowCount`）。
 
 ## 核心职责
 
@@ -88,16 +86,12 @@ kill 标志和内存 tracker 可跨 worker 共享且内部使用原子操作。�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/executor/sortexec/parallel_sort_worker.go`，保留了 worker、本地有序 run、多路归并、20,000 次比较检查信号以及内存追踪这些核心语义，但不是逐字段等价移植。
-
 - Go worker 自己持有 `chunkChannel`、等待组、结果/结束通道，并由 `run`/`fetchChunksAndSort` 循环拉取数据；Rust 把分发循环放进 `SortExec::fetchParallel`，本 worker 是受 mutex 保护的同步状态对象。
 - Go `maxSortedRowsLimit = maxChunkSize * 30`，在拉取期间达到阈值即 `sortBatchRows`，因此能产生多个本地 run；Rust 上游传 `maxChunkSize * 8`，但 `saveChunk` 不触发分批，`sortLocal` 的现有条件又会一次 flush 全部非空缓存。当前 Rust 阈值没有 Go 的分批限制效果。
 - Go 的 `keyColumnsLess` 调用 `SQLKiller::HandleSignal` 并通过 panic 交给 worker `run` 的 recover；Rust 用 `AtomicBool` 和私有 `SortCancelled`，在 `sortBatch` 内将该特定 panic 转成普通 `SortError`。Go failpoint 注入与随机 worker 延迟在本文件没有对应实现。
 - Go `multiWayMergeLocalSortedRows` 每 100 次归并循环再次检查 SQL killer；Rust `multiWayMerge` 的取消检查只发生在本地排序比较阶段，内存多路归并本身不轮询 `killed`。
 - Go 保存的是 chunk iterator，并单独维护 `rowNumInChunkIters`、`totalMemoryUsage`、`sortedRowsIter` 与 merger；Rust 直接拥有 `DataChunk`/`Vec<Row>`，并让 helper 接收归并后的向量。
 - Go `reset` 使用 tracker 的 `ReplaceBytesUsed(0)` 并清 merger/iterator；Rust `reset` 释放该 worker 累积的 `memoryBytes`，更适合 tracker 被多个 worker 共享的当前设计，但不会清比较次数。
-
-Go 测试 `parallel_sort_test.go::TestParallelSort` 验证并行排序正确性并启用信号检查 failpoint；`TestFailpoint` 覆盖随机错误。`parallel_sort_spill_test.go::TestParallelSortSpillDisk` 覆盖内存与落盘组合。Rust 的直接测试 `parallel_sort_worker_test.rs::cancellation_raised_during_comparison_interrupts_sort` 验证比较期间置 kill 后确实返回中断错误；`parallel_sort_test.rs` 和 `parallel_sort_spill_test.rs` 另有执行器级全局排序、复用、错误传播与 spill 结果测试。Go 的通道调度、failpoint 和归并阶段取消不能由当前 Rust 直接测试推定为已支持。
 
 ## 扩展指南
 
@@ -107,14 +101,3 @@ Go 测试 `parallel_sort_test.go::TestParallelSort` 验证并行排序正确性�
 - 若改变比较行为，优先在 `sort_util.rs` 的比较器构造处修改 SQL 键语义；本文件只负责调用比较器。测试应同时覆盖本地排序和多路归并，避免比较器不满足全序导致堆与排序结果不一致。
 - 若引入真实并发 worker 循环，线程、通道关闭、panic 传播和锁顺序应放在明确的调度层；本类型仍应保持单 worker 状态边界。Go 的 `run`/`fetchChunksAndSortImpl` 可作为行为参考，但不能省略 Rust 当前 spill helper 的 `Arc<Mutex<_>>` 协议。
 - Rust 单元测试继续放在同目录独立文件 `parallel_sort_worker_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] mod parallel_sort_worker_test;` 接入，不应内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/executor/sortexec` 找到目标 Rust/Go 文件与独立测试；`node --file pkg/executor/sortexec/parallel_sort_worker.rs --offset 1 --limit 500` 展示目标文件 132 行及文件级使用者。
-- RustCodeGraph 符号/边查询：`query parallelSortWorker`、`query saveChunk`、`query sortBatch`、`query sortLocal`、`query multiWayMerge`、`query newMultiWayMerger`、`query memorySource`；`callees multiWayMerge` 确认到 `sortLocal` 和 `newMultiWayMerger`，`callees sortBatch` 确认检查点与 `SortError`。精细 caller 查询未返回结果的部分已用源码调用点补证，没有据此扩大结论。
-- 目标源码：`pkg/executor/sortexec/parallel_sort_worker.rs`，核对全部常量、类型、字段和方法。
-- crate 与模块边界：`pkg/executor/sortexec/Cargo.toml`、`pkg/executor/sortexec/lib.rs`、上层 `pkg/executor/Cargo.toml`。
-- Rust 直接上下游：`pkg/executor/sortexec/sort.rs`、`parallel_sort_spill_helper.rs`、`multi_way_merge.rs`、`sort_util.rs`。
-- Rust 测试：`pkg/executor/sortexec/parallel_sort_worker_test.rs`；并参考执行器级 `parallel_sort_test.rs`、`parallel_sort_spill_test.rs` 和 helper 测试 `parallel_sort_spill_helper_test.rs`。
-- Go 对照与测试：`pkg/executor/sortexec/parallel_sort_worker.go`、`parallel_sort_test.go`、`parallel_sort_spill_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务规定的命令校验目标文档存在且恰有 11 个固定二级标题，并人工复核上述职责、流程、差异和扩展风险均可回溯到列出的符号或文件。

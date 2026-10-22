@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`bounded_min_heap.rs`](bounded_min_heap.rs) 位于 `pkg/util/generic`，是 `astersql-util-generic` crate 中维护固定容量 top-N 集合的通用容器实现。crate 的 [`Cargo.toml`](Cargo.toml) 将 `lib.rs` 指定为 crate 根，并用 `package.metadata.porting.go-package = "pkg/util/generic"` 标记 Go 迁移来源；[`lib.rs`](lib.rs) 通过 `pub mod bounded_min_heap` 声明模块，再用 `pub use bounded_min_heap::*` 将其公开符号提升到 crate 根。该 crate 自身没有第三方 Rust 依赖或 feature 开关。
-
-当前仓库搜索没有发现生产 Rust 文件调用 `NewBoundedMinHeap`、`BoundedMinHeap::Add` 或 `BoundedMinHeap::ToSortedSlice`；Rust 直接使用者是独立测试 [`bounded_min_heap_test.rs`](bounded_min_heap_test.rs) 和 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。因此这是一项已实现、已从 crate 公开且有测试证据，但尚未接入 Rust 应用主链的迁移能力。
-
-完整 TiDB/AsterSQL 应用中可验证的实际业务位置仍在 Go 侧：[`pkg/statistics/builder.go`](../../statistics/builder.go) 用它从采样值中保留计数最高的 top-N，[`pkg/statistics/histogram.go`](../../statistics/histogram.go) 用它选择分区合并后的全局 top-N。Rust 文件与这些 Go 调用者之间没有跨语言调用边，不能把 Go 接线当作 Rust 已接线。
+堆未满时，`Add` 插入元素并上浮，建立堆序。
 
 ## 核心职责
 
@@ -92,8 +88,6 @@ Go 对照的生产上游有两组：
 
 ## 与 Go 版本的对应关系
 
-直接来源是 [`bounded_min_heap.go`](bounded_min_heap.go)。类型和方法映射为：Go `internalHeap` ↔ Rust `internalHeap`，Go `BoundedMinHeap` ↔ Rust `BoundedMinHeap`，以及同名的 `NewBoundedMinHeap`、`Len`、`Add`、`ToSortedSlice`。两版都把更差元素放在根、未满时插入、满时只用严格更优元素替换根，并以最好到最差顺序返回副本。
-
 主要实现差异是：
 
 - Go 用 `container/heap` 调用 `heap.Push` 和 `heap.Fix`；Rust 在本文件用 `sift_up`、`sift_down` 和 `fix_root` 复现对应调整。
@@ -103,7 +97,7 @@ Go 对照的生产上游有两组：
 - Go 排序直接使用 `-cmp(a,b)`；Rust 使用 `saturating_neg` 后映射为 `Ordering`，明确避免 `i32::MIN` 的取负溢出。
 - Go 的 `internalHeap.Push(any)` 依赖运行时类型断言；Rust `Push(T)` 在编译期保证类型一致，并把标准库堆调用的上浮动作合并进方法。
 
-[`bounded_min_heap_test.rs`](bounded_min_heap_test.rs) 基本逐项对齐 [`bounded_min_heap_test.go`](bounded_min_heap_test.go)：覆盖空堆、容量内和超容量插入、重复值、容量一/零、自定义结构体、反向比较器、满堆替换、1000 个输入的 top-10 以及负容量 panic。Go 的 nil 比较器测试在 Rust 文件中只保留原因说明，不伪造不可表达的输入。
+Go 的 nil 比较器测试在 Rust 文件中只保留原因说明，不伪造不可表达的输入。
 
 ## 扩展指南
 
@@ -114,12 +108,3 @@ Go 对照的生产上游有两组：
 - 若收紧封装，可评估将 `internalHeap` 及其接口方法改为非公开，但这会改变当前 crate 通配再导出的可见 API，需先搜索外部 crate 使用者并作为兼容性变更处理。
 - 与 Go 继续保持迁移对齐时，同步核对 [`bounded_min_heap.go`](bounded_min_heap.go) 和 [`bounded_min_heap_test.go`](bounded_min_heap_test.go)。如果 Rust 生产代码要承接统计 top-N 主链，还需逐一移植并验证 `builder.go`/`histogram.go` 的调用语义，而不能仅凭本容器存在宣称接线完成。
 - 性能评估应关注 `N` 而非总输入量：流式插入空间为 `O(N)`、接受元素为 `O(log N)`；频繁调用 `ToSortedSlice` 会反复克隆和 `O(N log N)` 排序。大或昂贵克隆的 `T` 可能使输出成本占主导。
-
-## 验证依据
-
-- Rust 源码：[`bounded_min_heap.rs`](bounded_min_heap.rs)，核对 `internalHeap`、`BoundedMinHeap`、构造器、两套 `impl`、本地 sift 算法和 `cmp_to_order`；文件无条件编译项、常量、静态量或 trait。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)，核对包名、`lib.rs` crate 根、Go 包迁移元数据、公开模块/再导出和两个独立测试模块；目标目录不存在 `doc.go`。
-- Go 对照与生产入口：[`bounded_min_heap.go`](bounded_min_heap.go)、[`pkg/statistics/builder.go`](../../statistics/builder.go) 的 `processTopNValue`/`BuildHistAndTopN`，以及 [`pkg/statistics/histogram.go`](../../statistics/histogram.go) 的 `selectGlobalTopN`/`MergePartTopNAndHistToGlobal`。
-- 独立测试：[`bounded_min_heap_test.rs`](bounded_min_heap_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 和 Go [`bounded_min_heap_test.go`](bounded_min_heap_test.go)，共同证明正反比较器、重复项、零/负容量、自定义结构体、替换/忽略和大数据 top-N 边界。
-- RustCodeGraph：`status` 报告索引可用（11,467 个文件、307,296 个节点、1,848,419 条边）；`query BoundedMinHeap --kind struct` 与 `query NewBoundedMinHeap --kind function` 定位目标符号；`node --file pkg/util/generic/bounded_min_heap.rs --offset 1 --limit 260` 返回完整 224 行源码。精确 `callers NewBoundedMinHeap --limit 50` 在 30 秒内无输出，故调用关系以文件节点、Go 节点和仓库精确 `rg` 回退复核，未据此虚构 Rust 生产调用边。
-- 人工结构与边界复核：确认 11 个固定章节、所有关键行为均可回指真实符号或测试；特别区分 Go 生产接线与 Rust 当前迁移状态，并复核复杂度、所有权、panic 时状态和比较器一致性风险。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-br-pkg-restore-log-client` library crate；crate 根由 `br/pkg/restore/log_client/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`lib.rs` 以 `pub mod batch_meta_processor` 挂载本模块并用 `pub use batch_meta_processor::*` 扁平导出其公开 API。它位于日志恢复（PiTR）客户端的 meta KV 处理层：上游把 DDL/meta 日志文件交给处理器，处理器复用 `client.rs` 的分 CF、排序和分批框架，再选择“恢复重写”或“只读收集映射信息”两种回调策略。
-
-本文件不是文件读取或真实存储写入的实现位置。批次划分在 `client.rs::LoadAndProcessMetaKVFilesInBatch`，KV 读取/过滤和恢复委托给 `LogClient`，表映射类型当前从 `crate::stubs::stream` 引入。RustCodeGraph 的文件节点显示本文件被 `client.rs`、`client_test.rs`、`parity_test.rs` 使用；全仓 `rg` 进一步确认，当前 Rust 生产代码没有直接构造这两个处理器，生产级入口仍只见于 Go 的 `br/pkg/task/stream.go`。
+`MetaKVInfoProcessor` 编排预扫描路径：使用同一批加载框架解析 meta KV，维护表 ID 映射及表历史，并在扫描完成后清理临时 KV 状态。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 trait、两个 processor、构造器、两条主流程、两个 getter 以及批回调参数顺序都逐项对应 `batch_meta_processor.go`。恢复路径的控制顺序也一致：GC rows loader → CF 分组排序 → 分批处理 → 根据 `hasExplicitFilter` 选择全量 reload 或逐表 refresh；信息路径同样在成功扫描后 `CleanTempKV`。
-
 需要注意的差异和迁移缺口：
 
 - Go `RestoreMetaKVProcessor` 保存 `*SchemasReplace`，Rust 按值保存；两者都另外向主流程传递 schema replacement 用于最终刷新，但 Rust 更容易出现“持有值”和“参数引用”不是同一实例的调用错误。
@@ -106,14 +102,3 @@ Rust 的 trait、两个 processor、构造器、两条主流程、两个 getter 
 - 若改变 `hasExplicitFilter` 行为，需要分别覆盖 `UpdateSchemaVersionFullReload` 和 `RefreshMetaForTables` 的成功/失败分支，并验证失败不会被吞掉。当前测试没有直接覆盖这两个 processor 收尾分支，应新增同目录独立 `*_test.rs` 或扩展已有 `parity_test.rs`/`client_test.rs`，不要把测试内嵌回生产源文件。
 - 若消除构造时和方法参数中的双份 `SchemasReplace`，需同时调整 Go 对照或明确记录 Rust API 偏差，并核查 `br/pkg/task` 的未来 Rust 接线；这是兼容性变更而非局部重命名。
 - 性能敏感点在跨批 `Vec<KvEntryWithTS>` 所有权传递、文件元数据克隆、排序和 manager 逐条解析。优化时必须保留严格时间边界、确定性 `(Ts, Key)` 顺序及 default/write 依赖，不能用无序并行替代。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/restore/log_client` 确认目标、Go 对照及测试文件；`node --file br/pkg/restore/log_client/batch_meta_processor.rs` 读取完整 194 行并报告其被 `client.rs`、`client_test.rs`、`parity_test.rs` 使用；`node` 还核对了 `client.rs` 的批框架、下游桩，以及 `stubs.rs` 的 manager 桩。按符号执行的 `query RestoreAndRewriteMetaKVFiles`、`query ReadMetaKVFilesAndBuildInfo` 返回空结果，因此调用点用文件关系和精确 `rg` 补证。
-- 源码：`br/pkg/restore/log_client/batch_meta_processor.rs`、`client.rs`、`lib.rs`、`stubs.rs`。
-- crate 配置：`br/pkg/restore/log_client/Cargo.toml`，确认 library crate、Go package 元数据及本地依赖边界。
-- Go 对照与生产入口：`br/pkg/restore/log_client/batch_meta_processor.go`、`client.go`、`br/pkg/task/stream.go`。
-- Rust 测试：`br/pkg/restore/log_client/client_test.rs` 验证空输入双 CF 冲刷、批回调统计/进度及基本批次数；`parity_test.rs` 验证两个具体 processor 的空输入接线和 getter。目标文件没有内嵌测试，也没有同名独立 `batch_meta_processor_test.rs`。
-- Go 测试：`br/pkg/restore/log_client/client_test.go` 的 `TestRestoreMetaKVFilesWithBatchMethod1` 至 `6` 覆盖空 CF、时间范围、大小阈值、两 CF 交错及跨批 entries；`TestRestoreBatchMetaKVFiles` 覆盖空批。
-- 相关 canonical manager 测试：`br/pkg/stream/table_mapping_test.rs`、`rewrite_meta_rawkv_test.rs`（以及对应 Go 测试）证明完整映射逻辑的预期测试面，但不能证明本文件当前已接入该实现。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 标题结构检查，并人工复核唯一产物、源码链接、当前桩边界和无“已完整支持”臆断。

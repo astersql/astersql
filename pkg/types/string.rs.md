@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`string.rs`](string.rs) 定义一组面向字符串来源稳定性的轻量契约：一个返回拥有型字符串的 `String` trait，以及稳定来源 `PlainStr` 和可能来自可变缓冲区的 `HackedStr` 两个包装类型。文件位于 `pkg/types` 源码目录，但实际编译归属是 `astersql-types-file-group`：[`internal/file_group/lib.rs`](internal/file_group/lib.rs) 通过 `#[path = "../../string.rs"] pub mod string` 挂载它，[`internal/file_group/Cargo.toml`](internal/file_group/Cargo.toml) 为该子 crate 声明 `astersql-errors` 依赖；顶层 [`Cargo.toml`](Cargo.toml) 再依赖该子 crate，且 [`lib.rs`](lib.rs) 仅以 `pub use types_file_group as file_group` 暴露它。因此外部路径是 `astersql_types::file_group::string::*`，而不是 `astersql_types::string::*`。
-
-本文件当前属于“已编译、已测试，但尚未接入 Rust 时间解析生产链”的兼容契约。仓库内非测试 Rust 代码没有实例化或调用 `PlainStr`、`HackedStr`；直接引用来自 [`string_test.rs`](string_test.rs) 和 [`overflow_10_aster_unit_test.rs`](overflow_10_aster_unit_test.rs)。不能据 Go 版本的使用情况推断 Rust 已完成相同接线。
+除实现本地 `String` trait 外，还同时提供固有 `FreezeStr` 方法并实现 `astersql_errors::HackedStr`，让错误系统在延迟格式化前取得快照。
 
 ## 核心职责
 
@@ -68,15 +66,13 @@ RustCodeGraph 对精确节点的结果显示，`PlainStr` 由 `string_test.rs::w
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`string.go`](string.go)。符号一一对应：Go `String` interface 对应 Rust `String` trait，Go `type PlainStr string` / `type HackedStr string` 对应两个拥有型 newtype，三个 Go 方法对应 Rust 的两个 `String` 实现和 `HackedStr::FreezeStr`。Rust 额外实现 `astersql_errors::HackedStr`，把 Go 中依靠接口匹配的错误冻结能力显式接到 Rust trait 系统。
+Rust 额外实现 `astersql_errors::HackedStr`，把 Go 中依靠接口匹配的错误冻结能力显式接到 Rust trait 系统。
 
 语义差异主要有三点：
 
 - Go `PlainStr.String()` 和 `HackedStr.String()` 的 `string(s)` 转换通常不复制底层字节；Rust 方法签名要求返回拥有值，因此两个实现都会克隆。
 - Go `HackedStr.FreezeStr()` 使用 `strings.Clone` 强制切断底层字节别名；Rust `HackedStr` 构造时已经拥有一个 `String`，`FreezeStr` 再克隆一次以保留独立快照语义。
 - Go 生产链已经使用该抽象：`time.go::ParseTime`、`ParseTimeFromFloatString` 和 DST 调整路径构造 `PlainStr`，`ParseTimeWithString`、`parseTime`、`parseDatetime`、`adjustTimestampErrForDST` 接受 `String`，并把原包装传入警告/错误参数。当前 Rust 生产代码未发现对应调用，只有 file-group 装配和测试，因此 Rust 迁移状态是“契约与错误适配存在，时间解析接线未由本文件证据证明”。
-
-Go 同目录未发现专门的 `string_test.go`；其生产使用点位于 `time.go`，相关时间行为测试集中在 `time_test.go`。Rust 的直接契约测试则独立放在 `string_test.rs` 和 `overflow_10_aster_unit_test.rs`，符合源文件与测试文件分离要求。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@ Go 同目录未发现专门的 `string_test.go`；其生产使用点位于 `time
 若将此契约接入 Rust 时间解析，应在真实时间解析入口选择 `PlainStr`/`HackedStr`，让原包装一直传到产生警告和错误的位置，而不是过早转成普通字符串；同时新增或扩展时间解析的独立测试，覆盖截断警告、错误延迟格式化和 DST 错误路径。该接线目前不属于本文件任务，不能仅凭现有类型存在宣称已支持。
 
 修改本文件时至少同步 [`string_test.rs`](string_test.rs)；涉及深拷贝细节还应同步 [`overflow_10_aster_unit_test.rs`](overflow_10_aster_unit_test.rs)，涉及错误适配则检查 `pkg/errors/tests/normalize_generation_test.rs` 和 `pkg/errors/tests/api_parity_test.rs`。兼容风险包括公开路径、Go 风格命名和 trait 方法解析；性能风险主要是大字符串的重复克隆。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，其中 7,032 个 Rust 文件；`files --filter pkg/types/string.rs` 确认目标文件已索引并识别 9 个符号。
-- RustCodeGraph 源码与符号：`node --file pkg/types/string.rs --offset 1 --limit 400` 覆盖全部 74 行；`query PlainStr`、`query HackedStr`、`query FreezeStr` 及精确 `node string.rs::PlainStr`、`node string.rs::HackedStr` 核对了定义、实现和测试实例化边。通用 `FreezeStr` 图查询会命中多个同名符号，因此未把模糊结果当成本文件调用边。
-- 编译与依赖边界：读取 `pkg/types/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/internal/file_group/Cargo.toml` 和 `pkg/types/internal/file_group/lib.rs`，确认 file-group 挂载、`astersql-errors` 依赖及顶层再导出关系。
-- Go 对照：读取 `pkg/types/string.go`，并检查 `pkg/types/time.go` 中 `parseDatetime`、`ParseTime`、`ParseTimeWithString`、`parseTime`、`adjustTimestampErrForDST` 的实际调用链。
-- 测试证据：读取 `pkg/types/string_test.rs` 与 `pkg/types/overflow_10_aster_unit_test.rs` 的字符串包装测试；读取 `pkg/errors/normalize.rs` 的 `HackedStr` trait和 `pkg/errors/core.rs::ErrorArg::from_hacked`，确认错误冻结消费者。
-- 引用核验：用仓库搜索确认 `mod string` 仅由 file-group 装配，并区分生产引用与测试引用。任务是纯文档分析，按计划未运行 Cargo。

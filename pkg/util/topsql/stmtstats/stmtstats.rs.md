@@ -2,10 +2,6 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-topsql-stmtstats` crate 的语句级统计核心。crate 入口 `pkg/util/topsql/stmtstats/lib.rs` 通过私有模块 `mod stmtstats` 装载它，再以 `pub use stmtstats::*` 对外重导出公开 API；`pkg/util/topsql/stmtstats/Cargo.toml` 将 crate 归入 Go 包 `pkg/util/topsql/stmtstats` 的 Rust 移植，并声明执行详情、reporter metrics 与 TopSQL 状态三个同仓路径依赖。本文件本身没有 feature gate 或条件编译项。
-
-它位于 SQL 执行生命周期与后台 TopSQL/TopRU 聚合器之间：`pkg/session/runtime/scan_adapter_runtime.rs` 在 `TopSQLStart` 中懒创建 `StatementStats` 并调用 `OnExecutionBegin`，在 `TopSQLFinish` 中调用 `OnExecutionFinished`；`pkg/util/topsql/stmtstats/aggregator.rs` 周期性调用 `MergeRUInto`、`Take`、`Finished` 与 `ResetRUStateOnVersionChange`，将各 session 的局部数据合并后交给 collector。`pkg/session/runtime/typed_adapter_bridge.rs` 在 session owner 析构时调用 `SetFinished`，使聚合器最终注销该实例。
-
 当前 Rust 会话调用方会填入网络字节、RU 版本、RU v2 最终值和 TopRU 开关，但构造 begin/finish 信息时没有填 `User` 与 `RUDetails`，两者保持默认值；因此本文只把完整 RU v1 采样描述为本文件具备且由独立测试验证的能力，不声称当前 session 主链已经提供了所需明细。
 
 ## 核心职责
@@ -98,13 +94,11 @@ RustCodeGraph `node --file` 确认本文件被 28 个索引文件引用，并准
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `StatementObserver`、begin/finish 信息、`StatementStats` 三组状态、RU begin/finish/tick 算法、版本切换、常规统计字段和合并规则均逐项对应 `pkg/util/topsql/stmtstats/stmtstats.go`。独立 Rust 测试名称和断言与 `stmtstats_test.go` 的合并、网络字节、TopRU 动态开关、多 tick、版本切换、键切换及并发测试保持相同意图。
-
 主要实现差异是所有权与锁封装：Go 的 `StatementStatsMap` 保存 item 指针，Rust 保存值；Go 的 `GetOrCreateStatementStatsItem` 假定调用者已加锁，Rust 返回持锁 guard；Go begin 从 `context.Context` 提取 `*RUDetails`，Rust `ExecBeginInfo` 直接携带 `Option<SharedRUDetails>`；Go 用 `*atomic.Bool`，Rust 将 `AtomicBool` 内嵌在对象中。
 
-Go finish 在匹配上下文后以 `defer` 清理；Rust 在正/零/负 delta 分支汇合后显式清理，匹配情况下可观察行为一致。两者对不匹配 key 都保留当前上下文。Go map `Merge` 对 nil receiver/source 是 no-op；Rust 的 `HashMap` 值不存在 nil 状态，空 map 即对应 no-op 输入。Rust `KvExecCount` 使用 `Option<HashMap<...>>` 来表达 Go map 的 nil/非 nil 差异。
+Go finish 在匹配上下文后以 `defer` 清理；Rust 在正/零/负 delta 分支汇合后显式清理，匹配情况下可观察行为一致。Rust `KvExecCount` 使用 `Option<HashMap<...>>` 来表达 Go map 的 nil/非 nil 差异。
 
-当前接线差异必须单独看待：Go begin 可从 context 获取 RU details，并由调用方传用户；已核对的 Rust session 调用点只填网络、版本、v2 总量和开关。因此本文件算法与测试对齐不等于 Rust 主链已经拥有 Go 的全部 RUKey/RU v1 输入。
+当前接线差异必须单独看待：Go begin 可从 context 获取 RU details，并由调用方传用户；已核对的 Rust session 调用点只填网络、版本、v2 总量和开关。
 
 ## 扩展指南
 
@@ -115,15 +109,3 @@ Go finish 在匹配上下文后以 `defer` 清理；Rust 在正/零/负 delta �
 - 若拆锁优化性能，需防止 `Take` 与增量写入丢数据，并保持“先 RU 后常规统计”的 finished-session drain 顺序。不要在持有 `StatementStatsItemGuard` 时调用同对象其他加锁方法。
 - 若改变负时长、缺失 finish 或 key 不匹配行为，应先对齐 Go 版本并补回归测试；这些分支决定活跃 RU 上下文是否被清理，错误修改会造成跨语句污染或尾部 RU 丢失。
 - 测试继续放在同目录独立文件 `pkg/util/topsql/stmtstats/stmtstats_test.rs`；不要把测试模块内嵌到生产文件。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/topsql/stmtstats` 列出本 crate 的 21 个 Go/Rust 文件。
-- 目标源码：RustCodeGraph `node --file pkg/util/topsql/stmtstats/stmtstats.rs --offset 1 --limit 420` 与 `--offset 421 --limit 180` 覆盖全部 530 行；确认 56 个符号、公开 API、内部状态及分支。
-- 符号查询：`query CreateStatementStats`、`query StatementStatsItem`、`query MergeRUInto`、`query OnExecutionBegin` 确认 Rust/Go 对应定义和测试符号；精确 `callers/callees` 未返回边，故调用方改由下述源码与局部 `rg` 交叉验证。
-- crate 边界：`pkg/util/topsql/stmtstats/Cargo.toml`、`pkg/util/topsql/stmtstats/lib.rs`；核对 crate 名、路径依赖、模块装载和公开重导出。
-- Rust 生产调用证据：`pkg/session/runtime/scan_adapter_runtime.rs` 的 `TopSQLStart`/`TopSQLFinish`，`pkg/session/runtime/typed_adapter_bridge.rs` 的 `Drop`，`pkg/util/topsql/stmtstats/aggregator.rs` 的 `aggregate_all`/两条 drain 路径，以及 `kv_exec_count.rs` 的 `add_kv_exec_count` 调用。
-- RU 类型证据：`pkg/util/topsql/stmtstats/rustats.rs`；核对版本规范化、共享 details、RUKey、ExecutionContext 与增量 map 的定义。
-- Rust 独立测试：`pkg/util/topsql/stmtstats/stmtstats_test.rs`；核对 map/item 合并、注册/finished、Take、网络字节、v1/v2、版本切换、开关矩阵、长语句多 tick、key 切换、计数器回退和 finish/tick 并发语义。
-- Go 对照：`pkg/util/topsql/stmtstats/stmtstats.go`、`pkg/util/topsql/stmtstats/stmtstats_test.go`；核对接口、锁与状态布局、context 提取 RU details、分支语义及对应测试清单。
-- 本任务仅新增文档，按总计划不运行 Cargo。交付验证使用任务规定的 11 章节结构命令，并人工复核文档能回答文件定位、执行过程、安全扩展点及当前接线限制。

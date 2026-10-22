@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-executor-join` crate 的 Hash Join 公共运行时基座，由 [`lib.rs`](./lib.rs) 以公开模块 `hash_join_base` 装配。它不实现连接键编码、哈希表或具体 Join 语义，而是给 [`hash_join_v1.rs`](./hash_join_v1.rs) 与 [`hash_join_v2.rs`](./hash_join_v2.rs) 提供四类共用能力：build/probe 共享状态、probe chunk 顺序取用与回收、build 输入行展平和内存阈值 spill 触发、worker panic 到 `Result` 错误的转换。
-
-[`Cargo.toml`](./Cargo.toml) 将该目录声明为 `astersql-executor-join`，库入口是 `lib.rs`。本文件自身只使用标准库的 `Arc`、`Mutex`、`Condvar`、`VecDeque` 与 panic API，并通过 crate 内部 `joiner::Row`、`row_table_builder::Chunk` 交换行和数据块；它没有直接依赖 Cargo 清单中的其他 workspace crate。当前清单的大部分 Join 依赖仅在 Windows target 下启用，这一构建边界由 Cargo 配置决定，而不是本文件的条件编译逻辑；本文件没有 `#[cfg]` 项。
+`BuildWorkerBase` 在开始读取时检查取消，把多个 build chunk 展平为 `Vec<Row>`，并在严格超过可选内存上限时执行调用方提供的 spill 回调。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 对 `wait_for_build_side` 与 `fetch_next` 找到了独立测试�
 
 ## 与 Go 版本的对应关系
 
-同路径 [`hash_join_base.go`](./hash_join_base.go) 是命名和职责来源，但当前 Rust 是面向内存内执行器的收敛接口，不是逐字段翻译：
-
 - Go `hashJoinCtxBase` 持有 session、chunk allocator、并发度、结果/关闭/build 完成 channel、原子完成标志、Join 类型和内存/磁盘 tracker；Rust `HashJoinContextBase` 只保留 build 完成/失败、取消和 spill 状态。
 - Go `hashjoinWorkerResult` 用 `*chunk.Chunk`、`error` 和返回 chunk 的 channel 实现结果缓冲复用；Rust 用 `Vec<Row>` 与 `Option<String>`，没有结果回收 channel。
 - Go `probeSideTupleFetcherBase` 从真实 `exec.Executor` 读取，通过每 worker channel 分发并回收 chunk，还处理 required rows、build 空表跳过和 panic；Rust fetcher 只消费构造时给定的队列，`source_index` 当前固定为零，回收池也尚未重新投喂。
@@ -100,11 +96,3 @@ RustCodeGraph 对 `wait_for_build_side` 与 `fetch_next` 找到了独立测试�
 - 修改 spill 阈值或回调顺序时，必须覆盖“低于、等于、超过阈值”和“spill 回调失败”四种情况；同时检查 v1 `HashRowContainer` 与 v2 分区 spill 的统计一致性，关注峰值内存和重复 spill 风险。
 - 修改 panic 策略时，应同时维护 build/probe 两个 `run_guarded`，验证 `&str`、`String`、未知载荷以及闭包普通 `Err`；不要把业务错误误标为 build panic。
 - 直接回归位置首选 [`pkg/executor/test/jointest/hashjoin/hash_join_test.rs`](../test/jointest/hashjoin/hash_join_test.rs) 的 `injected_build_and_probe_failures_are_observable`。spill 标志可参考 [`pkg/executor/benchmark_test.rs`](../benchmark_test.rs) 的 build hash table 用例；端到端 v1/v2 语义还应同步相应独立测试文件。性能敏感修改需测量锁访问、全量行克隆与 chunk 回收效果。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可完整读取为 275 行。
-- RustCodeGraph 精确符号查询确认了 `HashJoinContextBase`、`ProbeSideTupleFetcherBase`、`ProbeWorkerBase`、`BuildWorkerBase` 及关键方法的定义位置；组合查询确认 `wait_for_build_side`、`fetch_next` 的独立测试调用，并给出 v1/v2 的构造关系。两个同名 `run_guarded` 的 callers/callees 消歧结果不可靠，本文没有采用其噪声边。
-- 已读生产文件：[`hash_join_base.rs`](./hash_join_base.rs)、[`lib.rs`](./lib.rs)、[`hash_join_v1.rs`](./hash_join_v1.rs)、[`hash_join_v2.rs`](./hash_join_v2.rs)、[`Cargo.toml`](./Cargo.toml)；已读 Go 对照：[`hash_join_base.go`](./hash_join_base.go)。
-- 已读独立 Rust 测试：[`pkg/executor/test/jointest/hashjoin/hash_join_test.rs`](../test/jointest/hashjoin/hash_join_test.rs) 验证 worker panic 转错、失败唤醒、取消时 build/probe/wait 一致报错；[`pkg/executor/benchmark_test.rs`](../benchmark_test.rs) 验证低内存 build 会同时标记哈希表与共享上下文为 spilled；[`hash_join_test_util_test.rs`](./hash_join_test_util_test.rs) 验证取消错误沿执行辅助路径传播并最终关闭执行器。Go 侧 `pkg/executor/test/issuetest/executor_issue_test.go` 与 `pkg/executor/test/seqtest/seq_executor_test.go` 提供 build 错误和 OOM panic failpoint 的原始回归语义线索。
-- 本任务是只读行为分析加单文档产出，没有运行 Cargo 或代码测试。交付结构以任务指定命令验证，另用 Git diff 确认只新增本文档且未改动 `plan.md`、Rust、Go 或 Cargo 文件。

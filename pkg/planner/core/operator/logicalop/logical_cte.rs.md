@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-logicalop` crate，是 SQL `WITH` 公用表表达式在逻辑计划层的消费者算子及共享定义状态。crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 通过 `mod logical_cte` 装载并 `pub use logical_cte::*` 导出其类型；`Cargo.toml` 的 `package.metadata.porting.go-package` 指向同目录 Go 包，表明直接对照文件是 `logical_cte.go`。
-
-规划器构建表源时，`pkg/planner/core/logical_plan_builder_runtime.rs` 的 CTE 分支会在非内联、非递归引用处构造 `LogicalCTE`；递归引用则构造相邻文件中的 `LogicalCTETable`。因此本文件位于“AST/CTE 绑定已经建立”之后、“逻辑规则优化和物理计划选择”之前，不负责解析 `WITH` 语法，也不负责执行 CTE 工作表。
+用 `LogicalCTE` 表示一次非递归引用，保存该引用的名称、输出 schema 基类、共享统计句柄以及共享 CTE 定义。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ RustCodeGraph 对目标文件报告 22 个使用文件，并确认 `InstallOptim
 
 ## 与 Go 版本的对应关系
 
-直接对照 `pkg/planner/core/operator/logicalop/logical_cte.go`：两侧都只对最外层非递归 CTE 收集谓词，Apply 外排除关联谓词，以 DNF 汇聚各引用条件并提取公共过滤，按 schema 位置重映射 NDV，递归 `UNION ALL` 累加行数、递归 DISTINCT 以 NDV 估算行数，并合并种子/递归关联列。
-
 已验证的实现差异如下：
 
 - Go `CTEClass` 同时持有种子/递归物理计划；Rust 结构只有逻辑计划，以 `OptimizeCTESeed` 回调就地优化逻辑树并从逻辑节点读取统计。
@@ -96,14 +92,3 @@ RustCodeGraph 对目标文件报告 22 个使用文件，并确认 `InstallOptim
 - 若补齐 Go 的递归优化、`OnlyUsedAsStorage` 或并发保护，修改范围会跨到优化器和执行器，不能只在本文件内增加字段或桩。应依据 Go 的实际生命周期接线，并在独立测试文件验证错误路径恢复共享 seed、会话变量恢复和多引用行为。
 - 修改 `PreparePossibleProperties` 时需要决定 Rust API 是继续读 seed 缓存，还是恢复 Go 的多 child 合并输入；同步更新 `logical_cte_test.rs` 和 `logicalop_test/logical_operator_test.rs`，并注意 TiFlash 路径选择兼容性。
 - 性能风险主要来自跨引用谓词 DNF 增长、表达式深克隆、重复统计推导及共享计划的再次优化；正确性风险集中在列 ID/列序映射、错误提前返回遗失 seed、递归 DISTINCT 行数口径和关联谓词误下推。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/logicalop/logical_cte.rs`（397 行），核对全部类型、函数、impl 和无条件编译项；该文件没有 `cfg` 条件项。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml` 与 `lib.rs`，核对包名、直接依赖、Go 包映射、模块装载、再导出和独立测试注册。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标已索引；`explore "pkg/planner/core/operator/logicalop/logical_cte.rs LogicalCTE LogicalCTETableSource"` 定位目标、Go 对照及调用边；`node --file` 分段核对目标全文件、构建器、优化器安装点和测试；`query InstallOptimizeCTESeed`、`query CTEClassRef`、`query PredicatePushDown --kind function` 用于消歧。
-- 上游源码：`pkg/planner/core/logical_plan_builder_runtime.rs` 的 `CteBinding` 和 CTE 表源构建分支；`pkg/planner/core/optimizer_runtime.rs::logical_optimize_in_place`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_cte.go`，重点核对 `PredicatePushDown`、`DeriveStats`、`PreparePossibleProperties`、`ExtractCorrelatedCols` 及 `CTEClass` 字段。
-- Rust 测试：`pkg/planner/core/operator/logicalop/logical_cte_test.rs` 验证递归 DISTINCT 的 NDV/行数与 seed TiFlash fallback；`pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.rs::TestLogicalCTEPreparePossiblePropertiesSkipNilChild` 验证无 seed 时返回空 order 且无 TiFlash。测试与源文件分离。
-- Go 测试：`pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.go::TestLogicalCTEPreparePossiblePropertiesSkipNilChild` 验证 Go 对 nil child 的过滤与有效 child 的 TiFlash 属性；它同时说明 Go 的属性 API 与 Rust seed-only API 不完全相同。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证恰有 11 个固定二级标题，并人工复查所有“已支持”陈述均来自上述源码、调用边或测试。

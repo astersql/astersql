@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-mysql` crate，由 [`pkg/parser/mysql/lib.rs`](lib.rs) 通过公开模块 `pub mod errname` 暴露。它把 [`pkg/parser/mysql/errcode.rs`](errcode.rs) 中的 MySQL、MariaDB 与 TiDB 数字错误码关联到默认英文消息模板及脱敏参数位置，是协议错误构造链中的只读元数据层，而不是错误格式化器、网络协议处理器或错误码注册器。
-
-crate 边界由 [`pkg/parser/mysql/Cargo.toml`](Cargo.toml) 确定：库入口是 `lib.rs`，包名为 `astersql-parser-mysql`。本文件本身只使用 Rust 标准库的 `HashMap`、`LazyLock` 和同模块 `errcode::*`，没有直接使用该 Cargo 清单中的外部依赖。
+因此，本文件回答“某个已知错误码默认使用什么模板、哪些参数需要脱敏”；SQLSTATE 由 [`pkg/parser/mysql/state.rs`](state.rs) 管理，参数格式化与最终 `SQLError` 构造由 [`pkg/parser/mysql/error.rs`](error.rs) 完成。
 
 ## 核心职责
 
@@ -75,15 +73,11 @@ RustCodeGraph 能定位 `MySQLErrName`、`ErrMessage`，并给出 `NewErr`、两
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/parser/mysql/errname.go`](errname.go)：
-
-- Go `ErrMessage` 的 `Raw string`、`RedactArgPos []int` 对应 Rust `String`、`Vec<usize>`。
 - Go `Message` 返回 `*ErrMessage`；Rust 返回拥有型值，再由静态 `HashMap` 统一持有。
 - Go `MySQLErrName` 是包初始化时创建的可变全局 map；Rust 改为函数形式并用 `LazyLock` 首次访问初始化，只暴露不可变共享引用。
 - 两端当前都声明 944 个键值项，首部经典错误、尾部 MariaDB/TiDB 扩展及抽样模板文本一致；两端当前的映射项都没有非空脱敏位置。
-- Go 消费链见 [`pkg/parser/mysql/error.go`](error.go) 的 `NewErr` 与 [`pkg/parser/terror/terror.go`](../terror/terror.go) 的 `NewStd`，分别对应 Rust 同路径实现。
 
-语义差异主要来自初始化时机和可变性，而不是消息内容：Go map 可被包内/外代码直接改写，Rust API 没有暴露可变引用；Go 在包加载时构造，Rust 在首次使用时构造。新增或同步条目时仍应以两端错误码、模板和脱敏位置三元组为比较单位。
+语义差异主要来自初始化时机和可变性，而不是消息内容：Go map 可被包内/外代码直接改写，Rust API 没有暴露可变引用；Go 在包加载时构造，Rust 在首次使用时构造。
 
 ## 扩展指南
 
@@ -96,12 +90,3 @@ RustCodeGraph 能定位 `MySQLErrName`、`ErrMessage`，并给出 `NewErr`、两
 5. 若改变缺失码策略，应修改实际消费点 `error.rs::NewErr` 或 `terror.rs::ErrClass::NewStd`，而不是在这张数据表中加入伪回退项。
 
 兼容性风险集中在客户端可见错误文本、占位符类型、脱敏遗漏和错误码覆盖；性能风险主要是首次初始化分配量与常驻内存。常规新增单项对后续查询仍是均摊常数时间。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`query ErrMessage --kind struct`、`query MySQLErrName --kind function` 定位到本文件；`node pkg/parser/mysql/errname.rs::MySQLErrName` 给出 `Message` 下游以及 `NewErr`、`mysql_error_names_are_complete_and_shared`、`parser_mysql_error_metadata_maps_known_codes` 等上游边。
-- 生产源码：完整阅读 `pkg/parser/mysql/errname.rs`，并核对 `pkg/parser/mysql/lib.rs`、`pkg/parser/mysql/Cargo.toml`、`pkg/parser/mysql/error.rs`、`pkg/parser/terror/terror.rs`、`pkg/parser/mysql/errcode.rs` 的相关入口与调用。
-- Go 对照：阅读 `pkg/parser/mysql/errname.go`、`pkg/parser/mysql/error.go`、`pkg/parser/terror/terror.go` 的对应结构和消费路径。
-- 独立测试：阅读 `pkg/parser/mysql/errcode_2_aster_unit_test.rs`、`pkg/parser/mysql/unit_test.rs`、`pkg/parser/mysql/error_test.rs`；确认现有覆盖包括 `Message` 拷贝语义、单例地址、抽样模板、未知码以及默认格式化。
-- 静态复核：`rg` 对 Rust/Go 表均计得 944 个声明项，且未发现表项传入非空脱敏下标；这与 Rust 测试中的长度 952 断言存在待核对差异。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构验证，并人工确认没有把静态计数矛盾写成已通过的运行时结论。

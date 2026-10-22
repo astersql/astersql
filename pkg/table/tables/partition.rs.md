@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-table-tables` crate，并由 [`lib.rs`](lib.rs) 中的公开模块 `pub mod partition` 无条件导出。它提供一个仅依赖 `mutation_checker::Datum`、标准集合和 `crc32fast` 的轻量分区路由模型：根据一行 `Datum` 计算 HASH、KEY、RANGE、RANGE COLUMNS、LIST 或 LIST COLUMNS 分区下标，再把下标映射为物理 `Partition`。
-
-它不等同于 Go [`partition.go`](partition.go) 中实现 `table.Table`/`table.PartitionedTable` 的完整 `partitionedTable`。当前 Rust 完整表达式元数据、排序规则编码和构造路径另见受 `expression-runtime` feature 控制的 [`partition_expr.rs`](partition_expr.rs) 与 [`canonical_partition_expr.rs`](canonical_partition_expr.rs)。RustCodeGraph 对 `writable_partition_ids` 和 `partition_record_key` 未找到生产调用边；精确引用搜索显示本文件模型目前主要由 [`tables_test.rs`](tables_test.rs)、[`test/partition/partition_test.rs`](test/partition/partition_test.rs) 及测试辅助 [`testutil.rs`](testutil.rs) 使用。因此它应被理解为已公开、可独立验证的简化路由/重组数据模型，而不能据此宣称完整 DML 主链已经切换到该实现。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：crate 名为 `astersql-table-tables`，默认启用 `expression-runtime`，但本文件自身只直接使用无条件依赖 `crc32fast` 和 crate 内 `Datum`；其代码不受条件编译控制。
+不负责解析 SQL 分区表达式、从 catalog 元数据构造分区定义、执行真实 KV 写入、维护索引、检查指定分区集合或按事务原子地完成重组双写。
 
 ## 核心职责
 
@@ -107,16 +103,11 @@ Go 完整实现的 `partitionedTable` 具有 `sync.Pool` 复用表达式求值�
 
 [`partition.go`](partition.go) 是主要对照文件，但 Rust 本文件只移植了其中一小部分可独立表达的语义：
 
-- `BTREE_DEGREE` 对应 `btreeDegree = 32`。
 - KEY 都使用 IEEE CRC32，NULL 都写一个零字节；但 Go `datumToHashKey` 会按排序规则生成字符串 key，Rust 本文件按 Datum 变体直接写原始/小端字节，所以只是结构对应，不是所有输入的位级等价。
-- RANGE 都按“首个严格大于值的上界”定位，NULL 进入首分区，MAXVALUE 接住剩余值。Rust 回归测试保留了 Go `ForRangePruning.Compare` 对无符号全范围比较的意图。
 - RANGE COLUMNS 与 LIST/LIST COLUMNS 在 Rust 中是预构造 `Datum`/map 的轻量形式；Go 会构建和求值 SQL expression、执行类型转换、collation 编码并处理更多元数据错误。
 - Rust `ListPartitionGroup { group_index, partition_indexes }` 的集合方向不同于 Go `ListPartitionGroup { PartIdx, GroupIdxs }`，不可按字段名直接互换。完整 Rust 对应形状实际也存在于 [`partition_expr.rs`](partition_expr.rs)。
 - Rust `PartitionedTable` 保存 definitions、物理 map、重组 map 和双写 map，呼应 Go 结构的过渡态字段；但 Go 还包含 `TableCommon`、表达式缓冲池、重组表达式、索引状态和完整 Table trait 行为。
-- Go `partitionedTableAddRecord` 先按行定位主分区，再只在当前分区属于重组集合时用 `reorgPartitionExpr` 重新定位并双写。Rust `writable_partition_ids` 则无条件附加 map 中全部双写 ID，语义明显更粗，不应视作完整等价移植。
 - Go `PartitionRecordKey` 通过 `tablecodec` 编码真实记录键；Rust函数只是测试格式帮助器。
-
-Go 测试 [`test/partition/partition_test.go`](test/partition/partition_test.go) 的对应场景被 Rust [`test/partition/partition_test.rs`](test/partition/partition_test.rs) 摘取为行路由回归；这些测试证明本文件列出的轻量行为，不证明 Go 文件其余两千余行功能均已移植。
 
 ## 扩展指南
 
@@ -131,16 +122,3 @@ Go 测试 [`test/partition/partition_test.go`](test/partition/partition_test.go)
 7. Rust 测试逻辑必须保留在独立文件。就近同步 [`partition_test.rs`](partition_test.rs) 的无符号 RANGE 回归、[`tables_test.rs`](tables_test.rs) 的单元边界，以及 [`test/partition/partition_test.rs`](test/partition/partition_test.rs) 的 Go 场景对齐；不要把测试内嵌回生产文件。
 
 兼容风险集中在哈希字节编码、SQL 类型/排序规则比较、definition 与物理 map 一致性和 DDL 双写选择；性能风险集中在 RANGE COLUMNS 线性扫描、每次多列键克隆、每次 writable ID 分配排序，以及大 LIST map 的内存占用。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 [`partition.rs`](partition.rs) 已索引。
-- RustCodeGraph `files --filter pkg/table/tables` 与 `node --file pkg/table/tables/partition.rs --offset 1 --limit 1200`：确认目标文件 387 行、51 个符号及全部实现。
-- RustCodeGraph `query PartitionedTable`、`query locate_partition`、`query writable_partition_ids`、`query partition_record_key`、`query locatePartition`、`query locateKeyPartition`、`query ListPartitionLocation` 和 `query ForRangePruning`：区分仓库内同名 Rust/Go 实现并定位直接对照符号；`callers writable_partition_ids` 未返回调用边。
-- RustCodeGraph 读取的 [`lib.rs`](lib.rs)、[`partition_expr.rs`](partition_expr.rs)、[`partition_test.rs`](partition_test.rs)、[`tables_test.rs`](tables_test.rs)、[`test/partition/partition_test.rs`](test/partition/partition_test.rs)、[`testutil.rs`](testutil.rs) 和 Go [`partition.go`](partition.go)：核对模块导出、平行完整实现、边界测试、重组字段和 Go 行路由/双写语义。
-- [`Cargo.toml`](Cargo.toml)：核对 crate 名、默认 feature、依赖和 Go package 元数据。`pkg/table/tables` 下没有 `doc.go`，因此无额外包级契约文件可读。
-- 精确引用搜索：确认生产 Rust 中只有 `testutil.rs` 直接使用本文件 `PartitionedTable`，完整表达式构造则引用 `partition_expr.rs` 类型；测试引用集中在上述独立测试文件。
-
-人工复核结论：本文件存在的直接价值是提供小依赖、可确定测试的分区定位和重组状态模型；它的运行方式是“行值 → 策略下标 → definition ID → 物理分区”，安全扩展必须先处理与完整表达式/Go 主实现之间的语义差距。本文没有把公开导出或测试覆盖误写为已接入完整生产 DML 主链。

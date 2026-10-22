@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Rust 服务端的 MySQL 线协议包编解码器，属于 Cargo crate `astersql-server-internal`。crate 根模块 `pkg/server/internal/lib.rs` 以 `pub mod packetio` 声明并通过 `pub use packetio::*` 再导出这里的公开符号；`pkg/server/internal/Cargo.toml` 指定 `lib.rs` 为库入口，并为本实现引入 `flate2` 与 `zstd`。
-
-它位于连接传输与命令处理之间：`pkg/server/runtime.rs` 中的 `TcpPacketIo` 和 Unix 平台上的 `UnixPacketIo` 持有 `astersql_server_internal::PacketIO`，把套接字字节交给 `PacketIO::read_packet`，并把上层响应交给 `PacketIO::write_packet`。本文件只负责协议帧、缓冲和序号，不解析 COM_QUERY 等命令，也不直接拥有写套接字；生产传输会在 `PacketIO::flush` 后用 `take_written_data` 取出完整编码字节并写入 TCP、TLS 或 Unix 流。
+对读入逻辑包执行累计大小限制，对普通包和压缩外层包执行序号检查，并将 I/O/编码错误转换成 `String` 暴露给上层。
 
 ## 核心职责
 
@@ -77,13 +75,11 @@ reader 以 `Box<dyn Read + Send>` 归 `PacketIO` 所有。启用压缩时，普�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/server/internal/packetio.go`。Rust 保留了 Go 的主要线协议语义：4/7 字节头、`MaxPayloadLen` 分包和重组、1 MiB 压缩聚合、50 字节压缩阈值、zlib/zstd、双序号、压缩模式忽略内层错误序号，以及 flush 后普通序号与压缩序号对齐。`pkg/server/internal/packetio_test.rs` 中的样例与 `packetio_test.go` 对应，`migration_aster_unit_test.rs` 进一步固定迁移契约。
-
 实现边界存在明确差异：Go `PacketIO` 直接持有 `BufferedReadConn` 和 `bufio.Writer`，并在 `readOnePacket` 内设置 deadline、记录协议 metrics、返回 TiDB/MySQL 类型化错误；Rust 将套接字写入、deadline 和连接存活状态放在 `pkg/server/runtime.rs`，本文件使用内存 `Vec` 与字符串错误，且没有 metrics。Go `NewPacketIO` 从全局配置读取 `maxAllowedPacket`，Rust 构造器要求上层传入。
 
 Rust 对未知压缩算法在 `set_compression_algorithm` 时立即拒绝；Go setter 先安装算法，实际 writer/reader 使用时才可能报告未知算法。Rust 的 zlib 解压增加了声明长度 + 1 的有界读取和精确长度验证，这是对畸形压缩数据的额外内存安全边界。Rust 的 `set_read_timeout` 只是状态记录，Go 则在每次头/载荷读取前直接设置 deadline。
 
-Go 压缩 reader/writer 通过共享序号指针维护 `compressedSequence`；Rust 让 reader/writer 各自持有序号并在 `PacketIO` 边界同步。二者对正常串行命令流的可观察协议结果一致，但修改 flush、重置或半双工交错行为时必须同时复核两套状态机。
+Go 压缩 reader/writer 通过共享序号指针维护 `compressedSequence`；Rust 让 reader/writer 各自持有序号并在 `PacketIO` 边界同步。
 
 ## 扩展指南
 
@@ -94,12 +90,3 @@ Go 压缩 reader/writer 通过共享序号指针维护 `compressedSequence`；Ru
 - 改变包大小或解压限制时，应覆盖截断头/载荷、错误序号、超限累计载荷、伪造未压缩长度、高膨胀 zlib、1 MiB 压缩块和 `MAX_PAYLOAD_LEN` 边界。内存占用与压缩 CPU 是主要性能风险。
 - 若要让 `PacketIO` 自身执行超时，需要重新设计 `Read` 抽象或传入可设置 deadline 的能力；当前不要误以为修改 `read_timeout` 字段就会影响自定义 reader。
 - 若引入压缩开启后的 reader 替换，必须修复或约束 `set_buffered_read_conn` 与 `compressed_reader` 的生命周期，避免算法状态为压缩但 reader 缺失。行为变化还应与 `pkg/server/internal/packetio.go` 及 `packetio_test.go` 对照。
-
-## 验证依据
-
-- 源码事实：RustCodeGraph `status` 显示索引覆盖 7,032 个 Rust 文件；通过 `node --file pkg/server/internal/packetio.rs` 阅读了全 568 行，并核对 `PacketIO`、`CompressedWriter`、`CompressedReader`、`read_packet`、`write_packet`、压缩辅助函数及条件编译测试模块。
-- 调用证据：RustCodeGraph `explore "pkg/server/internal/packetio.rs packetIO PacketIO readPacket writePacket"` 找到 Rust `runtime.rs`/`conn.rs` 的读、写、flush、reset、压缩和地址相关调用链；随后通过 `node --file pkg/server/runtime.rs` 核对 TCP/Unix 构造、委托、TLS reader 替换和套接字 flush 的实际代码。
-- crate 证据：`pkg/server/internal/Cargo.toml`、`pkg/server/internal/lib.rs`，确认 crate 名、库入口、再导出以及 `flate2`/`zstd` 依赖。
-- Go 对照：`pkg/server/internal/packetio.go` 与 `pkg/server/internal/packetio_test.go`，核对原始字段、普通/压缩流程、MariaDB Connector/J 兼容分支、分包和压缩样例。
-- Rust 测试证据：`pkg/server/internal/packetio_test.rs` 覆盖分片 reader、10,000 例确定性畸形语料、包头重写、满长分包、zlib/zstd、短载荷透传、输出接管和错误内层序号兼容；`pkg/server/internal/migration_aster_unit_test.rs` 覆盖普通序号、最大包限制、两种压缩往返和错误外层序号。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查，并人工复核本说明没有把 Go 独有能力描述为 Rust 已支持。

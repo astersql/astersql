@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 AsterSQL Rust 类型系统中“字段类型策略”层的实现：它不定义 `FieldType` 的存储结构，而是把 `pkg/parser/types/field_type.rs` 中的 `ast::FieldType` 取别名为 `FieldType`，围绕该结构提供默认构造、类型聚合、运行时值类型推断、DDL 列类型兼容性判断和 VARCHAR 长度校验。对应证据是 `pub type FieldType = ast::FieldType`，以及文件中的 `NewFieldType`、`AggFieldType`、`DefaultTypeForValue`、`CheckModifyTypeCompatible` 等入口。
-
-编译归属不是由根 `pkg/types/lib.rs` 直接声明 `mod field_type`，而是由 `pkg/types/internal/field/lib.rs` 的 `field_type` 模块通过 `include!("../../field_type.rs")` 纳入 `astersql-types-field` crate，再由 `pkg/types/lib.rs` 的 `pub use types_field_group as field` 暴露。`pkg/types/Cargo.toml` 将这个子 crate 声明为路径依赖 `types-field-group`；目标文件所需的 parser 类型、字符集、排序规则、错误和整数长度工具则由 `pkg/types/internal/field/Cargo.toml` 的 `parser-types`、`collate`、`dbterror`、`mathutil` 提供。
+AsterSQL Rust 类型系统中“字段类型策略”层的实现：它不定义 `FieldType` 的存储结构，而是把 `pkg/parser/types/field_type.rs` 中的 `ast::FieldType` 取别名为 `FieldType`，围绕该结构提供默认构造、类型聚合、运行时值类型推断、DDL 列类型兼容性判断和 VARCHAR 长度校验。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ RustCodeGraph 对目标文件报告 29 个符号，并显示该文件被表达�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/field_type.go`，Rust 基本保留其函数分组、29×29 合并表、整数范围提升、参数类型推断和列修改判定。`pkg/types/field_type_test.rs` 对应 `pkg/types/field_type_test.go` 的默认类型、全量聚合、flag 与 EvalType 表驱动测试；`pkg/types/field_type_5_aster_unit_test.rs` 额外覆盖 DATETIME flen、混合符号、动态值推断、列修改与 VARCHAR 上限。
+`pkg/types/field_type_test.rs` 对应 `pkg/types/field_type_test.go` 的默认类型、全量聚合、flag 与 EvalType 表驱动测试；`pkg/types/field_type_5_aster_unit_test.rs` 额外覆盖 DATETIME flen、混合符号、动态值推断、列修改与 VARCHAR 上限。
 
-已确认的表达差异包括：Go 构造器经 `NewFieldTypeBuilder`，Rust 直接调用 setter；Go `fieldTypeIndexes` 是 map，Rust 用 `match`；Go `any` type switch 的 `int`/`int64` 在 Rust 分别以 `i32`/`i64` 分支近似，Rust 还要求调用者以支持的具体类型放入 `Any`；Go 的 `*MyDecimal` 对应 Rust 的 `MyDecimal` 值引用；Go collation 构造忽略查询错误并随后解引用，Rust 明确 `expect`；Go 返回 `error`，Rust 返回 `Option<SharedError>` 或 `Result`。这些是语言适配，不应改变既有业务判定。
+已确认的表达差异包括：Go 构造器经 `NewFieldTypeBuilder`，Rust 直接调用 setter；Go `fieldTypeIndexes` 是 map，Rust 用 `match`；Go `any` type switch 的 `int`/`int64` 在 Rust 分别以 `i32`/`i64` 分支近似，Rust 还要求调用者以支持的具体类型放入 `Any`；Go 的 `*MyDecimal` 对应 Rust 的 `MyDecimal` 值引用；Go collation 构造忽略查询错误并随后解引用，Rust 明确 `expect`；Go 返回 `error`，Rust 返回 `Option<SharedError>` 或 `Result`。
 
-Go 当前生产主链对这些函数的使用更广：`pkg/expression/builtin_control.go` 使用聚合和 DATETIME 修正，`pkg/ddl/modify_column.go` 使用兼容性判断，DDL/planner 使用 VARCHAR 上限检查。Rust 已接线表达式聚合与参数推断，但仓库搜索未发现 Rust DDL 对后三类入口的生产调用，因此迁移状态应描述为“逻辑已移植并有独立测试，DDL 接线尚未由本次证据验证”。
+Rust 已接线表达式聚合与参数推断，但仓库搜索未发现 Rust DDL 对后三类入口的生产调用，因此迁移状态应描述为“逻辑已移植并有独立测试，DDL 接线尚未由本次证据验证”。
 
 ## 扩展指南
 
@@ -94,11 +92,3 @@ Go 当前生产主链对这些函数的使用更广：`pkg/expression/builtin_co
 修改表达式聚合规则时，应同步检查 `mergeEvalType`、`mergeTypeFlag`、`AggFieldType` 的混合符号提升与 `AggregateEvalType` 的输出 flag，并扩展 `TestAggFieldType`、`TestAggFieldTypeForIntegralPromotion` 和 `TestAggregateEvalType`。调用方必须继续过滤或处理空参数，或者在本入口增加显式空切片契约与回归测试。
 
 扩展 ALTER COLUMN 支持时，应分别修改 `checkTypeChangeSupported`（是否允许）、`needReorgToChange`（是否需重组）和 `CheckModifyTypeCompatible`（错误类别/消息），并在独立的 `pkg/types/field_type_5_aster_unit_test.rs` 增加同类型、跨类型、ENUM/SET、DECIMAL、binary charset 和 VectorFloat32 边界。若要真正用于 Rust DDL，还需在 DDL 层增加接线与 DDL 独立测试；不要把测试写回本生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标文件有 29 个符号；`files --filter pkg/types/field_type.rs` 确认目标已索引；`query FieldType`、`query FieldTypeBuilder`、`query EvalType` 用于区分 parser 定义、types 别名和构建器；`node --file pkg/types/field_type.rs` 阅读目标源码；对 `AggFieldType`、`AggregateEvalType`、`DefaultTypeForValue`、`CheckModifyTypeCompatible`、`IsVarcharTooBigFieldLength` 执行 callers/callees 查询。
-- Rust 源与装配：`pkg/types/field_type.rs`、`pkg/types/internal/field/lib.rs`、`pkg/types/internal/field/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`。
-- Rust 直接调用证据：`pkg/expression/planner_bridge.rs`、`pkg/expression/constant.rs`、`pkg/expression/util.rs`、`pkg/expression/pb_to_expr_runtime.rs`、`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/logical_plan_builder_runtime.rs`、`pkg/session/runtime/planning.rs`。
-- Go 对照与生产调用：`pkg/types/field_type.go`、`pkg/expression/builtin_control.go`、`pkg/expression/builtin_compare.go`、`pkg/planner/core/plan_cache_param.go`、`pkg/ddl/modify_column.go`、`pkg/ddl/add_column.go`、`pkg/ddl/executor.go`、`pkg/planner/core/preprocess.go`。
-- 独立测试：`pkg/types/field_type_test.rs`、`pkg/types/field_type_5_aster_unit_test.rs`、`pkg/types/field_type_test.go`。本任务是纯文档分析，按计划未运行 Cargo 或测试二进制；验证限于源码、调用图、对照文件和文档结构。

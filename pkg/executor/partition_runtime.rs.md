@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`partition_runtime.rs` 属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/executor/lib.rs` 通过 `pub mod partition_runtime` 公开导出。它不是 TiDB 线上执行器将 SQL 请求下发到 TiKV 的实现，而是一个只依赖 Rust 标准库集合的内存分区表语义模型：它把分区路由、点查/扫描、全局唯一索引、DML、行锁以及连接/聚合/Apply 等行为压缩到可确定验证的本地数据结构中。
-
-当前仓库中的直接使用主要来自独立测试 `pkg/executor/partition_runtime_test.rs`、`pkg/executor/partition_table_test.rs` 和外部测试 crate `pkg/executor/test/issuetest/executor_issue_test.rs`。代码搜索未发现线上 builder、reader 或 session 调用这组 API，因此应把它视为测试支撑的语义模型，不应将其能力等同于完整的生产执行路径。
+用 `PartitionTable` 维护主键行、全局唯一索引、已计算的分区下标和事务行锁，并实现点查、批量点查、分区扫描、过滤、排序限制、IndexMerge 及 DML。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ RustCodeGraph 对 `PartitionTable`、`join_rows`、`split_region_keys`、`correl
 
 ## 与 Go 版本的对应关系
 
-Go 树中没有 `pkg/executor/partition_runtime.go` 的一对一生产实现。Rust 文件是为了在不搭建完整 SQL/session/TiKV 栈的情况下，保留 `pkg/executor/partition_table_test.go` 中多类回归的核心可观测语义。
+对应关系包括：Go `TestPointGetwithRangeAndListPartitionTable` 对应 Rust 点查、LIST/RANGE 路由和 `TableDual`；Go `TestBatchGetforRangeandListPartitionTable` 对应 `batch_point_get`；Go `TestPartitionTableWithDifferentJoin` 的结果意图由 `join_rows` 的四种 `JoinKind` 缩减表达；Go `TestSelectLockOnPartitionTable` 及 issue 26251/31024 类场景由主键级 `lock`/`unlock_transaction` 表达冲突与释放；全局索引、IndexMerge、UnionScan、Apply、聚合和 Region split 场景则分别由相应的轻量函数承载。
 
-对应关系包括：Go `TestPointGetwithRangeAndListPartitionTable` 对应 Rust 点查、LIST/RANGE 路由和 `TableDual`；Go `TestBatchGetforRangeandListPartitionTable` 对应 `batch_point_get`；Go `TestPartitionTableWithDifferentJoin` 的结果意图由 `join_rows` 的四种 `JoinKind` 缩减表达；Go `TestSelectLockOnPartitionTable` 及 issue 26251/31024 类场景由主键级 `lock`/`unlock_transaction` 表达冲突与释放；全局索引、IndexMerge、UnionScan、Apply、聚合和 Region split 场景则分别由相应的轻量函数承载。`pkg/executor/partition_table_test.rs` 中的同名/近同名测试记录了这些对应。
-
-两者不是等价实现。Go 测试经过 DDL、planner、executor、事务、failpoint 和 mock store 的真实 SQL 路径，会检查物理计划、动态剪枝、不同 reader、乐观/悲观事务和阻塞；Rust 模型仅保留行结果、简化路径标签和立即锁冲突，不执行 SQL、不建计划、不访问 TiKV、不等待锁，也不模拟 MVCC。因此它是 Go 测试意图的局部语义复刻，不是 Go 生产执行器的替代品。
+Go 测试经过 DDL、planner、executor、事务、failpoint 和 mock store 的真实 SQL 路径，会检查物理计划、动态剪枝、不同 reader、乐观/悲观事务和阻塞；Rust 模型仅保留行结果、简化路径标签和立即锁冲突，不执行 SQL、不建计划、不访问 TiKV、不等待锁，也不模拟 MVCC。
 
 ## 扩展指南
 
@@ -89,12 +85,3 @@ Go 树中没有 `pkg/executor/partition_runtime.go` 的一对一生产实现。R
 - 扩展查询路径时，决定新行为是 `PartitionTable` 方法还是独立纯函数，并同步更新 `AccessPath`/`QueryResult`。要警惕 `BTree*` 隐含的确定排序被测试误当成生产 SQL 顺序。
 - 扩展锁语义时，先区分“测试用行锁状态机”与“真实事务等待/MVCC”。如果需要后者，不应继续把复杂分布式行为塞入本文件，而应接入生产事务子系统并使用相应集成测试。
 - 测试必须保持在独立文件中：精确不变式放入 `partition_runtime_test.rs`，Go 分区表场景对齐放入 `partition_table_test.rs`，跨 crate issue 回归放入相关 `pkg/executor/test/*/*_test.rs`；不要在 `partition_runtime.rs` 内嵌测试模块。
-
-## 验证依据
-
-- 源文件：`pkg/executor/partition_runtime.rs`，已核对全部 750 行，包括所有类型、impl、函数与错误分支。
-- crate/模块：`pkg/executor/Cargo.toml` 的 package、lib、feature 和 porting metadata；`pkg/executor/lib.rs:164` 的公开模块声明以及 `lib.rs:283-292` 的独立测试模块接线。
-- Rust 测试：`pkg/executor/partition_runtime_test.rs`、`pkg/executor/partition_table_test.rs`、`pkg/executor/test/issuetest/executor_issue_test.rs`。
-- Go 对照：`pkg/executor/partition_table_test.go`，重点核对 `TestPointGetwithRangeAndListPartitionTable`、`TestBatchGetforRangeandListPartitionTable`、`TestPartitionTableWithDifferentJoin`、`TestSelectLockOnPartitionTable` 及相关全局索引/锁回归。仓库中不存在与本 Rust 文件一对一的 Go 生产文件。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/executor/partition_runtime.rs` 读取了全文；`query` 定位 `partition_runtime.rs::PartitionTable`、`partition_runtime.rs::join_rows`、`partition_runtime.rs::split_region_keys`、`partition_runtime.rs::correlated_apply`。`callers`/`callees` 对这些符号未返回边，已用精确文本搜索补足上游证据。
-- 人工边界复核：确认本文件不是线上执行器接线，不含并行 Apply、锁等待、MVCC、SQL 完整 `NULL` 聚合规则或 TiKV Region 操作；文档未把这些预期设计写成当前已支持能力。

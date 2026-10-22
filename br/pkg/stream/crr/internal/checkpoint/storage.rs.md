@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 crate `astersql-br-pkg-stream-crr-internal-checkpoint`，由同目录 `lib.rs` 以 `pub mod storage` 挂载。它位于 CRR（跨区域复制）安全检查点计算器的“上游对象发现与元数据加载”边界：从上游对象存储的 `v1/backupmeta` 前缀增量列举 backupmeta，把文件名转换为轻量的 `parsedMetaFile`，再读取非空 meta 的 JSON 内容形成 `loadedMetaFile`。真正的检查点轮次调度、并发读取和下游同步等待分别位于 `progress.rs` 的 `Calculator::plan_round` 与 `Calculator::wait_object_sync`，本文件不直接推进 `synced_ts`。
-
-同目录 `Cargo.toml` 将该目录声明为独立 library crate，直接依赖 `astersql-br-pkg-stream-backupmetas`（解析 backupmeta 文件名）、`astersql-br-pkg-streamhelper`、`serde` 和 `serde_json`。模块入口为 `lib.rs`；包级算法约束还记录在 `doc.go`/`doc.rs`。
+位于 CRR（跨区域复制）安全检查点计算器的“上游对象发现与元数据加载”边界：从上游对象存储的 `v1/backupmeta` 前缀增量列举 backupmeta，把文件名转换为轻量的 `parsedMetaFile`，再读取非空 meta 的 JSON 内容形成 `loadedMetaFile`。
 
 ## 核心职责
 
@@ -93,8 +91,6 @@ RustCodeGraph 对目标文件给出 385 行完整源码；精确符号查询定�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `storage.go`，Rust 基本保持以下语义：`.meta` 过滤、`StartAfter` 游标、`backupmetas.ParseName`、`flushTS` 过滤、空 meta 快路径、内容 store ID 为权威值、组级路径优先、允许的 URI scheme，以及错误中携带对象路径。
-
 需要明确的实现差异：
 
 - Go `newMetaFileSeq` 返回惰性的 `iter.Seq2`；Rust `new_meta_file_iter` 先把 Walk 结果收集到 `Vec` 再迭代，内存与错误出现时机不同，但本轮短路语义保持。
@@ -104,8 +100,6 @@ RustCodeGraph 对目标文件给出 385 行完整源码；精确符号查询定�
 - Go 用结构化 `log.Warn`；Rust 对零 store ID 空 meta 使用 `eprintln!`。
 - Go `url.Parse` 负责 URI 解析；Rust `parse_scheme` 是较窄的 scheme 字符串提取器。
 - Go Walk 序列是惰性的；Rust 为了借用安全增加了 `AtomicBool` 停止适配和 `Vec` 物化。
-
-相关独立测试包括：Rust `storage_internal_test.rs`（大写 StartAfter、增量扫描、空 meta 快路径与零 store ID 忽略）、Rust `storage_test.rs`（V1 顶层 Files 兼容），以及 Go `storage_internal_test.go` 和 `checkpoint_calculator_test.go`。更完整的轮次行为由 Rust `checkpoint_calculator_test.rs`、`integration_test.rs`、`parity_test.rs` 和 `randomized_integration_test.rs` 间接覆盖。
 
 ## 扩展指南
 
@@ -118,12 +112,3 @@ RustCodeGraph 对目标文件给出 385 行完整源码；精确符号查询定�
 - 修改错误模型：若将停止哨兵改为可判别类型，应同步 `walk_dir_seq` 及存储测试，避免吞掉真实后端错误。
 
 兼容性风险集中在落盘 JSON/文件名格式和 scheme 行为；正确性风险集中在漏扫、漏提取路径和错误 store 归属；性能风险集中在全轮 `Vec` 物化、完整 meta 读取与重复路径导致的额外同步检查。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file br/pkg/stream/crr/internal/checkpoint/storage.rs` 读取目标文件完整 385 行；`query` 精确定位 `load_meta_file`、`validate_incremental_meta_scan_storage`、`meta_scan_start_after`；`node` 读取 `lib.rs`、`calculator.rs`、`progress.rs`、`storage_internal_test.rs` 和 `checkpoint_calculator_test.rs` 的相关定义与调用段。
-- 源码：`br/pkg/stream/crr/internal/checkpoint/storage.rs`；直接入口/调用方：同目录 `lib.rs`、`calculator.rs`、`progress.rs`；包级契约：同目录 `doc.go`。
-- crate 边界：`br/pkg/stream/crr/internal/checkpoint/Cargo.toml`。
-- Go 对照：`br/pkg/stream/crr/internal/checkpoint/storage.go`；Go 边界测试：`storage_internal_test.go`、`checkpoint_calculator_test.go`。
-- Rust 独立测试：`storage_internal_test.rs`、`storage_test.rs`；轮次级间接验证：`checkpoint_calculator_test.rs`、`integration_test.rs`、`parity_test.rs`、`randomized_integration_test.rs`。
-- 人工复核结论：文件存在是为了把对象存储增量列举和落盘格式兼容隔离在计算器边界；运行路径从构造期 scheme 校验，经扫描/加载进入 round plan，再由下游同步等待决定能否推进；安全扩展必须同步独立测试并保护 StartAfter、store 归属和 data path 完整性三项不变量。

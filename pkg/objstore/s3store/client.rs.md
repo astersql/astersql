@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-s3store` crate 的带桶前缀高层客户端实现。crate 入口 `pkg/objstore/s3store/lib.rs` 将它声明为 `client` 模块并公开再导出；`pkg/objstore/s3store/Cargo.toml` 表明该 crate 直接依赖 `s3like`、`storeapi`、`objectio`、AWS SDK 相关 crate 与 `anyhow`。
-
-生产构造链位于 `pkg/objstore/s3store/store.rs::NewS3Storage`：该函数先创建底层 `AwsS3Api`，再用桶名、规范化前缀、S3 配置和“是否为兼容 S3”标志构造 `S3Client`，完成权限探测后交给 `s3like::NewStorage`。因此本文件位于 AWS/兼容 S3 SDK 适配层与统一对象存储门面之间：向下只依赖 `S3API`，向上实现 `s3like::PrefixClient`。
+实现桶、列举、读取、写入/删除四类权限探测；其中读取探测把 `NoSuchKey` 解释为“请求已到达对象层，因而权限有效”。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/objstore/s3store/client.go`。Rust 保留了 `s3Client` 的字段含义、权限检查、前缀拼接、配置字段映射、错误码分类、API 指标、CopySource 的 `path.Join` 清理语义、从 1 开始的 part number，以及 Put/Delete 错误优先级。Rust 的 `join_copy_source` 明确模拟 `path.Join`；相关点段与前导斜线行为由两套 Rust 测试覆盖。
-
 主要实现差异如下：
 
 - Go 直接使用 AWS `manager.Uploader`，配置 `PartSize`、`Concurrency` 和缓冲池；Rust 在本文件中自行读尽、切块、分批启动 scoped threads。因此对外目标语义相同，但内存占用、流水并行和极大对象表现不等价。
@@ -100,13 +96,3 @@ Go 对照文件是 `pkg/objstore/s3store/client.go`。Rust 保留了 `s3Client` 
 - 修改 multipart 行为时至少覆盖：part 上限、失败 part 不提交、完成列表排序、worker panic、Abort 失败、context 取消、零/单块 Put 快路径、Content-MD5 和 close 后行为。若要改成流式 bounded-memory 实现，应把“与 Go uploader 的内存/流水差异”作为兼容与性能验收项，而不是只验证最终对象内容。
 - 更改错误映射时保持精确错误码判断；不要把权限错误误判为对象不存在，也不要用宽泛字符串匹配扩展非 `MaxUploadParts` 错误。
 - 修改并发模型前确认 `S3API`、context 和上层 `AsyncWriter` 的线程安全/取消契约；特别要防止 detached worker 在调用返回后继续访问 reader 或 context。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `client.rs` 被识别为 742 行、56 个符号，并列出 `store.rs` 与独立测试等直接使用者。
-- RustCodeGraph 源码/关系查询：读取了 `pkg/objstore/s3store/client.rs` 全部 742 行，并查询了 `S3Client`、`MultipartUploader`、`PrefixClient`、`CheckPermissions`、`NewStorage`、`Upload` 相关调用关系。关键链路包括 `NewS3Storage → CheckPermissions/NewStorage`、`Storage → PrefixClient` 各对象操作，以及 `MultipartUploader::Upload → upload → S3API multipart 方法`。
-- crate 与模块边界：`pkg/objstore/s3store/Cargo.toml`、`pkg/objstore/s3store/lib.rs`、`pkg/objstore/s3store/store.rs`。
-- 公共接口与上层调用：`pkg/objstore/s3like/interface.rs`、`pkg/objstore/s3like/permission.rs`、`pkg/objstore/s3like/store.rs`。
-- Go 对照：`pkg/objstore/s3store/client.go` 与 `pkg/objstore/s3store/client_test.go`。
-- Rust 独立测试：`pkg/objstore/s3store/client_test.rs` 覆盖权限、Range、删除、存在性、列举、MD5、复制与 part 上限；`pkg/objstore/s3store/client_1_aster_unit_test.rs` 覆盖 Go 转换语义、错误优先级、成功 part 列表、close 后行为以及并行完成排序。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只执行固定 11 章结构检查，并人工检查文档能回答文件位置、运行方式、状态生命周期和安全扩展点。

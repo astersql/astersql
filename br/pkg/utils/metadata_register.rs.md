@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`metadata_register.rs`](./metadata_register.rs) 位于 `astersql-br-pkg-utils` crate 中，由 [`lib.rs`](./lib.rs) 以 `pub mod metadata_register` 装配并将其中符号公开再导出。它不是任务注册状态机本身，而是生产 I/O 适配层：把 `astersql-metaservice` 提供的 `NamespacedEtcdClient` 包装成 [`register.rs`](./register.rs) 定义的 `EtcdRegisterClient`，从而让同一套 `TaskRegisterImpl` 能用于真实 etcd，而测试可以使用内存客户端。
-
-`br/pkg/utils/Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/utils` 的 Rust 移植库，并通过路径依赖引入 `astersql-metaservice` 与 `astersql-errors`。当前 RustCodeGraph 显示该文件被 `lightning/pkg/importer/import.rs` 使用；其 `registerTaskToPD` 用本适配器构造 Lightning 任务注册器。
+当前 RustCodeGraph 显示该文件被 `lightning/pkg/importer/import.rs` 使用；其 `registerTaskToPD` 用本适配器构造 Lightning 任务注册器。
 
 ## 核心职责
 
@@ -86,11 +84,7 @@ TTL 查询结果 `<= 0` 被视为租约失效。等待间隔最少一秒，避�
 
 ## 与 Go 版本的对应关系
 
-Go 同路径包没有独立的 `metadata_register.go`。Go 的 [`register.go`](./register.go) 让 `taskRegister` 直接持有 `*clientv3.Client`，直接调用 `Lease.Grant`、`KV.Put`、`Lease.KeepAlive`、`Get`、`Revoke` 与 `TimeToLive`。Rust 为了让生产客户端和测试替身共用状态机，将这些 I/O 抽成 `EtcdRegisterClient`，本文件负责真实客户端实现；因此它是 Rust 迁移新增的边界层，不是新的业务策略。
-
-对应语义包括：put 绑定 lease、持续续租约以 TTL/3 为节奏、一次性注册复用已有 key 的 lease、撤销不存在的 lease 可幂等关闭，以及 key 前缀扫描保留 lease/TTL 信息。差异在于 Go etcd SDK 直接返回长生命周期 keepalive channel，Rust 元数据客户端的 `keepalive` 是单次请求，所以本文件用线程、TTL 查询和 mpsc 合成通道。
-
-Go `register_test.go` 验证完整状态机：持续注册可列举并清理、`RegisterTaskOnce` 刷新同一 lease 的 TTL，以及 grant/re-put 失败后的恢复。Rust `register_test.rs` 用模拟客户端验证相同状态机分支；`metadata_register_test.rs` 另用真实 etcd 验证适配层不会破坏 lease 复用和 key 清理。后者带 `#[ignore]`，需要 `ASTER_ETCD_TEST_ENDPOINT`，本任务按纯文档约束没有运行它。
+差异在于 Go etcd SDK 直接返回长生命周期 keepalive channel，Rust 元数据客户端的 `keepalive` 是单次请求，所以本文件用线程、TTL 查询和 mpsc 合成通道。
 
 ## 扩展指南
 
@@ -102,15 +96,3 @@ Go `register_test.go` 验证完整状态机：持续注册可列举并清理、`
 - 生产入口若新增 BR/IMPORT INTO 调用者，应沿用“注册器先关闭、客户端后关闭”的所有权顺序，并增加独立测试文件；不要把测试嵌入本生产文件。
 
 兼容风险主要是 Go/Rust lease 生命周期差异和错误分类；性能风险主要是每个持续注册占用一个适配线程，并按 TTL/3 发起 TTL 查询与 keepalive 两类 RPC。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 7,032 个 Rust 文件；目标源码可通过 `node --file br/pkg/utils/metadata_register.rs` 完整读取。
-- RustCodeGraph `node --file br/pkg/utils/metadata_register.rs`：确认唯一公开类型、七个 trait 方法、上下文桥接和续租线程实现。
-- RustCodeGraph `explore "MetadataRegisterClient in br/pkg/utils/metadata_register.rs callers callees keep_alive revoke time_to_live"`：确认适配方法与 `register.rs` 的调用关系；`explore`/文件关系还确认生产使用者 `lightning/pkg/importer/import.rs`。
-- RustCodeGraph `node --file br/pkg/utils/register.rs`：核对 `EtcdRegisterClient` 契约、`TaskRegisterImpl` 的 grant/put/keepalive、重连、一次性注册、关闭与 TTL 列举逻辑。
-- RustCodeGraph `node --file lightning/pkg/importer/import.rs`：核对 `registerTaskToPD` 的构造、错误清理和返回清理闭包。
-- RustCodeGraph `node --file pkg/metaservice/dial.rs`：核对 `NamespacedEtcdClient` 的 namespace、共享 session/context、同步 RPC worker、各 etcd 操作和关闭语义。
-- 直接读取 `br/pkg/utils/Cargo.toml` 与 `br/pkg/utils/lib.rs`：核对 crate 边界、依赖、模块声明、公开再导出和独立测试挂载。
-- 直接读取 `br/pkg/utils/register.go`、`br/pkg/utils/register_test.go`、`br/pkg/utils/metadata_register_test.rs`：核对 Go 语义、边界测试及 Rust 真实 etcd 适配验证。
-- 本任务只新增说明文档，不运行 Cargo。交付前使用任务文件给出的命令验证 11 个固定章节，并人工检查没有把适配层描述成状态机本体、没有声称被忽略的真实 etcd 测试已执行。

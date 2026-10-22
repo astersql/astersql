@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-dxf-framework-mock`（`pkg/dxf/framework/mock/Cargo.toml`），由 crate 根 `pkg/dxf/framework/mock/lib.rs` 以 `mod storage_manager_mock` 装入并用 `pub use storage_manager_mock::*` 对外导出。它是 `astersql_dxf_framework_storage::Manager` 的测试替身，不访问数据库，也不实现任务存储算法；调用结果完全由测试安装的闭包决定。
-
-该文件对应 Go 生成文件 `pkg/dxf/framework/mock/storage_manager_mock.go`。仓库路径搜索确认，Rust 版本目前的直接使用点是同 crate 的独立测试 `pkg/dxf/framework/mock/migration_aster_unit_test.rs::storage_manager_mock_forwards_arguments_and_result`。它具备 `storage::Manager` trait 实现，因而可以注入要求该 trait 的代码，但当前未检索到生产 Rust 路径实际构造这个 `MockManager`；不能据此宣称它已接入完整生产调用链。
+实现 `storage::Manager`，把 trait 调用再次转发到固有方法，使替身满足应用侧存储管理接口。
 
 ## 核心职责
 
@@ -80,11 +78,7 @@ RustCodeGraph 的文件查询列出本文件 11 个符号；其 `explore` 结果
 
 ## 与 Go 版本的对应关系
 
-Go 原件 `pkg/dxf/framework/mock/storage_manager_mock.go` 由 MockGen 从 `storage.Manager` 生成：`MockManager` 保存 `*gomock.Controller` 和独立 `MockManagerMockRecorder`；调用方法通过 `ctrl.Call` 查找匹配期望，recorder 方法通过反射登记方法、参数 matcher、返回值与次数约束。
-
-Rust 版本保留了类型名、构造器名、`EXPECT`、`ISGOMOCK` 和三项接口，但实现策略明显不同：每个方法只对应一个可替换的 `FnMut`；controller 被忽略；recorder 是 manager 的别名；没有 matcher、调用顺序、次数上下限或自动满足性检查。Rust 的 `GetTaskByID` 返回 `Task` 而不是可空指针，`ModifyTaskByID` 接收值而不是指针，这是 `pkg/dxf/framework/storage/task_table.rs::Manager` 自身采用所有权类型的结果。
-
-Go 侧多个 DXF 测试导入 `pkg/dxf/framework/mock`，但该包还生成了 scheduler、task executor 等多种替身；不能只凭包 import 认定它们使用本文件的 `MockManager`。路径搜索未找到 Go 测试直接调用 `NewMockManager`，因此 Go 生成文件与接口声明是语义对照依据，而不是当前可确认的专属测试覆盖。
+Rust 版本保留了类型名、构造器名、`EXPECT`、`ISGOMOCK` 和三项接口，但实现策略明显不同：每个方法只对应一个可替换的 `FnMut`；controller 被忽略；recorder 是 manager 的别名；没有 matcher、调用顺序、次数上下限或自动满足性检查。
 
 ## 扩展指南
 
@@ -93,15 +87,3 @@ Go 侧多个 DXF 测试导入 `pkg/dxf/framework/mock`，但该包还生成了 s
 若要增强现有三项接口，优先改相应 handler 签名和固有方法，保持 `storage::Manager` 精确一致。涉及 `Task` / `ModifyParam` 时要明确值语义与 Go 指针语义的差异；若需要模拟 `nil`，必须先在 trait 层定义可表达的 Rust 类型，而不是在 mock 中私自约定。若希望实现真正的 GoMock recorder、并发同方法调用或调用顺序校验，应扩展通用 `Handler` 或引入独立期望模型，并同步审查所有 mock 模块，不能只在本文件局部伪装支持。
 
 建议补充的独立测试包括：`GetTaskByID` 的 ID、任务和错误透传；`ModifyTaskByID` 的 ID、参数及错误透传；trait object/泛型边界调用；未配置 handler 的 panic 消息；同一 handler 并发调用的明确契约。兼容风险主要是 GoMock API 只部分兼容；正确性风险集中在参数所有权和 panic 边界；性能通常不是测试替身的主目标，但每次调用包含 mutex 与 `SeqCst` 原子操作。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/dxf/framework/mock` 列出目标 Rust/Go 文件及独立测试；`explore "pkg/dxf/framework/mock/storage_manager_mock.rs StorageManagerMock"` 返回目标文件完整源码、11 个符号、`NewMockManager` 与回归测试的调用关系。另执行了 `query MockManager`、`query NewMockManager`、`query GetTaskByID`、`node MockManager` 及 callers/callees 查询；查询暴露了同名歧义，结论再用限定路径搜索复核。
-- 目标实现：`pkg/dxf/framework/mock/storage_manager_mock.rs`，核对了结果别名、结构字段、兼容 API、三个派发方法、trait impl 与构造器。
-- 通用 handler：`pkg/dxf/framework/mock/lib.rs`，核对了 `set`、`call_count`、`invoke` 的锁、原子计数、重入替换与 panic 行为，以及模块导出关系。
-- crate 边界：`pkg/dxf/framework/mock/Cargo.toml`，核对 crate 名称、lib 入口、Go 包元数据及对 storage crate 的路径依赖。
-- 接口定义：`pkg/dxf/framework/storage/task_table.rs::Manager`、`pkg/dxf/framework/storage/lib.rs::Context`，核对三项 trait 签名及当前上下文别名。
-- Go 对照：`pkg/dxf/framework/mock/storage_manager_mock.go` 和 `pkg/dxf/framework/storage/task_table.go::Manager`，核对 MockGen recorder/controller 行为、接口方法及指针语义。
-- Rust 独立测试：`pkg/dxf/framework/mock/migration_aster_unit_test.rs::storage_manager_mock_forwards_arguments_and_result` 与 `handler_does_not_hold_callback_lock_during_callback`，分别核对 CPU 方法转发/计数和通用 handler 的回调锁生命周期。
-- 使用面搜索：对 `pkg/dxf`、`tests` 和 Cargo manifests 执行 `rg`，确认直接 Rust 构造点、Go 测试 import、crate 消费方，并排除 RustCodeGraph 同名符号造成的无关调用者。
-

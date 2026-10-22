@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 [`utils.rs`](./utils.rs) 的逻辑说明。它属于 `astersql-planner-indexadvisor` crate 的 SQL 辅助层，由 `lib.rs` 以公开模块 `utils` 暴露。它位于用户 SQL 与索引推荐算法之间：先把 SQL 归一化并补全 schema，过滤不适合分析的查询，再从谓词、排序和分组位置提取候选列；算法枚举索引集合时，又通过本文件统一计算 workload 代价。生产主链可在 `indexadvisor.rs::advise_indexes_for_sql` 和 `algorithm.rs::advise_indexes` 中核对。
-
-`Cargo.toml` 将该 crate 映射到 Go 包 `pkg/planner/indexadvisor`。完整 TiDB parser、domain、infoschema、sessionctx 等依赖只声明在 `cfg(windows)` 下；当前 `utils.rs` 在通用目标上只依赖标准库以及本 crate 的 `model`、`optimizer`，因此用内部轻量词法器模拟 Go AST 访问器的关注边界，而不是提供完整 SQL parser。
+SQL 入口与指纹：`parse_one_sql` 做最低限度的语句检查；`normalize_digest` 删除两类注释、折叠空白、统一大小写，并用 `?` 替换字符串和数字字面量后生成 digest。
 
 ## 核心职责
 
@@ -86,17 +84,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/indexadvisor/utils.go`，相关 Go 测试为 `utils_test.go`。主要映射为：
-
 - `parse_one_sql` ↔ `ParseOneSQL`，`normalize_digest` ↔ `NormalizeDigest`；Go 返回真实 AST 并使用 parser digest，Rust 返回字符串并使用轻量规范化/hash。
 - `collect_table_names` ↔ `CollectTableNamesFromQuery`；Rust 的 `cte_names` 和 token 状态机模拟 Go `ast.Walk` 对 `WithClause`、`TableName` 的访问。
 - 三个 `collect_*_columns` ↔ Go 的 SELECT、ORDER BY、DNF 收集函数；Rust 的括号裁剪和 AND/OR 切分对应 Go 的 `flattenCNF`、`flattenDNF`、`flattenColEQConst`。
 - `restore_schema_name` ↔ `RestoreSchemaName`，但 Go 使用 `RestoreWithDefaultDB` 对 AST 恢复，Rust 只改写识别到的表 token。
-- `filter_invalid_queries`、`filter_system_queries` ↔ `FilterInvalidQueries`、`FilterSQLAccessingSystemTables`；两边都有 `ignoreErr` 跳过/传播分支和无表语句过滤。
 - 候选列提取对应 `CollectIndexableColumnsForQuerySet`/`CollectIndexableColumnsFromQuery`。Go 通过 AST 精确访问 Group/Order/Between/In/比较表达式，Rust 通过 token 邻接近似；两边都借助 optimizer 消歧，并在元数据查询失败时继续其他候选。
-- `evaluate_index_set_cost` ↔ Go 私有 `evaluateIndexSetCost`：两边均按频次加权、累计索引列数、排序索引键后拼接。Go 的 `chooseBestIndexSet` 在 Rust 中由 `algorithm.rs` 的组合选择逻辑承接，不在本文件中。
 
-Rust 文件没有移植 Go 文件末尾的 `exec` SQL 执行资源管理逻辑；当前 Rust indexadvisor 通过 `Optimizer` 抽象和内存实现工作。不能把该缺失描述为已由本文件支持。
+Rust 文件没有移植 Go 文件末尾的 `exec` SQL 执行资源管理逻辑；当前 Rust indexadvisor 通过 `Optimizer` 抽象和内存实现工作。
 
 ## 扩展指南
 
@@ -106,13 +100,3 @@ Rust 文件没有移植 Go 文件末尾的 `exec` SQL 执行资源管理逻辑�
 - 调整可索引类型时同时核对 `optimizer.rs::FieldType` 和 Go `isIndexableColumnType` 的允许矩阵，尤其是字符串长度、未知类型和复杂类型；这是当前最明显的兼容风险点。
 - 修改 digest 必须考虑 `advise_indexes_for_sql` 的聚合频次与 `prepare_recommendations` 的展示，并增加同形 SQL/不同字面量、注释和大小写测试。若 digest 需要持久化或跨语言一致，应采用明确稳定的算法而非依赖 `DefaultHasher`。
 - 调整代价汇总时同步验证频次乘法、优化器错误传播、空索引集合、索引键排序以及 `IndexSetCost::less` 的三级比较。算法可能对每个候选组合重复调用该函数，新增昂贵处理会放大搜索开销。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引有效（11,467 文件、307,296 节点、1,848,419 边）；`files --filter pkg/planner/indexadvisor` 确认本模块 27 个已索引 Go/Rust 文件；`node --file pkg/planner/indexadvisor/utils.rs --offset 1/500` 读取了目标文件 784 行及文件级使用关系；`query --kind function` 确认 13 个公开函数均定位于本文件。批量 `callers/callees` 命令在 30 秒窗口内未返回明细，调用边改由精准符号搜索复核，未据缺失输出作推断。
-- 已读生产源码：`pkg/planner/indexadvisor/utils.rs`、`lib.rs`、`model.rs`、`optimizer.rs`、`indexadvisor.rs`、`algorithm.rs`。
-- 已读边界配置：`pkg/planner/indexadvisor/Cargo.toml`，确认 crate 名、`lib.rs` 入口、Go package 映射以及仅 Windows 启用的外部 AsterSQL 依赖。
-- 已读测试：`pkg/planner/indexadvisor/utils_test.rs` 与 `utils_test.go`。Rust 用例覆盖限定/默认 schema、逗号 join、子查询、CTE、SELECT 别名、ORDER BY、CNF 内 DNF、反向等值、无表过滤和同名列保守展开；Go 用例提供 AST 版原始语义及 invalid/system 查询边界。
-- 已读 Go 对照：`pkg/planner/indexadvisor/utils.go`，核对 parser/AST visitor、schema 恢复、系统表判断、类型白名单、优化器错误处理和加权代价公式。
-- 调用边搜索：对 13 个公开函数在 `pkg/planner/indexadvisor/*.rs` 中执行精准 `rg`，确认生产调用集中于 `indexadvisor.rs` 和 `algorithm.rs`，测试调用集中于独立 `utils_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰含 11 个固定二级标题，并人工复核没有把轻量词法器描述为完整 AST/parser 实现。

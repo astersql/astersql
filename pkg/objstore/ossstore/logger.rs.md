@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore-ossstore` crate 的日志适配层。crate 入口 `pkg/objstore/ossstore/lib.rs` 通过 `mod logger` 声明模块，并通过 `pub use logger::*` 将公开项重新导出；因此 `OssLogLevel`、`LogPrinter`、`new_log_printer` 和 `get_oss_log_level` 都可从 crate 根访问。`pkg/objstore/ossstore/Cargo.toml` 表明该 crate 同时依赖 OSS 客户端 `ali-oss-rs` 和日志门面 `log`，但当前 Rust 生产构造路径 `pkg/objstore/ossstore/store.rs::NewOSSStorage`、`build_api` 并未引用本文件的公开项。
-
-本文件对应 Go 实现 `pkg/objstore/ossstore/logger.go`，意图是把 OSS SDK 产生的“级别前缀 + 消息”转换为仓库日志，并把仓库日志过滤级别压缩为 OSS SDK 的粗粒度级别。就当前 Rust 代码事实而言，它是已导出的兼容适配能力和迁移测试对象，尚未接入 `AliyunOssApi` 的实际创建链。
+这些职责只处理日志格式与级别，不创建 SDK 客户端、不读取全局 logger、不保存上下文，也不决定当前进程实际启用的 `LevelFilter`。
 
 ## 核心职责
 
@@ -67,7 +65,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/objstore/ossstore/logger.go` 的 `logPrinter.Print` 同样要求两个字符串参数，并按四个带尾随空格的前缀分派日志；无效参数记录警告，未知前缀忽略。Rust 的 `any_str` 额外明确接受 `String` 与 `&str` 两种 `Any` 形态。
+Rust 的 `any_str` 额外明确接受 `String` 与 `&str` 两种 `Any` 形态。
 
 两版的重要差异如下：
 
@@ -83,13 +81,3 @@
 修改参数协议或前缀映射时，应为 `LogPrinter::Print` 增加独立测试，覆盖四个合法前缀、未知前缀、参数个数错误、非字符串参数、`String` 与 `&str` 两种输入。按照仓库规则，测试逻辑应放在独立测试文件并由 `lib.rs` 的 `#[cfg(test)]` 模块装配，不应内嵌进 `logger.rs`；现有级别映射回归位于 `pkg/objstore/ossstore/migration_aster_unit_test.rs`，可拆出或在同类独立文件中扩充。
 
 兼容风险主要是 SDK 版本接口差异和日志量变化；性能风险主要来自高频 SDK 日志的格式化与输出。若引入上下文状态，需要重新评估克隆成本、线程安全和生命周期，避免让日志桥接拥有或延长 OSS 客户端资源生命周期。
-
-## 验证依据
-
-- 源码：`pkg/objstore/ossstore/logger.rs`，核对 `any_str`、`OssLogLevel`、`LogPrinter`、`new_log_printer`、`LogPrinter::Print`、`get_oss_log_level` 的完整实现。
-- crate 边界：`pkg/objstore/ossstore/lib.rs` 的 `mod logger` / `pub use logger::*`；`pkg/objstore/ossstore/Cargo.toml` 的 `ali-oss-rs`、`log` 依赖及 `lib.rs` 入口。
-- Rust 生产链：`pkg/objstore/ossstore/store.rs::NewOSSStorage` 与 `build_api`，确认当前构造 `AliyunOssApi` 时未引用日志桥接。
-- Go 对照：`pkg/objstore/ossstore/logger.go::{logPrinter,newLogPrinter,Print,getOSSLogLevel}` 与 `pkg/objstore/ossstore/store.go::NewOSSStorage`，确认参数协议、级别策略和 SDK 接线。
-- 测试：`pkg/objstore/ossstore/migration_aster_unit_test.rs::retry_logger_and_store_helpers_match_go`，确认五种 `LevelFilter` 输入的预期映射；仓库搜索未发现 `LogPrinter::Print` 的 Rust 直接测试。
-- RustCodeGraph：`status` 显示索引包含 `pkg/objstore/ossstore/logger.rs`；精确 `query` 定位到 `LogPrinter`（第 47 行）、`new_log_printer`（第 50 行）、`get_oss_log_level`（第 79 行）、`any_str`（第 24 行）。`explore`、按文件 `node` 及 `callers`/`callees` 未返回内容，因此调用者结论由全仓 `rg` 交叉核验，未据此虚构图边。
-- 结构检查：交付前运行任务指定命令，要求文档存在且固定二级标题恰好为 11 个；本任务是纯文档分析，按计划不运行 Cargo。

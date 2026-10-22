@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate；crate 根 `pkg/session/lib.rs` 通过 `pub mod session` 暴露它。它不是 SQL 解析或执行器本身，而是一个精简的会话核心模型：集中定义语句结果摘要、事务抽象、运行时适配边界、表锁状态以及提交、回滚和关闭时的生命周期动作。
-
-当前 Rust 实现并未复刻同路径 `pkg/session/session.go` 的完整 `session`。仓库内对本文件 `session::doCommit`、`RollbackTxn` 和 `Close` 的直接调用证据集中在 `pkg/session/session_test.rs` 的 `session_parity` 测试模块；生产模块可经公开模块和公开类型使用，但代码搜索没有发现这些核心方法已接入完整 SQL 请求主链。因此应把它视为可执行、有测试的局部迁移边界，而不是 Go 会话层的等价替代。
+用 `SessionTransaction` 隔离事务实现，用 `SessionRuntime` 隔离提交前选项、临时表提交、计划缓存清理、缓存表租约与资源关闭；`session` 只编排这些接口。
 
 ## 核心职责
 
@@ -81,9 +79,9 @@ Rust 租约实现不直接创建线程或通道；并发续租被封装在 `Sess
 
 ## 与 Go 版本的对应关系
 
-新增 owner 逻辑对应 Go `session.go::getAdvisoryLockOwner` 的首次缓存、process ID 优先、进程内偶数 fallback 与 CAS。Rust 以可选 processInfo 和 SessionVars.ConnectionID 表达 Go ShowProcess().ID；这只是本地核心模型，不能据此推断 canonical 会话复用本结构。
+Rust 以可选 processInfo 和 SessionVars.ConnectionID 表达 Go ShowProcess().ID；这只是本地核心模型，不能据此推断 canonical 会话复用本结构。
 
-同路径 `pkg/session/session.go` 是语义基准。Rust 的 `StmtHistory::{Add, Count}`、表锁增删查、`Status`、`LastInsertID`、`LastMessage`、`AffectedRows` 以及客户端/连接/命令/压缩字段 setter 保留了 Go 方法的基本形状；`AddTableLock` 同样跳过 `TableLockReadOnly`。
+Rust 的 `StmtHistory::{Add, Count}`、表锁增删查、`Status`、`LastInsertID`、`LastMessage`、`AffectedRows` 以及客户端/连接/命令/压缩字段 setter 保留了 Go 方法的基本形状；`AddTableLock` 同样跳过 `TableLockReadOnly`。
 
 提交路径只保留 Go `doCommit` 的骨架：无效/只读短路、内部 SQL 绕过只读限制、提交前选项和含临时表数据的提交。Go 还会延迟使事务失效、重置 in-txn/disk-full 状态，复查动态权限和两种只读变量，检查 placement policy，启动真实缓存表续租，处理 assertion failure；这些都未在 Rust 本文件实现。Rust 的 `RestrictedReadOnly` 是会话字段，而 Go 从全局原子变量读取并进行权限例外判断。
 
@@ -100,11 +98,3 @@ Rust `TxnInfo` 仅过滤零 `StartTS`；Go 在锁下复制快照，并可附加�
 - 扩展关闭流程时保持“一个清理失败不阻断其余清理”的 Go 语义，并补充失败注入测试。若资源必须自动释放，考虑独立 RAII guard；不要给 `cachedTableRenewLease` 随意添加可能阻塞或失败但无法报告的 `Drop`。
 - 表锁功能若接入真实 DDL unlock，必须区分本地 map 清理与远端解锁，验证 `ReadOnly` 跳过规则及无序快照；测试仍放在独立的 `pkg/session/session_test.rs`，不要内嵌到生产文件。
 - 若目标是追平 Go，会话字段、提交/回滚和关闭三块应按可验证的增量迁移；每一步对照 `pkg/session/session.go` 并补独立 Rust 回归，不能用空 trait 实现或删减生命周期动作宣称等价。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/session.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
-- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
-- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
-- `session_test.rs` 的 session_parity 测试覆盖只读提交拒绝、重试清理、Close 顺序与两个 advisory owner 路径；owner 分配、CAS 和清零顺序由冻结方法体复核。

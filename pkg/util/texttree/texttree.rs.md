@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-texttree` crate 的核心实现，负责把层次结构编码为 Unicode 文本树前缀。crate 入口 `pkg/util/texttree/lib.rs` 将本文件声明为私有模块，并公开再导出全部五个字符常量以及 `Indent4Child`、`PrettyIdentifier`；因此调用方通过 crate 根使用 API，而不直接依赖内部模块路径。`pkg/util/texttree/Cargo.toml` 指定 `lib.rs` 为库入口、没有运行时依赖，并以 `package.metadata.porting.go-package = "pkg/util/texttree"` 标明对应的 Go 包。
-
-它位于展示层的通用工具边界，不解析计划或采样数据，也不持有树节点。当前可核实的两个生产消费方是 `pkg/util/plancodec/binary_plan_decode.rs::decodeBinaryOperator`（生成二进制执行计划的树形算子 id）和 `pkg/util/profile/flamegraph.rs::FlamegraphCollector::{collect,collect_child}`（生成火焰图文本树行）。对应 Cargo 依赖分别见 `pkg/util/plancodec/Cargo.toml` 与 `pkg/util/profile/Cargo.toml`。
+用 `TreeBody`、`TreeMiddleNode`、`TreeLastNode`、`TreeGap`、`TreeNodeIdentifier` 定义稳定的文本树字符协议。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 的精确 `callers` 查询未返回函数级边，但 `node --file
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/texttree/texttree.go`。五个 Rust `char` 常量逐一对应五个 Go rune 常量，两个 Rust 函数也逐分支保留 Go 算法：Go 的 `[]rune(indent)` 对应 Rust 的 `indent.chars().collect::<Vec<char>>()`，Go 的反向循环、首次命中后 `break`、末位覆盖以及字符串拼接均有等价实现。
-
 可见差异仅属于语言接口：Go 接收并返回 `string`，Rust 输入为借用的 `&str`、返回拥有所有权的 `String`；Rust 通过 crate 根显式再导出 API，并用 lint allowance 保留 Go 命名。当前没有算法简化。`pkg/util/texttree/texttree_test.go` 与 `pkg/util/texttree/texttree_test.rs` 共享空缩进、中间/末孩子、空格和制表符案例；Rust 的 `migration_aster_unit_test.rs` 额外固定常量值、中文 id、多个活动树干选择以及无活动树干时覆盖末字符的行为。
 
 Go 的 `pkg/util/texttree/main_test.go::TestMain` 还负责通用测试初始化与 goroutine 泄漏检查；Rust 的 `main_test.rs` 明确只保存相应顺序契约，不把它伪装成已执行的等价运行时检查。这一差异属于包级测试基础设施，不改变本文件函数语义。
@@ -87,13 +83,3 @@ Go 的 `pkg/util/texttree/main_test.go::TestMain` 还负责通用测试初始化
 - 若要接受新的缩进表示，必须保留“最近的 `TreeBody`”和“非空输入末字符必被连接符覆盖”的既有兼容语义，或者明确评估两个生产调用方及 Go 输出兼容性。
 - 回归测试应继续放在同目录独立测试文件，不能放入 `texttree.rs`。至少覆盖空缩进、有/无活动树干、多个活动树干、末/非末孩子、空 id、Unicode id、制表符/空格以及精确 UTF-8 输出。
 - 性能优化可考虑减少中间分配，但不得退化为字节索引；任何原地/缓冲区 API 都应保留现有易用入口，避免迫使计划解码和火焰图调用方共享可变状态。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的 `texttree.rs`、`lib.rs` 和三个 Rust 测试文件均在索引中。
-- RustCodeGraph `node --file pkg/util/texttree/texttree.rs`：读取完整 126 行实现并取得文件使用关系；`query PrettyIdentifier` 同时定位 Go/Rust 定义。
-- RustCodeGraph `node`：读取 `pkg/util/plancodec/binary_plan_decode.rs::decodeBinaryOperator` 与 `pkg/util/profile/flamegraph.rs::FlamegraphCollector` 的实际调用上下文，确认当前节点格式化、孩子缩进生成和末孩子判定顺序。
-- Cargo/入口：`pkg/util/texttree/Cargo.toml`、`pkg/util/texttree/lib.rs`、根 `Cargo.toml`，以及 `pkg/util/plancodec/Cargo.toml`、`pkg/util/profile/Cargo.toml` 的直接依赖声明。
-- Go 对照：`pkg/util/texttree/texttree.go`、`pkg/util/texttree/texttree_test.go`、`pkg/util/texttree/main_test.go`。
-- Rust 测试：`pkg/util/texttree/texttree_test.rs`、`pkg/util/texttree/migration_aster_unit_test.rs`、`pkg/util/texttree/main_test.rs`。
-- 限定源码搜索确认生产调用点仅出现在 `binary_plan_decode.rs` 与 `flamegraph.rs`。本任务是纯文档分析，按计划不运行 Cargo；最终仅执行任务指定的 11 章节结构校验并人工复核上述事实链。

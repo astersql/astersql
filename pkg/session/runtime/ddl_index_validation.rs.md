@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的具体会话运行时，由 `pkg/session/runtime.rs` 以私有模块 `mod ddl_index_validation;` 接入。它只负责 CREATE TABLE 已构造索引元数据的累计键长校验，不负责解析 SQL、构造 `IndexInfo`、执行 DDL job 或校验索引列类型是否合法。直接入口是 `ConcreteSession::validate_create_table_index_lengths`；`pkg/session/runtime/ddl.rs` 在完成表选项、枚举/集合长度和外键父表检查之后、规范化表名及写入临时表或提交 DDL 之前调用它。
-
-`pkg/session/Cargo.toml` 声明该 crate 的库入口为 `lib.rs`，并直接依赖本文件使用的 `astersql-config`、`astersql-meta-model`、`astersql-parser-charset`、`astersql-parser-mysql` 与 `astersql-parser-types`。目标文件没有 feature 条件、模块级状态、公开类型或公开 crate API；入口可见性为 `pub(super)`，只供 `runtime` 父模块内部使用。
+在非严格 SQL mode 下，仅对单列、非唯一、非主键、且列本身没有唯一键标志的超长索引执行前缀截断，并记录 1071 warning；其他超长情况立即返回错误。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/ddl/index.go::buildIndexColumns` 与 `getIndexColumnLength`。两端都按索引逐列累加、按字符集最大宽度计算字符串、按位/数值/浮点/DECIMAL/日期时间类别换算，并对列存索引返回 1。两端也都只允许非严格模式的单列普通非唯一索引降级为前缀索引，并生成 1071 warning；多列或唯一语义必须报错。
+Rust 实现基于已构造的 `TableInfo` 做后置校验并原地改写 `IndexColumn.Length`；Go `buildIndexColumns` 从 AST `IndexPartSpecification` 构造返回的 `IndexColumn`，同时处理类型合法性、多值索引与前缀规范化。
 
-Rust 实现基于已构造的 `TableInfo` 做后置校验并原地改写 `IndexColumn.Length`；Go `buildIndexColumns` 从 AST `IndexPartSpecification` 构造返回的 `IndexColumn`，同时处理类型合法性、多值索引与前缀规范化。Rust 还直接检查 `index.Unique`、`index.Primary` 和列 `UniKeyFlag`，使“不可因截断破坏唯一性”的意图在本地入口中显式化。Go 的相关回归证据位于 `pkg/ddl/db_test.go::TestBuildMaxLengthIndexWithNonRestrictedSqlMode`：它覆盖多字符集字节宽度、严格模式 1071、非严格模式截断及 warning、唯一索引和复合索引仍报错；`pkg/ddl/tests/serial/serial_test.go::TestChangeMaxIndexLength` 覆盖动态配置上限及精确错误文本。
-
-检索未发现 Rust 中直接调用 `validate_create_table_index_lengths` 或专门断言上述截断/1071 行为的独立测试；现有 `pkg/session/runtime/*test.rs` 只有一般 CREATE TABLE/索引用例。因此 Go 测试是移植语义证据，不应表述成 Rust 回归已覆盖。
+检索未发现 Rust 中直接调用 `validate_create_table_index_lengths` 或专门断言上述截断/1071 行为的独立测试；现有 `pkg/session/runtime/*test.rs` 只有一般 CREATE TABLE/索引用例。
 
 ## 扩展指南
 
@@ -84,11 +80,3 @@ Rust 实现基于已构造的 `TableInfo` 做后置校验并原地改写 `IndexC
 - 建议在同目录新增独立测试文件（例如 `pkg/session/runtime/ddl_index_validation_test.rs`），并在 `pkg/session/runtime.rs` 以 `#[cfg(test)] mod ddl_index_validation_test;` 接入；不要把测试内嵌回生产文件。用公开会话 CREATE TABLE 路径覆盖 ASCII/多字节字符集、BIT/FLOAT/DECIMAL、严格与非严格模式、唯一/主键/复合索引、列存索引、未知字符集以及异常负长度。
 - 若把入口复用于 ALTER/ADD INDEX，必须重新核对调用时点和失败原子性；当前实现只由 CREATE TABLE 路径调用，不能直接声称覆盖后续索引变更。
 - 性能上当前对每个索引列线性扫描 `table.Columns`，复杂度约为索引键列数乘表列数。只有真实宽表热点证据出现时才值得引入名称到列的临时映射，同时必须保留大小写折叠名匹配规则。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件、307,296 个节点和 1,848,419 条边；`explore "pkg/session/runtime/ddl_index_validation.rs ..."` 返回目标文件全貌及 `default_mysql_type_length -> index_column_length`、`decimal_index_length -> index_column_length`、`index_column_length -> validate_create_table_index_lengths` 的文件内关系。
-- RustCodeGraph `query validate_create_table_index_lengths` 找到目标入口和 `pkg/session/runtime/ddl.rs` 中同名调用表达式；`callees validate_create_table_index_lengths` 对目标定义确认 `index_column_length` 与会话 `borrow`。`callers` 未产出可用结果，随后以 `rg` 核验唯一生产引用为 `pkg/session/runtime/ddl.rs`。
-- 已读 Rust/配置路径：`pkg/session/runtime/ddl_index_validation.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/ddl.rs`、`pkg/session/runtime/admin.rs`、`pkg/session/runtime/session.rs`、`pkg/session/Cargo.toml`、`pkg/meta/model/index.rs`、`pkg/parser/types/field_type.rs`。
-- 已读 Go 对照与测试：`pkg/ddl/index.go` 的 `checkIndexColumn`、`getIndexColumnLength`、`buildIndexColumns`；`pkg/ddl/db_test.go::TestBuildMaxLengthIndexWithNonRestrictedSqlMode`；`pkg/ddl/tests/serial/serial_test.go::TestChangeMaxIndexLength`。限定检索确认未找到 Rust 直接回归测试。
-- 本任务只新增文档，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有十一个固定二级章节，并人工复核所有“已支持”陈述均能回指上述符号或路径。

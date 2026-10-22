@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table-tables` crate，定义 Go `pkg/table/tables/partition.go` 中 `PartitionExpr` 及其 KEY、RANGE、LIST 裁剪辅助结构的 Rust 对应物。模块在 `pkg/table/tables/lib.rs` 中以私有模块 `partition_expr` 声明，再通过 `pub use partition_expr::*` 对外重导出；模块和重导出都受 `expression-runtime` feature 控制。`pkg/table/tables/Cargo.toml` 显示该 feature 默认启用，并同时启用可选依赖 `expression`、`exprstatic-dependency`、`stmtctx-dependency`；本文件实际直接使用前两者以及常规依赖 `crc32fast`。
-
-当前接线应分成两层理解。元数据加载路径 `tables::table_from_meta_for_validation` 调用 `canonical_partition_expr::build` 构造本文件的 `PartitionExpr`，并把当前分区表达式及重组期表达式分别存入 `ValidatedTableMetadata.partition_expression` 和 `reorganization_expression`（`pkg/table/tables/tables.rs:77-215`）。但 SQL DML 的物理分区定位目前由 `TableCommon::canonical_partition_router` 创建的 `CanonicalPartitionedTable` 完成（`pkg/table/tables/tables.rs:499-506`、`pkg/table/tables/canonical_partition.rs`、`pkg/session/runtime/dml.rs:990`）；代码搜索没有发现生产路径直接调用本文件的 `LocateKeyPartition`、`LocatePartition` 或 `ListPartitionLocationHelper`。因此，本文件目前既是完整目录模型分区表达式的承载类型，也是后续优化器裁剪/执行路由接线所需的 Go 兼容基础，但不能据此声称所有辅助方法已进入 SQL 运行主链。
-
-`pkg/table` 下未发现可供本任务读取的 `doc.go`；crate 边界以 `pkg/table/tables/lib.rs` 和 `pkg/table/tables/Cargo.toml` 为准。另有 `pkg/table/tables/partition.rs` 定义一组用于较小内存行引擎模型的同名类型，它们不是本文件类型的实现位置，扩展时必须避免混用。
+`ForRangePruning::Compare` 提供二分定位所需的三值比较，并处理无符号解释与末尾 `MAXVALUE`；`ForRangeColumnsPruning` 保存多列上界，其中 `None` 表示 `MAXVALUE`。
 
 ## 核心职责
 
@@ -100,19 +96,14 @@ clone 生命周期中，列/向量/位置集合独立，三个 Arc 映射共享�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/table/tables/partition.go`，而不是源注释所写的独立 `partition_expr.go`（仓库当前不存在后者）。主要对应关系如下：
-
 - Rust `NewPartitionExprBuildCtx(&TableCommon)` 保留 Go 的非严格日期/截断策略，并额外在构造时绑定表实例的 new-collation；Go 是先无参构造、再在 `newPartitionExpr` 中 `Apply(WithNewCollationEnabled(...))`。
-- Rust `Option<...>` 对应 Go 的 nil expression/interface/嵌入指针；`Vec<Vec<Option<ExprBox>>>` 对应 `[][]*expression.Expression`，其中 nil/`None` 是 RANGE COLUMNS 的 `MAXVALUE`。
 - `GetPartColumnsForKeyPartition` 保留 Go 指针共享导致的源列 `Index` 原地修改语义，同时返回 Rust clone。测试 `key_partition_columns_are_cloned_and_reindexed` 固化了这一点。
 - KEY 哈希保留 NULL 的单零字节、按列顺序追加、collation key 和 IEEE CRC32；取模前把分区数转为 `u32`。Rust 对所有非 NULL datum 统一 `ToString`，而 Go 对 string/bytes 直接 `GetString`、其他类型 `ToString`；当前测试覆盖普通字符串、NULL 和新旧排序规则，但未证明所有 bytes/非字符串 datum 的逐字节等价。
-- RANGE 比较与 Go `ForRangePruning.Compare` 相同：末尾 MAXVALUE 恒大于、可选择按 `u64` 解释负的 `i64` 存储值。
 - 普通 LIST 定位保留 NULL 优先、DEFAULT 回退、有符号整数经 `EncodeIntToCmpUint` 的规则；Rust 用 `Arc<BTreeMap<u64, usize>>` 代替 Go 泛型 B-tree。
 - LIST COLUMNS 的 `ValueMap`/`Sorted` 都由 `BTreeMap<String, ListPartitionLocation>` 表示；Go 分别使用 map 与 B-tree。Rust `GenKey` 对齐 Go `genKey` 的 ConvertTo、encoder 和 error-context 处理，但延迟构建/重建字段与方法（Go 中的 `ctx`、`tblInfo`、`schema`、`names`、`colIdx`、`RebuildPartitionValueMapAndSorted`、范围查询等）不在本文件中。Rust builder 当前一次性构建映射。
-- location helper 的首次惰性初始化、按分区求交、同分区直接 append 且不去重均与 Go 一致；独立测试覆盖重复值与空交集。
 - Rust `PartitionExpr::ForTable` 是实例级 collation 绑定辅助，属于 Rust 接线方式；Go 的相同效果分散在 `newPartitionExpr` 及各裁剪器构造过程。
 
-迁移状态并非“一比一完整替代”：完整 catalog builder 已能构造各类结构，相关元数据校验测试可观察结果；实际 DML 路由由 `canonical_partition.rs` 的另一套逻辑完成，planner 裁剪文件中的对应流程仍是 Go 移植注释。此外 `pkg/table/tables/partition.rs` 的同名结构服务另一模型，不应作为本文件 Go 对照的完成证据。
+迁移状态并非“一比一完整替代”：完整 catalog builder 已能构造各类结构，相关元数据校验测试可观察结果；实际 DML 路由由 `canonical_partition.rs` 的另一套逻辑完成，planner 裁剪文件中的对应流程仍是 Go 移植注释。
 
 ## 扩展指南
 
@@ -125,17 +116,3 @@ clone 生命周期中，列/向量/位置集合独立，三个 Arc 映射共享�
 - 修改 `Union`/`Intersect` 时不要擅自去重或排序；这些细节已由 Go 行为和 Rust 回归测试锁定。若要改变首次 `Intersect` 的返回约定，也必须先核对 planner 调用点。
 - 若要把本文件真正接入 planner 或 DML 主链，应先实现/定位 `PartitionedTable::partition_expr` 的生产实现，再决定与 `canonical_partition.rs` 统一还是替换；同时需要 SQL 集成测试证明构造、裁剪与物理路由三者选择相同分区。该工作超出本纯文档任务范围。
 - 性能上应保留映射的共享只读特性，避免每行 clone B-tree 或重复创建 collator/表达式上下文；正确性上重点防范 CRC32 输入、编码排序、NULL/DEFAULT 哨兵及 DDL 重组两套表达式漂移。
-
-## 验证依据
-
-本说明读取并核对了以下直接证据：
-
-- 目标源码：`pkg/table/tables/partition_expr.rs`（401 行），完整列出 1 个上下文构造函数、9 个公开数据结构、各公开/私有方法及无条件编译项；文件本身无局部 `cfg`，模块级 feature gate 位于 `lib.rs`。
-- crate 与模块边界：`pkg/table/tables/Cargo.toml`、`pkg/table/tables/lib.rs`、`pkg/table/Cargo.toml`；确认默认 `expression-runtime`、可选 expression 依赖和公开重导出。
-- 生产入口与相邻实现：`pkg/table/tables/canonical_partition_expr.rs::build`、`pkg/table/tables/tables.rs::table_from_meta_for_validation`、`TableCommon::canonical_partition_router`、`pkg/table/tables/canonical_partition.rs`、`pkg/session/runtime/dml.rs:990`。
-- Go 对照：`pkg/table/tables/partition.go` 中 `NewPartitionExprBuildCtx`、`PartitionExpr`、`GetPartColumnsForKeyPartition`、`LocateKeyPartition`、`ForRangePruning.Compare`、LIST/LIST COLUMNS 类型与 location helper；planner 的真实 Go 调用位于 `pkg/planner/core/rule/rule_partition_processor.go`。
-- 独立 Rust 测试：`pkg/table/tables/partition_expr_test.rs`；补充加载断言位于 `pkg/table/tables/tables_test.rs:1169-1179` 与 `pkg/session/runtime/normal_ddl_create_table_test.rs:998-1028`。本任务按计划不运行 Cargo，仅将这些测试作为已有行为证据读取。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/table/tables` 确认目标及相邻文件已索引；`node --file pkg/table/tables/partition_expr.rs --offset 1 --limit 500` 返回完整 401 行源码并报告 6 个使用文件；对主要符号执行了 `query`。精确 `callers/callees --file` 在限定时间内未返回边，因此调用点以 `rg` 和相邻源码补证，未把缺失图边当成“无调用”的结论。
-- 代码搜索：生产 Rust 引用表明 builder 构造、metadata loader 保存这些结构，但定位辅助方法的直接 Rust 调用目前集中在独立测试；`pkg/planner/core/rule/rule_partition_processor.rs` 的相关 Rust 文本是注释。本文据此明确标注接线限制。
-
-人工复核结论：本文件存在的原因是集中承载 Go 兼容的分区表达式及裁剪数据结构；构造从 catalog metadata 进入，具体算法按 KEY/RANGE/LIST 分支运行；安全扩展必须同时维护 builder、collation/编码一致性、独立测试以及尚未统一的实际路由边界。结构验收命令及退出码记录在任务交付结果中。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-mysql` crate；crate 入口 `pkg/parser/mysql/lib.rs` 通过 `pub mod charset` 将其作为公开模块暴露。它位于 parser 的 MySQL 兼容元数据层，不负责字符编码转换本身，而是集中保存 MySQL/TiDB 的字符集名、默认排序规则（collation）ID、collation 名称双向映射，以及少量字符分类辅助逻辑。编码转换由相邻的 `pkg/parser/charset/encoding.rs` 等模块承担。
-
-`pkg/parser/mysql/Cargo.toml` 声明该 crate 使用 Rust 2024 edition，并直接依赖 `unicode-general-category = "1.1.0"`；本文件只有 `IsRangeGraph` 使用该外部依赖。文件没有 feature 条件、平台条件或条件编译项。
+`Collations` 与 `CollationNames` 分别保存 `ID -> 名称` 和 `名称 -> ID` 的完整静态表，`GetCollationNameByID`、`GetCollationIDByName` 提供可表达“未找到”的查表 API。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ lexer 的字符集快路径位于 `pkg/parser/lexer.rs::convert2Connection`：�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/mysql/charset.go`。Rust 的 `CharsetNameToID` 保留 Go 的五个快速分支和未知 map key 返回零值的语义；Rust 用静态切片线性查找替代 Go map。`CharsetIDs`、`Collations`、`CollationNames` 以及默认值常量按 Go 表迁移，并保留不连续 ID 与 255、309 等条目。
+Rust 的 `CharsetNameToID` 保留 Go 的五个快速分支和未知 map key 返回零值的语义；Rust 用静态切片线性查找替代 Go map。
 
 Go 侧直接暴露两个 map，调用方用 map 访问；Rust 在静态切片之上新增 `GetCollationNameByID`、`GetCollationIDByName`，以 `Option` 明确表示缺失。仓库中未找到同名 Go 函数，因此这两个函数是 Rust 对 Go map 访问模式的封装，而不是逐函数翻译。
 
@@ -87,13 +85,3 @@ Go 的 `RangeGraph` 是一组 `unicode.RangeTable`，列出 `No/Mn/Me/Pc/Pd/Ps/P
 测试应放在独立文件，不要嵌入本源文件。表与 Unicode 分类的首选回归位置是 `pkg/parser/mysql/charset_1_aster_unit_test.rs`；公开 API 冒烟边界位于 `pkg/parser/mysql/unit_test.rs`；若变更影响会话连接变量，再扩展 `pkg/server/tests/tidb_serial_test.rs::test_default_character_and_collation`。至少覆盖新增条目的双向 round-trip、未知值、ID 空洞和名称大小写边界。
 
 兼容性风险主要是改变既有 ID/名称会破坏 MySQL 协议和持久元数据解释；让两个方向的表失配会导致同一 collation 无法 round-trip；改变默认常量会广泛影响 parser、字段元数据和会话行为。性能方面，当前小表的线性扫描简单且无初始化成本；若表显著增长，应在基准证据支持下考虑编译期或惰性索引，同时保持静态生命周期与并发只读属性。升级 Unicode 分类依赖前应重跑分类边界用例并核对 Go 使用的 Unicode 版本差异。
-
-## 验证依据
-
-- 源码与符号：`pkg/parser/mysql/charset.rs`；RustCodeGraph `node --file ... --offset 1/260` 确认 621 行源码、五个公开函数及三个静态映射表。
-- crate 与依赖：`pkg/parser/mysql/Cargo.toml`、`pkg/parser/mysql/lib.rs`；确认 crate 名、Rust edition、模块导出和 `unicode-general-category` 依赖。
-- 调用关系：RustCodeGraph 报告目标文件由 lexer、两个 mysql 测试文件和 server 串行测试使用；`rg` 进一步核对 `pkg/parser/lexer.rs::convert2Connection`、`pkg/server/internal/column/convert.rs`、`pkg/parser/charset/charset.rs` 等直接引用。RustCodeGraph 的函数级 callers/callees 查询未解析出有效调用边，因此未将空结果解释为“无调用”。
-- Go 对照：`pkg/parser/mysql/charset.go`；确认快速路径、三张表、默认常量和 `RangeGraph` 类别集合。全仓库 Go 搜索未找到 `GetCollationNameByID`/`GetCollationIDByName` 同名函数。
-- Rust 测试：`pkg/parser/mysql/charset_1_aster_unit_test.rs`、`pkg/parser/mysql/unit_test.rs`、`pkg/server/tests/tidb_serial_test.rs`；分别覆盖全表双向一致性、Unicode 图形类别、默认/未知值、309 扩展 ID 和会话 ID 255。
-- Go 调用/测试证据：`pkg/server/internal/column/column_test.go`、`pkg/server/conn_stmt_params_test.go`、`pkg/server/driver_tidb_test.go` 和 `pkg/server/tests/commontest/tidb_test.go` 使用 `CharsetNameToID` 验证协议列字符集行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务规定的正则检查恰好存在十一个固定二级标题，并人工复核所有行为陈述均可回溯到上述符号、调用点或测试。

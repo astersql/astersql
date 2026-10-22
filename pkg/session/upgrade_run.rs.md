@@ -6,9 +6,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate；`pkg/session/Cargo.toml` 以 `lib.rs` 为 crate 根，`lib.rs` 公开声明 `pub mod upgrade_run`。它位于已 bootstrap 集群再次启动时的版本迁移边界，包含三组职责：抽象完整升级循环的 `UpgradeRuntime`/`upgrade`，规划历史系统变量回填的 `BootstrapVariableUpgradeRuntime`/`upgrade_bootstrap_variables`，以及规划 v282 bind digest 刷新的数据类型与 `plan_binding_digest_refresh`。
-
-当前生产接线并不完全等同于上述三组定义。仓库搜索只发现 `UpgradeRuntime` 在 `upgrade_run_test.rs` 中有实现，未发现生产实现或对本文件 `upgrade` 的生产调用；canonical bootstrap 路径则在 `runtime/session.rs::upgrade_canonical_domain` 中直接调用 `upgrade_bootstrap_variables` 和 `refresh_canonical_binding_digests`，后者再调用 `plan_binding_digest_refresh`。因此，`upgrade` 是已实现并可测试的通用编排边界，但目前不是 canonical Rust 启动路径的实际入口。
+`InitMDLVariableForUpgrade` 和 `printClusterState` 分别封装升级前 MDL 状态初始化、支持 HTTP 升级状态版本之后的集群状态检查。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ crate 边界由 `pkg/session/Cargo.toml` 的 `name = "astersql-session"`、`[lib
 
 ## 与 Go 版本的对应关系
 
-`pkg/session/upgrade_run.go` 的 `upgrade`、`InitMDLVariableForUpgrade`、`printClusterState` 是通用 Rust 三个函数的直接语义来源：早退、v99 钩子条件、逐版本选择、更新后提交以及提交竞争复查顺序一致。Rust 用 trait 和 `Result` 代替具体 `sessionapi.Session`、全局 vardef 设置及 Go 的 fatal 日志，并将日志职责留给运行时。
+Rust 用 trait 和 `Result` 代替具体 `sessionapi.Session`、全局 vardef 设置及 Go 的 fatal 日志，并将日志职责留给运行时。
 
 变量分支对应 `pkg/session/upgrade_def.go` 中同版本 `upgradeToVerN` 的局部行为，不代表 Rust 已移植这些版本的其他 DDL：例如 Go v317 还修改权限列，Rust 本函数只负责 adaptive-limit 变量。v284 的 Go 路径仅对 next-gen 执行，而 Rust helper 自身没有 kernel gate；是否调用由上游路径与运行时决定。
 
-v282 Rust 规划复现 Go 的 builtin 排除、重新归一化、非法 plan digest 清理、按 digest pair 保留最新行、先清冲突后更新的意图。差异包括上一节所述的物理行身份/末级排序，以及 Rust `BindingDigestRefreshRow` 未携带 Go 查询中的 charset/collation；`NormalizeStmtForBinding` 的 Rust 接口只接收 statement、default DB 和布尔标志。相关 Go 行为由 `upgrade_backfill_test.go::TestUpgradeToVer282RefreshesBindingDigest` 覆盖。
+差异包括上一节所述的物理行身份/末级排序，以及 Rust `BindingDigestRefreshRow` 未携带 Go 查询中的 charset/collation；`NormalizeStmtForBinding` 的 Rust 接口只接收 statement、default DB 和布尔标志。
 
 ## 扩展指南
 
@@ -91,11 +89,3 @@ v282 Rust 规划复现 Go 的 builtin 排除、重新归一化、非法 plan dig
 扩展完整升级循环时，应为 `UpgradeRuntime` 提供真实生产实现或明确接入 canonical bootstrap，并为 `upgrade` 增加早退、步骤筛选、v99 顺序、步骤错误、提交竞争成功/失败的独立测试；当前 `upgrade_run_test.rs` 只覆盖 MDL 初始化。步骤表必须保持升序，否则 `upgrade` 不会自行排序。
 
 修改 v282 时，应同时检查 `BindingDigestRefreshRow`、动作顺序和 `runtime/session.rs::refresh_canonical_binding_digests` 的 SQL。若追求 Go 严格等价，需评估引入稳定 row id、charset/collation 和 `_tidb_rowid` 排序，并扩展 `upgrade_backfill_test.rs` 及 Go 对照测试覆盖同 digest/plan digest、非法行、builtin、并列时间与 SQL 中引号。主要风险是误删用户 binding、唯一键冲突、覆盖用户变量、启动升级不可重入，以及一次性物化大量 bind 带来的内存开销。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/upgrade_run.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
-- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
-- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
-- `upgrade_backfill_test.rs` 中 range-count 与 sampled-NDV 用例验证默认值、保值与版本边界；`runtime/session.rs::CanonicalBootstrapVariableRuntime` 实现 ndv_rate 幂等 DDL；Go `upgrade_def.go::upgradeToVer318/319` 提供对应语义。v320 与完整升级循环不由这两个变量测试证明。

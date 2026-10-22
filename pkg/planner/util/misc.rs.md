@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源文件为 [`misc.rs`](./misc.rs)。它属于 `astersql-planner-util` crate；crate 根 `pkg/planner/util/lib.rs` 以私有模块 `mod misc` 装入它，再通过 `pub use misc::*` 将其公开 API 统一再导出。`pkg/planner/util/Cargo.toml` 的 `[package.metadata.porting]` 指向 Go 包 `pkg/planner/util`，直接语义基线是同目录的 `misc.go`。
-
-本文件不负责构建完整逻辑或物理计划，而是给规划阶段提供四类横切工具：递归容器遍历、计划字段克隆、小型编码/元数据辅助，以及与表达式下推和隔离读引擎选择相关的上下文与路径过滤。实际主链接线包括 `pkg/session/runtime/planning.rs` 对访问路径的隔离读过滤，以及多个物理算子对 TiFlash/MPP 下推条件的判断。
+`QueryTimeRange`、`EncodeIntAsUint32`、`GetMaxSortPrefix`、`ExtractTableAlias` 提供指标时间条件、稳定的四字节编码、可下推排序前缀和 hint 表别名提取等规划辅助。
 
 ## 核心职责
 
@@ -90,7 +88,6 @@ Rust 基本逐项对应 `pkg/planner/util/misc.go` 的公开工具，但存在�
 - Go `QueryTimeRange::Condition` 使用 `MetricTableTimeFormat`；Rust 用等价的 chrono 格式直接格式化，公开常量只是保留 Go 布局。Go `MemoryUsage` 支持 nil receiver 并返回零，Rust 引用天然非空，仅返回 `size_of::<QueryTimeRange>()`。
 - `EncodeIntAsUint32`、`GetMaxSortPrefix`、别名选择、下推上下文字段、TiFlash 双条件判断和隔离读过滤的主分支与 Go 文件对齐。Rust 使用拥有所有权的 `Vec<AccessPath>` 与 `retain`，Go 在原 slice 上逆序删除；二者都用逆序首次出现顺序组织可用引擎文本。
 - Rust 的 `GetPushDownCtxFromBuildPBContext` 直接传 `GetExprCtx()`，Go 传 `GetExprCtx().GetEvalCtx()`；这是 Rust `expression::NewPushDownContext` 类型接口的适配，不应机械改成 Go 调用链。
-- Go 的隔离读错误是 `plannererrors.ErrInternal.GenWithStackByArgs`，Rust 当前是 `expression::errors::New` 文本错误。现有测试验证消息和分支行为，未验证错误类型/错误码完全一致。
 
 ## 扩展指南
 
@@ -99,13 +96,3 @@ Rust 基本逐项对应 `pkg/planner/util/misc.go` 的公开工具，但存在�
 - 修改别名提取时应覆盖无表名、DB/Tbl 不完整、多表、缺省数据库、子查询显式别名和 query block offset；兼容 Go 的空数据库名规则，避免 hint 错配到其他表。
 - 修改 `PushDownContext` 参数时需同步 `plan-base::BuildPBContext` 与 `expression::NewPushDownContext` 的字段契约，并检查 cascades 及其他表达式下推入口是否遗漏 warning handler 或 explain 状态。
 - 增加存储引擎或改变隔离读规则时，核心接入点是 `FilterPathByIsolationRead` 的“可用引擎收集”和 `retain` 谓词，以及 `ShouldCheckTiFlashPushDown` 的专属策略。同步更新 `pkg/planner/util/misc_test.rs` 和 `pkg/planner/core/integration_test.rs`，至少覆盖系统库绕过、混合引擎、零路径错误、错误文本顺序、严格模式提示及 MPP warning。该路径位于会话建表源主链，错误兼容性和候选裁剪会直接影响可执行计划；额外集合扫描也应避免引入与路径数平方相关的高常数。
-
-## 验证依据
-
-- Rust 源码与模块边界：`pkg/planner/util/misc.rs`、`pkg/planner/util/lib.rs`、`pkg/planner/util/Cargo.toml`。
-- Go 对照：`pkg/planner/util/misc.go`；递归迭代的原始 Go 用例为 `pkg/planner/util/slice_recursive_flatten_iter_test.go`。
-- 独立 Rust 测试：`pkg/planner/util/slice_recursive_flatten_iter_test.rs` 覆盖空树、嵌套顺序、空节点、continue 后下标和 break；`pkg/planner/util/misc_test.rs` 覆盖隔离过滤错误中的逆序引擎列表，以及零路径时仍产生 MPP warning。
-- 集成证据：`pkg/planner/core/integration_test.rs::test_none_access_paths_found_by_isolation_read` 覆盖 TiFlash-only 拒绝 TiKV、系统库绕过和混合引擎保留；`pkg/session/runtime/planning.rs::populate_session_data_source` 是当前 Rust 会话规划主链调用点。
-- 物理规划调用：`pkg/planner/core/operator/physicalop/{physical_projection.rs,base_physical_agg.rs,physical_selection.rs,physical_limit.rs,physical_window.rs,base_physical_plan.rs}`；表达式下推调用为 `pkg/planner/cascades/old/transformation_rules.rs`。
-- RustCodeGraph：`status` 显示本仓库索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/util` 找到目标及对照测试；`node --file` 读取 `misc.rs`、`misc.go` 与两份迭代/隔离测试；精确 `query` 区分了同名 Go/Rust `FilterPathByIsolationRead`，其 callers 结果识别到 Rust 单测和 planner core 集成测试，但部分生产 Rust 调用边缺失，已用源码搜索与调用点读取补足。
-- 本任务是纯文档分析，未运行 Cargo。交付前执行任务指定的结构命令，确认目标文件存在且恰有 11 个固定二级标题；并人工复核本文未把未接线 API、错误类型等未证事实描述为已支持。

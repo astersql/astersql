@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-extension` crate。crate 入口 `pkg/extension/lib.rs` 通过 `#[path = "_import/import.rs"] pub mod extension_import;` 将它公开为 `astersql_extension::extension_import`。它不是扩展框架的注册表实现；注册、manifest 和会话扩展等实际逻辑分别位于同 crate 的 `registry.rs`、`manifest.rs`、`session.rs` 等文件。
-
-当前文件是仓库外扩展的**注册落点/生成代码挂载点**。源文件只有许可证和用途说明，没有 Rust item，因此当前模块本身不执行注册，也不参与请求处理。其存在价值是为以后放置或挂接生成的兄弟模块提供稳定目录和公开模块边界。
+明确当前边界：该文件不实现扩展发现、动态加载或注册；真正的扩展能力由 `pkg/extension` 其他模块提供，生成代码必须显式连接到那些 API。
 
 ## 核心职责
 
@@ -59,8 +57,6 @@ Go 路径不同：`cmd/tidb-server/main.go` 使用空白导入 `_ "github.com/pi
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/extension/_import/import.go` 同样不含注册实现，只声明 `package extensionimport`，并说明每个扩展的自动生成注册文件会放在该目录。`pkg/extension/README.md` 给出的例子是生成 `import_example.go`，在其中空白导入扩展包；扩展包自己的 `init` 再调用 `extension.Register`。`cmd/tidb-server/main.go` 对 `_import` 包的空白导入保证这条初始化链在 TiDB 启动时发生。
-
 Rust 文件保留了目录意图，但目前只被 `pkg/extension/lib.rs` 声明为空模块，没有对应的生成文件、注册 item 或应用启动调用。因此两端当前只在“集中式注册落点”概念上对应，运行语义尚不等价；文档不能声称 Rust 已经复刻 Go 的自动注册链。
 
 ## 扩展指南
@@ -74,15 +70,3 @@ Rust 文件保留了目录意图，但目前只被 `pkg/extension/lib.rs` 声明
 5. 同步评估 Go 生成器/构建规则与 Rust Cargo 模块声明，避免只更新一端。若增加依赖或 feature，应同步 `pkg/extension/Cargo.toml`；若改变 Go 文件集合，还需遵循仓库 Bazel 元数据流程。
 
 主要兼容性风险是破坏既有模块路径或让 Rust 与 Go 注册时机分叉；主要正确性风险是漏接启动调用或重复注册；空模块本身没有性能成本，未来注册工作的性能取决于新增初始化逻辑。
-
-## 验证依据
-
-- `pkg/extension/_import/import.rs`：完整源码为许可证与中英文用途注释，没有 Rust item 或运行时逻辑。
-- `pkg/extension/lib.rs:25-27`：以显式路径公开声明 `extension_import`，是本文件当前唯一 Rust 装配入口。
-- `pkg/extension/Cargo.toml`：crate 名为 `astersql-extension`，库入口为 `lib.rs`，本模块没有独立 feature 或直接依赖声明。
-- `pkg/extension/_import/import.go:15-18`：Go 包声明及“生成注册文件放入本目录”的原始约定。
-- `pkg/extension/README.md:58-80`：`import_example.go` 空白导入扩展包、借助 Go `init` 完成注册的示例和解释。
-- `cmd/tidb-server/main.go:46`：服务入口对 Go `_import` 包的空白导入。
-- `pkg/extension/_import/BUILD.bazel`：当前 Go 目标只列出 `import.go`；仓库中未发现实际生成的同包注册文件。
-- RustCodeGraph：`status` 显示索引包含本 Rust/Go 文件；`files --filter pkg/extension/_import` 列出二者；`node --file` 核对完整源码；对目标文件执行 `callers`/`callees` 均返回 `No definition found`，与无符号事实相符。
-- 测试搜索：在 `*_test.rs` 与 `*_test.go` 中未发现 `extension_import`、`extensionimport` 或该路径的直接测试引用；因此当前没有可声称的本模块行为覆盖。

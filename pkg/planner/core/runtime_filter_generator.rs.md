@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate：`pkg/planner/core/Cargo.toml` 将 `lib.rs` 声明为库入口，`lib.rs` 通过 `mod runtime_filter_generator` 装入模块并以 `pub use runtime_filter_generator::*` 公开其类型。它位于 Rust 规划器的物理计划后优化阶段；`pkg/planner/core/optimizer.rs::postOptimize` 在 `OptimizeOptions.enable_runtime_filter` 为真时创建 `RuntimeFilterGenerator`，遍历 `PlanNode`，随后只把生成数量追加到根计划的 `operator_info`。
-
-因此，当前 Rust 文件承担的是轻量计划树上的 Runtime Filter 候选收集与辅助判定，而不是 Go 版物理算子 Runtime Filter 的完整移植。这里的计划节点来自 `pkg/planner/core/common_plans.rs::{PlanNode, PlanKind, JoinType, StoreType}`，并非 Go 版 `base.PhysicalPlan`/`physicalop` 类型体系。
+文件不会改写 `PlanNode`，也不会把过滤器对象挂到 HashJoin 或 TableScan；生成结果仅保存在 `RuntimeFilterGenerator::filters`。
 
 ## 核心职责
 
@@ -73,10 +71,6 @@ RustCodeGraph 的精确查询能定位 Rust `RuntimeFilterGenerator` 结构和 `
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/runtime_filter_generator.go`，生产入口为 `optimizer.go::generateRuntimeFilter`。两版共同点包括：只以 TiFlash HashJoin 为候选源、沿 probe 侧寻找目标扫描、以 ExchangeReceiver 作为 Fragment 边界、当前丢弃 Global RF，以及按等值条件产生多条过滤器。
-
-Rust 当前是明显缩减的迁移基线：
-
 - Go 用 `columnUniqueIDToRF` 按目标列唯一 ID 匹配具体扫描输出列；Rust 把条件字符串沿整条 probe 子树传播，所以该子树内每个可达 TableScan 都可能收到同一候选。
 - Go 的 `generateRuntimeFilterInterval` 在构造前调用 `matchRFJoinType` 和 `matchEQPredicate`；Rust `visit` 未调用对应连接门禁，也没有等值谓词门禁。
 - Go 的 `physicalop.NewRuntimeFilter` 把过滤器关联到真实 HashJoin，并由 `Assign` 写入 TableScan；Rust 只生成独立记录，生产调用者仅消费数量。
@@ -93,13 +87,3 @@ Go 测试 `pkg/planner/core/runtime_filter_generator_test.go` 通过 SQL、TiFla
 修改 Fragment 规则时，应同时检查 `visit` 对 `ExchangeReceiver` 的模式转换和 `belongsToSameFragment`，避免两个公开语义分叉。支持 Global RF 时，应替换 TableScan 分支中的 `continue`，并明确跨 Fragment 的序列化、发送和接收生命周期。优化克隆开销时，必须保持兄弟分支隔离及稳定编号，或明确改变顺序契约。
 
 测试必须继续放在独立文件 `pkg/planner/core/runtime_filter_generator_test.rs`，不要内嵌到生产源文件。至少应补充：生产路径应用连接门禁、ExchangeReceiver 下 Global 丢弃、嵌套/多个扫描的目标匹配、重复调用状态、异常 `inner_child`、以及未来谓词类型/列身份规则。若改变完整 SQL 计划语义，还应同步 Go 测试意图和 `pkg/planner/core/testdata/runtime_filter_generator_suite_{in,out}.json`，并评估兼容性（EXPLAIN 输出）、正确性（过滤目标与外连接语义）及性能（候选复制和扫描数量）。
-
-## 验证依据
-
-- 生产实现：`pkg/planner/core/runtime_filter_generator.rs`，核对了全部枚举、结构、字段、公开方法和私有递归流程。
-- Rust 调用与装配：`pkg/planner/core/optimizer.rs::postOptimize`、`pkg/planner/core/lib.rs`、`pkg/planner/core/common_plans.rs`。
-- crate 边界：`pkg/planner/core/Cargo.toml`（包名 `astersql-planner-core`、库入口 `lib.rs`、`autotests = false`）；独立测试由 `lib.rs` 的 `#[cfg(test)] #[path = "runtime_filter_generator_test.rs"]` 显式装入。
-- Rust 测试：`pkg/planner/core/runtime_filter_generator_test.rs`，覆盖 Local 生成、TiKV 拒绝、多等值条件、ID 连续、连接类型辅助门禁和 Fragment 边界。
-- Go 对照：`pkg/planner/core/runtime_filter_generator.go`、`pkg/planner/core/optimizer.go::generateRuntimeFilter`、`pkg/planner/core/runtime_filter_generator_test.go` 及对应 testdata JSON。
-- RustCodeGraph：`status` 显示索引可用（11,467 files）；`query RuntimeFilterGenerator --kind struct` 同时定位 Go/Rust 定义；`query postOptimize --kind function` 定位两版入口。目标文件的 `files --filter` 和限定 `node` 未命中，且同名方法查询偏向 Go，因此对未覆盖部分按技能规则使用 `rg` 与源码读取核验。
-- 结构验收使用任务指定命令，要求本文恰有十一个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

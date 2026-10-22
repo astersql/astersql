@@ -2,12 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor` crate，由 [`pkg/executor/lib.rs`](lib.rs) 以公开模块 `operate_ddl_jobs` 导出，直接依赖只有 `astersql_util_chunk::Chunk`（[`pkg/executor/Cargo.toml`](Cargo.toml)）。它把 DDL 作业管理分为两类 Open/Next 风格的执行逻辑：
-
-- `CommandDDLJobsExec` 编排 `ADMIN CANCEL/PAUSE/RESUME DDL JOBS`，`Open` 执行命令，`Next` 分批输出每个 job ID 的结果。
-- `AlterDDLJobExec` 编排 `ADMIN ALTER DDL JOBS` 的系统会话和事务重试，改写运行中作业的 reorg 参数。
-
-当前 Rust 接线必须如实理解：[`pkg/executor/builder.rs`](builder.rs) 已将 `CancelDdlJobs` / `PauseDdlJobs` / `ResumeDdlJobs` / `AlterDdlJob` 计划分派到 `build_leaf(ExecutorKind::...)`，但仓库内没有生产代码为本文件的两个 backend trait 提供实现，也没有生产侧构造这些泛型执行器。因此该文件是已公开、可单测的迁移逻辑，不能仅凭此认定 Rust 主链已使用它完成真实 DDL 管理。
+该层管理的是已持久化 DDL job 的控制与 reorg 参数，不执行 DDL schema state machine 或 backfill 本身；真实 Go 实现通过 `mysql.tidb_ddl_job` 作业元数据与 DDL 后台系统衔接。
 
 ## 核心职责
 
@@ -92,8 +87,6 @@ Rust 以 [`pkg/executor/operate_ddl_jobs.go`](operate_ddl_jobs.go) 为直接语�
 - Go `Open` 用 `defer` 归还 ALTER 系统会话；Rust 是处理函数返回后显式释放。Go 通用命令也是显式释放。
 - Go failpoint 分支 rollback 并立即返回；Rust `inject_commit_failure` 保留了同样语义，且独立 Rust 测试证实只 begin 一次、rollback 一次、归还会话一次。
 
-Go 回归证据位于 [`pkg/ddl/db_test.go`](../ddl/db_test.go)：`TestAdminAlterDDLJobUpdateSysTable` 覆盖 thread/batch size 更新，`TestAdminAlterDDLJobUnsupportedCases` 覆盖参数范围、不存在 job、不支持作业及 NextGen，`TestAdminAlterDDLJobCommitFailed` 验证提交故障后元数据不变。这些 Go 测试证明参考实现的行为，不等于 Rust 已全部覆盖或已接入。
-
 ## 扩展指南
 
 - 接入 Rust 生产主链时，应先为两个 backend trait 提供真实实现，并明确 `builder.rs` 的 `ExecutorKind` leaf 路径是否要构造本文件类型；不要把模块公开误当为已接线。
@@ -102,12 +95,3 @@ Go 回归证据位于 [`pkg/ddl/db_test.go`](../ddl/db_test.go)：`TestAdminAlte
 - 改变重试逻辑时，必须明确哪些错误可重试、每个已 begin 分支如何清理事务、是否需要退避，并为 begin/get/update/commit 分别失败增加计数与最终错误测试。
 - 资源管理若需覆盖 panic/unwind，应将系统会话改为 guard/RAII 协议，而不是仅在更多返回点手写 release。
 - Rust 测试应继续放在独立的 [`pkg/executor/operate_ddl_jobs_test.rs`](operate_ddl_jobs_test.rs)，不嵌入生产源文件。如果完成真实后端移植，还应与 `pkg/ddl/db_test.go` 的 Go 用例对齐，并根据用户可见 SQL 行为增加 Rust 集成覆盖。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：工程已索引（11,467 文件，其中 7,032 个 Rust 文件）；`node --file pkg/executor/operate_ddl_jobs.rs` 返回完整 282 行源码和符号上下文。
-- RustCodeGraph 符号查询：`query CommandDDLJobsExec`、`query AlterDDLJobExec`、`query DDLJobCommandBackend`、`query AlterDDLJobBackend`、`query processAlterDDLJobConfig`、`query updateReorgMeta`。索引识别了 Rust trait/结构与 Go 同名实现；泛型 Rust impl 方法的 callers/callees 未完整建边，因而用直接引用搜索补齐。
-- 已读生产与装配文件：[`pkg/executor/operate_ddl_jobs.rs`](operate_ddl_jobs.rs)、[`pkg/executor/lib.rs`](lib.rs)、[`pkg/executor/builder.rs`](builder.rs)、[`pkg/executor/Cargo.toml`](Cargo.toml)。`pkg/executor` 当前没有 `doc.go`，无额外包级契约可读。
-- 已读对照与测试：[`pkg/executor/operate_ddl_jobs.go`](operate_ddl_jobs.go)、[`pkg/executor/builder.go`](builder.go)、[`pkg/executor/operate_ddl_jobs_test.rs`](operate_ddl_jobs_test.rs)、[`pkg/ddl/db_test.go`](../ddl/db_test.go) 的 ALTER DDL JOB 回归用例，以及 [`docs/agents/ddl/README.md`](../../docs/agents/ddl/README.md) 的 DDL 执行边界。
-- Rust 测试 `commit_failpoint_rolls_back_and_returns_without_retrying` 的静态证据：注入失败后返回指定错误，`begin_calls == 1`、故障检查一次、rollback 一次、session release 一次。本任务按计划为纯文档分析，未运行 Cargo。
-- 结构验证使用任务指定的 `test -f` + `rg -c` 命令，要求本文档恰有 11 个固定二级标题。

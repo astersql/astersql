@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-manual` crate（`pkg/lightning/manual/Cargo.toml`），实现手动字节缓冲 API 的默认 Rust 版本。crate 根 `pkg/lightning/manual/lib.rs` 通过 `pub mod manual` 装载本模块，并以 `pub use manual::{Free, MaxArrayLen, New}` 将三个公开符号提升到 crate 根。它是 Lightning 内存缓冲基础设施的一层小型兼容接口，不负责缓存、复用或引用计数；这些策略由相邻的 `allocator.rs` 和上层缓冲池实现。
-
-Cargo 清单声明了空的 `default` feature 和 `cgo` feature，但当前 `lib.rs`、`manual.rs` 均没有 `#[cfg(feature = "cgo")]` 分支。`manual_nocgo.rs` 也始终被声明为另一个公开模块，而不是在编译期替换本文件。因此，不能把 Go 的 cgo/非 cgo 文件选择机制视为当前 Rust crate 已接线的行为。
+只提供“创建缓冲区/结束缓冲区生命周期”的原语。
 
 ## 核心职责
 
@@ -74,15 +72,13 @@ Cargo 清单声明了空的 `default` feature 和 `cgo` feature，但当前 `lib
 
 ## 与 Go 版本的对应关系
 
-对照文件为 `pkg/lightning/manual/manual.go` 和 `manual_nocgo.go`。
-
 - 常量与可观察内容：Rust `MaxArrayLen` 与 Go cgo 版本数值相同；两者的 `New` 都返回长度为 `n`、内容清零的字节缓冲。
 - 分配机制：Go cgo 版本用 `C.calloc` 获取 C 内存，以固定上限数组指针构造切片，并要求 `Free` 调用 `C.free`；Rust 版本用 `Vec<u8>` 和全局分配器，`Free` 仅消费所有权后 `drop`。因此二者 API 意图一致，但分配器来源、FFI 指针属性和泄漏条件并不等价。
 - 分配失败：Go cgo 版本在 `calloc` 返回 nil 时调用 `runtime.throw` 终止进程；Rust 交给 `Vec` 的分配失败策略处理。两者都没有可恢复的错误返回，但不应假定失败文本或终止细节完全相同。
 - 空缓冲：Go cgo `Free` 必须检查容量，并为长度零但容量非零的切片重新扩展后取得首地址；Rust `drop(Vec)` 不需要该指针操作。
 - 非 cgo 版本：Go `manual_nocgo.go` 用普通 `make` 且 `Free` 为空操作。Rust 的 `manual_nocgo.rs` 是单独可调用模块；Cargo 的 `cgo` feature 当前未用于在两个 Rust 模块间自动切换。
 
-相关 Rust 回归位于独立文件 `pkg/lightning/manual/migration_aster_unit_test.rs`，覆盖清零、零长度、保留后备存储的零长度释放，以及 nocgo 负长度 panic。当前同目录没有 Go `*_test.go`，所以 Go 语义证据来自实现文件和 `pkg/lightning/backend/kv/session.go` 的真实调用点。
+当前同目录没有 Go `*_test.go`，所以 Go 语义证据来自实现文件和 `pkg/lightning/backend/kv/session.go` 的真实调用点。
 
 ## 扩展指南
 
@@ -91,11 +87,3 @@ Cargo 清单声明了空的 `default` feature 和 `cgo` feature，但当前 `lib
 - 若要真正按 `cgo` feature 或 target 切换实现，应在 `lib.rs` 的模块声明/再导出层接线，并同步检查 `Cargo.toml` feature；不能只改 `manual_nocgo.rs`。这类改动还需核实依赖方期待的公开路径。
 - 若要求与 Go 的 C 分配器、FFI 地址稳定性或手动泄漏语义完全一致，`Vec` 方案不足，需要单独设计安全封装、分配失败策略和 `unsafe` 边界；不能仅把当前实现描述为 `calloc/free` 的直接移植。
 - 性能调整应关注清零成本、大缓冲分配峰值和上层复用策略。缓存/池化应放在 `Allocator` 或 `pkg/lightning/membuf` 等拥有策略的层，而不是在本无状态原语内偷偷加入全局池。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 `pkg/lightning/manual/manual.rs`；`files --filter pkg/lightning/manual` 确认模块及独立测试文件；`node --file ... --offset 1 --limit 240` 读取到本文件全部 44 行；`node pkg/lightning/manual/manual.rs::New` 确认函数定义和控制流。精确 `callers/callees` 查询在 30 秒窗口内未返回结果，因此调用关系又以限定路径源码搜索核验，未将超时当成“无调用者”。
-- Rust 源码：`pkg/lightning/manual/manual.rs`（三个公开符号）、`lib.rs`（模块声明与再导出）、`allocator.rs`（直接生产调用边）、`manual_nocgo.rs`（相邻回退实现）。
-- crate 配置：`pkg/lightning/manual/Cargo.toml`（crate 名、库入口、空 feature 定义）以及工作区根 `Cargo.toml`、`pkg/ingestor/ingestctrl/Cargo.toml`（工作区登记和 Windows 条件依赖）。
-- Go 对照：`pkg/lightning/manual/manual.go`、`manual_nocgo.go`、`allocator.go`；实际 Go 使用点为 `pkg/lightning/backend/kv/session.go::newBytesBuf` 与 `BytesBuf.destroy`。
-- 测试证据：`pkg/lightning/manual/migration_aster_unit_test.rs::{new_returns_zeroed_memory_and_free_accepts_it, free_accepts_a_zero_length_slice_with_backing_storage}`；`allocator_test.rs` 通过 `Allocator` 验证间接调用和计数配对。本任务按计划不运行 Cargo。

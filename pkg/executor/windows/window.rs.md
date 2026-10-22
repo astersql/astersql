@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件对应源码 [`window.rs`](./window.rs)，属于 `astersql-executor-windows` crate，是窗口执行模块的“缓冲式执行路径 + 共享窗口原语”实现。crate 入口 [`lib.rs`](./lib.rs) 将本模块整体公开再导出；[`builder.rs::build`](./builder.rs) 根据 `PhysicalWindowPlan` 选择缓冲式 `WindowExec` 或 `pipelined_window.rs::PipelinedWindowExec`，两条路径共同使用这里的值、帧边界、分组器、窗口函数和内存跟踪类型。
-
-`pkg/executor/windows/Cargo.toml` 把 Go 对照包标为 `pkg/executor/windows`。目前依赖声明位于 `cfg(any())` 下，不会启用；因此当前 Rust 文件使用的是本 crate 内的简化 `Value`、`Chunk`、`ChildExecutor` 和 `ExecContext`，尚不是 TiDB 完整 executor/chunk/sessionctx 类型的直接接线。
+定义窗口执行所需的基础数据模型：`Decimal`、`Value`、`Row`、`Chunk`、`Error`/`Result`。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ NULL 语义由各函数明确处理：数值聚合跳过非数值/NULL，空 SUM
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/windows/window.go`。Rust `WindowExec::{open,next,close,consume_one_group,consume_group_rows,fetch_child}` 分别对应 Go `(*WindowExec).Open/Next/Close/consumeOneGroup/consumeGroupRows/fetchChild`；Rust `WindowProcessor` 及三种 processor 对应 Go `windowProcessor`、`aggWindowProcessor`、`rowFrameWindowProcessor`、`rangeFrameWindowProcessor`。两边都以连续分区为计算单位、支持跨 Chunk 拼接，并把结果追加回与输入块边界对应的输出块。
-
 Rust 版本保留了 Go 的处理器分层、ROWS/RANGE 半开边界、滑动 partial result 和内存跟踪意图，但当前是独立简化模型：Go 使用真实 `exec.Executor`、`chunk.Chunk/Row`、`aggfuncs.WindowFunc`、session context 和表达式比较；Rust 使用本文件定义的容器和函数实现。Cargo 中真实子系统依赖被放在永假 `cfg(any())` 下也印证了尚未完成正式接线，不能把当前 crate 描述为完整替代 Go SQL 执行链。
 
-`window_executor_test.rs` 对照 `window_executor_test.go` 的核心场景，验证缓冲/流水执行器的 row_number 与滑动 sum 一致、有序构建固定走流水路径，以及空帧时 SUM/COUNT/ROW_NUMBER 的返回约定。Go `window_sql_test.go` 覆盖更多函数、类型与 SQL 集成情形；其中未在 Rust 独立测试出现的能力不能仅凭 Go 测试宣称 Rust 已支持。
+Go `window_sql_test.go` 覆盖更多函数、类型与 SQL 集成情形；其中未在 Rust 独立测试出现的能力不能仅凭 Go 测试宣称 Rust 已支持。
 
 ## 扩展指南
 
@@ -89,11 +85,3 @@ Rust 版本保留了 Go 的处理器分层、ROWS/RANGE 半开边界、滑动 pa
 - 修改缓冲生命周期：保持 `result_chunks` 与 `remaining_rows_in_chunk` 同步、只输出已补齐块、错误后停止继续消费、close 归零父子 tracker。应同步 `window_executor_test.rs` 与 `window_memory_test.rs`。
 - 扩充值类型或迁移到真实 TiDB 类型：优先替换 `Value::{numeric_cmp,sql_cmp}` 和各聚合的类型分派，并逐项对照 Go expression/types/collation 语义；性能上警惕完整分区复制、`Lag::update` 的行克隆、MIN/MAX 的线性删除与每行线性极值扫描。
 - 任何改变都应同时核对 `builder.rs` 和 `pipelined_window.rs`，因为它们共享这里的 frame/function/tracker 协议；若行为只在一条路径更新，会破坏两执行器结果一致性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/executor/windows` 定位 13 个 Go/Rust 文件；对 `window.rs` 分段执行 `node --file` 阅读 1–1884 行；查询 `WindowExec`、`GroupChecker` 并读取 `builder.rs`、`pipelined_window.rs` 精确文件节点，核对构建入口和共享调用关系。
-- Rust 源与边界：`pkg/executor/windows/window.rs`、`builder.rs`、`pipelined_window.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 独立测试：`window_executor_test.rs`（缓冲/流水一致性、ordered pipeline、空帧），`window_test.rs`（超过 `f64` 精确整数范围的 RANGE peer 分离），`window_memory_test.rs`（statement/local 内存计费与 close 释放）。
-- Go 对照：`pkg/executor/windows/window.go`、`window_executor_test.go`、`window_sql_test.go`；只将与当前 Rust 符号和测试能互相印证的行为写为已实现。
-- 人工复核结论：文件存在是为了提供缓冲式窗口状态机及两路径共享原语；运行依赖有序输入、完整分区收集和 processor 逐行产值；安全扩展必须同步函数协议、帧边界、内存记账、builder/流水路径和独立测试。

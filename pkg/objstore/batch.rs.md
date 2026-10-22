@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-`batch.rs` 属于 `astersql-objstore` crate，由 [lib.rs](lib.rs) 以公开模块 `pub mod batch` 暴露。它位于统一对象存储接口 `storeapi::Storage` 与具体存储后端之间，是一个“延迟副作用”包装器：读操作仍访问真实存储，整文件写入、删除和重命名先记录为 `Effect`，随后可丢弃、导出为 JSON，或由 `Batched::commit` 回放到底层存储。
-
-[Cargo.toml](Cargo.toml) 表明本文件直接使用的 crate 依赖包括 `anyhow`、`base64`、`serde`、`serde_json`、`tempfile`，并依赖本地 `objectio` 与 `storeapi` crate。另一个边界是 [objectio/lib.rs](objectio/lib.rs)：它只在 `cfg(test)` 下用 `#[path = "../batch.rs"]` 复用本文件，为 objectio 的外部包风格测试组装支撑模块；这不是 objectio 的生产 API 接线。
-
-当前 Rust 仓库中，RustCodeGraph 只给出了本文件内部序列化调用边和测试调用边；对全仓 Rust 源码的精确检索也没有发现 BR 等生产模块调用 `objstore::batch`。因此，“服务于 BR dry-run”是由 Go 生产链和移植目标证明的架构用途，而 Rust 当前已验证的接线范围主要是公开 crate API 与测试，不能写成已经接入 Rust BR 主链。
+让 `Batched<S>` 实现完整的 `storeapi::Storage` trait：四类副作用只入队；读取、存在性检查、打开 reader、遍历、URI、预签名和关闭直接透传；流式 `Create` 明确拒绝。
 
 ## 核心职责
 
@@ -99,14 +95,9 @@ RustCodeGraph 确认的内部调用链为：`save_json_effects_to_tmp -> write_j
 
 ## 与 Go 版本的对应关系
 
-[batch.go](batch.go) 是逐项语义基准：两边都有相同四种 effect、同顺序队列、相同写操作入队/读操作透传划分、禁止 `Create`、可清理/检查/提交，以及 `objstore.Eff*` tagged-union JSON。
-
-已确认的等价点：
-
 - Go `JSONEffects` 的 `json.Encoder.Encode` 会追加换行；Rust `json_effects` 显式追加 `b'\n'`。
 - Go `[]byte` 默认 JSON 表示为标准 Base64 字符串；Rust 显式采用 `base64::STANDARD`，测试期望 `Hello, world -> SGVsbG8sIHdvcmxk`。
 - Go `Commit` 尝试所有已知 effect、清空队列并最终返回 `nil`；Rust 尝试所有 enum variant、清空队列并返回 `Ok(())`，同样不向调用方暴露底层操作错误。
-- 两边都在提交期间持有队列 mutex，并按记录顺序访问底层存储。
 
 需注意的差异：
 
@@ -129,13 +120,3 @@ RustCodeGraph 确认的内部调用链为：`save_json_effects_to_tmp -> write_j
 若要保持包装透明性，应审查 `Storage` trait 新增的默认方法。例如 `AccessRequestSnapshot` 当前未透传；新增 trait 能力时需要决定它是只读透传、写入入队、禁止，还是需要新 effect。
 
 性能与兼容风险集中在：写内容被入队复制且快照再次深克隆、JSON 构造完整 `Vec<Value>` 与完整字节缓冲、提交持锁执行慢 I/O、固定 type 字符串构成跨语言协议。优化这些路径时应保留顺序和 JSON 兼容测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 `11467` 个文件、`307296` 个节点、`1848419` 条边，目标 `pkg/objstore/batch.rs` 在索引内并报告 `44` 个符号。
-- RustCodeGraph `node --file pkg/objstore/batch.rs`：核对了完整 267 行源码、所有公开/内部符号、四类 effect、Storage 实现和条件编译情况（本文件没有条件编译项）。
-- RustCodeGraph `node batch.rs::{json_effects,write_json_effects,save_json_effects_to_tmp,batch}`：确认序列化内部调用链、`json_effects` 的测试调用边；同名 `batch` 的模糊引用边经精确 `rg` 判定不属于本模块调用。
-- 已读生产/配置入口：[batch.rs](batch.rs)、[Cargo.toml](Cargo.toml)、[lib.rs](lib.rs)、[objectio/lib.rs](objectio/lib.rs)、[objectio/Cargo.toml](objectio/Cargo.toml)、[storeapi/storage.rs](storeapi/storage.rs)。包内没有 `doc.go`。
-- 已读 Go 对照及生产使用：[batch.go](batch.go)、[br/pkg/stream/stream_metas.go](../../br/pkg/stream/stream_metas.go)、[br/pkg/task/operator/migrate_to.go](../../br/pkg/task/operator/migrate_to.go)。
-- 已读独立测试：[batch_test.rs](batch_test.rs)、[batch_test.go](batch_test.go)、[azblob_1_aster_unit_test.rs](azblob_1_aster_unit_test.rs)。现有 Rust 证据覆盖 effect 顺序、清理、JSON/Base64/临时文件和成功提交可见性；未覆盖 `Create` 拒绝、读方法透传、`Close`、底层提交失败、并发竞争与空队列。
-- 按任务约束未运行 Cargo；本任务是纯文档分析，最终仅执行固定 11 章节的结构验证，并人工复核 Rust 当前接线与 Go 设计用途没有混写。

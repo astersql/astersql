@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate。`pkg/planner/core/lib.rs` 以私有模块 `mod pb_to_plan` 装配它，再通过 `pub use pb_to_plan::*` 导出其公开符号；测试则由相邻且独立的 `pb_to_plan_test.rs` 在 `#[cfg(test)]` 下装配。它承担“序列化执行器描述到物理计划树”的边界转换：输入是本文件定义的轻量 `PBExecutor` 序列、表元数据和 key range，输出是 crate 内通用的 `PlanNode`/`PlanKind` 表示。
-
-这里的 `PB*` 类型是 Rust 侧的简化传输模型，不是直接使用 `tipb::Executor` 的完整生产协议对象。文件目前只依赖 `crate::{PlanKind, PlanNode, PlannerContext}` 和标准库 `BTreeMap`；尽管 `Cargo.toml` 声明了 `tipb`、expression、infoschema、physicalop 等依赖，本文件没有直接使用它们。因此应把它理解为已接线、可测试但尚未完整等价于 Go 生产实现的局部移植，而不能据文件名推断其已覆盖完整 DAG protobuf 规划链。
+`PBPlanBuilder::Build` 按“叶到根”的执行器顺序逐个转换并串成单子树物理计划，随后执行一次谓词下推改写。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@ crate 边界证据来自 `pkg/planner/core/Cargo.toml`：包名是 `astersql-pla
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/planner/core/pb_to_plan.go` 是直接语义参照。两版共同保留了：叶到根遍历、当前节点挂接旧子计划、支持 TableScan/Selection/Projection/TopN/Limit/Hash 或 Stream Agg/Kill/BroadcastQuery、只允许集群表、列 ID 查找、Limit 的子节点信息补偿意图，以及 Selection 到内存表 extractor 的谓词下推边界。
+两版共同保留了：叶到根遍历、当前节点挂接旧子计划、支持 TableScan/Selection/Projection/TopN/Limit/Hash 或 Stream Agg/Kill/BroadcastQuery、只允许集群表、列 ID 查找、Limit 的子节点信息补偿意图，以及 Selection 到内存表 extractor 的谓词下推边界。
 
 关键差异必须视为当前迁移限制：
 
@@ -108,11 +106,3 @@ crate 边界证据来自 `pkg/planner/core/Cargo.toml`：包名是 `astersql-pla
 - 修改扫描列次序时：确认是否仍需 Go `buildTableScanSchema` 的“表顺序优先、重复请求保留”语义，并同步现有重复列测试。
 - 修改广播白名单时：优先迁移解析器/AST 校验而非继续扩展字符串特例；至少覆盖允许语句、大小写/分号、相似但非法语句。
 - 性能风险集中在 `convertColumnInfo` 和 `buildTableScanSchema` 的嵌套线性查找；表列或请求列很大时可考虑预建 ID 索引，但必须保留表序与重复项语义。
-
-## 验证依据
-
-本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/pb_to_plan.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
-
-`aggregation_group_by_column_identity_test.rs::aggregation_group_by_column_identity` 交叉覆盖 stream 开关与 Selection 有无，断言 GROUP BY 与 first 参数共享输入 ID 11、max 参数为 12、sum 参数为 13，避免输出位置冒充输入 identity；`pb_to_plan_test.rs` 保留列顺序和下推边界用例。越界失败分支由源码复核，未在本会话执行测试。
-
-RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

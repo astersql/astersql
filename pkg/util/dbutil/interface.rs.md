@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-dbutil` crate 的数据库执行边界，位于 `pkg/util/dbutil`。crate 入口 `pkg/util/dbutil/lib.rs` 以 `pub mod interface` 暴露模块，并再次导出 `DBExecutor`、`QueryExecutor`、`Transaction`、`Value`、`QueryResult` 和 `DbError`，因此其他模块既可从 `crate::interface` 使用，也可从 crate 根使用这些类型。
-
-它不建立连接、不选择数据库驱动，也不执行具体 SQL。它只规定 dbutil 辅助函数需要的最小数据形状和同步调用协议。`pkg/util/dbutil/common.rs`、`index.rs`、`query.rs`、`variable.rs` 是直接消费者；`pkg/util/dbutil/Cargo.toml` 将 crate 根设为 `lib.rs`，当前文件自身只依赖标准库 `std::fmt`，没有直接使用清单中的外部依赖或条件编译项。
+为单行查询提供默认实现：`QueryExecutor::QueryRowContext` 复用实现者的 `QueryContext`，避免每个测试替身重复首行提取逻辑。
 
 ## 核心职责
 
@@ -73,13 +71,13 @@ RustCodeGraph 的精确节点显示 `QueryExecutor` 被 `common.rs`、`index.rs`
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/dbutil/interface.go`。Go 的 `QueryExecutor` 只声明 `QueryContext(context.Context, string, ...any) (*sql.Rows, error)` 与 `QueryRowContext(...) *sql.Row`；Rust 保留两种操作的语义名称，但去掉 `context.Context`，把可变参数改为 `&[Value]`，把惰性 `*sql.Rows`/`*sql.Row` 改为拥有数据的 `QueryResult`/`Vec<Value>`，并在 trait 内实现单行提取。
+Go 的 `QueryExecutor` 只声明 `QueryContext(context.Context, string, ...any) (*sql.Rows, error)` 与 `QueryRowContext(...) *sql.Row`；Rust 保留两种操作的语义名称，但去掉 `context.Context`，把可变参数改为 `&[Value]`，把惰性 `*sql.Rows`/`*sql.Row` 改为拥有数据的 `QueryResult`/`Vec<Value>`，并在 trait 内实现单行提取。
 
-Go 的 `DBExecutor` 嵌入 `QueryExecutor`，并声明带 `context.Context` 和 `*sql.TxOptions` 的 `BeginTx`，以及返回 `sql.Result` 的 `ExecContext`。Rust 同样以 supertrait 复用查询能力，但 `BeginTx` 没有上下文和事务选项，返回 `Box<dyn Transaction>`；`ExecContext` 只返回 `u64` 受影响行数，不能提供 last insert ID。
+Rust 同样以 supertrait 复用查询能力，但 `BeginTx` 没有上下文和事务选项，返回 `Box<dyn Transaction>`；`ExecContext` 只返回 `u64` 受影响行数，不能提供 last insert ID。
 
-Go 文件没有单独定义 `Transaction`、`Value`、`QueryResult` 或 `DbError`，而是直接使用 `database/sql` 与 `any`。这些 Rust 类型是为当前无驱动依赖的迁移层新增的边界类型。Go 还以空白赋值在编译期验证 `*sql.DB` 和 `*sql.Conn` 满足 `DBExecutor`；Rust 源码只在注释中保留这一来源说明，当前没有对应真实驱动实现或编译期兼容性断言。
+Go 还以空白赋值在编译期验证 `*sql.DB` 和 `*sql.Conn` 满足 `DBExecutor`；Rust 源码只在注释中保留这一来源说明，当前没有对应真实驱动实现或编译期兼容性断言。
 
-因此两版的调用意图相近，但能力并不等价：Rust 目前缺少取消/超时、事务选项、游标式扫描、驱动值全集和真实连接接线。扩展时不能把 Go 的实现兼容性直接推断为 Rust 已具备。
+因此两版的调用意图相近，但能力并不等价：Rust 目前缺少取消/超时、事务选项、游标式扫描、驱动值全集和真实连接接线。
 
 ## 扩展指南
 
@@ -90,13 +88,3 @@ Go 文件没有单独定义 `Transaction`、`Value`、`QueryResult` 或 `DbError
 若改变查询或事务 trait 签名，需同步所有独立测试实现：`common_test.rs` 的 `ScriptedDb`/`TestTransaction`、`index_test.rs::IndexFixture`、`variable_test.rs` 的多个 fixture。真实驱动接入后还应为默认 `QueryRowContext` 增加独立回归测试，覆盖查询错误、空结果、单行及多行只取首行；测试仍应放在独立 `*_test.rs`，不要内嵌到生产源文件。
 
 兼容风险主要来自破坏 trait object、改变 Go 对齐的错误文本或丢失驱动值精度；性能风险主要来自 `QueryResult` 全量物化及 `QueryRowContext` 为取一行仍执行完整查询。若要支持流式结果或异步取消，应新增清晰的独立抽象，而不是在现有返回类型中隐式改变生命周期。
-
-## 验证依据
-
-- 目标源码：`pkg/util/dbutil/interface.rs`；逐项核对了全部公开枚举、结构体、转换实现、trait、默认方法和 supertrait 关系，确认无常量、自由函数、条件编译、异步或 `unsafe`。
-- crate 边界：`pkg/util/dbutil/Cargo.toml` 与 `pkg/util/dbutil/lib.rs`；确认库入口、模块声明、再导出和依赖范围。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/util/dbutil` 确认相关源码与独立测试；`node interface.rs::QueryExecutor`、`node interface.rs::QueryExecutor::QueryRowContext`、`node interface.rs::DBExecutor`、`node interface.rs::Transaction`、`node interface.rs::DbError`、`node interface.rs::QueryResult`、`node interface.rs::Value` 核对定义、内部调用和直接导入边。
-- Rust 调用方：`pkg/util/dbutil/common.rs`、`index.rs`、`query.rs`、`retry.rs`、`variable.rs`；重点核对了 `common.rs::ExecuteSQLs` 的事务生命周期、`ExecSQLWithRetry`/`DeleteRows` 的写入调用和各结果/错误消费者。
-- Go 对照：`pkg/util/dbutil/interface.go`；核对 `database/sql` 的接口签名、上下文/事务选项、`sql.Rows`/`sql.Row`/`sql.Result` 返回形状及 `*sql.DB`、`*sql.Conn` 兼容性断言。
-- 独立测试：`pkg/util/dbutil/common_test.rs` 的 `ScriptedDb`、`TestTransaction`，`index_test.rs::IndexFixture`，`variable_test.rs` 的查询 fixture，`query_test.rs` 的所有 `Value` 扫描边界，以及 Go 的 `common_test.go` 分批删除场景。未发现同名 `interface_test.rs` 或 `interface_test.go`，也未发现生产 Rust 类型实现这些 trait。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以规定命令验证文档存在且恰含 11 个固定二级章节，并人工复核所有“当前支持/未支持”陈述均可回指上述文件或符号。

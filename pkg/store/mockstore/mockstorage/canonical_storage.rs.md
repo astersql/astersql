@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-mockstorage` crate 的**规范 KV 接口适配层**：它不拥有底层数据，而是为 `storage.rs` 中的 `KVTxn`、`Transaction`、`Snapshot`、`MemManager` 和 `mockStorage` 实现 `astersql_kv`（本文记为 `kv`）定义的 traits。crate 入口 `lib.rs` 以 `mod canonical_storage` 装入本模块，并通过 `pub use canonical_storage::*` 与 `pub use storage::*` 将适配器和存储类型一起导出。
-
-因此上层通过 `dyn kv::Storage`、`dyn kv::Transaction` 或 `dyn kv::Snapshot` 使用 mock 时，会进入本文件的 trait 方法；实际 MVCC 版本、时间戳、写集和关闭状态仍由 `storage.rs` 管理。典型构造入口是 `storage.rs::NewMockStorage`，会同时初始化 `OracleHandle`、`ClientHandle`、内存缓存和 `canonicalOptions`。仓库中的会话运行时和存储测试通过 `NewMockStorage(...)` 使用这条链，例如 `pkg/session/runtime/session.rs`、`pkg/session/runtime/scan_adapter_runtime_test.rs` 与 `pkg/store/store_test.rs`。
-
-`Cargo.toml` 声明本 crate 的生产依赖为 `astersql-kv` 和 `astersql-store-mockstore-unistore`；coprocessor、driver/txn、helper 只位于永不成立的 `cfg(any())` 依赖段，不能据此认为 Rust 适配器直接使用这些 crate。
+为事务和快照提供点查、正反向扫描与预物化迭代；事务读取遵循“本地写集覆盖 start-ts 快照”，删除标记遮蔽旧值。
 
 ## 核心职责
 
@@ -95,7 +91,7 @@ RustCodeGraph 的文件关系显示 `canonical_storage.rs` 直接使用 `storage
 
 ## 与 Go 版本的对应关系
 
-同路径 `storage.go` 的 `mockStorage` 直接组合 `*tikv.KVStore` 与 `*copr.Store`，通过 `driver.NewTiKVTxn`/`driver.NewSnapshot` 获得 `kv.Transaction` 和 `kv.Snapshot`。Rust 将可独立运行的内存 MVCC 放在 `storage.rs`，再由本文件显式为内部对象实现同类 `kv` traits；这是结构差异，不应把 Rust 的默认 coprocessor/MPP 占位误认为 Go `copr.Store` 的完整等价实现。
+Rust 将可独立运行的内存 MVCC 放在 `storage.rs`，再由本文件显式为内部对象实现同类 `kv` traits；这是结构差异，不应把 Rust 的默认 coprocessor/MPP 占位误认为 Go `copr.Store` 的完整等价实现。
 
 已对齐的顶层行为包括：`Name` 为 `mock-storage`、`Describe` 为空、`ShowStatus` 返回未实现、`Begin` 支持事务选项、`GetSnapshot` 返回指定版本视图、`CurrentVersion` 经 oracle 获取版本、`GetMinSafeTS`、锁等待、cluster ID、keyspace、mem cache 和可设置选项。Rust 测试还固定了 Go 语义：事务 Getter 的 `CommitTs` 为 0、写冲突可由 `IsTxnRetryableError` 识别、显式 start-ts 被保留、回滚写不可见。
 
@@ -116,14 +112,3 @@ RustCodeGraph 的文件关系显示 `canonical_storage.rs` 直接使用 `storage
 - 为 options 增加动态类型时，必须同时修改 `option_key` 或 `leak_option_value`，并明确所有权与释放策略；当前泄漏方案不适合高频、无界设置。
 - 若实现 coprocessor、MPP、disk-full、checkpoint 或 flush，替换对应占位符号并加入能力/错误路径测试；不能只把 `IsRequestTypeSupported` 改为 true 而不提供实际响应。
 - 兼容风险集中在错误身份、`CommitTs` 暴露、key 编码、范围边界和 Go option 语义；性能风险集中在扫描预物化、staging 全量克隆、逐 key `BatchGet` 与 option 泄漏。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录的 6 个 Rust/Go 源文件均已索引，`canonical_storage.rs` 报告 151 个符号。
-- RustCodeGraph 源码读取：`canonical_storage.rs` 全部 1,390 行；直接实现载体 `storage.rs` 的 `KVStore`、`KVTxn`、`Transaction`、`Snapshot`、`MemManager`、`mockStorage` 和 `NewMockStorage`；模块入口 `lib.rs`。
-- RustCodeGraph 查询：`query CanonicalIterator --kind struct` 定位 `canonical_storage.rs:60`；`query mockStorage/KVTxn/NewMockStorage` 定位 `storage.rs` 的类型和构造器。对主要适配类型执行 `callers/callees` 未得到静态边，动态 trait 调用关系改由模块装配、构造点和仓库使用点交叉验证。
-- crate 边界：`pkg/store/mockstore/mockstorage/Cargo.toml`；确认生产依赖和 `package.metadata.porting.go-package = "pkg/store/mockstore/mockstorage"`。
-- Go 对照：`pkg/store/mockstore/mockstorage/storage.go` 全部 203 行，核对构造、事务/快照、版本、选项、关闭、codec、锁等待、cluster ID 和 keyspace。
-- 独立 Rust 测试：`pkg/store/mockstore/mockstorage/canonical_storage_test.rs` 全部 419 行；覆盖 trait 合规、提交/回滚/关闭、大小限制、显式 start-ts、零 `CommitTs`、可重试冲突、async commit、schema checker、lock-only 冲突依赖、embedded RPC union scan/错误传播及 SST 历史顺序。
-- 上游使用点文本核验：`pkg/session/runtime/session.rs`、`pkg/session/runtime/scan_adapter_runtime_test.rs`、`pkg/store/store_test.rs` 等构造并通过标准 KV 接口使用 `NewMockStorage`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级章节，并人工检查没有把占位能力写成已实现能力。

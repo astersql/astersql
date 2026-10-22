@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`typed_selection.rs` 位于 `astersql-executor` crate，是 typed 物理执行器链中的行过滤节点。crate 由 `pkg/executor/Cargo.toml` 定义，根模块在 `pkg/executor/lib.rs` 中以 `pub mod typed_selection` 暴露本模块，并仅在 `cfg(test)` 下装配独立测试 `typed_selection_test.rs`。
-
-上游 `pkg/executor/builder.rs` 将 canonical 物理计划中的 `PhysicalSelection` 构造成 `TypedSelection`；它也会在表扫描、索引扫描/回表以及非 Full Outer Join 的左右输入存在过滤条件时，用本节点包装已经构造好的子执行器。因此，本文件不是 SQL 解析或谓词生成处，而是把 planner 产生的 `ExprBox` 条件应用到 typed `Chunk` 行上的执行期适配层。
+`ExecExecutor` 实现负责生命周期检查，并把 schema、chunk 配置、扫描计数及外键相关能力透明委托给子节点。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 `pkg/executor/select.go` 的 `SelectionExec`。两者都以一个子执行器为输入，复用子 chunk，按谓词过滤行，在 EOF 时返回空 chunk，并传播子执行器或表达式错误。Rust 的 `EvalBool` 位于 `pkg/expression/expression.rs`，其 NULL、假值和 `IN` 等价条件延迟 NULL 规则与 `pkg/expression/expression.go` 的 canonical `EvalBool` 保持对应。
-
 当前 Rust typed 实现是聚焦的行式版本，与 Go 版本仍有明确差异：Go 会依据 `expression.Vectorizable` 选择 `VectorizedFilter` 或逐行路径，跟踪 chunk 内存占用，并尊重 required rows；Rust 始终逐行求值，只以 `output.IsFull()` 控制页大小，也没有本地内存 tracker。Go `SelectionExec.Detach` 会在表达式不需要可选求值属性时复制分离；Rust 因持有会话 `ContextRef` 而总是返回 `None`。Rust 还承担 typed locking 链中的逐行 `TakeLockKeys` 过滤，这是本文件测试明确覆盖的契约，不能仅按 Go `SelectionExec` 的字段结构理解。
 
 Go 侧 `pkg/executor/executor_required_rows_test.go::TestSelectionRequiredRows` 验证 required-row 拉取策略，`pkg/executor/detach_integration_test.go::TestDetachSelection` 验证可分离条件；它们说明的是 Go 完整执行器能力，不是 Rust 当前已具备能力。
@@ -89,12 +85,3 @@ Go 侧 `pkg/executor/executor_required_rows_test.go::TestSelectionRequiredRows` 
 - 生命周期或错误策略变化应覆盖未打开拉取、关闭后拉取、重复关闭、child 打开/关闭失败，以及键数不匹配。测试逻辑必须继续放在独立的 `pkg/executor/typed_selection_test.rs`，不要内嵌到生产文件。
 - builder 新增过滤包装位置时，应复用 `TypedSelection::new`，并检查过滤发生在索引行、回表行还是 Join 输入上；放置阶段会影响可用列、锁键和执行代价。
 - 兼容性风险主要是 SQL NULL/副作用求值顺序和 Go 语义漂移；正确性风险主要是游标或锁键错配；性能风险主要是逐行表达式调用与锁键克隆。任何优化都不应以删除 canonical 分支或简化 Go 行为来换取测试通过。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点；`node --file pkg/executor/typed_selection.rs` 读取了完整 163 行，并显示该文件被多个执行器/测试文件引用。
-- RustCodeGraph 符号与调用查询：`query TypedSelection` 定位到 `typed_selection.rs:16`；`query next_inner` 定位到本文件 `:48`；`callees next_inner` 给出本文件到 `EvalBool`、`Next`、`NextWithContext`、`TakeLockKeys` 和 `GetExprCtx` 的边；`node EvalBool` 进一步确认 `pkg/expression/expression.rs:383` 的实现及其由本文件调用。
-- 已读生产证据：`pkg/executor/typed_selection.rs`、`pkg/executor/builder.rs`、`pkg/executor/adapter.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`、`pkg/expression/expression.rs`（经 RustCodeGraph 源码节点）。`pkg/executor` 下未发现包级 `doc.go`。
-- 已读 Rust 测试：`pkg/executor/typed_selection_test.rs::canonical_typed_selection_filters_rows_and_excludes_discarded_record_locks`。它验证 `PhysicalSelection + PhysicalTableScan` 构建、Open 不提前迭代、仅保留值 30、仅返回该行锁键、`Detach == None`、EOF 空页和 Close 成功。
-- 已读 Go 对照：`pkg/executor/select.go::SelectionExec`、`Open/open/Next/unBatchedNext/Close`，`pkg/executor/detach.go::SelectionExec.Detach`，以及 `pkg/executor/executor_required_rows_test.go::TestSelectionRequiredRows`、`pkg/executor/detach_integration_test.go::TestDetachSelection`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核唯一新增生产物、源码链接和无“已支持”臆测。

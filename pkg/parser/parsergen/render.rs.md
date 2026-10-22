@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`render.rs` 位于 `astersql-parsergen` crate 的“语法模型 → 自动机/分析表 → Rust 数据”流水线末端。crate 入口 `pkg/parser/parsergen/lib.rs` 公开 `render` 模块并重导出其 API；`pkg/parser/parsergen/Cargo.toml` 同时把该 crate 配置为库和 `astersql-parsergen` 命令行程序，且没有第三方依赖。文件本身不解析 `.astergram`、不执行 SQL 语义动作，也不读写磁盘：它接收已经由 `Grammar::parse` 构造并验证的 `Grammar`，调用 `Automaton::build`、`ParseTable::build` 和 `ParseTable::encode`，形成可供生成器和验证器消费的确定性数据。
-
-仓库提交产物的真实生成入口在 `pkg/parser/parsergen/generate.rs::generate_parser_output`：它读取主/Hint 语法后调用 `GeneratedParser::build`，再由 `render_compatibility_tables` 输出 `pkg/parser/generated/main_tables.rs`、`hint_tables.rs` 等运行时兼容文件。`render.rs::render_rust`/`GeneratedParser::render_rust` 则提供一份自包含、通用的 Rust 常量源码表示，主要被渲染稳定性与标识符测试直接使用；不能把它误写成当前三个提交生成文件的唯一格式化入口。
+`GeneratedParser::trace` 用未编码表重放 shift/reduce/goto/accept 流程，提供与状态编号无关的 `TraceStep` 序列，用于把新生成数据和仓库现有解析表进行行为基线比较。
 
 ## 核心职责
 
@@ -73,9 +71,7 @@
 
 ## 与 Go 版本的对应关系
 
-仓库不存在 `pkg/parser/parsergen/render.go` 的一一对应文件。最接近的 Go 对照是 `pkg/parser/goyacc/main.go`：其生成阶段同样按确定顺序写出 token 常量、外部 token 到内部符号的 `XLAT`、符号名、归约 `(lhs, components)` 和解析表；生成的实际 Go 产物位于 `pkg/parser/parser.go`、`pkg/parser/hintparser.go`。Rust 的 `pkg/parser/parsergen/generate.rs::render_compatibility_tables` 进一步把 `GeneratedParser` 转成与 Go 运行时语义相近、但编码布局为 Rust 稀疏行的表。
-
-两侧共同约束是：外部 token 必须先翻译成表列；正动作表示 shift/goto，负动作表示 reduce，零表示错误；归约元数据给出左部符号和需要弹出的右部组件数。`parser_runtime.rs::yyParse` 才是 Go `goyacc/main.go` 生成的 `yyParse` 模板的运行时迁移，对应语义值栈、动作分派和三阶段错误恢复。
+Rust 的 `pkg/parser/parsergen/generate.rs::render_compatibility_tables` 进一步把 `GeneratedParser` 转成与 Go 运行时语义相近、但编码布局为 Rust 稀疏行的表。
 
 Rust 特有部分包括稳定字符串 `RuleId`、`ACTION_REQUIRED_BY_REDUCTION`、合法 Rust token 标识符转换、`GeneratedParser::trace` 以及自包含 `render_rust` 格式。Go 生成器直接嵌入语义动作和 Go 标识符/格式规则，Rust 则刻意把动作留给 `parser_actions::apply`。因此验证应比较接受/拒绝、shift/reduce/goto 和归约映射语义，而不应要求 Go/Rust 生成源码逐字节或表的物理布局相同；`parsergen_baseline_aster_unit_test.rs` 也明确以主/Hint 语法契约和现有 Rust 表作基线，而非复制 Go 内部表布局。
 
@@ -88,12 +84,3 @@ Rust 特有部分包括稳定字符串 `RuleId`、`ACTION_REQUIRED_BY_REDUCTION`
 若修改归约长度、规则枚举或表编码，应同步检查 `component_count`、`rule_variants`、`GeneratedParser::build` 和 `trace`，并扩展 `render_aster_unit_test.rs`、`parsergen_baseline_aster_unit_test.rs` 以及 `table_aster_unit_test.rs`。关键兼容风险是归约数组下标错位、语义动作被计入弹栈数、token 列号与符号名错位；性能风险主要是新增无界复制、把稀疏表改为稠密输出或破坏 `BTree*`/排序带来的稳定性。
 
 新增测试必须继续放在独立文件中，通过 `lib.rs` 的 `#[cfg(test)] mod ...` 接入，不应把测试嵌进 `render.rs`。对只影响文档的修改不需要生成或 Cargo；对未来行为修改则应先用最小语法构造回归用例，并同时验证失败/接受轨迹和生成字节稳定性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/parser/parsergen/render.rs`（37 个符号）；`node --file` 阅读了该文件 1–468 行；`query render_rust` 区分出实例方法（第 193 行）和公开自由函数（第 221 行）；`explore` 确认文件内 `render_rust`、`render_generated`、`build`、`trace` 及辅助函数关系。由于常见名称存在跨仓库同名候选，`callers`/`callees` 未给出可辨识输出，跨文件边改由精确调用点源码核验。
-- crate 与入口：`pkg/parser/parsergen/Cargo.toml`、`lib.rs`、`main.rs`。
-- 生产生成链：`pkg/parser/parsergen/generate.rs::generate_outputs`、`generate_parser_output`、`render_compatibility_tables`、`render_token_module`；实际消费：`pkg/parser/parser_runtime.rs::generated_main_symbol`、`generated_main_action`、`yyParse`。
-- 独立 Rust 测试：`pkg/parser/parsergen/render_test.rs` 验证带标点 token 生成不同合法标识符；`render_aster_unit_test.rs` 验证逐字节可复现、关键输出段和归约元数据长度；`pkg/parser/parsergen_baseline_aster_unit_test.rs` 验证主/Hint 语法的元数据、稳定渲染、接受/拒绝及未知 token 轨迹。
-- Go 对照：`pkg/parser/goyacc/main.go` 的常量、XLAT、符号名、归约和解析器模板；其生成产物 `pkg/parser/parser.go`、`pkg/parser/hintparser.go`。未发现同路径 `render.go`，所以文档明确采用最近语义对照而非宣称逐文件复刻。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。结构检查要求目标文件存在且固定二级标题恰好为 11 个；最终交付前另行执行并记录退出码。

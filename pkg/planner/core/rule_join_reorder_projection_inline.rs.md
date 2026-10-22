@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 以 `lib.rs` 为库入口，`pkg/planner/core/lib.rs` 通过 `pub mod rule_join_reorder_projection_inline` 公开本模块，并在 `#[cfg(test)]` 下把独立测试 `rule_join_reorder_projection_inline_test.rs` 接入测试构建。目标文件没有条件编译项、模块级常量、自定义类型或 trait，只提供五个公开函数。
-
-它是 Join Reorder 的 Projection 穿透辅助模块：输入和输出都使用相邻 `rule_join_reorder.rs` 定义的简化 `JoinPlan`、`JoinNode` 与 `joinGroupResult`。需要特别区分“公开模块”和“已接入优化主链”：RustCodeGraph 的 caller 结果与 Rust 源码搜索只发现独立 Rust 测试调用 `tryInlineProjectionForJoinGroup`；`JoinReOrderSolver::optimizeRecursive` 当前仍直接调用 `extractJoinGroup`，而 `extractJoinGroupImpl` 不穿透 Projection。因此本文件当前是可独立调用和测试的移植实现，尚未接入 Rust Join Reorder 的生产递归入口。Go 同名文件则已由 Go `rule_join_reorder.go::extractJoinGroupImpl` 在会话开关允许时调用。
+Rust `Expression` 只有一个 `column: Option<usize>` 可供本模块追踪，所以实现只能处理单个列号层面的映射；`name` 前缀承担部分安全标签的作用。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph 的 callee 边确认 `tryInlineProjectionForJoinGroup` 调用 `ext
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/core/rule_join_reorder_projection_inline.go` 是直接语义对照。两版保留了同名的四层结构：总入口、映射构建、基础表达式检查、Join 组归属检查；也都只尝试直接包在 Join 上的 Projection，失败时把 Projection 作为原子叶子，并避免 pass-through 自引用映射。
-
 Rust 已对齐的意图包括：拒绝 constant-only/危险表达式、要求列能归属 Join 组叶子、拒绝跨叶或未知归属、成功后保留 Projection 输出契约、失败时不破坏原计划，以及允许多个输出引用同一安全叶列。独立 Rust 测试实际覆盖 constant-only 拒绝、同一叶列被多次投影、未知列拒绝与原子回退。
 
 两版尚未等价，关键差异如下：
@@ -96,8 +92,6 @@ Rust 已对齐的意图包括：拒绝 constant-only/危险表达式、要求列
 - Go 的重复列归属仅在同一列出现在不同叶子时拒绝；Rust 当前对任何第二次出现都拒绝，包括同一叶内重复 schema id。
 - Go 安全回退保留真实逻辑计划对象；Rust 回退使用简化 `JoinPlan` 克隆并把 `originalSchema` 显式设置为 Projection schema。
 
-因此本文件是 Go 行为的局部、保守移植，而不是可互换实现。后续补齐必须逐项移植真实约束和测试，不应为了接线而删减 Go 语义。
-
 ## 扩展指南
 
 - 接入 Rust Join Reorder 主链时，优先修改 `rule_join_reorder.rs` 的抽取入口，并先定义开关、成功后的 schema 恢复、表达式映射传播和回退契约；同步扩展独立 `rule_join_reorder_projection_inline_test.rs` 与 `rule_join_reorder_test.rs`。接线前应新增一个证明主入口确实穿透 Projection 的回归测试。
@@ -109,13 +103,3 @@ Rust 已对齐的意图包括：拒绝 constant-only/危险表达式、要求列
 - Rust 测试继续放在同目录独立 `*_test.rs` 文件，通过 `lib.rs` 的 `#[cfg(test)] mod ...` 接入，不应把测试内嵌进生产源文件。
 
 兼容性风险集中在输出 schema 恢复与危险表达式移动，正确性风险集中在跨叶表达式、Outer Join 空值扩展和非确定性求值次数，性能风险集中在计划/表达式克隆与未来通用替换遍历。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；通过 `node --file pkg/planner/core/rule_join_reorder_projection_inline.rs --offset 1 --limit 400` 读取了目标文件全部 107 行。
-- RustCodeGraph 符号与边：查询了 `tryInlineProjectionForJoinGroup`、`buildColExprMapForProjection`、`isInlineableProjectionExpr`、`canInlineProjectionBasic`、`canInlineProjection`、`extractJoinGroup`；callee 结果确认总入口的内部调用和结果类型实例化，caller JSON 与源码搜索确认 Rust 侧仅有独立测试 caller、没有生产主链 caller。
-- crate 与模块证据：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。目标包根目录没有 `doc.go`；最近的 `pkg/planner/core/base/doc.go` 属于 `base` 子包，不作为当前 crate 行为定义。
-- Rust 上下游证据：`pkg/planner/core/rule_join_reorder.rs` 的 `JoinNode`、`JoinPlan`、`joinGroupResult`、`extractJoinGroupImpl` 和 `JoinReOrderSolver::optimizeRecursive`；`pkg/planner/core/task.rs` 的 `Expression`。
-- 独立 Rust 测试：`pkg/planner/core/rule_join_reorder_projection_inline_test.rs`。测试覆盖基础 constant-only 栅栏、同一叶列多次投影、未知列拒绝和原子回退；它没有覆盖成功路径的 `eqEdges` 改写、危险名称前缀或生产入口接线。
-- Go 对照与测试：`pkg/planner/core/rule_join_reorder_projection_inline.go`、`pkg/planner/core/rule_join_reorder.go`、`pkg/planner/core/rule_join_reorder_dp_test.go`。Go 测试额外证明非确定性、跨叶、null-extended 表达式拒绝，以及安全派生列映射和原子回退。
-- 本任务只新增说明文档，按计划未运行 Cargo，也未把历史测试结果当作本次运行证据；最终仅执行任务指定的 11 章节结构检查，并人工复核重要结论均能回指上述符号和文件。

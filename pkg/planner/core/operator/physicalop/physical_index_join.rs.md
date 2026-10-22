@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate；crate 入口由同目录 `lib.rs` 声明 `mod physical_index_join` 并以 `pub use physical_index_join::*` 导出。它定义 Index Lookup Join 家族共享的物理计划状态，以及“最后一个索引列由外表行动态决定范围”所需的比较过滤管理器。`PhysicalIndexHashJoin` 和 `PhysicalIndexMergeJoin` 都内嵌这里的 `PhysicalIndexJoin`，因此这里不是单一算子的孤立实现，而是三个 Index Join 变体的公共基座。
-
-在规划主链中，`base_physical_plan.rs` 根据连接提示、任务类型、存储引擎、内表可用索引和连接键可解析性创建 `PhysicalIndexJoin`，随后由 `index_join_probe.rs` 选择内表探测路径、构造模板范围及可选的末列比较管理器，最后在挂接阶段克隆计划并补齐 `InnerPlan`。本文件保存和转换这些信息，但不负责真正读取内表数据。
-
-`Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/planner/core/operator/physicalop`；本文件的直接 Go 对照是同目录 `physical_index_join.go`。
+`CompleteHashKeys` 以 `OuterJoinKeys`/`InnerJoinKeys` 为前缀，从原始 `EqualConditions` 中补收跨内外孩子的裸列等值条件，供 Index Hash Join 使用；`append_outer_hash_key_pair` 负责方向校正、`IN` 操作数排除和重复对去除。
 
 ## 核心职责
 
@@ -96,18 +92,15 @@ crate 边界由 `physicalop/Cargo.toml` 明确声明，上述依赖均为显式�
 
 ## 与 Go 版本的对应关系
 
-结构和大部分辅助方法与 `physical_index_join.go` 对齐：字段集合、初始化、克隆、内存统计、EXPLAIN、下标解析、比较管理器、动态范围生成和 `IndexJoinInfo` 均有同名或直接对应实现。Rust 额外保存并深克隆 `EqualConditions`，并通过 `CompleteHashKeys` 实现 Go `completePhysicalIndexJoin` 中从剩余等值条件补齐 Hash Key 的逻辑。
+Rust 额外保存并深克隆 `EqualConditions`，并通过 `CompleteHashKeys` 实现 Go `completePhysicalIndexJoin` 中从剩余等值条件补齐 Hash Key 的逻辑。
 
 重要差异如下：
 
-- Go 的 `completePhysicalIndexJoin` 在 `pkg/planner/core/exhaust_physical_plans.go` 回填 `IndexJoinInfo`，Rust 的对应工作分散在 `base_physical_plan.rs` 与 `index_join_probe.rs`。
 - Go `ResolveIndices` 依靠有序 Schema 双指针处理重复列；Rust 使用“逐输出搜索 + `used` 位图”，并额外支持输出列重排。独立 Rust 测试覆盖重复列及重排输出。
 - Go 的 `BuildRangesByRow` 已由 `pkg/executor/builder.go` 调用，`CompareRow` 已由 Index Lookup/Index Merge Join worker 用于排序和去重；当前 Rust 执行器对应代码仍是注释，因此 Rust 只具备规划数据与辅助实现，未验证完整运行期接线。
 - Go 比较管理器克隆时可能共享跨 session 安全的列、Schema 和比较函数；Rust 选择克隆列/Schema 并重建比较函数，所有权边界更明确。
 - Go 成本方法使用 Index Join 专用 `utilfuncp`；本文件 Rust 的成本路径较简化，属于已识别但非本文档任务修复范围的迁移差异。
 - `NormalizeNestedIndexJoinBuildExchange` 是 Rust 当前规划器中的局部规范化辅助，在 Go 同路径文件中没有对应同名函数。
-
-相关独立 Rust 测试 `physical_index_join_test.rs` 验证：跨孩子等值键补齐与去重、比较管理器内存统计、条件/比较 Schema 下标解析、重复输出列和重排输出。相邻的 `index_join_probe_test.rs`、`cache_snapshot_test.rs` 进一步覆盖探测选择和缓存快照，但不是本文件的独立测试主体。Go 同目录 `physical_utils_test.go` 主要覆盖 Index Join 变体识别；执行期比较和建范围行为更多由 executor 测试间接覆盖。
 
 ## 扩展指南
 
@@ -118,13 +111,3 @@ crate 边界由 `physicalop/Cargo.toml` 明确声明，上述依赖均为显式�
 - 修改 `ColWithCmpFuncManager` 的公开向量时，应优先提供维护不变量的方法，避免调用者绕过 `rebuild_compare_funcs`。增加字段还要同步 `cloneForPlanCache`、`restore_cache_snapshot` 和 `MemoryUsage`。
 - 调整 Exchange 阈值时，修改 `NormalizeNestedIndexJoinBuildExchange` 及 `optimizer_runtime.rs` 调用场景，并补充边界值 `1`、`512`、build/probe 相等和已有 HashCols 清理的独立测试。
 - 成本模型扩展不应继续堆入当前简化公式；应先核对 `pkg/planner/core/plan_cost_ver1.rs`、Go `plan_cost_ver2.go` 和 `utilfuncp` 路由，避免三种 Index Join 变体产生不一致排序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query PhysicalIndexJoin` 定位 Rust 结构于本文件第 76 行及 Go 结构于对照文件第 44 行；`query ColWithCmpFuncManager` 定位本文件结构、`index_join_probe.rs` 的构造入口、`cache_snapshot.rs` 的捕获/恢复和 Go executor 入口；按文件 `node` 完整读取本文件 1–662 行，并报告它被 13 个文件使用。方法级 `callers` 未返回边，故对未覆盖部分使用精确文本检索补证。
-- 读取的目标与边界文件：`pkg/planner/core/operator/physicalop/physical_index_join.rs`、`Cargo.toml`、`lib.rs`。
-- 读取的直接 Rust 调用证据：`base_physical_plan.rs`（创建、`CompleteHashKeys`、探测结果回填、挂接）、`index_join_probe.rs`（候选索引、模板范围、比较管理器）、`optimizer_runtime.rs`（Exchange 规范化）、`cache_snapshot.rs` 与 `plan_clone_generated.rs`（缓存生命周期）。
-- 读取的 Go 对照：`physical_index_join.go`；并以 `pkg/planner/core/exhaust_physical_plans.go`、`pkg/executor/builder.go`、`pkg/executor/join/index_lookup_join.go`、`index_lookup_merge_join.go` 的精确调用点核对规划反馈和执行期语义。
-- 测试证据：完整读取 `pkg/planner/core/operator/physicalop/physical_index_join_test.rs`；精确检索 `index_join_probe_test.rs`、`cache_snapshot_test.rs` 和 Go `physical_utils_test.go` 的相关引用。
-- 人工复核结论：本文件确实承担 Index Join 公共计划状态、哈希键补齐、下标解析、动态比较范围辅助和生命周期方法；动态比较辅助在当前 Rust executor 中没有有效调用，文档已明确该限制。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付只执行任务指定的 11 章节结构检查。

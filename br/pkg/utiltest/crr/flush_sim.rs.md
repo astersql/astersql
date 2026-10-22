@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明的真实源文件是 [`flush_sim.rs`](./flush_sim.rs)。它属于 `astersql-br-pkg-utiltest-crr` library crate；crate 边界由 `br/pkg/utiltest/crr/Cargo.toml` 的 `[lib] path = "lib.rs"` 确定，`lib.rs` 通过 `pub mod flush_sim` 纳入模块并用 `pub use flush_sim::*` 再导出公开项。它不是生产日志备份实现，而是 CRR（跨区域复制）测试夹具中的日志备份 flush 模拟器：针对一个模拟 store 生成空的 log 对象和可解析的 backup metadata，再推进假 PD 中该 store 的 region checkpoint。
-
-直接装配入口是 `harness.rs::newLocalTestHarness`：它把 `PDSim` 和带事件通知能力的 `CRRUpstreamStorage` 交给 `NewFlushSimWithTestContext`。因此 `FlushSim` 写出的对象会进入 CRR worker 的复制事件流，最终由 `TestHarness::AssertDownstreamCanRestoreTo` 使用 `RecordsUpTo` 校验下游恢复材料。该定位由 RustCodeGraph 的文件关系（`flush_sim.rs` 被 `harness.rs`、`parity_test.rs` 使用）以及上述源码调用共同确认。
+`Records` 与 `RecordsUpTo` 提供已成功完成 flush 的深拷贝快照；后者只返回 `CheckpointTS <= tso` 的记录，供恢复点断言使用。
 
 ## 核心职责
 
@@ -85,11 +83,9 @@ RustCodeGraph 能解析文件级使用关系和 `NewFlushSimWithTestContext -> n
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/utiltest/crr/flush_sim.go`。Rust 保留了 Go 的类型划分、公开 API 名称、两次 TSO 分配顺序、按 store 加锁、随机 component 名、对象路径、tagged metadata 名、wire 字段、先写文件后推进 PD、成功后登记记录，以及按 checkpoint 筛选历史的语义。
+实现机制上的差异主要是语言所有权与同步表达：Go 用一个 `mu` 同时保护 `seq`、`records` 和 `stores`，Rust 将其拆成多个 `Mutex`，并把 store 锁放在 `Arc` 中；Go 返回指针构造结果，Rust 返回拥有所有权的 `FlushSim`。Go protobuf 使用指针 slice，Rust stub 使用值集合并在写 metadata 时 clone。
 
-实现机制上的差异主要是语言所有权与同步表达：Go 用一个 `mu` 同时保护 `seq`、`records` 和 `stores`，Rust 将其拆成多个 `Mutex`，并把 store 锁放在 `Arc` 中；Go 返回指针构造结果，Rust 返回拥有所有权的 `FlushSim`。Go protobuf 使用指针 slice，Rust stub 使用值集合并在写 metadata 时 clone。两边都会返回记录副本，Rust 显式调用 `FlushRecord::clone_record`。
-
-当前最重要的迁移差异是 failpoint：Go 实际调用 `failpoint.InjectCall`，Rust 只保留对齐位置的注释。此外，Go `flushRegions` 忽略 `pd.flushStore` 返回的 region 列表，Rust 同样只关心成功或失败。`parity_test.rs` 已验证 metadata 的 `StoreId`、group 数量、group `Path` 以及嵌套 info 空路径等关键 wire shape。
+当前最重要的迁移差异是 failpoint：Go 实际调用 `failpoint.InjectCall`，Rust 只保留对齐位置的注释。此外，Go `flushRegions` 忽略 `pd.flushStore` 返回的 region 列表，Rust 同样只关心成功或失败。
 
 ## 扩展指南
 
@@ -99,12 +95,3 @@ RustCodeGraph 能解析文件级使用关系和 `NewFlushSimWithTestContext -> n
 - 若改变并发模型，必须保持同 store 串行不变量及全局 sequence 的唯一、单调、有序可见性。扩大 store 锁作用域会降低并行度，缩小作用域则可能让同一 store 的 metadata 与 checkpoint 交错。
 - 若增加回滚或幂等重试，应明确处理已写 log、已写 metadata、PD 已推进这三个阶段；这会改变目前允许孤儿对象和序号空洞的行为，需与 Go 实现同步决策。
 - 若改变 TS 范围规则，应同时检查 `types.rs::DeterministicRNG::Uint64InRange`、`PDSim` 的全局 checkpoint 单调性和文件名标签含义，避免 metadata 内外的最大 TS 语义混淆。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件，其中 Rust 7,032 个；目标文件已索引，显示 16 个符号，并显示文件被 `harness.rs`、`parity_test.rs` 和同名无关概念所在文件引用。针对目标精确读取了 `flush_sim.rs` 全部 342 行。
-- RustCodeGraph/源码核验：`NewFlushSimWithTestContext` 由 `harness.rs::newLocalTestHarness` 调用；`FlushStore` 下游依次涉及 `PDSim::RegionSnapshotsOnStore`、`AllocTSO`、`GlobalCheckpoint`、`Storage::WriteFile`、metadata `Marshal` 和 `PDSim::flushStore`；`RecordsUpTo` 由 `TestHarness::AssertDownstreamCanRestoreTo` 使用。
-- 读取的 Rust 文件：`br/pkg/utiltest/crr/flush_sim.rs`、`lib.rs`、`harness.rs`、`types.rs`、`pd_sim.rs`、`parity_test.rs`。测试证据位于独立的 `parity_test.rs`：正常 flush、对象存在、metadata wire shape、空 store 错误，以及 flush→拉取→复制→上传 checkpoint→恢复断言。
-- crate/依赖证据：`br/pkg/utiltest/crr/Cargo.toml` 将本目录声明为 library，并直接依赖 stream、stream/backupmetas、streamhelper、streamhelper/config、fakecluster、`rand`、`serde` 与 `serde_json`；本文件直接使用其中的 stream、backupmetas 和 crate 内模块。
-- Go 对照：完整读取 `br/pkg/utiltest/crr/flush_sim.go`，逐项核对构造、锁、TS/RNG、路径、metadata、checkpoint、记录与错误分支；Rust failpoint 仅保留注释的差异已明确记录。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前仅执行任务指定的 11 节结构验证，并人工检查文档未把空 log、failpoint 或未覆盖边界描述成已实现能力。

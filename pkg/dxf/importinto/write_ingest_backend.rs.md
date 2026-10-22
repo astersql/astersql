@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto` crate，由 `pkg/dxf/importinto/lib.rs` 以 `pub mod write_ingest_backend` 纳入模块树。它位于 IMPORT INTO 全局排序的 WriteAndIngest 阶段，把 `task_executor.rs` 定义的 `WriteIngestBackend`/`ImportStepHost` 调度边界连接到 Rust 版 global-sort 外部引擎和 ingestctrl 的 Region 导入管线。
-
-这个文件不负责解析子任务 meta、选择 KV group 的重复键策略，也不直接实现 TiKV RPC。前者由 `WriteAndIngestStepExecutor::RunSubtask` 处理，后者由宿主注入的 `RegionImportTransport` 实现。文件顶部注释将该边界概括为：宿主提供 Region 发现和 TiKV RPC，本地 Rust 代码负责数据加载、重试阶段、进度与引擎生命周期。
-
-crate 边界由 `pkg/dxf/importinto/Cargo.toml` 确认：库入口是 `lib.rs`，本文件直接使用 `astersql-ingestor-engineapi`、`astersql-ingestor-globalsort`、`astersql-ingestor-ingestctrl`、`astersql-objstore`/`storeapi` 和 DXF task-executor 执行接口。
+文件顶部注释将该边界概括为：宿主提供 Region 发现和 TiKV RPC，本地 Rust 代码负责数据加载、重试阶段、进度与引擎生命周期。
 
 ## 核心职责
 
@@ -87,12 +83,8 @@ object reader 有两个显式关闭保障：打开后 seek 失败立即关闭，
 
 ## 与 Go 版本的对应关系
 
-最近的 Go 对照实现不是同名文件，而是 `pkg/dxf/importinto/task_executor.go` 中的 `writeAndIngestStepExecutor`，以及其下游 Lightning/local backend：
-
-- Go `RunSubtask` 创建带记录的 object store、兼容 `RangeJobKeys == nil` 的旧 meta、选择 on-duplicate 策略、设置 collector，然后调用 `localBackend.CloseEngine` 和 `ImportEngine`。Rust `task_executor.rs` 保留这一顺序，但通过 `WriteIngestRequest` 和本文件的 trait 将物理导入拆出。
 - Go 把 `sm.RangeJobKeys == nil` 回退到 `RangeSplitKeys`；Rust `readWriteIngestMeta` 额外保留 JSON 字段是否存在的 `has_job_keys`，组装 request 时做同样回退，重写 meta 时也保留旧格式的 null 语义。
 - Go `CloseEngine` 的 `ExternalEngineConfig` 传递 storage/files/ranges/split config/TS/memory/on-duplicate/prefix。Rust `CloseExternalEngine` 对应这些字段并构造 Rust global-sort engine。一个明确差异是 Go 版此处把 `TotalKVCount` 设为 `0`，Rust request 传入 `SortedKVMeta.TotalKVCnt`，且 Rust 导入后会用它相关的 loaded count 做一致性检查。
-- Go `onFinished` 先读 conflict info、尽力 cleanup，无冲突时不产生 object-store PUT，有冲突时写外部 meta。Rust executor 保留这一语义；本文件为它提供 conflict query 和 cleanup。
 - Go executor `Init` 通过 CPU resource 设置 backend worker concurrency；Rust native host 在构造 backend 时使用 `task.GetRuntimeSlots()`，并以 1 为下限。扩展动态资源更新时需特别检查这个差异。
 - Go storage 记录格式由 global-sort 原实现产生；Rust adapter 显式返回 `RecordFormat::GoBigEndian64`，表明它要兼容 Go 大端 64 位长度前缀。
 
@@ -107,14 +99,3 @@ object reader 有两个显式关闭保障：打开后 seek 失败立即关闭，
 - 修改 object-store 读取：优先复用 `open_object_stream`，保持 seek 失败和 Drop 两条关闭路径，并注意它同时被 merge-sort adapter 使用。
 
 性能风险主要在 Region scan 数量、worker concurrency、memory capacity 和重试导致的物理重写；兼容风险主要在 Go 记录格式、旧 meta 的 job-key fallback、duplicate-key 语义和 external meta 写回。
-
-## 验证依据
-
-- RustCodeGraph `status`：本地索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/importinto/write_ingest_backend.rs` 确认目标文件已索引，有 48 个符号。
-- RustCodeGraph `node --file pkg/dxf/importinto/write_ingest_backend.rs --offset 1 --limit 500`：读取全部 353 行，并确认文件级 `used by` 关系。
-- RustCodeGraph `query`/`node`：查询了 `WriteIngestBackend`、`RegisterGlobalSortImportExecutor`、`NewExternalEngine`、`do_import`、`NewRegionJobBaseWorker` 和 `newRegionJobs`；节点源码确认 external-engine 参数校验、pipeline 的 worker/retry/cancellation/join 结构和 worker 的 15 分钟 write timeout。`callers`/`callees` 对精确符号的 CLI 查询在本次会话内超时且未返回边，因此调用关系另由已索引的源文件节点和 `used by` 证据逐处核对，没有把超时查询当作成功证据。
-- 源码与模块边界：`pkg/dxf/importinto/write_ingest_backend.rs`、`pkg/dxf/importinto/task_executor.rs`、`pkg/dxf/importinto/lib.rs` 和 `pkg/dxf/importinto/Cargo.toml`。目标包不存在 `doc.go`。
-- Go 对照：`pkg/dxf/importinto/task_executor.go` 的 `writeAndIngestStepExecutor::{Init,RunSubtask,onFinished,Cleanup}` 及 local backend 调用顺序。
-- 独立 Rust 测试：`pkg/dxf/importinto/write_ingest_backend_test.rs::physical_region_rewrite_increments_progress_without_recounting_logical_import`，覆盖无失败、`KVIngestFailed` 导致物理重写、`ServerIsBusy` 不重写三种情况，并验证 rows、writes、逻辑导入统计、collector 进度和 cleanup。
-- 应用接线证据：`tests/realtikvtest/importintotest4/recorded_summary_harness.rs` 创建 `RegionRpc` 并调用 `RegisterGlobalSortImportExecutor`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付仅运行任务文件指定的 11 章结构检查；仓库指令提到的 `.agents/skills/tidb-verify-profile` 在当前检出中不存在，因而无法加载额外 Ready profile 命令。

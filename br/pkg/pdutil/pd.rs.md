@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`br/pkg/pdutil/pd.rs` 属于 Cargo crate `astersql-br-pkg-pdutil`。crate 入口 `br/pkg/pdutil/lib.rs` 以 `pub mod pd` 挂载本文件，并通过 `pub use pd::*` 将其公开符号平铺到 crate 根；同一 crate 的 `utils.rs` 提供键编码和 `UndoFunc`。`br/pkg/pdutil/Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/pdutil` 的 library 移植，直接依赖 BR 错误类型、通用错误封装、`semver`、Serde/JSON、hex 和 UUID。
-
-本文件位于 BR 与 PD 控制面的边界：它不实现 PD 服务，而是通过 `PdHttpClient`、`PdClient` 两个 trait 抽象 PD HTTP/客户端操作，围绕备份、恢复期间的调度器暂停、临时调度配置、按 key range 禁止调度、版本能力判断和恢复清理提供 `PdController`。RustCodeGraph 显示 Rust 侧直接使用者包括 `br/pkg/task/backup_raw.rs`、`br/pkg/task/backup_txn.rs`、`br/pkg/restore/import_mode_switcher.rs`、`br/pkg/task/operator/prepare_snap.rs`、`br/pkg/restore/snap_client/client.rs`，而 `br/pkg/conn/conn.rs` 通过控制器接口暴露 PD client 生命周期。
+位于 BR 与 PD 控制面的边界：它不实现 PD 服务，而是通过 `PdHttpClient`、`PdClient` 两个 trait 抽象 PD HTTP/客户端操作，围绕备份、恢复期间的调度器暂停、临时调度配置、按 key range 禁止调度、版本能力判断和恢复清理提供 `PdController`。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ key-range 暂停线程持有 `Arc<PdHttpClient>` 和克隆的 `Context`。取消
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/pdutil/pd.go`，行为测试对照 `br/pkg/pdutil/pd_serial_test.go`。Rust 保留了 Go 的 scheduler 白名单、配置 generator、4.0.8/6.1.0 门控、首次同步暂停与 TTL/3 续租、`schedule.` 前缀、Undo 恢复顺序、ResetTS Forbidden 兼容以及 label rule 的 create/refresh/delete 契约。
-
 当前可见差异必须在扩展时保留意识：
 
 - Go `NewPdController` 负责按地址/TLS 创建真实 PD client、配置 gRPC 消息大小/超时、创建 HTTP client/backoff 并探测版本；Rust `pd.rs` 只有注入式构造器，trait 的生产实现和拨号接线不在本文件中。
@@ -90,8 +86,6 @@ key-range 暂停线程持有 `Arc<PdHttpClient>` 和克隆的 `Context`。取消
 - Go `RemoveSchedulersWithConfigGenerator` 要求非空 `pdClient`；Rust 未注入时以 0 个 store 继续计算。Go `pauseConfigMulStores` 对错误类型执行强制断言，Rust 回落为 0。
 - Go 构造失败路径会关闭已经创建的 client；Rust 构造只接收现成对象。Rust `Close` 额外提供显式幂等保护并允许缺失 PD client。
 - Go `parseVersion` 包含 failpoint 覆盖和告警日志；Rust 没有该 failpoint与日志。Rust 测试以 trait mock 替代 Go 的真实 pdhttp/httptest 边界。
-
-因此，本文件是 Go 控制逻辑的可测试移植，不应被描述为已经独立实现了完整 PD 网络客户端。
 
 ## 扩展指南
 
@@ -102,12 +96,3 @@ key-range 暂停线程持有 `Arc<PdHttpClient>` 和克隆的 `Context`。取消
 - 修改 key-range rule 时，保持 `Data` 是 `KeyRangeRule` 列表、键使用 hex、label 固定为 `schedule=deny`，并同步核对 PD 6.1.0 TTL 能力门槛以及 `pd_serial_test.rs::test_pause_schedulers_by_key_range`。
 - 若补齐真实 `NewPdController`，应在连接层实现并复用现有 trait，而不是把 TLS/gRPC 细节混入暂停算法；需要逐项对照 Go 的 API context、消息大小、60 秒自定义超时、HTTP backoff、版本探测和失败清理。
 - 性能风险主要来自后台线程数量和过短 TTL；兼容风险主要来自 PD 配置键/值类型、版本门控和错误文本匹配；正确性风险主要来自部分暂停后失败以及恢复清理未被等待。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7032 个 Rust 文件；`files --filter br/pkg/pdutil` 确认 `pd.rs`、crate 入口、三个相关 Rust 测试和 Go 对照文件均已索引；`node --file br/pkg/pdutil/pd.rs` 阅读了 1-1139 行完整实现。
-- RustCodeGraph：查询 `PdController`、`PdClient`、`NewPdController` 并执行包含 `RemoveSchedulers`、`RemoveSchedulersOnRegion`、`FetchPDVersion` 的 `explore`，核对内部调用链和 `backup_raw.rs`、`backup_txn.rs`、`import_mode_switcher.rs`、`prepare_snap.rs`、`snap_client/client.rs` 等上游。
-- crate/入口：读取 `br/pkg/pdutil/Cargo.toml` 和 `br/pkg/pdutil/lib.rs`，确认 crate 名、依赖、模块挂载、平铺导出及测试文件均通过 `#[cfg(test)]` 独立接入。
-- Go 对照：读取 `br/pkg/pdutil/pd.go` 全部公开/私有入口及 `br/pkg/pdutil/pd_serial_test.go` 的用例清单，核对调度器暂停、配置 TTL、Undo、版本解析、ResetTS 和 region label 生命周期。
-- Rust 测试：读取 `br/pkg/pdutil/pd_test.rs`、`br/pkg/pdutil/pd_serial_test.rs`、`br/pkg/pdutil/parity_test.rs`。覆盖证据包括 duration 精度、首次 pause/config 失败、错误分类、非法版本回落、Forbidden 兼容、空配置仍发送、白名单筛选、store 数生成配置、label TTL 刷新/取消清理、follower handle 和 Close 幂等。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令确认本文恰有 11 个固定二级标题，并人工核对未把 Go 调用关系误写为 Rust 已接线事实。

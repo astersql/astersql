@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`failpoint.rs`](failpoint.rs) 属于 `astersql-sessiontxn` crate。crate 根文件 [`lib.rs`](lib.rs) 以私有模块 `mod failpoint` 装入它，再通过 `pub use failpoint::*` 公开本文件的常量、类型别名、trait 和函数。因此，它是会话事务层面向故障注入测试的公共观测/断言适配层，而不是注册或触发 failpoint 的运行时。
-
-本文件把 Go `pkg/sessiontxn/failpoint.go` 依赖的 `sessionctx.Context.Value/SetValue`、事务管理器查询和 channel hook 抽象成 Rust trait。当前 Rust 仓库中这些 API 的直接调用集中在 `pkg/sessiontxn/*_test.rs`；未发现会话、执行器或隔离级别 Rust 生产代码调用它们。完整生产注入位置仍可在 Go 的 `pkg/session/session.go`、`pkg/executor/{adapter,compiler}.go` 和 `pkg/sessiontxn/isolation/*.go` 中观察到。因此这里已经具备可测试的辅助行为，但尚不能表述为已接入 Rust SQL 执行主链。
+提供测试断言与记账函数：`RecordAssert`、`AssertTxnManagerInfoSchema`、`AssertTxnManagerReadTS`、锁错误计数和 TSO/重试计数。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ InfoSchema 引用的生命周期由 `InfoSchemaRef` 自身管理，本函数只�
 
 ## 与 Go 版本的对应关系
 
-Rust 函数和字符串值逐项对应 `pkg/sessiontxn/failpoint.go`。`SessionValueStore` 对应 Go `sessionctx.Context.Value/SetValue`；`Box<dyn Any>` 对应 `any`；`AssertRecords`、`LockErrorRecords` 分别对应 `map[string]any`、`map[string]int`；`HookKey` 对应 Go 的 `fmt.Stringer` 键；`TestHook` 对应 `chan func()`。
+Rust 使用 `i64` 近似 Go `int` 的重试/锁错误计数，使用 `u64` 对齐 TSO 计数。
 
-核心行为保持一致：map 惰性初始化、同名覆盖、类型断言失败后重建/归零、两个 InfoSchema 期望都要检查、ReadTS 错误转 panic、hook 类型不匹配时忽略，以及十秒等待上限。Rust 使用 `i64` 近似 Go `int` 的重试/锁错误计数，使用 `u64` 对齐 TSO 计数。
-
-有两点实现形态差异。第一，Go 直接从具体 `sessionctx.Context` 取 `LocalTemporaryTables` 并断言事务 InfoSchema 是 `SessionExtendedInfoSchema`；Rust 通过 `TxnAssertionContext` 的两个身份方法解耦具体类型，默认实现允许上下文声明“无可观测本地临时表”。第二，Go channel 传递 `func()`，Rust receiver 传递 `Box<dyn FnOnce() + Send>`，把“一次消费”和跨线程传递约束写进类型。
+有两点实现形态差异。第一，Go 直接从具体 `sessionctx.Context` 取 `LocalTemporaryTables` 并断言事务 InfoSchema 是 `SessionExtendedInfoSchema`；Rust 通过 `TxnAssertionContext` 的两个身份方法解耦具体类型，默认实现允许上下文声明“无可观测本地临时表”。
 
 迁移完成度也有差异：Go 生产文件已经在 executor/session/isolation failpoint 中调用这些辅助函数；Rust 当前只有 crate 导出和独立测试调用。`AssertTxnInfoSchemaAfterRetryKey` 与两个断点常量在 Rust 中保留了协议名，但尚未发现对应 Rust 生产注入点。
 
@@ -93,12 +89,3 @@ Rust 函数和字符串值逐项对应 `pkg/sessiontxn/failpoint.go`。`SessionV
 把现有 helper 接入 Rust 主链时，最可能修改的是未来对应 Go `session/session.go`、`executor/{adapter,compiler}.go` 与 `sessiontxn/isolation/*.go` 的 Rust 实现。接线必须同时增加独立 Rust 回归测试，证明调用发生在真实编译、建执行器、重试或 TSO 分支；不能只靠直接调用 helper 的单元测试声称主链已覆盖。
 
 修改 `ExecTestHook` 时应保留无键/错误类型不阻塞、单次消费和有界等待三个性质。若引入异步 channel 或可配置超时，需要评估阻塞线程、闭包 `Send` 边界和 Go 测试协议兼容性。修改计数类型、键字面值或错误类型策略都可能破坏跨模块测试约定，需同步所有调用点与 `txn_rc_tso_optimize_test.rs`。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/sessiontxn/failpoint.rs`、`pkg/sessiontxn/lib.rs`、`pkg/sessiontxn/Cargo.toml`。目标包不存在 `pkg/sessiontxn/doc.go`。
-- Go 对照：`pkg/sessiontxn/failpoint.go`；生产调用证据来自 `pkg/session/session.go`、`pkg/executor/adapter.go`、`pkg/executor/compiler.go`、`pkg/sessiontxn/isolation/base.go`、`readcommitted.go`、`repeatable_read.go`。
-- Rust 独立测试：`pkg/sessiontxn/failpoint_test.rs` 验证无本地临时表时不访问事务侧身份；`txn_context_test.rs` 验证记录覆盖、InfoSchema 双期望/身份断言、ReadTS 和生命周期组合；`txn_rc_tso_optimize_test.rs` 验证计数、错误类型重置、分类锁错误、hook 空操作/执行和重试记账；`sessiontxn_aster_unit_test.rs` 提供附加的公开契约覆盖。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query` 同时定位 Go/Rust 的 `RecordAssert`、`AssertTxnManagerInfoSchema`、`ExecTestHook`；`explore` 给出的 Rust blast radius 只包含上述独立测试，而 Go `RecordAssert`/`AssertTxnManagerInfoSchema` 指向 `session/session.go::runStmt`。文件过滤命令未命中目标路径，但精确符号查询和 `node --file` 能读取目标、Go 对照及测试。
-- 人工检索：对全部相关符号进行 Rust/Go 仓库搜索，确认 Rust 生产目录没有调用，Go executor/session/isolation 存在真实调用；此结论描述的是当前检出状态。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证本文档存在且恰好包含 11 个固定二级标题，并检查 Git diff 只包含本文档和任务文件的预期删除。

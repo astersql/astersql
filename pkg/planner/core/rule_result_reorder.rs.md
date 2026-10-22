@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；`pkg/planner/core/Cargo.toml` 以 `lib.rs` 为库入口，而 `pkg/planner/core/lib.rs` 通过 `pub mod rule_result_reorder` 公开本模块，并只在 `cfg(test)` 下装入独立测试 `rule_result_reorder_test.rs`。模块提供 Go `pkg/planner/core/rule_result_reorder.go` 的轻量 Rust 语义镜像：它在简化的 `crate::task::PlanNode` 树上补全或注入排序，以使无显式完整顺序的查询结果可复现。
-
-当前接线必须与生产实现区分：RustCodeGraph 显示 `ResultReorder` 的直接使用者只有 `pkg/planner/core/rule_result_reorder_test.rs`，仓库文本搜索也未发现生产调用。Rust 生产逻辑优化流水线在 `pkg/planner/core/optimizer_runtime.rs` 中以 `LogicalRule::StabilizeResults -> stabilize_results` 实现同一规则，操作真实的 `logicalop::LogicalPlanRef`；因此本文件不是当前生产流水线的实际执行入口。
+规则只承诺确定输出顺序，不做代价判断，也不判断新增排序的执行成本。
 
 ## 核心职责
 
@@ -63,11 +61,7 @@ Go 主链在 `pkg/planner/core/optimizer.go`：`optRuleList` 实例化 `ResultRe
 
 ## 与 Go 版本的对应关系
 
-Rust 的六个方法与 Go `ResultReorder` 基本逐一对应：`Optimize`、`completeSort`、`injectSort`、`isInputOrderKeeper`、`extractHandleCol`、`Name`。两者都从根越过保序算子、只把 `Sort` 当作已有完整排序、优先使用 handle、否则补齐全部输出列，并且即使改变计划也不设置 `planChanged`。
-
-轻量移植并非生产对象的机械同型：Go 使用 `base.LogicalPlan`、`logicalop.LogicalSort`、`expression.Column` 和 `util.ByItems`，Rust 本文件使用统一的值类型 `PlanNode` 与列下标。Go 还把 `LogicalTableDual` 视为保序节点；本文件的 `PlanKind` 没有对应变体。Go 从 `DataSource.TableInfo.IsCommonHandle` 与 `GetPKIsHandleCol()` 读取真实元数据，本文件用 `from_data_source`/`common_handle`/`handle:<index>` 标签模拟。Go 的列等价性调用 `EqualColumn`，本文件仅比较 `column` 下标。
-
-生产 Rust 的 `optimizer_runtime.rs` 更贴近 Go：它操作真实 logicalop 类型，把 `LogicalTableDual` 纳入保序集合，保留 schema、输出名、上下文与 query block，并通过真实 `DataSource` 提取主键 handle。`optimizer_logical_entry_aster_unit_test.rs::stabilize_results_injects_deterministic_handle_order` 验证的是这条生产 Rust 路径；`rule_result_reorder_test.rs` 验证的是本文件的轻量镜像。仓库中没有找到直接点名 Go `ResultReorder` 的独立 Go 测试。
+轻量移植并非生产对象的机械同型：Go 使用 `base.LogicalPlan`、`logicalop.LogicalSort`、`expression.Column` 和 `util.ByItems`，Rust 本文件使用统一的值类型 `PlanNode` 与列下标。Go 还把 `LogicalTableDual` 视为保序节点；本文件的 `PlanKind` 没有对应变体。Go 的列等价性调用 `EqualColumn`，本文件仅比较 `column` 下标。
 
 ## 扩展指南
 
@@ -76,12 +70,3 @@ Rust 的六个方法与 Go `ResultReorder` 基本逐一对应：`Optimize`、`co
 - 改变排序键等价性时需注意当前只按列下标去重；表达式排序、方向、NULL 顺序等语义不能直接套用这一判断。对应风险是重复键、漏键或与 Go `EqualColumn` 不一致。
 - 若要把本文件接入生产优化器，不能只实例化 `ResultReorder`：必须先解决轻量 `PlanNode` 与 `LogicalPlanRef` 的模型差异、会话启用条件、语句类型排除、错误接口、上下文/schema/输出名保留及规则位接线。当前生产实现已经位于 `optimizer_runtime.rs`，应避免形成两套漂移实现。
 - 性能变更应关注宽 schema 上的二次扫描和无 handle 时的全列排序成本；兼容性变更应保持 `Name() == "result_reorder"`、`changed == false` 以及 `TopN` 不被视为完整排序等 Go 契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`query ResultReorder`、`query result_reorder` 定位 Rust/Go 定义和全部辅助方法；`node --file pkg/planner/core/rule_result_reorder.rs` 读取 113 行源码并报告唯一使用文件为 `rule_result_reorder_test.rs`；Go 与测试文件也通过 `node --file` 核对。
-- 源码与装配：`pkg/planner/core/rule_result_reorder.rs`、`pkg/planner/core/task.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`。目标包根目录没有 `doc.go`，因此没有可额外读取的包契约文件。
-- Go 对照与启用链：`pkg/planner/core/rule_result_reorder.go`、`pkg/planner/core/optimizer.go`、`pkg/planner/core/rule/logical_rules.go`、`pkg/sessionctx/variable/sysvar.go`。
-- Rust 生产对照：`pkg/planner/core/rule/logical_rules.rs`、`pkg/planner/core/optimizer_runtime.rs`。
-- 测试证据：`pkg/planner/core/rule_result_reorder_test.rs` 的五个测试覆盖注入位置、补全已有 Sort、叶保序节点、TopN 边界与显式 handle；`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs::stabilize_results_injects_deterministic_handle_order` 覆盖生产规则位调度后的 handle 排序。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构由任务指定命令检查恰好 11 个固定二级标题，并另行核对所有引用路径存在、限定 diff 只含本说明和任务文件删除、`plan.md` 未修改。

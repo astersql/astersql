@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-stmtsummary-v2` crate 的“语句摘要记录到虚拟表行”适配层。crate 根 `pkg/util/stmtsummary/v2/lib.rs` 以 `mod column; pub use column::*;` 暴露这里的列名、工厂与辅助函数；`pkg/util/stmtsummary/v2/Cargo.toml` 声明该 crate 依赖 `chrono`、`chrono-tz`、旧版 statement-summary 兼容类型以及 plan codec。直接生产调用者是同 crate 的 `reader.rs`：`NewMemReader` 和 `NewHistoryReader` 根据请求列构造工厂，`buildRow`/`buildValues` 再把 `StmtRecord` 投影为查询结果。
-
-它不采集、聚合或持久化统计信息；这些职责分别属于 `record.rs`、`stmtsummary.rs` 与 `logger.rs`。它只定义 128 个表列名及一一对应的 128 个取值工厂，把已经聚合好的 `StmtRecord` 字段转换为 INFORMATION_SCHEMA 风格的 `Datum`。
+在工厂中实现派生列：执行次数或提交次数分母的平均值、纳秒时长、时区化时间戳、backoff 汇总文本、空字符串到 NULL、plan 解码等。
 
 ## 核心职责
 
@@ -71,9 +69,7 @@
 
 ## 与 Go 版本的对应关系
 
-权威对照是 `pkg/util/stmtsummary/v2/column.go`，Rust 保留了同名列常量、`columnFactoryMap`/`makeColumnFactories`、`formatBackoffTypes`、四类平均函数及 `convertEmptyToNil`。`column_test.go::TestColumn`、`TestExecutionAverageColumnsUseExecCount`、`TestIAAvgColumns` 和 `TestIAAvgColumnsChunkRoundTrip` 给出 Go 的列值与类型契约；Rust 的 `column_test.rs` 对应覆盖代表列、无符号大数、IA 指标、时区和 chunk 往返。
-
-语言适配差异主要有三点：Go 工厂返回 `any`，Rust 以 `ColumnValue` 明确区分 Datum 类型；Go 的 `columnInfo` 由 reader 类型实现，Rust 使用独立 `ColumnContext`；Go 可直接把任意字节放进 string，Rust 对 `Vec<u8>` 增加 bytes-as-string Datum 路径。Go plan 解码失败写结构化日志，Rust 当前写标准错误，外部可观察日志设施不同，但两者都返回空 plan 而不让查询失败。Rust 还对纳秒转换做 `i64::MAX` 钳制，并显式实现 epoch 前亚秒向下取整。
+语言适配差异主要有三点：Go 工厂返回 `any`，Rust 以 `ColumnValue` 明确区分 Datum 类型；Go 的 `columnInfo` 由 reader 类型实现，Rust 使用独立 `ColumnContext`；Go 可直接把任意字节放进 string，Rust 对 `Vec<u8>` 增加 bytes-as-string Datum 路径。Go plan 解码失败写结构化日志，Rust 当前写标准错误，外部可观察日志设施不同，但两者都返回空 plan 而不让查询失败。
 
 迁移状态不是桩：内存与历史 reader 均已接线到 Rust 工厂。不过 Go 文件仍是逐项行为基准；新增或改名列时必须同步检查 Go 实现、Rust 常量/注册表及两侧测试，不能只让 Rust 表面编译通过。
 
@@ -84,11 +80,3 @@
 选择返回类型时按 SQL 列类型使用 `Int`、`Uint`、`Float`、`String`、`Time` 或专用 `Datum`；尤其不可将 `u64` 最大值经 `i64` 中转。派生平均值必须先判定其分母属于 `ExecCount` 还是 `CommitCount`，并补零分母测试。时间列需复用 `timestamp_value` 并覆盖目标时区/epoch 边界；可空字符串应明确是否复用 `convertEmptyToNil`。
 
 修改热路径时关注每行每列的 clone、join、排序和 plan 解码成本。若需要改变错误策略、并列 backoff 次序或 sample-user 确定性，这些都属于可观察兼容行为，应先更新 Go 对照与独立回归测试，而不是在工厂内静默改变。新增表列但遗漏注册会在 reader 构造阶段 panic，因此应增加“请求新列并执行工厂”的测试来证明接线完整。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/util/stmtsummary/v2` 列出目标、Go 对照、reader/record 与独立测试；目标文件节点报告 176 个符号及直接引用文件。精确 `query` 确认 Rust `makeColumnFactories` 位于第 790 行、`formatBackoffTypes` 位于第 810 行、`ColumnValue` 与 `ColumnInfoContext` 均属于本文件。通用 `explore` 因常见列名产生大量跨仓库同名噪声，精确 callers/callees 查询在 30 秒内无结果，故生产调用边另由下述源码搜索核实。
-- 已读生产文件：`pkg/util/stmtsummary/v2/column.rs`（全文件）、`lib.rs`、`Cargo.toml`，以及 `reader.rs` 中 `NewMemReader`、`NewHistoryReader`、`parseWorker`、`buildRow`、`buildValues`；目标目录没有 `doc.go`。
-- 已读 Go 对照：`pkg/util/stmtsummary/v2/column.go`、`column_test.go`，并以 `reader.go` 中两处 `makeColumnFactories` 调用确认 Go 主链一致。
-- 已读 Rust 测试：`pkg/util/stmtsummary/v2/column_test.rs` 与 `column_1_aster_unit_test.rs`。证据覆盖列顺序与代表字段、零分母、无符号大数、IA 指标、chunk 往返、epoch 前时间、plan 非 UTF-8 字节、backoff 格式及 reader 集成。
-- 静态计数：目标文件包含 128 个 `pub const` 列名和 128 个 `factories.insert` 注册项。本文是纯文档分析，按计划未运行 Cargo 或代码测试；最终只执行任务指定的 11 章节结构验证并人工复核关键行为与直接调用关系。

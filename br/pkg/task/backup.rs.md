@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`backup.rs` 是 `astersql-br-pkg-task` crate 的全量/表级备份配置与控制流模块。crate 根 [`br/pkg/task/lib.rs`](lib.rs) 通过 `pub mod backup` 挂载它，再以 `pub use backup::*` 平铺公开 API；命令层 [`br/cmd/br/backup.rs`](../../cmd/br/backup.rs) 使用 `DefineBackupFlags`、`BackupConfig` 和 `RunBackupWithDefaults` 完成 CLI 接线。该 crate 的边界和依赖由 [`br/pkg/task/Cargo.toml`](Cargo.toml) 定义，其中本文件直接用到同 crate 的 `common`/`stubs`，以及 `astersql-br-pkg-gc`、`serde_json`、`sha2`。
-
-它是 Go [`br/pkg/task/backup.go`](backup.go) 的迁移实现，但不是 Go 主流程的逐语句完整复刻：当前 Rust 版本保留配置解析、不可变配置哈希、TS 解析、GC safepoint、调度器恢复、范围备份和元数据落盘的核心骨架；Go 中的 Domain/统计信息、schema/checksum、DDL、checkpoint runner、锁文件和 tracing 等完整生产编排尚未全部出现在本文件中。因此应把它理解为已接入 Rust BR 命令的可运行迁移路径，而非 Go 功能面的完全等价实现。
+`DefineBackupFlags` 与 `BackupConfig::ParseFromFlags` 定义并解析备份专用参数，维护增量备份、checkpoint、压缩、并发、GC TTL、keyspace 和 EBS 扩展配置之间的约束。
 
 ## 核心职责
 
@@ -74,9 +72,9 @@ RustCodeGraph 精确查询确认了 `BackupConfig`、`DefineBackupFlags`、`Pars
 
 ## 与 Go 版本的对应关系
 
-配置层高度对应 [`backup.go`](backup.go)：旗标名称/默认值、`LastBackupTS` 关闭 checkpoint、并发上限、限速强制单并发、默认 GC TTL/ZSTD、不可变哈希字段、压缩与 replica label 解析均保持相同意图。Rust 独立测试 [`backup_test.rs`](backup_test.rs) 对照 Go [`backup_test.go`](backup_test.go) 的 TS、压缩和哈希断言，并额外覆盖 Rust RAII 与 GC 生命周期。
+Rust 独立测试 [`backup_test.rs`](backup_test.rs) 对照 Go [`backup_test.go`](backup_test.go) 的 TS、压缩和哈希断言，并额外覆盖 Rust RAII 与 GC 生命周期。
 
-执行层只对应 Go `RunBackup` 的安全主干。Rust 已有：manager 关闭、TS 选择、增量单调性、GC safepoint、可选调度器移除、存储占用检查、请求构造、范围备份、meta flush 和成功摘要。当前未在本文件实现的 Go 步骤包括：全局 keyspace 配置、backend URI 解析/noop checkpoint 降级、Domain 与 stats handle、集群 checkpoint 能力检查、collation 查询、`TableBackupClient` 初始化、checkpoint 配置校验与 lock file、checkpoint runner/清理、schema/policy/DDL/checksum 备份、精确 range progress、failpoint、tracing 及 `Size` 双重摘要记录。新增功能不能仅凭 Go 已存在就宣称 Rust 已支持，应先补齐对应抽象和独立测试。
+当前未在本文件实现的 Go 步骤包括：全局 keyspace 配置、backend URI 解析/noop checkpoint 降级、Domain 与 stats handle、集群 checkpoint 能力检查、collation 查询、`TableBackupClient` 初始化、checkpoint 配置校验与 lock file、checkpoint runner/清理、schema/policy/DDL/checksum 备份、精确 range progress、failpoint、tracing 及 `Size` 双重摘要记录。
 
 另一个显著接线差异是 Go `RunBackup` 内部创建真实 manager/client，而 Rust 将它们注入；Rust CLI 的 `RunBackupWithDefaults` 当前使用 `MemBackupClient`。这便于离线测试，但也意味着评估生产完备性时必须同时检查命令层和 `stubs` 的真实/内存实现边界。
 
@@ -88,13 +86,3 @@ RustCodeGraph 精确查询确认了 `BackupConfig`、`DefineBackupFlags`、`Pars
 - 增加真实 schema/checksum/checkpoint 功能时，不应把测试写进 `backup.rs`；按仓库约定扩展独立 [`backup_test.rs`](backup_test.rs)，并以 Go `backup_test.go`/`RunBackup` 为行为基准。
 - 修改时间解析需覆盖 Unix 本地时区、显式 offset、UTC `Z`、闰年、非法日期和小数精度；非 Unix fallback 与 Go `time.ParseInLocation` 的差异应显式记录。
 - 性能敏感点包括范围数量、请求并发、限速与 meta 缓冲；配置调整不得绕过 `maxBackupConcurrency`，且有 rate limit 时要保持单并发语义。
-
-## 验证依据
-
-- 源码全貌：[`br/pkg/task/backup.rs`](backup.rs)，核对了全部常量、`CompressionConfig`、`BackupConfig`、公开函数、私有日期函数、两个 RAII guard 与条件编译的 `local_epoch_seconds`。
-- crate/模块证据：[`br/pkg/task/Cargo.toml`](Cargo.toml) 与 [`br/pkg/task/lib.rs`](lib.rs)，确认 crate 名、依赖、模块挂载和重导出。
-- 上游接线：[`br/cmd/br/backup.rs`](../../cmd/br/backup.rs)，确认 `DefineBackupFlags` 和 `RunBackupWithDefaults` 的直接调用。
-- Go 对照：[`br/pkg/task/backup.go`](backup.go) 与 [`br/pkg/task/backup_test.go`](backup_test.go)，核对配置、哈希、TS 解析及完整 Go `RunBackup` 的迁移差异。
-- Rust 测试：[`br/pkg/task/backup_test.rs`](backup_test.rs)、[`br/pkg/task/common_test.rs`](common_test.rs) 与 [`br/pkg/task/parity_test.rs`](parity_test.rs)，确认纯函数、默认配置、空范围、manager 关闭、增量 TS、GC 成功/失败/checkpoint 生命周期和注册失败行为。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter br/pkg/task` 确认模块与对照文件；`query BackupConfig/DefineBackupFlags/ParseTSString/RunBackupWithDefaults --json` 确认定义位置。`node --file`、`explore` 和调用边命令本次未返回内容，故未将其空结果作为调用关系证据，而以直接引用搜索补足。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令检查目标文件存在且恰有十一个固定二级标题，并人工检查所有本地链接与迁移边界陈述。

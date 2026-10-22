@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/metrics/import.rs`](import.rs) 属于 `astersql-metrics` crate（见 [`pkg/metrics/Cargo.toml`](Cargo.toml)），由 [`pkg/metrics/lib.rs`](lib.rs) 通过公开模块 `pub mod import` 暴露。它位于 SQL 导入路径与 Lightning 通用指标实现之间：本文件不采集业务事件，而是为调用方创建一组 `astersql_lightning_metric::metric::Common` 指标，将其注册到进程级 Prometheus 默认注册表，并提供配对的注销入口。
-
-当前 Rust 仓库中没有发现 `GetRegisteredImportMetrics` 或 `UnregisterImportMetrics` 的目标文件外调用，因此该门面已经公开但尚无可确认的 Rust 业务接线。Go 对照实现则在 `pkg/executor/importer/chunk_process_testkit_test.go` 中被测试辅助流程调用。
+`GetRegisteredImportMetrics` 先调用 `metricscommon::GetMergedConstLabels` 合并调用方标签与 metrics 包全局常量标签，再通过调用方提供的 `promutil::Factory` 构造 `metric::Common`。
 
 ## 核心职责
 
@@ -60,7 +58,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/import.go` 具有同名常量和两个同名函数，流程逐步对应：合并常量标签、`metric.NewCommon`/`metric::new_common` 构造、向 `prometheus.DefaultRegisterer` 注册、返回句柄，以及配对注销。Rust 用 `Box<dyn Factory>` 表达 Go 接口值，用拥有所有权的 `metric::Common` 代替 Go 的 `*metric.Common`，注销入口则用 `&mut metric::Common` 代替指针。
+Rust 用 `Box<dyn Factory>` 表达 Go 接口值，用拥有所有权的 `metric::Common` 代替 Go 的 `*metric.Common`，注销入口则用 `&mut metric::Common` 代替指针。
 
 可确认的语义差异主要来自适配层表达方式：Rust 默认注册器的 `MustRegister` 逐个调用 `prometheus::default_registry().register(...).expect(...)`，注销返回值被丢弃；Go 同样使用 MustRegister 风格的强制注册和无返回值的包装注销。`pkg/executor/importer/chunk_process_testkit_test.go` 验证了 Go 侧调用生命周期；Rust 没有同名门面测试或调用者，因此不能声称该函数已在 Rust importer 主链中运行。
 
@@ -70,12 +68,3 @@
 - 若改变命名空间、subsystem 或标签合并规则，应修改本文件对应符号，并同步核对 `pkg/metrics/import.go`、`pkg/metrics/common/wrapper.rs` 及其独立测试 `pkg/metrics/common/wrapper_test.rs`，防止指标名称或全局标签优先级破坏监控兼容性。
 - 若为 Rust importer 接线，调用点应持有返回的 `Common`，把它传入导入执行上下文，并确保所有退出路径显式注销；应在调用者同目录的独立 `*_test.rs` 文件中增加回归测试，不能把测试内嵌到本生产文件。
 - 新增错误恢复或幂等需求时，应先决定是否继续保持 Go 的 MustRegister/panic 语义。改成可恢复注册、回滚部分注册或报告注销失败会改变公开 API 和兼容行为，需同时评估并发注册、重复任务、Prometheus 描述一致性及性能/基数风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 `pkg/metrics/import.rs`；`files --filter pkg/metrics` 显示该文件有 3 个符号；`query GetRegisteredImportMetrics --kind function` 返回 Go/Rust 两个同名定义。`explore/node` 未返回正文，`callers` 查询在当前索引上未及时完成，因此调用者结论使用全仓 `rg` 引用搜索补证，不宣称获得了图调用边。
-- 目标与 crate 边界：`pkg/metrics/import.rs`、`pkg/metrics/lib.rs`、`pkg/metrics/Cargo.toml`。
-- 下游实现：`pkg/lightning/metric/metric.rs`（`Common`、`new_common`、`register_to`、`unregister_from`）、`pkg/util/promutil/factory.rs`（`Factory`）、`pkg/util/promutil/registry.rs`（`Registry`）、`pkg/metrics/common/wrapper.rs`（标签快照与合并）、`pkg/metrics/bindinfo.rs`（默认注册器适配）。
-- Go 对照与调用：`pkg/metrics/import.go`、`pkg/executor/importer/chunk_process_testkit_test.go`。
-- 独立 Rust 测试：目标模块没有同名测试；底层 8 个 collector 的注册/注销行为由 `pkg/lightning/metric/metric_test.rs::test_metrics_register`、`test_metrics_unregister` 和 `pkg/lightning/metric/migration_aster_unit_test.rs::registration_and_unregistration_cover_all_go_metrics` 覆盖；标签覆盖规则由 `pkg/metrics/common/wrapper_test.rs::test_get_merged_const_labels` 覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工核对唯一新增产物、无源码/Cargo/总计划修改。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-util-topsql-reporter-metrics` 的子句柄绑定层。crate 根在同目录 `lib.rs`：其中 `metrics` 模块创建三个 Prometheus 父向量，随后以 `#[path = "metrics.rs"] pub mod reporter_metrics` 暴露本文件。`Cargo.toml` 表明该 crate 只直接依赖 `prometheus = "0.14"`，并以 `pkg/util/topsql/reporter/metrics` 为 Go 移植来源。
-
-在进程级初始化链中，`pkg/util/metricsutil/common.rs::initMetrics` 先调用 `initParentMetricsCollectors`；后者执行 `astersql_util_topsql_reporter_metrics::metrics::init_parent_metrics()`，然后 `initMetrics` 再调用本文件的 `InitMetricsVars()`。因此本文件不创建或注册新的指标族，而是把父向量的特定标签组合缓存成业务路径可直接写入的句柄。
+以 11 个 `prometheus::Counter` 子句柄表示 TopSQL 数据被忽略或丢弃的原因，包括 SQL/Plan/RU 上限、迟到 RU、采集/上报通道满和背压丢弃。
 
 ## 核心职责
 
@@ -68,16 +66,12 @@ Prometheus 的克隆子句柄负责并发安全的计数/观测；本文件不�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为同目录 `metrics.go`。两版都提供 25 个同名全局句柄、`init` 和 `InitMetricsVars`，所有 ignored/type/result 标签字符串逐项一致，绑定顺序也一致。
-
 主要差异如下：
 
 - Go 全局变量类型为非可空 `prometheus.Counter`/`prometheus.Observer`，包 `init()` 自动执行；Rust 使用 `Option<Counter/Histogram>`，并由 `metricsutil` 显式维持“先父向量、后子句柄”的初始化顺序。
 - Go 的 `Observer` 是接口；Rust 保存具体 `Histogram`，因此这些句柄只表达当前直方图实现。
 - Go 消费方通常直接 `Inc`/`Add`/`Observe`；Rust 消费方先判断 `Option`，允许初始化前跳过观测。
 - Go 的 `pubsub.go` 对 `ru_record` 数量和耗时有完整打点；当前 Rust 搜索只确认这些句柄的绑定和测试引用，未确认对应生产消费者。类似地，Go 的 datamodel/reporter 路径消费部分 SQL/Plan/collect-channel 计数器，而当前 Rust 生产引用不完整。
-
-Go 行为测试证据包括：`reporter_test.go` 验证 report-channel/backpressure 丢弃计数，`ru_window_aggregator_test.go` 验证迟到 RU 计数，`stmtstats/aggregator_test.go` 验证超限 RU 计数，`single_target_test.go` 验证整批成功/失败耗时分流。
 
 ## 扩展指南
 
@@ -88,13 +82,3 @@ Go 行为测试证据包括：`reporter_test.go` 验证 report-channel/backpress
 测试必须继续放在独立 Rust 测试文件中，不应内嵌到 `metrics.rs`。至少验证：每个新标签能成功绑定、子句柄写入反映到父向量、成功/失败映射正确、并发测试用全局互斥锁隔离。当前测试的 ignored cases 没有覆盖 `IgnoreReportDataByBackpressureCounter`，后续修改该组绑定时应补齐这一直接回归项；生产接线缺口应在其所属业务迁移任务中处理，而不是在本说明任务中改行为。
 
 兼容风险主要是指标名/标签变化导致历史时序断裂；正确性风险是父子初始化顺序或 `static mut` 并发访问；性能风险是新增高基数标签和热路径额外观测。若未来重构全局状态，优先考虑一次初始化容器和安全共享句柄，但需保持现有指标名、标签及初始化入口兼容。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标目录的 `lib.rs`、`metrics.rs`、`metrics.go`、`migration_aster_unit_test.rs`；目标文件节点列出 29 个符号和 5 个使用文件。`node --file` 核对了目标源码、crate 根、Rust 独立测试及主要消费函数。
-- 目标实现：`pkg/util/topsql/reporter/metrics/metrics.rs`，重点为 25 个静态句柄、`init`、`InitMetricsVars` 及三组 `with_label_values`。
-- crate/初始化：`pkg/util/topsql/reporter/metrics/Cargo.toml`、同目录 `lib.rs`、`pkg/util/metricsutil/common.rs::{initParentMetricsCollectors, initMetrics}`、根 `Cargo.toml` 及 reporter/stmtstats 的 Cargo manifest。
-- Rust 调用点：`pkg/util/topsql/reporter/reporter.rs::takeDataAndSendToReportChan`、`single_target.rs::{incrementIgnoreReportChannelFull, observeAll, observeRecords, observeSQL, observePlans}`、`ru_window_aggregator.rs::incrementLateCompactedMetrics`、`pkg/util/topsql/stmtstats/aggregator.rs::record_dropped_ru`。
-- Rust 测试：`pkg/util/topsql/reporter/metrics/migration_aster_unit_test.rs`；相关业务测试还包括 `ru_window_aggregator_test.rs` 和 stmtstats 聚合器测试。crate 级测试覆盖 ignored（除背压句柄）、全部 duration 标签和四类 data 标签与父序列共享。
-- Go 对照：`pkg/util/topsql/reporter/metrics/metrics.go`；相关行为测试为 `reporter_test.go`、`ru_window_aggregator_test.go`、`single_target_test.go`、`pkg/util/topsql/stmtstats/aggregator_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令和人工事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-tls` crate 的业务实现文件，crate 入口 `pkg/util/tls/lib.rs` 以 `pub mod tls` 声明模块并通过 `pub use tls::*` 再导出公共项。`pkg/util/tls/Cargo.toml` 将 `lib.rs` 指定为库入口，且不声明第三方依赖；本文件只使用标准库集合、延迟初始化和原子类型。
-
-它不是 TLS 握手或证书加载实现，而是 TLS 元数据兼容层：把协议版本号、密码套件编号转换成 TiDB/MySQL/OpenSSL 对外使用的名称，并公开账户授权校验所需的支持套件集合及一个安全传输开关。实际证书加载和客户端认证策略位于 `pkg/util/misc.rs`。
+`VersionName` 将 `u16` TLS 版本号转换为显示名。
 
 ## 核心职责
 
@@ -61,11 +59,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/tls/tls.go`。Rust 的 `versionString`、`tlsCipherString`、`SupportCipher`、`VersionName`、`CipherSuiteName` 与 Go 同名对象逐项对应：25 个 cipher 编号和字符串一致，TLS 1.2/1.3 使用同样的覆盖名，未知 cipher 同样返回空串。Go `init` 循环填充 `SupportCipher`，Rust 改为 `LazyLock<HashSet>` 的按需派生；Go 的 `map[string]struct{}` 对应 Rust 的集合。
+Rust 的 `versionString`、`tlsCipherString`、`SupportCipher`、`VersionName`、`CipherSuiteName` 与 Go 同名对象逐项对应：25 个 cipher 编号和字符串一致，TLS 1.2/1.3 使用同样的覆盖名，未知 cipher 同样返回空串。Go `init` 循环填充 `SupportCipher`，Rust 改为 `LazyLock<HashSet>` 的按需派生；Go 的 `map[string]struct{}` 对应 Rust 的集合。
 
-Go 对未知/旧版本调用标准库 `tls.VersionName`；Rust 没有使用对应库，因而在 `VersionName` 内显式复现 SSL 3.0、TLS 1.0、TLS 1.1 和未知十六进制格式。`pkg/util/tls/tls_test.go::TestVersionName` 与 `pkg/util/tls/tls_test.rs::test_version_name` 使用相同六组输入输出验证这一点。
+Go 对未知/旧版本调用标准库 `tls.VersionName`；Rust 没有使用对应库，因而在 `VersionName` 内显式复现 SSL 3.0、TLS 1.0、TLS 1.1 和未知十六进制格式。
 
-Go 的 `RequireSecureTransport` 被 `pkg/sessionctx/variable/sysvar.go` 和 `pkg/executor/simple.go` 直接读写，用于系统变量及 TLS 重载失败处理。当前 Rust 搜索仅在 `pkg/util/tls/migration_aster_unit_test.rs` 发现本文件原子值的有效直接使用；Rust 证书加载路径使用 `pkg/util/misc.rs` 内部的另一原子值。因此只能确认数据结构和单元语义已迁移，不能宣称该开关已完整对齐 Go 的应用接线。
+当前 Rust 搜索仅在 `pkg/util/tls/migration_aster_unit_test.rs` 发现本文件原子值的有效直接使用；Rust 证书加载路径使用 `pkg/util/misc.rs` 内部的另一原子值。
 
 ## 扩展指南
 
@@ -74,12 +72,3 @@ Go 的 `RequireSecureTransport` 被 `pkg/sessionctx/variable/sysvar.go` 和 `pkg
 新增版本覆盖时，应修改 `versionString`，必要时补充本地回退 `match`，并同步 `tls_test.rs::test_version_name`、`tls_test.go::TestVersionName` 和迁移一致性测试。不要仅因能显示一个版本就推断底层协商支持它。
 
 若要完成安全传输开关接线，应先决定本文件 `RequireSecureTransport` 与 `pkg/util/misc.rs` 私有开关的唯一所有者，避免两个原子状态分叉；随后在独立 Rust 测试文件中覆盖系统变量、证书加载和并发可见性。按照仓库约束，不应把测试内嵌进 `tls.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`files --filter pkg/util/tls` 确认目标、入口、Go 对照和测试均已索引；`node --file pkg/util/tls/tls.rs --offset 1 --limit 260` 读取完整 186 行并报告 3 个符号；`query VersionName`、`query CipherSuiteName`、`query RequireSecureTransport` 用于消歧。精确 `callers`/`callees` 未产生可用输出，因此没有据此虚构调用边。
-- 实现与 crate 边界：`pkg/util/tls/tls.rs`、`pkg/util/tls/lib.rs`、`pkg/util/tls/Cargo.toml`。
-- Rust 调用证据：`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/statusvar.rs`、`pkg/sessionctx/variable/Cargo.toml`、`pkg/executor/grant.rs`、`pkg/executor/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照：`pkg/util/tls/tls.go`、`pkg/sessionctx/variable/sysvar.go`、`pkg/executor/simple.go`。
-- 独立测试：`pkg/util/tls/tls_test.rs` 与 `pkg/util/tls/tls_test.go` 覆盖版本命名；`pkg/util/tls/migration_aster_unit_test.rs` 覆盖全部 25 个 cipher 映射、未知 cipher、集合一致性及原子读写/恢复。
-- 人工复核边界：本文件只做命名、集合和原子状态，不执行握手；未知版本和未知 cipher 的返回策略不同；Rust 安全传输原子值尚未证明接入 Go 对应的生产链。

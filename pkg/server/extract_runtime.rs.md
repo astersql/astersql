@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/extract_runtime.rs` 是 `astersql-server` crate 内部的生产 Extract 运行时适配层。模块由 `pkg/server/lib.rs` 以私有 `mod extract_runtime` 装配，只把 `pub(crate) struct CanonicalExtractRuntime` 暴露给同一 crate；它不是 Extract 算法本身，也不是 HTTP 参数解析器，而是把真实 `astersql_domain::Domain`、语句摘要、统计信息、内部 SQL 会话和全局外部存储接到 `astersql_server_handler_extractorhandler::extractor::ExtractRuntime` 接口上。
-
-生产接线位于 `pkg/server/runtime.rs`：`CanonicalServerDomain::new` 创建一个共享的 `Arc<CanonicalExtractRuntime>`，其 `ServerDomain::extract_runtime` 实现再以 `Arc<dyn ExtractRuntime>` 返回。`pkg/server/extract.rs::ExtractTaskServeHandler::new` 从 Server Domain 取得该对象，交给 handler crate 的 `NewExtractTaskServeHandler`，因此完整入口链是“status HTTP 路由 → handler → 本文件运行时 → `pkg/domain/extract.rs::ExtractHandle`”。
-
-`pkg/server/Cargo.toml` 将本文件归入包名 `astersql-server`、库入口 `lib.rs`；本文件直接使用的内部 crate 包括 `astersql-domain`、`astersql-session`、`astersql-planner-extstore`、`astersql-statistics(-handle)`、`astersql-infoschema`、`astersql-meta-model`、`astersql-util-stmtsummary`、`astersql-util-plancodec`、`astersql-util-printer` 和 extractor handler crate，序列化与时间处理还依赖 `base64`、`chrono`、`serde_json`、`toml`。
+`ProductionExtractSource` 实现 `pkg/domain/extract.rs::ExtractSource`，向通用 `ExtractHandle` 提供真实语句摘要、表/视图元数据、binary plan 解码、持久化摘要开关和归档落盘能力。
 
 ## 核心职责
 
@@ -97,9 +93,7 @@ RustCodeGraph 对该文件识别出 40 个符号；主要可见入口为 `Canoni
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照分为三层：`pkg/server/extract.go` 负责把 `Domain.GetExtractHandle()` 接到 server；`pkg/server/handler/extractorhandler/extractor.go` 负责 HTTP 构建与下载；核心 worker 与归档逻辑位于 `pkg/domain/extract.go`。Rust 把 handler 的副作用抽成 trait，并把 Go worker 的生产数据访问拆到本文件。
-
-已对齐的语义包括：目录名 `extract`；仅支持 Plan；后台任务返回空结果；history view 要求持久化摘要；时间窗口使用严格重叠判断；只接受 Select、非空 schema 和非空 plan digest；按 digest+plan digest 去重；含 `(len:` 的 SQL 写入 skipped；binary plan 去首尾换行；归档的 meta/config/variables/bindings/schema/view/stats/replica/SQL 分类；skip-stats 不生成 `stats/`；dump 下载采用流式 reader。
+Rust 把 handler 的副作用抽成 trait，并把 Go worker 的生产数据访问拆到本文件。
 
 实现差异与边界必须保留为当前事实：
 
@@ -107,10 +101,7 @@ RustCodeGraph 对该文件识别出 40 个符号；主要可见入口为 `Canoni
 - Go 文件名使用 16 个随机字节加纳秒时间；Rust `pkg/domain/extract.rs::generate_extract_file_name` 使用纳秒与进程内 atomic sequence 混合，目标是唯一性而非复刻随机格式。
 - Go 逐条向 zip writer 输出并直接写 external storage；Rust 本文件先构造内存 `ReplayArchive`，再整体编码、整体写入。
 - Go 通过 restricted SQL builtin 解码 binary plan；Rust直接调用同一 plan codec 并在失败时得到空字符串。
-- 本文件 `ProductionExtractSource::view_dependencies` 自身返回“requires the Domain AST wrapper”；生产构造器总是 `new_with_domain`，真正行为由 `DomainAstExtractSource` 完成。绕过生产构造器时不可宣称具备视图解析。
 - Go 使用配置项判断持久化摘要；Rust通过 `SELECT @@tidb_stmt_summary_enable_persistent` 判断，查询失败视为未开启。
-
-Go 测试 `pkg/domain/extract_test.go` 验证非 history view 可执行、持久化摘要关闭时 history view 失败，以及时间窗内任务产生文件名；`pkg/server/handler/extractorhandler/extract_test.go` 验证 server/handler 与 failpoint HTTP 路径。Rust 对应独立测试见下一节。
 
 ## 扩展指南
 
@@ -122,14 +113,3 @@ Go 测试 `pkg/domain/extract_test.go` 验证非 history view 可执行、持久
 - 改取消语义时需贯穿 handler `RequestContext`、domain handle 和外部存储读写；当前只在任务提交/打开前检查，不能假设长任务或下载会被中途取消。
 - 改资源或并发模型时需保持 `ExtractHandle` 的串行采集不变量，并关注全局摘要锁、独立 session、全局 storage 和内存峰值。
 - 测试必须继续放在独立文件。优先扩展 `pkg/server/runtime_test.rs` 覆盖生产 runtime 与真实 Domain/归档，扩展 `pkg/domain/extract_test.rs` 覆盖通用 worker/视图算法，扩展 `pkg/server/handler/extractorhandler/extract_test.rs` 覆盖 HTTP trait 契约；不要把测试嵌入 `extract_runtime.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/server/extract_runtime.rs` 命中目标文件；`node --file ... --offset 1/200` 读取完整 511 行并识别 40 个符号；`query CanonicalExtractRuntime`、`query ProductionExtractSource` 定位两个核心结构；`explore pkg/domain/extract.rs ...` 给出 `new_with_domain`、`extract_task`、`view_dependencies`、`dump_package` 的调用关系和相关测试。针对 impl 方法的独立 callers/callees 命令未产生额外可用输出，因此接线以精确源码引用补证。
-- 目标源码：`pkg/server/extract_runtime.rs`，确认所有常量、helper、两个结构、两个 trait impl 和 `CanonicalExtractRuntime` 的完整实现。
-- crate/模块接线：`pkg/server/Cargo.toml`、`pkg/server/lib.rs`、`pkg/server/runtime.rs`、`pkg/server/extract.rs`、`pkg/server/handler/extractorhandler/extractor.rs`、`pkg/server/server.rs`。
-- domain 实现：`pkg/domain/extract.rs`，确认互斥范围、过滤/去重、视图 AST 包装、文件名生成和 dump 调用顺序。
-- Go 对照：`pkg/server/extract.go`、`pkg/server/handler/extractorhandler/extractor.go`、`pkg/domain/extract.go`。
-- Rust 测试：`pkg/server/runtime_test.rs::go_merge_43_canonical_server_domain_serves_extract_archive` 覆盖真实表、归档固定条目、SQL JSON、统计 JSON、skip-stats 与后台任务；`go_merge_43_extract_archive_view_and_partitions` 覆盖嵌套视图/基表、分区与 global 统计形状。`pkg/domain/extract_test.rs` 覆盖 AST/CTE/循环视图依赖、记录有效性、截断与重复记录、反向时间窗和持久化摘要要求。`pkg/server/extract_test.rs` 与 handler crate 的 `extract_test.rs`/`extractor_test.rs` 覆盖 HTTP 适配、failpoint、参数和流式 reader 契约。
-- Go 测试：`pkg/domain/extract_test.go`、`pkg/server/handler/extractorhandler/extract_test.go`，用于核对历史摘要开关、任务产物与 HTTP 入口原始意图。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的精确标题计数命令验证恰有 11 个固定二级章节，并人工检查所有生产结论均可回指上述符号和路径。

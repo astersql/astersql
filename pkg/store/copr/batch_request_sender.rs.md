@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-copr` crate（`pkg/store/copr/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/store/copr/lib.rs` 声明为 `batch_request_sender` 模块，并把其中的发送器、请求/响应、Region 元数据、退避和 RPC 抽象统一再导出。它是 Rust 侧 Batch Coprocessor 请求发送边界：上层应先把键范围整理为 `RegionInfo`，再通过 `RegionBatchRequestSender` 将一个 `BatchRequest` 发往 `RpcContext.address` 指定的 TiFlash/TiKV 节点。
-
-需要区分实现状态与接线状态：发送器和失败重试决策已经实现，`pkg/executor/executor_failpoint_test.rs` 也直接执行了真实发送器失败路径；但仓库内 Rust 生产源码没有构造 `RegionBatchRequestSender` 或调用 `send_req_to_addr`。当前 Rust 的 `pkg/store/copr/mpp.rs` 只复用本文件的 `Backoffer`、错误和 Region 数据类型，尚未像 Go 的 `pkg/store/copr/batch_coprocessor.go`、`pkg/store/copr/mpp.go` 那样把该发送器接入生产发送主链。
+`RegionBatchRequestSender::send_req_to_addr` 负责填充请求上下文、检查地址与父取消状态、调用 RPC、记录耗时，并把传输失败转换为“重建整批后重试”或终止错误。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ Go 生产上游清晰存在：`pkg/store/copr/batch_coprocessor.go` 构造 sende
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/copr/batch_request_sender.go`。`RegionInfo` 字段、Region epoch/ranges 转换、`RegionBatchRequestSender`、构造器、`SendReqToAddr` 和失败处理顺序均对应 Go 实现。两边共同保持的关键语义包括：发送前写入 Region/peer context；RPC 失败后取消当前调用、记录错误、通知缓存并要求上层重建整批；普通 TiFlash 每次 I/O 失败都用 `reload=true`；取消和 TiDB 关停不继续重试；执行信息开关控制 RPC 耗时采集。
-
 Rust 当前有若干显式适配差异：
 
 - Go 嵌入 `tikv.RegionRequestSender` 并直接使用 client/cache/oracle；Rust 以 `RpcClient`、`RegionFailureHandler` trait 和原子关停标志注入依赖，没有 oracle 字段。
@@ -96,13 +92,3 @@ Rust 当前有若干显式适配差异：
 若扩展错误分类或重试规则，应同步检查 `BatchError::Display`、`Backoffer::backoff`、`RegionCache` 的 `RegionFailureHandler` 实现及上层匹配分支。改变取消/关停优先级、`reload_region=true` 或存算分离跳过缓存的规则会影响兼容性；改变重试计数边界可能产生额外 RPC 和延迟。对应独立测试至少覆盖：空地址、父取消、关停、存算分离、退避耗尽、统计开关、成功响应和真实 transport 错误。
 
 若更换为异步 RPC 或增加并行发送，需重新设计 `&mut self`/`&mut Backoffer` 所表达的串行所有权，并评估统计锁竞争、子取消令牌传播以及 `last_rpc_error` 的竞态语义。若修改 `BatchResponse::encoded_size` 用于限流或内存核算，必须先确认所需的是 Rust 内存估算还是实际协议编码大小。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `pkg/store/copr/batch_request_sender.rs` 已索引，共 511 行、47 个符号。
-- RustCodeGraph 源码/符号查询：读取目标文件全部两段（1–260、255–511），查询 `RegionBatchRequestSender`、`send_req_to_addr`、`on_send_fail_for_batch_regions`、`NewRegionBatchRequestSender`；精确 callers/callees 查询未返回额外静态边，因此用仓库引用搜索确认实际接线情况。
-- crate 与模块证据：`pkg/store/copr/Cargo.toml`、`pkg/store/copr/lib.rs`；前者确认 crate、`fail` 依赖和 Go package 元数据，后者确认模块声明、公开再导出及测试分文件组织。
-- 直接实现证据：`pkg/store/copr/batch_request_sender.rs`；下游失败处理证据：`pkg/store/copr/region_cache.rs::RegionFailureHandler for RegionCache`；共享类型的生产使用证据：`pkg/store/copr/mpp.rs` 等同 crate 文件。
-- Go 对照：`pkg/store/copr/batch_request_sender.go` 全文，以及其生产调用点 `pkg/store/copr/batch_coprocessor.go`、`pkg/store/copr/mpp.go`。
-- Rust 独立测试：`pkg/executor/executor_failpoint_test.rs::batch_cop_response_failpoint_uses_the_real_sender_retry_path`，验证 failpoint 绕过 transport、调用失败处理器、设置 `retry` 和保存 `last_rpc_error`。同目录不存在同名独立 sender 测试；`pkg/store/copr/region_cache_test.rs` 另有失败处理器相关覆盖。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构校验要求目标文档存在且恰有十一个固定二级标题。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现受实例级资源管理器管控的 `spool::Pool`：每次占到并发槽位后创建一个操作系统线程，不复用线程；既可执行单个闭包，也可让若干 worker 持续消费一个 `TaskChannel`。源码入口是 [`spool.rs`](spool.rs)，由同目录 [`lib.rs`](lib.rs) 的 `mod spool; pub use spool::*;` 导出；根门面 [`pkg/lib.rs`](../../../lib.rs) 又将整个 crate 暴露为 `resourcemanager::pool::spool`。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-resourcemanager-pool-spool`，库入口为 `lib.rs`。直接依赖包括 `prometheus`、`crossbeam-channel`，以及路径依赖 `astersql-resourcemanager`；其中通道类型实际由同 crate 映射进来的 `poolmanager` 模块提供。
-
-构造成功的池会在进程级 `InstanceResourceManager` 中按名称和 `Component` 注册，并通过 `GoroutinePool` trait 参与资源管理器的容量调度。仓库搜索只发现根门面导出和本 crate 测试直接构造 Rust `Pool`，未发现测试之外的 Rust 或 Go 生产构造点；因此当前可确认的是“实现及调度接线已经存在”，不能据此宣称某条线上业务路径已经实例化该池。
+实现受实例级资源管理器管控的 `spool::Pool`：每次占到并发槽位后创建一个操作系统线程，不复用线程；既可执行单个闭包，也可让若干 worker 持续消费一个 `TaskChannel`。
 
 ## 核心职责
 
@@ -96,10 +92,6 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-resource
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`spool.go`](spool.go)，行为测试是 [`spool_test.go`](spool_test.go)。Rust 保留了 `NewPool`、`Run`、`RunWithConcurrency`、`Tune`、`Cap`、`Running`、`ReleaseAndWait`、`GetOriginConcurrency` 等 Go 风格名称，同时提供 Rust 风格小写方法。
-
-主要一致点：零容量构造失败；默认阻塞、可选非阻塞；满载截断/拒绝规则；5 ms 轮询；容量、运行数和等待数分离；构造注册、释放注销；多并发任务由 `TaskManager` 调容；原始并发和最后调谐时间参与资源管理器决策。`spool_test.rs` 对应 Go 的释放、扩缩容、过载、并发截断和任务管理器场景；`migration_aster_unit_test.rs` 另行覆盖重名注册、Go API 名称、panic 恢复、关闭竞态顺序和整数回绕。
-
 实现差异：Go 使用 goroutine、`sync.WaitGroup`、`sync.Cond` 和全局 metrics 向量；Rust 使用 OS 线程、显式 `JoinHandle`、`Arc`/原子/互斥锁，并为每个池直接构造 gauge。Go 在任务 panic 时记录错误与堆栈，Rust 只捕获并丢弃 panic。Go 的任务/退出通道由原生 `select` 处理，Rust 的 `TaskChannel`/`SignalChannel` 基于 `crossbeam-channel`，由 `Meta::recv_event` 统一成 `MetaEvent`。这些差异不改变现有测试覆盖的核心调度语义，但会影响线程成本、诊断信息和指标注册方式。
 
 ## 扩展指南
@@ -111,12 +103,3 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-resource
 - 若接入新的生产调用点，优先通过根门面 `resourcemanager::pool::spool` 使用，并确保所有成功构造路径最终显式调用 `release_and_wait`。
 - 测试逻辑必须继续放在独立文件。行为回归扩展 [`spool_test.rs`](spool_test.rs)，Go/Rust 迁移与兼容边界扩展 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，并同步审视 [`spool_test.go`](spool_test.go)；不要把测试内嵌到 `spool.rs`。
 - 性能风险主要来自“一槽一 OS 线程”、5 ms 轮询和不断增长到释放时才清空的句柄向量；兼容风险主要来自 Go 风格错误文案、整数回绕、调容每次至多增一个 worker，以及关闭后排空已排队任务的语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，可查询本文件全部 414 行。
-- RustCodeGraph 文件/符号查询：`files --filter pkg/resourcemanager/pool/spool`；`node --file .../spool.rs --offset 1 --limit 500`；`query` / `node` 核对 `NewPool`、两个 `run_with_concurrency` 和 `run_task`。图中确认 `NewPool -> Pool::new`，`run_with_concurrency -> check_and_add_running / spawn_reserved / run_task`，以及 `tune`、`run_with_concurrency -> run_task`；图对跨 crate 构造调用未给出生产调用边，随后用 `rg` 补查门面和引用。
-- crate/入口证据：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`pkg/lib.rs`](../../../lib.rs) 和根 `Cargo.toml` 的 `facade_resourcemanager_pool_spool` 路径依赖。
-- 下游实现证据：[`basepool.rs`](../basepool.rs)、[`poolmanager/task_manager.rs`](../../poolmanager/task_manager.rs)、[`poolmanager/task_manager_scheduler.rs`](../../poolmanager/task_manager_scheduler.rs)、[`util/util.rs`](../../util/util.rs)、[`rm.rs`](../../rm.rs)、[`schedule.rs`](../../schedule.rs) 和 [`option.rs`](option.rs)。
-- Go 对照与独立测试证据：[`spool.go`](spool.go)、[`spool_test.go`](spool_test.go)、[`spool_test.rs`](spool_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前以任务指定命令验证本文恰含 11 个固定二级章节，并人工复核所有“已接线/未发现调用”结论均有上述源码、图查询或仓库搜索支撑。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`column.rs`](./column.rs) 属于 `astersql-server-internal-column` crate，是 SQL 执行结果进入 MySQL 客户端线协议前的列元数据与行数据编码层。crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，模块由 [`lib.rs`](./lib.rs) 私有加载后整体再导出；因此外部 Rust 调用者通过 crate 根使用 `Info`、`DumpFlag`、`dumpType`、`DumpTextRow` 和 `DumpBinaryRow`。
-
-它位于结果集抽象和网络包写出之间：上游提供 `resolve::ResultField` 转换得到的 `Info`、`chunk::Row` 与可选 `textrow::ResultEncoder`；本文件生成 ColumnDefinition41 字段体或一行的文本/二进制协议载荷。包头、分包、socket 写入和 flush 不在这里处理。Go 生产链可在 [`pkg/server/conn.go`](../../conn.go) 的 `handleFieldList`、`writeColumnInfo`、`writeChunks`、`writeChunksWithFetchSize` 中看到；Rust 当前接线状态见“依赖与调用关系”和“与 Go 版本的对应关系”。
+位于结果集抽象和网络包写出之间：上游提供 `resolve::ResultField` 转换得到的 `Info`、`chunk::Row` 与可选 `textrow::ResultEncoder`；本文件生成 ColumnDefinition41 字段体或一行的文本/二进制协议载荷。
 
 ## 核心职责
 
@@ -87,13 +85,11 @@ RustCodeGraph 对精确符号确认的内部边包括 `Dump → Info::dump`、`D
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`column.go`](./column.go)。Rust 保留同名数据字段和主要入口，ColumnDefinition41 字段顺序、`0x0c` 定长头、NULL 位图偏移、类型 getter 分派、字符集切换以及 SET/ENUM/Vector/BLOB 映射均逐分支对应 Go。
+已验证的表示差异包括：Go `Info.DefaultValue` 是 `any`，Rust 收窄为 `Option<DefaultValue>`；Rust 通过 `render_default_value` 模拟 Go `%v`，并专门保持任意字符串字节和 Go 风格浮点指数。Go 返回 `([]byte, error)`，Rust 返回 `Result<Vec<u8>, err::Error>`。
 
-已验证的表示差异包括：Go `Info.DefaultValue` 是 `any`，Rust 收窄为 `Option<DefaultValue>`；Rust 通过 `render_default_value` 模拟 Go `%v`，并专门保持任意字符串字节和 Go 风格浮点指数。Go `[]*Info` 在 Rust 中是 `&[Info]`，因此 Rust 行编码不表达空指针列。Go 返回 `([]byte, error)`，Rust 返回 `Result<Vec<u8>, err::Error>`。
+测试对应关系：[`column_test.go`](./column_test.go) 的列定义字节、SET/ENUM 类型标志、256 字节名称限制及文本值场景移植到独立 [`column_test.rs`](./column_test.rs)；Rust 补充的 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 进一步覆盖默认值原始字节/浮点格式、Vector 元数据、二进制行 NULL 位图和未知类型错误。
 
-测试对应关系：[`column_test.go`](./column_test.go) 的列定义字节、SET/ENUM 类型标志、256 字节名称限制及文本值场景移植到独立 [`column_test.rs`](./column_test.rs)；Rust 补充的 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 进一步覆盖默认值原始字节/浮点格式、Vector 元数据、二进制行 NULL 位图和未知类型错误。Rust 测试不与生产源文件混放，符合仓库约束。
-
-生产接线尚不完全同构：Go [`conn.go`](../../conn.go) 直接用 `DumpWithDefault` 响应 COM_FIELD_LIST，用 `Dump` 写列定义，并在普通/游标结果路径调用文本或二进制行编码；当前 Rust 网络运行时只确认直接使用 `Info`、`dumpType` 和 `DumpFlag`，行编码函数仍主要由测试覆盖。后续迁移不得把 Go 的网络写包接线当成 Rust 当前事实。
+生产接线尚不完全同构：Go [`conn.go`](../../conn.go) 直接用 `DumpWithDefault` 响应 COM_FIELD_LIST，用 `Dump` 写列定义，并在普通/游标结果路径调用文本或二进制行编码；当前 Rust 网络运行时只确认直接使用 `Info`、`dumpType` 和 `DumpFlag`，行编码函数仍主要由测试覆盖。
 
 ## 扩展指南
 
@@ -102,12 +98,3 @@ RustCodeGraph 对精确符号确认的内部边包括 `Dump → Info::dump`、`D
 - 扩展 `DefaultValue` 枚举时必须同步 `render_default_value`，并明确 Go `%v` 的精确字节形式。特别检查非 UTF-8 字节、浮点阈值、NaN/Inf 和动态时间默认值。
 - 若把 `DumpTextRow` / `DumpBinaryRow` 接入 Rust 生产网络主链，应从结果集列缓存取得同序 `Info`，复用每连接编码器，保持已有包头前缀，并补覆盖文本查询、prepared statement、cursor fetch 和编码失败传播的独立集成测试。
 - 性能风险集中在每单元格字符串化、转码和长度编码追加；兼容风险集中在客户端可见类型/flag/charset/length 与 NULL 位图。不要以“客户端能显示”为唯一验收，应断言精确协议字节。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/server/internal/column` 确认目标 Rust/Go/测试文件均已索引。
-- RustCodeGraph 源码与符号检查：`node --file pkg/server/internal/column/column.rs --offset 1 --limit 500` 读取完整 342 行和 14 个符号；`query DumpBinaryRow`、`query DumpTextRow`、`query dumpType`、`query DumpFlag` 均定位到 Rust 与 Go 对照定义；`callees` 确认 `Dump`/`DumpWithDefault` 到 `dump`、`DumpTextRow` 到 `toTextRow` 的边。精确 `callers` 查询超时，未把空输出作为无调用证据。
-- 已读取的直接证据：[`column.rs`](./column.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`column.go`](./column.go)、[`column_test.rs`](./column_test.rs)、[`column_test.go`](./column_test.go)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)、[`pkg/server/conn.go`](../../conn.go)、[`pkg/server/runtime.rs`](../../runtime.rs)、[`pkg/server/protocol_result.rs`](../../protocol_result.rs)、[`pkg/server/internal/resultset/resultset.rs`](../resultset/resultset.rs)。目标目录没有 `doc.go`。
-- 关键上游边：Go `handleFieldList → Info.DumpWithDefault`、`writeColumnInfo → Info.Dump`、`writeChunks → DumpBinaryRow/DumpTextRow`、`writeChunksWithFetchSize → DumpBinaryRow`；Rust `protocol_column → ConvertColumnInfo → dumpType/DumpFlag`，以及结果集/协议适配层对 `Info` 的持有。
-- 独立测试证据：`column_test.rs` 覆盖精确列定义字节、默认值、名称限制和多种文本类型/gbk；`migration_aster_unit_test.rs` 覆盖默认值字节与 Go 浮点格式、Vector 兼容映射、文本 NULL/数值/ENUM/JSON、二进制 NULL 位图和未知类型错误。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核本文只陈述上述源码、调用边、Cargo 和测试能够支持的事实。

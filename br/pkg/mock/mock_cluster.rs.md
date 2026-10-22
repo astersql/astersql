@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`mock_cluster.rs`](./mock_cluster.rs) 属于 Cargo workspace 成员 `astersql-br-pkg-mock`；该 crate 的入口 [`lib.rs`](./lib.rs) 以 `pub mod mock_cluster` 装载本文件，并通过 `pub use mock_cluster::*` 平铺导出其公共符号。它是 BR 测试基础设施中的 mock TiDB 集群门面，直接对照同目录 [`mock_cluster.go`](./mock_cluster.go)，不是生产环境的真实 PD、TiKV 或 TiDB Server 实现。
-
-[`Cargo.toml`](./Cargo.toml) 将 crate 标为 `library`，`go-package = "br/pkg/mock"`，且依赖表为空。文件所需的存储、Domain、Server、PD 客户端和探针能力全部来自同 crate 的 [`stubs.rs`](./stubs.rs)，这是为避免 darwin arm64 上引入 grpcio 等重型依赖而采用的本地替身边界。
+`getDSN`、`waitUntilServerOnline` 和 `split_after_first` 复刻 Go 版连接串生成及就绪轮询语义。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@ RustCodeGraph 对 `mock_cluster.rs::NewCluster` 的下游边给出 `DisableStats
 
 ## 与 Go 版本的对应关系
 
-Rust `Cluster` 的 `Option<T>` 对应 Go 结构体中的嵌入指针/interface 零值；Rust 的显式字段名保留了 Go 风格大写，以便机械移植调用点。`NewCluster` 的 bootstrap 顺序、取 PD 客户端的路径、`Start` 的零端口配置、后台运行与 channel 等待、`Stop` 的关闭顺序，以及 DSN 默认值均对照 [`mock_cluster.go`](./mock_cluster.go)。
+Rust `Cluster` 的 `Option<T>` 对应 Go 结构体中的嵌入指针/interface 零值；Rust 的显式字段名保留了 Go 风格大写，以便机械移植调用点。
 
-当前 Rust 不是重型 Go 依赖的等价运行时：`HttpServer::ListenAndServe` 不 bind，`NewServer` 使用固定测试端口，`sql_open`/`http_get` 默认只检查线程局部 online 标志，`DisableStats4Test` 和 `view_Stop` 是空操作，PD 客户端也只是带 id 的占位结构。因此它验证生命周期与接口契约，不证明真实 TiDB/PD/TiKV 的网络、调度或存储行为。
+当前 Rust 不是重型 Go 依赖的等价运行时：`HttpServer::ListenAndServe` 不 bind，`NewServer` 使用固定测试端口，`sql_open`/`http_get` 默认只检查线程局部 online 标志，`DisableStats4Test` 和 `view_Stop` 是空操作，PD 客户端也只是带 id 的占位结构。
 
-Rust 额外增加了可注入、线程局部的重试和探针钩子，以便独立测试成功、重试及 panic 边界；同时用纳秒 `SystemTime` 对应 Go 的 `time.Now().UnixNano()`。HTTP 耗尽后仍返回 DSN 是有测试保护的 Go 源码精确对齐行为。
+Rust 额外增加了可注入、线程局部的重试和探针钩子，以便独立测试成功、重试及 panic 边界；同时用纳秒 `SystemTime` 对应 Go 的 `time.Now().UnixNano()`。
 
 ## 扩展指南
 
@@ -94,13 +92,3 @@ Rust 额外增加了可注入、线程局部的重试和探针钩子，以便独
 - 修改 DSN 或重试语义时，同时对照 Go `getDSN`/`waitUntilServerOnline`，扩展 [`parity_test.rs`](./parity_test.rs) 的成功、SQL 耗尽、HTTP 耗尽和返回前缀用例；不要把测试逻辑放回生产 `.rs` 文件。
 - 若目标从“接口/生命周期替身”升级到真实网络集群，应在 Cargo 边界显式引入对应依赖并重新评估 macOS arm64/grpcio 约束，不能只替换一个探针函数就宣称与 Go 完全等价。
 - 性能风险主要在固定 10ms × 100 次的轮询上；测试可通过 stubs 钩子缩短，但生产对照常量与 Go 行为应保持同步。
-
-## 验证依据
-
-- 源码与模块：[`mock_cluster.rs`](./mock_cluster.rs)、[`lib.rs`](./lib.rs)、[`stubs.rs`](./stubs.rs)。
-- crate 边界：[`Cargo.toml`](./Cargo.toml)；workspace 根 `Cargo.toml` 将 `br/pkg/mock` 列为成员，`br/pkg/utiltest/Cargo.toml` 以路径依赖使用它。
-- Go 对照：[`mock_cluster.go`](./mock_cluster.go) 和 [`mock_cluster_test.go`](./mock_cluster_test.go)。
-- Rust 独立测试：[`mock_cluster_test.rs`](./mock_cluster_test.rs) 覆盖主生命周期和 pprof Once 归属；[`parity_test.rs`](./parity_test.rs) 覆盖 DSN、SQL 重试、SQL panic、HTTP 耗尽兼容语义和资源关闭。
-- 上游调用：[`br/pkg/utiltest/suite.rs`](../utiltest/suite.rs) 的 `CreateRestoreSchemaSuite` 与 `TestRestoreSchemaSuite::{Stop, Drop}`。
-- RustCodeGraph：索引状态为 7032 个 Rust 文件；`query NewCluster --kind function` 定位 Rust/Go 对照符号；`callees` 核验了 `NewCluster`、`Start`、`Stop`、`getDSN`、`waitUntilServerOnline` 的直接下游边。宽泛 `explore` 与 `callers` 查询未在时限内返回，所以上游事实改由索引搜索候选后使用 `rg` 核对直接引用，没有据此推断未验证的调用者。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查目标文件存在且恰含规定的十一个二级章节，并人工复核以上路径和符号可追溯。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-label` crate 的错误定义模块，源码入口为 [`errors.rs`](errors.rs)。`lib.rs` 以 `pub mod errors` 暴露该模块，因此外部可通过 `astersql_ddl_label::errors::{Error, ErrInvalidAttributesFormat}` 访问；crate 根只重新导出了 `attributes` 和 `rule` 的公开项，并未把这里的符号直接提升到根命名空间。
-
-它位于 DDL 的 Region Label 属性解析边界，不负责 DDL job 持久化、schema state 转换、回填或 schema version 同步。当前 Rust 调用链集中在同 crate 内：`rule::Rule::ApplyAttributesSpec` 解析 AST 属性，继而调用 `attributes::NewLabels` / `NewLabel` / `Add`，这些函数以本文件的 `Error` 表达失败。
-
-`pkg/ddl/label/Cargo.toml` 声明 crate 名为 `astersql-ddl-label`，根 workspace 又以 `facade_ddl_label` 将其挂到 `pkg::ddl::label` 门面；`pkg/ddl`、`pkg/executor`、`pkg/domain/infosync` 和 `pkg/store/gcworker` 的 Cargo manifest 声明了对此 crate 的依赖。不过仓库内 Rust 源码搜索目前没有发现这些外部 crate 直接构造或匹配本文件错误的生产调用，实际可确认的生产消费者仅为同 crate 的 `attributes.rs` 和 `rule.rs`。
+通过 `thiserror` 的展示模板集中定义用户可见错误文本，使解析函数无需重复拼接文案。
 
 ## 核心职责
 
@@ -84,8 +80,6 @@ RustCodeGraph 将 `errors.rs` 识别为含 2 个符号的已索引文件；对�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/ddl/label/errors.go`、`attributes.go` 和 `rule.go`。
-
 - Go `errors.go` 只定义 `ErrInvalidAttributesFormat = errors.New(...)`；Rust 保留同名字符串常量，同时增加统一的 `Error` 枚举以适配 `Result<T, E>`。
 - Go `NewLabel` 使用 `fmt.Errorf("%w: %s", ErrInvalidAttributesFormat, attr)`，支持 `errors.Is` 沿 `%w` 找到 sentinel；Rust 用带 `attribute` 字段的枚举变体表达同一文案，不提供等价 source 链。
 - Go `Add` 直接用 `fmt.Errorf` 生成冲突文本；Rust 将新旧标签保存为 `ConflictingAttributes` 的命名字段，最终文案与 Go 一致。
@@ -103,16 +97,3 @@ Go 对照文件是 `pkg/ddl/label/errors.go`、`attributes.go` 和 `rule.go`。
 5. 不要把展示字符串当作稳定的程序判断接口；Rust 调用者应匹配枚举变体。若外部 crate 需要匹配，需同时评估公开枚举新增变体对穷尽匹配的兼容影响。
 
 主要正确性风险是错误分类或文案顺序漂移；兼容风险是破坏 Go sentinel/SQL 错误码预期；性能风险较低，仅需注意当前冲突路径会分配两个恢复字符串，而 `InvalidAttributesSpec` 会分配底层诊断文本。
-
-## 验证依据
-
-事实依据如下：
-
-- 源文件：`pkg/ddl/label/errors.rs`（常量、枚举、派生和展示模板）。
-- 直接生产调用：`pkg/ddl/label/attributes.rs::{NewLabel, NewLabels, Add}`、`pkg/ddl/label/rule.rs::Rule::ApplyAttributesSpec`。
-- crate 与门面：`pkg/ddl/label/Cargo.toml`、`pkg/ddl/label/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`；相关依赖 manifest 为 `pkg/ddl/Cargo.toml`、`pkg/executor/Cargo.toml`、`pkg/domain/infosync/Cargo.toml`、`pkg/store/gcworker/Cargo.toml`。
-- Go 对照：`pkg/ddl/label/errors.go`、`attributes.go`、`rule.go`；SQL 层包装证据为 `pkg/ddl/executor.go` 对 `dbterror.ErrInvalidAttributesSpec` 的调用。
-- Rust 独立测试：`pkg/ddl/label/attributes_test.rs` 覆盖解析、去重和冲突；`rule_test.rs` 覆盖 AttributesSpec 合法/非法输入；`migration_aster_unit_test.rs` 额外断言非法格式文案、冲突文案以及冲突不修改集合。Go 对照测试为 `attributes_test.go` 和 `rule_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ddl/label` 找到 13 个相关文件；`node --file pkg/ddl/label/errors.rs --offset 1 --limit 240` 确认完整 46 行和 2 个符号；`query NewLabel --kind function` 同时定位 Go/Rust 实现。枚举变体查询无结果，故使用精确源码搜索补齐调用边。
-
-本任务是纯文档分析，按计划不运行 Cargo。人工复核确认：文档区分了定义、直接调用与尚未接线的上层行为，没有把 DDL 框架概览写成该文件的实际职责，也没有建议把 Rust 测试内嵌到生产源文件。

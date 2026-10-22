@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`mock.rs` 属于 `astersql-ddl` crate；[`Cargo.toml`](Cargo.toml) 的 `[lib]` 指向 `lib.rs`，[`lib.rs`](lib.rs) 以 `pub mod mock` 公开本模块，并仅在 `cfg(test)` 下装配独立的 [`mock_test.rs`](mock_test.rs)。文件提供 DDL 测试辅助 API：一个可修改的 delete-range 批大小测试值、一套空操作 delete-range 管理器接口，以及从完整 `CREATE TABLE` AST 构造 `TableInfo` 的便捷函数。
-
-它不在 DDL owner、job 持久化或后台 GC 的生产主链上。精确引用搜索显示，批大小 API 只由 [`tests/serial/main_test.rs`](tests/serial/main_test.rs) 使用，`mock_table_info` 只由 `mock_test.rs` 使用，而 `new_mock_delete_range_manager` 和本文件的 `DeleteRangeManager` trait 没有文件外 Rust 调用者。生产侧另有 [`delete_range.rs`](delete_range.rs) 的具体 `DeleteRangeManager` 和独立常量；两者与本文件的同名接口/状态并未接线。
+定义最小的 `DeleteRangeManager` trait，并用无状态 `MockDeleteRange` 提供全部成功或空操作的实现，方便未来调用者以 trait object 注入替身。
 
 ## 核心职责
 
@@ -77,11 +75,11 @@ mock 管理器刻意吞掉全部业务效果：它不验证 job ID 是否存在�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`mock.go`](mock.go)。Rust `set_batch_insert_delete_range_size` 对应 `SetBatchInsertDeleteRangeSize` 的测试配置意图，但接线并不等价：Go setter 直接修改 `delete_range.go` 分批循环读取的包变量；Rust setter 修改 `mock.rs` 私有原子量，而 `delete_range.rs` 的真实逻辑使用独立编译期常量 `256`。因此 Rust 当前只保留测试可观察值，没有改变生产批量大小。
+Rust `set_batch_insert_delete_range_size` 对应 `SetBatchInsertDeleteRangeSize` 的测试配置意图，但接线并不等价：Go setter 直接修改 `delete_range.go` 分批循环读取的包变量；Rust setter 修改 `mock.rs` 私有原子量，而 `delete_range.rs` 的真实逻辑使用独立编译期常量 `256`。因此 Rust 当前只保留测试可观察值，没有改变生产批量大小。
 
-Rust `MockDeleteRange`/trait 对应 Go `mockDelRange`/`delRangeManager` 的空实现意图。Go 的 `ddl.newDeleteRangeManager(mock)` 在 mock 分支真实调用 `newMockDelRangeManager`，随后调用 `start`；Go 方法还接收 `context.Context` 和完整 `*model.Job`。Rust 只接收 job ID，仓库未找到对应构造链调用，且生产 `delete_range.rs` 使用另一个具体 struct，而不是实现本 trait。
+Rust 只接收 job ID，仓库未找到对应构造链调用，且生产 `delete_range.rs` 使用另一个具体 struct，而不是实现本 trait。
 
-Rust `mock_table_info` 与 Go `MockTableInfo` 的共同点是从 `CreateTableStmt` 构造表元数据并最后赋指定 ID。实现路径有差异：Go 函数显式调用 `buildColumnsAndConstraints`、`BuildTableInfo`、`setTableAutoRandomBits` 和 `handleTableOptions`；Rust 复用更完整的 `BuildTableInfoFromAST` 正式入口。Rust 测试证明该入口同时保留索引、外键、check constraint、生成列及表选项，并传播正式 builder 校验错误，因此在当前覆盖范围内没有为测试另造简化语义。
+实现路径有差异：Go 函数显式调用 `buildColumnsAndConstraints`、`BuildTableInfo`、`setTableAutoRandomBits` 和 `handleTableOptions`；Rust 复用更完整的 `BuildTableInfoFromAST` 正式入口。Rust 测试证明该入口同时保留索引、外键、check constraint、生成列及表选项，并传播正式 builder 校验错误，因此在当前覆盖范围内没有为测试另造简化语义。
 
 ## 扩展指南
 
@@ -90,13 +88,3 @@ Rust `mock_table_info` 与 Go `MockTableInfo` 的共同点是从 `CreateTableStm
 - 扩展 `mock_table_info` 时优先继续复用 `BuildTableInfoFromAST`，不要手写一套弱化的列或表选项构造逻辑。新增 builder 行为应在正式 builder 的独立测试与 [`mock_test.rs`](mock_test.rs) 中同步验证成功元数据和错误传播。
 - 测试逻辑必须继续放在独立 `*_test.rs` 文件。批大小/manager 行为适合扩展串行测试或新增同目录独立测试；建表辅助继续扩展 `mock_test.rs`。若需求涉及用户可见 DDL 行为，还需在真实 executor/job/delete-range 路径增加相应测试，不能以 mock 测试替代。
 - 兼容性风险主要是 Go 与 Rust 接线、错误载荷和 job 参数差异；并发风险主要是全局测试值互相覆盖；性能风险当前很低，真正接入生产分批后才需评估过小批次造成的系统表写入次数。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ddl/mock.rs` 报告目标文件有 18 个符号；`node --file pkg/ddl/mock.rs --offset 1 --limit 400` 读取全部 91 行；`query` 核对了两个批大小函数、trait、mock struct、构造器、`mock_table_info` 和 `BuildTableInfoFromAST` 的签名。精确 `callers/callees` 查询超时且无输出，未把无输出解释为不存在调用。
-- crate 与模块证据：读取 `pkg/ddl/Cargo.toml`，核对依赖和 `[lib] path = "lib.rs"`；读取 `pkg/ddl/lib.rs`，核对 `pub mod mock` 与独立 `mock_test` 装配。
-- Rust 实现证据：读取 `pkg/ddl/mock.rs`、`pkg/ddl/create_table.rs::BuildTableInfoFromAST` 和 `pkg/ddl/delete_range.rs`；后者证明真实 manager/state 与批大小常量独立存在。
-- Rust 测试证据：读取 `pkg/ddl/mock_test.rs`，核对完整 CREATE TABLE 元数据和错误传播；读取 `pkg/ddl/tests/serial/main_test.rs`，核对全局批大小设置、读取和恢复；限定引用搜索确认没有其他直接 Rust 使用者。
-- Go 对照证据：读取 `pkg/ddl/mock.go`，核对 setter、`mockDelRange` 与 `MockTableInfo`；读取 `pkg/ddl/ddl.go::newDeleteRangeManager` 和 `pkg/ddl/delete_range.go` 的引用，确认 Go mock manager 与批大小已接入实际路径。
-- DDL 契约证据：读取 `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`，并以源码确认本文件不实现 job 持久化、owner 状态机、schema sync 或后台 GC。
-- 本任务为纯文档分析，按计划未运行 Cargo。最终以任务指定命令检查固定十一个二级标题，并人工复核“为何存在、如何运行、如何安全扩展”均可由上述源码、测试或调用证据回溯。

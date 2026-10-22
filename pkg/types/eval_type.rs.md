@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `pkg/types` 元数据分组中的 **EvalType 兼容门面**，不是求值类型的真实实现。`pkg/types/internal/metadata/lib.rs` 在 `eval_type_defs` 私有模块中通过 `include!("../../eval_type.rs")` 编译本文件，并以 `pub use eval_type_defs::*` 将其 API 暴露为 `astersql-types-metadata` 的公开符号；根 crate `pkg/types/lib.rs` 又以 `pub use types_group_4 as metadata` 暴露该分组。该装配方式使 Rust 调用方能够沿用 Go `pkg/types` 的类型名称，同时避免在 types 层复制 parser 层实现。
-
-目标文件仅含一个公开类型别名和九个公开常量，没有函数、trait、`impl`、条件编译项或私有运行时逻辑。真实定义位于 `pkg/parser/types/eval_type.rs`，并由 metadata crate 的 `ast_types` 模块（`pub use parser_types::types::*`）以局部名 `ast` 提供给本文件。
+该装配方式使 Rust 调用方能够沿用 Go `pkg/types` 的类型名称，同时避免在 types 层复制 parser 层实现。
 
 ## 核心职责
 
@@ -59,9 +57,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/types/eval_type.go` 是本文件的直接 Go 对照：它将 `type EvalType = ast.EvalType`，并逐项把 `ETInt`、`ETReal`、`ETDecimal`、`ETString`、`ETDatetime`、`ETTimestamp`、`ETDuration`、`ETJson`、`ETVectorFloat32` 绑定到 `ast`。Rust 门面的别名和九个常量与之逐项一致。
-
-实际方法位于两种语言各自的 parser 文件：Go 的 `pkg/parser/types/eval_type.go` 使用 `type EvalType byte`、`iota` 常量和三个方法；Rust 的 `pkg/parser/types/eval_type.rs` 使用 `EvalType(pub u8)` 新类型、0..8 常量、两个分类方法以及 `String`/`Display`。Rust 新类型用于表达类型约束，但保留未知 `u8` 可构造以及格式化非法值 panic 的 Go 行为。本门面不复刻方法，依靠类型别名把底层方法带到 types API。
+实际方法位于两种语言各自的 parser 文件：Go 的 `pkg/parser/types/eval_type.go` 使用 `type EvalType byte`、`iota` 常量和三个方法；Rust 的 `pkg/parser/types/eval_type.rs` 使用 `EvalType(pub u8)` 新类型、0..8 常量、两个分类方法以及 `String`/`Display`。Rust 新类型用于表达类型约束，但保留未知 `u8` 可构造以及格式化非法值 panic 的 Go 行为。
 
 ## 扩展指南
 
@@ -73,12 +69,3 @@
 4. 检查 `pkg/types/field_type.rs::AggregateEvalType`、`mergeEvalType` 及字段类型到 EvalType 的映射是否需要新分支。兼容性风险主要是常量编号变化和遗漏分类分支；性能风险很低，因为门面没有运行时开销，但下游新增分支可能影响热路径模式匹配。
 
 若只是修改说明或注释，不应改变 `include!` 装配、别名关系或常量值。若计划把门面改为独立 enum/struct，则会引入转换、布局和 API 兼容问题，已超出本文件当前设计。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/types/eval_type.rs` 确认目标已索引；`node --file pkg/types/eval_type.rs --offset 1 --limit 400` 确认文件全貌为一个别名和九个常量；`node --file pkg/parser/types/eval_type.rs --offset 1 --limit 140` 核对真实表示、编号、分类和格式化行为。图查询对 include 门面没有产出可靠调用边，此限制已在“依赖与调用关系”中说明。
-- Rust 源与装配：`pkg/types/eval_type.rs`、`pkg/types/internal/metadata/lib.rs`、`pkg/types/lib.rs`、`pkg/parser/types/eval_type.rs`、`pkg/types/field_type.rs`、`pkg/types/internal/field/lib.rs`。
-- Cargo：`pkg/types/Cargo.toml`、`pkg/types/internal/metadata/Cargo.toml`，用于确认 `types-group-4` 与 `parser-types` 的 crate 边界和路径依赖。
-- Go 对照：`pkg/types/eval_type.go`（门面）和 `pkg/parser/types/eval_type.go`（真实定义与方法）。
-- 独立测试：`pkg/types/enum_4_aster_unit_test.rs::eval_types_and_explain_formats_preserve_aliases_values_and_order`；`pkg/parser/types/migration_aster_unit_test.rs` 中的 EvalType 名称、`IsStringKind`、`IsVectorKind` 断言；聚合使用边界另见 `pkg/types/field_type_test.rs::TestAggregateEvalType` 与 `pkg/types/field_type_5_aster_unit_test.rs::aggregate_eval_type_matches_string_numeric_and_mixed_sign_rules`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构检查要求文档存在且恰有上述 11 个固定二级标题。

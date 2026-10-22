@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（`pkg/expression/Cargo.toml`），实现一套从 Go `pkg/expression/constant_fold.go` 迁移而来的常量折叠算法：在表达式构造或优化阶段，把当前求值上下文中可确定的标量表达式替换为 `Constant`，同时保留 SQL 类型与排序规则元数据。`pkg/expression/lib.rs:285-286` 通过私有模块 `constant_fold_kernel` 编译本文件。
-
-需要特别区分“已编译”和“当前 crate 根入口”：`lib.rs:368` 导出的是 `core_support::*`，其中 `pkg/expression/core_support.rs:481` 另有同名 `FoldConstant`；仓库搜索未发现 `constant_fold_kernel::` 的显式引用，也没有 `pub use constant_fold_kernel::*`。因此本文件目前是已编译的平行实现/迁移契约对象，而 `crate::FoldConstant` 及外部 crate 可见入口实际来自 `core_support.rs`。RustCodeGraph 会把若干未限定名称的调用同时关联到两个同名 Rust 符号，阅读调用图时必须结合上述模块接线消歧，不能据此断言本文件位于运行主链。
+`specialFoldHandler` 为 `IF`、`IFNULL`、`CASE WHEN`、`ISNULL` 提供短路折叠，避免提前求值不会执行的分支。
 
 ## 核心职责
 
@@ -86,13 +84,10 @@ RustCodeGraph 的 `node FoldConstant` 报告 `expression.rs`、`scalar_function.
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/constant_fold.go` 是直接语义对照：Rust 保留了 `FoldConstant`、`foldConstant`、四个特殊 handler、不可折叠/扩展函数保护、计划缓存保护、null-reject dummy 探测、deferred/parameter 刷新、类型标志和 `SubqueryRefID` 传播。
-
 主要实现差异如下：
 
 - Go 使用包级可变 `specialFoldHandler` 并在 `init()` 填充；Rust 的 `specialFoldHandler()` 每次返回新映射，`init()` 仅作为无调用者的对应面存在。
 - Go 的公开入口是 package 实际入口；本 Rust 文件的同名入口位于私有模块，当前 crate 根入口是 `core_support.rs` 中的平行版本。
-- Rust 通过 `Box<dyn Expression>`、`Option`、模式匹配及 `clone_with_value`/`with_deferred`/`with_subquery` 构造器表达 Go 的接口、nil 指针与结构体字面量。
 - Go 参数标记路径包含 `intest.AssertNoError` 后再回退；本文件仅记录 warning 并回退，不在优化期断言。
 - Rust 日志目前使用 warning 文本，Go 多数折叠错误使用带表达式信息的 debug 日志；对客户端的关键行为都是保留原表达式而非吞掉执行期错误。
 - Go `IFNULL` 在先折叠第二参数后修改原函数类型；Rust 先从第二参数读取 charset/collation 写入 `expr.RetType`，再折叠第二参数。外层 `FoldConstant` 还会恢复调用入口原表达式元数据，因此接线前应以行为测试核对最终排序规则效果。
@@ -107,12 +102,3 @@ RustCodeGraph 的 `node FoldConstant` 报告 `expression.rs`、`scalar_function.
 - 改变常量构造时必须维持 charset、collation、coercibility、repertoire、decimal、`NotNullFlag`、deferred/parameter 信息和 `SubqueryRefID`，否则可能改变比较语义、计划缓存或 explain 输出。
 - 测试应放在独立文件中。现有最近的 Rust 文件是 `pkg/expression/constant_fold_38_aster_unit_test.rs`，但它是源码契约测试；实际接线或行为修改应另补/扩展独立 Rust 行为测试，覆盖 IF/IFNULL/CASE/ISNULL 短路、错误分支不提前求值、计划缓存、null-reject、排序规则和 deferred 参数。Go 语义变化还应同步 `constant_fold.go` 的既有测试面。
 - 性能上注意 `specialFoldHandler()` 的逐次 HashMap 分配、表达式克隆以及 null-reject 的临时函数构造；若优化这些开销，必须保持无可变全局状态和相同分派语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/constant_fold.rs` 识别本文件含 11 个符号。
-- RustCodeGraph 源码查询：`node --file pkg/expression/constant_fold.rs --offset 1 --limit 500` 读取了完整 333 行；`query FoldConstant`、`query foldConstant`、`query specialFoldHandler` 核对同名定义；`node FoldConstant` 显示 Go、本文件和 `core_support.rs` 三个定义以及候选调用边。同名调用边已结合模块声明与 re-export 人工消歧。
-- 已读源码/配置：`pkg/expression/constant_fold.rs`、`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`、`pkg/expression/core_support.rs`、`pkg/expression/constant_fold.go`。
-- 已读直接调用与测试证据：`pkg/expression/expression.rs`、`pkg/expression/scalar_function.rs`、`pkg/expression/util.rs` 的调用片段；`pkg/expression/constant_fold_38_aster_unit_test.rs` 全文；`pkg/expression/constant_test.go` 中的 Go 调用位置。仓库没有 `pkg/expression/doc.go`。
-- 接线核验：`rg` 未找到任何 `constant_fold_kernel::`、`crate::constant_fold_kernel` 或 `use ... constant_fold_kernel`；`lib.rs` 声明私有模块但只从 `core_support` 导出 `FoldConstant`。因此文档没有把 RustCodeGraph 的歧义候选当成本文件的已验证运行时调用者。
-- 按任务约束未运行 Cargo 或代码测试；本次只创建说明文档，最终结构验证检查文件存在且恰有 11 个规定的二级标题。

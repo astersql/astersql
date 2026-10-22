@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`cpu.rs`](./cpu.rs) 是 `astersql-util-cpu` crate 的实现文件；[`lib.rs`](./lib.rs) 以 `mod cpu; pub use cpu::*;` 将这里的公开 API 提升到 crate 根。它提供两类进程级能力：后台观测当前进程相对于 cgroup CPU 份额的平滑使用率，以及查询当前进程可用的逻辑 CPU 数。
-
-在服务主链上，[`cmd/tidb-server/main.rs`](../../../cmd/tidb-server/main.rs) 启动 `resourcemanager::InstanceResourceManager`，而 [`pkg/resourcemanager/rm.rs`](../../resourcemanager/rm.rs) 的 `ResourceManager` 构造、启动和停止本文件的 `Observer`。采样快照由 [`pkg/resourcemanager/scheduler/cpu_scheduler.rs`](../../resourcemanager/scheduler/cpu_scheduler.rs) 的 `CPUScheduler::Tune` 读取，并映射为线程池扩容、缩容或保持命令。因此本文件是“进程 CPU/cgroup 观测”到“进程内资源调度”之间的底层数据源，不负责调度策略本身。
-
-[`Cargo.toml`](./Cargo.toml) 指定库入口为 `lib.rs`，默认启用 `failpoints` feature，并依赖 `astersql-util-cgroup`、`astersql-util-mathutil`、`fail`、`libc`、`log` 和 `prometheus`。`test-support` feature 只开放跨 crate 测试所需的 failpoint 辅助入口。
+提供跨平台的逻辑 CPU 数查询和 Unix 进程 CPU 时间读取（`GetCPUCount`、`getCPUTime`）。
 
 ## 核心职责
 
@@ -106,8 +102,6 @@ EMA 的全部读写发生在持有 `state` 锁期间；Prometheus 更新也发�
 
 ## 与 Go 版本的对应关系
 
-[`cpu.go`](./cpu.go) 是主要语义基准。两版都使用全局 CPU 快照和 unsupported 标志、100 ms 采样周期、`0.95/10` EMA、`(用户态速率 + 系统态速率) / CPU share` 公式，以及“初始 cgroup 失败则不启动，采样期 cgroup 错误则忽略”的行为。
-
 关键实现差异如下：
 
 - Go 用 goroutine、ticker、channel 和 `WaitGroup`；Rust 用 OS 线程、`recv_timeout`、MPSC 断连和 `JoinHandle`。Rust 的超时时间从每次 `recv_timeout` 调用重新计算，不是独立 ticker 的固定节拍。
@@ -118,8 +112,6 @@ EMA 的全部读写发生在持有 `state` 锁期间；Prometheus 更新也发�
 - Go `Stop` 关闭已关闭 channel 会 panic；Rust `Stop` 因 `Option::take` 可重复调用。Go 的构造函数预先创建退出 channel，Rust 在 `Start` 成功探测后才创建。
 - Rust 增加 `test-support` helper 与 crate 内复位函数，便于独立 Rust 测试和跨 crate 集成测试复现 Go failpoint 行为，不属于运行时业务接口。
 
-测试对应关系：[`cpu_test.rs`](./cpu_test.rs) 的 `TestCPUValue` 移植 Go 容器采样测试；[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 补充 CPU 数、进程时间单调性、干净停机、初始 cgroup 失败和采样期 cgroup 错误语义；[`pkg/resourcemanager/scheduler/tests/cpu_failpoint_integration.rs`](../../resourcemanager/scheduler/tests/cpu_failpoint_integration.rs) 验证 unsupported 最终令调度器 `Hold`。Go 的 [`cpu_test.go`](./cpu_test.go) 还直接覆盖 failpoint 场景及其调度结果。
-
 ## 扩展指南
 
 - 修改采样公式、周期或 EMA 参数时，主要接入点是 `observe`、`Observer::Start` 和 `NewCPUObserver`。必须同时核对 `cpu.go`，并在独立的 [`cpu_test.rs`](./cpu_test.rs) 或 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 增加确定性测试；不要把测试内嵌进生产源文件。
@@ -129,17 +121,3 @@ EMA 的全部读写发生在持有 `state` 锁期间；Prometheus 更新也发�
 - 替换计时时钟或 CPU 时间来源时要保持单位换算清晰，并测试首样本、时钟不前进/回拨、累计计数异常下降和长时间运行溢出。若有意修正首样本偏高，属于与 Go 行为不同的变更，应单独记录兼容性依据。
 - 修改指标发布时应消除或封装 `static mut` 的并发初始化约束，并验证 Gauge 未安装、已安装和并发停机三种情况；当前可选指标不是本文件 CPU 快照正确性的前提。
 - 修改 `GetCPUCount` 时需同步检查 Lightning 配置与 DXF 回退调用者，并明确要对齐 Go `GOMAXPROCS` 还是 Rust/操作系统可用并行度。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/util/cpu` 找到 `cpu.rs`、`cpu_test.rs`、`migration_aster_unit_test.rs`、`lib.rs` 及 Go 对照文件。
-- 源码与符号：[`cpu.rs`](./cpu.rs) 的 `CPU_USAGE`、`UNSUPPORTED`、`GetCPUUsage`、`ObserverState`、`Observer`、`NewCPUObserver`、`Observer::{Start,Stop}`、`observe`、`cpu_share_from_result`、`getCPUTime`、`GetCPUCount`、`now_unix_nano`。
-- crate 边界：[`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)；前者确认依赖/features，后者确认重导出、可选 Gauge 和测试模块装配。
-- 下游实现：`pkg/util/cgroup/cgroup_cpu.rs::CPUUsage::CPUShares` 和 `pkg/util/mathutil/exponential_average.rs::{NewExponentialMovingAverage, Add, Get}`。
-- 上游/消费方：`cmd/tidb-server/main.rs::runMain`、`pkg/resourcemanager/rm.rs::ResourceManager::{new_with_schedulers, Start, Stop}`、`pkg/resourcemanager/scheduler/cpu_scheduler.rs::CPUScheduler::Tune`、`pkg/lightning/config/config.rs::cpu_count`、`pkg/dxf/framework/scheduler/autoscaler.rs::GetExecCPUNode`。
-- Go 对照：[`cpu.go`](./cpu.go) 和 [`cpu_test.go`](./cpu_test.go)；Rust 测试：[`cpu_test.rs`](./cpu_test.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 与资源调度器跨 crate failpoint 集成测试。
-- RustCodeGraph 精确 `query/node/callers/callees` 与路径限定 `rg` 共同核对调用边；图对 `Start`/`observe` 等通用名称存在跨语言重名噪声，相关结论已回到具体调用点源码验证。
-
-本任务是纯文档分析，未运行 Cargo。结构验收以任务指定的 11 个固定二级标题检查为准；人工复核重点是定位、公式、降级行为、线程退出、Go 差异和扩展风险是否都能反向对应到上述源码与测试。

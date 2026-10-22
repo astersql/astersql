@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-infosync` crate 内的 PD 调度配置访问层。模块由 `pkg/domain/infosync/lib.rs` 以 `mod schedule_manager` 声明并完整再导出，因此 `ScheduleManager`、`PDScheduleManager` 和 `mockScheduleManager` 都属于该 crate 的公共接口。crate 的边界和 Go 来源分别由 `pkg/domain/infosync/Cargo.toml` 中的包名与 `[package.metadata.porting].go-package = "pkg/domain/infosync"` 声明。
-
-它位于 `InfoSyncer` 与 PD HTTP 客户端之间：`pkg/domain/infosync/info.rs` 的 `InfoSyncer::scheduleManager` 保存 `Arc<dyn ScheduleManager>`，公开函数 `GetPDScheduleConfig` 和 `SetPDScheduleConfig` 通过这个 trait object 转发调用。文件自身不负责全局单例初始化、HTTP 编解码或具体网络传输。
+`mockScheduleManager` 用受读写锁保护的内存映射实现同一契约；读取返回快照，写入按键合并，供未注入 PD 客户端的 `InfoSyncer` 使用。
 
 ## 核心职责
 
@@ -66,8 +64,6 @@ mock 的正常数据操作总是返回 `Ok`，但锁中毒时使用 `unwrap()` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/domain/infosync/schedule_manager.go`。两边都包含 `ScheduleManager`、`PDScheduleManager`、`mockScheduleManager`，真实实现都依赖 PD 客户端提供接口方法，mock 都以锁保护映射、读取复制、写入合并且覆盖同名键。
-
 主要差异如下：
 
 - Go 的方法接收 `context.Context`，Rust trait 没有上下文参数，因此取消与超时语义没有逐项移植。
@@ -77,7 +73,7 @@ mock 的正常数据操作总是返回 `Ok`，但锁中毒时使用 `unwrap()` �
 - Go mock 的读取使用独占 `Lock`，Rust 使用共享 `read`；两者都在复制期间持锁，但 Rust 允许并行读取。
 - Go 的 `InfoSyncer::initScheduleManager` 完成实现选择；Rust 当前在 `GlobalInfoSyncerInit` 内直接选择实现，而同名 `initScheduleManager` 是空占位，不能把该占位描述为实际装配入口。
 
-Go 回归测试 `pkg/ddl/cluster_test.go::TestFlashbackCloseAndResetPDSchedule` 通过公共包装函数先保存 `merge-schedule-limit = 1`，在 flashback 期间观察其变为 `0`，取消后再确认恢复为 `1`，证明这组接口承担 DDL 暂时修改并恢复 PD 调度参数的用途。当前未找到对应的 Rust 独立回归测试。
+当前未找到对应的 Rust 独立回归测试。
 
 ## 扩展指南
 
@@ -88,15 +84,3 @@ Go 回归测试 `pkg/ddl/cluster_test.go::TestFlashbackCloseAndResetPDSchedule` 
 测试应放在独立文件，符合本仓库 Rust 源码与测试分离规则。最接近的新增位置是新建同目录 `schedule_manager_test.rs` 并由 `lib.rs` 的 `#[cfg(test)]` 模块声明接入；至少覆盖空初态、插入、同键覆盖、保留未提交键、读取快照隔离、空写入，以及模拟 `PdHttpClient` 的成功委托和错误原样传播。涉及公共 DDL 行为时，还应与 `pkg/ddl/cluster_test.go::TestFlashbackCloseAndResetPDSchedule` 的保存/关闭/恢复意图保持一致。
 
 兼容风险集中在 Go/Rust 上下文差异与 `ConfigValue::Number(f64)` 的数值表示；正确性风险集中在误把合并当替换、锁中毒 panic 和未实现 schedule 方法的客户端；性能风险主要是锁内全量克隆。扩展时应分别评估这些风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件被索引且数据库时间晚于本次读取的目标及直接依赖源码。
-- RustCodeGraph `files --filter pkg/domain/infosync/schedule_manager.rs`：确认目标文件含 10 个索引符号。
-- RustCodeGraph `node --file pkg/domain/infosync/schedule_manager.rs`：核对 trait、两个结构体、两个实现及委托/锁操作；索引报告该文件被 `pkg/domain/infosync/info.rs` 使用。
-- RustCodeGraph `node --file pkg/domain/infosync/info.rs`：核对 `InfoSyncer::scheduleManager`、`GlobalInfoSyncerInit` 的实现选择以及两个公共包装函数的调用边。
-- RustCodeGraph `node --file pkg/domain/infosync/types.rs`：核对 `ConfigValue` 的 JSON 值集合和 `PdHttpClient` 默认 unsupported 错误。
-- 读取 `pkg/domain/infosync/Cargo.toml` 与 `lib.rs`：核对 crate 名称、Go 包映射、无 feature 门控、模块声明和再导出。
-- 读取 `pkg/domain/infosync/schedule_manager.go`、`info.go`：核对 Go 接口、mock 锁/复制/合并语义、真实实现装配和上下文参数差异。
-- 搜索 Rust/Go 生产及测试引用：确认 Rust 直接接线位于 `info.rs`；确认 Go 行为测试位于 `pkg/ddl/cluster_test.go::TestFlashbackCloseAndResetPDSchedule`；未发现针对该管理器或公共包装函数的 Rust 测试。
-- 本任务仅产出文档，未运行 Cargo。交付前使用任务指定的命令校验恰有十一个固定二级章节，并人工复核源码链接、事实范围和 diff。

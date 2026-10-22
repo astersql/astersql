@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 workspace 成员 `astersql-br-pkg-config`，其 crate 根是同目录的 [`lib.rs`](lib.rs)，后者把 `ebs` 声明为公开模块并通过 `pub use ebs::*` 扁平导出全部公开项。该 crate 的清单 [`Cargo.toml`](Cargo.toml) 用 `package.metadata.porting.go-package = "br/pkg/config"` 明确记录了 Go 来源包。
-
-它是 Go [`ebs.go`](ebs.go) 的 Rust 移植：定义 EBS 卷级备份/恢复元数据的 JSON 模型、元数据的局部更新和校验，以及从外部存储读取 `backupmeta` 的入口。当前仓库搜索到的生产 Rust 代码没有依赖 `astersql-br-pkg-config`，`EBSBasedBRMeta` 和 `NewMetaFromStorage` 的 Rust 引用仅出现在本 crate 的独立测试中；`br/pkg/aws/ebs.rs`、`br/pkg/task/backup_ebs.rs` 和 `br/pkg/task/restore_ebs_meta.rs` 使用的是 `astersql-br-pkg-aws` 内另一套同名模型。因此，本文件目前是已实现并由契约测试覆盖、但尚未接入 Rust BR 生产主链的配置 crate，不能把 Go 调用链当作 Rust 已接线事实。
+提供数量查询、集群信息惰性初始化、resolved-ts/备份类型/版本写入以及按卷 ID 批量回填快照 ID、恢复卷 ID 和可用区。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@ Go 生产链则已接线：`br/pkg/task/backup_ebs.go` 创建和更新 `config.E
 
 ## 与 Go 版本的对应关系
 
-类型和公开方法整体逐项对应 [`ebs.go`](ebs.go)：JSON 键、卷类型白名单、store/卷计数、setter、外部存储读取顺序和完整性检查顺序均保持一致。Rust `Option<T>` 对应 Go 指针，`Vec`/`HashMap` 对应 slice/map，缺失映射键写空字符串也对齐 Go 的 map 零值。
+有几处有意或现实差异。Go Kubernetes 字段使用 `corev1` 强类型，Rust 保留为不透明 `serde_json::Value`。Go `json.Unmarshal(data, c)` 会保留输入中缺失的结构字段，Rust 通过递归 JSON 合并显式复现该行为。Go `semver.NewVersion` 的错误包含底层解析细节，Rust 只生成带原值的统一消息。Rust `ClusterInfo.Version` 还接受 fixture 使用的历史键 `version`；Go 结构 tag 只声明 `cluster_version`。
 
-有几处有意或现实差异。Go 的 `EBSVolumeType` 是独立字符串类型并以方法 `Valid` 校验，Rust 是 `String` 别名加自由函数。Go Kubernetes 字段使用 `corev1` 强类型，Rust 保留为不透明 `serde_json::Value`。Go `json.Unmarshal(data, c)` 会保留输入中缺失的结构字段，Rust 通过递归 JSON 合并显式复现该行为。Go `semver.NewVersion` 的错误包含底层解析细节，Rust 只生成带原值的统一消息。Rust `ClusterInfo.Version` 还接受 fixture 使用的历史键 `version`；Go 结构 tag 只声明 `cluster_version`。
-
-测试对应关系也分层存在：[`ebs_test.go`](ebs_test.go) 与 [`ebs_test.rs`](ebs_test.rs) 都只验证磁盘 fixture 可以加载；Rust [`parity_test.rs`](parity_test.rs) 进一步覆盖卷类型、fixture 内容、setter、错误顺序、宽松版本、缺失字段保留和 `NewMetaFromStorage` 签名。当前 Rust 测试没有用 Storage fake 执行 `NewMetaFromStorage` 的成功及读取失败路径，这些仍仅由实现和 Go 对照提供证据。
+当前 Rust 测试没有用 Storage fake 执行 `NewMetaFromStorage` 的成功及读取失败路径，这些仍仅由实现和 Go 对照提供证据。
 
 ## 扩展指南
 
@@ -83,11 +79,3 @@ Go 生产链则已接线：`br/pkg/task/backup_ebs.go` 创建和更新 `config.E
 增加完整性约束应修改 `checkEBSBRMeta`，并在 `parity_test.rs` 增加每个失败分支及错误优先级断言，同时核对 Go 行为；更改校验顺序会影响用户看到的首个错误。扩充卷类型应同步常量、`EBSVolumeType_Valid`、Go `Valid` 和契约测试。
 
 若要把此 crate 接入 Rust BR 生产链，首先应盘点并统一 `br/pkg/aws/ebs.rs` 中的同名本地模型，确定由配置 crate提供 canonical 类型还是建立显式转换；随后再迁移 backup/restore 调用点。直接并存或隐式复制字段会带来序列化漂移。若引入异步 Storage API、大对象流式解析或并行回填，还需重新评估 `Context` 取消语义、错误类型、内存峰值及线程安全边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/config` 确认覆盖 `ebs.rs`、Go 对照及独立测试；`query NewMetaFromStorage --json` 与 `query EBSBasedBRMeta --json` 定位目标符号；`node 'ebs.rs::NewMetaFromStorage'` 验证源码及其到 `checkEBSBRMeta`/`Error` 的边；callers 查询没有返回 Rust 调用者。
-- 直接阅读：[`ebs.rs`](ebs.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、Go 对照 [`ebs.go`](ebs.go)、Rust 测试 [`ebs_test.rs`](ebs_test.rs) 与 [`parity_test.rs`](parity_test.rs)、Go 测试 [`ebs_test.go`](ebs_test.go)。
-- 直接依赖证据：`br/pkg/metautil/metafile.rs` 中 `MetaFile = "backupmeta"`；`pkg/objstore/storeapi/storage.rs` 中 `Storage: Send + Sync` 及 `ReadFile(&Context, &str) -> Result<Vec<u8>>`。
-- 调用面搜索：对 Rust/Go 源码检索 `NewMetaFromStorage`、`EBSBasedBRMeta`、数量查询和三个回填方法，确认 Rust 当前仅测试引用，而 Go 的 backup/restore 任务链已有生产调用。
-- 行为测试证据来自现有独立测试，本任务按计划不运行 Cargo；交付前另以任务指定命令验证本文恰好包含十一个固定二级章节。

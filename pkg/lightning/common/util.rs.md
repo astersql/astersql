@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`util.rs` 是 `astersql-lightning-common` crate 的综合工具实现。crate 入口 `pkg/lightning/common/lib.rs` 以私有模块 `mod util` 纳入它，并通过 `pub use util::*` 把这里的公开类型、trait、常量和函数暴露给依赖 crate；仓库根门面又在 `pkg/lib.rs` 的 `lightning::common` 下再导出整个 crate。`pkg/lightning/common/Cargo.toml` 指定 `lib.rs` 为库入口，并以 `package.metadata.porting.go-package = "pkg/lightning/common"` 标明 Go 对照包。
-
-文件位于 Lightning 公共层，横跨六类边界：MySQL 连接抽象、SQL 重试与事务、SQL 文本转义、表/索引元数据辅助、TiDB 配置查询，以及 RowID/KV 辅助。它没有自己的进程入口，也不拥有导入任务调度；上层应通过再导出的 API 调用它。
-
-当前接线需要如实区分“可公开调用”与“已由生产代码调用”。RustCodeGraph 将该文件索引为 104 个符号，并显示 `ConnectMySQL -> MySQLConnectParam::Connect`、`Retry -> SQLWithRetry::perform` 等文件内调用边；仓库文本搜索未找到 `BuildAddIndexSQL`、`SkipReadRowCount`、`GetAutoRandomColumn`、`IsRaftKV2` 等 Rust 实现在独立生产文件中的直接调用。多个 Cargo crate 依赖 `astersql-lightning-common`，但目前主要使用该 crate 的其他公共能力。`lightning/pkg/importer`、`lightning/pkg/checkpoints` 等目录中存在同名 `common` 本地桩，不能据名称把它们误认成这里的直接调用者。
+`Retry` 统一最多三次尝试、生产三秒/测试十毫秒间隔和错误分类；`SQLWithRetry::{QueryRow, QueryStringRows, Transact, Exec}` 在该策略上承载查询、事务与执行。
 
 ## 核心职责
 
@@ -83,7 +79,7 @@ Unix `KillMySelf` 通过外部 `kill -INT <pid>` 命令发送信号，命令启�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/common/util.go`，Go 测试是 `pkg/lightning/common/util_test.go`。Rust 保留了多数公开名称、三次重试、三秒生产间隔、1045 后 base64 密码回退、标识符/字符串转义、INFORMATION_SCHEMA 探测、表索引算法、会话变量读取、raft-kv2 探测和 `ChunkFlushStatus` 协议。Rust 独立测试 `pkg/lightning/common/util_test.rs` 复刻了 Go 的主要用例，并额外覆盖非法 base64 padding 与索引注释转义。
+Rust 独立测试 `pkg/lightning/common/util_test.rs` 复刻了 Go 的主要用例，并额外覆盖非法 base64 padding 与索引注释转义。
 
 Rust 不是对 Go 类型的逐字替换：Go 直接使用 `database/sql`、`mysql.Config`、完整 `model.TableInfo` 和日志对象；Rust 以 `DBExecutor`/`Transaction`、自有配置和缩减 schema 类型隔离依赖。Go `SQLWithRetry` 包含 `Logger`，能按 `HideQueryLog` 控制日志；Rust 结构仅保留 `DB` 与 `HideQueryLog`，当前不记录重试/SQL 日志。Go 查询行通过 `Rows.Close` 管理游标，Rust `QueryRows` 是已物化数据，没有游标关闭动作。
 
@@ -99,12 +95,3 @@ Rust 不是对 Go 类型的逐字替换：Go 直接使用 `database/sql`、`mysq
 - 修改 SQL 生成时，区分标识符、字符串字面量和绑定值；不要把 `SprintfWithIdentifiers` 扩展成不受约束的 printf。新增格式语法需要覆盖标识符不足/过量、`%%`、反引号和多字节字符。
 - 修改 `EncodeIntRowID` 时，应增加与 Go `codec.EncodeComparableVarint` 的跨语言边界向量，至少覆盖负数边界、`-1`、`0`、`239`、`240`、字节长度跃迁和 `i64::{MIN,MAX}`，并同步 `key_adapter_test.rs`。
 - 若把当前公开 API 接入新的生产调用链，应在调用 crate 的 `Cargo.toml` 明确依赖并用实际 crate 名导入；先确认没有命中 `lightning/pkg/*/stubs.rs` 中的同名本地模块。兼容性风险主要是错误分类、DDL 文本和编码字节；性能风险主要是同步 sleep、查询全量物化及合并 ALTER 过长。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/lightning/common/util.rs` 确认目标已索引且含 104 个符号。
-- RustCodeGraph 源码与结构：读取 `pkg/lightning/common/util.rs` 1–959 行、`pkg/lightning/common/lib.rs` 1–93 行、`pkg/lightning/common/util_test.rs` 1–699 行；`node ConnectMySQL`、`node Retry`、`node BuildAddIndexSQL`、`node SkipReadRowCount`、`node EncodeIntRowID`、`node GetAutoRandomColumn`、`node IsRaftKV2` 用于核对调用 trail。
-- crate 与上游边界：读取 `pkg/lightning/common/Cargo.toml`；搜索所有 Cargo manifest 中的 `astersql-lightning-common` 依赖；读取 `pkg/lib.rs` 的 `lightning::common` 门面；用 `rg` 区分真实 crate 引用和 `lightning/pkg/*/stubs.rs` 同名模块。
-- Go 对照：通过 RustCodeGraph 读取 `pkg/lightning/common/util.go` 1–722 行与 `pkg/lightning/common/util_test.go` 1–307 行，并核对 Go `SkipReadRowCount <- pkg/executor/importer/table_import.go::PopulateChunks` 调用边。
-- 测试证据：`pkg/lightning/common/util_test.rs` 覆盖目录判断、连接/base64 回退、取消识别、表名/字符串转义、三次重试、AUTO_RANDOM、ADD INDEX 与 SkipReadRowCount；`pkg/lightning/common/key_adapter_test.rs` 使用 `EncodeIntRowID`。本任务按计划是纯文档分析，未运行 Cargo 或代码测试。
-- 人工复核结论：本文区分了已实现 API、crate 再导出和实际 Rust 生产接线；明确列出了重试/事务/资源生命周期、Go 差异、未验证接线及安全扩展入口，没有把 Go 调用关系推断成 Rust 现状。

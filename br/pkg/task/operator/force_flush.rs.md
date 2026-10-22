@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-task-operator`。该 crate 由 `br/pkg/task/operator/Cargo.toml` 定义，以同目录 `lib.rs` 为入口；`lib.rs` 把本文件声明为公开模块 `force_flush`，并通过 `pub use force_flush::*` 将公开函数平铺到 crate 根。manifest 的 `package.metadata.porting.go-package = "br/pkg/task/operator"` 明确记录了它对应的 Go 包。
-
-应用入口是 `br/cmd/br/operator.rs::newForceFlushCommand`：该函数注册 `force-flush` 子命令，解析 `ForceFlushConfig` 后调用 `RunForceFlush`。命令用于让地址匹配的 TiKV 节点立即刷新日志备份任务；TiFlash 不应收到该请求。
-
-当前 Rust 路径仍处于本地边界桩接线阶段。`RunForceFlush` 依赖 `prepare_snap.rs::{dialPD, createStoreManager}`，而默认 `dialPD` 在没有测试 hook 时会明确返回“PD dial not configured”，不会连接真实 PD。因此本文描述的并发、筛选、错误聚合和清理逻辑是已经实现并可由契约测试验证的；真实集群 RPC 能力尚不能仅凭本文件宣称可用。
+只编排操作，不定义网络协议、PD 客户端或日志备份响应类型。
 
 ## 核心职责
 
@@ -84,8 +80,6 @@ worker 通过克隆 `Arc<StoreManager>` 共享管理器，仅捕获 `store_id`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/task/operator/force_flush.go`。两版的主阶段一致：连接 PD、创建 StoreManager、获取 store、过滤 TiFlash、按地址正则选择、并行调用 `FlushNow`、检查每个任务结果、等待结束并清理资源。错误文本 `failed to flush task ... at store ...` 也保持相同关键信息。
-
 需要明确的差异如下：
 
 1. Go `getAllTiKVs` 调用 `GetAllStores(ctx, opt.WithExcludeTombstone())`；Rust trait 没有 context、查询选项或 store 状态字段，只能过滤 TiFlash，不能表达 tombstone 排除。
@@ -102,12 +96,3 @@ worker 通过克隆 `Arc<StoreManager>` 共享管理器，仅捕获 `store_id`�
 - 若增加并发上限或线程池，应保留“所有已启动工作结束后再关闭资源”“任一任务结果失败即 store 失败”和可诊断错误上下文，并评估大量 store 下的性能与公平性。
 - 建议在同目录新增独立的 `force_flush_test.rs`，并从 `lib.rs` 以 `#[cfg(test)]` 挂载；不要把测试嵌入生产文件。至少覆盖地址不匹配、TiFlash/tombstone、PD 查询错误、FlushNow RPC 错误、响应内失败、多 store 多错、worker panic、空拓扑、清理和取消。
 - 更改日志或错误时应保留 store ID、地址或任务名等诊断信息，避免把服务端错误压成无上下文的通用失败。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/task/operator` 定位目标、Go 对照与测试；`node --file br/pkg/task/operator/force_flush.rs --offset 1 --limit 240` 核对了目标文件全部 128 行；`query RunForceFlush`、`query getAllTiKVs` 识别 Rust/Go 对照定义；`callees RunForceFlush` 给出 Rust `RunForceFlush → getAllTiKVs`；索引同时报告目标文件由 `br/pkg/task/operator/parity_test.rs` 使用。
-- Rust 源码与入口：`br/pkg/task/operator/force_flush.rs`、`br/pkg/task/operator/lib.rs`、`br/pkg/task/operator/config.rs`、`br/pkg/task/operator/prepare_snap.rs`、`br/pkg/task/operator/stubs.rs`、`br/cmd/br/operator.rs::newForceFlushCommand`。
-- crate 边界：`br/pkg/task/operator/Cargo.toml` 确认 crate 名、`lib.rs` 入口、Go 包映射、无 feature，以及本地依赖/stub 定位。
-- Go 对照：`br/pkg/task/operator/force_flush.go::{getAllTiKVs, RunForceFlush}`、`br/cmd/br/operator.go::newForceFlushCommand`。
-- 独立 Rust 测试：`br/pkg/task/operator/parity_test.rs::contract_normal_config_and_helpers` 验证 TiFlash 过滤；`contract_error_paths` 验证 StoreManager 创建失败时关闭 PD；`contract_resource_cleanup` 验证成功刷新并关闭 PD/StoreManager。未发现同名 `force_flush_test.rs`，现有测试也未覆盖 tombstone、正则跳过、FlushNow 错误、响应失败、panic 和取消传播。
-- 本任务是纯文档分析，按总计划不运行 Cargo；交付前执行任务指定的结构命令，验证本文存在且恰好包含 11 个固定二级章节。

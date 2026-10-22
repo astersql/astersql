@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-目标源码 [`canonical_table_reader.rs`](canonical_table_reader.rs) 属于 `astersql-session` crate 的会话运行时层，由 `pkg/session/runtime.rs` 以私有模块 `canonical_table_reader` 装配。它实现 `CanonicalTableReaderExecutor`，把已经准备好的 `PhysicalTableReader` 转成 TiKV DAG 请求，并通过 `astersql_executor::adapter::ExecExecutor` 接口向上层按 `Chunk` 输出行。
-
-它不是通用 TableReader 的完整复刻，而是 `SessionBoundAdapterOwner::BuildExecutor` 中一个受条件保护的生产快路径：存储客户端必须支持基础 DAG 请求，物理计划必须已准备，`leaf_ranges.len() <= 1`，计划中必须能取得一个 `PhysicalTableReader`，且收集到的 TableScan 恰好只有一个。条件不满足时，`pkg/session/runtime/scan_adapter_runtime.rs` 会回退到 `OpenTypedPhysicalPlanWithBindings`、`OpenTypedPhysicalTableScan` 或快照扫描路径。
+`Next`/`NextWithContext` 从 TiKV `SelectResponse` 解码 datum，填充调用方提供的 `chunk::Chunk`；带上下文版本还会在拉取下一响应前检查 SQL kill 信号。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/executor/table_reader.go` 的 `TableReaderExecutor`，构造入口主要在 `pkg/executor/builder.go::buildNoRangeTableReader/buildTableReader`。两者共同语义是：由 `PhysicalTableReader` 构造 DAG 请求，在 `Open` 打开分布式读取，在 `Next` 向 chunk 填行，在 `Close` 释放结果，并把表扫描纳入执行统计。
-
 Rust 当前只覆盖 Go 实现的受控子集：单个 TiKV TableScan/可下推子树、最多一个 leaf range 组、leader read、global txn scope、无 stale read。Go 版本还处理 signed/unsigned range 分段与有序合并、分区、TiFlash/MPP/batch cop、dummy 临时或缓存表、相关列重建、虚拟列、索引使用报告、内存 tracker、detach 等；这些能力不能据此文件声称已支持，Rust 入口会在形状不匹配时走其他 typed executor 路径。
 
 Go 的 `Next` 由 `tableResultHandler`/`distsql.SelectResult` 解码并填充 chunk，Rust 则直接迭代 `kv::Response`、解析 `tipb::SelectResponse` 与 `DecodeOne`。Rust 额外把同一 subset 上的 `CopRuntimeEvidence` 放入会话共享槽，以适配当前 Rust 语句 RU 汇总链；相关最终行为由 `pkg/session/runtime/scan_adapter_runtime.rs::StatementRURuntimeEvidence` 消费。
@@ -91,12 +87,3 @@ Go 的 `Next` 由 `tableResultHandler`/`distsql.SelectResult` 解码并填充 ch
 - 改动 RU 证据时，同时核对 `StatementRURuntimeEvidence` 和 `pkg/executor/statement_ru_plan_walk.rs` 的消费约定；真实 transport bytes 的端到端验证入口是被忽略的 RealTiKV 测试 `statement_ru_simple_select_real_tikv_terminal_publication`。
 - 若要支持可重开实例，需要重新设计一次性 request 的所有权与 response 清理；当前 `Option::take` 明确禁止 close 后 reopen。
 - 性能变更应关注每行 `Vec<Datum>` 分配、pending 峰值、响应整块预解码和逐 datum append 成本；兼容性变更应对照 Go TableReader 的 chunk、range ordering、virtual column 与 execution stats 语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点；`files --filter pkg/session/runtime/canonical_table_reader.rs` 确认目标文件已索引；`node --file ... --offset 1 --limit 500` 读取全部 304 行并识别 30 个符号；文件关系报告直接使用者为 `planning.rs`、`scan_adapter_runtime.rs`、`scan_adapter_runtime_test.rs`、`runtime_test/planning.rs`。`query CanonicalTableReaderExecutor --kind struct` 将定义定位到第 34 行。图对同名 `new`/`next_inner`/`fetch_response` 的无文件限定查询存在歧义，因此调用边再以已索引文件指向的直接入口核对。
-- Rust 源码：`pkg/session/runtime/canonical_table_reader.rs`；模块入口 `pkg/session/runtime.rs`；直接构造与证据消费 `pkg/session/runtime/scan_adapter_runtime.rs`；共享字段定义 `pkg/session/runtime/typed_adapter_bridge.rs`；请求/DAG 辅助实现 `pkg/session/runtime/relational_scan.rs`。
-- crate 边界：`pkg/session/Cargo.toml`。
-- Rust 独立测试：`pkg/session/runtime/scan_adapter_runtime_test.rs` 的 prepared/explain/execute statement RU terminal 测试，以及被忽略的 `statement_ru_simple_select_real_tikv_terminal_publication`。未发现直接以 `CanonicalTableReaderExecutor` 名称构造的同名专用单元测试；现有证据主要通过完整 adapter 路径覆盖。
-- Go 对照：`pkg/executor/table_reader.go` 的 `TableReaderExecutor::{Open, Next, Close}` 与 `pkg/executor/builder.go::{buildNoRangeTableReader, buildTableReader}`；RU/扫描统计语义另由 `pkg/executor/statement_ru_plan_walk.go` 及其独立测试覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证命令及最终退出码在任务交付时记录。

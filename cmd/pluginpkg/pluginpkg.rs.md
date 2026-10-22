@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cmd/pluginpkg/pluginpkg.rs` 是 `astersql-cmd-pluginpkg` crate 的打包主逻辑，对应 Go 实现 `cmd/pluginpkg/pluginpkg.go`。它不编译 Rust 插件，而是读取插件目录中的 `manifest.toml`，生成临时 `<插件名>.gen.go`，再调用 `go build -buildmode=plugin` 生成 `.so`。进程入口为 `cmd/pluginpkg/bin_main.rs::main`，经 `cmd/pluginpkg/lib.rs::main` 转发到本文件的 `main`；`run_with` 是可注入文件系统、命令执行器和时钟的可测业务入口。
-
-crate 边界由 `cmd/pluginpkg/Cargo.toml` 定义：库入口是 `lib.rs`，二进制入口是 `bin_main.rs`，移植元数据指向 Go 包 `cmd/pluginpkg` 且标记为 `binary`。直接依赖只有 `serde`、`serde_json` 和 `toml`；操作系统、子进程、flag 与时间边界来自同 crate 的 `cmd/pluginpkg/stubs.rs`，避免引入 TiDB 重型 crate。
+`CODE_TEMPLATE` 与 `execute_go_template` 把动态 manifest 映射为导出 `PluginManifest` 的 Go 源文件；实现只支持当前固定模板使用的字段访问、`if` 和 `range`。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ flag 状态是 thread-local 而非全局锁保护状态，因此不会在并发�
 
 ## 与 Go 版本的对应关系
 
-`CODE_TEMPLATE` 对应 Go `codeTemplate`；thread-local flag 对应 Go 包变量；`init_flags`/`usage`/`main` 对应 Go `init`/`usage`/`main`。`run_with` 是为可测性从 Go `main` 抽出的 Rust 编排器，保留路径绝对化、TOML 动态 map、当前时间、目录名校验、`0700` 临时文件、构建参数、工作目录、`GO111MODULE=on`、成功文本和清理时机。
-
 Rust 版与 Go 版的实现形式差异主要是：
 
 - Go 直接使用 `os`/`exec`/`time`/`flag`；Rust 通过 `Fs`/`Runner`/`Clock`/`Flags` 注入，生产实现放在 `stubs.rs`。
@@ -93,7 +89,6 @@ Rust 版与 Go 版的实现形式差异主要是：
 - Go 使用完整 `text/template`；Rust 只解释固定模板已用的语法子集，因此修改 `CODE_TEMPLATE` 时必须同步评估解释器。
 - Go 的 `defer os.Remove` 是语言机制；Rust 显式在成功末尾删除，故意不用无条件 RAII 清理。
 - Go map 的 JSON 键序不是本文件依赖的合同；Rust `encode_manifest_json` 为测试可重复性先用 `BTreeMap` 排序，同时仿真 Go HTML 转义、缩进和尾换行。
-- Rust 测试以 panic 代表可捕获的 `os.Exit`；非测试构建仍调用 `std::process::exit(1)`。
 
 同路径未发现 Go `*_test.go`；Go 对照依据是 `cmd/pluginpkg/pluginpkg.go`，Rust 回归依据是独立文件 `pluginpkg_test.rs` 和 `parity_test.rs`。
 
@@ -106,14 +101,3 @@ Rust 版与 Go 版的实现形式差异主要是：
 - 改变 JSON 输出时，要同时验证键序、Go HTML 转义、缩进前缀和尾换行；相关独立测试为 `manifest_json_uses_go_default_html_escaping` 以及 `contract_resource_cleanup` 尾部的 JSON 断言。
 - 如需支持并发打包同一插件目录，必须先解决固定 `.gen.go` 文件名的冲突，并评估这是否仍符合 Go 工具对外契约；当前实现不提供这项保证。
 - Rust 测试必须继续放在独立 `pluginpkg_test.rs`/`parity_test.rs` 中，不内嵌到生产文件。若改动模板或打包契约，同时与 `pluginpkg.go` 对照，不为了使测试通过而简化 Go 语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引可用，包含 7,032 个 Rust 文件；`files --filter cmd/pluginpkg` 列出 `pluginpkg.rs`、`lib.rs`、`bin_main.rs`、`stubs.rs`、`pluginpkg_test.rs`、`parity_test.rs` 和 Go 对照文件。
-- RustCodeGraph `node --file cmd/pluginpkg/pluginpkg.rs --offset 1 --limit 400` 与 `--offset 401 --limit 500`：读取 838 行源文件全貌，核对常量、thread-local 状态、公开/私有函数及主管线。
-- RustCodeGraph 精确 `query`：确认 `run_with` 在本文件第 543 行、`build_go_flags` 在第 506 行、`decode_manifest_toml` 在第 173 行、`execute_code_template` 在第 230 行、`encode_manifest_json` 在第 739 行。对文件限定符号的 `callers`/`callees` 查询未输出边，因此调用链另由已索引的入口和测试源码直接核对，没有推测图边。
-- 入口与 crate：`cmd/pluginpkg/Cargo.toml`、`cmd/pluginpkg/lib.rs`、`cmd/pluginpkg/bin_main.rs`；前者验证包名、lib/bin 路径、Go 包映射和 `serde`/`serde_json`/`toml` 依赖，后两者验证生产入口转发链。
-- Go 对照：`cmd/pluginpkg/pluginpkg.go`全文，核对 flag、模板、TOML、名称校验、生成文件、`go build`、输出与 `defer` 清理语义。同目录未发现 Go 测试文件。
-- 边界实现：RustCodeGraph 读取 `cmd/pluginpkg/stubs.rs`全文，核对 `Flags`、`fatal_exit`、`Fs`、`Clock`、`Runner`、`OsFs`、`SystemClock` 和 `ProdRunner` 的生产/测试语义。
-- 独立 Rust 测试：`cmd/pluginpkg/pluginpkg_test.rs`全文及 `cmd/pluginpkg/parity_test.rs`全文。前者验证 range 字段作用域、模板失败的部分文件、成功输出后清理和非字符串名称 panic；后者验证完整成功路径、flags/template 边界、错误分支、临时文件资源契约、数字 version、Go flag 语法、生产 runner 退出文本、系统时钟、缺失模板字段和 HTML 转义。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务指定的 11 章结构检查，不以编译或测试代替文档事实复核。

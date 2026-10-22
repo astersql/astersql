@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ttl-ttlworker` crate（`pkg/ttl/ttlworker/Cargo.toml`），是 TTL worker 的单节点、纯内存扫描子任务调度模型。模块由 `pkg/ttl/ttlworker/lib.rs` 以 `pub mod task_manager` 导出；其上层 `JobManager` 在 `pkg/ttl/ttlworker/job_manager.rs` 中持有公开字段 `task_manager: TaskManager`，并在 `JobManager::new` 中创建实例。
-
-当前 Rust 实现不直接访问 `mysql.tidb_ttl_task`、不创建 worker，也不自行启动后台循环。它接收已经构造好的 `ManagedTask`，在等待、运行和完成三个集合之间迁移，并把需要启动的 `TtlScanTask` 返回给调用者。因此它是 Go `taskManager` 的可测试内存语义子集，而不是 Go 生产管理器（`pkg/ttl/ttlworker/task_manager.go`）的完整替代。仓库内对 `push_waiting`、`reschedule`、`heartbeat_or_resign`、`report_finished` 和 `remove_invalid_jobs` 的 Rust 调用目前位于独立测试文件；生产 Rust 代码只构造/持有该对象。
+在调度时写入本节点 `owner_id` 和调用方提供的心跳时间，在续约或 TTL 失效时更新/释放归属（`TaskManager::reschedule`、`TaskManager::heartbeat_or_resign`）。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ Go 实现的真实资源生命周期更复杂：`resizeWorkers` 启停 worker �
 
 ## 与 Go 版本的对应关系
 
-Rust `COUNT_RUNNING_TASKS_SQL` 对应 Go `countRunningTasks`；`reschedule` 概括 Go `rescheduleTasks`/`lockScanTask` 的容量检查、任务认领和分发；`heartbeat_or_resign` 概括 `updateHeartBeat`、`taskHeartbeatOrResignOwner` 和 `tryResignTaskOwner`；`report_finished` 概括 `checkFinishedTask`/`reportTaskFinished`；`remove_invalid_jobs` 对应 `checkInvalidTask` 的本地剔除意图。
-
 两者并非一一等价：
 
 - Go 从系统表查询候选，在悲观事务及 `FOR UPDATE` 下竞争 owner，并用全局 running 数限制所有节点；Rust 只管理预先入队的本地值，并按本地映射容量限制。
@@ -95,7 +91,7 @@ Rust `COUNT_RUNNING_TASKS_SQL` 对应 Go `countRunningTasks`；`reschedule` 概�
 - Go 缩容后会等待尚未处理的行、记录扫描错误并取消 context；Rust 遇到 `WorkerStop` 立即回队，只保留 `scanned_rows` 到 `total_rows`。
 - Go 的无效任务判断是数据库记录消失或 owner 已变化；Rust 接收上层计算出的有效 job ID 集合。
 
-Rust 测试有意识地覆盖目前 API 可表达的交集：唯一身份、容量/FIFO、辞任后再调度、普通完成与 `WorkerStop` 分流、无效作业剔除。Go 集成测试还覆盖跨 manager 抢锁、心跳过期接管、worker 缩容等待、全局上限、SQL 错误隔离和 owner 竞争，这些是当前 Rust 文件未实现的差距。
+Go 集成测试还覆盖跨 manager 抢锁、心跳过期接管、worker 缩容等待、全局上限、SQL 错误隔离和 owner 竞争，这些是当前 Rust 文件未实现的差距。
 
 ## 扩展指南
 
@@ -105,11 +101,3 @@ Rust 测试有意识地覆盖目前 API 可表达的交集：唯一身份、容�
 - 若允许停止所有调度，不应依赖 `TaskManager::new(..., 0)`，因为构造器会钳制为 1；需要新增显式暂停/禁用状态并测试恢复行为。
 - 若改变辞任、重复任务或无效作业策略，必须同时验证 FIFO、公平性、迟到结果、底层任务取消和内存增长。完成列表当前无界，长期运行接线应定义消费或清理协议。
 - 若增加内部并发，需明确锁顺序、回调是否可重入以及 `ttl_enabled` 执行期间能否阻塞；当前外部 `Mutex` 模式最简单，闭包在 `BTreeMap::retain` 中持有管理器可变借用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/ttl/ttlworker` 列出该模块 58 个 Go/Rust 文件；`node --file pkg/ttl/ttlworker/task_manager.rs --offset 1 --limit 500` 返回目标文件全部 189 行和 20 个符号；`query TaskManager` 定位本文件类型。对 `reschedule` 等方法的 `query/callers/callees` 未返回可用调用边，此限制已通过精确引用搜索补证。
-- 目标实现：`pkg/ttl/ttlworker/task_manager.rs`；crate/模块边界：`pkg/ttl/ttlworker/Cargo.toml`、`pkg/ttl/ttlworker/lib.rs`；相邻生产入口：`pkg/ttl/ttlworker/job_manager.rs`、`pkg/ttl/ttlworker/scan.rs`。
-- Rust 独立测试：`pkg/ttl/ttlworker/task_manager_test.rs` 验证空调度、辞任回队和扫描错误仍为完成态；`pkg/ttl/ttlworker/task_manager_integration_test.rs` 验证外部互斥下去重、容量/FIFO、选择性辞任、`WorkerStop` 回队及无效作业；`pkg/ttl/ttlworker/job_manager_integration_test.rs` 验证 `JobManager` 聚合路径。
-- Go 对照：`pkg/ttl/ttlworker/task_manager.go`；Go 测试：`pkg/ttl/ttlworker/task_manager_test.go`、`pkg/ttl/ttlworker/task_manager_integration_test.go`。后者覆盖跨节点锁、心跳接管、缩容、全局 running 限制和 owner 变化等完整生产语义。
-- 人工复核结论：本文件存在于 TTL 作业之下，用有限容量的本地状态机管理扫描子任务；安全扩展必须在保持状态/身份不变量的同时补齐目前缺失的持久化、worker 取消和跨节点竞争语义。任务为纯文档分析，按计划未运行 Cargo。

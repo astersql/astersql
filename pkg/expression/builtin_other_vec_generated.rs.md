@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate，是 SQL `IN` 谓词的 Rust 向量化实现之一。crate 根在 `pkg/expression/lib.rs` 中通过 `#[path = "builtin_other_vec_generated.rs"] mod builtin_other_vec_generated_kernel;` 私有挂载它；依赖的列式求值接口和结果写入工具来自相邻的 `builtin_other_vec.rs`（模块名 `builtin_other_vec_kernel`）。`pkg/expression/Cargo.toml` 将该目录定义为 `astersql-expression` 库，并通过 `chunk-dependency`、`collate-dependency`、`types-dependency` 分别提供列批、排序规则和 SQL 类型能力。
-
-文件头明确标记为生成代码，对应 Go 文件 `pkg/expression/builtin_other_vec_generated.go`。不过当前 Rust 文件不是空门面：它包含共享求值内核和 Int、String、Decimal、Real、Time、Duration、JSON 七类签名的完整实现。需要同时注意当前接线边界：这些类型虽然声明为 `pub`，所在模块在生产 crate 中仍是私有模块；`lib.rs` 只在 `#[cfg(test)]` 的 `expression_other_vec` 测试门面中再导出它们。RustCodeGraph 显示目标文件直接被 `pkg/expression/builtin_other_vec_generated_21_aster_unit_test.rs` 使用，仓库搜索也未发现排除本文件及其两份测试后还有 Rust 构造点，因此“生产表达式注册/构造已接通”没有证据，不能由 Go 现状推断。
+`evaluate_in` 统一实现批量 `IN` 的三值逻辑：按列求左操作数，先探测常量集合，再逐个求值动态右操作数，最终为每行输出 `1`、`0` 或 SQL `NULL`。
 
 ## 核心职责
 
@@ -81,19 +79,13 @@ RustCodeGraph 的调用边确认 `evaluate_in -> write_int_options`，并把各 
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/builtin_other_vec_generated.go` 为直接语义对照。两端均为七类 IN 签名，均先求左列、常量命中优先、只在有常量集合时按 `nonConstArgsIdx` 缩减动态参数、按列扫描动态参数，并在末尾落实 true/false/NULL。
-
-主要对应关系如下：
-
 - Go 的 `builtinInIntSig`/`builtinInStringSig` 等对应 Rust 的 `BuiltinInIntSig`/`BuiltinInStringSig` 等；Go 的 `vecEvalInt` 对应 Rust 的 `vec_eval_int`，`vectorized` 均返回 true。
 - Go 各函数重复展开模板逻辑；Rust 用泛型 `evaluate_in` 合并共同流程，再由闭包保留类型差异。
 - Go Int 使用 `map[int64]bool` 同时编码值和 unsigned 标志；Rust 使用相同概念的 `HashMap<i64, bool>` 与 `int_equal`。
 - Go String 的常量和动态比较均受 collation 控制；Rust 分别使用 collator key 与 `Compare`。
-- Go Decimal、Time、Duration、JSON 的键或比较方法在 Rust 中分别对应 `ToHashKey`、`CoreTime`、`i64` 时长、`CompareBinaryJSON`。
-- Go Real 常量集合是 `map[float64]struct{}`，NaN 查找不命中；动态路径用 `cmp.Compare`，两个 NaN 比较相等。Rust 的 `Vec` 常量探测和显式 NaN 动态分支保留了这一非直观差别。
 - Go 复用 allocator 缓冲列；Rust 当前按调用分配临时列。Rust 还增加了空参数、错误下标和行数不一致的显式防御检查，这是其本地接口所需的边界保护。
 
-Go 测试 `pkg/expression/builtin_other_vec_generated_test.go` 用通用随机/基准框架覆盖七种类型的动态与常量场景，并比较标量、向量结果。Rust 的 `builtin_other_vec_generated_21_aster_unit_test.rs` 对七种类型、NULL、collation、有符号性、NaN 等做确定性断言；较小的 `builtin_other_vec_generated_test.rs` 专门覆盖整数常量哈希、动态命中和符号边界。两者测试风格不同，但共同验证核心语义。
+Rust 的 `builtin_other_vec_generated_21_aster_unit_test.rs` 对七种类型、NULL、collation、有符号性、NaN 等做确定性断言；较小的 `builtin_other_vec_generated_test.rs` 专门覆盖整数常量哈希、动态命中和符号边界。两者测试风格不同，但共同验证核心语义。
 
 ## 扩展指南
 
@@ -109,15 +101,3 @@ Go 测试 `pkg/expression/builtin_other_vec_generated_test.go` 用通用随机/�
 - 通用内核：不能把“尚未决定”的 `None` 直接当 NULL；必须结合 `has_null` 在末尾区分 false 和 NULL。任何优化都要保留命中短路和行数/索引检查。
 
 测试应放在独立文件而非生产源文件中。最低限度同步 `pkg/expression/builtin_other_vec_generated_test.rs` 或覆盖更全的 `pkg/expression/builtin_other_vec_generated_21_aster_unit_test.rs`；若改变 Go 对齐语义，还应核对 `pkg/expression/builtin_other_vec_generated_test.go` 的标量/向量对照用例。若要让这些签名进入 Rust 生产链，还需在表达式构造或注册层新增明确接线，并添加通过公开执行入口到本签名的集成测试，而不能仅依靠直接构造单测。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被索引为 31 个符号。
-- RustCodeGraph `node --file pkg/expression/builtin_other_vec_generated.rs`：逐行读取完整 539 行，确认 `evaluate_in`、`int_equal`、七个签名和 JSON 别名的实现。
-- RustCodeGraph `node write_int_options` 与 `node VectorExpression`：确认结果列写入方式、`Send + Sync` 约束、各类型求值方法及默认错误行为；调用轨迹包含 `evaluate_in -> write_int_options`。
-- RustCodeGraph `query builtin_other_vec_generated`、`query BuiltinInIntSig/BuiltinInJsonSig` 和 `explore`：确认目标符号、同路径 Go 文件、Go/Rust 测试以及内部调用关系；文件级关系报告直接使用者为 `pkg/expression/builtin_other_vec_generated_21_aster_unit_test.rs`。
-- 已读取 `pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`，确认 crate 边界、依赖、生产私有挂载和测试期再导出；该包没有 `doc.go`。
-- 已读取 Go 对照 `pkg/expression/builtin_other_vec_generated.go` 及 Go 测试 `pkg/expression/builtin_other_vec_generated_test.go`，确认七种类型、常量快路径、动态比较、NULL 和基准覆盖。
-- 已读取独立 Rust 测试 `pkg/expression/builtin_other_vec_generated_test.rs` 与 `pkg/expression/builtin_other_vec_generated_21_aster_unit_test.rs`，确认整数专项边界及七类型确定性行为。
-- 使用 `rg` 排除目标文件及两份测试后搜索所有 `BuiltinIn*Sig`，没有发现其他 Rust 使用点；因此生产构造接线记为“未发现”，而不是推断为已支持。
-- 按任务约束未运行 Cargo；本任务只新增文档，验证以源码/调用图事实核对和固定章节结构检查为准。

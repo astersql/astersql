@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-sqlexec` crate 中最小的内存结果集 `SimpleRecordSet`。它把构造时已经全部可知的字段元信息和行值包装成 `RecordSet`，供不需要真实执行器、存储扫描或流式拉取的场景按 chunk 消费。模块在 `pkg/util/sqlexec/lib.rs` 中以私有模块 `simple_record_set` 挂载，并通过 `pub use simple_record_set::*` 对外导出。
-
-该实现仅在默认启用的 `formal-crate` feature 下导入 `GoError`、`RecordChunk`、`RecordSet` 以及 `chunk`、`context`、`resolve`、`types`；feature 定义和所有直接依赖见 `pkg/util/sqlexec/Cargo.toml`。它位于 SQL 执行边界的结果集层，不负责解析、规划、执行 SQL，也不访问事务或存储。
+实现 `RecordSet::NewChunk`，按字段类型和 `MaxChunkSize` 创建 owned chunk，或从调用方提供的 allocator 取得 allocated chunk。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ owned chunk 由 `RecordChunk::Owned` 独占；allocator 路径返回 `RecordChun
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/sqlexec/simple_record_set.go`。Rust 保留了 Go `SimpleRecordSet` 的四个字段及核心算法：`Fields` 原样返回字段，`Next` 先 `Reset`、按字段逐列 `NewDatum`/`AppendDatum`、在 chunk 满时保留游标，`NewChunk` 支持 allocator 与普通分配，`Close` 把游标归零。
+Rust 保留了 Go `SimpleRecordSet` 的四个字段及核心算法：`Fields` 原样返回字段，`Next` 先 `Reset`、按字段逐列 `NewDatum`/`AppendDatum`、在 chunk 满时保留游标，`NewChunk` 支持 allocator 与普通分配，`Close` 把游标归零。
 
 语言映射上的差异主要是所有权表达：Go 使用 `[]*resolve.ResultField`、`[][]any` 和 `*chunk.Chunk`；Rust 使用拥有的 `Vec<ResultField>`、`Vec<Vec<Box<dyn Any>>>`，并以 `RecordChunk::{Owned, Allocated}` 统一两种 chunk 所有权。Go 直接取 `field.Column.FieldType`；Rust 因类型模型与所有权需要先检查 `column` 再克隆 `FieldType`。Go 没有显式构造函数，通常使用结构体字面量；Rust 增加 `new` 来初始化私有 `idx`。
 
-Go 的真实生产调用证据位于 `pkg/session/nontransactional.go::buildDryRunResults` 和 `buildExecuteResults`，用于返回非事务 DML 的说明性结果。当前 Rust 的 `pkg/session/nontransactional.rs` 使用另一套 `ResultValue`、`ResultField` 和同名领域结构，因此通用 sqlexec 版本在 Rust 侧主要由迁移测试和 server cursor 测试使用；后续若要统一两者，需要单独设计类型转换与接线，不能仅替换同名类型。
+当前 Rust 的 `pkg/session/nontransactional.rs` 使用另一套 `ResultValue`、`ResultField` 和同名领域结构，因此通用 sqlexec 版本在 Rust 侧主要由迁移测试和 server cursor 测试使用；后续若要统一两者，需要单独设计类型转换与接线，不能仅替换同名类型。
 
 ## 扩展指南
 
@@ -92,14 +90,3 @@ Go 的真实生产调用证据位于 `pkg/session/nontransactional.go::buildDryR
 - 若改变 `Close` 为释放型语义，会破坏现有“关闭后可重读”测试和 Go 对齐行为；这属于兼容性变更。
 - 应在独立文件 `pkg/util/sqlexec/migration_aster_unit_test.rs` 中扩展回归测试，不要把测试内嵌进生产源文件。现有测试 `simple_record_set_chunks_rows_and_close_restarts` 覆盖分批、EOF、字段访问和重读，`simple_record_set_uses_the_supplied_chunk_allocator` 覆盖 allocator 分支。可补充的边界包括空字段/空行、行列数不匹配、缺失 `column`、零 chunk 大小以及更多 `Any` 类型；其中 panic 契约测试应明确说明是否保持 Go 兼容。
 - 若把本类型接入非事务 DML Rust 主链，需要同时处理 `pkg/session/nontransactional.rs` 当前领域类型与 `resolve::ResultField`/`Box<dyn Any>` 的转换，并在该模块独立测试中验证生产接线；这不是本文件现状。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；目标 `pkg/util/sqlexec/simple_record_set.rs` 已索引。
-- RustCodeGraph `files --filter pkg/util/sqlexec`：确认目标、模块入口、Go 对照和相关独立测试位于同一 crate 目录。
-- RustCodeGraph `node --file pkg/util/sqlexec/simple_record_set.rs --offset 1 --limit 240`：核对 `SimpleRecordSet`、`new` 及四个 trait 方法的完整实现，并得到目标文件的直接使用文件。
-- RustCodeGraph 读取 `pkg/util/sqlexec/restricted_sql_executor.rs`：核对 `GoError`、`RecordChunk`、`RecordSet`、`DrainRecordSet`、`DrainRecordSetAndClose` 与 `ExecSQL` 的接口和调用关系。
-- RustCodeGraph 读取 `pkg/util/sqlexec/lib.rs` 与直接读取 `pkg/util/sqlexec/Cargo.toml`：核对模块再导出、默认 `formal-crate` feature、crate 边界和依赖来源。
-- RustCodeGraph 读取 `pkg/util/sqlexec/simple_record_set.go`、`pkg/session/nontransactional.go` 对应构造点，以及 `pkg/session/nontransactional.rs` 的同名领域结构：核对 Go 算法、生产用途和 Rust 当前接线差异。
-- `rg -n "SimpleRecordSet|DrainRecordSet|RecordSet" ...` 与 RustCodeGraph 读取 `pkg/util/sqlexec/migration_aster_unit_test.rs`、`pkg/server/conn_test.rs`：定位并核对独立 Rust 测试，确认分批、EOF、重置、allocator 和 server cursor 使用证据。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终仅执行任务指定的 11 章节结构校验。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 TiFlash 执行统计的 Rust 实现，对应 Go 文件 `pkg/util/execdetails/tiflash_stats.go`。它不是顶层 crate 入口：`pkg/util/execdetails/internal/ruv2/lib.rs` 在私有模块 `tiflash_stats` 中以 `include!("../../tiflash_stats.rs")` 编入源码，再用 `pub use tiflash_stats::*` 导出。因此这些类型实际属于 `astersql-util-execdetails-ruv2` crate；顶层 `astersql-util-execdetails` 又通过 `lib.rs` 的 `execdetails_ruv2::*` 间接提供相关 API。
-
-该文件位于 TiFlash 返回的 `tipb::ExecutorExecutionSummary` 与 TiDB 侧运行时统计/资源计量之间：它把 protobuf 中的扫描、等待、网络和 RU 字段解码为可合并的本地结构，并提供诊断字符串。直接消费方可见于 `pkg/util/execdetails/runtime_stats.rs`；TiFlash MPP report 的 RU 汇总入口则沿 `pkg/executor/internal/mpp/local_mpp_coordinator.rs::handleAllReports` 进入 `MppReportSink::MergeTiFlashRUConsumption`。
+合并多个 task/response 的统计：大多数字段求和，列存宽度类字段取最大值，流式耗时维护最小值/最大值，等待摘要保留执行时间最长的一条。
 
 ## 核心职责
 
@@ -97,17 +95,10 @@ crate 边界由两层 Cargo 清单确定：顶层 `pkg/util/execdetails/Cargo.to
 
 ## 与 Go 版本的对应关系
 
-Rust 的类型、字段分组和方法基本逐项对应 `pkg/util/execdetails/tiflash_stats.go`：`Clone`、`String`、`Merge`、`mergeExecSummary`、`Empty`、`CanBeIgnored`、`UpdateTiKVExecDetails`、`GetInterZoneTrafficBytes` 和 `MergeTiFlashRUConsumption` 保留同一职责。
-
-已核对的关键同义点：
-
 - Go 用 `maps.Copy` 深复制 `regionsOfInstance`，Rust 用派生 `Clone` 深复制 map。
 - Go/Rust 的 scan、columnar、wait、network 合并规则一致；尤其是列存 table/column 取最大值、wait 取最大 execution time 对应样本、stream min 的 0 哨兵规则。
-- Go `atomic.AddInt64` 对应 Rust `AtomicI64::fetch_add(SeqCst)`。
-- Go `time.Millisecond` 阈值对应 Rust `Duration::from_millis(1).as_nanos()`。
 - Go 网络字符串先转 `int64`，Rust 显式 `as i64`；`tiflash_stats_test.rs::network_string_matches_go_int64_conversion` 锁定 `u64::MAX -> -1`。
 - Go `%f` 的 Region 比例默认六位小数，Rust使用 `{:.6}`；`region_balance_uses_go_fixed_point_format` 锁定该格式。
-- Go `Unmarshal` 对应 protobuf 2.8 的 `merge_from_bytes`；两者在首个坏 payload 处返回错误，并在最终成功后才合并临时 RU。
 
 可见接口差异主要来自语言模型：Go 结构字段为包内私有，而 Rust 字段为 `pub` 以跨内部模块/测试使用；Go 方法可接收 nil 指针，Rust 引用不可为空，只有显式 `Option` 参数保留 nil 语义；Go summary slice 是指针切片，Rust 是 `Option<ExecutorExecutionSummary>` slice。
 
@@ -123,18 +114,3 @@ Rust 的类型、字段分组和方法基本逐项对应 `pkg/util/execdetails/t
 6. 同步修改独立 Rust 测试，优先放在 `pkg/util/execdetails/tiflash_stats_test.rs`；跨 runtime 聚合可扩展 `execdetails_test.rs`，execution-unit presence/overflow 可扩展 `tiflash_execution_units_test.rs`。同时参照 Go 的 `execdetails_test.go`、`tiflash_execution_units_test.go`，不得把测试内嵌到生产源文件。
 
 兼容性风险主要是慢查询/Explain 文本格式变化、空判断导致字段被隐藏、计数溢出以及收发流量重复计费；性能风险主要来自在热路径扩大 clone/map 合并和字符串分配。若加入共享可变状态，应沿现有边界使用原子或 `RUDetails` 的锁，而不是在这些值对象内引入隐式全局同步。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标 `pkg/util/execdetails/tiflash_stats.rs` 已索引，共 790 行。
-- RustCodeGraph 源码/结构查询：
-  - `rustcodegraph files --filter pkg/util/execdetails`
-  - `rustcodegraph node --file pkg/util/execdetails/tiflash_stats.rs --offset 1 --limit 260`
-  - 同文件 offsets `260/540`，覆盖全部类型和方法。
-  - `rustcodegraph query TiFlashScanContext --kind struct --limit 20`
-  - `rustcodegraph callers/callees` 与聚焦 `explore` 查询；确认 `MergeTiFlashRUConsumption` 的 MPP report 调用链，并用精确文件节点消除同名符号歧义。
-  - `runtime_stats.rs` offsets `195`、`local_mpp_coordinator.rs` offsets `35/675`，核对解码、合并、展示和 report 汇总入口。
-- crate/生成边界：`pkg/util/execdetails/Cargo.toml`、`pkg/util/execdetails/internal/ruv2/Cargo.toml`、`internal/ruv2/lib.rs` 第 317–327 行、`internal/ruv2/build.rs`。
-- Go 对照：`pkg/util/execdetails/tiflash_stats.go` 全部 918 行；聚合展示测试 `pkg/util/execdetails/execdetails_test.go::TestCopRuntimeStatsForTiFlash`、`TestVectorSearchStats`、`TestColumnarScanContextStats`。
-- Rust 独立测试：`pkg/util/execdetails/tiflash_stats_test.rs`；补充行为证据来自 `execdetails_test.rs::test_vector_search_stats`、`test_columnar_scan_context_stats` 和 `tiflash_execution_units_test.rs` 的 presence、重复、显式零及 overflow 用例。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付验证使用任务规定的 11 章节结构检查，并人工复核唯一生产物、源码链接、Go 对齐、边界和扩展位置。

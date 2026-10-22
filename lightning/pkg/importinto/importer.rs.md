@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Lightning `IMPORT INTO` 后端的生命周期总控。它不负责逐表 SQL 的拼装、作业轮询或 checkpoint 的具体持久化，而是把 `importsdk::SDK`、`CheckpointManager`、`JobOrchestrator` 和进度回调组装成一个可由 Lightning server 驱动的 `Importer`。crate 入口 `lightning/pkg/importinto/lib.rs` 通过 `mod importer; pub use importer::*;` 暴露这里的 API；crate 清单 `lightning/pkg/importinto/Cargo.toml` 将其声明为 `astersql-lightning-pkg-importinto` library，并用 `package.metadata.porting.go-package` 标明对应 Go 包为 `lightning/pkg/importinto`。
-
-真实上游入口位于 `lightning/pkg/server/lightning.rs` 的 `ImportIntoImporter::Run`：它把 Lightning 配置转换为本 crate 的配置，用 `WithProgressUpdater` 接入 `LightningStatus`，调用 `NewImporter`、`Importer::Run`，最后显式调用 `Importer::Close`。因此，本文件位于“Lightning 后端选择”之后、“IMPORT INTO 作业提交/监控”之前。
-
-该 Rust crate 当前还通过 `stubs.rs` 提供本地的配置、SQL、日志、context 和 SDK 边界类型；这反映当前移植形态，不能据此推断它已经直接链接 Go 生产依赖。`Cargo.toml` 的注释也明确说明，本地 stubs 用于覆盖 importsdk/SQL/objstore/config/common/log 边界。
+`NewImporter` 应用函数式选项，并为未注入的 SDK、checkpoint manager、logger 和 orchestrator 创建默认实现。
 
 ## 核心职责
 
@@ -105,11 +101,7 @@ RustCodeGraph 对目标文件的文件节点报告其被 `importer_test.rs`、`j
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `lightning/pkg/importinto/importer.go`，主要结构和顺序保持一致：同样的 option 模式、默认 SDK/checkpoint/orchestrator、checkpoint 初始化、group key 恢复、运行阶段顺序、取消分支、无操作的 Pause/Resume，以及 best-effort Close。
-
-语义映射包括：Go 接口值对应 Rust 的 `Arc<dyn Trait>`；Go `ImporterOption func(*Importer)` 对应 `Box<dyn FnOnce(&mut Importer) + Send>`；Go 指针配置对应 Rust `Arc<Config>`；Go 的 `time.Minute` 对应 Rust `Duration::from_secs(60)`。Rust 的 `Vec<ImporterOption>` 替代 Go variadic options，但调用顺序和覆盖语义相同。
-
-可观察行为由两套独立测试互证：`importer_test.go::TestImporterRun/TestImporterNewImporter/TestImporterClose` 与 `importer_test.rs::test_importer_run/test_importer_new_importer/test_importer_close` 都覆盖建表错误、取元数据错误、预检错误、orchestrator 错误、普通取消、failover 取消、恢复 group key、非法 checkpoint driver 和关闭错误继续清理。
+Rust 的 `Vec<ImporterOption>` 替代 Go variadic options，但调用顺序和覆盖语义相同。
 
 需要注意当前 Rust 生产接线的环境差异：`lightning/pkg/server/lightning.rs::ImportIntoImporter::Run` 通过 bridge 转换配置，并构造本 crate 的 background context 与内存 DB；Go `lightning/pkg/server/lightning.go::newImporter` 则把调用者 context、原配置和 `param.DB` 直接传给 Go importer。文档只确认本文件内部与 Go 的控制流对齐，不把这些 bridge/stub 差异描述为完全等价的外部运行环境。
 
@@ -123,12 +115,3 @@ RustCodeGraph 对目标文件的文件节点报告其被 `importer_test.rs`、`j
 - 修改 S3 external ID 行为时，需要注意该 option 只影响本文件创建的默认 submitter；自定义 orchestrator 的行为由注入者负责。应同时覆盖 `job_submitter_test.rs` 和端到端组合路径。
 - 增加资源时应把关闭逻辑加入 `Close`，保持“失败记录后继续”的清理风格，并在独立测试文件中验证前一资源关闭失败不阻断后一资源。
 - 性能风险主要集中在 `TableConcurrency`、轮询周期和日志周期的传递；正确性风险集中在 group key 稳定性、checkpoint 成功后清理条件和取消原因判断；兼容风险集中在 Go/Rust option 默认值和错误传播差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter lightning/pkg/importinto` 确认目标、相邻实现和测试均被索引；`node --file lightning/pkg/importinto/importer.rs --offset 1 --limit 400` 读取了完整 365 行目标源；`query` 确认 `NewImporter`、`buildOrchestrator`、`runOnce`、`runPrechecks`、`initGroupKey` 的 Rust/Go 对照符号。精确 `callers/callees` 未返回可用结果，故调用边由直接引用补证。
-- 生产与装配：`lightning/pkg/importinto/importer.rs`、`lightning/pkg/importinto/lib.rs`、`lightning/pkg/importinto/Cargo.toml`、`lightning/pkg/server/lightning.rs`。
-- 直接下游定义：`lightning/pkg/importinto/checkpoint.rs`、`job_submitter.rs`、`job_orchestrator.rs`、`precheck.rs`、`stubs.rs`。
-- Go 对照：`lightning/pkg/importinto/importer.go`、`lightning/pkg/server/lightning.go`。
-- 独立测试：`lightning/pkg/importinto/importer_test.rs`、`lightning/pkg/importinto/importer_test.go`；组合语义另由 `lightning/pkg/importinto/parity_test.rs` 提供证据。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；验收使用任务指定的文件存在与固定 11 章节结构命令，并人工复核上述路径和符号可回溯。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于独立 crate `astersql-util-promutil`。crate 入口 `pkg/util/promutil/lib.rs` 声明并重新导出 `registry` 模块，因此下游既可以从模块路径，也可以从 crate 根使用这里的公开 `Registry`、`NewNoopRegistry` 和 `NewDefaultRegistry`。`pkg/util/promutil/Cargo.toml` 表明本 crate 只有 `prometheus = "0.14"` 这一项直接依赖，并通过 `package.metadata.porting.go-package` 对应 Go 包 `pkg/util/promutil`。
-
-它位于“指标的创建”和“指标的使用”之间：相邻的 `factory.rs` 负责构造 Counter、Gauge、Histogram 等 Collector，本文件负责抽象这些 Collector 如何登记到或移出注册表。例如 `pkg/lightning/metric/metric.rs` 的 `Common::register_to`、`Metrics::register_to` 以及对应的 `unregister_from` 都只依赖 `promutil::Registry`，不绑定具体注册表实现。
+`noopRegistry` 提供有意不保存任何指标的实现。
 
 ## 核心职责
 
@@ -74,9 +72,7 @@ Collector 的 Box 在每次调用结束时要么交给底层注册表，要么�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/promutil/registry.go`。两版都提供 `Registry`、无状态 `noopRegistry`、`NewNoopRegistry` 和 `NewDefaultRegistry`；Go 测试 `registry_test.go::TestNoopRegistry` 与 Rust 测试 `registry_test.rs::test_noop_registry` 都验证重复注册不报错、注销 Counter/GaugeVec 恒为真。
-
-需要注意以下语言/API 映射：
+两版都提供 `Registry`、无状态 `noopRegistry`、`NewNoopRegistry` 和 `NewDefaultRegistry`；Go 测试 `registry_test.go::TestNoopRegistry` 与 Rust 测试 `registry_test.rs::test_noop_registry` 都验证重复注册不报错、注销 Counter/GaugeVec 恒为真。
 
 - Go 的 `Registry` 是 `prometheus.Registerer` 的类型别名；Rust 因 crate API 与对象模型不同，自定义了同名 trait，并显式要求 `Send + Sync`。
 - Go `MustRegister` 使用可变参数 `...prometheus.Collector`；Rust 使用拥有所有权的 `Vec<Box<dyn Collector>>`。
@@ -93,12 +89,3 @@ Collector 的 Box 在每次调用结束时要么交给底层注册表，要么�
 若修改 noop 契约，应同步更新独立测试 `pkg/util/promutil/registry_test.rs` 和迁移测试 `pkg/util/promutil/migration_aster_unit_test.rs`，并与 `pkg/util/promutil/registry_test.go` 的原始意图核对。若修改 default 的重复登记、注销或 panic 行为，应扩展迁移测试；特别建议覆盖 `MustRegister` 部分成功后失败的状态，以明确是否仍接受当前“无回滚”行为。
 
 若调用方需要 gather、批量原子性、错误可观测性或共享所有权，应先评估是否扩展 trait 会影响所有消费方。性能上，当前接口为每个 Collector 分配 Box 并使用动态分派；高频新增路径应避免把注册/注销放在请求热循环中。兼容性上应保留 Go 的 Register/MustRegister/Unregister 基本契约和现有 PascalCase 方法名，除非同步迁移全部调用者与测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/promutil` 确认目标 Rust/Go/测试文件均已索引。
-- RustCodeGraph `node --file pkg/util/promutil/registry.rs`：核对 84 行生产源码及 15 个文件内符号，确认 trait、两种实现和两个构造器的真实签名与方法体。
-- RustCodeGraph `query Registry`、`query NewNoopRegistry --json`、`query NewDefaultRegistry --json`、`query MustRegister --json`：消除同名符号歧义，并确认目标文件中的定义位置。
-- RustCodeGraph 对 `callers`/`callees` 的目标查询未返回可用方法级边；因此按技能规则使用精确 `rg` 补查 trait 方法和构造器引用。结果定位到 `pkg/lightning/metric/metric.rs` 的四个生产注册/注销方法，以及两个本 crate Rust 测试文件。
-- 已读取：`pkg/util/promutil/registry.rs`、`pkg/util/promutil/lib.rs`、`pkg/util/promutil/Cargo.toml`、`pkg/util/promutil/registry.go`、`pkg/util/promutil/registry_test.rs`、`pkg/util/promutil/registry_test.go`、`pkg/util/promutil/migration_aster_unit_test.rs`，以及直接生产消费者 `pkg/lightning/metric/metric.rs` 的注册/注销实现。
-- 测试证据：`registry_test.rs::test_noop_registry` 与 Go `registry_test.go::TestNoopRegistry` 覆盖 noop；`migration_aster_unit_test.rs::{noop_registry_accepts_duplicates_and_always_unregisters,default_registry_uses_prometheus_duplicate_and_unregister_semantics}` 覆盖两种实现的关键边界。本任务为纯文档分析，按任务约束未运行 Cargo，也未执行这些测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-collate` crate，crate 入口 `pkg/util/collate/lib.rs` 以 `gb18030_chinese_ci` 模块装入并公开重导出全部公开符号。它实现名为 `gb18030_chinese_ci` 的 GB18030 中文、不区分大小写（CI）、PAD SPACE 排序规则；`pkg/util/collate/collate.rs::new_collator` 在新 collation 开启时按该名称构造 `gb18030ChineseCICollator`。该实现不受 `full_collate` feature 控制；`Cargo.toml` 中的 `full_collate` 只控制另一组 Unicode/general/pinyin collator。
-
-文件本身不做 GB18030 字节编解码。输入接口是 Rust UTF-8 `str` 或模拟 Go string 的原始字节切片，排序语义来自随 crate 编译进二进制的 `gb18030_weight.data`。因此它处于“collation 名称/ID 分发”与上层比较、索引 key、LIKE 匹配调用之间，而非字符集转码层。
+`Key`/`KeyBytes` 实现 PAD SPACE：生成 key 前移除尾部 ASCII 空格；`KeyWithoutTrimRightSpace` 保留尾空格（`gb18030_chinese_ci.rs:44-65`、`collate.rs:297-308`）。
 
 ## 核心职责
 
@@ -80,16 +78,12 @@ key 长度最终转为 `i32`：`MaxKeyLen` 对极端超大字符串存在从 `us
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/gb18030_chinese_ci.go`。Rust 保留了 Go 的空 collator、嵌入式权重文件、U+10FFFF 上界、逐权重比较、PAD SPACE、1–4 字节 key 编码、最大长度、pattern 状态以及小端表读取。
-
 关键接口差异如下：
 
 - Go string 可含任意字节，所以 Go 的 `KeyWithoutTrimRightSpace` 必须在循环内检测 `utf8.RuneError` 且长度为 1；Rust 的 `&str` 路径天然合法，另增 `CompareBytes`/`KeyBytes` 来承接 Go 原始字节语义。
 - Go `ImmutableKey` 直接调用 `KeyWithoutTrimRightSpace(truncateTailingSpace(str))`；Rust 调用 `self.Key(str_)`。因为 Rust `Key` 正是同一组合且总返回新 `Vec`，当前可观察结果一致。
 - Go 的排序函数接收可能超出 Unicode 范围的有符号 `rune`，而 Rust 接收受范围约束的 `char`；因此 Go 的 `r > max` 防御分支可触达范围与 Rust 不完全相同。Go 代码也未显式防御负 rune，但正常 UTF-8 解码不会产生负值。
 - Go 只暴露字符串接口；Rust 的字节接口和 `as_any` 是 Rust trait/Go 兼容层的额外接线。
-
-现有 Go `collate_test.go` 的主表没有把 `gb18030_chinese_ci` 放入 compare/key collator 列表，非法 UTF-8 表也没有该 CI collator。因此不能把这些通用 Go 表测试当作本实现的直接覆盖证据。
 
 ## 扩展指南
 
@@ -100,13 +94,3 @@ key 长度最终转为 `i32`：`MaxKeyLen` 对极端超大字符串存在从 `us
 测试应放在独立 Rust 测试文件中，不要内嵌到本生产文件。最接近的现有测试是 `pkg/util/collate/bin_1_aster_unit_test.rs::chinese_ci_weights_and_keys_match_go_tables`，目前仅断言 `a/A` 等价、尾空格、最大长度；扩展时应在独立测试中补充中文权重 key、LIKE 大小写/中文等价、不同权重顺序、最高码点、合法 U+FFFD 与非法字节中止，以及 `Key` 和 `Compare` 顺序一致性。Go 语义变化还应同步 `pkg/util/collate/gb18030_chinese_ci.go` 的相关独立测试，而不是只让 Rust 用例通过。
 
 若新增 collation 名或 ID，接线位置是 `collate.rs::new_collator`、parser charset 元数据及名称/ID 映射；这超出本文件单纯权重行为的职责。性能修改应以长字符串、ASCII/中文混合和多字节权重为基准，关注重复查表、`Vec` 扩容及 pattern 回调成本。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件被索引为 17 个符号，并显示直接使用文件 `pkg/util/collate/collate.rs`、`pkg/util/collate/bin_1_aster_unit_test.rs`。
-- RustCodeGraph 源码/符号查询：`node --file pkg/util/collate/gb18030_chinese_ci.rs`；`query gb18030ChineseCICollator`、`query gb18030ChineseCIPattern`、`query gb18030ChineseCISortKey`、`query key_bytes_without_trim`；`callers`/`callees` 查询确认图中可见的直接边，其中 `key_bytes_without_trim` 调用 `gb18030ChineseCISortKey`，部分 trait 动态调用无具体静态边。
-- crate 与入口：`pkg/util/collate/Cargo.toml`、`pkg/util/collate/lib.rs`、`pkg/util/collate/collate.rs`；后者提供 trait、名称工厂、PAD SPACE、UTF-8 字节解码和通用比较实现。
-- Go 对照：`pkg/util/collate/gb18030_chinese_ci.go`、`pkg/util/collate/collate.go`、`pkg/util/collate/collate_test.go`。
-- Rust 测试：`pkg/util/collate/bin_1_aster_unit_test.rs` 的 `chinese_ci_weights_and_keys_match_go_tables`；同时检查 `pkg/util/collate/collate_test.rs` 和 `main_test.rs`，未发现对 GB18030 Chinese CI 中文权重表的完整专门覆盖。
-- 数据资产：`pkg/util/collate/gb18030_weight.data` 的本地尺寸为 4,456,448 字节，与全 Unicode 范围每码点 4 字节的索引布局一致。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 章节结构命令校验，并人工复核公开/内部符号、调用链、错误边界、生命周期、Go 差异与测试缺口。

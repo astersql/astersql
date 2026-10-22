@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/errors/wrap.rs` 是 `astersql-errors` crate 的单因错误链包装层，对应仓库 `go.mod` 锁定的 `github.com/pingcap/errors` 中 `errors.go` 的 `withStack`、`withMessage` 及相关遍历 API。crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-errors`，库入口是 [`mod.rs`](mod.rs)，运行时依赖为 `backtrace` 和带 `derive` 的 `serde`；本文件没有 feature 或条件编译分支。
-
-[`mod.rs`](mod.rs) 将 `AddStack`、`Cause`、`Find`、`GetErrStackMsg`、`HasStack`、`Unwrap`、`WithMessage`、`WithStack`、`Wrap`、`Wrapf` 从 crate 根公开。因此调用方通常依赖 `astersql_errors::*`，而不会直接访问私有 `wrap` 模块。文件内部还向 [`adaptor.rs`](adaptor.rs) 提供 `with_stack` 与 `suspend_stack`，支撑 `Annotate`、`Annotatef` 和 `SuspendStack`。
+实现“总是加栈”的 `WithStack`/`Wrap`/`Wrapf` 与“仅缺栈时加栈”的 `AddStack`，并让 `WithMessageError::cause_has_stack` 缓存内层栈状态。
 
 ## 核心职责
 
@@ -96,10 +94,6 @@ RustCodeGraph 对 `pkg/errors/wrap.rs` 报告 7 个直接使用文件，并确�
 
 ## 与 Go 版本的对应关系
 
-仓库没有 `pkg/errors` 下的同路径 Go 文件；直接基准是 `go.mod`/`go.sum` 锁定的 `github.com/pingcap/errors v0.11.5-0.20260508054701-306e305bcf41`，本机模块缓存中该版本的 `errors.go`、`errors_test.go`、`format_test.go` 与 `stack_test.go` 提供实现和回归证据。
-
-Rust `WithStackError`/`WithMessageError` 分别映射 Go `withStack`/`withMessage`；`Display` 与交替 `Debug` 承担 Go `Error()` 与 `%+v` 的主要语义；`StdError::source` 对应 Go 1.13 `Unwrap()`。`WithStack`、`AddStack`、`Wrap`、`Wrapf`、`WithMessage`、`Cause`、`Unwrap`、`Find`、`GetErrStackMsg` 的 nil 处理、消息顺序、栈去重和深度查找策略均保持直接对应。
-
 语言层差异是：Go 使用接口值和 `nil`，Rust 使用 `Option<SharedError>`；Go 格式化采用可变参数，Rust 使用 `&[ErrorArg]` 与 `format_message`；Go 私有包装通过 `Cause`/`Unwrap` 接口发现，Rust 对本 crate 私有具体类型做 downcast，并显式接入规范化错误。Go `Find` 同样委托 `WalkDeep`，Rust 因此保留了错误组子树搜索，而没有简化成仅遍历 `source()`。
 
 Go 注释将 `WithStack`/`Wrap`/`Wrapf` 标为大多数场景下应优先使用去重 API 的旧式入口；Rust 实现保留它们的“总是捕栈”行为以兼容现有调用，并由 `adaptor.rs` 提供 `Trace`/`Annotate` 的去重策略。
@@ -111,11 +105,3 @@ Go 注释将 `WithStack`/`Wrap`/`Wrapf` 标为大多数场景下应优先使用�
 更改公开 API 时同步更新 [`mod.rs`](mod.rs) 的再导出与 [`tests/api_parity_test.rs`](tests/api_parity_test.rs)。包装、遍历、身份和错误组顺序放在独立的 [`tests/wrap_test.rs`](tests/wrap_test.rs)；格式顺序放在 [`tests/format_test.rs`](tests/format_test.rs)；清栈/恢复行为放在 [`tests/adaptor_test.rs`](tests/adaptor_test.rs)；规范化链与标准 `source` 互操作分别放在现有 normalize/std interop 测试中。测试逻辑不要内嵌进 `wrap.rs`。
 
 兼容风险集中在 `Cause`/`Find` 的遍历顺序、`GetErrStackMsg` 的精确文本、交替 `Debug` 的换行及栈位置。性能风险集中在每次捕获 backtrace、递归遍历、消息克隆和字符串拼接；不要为追求统一而让 `AddStack` 重复捕栈，也不要移除 `cause_has_stack` 缓存而未评估深链调用成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/errors/wrap.rs` 读取完整 326 行并确认全部类型、impl、函数和无条件编译结构；文件关系报告 7 个直接使用文件。精确 `query` 确认 `wrap.rs::HasStack`、`wrap.rs::GetErrStackMsg`、`wrap.rs::suspend_stack` 的签名与位置；宽泛 `callers/callees` 查询未返回可用的精确边，因此调用关系又由已索引的 `adaptor.rs`、`group.rs` 源码和直接引用搜索交叉核验。
-- Rust crate：[`Cargo.toml`](Cargo.toml)、[`mod.rs`](mod.rs)、[`core.rs`](core.rs)、[`stack.rs`](stack.rs)、[`normalize.rs`](normalize.rs)、[`group.rs`](group.rs)、[`adaptor.rs`](adaptor.rs)。
-- Rust 测试：[`tests/wrap_test.rs`](tests/wrap_test.rs) 验证 `None`、原因身份、栈捕获/去重、格式顺序、标准 `source`、`Find` 与错误组；[`tests/adaptor_test.rs`](tests/adaptor_test.rs) 验证清栈与恢复；[`tests/format_test.rs`](tests/format_test.rs) 验证组合格式；[`tests/api_parity_test.rs`](tests/api_parity_test.rs) 覆盖公开 API；normalize 与 std interop 测试覆盖跨类型接线。
-- Go 对照：仓库 `go.mod`、`go.sum` 锁定提交 `306e305bcf41`；模块缓存对应版本的 `errors.go`、`errors_test.go`、`format_test.go`、`stack_test.go` 已核对。仓库内不存在 `pkg/errors/wrap.go`，因此未虚构同路径 Go 文件。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证另以任务指定命令确认目标文档存在且恰有 11 个固定二级标题。

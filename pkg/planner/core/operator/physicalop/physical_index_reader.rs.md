@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-core-operator-physicalop`（见同目录 `Cargo.toml`），定义根任务中的物理索引读取算子 `PhysicalIndexReader`。它包装一棵可下推到存储侧的 `IndexPlan`，把索引侧计划的 schema、统计信息、代价、解释文本和 protobuf 编码能力暴露给规划器及执行器。与需要按索引句柄回表的 `PhysicalIndexLookUpReader` 不同，本算子表达覆盖索引或只需索引侧结果的单读路径。
-
-模块入口 `lib.rs` 通过 `mod physical_index_reader` 和 `pub use physical_index_reader::*` 导出本文件，并为该类型实现 `ConcretePhysicalOperator`、再由 `impl_concrete_physical_plan!(PhysicalIndexReader)` 接入统一 `PhysicalPlan` trait。这里有一个重要所有权约定：真实孩子保存在 `IndexPlan`，而不是 `BasePhysicalPlan.Children`；`lib.rs` 的 `children_operator`/`set_children_operator` 专门维持这一约定。
+为执行器保留类型化边界：`pkg/executor/builder.rs` 对该类型向下转型，要求 `IndexPlan` 中存在 `PhysicalIndexScan`，并据表、索引和绑定信息构造类型化索引读取执行器。
 
 ## 核心职责
 
@@ -108,18 +106,13 @@ RustCodeGraph 对目标文件报告其被 24 个文件使用，并能定位本�
 
 ## 与 Go 版本的对应关系
 
-同路径 `physical_index_reader.go` 是直接语义基准，`Cargo.toml` 的 `[package.metadata.porting]` 也声明 Go package 为 `pkg/planner/core/operator/physicalop`。对应关系如下：
-
 - 结构体字段基本对应，但 Go 同时保存树根 `IndexPlan` 与叶到根扁平表 `IndexPlans`；Rust 只保存树根，并用递归辅助函数实现扫描定位、相关列和内存遍历。
 - `SetSchema` 保留了 Go 的核心分支：聚合/投影使用根 schema，普通计划使用索引扫描的 `DataSourceSchema`。Rust 递归寻找 scan，比 Go 的 `IndexPlans[0].(*PhysicalIndexScan)` 更宽容；找不到时静默保留原 schema，而 Go 会因不满足结构假设而 panic。
-- `Clone`、`ExtractCorrelatedCols`、explain、`ResolveIndices` 的总体意图一致；Rust 对可选计划做了空值处理，并保留虚拟表达式解析回退。
 - Go `LoadTableStats` 会基于 scan 的表和物理表 ID 调用统计加载；Rust 当前只探测 scan，是尚未完成的移植缺口。
 - Go `AccessObject` 根据动态分区裁剪开关、表别名与 `PlanPartInfo` 生成分区访问对象；Rust 只委托 `PhysicalIndexScan::AccessObject` 并返回字符串，未覆盖动态分区语义。
 - Go cost 调用 `GetPlanCostVer14PhysicalIndexReader`/`GetPlanCostVer24PhysicalIndexReader` 专用算法；Rust 当前委托基座 cost。Go `GetNetDataSize` 用直方图和平均行大小，Rust 固定按每列 8 字节估算，精度和类型敏感性不同。
 - Go `MemoryUsage` 的源码对 `IndexPlan.MemoryUsage()` 未把返回值加入 `sum`，随后遍历 `IndexPlans`；Rust 明确递归累计整棵树。两边最终是否等价取决于 Go 扁平列表和各节点 memory 约定，不能仅凭形式声称完全一致。
 - Go 工厂接收 `TiKVSingleGather` 并从中取 context/offset；Rust 工厂直接接收 context 且 `New` 默认 offset 为 0。传统 Rust 路径的调用点目前没有把 gather offset 传给工厂；专用路径可通过 `New(...).Init(..., offset)` 保留偏移。
-
-相关 Rust 独立测试 `physical_index_reader_test.rs` 已覆盖普通 index scan 使用 `DataSourceSchema`、projection 保留根 schema，以及虚拟表达式列解析回退。Go 同目录没有 reader 专属测试文件；`physical_utils_test.go` 仅覆盖 reader 的工具分类/包含关系，不能证明上述 Go 方法的全部行为。
 
 ## 扩展指南
 
@@ -130,14 +123,3 @@ RustCodeGraph 对目标文件报告其被 24 个文件使用，并能定位本�
 - 修改 `ResolveIndices` 时必须保留虚拟表达式重复匹配回退，并测试普通成功、虚拟表达式成功和两者均失败三条路径。
 - 若新增多个孩子或多个 scan 的能力，应先定义输出 schema、访问对象、protobuf 和内存计数的组合规则，并把 `SetChildren` 当前静默忽略额外孩子的行为改为显式处理或报错。
 - 影响用户可见执行行为的改动除本文件单元测试外，还应检查 `pkg/executor/typed_index_reader_test.rs`；涉及 optimizer 物化时检查 cascades/传统 planner 的相关测试，涉及 plan cache 时检查 `cache_snapshot_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/planner/core/operator/physicalop/physical_index_reader.rs --offset 1 --limit 500` 返回目标文件完整 286 行，并报告 24 个使用文件；`query PhysicalIndexReader --limit 20` 定位 Rust/Go 类型、工厂及 Go 方法。`explore`、`callers`、`callees` 在本次 CLI 运行中未返回边明细，调用关系改由下列源码搜索核验。
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_index_reader.rs`，核对结构体、12 个公开方法、3 个私有递归辅助函数和工厂函数。
-- crate 与模块：`pkg/planner/core/operator/physicalop/Cargo.toml`、`pkg/planner/core/operator/physicalop/lib.rs`，核对依赖、Go porting 元数据、导出及 `PhysicalPlan` 适配。
-- 上下游源码：`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/core/operator/physicalop/base_physical_plan.rs`、`pkg/planner/core/operator/physicalop/index_join_probe.rs`、`pkg/executor/builder.rs`、`pkg/executor/statement_ru_plan_walk.rs`。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_index_reader.go`；Go 辅助测试证据来自 `pkg/planner/core/operator/physicalop/physical_utils_test.go`。
-- Rust 测试：`pkg/planner/core/operator/physicalop/physical_index_reader_test.rs`；补充接线测试位置包括 `pkg/executor/typed_index_reader_test.rs`、`cache_snapshot_test.rs` 和 `physical_projection_test.rs`。
-- 包内未找到 `doc.go`，因此没有额外包契约文件可读；本说明以 crate/module 声明、实现和测试为准。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工核对唯一生产物、源码引用、Go 差异和无运行时文件修改。

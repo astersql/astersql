@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。`pkg/expression/Cargo.toml` 将该 crate 的入口指定为 `pkg/expression/lib.rs`，后者在第 185—186 行用 `#[path = "builtin_control_vec_generated.rs"] mod builtin_control_vec_generated_kernel;` 把本文件作为私有模块编入库。文件头明确标注它是控制流向量求值的生成代码，覆盖 SQL `CASE WHEN`、`IFNULL` 和 `IF`。
-
-这里需要区分“crate 内存在”与“完整运行时已接线”：模块不是 `pub mod`，其中类型虽然多为 `pub`，可见范围仍受私有父模块限制；仓库内对这些 Rust 签名的直接构造仅见 `builtin_control_vec_generated_test.rs` 和 `builtin_control_vec_generated_8_aster_unit_test.rs`。`builtin.rs`、`distsql_builtin.rs` 和 `builtin_threadsafe_generated.rs` 出现的同名文本是 Go 签名名称/移植元数据，未形成对本模块类型的 Rust 调用。因此，本文件当前是可编译、可独立验证的 Rust 语义实现，但没有证据表明它已经替代 Go 控制表达式并进入 Rust SQL 执行主链。
+用泛型核心 `BuiltinCaseWhen<T>`、`BuiltinIfNull<T>`、`BuiltinIf<T>` 实现向量求值和逐行标量回退，保持 SQL 的 NULL/真假选择规则以及 Go 版本的投机求值回退策略。
 
 ## 核心职责
 
@@ -80,12 +78,9 @@ Go 主链的对应入口在 `builtin_control_vec_generated.go`：具体 `builtin
 
 ## 与 Go 版本的对应关系
 
-`builtin_control_vec_generated.go` 为 CASE、IFNULL、IF × 七种返回类型生成与本文件同名的 21 类签名和 `fallbackEval*`、`vecEval*`、`vectorized()`。核心语义对应如下：CASE 首真优先、无 ELSE 为 NULL；IFNULL 左非 NULL 优先；IF 的 NULL 条件与零条件均选假分支；投机分支新增警告或报错时先截断警告再标量回退；IFNULL 左参和 IF 条件的向量错误直接返回。
-
 差异也很明确：
 
 - Go 使用真实 `EvalContext`、`chunk.Chunk`、类型专属 `chunk.Column` 和 `bufAllocator`；Rust 使用本文件自定义上下文、`Vec<Option<T>>` 与箱装 trait。
-- Go 的标量回退委托既有 `b.eval*`，Rust 在三个泛型核心中直接重现短路循环。
 - Go 各类型展开为大段生成代码，Rust 用三个泛型实现加宏包装减少重复。
 - Rust 的 `Time`/`Duration`/`BinaryJSON` 是 `chrono`/`serde_json` 类型别名，并非 Go `types.Time`、`types.Duration`、`types.BinaryJSON` 的完整兼容表示；时区、精度、MySQL 特殊时间值、JSON 内部格式等能力不能仅由本文件证明等价。
 - Go 生成测试通过 `vecBuiltinControlCases` 对各类型及多种 CASE 参数形态运行通用向量/标量一致性测试；Rust 两份独立测试覆盖主要 NULL/选择规则、类型矩阵、错误与警告，但没有证据表明覆盖了 Go 类型系统的全部边界。
@@ -99,13 +94,3 @@ Go 主链的对应入口在 `builtin_control_vec_generated.go`：具体 `builtin
 若要接入完整 Rust 表达式执行主链，不能只把模块改成公开：还需把本地 `VectorExpression`、`EvalContext` 和值别名适配到 crate 的真实表达式/列/类型体系，并在注册或构造路径建立可检索的调用边。性能上需重点评估全分支预求的峰值内存、克隆变长值的成本，以及与列缓冲池的整合；兼容性上需验证 MySQL 时间、Duration、Decimal 与 BinaryJSON 语义。
 
 本文件自称生成代码，直接手工编辑存在再生成覆盖风险；但现有 Rust 生成器未证明能重建该 `.rs`。扩展前应先确认并补齐真实生成源，或明确把 Rust 文件视为手工维护的移植产物，避免生成源与结果漂移。
-
-## 验证依据
-
-- 源码：`pkg/expression/builtin_control_vec_generated.rs`，重点符号为 `VectorExpression`、`BuiltinCaseWhen`、`BuiltinIfNull`、`BuiltinIf`、`check_column_len`、`rollback_speculative_warnings` 及三个签名宏。
-- crate 边界：`pkg/expression/Cargo.toml`（`astersql-expression`、`lib.rs`、`autotests = false`、类型依赖）和 `pkg/expression/lib.rs`（私有模块装配与两份测试模块装配）。目标包未发现 `doc.go`。
-- RustCodeGraph：`status` 显示索引包含本文件；`node --file ... --offset 1/500` 读取完整 607 行；`query BuiltinCaseWhen/BuiltinIfNull/BuiltinIf --kind struct` 定位三个泛型核心；`query VectorExpression --kind trait` 与 `query vec_eval --kind function` 区分同名符号。对精确 `callers/callees` 的查询未返回可用边，因此调用关系又用 Rust 引用搜索复核，未把文件级使用计数误作函数调用证据。
-- Rust 测试：`pkg/expression/builtin_control_vec_generated_test.rs` 验证首分支、ELSE、NULL、IF/IFNULL 和长度错误；`pkg/expression/builtin_control_vec_generated_8_aster_unit_test.rs` 验证七类型矩阵、投机错误/警告回滚、选中分支标量错误、强制首参错误与全部 21 签名。
-- Go 对照：`pkg/expression/builtin_control_vec_generated.go`、`pkg/expression/builtin_control_vec_generated_test.go`；生成源核对 `pkg/expression/generator/control_vec.go` 与 `pkg/expression/generator/control_vec.rs`。Go 测试入口为 `TestVectorizedBuiltinControlEvalOneVecGenerated` 和 `TestVectorizedBuiltinControlFuncGenerated`。
-- 接线边界：仓库 Rust 引用搜索仅在上述测试中发现具体包装类型构造；`builtin.rs`、`distsql_builtin.rs`、`builtin_threadsafe_generated.rs` 的同名字符串未形成 Rust 类型调用。这一限制是当前代码事实，不代表未来设计意图。
-- 按任务约束，本次是纯文档分析，未运行 Cargo，也未修改 Rust、Go、Cargo 或总计划。

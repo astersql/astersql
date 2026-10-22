@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Cascades 优化器共享的基础哈希器。它属于 `astersql-planner-cascades-base` crate；`pkg/planner/cascades/base/lib.rs` 在 `base` 模块内通过 `include!("hash_equaler.rs")` 嵌入实现，再以 `pub use base::*` 对外导出。crate 的边界由同目录 `Cargo.toml` 定义，当前没有单独声明第三方依赖或 feature。
-
-该哈希器服务于 `base.rs` 定义的 `Hash64`/`Equals`/`HashEquals` 协议：对象把语义字段依次写入 `Hasher`，得到适合快速筛选的 64 位摘要；摘要相同不代表对象相等，调用方仍须用 `Equals` 完成类型及字段的二次确认。实际规划链上的直接证据是 `pkg/planner/cascades/memo/group_expr.rs` 中 `GroupExpression::Init` 创建哈希器、调用自身 `Hash64`，再用 `Sum64` 缓存摘要。
+提供 `NilFlag`/`NotNilFlag`，要求复合类型实现者在指针或接口字段内容之前显式编码空/非空状态。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/base/hash_equaler.go`。Rust 保留了常量值、`Hasher` 方法集合与顺序、nil 标记、`Hash64a`/`hasher` 命名、构造初值、Reset 缓存复用，以及每种基础类型的哈希顺序。
-
 关键语言映射为：Go `Hasher` 接口对应 Rust `dyn Hasher`；Go `*hasher` 返回值对应 `Box<dyn Hasher>`；Go `int` 对应当前目标平台宽度的 `isize`；Go `rune` 对应 `i32`；Go `math.Float64bits` 对应 `f64::to_bits`；Go 无符号乘法自然回绕对应 Rust `wrapping_mul`；Go `[]byte` 对应拥有所有权的 `Vec<u8>` 加借用视图 `&mut [u8]`。
 
-`hash_equaler_test.rs` 逐项复刻 Go `hash_equaler_test.go` 的三类意图：组合字符串边界、不同结构类型的哈希相同但 Equal 为假、基础类型和 Reset 路径。`migration_aster_unit_test.rs` 进一步补充 Go 金值 `8465102021931103247`、负整数、`-0.0`、UTF-8 长度与 Reset 后缓存地址复用。当前可见差异主要是 Rust 所有权 API：`SetCache` 消费 `Vec<u8>`，`Cache` 返回固定长度的可变切片，而 Go 切片可由调用者 append 并再设置回来。
+`hash_equaler_test.rs` 逐项复刻 Go `hash_equaler_test.go` 的三类意图：组合字符串边界、不同结构类型的哈希相同但 Equal 为假、基础类型和 Reset 路径。当前可见差异主要是 Rust 所有权 API：`SetCache` 消费 `Vec<u8>`，`Cache` 返回固定长度的可变切片，而 Go 切片可由调用者 append 并再设置回来。
 
 ## 扩展指南
 
@@ -92,14 +88,3 @@
 若新增基础类型方法，需要同步修改 `Hasher` trait、`impl Hasher for hasher`、Go 对照接口/实现（若要求继续双端兼容），并在独立的 `hash_equaler_test.rs` 与迁移测试中加入固定向量和边界测试；Rust 单元测试不能内嵌回本生产文件。应重点评估摘要兼容性，因为改变现有方法的混合顺序、整数宽度、字符串长度单位或浮点规范化会改变所有上游对象的摘要。
 
 若更换算法或让 `NewHashEqualer` 返回其他实现，必须复核 `GroupExpression::Init` 等调用方对非零摘要、Reset 复用和 trait object 的假设，同时保留碰撞后二次比较。性能评估应关注热路径每字段开销、动态分派和缓存分配；正确性评估应包含 Go 固定向量、空/非空、负数、Unicode、浮点特殊值、字段分段及不同类型同字段的碰撞案例。
-
-## 验证依据
-
-- 源实现：`pkg/planner/cascades/base/hash_equaler.rs`，核对全部 163 行、公开 API、私有状态和混合流程。
-- crate 装配：`pkg/planner/cascades/base/Cargo.toml` 与 `pkg/planner/cascades/base/lib.rs`，核对 crate 名、`include!`、公开再导出和独立测试模块。
-- 协议定义：`pkg/planner/cascades/base/base.rs`，核对 `Hash64`、`Equals`、`HashEquals` 的职责边界。
-- 主链调用：`pkg/planner/cascades/memo/group_expr.rs::GroupExpression::{Hash64, Init}`，核对构造、字段写入、`Sum64` 和零值规范化；`pkg/planner/cascades/memo/group.rs::Group::Hash64` 核对子 GroupID 写入语义。
-- Go 对照：`pkg/planner/cascades/base/hash_equaler.go` 与 `hash_equaler_test.go`，核对常量、接口、算法、长度边界和碰撞后二次相等判断。
-- Rust 测试：`pkg/planner/cascades/base/hash_equaler_test.rs` 与 `migration_aster_unit_test.rs`，核对基础方法、Reset、固定 FNV 向量、UTF-8、负数、浮点和缓存复用。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file` 核对目标文件和主链源码；`explore/query` 识别 `NewHashEqualer` 的 Rust 定义、十个已索引调用者，以及 `mix`、`HashString`、`HashBytes` 的内部调用边。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构验收使用任务指定的 11 章节检查命令。

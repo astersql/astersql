@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate。`pkg/planner/core/lib.rs` 以私有模块 `mod expression_codec_fn` 装载它，再通过 `pub use expression_codec_fn::*` 导出其中的公开类型和方法；测试则由同一 `lib.rs` 将独立文件 `expression_codec_fn_test.rs` 与 `panicrisk_regression_test.rs` 接入。crate 边界由 `pkg/planner/core/Cargo.toml` 定义，目标文件自身只直接使用标准库的 `BTreeMap`，没有条件编译项、异步入口或外部依赖。
-
-它提供一套规划器侧的轻量键编解码模型：用本地 `CodecTable`、`CodecIndex`、`CodecColumn`、`CodecRow` 和 `Datum` 描述元数据与行，再生成或解析形如 `t{table_id}_r{handle}`、`t{table_id}_i{index_id}_{values}` 的**文本化键**。这与 Go `pkg/planner/core/expression_codec_fn.go` 服务于 `tidb_decode_key`、`tidb_encode_record_key`、`tidb_encode_index_key` 的职责相似，但当前 Rust 实现并不是 TiDB 真实二进制 tablecodec 的等价替代，也没有接入 Rust 表达式层的 `KeyCodec` trait。
+`datumToJSONObject` 生成用于展示/调试的 JSON 字面量片段。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ Go 对照文件为 `pkg/planner/core/expression_codec_fn.go`，方法名称与�
 - Go common handle 会做类型转换、索引值截断、时区相关编码和错误上下文处理；Rust 仅按列 ID 克隆 `Datum`。
 - Go 解码允许外层 mem-comparable bytes，使用 tablecodec 判断键类，并在失败时追加 warning 后返回原字符串；Rust 只解普通十六进制 UTF-8 文本，失败直接返回 `Err(String)`。
 - Go 从 infoschema 恢复真实列类型和分区表，`datumToJSONObject` 通过 `types.Datum::ToString` 返回值；Rust 依靠调用者提供的简化元数据，并手写 JSON 片段。
-- 两边都保留整数记录路径把 `table_id` 输出为 JSON 字符串、common/索引/表路径输出数值的现有形状；Rust 测试显式锁定了这一不对称。
-- `extractTablePartition` 的畸形括号保护与 Go 回归测试语义一致。
 
 所以迁移状态应描述为“局部行为模型和测试已存在，但生产 codec、权限/元数据接线及二进制兼容尚未完成”，不能描述为 Go 功能已完整移植。
 
@@ -99,15 +95,3 @@ Go 对照文件为 `pkg/planner/core/expression_codec_fn.go`，方法名称与�
 若目标是接入 Rust SQL 内建函数，不应仅扩写当前字符串格式：应围绕 `pkg/expression/builtin_info.rs::KeyCodec` 设计适配器，明确 infoschema/权限/会话类型上下文所有权，并复用或移植真实 tablecodec/codec 类型。接线后需补表达式层独立测试与 SQL 集成测试，覆盖 NULL、权限拒绝、分区物理 ID、整数/common handle、唯一/非唯一索引、类型转换、前缀截断、时区、非法键 warning/原值回退，以及 Go 集成测试中的真实十六进制向量。
 
 任何兼容性改动都要先决定目标是“维持当前文本模型”还是“与 Go/TiKV 二进制格式兼容”；两者不能无版本标记地混用。性能优化应优先减少多次 `format!`/`join` 分配及重复线性元数据查找，同时保持确定性字段顺序。Rust 单元测试继续放在独立测试文件，不嵌回生产源文件。
-
-## 验证依据
-
-- 源码全貌：RustCodeGraph `node --file pkg/planner/core/expression_codec_fn.rs --offset 1 --limit 500`，确认文件共 459 行及所有类型、函数、方法和分支。
-- 符号与调用边：RustCodeGraph `query TiDBCodecFuncHelper`、`query decodeKeyFromString`，以及对 `decodeKeyFromString`、`encodeHandleFromRow`、`encodeIndexKeyFromRow`、`buildHandle` 的 `callers`/`callees` 查询。
-- 模块/crate：`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`、`pkg/planner/core/doc.go`。
-- Rust 接线边界：`pkg/planner/core/core_init.rs` 与 `pkg/expression/builtin_info.rs::KeyCodec`。
-- Go 对照与生产接线：`pkg/planner/core/expression_codec_fn.go`、`pkg/planner/core/core_init.go`、`pkg/expression/builtin_info.go`。
-- 独立 Rust 测试：`pkg/planner/core/expression_codec_fn_test.rs` 覆盖 JSON 转义、记录/索引/表/分区解码、handle 约束和确定性输出；`pkg/planner/core/panicrisk_regression_test.rs` 覆盖畸形括号不 panic。
-- Go 测试：`pkg/planner/core/panicrisk_regression_test.go` 与 `pkg/expression/integration_test/integration_test.go::{TestTiDBDecodeKeyFunc, TestTiDBEncodeKey}`，用于核对真实二进制 key、权限、分区和错误行为。
-- 仓库级 `rg` 搜索确认 Rust 生产侧没有 `TiDBCodecFuncHelper`/`CodecTable` 调用者；这一结论受当前索引与工作树版本限制，后续接线新增时应重新查询。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证要求本文恰好包含上述十一个固定二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-stringutil` crate 的主体实现；crate 入口 `pkg/util/stringutil/lib.rs` 只公开 `string_util` 模块，`pkg/util/stringutil/Cargo.toml` 则把它登记为 Go 包 `pkg/util/stringutil` 的 Rust 迁移。它提供三组底层能力：SQL/字符串转义解析、SQL `LIKE` 模式编译与匹配、以及标识符/标签/UTF-8/ASCII 等无 I/O 字符串辅助函数。
-
-这些能力位于 SQL 表达式和排序规则之下，而不是直接处理 SQL 请求。直接使用证据包括：`pkg/util/collate/bin.rs` 的二进制及 rune 级通配模式，`pkg/util/collate/{general_ci,unicode_0400_ci_impl,unicode_0900_ai_ci_impl,gbk_chinese_ci,gb18030_chinese_ci}.rs` 的定制排序权重匹配，`pkg/planner/core/expression_rewriter.rs` 的精确 `LIKE` 判定，`pkg/planner/core/memtable_infoschema_extractor.rs` 与 `memtable_predicate_extractor.rs` 的内存表谓词，以及 `pkg/expression/builtin_ilike.rs`、`builtin_ilike_vec.rs` 的 ILIKE ASCII 归一化。`StringerStr` 还由 `pkg/util/breakpoint/breakpoint.rs` 用作字符串化键。
+`CompilePattern*` 把 `LIKE` 文本编译成平行的“权重”和“类型”数组，类型由 `PatMatch`、`PatOne`、`PatAny` 表示；`DoMatch*` 用线性 glob 回退算法执行匹配，`CompileLike2Regexp` 则生成锚定的正则文本。
 
 ## 核心职责
 
@@ -69,11 +67,11 @@ LIKE 编译结果由两个等长向量共同表示：`pat_weights[i]` 保存字�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/stringutil/string_util.go`，Rust 基本保留其函数分组、模式标签、`%_ -> _%`/连续 `%` 规范化、Russ Cox glob 回退、标签排序、ASCII 位运算以及 escape 保护分支。`pkg/util/stringutil/string_util_test.go` 的 Unquote、LIKE、正则、精确匹配、标签、glob、memoize 表格已移植到独立 Rust 测试；Rust 还把 Go benchmark 的正负 LIKE 输入保留为普通断言。
+`pkg/util/stringutil/string_util_test.go` 的 Unquote、LIKE、正则、精确匹配、标签、glob、memoize 表格已移植到独立 Rust 测试；Rust 还把 Go benchmark 的正负 LIKE 输入保留为普通断言。
 
-关键语言差异是 Go `string` 可保存任意字节，而 Rust `&str` 必须是 UTF-8。因此 Rust 新增 `UnquoteBytes`/`UnquoteCharBytes` 作为精确兼容路径，并让 `Unquote`/`UnquoteChar` 做 `String` 适配。Go 的 `fmt.Stringer`、`errors.Trace`、`mysql.SQLMode`、`regexp.QuoteMeta` 与 `hack.Slice` 分别由局部 `GoStringer`、`StringUtilError`、类型别名/常量、`regexp_quote_meta` 与 `to_owned` 表达；它们保持当前行为形状，但不代表统一依赖已经接线。
+关键语言差异是 Go `string` 可保存任意字节，而 Rust `&str` 必须是 UTF-8。
 
-Rust 的 `ConvertPosInUtf8` 使用 `String::from_utf8_lossy(prefix).chars().count()` 模拟 Go `utf8.RuneCountInString` 对截断多字节后缀计一个 `RuneError` 的行为，独立测试以 `ConvertPosInUtf8("你好", 4) == 3` 固化。`MemoizedStringer` 用 `RefCell` 表达 Go 闭包捕获的可变字符串，同时保持“仅缓存非空结果”。
+Rust 的 `ConvertPosInUtf8` 使用 `String::from_utf8_lossy(prefix).chars().count()` 模拟 Go `utf8.RuneCountInString` 对截断多字节后缀计一个 `RuneError` 的行为，独立测试以 `ConvertPosInUtf8("你好", 4) == 3` 固化。
 
 ## 扩展指南
 
@@ -84,12 +82,3 @@ Rust 的 `ConvertPosInUtf8` 使用 `String::from_utf8_lossy(prefix).chars().coun
 修改 ASCII/UTF-8 helper 时，应同步 `migration_utf8_and_ascii_mutation_match_go`、`test_convert_pos_in_utf8_inside_multibyte_character`，并检查标量/向量 ILIKE。若接入统一错误、SQL mode、stringer 或 regex 类型，应先评估公开签名和 workspace Cargo 依赖，不能把当前局部占位静默解释为完全等价。所有 Rust 测试仍应留在同目录独立测试文件，不嵌入本生产源文件。
 
 性能风险主要在 `CompilePattern`/`DoMatchCustomized` 每次收集完整 `Vec<char>`、正则转换逐字符分配、标签排序，以及任何破坏 `doMatchInner` 单回退点算法的修改；兼容风险集中在 Go 任意字节语义、escape 尾字符、ASCII-only ILIKE 和截断 UTF-8 前缀计数。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/stringutil` 识别 `string_util.rs` 为含 55 个符号的目标文件。
-- RustCodeGraph `node --file pkg/util/stringutil/string_util.rs`：完整读取 1–805 行，并报告 expression、planner 与迁移测试等使用文件；精确 `query` 核对了 `Unquote`、`CompilePattern`、`DoMatch`、`Escape`、`BuildStringFromLabels`、`LowerOneStringExcludeEscapeChar`、`EscapeGlobQuestionMark`。
-- 调用边核验：`pkg/util/collate/bin.rs`、`general_ci.rs`、`unicode_0400_ci_impl.rs`、`unicode_0900_ai_ci_impl.rs`、`gbk_chinese_ci.rs`、`gb18030_chinese_ci.rs`；`pkg/expression/builtin_ilike.rs`、`builtin_ilike_vec.rs`；`pkg/planner/core/expression_rewriter.rs`、`memtable_infoschema_extractor.rs`、`memtable_predicate_extractor.rs`；`pkg/util/breakpoint/breakpoint.rs`。
-- crate/装配核验：`pkg/util/stringutil/Cargo.toml`、`pkg/util/stringutil/lib.rs`，以及 expression、planner core、memtable extractors、breakpoint 的 Cargo 路径依赖声明。
-- Go 与测试核验：`pkg/util/stringutil/string_util.go`、`string_util_test.go`、`string_util_test.rs`、`migration_aster_unit_test.rs`。测试证据覆盖非法语法/非法 UTF-8、控制转义、Unicode 与 binary LIKE、自定义 escape、正则元字符、精确模式、稳定标签顺序、ANSI 引号、截断 UTF-8、ASCII escape 保护、glob 和非空 memoize。
-- 本任务是纯文档分析，未运行 Cargo；最终结构验证要求本文恰有十一个规定的二级标题，并另行检查唯一新增生产物、源码/Go/Cargo/测试均未改动。

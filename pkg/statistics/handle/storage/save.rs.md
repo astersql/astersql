@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-statistics-handle-storage`；crate 入口 `pkg/statistics/handle/storage/lib.rs` 以 `pub mod save` 声明模块并用 `pub use save::*` 重导出公开函数。它位于统计信息的持久化写侧：接收 `stats_read_writer.rs` 定义的内存统计结构和 `SqlStore` 抽象，把表级元数据、直方图、桶、TopN、CMSketch、FMSketch 及列分析时间转换为对 `mysql.stats_*` 系统表的 SQL。
-
-当前 Rust 生产主链中，可确认的入口是 `StatsReadWriter::save_analyze_result` 调用 `save_analyze_result_to_storage`（`stats_read_writer.rs:336-368`）。其余四个公开函数已由 crate 根重导出，但仓库内 Rust 搜索仅发现本文件内部调用或独立测试调用；因此它们是可用的存储 API，不能据此声称已接入与 Go 完全相同的 DDL、全局统计和导入链路。
+统计数据结构、错误类型和存储执行接口来自 `stats_read_writer.rs`；事务原子性取决于传入 `SqlStore` 的会话/事务实现。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ ANALYZE 写入的生命周期是“取得 start_ts → 锁定/读取 meta → �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/storage/save.go`。以下语义已经对齐：批量大小和 SQL 长度常量；TopN 分批写入；桶累计计数转 delta；ANALYZE 使用 start TS；负伪表 ID 与真实 ID 一并 `FOR UPDATE`；过期普通 v2 结果跳过；v1/无 meta、MV/全局索引和普通 v2 的三类 meta 分支；先清理旧附属行再写新数据；`tot_col_size` 非负；列分析时间 UPSERT。
-
 当前 Rust 不是 Go 文件的等量移植，重要差异如下：
 
 - Go 通过真实 `sessionctx`/事务、RecordSet drain/close、参数化转义、上下文、日志和 failpoint 工作；Rust 通过同步 `SqlStore` 和字符串 SQL 模拟这些边界，没有相应资源关闭、日志或故障注入逻辑。
@@ -102,8 +98,6 @@ ANALYZE 写入的生命周期是“取得 start_ts → 锁定/读取 meta → �
 - Go `InsertColStats2KV` 为新增列根据默认值建立占位直方图/桶；Rust `insert_column_stats_to_kv` 保存一份已经构造好的完整 `ColumnStats`，不是同一 DDL 语义。
 - Go `InsertTableStats2KV` 基于 schema 创建零值占位行并返回 start TS；Rust 同名语义入口导入已有 `TableStats` 内容。Rust 搜索也未发现它们接入 Go 对应的 DDL 调用链。
 
-因此扩展或修复时应以具体函数契约比较，不应仅凭相似名称认定一一等价。
-
 ## 扩展指南
 
 - 修改 ANALYZE 的 snapshot/计数合并规则时，优先改 `save_analyze_result_to_storage`，同时扩充 `save_test.rs` 的旧 snapshot、普通 v2、v1、MV/全局索引和 `analyze_snapshot` 分支测试；还应验证 `StatsReadWriter::save_analyze_result` 对返回 `0` 的历史记录抑制。
@@ -112,11 +106,3 @@ ANALYZE 写入的生命周期是“取得 start_ts → 锁定/读取 meta → �
 - 若要继续对齐 Go DDL API，不应把完整 DDL 逻辑硬塞入现有简化函数；先明确 `SqlStore` 是否能表达事务、受影响行数、Datum 转换和上下文取消，再分别设计新增列占位统计与整表 schema 初始化契约。
 - 若要对齐 FMSketch 行为，需要为 Rust 输入补充“是否分区统计”的可靠信息，并新增普通表不写、分区表写入、旧值始终清理的测试。
 - 性能风险主要是逐对象多条 DELETE/INSERT 和字符串构造；兼容风险集中在系统表列、stats version、历史 meta 版本语义以及 Go/Rust API 名称相似但契约不同。
-
-## 验证依据
-
-- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
-- 冻结 `save.rs`、`stats_read_writer.rs`、`read.rs`、`save_test.rs`：核对字节载荷、删除/插入顺序、读取 hex 还原及各入口 FM 开关。`standalone_column_save_replaces_stale_fm_sketch` 断言旧行删除与新值 `x'ab'` 插入；仅阅读，未执行。
-- 冻结 Go `save.go::SaveColOrIdxStatsToStorage`：对照真实草图编码、可选保存及事务/计数接口差异。
-- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。

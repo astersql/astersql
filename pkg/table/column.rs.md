@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table` crate（见 [`Cargo.toml`](./Cargo.toml)），由 [`lib.rs`](./lib.rs) 以 `pub mod column` 声明并通过 `pub use column::*` 在 crate 根重导出。它位于规范列元数据 `model::ColumnInfo` 与表读写执行之间：不重新拥有名称、类型、标志、默认值等元数据，而用 `Column` 附加可执行的生成列表达式和默认表达式状态，并集中实现列查找、Datum 类型转换、默认值解析、约束检查、`DESC` 描述和虚拟生成列物化。
-
-这不是纯数据结构文件。其转换与默认值逻辑参与行解码、在线 DDL 回填、规划器默认值重写和导入编码。例如 [`raw_row.rs`](./raw_row.rs) 的 `DecodeRawRowDataWithMeta` 调用 `GetChangingColVal`/`GetColDefaultValue` 恢复旧行缺失列；`pkg/session/runtime/modify_column_backfill.rs` 调用 `GetColOriginDefaultValue` 与 `CastValue`；`pkg/planner/core/expression_rewriter.rs` 调用 crate 根重导出的 `GetColDefaultValue`。
+在 table 边界执行 Datum 到列类型的转换，并保持 Go `(casted, err)` 语义：失败时 `CastError` 仍保存可用于诊断或兼容处理的部分转换值。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ Go 图中 `FillVirtualColumnValue` 被 table reader、point get、MPP gather、D
 
 ## 与 Go 版本的对应关系
 
-Rust 文件总体按 [`column.go`](./column.go) 的同名 API 移植：`Column`/`ClonableExprNode`、查找函数、`CastValue` 系列、`ColDesc`、非空检查、默认值链、`GetZeroValue`、`OptionalFsp` 和 `FillVirtualColumnValue` 均有直接对应。Rust 用 `Arc`/`Box` 表达 Go 指针所有权，用 `Option` 代替 nil，用 `Result<Datum, CastError>` 保留 Go 的 `(casted, err)` 双返回语义，并用 `CastContext`/`HandleTableInfo` 收窄依赖面。
+Rust 用 `Arc`/`Box` 表达 Go 指针所有权，用 `Option` 代替 nil，用 `Result<Datum, CastError>` 保留 Go 的 `(casted, err)` 双返回语义，并用 `CastContext`/`HandleTableInfo` 收窄依赖面。
 
 重要差异包括：Rust 的 `Column` 组合 `ColumnInfo`，Go 的 `Column` 直接嵌入它；Rust `ColDesc.DefaultValue` 是 `Option<model::DefaultValue>`，而 Go 使用 `any`；Rust 的表达式默认值通过 expression crate 的 `ParseSimpleExpr`/`BuildSimpleExpr` 接口实现，Go 通过 parser 与 `EvalSimpleAst`；Rust 只对 version 1+ TIMESTAMP 默认值显式按 UTC 解码，Go 还对旧版本使用系统时区。该旧版本时区差异在当前 Rust 测试中没有对应用例，应视为兼容性关注点而非已验证等价。
-
-[`column_test.rs`](./column_test.rs) 对齐 Go 的 `TestString`、`TestFind`、`TestCheck`、`TestHandleBadNull`、`TestDesc`、`TestGetZeroValue`、`TestCastValue`、`TestGetDefaultValue`、`TestCastValueStrict`，并增加 changing-column/row decode、legacy ENUM/SET collation 等 Rust 回归。迁移测试还验证 `_tidb_rowid`、部分转换值与错误分类、零日期模式及非法字符前缀。
 
 ## 扩展指南
 
@@ -91,10 +87,3 @@ Rust 文件总体按 [`column.go`](./column.go) 的同名 API 移植：`Column`/
 - 调整虚拟列填充时，应先确认 Rust 执行器接线现状，验证 indexes、return types、expression columns、table columns 四组输入对齐，并补充独立测试覆盖负下标/越界、负转无符号、NULL 非空回退及多行多列写回。
 - 扩展 `Column` 字段时保持 `ColumnInfo` 为规范元数据来源；若引入可变共享状态，需要重新评估 `Arc<Column>` 的线程安全与克隆语义，而不是依赖当前无锁只读假设。
 - 所有行为变化应与 [`column.go`](./column.go) 和 [`column_test.go`](./column_test.go) 对照；若有意产生差异，文档和测试必须明确说明兼容边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 文件、307,296 节点、1,848,419 条边；`files --filter pkg/table/column.rs` 确认目标文件已索引且含 99 个符号；`query`/`explore` 核对 `CastColumnValue`、`GetColDefaultValue`、`FillVirtualColumnValue`、`NewColDesc`、`FindCols` 的定义和上述调用边；`node --file pkg/table/column.rs --offset 780 --limit 700` 核对文件后半段源码。
-- 直接读取：[`column.rs`](./column.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`column_test.rs`](./column_test.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)、[`raw_row.rs`](./raw_row.rs)、[`column.go`](./column.go)、[`column_test.go`](./column_test.go)。目标包不存在 `doc.go`，因此没有可额外读取的包契约文件。
-- 结构校验要求：本文恰含“文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据”十一个二级章节。
-- 本任务是只读源码分析与文档新增，按计划不运行 Cargo；行为结论来自源码、调用图和既有独立测试，不声称本次重新执行了这些测试。

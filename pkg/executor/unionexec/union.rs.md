@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于独立 workspace crate `astersql-executor-unionexec`；crate 入口 `pkg/executor/unionexec/lib.rs` 公开 `union` 模块，根 `Cargo.toml` 同时把该 crate 列为 workspace member 并以 `facade_executor_unionexec` 命名接入根依赖表。当前 Rust 文件提供一套自包含的 Union 执行模型，而不是现有 TiDB Rust 执行器框架的实现：它定义自己的 `Executor` trait 和字符串二维数组 `Chunk`，并只被同 crate 的 `union_aster_unit_test.rs` 直接使用。仓库搜索没有发现生产 Rust 调用者。
-
-同目录 `union.go` 是实际 Go SQL 执行链中的实现：`pkg/executor/builder.go::buildUnionAll` 根据 `PhysicalUnionAll` 构造它，`buildUnionScanFromReader` 还会递归改写其 children。因此，Rust 文件当前应理解为对 Go 并发与生命周期语义的局部移植/验证载体，不能描述为已接入完整 SQL 主链。
+同目录 `union.go` 是实际 Go SQL 执行链中的实现：`pkg/executor/builder.go::buildUnionAll` 根据 `PhysicalUnionAll` 构造它，`buildUnionScanFromReader` 还会递归改写其 children。
 
 ## 核心职责
 
@@ -101,12 +99,3 @@ RustCodeGraph 对文件内关键边的结果为：`with_concurrency -> new`，`n
 - 改变错误模型时，应保留 panic 隔离并增加上下文；若扩大 catch 范围，还要验证 child 不会因提前 unwind 而跳过放回槽位和 close。
 - Rust 测试应继续放在独立的 `pkg/executor/unionexec/union_aster_unit_test.rs`，不要内嵌到生产文件。至少同步覆盖：未 open/重复 open、零 child/零并发、多个 worker 竞态错误、接收端提前关闭、mutex poison 或线程 panic、close 后 reopen、所有已触达 child 都关闭且只返回首错。
 - 若向 Go 语义靠拢，还应对照 `pkg/executor/executor_failpoint_test.go` 的关闭等待与 shutdown panic 场景，以及 `pkg/executor/test/executor/executor_test.go::TestTwiceCloseUnionExec` 的 reopen/错误打开/无泄漏场景。兼容风险集中在错误先后顺序、关闭覆盖范围和 chunk schema；性能风险集中在忙重试、每批分配及通道容量。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/executor/unionexec` 列出 `lib.rs`、`union.rs`、`union.go`、`union_aster_unit_test.rs`。
-- RustCodeGraph 源码/符号查询：完整检查 `pkg/executor/unionexec/union.rs` 的 555 行；查询 `UnionExec`、`send_result`、`child_call`，并检查 `new/open/initialize/next/close/drop` 的 callers/callees。可确认文件内边 `next -> initialize`、`initialize -> child_call/send_result/child.open/child.next`、`close -> restore_children/child_call/child.close`、`drop -> close`。
-- crate 与接线：读取 `pkg/executor/unionexec/Cargo.toml`、`lib.rs`、`BUILD.bazel` 及根 `Cargo.toml` 的 workspace member/facade 条目；全仓 `rg` 确认 Rust 生产代码没有构造该 `UnionExec`。
-- Go 对照：读取 `pkg/executor/unionexec/union.go` 全文；读取 `pkg/executor/builder.go::buildUnionAll`、`buildUnionScanFromReader` 和 `pkg/executor/join/hash_join_v1.go::aggExecutorTreeInputEmpty`，确认 Go 版的实际构建、递归改写与类型识别入口。
-- 独立测试：读取 `pkg/executor/unionexec/union_aster_unit_test.rs` 全文，覆盖 worker panic、open 失败仍 close、close 后 reopen、关闭全部已触达 child 并返回首错；另核对 Go `pkg/executor/executor_failpoint_test.go::{TestUnionExecCloseWaitsForWorkers,TestUnionExecCloseReturnsAfterWorkerPanicDuringShutdown}` 与 `pkg/executor/test/executor/executor_test.go::TestTwiceCloseUnionExec`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本文明确区分“可运行 Rust 实现”“注释中的 Go 映射”和“Go 生产接线”，未把未接线能力写成现状。

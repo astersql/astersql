@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-inference` crate 中 TiDB Cloud Free embedding 服务的 Rust provider 适配器。crate 由 [`Cargo.toml`](Cargo.toml) 定义，[`lib.rs`](lib.rs) 通过 `pub mod tidbcloud` 暴露本模块，并通过 `pub use embed_fn::{EmbedFn, Embedder, Options}` 提供它实现的统一接口。
-
-应用侧的直接接线位于 `pkg/domain/domain.rs`：当 `hosted_embedding_enabled(...)` 为真时，Domain 构造 `TiDBCloudFreeEmbedder`，以 `tidbcloud_free` 名称注册到 `EmbedFn`。三个配置 getter 分别从集群配置计算 billing ID、读取 API key 文件、读取 hosted embedding API endpoint。因此本文件处于“SQL embedding 调度/批处理”与“TiDB Cloud HTTP API”之间，不负责决定何时启用 provider，也不负责上层缓存和批次聚合。
+`TiDBCloudConfig` 保存延迟求值的 billing ID、API key、base URL，以及响应体大小上限；getter 允许调用时取得最新配置，而非构造时固化字符串。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@ Rust 生产代码中除 `pkg/domain/domain.rs` 的注册点外未检出其他 `T
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/inference/embedding/tidbcloud/tidbcloud_free.go` 与同目录 `protocol.go`。Rust 的 `TiDBCloudFreeEmbedder`/`TiDBCloudConfig` 分别对应 Go 的 `Embedder`/`EmbedderConfig`；`endpoint` 对应 `embeddingsEndpoint`；`decode_embeddings` 对应 `decodeEmbeddings`；trait 实现对应 `CreateEmbeddings`。两版共同保持以下语义：默认响应上限、空文本短路、空 model 报错、base URL 必配、默认 billing ID、billing path 转义、可匿名请求、固定字段覆盖 options、错误体 `error` 字段、返回数量检查和 Base64 小端 float32 解码。
-
 实现形态存在局部差异：Go 构造器接收一个 config，Rust 的常用 `new` 接收三个 getter，并另提供 `with_config`；Go 用 `Response`/`ErrorResponse` 强类型协议结构，Rust 直接使用 `serde_json::Value`；Go 逐项调用 `base.DecodeFloat32ArrayBytes`，Rust 通过构造单元素 OpenAI 响应复用共享解码器；Go 直接使用调用方 `context.Context`，Rust 同时保留旧 `AtomicBool` 入口和带 cause 的 `ProviderContext`。这些差异没有改变目前测试覆盖的 wire contract。
 
-Go 的应用入口 `pkg/inference/sqlembed.go::NewEmbedFn` 注册 `tidbcloud_free`；Rust 的对应接线已迁移到 `pkg/domain/domain.rs`。Go 测试 `pkg/inference/embedding/tidbcloud/tidbcloud_free_test.go` 与 Rust 测试 `pkg/inference/tidbcloud_test.rs` 分别覆盖成功请求、options、端点、错误、取消 cause、响应上限/脱敏、响应数量和无效字节。Rust 测试还明确覆盖实际请求中的 `%2E%2E` 保留，以及 null/非法 Base64 等协议边界。
+Go 的应用入口 `pkg/inference/sqlembed.go::NewEmbedFn` 注册 `tidbcloud_free`；Rust 的对应接线已迁移到 `pkg/domain/domain.rs`。
 
 ## 扩展指南
 
@@ -91,12 +87,3 @@ Go 的应用入口 `pkg/inference/sqlembed.go::NewEmbedFn` 注册 `tidbcloud_fre
 - 增加请求字段时在 `create_embeddings_with_context` 的固定 `fields` 或 options 合并点接入，并明确调用参数与 options 的覆盖优先级。同步更新 Rust `cloud_protocol_covers_default_billing_fixed_options_errors_and_byte_validation` 和 Go `TestTiDBCloudFreeEmbedder_WithOptions`。
 - 协议响应变化应集中修改 `decode_embeddings`；若不再是 Base64 小端 float32，不应继续伪装成 OpenAI indexed 结构，而应引入语义明确的共享解码函数。数量、空值、非法编码、字节长度和多项目错误下标都应在独立 `pkg/inference/tidbcloud_test.rs` 中回归，测试逻辑不要内嵌到生产文件。
 - 修改鉴权、错误或取消语义时复用 `base.rs` 的共享设施，并运行 provider contract 覆盖；同时检查 Go 版本是否需要保持一致。兼容风险主要是 wire path/header/JSON 变化，正确性风险主要是输入输出错位和错误 cause 丢失，性能风险主要是响应上限放宽、重复读取动态配置，以及每请求同步 runtime/HTTP 调用的成本。
-
-## 验证依据
-
-- Rust 源与边界：`pkg/inference/tidbcloud.rs`、`pkg/inference/lib.rs`、`pkg/inference/Cargo.toml`、`pkg/inference/embed_fn.rs`、`pkg/inference/base.rs`、`pkg/inference/openai.rs`、`pkg/domain/domain.rs`。
-- Rust 独立测试：[`tidbcloud_test.rs`](tidbcloud_test.rs)，覆盖 billing path、可选 key、固定字段、默认 billing、服务错误、响应体上限、transport/cancellation cause、脱敏和无效响应。
-- Go 对照：[`embedding/tidbcloud/tidbcloud_free.go`](embedding/tidbcloud/tidbcloud_free.go)、[`embedding/tidbcloud/protocol.go`](embedding/tidbcloud/protocol.go)、[`embedding/tidbcloud/tidbcloud_free_test.go`](embedding/tidbcloud/tidbcloud_free_test.go)、[`sqlembed.go`](sqlembed.go)。
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/inference/tidbcloud.rs` 识别目标文件及 14 个符号。对 `TiDBCloudFreeEmbedder`、`decode_embeddings`、`create_embeddings_with_context`、`NewTiDBCloudFreeEmbedder` 和 `NewEmbedFn` 的 `explore/query/node/callers/callees` 查询确认了上述注册边、目标文件内部调用边和 Go 对照调用边；同名符号查询出现的跨模块候选均以文件路径消歧。
-- 人工复核结论：本文件存在的原因是把统一 embedding provider 契约适配到 TiDB Cloud Free wire protocol；安全扩展必须同时维护 endpoint 转义、固定字段优先级、可选鉴权、数量对应、响应边界和独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的精确正则检查本文恰含 11 个固定二级章节，并检查变更范围只新增本文、删除完成后的编号任务文件，不修改 Rust、Go、Cargo 或只读 `plan.md`。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应 Rust 源文件](builtin_regexp_util.rs) 属于 `astersql-expression` crate；crate 由 `pkg/expression/Cargo.toml` 定义，并在 `pkg/expression/lib.rs` 中通过 `#[path = "builtin_regexp_util.rs"] mod builtin_regexp_util_kernel;` 装配。它保存从 Go `pkg/expression/builtin_regexp_util.go` 对照迁移而来的正则内建辅助模型：可空列、参数列缓冲、缓冲归还、行级 NULL 判断、结果 NULL 填充，以及 position 越界的特殊边界判断。
-
-当前生产接线需要分层理解：`pkg/expression/builtin_regexp.rs` 直接导入并调用 `check_out_range_pos`，用于正则子串等位置裁剪；`Column`、`FuncParam`、`BufferAllocator`、`RegexpMemorizedSig` 和其余辅助函数目前没有接入真实 `chunk_dependency::Column` 或生产向量执行器，主要由同 crate 的独立测试使用。因此本文件既不是完整正则引擎，也不是 Go `chunk`/缓冲池的通用 Rust 替代品。
+用 `RegexpMemorizedSig<T, E>` 记录“编译结果或编译错误均可缓存”的 Go 数据形状；Rust 生产缓存的实际实现位于 `pkg/expression/builtin_regexp.rs::RegexpBase`。
 
 ## 核心职责
 
@@ -68,9 +66,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/builtin_regexp_util.go` 是直接语义对照：`regexpMemorizedSig` 对应 `RegexpMemorizedSig`，`releaseBuffers`/`getBuffers`/`isResultNull`/`fillNullStringIntoResult`/`checkOutRangePos` 分别对应同名 snake_case Rust 函数。NULL 短路、参数顺序、清空后填充、空串 position=1 特例均保持一致。
-
-实现层面存在明确差异。Go 使用真实 `chunk.Column`、`baseBuiltinFunc.bufAllocator` 和指针；Rust 本文件使用轻量泛型列与只记录归还项的分配器，并以克隆模拟指针归还后参数仍引用列。Go 的 `regexpMemorizedSig` 被 `builtin_regexp.go` 实际缓存使用，而 Rust 同名结构当前未接线；生产 Rust 改由 `RegexpBase` 缓存 `Result<Arc<CompiledRegexp>, RegexpError>`。此外，Go 向量正则/ILIKE 路径广泛调用缓冲辅助函数，当前 Rust 生产调用仅确认到 `check_out_range_pos`。因此扩展时不能仅因符号对照存在就假设 Rust 已完成 Go 的整套向量缓冲集成。
+实现层面存在明确差异。Go 使用真实 `chunk.Column`、`baseBuiltinFunc.bufAllocator` 和指针；Rust 本文件使用轻量泛型列与只记录归还项的分配器，并以克隆模拟指针归还后参数仍引用列。Go 的 `regexpMemorizedSig` 被 `builtin_regexp.go` 实际缓存使用，而 Rust 同名结构当前未接线；生产 Rust 改由 `RegexpBase` 缓存 `Result<Arc<CompiledRegexp>, RegexpError>`。此外，Go 向量正则/ILIKE 路径广泛调用缓冲辅助函数，当前 Rust 生产调用仅确认到 `check_out_range_pos`。
 
 ## 扩展指南
 
@@ -79,11 +75,3 @@
 若修改 position 规则，应同时审查 `check_out_range_pos`、`builtin_regexp.rs::trim_utf8_at_position`、`trim_bytes_at_position`、INSTR 的专用裁剪函数以及 Go `checkOutRangePos` 的调用前置条件。重点风险包括 UTF-8 字符数与字节长度混用、空输入 position=1 兼容性、负数转 `usize`、切片 panic和标量/向量分支不一致。
 
 若整合正则缓存，需在“保留 `RegexpMemorizedSig` 数据形状”与“统一到 `RegexpBase` 的并发缓存”之间选定单一真实实现；必须继续缓存失败结果、按上下文隔离，并覆盖锁中毒/动态参数不缓存等 Rust 特有行为。不要把本文件的无锁容器直接描述或改造成共享缓存而缺少并发测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/expression/builtin_regexp_util.rs` 确认目标文件含 20 个符号；`node --file ... --offset 1 --limit 500` 读取了全部 158 行并报告模块使用文件；逐符号 `query` 定位了本文列出的类型和函数。`callers/callees` 命令在本环境长时间无返回，因此精确调用点由后续定向搜索补齐。
-- 已读生产源码与配置：`pkg/expression/builtin_regexp_util.rs`、`pkg/expression/builtin_regexp.rs`、`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`。
-- 已读 Go 对照与调用证据：`pkg/expression/builtin_regexp_util.go`，以及 `pkg/expression/builtin_regexp.go` 中的缓冲、NULL 与 position 调用段；定向搜索还确认 `pkg/expression/builtin_ilike_vec.go` 使用 Go 辅助函数。
-- 已读独立 Rust 测试：`pkg/expression/builtin_regexp_util_test.rs`、`pkg/expression/builtin_regexp_util_23_aster_unit_test.rs`。它们验证归还后参数仍持列、结果旧行被清空、越界索引 panic、NULL 传播和 `(str_len=0, pos=1)` 特例。
-- 事实边界：本文没有以测试存在替代生产接线；所有未发现的生产使用均表述为“仓库定向搜索未发现”，没有推断未来设计。

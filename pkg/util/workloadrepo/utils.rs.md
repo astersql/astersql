@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-workloadrepo` crate。crate 入口 `pkg/util/workloadrepo/lib.rs` 以私有 `mod utils` 装入本文件，再通过 `pub use utils::*` 导出其中的公开函数；`pkg/util/workloadrepo/Cargo.toml` 表明该 crate 的直接外部依赖只有 `chrono`，并以 `pkg/util/workloadrepo` 为 Go 移植来源。
-
-它位于工作负载仓库的配置与分区管理公共层：`table.rs::Worker::createAllTables` 用它生成新表的初始分区，`housekeeper.rs::{createPartition,dropOldPartition}` 用它维护分区，`worker.rs::Worker::setRepositoryDest` 用它规范化并校验目标配置。文件还为 `worker::worker` 增加保留天数设置方法。这里不执行后端 SQL，也不注册系统变量；SQL 执行和运行时启停分别由 `housekeeper.rs`、`table.rs` 与 `worker.rs` 完成。
+生成 MySQL `PARTITION BY RANGE(TO_DAYS(...))` 的初始定义，或在已有分区之后追加未来两天所需的范围（`generatePartitionDef`、`generatePartitionRanges`）。
 
 ## 核心职责
 
@@ -80,13 +78,11 @@ RustCodeGraph 将本文件标为 9 个符号，并列出直接使用文件 `util
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/workloadrepo/utils.go` 提供六个同名入口，Rust 还把 Go 时间构造的兼容细节拆为 `local_midnight`。名称格式、未来两天窗口、`allExisted` 布尔语义、目的地允许值以及保留天数的 `int32` 转换均保持一致。
-
 主要接口差异是：Go `generatePartitionRanges` 接收 `*model.TableInfo`，从其分区定义中取最后一项；Rust 接收已经由 `RepositoryBackend::partitions` 提取的 `&[String]`，因而不直接依赖 TiDB model。Go 使用结构化 `errWrongValueForVar`，Rust用字符串复现关键消息。Go 的 `setRetentionDays` 接收 `context.Context` 并锁住 `worker` 本体；Rust 无 context 参数，锁的是 `Worker.state`。
 
-Go `init` 在 `worker.go` 中注册目的地与保留天数系统变量，并为保留天数声明 `0..=365`；当前 Rust `lib.rs` 只组装并再导出 crate，未在本文件注册 sysvar。因此不能把“Rust 方法存在”等同于“已经接入完整 SQL 系统变量注册链”。
+Go `init` 在 `worker.go` 中注册目的地与保留天数系统变量，并为保留天数声明 `0..=365`；当前 Rust `lib.rs` 只组装并再导出 crate，未在本文件注册 sysvar。
 
-独立 Rust 测试 `utils_test.rs` 比 Go 同目录测试更直接地固定了解析错误文本、非闰年、严格长度、追加前缀、只读最后分区、整数溢出转换和 DST 午夜行为。集成式语义由 `worker_test.rs::{TestSettingSQLVariables,TestCreatePartition,TestDropOldPartitions,TestAddNewPartitionsOnStart}` 覆盖；Go 对照位于 `worker_test.go` 的同类测试及分区辅助函数。
+独立 Rust 测试 `utils_test.rs` 比 Go 同目录测试更直接地固定了解析错误文本、非闰年、严格长度、追加前缀、只读最后分区、整数溢出转换和 DST 午夜行为。
 
 ## 扩展指南
 
@@ -97,12 +93,3 @@ Go `init` 在 `worker.go` 中注册目的地与保留天数系统变量，并为
 新增仓库目的地时，扩展点是 `validateDest` 和 `worker.rs::Worker::setRepositoryDest`：前者定义规范化/错误契约，后者必须实现相应生命周期。新增保留期规则时，不要仅收紧 `setRetentionDays`；应与系统变量元数据的最小/最大值及 Go hook 同步，避免绕过 sysvar 的内部调用出现语义分叉。
 
 涉及时间逻辑的改动需保留 DST 专项测试，并在隔离进程中设置时区。涉及用户可见错误时，应同时检查 Go 的结构化错误格式、Rust 字符/字节截断差异和调用方是否依赖精确文本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，本目标已索引为 9 个符号；`files --filter pkg/util/workloadrepo` 与文件节点查询确认目标及直接使用文件。对 `generatePartitionRanges`、`validateDest` 等执行了 `query`，精确 `callers/callees` 未返回边详情，故用索引点名文件和文本引用补齐调用证据。
-- 目标与 crate：`pkg/util/workloadrepo/utils.rs`、`pkg/util/workloadrepo/Cargo.toml`、`pkg/util/workloadrepo/lib.rs`。
-- 生产调用：`pkg/util/workloadrepo/table.rs`、`pkg/util/workloadrepo/housekeeper.rs`、`pkg/util/workloadrepo/worker.rs`。
-- Go 对照：`pkg/util/workloadrepo/utils.go`、`pkg/util/workloadrepo/worker.go`。
-- 测试证据：`pkg/util/workloadrepo/utils_test.rs`、`pkg/util/workloadrepo/worker_test.rs`、`pkg/util/workloadrepo/worker_test.go`。
-- 本任务是纯文档分析，未修改 Rust、Go 或 Cargo，也未运行 Cargo。交付前按任务文件命令确认目标文件存在且恰有 11 个固定二级章节，并人工复核文档覆盖文件存在原因、运行链路、安全扩展点及已知边界。

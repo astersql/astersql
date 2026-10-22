@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑计划节点 `LogicalApply`。Apply 是关联子查询与 `LATERAL` 派生表在逻辑优化阶段的二元算子：左孩子提供外层行和关联列，右孩子在这些列绑定后执行，再按内嵌 `LogicalJoin` 的连接类型组合结果。计划构造入口包括 `pkg/planner/core/logical_plan_builder_runtime.rs` 的 `buildApplyWithJoinType`、`buildSemiApply` 和 LATERAL join 构造分支；优化阶段由 `pkg/planner/core/optimizer_runtime.rs` 进行列裁剪、去关联、聚合上拉判断和 join reorder 前的关联谓词整理。
-
-该文件属于 Cargo crate `astersql-planner-core-operator-logicalop`；`pkg/planner/core/operator/logicalop/Cargo.toml` 指定 `lib.rs` 为库入口，并直接依赖 `base`、`cardinality`、`expression`、`fd`、`planctx`、`property` 等本文件使用的本地 crate。文件不是执行器：它描述并改写逻辑计划，不逐行运行 SQL。
+Apply 是关联子查询与 `LATERAL` 派生表在逻辑优化阶段的二元算子：左孩子提供外层行和关联列，右孩子在这些列绑定后执行，再按内嵌 `LogicalJoin` 的连接类型组合结果。
 
 ## 核心职责
 
@@ -105,13 +103,3 @@ RustCodeGraph 索引（11467 文件、307296 节点）确认了目标文件及�
 - 扩大谓词上提范围前，必须实现对应的 MaxOneRow、聚合、Limit/TopN/Window、外连接 null-extension 语义，而不能只删除 `contains_barrier` 条件。
 - 修改 `ExtractFD` 或 `DeCorColFromEqExpr` 时应逐 join type 对照 Go 行为，并检查去关联规则的真实调用；若启用当前未接线辅助函数，应新增独立 Rust 测试而不是把测试写入本源文件。
 - 测试应优先扩展同目录 `logical_apply_test.rs`；跨规则行为可扩展 `logical_relational_aster_unit_test.rs` 或 `pkg/planner/core/optimizer_runtime.rs` 对应的独立测试模块。遵守仓库要求，Rust 测试不得内嵌到生产源文件。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/logicalop/logical_apply.rs`，已核对全部模块级结构、`LogicalApply` 字段、固有方法和 `LogicalPlan` 实现。
-- RustCodeGraph：运行 `status`、目标文件 `node`、`explore`，并查询 `LogicalApply`、`PruneColumns`、`DeriveStats`、`LiftInnerCorrelatedSelectionsForJoinReorder`、`ExtractFD`、`CanPullUpAgg`、`DeCorColFromEqExpr`、`findChildFullSchema`；调用图的重名歧义已由精确路径搜索补证。
-- Crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml`。
-- 构造与调用：`pkg/planner/core/logical_plan_builder_runtime.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/cascades/old/transformation_rules.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_apply.go`。
-- 独立 Rust 测试：`pkg/planner/core/operator/logicalop/logical_apply_test.rs` 验证外侧列组传播、left-outer-semi marker NDV、Apply 自有 CorCols 不作为外部依赖；`pkg/planner/core/operator/logicalop/logical_relational_aster_unit_test.rs` 验证 LATERAL 单次内层基数相乘及 left join 外行下限。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令和人工事实复核验收。

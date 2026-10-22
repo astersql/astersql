@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-util-collate-ucadata-generator` 的可执行入口。`pkg/util/collate/ucadata/generator/Cargo.toml` 通过 `[[bin]]` 将它注册为 `ucadata-generator`，同时以 `lib.rs` 作为同包库入口。它不属于 TiDB SQL 请求运行时主链，而是离线生成 UCA（Unicode Collation Algorithm）权重表源码的开发工具入口。
-
-实际的参数校验、Unicode 表构造和文件渲染位于 `pkg/util/collate/ucadata/generator/main.rs`，并经 `lib.rs` 的 `pub use generator::*` 暴露。`pkg/util/collate/ucadata/data.rs:40-42` 给出了从仓库根目录调用本二进制、重新生成两份 Rust 排序表的命令，因而这是“生成期入口”，不是生成结果的运行时读取入口。
+通过 `std::env::args_os()` 原样取得操作系统参数，避免入口层提前假设参数必须是 UTF-8。
 
 ## 核心职责
 
@@ -66,11 +64,9 @@ RustCodeGraph 将 `runGenerator -> generateOutputTarget -> {selectOutputTarget, 
 
 ## 与 Go 版本的对应关系
 
-Go 对照入口是 `pkg/util/collate/ucadata/generator/main.go::main`（`main.go:403-420`）。Go 版本读取 `os.Args` 的最后一项，根据两个 `.go` 文件名直接分支，在入口中完成 allkeys 解析、表名/URL 设置、隐式权重计算和写文件；未知目标直接 `panic("unreachable")`。
-
 Rust 版本保留相同的 Unicode 4.0.0/9.0.0 表构造语义，但把生成逻辑移到可复用库函数：`bin.rs::main` 只负责进程适配，`main.rs::runGenerator` 严格校验恰好一个输出路径，`generateOutputTarget` 同时支持 Go 和 Rust 两种输出文件。与 Go 相比，Rust 对参数/未知目标提供可打印的 `Result` 错误；而格式化和写文件失败仍以 panic 方式处理，与 Go 生成器的 panic 风格相近。
 
-相关迁移测试在独立文件 `pkg/util/collate/ucadata/generator/migration_aster_unit_test.rs`。它覆盖 Go/Rust 模板生成、四种目标选择和未知目标错误，但当前没有直接启动二进制或断言 `main` 的标准错误、退出码，也没有直接覆盖 `runGenerator` 的缺参/多参 usage 分支。
+它覆盖 Go/Rust 模板生成、四种目标选择和未知目标错误，但当前没有直接启动二进制或断言 `main` 的标准错误、退出码，也没有直接覆盖 `runGenerator` 的缺参/多参 usage 分支。
 
 ## 扩展指南
 
@@ -79,12 +75,3 @@ Rust 版本保留相同的 Unicode 4.0.0/9.0.0 表构造语义，但把生成逻
 - 若希望所有 I/O/格式化失败都得到统一前缀和状态码，需要先把 `format_source`、`write_formatted_source` 等 panic 路径改为可传播错误，再由 `runGenerator` 汇总；只改 `main` 无法捕获现有 panic。
 - 若未来加入临时文件、锁或其他清理资源，应避免在仍需依赖析构清理时直接调用 `process::exit`，或者在退出前显式清理。
 - 生成协议同时影响 Go 与 Rust 数据文件，修改目标选择或模板时应同步验证 `migration_aster_unit_test.rs`，并关注 Unicode 版本兼容性、生成结果稳定性、外部格式化器可用性及大表构造的时间/内存开销。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；查询到 `bin.rs` 只有 `main` 等 2 个索引符号，精确定位 `main` 于第 8 行。
-- RustCodeGraph 符号/调用查询：`node pkg/util/collate/ucadata/generator/bin.rs::main`、`query/node runGenerator`、`node generateOutputTarget`、`node selectOutputTarget`、`node buildTable`、`node generateFile`、`node generateRustFile`。库内调用边显示 `runGenerator -> generateOutputTarget`，以及后者到目标选择、表构造和两种生成后端的边；跨 crate 的 `main -> runGenerator` 由 `bin.rs:10` 直接源码核验。
-- 已读生产与配置路径：`pkg/util/collate/ucadata/generator/bin.rs`、`lib.rs`、`main.rs:525-653`、`Cargo.toml`、`pkg/util/collate/ucadata/data.rs:34-42`。
-- 已读 Go 对照：`pkg/util/collate/ucadata/generator/main.go:377-420`，核对模板写出和 Go `main` 的两个目标分支。
-- 已读独立测试：`pkg/util/collate/ucadata/generator/migration_aster_unit_test.rs`，其测试覆盖解析/打包、Go/Rust 渲染、四种目标选择和未知目标；通过 `rg` 确认仓库中没有其他 `runGenerator` 调用或专门的 `bin.rs` 测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证目标文件存在且恰好包含 11 个固定二级标题，并人工复核文档只陈述上述源码、配置、图查询和测试能够支持的事实。

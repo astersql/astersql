@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-sessiontxn-internal`。crate 入口 `pkg/sessiontxn/internal/lib.rs` 通过 `mod txn; pub use txn::*;` 暴露这里的 API，同时提供迁移期精简的 `kv`、`kvrpcpb` trait/常量；`pkg/sessiontxn/internal/Cargo.toml` 表明它只直接依赖 `log`、`astersql-sessionctx` 和 `astersql-sessionctx-variable`，并以 `pkg/sessiontxn/internal` 为 Go 移植来源。
-
-它对应 Go 文件 `pkg/sessiontxn/internal/txn.go` 中三个事务辅助函数：设置 KV 断言级别、进入新事务前提交仍有效的旧事务、按时间戳创建并配置快照。Rust 为了不依赖完整 Go `sessionctx.Context`，额外定义了窄接口 `SessionTxnContext`。
-
-当前接线状态需要特别区分：Go 的三个函数已被 `pkg/sessiontxn/isolation/base.go` 和 `pkg/sessiontxn/staleread/provider.go` 用于事务主链；Rust 函数目前仅在独立测试 `pkg/sessiontxn/internal/migration_aster_unit_test.rs` 中有直接调用。虽然 `pkg/sessiontxn/Cargo.toml`、`isolation/Cargo.toml` 和 `staleread/Cargo.toml` 声明了本 crate 依赖，但仓库搜索未发现这些 Rust 生产模块直接调用本文件符号；它们当前通过各自的 `IsolationRuntime`/backend 抽象实现相近流程。因此本文件是已实现、已聚焦测试的移植辅助层，而不是已经接入 Rust 会话事务生产主链的证明。
+`SessionTxnContext` 将上述逻辑所需的会话能力收窄为九个读取/操作方法，使真实会话适配器与独立测试替身能够复用相同逻辑。
 
 ## 核心职责
 
@@ -100,13 +96,13 @@ Go 版本的调用链证据更完整：`isolation/base.go::OnInitialize` 和 `st
 
 ## 与 Go 版本的对应关系
 
-`set_txn_assertion_level` 对应 `SetTxnAssertionLevel`，三种枚举映射与选项键一致。Go 注释要求断言级别在新事务创建后只设置一次；Rust 函数本身同样不强制调用次数，因此该约束仍由调用方保证。
+Go 注释要求断言级别在新事务创建后只设置一次；Rust 函数本身同样不强制调用次数，因此该约束仍由调用方保证。
 
-`commit_before_enter_new_txn` 对应 `CommitBeforeEnterNewTxn`：二者都用非激活方式取事务，仅在 `Valid()` 时保存 StartTS/scope、提交并记录 schemaVersion。Rust 以 `ExecutionContext` 代替 Go `context.Context`，以 `SessionTxnContext` getter 代替对 `GetSessionVars()`/`GetInfoSchema()` 的直接深层访问；行为测试覆盖有效性与两种错误传播。
+Rust 以 `ExecutionContext` 代替 Go `context.Context`，以 `SessionTxnContext` getter 代替对 `GetSessionVars()`/`GetInfoSchema()` 的直接深层访问；行为测试覆盖有效性与两种错误传播。
 
-`get_snapshot_with_ts` 对应 `GetSnapshotWithTS`：版本构造和五类条件选项顺序一致。Rust 用 `Option<Box<dyn SnapshotInterceptor>>` 表达 Go 的 nil interface，用空字符串和 `Duration::is_zero()` 表达 Go 的 `!= ""` 与 `> 0` 条件。当前 Rust 精简 `kv` trait 仅保留本文件需要的选项，而 Go 返回的完整 `kv.Snapshot` 随后还会由 provider 设置副本读、staleness 等选项。
+Rust 用 `Option<Box<dyn SnapshotInterceptor>>` 表达 Go 的 nil interface，用空字符串和 `Duration::is_zero()` 表达 Go 的 `!= ""` 与 `> 0` 条件。当前 Rust 精简 `kv` trait 仅保留本文件需要的选项，而 Go 返回的完整 `kv.Snapshot` 随后还会由 provider 设置副本读、staleness 等选项。
 
-迁移差异的核心不是这三个局部算法，而是接线方式：Go 函数直接接受完整 `sessionctx.Context` 并处于 provider 主链；Rust 使用待适配的窄 trait，当前直接调用证据只存在于 `migration_aster_unit_test.rs`。扩展文档和代码时应把“语义已移植”与“生产接线已完成”分开表述。
+迁移差异的核心不是这三个局部算法，而是接线方式：Go 函数直接接受完整 `sessionctx.Context` 并处于 provider 主链；Rust 使用待适配的窄 trait，当前直接调用证据只存在于 `migration_aster_unit_test.rs`。
 
 ## 扩展指南
 
@@ -115,13 +111,3 @@ Go 版本的调用链证据更完整：`isolation/base.go::OnInitialize` 和 `st
 - 修改进入新事务前的提交规则时，应优先调整 `commit_before_enter_new_txn`，保持 `txn(false)` 不激活不变量，并为无效、有效、查询失败、提交失败增加或更新回归断言。若日志时机或字段改变，也要核对 Go 对照。
 - 将本辅助层接入 Rust 生产主链时，需要为真实会话实现 `SessionTxnContext`，并明确它与 `isolation/base.rs::IsolationRuntime::commit_before_enter_new_txn`、`staleread/provider.rs` backend 的职责归属，避免重复提交或两套选项传播。接线应放在独立生产文件中，测试仍放在独立 `*_test.rs` 文件，不能内嵌进 `txn.rs`。
 - 性能风险主要来自每次快照构造的字符串复制、动态分发与 `Any` 装箱；兼容风险主要来自选项键、值类型、默认值判定和设置顺序与 Go/KV 实现不一致。任何优化都应先保留现有独立测试可观察语义。
-
-## 验证依据
-
-- Rust 源与模块边界：`pkg/sessiontxn/internal/txn.rs`、`pkg/sessiontxn/internal/lib.rs`。
-- crate 声明与依赖：`pkg/sessiontxn/internal/Cargo.toml`；反向依赖声明见 `pkg/sessiontxn/Cargo.toml`、`pkg/sessiontxn/isolation/Cargo.toml`、`pkg/sessiontxn/staleread/Cargo.toml`。
-- Go 对照与真实调用点：`pkg/sessiontxn/internal/txn.go`、`pkg/sessiontxn/isolation/base.go`、`pkg/sessiontxn/staleread/provider.go`。
-- 独立 Rust 测试：`pkg/sessiontxn/internal/migration_aster_unit_test.rs`，覆盖三级断言映射、无效/有效事务、查询/提交错误、全部非默认快照选项的顺序，以及默认值省略。
-- Go 回归用例：`pkg/sessiontxn/txn_manager_test.go` 多处使用 `GetSnapshotWithTS` 比较 provider 快照，并包含带 temporary-table interceptor 的调用。
-- RustCodeGraph：`status` 显示目标仓库索引可用；`files --filter pkg/sessiontxn/internal` 确认四个相关 Rust/Go 文件；`query` 精确定位 `SessionTxnContext` 与三个公开函数；`node --file` 阅读了 `txn.rs`、`lib.rs`、`txn.go`、`migration_aster_unit_test.rs` 及相邻 provider 片段。图的 callers/callees 未产生可用跨文件边，随后以 `rg` 对 Rust/Go 精确符号引用和 Cargo 依赖作了补充核验。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查，并人工复核现状/Go 主链/未接线边界没有混写。

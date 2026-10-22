@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-statistics-handle-usage` crate 内，并由同目录 `lib.rs` 以 `pub mod index_usage` 声明、再通过 `pub use index_usage::*` 对外导出。它提供一套 Rust 风格的索引使用量内存模型：构造单次访问样本，在会话级暂存增量，将增量合并到节点级映射，并通过 `StatsUsageImpl` 暴露创建会话收集器、启停、读取和持久层 GC 的入口。
-
-需要区分两条相邻实现：本文件的 `IndexUsageCollector` 是基于 `Arc<Mutex<HashMap<...>>>` 的同步轻量实现；`pkg/statistics/handle/usage/indexusage/collector.rs` 则定义 Go 风格的 `Collector`、通用通道 worker、对象池和语句级去重器。仓库搜索显示目标文件的类型目前直接用于本 crate 的 `index_usage_integration_test.rs` 以及 `StatsUsageImpl` 字段，而跨包接口 `pkg/statistics/handle/types/interfaces.rs` 引用的是后者的 `SessionIndexUsageCollector`。因此不能把本文件描述成完整生产异步采集链的唯一实现。
-
-`pkg/statistics/handle/usage/Cargo.toml` 指定 crate 根为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/statistics/handle/usage"` 标注 Go 对照包。其依赖目前全部放在 `cfg(any())` 下，不会在正常配置启用；本文件自身只使用标准库以及同 crate 的 `StatsUsageImpl`、`Error` 和存储抽象。
+需要区分两条相邻实现：本文件的 `IndexUsageCollector` 是基于 `Arc<Mutex<HashMap<...>>>` 的同步轻量实现；`pkg/statistics/handle/usage/indexusage/collector.rs` 则定义 Go 风格的 `Collector`、通用通道 worker、对象池和语句级去重器。
 
 ## 核心职责
 
@@ -72,11 +68,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照 `pkg/statistics/handle/usage/index_usage.go` 主要是 `statsUsageImpl` 门面：`NewSessionIndexUsageCollector`、`StartWorker`、`Close` 和 `GetIndexUsage` 委托 `indexusage.Collector`；`GCIndexUsage` 通过系统会话取得最新 infoschema，再按表和索引元数据清理。Rust 本文件的同名/同义门面保持总体用途，但 `gc_index_usage` 改为委托抽象 `UsageStore`，没有在此处展开 infoschema 查询。
+Rust 本文件的同名/同义门面保持总体用途，但 `gc_index_usage` 改为委托抽象 `UsageStore`，没有在此处展开 infoschema 查询。
 
-样本结构和聚合语义更直接对应 `pkg/statistics/handle/usage/indexusage/collector.go` 及其 Rust 移植 `indexusage/collector.rs`：七桶边界、总行数为零的末桶、计数回绕、最近时间取最大值均一致。重要差异是目标文件没有 Go 的有界通道、后台 worker、`sync.Pool` 等价物和语句级 `QueryTotal` 去重；它的 `report`/`flush` 都立即同步合并，`start_worker`/`close` 只切换标志。
+重要差异是目标文件没有 Go 的有界通道、后台 worker、`sync.Pool` 等价物和语句级 `QueryTotal` 去重；它的 `report`/`flush` 都立即同步合并，`start_worker`/`close` 只切换标志。
 
-`index_usage_integration_test.go::TestGCIndexUsage` 创建 10 张表、每表 10 个索引，上报后依次删除部分索引和表并验证 GC。Rust 的 `index_usage_integration_test.rs::canonical_gc_index_usage_matches_go_integration_scenario` 用整数 ID 和谓词复现相同保留矩阵，但没有真实 SQL、infoschema 或持久层交互。该 Rust 测试同时明确验证关闭后已 flush 样本仍可读。
+Rust 的 `index_usage_integration_test.rs::canonical_gc_index_usage_matches_go_integration_scenario` 用整数 ID 和谓词复现相同保留矩阵，但没有真实 SQL、infoschema 或持久层交互。
 
 ## 扩展指南
 
@@ -86,11 +82,3 @@
 - 修改会话共享方式或锁粒度时，要保留“clone 共享 pending”“report drain 后恰好合并一次”和锁顺序不变量，并在独立测试文件中增加并发用例；不要把测试内嵌进生产 `.rs`。
 - 若改变 `StatsUsageImpl::gc_index_usage`，必须同时检查 `UsageStore::gc_index_usage` 的实现/测试以及 Go infoschema 清理语义；本文件的 `IndexUsageCollector::gc` 与存储 GC 当前是两套不同入口。
 - 兼容风险主要是公开字段/方法与 Go 命名包装；性能风险主要是全局单个 `Mutex<HashMap>` 和同步 `report` 在高并发下形成争用。任何优化都应先建立并发和丢样/重复样本测试，再决定是否复用完整 collector。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/statistics/handle/usage` 确认目标、模块入口、Go 对照和测试均已索引；`node --file pkg/statistics/handle/usage/index_usage.rs` 读取完整 281 行并核对 27 个符号；对 `new_sample`、`spawn_session`、`new_session_index_usage_collector`、`gc_index_usage` 等执行了 `query`，并对目标符号尝试 `callers`/`callees`。图对常见短名称产生跨仓库歧义，因此调用接线另以精确路径 `rg` 结果复核。
-- 源码与模块边界：`pkg/statistics/handle/usage/index_usage.rs`、`pkg/statistics/handle/usage/lib.rs`、`pkg/statistics/handle/usage/predicate_column.rs`、`pkg/statistics/handle/usage/Cargo.toml`。
-- Go 与完整采集器对照：`pkg/statistics/handle/usage/index_usage.go`、`pkg/statistics/handle/usage/indexusage/collector.go`、`pkg/statistics/handle/usage/indexusage/collector.rs`、`pkg/statistics/handle/types/interfaces.rs`。
-- 独立测试：`pkg/statistics/handle/usage/index_usage_integration_test.rs` 和 `pkg/statistics/handle/usage/index_usage_integration_test.go`。Rust 测试覆盖累计、worker 标志关闭、会话 flush、10×10 GC 场景和七个桶代表边界；它未覆盖锁中毒、并发争用、异常比例、持久层 GC 错误和真实异步 worker。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令和人工事实复核作为交付验证。

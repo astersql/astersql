@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-common` crate。crate 入口 `pkg/lightning/common/lib.rs` 以私有 `mod errors` 装载本模块，再通过 `pub use errors::*` 将这里的错误类型、构造器、归一化函数和错误模板暴露给 Lightning 及 Import Into 相关代码。`pkg/lightning/common/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `package.metadata.porting.go-package = "pkg/lightning/common"` 表明它是 Go 包 `pkg/lightning/common` 的 Rust 移植组成部分。
-
-本文件不是错误发生点的全集，而是公共错误协议层：它给错误附加稳定 RFC ID、保留原因链和简化栈信息，并把 BR 错误身份转换成 Lightning 身份。RustCodeGraph 将该文件识别为 33 个符号、被 18 个文件使用；当前可见的直接生产调用之一是 `pkg/lightning/common/dupdetect.rs::DupDetector::Next`，在 `ReportErrOnDup` 分支调用 `ErrFoundDuplicateKeys`。
+`CommonError` 统一承载 `ID`、展示消息、错误种类、可选协议状态、嵌套原因和栈片段，并实现 `Display` 与 `std::error::Error`。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@
 
 ## 与 Go 版本的对应关系
 
-权威对照是 `pkg/lightning/common/errors.go` 与 `errors_test.go`。Rust 的 63 个 `define_error!` 模板复刻 Go `var` 块的 RFC ID 和消息；`NormalizeError` 保留 Lightning/Import ID、转换五类 BR 错误、保留栈及修复注解前缀的主流程与 Go 一致；`NormalizeOrWrapErr`、三种 CastValue 脱敏模式和重复键十六进制文本也保持相同意图。
-
 Rust 不是 `pingcap/errors` 的完整实现：`CommonError` 用值类型和 `Vec<CommonError>` 模拟错误链，栈是字符串占位；Go 可通过接口搜索任意 `*errors.Error` 和 `StackTracer`，Rust 则由 `find_rfc_error` 与字段复制完成。Go 的 `withStack` 真正包装任意 `error` 和 `errors.StackTracer`，Rust 的 `withStack` 只包装 `CommonError`，且当前归一化路径未实例化它。
 
-Rust 额外公开 4 个 `BR_Err*` 静态值来代替 Go 对 `br/pkg/errors` 模板的直接引用；它们主要为映射测试提供输入。Rust 测试还增加了 `ErrEncodeKV` 参数展开、`ErrFoundDuplicateKeys` 字节格式，以及全局脱敏模式恢复的明确断言。当前 Rust `redact_arg` 对 Marker 模式直接包裹 `‹…›`，与 Go 测试期望一致。
+Rust 额外公开 4 个 `BR_Err*` 静态值来代替 Go 对 `br/pkg/errors` 模板的直接引用；它们主要为映射测试提供输入。Rust 测试还增加了 `ErrEncodeKV` 参数展开、`ErrFoundDuplicateKeys` 字节格式，以及全局脱敏模式恢复的明确断言。
 
 ## 扩展指南
 
@@ -88,12 +84,3 @@ Rust 额外公开 4 个 `BR_Err*` 静态值来代替 Go 对 `br/pkg/errors` 模�
 - 修改归一化：必须保持取消透传、已有 Lightning/Import ID 稳定、Unknown 包装保留原错误、注解前缀兼容和栈传播。尤其要测试多层 `Causes`，因为当前映射只转移第一个 cause。
 - 修改错误 ID 或展示格式属于兼容性变化：日志解析、重试分类和外部 API 可能依赖 `[ID]Message`。`ErrChecksumMismatch` 的历史拼写也应按兼容 ID 对待。
 - 重复键逻辑若改变，应同时覆盖 `errors_test.rs` 的编码断言和 `pkg/lightning/common/dupdetect_test.rs` 的调用场景；跨 crate 使用还可参考 `pkg/dxf/importinto/task_executor_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标文件已索引；`files --filter pkg/lightning/common/errors.rs` 显示目标含 33 个符号；`node --file` 阅读了全部 649 行，并给出“被 18 个文件使用”的反向关系。
-- RustCodeGraph 调用边：`callees NormalizeError` 得到 Rust 定义到 `wrap`、`find_rfc_error`、`map_br_error_id`；`callees NormalizeOrWrapErr` 得到到 `wrap`、`gen_with_stack_by_args`、`Is`、`NormalizeError`。`callers` 对这些重载名称没有返回可区分的直接调用边，因此用精确源码搜索补充调用证据。
-- 生产与装配源码：`pkg/lightning/common/errors.rs`、`lib.rs`、`Cargo.toml`、`util.rs::IsContextCanceledError`、`dupdetect.rs::DupDetector::Next`。
-- Go 对照：`pkg/lightning/common/errors.go`、`pkg/lightning/common/errors_test.go`。
-- Rust 独立测试：`pkg/lightning/common/errors_test.rs` 覆盖空值、Unknown、BR 映射、Lightning 保留、栈保持、业务包装、重复键十六进制及三种脱敏模式；`pkg/lightning/common/lib.rs` 确认测试通过独立文件装配。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务文件规定的 11 节结构验证，并人工复核本文没有把简化的 Rust 错误模型描述成完整 `pingcap/errors` 实现。

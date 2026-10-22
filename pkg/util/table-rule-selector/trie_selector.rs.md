@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-table-rule-selector` crate 的核心实现。crate 入口 `pkg/util/table-rule-selector/lib.rs` 公开 `trie_selector` 模块并再导出其公共 API；`pkg/util/table-rule-selector/Cargo.toml` 将库入口指定为 `lib.rs`，且以 `package.metadata.porting.go-package = "pkg/util/table-rule-selector"` 标记其 Go 来源。该 crate 没有外部 Cargo 依赖，数据结构完全由标准库的 `HashMap`、`Arc` 和 `RwLock` 组成。
-
-它位于通用工具层，负责按 schema pattern 与可选 table pattern 保存、匹配、替换、追加、删除和枚举任意规则载荷。已核实的 Rust 上游包括：`pkg/util/filter/filter.rs::New`、`pkg/util/table-router/router.rs::NewTableRouter` 和 `pkg/util/column-mapping/column.rs::NewMapping`，三者都通过 `NewTrieSelector` 创建选择器。前两者分别将它用作复制风格过滤和表路由的底层 pattern 索引，后者将它用作列映射规则索引。
+`Selector` trait 定义 `Insert`、`Match`、`Remove`、`AllRules` 四项操作；`NewTrieSelector` 返回隐藏具体实现的 `Box<dyn Selector>`。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@ Unicode 行为刻意贴近 Go 原实现的混合语义：pattern 建树按 UTF-8
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐段对应同目录 `trie_selector.go`：`Selector`、`RuleSet`、`matchedResult`、`trieSelector`、`node`、`baseItem`、`rangeItem` 以及插入/匹配/删除/遍历 helper 均保留 Go 命名与控制流。`item` 接口在 Rust 中改成 `itemKind` enum；Go 指针与 `sync.RWMutex` 改成 `Arc<RwLock<_>>`；Go `any` 改成线程安全的 `Arc<dyn Any + Send + Sync>`；`errors` 包的分类错误和 trace/annotate 被扁平化成带上下文的 `String`。
+`item` 接口在 Rust 中改成 `itemKind` enum；Go 指针与 `sync.RWMutex` 改成 `Arc<RwLock<_>>`；Go `any` 改成线程安全的 `Arc<dyn Any + Send + Sync>`；`errors` 包的分类错误和 trace/annotate 被扁平化成带上下文的 `String`。
 
-重要差异包括：Go `RuleSet` 可为 nil，Rust 总以向量表示；Go 的 cache hit 使用读锁，Rust `Match` 使用操作级写锁；Go `NewTrieSelector` 返回接口，Rust返回 `Box<dyn Selector>`；Go item 可依赖 nil 指针，Rust用 `Option` 和 enum 明确状态。匹配算法保留 Go 按字符串 range 偏移和 `s[i]` 字节读取的行为，Rust 通过 `goUtf8RuneWidth` 与字节切片避免在非字符边界切 `&str` 时 panic。
+重要差异包括：Go `RuleSet` 可为 nil，Rust 总以向量表示；Go 的 cache hit 使用读锁，Rust `Match` 使用操作级写锁；Go `NewTrieSelector` 返回接口，Rust返回 `Box<dyn Selector>`；Go item 可依赖 nil 指针，Rust用 `Option` 和 enum 明确状态。
 
-`pkg/util/table-rule-selector/selector_test.rs` 基本复刻 `selector_test.go` 的 fixtures 和 Insert → Match → Append → Replace → Remove 流程；`migration_aster_unit_test.rs` 额外固定了缓存失效、返回向量独立性和 `Send + Sync`；`trie_selector_test.rs` 固定了 Go 式 UTF-8 边界。由这些证据可确认当前实现目标是行为移植，而不是重新设计 glob 语义。
+`pkg/util/table-rule-selector/selector_test.rs` 基本复刻 `selector_test.go` 的 fixtures 和 Insert → Match → Append → Replace → Remove 流程；`migration_aster_unit_test.rs` 额外固定了缓存失效、返回向量独立性和 `Send + Sync`；`trie_selector_test.rs` 固定了 Go 式 UTF-8 边界。
 
 ## 扩展指南
 
@@ -97,12 +95,3 @@ Rust 文件逐段对应同目录 `trie_selector.go`：`Selector`、`RuleSet`、`
 - 若实现删除剪枝，需要同时处理共享前缀、schema item 的 `rule` 与 `nextLevel` 可独立存在、range 语义等价 item，以及 cache 失效；当前 `track` 返回完整 item 路径但不返回父 node，剪枝设计需要补充父级定位。
 - 若要正式支持 Unicode glob，不应局部替换某个循环；必须先决定与 Go 的兼容策略，再整体调整 pattern 建树、普通字符键类型、`?`/range 单位、递归切片和测试，否则容易产生字节/字符混合状态。
 - 扩展公共模式常量时，应考虑把当前 `i32` 改为受控 enum 或至少显式拒绝未知值；当前未知值会静默走追加分支，是兼容与误用风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录列出 `lib.rs`、目标实现、Go 对照及三份 Rust 测试相关文件。
-- RustCodeGraph 分段读取：`pkg/util/table-rule-selector/trie_selector.rs` 全部 1,151 行；模块入口 `lib.rs`；Go 对照 `trie_selector.go`；Rust 测试 `selector_test.rs`、`migration_aster_unit_test.rs`、`trie_selector_test.rs`；Go 测试 `selector_test.go`。
-- RustCodeGraph/源码调用证据：`pkg/util/filter/filter.rs::New`、`pkg/util/table-router/router.rs::NewTableRouter`、`pkg/util/column-mapping/column.rs::NewMapping` 均直接调用 `NewTrieSelector`。精确 `callers/callees` 查询无输出，未将宽泛同名查询结果当作调用证据。
-- 配置证据：`pkg/util/table-rule-selector/Cargo.toml`、根 `Cargo.toml` 及 filter/table-router/column-mapping 的 Cargo manifests；目标包不存在 `doc.go`。
-- 行为测试证据：`selector_test.rs::TestSelector` 覆盖插入、匹配、追加、替换、删除、AllRules 和 cache；`migration_aster_unit_test.rs` 覆盖非法输入、缓存失效、返回向量独立性与多线程；`trie_selector_test.rs::question_mark_follows_go_byte_index_semantics_for_utf8` 覆盖 UTF-8 差异。
-- 本任务是只读行为分析加文档产出，按任务约束未运行 Cargo；交付前以指定 shell 命令验证目标文件存在且固定二级标题恰好为 11 个，并人工复核所有重要结论均可回指上述符号或文件。

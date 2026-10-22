@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-sessiontxn-staleread` crate 的语句级过期读（stale read）判定器。它把一条 SELECT 或 EXECUTE 可见的 `AS OF TIMESTAMP`、事务级读时间戳、`tidb_read_staleness`、外部时间戳和既有过期读事务上下文，归并为唯一的读时间戳与对应 `InfoSchema`。模块入口 `pkg/sessiontxn/staleread/lib.rs` 公开重导出本文件的 API；crate 边界及 Go 包映射由 `pkg/sessiontxn/staleread/Cargo.toml` 声明。
-
-当前 Rust 迁移状态需要与 Go 主链区分：RustCodeGraph 与仓库搜索只找到 `processor_test.rs`、`externalts_test.rs` 对 `StaleReadProcessor` 的 Rust 调用，未找到生产 Rust 调用者。生产 SQL 预处理接线仍可在 Go 的 `pkg/planner/core/preprocess.go` 中验证：`Preprocess` 创建处理器，访问表名时调用 `OnSelectTable`，执行预编译语句时调用 `OnExecutePreparedStmt`，随后把读 ts、evaluator 和 `InfoSchema` 写入预处理结果。因此 Rust 文件是已实现并有独立测试的移植边界，但尚不能据现有证据称其已接入 Rust SQL 主链。
+`Processor` 定义查询判定结果及两个入口：普通 SELECT 的逐表处理和预编译语句执行。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Processor`、`BaseProcessor`、`StaleReadProcessor`、`parse_and_validate_as_of` 分别对应 `processor.go` 的 `Processor`、`baseProcessor`、`staleReadProcessor`、`parseAndValidateAsOf`。主要优先级、错误消息、多表 AS OF 一致性、事务内限制、prepared evaluator 每次执行求值以及 external ts 不缓存 evaluator均与 Go 实现一致。
+主要优先级、错误消息、多表 AS OF 一致性、事务内限制、prepared evaluator 每次执行求值以及 external ts 不缓存 evaluator均与 Go 实现一致。
 
 明确差异如下：
 
@@ -93,12 +91,3 @@ Rust 独立测试 `processor_test.rs` 覆盖普通读、日期时间和原始 TS
 扩展表级语法时修改 `TableName`/`on_select_table`，并保持多表一致性规则；扩展 PREPARE 时修改 `StalenessTsEvaluator`/`on_execute_prepared_stmt`，重点防止把一次执行的 ts 写回可跨执行复用的缓存。若要接入完整 Rust SQL 主链，应在 planner/session 的真实 AST 与会话类型处增加适配，而不是继续扩张本文件的轻量桩模型，并用调用边证明接线。
 
 行为变更必须同步独立的 `pkg/sessiontxn/staleread/processor_test.rs`，external-ts 专项还应同步 `externalts_test.rs`；为保持移植一致性，还应对照 `processor.go` 与 `processor_test.go`。重点回归风险是优先级倒置、事务内时间倒退、相对时间 evaluator 被固化、external ts 被 PREPARE 复用、不同 ts 与 `InfoSchema` 不匹配，以及会话锁临界区扩大造成的性能或死锁风险。Rust 测试逻辑继续放在独立测试文件，不应内嵌进 `processor.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 `processor.rs`；`node --file pkg/sessiontxn/staleread/processor.rs --offset 1 --limit 400` 返回完整 336 行、符号实现及“used by”摘要；精确查询找到 `parse_and_validate_as_of` 及其三个独立测试。自然语言 `explore` 与部分 callers/callees 命令未输出可用边，因此调用关系又用仓库精确搜索核验。
-- 生产源码：`pkg/sessiontxn/staleread/processor.rs`（全部类型、trait、函数和实现）、`util.rs`（`SessionRef`、会话字段、后端抽象和时间戳工具）、`lib.rs`（模块与测试装配）。目标目录没有 `doc.go`。
-- crate 声明：`pkg/sessiontxn/staleread/Cargo.toml`（crate 名、`lib.rs` 入口、Go 包映射、恒假条件下的历史依赖声明）。
-- Go 对照：`pkg/sessiontxn/staleread/processor.go`（同名状态机和优先级）、`pkg/planner/core/preprocess.go`（生产构造、SELECT/EXECUTE 调用和结果回填）。
-- 测试证据：`pkg/sessiontxn/staleread/processor_test.rs`、`externalts_test.rs`、`main_test.rs`，以及端到端 Go 测试 `processor_test.go`。Rust 测试验证状态机和 mock 后端边界；Go 测试验证真实 SQL、parser、session 与 InfoSchema 接线。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的固定标题命令验证文档存在且恰有 11 个二级章节，并人工复核没有把未接线的 Rust 实现描述为生产主链。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-memo` crate，是 Cascades Memo 图中“逻辑等价类”的容器实现。crate 边界由 [`Cargo.toml`](./Cargo.toml) 声明，入口 [`lib.rs`](./lib.rs) 将私有 `group` 模块的公开项重新导出；直接依赖包括 `cascades-base` 的哈希器契约、`core-base` 的物理任务接口和 `property` 的逻辑/物理属性类型。
-
-在完整链路中，[`memo.rs`](./memo.rs) 负责创建、登记、合并 Group 以及维护全局表达式表，本文件负责单个 Group 内部的表达式集合、operand 首项索引、父表达式回边、逻辑属性、探索状态和最优物理任务缓存。[`group_expr.rs`](./group_expr.rs) 则表示“逻辑算子 + 子 Group”，并负责表达式自己的哈希、探索 mask、属性派生和合并清理。三者共同构成 Memo 图；本文件不是 SQL 入口，也不直接执行优化规则。
+[`group_expr.rs`](./group_expr.rs) 则表示“逻辑算子 + 子 Group”，并负责表达式自己的哈希、探索 mask、属性派生和合并清理。
 
 ## 核心职责
 
@@ -100,8 +98,6 @@ RustCodeGraph 的目标文件 `explore` 能识别 `Insert`/`Delete`/`GetLogicalE
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`group.go`](./group.go)，`Cargo.toml` 的 `package.metadata.porting.go-package` 也指向 `pkg/planner/cascades/memo`。主要语义保持一致：Group 持有等价表达式、operand 首项、父表达式反向引用、逻辑属性、探索标志和按物理属性缓存的最佳任务；哈希/相等只看 ID；插入去重、合并迁移和属性接口的角色相同。
-
 已确认的实现差异如下：
 
 - Go 用 `container/list` 加 `hash2GroupExpr` 泛型哈希表，平均常数时间定位重复项和删除项；Rust 用 `Vec` 并以 `Equals` 线性扫描，插入/删除后重建索引。Rust 保留了哈希冲突必须继续精确比较的行为，但性能特征不同。
@@ -112,8 +108,6 @@ RustCodeGraph 的目标文件 `explore` 能识别 `Insert`/`Delete`/`GetLogicalE
 - Go `Equals(any)` 还处理错误动态类型与 nil；Rust 签名限定为 `&Group`，这些分支由静态类型和非空引用消除。
 - Go 文件还声明了 `GroupPair` 和空实现 `ReplaceBestExpression`；当前 Rust 文件没有对应符号。由于 Go 的 `ReplaceBestExpression` 本身是 TODO/空操作，不能据此声称 Rust 缺少可观察行为。
 - Go `impl/impl_and_cost.go` 明确调用 `GetBestTask`/`SetBestTask`；当前 Rust `pkg/planner/cascades/**/*.rs` 搜索没有同类调用，故物理任务缓存的 Rust 接线状态仍未验证。
-
-测试对照以 [`group_and_expr_test.go`](./group_and_expr_test.go) 和独立 Rust [`group_and_expr_test.rs`](./group_and_expr_test.rs) 为主。Rust 测试保留了强制哈希碰撞仍按 `Equals` 区分、删除缺失/已有项、Group ID 哈希相等、父回边和逻辑属性等意图；[`memo_test.rs`](./memo_test.rs) 进一步覆盖普通及递归 Group 合并。
 
 ## 扩展指南
 
@@ -126,13 +120,3 @@ RustCodeGraph 的目标文件 `explore` 能识别 `Insert`/`Delete`/`GetLogicalE
 5. 若要并行化优化器，当前 `Rc<RefCell<_>>` 是架构边界，需要整体评估 Memo、GroupExpression、Task 和 LogicalPlan 的线程安全，不能局部替换一个别名就宣称可并发。
 
 Rust 单元测试必须放在独立文件，不能嵌入 `group.rs`。Group 容器级行为扩展 [`group_and_expr_test.rs`](./group_and_expr_test.rs)，Memo 合并/建图行为扩展 [`memo_test.rs`](./memo_test.rs)，优化调度和探索状态可扩展 [`task/task_test.rs`](../task/task_test.rs) 或 [`cascades_test.rs`](../cascades_test.rs)。兼容性风险集中在 Go 语义漂移和公开再导出 API；正确性风险集中在去重、双向边与属性缓存失效；性能风险集中在 `Vec` 线性去重/删除和每次完整重建 operand 索引。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，共 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/planner/cascades/memo` 确认目标 Rust/Go 文件、crate 入口和独立测试均被索引。
-- RustCodeGraph `node --file pkg/planner/cascades/memo/group.rs`：完整读取 294 行目标源码，确认 27 个符号、全部字段、唯一 `cfg(test)` 项及无其他条件编译分支。
-- RustCodeGraph `explore "pkg/planner/cascades/memo/group.rs ..."` 与 `query`：确认 `NewGroup`、`Insert`、`Delete`、`mergeTo`、`GetLogicalExpressions`、`IsExplored` 等候选调用点及 Go/Rust 同名符号；精确 `callers`/`callees` 未返回可用边，未据此推断“无调用者”。
-- 直接调用链：读取 [`memo.rs`](./memo.rs) 的 `RemoveOut`、`InsertGroupExpression`、`NewGroup`、`mergeGroup`、`replaceGEChild`，读取 [`group_expr.rs`](./group_expr.rs) 的属性派生、`addr` 与表达式 `mergeTo`，并用源码搜索核验 [`task/task_opt_group.rs`](../task/task_opt_group.rs) 的探索状态调用。
-- crate 与 Go 对照：读取 [`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs) 和完整 [`group.go`](./group.go)；源码搜索确认 Go `impl/impl_and_cost.go` 使用最佳任务缓存，而当前 Rust Cascades 源中未找到对应调用。
-- 测试证据：读取完整 [`group_and_expr_test.rs`](./group_and_expr_test.rs)、[`memo_test.rs`](./memo_test.rs) 及 Go [`group_and_expr_test.go`](./group_and_expr_test.go)，核对去重、哈希碰撞、删除、父回边、逻辑属性、普通合并和递归合并边界。
-- 本任务只生成说明文档，按总计划不运行 Cargo。交付验证仅执行任务指定的 11 章节结构检查，并人工复核链接、符号、当前接线状态和扩展边界。

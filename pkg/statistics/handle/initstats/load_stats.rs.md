@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-initstats` crate，负责计算启动阶段加载统计信息时应使用的并发度。crate 根文件 [`lib.rs`](lib.rs) 将私有模块 `load_stats` 的公开项整体再导出，因此调用方使用的是 crate 级 `GetConcurrency` / `get_concurrency_for`，而不是直接访问模块。工作区总 facade 还在 `pkg/lib.rs` 的 `statistics::handle::initstats` 命名空间转发该 crate。
-
-它只决定“并发度是多少”，不创建线程、不分发任务，也不读取统计表。真正的区间 worker 位于相邻的 `load_stats_page.rs`。Go 完整应用中的对应入口位于 `pkg/statistics/handle/bootstrap.go::Handle.initStatsWithSession`：得到并发度后，将同一个值传给 histogram、TopN 和 bucket 三段并发加载。当前 Rust 搜索只发现 crate 再导出和独立迁移测试使用这些函数，没有发现与 Go `initStatsWithSession` 等价的 Rust 生产调用点；所以该文件现状是已迁移、已测试的并发度策略组件，而不是已验证接入 Rust 启动主链的完整流程。
+`get_concurrency_for` 把配置开关和处理器数量映射为稳定的并发度，便于脱离机器环境验证边界。
 
 ## 核心职责
 
@@ -67,7 +65,7 @@ Rust 实现直接对应 `pkg/statistics/handle/initstats/load_stats.go::GetConcu
 
 两处实现存在运行时来源和类型层面的差异：Go 使用 `runtime.GOMAXPROCS(0)` 并返回 `int`，它反映 Go 运行时的并行执行上限；Rust 使用 `std::thread::available_parallelism()` 并返回 `usize`，它由标准库根据当前环境估算。这两个值通常表达相近意图，但不能假定在容器、CPU 亲和性或运行时人为限额下始终相同。Rust 还额外提供 `get_concurrency_for` 以隔离环境输入并覆盖边界测试，以及显式处理探测失败和 `usize -> isize` 转换失败。
 
-Go 侧 `pkg/statistics/handle/handletest/initstats/init_stats_test.go` 验证完整统计初始化的并发加载效果、内存限制、表删除和按表 ID 初始化等行为，但没有直接断言 `GetConcurrency` 的所有数值边界。Rust 的独立 `migration_aster_unit_test.rs` 则直接覆盖两种模式的上下界和全局配置读取；其余 worker 生命周期测试针对相邻 `load_stats_page.rs`，不应误归为本文件逻辑。
+Go 侧 `pkg/statistics/handle/handletest/initstats/init_stats_test.go` 验证完整统计初始化的并发加载效果、内存限制、表删除和按表 ID 初始化等行为，但没有直接断言 `GetConcurrency` 的所有数值边界。
 
 ## 扩展指南
 
@@ -76,13 +74,3 @@ Go 侧 `pkg/statistics/handle/handletest/initstats/init_stats_test.go` 验证完
 - 若要把此策略接入 Rust 启动加载主链，应在真正拥有 histogram/TopN/bucket worker 的上游模块调用 `GetConcurrency`，而不是让本文件承担任务调度；接线测试应放在对应上游 crate 的独立测试文件中，并验证该值实际控制消费者数量。
 - 若追求与 Go 更严格的运行时等价，需要先确认 `available_parallelism` 与目标部署环境的 `GOMAXPROCS(0)` 语义差异，特别是容器配额、CPU 亲和性和人为运行时限额。直接替换探测 API可能改变性能与兼容性。
 - 修改最大值会影响统计加载峰值 CPU、内存和下游数据库请求数；修改最小值会影响低核环境。任何变化都应同时核对 Go 文件，除非明确记录两种实现有意分叉。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 `11467` 个文件；目标目录列出 `load_stats.rs`、`load_stats.go`、`load_stats_page.rs`、crate 根和迁移测试。
-- RustCodeGraph `node --file pkg/statistics/handle/initstats/load_stats.rs`：确认文件共 47 行、两个函数的完整实现，并显示该文件被 `migration_aster_unit_test.rs` 使用。
-- RustCodeGraph `query/node`：确认 `get_concurrency_for` 位于第 24 行、`GetConcurrency` 位于第 42 行，调用边为 `GetConcurrency -> get_concurrency_for`；未返回生产侧上游调用边。
-- 读取的 Rust/Cargo 路径：`pkg/statistics/handle/initstats/load_stats.rs`、`pkg/statistics/handle/initstats/lib.rs`、`pkg/statistics/handle/initstats/Cargo.toml`、`pkg/statistics/handle/initstats/migration_aster_unit_test.rs`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/config/config.rs`。
-- 读取的 Go 路径：`pkg/statistics/handle/initstats/load_stats.go`、`pkg/statistics/handle/bootstrap.go`、`pkg/statistics/handle/handletest/initstats/init_stats_test.go`。其中 `bootstrap.go` 提供真实 Go 生产调用链，测试文件提供完整初始化的行为背景。
-- 全仓 `rg` 核验：Rust 中 `get_concurrency_for` / 本 crate `GetConcurrency` 的使用仅见迁移测试和函数内部调用；Go 中精确找到 `pkg/statistics/handle/bootstrap.go:944` 的 `initstats.GetConcurrency()` 生产调用。
-- 本任务是纯文档分析，按计划不运行 Cargo；文档结构由任务指定的 11 标题检查命令验证。

@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/ddl/lib.rs` 公开为 `pub mod delete_range`。它位于持久化 DDL 作业完成链的末端：`pkg/ddl/table_mode.rs` 中 `NormalDdlExecutor::finish` 先用 `persistent_job_need_gc` 判断作业是否需要垃圾回收范围，再通过 `DurableJobSession::register_delete_ranges` 注册范围；`pkg/session/runtime/system_session.rs` 的实现最终调用 `add_persistent_delete_range_job`，将记录写入 `mysql.gc_delete_range`。这些记录描述旧表、旧分区或旧索引的 KV 前缀范围，实际物理删除由后续 GC/兼容存储流程执行，本文件本身不扫描或删除业务 KV。
-
-文件同时保留一套较轻量的、字段已展开的模型：`DeleteRangeAction`、`DeleteRangeJob`、`DeleteRangeTask` 和内存 `DeleteRangeManager`。仓库精确调用搜索显示，生产主链调用的是持久化 `Job` 路径；`add_delete_range_job` 和内存管理器没有生产调用者，前者目前由 `pkg/ddl/delete_range_test.rs` 直接验证。因此阅读和扩展时不能把内存队列当作当前服务器的 GC 队列实现。
-
-从 DDL 生命周期看，这是 job-based 流程的完成阶段接线，不负责 schema state 转换、reorg 扫描或 schema version 推进。删除范围注册失败会阻止作业从活动队列移入历史；注册成功后，范围记录可独立于外层 DDL worker 事务存活（见 `DeleteRangeExecutor` 注释及 `normal_ddl_plan_delete_range_worker_conflict_preserves_gc_and_retry`）。
+`add_persistent_delete_range_job`/`persist_job_ranges` 解码完成态作业参数，把每个旧物理对象转换为 `[start_key, end_key)`，以独立执行器批量执行 `INSERT IGNORE INTO mysql.gc_delete_range`。
 
 ## 核心职责
 
@@ -102,17 +98,12 @@ crate 依赖依据见 `pkg/ddl/Cargo.toml`：直接使用 `astersql-meta-model`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/delete_range.go`，GC 判定在 `pkg/ddl/job_worker.go::JobNeedGC`。主要对应关系如下：
-
 - Rust `persistent_job_need_gc` 对应 Go `JobNeedGC`；动作、取消状态、1091 warning、列存索引和 multi-schema 递归规则保持一致。
-- Rust `add_persistent_delete_range_job` 对应 Go `AddDelRangeJobInternal`；两者都为一个父作业创建一次 element allocator，并将 multi-schema 子作业转为 proxy job。
-- Rust `finished_range_batches` + `persist_job_ranges` 对应 Go `insertJobIntoDeleteRangeTable` 及 `doBatchDeleteTablesRange`/`doBatchDeleteIndiceRange`。
 - Rust `DeleteRangeExecutor` 是 Go `DelRangeExecWrapper` 的收窄版本：当前生产实现只暴露取版本和执行 SQL，没有 Go 为 BR 提供的 `RewriteTableID`、参数列表构造和消费回调。因此本文件当前不提供 BR 表 ID 重写扩展点。
-- Rust `ElementIdAllocator` 对应 Go `elementIDAlloc`，保证对象到 element ID 的幂等映射。
 - Rust 的持久化路径包含 Go 动作矩阵中的物化视图动作；前半轻量 `DeleteRangeAction` 没有这些变体，不能作为完整兼容清单。
 - Go `delRange` 还负责原生 DeleteRange 不可用时的后台模拟器：加载范围、每批最多 65,536 个键、事务删除、推进 start key、完成迁移记录。Rust 文件仅有布尔回调的内存模型，没有与 Go `LoadDeleteRanges`/`CompleteDeleteRange`/`UpdateDeleteRange` 等价的生产执行链。
 
-Go 测试 `pkg/ddl/delete_range_test.go` 重点覆盖 BR-style 表 ID 重写后跳过行和 SQL 逗号拼接；这些能力不在当前 Rust executor 接口中。Rust 的直接单元测试覆盖整数环绕、multi-schema 父身份和列存过滤，生产持久化语义则主要由 `pkg/session/runtime/normal_ddl_test.rs` 的集成式测试覆盖。
+Go 测试 `pkg/ddl/delete_range_test.go` 重点覆盖 BR-style 表 ID 重写后跳过行和 SQL 逗号拼接；这些能力不在当前 Rust executor 接口中。
 
 ## 扩展指南
 
@@ -125,13 +116,3 @@ Go 测试 `pkg/ddl/delete_range_test.go` 重点覆盖 BR-style 表 ID 重写后�
 需要 BR 表 ID 重写时，必须先设计并扩展 `DeleteRangeExecutor`/任务生成边界，不能假定现有 Rust 路径已具备 Go `RewriteTableID` 语义。需要真实后台模拟删除器时，应连接 `pkg/ddl/util/util.rs` 的持久任务加载/完成接口并设计停止、重试和事务边界，而不是直接提升当前无锁内存 `DeleteRangeManager`。
 
 测试应继续放在独立文件：纯范围规则放 `pkg/ddl/delete_range_test.rs`；完成作业、系统表、独立 session、历史迁移和重试放 `pkg/session/runtime/normal_ddl_test.rs`。涉及 Go 对齐时同步核对 `pkg/ddl/delete_range_test.go` 与 `pkg/ddl/job_worker_test.go::TestJobNeedGC`。
-
-## 验证依据
-
-- 源码与模块：`pkg/ddl/delete_range.rs`（全部 691 行）、`pkg/ddl/lib.rs`、`pkg/ddl/delete_range_util.rs`、`pkg/ddl/persistent_drop_column.rs`、`pkg/ddl/persistent_modify_column.rs`。
-- crate 与包契约：`pkg/ddl/Cargo.toml`、`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`。DDL 文档只作为入口，本文行为结论均回查源码/测试。
-- 生产上游：`pkg/ddl/table_mode.rs::NormalDdlExecutor::finish`、`pkg/session/runtime/system_session.rs::register_delete_ranges`。
-- Go 对照：`pkg/ddl/delete_range.go`、`pkg/ddl/job_worker.go::JobNeedGC`；Go 测试为 `pkg/ddl/delete_range_test.go`、`pkg/ddl/job_worker_test.go::TestJobNeedGC`。
-- Rust 测试：`pkg/ddl/delete_range_test.rs`；持久化动作矩阵、V1、multi-schema、取消/回滚/warning、SQL 失败、worker 冲突与提交冲突证据来自 `pkg/session/runtime/normal_ddl_test.rs` 中 `normal_ddl_plan_delete_range_*` 测试。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、索引时间戳 `1791342965170`；`node --file pkg/ddl/delete_range.rs` 读取全文件；对 `add_delete_range_job`、`insert_job_into_delete_range`、`persistent_job_need_gc`、`add_persistent_delete_range_job`、`finished_range_batches` 执行了 `query`/`callers`/`callees`。图确认 `finished_range_batches` 到 table/index helpers、V1 helpers、持久列变更模块及 `GetFinished*Args` 的下游边；公开入口 caller 边为空，因此使用精确 `rg` 补证了 `table_mode.rs` 与 `system_session.rs` 的生产接线。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构检查要求文档恰含十一个固定二级标题。

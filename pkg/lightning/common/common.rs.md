@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-common` crate，是 Lightning/IMPORT INTO 导入链路共享的表级 AutoID 边界。crate 入口 `pkg/lightning/common/lib.rs` 通过 `mod common; pub use common::*;` 将这里的常量、精简表元数据、分配器 trait 和辅助函数公开；`pkg/lightning/common/Cargo.toml` 声明该 crate 的 Go 对照包为 `pkg/lightning/common`。它不负责保存真实的 TiDB 元数据，也不直接连接 KV/etcd，而是把这些能力抽象为 `AutoIDRequirement` 和 `Allocator`，供宿主实现注入。
-
-当前 Rust 生产链中，`pkg/executor/importer/production_regions.rs` 的 `rebaseTableAllocatorsWithStore` 将实际表元数据映射成这里的 `TableInfo`，再调用 `RebaseTableAllocators`。根 facade 还在 `pkg/lib.rs` 中再导出整个 `astersql-lightning-common` crate。常量和默认变量虽然是公开 API，但精确检索没有发现当前 Rust 生产代码直接引用本文件的 `IndexEngineID`、`AllTables`、`DefaultImportantVariables` 或 `DefaultImportVariablesTiDB`；仓库其他 Lightning 迁移层存在同名定义，不能视为本文件的调用边。
+`GetGlobalAutoIDAlloc` 根据表结构和版本语义选择分配器；`GetMaxAutoIDBase` 读取所有候选的最大已用 base；`RebaseTableAllocators` 仅对调用者显式提供 base 的类型执行 rebase。
 
 ## 核心职责
 
@@ -80,11 +78,9 @@ base 的语义是“已经使用的最大 ID”，next 的语义是“下一个�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/common/common.go`，Rust 保留了两个常量、两组默认变量、三个主要函数及分配器选择顺序。`pkg/lightning/common/common_test.rs` 的 case 矩阵与 `pkg/lightning/common/common_test.go` 一致：无 AutoID 报错；隐式 RowID 得到 RowID；普通 AUTO_INCREMENT 复用 RowID；`SepAutoInc` 时返回 AutoIncrement 后 RowID；纯 AUTO_RANDOM 返回 AutoRandom。两边也都验证空 bases 不改变状态、部分 rebase 只改变指定类型、最大 base 取所有 next 的最大值减一。
+Rust 为解除对完整 TiDB 类型的依赖，引入本地 `TableInfo`，由调用侧从 Go 对应的 `model.TableInfo` 语义字段转换。Go 通过 `autoid.Requirement.Store() != nil` 验证存储，Rust 抽象成 `StoreAvailable()`；Go 直接调用 `autoid.NewAllocator`，Rust 调用 `AutoIDRequirement::NewAllocator`。Go 的 cache option/table version 是具体类型，Rust 用 `u64/u16` 传递等价信息。
 
-Rust 为解除对完整 TiDB 类型的依赖，引入本地 `TableInfo`，由调用侧从 Go 对应的 `model.TableInfo` 语义字段转换。Go 通过 `autoid.Requirement.Store() != nil` 验证存储，Rust 抽象成 `StoreAvailable()`；Go 直接调用 `autoid.NewAllocator`，Rust 调用 `AutoIDRequirement::NewAllocator`。Go 的 cache option/table version 是具体类型，Rust 用 `u64/u16` 传递等价信息。Rust 的 `AllocatorType` 名称更短，但调用点显式完成 `RowIDAllocType/AutoIncrementType/AutoRandomType` 的映射。
-
-两边都给独立 AUTO_INCREMENT 传步长 `1`、给 RowID/AUTO_RANDOM 传步长 `2`。Go 注释解释步长 2 用于规避步长 1 开启实验特性的同时近似禁用缓存；Rust 源码保留了“近似不缓存”的结论，但未携带 issue 链接。Rust 测试是纯内存替身，Go 测试会创建 mock store、建库建表并解析真实 SQL，因此 Go 测试对完整元数据推导提供更强的集成证据，Rust 测试则覆盖本地抽象本身。
+Go 注释解释步长 2 用于规避步长 1 开启实验特性的同时近似禁用缓存；Rust 源码保留了“近似不缓存”的结论，但未携带 issue 链接。Rust 测试是纯内存替身，Go 测试会创建 mock store、建库建表并解析真实 SQL，因此 Go 测试对完整元数据推导提供更强的集成证据，Rust 测试则覆盖本地抽象本身。
 
 ## 扩展指南
 
@@ -94,13 +90,3 @@ Rust 为解除对完整 TiDB 类型的依赖，引入本地 `TableInfo`，由调
 - 为 `RebaseTableAllocators` 增加原子性时，必须在 trait/宿主存储层设计事务或补偿机制；在本函数内简单捕获错误无法撤销已完成的前序 rebase。
 - 新增行为测试应继续放在独立的 `pkg/lightning/common/common_test.rs`，不要内嵌到生产文件。若改变生产接线，还应同步覆盖 `pkg/executor/importer/production_regions.rs` 附近的 importer 测试。
 - 保持 `Send + Sync` 和 `Arc` 契约，避免把不可跨线程实现藏进 trait object；对可能阻塞的远程操作，应由实现方处理超时和 `Context` 取消。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/lightning/common` 确认 `common.rs` 有 24 个符号。
-- RustCodeGraph 源码视图：`node --file pkg/lightning/common/common.rs --offset 1 --limit 500` 覆盖目标文件全部 204 行，并给出公开符号签名。
-- RustCodeGraph 精确查询：`query GetGlobalAutoIDAlloc/GetMaxAutoIDBase/RebaseTableAllocators/TableHasAutoRowID --json` 区分了 Go/Rust 同名符号；对四个 Rust node ID 执行 `callers`/`callees` 未返回边，因此调用关系改用精确源码检索核验，未把缺失图边写成“无调用者”。
-- 已读 Rust 路径：`pkg/lightning/common/common.rs`、`pkg/lightning/common/lib.rs`、`pkg/lightning/common/Cargo.toml`、`pkg/lightning/common/common_test.rs`、`pkg/executor/importer/production_regions.rs`、`pkg/executor/importer/table_import.rs`。
-- 已读 Go 对照：`pkg/lightning/common/common.go`、`pkg/lightning/common/common_test.go`，并抽查 `lightning/pkg/importer/meta_manager.go` 与 `lightning/pkg/importer/table_import.go` 的真实使用场景。
-- 直接调用证据：精确检索定位到 `pkg/executor/importer/production_regions.rs` 对 `astersql_lightning_common::RebaseTableAllocators` 的调用；目标函数内部对 `GetGlobalAutoIDAlloc`、`NextGlobalAutoID`、`GetType` 和 `Rebase` 的调用由完整源码确认。
-- 结构校验要求：文档必须存在，且固定标题正好为“文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据”共 11 个。

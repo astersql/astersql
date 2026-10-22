@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/types/set.rs`](set.rs) 实现 MySQL `SET` 值的内存表示，以及“成员名 ↔ 位掩码”的解析。源码虽然位于 `pkg/types`，但直接编译边界是 `pkg/types/internal/file_group/lib.rs`：该入口用 `#[path = "../../set.rs"] pub mod set` 将文件纳入 `astersql-types-file-group` crate。随后 `pkg/types/internal/datum/lib.rs` 再导出 `ParseSet`、`ParseSetValue` 和 `Set`，根 `astersql-types` crate 又以 `datum` 等内部 crate 组成对外类型层。
-
-它处在 SQL 类型系统的值转换与编解码基础层，而不是 SQL 语法层：字符串/数值转换为 SET 时会进入这里，存储中的 SET 位掩码被解码、校验或生成哈希键时也会进入这里。直接证据包括 `pkg/types/datum.rs::convertToMysqlSet`、`pkg/tablecodec/tablecodec.rs` 的 `mysql::TypeSet` 分支、`pkg/util/rowcodec/decoder.rs` 的 SET 解码分支和 `pkg/util/codec/codec.rs` 的 SET 哈希编码分支。
+[`pkg/types/set.rs`](set.rs) 实现 MySQL `SET` 值的内存表示，以及“成员名 ↔ 位掩码”的解析。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ RustCodeGraph 能解析本文件内部边：`ParseSet -> ParseSetName`、`ParseS
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/set.go`，Rust 保留了 `Set`、`String`、`ToNumber`、`Copy`、`ParseSet`、`ParseSetName`、`ParseSetValue`、空 SET 和两张 64 位掩码表的整体结构。两端都先按名、后按 base-0 数字解析，都按 collator key 去重匹配，并以声明顺序规范化输出；`pkg/types/set_test.rs` 与 `pkg/types/set_test.go::TestSet` 的主要表驱动用例一致，覆盖名称顺序/重复、空值、数字零、大小写及尾随空格、位图反解和非法成员/未知位。
-
 实现语言差异如下：
 
 - Go 的 `zeroSet` 是普通包变量；Rust 使用 `LazyLock<Set>` 并在返回时 clone。
@@ -96,7 +92,7 @@ RustCodeGraph 能解析本文件内部边：`ParseSet -> ParseSetName`、`ParseS
 - Go 用 `strconv.ParseUint(..., 0, 64)`；Rust 私有 `parse_uint_base_zero` 明确实现前缀、传统八进制、下划线和溢出规则。额外迁移测试 `pkg/types/overflow_10_aster_unit_test.rs` 验证 `0xf`、`017` 成功而 `08` 失败。
 - Go 返回通用 `error`；Rust 返回本地 `SetError`，再由 `pkg/types/internal/datum/lib.rs` 转成 Datum 错误。错误文本保持 Go 风格，但类型身份并不跨该转换保留。
 
-当前 Rust 测试比直接 Go `set_test.go` 多验证了 `utf8_general_ci` 行为和深拷贝指针；额外迁移测试又覆盖了 base-0 数值字面量。文档只据现有源码和测试陈述这些行为，没有把未运行 Cargo 测试等同于本次重新证明运行正确性。
+当前 Rust 测试比直接 Go `set_test.go` 多验证了 `utf8_general_ci` 行为和深拷贝指针；额外迁移测试又覆盖了 base-0 数值字面量。
 
 ## 扩展指南
 
@@ -106,11 +102,3 @@ RustCodeGraph 能解析本文件内部边：`ParseSet -> ParseSetName`、`ParseS
 - 修改 `Set` 字段或不变量时，需要审计直接结构体构造者、Datum 的 `SetMysqlSet`/`GetMysqlSet`、chunk 列存储、serialization、tablecodec、rowcodec 和 codec 哈希路径；公开字段意味着仅改构造函数不足以覆盖所有生产者。
 - 不应把测试内嵌回 `set.rs`。本仓库约定 Rust 测试独立放置，首要测试文件是 `pkg/types/set_test.rs`；迁移补充覆盖目前位于 `pkg/types/overflow_10_aster_unit_test.rs`。
 - 兼容性风险主要是规范名称、错误文本、collation 等价关系和 numeric fallback 顺序；性能风险主要是增加 collation key 计算或额外分配。任何行为改动都应与 `pkg/types/set.go` 保持一致，除非明确记录为 Rust/Go 的受控差异。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/types/set.rs`、`pkg/types/internal/file_group/lib.rs`、`pkg/types/internal/file_group/Cargo.toml`、`pkg/types/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/internal/datum/lib.rs`、`pkg/types/internal/scalar/lib.rs`、`pkg/expression/lib.rs`。
-- Go 对照与测试：`pkg/types/set.go`、`pkg/types/set_test.go`、`pkg/types/set_test.rs`、`pkg/types/overflow_10_aster_unit_test.rs`。
-- 生产调用证据：`pkg/types/datum.rs::convertToMysqlSet`、`pkg/tablecodec/tablecodec.rs` 的 SET 分支、`pkg/util/rowcodec/decoder.rs` 的 SET 分支、`pkg/expression/chunk_executor.rs` 的 SET 分支、`pkg/util/codec/codec.rs` 的 SET 分支。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/types/set.rs` 核对了完整实现；`query ParseSet`/`ParseSetName`/`ParseSetValue` 定位 Rust 与 Go 对照符号；`callees` 核对 `ParseSet -> ParseSetName/parse_uint_base_zero/ParseSetValue`、`ParseSetName -> GetCollator/Key` 和 `ParseSetValue -> 掩码表/Set`。跨 crate `callers` 未返回边，已以 RustCodeGraph 上述调用文件节点和精确引用检索补证。
-- 本任务按计划为纯文档分析，未运行 Cargo。交付前执行任务指定的结构命令，确认文件存在且恰有 11 个固定二级标题；并人工复核了文件定位、运行流程、安全扩展点及未验证限制。

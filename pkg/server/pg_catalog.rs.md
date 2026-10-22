@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server` crate（见 `pkg/server/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/server/lib.rs` 以私有模块 `mod pg_catalog;` 装配。它不是通用 SQL 执行器，而是 PostgreSQL 协议入口中的一个有界目录查询适配层：识别 DataGrip 等客户端发出的 `pg_catalog` 探测 SQL，把 AsterSQL/TiDB 的 schema snapshot、表模型和少量原生系统查询投影成 PostgreSQL 风格的目录行，再返回协议层可直接编码的 `QueryResult`。
-
-上游有两条真实入口。简单查询协议在 `pkg/server/pg_conn.rs` 中调用 `CatalogQuery::parse_session`，命中后直接调用 `CatalogQuery::execute`；扩展协议在 `pkg/server/pg_extended.rs` 的 Parse 阶段调用 `parse_session_with_types`，Bind 阶段调用 `bind_values`，Describe 使用 `metadata`，Execute 最终仍由 `pg_conn.rs` 调用 `execute`。未命中的 SQL继续走 `pg_name::adapt` 和原生引擎，不由本文件接管。
+`evaluate`、`project`、`execute_rows` 和 `execute_select` 实现受限的 JOIN/LEFT JOIN、CTE、相关或非相关子查询、UNION、过滤、排序、DISTINCT、LIMIT、数组、`unnest`、`array_agg` 和三值逻辑。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 
 `pkg/server/Cargo.toml` 将 crate 对应到 Go 包 `pkg/server`，但在该 Go 目录中检索不到 `pg_catalog`、DataGrip 或 PostgreSQL 目录适配实现，也不存在 `pkg/server/pg_catalog.go`。因此本文件不是同路径 Go 文件的机械翻译，而是 Rust 服务器新增的 PostgreSQL 3.2 协议兼容层；Go `pkg/server` 仍主要是 MySQL 协议服务端实现。
 
-可对齐的是底层数据语义而非文件结构：Rust 从与 Go/TiDB 共用的 infoschema/model 概念读取 public schema/table/column/index/foreign key/sequence，并坚持不把 MySQL/TiDB 特性伪装成不存在的 PG 对象。例如 auto-increment 不当作 PG sequence，native partition 不生成 inheritance 边，MySQL collation 不生成 PG collation，持久化 view source 通过专用转换读取。扩展该层时应继续以真实 model 字段和原生查询为证据，不能仅按 PostgreSQL 目录定义填充合成数据。
+可对齐的是底层数据语义而非文件结构：Rust 从与 Go/TiDB 共用的 infoschema/model 概念读取 public schema/table/column/index/foreign key/sequence，并坚持不把 MySQL/TiDB 特性伪装成不存在的 PG 对象。
 
 ## 扩展指南
 
@@ -78,13 +76,3 @@ OID 身份由 `pg_oid` 统一生成；`namespace_oid`、`table_oid`、`index_oid
 新增原生类型映射应同步 `COLUMN_TYPES`、`native_column_type`、`format_column_type`、`column_default` 和线协议元数据；新增对象身份应先进入 `pg_oid`，再让 provider、regclass、定义函数共享同一映射。新增参数类型要同步 `catalog_parameter_type` 以及 `pg_extended.rs` 的文本/二进制参数解码。
 
 测试必须放在独立文件而非 `pg_catalog.rs` 内。首选扩展 `pkg/server/pg_catalog_test.rs` 的对应主题；纯 DataGrip 模板放 `pg_datagrip_test.rs`，Parse/Bind/Execute 和参数放 `pg_extended_test.rs`，解析边界放 `pg_catalog_query_test.rs`，线类型放 `pg_types_test.rs`，真实客户端兼容放 `pg_client_integration_test.rs`。重点风险是 OID 稳定性、客户端依赖的列名/类型/顺序、snapshot 一致性、NULL 语义、资源上限及不受控笛卡尔积。
-
-## 验证依据
-
-- 生产源码：`pkg/server/pg_catalog.rs`；逐段核对了常量、`Execution`、`CatalogQuery` 的解析/绑定/执行链，以及 provider、OID、类型、索引/约束辅助函数。
-- crate 与模块边界：`pkg/server/Cargo.toml`、`pkg/server/lib.rs`；`pkg/server/doc.go` 不存在。
-- 上游接线：`pkg/server/pg_conn.rs`（简单查询分类、取消与执行）、`pkg/server/pg_extended.rs`（Parse/Bind/Describe/Execute）、`pkg/server/pg_oid.rs`（`catalog_indexes` 调用）。
-- 独立测试：`pkg/server/pg_catalog_test.rs` 覆盖投影、描述、关系、谓词、JOIN、CTE、列、约束、函数和依赖；`pg_datagrip_test.rs` 覆盖客户端模板；`pg_extended_test.rs` 覆盖参数和扩展协议；`pg_catalog_query_test.rs` 覆盖解析/拒绝路径；`pg_types_test.rs` 覆盖目录线类型；`pg_client_integration_test.rs` 覆盖客户端交互。
-- Go 对照：检索 `pkg/server/*.go` 未发现对应 PG catalog/DataGrip 实现；只将 `Cargo.toml` 声明的 `pkg/server` 包归属和共享 TiDB 模型语义作为对照，不声称存在逐函数 Go 源。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/server/pg_catalog.rs` 成功读取 3,689 行目标源码。精确方法 callers/callees 未返回边，已由直接源码调用点补证。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务规定的命令确认目标文档存在且恰有 11 个固定二级章节，并人工复核唯一新增产物与上述事实链。

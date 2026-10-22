@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-compressedio` crate 的公共定义层，源码见 [`def.rs`](def.rs)。crate 根 [`lib.rs`](lib.rs) 以 `pub mod def` 声明模块，并通过 `pub use def::*` 再导出这里的全部公开符号；[`Cargo.toml`](Cargo.toml) 则把该 crate 映射到 Go 包 `pkg/objstore/compressedio`，声明实际编解码所需的 `flate2`、`snap` 和 `zstd` 依赖。
-
-它不执行压缩或解压，而是为 [`reader.rs`](reader.rs)、[`writer.rs`](writer.rs) 和 [`buffer.rs`](buffer.rs) 提供共同协议：压缩类型、文件后缀、压缩器刷新能力、zstd 解码配置，以及配置字符串到压缩类型的解析。上层 [`pkg/objstore/objectio/lib.rs`](../objectio/lib.rs) 又将该 crate 暴露为 `objectio::compressedio` 并单独再导出 `CompressType`，所以这些定义同时构成对象存储适配层的类型边界。
+不执行压缩或解压，而是为 [`reader.rs`](reader.rs)、[`writer.rs`](writer.rs) 和 [`buffer.rs`](buffer.rs) 提供共同协议：压缩类型、文件后缀、压缩器刷新能力、zstd 解码配置，以及配置字符串到压缩类型的解析。
 
 ## 核心职责
 
@@ -79,13 +77,11 @@ RustCodeGraph 将 `def.rs` 标记为被 15 个文件使用，并确认 `file_suf
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`def.go`](def.go)。Rust 的 `CompressType` 显式写出 `0..=3`，对应 Go 的 `type CompressType uint8` 和 `iota` 顺序；文件后缀与解析别名完全相同，未知解析输入的文本也保持 `unknown compress type <值>`。Rust 用 `Result` 与 `ParseCompressTypeError` 替代 Go 的 `(CompressType, error)`；失败时 Rust 不额外返回 `NoCompression` 值。
+Rust 的 `CompressType` 显式写出 `0..=3`，对应 Go 的 `type CompressType uint8` 和 `iota` 顺序；文件后缀与解析别名完全相同，未知解析输入的文本也保持 `unknown compress type <值>`。Rust 用 `Result` 与 `ParseCompressTypeError` 替代 Go 的 `(CompressType, error)`；失败时 Rust 不额外返回 `NoCompression` 值。
 
-Go 的 `Flusher.Flush() error` 对应 Rust 的 `flush(&mut self) -> io::Result<()>`。Rust 把错误限定为标准 I/O 错误并显式表达可变访问；Go 接口没有这种借用约束。Go `DecompressConfig.ZStdDecodeConcurrency int` 对应 Rust `i32` 字段。
+Rust 把错误限定为标准 I/O 错误并显式表达可变访问；Go 接口没有这种借用约束。
 
-Go [`reader.go`](reader.go) 对所有正并发值调用 `zstd.WithDecoderConcurrency`，其中 `1` 表示同步，默认值 `0` 使用库默认并发。Rust 当前只精确复刻测试所要求的同步/异步分界：等于 `1` 同步，其余值异步，并没有按大于 `1` 的具体数值配置 worker 数量。这是已知实现粒度差异，扩展前应先明确兼容目标。Go [`writer.go`](writer.go) 与 Rust writer 都让 Gzip、Snappy、Zstd 实现刷新和关闭，并让无压缩返回 `nil`/`None`。
-
-[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 覆盖全部解析别名、规范后缀、未知类型错误、三种格式往返、Zstd 同步配置和无压缩工厂语义；[`../objectio/writer_test.rs`](../objectio/writer_test.rs) 与 Go [`../objectio/writer_test.go`](../objectio/writer_test.go) 进一步对照真实对象存储读写及同步/异步管道行为。
+Rust 当前只精确复刻测试所要求的同步/异步分界：等于 `1` 同步，其余值异步，并没有按大于 `1` 的具体数值配置 worker 数量。这是已知实现粒度差异，扩展前应先明确兼容目标。Go [`writer.go`](writer.go) 与 Rust writer 都让 Gzip、Snappy、Zstd 实现刷新和关闭，并让无压缩返回 `nil`/`None`。
 
 ## 扩展指南
 
@@ -94,12 +90,3 @@ Go [`reader.go`](reader.go) 对所有正并发值调用 `zstd.WithDecoderConcurr
 改变已有后缀、别名或判别值有持久化与兼容风险：文件名约定可能被对象存储、导入流程或外部 crate 消费，判别值也与 Go 顺序对齐。新增别名应明确是否继续保持大小写敏感，且需加入成功与未知输入回归用例。
 
 若要完整支持 `zstd_decode_concurrency > 1` 的具体 worker 数，应主要修改 [`reader.rs`](reader.rs) 的构造策略，而不是只扩充本结构体；需要同步 [`../objectio/writer_test.rs`](../objectio/writer_test.rs) 中的管道/线程行为测试，并评估线程数、内存、取消和 reader drop 时的后台回收。若扩充 `Flusher` 的契约，应同步所有 Gzip/Snappy/Zstd 实现及 `Buffer::flush`，并保持 flush 与 close 的语义边界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/objstore/compressedio` 确认本目录的 Rust/Go 源与独立测试均已收录。
-- RustCodeGraph `node --file pkg/objstore/compressedio/def.rs`：核对了目标文件 82 行源码及 9 个符号；`node`/`query` 进一步确认 `file_suffix` 的迁移测试调用边、`DecompressConfig` 的实例化位置，以及同名 Dumpling 解析函数并非本模块调用者。
-- RustCodeGraph `node --file`：读取并核对了 [`reader.rs`](reader.rs)、[`writer.rs`](writer.rs)、[`buffer.rs`](buffer.rs)、[`../objectio/writer_test.rs`](../objectio/writer_test.rs) 和 [`../../session/runtime/import_compression.rs`](../../session/runtime/import_compression.rs) 的直接实现/测试证据。限定目标文件的 `callers/callees` 命令在 30 秒内未返回，因此使用仓库 `rg` 补充直接引用清单，未把无结果解释为无调用。
-- 配置与模块证据：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`../objectio/lib.rs`](../objectio/lib.rs)；本目录不存在 `doc.go`。
-- Go 对照与测试证据：[`def.go`](def.go)、[`reader.go`](reader.go)、[`writer.go`](writer.go)、[`../objectio/writer_test.go`](../objectio/writer_test.go)；Rust 独立测试为 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`reader_test.rs`](reader_test.rs) 和 [`../objectio/writer_test.rs`](../objectio/writer_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终用任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核所有行为陈述均可回链到上述源码、图查询或测试。

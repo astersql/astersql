@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-jobsubmit` crate 的持久化提交核心：接收已经构造好的 `JobSpec`，在提交前校验和补齐 `Job`，为 job 及其新建元数据对象分配全局 ID，并把编码后的记录批量写入 `mysql.tidb_ddl_job`。crate 入口 `pkg/ddl/jobsubmit/lib.rs` 将本模块全部公开符号再导出；`pkg/ddl/jobsubmit/Cargo.toml` 指定 `lib.rs` 为库入口，并以 `package.metadata.porting.go-package = "pkg/ddl/jobsubmit"` 标明 Go 对照包。
-
-Rust 应用中已有三类直接入口：普通 DDL 的 `pkg/session/runtime/normal_ddl_submit.rs::submit_and_wait`、跨 keyspace 的 `pkg/session/runtime/crossks_job_submit.rs::CrossKSJobSubmitter::submit_table_mode`，以及 `pkg/domain/crossks/ddl_submit.rs::SubmitOnlyBackend::submit`。前两者将会话池、系统表管理器、BDR 策略和重试策略装配为 `SubmitOptions`；后者还明确说明提交器本身不启动 owner、scheduler 或 worker。因此本文件位于“构造 DDL job”与“owner 调度并执行 job”之间，只负责可靠入队，不负责执行 schema 状态机、等待历史结果或启动后台服务。
-
-Go 生产主链的对应入口是 `pkg/ddl/job_submitter.go::JobSubmitter.addBatchDDLJobs2Table` 调用 `pkg/ddl/jobsubmit/submit.go::SubmitBatch`。RustCodeGraph 对 Go 文件给出了 `addBatchDDLJobs -> addBatchDDLJobs2Table -> SubmitBatch` 调用边；Rust 调用点则由上述三个文件的实际 `submit_batch` 调用核实。
+`submit_batch` 执行整批提交前置工作：空批次快速成功、借用/归还系统会话、阻止 flashback cluster 期间的新 DDL、读取 BDR 角色与事务 `start_ts`、规范化并校验 involving schema、补齐 trace 标记、应用 BDR 限制和升级期暂停策略。
 
 ## 核心职责
 
@@ -101,8 +97,6 @@ Go 主链的直接关系是 `JobSubmitter.addBatchDDLJobs2Table -> jobsubmit.Sub
 
 ## 与 Go 版本的对应关系
 
-Rust 主要符号与 `pkg/ddl/jobsubmit/submit.go` 一一对应：`submit_batch`/`SubmitBatch`、`generate_ids_and_insert_jobs_with_retry`/`GenGIDAndInsertJobsWithRetry`、`GlobalIdAllocator`/`gidAllocator`、ID 计数与赋值函数、全局 ID 锁、job 表 INSERT、ID 列生成、queueing 状态以及 owner 通知辅助。事务顺序、失败 cleanup、只重试 retryable 错误、write-conflict 锁循环、字符串字典序排序等关键语义保持一致。
-
 已确认的差异和迁移边界：
 
 - Go 通过真实 `context.Context`、KV transaction、meta mutator、session pool 和 etcd client 实现；Rust 将这些边界抽象进 `Session`、`SessionPool`、`SystemTableManager`、`BdrPolicy`、`OwnerNotifier` 等 trait，由 session/domain 适配器接入。
@@ -128,18 +122,3 @@ Rust 测试 `pkg/ddl/jobsubmit/submit_test.rs` 使用 mock trait 验证算法和
 若要补齐 Go 物化视图分支，应先扩展本 crate 的 `JobType`/`JobArgs` 模型，再同时补齐 ID 计数、ID 分配、table ID 索引列和编码测试；这属于明确的现有差距，不应通过通用 `_ => 0`/`_ => {}` 分支静默处理。
 
 性能上，整个批次构造单条 INSERT，可减少往返但 SQL 大小随批次线性增长；`hex` 使用逐字节 `format!`，大 job metadata 会产生额外分配。若优化，必须保持 MySQL hex literal 与 Go `WrapKey2String` 的字节等价，并用相同批量边界验证。
-
-## 验证依据
-
-本说明基于以下直接证据完成，未运行 Cargo（该计划明确为纯文档分析）：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标 `pkg/ddl/jobsubmit/submit.rs` 已索引为 493 行、27 个符号。
-- RustCodeGraph `node --file pkg/ddl/jobsubmit/submit.rs`：完整读取第 1–493 行，核对所有函数、内部 allocator、事务重试、ID 分支、SQL 编码和辅助函数。
-- RustCodeGraph `query/callers/callees`：核对 `submit_batch`、`generate_ids_and_insert_jobs_with_retry`、`insert_ddl_jobs_to_table`、`notify_ddl_owner`；确认主要模块内调用边。图未返回 Rust 跨 crate caller，随后用仓库搜索核实实际调用点。
-- RustCodeGraph `node addBatchDDLJobs2Table`：确认 Go 生产边 `JobSubmitter.addBatchDDLJobs2Table -> jobsubmit.SubmitBatch`，其上游为 `addBatchDDLJobs`。
-- 已读 Rust 源/边界：`pkg/ddl/jobsubmit/Cargo.toml`、`pkg/ddl/jobsubmit/lib.rs`、`pkg/ddl/jobsubmit/types.rs` 中的 `JobSpec`/`Session`/`SubmitOptions`、`pkg/session/runtime/system_session.rs::table_mode_submit_options`、`pkg/session/runtime/normal_ddl_submit.rs`、`pkg/session/runtime/crossks_job_submit.rs`、`pkg/domain/crossks/ddl_submit.rs`。
-- 已读 Go 对照：`pkg/ddl/jobsubmit/submit.go` 全部 546 行、`pkg/ddl/job_submitter.go::addBatchDDLJobs2Table`。
-- 已读独立测试：`pkg/ddl/jobsubmit/submit_test.rs` 全部 565 行、`pkg/ddl/jobsubmit/submit_test.go` 全部 344 行。Rust 测试证明 ID 顺序、持久化类型码、字符串排序、规范化、重试 cleanup、write-conflict backoff、begin 失败边界和 reorg metadata 编码；Go 测试提供真实系统表与 failpoint 证据。
-- 已读 DDL 权威入口：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`；其中关于 job-based/owner-driven 的概览仅用于定位，具体结论均以上述代码和测试复核。
-
-人工复核结论：本文分别回答了该文件为何存在（可靠持久化 DDL job）、如何运行（校验、状态设置、事务内 ID 与 INSERT、重试/清理）、当前由谁调用、哪些职责在边界外，以及新增 action/字段/策略时必须同步的符号和测试；已明确记录 Rust 与 Go 的未对齐处，没有把未接线或仅 Go 支持的能力写成 Rust 现状。

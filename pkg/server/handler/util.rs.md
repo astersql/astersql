@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-handler` crate 的公共 HTTP handler 工具模块，由 [`pkg/server/handler/lib.rs`](lib.rs) 以 `pub mod util` 暴露。crate 的 [`Cargo.toml`](Cargo.toml) 将其对应到 Go 包 `pkg/server/handler`；文件自身不直接使用该清单中的领域、存储等依赖，而是为同 crate 的升级 handler、下游 TiKV handler crate 以及 `pkg/server` 的 HTTP 适配层提供协议常量、内存响应表示、JSON 写出和表/分区名切分。
-
-它位于 status HTTP 请求链的辅助层而非路由入口：例如 [`upgrade_handler.rs`](upgrade_handler.rs) 调用 `WriteError`/`WriteData` 生成内存响应，随后 [`pkg/server/http_status.rs`](../http_status.rs) 的 `upgrade_response` 把 `ResponseWriter` 的状态码和 body 转为 server `Response`；[`tikvhandler/tikv_handler.rs`](tikvhandler/tikv_handler.rs) 则直接调用 `ExtractTableAndPartitionName` 规范化路由中的表名。
+定义与 Go `handler` 包一致的路径变量和查询参数键，如 `DB_NAME`、`TABLE_NAME`、`TABLE_ID_QUERY`、`OPERATION`，并提供 `DBName`、`TableName`、`TableIDQuery`、`Operation` 等 Go 风格兼容别名。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ RustCodeGraph 对这些跨 crate 调用未返回 `callers` 边，因此跨 crate
 
 ## 与 Go 版本的对应关系
 
-直接对照 [`util.go`](util.go)：两边的路径/查询字符串和公开 Go 拼写一致；Rust 额外提供 idiomatic snake-case 常量。`WriteError` 都默认 400，`WriteErrorWithCode` 都先写状态再写错误文本，`WriteData` 都先序列化、再设置 JSON header、写 200 和 body。`ExtractTableAndPartitionName` 的四个已测分支与 Go 的 `strings.IndexByte` 实现一致。
+直接对照 [`util.go`](util.go)：两边的路径/查询字符串和公开 Go 拼写一致；Rust 额外提供 idiomatic snake-case 常量。
 
 实现能力仍有差异：Go 接受任意 `error`、`http.ResponseWriter` 和 `any`，使用 `encoding/json.MarshalIndent` 并通过 `terror.Log(errors.Trace(...))` 记录写出错误；Rust 使用本地 `Error`/`ResponseWriter`、显式 `JsonValue`，`json_marshal_indent` 不缩进也不失败，`terror_log` 不记录。Rust 的 status server 适配层只读取此 writer 的状态和 body，content type 最终由外层 `Response::json` 建立。文档因此只确认当前已接线行为，不把这些占位抽象等同于 Go 标准库的全部语义。
 
@@ -82,11 +80,3 @@ Go 目录没有该工具的同名独立 `*_test.go`；Rust 的直接回归集中
 - 若把内存 `ResponseWriter` 接到更多生产 handler，需决定 header、多次写状态、写失败和日志语义；修改后同步 `util_test.rs`，并检查 `http_status.rs::upgrade_response` 的适配是否仍保留 content type 与状态。
 - 修改表/分区语法时应同时更新 `ExtractTableAndPartitionName`、TiKV handler 两处调用及 `table_and_partition_extraction_matches_go_branches`，并核对 Go 行为。修复异常括号 panic 会改变当前简单切分契约，应增加回归用例并明确兼容性影响。
 - 测试必须继续放在独立的 `util_test.rs` 或相邻测试文件，不应内嵌回生产源文件。性能关注点主要是字符串/响应 body 分配和手写 JSON 的重复拼接；兼容风险主要是路由键值、HTTP 状态/body 顺序及 Go 风格别名。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/server/handler/util.rs`；`files --filter` 报告该文件 84 个符号；`node --file ... --offset 1 --limit 300` 阅读了完整 287 行源码。
-- RustCodeGraph 符号/调用查询：查询了 `WriteError`、`WriteErrorWithCode`、`WriteData`、`ExtractTableAndPartitionName`、`json_string`、`ResponseWriter`；`callees --file pkg/server/handler/util.rs` 核对了上述内部调用边。跨 crate `callers` 无输出，已以精确源码引用补证。
-- 源码与装配：[`util.rs`](util.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`upgrade_handler.rs`](upgrade_handler.rs)、[`tikvhandler/tikv_handler.rs`](tikvhandler/tikv_handler.rs)、[`pkg/server/http_status.rs`](../http_status.rs)。
-- Go 对照与测试：[`util.go`](util.go)、[`util_test.rs`](util_test.rs)、[`handler_aster_unit_test.rs`](handler_aster_unit_test.rs)；全仓 `*_test.go` 搜索未找到该工具函数的直接 Go 单元测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核文件定位、运行流程、扩展入口与当前占位限制。

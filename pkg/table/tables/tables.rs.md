@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-table-tables` crate，是 `pkg/table/tables/lib.rs` 中公开的 `tables` 模块。它把表层能力分成两类：一类是直接借用完整 catalog 模型 `model_dependency::TableInfo` 的构造前验证视图（`table_from_meta_for_validation`、`ValidatedTableMetadata`），另一类是基于本 crate 精简模型的可执行内存表、序列、扫描描述和元数据辅助函数（`TableCommon`、`SequenceCommon`、`TableScan` 等）。
-
-Go 对照文件是 `pkg/table/tables/tables.go`，其中 `TableCommon` 实现真实事务、KV 编码、断言、统计和 DDL 过渡期写入。Rust 的 `TableCommon` 只在进程内的 `BTreeMap`/`HashMap` 中保存行与索引，不应被理解为 Go 持久表实现的透明替代。当前仓库中完整模型入口的生产调用者是 `pkg/ddl/create_table.rs:43`；RustCodeGraph 还确认本文件被 15 个文件引用，直接行为覆盖主要集中在同目录独立测试 `pkg/table/tables/tables_test.rs`。
-
-crate 边界由 `pkg/table/tables/Cargo.toml` 定义：默认启用 `expression-runtime`；完整元数据验证依赖 `astersql-meta-model`、`astersql-util-generatedexpr` 和 `astersql-table`，表达式条件与分区表达式在该 feature 下额外依赖 `astersql-expression`、`exprstatic` 与 `stmtctx`。
+`TableCommon` 保存表/物理表标识、列、索引、约束、内存行、唯一索引键、handle 分配进度和可选序列；提供 DDL `SchemaState` 相关筛选、键前缀、行增删改查及扫描迭代。
 
 ## 核心职责
 
@@ -103,9 +99,9 @@ crate 边界由 `pkg/table/tables/Cargo.toml` 定义：默认启用 `expression-
 
 ## 与 Go 版本的对应关系
 
-完整元数据入口对齐 `tables.go` 的 `TableFromMetaWithCollate`：状态检查、偏移只记录日志、生成列表达式解析并解析列名、表达式默认值仅解析、CHECK 加载、分区构造和索引初始化的先后关系由 `tables_test.rs` 的 `normal_ddl_plan_*` 系列测试固定。Rust 额外返回 `ValidatedTableMetadata` 供调用方消费验证结果，不直接构造 Go `table.Table` 接口对象。
+Rust 额外返回 `ValidatedTableMetadata` 供调用方消费验证结果，不直接构造 Go `table.Table` 接口对象。
 
-精简 `TableCommon` 与 Go 同名类型共享列/索引 DDL 状态筛选、逻辑/物理表 ID、排序规则固定、记录与索引共同维护、唯一冲突、序列缓存、扫描元数据等概念。但重要差异包括：
+但重要差异包括：
 
 - Go 读写 `kv.Transaction` 的 mem-buffer staging，并维护断言、mutation checker、临时表事务大小与统计；Rust 只更新内存容器。
 - Go 支持 `kv.Handle`（整数/公共句柄）、autoid allocators、列变更的依赖列、写入选项和不同重复键检查模式；Rust 只用 `i64` handle 和精简选项。
@@ -113,8 +109,6 @@ crate 边界由 `pkg/table/tables/Cargo.toml` 定义：默认启用 `expression-
 - Go 的列默认值使用表达式上下文和 `tablecodec.EncodeValue`；Rust `encode_default` 只覆盖四种 `Datum` 变体。
 - Go `Copy` 是浅复制并保留指针字段；Rust clone 深拷贝行/索引状态，但共享序列 Arc。
 - `try_get_common_pk_column_ids` 的 Go 入口先要求 `IsCommonHandle`；Rust 精简 `TableInfo` 没有该标志，因此只要提供 primary index 就返回列 ID。`primary_prefix_column_ids` 对前缀有效性的判断也比 Go 简化。
-
-因此，扩展时应先确定目标是完整 catalog 验证、精简内存行为，还是 Go 持久表的真正移植；不得用精简实现的通过测试推断 Go 全部事务语义已经移植。
 
 ## 扩展指南
 
@@ -125,11 +119,3 @@ crate 边界由 `pkg/table/tables/Cargo.toml` 定义：默认启用 `expression-
 - 扩展序列时保持正/负 increment 的镜像分支、循环 round offset 和“allocator 成功后才更新缓存”的不变量；为缓存耗尽、递减、循环、SETVAL 范围内/范围外和 allocator 错误各加独立测试。
 - 修改共享状态时说明同步粒度：行状态当前依赖外部 `&mut`/锁，序列依赖 Mutex，临时表原子字段不构成一致快照。性能上需关注每次 `writable_indices()` 分配 Vec、整行/键 clone、更新时全索引重建，以及 `copy` 对全部行的深复制。
 - 若新增依赖、feature 或模块接线，同步 `pkg/table/tables/Cargo.toml`/`lib.rs`；本文件测试仍保持在 `pkg/table/tables/tables_test.rs`。Rust 源改动完成后按仓库要求运行 `cargo fmt --all`，但本次纯文档分析不修改或运行 Rust。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/table/tables` 找到目标 Rust/Go/测试文件；`node --file pkg/table/tables/tables.rs` 阅读了 1–1094 全部行并报告该文件被 15 个文件使用；`query table_from_meta_for_validation`、`query TableCommon --kind struct --json`、`query SequenceCommon --kind struct --json` 定位了 Rust/Go 对照符号。图对本文件 impl 方法的同名查询覆盖不完整，因此调用证据按技能规则由仓库搜索补齐。
-- 已读生产与配置：`pkg/table/tables/tables.rs`、`pkg/table/tables/Cargo.toml`、`pkg/table/tables/lib.rs`、`pkg/table/tables/tables.go`、`pkg/ddl/create_table.rs` 的直接调用位置。
-- 已读独立测试：`pkg/table/tables/tables_test.rs`，覆盖构造状态与错误顺序、部分索引、行/索引原子性、行宽与偏移、SchemaState、序列、公共句柄辅助、恢复数据、扫描/default 与临时表原子状态；另以仓库搜索核对 `pkg/table/tables/tables_test.go` 的 Go 行增删改、TableFromMeta 和排序规则测试入口。
-- 关键事实由 `tables.rs` 的 `table_from_meta_for_validation`、`TableCommon::{new,add_record,update_record,remove_record}`、`SequenceCommon::{next_value,set_value}`、`set_pb_columns_default_value` 和 `TemporaryTable` 实现直接支持，并与上述测试断言交叉核验。
-- 本任务是纯文档分析，未修改 Rust/Go/Cargo，也未运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级章节。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 library crate `astersql-br-pkg-streamhelper-config`；crate 入口是同目录的 `lib.rs`，它公开 `tidb_conf` 模块并通过 `pub use tidb_conf::*` 扁平再导出本文件的公开符号。`Cargo.toml` 表明该 crate 只直接依赖 `astersql-sessionctx-vardef`，对应的 Go package 是 `br/pkg/streamhelper/config`。
-
-它提供检查点推进器运行在 TiDB 进程内时使用的配置实现。Rust 上游 `br/pkg/streamhelper/advancer.rs::NewTiDBCheckpointAdvancer` 调用 `DefaultTiDBConfig`，将结果装入 `Cfg::TiDB`；推进器随后只通过 `types.rs::Config` trait 读取配置。该文件不是通用 TiDB server 配置，也不负责解析命令行或注册系统变量。
+提供检查点推进器运行在 TiDB 进程内时使用的配置实现。
 
 ## 核心职责
 
@@ -67,11 +65,11 @@ TiDB 内嵌模式的主流程如下：
 
 ## 与 Go 版本的对应关系
 
-Go 的 `tidb_conf.go` 令 `TiDBConfig` 匿名嵌入 `*CommandConfig`，因此自然继承其方法，并只显式覆盖 `GetCheckPointLagLimit`；Rust 无结构体方法提升，故 `impl Config` 明确写出五个委托方法和一个覆盖方法。两边的关键语义一致：默认构造包含 `defaultCommandConfig()`，而滞后上限读取 `vardef.AdvancerCheckPointLagLimit` 的实时值。
+Go 的 `tidb_conf.go` 令 `TiDBConfig` 匿名嵌入 `*CommandConfig`，因此自然继承其方法，并只显式覆盖 `GetCheckPointLagLimit`；Rust 无结构体方法提升，故 `impl Config` 明确写出五个委托方法和一个覆盖方法。
 
 接口形态有三点差异。第一，Go `DefaultTiDBConfig() Config` 返回装箱在接口后的指针，Rust 返回拥有数据的具体 `TiDBConfig`，再由调用方通过 trait/枚举分派。第二，Rust 的 `AdvancerCheckPointLagLimitNanosValue`、`AdvancerCheckPointLagLimitNanos` 和测试 mutex 是为移植测试提供的兼容设施，Go 文件中没有对应生产符号。第三，Rust 用整数纳秒承接 Go `time.Duration`；正常路径单位一致，但 Rust 的显式有符号/无符号转换具有前述边界风险。
 
-Go `config_test.go::TestCheckPointLimit` 证明 `SET GLOBAL` 后 TiDB 配置从 48 小时变为 100 小时，而命令配置仍保持 48 小时；Rust `config_test.rs::test_check_point_limit` 通过同一 vardef 原子量复现该区别。Go `TestResolveLockInterval` 与 Rust `test_resolve_lock_interval` 都证明 TiDB 默认 resolve-lock 间隔来自内嵌命令配置的两倍 tick。
+Go `config_test.go::TestCheckPointLimit` 证明 `SET GLOBAL` 后 TiDB 配置从 48 小时变为 100 小时，而命令配置仍保持 48 小时；Rust `config_test.rs::test_check_point_limit` 通过同一 vardef 原子量复现该区别。
 
 ## 扩展指南
 
@@ -80,13 +78,3 @@ Go `config_test.go::TestCheckPointLimit` 证明 `SET GLOBAL` 后 TiDB 配置从 
 - 若修改滞后上限的数值类型或单位，必须同时检查 `isCheckpointLagged` 的 `Duration -> 毫秒 -> TSO` 换算、测试兼容层的纳秒转换，以及 `i64/u64` 边界；兼容性风险包括已有系统变量取值、48 小时默认值和 365 天上限。
 - 若增加会修改全局 vardef 的测试，复用 `ADVANCER_LAG_LIMIT_TEST_LOCK`，在测试结束前恢复原值，并同步 `tidb_conf_test.rs`、`config_test.rs` 以及必要的 Go 测试。不要依赖测试执行顺序。
 - 本文件的热路径只是少量字段读取和一次原子加载；新增解析、锁或 I/O 会改变推进 tick 的成本，应放在 setter/初始化路径而不是 getter 中。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；目标文件被识别为 76 行、20 个符号。
-- RustCodeGraph 源码与调用查询：`node --file br/pkg/streamhelper/config/tidb_conf.rs`；查询 `TiDBConfig`、`DefaultTiDBConfig`；`explore` 确认 `DefaultTiDBConfig -> NewTiDBCheckpointAdvancer`、`GetCheckPointLagLimit -> isCheckpointLagged` 及对应测试调用边。
-- 直接读取的实现与装配：`br/pkg/streamhelper/config/tidb_conf.rs`、`command_conf.rs`、`types.rs`、`lib.rs`、`Cargo.toml`，以及 `br/pkg/streamhelper/advancer.rs` 的 `Cfg`、`NewTiDBCheckpointAdvancer`、`isCheckpointLagged`、`importantTick`。
-- Go 对照：`br/pkg/streamhelper/config/tidb_conf.go`、`command_conf.go`、`types.go`、`config_test.go`，以及 `br/pkg/streamhelper/advancer.go` 的构造和滞后判断调用点。
-- Rust 测试：`br/pkg/streamhelper/config/tidb_conf_test.rs` 验证读取共享 vardef 值；`config_test.rs` 验证默认值、全局热更新与 Command/TiDB 模式隔离；`br/pkg/streamhelper/export_test.rs` 验证测试辅助更新路径。
-- 全局值证据：`pkg/sessionctx/vardef/tidb_vars.rs` 定义默认 48 小时和 `AtomicI64Value`；`pkg/sessionctx/variable/sysvar_builtins.rs` 注册全局 duration 系统变量、限制 1 秒至 365 天并在 setter/getter 中访问同一原子量。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前使用任务指定命令验证固定的 11 个二级章节。

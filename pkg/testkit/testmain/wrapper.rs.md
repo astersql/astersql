@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-testkit-testmain`，包边界由 `pkg/testkit/testmain/Cargo.toml` 声明，crate 根是同目录的 `lib.rs`。`lib.rs` 将 `wrapper` 声明为公开模块并以 `pub use wrapper::*` 再导出，因此调用方通常直接从 `astersql_testkit_testmain` 导入 `TestingM` 和 `WrapTestingM`，而不必写出 `wrapper` 模块路径。
-
-它位于测试基础设施而非数据库 SQL 运行主链：作用是把“运行整套测试并产生进程退出码”的能力抽象出来，并允许在底层 runner 完成之后执行一次退出码回调。直接的 Rust 使用证据包括 `pkg/session/test/main_test.rs`、`pkg/session/test/variable/main_test.rs`、`pkg/session/test/bootstraptest/lib.rs` 与 `pkg/session/test/bootstraptest2/main_test.rs`；同 crate 的 `bench.rs` 也复用 `TestingM` 驱动 benchmark 短路路径。
+进程退出与 benchmark 参数处理位于相邻的 `bench.rs`；Go 侧的泄漏检查由外部 `goleak.VerifyTestMain` 完成。
 
 ## 核心职责
 
@@ -74,10 +72,6 @@ API 不使用 `Result`，也没有自行捕获 panic：底层 runner、回调或
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/testkit/testmain/wrapper.go`。两侧的核心顺序相同：保存一个实现 runner 接口的对象；调用其 `Run/run`；把得到的整数交给回调；返回回调结果；空回调被替换为恒等函数。
-
-类型映射如下：Go 的 `goleak.TestingM` 对应 Rust 本地 trait `TestingM`；Go 私有结构体 `testingM` 对应 Rust 公开泛型结构体 `WrapTestingM<'a, M>`；Go `func(int) int` 对应 Rust `Box<dyn FnMut(i32) -> i32 + 'a>`；Go 的 `nil` 对应 Rust 的 `None`。
-
 两侧也存在明确差异：
 
 - Go 包装器嵌入 `goleak.TestingM` 并返回私有指针类型，面向 `goleak.VerifyTestMain`；Rust crate 没有 `goleak` 依赖，而是定义最小本地 trait，以适配 Rust 测试 harness 和相邻 benchmark 逻辑。
@@ -95,12 +89,3 @@ Go 对照文件是 `pkg/testkit/testmain/wrapper.go`。两侧的核心顺序相�
 - 保持 Go 对照时，应核对 `wrapper.go` 以及代表性 `TestMain`（如 `pkg/session/main_test.go`、`pkg/statistics/main_test.go`），尤其确认回调仍在测试套件之后执行，并按预期保留或改变退出码。
 
 兼容风险集中在公开 trait 签名、自由函数的 Go 风格名称及 `lib.rs` 的再导出；性能方面每次 `run` 有一次动态回调分派和一次 `RefCell` 运行时借用，适合测试入口的低频调用，不应未经测量扩展到热路径。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/testkit/testmain/wrapper.rs`、`pkg/testkit/testmain/lib.rs`、`pkg/testkit/testmain/Cargo.toml`、根 `Cargo.toml`。
-- Rust 行为测试：`pkg/testkit/testmain/wrapper_test.rs` 验证 `FnMut` 捕获状态跨调用变化以及 runner 调用次数；`pkg/testkit/testmain/migration_aster_unit_test.rs` 验证 `None` 恒等回调和“先 runner、后回调”的退出码变换；`pkg/session/test/bootstraptest2/main_test.rs` 验证清理回调不吞掉退出码。
-- Rust 直接使用：`pkg/session/test/bootstraptest/lib.rs`、`pkg/session/test/bootstraptest/main_test.rs`、`pkg/session/test/main_test.rs`、`pkg/session/test/variable/main_test.rs`、相邻 `pkg/testkit/testmain/bench.rs`。
-- Go 对照与真实用途：`pkg/testkit/testmain/wrapper.go`，以及 `pkg/session/main_test.go`、`pkg/session/test/main_test.go`、`pkg/statistics/main_test.go` 等对 `goleak.VerifyTestMain(testmain.WrapTestingM(...))` 的调用。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/testkit/testmain` 确认该目录 8 个已索引 Go/Rust 文件；`node --file pkg/testkit/testmain/wrapper.rs --offset 1 --limit 260` 返回完整 64 行源码、9 个符号及 5 个 Rust 使用文件；`query TestingM --limit 20` 与 `query WrapTestingM --limit 20` 定位 Rust trait/结构体/工厂函数及 Go 对照符号。对高度重载的 `run`，调用图未提供可用消歧结果，改用直接源文件证据核验，没有把模糊结果当作事实。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证目标文档存在且恰好包含 11 个固定二级章节，并人工复核没有修改 Rust、Go、Cargo 或只读 `plan.md`。

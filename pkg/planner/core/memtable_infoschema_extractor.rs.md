@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；`pkg/planner/core/Cargo.toml` 将 crate 根设为 `lib.rs`，而 `lib.rs:154,218` 声明并公开重导出本模块。它提供一组面向 `INFORMATION_SCHEMA` 内存表的轻量谓词抽取器：把规划阶段已经简化成 `Predicate` 的条件转成元数据候选过滤状态，以减少后续枚举范围。输入谓词模型定义在同 crate 的 `memtable_predicate_extractor.rs:16-50`。
-
-RustCodeGraph 把本文件识别为 586 行、65 个符号，并列出 `planbuilder_runtime.rs`、旧 Cascades `implementation_rules.rs` 以及两个测试文件为文件级使用者；但对本文件关键方法执行精确 `callers`/`callees` 查询没有返回静态调用边。结合全仓 Rust 引用搜索，能直接证实的构造、抽取和枚举调用主要位于独立测试。因此，本文件当前可确认的是“已公开的规划辅助 API 与已测试行为”，不能仅凭 Go 的接线推断 Rust 生产主链已经完整调用这些 API。
+`InfoSchemaBaseExtractor` 统一保存等值/`IN` 条件、`LIKE` 条件和不可命中标志，并实现状态重置、条件求交、匹配和 Explain 摘要（`64-225`）。
 
 ## 核心职责
 
@@ -67,8 +65,6 @@ RustCodeGraph 把本文件识别为 586 行、65 个符号，并列出 `planbuil
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/planner/core/memtable_infoschema_extractor.go`。两版共同保留：各视图的列白名单、同列条件收窄、`SkipRequest`、Explain 信息、大小写无关元数据匹配、DDL 不裁掉 Selection、隐藏列跳过、可见列 ordinal、整型主键索引 ID 0，以及 schema/table 配对排序。Rust 测试 `infoschema_extractors_use_the_go_column_lists` 和 `infoschema_listing_preserves_sorting_visibility_and_ordinals` 明确锁定这些迁移语义。
-
 当前 Rust 是简化的规划数据模型，而不是 Go 实现的逐 API 完整副本：Go `Extract` 接收表达式 schema/context 并调用 `extractHelper`，Rust 接收已经归一化的 `Predicate`；Go 的 `ListSchemasAndTables` 会从 `infoschema.InfoSchema` 按 ID、分区 ID、名称枚举并传播错误，Rust 只过滤传入候选；Go 会编译 regexp，Rust用 `CompilePattern/DoMatch`；Go 的 Columns/IndexUsage 缓存谓词名，Rust每次直接调用 `Has`。这些差异说明 Rust 文件实现了抽取和候选过滤核心，但完整生产数据获取与表达式转译链不能由本文件单独证明。
 
 配对排序对应 Go `schemaTableSorter`（Go `799-819`）；Rust额外在 `new` 阶段检查长度并以稳定置换同步交换。Go `findSchemasForTables` 的修复意图是删掉找不到 schema 的表并保持平行切片对齐（`752-796`），Rust回归测试则直接验证排序不会打乱配对。
@@ -81,11 +77,3 @@ Go 对照文件为 `pkg/planner/core/memtable_infoschema_extractor.go`。两版�
 - 修改元数据列表时，在 `memtable_extractors/memtable_extractors_test.rs` 覆盖排序、隐藏列、ordinal、`PKIsHandle` 与 ID/name/LIKE 组合；修改 `SchemaTableSorter` 时同步维护 `panicrisk_regression_test.rs`，不得把 Rust 单元测试内嵌回生产源文件。
 - 若接入真实规划主链，应在表达式到 `Predicate` 的转换点和具体内存表扫描消费者处补独立集成测试，并验证 `SkipRequest` 真能阻止底层访问，而不只是类型存在或零测试编译通过。
 - 性能上应避免无界复制整个 `TableInfo` 集合；兼容性上应以 Go 的大小写、escape、remaining 和错误传播行为为基准，但对 Rust 尚未实现的 InfoSchema 查询链应单独移植，不能在本文件中用桩替代。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含本文件；`files --filter` 报告 586 行、65 个符号；`node --file` 阅读了完整源文件，并读取 `lib.rs`、`memtable_predicate_extractor.rs` 及测试源码。对 `ExtractPredicates`、`ListSchemasAndTables`、`ListColumns`、`ListIndexes` 的精确 callers/callees 查询没有输出，因此相关生产调用没有被宣称为已验证。
-- 源与配置：`pkg/planner/core/memtable_infoschema_extractor.rs`、`pkg/planner/core/lib.rs:154,218`、`pkg/planner/core/Cargo.toml`、`pkg/planner/core/memtable_predicate_extractor.rs:16-50`。
-- Go 对照：`pkg/planner/core/memtable_infoschema_extractor.go:91-300,306-635,700-1040`；生产 Go 构造分派见 `pkg/planner/core/logical_plan_builder.go:5503-5531`。
-- Rust 测试：`pkg/planner/core/memtable_extractors/memtable_extractors_test.rs:17-99,263-350,435-522`，`pkg/planner/core/operator/logicalop/logicalop_test/logical_mem_table_predicate_extractor_test.rs:355-427`，`pkg/planner/core/panicrisk_regression_test.rs:51-99`，`pkg/planner/core/tests/extractor/memtable_infoschema_extractor_test.rs:505-678`。
-- 未运行 Cargo 或代码测试，符合本任务纯文档范围。交付前使用任务指定的命令验证文档存在且恰有 11 个固定二级标题，并人工复核所有“已支持”结论均能回指上述源码或测试。

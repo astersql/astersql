@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpling-export` library crate；crate 根在 `dumpling/export/lib.rs`，通过 `#[path = "schema_projection.rs"] mod schema_projection;` 将它注册为私有模块。它位于 Dumpling 列过滤的“表元数据重写”阶段：`dumpling/export/dump.rs::prepareColumnProjection` 先从服务器取得每张基础表的 `SHOW CREATE TABLE`，再调用本文件解析、裁剪和校验 AST，最终把恢复出的 SQL 写入 `columnProjection.schemaSQL`。因此它不会筛选数据行，也不负责发现可写列；它保证数据列被过滤后，随导出产物写出的 `CREATE TABLE` 仍只引用保留列，并保持可解析及关键 DDL 约束。
-
-直接配套的 SQL 恢复实现位于 `dumpling/export/schema_projection_restore.rs`，由本文件以私有子模块 `restore` 引入。独立 Rust 测试是 `dumpling/export/schema_projection_test.rs`；Go 语义基线是同目录 `schema_projection.go` 和 `schema_projection_test.go`。
+`build_projected_table_schema` / `project_table_schema` 按用户选中的列裁剪列定义与约束，同时闭包式保留可由当前保留列推导的生成列。
 
 ## 核心职责
 
@@ -90,9 +88,9 @@
 
 `dumpling/export/schema_projection.go` 是逐函数语义基线：Rust 的 `ProjectedTableSchema`、`parse_table_schema`、`build_projected_table_schema`、约束/索引辅助函数、自动列校验、分区和 TTL 校验、外键校验及 schema lookup，分别对应 Go 的同名 camelCase 实现。两者都按声明顺序补入生成列，都在裁剪后验证自动列/分区/TTL，也都先精确匹配表名再使用不区分大小写匹配并拒绝歧义。
 
-实现层面的可核对差异：Go 使用 `ddl.FindColumnNamesInExpr`，Rust 用 parser `Visitor` 的 `enter_column_name` 达到相同 AST 列依赖语义；Go 直接用 `strings.EqualFold`，Rust 用转义、首尾锚定、case-insensitive 的 regex 来覆盖 Unicode simple folding；Go 用 `format.RestoreCtx`，Rust 把恢复细节拆到 `schema_projection_restore.rs`。Rust 还显式检查外键 index part 的 `Column` 非空并返回错误，避免对异常 AST 解引用。
+实现层面的可核对差异：Go 使用 `ddl.FindColumnNamesInExpr`，Rust 用 parser `Visitor` 的 `enter_column_name` 达到相同 AST 列依赖语义；Go 直接用 `strings.EqualFold`，Rust 用转义、首尾锚定、case-insensitive 的 regex 来覆盖 Unicode simple folding；Go 用 `format.RestoreCtx`，Rust 把恢复细节拆到 `schema_projection_restore.rs`。
 
-`dumpling/export/schema_projection_test.go` 覆盖原始移植意图，包括生成列、分区、TTL、默认表达式、自动列、外键和大小写表名；`schema_projection_test.rs` 在保持这些行为的基础上还验证子分区、部分/表达式/vector 索引、Unicode simple folding、typed literal 与 TiDB special comment、SQL mode、枚举/集合反斜杠和 placement policy 恢复。修改 Rust 行为时应同时核对 Go 测试，而不能为通过 Rust 测试删减 Go 分支。
+修改 Rust 行为时应同时核对 Go 测试，而不能为通过 Rust 测试删减 Go 分支。
 
 ## 扩展指南
 
@@ -103,12 +101,3 @@
 - 改动大小写查找时必须保持精确匹配优先、多折叠匹配报歧义以及 Go `EqualFold` 的 Unicode 类；现有 `projected_schema_lookup_*` 测试是最低回归集合。
 - 若接入并行解析，只能并行单表构建；`prepareColumnProjection` 的第二阶段外键校验屏障不能移除。
 - 测试逻辑应继续放在独立的 `dumpling/export/schema_projection_test.rs`，不要内嵌回生产文件；应用级缓存与两阶段行为还应同步更新 `dumpling/export/dump_test.rs`。本文件属于 Go 移植，修改时也应检查 `schema_projection.go` / `schema_projection_test.go` 的对应语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；目标源码由 `node --file dumpling/export/schema_projection.rs --offset 1 --limit 400` 完整读取，并显示被 `dumpling/export/dump.rs`、`dump_test.rs`、`schema_projection_test.rs` 等文件使用。
-- RustCodeGraph `query`：确认 `project_table_schema` 位于第 152 行、`lookup_schema` 位于第 263 行、`has_clustered_primary_key` 位于第 115 行；`callees` 确认核心内部边 `build_projected_table_schema -> parse_table_schema/project_table_schema`、`project_table_schema -> expression_columns/uses_only_retained_columns/keep_constraint/has_parent_index/has_clustered_primary_key`、`validate_foreign_key_parent -> lookup_schema/has_parent_index`。限定名 `callers` 未返回结果且 `callees` 输出混有同名候选，因此上游边改由直接入口源码核对，不将图中的噪声候选作为结论。
-- 已读生产路径：`dumpling/export/schema_projection.rs`、`dumpling/export/schema_projection_restore.rs`、`dumpling/export/dump.rs::prepareColumnProjection`、`dumpling/export/lib.rs`、`dumpling/export/Cargo.toml`。
-- 已读对照与测试：`dumpling/export/schema_projection.go`、`dumpling/export/schema_projection_test.go`、`dumpling/export/schema_projection_test.rs`；另由调用搜索核对 `dumpling/export/dump_test.rs` 的投影准备、缓存、外键和生成列场景。
-- 人工复核结论：该文件存在是为了让列过滤同时安全地重写 `CREATE TABLE`；运行时以单表 AST 投影和全表外键二阶段校验工作；安全扩展点集中在 AST 依赖收集、投影后不变量、父索引资格、恢复器和独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定的 `test -f` 与 11 个固定二级标题计数命令。

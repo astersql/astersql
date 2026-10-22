@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore` crate 的 Unix 平台目录创建适配层。crate 根模块 [`lib.rs`](./lib.rs) 以 `pub mod local_unix` 暴露它；[`local.rs`](./local.rs) 在 `#[cfg(not(windows))]` 下导入 `local_unix::mkdirAll`，Windows 构建则改用 [`local_windows.rs`](./local_windows.rs) 的同名实现。因此它不是完整存储后端，而是 `LocalStorage` 为保持 Go 版目录权限语义而复用的单函数平台边界。
-
-[`Cargo.toml`](./Cargo.toml) 将该模块归入包 `astersql-objstore`，库入口为 `lib.rs`。本文件直接依赖 `anyhow` 作为错误边界，并用 `libc` 调用 Unix `umask`；两项都由该 manifest 的普通依赖声明提供，没有额外 feature。包目录中没有 `doc.go`。
+直接依赖 `anyhow` 作为错误边界，并用 `libc` 调用 Unix `umask`；两项都由该 manifest 的普通依赖声明提供，没有额外 feature。
 
 ## 核心职责
 
@@ -79,16 +77,10 @@ RustCodeGraph 已索引目标文件，并将 `mkdirAll` 同时定位到 Rust/Go 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`local_unix.go`](./local_unix.go)。两版执行顺序一致：保存旧 umask、临时设为零、以 `0777` 递归创建目录、恢复旧 umask、返回创建错误。Go 的 mode 来自 [`local.go`](./local.go) 中的 `localDirPerm`，Rust 在本文件直接写出 `0o777`。
-
 已确认的实现差异：
 
-- Go 接收 `string`，Rust 接收 `&Path`，避免为系统路径强制 UTF-8 转换。
 - Go 手工在 `os.MkdirAll` 后恢复 umask；Rust 还用 `Drop` 守卫覆盖错误返回和 panic 栈展开，并显式在返回结果前 drop。Go 若 `MkdirAll` 正常返回，无论成功失败也会恢复，但同样没有并发同步。
 - Go 用 `errors.Trace(err)` 保留 PingCAP 错误栈语义；Rust只把 `io::Error` 转为 `anyhow::Error`，具体调用点再决定是否补上下文。
-- Windows 两版都不触碰 umask：Rust 的 [`local_windows.rs`](./local_windows.rs) 直接调用 `create_dir_all`，平台选择在 `local.rs` 的条件导入处完成。
-
-测试意图也对应：[`local_test.go`](./local_test.go) 与 [`local_test.rs`](./local_test.rs) 都覆盖写入嵌套路径 `123/456/789.txt`，证明缺失父目录可经 `WriteFile` 间接创建；Rust 的 [`helper_2_aster_unit_test.rs`](./helper_2_aster_unit_test.rs) 还通过两个不存在的根目录和 `copied/1.txt` 覆盖 `NewLocalStorage` 与 `CopyFrom` 的目录准备及硬链接结果。两边都没有本文件级的 umask/权限专测。
 
 ## 扩展指南
 
@@ -99,12 +91,3 @@ RustCodeGraph 已索引目标文件，并将 `mkdirAll` 同时定位到 Rust/Go 
 若要消除并发窗口，需要设计进程内共享锁，并确保所有会修改 umask 的本仓代码遵守同一锁；只在本函数内加局部锁无法约束外部库或其他语言线程。此类变化还要核对 [`local_unix.go`](./local_unix.go) 的兼容取舍，并评估锁竞争、panic poisoning 处理和跨 FFI 调用。
 
 若新增平台分支，应同步检查 [`lib.rs`](./lib.rs) 的模块装配、[`local.rs`](./local.rs) 的 `cfg` 选择和 Cargo 目标兼容性。性能风险主要是每次缺失目录都进行两次进程级系统调用；正确性风险则集中在全局 umask 竞态、部分目录已创建后失败，以及放宽新目录权限带来的安全边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/objstore` 确认目标文件被索引且含 4 个符号；`node --file pkg/objstore/local_unix.rs` 核对完整 45 行源码；`query mkdirAll --kind function --json` 定位 Rust/Go 的 Unix、Windows 四个实现。限定名 `callers`/`callees` 未返回函数级结果，此限制已在调用关系章节说明。
-- 源码与装配：[`local_unix.rs`](./local_unix.rs)、[`local.rs`](./local.rs)、[`lib.rs`](./lib.rs)、[`storage.rs`](./storage.rs)，确认唯一函数、条件编译、三处生产调用和本地后端工厂入口。
-- crate 边界：[`Cargo.toml`](./Cargo.toml)，确认包名、库入口、`anyhow`/`libc` 普通依赖以及没有影响本实现的 feature；包目录内未发现 `doc.go`。
-- Go 对照：[`local_unix.go`](./local_unix.go)、[`local.go`](./local.go)、[`local_windows.go`](./local_windows.go)，确认 `umask(0)`、`0777`、恢复顺序、三处对应调用及平台差异。
-- 独立测试：[`local_test.rs`](./local_test.rs)、[`local_test.go`](./local_test.go)、[`helper_2_aster_unit_test.rs`](./helper_2_aster_unit_test.rs)，确认嵌套写入、根目录创建和 `CopyFrom` 目标父目录创建的间接覆盖；未发现直接验证 umask 或最终目录 mode 的测试。
-- 按任务约束未运行 Cargo。交付仅执行固定 11 章节结构验证，并人工复核文档没有把平台辅助函数描述为完整存储后端，也没有把未覆盖的权限与并发性质写成测试已证明。

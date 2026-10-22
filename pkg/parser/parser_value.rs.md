@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser` crate 的主 SQL 解析器语义值基础层。它不单独声明模块，而是由 [`parser.rs`](parser.rs) 通过 `include!("parser_value.rs")` 嵌入 `parser_impl`，随后同一作用域继续嵌入语义辅助函数和 LR 运行时，并声明 `parser_actions`。因此这里的类型可以被词法器、移进/规约状态机和各类命名语义动作直接共享，但没有形成独立的公共 crate 模块。
-
-文件头标明它属于 goyacc 生成解析器产物；当前 Rust 拆分把 Go `parser.go` 中的 `yySymType` 和 Rust 动作分发需要的 `Rhs` 集中到此处。crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名是 `astersql-parser`，库入口为 `lib.rs`，AST 类型来自本地依赖 `astersql-parser-ast`。
+`take` 与 `take_default` 通过移动而非克隆取出动态 AST/`Any` 载荷；这既适配不可克隆的 trait object，也实现无显式动作时 goyacc 的默认 `$$ = $1` 语义。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照位于 [`parser.go`](parser.go)。Go `yySymType` 同样含 `yys`、`offset`、`item`、`ident`、`expr`、`statement`：Rust 将 Go `int` 映射为 `isize`/`i32`，将 `interface{}` 映射为 `Option<Box<dyn Any>>`，将可空接口型 AST 映射为 `Option` 和 trait object。Rust 的 `semantic_complete` 是当前 Rust 命名动作迁移用于传播覆盖完整性的附加字段，Go 结构中没有该字段。
+Rust 的 `semantic_complete` 是当前 Rust 命名动作迁移用于传播覆盖完整性的附加字段，Go 结构中没有该字段。
 
 Go 运行时以 `yyS` 栈、`yypt` 顶点和 `yyS[yypt-k]` 访问规约右部，并令 `parser.yyVAL` 指向规约结果槽；Rust 则以切片包装 `Rhs`，把同一位置关系表示为一基 `$1..$n`，动作层的 `rhs_len - k` 对应 Go 的 `yypt-k`。Go 栈槽赋值可复制接口头，Rust 不能复制 `Box<dyn Any>`/AST trait object，因此用 `take` 明确转移所有权。
 
@@ -94,11 +92,3 @@ Go 的生成运行时通过复用 `parser.cache` 扩容后的 `[]yySymType` 降�
 - 改动所有权传递时不得用浅复制或不受控共享替代 `take`。尤其要验证无动作规约的 `$$ = $1`、重复消费后的默认值、空右部和动态 `item` 向下转型。
 - 测试逻辑应保持在独立文件。最直接的同步位置是 [`parser_runtime_aster_unit_test.rs`](parser_runtime_aster_unit_test.rs)，其中已有一基借用/移动和默认值移动测试；默认 `item` 分配、缓存复用和完整解析行为位于 [`parser_3_aster_unit_test.rs`](parser_3_aster_unit_test.rs)。文法右部长度与动作覆盖变化还应同步检查 [`parser_manifest_aster_unit_test.rs`](parser_manifest_aster_unit_test.rs) 及对应动作模块的独立测试。
 - 该文件标为生成产物；若生成链能够产出它，应修改生成源/模板并重新生成，而不是让手工修改在下一次生成时丢失。当前证据只确认文件头和组装方式，未在本任务中验证具体生成命令。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引有效（11,467 个文件、307,296 个节点），索引时间晚于 `parser_value.rs`；`files --filter pkg/parser/parser_value.rs` 确认目标被索引且含 11 个符号；`node --file ... --offset 1 --limit 400` 核对了文件全部 81 行。`query yySymType`、`query Rhs --kind struct` 找到本文件类型；方法调用查询因同名歧义未给出可靠调用者，未将其结果当作调用证据。
-- 源码与入口：[`parser_value.rs`](parser_value.rs)、[`parser.rs`](parser.rs)、[`lib.rs`](lib.rs)、[`parser_runtime.rs`](parser_runtime.rs)、[`parser_actions/mod.rs`](parser_actions/mod.rs)、[`parser_semantic_support.rs`](parser_semantic_support.rs)、[`lexer.rs`](lexer.rs)、[`yy_parser.rs`](yy_parser.rs)。精确引用搜索确认 `Rhs::new` 位于规约动作调用和默认值传递两条路径，并确认各动作模块对 `Rhs` 的使用。
-- crate/Go 对照：[`Cargo.toml`](Cargo.toml) 与 Go 生成文件 [`parser.go`](parser.go)，重点核对 `yySymType` 字段、`yyS`/`yypt` 右部访问、规约结果槽和缓存复用。
-- 独立测试：[`parser_runtime_aster_unit_test.rs`](parser_runtime_aster_unit_test.rs) 验证一基左右顺序、可变借用、越界、移动后默认值及 `$1` 默认传递；[`parser_3_aster_unit_test.rs`](parser_3_aster_unit_test.rs) 验证默认 `item` 不分配、生成动作覆盖与长 SQL 栈缓存复用；[`parser_manifest_aster_unit_test.rs`](parser_manifest_aster_unit_test.rs) 验证生成归约的右部长度和动作标记。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本文只描述上述代码和测试可证实的当前行为。

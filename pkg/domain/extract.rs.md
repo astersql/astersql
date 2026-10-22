@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate，由 [`pkg/domain/lib.rs`](lib.rs) 以 `pub mod extract` 暴露。它实现 Plan Extract 的领域层：把语句摘要记录规范化、按 SQL digest 与 plan digest 去重，解析视图依赖，解码 binary plan，并把最终包交给可替换的数据源写出。生产入口位于 `pkg/server/extract_runtime.rs`：`CanonicalExtractRuntime::new` 用当前 `Domain` 和 `ProductionExtractSource` 构造 `ExtractHandle::new_with_domain`，随后 `ExtractRuntime::extract_task` 将 HTTP 层任务转换为本文件的 `ExtractTask` 并调用 `ExtractHandle::extract_task`。
-
-源码第 23–591 行是整段注释掉的 Go 机械翻译草稿，不参与编译；当前可执行 Rust 实现从 `use std::collections::{BTreeMap, BTreeSet};` 开始。分析行为时应以第 592 行之后的实现为准，不能把注释草稿中的 zip API、restricted SQL 或错误分支当作已经接线的 Rust 行为。
+用 `ExtractSource` 隔离语句摘要查询、InfoSchema 表解析、计划解码和产物落盘；本文件负责与具体存储无关的编排与过滤。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/domain/extract.go`，对应测试为 `pkg/domain/extract_test.go`。Rust 保留了 `ExtractPlanType`、任务默认值、history-view 配置门槛、`collectRecords` 的串行与 digest-pair 去重、`checkRecordValid` 三项过滤、截断 SQL 路由、binary plan 换行裁剪、视图依赖扩展以及产物目录/文件名用途。
+Rust 保留了 `ExtractPlanType`、任务默认值、history-view 配置门槛、`collectRecords` 的串行与 digest-pair 去重、`checkRecordValid` 三项过滤、截断 SQL 路由、binary plan 换行裁剪、视图依赖扩展以及产物目录/文件名用途。
 
 主要结构差异是 Rust 将 Go 中绑定 session/domain/外部存储的 worker 拆为 `ExtractSource` trait，并把具体 I/O 放在 server 的生产 source 中；`DomainAstExtractSource` 则专门保证生产视图定义来自当前 Domain InfoSchema。Go 通过 `tableNameExtractor` 与 restricted SQL parser 展开视图；Rust 直接调用 `astersql-parser` 并遍历真实 AST，独立测试进一步覆盖嵌套子查询、普通 CTE、递归 CTE、嵌套视图和视图环。
 
@@ -84,12 +82,3 @@ Rust 当前 `ExtractType` 只有 `Plan`，没有 Go `taskTypeToString` 的 `Unkn
 - 修改并发策略时，明确评估锁范围、source 的 `Send + Sync` 契约及 dump 是否允许并发。不要把文件/zip 资源生命周期搬入本文件而没有为失败关闭路径增加测试。
 - 修改产物格式或 stats 开关时，应实现于生产 `ExtractSource::dump_package`，本文件只负责传递 `ExtractTask::skip_stats` 和 package；同时核对 `EXTRACT_*` 协议常量、server 生产 source 及 Go zip 格式。
 - 修改文件名算法时，保留并发唯一性并同步测试 `generate_extract_file_name`；若产物名成为安全边界，当前时间戳加 `Relaxed` 序列方案不足，需引入明确的安全随机源并评估外部兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/domain` 确认目标文件有 46 个符号；`node --file pkg/domain/extract.rs --offset 1/501` 读取了完整 993 行目标实现；`node extract.rs::ExtractHandle` 确认类型位置及来自 `extract_test.rs` 的引用。精确 callees 命令发生名称歧义，因此没有把其泛化结果作为调用事实。
-- Rust 源与入口：`pkg/domain/extract.rs`、`pkg/domain/lib.rs`、`pkg/server/extract_runtime.rs:434-479`、`pkg/server/extract.rs:16-58`、`pkg/server/http_status.rs:16-29`。
-- Crate 边界：`pkg/domain/Cargo.toml` 的 `[package]`、`[lib]` 与 `astersql-parser` / `astersql-parser-ast` 依赖。
-- Rust 独立测试：`pkg/domain/extract_test.rs`，覆盖真实 AST 的嵌套查询与 CTE、Domain InfoSchema 的递归视图/环、Go 过滤条件、截断与重复记录顺序、反向时间窗及 history-view 开关。
-- Go 对照：`pkg/domain/extract.go`；Go 集成行为证据：`pkg/domain/extract_test.go` 的当前摘要、持久化历史摘要配置错误和成功导出场景。
-- 本任务是纯文档分析，未修改 Rust/Go/Cargo，按任务约束未运行 Cargo。交付前另运行任务指定的 11 章节结构验证，并人工确认本文区分了注释草稿、领域编排与生产 source 的真实职责。

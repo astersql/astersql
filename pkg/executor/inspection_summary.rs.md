@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`inspection_summary.rs`](inspection_summary.rs) 属于 `astersql-executor` crate；crate 根在 [`lib.rs`](lib.rs) 中以 `pub mod inspection_summary` 公开该模块，包边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确认。它把 `metrics_schema` 指标表按巡检规则聚合为巡检摘要行，是 Go 文件 [`inspection_summary.go`](inspection_summary.go) 的 Rust 语义移植。
-
-当前接线状态需要特别区分：Rust 源码已经公开规则、抽象运行时和检索算法，但全仓 `.rs` 引用搜索只找到独立测试 [`inspection_summary_test.rs`](inspection_summary_test.rs)，没有生产代码实现 `InspectionSummaryRuntime` 或实例化 `InspectionSummaryRetriever`。因此本文件当前是可测试的执行核心，尚不能据此认定 Rust SQL 主链已经把它接入 `INFORMATION_SCHEMA.INSPECTION_SUMMARY`。Go 版本则通过 executor 的 memtable 路径实际运行。
+`InspectionSummaryRetriever::retrieve` 根据规则名、指标名和分位数过滤条件，逐个查找指标定义，生成受限 SQL，对 `value` 计算 `avg/min/max`，再把查询结果转换成固定九列摘要行（第 483—596 行）。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@ Go 对应调用链是 `information_schema.inspection_summary` 的 memtable retri
 
 ## 与 Go 版本的对应关系
 
-[`inspection_summary.go`](inspection_summary.go) 的 `inspectionSummaryRules` 与 `inspectionSummaryRetriever.retrieve` 是直接对照。Rust 保留了规则/指标过滤、缺失定义 warning、分位数默认 0.99、六位小数列表、标签分组排序、`instance` 抽取、store 标签格式化、九列顺序和带 SQL 的错误包装。Rust 独立测试明确验证了这些核心语义。
-
 两者仍有重要接线差异：Go 结构直接持有 `TableInfo`、planner extractor 和 `QueryTimeRange`，从 session 获取指标定义与 restricted SQL executor，并给 context 标记 `InternalTxnMeta`；Rust 使用自定义 extractor、字符串时间条件和泛型 trait，尚无生产实现。Go 测试 `TestInspectionSummary` 通过真实 SQL 路径、mock metrics failpoint 验证聚合和展示，`TestValidInspectionSummaryRules` 还逐项确认指标存在于 `infoschema.MetricTableMap`；Rust 规则测试只验证规则非空、规则内无重复以及关键指标存在，没有逐项连接真实 Rust 指标目录。
 
-Go 的 nil 分位数对应 Rust `InspectionSummaryValue::Null`。Go 的 `types.Datum` 能表达更广泛 SQL 值，Rust 枚举当前只覆盖字符串、浮点和空值，足够服务本文件现有九列协议，但不是通用 Datum 替代物。
+Go 的 `types.Datum` 能表达更广泛 SQL 值，Rust 枚举当前只覆盖字符串、浮点和空值，足够服务本文件现有九列协议，但不是通用 Datum 替代物。
 
 ## 扩展指南
 
@@ -80,11 +76,3 @@ Go 的 nil 分位数对应 Rust `InspectionSummaryValue::Null`。Go 的 `types.D
 - 接入 Rust 生产链时，实现 `InspectionSummaryRuntime` 并在 memtable/executor builder 的相应分支构造 retriever；同时补端到端 SQL 测试，验证权限/内部事务标记、取消传播、时间范围、warning 和结果排序。不能以当前 mock trait 测试代替生产接线证据。
 - 若需稳定的规则间顺序，优先采用有序静态目录或在输出层排序，并评估每次调用重建大 `HashMap<Vec<_>>` 的成本。若改为全局惰性缓存，还要明确初始化和并发访问语义。
 - 若增强健壮性，可在运行时边界验证行宽、标签列类型和分位数范围，并用可返回错误的读取接口替代隐式索引/类型假设；这会改变 trait 和错误契约，需要同步所有实现与测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件完整索引为 597 行。`node inspection_summary.rs::retrieve` 确认入口源码及其本地调用，`query InspectionSummaryRetriever`、`query inspectionSummaryRules` 确认 Rust/Go 对照符号，`callers`/`callees` 查询暴露同名噪声后以精确仓库搜索复核。
-- 已读生产与装配文件：[`inspection_summary.rs`](inspection_summary.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、Go 对照 [`inspection_summary.go`](inspection_summary.go)。目标包没有 `doc.go`。
-- 已读独立测试：Rust [`inspection_summary_test.rs`](inspection_summary_test.rs)；Go [`inspection_summary_test.go`](inspection_summary_test.go)。Rust 测试覆盖目录基本不变量、SQL/九列转换、一次性读取、默认 0.99、缺失定义 warning 和 SQL 错误包装；Go 测试补充真实 SQL 聚合与指标目录存在性证据。
-- 实际 Rust 接线复核：全仓 `*.rs` 对 `InspectionSummaryRetriever|InspectionSummaryExtractor|InspectionSummaryRuntime|InspectionSummaryValue|MetricDefinition|inspectionSummaryRules` 的精确搜索仅命中本文件与其独立测试，所以本文将生产集成标为“尚未验证/尚未接线”，没有用 Go 现状替代 Rust 事实。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题。

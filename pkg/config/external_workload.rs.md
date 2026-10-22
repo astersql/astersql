@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-config` crate（见 `pkg/config/Cargo.toml`），定义 TiDB 主配置中 `[external-workload]` 段的 Rust 数据模型和字段级校验。`pkg/config/lib.rs` 以 `mod external_workload` 装入模块并通过 `pub use external_workload::*` 重导出，因此其他 crate 可直接使用 `astersql_config::ExternalWorkload` 和各角色常量。
-
-它不是外部工作负载控制器或任务调度器的实现。配置经 `pkg/config/config.rs` 的 `Config::valid` 校验后，才由 `pkg/session/runtime/session.rs` 读取并转换成 `astersql_extworkload::config::ExternalWorkload`，随后交给 `NewManagerWithTLS` 建立运行时管理器。
+配置经 `pkg/config/config.rs` 的 `Config::valid` 校验后，才由 `pkg/session/runtime/session.rs` 读取并转换成 `astersql_extworkload::config::ExternalWorkload`，随后交给 `NewManagerWithTLS` 建立运行时管理器。
 
 ## 核心职责
 
@@ -83,13 +81,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/config/external_workload.go`。Rust 保留了 Go 的四个角色文本、四个配置字段、零值默认、启用短路、规范化顺序、默认 master、校验顺序和错误文本语义。
+Rust 保留了 Go 的四个角色文本、四个配置字段、零值默认、启用短路、规范化顺序、默认 master、校验顺序和错误文本语义。
 
-主要语言映射为：Go 的命名字符串类型对应 Rust `String` 类型别名；Go 的 TOML/JSON tag 对应 serde kebab-case；Go 的指针接收者 `Valid` 对应 Rust `&mut self`；Go `error` 对应当前 Rust 的 `Result<(), String>`；Go 的值接收者 `isConfigured` 对应 Rust `&self`。
-
-已确认的接线差异是 Rust `Config::default` 直接使用派生的 `ExternalWorkload::default()`，而 Go `defaultConf` 调用 `defaultExternalWorkload()`，两者结果相同。Rust 另保留公开的同名函数供迁移接口和测试使用。Rust 顶层加载/校验位于 `pkg/config/config.rs`，Go 对应逻辑位于 `pkg/config/config.go`；两者都实施“仅 Starter 可配置”的外层约束。
-
-Go 回归 `pkg/config/config_test.go::TestExternalWorkloadValid` 覆盖部署模式、必填字段、非法角色和 `GCV2` 规范化。Rust 的 `pkg/config/config_test.rs::test_external_workload_valid` 覆盖相同主链，`pkg/config/const_3_aster_unit_test.rs::external_workload_normalizes_and_validates_like_go` 进一步直接覆盖关闭态不修改、空角色默认 master、空白修剪和错误文本。
+已确认的接线差异是 Rust `Config::default` 直接使用派生的 `ExternalWorkload::default()`，而 Go `defaultConf` 调用 `defaultExternalWorkload()`，两者结果相同。Rust 顶层加载/校验位于 `pkg/config/config.rs`，Go 对应逻辑位于 `pkg/config/config.go`；两者都实施“仅 Starter 可配置”的外层约束。
 
 ## 扩展指南
 
@@ -98,12 +92,3 @@ Go 回归 `pkg/config/config_test.go::TestExternalWorkloadValid` 覆盖部署模
 - 收紧地址或池名语法前，需要评估现有配置兼容性。当前契约只做非空检查，直接增加 URL 或字符集限制会成为行为变化。
 - 不应把测试内嵌到本源文件。直接单元测试应继续放在 `pkg/config/const_3_aster_unit_test.rs` 或 `pkg/config/config_test.rs`，顶层配置/加载行为同步 `pkg/config/config_test.go` 的 Go 用例；涉及真实管理器创建的行为应放在 `pkg/extworkload/manager_test.rs` 或 session/domain 的独立测试文件。
 - 修改错误文本或校验顺序时，应同步断言字符串的 Rust/Go 测试，并检查顶层 `Config::valid` 的错误包装是否仍保持用户可诊断性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/config/external_workload.rs` 报告该文件 7 个符号；`node --file ... --offset 1 --limit 260` 读取了完整 132 行源码；精确查询确认 Rust/Go 同名结构、默认函数及规范化函数；调用图确认 `Valid → normalized/valid`、`isConfigured → normalized`。通用符号名的 callers 查询存在跨语言歧义，因此上游接线另由精确引用与源码核验。
-- 目标源码：`pkg/config/external_workload.rs`，核对常量、结构、serde 属性、默认函数、两个方法与两个辅助函数。
-- crate 与模块：`pkg/config/Cargo.toml`、`pkg/config/lib.rs`，核对 crate 名、serde 依赖、模块装入与公开重导出。
-- Rust 上下游：`pkg/config/config.rs`、`pkg/session/runtime/session.rs`、`pkg/domain/domain.rs`、`pkg/extworkload/manager.rs`、`pkg/extworkload/lib.rs`，核对默认值、部署模式门禁、校验调用、运行时转换、角色消费和管理器边界。
-- Go 对照：`pkg/config/external_workload.go`、`pkg/config/config.go`，核对字段、角色、规范化、校验及顶层接线。
-- 测试证据：`pkg/config/config_test.rs::test_external_workload_valid`、`pkg/config/const_3_aster_unit_test.rs::external_workload_normalizes_and_validates_like_go`、`pkg/config/config_test.go::TestExternalWorkloadValid`。本任务是纯文档分析，按计划不运行 Cargo 或代码测试。

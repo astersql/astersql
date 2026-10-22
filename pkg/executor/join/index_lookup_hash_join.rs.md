@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-join` crate 中 Index Nested Loop Hash Join 的 Rust 实现。模块由 `pkg/executor/join/lib.rs` 以 `pub mod index_lookup_hash_join` 公开，核心公开类型是 `IndexNestedLoopHashJoin`。它把外表按批次组织成索引查找请求，通过 `IndexJoinExecutorBuilder` 获取内表行，再借助 `Joiner` 生成不同连接类型的结果。
-
-当前可执行 Rust 实现位于源文件第 637 行之后；此前的大段注释保存了 Go 版本的结构和迁移线索，并不参与编译。当前实现是同步、单线程、全量物化结果的版本。`pkg/executor/benchmark_test.rs` 直接构造并抽干该执行器；`pkg/executor/builder.rs::buildIndexNestedLoopHashJoin` 则通过 `ExecutorBuilderDependencies::wrap_index_nested_loop_hash_join` 做通用执行器接线，现有直接证据不能证明该依赖注入最终必然构造本文件的具体类型。
-
-crate 边界见 `pkg/executor/join/Cargo.toml`：包名为 `astersql-executor-join`，库入口为 `lib.rs`，移植元数据指向 Go 包 `pkg/executor/join`。本文件实际使用同 crate 的 `index_lookup_join`、`joiner`、`row_table_builder` 模块以及标准库 `HashMap`；Cargo 中大量 `cfg(windows)` 依赖属于整个 join crate，并非都被本文件直接调用。
+`open`、`next`、`close` 提供轻量生命周期和分页读取接口；第一次需要数据的 `next` 会一次性执行完全部任务并缓存结果。
 
 ## 核心职责
 
@@ -102,17 +98,6 @@ Go `IndexNestedLoopHashJoin` 的真实模型是一条 outer goroutine 加 N 条 
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/executor/join/index_lookup_hash_join.go` 是直接对照实现。名称和主要概念的映射包括：`numResChkHold -> NUM_RESULT_CHUNKS_HELD`、`maxRowsPerFetch -> MAX_ROWS_PER_FETCH`、`indexHashJoinTask -> IndexHashJoinTask`、outer/inner worker、`IndexNestedLoopHashJoin`、保序/乱序 join 以及 `supportIncrementalLookUp` 门禁。
-
-已保持的主要语义：
-
-- outer 侧建哈希、inner 侧索引 lookup 后探测的算法方向；
-- 保序模式按外表行组织匹配结果，乱序模式以内表行驱动探测；
-- lookup key 去重、重复 outer key 映射到多行；
-- 未匹配行统一交给 Joiner，并累计 join 条件的 NULL 结果；
-- 增量 lookup 仅允许乱序的 Inner、LeftOuter、RightOuter、AntiSemi 四类 join；
-- 批次最大值 4096，以及保序资源常量值 4。
-
 尚未等价或明显简化的部分：
 
 - Go 用一个 outer worker 和多个 inner worker 并发执行，并让建哈希与 inner fetch 并行；Rust 当前完全串行。
@@ -135,18 +120,3 @@ Go `IndexNestedLoopHashJoin` 的真实模型是一条 outer goroutine 加 N 条 
 - 修改生命周期时，应补充 `open -> next -> close`、隐式 open、零 required rows、空结果重复 next、close 后 next，以及是否允许重新 open 的独立回归测试。
 - 若要接入生产计划构建链，应沿 `pkg/executor/builder.rs::buildIndexNestedLoopHashJoin` 检查 `wrap_index_nested_loop_hash_join` 的具体实现，验证返回对象确实包装或构造本类型；不要仅凭 plan 分派名称假定已经接线。
 - 性能重点是当前全量 `output`、任务/匹配行克隆和单线程 builder 调用。任何减少克隆或引入流式输出的改动都必须同时验证结果顺序、未匹配行时机和分页边界。
-
-## 验证依据
-
-本说明基于以下直接证据完成事实核对：
-
-- RustCodeGraph 索引状态：项目索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- 目标源码与符号：`pkg/executor/join/index_lookup_hash_join.rs`；查询确认 22 个符号，并逐段读取全部 908 行。主要符号为 `IndexHashJoinResult`、`IndexHashJoinTask`、`IndexHashJoinOuterWorker::{new, build_task}`、`IndexHashJoinInnerWorker::handle_task`、`IndexNestedLoopHashJoin::{new, support_incremental_lookup, open, execute, join_in_order, join_unordered, next, close}`。
-- 下游定义：RustCodeGraph `node IndexJoinExecutorBuilder` / `node IndexJoinLookupContent` 定位到 `pkg/executor/join/index_lookup_join.rs`；`node Joiner`、`query try_to_match_inners`、`query on_miss_match` 定位到 `pkg/executor/join/joiner.rs`。
-- 上游与装配：`pkg/executor/join/lib.rs`、`pkg/executor/builder.rs::build` 和 `buildIndexNestedLoopHashJoin`、`pkg/executor/benchmark_test.rs::run_index_nested_loop_hash_join_case` / `run_index_join_lane`。
-- crate 边界：`pkg/executor/join/Cargo.toml` 的 package、lib、porting metadata 和条件依赖声明。
-- Go 对照：RustCodeGraph 逐段读取 `pkg/executor/join/index_lookup_hash_join.go`，重点核对 `Open`、`startWorkers`、`buildTask`、`supportIncrementalLookUp`、`newInnerWorker`、`handleTask`、`doJoinUnordered`、`doJoinInOrder` 及 worker/channel 生命周期。
-- 独立 Rust 测试：`pkg/executor/join/index_lookup_hash_join_test.rs::incremental_lookup_matches_go_join_type_and_order_gate`，确认四个允许类型、三个拒绝类型及 `keep_outer_order` 门禁。
-- 人工复核结论：当前 Rust 可执行部分的同步物化实现与前半段注释化 Go 迁移线索已明确分离；未把 Go 并发、取消、内存跟踪或增量 inner fetch 描述为 Rust 已支持。
-
-本任务按计划属于纯文档分析，未运行 Cargo。结构验收应使用任务指定命令，确认文件存在且恰有上述 11 个固定二级标题。

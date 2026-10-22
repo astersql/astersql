@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/generated_column.rs` 属于 `astersql-ddl` crate；crate 根由 `pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/ddl/lib.rs` 通过 `pub mod generated_column` 将本模块公开。它位于 DDL 元数据构造和校验层：在生成列或表达式索引的元数据进入后续 DDL 作业流程前，检查表达式形状、列依赖、列顺序、自动增量引用以及 `EMBED_TEXT` 的专有限制。本文件不创建或调度 DDL job，也不推进 schema state。
-
-RustCodeGraph 的文件节点将直接生产使用方概括为 `pkg/ddl/create_table.rs` 与 `pkg/session/runtime/ddl.rs`；源码搜索还显示，模块内的简化数据模型被 `pkg/ddl/add_column.rs`、`pkg/ddl/modify_column.rs` 和 `pkg/ddl/constraint.rs` 分别用于新增列、修改列依赖保护和约束依赖提取。测试模块由 `pkg/ddl/lib.rs` 中的 `mod generated_column_test` 独立装配，测试逻辑没有内嵌在生产文件中。
+虚拟列读取时计算、存储列写入时计算的实际执行不在本文件；这里仅决定定义是否允许进入元数据/DDL 主链。
 
 ## 核心职责
 
@@ -80,13 +78,11 @@ embedding 路径直接返回 `astersql_parser::errors::Error` 并保留与 Go �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/generated_column.go`。Rust 的 `GenerationAttribute` 对应 Go 的 `columnGenerationInDDL`；`verify_column_generation`、`verify_column_generation_single`、`check_depended_columns_exist`、`find_position_relative_column`、`find_column_names_in_expr`、`has_dependent_generated_column`、`check_auto_increment_reference` 分别对应同名驼峰 Go 函数或其等价逻辑。Rust 的 `check_illegal_function_for_generated` 对应 `illegalFunctionChecker` 与 `checkIllegalFn4Generated`，包括 `GROUPING` 归类、函数参数验证意图、表达式索引 GA 函数开关以及数组 `CAST` 根节点规则。
-
 `check_modify_generated_column` 合并表达了 Go `checkModifyGeneratedColumn` 中的存储状态/全表依赖检查以及 `checkIndexOrStored` 的表达式、类型、STORED 和索引保护，但 Rust 签名只接收已算好的 `indexed`，也不包含 Go 函数中的 session 开关、parser 列定义和 EMBED_TEXT 检查；更关键的是，它当前没有生产调用者。因此不能声称 Rust 修改列主链已经通过该函数完整复刻 Go 流程。
 
-Rust 的 `check_embed_text_generated_column` 与 `embed_text_dependency_error` 分别对应 Go 的 `checkEmbedTextGeneratedColumn` 和 `embedTextDependencyErr`。Go 另有 `findEmbedTextDependency`；Rust 没有同名公共函数，而是在 `create_table.rs::check_table_info_valid_with_stmt` 和 `session/runtime/ddl.rs::check_embedding_column_dependencies` 的上下文中直接扫描依赖。Go 的 `checkExpressionIndexAutoIncrement` 在本文件也没有直接对应物。
+Go 另有 `findEmbedTextDependency`；Rust 没有同名公共函数，而是在 `create_table.rs::check_table_info_valid_with_stmt` 和 `session/runtime/ddl.rs::check_embedding_column_dependencies` 的上下文中直接扫描依赖。Go 的 `checkExpressionIndexAutoIncrement` 在本文件也没有直接对应物。
 
-Rust 还保留一套简化 `ExpressionNode`，同时 embedding 新增逻辑使用真实 parser AST。这是当前迁移状态，不应把两套遍历器视为自动同步；修改表达式规则时必须检查两条路径及 Go visitor 的优先级。
+Rust 还保留一套简化 `ExpressionNode`，同时 embedding 新增逻辑使用真实 parser AST。
 
 ## 扩展指南
 
@@ -95,11 +91,3 @@ Rust 还保留一套简化 `ExpressionNode`，同时 embedding 新增逻辑使�
 修改依赖规则时，应同时审查 `verify_column_generation`（全表）、`verify_column_generation_single`（新增单列）、`check_depended_columns_exist`（可见性）、`has_dependent_generated_column`（删除/修改保护）以及 CREATE TABLE 自有的真实 AST 依赖检查，避免只修一条入口。若要让 `check_modify_generated_column` 成为生产主链的一部分，应先补齐与 Go `checkModifyGeneratedColumn` 的 session 开关、位置变化、非法函数、自增和 embedding 语义，而不是直接替换现有 `modify_column.rs` 检查。
 
 兼容风险主要是 MySQL/TiDB 错误码、错误优先级、列名大小写和隐藏表达式索引语义；性能风险主要来自对所有列的重复线性扫描和深表达式递归。测试至少应覆盖 `pkg/ddl/generated_column_test.rs`，并视入口同步 `pkg/ddl/db_integration_test.rs`、`pkg/ddl/column_modify_test.rs`、`pkg/ddl/add_column_test.rs` 和 `pkg/ddl/create_table_validation_aster_unit_test.rs`。测试仍应放在独立文件，不要移入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/ddl/generated_column.rs --offset 1 --limit 400` 与后续 400 行起的查询读取了完整 569 行，并报告直接使用文件 `pkg/ddl/create_table.rs`、`pkg/session/runtime/ddl.rs`；`query` 精确确认了关键函数定义。`callers` 对 `verify_column_generation` 和 `check_embed_text_generated_column` 的精确查询均在约 60 秒内无结果而超时，因此具体调用行改由源码引用搜索核验。
-- 已读生产与配置路径：`pkg/ddl/generated_column.rs`、`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、`pkg/ddl/add_column.rs`、`pkg/ddl/modify_column.rs`、`pkg/ddl/constraint.rs`、`pkg/ddl/create_table.rs`、`pkg/session/runtime/ddl.rs`。
-- 已读契约与 Go 对照：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`、`pkg/ddl/generated_column.go`。DDL 文档只作为入口，本文行为结论均以源码和测试复核。
-- 已读测试：完整的 `pkg/ddl/generated_column_test.rs`，以及 `pkg/ddl/db_integration_test.rs`、`pkg/ddl/column_modify_test.rs`、`pkg/ddl/create_table_validation_aster_unit_test.rs` 中的相关用例。证据覆盖 `GROUPING` 错误分类、表达式索引根/嵌套数组 `CAST`、未知依赖、前序生成列规则、非法/合法函数、列名小写化和 deployment 先于 EMBED_TEXT 形状校验的错误优先级。
-- 人工复核结论：本文区分了纯校验与 DDL job 生命周期、简化 AST 与真实 parser AST、已接线函数与当前无生产调用者，并给出了新增功能的接入点、同步测试及兼容/性能风险；未把 Go 的完整实现或未来目标描述成 Rust 当前已支持能力。

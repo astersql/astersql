@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate（见 `pkg/planner/core/Cargo.toml`），负责把解析器的 `ast::SelectStmt` 转成一棵轻量 FTS 逻辑计划树。`pkg/planner/core/lib.rs` 以私有模块 `mod fts_plan_builder` 装入它，再通过 `pub use fts_plan_builder::*` 将公开类型和函数提升到 crate 根。
-
-它位于“规范 SQL AST”与本 crate 的轻量 `PlanNode` 表示之间：构造 `DataSource`，按语句内容向外包装 `Selection`、`TopN`/`Sort`/`Limit` 和 `Projection`。它不负责把 `FTS_MATCH_WORD()` 绑定到具体全文索引，也不生成 TiPB 下推载荷；这些后续语义由相邻的 `fts_resolve_index.rs::ResolveFullTextPlan` 及各 resolver 承担。
-
-全仓 Rust 精确搜索只发现 `lib.rs` 的模块声明/重导出和本文件内部引用，没有发现 `BuildFullTextPlan`、`RestoreFtsExpression`、`FullTextIndexes` 或 `FtsTableMetadata` 的生产调用者，也没有 `fts_plan_builder_test.rs`。因此当前可确认的是一组已编译、已导出的构造能力，不能据此声称它已接入 Rust SQL 规划主链。
+`FtsTableMetadata` 提供构造 FTS 计划所需的轻量表信息：表标识、表名、列名、全文索引列表和 TiFlash 可用性。
 
 ## 核心职责
 
@@ -82,9 +78,7 @@ RustCodeGraph 能精确定位 `BuildFullTextPlan` 和 `RestoreFtsExpression`，�
 
 ## 与 Go 版本的对应关系
 
-同目录没有 `fts_plan_builder.go`，因此本文件不是某个 Go 同名文件的逐函数翻译。Go 的真实 FTS 生产链分散在通用 plan builder、表达式重写和 `pkg/planner/core/fts_resolve_index.go`：Go builder 直接创建 `logicalop.DataSource`、`LogicalSelection`、`LogicalTopN`、`LogicalProjection` 等完整逻辑计划，resolver 再基于列 ID、表 `IndexInfo`、schema 和 session context 绑定全文索引。
-
-Rust 本文件保留了这条链的前半段形状，但使用 `common_plans.rs` 的轻量 `PlanNode` 和字符串表达式。相邻 Rust `fts_resolve_index.rs` 对应 Go `fts_resolve_index.go` 的核心规则顺序，并由 `fts_resolve_index_test.rs` 覆盖索引匹配、字符串转义、TopN/Projection 对齐、脏事务和错误文本；这些测试验证的是构造后计划格式的消费者，不是对 `BuildFullTextPlan` 的直接调用测试。
+相邻 Rust `fts_resolve_index.rs` 对应 Go `fts_resolve_index.go` 的核心规则顺序，并由 `fts_resolve_index_test.rs` 覆盖索引匹配、字符串转义、TopN/Projection 对齐、脏事务和错误文本；这些测试验证的是构造后计划格式的消费者，不是对 `BuildFullTextPlan` 的直接调用测试。
 
 与 Go 完整实现相比，当前构造器没有 session/deployment-mode 检查、真实表/列 ID 解析、public 单列全文索引验证、`_FTS_SCORE` 虚拟列 schema 追加、类型信息、计划列 ID 分配、别名解析、谓词拆分或父子节点替换。`fts_resolve_index_test.go` 和 JSON testdata 证明 Go 侧已覆盖 TiFlash FTS EXPLAIN、错误用法、prepared plan cache 与脏事务；不能用这些 Go 集成测试替代 Rust 构造器自身尚缺的直接测试。
 
@@ -97,13 +91,3 @@ Rust 本文件保留了这条链的前半段形状，但使用 `common_plans.rs`
 - 增加 LIMIT 表达式或 prepared parameter 支持时，不应只让 `read_limit_value` 接受更多形状；必须定义执行期绑定、溢出和计划缓存语义。当前 FTS prepared cache 在 Go 测试中被明确禁用复用。
 - 修改表达式文本格式必须同步检查 `fts_resolve_index.rs` 的 `interpret_fts_expression`、`split_function_arguments`、`contains_fts_text` 和相关独立测试，否则可能导致 FTS 未识别或错误绕过。
 - 兼容风险集中在字符串化 AST、大小写/标识符引用、固定错误文案和 Go 完整逻辑计划的语义差距；性能风险主要是重复分配及深层递归。迁移时应复用现有 parser restore/type infrastructure，而不是继续扩大脆弱的手写字符串协议。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/fts_plan_builder.rs`，人工核对全部 230 行、所有模块级符号、分支、公开性和固定节点 ID。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query BuildFullTextPlan --kind function` 与 `query RestoreFtsExpression --kind function` 精确定位本文件符号。`explore`/`node` 本次未返回内容，`callers BuildFullTextPlan` 持续无输出后中止，因此调用关系以全仓精确源码搜索补证，没有把超时结果当作无调用证据。
-- 模块与 crate：`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`、`pkg/planner/core/common_plans.rs`；确认私有模块公开重导出、parser AST 依赖和 `PlanNode` 默认字段语义。
-- Rust 下游实现与独立测试：`pkg/planner/core/fts_resolve_index.rs`、`pkg/planner/core/fts_resolve_index_test.rs`；确认字符串计划的消费方式、resolver 顺序和已有边界覆盖。仓库中未发现直接调用本文件公开 API 的 Rust 测试。
-- Go 对照：`pkg/planner/core/fts_resolve_index.go`、`pkg/planner/core/fts_resolve_index_test.go`、`pkg/planner/core/testdata/fts_resolve_index_suite_{in,xut,out}.json`；确认 Go 侧使用完整逻辑计划与真实索引/schema/session 状态，而非本文件的轻量构造器。
-- 搜索证据：`rg` 对 `BuildFullTextPlan|RestoreFtsExpression|FullTextIndexes|FtsTableMetadata|fts_plan_builder` 的全仓/目录精确搜索只发现本文件定义、内部递归调用和 `lib.rs` 装配；对 `FTS_MATCH_WORD` 的测试搜索定位到上述 Rust/Go resolver 测试及 testdata。
-- 验证范围：本任务为纯文档分析，按计划不运行 Cargo 或代码测试。交付前仅运行指定的十一章节结构检查和文档差异检查；运行时行为仍以现有源码与测试内容为证据，未在本任务中重新执行。

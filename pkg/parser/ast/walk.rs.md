@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-ast` crate 的 AST 子节点遍历表与递归适配层。它不是公开模块：[`lib.rs`](lib.rs) 以 `mod walk` 私有装配，但公开的 `Node::accept`、`Node::accept_in_place` 和 `Walk` 会进入这里。因此调用者通常不直接依赖本文件，而是实现 [`lib.rs`](lib.rs) 中的 `Visitor` 或 `InPlaceVisitor`，再从某个 AST 根节点开始深度优先遍历。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名是 `astersql-parser-ast`，库入口是 `lib.rs`；本文件通过 `use super::*` 使用同 crate 的 AST 类型，不直接引入新的外部 crate，也没有 feature 或条件编译项。RustCodeGraph 的文件级关系显示 `walk.rs` 仅由 `pkg/parser/ast/lib.rs` 使用，符合“内部遍历实现、公开协议位于 crate 根”的结构。
-
-本文件存在的核心原因，是把“每个节点应按什么顺序访问哪些字段”从节点类型和公共访问者协议中集中抽出。它覆盖语句节点、表达式枚举、嵌入式值对象、容器和过程 AST 的动态值；不负责 SQL 解析、格式化、语义检查或执行。
+用私有 `Visit` / `VisitMut` 为具体节点、`dyn Node`、`Option`、`Vec`、`Box`、引用包装器和特殊叶子类型提供递归适配。
 
 ## 核心职责
 
@@ -86,13 +82,11 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名是 `astersql-parser-a
 
 ## 与 Go 版本的对应关系
 
-Go 没有同名 `walk.go`；对应语义分布在 [`ast.go`](ast.go) 的 `Visitor` / `InPlaceVisitor` / `Walk` 契约、各 AST 文件的 `Accept` 方法，以及生成文件 [`visitor_inplace_generated.go`](visitor_inplace_generated.go) 的 `AcceptInPlace` 方法。Rust 把大量字段遍历集中到本文件，并由 [`lib.rs`](lib.rs) 的通用 `Node` 实现模板调用。
-
-两端共同保持 enter-before-children、按字段/切片顺序深度优先、skip 时仍 leave、leave 返回 false 时全局短路的语义。Go `visitor_inplace_generated.go` 中 `IndexPartSpecification` 的 Expr/Column 二选一、`ReferenceDef` 的 Table/索引列/删除更新动作顺序等，与本文件手写或 `children!` 路径对应；Rust 回归测试直接固定了这些顺序。
+Go `visitor_inplace_generated.go` 中 `IndexPartSpecification` 的 Expr/Column 二选一、`ReferenceDef` 的 Table/索引列/删除更新动作顺序等，与本文件手写或 `children!` 路径对应；Rust 回归测试直接固定了这些顺序。
 
 表示方式存在差异：Go 传统 `Visitor.Enter/Leave` 返回替换节点，`InPlaceVisitor` 只原地修改；Rust 的只读 `Visitor` 不替换，而 `InPlaceVisitor` 另有可选的 enter/leave replacement 钩子，并要求替换保持完全相同的具体 Rust 类型。Rust 还需为不是 `Node` 的值类型提供 embedded 和专用叶子回调，并为 `Option`、`Vec`、`Box`、`Rc<RefCell<_>>` 写泛型适配；这些是 Rust 数据模型带来的实现层差异，不改变目标访问顺序。
 
-Go 测试 [`visitor_test.go`](visitor_test.go) 及各 AST 的 `*_test.go` 覆盖传统访问者和生成遍历；Rust 对应的独立测试主要是 [`ast_1_aster_unit_test.rs`](ast_1_aster_unit_test.rs)、[`go_merge_13_test.rs`](go_merge_13_test.rs)、[`go_merge_23_test.rs`](go_merge_23_test.rs)、[`go_merge_25_test.rs`](go_merge_25_test.rs)、[`go_merge_27_test.rs`](go_merge_27_test.rs) 以及各模块的 visitor cover 测试。Rust 测试逻辑保持在独立文件，没有内嵌到 `walk.rs`。
+Rust 测试逻辑保持在独立文件，没有内嵌到 `walk.rs`。
 
 ## 扩展指南
 
@@ -105,11 +99,3 @@ Go 测试 [`visitor_test.go`](visitor_test.go) 及各 AST 的 `*_test.go` 覆盖
 5. 在独立测试中至少固定：enter/children/leave 顺序、skip、false 短路、可变写回；有条件分支时覆盖每条分支，有替换时覆盖 enter 与 leave 替换及错误类型约束。优先扩展现有 [`go_merge_25_test.rs`](go_merge_25_test.rs) / [`go_merge_27_test.rs`](go_merge_27_test.rs)，分区结构使用 [`go_merge_13_test.rs`](go_merge_13_test.rs)。
 
 兼容性风险主要是漏孩子、字段次序改变或停止传播错误，这会影响名称收集、改写、标志分析等所有 visitor；性能风险是引入分配、克隆或重复访问。保持宏字段列表简单、原地遍历零框架分配，并与 Go `Accept` / `AcceptInPlace` 逐字段对照，可降低这些风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/ast` 定位 `walk.rs` 的 57 个符号；`node --file pkg/parser/ast/walk.rs` 分段读取全 939 行并确认文件只由 `lib.rs` 使用；`explore` 识别 `accept -> visit_children -> visit/accept` 链。一次针对通用 `visit` 名称的精确 callers/callees 查询超时，未把其无结果当作证据，而以文件边、精确源码和调用检索交叉核对。
-- Rust 生产源码：完整核对 [`walk.rs`](walk.rs)；读取 [`lib.rs`](lib.rs) 的 `Visitor`、`InPlaceVisitor`、`Walk`、`Node`、`SelectStmt` / `simple_node!` 的 accept 实现、`NodeRef` / `WithClauseRef` 和 `mod walk`；读取 [`Cargo.toml`](Cargo.toml) 的 crate 入口、依赖及 Go 包迁移元数据。
-- Go 对照：读取 [`ast.go`](ast.go) 的访问者协议和 `Walk`；读取 [`visitor_inplace_generated.go`](visitor_inplace_generated.go) 的生成遍历，且通过源码检索定位各 AST 文件的 `Accept` 实现；确认 Go 没有同名 `walk.go`。
-- Rust 测试：读取 [`ast_1_aster_unit_test.rs`](ast_1_aster_unit_test.rs)、[`go_merge_23_test.rs`](go_merge_23_test.rs)、[`go_merge_25_test.rs`](go_merge_25_test.rs)、[`go_merge_27_test.rs`](go_merge_27_test.rs) 的直接遍历用例，并检索 [`go_merge_13_test.rs`](go_merge_13_test.rs) 及其他 visitor cover 测试。证据覆盖顺序、跳过、短路、字段写回、类型替换、条件分支、特殊叶子和零框架分配。
-- 本任务只新增说明文档，按计划未运行 Cargo。交付前运行任务指定的结构命令，验证目标存在且恰好含 11 个固定二级标题；同时人工复核本文说明了文件职责、真实入口、扩展接点和未验证边界，没有把理想设计写成当前事实。

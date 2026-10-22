@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文对应源码为 [`prepare_snap.rs`](./prepare_snap.rs)。该文件属于 Cargo 包 `astersql-br-pkg-task-operator`（清单见 `br/pkg/task/operator/Cargo.toml`），由 `br/pkg/task/operator/lib.rs` 以 `pub mod prepare_snap` 挂载并通过 `pub use prepare_snap::*` 平铺导出。命令层 `br/cmd/br/operator.rs::newPrepareForSnapshotBackupCommand` 在解析 `PauseGcConfig` 后直接调用 `AdaptEnvForSnapshotBackup`，因此它是 `pause-gc-and-schedulers` / `prepare-for-snapshot-backup` 两个兼容命令名背后的 Rust 业务入口。
-
-本文件不是完整网络实现：PD、TiKV Store、GC safepoint 和 prepare-snapshot 协议均通过 `crate::stubs` 中的本地接口或桩类型访问。特别是 `dialPD` 在没有 `DIAL_HOOKS.dial_pd` 时必定拒绝连接，而不是建立真实 PD 连接；因此当前 Rust 路径的可运行形态主要是测试注入，不能把它描述为已经接通真实集群。
+任一 worker 返回错误都会记录错误并触发共享取消；所有线程退出后执行 `OnExit`、关闭 PD/Store 管理器并返回记录到的首个错误。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ Cargo 清单声明该 crate 是 `lib.rs` 驱动的 library；目标文件自身�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐函数对应 `br/pkg/task/operator/prepare_snap.go`：两版都有 PD/Store 创建、三项 keeper、连接建立后再暂停 scheduler、三项 ready 后回调和固定日志、取消后恢复资源的主结构。Rust CLI 与 Go CLI 也都把两个兼容命令名接到同一个入口。
+Rust 文件逐函数对应 `br/pkg/task/operator/prepare_snap.go`：两版都有 PD/Store 创建、三项 keeper、连接建立后再暂停 scheduler、三项 ready 后回调和固定日志、取消后恢复资源的主结构。
 
 关键差异必须保留在认知中：
 
@@ -95,13 +93,3 @@ Rust 文件逐函数对应 `br/pkg/task/operator/prepare_snap.go`：两版都有
 若增加第四个就绪组件，必须同步修改 `ready_expected`、启动/错误取消/join 逻辑以及 ready 测试；更稳妥的演进方向是让线程集合和期望数从同一处派生，避免计数漂移。若调整错误策略，要明确 cleanup 错误是否覆盖主错误，并为线程 panic 建立可观察的返回路径。
 
 测试应放在独立文件，不嵌入 `prepare_snap.rs`。最接近的 crate 测试是 `br/pkg/task/operator/parity_test.rs`；应扩展其 hook 驱动用例以覆盖连接失败、最小 resolved TS 失败、scheduler 移除/undo 失败、prepare/Finalize 失败和并发取消。真实 PD/TiKV 行为应放到 `tests/realtikvtest/brietest/operator_test.rs`，但该文件当前调用的是 `tests/realtikvtest/brietest/harness.rs` 内的同名模拟函数；在把它作为目标实现的回归证据前，需要先完成真实 crate 接线。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/task/operator/prepare_snap.rs` 确认目标文件有 13 个符号；`explore`/`query`/`callers`/`callees` 确认主入口到三项 keeper 的调用边、`ReadyL` 的三个调用者、`contract_resource_cleanup` 测试调用者，以及 `force_flush.rs` 对 `dialPD`/`createStoreManager` 的复用。
-- 目标源码：`br/pkg/task/operator/prepare_snap.rs`，核对全部 344 行、公开 API、线程、原子状态、清理和错误分支。
-- crate 与入口：`br/pkg/task/operator/Cargo.toml`、`br/pkg/task/operator/lib.rs`、`br/cmd/br/operator.rs`。
-- 直接配置/依赖：`br/pkg/task/operator/config.rs::PauseGcConfig` 与 `br/pkg/task/operator/stubs.rs` 中 `Context`、`PDClient`、`PdController`、`StoreManager`、`GCManager`、`Preparer`、`DIAL_HOOKS`。
-- Go 对照：`br/pkg/task/operator/prepare_snap.go` 与 `br/cmd/br/operator.go`。
-- 独立测试：`br/pkg/task/operator/parity_test.rs::contract_error_paths` 验证无 hook 的拨号失败；`contract_resource_cleanup` 验证 hook 路径、ready/exit 顺序、取消和默认 StoreManager 关闭。`tests/realtikvtest/brietest/operator_test.{go,rs}` 用于理解预期集群行为，但 Rust 版经 `harness.rs` 同名模拟层执行，不算本目标文件的直接集成覆盖。
-- 结构校验按任务给定命令执行；本任务为纯文档分析，按计划不运行 Cargo。

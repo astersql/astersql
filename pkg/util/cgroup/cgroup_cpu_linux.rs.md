@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-cgroup` crate 的 Linux CPU 平台层。crate 入口 `pkg/util/cgroup/lib.rs` 仅在 `target_os = "linux"` 时声明并公开重导出 `cgroup_cpu_linux`；非 Linux 构建改用 `cgroup_cpu_unsupport.rs`。它不负责解析 cgroup 文件格式，而是把平台无关解析器 `cgroup_cpu.rs` 包装成面向真实根文件系统 `/` 的公开 API，并额外提供容器环境探测。
-
-crate 边界由 `pkg/util/cgroup/Cargo.toml` 确定：包名为 `astersql-util-cgroup`，库入口是 `lib.rs`，生产依赖仅有 `anyhow`。本文件通过 `use super::*` 使用同 crate 的 `CPUUsage`、`CPUQuotaStatus`、proc 路径常量以及 `getCgroupCPU`、`getCgroupCPUPeriodAndQuota` 等符号。
+`GetCPUPeriodAndQuota` 提供只读取 period/quota 的窄接口，避免需要完整 CPU 用量的调用约束。
 
 ## 核心职责
 
@@ -75,17 +73,12 @@ RustCodeGraph 对目标公开符号未返回 callers，因此上述上游列表�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/cgroup/cgroup_cpu_linux.go`，四个公开入口及容器判定顺序基本一一对应：真实根目录采样、`CPUShares` 向上取整与下限状态、窄 period/quota API，以及 cgroup 标记/根 overlay 判断均保持一致。
-
 已确认的差异如下：
 
-- Go 文件由 `//go:build linux` 选择，Rust 由 `lib.rs` 的 `#[cfg(target_os = "linux")]` 选择。
 - Go `GetCgroupCPU` 含 `GetCgroupCPUErr` failpoint，并且即便底层返回错误仍会给局部结果写入 `runtime.NumCPU()`；本 Rust 函数自身没有 failpoint，且 `?` 使错误立即返回。Rust CPU 观测器在 `pkg/util/cpu/cpu.rs::Observer::Start` 另有同名 failpoint 兼容入口，但它不改变直接调用本函数的行为。
 - Go `CPUQuotaToGOMAXPROCS` 的错误返回还携带 `-1` 与 `CPUQuotaUndefined`；Rust 用 `Result` 的 `Err` 表达失败，不携带这两个占位值。
 - Go `runtime.NumCPU()` 直接返回整数；Rust 使用 `available_parallelism()`，查询失败时明确降级为 `1`。
 - Go 把文件内容转换成可含任意字节的字符串再搜索；Rust 直接在字节切片上搜索。`pkg/util/cgroup/cgroup_cpu_linux_test.rs` 的非 UTF-8 回归用例确认两者在该边界上语义一致。
-
-`pkg/util/cgroup/cgroup_cpu_test.go` 与 Rust 的 `cgroup_cpu_test.rs` 都在容器中、并发空转线程存在时读取 CPU 信息，并对旧内核缺控制器做兼容处理。Rust 迁移补充测试 `cgroup_cpu_linux_1_aster_unit_test.rs` 进一步用临时根验证 v1/v2 解析、v2 端到端份额 `2.5` 和异常格式错误上下文。
 
 ## 扩展指南
 
@@ -94,11 +87,3 @@ RustCodeGraph 对目标公开符号未返回 callers，因此上述上游列表�
 - 修改配额舍入、下限或状态语义时，应同时核对 `CPUUsage::CPUShares`、`SetGOMAXPROCS`、CPU 观测器归一化逻辑，并补充独立 Rust 测试和对应 Go 测试语义。特别注意零/负 period、无限 quota、非正 `minValue`、小数份额和超大值。
 - 修改错误契约前需评估 Rust/Go 差异：直接调用者可能依赖 `Err`，而 Go 调用者可能仍检查部分结果或 `CPUQuotaUndefined`。若要补齐 failpoint，也应验证它对所有直接调用方的影响，而不是只覆盖 CPU 观测器。
 - 性能上，这些 API 可能在 100ms 采样循环中反复执行；新增工作应保持有界，避免全文件系统遍历、额外线程或跨采样缓存陈旧的 cgroup 路径而没有失效策略。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共索引 11,467 个文件；目标文件被识别为 82 行、11 个图节点。读取并核对了 `cgroup_cpu_linux.rs`、`cgroup_cpu.rs`、`cgroup.rs`、`lib.rs`、`cgroup_cpu_test.rs`、`cgroup_cpu_linux_test.rs`、`cgroup_cpu_linux_1_aster_unit_test.rs`、`pkg/util/cpu/cpu.rs`、`pkg/util/cgmon/cgmon.rs` 与 `pkg/util/memory/meminfo.rs`。
-- 图查询确认的主要调用边：`GetCgroupCPU -> getCgroupCPU`、`CPUQuotaToGOMAXPROCS -> GetCgroupCPU`、`GetCPUPeriodAndQuota -> getCgroupCPUPeriodAndQuota`、`InContainer -> inContainer`；`in_container_content` 没有下游函数调用。
-- 配置与 Go 对照：读取了 `pkg/util/cgroup/Cargo.toml`、`pkg/util/cgroup/cgroup_cpu_linux.go` 和 `pkg/util/cgroup/cgroup_cpu_test.go`；精确 `rg` 搜索补齐了图未返回的 Rust/Go 上游调用点及 `GetCgroupCPUErr` 差异。
-- 测试证据：`cgroup_cpu_linux_test.rs` 覆盖非 UTF-8 标记；`cgroup_cpu_test.rs` 覆盖容器真实采样与旧内核边界；`cgroup_cpu_linux_1_aster_unit_test.rs` 覆盖临时根上的控制器匹配、v1/v2 文件、v2 端到端份额和错误上下文。
-- 本任务是只新增说明文档的静态分析，按计划不运行 Cargo。交付前使用任务规定的命令验证目标文档存在且恰有十一个固定二级章节，并人工复核源码链接、符号名称、范围和 Go 差异。

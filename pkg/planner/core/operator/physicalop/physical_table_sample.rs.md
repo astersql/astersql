@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `physical_table_sample.rs`](./physical_table_sample.rs) 定义 Rust 侧的物理表采样算子 `PhysicalTableSample`。它位于 `astersql-planner-core-operator-physicalop` crate；该归属由同目录 `Cargo.toml` 的 `[package]` 与 `[lib] path = "lib.rs"` 确认。`lib.rs` 公开声明并再导出 `physical_table_sample`，随后用 `impl_schema_leaf_operator!(PhysicalTableSample)` 把该类型接入通用 `base::Plan` / `base::PhysicalPlan` 接口。
-
-需要区分“算子类型已具备物理计划接口”和“Rust 规划主链已使用该类型”。仓库内对 `PhysicalTableSample` 的 Rust 构造引用目前只有独立测试 `physical_table_sample_test.rs`；Rust `pkg/planner/core/find_best_task.rs::convertToSampleTable` 仍返回 `PlanNode::new(PlanKind::Other("TableSample"))`，并未构造本文件类型。Go 主链则在 `pkg/planner/core/find_best_task.go::convertToSampleTable` 中构造真实的 `physicalop.PhysicalTableSample`。因此，本文件当前是已移植并可通过统一 trait 使用、但尚未被 Rust 规划主链直接接线的实现。
+`MemoryUsage` 按 Go 实现的计费项目估算内存；`ExplainInfo` 当前返回空字符串。
 
 ## 核心职责
 
@@ -92,10 +90,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接参照文件是 `pkg/planner/core/operator/physicalop/physical_table_sample.go`。
-
-- 字段一一对应：schema producer、`TableSampleInfo`、`TableInfo`、`PhysicalTableID`、`Desc`。Go 指针/接口在 Rust 中分别表示为 `Option<Arc<_>>` 和 `Option<Arc<dyn table::Table>>`。
-- Go 没有单独的 `New`；常见调用是结构体字面量后 `.Init(ctx, offset)`。Rust 拆为 `New` 和 `Init`：前者先创建基础计划，后者更新上下文/类型/offset/统计。独立 Rust 测试确认这种拆分保持 plan ID，不等同于重新构造。
 - Go `Init` 调用 `NewBasePhysicalPlan(..., &p, offset)` 并设置 `RowCount: 1`；Rust `Init` 对已有 base plan 调用 setter，并设置相同的一行估计。外部可观察目标相同，但内部构造时序不同。
 - Go 当前未定义显式 `Clone` 或 `ExplainInfo` 于该文件；Rust 为统一物理计划 trait 补充了上下文克隆和空 explain 实现。
 - 两边 `MemoryUsage` 都计算 producer、表接口、布尔值和非空采样信息，均未单独加入 `PhysicalTableID`。Go nil receiver 返回零；Rust 不存在 nil receiver。Rust 对表接口使用自身 `Option<Arc<dyn Table>>` 的槽位大小，而不是直接引用 Go `size.SizeOfInterface` 常量。
@@ -112,15 +106,3 @@ Go 的 `pkg/executor/sample_test.go` 验证 SQL 层的 Region 采样、空表、
 - 改动基数估计时修改 `Init` 中的 `StatsInfo`，并评估优化器成本和计划选择兼容性。`1.0` 是 Go 当前契约，而非实际样本行数上限。
 - 改动内存估算时与 Go `physical_table_sample.go::MemoryUsage`、Rust `tablesampler::TableSampleInfo::MemoryUsage` 同步；主要风险是漏算新字段、对共享对象重复计费，或把 Rust 布局误当作 Go 接口布局。
 - 完成生产接线后，除结构级单测外还需要规划器/执行器独立测试证明真正生成此具体类型并正确执行。当前 Go `pkg/executor/sample_test.go` 可作为行为清单，但 Rust 测试需基于 Rust 实际接口建立，不能以 Go 测试通过替代。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引可用（包含 Rust 与 Go）；`query PhysicalTableSample --json` 命中 Go 结构体和本文件 Rust 结构体；`query physical_table_sample.rs --json` 列出 `New`、`WithTableSampleInfo`、`Init`、`Clone`、`ExplainInfo`、`MemoryUsage`。图的通用名称 callers/callees 结果存在歧义，未用其跨文件误匹配作为事实依据。
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_table_sample.rs`，完整读取结构体和全部六个方法。
-- crate 与装配：`pkg/planner/core/operator/physicalop/Cargo.toml`；`pkg/planner/core/operator/physicalop/lib.rs` 中的模块声明、再导出、`ConcretePhysicalOperator`、`impl_concrete_physical_plan!`、`impl_schema_leaf_operator!` 及其对本类型的调用。
-- Go 对照与生产入口：`pkg/planner/core/operator/physicalop/physical_table_sample.go`；`pkg/planner/core/find_best_task.go::convertToSampleTable`、`validateTableSamplePlan`。
-- Rust 主链现状：`pkg/planner/core/find_best_task.rs::convertToSampleTable`、`validateTableSamplePlan`，以及全仓精确搜索 `PhysicalTableSample::` / `PhysicalTableSample {`。
-- 直接独立测试：`pkg/planner/core/operator/physicalop/physical_table_sample_test.rs::init_and_memory_usage_match_go_contract`。
-- 直接依赖与其测试：`pkg/planner/util/tablesampler/sample.rs`、`sample.go`、`sample_test.rs`。
-- 相关端到端 Go 测试：`pkg/executor/sample_test.go`；它用于说明 Go 行为覆盖面，不作为 Rust 已完成生产接线的证据。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，任务计划明确禁止运行 Cargo。交付前只运行任务指定的 11 章节结构检查，并人工复核无未经证实的 Rust 主链支持声明。

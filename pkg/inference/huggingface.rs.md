@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-inference` crate 中 HuggingFace Feature Extraction API 的 Rust provider 适配器。crate 入口 `pkg/inference/lib.rs` 以 `pub mod huggingface` 暴露它，并从 `embed_fn` 重导出统一的 `Embedder`、`EmbedFn` 与 `Options` 接口。应用启动时，`pkg/domain/domain.rs` 的 embedding provider 初始化逻辑构造 `HuggingFaceEmbedder::new`，从全局变量 `tidb_exp_embed_huggingface_api_key` 动态读取密钥，并以名称 `huggingface` 注册到 Domain 持有的 `EmbedFn`。
-
-文件本身不实现缓存、跨请求合批或 SQL 表达式接线；这些职责属于 `pkg/inference/embed_fn.rs`。它也不自行实现完整 HTTP 生命周期，而是把 HuggingFace 特有的 URL、请求字段、错误状态和响应解码规则交给 `pkg/inference/base.rs` 的共享调用框架。
-
-所属 crate 由 `pkg/inference/Cargo.toml` 定义，包名是 `astersql-inference`。本实现直接使用 `reqwest` 的异步客户端类型、`serde_json` 和标准库原子取消标志；同步的 provider trait 由共享基座在单线程 Tokio runtime 上驱动该客户端。共享基座还使用 Cargo 中声明的 `tokio`、`hyper`/`hyper-util`、`hyper-rustls`、`rustls` 与 `logutil` 完成请求、特殊转义路径和错误日志处理。
+`HuggingFaceEmbedder::with_config` 支持测试或高级调用者直接提供完整配置，为 provider 建立带共享默认超时的 HTTP client，并补齐默认响应体上限。
 
 ## 核心职责
 
@@ -94,15 +90,8 @@ RustCodeGraph 将 `pkg/inference/huggingface.rs` 标为被 Domain、共享 provi
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/inference/embedding/huggingface/huggingface.go` 与同目录 `protocol.go`。Rust 对应关系如下：
-
-- Go `DefaultAPIBaseURL`、`Embedder`、`NewHuggingFaceEmbedder` 分别对应 Rust `DEFAULT_BASE_URL`、`HuggingFaceEmbedder`、`with_config`；Rust 另有面向 Domain 系统变量接线的便利构造器 `new`。
 - Go `featureExtractionEndpoint` 对应 Rust `endpoint`；二者都会 trim 基础 URL、选择相同默认值、逐段转义模型路径，并保留基础 URL query。Rust 通过 `ProviderEndpoint`/`raw_http` 额外对抗 `reqwest::Url` 对完整点段的归一化。
 - Go `decodeErrorMessage` 的语义内联为传给共享调用器的 `base::string_field(&value["error"])`；Go `decodeEmbeddings` 对应 Rust 私有函数 `decode_embeddings`。
-- Go `CreateEmbeddings` 对应 Rust 两个 trait 方法。空输入、空模型、动态 key、固定 `inputs` 覆盖 options、Bearer header、最大响应体、密钥脱敏、401/404 映射与期望数量检查均保持一致。
-- Rust 的共享 `ProviderError`/`ProviderContext` 明确保留可检查的传输或调用者 cause；兼容字符串入口再通过 `to_string()` 降级。这是 Rust 接口形态上的补充，不改变普通错误文案契约。
-
-`pkg/inference/embedding/huggingface/huggingface_test.go` 验证成功请求、Bearer header、401、404、503 JSON 错误、缺失/自定义错误、数量不匹配、options 合并、端点转义以及 provider 通用合约。`pkg/inference/huggingface_test.rs` 对应覆盖这些语义，并增加真实请求路径中 `%2E%2E` 保真和结构化调用者取消 cause 的验证。
 
 ## 扩展指南
 
@@ -113,19 +102,3 @@ RustCodeGraph 将 `pkg/inference/huggingface.rs` 标为被 Domain、共享 provi
 - 需要不同超时、代理或 transport 时，当前公开 Rust 配置只暴露 API key、base URL、错误和响应体大小；应先评估扩展共享 `APIKeyProviderConfig`/HTTP client 工厂，而不是在本文件复制请求循环。
 - 并发或取消语义变化需要同步检查 `pkg/inference/embed_fn.rs` 的 `run_batch`、本类型的两个 trait 入口和 `pkg/inference/huggingface_test.rs`。Rust 单元测试继续放在独立的 `huggingface_test.rs`，不要嵌入生产源文件。
 - 兼容性风险主要是 URL 字节级形式、错误文案、固定字段优先级及状态码映射；性能风险主要是每次调用创建 Tokio runtime，以及超大批次/响应的内存占用。任何优化都应保留响应上限、取消检查和 secret 脱敏。
-
-## 验证依据
-
-已核对的直接材料：
-
-- `pkg/inference/huggingface.rs`：完整 134 行源文件，确认常量、结构体、构造器、端点、trait 实现和解码器。
-- `pkg/inference/Cargo.toml` 与 `pkg/inference/lib.rs`：确认 crate 名、模块公开面及 `reqwest`、`serde_json`、Tokio/HTTP/TLS/logging 依赖。
-- `pkg/inference/embed_fn.rs`：确认 `Embedder` 合约、provider 注册/查找、合批 worker、取消、结果数量复核、缓存和资源关闭边界。
-- `pkg/inference/base.rs`：确认配置默认值、URL/segment 规则、`ProviderEndpoint`、Bearer header、HTTP/取消生命周期、响应上限、脱敏、状态处理和浮点数组解码。
-- `pkg/domain/domain.rs`：确认生产注册名、构造调用和全局 API key 变量来源。
-- `pkg/inference/huggingface_test.rs`：确认真实路径转义、payload 合并、成功值、共享 provider 合约、取消 cause、401/404/503、数量检查和默认 endpoint。
-- `pkg/inference/embedding/huggingface/huggingface.go`、`protocol.go`、`huggingface_test.go`：确认 Go 原实现的数据模型、请求/错误协议和回归边界。
-
-RustCodeGraph 证据：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/inference` 确认本 crate 的 Rust/Go 对照文件集合；`node --file` 读取了目标源、Rust 测试、共享 `embed_fn.rs`/`base.rs`、Domain 接线和 Go 对照文件；`query HuggingFaceEmbedder`、`query decode_embeddings` 识别目标结构和私有解码函数。对 `new`、`endpoint`、`create_embeddings_with_context` 等全仓库重名符号，`explore`/`callers` 结果存在消歧不足，故生产构造点与方法调用以精确 Rust 文本引用和源码显式调用为补充证据，没有据此推断额外调用者。
-
-本任务是纯文档分析，按计划未运行 Cargo 或代码测试。结构验收使用任务指定命令，要求本文恰好具有上述 11 个固定二级章节；人工复核重点是本文能回答该文件为何存在、请求如何运行、错误/取消/资源边界以及安全扩展时应修改和同步验证的位置。

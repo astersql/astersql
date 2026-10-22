@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`source.rs` 是 `astersql-session` crate 的完整关系查询数据源执行层。`pkg/session/runtime.rs:116,174-175` 以私有 `mod source` 装配本文件，仅将 `is_scalar_count_non_null_constant` 提升为 `pub(crate)`，其余入口通过 `use source::*` 服务同一 `runtime` 模块。`pkg/session/Cargo.toml` 的 `[package] name = "astersql-session"`、`[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/session"` 确认其 crate 与 Go 包边界；目标包没有 `doc.go`。
-
-本文件位于解析后的 `ast::SelectStmt`/`ResultSetNode` 与 `ConcreteSession` 的表扫描、表达式求值和结果集适配之间。普通单表快速路径主要在 `runtime/query.rs`，而派生表、多源 JOIN、集合运算、CTE、聚合/窗口组合等会进入本文件的 `execute_insert_select_node_with_outer`。它不是同路径 Go 文件的翻译：仓库不存在 `pkg/session/runtime/source.go`，可核对的 Go 行为主要分散在 `pkg/executor/cte.go`、JOIN/投影/排序执行器和相关测试中。
+管理 CTE 生命周期：维护语句级嵌套作用域，按 delta 迭代递归 CTE，执行 UNION 去重、递归深度检查、panic 恢复和内存超额后的临时文件溢写。
 
 ## 核心职责
 
@@ -114,8 +112,6 @@ JOIN/集合/排序/分组与结果向量由当前函数拥有，无共享锁。G
 - Rust `execute_recursive_cte` 的 `accumulated`/`delta` 对应 `pkg/executor/cte.go` 注释和 `cteProducer` 中的 `resTbl`/`iterInTbl`/`iterOutTbl`：每轮递归只读取上一轮输入，输出并入完整结果，再成为下一轮输入。
 - Rust 使用与 Go 相同路径名的 `testCTESeedPanic`、`testCTERecursivePanic`、`testCTEStorageSpill`、`assertIterTableSpillToDisk` 和 `mock_cte_exec_panic_avoid_deadlock`；Go `computeSeedPart`/`computeRecursivePart` 也恢复 panic，`Close` 在存储锁边界测试 panic 后仍释放锁。
 - Go `setupCTEStorageTracker` 让 chunk row container 在配额下 spill，并记录 memory/disk tracker；Rust 用 `recursive_cte_values_size`、全局临时存储开关和 `RecursiveCteSpill` 实现本运行时可验证的磁盘物化，记录 `last_statement_disk_max`。
-- `pkg/executor/test/cte/cte_test.go` 的 `TestSpillToDisk`、`TestCTEPanic`、`TestCTEDelSpillFile` 和 `TestCTEIssue49096` 分别固定 spill 结果、panic 错误传播、存储清理及 cleanup 不死锁意图；Rust 源码中的同名 failpoint 与 scope/file cleanup 对齐这些边界。
-- Rust JOIN、集合、聚合和窗口是基于 `Option<String>` 行映射的同步解释执行，不是 Go 的 chunk/volcano executor pipeline。hash 等值快路和流式 CROSS JOIN只是局部性能接线，不能据此推断与 Go 优化器或并发执行器完全等价。
 
 ## 扩展指南
 
@@ -125,12 +121,3 @@ JOIN/集合/排序/分组与结果向量由当前函数拥有，无共享锁。G
 - 修改 CTE：保持 scope 在错误路径也 pop、递归成员只读 delta、UNION DISTINCT 跨轮去重、列 marker 随重命名、spill 后完整历史可重建。应同步 Rust 独立测试和 `pkg/executor/test/cte/cte_test.go` 所表达的 Go 边界。
 - 修改 SELECT 阶段：必须保留 SQL 次序，尤其 WHERE 在分组前、HAVING 在投影/聚合上下文、DISTINCT 在最终 LIMIT 前。扩展类型比较时同步审查 `runtime/query.rs` 的表达式类型和 marker。
 - 性能风险集中在全量物化、非等值嵌套循环 JOIN、排序/分组/DISTINCT 和 spill 全量回读；正确性风险集中在列歧义、NULL/三值逻辑、相关外层遮蔽和 CTE 迭代；兼容风险集中在字符串化行模型、排序规则、错误文本和 Go pipeline 的顺序差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 报告索引含 11,467 文件、307,296 节点、1,848,419 条边；`files --filter pkg/session/runtime/source.rs` 确认目标文件已索引且有 57 个符号；`query execute_insert_select_query_with_outer`、`query execute_recursive_cte`、`query execute_insert_select_table_source_with_outer` 定位到本文对应实现。`explore` 与 impl 内函数的 `callers/callees` 本次未返回内容，因此调用边以精确仓库搜索补充，没有据此虚构图关系。
-- 阅读的生产证据：`pkg/session/runtime/source.rs` 全部 2,089 行；`pkg/session/runtime.rs` 的模块装配和共享 import；`pkg/session/runtime/session.rs:616-644` 的 CTE/disk 状态；`pkg/session/runtime/query.rs` 的调用点与中间行模型；`pkg/session/Cargo.toml` 的 crate、feature 和依赖。目标包未发现 `doc.go`。
-- 精确调用边搜索：对 `collect_physical_table_sources`、`result_set_node_has_derived_source`、`stale_source_profile`、`is_scalar_count_non_null_constant`、`execute_insert_select_query(_with_outer)`、`execute_insert_select_node_with_outer`、`execute_recursive_cte`、`execute_with_clause` 和 `visit_insert_select_source` 执行 `rg`，结果覆盖 `query.rs`、`dispatch.rs`、`control.rs`、`dml.rs`、`explain_*`、`system_query.rs` 与 `select_into.rs`。
-- 阅读的 Rust 测试：`pkg/session/runtime/source_test.rs`；`pkg/session/lib.rs:178-179` 确认其作为独立 `cfg(test)` 模块编译。该测试验证派生集合源上普通及聚合 DISTINCT 在最终 LIMIT 之前生效。
-- 阅读的 Go 对照：`pkg/executor/cte.go` 的 `CTEExec`、`cteProducer::genCTEResult`、seed/recursive 迭代与 spill/failpoint；`pkg/executor/test/cte/cte_test.go` 的 cleanup、spill、panic 和磁盘文件回归。未找到同路径 Go 文件，因此未作逐函数映射。
-- 按任务约束未运行 Cargo。结构验证使用任务指定命令；交付前另检查目标文档恰有 11 个固定二级标题、仅目标文档与编号任务删除属于本会话、`plan.md` 未修改，并人工复核所有行为结论均可回到上述符号、调用点或测试。

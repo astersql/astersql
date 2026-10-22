@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的运行时层，是规范会话 `ConcreteSession` 与 `astersql-executor` 类型化执行适配器之间的桥梁。`pkg/session/runtime.rs` 以私有模块 `mod typed_adapter_bridge` 装配它，只向 crate 的其他使用者重导出 `OwnedKVSnapshotSource`、`SessionBoundAdapterOwner` 和 `TypedScanSpec`；其余绑定结构、RU 终结作用域和辅助函数保持在 `runtime` 模块内部。
-
-它不是通用 SQL 入口，也不独立负责优化。上游在 `pkg/session/runtime/planning.rs`、`explain_analyze.rs`、`dispatch.rs` 和 `load_data.rs` 中完成语句识别或计划生成，再由本文件把真实物理计划、固定 MVCC 版本、会话状态和执行终结生命周期交给 executor。实际 `AdapterRuntime` trait 实现在相邻的 `pkg/session/runtime/scan_adapter_runtime.rs`，因此本文件与该实现共同构成完整适配层。
-
-`pkg/session/Cargo.toml` 声明 crate 名为 `astersql-session`、库入口为 `lib.rs`，并直接依赖这里使用的 `astersql-executor`、`astersql-kv`、`astersql-domain`、planner core/base/physicalop、`astersql-store-driver`、`astersql-resourcegroup-runaway`、`astersql-tablecodec`、`astersql-util-codec` 等本地 crate。目标包下未找到 `doc.go`；crate 的 Go 对照包由 `[package.metadata.porting].go-package = "pkg/session"` 明确指定。
+executor 的 `ExecStmt.Ctx` 持有其 `Arc`，从而通过同一会话状态实现执行回调。
 
 ## 核心职责
 
@@ -114,7 +110,7 @@ RU scope 采用 RAII 恢复嵌套状态：构造时取走先前 pending 并增�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件没有一一对应的 `pkg/session/typed_adapter_bridge.go`；其职责是把 Go `pkg/session/session.go` 中分散在 session、executor、record-set 生命周期里的语义集中成类型化桥接层。`Cargo.toml` 的 porting metadata 明确 Go 包为 `pkg/session`。
+Rust 文件没有一一对应的 `pkg/session/typed_adapter_bridge.go`；其职责是把 Go `pkg/session/session.go` 中分散在 session、executor、record-set 生命周期里的语义集中成类型化桥接层。
 
 - Go `executeStmtImpl` 在最早 defer 中记录 panic/错误的 RU 失败，并让 point-get 或文件传输的正常返回发布成功；Rust 用 `StatementRUFailureGuard`、`PendingStatementRU` 和两个 scope 保持相同“必须有终态”的意图。
 - Go 的 `runStmt` 在有 result set 时把终结交给 `execStmtResult.Finish/Close`，无 result set 时调用 `FinishExecuteStmt`；Rust `PendingStatementRU::finish` 同样区分 `record_set: Some` 与 `None`。
@@ -123,7 +119,7 @@ Rust 文件没有一一对应的 `pkg/session/typed_adapter_bridge.go`；其职�
 - prepared plan cache 的实际规划、参数绑定和缓存准入仍由规范 session/planner 实现；本文件不复制简化算法，而是通过 `PlanPreparedPlannedKVSelect`、`FinishPreparedKVPhysicalPlan` 和真实物理树接回该链。
 - 最大执行时间沿用 Go 的 session `SQLKiller`/`MaxExecTimeExceeded` 语义；Rust 独立 worker 弥补 result set 空闲、不调用 `Next` 时仍需及时 kill 的生命周期要求。
 
-Go 与 Rust 的结构并不完全相同：Rust 明确拆出 `OwnedKVSnapshotSource` 以支持 detachable typed executor，并用 `Rc`/`Arc` 的类型边界表达线程局部会话与线程安全快照的差别。文档不据此声称整个 Go executor 已逐字段移植；可确认的是上述 prepared、RU、kill、快照与终结语义有源码和测试证据。
+Go 与 Rust 的结构并不完全相同：Rust 明确拆出 `OwnedKVSnapshotSource` 以支持 detachable typed executor，并用 `Rc`/`Arc` 的类型边界表达线程局部会话与线程安全快照的差别。
 
 ## 扩展指南
 
@@ -135,13 +131,3 @@ Go 与 Rust 的结构并不完全相同：Rust 明确拆出 `OwnedKVSnapshotSour
 - 修改 RU 生命周期时同时审查 `dispatch.rs`、`load_data.rs`、`planning.rs`、`explain_analyze.rs` 和 Go `session.go` 的终结分支，覆盖成功、编译后错误、result set 关闭错误、panic、嵌套语句和文件传输延迟。
 - 修改 deadline 时验证“从原始 started 计时”“取消后不污染复用会话”“无 Next 也超时”三项；注意 join 可能阻塞当前 worker，不能引入持锁等待。
 - 性能风险集中在每次 getter 新建 snapshot、物理树 clone、prepared range 重建和多叶 source 创建；正确性风险集中在错误 range、错用 MVCC 版本、遗漏 RU 终态与 session/快照所有权混淆。
-
-## 验证依据
-
-- 目标源码：`pkg/session/runtime/typed_adapter_bridge.rs`（1354 行）；逐段核对了所有模块级结构、枚举、函数、impl、`#[cfg(test)]` hook 和 Drop 实现。
-- 模块/依赖：`pkg/session/runtime.rs` 的模块声明与重导出；`pkg/session/Cargo.toml` 的 crate 入口、porting metadata 和直接依赖。`pkg/session` 下未发现 `doc.go`。
-- RustCodeGraph：`status` 显示索引包含 11467 文件、307296 节点、1848419 边；文件节点显示目标被 `runtime.rs`、`dispatch.rs`、`planning.rs`、`scan_adapter_runtime.rs` 等 8 个文件使用。精确查询确认 `BindPreparedPlannedKVSelect` 的下游包括 `collect_table_scans`、`find_index_lookup`、`find_index_reader`、`encode_index_ranges`、`encode_table_record_ranges` 和 `bind_physical_plan`；`execute_do_terminal` 的下游包括 `AdapterPlanContext`、`BindTypedPhysicalPlan`、`BuildExecStmt` 和 `CurrentVersion`。图对 impl 方法的部分 callers 为空，因此用下列源码引用补齐反向边。
-- 上游/相邻实现：`pkg/session/runtime/planning.rs`、`explain_analyze.rs`、`dispatch.rs`、`load_data.rs`、`scan_adapter_runtime.rs`、`session.rs`。
-- 独立 Rust 测试：`pkg/session/runtime_test/typed_adapter_bridge.rs` 覆盖 thread-safe snapshot owner、规范数据库/SQLKiller、行锁与失败回滚、deadline、lazy detach、物理 Limit、prepared ExecStmt、FOR UPDATE 和终结；`pkg/session/plan_cache_runtime_test.rs` 覆盖 covering/double-read index、point-get、range rebuild、缓存准入与内存仲裁；`pkg/session/runtime/scan_adapter_runtime_test.rs` 覆盖 DML/锁、RU 证据、prepared/explain/execute/file-transfer 终态和 Top RU。
-- Go 对照：`pkg/session/session.go` 的 `executeStmtImpl`、`runStmt`、`execStmtResult::Finish`、session close；另参考 `pkg/session/session_test.go` 与 `pkg/session/test/variable/variable_test.go` 的 SQLKiller/最大执行时间行为。
-- 未运行 Cargo 或代码测试：任务明确为纯文档分析。交付验证只执行任务指定的 11 章节结构命令，并人工复核本文件能回答存在原因、运行路径和安全扩展点。

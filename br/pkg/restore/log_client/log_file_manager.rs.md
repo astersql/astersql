@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-log-client` crate，是 PiTR 日志恢复中“发现备份元数据、按恢复时间窗筛选文件、读取 MetaKV 内容、暴露压缩/摄取 SST”的文件管理层。crate 根在 [`lib.rs`](./lib.rs)，通过 `pub mod log_file_manager` 挂载本模块并扁平再导出其公开 API；[`Cargo.toml`](./Cargo.toml) 将该 crate 定义为 library，并声明对 `stream`、`restore`、`restore-utils`、`utils-iter` 等本地 crate 以及 `sha2`、`serde_json` 的依赖。
-
-应用侧直接入口是 [`client.rs`](./client.rs) 的 `LogClient::InstallLogFileManager`：它组装 `LogFileManagerInit` 后调用 `CreateLogFileManager`。RustCodeGraph 还表明 Go 主链中 `RunStreamRestore -> restoreStream -> PreSplitRegions -> LoadDMLFiles`，而 Rust `client.rs` 已调用本文件的构造函数；本文件因此是恢复编排与对象存储日志归档之间的边界，而不是实际向 TiKV 导入 KV 的执行器。
+`ReadFilteredEntriesFromFiles` 校验指定 range 的 SHA-256，解析 MetaKV 事件，执行恢复窗口过滤、Write CF 类型过滤、auto-ID 去重，并按 `filter_ts` 拆成两批。
 
 ## 核心职责
 
@@ -110,7 +108,7 @@ Rust 当前 `streamingMeta` 是串行 `WalkDir + ReadFile`，没有使用 `metad
 
 ## 与 Go 版本的对应关系
 
-同路径 [`log_file_manager.go`](./log_file_manager.go) 是主要语义基准。Rust 已对齐的关键点包括：三分支 TS 文件过滤；v2 metadata 使用物理 group path；DDL/meta 与 DML 分流；shift TS 取最早候选；缓存引用数规则；MetaKV range 校验和；只恢复 mDB/DDL history 范围；Write CF 跳过 Lock/Rollback；auto-ID 仅保留最高 TS；DDL history 旁路去重；按 `filterTS` 拆分；compacted/ingested SST 展平与计数；以及显式关闭 helper。
+Rust 已对齐的关键点包括：三分支 TS 文件过滤；v2 metadata 使用物理 group path；DDL/meta 与 DML 分流；shift TS 取最早候选；缓存引用数规则；MetaKV range 校验和；只恢复 mDB/DDL history 范围；Write CF 跳过 Lock/Rollback；auto-ID 仅保留最高 TS；DDL history 旁路去重；按 `filterTS` 拆分；compacted/ingested SST 展平与计数；以及显式关闭 helper。
 
 当前可见差异/未完成迁移边界：
 
@@ -134,14 +132,3 @@ Rust 当前 `streamingMeta` 是串行 `WalkDir + ReadFile`，没有使用 `metad
 - 补齐 `Subcompactions`/`LoadMigrations` 时应对齐 Go 对象存储 protobuf 格式和错误传播，而不是继续扩展临时 JSON/注入接口；兼容旧测试夹具时应区分测试适配层与生产路径。
 - 调整 group 展开时要同步核查 `MetaDataGroupName` 和两个 offset 对检查点/skip map 的影响，测试至少覆盖 v1/v2 metadata、多 group、多 file、迁移重写和空 group。
 - 性能风险集中在 metadata 全量扫描/物化、对象文件整读后切 range、MetaKV 去重表大小以及 DDL group 全量收集；优化前应保留校验和作用范围、错误原子性和稳定输出顺序。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件，其中 Rust 7,032 个；目标文件被索引为 90 个符号，并显示由 `client.rs`、多个测试和 restore 相邻模块使用。
-- RustCodeGraph 查询/调用证据：`query CreateLogFileManager` 同时定位 Go `log_file_manager.go:148` 与 Rust `log_file_manager.rs:190`；`explore` 给出 `client.rs::InstallLogFileManager -> log_file_manager.rs::CreateLogFileManager`，并列出 `LoadDMLFiles`、`LoadDDLFiles`、`FilterDataFiles`、`FilterMetaFiles`、`GetCompactionIter`、`GetIngestedSSTs`、`ReadFilteredEntriesFromFiles` 的直接调用关系及测试调用者。
-- 已完整核对 Rust 源文件 [`log_file_manager.rs`](./log_file_manager.rs) 1–819 行，特别是 `CreateLogFileManager`/`loadShiftTS`、metadata 两条过滤管线、MetaKV 读取与去重、SST 迭代、`Subcompactions` 和 `LoadMigrations`。
-- crate 边界证据：[`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)。前者确认依赖和 library 身份，后者确认模块挂载、公开再导出及独立测试文件。
-- Go 对照证据：[`log_file_manager.go`](./log_file_manager.go) 1–646 行；重点核对构造/helper、并发 metadata 下载、TS 三分支、DDL/DML 管线、MetaKV 事件读取/去重、关闭及对象存储反序列化。
-- Rust 测试证据：[`log_file_manager_test.rs`](./log_file_manager_test.rs) 1–733 行，覆盖 TS 过滤、auto-ID 去重、DDL history 旁路、空 value、Write CF Put/Delete/Lock/Rollback、返回值拷贝语义、range、四线程并发读取、注入 metadata、DML/meta 分流和 empty tagged metadata。
-- Go 测试证据：[`log_file_manager_test.go`](./log_file_manager_test.go)，核对 v1/v2 metadata、shift TS、多恢复窗口、真实本地 storage 枚举及同类 MetaKV 行为。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级标题，并人工检查未把上述 Rust/Go 差异描述为已完成能力。

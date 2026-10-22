@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（见 `pkg/ddl/Cargo.toml`），实现持久化 DDL worker 中 `DROP COLUMN` 的单步状态机。模块由 `pkg/ddl/lib.rs` 公开声明；`pkg/ddl/persistent_actions.rs::step` 在 `job.tp == 6`（`ActionDropColumn`）时把作业分派给本文件的 `step`。它不是 SQL 解析或作业创建入口，而是在作业已经持久化、DDL owner 驱动 worker 反复执行时，逐次修改表元数据并推进 schema 状态。
-
-该流程属于 job-based Online DDL，而不是 metadata-only 快路径。每次调用最多推进一个状态，并通过新的 schema version 让集群观察到阶段变化。列真正从 `TableInfo.Columns` 移除后，关联单列索引的物理键仍由 delete-range 流程异步清理；本文件负责把所需 ID 写回作业参数，`pkg/ddl/delete_range.rs` 再读取这些参数生成清理范围。
+列真正从 `TableInfo.Columns` 移除后，关联单列索引的物理键仍由 delete-range 流程异步清理；本文件负责把所需 ID 写回作业参数，`pkg/ddl/delete_range.rs` 再读取这些参数生成清理范围。
 
 ## 核心职责
 
@@ -86,11 +84,11 @@ masking policy 清理发生在元数据 `with_transaction` 回调返回之后，
 
 ## 与 Go 版本的对应关系
 
-直接对照实现是 `pkg/ddl/column.go` 的 `worker.onDropColumn`、`checkDropColumn`、`checkDropColumnForStatePublic`、`checkDropColumnWithMLogBaseConstraint` 和 `isDroppableColumn`。Rust 保留了 Go 的四段 schema 状态、列移至末尾、单列索引随状态移除、multi-schema 先变为不可回退、正常/回滚终态、完成参数供 delete-range 使用等主语义。
+Rust 保留了 Go 的四段 schema 状态、列移至末尾、单列索引随状态移除、multi-schema 先变为不可回退、正常/回滚终态、完成参数供 delete-range 使用等主语义。
 
 对应关系中的实现形态差异包括：Go 通过 `model.GetTableColumnArgs`/`job.FillArgs` 管理版本化参数，Rust 在本文件显式处理 V1 数组与新结构 JSON；Go 将外键检查委托给 infoschema/owner helper，Rust 在启用外键时通过事务元数据遍历数据库和表；Go 的 masking policy 清理由 worker helper 封装，Rust 显式查询策略并逐条 DELETE。Go 在 `StateWriteOnly` 分支还有 `onDropColumnStateWriteOnly` failpoint，当前 Rust 文件没有对应 failpoint。
 
-Go 测试中的 `pkg/ddl/db_change_test.go` 覆盖 WriteOnly、DeleteOnly、DeleteReorganization 等可见行为，`pkg/ddl/column_type_change_test.go` 提供 origin default 相关语义背景。Rust 侧未发现与 `persistent_drop_column.rs` 同名的独立测试；相关但非完整状态机覆盖分布在 `pkg/ddl/delete_range_test.rs`（DropColumn 索引范围）、`pkg/ddl/rollingback_test.rs`（开始删除后的取消语义）、`pkg/ddl/multi_schema_change_test.rs`（多 schema 删除列组合）以及 `pkg/ddl/tests/serial/serial_test.rs` 等 SQL 路径测试。
+Rust 侧未发现与 `persistent_drop_column.rs` 同名的独立测试；相关但非完整状态机覆盖分布在 `pkg/ddl/delete_range_test.rs`（DropColumn 索引范围）、`pkg/ddl/rollingback_test.rs`（开始删除后的取消语义）、`pkg/ddl/multi_schema_change_test.rs`（多 schema 删除列组合）以及 `pkg/ddl/tests/serial/serial_test.rs` 等 SQL 路径测试。
 
 ## 扩展指南
 
@@ -101,12 +99,3 @@ Go 测试中的 `pkg/ddl/db_change_test.go` 覆盖 WriteOnly、DeleteOnly、Dele
 - 改动 masking policy 清理时要显式处理元数据事务与 SQL 操作并非同一回调事务的失败窗口，并验证重试不会错误删除无关策略。
 - 最适合新增的直接回归文件是同目录独立的 `persistent_drop_column_test.rs`，并在 `lib.rs` 以 `#[cfg(test)] mod persistent_drop_column_test;` 接入；跨模块行为继续扩展 `delete_range_test.rs`、`rollingback_test.rs` 或现有 SQL 集成测试。按照仓库规则，Rust 测试不要放进本生产文件。
 - 性能风险集中在外键检查遍历所有数据库/表，以及 masking policy 逐条 DELETE；新增扫描或 SQL 循环前应评估大 schema/大量策略场景。兼容风险集中在历史 `raw_args` 编码、错误码和 schema 状态顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`node --file pkg/ddl/persistent_drop_column.rs --offset 1 --limit 400` 读取目标文件 390 行并报告其被 12 个文件使用；`query` 确认 `step`、`finished_range_ids`、`check_column` 等符号。精确 caller/callee 查询对部分符号未返回边，因此调用接线又由下列源码检索核验。
-- 目标源码：`pkg/ddl/persistent_drop_column.rs`，重点符号为 `DropColumnArgs`、`decode_args`、`finished_range_ids`、`check_column`、`origin_default`、`save_args`、`step`。
-- Rust 接线与边界：`pkg/ddl/lib.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/persistent_masking_actions.rs`、`pkg/ddl/delete_range.rs`。
-- crate 边界：`pkg/ddl/Cargo.toml` 的 `[package]`、`[dependencies]`、`[lib]` 与 `package.metadata.porting`。
-- Go 对照：`pkg/ddl/column.go`；相关入口/清理证据还包括 `pkg/ddl/job_worker.go`、`pkg/ddl/delete_range.go`、`pkg/ddl/rollingback.go`。
-- 测试证据：`pkg/ddl/delete_range_test.rs`、`pkg/ddl/rollingback_test.rs`、`pkg/ddl/multi_schema_change_test.rs`、`pkg/ddl/tests/serial/serial_test.rs`，以及 Go 的 `pkg/ddl/db_change_test.go`、`pkg/ddl/column_type_change_test.go`。未运行 Cargo，未声称这些测试在本任务中执行；本任务按计划只做文档结构与事实核对。

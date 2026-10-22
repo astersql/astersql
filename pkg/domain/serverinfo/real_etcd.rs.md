@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`real_etcd.rs`](real_etcd.rs) 是 `astersql-domain-serverinfo` crate 的生产 etcd 适配层：它把 [`syncer.rs`](syncer.rs) 定义的同步接口 `EtcdClient` 落到 `etcd-client 0.19`，让同步的 `Syncer` 代码可以访问 PD 内嵌 etcd。模块由 [`lib.rs`](lib.rs) 私有声明为 `real_etcd`，再通过 `pub use real_etcd::*` 导出 `RealEtcdClient`；因此外部 crate 使用的是 `astersql_domain_serverinfo::RealEtcdClient`，而不是直接访问模块路径。
-
-生产接线可在 `pkg/session/runtime/session.rs` 的 Domain 初始化、`pkg/session/runtime/session_factory.rs` 的跨 keyspace transport，以及 `pkg/session/runtime/crossks_runtime.rs::target_real_etcd` 中看到。前两处还把同一连接的 `raw_client()` 和 `namespace()`交给 owner、TTL watch 或 `pkg/ddl/schemaver/syncer.rs::RealEtcdClient`，所以本类型既是 server-info 的 `EtcdClient` 实现，也是多个 Domain 元数据组件共享底层 etcd 连接的边界。
+`EtcdClient` 实现提供 lease、精确/前缀读写、删除、租约撤销，以及状态端点 claim 所需的原子比较事务。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ claim 并发安全依赖 etcd transaction，而非本地锁：首次创建以 cr
 
 ## 与 Go 版本的对应关系
 
-Go 目录没有单独的 `real_etcd.go`：Go `pkg/domain/serverinfo/syncer.go` 直接持有 `*clientv3.Client`，由 `concurrency.Session`、`util.PutKVToEtcd` 等调用原生 client。Rust 为了让同步器可测试且兼容同步 API，额外抽出了 `EtcdClient` trait 和本文件这一生产实现；所以应按“操作语义”而不是按文件一一对应。
+Rust 为了让同步器可测试且兼容同步 API，额外抽出了 `EtcdClient` trait 和本文件这一生产实现；所以应按“操作语义”而不是按文件一一对应。
 
 通用行为对应关系为：Rust `GrantLease` + keepalive map 对应 Go `tidbutil.NewSession`/`concurrency.Session`；Rust `Get`/`Put`/删除方法对应 Go clientv3 KV 调用及 `util.PutKVToEtcd`；Rust namespace 的物理键拼接/读回剥离对应 Go namespaced client 的键空间包装。
 
-claim 语义可直接与 `pkg/domain/serverinfo/status_endpoint_claim.go` 核对：`TryCreateClaim` 对应 `tryCreate` 的 create-revision transaction；`ReattachClaim` 对应 `reattach` 的 value + mod-revision CAS；`CompareAndDelete` 对应 `remove` 的 value + lease CAS。两边都把 claim 冲突和检查失败保持为 warning-only，不阻止 server info 注册。Go 集成测试 `syncer_test.go::TestStatusEndpointClaim` 是完整语义基准；Rust `syncer_test.rs::status_endpoint_real_etcd_transactions_namespace_and_lease_cleanup` 是同类真实 etcd 覆盖，但被 `#[ignore]` 标记并要求 `ASTERSQL_TEST_ETCD_ENDPOINT`。
+Go 集成测试 `syncer_test.go::TestStatusEndpointClaim` 是完整语义基准；Rust `syncer_test.rs::status_endpoint_real_etcd_transactions_namespace_and_lease_cleanup` 是同类真实 etcd 覆盖，但被 `#[ignore]` 标记并要求 `ASTERSQL_TEST_ETCD_ENDPOINT`。
 
 一个需要明确保留的差异是取消/超时实现：Go RPC 原生接收 `context.Context`；Rust `Context` 是 crate 内简化类型，本文件以 20 ms timeout 轮询桥接，且部分方法只做发起前检查。修改时应优先向 Go 的可取消边界靠齐，不能假定当前实现已经完全等价。
 
@@ -96,12 +94,3 @@ claim 语义可直接与 `pkg/domain/serverinfo/status_endpoint_claim.go` 核对
 - 修改 lease 生命周期时同时检查 `GrantLease`、`RevokeLease`、`Drop` 和 `Syncer::{RevokeSession,Restart}`；重点风险是授予后保活失败、revoke RPC 失败、重复 lease handle、客户端 drop 后短暂残留键。
 - 行为对齐应同步检查 Go `syncer.go`、`status_endpoint_claim.go` 和 `syncer_test.go::TestStatusEndpointClaim`。真实 etcd 行为应扩展 Rust 的 ignored 集成测试，内存语义则扩展 `MemoryEtcdClient` 相关独立测试。
 - 性能上避免在 `client`/`keepalive` 锁内执行网络等待；若提高并发或增加 watch/stream，应评估固定两 worker runtime、同步 `block_on` 调用和每 lease 一个任务的成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/domain/serverinfo` 找到 `real_etcd.rs` 及相邻 Rust/Go 文件；`node --file pkg/domain/serverinfo/real_etcd.rs` 读取完整 406 行；`query RealEtcdClient`、`query run_with_context`、`query TryCreateClaim`、`query CompareAndPut` 核对类型与签名。精确 callers/callees 对这些 trait 实现未返回边，未据此声称不存在调用者。
-- 目标与 crate：`pkg/domain/serverinfo/real_etcd.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 接口与调用：`pkg/domain/serverinfo/syncer.rs`、`status_endpoint_claim.rs`、`pkg/session/runtime/session.rs`、`session_factory.rs`、`crossks_runtime.rs`、`pkg/ddl/schemaver/syncer.rs`。
-- Rust 测试：`pkg/domain/serverinfo/syncer_test.rs::normal_schema_barrier_transport_cancellation_and_parent_deadline` 验证传输 future 不越过取消/父截止时间；`status_endpoint_real_etcd_transactions_namespace_and_lease_cleanup` 验证真实 etcd 的 namespace、claim CAS、换租约及清理，且测试明确标为需外部 fixture 的 ignored 测试。
-- Go 对照：`pkg/domain/serverinfo/syncer.go`、`status_endpoint_claim.go`、`syncer_test.go::TestStatusEndpointClaim`；后者覆盖冲突仅告警、并发单赢家、同 ID 重启、重挂竞态、所有权安全删除、revoke 和 namespace 隔离。
-- 本任务是纯文档分析，按计划不运行 Cargo，也未执行真实 etcd ignored 测试；结论来自已索引源码、直接引用搜索与现有测试断言。交付前以任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复查没有把 ignored 测试写成已实际运行。

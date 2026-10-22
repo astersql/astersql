@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-planner-core` crate 中的会话级 LRU 计划缓存。模块在 [`lib.rs`](./lib.rs) 中以 `mod plan_cache_lru` 声明，并通过 `pub use plan_cache_lru::*` 导出 `LRUPlanCache` 与 `NewLRUPlanCache`。其缓存值不是任意对象，而是 [`plan_cache_utils.rs`](./plan_cache_utils.rs) 定义的 `PlanCacheValue`；查找时还复用该文件的 `PlanCacheValue::MatchesParamTypes` 判断参数类型能否共享缓存计划。
-
-当前仓库的 Rust 生产代码没有构造或调用 `LRUPlanCache`：除本模块外，`NewLRUPlanCache`/`LRUPlanCache` 的 Rust 引用出现在独立测试 [`plan_cache_lru_test.rs`](./plan_cache_lru_test.rs) 和 `pkg/planner/core/casetest/plancache/plan_cache_suite_test.rs`。因此它是已经由 crate 公共接口导出、具有真实实现和测试，但尚未接入 Rust 会话主链的移植模块。Go 主链则在 `pkg/session/session.go` 创建同名缓存。
+维护缓存自己的估算内存计数，并提供删除、清空、动态缩容和关闭接口。
 
 ## 核心职责
 
@@ -77,9 +75,7 @@ Go 侧实际上游是 `pkg/session/session.go` 对 `plannercore.NewLRUPlanCache`
 
 ## 与 Go 版本的对应关系
 
-冻结 Go 容器通过 `PlanCacheValue.matchesParamTypes` 选择桶，Rust 本次改为对应值方法，保持查找与写入去重/替换采用同一规则。`pkg/planner/core/casetest/plancache/plan_cache_suite_test.rs::coalesce_plan_cache_update` 分别验证 LRU 和实例缓存中三种 DECIMAL 签名独立驻留、逐个命中，以及未标记值仍允许宽度兼容；这是容器行为证据，不代表 SQL 主链已自动采集标记。
-
-Rust 对照文件是 [`plan_cache_lru.go`](./plan_cache_lru.go)，核心语义保持一致：默认容量 100、同键多参数类型桶、命中/替换提升到 LRU 前端、超容量从尾部驱逐、删除一个键的全部桶、缩容驱逐、关闭等价清空，以及替换兼容桶后提前返回而不运行 memory guard。
+冻结 Go 容器通过 `PlanCacheValue.matchesParamTypes` 选择桶，Rust 本次改为对应值方法，保持查找与写入去重/替换采用同一规则。
 
 实现数据结构不同：Go 用 `map[string]map[*list.Element]struct{}` 加双向链表，按键先定位桶；Rust 只用 `VecDeque`，所有匹配都线性扫描。Go 的 `Get` 在 `RLock` 下仍移动链表，Rust 则用互斥锁明确串行化该写操作。
 
@@ -95,14 +91,3 @@ Rust 专属测试 [`plan_cache_lru_test.rs`](./plan_cache_lru_test.rs) 对照 Go
 - 若改变内存估算，需同时审查 `entryMemoryUsage`、`PlanCacheValue::MemoryUsage` 的缓存策略、所有加减路径和 guard 测试。公开字段在首次 `MemoryUsage` 后发生容量变化不会自动使值内缓存失效，这是扩展可变字段时的兼容风险。
 - 若补齐 Go 的指标或淘汰回调，应在锁内/锁外调用策略、回调重入和 panic 隔离上做显式设计，并放在独立测试文件中；不要把测试模块内嵌进本生产文件。
 - 性能敏感改动应验证命中、替换与删除的复杂度，兼容桶很多时当前线性扫描会放大锁持有时间；正确性改动则必须保持“队首最新、队尾最旧”和内存总和两个核心不变量。
-
-## 验证依据
-
-本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/plan_cache_lru.rs` 并读取 `git show 2c944fb:pkg/planner/core/plan_cache_lru.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件已完整索引；`node --file pkg/planner/core/plan_cache_lru.rs` 读取了 1–182 行并列出两个文件关联。
-- RustCodeGraph 对 `NewLRUPlanCache`、`LRUPlanCache` 的精确查询，以及对构造函数、`Get`、`Put`、`memoryControl` 等符号的 callers/callees 查询；图确认构造函数创建两个状态结构，`Put` 调用 `state`/`memoryControl` 并创建条目，`Get` 调用 `state`。同名通用方法产生的噪声未作为结论依据。
-- RustCodeGraph `node` 读取：[`plan_cache_lru.rs`](./plan_cache_lru.rs)、[`plan_cache_utils.rs`](./plan_cache_utils.rs) 中 `PlanCacheValue`/`MemoryUsage`/`PlanCacheValue::MatchesParamTypes`、[`lib.rs`](./lib.rs) 的模块声明与再导出、[`plan_cache_lru_test.rs`](./plan_cache_lru_test.rs)、[`plan_cache_instance_test.rs`](./plan_cache_instance_test.rs)、[`plan_cache_lru.go`](./plan_cache_lru.go) 和 [`plan_cache_lru_test.go`](./plan_cache_lru_test.go)。
-- Cargo 边界来自 [`Cargo.toml`](./Cargo.toml)：crate 名为 `astersql-planner-core`，库入口为 `lib.rs`，默认 feature 为空，`nextgen` 不条件控制本模块，`types-dependency` 指向 `../../types`，porting 元数据指向 Go 包 `pkg/planner/core`。
-- `rg` 核验：`lib.rs` 在第 166 行声明模块、第 229 行再导出、第 368–369 行挂载独立测试；冻结搜索补充了 `plan_cache_suite_test.rs` 的测试引用，未发现生产引用；Go 的 `pkg/session/session.go` 第 443 行构造该缓存。
-- 行为边界由 Rust 专属测试固定：默认容量与多桶容量、命中提升、按键删除与清空、缩容和容量 0 错误、内存计数、memory guard 驱逐、兼容桶替换跳过 guard。本文档任务不改变运行时代码，按计划不运行 Cargo。

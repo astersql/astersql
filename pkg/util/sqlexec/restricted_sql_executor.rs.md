@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-sqlexec`，crate 根在 `pkg/util/sqlexec/lib.rs`。根模块以私有模块 `restricted_sql_executor` 挂载本文件，再通过 `pub use restricted_sql_executor::*` 将这里的接口、类型和辅助函数作为 crate 公共 API 导出。`pkg/util/sqlexec/Cargo.toml` 将默认 feature 设为 `formal-crate`；本文件在该 feature 下从 crate 根引入 AST、chunk、执行上下文、日志、解析器、结果字段、系统过程跟踪、错误和会话变量类型。
-
-它不是具体 SQL 引擎，而是位于会话、执行器和需要执行内部 SQL 的上层模块之间的抽象边界。Go 对照文件 `pkg/util/sqlexec/restricted_sql_executor.go` 明确说明：`RestrictedSQLExecutor` 用受限制的内部 SQL 操作系统表并打断包依赖环，`SQLExecutor` 则为普通/内部 SQL 提供更通用的依赖倒置接口。Rust 调用证据包括 `pkg/dxf/framework/storage/*.rs` 大量通过 `sqlexec::ExecSQL` 操作任务元数据，以及 `pkg/extension/extensionimpl/bootstrap.rs` 使用 `DrainRecordSet` 汇聚结果。
+定义受限执行选项：`ExecOption` 保存快照、统计版本、分区裁剪、会话来源、会话变量临时设置和系统过程跟踪等配置；一组 `ExecOption*`/`Get*Option` 函数构造或应用一次性闭包。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ Drain 的主要错误优先级是明确的：`Next` 错误成为 `DrainError.sou
 
 ## 与 Go 版本的对应关系
 
-Rust 的 trait 和字段逐项对应 `pkg/util/sqlexec/restricted_sql_executor.go` 中的 `RestrictedSQLExecutor`、`ExecOption`、`SQLExecutor`、`SQLParser`、`Statement`、`RecordSet`、`DetachableRecordSet`、`MultiQueryNoDelayResult` 及三个辅助函数。主要语义保持一致：选项按序覆盖、空 chunk 表示结束、Drain 后 Renew、关闭错误不覆盖主结果、`ExecSQL` 对无结果语句返回空值。
-
 Rust 为所有权和错误表达增加了几处适配：Go 的 `*bool` 对应 `Option<bool>`；Go 的 `*chunk.Chunk` 被 `RecordChunk::{Owned,Allocated}` 统一；Go 可以同时返回 `rows, err`，Rust 用 `DrainError { rows, source }` 保留部分结果；Go 的 nil `RecordSet` 对应 `Option<Box<dyn RecordSet>>`；Go 的 variadic 参数变为 `Vec<Box<dyn Any>>` 或切片。
 
 存在值得维护者注意的接口差异：Go 基础 `RecordSet` 只有四个方法，Rust 为服务已迁移调用链把 `Finish`、`TryDetach`、`OnFetchReturned` 作为带默认实现的方法加入基础 trait；另有 `DetachableRecordSet` 重复声明分离能力。Go `SessionVarsSetup` 返回无参恢复函数，Rust 恢复函数重新接收 `&mut SessionVars`。Go Drain 直接追加引用当前 chunk 的行表示，Rust 显式 `CopyConstruct`，以满足块更新后的所有权安全。
@@ -87,12 +83,3 @@ Rust 为所有权和错误表达增加了几处适配：Go 的 `*bool` 对应 `O
 扩展结果集能力时，先判断它是所有实现必须提供的核心方法，还是像 `Finish`、`TryDetach`、`OnFetchReturned` 一样的可选钩子。改变基础 trait 会影响 `pkg/util/sqlexec/simple_record_set.rs`、`pkg/executor/adapter.rs`、`pkg/server/internal/resultset/*.rs`、`pkg/server/protocol_result.rs` 以及测试 mock；可选能力应给出与 Go 类型断言失败一致的安全默认值。测试逻辑应继续放在独立的 `*_test.rs` 文件，不嵌入生产源文件。
 
 修改 Drain 时必须保留三项不变量：空块才表示正常结束；返回行不能借用会被 Renew/复用的 chunk；Close 错误不能覆盖主要 Drain 结果。对应回归点位于 `pkg/util/sqlexec/migration_aster_unit_test.rs`。若改变 allocator 或锁策略，还需覆盖 `RecordChunk::Allocated` 及互斥锁生命周期，并评估逐行复制的性能成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/sqlexec` 收录目标 Rust/Go 文件及独立测试；`node --file pkg/util/sqlexec/restricted_sql_executor.rs` 读取 433 行完整源码，并报告 17 个使用文件；`query` 精确定位 Rust/Go 的 `DrainRecordSet`、`DrainRecordSetAndClose`、`GetExecOption` 等对应符号。图的 `callers`/`callees` 命令对这些节点未返回可展示边，因此调用点又用精确文本引用核验，未将空图结果推断为“无调用者”。
-- 源码与 crate 边界：`pkg/util/sqlexec/restricted_sql_executor.rs`、`pkg/util/sqlexec/lib.rs`、`pkg/util/sqlexec/Cargo.toml`。
-- Go 对照：`pkg/util/sqlexec/restricted_sql_executor.go`，尤其是接口动机、参数安全提示、可分离结果集错误语义和 Drain/Close 实现。
-- Rust 独立测试：`pkg/util/sqlexec/migration_aster_unit_test.rs` 覆盖选项顺序、owned/allocated chunk、Drain 部分行、Close 优先级和 `ExecSQL`；`pkg/util/sqlexec/go_merge_34_test.rs` 覆盖会话变量设置/恢复；`pkg/server/internal/resultset/resultset_aster_unit_test.rs` 和 `pkg/server/tests/commontest/cursor_test.rs` 提供 `TryDetach`/`OnFetchReturned` 集成边界证据。
-- 代表性上游：`pkg/dxf/framework/storage/*.rs`、`pkg/dxf/importinto/scheduler.rs`、`pkg/extension/extensionimpl/bootstrap.rs`、`pkg/server/internal/resultset/{cursor.rs,resultset.rs}`。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；最终只执行固定 11 章节的结构验证。

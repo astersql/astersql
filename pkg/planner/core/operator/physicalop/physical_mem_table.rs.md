@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-core-operator-physicalop`（见同目录 `Cargo.toml`），实现内存表扫描的物理计划节点。这里的“内存表”主要指 `INFORMATION_SCHEMA`、诊断表和性能相关虚拟表：数据不是由普通 KV 表扫描直接读取，而是在执行阶段由进程内逻辑、缓存或相应系统接口产生。
-
-模块入口 `pkg/planner/core/operator/physicalop/lib.rs` 以 `mod physical_mem_table` 纳入实现、以 `pub use physical_mem_table::*` 导出符号，并通过 `impl_schema_leaf_operator!(PhysicalMemTable)` 把该类型接入统一的物理计划 trait。物理计划路由位于 `base_physical_plan.rs`：当动态逻辑节点是 `logicalop::LogicalMemTable` 时，调用本文件的 `ExhaustPhysicalPlans4LogicalMemTable`。
+只描述和枚举计划，不读取表数据；真正的内存表执行器构造与数据生产不在此文件中。
 
 ## 核心职责
 
@@ -93,10 +91,7 @@ RustCodeGraph 将该文件标记为被多个规划、执行和测试文件使用
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/physicalop/physical_mem_table.go`。
-
 - 字段意图一一对应：Go 的 `PhysicalSchemaProducer`、`DBName`、`Table`、`Columns`、`Extractor`、`QueryTimeRange` 在 Rust 中均有对应字段；Rust 用拥有型 `TableInfo`/`ColumnInfo` 和 `Option<Box<dyn ...>>` 表达 Go 的指针/interface 可空性。
-- `Init` 均用 `TypeMemTableScan` 建立基类并设置统计；Rust 枚举函数还显式设置逻辑 schema。
 - `MemoryUsage` 有意沿用 Go 的字段头部估算模型。Go 对 nil receiver 返回 0；Rust 方法需要有效引用，不存在 nil receiver 分支。Go 的 `QueryTimeRange.MemoryUsage()` 与 Rust 的 `size_of::<Option<(i64, i64)>>()` 是表示层面的近似对应。
 - Go `AccessObject` 返回含 Database 和 Table 的 `ScanAccessObject`，其字符串化在测试场景中表现为表访问描述；Rust 直接返回 `table:<name>`，没有保留结构化数据库字段。
 - Go `OperatorInfo` 在 extractor 存在时调用 `Extractor.ExplainInfo(p)`；当前 Rust extractor trait 没有 EXPLAIN 方法，故 Rust 固定返回空串。这是明确的移植差异。
@@ -112,14 +107,3 @@ RustCodeGraph 将该文件标记为被多个规划、执行和测试文件使用
 - 测试逻辑必须保留在独立文件 `physical_mem_table_test.rs`。现有测试覆盖 EXPLAIN 格式和内存估算；建议新增候选枚举属性矩阵、字段/schema 复制、缺上下文、默认统计及换上下文克隆测试。不要把 `#[cfg(test)]` 测试内嵌到生产文件。
 
 兼容风险主要是 EXPLAIN 文本变化和 Go/Rust 行为偏差；正确性风险集中在漏复制字段或错误声称支持排序/MPP/IndexJoin；性能风险主要来自不必要的元数据/extractor 深克隆，以及错误的属性声明让计划器选择实际无法执行的候选。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_mem_table.rs`，RustCodeGraph `node --file` 确认 150 行源码及结构体、方法和枚举入口。
-- 路由与 trait 接线：`pkg/planner/core/operator/physicalop/base_physical_plan.rs` 中 `LogicalMemTable` 路由；`pkg/planner/core/operator/physicalop/lib.rs` 中模块声明、公开再导出、`impl_schema_leaf_operator!` 定义及对 `PhysicalMemTable` 的调用。
-- 逻辑输入：`pkg/planner/core/operator/logicalop/logical_mem_table.rs` 中 `MemTablePredicateExtractor` 与 `LogicalMemTable` 字段和谓词下推契约。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml` 的 package、lib、依赖和 `go-package` 元数据。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_mem_table.go` 的字段、`MemoryUsage`、`Init`、EXPLAIN/访问对象和 `findBestTask4LogicalMemTable`。
-- 独立 Rust 测试：`pkg/planner/core/operator/physicalop/physical_mem_table_test.rs`；`explain_info_uses_go_scan_access_object_format` 验证 `table:TABLES`，`memory_usage_counts_go_field_headers_and_column_pointers` 验证容量和字段头部计量。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter` 确认目标有 12 个索引符号；`query PhysicalMemTable` 定位 Rust/Go 类型及相关构造入口。精确 callers/callees 命令未产出可用结果，故调用关系以索引文件节点、路由源码和模块宏交叉核对。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务规定的命令验证本文恰有 11 个固定二级章节，并人工复核所有行为陈述均能回指上述源码或测试。

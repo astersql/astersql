@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-pdtypes` crate（入口见 `pkg/store/pdtypes/lib.rs`，清单见 `pkg/store/pdtypes/Cargo.toml`），定义 AsterSQL 与 PD placement rule JSON 接口共享的数据模型。它不负责解析 SQL placement policy，也不直接调用 PD；上层 `pkg/ddl/placement/lib.rs` 将这些类型再导出，随后由 `constraint.rs`、`rule.rs` 和 `bundle.rs` 完成约束解析、规则构造与规则组编排。
-
-对应生产源码为 [`placement.rs`](placement.rs)。该文件是协议/数据边界，不是调度算法实现：PD 才负责依据这些规则把 Region peer 放置到匹配的 Store。
+不检查 `Count` 是否为正数、不校验键范围顺序、不解释 label 约束是否互相冲突，也不计算规则应用顺序；这些语义由构造层或 PD 负责。
 
 ## 核心职责
 
@@ -67,11 +65,11 @@ JSON 往返还有一个重要边界：被 `#[serde(skip)]` 标记的原始 key �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/pdtypes/placement.go`。字段名和 JSON tag 基本逐项对应：Go 的 `int` 在 Rust 中选为 `i32`，`uint64` 对应 `u64`，`[]byte` 对应 `Vec<u8>`，字符串别名改为可保留未知值的 Rust 枚举。Go `omitempty` 对应私有零值谓词或 `Vec::is_empty`/`String::is_empty`。
+字段名和 JSON tag 基本逐项对应：Go 的 `int` 在 Rust 中选为 `i32`，`uint64` 对应 `u64`，`[]byte` 对应 `Vec<u8>`，字符串别名改为可保留未知值的 Rust 枚举。
 
 Rust `Rule` 有意保持本地 Go `pdtypes.Rule` 不含 witness JSON 字段的契约；额外的泛型底座和 `HttpRule` 用于兼容 DDL 原 Go 代码所导入的 `pd/client/http.Rule`。这是 Rust 侧的接线差异，不表示本地 Go 结构新增了 `IsWitness`。
 
-Go 的 `PeerRoleType`/`LabelConstraintOp` 是开放字符串别名，任意新字符串都可存活；Rust 因而不能只用封闭枚举。`Unknown(String)` 保留这一前向兼容性，`Empty` 或空 `Unknown` 则表达 Go 零值。`placement_test.rs` 进一步确认 JSON `null` 被接受为 Go 字符串零值。
+Go 的 `PeerRoleType`/`LabelConstraintOp` 是开放字符串别名，任意新字符串都可存活；Rust 因而不能只用封闭枚举。
 
 Go 注释说明规则应用次序为 `[GroupIndex, GroupID, Index, ID]`，但本地 `Rule` 自身没有 `GroupIndex`；组级索引由相邻的组/Bundle 表示承担。该排序规则是协议语义背景，本文件没有排序实现。
 
@@ -83,11 +81,3 @@ Go 注释说明规则应用次序为 `[GroupIndex, GroupID, Index, ID]`，但本
 - 业务校验应优先放在 `pkg/ddl/placement/constraint.rs`、`constraints.rs`、`rule.rs` 或 `bundle.rs`，不要把具体 SQL/DDL 约束塞进这个通用 PD 数据模型。
 - 测试必须继续放在独立文件。JSON 零值、未知值及 witness 契约应更新 `pkg/store/pdtypes/placement_test.rs` 或 `migration_aster_unit_test.rs`；DDL 构造/冲突/合并行为则同步对应的 `pkg/ddl/placement/*_test.rs`，不要把测试嵌入 `placement.rs`。
 - 兼容风险集中在 JSON 线协议和 Go 零值语义；性能风险主要来自规则集合中字符串/向量的克隆与序列化。新增大字段或频繁复制路径前应检查上层 Bundle 的规模和所有权传递。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/store/pdtypes/placement.rs`；`files --filter pkg/store/pdtypes` 确认同 crate 文件；`node --file pkg/store/pdtypes/placement.rs --offset 1 --limit 500` 读取 313 行完整源码并报告 20 个引用文件；`query` 分别定位 `PlacementRule`、`PeerRoleType`、`LabelConstraint`、`RuleGroup`、`LabelConstraintOp`；聚焦 `explore` 与 `node` 核对 DDL 的 `constraint -> rule -> bundle` 构造链。
-- 源码与边界：`pkg/store/pdtypes/placement.rs`、`pkg/store/pdtypes/lib.rs`、`pkg/store/pdtypes/Cargo.toml`、`pkg/ddl/placement/lib.rs`、`pkg/ddl/placement/constraint.rs`、`pkg/ddl/placement/rule.rs`、`pkg/ddl/placement/bundle.rs`。
-- Go 对照：`pkg/store/pdtypes/placement.go`，用于核对字段、JSON tag、角色/操作符字符串及规则顺序说明。
-- 独立测试：`pkg/store/pdtypes/placement_test.rs` 验证 `null` 的 Go 零值兼容；`pkg/store/pdtypes/migration_aster_unit_test.rs` 验证 JSON 字段形状、未知值 round-trip，以及本地 `Rule` 与 `HttpRule` 的 witness 差异。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前只执行任务指定的 11 章节结构检查，并人工复核上述结论均能回溯到列出的源码或索引结果。

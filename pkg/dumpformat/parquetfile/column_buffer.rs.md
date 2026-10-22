@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpformat-parquetfile` crate，crate 根由 [`lib.rs`](lib.rs) 公开为 `column_buffer` 模块。它位于 Parquet 写出链的中间层：上游 [`writer.rs`](writer.rs) 根据 SQL 列元数据建立 `Column` 列描述并创建每列缓冲，下游 [`column_value.rs`](column_value.rs) 将解析后的 `ColumnValue` 追加到相应物理类型向量，最终由 `ParquetWriter::flush_rows` 把这些向量交给 `parquet` crate 的列写入器。
-
-该文件不负责 SQL 文本解析、Parquet schema 构造或 I/O；它只定义“一个 row group 尚未写出时，单列数据如何驻留内存”、缓冲如何初始化，以及写出后如何复用。源码中的有效实现位于 `ColumnBuffer`、`new_column_buffer`、`new_column_buffers` 及两个 Go 风格别名；文件前半段的注释代码是迁移说明，不参与编译。
+`new_column_buffer` 根据 `Column.column_type.physical` 只为实际使用的值向量预留 `capacity`，避免所有类型同时分配；仅当 `Column.allows_null_encoding` 为真时预留定义级别容量。
 
 ## 核心职责
 
@@ -77,11 +75,7 @@ RustCodeGraph 与源码交叉核对出的生产调用边为：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`column_buffer.go`](column_buffer.go)：`columnBuffer` 对应 `ColumnBuffer`，`reset` 对应 `ColumnBuffer::reset`，`newColumnBuffer(s)` 对应 snake_case 主实现及同名 Go 风格转发函数。两版都按物理类型只初始化一个值切片/向量，都只为允许 NULL 编码的列初始化定义级别容量，也都拒绝非正的 fixed-len 宽度与未支持的物理类型；批量错误文本都包含 `init parquet buffer for column <name>`。
-
 需要注意的表示差异：Go 的 byte-array 字段使用 Arrow Go 的 `parquet.ByteArray`/`FixedLenByteArray`，Rust 缓冲直接拥有 `Vec<u8>`，到 flush 时才转换为 `parquet-rs` 类型；Rust `Default` 产生非 null 的空 `Vec`，所以 Go 测试中用 `NotNil` 观察初始化的细节不能原样作为 Rust 的语义断言，Rust 测试验证的是容量/追加/读回行为。Rust 对不支持项把枚举分支写成显式 `Int96`，而 Go 使用 `switch default`，当前可观察错误意图一致。
-
-[`writer_behavior_test.go`](writer_behavior_test.go) 与 Rust 的 [`writer_behavior_test.rs`](writer_behavior_test.rs) 均覆盖非法 fixed width、`Int96`、批量列名上下文以及 Float/Double 初始化；Rust 的 [`writer_test_helpers_test.rs`](writer_test_helpers_test.rs) 还直接验证 reset 后读出的批次为空和 definition levels 与值相互独立。
 
 ## 扩展指南
 
@@ -92,11 +86,3 @@ RustCodeGraph 与源码交叉核对出的生产调用边为：
 若要优化容量，生产构造当前传 `0`；可以从预计 row-group 行数推导容量后传入，但须评估多列、变长值和峰值内存，避免按最大行数为所有列过度预留。reset 复用策略改变时还需关注大 row group 后长期保留峰值容量的风险。
 
 测试应继续放在独立文件而非 `column_buffer.rs` 内。优先扩展 `writer_test_helpers_test.rs` 覆盖类型分派、容量复用和定义级别，扩展 `writer_behavior_test.rs` 覆盖构造错误上下文及 writer 集成行为；Go 语义变化还应同步相应 `*_test.go`。兼容性重点是物理类型选择、错误边界、NULL/value 计数和 row-group flush 后状态，性能重点是分配次数与保留容量。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/dumpformat/parquetfile` 确认目标、writer、Go 对照和独立测试均在索引中。
-- RustCodeGraph 源码/调用查询：`node --file pkg/dumpformat/parquetfile/column_buffer.rs` 确认全部 206 行及 7 个符号；限定查询确认 `new_column_buffers` 的生产调用者是 `ParquetWriter::new`，测试调用者包括 `parquet_writer_conversion_errors_leave_writer_unusable_like_go`；源码节点进一步核对了 `writer.rs` 的构造、追加、flush、reset 链。
-- 读过的生产文件：`pkg/dumpformat/parquetfile/column_buffer.rs`、`column_type.rs`（由目标符号定义和引用查询核对）、`column_value.rs`、`writer.rs`、`lib.rs`、`Cargo.toml`、Go 对照 `column_buffer.go` 与 `writer.go` 的直接调用位置。
-- 读过的独立测试：`writer_test_helpers_test.rs`、`writer_behavior_test.rs`、`writer_behavior_test.go`。它们验证可空定义级别、各值类型分派、reset、非法 fixed width、`Int96`、批量列名错误上下文和 Float/Double 缓冲。
-- 结构验证使用任务指定命令，要求本文件存在且恰有十一个固定二级标题。本任务是纯文档分析，按计划不运行 Cargo 或代码测试；关于行为的结论来自已索引源码、Go 对照与现有独立测试，而不是本次执行测试的结果。

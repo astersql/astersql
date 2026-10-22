@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-对应源码：[builtin_like.rs](builtin_like.rs)。
-
-本文件位于 `astersql-expression` crate（`pkg/expression/Cargo.toml`）中，由 `pkg/expression/lib.rs` 以私有模块 `builtin_like_kernel` 编译进 crate。它是从 Go `pkg/expression/builtin_like.go` 独立迁移出的 LIKE 标量求值内核，负责表达式形态 `value LIKE pattern ESCAPE escape` 的构造元数据、逐行求值和常量模式缓存；同一 Rust 类型的批量求值方法在相邻的 `pkg/expression/builtin_like_vec.rs` 中实现。
-
-需要区分“模块已编译”和“通用 SQL 主路径已接入”：当前 `pkg/expression/builtin.rs` 会把函数名 `like` 绑定为 `CoreBuiltinKind::Like`，并在其自身的 `EvalInt` 分支内直接创建 collator pattern；仓库内除本文件、向量伴随文件和测试外，没有生产 Rust 代码直接构造这里的 `likeFunctionClass` 或 `builtinLikeSig`。因此本文件目前更准确的角色是可复用的独立迁移内核及语义对照面，而不能据此声称所有 Rust SQL LIKE 求值都经过 `builtinLikeSig::evalInt`。
+从 Go `pkg/expression/builtin_like.go` 独立迁移出的 LIKE 标量求值内核，负责表达式形态 `value LIKE pattern ESCAPE escape` 的构造元数据、逐行求值和常量模式缓存；同一 Rust 类型的批量求值方法在相邻的 `pkg/expression/builtin_like_vec.rs` 中实现。
 
 ## 核心职责
 
@@ -74,11 +70,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `likeFunctionClass::getFunction`、`builtinLikeSig::Clone` 和 `evalInt` 分别对应 Go `pkg/expression/builtin_like.go` 的同名方法。两边都要求 value/string、pattern/string、escape/int 三个参数，将返回长度设为 1，使用 LIKE pb 签名，按相同顺序传播 NULL/错误，并只在 pattern 与 escape 都达到 `ConstOnlyInContext` 时复用已编译 matcher。Rust 的 `Mutex<Option<Box<dyn WildcardPattern>>>` 对应 Go 的 `builtinFuncCache[collate.WildcardPattern]`，而显式 `Clone` 都不复制缓存。
+Rust 的 `Mutex<Option<Box<dyn WildcardPattern>>>` 对应 Go 的 `builtinFuncCache[collate.WildcardPattern]`，而显式 `Clone` 都不复制缓存。
 
 目前并非完全等形移植：Go 函数类通过 `newBaseBuiltinFuncWithTp` 完成参数类型约束、collator/base 元数据和 pb code 接线；本 Rust 文件用简化的 `legacy_vectorized_runtime`、本地 `ScalarFuncSig` 与显式 collator 注入表达同一核心算法。Go 缓存初始化可返回 error，并在理论错误路径返回 NULL/error；Rust matcher 的 `Compile` 无返回值，缓存锁失败则 panic。Go 的完整函数注册与 distsql 反序列化已连接 `builtinLikeSig`，而 Rust 通用 `builtin.rs` 当前另行实现 LIKE 主路径。
-
-语义用例保持对齐：`pkg/expression/builtin_like_test.rs` 和 Go `pkg/expression/builtin_like_test.go` 覆盖 binary 通配符、转义、中文字符及三种 utf8mb4 CI collation；其中 `ß`、`ss` 和 Glagolitic 字母用例明确验证 matcher 是按 collation/字符规则工作，而非简单 lowercase 或字节查找。
 
 ## 扩展指南
 
@@ -87,14 +81,3 @@ Rust `likeFunctionClass::getFunction`、`builtinLikeSig::Clone` 和 `evalInt` �
 - 若改变缓存结构，必须维持“只缓存上下文常量 pattern+escape”“Clone 不复制运行期缓存”“并发共享不产生数据竞争”三个不变量，并评估每次持锁匹配的性能。新增测试仍应放在独立 `*_test.rs` 文件，不要嵌入生产源文件。
 - 若目标是把此迁移内核接入完整 SQL 主链，需要同时审查 `pkg/expression/builtin.rs` 的函数注册、类型 cast、`CoreBuiltinKind::Like` 求值和 `tipb::ScalarFuncSig` 映射；不能只替换同名字符串。还需核对 `pkg/expression/distsql_builtin.rs` 当前是 Go 构造配方数据，而不是本 Rust 类型的直接构造代码。
 - 若改向量行为，应修改 `pkg/expression/builtin_like_vec.rs` 并同步 `pkg/expression/builtin_like_vec_test.rs`、`pkg/expression/builtin_like_vec_15_aster_unit_test.rs` 及 Go `pkg/expression/builtin_like_vec_test.go`，验证按行 pattern、NULL 位图与标量结果一致。
-
-## 验证依据
-
-- 源码全貌：`pkg/expression/builtin_like.rs`（159 行），逐项核对 `ScalarFuncSig`、`likeFunctionClass`、`builtinLikeSig` 及其全部方法。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`query builtinLikeSig --kind struct` 同时定位 Go/Rust 定义；`node --file pkg/expression/builtin_like.rs --offset 1 --limit 220` 返回完整文件并报告其被 19 个文件使用。精确 callers/callees 查询未给出可归属到重名 Rust 符号的边，因此调用接线结论另用限定路径的 `rg` 核验，没有据重名结果推断调用关系。
-- crate/装配：读取 `pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`，确认 crate 名、`collate-dependency`、私有 kernel 声明、向量伴随模块及测试再导出。
-- 直接依赖：读取 `pkg/expression/legacy_vectorized_runtime.rs` 的 `ConstLevel`、`EvalContext`、`LegacyExpression` 和 `ExprRef`；读取 `pkg/util/collate/collate.rs` 的 `Collator`/`WildcardPattern` trait 与 `pkg/util/collate/bin.rs` 的 `binCollator` 实现。
-- Rust 接线与伴随实现：读取 `pkg/expression/builtin_like_vec.rs`；检索 `builtin_like_kernel|builtinLikeSig|likeFunctionClass` 的非测试 Rust 引用；读取 `pkg/expression/builtin.rs` 中 LIKE 构建、标量求值和 tipb 签名映射，以及 `pkg/expression/distsql_builtin.rs` 的配方条目。
-- Go 对照：读取 `pkg/expression/builtin_like.go`、`pkg/expression/builtin_like_vec.go`、`pkg/expression/builtin_like_test.go` 和 `pkg/expression/builtin_like_vec_test.go`。
-- Rust 测试：读取 `pkg/expression/builtin_like_test.rs`、`pkg/expression/builtin_like_vec_test.rs` 和 LIKE 相关的 `pkg/expression/builtin_like_vec_15_aster_unit_test.rs`；证据覆盖参数数量、0/1 结果、通配符/escape、NULL、collation 差异、缓存初始化和 Clone 隔离。
-- 本任务是纯文档分析，依计划未运行 Cargo；交付前仅执行任务指定的 11 章节结构验证并人工检查唯一产物、事实限定和源码链接。

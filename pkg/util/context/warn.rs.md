@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-context` crate；crate 入口 `pkg/util/context/lib.rs` 以 `pub mod warn` 声明模块，并以 `pub use warn::*` 重导出其公开项。`pkg/util/context/Cargo.toml` 把该 crate 映射到 Go 包 `pkg/util/context`，本文件的直接 Go 对照是 `pkg/util/context/warn.go`。
-
-它位于 SQL 执行链的通用上下文层，不负责生成具体业务错误，而是把表达式求值、类型转换、错误降级、计划缓存和执行器产生的错误按 `Error`、`Warning`、`Note` 三种 `SHOW WARNINGS` 级别收集起来。上层典型持有者是 `pkg/sessionctx/stmtctx/stmtctx.rs` 的语句上下文；更窄的消费方通过 `WarnAppender` trait 接收追加能力，例如 `pkg/types/context.rs`、`pkg/errctx/context.rs`、`pkg/expression/exprstatic/evalctx.rs` 和 `pkg/util/context/plancache.rs`。
-
-这是实际实现而非门面或桩：它定义数据格式、trait 契约、线程安全容器、忽略型实现和测试回调实现。文件本身没有条件编译项；独立测试由 `pkg/util/context/lib.rs` 的 `#[cfg(test)]` 模块声明接入。
+这是实际实现而非门面或桩：它定义数据格式、trait 契约、线程安全容器、忽略型实现和测试回调实现。
 
 ## 核心职责
 
@@ -90,10 +86,6 @@ RustCodeGraph 将本文件标记为被 45 个文件使用。关键上游调用�
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/context/warn.go` 是逐项对照基准。三个级别常量、`SQLWarn` / `jsonSQLWarn` 字段、三层接口、`StaticWarnHandler`、`ignoreWarn` 和 `funcWarnAppender` 均有一一对应符号。Rust 的 `Option<&dyn WarnHandler>` 对应可为 nil 的 Go 接口；`Mutex<Vec<_>>` 对应嵌入的 `sync.Mutex` 加 warning slice；`u16::MAX` 对应 `math.MaxUint16`。
-
-重要语义保持包括：只序列化最内层结构化错误；普通错误退化为消息；单条追加在上限后静默丢弃；批量追加可能越过上限；复制结果与内部切片分离；截断返回被移除后缀；忽略 handler 永远为空；测试回调仅建议用于测试。
-
 存在需要扩展者注意的 Rust 表达差异：
 
 - Go `GetWarnings` 返回内部 slice 别名且注释要求不得修改；Rust 无法安全地跨锁返回该引用，所以返回完整克隆。调用者修改返回值不会改变 handler，并多出 O(n) 克隆成本。
@@ -118,12 +110,3 @@ RustCodeGraph 将本文件标记为被 45 个文件使用。关键上游调用�
 并发扩展应避免在持有 `warnings` 锁时调用外部回调、格式化复杂错误或执行 I/O。若要提供一致快照加后续变更的复合操作，应新增单方法 API，在一次锁持有内完成，而不是组合 `WarningCount`、`GetWarnings`、`TruncateWarnings`。
 
 测试必须保持在独立文件中：核心对照用 `pkg/util/context/warn_test.rs`，AsterSQL 特有或跨模块迁移场景用 `pkg/util/context/migration_aster_unit_test.rs`；同时核对 `pkg/util/context/warn_test.go` 的测试意图，不把测试内嵌回生产文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/context` 确认 `warn.rs`、`warn.go`、两端测试及模块文件均被索引。
-- RustCodeGraph `node --file pkg/util/context/warn.rs --offset 1 --limit 500`：读取目标文件全部 433 行，确认常量、结构体、trait、实现、可见性和无条件编译分支。
-- RustCodeGraph `query` / `explore` / `callers` / `callees`：确认 `NewStaticWarnHandler`、`NewStaticWarnHandlerWithHandler`、`NewFuncWarnAppenderForTest` 的双语言定义，并取得 `AppendWarning`、`GetWarnings`、`SetWarnings` 的上游调用结果；精确图命令对部分 trait/方法没有单独输出，因此再以索引的 `explore` 调用者结果及窄范围 `rg` 核对具体 Rust 使用点。
-- 已读生产与装配文件：`pkg/util/context/warn.rs`、`pkg/util/context/warn.go`、`pkg/util/context/lib.rs`、`pkg/util/context/Cargo.toml`；调用关系抽查了 `pkg/sessionctx/stmtctx/stmtctx.rs`、`pkg/expression/exprstatic/evalctx.rs`、`pkg/errctx/context.rs`、`pkg/types/context.rs`、`pkg/planner/planctx/context.rs`、`pkg/util/context/plancache.rs` 的符号引用。
-- 已读独立测试：`pkg/util/context/warn_test.rs`、`pkg/util/context/warn_test.go`、`pkg/util/context/migration_aster_unit_test.rs`。覆盖证据包括 JSON 往返与 nil panic、IgnoreWarn 空操作、CopyWarnings 容量复用/重新分配、TruncateWarnings 边界、handler 独立复制、三种级别和错误计数、Reset，以及测试回调在计划缓存 range fallback 中的使用。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅用任务指定命令验证本文档存在且恰有 11 个固定二级标题，并人工复核没有把未验证设计写成当前事实。

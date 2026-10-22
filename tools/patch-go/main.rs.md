@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件是 Cargo 包 `astersql-tools-patch-go` 的二进制入口。`tools/patch-go/Cargo.toml` 通过 `[[bin]]` 将二进制名 `astersql-tools-patch-go` 映射到本文件，同时以 `lib.rs` 作为同包库入口。根 `Cargo.toml` 又将 `tools/patch-go` 列为 workspace 成员。因此，本文件位于进程启动边界，不实现补丁探测本身，只把 Cargo/操作系统启动的进程转交给库侧统一入口 `astersql_tools_patch_go::entry()`。
-
-它是一个有意保持极薄的二进制门面：真实探针逻辑依次位于 `lib.rs::entry`、`check.rs::main`、`check.rs::run_main` 和 `check.rs::grunningnanos`。这也意味着不能仅凭本文件判断 Go 运行时补丁是否存在，必须继续检查上述库调用链。
+只有一项职责：在 Rust 二进制启动时调用一次 `astersql_tools_patch_go::entry()`。
 
 ## 核心职责
 
@@ -62,9 +60,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `tools/patch-go/check.go`。Go 文件属于 `package main`，其 `main()` 直接调用通过 `//go:linkname` 绑定到 `runtime.grunningnanos` 的 `grunningnanos()`，并丢弃返回值。Rust 为了同时支持二进制和库测试，将同一条语义拆成两层：本文件的 `main()` 调 `lib.rs::entry()`，再由 `check.rs::main()` 完成与 Go `main()` 对应的调用。
+Rust 为了同时支持二进制和库测试，将同一条语义拆成两层：本文件的 `main()` 调 `lib.rs::entry()`，再由 `check.rs::main()` 完成与 Go `main()` 对应的调用。
 
-两版一致之处是：入口无参数业务、仅触发一次探针调用、不使用 `int64`/`i64` 结果，也不在入口恢复失败。差异是：Go 的真实性来自链接实际运行时私有符号，而当前 Rust 的 `check.rs::grunningnanos()` 调用可控的 `stubs.rs::runtime_grunningnanos()`。因此 Rust 路径验证了调用契约和失败传播，不能被描述成已验证真实 Go runtime 补丁或替代 `patch-go.sh` 的 Go 编译检查。
+差异是：Go 的真实性来自链接实际运行时私有符号，而当前 Rust 的 `check.rs::grunningnanos()` 调用可控的 `stubs.rs::runtime_grunningnanos()`。因此 Rust 路径验证了调用契约和失败传播，不能被描述成已验证真实 Go runtime 补丁或替代 `patch-go.sh` 的 Go 编译检查。
 
 ## 扩展指南
 
@@ -72,13 +70,3 @@
 - 若要增加真正的命令行参数、退出码或用户输出，入口职责才可能需要扩展；应先同步评估 `lib.rs::entry()` 的签名和 Go `check.go`/`patch-go.sh` 的调用契约，避免让脚本误判“已打补丁”。
 - 新行为的测试应继续放在独立文件（当前为 `parity_test.rs`），不要在 `main.rs` 内嵌 `#[cfg(test)]` 测试模块。涉及二进制参数或退出状态时，可新增独立集成测试来启动 `astersql-tools-patch-go`；现有测试只直接覆盖库侧 `run_main()` 与 `grunningnanos()`，未直接启动本二进制。
 - 兼容性风险主要是破坏 Go 探针“一次调用、忽略结果、失败外露”的语义；性能风险目前可忽略，因为入口仅增加一次普通函数转发。若新增 I/O、重试或后台任务，则必须重新说明错误传播和资源退出规则。
-
-## 验证依据
-
-- `tools/patch-go/main.rs`：确认唯一符号 `fn main()` 及其唯一调用 `astersql_tools_patch_go::entry()`。
-- `tools/patch-go/Cargo.toml`：确认包名、`lib.rs` 库入口、`main.rs` 二进制入口、`kind = "binary"` 和空依赖表；根 `Cargo.toml` 确认 workspace 成员关系。
-- `tools/patch-go/lib.rs`、`check.rs`、`stubs.rs`：逐层确认 `entry → check::main → run_main → grunningnanos → runtime_grunningnanos`，以及 panic、原子状态和清理语义。
-- `tools/patch-go/check.go`、`patch-go.sh`：确认 Go `main()` 直接触发 linkname 目标，以及脚本用 Go 编译成功与否判定补丁状态。
-- `tools/patch-go/parity_test.rs`：确认一次调用、`i64` 边界值、符号不可用失败和测试状态清理；同时确认没有直接启动 `main.rs` 二进制的测试。
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件；`files --filter tools/patch-go` 列出目标及五个直接相关 Go/Rust 文件。对入口执行的精确源码/调用边查询没有产生可用边，因此未将其作为超出源码可见关系的证据。
-- 结构验收以任务规定命令检查文档存在且恰含十一个固定二级章节；本任务为纯文档分析，按计划不运行 Cargo 或代码测试。

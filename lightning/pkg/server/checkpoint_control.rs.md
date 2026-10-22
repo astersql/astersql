@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-lightning-pkg-server`，由同目录 `lib.rs` 以 `checkpoint_control` 模块装入并整体再导出。`lightning/pkg/server/Cargo.toml` 将该 crate 标记为 Go 包 `lightning/pkg/server` 的 library 移植，并直接依赖已经移植的 `checkpoints`、`importer` 与 `importinto` crates。
-
-它位于 Lightning 运维控制面，而不是数据导入执行面：上游 `lightning/cmd/tidb-lightning-ctl/main.rs::dispatch` 根据 `cp_remove`、`cp_err_ignore`、`cp_err_destroy`、`cp_dump` 和 `local_storing_tables` 参数即时创建 `CheckpointControl`，本文件再把请求分派给传统 Lightning checkpoint 或 Import-Into checkpoint 后端。这里负责删除、修复、销毁、导出和诊断已有 checkpoint；不会创建或重新调度导入任务。
+这里负责删除、修复、销毁、导出和诊断已有 checkpoint；不会创建或重新调度导入任务。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ legacy checkpoint DB 的生命周期严格包在单次 `withDB` 调用内；Impo
 
 ## 与 Go 版本的对应关系
 
-主体接口、backend 分流、legacy 的五种操作、DestroyError 的“先删资源、无错误再清 meta”、Import-Into 返回 nil/`None` 的本地残留语义，以及三份固定 CSV 文件均与 `checkpoint_control.go` 对齐。Rust 独立测试的表驱动 case 与 Go 的 `TestImportIntoCheckpointControl`、`TestLegacyCheckpointControl`、`TestNewCheckpointControl_LegacyBackend` 对应。
-
 已确认的实现差异如下：
 
 - Go `withDB` 使用调用者 `context.Context`，Rust 在下游 checkpoints/importer/importinto crates 之间使用各自的 `Background()`，传入的 server `ctx` 主要只继续传给 `CleanupMetas`；取消/超时传播目前并不等价。
@@ -106,14 +102,3 @@ legacy checkpoint DB 的生命周期严格包在单次 `withDB` 调用内；Impo
 - 修改 Import-Into manager 生命周期时，消除当前 `Option::unwrap` 的一次性前提或明确拒绝复用，并覆盖关闭失败、重复调用以及仅调用 `GetLocalStoringTables` 的情形。
 - 修改 meta 清理时应复用 importer crate 的真实操作，不能改接 `DBFromConfigLocal`；同时验证 `all` 到空串的协议、meta 表不存在、count 解析失败及未完成表阻止全量清理等边界。
 - Rust 单元测试继续放在独立的 `checkpoint_control_test.rs`；与 Go 对齐时同步检查 `checkpoint_control_test.go`，不要把测试嵌入生产文件。
-
-## 验证依据
-
-- 源文件：`lightning/pkg/server/checkpoint_control.rs`，核对了 trait、两个控制器、工厂、五项操作、`CleanupMetas`、常量和存在性查询辅助函数。
-- Crate 装配：`lightning/pkg/server/Cargo.toml`、`lightning/pkg/server/lib.rs`，核对 crate 归属、四个直接 Lightning 依赖和模块再导出关系；目录内不存在 `doc.go`。
-- 上游入口：`lightning/cmd/tidb-lightning-ctl/main.rs::dispatch`，核对五个 CLI 操作到 trait 方法的生产调用边。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件并覆盖目标文件；`files --filter lightning/pkg/server` 确认源/Go/测试集合；`node --file ...` 读取 580 行源码；精确 `query/explore` 确认 `NewCheckpointControl -> NewLegacyCheckpointControl/NewImportIntoCheckpointControl`、CLI `dispatch -> NewCheckpointControl`，以及三个 `CleanupMetas` 调用位置。
-- Rust 测试：`lightning/pkg/server/checkpoint_control_test.rs`，核对真实 importer 清理路径、Import-Into 调用/关闭顺序和错误分支、三份非空 CSV、legacy 单删/全删/错误恢复/local engine 查询、工厂的 legacy 分流。
-- 补充 Rust 合同测试：`lightning/pkg/server/parity_test.rs`，核对 Import-Into file manager 的初始化后 dump/DestroyError、legacy 查询和 `None` 语义。
-- Go 对照：`lightning/pkg/server/checkpoint_control.go`、`lightning/pkg/server/lightning.go::CleanupMetas`、`lightning/pkg/server/checkpoint_control_test.go`，用于确认接口、操作顺序、资源回收和测试意图，并记录上述 Rust 差异。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构检查用于确认目标文档存在且恰有规定的十一个二级章节。

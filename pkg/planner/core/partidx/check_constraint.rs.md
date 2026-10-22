@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-partidx` crate 的部分索引（partial index）约束蕴含判定实现。crate 入口 `pkg/planner/core/partidx/lib.rs` 将本模块的公开类型和函数全部再导出；根 `Cargo.toml` 以 `facade_planner_core_partidx` 引入该 crate，`pkg/lib.rs` 再把它暴露为 `planner::core::partidx`。
-
-它要回答两个与索引选择有关的问题：查询过滤条件 `filters` 是否蕴含索引元数据中的前置谓词 `pre_predicates`；以及在计划缓存场景下，过滤条件是否必然拒绝目标列上的 `NULL`。Go 生产链在 `pkg/planner/core/operator/logicalop/logical_datasource.go` 的 `DataSource.CheckPartialIndexes` 中调用同路径 Go 实现来删除不可用访问路径，并为不能稳定满足条件的缓存计划设置 `NoncacheableReason`。当前仓库的 RustCodeGraph 和文本检索没有发现 Rust 生产代码调用本文件两个公开入口，只有 crate/facade 再导出和独立单元测试，因此 Rust 版本目前应视为“算法已移植、生产接线未验证”，不能把 Go 调用链当作 Rust 已接线事实。
+`ConstraintContext` 把表达式相等、列访问条件提取、区间构造和区间合并交给调用方，使排序规则、类型转换、告警、内存配额与计划缓存策略仍由真实规划器上下文负责。
 
 ## 核心职责
 
@@ -68,7 +66,7 @@ Go 对照的生产上游是 `DataSource.CheckPartialIndexes`：它解析索引 `
 
 ## 与 Go 版本的对应关系
 
-同路径 `check_constraint.go` 是直接语义基线。Rust 的 `CheckConstraints`/`exactMatch`/`canBeImpliedFromExprs`/`implCompareExpr`/`implIsNotNull` 和 `AlwaysMeetConstraints`/`checkIsNullRejected` 与 Go 函数分层对应；区间并集相等、`OR` 全分支拒绝、`AND` 任一分支拒绝以及排除 `NullEQ` 的规则保持一致。
+Rust 的 `CheckConstraints`/`exactMatch`/`canBeImpliedFromExprs`/`implCompareExpr`/`implIsNotNull` 和 `AlwaysMeetConstraints`/`checkIsNullRejected` 与 Go 函数分层对应；区间并集相等、`OR` 全分支拒绝、`AND` 任一分支拒绝以及排除 `NullEQ` 的规则保持一致。
 
 已确认的实现差异：
 
@@ -84,12 +82,3 @@ Go 对照的生产上游是 `DataSource.CheckPartialIndexes`：它解析索引 `
 要真正接入 Rust 规划器，应新增位于适当规划器 crate 的 `ConstraintContext` 实现，把真实表达式相等、ranger 构造和区间并集映射进来；不要把排序规则、转换、告警或内存策略复制到本文件。接线后还应从 Rust 数据源/访问路径选择处调用两个公开入口，并验证 facade 之外确有生产调用边。
 
 测试必须继续放在独立的 `pkg/planner/core/partidx/check_constraint_aster_unit_test.rs`，不要嵌入生产源文件。新增 ranger 适配器时至少补充：过滤区间严格包含/等于/不相交、开闭端点、NULL 区间、`IN`、类型转换和排序规则、构造/合并错误、多个前置谓词的保守行为；计划缓存接线还应覆盖混合 `AND`/`OR` 与 `NullEqual`。同时对照 `check_constraint.go` 及 Go 部分索引集成测试，防止 Rust 逻辑被简化。
-
-## 验证依据
-
-- 源码全貌：`pkg/planner/core/partidx/check_constraint.rs`（454 行），核对全部公开类型、trait、公开入口及私有辅助函数。
-- crate/装配：`pkg/planner/core/partidx/Cargo.toml`、`pkg/planner/core/partidx/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`；确认 crate 名称、可选依赖、测试文件独立装配及 facade 暴露。
-- RustCodeGraph：`status` 显示目标仓库已索引；`node --file ...` 读取目标文件；`query CheckConstraints` 与 `query AlwaysMeetConstraints` 定位 Rust/Go 同名符号；带 `--file` 的 callers 对两个 Rust公开入口均返回空数组；callees 分别返回 `exactMatch`/`canBeImpliedFromExprs` 与 `checkIsNullRejected`。
-- 文本调用检索：`rg` 找到 Rust 直接调用仅位于 `pkg/planner/core/partidx/check_constraint_aster_unit_test.rs`；`impl ConstraintContext` 检索只找到 `StructuralContext`；未找到 Rust 生产适配器或规划器调用点。
-- Go 对照：`pkg/planner/core/partidx/check_constraint.go`；生产上游：`pkg/planner/core/operator/logicalop/logical_datasource.go` 的 `DataSource.CheckPartialIndexes`。
-- 独立 Rust 测试：`pkg/planner/core/partidx/check_constraint_aster_unit_test.rs`，覆盖按 `unique_id` 判等、空约束与精确匹配、普通比较和 `NullEqual`、`AND`/`OR` 空值拒绝及显式 `IS NULL` 反例。未发现同包专门的 Go `check_constraint_test.go`；仓库中的 Go 部分索引集成覆盖位于 planner case/index 等测试面，但本纯文档任务未运行测试或 Cargo。

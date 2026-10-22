@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor` crate 中 Traffic SQL 的 Rust 侧执行逻辑，模块由 `pkg/executor/lib.rs` 的 `pub mod traffic` 导出。它把 `TRAFFIC CAPTURE`、`TRAFFIC REPLAY`、`CANCEL TRAFFIC JOBS` 和 `SHOW TRAFFIC JOBS` 转换为对集群内 TiProxy status 端口的 HTTP 请求，并负责共享存储路径分配、权限过滤和结果行组装。crate 边界由 `pkg/executor/Cargo.toml` 的包名 `astersql-executor` 与 `[lib] path = "lib.rs"` 确认。
-
-当前 Rust 接线仍是抽象边界：`pkg/executor/builder.rs` 收集 Traffic 计划参数后调用 `ExecutorBuilderDependencies::build_traffic_executor`，但仓库搜索只找到 `pkg/executor/traffic_test.rs` 中的 `MockBackend: TrafficBackend`，未找到生产 `TrafficBackend` 实现。因此，本文件的算法和 Go 对齐行为已有独立测试，不能据此声称四个 Rust 执行器已经接入生产执行链。
+`request`、`requestOne`、`getForm`、`formReader4Capture`、`formReader4Replay` 提供 HTTP 扇出、表单编码和存储路径转换的共享实现。
 
 ## 核心职责
 
@@ -69,11 +67,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 逻辑直接对应 `pkg/executor/traffic.go`：四类执行器、四个 API 路径、10 秒共享存储超时、`tiproxy-` 目录协议、节点数/路径数分支、权限过滤、Show 排序与参数展示格式均保持一致。`pkg/executor/traffic_test.go` 的 `TestTrafficForm`、`TestTrafficError`、`TestTrafficShow`、`TestTrafficPrivilege` 提供 Go 端完整执行链证据；Rust 的 `pkg/executor/traffic_test.rs` 以 backend mock 覆盖相同核心语义。
+实现形态不同：Go 文件直接依赖 `infosync`、HTTP client、objstore、privilege、session context 和 chunk；Rust 将这些能力收拢到 `TrafficBackend`/`TrafficChunk`。Go `request` 只返回 `(部分响应, error)`，Rust 用 `TrafficRequestFailure` 显式保存部分响应。Go 使用 map 枚举远程目录，Rust 使用 `HashSet`，两者都不承诺目录分派顺序。
 
-实现形态不同：Go 文件直接依赖 `infosync`、HTTP client、objstore、privilege、session context 和 chunk；Rust 将这些能力收拢到 `TrafficBackend`/`TrafficChunk`。Go `request` 只返回 `(部分响应, error)`，Rust 用 `TrafficRequestFailure` 显式保存部分响应。Go 的存储 `defer store.Close()` 与 Rust 的 `owned` 条件关闭语义对应。Go 使用 map 枚举远程目录，Rust 使用 `HashSet`，两者都不承诺目录分派顺序。
-
-迁移状态必须保守描述：算法文件与独立 Rust 测试存在，模块也公开导出；但当前搜索没有发现生产 `TrafficBackend` 实现，Rust builder 仅通过依赖 trait 委托构造。因此完整生产可用性仍需在具体依赖实现处验证，不能从本文件单独得出。
+迁移状态必须保守描述：算法文件与独立 Rust 测试存在，模块也公开导出；但当前搜索没有发现生产 `TrafficBackend` 实现，Rust builder 仅通过依赖 trait 委托构造。
 
 ## 扩展指南
 
@@ -83,12 +79,3 @@ Rust 逻辑直接对应 `pkg/executor/traffic.go`：四类执行器、四个 API
 - 若实现生产 `TrafficBackend`，应明确 HTTP 响应体关闭、超时取消、对象存储所有权、权限来源、warning/error 写入和 RFC3339 到 SQL 时间的转换，并为它增加独立集成测试。不要让测试 mock 的 `owned=false` 行为泄漏为生产资源不关闭。
 - 并行化 `request` 会改变首错、部分响应、日志顺序和外部副作用范围，属于行为及性能语义变更；需要与 Go 版本共同设计，而不是局部优化。
 - Show 增加字段时必须同步 `TrafficJob`、`decode_jobs` 适配器、`TrafficChunk` 列映射、SQL schema 和 Go/Rust 测试；调整排序时应明确 RFC3339 偏移格式和稳定性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`explore "traffic.rs CaptureTrafficToFile DrainableCaptureFile GetCaptureFileInfo"` 的结果给出本文件符号及调用关系，随后用 `node --file pkg/executor/traffic.rs` 分段核对 596 行源码；`query TrafficCaptureExec` 同时定位 Go/Rust 定义与 Rust 测试引用。
-- Rust 源与装配：`pkg/executor/traffic.rs`、`pkg/executor/lib.rs`、`pkg/executor/builder.rs`、`pkg/executor/Cargo.toml`。
-- Rust 独立测试：`pkg/executor/traffic_test.rs` 覆盖 Go 风格表单转义、capture/replay 本地与远程路径、存储关闭所有权、首错停止与部分响应、replay 路径数分支、cancel 权限表单、Show 过滤/排序/分页及坏时间降级。
-- Go 对照：`pkg/executor/traffic.go`、`pkg/executor/builder.go`、`pkg/executor/traffic_test.go`；其中 Go 测试还覆盖真实 HTTP mock server 与 SQL builder 链。
-- 接线限制：仓库级 `rg 'impl .*TrafficBackend|TrafficBackend for|TrafficCaptureExec<' pkg/executor --glob '*.rs'` 只命中本文件的泛型类型和 `traffic_test.rs` 的 mock 实现；未发现生产 backend，因此相关生产可用性标记为未验证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档恰含 11 个固定二级章节，并人工复核唯一新增生产物、源码链接、错误边界和扩展风险。

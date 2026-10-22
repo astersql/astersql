@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression-aggregation` crate，是聚合运行时的内部公共工具层。模块入口 `pkg/expression/aggregation/lib.rs` 以 `mod util` 装配它并通过 `pub use util::*` 在 crate 内统一导出。它不负责选择聚合函数或产生最终结果，而是为多个聚合实现提供两项共享能力：DISTINCT 参数元组判重，以及 SUM/AVG 输入的数值类型提升与累加。
-
-直接使用点位于同目录聚合实现中：`aggregation.rs` 创建、重置 DISTINCT 状态并在通用求和路径调用 `Check`/`calculateSum`；`avg.rs` 用 `calculateSum` 合并分布式 AVG 的局部和；`count.rs`、`concat.rs`、`sum_int.rs` 分别用 `Check` 过滤重复的 COUNT 参数组合、GROUP_CONCAT 参数组合和整数 SUM 值。
+`calculateSum` 实现与 Go 版 SUM/AVG 相同的累计类型规则：NULL 不改变已有和；有符号/无符号整数先转为 DECIMAL；DECIMAL 保持 DECIMAL；其余非空类型转为 DOUBLE；随后仅允许在 NULL、DOUBLE 或 DECIMAL 累计状态上继续运算。
 
 ## 核心职责
 
@@ -75,15 +73,11 @@ DISTINCT 路径如下：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/aggregation/util.go`，Rust 基本逐分支保留其语义：
-
-- Go `distinctChecker.existingKeys/key/ctx` 分别对应 Rust `existing_keys/key/ctx`；构造函数都创建空 `MVMap`。
-- 两版 `Check` 都按求值上下文时区调用 `codec.EncodeValue`，再经错误上下文处理，然后以 MVMap 是否已有值决定返回值，首次出现时写入空值。
 - Go 额外保存 `vals [][]byte` 作为 `Get` 的复用缓冲；Rust 未保存等价字段，而是每次传 `Vec::new()`。这是潜在分配性能差异，不是可观察 SQL 语义差异。
 - Go `calculateSum` 与 Rust 对 NULL、整数、DECIMAL、其他类型以及累计状态种类的分支一致。Rust 的 DECIMAL Datum 可直接移动，无需 Go 的 `v.Copy(&data)`；所有权模型不同但目标语义相同。
 - Go 对转换错误先写命名返回值再统一检查；Rust 用 `?` 提前返回。Go 无效累计类型分支返回当前 `data` 加错误，Rust 只返回 `Err`；现有 Rust 调用方使用 `?` 丢弃错误值，因此成功/失败控制流一致。
 
-`pkg/expression/aggregation/util_test.go::TestDistinct` 与 `util_test.rs::TestDistinct` 使用相同的六个序列，覆盖首次/重复的两整数元组及含 NULL 元组。Rust 当前没有在 `util_test.rs` 中直接逐分支测试 `calculateSum`；其主要行为由聚合调用链和 `main_test.rs` 中 `ComputePlus` 的 DECIMAL/混合整数契约间接覆盖，新增转换边界时应补独立测试。
+Rust 当前没有在 `util_test.rs` 中直接逐分支测试 `calculateSum`；其主要行为由聚合调用链和 `main_test.rs` 中 `ComputePlus` 的 DECIMAL/混合整数契约间接覆盖，新增转换边界时应补独立测试。
 
 ## 扩展指南
 
@@ -92,12 +86,3 @@ DISTINCT 路径如下：
 - 若优化高基数 DISTINCT 的分配，可考虑复用查询结果缓冲或调整 MVMap 接口，但要保留键缓冲跨调用复用、首次写入/重复跳过的不变量，并用基准或分配数据证明收益；不可为了减少内存而丢弃已见键。
 - 新增 SUM/AVG 可接受类型或混合类型规则时，应在 `calculateSum` 的 `value.Kind()` 和 `sum.Kind()` 两处成对审查，并与 Go 版本及 `types::ComputePlus` 能力同步。重点测试 NULL 首值、整数到 DECIMAL、DECIMAL 精度、DOUBLE、转换错误、溢出和非法累计状态。
 - 测试应放在同目录独立文件：判重与本工具分支放 `util_test.rs`，通用聚合行为可扩展 `aggregation_test.rs`，AVG 阶段合并放 `avg_test.rs`；同时核对 Go 的 `util_test.go`/相关聚合测试，保持迁移语义。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/aggregation/util.rs` 报告目标文件含 5 个符号。
-- RustCodeGraph 源码与关系查询：`node --file pkg/expression/aggregation/util.rs --offset 1 --limit 260`；并读取图中直接调用文件 `aggregation.rs`、`avg.rs`、`count.rs`、`concat.rs`、`sum_int.rs` 的相关区段。精确 `callers/callees` 对目标限定符未返回边，因此调用关系又由这些文件中的直接符号引用复核，没有把宽泛探索的无关同名结果作为依据。
-- crate 与模块证据：`pkg/expression/aggregation/Cargo.toml`、`pkg/expression/aggregation/lib.rs`。
-- Go 对照：`pkg/expression/aggregation/util.go`，以及直接调用点所在的同目录 Go 聚合文件。
-- 测试证据：`pkg/expression/aggregation/util_test.rs`、`pkg/expression/aggregation/util_test.go`、`pkg/expression/aggregation/main_test.rs`、`pkg/expression/aggregation/avg_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证本文恰好包含 11 个固定二级章节，并人工复核符号、调用边、边界与扩展建议均有上述文件依据。

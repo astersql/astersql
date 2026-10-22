@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`mview_log.rs`](mview_log.rs) 属于 `astersql-table` crate；[`lib.rs`](lib.rs) 通过 `pub mod mview_log` 装配该模块，并用 `pub use mview_log::*` 再导出公共 API。它定义物化视图日志（MLog）的表级契约：校验基础表与日志表元数据、把基础行投影成日志行，并提供一个实现 `Table` 的语句级包装器，使基础表写入成功后在同一个 `Transaction` 中同步追加日志记录。
-
-当前 Rust 应用主链需要区分两种接线。`WrapTableWithMaterializedViewLog`/`MLogTable` 是完整的 `Table` 包装实现，但仓库中的非测试 Rust 调用者没有直接构造它；实际关系型 DML 路径由 [`pkg/session/runtime/mlog.rs`](../session/runtime/mlog.rs) 的 `RuntimeMLog` 调用本文件的 `validate_meta` 和 `MLogDMLType`，再由 [`pkg/session/runtime/dml.rs`](../session/runtime/dml.rs) 将基础表与 MLog 的 KV mutation 一起提交。包装器行为由 [`mview_log_test.rs`](mview_log_test.rs) 和 [`go_merge_49_test.rs`](go_merge_49_test.rs) 独立验证。
+定义物化视图日志（MLog）的表级契约：校验基础表与日志表元数据、把基础行投影成日志行，并提供一个实现 `Table` 的语句级包装器，使基础表写入成功后在同一个 `Transaction` 中同步追加日志记录。
 
 ## 核心职责
 
@@ -89,12 +87,3 @@ Rust [`mview_log.rs`](mview_log.rs) 对照 Go [`tables/mview_log.go`](tables/mvi
 - 增加 `Table` trait 方法时，要在 `MLogTable` 中明确决定委托还是覆写，不能让包装器丢失基础表能力；相关测试应继续放在独立的 [`mview_log_test.rs`](mview_log_test.rs)，不要内嵌到生产文件。
 - 若将 `MLogTable` 接入 Rust 生产 DML，需先确认语句级实例边界、同事务回滚、分区表语义以及并发调用约束，并避免与现有 `RuntimeMLog` 重复写日志。
 - 优化 metadata 查找或行投影时，保持包装时一次校验、写路径按 offset 线性投影的特性；当前每条日志的主要额外成本是 `Datum` 克隆、日志表 `AddRecord` 和 UPDATE 的两条日志写入。
-
-## 验证依据
-
-- 源码与模块：[`mview_log.rs`](mview_log.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。`pkg/table` 中不存在 `doc.go`，因此最近的模块契约来自 Rust `lib.rs` 与 Go 对照实现。
-- Go 对照：[`tables/mview_log.go`](tables/mview_log.go)，核对了 source/DML 枚举、metadata 不变量、DML 顺序、marker、option 透传和 allocator 恢复。
-- 独立 Rust 测试：[`mview_log_test.rs`](mview_log_test.rs) 验证基础/日志错误传播、同一 transaction、日志事件序列、跳过重复键检查、Row ID 区间恢复及共同 rollback；[`go_merge_49_test.rs`](go_merge_49_test.rs) 验证分类、metadata/offset、投影越界和未触碰更新跳过。
-- 生产接线：[`pkg/session/runtime/mlog.rs`](../session/runtime/mlog.rs) 与 [`pkg/session/runtime/dml.rs`](../session/runtime/dml.rs)，证明当前 Rust 主链调用 `validate_meta`/`MLogDMLType` 并以 mutation 批次记录日志，而非直接构造包装器。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`explore` 确认 `WrapTableWithMaterializedViewLog -> validate_meta`、`validate_meta <- RuntimeMLog::for_table`、`project_log_row <- write_log_row`、`classify_add_record <- AddRecord`。精确 path-qualified `callers/callees` 返回空数组，故调用者集合又用仓库 `rg` 做了直接交叉核验。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按任务计划以事实检索与固定十一章节结构校验代替运行时测试。

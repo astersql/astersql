@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现昂贵查询与长事务的进程内巡检器，属于独立 crate `astersql-util-expensivequery`；crate 入口 `pkg/util/expensivequery/lib.rs` 公开 `expensivequery` 模块并重新导出其全部公共项。根 workspace 通过 `facade_util_expensivequery` 纳入该 crate，`pkg/lib.rs` 又把它暴露为 `util::expensivequery`。直接的非测试依赖只有 `astersql-statistics-handle-util`，用于读取自动 ANALYZE 进程集合（`Cargo.toml`、`GLOBAL_AUTO_ANALYZE_PROCESS_LIST`）。
-
-该实现负责“观察和处置已由会话层登记的进程”，不负责执行 SQL、建立会话或采集真实日志字段。`SessionManager`、`Histogram`、`EventLogger` 和 `RunawayChecker` 都是本文件定义的适配边界，实际系统必须注入实现后才会产生指标、日志或 kill 行为。
-
-当前迁移状态需要特别区分：workspace facade 和 `pkg/domain/Cargo.toml` 已声明该 crate，但仓库内 Rust 生产代码没有找到 `new_expensive_query_handle`、`Handle::set_session_manager` 或 `Handle::run` 的直接调用。`cmd/tidb-server/main.rs` 中的 PascalCase 调用由同目标的 `stubs.rs` 提供另一套占位 `Handle`，不是本文件的类型。因此本实现目前可独立使用和测试，但尚无证据表明已接入 Rust 服务器主链；Go 主链则已在 `pkg/domain/domain.go` 和 `cmd/tidb-server/main.go` 完整接线。
+`SessionManager`、`Histogram`、`EventLogger` 和 `RunawayChecker` 都是本文件定义的适配边界，实际系统必须注入实现后才会产生指标、日志或 kill 行为。
 
 ## 核心职责
 
@@ -81,8 +77,6 @@ Go 应用主链提供预期接线证据：`pkg/domain/domain.go` 用 `NewExpensi
 
 ## 与 Go 版本的对应关系
 
-Rust `Handle`、`new_expensive_query_handle`、`set_session_manager`、`run`、`log_on_query_exceed_mem_quota` 和 `log_expensive_query` 分别对应 Go 的 `Handle`、`NewExpensiveQueryHandle`、`SetSessionManager`、`Run`、`LogOnQueryExceedMemQuota` 和 `logExpensiveQuery`。100 ms 巡检、15 秒指标采样、60 秒查询日志限流、10 分钟事务日志限流、三类 kill 参数以及每轮刷新查询/事务阈值均保持一致。
-
 结构差异主要来自移植边界：Go 直接使用 `sessmgr.ProcessInfo`、全局 metrics、真实 logger、`vardef` 阈值和 `util.GenLogFields`；Rust 在本 crate 内定义精简 `ProcessInfo` 与四个 trait，并以 Noop 观察器为默认值。Rust 的 `log_expensive_query` 总是把事件交给 `EventLogger`，没有复刻 Go `GenLogFields(...) == nil` 时不输出的过滤，也没有组装完整 zap 字段。Rust 把日志时间放在私有 mutex 中，Go 则直接修改 `sessmgr.ProcessInfo` 字段。
 
 测试覆盖也不等价。Go 同目录 `expensivequery_test.go` 只有 `TestMain` 和 goleak 白名单，没有业务断言；Rust `expensivequery_test.rs` 除公共测试初始化外，新增了空 SQL 内存超额仍记录的回归测试。巡检周期、阈值热更新、日志限流、指标分类、所有 kill 分支、退出通道以及重复 kill 目前在同目录 Rust 测试中均未见覆盖。
@@ -94,12 +88,3 @@ Rust `Handle`、`new_expensive_query_handle`、`set_session_manager`、`run`、`
 接入真实系统时，应在 domain 的 Rust 实现中持有本文件 `Handle`，服务器装配阶段注入真实 `SessionManager`、`Histogram` 和 `EventLogger`，再由受控后台线程运行；不要把 `cmd/tidb-server/stubs.rs::Handle` 当成可替换的同一类型。还需要安排退出发送端与线程 join，证明关闭过程中不会遗留巡检线程。
 
 修改 `ProcessInfo`、kill 规则或 Go 对齐行为时，同步更新独立测试 `pkg/util/expensivequery/expensivequery_test.rs`，不要把测试嵌入生产源文件。建议补齐可控时钟或可配置 tick 的测试接缝，以稳定覆盖 60/600/15 秒边界；同时用记录型 manager 验证 kill 次数及参数。兼容风险集中在公开 trait/字段签名，性能风险集中在每 100 ms 全量扫描和锁竞争，正确性风险集中在空 SQL 提前返回、重复 kill 以及快照重建导致限流失效。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7032 个 Rust 文件；`files --filter pkg/util/expensivequery` 返回目标 Rust/Go 实现、两份测试和 `lib.rs`；`node --file ... --offset 1 --limit 500` 读取了目标文件全部 348 行；`query` 精确定位 `new_expensive_query_handle`、`inspect_transaction`、`inspect_query`。`explore`/部分 callers、callees 调用未返回内容，故调用接线另用精确仓库搜索复核。
-- 生产实现：`pkg/util/expensivequery/expensivequery.rs`；crate 与再导出：`pkg/util/expensivequery/Cargo.toml`、`pkg/util/expensivequery/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/domain/Cargo.toml`。
-- 下游自动分析状态：`pkg/statistics/handle/util/auto_analyze_proc_id_generator.rs` 的 `GlobalAutoAnalyzeProcessList`、`AutoAnalyzeTracker::track/untrack`。
-- Go 对照和真实接线：`pkg/util/expensivequery/expensivequery.go`、`pkg/domain/domain.go`、`cmd/tidb-server/main.go`；Rust 启动占位边界：`cmd/tidb-server/main.rs`、`cmd/tidb-server/stubs.rs`。
-- 独立测试：`pkg/util/expensivequery/expensivequery_test.rs`、`pkg/util/expensivequery/expensivequery_test.go`。Rust 测试证明主动内存超额入口保留空 SQL 事件；其余未覆盖项已在上文明确列出，没有以预期设计代替当前事实。
-- 本任务只新增说明文档，未运行 Cargo。交付结构检查要求文档存在且恰有上述 11 个固定二级标题；另以 diff 自审确认没有修改 Rust、Go、Cargo 或总计划。

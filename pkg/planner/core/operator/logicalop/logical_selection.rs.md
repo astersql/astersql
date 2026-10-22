@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑计划中的选择算子 `LogicalSelection`，对应 SQL 的 `WHERE`、`HAVING` 以及优化规则临时物化的过滤节点。它位于 `astersql-planner-core-operator-logicalop` crate：[`lib.rs`](lib.rs) 以私有模块 `logical_selection` 装入实现，再用 `pub use logical_selection::*` 对外导出；[`Cargo.toml`](Cargo.toml) 的包名与 `[package.metadata.porting].go-package` 分别确认了 Rust crate 边界和 Go 对照目录。
-
-在实际规划主链中，[`logical_plan_builder_runtime.rs`](../../logical_plan_builder_runtime.rs) 的 SELECT 构建流程遇到 `select.Where` 时，先用 `LogicalSelection::default().Init(...)` 建节点，再重写条件并挂接原计划子树。优化阶段通过 [`base_logical_plan.rs`](base_logical_plan.rs) 的 `PredicatePushDownPlan` 调用 `LogicalPlan::PredicatePushDownRoot`；物理化阶段由 [`physical_selection.rs`](../physicalop/physical_selection.rs) 的 `ExhaustPhysicalPlans4LogicalSelection` 读取本节点的 `Conditions` 并生成 `PhysicalSelection` 候选。因此本文件处在“AST 表达式已改写为 planner expression”之后、“物理计划与执行器”之前。
+为计划显示和等价比较提供稳定表示：`ExplainInfo` 与 `HashCode` 都消除条件顺序带来的不稳定性。
 
 ## 核心职责
 
@@ -96,7 +94,7 @@ TopN 派生必须同时满足：恰好一个条件；`FindUpperBound` 找到正�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`logical_selection.go`](logical_selection.go)。结构字段、`Init`、稳定 Explain/Hash、列裁剪、MaxOneRow、统计缩放、属性继承、相关列/FD 提取、会话变量条件隔离，以及 `row_number` TopN 识别条件均来自 Go 实现并保留相同意图。
+结构字段、`Init`、稳定 Explain/Hash、列裁剪、MaxOneRow、统计缩放、属性继承、相关列/FD 提取、会话变量条件隔离，以及 `row_number` TopN 识别条件均来自 Go 实现并保留相同意图。
 
 需要注意的 Rust 适配与当前差异：
 
@@ -105,7 +103,6 @@ TopN 派生必须同时满足：恰好一个条件；`FindUpperBound` 找到正�
 - Go `DeriveTopN` 返回逻辑计划指针；Rust 在原树内改写并返回 `bool`。Rust 会显式给派生 TopN 设置原孩子 schema，且在上下文缺失时恢复孩子。
 - Go 的 `windowIsTopN` 要求显式当前行窗口帧；Rust 将 `Frame == None` 也视为默认的 current-row frame，然后对显式 frame 执行同等检查。该差异应与 Window 构建阶段的默认帧表达方式一起维护。
 - Go `PredicateSimplification` 当前主要在 `intest` 中断言简化前后等价，再递归基类；Rust 实现会实际用 `ApplyPredicateSimplification` 替换本节点条件后再递归。修改此处时要用真实优化计划测试确认两端可观察结果仍一致。
-- Go 的 `ResolveExprAndReplace`/`HasGetSetVarFunc` 是公共表达式工具；Rust 在本文件内实现对应的递归替换和检测逻辑。新增表达式种类时，必须同步检查 Rust 递归覆盖范围。
 
 这些差异是移植形态或当前实现事实，不能据此假定 Rust 已覆盖 Go 文件之外的所有 planner 行为。
 
@@ -123,14 +120,3 @@ TopN 派生必须同时满足：恰好一个条件；`FindUpperBound` 找到正�
 测试必须放在独立测试文件，不要嵌入本生产文件。最近的精确单元证据是 [`logical_d_aster_unit_test.rs`](logical_d_aster_unit_test.rs)（条件顺序无关哈希、普通常量可下推）与 [`logicalop_test/hash64_equals_test.rs`](logicalop_test/hash64_equals_test.rs)（Selection 的 Hash64/Equals）。真实优化树回归位于 [`logical_plans_test.rs`](../../logical_plans_test.rs) 和 [`optimizer_logical_entry_aster_unit_test.rs`](../../optimizer_logical_entry_aster_unit_test.rs)，后者验证启用谓词下推后 Selection 被移除且条件进入 DataSource，并覆盖空结果 Dual。Window/TopN 的现有 casetest 在 [`casetest/windows/window_push_down_test.rs`](../../casetest/windows/window_push_down_test.rs) 与 [`casetest/rule/rule_derive_topn_from_window_test.rs`](../../casetest/rule/rule_derive_topn_from_window_test.rs)；其中使用简化 `PlanNode` 规则模型，扩展真实 `LogicalSelection::DeriveTopN` 时还应补同层真实逻辑树测试，而不能只依赖该模型测试。
 
 兼容性风险集中在谓词副作用/相关列作用域、输出 schema 和名字、NULL 三值逻辑、哈希稳定性与 Go 计划形状；性能风险集中在重复表达式克隆、条件简化次数、FD 抽取遍历和错误派生 TopN 导致的代价变化。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust/Go 文件均在索引内。
-- RustCodeGraph `explore "pkg/planner/core/operator/logicalop/logical_selection.rs LogicalSelection"`：得到目标源码上下文、测试中的 `find_selection` 引用、`base_logical_plan` 规则钩子与物理 Selection 关联候选。
-- RustCodeGraph `node --file ... --offset ... --limit ...`：分段读取了目标文件全部 707 行，并核验了 `lib.rs`、`base_logical_plan.rs`、`logical_plan_builder_runtime.rs`、`optimizer_runtime.rs`、`physical_selection.rs`、`hash64_equals_generated.rs` 及上述 Rust 测试的直接相关片段。
-- RustCodeGraph `query LogicalSelection --kind struct --json`：同时定位 Rust `logical_selection.rs::LogicalSelection` 和 Go `logical_selection.go::LogicalSelection`；`query splitSetGetVarFunc --kind function --json` 同时定位两端实现。`callers/callees` 对 impl/trait 方法未返回可用独立边，故调用结论以文件节点的 `used by`、trait 入口和源码调用点交叉验证。
-- Cargo/模块证据：[`Cargo.toml`](Cargo.toml) 的 crate 名称、依赖和 Go 包元数据；[`lib.rs`](lib.rs) 的模块声明与公开再导出。
-- Go 语义证据：完整读取 [`logical_selection.go`](logical_selection.go)，逐项比对结构、优化流程、TopN 约束、统计与 FD 行为。
-- 测试证据：[`logical_d_aster_unit_test.rs`](logical_d_aster_unit_test.rs)、[`logicalop_test/hash64_equals_test.rs`](logicalop_test/hash64_equals_test.rs)、[`logical_plans_test.rs`](../../logical_plans_test.rs)、[`optimizer_logical_entry_aster_unit_test.rs`](../../optimizer_logical_entry_aster_unit_test.rs)、[`casetest/windows/window_push_down_test.rs`](../../casetest/windows/window_push_down_test.rs) 和 [`casetest/rule/rule_derive_topn_from_window_test.rs`](../../casetest/rule/rule_derive_topn_from_window_test.rs)。
-- 本任务是纯文档分析，按总计划未运行 Cargo。交付前使用任务规定的命令校验文档存在且恰有十一个固定二级标题，并人工复核唯一新增生产物、链接路径、无整段源码复制和无未经证实的支持声明。

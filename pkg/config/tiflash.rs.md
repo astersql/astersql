@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-config` crate；crate 根在 `pkg/config/lib.rs` 中以私有模块 `mod tiflash` 装入，再通过 `pub use tiflash::*` 将全部公开常量和函数重导出。因此调用方使用的是 `astersql_config::GetAutoScalerType`、`astersql_config::AWSASType` 等 crate 级路径，而不是直接依赖模块路径。`pkg/config/Cargo.toml` 没有为本文件声明专属 feature 或依赖；实现只使用 Rust 基本类型和模式匹配。
-
-它是 TiFlash 存算分离场景中 AutoScaler 类型约定的配置边界：维护用户配置字符串、稳定的整数判别值、AWS 默认地址，并提供字符串到判别值的转换与用户配置合法性判断。实际拓扑获取、网络访问和全局 fetcher 生命周期位于 `pkg/util/tiflashcompute/topo_fetcher.rs`，不在本文件中。
+TiFlash 存算分离场景中 AutoScaler 类型约定的配置边界：维护用户配置字符串、稳定的整数判别值、AWS 默认地址，并提供字符串到判别值的转换与用户配置合法性判断。
 
 ## 核心职责
 
@@ -67,11 +65,11 @@ RustCodeGraph 对目标文件报告两个直接使用文件为 `pkg/config/confi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/config/tiflash.go`。Rust 保留了同名字符串常量、默认值、整数常量和两个函数；`&str -> i32` 对应 Go `string -> int`，显式 `0..4` 对应 Go `iota`，Rust `match` 对应 Go `switch`。四个已知类型、未知类型兜底以及用户合法集合均逐项一致。
+Rust 保留了同名字符串常量、默认值、整数常量和两个函数；`&str -> i32` 对应 Go `string -> int`，显式 `0..4` 对应 Go `iota`，Rust `match` 对应 Go `switch`。
 
-Go 侧还在 `pkg/config/config.go` 中使用 `DefASStr`、`DefAWSAutoScalerAddr` 填充默认配置，并在 `Config.Valid` 中按 `DisaggregatedTiFlash && UseAutoScaler` 条件校验类型和地址。当前 Rust 主配置 `pkg/config/config.rs` 仅包含 `use_auto_scaler`；启动路径使用 `cmd/tidb-server/stubs.rs` 的 Go 风格兼容字段。故本文件的常量/函数移植已对齐，但它与 Rust 主配置的完整默认值和校验接线不能据此宣称完成。
+当前 Rust 主配置 `pkg/config/config.rs` 仅包含 `use_auto_scaler`；启动路径使用 `cmd/tidb-server/stubs.rs` 的 Go 风格兼容字段。
 
-Go 的 `pkg/config/config_test.go::TestAutoScalerConfig` 主要验证开关默认值及全局更新；Rust 对应覆盖分散在 `pkg/config/config_test.rs::test_auto_scaler_config` 和更细的 `pkg/config/const_3_aster_unit_test.rs::constants_and_tiflash_mapping_match_go`。Rust 测试位于独立文件，没有内嵌到生产源文件。
+Rust 测试位于独立文件，没有内嵌到生产源文件。
 
 ## 扩展指南
 
@@ -80,13 +78,3 @@ Go 的 `pkg/config/config_test.go::TestAutoScalerConfig` 主要验证开关默�
 - 在独立测试 `pkg/config/const_3_aster_unit_test.rs` 中补齐已知、未知、内部测试类型和大小写/空白边界；若影响 fetcher，更新 `pkg/util/tiflashcompute/migration_aster_unit_test.rs`，不要把测试写入 `tiflash.rs`。
 - 修改默认类型或地址时，同时核对 Go `pkg/config/config.go` 的默认配置、部署环境中的服务发现地址及启动配置接线。默认地址变化有部署兼容风险；整数重排有分派兼容风险；新增分支本身性能影响近似常数级，但下游网络与资源行为必须另行评估。
 - 若补齐 Rust 主配置校验，应在 `pkg/config/config.rs` 的默认值、反序列化和校验路径中接线，并添加独立回归测试；不要把配置加载或全局状态逻辑塞入本文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 `pkg/config/tiflash.rs`，目标文件识别为 3 个图符号（文件及两个函数）。
-- RustCodeGraph `explore/node`：完整读取 `pkg/config/tiflash.rs`，确认 12 个常量、`IsValidAutoScalerConfig`、`GetAutoScalerType` 及文件的两个直接测试使用者。
-- RustCodeGraph `callees IsValidAutoScalerConfig`：确认唯一函数调用边为 `IsValidAutoScalerConfig -> GetAutoScalerType`；`callees GetAutoScalerType` 无下游函数。
-- RustCodeGraph 源码节点：核对 `pkg/config/tiflash.go`、`pkg/util/tiflashcompute/topo_fetcher.rs::InitGlobalTopoFetcher`、`cmd/tidb-server/main.rs`、`pkg/config/config.rs`、`pkg/config/config.go::Config.Valid` 以及三个相关 Rust 测试文件。
-- 配置与装配文件：读取 `pkg/config/Cargo.toml`、`pkg/config/lib.rs`、`pkg/util/tiflashcompute/Cargo.toml`；确认 crate 名、重导出和跨 crate 路径依赖。
-- 文本引用复核：用 `rg` 确认 Rust 生产消费点、Go 默认值/校验点、兼容 stub 字段和测试引用；未发现 `pkg/config/doc.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终以固定 11 个二级标题的结构检查和人工事实复核作为交付验证。

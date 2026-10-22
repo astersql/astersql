@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-ddl-schematracker` crate 的内存 DDL 元数据跟踪器。crate 入口 `pkg/ddl/schematracker/lib.rs` 通过 `mod dm_tracker; pub use dm_tracker::*;` 导出这里的公开类型，并同时导出 `InfoStore`、解析器 AST 类型和元数据模型类型。`pkg/ddl/schematracker/Cargo.toml` 将该 crate 标记为 Go 包 `pkg/ddl/schematracker` 的移植，并声明它直接依赖 `astersql-ddl`、`astersql-expression-exprstatic`、`astersql-meta-model` 和 `astersql-parser-ast`。
-
-这里不是 TiDB 集群中的持久化 DDL job 执行器：它不创建 job、不推进 schema state、不做 reorg/backfill，也不更新全局 schema version。它接收已经规整为 Rust 规格类型的操作，在内存 `InfoStore` 中模拟库、表、列、索引和分区元数据的变化，供 `pkg/ddl/schematracker/checker.rs` 在真实执行器执行后镜像同一命令并比较结果。按 DDL 预检问题分类，这是 metadata-only fast path；新建或变更的列、索引直接进入 `StatePublic`，没有持久化检查点、回滚 job、delete-range GC、MDL 或 follower schema sync。
+维护元数据内部引用的一致性：列改名同步索引列名，列删除同步裁剪索引，表达式索引生成/删除隐藏列，`normalize_table` 重算列与索引列偏移。
 
 ## 核心职责
 
@@ -100,8 +98,6 @@ RustCodeGraph 对 `NewSchemaTracker`、`apply_operation` 和 `BatchCreateTableWi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/schematracker/dm_tracker.go`，Rust 测试也以 Go 行为为兼容基准。两者共同点包括：`SchemaTracker` 包装 `InfoStore`；按 `lower_case_table_names` 建立存储；ALTER 前使用表克隆；表达式索引生成 public hidden column；多 schema ALTER 失败恢复旧表；多表 DROP 和批量建表的部分成功语义；大量 DM 不关心的 Executor 方法为 no-op。
-
 Rust 当前是收窄后的模型层，而非逐签名实现 Go `ddl.Executor`：
 
 - Go `CreateSchema`/`CreateTable`/`CreateView` 接收 AST 与 session context，并调用 DDL builder、charset/collation 和合法性检查；Rust 接收已构造的 `DBInfo`/`TableInfo` 或规格。
@@ -122,15 +118,3 @@ Rust 当前是收窄后的模型层，而非逐签名实现 Go `ddl.Executor`：
 测试必须继续放在独立的 `pkg/ddl/schematracker/dm_tracker_test.rs`，不要内嵌到生产文件。至少覆盖成功状态、精确错误、失败后的 `InfoStore` 状态、大小写键、引用/offset 维护及 Go 对照边界。需要 AST/session 语义时还应读取并对照 `pkg/ddl/schematracker/dm_tracker_test.go`，而不能只添加能通过当前 Rust 规格的简化测试。
 
 兼容风险主要在错误优先级、IF EXISTS/IF NOT EXISTS、匿名索引/隐藏列命名、操作顺序和部分成功语义；性能风险主要来自每次 ALTER 深克隆整张 `TableInfo`、`normalize_table` 对每个索引列线性查找列位置，以及隐藏列清理中的线性包含检查。除非有基准和行为测试，不要为了优化改变这些可见顺序或原子性。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 `files --filter` 列出 Rust/Go 源及独立测试。
-- RustCodeGraph `node --file pkg/ddl/schematracker/dm_tracker.rs`：读取 1–1028 行，确认全部规格类型、公开/私有方法、分派和辅助函数。
-- RustCodeGraph `query`：确认 Rust/Go `SchemaTracker`、`NewSchemaTracker`、`AlterTable`、`add_index`、`apply_operation` 和 `BatchCreateTableWithInfo` 的精确位置；对三个 Rust 关键入口执行了 `callers`/`callees`，当前 CLI 未打印边。
-- 调用链：`pkg/ddl/schematracker/lib.rs` 的模块再导出；`pkg/ddl/schematracker/checker.rs` 中 `NewChecker`、`execute`、`CreateTable`、`AlterTable` 和元数据核对方法；`pkg/ddl/schematracker/info_store.rs` 的存储与克隆接口。
-- crate 边界：`pkg/ddl/schematracker/Cargo.toml`；workspace 成员与依赖别名由根 `Cargo.toml`、`pkg/ddl/Cargo.toml` 的路径声明交叉确认。
-- Go 对照：`pkg/ddl/schematracker/dm_tracker.go` 的 `SchemaTracker`、建删库表、索引、列/分区、`AlterTable`、`RenameTable`、no-op 入口及 `BatchCreateTableWithInfo`。
-- Rust 测试：`pkg/ddl/schematracker/dm_tracker_test.rs` 的对象类型、原子 ALTER、部分成功、表达式索引、offset/位置、storage class、分区及 no-op 合同；Go 测试路径为 `pkg/ddl/schematracker/dm_tracker_test.go`。
-- DDL 范围判断参考 `docs/agents/ddl/README.md`，并以本文件、调用者和测试重新核验：本模块不进入持久 DDL job/state/reorg/schema-sync 主链。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构检查要求文档恰有本页所示 11 个固定二级标题。

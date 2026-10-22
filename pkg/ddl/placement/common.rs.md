@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`common.rs` 是 `astersql-ddl-placement` crate 的公共词汇表：它不执行 DDL job，也不直接访问 PD，而是集中定义 PD placement rule 所需的规则组 ID、特殊 key range 名称、优先级、Store 标签键值，以及对象 ID 到规则组 ID 的编码函数。crate 根在 [`lib.rs`](lib.rs) 中以 `mod common; pub use common::*;` 将本文件全部符号再导出，因此既供同 crate 的 `bundle.rs`、`constraint.rs` 使用，也能被 `pkg/domain`、`pkg/executor`、`pkg/session` 等其他 Rust crate 通过 `astersql_ddl_placement::*` 使用。
-
-所属 crate 由 [`Cargo.toml`](Cargo.toml) 声明为 `astersql-ddl-placement`。本文件自身只依赖 Rust 标准库的字符串格式化；常量的实际消费者再通过该 crate 的 `pdtypes`、`meta-model`、`tablecodec-dependency` 等依赖构造 PD 规则。它是 placement 数据建模和协议约定的一部分，不承担 DDL job 持久化、schema state 迁移、reorg、回滚或 schema version 同步。
+统一规则组命名：`BundleIDPrefix` 与 `GroupID` 生成表或分区所属的 `TiDB_DDL_<id>` 规则组；`TiFlashRuleGroupID`、`PDBundleID`、`TiDBBundleRangePrefixForGlobal`、`TiDBBundleRangePrefixForMeta` 表示协议约定的特殊规则组。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`common.go`](common.go)，Rust 在符号集合、字符串字面量、数值和 `GroupID` 格式上逐项保持一致。Go 的 `fmt.Sprintf("%s%d", BundleIDPrefix, id)` 对应 Rust 的 `format!("{BundleIDPrefix}{id}")`；两侧测试都断言 `1`、`90`、`-1` 的完全相同输出。
-
 已验证的语义差异/迁移状态：
 
 - Go 的 `metaPrefix` 是可变 slice 变量 `[]byte("m")`，Rust 收紧为不可变 `&'static [u8]`，当前消费者只读，因此不改变预期行为并减少误修改风险。
@@ -106,12 +102,3 @@
 6. 始终与 `common.go` 及相关 Go 调用点复核。若是 Rust 独有协议，需明确说明没有 Go 对照，而不能假借同名常量的语义。
 
 主要风险包括：规则 ID 变化导致旧规则无法覆盖/清理，index 变化导致优先级反转，key range 边界变化导致规则作用于错误数据，以及 label 拼写变化导致 Store 无法匹配。性能风险很低（本文件只有常量读取和一次小字符串分配），但协议错误的集群行为风险很高。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/ddl/placement` 确认目标源、Go 对照和独立测试均被索引。
-- RustCodeGraph 源/符号查询：读取 `common.rs` 全部 75 行；`query GroupID --kind function` 区分 Go/Rust 同名定义；`node pkg/ddl/placement/common.rs::GroupID` 确认函数体；`callers GroupID --file pkg/ddl/placement/common.rs` 返回 Go 的 `NewBundle`/`Reset` 与 Rust 的 `expected_bundle`，Rust 生产调用则由 `bundle.rs` 的精确源码节点核对。
-- RustCodeGraph 调用上下文：读取 `lib.rs` 的模块再导出与测试装配、`bundle.rs::{NewBundle, RebuildForRange, Reset, ObjectID, GetRangeStartAndEndKeyHex}`、`constraint.rs::NewConstraint`、`tiflash_manager.rs::makeBaseRule`、`local_mpp_coordinator.rs::add_tiflash_store_info`。
-- crate/对照证据：读取 `pkg/ddl/placement/Cargo.toml`、`common.go`、`common_test.rs`、`common_test.go`；用精确符号搜索核对 Rust 与 Go 的常量消费点。
-- 测试事实：Rust 与 Go 的 common 独立测试都覆盖正数和负数 group ID；bundle 独立测试覆盖 meta 范围、表/分区 index 和规则重建。按任务约束，本次为纯文档分析，未运行 Cargo 或代码测试。
-- 人工复核结论：本文件存在的原因是集中维护跨 PD、Store labels、Go/Rust 的稳定协议词汇；运行方式是被 bundle、constraint、TiFlash 和 MPP 调用方读取；安全扩展必须同步实际消费者、独立测试与 Go/外部协议，而不能只添加常量。

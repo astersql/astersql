@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`db.rs` 属于 `astersql-util-importer` crate 的数据库与数据生成边界。crate 入口 `pkg/util/importer/lib.rs` 将 `db` 声明为公开模块并重导出其公开项；`pkg/util/importer/Cargo.toml` 以 `lib.rs` 为库入口，且普通 `[dependencies]` 为空，所以本文件的运行时依赖都是标准库或同 crate 的 `config`、`parser`、`rand` 模块。`target.'cfg(any())'.dependencies` 永远不会启用，不能视为当前实现的运行时接线。
-
-在完整导入链中，`pkg/util/importer/importer.rs::process` 调用本文件的 `create_databases`、`execute_sql` 和 `close_databases`，负责连接建立、DDL 执行和最终清理；`pkg/util/importer/job.rs::do_insert` 经 `generate_row_data_batch` 生成 INSERT，并通过 `Database::begin` 得到的事务逐条执行、最后提交。因此本文件同时处在“配置/表元数据到 SQL 文本”和“导入流程到数据库驱动”两个边界上。
-
-当前仓库在该 crate 的生产代码中没有 `Database`、`DatabaseTransaction` 或 `DatabaseConnector` 的真实驱动实现；可见实现位于独立测试替身中。这意味着本文件提供可注入协议和纯生成逻辑，真实连接器必须由调用方提供，不能把 Go 版直接使用 `database/sql` 的接线视为 Rust 版已经完成。
+只生成 SQL 字符串并定义驱动协议，不解析 DDL、不调度线程、不决定事务批次，也不实现重试、回滚或真实 MySQL I/O；这些职责分别位于 `parser.rs`、`job.rs` 和调用方提供的 trait 实现中。
 
 ## 核心职责
 
@@ -90,10 +86,6 @@ RustCodeGraph 的 `status` 显示目标仓库索引包含 `pkg/util/importer/db.
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/importer/db.go`：`integer_range`/`random_integer`/`unique_integer` 分别对应 `intRangeValue`/`randInt64Value`/`uniqInt64Value`；三层行生成函数对应 `genColumnData`、`genRowData`、`genRowDatas`；连接辅助对应 `execSQL`、`createDBs`、`closeDBs`。
-
-已保持的核心语义包括：唯一索引决定唯一序列、整数有符号/无符号默认范围、BIGINT 和浮点的有符号随机默认范围仍为 32 位、字符串与时间值加单引号、空 SQL 不执行、每个 worker 建一个连接，以及关闭错误不覆盖主导入结果。`db_test.rs::signed_numeric_defaults_match_go_ranges` 专门锁定数值默认范围；`tests.rs::generation_and_job_processing_preserve_row_and_batch_counts` 锁定行数和事务批次。
-
 有意或客观存在的 Rust 差异包括：
 
 - Go 直接依赖 `database/sql` 和 MySQL 驱动，Rust 改为 trait 注入且当前无生产驱动实现。
@@ -111,13 +103,3 @@ RustCodeGraph 的 `status` 显示目标仓库索引包含 `pkg/util/importer/db.
 - 修改连接策略：以 `create_databases` 为切入点，保留“部分成功后失败必须清理”的不变量，并为关闭错误优先级作出显式决定。相关回归位置是 `tests.rs::create_databases_closes_connections_when_opening_fails`。
 - 修改并发生成：必须保留 `Column::data` 跨 worker 共享和 `Datum` 内部同步，否则唯一索引列会发生竞态重复。性能优化应分别测量 `Datum::Mutex` 争用、全局随机原子争用和逐行 SQL 字符串分配，不能仅凭 trait 的 `Send + Sync` 推断无瓶颈。
 - 修改 SQL 格式：同步检查 `tests.rs::generation_and_job_processing_preserve_row_and_batch_counts`、下游 `job.rs::do_insert` 以及 Go 的 `genRowData`，并关注标识符转义、值转义和数据库兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引 11,467 个文件、307,296 个节点，目标目录清单包含 `db.rs`；`node --file pkg/util/importer/db.rs` 读取完整 215 行；`query` 精确确认 3 个 trait、6 个公开函数及 3 个内部生成辅助函数。`callers/callees` 命令本次超时无结果，故未把它当作成功证据。
-- 源码与模块：`pkg/util/importer/db.rs`、`pkg/util/importer/lib.rs`、`pkg/util/importer/config.rs`、`pkg/util/importer/parser.rs`、`pkg/util/importer/data.rs`、`pkg/util/importer/rand.rs`、`pkg/util/importer/importer.rs`、`pkg/util/importer/job.rs`。
-- crate 边界：`pkg/util/importer/Cargo.toml`；活动依赖为空，porting metadata 指向 Go 包 `pkg/util/importer`。
-- Go 对照：`pkg/util/importer/db.go` 与 `pkg/util/importer/importer.go`；前者提供数据生成和连接辅助的直接语义基线，后者确认完整流程中的调用顺序与关闭策略。
-- 独立 Rust 测试：`pkg/util/importer/db_test.rs::signed_numeric_defaults_match_go_ranges`；`pkg/util/importer/tests.rs::generation_and_job_processing_preserve_row_and_batch_counts`、`create_databases_closes_connections_when_opening_fails`；测试替身还证明 trait 的执行、提交和关闭观测方式。
-- 精确调用搜索：限定 Rust 路径的 `rg` 确认 `importer.rs` 对连接函数的调用、`job.rs` 对批量生成的调用，以及测试中的 trait 实现；限定 Go 路径的 `rg` 确认对应入口。未发现该 crate 生产代码中的真实数据库 trait 实现。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核本文能回答文件存在原因、运行链路、状态/错误/资源边界和安全扩展位置。

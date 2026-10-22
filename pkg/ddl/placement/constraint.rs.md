@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-placement` crate，是 Placement Policy 到 PD placement rule 转换链中的“单条 Store 标签约束”基础层。crate 入口 `pkg/ddl/placement/lib.rs` 将本模块的公开项重新导出；上层 `pkg/ddl/placement/constraints.rs` 负责约束集合的解析、去重和冲突检测，`pkg/ddl/placement/bundle.rs` 再把约束放入 PD `Rule`/`Bundle`。因此，本文件只处理 `pd::LabelConstraint` 的值转换和两两关系，不直接提交 DDL job、不推进 schema state、不持久化元数据，也不调用 PD 网络接口。
-
-从 DDL 执行框架看，这属于构造 placement 元数据的同步辅助逻辑，而不是独立的 job worker 或 reorg 路径。真正的 DDL 调度、版本同步和失败恢复由 `pkg/ddl` 更上层完成；本文件没有相关状态机（依据：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`、本文件全部符号）。
+因此，本文件只处理 `pd::LabelConstraint` 的值转换和两两关系，不直接提交 DDL job、不推进 schema state、不持久化元数据，也不调用 PD 网络接口。
 
 ## 核心职责
 
@@ -95,11 +93,9 @@ RustCodeGraph 对本文件给出 5 个符号，并标记它被 `constraint_test.
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ddl/placement/constraint.go`，独立测试为 `constraint_test.go`。Rust 四个函数与 Go 的 `NewConstraint`、`NewConstraintDirect`、`RestoreConstraint`、`ConstraintCompatibleWith` 一一对应，三个结果常量也保持 `0/1/2` 顺序。
+Rust 的 `impl Into<String>`/`Vec<String>` 替代 Go 的 string/variadic 参数；Go 用 `%w` 保留哨兵错误链，Rust 当前用字符串 `Error` 与前缀匹配表达错误类别，这是错误类型机制上的差异，但现有 Rust 测试明确按错误文本前缀验证。
 
-已核对的等价点包括：最短长度 4、只接受 `+/-`、要求恰好一个等号、trim key/value、拒绝 `+engine=tiflash` 且忽略 value 大小写、按逗号切值、还原仅接受单 value 与 In/NotIn，以及兼容性循环只遍历左侧 values。Rust 的 `impl Into<String>`/`Vec<String>` 替代 Go 的 string/variadic 参数；Go 用 `%w` 保留哨兵错误链，Rust 当前用字符串 `Error` 与前缀匹配表达错误类别，这是错误类型机制上的差异，但现有 Rust 测试明确按错误文本前缀验证。
-
-Rust `constraint_test.rs` 基本复刻 Go 表驱动用例；其中 YAML 两例实际测试 `constraints.rs::NewConstraintsFromYaml`，其余分别覆盖本文件三个有行为的入口。Rust 另有 `bundle_1_aster_unit_test.rs` 对解析、还原、TiFlash 拒绝和集合冲突做贯通验证。
+Rust `constraint_test.rs` 基本复刻 Go 表驱动用例；其中 YAML 两例实际测试 `constraints.rs::NewConstraintsFromYaml`，其余分别覆盖本文件三个有行为的入口。
 
 ## 扩展指南
 
@@ -109,15 +105,3 @@ Rust `constraint_test.rs` 基本复刻 Go 表驱动用例；其中 YAML 两例�
 - 调整 TiFlash 规则时，应同时检查 `common.rs` 的引擎常量和 `bundle.rs` 的 TiFlash/普通规则组职责，避免普通 Placement 规则与专用 TiFlash 规则重叠。
 - 若新增仅供测试的逻辑，遵守仓库约定放在独立 `*_test.rs` 中，不把测试模块内嵌进本文件；`lib.rs` 已用 `#[cfg(test)] mod constraint_test` 接线。
 - 若改动进入运行时代码，需保留文件顶部 PingCAP Apache License 和 AsterSQL 处理标记，并按仓库要求更新对应测试、执行 `cargo fmt --all`；本次任务仅新增文档，没有修改 Rust。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`files --filter pkg/ddl/placement` 确认 Rust/Go 对照文件、测试及模块入口均已索引；`query` 确认四个 Rust 入口和对应 Go 符号；`node --file` 读取并核对 `constraint.rs`、`constraints.rs`、`bundle.rs`、`errors.rs`、`common.rs`、`lib.rs` 及 Rust/Go 测试。`callers/callees` 对精确符号未返回边，因此调用关系又用限定 Rust 文件的符号引用搜索核验，没有把空结果解释为“无人调用”。
-- 源码：`pkg/ddl/placement/constraint.rs`（5 个图符号、全部 139 行）。
-- 直接调用方：`pkg/ddl/placement/constraints.rs`、`pkg/ddl/placement/bundle.rs`。
-- crate 与模块：`pkg/ddl/placement/Cargo.toml`、`pkg/ddl/placement/lib.rs`。
-- 错误与常量：`pkg/ddl/placement/errors.rs`、`pkg/ddl/placement/common.rs`。
-- Go 对照：`pkg/ddl/placement/constraint.go`、`pkg/ddl/placement/constraint_test.go`。
-- Rust 独立测试：`pkg/ddl/placement/constraint_test.rs`；补充贯通证据来自 `bundle_1_aster_unit_test.rs` 和 `constraints_test.rs`。
-- DDL 边界：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`。它们用于确认本文件不承担 job 生命周期；具体结论仍以源码和测试为准。
-- 按任务要求不运行 Cargo。交付前执行固定 11 章节结构检查，并人工复核本文能回答文件存在原因、运行路径、边界与安全扩展点。

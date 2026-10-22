@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessionctx-variable` crate 的系统变量错误定义层。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod error` 暴露整个模块，并额外在 crate 根再导出 `ErrIncorrectScope` 与 `ErrUnknownSystemVar`；[`Cargo.toml`](Cargo.toml) 指定该 crate 的库入口为 `lib.rs`，且没有为本文件配置条件 feature。它不负责读取或修改系统变量，而是为变量校验、next-gen 限制、GC 快照检查和密码策略等调用点提供稳定的错误分类、MySQL/TiDB errno 与消息模板。
-
-当前 Rust 实现是 Go [`error.go`](error.go) 中 `dbterror` 错误表的轻量移植。它保留协议可见的 class、code 和消息文本，但没有移植 Go `*terror.Error` 的完整错误链、堆栈捕获、SQL error 转换与 `Equal` 等行为；调用方需要自行把描述符格式化或封装成自身的错误类型。
+`ErrorDescriptor::format` 实现本表所需的有限 printf 风格替换，使 `'%-.64s'`、`%s`、`%d` 与 `%%` 能生成用户可见文本。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ RustCodeGraph 将本文件标为被 34 个文件使用；精确 `callers` 命令
 
 ## 与 Go 版本的对应关系
 
-Go [`error.go`](error.go) 通过 `dbterror.ClassVariable.NewStd`、`NewStdErr` 和 `ClassExecutor.NewStd` 从 `pkg/errno` 及 MySQL 消息表构造错误。Rust 将这套间接注册展开为显式的 class、数值 code 和消息模板，24 个条目的名称与顺序和 Go 表对应。
+Rust 将这套间接注册展开为显式的 class、数值 code 和消息模板，24 个条目的名称与顺序和 Go 表对应。
 
 重要差异如下：
 
@@ -94,11 +92,3 @@ Go [`error.go`](error.go) 通过 `dbterror.ClassVariable.NewStd`、`NewStdErr` �
 5. 检查所有直接消费者是否依赖具体 code、class 或文本。尤其注意 `session/runtime/session.rs` 直接读取 code，而 `nextgen.rs` 同时保留描述符和格式化消息。
 
 主要兼容风险是错误码或文本变化影响 MySQL 客户端、测试断言和告警匹配；正确性风险是新模板超出有限格式化器能力，或忘记加入 `ALL_ERRORS`；性能风险较低，但高频路径每次格式化都会分配一个新 `String`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/sessionctx/variable` 确认目标及相关测试已索引；`node --file pkg/sessionctx/variable/error.rs` 读取 273 行完整定义，并报告本文件被 34 个文件使用；`query ErrorDescriptor --kind struct` 将类型定位到本文件。精确 `callers` 查询在 30 秒执行窗口内未返回，未据此作未验证的逐调用者结论。
-- 源与边界：[`error.rs`](error.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。目标目录没有 `doc.go`，因此包边界以 crate 入口 `lib.rs` 为准。
-- Rust 直接证据：[`variable.rs`](variable.rs)、[`nextgen.rs`](nextgen.rs)、[`../../session/runtime/session.rs`](../../session/runtime/session.rs)、[`../../util/gcutil/gcutil.rs`](../../util/gcutil/gcutil.rs)、[`../../util/password-validation/password_validation.rs`](../../util/password-validation/password_validation.rs)。
-- Rust 测试：[`error_test.rs`](error_test.rs) 覆盖 Unicode 字符精度和 `%%`；[`error_1_aster_unit_test.rs`](error_1_aster_unit_test.rs) 覆盖 code、class、格式化与 24 项表长度；[`tests/variable_test.rs`](tests/variable_test.rs) 检查 `ALL_ERRORS` 非空且 code 非零。
-- Go 对照：[`error.go`](error.go)、[`session.go`](session.go)、[`varsutil.go`](varsutil.go)、[`sysvar.go`](sysvar.go)、[`tests/variable_test.go`](tests/variable_test.go) 与 [`sysvar_test.go`](sysvar_test.go)。这些文件证明 Go 侧构造/使用方式及错误码回归意图；本任务未运行 Go 或 Rust 测试，因为计划明确为纯文档分析且禁止运行 Cargo。

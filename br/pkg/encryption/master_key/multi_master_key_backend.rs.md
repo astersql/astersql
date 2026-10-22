@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-encryption-master-key`，crate 边界由同目录 [`Cargo.toml`](./Cargo.toml) 定义，模块由 [`lib.rs`](./lib.rs) 以 `pub mod multi_master_key_backend` 装配并公开重导出。它位于 BR 文件加密的主密钥层：上层 [`br/pkg/encryption/manager.rs`](../manager.rs) 在主密钥加密模式下通过 `NewManager` 构造此后端，再由 `Manager::Decrypt` 用它解开数据密钥；本文件不直接解密备份文件正文。
-
-RustCodeGraph 对目标文件的索引显示 5 个符号，并确认独立测试 [`multi_master_key_backend_test.rs`](./multi_master_key_backend_test.rs) 直接引用它。结合 `manager.rs` 的源码接线，可以确认它既是公开 crate API，也是加密管理器内部的顺序回退组件，而不是未接线的桩。
+还负责两项生命周期工作：构造时把 protobuf 风格的 `MasterKey` 配置逐一转换为具体后端，关闭时逐一调用底层后端的 `Close`。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ RustCodeGraph 对目标文件的索引显示 5 个符号，并确认独立测试
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`multi_master_key_backend.go`](./multi_master_key_backend.go)，总体结构逐项对应：同名组合类型、默认初始容量 5、逐项 `CreateBackend`、有序短路解密、全失败聚合，以及逐项关闭。Rust 的 `Option<&[MasterKey]>` 表达 Go 的 nil/非 nil 切片差异，并刻意保留“nil 被拒绝、非 nil 空切片可构造”的当前行为。
+Rust 的 `Option<&[MasterKey]>` 表达 Go 的 nil/非 nil 切片差异，并刻意保留“nil 被拒绝、非 nil 空切片可构造”的当前行为。
 
 主要实现差异有三点。第一，Go 字段是 `[]Backend` trait 接口，可直接注入 mock；Rust 生产字段收窄为 `Vec<AnyBackend>`，所以独立 Rust 测试另建 `Vec<Box<dyn Backend + Send>>` 的测试组合来验证 mock 调用次数，并额外用真实文件后端验证生产构造链。第二，Go `Decrypt` 接受 `context.Context`，Rust 同名方法没有上下文参数。第三，Go 使用 `multierr.Append` 与 `errors.Wrap` 保留错误链，Rust 将字符串收集后以 `; ` 拼接，保留可读消息但不保留结构化错误链。
-
-[`multi_master_key_backend_test.go`](./multi_master_key_backend_test.go) 与 Rust 独立测试共同覆盖：首个成功时后端短路、首个失败后第二个成功、全部失败包含每条错误、空列表报内部错误。Rust 的 [`parity_test.rs`](./parity_test.rs) 还覆盖构造、关闭以及空切片兼容行为。
 
 ## 扩展指南
 
@@ -92,12 +88,3 @@ RustCodeGraph 对目标文件的索引显示 5 个符号，并确认独立测试
 若要实现真正的多主密钥轮换或高可用，需要同时检查上层 `manager.rs` 当前只选取 `DataKeyEncryptedContent[0]` 的限制、密文与后端之间的标识关系、旧密钥保留策略及错误可观测性。仅增加本文件的后端数量不能自动解密分别由不同主密钥产生的多份数据密钥。
 
 若要增加并行竞速、首选后端缓存或熔断，至少应补充确定性测试来约束短路、调用次数、取消、超时、错误排序和关闭期间竞态，并评估 KMS 请求成本。若修正空切片构造行为或引入结构化错误，必须同步 Go 对照或明确记录兼容性偏差，并更新 `parity_test.rs`。若后端引入必须显式释放的资源，还应让构造失败路径关闭已成功创建的前序后端。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/encryption/master_key` 定位目标、模块、Go 对照和测试；`node --file br/pkg/encryption/master_key/multi_master_key_backend.rs --offset 1 --limit 260` 读取目标文件全部 68 行并报告其被独立 Rust 测试使用；对 `NewMultiMasterKeyBackend`、`Decrypt`、`Close` 执行了限定目标文件的 callers/callees 查询。
-- 生产源码：[`multi_master_key_backend.rs`](./multi_master_key_backend.rs)、[`master_key.rs`](./master_key.rs)、[`lib.rs`](./lib.rs)、[`br/pkg/encryption/manager.rs`](../manager.rs)。这些文件分别证明组合算法、具体后端工厂、模块公开边界和上层生产调用链。
-- crate 配置：[`Cargo.toml`](./Cargo.toml)，证明 crate 名称、library 入口、Go 包映射和直接依赖。
-- Go 对照：[`multi_master_key_backend.go`](./multi_master_key_backend.go) 与 [`br/pkg/encryption/manager.go`](../manager.go)，用于核对构造条件、顺序回退、错误聚合、上下文参数和应用接线。
-- 测试证据：[`multi_master_key_backend_test.rs`](./multi_master_key_backend_test.rs)、[`multi_master_key_backend_test.go`](./multi_master_key_backend_test.go)、[`parity_test.rs`](./parity_test.rs)，覆盖短路、回退、全失败、空列表、真实文件后端和 nil/空切片兼容边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核没有把未来设计写成当前能力。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-对应生产源码：[queue_ddl_handler.rs](queue_ddl_handler.rs)。
-
-本文件是 `astersql-statistics-handle-autoanalyze-priorityqueue` crate 中“DDL 事件到分析队列变更”的适配层。crate 入口 `pkg/statistics/handle/autoanalyze/priorityqueue/lib.rs` 以私有模块 `mod queue_ddl_handler` 装配它，再通过 `pub use queue_ddl_handler::*` 导出其中的常量、事件类型和 `AnalysisPriorityQueue` 的公开方法。`Cargo.toml` 将该 crate 的库入口设为 `lib.rs`，并以 `package.metadata.porting.go-package` 指向同路径 Go 包。
-
-它不解析真实 DDL notifier 事件，也不自行构造分析作业；它接收本文件定义的扁平化 `SchemaChangeEvent`，决定哪些物理 ID 要从队列删除、哪些表要交给队列的数据源重建。实际堆操作与状态锁位于 `queue.rs`。全仓 Rust 引用检索只找到本文件及 `queue_ddl_handler_test.rs` 对这些 API 的使用，未找到从 `aster_sql_ddl_notifier::SchemaChangeEvent` 到本类型的生产适配或生产态 `HandleDDLEvent` 调用者，因此当前不能把 Go 版本的 notifier/session 集成视为已经在 Rust 中接通。
+不解析真实 DDL notifier 事件，也不自行构造分析作业；它接收本文件定义的扁平化 `SchemaChangeEvent`，决定哪些物理 ID 要从队列删除、哪些表要交给队列的数据源重建。
 
 ## 核心职责
 
@@ -95,12 +91,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler.go`，相关集成测试是同目录 `queue_ddl_handler_test.go`。
-
-保持的核心语义包括：未就绪时是否重试取决于 auto-analyze 开关；只处理选定动作；新增索引若已由 DDL 分析则跳过；表/分区布局变化会删除失效物理 ID并重建仍存在的目标；初始化后 handler 错误被确认而不是无限重试。Rust 独立测试覆盖了这些关键分支中的就绪门禁、截断表不重建、错误吞并、已分析索引跳过、三类分区事件重建全局表，以及破坏性动作清理失效 ID。
-
-当前 Rust 是参数压缩后的本地模型，不是 Go 实现的等量集成：
-
 - Go 接收 `context.Context`、`sessionctx.Context` 和 notifier 事件，并从事件携带的 `TableInfo`/分区定义获取 ID；Rust 接收布尔开关和扁平 ID 事件。
 - Go 重建路径读取会话参数、时间戳、InfoSchema、锁表信息、分区裁剪模式和统计元数据；Rust 把这些全部抽象到 `QueueSource::recreate_job(table_id)`。
 - Go 在整个入口持有 `syncFields.mu`；Rust 只在底层单次状态操作时持锁。
@@ -120,12 +110,3 @@
 - 若要保证单事件原子性，需要评估后台 worker、`QueueSource` 回调和锁顺序；不要直接把当前整段流程包入状态锁，因为重建会调用外部实现并再次通过 `Push` 获取同一锁。
 - 需要同步维护的独立测试是 `pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler_test.rs`；Go 语义变更还应对照 `queue_ddl_handler_test.go`。按仓库约定不要把 Rust 测试内嵌回生产源文件。
 - 兼容风险主要是事件字段含义和确认/重试合同；正确性风险是遗漏物理 ID 或错误重建对象；性能风险来自大规模删库时逐 ID 加锁和逐项堆操作，以及重建过程的数据源访问。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件；目标文件已索引为 228 行、30 个符号。`node --file ... --offset 1 --limit 500` 用于读取全貌；`query` 定位了 `SchemaChangeAction`、其全部枚举项、`ERR_NOT_READY_RETRY_LATER` 和 `HandleAddIndexEvent`。对本文件 inherent `impl` 的 `callers/callees` 查询无输出，因此调用边用下述源码检索补齐。
-- 生产源码：`pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler.rs`（事件模型、分派、各动作处理）；`queue.rs`（`AnalysisPriorityQueue`、锁、`DeleteByTableID`、`RecreateAndPushJob`、`QueueSource`）；`lib.rs`（模块装配与公开重导出）。目标包及其逐级父目录未发现 `doc.go`。
-- crate 配置：`pkg/statistics/handle/autoanalyze/priorityqueue/Cargo.toml`，核对 crate 名、`lib.rs` 入口、直接依赖及 Go 包映射；根 `Cargo.toml` 和 `refresher/Cargo.toml` 仅用于确认 workspace/消费者边界。
-- Go 对照：`pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler.go`，核对就绪门禁、动作映射、删除/重建策略、日志/确认语义与会话依赖。
-- 测试证据：`pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler_test.rs` 的六个可执行测试；`queue_ddl_handler_test.go` 的 TestKit/DDL 集成用例列表。按任务约束未运行 Cargo，也未把注释中的 Go 测试当作 Rust 可执行覆盖。
-- 全仓 `rg` 检索 `HandleDDLEvent`、`SchemaChangeEvent`、`SchemaChangeAction` 和错误常量，未发现本地事件模型的生产调用者；这是“尚未验证生产接线”结论的依据，而不是对未来接线能力的推断。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`normal_ddl_fixture.rs` 属于 `astersql-session` crate（`pkg/session/Cargo.toml`）的 runtime 测试辅助模块。`pkg/session/runtime.rs:95-96` 以 `#[cfg(test)] mod normal_ddl_fixture;` 引入它，因此它不进入普通生产构建，也不是 normal DDL 服务的线上入口。文件的所有项均为 `pub(super)`，只向 `runtime` 父模块及其子模块中的独立测试提供共享夹具。
-
-该文件虽以非 `*_test.rs` 命名，但实际职责是为 normal DDL 回归构造可执行的内存 Domain、系统会话池、基础表、Go 兼容的持久化元数据和 DDL Job。真实服务实现位于 `pkg/session/runtime/normal_ddl_service.rs`；本文件只是其测试环境的可复用搭建层。
+虽以非 `*_test.rs` 命名，但实际职责是为 normal DDL 回归构造可执行的内存 Domain、系统会话池、基础表、Go 兼容的持久化元数据和 DDL Job。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@
 
 ## 与 Go 版本的对应关系
 
-仓库中没有同路径、同名的 Go `normal_ddl_fixture.go`，所以本文件不是单一 Go 源文件的逐函数翻译，而是将 Go 测试基础设施与持久化契约组合成 Rust 共享夹具。`pkg/meta/meta.go` 定义 `mMetaPrefix="m"`、hash data type 和 `DBs -> DB:<id> -> Table:<id>` 布局，是 `hash`、DBInfo/TableInfo 直接写入的 Go 语义依据。
+仓库中没有同路径、同名的 Go `normal_ddl_fixture.go`，所以本文件不是单一 Go 源文件的逐函数翻译，而是将 Go 测试基础设施与持久化契约组合成 Rust 共享夹具。
 
-`Fixture::insert` 的直接行为对照是 `pkg/ddl/jobsubmit/table_mode.go::BuildAlterTableModeJob`：两版都验证模式迁移，相同模式返回 no-op，否则生成 version 2、`ActionAlterTableMode`、query `"skip"`、含 HistoryInfo、CDC source/SQL mode 和 involving-schema 信息的 Job。`pkg/ddl/jobsubmit/table_mode_test.go` 覆盖正常构造、no-op 和 Import-to-Restore 非法迁移；Rust 夹具固定选用必定非 no-op 的 Normal-to-Import。
-
-`Job::encode(...)/decode_go_history_job`、`EncodeTableInfo` 和 `EncodeDBInfo` 明确要求 Go 兼容 wire/meta 格式。因此扩展夹具不应为了方便而写入 Rust 私有结构序列化，否则 normal DDL 回归会绕过真实兼容边界。
+`pkg/ddl/jobsubmit/table_mode_test.go` 覆盖正常构造、no-op 和 Import-to-Restore 非法迁移；Rust 夹具固定选用必定非 no-op 的 Normal-to-Import。
 
 ## 扩展指南
 
@@ -80,11 +76,3 @@
 如需支持其他 Job 类型或可变表结构，必须同时核对：Go jobsubmit/model 载荷，`mysql.tidb_ddl_job` 的 type/reorg/schema_ids/table_ids/processing 字段，Go 兼容 Job 编解码，以及持久化 meta key 布局。修改 `hash` 时需以 `pkg/meta/meta.go`/structure codec 为契约，否则 SnapshotReader 将读不到夹具写入的数据。
 
 扩展资源或并发场景时，应为所有 worker 增加确定性停止/等待，确保 lease 先于 Fixture 释放，并避免依赖 sleep 作为唯一同步手段。若改变快照观察行为，新增回归应明确验证“旧 reader 保持旧版本，重新 `reader()` 看到新提交”。
-
-## 验证依据
-
-本说明直接核对了目标源 `pkg/session/runtime/normal_ddl_fixture.rs`、模块接入 `pkg/session/runtime.rs`、crate 声明 `pkg/session/Cargo.toml`、Domain 创建入口 `pkg/session/runtime/session.rs::CreateAnalyzeSession`、会话池生命周期 `pkg/session/runtime/system_session.rs::SystemSessionPool`，以及九个直接引用夹具的独立 `normal_ddl*_test.rs` 文件。`pkg/session` 下未找到 `doc.go`。
-
-Go 语义证据来自 `pkg/meta/meta.go`、`pkg/ddl/jobsubmit/table_mode.go` 和 `pkg/ddl/jobsubmit/table_mode_test.go`；Rust 构造器对照为 `pkg/ddl/jobsubmit/table_mode.rs`。`normal_ddl_test.rs` 中的代表用例证明 `Fixture::insert/queue/reader` 被用于观察 queue-to-history、表模式、schema version、失败保留与服务关闭；其他八个测试模块复用相同基础设施覆盖创建表、物化视图、分区、index reorg 初始化和 masking policy。
-
-RustCodeGraph `status` 显示当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime/normal_ddl_fixture.rs` 确认目标已索引；`node --file ... --offset 1 --limit 500` 读取了完整 132 行；`node/callees CreateAnalyzeSession` 确认其下游为 mock storage、Domain bootstrap 和 stats 初始化。图对常见名 `Fixture`/`hex`/`hash` 无法稳定消歧义，因此调用者列表以 `rg` 的精确模块引用与测试源码交叉核实，不将空图结果解释为“无调用者”。本任务是纯文档分析，按计划不运行 Cargo。

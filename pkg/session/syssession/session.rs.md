@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`session.rs` 是 `astersql-session-syssession` crate 的会话包装层，由 `pkg/session/syssession/lib.rs` 以 `mod session; pub use session::*;` 对 crate 内外导出。它不负责 SQL 解析、优化或存储访问；它定义底层会话必须实现的 `SessionContext` 契约，并在其上提供独占 owner 校验、操作计数、并发误用检测、关闭时序和 SQL 代理。
-
-crate 边界由 `pkg/session/syssession/Cargo.toml` 确认：库入口是 `lib.rs`，移植元数据指向 Go 包 `pkg/session/syssession`。Cargo 中原 Go 依赖的 Rust crate 声明位于 `target.'cfg(any())'.dependencies`，该 cfg 恒为 false；本文件当前实际只直接依赖 Rust 标准库。完整应用中的具体对接位于 `pkg/session/runtime/system_session.rs`，其 `ConcreteSystemContext` 实现 `SessionContext`，`SystemSessionPool` 内持有 `AdvancedSessionPool`。
+不负责 SQL 解析、优化或存储访问；它定义底层会话必须实现的 `SessionContext` 契约，并在其上提供独占 owner 校验、操作计数、并发误用检测、关闭时序和 SQL 代理。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@ panic 边界分两类：`Session::with_context` 捕获业务操作 panic，做�
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照是 `pkg/session/syssession/session.go`。Rust `InternalSession` 对应 Go 私有 `session`，`Session` 对应 Go 公开代理，`owner`/`in_use`/`unsafe_count`/`avoid_reuse` 对应 `owner`/`inUse`/`unsafe`/`avoidReuse`。Rust 用带 ID 的 `Owner` 值替代 Go `sessionOwner` 接口实例，用 `Closed` 替代 nil，以便在不保留 owner 对象引用的前提下执行身份校验。
+Rust 用带 ID 的 `Owner` 值替代 Go `sessionOwner` 接口实例，用 `Closed` 替代 nil，以便在不保留 owner 对象引用的前提下执行身份校验。
 
-Go `EnterOperation` 返回 context 和 exit 闭包；Rust 将它收敛到 `with_context`，利用 `catch_unwind` 保证退出逻辑。两者都在重叠线程不安全操作时拒绝后来者，在已关闭但仍 `inUse > 0` 时延迟 context close，并在代理操作 panic 后禁止复用。Rust 的 `sequence` 只在 owner 转移时增加，不像 Go `seq` 同时记录操作进出并用于日志；Rust 也没有 Go `reportErrorWithoutLock` 的 zap/测试断言路径，而是把进入失败直接返给调用者。
+Go `EnterOperation` 返回 context 和 exit 闭包；Rust 将它收敛到 `with_context`，利用 `catch_unwind` 保证退出逻辑。Rust 的 `sequence` 只在 owner 转移时增加，不像 Go `seq` 同时记录操作进出并用于日志；Rust 也没有 Go `reportErrorWithoutLock` 的 zap/测试断言路径，而是把进入失败直接返给调用者。
 
-Go `SessionContext` 嵌入完整 `sessionctx.Context`，SQL 代理通过 `GetSQLExecutor`/`GetRestrictedSQLExecutor` 调用真实 TiDB 类型。Rust 当前用独立 trait 和 `Any` 擦除边界，具体 SQL 参数、statement 与 row 语义由适配器实现。Go `Session::onBecameOwner`/`onResignOwner` 直接调用 infosync 登记表；Rust 的公开 `Session` 没有自身 hook，hook 在 `SessionContext` 具体实现中完成。`ThreadBoundSession` 是 Rust 为容纳非 `Send` `ConcreteSession` 增加的适配层，Go 同文件没有对应类型。
+Go `Session::onBecameOwner`/`onResignOwner` 直接调用 infosync 登记表；Rust 的公开 `Session` 没有自身 hook，hook 在 `SessionContext` 具体实现中完成。`ThreadBoundSession` 是 Rust 为容纳非 `Send` `ConcreteSession` 增加的适配层，Go 同文件没有对应类型。
 
 ## 扩展指南
 
@@ -87,12 +85,3 @@ Go `SessionContext` 嵌入完整 `sessionctx.Context`，SQL 代理通过 `GetSQL
 - 修改关闭逻辑时，需同时考虑幂等、错 owner、进行中操作、hook 返错/panic、unregister/close panic 的顺序，并保持“已接受操作先结束”。主要回归文件是 `session_test.rs`、`session_integration_test.rs` 和 `pool_test.rs`。
 - 扩展 `ThreadBoundSession` 时不得让 `&mut T` 或非 `Send` 结果逃离 worker；需在 `thread_bound_test.rs` 继续验证线程亲和性、启动失败、panic 后 worker 停止、close/call 排序和 drop 时机。每个实例一条 OS 线程，扩大池容量或增加实例时必须评估线程/通道开销。
 - 变更类型擦除 ABI 时，须同步检查具体适配器的 downcast 和错误文本，并保持 Go 版本 SQLExecutor/RestrictedSQLExecutor 的参数、多结果集与行返回语义；不能以类型擦除为理由简化实际行为。
-
-## 验证依据
-
-- 源文件：`pkg/session/syssession/session.rs` 全部 568 行；符号和流程重点为 `SessionContext`、`InternalSession`、`new_internal_session_impl`、`transfer_owner`、`close_internal`、`Session::with_context` 和 `ThreadBoundSession::{new, call, close}`。
-- RustCodeGraph：`status` 确认索引可用；`files --filter pkg/session/syssession` 列出 17 个 Rust/Go 相关文件；`explore "SysSession session.rs pkg/session/syssession"` 返回 owner、池、关闭和运行会话相关候选；`node --file pkg/session/syssession/session.rs --offset 1 --limit 500` 及 `--offset 501 --limit 100` 验证了全文与被使用关系。独立 `callers transfer_owner` 查询未在 30 秒内返回，因此用索引已定位的 `pool.rs` 和精确文本搜索补齐直接调用边，未据此推测其他调用。
-- crate 与模块：`pkg/session/syssession/Cargo.toml`、`pkg/session/syssession/lib.rs`、`pkg/session/syssession/pool.rs`。运行接线：`pkg/session/runtime/system_session.rs`、`pkg/session/runtime/ttl_timer_store.rs`、`pkg/timer/tablestore/store.rs`、`pkg/executor/internal/exec/executor.rs`。
-- Go 对照：`pkg/session/syssession/session.go` 中 `session`、`newInternalSession`、`TransferOwner`、`EnterOperation`、`doCloseWithoutLock` 和公开 `Session` 代理方法。
-- Rust 测试：`pkg/session/syssession/session_test.rs` 验证错误文本、owner hook/转移、延迟关闭、非 owner 拒绝、panic 清理、未决事务、reset、禁复用和线程不安全竞争；`session_integration_test.rs` 验证空壳会话、内部注册生命周期和脏会话归还；`pool_test.rs` 验证池复用/拒收与工厂失败清理；`thread_bound_test.rs` 验证非 `Send` 值的线程生命周期。Go 回归对照在 `pkg/session/syssession/session_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；以固定 11 个二级标题的结构命令与人工事实复核作为交付验证。

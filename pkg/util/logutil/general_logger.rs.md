@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`general_logger.rs`](general_logger.rs) 属于 `astersql-util-logutil` crate；crate 入口 [`lib.rs`](lib.rs) 通过 `pub mod general_logger` 公开此模块。它位于全局日志配置与 General Log 专用 logger 之间，负责从 [`log.rs`](log.rs) 的 `LogConfig` 派生专用配置，并委托同文件中的通用初始化器 `init_logger` 创建 `Logger`。它不决定是否记录某条 SQL，也不保存进程级 logger；进程级选择和安装发生在 `log.rs::initialize_loggers`。
-
-根据 [`Cargo.toml`](Cargo.toml)，该 crate 的库入口是 `lib.rs`，Go 对照包为 `pkg/util/logutil`。本文件没有直接引入第三方 crate，使用的 `LogConfig`、`Logger` 和 `init_logger` 都来自 crate 内部 `log` 模块。
+位于全局日志配置与 General Log 专用 logger 之间，负责从 [`log.rs`](log.rs) 的 `LogConfig` 派生专用配置，并委托同文件中的通用初始化器 `init_logger` 创建 `Logger`。
 
 ## 核心职责
 
@@ -69,12 +67,8 @@ RustCodeGraph 将本文件标记为被 `pkg/util/logutil/log.rs` 和 `pkg/util/l
 
 ## 与 Go 版本的对应关系
 
-直接对照 [`general_logger.go`](general_logger.go)：
-
-- 两版都复制全局日志配置，不修改输入；都把专用配置的 level 设为零值/空值；`GeneralLogFile` 非空时都复制主文件配置并只替换文件名。
 - Go `newGeneralLogger` 调用 `pingcap/log.InitLogger`，返回 `(*zap.Logger, *log.ZapProperties, error)`，并用 `errors.Trace` 包装错误；Rust 返回仓库内 `Logger` 和字符串错误，没有 `ZapProperties` 对应返回值，也没有错误链包装。
 - Go 的空 level 由上游日志库解释为 Info；Rust 在 `LogLevel::from_str` 中显式规定 `"" | "info" => Info`，由 Rust 测试固定该迁移语义。
-- Go `InitLogger` 在 General 文件为空或等于主文件时直接令 `GeneralLogger = gl`；Rust `initialize_loggers` 在相同条件下克隆 background。由于 Rust `Logger::clone` 共享 `Arc` 包装的 sink 和 level，这里保留了资源复用意图。
 - Go 风格再导出名让邻近迁移代码继续使用 `newGeneralLogger` / `newGeneralLogConfig`，而蛇形名称提供惯用 Rust API。
 
 Go 测试 `log_test.go::TestSlowQueryLoggerAndGeneralLoggerCreation` 是 Rust 同名测试的语义来源：两者都验证专用 logger 为 Info、输入级别不变以及文件滚动字段被保留。Go 的同文件名测试还通过反射比较底层 `WriteSyncer`；Rust 测试验证共享文件的可见输出，但没有暴露或直接比较内部 sink 指针。
@@ -87,13 +81,3 @@ Go 测试 `log_test.go::TestSlowQueryLoggerAndGeneralLoggerCreation` 是 Rust �
 - 若增加可能失败的校验，决定错误属于纯配置派生还是 `init_logger` 的通用策略，并保持 `new_general_logger` 的传播契约。需要关注错误文本兼容性以及文件初始化/写入时机的变化。
 - 测试逻辑应继续放在独立文件：专用配置边界可扩充 `migration_aster_unit_test.rs`，公开迁移行为可扩充 `log_test.rs`；不要把单元测试内嵌进 `general_logger.rs`。
 - 性能风险主要来自不必要的配置/字符串克隆或错误地为同一文件创建独立 sink；正确性风险主要是意外继承全局级别、丢失文件滚动字段、修改输入配置或破坏同文件复用。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含本仓库 Rust/Go 文件；`node --file pkg/util/logutil/general_logger.rs` 展示完整 44 行源码并列出使用者 `log.rs`、`migration_aster_unit_test.rs`。
-- RustCodeGraph 符号/调用查询：定位 `new_general_logger`；`callees new_general_logger` 确认调用 `new_general_log_config`；配置函数没有图中被调用者（字段克隆和赋值不会形成项目符号调用边）。
-- Rust 源码：`general_logger.rs::{new_general_logger,new_general_log_config}`；`log.rs::{LogConfig,LogLevel::from_str,Logger,init_logger,initialize_loggers}`；crate 入口 `lib.rs`。
-- crate 边界：`pkg/util/logutil/Cargo.toml` 的包名、库入口和 `package.metadata.porting.go-package`。
-- Rust 独立测试：`log_test.rs::{TestSlowQueryLoggerAndGeneralLoggerCreation,TestSlowQueryLoggerAndGeneralUseSameLogFileName}`；`migration_aster_unit_test.rs::test_dedicated_configs_copy_file_settings_without_mutating_source`。
-- Go 对照：`general_logger.go::{newGeneralLogger,newGeneralLogConfig}`；`log.go::{InitLogger,ReplaceLogger}`；`log_test.go::{TestSlowQueryLoggerAndGeneralLoggerCreation,TestSlowQueryLoggerAndGeneralUseSameLogFileName}`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令检查文档存在且恰有十一个固定二级章节，并人工复核链接、符号名称、范围和无依据结论。

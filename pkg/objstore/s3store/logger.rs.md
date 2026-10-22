@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-objstore-s3store` crate 内，是 AWS SDK/Smithy 日志到仓库 `tracing` 门面的轻量桥接层。模块由 `pkg/objstore/s3store/lib.rs` 的 `mod logger` 装载，并通过 `pub use logger::*` 公开 `Classification`、`PingcapLogger`、`newLogger` 和 `Logf`。
-
-当前 Rust 生产构造链尚未使用这个桥接层：`pkg/objstore/s3store/store.rs` 的 `load_sdk_config` 与 `build_api` 配置 region、凭证、HTTP client、重试、endpoint 和 signer，但没有注入 `PingcapLogger`。RustCodeGraph 只找到 `pkg/objstore/s3store/s3_test.rs::test_s3_read_file_suppresses_skipped_checksum_validation_log` 调用 `newLogger`。因此它目前是“可用且被导出的日志适配器”，不是已经接入 AWS SDK 请求主链的组件。
+用 `newLogger` 提供与 Go 版本命名相近的构造入口；构造不分配资源，也不携带配置。
 
 ## 核心职责
 
@@ -68,11 +66,8 @@ crate 根的 `#![allow(non_snake_case, non_upper_case_globals)]` 使 `newLogger`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/objstore/s3store/logger.go`：
-
 - Go `pingcapLogger` 持有 `*zap.Logger`，`newLogger(logger)` 用 `zap.AddCallerSkip(1)` 保留调用点；Rust `PingcapLogger` 无状态，`newLogger()` 无参数，也没有 caller-skip 配置。
 - Go `Logf(classification, format, v...)` 先用 `fmt.Sprintf` 格式化，再调用 zap；Rust `Logf(classification, message)` 只接收最终字符串。
-- 两者都把 Warn、Debug 分别映射到同名级别，并把其余情况记为 Info；Rust 通过封闭枚举和默认 `Info` 表达这一意图。
 - Go `store.go::NewS3Storage` 把 logger 同时传入 `config.WithLogger` 和 `s3.Options.Logger`，启用请求、重试、响应、弃用提示，并设置 `DisableLogOutputChecksumValidationSkipped = true`。Rust `store.rs` 没有对应 logger/日志模式/checksum 抑制接线。
 - Go 回归测试 `TestS3ReadFileSuppressesSkippedChecksumValidationLog` 安装 warn 级观察器、执行真实本地 HTTP 读取，并断言观察日志不含指定文本；Rust 同名意图测试使用 mock 读取后手工调用 Debug 日志，没有等价断言。
 
@@ -85,15 +80,3 @@ crate 根的 `#![allow(non_snake_case, non_upper_case_globals)]` 使 `newLogger`
 - 若要对齐 checksum 静默行为，应建立能捕获 tracing 事件的独立回归测试，验证完整 `NewS3Storage/ReadFile` 路径，而不是仅验证 `Logf` 可调用。
 - 如需携带 bucket、prefix、provider 等上下文，优先用 tracing 字段表达；必须评估基数、性能与凭证泄露风险。
 - 保留 `aws_smithy` target 的兼容性，或同步更新所有 subscriber filter、运维查询和测试。改变日志级别可能增加高频请求路径的日志量与格式化成本。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/objstore/s3store` 确认本模块及相邻 Rust/Go/测试文件在图中。
-- `rustcodegraph node --file pkg/objstore/s3store/logger.rs`：确认 48 行源码、四个公开符号及三路 tracing 分派。
-- `rustcodegraph query newLogger`：区分 Go `logger.go::newLogger` 与 Rust `logger.rs::newLogger`；文件使用关系和 callers 查询表明 Rust 侧仅由 `s3_test.rs` 使用，未发现生产调用边。
-- `pkg/objstore/s3store/lib.rs`：确认模块装载、公开再导出和 crate 级 Go 命名兼容属性。
-- `pkg/objstore/s3store/Cargo.toml`：确认 crate 名、`tracing` 运行依赖、`tracing-subscriber` 测试依赖，以及 Go package 移植元数据。
-- `pkg/objstore/s3store/store.rs::{NewS3Storage,build_api,load_sdk_config}`：确认 Rust S3 构造链及当前缺少 logger 注入。
-- `pkg/objstore/s3store/logger.go::{pingcapLogger,newLogger,Logf}` 与 `store.go::NewS3Storage`：确认 Go logger 状态、格式化、caller skip、SDK 注入与日志选项。
-- `pkg/objstore/s3store/s3_test.rs::test_s3_read_file_suppresses_skipped_checksum_validation_log` 与 `s3_test.go::TestS3ReadFileSuppressesSkippedChecksumValidationLog`：确认两侧测试覆盖强度和语义差异。
-- 本任务只新增文档，未运行 Cargo；最终以任务指定的 11 章节结构命令、路径/符号链接人工复核和 diff 自审作为验证。

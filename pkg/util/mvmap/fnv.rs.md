@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-mvmap` crate 内部的 FNV-1 64 位哈希实现。crate 入口 `pkg/util/mvmap/lib.rs` 通过 `include!("mvmap.rs")` 引入主体，主体在 `pkg/util/mvmap/mvmap.rs:23-26` 以私有 `mod fnv` 声明本模块并导入 `fnv_hash64`。因此它不是对 workspace 公开的通用哈希 API，而是 `MVMap` 把字节 key 映射到 `HashMap<u64, entryAddr>` 桶头时使用的内部组件。
-
-`pkg/util/mvmap/Cargo.toml` 将该 crate 命名为 `astersql-util-mvmap`，库入口为 `lib.rs`，且没有为本文件声明 feature 或外部依赖；其移植元数据明确对应 Go 包 `pkg/util/mvmap`。
+`fnv_hash64(data: &[u8]) -> u64` 为任意字节切片计算确定性的 FNV-1 64 位值：从固定偏移量开始，对每个字节依次先乘 FNV 素数、再与该字节异或。
 
 ## 核心职责
 
@@ -65,11 +63,7 @@ RustCodeGraph 的 callees 查询返回“无被调用者”：实现只使用语
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/util/mvmap/fnv.go`：`OFFSET64`/`PRIME64` 分别对应 `offset64`/`prime64`，`fnv_hash64` 对应 `fnvHash64`。两者均从相同偏移量开始，对每个字节执行“乘素数后异或”，返回 64 位无符号值。
-
 可见性表达不同但边界一致：Go 的小写符号限于包内，Rust 的常量为模块私有、函数为 `pub(crate)`；后者供同 crate 中由 `include!` 组装的 `mvmap.rs` 和独立测试模块调用。Rust 用 `wrapping_mul` 显式表达 Go `uint64` 的回绕语义，是语义保真而不是算法变化。
-
-Go 测试 `pkg/util/mvmap/mvmap_test.go:53` 将结果与标准库 `fnv.New64()` 比较。Rust 的 `pkg/util/mvmap/mvmap_test.rs:85` 和 `migration_aster_unit_test.rs:109` 使用同一输入 `{cb f2 9c e4 84 22 23 25}`，期望 `0x51af634308c212fc`，为当前移植结果提供直接对照。
 
 ## 扩展指南
 
@@ -78,13 +72,3 @@ Go 测试 `pkg/util/mvmap/mvmap_test.go:53` 将结果与标准库 `fnv.New64()` 
 任何算法调整都应同步独立测试文件，而不要把测试嵌入生产源文件。最低限度应更新或扩展 `pkg/util/mvmap/mvmap_test.rs`，并按迁移目的决定是否同步 `pkg/util/mvmap/migration_aster_unit_test.rs`；Go 对齐变化还应核对 `pkg/util/mvmap/fnv.go` 与 `mvmap_test.go`。建议覆盖空输入、单字节、含零字节、产生多次回绕的长输入及与 Go/标准库一致的固定向量。
 
 扩展时需重点检查三类风险：改变稳定哈希结果的兼容风险、桶分布退化或额外分配带来的性能风险，以及绕过原始 key 比较导致碰撞误命中的正确性风险。若要引入随机化或密码学性质，那已超出当前 Go 对齐的 FNV-1 合同，应作为显式架构变更处理。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 `11467` 个文件；`files --filter pkg/util/mvmap` 覆盖本模块的 Rust/Go 实现与测试。
-- RustCodeGraph 文件节点：`node --file pkg/util/mvmap/fnv.rs --offset 1 --limit 120`，核对完整 45 行源码、常量、函数签名和算法。
-- RustCodeGraph 符号与调用查询：`query fnv_hash64 --kind function`、`node pkg/util/mvmap/fnv.rs::fnv_hash64`、`callees pkg/util/mvmap/fnv.rs::fnv_hash64`；节点轨迹确认四个直接调用者，callees 确认没有仓库级下游调用。独立 `callers` 命令曾无输出挂起并被终止，调用方证据改由同一索引的 node trail 及下列精确节点交叉验证。
-- RustCodeGraph 精确节点：`pkg/util/mvmap/mvmap.rs::Put`、`pkg/util/mvmap/mvmap.rs::Get`、`pkg/util/mvmap/mvmap_test.rs::test_fnv_hash`、`pkg/util/mvmap/migration_aster_unit_test.rs::fnv_hash_matches_go_test_vector`。
-- crate 与装配证据：`pkg/util/mvmap/Cargo.toml`、`pkg/util/mvmap/lib.rs`、`pkg/util/mvmap/mvmap.rs:16-26`。
-- Go 对照与测试证据：`pkg/util/mvmap/fnv.go`、`pkg/util/mvmap/mvmap.go:130-163`、`pkg/util/mvmap/mvmap_test.go:53-64`。
-- Rust 独立测试证据：`pkg/util/mvmap/mvmap_test.rs:85-90`、`pkg/util/mvmap/migration_aster_unit_test.rs:109-112`。本任务只新增文档，按计划不运行 Cargo；验证以源码、调用图、跨语言测试向量和文档结构检查为准。

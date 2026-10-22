@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-util-versioninfo` 的版本元数据实现，源码入口由同目录 `lib.rs` 的 `pub mod versioninfo; pub use versioninfo::*;` 装配并在 crate 根重新导出。它不负责计算版本，也不输出日志；它只定义构建时间、Git 信息、发行版和企业扩展版本的默认值及进程内可变存储，供服务器状态接口、BR 版本展示等上层代码读取。
-
-`pkg/util/versioninfo/Cargo.toml` 指定 `[lib] path = "lib.rs"`，没有普通依赖或 feature，并以 `package.metadata.porting.go-package = "pkg/util/versioninfo"` 明确标记 Go 对照包。文件级 `#![allow(non_upper_case_globals)]` 保留 Go 风格公开名称，降低迁移调用点的命名差异。
+为 Rust 上层提供同步读取边界。
 
 ## 核心职责
 
@@ -75,13 +73,11 @@ RustCodeGraph 已索引目标文件，但把整个文件只识别为一个符号
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/versioninfo/versioninfo.go` 定义同名的一个常量和五个 package 变量，名称、初始值与 Rust 完全一致。Rust 用 `RwLock<&'static str>` 代替 Go 可直接读写的 `string` 变量，使共享可变静态状态满足 Rust 同步与安全要求；代价是所有读写都必须显式处理加锁结果，并且写入值受 `'static` 生命周期约束。
+Rust 用 `RwLock<&'static str>` 代替 Go 可直接读写的 `string` 变量，使共享可变静态状态满足 Rust 同步与安全要求；代价是所有读写都必须显式处理加锁结果，并且写入值受 `'static` 生命周期约束。
 
-Go 构建链在 `Makefile.common` 通过链接器 `-X` 注入 `TiDBBuildTS`、`TiDBGitHash`、`TiDBGitBranch`、`TiDBEdition`，并可注入 `TiDBEnterpriseExtensionGitHash`。当前 Rust 代码没有经验证的等价链接期路径，所以默认值对齐和进程内可写性已经迁移，发布构建自动注入尚不能从本文件或已检索接线中确认。
+当前 Rust 代码没有经验证的等价链接期路径，所以默认值对齐和进程内可写性已经迁移，发布构建自动注入尚不能从本文件或已检索接线中确认。
 
-Go 的生产使用面也更完整：例如 `pkg/util/printer/printer.go` 输出全部字段，`pkg/server/http_status.go` 与元数据同步代码传播 Git 哈希，`cmd/tidb-server/main.go` 可按配置修改 `TiDBEdition`。Rust 当前确认的直接生产读取集中在 BR 构建信息的三个字段；测试服务器客户端读取 Git 哈希。不能因为 Go 有调用点就宣称对应 Rust 主链已经接通。
-
-测试对应方面，Rust 的 `pkg/util/versioninfo/migration_aster_unit_test.rs` 是独立测试文件，符合本仓库“不把 Rust 测试内嵌到源文件”的约束。它验证默认发行版、构建时间、分支、企业扩展哈希以及 Git 哈希可覆写；目前没有逐项验证 `TiDBGitHash` 默认值，也没有验证其余四个静态量均可写。
+不能因为 Go 有调用点就宣称对应 Rust 主链已经接通。
 
 ## 扩展指南
 
@@ -91,12 +87,3 @@ Go 的生产使用面也更完整：例如 `pkg/util/printer/printer.go` 输出�
 - 若需要运行时生成的字符串，当前 `&'static str` 形状不合适。不要通过泄漏 `String` 来凑 `'static`；应评估拥有所有权的状态结构和清晰的 setter/getter API。
 - 修改默认值或哨兵语义时，应同步核对 `br/pkg/version/build/info.rs` 的首次读取缓存、`run_test_status_api` 的精确相等校验，以及 Go 端所有直接变量使用处。
 - 性能方面，版本信息通常只在启动、状态接口或日志路径读取，锁开销较低；若把它放入高频路径，应优先读取一次并持有不可变快照，而不是反复加锁。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/versioninfo` 确认索引覆盖 `lib.rs`、`versioninfo.rs`、迁移测试及 Go 对照；`node --file pkg/util/versioninfo/versioninfo.rs --offset 1 --limit 220` 核对了目标文件全部 40 行。对六个公开符号执行了 `query/node/callers/callees`；除同名外部/本地符号外未得到目标静态量的可靠定义边，因此没有把图的 `used by 0 files` 当作“无调用者”结论。
-- 源码与 crate 边界：`pkg/util/versioninfo/versioninfo.rs`、`pkg/util/versioninfo/lib.rs`、`pkg/util/versioninfo/Cargo.toml`。
-- Rust 调用与测试：`br/pkg/version/build/info.rs`、`br/pkg/version/build/info_test.rs`、`br/pkg/version/build/parity_test.rs`、`pkg/server/internal/testserverclient/server_client.rs`、`pkg/server/internal/testserverclient/server_client_test.rs`、`pkg/util/versioninfo/migration_aster_unit_test.rs` 及相关 Cargo 清单。
-- Go 对照与构建证据：`pkg/util/versioninfo/versioninfo.go`、`br/pkg/version/build/info.go`、`pkg/util/printer/printer.go`、`pkg/server/http_status.go`、`cmd/tidb-server/main.go`、`Makefile.common`。
-- 人工复核结论：文件存在是为了集中承载与 Go 同名、同默认值的版本元数据；运行时只发生静态初始化和显式加锁读写；安全扩展的关键约束是链接期注入尚未证实、`&'static str` 写入限制、锁中毒处理、跨字段非原子性以及上层首次读取缓存。
-- 按任务约束，本次是纯文档分析，未修改 Rust/Go/Cargo，未运行 Cargo。交付前使用任务规定的命令验证文档恰好包含十一个固定二级章节。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-tools-fake-oauth` crate 的 Rust 可执行入口，也是库入口复用的实现模块。`tools/fake-oauth/Cargo.toml` 的 `[[bin]]` 将它声明为 `astersql-tools-fake-oauth` 二进制；`tools/fake-oauth/lib.rs` 又通过 `#[path = "main.rs"] pub mod main` 暴露同一实现，并由 `entry()` 调用 `main::main()`。crate 的移植元数据把其 Go 来源标为 `tools/fake-oauth`、类型标为 `binary`，工作区根 `Cargo.toml` 将该 crate 纳入成员列表。
-
-它对照 `tools/fake-oauth/main.go`，提供测试用的固定 OAuth 令牌端点契约。需要特别区分当前实现与 Go 工具：Go 版使用 `net/http` 真正监听端口；Rust 版经本地 `stubs` 模块模拟路由和监听，只在进程内保存状态，不创建网络监听套接字（`tools/fake-oauth/stubs.rs::ListenAndServe`）。因此，当前 BR/Lightning 集成流程仍由 `Makefile` 编译 Go `main.go`，并由 `br/tests/br_gcs/run.sh`、`lightning/tests/lightning_gcs/run.sh` 启动 `fake-oauth`。
+需要特别区分当前实现与 Go 工具：Go 版使用 `net/http` 真正监听端口；Rust 版经本地 `stubs` 模块模拟路由和监听，只在进程内保存状态，不创建网络监听套接字（`tools/fake-oauth/stubs.rs::ListenAndServe`）。
 
 ## 核心职责
 
@@ -76,9 +74,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `main`/`run_main` 对应 Go `main`；`register_routes` 对应 `http.HandleFunc` 调用；handler 中的 `w.Write(TOKEN_JSON)` 对应 Go 闭包的 `w.Write([]byte(...))`；`stubs::ListenAndServe(LISTEN_ADDR, None)` 对应 `http.ListenAndServe(":5000", nil)`。路径、地址、JSON 字节、注册先于监听的顺序以及两个被忽略的错误结果均保持一致。
+Rust `main`/`run_main` 对应 Go `main`；`register_routes` 对应 `http.HandleFunc` 调用；handler 中的 `w.Write(TOKEN_JSON)` 对应 Go 闭包的 `w.Write([]byte(...))`；`stubs::ListenAndServe(LISTEN_ADDR, None)` 对应 `http.ListenAndServe(":5000", nil)`。
 
-迁移为了可测试性新增了 Go 中没有的 `token_response_body`、三个命名常量以及 `run_main`/`register_routes` 分层。行为载体也存在实质差异：Go 使用真实 `net/http` 默认 mux 和套接字；Rust 使用功能受限的本地桩，未实现 HTTP header、网络协议、Go ServeMux 的完整匹配规则或真实阻塞监听。`parity_test.rs` 验证的是当前文件依赖的最小契约，不证明完整 `net/http` 等价。
+行为载体也存在实质差异：Go 使用真实 `net/http` 默认 mux 和套接字；Rust 使用功能受限的本地桩，未实现 HTTP header、网络协议、Go ServeMux 的完整匹配规则或真实阻塞监听。
 
 ## 扩展指南
 
@@ -88,12 +86,3 @@ Rust `main`/`run_main` 对应 Go `main`；`register_routes` 对应 `http.HandleF
 - 如需真实可用的 Rust 服务，应替换或扩展 `stubs::ListenAndServe`，补充端口绑定、关闭、并发请求和启动失败测试，并确认 BR/Lightning 构建脚本切换目标。不能仅改变 `main.rs` 后宣称完成网络迁移。
 - 如 handler 需要访问 mux、注册新路由或执行长耗时工作，应先审视 `ServeMux::serve` 持锁调用 handler 的设计，避免重入死锁和全局串行化带来的性能问题。
 - 错误传播策略是 Go 兼容契约的一部分；若改成返回 `Result`、日志或退出码，应同步调整 `run_main`/`main`/`lib.rs::entry` 的接口和错误路径测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `tools/fake-oauth` 的 5 个文件；`files --filter tools/fake-oauth` 显示 `main.rs` 有 5 个符号；`node --file tools/fake-oauth/main.rs --offset 1 --limit 240` 展示完整 65 行源码并标记其被 `parity_test.rs` 使用；`query` 定位了 `token_response_body`、`register_routes` 和 `run_main`。精确 callers/callees 查询没有返回额外调用边，因此未据此声称其他图关系。
-- 源码：`tools/fake-oauth/main.rs`（常量、handler、注册/启动/入口顺序）和 `tools/fake-oauth/stubs.rs`（默认 mux、精确分派、监听记录、锁与重置生命周期）。
-- crate 边界：`tools/fake-oauth/Cargo.toml`、`tools/fake-oauth/lib.rs`、工作区根 `Cargo.toml`。
-- Go 对照：`tools/fake-oauth/main.go`；构建与实际集成使用证据来自 `Makefile`、`br/tests/br_gcs/run.sh`、`lightning/tests/lightning_gcs/run.sh`。
-- 独立测试：`tools/fake-oauth/parity_test.rs` 覆盖固定响应、200 状态、精确路径、常量字节、监听错误忽略、未知路径、重复注册 panic 和全局状态清理。同目录未发现 Go 单元测试；仓库引用搜索未发现其他 Rust 测试直接使用这些符号。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收应确认该文档存在，且固定的十一个二级标题各出现一次。

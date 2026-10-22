@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate；crate 由 `pkg/expression/Cargo.toml` 定义，根模块 `pkg/expression/lib.rs` 通过 `#[path = "fts_helper.rs"] mod fts_helper_kernel;` 将其编入。模块本身是私有模块，且 crate 根当前没有 `pub use fts_helper_kernel::*`，因此文件内虽声明了三个 `pub` 符号，它们目前仍只在该私有模块边界内可见。
-
-它移植自同目录的 `pkg/expression/fts_helper.go`，目标角色是识别表达式树中的内部标量函数 `ast::FTSMatchWord`，以及把一个标准形状的全文检索表达式拆成查询文本和列引用。仓库搜索与 RustCodeGraph 的文件关系均未发现 Rust 调用者；当前 Rust 规划器主链 `pkg/planner/core/fts_resolve_index.rs` 使用自己的字符串计划表示和局部 `interpret_fts_expression`，并未接入这里基于 `Expression` trait 的 helper。因此，本文件当前是已编入但尚未接线的表达式辅助实现，不能据此宣称 Rust 规划器已经通过它完成 FTS 下推。
+这些职责分别位于诸如 `pkg/expression/builtin_fts.rs`、`pkg/expression/planner_bridge.rs` 和 `pkg/planner/core/fts_resolve_index.rs` 等实现中。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@ Go 侧存在真实上游：`pkg/planner/core/fts_resolve_index.go` 在 WHERE 下
 
 `pkg/expression/fts_helper.go` 是逐项语义基准：Go 的 `FTSInfo{Query string, Column *Column}` 对应 Rust 的拥有查询字符串加借用列；Go 的类型断言对应 Rust 的 `Any` 向下转型；Go 的 `slices.ContainsFunc(x.GetArgs(), ContainsFullTextSearchFn)` 对应 Rust 的 `.iter().any(...)`；Go 的失败 `nil` 对应 Rust 的 `None`。
 
-核心检查顺序也一致：仅处理 `ScalarFunction`，先比对 `ast.FTSMatchWord`，解释时再要求两个参数以及 `Constant`/`Column` 的固定位置。Rust 没有删减这两个 helper 的局部判断逻辑。
+Rust 没有删减这两个 helper 的局部判断逻辑。
 
 迁移状态存在重要差异：Go helper 是 `expression` 包导出 API，并被 `pkg/planner/core/fts_resolve_index.go` 多处调用；Rust helper 所在模块未从 crate 根导出，且 Rust 规划器目前使用字符串计划模型的局部实现。因此 Go 测试 `pkg/planner/core/fts_resolve_index_test.go` 能间接覆盖 Go helper，而 Rust 测试 `pkg/planner/core/fts_resolve_index_test.rs` 覆盖的是规划器局部字符串解析与下推规则，不能作为本文件直接执行覆盖的证据。
 
@@ -96,14 +94,3 @@ Go 侧存在真实上游：`pkg/planner/core/fts_resolve_index.go` 在 WHERE 下
 本文件目前没有同名独立 Rust 测试。新增或修改行为时应新建独立测试文件（例如 `pkg/expression/fts_helper_test.rs`）并由 `lib.rs` 在 `#[cfg(test)]` 下装配，遵守“源文件与单元测试不放在同一文件”的仓库规则。最低用例应覆盖：根节点命中、嵌套命中、非标量节点、非 FTS 标量函数、错误参数数目、参数顺序/类型错误、成功提取查询和保持同一列引用。规划器接线变化还应同步 `pkg/planner/core/fts_resolve_index_test.rs`，Go 语义变化则应核对 `pkg/planner/core/fts_resolve_index_test.go`。
 
 兼容风险主要是错误分类和 Go/Rust 行为漂移；性能风险主要来自对深层表达式的递归遍历和成功路径上的字符串复制。若做性能优化，应保留当前短路顺序和借用列的生命周期约束。
-
-## 验证依据
-
-- 目标实现：`pkg/expression/fts_helper.rs`。确认文件共 71 行，包含 `FTSInfo`、`ContainsFullTextSearchFn`、`InterpretFullTextSearchExpr`，无条件编译或隐藏实现。
-- crate 边界：`pkg/expression/Cargo.toml` 的包名为 `astersql-expression`、库入口为 `lib.rs`；`pkg/expression/lib.rs` 将文件声明为私有 `fts_helper_kernel`，未再导出其符号。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；精确查询定位了 Rust/Go 两套同名符号；文件节点显示 `used by 0 files`。`callers`/`callees` 命令在本地未在限定时间内返回，所以调用者结论另由仓库级精确搜索交叉验证，未把超时当作空结果。
-- 仓库搜索：`rg -w 'ContainsFullTextSearchFn|InterpretFullTextSearchExpr|FTSInfo'` 未发现目标 Rust 符号的外部使用；只见目标文件、Go 对照、Go 规划器调用，以及 Rust 规划器的独立同名私有结构。
-- Go 对照：`pkg/expression/fts_helper.go`，确认类型、递归短路、严格二参数形状及 `nil` 失败合同与 Rust 局部实现一致。
-- 应用主链证据：`pkg/planner/core/fts_resolve_index.go` 展示 Go helper 在 WHERE、ORDER BY、SELECT 和残留检查中的真实调用；`pkg/planner/core/fts_resolve_index.rs` 展示 Rust 当前使用局部字符串解释器的差异。
-- 测试证据：`pkg/planner/core/fts_resolve_index_test.go` 覆盖 Go 主链的匹配索引、嵌套/重复使用、查询词/列不匹配、参数标记和脏事务等边界；`pkg/planner/core/fts_resolve_index_test.rs` 覆盖 Rust 当前规划器实现，但两者都不是目标 Rust helper 的直接单元测试。同目录没有发现引用目标 Rust 符号的独立测试。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；最终只执行固定 11 章节的结构验证，并人工复核上述“为何存在、如何运行、如何安全扩展”三类信息。

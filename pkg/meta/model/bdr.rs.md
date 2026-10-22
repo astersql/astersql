@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`bdr.rs`](bdr.rs) 是 `pkg/meta/model` 的 BDR（Bidirectional Replication，双向复制）元数据定义文件，同时承载一个通用的 TSO 物理时间转换函数。它不是 DDL 拒绝策略本身，而是为策略提供“DDL 动作属于哪一安全类别”的静态事实表。
-
-编译边界并不直接由顶层 `pkg/meta/model/lib.rs` 声明：`pkg/meta/model/internal/group1/lib.rs` 以 `#[path = "../../bdr.rs"] mod bdr; pub use bdr::*;` 纳入本文件，形成 `astersql-meta-model-group1` 的公开 API；随后 `pkg/meta/model/lib.rs` 通过 `pub use ::group_1::*` 再导出为 `astersql-meta-model` 的根级 API。`pkg/meta/model/Cargo.toml` 只依赖四个内部 group crate；本文件实际使用的 `chrono` 依赖声明在 `pkg/meta/model/internal/group1/Cargo.toml`。
-
-本文件没有条件编译项、trait 或业务对象实例。生产代码由一个值类型、四个类别常量、两个进程级惰性映射和一个纯转换函数组成。
+[`bdr.rs`](bdr.rs) 是 `pkg/meta/model` 的 BDR（Bidirectional Replication，双向复制）元数据定义文件，同时承载一个通用的 TSO 物理时间转换函数。
 
 ## 核心职责
 
@@ -85,12 +81,7 @@ RustCodeGraph 的文件节点确认 `bdr.rs` 被 `pkg/ddl/persistent_actions.rs`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/model/bdr.go`，测试对照为 `pkg/meta/model/bdr_test.go`。
-
-- Go 的 `type DDLBDRType string` 对应 Rust 的静态字符串新类型 `DDLBDRType(&'static str)`；四个常量的字面值一致。
-- 两边的四组动作内容与类别语义一致，Rust 当前为 23/57/9/1，共 90 项。
 - Go 先创建空 `ActionBDRMap`，再在包 `init()` 中遍历 `BDRActionMap` 填充；Rust 用两个 `LazyLock`，在首次访问反向表时惰性派生，避免可变全局初始化。
-- Go 重复键赋值和 Rust `collect::<HashMap<_, _>>()` 都会以后写值覆盖先写值，因此两边都依赖测试检测重复分类。
 - Go `time.UnixMilli(int64(ts >> 18))` 对应 Rust `DateTime::from_timestamp_millis((ts >> 18) as i64)`；两边都忽略 18 个逻辑位。Rust 明确返回 `DateTime<Utc>`，Go 返回 `time.Time`。
 - Go 注释对 `SafeDDL` 的定义是 Primary 可执行，对 `UnmanagementDDL` 的定义是 CDC 不同步；Rust 源码的概括性注释不是最终准入规则，完整角色行为应以 `pkg/ddl/bdr/bdr.rs::IsDenied` 及其 Go 对照为准。
 
@@ -105,13 +96,3 @@ RustCodeGraph 的文件节点确认 `bdr.rs` 被 `pkg/ddl/persistent_actions.rs`
 5. 若修改 TSO 位布局或返回类型，同步检查 `TableInfo::GetUpdateTime`、DDL/存储迁移状态调用者及 `pkg/meta/model/bdr_1_aster_unit_test.rs` 的毫秒转换断言。
 
 兼容风险主要是动作误分类导致 Primary/Secondary 错误放行或拒绝，以及字符串标签变化破坏比较语义。性能风险较低：两张表只初始化一次，查询为哈希查找；若动作集合显著扩大，应仍避免在热路径重复构造分类表。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/meta/model/bdr.rs --offset 1 --limit 260` 读取了目标文件全部 169 行；文件节点列出其直接使用文件。对 `DDLBDRType`、`BDRActionMap`、`ActionBDRMap`、`TSConvert2Time` 执行了查询；精确 `callers/callees` 因 Go/Rust 同名解析超时，调用边改由限定路径的 `rg` 结果交叉核验。
-- 源码与装配：`pkg/meta/model/bdr.rs`、`pkg/meta/model/internal/group1/lib.rs`、`pkg/meta/model/internal/group1/Cargo.toml`、`pkg/meta/model/lib.rs`、`pkg/meta/model/Cargo.toml`。
-- Rust 调用者：`pkg/ddl/bdr/bdr.rs`、`pkg/ddl/bdr/lib.rs`、`pkg/meta/model/table.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/storage_class_transition.rs`。
-- Rust 独立测试：`pkg/meta/model/bdr_test.rs` 验证动作全集长度、正反映射可逆及物化视图动作分类；`pkg/meta/model/bdr_1_aster_unit_test.rs` 另行抽查四类代表动作和 TSO 毫秒转换；`pkg/meta/model/table_test.rs` 验证表更新时间委托关系。
-- Go 对照：`pkg/meta/model/bdr.go` 与 `pkg/meta/model/bdr_test.go`；直接消费分类的 Go 行为可在 `pkg/ddl/bdr/bdr.go` 核验。
-- 人工复核：逐项统计 `BDRActionMap` 得到 90 项且未发现重复名称；文档区分了静态分类、调用者准入策略和独立的 TSO 转换职责，没有将未登记动作描述成已显式分类。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并检查只新增本说明、删除完成后的编号任务文件，未改动 Rust、Go、Cargo 或 `plan.md`。

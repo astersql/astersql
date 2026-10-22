@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-infosync` crate，crate 入口 `pkg/domain/infosync/lib.rs` 通过 `mod label_manager` 装入模块并公开重导出其符号。它位于 Domain 的信息同步层，在上层 `InfoSyncer` 与下层 PD Region Label HTTP API 之间提供可替换的规则管理边界；没有 PD HTTP 客户端时，同一边界由内存实现支撑测试和 mock-storage 路径。crate 的归属、入口和依赖分别见 `pkg/domain/infosync/Cargo.toml` 与 `pkg/domain/infosync/lib.rs:16-31`。
-
-这里管理的是 `ddl_label` crate 导出的 `label::Rule`，批量更新载体 `LabelRulePatch` 和 HTTP 抽象 `PdHttpClient` 则定义在 `pkg/domain/infosync/types.rs:102-159,200-209`。本文件不负责生成规则内容、初始化全局单例或实现真实网络传输。
+位于 Domain 的信息同步层，在上层 `InfoSyncer` 与下层 PD Region Label HTTP API 之间提供可替换的规则管理边界；没有 PD HTTP 客户端时，同一边界由内存实现支撑测试和 mock-storage 路径。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ mock 使用 `std::sync::RwLock`：单条写入和整个补丁持有独占写锁�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/domain/infosync/label_manager.go`。两版均定义四方法 `LabelRuleManager`、PD 与内存实现、删后设的补丁顺序、JSON 快照存储、按 ID 忽略缺失规则，以及 `keyspace/<id>/` 前缀过滤。Rust 独立测试 `label_manager_test.rs:12-45` 对齐 Go 测试 `label_manager_test.go:27-46` 的核心两条路径：关闭感知返回全部规则，开启且 ID 为 42 时只返回对应规则。
+Rust 独立测试 `label_manager_test.rs:12-45` 对齐 Go 测试 `label_manager_test.go:27-46` 的核心两条路径：关闭感知返回全部规则，开启且 ID 为 42 时只返回对应规则。
 
 已验证的移植差异如下：
 
@@ -90,12 +88,3 @@ mock 使用 `std::sync::RwLock`：单条写入和整个补丁持有独占写锁�
 修改过滤规则时，重点覆盖关闭感知、`None`/0 keyspace、相邻数字前缀、格式错误 ID、输入顺序，以及 classic/non-classic 语义由谁决定。若要改变 mock 的更新原子性，应避免序列化到一半才失败，可先在锁外完成全部序列化，再一次持锁提交；这会改变错误时可见状态，需要新增回归测试并核对 Go 行为。
 
 扩展并发或异步支持时要保留 `Send + Sync` 边界，并明确 context/取消、超时和重试由哪一层负责。性能风险主要在全量规则读取和 JSON 反序列化仍发生在读锁内，以及全量 PD 拉取后才做本地 keyspace 过滤；改变为服务端过滤前必须确认 PD API 与多租户兼容性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；索引中 `pkg/domain/infosync/label_manager.rs` 为 139 行、18 个符号。
-- RustCodeGraph 文件/符号查询：读取 `label_manager.rs:1-139`，查询到 Rust `LabelRuleManager`、三个 `UpdateLabelRules` 和三个 `GetAllLabelRules` 定义；探索结果确认 trait 到 PD/mock 实现的分派边、两个 `GetAllLabelRules` 实现到 `filterRulesByKeyspace` 的边，以及 `info.rs`/`create_table_resources.rs::update_labels` 的上游使用。
-- 已读 Rust 路径：`pkg/domain/infosync/label_manager.rs`、`lib.rs`、`info.rs:1-225,600-629`、`types.rs:1-220`、`label_manager_test.rs`、`pkg/session/runtime/create_table_resources.rs:500-618`。
-- 已读配置与 Go 对照：`pkg/domain/infosync/Cargo.toml`、`label_manager.go`、`label_manager_test.go`。`pkg/domain` 下未找到适用的 `doc.go`。
-- 独立测试现有覆盖仅直接验证 keyspace 过滤两条路径；本任务是纯文档分析，按计划不运行 Cargo，未声称运行期测试结果。
-- 交付结构以任务指定命令验证，要求目标文件存在且恰有本文的十一个固定二级标题；人工复核同时检查了文件存在理由、真实/模拟执行链、边界、Go 差异和安全扩展入口。

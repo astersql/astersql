@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-cteutil` crate，是 CTE（公共表表达式）中间结果的临时存储层实现。crate 入口 [`lib.rs`](./lib.rs) 将本模块声明为私有 `mod storage`，再公开导出全部符号；[`Cargo.toml`](./Cargo.toml) 通过 `package.metadata.porting.go-package = "pkg/util/cteutil"` 标明其 Go 对照包。根 crate 还在 `pkg/lib.rs` 的 `util::cteutil` facade 中再次导出该 crate。
-
-在 Rust 执行器侧，`pkg/executor/cte_table_reader.rs` 直接依赖这里的 `Storage` trait：`CTETableReaderExec::Next` 读取 `GetIter`、`NumChunks` 和 `GetChunk`，在递归轮次变化时从第 0 个 chunk 重新扫描，并复制列数据以免上层修改共享结果。`pkg/executor/cte.rs` 的主 CTE 流程则通过通用的 `CTEBackend::Storage` 及 `storage_*` 方法抽象存储操作；当前代码搜索没有找到该生产抽象直接调用 `NewStorageRowContainer` 的 Rust 接线，因此不能据此断言 `StorageRC` 已经是 `CTEBackend` 的生产实现。构造函数的明确 Rust 调用者目前位于本 crate 的独立测试。
+`Storage` 定义一次填充、多读者消费的 CTE 临时表契约，包括引用计数生命周期、chunk/row 访问、完成与错误状态、迭代轮次，以及内存/磁盘统计和 spill 动作。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ Rust 方法签名仍要求 `&mut self` 才能执行 `Add`、状态设置、打�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项复刻 [`storage.go`](./storage.go) 的 `Storage`、`StorageRC` 和构造/生命周期/读写/tracker API。字段含义、首次打开、引用计数递增与归零清理、空 chunk no-op、只交换数据与 schema、`Reopen` 新建容器以及错误文本均保持一致。[`storage_test.rs`](./storage_test.rs) 对应 [`storage_test.go`](./storage_test.go) 的六组场景：基础生命周期、多次打开关闭、Add/GetChunk、spill、重复 Reopen 和 SwapData。
-
 主要语言适配差异如下：
 
 - Go 构造器返回 `*StorageRC`，Rust 返回拥有所有权的 `StorageRC`；Go 字段类型是指针切片，Rust 使用值类型 `Vec<FieldType>`。
@@ -102,12 +98,3 @@ Rust 文件逐项复刻 [`storage.go`](./storage.go) 的 `Storage`、`StorageRC`
 - 引入新的 `Storage` 实现时，当前 `SwapData` 会拒绝与 `StorageRC` 互换。若需要异构交换，应显式设计兼容协议，不能绕过类型检查；同时评估 `as_any_mut` 暴露的对象安全边界。
 - 若要把 `StorageRC` 接入 `pkg/executor/cte.rs::CTEBackend`，应在 executor 的具体 backend 中逐项实现 `storage_*` 适配，并验证线程共享方式；当前仅存在抽象边界，不能用测试构造调用代替生产接线证据。
 - 兼容性风险集中在现有错误文本、`SwapData` 不交换元数据、`Reopen` 保持引用计数、无效状态下部分 API panic 等既有约定；修改时应与 Go 文件和两组独立 Rust 测试一起审查。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点，目标目录的 `storage.rs` 含 57 个符号；`node --file pkg/util/cteutil/storage.rs` 读取了完整 346 行源码；精确 `query NewStorageRowContainer --json` 和 `query StorageRC --json` 同时定位 Go/Rust 定义；qualified callers/callees 未返回边，故没有据此虚构调用关系。
-- 生产源码：[`storage.rs`](./storage.rs)（`Storage`、`StorageMutex`、`StorageRC` 及全部实现），`pkg/executor/cte_table_reader.rs`（直接 trait 消费者），`pkg/executor/cte.rs`（`CTEBackend` 抽象与 CTE 主流程），`pkg/executor/builder.rs`（CTE 存储/读取器构建边界）。
-- crate/装配：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、`pkg/executor/Cargo.toml`、根 `Cargo.toml` 和 `pkg/lib.rs`。
-- Go 对照：[`storage.go`](./storage.go) 与 [`storage_test.go`](./storage_test.go)。
-- Rust 独立测试：[`storage_test.rs`](./storage_test.rs) 和 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)，覆盖引用计数、chunk/row 读写、空块、状态复位、数据交换、spill 与显式互斥。
-- 精确文本搜索确认：Rust 生产代码中 `Storage` 的直接使用位于 `pkg/executor/cte_table_reader.rs`；`NewStorageRowContainer` 的明确 Rust 调用目前仅见于上述独立测试。任务为纯文档分析，按计划未运行 Cargo。

@@ -2,17 +2,7 @@
 
 ## 文件定位
 
-本文件定义 Rust 物理计划层的索引扫描叶子算子 `PhysicalIndexScan`。它位于
-`astersql-planner-core-operator-physicalop` crate；`Cargo.toml` 将 crate 根指定为
-`lib.rs`，后者通过 `mod physical_index_scan` 装配并以
-`pub use physical_index_scan::*` 对外导出。`direct_operator_core!(PhysicalIndexScan,
-PhysicalSchemaProducer)` 又为该类型接入统一的物理算子/计划接口，因此它能作为
-`Box<dyn PhysicalPlan>` 出现在 reader 的子计划中。
-
-在完整链路中，它承接逻辑索引扫描或访问路径选择的结果，保存表、索引、范围、输出
-Schema 和顺序属性；随后由 `PhysicalIndexReader`、`PhysicalIndexLookUpReader` 或
-Index Merge 计划包裹。执行侧读取这些元数据生成 KV 索引范围或 `tipb::IndexScan`。
-它描述“扫描什么、按什么范围和顺序扫描”，自身不执行 KV I/O。
+执行侧读取这些元数据生成 KV 索引范围或 `tipb::IndexScan`。
 
 ## 核心职责
 
@@ -171,9 +161,7 @@ Index Merge 计划包裹。执行侧读取这些元数据生成 KV 索引范围�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `physical_index_scan.go`。Rust 已对应的主干包括结构体核心字段、
-克隆、相关列提取、Schema 初始化、访问对象/EXPLAIN、全范围判定、point-get 判定、PB
-编码和两个代价版本的入口。独立 Rust 测试特别锁定了 Go 语义：空范围展示、只从访问
+独立 Rust 测试特别锁定了 Go 语义：空范围展示、只从访问
 条件提取相关列、别名/分区/隐藏索引列展示、PB 列元数据、预建索引列保持以及 common
 handle 后缀布局。
 
@@ -217,25 +205,3 @@ handle 后缀布局。
   `pkg/planner/core/integration_test.rs` 中验证。
 - 性能风险主要在范围数量、表达式重复克隆、缓存重建和 Schema 列膨胀；兼容风险主要在
   EXPLAIN 字符串、PB 列顺序/唯一标志、common handle 偏移及 Go/Rust 计划行为差异。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；
-  `node --file ...physical_index_scan.rs` 读取了完整 674 行源码，并报告该文件被 16 个
-  文件使用。对精确符号执行的 `query/callers/callees` 未返回可用 Rust 调用边，因此按
-  技能规则用 `rg` 补查具体引用。
-- 源码事实：`physical_index_scan.rs` 中的 `PhysicalIndexScan`、`InitSchema`、
-  `build_ranges_with_quota`、`ToPB`、三个构造/转换函数；`lib.rs` 中的模块导出、
-  `direct_operator_core!` 与 cache contract。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml` 的 `[package]`、`[lib]`、
-  `[dependencies]` 和 `package.metadata.porting`。
-- 上下游证据：`implementation_rules.rs::ImplIndexScan::OnImplement`、
-  `base_physical_plan.rs` 的逻辑索引扫描物理化路径、`physical_index_reader.rs`、
-  `pkg/session/runtime/planning.rs`、`typed_adapter_bridge.rs`、
-  `pkg/executor/builder.rs`、`cache_snapshot.rs::CachedIndexScan`。
-- Go 对照：完整读取同目录 `physical_index_scan.go` 的 757 行，逐项核对结构体、Schema、
-  EXPLAIN、全局索引、PB、代价与构造/partial conversion 行为。
-- 测试依据：完整读取同目录独立测试 `physical_index_scan_test.rs` 的 298 行；另由引用搜索
-  确认 `pkg/planner/core/integration_test.rs` 覆盖缓存范围字符串和 IndexScan 计划集成。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定命令验证目标文件存在且恰有
-  11 个固定二级章节，并人工复核没有把 Go 独有逻辑或 Rust 占位函数写成已支持能力。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cmd/importer/data.rs` 属于 Cargo 包 `astersql-cmd-importer`，由 `cmd/importer/lib.rs` 以 `pub mod data` 装入 importer 的库目标和二进制目标。它位于“列定义已经解析、INSERT 字面量尚未生成”之间：`cmd/importer/parser.rs::parseTable` 为每一列创建一个 `Arc<datum>`，`cmd/importer/parser.rs::column::parseRule` 再把列注释中的 `step`、`repeats` 和 `probability` 写入该对象；`cmd/importer/db.rs::genColumnData` 根据列类型和本轮是否走 incremental 分支，调用这里的顺序值或随机值原语。
-
-本文件不是进程入口，也不解析 DDL、不拼接 SQL、不执行导入任务。进程装配发生在 `cmd/importer/main.rs::run_with_args`，列到 SQL 字面量的分派发生在 `cmd/importer/db.rs::genColumnData`。Cargo 清单把该包标为 `kind = "binary"`，但具体代码通过 `lib.rs` 共享给 `bin_main.rs` 和独立测试；直接外部依赖只有 `toml`、`serde_json`，本文件自身只使用标准库 `Mutex` 和本 crate 的 `stubs`。
+一个重要的当前实现事实是：`step` 可由规则配置且会被读取，但本文件及 `cmd/importer` 其他 Rust/Go 生产代码都没有推进 `intValue` 的赋值。
 
 ## 核心职责
 
@@ -88,9 +86,7 @@ RustCodeGraph 的文件节点报告 `cmd/importer/data.rs` 被 20 个索引文�
 
 ## 与 Go 版本的对应关系
 
-`datum`、`newDatum`、`setInitInt64Value`、`updateRemains`、五个 `next*` 方法逐项对应 `cmd/importer/data.go`。Rust 的 `DatumInner + Mutex` 对应 Go 结构体内嵌的 `sync.Mutex`；默认 `step/repeats/remains/probability` 相同；首次范围初始化、负步长中点、闭区间钳制、时间值缓存、格式字符串和 remains 消费顺序均按 Go 结构保留。
-
-`alphabet`、三个 `letterIdx*` 常量、`randInt`、`randInt64`、`randString` 实际对应 `cmd/importer/rand.go`，而不是 `data.go`。迁移时把通用随机原语收到了 Rust `data.rs`，再由 Rust `rand.rs` 导入或再导出；职责位置不同但生产调用意图一致。
+迁移时把通用随机原语收到了 Rust `data.rs`，再由 Rust `rand.rs` 导入或再导出；职责位置不同但生产调用意图一致。
 
 已核对的差异和迁移限制包括：
 
@@ -101,7 +97,7 @@ RustCodeGraph 的文件节点报告 `cmd/importer/data.rs` 被 20 个索引文�
 - `randString(n < 0)` 和 `updateRemains(remains == 0)` 的异常边界与 Go 不完全相同，不能据此宣称逐个非法输入均 parity。
 - 两个版本当前都只在本模块初始化或钳制 `intValue`，没有按 `step` 推进它；这属于共同的当前实现事实，而非 Rust 独有简化。
 
-Go 目录没有独立的 `data_test.go`。直接 Go 测试证据主要来自同目录生产调用与 `db_test.go` 的相邻生成逻辑；Rust 则有 `data_test.rs` 的溢出回归，以及 `parity_test.rs::contract_boundary` 对默认值、随机字符串长度和闭区间随机值的契约检查。
+直接 Go 测试证据主要来自同目录生产调用与 `db_test.go` 的相邻生成逻辑；Rust 则有 `data_test.rs` 的溢出回归，以及 `parity_test.rs::contract_boundary` 对默认值、随机字符串长度和闭区间随机值的契约检查。
 
 ## 扩展指南
 
@@ -114,17 +110,3 @@ Go 目录没有独立的 `data_test.go`。直接 Go 测试证据主要来自同�
 若改变时间行为，需要同时核对四个 `next*` 方法和 `stubs.rs::CivilTime`，决定仍共享一次采样还是每次读取时钟，并为时区、闰日与格式补独立测试。若只是新增 SQL 类型分支，类型选择应接在 `db.rs::genColumnData`，不要把 SQL 引号或类型判断塞入本文件。
 
 任何修改都应继续把 Rust 生产逻辑和测试逻辑分文件保存，保留现有 PingCAP Apache License；修复后的 Rust 源文件应保留顶部 `// Copyright 2026 AsterSQL.`。本次任务只创建说明文档，不修改上述代码。
-
-## 验证依据
-
-事实核验读取了以下文件：
-
-- 目标实现：`cmd/importer/data.rs`。
-- crate 与模块边界：`cmd/importer/Cargo.toml`、`cmd/importer/lib.rs`、`cmd/importer/main.rs`。
-- 直接 Rust 上下游：`cmd/importer/parser.rs`、`cmd/importer/db.rs`、`cmd/importer/rand.rs`、`cmd/importer/stats.rs`、`cmd/importer/stubs.rs`。
-- Rust 测试：`cmd/importer/data_test.rs`、`cmd/importer/rand_test.rs`、`cmd/importer/parity_test.rs`。
-- Go 对照：`cmd/importer/data.go`、`cmd/importer/rand.go`、`cmd/importer/parser.go`、`cmd/importer/db.go`、`cmd/importer/stats.go`；同目录未发现 `data_test.go`。
-
-RustCodeGraph 在索引状态中报告 7,032 个 Rust 文件、索引包含 `cmd/importer/data.rs` 的 30 个符号；执行过文件列表、目标文件 node、`newDatum`/`nextInt64`/`nextTime`/`randInt`/`randInt64`/`randString` 的 callers/callees 查询。有效图证据包括目标文件被 20 个索引文件使用、`newDatum` 实例化 `datum` 和 `DatumInner`、`randString` 引用三个位缓存常量；camelCase Rust 方法的 callers 未被图完整恢复，调用点另用 `rg` 在上述直接上下游文件中核实。
-
-结构验收使用任务指定命令，要求文件存在且恰有 11 个固定二级标题。本任务是纯文档分析，按计划未运行 Cargo、Rust 单元测试或 Go 测试；因此这里验证的是文档结构和源码可追溯性，不是重新执行运行时行为。

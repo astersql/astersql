@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-parser-format` 的核心实现。`pkg/parser/format/Cargo.toml` 指定库入口为 `lib.rs`，没有声明第三方依赖；`pkg/parser/format/lib.rs` 通过 `pub mod format` 加载本文件，并用 `pub use format::*` 把公开项再导出到 crate 根。该 crate 位于 parser 基础层，为 AST（抽象语法树）及其消费者提供“把结构重新写成 SQL 文本”的共享上下文，同时提供带 `%i`/`%u` 层级命令的文本格式化器。
-
-它不是 SQL 解析器，也不遍历具体 AST。具体节点负责调用 `RestoreCtx` 的写入方法；本文件只保存恢复策略、表达式父子上下文和 CTE 名称作用域，并把最终字节交给调用方提供的 `std::io::Write`。已接线的 Rust 上游包括 `pkg/parser/types/field_type.rs`、`pkg/parser/test_driver/test_driver.rs`、`pkg/types/parser_driver/value_expr.rs`、`pkg/util/ranger/ranger.rs` 和 `dumpling/export/schema_projection_restore.rs`；这些调用点分别用于类型、值表达式、范围条件或 schema SQL 的恢复。
+具体节点负责调用 `RestoreCtx` 的写入方法；本文件只保存恢复策略、表达式父子上下文和 CTE 名称作用域，并把最终字节交给调用方提供的 `std::io::Write`。
 
 ## 核心职责
 
@@ -82,13 +80,9 @@ CTE 清理闭包拥有捕获的长度而不借用 restorer，便于作用域内�
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/parser/format/format.go`。Rust 的 `Formatter`、`IndentFormatterState`、`FlatFormatterState`、`RestoreFlags`、`RestoreCtx` 和 `CTERestorer` 分别对应 Go 的 `Formatter`、`indentFormatter`、`flatFormatter`、同名位集、同名上下文和嵌入式 CTE 状态。四态状态机、bit 0..20 的顺序、默认标志、冲突优先级、特殊注释形状和 CTE 栈截断顺序均保持一致。
-
 语言适配包括：Go 的 `...any` 在 Rust 中收窄为 `&[&dyn Display]`；Go 的 `io.Writer + io.StringWriter` 由带默认 `write_string` 的 `RestoreWriter` blanket impl 代替；Go 的指针上下文变成带 writer 生命周期的值类型；Go 的无参 CTE 恢复闭包在 Rust 中显式接收 `&mut CTERestorer`，以免长期可变借用阻止作用域内追加名称。Rust 的写入 API返回 `io::Result`，而 Go 的若干 `Write*` 方法忽略 writer 返回值；这使 Rust 可以传播多数写入错误，但仍保留部分输出。
 
-最重要的实现差异是 Go 最终调用标准库 `fmt.Fprintf`，Rust 调用本文件的 `render_printf_shape`。现有测试固定了 `%d`、`%%`、`%03d`、常用宽度/精度和显式索引等已实现形状，但不能据此宣称与 Go 格式化系统完全等价。另一个小差异是 Go 在 CTE 旧长度为零时把切片恢复为 `nil`，Rust `Vec::truncate(0)` 得到空向量；对 `IsCTETableName` 和后续追加的可见行为等价，但内存表示并不相同。
-
-`pkg/parser/format/format_test.go` 的 `TestFormat`、`TestRestoreCtx`、`TestRestoreSpecialComment` 在 Rust 的 `format_test.rs` 中有直接语义对照；`migration_aster_unit_test.rs` 另外覆盖跨调用状态、UTF-8/零填充、`OutputFormat`、writer 中途失败和 CTE 作用域。
+最重要的实现差异是 Go 最终调用标准库 `fmt.Fprintf`，Rust 调用本文件的 `render_printf_shape`。另一个小差异是 Go 在 CTE 旧长度为零时把切片恢复为 `nil`，Rust `Vec::truncate(0)` 得到空向量；对 `IsCTETableName` 和后续追加的可见行为等价，但内存表示并不相同。
 
 ## 扩展指南
 
@@ -99,12 +93,3 @@ CTE 清理闭包拥有捕获的长度而不借用 restorer，便于作用域内�
 - 修改特殊注释时保持“未启用时只执行正文”“feature id 可空”“正文错误不补尾部”的控制流，并同步 `format_test.rs::test_restore_special_comment` 和 `migration_aster_unit_test.rs::special_comments_propagate_errors_and_keep_go_partial_output`。
 - 扩展 CTE 作用域时优先围绕 `RecordCTEName`/`RestoreCTEFunc` 建立成对操作，明确名称是否已规范化；若改用哈希集合以优化查找，仍需保存嵌套作用域的插入顺序或等价回滚信息。
 - 若希望所有恢复写入严格完整，应先设计 `RestoreWriter::write_string` 的 `write_all` 兼容迁移并增加短写回归测试；这是行为变化，不能仅作为文档或内部重构悄然修改。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/parser/format` 确认目标 Rust/Go 源、两个 Rust 测试、Go 测试和 crate 入口均在索引中。
-- 完整源码核验：`rustcodegraph node --file pkg/parser/format/format.rs --offset 1 --limit 420` 与 `--offset 421 --limit 380` 覆盖全部 736 行，确认四态状态机、渲染器、21 个标志位、上下文写入和 CTE 生命周期。
-- 装配与调用证据：读取 `pkg/parser/format/Cargo.toml` 和 RustCodeGraph 中的 `pkg/parser/format/lib.rs`；代码搜索核对了 `pkg/parser/types/field_type.rs`、`pkg/parser/test_driver/test_driver.rs`、`pkg/types/parser_driver/value_expr.rs`、`pkg/util/ranger/ranger.rs`、`dumpling/export/schema_projection_restore.rs` 的直接调用，以及相关 Cargo 路径依赖/再导出。
-- Go 对照：RustCodeGraph 完整读取 `pkg/parser/format/format.go`（531 行）和 `format_test.go`（109 行），核对状态转换、公开 API、位序、优先级、特殊注释错误路径与 CTE 回滚行为。
-- Rust 测试：完整读取 `pkg/parser/format/format_test.rs`（248 行）和 `migration_aster_unit_test.rs`（219 行）；现有用例覆盖缩进/扁平输出、无错误短写、15 组恢复标志、特殊注释成功及错误身份、跨调用状态、UTF-8/宽度、固定字符转义和 CTE 截断。
-- 最近目录没有 `doc.go`，因此没有额外的包级 Go 契约可读。本任务是纯文档分析，按计划未运行 Cargo；交付验证使用任务指定的 11 章节结构检查，并人工复核重要结论均指向上述符号、调用点或对照测试。

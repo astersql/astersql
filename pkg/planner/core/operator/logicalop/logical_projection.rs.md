@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现逻辑计划树中的投影算子 `LogicalProjection`。投影位于 SQL 逻辑优化阶段，表示 SELECT 列表或优化器为计算派生表达式而插入的中间层：它从唯一子节点取得行，以 `Exprs` 逐项计算输出，并用自身 `Schema` 描述计算结果。源码入口是 [`LogicalProjection`](logical_projection.rs)；crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 以 `mod logical_projection` 装配模块，并通过 `pub use logical_projection::*` 将公共 API 暴露给 planner、规则和物理算子层。
-
-本模块属于 Cargo 包 `astersql-planner-core-operator-logicalop`（`pkg/planner/core/operator/logicalop/Cargo.toml`）。与本文件直接相关的包依赖包括表达式层 `expression`、逻辑计划基础层 `base`、函数依赖 `fd`、物理属性 `property`、计划编码 `plancodec`、规划器工具 `planner_util`、AST 常量 `parser_ast` 和整数集合 `intset`。它不是执行器：实际投影执行由后续物理化产生的 `PhysicalProjection` 承担。
+用 `Init` 建立类型为 `plancodec::TypeProj` 的基础逻辑计划，用 `ExplainInfo` 和 `HashCode` 提供可解释文本及结构哈希。
 
 ## 核心职责
 
@@ -113,7 +111,7 @@ RustCodeGraph 的精确 `callers` / `callees` 查询未为 `SubstituteProjection
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_projection.go`。Rust 保留了 Go 的主体类型、字段和大部分同名方法，尤其是哈希编码、变量副作用屏障、纯列键映射、常量谓词上拉、列组 NDV、FD 抽取、排序属性转换、宽松消除和表达式注入。以下差异是当前源码事实：
+Rust 保留了 Go 的主体类型、字段和大部分同名方法，尤其是哈希编码、变量副作用屏障、纯列键映射、常量谓词上拉、列组 NDV、FD 抽取、排序属性转换、宽松消除和表达式注入。以下差异是当前源码事实：
 
 - Go `ExplainInfo` 使用 schema 与日志脱敏设置生成说明；Rust 逐表达式调用 `StringWithCtx`，未在本方法中读取 `EnableRedactLog` 或 schema。
 - Go `PruneColumns` 在 schema 被完全裁空时可直接返回孩子；Rust 除 Dual 保底列外保留 Projection 节点，并额外用 `projection_lineage_is_used` 兼顾聚合 `firstrow` 血缘。
@@ -123,7 +121,7 @@ RustCodeGraph 的精确 `callers` / `callees` 查询未为 `SubstituteProjection
 - Go `AppendExpr` 复制 coercibility、repertoire，并清理 JSON 类型的 `ParseToJSONFlag`；Rust 当前只设置返回类型和 UniqueID。这是字符串排序规则、字符 repertoire 与 JSON 类型兼容的显式迁移风险。
 - Go `buildSchemaByExprs` 为非列表达式分配新的占位列；Rust 复用相同位置的已有输出列，缺位时用默认列。Rust 调用该方法前必须保证输出 schema 已正确建立。
 
-Go 测试 `pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.go::TestLogicalProjectionPushDownTopN` 从 SQL EXPLAIN 验证 TopN/Projection 的计划形态；Rust 同名测试验证排序输出列映射回输入列，但覆盖面小于 Go 的端到端场景。因此本文只把已读 Rust 实现和测试覆盖的行为标为已验证。
+Go 测试 `pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.go::TestLogicalProjectionPushDownTopN` 从 SQL EXPLAIN 验证 TopN/Projection 的计划形态；Rust 同名测试验证排序输出列映射回输入列，但覆盖面小于 Go 的端到端场景。
 
 ## 扩展指南
 
@@ -136,20 +134,3 @@ Go 测试 `pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_t
 - MPP 属性变换必须保留“计算键在投影后才存在”的顺序；相关测试是 `logical_relational_aster_unit_test.rs::projection_keeps_mpp_hash_property_candidate_for_computed_output`。
 - 测试必须继续放在独立文件。最邻近文件是 `logical_projection_test.rs`；跨算子行为目前还在 `logical_relational_aster_unit_test.rs`、`logical_d_aster_unit_test.rs` 和独立 crate 测试 `logicalop_test/logical_operator_test.rs`。不要把测试内嵌回生产源文件。
 - 兼容性风险集中在谓词/TopN 重排的语义安全、类型与排序规则元数据、统计估值差异；性能风险主要是递归表达式克隆、重复列提取和 FD 哈希登记。更改前后应以目标规则的独立测试和 Go 对照用例验证。
-
-## 验证依据
-
-本说明基于以下直接证据完成：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust 文件完整索引为 882 行，并显示被 15 个文件使用。
-- RustCodeGraph 文件/符号读取：`logical_projection.rs::LogicalProjection`、`SubstituteProjectionExpr`、`InjectExpr`，以及目标文件全部实现；精确自由函数 `callers` / `callees` 未返回边，已在“依赖与调用关系”说明限制。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml` 和 `pkg/planner/core/operator/logicalop/lib.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_projection.go` 全文，以及 `pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.go::TestLogicalProjectionPushDownTopN`。
-- Rust 独立测试：
-  - `pkg/planner/core/operator/logicalop/logical_projection_test.rs::projection_rewrites_pulled_predicate_to_output_column`；
-  - `pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.rs::{TestReplaceColumnOfExprCopyOnWrite, TestResolveExprAndReplaceCopyOnWrite, TestLogicalProjectionPushDownTopN}`；
-  - `pkg/planner/core/operator/logicalop/logical_relational_aster_unit_test.rs::{projection_trait_derives_output_column_statistics, projection_keeps_mpp_hash_property_candidate_for_computed_output}`；
-  - `pkg/planner/core/operator/logicalop/logical_d_aster_unit_test.rs::projection_elimination_requires_only_direct_columns`。
-- 生产调用点：`pkg/planner/cascades/old/implementation_rules.rs::ImplProjection::OnImplement`、`pkg/planner/core/operator/physicalop/physical_projection.rs::ExhaustPhysicalPlans4LogicalProjection`、`pkg/planner/core/optimizer_runtime.rs` 中的 `SubstituteProjectionExpr` 调用，以及 `logical_selection.rs` 对 `breakDownPredicates` 的调用。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文恰有且仅有上述十一个固定二级标题；运行结果和退出码在任务交付时记录。

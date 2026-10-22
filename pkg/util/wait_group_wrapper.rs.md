@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util` crate（`pkg/util/Cargo.toml`），并由 `pkg/util/lib.rs` 以 `pub mod wait_group_wrapper` 公开。它把 Go `pkg/util/wait_group_wrapper.go` 中围绕 `sync.WaitGroup`、goroutine 池和 `errgroup.Group` 的辅助能力移植为 Rust 线程同步组件：调用者提交一次性闭包，包装器负责计数、等待、panic 恢复、后台任务标签追踪或错误汇总。
-
-它是通用并发基础设施，不负责 SQL、存储或调度业务本身。当前可确认的生产接线包括：`pkg/resourcemanager/rm.rs` 用 `WaitGroupWrapper` 管理资源调度循环的启动和停止；`br/pkg/metautil/statsfile.rs` 用它等待并发统计文件下载；`pkg/util/worker_pool.rs` 把池化 worker 任务提交给 `ErrorGroupWithRecover`。`pkg/statistics/handle/types/interfaces.rs` 还重新导出 `WaitGroupEnhancedWrapper`，供统计模块接口使用。
+`DoneGuard` 与 `EnhancedDoneGuard` 用 RAII 保证正常返回和线程展开路径都会减计数；增强守卫还负责注销标签。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@ RustCodeGraph 的文件级结果显示目标文件被 35 个已索引文件引�
 
 ## 与 Go 版本的对应关系
 
-Rust 的公开命名和职责直接对应 `pkg/util/wait_group_wrapper.go`：`WaitGroupWrapper`、`WaitGroupEnhancedWrapper`、`WaitGroupPool`、`ErrorGroupWithRecover` 及各 `New*`/`Run*`/`Wait` 入口均保留 Go 风格名称。Rust `WaitGroup` 用 `Mutex<usize> + Condvar` 替代 `sync.WaitGroup`；`thread::spawn` 替代 goroutine；`crossbeam_channel::Receiver<()>` 替代退出 channel；`threadpool::ThreadPool` 替代 `gp.Pool`；`CancellationToken` 替代 `context.Context`；内部结果 channel 和句柄列表实现 `errgroup.Group` 的等待语义。
-
-已核对的行为一致点包括：提交前加计数、退出时减计数；基础 `RunWithRecover` 在正常路径也调用回调并传空恢复值；增强恢复回调只在 panic 时调用；重复标签属于编程错误；退出后每两秒检查未注销任务；错误组把 panic 转成错误且按完成先后返回首错。`pkg/util/wait_group_wrapper_test.rs` 的并发计数、恢复回调、标签检查、日志恢复和首个完成错误测试对应 `pkg/util/wait_group_wrapper_test.go` 的原始意图。
+Rust `WaitGroup` 用 `Mutex<usize> + Condvar` 替代 `sync.WaitGroup`；`thread::spawn` 替代 goroutine；`crossbeam_channel::Receiver<()>` 替代退出 channel；`threadpool::ThreadPool` 替代 `gp.Pool`；`CancellationToken` 替代 `context.Context`；内部结果 channel 和句柄列表实现 `errgroup.Group` 的等待语义。
 
 需要注意的差异是：Go 日志包含恢复对象和栈，Rust 当前只输出消息或固定文案；Go `GetRecoverError` 的具体错误包装未被完整复制，Rust 使用 `panic_message + anyhow`；Rust 的增强标签插入在单次持锁内完成，避免了 Go `onStart` 先检查再二次加锁插入的窗口；Rust 基础 `Run` 的线程 panic 不会传播到 `Wait`；Rust 错误组显式 join 线程，而 Go `errgroup.Wait` 等待 goroutine 完成但没有句柄概念。这些差异在修改可观测日志、错误文本或兼容行为前必须先确认是否属于有意移植选择。
 
@@ -94,13 +90,3 @@ Rust 的公开命名和职责直接对应 `pkg/util/wait_group_wrapper.go`：`Wa
 - 为池化提交增加失败语义时，应让 `Run` 在提交失败时回滚计数或返回错误；需要同步验证饱和、关闭/拒绝提交和任务 panic 路径，并检查 `threadpool` 的真实保证。
 - 扩展错误组时应保持“首个完成错误 + 等待全部任务”的行为，分别测试普通 `Err`、字符串/非字符串 panic、多错误完成顺序、取消 token 和重复 `Wait`。若要增强 Go 兼容性，最可能修改 `panic_message`、`Go` 的日志/错误构造和 `NewErrorGroupWithRecoverWithCtx`。
 - 生产接线变更应回归直接消费者：资源管理器启停（`pkg/resourcemanager/rm.rs`）、BR 下载关闭顺序（`br/pkg/metautil/statsfile.rs`）、worker 回收与错误传播（`pkg/util/worker_pool.rs`）。并发基础设施的兼容风险主要是死锁、计数泄漏、错误选择顺序变化和日志/错误文本变化；性能风险主要是无界创建 OS 线程、两秒轮询以及无界结果 channel。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引包含 11,467 个文件；`query WaitGroupWrapper` 定位 Rust/Go 定义；`node wait_group_wrapper.rs::WaitGroupWrapper` 和 `node --file pkg/util/wait_group_wrapper.rs` 读取目标文件全部 445 行；文件级关系报告 35 个使用文件。精确方法级 callers/callees 未返回稳定边，已明确降级为索引文件片段与 `rg` 交叉验证。
-- 生产源码：`pkg/util/wait_group_wrapper.rs`（全部类型、函数、实现和无条件编译项）；该文件没有 feature 或 `cfg` 分支。
-- crate 边界：`pkg/util/Cargo.toml`（crate 名、lib 入口、依赖和测试 target）与 `pkg/util/lib.rs`（公开模块及独立测试挂载）。目标包下未找到 `pkg/util/doc.go`，因此没有可额外读取的包契约文件。
-- Go 对照：`pkg/util/wait_group_wrapper.go` 与 `pkg/util/wait_group_wrapper_test.go`。
-- Rust 测试：`pkg/util/wait_group_wrapper_test.rs`；补充证据 `pkg/util/security_2_aster_unit_test.rs` 覆盖基础/增强包装器和错误组生命周期。
-- 直接调用证据：`pkg/resourcemanager/rm.rs::{Start, Stop}`、`br/pkg/metautil/statsfile.rs::downloadStats`、`pkg/util/worker_pool.rs::{ApplyOnErrorGroup, ApplyWithIDInErrorGroup}`、`pkg/statistics/handle/types/interfaces.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核本文能回答文件存在原因、运行路径、并发不变量、边界和安全扩展位置。

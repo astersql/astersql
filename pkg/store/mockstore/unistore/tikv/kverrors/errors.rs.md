@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore-tikv-kverrors` crate 的业务实现，定义 UniStore mock TiKV 在 MVCC、事务和锁处理过程中使用的结构化错误。crate 入口 `pkg/store/mockstore/unistore/tikv/kverrors/lib.rs` 通过 `#[path = "errors.rs"] pub mod kverrors` 装载本文件，再用 `pub use kverrors::*` 将其公开；仓库根门面 `pkg/lib.rs` 也在 `store::mockstore::unistore::tikv::kverrors` 下再导出该 crate。
-
-crate 边界由 `pkg/store/mockstore/unistore/tikv/kverrors/Cargo.toml` 确定：直接依赖 `hex` 做键编码，依赖带固定 tag 的 `kvproto` 取得 `deadlockpb`/`kvrpcpb` 类型，并通过相邻 `mvcc` crate 取得 `mvcc::Lock`。它不负责检测冲突、操作存储或组装 RPC 响应，而是保存错误载荷并提供稳定的人类可读文本。
-
-当前 Rust 接线不是 Go 主链的完整复刻。可确认的生产调用是 `pkg/store/mockstore/unistore/tikv/dbreader/db_reader.rs::CheckWriteItemForRcCheckTSRead` 构造 `ErrConflict`；其他错误类型均已公开且有本 crate 的迁移单测，但仓库搜索未发现它们在 Rust MVCC/server 主路径中的有效生产构造。`pkg/store/mockstore/unistore/tikv/mvcc_test.rs` 内提到若干类型的内容目前是注释化迁移草稿，不能当作已接线测试。
+用 `BuildLockErr` 封装 `ErrLocked` 的构造，并用三个惰性全局值提供 Go 变量块对应的可重试错误。
 
 ## 核心职责
 
@@ -92,16 +88,10 @@ RustCodeGraph `files` 将 `errors.rs`、`errors.go`、`lib.rs`、`migration_aste
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/store/mockstore/unistore/tikv/kverrors/errors.go` 的类型、字段与 `Error()` 文案，`pkg/store/mockstore/unistore/tikv/kverrors/Cargo.toml` 的 `package.metadata.porting.go-package` 也明确指向该 Go 包。主要差异是语言适配，而不是业务语义删减：
+主要差异是语言适配，而不是业务语义删减：
 
 - Go 的 `*mvcc.Lock`/`*ErrLocked` 对应 Rust 的 `Box<mvcc::Lock>`/`Box<ErrLocked>`；Rust 因此没有 nil lock 状态。
-- Go 的字符串别名 `ErrRetryable` 对应 `Cow<'static, str>`，并增加 `From` 实现；Go 包级变量对应 `LazyLock`。
-- Go 的 `[]*deadlockpb.WaitForEntry` 对应 Rust 的 `Vec<deadlockpb::WaitForEntry>`，Rust 向量元素不是可空指针。
-- Go protobuf 枚举 `WriteConflict_Reason` 对应 Rust 生成类型 `WriteConflictReason`；`Op.String()`/`Assertion.String()` 在 Rust 中以 `Debug` 格式输出。迁移单测验证当前枚举输出为 `Del`、`Exist`，与 Go 文本一致。
-- Rust 为 `ErrInvalidOp`、`ErrConflict`、`ErrAssertionFailed` 明确选择 protobuf 默认枚举，并为类型派生 traits；这是 Rust 构造/测试便利，不改变错误触发规则。
 - Go 生产链在 `mvcc.go`、`detector.go`、`server.go` 中构造并映射全部错误；当前 Rust 搜索仅确认 DBReader 的 `ErrConflict` 生产接线。故本文档只把其他类型描述为“已定义并经局部迁移单测验证”，不宣称 Rust 已覆盖 Go 全部触发链。
-
-Go 行为测试 `pkg/store/mockstore/unistore/tikv/mvcc_test.go` 进一步证明字段用途：锁冲突和已存在键做类型断言，rollback 场景匹配 `ErrAlreadyRollback`，secondary lock 场景检查 `ErrPrimaryMismatch`，断言测试核对五个载荷字段，RC CheckTS 测试核对冲突时间戳。Rust 的直接迁移测试覆盖文本和载荷，但上述完整 MVCC 行为场景在 `mvcc_test.rs` 中仍是注释内容。
 
 ## 扩展指南
 
@@ -114,12 +104,3 @@ Go 行为测试 `pkg/store/mockstore/unistore/tikv/mvcc_test.go` 进一步证明
 5. 若新增依赖，更新本 crate `Cargo.toml`；若变更公开类型，还需检查 `dbreader`、Windows 目标的 `tikv` crate 和根 facade 的兼容性。
 
 兼容风险主要是错误字符串、protobuf 枚举命名、字段类型/所有权和公开结构体布局的变化；性能风险主要来自在热错误路径克隆较大的 key、lock 或 wait chain，以及每次 `Display` 分配新 `String`。保持 `Cow` 的静态借用和按需格式化可避免不必要分配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/store/mockstore/unistore/tikv/kverrors` 列出本目录 4 个源码/测试文件；对 `BuildLockErr`、`ErrLocked`、`ErrRetryable`、`ErrInvalidOp`、`ErrAlreadyCommitted`、`ErrKeyAlreadyExists`、`ErrDeadlock`、`ErrConflict`、`ErrCommitExpire`、`ErrTxnNotFound`、`ErrAssertionFailed`、`ErrPrimaryMismatch` 的 `query --json` 均定位到本文件。精确 `callers` 在 `BuildLockErr` 上长时间无输出后被终止，因此生产引用以限定路径的 `rg` 结果核对。
-- 源与 crate：`pkg/store/mockstore/unistore/tikv/kverrors/errors.rs`、`lib.rs`、`Cargo.toml`；另核对 `pkg/store/mockstore/unistore/tikv/Cargo.toml`、`pkg/store/mockstore/unistore/tikv/dbreader/Cargo.toml`、`dbreader/lib.rs` 与根 `pkg/lib.rs` 的依赖和再导出关系。
-- 生产调用边：`pkg/store/mockstore/unistore/tikv/dbreader/db_reader.rs::CheckWriteItemForRcCheckTSRead -> kverrors::ErrConflict -> DbReaderError::Conflict -> Display`。
-- Go 对照：`pkg/store/mockstore/unistore/tikv/kverrors/errors.go`；生产触发与转换引用由 `mvcc.go`、`detector.go`、`deadlock.go`、`server.go` 的限定搜索确认。
-- 测试：`pkg/store/mockstore/unistore/tikv/kverrors/migration_aster_unit_test.rs` 直接覆盖全部类型的载荷/文本/标准错误接口；`pkg/store/mockstore/unistore/tikv/mvcc_test.go` 提供完整行为边界；`pkg/store/mockstore/unistore/tikv/mvcc_test.rs` 的相关内容为注释化迁移草稿，未作为有效 Rust 测试证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务文件指定的 11 章节检查命令；人工复核重点是区分定义、局部单测与真实生产接线，且本文未把 Go 侧完整行为臆测为 Rust 已支持。

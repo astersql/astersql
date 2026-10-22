@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core-rule` crate（见同目录 `Cargo.toml`），负责“逻辑计划需要哪些统计信息”的一部分 Rust 迁移实现。模块由 `pkg/planner/core/rule/lib.rs` 以 `pub mod rule_collect_plan_stats` 公开。
-
-文件必须分成两层理解：第 16～255 行是被块注释包住的 Go 全流程迁移草稿，不参与编译；第 261～407 行才是当前可执行 Rust。当前代码提供一个基于精简 `Plan` IR 的谓词列收集规则、一个可注入的同步加载边界，以及 Go `CollectDependingVirtualCols` 的实际移植。生产优化流水线在 `pkg/planner/core/optimizer_runtime.rs` 中注册同名阶段；其中规则主体目前由该文件外的 `collect_predicate_columns_descendants` 执行，而虚拟列补集会直接调用本文件的 `collect_depending_virtual_columns`。因此，本文件既不是完整 Go 规则的等价落点，也不是未接线的纯桩。
+`StatsLoader` 与 `request_load_stats` 定义最小同步加载协议：调用方给出 `(table_id, item_id)` 列表和等待毫秒数，只有全部请求项都出现在加载结果中才成功。
 
 ## 核心职责
 
@@ -83,11 +81,11 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `CollectPredicateColumnsPoint::name` 与 Go `CollectPredicateColumnsPoint.Name` 的注册语义一致，谓词列收集入口也源自 Go `CollectColumnStatsUsage`。但 Rust 精简实现目前仅生成 `Plan.used_stats`；Go `Optimize` 还会更新 statement context、查 InfoSchema、保证每表至少一次 full load、裁剪 access paths、收集索引、展开静态分区并选择同步或异步加载。文件前 255 行保存了这些步骤的迁移草稿，但它们没有参与编译，不能据此声称已对齐。
+但 Rust 精简实现目前仅生成 `Plan.used_stats`；Go `Optimize` 还会更新 statement context、查 InfoSchema、保证每表至少一次 full load、裁剪 access paths、收集索引、展开静态分区并选择同步或异步加载。
 
-Rust `request_load_stats` 只是可测试的最小抽象。Go `RequestLoadStats` 会用最大执行时间截断等待、向 domain stats handle 发请求、设置 `IsSyncStatsFailed`、记录日志/警告，并受 `StatsLoadPseudoTimeout` 控制是否吞掉超时错误。Rust 当前仅验证请求项是否全部加载，并以同一原因字符串报告部分加载。
+Rust `request_load_stats` 只是可测试的最小抽象。Rust 当前仅验证请求项是否全部加载，并以同一原因字符串报告部分加载。
 
-Rust `collect_depending_virtual_columns` 是 Go `CollectDependingVirtualCols` 的直接行为移植：忽略索引输入、按表和列名匹配、只考虑公开虚拟列及直接依赖、跳过已需列、输出 full-load 项。Rust `pkg/planner/core/casetest/planstats/plan_stats_test.rs::test_collect_depending_virtual_columns_from_table_metadata` 复现 Go `plan_stats_test.go::TestCollectDependingVirtualCols` 的九组真实元数据场景，覆盖 JSON 多值索引、表达式索引和多层虚拟列的“一层依赖”边界。
+Rust `collect_depending_virtual_columns` 是 Go `CollectDependingVirtualCols` 的直接行为移植：忽略索引输入、按表和列名匹配、只考虑公开虚拟列及直接依赖、跳过已需列、输出 full-load 项。
 
 ## 扩展指南
 
@@ -97,15 +95,3 @@ Rust `collect_depending_virtual_columns` 是 Go `CollectDependingVirtualCols` �
 - 修改加载协议时保持“加载器错误”和“成功但不完整”两类错误可区分，并补充完整加载、空输入、加载器失败及部分加载测试。若接入真实等待/回退，还需同步 statement context 与计划缓存语义。
 - 修改虚拟列依赖算法时同步 Rust `casetest/planstats/plan_stats_test.rs` 和 Go `plan_stats_test.go` 的场景。引入传递依赖必须考虑循环、重复输出、稳定顺序和额外统计加载的性能成本。
 - 性能风险集中在 `columns_for_table` 对每张访问表重复递归整棵计划树，以及虚拟列阶段按表线性扫描列元数据；大计划或宽表上的扩展应先评估复杂度。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件已索引并报告 13 个符号。
-- RustCodeGraph `node --file`：完整读取 `rule_collect_plan_stats.rs` 第 1～407 行，确认注释草稿边界和实际实现；读取 `rule_init.rs` 的 `Plan`、`UsedStats`、`LogicalRule`；读取 `collect_column_stats_usage.rs` 的汇总结构和入口。
-- RustCodeGraph `query`：确认 Rust 的 `CollectPredicateColumnsPoint`、`columns_for_table`、`StatsLoader`、`request_load_stats`、`collect_depending_virtual_columns`，并定位 Rust/Go 同名符号及相关测试。
-- RustCodeGraph `callers`/`callees`：对精确 Rust 符号执行查询但未返回文本边；因此没有把缺失图边当成“无调用者”，而是用 `optimizer_runtime.rs`、`lib.rs` 和测试源码中的直接引用补证。
-- crate/模块证据：`pkg/planner/core/rule/Cargo.toml`、`pkg/planner/core/rule/lib.rs`。
-- Rust 调用与测试证据：`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/rule/rule_collect_plan_stats_test.rs`、`pkg/planner/core/rule/rule_aster_unit_test.rs`、`pkg/planner/core/casetest/planstats/plan_stats_test.rs`。
-- Go 对照证据：`pkg/planner/core/rule/rule_collect_plan_stats.go`、`pkg/planner/core/casetest/planstats/plan_stats_test.go`。
-- 目标目录不存在 `doc.go`，因此无更近的 Go package contract 可读；模块定位由 Cargo、`lib.rs`、运行时注册与 Go 对照共同确认。
-- 本任务为纯文档分析，按任务要求未运行 Cargo；最终结构检查应确认文件存在且恰好包含规定的 11 个二级标题。

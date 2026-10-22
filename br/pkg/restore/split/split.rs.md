@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-restore-split`。该 crate 的入口是 [`lib.rs`](./lib.rs)，入口以 `pub mod split` 装入本文件并通过 `pub use split::*` 扁平导出其公开项；[`Cargo.toml`](./Cargo.toml) 将 crate 标记为 Go 包 `br/pkg/restore/split` 的 Rust library 移植。它位于 BR 恢复流程的 Region 准备层：上层给出有序拆分键或待扫描键区间，本文件负责组织 Region 拆分/散射、从 PD 分页扫描 Region、校验扫描结果连续且可用，并提供相应退避策略。
-
-本文件不是 PD RPC 的具体实现。外部交互都经过 [`client.rs`](./client.rs) 中的 `SplitClient` trait；策略组合位于 [`splitter.rs`](./splitter.rs)。因此这里既是“基础拆分执行器”，也是多个恢复调用方共用的“可靠 Region 扫描”实现。
+位于 BR 恢复流程的 Region 准备层：上层给出有序拆分键或待扫描键区间，本文件负责组织 Region 拆分/散射、从 PD 分页扫描 Region、校验扫描结果连续且可用，并提供相应退避策略。
 
 ## 核心职责
 
@@ -98,12 +96,6 @@ RustCodeGraph 对 `PaginateScanRegion` 的被调用边确认了 `scanRegionsLimi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`split.go`](./split.go)，测试对照为 [`split_test.go`](./split_test.go)。Rust 保留了 Go 的两阶段粗/细拆分、scatter 错误降级、follower-first/leader-after-error 扫描、整批连续性复核、Region 数量变化抵消重试、两种 sentinel 退避以及 RawKV/TxnKV 拆分键编码分支。
-
-主要语言适配如下：
-
-- Go 的包级可变 `WaitRegionOnlineAttemptTimes`/`SplitRetryTimes` 在 Rust 中变为线程局部 `RetryCounter`。默认值一致，但测试覆盖的可见范围从进程全局缩小为线程局部，以支持 Rust 测试并行执行。
-- Go 的 `SplitClient` 接口值在 Rust 中由 `Box<dyn SplitClient>` 拥有；Go 的 `[]*RegionInfo` 对应 Rust 的 `Vec<RegionInfo>`，可选 protobuf/Leader 字段通过 `Option` 表达。
 - Go `getSplitKeysOfRegions` 以 Region 指针为 map key；Rust 用稳定的 `Region.Id: u64`，随后由 `client.rs` 按 ID 取键。
 - Go 的 failpoint `hint-scan-region-backoff` 在 Rust stubs 中由原子布尔 `HINT_SCAN_REGION_BACKOFF` 表达；启用时同样把退避缩短到 1 微秒。
 - Go 通过 `errors.As`/`ErrorEqual` 判断错误身份；Rust 分别使用 `BrIs` 遍历包装链，以及 `Cause` 后的 sentinel 文本比较。扩展错误包装时必须保留这些分类结果。
@@ -120,12 +112,3 @@ RustCodeGraph 对 `PaginateScanRegion` 的被调用边确认了 `scanRegionsLimi
 - 修改 `getSplitKeysOfRegions` 时同时检查 `client.rs` 按 Region ID 取 map 的逻辑；保持空键和 Region 起点不产生无效 split，保持 RawKV 与 TxnKV 编码差异，并扩展 `test_get_split_key_per_region`。
 - 如果要强化缺失 `Region` 元数据或非法 `limit` 的处理，应先对齐 Go 版本和 `SplitClient` 契约，再新增回归测试；不要只让一个语言版本静默接受或拒绝输入。
 - Rust 单元测试继续放在独立 [`split_test.rs`](./split_test.rs)，不要嵌回生产文件。涉及 Go/Rust 对齐的行为应同步检查 [`split_test.go`](./split_test.go)，避免只满足一侧测试。
-
-## 验证依据
-
-- 源码全貌：[`split.rs`](./split.rs)；模块装配：[`lib.rs`](./lib.rs)；crate 边界与依赖：[`Cargo.toml`](./Cargo.toml)。本文件无条件编译分支；测试由 `lib.rs` 的 `#[cfg(test)] #[path = "split_test.rs"]` 独立挂载。
-- 直接实现依赖：[`client.rs`](./client.rs) 的 `SplitClient` 以及批量 split、epoch 与 scatter 调用；[`region.rs`](./region.rs) 的 `RegionInfo`/`ContainsInterior`；[`stubs.rs`](./stubs.rs) 的 context、retry、codec 和协议类型。
-- 上游调用：[`splitter.rs`](./splitter.rs)、[`../misc.rs`](../misc.rs)、[`../log_client/import_retry.rs`](../log_client/import_retry.rs)。
-- Go 语义：[`split.go`](./split.go)；Rust 独立测试：[`split_test.rs`](./split_test.rs)；Go 对照测试：[`split_test.go`](./split_test.go)。
-- RustCodeGraph：索引状态为 7032 个 Rust 文件，目标 `split.rs` 识别 60 个符号；`query` 同时定位 Rust/Go 的 `RegionSplitter`、`PaginateScanRegion`、`NewWaitRegionOnlineBackoffer`、`checkRegionConsistency`；`callees PaginateScanRegion` 核实扫描、严格校验、backoffer、取消与重试状态边。由于全仓同名 callers 查询超时，跨文件调用者使用上述精确路径搜索补证。
-- 结构验收命令：`test -f br/pkg/restore/split/split.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' br/pkg/restore/split/split.rs.md)" -eq 11`。

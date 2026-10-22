@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`error.rs` 属于 `astersql-parser-mysql` crate，由 `pkg/parser/mysql/lib.rs` 以 `pub mod error` 对外暴露。它位于解析器与 MySQL 协议语义的错误边界：将数字错误码、SQLSTATE、消息模板和参数组装为可展示的 `SQLError`。它只构造内存对象，不解析 SQL，不编码 MySQL 网络包，也不访问存储。依据是 `pkg/parser/mysql/error.rs:13-21` 的模块说明与导入，以及 `pkg/parser/mysql/lib.rs` 的 crate 入口。
-
-`pkg/parser/mysql/Cargo.toml` 定义该 crate，其直接错误基础设施依赖是路径 crate `astersql-errors` 。`lib.rs` 将它转发为 `crate::errors`，因此本文件的 `ErrorArg`、`Errorf` 和 `RedactErrorArg` 实际来自 `pkg/errors`。
+`SQLError::Error` 及 `Display` 将结果统一呈现为 `ERROR <code> (<state>): <message>`，`std::error::Error` 实现使它能进入 Rust 错误链（`error.rs:47-60`）。
 
 ## 核心职责
 
@@ -67,11 +65,8 @@
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照是 `pkg/parser/mysql/error.go`。两个版本共享以下语义：两个固定连接/报文错误文本；`SQLError` 的三字段和展示形状；专用 SQLSTATE 查找及默认回退；`NewErr` 的默认模板/未知码 `Sprint` 分支；以及 `NewErrf` 的自定义模板和格式化前脱敏。
-
 明确的语言适配差异为：
 
-- Go 的 `ErrBadConn`/`ErrMalformPacket` 是包级错误值，Rust 是每次构造 `std::io::Error` 的函数。
 - Go 构造器返回 `*SQLError` 并接收 `args ...any`；Rust 返回拥有的 `SQLError` 并接收 `Vec<ErrorArg>`，用显式枚举保留常用运行时类型。
 - Go 使用 `fmt.Sprintf`/`fmt.Sprint`；Rust 委托 `astersql-errors::Errorf`，只能承诺该共享格式化器已实现的 Go 格式子集。
 - Go `MySQLState` 是全局 map；当前 Rust `MySQLState()` 每次构建 `HashMap`。这是性能/实现差异，不改变本文件观察到的查找结果。
@@ -86,14 +81,3 @@ Go 权威对照是 `pkg/parser/mysql/error.go`。两个版本共享以下语义�
 - 与本文件对应的 Rust 测试必须继续放在独立文件：首选扩展 `pkg/parser/mysql/error_test.rs`；跨模块脱敏/元数据回归可扩展 `pkg/parser/mysql/error_3_aster_unit_test.rs`，不得将 `#[cfg(test)]` 测试内嵌到 `error.rs`。
 - 保持 Go 对齐时应同步检查 `pkg/parser/mysql/error.go` 和 `error_test.go`。格式化扩展还需加入类型错配、缺失/多余参数、精度、Unicode、脱敏下标越界及并发切换模式等边界用例。
 - 如需优化热路径，可评估将 `MySQLState()` 改为共享惰性映射，但这属于 `state.rs` 的行为/性能变更，必须单独验证，不是本文档任务的实现内容。
-
-## 验证依据
-
-- 目标源文件：`pkg/parser/mysql/error.rs`，已核对全部别名、函数、结构体和 trait impl；文件无条件编译项。
-- crate 边界：`pkg/parser/mysql/Cargo.toml` 与 `pkg/parser/mysql/lib.rs`，已确认 `astersql-parser-mysql` 及 `astersql-errors` 路径依赖/转发。
-- 元数据与格式化依赖：`pkg/parser/mysql/state.rs`、`pkg/parser/mysql/errname.rs`、`pkg/errors/core.rs`、`pkg/errors/normalize.rs`。
-- Rust 上游调用：`pkg/parser/mysql/const.rs`、`pkg/parser/terror/terror.rs`、`pkg/expression/util.rs`、`pkg/util/errmsg/errmsg.rs`；此外用 `rg` 核对了 `pkg` 下 `NewErr`/`NewErrf`/`ErrMalformPacket`/`SQLError` 的引用。
-- Go 对照：`pkg/parser/mysql/error.go` 和 `pkg/parser/mysql/error_test.go`。
-- Rust 独立测试：`pkg/parser/mysql/error_test.rs`、`pkg/parser/mysql/error_3_aster_unit_test.rs`、`pkg/parser/mysql/unit_test.rs`；间接转换验证参考 `pkg/types/errors_test.rs`。本任务按计划不运行 Cargo。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/mysql` 确认 Rust/Go 目标与测试在索引中；`explore` 确认 `NewErr -> format_string_args`、`NewErr -> sprint_args`、`NewErrf -> format_string_args` 三条内部调用边，并识别 `const.rs`、`terror.rs` 及测试调用者。精确 ID 的 `node/callers/callees` 命令将 `NewErr` ID 误解析到 `pkg/parser/ast/base.rs::functionExpression`，因此该部分索引结果不作为证据，改用精确 `rg` 与直接源码读取补齐。
-- 文档结构最终使用任务指定命令校验，要求目标文件存在且恰好命中 11 个固定二级标题。

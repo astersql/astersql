@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `pkg/testkit/stepped.rs`](stepped.rs) 属于 `astersql-testkit` crate；`pkg/testkit/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 crate 根，`pkg/testkit/lib.rs` 再以 `pub mod stepped` 暴露本模块。它不是数据库请求主链的一部分，而是测试基础设施：让测试把 SQL 操作、自定义动作和同步点排成一个队列，在独立线程中顺序执行，并由测试主线程精确控制断点放行时机。
-
-当前仓库内 Rust 侧的直接使用证据仅见独立测试 `pkg/testkit/stepped_test.rs`；未发现其他 Rust 调用者。因此本文件目前应理解为已公开但接线范围有限的测试工具，而不能据此宣称 Go 侧所有并发回归场景已经迁移。
+`SteppedTestKit` 负责收集 `Step` 队列、创建后台 `TestKit`、按 FIFO 执行步骤、传播首个失败，并保存最近一次查询产生的 `Result`。
 
 ## 核心职责
 
@@ -89,7 +87,7 @@ RustCodeGraph 的文件级关系还报告 `pkg/ddl/testutil/operator.rs`、`pkg/
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/testkit/stepped.go`。两版共同目标是：在后台执行 SQL 命令，在确定的断点处把控制权交给测试线程，并保留查询结果。但具体协议存在重要差异：
+但具体协议存在重要差异：
 
 - Go 的 `NewSteppedTestKit(t, store)` 内部长期持有一个 `TestKit`，每次 `SteppedMustExec`/`SteppedMustQuery` 立即用 goroutine 启动单个命令；Rust 先把多个 `Step` 排入 `VecDeque`，显式 `Start` 后由一个线程顺序执行。
 - Go 用 `SetBreakPoints` 启用 `pkg/util/breakpoint` failpoint，把通知函数写入 session，并用 `ch1`/`ch2` 双通道在前后台握手；Rust 不启用 failpoint，而是要求队列显式插入 `Checkpoint`，或由 `Custom` 闭包直接调用 `StepController`。
@@ -97,7 +95,7 @@ Go 对照文件是 `pkg/testkit/stepped.go`。两版共同目标是：在后台�
 - Go 通道操作具有 `defaultChanTimeout` 十秒超时，并在 defer 中禁用 failpoint、清理 session 回调；Rust 条件变量没有超时，也没有 failpoint/session 清理，资源回收重点是 `stop + join`。
 - Go 同一对象还支持同步 `MustExec`/`MustQuery`；Rust 文件只提供排队版本。Go 的调用证据包括 `pkg/sessiontxn/txn_context_test.go`、`pkg/executor/update_test.go` 和 `pkg/executor/statement_ru_plan_walk_integration_test.go`，这些场景目前不能仅凭本文件认定已迁移到 Rust。
 
-因此 Rust 实现是面向相同测试意图的独立同步模型，而不是 Go API 的逐项等价复刻。扩展时应以 Go 行为作为兼容参照，同时为 Rust 的队列状态机补足独立测试。
+因此 Rust 实现是面向相同测试意图的独立同步模型，而不是 Go API 的逐项等价复刻。
 
 ## 扩展指南
 
@@ -107,12 +105,3 @@ Go 对照文件是 `pkg/testkit/stepped.go`。两版共同目标是：在后台�
 - 若允许动态追加步骤或多次 `Start`，必须重做 `worker` 与 `steps` 的状态机；当前实现会把启动时队列整体移走，重复启动被禁止。
 - 若改变结果保留策略，要明确“最后一次成功查询”是否仍为不变量，并同步更新 `GetResult`/`GetQueryResult` 及 `stepped_query_preserves_the_first_result_for_later_assertion`。
 - 兼容风险集中在 Go/Rust 时序语义差异、提前放行是否允许、同名断点次数、错误传播和超时；性能风险主要是每实例一个 OS 线程、全断点共用 `notify_all`，以及 `Drop` 的同步 join。
-
-## 验证依据
-
-- 源码：`pkg/testkit/stepped.rs`，核对了全部 228 行以及 `BreakpointState`、`StepController`、`Step`、`SteppedTestKit`、所有方法和 `Drop` 实现。
-- crate 装配：`pkg/testkit/Cargo.toml` 的 `[lib]` 与依赖声明；`pkg/testkit/lib.rs` 的 `pub mod stepped` 和独立 `#[path = "stepped_test.rs"] mod stepped_test`。
-- Rust 测试：`pkg/testkit/stepped_test.rs`，覆盖非法预放行、一次放行一次到达、后台查询结果在线程回收后仍可断言。
-- Go 对照：`pkg/testkit/stepped.go`；Go 调用样本为 `pkg/sessiontxn/txn_context_test.go`、`pkg/executor/update_test.go`、`pkg/executor/statement_ru_plan_walk_integration_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳 `1791342965170`；`explore "pkg/testkit/stepped.rs SteppedTestSuite run_test_in_steps run_test_in_steps_with_breakpoints"` 返回目标文件源码；`node --file pkg/testkit/stepped.rs --offset 1 --limit 320` 返回完整 228 行并列出文件级关系；`query SteppedTestKit --kind struct` 和 `query StepController --kind struct` 定位 Rust/Go 符号。对 `SteppedTestKit::new`、`SteppedTestKit::Start`、`StepController::checkpoint` 执行 callers/callees 未得到方法级边，因此调用范围另以仓库文本检索核验，没有把缺失图边推断成调用事实。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令、链接/路径人工复核和工作区差异检查验收。

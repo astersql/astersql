@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/infoschema/metrics.rs` 属于 `astersql-infoschema` crate；模块由 `pkg/infoschema/lib.rs` 以 `pub mod metrics` 装配。它是 InfoSchema V2 表缓存与指标子 crate 之间的适配层：上游契约是 `pkg/infoschema/sieve.rs` 的 `SieveStatusHook`，下游指标句柄来自 `astersql-infoschema-metrics`（路径依赖声明在 `pkg/infoschema/Cargo.toml`，实现位于 `pkg/infoschema/metrics/lib.rs`）。
-
-该文件不定义 SIEVE 淘汰算法，也不创建或注册整个指标体系。缓存算法及回调时机在 `pkg/infoschema/sieve.rs`，指标描述符和全局共享句柄在 `pkg/infoschema/metrics/lib.rs`；本文件只把两者连接起来。当前 Rust 生产构造链还有一个重要边界：`pkg/infoschema/infoschema_v2.rs::Data::new` 创建 `Sieve` 时没有调用 `newSieveStatusHookImpl`，所以默认仍使用 `EmptySieveStatusHook`。与之不同，Go 的 `pkg/infoschema/infoschema_v2.go::NewData` 会自动安装此指标钩子。
+`sieveStatusHookImpl` 保存三个 `prometheus::Counter` 和三个 `prometheus::Gauge` 句柄，分别表示驱逐、命中、未命中、对象数、内存用量和内存上限。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ Counter 表示累计事件，只有递增操作；Gauge 表示最新快照，可
 
 ## 与 Go 版本的对应关系
 
-`pkg/infoschema/metrics.go` 是直接语义来源：两端都有同名 `sieveStatusHookImpl`、三个 Counter、三个 Gauge、同样的 `evict/hit/miss` label，以及五个一一对应的回调。Rust 的 `on_*` 名称对应 Go 的 `onHit/onMiss/onEvict/onUpdate/onUpdateLimit`；Rust 字段 `object_count/memory_usage/memory_limit` 对应 Go 的 `objCnt/memUsage/memLimit`。
-
 实现层差异如下：
 
 - Go 构造函数返回指针，Rust 返回拥有句柄的值，真正交给缓存时再通过 `Arc<dyn SieveStatusHook>` 共享。
@@ -89,12 +85,3 @@ Counter 表示累计事件，只有递增操作；Gauge 表示最新快照，可
 若目标是补齐当前 Rust 生产接线，最小入口是 `pkg/infoschema/infoschema_v2.rs::Data::new`：创建缓存后安装 `Arc::new(crate::metrics::newSieveStatusHookImpl())`，语义对齐 Go `NewData`。这属于运行时代码变更，不是本文档任务的一部分；实现时应增加回归测试，证明通过正常 `Data`/InfoSchema V2 操作而非直接调用 hook 就能改变共享指标。
 
 兼容性风险主要是指标名称和 label 值属于监控契约，修改会破坏仪表盘与告警；正确性风险是回调次数、顺序或 `size/count` 对应关系错误；性能风险是每次缓存访问进入指标更新，不能在回调中加入分配密集、阻塞或锁重入逻辑。由于共享 Gauge 不是按 `Data` 实例分组，多个同时活跃的 InfoSchema V2 缓存会互相覆盖瞬时值；新增实例维度前必须评估 Prometheus 基数和 Go 兼容性。
-
-## 验证依据
-
-- RustCodeGraph 状态：本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `pkg/infoschema/metrics.rs` 已索引，共识别 16 个符号。
-- RustCodeGraph 查询：对 `sieveStatusHookImpl`、`newSieveStatusHookImpl`、`on_evict`、`on_hit`、`on_miss`、`on_update`、`on_update_limit` 执行了 `query`；对构造函数及回调执行了 `node`、`callers`、`callees`，并读取了目标文件的完整索引源码。
-- 调用流证据：`pkg/infoschema/sieve.rs::{Get,Set,SetCapacity,remove_entry,evict}` 定义回调时机；`pkg/infoschema/infoschema_v2.rs::{Data::new,Data::SetStatusHook}` 证明 Rust 默认空钩子和可选接线入口；`pkg/infoschema/metrics_test.rs::sieve_status_hook_updates_shared_prometheus_metrics` 是具体适配器的直接调用测试。
-- crate/指标证据：读取了 `pkg/infoschema/Cargo.toml`、`pkg/infoschema/lib.rs`、`pkg/infoschema/metrics/Cargo.toml`、`pkg/infoschema/metrics/lib.rs`、`pkg/infoschema/metrics/metrics.rs`，并核对 `pkg/metrics/infoschema.rs` 与 `pkg/metrics/metrics.rs` 中的桥接和注册引用。
-- Go 对照：读取了 `pkg/infoschema/metrics.go`、`pkg/infoschema/infoschema_v2.go::NewData`、`pkg/infoschema/sieve.go` 与 `pkg/infoschema/infoschemav2_cache_test.go`；Rust 独立测试还读取了 `pkg/infoschema/infoschemav2_cache_test.rs`。
-- 未运行 Cargo 或运行时测试，符合本任务“纯文档分析、不运行 Cargo”的限制；事实验证依赖已存在的源码、独立测试和 RustCodeGraph 索引，结构验证按任务给定命令执行。

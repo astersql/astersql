@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-ossstore` crate 的高层 OSS 客户端适配层。crate 入口在 [`lib.rs`](lib.rs)，由其私有声明 `mod client` 并通过 `pub use client::*` 导出本文件的公开符号。它不直接实现 HTTP、签名或重试；这些工作由 [`interface.rs`](interface.rs) 中的 `API` trait 及 `AliyunOssApi` 完成。本文件负责把统一对象存储语义转换成 OSS 请求模型，并把 `Client` 实现为 `s3like::PrefixClient`，从而接入 [`../s3like/store.rs`](../s3like/store.rs) 的读写、列举、复制和创建 Writer 主链。
-
-生产入口是 [`store.rs`](store.rs) 的 `NewOSSStorage`：该函数构造数据访问 API 与公网预签名 API，调用 `Client::with_presign_api`，执行 `s3like::CheckPermissions`，最后将客户端交给 `s3like::NewStorage`。`new_oss_storage_for_test` 则通过 `Client::from_dyn` 注入测试 API。`Cargo.toml` 表明本文件属于 `astersql-objstore-ossstore`，直接依赖同工作区的 `storeapi`、`s3like`、`objectio` 和 `prefetch`；具体 OSS SDK 依赖 `ali-oss-rs` 被封装在 `interface.rs`，没有从本文件泄漏到上层接口。
+负责把统一对象存储语义转换成 OSS 请求模型，并把 `Client` 实现为 `s3like::PrefixClient`，从而接入 [`../s3like/store.rs`](../s3like/store.rs) 的读写、列举、复制和创建 Writer 主链。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ Get 返回的 body 生命周期属于调用方。权限 Get 是例外：本层�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`client.go`](client.go)，测试对照是 [`client_test.go`](client_test.go)。Rust 保留了 Go `client` 的字段角色、公开方法名、BucketPrefix 拼接、权限探测、Range/List/Copy 映射、同步 multipart writer 的分片顺序及 Close 后可继续使用等语义。`client_test.rs` 与 `migration_aster_unit_test.rs` 分别覆盖错误映射和迁移边界，并没有把测试嵌入生产源文件。
+Rust 保留了 Go `client` 的字段角色、公开方法名、BucketPrefix 拼接、权限探测、Range/List/Copy 映射、同步 multipart writer 的分片顺序及 Close 后可继续使用等语义。`client_test.rs` 与 `migration_aster_unit_test.rs` 分别覆盖错误映射和迁移边界，并没有把测试嵌入生产源文件。
 
 主要实现差异来自 SDK：Go `multipartUploader.Upload` 委托阿里云 SDK `Uploader.UploadFrom`；Rust 为保持默认分片大小、并发度、流式背压、错误 Abort 与顺序 Complete，在本文件自行实现工作线程流水线。Go 的请求/响应使用 OSS SDK 类型，Rust 用 `interface.rs` 定义的 SDK 无关输入输出，再由 `AliyunOssApi` 转换。Go `client.options` 是指针，Rust 保存 `S3` 值副本；因此客户端构造后的外部配置变更不会影响 Rust 实例。
 
-Go 预签名方法记录了临时凭证有效期可能短于请求过期时间的 TODO；Rust 的 `PresignObject` 同样仅把 `expire` 交给 API，没有在本层校验凭证剩余寿命。生产 `store.rs` 通过独立公网 `presign_svc` 保留了 URL 可从 VPC 外使用的意图。Rust 的 `HeadObject` 与 Go 一样仅返回空响应。Rust `CheckPutAndDeleteObject` 虽不用 Go `defer`，但先保存 Put 结果、随后无条件 Delete，返回优先级与 Go 一致。
+Go 预签名方法记录了临时凭证有效期可能短于请求过期时间的 TODO；Rust 的 `PresignObject` 同样仅把 `expire` 交给 API，没有在本层校验凭证剩余寿命。Rust 的 `HeadObject` 与 Go 一样仅返回空响应。Rust `CheckPutAndDeleteObject` 虽不用 Go `defer`，但先保存 Put 结果、随后无条件 Delete，返回优先级与 Go 一致。
 
 ## 扩展指南
 
@@ -83,12 +81,3 @@ Go 预签名方法记录了临时凭证有效期可能短于请求过期时间�
 调整权限语义时同步检查 `s3like::CheckPermissions` 和 `client_test.rs::test_client_permission`，保持 `NoSuchKey`、清理探测对象和双重失败优先级。扩充 Head 元数据需同时修改 `API::head_object` 返回类型、`s3like::HeadObjectResp` 及 Go 对齐测试，不能只填本层默认对象。
 
 修改 multipart 时应分别覆盖两条路径：同步 writer 的序号、ETag、重复 Close、失败后会话生命周期；并发 uploader 的默认参数、短读/EOF、读取失败、任一 worker 上传失败、乱序完成后的排序、Complete 失败和 Abort 失败。对应独立测试优先放在 `client_test.rs`；需要锁定 Go 迁移细节时补在 `migration_aster_unit_test.rs`，不要把测试写回 `client.rs`。增大默认 part size/concurrency 或改变队列策略前评估 `part_size × concurrency` 的峰值内存、线程数、OSS 分片限制及取消延迟。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标 `client.rs` 含 57 个符号；`files --filter pkg/objstore/ossstore` 确认本 crate 的 Rust/Go 源与独立测试；`node --file pkg/objstore/ossstore/client.rs --offset 1 --limit 520` 和 `--offset 521 --limit 200` 覆盖目标文件全部 668 行；`query MultipartWriter`、`query MultipartUploader`、`query CheckBucketExistence`、`query OssStorage` 用于消除同名符号并定位接口及构造入口。图的 `callers/callees` 命令本轮未返回可用文本，因此调用边又由下列直接源码位置交叉核验。
-- Rust 源码：[`client.rs`](client.rs)；crate/构造边界 [`lib.rs`](lib.rs)、[`store.rs`](store.rs)、[`interface.rs`](interface.rs)；上层消费边 [`../s3like/interface.rs`](../s3like/interface.rs)、[`../s3like/store.rs`](../s3like/store.rs)、[`../s3like/permission.rs`](../s3like/permission.rs)。目标目录没有 `doc.go`。
-- Rust 独立测试：[`client_test.rs`](client_test.rs) 验证权限、Range、删除、存在性、List、Copy、预签名及并发 uploader 的默认值/失败 Abort；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 验证 List 整数转换、SSE/存储类、分片顺序、重复 Close 与 context 委托。
-- Go 对照：[`client.go`](client.go) 与 [`client_test.go`](client_test.go)，用于核对方法职责、错误语义、SDK uploader 行为和预签名限制。
-- Cargo 边界：[`Cargo.toml`](Cargo.toml) 声明 crate 名、`lib.rs` 入口、关闭自动测试，以及 `objectio`/`s3like`/`storeapi` 工作区依赖和 `ali-oss-rs` blocking/rust-tls 特性。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务规定的正则结构检查，要求固定的十一个二级标题恰好各出现一次，并人工复核没有把推测写成已支持行为。

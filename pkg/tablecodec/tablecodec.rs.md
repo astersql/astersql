@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tablecodec.rs` 是 `astersql-tablecodec` crate 的主实现文件，由同目录 [`lib.rs`](lib.rs) 通过 `include!("tablecodec.rs")` 纳入 crate。它位于逻辑表模型与底层有序 KV 字节格式之间，负责把 table ID、index ID、行 handle、列 Datum 和 DDL 临时索引操作编码为可排序、可持久化的 key/value，也负责逆向解析这些格式。生产调用已经接入会话 DML/扫描（如 `pkg/session/runtime/row_codec.rs`）、执行器、Lightning KV 后端以及 store 错误诊断路径；它不是门面或桩。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-tablecodec`，默认使用 Classic 内核，`nextgen` feature 仅向 `kerneltype-dependency/nextgen` 透传。实现依赖 canonical `structure::kv` handle/key 类型、`meta/model` 表索引元数据、`util/codec` 的 mem-comparable 编码、`util/rowcodec` 的新行格式、类型/排序规则与标准数据库错误。
+提供范围构造、key 分类、table ID 校验等上层扫描辅助函数（`GetTableHandleKeyRange`、`GetTableIndexKeyRange`、`VerifyTableIDForRanges`）。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ RustCodeGraph 显示 `EncodeRow -> rowcodec::Encoder::Encode | EncodeOldRow`，`
 
 ## 与 Go 版本的对应关系
 
-同目录 [`tablecodec.go`](tablecodec.go) 是直接对照实现。Rust 基本保持相同的常量、公开函数分组和三套索引 value 布局：Go 的 `GenIndexValuePortal`、`GenIndexValueForClusteredIndexVersion1`、`genIndexValueVersion0` 分别对应同名 Rust 函数；行 key、meta key、临时索引和 range 验证也逐项对应。
-
 语言层差异主要是 Rust 用 `Result`、`Option`、拥有所有权的 `Vec` 与 `Box<dyn Handle>` 表达 Go 的多返回值、nil slice/map/interface；Go 的 `TempIndexValue` 方法在 Rust 中由 `TempIndexValueExt` trait 承载。Rust `lib.rs` 还用依赖再导出和 `include!` 组合 `rowcodec`，而 Go 直接导入包。
 
-已核对的兼容细节包括：API V2 `x001` keyspace 前缀后的 table ID 解码；唯一全局索引含 NULL 时变为 non-distinct 并在 key 中写 partition ID；global V1 key/value 双重 partition 信息不得生成嵌套 `PartitionHandle`；无 handle 的新格式唯一索引 value 返回 `None`，对应 Go 的 `nil, nil`；临时索引四类 value 元素及 overwritten 过滤语义。Rust 独立测试 [`tablecodec_test.rs`](tablecodec_test.rs) 与 Go [`tablecodec_test.go`](tablecodec_test.go) 的同名测试覆盖上述主干，另有 [`tablecodec_1_aster_unit_test.rs`](tablecodec_1_aster_unit_test.rs) 验证 canonical model/kv 类型与额外边界。
+Rust 独立测试 [`tablecodec_test.rs`](tablecodec_test.rs) 与 Go [`tablecodec_test.go`](tablecodec_test.go) 的同名测试覆盖上述主干，另有 [`tablecodec_1_aster_unit_test.rs`](tablecodec_1_aster_unit_test.rs) 验证 canonical model/kv 类型与额外边界。
 
 ## 扩展指南
 
@@ -86,11 +82,3 @@ RustCodeGraph 显示 `EncodeRow -> rowcodec::Encoder::Encode | EncodeOldRow`，`
 新增 SQL 类型存储转换应成对更新 `flatten`/`Unflatten`，并在独立测试文件覆盖时区、零值、unsigned、collation、FSP 和错误传播。新增索引前缀规则应同时检查 `TruncateIndexValue` 的字节/字符边界以及 restored-data 路径。扩展 global index 时必须分别验证 distinct/non-distinct、int/common/partition handle、key/value 两个 partition 来源及 EXCHANGE PARTITION 后的重复 handle 场景。
 
 测试必须继续放在独立文件，不应内嵌到 `tablecodec.rs`。优先扩展 [`tablecodec_test.rs`](tablecodec_test.rs) 并对照 [`tablecodec_test.go`](tablecodec_test.go)；canonical 类型或迁移特有契约可扩展 [`tablecodec_1_aster_unit_test.rs`](tablecodec_1_aster_unit_test.rs)。涉及 failpoint 的目标测试需遵循仓库 failpoint 启停流程。格式变更还应审查 `pkg/session/runtime/row_codec.rs`、`pkg/lightning/backend/kv/base.rs` 与 `pkg/store/driver/txn/error.rs` 等直接消费者。
-
-## 验证依据
-
-- RustCodeGraph：索引状态覆盖 `pkg/tablecodec/tablecodec.rs`（145 个符号）；读取了文件符号图，并精确查询 `EncodeRow`、`DecodeRowKey`、`EncodeIndexSeekKey`、`GenIndexKey`、`GenIndexValuePortal`、`DecodeIndexKVWithCollate`、`DecodeTempIndexValue`、`VerifyTableIDForRanges` 的源码与调用 trail。
-- 源与装配：阅读 [`tablecodec.rs`](tablecodec.rs)、[`lib.rs`](lib.rs) 和 [`Cargo.toml`](Cargo.toml)，确认常量、类型、函数、trait、依赖、feature 与测试模块接线；本包不存在 `doc.go`。
-- Go 对照：阅读 [`tablecodec.go`](tablecodec.go) 的完整符号清单及关键布局对应函数，并抽查 [`tablecodec_test.go`](tablecodec_test.go) 中临时索引、API V2、global partition handle、唯一全局索引 NULL 行为。
-- Rust 测试：阅读 [`tablecodec_test.rs`](tablecodec_test.rs) 的行/索引/meta/range/错误/临时索引/global index 测试，以及 [`tablecodec_1_aster_unit_test.rs`](tablecodec_1_aster_unit_test.rs) 的整数/common handle、canonical 类型和跨表 range 边界测试。
-- 生产调用：通过仓库搜索核对 `pkg/session/runtime/row_codec.rs`、`pkg/session/runtime/relational_scan.rs`、`pkg/lightning/backend/kv/base.rs`、`pkg/store/driver/txn/error.rs`、`pkg/store/helper/helper.rs` 等直接调用点。结构验收命令见任务交付记录；本任务按计划为纯文档分析，未运行 Cargo。

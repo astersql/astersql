@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/tikvutil/tikvutil.rs` 是 `astersql-util-tikvutil` crate 当前唯一的业务实现文件，负责保存 `tidb_committer_concurrency` 的进程级原子缓存。crate 的边界由 `pkg/util/tikvutil/Cargo.toml` 定义，`lib.rs` 通过 `pub mod tikvutil` 装载本文件并以 `pub use tikvutil::*` 再导出公开符号；工作区根 `Cargo.toml` 将它登记为 `facade_util_tikvutil`，随后 `pkg/lib.rs` 的 `pkg::util::tikvutil` 门面再次公开这些符号。
-
-它不是 TiKV RPC 客户端、两阶段提交调度器或系统变量校验器。当前 Rust 文件只提供一个与 Go 原子整数用法对齐的共享值容器。全仓 Rust 文本引用检索显示，生产 Rust 尚未直接读取或写入这个缓存；除定义和门面再导出外，直接使用只出现在 `pkg/util/tikvutil/migration_aster_unit_test.rs`。因此，Rust 侧已经具备数据结构和公开路径，但尚不能据此断言完整的系统变量到 TiKV client 配置链已经迁移。
+`GoAtomicI32` 用标准库 `AtomicI32` 封装一个 `i32`，把公开操作限制为构造、顺序一致读取和顺序一致写入。
 
 ## 核心职责
 
@@ -63,9 +61,9 @@ Go 主链提供了迁移语义参照：`pkg/sessionctx/variable/sysvar.go` 的�
 
 ## 与 Go 版本的对应关系
 
-Go 对照 `pkg/util/tikvutil/tikvutil.go` 只有一个生产符号：`var CommitterConcurrency = atomic.NewInt32(128)`。Rust 用 `GoAtomicI32` 加 `pub static CommitterConcurrency` 复刻了名称、`i32` 宽度、默认值以及 Load/Store 所需的并发安全语义；额外封装的原因是 Rust 标准库原子 API要求每次调用显式选择 `Ordering`，本文件统一固定为 `SeqCst`。
+Rust 用 `GoAtomicI32` 加 `pub static CommitterConcurrency` 复刻了名称、`i32` 宽度、默认值以及 Load/Store 所需的并发安全语义；额外封装的原因是 Rust 标准库原子 API要求每次调用显式选择 `Ordering`，本文件统一固定为 `SeqCst`。
 
-两端的差异主要在接线成熟度。Go 的静态量已由 `pkg/sessionctx/variable/sysvar.go` 读写，并由 `pkg/config/config.go::GetTiKVConfig` 消费；相关 Go 测试 `pkg/sessionctx/variable/sysvar_test.go::TestTiDBCommitterConcurrency` 验证系统变量边界。Rust 当前仅由 `pkg/util/tikvutil/migration_aster_unit_test.rs` 直接验证默认值和 load/store，系统变量范围测试位于 `pkg/sessionctx/variable/sysvar_test.rs`，但全仓 Rust 引用中尚无把两层连接起来的生产代码。因此移植状态应表述为“原子缓存与测试已存在，生产配置传播链未在 Rust 侧证实”。
+两端的差异主要在接线成熟度。Rust 当前仅由 `pkg/util/tikvutil/migration_aster_unit_test.rs` 直接验证默认值和 load/store，系统变量范围测试位于 `pkg/sessionctx/variable/sysvar_test.rs`，但全仓 Rust 引用中尚无把两层连接起来的生产代码。
 
 ## 扩展指南
 
@@ -74,12 +72,3 @@ Go 对照 `pkg/util/tikvutil/tikvutil.go` 只有一个生产符号：`var Commit
 若要完成 Rust 生产接线，最可能的修改点不是原子包装本身，而是 Rust 系统变量 setter/getter 与生成 TiKV client 配置的对应路径。实现时应复刻 Go 顺序：先经过系统变量类型和 `1..=10000` 范围规范化，再更新缓存，并明确处理下游全局配置刷新失败或不可用时的一致性策略。不能把无校验的 `store` 直接暴露为 SQL 配置入口。
 
 测试应继续放在独立文件：原子包装与默认值覆盖 `pkg/util/tikvutil/migration_aster_unit_test.rs`；系统变量边界覆盖 `pkg/sessionctx/variable/sysvar_test.rs`；若增加实际配置传播，再在拥有该接线的 crate 的独立测试文件中验证缓存和 TiKV 配置同步。重点风险是全局测试状态污染、默认值多处复制、合法范围绕过，以及多步骤配置更新只完成一半。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/util/tikvutil/tikvutil.rs`、`pkg/util/tikvutil/lib.rs`、`pkg/util/tikvutil/Cargo.toml`、根 `Cargo.toml` 的 `facade_util_tikvutil`、`pkg/lib.rs::util::tikvutil`。
-- RustCodeGraph：执行了索引状态检查、`files --filter pkg/util/tikvutil`、目标文件 `node --file`、`GoAtomicI32` 的 `query/node` 及 callers/callees 探查；索引确认目标源码、模块入口、独立测试和 Go 对照文件均存在。通用 `load/store/new` 和静态量查询出现歧义，故未把噪声结果当成调用关系。
-- 直接引用核验：全仓对 `CommitterConcurrency`、`GoAtomicI32`、`facade_util_tikvutil` 的 Rust `rg` 检索；除定义/再导出外，仅 `pkg/util/tikvutil/migration_aster_unit_test.rs` 直接读写静态量。
-- Go 语义与在线调用边：`pkg/util/tikvutil/tikvutil.go`、`pkg/sessionctx/variable/sysvar.go`、`pkg/config/config.go`、`pkg/sessionctx/variable/sysvar_test.go`。
-- Rust 相邻契约与测试：`pkg/sessionctx/vardef/tidb_vars.rs`、`pkg/sessionctx/variable/sysvar_test.rs`、`pkg/util/tikvutil/migration_aster_unit_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；完成判定使用任务规定的十一章节结构检查，并人工复核文档明确区分 Rust 已有实现、Go 生产链和尚未验证的 Rust 接线。

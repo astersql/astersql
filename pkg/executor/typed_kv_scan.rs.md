@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 入口 `pkg/executor/lib.rs` 以 `pub mod typed_kv_scan` 导出生产模块，并仅在 `cfg(test)` 下装配独立测试 `typed_kv_scan_test.rs`。它实现 typed executor 路径中的本地 KV 表扫描叶子：输入已经由规划/构建层编码好的半开键区间和一个真实 `kv::Retriever`，按需把表记录解码到 `chunk::Chunk`。直接构建入口是 `pkg/executor/builder.rs::BuildTypedTableScan`，更大的物理计划也通过 `BuildTypedPhysicalPlan*` 分发到该实现。
-
-这里不是 Go `TableReaderExecutor` 的逐行翻译，也不负责 ranger 到 KV range、DAG protobuf、TiKV/TiFlash 请求或虚拟列计算。范围编码由调用者承担；`TypedKVScan` 只扫描给定的编码区间。因此它是 typed adapter 的本地快照执行边界，而非完整的分布式 TableReader 替代品。
+实现 `adapter::ExecExecutor` 的生命周期、schema/chunk 构造、扫描计数、悲观锁键传递和 detach 能力；该扫描是只读执行器，不产生外键检查或级联任务。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@
 
 ## 与 Go 版本的对应关系
 
-仓库中不存在 `pkg/executor/typed_kv_scan.go`。crate 元数据把整个 Rust crate 对应到 Go package `pkg/executor`，职责上最接近的是 `pkg/executor/table_reader.go::TableReaderExecutor`：两者都有 Open/Next/Close 生命周期、扫描方向/range 状态并向 chunk 填行；Go 构建侧位于 `pkg/executor/builder.go::buildTableReader` 一带，Rust typed 构建侧是 `builder.rs::BuildTypedTableScan`。
-
 两者不能视为行为完全等价。Go TableReader 把逻辑 ranger ranges 转成请求，构造 DAG，处理 TiKV/TiFlash、分区、signed/unsigned range 分段、correlated column、虚拟列、内存跟踪和 `SelectResult` 生命周期；Rust `TypedKVScan` 接受已编码 range，直接遍历调用者提供的 Retriever，并在本地用 tablecodec 解码。Rust 的 kill、锁键移交、detach 和分页行为由 typed adapter 协议显式实现；Go 对应能力分散在 executor、DistSQL result 和会话执行链中。
 
 行解码语义也只做局部对齐：Rust 依据 `ColumnInfo.ID/FieldType` 解码并补 `PKIsHandle` 整数主键，这与 Go 表行解码的元数据规则一致，但本文件没有覆盖 Go TableReader 的虚拟列、common handle、extra handle、分区请求和下推表达式等完整路径。扩展时应以这些差异为兼容边界，不能仅因名称相近推断已支持。
@@ -89,13 +85,3 @@
 - 修改 Detach/Rebind 时要明确 Retriever 快照所有权和 page_keys 是否可转移；当前约定是共享快照、复制游标、丢弃未消费锁键。缓存 PointGet 的形状检查还依赖 `ColumnIDs`。
 - 测试应继续放在独立的 `pkg/executor/typed_kv_scan_test.rs`，不要嵌入源文件。若影响包装器或共享解码器，还应同步 `typed_index_lookup_test.rs`、`typed_point_get_test.rs`，以及按键传递相关的 typed limit/projection/selection 测试。
 - 性能关注点包括每行重建 `column_types` HashMap、每页重建 KV Iterator、range 排序和记录 value 全量解码；任何缓存优化都必须保持列元数据不可变、物理表校验和错误页回滚语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引含 `pkg/executor` Rust 源码；`node --file pkg/executor/typed_kv_scan.rs --offset 1 --limit 500` 返回完整 334 行，并报告该文件被 typed tests、`typed_point_get.rs` 等 7 个文件使用；`query TypedKVScan --kind struct` 定位结构体于第 32 行。精确 `callers` 查询未返回结果并被终止，因此调用边又以局部源码搜索交叉核验，没有把缺失图边写成结论。
-- 主实现：`pkg/executor/typed_kv_scan.rs` 的 `KeyRange`、`TypedKVScan::{new,next_inner,append_decoded_row_for_table,clone_detached}` 及 `impl ExecExecutor`。
-- crate/装配：`pkg/executor/Cargo.toml` 的 package、lib、feature 与直接 workspace 依赖；`pkg/executor/lib.rs` 的生产模块和独立测试模块声明。
-- 上游与复用：`pkg/executor/builder.rs::{BuildTypedTableScan,BuildTypedPhysicalPlanWithBindings}`，以及该文件构建 TypedIndexLookUp 解码器的位置；`pkg/executor/typed_index_lookup.rs`、`pkg/executor/typed_point_get.rs` 对共享解码 API 的调用；`pkg/executor/adapter.rs::runPessimisticSelectForUpdate` 对 `TakeLockKeys` 的消费。
-- Rust 独立测试：`pkg/executor/typed_kv_scan_test.rs` 验证建迭代器前取消、迭代中取消时关闭游标且不泄漏半页/锁键、真正的 codec 行懒读取、升降序分页无重复、多 range 降序、Detach 后继续共享快照，以及物理 builder 返回 typed lazy executor。
-- Go 对照：确认无同路径 `typed_kv_scan.go`；读取 `pkg/executor/table_reader.go::{TableReaderExecutor,Open,Next,Close}` 和 `pkg/executor/builder.go` 的 TableReader 构建片段，只据此描述职责映射与已验证差异。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅运行任务指定的 11 章节结构验证，并人工复核本说明未把 Go DistSQL 能力误写成 Rust 当前能力。

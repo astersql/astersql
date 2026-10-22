@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-br-pkg-restore` library crate；crate 清单是 [`br/pkg/restore/Cargo.toml`](Cargo.toml)，模块由 [`br/pkg/restore/lib.rs`](lib.rs) 通过 `pub mod import_mode_switcher` 挂载并以 `pub use import_mode_switcher::*` 扁平导出。它位于 BR 恢复的准备与收尾边界：在批量写入 SST 前把非 TiFlash 的 TiKV 切入 Import 模式并暂停 PD 调度，在恢复结束后切回 Normal 模式并执行调度恢复闭包。
-
-Rust 生产接线位于 [`br/pkg/task/restore_lifecycle.rs`](../task/restore_lifecycle.rs)：`RestoreLifecycle::Start` 创建 `ImportModeSwitcher`，按是否有 key ranges 选择 `FineGrainedRestorePreWork` 或 `RestorePreWork`；`RestoreSession::drop` 通常调用 `RestorePostWork`，而 checkpoint 保留现场时只调用 `StopRefreshing`。因此本文件不是仅供测试的兼容门面，而是 Rust restore 生命周期的资源管理组件。
+`GrpcImportSstSwitcher` 实现 `ImportSstSwitcher` 网络边界，为每个 store 建立 grpcio channel，并调用 kvproto ImportSST `SwitchMode` RPC。
 
 ## 核心职责
 
@@ -93,8 +91,6 @@ RustCodeGraph 对本文件确认的关键内部调用边为：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`br/pkg/restore/import_mode_switcher.go`](import_mode_switcher.go)。Rust 保留了 Go 的主要顺序和分支：过滤 TiFlash、按 store 并发切换、五秒连接边界、初次同步 Import、周期刷新、取消后等待、在线 no-op pre-work、细粒度 rule undo，以及 post-work 即使模式恢复失败仍执行 scheduler undo。
-
 主要实现差异如下：
 
 - Go switcher 直接持有 `pd.Client` 和 `*tls.Config`，并在 `switchTiKVMode` 中构造 gRPC；Rust 将两者拆成 `PdClient` 与 `ImportSstSwitcher` trait，真实传输由 `GrpcImportSstSwitcher` 实现，测试可注入 recording transport。
@@ -105,8 +101,6 @@ RustCodeGraph 对本文件确认的关键内部调用边为：
 - Rust 增加 `StopRefreshing`，服务于 `restore_lifecycle.rs` 的 checkpoint 语义；该公开方法在当前 Go 对照文件中没有同名实现。
 - Rust `RestorePreWork` 的配置返回类型是 `Option<ClusterConfig>`，用 `None` 表示 Go 的 nil；细粒度 Rust 返回拥有所有权的 `ClusterConfig`，而 Go 返回指针。
 
-Go 测试 [`br/pkg/restore/import_mode_switcher_test.go`](import_mode_switcher_test.go) 使用真实 gRPC mock 和 fake PD HTTP 检查初次/周期切换及调度配置恢复。Rust 独立测试保留这些意图，并补充取消唤醒、在线收尾和真实 grpcio transport 验证。
-
 ## 扩展指南
 
 - 新增模式切换策略时，优先扩展 `ImportSstSwitcher` 或 `GrpcImportSstSwitcher::SwitchMode`，保持 `ImportModeSwitcher` 的状态机与测试 transport 可替换性。若改变超时、重试或连接复用，需评估每轮 store 数量带来的连接/线程成本，并同步 Go 语义说明。
@@ -115,13 +109,3 @@ Go 测试 [`br/pkg/restore/import_mode_switcher_test.go`](import_mode_switcher_t
 - 改动 pre/post-work 协议时同步检查 `RestoreLifecycle::Start`、`RestoreSession::drop` 的 checkpoint 分支，以及普通/细粒度 scheduler undo 的所有权。特别注意 `RestorePostWork` 当前不返回错误；若要让错误可见，会改变调用契约和析构路径的可处理能力。
 - 增加 TLS 或认证选项时由生命周期 factory 构造 `GrpcImportSstSwitcher.credentials`，不要把环境配置重新耦合进模式状态机。
 - Go 对齐修改应同步检查 `import_mode_switcher.go`、`import_mode_switcher_test.go`；Rust 验证至少更新 `import_mode_switcher_test.rs`，涉及总体公开契约时再更新 `parity_test.rs` 和 `br/pkg/task/restore_lifecycle_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`node --file br/pkg/restore/import_mode_switcher.rs` 读取了完整 342 行源码。
-- RustCodeGraph `explore`/`query`：确认 `ImportModeSwitcher`、构造函数、pre/post-work、`GrpcImportSstSwitcher` 符号，以及 `SwitchToNormalMode -> switchTiKVMode -> SwitchMode` 等内部调用边。由于 Go/Rust 同名符号会混合，Rust 上游另以直接源码引用核验。
-- 生产源码与边界：`br/pkg/restore/import_mode_switcher.rs`、`br/pkg/restore/lib.rs`、`br/pkg/restore/stubs.rs`、`br/pkg/task/restore_lifecycle.rs`。
-- crate/依赖：`br/pkg/restore/Cargo.toml`，确认 library 根为 `lib.rs`，真实网络依赖为 grpcio 与带发布 tag 的 kvproto。
-- Go 对照：`br/pkg/restore/import_mode_switcher.go`。
-- 独立测试：`br/pkg/restore/import_mode_switcher_test.rs`、`br/pkg/restore/import_mode_switcher_test.go`、`br/pkg/restore/parity_test.rs`。它们分别验证初始与周期 Import、Normal 收尾、长睡眠即时唤醒、在线模式跳过 Normal、TiFlash 过滤、细粒度 undo 与真实 gRPC request。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务文件规定的命令确认本文恰有 11 个固定二级标题，并用 Git 暂存检查保证提交仅含本文档。

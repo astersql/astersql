@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-util-topsql-reporter`，由同目录 `lib.rs` 的 `datamodel` 模块通过 `include!` 编译，并经 `pub use datamodel::*` 从 crate 根公开。它把 TopSQL 一个上报窗口内的 CPU、语句统计、SQL/Plan digest 和规范化元数据组织成可聚合的数据结构，最终转换为 `tipb` protobuf。crate 边界、`tipb`、collector、state 和 stmtstats 的依赖见 `pkg/util/topsql/reporter/Cargo.toml` 与 `pkg/util/topsql/reporter/lib.rs`。
-
-当前接线需要特别区分：这些类型是公开、可编译且被独立测试覆盖的数据模型，但仓库内生产 Rust 代码没有找到对 `Collecting`、`Records`、`CpuRecords`、`NormalizedSqlMap` 或 `NormalizedPlanMap` 的直接使用；当前 `pkg/util/topsql/reporter/reporter.rs` 另有 `TopSQLCollecting`、`TopSQLRecord` 和 `MetaState`，实际收集/上报主链使用的是那套结构。因此本文件目前更接近已移植的数据模型 API 与兼容基线，而不是 `RemoteTopSQLReporter` 的直接运行时存储实现。
+用 `NormalizedSqlMap`、`NormalizedPlanMap` 限制一个快照中收集的规范化元数据数量，支持原子式取走快照及 protobuf 转换。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/topsql/reporter/datamodel.go`，测试对照是 `datamodel_test.go`。Rust 的 `TsItem`、`Record`、`Records`、`Collecting`、`CpuRecords`、`NormalizedSqlMap`、`NormalizedPlanMap` 分别对应 Go 的 `tsItem`、`record`、`records`、`collecting`、`cpuRecords`、`normalizedSQLMap`、`normalizedPlanMap`；protobuf 字段、Others 约定、Top-N 方向、空 Plan 合并和 Plan 解码失败跳过均保持同一意图。
-
 可见差异如下：
 
 - Go 当前元数据表使用 `atomic.Pointer<normalizedMetadataMap>`、`sync.Map`、CAS 预留和 generation 重试，并包含并发 failpoint；Rust 使用单个 `Mutex<HashMap>`，语义更易串行化但并发性能与 Go 的无锁 generation 模型不同。
@@ -102,11 +98,3 @@ Rust 的 `datamodel_test.rs` 基本逐项映射 Go 测试；额外的 `datamodel
 - 改复合键时，必须同时评估 `get_or_create_record`、淘汰集合、空 Plan 合并、Others 空键和 Go `encodeKey` 的兼容性。推荐新增长度编码前先设计旧快照/跨版本兼容方案，并为歧义 digest 增加独立回归测试。
 - 扩展元数据时，修改私有 meta、`register` 与 `to_proto` 三处；保持首次写入策略、容量计数和 `take` 的 generation 边界。涉及并发语义时，应在独立测试文件中增加多线程注册/take 交错测试，而不是把测试嵌入生产文件。
 - 若要让当前远程 reporter 复用本文件，接线点是 `reporter.rs` 的 `TopSQLCollecting`、`MetaState`、`processCPUTimeData`、`processStmtStatsData` 与 `takeDataAndSendToReportChan`。这属于行为重构，必须先证明 protobuf、backpressure、指标和并发快照语义一致，不能只替换类型名。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/util/topsql/reporter` 确认 `datamodel.rs`、Go 对照和测试均已索引；`node --file ... --offset 1/500` 读取目标文件 686 行与 60 个符号；`query` 找到 `Collecting`、`NormalizedSqlMap`、`NormalizedPlanMap`、`CpuRecords`、`encode_key` 及对应 Go/测试符号。组合 `explore` 与类型级 callers/callees 查询在 30 秒内无结果，因此调用边又用局部源码搜索核验。
-- 已读生产与配置：`pkg/util/topsql/reporter/datamodel.rs`、`datamodel.go`、`Cargo.toml`、`lib.rs`，以及为核对实际接线读取的 `reporter.rs` 相关收集和上报路径。
-- 已读测试：`pkg/util/topsql/reporter/datamodel_test.rs`、`datamodel_1_aster_unit_test.rs`、`datamodel_test.go`。覆盖时间序列排序/合并、Top-N、Others、空 Plan 修正、元数据容量/take/protobuf、解码错误和任意 digest 字节。
-- 仓库搜索：排除目标文件和两份直接 Rust 测试后，未发现主要模型类型的生产 Rust 使用；这支持“公开但尚未接入当前 reporter 主链”的结论。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构检查，并人工复核所有事实均可回链到上述符号或文件。

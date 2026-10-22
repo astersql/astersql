@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`common.rs` 是 `astersql-lightning-mydump` crate 的公共数据契约文件。crate 根模块在 [`lib.rs`](lib.rs) 中以 `mod common; pub use common::*;` 将本文件的类型重新导出，因此 loader、reader、parser、router、region、schema/view import，以及 crate 外的 Lightning importer 都可以从 crate 根使用这些类型。crate 边界和 Go 包映射由 [`Cargo.toml`](Cargo.toml) 的 `name = "astersql-lightning-mydump"`、`path = "lib.rs"` 和 `go-package = "pkg/lightning/mydump"` 明确给出。
-
-本文件不扫描目录、不读取数据，也不解析 SQL/CSV；它只定义统一错误 `MydumpError` 和描述输入文件的三个值类型 `ExtendColumnData`、`FileMeta`、`FileInfo`。实际构造与消费发生在相邻模块，例如 [`loader.rs`](loader.rs) 的 `constructFileInfo`、[`reader.rs`](reader.rs) 的文件打开/读取流程和 [`region.rs`](region.rs) 的分片计算。
+这些类型是“数据载体而非行为对象”：除标准派生实现和 `std::io::Error -> MydumpError` 转换外没有方法，也不自行维护跨字段不变量。
 
 ## 核心职责
 
@@ -94,12 +92,8 @@ RustCodeGraph 对 `common.rs` 的文件节点报告 32 个使用文件，直接�
 
 ## 与 Go 版本的对应关系
 
-Go 对照主要分散在 [`loader.go`](loader.go) 与 [`router.go`](router.go)：
-
-- Go `ExtendColumnData { Columns, Values []string }` 与 Rust `ExtendColumnData { columns, values }` 字段语义一致。
 - Go `FileInfo` 同时包含 `TableName filter.Table` 与 `FileMeta SourceFileMeta`；Rust `common.rs::FileInfo` 只包含文件元数据和扩展列。Rust 的库表归属由 `MDDatabaseMeta`/`MDTableMeta` 层级和路由结果承载，因此不能假定 Rust `FileInfo` 自带表名。
 - Go `SourceFileMeta` 含 `Path/Type/Compression/SortKey/FileSize/ExtendData/RealSize/Rows`。Rust 在当前移植中将常用子集拆为 `common.rs::FileMeta` 加 `FileInfo.extend_data`，而 [`loader.rs`](loader.rs) 又定义了一个带 `rows` 的 `SourceFileMeta`。这两个 Rust 类型并存，扩展字段时必须确认目标调用链，不能只改其中一个。
-- `SourceType` 和 `Compression` 的数值顺序及含义由 Rust/Go 两份 [`router.rs`](router.rs)、[`router.go`](router.go) 对照；`Default` 对应 Go 零值，即 Ignore/None。
 - Go 使用 `error`、`io.EOF` 和 PingCAP 结构化错误；Rust 用本地 `MydumpError` 分类，其中 `Eof` 对应 Go 侧正常 EOF 语义，但不是 `std::io::ErrorKind::UnexpectedEof` 的自动等价物。
 - Go 的错误链可用 `errors.Cause`/包装保留更多来源信息；现有 Rust `From<std::io::Error>` 只保留字符串，这是已实现行为差异。
 
@@ -112,13 +106,3 @@ Go 对照主要分散在 [`loader.go`](loader.go) 与 [`router.go`](router.go)�
 - 改动排序或大小语义时，同步更新 `loader_test.rs` 的排序/估算用例和 `region_test.rs` 的分片/引擎分配用例；压缩与读取行为则应同步 `reader_test.rs`。
 - 若需要保留 I/O 错误种类或 source chain，应设计结构化载荷，并评估 `Clone + Eq` 是否仍然必要；直接保存 `std::io::Error` 会破坏当前派生能力和 API 契约。
 - 性能风险主要来自深克隆 `String`/`Vec` 及在大文件清单中复制 `FileInfo`。引入共享所有权或借用会影响生命周期与线程边界，应先检查 loader/importer 的并行使用方式。
-
-## 验证依据
-
-- 源文件：[`common.rs`](common.rs)，核对 79 行完整实现、四个公开符号、七个错误变体、标准 I/O 转换及所有派生实现。
-- crate 装配与依赖：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)，确认 crate 名、Go 包映射、`thiserror` 依赖和 `pub use common::*` 公共出口。
-- RustCodeGraph：执行 `status`，索引包含 11,467 个文件且覆盖 `pkg/lightning/mydump/common.rs`；执行 `files --filter pkg/lightning/mydump`、目标文件 `node`、`MydumpError`/`ExtendColumnData`/`FileMeta`/`FileInfo` 查询及 callers/callees 检查。文件节点报告 32 个使用文件；`from` 无业务 callee。
-- Rust 直接实现：[`router.rs`](router.rs)、[`loader.rs`](loader.rs)、[`reader.rs`](reader.rs)、[`region.rs`](region.rs)、[`schema_import.rs`](schema_import.rs)、[`test_support.rs`](test_support.rs)。这些文件分别验证枚举定义、构造与排序、打开输入、大小消费、schema 错误和测试构造方式。
-- 独立 Rust 测试：[`loader_test.rs`](loader_test.rs) 覆盖 `sort_key`、路由与 `real_size`；[`region_test.rs`](region_test.rs) 覆盖 `FileInfo/FileMeta` 分片和 Parquet `real_size`；[`reader_test.rs`](reader_test.rs) 覆盖压缩元数据；[`schema_import_test.rs`](schema_import_test.rs) 覆盖 `MydumpError::Schema` 的传播/处理。
-- Go 对照与测试：[`loader.go`](loader.go)、[`router.go`](router.go)、[`loader_test.go`](loader_test.go)、[`region_test.go`](region_test.go)、[`parser_test.go`](parser_test.go) 与 [`csv_parser_test.go`](csv_parser_test.go)，核对数据结构、枚举零值、排序/大小语义和 `io.EOF` 行为。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按计划以源码/调用图事实复核和文档结构校验代替运行时验证。

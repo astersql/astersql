@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sys-storage` crate 的 Windows 专用实现，源码通过文件级 `#![cfg(target_os = "windows")]` 限定目标平台。crate 根 [`lib.rs`](lib.rs) 在 Windows 上声明并再导出 `sys_windows`，因此对 crate 使用者呈现统一的 `GetTargetDirectoryCapacity` API；Linux/macOS 和其他平台分别由 `sys_posix.rs`、`sys_other.rs` 提供同名实现。
-
-该 crate 还通过工作区根 `Cargo.toml` 的 `facade_util_sys_storage` 依赖以及 `pkg/lib.rs` 的 `pkg::util::sys::storage` 模块向上层门面导出。不过，截至本次核验，`cmd/tidb-server/main.rs::checkTempStorageQuota` 导入的是 `crate::stubs::storage_sys`，其返回固定 100 GiB，并没有调用本文件。因而本文件是可用的真实平台实现和测试目标，但尚不是当前 Rust 服务启动配额检查的实际后端。
+唯一职责是实现 `GetTargetDirectoryCapacity`：把调用者提供的路径转换成 Windows API 接受的、以 NUL 结尾的 UTF-16 路径，调用 `GetDiskFreeSpaceExW`，并返回该路径所在卷上“调用者可用”的空闲字节数。
 
 ## 核心职责
 
@@ -63,15 +61,7 @@ RustCodeGraph 精确符号查询同时找到各平台同名函数；由于重名
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/sys/storage/sys_windows.go`：
-
-- Go build tag `//go:build windows` 对应 Rust 文件级 `#![cfg(target_os = "windows")]` 和 `lib.rs` 的条件模块声明。
 - Go `path string` 对应 Rust 泛型 `P: AsRef<Path>`；Rust 接口更宽，但仍把路径转换为 Windows UTF-16。
-- Go `windows.StringToUTF16Ptr(path)` 对应 `encode_wide().chain(once(0)).collect()`；两者都为宽字符 API 准备终止 NUL。
-- Go `windows.GetDiskFreeSpaceEx(..., &freeBytes, nil, nil)` 对应 `GetDiskFreeSpaceExW(..., &mut free_bytes, null_mut(), null_mut())`。
-- Go 的 `(0, err)` 对应 Rust `Err(last_os_error())`；Rust `Err` 不携带单独的零值。Go 的 `(freeBytes, nil)` 对应 `Ok(free_bytes)`。
-
-相关 Go 测试 `sys_test.go::TestGetTargetDirectoryCapacity` 只验证当前目录查询成功且容量至少为 1。Rust 的 `sys_test.rs` 保留同一冒烟意图，`migration_aster_unit_test.rs` 还覆盖临时目录正容量和缺失路径错误。现有测试没有验证具体容量与系统工具一致，也没有 Windows 专属 mock/FFI 参数断言。
 
 ## 扩展指南
 
@@ -80,13 +70,3 @@ RustCodeGraph 精确符号查询同时找到各平台同名函数；由于重名
 - 修改路径编码、错误映射或 FFI 参数时，应在独立测试文件中增加 Windows 条件测试，优先扩展 `migration_aster_unit_test.rs`；不要把测试嵌入本生产文件。建议覆盖 Unicode 路径、磁盘配额语义、嵌入 NUL 的兼容决策和明确的不存在路径。
 - 保持 Windows 依赖位于 Cargo 的 target-specific dependency 下，并保留 `Win32_Storage_FileSystem` feature，避免让非 Windows 构建无条件承担平台绑定。
 - FFI 调整必须继续维持指针有效期、终止 NUL、输出指针对齐/可写及 `last_os_error` 的即时捕获；这些是主要正确性与兼容风险。容量查询是同步系统调用，若将来放入高频路径，应由上层评估缓存和阻塞成本，而不是在本文件引入隐式全局缓存。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 `pkg/util/sys/storage/sys_windows.rs`；`node --file ... --offset 1 --limit 260` 读取到完整 76 行源码；`query GetTargetDirectoryCapacity --kind function` 确认 Windows、POSIX、兜底和桩实现的重名边界；`callers`/`callees` 结果因重名无法可靠区分 Windows 定义，未据此臆造调用关系。
-- 生产源码与入口：`pkg/util/sys/storage/sys_windows.rs`、`pkg/util/sys/storage/lib.rs`、`pkg/lib.rs`、`cmd/tidb-server/main.rs`、`cmd/tidb-server/stubs.rs`。
-- 依赖声明：`pkg/util/sys/storage/Cargo.toml`、工作区根 `Cargo.toml`；前者确认 Windows 专属 `windows-sys` feature，后者确认门面依赖名。
-- Go 对照：`pkg/util/sys/storage/sys_windows.go`、`cmd/tidb-server/main.go::checkTempStorageQuota`。
-- 独立测试：`pkg/util/sys/storage/sys_test.rs`、`pkg/util/sys/storage/migration_aster_unit_test.rs`、`pkg/util/sys/storage/main_test.rs`，以及 Go 的 `sys_test.go`、`main_test.go`。
-- 仓库级 `rg`：确认 Rust 测试、Go/Rust服务调用点和同名平台实现；确认当前没有其他 Rust 生产调用点直接使用本 crate 的函数。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构检查另行执行，以确认文件存在且恰有 11 个规定的二级标题。

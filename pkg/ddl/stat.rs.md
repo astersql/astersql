@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl` crate：`pkg/ddl/Cargo.toml` 声明库入口为 `lib.rs`，`pkg/ddl/lib.rs` 通过 `pub mod stat;` 无条件公开本模块，并在 `cfg(test)` 下从独立文件 `pkg/ddl/stat_test.rs` 挂载测试。它位于 DDL 的状态观测边界，定义导出本节点标识与当前 schema version 的值模型，以及从会话池读取版本时必须遵守的资源归还协议。
-
-当前接线状态必须与 Go 生产实现区分。仓库精确引用搜索表明，Rust 生产代码尚未实例化 `DdlStatistics`、`DdlStats` 或实现 `StatsSessionPool`；这些符号的直接 Rust 使用者只有 `pkg/ddl/stat_test.rs`。因此本文件已移植可独立验证的状态值、scope 和会话生命周期语义，但不能据此认定 Rust 的 `SHOW STATUS` 或 DDL 实例已经调用它。Go 的真实生产入口是 `pkg/ddl/stat.go:(*ddl).Stats`。
-
-从 DDL 执行模型看，这里是只读、metadata-only 的状态查询，不创建或推进 DDL job，不触发 schema state 转换、reorg/backfill、schema diff 发布、owner 调度、取消/回滚或 delete-range GC。读取到的 schema version 是 DDL 元数据状态的观测值，不是由本文件递增。
+`DdlStatistics::stats` 执行动态读取：获取会话、读取 schema version、归还会话，然后仅在读取成功时构造两项状态 map。
 
 ## 核心职责
 
@@ -75,9 +71,9 @@ Go 的 `GetDDLInfoWithNewTxn` 会在会话上开始新事务、调用 `GetDDLInf
 
 ## 与 Go 版本的对应关系
 
-键常量逐字对应 `pkg/ddl/stat.go` 的 `serverID` 和 `ddlSchemaVersion`。`DdlStats::scope` 对应 `(*ddl).GetScope`，Rust 的 `ScopeGlobal | ScopeSession` 与 `pkg/sessionctx/variable/statusvar.go:DefaultStatusVarScopeFlag` 等价。`DdlStats::stats` 是 Rust 新增的纯快照表达；Go 没有独立的同名快照结构。
+`DdlStats::stats` 是 Rust 新增的纯快照表达；Go 没有独立的同名快照结构。
 
-`DdlStatistics::stats` 对应 `(*ddl).Stats` 的主要控制流：获取池会话，读取当前 schema version，归还会话，返回 server ID 和整数版本。Rust 用泛型 trait 隔离真实 DDL/session/meta 依赖；Go 直接持有 `d.uuid`、`d.sessPool` 并调用 `GetDDLInfoWithNewTxn`。Go 返回 `map[string]any`，Rust 返回 `BTreeMap<String, StatusValue>`，因此 Rust 的值域更窄且顺序确定。
+Rust 用泛型 trait 隔离真实 DDL/session/meta 依赖；Go 直接持有 `d.uuid`、`d.sessPool` 并调用 `GetDDLInfoWithNewTxn`。Go 返回 `map[string]any`，Rust 返回 `BTreeMap<String, StatusValue>`，因此 Rust 的值域更窄且顺序确定。
 
 语义差异与缺口包括：Rust 尚无生产实现或状态框架适配；`schema_version` 只返回版本，未携带 Go `Info` 中的 `Jobs` 与 `ReorgHandle`；Rust 错误不经过 `errors.Trace`；Rust 显式 `put` 不覆盖 panic；本模块 `StatusValue` 与 Rust 通用状态变量模块的同名类型相互独立。Go 回归测试 `pkg/ddl/restart_test.go:getDDLSchemaVer` 证明生产 `Stats` 可用于 DDL worker 重启场景，而当前 Rust 测试只验证局部模型和 mock 池。
 
@@ -90,12 +86,3 @@ Go 的 `GetDDLInfoWithNewTxn` 会在会话上开始新事务、调用 `GetDDLInf
 会话生命周期扩展应优先引入 RAII guard，使读取错误、早返回和 panic 都不会泄漏池资源，并定义 `put` 本身失败时的处理。如果 trait 增加 `Send`/`Sync`、异步方法或借用式 session，需同步评估对象安全、并发池语义和事务跨 await 的风险。
 
 修改 schema version 来源时，要保持它是持久元数据中“带非空 diff”的当前版本，而不是本地缓存或某个 job 的临时版本；否则多节点观测和 Go 兼容性会偏离。该文件仍应保持只读状态查询，不应在此接入 job 推进、schema state 转换或版本发布副作用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ddl/stat.rs` 确认目标文件被索引且含 17 个符号；`node --file pkg/ddl/stat.rs --offset 1 --limit 400` 核对全部 96 行；`query` 精确定位 `StatsSessionPool`、`DdlStatistics`、`DdlStats`；`callees stat.rs::DdlStatistics` 显示动态 `stats` 对三个 trait 方法、键常量和值变体的调用/引用；精确 `explore` 找到测试实例化及 `get`/`put`/`schema_version` 调用边。
-- Rust 源与装配：`pkg/ddl/stat.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。装配证据是生产模块无条件公开、测试模块仅在 `cfg(test)` 下接入；Cargo 证据是 crate 名为 `astersql-ddl`、入口为 `lib.rs`、scope 类型来自 `astersql-sessionctx-vardef` 路径依赖。
-- Rust 独立测试：`pkg/ddl/stat_test.rs` 中的 `ddl_status_scope_and_value_types_match_go`、`ddl_stats_returns_session_on_success_and_read_error`、`ddl_stats_does_not_put_when_session_acquisition_fails`。同文件后半的 DDL job fixture 测试不直接调用本文件 API，未被当作状态导出行为证据。
-- Go 对照：`pkg/ddl/stat.go` 的 `GetScope`/`Stats`，`pkg/ddl/ddl.go:GetDDLInfoWithNewTxn`/`GetDDLInfo`，以及 `pkg/sessionctx/variable/statusvar.go:DefaultStatusVarScopeFlag`。Go 使用证据来自 `pkg/ddl/restart_test.go:getDDLSchemaVer`。
-- 包契约与 DDL 边界：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`。本文件读取元数据状态但不驱动 job、schema state、reorg、持久化 checkpoint、schema sync、MDL 或回滚状态机。
-- 交付按任务约束不运行 Cargo；使用任务指定命令验证目标文档存在且恰有十一个固定二级标题，并用精确引用搜索人工确认未把测试专用、尚未接线的 Rust API 描述为生产现状。

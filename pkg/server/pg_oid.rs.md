@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server` crate 内部的 PostgreSQL 对象标识适配层。`pkg/server/lib.rs` 以私有模块 `mod pg_oid` 挂载它，因此这里的常量和函数即使声明为 `pub(crate)`，也只服务于 server crate 内的 PostgreSQL 协议、系统目录和查询适配代码，不构成跨 crate API。crate 边界由 `pkg/server/Cargo.toml` 的 `[package] name = "astersql-server"` 与 `[lib] path = "lib.rs"` 确认。
-
-它解决两个相连的问题：一是把 AsterSQL 持久化的 schema、table、table-local index ID 稳定映射到 PostgreSQL `u32` OID；二是在 PostgreSQL `regclass` 的文本名称与这些 OID 之间转换。主要消费方是 `pkg/server/pg_catalog.rs`，后者用这些 OID 生成 `pg_namespace`、`pg_class`、`pg_index`、`pg_depend` 等目录行，并在 `oid`/`regclass` 强制转换时调用名称解析和反向显示。
+主要消费方是 `pkg/server/pg_catalog.rs`，后者用这些 OID 生成 `pg_namespace`、`pg_class`、`pg_index`、`pg_depend` 等目录行，并在 `oid`/`regclass` 强制转换时调用名称解析和反向显示。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ RustCodeGraph 对 `table_oid` 的下游边为 `signed_id`、`bounded`、`TABLE_B
 
 `pkg/server/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/server"` 表明整个 crate 对齐 Go 的 `pkg/server` 包，但仓库中不存在 `pkg/server/pg_oid.go`；在 `pkg/server/**/*.go` 中也未找到 `regclass`、本文件范围错误文本或同名 OID 映射实现。因此，本文件没有可声明的一一对应 Go 源文件，当前直接证据表明它是 Rust PostgreSQL 适配层为 PG 系统目录和 `regclass` 行为新增的实现。
 
-不能据此推断 Go server 拥有相同的三段 OID布局、Cantor pairing 或搜索路径语义。可验证的对齐对象是 PostgreSQL 客户端可见契约，以及 Rust 侧 `pg_catalog` 生产者与测试，而不是缺失的 Go 代码。若以后 Go 侧加入对应实现，应单独核对固定系统 OID、范围边界、大小写/引号规则、搜索顺序和同名索引歧义处理。
+可验证的对齐对象是 PostgreSQL 客户端可见契约，以及 Rust 侧 `pg_catalog` 生产者与测试，而不是缺失的 Go 代码。
 
 ## 扩展指南
 
@@ -89,13 +87,3 @@ RustCodeGraph 对 `table_oid` 的下游边为 `signed_id`、`bounded`、`TABLE_B
 - 扩展反向文本表示时，修改 `display`、`native_name`、`quoted`，并保证输出能够由解析路径安全回读；尤其不能让 `public` 中与系统目录同名的表显示成无前缀名称。
 - 测试逻辑应继续放在独立文件 `pkg/server/pg_oid_test.rs`，端到端 cast/查询覆盖放在现有 `pkg/server/pg_catalog_query_test.rs`、`pkg/server/pg_catalog_test.rs` 或其他相应独立测试文件，不要把测试内嵌进生产源文件。
 - 当前解析和显示是线性扫描。若引入缓存，必须明确 snapshot/DDL 版本作为失效键，并保持同一快照内一致性；否则宁可保留现有无状态实现。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点、1,848,419 条边；通过 `node --file pkg/server/pg_oid.rs` 阅读了完整 266 行生产源码。
-- RustCodeGraph 符号/调用查询：查询了 `namespace_oid`、`table_oid`、`index_oid`、`resolve`、`resolve_with_path`、`display`；并对 `table_oid`、`index_oid`、`resolve_with_path` 执行 `callers`/`callees`。调用者图为空的部分以 `rg` 精确引用结果补齐，未将空图误写成“无人调用”。
-- crate 与模块证据：读取 `pkg/server/Cargo.toml` 和 `pkg/server/lib.rs`；确认 `astersql-server`、`astersql-infoschema` 路径依赖、私有 `pg_oid` 模块及独立 `pg_oid_test.rs` 挂载。
-- 直接实现/调用证据：读取 `pkg/server/pg_oid.rs`、`pkg/server/pg_catalog.rs` 的 cast 与目录行生成片段、`pkg/server/pg_catalog_query.rs::is_catalog_relation`，以及 `pkg/server/pg_result.rs::CatalogColumnType` 的符号位置。
-- 测试证据：读取 `pkg/server/pg_oid_test.rs`，其验证区间隔离、零值与极值拒绝、负 ID 区分、系统 OID及小范围原生 OID唯一性；读取 `pkg/server/pg_query_test.rs::namespace_catalog_live_metadata` 的边界和跨连接稳定性断言；搜索并核对 `pkg/server/pg_catalog_query_test.rs` 与 `pkg/server/pg_catalog_test.rs` 中数字 OID、系统/原生表、索引和 `regclass` cast 的调用场景。
-- Go 对照证据：检查确认 `pkg/server/pg_oid.go` 不存在，并在 `pkg/server/**/*.go` 搜索 `regclass`、范围错误和歧义错误文本无结果；因此只记录“无直接 Go 对照”，不推测未实现语义。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终还需以任务指定命令确认目标文档存在且恰有十一个固定二级标题。

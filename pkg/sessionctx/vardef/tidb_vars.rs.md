@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`tidb_vars.rs` 属于 `astersql-sessionctx-vardef` crate，是 TiDB 专有系统变量的底层定义表。它集中保存变量名、`Def*` 默认值、取值枚举、作用域/类型标志、进程级可变状态以及少量转换和原子访问函数。crate 入口 `pkg/sessionctx/vardef/lib.rs` 通过 `mod tidb_vars; pub use tidb_vars::*;` 将这些符号平铺重导出，因此调用方通常使用 `astersql_sessionctx_vardef::TiDB...` 或将整个 crate 别名为 `vardef`，而不会直接引用私有模块路径。
-
-该文件本身不是完整的 SysVar 注册表，也不负责解析 SQL。系统变量的合法范围、SET/SHOW 行为及会话值保存主要由 `pkg/sessionctx/variable/variable.rs`、其 SysVar 定义和 `pkg/session/runtime/control.rs` 完成；本文件为这些上层流程提供稳定的名字、默认值和跨会话共享状态。RustCodeGraph 将该文件识别为被 20 个文件直接使用，实际消费面包括 session、DDL、executor、planner、server、domain、meta 与 infoschema。
-
-crate 边界由 `pkg/sessionctx/vardef/Cargo.toml` 给出：库入口为 `lib.rs`，直接依赖 `chrono`、`sysinfo` 和路径依赖 `astersql-config-kerneltype`；`nextgen` feature 向 `kerneltype/nextgen` 透传。没有在这里声明 tipb、配置中心或慢日志规则 crate，相关 Go 类型因此在 Rust 文件中使用本地表示或简化边界。
+绝大多数内容是声明性数据，真正有分支或状态转换的逻辑集中在文件开头的原子包装，以及约第 2227 行之后的辅助函数和类型实现。
 
 ## 核心职责
 
@@ -94,7 +90,7 @@ RustCodeGraph 对精确节点给出的下游边包括：`IsMDLEnabled → kernel
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/sessionctx/vardef/tidb_vars.go`，Rust 保留了变量名、声明分组、默认值、枚举数值、作用域字符串顺序、聚簇索引回退、DDL 原子访问，以及 NextGen 的 MDL/事务断言分支。Go 测试 `pkg/sessionctx/vardef/tidb_vars_test.go` 的 `TestIsMDLEnabledInNextGen` 和慢日志 limiter 并发 benchmark，在 Rust 独立测试 `tidb_vars_test.rs` 中有相应行为覆盖；更完整的迁移测试位于 `tidb_vars_2_aster_unit_test.rs`。
+Go 测试 `pkg/sessionctx/vardef/tidb_vars_test.go` 的 `TestIsMDLEnabledInNextGen` 和慢日志 limiter 并发 benchmark，在 Rust 独立测试 `tidb_vars_test.rs` 中有相应行为覆盖；更完整的迁移测试位于 `tidb_vars_2_aster_unit_test.rs`。
 
 需要明确的表示或接线差异如下：
 
@@ -105,8 +101,6 @@ RustCodeGraph 对精确节点给出的下游边包括：`IsMDLEnabled → kernel
 - Go TTL 窗口是 `atomic.Time`，Rust 保存经过 `chrono` 校验的 `String`；Go duration 原子在 Rust 中多以 `i64` 表示。数值单位由各 `Def*` 注释和消费者约定维持，类型系统没有编码单位。
 - Go 的 `GlobalLogMaxDays` 和 `DDLSlowOprThreshold` 从全局配置初始化；Rust 当前分别初始化为 `0` 和 `300`。这属于当前源码事实，不能描述为已与运行时配置动态一致。
 - Go `serverMemoryLimitDefaultValue` 通过 `memory.MemTotal()` 返回错误；Rust 使用 `sysinfo` 并只判断总内存是否非零，两者都以 `80%`/`0` 表达成功与回退，但探测来源不同。
-
-因此本文件是高覆盖度迁移，而不是所有外部类型和初始化来源的一比一替换。判断某变量是否“完全迁移”时还必须检查上层注册、回调和生产消费者。
 
 ## 扩展指南
 
@@ -120,15 +114,3 @@ RustCodeGraph 对精确节点给出的下游边包括：`IsMDLEnabled → kernel
 6. 测试必须继续放在独立文件。优先扩展 `pkg/sessionctx/vardef/tidb_vars_2_aster_unit_test.rs`（类型、默认值、原子访问、时间和内核分支）或 `pkg/sessionctx/vardef/tidb_vars_test.rs`（Go 同名测试/并发行为），并用恢复守卫还原所有被修改的静态状态；Go 语义变化时同步核对 `tidb_vars.go` 与 `tidb_vars_test.go`。
 
 主要兼容风险是 SQL 名称/默认值漂移、Go iota 数值或协议枚举不一致、作用域错误以及 Classic/NextGen 分支倒置；主要正确性风险是绕过校验写入全局状态或多原子更新破坏不变量；主要性能风险是高频读取字符串产生克隆、扩大 `SeqCst` 原子使用，以及在全局 `RwLock` 内执行重工作。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/vardef/tidb_vars.rs` 与 `git show 2c944fb:pkg/sessionctx/vardef/tidb_vars.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：冻结 Go `pkg/sessionctx/vardef/tidb_vars.go` 同名常量/原子值；`pkg/sessionctx/variable/sysvar_builtins_test.rs` 的 range_count_threshold_sysvar_matches_go_contract 与 sampled_ndv_threshold_sysvar_updates_global_atomic_state 记录作用域、默认值、字段和原子钩子断言。
-- 源文件全貌：`pkg/sessionctx/vardef/tidb_vars.rs`（2685 行）；符号盘点确认 968 个 `pub const`、113 个 `pub static`、19 个 `pub fn`，并检查了所有结构体、枚举、类型别名、impl 和函数区域。
-- crate 与模块边界：`pkg/sessionctx/vardef/Cargo.toml`、`pkg/sessionctx/vardef/lib.rs`。
-- Go 对照：`pkg/sessionctx/vardef/tidb_vars.go`，重点核对进程全局 var block、内存/时间辅助、压缩模式、作用域/类型标志、聚簇索引转换、DDL 原子访问及内核分支。
-- 独立测试：`pkg/sessionctx/vardef/tidb_vars_test.rs`、`pkg/sessionctx/vardef/tidb_vars_2_aster_unit_test.rs`；Go 对照测试：`pkg/sessionctx/vardef/tidb_vars_test.go`。
-- 直接调用证据包括：`pkg/session/runtime/control.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/domain/domain.rs`、`pkg/ddl/normal_policy.rs`、`pkg/ddl/reorg.rs`、`pkg/meta/model/reorg.rs`、`pkg/infoschema/issyncer/syncer.rs`、`pkg/sessionctx/variable/variable.rs`、`pkg/executor/adapter.rs` 和 `pkg/kv/version_test.rs`。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

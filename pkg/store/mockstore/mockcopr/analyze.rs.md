@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-mockcopr` crate，crate 入口 `pkg/store/mockstore/mockcopr/lib.rs` 通过 `mod analyze;` 装配本模块，并在 `#[cfg(test)]` 下把独立测试文件 `analyze_test.rs` 接入同一 crate。`Cargo.toml` 的 `[package.metadata.porting]` 将 crate 对应到 Go 包 `pkg/store/mockstore/mockcopr`；本实现服务于 mockstore 的 Coprocessor `ANALYZE` 路径，不是 TiKV 或 SQL 层生产统计系统的完整实现。
-
-已核实的上游调用链是 `rpc_copr.rs::coprRPCHandler::HandleCmdCop` → `copr_handler.rs::coprHandler::handle_request` → 本文件 `coprHandler::handleCopAnalyzeRequest`。`handle_request` 只在载荷为 `RequestPayload::Analyze` 时进入本模块；本文件再按 `AnalyzeType::{Index, Columns}` 选择索引或列统计分支。
+提供简化的 `analyzeColumnsExec` 拉取接口：首次取数时扫描并缓存全部行，之后每次 `Next` 最多输出一行。
 
 ## 核心职责
 
@@ -84,13 +82,11 @@ RustCodeGraph 与源码共同确认以下边：
 
 ## 与 Go 版本的对应关系
 
-同路径 `analyze.go` 提供同名 handler 和 `analyzeColumnsExec`，Rust 保留了空范围守卫、索引/列分支、升序 MVCC 扫描、列执行器 `Next` 清空目标以及 `Close` 无操作等外形，但实现范围明显更窄。
-
 Go 入口还校验 `kv.ReqTypeAnalyze`、请求 Region context，并从 `req.Data` protobuf 反序列化 `tipb.AnalyzeReq`；Rust 请求已经是结构化 `RequestPayload::Analyze`，Region context 由更外层 `HandleCmdCop` 的简化会话检查处理。Go 在 `req.StartTs == 0` 时使用 `StartTsFallback`，Rust 始终直接把 `request.start_ts` 传给 reader。
 
-Go 索引路径使用 `indexScanExec`、`statistics.NewSortedBuilder` 和可选 `CMSketch`，并输出 protobuf `AnalyzeIndexResp`；Rust 把扫描行编码为一个字节值，计算简化直方图、精确 NDV和样本，再输出自有格式。Go 列路径构造字段类型、默认值 decoder、collator、`statistics.SampleBuilder`、FM/CMS sketch 和可选 PK builder，输出 `AnalyzeColumnsResp`；Rust 只按向量偏移统计 `Datum`，缺列补 NULL。因此两者共享“mock ANALYZE 扫描并汇总统计”的目的，但 Rust 当前不是逐字段等价移植。
+Go 索引路径使用 `indexScanExec`、`statistics.NewSortedBuilder` 和可选 `CMSketch`，并输出 protobuf `AnalyzeIndexResp`；Rust 把扫描行编码为一个字节值，计算简化直方图、精确 NDV和样本，再输出自有格式。Go 列路径构造字段类型、默认值 decoder、collator、`statistics.SampleBuilder`、FM/CMS sketch 和可选 PK builder，输出 `AnalyzeColumnsResp`；Rust 只按向量偏移统计 `Datum`，缺列补 NULL。
 
-Go `analyzeColumnsExec::Fields` 返回预建的 `ResultField` schema，`Next` 从 `tableScanExec` 流式拉取一行并把 codec NULL flag 转成 SQL NULL；Rust `Fields` 返回已加载首行的宽度，且执行器首次调用便缓存整个扫描。当前 Rust 独立测试只覆盖请求守卫与执行器生命周期，没有直接断言直方图、NDV、采样、索引编码或错误响应。目录内没有同路径 `analyze_test.go`；Go 行为依据来自 `analyze.go` 本身及相邻 Go 请求链。
+Go `analyzeColumnsExec::Fields` 返回预建的 `ResultField` schema，`Next` 从 `tableScanExec` 流式拉取一行并把 codec NULL flag 转成 SQL NULL；Rust `Fields` 返回已加载首行的宽度，且执行器首次调用便缓存整个扫描。当前 Rust 独立测试只覆盖请求守卫与执行器生命周期，没有直接断言直方图、NDV、采样、索引编码或错误响应。
 
 ## 扩展指南
 
@@ -100,15 +96,3 @@ Go `analyzeColumnsExec::Fields` 返回预建的 `ResultField` schema，`Next` �
 - 若优化大数据量资源使用，应优先评估让列/索引统计增量消费扫描结果，以及消除列路径对每个单元格的重复克隆；但流式直方图和确定性采样必须保持排序/NDV契约，且要评估结果与 Go builder 的差异。
 - 修改 `analyzeColumnsExec` 时需保持“首次访问最多扫描一次”“`Next` 先清空目标且最多追加一行”“`Close` 不回绕”这些已测试行为。若要让 `Fields` 表示 schema，应新增显式字段元数据，不能继续从尚未加载的行推导。
 - 正确性风险主要是简化 `Datum` 排序与真实 SQL 类型/collation 不一致；兼容风险主要是自有响应格式；性能风险主要是全量扫描、排序、逐列克隆和最终编码的峰值内存。
-
-## 验证依据
-
-- `pkg/store/mockstore/mockcopr/analyze.rs`：RustCodeGraph `node --file` 完整读取 1–297 行，核对 22 个已索引符号、分支、编码、统计算法和执行器状态。
-- `pkg/store/mockstore/mockcopr/copr_handler.rs`：`CopError`、`Datum::{Ord,encode}`、`KvReader`、`AnalyzeType`、`AnalyzeRequest`、请求/响应类型、`coprHandler` 及 `handle_request` 分派。
-- `pkg/store/mockstore/mockcopr/rpc_copr.rs`：`coprRPCHandler::HandleCmdCop` 的请求上下文检查和外层调用入口。
-- `pkg/store/mockstore/mockcopr/Cargo.toml`、`lib.rs`：crate 名、lib 入口、Go 包映射、optional 依赖边界、模块及独立测试装配；目标包目录未发现 `doc.go`。
-- `pkg/store/mockstore/mockcopr/analyze.go`：Go handler、索引/列统计构建和 `analyzeColumnsExec` 的完整对照证据。
-- `pkg/store/mockstore/mockcopr/analyze_test.rs`：`analyze_request_guards_match_go` 证明空范围/错误载荷不扫描；`analyze_columns_exec_matches_record_set_lifecycle` 证明 `Next` 清空目标和空扫描只执行一次；`analyze_columns_close_does_not_rewind_the_record_set` 证明 `Close` 不回绕且不重扫。
-- RustCodeGraph：`status` 报告索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore/mockcopr` 列出目标 Rust/Go/测试文件；`query` 定位 Rust、同路径 Go 和 unistore 的同名符号；窄化 `explore` 明确给出 `handle_request → handleCopAnalyzeRequest`、handler 内两分支以及 `analyzeColumnsExec::Next` 的调用者。单独 `callers handleCopAnalyzeRequest` 在 90 秒内无输出后中止，调用边已由图探索和源码调用点交叉复核。
-
-本任务是纯文档分析，按计划未运行 Cargo。人工复核确认本文区分了当前 Rust mock 与 Go 完整统计实现，能够回答文件为何存在、请求如何运行、状态和错误如何流动，以及安全扩展时需要修改和补测的位置。

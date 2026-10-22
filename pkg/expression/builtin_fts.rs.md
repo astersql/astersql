@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 中全文检索（FTS）内置函数的轻量校验内核，源文件由 [`pkg/expression/lib.rs`](lib.rs) 以 `builtin_fts_kernel` 私有模块装入，再通过公开模块 `astersql_expression::builtin_fts` 全量再导出。crate 边界由 [`pkg/expression/Cargo.toml`](Cargo.toml) 定义；本文件自身唯一直接外部依赖是 `thiserror = "2"`，用于生成稳定的错误展示文本。
-
-它负责把上层已经归类好的表达式形状转换为两种 FTS 签名状态，并在 TiDB/AsterSQL 侧直接求值时执行保护。它不解析 SQL、不持有真实表达式树，也不执行倒排索引匹配。生产代码中可确认的上游是 [`pkg/session/fts_runtime.rs`](../session/fts_runtime.rs) 的 `FtsSessionRuntime::validate_fts_expression`：该适配层从 AST 提取 `FTS_MATCH_WORD` 的查询词和列形状，再调用 `build_match_word`。当前仓库搜索未发现非测试 Rust 代码调用 `build_mysql_match_against` 或 `set_mysql_match_against_modifier`，因此 MySQL `MATCH ... AGAINST` 这一半应视为已实现并公开、但尚未由 Rust 生产主链接线的表达式内核。
+负责把上层已经归类好的表达式形状转换为两种 FTS 签名状态，并在 TiDB/AsterSQL 侧直接求值时执行保护。
 
 ## 核心职责
 
@@ -97,7 +95,7 @@ Rust `build_match_word` 对应 Go `ftsMatchWordFunctionClass.getFunction` 的核
 
 Rust `build_mysql_match_against` 对应 Go `ftsMysqlMatchAgainstFunctionClass.getFunction`：接受字符串常量或 NULL，拒绝非常量与非字符串常量，并要求所有 MATCH 列为字符串列。Go 还创建返回类型为 real 的 builtin 并设置 `tipb.ScalarFuncSig_FTSMatchExpression`；Rust 没有 base builtin、返回类型或 protobuf code。
 
-Rust 两个 `eval_real` 与 Go 两个 `evalReal` 的保护语义一致：MatchWord 始终拒绝 TiDB 侧执行；MySQL 形式先识别 NULL 查询词并返回 NULL，否则拒绝索引外执行。区别是 Go 从 `b.args[0]` 防御性读取实际常量，Rust 已在构建期把 NULL 压缩为 `Option`，求值时不再读取表达式参数。
+Rust 两个 `eval_real` 与 Go 两个 `evalReal` 的保护语义一致：MatchWord 始终拒绝 TiDB 侧执行；MySQL 形式先识别 NULL 查询词并返回 NULL，否则拒绝索引外执行。
 
 Rust 的 `set_mysql_match_against_modifier`/`FtsSignature` 对应 Go `SetFTSMysqlMatchAgainstModifier` 的签名类型检查及 `SetModifier`，但 Rust helper 当前未见生产调用。Go 使用 `ast.FulltextSearchModifier`，Rust 使用本地四变体枚举；若将 Rust 路径接入 parser/planner，必须显式验证两者所有组合的映射，尤其是“自然语言 + 查询扩展”的位组合。
 
@@ -112,12 +110,3 @@ Go 证据还包括 [`pkg/expression/fts_to_like_test.go`](fts_to_like_test.go)�
 - 若要支持真实匹配计算，不应在 `eval_real` 中做无索引全表扫描；应让规划器把签名绑定到全文索引执行路径，并保留这里的索引外守卫。需要明确索引生命周期、事务可见性和下推协议，而不是只返回一个伪分数。
 - 若让 `fts_function_used` 真正影响 statement context，应在会话/表达式构建层完成状态写入并测试生命周期；不要在这个无上下文内核中引入全局可变状态。
 - 兼容性风险主要是错误消息/优先级、NULL 三值逻辑和修饰符映射；性能风险主要来自误把守卫替换成逐行本地匹配，或在 builder 中复制/保存完整列对象。当前构建仅线性扫描列分类并复制查询字符串。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引可用；`query` 分别定位 `build_match_word`（第 170 行）、`build_mysql_match_against`（第 200 行）和 `set_mysql_match_against_modifier`（第 223 行）；`node --file pkg/expression/builtin_fts.rs` 读取完整 234 行源码。
-- RustCodeGraph callee：确认两个 builder 均调用 `validate_columns` 并实例化各自签名；modifier helper 调用 `FtsMysqlMatchAgainstSig::set_modifier`。caller 查询未给出跨 crate 结果，因此跨 crate 关系另以源码搜索核验。
-- 已读生产源码/配置：[`pkg/expression/builtin_fts.rs`](builtin_fts.rs)、[`pkg/expression/lib.rs`](lib.rs)、[`pkg/expression/Cargo.toml`](Cargo.toml)、[`pkg/session/fts_runtime.rs`](../session/fts_runtime.rs)、[`pkg/session/lib.rs`](../session/lib.rs)、[`pkg/expression/builtin_fts.go`](builtin_fts.go)、[`pkg/expression/builtin.go`](builtin.go)。`pkg/expression` 下未发现 `doc.go`。
-- 已读测试：[`pkg/expression/builtin_fts_test.rs`](builtin_fts_test.rs)、[`pkg/expression/builtin_encryption_11_aster_unit_test.rs`](builtin_encryption_11_aster_unit_test.rs) 的 FTS 段，以及 Go [`pkg/expression/fts_to_like_test.go`](fts_to_like_test.go) 的真实 builtin 构建和 modifier/NULL 边界。源码搜索还确认会话级独立测试位于 `pkg/session/fts_runtime_test.rs`。
-- 人工复核结论：该文件存在的目的，是在不依赖完整表达式框架的前提下复刻 FTS 构建门禁和索引外求值保护；当前 Rust 生产链只确认接入 `FTS_MATCH_WORD` 校验，MySQL builder/modifier 仍只见测试使用。安全扩展必须保持 Go 校验顺序与 NULL 语义，并把真实执行留给全文索引路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构验证要求本文恰好包含任务指定的 11 个二级标题。

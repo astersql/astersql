@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser` crate 内 optimizer hint 的 LALR 解析核心：接收 `hintScanner` 已经切分出的 token，通过生成表执行移进/归约，并构造 `parser_ast::TableOptimizerHint`。它不负责从完整 SQL 中识别 `/*+ ... */`，也不直接提供公开入口；词法扫描、解析器实例和公开 `ParseHint` 位于 [`hintparserimpl.rs`](./hintparserimpl.rs)。
-
-模块装配见 [`lib.rs`](./lib.rs)：`parser_impl::lexer_support` 依次 `include!` 生成 token/表、本文件、`hintparserimpl.rs`、通用 lexer 等，因此本文件可直接使用同一模块作用域中的 `ast`、`Error`、错误常量、`hintParser`、`yyhintSetOffset` 和生成常量。SQL 主解析链在 [`parser_actions/query.rs`](./parser_actions/query.rs) 的 `TableOptimizerHintsAlt01` 调用 `Parser::parseHint`；后者位于 [`yy_parser.rs`](./yy_parser.rs)，复用 `hintParser` 并最终进入本文件的 `yyhintParse`。crate 根还再导出 `ParseHint`，允许独立解析一段完整的 hint 注释。
+`yyhintSymType` 定义 token 与非终结符共用的语义栈槽，承载标识符、整数、单个/多个 hint、表、分区名和 LEADING 嵌套结构。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ RustCodeGraph 精确查询识别出 `pkg/parser/hintparser.rs::yyhintParse`、`r
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`hintparser.go`](./hintparser.go)，文法源是 [`hintparser.y`](./hintparser.y)，词法与公开入口对照是 [`hintparserimpl.go`](./hintparserimpl.go)。`yyhintSymType` 字段、lexer 接口、token 翻译、shift/reduce/goto 结构和规则 1–76 的有动作分支与 Go 保持同一语义顺序；Rust 用 `HintData` enum 代替 Go `interface{}`，用 `LeadingElement`/`LeadingItem` 明确 LEADING 元素类型，用 `Box` 表示指针拥有关系。
-
-语义对齐包括：不支持 hint 只报警告；query block/table/index/partition 按输入顺序保留；READ_FROM_STORAGE 为每个存储类型生成 hint；LEADING 同时保留嵌套与扁平视图；`SET_VAR`、布尔、时间范围和内存配额分别进入对应 `HintData` 变体；负整数 `-2^63` 是合法边界。
+`yyhintSymType` 字段、lexer 接口、token 翻译、shift/reduce/goto 结构和规则 1–76 的有动作分支与 Go 保持同一语义顺序；Rust 用 `HintData` enum 代替 Go `interface{}`，用 `LeadingElement`/`LeadingItem` 明确 LEADING 元素类型，用 `Box` 表示指针拥有关系。
 
 已确认的实现差异是：Rust 动作表把状态编码为 `action - 1` 并用 `i32::MIN` 表示 accept；Go 使用 `yyhintTabOfs`；Rust 不实现 Go 的语法错误恢复；扩展错误消息表为空实现；Rust 当前没有真正复用 `hintParser.cache` 的容量；Rust 的不支持 hint 规则在少数字段为空时会反向搜索最近的大写标识符作为兼容兜底，Go 直接使用固定栈偏移。修改时应以文法、Go 生成物与 Rust 生成表三方核验，不能仅凭同名函数认定完全等价。
 
@@ -83,11 +79,3 @@ RustCodeGraph 精确查询识别出 `pkg/parser/hintparser.rs::yyhintParse`、`r
 - 修改错误路径时必须决定是否补齐 Go 的恢复语义、扩展错误消息和多 hint 后续解析。该区域会改变诊断数量、错误优先级及是否保留前面已成功的 AST，需要 Rust/Go 对照用例锁定。
 - 调整栈或 cache 复用必须保持状态栈/值栈同长、归约基状态有效、默认 `$$ = $1` 语义以及所有提前返回路径保存/清理状态；性能优化不能以跳过语义 clone 后产生别名修改为代价。
 - 测试应继续放在独立 [`hintparser_test.rs`](./hintparser_test.rs) 或相邻独立 parser 测试文件，不要嵌入生产文件。至少覆盖新增成功 AST、非法 token、数值上下界、SQL mode/位置传播、完整 SQL 接线和 Go 对照。
-
-## 验证依据
-
-- 源码全量读取：[`hintparser.rs`](./hintparser.rs) 的全部类型、trait、函数和规则分支；[`generated/hint_tables.rs`](./generated/hint_tables.rs) 的 token、accept、翻译表、符号表、归约/legacy rule 和动作表声明。
-- 模块与调用链：[`lib.rs`](./lib.rs) 的 include/re-export 和独立测试装配；[`Cargo.toml`](./Cargo.toml) 的 crate 边界、路径依赖与 `go-package = "pkg/parser"`；[`hintparserimpl.rs`](./hintparserimpl.rs)、[`yy_parser.rs`](./yy_parser.rs) 和 [`parser_actions/query.rs`](./parser_actions/query.rs) 的公开入口与完整 SQL 桥接。本包未发现 `doc.go`，因此采用这些最近入口作为包级契约证据。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`query yyhintParse`、`query reduce_hint`、`query yyhintLexer`、`query hintParser` 确认 Rust/Go 主要符号和实现位置。目标路径的 `files --filter` 以及精确 callers/callees 没有返回可用文件/边，故按技能规则用源码调用点搜索补齐证据。
-- Go 对照：[`hintparser.go`](./hintparser.go) 的生成栈机、错误恢复和规则 1–76；[`hintparserimpl.go`](./hintparserimpl.go) 的 parser 生命周期、诊断选择和公开入口；[`hintparser.y`](./hintparser.y) 的语法与语义来源。
-- 独立测试：[`hintparser_test.rs`](./hintparser_test.rs) 覆盖空输入、非法 token、不支持 hint、MEMORY_QUOTA、QB_NAME、SET_VAR、表/索引/分区、存储类型、TIME_RANGE 和 LEADING，并深查各类 `HintData`；[`yy_parser_test.rs`](./yy_parser_test.rs) 覆盖 SQL mode/位置与完整 SQL AST 接线；[`go_merge_29_test.rs`](./go_merge_29_test.rs) 覆盖 10,000 层 hint 括号限制。Go 对照测试为 [`hintparser_test.go`](./hintparser_test.go)。按任务要求未运行 Cargo。

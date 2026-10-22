@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-tiflashcompute` crate。该 crate 由同目录 `Cargo.toml` 定义，入口是 `pkg/util/tiflashcompute/lib.rs`；入口将 `dispatch_policy` 声明为公开模块并再次导出其全部公开符号。因此，调用方既可以经模块路径访问，也可以从 crate 根导入这些符号。
-
-它位于 TiFlash Compute 系统变量与实际 MPP 调度之间的表示转换边界：本文件只定义策略值、合法字符串及双向转换，不选择计算节点，也不实现轮询或一致性哈希算法。当前 Rust 上游主要通过 `pkg/sessionctx/variable/lib.rs` 对 `tiflashcompute` crate 的再导出接入；系统变量注册、会话状态写入以及会话运行时 SET/GET 路径再调用这里的转换函数。
+位于 TiFlash Compute 系统变量与实际 MPP 调度之间的表示转换边界：本文件只定义策略值、合法字符串及双向转换，不选择计算节点，也不实现轮询或一致性哈希算法。
 
 ## 核心职责
 
@@ -74,16 +72,13 @@ RustCodeGraph 的文件节点显示本文件被 `pkg/session/runtime/control.rs`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/tiflashcompute/dispatch_policy.go`。Rust 保留了 Go 的公开符号名、常量数值、合法字符串顺序、精确匹配规则及未知数值映射为 `invalid` 的行为。`pkg/sessionctx/vardef/tidb_vars.rs` 与对应 Go 常量文件也使用相同的三个字符串，默认值同为 `consistent_hash`。
+Rust 保留了 Go 的公开符号名、常量数值、合法字符串顺序、精确匹配规则及未知数值映射为 `invalid` 的行为。
 
 主要语言差异如下：
 
 - Go 的 `DispatchPolicy` 底层为 `int`，Rust 为 `isize`；两者都是平台字宽整数，但都不提供封闭枚举约束。
 - Go 的合法列表是 `[]string`，Rust 是拥有容器但借用静态元素的 `Vec<&'static str>`。
 - Go 用 `errors.Errorf` 返回错误并同时返回 `DispatchPolicyInvalid`；Rust 用 `thiserror` 类型及 `Result`，错误分支没有策略值。
-- 两边错误内容语义一致。Rust 显式用空格连接列表，使显示结果保持 `[consistent_hash round_robin]`。
-
-相关 Go 行为测试位于 `pkg/executor/test/tiflashtest/tiflash_test.go::TestTiFlashComputeDispatchPolicy` 所在测试段；它还验证两种合法策略进入系统变量和调度路径后的表现。Rust 对应覆盖位于 `pkg/util/tiflashcompute/migration_aster_unit_test.rs::dispatch_policy_matches_go_mappings_and_errors`，另有 `pkg/executor/test/tiflashtest/tiflash_test.rs::tiflash_dispatch_policy_round_trips_canonical_names` 覆盖精确错误与 SQL 层往返。
 
 ## 扩展指南
 
@@ -98,14 +93,3 @@ RustCodeGraph 的文件节点显示本文件被 `pkg/session/runtime/control.rs`
 - Go 对照测试 `pkg/executor/test/tiflashtest/tiflash_test.go`，用于确认跨语言行为没有漂移。
 
 主要风险是数值 ABI/持久语义不兼容、合法列表或错误文案变化、系统变量接受了策略但下游调度未实现，以及每次构造列表/错误产生的少量分配。若该路径将来进入高频热循环，可考虑静态切片，但需要保持公开返回类型与调用兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/tiflashcompute` 确认目标与对照文件被索引；目标文件节点确认 76 行源码、5 个顶层符号及三个文件级使用者。
-- RustCodeGraph 精确查询：`GetValidDispatchPolicy`、`GetDispatchPolicyByStr`、`GetDispatchPolicy` 和 `DispatchPolicyError` 均定位到本文件；对三个 Rust 函数执行 callers/callees 查询均未返回函数级边，因此上游调用关系又以源码引用补证，没有把缺失图边误写为“没有调用者”。
-- 源与 crate 边界：`pkg/util/tiflashcompute/dispatch_policy.rs`、`pkg/util/tiflashcompute/lib.rs`、`pkg/util/tiflashcompute/Cargo.toml`。
-- 字符串和默认值：`pkg/sessionctx/vardef/tidb_vars.rs`。
-- Rust 上游：`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/sysvar.rs`、`pkg/sessionctx/variable/sysvar_builtins.rs`、`pkg/session/runtime/control.rs`。
-- Go 对照：`pkg/util/tiflashcompute/dispatch_policy.go`。
-- 独立测试：`pkg/util/tiflashcompute/migration_aster_unit_test.rs::dispatch_policy_matches_go_mappings_and_errors`、`pkg/executor/test/tiflashtest/tiflash_test.rs::tiflash_dispatch_policy_round_trips_canonical_names`，以及 Go 的 `pkg/executor/test/tiflashtest/tiflash_test.go` 对应测试段。
-- 本任务仅新增说明文档，按计划不运行 Cargo。交付前以任务指定命令检查文件存在且固定二级标题恰好为 11 个，并人工复核所有职责、边界、调用关系和 Go 差异均可回溯到上述路径。

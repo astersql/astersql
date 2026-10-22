@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-checkpoint` crate 面向“快照恢复”场景的适配层。crate 根 `br/pkg/checkpoint/lib.rs` 以 `pub mod restore` 装入本模块，并通过 `pub use restore::*` 展平导出其公开类型与函数；`br/pkg/checkpoint/Cargo.toml` 则表明该 crate 对应 Go 包 `br/pkg/checkpoint`，直接依赖 `serde`、`serde_json` 和带 `v4` feature 的 `uuid`。
-
-它位于通用检查点引擎 `checkpoint.rs` 与具体恢复业务之间：本文件选择分组键/值类型、定义快照恢复元数据、把完成项包装成 `CheckpointMessage`，并把快照恢复专用的 JSON marshaler 交给 `SnapshotMetaManager`。存储路径、线程循环、重试和落盘均不在本文件实现，而由 `manager.rs`、`checkpoint.rs` 及 storage 模块承担。
-
-RustCodeGraph 将本文件识别为含 22 个符号的 Rust 文件，直接使用者仅为 `br/pkg/checkpoint/checkpoint_test.rs` 与 `br/pkg/checkpoint/restore_test.rs`；关键公开入口在图中的生产 callers 为空。虽然 `br/pkg/restore/log_client/Cargo.toml` 与 `br/pkg/task/Cargo.toml` 依赖本 crate，当前 Rust 源码搜索没有发现它们调用 `StartCheckpointRunnerForRestore` 或 `AppendRangesForRestore`。因此这里是可用且有测试的 crate API，但不能据此宣称 Rust 的完整恢复生产链已经接通。
+用 `CheckpointItem`、`NewCheckpointRangeKeyItem`、`NewCheckpointFileItem` 提供追加记录的场景化输入，并由 `AppendRangesForRestore` 转换为通用 Runner 消息。
 
 ## 核心职责
 
@@ -96,7 +92,7 @@ Go 对照中的真实业务调用者包括 `br/pkg/restore/snap_client/client.go
 
 ## 与 Go 版本的对应关系
 
-核心 API 与 `br/pkg/checkpoint/restore.go` 基本逐项对应：类型别名、两个 value 字段、两个 item 构造函数、直接 JSON marshaler、测试/正式 Runner 启动函数、追加转换、`PreallocIDs` 和快照恢复元数据均保留了 Go 命名与职责。Rust 通过 serde rename 显式固定 Go JSON tag；`RangeKey`/`Name` 的空值省略与 Go `omitempty` 对齐。
+Rust 通过 serde rename 显式固定 Go JSON tag；`RangeKey`/`Name` 的空值省略与 Go `omitempty` 对齐。
 
 主要语言差异包括：
 
@@ -105,7 +101,6 @@ Go 对照中的真实业务调用者包括 `br/pkg/restore/snap_client/client.go
 - Go 的可空指针映射为 Rust `Option`；Go `[]byte` 映射为 `Vec<u8>`，`[32]byte` 映射为 `[u8; 32]`；
 - Go `uuid.UUID` 依靠 `encoding.TextMarshaler` 输出文本，Rust 用 `uuid_serde` 明确复刻该 JSON 表示；
 - Go 源码对正式 Runner 明确记录 session 所有权，Rust 的所有权行为落在 `manager.rs` 与 `checkpoint.rs`，本入口注释本身未完整复述；
-- Rust 为所有 metadata 字段加了 serde `default`，比 Go 的常规 `encoding/json` 解码更明确地支持缺字段输入。
 
 最重要的迁移状态差异是：Go 生产代码已有启动、加载、追加和停止链；Rust 当前证据只显示本 crate 内测试直接调用这些 API，其他 Rust crate 虽声明依赖但未找到对应生产调用。后续文档或实现不得把 Go 调用者直接当作 Rust 调用者。
 
@@ -120,11 +115,3 @@ Go 对照中的真实业务调用者包括 `br/pkg/restore/snap_client/client.go
 扩展任务元数据时，应同步 `CheckpointMetadataForSnapshotRestore`、Go 同名结构、manager 的 save/load 路径和 `restore_test.rs` 的 JSON 往返测试。UUID 表示变化尤其会破坏跨语言读取。`PreallocIDs` 的区间业务规则属于预分配模块，若改变含义还需同步 `br/pkg/restore/internal/prealloc_table_id` 的 Go/Rust 实现与独立测试。
 
 若要接通 Rust 生产链，入口应放在实际 Rust snapshot/log restore 客户端完成元数据加载或创建之后，并在 SST 成功导入后追加；同时明确谁在成功、取消和错误路径调用 `WaitForFinish`。这属于上层接线任务，不应通过在本文件中伪造调用或简化 storage/runner 逻辑来完成。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/checkpoint/restore.rs` 确认本文件有 22 个符号并被两个 Rust 测试文件使用；`node --file ...` 读取全文件；`query` 核对 `StartCheckpointRunnerForRestore`、`AppendRangesForRestore`、`NewCheckpointRangeKeyItem`、`valueMarshalerForRestore`；对关键 Rust 函数执行 `callers`/`callees`，结果为空；`node checkpoint.rs::CheckpointRunner` 与按行读取确认通道、锁、线程和收尾语义。
-- 源与 crate 边界：`br/pkg/checkpoint/restore.rs`、`br/pkg/checkpoint/lib.rs`、`br/pkg/checkpoint/Cargo.toml`、`br/pkg/checkpoint/checkpoint.rs`、`br/pkg/checkpoint/manager.rs`。
-- Go 对照与生产调用：`br/pkg/checkpoint/restore.go`、`br/pkg/restore/snap_client/client.go`、`br/pkg/restore/log_client/client.go`、`br/pkg/restore/restorer.go`、`br/pkg/task/restore.go`。
-- 独立测试：`br/pkg/checkpoint/restore_test.rs` 验证 UUID 文本 JSON 往返；`br/pkg/checkpoint/checkpoint_test.rs` 验证 metadata、table ID 分组、两种后端、checksum、重试和无重试路径；`br/pkg/checkpoint/parity_test.rs` 验证空 item 错误与成功 append/flush/load；Go 对照为 `br/pkg/checkpoint/checkpoint_test.go`。
-- 生产接线核验：仓库文本搜索 Rust/Go 的公开符号；Rust 仅在本 crate 测试、manager 类型引用及依赖声明中命中，Go 则命中上述恢复客户端和 restorer。该结论仅反映当前仓库静态证据，未运行 Cargo 或动态端到端恢复。

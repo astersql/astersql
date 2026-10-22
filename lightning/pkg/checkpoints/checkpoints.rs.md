@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-checkpoints` crate 的核心实现，crate 根 `lib.rs` 通过 `mod checkpoints; pub use checkpoints::*;` 将其公开符号提升为包级 API。它位于 Lightning 批量导入链路的恢复边界：上层以 `DB` trait 读取任务、表、engine 和 chunk 的恢复坐标，并把导入事件先合并为 `TableCheckpointDiff`，再交给选定后端持久化。
-
-`Cargo.toml` 把该 crate 标为 Go 包 `lightning/pkg/checkpoints` 的 library 移植，直接依赖 checkpoint protobuf crate、`serde` 与 `serde_json`。当前迁移架构还通过同 crate 的 `stubs.rs` 提供 SQL、对象存储、配置、日志、校验和等边界；因此本文件是实际检查点协议实现，但 MySQL/外部存储能力的可用范围仍受这些迁移边界实现约束，不能仅凭接口齐全推断已接入所有 Go 生产依赖。
-
-生产侧可见入口包括 `lightning/pkg/server/lightning.rs` 与 `lightning/pkg/importer/precheck.rs` 对 `OpenCheckpointsDB` 的调用、`lightning/pkg/importer/import.rs` 对 `ChunkCheckpointMerger` 的构造，以及 `lightning/pkg/server/checkpoint_control.rs` 对忽略/销毁错误检查点的管理调用。该文件不是独立进程入口，而是 Lightning 启动、恢复、导入推进和运维控制共同依赖的状态子系统。
+抽象并选择后端：`DB` 规定生命周期、读写、清理、迁移和导出契约；`OpenCheckpointsDB` 根据配置返回 Null、MySQL 或文件实现。
 
 ## 核心职责
 
@@ -103,13 +99,9 @@ MySQL 后端把多语句原子性委托给事务，prepared statement 在使用�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件头明确声明移植自 `lightning/pkg/checkpoints/checkpoints.go`，两者的公开结构和方法基本逐项对应：状态常量与表版本名、四层 checkpoint 类型、diff/merger、`DB` 方法集、三种后端、路径拆分、错误管理和 CSV 导出均保留相同命名与总体控制流。
-
 关键语义对齐点包括：`SetInvalid` 除十编码；普通 engine 状态仅写 engine diff，而整表 ID 或失败态会影响表状态；同一 chunk key 后写覆盖前写；rebase 取最大值；`Apply` 忽略未知 engine/chunk；`DeepCopy` 不复制 `TableInfo`；压缩/非压缩文件使用不同 size 计算；URL 百分号转义采用大写十六进制；全量操作以 `common::AllTables`（实际字符串 `"all"`）为哨兵。
 
-实现层面存在迁移形态差异。Go MySQL `Get` 从真实行扫描重建对象，而当前 Rust 版本执行对应查询形状后返回 `sql::DB` 边界维护的 checkpoint 镜像；crate 的外部能力也由 `stubs.rs` 汇入。文件后端仍保留 Go 的 protobuf 整体快照语义，但 Rust 使用 `Mutex` 和拥有所有权的 `HashMap/Vec` 表达内存安全。文档所称“支持”仅指本 crate 当前代码与测试覆盖的行为，不扩张为所有外部生产依赖已经完成迁移。
-
-Go 测试 `checkpoints_test.go`、`checkpoints_file_test.go`、`checkpoints_sql_test.go` 分别对应 Rust 的同名独立测试文件；`parity_test.rs` 进一步核对公共契约、边界错误和资源清理。测试未内嵌在生产源文件，符合本仓库测试分离约束。
+实现层面存在迁移形态差异。Go MySQL `Get` 从真实行扫描重建对象，而当前 Rust 版本执行对应查询形状后返回 `sql::DB` 边界维护的 checkpoint 镜像；crate 的外部能力也由 `stubs.rs` 汇入。文件后端仍保留 Go 的 protobuf 整体快照语义，但 Rust 使用 `Mutex` 和拥有所有权的 `HashMap/Vec` 表达内存安全。
 
 ## 扩展指南
 
@@ -122,12 +114,3 @@ Go 测试 `checkpoints_test.go`、`checkpoints_file_test.go`、`checkpoints_sql_
 新增后端需要实现完整 `DB` trait，并接入 `OpenCheckpointsDB`、`IsCheckpointsDBExists`、配置 driver 校验和生命周期清理。建议复用 `checkpoints_file_test.rs`/`checkpoints_sql_test.rs` 的共同场景：初始化与 round trip、AddIndexBySQL、更新、单表/全量删除、忽略与销毁错误、迁移、导出能力及缺失对象错误。
 
 任何代码修改都应继续把 Rust 生产实现放在本文件、测试放在独立测试文件；修复真实 Rust 逻辑后保留顶部 `// Copyright 2026 AsterSQL.` 和 PingCAP Apache License。由于本说明只分析现状，本任务不修改 Rust、Go、Cargo 或 protobuf。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引可用；`files --filter lightning/pkg/checkpoints` 确认目标与相关测试已索引；`node --file lightning/pkg/checkpoints/checkpoints.rs` 分段核对全部 2300 行；`node --file lightning/pkg/checkpoints/checkpoints_test.rs` 核对核心 merger/apply 测试；`callees OpenCheckpointsDB` 与 `callees Update` 核对后端构造、事务、apply 和文件保存边。
-- crate/模块证据：`lightning/pkg/checkpoints/Cargo.toml`、`lightning/pkg/checkpoints/lib.rs`、`lightning/pkg/checkpoints/stubs.rs`。
-- Go 对照：`lightning/pkg/checkpoints/checkpoints.go`；相关 Go 测试为 `checkpoints_test.go`、`checkpoints_file_test.go`、`checkpoints_sql_test.go`。
-- Rust 独立测试：`checkpoints_test.rs` 覆盖状态/失败状态/chunk/rebase 合并、diff 应用、序列化与路径拆分；`checkpoints_file_test.rs` 覆盖文件后端读取、删除、忽略/销毁错误；`checkpoints_sql_test.rs` 覆盖 MySQL round trip、更新、管理、导出与迁移；`parity_test.rs` 覆盖 Go/Rust 公共契约、边界、错误和资源清理。
-- 生产调用证据：`lightning/pkg/server/lightning.rs`、`lightning/pkg/importer/precheck.rs`、`lightning/pkg/importer/import.rs`、`lightning/pkg/server/checkpoint_control.rs` 的精确符号搜索。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；结构验证使用任务文件给定命令，结果在交付时报告。

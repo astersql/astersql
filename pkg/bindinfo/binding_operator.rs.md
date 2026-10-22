@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-bindinfo` crate 的全局 SQL 绑定写路径边界：它定义 [`BindingOperator`](binding_operator.rs) 接口，并用 `bindingOperator` 把持久化抽象 `BindingStore` 与内存缓存更新抽象 `BindingCacheUpdater` 组合起来。crate 根在 [`lib.rs`](lib.rs) 中声明并重新导出本模块；[`binding_handle.rs`](binding_handle.rs) 的 `NewBindingHandle` 创建缓存后调用 `newBindingOperator(store, cache, Lease)`，再把所得 trait 对象放入 `bindingHandle.BindingOperator`，因此上层通过 `BindingHandle::operator()` 取得它。
-
-当前 Rust 生产代码搜索只发现上述组装和访问器，未发现对 `CreateBinding`、`DropBinding`、`SetBindingStatus`、`GCBinding` 的直接生产调用；这些方法目前有独立单元测试覆盖，但从 SQL 执行入口到它们的完整 Rust 接线未在索引中得到证明。文件属于 `pkg/bindinfo/Cargo.toml` 定义的 `astersql-bindinfo` 库；该 manifest 关闭自动测试发现，由 [`lib.rs`](lib.rs) 以 `#[cfg(test)] mod binding_operator_test` 显式接入测试。
+在默认实现中维护“先存储成功，后增量重载缓存”的顺序。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@
 
 ## 与 Go 版本的对应关系
 
-接口的四类操作、默认实现名称、先写存储后刷新缓存、空删除列表错误、合法状态集合、十倍租约 GC 和伪记录锁 SQL 均对应 [`binding_operator.go`](binding_operator.go)。Rust 的 `operator_parity` 测试验证了数据库名小写化/时间更新、缓存重载而非直接修改、未知状态不写存储、超大租约饱和及锁 SQL。
+Rust 的 `operator_parity` 测试验证了数据库名小写化/时间更新、缓存重载而非直接修改、未知状态不写存储、超大租约饱和及锁 SQL。
 
 仍存在应显式保留的差异：
 
@@ -95,11 +93,3 @@ Go 的 [`binding_operator_test.go`](binding_operator_test.go) 还覆盖 SQL 层�
 补齐真实持久化适配器时，必须对照 Go 的锁事务、旧记录墓碑、严格时间排序、SQL `NULL` 编码、`SHOW WARNINGS` 和状态迁移过滤；这些不能仅靠现有 `RecordingStore` 证明。接入 `lockBindInfoTable` 时还要让锁与写共用事务上下文，单独提前执行没有互斥保证。
 
 更改缓存策略时需保留“持久化先于缓存”的不变量，并为“存储成功、缓存失败”定义可恢复行为。更改 GC 应同步审查 `Lease`、缓存增量水位和多节点最大传播延迟。性能风险主要在每次写后触发一次增量加载；批量创建当前还会克隆每个 `Binding`。兼容风险集中在 `using` 历史状态、ASCII 与 Unicode 数据库名归一化、批量删除时间排序及返回值差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/bindinfo` 确认目标及相邻实现已索引；`node --file pkg/bindinfo/binding_operator.rs` 读取完整 155 行和文件使用关系。
-- RustCodeGraph `query` 确认 `BindingOperator`、`bindingOperator`、`newBindingOperator`、`lockBindInfoTable` 及四个方法的 Rust/Go 定义；`callees` 确认 Rust 实现到 `replace_bindings`、`mark_deleted`、`set_status`、`gc_deleted_before`、`LoadFromStorageToCache`、`execute` 的边。`callers` 未返回生产调用者，因此又以仓库范围 Rust 搜索核实只存在 `binding_handle.rs` 的构造/访问接线和测试引用。
-- 已读生产/配置路径：[`binding_operator.rs`](binding_operator.rs)、[`binding_handle.rs`](binding_handle.rs)、[`binding.rs`](binding.rs)、[`binding_cache.rs`](binding_cache.rs)、[`utils.rs`](utils.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml) 和 Go 对照 [`binding_operator.go`](binding_operator.go)。本包没有 `doc.go`。
-- 已读测试路径：[`binding_operator_test.rs`](binding_operator_test.rs) 的 `operator_parity` 六项测试，以及 [`binding_operator_test.go`](binding_operator_test.go) 的状态切换、跨节点缓存缺失和时间滞后用例。测试仅作为行为证据，本纯文档任务未运行 Cargo 或 Go 测试。
-- 交付结构以任务指定命令校验，要求本文件存在且恰好包含上述十一个固定二级标题；同时人工复核当前实现、Go 差异和未验证接线均有明确边界。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/domain/plan_replayer.rs` 属于 `astersql-domain` crate，并由 `pkg/domain/lib.rs` 以 `pub mod plan_replayer` 公开。它描述 Plan Replayer 的领域侧控制面：dump 文件过期清理、capture 任务收集、有界投递、并发去重，以及将真实 dump 行为隔离在后端 trait 之后。Plan Replayer dump 的具体内容处理另在相邻模块 `pkg/domain/plan_replayer_dump.rs`；本文件本身不解析或生成完整 dump 包。
-
-`pkg/domain/Cargo.toml` 指定 crate 入口为 `pkg/domain/lib.rs`。当前可编译实现直接使用的跨 crate 依赖只有 `astersql-kv`（为收集查询打内部请求标记）和 `astersql-sessionctx-vardef`（读取普通 dump 保留期），其余主体依赖 Rust 标准库。文件中没有 feature 或条件编译项。
-
-需要特别区分文件的两层内容：第 15 至 601 行是一段注释化的 Go 机械映射，保存了尚未移植的完整 worker、状态表 SQL 和 dump 文件生成流程，不能视为 Rust API 或运行时代码；真正参与编译的实现从 `PlanReplayerTaskKey`（第 609 行）开始。RustCodeGraph 对实际符号未找到生产调用者；目前除 `pkg/domain/lib.rs` 的模块导出外，直接调用均位于 `pkg/domain/plan_replayer_test.rs`、`pkg/domain/plan_replayer_handle_test.rs` 和 `pkg/domain/plan_replayer_slow_log_test.rs`。因此该文件当前是可测试的领域组件集合，尚未接入 Rust `Domain` 主生命周期。
+上述能力只出现在前半部注释映射和 Go 对照 `pkg/domain/plan_replayer.go` 中，或应由 trait 实现及外围生命周期代码提供。
 
 ## 核心职责
 
@@ -111,8 +107,6 @@ collector/status 以细粒度 `RwLock` 保护集合。`occupy` 的“检查并�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `parse_dump_time` 对应 Go `parseTime`；`DumpFileGcChecker::{gc_with_current_retention,gc}` 对应 `dumpFileGcChecker.GCDumpFiles/gcDumpFilesByPath`；`PlanReplayerTaskCollector` 对应 `planReplayerTaskCollectorHandle`；`PlanReplayerHandle::send_task` 对应 `planReplayerHandle.SendTask`；`PlanReplayerDumpTaskStatus` 和 `handle_dump_task` 对应 `planReplayerDumpTaskStatus` 与 worker 的 `handleTask/HandleTask` 去重骨架。
-
 已对齐的关键语义包括：普通/capture 双租约、无法解析或删除时继续、删除 replayer 文件后 best-effort 清 status、仅成功投递的普通任务从 collector 移除、channel 满不阻塞查询、running key 防并发、持续 capture 成功后进入 finished，以及收集 SQL使用内部请求标记。
 
 当前 Rust 与 Go 仍有实质差异：
@@ -124,7 +118,7 @@ Rust 的 `parse_dump_time` 对应 Go `parseTime`；`DumpFileGcChecker::{gc_with_
 - Go `PlanReplayerDumpTask` 保存 `Binding`、AST、`SessionVars`、writer 和任意统计/debug 对象；Rust 以字符串/列表简化，不能直接承载完整生产 dump 语义。
 - Go channel 容量和 worker 数由 Domain 常量/配置决定；Rust `new` 只返回 receiver，不创建 worker，且把容量零提升为一。
 
-因此该 Rust 文件是 Go 行为的局部、可测试移植，而不是完整替代。文件前半段注释不能用于弥补这些运行时缺口。
+因此该 Rust 文件是 Go 行为的局部、可测试移植，而不是完整替代。
 
 ## 扩展指南
 
@@ -137,15 +131,3 @@ Rust 的 `parse_dump_time` 对应 Go `parseTime`；`DumpFileGcChecker::{gc_with_
 若要达到 Go 生产能力，最可能修改的入口是 `PlanReplayerHandle`（保存/管理 worker 生命周期）、`PlanReplayerDumper`（真实文件生成与状态落库）、`handle_dump_task`（panic-safe release 与结果持久化）、`DumpFileGcChecker`（与 finished 状态联动）以及 Rust `pkg/domain/domain.rs`（初始化、ticker、关闭顺序）。这属于跨文件接线，不能只靠本文件前半段注释实现。需要同步新增独立 Rust 测试，不能把测试嵌入生产文件。
 
 兼容性风险集中在 Go SQL 表语义、持续 capture 的 `plan_digest == "*"` 行为、status token 与文件 basename 的一致性，以及内部查询标记。正确性风险包括 dumper panic 后 running 泄漏、GC 删除文件但未清 finished、关闭时未 drain。性能风险包括全程持有 GC mutex、逐 key 串行 `is_unhandled`、任务深克隆及单个 sender mutex。
-
-## 验证依据
-
-事实核对使用了以下路径和符号：
-
-- Rust 实现：`pkg/domain/plan_replayer.rs` 的 `PlanReplayerTaskKey`、`PlanReplayerDumpTask`、`parse_dump_time`、`DumpFileGcChecker`、`PlanReplayerTaskCollector`、`PlanReplayerDumpTaskStatus`、`PlanReplayerHandle`、`PlanReplayerDumper`、`handle_dump_task`。
-- crate 边界：`pkg/domain/Cargo.toml` 的 `[lib] path = "lib.rs"`、`astersql-kv` 与 `astersql-sessionctx-vardef` 依赖；`pkg/domain/lib.rs` 的 `pub mod plan_replayer` 和三个独立测试模块声明。`pkg/domain/doc.go` 不存在。
-- Rust 测试：`pkg/domain/plan_replayer_test.rs` 验证正/负纳秒、非法名、双租约和 GC 容错；`pkg/domain/plan_replayer_handle_test.rs` 验证任务过滤/去重、普通与持续 capture 投递、finished/running 生命周期、失败释放、GC status 清理和原 SQL 保真；`pkg/domain/plan_replayer_slow_log_test.rs` 验证内部请求类型、slow log 标记与 statement summary 过滤。
-- Go 对照：`pkg/domain/plan_replayer.go`；`pkg/domain/domain.go` 的 `SetupPlanReplayerHandle`、`StartPlanReplayerHandle`、`SetupDumpFileGCChecker`、`DumpFileGcCheckerLoop`；`pkg/domain/plan_replayer_test.go`、`pkg/domain/plan_replayer_handle_test.go`、`pkg/domain/plan_replayer_slow_log_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/domain/plan_replayer.rs --offset 1 --limit 500` 与 `--offset 500 --limit 600` 读取完整目标；`query collect_plan_replayer_tasks`、`query PlanReplayerHandle`、`query send_task`、`query handle_dump_task`、`query gc_with_current_retention` 核对主要符号。图查询没有给出实际 Rust 生产调用边，仓库直接引用检索也仅发现上述测试。
-
-本任务是纯文档分析，按任务约束未运行 Cargo。结构验证应确认本文件存在且恰好包含任务规定的十一个二级章节；人工复核还应确认所有“当前支持”陈述只描述第 602 行以后的可编译 Rust 实现，没有把注释化机械映射或 Go 生命周期误写为 Rust 现状。

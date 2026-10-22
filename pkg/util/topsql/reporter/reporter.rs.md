@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现远程 TopSQL reporter，是 `astersql-util-topsql-reporter` crate 中连接“进程内采集”和“远端数据接收端”的核心编排层。crate 根 `pkg/util/topsql/reporter/lib.rs` 以公开模块 `reporter` 挂载本文件，并重导出 `NewRemoteTopSQLReporter`、`RemoteTopSQLReporter` 与 `findKthNetworkBytes`；`pkg/util/topsql/reporter/Cargo.toml` 则声明它直接依赖 collector、stmtstats、state、tipb protobuf、reporter metrics 和 `crossbeam-channel`。
-
-应用侧入口位于 `pkg/util/topsql/topsql.rs`：`default_pipeline` 构造 `RemoteTopSQLReporter`，注入 plan 解码与压缩函数，再把它包装成包级 `TopSQLReporter`。SQL 执行路径通过该包级门面注册 SQL/Plan 元数据，stmtstats 聚合器提交语句统计与 RU 增量，CPU collector 提交 SQL CPU 采样；本文件将这些输入周期性合并成统一 protobuf 载荷并发送给已注册 `DataSink`。
+`RegisterSQL`、`RegisterPlan`、`BindKeyspaceName`、`BindProcessCPUTimeUpdater` 和 `DataSinkRegisterer`/collector trait 实现，构成上层包与本 reporter 之间的适配边界。
 
 ## 核心职责
 
@@ -102,7 +100,6 @@ Rust 文件直接移植自 `pkg/util/topsql/reporter/reporter.go`，核心结构
 - Go `findKthNetworkBytes` 使用 quickselect；Rust 对 scratch 全量降序排序。结果规则相同，但 Rust 是 `O(n log n)`，大 map 下可能有额外 CPU 成本。
 - Go worker 和处理函数用 `util.Recover`；Rust mutex poison 会 panic，worker 没有等价恢复。
 - Go `doReport` 在 failpoint 下可缩短 timeout；Rust 固定使用 40 秒，当前没有该测试钩子。
-- Rust sink 层使用公开 `datasink::ReportData`，让 PubSub 与 SingleTarget 共享统一 protobuf 载荷；`reporter_2_aster_unit_test.rs` 验证同一 reporter 向两种真实 sink fan-out。
 
 独立 Rust 测试 `pkg/util/topsql/reporter/reporter_test.rs` 基本对应 `reporter_test.go` 的收集、TopN、容量、内部 SQL、多 sink、worker、stmtstats、背压和 TopRU 场景；`reporter_2_aster_unit_test.rs` 增补 RU 并发、迟到数据、公开 sink 注册和统一 fan-out 等迁移边界。
 
@@ -115,14 +112,3 @@ Rust 文件直接移植自 `pkg/util/topsql/reporter/reporter.go`，核心结构
 - 增加 sink 时优先实现 `DataSink` 并通过 `Register` 接入，避免在 reporter 内建立特例。必须验证单 sink 失败不会妨碍其他 sink，以及 `Close` 会通知并释放它。
 - 生命周期或线程模型变更应覆盖未启动关闭、重复 Start/Close、worker panic、取消时通道已有数据等边界。Rust 单元测试必须继续放在独立测试文件，不能嵌入 `reporter.rs`；本 crate 现有入口是 `reporter_test.rs` 与迁移补充 `reporter_2_aster_unit_test.rs`。
 - 若追求与 Go 更严格的性能对齐，可评估用选择算法替换 `findKthNetworkBytes` 的全排序；这属于行为/性能代码变更，必须以重复值和 `k=0`/`len<=k` 回归测试证明阈值语义不变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`node --file pkg/util/topsql/reporter/reporter.rs --offset 1 --limit 1200` 返回目标文件完整 867 行、全部符号与文件级引用。图查询对 Go/Rust 同名 `RemoteTopSQLReporter` 存在消歧限制，因此未把缺失的方法边当作事实，改以精确源码搜索补齐。
-- 目标实现：`pkg/util/topsql/reporter/reporter.rs`，重点核对 `NewRemoteTopSQLReporter`、`Start`、三个 Collect 入口、`processCPUTimeData`、`processStmtStatsData`、`takeDataAndSendToReportChan`、`doReport`、`trySend`、`Close` 和 `findKthNetworkBytes`。
-- crate 边界：`pkg/util/topsql/reporter/Cargo.toml` 与 `pkg/util/topsql/reporter/lib.rs`，核对依赖、模块可见性、重导出和独立测试挂载方式。
-- 应用入口与直接调用者：`pkg/util/topsql/topsql.rs`、`pkg/util/topsql/stmtstats/aggregator.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`。
-- 下游实现：`pkg/util/topsql/reporter/datasink.rs`、`pkg/util/topsql/reporter/ru_window_aggregator.rs`、`pkg/util/topsql/reporter/single_target.rs`。
-- Go 对照：`pkg/util/topsql/reporter/reporter.go`；测试对照：`pkg/util/topsql/reporter/reporter_test.go`。
-- Rust 独立测试：`pkg/util/topsql/reporter/reporter_test.rs`、`pkg/util/topsql/reporter/reporter_2_aster_unit_test.rs`、`pkg/util/topsql/reporter/topru_case_runner_test.rs`、`pkg/util/topsql/reporter/single_target_test.rs`。
-- 本任务为纯文档分析，依计划不运行 Cargo；交付验证只检查目标文档存在且固定章节恰为 11 个，并人工复核上述符号、调用边、边界和 Go/Rust 差异均有直接源码依据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust crate `astersql-planner-cascades` 的门户实现。`pkg/planner/cascades/lib.rs` 将私有 `cascades` 模块的公开项全部再导出，`pkg/planner/cascades/Cargo.toml` 则把它连接到 `base`、`task`、`memo`、`pattern`、`rule` 与 `logicalop` 六个本地 crate。它负责把调用者提供的逻辑计划放入 Memo，并以任务栈启动 Cascades 的逻辑等价变换搜索；物理实现选择和最终代价最优计划不在本文件中。
-
-当前 Rust 接线范围要特别区分：仓库搜索到本文件 `NewOptimizer` 的可执行调用集中在 `pkg/planner/cascades/cascades_test.rs`；没有发现它被 Rust 服务端规划主链调用。`Cargo.toml` 中测试依赖还放在永不成立的 `cfg(any())` 下。因此这里是已实现并由无存储单元测试覆盖的 Cascades 门户，不等同于已经替代 Go 生产规划入口。Go 生产对照是同目录的 `cascades.go`。
+负责把调用者提供的逻辑计划放入 Memo，并以任务栈启动 Cascades 的逻辑等价变换搜索；物理实现选择和最终代价最优计划不在本文件中。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ Cargo 依赖全部是工作区路径依赖，未声明 feature。本 crate 的 `
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/cascades/cascades.go` 的 `Optimizer`、`NewOptimizer`、`Execute`、`Destroy`、`GetMemo`、`SetRules`，以及 `Context` 的 Memo/调度器/bitset 组合，是本文件的直接移植基线。两边都从 `lp.SCtx()` 建 Memo、初始化根表达式、压入根 Group 任务，并由调度器执行至结束。
-
 Rust 为适应类型和所有权模型增加了几层显式结构：`LogicalPlan` trait 把 Go `corebase.LogicalPlan` 缩成门户所需接口；`TaskContext` 隔离任务可见能力；`Rc<RefCell<_>>` 替代 Go 指针共享；`TaskError` 承接字符串化错误。Rust `RuleMask` 用集合模拟 Go 固定长度 bitset，并通过 `XFMaximumRuleLength` 保持默认范围边界。
 
 行为差异和迁移状态也必须保留：Go `NewOptimizer` 对根初始化结果还有 `intest.Assert`，Rust 直接传播初始化错误、仅对“根必须属于 Group”使用 `expect`；Go `Context` 使用 `task.NewSimpleTaskScheduler()`，Rust 本文件内置 `SharedTaskScheduler`。Rust 还提供 `RegisterRules`、`CopyInWithChildren` 和显式规则表，这是驱动现有 Rust 规则任务所需的局部接线，而 Go 本文件没有对应字段。Go SQL 测试 `cascades_test.go` 覆盖 planner 开关与 Apply-to-Join 统计一致性；Rust 文件中这些 SQL 测试主体只是注释，当前可执行测试是无存储的门户级等价检查，不能视为完整 SQL 集成对齐。
@@ -89,13 +85,3 @@ Rust 为适应类型和所有权模型增加了几层显式结构：`LogicalPlan
 修改调度顺序时必须同步审查 `SharedTaskScheduler::PushTask/ExecuteTasks` 与 `task_opt_group_expression.rs` 的逆序压子组逻辑；将 LIFO 改成 FIFO 会改变子树和规则执行次序。若引入并行搜索，不能只替换容器：还需整体替换 `Rc<RefCell<_>>`、明确 Group/Memo 并发不变量、错误取消策略与 `Destroy` 等待语义。
 
 修改 Memo 门户时应同步 `pkg/planner/cascades/cascades_test.rs`，不要把 Rust 测试嵌入生产文件。若要宣称生产可用，还需把本 crate 接到 Rust planner 主链，并把 Go `cascades_test.go` 中 planner 开关、EXPLAIN 结果和变换后统计行为迁移为真实可执行的独立 Rust 集成测试；仅让当前门户单测通过不足以证明这一点。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/planner/cascades` 找到本文件及其 Go/Rust 邻接实现；`node --file pkg/planner/cascades/cascades.rs` 读取全 391 行并列出 59 个符号。
-- RustCodeGraph 源码节点：`task/task_opt_group.rs` 的 `OptGroupTask::Execute`，`task/task_opt_group_expression.rs` 的规则筛选与逆序子组压栈，`task/task_apply_rule.rs` 的 Binder/XForm/CopyIn/RemoveOut 链，`base/task_scheduler_base.rs::Scheduler` 与 `task/base.rs::Context` trait。
-- crate 边界：`pkg/planner/cascades/Cargo.toml`、`pkg/planner/cascades/lib.rs`。
-- Go 对照：`pkg/planner/cascades/cascades.go`、`pkg/planner/cascades/cascades_test.go`。
-- Rust 独立测试：`pkg/planner/cascades/cascades_test.rs`，覆盖 Memo 容量与根表达式、根 Group 探索、销毁、规则掩码范围、规则注册与探索标记；其中 SQL testkit 段落为注释，不计作已执行覆盖。
-- 接线核验：仓库范围 `rg` 查询 `NewOptimizer`、`RegisterRules`、crate 名和相关观察方法；没有发现本门户进入 Rust 服务端生产规划链。RustCodeGraph 精确 `callers NewOptimizer --file ...` 在本地长时间无输出后停止，因此本结论采用仓库文本搜索作保守直接证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付只执行任务规定的 11 章节结构检查及文档差异自审。

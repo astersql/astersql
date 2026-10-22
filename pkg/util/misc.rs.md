@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/misc.rs` 是 `astersql-util` crate 的杂项基础设施模块，由 [`pkg/util/lib.rs`](lib.rs) 通过 `pub mod misc` 公开。它不是一条单独的业务主链，而是把多个需要跨子系统复用、又不适合形成独立 crate 的边界能力集中起来：有限重试与 panic 隔离、SQL 语法错误归一化、证书名称与 SAN 解析、列元数据序列化、序列对象解耦接口、服务端 TLS、集群内部 HTTP、网卡地址选择、自签证书以及 INSERT/IMPORT 类型转换标志。
-
-crate 边界由 [`pkg/util/Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-util`，入口是 `lib.rs`。本文件直接使用 `anyhow`、`thiserror`、`openssl`、`reqwest`、`get_if_addrs`、`hostname`、`tokio-util`，并通过工作区内部依赖 `task_config`、`task_mysql`、`task_types_group` 读取全局配置、SQL mode 和标志位。该文件没有条件编译的 API；唯一的条件编译块位于 `CreateCertificates` 中，仅在 Unix 上把私钥文件权限设置为 `0600`（`misc.rs:753-757`）。
+`LoadTLSCertificates`、`TlsConfig`、`CreateCertificates` 负责服务端证书加载、自动生成和热加载；`InternalHTTPClient`、`InternalHTTPSchema`、`ComposeURL` 负责集群内部 HTTP(S) 客户端的进程级惰性初始化（`misc.rs:403-654`）。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ crate 边界由 [`pkg/util/Cargo.toml`](Cargo.toml) 定义，包名为 `astersql
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`pkg/util/misc.go`](misc.go)，独立回归为 [`pkg/util/misc_test.go`](misc_test.go) 和 [`pkg/util/misc_test.rs`](misc_test.rs)。主要结构与 Go 一致：三种重试终态、恢复回调、语法错误/警告区分、PKIX/SAN 规则、列 Proto 分支、序列解耦接口、TLS 认证策略、内部 HTTP 五分钟超时、全局单播 IP、自签证书算法以及类型 Flags 公式均保留。
-
 已验证的实现差异必须视为当前事实，而非等价细节：
 
 - Go `RunWithRetry` 每次可重试失败会增加 `RetryableErrorCount`，Rust 版本只保留错误与退避，没有指标副作用；两者退避都是线性而非注释所称“指数式”。
@@ -106,11 +102,3 @@ crate 边界由 [`pkg/util/Cargo.toml`](Cargo.toml) 定义，包名为 `astersql
 - 修改 TLS 策略时同时评估 `LoadTLSCertificates`、`TlsConfig::reload_certificate`、`CreateCertificates`、`pkg/server/server.rs` 和 `pkg/server/tests/tls/tls_test.rs`。高风险点包括认证降级、最低协议、密码套件、密钥权限、轮换并发和文件部分写入。
 - 修改内部 HTTP 配置必须记住 `Once` 快照语义；若需要运行时刷新，应设计显式生命周期和并发替换，而不是仅更改全局配置。URL 规范化如需增强，应在 `ComposeURL` 的 Rust/Go 测试中固定双斜杠、已有 scheme、IPv6 地址和路径查询串行为。
 - Rust 单元测试继续保存在独立 `misc_test.rs` 或相关调用方测试中，不要嵌入生产源文件；本文件行为涉及的服务端 TLS 集成测试继续放在 `pkg/server/tests/tls/tls_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/util/misc.rs` 读取了 798 行完整实现并报告该文件被 58 个文件使用；`query` 分别定位了 Rust/Go 的 `RunWithRetry`、`LoadTLSCertificates`、`InternalHTTPClient`、`ColumnsToProto`、`GetTypeFlagsForInsert`。精确 `callers/callees` 未对同名跨语言符号返回可用边，因此没有把空结果写成无调用者结论。
-- 已读源码与边界：`pkg/util/misc.rs`、`pkg/util/lib.rs`、`pkg/util/Cargo.toml`；`pkg/util` 目录没有 `doc.go`，因此无更近的包级 Go 契约可读。
-- 已读对照与测试：`pkg/util/misc.go`、`pkg/util/misc_test.go`、`pkg/util/misc_test.rs`。额外直接证据来自 `pkg/executor/grant.rs`、`pkg/privilege/privileges/cache.rs`、`pkg/server/server.rs`、`cmd/tidb-server/main.rs`、`tests/globalkilltest/util.rs`、`pkg/server/tests/tls/tls_test.rs` 和 `pkg/planner/core/plan_to_pb_test.rs` 的符号引用。
-- 独立 Rust 测试证明：重试的三种终态；PKIX 输出顺序；panic 载荷交付；语法错误的空值、包装与原样保留；基础列转换；URL scheme 拼接；IPv4/IPv6 link-local 排除。更完整的 TLS 和列协议分支分别由服务端 TLS 测试与 planner 测试提供证据。
-- 本任务是只读分析加 Markdown 输出，按计划不运行 Cargo。交付前执行固定章节结构检查，并人工核对本文能回答文件存在原因、执行路径、共享状态、失败边界、Go 差异和安全扩展位置。

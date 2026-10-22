@@ -4,15 +4,7 @@
 
 ## 文件定位
 
-本文件定义物理排序节点 `PhysicalSort`，并提供从 `LogicalSort` 枚举物理候选、从 `ORDER BY` 表达式推导物理排序属性以及判断排序前缀是否匹配的辅助函数。它位于 `astersql-planner-core-operator-physicalop` crate；crate 入口 `lib.rs` 以 `mod physical_sort` 装入模块，再用 `pub use physical_sort::*` 对外导出。
-
-它处在规划与执行之间的三个边界上：
-
-- 规划入口：`base_physical_plan.rs` 的逻辑算子路由将 `LogicalSort` 交给 `ExhaustPhysicalPlans4LogicalSort`；旧 Cascades 实现规则和排序 enforcer 也直接构造 `PhysicalSort`。
-- 物理计划公共接口：`lib.rs` 中的 `impl_sort_operator!(PhysicalSort, ...)` 为该类型接入 `Plan`、`PhysicalPlan`、克隆、Schema、Explain、代价、任务挂接和 PB 编码等统一分派。
-- 执行入口：`pkg/executor/physical_plan_runtime.rs` 识别 `PhysicalSort`，先执行唯一孩子，再用 `sort.ByItems` 构造 `SortExec`。因此本文件描述计划节点和规划语义，不实现排序算法本身。
-
-目标包没有 `doc.go`；crate 边界以本目录 `Cargo.toml`、`lib.rs` 和上述路由为准。
+定义物理排序节点 `PhysicalSort`，并提供从 `LogicalSort` 枚举物理候选、从 `ORDER BY` 表达式推导物理排序属性以及判断排序前缀是否匹配的辅助函数。
 
 ## 核心职责
 
@@ -148,19 +140,10 @@ partial sort 与分布式资源边界有关但不自行管理资源：规划器�
 
 ## 与 Go 版本的对应关系
 
-同目录 `physical_sort.go` 是直接语义对照，核心字段及大部分方法一一对应：`PhysicalSort`、`Init`、`Clone`、`ExtractCorrelatedCols`、`MemoryUsage`、`ExplainInfo`、`Attach2Task`、代价入口、`ToPB`、`ResolveIndices`、物理候选枚举和三个属性辅助函数均有对应实现。
-
-已核实的等价点：
-
-- Root 匹配时同时考虑真实 Sort 和可用的 NominalSort；MPP 只接受能通过孩子属性满足的仅列排序。
-- 真实 Sort 的孩子 `ExpectedCnt` 为最大值，统计按父期望行数缩放。
-- 排序前缀同时比较列和升降序；特殊标量函数通过 `GetSingleColumn` 抽取列与方向。
-- 非 partial sort 不允许转换为 PB；PB 携带孩子、executor id 和细粒度 shuffle 参数。
 - Go 测试 `pkg/planner/core/physical_plan_test.go::TestPhysicalPlanMemoryTrace` 与 Rust 测试共同验证 `ByItems` 会增加内存估算；Go `optimizer_test.go` 的窗口/shuffle 场景证明只有 partial sort 传播细粒度 shuffle stream count，普通 Sort 会禁用该路径。
 
 需要注意的 Rust 形态差异：
 
-- Go 通过嵌入 `BasePhysicalPlan` 表达继承，Rust 通过 `PhysicalSchemaProducer` 组合并由 `lib.rs` 宏实现 traits。
 - Go 的 `GetCost` 和 `Attach2Task` 委托 `utilfuncp`；Rust 本文件保留局部旧式成本公式，任务挂接走公共 trait 默认实现，同时规范 v1/v2 代价仍经 planner core 路由。
 - Go `ExhaustPhysicalPlans4LogicalSort` 返回“候选、是否处理、错误”，Rust 返回候选向量；当前 Rust 路由把空向量作为无候选。
 - Rust `ToPB` 显式检查 client、表达式转换和孩子存在，错误边界比 Go 版本的直接取值更防御性。
@@ -177,22 +160,3 @@ partial sort 与分布式资源边界有关但不自行管理资源：规划器�
 - 调整 Schema 行为时保留“优先孩子 Schema”的宏覆盖，并扩展 `sort_replacement_preserves_child_output_schema`；Sort 不应改变列集合或顺序。
 - 与执行行为有关的变更还需同步 `pkg/executor/physical_plan_runtime.rs` 和 sort executor 的独立测试。本文件只定义计划，不应在这里复刻执行排序算法。
 - 性能审查重点是 `ByItems` 深克隆、属性枚举候选数、`n log n` 成本及 spill 判断；正确性审查重点是方向、列恒等、表达式索引和分区内 partial 语义。
-
-## 验证依据
-
-事实核对使用了以下本地证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/planner/core/operator/physicalop/physical_sort.rs --offset 1 --limit 400`：读取目标文件全部 385 行，并报告它被 13 个文件使用。
-- RustCodeGraph `query PhysicalSort --kind struct`、`query ExhaustPhysicalPlans4LogicalSort --kind function`、`query GetPropByOrderByItemsContainScalarFunc --kind function`、`query MatchItems --kind function`：确认 Rust/Go 同名定义及位置。
-- RustCodeGraph callers/callees 查询：确认 `ExhaustPhysicalPlans4LogicalSort` 调用 `MatchItems`；工具对同名 Go/Rust 符号未完全消歧，因此上游引用又以精确路径搜索和下列文件交叉核对。
-- `pkg/planner/core/operator/physicalop/lib.rs`：模块装配、公开再导出、`impl_sort_operator!` 以及 Sort 的孩子优先 Schema 规则。
-- `pkg/planner/core/operator/physicalop/base_physical_plan.rs`：逻辑 Sort 路由、强制排序和 MPP 分区接线。
-- `pkg/planner/core/operator/physicalop/nominal_sort.rs`、`physical_topn.rs`：属性推导函数的直接消费者。
-- `pkg/executor/physical_plan_runtime.rs`：`PhysicalSort` 到 `SortExec` 的直接执行入口。
-- `pkg/planner/core/operator/physicalop/Cargo.toml`：crate 名称、模块依赖、tipb feature、测试装配模式和 Go 包映射。
-- `pkg/planner/core/operator/physicalop/physical_sort.go`：逐符号 Go 对照。
-- `pkg/planner/core/operator/physicalop/physical_sort_test.rs`：Rust 独立测试覆盖内存 capacity、Root 真实/名义候选和替换孩子后的 Schema。
-- `pkg/planner/core/physical_plan_test.go`、`optimizer_test.go`、`find_best_task_test.go`：Go 侧内存估算、partial sort/shuffle 和属性 enforcer 行为。
-
-人工复核结论：文档区分了规划节点、名义排序与执行排序，明确了 partial-only PB 边界、候选枚举、状态所有权、Go 差异及安全扩展位置；没有把未在本文件中实现的执行 spill、并发模型或 plan-cache 克隆声明为已支持。

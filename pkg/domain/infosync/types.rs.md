@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`types.rs` 是 `astersql-domain-infosync` crate 的公共契约层：它集中定义 infosync 与 PD HTTP、Resource Manager、TiKV store/region 元数据之间交换的数据形状，以及两个可注入的客户端 trait。crate 根 `pkg/domain/infosync/lib.rs` 通过 `mod types; pub use types::*;` 将这里的符号全部重新导出，因此同 crate 的 `info.rs`、`region.rs`、`label_manager.rs`、`placement_manager.rs`、`schedule_manager.rs`、`tiflash_manager.rs` 和 `resource_manager_client.rs` 都从 crate 根使用这些类型。
-
-该文件不负责创建网络客户端、保存全局 `InfoSyncer`，也不直接执行 PD 请求。真实调用发生在上述 manager 或 `InfoSyncer` 门面中；当前仓库可见的 `PdHttpClient` 实现主要是测试替身，而 `ResourceManagerClient` 的直接实现是 `resource_manager_client.rs` 中的内存 mock。`pkg/domain/infosync/Cargo.toml` 将本目录定义为独立 crate，并声明 `tikv-client`（固定 tag `v0.4.2-aster.10`）、`serde`、DDL label/placement 等依赖；没有 feature 条件控制本文件。
+抽象 PD HTTP 能力：`PdHttpClient: Send + Sync` 覆盖 keyspace 配置、placement bundle、region label、调度配置、region 复制/分布和 scheduler job 操作，使 infosync 上层不绑定具体 HTTP 实现。
 
 ## 核心职责
 
@@ -79,10 +77,7 @@ watch receiver 和 channel 的实际生命周期绑定到 mock client：client �
 
 ## 与 Go 版本的对应关系
 
-Go 的 infosync 包没有同路径 `types.go`；对应公共类型和客户端接口主要来自 `github.com/tikv/pd/client/http`、`github.com/tikv/pd/client`、kvproto，而 Go `pkg/domain/infosync/info.go`、`region.go`、`resource_manager_client.go` 直接消费它们。Rust 因 crate 边界和可测试性在本文件建立本地等价契约，因此不是对单一 Go 文件的逐行翻译。
-
 - `UpdateKeyspaceConfigParams`、store/region 类型、`LabelRulePatch` 和 `PdHttpClient` 对齐 Go 的 `pdhttp`/`pd` 客户端形状；Rust 独立测试用精确 JSON 断言锁定 wire name。
-- `ConfigValue` 对应 Go scheduler API 的 `any`/`map[string]any`；Rust 通过封闭 JSON 枚举获得可序列化、可比较的表示。
 - Go `resource_manager_client.go:33-178` 的 mock 使用 `map`、`sync.RWMutex` 和容量 100 的 `chan *WatchResponse`；Rust 的 `ResourceGroup`/event envelope 与 `Mutex<HashMap<...>>`、`sync_channel(100)` 保留 CRUD、默认组、事件类型、预订阅缓冲和共享消费语义。
 - Rust 对 Go proto 做了有意简化：`ResourceGroup` 只保留 Name、RU token limit、Priority；`ResourceGroupWatchResponse` 直接携带已解码的 `ResourceGroupEvent`，而 Go watch 传输 protobuf `KeyValue.Value`。adapter 在需要接入 tikv-client 时重建 proto。
 - Rust 的缺失 delete 会报错，而当前 Go mock 直接删除后 marshal 查询结果；独立 Rust 测试明确把“缺失时报错且保持状态”作为当前 Rust 契约。扩展时不能只凭 Go 零值行为覆盖既有 Rust 测试意图。
@@ -97,12 +92,3 @@ Go 的 infosync 包没有同路径 `types.go`；对应公共类型和客户端�
 扩展资源组 proto 字段时，至少同步修改 `ResourceGroup`、`ResourceManagerProviderAdapter::get_resource_group`、mock CRUD 事件和 `resource_manager_client_test.rs`。若要实现 `AcquireTokenBuckets`、`WatchResourceGroup`、`LoadResourceGroups`，应把现在的占位返回替换成可观察行为与错误，并新增独立测试，避免“空结果”继续伪装成成功。
 
 改变 watch 语义风险最高：广播订阅、无界队列或非阻塞发送都会偏离当前 Go 对齐的共享容量 100 队列。若确需改变，应同时更新 `ResourceGroupWatchReceiver`、mock client 和容量/多消费者测试，并评估锁内等待造成的吞吐与饥饿。改变 keyspace 路径必须同时核对上游 `pd.GroupSettingsPathPrefixBytes` 和两类 keyspace 测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/domain/infosync` 确认目标及相邻文件已索引；`node --file pkg/domain/infosync/types.rs` 读取 321 行/59 个符号，并报告至少 9 个使用文件；`query PdHttpClient --kind trait`、`query ResourceManagerClient --kind trait` 消除跨仓库同名符号；针对 `SetKeyspaceConfig`、manager、resource watch、store 消费链运行了 `explore`。动态 trait 分派没有静态 callee 边，本文据 manager 源码只陈述可验证的动态边界。
-- 生产源码：`pkg/domain/infosync/types.rs`、`lib.rs`、`info.rs`、`region.rs`、`label_manager.rs`、`placement_manager.rs`、`schedule_manager.rs`、`tiflash_manager.rs`、`resource_manager_client.rs`。
-- crate/依赖：`pkg/domain/infosync/Cargo.toml`，包括 `package.metadata.porting.go-package = "pkg/domain/infosync"` 和固定 tag 的 `tikv-client`。
-- Rust 独立测试：`pkg/domain/infosync/types_test.rs` 验证路径与 JSON；`resource_manager_client_test.rs` 验证默认组、CRUD、错误保持状态、watch envelope、100 容量共享消费和 provider 响应；`info_test.rs`、`region_test.rs` 验证 trait 注入后的 keyspace/region/scheduler 边界。
-- Go 对照：`pkg/domain/infosync/info.go`、`region.go`、`label_manager.go`、`resource_manager_client.go` 及 `info_test.go`；PD 客户端公共类型不定义在 infosync 同路径文件中，本文没有将外部实现臆测为仓库内现状。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。最终结构验证要求本文恰有上述 11 个固定二级标题。

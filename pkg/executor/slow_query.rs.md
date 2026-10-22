@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的库入口为 `lib.rs`），并由 `pkg/executor/lib.rs` 以 `pub mod slow_query` 公开。它把 `INFORMATION_SCHEMA.SLOW_QUERY` 所需的慢日志读取、筛选、解析、内存记账和运行时统计抽象为泛型 Rust 实现；真正的文件系统、压缩读取、会话权限、Datum 构造、warning、取消和异步 worker 都通过 `SlowQueryRuntime` 注入。
-
-当前仓库未找到任何 `impl SlowQueryRuntime for ...`，也没有在 Rust 生产代码中构造 `slowQueryRetriever` 的证据。因此，本文件目前提供的是公开的移植边界和可测试算法组件，而不是已经接入 Rust executor 主链的完整生产实现。Go 生产入口仍可在 `pkg/executor/builder.go:2906`（构造 `slowQueryRetriever`）和 `pkg/executor/memtable_reader.go`（调用 `retrieve`）看到。
+把 `INFORMATION_SCHEMA.SLOW_QUERY` 所需的慢日志读取、筛选、解析、内存记账和运行时统计抽象为泛型 Rust 实现；真正的文件系统、压缩读取、会话权限、Datum 构造、warning、取消和异步 worker 都通过 `SlowQueryRuntime` 注入。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ Go 对照调用链为 `pkg/executor/builder.go` 构造 retriever、`pkg/executor
 
 ## 与 Go 版本的对应关系
 
-结构和命名基本对应 `pkg/executor/slow_query.go`：retriever/checker/file/offset/stats、字段拆分、文件起止时间探测、正反向扫描、runtime stats 与尾读函数均能找到同名来源。Rust 独立测试 `slow_query_test.rs` 明确以 Go `TestSplitByColon` 用例矩阵校验空值、嵌套方/花括号和畸形括号，并校验真实文件尾读。
+Rust 独立测试 `slow_query_test.rs` 明确以 Go `TestSplitByColon` 用例矩阵校验空值、嵌套方/花括号和畸形括号，并校验真实文件尾读。
 
 但当前 Rust 版本不是 Go 完整语义的等价生产接线，重要差异包括：
 
@@ -93,12 +91,3 @@ Go 对照调用链为 `pkg/executor/builder.go` 构造 retriever、`pkg/executor
 - 若调整文件发现/时间剪枝，修改 runtime 的 `list_log_files` 契约及 `getAllFiles`，同步验证压缩/非压缩轮转文件、1 秒容差、损坏文件 warning 和取消行为。
 - 若修改尾读，保持调用方游标不变、负 cursor/EOF/max-cache 边界和 CRLF 语义，并同步 `slow_query_test.rs` 与 `benchmark_test.rs` 中的真实文件用例。
 - 性能风险主要在压缩文件整体物化、批大小、Row 内存双重记账和大文件尾读；兼容风险主要在字段语法、时区/时间容差、权限过滤、limit 与日志轮转顺序。
-
-## 验证依据
-
-- Rust 源与装配：`pkg/executor/slow_query.rs`（966 行）、`pkg/executor/lib.rs:230,443-448`、`pkg/executor/Cargo.toml`（`astersql-executor`、`lib.rs`、`astersql-util-memory`）。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 边；对 `slowQueryRetriever`、`parseSlowLog`、`parseLog`、`ReadLastLinesFromFile` 的 query/explore/callers/callees 查询用于核对符号和调用边。宽泛同名查询存在 Go/Rust及其他模块歧义，因此结论同时用文件限定结果复核。
-- Rust 测试：`pkg/executor/slow_query_test.rs` 覆盖字段拆分、用户提取、嵌套括号和真实尾读；`pkg/executor/slow_query_sql_test.rs` 覆盖行切分、大小计算、统计合并，并提供更宽的 SQL 行为证据；`pkg/executor/benchmark_test.rs` 覆盖真实尾读边界和一个 ignore 的 10 MiB 长行案例。
-- Go 对照：`pkg/executor/slow_query.go`、`pkg/executor/slow_query_test.go`，以及生产构造/调用点 `pkg/executor/builder.go:2906`、`pkg/executor/memtable_reader.go`。
-- 接线限制：`rg 'impl(.*)SlowQueryRuntime|SlowQueryRuntime for|slowQueryRetriever<' --glob '*.rs' pkg/executor` 只命中本文件的泛型定义/impl，没有 runtime 实现；因此本文没有把 Go 的生产调用关系误报为 Rust 已接线。
-- 本任务是纯文档分析，按任务要求不运行 Cargo。结构验证应确认目标文件存在且恰有本文固定的 11 个二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`attributes.rs` 位于 `astersql-ddl-label` crate，负责 DDL Label Rule 进入 PD 规则模型之前的属性文本处理。crate 入口 `pkg/ddl/label/lib.rs` 通过 `pub mod attributes` 和 `pub use attributes::*` 暴露本文件 API；`pkg/ddl/label/Cargo.toml` 将该 crate 定义为 `astersql-ddl-label`，默认使用 Classic 内核语义，并通过 `nextgen` feature 联动 `kerneltype-dependency/nextgen`。
-
-它不是 DDL job 执行器，也不负责 job 持久化、schema state 迁移、reorg、回滚或 schema version 同步。它是 Label Rule 构造链上的纯内存辅助层：`pkg/ddl/label/rule.rs` 中的 `Rule::ApplyAttributesSpec` 先把 AST 的 attributes 字段按 YAML 字符串数组解析，再调用本文件的 `NewLabels` 生成 `pd::RegionLabel`。后续规则 ID、内部标签和 key range 的组装由 `rule.rs` 完成。
+Label Rule 构造链上的纯内存辅助层：`pkg/ddl/label/rule.rs` 中的 `Rule::ApplyAttributesSpec` 先把 AST 的 attributes 字段按 YAML 字符串数组解析，再调用本文件的 `NewLabels` 生成 `pd::RegionLabel`。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ crate 边界方面，`pkg/ddl/label/Cargo.toml` 声明 `kerneltype-dependency`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/label/attributes.go`，Rust 保留了同名常量、类型和六个函数的控制流。`str::split('=').collect()` 对齐 Go `strings.Split(attr, "=")` 的“恰好两个片段”规则；`trim()` 对齐 `strings.TrimSpace`；三态枚举对齐 Go 底层为 `byte` 的 `AttributesCompatibility` 常量；线性 `Add` 与过滤恢复逻辑也逐分支对应。
-
 表达形式上的差异包括：Go 使用指针与 slice，Rust 使用引用和 `Vec`；Go 通过 `fmt.Errorf` 包装哨兵错误，Rust 使用 `thiserror` 的结构化 `Error`；Go 的 `nil`/空 slice 在 Rust 中统一为空 `Vec`；Go 的 `pd.RegionLabel` 来自 PD client，Rust 对应结构定义在本 crate 的 `lib.rs` 并保持 JSON 字段形状。以上差异没有改变当前被测试的 Key/Value 行为。
 
 `pkg/ddl/label/attributes_test.go` 与 `attributes_test.rs` 均验证解析裁剪、单条恢复、空/多项批量解析、重复去重、冲突以及内部标签过滤。Rust 的 `migration_aster_unit_test.rs` 进一步覆盖 Go 测试未显式列出的 `""`、`"key"`、`"=value"`、`"key="`、`"a=b=c"` 非法输入，并断言冲突不修改原集合及完整错误文案。
@@ -88,11 +84,3 @@ crate 边界方面，`pkg/ddl/label/Cargo.toml` 声明 `kerneltype-dependency`�
 新增系统内部标签键时，需要同时考虑两处：`rule.rs` 是否注入该键，以及 `RestoreRegionLabels` 是否应隐藏该键。若规则依赖内核类型，还需同步 `Cargo.toml` feature 和 Classic/NextGen 两套测试期望。改变输出格式则要评估 SQL SHOW/恢复文本的兼容性，特别是顺序、引号、逗号和转义。
 
 性能优化应保留当前可观察语义。用哈希结构替换线性扫描可能改变顺序或首个冲突；只有在真实大列表证据存在并补足回归测试后才适合进行。该文件本身不应承担 DDL job、PD 网络提交或 key-range 编码，这些分别属于 DDL 执行层、infosync/label manager 与 `rule.rs`/codec 边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点且目标目录已索引；`files --filter pkg/ddl/label` 确认 Rust/Go 源与测试文件；`node --file pkg/ddl/label/attributes.rs --offset 1 --limit 260` 返回完整 167 行源码及八个符号；`explore 'pkg/ddl/label/attributes.rs symbols callers callees label attributes'` 给出 `NewLabels`、`Add`、`RestoreRegionLabels` 与 `ApplyAttributesSpec` 的调用关系及测试使用点。
-- 已读生产与边界文件：`pkg/ddl/label/attributes.rs`、`pkg/ddl/label/lib.rs`、`pkg/ddl/label/errors.rs`、`pkg/ddl/label/rule.rs`、`pkg/ddl/label/Cargo.toml`、`pkg/ddl/Cargo.toml`，以及 DDL 包契约 `pkg/ddl/doc.go`。
-- 已读 Go 对照与测试：`pkg/ddl/label/attributes.go`、`pkg/ddl/label/attributes_test.go`。
-- 已读 Rust 独立测试：`pkg/ddl/label/attributes_test.rs`、`pkg/ddl/label/migration_aster_unit_test.rs`；其中后者直接验证严格格式、去重、冲突不修改集合、错误文本和内核类型相关过滤。
-- 本任务是纯文档分析，按任务要求不运行 Cargo；结构验证单独检查目标文件存在且恰有规定的十一个二级标题。

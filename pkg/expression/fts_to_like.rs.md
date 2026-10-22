@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（`pkg/expression/Cargo.toml` 的 `[package] name = "astersql-expression"`），由 `pkg/expression/lib.rs` 通过 `#[path = "fts_to_like.rs"] mod fts_to_like_kernel;` 作为私有内核装入。它承担两项相关但层次不同的工作：一是把 `MATCH ... AGAINST` 的受限语义降级成由 `ILIKE`、`IFNULL`、`AND`、`OR`、`NOT` 组成的轻量表达式树；二是提供 `Datum`、`FieldType`、`Column`、`ScalarFunction`、`Expression` 等轻量表达式模型，供同一移植批次的 `infer_pushdown.rs` 等内核复用。
-
-当前 Rust 仓库中，精确搜索 `build_fts_to_ilike_expression*` 和 `validate_fts_search_string_for_like_fallback` 只找到本文件内部调用以及 `pkg/expression/fts_to_like_test.rs`、`pkg/expression/fts_to_like_36_aster_unit_test.rs` 两个测试模块；没有发现 Rust planner/cardinality 生产调用者。`pkg/expression/lib.rs` 只在测试辅助模块 `expression_files_36` 中再导出整个内核，公共的 `infer_pushdown` 模块仅选择性再导出轻量模型类型。因此，本文件已经实现并验证了 Go 语义内核，但不能据现有证据称其已经接入 Rust SQL 规划主链。
+`Expression::eval_bool` 与私有 `eval` 为所生成的有限函数集合提供可执行语义，既用于证明树形组合的行为，也明确了这个轻量模型并非完整 SQL 表达式执行器。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ builtin 替换只支持单列，这是选择率替换场景的约束，不是直
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/fts_to_like.go`，测试对照为 `pkg/expression/fts_to_like_test.go`。Rust 的以下流程与 Go 保持一致：严格词法集合；布尔词的 required/excluded/optional 分类；只有排除词时恒假；有 required 时忽略 optional；自然语言的任意词/任意列 OR；ILIKE 模式转义和 `IFNULL(..., 0)`；拒绝查询扩展；builtin 替换的单列限制；NULL 搜索常量直通；非字符串/非常量拒绝。
+Rust 的以下流程与 Go 保持一致：严格词法集合；布尔词的 required/excluded/optional 分类；只有排除词时恒假；有 required 时忽略 optional；自然语言的任意词/任意列 OR；ILIKE 模式转义和 `IFNULL(..., 0)`；拒绝查询扩展；builtin 替换的单列限制；NULL 搜索常量直通；非字符串/非常量拒绝。
 
 实现载体存在明确差异：Go 使用真实的 `expression.Expression`、`BuildContext`、`NewFunction`、TiDB 类型和具体 `builtinFtsMysqlMatchAgainstSig`；Rust 使用本文件定义的轻量 AST、字符串函数名与 `Signature::Generic`。Go 构造过程中 `NewFunction` 可能传播真实函数构建错误，Rust 的 `ilike_predicate` 和 `compose` 目前不会失败，因此两个私有模式构建器虽返回 `Result`，实际错误主要来自入口验证。
 
@@ -96,11 +94,3 @@ Go 生产版本已经由 planner rewrite 和 cardinality selectivity 调用；Ru
 - 新增 modifier 时须同时审查三个分类方法、顶层分派、builtin modifier 携带方式以及 `infer_pushdown.rs` 的 TiFlash 规则，避免某个模式被错误下推或静默落入不可达分支。
 - 性能上应控制 O(列数×词数) 节点数；若引入去重或缓存，要注意 `canonical_key` 当前不包含类型、签名和 modifier，不能直接假设它足以表达完整等价性。
 - 与 Go 继续对齐时，同步检查 `pkg/expression/fts_to_like.go` 和 `pkg/expression/fts_to_like_test.go`，尤其关注真实 `NewFunction` 错误、类型/校对规则以及 planner 调用约束，避免用轻量求值通过代替生产可用性证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 11,467 个文件；`node --file pkg/expression/fts_to_like.rs --offset ...` 分段读取了目标文件全部 811 行；对 `build_fts_to_ilike_expression`、`build_fts_to_ilike_expression_from_builtin`、`validate_fts_search_string_for_like_fallback` 执行了 `query`，均定位到本文件；对应 `callers`/`callees` 无静态结果，随后以精确仓库搜索补证。
-- 源码与 crate 边界：`pkg/expression/fts_to_like.rs`、`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`；目标包没有 `doc.go` 或 `doc.rs`。
-- Rust 独立测试：`pkg/expression/fts_to_like_test.rs` 覆盖合法/非法词法矩阵、布尔解析、LIKE 转义、builtin 结构守卫和 TiFlash modifier；`pkg/expression/fts_to_like_36_aster_unit_test.rs` 覆盖两种模式的实际树求值、NULL、多列、查询扩展及下推规则。
-- Go 对照：`pkg/expression/fts_to_like.go`、`pkg/expression/fts_to_like_test.go`；生产调用边由 `pkg/planner/core/expression_rewriter.go`、`pkg/planner/core/fulltext_to_like.go`、`pkg/planner/cardinality/selectivity.go` 的精确符号引用确认。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付验证使用任务文件指定的 11 章节结构命令，并人工复核文档明确回答文件用途、执行路径、能力边界、当前接线状态和安全扩展位置。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`data.rs` 是 `astersql-telemetry` crate 的单次遥测载荷编排层。模块由 [`pkg/telemetry/lib.rs`](lib.rs) 以 `mod data` 装入并通过 `pub use data::*` 在 crate 根重导出；真正触发它的是 [`ReportUsageData`](telemetry.rs)（`pkg/telemetry/telemetry.rs:138`）。它不负责调度、开关判断、指标累加或网络发送，而是在上报已经获准执行后，把功能使用快照和滑动窗口快照组装成一个顶层对象，并提供上报后的计数基线推进钩子。
-
-所属 crate 由 [`pkg/telemetry/Cargo.toml`](Cargo.toml) 定义，库入口是 `lib.rs`。清单中的跨 crate 依赖全部位于 `target.'cfg(any())'.dependencies`；`cfg(any())` 恒为假，因此当前 Rust 实现并不靠这些声明参与正常构建，`data.rs` 实际只使用 crate 内重导出的 `SessionContext`、`featureUsage`、`windowData` 及采集/后置函数，以及标准库时间 API。
+`telemetryData` 定义一份报告的顶层形状：生成时刻、可缺失的功能使用信息和零到多个窗口统计。
 
 ## 核心职责
 
@@ -87,15 +85,8 @@ RustCodeGraph 的文件关系报告显示 `data.rs` 被 `telemetry.rs`、`data_f
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/telemetry/data.go`](data.go)：
-
-- `telemetryData` 的三个字段及 JSON 名称一一对应。Go 的 `*featureUsage` 对应 Rust 的 `Option<featureUsage>`；Go 的 `[]*windowData` 对应 Rust 的 `Vec<windowData>`。
-- 两边都使用当前 Unix 秒，都在功能采集失败时保留空值而不中止整份报告，也都继续采集窗口数据。
 - Go 在采集前用 `kv.WithInternalSourceType(..., InternalTxnTelemetry)` 创建内部事务上下文，并把它传给 `getFeatureUsage`；当前 Rust `SessionContext` 是可注入数据的轻量结构，`getFeatureUsage` 不接收独立事务上下文。这是实际移植边界，不应把 Rust 文档描述成已拥有 Go 的内部事务标记。
-- `postReportTelemetryData` 的十三项调用及顺序与 Go `data.go:44-58` 一致；测试辅助入口也都只重置表分区计数。
 - Go 由 `encoding/json` 根据 tag 序列化，可能返回错误，并把结果写日志；Rust 使用各类型的手写 `Marshal`，返回不可失败的 `String`，再存入内存 `reports` 列表。两者的字段输出目标一致，但错误通道和最终输出介质不同。
-
-Go 测试 `data_feature_usage_test.go:231-289` 在真实 SQL 操作间调用 `PostReportTelemetryDataForTest`，验证表分区基线切换后的增量。Rust 对应测试 `data_feature_usage_test.rs:280-349` 使用注入的 `MetricsSnapshot` 模拟相同边界，并显式串行化共享指标；它验证的是移植后的计数语义，不是 SQL 到指标累加的端到端链路。
 
 ## 扩展指南
 
@@ -104,16 +95,3 @@ Go 测试 `data_feature_usage_test.go:231-289` 在真实 SQL 操作间调用 `Po
 - 改变上报顺序前，应同时审查 `telemetry.rs::ReportUsageData`。特别要决定序列化或保存失败时是否推进基线，以及并发报告是否需要一把覆盖整个周期的锁；这些属于兼容性和丢计数风险，而非单纯重排。
 - 新增窗口字段时，修改点主要在 `data_window.rs` 的快照、合并和 `Marshal`，并同步 `data_window_test.rs`；`data.rs` 只在顶层结构形状发生变化时需要调整。
 - 性能上，当前顶层序列化会为每个子对象分配字符串、收集 `Vec<String>` 后再连接。窗口数量或载荷显著增长时，可考虑单缓冲写入，但必须保持 JSON 转义、确定性键顺序和 Go 兼容输出，并用独立测试锁定行为。
-
-## 验证依据
-
-本说明基于以下可复核证据：
-
-- RustCodeGraph 状态：索引包含 11,467 个文件，`pkg/telemetry/data.rs` 被识别为 76 行、6 个符号；`node --file` 已读取完整目标文件。
-- RustCodeGraph 精确查询：`query generateTelemetryData`、`query postReportTelemetryData`、`query PostReportTelemetryDataForTest`、`query telemetryData` 均同时定位到 Go/Rust 对照符号；`callers/callees` 对这些 Rust 限定名未返回边，故调用关系进一步以已索引文件源码和精确 `rg` 引用核验，没有推测缺失边。
-- 已读生产路径：`pkg/telemetry/lib.rs`、`Cargo.toml`、`telemetry.rs`、`data_feature_usage.rs:560-733`、`data_window.rs:230-278`；包内没有 `doc.go`。
-- 已读 Go 对照：`pkg/telemetry/data.go` 和 `pkg/telemetry/telemetry.go`。
-- 已读独立测试：`pkg/telemetry/data_feature_usage_test.rs:280-349`、`data_feature_usage_test.go:230-289`、`telemetry_test.rs`；引用搜索未发现直接覆盖 `generateTelemetryData`、`postReportTelemetryData` 或顶层 `telemetryData::Marshal` 的 Rust 测试。`data_window_test.rs` 与 `data_feature_usage_test.rs` 分别覆盖子对象序列化/行为，但不能替代顶层组合测试。
-- 人工复核结论：该文件之所以存在，是为了固定上报顶层 schema、协调两个采集域并在报告周期边界推进计数基线；安全扩展必须同时维护载荷构造、JSON 形状、后置基线和独立测试。
-
-任务规定的结构检查应确认本文档存在且恰好包含上述 11 个固定二级标题。该任务只分析文档，按计划不运行 Cargo 或代码测试。

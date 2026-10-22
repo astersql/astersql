@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate（`pkg/metrics/Cargo.toml`），由 crate 入口 `pkg/metrics/lib.rs` 以公开模块 `pub mod log_backup` 暴露。它只负责定义和构造日志备份（PiTR）观测指标，不负责推进 checkpoint、扫描 Region、访问外部存储或执行备份。
-
-包级初始化链为 `pkg/metrics/metrics.rs::InitMetrics` 调用 `log_backup::InitLogBackupMetrics`，随后 `pkg/metrics/metrics.rs::RegisterMetrics` 将本文件的 10 个 collector 注册到默认 Prometheus registry。指标统一使用 `tidb` namespace 和 `log_backup` subsystem，因此最终名称形如 `tidb_log_backup_last_checkpoint`。
+`InitLogBackupMetrics` 一次构造三组指标：任务 checkpoint 水位、advancer 的所有权/循环行为，以及 Region checkpoint 请求和订阅事件。
 
 ## 核心职责
 
@@ -71,11 +69,11 @@ Gauge 保存可升可降的当前值，Counter 只适合累计事件，Histogram
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metrics/log_backup.go`。Rust 与 Go 都声明相同的 10 个指标，使用相同 namespace、subsystem、name、help、变量标签、桶参数和初始化顺序。Go 的 `ConstLabels: map[string]string{}` 在 Rust 兼容层中体现为构造 opts 时注入空 const-label map，语义仍是“没有固定标签”。
+Rust 与 Go 都声明相同的 10 个指标，使用相同 namespace、subsystem、name、help、变量标签、桶参数和初始化顺序。Go 的 `ConstLabels: map[string]string{}` 在 Rust 兼容层中体现为构造 opts 时注入空 const-label map，语义仍是“没有固定标签”。
 
 主要语言差异是：Go 包级变量在 `init()` 调用 `InitMetrics` 后直接持有 collector；Rust 用 `Option` 表达前置初始化状态，用 `unsafe` 标记全局可变访问，并由 `Once` 与 `Mutex` 补上初始化时序约束。Go `RegisterMetrics` 使用 `prometheus.MustRegister`，注册错误 panic；Rust `RegisterMetrics` 对 registry 错误返回 `Result`，但对未初始化 `Option` 仍 panic。
 
-Go 业务侧直接证据包括：`br/pkg/streamhelper/advancer.go` 更新两个 checkpoint、tick duration 和两个最小 Region gauge，并在任务移除时删除 task labels；`collector.go` 更新批大小、请求结果及失败原因；`regioniter.go` 更新重试失败原因；`flush_subscriber.go` 观察订阅事件；`advancer_daemon.go` 设置 owner 并在退出时清理。Rust 同路径业务文件目前没有这些指标名的引用，属于迁移覆盖差异，而不是本指标定义文件可单独补齐的行为。
+Rust 同路径业务文件目前没有这些指标名的引用，属于迁移覆盖差异，而不是本指标定义文件可单独补齐的行为。
 
 ## 扩展指南
 
@@ -84,12 +82,3 @@ Go 业务侧直接证据包括：`br/pkg/streamhelper/advancer.go` 更新两个 
 行为接线应放在真正产生事件的 BR Rust 模块，而不是在本文件模拟数据。移植 Go 写入点时至少核对 `br/pkg/streamhelper/{advancer,advancer_daemon,collector,regioniter,flush_subscriber}.go`，并在对应独立 Rust 测试文件中验证更新值、标签、失败分类、owner 退出和任务删除后的清理。依照仓库约束，测试不可嵌入 `log_backup.rs`。
 
 现有 `pkg/metrics/bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata` 只冒烟调用初始化函数，未验证本文件的完整指标名、标签、桶和值。安全扩展宜新增同目录独立 `log_backup_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 区域挂载；若增加新的顶层测试函数或改动 Go import，还需按仓库 Build Flow 判断并运行 `make bazel_prepare`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/metrics` 确认目标、Go 对照、crate 入口和测试文件；`node --file pkg/metrics/log_backup.rs --offset 1 --limit 220` 读取完整 165 行并报告其被 `pkg/metrics/metrics.rs` 与 `pkg/metrics/bindinfo_1_aster_unit_test.rs` 使用；`query LOG_BACKUP --limit 20` 定位 Rust/Go 同名初始化函数。精确 `callers/callees InitLogBackupMetrics` 在 30 秒内未产生结果，故调用边由下列源码引用直接核验。
-- Rust 源码：`pkg/metrics/log_backup.rs`（10 个静态量及唯一初始化函数）、`pkg/metrics/metrics.rs`（初始化锁、`Once`、初始化与注册链）、`pkg/metrics/bindinfo.rs`（兼容 opts、构造器、标签操作）、`pkg/metrics/lib.rs`（公开模块和测试挂载）。目标包没有 `doc.go`。
-- crate 边界：`pkg/metrics/Cargo.toml`（crate 名、lib 入口、`prometheus` 与 `astersql-metrics-common` 依赖）。
-- Go 对照与业务证据：`pkg/metrics/log_backup.go`、`pkg/metrics/metrics.go`，以及 `br/pkg/streamhelper/advancer.go`、`advancer_daemon.go`、`collector.go`、`regioniter.go`、`flush_subscriber.go`。
-- 测试证据：`pkg/metrics/bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata` 覆盖初始化冒烟；`br/pkg/streamhelper/advancer_test.go` 验证外部存储 checkpoint 等 Go 侧业务写入。全仓检索未发现同名 Rust 专测或 Rust BR 业务写入引用。
-- 本任务是纯文档分析，依照计划不运行 Cargo；交付前以任务指定命令验证本文恰有 11 个固定二级章节，并人工检查每项职责、调用边和迁移差异均有上述直接证据。

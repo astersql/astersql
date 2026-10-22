@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-dxf-framework-testutil` crate，是 DXF（Distributed eXecution Framework，分布式任务执行框架）的执行器测试适配层。crate 入口 `pkg/dxf/framework/testutil/lib.rs` 通过 `pub mod executor_util` 声明模块，并用 `pub use executor_util::*` 再导出其公开 API；`pkg/dxf/framework/testutil/Cargo.toml` 则把 crate 映射回 Go 包 `pkg/dxf/framework/testutil`。
-
-它不实现生产环境的 task executor manager，也不调度任务。它把 `disttest_util.rs` 中可注入的 `TaskExecutorExtension` 和 `StepExecutor` 组装成名为 `Example` 的测试任务执行器，并提供一次完整执行单个子任务生命周期的辅助函数。DXF 的生产语义是“任务按顺序经过多个 step，每个 step 包含可并行的 subtask”；该定位由 `pkg/dxf/framework/doc.go` 的 Task abstraction 和 task executor 描述确认。
+测试工具而非完整的 Go API 等价实现：Rust 版本只处理执行器扩展注册和单次子任务执行，没有在这里构造生产 `BaseTaskExecutor` 或运行完整 executor loop。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ RustCodeGraph 对目标文件给出的直接调用边包括 `InitTaskExecutor �
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/dxf/framework/testutil/executor_util.go`。两边都保留 `InitTaskExecutor` 名称，都用调用者注入的子任务回调构造通用 step executor，并固定面向 `proto.TaskTypeExample` / Rust 的 `TASK_TYPE_EXAMPLE`。
-
 当前 Rust 移植有以下显式差异：
 
 - Go 函数接收 `gomock.Controller`，通过 `GetCommonTaskExecutorExt` 和 `GetCommonStepExecutor` 建立 mock；Rust 用 trait、`Arc` 和闭包表达同一可注入边界。
@@ -95,7 +91,7 @@ Go 对照文件是 `pkg/dxf/framework/testutil/executor_util.go`。两边都保�
 - Go 函数没有返回值，清理由 Go 测试控制器/测试进程的全局环境承担；Rust 返回 `Result` 和 RAII 守卫，并在失败或析构时显式全量清理，使隔离行为可测试。
 - `run_registered_subtask` 是 Rust 为验证移植后的 extension/step executor 生命周期新增的辅助函数，Go 对照文件没有同名函数。
 
-Go 的真实用例 `pkg/dxf/framework/taskexecutor/task_executor_testkit_test.go::TestTaskExecutorBasic` 用该注册函数运行两个 step、每步创建多个 subtask 并检查成功状态。Rust 当前直接相关测试覆盖了注册值、守卫清理、回调调用和运行错误传播，但没有在本文件层面复刻该完整 manager loop；不能据此宣称 Rust 辅助函数已经独立覆盖 Go 集成用例的全部行为。
+Rust 当前直接相关测试覆盖了注册值、守卫清理、回调调用和运行错误传播，但没有在本文件层面复刻该完整 manager loop；不能据此宣称 Rust 辅助函数已经独立覆盖 Go 集成用例的全部行为。
 
 ## 扩展指南
 
@@ -105,15 +101,3 @@ Go 的真实用例 `pkg/dxf/framework/taskexecutor/task_executor_testkit_test.go
 - 改变注册生命周期：应评估 `clear_executors` 的全量清理是否会破坏并行测试。若需要精确撤销，应让注册 API 返回注册句柄或提供按 task type 注销能力，而不是在 `Drop` 中猜测注册表内部结构。
 - 测试应继续放在独立文件。针对本文件的契约测试应扩展 `pkg/dxf/framework/testutil/migration_aster_unit_test.rs`；跨 crate 的用户可见执行路径应扩展 `pkg/dxf/framework/integrationtests/framework_test.rs`。不要把测试模块内嵌回 `executor_util.rs`。
 - 兼容风险主要是固定任务类型字符串、Go 风格公开函数名和错误优先级；性能风险很低，主要成本是每次构造执行器时克隆 `Arc`。若改用锁或全局表，应额外评估注册/清理竞争。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标目录查询识别 `executor_util.rs` 的 8 个符号，并识别两个直接使用文件。
-- 源文件：`pkg/dxf/framework/testutil/executor_util.rs`，核对 `TaskExecutorRegistry`、`ExecutorRegistrationGuard`、`Drop::drop`、`InitTaskExecutor`、`run_registered_subtask` 的完整实现。
-- crate 边界：`pkg/dxf/framework/testutil/Cargo.toml` 与 `pkg/dxf/framework/testutil/lib.rs`，核对 crate 名、Go 包映射、模块声明和公开再导出。
-- 下游实现：`pkg/dxf/framework/testutil/disttest_util.rs`，核对 `RunSubtaskFn`、`TASK_TYPE_EXAMPLE`、`StepExecutor`、`TaskExecutorExtension`、`GetCommonTaskExecutorExt` 和 `GetCommonStepExecutor` 的真实语义。
-- 框架定位：`pkg/dxf/framework/doc.go`，核对 DXF 的 task/step/subtask 抽象以及 task executor 在各节点执行任务的职责。
-- Go 对照：`pkg/dxf/framework/testutil/executor_util.go` 与 `pkg/dxf/framework/taskexecutor/task_executor_testkit_test.go::TestTaskExecutorBasic`。
-- Rust 独立测试：`pkg/dxf/framework/testutil/migration_aster_unit_test.rs::executor_helpers_run_and_cleanup_with_raii_registration` 与 `pkg/dxf/framework/integrationtests/framework_test.rs::framework_executor_failure_is_returned_without_hiding_cleanup`。
-- RustCodeGraph 查询包括 `status`、目录 `files`、目标文件 `explore` / `node`，以及对 `InitTaskExecutor`、`run_registered_subtask`、`TaskExecutorExtension`、`GetCommonTaskExecutorExt`、`GetCommonStepExecutor` 和两个测试函数的精确查询。图中确认的关键边为 `InitTaskExecutor → register_executor`、失败分支与 `Drop::drop → clear_executors`，以及两个测试对公开辅助函数的调用。
-- 本任务只新增说明文档，没有修改运行时代码；依照任务约束未运行 Cargo。最终结构以任务指定命令验证恰好包含 11 个固定二级章节。

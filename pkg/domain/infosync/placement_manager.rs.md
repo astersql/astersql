@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-infosync` crate，定义 Placement Rule Bundle 的最小读写抽象、基于 PD HTTP 客户端的生产实现、供无 PD 场景使用的内存 mock，以及一项面向 leader 规则的本地重叠检查。crate 入口 `pkg/domain/infosync/lib.rs` 将该模块的公开项重新导出；`pkg/domain/infosync/Cargo.toml` 通过 `ddl-placement` 依赖取得 `placement::Bundle` 和 PD 规则类型，并以 `package.metadata.porting.go-package = "pkg/domain/infosync"` 声明 Go 对照包。
-
-它不是 Placement Bundle 的构造器，也不负责 DDL 策略解析。Bundle 的数据模型及 `IsEmpty` 语义位于 `pkg/ddl/placement/bundle.rs`；本文件位于 Domain 的信息同步边界，把上层对 Bundle 的读写统一转发到 PD 或本地 mock。`InfoSyncer::placementManager` 是该抽象在应用中的持有者（`pkg/domain/infosync/info.rs`）。
+职责边界必须严格区分：生产 `PDPlacementManager::PutRuleBundles` 不调用 `CheckBundle`，校验最终由 PD 接口负责；本地检查只在 mock 写入路径中自动执行。
 
 ## 核心职责
 
@@ -86,9 +84,7 @@ mock 查询在 Bundle 不存在时返回成功和空 Bundle，而不是 not-foun
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/domain/infosync/placement_manager.go`。Rust 保留了同名接口、生产/模拟两种实现、空批 no-op、读取后补 ID、partial-update=`true`、空 Bundle 删除、leader-only 重叠检查以及 override 清空累计范围等核心顺序。
-
-主要表示差异如下：Go 使用指针 Bundle 切片，mock map 也保存指针；Rust 使用拥有所有权的 `Bundle`，在写入和读取时克隆，避免别名修改。Go 的接口每个方法接收 `context.Context`，Rust 同步 trait 不接收上下文。Go 首次写入会惰性初始化可能为 nil 的 map；Rust `#[derive(Default)]` 直接得到可用空 `HashMap`。Go 为范围定义 `keyRange`，Rust用临时元组。Go 的错误通过 `fmt.Errorf` 构造，Rust映射为 `Error::External`。
+主要表示差异如下：Go 使用指针 Bundle 切片，mock map 也保存指针；Rust 使用拥有所有权的 `Bundle`，在写入和读取时克隆，避免别名修改。Go 首次写入会惰性初始化可能为 nil 的 map；Rust `#[derive(Default)]` 直接得到可用空 `HashMap`。Go 为范围定义 `keyRange`，Rust用临时元组。
 
 测试证据分两层：`pkg/domain/infosync/info_test.rs::test_put_bundles_retry` 是可执行 Rust 测试，覆盖 PD 管理器经门面的重试与读取；`pkg/ddl/placement_policy_test.go::TestCheckBundle` 是 Go 行为矩阵，证明无重叠 leader 成功、表与分区 leader 使用同一范围时失败。对应的 `pkg/ddl/placement_policy_test.rs::test_check_bundle_go_draft` 目前只是保留 Go 调用顺序的测试草稿，主体为注释，没有实际构造 Bundle 或调用 Rust `CheckBundle`，不能作为 Rust 行为已执行的证据。
 
@@ -101,16 +97,3 @@ mock 查询在 Bundle 不存在时返回成功和空 Bundle，而不是 not-foun
 修改 mock 写入顺序时要特别测试：同 ID 多次出现、删除后重建、校验失败后的持久状态、override leader 位于规则序列不同位置、相邻与重叠端点，以及并发读写。若希望校验失败回滚，这是可观察行为变化，必须同步 Go 版本或明确记录迁移差异。
 
 性能方面，`CheckBundle` 对 `L` 条 leader 规则使用 `O(L log L)` 排序；`checkBundles` 会在每次 mock 写入后重新扫描全部保存 Bundle。当前适合作为测试实现，但若 mock 被用于大规模规则压力测试，应测量临界区长度再决定是否维护增量索引。不要依赖 `GetAllRuleBundles` 的 HashMap 顺序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 Rust 文件已索引。
-- RustCodeGraph `explore "pkg/domain/infosync/placement_manager.rs symbols callers callees placement rules"`：确认 `InfoSyncer` 持有 `PlacementManager`，本文件三项操作经 `info.rs` 门面调用，并定位 `CheckBundle -> checkBundles -> mock PutRuleBundles` 关系。
-- RustCodeGraph `node --file pkg/domain/infosync/placement_manager.rs --offset 1 --limit 400`：完整读取 117 行目标文件，核对全部 trait、struct、impl 和函数；图报告直接使用文件为 `info.rs`、`info_test.rs`。
-- RustCodeGraph `node` 读取 `pkg/domain/infosync/info.rs` 的初始化段与 510--579 行：核对管理器选择、全局持有、三项门面和重试边界。
-- RustCodeGraph `node` 读取 `pkg/domain/infosync/types.rs` 90--154 行：核对 `PdHttpClient` placement 方法及默认 unsupported 行为。
-- RustCodeGraph `node` 读取 `pkg/ddl/placement/bundle.rs` 35--79、440--474 行：核对 Bundle 字段、所有权类型及 `IsEmpty` 精确定义。
-- 直接读取 `pkg/domain/infosync/Cargo.toml` 与 `lib.rs`：核对 crate 名称、Go 包元数据、`ddl-placement` 依赖和公开重导出。
-- 直接对照 `pkg/domain/infosync/placement_manager.go`、`pkg/domain/infosync/info_test.go::TestPutBundlesRetry`、`pkg/ddl/placement_policy_test.go::TestCheckBundle`：核对移植顺序、错误/删除语义与重叠用例。
-- 读取 `pkg/domain/infosync/info_test.rs::test_put_bundles_retry` 和 `pkg/ddl/placement_policy_test.rs::test_check_bundle_go_draft`：确认前者为可执行 Rust 回归，后者尚为注释化草稿；当前没有独立 Rust 测试真实执行 `CheckBundle` 的 Go 用例矩阵。
-- 本任务仅新增文档，按计划不运行 Cargo。交付前使用任务指定的命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核以上边界没有被表述为超出当前代码的能力。

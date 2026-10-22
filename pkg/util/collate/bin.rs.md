@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-collate` crate 的二进制排序规则实现。crate 入口 `pkg/util/collate/lib.rs` 以 `pub mod bin` 装入本文件并公开重导出其中类型；`pkg/util/collate/Cargo.toml` 声明该 crate 默认启用 `full_collate`，但本文件自身没有 feature 或平台条件编译，因此基础 binary、PAD SPACE binary 和 derived binary 在两种 feature 配置下都存在。
-
-它位于字符串比较、排序键生成与 SQL `LIKE` 匹配的公共底层。`pkg/util/collate/collate.rs` 的工厂将名称和开关状态映射到本文件的三种 `Collator`，表达式层 `pkg/expression/builtin_like.rs::builtinLikeSig::new` 又直接以 `binCollator` 作为默认 LIKE collator。这里不负责解析 collation 名称、维护全局开关或执行表达式，只实现选定 binary 规则后的具体行为。
+`derivedBinCollator` 保持同样的字节比较与 key，却将 pattern 改为 Unicode 标量值（Go rune）匹配；它也是旧 collation 模式和 `GetBinaryCollator` 的统一回退实现。
 
 ## 核心职责
 
@@ -77,11 +75,11 @@ pattern 的编译需要 `&mut self`，匹配只需要 `&self`；因此 Rust 类�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/bin.go`。类型及流程一一对应：Go `binCollator`、`derivedBinCollator`、`binPaddingCollator`、`derivedBinPattern`、`binPattern` 分别对应 Rust 同名类型，比较、裁尾、pattern 选择和克隆语义保持一致。Rust 没有用嵌入复用 `derivedBinCollator` 的基础方法，而是显式实现完整 `Collator` trait；这是语言结构差异，不是行为简化。
+Rust 没有用嵌入复用 `derivedBinCollator` 的基础方法，而是显式实现完整 `Collator` trait；这是语言结构差异，不是行为简化。
 
 Rust 为 trait 补充了 Go 接口中没有的 `CompareBytes`、`KeyBytes` 和 `as_any`：前两者保留任意 Go string 字节而不经有损 UTF-8 转换，后者服务运行时类型判断。另一方面，Go `ImmutableKey` 用 `hack.Slice` 可零拷贝借用字符串内存，Rust 当前签名返回拥有所有权的 `Vec<u8>`，所以三个 Rust 实现都会复制；行为内容一致，但分配特征不同。
 
-Go `strings.Compare` 与 Rust `compare_bytes` 都产生字节字典序的 `-1/0/1`。Go padding 版本以 `truncateTailingSpace` 裁剪；Rust 对 `&str` 和原始字节分别调用字符串版/字节版辅助函数。Go `[]rune` 对应 Rust `Vec<char>`，Go `[]byte` 对应 Rust `Vec<u8>`。
+Go padding 版本以 `truncateTailingSpace` 裁剪；Rust 对 `&str` 和原始字节分别调用字符串版/字节版辅助函数。
 
 测试证据来自 Go `pkg/util/collate/collate_test.go` 和 Rust 独立测试 `pkg/util/collate/bin_1_aster_unit_test.rs`：两边都验证 binary 保留 `"a "`、`utf8mb4_bin` 去除尾空格、`utf8mb4_0900_bin` 返回 derived 类型，以及新 collation 关闭时统一回退 derived binary。Rust 独立测试额外明确验证 byte/rune pattern 对中文的差异。
 
@@ -93,12 +91,3 @@ Go `strings.Compare` 与 Rust `compare_bytes` 都产生字节字典序的 `-1/0/
 - 修改 pattern 必须同步检查 `pkg/util/stringutil/string_util.rs` 的编译/匹配算法，以及复用它们的 `gbkBinPattern`、`gb18030BinPattern`。byte/rune、转义、连续 `%`、空 pattern、多字节字符和尾空格都是必要回归边界。
 - 测试逻辑应继续放在独立文件 `pkg/util/collate/bin_1_aster_unit_test.rs` 或现有 `collate_test.rs`，不要内嵌到生产 `bin.rs`。Go 对照行为变化时还需同步核验 `pkg/util/collate/bin.go` 与 `collate_test.go`。
 - 性能变更应关注 key 分配和 rune pattern 的 `Vec<char>` 构造；语义优化不能破坏 Go 对齐。`collate_bench_test.rs`/`collate_bench_test.go` 已覆盖多长度的 compare、key 和 immutable-key 基准，可作为性能回归入口。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引可用（Rust/Go 均已索引）；`files --filter pkg/util/collate` 定位目标、Go 对照与独立测试；`node --file pkg/util/collate/bin.rs --offset 22 --limit 180` 核对完整实现及文件级使用者；对五个主要类型执行 `query`，确认 Rust/Go 定义位置。因同名跨语言符号令裸 `callers/callees` 查询歧义，调用边使用文件节点与精确引用交叉确认。
-- 生产源码：`pkg/util/collate/bin.rs`（全部符号和分支）、`lib.rs`（模块装配与测试接线）、`collate.rs`（trait、工厂、回退和 raw-key 判断）、`../stringutil/string_util.rs`（pattern 类型与算法）、`gbk_bin.rs`/`gb18030_bin.rs`（pattern 复用）、`pkg/expression/builtin_like.rs`（应用层默认调用者）。
-- crate 配置：`pkg/util/collate/Cargo.toml`，确认 crate 名、`lib.rs` 入口、默认 `full_collate` feature、依赖和 Go package 元数据。
-- Go 对照：`pkg/util/collate/bin.go` 与 `collate_test.go`，核对五个类型、key/比较/pattern/clone 行为、尾空格样例和工厂类型映射。
-- Rust 测试：`pkg/util/collate/bin_1_aster_unit_test.rs` 验证 strict/padding key 与比较、`KeyWithoutTrimRightSpace`、byte/rune pattern 语义和注册回退；`collate_test.rs` 验证名称/ID 到具体类型；`collate_bench_test.rs` 提供 compare/key 性能入口。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务规定的 11 章节结构检查，并人工检查每项关键结论可回溯到上述符号或文件。

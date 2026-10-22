@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-timer-tablestore` crate 的 etcd 定时器变更通知器，是表存储完成持久化写入后向集群其他节点广播 create、update、delete 事件的边界层。crate 入口 [`lib.rs`](./lib.rs) 将 `notifier` 声明为私有模块并再导出其公开项；[`store.rs`](./store.rs) 的 `NewTableTimerStore` 在传入 `Arc<dyn EtcdClient>` 时构造 `NewEtcdNotifier`，否则退回内存通知器。
-
-该文件不直接依赖具体 etcd SDK，也不负责 JSON 编解码。它通过公开 trait `EtcdClient` 描述租约、keep-alive、前缀监听和批量写入；当前应用侧实现位于 `pkg/session/runtime/ttl_timer_etcd.rs::RealTimerEtcdClient`。这种分层让本 crate 的直接业务依赖保持为 `astersql-timer-api`，与 [`Cargo.toml`](./Cargo.toml) 一致。
+`EtcdNotifier::Notify` 把合法的 API 事件转换为 `EtcdNotifyEvent`，压入共享队列，并以容量为 1 的唤醒通道合并连续唤醒。
 
 ## 核心职责
 
@@ -84,10 +82,6 @@ RustCodeGraph 对 `notifier.rs` 的文件查询显示它被 10 个文件引用�
 
 ## 与 Go 版本的对应关系
 
-同路径 [`notifier.go`](./notifier.go) 是主要语义基准。Rust 保留了 20 秒写入超时、1 秒最小间隔、60 秒 lease TTL、三个事件字符串、每实例唯一键、容量为 1 的合并唤醒、批量发送、lease 断线重建以及 `Close` 等待工作协程等设计。
-
-主要结构映射为：Go `notifyEvent` ↔ Rust `EtcdNotifyEvent`，`etcdNotifier` ↔ `EtcdNotifier`/`NotifierInner`/`State`，`notifyLoop`/`takeEvents`/`sendEvents` ↔ 同名 Rust 辅助函数，Go `context + cancel + WaitGroup` ↔ Rust 原子关闭位、可取消 `api::Context` 和保存后 join 的 `JoinHandle`。
-
 实现边界有意不同：Go 文件直接持有 `clientv3.Client`、执行 JSON 编解码并记录日志；Rust 文件通过 `EtcdClient` 抽象这些工作，真实 etcd 与 JSON 逻辑在 `pkg/session/runtime/ttl_timer_etcd.rs`。Go 使用 UUID 生成键和 watcher ID，Rust 键使用 PID、创建纳秒和 `NEXT_KEY`，且本层不记录 watcher 日志。
 
 Go 的 `Watch` 自己创建输出通道并逐条解析 etcd 响应；Rust 的 `Watch` 直接返回适配器通道，只负责生命周期联动。当前 Rust 测试覆盖关闭传播和 wire shape，但没有等价于 Go `TestEtcdNotifier` 的真实 etcd 双实例端到端测试，因此完整跨节点广播仍以 Go 集成测试为直接基准，而不是声称已由 Rust 本地测试完全证明。
@@ -100,13 +94,3 @@ Go 的 `Watch` 自己创建输出通道并逐条解析 etcd 响应；Rust 的 `W
 - 调整批处理或节流时，应覆盖高并发 `Notify`、单次唤醒合并、顺序保持、grant/keep-alive/put 失败和关闭期间未发送事件。独立 Rust 测试应继续放在现有 `sql_test.rs` 或新增同目录 `notifier_test.rs`，并从 `lib.rs` 以 `#[cfg(test)] #[path = ...]` 接入，不能把测试内嵌进生产文件。
 - 调整 `Watch` 生命周期时，应保持调用方 context 取消只终止自己的 watcher，而 `Close` 终止全部 watcher且关闭后不创建新 etcd watch。现有 `sql_test.rs::test_etcd_notifier_close_cancels_watchers` 是最接近的回归入口。
 - 若为 notifier 增加自动资源释放，需要特别处理发送线程持有内部 `Arc` 的自引用生命周期，不能简单依赖外部 `EtcdNotifier` 的 `Drop`。
-
-## 验证依据
-
-- 生产源码：`pkg/timer/tablestore/notifier.rs`（全部 325 行），包括 `EtcdNotifyEvent`、`EtcdClient`、`NewEtcdNotifier`、`notifyLoop`、`sendEvents` 和 `TimerWatchEventNotifier` 实现。
-- crate 与接线：`pkg/timer/tablestore/Cargo.toml`、`pkg/timer/tablestore/lib.rs`、`pkg/timer/tablestore/store.rs`、`pkg/timer/api/store.rs::TimerWatchEventNotifier`。
-- 真实适配器与线格式：`pkg/session/runtime/ttl_timer_etcd.rs`；Rust wire-shape 测试：`pkg/session/runtime/ttl_timer_etcd_test.rs::go_merge_43_timer_etcd_notice_matches_go_wire_shape`。
-- Rust notifier 测试：`pkg/timer/tablestore/sql_test.rs::test_etcd_notifier_close_cancels_watchers`，验证关闭现有 watcher、关闭后返回断开通道且不新增底层 watch。
-- Go 对照与端到端行为：`pkg/timer/tablestore/notifier.go`；`pkg/timer/store_intergartion_test.go::TestEtcdNotifier`/`runNotifierTest` 验证同实例及双实例广播、批量顺序、单 watcher 取消、整体关闭和关闭后忽略通知。
-- RustCodeGraph：`status` 显示当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/timer/tablestore` 找到 Rust/Go 源与独立测试；`node --file pkg/timer/tablestore/notifier.rs` 展示完整源并报告 10 个引用文件；`query NewEtcdNotifier`、`query notifyLoop`、`query sendEvents` 均返回 Rust 与 Go 对应符号。`callers`/`callees` 未输出边明细，因此又以精确 `rg` 核对上述调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证为固定十一章节结构检查、路径/链接核对和 diff 人工复核。

@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session-sessionapi` crate，是 Rust 侧客户端连接级会话 ABI 的核心定义。crate 入口 `pkg/session/sessionapi/lib.rs` 将本文件声明为私有 `session` 模块，再以 `pub use session::*` 对外导出，因此使用方看到的是 crate 根上的 `Session`、`ErrIdentityNotFound` 和 `Any`。
-
-它位于协议/服务器、SQL 解析与执行、事务、鉴权和会话管理之间，但只定义接口与两个辅助类型，不保存具体会话状态，也不实现 SQL 执行。`pkg/session/runtime.rs:16-24` 进一步明确：当前可执行运行时与完整 planner/executor 版 `sessionapi::Session` 是分开的；不能仅凭本文件推断完整 trait 已被某个生产类型实现或接入服务器主链。
-
-crate 边界由 `pkg/session/sessionapi/Cargo.toml` 给出：包名为 `astersql-session-sessionapi`，库入口为 `lib.rs`，并通过路径依赖连接 AST、用户身份、鉴权连接、扩展、结果字段、会话管理、会话上下文、状态迁移、结果集和事务信息等 crate；TLS 状态直接使用外部依赖 `rustls = "0.23"`。
+位于协议/服务器、SQL 解析与执行、事务、鉴权和会话管理之间，但只定义接口与两个辅助类型，不保存具体会话状态，也不实现 SQL 执行。
 
 ## 核心职责
 
@@ -103,19 +99,12 @@ trait 没有声明 `Send` 或 `Sync`，绝大多数变更操作要求 `&mut self
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/session/sessionapi/session.go`。Rust 保留了 Go `Session` 的方法集合、参数语义和返回形态，并用 Rust 所有权/trait 机制表达 Go 接口：
+Rust 保留了 Go `Session` 的方法集合、参数语义和返回形态，并用 Rust 所有权/trait 机制表达 Go 接口：
 
-- Go 的接口嵌入 `sessionctx.Context` 对应 Rust 超 trait `Session: sessionctx::Context`。
-- Go 的 `context.Context` 对应借用的 `sessionctx::ExecutionContext`；Go `error` 对应 `sessionctx::GoError`。
-- Go `[]sqlexec.RecordSet`、`ast.StmtNode` 等接口值对应 Rust `Vec<Box<dyn RecordSet>>`、`Box<dyn StmtNode>`。
-- Go `[]expression.Expression` 被抽象为关联类型 `PreparedExpression` 的切片，避免 sessionapi crate 直接绑定表达式 crate。
-- Go `conn.AuthConn` 和 `sessionctx.SessionStatesHandler` 被抽象为有关联约束的 `AuthConnection`、`StateHandler`。
 - Go `*tls.ConnectionState` 在 Rust 中近似为 `Option<&rustls::ServerConnection>`；两者库与具体状态类型不同，只能确认“可空 TLS 连接状态”意图对齐，字段级等价未验证。
-- Go `sessmgr.Manager` 接口值在 Rust 中为 `Option<Arc<dyn Manager>>`；Go `*SessionExtensions` 对应 `Option<Arc<SessionExtensions>>`。
-- Go `...any` 对应 `&[Any]`，其中每项是带 `Send + Sync` 的装箱类型擦除值。
 - Go `*TxnInfo`、`*UserIdentity` 和字段指针切片在 Rust 中分别用 `Option<&TxnInfo>`、按值 `UserIdentity` 和值向量表达；这改变了所有权表示，但保留了“可能无事务/返回解析身份/返回字段集合”的接口意图。
 
-差异与迁移缺口：Go 注释中的废弃标记没有完整复制到 Rust API 文档；Rust 没有 Go 已推荐的 `ParseWithParams`；仓库内尚未搜索到完整 trait 的 Rust 实现。`pkg/session/sessionapi/Cargo.toml` 的 `package.metadata.porting` 将 Go 包映射到 `pkg/session/sessionapi` 并记录 `legacy-tasks = ["task-712"]`，说明这是按 Go 包迁移的 crate 边界。
+差异与迁移缺口：Go 注释中的废弃标记没有完整复制到 Rust API 文档；Rust 没有 Go 已推荐的 `ParseWithParams`；仓库内尚未搜索到完整 trait 的 Rust 实现。
 
 ## 扩展指南
 
@@ -128,13 +117,3 @@ trait 没有声明 `Send` 或 `Sync`，绝大多数变更操作要求 `&mut self
 修改可空对象时，应保持 `Option` 与 Go nil 语义，并在独立的 `pkg/session/sessionapi/session_test.rs` 增加编译期签名断言。错误或 `Any` 行为应在 `migration_aster_unit_test.rs` 扩展，不要把测试嵌入生产文件。新增行为测试还应覆盖失败路径、资源释放和与 Go 的相同边界。
 
 性能风险主要来自在热路径增加装箱、克隆或锁：AST/结果集已使用动态分发，`Any` 还需要 downcast；扩展时避免无依据地复制大型结果、把 `Arc` 深拷贝成数据副本，或在每条语句上引入全局锁。兼容风险集中在方法签名、错误文案、nullable 语义和 Go 已废弃接口；修改前应搜索所有 Cargo 反向依赖和具体实现。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件完整收录为 186 行。
-- RustCodeGraph 源码与符号：`pkg/session/sessionapi/session.rs`；`Session` 节点 `trait:35acc4ea10cafbdd991a2a82d38c1b7c`，`ErrIdentityNotFound` 节点 `constant:28430b65b72f68c7355d41116a06c647`，`Any` 节点 `type_alias:c7bb9e1c6b77e1d95c4d43a25ddf47bc`。
-- crate 装配与依赖：`pkg/session/sessionapi/lib.rs`、`pkg/session/sessionapi/Cargo.toml`。
-- Go 语义基线：`pkg/session/sessionapi/session.go`。
-- 独立 Rust 测试：`pkg/session/sessionapi/session_test.rs` 验证 `SetExtensions` 可空签名；`pkg/session/sessionapi/migration_aster_unit_test.rs` 验证错误文案和 `Any` downcast。
-- 实现状态旁证：`pkg/session/runtime.rs:16-24` 明确区分窄可执行运行时与完整 `sessionapi::Session` ABI；`rg` 对 Rust 实现与引用的补充搜索未发现完整 trait 实现，因此实现细节标记为未验证。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收采用固定章节结构检查和人工事实复核。

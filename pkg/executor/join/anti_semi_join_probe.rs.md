@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`anti_semi_join_probe.rs` 是 `astersql-executor-join` crate 中 Hash Join probe 阶段的 Anti Semi Join 实现。它实现 `base_join_probe.rs` 定义的 `Probe` trait，并通过 `BaseSemiJoin` 复用 semi/anti-semi 的共享状态。模块由 `pkg/executor/join/lib.rs` 公开声明，具体对象由 `base_join_probe.rs::new_join_probe` 在 `JoinType::AntiSemi` 分支创建。
-
-该文件处理普通 Anti Semi Join：返回左侧中在右侧找不到符合 join key 及 other condition 的行。它不是 `AntiLeftOuterSemi` 的 marker-column 实现，也没有自己实现 null-aware anti join 状态机；本文件向 `match_probe_row` 传入的是 `NaajType::Unknown`。
+实现 `base_join_probe.rs` 定义的 `Probe` trait，并通过 `BaseSemiJoin` 复用 semi/anti-semi 的共享状态。
 
 ## 核心职责
 
@@ -62,9 +60,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/join/anti_semi_join_probe.go`。Rust `AntiSemiJoinProbe`/`BaseSemiJoin` 对应 Go `antiSemiJoinProbe`/`baseSemiJoin`；`set_chunk_for_probe`、`probe`、scan 组方法、`is_current_chunk_probe_done` 和 `reset_probe` 均能找到同名语义。两者都覆盖左/右 build，other condition 的 true/false/NULL，容量限制续跑，以及未命中行的输出。
-
-当前 Rust 实现是可运行的行向量模型，不是 Go 实现的逐句机械翻译：
+Rust `AntiSemiJoinProbe`/`BaseSemiJoin` 对应 Go `antiSemiJoinProbe`/`baseSemiJoin`；`set_chunk_for_probe`、`probe`、scan 组方法、`is_current_chunk_probe_done` 和 `reset_probe` 均能找到同名语义。两者都覆盖左/右 build，other condition 的 true/false/NULL，容量限制续跑，以及未命中行的输出。
 
 - Go 按“有/无 other condition × 左/右 build”分为四个专用 probe 函数，使用 `chunk.Chunk`、行地址链、向量表达式求值和中间 joined chunk；Rust 用 `Joiner` 逐行评估并统一了分支。
 - Go 在 probe/scan 循环内检查 `SQLKiller`，并在左 build 无 other condition 路径使用原子 used flag；Rust 此文件没有对应的取消检查或原子标记。
@@ -80,12 +76,3 @@ Go 回归 `anti_semi_join_probe_test.go` 还覆盖更多 SQL 类型、复合 key
 - 扩展左 build 时，不要在 chunk reset 中清除 `build_row_used`；该标记必须保留到全部 probe 完成后的 scan。若引入多 worker 共享 context，需要先设计 Go 版原子 used flag 的 Rust 对等机制。
 - 若要对齐 Go 的取消、向量化或 spill/restored 语义，这不只是本文件的局部修改；需连同 `base_join_probe.rs`、`base_semi_join.rs`、`joiner.rs` 及上层 worker 协议一并评估。
 - 所有 Rust 回归都应放在独立的 `pkg/executor/join/anti_semi_join_probe_test.rs`，不要内嵌到生产文件。最少同时跑右 build、左 build + scan、other condition NULL、多次容量续跑与 spill 用例。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/executor/join/anti_semi_join_probe.rs` 确认目标文件已索引且有 15 个符号；`node --file ... --offset 1 --limit 500` 读取了全部 126 行并报告直接使用文件；`query AntiSemiJoinProbe` 核对了 Rust 类型与 Go 对照符号。`callers/callees` 在当前索引上未在 30 秒内返回，调用关系因此又用工厂和模块源文本直接核验。
-- Rust 源码：`anti_semi_join_probe.rs`、`base_join_probe.rs`、`base_semi_join.rs`、`joiner.rs`、`lib.rs`。
-- crate 声明：`pkg/executor/join/Cargo.toml`。其移植元数据明确指向 Go 包 `pkg/executor/join`。
-- Rust 独立测试：`anti_semi_join_probe_test.rs` 覆盖重复 build key 只输出未命中行、restored/reset、NULL key、左 build 后置扫描、NULL other condition 抑制 build 行、spill 尾部与容量续跑。
-- Go 对照：`anti_semi_join_probe.go` 提供分支、scan、spill 和取消的原始实现；`anti_semi_join_probe_test.go` 提供左/右 build、other condition、nullable/复合 key、重复 key 与 `NOT IN` 的回归意图。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付检查为固定十一章节的结构验证与人工事实复核。

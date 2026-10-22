@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-memory` crate。`pkg/util/memory/Cargo.toml` 指定 `lib.rs` 为 crate 根，`pkg/util/memory/lib.rs` 通过 `pub mod pool;` 公开本模块；它没有被 `mem-arbitrator` feature 条件包围，因此模块始终参与该 crate 的编译。文件实现一棵进程内资源配额树：`ResourcePool` 是树节点和配额账户，`Budget` 是从某个 pool 取得、消费并归还容量的句柄。
-
-当前 Rust 仓库中，经限定 `.rs` 路径搜索，生产代码没有直接引用 `pool::ResourcePool`、`pool::Budget` 或 `NewResourcePool*`；可观察行为主要由 `pkg/util/memory/pool_test.rs` 覆盖。因此它是已经公开并具有完整局部行为、但尚未接入 Rust 应用主链的 Go 移植模块，不能把同 crate 的 `arbitrator.rs`/`tracker.rs` 新式预算类型当成其直接调用者。直接 Go 对照是 `pkg/util/memory/pool.go`。
+通过 `Start`/`Stop` 管理树节点挂载、配额初始化、余额归还和兄弟链表摘除；通过 `Traverse` 生成监控快照。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ Go 的 `Budget` 方法允许 nil receiver；Rust 不能调用空引用，改用 
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/memory/pool.go` 是逐符号对照：常量、`ResourcePool`/`Budget` 字段、构造函数、父子链表、对齐申请、两类回调、错误文本和 `Traverse` 快照均保持同一算法。`pkg/util/memory/pool_test.go` 与 `pkg/util/memory/pool_test.rs` 共享核心测试意图：随机预算不变量、双 Budget 竞争、nil/空预算、limit、对齐、多层树、reserved、回调和并发无死锁。
-
 Rust 的主要表达差异是：Go 裸指针改为 `Option<NonNull<_>>`，函数值改为 `Arc<dyn Fn + Send + Sync>`，匿名锁内结构拆成 `ResourcePoolMu`，错误临时用 `String`，Go nil receiver 用 Option/空 pool 分支近似。Go `Name()` 返回字符串值，Rust 返回 `&str`；Rust 的 `ApproxAllocated`/`ApproxCap` 实际仍加 `Mutex`，比 Go 的无锁近似读更强。
 
 已知迁移差异不能忽略：Go `DefMaxLimit` 来自 `arbitrator.go`，Rust 在本文件复制常量；Go 测试中的 limit 回调可用原子 setLimit 后继续，Rust 测试回调直接返回错误；Rust 极大尺寸测试允许溢出 panic；Rust 的裸指针生命周期由测试手工维持。`pool_test.rs::TestResourcePool` 还用 `Budget::Clear + Grow` 重建可观察状态，而非像 Go 测试直接调用私有 `release`。这些都表明当前实现保留主算法，但安全封装和部分边界契约仍未完全等价。
@@ -92,12 +88,3 @@ Rust 的主要表达差异是：Go 裸指针改为 `Option<NonNull<_>>`，函数
 - 若要对齐错误处理，应统一整数溢出、负请求、重复 Stop/Start 和回调后重新校验策略，并将 `String` 迁移到项目错误类型；同时与 `pool.go`/`pool_test.go` 核对兼容语义。
 - 若要消除本地 `DefMaxLimit`，应从 `arbitrator` 模块建立单一来源并检查是否产生模块耦合；Cargo 依赖不需要为标准库实现额外增加外部 crate。
 - 性能风险集中在每次分配的互斥锁、沿父链递归加锁、`Traverse` 的子节点 Vec 分配，以及回调在锁内执行；安全风险集中在 `NonNull` 悬垂和 `unsafe` 可变别名。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点；`files --filter pkg/util/memory/pool.rs` 确认目标文件有 73 个符号；`node --file pkg/util/memory/pool.rs` 分三段读取全部 897 行；`query NewResourcePool`/`query ResourcePool` 同时定位 Rust 与 Go 定义；带 `--file pkg/util/memory/pool.rs` 的 `callers/callees Grow/NewResourcePool/Traverse` 确认内部边与测试候选，并暴露同名符号误配，故外部调用再用限定 `rg` 复核。
-- Rust 源与模块边界：`pkg/util/memory/pool.rs`、`pkg/util/memory/lib.rs`、`pkg/util/memory/Cargo.toml`。
-- Rust 独立测试：`pkg/util/memory/pool_test.rs`。重点覆盖 `TestPoolAllocations`、`TestBudget`、`TestNilBudget`、`TestResourcePool`、`TestMemoryAllocationEdgeCases`、`TestActions`、`TestResourcePoolTree`、`TestResourcePoolUsedFromReserved` 和 `TestResourcePoolNoDeadlocks`。
-- Go 对照与回归依据：`pkg/util/memory/pool.go`、`pkg/util/memory/pool_test.go`；二者用于核对算法、错误文本、树顺序、对齐和测试意图。
-- 调用接线复核：限定 Rust 文件搜索 `NewResourcePoolDefault`、`OutOfCapacityActionArgs`、`ResourcePoolState` 以及 `astersql_util_memory::pool` 等路径后，未发现 Rust 生产调用者；当前直接 Rust 使用证据来自测试，模块公开证据来自 `lib.rs`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付验证仅执行固定 11 章节结构检查，并人工确认符号、路径、调用边、已知差异和扩展风险均可由上述材料反查。

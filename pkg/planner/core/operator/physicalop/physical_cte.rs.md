@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate，是 CTE（Common Table Expression，公用表表达式）的物理计划模型。`pkg/planner/core/operator/physicalop/Cargo.toml` 将 crate 根指定为 `lib.rs`，后者以 `pub mod physical_cte` 声明并以 `pub use physical_cte::*` 再导出这里的公开类型。
-
-当前代码包含两组用途不同、不能混为一谈的模型：
-
-- `PhysicalCTEDefinition`、`PhysicalCTE`、`PhysicalCteScan` 接入 `base::PhysicalPlan` trait，参与规范优化器、计划遍历和执行资源统计等真实主链。
-- `PhysicalCte`、`PhysicalCteStorage`、`PhysicalCteSink`、`PhysicalCteSource`、`CteExecutor` 和 `exhaust_physical_cte` 基于 `physical_common_plans::PhysicalPlanNode`，是保留 Go 语义的兼容数据模型。它覆盖关联列、EXPLAIN、属性传递和简化 sink/source 编码，但部分能力仍是占位或简化实现。
-
-文件开头第 21—104 行还有一段被注释掉的早期迁移草图；它不是可执行代码，理解现状应以第 107 行之后的定义以及 `lib.rs` 中的 trait 接线为准。
+用兼容模型 `PhysicalCte` 表达种子/递归树、`distinct` 和三段统计信息，并提供关联列提取、EXPLAIN、内存估算和访问对象文本。
 
 ## 核心职责
 
@@ -91,14 +84,11 @@ crate 依赖由 `pkg/planner/core/operator/physicalop/Cargo.toml` 声明；本�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/physicalop/physical_cte.go`。
-
 - Go `PhysicalCTE` 将 seed、recur、`CTEClass`、名称和别名放在同一结构中；Rust typed 路径拆成共享 `PhysicalCTEDefinition` 与主树引用 `PhysicalCTE`，并另设消费叶子 `PhysicalCteScan`。这是所有权模型上的重构，不是字段逐一同构。
 - Go `PhysicalCTE.Clone` 深克隆 seed/recur、共享 `CTEClass`；Rust 将相应语义分开：定义 clone 深克隆计划，引用 clone 保持 `Arc` 共享。
 - Go `CTEDefinition.ExplainInfo` 还处理 LIMIT 和日志脱敏；兼容 Rust `CteDefinition` 目前只报告是否递归。Go 的访问对象使用 CTE 名/别名，兼容 Rust `PhysicalCte::access_object` 只显示 storage ID；typed scan 的名称/别名文本在路由处补足。
 - Go `PhysicalCTEStorage.Attach2Task` 调用专用挂接函数，Rust 兼容 `attach_to_task` 仅透传；Go 成本委托 `GetPlanCostVer24PhysicalCTE`，Rust 兼容成本固定为零。这两处均是明确的迁移缺口。
 - Go sink/source `ToPB` 构造完整 `tipb::Executor`、转换字段类型，并由 sink 递归构造 child PB；Rust 兼容 `CteExecutor` 只保存字段 ID 和少量元数据。两者的 local source/sink 计数、storage ID、sink 压缩信息意图一致。
-- `PhysicalCteStorage::explain_info` 的固定字符串、`CteDefinition` 的递归判断及 `CTE_<id>` 格式由独立 Rust 测试与 Go 实现互相核对。
 
 ## 扩展指南
 
@@ -108,13 +98,3 @@ crate 依赖由 `pkg/planner/core/operator/physicalop/Cargo.toml` 声明；本�
 - 若把 `CteExecutor` 升级为真实 tipb 编码，需要加入字段类型转换、child executor、executor ID 及错误传播，并验证 storage ID 值域。Cargo 已声明 `tipb` 和 `protobuf`，但当前结构并未直接使用它们。
 - 修改 clone 时必须保持所有权约定：typed 引用共享定义、typed 定义深克隆计划、兼容 sink 清空瞬态任务列表。相应回归测试应继续放在同目录独立文件 `physical_cte_test.rs`，不要嵌入生产源文件。
 - 兼容模型与 typed 模型存在语义重复；扩展前先确定调用主链，避免只更新其中一套而造成 EXPLAIN、成本或 PB 行为漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳为 `1791342965170`；`files --filter pkg/planner/core/operator/physicalop` 确认目标、Go 对照和独立测试均已索引。
-- RustCodeGraph：`explore "pkg/planner/core/operator/physicalop/physical_cte.rs PhysicalCTE PhysicalCTETable PhysicalCTETableScan"` 给出目标上下文和调用爆炸半径；`node --file .../physical_cte.rs` 核对全部 502 行；`query` 精确定位 `PhysicalCTEDefinition`、`PhysicalCteScan` 和 `exhaust_physical_cte`。单独的 `callers` 查询在本次运行中未在 30 秒内返回结果，因此调用关系又由已索引文件的精确符号引用核验。
-- Rust 源与接线：`pkg/planner/core/operator/physicalop/physical_cte.rs`、`physical_common_plans.rs`、`base_physical_plan.rs`、`lib.rs`。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`。目标包没有 `doc.go`；最近的有效模块契约是 Rust crate 根 `lib.rs`，已读取。
-- Rust 独立测试：`pkg/planner/core/operator/physicalop/physical_cte_test.rs`，覆盖共享定义、递归说明、嵌套标量关联列、属性保留以及 sink PB/clone 行为；`pkg/executor/statement_ru_plan_walk_test.rs` 另有 typed 定义的集成式使用证据。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_cte.go`；MPP fragment 的 Go 流程和测试文件进一步说明 local sink/source 数量由 fragment split 后填充。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构通过任务指定的 11 章节检查验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`relational_scan.rs`](./relational_scan.rs) 属于 `astersql-session` crate 的 `runtime` 私有子模块：`pkg/session/runtime.rs` 以 `mod relational_scan` 装配它，并在 crate 内重导出 `scan_mlog_record_commit_ts`，对外重导出 `transaction_has_table_prefix`。`pkg/session/Cargo.toml` 的 `[package.metadata.porting]` 将整个 crate 对应到 Go `pkg/session`；本文件本身没有同路径 Go 文件，而是把 Go 中分散在 session、executor、planner 与 tablecodec 的表读语义集中到 Rust 会话运行时。
-
-它位于 SQL 查询主链的“物理计划/会话可见性到 KV 读取”边界：上游主要是 `runtime/query.rs`、`runtime/dml.rs`、`runtime/ddl.rs`、`runtime/explain_analyze.rs` 与 `runtime/canonical_table_reader.rs`，下游则是 `astersql-kv` 的 transaction/snapshot/client、`astersql-tablecodec` 的键值编解码、`tipb` coprocessor 协议，以及 planner 的 `PhysicalTableReader`。文件包含真实读路径而非门面或桩。
+将记录前缀、整数聚簇主键条件和本地二级索引条件转换为 KV 范围，以正序/逆序和分区物理表范围执行扫描（`relational_row_scan_ranges`、`relational_primary_key_scan_ranges`、`secondary_index_predicate_bounds`）。
 
 ## 核心职责
 
@@ -80,13 +78,10 @@ Index merge 是本文件唯一显式多线程区域：`std::thread::scope` 让 w
 
 ## 与 Go 版本的对应关系
 
-crate 元数据只声明整体对应 Go `pkg/session`，不存在 `pkg/session/runtime/relational_scan.go` 一对一文件。可复核的语义对应点是：
-
 - Rust `planned_table_reader_dag` 使用 planner `FlattenListPushDownPlan` 并逐 operator `to_pb`；Go 对应实现在 `pkg/planner/core/operator/physicalop/physical_utils.go::FlattenListPushDownPlan` 和 `pkg/executor/internal/builder/builder_utils.go::ConstructDAGReq`，由 `pkg/executor/builder.go` 的 TableReader/IndexReader 构建链调用。
 - Rust 的 snapshot/transaction 分流与 `scan_latest_with_transaction_overlay*` 对应 Go executor 的 union-scan/read-your-writes 契约，但 Rust 在本文件内以 record-key map 显式合并；它不是 Go `UnionScanExec` 的逐行复刻。
 - Rust `latest_relational_version` 注释明确对齐 Go RC `getStmtTS`；Go `pkg/session/txn.go` 也只在成功取得时间戳后更新 `DurationWaitTS`。Rust 相关失败/延迟行为由 `runtime/scan_adapter_runtime_test.rs` 的 RC timestamp tests 覆盖。
 - Rust 二级索引范围与 index merge 是当前 session runtime 的局部实现，遵循 Go ranger/index-merge 的结果语义，但只承认代码中列出的简单表达式、索引种类与显式 hinted intersection；不能据此声称覆盖 Go 成本模型和完整 ranger。
-- Rust Checksum/partial COUNT、key-only OFFSET、ANN TiFlash 请求是为保持结果和资源语义实现的运行时快路；失败或不适用时仍保留 root/snapshot 回退，因此快路能力不等同于 SQL 支持范围。
 
 ## 扩展指南
 
@@ -97,11 +92,3 @@ crate 元数据只声明整体对应 Go `pkg/session`，不存在 `pkg/session/r
 新增 OFFSET 优化不得以稠密 handle 为前提；当前 candidate 只是不会越过目标的下界，仍需精确范围计数补偿删除空洞。任何 snapshot option 修改都要恢复，任何 iterator/response 新分支都要关闭。新增 COUNT datum 类型或 executor 形态时保留溢出检查和 planner 首尾约束。
 
 测试必须放在独立文件而非本源文件。优先扩展 `pkg/session/runtime_test/storage.rs`（计数、OFFSET、二级索引、index merge 与快路结果）、`pkg/session/runtime_test/planning.rs`（planner/DAG 形态），以及 `pkg/session/runtime/scan_adapter_runtime_test.rs`（client response 关闭、exec details、RC TSO、codec 边界）。若改变 Go 对齐语义，还应对照对应 Go executor/planner 测试，而不是只验证 Rust 能编译。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 文件；`files --filter pkg/session/runtime/relational_scan.rs` 确认目标被索引；`node --file ...` 分段读取了 2,883 行与 139 个符号；`callees scan_registered_table_at_with_window` 核实 OFFSET/coprocessor/key-only 调用链。callers 对部分 impl method 无输出，已用直接引用搜索补证。
-- 源码与装配：`pkg/session/runtime/relational_scan.rs`、`pkg/session/runtime.rs`、`pkg/session/Cargo.toml`、`pkg/session/runtime/query.rs`、`dml.rs`、`ddl.rs`、`explain_analyze.rs`、`canonical_table_reader.rs`。
-- Rust 独立测试：`pkg/session/runtime_test/storage.rs`（基础 COUNT、key-only 大 OFFSET、TiKV partial COUNT、LIMIT/OFFSET、二级索引），`pkg/session/runtime_test/planning.rs`（规范 planner 生成 filtered COUNT DAG），`pkg/session/runtime/scan_adapter_runtime_test.rs`（响应关闭和统计合并、导入行 PK handle 恢复、RC timestamp 行为）。本任务按要求未运行 Cargo，测试文件仅作为现有行为证据读取。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_utils.go`、`pkg/executor/internal/builder/builder_utils.go`、`pkg/executor/builder.go`、`pkg/executor/select.go`、`pkg/session/txn.go`；这些是语义对应文件，不是本 Rust 文件的一对一来源。
-- 人工复核重点：读取视图优先级、事务 overlay、范围半开区间、unsigned handle 分段、response/iterator 关闭、优化失败回退、index merge 同版本并发，以及新增测试必须保持独立文件。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（见 [Cargo.toml](Cargo.toml)），描述分布式 ADD INDEX 回填中“合并临时索引”子任务的 Rust 执行器。在线回填期间，并发 DML 的索引变化先进入临时索引；回填后需要把这些变化合并回正式索引。调度侧已经用 `BackfillStep::MergeTemporaryIndex` 表示这个阶段，并在 `LitBackfillScheduler::get_next_step` 中支持 `Init -> MergeTemporaryIndex -> Done`（[backfilling_dist_executor.rs](backfilling_dist_executor.rs)、[backfilling_dist_scheduler.rs](backfilling_dist_scheduler.rs)）。
-
-当前接线范围需要特别区分：`lib.rs` 公开声明了 `backfilling_merge_temp` 模块，RustCodeGraph 显示本文件被 `index.rs` 和独立测试关联，但生产 Rust 源码中没有构造或调用 `MergeTemporaryIndexExecutor`；对该类型的直接调用证据仅见 [backfilling_merge_temp_test.rs](backfilling_merge_temp_test.rs)。因此它是可测试的执行逻辑移植件，尚不能据此声称 Rust DDL 主链已实际驱动该执行器。Go 生产入口仍是 `newMergeTempIndexExecutor` / `RunSubtask`（[backfilling_merge_temp.go](backfilling_merge_temp.go)）。
+生命周期钩子 `init`、`cleanup`、`task_meta_modified`、`resource_modified` 当前均为空；这里只提供接口形状，不执行环境准备、资源调整或清理。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@ Go 实现会创建 worker pool、source/merge/sink 异步 pipeline，并从步�
 
 ## 与 Go 版本的对应关系
 
-主要一一对应关系是：`mergeTempIndexExecutor` ↔ `MergeTemporaryIndexExecutor`，`initializeByMeta` ↔ `initialize_by_meta`，`RunSubtask` ↔ `run_subtask`，`mergeTempIndexCollector` 的计数 ↔ Rust 摘要与累计字段，空生命周期方法也保留了相同接口意图。
-
-已对齐的关键语义包括：从 `StartKey` 解码表/索引而不是依赖 `EleIDs`；局部分区索引选择解码分区、全局索引选择父表；合并指标仍用 `meta.PhysicalTableID` 标签；collector 的 `Processed(_, rows)` 令 `addCount` 与 `scanCount` 同增，所以 Rust 的 `summary.row_count` 和 `total_rows` 都使用 `add_count`。字节统计存在明确差异：Go 在整条 pipeline 成功后才将 collector 字节发布到 `Processed`；Rust 在每批成功后立即更新本地 summary，后续批次失败不会撤销先前累计，调用方需在重试前按需要 `reset_summary`。因此不能声称两者失败重试统计完全一致；Rust 摘要也不会自动上报 DXF 或写 job RU。独立 Rust 测试覆盖了解码及临时索引前缀掩码、全局索引父表选择、指标标签、skip 记录计数、零批大小字段保留和非法分区。
+字节统计存在明确差异：Go 在整条 pipeline 成功后才将 collector 字节发布到 `Processed`；Rust 在每批成功后立即更新本地 summary，后续批次失败不会撤销先前累计，调用方需在重试前按需要 `reset_summary`。因此不能声称两者失败重试统计完全一致；Rust 摘要也不会自动上报 DXF 或写 job RU。
 
 尚未等价或尚未接线的部分包括：Go 从 JSON 子任务元数据开始并自行从 KV 扫描，Rust 接收已经解析的 meta 和内存记录切片；Go 使用并发 pipeline、真实事务、日志、Prometheus counter、资源 CPU 容量和完整表对象，Rust 使用同步 worker 与抽象 store；Go 初始化 `mergeCounter` / `conflictCounter`，Rust 的 `conflict_metrics` 没有更新；Go 的修改通知标注为未来支持，Rust 同样为空；Rust worker 固定 16 次最大尝试，而 Go 片段按可重试事务错误持续退避，没有相同的本地次数上限。
 
@@ -94,11 +90,3 @@ Go 实现会创建 worker pool、source/merge/sink 异步 pipeline，并从步�
 - 增加冲突统计时，应明确由 store/worker 如何报告冲突，再更新 `conflict_metrics`；不能仅增加计数而没有与 Go 唯一键冲突语义对应的事件来源。
 - 实现 `resource_modified` 或并发执行前，需要定义 store 是否可跨 worker、安全的汇总合并方式、取消/关闭顺序与检查点持久化；同步参考 Go 的 source/merge/sink pipeline，但不要假定当前同步接口已提供这些保证。
 - 修改摘要重置规则时同时检查 `reset_summary`、`total_rows`、metrics maps 和 worker 扫描计数，明确哪些是子任务级、任务级或进程级累计值，并在 [backfilling_merge_temp_test.rs](backfilling_merge_temp_test.rs) 添加回归覆盖。
-
-## 验证依据
-
-- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/backfilling_merge_temp.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
-- 已读源码/配置：目标 [backfilling_merge_temp.rs](backfilling_merge_temp.rs)、[Cargo.toml](Cargo.toml)、`lib.rs`、`backfilling_dist_executor.rs`、`backfilling_dist_scheduler.rs`、`backfilling_operators.rs`、`backfilling_read_index.rs`、`backfilling_import_cloud.rs` 与 `index.rs`。
-- Go 对照：[backfilling_merge_temp.go](backfilling_merge_temp.go)、`backfilling_operators.go`、`index.go`；DDL 上下文还核对了 `docs/agents/ddl/README.md` 与 `docs/agents/ddl/06-add-index.md`，但行为结论以上述代码和测试为准。
-- 测试证据：[backfilling_merge_temp_test.rs](backfilling_merge_temp_test.rs) 的三个测试覆盖 key 解码、全局/分区选择、指标/统计、skip 记录和零批大小；`backfilling_dist_scheduler_test.rs` 覆盖阶段流转及合并计划不设置 `element_ids`。本任务按计划为纯文档分析，未运行 Cargo 或测试二进制。
-- 人工仓库搜索未发现生产 Rust 代码构造 `MergeTemporaryIndexExecutor` 或调用其 `run_subtask`；该限制已在“文件定位”和“依赖与调用关系”中明确记录。

@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-dxf-framework-scheduler-mock`，由同目录 `lib.rs` 以 `pub mod scheduler_mock` 装配并通过 `pub use scheduler_mock::*` 导出。crate 在根 `Cargo.toml` 中注册为 `facade_dxf_framework_scheduler_mock`，又由 `pkg/lib.rs` 暴露到 `dxf::framework::scheduler::mock` 路径；直接依赖它的 Cargo 清单包括调度器的 Windows dev-dependency、`framework/integrationtests` 和 `framework/testutil`。
-
-它是测试基础设施，不是调度算法本身：文件头保留 Go MockGen 的来源与生成命令，Rust 侧用 `mockall` 复刻 Go `pkg/dxf/framework/scheduler/mock/scheduler_mock.go` 的 `Extension` mock 方法面。当前文件已不是可由该 Go 命令重新生成的 Rust 产物，修改时必须同时理解 `mockall::mock!` 的展开规则。
-
-需要特别区分“方法面迁移”和“生产 trait 接线”。本文件使用本 mock crate 在 `lib.rs`、`storage_adapter.rs` 中定义或再导出的 `Context`、proto 类型和 `storage::TaskHandle`，公开方法保留 Go 风格名称；源码中没有 `impl astersql_dxf_framework_scheduler::Extension for MockExtension<_>`。因此它目前是可独立配置和验证的兼容 mock，并不能仅凭类型名断言已作为生产 Rust 调度器的 `Extension` trait object 使用。`pkg/dxf/framework/integrationtests/framework_test.rs` 中两处看似使用它的调用位于归档 Go 草稿字符串，不是编译后的 Rust 调用证据。
+只负责分发预先配置的测试行为，不保存或实现真实的任务调度、步骤状态机、节点选择、元数据持久化或 session/事务访问逻辑。
 
 ## 核心职责
 
@@ -94,16 +90,14 @@ Go 对照中的主调用边为 scheduler/testutil → `NewMockExtension` → `EX
 
 ## 与 Go 版本的对应关系
 
-对应源文件是 `pkg/dxf/framework/scheduler/mock/scheduler_mock.go`，其声明来自 `scheduler.Extension`。八个方法名、参数顺序和返回形状在 Rust 文件中逐项保留，因而迁移测试可以沿用 GoMock 的阅读习惯。
+八个方法名、参数顺序和返回形状在 Rust 文件中逐项保留，因而迁移测试可以沿用 GoMock 的阅读习惯。
 
 主要差异如下：
 
 - Go 使用 `*gomock.Controller`、`MockExtensionMockRecorder` 和反射式 `RecordCallWithMethodType`；Rust 使用 mockall 的静态宏生成 API，没有独立 recorder 类型，`EXPECT()` 返回 `&mut Self`。
 - Go controller 被构造器保存并统一驱动调用与校验；Rust 构造器的泛型 controller 参数只是形状兼容占位，实际状态由 `MockExtension::new()` 创建。
-- Go `ISGOMOCK() struct{}` 与 Rust `ISGOMOCK() -> ()` 都是无业务状态的标记。
 - Go `context.Context` 在 Rust mock crate 中退化为 `()`；Go `storage.TaskHandle` 是接口值，Rust 使用具体泛型 `H`，以绕开含泛型回调方法的 trait object 限制。
 - Rust `OnPrepare` 明确接受 `&mut Task`，使测试闭包可在借用规则下就地修改任务；其他 task 参数保持只读。
-- Go 的 `[]byte`/`[][]byte`/`[]string` 对应 Rust 的拥有型 `Vec<u8>`/`Vec<Vec<u8>>`/`Vec<String>`；Rust 方法会发生所有权移动。
 - 生产 Rust `pkg/dxf/framework/scheduler/interface.rs::Extension` 使用蛇形方法、生产自有 `Context`/`Task`/`SchedulerError`，且部分回调接收 `&mut Task` 或 `&dyn TaskHandle`。目标 mock 没有实现它，因此两者不能视为当前可直接互换。
 
 语义证据来自两侧测试：Go 的 `scheduler_nokit_test.go` 使用该 mock 注入候选节点错误、规划错误和不同 subtask 批次；Rust 的 `migration_aster_unit_test.rs` 聚焦验证 mock API 自身的参数转发、返回/错误、可变任务与次数约束。二者覆盖层级不同。
@@ -119,13 +113,3 @@ Go 对照中的主调用边为 scheduler/testutil → `NewMockExtension` → `EX
 5. 保持 Go 兼容入口时，不要删除 `EXPECT`、`ISGOMOCK`、`NewMockExtension` 或改变参数顺序；若决定改用纯 Rust 命名，应先迁移所有调用者并明确是否仍承诺 Go 形状兼容。
 
 性能风险很低，因为该文件仅用于测试；主要风险是 mockall 匹配闭包或复制大型 `Vec` 带来的测试开销。更重要的是正确性风险：宽泛匹配器可能漏掉参数回归，遗漏 `times` 可能弱化生命周期断言，错误地把归档字符串当作编译接线则会高估迁移完成度。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件，目标目录六个已索引文件；`node --file pkg/dxf/framework/scheduler/mock/scheduler_mock.rs` 读取了完整 115 行。
-- RustCodeGraph 符号查询：`query/node NewMockExtension` 定位目标构造器第 109 行；`callees NewMockExtension` 对目标 Rust 定义未发现下游静态边；文件索引显示 `used by 0 files`。宏生成的 `MockExtension`/`expect_*` 没有形成可依赖的完整静态图，因此以源码与独立测试补证。
-- 读取的 Rust 事实文件：`scheduler_mock.rs`、同 crate 的 `lib.rs`、`Cargo.toml`、`storage_adapter.rs`、`migration_aster_unit_test.rs`，以及生产边界 `pkg/dxf/framework/scheduler/interface.rs`。
-- 读取的 Go 对照与测试证据：`scheduler_mock.go`、`interface.go`、`scheduler_nokit_test.go` 的引用，以及 `pkg/dxf/framework/testutil/scheduler_util.go` 的通用期望配置。
-- 调用与装配核验：根 `Cargo.toml`、`pkg/lib.rs`、`scheduler/Cargo.toml`、`integrationtests/Cargo.toml`、`testutil/Cargo.toml`；仓库 `rg` 搜索区分了可编译 Rust 调用与归档 Go 草稿字符串。
-- 独立迁移测试覆盖：`constructor_marker_and_scalar_results_follow_gomock_contract`、`metadata_and_batch_callbacks_forward_arguments_and_errors`、`prepare_can_mutate_task_and_tick_is_dispatched`，合计覆盖八个 mock 方法、构造/标记、参数转发、错误传播、任务修改和期望次数。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前另运行固定十一章节结构检查，并人工确认本文明确回答文件为何存在、如何运行、当前未接线边界及安全扩展位置。

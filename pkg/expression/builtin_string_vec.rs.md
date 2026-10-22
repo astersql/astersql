@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（见 `pkg/expression/Cargo.toml`），提供从 Go `pkg/expression/builtin_string_vec.go` 移植而来的字符串内建函数“行无关向量内核”。crate 根在 `pkg/expression/lib.rs:265-266` 以私有模块 `builtin_string_vec_kernel` 装入它；只有测试配置在 `pkg/expression/lib.rs:826-829` 通过 `string_vec` 重导出。因此，当前代码会参与库编译，但其公开项并不是 crate 对外 API，直接调用者也仅见于独立测试。
-
-它与 Go 文件的架构位置并不完全等价：Go 各 `builtin*Sig.vecEvalString/vecEvalInt` 直接读取 `chunk.Chunk`、调用子表达式并写入 `chunk.Column`；本文件把这一层压缩为 `Vec<Value>` 输入、`EvalOutput` 输出，以 `StringBuiltin` 选择算法。文件头注释和 RustCodeGraph 对 `eval_rows` 的调用边都表明，这是供后续表达式签名类型接线的计算内核，不应描述为已经接入 SQL 执行主链的完整实现。
+提供与真实 chunk/表达式系统解耦的最小数据模型，便于独立验证移植语义；它没有负责函数签名构造、参数类型推导、chunk 缓冲复用或执行上下文接线。
 
 ## 核心职责
 
@@ -81,11 +79,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/expression/builtin_string_vec.go` 为每个 concrete signature 提供 `vecEvalString` 或 `vecEvalInt`，并以 `vectorized() bool` 宣告能力。Rust 的 `StringBuiltin` 变体大体一一对应这些 signature：例如 `Repeat` 对 `builtinRepeatSig`、`Locate3Utf8` 对 `builtinLocate3ArgsUTF8Sig`、`FormatWithLocale` 对 `builtinFormatWithLocaleSig`、`TranslateBinary/Utf8` 对相应 translate signature。
-
 保留的关键语义包括 binary/UTF-8 双路径、chunk NULL 规则、1 基位置、collation 比较、包大小限制、FORMAT locale、字符集转换和 Base64 折行。`pkg/expression/builtin_string_vec_24_aster_unit_test.rs` 用真实 `eval_rows` 覆盖 NULL、多字节边界、包限制、binary/UTF-8 位置、编码/翻译/格式化、可变参数与 Base64，并包含更大的函数矩阵；`pkg/expression/builtin_string_vec_test.rs` 保存 Go `builtin_string_vec_test.go` 的 case/benchmark 结构，四个测试入口会转调该真实 parity suite，并另测 Go 简单大小写映射。
 
-仍需明确的差异是：Rust 没有 `EvalContext`、`chunk.Chunk`/`chunk.Column`、子表达式向量求值、列缓冲复用及 signature 类型；`Value` 的类型系统也远小于 TiDB `types`。Rust `builtin_string_vec_test.rs` 的大量 case 定义仍是迁移草稿数据，benchmark 入口不执行性能测试。因此当前验证证明的是内核案例对齐，而不是完整 Go 向量执行框架或全量 case 自动驱动已经完成。
+仍需明确的差异是：Rust 没有 `EvalContext`、`chunk.Chunk`/`chunk.Column`、子表达式向量求值、列缓冲复用及 signature 类型；`Value` 的类型系统也远小于 TiDB `types`。
 
 ## 扩展指南
 
@@ -96,12 +92,3 @@ Go 对照文件 `pkg/expression/builtin_string_vec.go` 为每个 concrete signat
 测试逻辑必须继续放在独立文件。优先扩展 `pkg/expression/builtin_string_vec_24_aster_unit_test.rs` 的真实内核矩阵；如果变更 Go case 映射或桥接入口，再同步 `pkg/expression/builtin_string_vec_test.rs`，并参考 Go `pkg/expression/builtin_string_vec_test.go`。若未来把内核接入生产 signature，还需修改 `pkg/expression/lib.rs` 或实际调用模块并增加覆盖真实 chunk/执行上下文的独立测试，而不能把测试内嵌进本源文件。
 
 性能扩展应减少逐行重复分配和有损解码，同时保持结果所有权与 Go 语义；在没有真实 chunk 接线前，不应把此内核的分配行为宣称为 Go 向量实现的性能等价物。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/expression/builtin_string_vec.rs`；`files --filter` 将其识别为 1534 行、171 个符号的 Rust 文件；`node --file ... --offset/--limit` 分三段读取完整实现。
-- RustCodeGraph：`query eval_rows --kind function` 唯一定位到 `pkg/expression/builtin_string_vec.rs:228`；`node eval_rows` 给出 `eval_rows -> eval_row`、`eval_rows -> EvalOutput`，并列出直接测试调用者。单独的 `callers/callees` 命令未额外产生可用输出，故未据此推断生产调用。
-- 模块与 crate：读取 `pkg/expression/lib.rs:262-266`、`:826-829`，以及完整 `pkg/expression/Cargo.toml`，确认私有模块、测试重导出、crate 名和直接依赖。
-- Go 对照：读取/搜索 `pkg/expression/builtin_string_vec.go`，确认 concrete signature 的 `vecEvalString`/`vecEvalInt` 和 `vectorized()` 结构；读取/搜索 `pkg/expression/builtin_string_vec_test.go` 的四组测试/benchmark 入口。
-- Rust 测试：读取 `pkg/expression/builtin_string_vec_24_aster_unit_test.rs` 和 `pkg/expression/builtin_string_vec_test.rs` 的真实 parity suite 调用、边界案例与 Go case 草稿。未运行 Cargo，符合本纯文档任务要求。
-- 交付结构以任务指定命令检查，要求本文恰有 11 个固定二级标题；人工复核同时确认本文没有把测试可达内核写成已接入生产执行链。

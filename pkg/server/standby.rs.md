@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/standby.rs` 是 `astersql-server` crate 的待命（standby）生命周期抽象层，由 `pkg/server/lib.rs` 以公开模块 `standby` 导出。它不实现具体的待命状态机或 HTTP 业务，而是定义 Server 与待命控制器之间的能力边界，并提供默认的 `NoopStandbyController`。真正的生产控制器 `LoadKeyspaceController` 位于 `pkg/standby/standby.rs`，通过依赖 `astersql-server` 来实现这里的 trait。
-
-本文件直接依赖标准库的 `Arc` 和同 crate 的 `http_status::Router`；`pkg/server/Cargo.toml` 将 crate 命名为 `astersql-server`、入口设为 `lib.rs`，未为 standby 声明单独 feature，因此这些接口始终属于 server 公共 API，而不是条件编译功能。
+不实现具体的待命状态机或 HTTP 业务，而是定义 Server 与待命控制器之间的能力边界，并提供默认的 `NoopStandbyController`。
 
 ## 核心职责
 
@@ -65,11 +63,9 @@ crate 边界刻意避免循环依赖：`astersql-server` 只定义接口和通�
 
 ## 与 Go 版本的对应关系
 
-`pkg/server/standby.go` 定义同名的 `StandbyController`、`StandbyReadyServer` 和 `StandbyShutdownServer`。Rust 的 `wait_for_activate`、`end_standby`、`handler`、`on_connection_active`、`prepare_for_activation`、`on_server_created`、`on_server_shutdown` 分别对应 Go 的同名驼峰方法，`StandbyReadyServer::init_tidb_listener` 对应 `InitTiDBListener`。
-
 Rust 保留了 Go 的关键时序意图：激活成功返回前初始化监听器，状态服务挂载控制器路由，连接活跃时通知控制器，关闭时把受限 Server 能力交给控制器。`pkg/server/tests/standby/standby_test.go` 的 `TestStandby` 验证等待激活、状态路由可达和连接活跃通知；Rust 的 `pkg/server/tests/standby/standby_test.rs` 覆盖相同主链，并额外断言创建、准备、结束和关闭钩子的调用次数。
 
-接口并非逐字段机械翻译。Go 的 `Handler` 接收 `*Server`，Rust 以 `Arc<dyn StandbyShutdownServer>` 限制能力并满足 HTTP 闭包生命周期；Rust shutdown trait 还包含 `health`、`normal_closed_connection` 和 `wait_zero_connections_timeout`，服务于已移植的激活健康判断、checkconn 与无需派生线程的超时排空。Go 接口只有阻塞式 `WaitZeroConn`，其 `LoadKeyspaceController` 自行启动 goroutine 并通过 timer 超时。Rust 的真实 `LoadKeyspaceController::prepare_for_activation` 会自行调用一次 `end_standby`，同时 `Server::run` 也调用它；控制器内部的 `end_once` 保证结果只发布一次。
+接口并非逐字段机械翻译。Go 的 `Handler` 接收 `*Server`，Rust 以 `Arc<dyn StandbyShutdownServer>` 限制能力并满足 HTTP 闭包生命周期；Rust shutdown trait 还包含 `health`、`normal_closed_connection` 和 `wait_zero_connections_timeout`，服务于已移植的激活健康判断、checkconn 与无需派生线程的超时排空。Rust 的真实 `LoadKeyspaceController::prepare_for_activation` 会自行调用一次 `end_standby`，同时 `Server::run` 也调用它；控制器内部的 `end_once` 保证结果只发布一次。
 
 ## 扩展指南
 
@@ -78,15 +74,3 @@ Rust 保留了 Go 的关键时序意图：激活成功返回前初始化监听�
 新增激活路由时，应在控制器的 `handler` 返回的 `Router` 中注册相对路径，并核对 `pkg/server/http_status.rs` 的前缀挂载语义。改变启动时序时重点检查：激活响应不能早于监听准备完成，`end_standby` 必须收到与 `prepare_for_activation` 相同的结果，失败路径必须让 `Server::run` 回收监听资源。改变关闭协议时要保持强制关闭跳过等待、AutoID owner 处理、连接排空期限和 manager-free 标志的兼容语义。
 
 测试逻辑必须继续放在独立文件。接口/默认实现的局部回归可扩展 `pkg/server/standby_test.rs`；完整生命周期应扩展 `pkg/server/tests/standby/standby_test.rs`，并与 `pkg/server/tests/standby/standby_test.go` 的意图对齐；生产控制器行为则在 `pkg/standby/standby_test.rs` 或 `pkg/standby/standby_nextgen_test.rs` 覆盖。并发测试应使用有界等待，避免无期限挂起。
-
-## 验证依据
-
-- 目标源码：`pkg/server/standby.rs`，确认三个公开 trait、默认控制器及构造函数的完整定义。
-- crate 与模块入口：`pkg/server/Cargo.toml`、`pkg/server/lib.rs`，确认 `astersql-server` 边界、公开模块以及独立 `standby_test.rs` 的测试接线。
-- Server 调用链：`pkg/server/server.rs` 中 `Server::new`、`with_standby`、`standby_handler`、`register_connection`、`run`、`close`、`init_tidb_listener`，以及三个能力 trait 的 `Server` 实现。
-- HTTP 接线：`pkg/server/http_status.rs` 中对 `server.standby_handler()` 返回路由的前缀挂载。
-- 生产实现：`pkg/standby/standby.rs` 中 `LoadKeyspaceController::handler`、`wait_zero_conn` 及其 `StandbyController` 实现；`pkg/standby/Cargo.toml` 证明它单向依赖 `astersql-server`。
-- Go 对照：`pkg/server/standby.go`、`pkg/server/server.go`、`pkg/server/http_status.go`、`pkg/standby/standby.go`。
-- 测试证据：`pkg/server/standby_test.rs` 验证 handler 收到真实 Server；`pkg/server/tests/standby/main_test.rs` 验证默认控制器恰调用一次 ready 能力；`pkg/server/tests/standby/standby_test.rs` 与同目录 Go 测试验证激活、路由、连接通知和关闭主链。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`query StandbyController --kind trait` 定位到 `pkg/server/standby.rs:65`，`query noop_standby_controller --kind function` 定位到第 111 行，`query LoadKeyspaceController --kind struct` 定位生产实现到 `pkg/standby/standby.rs:232`。文件级 `explore/node` 未返回文本，因此调用关系另以上述已索引符号查询和直接源码读取交叉核验。
-

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate（见 `pkg/planner/core/Cargo.toml`），实现规划器对“可在优化期求值的非相关标量子查询”的两层占位对象：实现 `base::Plan` 的 `ScalarSubqueryEvalCtx` 保存物理子计划和求值环境，实现 `expression::Expression` 的 `ScalarSubQueryExpr` 表示子查询某个输出列。`pkg/planner/core/lib.rs` 公开再导出这两个类型以及执行器钩子类型/安装函数，因此 session、executor 和 planner 内部均可消费它们。
-
-它处在 AST 子查询改写与执行器之间：`pkg/planner/core/expression_rewriter.rs` 将已优化的子查询物理计划包装为 `ScalarSubqueryEvalCtx`，为输出列创建 `ScalarSubQueryExpr`，并把上下文注册到会话；真正取首行的能力不由 planner 直接依赖 executor，而由 `InstallEvalSubqueryFirstRow` 安装的函数指针反向注入。`pkg/session/runtime/explain_query.rs` 是当前明确的 Rust 安装者和 EXPLAIN 消费者。
+`EvalSubqueryFirstRowFn`、`EVAL_SUBQUERY_FIRST_ROW`、`InstallEvalSubqueryFirstRow` 和 `eval_subquery_first_row` 定义并维护 planner 到执行器的窄接口。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ RustCodeGraph 对本文件报告 15 个使用文件，明确列出 `pkg/executor
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/scalar_subq_expression.go`。两版都保留 `ScalarSubqueryEvalCtx`/`ScalarSubQueryExpr` 两层结构、按输出列 ID 取首行值、只执行一次、错误缓存、仅通用 `Eval` 可用、列 ID 决定哈希与相等性、`ConstNone`、非相关以及 EXPLAIN 字符串格式。
-
 Rust 为满足所有权和并发要求做了显式化：Go 结构体用布尔值、错误和切片记录状态，Rust 用 `Arc<Mutex<SubqueryEvaluation>>` 与 `Mutex<ExpressionEvaluation>`；Go 的全局 `EvalSubqueryFirstRow` 变量在 Rust 中变成 `OnceLock` 安装接口；Go 的嵌入 `Constant` 在 Rust 中以私有字段加 `Deref/DerefMut` 和 trait 委托表达。
 
 需注意可观察差异：Go 的 `Traverse`、`Decorrelate` 等通常返回同一指针，Rust 返回深度克隆的表达式；Go 对空首行把 `colsData` 留为 nil，Rust 转为空向量，列读取效果仍为失败；Rust 对结果列不足增加了显式错误，避免 Go 版本潜在的越界；Rust 的克隆与互斥锁使并发语义比 Go 原结构更明确。`pkg/planner/core/scalar_subq_expression_test.rs` 验证字符串使用表达式自身列 ID，`scalar_subq_expression_aster_unit_test.rs` 验证 Go 对齐的哈希、相等性、未求值内存、向量化声明、跨会话限制和类型擦除恢复。
@@ -89,12 +85,3 @@ Rust 为满足所有权和并发要求做了显式化：Go 结构体用布尔值
 - 若改变哈希或相等性，必须保持 `Hash64`、`HashCode`、`CanonicalHashCode`、`Equal`、`Equals` 五处一致，并与 Go 的 `codec.EncodeInt` 字节语义核对。
 - 若改变克隆行为，需区分“表达式缓存复制”与“上下文执行结果共享”，并覆盖并发首求值只执行一次、错误只执行一次的回归测试。
 - 若改变计划接口，应同步检查 `flat_plan.rs`、`statement_ru_plan_walk.rs`、session EXPLAIN 及计划缓存行为。真实功能测试应继续放在同目录独立的 `*_test.rs` 文件中。
-
-## 验证依据
-
-- 源码全量：`pkg/planner/core/scalar_subq_expression.rs`（750 行）；模块边界：`pkg/planner/core/lib.rs`；crate 依赖：`pkg/planner/core/Cargo.toml`。
-- 上游与消费端：`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/flat_plan.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/session/runtime/explain_query.rs`、`pkg/executor/statement_ru_plan_walk.rs`。
-- Go 对照：`pkg/planner/core/scalar_subq_expression.go`，并参考 `pkg/planner/core/expression_rewriter.go` 的构造流程。
-- 独立 Rust 测试：`pkg/planner/core/scalar_subq_expression_test.rs`、`pkg/planner/core/scalar_subq_expression_aster_unit_test.rs`；相关集成安装点：`pkg/planner/core/integration_test.rs`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`query` 找到 Rust/Go 两版 `ScalarSubqueryEvalCtx`、`ScalarSubQueryExpr`、Rust 的安装函数与内部调用函数；`node --file ... --offset ...` 覆盖目标 1–750 行，并报告 15 个使用文件；`callees eval_subquery_first_row` 确认其引用 `EVAL_SUBQUERY_FIRST_ROW`。同名类型的 trait/函数指针动态边未被完整解析，已用上述直接源码位置补证。
-- 本任务是纯文档分析，按任务要求未运行 Cargo。结构验证要求为目标文件存在且恰有本文列出的 11 个固定二级标题。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`enforce.rs` 位于 `astersql-planner-core-operator-physicalop` crate，crate 根在同目录的 `lib.rs` 中以 `pub mod enforce` 公开它。该文件处在物理计划候选已经形成、但仍可能缺少调用方要求的分布或排序属性这一阶段：它接收一个简化的 `PhysicalTask`，必要时在计划树顶端补 `ExchangeSender`/`ExchangeReceiver` 或 `Sort`。
-
-当前 Rust 接线必须与 Go 主线区分开来。全仓 Rust 搜索和 RustCodeGraph 调用图没有发现 `enforce_property`、`enforce_exchanger` 的生产调用者，只有 `enforce_test.rs` 使用这些 API；Rust 主选优文件 `pkg/planner/core/find_best_task.rs` 另有一个私有的同名 `enforce_property`，操作的是另一套 `Task` 类型。因此本文件是由 crate 公开、可独立执行和测试的 Go 语义移植骨架，尚未接入 Rust 的完整选优主链。Go 版本则由 `pkg/planner/core/find_best_task.go`、`physical_cte.go`、`physical_mem_table.go` 等真实调用。
-
-本文件直接使用的计划数据模型来自 `physical_common_plans.rs`，没有条件编译项、模块级常量或 trait 实现。`Cargo.toml` 声明 crate 名、`lib.rs` 入口和 `autotests = false`；本文件自身只依赖同 crate 模块及标准库集合类型，不直接使用清单中的外部 crate。
+`enforce_exchanger` 只在当前分区不满足请求时插入成对的 Exchange 节点，并同步任务的分区元数据；它也负责新排序规则下字符串 Hash Exchange 的兼容性拒绝与 MPP 压缩协商。
 
 ## 核心职责
 
@@ -96,13 +92,13 @@ Go 应用主链是对照证据而非 Rust 现有调用边：`pkg/planner/core/fi
 
 ## 与 Go 版本的对应关系
 
-Rust `enforce_property` 对应 `enforce.go` 的 `EnforceProperty`：两者都先处理 MPP/Exchange，再在需要时转换到 Root 语义并附着 Sort；都在 MPP Sort 不受支持时返回无效候选并发出相同文本警告。Rust 的 `sort_items_all_for_partition` 是 Go `PhysicalProperty.IsSortItemAllForPartition` 的压缩表示，但 Go 比较 `SortItems` 与独立的 `SortItemsForPartition`，同时检查列和升降序，Rust 仅将排序列与 `partition_columns` 对齐。
+Rust 的 `sort_items_all_for_partition` 是 Go `PhysicalProperty.IsSortItemAllForPartition` 的压缩表示，但 Go 比较 `SortItems` 与独立的 `SortItemsForPartition`，同时检查列和升降序，Rust 仅将排序列与 `partition_columns` 对齐。
 
 Rust `enforce_exchanger` 合并了 Go `MppTask.EnforceExchanger` 与 `EnforceExchangerImpl` 的主要分支：先调用满足性判定，再检查新排序规则字符串键，最后构造 Sender/Receiver 并在 MPP v1 起设置压缩。Go 会先 `Copy` 任务、从真实计划上下文取版本和压缩、使用字段类型判断字符串列，并复制 `Warnings`；Rust 使用按值任务和显式 `EnforceContext` 达成简化等价效果。
 
-Rust `need_enforce_exchanger` 对应 `property.NeedEnforceExchanger`。Any/Broadcast/Single/Hash 的基本规则一致；Go 在有 `FDSet` 时调用 `NeedMPPExchangeByEquivalence`，Rust 用无向整数边闭包近似。`pkg/planner/property/physical_property_test.go` 与 Rust 的 `physical_property_test.rs` 覆盖了更完整的等价类用例；本模块的 `enforce_test.rs` 另外验证了等价键子集能避免重复 Exchange。
+Any/Broadcast/Single/Hash 的基本规则一致；Go 在有 `FDSet` 时调用 `NeedMPPExchangeByEquivalence`，Rust 用无向整数边闭包近似。
 
-目前仍有明确迁移差距：Rust 模块没有生产调用者；`PhysicalTask` 不是真实 `MppTask`/`base.Task`；非 MPP Root 转换、QueryBlockOffset、`ExpectedCnt = MaxFloat64`、真实 ByItems 表达式及代价/统计接线均被简化。因此扩展时应以 Go 行为为规范，并避免把这份骨架直接描述为已替代 Go 主线。
+目前仍有明确迁移差距：Rust 模块没有生产调用者；`PhysicalTask` 不是真实 `MppTask`/`base.Task`；非 MPP Root 转换、QueryBlockOffset、`ExpectedCnt = MaxFloat64`、真实 ByItems 表达式及代价/统计接线均被简化。
 
 ## 扩展指南
 
@@ -113,16 +109,3 @@ Rust `need_enforce_exchanger` 对应 `property.NeedEnforceExchanger`。Any/Broad
 测试应继续放在独立文件 `pkg/planner/core/operator/physicalop/enforce_test.rs`，不要内嵌到生产源文件。新增分支至少覆盖成功、不需要改写、拒绝并告警三类结果；排序变更应覆盖列序和升降序；Hash 变更应与 `pkg/planner/property/physical_property_test.rs` 及 Go 的 `physical_property_test.go` 等价用例同步。若将模块接入生产主链，还需要在真正调用点增加集成级计划形状测试，证明执行的是本模块而非 `find_best_task.rs` 的私有同名函数。
 
 兼容性风险集中在 Go/Rust 属性模型差异、会话开关默认值和警告文本；正确性风险集中在 Hash 等价方向、键子集规则及树节点次序；性能风险集中在等价闭包的重复全边扫描与计划元数据克隆。任何扩展都应对照 `enforce.go`、`physical_property.go` 和两侧独立测试逐项核验。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- Rust 源码：`pkg/planner/core/operator/physicalop/enforce.rs` 的 `PhysicalTask`、`EnforceContext`、`enforce_property`、`enforce_exchanger`、`sort_items_all_for_partition`、`need_enforce_exchanger`、`equivalent`。
-- Rust 数据模型与装配：`physical_common_plans.rs` 的 `TaskType`、`PartitionType`、`SortItem`、`PhysicalProperty`、`PhysicalKind`、`PhysicalPlanNode`，以及 `lib.rs` 的 `pub mod enforce`/`mod enforce_test`。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml` 的 package、lib、dependencies、dev-dependencies 和 `package.metadata.porting.go-package`。
-- Rust 测试：`enforce_test.rs` 覆盖 Any 不强制、Broadcast 总强制、Single 忽略残留 Hash 列、等价键子集、MPP Sort 拒绝、新排序规则字符串 Hash 拒绝、警告保留和 MPP v1 压缩；`pkg/planner/property/physical_property_test.rs` 覆盖更完整的 Go 对齐等价类规则。
-- Go 对照：`enforce.go` 的 `EnforceProperty`、`MppTask.EnforceExchanger`、`EnforceExchangerImpl`；`pkg/planner/property/physical_property.go` 的 `IsSortItemAllForPartition`、`NeedEnforceExchanger`；`physical_property_test.go` 的等价类回归；`pkg/planner/core/find_best_task.go` 等调用点。
-- RustCodeGraph：状态显示项目已索引；`node --file .../enforce.rs` 读取到完整 214 行；`query enforce_property` 区分出本模块入口和 `find_best_task.rs` 私有同名函数；callees 显示本入口调用 `enforce_exchanger`、`sort_items_all_for_partition` 并构造 Sort/计划节点；callers 对本模块入口无生产调用结果。补充 `rg` 搜索确认模块外 Rust 使用仅来自独立测试。
-
-本任务是纯文档分析，按计划未运行 Cargo。结构验收另以任务指定命令确认文件存在且恰有十一个固定二级章节；人工复核重点是当前未接线事实、Go/Rust 差异、直接调用前置条件和扩展风险均有源码或测试依据。

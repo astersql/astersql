@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-expression-generator`，由 [`pkg/expression/generator/lib.rs`](lib.rs) 以 `pub mod control_vec` 暴露。该 crate 的 `Cargo.toml` 指定 Rust 2024 edition、`publish = false`，并以 `[workspace]` 形成独立工作区；它是表达式向量化 Go 源码的生成/一致性维护工具，不进入 SQL 请求的运行时求值链。
-
-文件面向的运行时产物是相邻上级目录中的 `pkg/expression/builtin_control_vec_generated.go` 和 `pkg/expression/builtin_control_vec_generated_test.go`。前者为 Go 表达式引擎提供 CASE、IFNULL、IF 的 `fallbackEval*`、`vecEval*` 和 `vectorized` 方法；后者提供类型矩阵的单元测试及基准测试入口。Rust 表达式运行时另外通过 `pkg/expression/lib.rs` 挂载 `builtin_control_vec_generated.rs`，不能把它与本文件返回的 Go 字节混为一谈。
+通过 `generate_dot_go` 和 `generate_test_dot_go` 原样读取已签入的 Go 生成物，通过 `generate_one_file`/`default_outputs` 返回目标路径和内容，供一致性检查或上层写盘逻辑使用。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ Rust 入口没有锁、线程、异步任务、channel 或文件句柄；所有�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/generator/control_vec.go`。映射关系为：Go `typeContext` ↔ Rust `TypeContext`/未使用的 `LocalTypeContext`，三个 `*Sigs` ↔ 三个静态签名切片，Go `function`/`tmplVal` ↔ Rust `Function`/`TMPL_VAL`，Go `generateDotGo`/`generateTestDotGo`/`generateOneFile`/`main` ↔ Rust 四个公开输出函数（其中 `default_outputs` 对应 `main` 的默认路径选择）。
+映射关系为：Go `typeContext` ↔ Rust `TypeContext`/未使用的 `LocalTypeContext`，三个 `*Sigs` ↔ 三个静态签名切片，Go `function`/`tmplVal` ↔ Rust `Function`/`TMPL_VAL`，Go `generateDotGo`/`generateTestDotGo`/`generateOneFile`/`main` ↔ Rust 四个公开输出函数（其中 `default_outputs` 对应 `main` 的默认路径选择）。
 
-两版共同覆盖 Case、Ifnull、If 与七种返回类型，并保留 warning/错误触发标量回退的意图。差异是实质性的：Go 版运行 `text/template`、`go/format.Source` 并以 0644 写盘，格式化失败时记录 warning 后写原始内容；Rust 版当前不解析模板、不格式化、不写盘，而是返回签入 Go 文件的精确字节和建议路径。Go 版的完整模板细分 Decimal 指针解引用、Duration 内部值、定长/变长列访问；Rust 私有简化模板没有成为输出来源，因此不能据此宣称已独立复现 Go 模板引擎。
-
-`pkg/expression/builtin_control_vec_generated_test.go` 进一步确认测试矩阵：CASE 每类型覆盖单组/双组 WHEN-THEN 以及有无 ELSE，IFNULL 每类型覆盖两个同类型参数，IF 每类型覆盖 Int 条件和两个同类型分支；`defaultControlIntGener` 以约 0.3 比例生成零条件，以增加分支覆盖。
+差异是实质性的：Go 版运行 `text/template`、`go/format.Source` 并以 0644 写盘，格式化失败时记录 warning 后写原始内容；Rust 版当前不解析模板、不格式化、不写盘，而是返回签入 Go 文件的精确字节和建议路径。Go 版的完整模板细分 Decimal 指针解引用、Duration 内部值、定长/变长列访问；Rust 私有简化模板没有成为输出来源，因此不能据此宣称已独立复现 Go 模板引擎。
 
 ## 扩展指南
 
@@ -88,12 +84,3 @@ Rust 入口没有锁、线程、异步任务、channel 或文件句柄；所有�
 - 若要让 Rust 真正重新生成而非回放签入文件，应把 `render_function`/测试模板接入公开入口，并补齐 Go 模板的所有类型特例、format.Source 等价验证和清晰的 IO 层。接线前不要删除逐字节对抗测试。
 - 修改输出命名或写出顺序时，同步 `control_vec_test.rs::generate_one_file_preserves_go_write_order_and_paths` 和聚合测试 `every_generator_returns_go_and_test_output_paths`。
 - 测试应继续放在独立的 `control_vec_test.rs` 或其他独立 `*_test.rs` 中，不要嵌入生产源文件。性能风险主要来自生成 Go 代码的额外缓冲分配、全分支提前计算和不必要 fallback；兼容风险主要来自 warning 截断、NULL/零条件、无 ELSE CASE 以及定长/变长写入语义漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`files --filter pkg/expression/generator` 确认目标、Go 对照和独立测试均已索引；`node --file pkg/expression/generator/control_vec.rs --offset 1 --limit 500` 读取目标文件 381 行及 35 个符号；对文件限定的 `generate_dot_go`、`generate_one_file`、`default_outputs`、`render_function` 执行 callers/callees 查询，未返回边。
-- Rust 源与模块证据：`pkg/expression/generator/control_vec.rs`、`pkg/expression/generator/lib.rs`、`pkg/expression/generator/Cargo.toml`。
-- Rust 测试证据：`pkg/expression/generator/control_vec_test.rs`；相关聚合测试 `pkg/expression/generator/builtin_threadsafe_1_aster_unit_test.rs`。
-- Go 对照与产物证据：`pkg/expression/generator/control_vec.go`、`pkg/expression/builtin_control_vec_generated.go`、`pkg/expression/builtin_control_vec_generated_test.go`。
-- 应用边界证据：`pkg/expression/lib.rs` 挂载 Rust 运行时的 `builtin_control_vec_generated.rs` 及其独立测试，证明生成器 crate 与表达式运行时模块是不同层次。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证本文档恰含 11 个固定二级标题，并人工检查所有“当前路径”和“模板设计”表述均有上述文件或符号依据。

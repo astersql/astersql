@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`br/pkg/mock/encode.rs` 属于 `astersql-br-pkg-mock` crate，是 Go 生成文件 `br/pkg/mock/encode.go` 的手写 Rust 移植，模拟 Lightning 编码边界中的 `Encoder`、`EncodingBuilder`、`Rows` 和 `Row` 四组接口。模块由 `br/pkg/mock/lib.rs` 通过 `#[path = "encode.rs"]` 装入，并用 `pub use encode::*` 平铺导出。
-
-该文件服务隔离测试，不执行真实 SQL 行到 TiKV KV 的编码。真实 Rust 接口位于 `pkg/lightning/backend/encode/encode.rs`；本文件使用 `br/pkg/mock/stubs.rs` 中的本地 `Controller`、`Datum`、`EncodingConfig`、`RowHandle` 和 `RowsHandle`，且四个 mock 没有实现真实 `Encoder`、`EncodingBuilder`、`Rows`、`Row` trait。因此它当前是测试契约替身，而不是可直接注入真实 Lightning 编码流水线的 trait 实现。
-
-`br/pkg/mock/Cargo.toml` 将 crate 声明为 library，入口为 `lib.rs`，`package.metadata.porting.go-package` 指向 `br/pkg/mock`；依赖表为空，说明该 mock 依靠 crate 内桩类型保持轻量，而不链接 Lightning、KV 或 gRPC 依赖。
+这些限制来自本文件 recorder 传入空参数列表以及 `stubs.rs` 的 `Controller` 忽略 `_args` 的实现。
 
 ## 核心职责
 
@@ -82,7 +78,7 @@ RustCodeGraph 的文件节点确认 `encode.rs` 含 35 个符号；符号查询�
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/mock/encode.go` 是 MockGen 从 `pkg/lightning/backend/encode` 的四个接口生成的对照文件。Rust 保留了四组 mock/recorder、四个构造器、`EXPECT`、`ISGOMOCK` 以及全部业务方法名称，基础的“登记期望—调用—取返回值”结构与 Go 一致。
+Rust 保留了四组 mock/recorder、四个构造器、`EXPECT`、`ISGOMOCK` 以及全部业务方法名称，基础的“登记期望—调用—取返回值”结构与 Go 一致。
 
 主要差异如下：
 
@@ -102,14 +98,3 @@ RustCodeGraph 的文件节点确认 `encode.rs` 含 35 个符号；符号查询�
 - 若增强 `ClassifyAndAppend`，应测试数据行与索引行句柄、两组 `KVChecksum` 的实际回写；当前 parity 测试只验证方法可达，不能证明分类或校验逻辑。
 - 若改变默认返回或错误 downcast 策略，应补充 `Encode`/`NewEncoder` 的成功、显式错误、缺失返回和错误类型四类边界测试。严格化可能暴露已有测试的宽松配置，属于兼容性风险。
 - 性能通常不是该测试桩的主约束；但 `Encode` 对向量取所有权、`ClassifyAndAppend` 克隆四个对象、动态 `Any` 装箱和互斥锁都会产生开销，不应据此评估真实编码路径性能。
-
-## 验证依据
-
-- 目标实现：`br/pkg/mock/encode.rs`，RustCodeGraph `node --file ... --offset 1 --limit 500` 显示全文件 346 行和 35 个符号；`query MockEncoder/MockRows/MockRow/NewMockEncodingBuilder` 核对了 Rust/Go 对应符号位置。
-- crate 边界：`br/pkg/mock/Cargo.toml`、`br/pkg/mock/lib.rs`，确认 library 入口、空依赖表、模块装配和平铺导出。
-- 控制器语义：`br/pkg/mock/stubs.rs` 的 `Controller::{new,Call,RecordCallWithMethodType,remaining}`、`Call::{Return,Return1,Return2,ReturnError}`、`take_error`、`take_one`，确认共享队列、方法名匹配、动态返回值和默认/错误行为。
-- Go 对照：`br/pkg/mock/encode.go`，确认 MockGen 来源、四组接口方法、Go 返回类型与 recorder 参数传递。
-- 真实接口：`pkg/lightning/backend/encode/encode.rs` 与 `pkg/lightning/backend/encode/encode.go`，确认编码器、行集合、分类追加和大小语义；本文件没有实现真实 Rust traits。
-- 独立测试：`br/pkg/mock/parity_test.rs::go_rust_public_contract_matches`，覆盖 `Encode` 成功返回、`Close`、`MakeEmptyRows`、`Clear`、`Size` 和 `ClassifyAndAppend` 的调用可达性。仓库 `rg` 未发现其他 Rust 测试直接调用四个 `NewMock*` 构造器。
-- 调用图限制：RustCodeGraph `explore "br/pkg/mock/encode.rs symbols callers callees"` 返回文件上下文和局部 blast radius；后续精确 `callers/callees` 查询超时，故未把未获得的生产调用边写成已验证事实，并用模块入口、crate 依赖检索及测试引用交叉验证当前接线。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文档存在且恰含 11 个固定二级章节。

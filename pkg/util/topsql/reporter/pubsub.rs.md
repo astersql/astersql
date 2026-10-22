@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-topsql-reporter` crate 的订阅发送端实现：把 reporter 产生的 `ReportData` 变成面向单个订阅者的 `PubSubResponse` 流。crate 根 `pkg/util/topsql/reporter/lib.rs` 以 `pub mod pubsub` 装载本文件，并再导出其公开项；上层 `pkg/util/topsql/topsql.rs` 在 `TopSQLReporter for RemoteTopSQLReporter` 的 `RegisterPubSubServer` 中调用 `NewTopSQLPubSubService`，再把服务交给抽象的 `PubSubServer` 注册。因此它位于“远程 reporter → DataSink 注册器 → 订阅流”的边界，不负责生成 TopSQL/TopRU 数据，也不直接实现具体 gRPC server。
-
-crate 边界由 `pkg/util/topsql/reporter/Cargo.toml` 确认：本文件直接使用 `crossbeam-channel`，使用 `tipb` protobuf 类型，并通过路径依赖 `topsql_state` 读取全局 TopRU 开关。该 crate 没有为本模块设置条件编译；测试由 `lib.rs` 中独立的 `mod pubsub_test` 挂载，未把测试写入生产源文件。
+`TopSqlPubSubService` 管理单次订阅的注册、运行、注销和取消，确保发送路径正常返回或 panic 后都执行清理。
 
 ## 核心职责
 
@@ -91,12 +89,7 @@ RustCodeGraph `files --filter pkg/util/topsql/reporter` 确认目标、Go 对照
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/topsql/reporter/pubsub.go`，测试是同目录 `pubsub_test.go`。主要一致点如下：
-
-- Rust `TopSqlPubSubService`、`PubSubDataSink`、解析函数和容量 1 的任务通道分别对应 Go `TopSQLPubSubService`、`pubSubDataSink`、`parseTopSQLSubscription`/`parseTopRUSubscription` 和 `sendTaskCh`。
 - 两版都把空 collector 视为 TopSQL 订阅，只有显式 TopRU collector 才启用 TopRU，并在缺少 TopRU 配置时报错。
-- 两版都按 TopSQL → TopRU → SQL meta → plan meta 顺序发送，且 TopRU 还受进程级开关门控；单条失败立即中止后续发送。
-- 两版都在订阅结束时注销和取消，并将发送路径 panic 恢复为订阅成功返回。
 
 需要明确的实现差异：Go sink 自带 context/cancel 和 registerer，`run` 为每批发送启动恢复保护的 goroutine，并可由 deadline context 先结束等待；Rust 将注册/注销放在服务层，使用原子位加 crossbeam 取消通道，并同步调用 stream。Go 记录细分的 Prometheus histogram/counter，Rust 当前仅维护 `PUBSUB_METRICS` 原子计数。Rust `PubSubResponse` 是本地枚举，而 Go 直接组装 `TopSQLSubResponse` oneof；具体编码/传输由 Rust 的 `PubSubStream` 适配层承担。
 
@@ -110,12 +103,3 @@ RustCodeGraph `files --filter pkg/util/topsql/reporter` 确认目标、Go 对照
 - 测试继续放在独立的 `pkg/util/topsql/reporter/pubsub_test.rs`；跨 crate 包级接线可在 `pkg/util/topsql/topsql_test.rs` 覆盖，不应把测试模块嵌回生产文件。
 
 兼容风险集中在订阅默认值、消息顺序和 panic 返回契约；性能风险集中在 protobuf 逐条克隆、同步 stream 阻塞和队列容量；正确性风险集中在 register/deregister 配对、TopRU 双重门控以及取消/deadline 的发送后检查。
-
-## 验证依据
-
-- RustCodeGraph：运行 `status`，索引包含 11,467 个文件；运行 `files --filter pkg/util/topsql/reporter`，确认目标 Rust、Go 对照和独立测试均在索引中；运行 `node --file pkg/util/topsql/reporter/pubsub.rs --offset 1 --limit 260` 及 `--offset 240 --limit 140`，读取完整 340 行实现；并查询 `PubSubDataSink`、`TopSqlPubSubService`、`parse_top_ru_subscription`。歧义的通用方法调用结果未用作结论。
-- 生产源码：`pkg/util/topsql/reporter/pubsub.rs`（目标实现）、`pkg/util/topsql/reporter/datasink.rs`（trait、错误、注册器与全局开关生命周期）、`pkg/util/topsql/reporter/lib.rs`（模块装载/再导出）、`pkg/util/topsql/topsql.rs`（`RegisterPubSubServer` 上游接线）。
-- crate 配置：`pkg/util/topsql/reporter/Cargo.toml`（crate 名、`crossbeam-channel`、`tipb`、`topsql_state` 依赖及无本模块条件 feature），以及 `pkg/util/topsql/Cargo.toml`（上层对 reporter crate 的路径依赖）。
-- Go 对照：`pkg/util/topsql/reporter/pubsub.go`；入口对照由 `pkg/util/topsql/topsql.go` 的 `NewTopSQLPubSubService` 调用精确搜索确认。
-- 独立测试：`pkg/util/topsql/reporter/pubsub_test.rs` 覆盖解析、顺序、TopSQL/TopRU 门控、队列满、超时、取消、流错误、注册失败、非法 interval 和 panic 注销；`pkg/util/topsql/reporter/pubsub_test.go` 提供 Go 语义对照；`pkg/util/topsql/topsql_test.rs` 覆盖包级 sink/服务集成。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文件存在且恰好具有 11 个固定二级章节，并人工复核以上关键陈述均指向实际符号或文件。

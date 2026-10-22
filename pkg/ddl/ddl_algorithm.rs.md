@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/ddl_algorithm.rs` 位于 `astersql-ddl` crate 中；crate 的清单是 `pkg/ddl/Cargo.toml`，库入口 `pkg/ddl/lib.rs` 通过 `pub mod ddl_algorithm;` 公开本模块。它是 `ALTER TABLE ... ALGORITHM=...` 的算法协商层：把用户请求的算法与某类 ALTER 操作支持的算法集合进行比较，返回最终选择以及可选的不匹配信息。
-
-该文件只做内存中的值判断，不创建或提交 DDL job，也不推进 schema state、执行 reorg/backfill、更新 schema version 或等待集群同步。当前 Rust 生产代码中没有调用 `resolve_alter_algorithm`；仓库内直接调用者只有 `pkg/ddl/ddl_algorithm_test.rs` 和 `pkg/ddl/db_integration_test.rs::test_alter_algorithm`。因此它目前是已公开且有测试的移植逻辑，但尚未像 Go 版本那样接入 ALTER 规格解析主链。
+`proper_algorithm` 实现与具体 ALTER 类型无关的协商规则：默认请求直接采用默认算法；显式请求则从支持集合中选择第一个枚举序不低于请求值的算法；无候选时返回 `Default`。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ Go 主链不同：`pkg/ddl/executor.go::ResolveAlterTableSpec` 调用 `pkg/ddl/d
 
 ## 与 Go 版本的对应关系
 
-Rust `AlgorithmType` 对应 Go `ast.AlgorithmType`；Rust `AlterAlgorithm` 对应 Go 同名结构；`proper_algorithm` 对应 `getProperAlgorithm`；`resolve_alter_algorithm` 对应 `ResolveAlterAlgorithm`。两边都执行 `specified <= supported` 的首个匹配、无候选回退 `Default`，并对选择值不同的显式请求报告不匹配。
+两边都执行 `specified <= supported` 的首个匹配、无候选回退 `Default`，并对选择值不同的显式请求报告不匹配。
 
 差异如下：
 
@@ -77,7 +75,6 @@ Rust `AlgorithmType` 对应 Go `ast.AlgorithmType`；Rust `AlterAlgorithm` 对�
 - Go 复用静态的 `instantAlgorithm`/`inplaceAlgorithm`；Rust 每次在栈上构造单元素策略和 `Vec`。
 - Go 返回由 `dbterror.ErrAlterOperationNotSupported` 生成、带 MySQL 兼容消息的 `error`；Rust 返回不实现错误 trait 的 `AlgorithmError` 数据。
 - Go 已由 `pkg/ddl/executor.go::ResolveAlterTableSpec` 在生产路径调用，并区分错误与警告；Rust 当前仅由测试调用。
-- Go 测试 `pkg/ddl/ddl_algorithm_test.go::TestFindAlterAlgorithm` 枚举多种实际 `AlterTableSpec`。Rust 独立测试覆盖两类映射和通用选择规则，但用 `Other` 汇总具体操作，覆盖粒度较粗。
 
 因此当前 Rust 文件准确移植了核心比较规则，但不能据此声称完整移植了 AST 接入、错误编码/消息、语句警告和各 ALTER 类型的生产行为。
 
@@ -88,12 +85,3 @@ Rust `AlgorithmType` 对应 Go `ast.AlgorithmType`；Rust `AlterAlgorithm` 对�
 - 若接入生产 ALTER 主链，应参照 `pkg/ddl/executor.go::ResolveAlterTableSpec`：在创建/执行 job 前写回选择结果，并明确 `selected == Default` 为错误、选择更优算法为警告的兼容行为。同时将 `AlgorithmError` 映射到现有 Rust 错误体系和 MySQL 错误码，而不是在本文件内吞掉信息。
 - 若允许外部构造 `AlterAlgorithm`，应决定是否验证 `supported` 顺序、默认值归属和空集合；改变这些边界需增加 `proper_algorithm` 的独立回归测试。
 - 性能方面当前单元素 `Vec` 分配可被静态切片或常量策略消除，但仅在有测量依据时调整；正确性风险主要来自排序语义和上层错误/警告分类，而非计算成本。
-
-## 验证依据
-
-- 源码与装配：`pkg/ddl/ddl_algorithm.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- Rust 测试：`pkg/ddl/ddl_algorithm_test.rs::test_find_alter_algorithm`、`test_proper_algorithm_preserves_go_order_and_error_contract`；`pkg/ddl/db_integration_test.rs::test_alter_algorithm`。
-- Go 对照：`pkg/ddl/ddl_algorithm.go::{getProperAlgorithm, ResolveAlterAlgorithm}`、`pkg/ddl/ddl_algorithm_test.go::{TestFindAlterAlgorithm, runAlterAlgorithmTestCases}`、`pkg/ddl/executor.go::ResolveAlterTableSpec` 中的调用及错误/警告分支。
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`node resolve_alter_algorithm` 确认其构造 `AlterAlgorithm` 并调用 `proper_algorithm`，调用者为 Rust 测试；`node proper_algorithm` 确认其构造 `AlgorithmError`，调用者为 `resolve_alter_algorithm` 和测试模块。
-- 仓库搜索：对 `pkg/ddl/**/*.rs` 搜索 `resolve_alter_algorithm`/`proper_algorithm`，未发现生产调用；对 Go 文件搜索确认 `executor.go` 的生产调用。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令检查文档存在且恰有十一个固定二级标题，并人工复核没有把 Go 主链行为误写为 Rust 已接线行为。

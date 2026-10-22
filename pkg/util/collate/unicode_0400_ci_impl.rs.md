@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-collate` crate 中 Unicode 4.0.0、大小写不敏感排序规则的“策略内核”。crate 入口 `pkg/util/collate/lib.rs` 以 `unicode_0400_ci_impl` 模块加载并重导出它；`pkg/util/collate/Cargo.toml` 的默认 `full_collate` feature 使 `collate.rs::group2_collator` 能把 `utf8_unicode_ci` 和 `utf8mb4_unicode_ci` 映射为 `unicode_0400_ci_generated.rs::unicodeCICollator`。后者负责完整的 `Collator` 接口和权重流比较，本文件只提供尾空格预处理、单字符 UCA 4.0 权重查询以及 LIKE 通配符的等价关系。
-
-文件不是独立入口，也不是数据生成物：权重数据来自 `ucadata::DUCET0400Table`，完整 Collator 是相邻的生成文件 `unicode_0400_ci_generated.rs`。两者分离保留了 Go 版本由 `ucaimpl` 生成展开代码、让 `GetWeight`/`Preprocess` 位于热路径上的组织方式。
+后者负责完整的 `Collator` 接口和权重流比较，本文件只提供尾空格预处理、单字符 UCA 4.0 权重查询以及 LIKE 通配符的等价关系。
 
 ## 核心职责
 
@@ -82,15 +80,10 @@ crate 清单的直接依赖为 `dbterror`、`encoding_rs` 和 `parser_charset`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/unicode_0400_ci_impl.go`，结构和分支基本逐项对应：Go 的空 `unicode0400Impl`、`longRune`、`Clone`、`Preprocess`、`GetWeight`、`Pattern`、`unicodePattern.Compile/DoMatch` 在 Rust 中均保留。Go `rune` 对超 BMP 的判断对应 Rust `char as usize`；Go 对 `LongRuneMap[r]` 的 map 索引对应 Rust 有序切片的二分查找。
-
-可见的语言适配有三点：
-
 1. Go `Pattern` 返回接口并取 `&unicodePattern{}`，Rust 返回 `Box<dyn WildcardPattern>`。
-2. Go 的 `[]rune`/`[]byte` 状态分别成为 `Vec<char>`/`Vec<u8>`。
 3. Go 对长权重 map 的缺失会在后续索引时触发运行期失败；Rust 用带不变量说明的 `expect` 显式失败。
 
-完整算法的 Go 对照还包括 `unicode_0400_ci_generated.go`：它同样内嵌实现、按两段 `u64` 消费权重、Key 前裁尾空格并将每个 16 位权重写为两个字节。Rust 生成文件额外提供 `CompareBytes`/`KeyBytes` 以表达 Go 字符串可包含任意字节的语义，但不改变本文件的权重规则。Go 的 `collate_test.go` 与 Rust 的 `collate_test.rs` 使用对应表驱动用例验证比较、Key、工厂映射和无效 UTF-8 边界。
+Rust 生成文件额外提供 `CompareBytes`/`KeyBytes` 以表达 Go 字符串可包含任意字节的语义，但不改变本文件的权重规则。Go 的 `collate_test.go` 与 Rust 的 `collate_test.rs` 使用对应表驱动用例验证比较、Key、工厂映射和无效 UTF-8 边界。
 
 ## 扩展指南
 
@@ -99,11 +92,3 @@ crate 清单的直接依赖为 `dbterror`、`encoding_rs` 和 `parser_charset`�
 - 修改通配符等价关系时，入口是 `unicodePattern::DoMatch` 的比较闭包；通用 `%`、`_`、escape 解析应留在 `stringutil`。应在独立测试文件中扩展 `general_ci_2_aster_unit_test.rs::unicode_0400_matches_go_weights_padding_and_pattern`，覆盖普通同权字符、非 BMP、不同长权重字符和相同长权重字符，不能把测试内嵌进生产源文件。
 - 新增 Unicode 版本不应复用本类型后偷偷切换表；应参照 0900 实现建立独立策略、生成 Collator、工厂名称/ID 接线和独立测试，避免改变既有 `utf8*_unicode_ci` 的持久化排序语义。
 - 热路径修改要保留生成代码所强调的内联/展开意图，并评估 `GetWeight` 每字符查表及长权重二分查找的性能。排序权重或 Key 字节的改变会影响索引顺序、等值判断和存量 Key 兼容性，必须与 Go 行为和 MySQL collation 契约一起验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标文件被索引且报告 9 个符号；`node --file pkg/util/collate/unicode_0400_ci_impl.rs` 核对了全部 119 行；`query Unicode0400`/`query unicode_0400` 定位实现、生成 Collator 和 UCA 测试；`callees` 明确识别 `GetWeight -> ucadata/unicode_ci_data_generated.rs::long_rune_weight`。同名方法较多导致 `callers/callees` 消歧结果含噪声，因此上游边另以生成文件源码和引用搜索交叉确认。
-- Rust 源与配置：`pkg/util/collate/Cargo.toml`、`lib.rs`、`collate.rs`、`unicode_0400_ci_generated.rs`、`ucadata/unicode_ci_data_generated.rs`。
-- Go 对照：`pkg/util/collate/unicode_0400_ci_impl.go`、`unicode_0400_ci_generated.go`、`collate_test.go`、`ucadata/unicode_ci_data_test.go`。
-- 独立 Rust 测试：`pkg/util/collate/collate_test.rs` 覆盖工厂接线、比较、Key、PAD SPACE、非 BMP 和无效 UTF-8；`general_ci_2_aster_unit_test.rs` 直接覆盖 Unicode 4.0 权重与通配符；`ucadata/unicode_ci_data_generated_3_aster_unit_test.rs` 与 `ucadata/unicode_ci_data_test.rs` 覆盖表边界、长权重查找和 Go 原始数据一致性。
-- 本任务是只读逻辑分析加 Markdown 文档，不修改运行时代码，按计划不运行 Cargo。结构验收使用任务文件给定的 11 章节命令；人工复核重点是文件存在理由、三条运行路径、数据不变量、Go 差异和安全扩展位置均有直接证据。

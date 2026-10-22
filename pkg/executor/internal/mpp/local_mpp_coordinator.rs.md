@@ -2,12 +2,6 @@
 
 ## 文件定位
 
-本文同步基于冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`，增量比较基点为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9`。
-
-本文件属于 `astersql-executor-internal-mpp` crate（见同目录 `Cargo.toml`），是 TiDB 进程内 MPP（Massively Parallel Processing）执行的本地协调器实现。crate 入口 `pkg/executor/internal/mpp/lib.rs` 将 `NewLocalMppCoordinator`、`MppCoordinatorPlan`、`MppDispatchSession`、`MppStoreInfo`、`MppReportSink` 和 `NoopMppReportSink` 重新导出；外层 `executor_with_retry.rs` 再把构造出的 `Box<dyn kv::MppCoordinator>` 注册、执行、按需重建，并作为 `kv::Response` 消费。
-
-它位于“物理计划已选定、TiFlash 根任务即将生成”与“调用者逐包读取 MPP 结果”之间：`NewLocalMppCoordinator` 调用 `SessionRootMppTaskGenerator::GenerateRootMPPTasks` 切分 Fragment 和 KV range，编码 TiFlash DAG 与派发请求；`LocalMppCoordinator::Execute` 启动派发，`kv::Response::Next` 汇聚根任务流，`Close` 取消剩余任务并处理 execution summary。文件本身不负责优化计划、选择 MPP 与否或决定重试策略。
-
 源文件已经带有 `// Copyright 2026 AsterSQL.`，并非门面或桩：其 1553 行实现包含生产传输适配、状态机、请求编码、拓扑标记和结果类型。
 
 ## 核心职责
@@ -98,15 +92,10 @@ report 通道与响应通道刻意分离。`MppReportHandle` 自含 Mutex/Condva
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/internal/mpp/local_mpp_coordinator.go`，Go 测试是 `local_mpp_coordinator_test.go`。主要一一对应关系如下：
-
-- Go `localMppCoordinator`、`NewLocalMPPCoordinator`、`Execute`、`Next`、`Close` 对应 Rust `LocalMppCoordinator`、`new_local_mpp_coordinator`/公开 `NewLocalMppCoordinator` 及相同 trait 方法。
 - Go `appendMPPDispatchReq` 对应 Rust `appendMPPDispatchReq` + `append_mpp_dispatch_requests` + `prepare_dispatch_requests_from_root`；Rust 把 sessionctx/config/infoschema 读取前移为显式的 `MppDispatchSession`、store 列表和 plan 参数，更容易独立验证。
 - Go `taskZoneInfoHelper`、`needReportExecutionSummary` 和 `mppResponse` 分别对应 Rust `TaskZoneInfoHelper`、`need_report_execution_summary`、`mppResponse`。同路径 Rust 测试复刻 Go 的 Limit/TableReader 形状和 zone quick-fill 用例。
 - Go goroutine、`respChan`、`finishCh`、`WaitGroup` 被 Rust worker thread、`mpsc::channel<WorkerEvent>`、`AtomicBool`、`JoinHandle` 替换；状态转换和“取消只包含 Running store”的意图保持一致。
 - Go `reqMap + reportStatusCh + mu` 被 Rust `MppReportHandle(Mutex + Condvar)` 替换，从而让 status reporter 可独立于主协调器锁被注册。
-
-编码增量对应 Go `setMPPEncodeType`：非 root 强制 CHBlock，root 委托 DistSQL 编码策略。Rust 直接使用 tipb DagRequest，复用 DistSQL `checkAlignment` 并在本文件写 layout；其 `checkAlignment` 当前定义为 `align_of::<i128>() >= 8`。开关由调用方传入，不在协调器内部重新读取 session。
 
 当前可见差异必须在扩展时保留意识：
 
@@ -128,12 +117,3 @@ report 通道与响应通道刻意分离。`MppReportHandle` 自含 Mutex/Condva
 - 修改结果对象或缓冲：同步 `mppResponse` 的所有权、`MemSize` 缓存与 `recovery_handler.rs` 的容量语义；相关独立测试还包括 `mpp_response_aster_unit_test.rs`。
 - 修改公开构造签名或 crate 边界：同步 `lib.rs` 再导出、具体 `CoordinatorFactory` 实现和 `executor_with_retry.rs`，并检查所有 Cargo manifest 仍使用一致依赖。该类改变可能影响 distsql/executor 接线，不应只改单文件。
 - 保持仓库约束：Rust 生产逻辑和测试分别放置；与 Go 行为尽可能一致；不删除 PingCAP Apache License；修复后的 Rust 文件保留顶部 AsterSQL 版权行；代码变更后先 `cargo fmt --all`。本次仅写文档，没有修改代码或运行 Cargo。
-
-## 验证依据
-
-- 冻结审计：`git diff ad0a6f4..2c944fb -- pkg/executor/internal/mpp/local_mpp_coordinator.rs` 和 `git show 2c944fb:pkg/executor/internal/mpp/local_mpp_coordinator.rs` 分段读取完整实现。增量只增加 chunk 开关传递和编码选择/layout，未改变取消、worker、report 或恢复策略。
-- 冻结装配：同目录 `Cargo.toml`、`lib.rs` 与 `executor_with_retry.rs`，核对工厂注入、reporter 注册、Close/Drop、恢复重建边界；`pkg/executor/doc.go` 及 MPP 目录 `doc.go` 不存在。
-- 编码依据：冻结 Go `local_mpp_coordinator.go::setMPPEncodeType`、Rust `pkg/distsql/distsql.rs::{canUseChunkRPC,checkAlignment,SetEncodeType}`，核对 root 开关/对齐和端序来源。
-- 静态读取冻结 `local_mpp_coordinator_test.rs::test_set_mpp_encode_type_respects_chunk_rpc_setting`，通过解析序列化 DAG 验证开关开/关与 root/non-root 四种组合。该测试不直接断言 layout/endian 或对齐失败分支；这些描述来自实现，未声称已运行测试。
-- 既有生命周期边界以源码复核：只派发 Ready、只收集 Running store 做取消、Close join、独立 report handle 的 Condvar 唤醒、超时不消费部分 summaries、没有本地 Drop/会话 kill 轮询或响应内存 tracker 记账。
-- RustCodeGraph status/explore 仅辅助定位当前工作区符号，不能证明冻结快照；本文依据 `2c944fb` blob。Ready 文档检查使用任务指定 11 节与 `git diff --check`；profile 技能缺失，按计划采用等价证据，不运行 Cargo。

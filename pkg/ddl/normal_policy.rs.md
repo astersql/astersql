@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`normal_policy.rs` 属于 `astersql-ddl` crate（见 `pkg/ddl/Cargo.toml` 与 `pkg/ddl/lib.rs` 的 `pub mod normal_policy`），实现普通 DDL owner 在持久化 SQL 作业队列上的“升级期准入策略”。它不是一个 DDL action handler，也不负责 schema state 迁移或回填；它在 `JobScheduler::schedule_persisted` 从 `mysql.tidb_ddl_job` 读出作业后、`JobWorker::transit_persisted_job_step` 真正推进作业前，决定当前作业是否可运行，并按需把作业持久化为系统暂停或恢复状态。
-
-上游装配有两处：`pkg/session/runtime/normal_ddl_service.rs::NormalDdlService::with_upgrade_policy` 为实际服务安装带轮次缓存的策略；`pkg/session/runtime/session_factory.rs::install_serving_ddl_runtime` 先安装可独立工作的初始策略，随后由服务包装升级状态。该文件属于普通、owner 驱动、可恢复的 DDL job 主链，而不是 metadata-only 快路径。
+向 `NormalDdlExecutor` 提供动态 DDL 错误次数上限和可选 MDL owner ID，分别来自 `GetDDLErrorCountLimit` 与 `IsMDLEnabled`。
 
 ## 核心职责
 
@@ -91,13 +89,11 @@ durable job 的并发安全来自事务内重读和 commit 冲突重试。真正
 
 ## 与 Go 版本的对应关系
 
-主要对照是 `pkg/ddl/job_scheduler.go::processJobDuringUpgrade`：升级期的 Paused/Pausing/系统库分支、调用 `PauseJobsBySystem`、不可暂停错误继续运行，以及正常期跳过磁盘满暂停、调用 `ResumeJobsBySystem` 后返回“need to be resumed”，均在 `runnable` 中保留。
+Rust 这里只处理单个 job ID，而 Go helper 支持一批 ID 并返回逐项错误。
 
-持久化事务对应 `pkg/ddl/ddl.go::processJobs`：两者都最多尝试三次，事务内重读 job、应用命令、更新 `mysql.tidb_ddl_job` 并在 commit 冲突后重试。Rust 这里只处理单个 job ID，而 Go helper 支持一批 ID 并返回逐项错误。
+Rust 恢复逻辑只允许 `AdminCommandOperator::System`，并保留磁盘满暂停；它清除 resume reason，符合“升级完成自动恢复”路径，而不是 Go 允许最终用户显式恢复磁盘满作业并设置 `JobResumeReasonKVDiskFull` 的另一条路径。
 
-状态转换对应 `pkg/ddl/util/util.go::PauseRunningJob` 和 `pkg/ddl/ddl.go::resumePausedJob`/`resumePausedJobForUpgradeFinish`。Rust 恢复逻辑只允许 `AdminCommandOperator::System`，并保留磁盘满暂停；它清除 resume reason，符合“升级完成自动恢复”路径，而不是 Go 允许最终用户显式恢复磁盘满作业并设置 `JobResumeReasonKVDiskFull` 的另一条路径。
-
-实现差异是 Rust 通过 `round_upgrading` 固定一次队列 dispatch 的升级状态，而 Go 展示的 `processJobDuringUpgrade` 每次调用 `IsUpgradingState()`；Rust 无快照的初始/测试路径仍会直接查询 syncer。文档没有假定两种读取方式在所有时序下完全等价。
+实现差异是 Rust 通过 `round_upgrading` 固定一次队列 dispatch 的升级状态，而 Go 展示的 `processJobDuringUpgrade` 每次调用 `IsUpgradingState()`；Rust 无快照的初始/测试路径仍会直接查询 syncer。
 
 ## 扩展指南
 
@@ -107,13 +103,3 @@ durable job 的并发安全来自事务内重读和 commit 冲突重试。真正
 - 修改事务或重试逻辑时，必须保留“每次重试重新读 job row”的不变量，避免覆盖并发用户 pause/cancel；相应测试应继续放在独立文件 `pkg/session/runtime/normal_ddl_test.rs`，不要把测试嵌入本生产文件。
 - 修改轮次缓存时，应同时检查 `NormalDdlService::with_upgrade_policy` 中快照的刷新时机和 Acquire/Release 顺序，避免一次扫描内状态撕裂。
 - 修改 `error_limit` 或 `mdl_owner` 时，应验证动态配置读取以及 `mysql.tidb_mdl_info` 的 owner 记录。兼容风险集中在 Go error code、job wire fields 和管理者身份；性能风险主要是每个被暂停/恢复作业独立 SQL 事务及失败时最多三次重读/提交。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 files、307296 nodes、1848419 edges；目标 `pkg/ddl/normal_policy.rs` 已索引为 164 行、17 个符号。
-- RustCodeGraph 查询：`node --file pkg/ddl/normal_policy.rs`；`node`/`callers`/`callees` 针对 `NormalDdlJobPolicy`、`system_command`、`pause_system_job`、`resume_system_job`；构造边指向 `NormalDdlService::with_upgrade_policy` 与 `install_serving_ddl_runtime`。图未返回文件内私有 caller 边，已由同一索引中的目标源码确认 `runnable → system_command → pause_system_job/resume_system_job`。
-- 主链源码：`pkg/ddl/table_mode.rs::DdlJobPolicy`、`NormalDdlExecutor`；`pkg/ddl/job_scheduler.rs::schedule_persisted`；`pkg/ddl/job_worker.rs::DurableJobExecutor`、`transit_persisted_job_step`；`pkg/session/runtime/normal_ddl_service.rs::with_upgrade_policy`；`pkg/session/runtime/session_factory.rs::install_serving_ddl_runtime`。
-- crate/模块依据：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、`pkg/ddl/doc.go`。
-- Go 对照：`pkg/ddl/job_scheduler.go::processJobDuringUpgrade`；`pkg/ddl/ddl.go::processJobs`、`resumePausedJob`、`resumePausedJobForUpgradeFinish`、`PauseJobsBySystem`、`ResumeJobsBySystem`；`pkg/ddl/util/util.go::PauseRunningJob`。
-- 独立 Rust 测试：`pkg/session/runtime/normal_ddl_test.rs::crossks_align_normal_ddl_policy_upgrade_pauses_then_resumes_durable_job`、`crossks_align_normal_ddl_policy_retains_user_and_disk_full_pauses`、`crossks_align_normal_ddl_policy_commit_conflict_preserves_concurrent_user_pause`、`normal_ddl_plan_upgrade_owner_cached_state_and_unpausable_jobs`、`normal_ddl_plan_upgrade_owner_dynamic_limits_and_mdl`。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在且恰有十一个固定二级标题。

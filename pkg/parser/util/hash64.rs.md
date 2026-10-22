@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`hash64.rs` 位于 `astersql-parser-util` crate 中，是解析器公共工具层的 64 位增量哈希协议定义。crate 根 `pkg/parser/util/lib.rs` 通过 `pub mod hash64` 声明模块，并以 `pub use hash64::*` 再导出其中的 `IHasher`；`pkg/parser/util/Cargo.toml` 将 `lib.rs` 指定为库入口，且没有为本模块声明 feature 或第三方依赖。
-
-本文件不是哈希算法实现，也不创建哈希器。它把“按类型、按顺序向一个有状态哈希器写值，最后读取 64 位摘要”的能力抽象为 trait，供需要稳定结构哈希的上层对象使用。RustCodeGraph 的文件关系显示当前 Rust 生产代码中的直接使用文件为 `pkg/parser/types/field_type.rs`。
+将编码、分隔、具体混合算法和初始种子留给实现者。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `pkg/parser/util/hash64.rs::IHasher` 逐项对应 Go `pkg/parser/util/hash64.go::IHasher`：`bool` 对应 `bool`，`isize` 对应 `int`，`i64`/`u64` 对应 `int64`/`uint64`，`f64` 对应 `float64`，`i32` 对应 `rune`，`&str` 对应 `string`，`u8` 对应 `byte`，`&[u8]` 对应 `[]byte`，并保留 `Reset` 与 `Sum64`。
+主要语言差异是 Rust 显式表达可变性与借用：Go 接口方法没有在签名中标出接收者状态变化，而 Rust 的写入和重置方法要求 `&mut self`；Go 切片和字符串按值传递其描述符，Rust 则显式短借用；Go `int` 与 Rust `isize` 都随目标位宽变化。
 
-主要语言差异是 Rust 显式表达可变性与借用：Go 接口方法没有在签名中标出接收者状态变化，而 Rust 的写入和重置方法要求 `&mut self`；Go 切片和字符串按值传递其描述符，Rust 则显式短借用；Go `int` 与 Rust `isize` 都随目标位宽变化。Rust 还可通过 `&mut dyn IHasher` 进行动态分派，`migration_aster_unit_test.rs` 对此有直接覆盖。
-
-Go 文件同样只声明接口，不提供算法。Rust 当前可确认的生产接线只覆盖 `FieldType::Hash64`；Go 中接受 `util.IHasher` 的 AST 方法不能自动视为 Rust 已迁移功能。
+Rust 当前可确认的生产接线只覆盖 `FieldType::Hash64`；Go 中接受 `util.IHasher` 的 AST 方法不能自动视为 Rust 已迁移功能。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Go 文件同样只声明接口，不提供算法。Rust 当前可确认的生产
 - 若要求跨平台稳定，避免直接把原生 `isize` 内存表示作为协议；应明确整数宽度、字节序、字符串/切片长度编码及浮点数规范，并增加 32/64 位目标证据。
 - 若用于并发路径，应由具体实现明确 `Send`/`Sync` 和同步策略；不要仅凭本 trait 假设线程安全。
 - 与 Go 继续对齐时，先核对 Go 的真实调用者和具体 `cascades/base.Hasher` 行为。本文件注释表达的是接口用途，不构成 Rust 已有完整算法实现的证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/parser/util/hash64.rs`；`files --filter pkg/parser/util` 显示该文件及相邻 Go、模块入口和两个 Rust 测试文件；`node --file pkg/parser/util/hash64.rs` 列出完整 58 行并报告由 `pkg/parser/types/field_type.rs` 使用；`query IHasher --kind trait` 定位 trait、测试和 Go/Rust 调用符号；`node IHasher --file pkg/parser/util/hash64.rs` 核对全部方法签名。`callers`/`callees` 查询在本地 30 秒窗口内超时，调用关系因此另以文件级图结果和源码搜索交叉核验。
-- 源码：`pkg/parser/util/hash64.rs`（trait 方法面、借用与返回类型）；`pkg/parser/util/lib.rs`（模块声明、再导出及命名规则）；`pkg/parser/types/field_type.rs::FieldType::Hash64`（当前 Rust 生产写入顺序）。
-- crate：`pkg/parser/util/Cargo.toml`（crate 名、`lib.rs` 入口、Go 包迁移元数据以及无额外依赖/feature 的事实）。
-- Go 对照：`pkg/parser/util/hash64.go`（同名接口）；`pkg/parser/types/field_type.go::FieldType.Hash64`（字段顺序对齐）；通过 `rg` 定位的 `pkg/parser/ast/dml.go::SelectLockInfo.Hash64` 与 `pkg/parser/ast/model.go::CIStr.Hash64`（Go 侧相邻使用范围）。
-- 独立 Rust 测试：`pkg/parser/util/escape_test.rs::test_ihasher_state_updates_and_reset` 以 `StateHasher` 覆盖全部写入方法、极值、UTF-8、原始字节、摘要读取和重置；`pkg/parser/util/migration_aster_unit_test.rs::ihasher_preserves_go_method_surface_and_mutation_protocol` 以 `RecordingHasher` 覆盖 `dyn IHasher` 动态分派、调用计数及重置。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时使用任务指定的结构命令确认目标文档存在且恰有十一个固定二级标题，并人工复核只修改本文档（完成后按任务协议删除任务文件）。

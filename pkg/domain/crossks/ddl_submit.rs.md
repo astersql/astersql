@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-crossks` crate 的跨 Keyspace DDL 提交层，专门把目标 Keyspace 上的 `Alter Table Mode` 请求转换为 DDL Job、写入目标系统表，并等待该 Job 出现在目标 KV 的历史区。crate 由 [`lib.rs`](./lib.rs) 声明并公开再导出 `ddl_submit`；[`Cargo.toml`](./Cargo.toml) 将其归入 Go 包 `pkg/domain/crossks` 的 Rust 移植，并声明对 `astersql-ddl-jobsubmit`、`astersql-kv`、`astersql-meta`、`astersql-meta-model` 和 `astersql-domain-serverinfo` 的直接依赖。
-
-上游调用路径是 [`cross_ks.rs`](./cross_ks.rs) 中的 `RuntimeHandle::alter_table_mode` → `SessionManager::alter_table_mode` → 本文件 `DdlClient::alter_table_mode`。生产运行时可在 `pkg/session/runtime/crossks_runtime.rs` 中组装另一种 `DdlBackend`；本文件自带的 `SubmitOnlyBackend` 则提供只提交、不启动选举或 worker 的 Go 兼容适配器。
+生产运行时可在 `pkg/session/runtime/crossks_runtime.rs` 中组装另一种 `DdlBackend`；本文件自带的 `SubmitOnlyBackend` 则提供只提交、不启动选举或 worker 的 Go 兼容适配器。
 
 ## 核心职责
 
@@ -84,9 +82,6 @@ RustCodeGraph 将 `ddl_submit.rs` 标记为被 `pkg/domain/crossks/cross_ks.rs`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`ddl_submit.go`](./ddl_submit.go)：
-
-- 两端均按“解析目标 → 构建/no-op → 刷新升级状态 → 批量提交 → 尽力通知 → 轮询历史”执行，轮询间隔同为 100 ms。
 - Go 用 `kv.RunInNewTxn` 在同一事务 reader 中解析库和表；Rust `SubmitOnlyBackend::resolve_metadata` 用单个不可变快照提供对应保证。
 - Go `BuildAlterTableModeJob` 从 `SessPool` 取得真实会话变量；Rust 通过 `SessionVariablesProvider` 注入目标系统会话读取，并在构建基础 Job 后覆盖字段。
 - Go 用 `context.Context` 同时传播内部事务来源、取消和下游调用上下文；Rust 目前只用 `Cancellation` 控制历史轮询，同步 backend 方法没有上下文参数，也没有显式 `InternalTxnDDL` 标记。
@@ -104,12 +99,3 @@ Go 集成测试 `cross_ks_test.go::TestDomainAlterTableModeInKeyspaceSubmitOnly`
 - 引入异步等待、退避或超时时，要保持取消可达、临时历史读取错误可重试、已提交 Job 不因通知失败回滚，并评估 100 ms 固定轮询对目标 KV 的负载与完成延迟。
 - 若要传播结构化错误或 context，应评估所有 `DdlBackend` 实现、生产装配及调用链，而非只改 `DdlClient`；当前字符串化边界可能丢失可重试分类。
 - 修改提交顺序时必须保持 server-state 刷新先于 `submit_batch`，否则升级状态可能陈旧；同时保留 no-op 不产生任何持久化或通知副作用。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件，目标目录 17 个已索引源码文件；`node --file pkg/domain/crossks/ddl_submit.rs` 读取了目标文件完整 410 行，并显示其被 11 个文件使用。
-- RustCodeGraph 源码证据：`pkg/domain/crossks/cross_ks.rs` 第 610–758 行（代理入口与 `SessionManager` 持有关系）；`pkg/domain/crossks/ddl_submit_test.rs` 第 1–82 行（Unicode 名称和 `Normal → Restore`）；`pkg/domain/crossks/ddl_submit.go` 第 1–202 行（Go 主流程）；`pkg/ddl/jobsubmit/table_mode.rs` 第 1–135 行（迁移规则、no-op、Job 字段和参数编码）；`pkg/ddl/jobsubmit/submit.rs` 第 1–100 行（提交约束）；`pkg/session/runtime/crossks_runtime.rs` 第 350–438 行（生产装配）。
-- 配置与模块证据：[`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)。目标目录没有 `doc.go`。
-- 测试证据：[`ddl_submit_test.rs`](./ddl_submit_test.rs)、[`cross_ks_test.rs`](./cross_ks_test.rs) 的 `test_domain_alter_table_mode_in_keyspace_submit_only`、`pkg/session/runtime/crossks_runtime_test.rs` 中 `crossks_align_submit_only_*` 测试，以及 Go [`cross_ks_test.go`](./cross_ks_test.go) 的对应集成场景。
-- 调用边补证：`rg` 精确定位了 `RuntimeHandle::alter_table_mode`、`SessionManager::alter_table_mode`、`DdlClient` 构造、`SubmitOnlyBackend`/`EtcdOwnerNotifier` 装配和所有直接测试调用；RustCodeGraph 的精确 `callers/callees` 查询本次超时，故没有声称额外静态图关系。
-- 本任务仅新增说明文档，未运行 Cargo。结构检查要求文档存在且恰有上述 11 个固定二级标题；交付前还应检查链接路径、diff 范围和任务文件删除状态。

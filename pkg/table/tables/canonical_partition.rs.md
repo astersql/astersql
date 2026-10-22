@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table-tables` crate，是基于规范目录模型 `model_dependency::TableInfo` 的轻量分区路由器。模块由 `pkg/table/tables/lib.rs` 无条件公开为 `canonical_partition`；它不依赖 `expression-runtime` feature，而是让调用者以闭包提供分区表达式求值，因此可被表层和会话运行时共同使用。
-
-主要入口是 `CanonicalPartitionedTable::locate`。`pkg/session/runtime/dml.rs` 的 `ConcreteSession::row_physical_id` 用它把逻辑行映射到物理表 ID；该结果继续用于 DML 分组、更新前后分区迁移、关系扫描、查询过滤、行编码和部分 DDL 数据筛选。`pkg/table/tables/tables.rs` 的 `TableCommon::canonical_partition_router` 则把表实例保存的 `use_new_collation` 绑定到路由器。
+`CanonicalPartitionedTable::locate` 从 `PartitionInfo` 读取 HASH、KEY、RANGE 或 LIST 定义，选择首个匹配定义并返回其物理分区 ID。
 
 ## 核心职责
 
@@ -79,14 +77,7 @@ RANGE COLUMNS 使用 `zip`，不会显式检查列数与上界数一致；较短
 
 ## 与 Go 版本的对应关系
 
-Go 的真实实现集中在 `pkg/table/tables/partition.go`，不是一个同名文件。语义对应关系包括：
-
-- Rust KEY 分支对应 Go `ForKeyPruning.LocateKeyPartition` 与 `datumToHashKey`：两者都按分区列顺序累计 IEEE CRC32，NULL 写入单字节零，字符串经过所选 collator key，再对分区数取模。
-- Rust RANGE/RANGE COLUMNS 分支对应 Go `partitionedTable.locateRangePartition`、`locateRangeColumnPartition` 及 `ForRangeColumnsPruning`；`MAXVALUE` 是无穷上界，列分区做字典序比较。
-- Rust LIST 分支对应 Go `ForListPruning.LocatePartition`、`ForListColumnPruning.LocatePartition` 及 `locateListPartition` 的按值定位意图。
-- Rust `locate` 的总分派对应 Go `partitionedTable.locatePartitionCommon` / `locatePartition`，最终都以 `PartitionDefinition.ID` 表示物理分区。
-
-当前 Rust 文件是会话规范行模型的简化适配层，并非 Go 完整执行器的逐类型移植。Go 使用 `Datum`、表达式上下文、类型转换和编码 key，能传播求值/转换错误、处理默认或正在 dropping 的分区，并在无匹配时返回 `ErrNoPartitionForGivenValue`；本文件使用字符串行与 `i64` 闭包并回退逻辑表 ID。扩展时必须保持这些差异显式，不能仅凭接口名称假定完全等价。
+当前 Rust 文件是会话规范行模型的简化适配层，并非 Go 完整执行器的逐类型移植。扩展时必须保持这些差异显式，不能仅凭接口名称假定完全等价。
 
 ## 扩展指南
 
@@ -95,13 +86,3 @@ Go 的真实实现集中在 `pkg/table/tables/partition.go`，不是一个同名
 涉及字符串的修改必须同时验证新旧 collation、大小写/重音等价、缺失列与 NULL；涉及 RANGE COLUMNS 必须覆盖多列前缀相等、MAXVALUE、负数、大整数、字符串和畸形边界长度；涉及 KEY 必须用 Go `crc32.NewIEEE` 结果交叉校验。若把宽松回退改为错误传播，需要同步审查 `row_physical_id` 的所有调用者以及 DML 的 unmatched 警告逻辑，否则可能改变写入、扫描和编码的物理 ID。
 
 测试应放在独立文件而非本源文件。直接路由测试应扩展 `pkg/table/tables/partition_expr_test.rs`（现有 `go_merge_49_table_common_routes_canonical_partition_metadata` 已覆盖 TableCommon→HASH 路径）；会话可见的错误或警告应扩展 `pkg/session/runtime` 下相应独立 `*_test.rs`。Go 对照回归位于 `pkg/table/tables/partition_test.go` 及相关分区测试目录。
-
-## 验证依据
-
-- 目标实现：`pkg/table/tables/canonical_partition.rs`，逐项核对结构体、构造函数、四种分区分支和两个比较辅助方法。
-- crate 边界：`pkg/table/tables/Cargo.toml` 与 `pkg/table/tables/lib.rs`，核对公开模块、feature 和 `model`/`collate`/`crc32fast` 依赖。
-- Rust 上游：`pkg/table/tables/tables.rs::TableCommon::canonical_partition_router`；`pkg/session/runtime/dml.rs::{row_physical_id, unmatched_range_partition_value, unmatched_list_partition_warning}`；并以精确引用确认 `ddl.rs`、`relational_scan.rs`、`query.rs`、`row_codec.rs` 的消费位置。
-- Rust 测试：`pkg/table/tables/partition_expr_test.rs::go_merge_49_table_common_routes_canonical_partition_metadata` 验证表对象绑定与 HASH 定位；同文件 `key_partition_uses_ieee_crc32_and_null_marker` 验证底层 KEY 裁剪语义；`pkg/table/tables/partition_test.rs::unsigned_range_values_do_not_wrap_into_the_first_partition` 记录 Go RANGE 数值边界意图。未发现专门覆盖本文件 LIST/RANGE 辅助方法的独立 Rust 测试。
-- Go 对照：`pkg/table/tables/partition.go` 中 `LocateKeyPartition`、`datumToHashKey`、`locatePartitionCommon`、`locatePartition`、`LocatePartition` 和 `GetPartitionByRow`；相关回归入口为 `pkg/table/tables/partition_test.go` 与 `pkg/table/tables/test/partition/`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query CanonicalPartitionedTable` 定位目标及 `canonical_partition_router`、会话 router 变量；`callees locate` 给出两个内部辅助调用，两个辅助方法的 `callees` 均指向 collator `Key`。由于 callers 查询无输出，调用者另由 `rg` 核对。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级章节。

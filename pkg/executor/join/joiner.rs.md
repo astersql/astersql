@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate，是连接算法与“连接类型语义”之间的结果整形层。`pkg/executor/join/lib.rs` 以 `pub mod joiner` 导出它；Hash Join v1/v2、各类 probe、Merge Join、Index Lookup Join/Hash Join/Merge Join 在找到候选行后调用这里的 `Joiner`，由它计算 other condition、决定 SQL 三值逻辑下的匹配状态，并生成匹配或未匹配结果。
-
-文件由两部分组成：第 1–1286 行是注释化的早期 Go 映射草稿，不能视作当前 API；第 1288 行起才是实际编译的 Rust 实现。当前实现用 `Vec<Value>` 表示行，是 Go `chunk.Row`/`chunk.Chunk` 语义的轻量 Rust 版本，而不是 Go 实现的逐类型对象层次复刻。
-
-crate 边界由 `pkg/executor/join/Cargo.toml` 定义：库入口是同目录 `lib.rs`，包名为 `astersql-executor-join`。本文件实际代码只直接依赖同 crate 的 `row_table_builder::Value` 和标准库 `Arc`；Cargo 中大量 Windows 条件依赖服务于整个 join crate，并非本文件逐项直接使用。
+为 null-aware anti join（NAAJ）保存键两侧 NULL 组合，并按 Go 的短路语义生成 `false` 或 `NULL` 标记。
 
 ## 核心职责
 
@@ -78,8 +74,6 @@ NAAJ outer-build 路径返回空 `Vec`，不是“所有行 unmatched”；调�
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/join/joiner.go` 是语义基准：Go 的 `Joiner` interface 对应 Rust 单一 `Joiner` 加 `JoinType` 分派；Go 的多个具体 joiner 类型对应 Rust `match self.join_type`；`outerRowStatusFlag`、`NAAJType`、`TryToMatchInners`、`TryToMatchOuters`、`OnMissMatch` 均有直接概念映射。
-
 已保持的关键语义包括：左右顺序由 outer 方向决定；inline projection 在结果输出时生效但条件读取完整 joined row；Semi 命中后早停；普通 anti/semi 保留 condition NULL；false 支配 CNF 中此前 NULL；NAAJ other condition 不传播 NULL；outer join miss 拼默认 inner；null-aware outer-build 路径仍未实现。
 
 重要差异是：Rust 使用 `Vec<Value>`/闭包而非 session context、expression tree 和 chunk；没有 Go 的 iterator error、required rows、临时 filter chunk、向量化表达式开关和深拷贝 expression；Rust 构造器返回 `Result` 并校验参数；Rust 增加 `FullOuter`；`max_chunk_size` 只校验不执行容量限制；Rust `select` 静默跳过越界列。Go 测试 `TestJoinerOtherConditionChunkUsesInitChunkSize` 与 `TestRequiredRows` 覆盖的 chunk 容量行为在当前 Rust 模型中没有等价实现，不能写成已支持。
@@ -91,13 +85,3 @@ NAAJ outer-build 路径返回空 `Vec`，不是“所有行 unmatched”；调�
 改变左右布局或投影时，应保持两个不变量：condition 始终读取未裁剪的完整 joined row；`left_used/right_used` 始终相对于原始左右 schema，而非 outer/inner 角色。相关测试应放在独立的 `pkg/executor/join/joiner_test.rs`，并联动 probe/hash/index/merge 的独立测试，而不要把测试内嵌到本文件。
 
 若要接近 Go 的性能与容量语义，需要显式设计 chunk/iterator 层，而不能只使用传入但不保存的 `max_chunk_size`。这会影响所有上游调用者、输出部分成功时的错误契约、值克隆成本和 RequiredRows 行为，属于跨文件改造。若只增加 predicate，必须说明错误后的部分输出是否允许保留，并测试 false/NULL 顺序。
-
-## 验证依据
-
-- 目标实现：`pkg/executor/join/joiner.rs`，实际符号位于第 1288–1594 行；第 1–1286 行仅是注释化迁移草稿。
-- crate 与模块：`pkg/executor/join/Cargo.toml`、`pkg/executor/join/lib.rs`。
-- Rust 单元证据：`pkg/executor/join/joiner_test.rs` 覆盖 Inner/LeftOuter 投影与 miss、三态 status、Semi 早停、NAAJ、非法构造、普通 join 不暴露 NULL、false 覆盖 earlier NULL。
-- Go 对照：`pkg/executor/join/joiner.go`、`pkg/executor/join/joiner_test.go`；后者额外验证 InitChunkSize 和 RequiredRows，明确了当前 Rust 尚未对齐的 chunk 行为。
-- RustCodeGraph：`status` 确认索引含本文件；`query Joiner --kind struct`、`query try_to_match_inners/try_to_match_outers/on_miss_match --kind function` 定位真实符号；`callees try_to_match_inners` 核对内部调用；callers 空结果由 `rg` 的直接调用证据补充。
-- 上游源码证据：`hash_join_v1.rs`、`hash_join_v2.rs`、`base_semi_join.rs`、各 probe、`merge_join.rs`、`index_lookup_join.rs`、`index_lookup_hash_join.rs`、`index_lookup_merge_join.rs`。
-- 本任务是只读行为分析和文档新增，按计划不运行 Cargo；结构验证仅检查文件存在且恰有十一个固定二级标题。

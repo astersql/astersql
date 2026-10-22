@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/config/config.rs` 是 `astersql-config` crate 的核心配置实现。crate 根模块 `pkg/config/lib.rs` 以 `pub mod config; pub use config::*;` 将本文件的公开类型和函数提升为 `astersql_config::*` API；`pkg/config/Cargo.toml` 则声明该 crate 依赖 Serde/TOML、正则、URL、用户身份、原子初始化，以及资源组和配置子 crate。本文件不是仅用于反序列化的 DTO：它同时定义服务端配置模型、默认值、文件加载、语义校验、全局发布、配置导出和若干运行时查询入口。
-
-在完整应用中，本文件位于“启动配置输入”和“运行时子系统消费”之间。`cmd/tidb-server/main.rs:1203` 调用 `load_postgres_port` 从配置文件投影独立 PostgreSQL 监听端口；服务运行后，session、DDL、executor、distsql、store、domain、server、planner 等模块通过 `get_global_config` 或更窄的查询函数读取已发布快照，例如 `pkg/session/runtime/planning.rs:434`、`pkg/ddl/job_worker.rs:573`、`pkg/executor/statement_ru_result.rs:103`、`pkg/store/store.rs:531` 和 `pkg/server/http_status.rs:1764`。
-
-该文件已有 `// Copyright 2026 AsterSQL.`，并明确说明它由同目录 `pkg/config/config.go` 迁移。Rust 实现当前覆盖可被 Rust 主链使用的核心配置子集，并非 Go 文件全部启动编排逻辑的一比一替代；具体差异见“与 Go 版本的对应关系”。
+发布进程级只读快照：`GLOBAL_CONFIG` 保存 `Arc<Config>`，`get_global_config` 提供低成本快照读取，`store_global_config` 整体替换配置并同步错误消息扩展缓存，`update_global` 采用拷贝—修改—发布方式更新。
 
 ## 核心职责
 
@@ -103,11 +99,3 @@ Rust 独立测试把“保持 Go 语义”作为显式合同：`pkg/config/confi
 若扩展启动加载链，必须先决定该逻辑属于完整 `Config::load`/`valid`，还是像 `load_postgres_port` 一样属于入口适配投影；后者不应悄悄承担完整验证。需要同步检查 `cmd/tidb-server/main.rs` 入口、`pkg/config/lib.rs` 导出、`pkg/config/Cargo.toml` 依赖，以及 Go `InitializeConfig` 尚未迁移的职责。任何修改 Rust 生产代码时应按仓库规则同步独立测试、运行 `cargo fmt --all`，并在真正可用后保留/添加 AsterSQL 2026 版权行。
 
 兼容风险主要来自公开 TOML/JSON 键名和默认值变化；正确性风险集中在“load 不自动 valid”“store 不自动 valid”和跨字段模式约束；性能风险集中在高频 `update_global` 的整份深克隆与错误正则重编译。读取只克隆 `Arc`，不应改成每次深拷贝。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/config/config.rs` 差异及目标 blob `f01f53f1c2b364b0a41522cb946af4d4550e0181` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/config/config.rs` 和 `git show 2c944fb:pkg/config/config.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/config/config_test.rs`，Go 对照为 `pkg/config/config.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

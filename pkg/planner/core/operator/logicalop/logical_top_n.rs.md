@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件定义逻辑规划阶段的 `LogicalTopN` 节点，表达“按若干表达式排序，跳过 `Offset` 行，再保留 `Count` 行”的关系代数语义，对应 SQL 中常见的 `ORDER BY ... LIMIT ... OFFSET ...`。它属于 Cargo 包 `astersql-planner-core-operator-logicalop`；包入口 `pkg/planner/core/operator/logicalop/lib.rs` 以 `mod logical_top_n` 纳入实现并通过 `pub use logical_top_n::*` 对外导出。
-
-`LogicalTopN` 位于逻辑优化与物理计划枚举之间：上游规则可创建、改写或下推该节点；下游 `pkg/planner/core/operator/physicalop/base_physical_plan.rs` 识别该类型并调用 `ExhaustPhysicalPlans4LogicalTopN`，由 `physical_topn.rs` 枚举物理 TopN 和保序 Limit 候选。本文件本身不执行排序，也不访问存储。
+物理化位于 `physical_topn.rs`，而 `Hash64`/`Equals` 位于生成式邻接实现 `hash64_equals_generated.rs`。
 
 ## 核心职责
 
@@ -103,8 +101,6 @@ RustCodeGraph 的索引状态为 11,467 个文件、307,296 个节点。针对�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/logicalop/logical_top_n.go`。两版共同实现 `Init`、`ExplainInfo`、`ReplaceExprColumns`、`PruneColumns`、`BuildKeyInfo`、`DeriveStats`、`PreparePossibleProperties`、`ExtractCorrelatedCols`、`GetPartitionBy`、`IsLimit` 和 `AttachChild`，核心分支保持一致：Dual 行数折叠、空 `ByItems` 转 Limit、`Count == 1` 标记最多一行，以及按 `Count` 推导统计。
-
 需要注意的实现差异：
 
 - Rust 结构额外保存 `OffsetParam` 和 `CountParam`，转为 `LogicalLimit` 时会保留；当前 Go 对照结构没有这两个字段。
@@ -112,8 +108,6 @@ RustCodeGraph 的索引状态为 11,467 个文件、307,296 个节点。针对�
 - Go `DeriveStats` 直接取 `childStats[0]`；Rust 对缺失子统计返回可诊断错误。两者正常单子节点路径一致。
 - Go 的 `PreparePossibleProperties` 将 `hasTiFlash` 缓存在节点内部；Rust 返回包含 `HasTiFlash` 的 `SortProperties`，本结构没有同名独立缓存字段。
 - Rust 的 `AttachChild` 对负 `LogicalTableDual::RowCount` 先归零，避免有符号到无符号的异常转换；Go 正常规划路径假定行数非负。
-
-独立测试 `logical_top_n_test.rs` 覆盖相关列替换与降序解释文本。`logicalop_test/logical_operator_test.rs` 对齐 Go 回归测试的 schema 刷新语义；`logicalop_test/hash64_equals_test.rs` 与 Go 同名测试核对排序表达式、方向、分区键、offset/count 及下推偏好对等价性和哈希的影响。
 
 ## 扩展指南
 
@@ -123,16 +117,3 @@ RustCodeGraph 的索引状态为 11,467 个文件、307,296 个节点。针对�
 - 改动基数估计时，应验证缓存命中、强制 reload、缺失子统计、`Count == 0/1` 和大 `Offset`。注意当前统计公式只使用 `Count`，offset 的成本/基数语义需与 property 层和 Go 版本一起评估。
 - 改动 `PartitionBy` 时，应同步物理 TopN 枚举和哈希等价测试；当前相关列提取及可能顺序只基于 `ByItems`，若要改变这一约定必须提供 Go 对照或明确的迁移依据。
 - 性能风险主要来自复制 schema/列集合、重复格式化表达式以及扩大物理候选集合；兼容风险集中在 EXPLAIN 文本、参数化 LIMIT/OFFSET、memo 哈希等价和 coprocessor 下推行为。
-
-## 验证依据
-
-事实核对使用了以下路径：
-
-- 生产实现：`pkg/planner/core/operator/logicalop/logical_top_n.rs`（完整 247 行）。
-- crate 与模块接线：`pkg/planner/core/operator/logicalop/Cargo.toml`、`pkg/planner/core/operator/logicalop/lib.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_top_n.go`。
-- 直接测试：`pkg/planner/core/operator/logicalop/logical_top_n_test.rs`。
-- 对齐与邻接测试：`pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.rs`、同名 `.go` 文件，以及 Rust/Go 的 `logicalop_test/hash64_equals_test.*`。
-- 上下游实现：`logical_limit.rs`、`hash64_equals_generated.rs`、`physicalop/physical_topn.rs`、`physicalop/base_physical_plan.rs`。
-
-RustCodeGraph 执行了 `status`、针对文件及 `LogicalTopN` 关键方法的 `explore`/`query`/`node` 查询。查询确认了源文件完整符号集合、逻辑 trait 调度入口、`LogicalLimit::PushDownTopN -> AttachChild` 调用边和 `ExhaustPhysicalPlans4LogicalTopN` 物理化出口。未运行 Cargo 或代码测试，符合本任务纯文档分析约束；交付验证仅采用任务指定的十一章节结构检查及人工事实复核。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dumpformat-sqlfile` crate 的单值 SQL 字面量编码层。crate 入口 `pkg/dumpformat/sqlfile/lib.rs` 将本模块声明为私有模块 `sql`，再以 `pub use sql::append_value` 公开唯一函数；同 crate 的 `writer.rs::Writer::write` 用它编码 `INSERT ... VALUES` 中的每个字段。上层生产入口是 `dumpling/export/writer_util.rs::writeSQLFile`：该函数构造 `Writer`，把查询行交给 `Writer::write`，最终形成 Dumpling 的 SQL 数据文件。
-
-该文件只负责“一个值如何写入已有字节缓冲区”，不负责 INSERT 前缀、行括号、字段逗号、语句切分、文件轮转、底层 I/O 或类型推断。这些边界分别由 `pkg/dumpformat/sqlfile/writer.rs` 与 `dumpling/export/writer_util.rs` 承担。
+`append_value` 根据 `is_null` 与 `astersql_dumpformat::FieldKind`，向调用者提供的 `Vec<u8>` 末尾追加恰好一个 SQL 值。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ RustCodeGraph 对 `sql.rs::append_value` 给出的调用者包含 `writer.rs::wr
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/dumpformat/sqlfile/sql.go`。Rust `append_value` 对应 Go `AppendValue`，分支语义一致：NULL 优先、数字原样、字节使用小写 `x'%x'`、字符串由 `escapeBackslash` 选择两种转义模式。Go 将字符串逻辑拆为 `appendEscaped` 与 `appendEscapedBackslash`，Rust 为保持单文件直观性把两段逻辑内联到 `FieldKind::String` 的单次循环中；这是结构差异，不是行为删减。
+Rust `append_value` 对应 Go `AppendValue`，分支语义一致：NULL 优先、数字原样、字节使用小写 `x'%x'`、字符串由 `escapeBackslash` 选择两种转义模式。Go 将字符串逻辑拆为 `appendEscaped` 与 `appendEscapedBackslash`，Rust 为保持单文件直观性把两段逻辑内联到 `FieldKind::String` 的单次循环中；这是结构差异，不是行为删减。
 
 API 形态上的差异是 Go 返回扩展后的 `[]byte`，Rust 通过 `&mut Vec<u8>` 原地修改且返回 `()`；Go 的 `default` 承担字符串分支，Rust 对三种 `FieldKind` 穷举匹配，新增枚举变体时会产生编译期未穷尽错误。Rust `Bytes` 手工查表编码，Go 使用 `fmt.Appendf`，预期字节结果相同。
 
-对应测试为 Go 的 `pkg/dumpformat/sqlfile/writer_test.go` 与 Rust 的独立文件 `pkg/dumpformat/sqlfile/writer_test.rs`。两边都覆盖完整行框架、NULL、数字、空/非空二进制、两种字符串转义和语句切分；Rust 还直接调用 `append_value` 检查 `[0, 255] -> x'00ff'`，并额外覆盖宽度不匹配、写错误与关闭幂等性等 writer 边界。
+两边都覆盖完整行框架、NULL、数字、空/非空二进制、两种字符串转义和语句切分；Rust 还直接调用 `append_value` 检查 `[0, 255] -> x'00ff'`，并额外覆盖宽度不匹配、写错误与关闭幂等性等 writer 边界。
 
 ## 扩展指南
 
@@ -83,11 +81,3 @@ API 形态上的差异是 Go 返回扩展后的 `[]byte`，Rust 通过 `&mut Vec
 - 改动二进制编码时，应保留每字节两位、小写、零填充及空值 `x''` 的契约，除非 Go 与恢复端协议同时变更。
 - 测试应继续放在独立的 `pkg/dumpformat/sqlfile/writer_test.rs`，不要内嵌进生产源文件；跨 crate 的公开 API/Go-Rust 对齐可同步更新 `dumpling/export/parity_test.rs`。
 - 性能修改要关注热路径的单次遍历、缓冲复用和扩容次数；可预留容量，但不能改变已有 `dst` 前缀或输出字节。兼容性修改还应验证生成 SQL 在目标 MySQL/TiDB SQL mode 下可恢复。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含本仓库；`files --filter pkg/dumpformat/sqlfile` 确认模块文件；`query append_value --kind function --json` 将目标定位为 `sql.rs::append_value`；`node --file` 阅读 `sql.rs`、`writer.rs`、`writer_test.rs`、`pkg/dumpformat/kind.rs` 与 `dumpling/export/writer_util.rs`；`explore` 确认 `append_value` 的直接调用者为 `writer.rs::write` 和 `writer_test.rs::escaping_and_binary_bytes`。
-- crate 与入口：`pkg/dumpformat/sqlfile/Cargo.toml`、`pkg/dumpformat/sqlfile/lib.rs`、根 `Cargo.toml` 的 workspace member，以及 `dumpling/export/Cargo.toml` 的路径依赖。
-- Go 对照：`pkg/dumpformat/sqlfile/sql.go`、`pkg/dumpformat/sqlfile/writer.go`、`pkg/dumpformat/sqlfile/writer_test.go`。
-- Rust 测试与应用证据：`pkg/dumpformat/sqlfile/writer_test.rs`、`dumpling/export/parity_test.rs`、`dumpling/export/writer_util.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有十一个固定二级章节，并人工复核本文只描述上述源码与测试能够支持的现状。

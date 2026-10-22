@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`manifest.rs` 是 `astersql-extension` crate 的声明与安装边界：扩展作者用一组 `With*` 工厂生成 `Option`，注册表在 Setup 阶段把这些选项应用到一个 `Manifest`，并把需要写入进程级注册中心的动态权限、系统变量和扩展函数真正安装进去。模块由 `pkg/extension/lib.rs` 公开声明并整体再导出；crate 边界与依赖见 `pkg/extension/Cargo.toml`，其中 `chunk_dependency`、`variable_dependency` 和 `etcd-client` 分别支撑 bootstrap 返回行、系统变量注册和 etcd 访问。
-
-它处在“扩展注册”与“运行时消费”之间。上游 `pkg/extension/registry.rs::registry::doSetup` 按扩展名排序后调用 `newManifestWithSetup`；下游 `pkg/extension/extensions.rs::Extensions` 保存构造好的清单，并在 bootstrap、访问检查、认证插件收集和会话扩展创建时读取相应字段。这个文件不是扩展代码的动态加载器，也不直接执行所有运行期回调。
+定义扩展清单 `Manifest`，集中保存扩展名以及系统变量、动态权限、函数、访问检查、认证插件、会话处理器工厂、bootstrap 和关闭回调。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/extension/manifest.go`：相同的 Option 字段、清单字段、安装顺序和失败回滚意图均被保留。`pkg/extension/manifest_test.rs::manifest_options_register_resources_and_clear_in_go_order` 专门验证资源注册与清理顺序；`setup_error_rolls_back_only_resources_registered_before_the_error` 和 `invalid_system_variables_match_go_errors_and_rollback_prior_setup` 验证部分安装失败及错误文本。
-
 主要语言适配差异如下：Go `Option` 是普通函数，Rust 用 `Arc<dyn Fn + Send + Sync>`；Go 的 nil 指针在 Rust 中成为 `Option<Arc<_>>`；Go 全局函数变量 `RegisterDynamicPrivilege`/`RemoveDynamicPrivilege` 在 Rust 中成为带锁的可替换钩子对；Go `context.Context` 嵌入被缩减为本地 `ExtensionContext::is_cancelled` 抽象；Go `ExecuteSQL(ctx, sql)` 在 Rust 中改为 `&mut self, sql`，取消状态由上下文本身承担；Go `WithBootstrapSQL` 是可变参数，Rust 接收 `Vec<String>`。
 
-Go `newManifestWithSetup` 用 `defer` 在命名错误返回时回滚，Rust 用闭包结果加 `match` 显式实现相同行为。两边的 `clearFuncBuilder` 都按收集先后执行。Go `bootstrap_test.go::TestBootstrap` 与 Rust `bootstrap_test.rs::canonical_bootstrap_sql_preserves_registration_order` 均证明 bootstrap SQL 和后续自定义 bootstrap 的顺序；Rust 测试用内存上下文替代完整存储。
+Go `newManifestWithSetup` 用 `defer` 在命名错误返回时回滚，Rust 用闭包结果加 `match` 显式实现相同行为。Go `bootstrap_test.go::TestBootstrap` 与 Rust `bootstrap_test.rs::canonical_bootstrap_sql_preserves_registration_order` 均证明 bootstrap SQL 和后续自定义 bootstrap 的顺序；Rust 测试用内存上下文替代完整存储。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Go `newManifestWithSetup` 用 `defer` 在命名错误返回时回滚，Rust 用�
 - 修改动态权限或函数钩子时，要保持“锁内克隆、锁外调用”，并同时验证钩子未安装、安装失败和清理钩子缺失路径。
 - 修改认证字段时同步 `pkg/extension/auth.rs::validateAuthPlugin` 与独立认证测试；修改 bootstrap 时同步 `pkg/extension/bootstrap_test.rs`；修改安装/回滚顺序时同步 `pkg/extension/manifest_test.rs` 和 `registry_test.rs`。Rust 测试应继续独立放置，不嵌入生产源文件。
 - 兼容性风险集中在公开回调签名、固定错误文本、安装/清理顺序和“后选项覆盖前选项”行为；性能风险主要来自 Setup 期间逐项全局注册和回调执行，当前没有批处理或并行安装。
-
-## 验证依据
-
-- 源码：`pkg/extension/manifest.rs`（27 个索引符号）、`pkg/extension/lib.rs`、`pkg/extension/registry.rs`、`pkg/extension/extensions.rs`、`pkg/extension/util.rs`、`pkg/extension/auth.rs`、`pkg/extension/function.rs`。
-- crate 与使用说明：`pkg/extension/Cargo.toml`、`pkg/extension/README.md`。目标包不存在 `doc.go`，因此以模块入口和 README 作为最近的包级说明。
-- Go 对照：`pkg/extension/manifest.go`、`pkg/extension/registry.go`、`pkg/extension/bootstrap_test.go`、`pkg/extension/registry_test.go`。
-- Rust 独立测试：`pkg/extension/manifest_test.rs`、`pkg/extension/bootstrap_test.rs`、`pkg/extension/registry_test.rs`；调用搜索还定位到 `event_listener_test.rs` 与 `auth_1_aster_unit_test.rs` 的相关构造路径。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/extension` 确认目标与相邻 Rust/Go 文件均入图；对 `Manifest newManifestWithSetup WithBootstrapSQL InstallDynamicPrivilegeHooks` 的 `explore` 核对了主要调用者、被调用者及测试触达，精确 `query` 将 Rust `newManifestWithSetup` 定位到 `pkg/extension/manifest.rs:226`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另行执行固定 11 章节结构检查，并人工复核本页没有把 README 约束误写成代码强制行为。

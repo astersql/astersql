@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-implementation` crate；crate 入口 `pkg/planner/implementation/lib.rs` 将私有 `datasource` 模块的公开项重新导出。它位于旧 Cascades/Memo 优化链的“逻辑规则已选出物理节点”与“Memo 对物理候选计价、剪枝并最终挂接子计划”之间：`pkg/planner/cascades/old/implementation_rules.rs` 的 `ImplTableDual`、`ImplMemTableScan`、`ImplTiKVSingleReadGather`、`ImplTableScan` 和 `ImplIndexScan` 构造这里定义的六类 Implementation。
-
-`pkg/planner/implementation/Cargo.toml` 将该目录定义为独立 library crate（`lib.rs` 为入口），没有 feature 条件；本文件直接使用 expression、meta model、planner core/base、planner memo 和 statistics 等工作区 crate。文件中没有条件编译项，也不是生成代码、门面或桩。
+为 Reader 将父代价上限按 coprocessor worker 数反向放大；其余实现沿用 `BaseImpl::GetCostLimit` 的“父上限减去已有子代价”规则。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ Reader 的 `cost_limit` 用 `f64::MAX / workers < cost_limit` 预判乘法溢出
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/implementation/datasource.go`。六类结构、构造器以及四套核心公式逐项对应：Dual/MemTable 返回零；两个 Reader 累加网络与 child 代价后除以 `DistSQLScanConcurrency`；TableScan 按顺序方向选择扫描因子；IndexScan 另加 ranges 数量乘 seek 因子；Reader 的代价上限都有溢出饱和保护。
-
 Rust 将 Go 构造器从 `logicalop.DataSource` 提取 `TableInfo`/`TblColHists` 的动作移到了调用规则中，再把拥有所有权的值显式传入；将 Go 对具体 `physicalop` 的类型断言改为 `ReaderCostPlan`、`TableScanCostPlan`、`IndexScanCostPlan` trait object。TableReader 仍以 Reader 自身计划/schema 为行宽来源，IndexReader 仍以第一个子计划/schema 为来源，这一差异由 `base_test.rs::readers_use_the_same_row_size_source_as_go` 锁定。
 
-Go 的零代价 `CalcCost` 不写 `baseImpl.cost`，Rust 宏保持相同语义；`base_test.rs::zero_cost_calc_does_not_reset_cached_cost` 验证已缓存的手工代价不会被清零。`reader_zero_workers_follow_go_float_semantics` 则验证 Rust 没有擅自把 Go 的零并发浮点行为改成错误或最小并发度。未发现专门覆盖 TableScan/IndexScan 公式的独立 Rust 测试，因此这部分一致性依据是逐行公式对照与规则接线，而不是测试证明。
+`reader_zero_workers_follow_go_float_semantics` 则验证 Rust 没有擅自把 Go 的零并发浮点行为改成错误或最小并发度。
 
 ## 扩展指南
 
@@ -82,11 +78,3 @@ Go 的零代价 `CalcCost` 不写 `baseImpl.cost`，Rust 宏保持相同语义�
 - 若改变行宽来源，需分别确认 TableReader 使用自身计划、IndexReader 使用 child 计划的设计；不能因为结构相似而合并为同一来源。
 - 测试应继续放在独立文件。优先扩展 `pkg/planner/implementation/base_test.rs`，补齐 TableScan/IndexScan 的正序、逆序、多个 range、缓存回写及 Reader 上限溢出案例；规则构造与属性匹配应放到 `pkg/planner/cascades/old/implementation_rules_test.rs`。不要把测试嵌入 `datasource.rs`。
 - 性能风险主要来自错误的行宽/因子放大、遗漏 worker 摊薄或 range seek 项；兼容风险主要来自改变零 worker、浮点特殊值、缺 child panic 或零代价缓存语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引可用；`node --file pkg/planner/implementation/datasource.rs --offset 1 --limit 500` 读取全部 276 行，并报告直接使用文件为 `pkg/planner/cascades/old/implementation_rules.rs` 和 `pkg/planner/implementation/base_test.rs`。
-- RustCodeGraph 精确查询：`query NewTableReaderImpl`、`query NewTableScanImpl`、`query NewIndexReaderImpl`、`query NewIndexScanImpl` 均同时定位 Rust 与 Go 同名构造器；对 Rust 限定符执行 callers 查询未返回边，因此又以精确引用搜索核实调用点。
-- 已读生产与配置文件：`pkg/planner/implementation/datasource.rs`、`pkg/planner/implementation/base.rs`、`pkg/planner/implementation/lib.rs`、`pkg/planner/implementation/Cargo.toml`、`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/implementation/datasource.go`。
-- 已读独立测试：`pkg/planner/implementation/base_test.rs` 的 `zero_cost_calc_does_not_reset_cached_cost`、`reader_zero_workers_follow_go_float_semantics`、`readers_use_the_same_row_size_source_as_go`；另检查 `pkg/planner/cascades/old/implementation_rules_test.rs`，当前仅覆盖 HashJoin 分支，没有数据源规则专项测试。
-- 本任务是纯文档分析，依计划不运行 Cargo。结构通过任务规定的 11 标题检查；事实通过上述符号、调用点、Go 公式和测试断言人工交叉复核。

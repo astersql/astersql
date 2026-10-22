@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`fortest.rs`](./fortest.rs) 是 `astersql-util-mock` crate 的测试上下文工厂门面。crate 根模块 [`lib.rs`](./lib.rs) 通过 `mod fortest; pub use fortest::*;` 将本文件的 `NewContext` 公开到 crate 根，使调用方可以写 `mock_crate::NewContext()`，而不必依赖内部的 `context::newContext`。
-
-文件名、注释和 Go 对照都把该 API 定位为测试辅助设施。不过 Rust 模块当前没有 `#[cfg(test)]`：只要依赖 `astersql-util-mock`，`NewContext` 就会被编译并公开。因此“仅测试使用”是 API 约定，不是 Rust 编译器强制的可见性边界。
+不过 Rust 模块当前没有 `#[cfg(test)]`：只要依赖 `astersql-util-mock`，`NewContext` 就会被编译并公开。
 
 ## 核心职责
 
@@ -58,11 +56,11 @@ RustCodeGraph 对 `fortest.rs` 的文件节点给出了“used by”边到 `go_m
 
 ## 与 Go 版本的对应关系
 
-[`fortest.go`](./fortest.go) 与本文件具有相同的核心调用链：公开 `NewContext` 直接返回私有 `newContext` 的结果。Go 返回 `*Context`，Rust 用 `Box<Context>` 表达同样的独占堆对象意图；两边都不在门面中复制初始化逻辑。
+Go 返回 `*Context`，Rust 用 `Box<Context>` 表达同样的独占堆对象意图；两边都不在门面中复制初始化逻辑。
 
 关键差异是可用范围。Go 文件带 `//go:build !codes`，并明确排除生产构建；Rust 的 `lib.rs` 当前无条件包含和再导出 `fortest`。此外，Go `context.go::newContext` 初始化更完整的正式会话设施，包括可取消的标准 context、表达式/表变更上下文以及内存和磁盘 tracker；当前 Rust `context.rs::newContext` 是按已移植 mock 能力构造的对应实现，不能据 Go 行为推断 Rust 已具备所有相同子系统。
 
-Go [`mock_test.go`](./mock_test.go) 的 `TestContext` 和 `BenchmarkNewContext` 分别对应 Rust `mock_test.rs` 的键值生命周期测试与 `benchmark_new_context` 辅助函数。Rust 还有 `migration_aster_unit_test.rs` 和 `go_merge_30_test.rs`，用于固定更多迁移后的行为。
+Rust 还有 `migration_aster_unit_test.rs` 和 `go_merge_30_test.rs`，用于固定更多迁移后的行为。
 
 ## 扩展指南
 
@@ -71,12 +69,3 @@ Go [`mock_test.go`](./mock_test.go) 的 `TestContext` 和 `BenchmarkNewContext` 
 - 修改默认值时，至少同步独立测试 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；修改键值或构造入口时同步 [`mock_test.rs`](./mock_test.rs)；修改 DistSQL 限流默认值时同步 [`go_merge_30_test.rs`](./go_merge_30_test.rs)。Rust 单元测试应继续保留在独立测试文件中，不嵌入 `fortest.rs`。
 - 若要真正强制“仅测试可见”，需要评估所有下游 crate 的使用方式后再考虑 feature 或条件编译；直接添加 `#[cfg(test)]` 会使依赖 crate 的测试也看不到该 API，因为依赖库通常不会以自身 `cfg(test)` 编译。
 - 兼容风险主要是公开函数路径、返回所有权和默认会话状态；性能风险主要来自每次调用都重新分配并初始化上下文。修改后应保留 Go 对照语义，不能用空桩替代实际构造。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 `pkg/util/mock/fortest.rs`；文件节点显示 26 行、2 个符号，并给出到 `go_merge_30_test.rs`、`migration_aster_unit_test.rs` 的使用关系。
-- RustCodeGraph `node --file`：读取了 `fortest.rs` 全文、`context.rs` 的 `newContext` 与相邻公开入口、三个相关 Rust 测试的使用场景。`query NewContext/newContext` 的结果包含定义文件路径，据此排除了仓库内其他同名符号。
-- 源码与配置：读取了 `pkg/util/mock/{fortest.rs,context.rs,lib.rs,Cargo.toml}`，确认公开再导出、真实初始化和 crate 依赖边界。
-- Go 对照：读取了 `pkg/util/mock/{fortest.go,context.go,mock_test.go}`，确认门面调用链、构建标签、初始化差异和测试意图。
-- 相关 Rust 测试：`mock_test.rs`、`go_merge_30_test.rs`、`migration_aster_unit_test.rs`。本任务为纯文档分析，按计划不运行 Cargo；测试文件仅作为现有行为证据。
-- 人工复核结论：本文件存在的原因是提供稳定公开的测试构造入口；运行时只委托真实构造器；安全扩展应优先修改 `context.rs` 并在独立测试文件中锁定默认值与边界。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core-operator-physicalop` crate，定义索引哈希连接的两套 Rust 表示：当前参与统一物理计划接口的 `PhysicalIndexHashJoin`，以及供旧式轻量计划、缓存快照和相关测试使用的 `LegacyPhysicalIndexHashJoin`。crate 边界由同目录 `Cargo.toml` 的 `[package]`、`[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/planner/core/operator/physicalop"` 确认。
-
-`lib.rs` 公开再导出 `PhysicalIndexHashJoin`，并用 `join_operator_core!(PhysicalIndexHashJoin, BasePhysicalJoin)` 将它接入 `ConcretePhysicalOperator` 和统一物理计划 trait。它是规划阶段的计划节点，不是执行器本身；执行侧会按动态类型或 `tp() == "IndexHashJoin"` 识别该节点，例如 `pkg/executor/statement_ru_plan_walk.rs`。真正的索引探测、哈希表构建和 worker 错误处理不在本文件内。
+`LegacyPhysicalIndexHashJoin` 提供可独立计算的简化节点：拼装 outer/inner 子树、估算两版成本、缓存 V1 成本并递归汇总内存。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `physical_index_hash_join.go`。两端生产结构都以 `PhysicalIndexJoin` 为基础并增加 `KeepOuterOrder`；Rust `Clone` 与 Go `Clone` 都克隆基础连接并保留该布尔值，Rust `MemoryUsage` 与 Go 都在基础估算上增加布尔字段大小。Rust 的 `Deref/DerefMut` 对应 Go 的匿名嵌入字段提升效果。
+两端生产结构都以 `PhysicalIndexJoin` 为基础并增加 `KeepOuterOrder`；Rust `Clone` 与 Go `Clone` 都克隆基础连接并保留该布尔值，Rust `MemoryUsage` 与 Go 都在基础估算上增加布尔字段大小。
 
 当前差异必须显式保留：Go 有 `Init`、`Attach2Task`、`GetCost`、`GetPlanCostVer1` 和 `GetPlanCostVer2` 的同名实现，并通过 `utilfuncp` 接入完整成本/任务逻辑；Rust 文件中这些版本仅存在于注释草稿。可编译生产类型依靠 `lib.rs` 的统一 trait 将成本调用委托到嵌入的 `PhysicalIndexJoin`，而 legacy 类型实现的是较简化的本地公式，两者不可等同。Go `Init` 分配会话 PlanID、设置上下文和 Self；Rust `New` 只覆盖类型标签并保留传入基础状态。
-
-Go 测试 `physical_utils_test.go` 证明哈希/合并变体因嵌入 `PhysicalIndexJoin` 而应被公共扫描逻辑识别。Rust 的对应直接证据是 `canonical_router_aster_unit_test.rs::canonical_router_recognizes_all_index_join_families`，以及 `cache_snapshot_test.rs` 中具体类型、`KeepOuterOrder`、键、过滤器和子节点的往返/克隆断言。
 
 ## 扩展指南
 
@@ -83,12 +79,3 @@ Go 测试 `physical_utils_test.go` 证明哈希/合并变体因嵌入 `PhysicalI
 若完善 Go 对齐接口，不应直接把注释草稿视为实现；需要核对 Go `utilfuncp` 的挂接与两版成本语义，再接入 Rust 统一 trait，避免与 `LegacyPhysicalIndexHashJoin::cost` 的简化公式重复或冲突。类型标签必须继续为 `IndexHashJoin`，并保持 `index_join_base(_mut)`、RU 遍历、缓存快照和动态类型路由可识别。
 
 测试必须放在独立文件。生产类型变更至少同步 `canonical_router_aster_unit_test.rs`、`cache_snapshot_test.rs` 和需要时的 `pkg/executor/statement_ru_plan_walk_test.rs`；legacy 组树、零并发、V1 缓存失效策略或内存公式变更，应在同目录独立测试文件增加针对性用例。性能风险主要来自成本公式和保序语义改变导致的计划选择变化；兼容风险主要来自 Go 字段语义、动态类型和缓存快照格式失配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/planner/core/operator/physicalop/physical_index_hash_join.rs` 显示目标文件含 15 个符号；`node --file ... --offset 1 --limit 400` 读取完整 223 行并报告 13 个使用文件。精确 `query` 定位了 Rust/Go 的 `PhysicalIndexHashJoin`、legacy 结构、公共再导出、缓存和执行器入口；精确 `callers/callees` 未返回方法级边，因此未据此臆造调用关系。
-- 源码与 crate：`physical_index_hash_join.rs`、同目录 `Cargo.toml`、`lib.rs`、`physical_index_join.rs`（经包装字段和公共接口引用）。
-- 直接生产接线：`lib.rs` 的 `join_operator_core!`、`index_join_base(_mut)`、`preserve_index_join_variant`；`cache_snapshot.rs` 的生产/legacy 捕获恢复；`plan_clone_generated.rs` 的 legacy 克隆；`pkg/executor/statement_ru_plan_walk.rs` 的 RU 类型识别。
-- 独立 Rust 测试：`canonical_router_aster_unit_test.rs::canonical_router_recognizes_all_index_join_families`；`cache_snapshot_test.rs::join_cached_round_trip_preserves_index_hash_children_and_properties`、`go_merge_187_join_aggregation_typed_index_cache`、`go_merge_187_join_aggregation_attach_keeps_concrete_variant`；`pkg/executor/statement_ru_plan_walk_test.rs` 的索引哈希连接槽位覆盖。
-- Go 对照与测试：`physical_index_hash_join.go`、`physical_utils_test.go`，以及执行/规划测试中对 `IndexHashJoin` 计划形状的断言。上述执行测试证明算子标签进入应用链，但执行器 worker 内部行为不属于本文件实现，本文未将其归因于此处。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；交付只执行任务指定的 11 章节结构检查、Markdown 链接/事实复查和 diff 自审。

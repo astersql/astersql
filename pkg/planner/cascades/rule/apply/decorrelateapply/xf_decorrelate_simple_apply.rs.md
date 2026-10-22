@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-rule-apply-decorrelateapply` 子 crate；其 crate 入口 `lib.rs` 将本模块公开并再导出全部符号。它实现 Cascades 逻辑变换规则 `XFDeCorrelateSimpleApply`：当 `Apply` 的内侧不再引用外侧输出列时，把 `Apply` 降为普通 `Join`，让后续连接规则和物理优化能够处理它。
-
-文件同时保留两套接口。`impl cascades_rule::Rule` 是接入真实 `BoundPlan`、`logicalop` 和 memo 的运行接口；`impl xf_decorrelate_apply_base::Rule` 及固有方法 `xform` 使用相邻基类文件中的轻量计划模型，主要用于机械迁移阶段的独立语义测试。二者实现同一判断和改写意图，但数据类型与元数据恢复方式不同，阅读时不能混为一条调用路径。
-
-规则已经由 `pkg/planner/cascades/rule/ruleset/rule_set.rs` 的 `OperandApplyRulesMap` 和 `OperandApplyRulesList` 构造并注册到 Apply 专用集合；不过 `DefaultRuleSets()` 当前仍为空，因此不能据此声称该规则已在所有默认优化流程中全局启用。
+实现 Cascades 逻辑变换规则 `XFDeCorrelateSimpleApply`：当 `Apply` 的内侧不再引用外侧输出列时，把 `Apply` 降为普通 `Join`，让后续连接规则和物理优化能够处理它。
 
 ## 核心职责
 
@@ -79,9 +75,7 @@ RustCodeGraph 对目标文件给出的文件级使用者是 `pkg/planner/cascade
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是同目录的 `xf_decorrelate_simple_apply.go`。构造 Pattern、固定规则 ID、外/内孩子顺序、相关列抽取、禁止原地修改相关列、浅复制 Join、重新分配 Cascades 元数据，以及中间 Apply 的 `remove` 语义均逐项对应。
-
-Rust 真实实现补足了 Go 代码依赖隐含前置条件的显式错误：Go 直接索引两个孩子并强制类型断言，Rust 对孩子数与根类型返回 `RuleError`。Rust 还显式恢复 schema 与 output names，并在 session context 可用时重建 Join base，以适配当前 Rust `BoundPlan`/`CopyIn` 所有权模型；这不是改变“无相关 Apply 转 Join”的规则语义。
+Rust 真实实现补足了 Go 代码依赖隐含前置条件的显式错误：Go 直接索引两个孩子并强制类型断言，Rust 对孩子数与根类型返回 `RuleError`。
 
 测试状态需要区分：Go 的 `TestXFDeCorrelateShouldDeleteIntermediaryApply` 当前开头调用 `t.Skip`，其完整优化器级断言描述普通 Apply 产生两个 memo 计划、中间 Apply 改写后只剩 Join。Rust 测试文件保留了这段未接线参考，同时另有可执行的轻量测试验证核心语义；`rule_set_aster_unit_test.rs` 还直接验证真实注册规则能把无相关 Apply 变成 Join。因此当前有规则级与注册链证据，但不能把被跳过的 Go 端完整优化器测试写成已恢复通过。
 
@@ -93,12 +87,3 @@ Rust 真实实现补足了 Go 代码依赖隐含前置条件的显式错误：Go
 - 若调整中间 Apply 标志语义，必须联动 `rule_set.rs::OperandRules::Filter`，确保只有存在等价 Join 时才请求移除旧表达式。
 - 回归测试应放在独立文件：规则局部语义扩展同目录 `xf_decorrelate_apply_test.rs`，真实注册/绑定行为扩展 `pkg/planner/cascades/rule/ruleset/rule_set_aster_unit_test.rs`；不要把测试嵌入生产 `.rs` 文件。
 - 性能上应避免遍历无关子树或深复制完整计划；正确性上重点检查 schema、output names、query block offset、孩子顺序、统计/任务缓存重置和 memo 哈希稳定性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录下识别出 Rust/Go 实现、基类及两侧测试。
-- RustCodeGraph `query`：定位 `XFDeCorrelateSimpleApply`、`new_xf_decorrelate_simple_apply`、`NewXFDeCorrelateSimpleApply`；`node --file` 完整读取目标文件，并读取 Go 对照、轻量基类、Rust 测试、Go 测试、规则集及其真实接口测试、binder 字符串测试。
-- 源与配置路径：`xf_decorrelate_simple_apply.rs`、`xf_decorrelate_apply_base.rs`、`lib.rs`、同目录 `Cargo.toml`、`xf_decorrelate_simple_apply.go`。
-- 测试路径：同目录 `xf_decorrelate_apply_test.rs` 与 `xf_decorrelate_apply_test.go`，以及 `pkg/planner/cascades/rule/ruleset/rule_set_aster_unit_test.rs`、`pkg/planner/cascades/rule/binder_test.rs`。
-- 关键调用边经 RustCodeGraph 与精确文本检索交叉核对：`OperandApplyRulesMap/List → NewXFDeCorrelateSimpleApply`，构造别名转发到 `new_xf_decorrelate_simple_apply`，真实规则测试经 `NewBinder → Rule::XForm` 产生 Join；轻量 `Rule::xform` 转发到固有 `xform`，后者调用 `extract_correlated_columns`、`shallow_ref`、`realloc_for_cascades`。
-- 本任务是纯文档分析，按计划未运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查，并人工核对“存在原因、运行流程、安全扩展”三项均有源码或测试依据。

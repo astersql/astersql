@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`planbuilder_runtime.rs` 是 `astersql-planner-core` crate 中把已解析、已解析名字的 SQL AST 转换为运行时计划的上层分派器和状态容器。crate 根在 `pkg/planner/core/lib.rs` 中以 `mod planbuilder_runtime` 纳入本文件，再通过 `pub use planbuilder_runtime::*` 对外暴露其类型和入口。`pkg/planner/core/Cargo.toml` 说明它属于 `astersql-planner-core`，并直接依赖 parser AST、InfoSchema、expression、hint、logicalop、physicalop、rule、resolve 和 planner errors 等内部 crate。
-
-在完整规划链中，`pkg/planner/optimize.rs::buildPlan` 先清理会话级瞬时状态和 Plan/Column ID，然后调用 `NewPlanBuilder().withResultSetBuilder(...).Init(...)` 与 `PlanBuilder::Build`。本文件返回 `BuiltRuntimePlan`：普通结果集语句是 `Logical`，交由上层继续逻辑/物理优化；INSERT、UPDATE、DELETE 和 EXPLAIN 是已包装或已优化的 `NonLogical`，上层直接交给执行阶段。
+提供 `RuntimeExplain`、`RuntimeExecute`、`RuntimeAnalyze`、`RuntimeSimple` 这些实现 `base::Plan` 的运行时包装，让执行器能保留 EXPLAIN 目标、prepared plan、ANALYZE 任务或原始事务控制 AST。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-主要 Go 对照是 `pkg/planner/core/planbuilder.go`，DML 的 UPDATE/DELETE 对照还在 `pkg/planner/core/logical_plan_builder.go`。Rust 的 `PlanBuilder`、`VisitInfo`、`CteInfo`、`HandleColHelper`、`NewPlanBuilder`、`Init`、`ResetForReuse`、`Build`、`buildInsert`、`buildUpdate`、`buildDelete`、`buildExplain` 都能对应 Go 同名概念或函数。Rust 保留了重要语义：从 session 初始化 no-decorrelate/semi-join 开关，UPDATE assignment 顺序重写，DELETE 列裁剪与 handle/索引布局，INSERT SELECT 的 old/new row schema，ON DUPLICATE 和 generated-column 依赖，以及 EXPLAIN 在 builder 边界完成目标优化。
-
-两版不是结构上一对一的完整复制：
+Rust 保留了重要语义：从 session 初始化 no-decorrelate/semi-join 开关，UPDATE assignment 顺序重写，DELETE 列裁剪与 handle/索引布局，INSERT SELECT 的 old/new row schema，ON DUPLICATE 和 generated-column 依赖，以及 EXPLAIN 在 builder 边界完成目标优化。
 
 - Go `PlanBuilder::Build` 直接分派管理、DDL、PREPARE/EXECUTE、SHOW、ANALYZE 等大量语句；本 Rust 文件只专项处理 INSERT/UPDATE/DELETE/EXPLAIN，其他已支持的结果集语句由 `logical_plan_builder_runtime.rs` 处理，非结果集能力不应从 Go 实现推定为 Rust 已支持。
 - Go `cteInfo` 含完整的递归计划、统计、storage ID、inline 策略和 consumer count；本文件的 `CteInfo` 只承担子查询可见性检查所需的两个标志，更完整的 Rust CTE 环境在 `logical_plan_builder_runtime::CteEnvironment`。
@@ -102,12 +98,3 @@ Rust 直接回归 `pkg/planner/core/planbuilder_runtime_test.rs::init_uses_the_s
 - 回归测试不要内嵌到本文件。初始化和局部状态对齐放在 `planbuilder_runtime_test.rs`；真实 parser AST 与 provider 边界放在 `real_result_set_builder_aster_unit_test.rs`；完整 DML/EXPLAIN 路径放在 `integration_test.rs` 或邻近独立测试文件，并与 Go 对应测试保持语义一致。
 
 主要风险是 DML 列布局与 executor 不兼容（正确性）、Go/Rust 分派差异导致功能误判（兼容性）、过早增加/删除 projection 或列使优化和索引维护退化（性能与正确性），以及在多轮优化间泄漏 builder/session 状态（稳定性）。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
-
-- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/planbuilder_runtime.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
-- 核对 `buildUpdate` 的物理计划填充；`logical_plans_test.rs` 直接断言 `update.IsMultiTable`，涵盖 SQL 到 runtime plan。Go 对照 `logical_plan_builder.go` 的 UPDATE 构建。
-- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
-- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。

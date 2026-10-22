@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`manager.rs` 是 `astersql-resourcegroup-runaway` crate 的状态中枢：它把单查询检查器需要的资源组目录、进程内 quarantine watch 列表、三类待持久化记录队列，以及对 `tidb_runaway_watch` / `tidb_runaway_watch_done` 的增量同步器集中在一个可克隆的 `Manager` 句柄中。crate 入口在 `pkg/resourcegroup/runaway/lib.rs` 中公开 `manager` 模块，并定义本文件使用的 `ResourceGroupCatalog`、`RestrictedSqlExecutor`、动作/匹配枚举和统一 `Error`。
-
-当前 Rust 应用链路是“可用组件加局部接线”，不是 Go 后台管理器的完整等价物。`pkg/domain/domain.rs::bind_runaway_manager` 可发布一个 `Arc<Manager>`，`pkg/session/runtime/scan_adapter_runtime.rs::RunawayBeforeExecutor` 会取出它并调用定义于 `checker.rs` 的 `Manager::DeriveChecker`。但是 Go `manager.go` 中的 `RunawayRecordFlushLoop`、`RunawayWatchSyncLoop` 在本文件没有对应后台任务；Rust 的手工 ADD/DROP QUERY WATCH 入口在 `pkg/executor/internal/querywatch/query_watch.rs` 仍是注释化迁移草稿。因此本文件提供同步、排队、drain 和手工持久化 API，本身不会定时调用它们。
-
-crate 清单 `pkg/resourcegroup/runaway/Cargo.toml` 指定 `lib.rs` 为入口，并用 `package.metadata.porting.go-package = "pkg/resourcegroup/runaway"` 声明 Go 对照目录。清单中的本地依赖和 dev-dependencies 当前都受 `cfg(windows)` 限制；本文件本身只直接使用标准库和同 crate 类型。
+`examineWatchList` 为 `Checker::BeforeExecutor` 提供热路径查询；`resourceGroup` 和活跃计数则供 `Checker` 校验切换目标、判断是否需要派生检查器。
 
 ## 核心职责
 
@@ -115,9 +111,6 @@ RustCodeGraph 对目标文件的 `node --file` 给出了 38 个符号和完整�
 
 ## 与 Go 版本的对应关系
 
-对应基线主要是 `pkg/resourcegroup/runaway/manager.go`，手工增删持久化逻辑位于 `record.go`：
-
-- 常量数值、三类队列、watch key、手工来源覆盖、ID 冲突处理、活跃资源组计数、同步先 new 后 done、首轮 done checkpoint overlap、按 ID 防误删，以及 flush threshold 512 均保留了 Go 意图。
 - Go 用容量 10,000 的 `ttlcache`，带 insertion/eviction 回调和自动到期；Rust 用 `Mutex<HashMap>` 手动更新计数和 stale 队列，只在同 key 插入时发现到期。自动 TTL 驱逐尚不等价。
 - Go 用三个有界 channel 和一个 select loop；Rust 用三个有界 `Vec` 加 drain API。Go 热路径的 runaway/quarantine channel send 是 non-blocking default，Rust也在满时静默丢弃；但 Go 某些 stale send 是阻塞式，而 Rust stale 队列始终不会阻塞。
 - Go `RunawayRecordFlushLoop` 会去重/合并并定期写表、GC 历史记录；Rust `manager.rs` 不创建该循环。相邻 `flusher.rs::BatchFlusher` 和 `record.rs` 提供部分构件，但目标文件未把它们装配起来。
@@ -128,7 +121,7 @@ RustCodeGraph 对目标文件的 `node --file` 给出了 38 个符号和完整�
 
 Rust 独立回归 `manager_test.rs::duplicate_and_manual_watch_replacement_match_go` 专门固定了重复 ID、手工相同 ID 和手工不同 ID 替换的 Go 语义。`checker_test.rs` 覆盖 watch 动作、切组校验、规则超限后 runaway/quarantine 排队和并发阈值状态；Go `checker_test.go::TestActiveGroupCounterOrdering` 还覆盖 counter 正反顺序及并发加减，而 Rust `checker_test.rs::active_group_counter_ordering_and_concurrency_match_go` 也覆盖 counter 顺序与并发。
 
-Go `manager.go` 的 `inNormalMode` 用于记录构造时是否启动维护并在 Stop 时决定 TTL cache 停止；Rust 保留该构造快照并提供访问器，但没有因此增加 Go 后台循环或 ttlcache。`Stop` 仍只置停止标志。
+Go `manager.go` 的 `inNormalMode` 用于记录构造时是否启动维护并在 Stop 时决定 TTL cache 停止；Rust 保留该构造快照并提供访问器，但没有因此增加 Go 后台循环或 ttlcache。
 
 ## 扩展指南
 
@@ -142,10 +135,3 @@ Go `manager.go` 的 `inNormalMode` 用于记录构造时是否启动维护并在
 - 对外增加状态或指标时优先提供只读快照，避免暴露 mutex guard；队列丢弃、watch 容量拒绝和锁中毒目前不可观测，是最值得补的运维信号。
 
 后续接入后台服务时应区分构造快照、当前诊断开关、实际 worker 状态及 stopped，不应仅凭 `inNormalMode()` 返回 true 就断言已有后台消费者。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/resourcegroup/runaway/manager.rs` 定位增量、`git show 2c944fb:pkg/resourcegroup/runaway/manager.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`checker.rs` 和 Go `manager.go` 的构造/Stop；独立 `manager_test.rs::diagnostic_mode_suppresses_runaway_manager_work` 断言普通构造 true、诊断构造 false、已有普通 manager 在诊断模式无法派生，以及 Stop 标志。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

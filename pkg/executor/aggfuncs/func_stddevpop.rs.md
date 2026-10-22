@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate（见同目录 `Cargo.toml`，库入口为 `lib.rs`），由 `lib.rs` 的 `pub mod func_stddevpop;` 对外公开。它是 Rust 侧 `STDDEV_POP`（总体标准差）的轻量收尾模块：不自行读取 SQL 行、维护聚合器或实现 `AggFunc`，而是在 `func_varpop.rs` 已完成累计/合并的方差状态上计算最终数学值。
-
-在较完整的聚合链中，`builder.rs::build` 把 `FunctionName::StddevPop` 交给 `build_variance`，后者按普通或 DISTINCT、原始或部分聚合阶段选择 `AggImplementation::StddevPop`、`StddevPopOriginalDistinct` 或 `StddevPopPartialDistinct`。`aggfuncs.rs::BuiltAggFunc::spill_function` 随后为这些实现绑定 `VarianceState` 或 `DistinctVariance`。不过，截至本次核验，生产 Rust 代码没有直接引用本文件的两个求值函数；直接调用者均为测试。因此，本文件已提供最终数学收尾能力，但从类型擦除状态到 `AggFunc::append_final_result_to_chunk` 的完整生产输出接线在当前证据中尚未实现或至少尚未接到这里。
+Rust 侧 `STDDEV_POP`（总体标准差）的轻量收尾模块：不自行读取 SQL 行、维护聚合器或实现 `AggFunc`，而是在 `func_varpop.rs` 已完成累计/合并的方差状态上计算最终数学值。
 
 ## 核心职责
 
@@ -65,11 +63,9 @@ NULL 的过滤不在本文件发生，而在 `VarianceState::update` 与 `Distin
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_stddevpop.go`。Go 的 `stdDevPop4Float64.AppendFinalResult2Chunk` 将 `partialResult4VarPopFloat64` 的中间方差除以 count 后开方；count 为零时向 chunk 追加 NULL。Rust 的 `stddev_population` 对应这段数学和空值语义，但返回 `Option<f64>`，不直接写 chunk，也没有 `AggFuncUpdateContext` 或 `error` 返回。
+Rust 的 `stddev_population` 对应这段数学和空值语义，但返回 `Option<f64>`，不直接写 chunk，也没有 `AggFuncUpdateContext` 或 `error` 返回。
 
-Go 为 DISTINCT 的 original/partial 阶段定义两个包装类型，并各自实现相同的 `AppendFinalResult2Chunk`：调用 `calculateDistinctFloat64Variance`，空集合写 NULL，否则计算 `sqrt(variance/count)`。Rust 将两阶段统一为 `DistinctVariance` 状态和 `stddev_population_distinct` 函数；`builder.rs::build_variance` 仍保留 `StddevPopOriginalDistinct` 与 `StddevPopPartialDistinct` 的阶段枚举，但 spill 时两者绑定同一具体状态。
-
-Go 测试 `func_stddevpop_test.go::TestMergePartialResult4Stddevpop` 的 0..5、2..5 及合并结果，被 Rust 测试 `merge_partial_result_matches_go_fixture` 逐项复现；`TestStddevpop` 的 NULL/空输入意图由 `stddev_population_skips_null_and_returns_null_for_empty_input` 覆盖。Rust 另测了 DISTINCT 跨分区去重以及“标准差等于总体方差平方根”。主要迁移差异是 Rust 文件目前只实现状态到数值的收尾函数，尚无直接证据表明它们已接到生产 `AggFunc::append_final_result_to_chunk`；Go 文件则是完整的最终输出实现。
+主要迁移差异是 Rust 文件目前只实现状态到数值的收尾函数，尚无直接证据表明它们已接到生产 `AggFunc::append_final_result_to_chunk`；Go 文件则是完整的最终输出实现。
 
 ## 扩展指南
 
@@ -78,13 +74,3 @@ Go 测试 `func_stddevpop_test.go::TestMergePartialResult4Stddevpop` 的 0..5、
 若要完成生产最终输出接线，应从 `builder.rs` 的 `AggImplementation::StddevPop*` 和聚合 `AggFunc` 构造/实现处接入本文件函数，确保普通、original DISTINCT、partial DISTINCT 均在最终阶段写出 `Option` 对应的值或 NULL；同时增加独立测试验证 builder 到 `append_final_result_to_chunk` 的端到端路径，而不把测试嵌入生产源文件。还需复查 spill 恢复后的最终收尾、输出列 ordinal、返回类型及内存记账。
 
 兼容性上须保持总体分母为 `N`、空输入为 NULL、DISTINCT 跨分区去重以及与 Go 浮点行为一致。性能上，普通路径应继续复用 O(1) 状态；DISTINCT 路径当前最终计算为 O(U)（U 为唯一值数），若优化缓存必须保证 merge/update 后缓存失效并维持 Go 的 ±0 与 NaN 键语义。类型别名若改为新类型会影响 builder、spill、类型擦除 downcast 和内存布局，不能只在本文件局部修改。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为 23 行模块。
-- RustCodeGraph `node --file`：阅读了 `func_stddevpop.rs`、`func_varpop.rs`、`func_stddevpop_test.rs`、`builder.rs`、`aggfuncs.rs`、`lib.rs`，确认符号定义、状态算法、构建选择、spill/merge 接线及测试模块声明。
-- RustCodeGraph `query StddevPop`、`query stddev_population` 与 `explore`：确认两个公开函数、Go 对照类型/方法、builder 枚举和测试调用者。精确 `callers` 查询在本环境中长时间无输出，因此又以全仓 `rg` 交叉核验直接引用集合。
-- Cargo 与模块边界：`pkg/executor/aggfuncs/Cargo.toml` 的 package 名为 `astersql-executor-aggfuncs`、库入口为 `lib.rs`；`lib.rs` 公开 `func_stddevpop` 并在 `#[cfg(test)]` 下声明独立的 `func_stddevpop_test`。
-- Go 对照：阅读 `func_stddevpop.go` 与 `func_stddevpop_test.go`，核对普通/DISTINCT 最终值、空输入 NULL、总体分母和 merge fixture。
-- Rust 测试证据：`func_stddevpop_test.rs` 覆盖普通 merge、NULL/空输入、DISTINCT 跨 partial 去重和方差开方关系；`func_distinct_agg_test.rs` 与 `go_scenario_coverage_test.rs` 额外覆盖 DISTINCT 方差/标准差场景。本任务依计划不运行 Cargo，测试内容仅作源码事实证据。
-- 全仓引用复核：`rg` 显示 `stddev_population*` 的 Rust 直接引用只存在于上述测试文件，故生产最终输出接线被明确标为未验证/当前未见，而没有据 Go 实现推断 Rust 已完整接线。

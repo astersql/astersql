@@ -2,23 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-expression-exprstatic` crate 的静态求值上下文。crate 入口
-`pkg/expression/exprstatic/lib.rs` 以私有模块 `evalctx` 装载它，再通过
-`pub use evalctx::*` 导出公开 API。这里的“静态”不是编译期常量，而是指上下文不依赖仍在
-变化的会话对象：SQL 表达式可以持有一份字段基本不可变、必要资源通过 `Arc` 共享的快照。
-
-`EvalContext` 位于表达式执行的基础层：上层 `ExprContext` 持有它；标量表达式、类型转换、
-错误分级、计划缓存参数和需要语句级当前时间的函数通过 `exprctx::EvalContext` trait 使用它。
-生产调用的直接例子包括 `pkg/expression/exprstatic/exprctx.rs` 中的
-`NewExprContext`、`ExprContext::LoadSystemVars` 和 `MakeExprContextStatic`，以及
-`pkg/session/runtime/planning.rs`、`pkg/session/runtime/system_session.rs`、
-`pkg/session/runtime/modify_column_backfill.rs` 等静态执行场景。
-
-`pkg/expression/exprstatic/Cargo.toml` 将本目录定义为独立 library crate，直接依赖
-`astersql-expression-exprctx`、`astersql-expression-expropt`、`astersql-types`、
-`astersql-errctx`、parser 的 MySQL/charset crate、sessionctx 的 vardef/variable crate，
-以及 `chrono`/`chrono-tz`。因此本文件既是 trait 的实现者，也是这些较低层上下文和系统变量
-组件的组合边界。
+实现 `contextutil::{WarnAppender, WarnHandler}`、`exprctx::{ParamValues,。
 
 ## 核心职责
 
@@ -189,11 +173,6 @@ RustCodeGraph 将本文件标记为被 73 个文件使用；这个数字包含�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/exprstatic/evalctx.go`，测试对照为同目录
-`evalctx_test.go`。Rust 保留了 Go 的核心结构：`timeOnce`/`TimeOnce`、私有 state、函数式 option、
-`EvalContext`、`Apply`、参数快照、系统变量加载和 `MakeEvalContextStatic`；Rust 测试名称也基本与
-Go 测试一一对应。
-
 主要语言适配和当前差异如下：
 
 - Go 用嵌入 `evalCtxState` 和接口值；Rust 用显式 `state`、trait object、`Box`/`Arc`，并通过
@@ -207,7 +186,6 @@ Go 测试一一对应。
 - Go 的 `WithParamList` 从 `PlanCacheParamList` 抽取 Datum；Rust API 直接接收 `Vec<Datum>`。
 - Go `MakeEvalContextStatic` 复用 `GetWarnHandler`；Rust trait 新增可选的
   `GetWarnHandlerArc`，有 Arc 时保留同一 handler，否则以静态 handler 包装原读取结果。
-- 两版都明确不复制 optional properties。Rust 用空 vector 表达该 TODO/边界。
 - Go 借助完整 `variable.SessionVars` 执行系统变量规范化；Rust 对关键变量显式实现解析，并对
   其余已注册变量调用临时 `SessionVars` 校验。Rust 独立测试额外固定了数值裁剪、
   `max_allowed_packet` 对齐、redact 原值保留、无关注册变量校验和默认 timestamp 懒求值。
@@ -241,26 +219,3 @@ Go 测试一一对应。
 
 性能方面，热路径访问器应继续保持简单克隆或 `Arc` 借用；不要让每次表达式求值重新解析系统
 变量、读取 session 或加全局锁。若扩展 `TimeOnce` 回调，还需评估首次调用持锁期间的阻塞。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引可用，覆盖 11,467 个文件；`files --filter
-  pkg/expression/exprstatic/evalctx.rs` 确认目标文件已索引并含 96 个符号。
-- RustCodeGraph `node --file pkg/expression/exprstatic/evalctx.rs`：完整读取 891 行生产源码，核对
-  `TimeOnce`、`EvalCtxState`、全部 option、`EvalContext`、trait impl、
-  `MakeEvalContextStatic`、`ParsedSystemVars` 和解析辅助函数。
-- RustCodeGraph 精确节点：`NewEvalContext` 的调用轨迹包含
-  `MakeEvalContextStatic` 及独立测试；`MakeEvalContextStatic` 的生产调用者为
-  `MakeExprContextStatic`；`parse_system_vars` 的调用者为 Eval/Expr 两层 `LoadSystemVars`。
-- crate 与模块证据：`pkg/expression/exprstatic/Cargo.toml`、
-  `pkg/expression/exprstatic/lib.rs`、`pkg/expression/exprstatic/exprctx.rs`。
-- Go 对照证据：`pkg/expression/exprstatic/evalctx.go` 和
-  `pkg/expression/exprstatic/evalctx_test.go`。
-- Rust 独立测试证据：`pkg/expression/exprstatic/evalctx_test.rs`，覆盖默认/全选项构造、时间
-  重试与缓存、告警共享与替换、optional properties 整体替换、Apply、参数快照、静态物化、
-  系统变量加载、默认 timestamp 懒求值、无关注册变量校验和 Go 归一化规则。
-
-本任务是纯文档分析，按计划未运行 Cargo，也未据此声称代码测试在当前环境通过。文档结构另以
-任务指定命令验证必须恰有 11 个固定二级章节；关键关系同时经图索引和上述相邻源码人工复核。

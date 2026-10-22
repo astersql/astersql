@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/executor.rs` 属于 `astersql-ddl` crate；`pkg/ddl/Cargo.toml` 以 `lib.rs` 为库入口，`pkg/ddl/lib.rs` 通过 `pub mod executor` 无条件公开本模块，并仅在 `cfg(test)` 下装配独立的 `executor_test.rs`。文件本身不是模块装配壳：它定义了一套可执行、可测试的 DDL 前端模型，包括简化的 schema 元数据、DDL job、会话状态、作业后端抽象以及大量 DDL 校验和变更入口。
-
-在完整应用架构中，它对应 Go `pkg/ddl/executor.go` 的“SQL DDL 请求转换为 job，并等待 job 完成”职责。不过当前 Rust `Executor<B>` 并不是 Go 生产 DDL 主链的等价接线：仓库中它的直接实例化集中在 `pkg/ddl/*_test.rs`，默认测试后端 `MemoryJobBackend` 也会同步完成 job；生产侧 Go 仍由 `pkg/executor/ddl.go` 调用 `pkg/ddl/executor.go`，再交给 `JobSubmitter`、owner scheduler 和 worker。因而应把本文件理解为正在移植中的、对 Go 行为进行独立验证的内存实现，而不能据其公开模块就断言 Rust 服务主链已经使用它。
-
-DDL 框架问题的答案也应据此分层：Go 生产实现是持久 job、owner failover、schema state/version 同步模型；本 Rust 文件表达了 job/state/取消/回滚等合同，但不提供持久系统表、owner 选举、真实 backfill 或跨节点 schema 同步。
+提供可独立复用的兼容性辅助函数：字符集归并、表定义/交换分区校验、匿名索引命名、UTF-8 安全的注释截断、禁止删除系统表、锁 ID 迁移、轮询策略、reorg 环境快照、多 schema change 判定、repair table ID 保留等（`executor.rs:2330-3046`）。
 
 ## 核心职责
 
@@ -93,15 +89,7 @@ job 生命周期由 backend 决定。`MemoryJobBackend` 的 current 插入和 hi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/executor.go`。Rust 的 `Executor<B>` 对应 Go `Executor` 接口加私有 `executor` 实现的一部分，但将 TiDB 的 AST、infoschema、kv/meta、sessionctx 和持久 job 类型替换成自有简化结构。
-
-保留得较明确的语义包括：
-
-- Go `DoDDLJobWrapper` 的多 schema change 收集、involving schema 校验、job query 设置、提交后记录 job ID、kill 后系统取消、history/current job 检查、磁盘满自动暂停、成功警告合并和 last DDL 信息，在 Rust `submit_simple_job_with_schema_state` / `do_ddl_job_wrapper` 中都有对应分支（Go `executor.go:7916-8158`；Rust `executor.rs:2188-2312`）。
-- Go `isRetryableDDLCancelErr` 将 finished/cannot-cancel/not-found 视为终态；Rust `CancelJobError` 和 `is_retryable_ddl_cancel_err` 保持同一分类（Go `executor.go:7927-7934`；Rust `executor.rs:785-804`）。
-- Go `setDDLJobQuery` 对 TiFlash replica status 和 unlock table 清空 query；Rust `set_ddl_job_query` 相同（Go `executor.go:8236-8245`；Rust `executor.rs:2608-2620`）。
-- Go 快/普通/慢 job 检查策略分别为 500ms、500/500/1000ms、500/500/1000/1000/3000ms，动作分类在 Rust `get_job_check_interval` 中基本对齐（Go `executor.go:8247-8305`；Rust `executor.rs:2648-2687`）。
-- Go truncate 表锁的成功提交/结束处理对应 Rust `handle_lock_on_submit` / `handle_lock_on_finish`（Go `executor.go:8177-8203`；Rust `executor.rs:2584-2606`）。
+Rust 的 `Executor<B>` 对应 Go `Executor` 接口加私有 `executor` 实现的一部分，但将 TiDB 的 AST、infoschema、kv/meta、sessionctx 和持久 job 类型替换成自有简化结构。
 
 关键差异与迁移状态：
 
@@ -119,11 +107,3 @@ job 生命周期由 backend 决定。`MemoryJobBackend` 的 current 插入和 hi
 - 改动具体 DDL 行为时按现有测试归属选择文件：库与表用 `db_test.rs`/`db_table_test.rs`，索引用 `index_change_test.rs`/`index_modify_test.rs`，外键用 `foreign_key_test.rs`，分区用 `partition_test.rs`，TiFlash 用 `tiflash_replica_test.rs`，repair 用 `repair_table_test.rs`，表锁/修改用 `table_modify_test.rs`，切分策略用 `table_split_test.rs`。
 - 如果要把本执行器接入 Rust 生产主链，不能只新增调用点：需要先明确持久 job 表、owner 单写、schema state/version 同步、通知、取消、恢复和 backfill checkpoint 的实现边界，并将 `JobBackend` 的同步合同扩展为不会忙轮询的真实等待机制。这属于超出当前单文件说明任务的独立架构工作。
 - 性能风险主要来自 `rename_tables` 和 `update_replica_status` 的全库扫描、`lock_tables` 的线性检查、忙轮询等待以及大量 clone/string args；兼容风险主要来自简化 charset/type/action/error 模型与 Go 演进漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、目标 `pkg/ddl/executor.rs` 已索引且有 275 个符号；`files --filter pkg/ddl/executor.rs` 确认唯一目标；`node --file pkg/ddl/executor.rs --offset ... --limit ...` 分段读取了全部 3,046 行。自然语言 `explore "pkg/ddl/executor.rs Executor DoDDLJobWrapper key symbols call graph"` 返回了 `Executor` 的索引位置与仓库 blast radius，但精确 snake_case method 查询没有结果，因此调用关系再由源码和限定 `rg` 核验。
-- Rust 源与装配：完整读取 `pkg/ddl/executor.rs`；读取 `pkg/ddl/Cargo.toml` 确认 crate、常规依赖、lib 入口与 Go package 移植元数据；读取 `pkg/ddl/lib.rs` 的 `pub mod executor` 和 `#[cfg(test)] mod executor_test`。
-- Rust 测试：完整读取 `pkg/ddl/executor_test.rs`。其中 7 个测试覆盖队列可见性/排序、动作与 schema state 的回滚性、truncate 锁交接、取消错误分类，以及临时取消错误重试后清理 job ID。限定代码搜索还确认了按领域拆分的相邻独立测试文件。
-- Go 对照：读取 `pkg/ddl/executor.go` 的 `Executor`/`executor` 定义、`DoDDLJobWrapper`、current/history 查询、锁迁移、完成 channel、query 设置、轮询策略和 `NewDDLReorgMeta`；同时用 `docs/agents/ddl/README.md` 定位完整生产链，但所有结论均以代码/测试复核，未把概览文档本身当实现证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构以任务指定命令检查 11 个固定二级标题。人工复核重点为：明确当前 Rust 接线状态，未把同步内存后端描述成生产持久 DDL，未宣称缺失的 owner/backfill/schema sync 已支持，并将测试建议保留在独立测试文件中。

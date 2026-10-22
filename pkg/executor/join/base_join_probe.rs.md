@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor-join` crate；`pkg/executor/join/Cargo.toml` 将 `lib.rs` 设为 crate 根，而 `pkg/executor/join/lib.rs` 以 `pub mod base_join_probe` 暴露本模块。它提供当前 Rust Hash Join probe（探测）实现共用的数据模型、状态机接口和按连接类型分派的工厂，具体算法分别落在 `inner_join_probe.rs`、`outer_join_probe.rs`、`semi_join_probe.rs`、`anti_semi_join_probe.rs` 与 `left_outer_semi_join_probe.rs`。
-
-当前接线范围需要特别区分：RustCodeGraph 将本文件识别为 413 行、53 个符号，并显示文件级使用者包括 `hash_join_v1.rs`、`hash_join_v2.rs` 和测试；但精确引用搜索表明，Rust 的 `new_join_probe`/`HashJoinContext` 目前由各 probe 独立测试构造，`hash_join_v1.rs` 与 `hash_join_v2.rs` 的可执行 Rust 部分使用各自的 `ProbeWorkerV1`/`ProbeWorkerV2` 路径，没有调用本文件的工厂。因此本文件是完整的 probe 子模块公共实现和测试入口，但不能据此声称它已经接入 Rust Hash Join v2 主执行链。Go 对照 `pkg/executor/join/base_join_probe.go` 中的 `NewJoinProbe` 则明确是 Hash Join v2 的工厂。
-
-文件没有条件编译项。测试通过 `lib.rs` 中独立的 `#[cfg(test)] mod base_join_probe_test;` 接入，测试逻辑没有内嵌在生产文件。
+`BaseJoinProbe` 保存一个 worker 当前 chunk 的序列化键、哈希、候选 build 行索引、双层游标、碰撞统计、spill 缓冲与扫描游标；具体 probe 实现复用这些状态。
 
 ## 核心职责
 
@@ -84,13 +80,13 @@ NULL join key 不进入哈希候选，符合普通等值连接的 NULL 不相等
 
 ## 与 Go 版本的对应关系
 
-Rust 名称总体一一对应：`KeyMode` 对应 `keyMode`，`BATCH_BUILD_ROW_SIZE` 对应 `batchBuildRowSize`，`Probe` 对应 `ProbeV2`，`BaseJoinProbe` 对应 `baseJoinProbe`，`new_join_probe` 对应 `NewJoinProbe`，`is_key_matched` 对应 `isKeyMatched`。连接类型到具体 probe 的映射和左外 semi 只支持右 build 的约束与 Go 保持一致；Rust 用 `Result` 报错，Go 对不支持组合 panic。
+连接类型到具体 probe 的映射和左外 semi 只支持右 build 的约束与 Go 保持一致；Rust 用 `Result` 报错，Go 对不支持组合 panic。
 
 当前 Rust 是面向 `Vec<Row>` 的安全简化实现，并非 Go 内存布局的等价替换。Go `baseJoinProbe` 处理 `chunk.Chunk` 的 selection vector、分区哈希表、tagged pointer 链、预过滤向量、列裁剪、other-condition 临时 chunk、SQL killer、真实 spill helper、恢复 chunk 的预存哈希/键和批量行列转换；Rust 上下文只保存行、键下标、普通哈希桶和 `Joiner`，恢复路径等同普通装载，spill 只返回内存行块，也没有 SQL 中断检查。
 
 Go `isKeyMatched(OneInt64)` 通过 unsafe 指针读取 8 字节，Rust 使用安全切片并为短输入返回 false。Go 的 fixed/variable 模式从 row table 元数据定位 key；Rust 函数直接接收两段字节。Go `ResetProbe` 主要重建可能影响 GC 的缓存，Rust `reset_probe` 清理当前批和统计游标，语义范围不同。
 
-最重要的迁移差异是接线：Go 注释和 `hash_join_v2.go` 调用关系将 `NewJoinProbe` 放在 v2 worker 主链；当前 Rust `hash_join_v2.rs` 自带 `ProbeWorkerV2`/`HashTableContext` 模型，没有调用本工厂。本文件及具体 probe 的测试证明局部行为，但不证明 Rust v2 主执行器使用了这套状态机。
+最重要的迁移差异是接线：Go 注释和 `hash_join_v2.go` 调用关系将 `NewJoinProbe` 放在 v2 worker 主链；当前 Rust `hash_join_v2.rs` 自带 `ProbeWorkerV2`/`HashTableContext` 模型，没有调用本工厂。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@ Go `isKeyMatched(OneInt64)` 通过 unsafe 指针读取 8 字节，Rust 使用安
 - 引入多 worker 共用 build used 标记前，应重新设计 `HashJoinContext` 所有权（例如明确的共享同步结构），并检查 outer/semi 的事后扫描；简单 clone 会产生彼此独立的标记。
 - 若要把本工厂接入 `HashJoinV2Exec`，需要明确取代还是适配现有 `ProbeWorkerV2`/`HashTableContext`，并以端到端执行器测试证明接线。仅让 `new_join_probe` 编译或增加局部测试不足以证明主链迁移。
 - 测试继续放在独立文件。公共状态/键规则放 `base_join_probe_test.rs`；具体连接输出放对应 `*_probe_test.rs`；spill 行为放 `outer_join_spill_test.rs` 等既有测试面，不把测试加入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标在索引中；`files --filter pkg/executor/join/base_join_probe.rs` 定位目标；`node --file ... --offset 1 --limit 500` 读取全部 413 行并列出文件级使用者；`query BaseJoinProbe`、`query new_join_probe`、`query set_chunk_for_probe`、`query HashJoinContext` 核对主要符号；精确 `callers/callees` 未返回可用符号边，此限制已在调用关系结论中保留。
-- 生产源码：`pkg/executor/join/base_join_probe.rs`；直接具体实现 `inner_join_probe.rs`、`outer_join_probe.rs`、`base_semi_join.rs`、`semi_join_probe.rs`、`anti_semi_join_probe.rs`、`left_outer_semi_join_probe.rs`；执行器接线核验 `hash_join_v1.rs`、`hash_join_v2.rs`；模块入口 `lib.rs`。
-- crate 边界：`pkg/executor/join/Cargo.toml` 的 `[package]`、`[lib] path = "lib.rs"` 与本地依赖声明。
-- Rust 测试：重点读取 `pkg/executor/join/base_join_probe_test.rs`；并通过精确引用核对 `inner_join_probe_test.rs`、`outer_join_probe_test.rs`、`left_outer_join_probe_test.rs`、`right_outer_join_probe_test.rs`、semi/anti 系列及 `outer_join_spill_test.rs` 对工厂和上下文的使用。
-- Go 对照：`pkg/executor/join/base_join_probe.go` 的 `ProbeV2`、`baseJoinProbe`、`SetChunkForProbe`、`SetRestoredChunkForProbe`、`SpillRemainingProbeChunks`、`ResetProbe`、`isKeyMatched`、`NewJoinProbe`；`pkg/executor/join/hash_join_v2.go` 的 worker 调用点；`pkg/executor/join/inner_join_probe_test.go` 的工厂与 probe 循环。
-- 人工复核结论：本文件存在是为了统一具体 probe 的公共状态与工厂；当前 Rust 运行方式是先预建 build 哈希桶、按 chunk 预筛候选，再由具体 probe 以可暂停游标分批输出；安全扩展必须同时维护键编码、工厂分派、状态机不变量和独立测试，并区分局部 probe 行为与 v2 主链是否已经接线。

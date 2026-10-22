@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源文件是 [`core_init.rs`](core_init.rs)，属于 `astersql-planner-core` crate。crate 根在 [`lib.rs`](lib.rs) 中以私有模块 `mod core_init` 挂载它，再通过 `pub use core_init::*` 导出两个公开函数；对应的独立测试由 `#[path = "core_init_test.rs"] mod core_init_test` 接入。crate 边界由 [`Cargo.toml`](Cargo.toml) 声明，库入口是 `lib.rs`，默认 feature 为空，`nextgen` feature 也不改变本文件的编译路径。
-
-它当前位于 Go 规划器初始化逻辑向 Rust 迁移的兼容核对层：保存 Go `pkg/planner/core/core_init.go::init` 所做 111 项接线的名称清单，但不保存或安装这些接线对应的 Rust 函数指针。因而它不是 SQL 优化主链中的回调分派器，也不能单凭名称存在证明相关规划器行为已经接通。
+`RegisteredPlannerCallbacks()` 提供注册表快照，供迁移完整性测试或诊断读取。
 
 ## 核心职责
 
@@ -63,8 +61,6 @@ Go 对照的下游依赖更广：`core_init.go::init()` 会写入 `utilfuncp`、
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`core_init.go`](core_init.go) 的包级 `init()`。Rust `CALLBACKS` 的 111 个字符串与 Go 中第一项 `hint.RegisterRestrictedHintChecker(...)` 以及其后 110 个赋值的名称和顺序完全一致。
-
 主要差异如下：
 
 - Go 在包初始化阶段自动执行，并把真实函数、绑定方法、`RootTask` 对象和 `atomic.Value` 等值写入跨包槽位；Rust 没有等价包级副作用，本文件仅在显式查询时写入字符串集合。
@@ -79,14 +75,3 @@ Go 对照的下游依赖更广：`core_init.go::init()` 会写入 `utilfuncp`、
 若目标是让 Rust 真正执行某项规划器接线，应修改该行为所属的实现模块与独立测试，并设计类型安全的函数/trait 边界；不要把字符串注册表扩展成依赖字符串分派的执行框架，除非有明确的兼容协议。若保留顺序有运行时意义，也不应从 `BTreeSet` 读取顺序，而应显式使用 `CALLBACKS` 或专门的有序结构。
 
 修改并发或错误策略时要保持 `init()` 幂等，并评估锁 poisoning、热路径写锁和快照克隆成本。任何新增公开 API 仍会经 `lib.rs` 的通配重导出暴露，应同时检查命名和 crate 边界兼容性。
-
-## 验证依据
-
-- RustCodeGraph `node --file pkg/planner/core/core_init.rs`：读取完整 163 行源码，确认 111 项常量、全局注册表和两个函数。
-- RustCodeGraph `node core_init.rs::init`、`node RegisteredPlannerCallbacks`、`callees RegisteredPlannerCallbacks`：确认 `RegisteredPlannerCallbacks -> init -> CALLBACKS/REGISTRY`，以及测试调用者。
-- RustCodeGraph `node --file pkg/planner/core/lib.rs`：确认私有模块声明、公开重导出和独立测试挂载位置。
-- [`Cargo.toml`](Cargo.toml)：确认 crate 名称 `astersql-planner-core`、`lib.rs` 入口、feature 边界及 Go 包迁移元数据。
-- [`core_init.go`](core_init.go)：核对 Go 包级初始化的真实赋值目标、对象初始化和跨包依赖。
-- [`core_init_test.rs`](core_init_test.rs)：确认 111 项覆盖断言、哨兵名称和重复查询幂等性。
-- 名称对照检查分别从 Rust 字符串列表与 Go 注册调用/赋值中提取 111 项，按顺序比较退出码为 0。
-- 本任务是纯文档分析，未运行 Cargo；结构验证按任务文件给出的 11 个固定标题命令执行。

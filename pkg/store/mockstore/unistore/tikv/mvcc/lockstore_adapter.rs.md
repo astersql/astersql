@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore-tikv-mvcc` crate 内的源码复用适配层，而不是一份新的锁存储实现。crate 入口 `pkg/store/mockstore/unistore/tikv/mvcc/lib.rs` 通过 `#[path = "lockstore_adapter.rs"] pub mod lockstore;` 将它公开为 `crate::lockstore`；本文件再用四个 `#[path]` 模块声明，把上两级目录 `pkg/store/mockstore/unistore/lockstore/` 中的 `arena.rs`、`iterator.rs`、`load_dump.rs` 和 `lockstore.rs` 编入当前 crate，并统一公开再导出。
-
-因此，同一套锁存储源码既可由其原 crate 使用，也能在 MVCC crate 中以 `crate::lockstore::{MemStore, Hint, Iterator, ...}` 访问。这里的作用是解决 crate 边界和模块路径接线，真实数据结构与算法均位于上述四个被挂载文件中。
+保持单一实现来源：本文件不复制 `MemStore` 算法，不增加包装调用，也不保存运行时状态；MVCC 看到的行为就是被挂载 Rust 文件当前实现的行为。
 
 ## 核心职责
 
@@ -74,14 +72,14 @@ arena 块在节点删除后不会立即复写。当块引用计数归零且曾�
 
 ## 与 Go 版本的对应关系
 
-仓库中没有与 `lockstore_adapter.rs` 同名的 Go 适配文件，因为 Go 包可直接导入 `pkg/store/mockstore/unistore/lockstore`；本文件是 Rust crate 拆分后为复用该包移植源码而新增的接线层。实际语义逐文件对应：
+仓库中没有与 `lockstore_adapter.rs` 同名的 Go 适配文件，因为 Go 包可直接导入 `pkg/store/mockstore/unistore/lockstore`；本文件是 Rust crate 拆分后为复用该包移植源码而新增的接线层。
 
 - `arena.rs` 对应 `arena.go`：地址编码、8 字节对齐分配、块增长与 100 ms 延迟复用一致。Rust 用 `Arc<arenaBlock>`、`Cell/UnsafeCell` 和显式 `Send/Sync` 表达 Go 指针共享及单写假设。
 - `iterator.rs` 对应 `iterator.go`：定位规则一致，Rust 返回借用切片并在内部 `Vec` 中缓存副本；Go 使用复用切片。
 - `load_dump.rs` 对应 `load_dump.go`：文件格式和临时文件 rename 流程一致。Rust 使用 `Option<Vec<u8>>` 表示 Go 的 `nil`，并保留 Go 中成功 Close 覆盖先前读取错误的可观察行为。
 - `lockstore.rs` 对应 `lockstore.go`：均为单写多读、可复用 arena 的跳表。Rust 用 `Box`/原始指针/原子类型实现 Go 的指针布局与原子发布，并以 `Drop` 集中回收当前及退休 arena 定位器。
 
-`lockstore/lockstore_test.go` 与 `lockstore/lockstore_test.rs` 保持 CRUD、替换、hint、迭代和并发工作负载对应；Go 因 #26235 跳过不稳定迭代器测试，Rust 对应测试也标记 `#[ignore]`。额外的 Rust `lockstore/migration_aster_unit_test.rs` 用较小、确定性的用例覆盖 arena、边界定位、dump/load 和单写多读语义。
+额外的 Rust `lockstore/migration_aster_unit_test.rs` 用较小、确定性的用例覆盖 arena、边界定位、dump/load 和单写多读语义。
 
 ## 扩展指南
 
@@ -91,14 +89,3 @@ arena 块在节点删除后不会立即复写。当块引用计数归零且曾�
 - 扩展迭代器时覆盖空表、首尾、相等/非相等 Seek、越界和空 key 约束；扩展持久化格式时覆盖旧文件兼容、截断项、临时文件失败与原子替换语义。
 - 改动 `unsafe` 内存布局、原子发布或 arena 回收时，应重点评估节点对齐、旧定位器生命周期、读者悬空指针和 100 ms 复用窗口；这些属于正确性与数据损坏风险，而非单纯性能优化。
 - 若 MVCC 需要不同于独立 lockstore crate 的行为，应先明确是否仍能共享源码。通过条件编译或适配 trait 隔离差异通常比在本文件静默覆盖符号更可审计。
-
-## 验证依据
-
-- 目标与模块入口：`pkg/store/mockstore/unistore/tikv/mvcc/lockstore_adapter.rs`、`pkg/store/mockstore/unistore/tikv/mvcc/lib.rs`。
-- crate 声明：`pkg/store/mockstore/unistore/tikv/mvcc/Cargo.toml`，确认包名、`lib.rs` 入口、依赖与无 feature 条件。
-- 被挂载 Rust 实现：`pkg/store/mockstore/unistore/lockstore/arena.rs`、`iterator.rs`、`load_dump.rs`、`lockstore.rs`。
-- MVCC 直接入口与测试：`pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs`、`pkg/store/mockstore/unistore/tikv/mvcc/migration_aster_unit_test.rs`。
-- 独立 Rust 测试：`pkg/store/mockstore/unistore/lockstore/lockstore_test.rs`、`load_dump_test.rs`、`migration_aster_unit_test.rs`；它们覆盖 CRUD、替换、hint、迭代边界、dump/load、截断文件与并发读取。
-- Go 对照：`pkg/store/mockstore/unistore/lockstore/arena.go`、`iterator.go`、`load_dump.go`、`lockstore.go`、`lockstore_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点与 1,848,419 条边；`files --filter .../lockstore_adapter.rs` 与文件 `node` 显示本适配文件共 22 行、1 个符号且无自身调用者；`node` 核对了 `mvcc/lib.rs` 的模块挂载、四个共享实现及 `db_writer.rs` 的消费关系。对常见名 `MemStore`/`NewMemStore` 的 `query` 同时找到 Go 与 Rust 定义，确认对应位置；一次无文件限定的 `callers NewMemStore` 查询因同名图规模过大而中止，调用关系改由精确文件节点和仓库引用核验，未据此推断额外调用者。
-- 本任务按计划仅做静态事实与文档结构验证，不运行 Cargo；运行时代码未发生变化。

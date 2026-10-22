@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 statistics 子系统的专用日志构造层，位于独立 crate `astersql-statistics-handle-logutil` 中。crate 入口 [`lib.rs`](lib.rs) 以 `stats_logutil` 模块加载本文件，并把其中公开函数重新导出；底层 `Logger`、`LogField`、后台 logger 与详细错误 logger 来自路径依赖 `astersql-util-logutil`（见 [`Cargo.toml`](Cargo.toml)）。因此它不负责格式化、落盘或日志级别过滤，而是在通用日志设施上统一附加 statistics 分类并提供固定采样策略。
-
-当前 Rust 调用链已经接入自动分析相关路径：`pkg/statistics/handle/autoanalyze/exec/exec.rs` 使用 `StatsLogger` 记录版本改写、执行失败、时间窗口解析失败和超窗终止；`pkg/statistics/handle/autoanalyze/priorityqueue/job.rs::IsValidToAnalyze` 使用两个采样入口记录历史查询失败和冷却跳过。RustCodeGraph 还显示同目录迁移测试和 `job_test.rs` 是直接调用者。
+用私有辅助函数 `with_stats_category` 给通用 logger 固定追加 `category=stats`，使 statistics 日志可被检索、过滤和归类。
 
 ## 核心职责
 
@@ -84,17 +82,15 @@ Go 版本的调用面远大于当前 Rust 图中已接线范围，例如 statist
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`logutil.go`](logutil.go)。API 名称、返回目的和固定参数逐项对应：
-
 - Go `StatsLogger` 使用 `BgLogger().With(category=stats)`；Rust 使用 `background_logger()` 加同名同值字段。
 - Go `StatsErrVerboseLogger` 使用 `ErrVerboseLogger()`；Rust 使用 `err_verbose_logger()`，都用于保留更详细的错误信息。
 - Go `sampleLoggerFactory` 使用 5 分钟、首条阈值 1；Rust `StatsSampleLogger` 使用 300 秒和 1。
 - Go `sampleErrVerboseLoggerFactory` 使用 10 分钟、首条阈值 1；Rust详细错误采样入口使用 600 秒和 1。
 - Go 工厂通过闭包内 `sync.Once` 复用单个 zap logger；Rust通过函数内 `OnceLock<Logger>` 复用单个模板，并借助 `Arc` 保持共享采样状态。
 
-两侧都附加 `sampled=""` 标记并按级别、消息采样。需要保留的已知差异是：Go 使用 zap sampler，且其工厂注释声明最多 4096 类日志；Rust 使用自有 `HashMap` 采样器，当前源码没有对应容量限制。此外 Rust 返回拥有所有权的可克隆值，Go 返回 `*zap.Logger` 指针，但两者都让调用方链式追加字段而不改写全局模板。
+需要保留的已知差异是：Go 使用 zap sampler，且其工厂注释声明最多 4096 类日志；Rust 使用自有 `HashMap` 采样器，当前源码没有对应容量限制。此外 Rust 返回拥有所有权的可克隆值，Go 返回 `*zap.Logger` 指针，但两者都让调用方链式追加字段而不改写全局模板。
 
-同目录没有 Go `*_test.go`；Go 采样工厂的行为由 `pkg/util/logutil/log_test.go::TestSampleLoggerFactory` 验证。Rust 的同目录独立测试 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 验证四个入口的分类字段、采样字段、共享实例效果和“窗口内只保留第一条”。
+Rust 的同目录独立测试 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 验证四个入口的分类字段、采样字段、共享实例效果和“窗口内只保留第一条”。
 
 ## 扩展指南
 
@@ -106,13 +102,3 @@ Go 版本的调用面远大于当前 Rust 图中已接线范围，例如 statist
 - 若只是接入新的 statistics 子系统调用点，消费本 crate 的公开函数并在调用方 Cargo manifest 增加路径依赖即可；不要复制 logger 构造逻辑。
 
 兼容性风险主要是字段名/值、采样窗口与基础日志族变化会改变日志检索和告警可见性；性能风险主要是动态消息扩大采样键集合，以及大量并发写入竞争共享 sampler mutex。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标目录的 `logutil.rs` 被识别为 6 个符号，并被 4 个文件使用。
-- RustCodeGraph `node` 证据：`StatsLogger` 的生产调用者为 `execOptionForAnalyzeVersion`、`AutoAnalyze`、`CheckAutoAnalyzeWindow`、`KillAutoAnalyzeOutsideWindow`；`StatsSampleLogger` 与 `StatsErrVerboseSampleLogger` 的生产调用者包含 `IsValidToAnalyze`；两个基础入口都调用 `with_stats_category`，两个采样入口分别调用对应基础入口。
-- 已读实现与装配：[`logutil.rs`](logutil.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、`pkg/util/logutil/log.rs`。
-- 已读 Go 对照与基础测试：[`logutil.go`](logutil.go)、`pkg/util/logutil/log.go`、`pkg/util/logutil/log_test.go::TestSampleLoggerFactory`。
-- 已读 Rust 独立测试和真实调用测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、`pkg/statistics/handle/autoanalyze/priorityqueue/job_test.rs::cooldown_matches_go_branches_and_query_order`，并核对 `pkg/statistics/handle/autoanalyze/exec/exec.rs` 与 `priorityqueue/job.rs::IsValidToAnalyze`。
-- 目标目录不存在 `doc.go`，因此没有可补读的 package contract；本说明以实际 Rust/Go 源码、Cargo 清单、调用边和独立测试为准。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行固定 11 章节结构检查及文档适用的仓库 Ready 检查。

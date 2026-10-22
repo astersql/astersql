@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的 `runtime` 私有模块；模块由 `pkg/session/runtime.rs` 通过 `mod ttl_timer` 装配，文件内可见性均限制为当前父模块（`pub(super)`）或文件内部。它把两条链路连接起来：一条是把当前 InfoSchema 中的 TTL 表/分区同步成 `mysql.tidb_timers` 记录，另一条是实现通用 timer runtime 的 `Hook`，把被触发的 timer event 转换成一次 TTL job 并跟踪到完成。
-
-生产接线位于 `pkg/session/runtime/ttl_runtime.rs`：`start_domain_ttl_job_manager_with_interval` 每轮从同一 InfoSchema 快照收集 `TtlSchedule`，调用 `sync_ttl_timers`，随后以 `TIMER_KEY_PREFIX` 构建 timer runtime，并把 `SqlTtlTimerHook::new` 注册到 `TIMER_HOOK_CLASS`（`tidb.ttl`）。`run_ttl_tick_inner` 在没有指定单个 event 时也调用同步函数。因此本文件不是独立调度器；定时扫描、hook 派发和 timer 表存储分别由 `astersql-timer-runtime`、`astersql-timer-api` 和 session 侧 table store 承担。
-
-`pkg/session/Cargo.toml` 声明 crate 名为 `astersql-session`，直接依赖 `astersql-domain`、`astersql-timer-api`、`astersql-timer-runtime`、`astersql-timer-tablestore`、`astersql-ttl-ttlworker`、`astersql-sessionctx-vardef`、`serde_json` 与 `chrono`。本文件没有条件编译项，`nextgen` feature 也没有改变这里的代码路径。
+把两条链路连接起来：一条是把当前 InfoSchema 中的 TTL 表/分区同步成 `mysql.tidb_timers` 记录，另一条是实现通用 timer runtime 的 `Hook`，把被触发的 timer event 转换成一次 TTL job 并跟踪到完成。
 
 ## 核心职责
 
@@ -95,8 +91,6 @@ RustCodeGraph 对 `sync_ttl_timers` 给出的直接 caller 包括 `run_ttl_tick_
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/ttl/ttlworker/timer.go` 和 `pkg/ttl/ttlworker/timer_sync.go`。
-
 - Rust `SqlTtlTimerHook` 对应 Go `ttlTimerHook`；`OnPreSchedEvent` 都检查全局开关、时间窗口和表/物理表是否可提交，拒绝时延迟一分钟。Rust 直接从 Domain InfoSchema 收集 schedule，Go 通过 `TTLJobAdapter.CanSubmitJob`；Rust 的非法 timer data 返回错误，Go 版本记录错误后以一分钟 delay 返回。
 - Rust `OnSchedEvent` 对应 Go 同名方法及 `waitJobFinished`：先复用已有 job 或提交新 job，再等待终态、更新 watermark 与 summary。Rust 把提交和等待放在同一个命名线程，Go 在回调线程提交后另起 goroutine 等待；两者的 Stop 都会取消并等待自有后台任务。
 - Rust 以 `mysql.tidb_ttl_job_history` 直接实现 `GetJob` 语义，并通过 `run_ttl_event` 实现提交；Go 将两者抽象为 `TTLJobAdapter`。Rust 额外用 event ID 查询终态，使回调重入时可跳过重复执行。
@@ -104,7 +98,7 @@ RustCodeGraph 对 `sync_ttl_timers` 给出的直接 caller 包括 `run_ttl_tick_
 - Go 创建 timer 时遵循 `TTLInfo.Enable`，而 Rust 输入 `TtlSchedule` 已代表当前可调度对象，创建和更新时固定启用；消失对象由随后禁用/延迟删除路径处理。
 - watermark 兼容点在 Rust 源码中特别标注：Go 的零 `time.Time` 会使新 timer 立即调度；Rust 通用 timer 对 `NULL` 不调度，所以 Rust 写入 1970 年非空值。
 
-Go 测试 `pkg/ttl/ttlworker/timer_test.go` 覆盖 pre-schedule 守门、提交错误、复用已有 job、无效/禁用/过旧事件保留 watermark、timer 被删或 event ID 改变时退出、完成关闭失败重试以及 stop 等待；`pkg/ttl/ttlworker/integrationtest/timer_sync_test.go` 覆盖同步器的创建、更新、cache 与延迟删除。它们是移植语义的重要对照，但不是 Rust 测试的替代品。
+它们是移植语义的重要对照，但不是 Rust 测试的替代品。
 
 ## 扩展指南
 
@@ -115,12 +109,3 @@ Go 测试 `pkg/ttl/ttlworker/timer_test.go` 覆盖 pre-schedule 守门、提交�
 - 调整轮询/超时时间时，应区分三个概念：触发前一分钟 delay、事件未提交的 600 秒保护、完成状态的 10 秒轮询。缩短时间会增加系统表和 timer store 压力；改变旧 watermark/新 watermark 选择会影响漏跑或重复跑风险。
 - 引入更多并发时要保持 `Stop` 能唤醒并 join 所有本文件创建的任务，并评估同一 timer/event 的重复线程。若改为 async task，需同步 timer runtime 的阻塞/异步边界，不能只替换 `std::thread`。
 - 本文件属于 session crate 私有实现；如果要暴露跨 crate API，应优先在 `astersql-ttl-ttlworker` 或 timer API 中定义稳定边界，而不是扩大 `pub(super)` 可见性。
-
-## 验证依据
-
-- 目标源码：`pkg/session/runtime/ttl_timer.rs`，核对了全部 387 行；主要符号为 `SqlTtlTimerHook`、`timer_ids`、`pre_schedule_delay`、`job_status`、`Hook::{Start, Stop, OnPreSchedEvent, OnSchedEvent}`、`sync_ttl_timers`，文件内无条件编译项。
-- RustCodeGraph：`status` 显示目标位于已建立索引的 7,032 个 Rust 文件中；`files --filter pkg/session/runtime/ttl_timer.rs` 确认单一文件；`node --file ...` 读取全文件；`node sync_ttl_timers` 确认 caller 包括 `run_ttl_tick_inner` 和相关 runtime 测试；`node OnPreSchedEvent`/`node OnSchedEvent` 确认 trait worker 调用及本实现下游；`node job_status`、`node timer_ids`、`node pre_schedule_delay` 核对内部调用边。独立 `callers` 命令未返回结果，因此没有把该次空输出当作证据。
-- crate 与模块：`pkg/session/Cargo.toml`、`pkg/session/runtime.rs`、`pkg/session/runtime/ttl_runtime.rs`；核对了 crate 归属、直接依赖、模块声明、同步调用、hook factory 注册与 owner 生命周期。
-- Rust 独立测试：`pkg/session/runtime/ttl_timer_test.rs` 覆盖跨午夜窗口、全局关闭、表不存在、timer 创建/interval 更新、扩展字段保留、禁用和重新启用；`pkg/session/runtime/ttl_runtime_test.rs` 还包含 hook 提交/关闭事件、两个 manager 与接管、watermark/summary 等集成式场景。
-- Go 对照：`pkg/ttl/ttlworker/timer.go`、`pkg/ttl/ttlworker/timer_sync.go`、`pkg/ttl/ttlworker/timer_test.go`、`pkg/ttl/ttlworker/integrationtest/timer_sync_test.go`；核对 hook 生命周期、守门、job 等待、timer 同步及延迟删除语义。
-- 本任务为纯文档分析，按计划未运行 Cargo 或代码测试。交付验证只执行任务指定的 11 章节结构检查，并人工检查本说明能回答文件存在原因、运行流程和安全扩展位置。

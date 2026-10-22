@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`builtin_func_param.rs` 是 `astersql-expression` crate 内一个小型、类型化的内置函数参数规约器。它把“参数未提供、常量、已经批量求值的列、求值失败”四类输入统一成可按行读取的 `FuncParam<T>`，对应 Go `pkg/expression/builtin_func_param.go` 的 `funcParam`、`buildStringParam` 和 `buildIntParam` 概念。
-
-crate 根 `pkg/expression/lib.rs` 通过 `#[path = "builtin_func_param.rs"] mod builtin_func_param_kernel;` 装入该文件，但没有把它作为正式公共 API 再导出。当前唯一的再导出位于 `#[cfg(test)] mod expression_encryption`，供独立测试 `pkg/expression/builtin_encryption_11_aster_unit_test.rs` 使用。仓库精确引用搜索没有发现生产 Rust 调用者，因此它目前是已装配、已测试但尚未接入 Rust 正则/ILIKE 执行链的迁移实现，不能据此声称 Go 的生产调用链已经移植完成。
-
-`pkg/expression/Cargo.toml` 声明包名为 `astersql-expression`、库入口为 `lib.rs`、`autotests = false`，并用 porting metadata 指向 Go 包 `pkg/expression`。本文件的非标准库直接依赖只有 manifest 中的 `thiserror = "2"`。
+把“参数未提供、常量、已经批量求值的列、求值失败”四类输入统一成可按行读取的 `FuncParam<T>`，对应 Go `pkg/expression/builtin_func_param.go` 的 `funcParam`、`buildStringParam` 和 `buildIntParam` 概念。
 
 ## 核心职责
 
@@ -90,7 +86,7 @@ NULL 的表达能力有意受限：`Constant(None)` 能表示常量 SQL NULL并�
 - Go 用 `ConstLevel() >= ConstOnlyInContext` 在每次求值上下文内判断常量，并把非常量表达式求值到分配器提供的 `chunk.Column`；Rust 当前把分类、求值、NULL 列和缓冲生命周期全部移到 `ParamSource` 生产者之外。
 - Go `setStrVal`、`setCol` 支持 ILIKE 对常量或列进行小写转换并替换存储；Rust 目标 `FuncParam` 没有可变 setter。Go 的 `getCol` 还服务于 NULL 合并、记忆化判断和缓冲归还；Rust 的 `column()` 只暴露只读 `&[T]`。
 
-上述差异说明 Rust 文件保留了参数规约的核心控制流，但尚不是 Go 实现的完整生产替代品。尤其不能用现有测试推断向量 NULL、分配器复用、ILIKE 变换或正则执行已经对齐。
+上述差异说明 Rust 文件保留了参数规约的核心控制流，但尚不是 Go 实现的完整生产替代品。
 
 ## 扩展指南
 
@@ -106,14 +102,3 @@ NULL 的表达能力有意受限：`Constant(None)` 能表示常量 SQL NULL并�
 6. 对照 `pkg/expression/builtin_regexp_test.go` 的 REGEXP_LIKE/INSTR/SUBSTR/REPLACE 向量用例，以及 `builtin_ilike_vec.go` 的常量/列组合，验证真实函数行为，而不能只保留当前构建器单元测试。
 
 任何扩展都应继续保持源文件与 Rust 测试分离，并同步核对 Go 的具体调用点和缺省值。若只是增加公开性，还需先证明有生产调用者；不应为了“看起来已接线”而无条件从 crate 根再导出未使用 API。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/expression/builtin_func_param.rs --offset 1 --limit 400` 完整读取了目标文件 138 行及其装配使用概览。
-- RustCodeGraph：`query` 精确定位 `FuncParam`、`build_param`、`build_string_param`、`build_int_param`；`callees` 确认两个公开构建器均只调用私有 `build_param`。图工具对路径限定符存在候选合并，因此生产引用结论又用精确文本搜索复核。
-- Rust 源与装配：读取 `pkg/expression/lib.rs` 中 `builtin_func_param_kernel` 装入、`expression_encryption` 测试门面和 `builtin_encryption_11_aster_unit_test.rs` 测试模块声明；目标包没有 `pkg/expression/doc.go`。
-- Cargo：读取 `pkg/expression/Cargo.toml`，核对 crate 名、`lib.rs` 入口、关闭自动测试发现、`thiserror` 依赖和 `go-package = "pkg/expression"` 的移植边界。
-- Rust 测试：读取 `pkg/expression/builtin_encryption_11_aster_unit_test.rs::grouping_fts_and_function_parameters_preserve_go_control_flow`，核对常量广播、常量 NULL、缺省整数、列成功/越界和求值错误；精确引用搜索确认这是当前唯一 Rust 消费点。
-- Go 对照：完整读取 `pkg/expression/builtin_func_param.go`；检索并读取其直接调用/资源关系，证据来自 `pkg/expression/builtin_regexp.go`、`builtin_ilike_vec.go`、`builtin_regexp_util.go` 及相关 `builtin_regexp_test.go` 用例位置。
-- 迁移边界：读取 `pkg/expression/builtin_regexp_util.rs`，确认其中存在另一套 `FuncParam<T>`、`Column<T>` 与 `BufferAllocator<T>`，且目标文件没有与其建立类型或调用连接。
-- 本任务为纯文档分析，依计划未运行 Cargo。本文内容已人工复核，不把 Rust 测试门面、Go 生产调用链或相邻正则辅助模型误写为目标文件的生产接线。

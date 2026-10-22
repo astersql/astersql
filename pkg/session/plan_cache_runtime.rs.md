@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`plan_cache_runtime.rs` 属于 `astersql-session` crate；crate 根在 `pkg/session/Cargo.toml` 中以 `lib.rs` 声明，`pkg/session/lib.rs` 公开导出 `plan_cache_runtime` 模块，并把独立测试文件 `plan_cache_runtime_test.rs` 仅在测试构建中接入。该文件本身不执行 SQL，也不实现缓存算法，而是集中定义 Prepare/Execute 计划缓存运行时在 session 层交换的四个数据结构。
-
-直接使用点位于 `pkg/session/runtime.rs` 及其子模块：`runtime/planning.rs` 负责创建和消费这些结构，`runtime/session.rs` 把预处理状态与最近一次计划快照保存在会话状态中，`runtime/typed_adapter_bridge.rs` 把同一份物理计划交给标准执行适配器。因而它位于“预处理语句状态/规划器计划缓存”与“KV 或适配器执行”之间的数据边界，而不是缓存实现的入口。
+直接使用点位于 `pkg/session/runtime.rs` 及其子模块：`runtime/planning.rs` 负责创建和消费这些结构，`runtime/session.rs` 把预处理状态与最近一次计划快照保存在会话状态中，`runtime/typed_adapter_bridge.rs` 把同一份物理计划交给标准执行适配器。
 
 ## 核心职责
 
@@ -78,9 +76,8 @@ range 超过 `tidb_opt_range_max_size` 是可恢复的缓存回退而非查询�
 
 ## 与 Go 版本的对应关系
 
-仓库不存在 `pkg/session/plan_cache_runtime.go`，因此不能声称 Rust 四个结构与某个 Go 文件逐项对应。`pkg/session/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/session"` 表明 crate 的整体 Go 来源；职责上的直接对照分散如下：
+仓库不存在 `pkg/session/plan_cache_runtime.go`，因此不能声称 Rust 四个结构与某个 Go 文件逐项对应。
 
-- Rust `PreparedPlannedKVSelect::Statement` 对应 Go `pkg/session/session.go::ExecutePreparedStmt` 取得并校验的 `*plannercore.PlanCacheStmt`，两者都把已 Prepare 描述交给执行路径。
 - Rust `PlanPreparedPlannedKVSelect` 的“预处理、键生成、参数类型匹配、命中调整或生成新计划”流程，对应 Go `pkg/planner/core/plan_cache.go::GetPlanFromPlanCache`。Rust 当前聚焦计划型 KV `SELECT`，不是 Go 通用 prepared/non-prepared 执行入口的完整替代。
 - Rust `CachedValue`/`PendingCache` 对应 Go `PlanCacheValue` 与 plan cache 的查找、生成和写入职责；Rust 把新条目延迟到执行成功后准入，这是本运行时适配层显式表达的生命周期。
 - Rust `FinishPreparedKVPhysicalPlan` 对命中项调用 `UpdateRuntimeInfo`，语义可由 Go `pkg/planner/core/plan_cache_utils.go::PlanCacheValue.UpdateRuntimeInfo` 核对：累计执行次数、processed/total keys、延迟并更新时间。当前 Rust 调用把 scanned rows 同时作为 processed/total keys，latency 传 0，这是已实现事实，不代表 Go 完整统计粒度均已移植。
@@ -99,12 +96,3 @@ range 超过 `tidb_opt_range_max_size` 是可恢复的缓存回退而非查询�
 扩展计划快照时，应修改 `collect_process_plan_snapshot` 并说明遍历顺序和哪些节点产生额外数据；不要假设 `Operators` 与 `IndexRanges` 一一对应。新增公开字段还需评估 crate 外 API 兼容性及克隆成本，尤其是行集、字符串和大型计划诊断数据。
 
 性能风险集中在计划克隆/恢复、快照字符串生成、参数类型匹配与大 range；正确性风险集中在缓存键遗漏、InfoSchema 版本、事务/隔离读环境和失败执行误准入；兼容性风险集中在 Go 完整计划缓存语义与 Rust 当前计划型 KV `SELECT` 子集之间的差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引可用（11,467 files、307,296 nodes、1,848,419 edges）；`node --file pkg/session/plan_cache_runtime.rs` 读取完整 76 行源码，并报告四个直接使用文件；对 `ProcessPlanSnapshot`、`PreparedPlannedKVResult`、`PreparedKVPhysicalPlan`、`PreparedPlannedKVSelect` 执行了 `query`、`callers`、`callees`。类型节点没有函数调用边，因此再按图未覆盖规则核对直接文本使用点。
-- 源码与装配：`pkg/session/plan_cache_runtime.rs`；`pkg/session/lib.rs` 的模块声明与独立测试声明；`pkg/session/runtime.rs` 的导入；`pkg/session/runtime/session.rs::RuntimeSessionState`；`pkg/session/runtime/planning.rs::{collect_process_plan_snapshot, PreparePlannedKVSelect, PlanPreparedPlannedKVSelect, FinishPreparedKVPhysicalPlan, ExecutePreparedPlannedKVSelect, ExecutePreparedPlannedKVSelectThroughAdapter}`；`pkg/session/runtime/typed_adapter_bridge.rs::{BoundPhysicalPlan, PreparedResultMetadata, BindPreparedPlannedKVSelect}`；`pkg/session/runtime/scan_adapter_runtime.rs::FinalizePreparedExecution`。
-- crate/依赖：`pkg/session/Cargo.toml` 的 `[package]`、`[lib]`、`[features]`、`[package.metadata.porting]` 及相关普通依赖。`nextgen` feature 不对本文件做条件编译。
-- Rust 独立测试：`pkg/session/plan_cache_runtime_test.rs` 中覆盖索引 reader/lookup、跨会话缓存恢复、参数绑定不读取 KV、成功后延迟准入、range 超额跳过缓存、编译内存配额释放的测试；另核对 `pkg/session/runtime_test/typed_adapter_bridge.rs`、`pkg/session/tests/paging_rpc.rs`、`pkg/session/tests/system_session.rs` 和 `pkg/session/runtime/scan_adapter_runtime_test.rs` 的直接调用。
-- Go 对照：`pkg/session/session.go::{GetSessionPlanCache, ExecutePreparedStmt, rebuildFromPrepareCache}`；`pkg/planner/core/plan_cache.go::{GetPlanFromPlanCache, lookupPlanCache, clonePlanForInstancePlanCache}`；`pkg/planner/core/plan_cache_utils.go::{PlanCacheValue, UpdateRuntimeInfo}`。没有发现同路径 `pkg/session/plan_cache_runtime.go`，故文档只作职责级对照。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核唯一新增生产物、无源代码修改、无整段源码复制以及所有“已支持”结论均有上述路径或符号依据。

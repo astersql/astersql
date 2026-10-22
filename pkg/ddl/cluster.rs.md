@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`cluster.rs` 位于 `astersql-ddl` crate，模块由 `pkg/ddl/lib.rs` 的 `pub mod cluster` 公开。它描述 `FLASHBACK CLUSTER` 的核心数据、设置快照和一个简化的内存状态机，用来表达“关闭集群写相关机制、准备、回写、恢复”的顺序约束。
-
-当前文件不是完整的集群闪回执行器：它只使用标准库容器和错误 trait，不访问 DDL job 表、TSO、GC safe point、PD 或 TiKV，也不发送 Region RPC。仓库搜索仅发现 `pkg/ddl/cluster_test.rs` 直接调用这些 Rust API，未发现 Rust 生产调用者；完整线上链路仍在 Go 的 `pkg/ddl/cluster.go`、`pkg/ddl/job_worker.go` 和 `pkg/ddl/executor.go` 中。因此应把本文件理解为已公开但尚未接入 DDL worker 的语义模型，而不是可独立完成闪回的实现。
-
-`pkg/ddl/Cargo.toml` 声明 crate 名为 `astersql-ddl`、库入口为 `lib.rs`，并以 `go-package = "pkg/ddl"` 标注移植来源。本文件自身没有使用 manifest 中的任何外部依赖。
+由于入参类型没有其他变体，它在现有类型定义下恒为 `true`；`ClusterError::UnsupportedAction` 当前也没有产生点。
 
 ## 核心职责
 
@@ -94,7 +90,6 @@ Go 生产链路则是 `pkg/ddl/executor.go` 创建 `ActionFlashbackCluster` job�
 - Rust `merge_continuous_key_ranges` 对应 Go `mergeContinuousKeyRanges` 的“排除项切断连续组”约定。Go 输入由 `getFlashbackKeyRanges` 预先排序且不重叠；Rust 自行排序并增加非法区间校验。
 - Rust `ClusterSettings` 和关闭/恢复函数抽象 Go 的 `savePDSchedule`、`checkAndSetFlashbackClusterInfo` 与 `finishFlashbackCluster`。Go 操作真实 PD 配置、GC 和全局变量，并把原值保存在 `model.FlashbackClusterArgs`；Rust 只改内存结构。
 - Rust 状态 `Pending/Preparing/Prepared/FlashingBack/Done` 是对 Go `StateNone/DeleteOnly/WriteOnly/WriteReorganization/Public` 的语义重命名，不是一一复用 schema state。Go 每阶段更新 job 参数和必要的 schema version，并实际执行 Region split、prepare RPC、flashback RPC 与 notifier 事件。
-- 两侧都保留“进入实际回写阶段后不可取消”和“成功后 TTL 保持关闭、取消时恢复 TTL”的行为意图。Go 由 job cancellation 状态及 `finishFlashbackCluster` 实现，Rust 由 `cancel` 与 `restore_cluster_after_flashback` 实现。
 - Go `isFlashbackSupportedDDLAction` 判断的是闪回期间其他 DDL action 是否允许，大多数动作返回 true、部分 placement/TiFlash 动作返回 false；Rust `is_flashback_action_supported` 判断自身三种阶段动作且恒为 true，二者名称相近但语义并不等价。
 
 Go 测试 `pkg/ddl/cluster_test.go` 覆盖真实 job 阶段、闪回期间拒绝新 DDL、全局变量和取消规则；Rust 独立测试 `pkg/ddl/cluster_test.rs` 覆盖生产函数的区间合并、晚期取消和设置恢复，并另有测试内简化模型复述 Go 场景。Rust 测试未证明真实 PD/TiKV/持久化链路可用。
@@ -107,12 +102,3 @@ Go 测试 `pkg/ddl/cluster_test.go` 覆盖真实 job 阶段、闪回期间拒绝
 - 修改恢复策略时必须分别验证成功、准备期取消、回写期拒绝取消和缺失快照；TTL 的成功路径特例属于兼容行为，不能与其他变量一起无条件恢复。
 - 若增加外部 I/O，应定义每阶段的幂等性、失败后的可重试点、外部设置部分修改时的补偿次序，以及 crash 后从持久化 job 恢复的规则。性能风险主要来自 Region 数量、区间切分/排序和 RPC 重试，而当前纯内存函数只有 `merge_continuous_key_ranges` 的排序开销 `O((n+m) log(n+m))`。
 - 所有 Rust 行为变更应同步 `pkg/ddl/cluster_test.rs`；与线上兼容相关的语义还应对照 `pkg/ddl/cluster.go`、`pkg/ddl/cluster_test.go`、`pkg/ddl/job_worker.go` 和 `pkg/ddl/executor.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 Rust/Go；`query validate_flashback_ts --kind function` 定位到 `pkg/ddl/cluster.rs:141`；`query FlashbackJob --kind struct` 定位到 `pkg/ddl/cluster.rs:96`；`node --file pkg/ddl/cluster.rs --offset 1 --limit 380` 读取了完整 324 行。`callers`/`callees` 查询未产生可用调用边，因此又以仓库搜索核对引用。
-- Rust 源与装配：`pkg/ddl/cluster.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- Rust 独立测试：`pkg/ddl/cluster_test.rs`，重点为 `production_merge_matches_go_exclusion_contract`、`production_rejects_cancel_after_flashback_writes_begin`、`production_finish_and_early_cancel_restore_go_settings`，以及测试内 Go 场景模型。
-- Go 对照：`pkg/ddl/cluster.go` 的 `ValidateFlashbackTS`、`mergeContinuousKeyRanges`、`getFlashbackKeyRanges`、`worker.onFlashbackCluster`、`finishFlashbackCluster`；`pkg/ddl/job_worker.go` 的 action 分派；`pkg/ddl/executor.go` 的 job 创建。
-- Go 测试：`pkg/ddl/cluster_test.go` 的闪回期间 DDL、全局变量和取消场景。
-- 人工复核结论：本文件存在于公开 DDL crate 中，用纯内存类型保存设置快照并约束闪回阶段顺序；安全扩展的关键是不要把该模型误当成已经连接的集群执行链，并为状态、恢复和区间边界同步增加独立测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-cascades-old` crate 的逻辑等价变换规则集。crate 入口 `pkg/planner/cascades/old/lib.rs` 将本模块的公开项重新导出；`pkg/planner/cascades/old/Cargo.toml` 用 `package.metadata.porting.go-package = "pkg/planner/cascades/old"` 明确它来自同目录 Go 包。它不选择最终物理实现：逻辑探索由本文件提供的规则完成，物理实现规则和属性强制规则分别位于 `implementation_rules.rs` 与 `enforcer_rules.rs`。
-
-真实入口在 `optimize.rs`：`Optimizer::NewOptimizer` 调用 `default_rule_batches()`，`Optimizer::onPhaseExploration` 依批次探索 memo，`Optimizer::findMoreEquiv` 根据根 `Operand` 取规则、绑定 `Pattern`、调用 `matches`/`on_transform`，再按擦除标志更新 `Group`。因此本文件处于“逻辑计划进入 memo”之后、“统计推导和物理实现”之前。
+提供 Rust 适配层：`expression` 模块封装 PB 可下推分类、常量传播和变量函数检测；`memo` 模块封装 `GroupRef`/`GroupExprRef`、类型化计划读取和 `ExprIter` 子节点访问；若干构造/克隆 trait 保留 Go 初始化、schema 与上下文语义。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@ RustCodeGraph 的文件索引确认 `transformation_rules.rs`、`optimize.rs`、
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/cascades/old/transformation_rules.go`。Rust 的 `Transformation` 对应 Go 同名接口，`TransformResult` 将 Go 的四返回值压入 Rust `Result`；`BaseRule` 对应 `baseRule`；三个批次的 Operand 分桶、规则成员与桶内顺序逐项一致。Rust 构造器保留 `NewRule...` 命名，以便审查时直接映射 Go 实现。
+Rust 的 `Transformation` 对应 Go 同名接口，`TransformResult` 将 Go 的四返回值压入 Rust `Result`；`BaseRule` 对应 `baseRule`；三个批次的 Operand 分桶、规则成员与桶内顺序逐项一致。
 
-Rust 额外代码主要是所有权/类型适配，而非新优化语义：`GroupHandle`、`PlanHandle<T>`、`ExprIterExt` 代替 Go 指针和类型断言；`NewLogical*`/`CloneLogical*` 显式补回 Go `Init` 后隐含的 context/schema 字段；`unchanged`/`rewritten` 统一常见返回元组。`rule_id` 和 `AddAppliedRule` 用类型名哈希代替 Go 接口对象身份相关处理。
+Rust 额外代码主要是所有权/类型适配，而非新优化语义：`GroupHandle`、`PlanHandle<T>`、`ExprIterExt` 代替 Go 指针和类型断言；`NewLogical*`/`CloneLogical*` 显式补回 Go `Init` 后隐含的 context/schema 字段；`unchanged`/`rewritten` 统一常见返回元组。
 
-测试覆盖并不等价：Go 的 `transformation_rules_test.go` 通过 SQL 构建、预处理和探索管线，配合 `testdata/transformation_rules_suite_{in,out}.json` 覆盖聚合下推、谓词下推、TopN、Projection、外连接、去关联、注入 Projection、Window 等规则族。Rust 的独立 `transformation_rules_test.rs` 当前有 7 个聚焦测试，覆盖 PB 可编码分类、完整常量传播、零 Count Limit、相邻 Limit 的非空/空/回绕分支，以及 TopN 下推 Projection 时的常量排序项。未被 Rust 独立测试逐条覆盖的规则不能仅因已注册就宣称完整回归等价；其实现事实可由源码与 Go 对照确认，行为回归仍应补测试。
+测试覆盖并不等价：Go 的 `transformation_rules_test.go` 通过 SQL 构建、预处理和探索管线，配合 `testdata/transformation_rules_suite_{in,out}.json` 覆盖聚合下推、谓词下推、TopN、Projection、外连接、去关联、注入 Projection、Window 等规则族。未被 Rust 独立测试逐条覆盖的规则不能仅因已注册就宣称完整回归等价；其实现事实可由源码与 Go 对照确认，行为回归仍应补测试。
 
 ## 扩展指南
 
@@ -96,13 +94,3 @@ Rust 额外代码主要是所有权/类型适配，而非新优化语义：`Grou
 4. 同步更新独立测试 `transformation_rules_test.rs`，不要把测试内嵌回生产文件。至少覆盖 Pattern 匹配、拒绝分支、改写树形、schema/engine、残留条件、擦除标志和错误传播；再与 Go 的对应规则及 `transformation_rules_test.go`/golden 用例核对。
 5. 修改 Apply/外连接/表达式下推时重点评估 NULL 语义、相关列、SET_VAR/GET_VAR、副作用和唯一键证明；修改 Limit/TopN 时检查 `u64` 回绕及 offset+count 边界；修改扫描规则时检查 range max size、前缀索引、remained conditions 与 TiFlash/TiKV engine 限制。
 6. 性能风险主要来自规则循环、候选爆炸、深度递归收集相关列以及重复克隆表达式/schema。新增等价候选前应确认会被 applied-rule/等价检测收敛，并避免在 `matches` 中做无界昂贵工作。
-
-## 验证依据
-
-- 生产源码：`pkg/planner/cascades/old/transformation_rules.rs`，重点符号为 `Transformation`、三个 batch 构造函数、全部 38 个 `impl Transformation`、`expression`/`memo` 适配模块及 `unchanged`/`rewritten`。
-- 真实调用入口：`pkg/planner/cascades/old/optimize.rs` 的 `Optimizer::NewOptimizer`、`onPhaseExploration`、`exploreGroup`、`findMoreEquiv`。
-- crate 边界：`pkg/planner/cascades/old/Cargo.toml` 与 `pkg/planner/cascades/old/lib.rs`；目标目录无 `doc.go`，故没有额外包契约文件可读。
-- Go 对照：`pkg/planner/cascades/old/transformation_rules.go`、`optimize.go`；Go 回归：`transformation_rules_test.go` 与 `testdata/transformation_rules_suite_{in,out}.json`。
-- Rust 回归：`pkg/planner/cascades/old/transformation_rules_test.rs`；其 7 个测试名和覆盖差异已在“与 Go 版本的对应关系”中说明。
-- RustCodeGraph：`status` 显示目标仓库索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/planner/cascades/old` 确认目标 Rust/Go/测试文件均入图；`query Transformation --kind trait` 定位本文件协议，`node --file` 核对规则批次、扫描下推、Apply 和 Window 代码，调用链再由 `optimize.rs` 精确源码节点核实。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构校验要求本文恰有上述 11 个固定二级标题。

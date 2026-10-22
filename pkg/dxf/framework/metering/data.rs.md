@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`data.rs`](data.rs) 是 `astersql-dxf-framework-metering` crate 的计量数据模型层。模块入口 [`lib.rs`](lib.rs) 以 `pub mod data` 装载并整体再导出它；[`Cargo.toml`](Cargo.toml) 表明该 crate 属于 Go 包 `pkg/dxf/framework/metering` 的 Rust 移植，并提供与 Go `nextgen` 构建标签对应的 feature。文件本身不采集资源、不调度 flush、也不执行 I/O，而是承接两个边界：把 [`recorder.rs`](recorder.rs) 生成的累计快照表示为 `Data`，以及把当前快照与上次 flush 快照转换为 writer 接受的 `MeterItem`。
-
-在完整链路中，`Recorder::curr_data` 构造 `Data`，`Meter::scrape_current_data` 收集各任务快照，`Meter::calculate_data_items` 调用 `Data::cal_meter_data_item`，随后 `Meter::flush` 把生成的条目交给 `write_meter_data`。因此本文件位于“并发计数采集”和“带时间戳的持久化/重试”之间，是快照差分与载荷模式的边界。
+文件本身不采集资源、不调度 flush、也不执行 I/O，而是承接两个边界：把 [`recorder.rs`](recorder.rs) 生成的累计快照表示为 `Data`，以及把当前快照与上次 flush 快照转换为 writer 接受的 `MeterItem`。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@
 
 Rust 的 `Data`/`DataValues` 对应 [`data.go`](data.go) 的 `Data`/`dataValues`；私有元信息、六个累计 `uint64` 字段、只比较计数的 `equals`、按字段省略零差值的 `calMeterDataItem`、字符串展示和 `GetBaseMeterItem` 均保持 Go 行为。Rust 用显式的 `MeterValue` 替代 Go 的 `any`，用 `Option<MeterItem>` 表示 Go 的 `nil map`，并用访问器替代同包内直接访问私有字段。
 
-`insert_positive_delta` 显式使用 `wrapping_sub`，是对 Go `uint64` 下溢语义的必要移植；不能以“计数应单调”为由换成普通 debug 下溢、`checked_sub` 或 `saturating_sub`。`byte_size` 是本地实现，但测试覆盖 `1KiB`、`1.5KiB`、`976.6KiB` 和 `u64::MAX -> 16EiB`，用于对齐 Go `go-units.BytesSize` 的可见日志格式。
-
 基础字段中 Go 使用包常量 `category`，其值为 `dxf`；Rust 当前在 `GetBaseMeterItem` 中直接写入 `"dxf"`，而 `metering.rs` 的外层 `MeteringData.category` 也使用 `CATEGORY`。两者在当前测试中一致，但未来修改类别名时需同步，避免内外两层字段漂移。
 
-六个 CamelCase 摘要常量保持 Go 导出 API 名称，并由 `lib.rs` 的 lint allow 接受。Go `handle.go` 已用这些常量构造任务完成条目；Rust `handle.rs` 当前有独立的 `BTreeMap<String, handle::MeterValue>` 实现，类型和字段接线尚未统一。这是当前迁移状态，而不是本文件已覆盖的周期差分流程。
+Go `handle.go` 已用这些常量构造任务完成条目；Rust `handle.rs` 当前有独立的 `BTreeMap<String, handle::MeterValue>` 实现，类型和字段接线尚未统一。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@ Rust 的 `Data`/`DataValues` 对应 [`data.go`](data.go) 的 `Data`/`dataValues`
 新增基础元信息字段时，应修改 `GetBaseMeterItem` 和 writer 序列化测试，并明确它是否参与“有变化”的判断；当前约定是元信息不参与 `equals`。新增 `MeterValue` 变体时，必须同步所有将条目转成 JSON/SDK 载荷的 match 分支，否则会造成编译失败或序列化不完整。
 
 若要让 Rust 一次性任务摘要真正复用本文件的 `RowCountField` 等常量，需要先解决 [`handle.rs`](../handle/handle.rs) 与本 crate 两套 `MeterItem`/`MeterValue` 的边界，而不是只替换字符串字面量。应评估数值符号差异（handle 当前使用 `i64`，周期计数使用 `u64`）、模块依赖方向和序列化兼容性，并在 handle 的独立测试中验证。性能上，新增字段会增加每个任务每轮差分和 HashMap 分配；通常是常数开销，但高任务数场景仍应避免不必要的字符串复制或无变化条目。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、`data.rs` 有 19 个符号；通过 `node --file` 读取了 [`data.rs`](data.rs)、[`lib.rs`](lib.rs)、[`recorder.rs`](recorder.rs)、[`metering.rs`](metering.rs)、[`data_test.rs`](data_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的相关区段，并用 `query cal_meter_data_item` 确认实现与独立测试入口。
-- crate 与模块：[`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs) 证明 crate 名称、入口、feature、Go 包映射、模块再导出及测试分离方式。
-- Go 语义：[`data.go`](data.go) 与 [`data_test.go`](data_test.go) 证明六个计数、忽略元信息的相等性、nil/增量字段、基础字段和展示来源；[`handle.go`](../handle/handle.go) 证明任务摘要常量的 Go 调用点。
-- Rust 测试：[`data_test.rs`](data_test.rs) 覆盖每个计数的相等性和差异、任务 ID 被忽略、全字段差分、单字段差分及无变化 `None`；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 额外覆盖 Go 无符号回绕、基础字段值/类型、recorder 快照以及字节展示边界。
-- 应用调用边：[`recorder.rs`](recorder.rs) 的 `curr_data` → `Data::new`；[`metering.rs`](metering.rs) 的 `scrape_current_data` → `calculate_data_items` → `Data::cal_meter_data_item` → `flush`/`write_meter_data`，以及 `after_flush` → `Data::equals`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前仅执行任务规定的 11 章节结构检查，并人工复核没有把 Rust handle 的独立实现误写成已接线能力。

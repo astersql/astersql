@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session-metrics` crate 中的会话侧指标句柄绑定层。crate 入口 `pkg/session/metrics/lib.rs` 以 `session_metrics` 模块公开本文件，同时在内嵌的 `metrics` 模块中加载 `pkg/metrics/session.rs` 定义的包级 collector，并公开 `pkg/metrics/telemetry.rs` 的遥测指标。`pkg/session/metrics/Cargo.toml` 表明该 crate 只直接依赖 `prometheus = "0.14"`，没有 feature 分支；本文件本身也没有条件编译项。
-
-在应用初始化链上，`pkg/util/metricsutil/common.rs` 的 `RegisterMetrics`/`registerMetrics` 先建立父级 collector，再由 `initMetrics` 调用 `session_metrics::InitMetricsVars`。因此，本文件不定义指标名称、帮助文本、桶边界或注册表策略，而是把已经存在的 collector 绑定到会话运行时所需的固定标签组合，得到可直接 `inc` 或 `observe` 的句柄。
+通过 `InitMetricsVars` 集中建立上述绑定，并以 `INIT_LOCK` 串行化初始化和重复初始化；`init` 只是与 Go 包初始化形态对应的显式包装函数。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ crate 边界由 `pkg/session/metrics/Cargo.toml` 定义；根 workspace 以 `fac
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/session/metrics/metrics.go`。Rust 保留了 Go 的公开变量名、`init`/`InitMetricsVars` 名称以及所有标签组合：非事务 DML 三类、事务模式×结果/结束方式×来源组合、重试和解析/编译来源、CTE 字符串、账户操作字符串，以及各遥测单指标。
-
 主要实现差异如下。
 
 - Go 全局变量是非空接口/句柄并依赖包 `init()` 自动赋值；Rust 用 `Option` 表达初始化状态，普通 `init` 函数不会自动执行，生产接线显式调用 `InitMetricsVars`。
@@ -94,7 +90,7 @@ crate 边界由 `pkg/session/metrics/Cargo.toml` 定义；根 workspace 以 `fac
 - Go 的分区遥测是多个具名全局 counter；Rust 的 `TelemetryMetrics` 将十五项压入数组，所以本文件必须维护位置映射。语义保持一致，但重排数组会造成静默错绑风险。
 - Rust `init_telemetry_metrics` 返回 `Result`，本文件将错误提升为 panic；Go 赋值路径没有对应的显式错误返回。
 
-迁移回归位于独立文件 `pkg/session/metrics/migration_aster_unit_test.rs`，符合测试不与生产源码混放的仓库约定。仓库中没有同目录 Go `*_test.go`；Go 语义证据来自实现本身，而 Rust 测试覆盖全部别名和幂等性。
+仓库中没有同目录 Go `*_test.go`；Go 语义证据来自实现本身，而 Rust 测试覆盖全部别名和幂等性。
 
 ## 扩展指南
 
@@ -107,13 +103,3 @@ crate 边界由 `pkg/session/metrics/Cargo.toml` 定义；根 workspace 以 `fac
 5. 若新句柄会被生产业务消费，还需在对应独立业务测试中验证实际 `inc`/`observe` 时机；仅验证绑定不能证明业务路径已接线。
 
 兼容性风险主要是 label 名或次序变化造成时间序列不兼容，正确性风险是 `static mut` 的未同步访问和数组错位，性能风险则是高基数标签或在热路径反复初始化。扩展不应为动态业务值在这里预绑定无限序列。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，共 11,467 个文件、307,296 个节点、1,848,419 条边。
-- RustCodeGraph `files --filter pkg/session/metrics` 与 `node --file pkg/session/metrics/metrics.rs`：确认目标文件 317 行、模块内符号及文件使用关系；`query/node InitMetricsVars` 确认入口位于第 150 行，图中的直接调用者为同文件 `init`；`callees init` 确认 `init -> InitMetricsVars`。图工具没有解析出 `InitMetricsVars` 内宏/方法调用边，所以下游关系进一步由已索引源码节点和精确源码检索核验。
-- RustCodeGraph `node InitSessionMetrics --file pkg/metrics/session.rs`：确认父级 collector 的名称、标签维度和桶定义；`node TelemetryMetrics`、`node init_telemetry_metrics --file pkg/metrics/telemetry.rs`：确认遥测字段、15 元分区数组和 `OnceLock` 式初始化。
-- 读取的 crate/入口证据：`pkg/session/metrics/Cargo.toml`、`pkg/session/metrics/lib.rs`、根 `Cargo.toml`、`pkg/session/Cargo.toml`、`pkg/util/metricsutil/Cargo.toml`。
-- 读取的实现与调用证据：`pkg/session/metrics/metrics.rs`、`pkg/metrics/session.rs`（通过 RustCodeGraph 节点）、`pkg/metrics/telemetry.rs`（通过 RustCodeGraph 节点）、`pkg/util/metricsutil/common.rs`。
-- Go 对照与测试证据：`pkg/session/metrics/metrics.go`、`pkg/session/metrics/migration_aster_unit_test.rs`、`pkg/util/metricsutil/common_test.rs`。同目录未找到 Go `*_test.go`；`migration_aster_unit_test.rs` 对 51 个别名进行底层 series 联动检查，并验证重复初始化。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工复核只新增本文档、未修改 Rust/Go/Cargo/只读总计划。

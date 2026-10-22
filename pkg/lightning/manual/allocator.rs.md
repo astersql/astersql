@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-manual` crate；crate 根在 `pkg/lightning/manual/lib.rs`，其中声明 `allocator` 模块并以 `pub use allocator::Allocator` 将本文件的类型提升为 crate 级 API。`pkg/lightning/manual/Cargo.toml` 指定库入口为 `lib.rs`、Go 包映射为 `pkg/lightning/manual`，并声明空的默认 feature 与 `cgo` feature；本文件自身没有条件编译分支，实际分配函数固定通过 `super::{New, Free}` 取得 crate 根再导出的 `manual.rs` 实现。
-
-它是 Go `pkg/lightning/manual/allocator.go` 的 Rust 对照文件，提供“字节缓冲分配/释放 + 可选未释放计数”的小型门面。当前 Rust 生产代码中未检索到 `Allocator`、`Alloc`、`Free` 或 `CheckRefCnt` 的直接调用；已确认的使用者是同 crate 的独立测试 `allocator_test.rs` 与 `migration_aster_unit_test.rs`。因此它目前是已实现、已测试、已公开，但尚未按 Go 主链接入 Rust ingest 控制面的迁移边界，而不是 Lightning 导入主链已经在使用的分配器。
+`Allocator::CheckRefCnt` 把非零计数转换为稳定的泄漏诊断字符串；未启用计数或计数为零时返回成功。
 
 ## 核心职责
 
@@ -67,11 +65,11 @@ Go 对照主链更完整：`pkg/ingestor/ingestctrl/engine_mgr.go::newEngineMana
 
 ## 与 Go 版本的对应关系
 
-Rust `Allocator` 对应 `pkg/lightning/manual/allocator.go::Allocator`；`Option<Arc<AtomicI64>>` 对应可为空的 `*atomic.Int64`。`Alloc`、`Free` 和 `CheckRefCnt` 保留了 Go 的操作顺序、零值行为、共享计数器以及错误文本。Rust 使用 `Result<(), String>` 表示 Go 的 `error`，使用 `Vec<u8>` 所有权替代 Go `[]byte` 的显式手动释放约定。
+Rust 使用 `Result<(), String>` 表示 Go 的 `error`，使用 `Vec<u8>` 所有权替代 Go `[]byte` 的显式手动释放约定。
 
 主要语言差异是：Rust `Free(Vec<u8>)` 消耗值，能在编译期阻止对同一变量的安全重复释放；Go 切片可复制，API 本身无法阻止重复调用。反过来，两种实现都无法验证释放操作使用了正确的 allocator。Rust 的 `Alloc` 参数为 `isize`，Go 为 `int`，两者均采用本机字长的有符号整数；真实 Rust 长度上限还由 `manual::MaxArrayLen` 固定为 `(1 << 31) - 1`。
 
-迁移状态并非完整主链接线：Go `engine_mgr.go` 将此分配器注入 `membuf` 并在测试模式暴露最后一个计数器；Rust 对照的 `engine_mgr.rs` 尚无这些字段与调用。文档只确认本文件内部语义与独立测试对齐，不声称 Rust Lightning 导入过程已经通过该类型管理缓冲。
+迁移状态并非完整主链接线：Go `engine_mgr.go` 将此分配器注入 `membuf` 并在测试模式暴露最后一个计数器；Rust 对照的 `engine_mgr.rs` 尚无这些字段与调用。
 
 ## 扩展指南
 
@@ -80,12 +78,3 @@ Rust `Allocator` 对应 `pkg/lightning/manual/allocator.go::Allocator`；`Option
 若要完成 Go 主链接线，应在独立迁移任务中核对 `pkg/ingestor/ingestctrl/engine_mgr.go::newEngineManager`、Rust `engine_mgr.rs`、`astersql-lightning-membuf` 的 allocator 接口以及 `LastAlloc` 对应测试需求；不能只因 Cargo 中已有依赖就假定接口兼容。接线还需决定非 Windows 依赖范围，因为当前 ingestctrl 对 manual crate 的声明位于 Windows target 段。
 
 若改变原子排序，必须先证明不再需要 Go `go.uber.org/atomic` 的顺序一致契约，并修改 `allocator_uses_go_sequentially_consistent_atomic_operations`；仅为性能把它降为 `Relaxed` 会破坏现有迁移契约。若让 `Alloc` 返回可恢复错误，还需处理“先计数、后分配”的回滚，并评估与 Go panic 行为及现有调用签名的兼容性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的 `allocator.rs`、`allocator_test.rs`、`lib.rs`、`manual.rs` 及 Go 对照均已索引。
-- RustCodeGraph `node --file pkg/lightning/manual/allocator.rs`：确认文件共 67 行，唯一类型为 `Allocator`，方法为 `Alloc`、`Free`、`CheckRefCnt`，并确认其原子操作和对 `New`/`Free` 的委托。
-- RustCodeGraph `node`：读取 `pkg/lightning/manual/lib.rs`、`manual.rs`、`allocator_test.rs`、`migration_aster_unit_test.rs` 与 `allocator.go`，核对公开边界、分配语义、零值/克隆/顺序一致性/泄漏错误测试及 Go 实现。精确 `callers`/`callees` 查询受同名符号消歧限制，没有得到可信的方法级调用边，因此未把其模糊结果用作结论。
-- Cargo 与入口：读取 `pkg/lightning/manual/Cargo.toml`、工作区根 `Cargo.toml` 和 `pkg/ingestor/ingestctrl/Cargo.toml`，确认 crate 身份、workspace/facade 登记、feature，以及 Windows 目标依赖声明。
-- Go/Rust 接线对照：读取 `pkg/ingestor/ingestctrl/engine_mgr.go::newEngineManager` 和 Rust `engine_mgr.rs::newEngineManager`，并用仓库文本搜索确认 Rust 生产文件当前没有 `Allocator` 直接引用，从而界定“已实现但未接入对应主链”的迁移状态。
-- 独立测试证据：`allocator_test.rs` 覆盖默认零值、克隆共享计数和 `SeqCst` 源码契约；`migration_aster_unit_test.rs` 覆盖分配加计数、泄漏错误、释放减计数、禁用计数和清零分配。按任务要求这是纯文档分析，未运行 Cargo。

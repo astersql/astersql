@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`keydecoder.rs`](keydecoder.rs) 是 `astersql-util-keydecoder` crate 的核心实现，负责把 TiDB/TiKV 表键解析为面向诊断输出的 [`DecodedKey`](keydecoder.rs#L43)。crate 根 [`lib.rs`](lib.rs) 将本文件声明为私有模块并用 `pub use keydecoder::*` 再导出公开符号；[`Cargo.toml`](Cargo.toml) 将 crate 根设为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/util/keydecoder"` 标明 Go 对照目录。
-
-该能力面向“解释已有存储键”，不是通用编解码器：公开入口 [`DecodeKey`](keydecoder.rs#L283) 只接受能被 `tablecodec::IsRecordKey` 或 `tablecodec::IsIndexKey` 识别的行键/索引键，再结合调用方提供的 `infoschema::InfoSchema` 补齐库、逻辑表、分区和索引名称。其结果字段与 Go 诊断 JSON 契约一致，可用于类似 `DEADLOCKS`、`DATA_LOCK_WAITS` 的 KEY_INFO 信息；这项用途由 Go 源码注释明确给出，Rust 文件本身没有直接连接这些上层表。
-
-仓库当前可验证的 Rust 装配链是本文件 → [`lib.rs`](lib.rs) → 根 facade 的 `pkg::util::keydecoder`（[`pkg/lib.rs`](../../lib.rs)）。`pkg/executor/Cargo.toml` 声明了对该 crate 的依赖，但仓库 Rust 生产源码全文引用检查没有发现对 `DecodeKey` 的直接调用。因此当前事实是“API 已公开、已有独立测试、被 executor 声明为依赖”，不能据此声称 Rust 应用主链已经消费它。
+其结果字段与 Go 诊断 JSON 契约一致，可用于类似 `DEADLOCKS`、`DATA_LOCK_WAITS` 的 KEY_INFO 信息；这项用途由 Go 源码注释明确给出，Rust 文件本身没有直接连接这些上层表。
 
 ## 核心职责
 
@@ -92,13 +88,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`keydecoder.go`](keydecoder.go)。两版具有相同的公开数据字段、handle 标签、普通表优先/分区回退的元数据流程，以及“尽可能返回部分信息”的错误策略。Rust `InfoSchemaLookup` 对应 Go `DecodeKey` 中的 `TableByID`、`SchemaByTable` 和 `FindTableByPartitionID` 片段；Rust 将其抽象成 `MetadataLookup`，主要用于独立测试隔离。
+Rust `InfoSchemaLookup` 对应 Go `DecodeKey` 中的 `TableByID`、`SchemaByTable` 和 `FindTableByPartitionID` 片段；Rust 将其抽象成 `MetadataLookup`，主要用于独立测试隔离。
 
 关键对应关系包括：Rust `DecodeKeyHead`、`DecodeRecordKey`、`DecodeIndexKey` 分别对齐同名 Go 调用；Rust 的 `Handle::String()` 对齐 Go `handle.String()`；`schema_missing_for_table` 显式保存 Go 在 `SchemaByTable` 失败时立即返回的控制流；索引载荷失败时两版都记录警告并返回部分结果；分区键都把逻辑表 ID 与物理分区 ID 分开保存。
 
-可见差异如下：Rust `HandleType` 是 `&'static str`，Go 是命名字符串类型；Rust 错误是本地 `DecodeKeyError`，Go 使用 `errors.Errorf`；Rust 的 `InfoSchema` API 通过表元数据 `db_id` 调 `SchemaByID`，Go 用 `SchemaByTable`；Rust 为序列化省略添加显式谓词；Rust 通过拥有型快照克隆名称和索引列表。Rust 对普通表命中后将 `TableID` 设为 `meta.id`，正常情况下与输入 ID 相同；Go 在普通表分支依靠初始物理 ID，不重复赋值。
+可见差异如下：Rust `HandleType` 是 `&'static str`，Go 是命名字符串类型；Rust 错误是本地 `DecodeKeyError`，Go 使用 `errors.Errorf`；Rust 的 `InfoSchema` API 通过表元数据 `db_id` 调 `SchemaByID`，Go 用 `SchemaByTable`；Rust 为序列化省略添加显式谓词；Rust 通过拥有型快照克隆名称和索引列表。
 
-[`keydecoder_test.rs`](keydecoder_test.rs) 的 `decode_key_matches_go_test_decode_key_scenarios` 明确复刻 [`keydecoder_test.go`](keydecoder_test.go) 的普通整数 handle、公共 handle、普通/分区索引、分区记录、非法键和 schema 变化后未知表场景。Rust 还增加了注入 lookup 的缺失 schema、JSON 省略规则等聚焦测试。Go 的 [`main_test.go`](main_test.go) 安装 goroutine 泄漏检查；Rust 没有对应的进程级 goroutine harness，这不是生产解码语义差异。
+Rust 还增加了注入 lookup 的缺失 schema、JSON 省略规则等聚焦测试。Go 的 [`main_test.go`](main_test.go) 安装 goroutine 泄漏检查；Rust 没有对应的进程级 goroutine harness，这不是生产解码语义差异。
 
 ## 扩展指南
 
@@ -110,13 +106,3 @@
 - 若优化性能，先基准化 `key.to_vec()`、`kv::Key::clone()`、全部索引名称克隆与线性 ID 扫描。缓存或借用优化必须评估 DDL 变化、对象生命周期和并发一致性，不能以牺牲部分结果兼容语义为代价。
 
 兼容性风险主要是 JSON 字段/省略规则和 Go 对齐的部分成功策略；正确性风险集中在物理/逻辑表 ID 转换与 schema 缺失早退；性能风险集中在键和元数据的复制及索引线性扫描。该文件不处于已证实的生产热路径，任何性能结论都需要实际接入点和基准支持。
-
-## 验证依据
-
-- Rust 源码：[`keydecoder.rs`](keydecoder.rs)，完整核对常量、`DecodedKey`、`DecodeKeyError`、`handleType`、`KeyMetadata`、`MetadataLookup`、`InfoSchemaLookup::lookup`、`decodeKeyWithLookup` 和 `DecodeKey`。
-- crate/装配：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs) 与根 facade [`pkg/lib.rs`](../../lib.rs)，核对 crate 名、Go 移植元数据、依赖、crate 根和再导出链；`pkg/executor/Cargo.toml` 仅证明依赖声明，不证明源码调用。
-- Go 对照：[`keydecoder.go`](keydecoder.go)，核对输出字段、handle 分类、元数据解析顺序、部分成功策略与错误边界。
-- 独立测试：[`keydecoder_test.rs`](keydecoder_test.rs) 覆盖未知键、整数/公共 handle、分区身份、普通索引、表/schema 缺失、JSON 字段，以及完整 Go 场景；[`keydecoder_test.go`](keydecoder_test.go) 提供原始移植语义。
-- RustCodeGraph：`status` 报告索引可用（11,467 个文件、307,296 个节点）；`files --filter pkg/util/keydecoder` 报告 `keydecoder.rs` 含 15 个符号；`node --file ... --offset 1 --limit 400` 返回完整 288 行源码，并报告三个文件级使用者；`query` 精确定位 Rust `DecodeKey`、`decodeKeyWithLookup`、`handleType`。路径限定的 `callers`/`callees` 没有返回边明细，且文件级结果中的两个 TopSQL 文件经 `rg` 未发现符号引用，因此文档只把独立测试记为已证实直接调用者。
-- 仓库文本复核：对 `astersql_util_keydecoder`、`keydecoder::`、`DecodeKey(` 的 Rust 搜索只发现 facade、crate 内实现和独立测试；对 Cargo manifest 的搜索发现 `pkg/executor/Cargo.toml` 依赖声明。
-- 人工复核：确认文档能回答文件为何存在、普通表/分区记录/索引如何运行、哪些异常返回错误或部分结果、ID 字段如何变化、当前接线状态以及扩展时应修改的符号与独立测试位置；未把未返回的图边或 manifest 依赖推断为生产调用。

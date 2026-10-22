@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`debug.rs` 属于 Cargo crate `astersql-br-cmd-br`，crate 的库入口是 `br/cmd/br/lib.rs`，二进制入口是 `br/cmd/br/bin_main.rs`（见 `br/cmd/br/Cargo.toml`）。`lib.rs` 以 `pub mod debug` 暴露本模块；`br/cmd/br/main.rs::main` 再把 `NewDebugCommand()` 加入 `br` 根命令。因此它位于 BR 命令装配层，而不是备份/恢复的常规数据路径。
-
-本文件实现隐藏的 `br debug <subcommand>` 命令族，并用 `validate` 作为顶层别名兼容旧版 BR。它面向离线排障和人工修复：检查备份对象摘要、检查 backupmeta 的范围与 rewrite rule、在 JSON 与 backupmeta 间转换、恢复 PD 调度配置，以及按 key 搜索日志备份。当前 Rust 版本同时依赖 `br/cmd/br/stubs.rs` 中的迁移期精简实现；文中所述能力以当前源码为准，不能等同于 Go 版本的完整生产实现。
+`newBackupMetaValidateCommand` 汇集所有数据文件范围，用 `RangeTree` 检查重叠；随后模拟重新分配表、索引和分区 ID，调用 `restoreutils::GetRewriteRules` 生成规则，并以 `ValidateFileRewriteRule` 检查每个文件。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ Rust 代码通过 `GetDefaultContext` 取得共享上下文，但不同于 Go �
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对照 `br/cmd/br/debug.go`，命令名、顶层别名、隐藏属性、主要 flag、成功/错误文案和六条子命令布局总体一致。`br/cmd/br/debug_test.rs` 固定了命令顺序、`no_args` 约束以及字段兼容；`br/cmd/br/parity_test.rs` 固定顶层隐藏/别名、空搜索 key 错误和 PD manager 调用边界。
-
 目前存在必须保留在认知中的迁移差异：
 
 - Go checksum/validate 通过真实 `MetaReader` 和 `LoadBackupTables` 展开 backupmeta；Rust 改读 `tables.json` 调试侧车，并在 `stubs.rs` 中注明“非生产 backupmeta 管线”。
@@ -101,12 +97,3 @@ Rust 文件直接对照 `br/cmd/br/debug.go`，命令名、顶层别名、隐藏
 - 将日志搜索接到 `br/pkg/stream/search.rs` 的真实实现时，应验证 key 编码、TSO 闭区间/开区间语义、CF 合并、取消传播和大文件内存开销。
 - 修改 PD 复位时必须维持 manager 在所有已创建路径上的关闭不变量；如果引入提前返回或更多操作，优先使用明确的 RAII guard，避免遗漏清理。
 - 性能敏感点集中在 checksum 的逐文件完整读取、validate 的全量文件/表驻留和 decode 的完整 JSON 文档复制。扩展时应以真实数据规模评估流式处理，但不得改变可观察输出和 Go 兼容语义而不补回归测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7032 个 Rust 文件；`files --filter br/cmd/br/debug.rs` 命中目标；`node --file br/cmd/br/debug.rs --offset 1/261` 读取完整 519 行；`explore` 查询了 `NewDebugCommand`、六个子命令、`ReadBackupMeta`、`RangeTree::InsertRange`、`GetRewriteRules`、`ValidateFileRewriteRule`、`DecodeMetaFile`、`Encrypt`、`NewMgr`、`UpdatePDScheduleConfig` 和 `NewStreamBackupSearch::Search` 的调用关系。
-- 目标与入口：`br/cmd/br/debug.rs`、`br/cmd/br/lib.rs`、`br/cmd/br/main.rs`、`br/cmd/br/Cargo.toml`。
-- 当前依赖实现：`br/cmd/br/stubs.rs`（`metautil::LoadBackupTablesFromStorage`、`rtree`、`restoreutils`、`stream_search`）以及 `br/pkg/task/stubs.rs` 的 `Storage`/`Mgr` 边界。
-- Go 对照：`br/cmd/br/debug.go`，逐项核对命令装配、checksum、backupmeta validate/decode/encode、PD 复位和日志搜索。
-- 独立 Rust 测试：`br/cmd/br/debug_test.rs` 与 `br/cmd/br/parity_test.rs`；Go 同目录未发现专门覆盖 `NewDebugCommand` 的 `*_test.go`，因此 Go 侧行为依据主要来自实现文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `rg` 命令验证恰有 11 个固定二级章节，并人工检查文档明确标出 stub、未验证边界和 Go/Rust 差异。

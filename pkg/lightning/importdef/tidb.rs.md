@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-importdef` crate 的 TiDB 导入元数据模型实现，源码入口由 `pkg/lightning/importdef/lib.rs` 的 `#[path = "tidb.rs"] mod tidb` 装配，并通过 `pub use tidb::*` 对 crate 使用者公开。根门面 `pkg/lib.rs` 又在 `lightning::importdef` 下再导出该 crate。`pkg/lightning/importdef/Cargo.toml` 声明其 Go 对照包为 `pkg/lightning/importdef`，唯一直接 Rust 依赖是 `astersql-meta-model`。
-
-它位于 Lightning 导入流程的“库表描述”边界：只定义传递数据库、表以及当前/目标表结构所需的数据类型，不负责读取 TiDB、执行导入、持久化 checkpoint 或计算 checksum。Go 生产链会在 `lightning/pkg/importer/tidb.go::LoadSchemaInfo` 创建这些对象，再交给 importer、checkpoint 和 checksum 代码；当前 Rust 仓库中没有找到生产源码对本 crate 类型的直接引用，只有 crate/根门面的再导出、下游 Cargo 依赖声明及本 crate 的迁移测试。因此，Go 主链说明的是该模型的设计位置，而不是 Rust 主链已经完整接线的证据。
+保持模型层轻量：没有构造函数、校验函数、序列化实现、错误类型或业务副作用；调用方必须自行建立并维护字段间的一致性。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ RustCodeGraph 将 `DBInfo` 和 `TableInfo` 索引为 `pkg/lightning/importdef/ti
 
 ## 与 Go 版本的对应关系
 
-`pkg/lightning/importdef/tidb.go` 定义同名 `DBInfo` 与 `TableInfo`，字段集合和语义逐项对应：Rust `i64`/`String` 对应 Go `int64`/`string`，Rust `Option<TableInfoMapRef>` 对应可为 nil 的 Go map，Rust `Option<ModelTableInfoRef>` 对应可为 nil 的 Go 指针。
+Rust 为保留 Go 引用语义引入了显式包装。由此产生两点语言差异：Rust 访问共享值必须处理加锁结果，Go 原类型则没有锁；Rust `Arc<RwLock<_>>` 自带线程安全能力，但并不意味着 Go 版本原本承诺并发安全。
 
-Rust 为保留 Go 引用语义引入了显式包装。Go map 和指针复制后天然共享底层对象；Rust 通过 `Arc` 保持共享所有权，通过 `RwLock` 提供内部可变性。由此产生两点语言差异：Rust 访问共享值必须处理加锁结果，Go 原类型则没有锁；Rust `Arc<RwLock<_>>` 自带线程安全能力，但并不意味着 Go 版本原本承诺并发安全。
-
-`Core`/`Desired` 的注释与 Go 完全相同的业务意图：通常二者相同；分离索引和数据导入时，`Core` 可暂时不含索引，`Desired` 保留索引。Rust 测试还验证它们可以显式别名到同一个对象。当前 Rust 生产接线覆盖度低于 Go：Go 的 importer、checkpoint、backend、DDL ingest 和 checksum 路径有直接类型引用；Rust 侧能确认的是模型、再导出、依赖声明与迁移单测，不能宣称上述 Go 消费链均已移植到此类型。
+当前 Rust 生产接线覆盖度低于 Go：Go 的 importer、checkpoint、backend、DDL ingest 和 checksum 路径有直接类型引用；Rust 侧能确认的是模型、再导出、依赖声明与迁移单测，不能宣称上述 Go 消费链均已移植到此类型。
 
 ## 扩展指南
 
@@ -81,13 +77,3 @@ Rust 为保留 Go 引用语义引入了显式包装。Go map 和指针复制后�
 - 增加便利方法时，优先把“初始化 map”“按名查询”“获得当前/目标元数据”等协议封装成明确返回 `Result`/`Option` 的 API，避免各调用方直接 `unwrap`；同时明确 poisoned lock 的处理策略。
 - 若把 Rust 类型接入生产流程，需从当前实际消费者开始验证，而不是只添加 Cargo 依赖：重点核对 schema 加载、checkpoint 初始化、单表 importer 与 checksum 边界，并补各自目录的独立测试。
 - 调整锁或容器类型会影响克隆可见性、并发性能和潜在死锁顺序，属于兼容性较高风险的改动；调整字段名或公开类型也会破坏门面 API。序列化若未来加入，还需明确 map 顺序和 `Arc<RwLock<_>>` 的快照规则。
-
-## 验证依据
-
-- 目标源码：`pkg/lightning/importdef/tidb.rs`，核对四个类型别名、`DBInfo`、`TableInfo`、字段、derive 及不存在函数/trait/条件编译项。
-- crate 边界：`pkg/lightning/importdef/Cargo.toml`、`pkg/lightning/importdef/lib.rs`；工作区与根门面：根 `Cargo.toml`、`pkg/lib.rs::lightning::importdef`。
-- Go 对照：`pkg/lightning/importdef/tidb.go`；Go 调用证据包括 `lightning/pkg/importer/tidb.go::LoadSchemaInfo`、`lightning/pkg/checkpoints/checkpoints.go::Initialize`、`lightning/pkg/importer/table_import.go`、`pkg/ingestor/ingestctrl/checksum.go::Checksum`。
-- Rust 独立测试：`pkg/lightning/importdef/migration_aster_unit_test.rs` 的 `zero_values_match_go_struct_behavior`、`database_keeps_tables_addressable_by_name`、`copied_and_dual_metadata_pointers_preserve_aliases`。
-- RustCodeGraph：索引状态为 11,467 个文件；`files --filter pkg/lightning/importdef` 找到 `lib.rs`、`migration_aster_unit_test.rs`、`tidb.go`、`tidb.rs`；`query` 定位 `tidb.rs::DBInfo`（第 37 行）和 `tidb.rs::TableInfo`（第 48 行）；`callees` 对两个结构体均显示 `No callees found`。CLI 对高度重名符号的限定查询会展开同名候选，因此引用覆盖又以 `rg` 精确核验。
-- 文本引用核验：Rust 侧仅发现 `migration_aster_unit_test.rs` 直接使用本文件类型，`pkg/lib.rs` 通过 facade 再导出；四个下游 manifest 声明依赖但其 Rust 源码没有命中 crate 名。该结果限定了本文关于“当前 Rust 尚未生产接线”的结论。
-- 按任务要求未运行 Cargo；本次只新增说明文档，结构检查负责确认目标文件存在且恰有十一个固定二级章节。

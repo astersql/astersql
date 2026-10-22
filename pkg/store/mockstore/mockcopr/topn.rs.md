@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-mockcopr` crate 内部的 TopN 数据结构实现，源码入口由 [`lib.rs`](lib.rs) 的私有 `mod topn;` 声明装配。它不解析请求、不计算 ORDER BY 表达式，也不直接读取 KV；上游 [`cop_handler_dag.rs`](cop_handler_dag.rs) 把 `ExecutorSpec::TopN` 构造成 [`executor.rs`](executor.rs) 中的 `topNExec`，后者计算排序键后调用本文件维护容量受限的候选集合。
-
-[`Cargo.toml`](Cargo.toml) 将该目录定义为独立库 crate，并以 `package.metadata.porting.go-package = "pkg/store/mockstore/mockcopr"` 指向 Go 对照包。本文件自身只使用标准库 `std::cmp::Ordering`，以及同 crate `copr_handler` 模块的 `ByItem`、`Datum`、`Row` 和 `CopError`；Cargo 中列出的可选 AsterSQL 子 crate 并非本文件的直接依赖。
+不解析请求、不计算 ORDER BY 表达式，也不直接读取 KV；上游 [`cop_handler_dag.rs`](cop_handler_dag.rs) 把 `ExecutorSpec::TopN` 构造成 [`executor.rs`](executor.rs) 中的 `topNExec`，后者计算排序键后调用本文件维护容量受限的候选集合。
 
 ## 核心职责
 
@@ -72,13 +70,9 @@ RustCodeGraph 已索引目标文件及其 20 个符号，但其对本文件 Rust
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`topn.go`](topn.go)，执行器配合逻辑分别对应 [`executor.go`](executor.go) 的 `topNExec` 和 [`cop_handler_dag.go`](cop_handler_dag.go) 的 `buildTopN`。
-
-- `sortRow`、`topNSorter`、`topNHeap`、`Len`、`Swap`、`Less`、`Push`、`Pop`、`tryToAddRow` 均保留 Go 命名与总体职责。两版都以反向 `Less` 让堆顶成为最差候选，并只让严格更优的新行替换根。
 - Go 使用 `container/heap` 的 `Push`/`Fix`；Rust 用 `sift_up`/`sift_down` 内建相同行为。Go 满堆时临时把新行追加到 `rows[heapSize]` 再比较、交换并裁剪；Rust 先与根比较，命中后直接覆盖根。
 - Go 的值比较调用 `types.Datum.Compare`，传入 StatementContext 的类型上下文和由字段 collation 构造的 collator；比较失败会写入 `topNSorter.err`，并由 `evalTopN` 返回。Rust 使用简化 `Datum::Ord`，没有 StatementContext/collation 参与，也没有当前可触发的比较错误。这是明确的迁移语义差距，不能把 Rust 实现描述成完整复刻。
 - Go 的 `topNExec` 在输入耗尽时直接 `sort.Sort(&heap.topNSorter)` 并用游标输出；Rust 的 `intoSortedRows` 消费堆，返回行向量，再由 `VecDeque::pop_front` 输出。
-- Go 仅在新行被接纳后复制原始 `data`；Rust 的 `sortRow` 在尝试接纳前已拥有 `Row`，拒绝时直接丢弃所有权，外部可见结果一致。
 
 ## 扩展指南
 
@@ -87,13 +81,3 @@ RustCodeGraph 已索引目标文件及其 20 个符号，但其对本文件 Rust
 - 若实现 `Pop`，应把测试放在独立 Rust 测试文件（例如同目录现有测试组织方式中的 `topn_test.rs`，并由 `lib.rs` 的 `#[cfg(test)]` 模块声明接入），不要把测试内嵌到 `topn.rs`；还需验证 `heapSize`、`rows.len()` 与堆序同步。
 - 当前 `rg` 未在 `pkg/store/mockstore/mockcopr/*test*.rs` 或 `*_test.go` 中发现直接针对 TopN/这些堆符号的测试。扩展本文件时应新增独立回归测试，并通过 `topNExec` 或 DAG 路径补一组集成式断言，覆盖表达式求值错误以及最终逐行输出。
 - 性能修改应保留 `O(N)` 候选内存边界，避免比较阶段克隆整行或重复求值表达式；大 N 时还应关注最终稳定排序和 `VecDeque` 转换的额外内存。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/store/mockstore/mockcopr/topn.rs` 确认目标已索引且有 20 个符号；`node --file .../topn.rs` 阅读完整 195 行；对 `topNHeap`、`topNSorter`、`compare_rows` 执行了 `query`/`callers`/`callees`。方法级 callers 缺失后，以精确 `rg` 引用搜索补齐调用证据。
-- 目标实现：`topn.rs:27-195`，核对行/键结构、普通与反向比较、有界堆、容量零、最终排序、错误占位和资源所有权。
-- Rust 入口与类型：`lib.rs:18-29`（模块装配）；`copr_handler.rs:27-131, 418-470`（`CopError`、`Datum::Ord`、`ByItem`、`ExecutorSpec::TopN`）；`cop_handler_dag.rs:230-267, 322-325`（DAG 构建）；`executor.rs:319-415`（键求值、堆生命周期与输出）。
-- crate 边界：`Cargo.toml` 的 `[lib]`、`package.metadata.porting`、dependencies 与 dev-dependencies。
-- Go 对照：`topn.go:27-141`；`executor.go:455-553`；`cop_handler_dag.go:405-437`。
-- 测试搜索：对本目录 `*test*.rs` 与 `*_test.go` 搜索 `TopN`、`topNHeap`、`topNSorter`、`tryToAddRow`、`ExecutorSpec::TopN` 等符号，未发现直接覆盖；因此本文没有声称已有 TopN 回归测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 章节结构检查，并补充 `git diff --check` 与目标范围差异复核。

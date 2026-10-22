@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-internal-querywatch` crate 的业务实现，负责把 ADD / DROP QUERY WATCH 所需的选项转换为 runaway query（失控查询）监视记录，并通过抽象接口完成资源组校验、规则注册和删除。crate 根文件 [`lib.rs`](./lib.rs) 以 `pub mod query_watch` 导出本模块；[`Cargo.toml`](./Cargo.toml) 将其登记为 Go 包 `pkg/executor/internal/querywatch` 的移植单元。workspace 根 `Cargo.toml` 纳入该 crate，`pkg/lib.rs` 又通过 `pkg::executor::internal::querywatch` facade 再导出。
-
-当前接线边界需要特别说明：RustCodeGraph 与仓库文本检索只发现本模块的独立测试直接调用这里的生产符号；`astersql-executor` 虽声明了对该 crate 的依赖，但尚未发现 Rust executor builder、session 或 SQL 分派路径调用 `AddExecutor` / `exec_drop_query_watch`。完整 SQL 到 domain/runaway manager 的在线链路目前仍可在同目录 [`query_watch.go`](./query_watch.go) 中看到。因此，本文件是可测试的 Rust 业务逻辑移植，不应被描述为已经接管线上 QUERY WATCH SQL 执行。
-
-文件前部第 22～239 行是 Go 控制流的注释映射，不参与编译；实际 Rust 实现从 `use std::collections::BTreeMap` 开始。文件还以 `#[path = "../../../parser/keywords.rs"]` 和 `include!("../../../parser/digester.rs")` 复用 parser 的关键字表与 digest 规则。
+此外，`single_sql`、`normalize_digest`、`local_sha2::Sha256` 和 `sha256_bytes` 提供 SQL 文本边界处理与 TiDB normalize digest 所需的本地哈希适配。
 
 ## 核心职责
 
@@ -98,8 +94,6 @@ Go 在线实现的下游是真实 `domain.ResourceGroupsController()`、`domain.
 
 ## 与 Go 版本的对应关系
 
-[`query_watch.go`](./query_watch.go) 是逐项对照基准：Rust `from_option_list` 合并了 Go `fromQueryWatchOptionList` 与 `setWatchOption` 的主要业务分支；`validate_watch_record` 对应 `validateWatchRecord`；`AddExecutor::next` 对应 `(*AddExecutor).Next`；`exec_drop_query_watch` 对应 `ExecDropQueryWatch`。默认组、默认 action 继承、三种 watch 类型、只接受一条 SQL、digest 只验长度、switch group 暂不校验以及 done 的设置时机均保持一致。
-
 仍存在清晰的移植边界/差异：
 
 - Go 接收 AST 节点并通过 planner expression rewrite/evaluation 支持资源组表达式和 watch text 表达式；Rust 接收已经求值的 `String`/枚举，没有表达式求值、NULL 分支或 AST 类型断言。
@@ -109,7 +103,7 @@ Go 在线实现的下游是真实 `domain.ResourceGroupsController()`、`domain.
 - Go 使用 protobuf/runtime 的动作与 watch 枚举、`runaway.QuarantineRecord` 和 infoschema 结构化错误；Rust 使用本地类型与 `String` 错误。
 - Go DROP 从 session user vars 读取 datum 并调用 `ToString`；Rust 只读取预先构造的 `BTreeMap<String, String>`。
 
-[`query_watch_test.rs`](./query_watch_test.rs) 直接驱动 Rust API，覆盖 Go 的主要 fixture 及额外的移植语义测试；[`query_watch_test.go`](./query_watch_test.go) 则通过 SQL、系统表、failpoint 和真实 Go 组件验证完整链路。因此 Rust 单测证明的是本文件逻辑，不证明 Rust SQL 主链已接通。
+[`query_watch_test.rs`](./query_watch_test.rs) 直接驱动 Rust API，覆盖 Go 的主要 fixture 及额外的移植语义测试；[`query_watch_test.go`](./query_watch_test.go) 则通过 SQL、系统表、failpoint 和真实 Go 组件验证完整链路。
 
 ## 扩展指南
 
@@ -120,12 +114,3 @@ Go 在线实现的下游是真实 `domain.ResourceGroupsController()`、`domain.
 接入 Rust 线上执行链时，最可能新增的适配点是：从 Rust AST 构造 `QueryWatchOption`、实现基于 domain 的三个 trait、把 `Option<u64>` 写入 executor 输出，以及为系统 session/EXPLAIN 建立可清理的 `PlanDigester`。还需补充 SQL 级独立集成测试，验证持久化表、information schema、规则实际命中和 DROP 的最终一致性，而不能只复用当前内存 mock。
 
 改变 `AddExecutor` 的重试语义、digest 合法性检查或 switch group 校验会产生 Go 兼容风险；改变 `local_sha2` 或 parser include 会产生所有 Similar 规则不再匹配的高正确性风险。`local_sha2` 累积全部输入的策略通常面对短 SQL，但若接受超大文本会线性占用内存；任何优化必须用已知 Go digest 向量验证结果不变。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `query_watch.rs` 被识别出 33 个符号。
-- RustCodeGraph 源码与图查询：读取 `query_watch.rs` 全部 724 行；查询 `from_option_list`、`validate_watch_record`、`AddExecutor`、`exec_drop_query_watch`；对 `from_option_list`、`validate_watch_record`、`AddExecutor::next`、`exec_drop_query_watch`、`single_sql`、`normalize_digest` 执行 callers/callees。精确图结果确认了 `from_option_list` 的四条下游边、controller 查询边和两个删除接口边；没有得到 Rust 生产调用者。
-- crate/装配证据：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、workspace 根 `Cargo.toml`、`pkg/executor/Cargo.toml`、`pkg/lib.rs`。目标目录不存在 `doc.go`；最近的模块契约由 Rust `lib.rs` 和 Go package 文件提供。
-- Go 对照证据：[`query_watch.go`](./query_watch.go) 的 `setWatchOption`、`fromQueryWatchOptionList`、`validateWatchRecord`、`AddExecutor.Next`、`ExecDropQueryWatch`。
-- 测试证据：[`query_watch_test.rs`](./query_watch_test.rs)、[`main_test.rs`](./main_test.rs)、[`query_watch_test.go`](./query_watch_test.go)、[`main_test.go`](./main_test.go)。Rust 测试覆盖默认值、资源组/action 校验、Exact/Similar/Plan、64 字节 digest、三种删除方式、一次性状态、错误顺序、statement text 和 normalize digest；Go 测试补充完整 SQL 与系统表行为。
-- 本任务按计划只做文档分析，未运行 Cargo 或代码测试。结构验证命令及其退出状态在交付前单独执行并报告。

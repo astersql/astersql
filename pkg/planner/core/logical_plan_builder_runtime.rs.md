@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core` crate 中把解析器结果集 AST 降低为真实 `logicalop::LogicalPlanRef` 的运行时构建器。模块由 `pkg/planner/core/lib.rs:153` 私有装配；其中 `resetCTECheckForSubQuery` 与 `appendDynamicVisitInfo` 又在 `lib.rs:217` 对 crate 外重导出。默认入口 `BuildResultSetNode` 在 `pkg/planner/core/planbuilder_runtime.rs:758` 注册进 `PlanBuilder::withResultSetBuilder`，而同文件的若干 DML/查询路径直接调用 `BuildBorrowedResultSetNode`（例如 `planbuilder_runtime.rs:1018,1035,1078,1202,1655`）。因此它位于“parser AST → PlanBuilder → 逻辑算子树 → 逻辑优化规则”的主链中，而不是优化器规则本身。
-
-`pkg/planner/core/Cargo.toml` 声明 crate 名为 `astersql-planner-core`、库入口为 `lib.rs`、`autotests = false`。本文件直接使用该 crate 的 `PlanBuilder`、AST、表达式重写器与 CTE 检查逻辑，并依赖 `astersql-expression`、`astersql-expression-aggregation`、`astersql-planner-core-base`、`astersql-planner-core-operator-logicalop`、`astersql-planner-core-rule`、`astersql-util-hint`、`astersql-types` 等路径依赖。代码本身没有条件编译项；Cargo 的 `nextgen` feature 只向配置依赖透传，未在本文件形成分支。
-
-RustCodeGraph 的文件节点报告该文件共 6264 行、约 1043 个索引符号，并列出 `pkg/server/runtime.rs`、`pkg/session/runtime/planning.rs`、`pkg/store/copr/coprocessor_test.rs` 三个文件级使用者。符号级 callers/callees 对动态 trait 回调和大量同名 Go 风格方法解析不完整，所以上述入口边同时以 `lib.rs` 与 `planbuilder_runtime.rs` 的直接引用复核。
+**结果集分派与作用域管理**：`BuildResultSetNode`/`BuildBorrowedResultSetNode` 接收 AST，保存并隔离 `runtimeCTEs`，建立 handle 映射，分派 `SELECT`、集合运算、`SHOW`、`DO`，最后执行 `RecheckLogicalCTE`。
 
 ## 核心职责
 
@@ -117,19 +113,10 @@ crate 边界由 `pkg/planner/core/Cargo.toml` 复核：上述依赖均是显式�
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/planner/core/logical_plan_builder.go`（8123 行），Cargo 的 `[package.metadata.porting] go-package = "pkg/planner/core"` 也明确了移植归属。Rust 不是逐行同名：它把 Go 文件的大型 `PlanBuilder` 方法群拆成自由函数和尾部 `impl PlanBuilder`，但关键阶段可对应如下：
+Rust 不是逐行同名：它把 Go 文件的大型 `PlanBuilder` 方法群拆成自由函数和尾部 `impl PlanBuilder`，但关键阶段可对应如下：
 
-- Rust `BuildResultSetNode`/`build_query_node_with_ctes` ↔ Go `(*PlanBuilder).buildResultSetNode`（Go 第 434 行）。
 - Rust `build_select_runtime(_inner)` ↔ Go `buildSelect`（第 4290 行）；FROM/WHERE/聚合/窗口/投影/排序/LIMIT 的相对顺序和临时状态恢复均以 Go 为契约。
-- Rust `build_select_aggregation`、`build_select_projection`、窗口函数组 ↔ Go `buildAggregation`（第 255 行）、`buildProjection`（第 1805 行）、`buildWindowFunctions` 及 frame 函数组（第 6792 行以后）。
-- Rust 集合运算组 ↔ Go `buildSetOpr`、`buildUnion`、`buildUnionAll`、`buildSemiJoinForSetOperator`（第 2146–2411 行）。
-- Rust `build_join_runtime`/`build_table_source_runtime` ↔ Go `buildJoin`（第 739 行）和 `buildDataSource`（第 4960 行）。Rust 还显式承载 lateral Apply、隐藏 handle/commit-ts、hint 访问路径等已经接线的运行时逻辑。
 - Rust LIMIT/DISTINCT ↔ Go `buildLimit`（第 2607 行）和 `buildDistinct`（第 2004 行）。Rust 单测明确固定 offset/count 饱和、缺省 count 为零、FirstRow 聚合等 Go 可观察行为。
-- Rust Apply/SemiJoin/MaxOneRow ↔ Go 第 5750–5840 行的同名方法；Rust 保持 decorrelate/outer-join/semi-rewrite 标志及标量半连接输出列形状。
-- Rust `build_with_runtime`/CTE helpers ↔ Go `buildWith`、`buildProjection4CTEUnion`、`resetCTECheckForSubQuery`（第 8039 行以后）。
-- Rust `appendDynamicVisitInfo` ↔ Go 第 7730 行同名函数，均按原顺序追加动态权限检查。
-
-相关 Go 测试证据分散在 planner 测试面：`pkg/planner/core/lateral_join_test.go` 覆盖 LATERAL 生成 Apply、左侧别名可见性、外连接可空性、递归 CTE 中 lateral ORDER/LIMIT 例外及非 lateral 失败；`pkg/planner/core/logical_plans_test.go` 覆盖 ONLY_FULL_GROUP_BY、窗口和逻辑计划输出；`pkg/planner/core/preprocess_test.go` 覆盖 CTE 预处理和消费者计数幂等。Rust 侧的直接回归见下一节。文档只陈述已在当前 Rust 源码中接线的行为，不把 Go 文件其余 8123 行功能自动视为 Rust 已覆盖。
 
 ## 扩展指南
 
@@ -143,13 +130,3 @@ crate 边界由 `pkg/planner/core/Cargo.toml` 复核：上述依赖均是显式�
 - **新增公共 API**：先判断是否只需 `pub(crate)`；若 crate 外使用，再在 `lib.rs` 重导出。保持 Go 风格名称是当前移植兼容选择，不要为局部风格统一任意改名。
 
 主要风险：Schema 与 OutputNames 不同步会造成后续解析错列；列/计划 ID 顺序变化会破坏计划快照；遗漏优化标志会产生行为或性能回归；CTE/hint/outer schema 栈未恢复会污染后续查询；访问路径或类型合并简化会偏离 Go 兼容语义。任何行为修改均应先构造失败回归、再修复，并遵循仓库要求运行 `cargo fmt --all`，但本任务是纯文档分析且按计划不运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11467 文件、307296 节点、1848419 边；`files --filter pkg/planner/core/logical_plan_builder_runtime.rs` 确认目标已索引；`node --file ...` 读取 1–6264 行并取得文件级使用者；`node --symbols-only` 与按区间节点读取核对主要类型、函数和实现位置。
-- RustCodeGraph 精确调用查询：对 `BuildResultSetNode`、`BuildBorrowedResultSetNode`、`build_select_runtime`、`build_with_runtime`、`build_join_runtime`、`build_limit_runtime`、`build_distinct_runtime`、`appendDynamicVisitInfo` 运行 callers/callees。索引对动态回调只识别到有限边，因此再以直接引用补证，未把空结果外推为无调用关系。
-- 源/装配/Cargo：`pkg/planner/core/logical_plan_builder_runtime.rs`、`pkg/planner/core/planbuilder_runtime.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`。
-- Rust 独立测试：`pkg/planner/core/logical_plan_builder_runtime_test.rs`（INTERSECT/EXCEPT 与 ALL 错误）；`logical_plan_builder_runtime_aster_unit_test.rs`（LIMIT、字面量、DISTINCT）；`logical_plan_builder_lateral_with_aster_unit_test.rs`（LATERAL、递归 CTE、消费者计数）；`logical_plan_builder_test.rs` 是旧的轻量窗口结构测试，针对 `logical_plan_builder.rs`，不能替代本运行时文件的回归。
-- Go 对照：`pkg/planner/core/logical_plan_builder.go`；相关测试证据来自 `pkg/planner/core/lateral_join_test.go`、`logical_plans_test.go`、`preprocess_test.go`。最近目录没有 `doc.go`，故不存在额外包级契约可读。
-- 人工复核结论：本文件存在是为了提供已接入 `PlanBuilder` 的真实 AST→逻辑计划实现；运行方式是入口分派后按 SQL 子句逐层建树并维护 Schema/名称/状态；安全扩展必须在对应阶段保持 Go 顺序、状态栈、优化标志与独立回归测试。
-- 按任务约束，本次只生成文档，不运行 Cargo；交付前执行任务指定的固定 11 章节结构校验，并检查唯一生产物及未修改 `plan.md`。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-unistore-tikv` crate；crate 根由 `pkg/store/mockstore/unistore/tikv/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`lib.rs` 通过 `pub mod util` 公开本模块。它为进程内 mock TiKV 提供三组无状态工具：Region 右边界判断、Latch 键指纹集合构造、字节缓冲区独立拷贝。
-
-当前 Rust 生产接线主要位于 `server.rs`：`Server::with_latches` 用 `keys_to_hash_values` 为同键写操作获取和释放 Region Latch，`injected_pessimistic_deadlock` 用同一函数产生 `MvccError::Deadlock.deadlock_key_hash`。`exceed_end_key`、Mutation/user-key 转换和 `safe_copy` 已有实现与独立测试，但在当前 Rust 生产代码中未发现调用；不能据 Go 版更广的调用面宣称 Rust 已完成对应接线。
+`fingerprint64` 在本地实现 Go `github.com/dgryski/go-farm` 的 `farm.Fingerprint64`（FarmHash NA），使 Rust 生成的 Latch/死锁键哈希与 Go 位级一致。
 
 ## 核心职责
 
@@ -85,13 +83,11 @@ RustCodeGraph 对公共短名称的首次 `explore` 混入大量同名符号，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/tikv/util.go`，符号对应为 `exceedEndKey`/`exceed_end_key`、`sortAndDedupHashVals`/`sort_and_dedup_hash_values`、`mutationsToHashVals`/`mutations_to_hash_values`、`keysToHashVals`/`keys_to_hash_values`、`userKeysToHashVals`/`user_keys_to_hash_values`、`safeCopy`/`safe_copy`。
-
-两版的核心语义一致：空上界无界、非空上界按字节序比较；所有键使用 FarmHash Fingerprint64；哈希结果排序去重；复制结果不共享原缓冲区。Rust 用自包含 FarmHash NA 实现替代 Go 的 `go-farm` 依赖，并由 `util_test.rs::fingerprint_matches_go_farmhash` 的固定向量覆盖长度 `0/1/11/17/33/65/129` 的各算法路径。
+Rust 用自包含 FarmHash NA 实现替代 Go 的 `go-farm` 依赖，并由 `util_test.rs::fingerprint_matches_go_farmhash` 的固定向量覆盖长度 `0/1/11/17/33/65/129` 的各算法路径。
 
 接口差异包括：Go `keysToHashVals`/`userKeysToHashVals` 是 variadic，Rust 接收 slice；Go Mutation 是 kvproto 指针，Rust 使用本 crate 的拥有型 `mvcc::Mutation`；Go user-key 入口读取 `y.Key.UserKey`，Rust 泛型入口接收已经抽取、实现 `AsRef<[u8]>` 的视图；Go `safeCopy(nil)` 保留 nil，而 Rust slice API 没有 nil 状态。
 
-调用覆盖尚不对等：Go `mvcc.go` 广泛调用 mutation/key 哈希、边界判断和安全复制，`write.go` 使用边界判断及 user-key 哈希，`mock_region.go` 使用安全复制；当前 Rust 生产引用搜索只发现 `server.rs` 使用 `keys_to_hash_values`。这是当前迁移/接线事实，不应把已存在的工具函数等同于所有 Go 调用点均已移植。
+调用覆盖尚不对等：Go `mvcc.go` 广泛调用 mutation/key 哈希、边界判断和安全复制，`write.go` 使用边界判断及 user-key 哈希，`mock_region.go` 使用安全复制；当前 Rust 生产引用搜索只发现 `server.rs` 使用 `keys_to_hash_values`。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@ RustCodeGraph 对公共短名称的首次 `explore` 混入大量同名符号，�
 - 修改哈希集合构造时同步更新 `util_test.rs::hashes_are_sorted_deduplicated_for_keys_and_mutations`，并验证 `server.rs::Server::with_latches` 的获取/释放集合仍完全一致以及死锁错误哈希保持兼容。
 - 修改复制 API 时同步更新独立测试 `util_test.rs::safe_copy_has_independent_storage`，明确空输入与所有权语义；Rust 单元测试应继续放在独立 `util_test.rs`，不要内嵌到生产文件。
 - 性能优化应保留位级输出；可重点基准长键哈希、批量排序和重复键比例。切换哈希实现会改变并发分桶与协议可观察的死锁字段，必须视为兼容性变更。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/store/mockstore/unistore/tikv/util.rs` 确认目标文件含 20 个符号；`node --file ... --offset 1 --limit 400` 读取了完整 266 行并给出四个使用文件；精确 `query --json` 定位了各公开函数及其文件节点 ID。
-- 生产源码：`pkg/store/mockstore/unistore/tikv/util.rs`（全部公开入口与 FarmHash 私有实现）、`lib.rs`（模块公开）、`server.rs`（Latch 与死锁哈希调用）、`region.rs`（Latch 获取/释放）、`mvcc.rs`（`Mutation` 定义）。
-- crate 配置：`pkg/store/mockstore/unistore/tikv/Cargo.toml`（crate 名、lib 入口、Go 包映射及依赖边界）。
-- Go 对照：`pkg/store/mockstore/unistore/tikv/util.go`；调用面核验了同目录 `mvcc.go`、`write.go`、`mock_region.go`、`server.go` 的直接引用。
-- 测试：`pkg/store/mockstore/unistore/tikv/util_test.rs`、`server_test.rs`、`pkg/session/runtime/scan_adapter_runtime_test.rs`；另读 `pkg/store/mockstore/unistore/tikv/util_test.go` 核对 Go 的边界、排序去重与复制语义。
-- 本任务只新增说明文档，未运行 Cargo。结构由任务指定的 11 章节命令验证；人工复核区分了已实现、已接线与仅测试覆盖的结论。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`br/pkg/aws/ebs.rs`](./ebs.rs) 是 BR 的 AWS EBS 适配实现，属于独立 library crate `astersql-br-pkg-aws`。`br/pkg/aws/Cargo.toml` 把 `lib.rs` 设为 crate 根，`br/pkg/aws/lib.rs` 通过 `#[path = "ebs.rs"] pub mod ebs` 装配本文件并 `pub use ebs::*`，因此本文件的公开类型和函数就是该 crate 对外 API。
-
-在当前 Rust 生产调用链中，`br/pkg/task/restore_ebs_meta.rs::doRestore` 通过 task crate 对 `astersql-br-pkg-aws` 的路径依赖调用 `NewEC2Session`，然后按配置执行 `EnableDataFSR`、`CreateVolumes`、`WaitVolumesCreated`、`DisableDataFSR`，失败时调用 `DeleteVolumes` 清理。`CreateSnapshots`、`WaitSnapshotsCreated`、`DeleteSnapshots` 也已公开实现并有独立测试，但在排除测试后的 Rust 源码搜索中没有发现外部生产调用者；不能据此把它们描述成已接入 Rust 备份主链。
-
-本文件不是门面或桩：它包含真实 AWS SDK 适配、可注入客户端接口、EBS 元数据模型、并发调度、轮询和错误处理。门面位于相邻的 `lib.rs`。
+通过 `Ec2Client`、`CloudWatchClient` trait 隔离 AWS SDK，使编排逻辑可以注入内存客户端测试；`AwsEc2Client` 与 `AwsCloudWatchClient` 是生产同步适配器。
 
 ## 核心职责
 
@@ -113,18 +109,12 @@
 
 ## 与 Go 版本的对应关系
 
-本文件直接移植 `br/pkg/aws/ebs.go`，公开流程和关键常量基本逐项对应：
-
 - Go `EC2Session`、`VolumeAZs`、`NewEC2Session` 对应同名 Rust 符号；Rust 额外引入 `Ec2Client`/`CloudWatchClient` trait 和 `NewEC2SessionWithClients` 以支持无真实凭据测试。
-- Go `CreateSnapshots`、`createSnapshotsWithRetry`、`WaitSnapshotsCreated`、`DeleteSnapshots` 对应 Rust 同名或 snake_case helper，仍保留按 store 创建、pending-limit 重试、进度增量和 best-effort 删除语义。
-- Go `EnableDataFSR`、`waitDataFSREnabled`、`getFSRCreditBalance`、`DisableDataFSR`、`fetchTargetSnapshots` 对应 Rust 的同名公开方法及 snake_case 私有 helper，批大小、credit 时间窗/统计量、轮询间隔和冲突状态一致。
 - Go `CreateVolumes`、`WaitVolumesCreated`、`DeleteVolumes`、`HandleDescribeVolumesResponse` 对应 Rust 同名方法；AZ 选择、可选性能参数、标签前缀、FSR 检查和部分结果返回语义一致。
 - Go 直接使用 `config.EBSBasedBRMeta` 与 `glue.Progress`；Rust 为避免 crate 环依赖，在本文件定义 serde 兼容元数据和最小 `Progress` trait，由 task 层完成适配。
 - Go 使用 AWS SDK 的指针/枚举类型；Rust 用本地精简模型转换 SDK 返回值，未知状态保留在 `Other(String)`。
 - Go 使用 `util.WorkerPool`、`errgroup` 和 `atomic.Int32`；Rust 用 `WorkerPool`、`ErrorGroup`、`Mutex<i32>` 实现。两者都会等待已启动任务，但 Rust 实现没有 context 取消。
 - Go 的生产日志没有在 Rust 中逐项移植；错误字符串和返回形状承担主要诊断信息。Rust 对 AWS 空数组响应增加了显式检查，避免 Go 版索引访问可能产生的 panic。
-
-测试对应关系：`br/pkg/aws/ebs_test.go` 的进度解析、volume 状态拆分和 snapshot 完成/失败/pending 场景由 `br/pkg/aws/ebs_test.rs` 对齐；Rust 还验证 SDK service error metadata 和空 AWS ID 保留。`br/pkg/aws/parity_test.rs::go_rust_public_contract_matches` 串联重试、FSR 空输入/校验、快照与卷创建清理、标签相关恢复以及进度行为。
 
 ## 扩展指南
 
@@ -136,13 +126,3 @@
 - 修改建卷标签时，维护三类固定标签和“仅复制非 `snapshot/` 源标签”的不变量，避免标签递归增长；测试应记录传给 `CreateVolume` 的完整 tags，而不只是确认调用成功。
 - 修改并发实现时，验证令牌在成功、错误和 panic 三条路径都释放，并明确是否仍需“等待全部、返回首错”以及是否要为 FSR 批次施加 `concurrency` 上限。
 - 新增测试必须继续放在独立文件 `br/pkg/aws/ebs_test.rs` 或 `br/pkg/aws/parity_test.rs`，不要把 Rust 测试嵌入 `ebs.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件；`br/pkg/aws/ebs.rs` 被识别为 91 个符号。使用了 `status`、`files --filter br/pkg/aws`、`explore`、`query` 与按行 `node` 检查。
-- RustCodeGraph 关键边：`NewEC2Session` 的生产 Rust 调用者为 `br/pkg/task/restore_ebs_meta.rs::doRestore`；图中还确认了 `CreateSnapshots -> create_snapshots_with_retry`、`EnableDataFSR -> fetch_target_snapshots/wait_data_fsr_enabled`、`CreateVolumes -> DescribeSnapshots/CreateVolume`、等待方法到 Describe API/`Progress::IncBy` 的关系。
-- 完整阅读的目标与模块文件：`br/pkg/aws/ebs.rs`、`br/pkg/aws/lib.rs`、`br/pkg/aws/Cargo.toml`。
-- 直接入口证据：`br/pkg/task/restore_ebs_meta.rs` 与 `br/pkg/task/Cargo.toml`；源码搜索确认恢复 API 的生产调用点，并确认快照生命周期 API 当前没有排除测试后的 Rust 外部调用点。
-- Go 对照：`br/pkg/aws/ebs.go`，核对了全部同名公开流程、常量、轮询时间、错误条件和标签规则。
-- 测试证据：`br/pkg/aws/ebs_test.rs`、`br/pkg/aws/parity_test.rs`、`br/pkg/aws/ebs_test.go`。这些文件覆盖进度解析、快照状态、AWS 错误 metadata、volume 状态/FSR 校验、pending-limit 重试、清理与公开契约串联。
-- 本任务只新增文档，未运行 Cargo 或 AWS 集成调用。文档结构通过任务指定命令检查，章节数量必须恰为 11；事实复核使用本节所列静态源码、调用图、Cargo 和测试证据。

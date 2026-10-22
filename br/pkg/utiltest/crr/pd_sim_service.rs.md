@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-utiltest-crr` 测试夹具 crate 中的服务适配层。crate 入口 `br/pkg/utiltest/crr/lib.rs` 通过 `#[path = "pd_sim_service.rs"] pub mod pd_sim_service` 将它纳入编译；`br/pkg/utiltest/crr/Cargo.toml` 则表明该 crate 是对应 Go 包 `br/pkg/utiltest/crr` 的 library，并直接依赖 `streamhelper`、`streamhelper/config` 与 `utiltest/fakecluster`。它不创建 `PDSim` 的状态，而是为 `br/pkg/utiltest/crr/pd_sim.rs` 定义的 `PDSim` 补齐 checkpoint advancer 所需的 streamhelper trait 和少量 Go 兼容方法。
-
-这是一条测试基础设施路径，不是真实 PD、TiKV 或 gRPC 服务。`br/pkg/utiltest/crr/harness.rs` 构造 `PDSim` 后，把 `pd.clone()` 交给 `NewCommandCheckpointAdvancer`，并以 `&dyn StreamMeta` 调用 `Begin` 注册初始任务。因此本文件存在的直接目的，是让内存中的 fakecluster/PDSim 能以生产 streamhelper 接口参与 CRR（跨区域复制）测试线束。
+通过 `impl LogBackupService` 和 `impl LogBackupFlushIntervalGetter` 提供按 store 获取客户端、清缓存及测试用 flush 间隔。
 
 ## 核心职责
 
@@ -97,7 +95,7 @@ RustCodeGraph 对 `decode_tikv_key` 给出唯一符号 `pd_sim_service.rs::decod
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `br/pkg/utiltest/crr/pd_sim_service.go`，而 Go 的 `Stores`、`BlockGCUntil`、`UnblockGC`、`FetchCurrentTS` 位于相邻 `pd_sim.go`。Rust 将这些能力集中为 `TiKVClusterMeta` trait impl；Go 则依靠 `PDSim`/嵌入的 Cluster 方法满足接口。
+Rust 将这些能力集中为 `TiKVClusterMeta` trait impl；Go 则依靠 `PDSim`/嵌入的 Cluster 方法满足接口。
 
 语义保持部分：默认 flush 间隔取 `DefaultCommandConfig().GetResolveLockInterval()`；`Begin` 产生单个全范围 `EventAdd`；上传、读取、清空和等待全局 checkpoint 的任务校验及回滚限制一致；标识符均为 `drr-pd-sim`；真实 store 获取会 panic；两种单 region 锁操作明确不支持。Rust 的等待实现用 `Mutex + Condvar + generation` 替代 Go waiter channel，但成功上传（包括等值上传）都会唤醒等待方，保留 Go 关闭 waiter 的效果。
 
@@ -118,17 +116,3 @@ RustCodeGraph 对 `decode_tikv_key` 给出唯一符号 `pd_sim_service.rs::decod
 - 若要支持锁解析，不能只移除错误或 panic；必须提供真实 store、扫描返回数据、region 重定位与取消/重试语义，并在独立测试中覆盖 leader/epoch 变化。当前 DRR harness 明确不应扩成生产 TiKV 客户端。
 - 调整订阅线程时，应明确停止协议和 join 策略，避免长期无事件时仅丢 receiver 仍不能立即停止线程。性能关注点是每个订阅一个 OS 线程、无界 mpsc 和每批 key 解码分配。
 - 修改 `UnblockGC` 时必须保持“底层成功后才清本地 safepoint”的失败原子性；修改 checkpoint 方法时必须保持任务绑定和单调不回滚不变量。
-
-## 验证依据
-
-已核对的直接材料：
-
-- 目标源码：`br/pkg/utiltest/crr/pd_sim_service.rs`（RustCodeGraph file node，1–329 行）。
-- 状态实现：`br/pkg/utiltest/crr/pd_sim.rs`，尤其是 `PDSimState`、`PDSim`、`upload_v3_global_checkpoint`、`get_global_checkpoint`、`clear_v3_global_checkpoint`、`wait_global_checkpoint_advance`。
-- 上游接线：`br/pkg/utiltest/crr/harness.rs` 的 `newLocalTestHarness`、`start_task_listener`、`Tick` 和 `UploadGlobalCheckpoint`。
-- crate 边界：`br/pkg/utiltest/crr/lib.rs` 与 `br/pkg/utiltest/crr/Cargo.toml`；未发现该目标包的 `doc.go`。
-- Go 对照：`br/pkg/utiltest/crr/pd_sim_service.go` 全文，以及 `br/pkg/utiltest/crr/pd_sim.go` 中 `Stores`、`BlockGCUntil`、`UnblockGC`、`FetchCurrentTS`。
-- 独立 Rust 测试：`br/pkg/utiltest/crr/pd_sim_service_test.rs` 的 `log_backup_client_preserves_region_error_kind` 与 `log_backup_client_forwards_flush_subscription`；后者证明一次 `store.Flush()` 会转发单个空范围事件，checkpoint 等于任务起始 TSO。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utiltest/crr` 包含目标、Go 对照、模块入口及测试；`query decode_tikv_key --json` 返回唯一目标符号；`query SubscribeFlushEvents --json` 和 `query WaitGlobalCheckpointAdvance --json` 用文件限定消除了同名候选。精确 `callers/callees` 未产生可用输出，故动态 trait 边用上述源码接线与直接测试交叉验证。
-
-本任务是纯文档分析，未运行 Cargo。交付前另以任务指定命令校验本文恰含十一个固定二级标题，并人工复核没有把 Go 的实时 Pause、真实锁解析或生产 gRPC 能力误写成 Rust 当前已支持。

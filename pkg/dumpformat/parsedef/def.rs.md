@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-源文件 [`def.rs`](./def.rs) 是 `astersql-dumpformat-parsedef` crate 的数据定义实现，提供与 Go `pkg/dumpformat/parsedef` 对齐的行容器 `Row`、日志数组编码抽象 `ArrayEncoder`，并公开再导出 SQL 通用值类型 `Datum`。[`lib.rs`](./lib.rs) 以私有 `mod def` 装载本文件，再用 `pub use def::*` 将全部公共项暴露到 crate 根，因此外部应从 `astersql_dumpformat_parsedef::{Row, Datum, ArrayEncoder}` 使用这些类型，而不是依赖私有模块路径。
-
-[`Cargo.toml`](./Cargo.toml) 声明本 crate 仅直接依赖 `astersql-types`，并用 `package.metadata.porting.go-package = "pkg/dumpformat/parsedef"` 记录 Go 对照包。根 `Cargo.toml` 又以 `facade_dumpformat_parsedef` 引入它，`pkg/lib.rs` 将其再导出为 `pkg::dumpformat::parsedef` 门面。
-
-当前 Rust 接线需要谨慎区分“依赖已声明”和“类型已在热路径使用”：`pkg/dumpformat/parquetfile/Cargo.toml` 与 `pkg/executor/importer/Cargo.toml` 都声明了该 crate，但仓库内活跃 Rust 源码没有直接构造本文件的 `Row`。Parquet 的当前实现使用 `parser.rs::ParsedRow` 和 `file_parser.rs` 中的 `astersql_lightning_mydump::Row`；`parser.rs` 前半段保留的 `parsedef::Row` 代码是整段注释掉的迁移草稿，不是运行路径。本文件目前主要承担 Go 兼容的数据契约、公共门面和后续接线基础。
+抽象 Go `zapcore.ArrayEncoder` 所需的最小能力 `AppendString`，使日志后端可以自行提供适配器。
 
 ## 核心职责
 
@@ -103,11 +99,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go `def.go::ErrRowTooLarge` 是 `errors.NewNoStackError` 生成的共享错误值；Rust 使用等文案字符串，由各解析器包装成自身错误类型。不能以相同文本推断 Rust 具备 Go error identity 或 errors.Is 语义。
+Go `def.go::ErrRowTooLarge` 是 `errors.NewNoStackError` 生成的共享错误值；Rust 使用等文案字符串，由各解析器包装成自身错误类型。
 
-直接对照文件是 [`def.go`](./def.go)。字段逐项对应：Go `RowID int64` ↔ Rust `i64`，Go `Row []types.Datum` ↔ Rust `Vec<Datum>`，Go `Length int` ↔ Rust `isize`。两边的日志方法都按列遍历，调用 Datum 的 `String`，再调用数组编码器的 `AppendString`，最后成功返回。
-
-Rust 为保持对照特意保留 `RowID`、`Row`、`Length`、`MarshalLogArray` 与 `AppendString` 的 Go 式名称，并通过文件级 lint allowance 接受它们。语义差异主要是语言边界：
+语义差异主要是语言边界：
 
 - Go `Row` 的零值天然可用；Rust 通过 `Default` 明确复现该状态。
 - Go 结构体按值返回时 slice 头被复制、底层数组通常共享；Rust `Clone` 会克隆 `Vec<Datum>` 内容，独立测试只验证值相同，不主张共享缓冲。
@@ -123,10 +117,3 @@ Rust 为保持对照特意保留 `RowID`、`Row`、`Length`、`MarshalLogArray` 
 - 若要把当前 Parquet/importer 活跃路径统一到本 `Row`，需要同时评估 Datum 类型差异、字段命名、`Length` 类型、行池所有权与 `RecycleRow` 行为；Cargo 依赖已经存在，但这不等于转换可零成本完成。
 - 若改变 `Length` 的含义，应明确单位、是否包含容器开销以及溢出规则，并同步生产它的解析器、消费它的内存/进度逻辑和迁移测试。只改字段类型会产生兼容与跨平台风险。
 - 性能敏感点是 `Clone` 的整行复制和 `MarshalLogArray` 对每列执行字符串转换。扩展时避免在循环中增加不必要的二次格式化或额外克隆，并用独立基准/测试证明需要的新行为。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`ERR_ROW_TOO_LARGE` 与 lib.rs 再导出；`def.go::ErrRowTooLarge`、Parquet 与 mydump 消费点；`migration_aster_unit_test.rs` 是既有 Row/日志契约测试，不是新增常量检查的运行证据。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

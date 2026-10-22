@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的 session 运行时层，是 session 发起物理 KV 导入时的适配边界。它不负责 SQL 解析、导入任务规划或 SST 排序算法本身，而是把三组既有抽象接起来：`astersql_executor_importer::TableImporterRuntime`、`astersql_lightning_backend::Backend`，以及 `astersql_ingestor_ingestctrl` 的本地/外部 engine 与导入客户端接口。
-
-模块由 `pkg/session/runtime.rs` 以私有 `mod import_sst` 装配，只把 `NewImportLocalBackend` 重新导出。其余 `pub(super)` 类型和方法仅供 session runtime 的相邻模块使用。直接使用点包括文件型 `IMPORT INTO` 的 `pkg/session/runtime/import_file.rs`、查询型导入的 `pkg/session/runtime/import_query.rs`、DDL 本地回填的 `pkg/session/runtime/modify_column_backfill.rs`，以及云端全局排序回填的 `pkg/session/runtime/modify_column_cloud_executor.rs`。
-
-crate 边界由 `pkg/session/Cargo.toml` 确认：本文件直接依赖 session crate 声明的 executor importer、Lightning backend/encode/kv/mydump、ingestor ingestctrl/globalsort、DXF collector、KV、meta model、types 和 `uuid`。这些都是普通依赖，不受 `nextgen` feature 条件控制；本文件自身也没有条件编译项。
+`StoreBridge` 把 ingestctrl 的写入请求落到当前 `Domain` 持有的 KV store，同时执行取消传播、keyspace 前缀处理、目标键冲突检查和导入统计累计。
 
 ## 核心职责
 
@@ -88,9 +84,9 @@ RustCodeGraph 对 `NewImportLocalBackend` 的节点定位为 `import_sst.rs::New
 
 ## 与 Go 版本的对应关系
 
-仓库中没有 `pkg/session/runtime/import_sst.go` 的一对一 Go 文件；该 Rust 文件是把原本分散在 Go 子系统中的接口语义接入 Rust session，而不是同路径机械翻译。Go 对照证据主要来自 `pkg/lightning/backend/backend.go` 的 `Backend`/`EngineWriter` 生命周期接口、`pkg/ingestor/ingestctrl/local.go` 的 local backend 构造与 engine 生命周期，以及 `pkg/ingestor/ingestctrl/engine.go` 的 writer 行为。
+仓库中没有 `pkg/session/runtime/import_sst.go` 的一对一 Go 文件；该 Rust 文件是把原本分散在 Go 子系统中的接口语义接入 Rust session，而不是同路径机械翻译。
 
-Rust `Backend` 保留了 Go Lightning backend 的 Open/Close/Import/Cleanup/Flush/LocalWriter 形状，也让上层遵循打开 engine、写 rows、关闭、导入、清理的顺序。区别是 Rust 版本通过 crate 内 trait、`Arc`/`Mutex` 和 `CancellationToken` 组合这些能力，并让 `StoreBridge` 直接调用抽象 KV store，而 Go `ingestctrl.NewBackend` 通常从 PD/TiKV 客户端与 import client factory 构建完整后端。
+区别是 Rust 版本通过 crate 内 trait、`Arc`/`Mutex` 和 `CancellationToken` 组合这些能力，并让 `StoreBridge` 直接调用抽象 KV store，而 Go `ingestctrl.NewBackend` 通常从 PD/TiKV 客户端与 import client factory 构建完整后端。
 
 `Runtime` 对应 Go `pkg/executor/importer/table_import.go` 中 TableImporter 的 parser/encoder/engine 协作意图，但 Rust 将数据源相关能力抽成 `TableImporterRuntime`，由文件源和查询源分别实现。云端 external engine、keyspace 前缀剥离、同键同值幂等和 store 统计是当前 Rust 接线的具体行为，不能仅凭 Go backend 接口推断；应以本文件和独立 Rust 测试为准。
 
@@ -105,13 +101,3 @@ Rust `Backend` 保留了 Go Lightning backend 的 Open/Close/Import/Cleanup/Flus
 新增可变导入控制项时，沿用 `set_import_options` 的共享更新边界，并检查正在运行与下一 subtask 的可见性；若要求无竞态快照，保持“每次写入开始时 clone options”的约束。调整取消桥时必须保证限速等待和外部 reader 都能被唤醒，且所有早退路径 join 监控线程。
 
 修改 engine 生命周期或清理策略时，同步检查 `Drop for Backend`、`CleanupEngine`、`seen` 条目和临时目录。性能风险集中在全批次 KV 收集、snapshot `BatchGet`、writer 全批持锁、1 ms 取消轮询与 `BTreeSet` 内存占用；正确性风险集中在时间戳、keyspace、重复键和 option context 的跨 subtask 生命周期。
-
-## 验证依据
-
-- 主源码：`pkg/session/runtime/import_sst.rs`，逐项核对 `Progress`、`Runtime`、`StoreBridge`、`ImportMonitorStop`、`Backend`、`CloudEngine`、`CloudPool`、`Writer` 及其 trait impl。
-- 模块与上游：`pkg/session/runtime.rs`、`pkg/session/runtime/import_file.rs`、`pkg/session/runtime/import_query.rs`、`pkg/session/runtime/modify_column_backfill.rs`、`pkg/session/runtime/modify_column_cloud_executor.rs`。
-- crate 声明：`pkg/session/Cargo.toml` 的 package、feature 与相关 path dependencies。
-- 独立 Rust 测试：`pkg/session/runtime/import_sst_test.rs`。四个测试分别覆盖运行中限速更新、framework 取消唤醒物理写限速器、带 keyspace 前缀的 external engine 按 subtask 时间戳导入及 context 更新、duplicate key/value 的结构化冲突保留。
-- Go 语义参照：`pkg/lightning/backend/backend.go`、`pkg/ingestor/ingestctrl/local.go`、`pkg/ingestor/ingestctrl/engine.go`、`pkg/executor/importer/table_import.go`；仓库内未发现同路径 `pkg/session/runtime/import_sst.go`。
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件；`query NewImportLocalBackend --kind function` 定位到本文件第 514 行；`node import_sst.rs::NewImportLocalBackend` 给出源码及 `runtime.rs` 模块导入轨迹；对图未覆盖的 trait 动态分派与 Cargo/Go 内容使用 `rg` 和直接文件读取核验。
-- 本任务是纯文档分析，未运行 Cargo。结构验收要求目标文档存在，且固定的十一个二级标题各出现一次；人工复核重点是文件为何存在、三条导入路径如何运行、重复/取消/keyspace 边界以及安全扩展位置。

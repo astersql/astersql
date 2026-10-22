@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 AsterSQL 对 MySQL `DECIMAL/NUMERIC` 的定长精确十进制表示，是 Go `pkg/types/mydecimal.go` 的 Rust 对照实现。它并非由 `pkg/types/lib.rs` 直接声明为模块：`pkg/types/internal/decimal/lib.rs` 使用 `#[path = "../../mydecimal.rs"] pub mod mydecimal` 将其编入 `astersql-types-decimal`，根 crate 再通过 `pub use types_decimal as decimal` 暴露为 `astersql_types::decimal::mydecimal`。因此服务运行路径中的典型引用是 `pkg/session/runtime/row_codec.rs`、`pkg/session/runtime/relational_value.rs` 和 `pkg/executor/typed_hash_agg.rs` 对该重导出路径的使用。
-
-直接归属的内部 crate 是 `pkg/types/internal/decimal/Cargo.toml`；它依赖 `num-bigint`、`num-traits` 和 `serde_json`。根 `pkg/types/Cargo.toml` 仅以路径依赖 `types-decimal` 接入该实现，没有控制本文件行为的 feature。
+提供 SQL 执行所需的稳定编码和相等性键：`ToBin`/`FromBin` 对应 MySQL 二进制 DECIMAL，`ToHashKey` 去除无意义尾零并附加有效小数位数，使数值相同但 scale 不同的值形成同一数值键。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@ RustCodeGraph 将 `DecimalMul` 的 Rust 定义解析到本文件，并确认其�
 
 ## 与 Go 版本的对应关系
 
-主对照文件是 `pkg/types/mydecimal.go`，Rust 保留了其公开命名、字段顺序、错误分类、9 位 word 布局、显示 scale、MySQL 二进制编码和主要算法入口。`pkg/types/mydecimal_test.go` 是原始行为样例；`pkg/types/mydecimal_test.rs` 将其整数/浮点转换、round、shift、解析、hash/bin、比较、四则运算、JSON 等表驱动用例迁移为独立 Rust 测试。
+实现手段并非逐行翻译：Rust 在 scale 对齐和部分转换中使用 `BigInt`，但舍入、移位和乘法保留必要的 word 级逻辑，以免丢失 Go 的 guard digits、进位和截断元数据。Rust 以 `Result<(), DecimalError>` 代替 Go 的包级错误值，并以值返回替代若干 Go 指针返回。
 
-实现手段并非逐行翻译：Rust 在 scale 对齐和部分转换中使用 `BigInt`，但舍入、移位和乘法保留必要的 word 级逻辑，以免丢失 Go 的 guard digits、进位和截断元数据。Rust 以 `Result<(), DecimalError>` 代替 Go 的包级错误值，并以值返回替代若干 Go 指针返回。对安全性有意收紧的一点是 `FromBin` 在索引固定数组前验证畸形编码的整数 word 数。
-
-测试迁移也记录了差异：Go 的 `wordBufLen` 测试钩子是可变包级状态，Rust 始终使用生产上限 9，通过 81 位真实边界复现截断/溢出；`ModeCeiling` 不是重新定义的数学 ceiling，而是保持 Go 当前不完整的兼容行为。扩展时应以 Go 源码和两侧测试共同判定语义，不能仅凭 `BigInt` 的直觉行为替换现有 word 规则。
+测试迁移也记录了差异：Go 的 `wordBufLen` 测试钩子是可变包级状态，Rust 始终使用生产上限 9，通过 81 位真实边界复现截断/溢出；`ModeCeiling` 不是重新定义的数学 ceiling，而是保持 Go 当前不完整的兼容行为。
 
 ## 扩展指南
 
@@ -81,13 +77,3 @@ RustCodeGraph 将 `DecimalMul` 的 Rust 定义解析到本文件，并确认其�
 - 修改二进制或 hash 编码时，以 `DecimalBinSize`、`WriteBin`、`FromBin`、`ToHashKey`、`HashKeySize` 为完整变更面，并检查 `pkg/session/runtime/row_codec.rs`、聚合 spill 序列化和分组/去重消费者；字节序、负数取反、首位符号翻转及尾零归一化属于兼容协议。
 - 修改布局时必须同步 `MyDecimalStructSize`、所有结构序列化字段、内存估算调用方及布局测试。由于字段公开且 JSON 保存内部形状，字段类型/顺序/范围变化存在持久化与跨语言兼容风险。
 - 性能优化应优先做基准验证；`pkg/types/mydecimal_benchmark_test.rs` 覆盖舍入、浮点转换、二进制编码和 hash key 热路径。不得为了减少 `BigInt` 分配而简化 Go 已覆盖的容量、guard digit 或错误优先级语义。
-
-## 验证依据
-
-- 源码全貌：`pkg/types/mydecimal.rs`（1809 行），重点符号为 `MyDecimal`、`FromString`、`Shift`、`Round`、`WriteBin`、`FromBin`、`DecimalAdd`/`Sub`/`Mul`/`Div`/`Mod`。
-- 编译边界：`pkg/types/internal/decimal/lib.rs` 的 `#[path = "../../mydecimal.rs"]` 接线；`pkg/types/internal/decimal/Cargo.toml` 的 `num-bigint`、`num-traits`、`serde_json` 依赖；`pkg/types/Cargo.toml` 和 `pkg/types/lib.rs` 的路径依赖及 `decimal` 重导出。目标包没有 `pkg/types/doc.go`。
-- Go 对照：`pkg/types/mydecimal.go`；Go 测试 `pkg/types/mydecimal_test.go` 和性能测试 `pkg/types/mydecimal_benchmark_test.go`。
-- Rust 测试：`pkg/types/mydecimal_test.rs`（独立测试文件，覆盖转换、编码、舍入、比较、算术、移位、解析、JSON 和审计边界）；`pkg/types/mydecimal_9_aster_unit_test.rs`；性能面 `pkg/types/mydecimal_benchmark_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`query MyDecimal --limit 20` 定位本文件结构体和常量；`callees DecimalMul --limit 20` 与 `callees FromString --limit 20` 核实上述内部调用边。图查询同名 Go/Rust 符号时按文件路径消歧。
-- 上游代码搜索核验：`pkg/session/runtime/row_codec.rs`、`pkg/session/runtime/relational_value.rs`、`pkg/executor/typed_hash_agg.rs`、`pkg/types/parser_driver/value_expr.rs`，证明该模块经 `astersql-types-decimal` 重导出参与行编解码、SQL 十进制运算和聚合执行。
-- 本任务只新增说明文档，未运行 Cargo；交付结构检查要求文档存在且恰含本文 11 个固定二级标题。

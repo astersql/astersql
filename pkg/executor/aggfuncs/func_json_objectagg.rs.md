@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate；该 crate 由同目录 `Cargo.toml` 定义，入口是 `lib.rs`，并通过 `lib.rs::func_json_objectagg` 公开本模块。它提供 SQL `JSON_OBJECTAGG(key, value)` 所需的一种 Rust 部分聚合状态 `JsonObjectAgg`，负责把已经完成类型转换的 `(可空字符串键, SpillValue)` 流收集成对象成员表。
-
-这个文件不是完整的聚合执行器。它不负责表达式求值、字段类型/字符集检查、把结果构造成 `BinaryJSON`、向结果 chunk 写值或 spill 编解码。Rust 的 `builder.rs::build_aggregate_function` 能把 `FunctionName::JsonObjectAgg` 识别为 `AggImplementation::JsonObjectAgg`，但 RustCodeGraph 对本文件的直接使用关系只列出 `func_json_objectagg_test.rs` 和 `go_scenario_coverage_test.rs`；当前证据未显示该枚举变体会实例化本文件的 `JsonObjectAgg`。因此应把它理解为已公开、已测试的状态逻辑，而不能据此宣称完整 SQL 执行链已经接通。
+提供 SQL `JSON_OBJECTAGG(key, value)` 所需的一种 Rust 部分聚合状态 `JsonObjectAgg`，负责把已经完成类型转换的 `(可空字符串键, SpillValue)` 流收集成对象成员表。
 
 ## 核心职责
 
@@ -66,11 +64,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `JsonObjectAgg.entries` 对应 Go `partialResult4JsonObjectAgg.entries` 的成员映射；`update` 对应 `jsonObjectAgg.UpdatePartialResult` 写入 map 之后的核心覆盖逻辑；`merge` 对应 `MergePartialResult`；`reset` 对应 `ResetPartialResult`；`value_memory_delta` 对应 `getValMemDelta`。两端都遵守 NULL key 报错、重复 key 后写覆盖、update 只对新键记增量、merge 对源条目逐项记增量的意图。
+当前 Rust 文件是有意缩小的状态层，不等价于 Go 完整实现。Go `getValMemDelta` 还列出 decimal 与 `[]uint8` 分支，而 Rust `SpillValue` 不含这两个变体，因为相应值应在进入状态前完成转换。
 
-当前 Rust 文件是有意缩小的状态层，不等价于 Go 完整实现。Go 还包含 partial 分配的结构/桶内存、表达式求值、binary charset key 拒绝、`Datum` 到 JSON 值的规范化、最终 `BinaryJSON` 创建与 chunk 写入，以及 spill 的序列化/反序列化。Go `getValMemDelta` 还列出 decimal 与 `[]uint8` 分支，而 Rust `SpillValue` 不含这两个变体，因为相应值应在进入状态前完成转换。
-
-测试对应关系方面，Rust `func_json_objectagg_test.rs` 精确覆盖重复键、NULL 键、update/merge 内存口径；`go_scenario_coverage_test.rs` 提供 reset/非空结果及简单多项状态场景。Go `func_json_objectagg_test.go` 还覆盖多种字段类型组合、merge 结果、初始 map 成本和更完整的内存矩阵，这些不能由现有 Rust 状态测试替代。
+Go `func_json_objectagg_test.go` 还覆盖多种字段类型组合、merge 结果、初始 map 成本和更完整的内存矩阵，这些不能由现有 Rust 状态测试替代。
 
 ## 扩展指南
 
@@ -81,13 +77,3 @@ Rust `JsonObjectAgg.entries` 对应 Go `partialResult4JsonObjectAgg.entries` 的
 若改变重复键策略或 merge 方向，要同时评估 hash/并行 partial 合并的确定性。SQL 语义要求保留“最后遇到的值”，而并行 merge 的实际顺序需要由上层执行器提供明确保证。若需要批量原子性，则应新增显式 API 或先在临时 map 中完成校验，不能悄悄改变现有 `update` 的部分写入行为。
 
 性能风险集中在每次新键前的 `contains_key + insert` 双重查找、merge 的全量克隆以及未计入的 map 扩容；优化时必须同步校准 Go 兼容的内存记账与测试预期。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/aggfuncs/func_json_objectagg.rs`，核对了 `JsonObjectAgg`、`update`、`merge`、`reset`、`result` 和 `value_memory_delta` 的完整实现。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file ...func_json_objectagg.rs` 返回完整 78 行源码，并报告直接使用者为 `func_json_objectagg_test.rs`、`go_scenario_coverage_test.rs`；`query JsonObject` / `query ObjectAgg` 定位了结构、builder 枚举、Go 对照、测试与 spill helper 符号。
-- crate 与接线：`pkg/executor/aggfuncs/Cargo.toml`、`lib.rs`、`builder.rs::build_aggregate_function`、`aggfuncs.rs::SpillValue` / `JsonObjectPartialResult`。
-- spill 边界：`spill_serialize_helper.rs::serialize_json_object` 和 `spill_deserialize_helper.rs::deserialize_json_object`，确认它们使用 `JsonObjectPartialResult` 而非本结构。
-- Rust 测试：`pkg/executor/aggfuncs/func_json_objectagg_test.rs` 与 `pkg/executor/aggfuncs/go_scenario_coverage_test.rs`。
-- Go 对照与测试：`pkg/executor/aggfuncs/func_json_objectagg.go`、`pkg/executor/aggfuncs/func_json_objectagg_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终使用任务文件指定的命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核所有“已接线/已支持”表述均受上述直接证据约束。

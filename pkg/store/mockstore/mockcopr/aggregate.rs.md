@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 mock Coprocessor DAG 中的两个聚合执行器：`hashAggExec` 与 `streamAggExec`。它属于 Cargo crate `astersql-store-mockstore-mockcopr`；crate 入口 `pkg/store/mockstore/mockcopr/lib.rs` 以私有模块 `aggregate` 装配本文件，并在测试配置下把独立文件 `aggregate_test.rs` 纳入同一 crate。这里的实现服务于 mockstore 的存储侧下推执行，不是 SQL 层通用聚合执行器 `pkg/executor/aggregate/**`。
-
-在请求主链中，`coprHandler::handleCopDAGRequest` 先经 `buildDAGExecutor` 和 `buildDAG` 自底向上组装执行器；`coprHandler::buildExec` 遇到 `ExecutorSpec::HashAgg` 或 `ExecutorSpec::StreamAgg` 时分别调用 `buildHashAgg`、`buildStreamAgg`，然后以 `executor::SetSrcExec` 挂接前一个算子。根执行器由 `handleCopDAGRequest` 反复调用 `Next` 排空，聚合行最终交给 `fillUpData4SelectResponse` 编码（证据：`cop_handler_dag.rs` 的 `handleCopDAGRequest`、`buildDAG`、`buildExec`、`buildHashAgg`、`buildStreamAgg`）。
+两个执行器共同负责表达式求值、SQL 空值的基础聚合规则、结果行布局、上游统计透传，以及本算子的 `ExecDetail` 采集。
 
 ## 核心职责
 
@@ -95,8 +93,6 @@ HashAgg 的资源高峰发生在首次 `Next`：它排空上游，同时保留�
 
 ## 与 Go 版本的对应关系
 
-同路径 `aggregate.go` 定义同名 `aggCtxsMapper`、`hashAggExec`、`streamAggExec`，并实现同一类 `executor` 接口方法；Rust 保留了“HashAgg 全量分组、StreamAgg 遇新组输出、统计透传、执行耗时更新”的总体骨架。
-
 关键差异必须在扩展时显式考虑：
 
 - Go 的聚合函数来自 `pkg/expression/aggregation.Aggregation`，状态为 `AggEvaluateContext`，一个聚合可产生多个 partial result；Rust 固定为五种 `AggKind`，每个调用只输出一个 `Datum`。
@@ -106,7 +102,7 @@ HashAgg 的资源高峰发生在首次 `Next`：它排空上游，同时保留�
 - Go 的 `getPartialResult` 会输出 partial-result 形状并重建 aggregation context；Rust 的 `getPartialResult` 只是读取当前 `AggState`，新组状态在下一次 `Next` 开始时整体重建。
 - Rust 显式覆盖了空输入且无分组时的一行结果，并以独立测试确认 StreamAgg 的执行明细；现有 Rust 独立测试未覆盖具体聚合值、Hash/Stream 分组等价性、排序前置条件或上述 Go 完整语义。
 
-在 `pkg/store/mockstore/mockcopr` 下没有同路径 `aggregate_test.go`。当前目录的 Go 测试文件也未直接引用 `hashAggExec`/`streamAggExec`；因此 Go 行为依据主要来自 `aggregate.go` 本身，而 Rust 回归依据来自 `aggregate_test.rs`。
+当前目录的 Go 测试文件也未直接引用 `hashAggExec`/`streamAggExec`；因此 Go 行为依据主要来自 `aggregate.go` 本身，而 Rust 回归依据来自 `aggregate_test.rs`。
 
 ## 扩展指南
 
@@ -118,18 +114,3 @@ HashAgg 的资源高峰发生在首次 `Next`：它排空上游，同时保留�
 - 调整统计或重置语义时，同步检查 `append_details`、两个 `Next` 的成功/错误更新和 `executor` trait；当前独立测试专门要求空输入和上游错误都计入 iteration。
 - 测试逻辑应继续放在独立的 `pkg/store/mockstore/mockcopr/aggregate_test.rs`，不要内嵌到生产文件。建议补充：五类聚合的 NULL/空输入行为、SUM 类型与溢出、表达式错误传播、多组首次出现顺序、Hash/Stream 等价结果、Stream 无序输入契约、无 source 错误，以及 `Counts`/`ExecDetails` 链顺序。
 - 兼容风险集中于结果行列顺序和 partial-result 形状；性能风险集中于 HashAgg 双重物化和大分组键克隆；正确性风险集中于简化 `Datum` 与 Go session/collation 语义的差距。
-
-## 验证依据
-
-本说明基于以下直接证据人工复核：
-
-- 目标实现：`pkg/store/mockstore/mockcopr/aggregate.rs`（RustCodeGraph `node --file`，完整 1–399 行）。
-- crate 边界：`pkg/store/mockstore/mockcopr/Cargo.toml` 与 `pkg/store/mockstore/mockcopr/lib.rs`；前者声明 package、lib 路径、porting 元数据和依赖，后者声明模块与独立测试装配。
-- 调用主链：`pkg/store/mockstore/mockcopr/cop_handler_dag.rs` 的 `handleCopDAGRequest`、`buildDAGExecutor`、`buildDAG`、`buildExec`、`buildHashAgg`、`buildStreamAgg`。
-- trait 与上游协议：`pkg/store/mockstore/mockcopr/executor.rs` 的 `executor`、`NextRow`、`ExecDetail::update`；`pkg/store/mockstore/mockcopr/copr_handler.rs` 的 `CopError`、`Datum`、`Expr::eval`、`AggKind`、`AggCall`、`ExecutorSpec`、`ExecDetail`。
-- Go 对照：`pkg/store/mockstore/mockcopr/aggregate.go`（RustCodeGraph `node --file`，完整 1–364 行）。
-- Rust 测试：`pkg/store/mockstore/mockcopr/aggregate_test.rs`；`stream_aggregate_updates_exec_detail_on_empty_input` 验证无分组空输入与明细计数，`aggregates_update_exec_detail_when_the_source_errors` 验证 Hash/Stream 的错误调用也更新明细。
-- Go 测试检索：在 `pkg/store/mockstore/mockcopr/**/*_test.go` 中检索 `hashAggExec|streamAggExec|HashAgg|StreamAgg|aggregate` 无命中，未发现本目录直接聚合回归测试。
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录列出 27 个已索引 Go/Rust 文件，目标文件报告 44 个符号。已运行 `query hashAggExec`、`query streamAggExec`、`query update_aggregates`、`query buildHashAgg`；因常见符号重名且精确 `callers`/`callees` 未产出可用结果，调用关系以索引 `node` 展示的真实构造和调用语句复核。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证目标文档存在且恰好包含上述 11 个固定二级标题。

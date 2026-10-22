@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现行式聚合框架中的 `FIRST_ROW` 运行时聚合器。它属于 Cargo 包 `astersql-expression-aggregation`（`pkg/expression/aggregation/Cargo.toml`），由模块入口 `pkg/expression/aggregation/lib.rs` 以 `mod first_row` 纳入并通过 `pub use first_row::*` 在 crate 内外导出。
-
-它不负责 SQL 解析、返回类型推断或聚合描述符构造；这些工作分别由上游 AST/表达式层和同 crate 的 `base_func.rs`、`descriptor.rs` 完成。本文件接收已经构造好的 `aggFunction`，实现 `aggregation.rs` 定义的 `Aggregation` trait，在执行器逐行送入数据时保存第一行参数值。
+接收已经构造好的 `aggFunction`，实现 `aggregation.rs` 定义的 `Aggregation` trait，在执行器逐行送入数据时保存第一行参数值。
 
 ## 核心职责
 
@@ -72,11 +70,11 @@ RustCodeGraph 的文件节点显示 `first_row.rs` 被 `aggregation.rs`、`descr
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/first_row.go`。Rust 保留了 Go 的结构与方法边界：同名 `firstRowFunction` 包含公共 `aggFunction`；`Update` 先检查 `GotFirstRow`，再校验单参数、求值、保存并置位；`GetResult` 返回保存值；`GetPartialResult` 返回单元素切片/向量；`ResetContext` 仅更新求值上下文并清除首行标记。
+Rust 保留了 Go 的结构与方法边界：同名 `firstRowFunction` 包含公共 `aggFunction`；`Update` 先检查 `GotFirstRow`，再校验单参数、求值、保存并置位；`GetResult` 返回保存值；`GetPartialResult` 返回单元素切片/向量；`ResetContext` 仅更新求值上下文并清除首行标记。
 
 实现语言层面的差异不改变语义：Go 通过 `value.Copy(&evalCtx.Value)` 显式复制 `Datum`，Rust 将求值返回的拥有值赋给 `ctx.Value`；Go 的 `GetResult` 按值返回，Rust 用 `clone` 达到相同的所有权隔离；Go 使用接口值保存上下文，Rust 使用 `Arc<dyn EvalContext>`。
 
-测试对应关系如下：Go 的 `aggregation_test.go::TestFirstRow` 验证输入 1、2 后结果和部分结果仍为 1；Rust 的 `aggregation_test.rs::TestFirstRow` 转发到 `aggregation_aster_unit_test.rs::first_row_max_and_min_match_go_row_order_and_null_cases`，验证同一顺序行为及单元素部分结果。Rust 独立文件 `first_row_test.rs` 额外固定了 Go `ResetContext` 的细节：清除 `GotFirstRow` 但保留既有 `Value`。
+Rust 独立文件 `first_row_test.rs` 额外固定了 Go `ResetContext` 的细节：清除 `GotFirstRow` 但保留既有 `Value`。
 
 ## 扩展指南
 
@@ -85,11 +83,3 @@ RustCodeGraph 的文件节点显示 `first_row.rs` 被 `aggregation.rs`、`descr
 - 修改重置语义时必须同时更新 `ResetContext` 与独立的 `first_row_test.rs`，并先核对 Go 文件；不要无意改为公共 `aggFunction::ResetContext`，后者会清空更多字段和 `Value`。
 - 若新增字段，应判断它属于聚合器级描述信息还是分组级可变状态。后者应进入 `AggEvaluateContext` 或专用状态，并确保不同分组隔离；不要把分组状态放在共享聚合器上。
 - 测试逻辑应继续放在独立的 `first_row_test.rs` 或现有聚合测试文件中，不要内嵌进生产源文件。兼容风险主要是 Go 行为偏离和 PB 部分结果形状变化；性能风险主要是取消后续行短路、重复求值昂贵表达式或增加每行分配。
-
-## 验证依据
-
-- 源码与模块：`pkg/expression/aggregation/first_row.rs`、`aggregation.rs`、`descriptor.rs`、`lib.rs`、`Cargo.toml`。
-- Go 对照：`pkg/expression/aggregation/first_row.go`、`aggregation_test.go::TestFirstRow`。
-- Rust 测试：`pkg/expression/aggregation/first_row_test.rs::reset_context_matches_go_and_preserves_accumulated_value`、`aggregation_test.rs::TestFirstRow`、`aggregation_aster_unit_test.rs::first_row_max_and_min_match_go_row_order_and_null_cases`、`agg_to_pb_test.rs` 中的 FIRST_ROW/`tipb::ExprType::First` 映射用例。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query firstRowFunction --json` 定位 Rust 结构为 `first_row.rs::firstRowFunction`；目标文件节点报告由 `aggregation.rs` 与 `descriptor.rs` 使用；`query GetAggFunc --json` 和 `query NewAggFuncDesc --json` 定位描述符构造链。对同名 `Update`/`ResetContext` 的宽泛探索会混入仓库其他模块，因此具体动态分派关系以目标文件节点、精确工厂分支和测试调用为准。
-- 人工复核结论：本文件存在是为了在统一行式聚合接口下保存每组第一行的参数值；安全扩展必须保持 NULL 也算首行、成功后短路、求值错误不置位、部分结果为单值以及 Go 式重置行为。

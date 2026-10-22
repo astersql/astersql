@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`misc.rs` 是 `astersql-parser` crate 的词法支撑文件。它不是独立 Rust 模块，而是由 [`pkg/parser/lib.rs`](lib.rs) 的 `parser_impl::lexer_support` 通过 `include!("misc.rs")` 嵌入，因此可以直接使用同一作用域中的 `Scanner`、`Pos`、`token::*`、Hint token 常量以及 `lexer.rs` 定义的扫描函数。Cargo 边界见 [`pkg/parser/Cargo.toml`](Cargo.toml)：crate 名为 `astersql-parser`，库入口是 `lib.rs`，该清单没有为本文件设置条件 feature。
-
-它处在“SQL 字节流 → 词法 token → 生成语法分析器”的前半段：[`pkg/parser/lexer.rs`](lexer.rs) 的 `Scanner::scan` 使用这里的 `ruleTable` 选择扫描函数或运算符 token，`Scanner::Lex` 再调用这里的 `Scanner::isTokenIdentifier` 把普通 identifier 提升为关键字、内建函数或窗口函数 token。优化器 Hint 的 lexer 则由 [`pkg/parser/hintparserimpl.rs`](hintparserimpl.rs) 查询 `hintTokenMap`。
+只做词法分类和映射，不构造 AST、不决定语法是否合法，也不直接生成用户可见错误；后续语法接受/拒绝由 parser 生成代码负责。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ Hint 路径不走 `isTokenIdentifier` 的三级判断：`hintparserimpl.rs` 对 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/parser/misc.go`](misc.go)。Rust 保留了 Go 的字符规则、运算符/扫描函数注册内容、关键字与 Hint 表内容，以及 `isTokenIdentifier` 的限定名、ASCII 大写化、`IGNORE_SPACE` 和窗口函数开关流程。
+Rust 保留了 Go 的字符规则、运算符/扫描函数注册内容、关键字与 Hint 表内容，以及 `isTokenIdentifier` 的限定名、ASCII 大写化、`IGNORE_SPACE` 和窗口函数开关流程。
 
 实现形态有四项明确差异：
 
@@ -92,7 +90,7 @@ Hint 路径不走 `isTokenIdentifier` 的三级判断：`hintparserimpl.rs` 对 
 - Go 的关键字表是 map/set，Rust 为有序静态切片并由 `lookup_token`/`contains` 查询；Rust 的 `aliases` 是显式二元组表，`hintedTokens` 是 token 切片。语义目标相同，但 Rust 查询复杂度为线性。
 - Go 用预计算 `[256]bool` 实现 `isUserVarChar`，Rust 直接复用谓词计算；允许字符集合一致。
 
-这些差异属于移植实现选择，不表示 Rust 可以缩减 Go 表项。表项或分支变化应先与同路径 Go 文件和 grammar 事实对照。
+这些差异属于移植实现选择，不表示 Rust 可以缩减 Go 表项。
 
 ## 扩展指南
 
@@ -101,11 +99,3 @@ Hint 路径不走 `isTokenIdentifier` 的三级判断：`hintparserimpl.rs` 对 
 新增运算符或特殊前缀时，修改 `buildRuleTable` 中恰当的单字节、字符串或函数注册段；确认共享前缀的最短和最长形式都正确，且扫描函数应挂在每个首字节还是多级路径。新增 Hint 时同步 `hintTokenMap`；若要允许新语句承载 Hint，还需评估 `hintedTokens` 和 `lexer.rs` 的 Hint 启动逻辑。
 
 测试逻辑必须继续放在独立文件。最直接的回归位置是 [`pkg/parser/misc_2_aster_unit_test.rs`](misc_2_aster_unit_test.rs)；表与 grammar 关系使用 [`pkg/parser/consistent_test.rs`](consistent_test.rs)，保留字例外使用 [`pkg/parser/reserved_words_test.rs`](reserved_words_test.rs)，公开 Parser/摘要路径的词法行为使用 [`pkg/parser/lexer_test.rs`](lexer_test.rs)。兼容风险主要是 token 编号或分类变化导致语法含义改变；性能风险主要是线性表继续增长；限定名和 SQL mode 分支必须与 Go 保持一致。
-
-## 验证依据
-
-- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/misc.rs`，并用 `git show 2c944fb:pkg/parser/misc.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
-- Go `misc.go` 对应 RESULT/RETURN token 映射一致。Rust `parser_test.rs::recommend_index_return_result_ast_is_read_only` 从完整 SQL 解析到主推荐 AST；`misc_2_aster_unit_test.rs`、`consistent_test.rs` 提供既有映射/词法一致性基线。未运行 parser 生成或测试。
-- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
-- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
-- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

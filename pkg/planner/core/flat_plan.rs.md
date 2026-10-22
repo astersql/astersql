@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 将该 crate 的入口设为 `lib.rs`；`pkg/planner/core/lib.rs` 以私有模块 `mod flat_plan` 装入本文件，再通过 `pub use flat_plan::*` 对外导出其公开符号。它处在“物理计划树 → 可线性遍历的计划表示 → 编码、EXPLAIN 或 statement RU 统计”的转换边界。
-
-文件同时维护两套用途不同的表示：`TypedFlatPhysicalPlan`/`TypedFlatOperator` 借用真实 `base::Plan` trait object，供执行器按具体算子类型计算 statement RU；`FlatPhysicalPlan`/`FlatOperator` 拥有轻量 `PlanNode` 摘要，供 Rust 侧计划编码、摘要和 EXPLAIN 展示。两套表示不能互换：前者保留可 downcast 的具体算子和请求类型，后者保留展示字段并可克隆。
+`FlattenTypedPhysicalPlanForest` 在主树之外收集 CTE 定义和注册的标量子查询，形成 statement RU 所需的完整森林；CTE 按 `IDForStorage` 去重。
 
 ## 核心职责
 
@@ -76,13 +74,9 @@ typed 结构通过生命周期借用原始计划，不能比 `plan`、CTE 定义
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/flat_plan.go`，展示与 RU 对照还涉及 `pkg/planner/core/common_plans.go`。两端共同遵守前序展开、children 下标、reader 执行站点、join Build/Probe、CTE Seed/Recursive、DML SELECT 与外键尾部以及 Execute/Explain 解包等核心语义。
-
-typed Rust 路径最接近 Go 的 `FlatPhysicalPlan`：它保留真实算子，支持多棵 CTE/标量子查询树，并覆盖 reader、DML、外键、shuffle 等特殊孩子。Rust 摘要路径则是额外的轻量表示；其 `FlatPhysicalPlan` 当前把 `CTE`、`ScalarSubQ` 各表示为单个向量，且 `FlattenPhysicalPlan` 只自动生成 `Main`，所以不能声称与 Go 的 `CTEs []FlatPlanTree`、`ScalarSubQueries []FlatPlanTree` 完全等价。
+Rust 摘要路径则是额外的轻量表示；其 `FlatPhysicalPlan` 当前把 `CTE`、`ScalarSubQ` 各表示为单个向量，且 `FlattenPhysicalPlan` 只自动生成 `Main`，所以不能声称与 Go 的 `CTEs []FlatPlanTree`、`ScalarSubQueries []FlatPlanTree` 完全等价。
 
 仍需注意的可见差异包括：Go `FlatOperator` 保存 `ReqType`、`ChildrenEndIdx`、`TextTreeIndent`、`IsINLProbeChild` 和 `IsPhysicalPlan`，Rust 摘要算子没有这些字段；Go row EXPLAIN 遍历 main、所有 CTE 与所有标量子查询，Rust `ExplainFlatPlanInRowFormat` 当前只遍历 `Main`；Go 字节格式化和运行时统计由更完整的 formatter/provider 处理，Rust 摘要实现只提供 Bytes/KB 与已存入 `PlanNode` 的字段。文档将这些视为当前迁移边界，而不是预期设计。
-
-`pkg/planner/core/flat_plan_test.rs` 验证 DML/FK 切片、标签字符串、right outer merge join、root 继承、RU 有值/无值和 RuntimeAnalyze/RuntimeSimple typed 叶节点。`pkg/planner/core/casetest/flatplan/flat_plan_test.rs` 以手工 `PlanNode` 树覆盖单表、HashJoin 重排、CTE 标签、嵌套层级和文本前缀；对应 Go `flat_plan_test.go` 则通过 parser→resolve→optimizer→flatten 的真实 SQL/golden 链路验证主树及多棵 CTE。
 
 ## 扩展指南
 
@@ -92,13 +86,3 @@ typed Rust 路径最接近 Go 的 `FlatPhysicalPlan`：它保留真实算子，�
 - 扩展 EXPLAIN 列时，要明确 row/analyze/verbose/RU 的列顺序，并同步 `Explain::RenderResult`、编码消费者与 Go 输出契约。RU 仍应按 occurrence 对齐，不能退化成以 plan ID 为 key。
 - 测试逻辑应放在独立文件：核心回归优先补 `pkg/planner/core/flat_plan_test.rs`；SQL/golden 语义补 `pkg/planner/core/casetest/flatplan/flat_plan_test.rs` 及对应测试数据；typed statement RU 的 reader/CTE/标量子查询覆盖补 `pkg/executor/statement_ru_plan_walk_test.rs`。不要把测试内嵌回本生产文件。
 - 性能风险集中于大树递归深度、`Vec` 多次增长、摘要 `PlanNode` 克隆以及 `build_side_first` 排序；兼容风险集中于 EXPLAIN 文本、下标稳定性、Go 标签/顺序和远端执行站点判定。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；读取 `node --file pkg/planner/core/flat_plan.rs` 得到完整 824 行源码。
-- RustCodeGraph 查询：`explore "pkg/planner/core/flat_plan.rs symbols responsibilities callers callees FlatPlan FlatOperator"`；`callees FlattenTypedPhysicalPlanForest`；`callees FlattenTypedPhysicalPlan`；`callees ExplainFlatPlanInRUFormat`；并尝试对六个公开入口执行 callers 查询。精确 callers 无输出时，以索引的 “used by 6 files” 结果和仓库引用搜索补齐调用点。
-- 已读 Rust 生产路径：`pkg/planner/core/flat_plan.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/common_plans.rs`、`pkg/planner/core/encode.rs`、`pkg/executor/adapter.rs`；调用关系还由 RustCodeGraph 指向 `pkg/executor/statement_ru_plan_walk.rs`。
-- 已读边界声明：`pkg/planner/core/Cargo.toml`；该包不存在 `pkg/planner/core/doc.go`。
-- 已读 Go 对照：`pkg/planner/core/flat_plan.go`、`pkg/planner/core/common_plans.go`、`pkg/planner/core/casetest/flatplan/flat_plan_test.go`。
-- 已读独立 Rust 测试：`pkg/planner/core/flat_plan_test.rs`、`pkg/planner/core/common_plans_test.rs`、`pkg/planner/core/casetest/flatplan/flat_plan_test.rs`；引用搜索还确认 `pkg/planner/core/plan_test.rs`、`encode_test.rs`、`logical_plans_test.rs` 和 `pkg/executor/statement_ru_plan_walk_test.rs` 的覆盖点。
-- 本任务是纯文档分析，依计划不运行 Cargo。交付前使用任务规定的 `rg -c` 命令验证恰有 11 个固定二级章节，并人工复核所有“已支持”描述均能回指上述源码、调用边、Go 对照或独立测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-testkit-analyzehelper` crate 的行为实现，服务于 ANALYZE、统计信息与谓词列收集相关测试。crate 入口 `pkg/testkit/analyzehelper/lib.rs` 声明 `helper` 模块，并通过 `pub use helper::*` 将本文件的三个公开项重新导出；仓库总门面 `pkg/lib.rs` 又在 `testkit::analyzehelper` 下转出该 crate。
-
-它不是 SQL 执行器或统计模块的生产实现，而是一个测试辅助边界：调用方提供“执行 SQL”和“将列统计用量写入 KV”的运行时能力，本文件负责以固定顺序编排这两个动作。`pkg/testkit/analyzehelper/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/testkit/analyzehelper`，并声明 `astersql-kv`、`astersql-session`、`astersql-testkit` 三个路径依赖；不过当前 `helper.rs` 本身没有直接引用这些 crate，真实会话/Domain 适配尚未在本文件中接线。
+`AnalyzeError` 为适配层提供最小、可比较且实现标准错误接口的消息错误，并让底层执行或持久化失败原样向上返回。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ SQL 字符串在单次循环迭代中创建，并在 `execute` 返回后释放�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/testkit/analyzehelper/helper.go`。两版共有的核心语义是：保持列顺序；每列执行 `SELECT * FROM <table> WHERE <column> = '1'`；所有查询成功后只调用一次列使用落盘；即使列集合为空也会落盘。
-
-接口层存在有意差异。Go 函数直接接收 `*testing.T`、`*testkit.TestKit` 和 `kv.Storage`，先通过 `session.GetDomain(store)` 获取 Domain，再取 `StatsHandle`；SQL 用 `tk.MustExec` 执行，错误通过 `require.NoError`/测试失败终止。Rust 版不依赖测试框架终止流程，而是要求调用者实现 `AnalyzeRuntime`，并以 `Result<(), AnalyzeError>` 显式传播错误。这让顺序与失败路径可独立测试，但也意味着 Rust 文件尚未包含 Go 版的真实 TestKit/Storage/Domain 适配和 `GetDomain` 失败分支。
+接口层存在有意差异。Rust 版不依赖测试框架终止流程，而是要求调用者实现 `AnalyzeRuntime`，并以 `Result<(), AnalyzeError>` 显式传播错误。这让顺序与失败路径可独立测试，但也意味着 Rust 文件尚未包含 Go 版的真实 TestKit/Storage/Domain 适配和 `GetDomain` 失败分支。
 
 Go 版使用可变参数 `columns ...string`，Rust 版使用 `&[String]`。Go 的测试调用点已经覆盖统计集成、统计句柄与 executor analyze 场景；Rust 的同类迁移测试目前多以内联步骤完成，不能据此声称 helper 已在所有对应场景复用。
 
@@ -84,12 +80,3 @@ Go 版使用可变参数 `columns ...string`，Rust 版使用 `&[String]`。Go �
 - 若允许不可信标识符，应引入仓库既有的 SQL 标识符转义方案，并为数据库名、限定表名、保留字、反引号和注入文本添加独立回归测试；直接拼接用户输入不安全。
 - 若改成异步或并行执行，需要先定义查询顺序、首错语义、部分成功后的 dump 策略和运行时线程安全约束。并行化还可能改变列使用记录的可观察顺序，当前测试契约不允许无依据地这样做。
 - Rust 测试必须继续放在独立的 `helper_aster_unit_test.rs`，不要内嵌到 `helper.rs`。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/testkit/analyzehelper/helper.rs`、`pkg/testkit/analyzehelper/lib.rs`、`pkg/testkit/analyzehelper/Cargo.toml`、`pkg/lib.rs`。
-- 独立 Rust 测试：`pkg/testkit/analyzehelper/helper_aster_unit_test.rs`，覆盖生成 SQL与事件顺序、空列、查询失败短路和 dump 失败传播。
-- Go 对照与调用证据：`pkg/testkit/analyzehelper/helper.go`；使用 `rg` 找到 `pkg/statistics/integration_test.go`、`pkg/statistics/handle/**` 与 `pkg/executor/test/analyzetest/**` 中的调用。
-- Rust 迁移现状：使用 `rg` 检查 `TriggerPredicateColumnsCollection` 与 `trigger_predicate_columns_collection`，并读取 `pkg/statistics/handle/updatetest/update_test.rs`、`pkg/statistics/handle/handletest/analyze/analyze_test.rs`、`pkg/statistics/handle/handletest/handle_test.rs`、`pkg/statistics/handle/storage/gc_test.rs` 的相关片段。
-- RustCodeGraph：`status` 显示本地索引包含 11,467 个文件、307,296 个节点；`query TriggerPredicateColumnsCollection --kind function` 同时定位 Go `helper.go:28` 与 Rust `helper.rs:45`；`query AnalyzeRuntime --kind trait` 定位本文件 trait；`query AnalyzeError --kind struct` 区分本文件类型与仓库其他同名错误。`explore/files/node` 与后续 `callers/callees/node` 组合未返回可用输出或超时，因此调用点以 `rg` 和原始文件读取补证，没有把缺失图边解释成“无调用者”。
-- 结构验收应执行任务指定命令，确认文件存在且恰好包含十一个固定二级标题。本任务是纯文档分析，按计划不运行 Cargo。

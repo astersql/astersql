@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-dxf-framework-storage`，不是一个独立的 Rust 模块：crate 根 `pkg/dxf/framework/storage/lib.rs` 通过 `include!("nodes.rs")` 将它直接展开到 crate 根作用域。因此这里的自由函数和 `impl TaskManager` 方法都是 storage crate 的公开 API，可直接使用 `astersql_dxf_framework_storage::GetDXFCPUCount`、`TaskManager::GetAllNodes` 等路径访问。
-
-它位于 DXF（分布式执行框架）的持久化边界，连接三类信息：进程内的本机资源快照、`mysql.dist_framework_meta` 中的受管节点记录，以及 `mysql.tidb_background_subtask` 中用于调度判断的执行节点/并发信息。节点记录经 `pkg/dxf/framework/scheduler/storage_adapter.rs` 提供给调度器，经 `pkg/dxf/framework/handle/status.rs` 提供给状态查询；执行器启动与恢复路径则通过 `pkg/dxf/framework/taskexecutor/manager.rs` 更新本机记录。
+位于 DXF（分布式执行框架）的持久化边界，连接三类信息：进程内的本机资源快照、`mysql.dist_framework_meta` 中的受管节点记录，以及 `mysql.tidb_background_subtask` 中用于调度判断的执行节点/并发信息。
 
 ## 核心职责
 
@@ -83,13 +81,13 @@ CPU 查询只接受严格大于零的 `CPUCount`。存在节点不代表一定�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/storage/nodes.go`。Rust 保留了 Go 的 SQL 结构、状态过滤、host 排序、两阶段 slot 聚合、错误文案，以及 `InitMeta` 更新 role 而 `RecoverMeta` 不更新 role 的关键差异。`pkg/dxf/framework/storage/Cargo.toml` 的 `package.metadata.porting.go-package` 也将该 crate 映射到 `pkg/dxf/framework/storage`。
+Rust 保留了 Go 的 SQL 结构、状态过滤、host 排序、两阶段 slot 聚合、错误文案，以及 `InitMeta` 更新 role 而 `RecoverMeta` 不更新 role 的关键差异。
 
 主要语言映射如下：Go 的 `atomic.Pointer<NodeResource>` 对应 Rust 的 `RwLock<Option<NodeResource>>`；Go 指针返回对应 Rust 字段复制后的 owned 值；Go `[]ManagedNode` / `map[string]int` 对应 Rust `Vec<ManagedNode>` / `HashMap<String, i32>`；Go `defer r.End()` 对应 Rust 在错误传播前显式调用 `r.End()`。
 
-两处当前实现差异需要扩展者留意。第一，Go 包级 `init()` 会自动执行，而 Rust 的同名函数只是普通函数；Rust 静态值已直接设置为相同默认资源，因此当前默认行为一致。第二，Go 的初始 `atomic.Pointer` 在 `init` 前语义上可为 nil，Rust 静态初始化后立即为 `Some`，且公开 setter 不能清空它。
+两处当前实现差异需要扩展者留意。第一，Go 包级 `init()` 会自动执行，而 Rust 的同名函数只是普通函数；Rust 静态值已直接设置为相同默认资源，因此当前默认行为一致。
 
-Go 的真实表回归 `table_test.go::TestDistFrameworkMeta` 验证了排序、角色更新/保留、删除、无节点/无有效资源错误和按角色选 CPU；`TestInitMeta` 验证 service scope 交互。Rust 侧 `converter_1_aster_unit_test.rs::node_queries_preserve_order_role_filter_and_slot_aggregation` 与 `table_test.rs::TestGetUsedSlotsOnNodesAndBusyNodes` 验证 SQL 结果映射、slot 聚合、忙碌节点及角色过滤。Rust 测试目前不是 Go 全部节点生命周期用例的一比一复刻，不能把 Go 独有覆盖视作 Rust 已执行验证。
+Rust 测试目前不是 Go 全部节点生命周期用例的一比一复刻，不能把 Go 独有覆盖视作 Rust 已执行验证。
 
 ## 扩展指南
 
@@ -100,11 +98,3 @@ Go 的真实表回归 `table_test.go::TestDistFrameworkMeta` 验证了排序、�
 - 修改死亡节点删除方式时，优先改为参数化、可验证的 SQL 构造，同时维持空输入短路与事务原子性；调用方识别死亡节点的策略仍应留在 scheduler。
 - 资源快照新增字段或允许清空时，应重新定义 `GetNodeResource` 的复制语义、锁中毒策略及注册时一致性，并把测试放在独立测试文件（现有最近位置为 `converter_1_aster_unit_test.rs` 或 `table_test.rs`），不要嵌入生产源文件。
 - 任何行为迁移都应以 `nodes.go` 和相关 Go 测试为语义基线；本任务仅说明现状，不建议为简化 Rust 实现而删减 Go 分支。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/dxf/framework/storage` 确认 `nodes.rs`、Go 对照与相关测试均在索引中；`node --file pkg/dxf/framework/storage/nodes.rs --offset 1 --limit 400` 读取了完整 272 行源码及 8 个使用文件摘要；另读取了 taskexecutor manager、scheduler storage adapter 与 handle status 的索引节点。具名 `callers GetAllNodes` 未返回边，结合 `include!` 形态判断该查询覆盖不足，随后以精确源码引用补证。
-- 生产源码：`pkg/dxf/framework/storage/nodes.rs`、`lib.rs`、`task_table.rs`，`pkg/dxf/framework/proto/node.rs`，`pkg/dxf/framework/taskexecutor/manager.rs`，`pkg/dxf/framework/scheduler/storage_adapter.rs`、`autoscaler.rs`，`pkg/dxf/framework/handle/status.rs`。
-- crate/移植边界：`pkg/dxf/framework/storage/Cargo.toml`；Go 对照：`pkg/dxf/framework/storage/nodes.go`、`pkg/dxf/framework/proto/node.go`。
-- 独立测试：Rust 的 `pkg/dxf/framework/storage/converter_1_aster_unit_test.rs`、`pkg/dxf/framework/storage/table_test.rs`；Go 的 `pkg/dxf/framework/storage/table_test.go`。本任务遵循纯文档约束，未运行 Cargo 或代码测试。
-- 人工复核结论：该文件存在是为了把本机 DXF 资源与系统表中的节点/活跃子任务状态转换成调度可消费的存储 API；安全扩展必须同时维护 SQL、行映射、role 恢复不变量、session/事务边界以及独立测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-sessionctx-variable` crate 的内置系统变量注册表实现。模块由 [`lib.rs`](./lib.rs) 公开为 `sysvar_builtins` 并整体再导出；crate 边界及依赖见 [`Cargo.toml`](./Cargo.toml)。它不负责解析 `SET` 语句，而是把变量名、默认值、作用域、类型、上下界以及验证/读写钩子组装成 `SysVar`，再交给 `RegisterSysVar` 写入 crate 级注册表。
-
-应用启动和会话构造通过 `register_builtin_sysvars()` 保证这些定义可见。直接入口包括 `variable.rs` 的注册表初始化、`session.rs` 的会话变量初始化、`pkg/session/hint_runtime.rs` 的 hint 桥接，以及 `pkg/session/runtime/session.rs` 的运行时启动接线。文件末尾的 `set_global_system_var()` 是测试和内部接线使用的“验证、执行全局钩子、持久化”组合入口；正常 SQL 控制流也会调用已注册 `SysVar` 的同类钩子，而非在本文件解析 SQL。
+应用启动和会话构造通过 `register_builtin_sysvars()` 保证这些定义可见。
 
 ## 核心职责
 
@@ -99,17 +97,13 @@ RustCodeGraph 将该文件标记为被 `pkg/session/runtime/planning.rs`、`pkg/
 
 ## 与 Go 版本的对应关系
 
-Go 的主要对照是 [`variable.go`](./variable.go) 与 [`sysvar.go`](./sysvar.go)：前者定义 `SysVar` 注册表、锁和 `RegisterSysVar`/`GetSysVar`，后者集中定义默认系统变量及验证、session/global hook。本 Rust 文件把 Go 的单一大表按职责拆成多个 `register_*` 函数，但仍保持 `Scope`、类型、默认值、上下界、alias、hint 可更新标志和 hook 语义。
-
-对应关系不是逐行复刻：
+本 Rust 文件把 Go 的单一大表按职责拆成多个 `register_*` 函数，但仍保持 `Scope`、类型、默认值、上下界、alias、hint 可更新标志和 hook 语义。
 
 - Rust 用 `Once` 完成延迟幂等注册，并通过构造器减少表项样板；Go 使用包级表和 `RWMutex`。
 - Go 的 noop 表在 Rust 中由 `noop.rs` 静态元数据转换，且只补缺失定义。
-- Go 进程级变量常由原子封装或 package global 保存；Rust 对应为本文件原子量或 `vardef` 动态状态。
 - Rust 明确保留若干兼容退化行为，如 merge concurrency 固定为 `1`、index join build v2 固定开启、disable txn auto retry 固定为 `ON`。
-- 外键共享锁的 persisted value 可在初始化时读取，但用户 `SET` 仍受 next-gen 配置门控；这与 Go `sysvar.go` 中的 validation/getter 设计一致。
 
-直接 Go 测试证据位于 [`sysvar_test.go`](./sysvar_test.go)：覆盖 server memory limit、GC trigger 以及 foreign-key shared-lock gate。Rust 的独立测试没有嵌入生产文件，而位于 [`sysvar_builtins_test.rs`](./sysvar_builtins_test.rs)；它核对 hash join auto 值、GOGC 严格次序、CDC source、DDL scope/write speed、全局 hook、MLog、paging、fix control 和废弃变量行为。
+Rust 的独立测试没有嵌入生产文件，而位于 [`sysvar_builtins_test.rs`](./sysvar_builtins_test.rs)；它核对 hash join auto 值、GOGC 严格次序、CDC source、DDL scope/write speed、全局 hook、MLog、paging、fix control 和废弃变量行为。
 
 ## 扩展指南
 
@@ -122,11 +116,3 @@ Go 的主要对照是 [`variable.go`](./variable.go) 与 [`sysvar.go`](./sysvar.
 5. 兼容项应优先完整实现；只有无运行效果的变量才进入 noop 元数据。不要让 noop 后注册覆盖真实定义。
 6. 同步修改独立测试 `sysvar_builtins_test.rs`；若行为来自 Go，还应核对 `sysvar.go` 与 `sysvar_test.go` 的默认值、warning、钳制和 hook 顺序。测试全局状态时必须恢复原值，必要时串行执行。
 7. 性能风险主要来自高频 session getter/setter 中的分配、锁或配置读取；正确性风险主要来自字符串 map 与强类型字段不一致、全局 hook 与持久化非原子、别名定义漂移及跨变量不变量失配。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/sysvar_builtins.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/sysvar_builtins.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：`sysvar_builtins_test.rs::range_count_threshold_sysvar_matches_go_contract` 与 `sampled_ndv_threshold_sysvar_updates_global_atomic_state` 核对正式定义、scope、Hint 标志、负值 warning、global 原子写读与测试后恢复；Go `sysvar.go` 的同名项提供对照。
-- 已核对：`pkg/sessionctx/variable/Cargo.toml`、`lib.rs`、`variable.rs`、`session.rs`、`sysvar_builtins_test.rs`、Go `variable.go`、`sysvar.go`、`sysvar_test.go`，以及直接调用点 `pkg/session/hint_runtime.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/control.rs`。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

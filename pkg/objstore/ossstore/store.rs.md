@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-ossstore` crate 的存储构造层：它把兼容 BR protobuf 的 `s3like::backuppb::S3` 配置、`storeapi::Options` 和 OSS 凭证组合成 `OSSStore`。真正的对象请求由同 crate 的 `Client` 和 `AliyunOssApi` 执行，本文件负责其之前的凭证选择、桶地域探测、endpoint 选择、权限预检，以及其之后的资源关闭。
-
-`pkg/objstore/ossstore/lib.rs` 通过 `mod store; pub use store::*;` 导出这里的公开符号；crate 边界和依赖见 `pkg/objstore/ossstore/Cargo.toml`。根 `Cargo.toml` 以 `facade_objstore_ossstore` 登记该 crate，但当前 Rust 生产源码搜索不到 `NewOSSStorage` 的静态调用。统一入口 `pkg/objstore/storage.rs::New` 对网络后端使用 `Options::external_factory`，因此这里是可供集成工厂调用的完整 OSS 实现，不能据现有静态边声称它已由统一入口直接接线。
-
-对应的 Go 实现是 `pkg/objstore/ossstore/store.go`。Rust 文件不是门面或桩：`NewOSSStorage` 包含真实联网探测和资源管理逻辑；只有 `new_oss_storage_for_test` / `new_oss_store_for_test` 是绕过网络的测试构造入口。
+仅当凭证提供者表明其来自 ECS RAM Role、元数据给出的 ECS 地域非空且与桶地域相同，才选择 OSS 内网 endpoint；自定义 `Endpoint` 始终优先。
 
 ## 核心职责
 
@@ -106,13 +102,13 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `OSSStore`、`URI`、`Close`、`NewOSSStorage`、`set_backend_credentials`、地域裁剪和内网判定分别对应 `store.go` 的同名或 snake_case 等价实现。两版共同保持以下语义：复制 backend 后构造、静态与默认凭证二选一、可选回填凭证、Bucket Location 探测、显式地域校验、同区 ECS 内网优化、Prefix 规范化、权限预检、动态凭证刷新，以及关闭刷新器。
+Rust `OSSStore`、`URI`、`Close`、`NewOSSStorage`、`set_backend_credentials`、地域裁剪和内网判定分别对应 `store.go` 的同名或 snake_case 等价实现。
 
 实现依赖不同：Go 使用 Alibaba Cloud OSS SDK v2 与 `credentials-go`，Rust 使用 `ali-oss-rs` 和 reqsign 默认链。Rust 的 `build_api` 显式构造数据与预签名 API；Go 用 `newPresignClient` 复制配置、强制公网并关闭 SDK 日志以避免预签名 query 中凭证被原始日志暴露。Rust 代码能确认公网预签名 endpoint 的分离，但本文件没有与 Go `LogOff` 完全同形的日志开关，日志安全性需要继续在 `AliyunOssApi`/SDK 层核验，不能宣称完全等价。
 
-另一个差异是 Go `NewOSSStorage` 直接从默认 provider 返回的 `ProviderName` 判断 ECS 来源；Rust `ReqsignCredentialsProvider::get_credentials` 在 `credential.rs` 当前将 `provider_name` 写为 `reqsign_default`。因此仅凭当前直接源码，动态 reqsign 路径是否能触发 `metadata_region` 的 ECS 分支存在迁移差异：条件函数本身已实现，但 provider 名传播未体现 Go 的串联 provider 名。扩展或修复时应先确认 reqsign 是否另有来源信息，不能假设自动内网选择已与 Go 完全对齐。
+另一个差异是 Go `NewOSSStorage` 直接从默认 provider 返回的 `ProviderName` 判断 ECS 来源；Rust `ReqsignCredentialsProvider::get_credentials` 在 `credential.rs` 当前将 `provider_name` 写为 `reqsign_default`。因此仅凭当前直接源码，动态 reqsign 路径是否能触发 `metadata_region` 的 ECS 分支存在迁移差异：条件函数本身已实现，但 provider 名传播未体现 Go 的串联 provider 名。
 
-Go `TestStore` 和 `TestInternalEndpoint` 依赖真实 OSS 凭证且正常 CI 中跳过；Rust `store_test.rs` 用 `MemoryOssApi` 覆盖通用读写、范围读、批量删除、multipart、复制和分页遍历，但同样没有真实 OSS 构造测试。因此 Rust 的对象适配行为有确定性证据，真实凭证链、地域探测和 endpoint 联网兼容性仍主要由源码对照支持。
+Go `TestStore` 和 `TestInternalEndpoint` 依赖真实 OSS 凭证且正常 CI 中跳过；Rust `store_test.rs` 用 `MemoryOssApi` 覆盖通用读写、范围读、批量删除、multipart、复制和分页遍历，但同样没有真实 OSS 构造测试。
 
 新增分类器对应 Go `store.go::IsTransientNoCredentialsError`：Go 接收 error，Rust 接收可选错误文本，二者使用相同 ECS 地址与两种超时短语。Rust 初始化传入 Context，后续 start_refresh 的默认 Context 与 Go 取消生命周期仍有差异。
 
@@ -126,10 +122,3 @@ Go `TestStore` 和 `TestInternalEndpoint` 依赖真实 OSS 凭证且正常 CI �
 - 改变关闭或后台刷新时必须同步 `OSSStore::Close` 与 `CredentialRefresher::{start_refresh,close,Drop}`，验证重复关闭、启动失败、刷新失败保留旧快照和线程 join。
 - 若要把该 crate 接入 Rust 统一对象存储入口，应在集成层提供 `pkg/objstore/storage.rs::Options::external_factory`，并新增覆盖 backend 分发的独立测试；不能只因 crate 已在 workspace 注册就认为接线完成。
 - 性能风险主要来自构造期串行网络调用、阻塞元数据请求和权限预检；兼容风险集中在 endpoint 优先级、签名地域、Prefix/URI 格式及 Go/Rust 凭证链差异。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/objstore/ossstore/store.rs` 定位增量、`git show 2c944fb:pkg/objstore/ossstore/store.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`credential.rs` 和 Go `store.go::IsTransientNoCredentialsError`；独立 `credential_test.rs` 覆盖 None、缺配置、connection refused 与两种 ECS 超时。`store_test.rs` 的 mock 存储操作不证明真实 ECS metadata 或 OSS 联网。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

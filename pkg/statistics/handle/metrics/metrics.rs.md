@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是独立 crate `astersql-statistics-handle-metrics` 的实现文件；crate 边界由 `pkg/statistics/handle/metrics/Cargo.toml` 定义，入口 `pkg/statistics/handle/metrics/lib.rs` 通过 `#[path = "metrics.rs"] mod implementation` 装载并用 `pub use implementation::*` 对外再导出全部公开符号。它只直接依赖 `prometheus = "0.14"`，不持有统计表或会话对象，而是为 statistics handle 子系统提供进程级指标句柄和与 Go 一致的健康度分桶协议。
-
-应用侧的显式初始化链为 `pkg/util/metricsutil/common.rs::initMetrics` → `astersql_statistics_handle_metrics::InitMetricsVars`。健康度指标的 Rust 生产消费方位于 `pkg/statistics/handle/cache/statscache.rs::UpdateStatsHealthyMetrics`；历史统计 dump 计数器目前只有本 crate 的迁移测试直接读写，仓库 Rust 生产代码中未检索到递增调用。因而本文件既是已接线的健康度指标契约，也是尚待 storage Rust 路径消费的历史统计指标接口。
+构造 `tidb_statistics_stats_healthy{type=...}` 的十个 Gauge 子句柄，以及 `tidb_statistics_historical_stats{type="dump",result=...}` 的成功/失败 Counter 子句柄。
 
 ## 核心职责
 
@@ -85,11 +83,11 @@ RustCodeGraph 对目标文件报告 4 个索引符号和一个使用文件（同
 
 ## 与 Go 版本的对应关系
 
-Rust 的桶常量、`HealthyBucketConfig` 三字段、十项顺序、排他上界和标签逐项对应 `pkg/statistics/handle/metrics/metrics.go`。特别是：100 分桶用上界 101；total 保留历史标签 `[0,100]`；三个特殊项的 Go 零值 `UpperBound` 在 Rust 中显式写为 0。
+特别是：100 分桶用上界 101；total 保留历史标签 `[0,100]`；三个特殊项的 Go 零值 `UpperBound` 在 Rust 中显式写为 0。
 
 生命周期实现有所不同。Go 包级 `init()` 会自动执行并由 `InitMetricsVars` 每次重建公开 slice、从 `pkg/metrics` 的共享 `StatsHealthyGauge` 与 `HistoricalStatsCounter` 取子句柄；Rust 的 `init()` 只是可调用函数，实际由 metricsutil 显式调用，且使用 `LazyLock` 复用首次创建的句柄。
 
-collector 所有权也不完全相同：Go 直接绑定 `pkg/metrics` 已注册的共享父向量；Rust 本文件自行创建同名私有父向量。仓库搜索没有发现本文件对其执行注册。健康度的分类与写入已有 Rust 对应实现和边界测试；历史 dump 成功/失败递增只在 Go storage 路径和 Rust metrics 单测中得到证据，不能宣称 Rust storage 生产路径已完全对齐。
+collector 所有权也不完全相同：Go 直接绑定 `pkg/metrics` 已注册的共享父向量；Rust 本文件自行创建同名私有父向量。健康度的分类与写入已有 Rust 对应实现和边界测试；历史 dump 成功/失败递增只在 Go storage 路径和 Rust metrics 单测中得到证据，不能宣称 Rust storage 生产路径已完全对齐。
 
 ## 扩展指南
 
@@ -98,14 +96,3 @@ collector 所有权也不完全相同：Go 直接绑定 `pkg/metrics` 已注册�
 新增历史统计操作或结果标签时，应先确认父 `CounterVec` 的标签维度仍是 `type`/`result`，再新增命名明确的 `LazyLock<Counter>` 子句柄和测试；不要在热路径重复创建动态标签。若补齐 Rust dump 生产接线，最可能修改 storage 的实际启用实现，在成功/错误最终确定的位置各递增一次，并增加能覆盖两条结果路径的独立 storage 测试。
 
 若目标是让指标被抓取，必须先解决 collector 所有权：复用 `pkg/metrics/stats.rs` 中已注册的共享 collector，或明确为本地 collector 增加唯一且只执行一次的注册路径；不能同时注册两个同名 descriptor。该改动涉及 metricsutil 初始化顺序、重复注册风险和兼容性，应同步添加 registry gather 测试，而不仅验证句柄 `.get()`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引可用（11,467 文件、307,296 节点）；`files --filter pkg/statistics/handle/metrics` 确认目标、入口、Go 对照和迁移测试；`node --file` 阅读了 `metrics.rs` 全 171 行及 `migration_aster_unit_test.rs` 全 82 行；目标文件被索引为 4 个符号，精确 callers/callees 无跨文件输出。
-- crate 与入口：`pkg/statistics/handle/metrics/Cargo.toml`、`pkg/statistics/handle/metrics/lib.rs`。
-- Rust 初始化上游：`pkg/util/metricsutil/common.rs::initMetrics` 及 `pkg/util/metricsutil/Cargo.toml`。
-- Rust 健康度下游与行为测试：`pkg/statistics/handle/cache/statscache.rs::UpdateStatsHealthyMetrics`、`statsHealthyBucketIndex`，以及 `pkg/statistics/handle/cache/statscache_test.rs::stats_healthy_bucket_index_matches_go_bounds` 和相邻 Gauge 分布断言。
-- 本 crate 独立测试：`pkg/statistics/handle/metrics/migration_aster_unit_test.rs::{healthy_bucket_configs_match_go_order_bounds_and_labels, init_binds_each_gauge_and_historical_counter_labels, repeated_init_reuses_go_global_metric_handles}`。
-- Go 语义对照：`pkg/statistics/handle/metrics/metrics.go`、`pkg/statistics/handle/cache/statscache.go`、`pkg/statistics/handle/cache/statscache_test.go`、`pkg/statistics/handle/storage/stats_read_writer.go::DumpHistoricalStatsBySnapshot`。
-- 注册边界补证：全仓精确检索 `tidb_statistics_stats_healthy`、`tidb_statistics_historical_stats`、`StatsHealthyGauge`、`HistoricalStatsCounter`，对照 `pkg/metrics/stats.rs` 与 `pkg/metrics/metrics.rs`；本文件及其调用链中未发现私有父向量注册语句。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，计划明确排除 Cargo；完成依据是源码/调用边事实复核与任务规定的 11 章节结构验证。

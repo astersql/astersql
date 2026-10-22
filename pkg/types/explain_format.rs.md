@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/explain_format.rs` 是 EXPLAIN 输出格式名称的共享协议词汇表。它不负责解析 SQL、生成执行计划或渲染结果，只把各层共享的格式标识定义成公开的 `&'static str` 常量，并用 `ExplainFormats` 给出合法格式的有序全集。源码有两条装配路径：`pkg/types/lib.rs` 以 `mod explain_format; pub use explain_format::*;` 从 `astersql-types` crate 根公开；`pkg/types/internal/metadata/lib.rs` 又在私有 `explain_format_defs` 模块中以 `include!("../../explain_format.rs")` 编译同一文件并公开再导出。因此调用方既可能从 `astersql_types` 根取得这些常量，也可能经 metadata 子 crate 取得同源定义。
-
-主 crate 的边界由 `pkg/types/Cargo.toml` 定义：包名为 `astersql-types`，库入口是 `lib.rs`，且 `[package.metadata.porting].go-package = "pkg/types"` 明确记录了它与 Go `pkg/types` 的移植对应关系；同一 manifest 通过 `types-group-4` 依赖 metadata 子 crate。目标文件自身没有外部 crate 导入、feature 开关或条件编译项，能够被两条路径原样编译。
+“格式名称协议”而非“格式实现”。
 
 ## 核心职责
 
@@ -87,16 +85,12 @@ Go 对照文件使用包级 `var` 和可变 `[]string`，理论上可被进程�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/types/explain_format.go`。Rust 版本逐项保留 Go 的 14 个名称、字面值和列表顺序；`pkg/types/Cargo.toml` 的 porting 元数据也把整个 crate 指向 Go `pkg/types`。两边关键语义一致：brief 与 row 的兼容关系、traditional 作为 row 的别名、true-card-cost/cost-trace/plan-cache/plan-tree/RU 的用途，以及 `ExplainFormats` 作为合法值集合。
-
 主要语言层差异如下：
 
 - Go 单值和列表是包级 `var`；Rust 是 `pub const` 静态借用，Rust 侧不可在运行时替换或追加。
 - Go `ExplainFormats` 类型为拥有字符串头的 `[]string`；Rust 类型为 `&[&str]`，列表和元素都借用静态数据。
 - Go 包内符号天然可见；Rust 先在私有 `explain_format` 模块定义，再由 `pkg/types/lib.rs` 从 crate 根公开再导出。
 - Go 当前拥有完整的 SQL 合法性校验与 Explain 分派证据；本次检索到的 Rust 生产引用只覆盖 `plan_cache` 与 `plan_tree` 的局部行为。其余 Rust 常量已定义并受顺序测试保护，但不能仅据此声称对应渲染链全部移植完成。
-
-Go 测试证据包括 `pkg/planner/core/preprocess_test.go` 对未知格式 `xx` 返回 `ErrUnknownExplainFormat` 的断言，以及 `pkg/executor/explain_test.go::TestExplainFormatInCtx` 对多种格式写入 statement context、plan-cache 特例行为的验证。
 
 ## 扩展指南
 
@@ -109,12 +103,3 @@ Go 测试证据包括 `pkg/planner/core/preprocess_test.go` 对未知格式 `xx`
 5. 增加拒绝未知格式、大小写归一化、支持/不支持的 analyze 组合、输出 schema 和实际渲染结果测试。格式字符串属于 SQL 可见兼容协议，重命名、删除、重排或改变别名行为都有兼容风险。
 
 性能风险很低：常量读取为静态引用，线性验证列表目前仅 14 项。若未来格式数量显著增长才需要评估查找结构；在此之前，把列表替换为更复杂结构可能破坏顺序契约而收益有限。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`node --file pkg/types/explain_format.rs` 读取目标文件并报告 5 个使用文件；对 15 个常量执行 `query --kind constant`，确认定义位置和唯一性。对关键常量执行 `callers/callees` 时索引未解析常量引用边，已用文件级使用关系和 `rg` 补证。
-- Rust 源与装配：`pkg/types/explain_format.rs`（15 个公开常量、无可执行函数）；`pkg/types/lib.rs`（主 crate 模块挂载、公开再导出、独立测试挂载）；`pkg/types/internal/metadata/lib.rs`（同一源码的 `include!` 装配与再导出）；`pkg/planner/optimize.rs`（plan-cache 警告门控）；`pkg/planner/core/operator/physicalop/physical_projection.rs`（plan-tree 表达式展示分支）；`pkg/expression/lib.rs`（metadata 路径的跨 crate 再导出）。
-- Cargo 边界：`pkg/types/Cargo.toml`、`pkg/types/internal/metadata/Cargo.toml`、`pkg/planner/Cargo.toml`、`pkg/expression/Cargo.toml`，分别证明主/metadata crate 身份、planner 路径依赖和 expression 的别名路径依赖。
-- Rust 独立测试：`pkg/types/explain_format_test.rs` 验证 RU 值及末项不变量；`pkg/types/enum_4_aster_unit_test.rs` 验证完整值序；`pkg/planner/optimize_aster_unit_test.rs` 验证仅 plan-cache 格式触发旁路警告。
-- Go 对照与行为：`pkg/types/explain_format.go`（完整同名集合）；`pkg/planner/core/preprocess.go` 与 `preprocess_test.go`（合法列表和未知格式错误）；`pkg/planner/core/common_plans.go`（schema/渲染分派及不支持边界）；`pkg/executor/explain_test.go::TestExplainFormatInCtx`（格式进入 statement context）。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核文档只描述有上述路径支持的事实。

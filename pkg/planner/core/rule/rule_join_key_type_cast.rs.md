@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-rule` crate；crate 入口 `pkg/planner/core/rule/lib.rs` 以 `pub mod rule_join_key_type_cast` 导出它。它在 `rule_init.rs` 定义的精简逻辑计划 IR（`Plan`、`PlanKind`、`Expr`、`FieldType`）上实现 Join 键类型改写规则，而不是直接操作 Go 版的 `base.LogicalPlan`/`logicalop.LogicalJoin`。
-
-公开入口是零大小类型 `JoinKeyTypeCast` 及其 `LogicalRule` 实现。`name()` 返回稳定注册名 `join_key_type_cast`，该名称也出现在 `rule_init.rs::default_rule_names`。不过，仓库搜索到对本文件 `JoinKeyTypeCast.optimize` 的直接调用均位于 Rust 测试；真实优化器运行时在 `pkg/planner/core/optimizer_runtime.rs` 中通过另一套 `LogicalRule::JoinKeyTypeCast` 和 `rewrite_join_key_type_casts` 接线。因此，本文件当前是可独立验证的规则实现和移植语义载体，不能仅凭模块导出或默认名称清单断言它已直接驱动生产优化主链。
+规则解决 signed INT 与 VARCHAR 等值连接因隐式统一成 `DOUBLE` 而妨碍整数索引键识别的问题。
 
 ## 核心职责
 
@@ -75,10 +73,6 @@ crate 边界由 `pkg/planner/core/rule/Cargo.toml` 确认：库入口为 `lib.rs
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/rule/rule_join_key_type_cast.go`。主要映射如下：`JoinKeyTypeCastRewriter` 对应 `JoinKeyTypeCast`；`Optimize`/`Name` 对应同名 trait 方法；`rewriteJoinTypeCasts` 与 `rewriteJoinEqConds` 的职责合并进 `rewrite_join_keys`；`projCastInfo`/`findCastInProj`/`classifyCastPair` 分别对应 `ProjectedCast`、`projected_float_cast` 和 Rust 内联的类型配对分支。
-
-两版共享的行为包括后序遍历、要求两侧 Projection、仅处理双 DOUBLE 等值键、排除 null-safe equality、只接受 signed INT 与字符串组合、跳过文本位于外连接保留侧的情况、保持 Join 参数左右顺序、在整数侧保留原列标识、为文本转整数分配新列标识、合并同侧 guard，并且不把内部键加入 Join 输出 schema。
-
 差异来自 IR 能力而非文档推断：Go 使用会话分配器 `AllocPlanColumnID`，Rust 通过子树最大 schema ID 分配；Go 保留真实字段类型、表达式上下文、查询块偏移和统计信息，Rust 使用精简枚举与简单字符串函数名；Go 明确排除 unsigned INT 和 BIGINT，Rust能排除 `UnsignedInt`，但 `SignedInt` 无宽度信息，不能单独排除 BIGINT；Go 覆盖更多外/半连接类型，Rust 仅覆盖 `JoinType` 已定义的五种。Go 规则已在 `optimizer.go` 的 `optRuleList` 中注册且位于谓词下推之后，Rust 本文件的生产接线则没有从直接调用搜索中得到确认，真实 Rust 运行时使用 `optimizer_runtime.rs` 的平行实现。
 
 ## 扩展指南
@@ -90,13 +84,3 @@ Go 对照文件是 `pkg/planner/core/rule/rule_join_key_type_cast.go`。主要�
 列 ID 分配策略若改变，应修改 `maximum_column_id` 和新列创建处，并验证嵌套 Join、多个等值条件及接近 `i64::MAX` 的行为。若改变 Selection 构造，应检查 schema、keys、estimated_rows 和 used_stats 的继承策略。
 
 测试必须继续放在独立文件，优先扩展 `pkg/planner/core/rule/rule_join_key_type_cast_test.rs`；涉及共享规则不改写的不变量可同步 `rule_aster_unit_test.rs`，涉及真实优化入口则同步 `pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs`。至少覆盖左右类型互换、多个条件合并 guard、null-safe equality、unsigned/BIGINT、各 Join 保留侧、schema/表达式错位和嵌套 Join，且与 Go 对照行为逐项核验。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标源码可由 `node --file` 完整读取。
-- RustCodeGraph `query rewrite_join_keys --kind function` 与 `query projected_float_cast --kind function`：确认核心函数、签名和源码位置；`query JoinKeyTypeCast --kind struct` 同时定位 Rust 类型与 Go 对照类型。
-- RustCodeGraph callers/callees 查询未返回额外调用边；因此跨文件接线结论由仓库搜索核验，并在本文中限定为“搜索到的直接调用”。
-- 生产源码：`pkg/planner/core/rule/rule_join_key_type_cast.rs`；共享 IR 与 trait：`pkg/planner/core/rule/rule_init.rs`；模块入口：`pkg/planner/core/rule/lib.rs`；crate 声明：`pkg/planner/core/rule/Cargo.toml`。
-- Go 对照：`pkg/planner/core/rule/rule_join_key_type_cast.go`；Go 优化器注册与顺序：`pkg/planner/core/optimizer.go`。
-- 独立 Rust 测试：`pkg/planner/core/rule/rule_join_key_type_cast_test.rs` 验证成功改写、外连接保留侧跳过和无 Projection 时不改写；`pkg/planner/core/rule/rule_aster_unit_test.rs` 验证非目标数字类型保持不变；`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs` 验证真实逻辑计划入口把混合键恢复为整数并增加文本侧 guard。
-- 人工复核结论：本文分别回答了规则为何存在、精确匹配和变换流程、当前接线边界、Go 差异、失败/跳过路径及安全扩展位置；未把源码中不存在的生产接线、类型精度或并发行为描述为已支持。

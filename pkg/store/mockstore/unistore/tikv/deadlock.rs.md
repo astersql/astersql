@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-store-mockstore-unistore-tikv` crate 内，是进程内 mock TiKV 的死锁检测协议适配层。crate 入口 `pkg/store/mockstore/unistore/tikv/lib.rs` 以 `pub mod deadlock` 导出该模块，并把独立测试 `deadlock_test.rs` 通过 `#[path = "deadlock_test.rs"]` 接入。上层 `pkg/store/mockstore/unistore/tikv/server.rs` 的 `Server` 持有一个 `DetectorServer`，其 `detect_deadlock` 方法把请求直接转发到本文件的 `DetectorServer::detect`。
-
-真正维护等待图并执行 DFS、TTL 淘汰和边清理的是相邻的 `pkg/store/mockstore/unistore/tikv/detector.rs`；本文件负责定义请求/响应、分发操作、转换死锁结果，以及提供一个同步的进程内客户端封装。它不负责 MVCC 加锁本身，也不包含网络协议实现。
-
-`pkg/store/mockstore/unistore/tikv/Cargo.toml` 声明该目录为独立 library crate（`[lib] path = "lib.rs"`），并通过 `package.metadata.porting.go-package` 指向 Go 包 `pkg/store/mockstore/unistore/tikv`。当前 manifest 没有为死锁模块声明专用 feature；大量相邻 crate 依赖仅置于 Windows target 段，本文件自身只依赖标准库和同 crate 的 `detector` 模块。
+真正维护等待图并执行 DFS、TTL 淘汰和边清理的是相邻的 `pkg/store/mockstore/unistore/tikv/detector.rs`；本文件负责定义请求/响应、分发操作、转换死锁结果，以及提供一个同步的进程内客户端封装。
 
 ## 核心职责
 
@@ -89,11 +85,9 @@ RustCodeGraph 将目标文件列为 30 个符号，并报告 `server.rs`、`dead
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/tikv/deadlock.go`。服务端语义基本逐项对应：三种请求类型、默认 `Detector` 参数、错误到响应的字段映射、Follower/Leader 常量和原子角色访问均可找到对应实现。独立 Rust 测试 `deadlock_test.rs::deadlock_response_entry_matches_go_proto_conversion` 特别验证了 Go 转换的重要细节：触发边的数值字段保留、顶层 key/tag 为空、闭环 key hash 与等待链诊断字段正确。
+客户端实现则是有意可见的缩减边界，不能视为等价网络移植。Rust `DetectorClient` 仅持有本地 `Arc<DetectorServer>`，同步调用并把请求追加到无界历史 `Vec`；没有 PD、gRPC、后台循环、重连、取消或显式连接关闭。
 
-客户端实现则是有意可见的缩减边界，不能视为等价网络移植。Go `DetectorClient` 通过 PD 查找首个 Region Leader，建立 gRPC 双向流，使用容量 10,000 的 channel，分别运行发送/接收循环，在连接失败时等待 3 秒重建，并通过 `lockwaiter.Manager` 唤醒等待方。Rust `DetectorClient` 仅持有本地 `Arc<DetectorServer>`，同步调用并把请求追加到无界历史 `Vec`；没有 PD、gRPC、后台循环、重连、取消或显式连接关闭。
-
-核心图算法应同时参考 `detector.rs` 与 Go `detector.go`。`detector_test.rs` 和 Go `detector_test.go` 共同覆盖等待链顺序、断环、重复边、按边/按事务清理以及 TTL 过期行为。Rust 算法额外使用 `visited` 集合避免 DFS 在非源环上无限递归；该细节属于 `detector.rs`，本文件只是透传结果。
+Rust 算法额外使用 `visited` 集合避免 DFS 在非源环上无限递归；该细节属于 `detector.rs`，本文件只是透传结果。
 
 ## 扩展指南
 
@@ -103,16 +97,3 @@ RustCodeGraph 将目标文件列为 30 个符号，并报告 `server.rs`、`dead
 - 若要真正接入 `DetectorClient`，应先明确是保持进程内同步语义，还是补齐 Go 的远程 Leader 路由。后者涉及 PD、传输、重连、取消、背压和关闭生命周期，超出本文件当前依赖和接线范围，不能只把 `pending` 换成 channel 就宣称等价。
 - 若角色要成为强制路由条件，应在服务端/RPC 边界明确 Follower 行为，并新增角色切换测试；直接在 `detect` 中静默丢弃请求会改变现有调用契约。
 - 性能上应关注请求诊断字节复制、等待图全局互斥和客户端历史的无界增长；兼容性上应保持 wait-chain 顺序、deadlock key hash 来源以及顶层响应 entry 清空诊断字段的 Go 语义。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标 `deadlock.rs` 被识别为 30 个符号，并显示 `server.rs`、`deadlock_test.rs` 等使用方。
-- RustCodeGraph 源码节点：`deadlock.rs` 全文件；`detector.rs` 的 `Detector::{new, detect, do_detect, clean_up, clean_up_wait_for, active_expire}`；`server.rs` 的 `Server::{new, detect_deadlock}`。
-- crate 与装配：`pkg/store/mockstore/unistore/tikv/Cargo.toml`、`pkg/store/mockstore/unistore/tikv/lib.rs`。
-- Rust 独立测试：`pkg/store/mockstore/unistore/tikv/deadlock_test.rs`、`pkg/store/mockstore/unistore/tikv/detector_test.rs`。
-- Go 对照与测试：`pkg/store/mockstore/unistore/tikv/deadlock.go`、`pkg/store/mockstore/unistore/tikv/detector.go`、`pkg/store/mockstore/unistore/tikv/detector_test.go`。
-- 精确调用搜索：`Server::detect_deadlock` 在 `server.rs:695-698` 转发；全仓库未找到 `DetectorClient::new` 的文件外调用、`DeadlockWaiterManager` 实现或该类型 `pending_count` 的使用。
-
-这是纯文档分析，没有运行 Cargo 或代码测试。结构验证要求目标文档存在，并且上述十一个固定二级标题各出现一次。

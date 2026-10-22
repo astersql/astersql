@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`typed_projection.rs` 属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/executor/lib.rs` 公开为 `typed_projection` 模块。它把规范物理计划中的 `PhysicalProjection` 和 `PhysicalTableDual` 落为统一 `ExecExecutor` 接口下的 typed 执行器，位于“物理计划构建 -> chunk 拉取执行”链路中。
-
-直接装配入口在 `pkg/executor/builder.rs`：`build_typed_physical_plan` 为普通 typed 计划递归构建 `TypedProjection`/`TypedTableDual`，`wrap_typed_pushdown_plan` 还会在 index pushdown 子树外包装 `TypedProjection`。因此本文件不是通用 Go 执行器 `ProjectionExec` 的 Rust 逐字段翻译，而是当前 Rust typed runtime 的投影节点与 dual 叶子节点实现。
+`TypedTableDual`：为常量投影和 `DO` 一类无真实数据源的计划提供 0/1 行叶子；有 schema 时产生一行全 `NULL`，空 schema 时用 virtual row 表示一行。
 
 ## 核心职责
 
@@ -109,11 +107,11 @@
 
 ## 与 Go 版本的对应关系
 
-`TypedProjection` 对应 `pkg/executor/projection.go::ProjectionExec` 的关系代数语义：从 child 拉取 chunk，按表达式形成新列，并在 `Open`/`Next`/`Close` 生命周期中工作。Rust 当前路径使用同一会话的 eval context，语义上接近 Go 的 `unParallelExecute` 调用 `EvaluatorSuite.Run`，但实现粒度是逐行 `ExprBox::Eval`。
+Rust 当前路径使用同一会话的 eval context，语义上接近 Go 的 `unParallelExecute` 调用 `EvaluatorSuite.Run`，但实现粒度是逐行 `ExprBox::Eval`。
 
 重要差异：Go `ProjectionExec` 支持 `numWorkers`、fetcher/worker channels、goroutine 回收、vectorizable 判断、requiredRows 传递、内存 tracker 和运行时并发统计；`TypedProjection` 目前均未实现，只按输出 chunk 的 `IsFull` 串行求值。Go 测试 `pkg/executor/executor_required_rows_test.go` 验证 requiredRows 和并行/非并行分页，其中并行用例目前还因调度不稳定而跳过；这些不能被当作 Rust 已支持能力。
 
-`TypedTableDual` 对应 `pkg/executor/select.go::TableDualExec`：Go 同样在 `Open` 重置计数，0 行直接 EOF，空 schema 使用 virtual row，有 schema 追加 `NULL`，且计划约束 dual 行数只能为 0/1。Rust 用 `returned: bool` 表达一次性输出，而 Go 用 `numReturned`/`numDualRows`。
+Rust 用 `returned: bool` 表达一次性输出，而 Go 用 `numReturned`/`numDualRows`。
 
 Rust 独立测试 `pkg/executor/typed_projection_test.rs` 是本移植路径的直接行为证据；Go 的投影测试更多覆盖通用执行器能力，不能反向推断 Rust typed runtime 已完整移植。
 
@@ -127,12 +125,3 @@ Rust 独立测试 `pkg/executor/typed_projection_test.rs` 是本移植路径的�
 - 扩展 dual 行数前必须同时修改构建器 `0..=1` 校验和有 schema 输出逻辑；当前实现对大于 1 行只在空 schema 分支按 `rows` 设置 virtual rows。
 - 调整 schema/type 推导时，应同步验证 `new` 的 `GetType`、`ChunkConfig` 和实际 `Eval` datum 类型一致，避免 chunk 列类型与运行值不匹配。
 - 性能风险集中在逐行、逐表达式动态分派与 key 克隆；兼容风险集中在 session eval context、NULL/virtual-row 表示和 Go 执行器能力差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`explore "pkg/executor/typed_projection.rs TypedProjection TypedTableDual"` 返回目标文件源码；`query TypedProjection` 与 `query TypedTableDual` 分别定位到第 28、206 行；`node --file pkg/executor/typed_projection.rs --offset 200 --limit 260` 核对 dual 完整实现。`callers`/`callees` 对这些符号未返回边，因此装配关系按技能规则用下述精确文本搜索补齐。
-- 生产源码：`pkg/executor/typed_projection.rs`（两个执行器全部 293 行）、`pkg/executor/builder.rs`（`wrap_typed_pushdown_plan`、`build_typed_physical_plan`）、`pkg/executor/adapter.rs`（`ExecExecutor` 与 `recordSet::Next`）、`pkg/executor/lib.rs`（模块声明）。目标包没有 `doc.go`。
-- crate 边界：`pkg/executor/Cargo.toml` 的 package/lib、`nextgen` feature 和直接依赖声明。
-- Rust 测试：`pkg/executor/typed_projection_test.rs::canonical_typed_projection_reorders_typed_columns_and_preserves_row_lock_keys` 验证 typed builder、列重排、逐页输出、锁 key、不可 detach 和关闭；`typed_dual_emits_zero_or_one_row_and_reopens` 验证 0/1 行、空/非空 schema、EOF 和 reopen。
-- Go 对照：`pkg/executor/projection.go::ProjectionExec`、`pkg/executor/select.go::TableDualExec`、`pkg/executor/executor_required_rows_test.go`。对照仅用于确认共同语义与明确未移植能力。
-- 文档结构以任务指定命令校验，要求目标文件存在且恰有 11 个固定二级标题；本任务为纯文档分析，未运行 Cargo 或代码测试。

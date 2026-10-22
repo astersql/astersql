@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-br-pkg-task` crate，由 `br/pkg/task/lib.rs` 以 `pub mod restore_lifecycle` 挂载。它位于任务编排层与 `astersql-br-pkg-restore`、`astersql-br-pkg-restore-log-client` 两个恢复实现 crate 之间：任务层先从备份元数据筛选文件，再通过 `Glue::GetRestoreLifecycle` 取得由宿主注入的真实 PD、调度器、导入器及已准备文件集，最后由本文件统一执行恢复前置工作、SST 导入和退出清理。
-
-`br/pkg/task/Cargo.toml` 将本 crate 定义为对应 Go 包 `br/pkg/task` 的 library，并直接依赖 `../restore`、`../restore/log_client` 与 `../conn`；因此本文件不是独立命令入口，也不是仅供测试的桩。公开模块入口及直接调用点见 `br/pkg/task/lib.rs`、`br/pkg/task/restore.rs`、`br/pkg/task/restore_raw.rs`、`br/pkg/task/restore_txn.rs` 和 `br/pkg/task/stream.rs`。
+用 `RestoreLifecycle` 聚合一次恢复所需的 context、PD 客户端、scheduler 管理器、导入模式传输层、文件集、checkpoint runner、checkpoint 已恢复大小和可选 key ranges。
 
 ## 核心职责
 
@@ -87,9 +85,7 @@ Stream 流程由 `stream.rs::restoreStreamBody` 以空的初始文件参数取�
 
 Rust 将分散在 Go 任务文件中的生命周期接线集中到本文件，没有同名 `restore_lifecycle.go`。
 
-- `br/pkg/task/restore.go` 的 `NewImportModeSwitcher`、全量/增量时 `RestorePreWork`、部分恢复时 `FineGrainedRestorePreWork`、checkpoint 失败保留 scheduler 以及成功后的 `RestorePostWork`，对应 `Start`、`RestoreFiles` 和 `RestoreSession::drop`。
 - `br/pkg/task/restore_raw.go` 与 `restore_txn.go` 都是 pre-work → `GoRestore` → `WaitUntilFinish` → deferred post-work；Rust 由 `RestoreFiles` 共用这一骨架，Txn 同样固定 offline。
-- `br/pkg/task/stream.go` 根据 `ExplicitFilter` 选择细粒度/全局/跳过 scheduler 暂停，并调用 `LogClient::RestoreSSTFileSets`；Rust 的 `RestoreCompactedSST` 保留该分支和数据量/checkpoint 参数。
 - Go 的 live client 通常在较大的函数中直接构造；Rust 通过 `RestoreLifecycleFactory` 注入，是为 crate 边界和平台精简依赖建立的适配层，不代表省略了 PD、importer 或 scheduler 行为。
 - Rust 额外用 `ValidateFiles` 明确校验工厂产物未遗漏任务层选中文件，并用枚举在类型层区分 balanced importer；这是接线安全检查，不改变 Go 恢复算法。
 
@@ -101,12 +97,3 @@ Rust 将分散在 Go 任务文件中的生命周期接线集中到本文件，�
 - 修改 Stream scheduler 选择时必须分别覆盖 `ExplicitFilter=false`、显式过滤且 ranges 非空、显式过滤且 ranges 为空三种状态，并与 `br/pkg/task/stream.go` 对齐。
 - 替换 importer 或 PD 适配器时保留 context 取消优先级、store labels、至少一个 worker、关闭覆盖所有返回路径等不变量。
 - 性能敏感点是 `file_sets.clone()`、文件身份排序和 worker pool 并发度；若文件量很大而要消除克隆或排序，应先明确所有权及重复文件语义，不能只改容器类型。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/task` 确认目标、模块入口及独立测试；`node --file br/pkg/task/restore_lifecycle.rs --offset 1 --limit 500` 返回完整 304 行并标记直接使用文件为 `restore.rs`、`restore_lifecycle_test.rs`；`query` 分别定位 `RestoreFiles`、`RestoreCompactedSST`、`ValidateFiles`。精确 `callers/callees` 查询在 30 秒窗口内未返回内容，因此调用边又用源码搜索核验，未据此臆测。
-- Rust 源与 crate：`br/pkg/task/restore_lifecycle.rs`、`br/pkg/task/lib.rs`、`br/pkg/task/stubs.rs`、`br/pkg/task/Cargo.toml`。
-- Rust 直接入口：`br/pkg/task/restore.rs`、`br/pkg/task/restore_raw.rs`、`br/pkg/task/restore_txn.rs`、`br/pkg/task/stream.rs`。
-- 独立 Rust 测试：`br/pkg/task/restore_lifecycle_test.rs` 覆盖 Snapshot/Raw/Txn 的 real restorer 接线、online/offline mode 生命周期、checkpoint 失败保留 import mode、文件遗漏拒绝和 Stream compacted SST 导入。
-- Go 对照：`br/pkg/task/restore.go`、`br/pkg/task/restore_raw.go`、`br/pkg/task/restore_txn.go`、`br/pkg/task/stream.go`；下游实现位置由 `br/pkg/restore/import_mode_switcher.go`、`br/pkg/restore/restorer.go`、`br/pkg/restore/log_client/client.go` 核验。
-- 本任务是只读逻辑分析与文档新增，按计划未运行 Cargo；交付前以固定章节命令验证文档恰含 11 个指定二级标题，并人工检查没有把测试代码嵌入生产源文件的建议。

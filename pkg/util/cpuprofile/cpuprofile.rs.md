@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-cpuprofile` crate 的进程级 CPU 采样核心。crate 入口 `pkg/util/cpuprofile/lib.rs` 以私有 `mod cpuprofile` 装配本文件，再用 `pub use cpuprofile::*` 重导出公开 API；同一入口还装配 `pprof_api.rs`，后者把这里周期产出的 pprof protobuf 片段合并成按需采集结果。`pkg/util/cpuprofile/Cargo.toml` 将 crate 对应到 Go 包 `pkg/util/cpuprofile`，直接对照文件是 `pkg/util/cpuprofile/cpuprofile.go`。
-
-它解决的是“进程只能有一个底层 CPU sampler，但可以有多个上层消费者”的冲突：一个后台 worker 独占 `pprof-rs` 的进程级采样器，每个固定区间结束后把同一份 `Arc<ProfileData>` 非阻塞广播给全部注册者。当前 Rust 生产消费者之一是 `pkg/util/topsql/collector/cpu.rs::SQLCPUCollector`；同 crate 的 `pkg/util/cpuprofile/pprof_api.rs::Collector` 也通过 `Register` / `Unregister` 订阅片段。
-
-需要区分真实实现与迁移桩：`cmd/tidb-server/main.rs` 当前从 `stubs` 导入 `cpuprofile`，其启动/退出调用命中 `cmd/tidb-server/stubs.rs` 的事件记录桩，并未直接启动本文件的全局 profiler。真实 crate 已被 `pkg/server`、TopSQL collector、TopSQL 和 `pkg/util/profile` 等 Cargo manifest 声明为依赖，且 server testkit 会直接调用真实 `StartCPUProfiler` / `StopCPUProfiler`。因此本文件不是桩，但完整 server 主入口尚未接到它。
-
-本文件没有 `#[cfg(...)]` 条件分支，测试也没有内嵌在生产源文件中；独立测试由 `lib.rs` 的 `#[cfg(test)] mod cpuprofile_test` 和 `migration_aster_unit_test` 接入。
+用 `parallelCPUProfiler` 串行管理进程级 `pprof::ProfilerGuard` 的启动、停止和后台线程生命周期，并拒绝同一实例重复启动。
 
 ## 核心职责
 
@@ -104,8 +98,6 @@ crate 依赖声明存在于 `pkg/server/Cargo.toml`、`pkg/server/tests/serverte
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/cpuprofile/cpuprofile.go` 是行为基准。公开 `DefProfileDuration`、`ProfileConsumer`、`ProfileData`、`StartCPUProfiler`、`StopCPUProfiler`、`Register`、`Unregister`，以及内部 `parallelCPUProfiler`、重复启动错误、消费者计数和非阻塞发送，均有直接对应。两端都保证单个进程级 sampler、多消费者共享、无消费者不继续采样、满 channel 丢弃最新包、重复启停语义和按上一轮大小以 4096 为单位预分配。
-
 Rust 用 `pprof-rs::ProfilerGuard` 替代 Go `runtime/pprof.StartCPUProfile` / `StopCPUProfile`：旧 guard 在新 guard 建立前生成报告并 drop，对应 Go `doProfiling` 先 Stop、发送旧 buffer、再 Start 的顺序。Rust 的 builder 固定 100 Hz 并带 native blocklist，这是实现层差异；Go runtime 的采样频率/过滤由运行时决定。
 
 并发表达不同：Go 用结构体 mutex、`context.CancelFunc`、ticker、无缓冲通知 channel和 `WaitGroup`；Rust 用外层全局 mutex、共享 core、`AtomicBool`、`recv_timeout`、bounded(1) 通知 channel 和 `JoinHandle`。Go 的 `profileData != nil` 同时表示 active buffer；Rust 正常路径以局部 `Option<ProfilerGuard>` 表示 active 状态，结构体 `profileData` 只保留作测试辅助。
@@ -114,7 +106,7 @@ Rust 用 `pprof-rs::ProfilerGuard` 替代 Go `runtime/pprof.StartCPUProfile` / `
 
 Go `sendToConsumers` 用 recover 防止向已关闭 channel 发送导致 panic；Rust receiver 断开只会让 `try_send` 返回错误，所以直接忽略即可。Go 通过 `metrics.CPUProfileCounter.Inc()` 写全局指标；Rust 当前只更新文件私有 `AtomicU64`，没有连接 metrics crate，这是可观测性差异。
 
-`pkg/util/cpuprofile/cpuprofile_test.go` 与 Rust 的 `cpuprofile_test.rs` 保持主要意图：重复启动/停止、nil 与重复消费者、占用 sampler 的错误、有效 protobuf、注销后释放 sampler、并发 Collector 和 HTTP profile。Rust 额外的 `migration_aster_unit_test.rs` 聚焦去重、满 channel 丢包和真实数据交付。Rust 测试用 `#[serial]` 防止同一测试进程争抢全局 sampler。
+Rust 额外的 `migration_aster_unit_test.rs` 聚焦去重、满 channel 丢包和真实数据交付。
 
 ## 扩展指南
 
@@ -129,12 +121,3 @@ Go `sendToConsumers` 用 recover 防止向已关闭 channel 发送导致 panic�
 修改 `ProfileData` 或错误类型会影响 `pprof_api.rs`、TopSQL collector、profile 工具和 server testkit 等多个 crate。字段或编码变化必须仍产出可由 `pprof::protos::Profile::decode` 读取的数据，并明确错误包是否仍要求空 `Data`。
 
 测试逻辑必须继续放在独立文件：核心对照场景放 `pkg/util/cpuprofile/cpuprofile_test.rs`，迁移特有场景放 `pkg/util/cpuprofile/migration_aster_unit_test.rs`；同步参考 `cpuprofile_test.go`，不要在生产文件中加入 `#[cfg(test)]` 测试模块或为了测试删减 Go 版生命周期语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/cpuprofile` 返回 13 个 Rust/Go 文件，覆盖目标、装配、Go 对照和独立测试。
-- RustCodeGraph `node --file pkg/util/cpuprofile/cpuprofile.rs --offset 1 --limit 400` 及尾部补读：读取目标全部 403 行，确认 36 个符号、公开性、无条件编译分支和完整控制流。
-- RustCodeGraph `query StartCPUProfiler`、`query Register`、`query profiling_loop`、`query finish_profile`：确认 Rust/Go 同名符号及内部函数位置；对精确符号执行 `callers` / `callees` 未返回边，因此未据此声称无调用者，而是用精确 `rg` 补核真实引用。
-- 已读生产与装配文件：`pkg/util/cpuprofile/{cpuprofile.rs,cpuprofile.go,pprof_api.rs,lib.rs,Cargo.toml}`、`pkg/util/topsql/collector/cpu.rs`、`cmd/tidb-server/{main.rs,stubs.rs}`、`pkg/lib.rs`；Cargo 依赖又核对了 server、TopSQL collector、TopSQL 和 profile crate 的 manifest。
-- 已读独立测试：`pkg/util/cpuprofile/cpuprofile_test.rs`、`pkg/util/cpuprofile/cpuprofile_test.go`、`pkg/util/cpuprofile/migration_aster_unit_test.rs`。它们给出重复启停、None/重复/断连消费者、非阻塞丢包、采样器冲突、有效 pprof、最后消费者释放 guard 和串行测试要求的直接证据。
-- 本任务只新增说明文档，依计划未运行 Cargo。交付前使用任务指定的结构命令确认文件存在且恰有 11 个固定二级标题，并人工复核“真实实现但 server 主入口仍命中桩”等迁移边界没有被写成已接线事实。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`sql.rs`](./sql.rs) 是 `astersql-dumpling-export` crate 的 SQL 辅助层。crate 入口 [`lib.rs`](./lib.rs) 通过 `include!("sql.rs")` 将它并入 crate 根，而不是建立独立的 `sql` 模块；因此文件里的 `pub` 符号位于 crate 根，并直接共享 `lib.rs` 引入的 `HashMap`、`Field`、`tcontext` 以及 [`stubs.rs`](./stubs.rs) 提供的 `DB`、`Conn`、`BaseConn`、`Rows`、`Config`、`TableMeta` 等迁移期类型。
-
-它位于 Dumpling 导出流程的“数据库探测与 SQL 规划”层：向服务器查询库表、DDL、索引、分区、版本和集群信息，构造整表或分块导出的 `SELECT`，并生成锁表、快照、TiDB region 采样等语句。它不负责把数据写入文件；已接线的主要上游是 [`dump.rs`](./dump.rs)，例如 `prepareTableListToDumpInner -> ListAllDatabasesTables`、`dumpDatabases -> ShowCreateDatabase/ShowCreatePlacementPolicy`、`dumpWholeTableDirectly -> SelectAllFromTable` 和 `dumpSQL -> detectEstimateRows`。
-
-[`Cargo.toml`](./Cargo.toml) 将本目录声明为库 crate（`[lib] path = "lib.rs"`，porting 元数据对应 Go 包 `dumpling/export`）。本文件没有条件编译项，也没有自定义 `struct`、`trait` 或 `impl`；其一个枚举、一个常量和函数集合都依赖 crate 级单包视图。
+**提供一致性与集群探测语句。
 
 ## 核心职责
 
@@ -124,8 +120,6 @@
 
 ## 与 Go 版本的对应关系
 
-主要 API、Go 风格命名和 SQL 文本来自 [`sql.go`](./sql.go)。已有单元测试特别覆盖枚举数值、空字段 `SELECT ''`、where/chunk 精确格式、隐式 rowid、DDL、序列、charset、分区和 region builder，说明 Rust 目标是行为对齐而非重新设计。
-
 但当前不是完整等价移植，扩展前应先确认差异是否属于目标 commit：
 
 - Go `ShowCreateDatabase` 对 MemSQL/SingleStore 不支持 `SHOW CREATE DATABASE` 有 `CREATE DATABASE` 回退；Rust 版本没有该回退。
@@ -144,13 +138,3 @@
 - 要补齐快照一致性，应同时定义连接建立失败的关闭规则、事务提交/回滚、未知系统变量兼容和锁释放责任，并在独立连接/一致性测试中验证错误路径。
 - 修改 Go 对齐逻辑前先比较 `sql.go` 以及 `dump.go` 中直接相关函数；仅对齐目标 Go commit 的增量和必要接线，把无关的既有移植缺口记录为范围外，不借机扩建子系统。
 - 若新增 Rust 源码行为，依仓库协议同步独立测试、运行 `cargo fmt --all` 并使用适用验证流程；本说明任务只新增文档，没有改变源码或测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；`files --filter dumpling/export` 确认本目录 Rust/Go 源与独立测试均已索引。
-- 源码全貌：RustCodeGraph `node --file dumpling/export/sql.rs --offset 1/500/1000` 覆盖 1,422 行；确认本文件有 1 个枚举、1 个常量、55 个函数，无本地 struct/trait/impl/条件编译项。
-- crate 边界：读取 [`Cargo.toml`](./Cargo.toml) 和 RustCodeGraph `node --file dumpling/export/lib.rs`；确认 `include!("sql.rs")`、共享导入、stub 基座与 `#[path = "sql_test.rs"]` 独立测试模块。
-- 调用图：RustCodeGraph `node prepareTableListToDumpInner`、`node dumpWholeTableDirectly` 及精确 explore 显示 `prepareTableListToDumpInner -> ListAllDatabasesTables`、Rust `dumpWholeTableDirectly -> SelectAllFromTable`；`node --file dump.rs` 又确认 `dumpDatabases` 的 DDL 调用和 `dumpSQL -> detectEstimateRows`。图中 `buildWhereClauses`、`buildLockTablesSQL`、`parseSnapshotToTSO`、`pickupPossibleField`、`buildTableSampleQueries` 等没有 Rust 生产调用者，因此文中按未接线 helper 描述。
-- Rust 测试：读取 [`sql_test.rs`](./sql_test.rs) 全部 782 行，并参考 `prepare_test.rs`、`dump_test.rs` 的图调用边。核心证据包括 `test_build_select_all_query`、`test_build_order_by_clause`、`test_build_select_field`、`test_parse_snapshot_to_tso`、`test_show_create_view`、`test_show_create_sequence`、`test_get_suitable_rows`、`test_go_where_clause_format_and_ranges` 和 region/table-sample builder 测试。
-- Go 对照：读取 RustCodeGraph 中 [`sql.go`](./sql.go) 的对应 DDL、枚举、SELECT、边界、索引、估算和快照实现，并读取 [`dump.go`](./dump.go) 的 `concurrentDumpTable`、`sendConcurrentDumpTiDBTasks`、`selectTiDBTableSample`、`buildTiDBTableSampleQuery` 主链，差异已在上一节逐项标注。
-- 人工复核结论：本文件存在于导出 SQL/元数据规划层；当前已接线流程以对象枚举、DDL 和整表查询为主；安全扩展必须保持资源关闭、标识符/字面量转义、字典序半开区间、Go 兼容和独立测试边界。

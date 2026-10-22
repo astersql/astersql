@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`rule.rs` 属于 `astersql-ddl-placement` crate，是 SQL Placement Settings 到 PD placement rule 之间的规则构建层。crate 入口 `pkg/ddl/placement/lib.rs` 将本模块公开再导出，并把 `pdtypes::placement::HttpRule` 别名为这里使用的 `pd::Rule`；因此本文件返回的是可继续装入 `Bundle`、最终提交给 PD 的规则对象，而不是 DDL job、schema state 或持久化记录。
-
-直接上游是 `pkg/ddl/placement/bundle.rs::NewBundleFromConstraintsOptions`：它从 `model::PlacementSettings` 读取通用、Follower、Learner 等约束，配置 `RuleBuilder`，再把返回的 `Vec<Box<pd::Rule>>` 拆箱并加入 `Bundle`。更外层的 `NewBundleFromOptions` 会调用 `Bundle::Tidy` 规范化规则；表/分区 DDL 再使用这些 Bundle。本文件自身不参与 DDL owner 调度、schema 版本推进或回填。
-
-`pkg/ddl/placement/Cargo.toml` 声明 crate 名为 `astersql-ddl-placement`，`lib.rs` 为库入口；本文件直接使用标准库 `HashMap`/`LazyLock`、`regex`、`serde_yaml`，并通过 crate 内再导出的 `pd` 类型连接 `astersql-store-pdtypes`。
+对字典键中的特殊属性执行预处理；当前 `#evict-leader` 可把 Voter 规则改成 Follower，实际逻辑位于 `constraints.rs::preCheckDictConstraintStr`。
 
 ## 核心职责
 
@@ -96,8 +92,6 @@ RustCodeGraph 对 `bundle.rs` 的结果显示：`NewBundleFromConstraintsOptions
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/ddl/placement/rule.go`：builder 字段和 setter、两个 Build 入口、`NewRule`、数组优先/字典回退、正计数校验、属性角色覆盖及总副本数校验均保留。`pkg/ddl/placement/Cargo.toml` 的 `package.metadata.porting.go-package` 也明确指向 `pkg/ddl/placement`。
-
 主要语言适配差异是：
 
 - Go 返回 `*RuleBuilder` 和 `[]*pd.Rule`；Rust 返回拥有所有权的 `RuleBuilder` 与 `Vec<Box<pd::Rule>>`，setter 使用 `&mut Self`。
@@ -105,8 +99,6 @@ Rust 文件逐项对应 `pkg/ddl/placement/rule.go`：builder 字段和 setter�
 - Go 的空字典/数组结果可表现为 `nil` slice；Rust 统一表现为 `Vec::new()`，调用方应依据内容而非 nil 性判断。
 - Go map 与 Rust `HashMap` 都不提供业务顺序保证；Rust 测试显式以集合方式比较规则。
 - Go 的 `int(replicas)` 与 Rust 的 `replicas as i32` 都存在目标整数宽度边界，Rust 当前没有额外收紧语义。
-
-`pkg/ddl/placement/rule_test.rs` 的可执行测试覆盖 Rule 克隆独立性，以及 Go `TestNewRuleAndNewRules` 的关键表格：空约束、零副本、列表/字典、零计数、非法语法、错误分隔符、非法/未知属性和 `#evict-leader`。文件前半还有 Go 草稿注释，但真实验证入口是 `rule_clone_is_independent` 与 `new_rule_and_new_rules_match_go_table`；Go 原始基准在 `rule_test.go`。
 
 ## 扩展指南
 
@@ -117,12 +109,3 @@ Rust 文件逐项对应 `pkg/ddl/placement/rule.go`：builder 字段和 setter�
 - 若扩大可接受副本数，需先处理 `NewRule` 的 `u64 -> i32` 转换及 `BuildRules` 的 `i32` 求和风险，再核对 PD `HttpRule.Count` 和 Go `int` 的兼容边界。
 - 新测试必须继续放在独立的 `pkg/ddl/placement/rule_test.rs`，不要内嵌进生产文件；同时根据语义变化更新 `rule_test.go` 对照或记录明确的有意差异。
 - 本模块是纯转换层。需要修改规则 ID、范围或合并策略时，应改 `bundle.rs`；需要改变单条 label 语法/冲突规则时，应改 `constraint.rs` / `constraints.rs`，不要把不相关职责堆入 `rule.rs`。
-
-## 验证依据
-
-- 目标实现：`pkg/ddl/placement/rule.rs`，RustCodeGraph `node --file ... --offset 1 --limit 420` 核对了全部 222 行、所有公开/私有符号及分支。
-- crate 边界：`pkg/ddl/placement/Cargo.toml` 与 `pkg/ddl/placement/lib.rs`，确认 crate 名、依赖、`pd::Rule` 别名、模块再导出及独立测试装配。
-- 上游调用：RustCodeGraph 对 `NewRuleBuilder`、`BuildRulesWithDictConstraintsOnly`、`NewBundleFromConstraintsOptions` 和 `pkg/ddl/placement/bundle.rs` 的查询，以及 `bundle.rs` 第 69 行起的源码；确认通用字典、Follower、Learner 三条构建路径和后续 `Tidy`。
-- 下游实现：`pkg/ddl/placement/constraints.rs::{NewConstraints, preCheckDictConstraintStr, NewConstraintsFromYaml}` 与 `pkg/ddl/placement/errors.rs`，确认属性覆盖、冲突检测、空白处理和错误类别。
-- Go 对照：`pkg/ddl/placement/rule.go`，逐项核对 builder、解析分派、计数校验及错误语义。
-- 独立测试：`pkg/ddl/placement/rule_test.rs` 与 `pkg/ddl/placement/rule_test.go`，核对成功、错误、角色覆盖和克隆边界。按任务约束，本次为纯文档分析，未运行 Cargo 或代码测试。

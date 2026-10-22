@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-encryption-master-key`；crate 的清单是 [`br/pkg/encryption/master_key/Cargo.toml`](Cargo.toml)，入口 [`lib.rs`](lib.rs) 通过 `pub mod kms_backend` 加载本模块并重导出其公开符号。它位于备份恢复（BR）的信封加密解密链路中：备份元数据携带 KMS 厂商名和被 KMS 加密的数据密钥，本模块先向云 KMS 解开数据密钥，再把明文数据密钥交给内存 AES-256-GCM 后端解密实际内容。
-
-上游装配入口在 [`master_key.rs`](master_key.rs) 的 `CreateBackend`、`createCloudBackend` 和 `CreateKmsBackendWithProvider`。AWS/GCP 配置先被构造成 `astersql-br-pkg-kms` 的 `Provider`，随后由 `NewKmsBackend` 包装成 `AnyBackend::Kms`；Azure 分支当前在装配层直接返回未实现错误，不会进入本文件。模块不是独立进程入口，也不负责创建云厂商客户端、解析主密钥配置或执行内容加密。
+强制把 KMS 返回值校验为 32 字节 AES-GCM-256 明文密钥，构造 `MemAesGcmBackend`，再解密内容。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@ RustCodeGraph 显示本文件由独立测试模块 [`kms_backend_test.rs`](kms_b
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 [`kms_backend.go`](kms_backend.go) 具有相同的 `CachedKeys`/`KmsBackend` 状态模型、vendor 和密文 key 校验顺序、单条缓存策略、AES-GCM-256 长度约束以及 `Close` 转发。Go 的 `sync.Mutex` 与 Rust 的 `Mutex<Option<CachedKeys>>` 都覆盖 KMS 调用和内容解密，因此主要串行化语义一致。
+Go 的 `sync.Mutex` 与 Rust 的 `Mutex<Option<CachedKeys>>` 都覆盖 KMS 调用和内容解密，因此主要串行化语义一致。
 
 Rust 将 Go 的 `Decrypt(ctx, content)` 拆为默认上下文的 `Decrypt(content)` 和显式 `DecryptWithContext(ctx, content)`，以适配当前 `Backend` trait；只有后者完整暴露 Go API 的取消能力。Go 使用 `utils.WithRetryV2(NewBackoffRetryAllErrorStrategy(10, 500ms, 5s))`；其策略也会在计算第一次等待前把延迟翻倍，所以 Rust 的 1 s 起步、5 s 封顶和最多 10 次尝试与当前 Go 实现一致。两端都会累计所有失败，但具体字符串拼接格式来自不同错误设施，调用方不应依赖跨语言完全相同的重试错误排版。
 
-独立 Rust 测试 [`kms_backend_test.rs`](kms_backend_test.rs) 移植了 Go 测试 [`kms_backend_test.go`](kms_backend_test.go) 的核心契约：首次访问调用 provider、相同密文 key 命中缓存、不同 key 再次调用，以及三种元数据错误。Rust 额外覆盖了 `DecryptWithContext` 的即时取消传播。现有成功路径测试故意忽略最终 `DecryptContent` 结果，因为测试内容不是完整 AES-GCM 密文；它证明的是 KMS 调用计数和缓存行为，不证明内容解密成功。
+独立 Rust 测试 [`kms_backend_test.rs`](kms_backend_test.rs) 移植了 Go 测试 [`kms_backend_test.go`](kms_backend_test.go) 的核心契约：首次访问调用 provider、相同密文 key 命中缓存、不同 key 再次调用，以及三种元数据错误。Rust 额外覆盖了 `DecryptWithContext` 的即时取消传播。
 
 ## 扩展指南
 
@@ -95,11 +93,3 @@ Rust 将 Go 的 `Decrypt(ctx, content)` 拆为默认上下文的 `Decrypt(conten
 - 新增 KMS 厂商通常不在本文件分支判断，而是在 [`master_key.rs`](master_key.rs) 的 `createCloudBackend` 创建新的 `Provider`；本文件只要求 provider 的 `Name` 与内容元数据编码一致。需同步 provider crate 测试、装配测试和本后端 vendor 匹配测试。
 - 若要支持异步或高并发解密，必须同时设计 provider 的 `Sync` 约束、避免持锁跨网络/睡眠、处理同 key 请求合并，并保持“缓存只在成功获得且校验明文 key 后更新”的不变量。性能优化不能绕过 AES-GCM 内容认证。
 - 若改变公开构造或错误类型，要同步 [`master_key.rs`](master_key.rs) 的 `AnyBackend` 接线和独立测试；测试逻辑继续放在 `kms_backend_test.rs`，不要嵌入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件；`files --filter br/pkg/encryption/master_key` 确认目标源码、模块入口、Go 对照及独立测试均在对应目录。
-- RustCodeGraph 源码/符号检查：`node --file br/pkg/encryption/master_key/kms_backend.rs --offset 1 --limit 260` 完整读取 133 行实现；`query KmsBackend`、`query CreateKmsBackendWithProvider`、`query DecryptWithContext` 确认主要定义；`explore` 确认 `CreateBackend → createCloudBackend` 以及 `CreateKmsBackendWithProvider → NewKmsBackend` 的装配关系，并识别 `DecryptWithContext → with_retry/Provider::DecryptDataKey/NewPlainKey/NewMemAesGcmBackend` 的下游链路。
-- 读取的 Rust/Cargo 直接证据：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`master_key.rs`](master_key.rs)、[`common.rs`](common.rs)、[`mem_backend.rs`](mem_backend.rs)、[`../../kms/kms.rs`](../../kms/kms.rs)、[`../../kms/common.rs`](../../kms/common.rs) 和 [`kms_backend_test.rs`](kms_backend_test.rs)。目标目录没有 `doc.go`。
-- 读取的 Go 对照证据：[`kms_backend.go`](kms_backend.go)、[`kms_backend_test.go`](kms_backend_test.go)、[`../../utils/retry.go`](../../utils/retry.go) 和 [`../../utils/backoff.go`](../../utils/backoff.go)。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另运行固定 11 章节结构检查，并人工复核唯一生产物、路径链接、调用关系、错误与并发生命周期描述。

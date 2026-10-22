@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`table_mode.rs`](./table_mode.rs) 属于 `astersql-ddl` crate，并由 [`lib.rs`](./lib.rs) 的 `pub mod table_mode` 暴露。它并不只处理“表模式”：文件前段提供表模式的精简模型和权限判定，后段实现普通 DDL 持久化 worker 的执行器、schema 同步屏障接口，以及 action 75（AlterTableMode）的真实元数据处理函数。
-
-生产主链是 [`pkg/session/runtime/normal_ddl_service.rs`](../session/runtime/normal_ddl_service.rs) 或 `session_factory.rs` 创建 `NormalDdlExecutor`，再由 [`job_worker.rs`](./job_worker.rs) 的 `DurableJobExecutor` 协议逐步执行持久化 job。表模式 action 最终经 [`persistent_actions.rs`](./persistent_actions.rs) 的 `step_metadata` 分派到 `on_persistent_alter_table_mode`。因此，真正的表模式修改是 job-based、owner-driven 的元数据变更，不是绕过 DDL 队列的快速路径；它保持 `SchemaState::Public`，不做 reorg/backfill。
+并不只处理“表模式”：文件前段提供表模式的精简模型和权限判定，后段实现普通 DDL 持久化 worker 的执行器、schema 同步屏障接口，以及 action 75（AlterTableMode）的真实元数据处理函数。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-- [`table_mode.go`](./table_mode.go) 的 `onAlterTableMode` 对应 Rust `on_persistent_alter_table_mode`：两者都解码 `AlterTableModeArgs`、读取完整表、同模式 no-op、用 `CanTransitionTo` 校验、更新版本与表，并以 `Done/Public` 完成 job。
 - Go `alterTableMode` 只做 `CanTransitionTo` 与赋值；Rust 持久化 handler 内联了该过程。Rust 前段的精简 `alter_table_mode`/`on_alter_table_mode` 是便于局部验证的附加模型，不是 Go 函数的一对一生产替代。
-- Rust V1/V2 参数分支对应 Go job args 的兼容格式；action code 75、错误 display code、Go wire job 编解码和 schema diff 字段由 [`table_mode_test.rs`](./table_mode_test.rs) 验证。
 - Go [`table_mode_test.go`](./table_mode_test.go) 的范围更广：它通过 SQL 覆盖 Import/Restore 的 metadata/checksum 例外、DML/DDL 拒绝、并发迁移和 RefreshMeta。Rust 独立测试当前覆盖精简权限矩阵、迁移/幂等/ID 校验、真实 KV stage 清理与错误 wire；不能据此声称 Rust 已在本文件中复刻 Go SQL 入口的所有保护检查。
 - Go 注释指出 BR 通常通过 `(batch)CreateTableWithInfo` 设置 Restore，而不是普通 AlterTableMode；Rust handler仍按模型校验所有 0..=2 目标，实际调用约束应由 job 构造/上游入口共同保持。
 
@@ -93,11 +89,3 @@
 - 新增普通 DDL action 时，应在 `persistent_actions::handler_available`/`step` 建立明确分派，而不是让 `NormalDdlExecutor` 默认成功；涉及 schema 版本时还要验证 MDL table IDs、barrier wait 和 history 收尾。
 - 修改暂停、取消、upgrade admission 或 schema sync 时分别进入 `NormalDdlExecutor::step`、[`normal_policy.rs`](./normal_policy.rs) 和 [`schema_version.rs`](./schema_version.rs)，避免把集群协议塞进 TableMode handler。
 - 性能风险主要在每步 Go wire 深拷贝、SQL/MDL 查询与 history 编码，不在精简权限 match；兼容风险集中于 job raw args、错误码、action 75、schema diff 和 history wire；正确性风险集中于 stage 释放/清理、owner fence、no-op 版本语义和非法迁移。
-
-## 验证依据
-
-- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/table_mode.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
-- 已读生产证据：[`table_mode.rs`](./table_mode.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`persistent_actions.rs`](./persistent_actions.rs)、[`job_worker.rs`](./job_worker.rs)、[`normal_policy.rs`](./normal_policy.rs)、[`schema_version.rs`](./schema_version.rs)、[`pkg/session/runtime/normal_ddl_service.rs`](../session/runtime/normal_ddl_service.rs)。
-- 事务回滚补证：`pkg/ddl/tests/materializedview/materialized_view_create_test.rs` 的 `mview_cleanup_rollback_discards_metadata_and_retries_schema_version`、`mview_cleanup_rollback_notification_failure_is_atomic`、`mview_cleanup_rollback_rechecks_job_meta_after_reopen` 覆盖外层 worker 的标志消费、失败原子性和重开后的 job meta 检查；它们使用独立 executor 替身，不能代替 `NormalDdlExecutor` 端到端运行证据。
-- 已读对照与测试：[`table_mode.go`](./table_mode.go)、[`table_mode_test.rs`](./table_mode_test.rs)、[`table_mode_test.go`](./table_mode_test.go)，并通过 `pkg/meta/model` 中 action 75、TableMode 和 job args 定义核对 wire/枚举来源。
-- 结构校验使用任务指定命令，要求文件存在且恰有 11 个固定二级标题。本任务只更新说明文档，不修改运行时代码，按计划不运行 Cargo。

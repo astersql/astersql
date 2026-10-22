@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`store.rs` 属于 `astersql-util-mock` crate，定义 util 测试工具中的最小化存储占位类型 `Store`。crate 根 `pkg/util/mock/lib.rs` 通过 `mod store; pub use store::*;` 对外重导出该类型；`pkg/util/mock/Cargo.toml` 则表明它依赖的 KV 抽象来自同工作区 `astersql-kv` crate（在 `lib.rs` 中重导出为 `crate::kv`）。
-
-该文件的定位是“可直接调用固定返回值的测试替身”，不是 TiKV、MPP、Oracle 或事务引擎。Go 对照文件 `pkg/util/mock/store.go` 的 `Store` 实现了 `kv.Storage`；但当前 Rust `Store` 只定义了固有方法，没有 `impl kv::Storage for Store`，且部分签名与 `pkg/kv/kv.rs::Storage` 不同。因此它尚不能作为 `Arc<dyn kv::Storage>` 注入 `pkg/util/mock/context.rs::Context::Store`。
+Go 对照文件 `pkg/util/mock/store.go` 的 `Store` 实现了 `kv.Storage`；但当前 Rust `Store` 只定义了固有方法，没有 `impl kv::Storage for Store`，且部分签名与 `pkg/kv/kv.rs::Storage` 不同。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ RustCodeGraph 可列出该文件的 21 个符号（`Store` 加 20 个方法）�
 
 ## 与 Go 版本的对应关系
 
-Rust `Store`、字段 `Client` 及 20 个方法与 `pkg/util/mock/store.go` 中的同名符号一一对应。固定值保持一致：`UUID` 为 `mock`，版本与 safe TS 为 0，不支持 DeleteRange，名称/描述文本一致，集群 ID 为 1，keyspace 为空。
+Rust 用显式类型表达 Go `nil`：客户端、事务、快照和若干服务返回 `Option`，Go 的 `(nil, nil)` 在 `Begin` 中映射为 `Ok(None)`。
 
-Rust 用显式类型表达 Go `nil`：客户端、事务、快照和若干服务返回 `Option`，Go 的 `(nil, nil)` 在 `Begin` 中映射为 `Ok(None)`。Go 的 `any` 映射为 `dyn Any`，Go 的可空 Client interface 映射为 `Option<Arc<dyn Client + Send + Sync>>`。
-
-尚未完全对齐的部分是接口接线：Go 通过方法集隐式满足 `kv.Storage`；Rust 没有 `impl kv::Storage for Store`。同时 Rust trait 要求的 `Begin`、`GetSnapshot`、`GetClient`、`GetMPPClient`、`GetOracle`、`ShowStatus`、`GetMemCache`、`GetLockWaits`、`GetCodec`、`GetOption` 签名与此文件的可空签名不兼容，`Close` 的接收者也是 `&self` 与 trait 的 `&mut self` 之别。这是当前代码事实，不应宣称 Rust 版已完成 Go Storage 替换。
+尚未完全对齐的部分是接口接线：Go 通过方法集隐式满足 `kv.Storage`；Rust 没有 `impl kv::Storage for Store`。
 
 ## 扩展指南
 
@@ -81,12 +77,3 @@ Rust 用显式类型表达 Go `nil`：客户端、事务、快照和若干服务
 - 如使 `SetOption` 开始持久化值，需增加内部同步和类型擦除策略，验证覆盖/缺失/错误类型/并发访问，并重新评估 `Store` 的 `Send + Sync` 性质与性能。
 - 如增加事务、快照、Oracle 或编解码器，应优先复用 `astersql-kv` 已有测试替身，并同步检查 `pkg/util/mock/context.rs` 中的 `Context::Txn`、`GetClient`、`GetMPPClient`、`Txn`、`GetStore`。
 - 任何改变固定值或空值语义的改动，都要与 `pkg/util/mock/store.go` 的对应行为核对；若有意与 Go 分歧，需在独立 Rust 测试中明确记录理由及兼容风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引包含 7,032 个 Rust 文件；`files --filter pkg/util/mock` 确认目标源文件与相邻测试；`node --file pkg/util/mock/store.rs --symbols-only` 列出 `Store` 和 20 个方法；`node Store --file pkg/util/mock/store.rs` 定位唯一结构体。callers/callees 对同名符号产生歧义候选，未将其作为精确调用边。
-- Rust 源码：`pkg/util/mock/store.rs` 提供全部类型、签名和固定返回值；`pkg/util/mock/lib.rs` 提供模块声明与重导出；`pkg/kv/kv.rs::Storage` 提供 trait 签名对照；`pkg/util/mock/context.rs::Context::Store` 提供实际注入边界。
-- Cargo：`pkg/util/mock/Cargo.toml` 确认 crate 名、`lib.rs` 入口、`astersql-kv` 路径依赖和开发测试依赖；本文件没有 feature 条件。
-- Go 对照：`pkg/util/mock/store.go` 提供 `Store` 的原始字段、方法集、固定值及 `kv.Storage` 实现意图。`pkg/util/mock/mock_test.go` 只测试 Context，未覆盖 Store。
-- Rust 测试：`pkg/util/mock/migration_aster_unit_test.rs::store_returns_the_same_fixed_defaults_as_go` 是 Store 的独立回归测试，覆盖默认 Client、全部占位方法、固定身份值和 `SetOption` 的 no-op 行为。
-- 结构验证按任务文件的命令执行，要求本文件存在且恰好包含 11 个固定二级标题。本任务是纯文档分析，按总计划不运行 Cargo。

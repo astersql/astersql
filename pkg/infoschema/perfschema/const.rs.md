@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema-perfschema` crate，是 `PERFORMANCE_SCHEMA` 虚拟库的静态 DDL 清单。crate 根 `pkg/infoschema/perfschema/lib.rs` 通过 `#[path = "const.rs"] pub mod consts` 装入它；文件本身不注册虚拟库、不提供行数据，也不执行 SQL。它只把 `pkg/infoschema/perfschema/tables.rs` 中的表名常量拼成建表文本，并由 `pkg/infoschema/perfschema/init.rs::build_performance_schema` 解析成 `TableMeta`。
-
-`pkg/infoschema/perfschema/Cargo.toml` 指定库入口为 `lib.rs`，移植来源为 Go 包 `pkg/infoschema/perfschema`。该 manifest 的正常依赖只有 `tracing`；本文件实际只直接使用标准库 `std::sync::LazyLock` 和 crate 内 `tables::*`，不直接依赖 tracing 或 `cfg(any())` 下列出的尚未接线依赖。
+用 44 个 `LazyLock<String>` 保存 44 张虚拟表的完整 `CREATE TABLE` 文本，表名来自 `tables.rs`，避免在 DDL 与 ID/运行时分派处重复硬编码名称。
 
 ## 核心职责
 
@@ -72,11 +70,11 @@ RustCodeGraph 能定位本文件的两个私有生成函数和 `init.rs` 对 `pe
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/perfschema/const.go` 和 `init.go`。Rust 的前 35 张表与 Go `perfSchemaTables` 清单包含相同名称并保持相同注册顺序；各对应 DDL 沿用 Go 的列顺序、类型与索引片段。Rust 用运行时一次性 `LazyLock<String>` 替代 Go 编译期字符串常量，因为 Rust 需要把多个 `&str`（包括表名常量）拼成拥有所有权的字符串。
+Rust 的前 35 张表与 Go `perfSchemaTables` 清单包含相同名称并保持相同注册顺序；各对应 DDL 沿用 Go 的列顺序、类型与索引片段。Rust 用运行时一次性 `LazyLock<String>` 替代 Go 编译期字符串常量，因为 Rust 需要把多个 `&str`（包括表名常量）拼成拥有所有权的字符串。
 
 Rust 当前不是对 Go 文件的完全逐项镜像：它在 Go 的 35 张表之后追加了 9 张客户端兼容表，而当前 `const.go` 没有这些 DDL。该差异由 `tables_test.rs::test_client_required_registry_is_complete_and_stable` 明确记录并验证。因此维护时应分别保护“Go 既有 35 表的对齐”和“Rust 追加 9 表的客户端契约”，不能用 Go 清单直接覆盖 Rust 清单。
 
-初始化语义也有实现差异：Go `Init` 使用完整 parser 和 `ddl.BuildTableInfoFromAST`，Rust `build_performance_schema` 使用本 crate 的轻量解析器；二者都为列赋连续 ID、设置固定数据库 ID/public 状态，并在依赖就绪后执行一次注册。DDL 语义的改动必须同时评估完整 Go parser 与 Rust 轻量解析器的接受范围。
+初始化语义也有实现差异：Go `Init` 使用完整 parser 和 `ddl.BuildTableInfoFromAST`，Rust `build_performance_schema` 使用本 crate 的轻量解析器；二者都为列赋连续 ID、设置固定数据库 ID/public 状态，并在依赖就绪后执行一次注册。
 
 ## 扩展指南
 
@@ -90,14 +88,3 @@ Rust 当前不是对 Go 文件的完全逐项镜像：它在 Go 的 35 张表之
 6. 对 Go 既有表的修改同步核对 `const.go`；对 Rust 专有客户端表，记录为何与 Go 不同，避免错误“回归”为 Go 的较小集合。
 
 主要风险是旧表 ID 漂移、列 offset 改变、轻量解析器不接受新语法，以及元数据已经可见但运行时数据源未接线。DDL 只在首次初始化时解析，性能风险很小；更值得关注的是新增永久静态字符串的内存和查询期数据实现的开销。
-
-## 验证依据
-
-- 目标源码：`pkg/infoschema/perfschema/const.rs`，确认 45 个公开静态量、44 项 DDL 清单，以及 `events_waits_table`、`connection_summary_table` 两个私有函数。
-- crate 与装配：`pkg/infoschema/perfschema/Cargo.toml`、`lib.rs`；最近的 `pkg/infoschema/doc.go` 不存在，因此以 crate 根文档作为包契约。
-- 初始化链：`pkg/infoschema/perfschema/init.rs` 中的 `perfSchemaTables` 导入、`build_performance_schema`、`parse_create_table`、`init`。
-- 名称、ID 与取数边界：`pkg/infoschema/perfschema/tables.rs` 的 `tableName*`、`TABLE_ID_MAP`、`table_from_meta` 和行数据源接口。
-- Go 对照：`pkg/infoschema/perfschema/const.go` 的 35 项清单及 DDL，`init.go::Init` 的完整 parser 构建与一次性注册流程。
-- 独立测试：`pkg/infoschema/perfschema/tables_test.rs::test_perf_schema_tables`、`test_client_required_registry_is_complete_and_stable`、`test_tikv_profile_cpu_table_meta`、`test_session_connect_attrs_table_meta`、`test_init_registers_when_eval_ready`；`init_test.rs` 覆盖解析器的复杂定义切分。
-- RustCodeGraph：`status` 显示索引含目标 Rust 文件；`files --filter pkg/infoschema/perfschema` 确认模块文件面；`node --file` 核对 `const.rs`、`init.rs`、`lib.rs`；`query` 定位两个私有生成函数。由于图对静态变量调用边识别有限，关键消费边以源码直接引用复核。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核本文没有把元数据声明误写成运行时数据实现。

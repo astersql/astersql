@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-example` crate 的执行端。crate 根模块 `pkg/dxf/example/lib.rs` 以 `mod task_executor` 装载它，再用 `pub use task_executor::*` 导出 `taskExecutor`、`newTaskExecutor` 和 `stepExecutor`。包级说明 `pkg/dxf/example/doc.go` 将该 crate 定位为 DXF（Distributed eXecution Framework）的教学示例：调度器为 StepOne、StepTwo 生成子任务，而 follower 节点上的执行器消费这些子任务并打印消息。
-
-它不是完整执行循环的实现。`taskExecutor` 是 `astersql-dxf-framework-taskexecutor::BaseTaskExecutor` 的薄适配层，负责安装示例专用 `Extension` 并转发生命周期方法；真正的轮询、状态迁移、取消和步骤资源管理在框架基类中。业务叶子 `stepExecutor::RunSubtask` 只把 `Subtask.Meta` 解码为 `subtaskMeta` 并写一条 info 日志（依据：`task_executor.rs::newTaskExecutor`、`impl TaskExecutor for taskExecutor`、`impl StepExecutor for stepExecutor`）。
-
-`pkg/dxf/example/Cargo.toml` 声明该 crate 对应 Go 包 `pkg/dxf/example`，当前正常构建依赖为 `astersql-dxf-framework-taskexecutor` 与 `astersql-util-logutil`。scheduler、storage、handle 等依赖仍位于永不启用的 `cfg(any())` 占位区，因此生产 crate 当前只直接接入 taskexecutor 框架；更完整的两步流程由本 crate 的内存端到端测试模拟。
+`taskExecutor` 是 `astersql-dxf-framework-taskexecutor::BaseTaskExecutor` 的薄适配层，负责安装示例专用 `Extension` 并转发生命周期方法；真正的轮询、状态迁移、取消和步骤资源管理在框架基类中。
 
 ## 核心职责
 
@@ -83,13 +79,11 @@ RustCodeGraph 已索引目标文件并报告其 23 个符号。对精确名称 `
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/dxf/example/task_executor.go`。两端都以一个任务执行器包装框架 `BaseTaskExecutor`，都声明子任务幂等、错误可重试，并返回无状态 `stepExecutor`；`RunSubtask` 都解码 `subtaskMeta`，成功后以 info 级别记录 subtask ID 和 message，解码失败则原样结束业务处理。
-
-构造接线有语言实现差异。Go 先创建 `BaseTaskExecutor`，再令 `e.BaseTaskExecutor.Extension = e`，所以同一个 `taskExecutor` 同时承担框架 TaskExecutor 与 Extension。Rust 为避免自引用对象，在调用 `NewBaseTaskExecutor` 前把 `Param.Extension` 设置为独立的 `Arc<exampleExtension>`；`taskExecutor` 自身仍保留对应的三个固有方法，并通过 trait 的错误判断方法使用其中之一。行为返回值对齐，但对象身份和策略调用路径不同。
+构造接线有语言实现差异。行为返回值对齐，但对象身份和策略调用路径不同。
 
 Go 依靠嵌入自动提升 `BaseTaskExecutor` 和 `BaseStepExecutor` 方法；Rust 显式实现 `TaskExecutor` 并逐项转发，`StepExecutor` 的未覆盖钩子则使用 trait 默认实现。Go 使用 `encoding/json.Unmarshal` 和 zap 字段；Rust 使用 `subtaskMeta::Unmarshal` 与 `astersql-util-logutil` 的 `LogField`，其 JSON 兼容细节由独立 `proto.rs` 实现。
 
-Rust `app_test.rs` 已用内存 `FakeTaskTable` 跑通本 crate 的真实 scheduler/executor 两步流程，但测试注释和 Cargo 的 `cfg(any())` 依赖表明 scheduler/handle/storage/testkit 的完整 Go 式集成尚未接通。因此可以确认本文件与已移植框架基类协作，不应据此声称整个 Go DXF 示例环境已经等价移植。
+Rust `app_test.rs` 已用内存 `FakeTaskTable` 跑通本 crate 的真实 scheduler/executor 两步流程，但测试注释和 Cargo 的 `cfg(any())` 依赖表明 scheduler/handle/storage/testkit 的完整 Go 式集成尚未接通。
 
 ## 扩展指南
 
@@ -100,12 +94,3 @@ Rust `app_test.rs` 已用内存 `FakeTaskTable` 跑通本 crate 的真实 schedu
 若引入外部资源或每步状态，应分别利用 `StepExecutor::Init`、`Cleanup`、`TaskMetaModified`、`ResourceModified` 和进度摘要钩子，不要绕开 `BaseTaskExecutor` 的 step 切换与取消上下文。资源构造失败应通过 `Result` 返回；Cleanup 需可重复且能应对取消后的部分初始化状态。
 
 修改 `IsIdempotent` 或 `IsRetryableError` 时，需要新增 Running 子任务恢复、确定性解析错误和瞬态错误的独立测试，验证框架最终状态，而不只验证布尔返回值。兼容风险集中在重试次数和恢复语义；性能风险主要来自为每个 step 重建 executor、每个子任务解析 JSON及同步记录日志。若消息量上升，应先用实际负载确认日志成本，再决定采样或降级策略。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11467 个文件、7032 个 Rust 文件；`files --filter pkg/dxf/example` 确认目标、Go 对照、模块入口和独立测试均已索引。
-- RustCodeGraph `node --file` 已阅读：`pkg/dxf/example/task_executor.rs`、`lib.rs`、`task_executor.go`、`task_executor_test.rs`、`app_test.rs`、`proto.rs`、`pkg/dxf/framework/taskexecutor/interface.rs` 与 `task_executor.rs` 的直接相关区段。
-- RustCodeGraph 已查询 `newTaskExecutor`、`stepExecutor`、`RunSubtask`，并执行 callers/callees/explore；由于跨语言重名导致精确图边不足，调用关系又以 `app_test.rs` 的工厂注册现场和框架 `createStepExecutor`/`runSubtask` 源码核验。
-- crate 与包契约证据：`pkg/dxf/example/Cargo.toml`、`pkg/dxf/example/doc.go`；Go 语义对照：`pkg/dxf/example/task_executor.go`。
-- 独立测试证据：`task_executor_test.rs` 验证合法 meta 的 ID/message 日志以及非法 JSON 不写成功日志；`app_test.rs::test_example_application` 验证工厂覆盖占位 Extension、两步各三个子任务并由 `executor.Run()` 推进为 Succeed。
-- 本任务只新增说明文档，按计划未运行 Cargo。交付时使用任务指定的结构命令确认文件存在并恰有 11 个固定二级标题，并人工复核文档区分了本文件职责、框架职责和尚未接通的完整集成边界。

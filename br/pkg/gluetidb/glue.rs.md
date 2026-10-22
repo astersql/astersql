@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-gluetidb`；crate 入口 [`lib.rs`](lib.rs) 以 `pub mod glue` 挂载本模块并用 `pub use glue::*` 扁平导出公开符号。其直接依赖由 [`Cargo.toml`](Cargo.toml) 限定为 `astersql-br-pkg-glue`（公共 Glue/Session/Storage 契约）、`astersql-br-pkg-gluetikv`（存储、进度和版本实现）与 `astersql-errors`（共享错误）。
-
-它是 Go [`glue.go`](glue.go) 的迁移对应物，处在 BR 通用接口与 TiDB Domain/Session 生命周期之间：对外实现 `astersql_br_pkg_glue::Glue`，对下把存储及 CLI 辅助能力委托给 `gluetikv::Glue`，把尚未直接链接到完整 TiDB 运行时的 Domain/Session 操作抽象为 `DomainHooks`。因此它既是适配层，也是当前迁移边界；默认 hooks 不是完整生产 Domain 实现。
+`impl GlueTrait for Glue` 只做公开 trait 到固有方法的转发，确保调用方可通过通用 `Glue` trait 使用本实现。
 
 ## 核心职责
 
@@ -76,13 +74,13 @@ Domain 启动采用“锁外预查（`GetDomain`）/锁内复查（`startDomainA
 
 ## 与 Go 版本的对应关系
 
-Rust `New` 对齐 Go 的 schema lease、Dashboard、慢日志和 1800 秒 Coprocessor 超时副作用，但只把结果记录在 `GlobalConfigBits`，没有直接调用 Go 中的 `vardef`/`config` 全局配置设施。`Glue` 的启动互斥、InfoSchema 过滤器、TiKV 委托、`OwnsStorage=true` 与 `ClientCLP` 均保持同一意图。
+Rust `New` 对齐 Go 的 schema lease、Dashboard、慢日志和 1800 秒 Coprocessor 超时副作用，但只把结果记录在 `GlobalConfigBits`，没有直接调用 Go 中的 `vardef`/`config` 全局配置设施。
 
-Domain 主流程与 Go 顺序相同：空 store 探测、互斥内复查、启动 DDL owner、创建并启动 Domain；`GetDomain` 在首次创建后初始化 MDL 与统计循环；`CreateSession` 先保证 Domain。Rust 通过 `DomainHooks` 替代 Go 对 `session`、`ddl`、`domain` 包的直接调用，这是可测试的迁移接缝，并非 Go 完整运行时能力本身。
+Rust 通过 `DomainHooks` 替代 Go 对 `session`、`ddl`、`domain` 包的直接调用，这是可测试的迁移接缝，并非 Go 完整运行时能力本身。
 
 会话层差异更明显。Go `tidbSession` 在本文件内实现内部 SQL 执行、结果集触发、事务 InfoSchema 清理、建库建表、放置策略、AlterTableMode 与 RefreshMeta；Rust `OneShotSession` 仅转发已有 `dyn Session`，真实语义属于注入的 Session 实现。Go 还提供 `WrapSession`、`tidbSession` 和批量建表实现，当前 Rust 文件没有对应生产实现。相反，Rust 增加 RAII guard，以适配可被回调持有的 boxed trait object，同时维持 Go `defer se.Close()`/可选 `dom.Close()` 的退出语义。
 
-数据库过滤的指定库小写匹配和临时库原名匹配与 Go 一致；系统库判断并非完整等价：Go 委托 `metadef.IsSystemDB`，Rust 当前只接受 `mysql`。[`glue_test.rs`](glue_test.rs) 说明真实 TiDB `session/domain/testkit/model` 在该平台不可用，测试用 hooks 和描述符模拟调用顺序及 schema 版本行为，因此这些测试证明适配契约，不证明与真实 TiDB 集成已经接通。
+数据库过滤的指定库小写匹配和临时库原名匹配与 Go 一致；系统库判断并非完整等价：Go 委托 `metadef.IsSystemDB`，Rust 当前只接受 `mysql`。
 
 ## 扩展指南
 
@@ -92,17 +90,3 @@ Domain 主流程与 Go 顺序相同：空 store 探测、互斥内复查、启�
 - 若把 Go `tidbSession` 语义迁入 Rust，应放在独立生产源文件并在同目录独立测试文件中覆盖内部 SQL 结果集触发、Txn InfoSchema 清理、DDL query string 恢复和批量建表；不要把测试写入 `glue.rs`。
 - 改动 Domain 并发逻辑时，应针对多个线程同时调用 `GetDomain` 添加回归测试，分别计数 `StartOwnerManager`、`StartDomain`、`InitMDLVariable` 与 `UpdateTableStatsLoop`，明确是只保证启动一次还是所有初始化都严格一次。
 - 修改公共方法签名或委托关系时，同步检查 `astersql-br-pkg-glue::Glue` trait、[`lib.rs`](lib.rs) 的再导出、[`parity_test.rs`](parity_test.rs) 的 trait 接线断言，以及 [`glue_test.rs`](glue_test.rs) 的 Go 等价场景。
-
-## 验证依据
-
-- 源码全貌：[`glue.rs`](glue.rs) 的常量、`GlobalConfigBits`、过滤器、`DomainHooks`/`NopDomainHooks`、`Glue`、两个 RAII guard、固有方法与 `GlueTrait` 实现。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的包名、`lib.rs` 入口及三项直接依赖；[`lib.rs`](lib.rs) 的模块挂载、测试隔离与扁平再导出。
-- Go 对照：[`glue.go`](glue.go) 的 `New`、过滤器、Domain/Session 启动、`UseOneShotSession`、TiKV 委托和 `tidbSession` 具体行为；[`glue_test.go`](glue_test.go) 的会话隔离、策略创建和批量建表场景。
-- Rust 测试：[`glue_test.rs`](glue_test.rs) 验证关闭 bootstrap Domain 后 `CreateSession` 触发 owner/Domain 启动，并以测试替身覆盖 schema 版本、DDL 和表/策略关系；[`parity_test.rs`](parity_test.rs) 验证配置位、过滤边界、公开 trait、Open 委托，以及一次性会话在成功/错误路径上的清理；[`test_support_test.rs`](test_support_test.rs) 验证全局测试状态的串行与复位策略。
-- 验证限制：本任务按计划不运行 Cargo。调用图对同名 Go/Rust 方法和 trait 动态分派存在歧义，所以上游应用位置只作为公共 Glue 契约的间接使用证据；真实生产 hooks 的安装在本文件及其直接 crate 入口中未找到，本文不宣称完整 TiDB Domain 已接通。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/gluetidb/glue.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/gluetidb/glue.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-`parity_test.rs` 的 hooks 替身接受 `_disable_rpc`，但没有断言该参数；现有生命周期测试不能充当真实 RPC 服务关闭证据。对应 Go `glue.go` 使用 session Domain API 表达相同禁用意图。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

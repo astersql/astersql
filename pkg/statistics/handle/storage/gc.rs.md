@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-statistics-handle-storage` crate 的统计系统表垃圾回收实现。crate 边界由 `pkg/statistics/handle/storage/Cargo.toml` 定义，`pkg/statistics/handle/storage/lib.rs` 通过 `pub mod gc` 装载并用 `pub use gc::*` 再导出公开符号。这里的 GC 清理 `mysql.stats_*` 中已删表、列、索引及过期历史统计，不是 TiKV MVCC GC。
-
-Rust 应用中的直接上游是 `pkg/domain/domain.rs::Domain::gc_stats`：它先调用 `stats_context().gc_dropped_stats()` 处理已知 drop ID，再以 `stats_storage::new_stats_gc(self.stats_store.as_ref(), self)` 构造本文件的门面。`Domain` 同时实现 `StatsCatalog`，而 `KvStatsStore` 在 `pkg/statistics/handle/restricted_sql.rs` 实现 `SqlStore`，因此本文件处在 schema 视图与统计系统表访问的交界处。
-
-`Cargo.toml` 的 Go 包映射是 `pkg/statistics/handle/storage`。其大量路径依赖位于恒假的 `[target.'cfg(any())'.dependencies]`，当前本文件实际只直接使用标准库和 crate 内的 `Error`/`SqlStore`；不应根据该依赖清单声称本文件已直接接入那些 crate。
+提供严格单调的 TiDB TSO 刻度进程时间戳 `current_ts` 和向上取整批次计算 `batch_count`，供存储适配层及其他统计路径复用。
 
 ## 核心职责
 
@@ -87,8 +83,6 @@ RustCodeGraph 能索引目标文件的 25 个符号并给出 `StatsGc <- new_sta
 
 ## 与 Go 版本的对应关系
 
-Rust `StatsGc`/`StatsCatalog` 是 Go `statsGCImpl` 绑定 `types.StatsHandle` 与 `infoschema.InfoSchema` 的拆分适配。`gc_stats`、`delete_table_stats_from_kv`、`clear_outdated_history_stats`、`gc_history_stats_from_kv`、`delete_histogram_stats_from_kv`、`gc_table_stats` 和水位读写，分别对应 `gc.go` 中同名或 camel-case 符号。十倍最大 lease、版本窗口、表的两阶段删除、列/索引存在性判定、水位只在主流程成功后推进，以及历史保留清理尽力而为，均保留了 Go 意图。
-
 已确认的实现差异如下：
 
 - Go 用 `oracle.GoTimeToTS(time.Now())` 得到墙钟上界；Rust 用 `store.start_ts()?.saturating_add(1)`，直接与后端事务版本时钟对齐，并因排他上界增加一个逻辑 tick。`gc_uses_the_store_transaction_clock_for_its_scan_window` 专门验证这一点。
@@ -97,9 +91,8 @@ Rust `StatsGc`/`StatsCatalog` 是 Go `statsGCImpl` 绑定 `types.StatsHandle` �
 - Go 记录过期历史清理警告；Rust 目标文件直接忽略该错误，没有日志依赖。
 - Go 删除路径显式包装事务；Rust 由 `SqlStore` 语义承载多条 SQL，`gc.rs` 本身没有事务封装。
 - Rust `Domain::gc_stats` 额外先处理 `dropped_stats_ids`，以免已知 drop 因持久化水位窗口而延后；这是 Rust 应用层必需一起考虑的局部接线。
-- `current_ts` 是 Rust 存储适配的进程内工具，不是 `gc.go` 中的独立对应函数。
 
-`gc_test.rs` 前半的 Go 风格集成用例被放在 `_GO_DRAFT_ARCHIVE` 原始字符串中，当前不会被 Rust 测试运行器编译或执行。它们与 `gc_test.go::{TestGCStats,TestGCPartition,TestGCColumnStatsUsage,TestExtremCaseOfGC}` 一致，只能作为迁移意图证据；当前真正可运行的相邻 Rust 测试是文件末尾的三个用例。
+`gc_test.rs` 前半的 Go 风格集成用例被放在 `_GO_DRAFT_ARCHIVE` 原始字符串中，当前不会被 Rust 测试运行器编译或执行。
 
 ## 扩展指南
 
@@ -112,13 +105,3 @@ Rust `StatsGc`/`StatsCatalog` 是 Go `statsGCImpl` 绑定 `types.StatsHandle` �
 修改 `current_ts` 时必须保持全并发调用严格递增、左移 18 位的刻度兼容和饱和边界；同步扩展 `current_ts_is_strictly_monotonic_under_concurrency`。修改历史批次时则需同步 `batch_count` 测试和 `SqlStore::gc_clear_expired_history`，并评估单次 SQL 锁持有时间、日志量和大表删除性能。
 
 所有 Rust 测试逻辑应继续放在独立 `gc_test.rs` 或相关 `handletest` 文件，不应内嵌回生产 `gc.rs`。若要把 `_GO_DRAFT_ARCHIVE` 中的用例变为可运行 Rust 回归，必须用真实 Rust API 重写并删除对应草稿，不能把字符串归档当成覆盖率。
-
-## 验证依据
-
-- RustCodeGraph 索引：`status` 确认 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/storage` 确认目标、入口、Go 对照和独立测试；`node --file` 读取了 `gc.rs` 全 204 行、`gc_test.rs` 全 257 行、`gc.go` 全 362 行和 `gc_test.go` 全 159 行。
-- RustCodeGraph 符号证据：`query StatsGc` 同时找到 Rust `StatsGc`/`new_stats_gc` 和 Go `statsGCImpl`/`NewStatsGC`；`node StatsGc` 确认 `new_stats_gc` 实例化边。`query current_ts`/`query batch_count` 确认相邻测试和生产消费者。名称级 callers/callees 对 snake_case 函数未产生跨文件输出，已用精确引用检索补证。
-- crate 与存储边界：`pkg/statistics/handle/storage/Cargo.toml`、`storage/lib.rs`、`storage/stats_read_writer.rs::SqlStore` 及其全部 GC 默认方法。
-- Rust 上游和适配：`pkg/domain/domain.rs::{impl StatsCatalog for Domain,Domain::gc_stats,Domain::clear_outdated_history_stats,insert_col_stats_2_kv}`，以及 `pkg/statistics/handle/restricted_sql.rs::{impl SqlStore for KvStatsStore,current_stats_timestamp}`。
-- Go 语义对照：`pkg/statistics/handle/storage/gc.go`，以及 `gc_test.go::{TestGCStats,TestGCPartition,TestGCColumnStatsUsage,TestExtremCaseOfGC}`。
-- Rust 测试现状：`gc_test.rs::{canonical_stats_gc_batch_count_covers_empty_exact_and_partial_batches,current_ts_is_strictly_monotonic_under_concurrency,gc_uses_the_store_transaction_clock_for_its_scan_window}` 是当前可运行用例；同文件 `_GO_DRAFT_ARCHIVE` 只是不可执行迁移草稿。`pkg/statistics/handle/handletest/handle_test.rs` 与 `handletest/lockstats/*_test.rs` 提供更高层 `Domain::gc_stats` 回归路径。
-- 未运行 Cargo 或代码测试：本任务只生成文档，总计划和任务文件明确禁止 Cargo；完成依据为上述源码/调用边事实复核与任务规定的 11 章节结构验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 planner/core 中诊断类、集群类和若干 `INFORMATION_SCHEMA` 内存表的谓词抽取实现。它把调用方已经归一化成 `Predicate` 的过滤条件转成更适合远端请求或表读取器消费的集合、时间范围、正则模式及跳过标志，并返回仍必须由 SQL 层计算的谓词。源码由 `pkg/planner/core/lib.rs` 作为私有模块载入后整体 `pub use`；同时又被 `pkg/planner/core/memtable_extractors/lib.rs` 用 `#[path = "../memtable_predicate_extractor.rs"]` 载入并导出，因此同一实现服务于 `astersql-planner-core` 和更窄的 `astersql-planner-core-memtable-extractors` crate。
-
-需要区分两个边界：本文件公开的是简化的 `Predicate`/`PredicateValue` API 和各具体抽取器的 `ExtractPredicates` 方法；它没有直接实现 `pkg/planner/core/operator/logicalop/logical_mem_table.rs` 中接收 `Schema`、`NameSlice`、完整 `Expression` 的 `MemTablePredicateExtractor` trait。因此当前可确认的直接使用面主要是两个 crate 的导出、相邻抽取器以及独立测试；不能仅凭同名类型推断它已经完整接入 `LogicalMemTable::PredicatePushDown`。RustCodeGraph 能定位该 trait 和 `PredicatePushDown -> Extract` 主链，但索引的文件清单没有收录本目标文件，目标文件内部关系由源码与 `rg` 补证。
+提供共用抽取原语：大小写归一化、值类型转换、同列多个 CNF 条件求交、闭区间时间范围合并，以及 LIKE 到正则的编译。
 
 ## 核心职责
 
@@ -87,7 +85,7 @@ API 不返回 `Result`，所有“不支持/无法安全转换”都走保守退
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/memtable_predicate_extractor.go`。Rust 保留了 Go 版的类型分组、字段命名、同列集合求交、大小写策略、跳过语义、Explain 形态及若干刻意兼容行为：指标 `value` 不作为标签；数值 quantile 不做 `[0,1]` 范围拒绝；Metric Summary 的 metrics_name 从原谓词提取；Statements Summary 的粗时间条件仍保留给旧路径；热点 Region 的角色和读写类型有全量默认值。
+Rust 保留了 Go 版的类型分组、字段命名、同列集合求交、大小写策略、跳过语义、Explain 形态及若干刻意兼容行为：指标 `value` 不作为标签；数值 quantile 不做 `[0,1]` 范围拒绝；Metric Summary 的 metrics_name 从原谓词提取；Statements Summary 的粗时间条件仍保留给旧路径；热点 Region 的角色和读写类型有全量默认值。
 
 但两者并非一比一完整移植：
 
@@ -109,12 +107,3 @@ API 不返回 `Result`，所有“不支持/无法安全转换”都走保守退
 新增抽取器时应：定义独立状态结构；每次抽取重置查询相关字段；空交集设置跳过标志；提供确定性 `ExplainInfo`；在 `pkg/planner/core/memtable_extractors/memtable_extractors_test.rs` 或同目录独立测试文件增加边界用例。若接入真实逻辑计划，还需在 `logical_mem_table.rs` 的 trait 边界实现适配，并验证物理计划/执行器确实消费状态，而不是只让零调用方的单元测试通过。
 
 对照 Go 迁移时必须逐项检查 `pkg/planner/core/memtable_predicate_extractor.go`，尤其是表达式常量求值、时区、prepared statement、慢日志 key range 和 Explain 上下文。性能方面关注超长 IN 列表的多次集合复制、OR 正则拼接和标签笛卡尔式输出；兼容方面关注大小写、整数符号、时间单位和保留谓词规则。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/planner/core/memtable_predicate_extractor.rs`，确认 1200 行内的枚举、helper、宏、14 类抽取器、常量和方法；文件无条件编译分支。
-- crate 边界：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`、`pkg/planner/core/memtable_extractors/Cargo.toml`、`pkg/planner/core/memtable_extractors/lib.rs`。
-- 规划接口与入口：`pkg/planner/core/operator/logicalop/logical_mem_table.rs`、`pkg/planner/core/base/misc_base.rs`。RustCodeGraph `query/node` 定位了两个同名 Rust trait，并显示 `LogicalMemTable::PredicatePushDown` 调用 trait 的 `Extract`；对目标路径执行 `files --filter` 和内部 helper 精确查询均无结果，故目标内部事实按技能规则由源码/`rg` 核验。
-- Go 对照：`pkg/planner/core/memtable_predicate_extractor.go` 的 `extractHelper`、全部同名抽取器、`Extract`、`ExplainInfo` 及 Slow Query/Statements Summary 辅助流程。
-- Rust 测试：`pkg/planner/core/memtable_predicate_extractor_test.rs` 验证 value 排除、quantile、Metric Summary 返回谓词和 LIKE 预过滤；`pkg/planner/core/memtable_extractors/memtable_extractors_test.rs` 验证状态重置、交集、时间边界、默认值、开放时间范围、ESCAPE/ILIKE/OR；`pkg/planner/core/operator/logicalop/logicalop_test/logical_mem_table_predicate_extractor_test.rs` 覆盖各主要抽取器的 Go 对齐行为；`pkg/executor/memtable_reader_test.rs` 覆盖日志预过滤后的标量复核。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只执行任务指定的 11 章节结构检查，并人工复核所有生产代码搜索结论均区分了同名执行器类型和真实调用边。

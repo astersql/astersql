@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-parser` crate，是解析器 AST 与 SQL binding/会话层之间的规范化适配层。crate 根 `pkg/util/parser/lib.rs` 通过 `#[path = "ast.rs"] pub mod ast` 挂载本模块，并用 `pub use ast::*` 导出其公开函数和常量；`pkg/util/parser/Cargo.toml` 表明该 crate 只直接依赖本仓库的 `astersql-parser`，本文件再经 `crate::parser_core::ast` 使用其 AST 类型。
-
-生产侧已确认的直接 Rust 调用者包括 `pkg/bindinfo/binding.rs` 的 `RestoreDBForBinding`、`NormalizeStmtForBinding`/`normalize_parsed_statement`，以及 `pkg/session/hint_runtime.rs` 的 `binding_sql_for_warning`。因此它处在“已解析 AST -> 带库名或去库名的稳定 SQL -> binding 归一化、摘要与提示信息”的链路中，而不是 SQL 解析入口本身。RustCodeGraph 的文件节点还报告该文件被 33 个文件引用；精确函数调用以以上源码调用点为准，因为同仓库存在同名 Go API。
+恢复器统一处理反引号、字符串转义、表达式优先级、CTE 名称、连接、集合操作和常用 DML 子句。
 
 ## 核心职责
 
@@ -83,13 +81,11 @@ RustCodeGraph 对文件的结构查询确认 46 个符号和 33 个引用文件�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/parser/ast.go`，测试对照是 `pkg/util/parser/ast_test.go`。
+Rust 因 `TableName` 在当前 AST 中是值类型且结果集有显式枚举，访问器不仅依赖通用节点遍历，还在 `SelectStmt`/DML 的 join 结构及 `ExprKind::TableName` 上显式检查；测试 `default_db_walks_through_statement_wrappers_like_go_visitor` 验证 EXPLAIN 包装仍能下钻。
 
-`GetDefaultDB`、`implicitDatabase`、`findTablePos` 和 `SimpleCases` 保留了 Go API 名称与主要守卫顺序。Rust 因 `TableName` 在当前 AST 中是值类型且结果集有显式枚举，访问器不仅依赖通用节点遍历，还在 `SelectStmt`/DML 的 join 结构及 `ExprKind::TableName` 上显式检查；测试 `default_db_walks_through_statement_wrappers_like_go_visitor` 验证 EXPLAIN 包装仍能下钻。
+最大的迁移差异在恢复路径。Rust 当前没有调用统一节点 formatter，而在本文件的 `Restorer` 中实现支持子集，错误同样折叠为空串但不记录日志。由此 Go 新增节点恢复能力不会自动出现在 Rust；两边演进时必须同步检查格式标志、节点覆盖和错误可观测性。
 
-最大的迁移差异在恢复路径。Go 的 `RestoreWithDefaultDB`/`RestoreWithoutDB` 创建 `format.RestoreCtx`，把 `bindingRestoreFlag`、`DefaultDB` 或 `RestoreWithoutSchemaName` 交给每个 AST 节点自身的 `Restore`，失败时记录 debug 日志并返回空串。Rust 当前没有调用统一节点 formatter，而在本文件的 `Restorer` 中实现支持子集，错误同样折叠为空串但不记录日志。由此 Go 新增节点恢复能力不会自动出现在 Rust；两边演进时必须同步检查格式标志、节点覆盖和错误可观测性。
-
-`pkg/util/parser/ast_test.go::TestSimpleCases` 的四组 INSERT 用例已移植到 `pkg/util/parser/ast_test.rs::test_simple_cases`。Rust 还在 `ast_test.rs` 覆盖 full outer join、真实 SELECT 默认库/去库名、EXPLAIN 包装和 INSERT/UPDATE/DELETE；`pkg/util/parser/migration_aster_unit_test.rs` 补充快路径拒绝 `INSERT ... SELECT` 与不支持 `DoStmt` 返回空串的契约。
+Rust 还在 `ast_test.rs` 覆盖 full outer join、真实 SELECT 默认库/去库名、EXPLAIN 包装和 INSERT/UPDATE/DELETE；`pkg/util/parser/migration_aster_unit_test.rs` 补充快路径拒绝 `INSERT ... SELECT` 与不支持 `DoStmt` 返回空串的契约。
 
 ## 扩展指南
 
@@ -100,17 +96,3 @@ RustCodeGraph 对文件的结构查询确认 46 个符号和 33 个引用文件�
 修改 `SimpleCases` 必须保持“不能证明安全就返回 false”的原则，并至少同步 Go 的四个基准用例、`INSERT ... SELECT` 拒绝用例，以及注释、引号、大小写、显式 schema、空默认库等边界。扩大快路径前应评估原文保真收益与误定位风险。
 
 兼容性风险主要是规范 SQL 文本变化会改变 binding 归一化与 digest；正确性风险主要是遗漏节点字段、错误去括号或错误注入 schema；性能风险来自递归中频繁构造临时 `String`/`Vec`。因此扩展后应检查 `pkg/bindinfo/binding.rs` 和 `pkg/session/hint_runtime.rs` 的调用契约，并用解析后的真实 AST 做往返/语义等价验证，而不能只手工构造局部节点。
-
-## 验证依据
-
-本说明依据以下直接材料：
-
-- 生产实现：`pkg/util/parser/ast.rs` 全部 1038 行；主要入口为 `GetDefaultDB`、`SimpleCases`、`RestoreWithDefaultDB`、`RestoreWithoutDB`，核心分派为 `Restorer::node`。
-- crate 边界：`pkg/util/parser/Cargo.toml`、`pkg/util/parser/lib.rs`；确认 crate 名、唯一直接依赖、模块挂载和再导出。
-- AST 契约：`pkg/parser/ast/lib.rs` 的 `Visitor`、`Node`、`ExprKind`、`SelectStmt::accept`，确认 visitor 的跳过语义、动态类型分派和子树遍历。
-- Rust 调用点：`pkg/bindinfo/binding.rs` 的 `RestoreDBForBinding`、`normalize_parsed_statement`，`pkg/session/hint_runtime.rs` 的 `binding_sql_for_warning`。
-- Rust 独立测试：`pkg/util/parser/ast_test.rs`、`pkg/util/parser/migration_aster_unit_test.rs`；确认简单 INSERT、默认库检测、EXPLAIN 下钻、SELECT/DML 恢复、full outer join、去库名和不支持节点空串行为。
-- Go 对照：`pkg/util/parser/ast.go`、`pkg/util/parser/ast_test.go`；确认 API 起源、快路径用例、formatter flag 与错误处理差异。
-- RustCodeGraph：`status` 显示索引含 11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/util/parser` 显示本目录 12 个相关文件；`node --file pkg/util/parser/ast.rs --offset 1 --limit 120` 确认文件共 1038 行、被 33 个文件使用；`query` 分别定位到 Rust/Go 同名入口。函数级 `callers` 查询超时且无输出，故调用边另由仓库文本搜索和调用点源码复核。
-
-人工复核结论：本文能说明文件存在目的、三条运行路径、支持边界、失败约定、上/下游关系及安全扩展位置；没有把未支持节点描述为已支持，也没有建议把测试写入生产源文件。任务是纯文档分析，未运行 Cargo 或代码测试；最终以任务指定的 11 章节结构命令验证文档形状。

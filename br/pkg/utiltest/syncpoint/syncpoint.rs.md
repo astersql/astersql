@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-utiltest-syncpoint` 库 crate 的有序 failpoint 编排实现，源码由同目录的 [`lib.rs`](./lib.rs) 以 `pub mod syncpoint` 装入并通过 `pub use syncpoint::*` 重新导出。它服务于并发测试：多个线程即使乱序命中 failpoint，也只有当前声明的步骤能够推进并执行回调。它不参与 BR 的备份、恢复生产路径，也不实现 failpoint 注入本身。
-
-[`Cargo.toml`](./Cargo.toml) 将 crate 定义为 library，入口为 `lib.rs`，直接依赖本仓库的 `astersql-testkit-testfailpoint` 和启用 `failpoints` feature 的 `fail 0.5.1`。根 `Cargo.toml` 把该目录列为 workspace member；仓库内没有其他 Cargo manifest 声明对该 crate 的依赖，当前可验证的 Rust 使用者是本 crate 的独立测试 [`syncpoint_test.rs`](./syncpoint_test.rs) 与 [`parity_test.rs`](./parity_test.rs)。
+不参与 BR 的备份、恢复生产路径，也不实现 failpoint 注入本身。
 
 ## 核心职责
 
@@ -87,13 +85,10 @@
 
 ## 与 Go 版本的对应关系
 
-直接语义来源是同目录 [`syncpoint.go`](./syncpoint.go)，测试对照是 [`syncpoint_test.go`](./syncpoint_test.go)。Rust 保留了 `StepDecl`/active step/registered step、`Script`、互斥状态、条件变量、`BeginSeq`、`EndSeq`、步骤准备、一次注册、错序等待、取消广播、完成后复用等结构和顺序。
-
 主要差异如下：
 
 - Go `New(t testing.TB)` 保存测试接口，用 `Helper`、`Fatalf`、`require` 报错，并借测试 cleanup 禁用 failpoint；Rust `New()` 不接收测试对象，用 panic 和 `FailGuard` drop 完成对应职责。
 - Go `Step(name string, fn any)` 通过反射支持不同参数签名，并检查 nil、函数种类、零返回值及同名签名一致；Rust `Step<F>` 只接受 `Fn()`，大部分检查在编译期完成，同名注册无需保存类型。
-- Go 的 `context.Context` / `context.AfterFunc` 被本 crate 的轻量 `Context` / `after_func` 替代，以避免引入 BR 完整上下文依赖；这里只覆盖本协调器需要的取消语义。
 - Go 的生成式 `failpoint.InjectCall("short-name")` 会扩展包路径；Rust 测试必须显式拼出并注入同一个完整路径。
 - Go `register` 使用状态锁保护注册表；Rust 注册表有独立锁，并让注册发生在序列锁外。两者都保证单个脚本内同名只注册一次，但 Rust 的锁分工也服务于底层零参回调注册模型。
 
@@ -108,13 +103,3 @@
 修改等待规则时必须保持循环谓词完整，覆盖取消、序列完成、当前名称三类唤醒条件；用户回调应继续在状态锁外执行，否则容易阻塞其他步骤或造成重入死锁。修改 watcher 生命周期时，应同时证明成功完成、显式结束、取消、未结束 drop 四条路径不会让迟到回调污染下一轮。
 
 测试应继续放在独立文件，不要内嵌到 `syncpoint.rs`。核心行为更新同步修改 [`syncpoint_test.rs`](./syncpoint_test.rs)，Go/Rust 契约差异或边界更新同步修改 [`parity_test.rs`](./parity_test.rs)；若改变对外语义，还应对照 [`syncpoint.go`](./syncpoint.go) 和 [`syncpoint_test.go`](./syncpoint_test.go)。兼容风险集中在 panic 文案、完整名称规则和 Go/Rust API 差异；性能风险主要是全局注册数量、锁竞争、错序线程数量和每轮 watcher 线程生命周期。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utiltest/syncpoint` 找到该目录 7 个已索引源码文件。
-- RustCodeGraph `node --file br/pkg/utiltest/syncpoint/syncpoint.rs --offset 1 --limit 400`：读取目标文件 282 行及文件使用候选；精确 `query` 定位 `Step`（第 65 行）、`BeginSeq`（第 123 行）、`EndSeq`（第 187 行）、`prepare_step`（第 215 行）和 `advance`（第 248 行）。对这些节点运行 `callers`/`callees` 无静态边输出，故没有把宽泛候选当成真实调用关系。
-- 源码与装配：[`syncpoint.rs`](./syncpoint.rs)、[`lib.rs`](./lib.rs)、[`stubs.rs`](./stubs.rs)、[`Cargo.toml`](./Cargo.toml) 以及根 `Cargo.toml` 的 workspace member 声明。
-- Go 对照：[`syncpoint.go`](./syncpoint.go)、[`syncpoint_test.go`](./syncpoint_test.go)。
-- Rust 独立测试：[`syncpoint_test.rs`](./syncpoint_test.rs)、[`parity_test.rs`](./parity_test.rs)。这些文件覆盖乱序放行、锁外回调重叠、序列外忽略、输入 panic、取消唤醒、脚本复用和 guard drop。
-- 仓库引用核验：对 `astersql-br-pkg-utiltest-syncpoint`、`astersql_br_pkg_utiltest_syncpoint`、`BeginSeq(`、`EndSeq(` 及 syncpoint 导入执行 `rg`；除 workspace member、crate 自身入口与上述独立测试外，未发现实际 Cargo 依赖或外部 API 调用。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时执行任务指定的结构命令，确认文件存在且固定二级标题恰好 11 个；人工复核重点是职责边界、状态推进、取消与资源清理、Go 差异和安全扩展入口均可由上述文件与符号反查。

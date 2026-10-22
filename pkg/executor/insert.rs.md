@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/lib.rs:120` 通过 `pub mod insert;` 公开本模块，独立测试则在同一 crate 的 `pkg/executor/insert_test.rs` 中由 `#[path = "insert_test.rs"] mod insert_test;` 装配。
-
-它是 Go `pkg/executor/insert.go` 的 Rust 控制流移植层：定义 INSERT 所需的运行时能力接口，并编排普通 INSERT、`INSERT IGNORE`、`INSERT ... ON DUPLICATE KEY UPDATE`、`INSERT ... SELECT` 以及执行器 `Open`/`Next`/`Close` 生命周期。当前仓库中没有生产代码实现 `InsertRuntime`；代码搜索只找到 `pkg/executor/insert_test.rs:70` 的 `TestRuntime` 实现。因此，本文件目前提供可测试的行为契约和算法骨架，但不能据此认定 Rust SQL 主链已经实例化并使用了该执行器。
+实现执行器生命周期和错误归类：选择 VALUES 或 SELECT 输入路径，特殊处理自增 ID 读取错误，登记运行时统计并转交子 SELECT 的开关（`insert.rs:352-405`）。
 
 ## 核心职责
 
@@ -74,11 +72,11 @@ ON DUPLICATE 的“记录不存在”是有意区分的控制信号：handle 主
 
 ## 与 Go 版本的对应关系
 
-Rust `InsertExec<R>` 对应 Go `InsertExec`，但 Rust 把 Go 结构体内嵌的 `InsertValues`、赋值缓冲、优先级、统计及表/会话访问收敛为 `InsertRuntime` 方法。Go `exec` 的三分支、Top SQL 设置、快照统计、行数/CPU 记账、分片 auto-id hint 和 `txn.MayFlush()` 在 Rust `exec_inner` 中都有对应控制流（`insert.go:59-127` 对 `insert.rs:177-223`）。Rust 额外用外层 `exec` 显式保证 `clean_buffers`，对应 Go 的 `defer sessVars.CleanBuffers()`。
+Rust `InsertExec<R>` 对应 Go `InsertExec`，但 Rust 把 Go 结构体内嵌的 `InsertValues`、赋值缓冲、优先级、统计及表/会话访问收敛为 `InsertRuntime` 方法。Rust 额外用外层 `exec` 显式保证 `clean_buffers`，对应 Go 的 `defer sessVars.CleanBuffers()`。
 
-预取和冲突更新的顺序与 Go `prefetchUniqueIndices`、`prefetchConflictedOldRows`、`prefetchDataCache`、`batchUpdateDupRows` 一致（`insert.go:129-327`）。Rust 保留了临时表/临时索引跳过、行 handle 优先、唯一索引回退及索引不一致日志语义；具体 `doDupRowUpdate` 中的表达式求值、类型转换、生成列、警告重写、`mysql_insert_id()` 更新等复杂逻辑没有在本文件展开，而是通过 `update_duplicate_row` 能力委托给未来运行时。Go 测试 `TestMySQLInsertID`、`TestInsertNullInNonStrictMode` 和 `TestInsertDuplicateToGeneratedColumns` 展示了这些被委托语义的兼容边界（`insert_test.go:618-759`），Rust 独立测试尚未覆盖这些端到端行为。
+Rust 保留了临时表/临时索引跳过、行 handle 优先、唯一索引回退及索引不一致日志语义；具体 `doDupRowUpdate` 中的表达式求值、类型转换、生成列、警告重写、`mysql_insert_id()` 更新等复杂逻辑没有在本文件展开，而是通过 `update_duplicate_row` 能力委托给未来运行时。Go 测试 `TestMySQLInsertID`、`TestInsertNullInNonStrictMode` 和 `TestInsertDuplicateToGeneratedColumns` 展示了这些被委托语义的兼容边界（`insert_test.go:618-759`），Rust 独立测试尚未覆盖这些端到端行为。
 
-`Open`/`Next`/`Close` 和外键访问器与 Go `insert.go:362-420,587-599` 对齐。重复键模式两个 Rust 纯函数把 Go 的 `SessionVars`/`Transaction` 查询改为布尔参数，便于隔离测试；`insert_duplicate_check_modes_follow_transaction_and_pipeline_rules` 覆盖了关键组合（`insert_test.rs:274-296`）。
+重复键模式两个 Rust 纯函数把 Go 的 `SessionVars`/`Transaction` 查询改为布尔参数，便于隔离测试；`insert_duplicate_check_modes_follow_transaction_and_pipeline_rules` 覆盖了关键组合（`insert_test.rs:274-296`）。
 
 主要迁移差异是接线完整度：Go 类型直接实现生产 Executor 生命周期并操作真实 TiKV/表/会话对象；Rust 只有测试运行时。另一个可见差异是 Go 记录独立 `Prefetch` 耗时，而当前 Rust trait 只暴露总的 `record_check_insert_elapsed`，没有单独的 prefetch 计时接口。
 
@@ -90,12 +88,3 @@ Rust `InsertExec<R>` 对应 Go `InsertExec`，但 Rust 把 Go 结构体内嵌的
 - 修改预取时应保持其只是缓存优化而非正确性前提；临时表和临时索引仍须跳过不适用的存储/解码路径。性能风险集中在键向量及 `HashMap` 内存、重复键未去重和两次 `batch_get` 的 RPC/缓存成本。
 - 修改模式选择时同时更新 `optimizeDupKeyCheckForNormalInsert`、`getPessimisticLazyCheckMode` 及 `insert_duplicate_check_modes_follow_transaction_and_pipeline_rules`，并对照 Go 的 session/transaction 条件。错误选择可能把唯一约束错误从语句阶段推迟到锁或提交阶段，属于兼容性和事务语义风险。
 - 新增统计或资源时，应在 `Open`/`exec_inner`/`Close` 三处检查生命周期对称性；尤其避免在快照统计开始后新增会提前 `return`/`?` 且绕过收尾的路径。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；使用 `node --file pkg/executor/insert.rs` 阅读了全部 452 行，使用 `node --file pkg/executor/insert_test.rs` 阅读了全部 366 行。
-- RustCodeGraph 查询：查询了 `InsertExec`、`batchUpdateDupRows`、`prefetchDataCache`、`optimizeDupKeyCheckForNormalInsert`、`getPessimisticLazyCheckMode`，并运行相应 callers/callees。图确认 `prefetchDataCache -> prefetchUniqueIndices/prefetchConflictedOldRows` 等内部边；泛型方法 callers 为空、部分带 ID/限定名的结果发生宽泛消歧，因此没有据此宣称不存在调用，而用仓库搜索补证。
-- 已读源码与装配：`pkg/executor/insert.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`。最近的 `pkg/executor/doc.go` 不存在。
-- 已读对照与测试：Go 实现 `pkg/executor/insert.go`，Rust 独立测试 `pkg/executor/insert_test.rs`，以及 Go 测试 `pkg/executor/insert_test.go` 中运行时统计、MySQL insert ID、非严格 NULL、生成列重复键等相关用例。
-- 补充接线搜索：`rg` 检索 `InsertRuntime for`、`InsertExec<`、`insert::InsertExec` 和两个模式函数，确认当前 Rust 唯一运行时实现及执行器构造均在 `insert_test.rs`；生产 Rust 接线未验证到。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构验证，并人工复核文档是否回答文件存在原因、执行方式和安全扩展位置。

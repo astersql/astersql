@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-lightning-mydump` crate；crate 根由 `pkg/lightning/mydump/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 `pkg/lightning/mydump/lib.rs`，后者以公开模块 `pub mod test_support` 导出这里的辅助设施。它不是导入主链中的生产存储实现，而是实现同一 `Storage` 契约的内存适配器，供 mydump 单元测试、session 导入测试和 RealTiKV 导入场景注入可控文件内容。
-
-文件当前公开两个入口：`MemoryStorage` 和 `file`。RustCodeGraph 将该文件识别为 7 个符号，并显示 `MemoryStorage` 经导入边被 `loader_test.rs`、`reader_test.rs`、`region_test.rs`、`schema_import_test.rs` 使用；仓库搜索还确认了 `pkg/session/runtime/import_compression_test.rs`、`tests/realtikvtest/importintotest3/compression_harness.rs` 和 `tests/realtikvtest/importintotest4/split_file_test.rs` 的 crate 外调用。
+`Storage::list` 提供稳定的路径、长度清单，支持 loader 扫描和通配符导入。
 
 ## 核心职责
 
@@ -75,9 +73,7 @@
 
 ## 与 Go 版本的对应关系
 
-同路径不存在 `test_support.go`，所以这里不是某个 Go 文件的一对一翻译。Go 测试把相同职责分散在三类设施中：`loader_test.go` 和 `csv_parser_test.go` 使用 `objstore.NewMemStorage` 及 `WriteFile`；reader 测试使用本地临时文件和 `mockobjstore.NewMockStorage`；部分 region/schema 测试直接写临时目录。
-
-语义对应点是“向生产读取/枚举接口注入可控对象集合”，而不是 API 名称完全相同。Rust 版本以同步 `Storage::open/list`、`Read + Send` 和 `Arc` 表达该边界；Go 版本通常带 `context.Context`、可关闭/可 seek 的对象 reader，并能由 gomock 精确配置失败。Rust 的 `file` 只是测试便利构造器，对应 Go 测试中反复出现的 `FileInfo{FileMeta: SourceFileMeta{…}}` 字面量，而不是 Go 生产 API。
+Rust 版本以同步 `Storage::open/list`、`Read + Send` 和 `Arc` 表达该边界；Go 版本通常带 `context.Context`、可关闭/可 seek 的对象 reader，并能由 gomock 精确配置失败。Rust 的 `file` 只是测试便利构造器，对应 Go 测试中反复出现的 `FileInfo{FileMeta: SourceFileMeta{…}}` 字面量，而不是 Go 生产 API。
 
 ## 扩展指南
 
@@ -86,11 +82,3 @@
 增加删除、重命名或条件失败等可变操作时，应明确其与 `list/open` 的原子性，并保持锁临界区内不调用外部代码。若对象可能很大，应评估 `open` 的全量克隆和 `list` 的全量克隆成本；可考虑共享不可变字节，但必须保持已打开 reader 的快照语义。
 
 扩展 `file` 时要谨慎：默认字段目前让调用点清楚表达自己依赖的元数据。不要根据文件名暗中推断压缩或来源类型，否则会改变现有负面测试的构造方式。测试应继续放在同目录独立文件中：通用存储契约可扩展 `loader_test.rs` 或 `reader_test.rs`，schema 元数据场景扩展 `schema_import_test.rs`，跨 crate IMPORT 行为扩展 `pkg/session/runtime/import_compression_test.rs` 或对应 RealTiKV 测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/lightning/mydump` 确认目标及相邻 Rust/Go 测试；`node --file pkg/lightning/mydump/test_support.rs` 读取完整 81 行并报告 17 个文件的使用关系；精确 `node pkg/lightning/mydump/test_support.rs::MemoryStorage` 确认结构定义及 4 个同 crate 测试导入边。
-- 源码与 crate 边界：`pkg/lightning/mydump/test_support.rs`、`pkg/lightning/mydump/lib.rs`、`pkg/lightning/mydump/Cargo.toml`、`pkg/lightning/mydump/common.rs`、`pkg/lightning/mydump/reader.rs`、`pkg/lightning/mydump/router.rs`。
-- 独立 Rust 测试：`pkg/lightning/mydump/loader_test.rs`、`reader_test.rs`、`region_test.rs`、`schema_import_test.rs`、`pkg/session/runtime/import_compression_test.rs`、`tests/realtikvtest/importintotest3/compression_harness.rs`、`tests/realtikvtest/importintotest4/split_file_test.rs`。
-- Go 对照：`pkg/lightning/mydump/loader_test.go`、`reader_test.go`、`region_test.go`、`schema_import_test.go`；仓库搜索确认无同路径 `test_support.go`。
-- 人工复核重点：公开边界、快照与锁生命周期、缺失路径错误、压缩参数被忽略、`file` 默认字段以及 Go 测试设施差异，均由上述符号与调用点直接支持；未把内存夹具描述成持久化存储或解压实现。

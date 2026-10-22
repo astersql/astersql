@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`ddl.rs`](./ddl.rs) 是 `astersql-executor` crate 暴露的 DDL（Data Definition Language，数据定义语言）执行骨架；模块由 [`lib.rs`](./lib.rs) 的 `pub mod ddl` 纳入 crate。它位于 SQL 执行层与 Domain/DDL、InfoSchema、会话事务及临时表实现之间，但不直接依赖这些组件的具体类型，而是把生产边界收敛为 `DdlRuntime` trait。
-
-当前文件应理解为“可注入运行时的行为模型”，而不是已经完整接入服务器的具体执行器：仓库级 Rust 搜索未发现 `DdlRuntime` 的实现，也未发现除本文件之外对 `DDLExec` 或 `GetDropOrTruncateTableInfoFromJobs` 的直接引用。RustCodeGraph 只报告了若干文件对 `ddl.rs` 中通用符号（例如 `statement_kind`、`execute`）的名称级使用关系；这些不是 `DDLExec<R>` 的生产构造或调用证据。因此，文档不能把 Go 主链的接线状态等同于 Rust 当前状态。
-
-[`Cargo.toml`](./Cargo.toml) 声明 crate 名为 `astersql-executor`、库入口为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/executor"` 标明 Go 移植来源。虽然该 crate 整体依赖 `astersql-ddl`、`astersql-domain`、`astersql-infoschema`、`astersql-sessiontxn`、`astersql-table-temptable` 等包，本文件本身没有 `use` 语句；所有具体依赖均通过 `DdlRuntime` 的关联类型和方法间接注入。
+`DDLExec::Next` 定义 DDL 算子的一次性生命周期：清空输出块、以 `done` 防止重复执行、预处理本地临时表、进入语句级新事务、分发操作，并在成功后刷新事务 InfoSchema 和离开事务状态。
 
 ## 核心职责
 
@@ -91,7 +87,7 @@ RustCodeGraph 对 `pkg/executor/ddl.rs` 报告 75 个符号，并能解析上述
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`ddl.go`](./ddl.go)。两版均具有 `DDLExec`、`Next`、`toErr`、本地临时表分流、按语句类型分发、DDL 后刷新 InfoSchema/退出事务，以及 `GetDropOrTruncateTableInfoFromJobs` 的恢复筛选语义。Rust 的 `DdlStatementKind`/`DdlOperation` 将 Go 类型 switch 和各 `ddl.Executor` 方法压缩为枚举分发；`DdlRuntime` 则把 Go 中的 `Domain`、session context、InfoSchema、temporary-table DDL 与 DDL executor 访问封装为注入边界。
+Rust 的 `DdlStatementKind`/`DdlOperation` 将 Go 类型 switch 和各 `ddl.Executor` 方法压缩为枚举分发；`DdlRuntime` 则把 Go 中的 `Domain`、session context、InfoSchema、temporary-table DDL 与 DDL executor 访问封装为注入边界。
 
 当前 Rust 逻辑不是 Go 文件的完整等价实现，关键差异包括：
 
@@ -102,7 +98,7 @@ RustCodeGraph 对 `pkg/executor/ddl.rs` 报告 75 个符号，并能解析上述
 - Go `GetDropOrTruncateTableInfoFromJobs` 委托 `ddl.GetDropOrTruncateTableInfoFromJobsByStore` 并从 Domain snapshot meta 取表；Rust 在本文件展开筛选循环，但所有判定和快照读取仍由 runtime 提供。
 - Go 文件已由实际 executor builder/session 主链使用；Rust 仓库搜索未找到 `DdlRuntime` 实现，因此 Rust 版本目前更接近可测试的移植边界，而非已验证的端到端替代。
 
-相关 Rust SQL 测试位于 [`test/ddl/ddl_test.rs`](./test/ddl/ddl_test.rs)，对应 Go 的 [`test/ddl/ddl_test.go`](./test/ddl/ddl_test.go)，覆盖事务内失败后执行 DDL、建表、临时表等用户可见场景；[`temporary_table_test.rs`](./temporary_table_test.rs) 还覆盖全局/本地临时表查询行为。但这些测试未直接引用 `DDLExec<R>` 或实现 `DdlRuntime`，不能作为本文件每个分支的单元覆盖证据。
+相关 Rust SQL 测试位于 [`test/ddl/ddl_test.rs`](./test/ddl/ddl_test.rs)，对应 Go 的 [`test/ddl/ddl_test.go`](./test/ddl/ddl_test.go)，覆盖事务内失败后执行 DDL、建表、临时表等用户可见场景；[`temporary_table_test.rs`](./temporary_table_test.rs) 还覆盖全局/本地临时表查询行为。
 
 ## 扩展指南
 
@@ -115,11 +111,3 @@ RustCodeGraph 对 `pkg/executor/ddl.rs` 报告 75 个符号，并能解析上述
 测试逻辑应继续放在独立 Rust 测试文件，不嵌入 `ddl.rs`。最贴近本文件的缺口是新增 `pkg/executor/ddl_test.rs`，用 mock `DdlRuntime` 验证一次性 `Next`、三种临时表预处理结果、job 状态清理与错误转换、成功收尾顺序、每个 dispatch 映射及历史 job 筛选。用户可见 SQL 行为仍应同步扩充 `pkg/executor/test/ddl/ddl_test.rs`，并与 Go `pkg/executor/test/ddl/ddl_test.go` 的意图保持一致。
 
 兼容性风险集中在分类映射、错误转换条件、临时表例外和 Go/Rust 行为漂移；性能风险主要是历史 job 扫描中的逐 job 快照读取。若 runtime 的 `table_at_job_snapshot` 代价较高，应由 runtime 缓存或批量化，但不能放松 GC 与 job 类型过滤。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/ddl.rs` 报告该文件含 75 个符号；`node --file ... --offset 1/421` 完整读取 518 行并核对文件内调用。`explore` 确认 `Next -> reset_chunk/preprocess_local_temporary_tables/new_transaction_in_statement/dispatch/状态收尾` 等边。精确 callers/callees 因 Go/Rust 重名未产生可用输出，故未据此声称生产接线。
-- Rust 源与装配：`pkg/executor/ddl.rs`、`pkg/executor/lib.rs`（`pub mod ddl`）、`pkg/executor/Cargo.toml`（crate、Go package 元数据和相关依赖）。该目录未发现 `doc.go`，所以没有额外包级 Go 契约可读。
-- Go 对照：`pkg/executor/ddl.go`，重点核对 `DDLExec`、`toErr`、`Next`、临时表操作、恢复/Flashback 和 `GetDropOrTruncateTableInfoFromJobs`。
-- 测试证据：`pkg/executor/test/ddl/ddl_test.rs`、`pkg/executor/test/ddl/main_test.rs`、对应 Go 测试 `pkg/executor/test/ddl/ddl_test.go` 与临时表测试 `pkg/executor/temporary_table_test.rs`。仓库精确搜索未发现直接实现 `DdlRuntime` 或直接实例化 `DDLExec<R>` 的 Rust 测试。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前以固定标题计数验证恰有 11 个二级章节，并人工复核无“已接入完整主链”等超出证据的结论。

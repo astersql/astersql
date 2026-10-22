@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/ddl/lib.rs` 以 `pub mod multi_schema_change` 对外暴露。它用一组独立的 Rust 数据类型和纯内存状态机表达“一条 `ALTER TABLE` 包含多个 DDL 子操作”的核心规则：收集子操作、做语句内冲突检查、推进可回滚/不可回滚阶段、汇总 schema version，以及传播磁盘满暂停和云存储选择。
-
-它目前不是完整 DDL owner/worker 实现。RustCodeGraph 能索引本文件的符号与内部调用边，但没有找到来自生产 Rust 模块的调用者；`run_multi_schema_change` 的已索引调用者仅是 `pkg/ddl/multi_schema_change_test.rs` 中 3 个直接回归测试。因此，本文件当前更接近可测试的领域模型/移植边界；真正的 TiDB 运行链仍可在同路径 Go 文件的 `onMultiSchemaChange`、worker、meta mutator 和 job 持久化逻辑中看到。
+`append_to_sub_jobs` 与 `fill_multi_schema_info` 把 `MultiAction` 变成 `SubJob`，同时维护列、索引、外键和相对列集合，为提交前检查提供材料。
 
 ## 核心职责
 
@@ -77,12 +75,7 @@ Go 测试记录稿覆盖并发提交、MDL、failpoint 和 session 等场景，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ddl/multi_schema_change.go`，主要映射如下：
-
-- Rust `run_multi_schema_change` 对应 Go `onMultiSchemaChange` 的四段主流程：逆序回滚、逐项推进可回滚子 job、批量越过不可回滚边界、不可回滚收尾。
 - `update_parent_job_from_proxy` 对应 `updateParentJobFromProxy`，共同保证 proxy 发现的 `UseCloudStorage` 回写 durable parent；Go 还回写 RU，Rust 模型没有对应字段。
-- `promote_disk_full_pause` 对应 `promoteProxyKVDiskFullPause`；两者都恢复子状态并把暂停提升到父 job，Go 还处理 admin operator 和结构化 TiDB error。
-- `append_to_sub_jobs` / `fill_multi_schema_info`、`check_operate_same_col_and_idx`、`merge_add_index`、`check_need_analyze`、`check_operate_drop_index_used_by_foreign_key`、`check_multi_schema_info`、`rolling_back_multi_schema_change`、`finish_multi_schema_job` 均有同名语义的 Go 函数。
 - Rust `collect_warnings` 对应 Go `appendMultiChangeWarningsToOwnerCtx` 的收集部分，但没有 session `StmtCtx.AppendNote` 副作用。
 
 差异必须视为当前迁移状态而非设计等价：Go 版使用真实 `model.Job`/`SubJob`、`meta.Mutator`、table/infoschema/session、worker 和结构化错误；还包括 analyze、物化视图约束、table-info 恢复、持久化收尾等逻辑。Rust 版用字符串错误和 shape 投影，未接生产调度链。`pkg/ddl/multi_schema_change_test.go` 是 Go 的真实 DDL 回归；Rust 同名测试文件的大部分内容仅机械记录这些步骤，只有文件末尾 3 个测试直接执行 Rust 状态机。
@@ -96,13 +89,3 @@ Go 测试记录稿覆盖并发提交、MDL、failpoint 和 session 等场景，�
 - 修改 pause/resume 或云存储逻辑时必须同步 3 个直接 Rust 回归：磁盘满版本保留、后续代理继承云模式、四条 proxy 路径均持久化云模式；还应新增 owner failover/persistence 层测试，因为当前单元测试只验证内存模型。
 - 修改索引合并或外键逻辑时，应与 Go 的结构化 `IndexArgs` 语义比对，尤其避免逗号拼名和列扁平化在真实接线后丢失索引边界。
 - 兼容性风险集中在已持久化 job 字段和错误语义；正确性风险集中在部分批次失败、回滚顺序和 schema version；性能风险集中在 reorg 子任务是否能安全合批。当前文件没有锁或 I/O，不能由这里的微观成本推断完整 DDL 性能。
-
-## 验证依据
-
-- 源码：`pkg/ddl/multi_schema_change.rs`（711 行），核对全部枚举、结构体、trait、impl、公开函数和私有 `update_parent_job_from_proxy`；文件无条件编译项。
-- crate/模块：`pkg/ddl/Cargo.toml` 确认 crate 为 `astersql-ddl`、lib 入口为 `lib.rs`；`pkg/ddl/lib.rs` 确认生产模块公开及测试模块以 `#[cfg(test)]` 独立装配。
-- 包契约：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md` 用于理解 DDL job、schema version/sync、owner/worker 背景；本文对具体行为仍以源码和测试为准。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；精确 `query/node/callers/callees` 确认 `run_multi_schema_change` 位于第 585 行，其内部调用边及 3 个测试调用者；对其余主要公开函数未找到生产调用者。早先 `files --filter pkg/ddl/multi_schema_change` 返回空与精确符号可查存在工具过滤异常，因此又用仓库 `rg` 复核生产调用范围。
-- Rust 测试：`pkg/ddl/multi_schema_change_test.rs`；末尾 `disk_full_pause_preserves_the_generated_schema_version`、`multi_schema_parent_preserves_cloud_mode_for_later_proxy_jobs`、`every_multi_schema_proxy_path_persists_cloud_mode` 是直接行为证据。该文件其余 `CaseRecorder` 用例明确不执行数据库逻辑，只能作为 Go 场景目录。
-- Go 对照：`pkg/ddl/multi_schema_change.go` 与 `pkg/ddl/multi_schema_change_test.go`，核对 `onMultiSchemaChange`、校验/合并/取消/收尾辅助函数及真实测试意图。
-- 按任务约束未运行 Cargo；交付验证仅执行文档 11 个固定章节的结构检查，并人工复核文档没有把未接线能力写成已支持。

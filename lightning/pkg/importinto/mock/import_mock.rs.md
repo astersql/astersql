@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-lightning-pkg-importinto-mock`。crate 入口 `lightning/pkg/importinto/mock/lib.rs` 先装配本地 `stubs.rs`，再公开重导出本文件的全部符号；`Cargo.toml` 只依赖父目录的 `astersql-lightning-pkg-importinto`，因此这里是 import-into 子系统的测试替身边界，而不是导入作业的生产实现。
-
-文件是 Go MockGen 产物 `lightning/pkg/importinto/mock/import_mock.go` 的手工 Rust 语义镜像，覆盖 `CheckpointManager`、`JobSubmitter`、`JobMonitor`、`JobOrchestrator` 和 `ProgressUpdater` 五个接口。它让 Rust 测试能以 GoMock 风格先登记预期调用和返回值，再把 mock 作为对应 trait 对象注入被测代码。真实 checkpoint 持久化、作业提交、轮询、编排和进度统计分别位于父 crate 的实现文件中；本文件不执行这些业务动作。
+在动态返回值与静态 Rust 类型之间转换：无返回值/错误用 `take_error`，单返回值用 `take_one`，`(T, error)` 用 `take_pair`，Go 指针返回用 `take_opt_pair`。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ RustCodeGraph 对 `NewMockCheckpointManager`、`NewMockJobSubmitter`、`NewMockJ
 
 ## 与 Go 版本的对应关系
 
-Go 文件由 MockGen 生成，五组类型、构造器、`EXPECT`/`ISGOMOCK`、接口方法和 recorder 方法在 Rust 中逐项对应。Go recorder 持有 `*MockType`，Rust recorder 直接持有共享 `Controller`；这是所有权表达差异，不改变登记预期再调用的外部模式。
+Go recorder 持有 `*MockType`，Rust recorder 直接持有共享 `Controller`；这是所有权表达差异，不改变登记预期再调用的外部模式。
 
 主要类型映射为：Go `context.Context` 对应 Rust `context::Context`；Go 指针参数在 Rust 中多为借用；Go `[]*ImportJob`/`[]*TableMeta` 对应 Rust 切片；Go `error` 对应父 crate 的 `Result`。Go 的 `*TableCheckpoint` 返回可为 nil，所以 Rust 使用 `Option<TableCheckpoint>`。Go `SubmitTable` 返回 `*ImportJob`，但 Rust trait 返回非可选 `ImportJob`，因此 nil 成功结果被显式映射为零值对象。
 
@@ -93,14 +91,3 @@ Rust 轻量 controller 并非 `go.uber.org/mock/gomock` 的完整重写：它只
 - 若要求验证 `Dump*` 输出，不应只增强本 mock 的返回值；应让控制器能够执行 writer 副作用，或直接在 checkpoint 生产实现测试中验证字节内容，并清楚区分“调用发生”和“输出正确”。
 - 涉及共享 controller、并发调用或自动验证剩余预期时，应评估锁顺序、panic 时队列状态以及与 GoMock 生命周期的兼容性。相关回归测试应放在 `lightning/pkg/importinto/mock/parity_test.rs` 或新的独立 `*_test.rs`，不要放进 `import_mock.rs`。
 - 文件标注为 Go MockGen port。若 Go 接口重新生成，应逐项对照方法集合与 nil/错误语义，避免直接覆盖 Rust 特有的 trait 实现和类型转换分支。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标文件；`files --filter lightning/pkg/importinto/mock` 列出 Go/Rust 对照、crate 入口、parity 测试和 stubs。
-- RustCodeGraph `node --file lightning/pkg/importinto/mock/import_mock.rs`：核对 808 行文件、五组 mock/recorder/trait impl、所有方法及 `_stubs_ty`；`explore` 核对构造器和方法调用者。
-- RustCodeGraph `node`：核对 `CheckpointManager`（`checkpoint.rs:220`）、`JobSubmitter`（`job_submitter.rs:85`）、`JobMonitor`（`job_monitor.rs:90`）、`JobOrchestrator`（`job_orchestrator.rs:143`）、`ProgressUpdater`（`importer.rs:91`）的真实 trait 签名与 `Send + Sync` 边界。
-- `lightning/pkg/importinto/mock/Cargo.toml` 与 `lib.rs`：核对独立 crate、唯一父 crate 依赖、模块装配和公开重导出。
-- `lightning/pkg/importinto/mock/import_mock.go`：核对 MockGen 来源、五个 Go 接口的构造器、方法、recorder、指针返回和错误返回语义。
-- `lightning/pkg/importinto/mock/stubs.rs`：核对 `Arc<Mutex<_>>` 共享队列、首个匹配消费、参数匹配范围、panic 条件及 `take_*` 默认值/错误转换。
-- `lightning/pkg/importinto/mock/parity_test.rs`：核对正常调用、nil/空集合、错误传播、未登记调用 panic、参数不匹配、无隐式调用顺序、trait 对象适配和共享 controller 生命周期。
-- 相关独立测试路径：`lightning/pkg/importinto/checkpoint_test.rs`、`job_monitor_test.rs`、`job_orchestrator_test.rs` 与 `parity_test.rs`，用于确认父接口在真实实现中的边界；本任务未运行 Cargo，符合纯文档计划约束。

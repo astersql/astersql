@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`terror.rs` 是 `astersql-parser-terror` crate 的实现文件，提供与 Go `pkg/parser/terror/terror.go` 对齐的分类错误框架。crate 入口 `pkg/parser/terror/lib.rs` 将本文件全部公开项同时再导出到 crate 根和 `parser::terror` 命名空间；上层因此既可直接依赖 `astersql_parser_terror::*`，也可沿兼容路径访问。
-
-该文件位于 SQL 解析器目录，但职责并不限于语法错误：`ClassDDL`、`ClassKV`、`ClassSession` 等 27 个内置 `ErrClass` 为多个子系统提供统一的 RFC 错误身份，并把规范化错误转换为 MySQL 协议 `SQLError`。根工作区通过 `facade_parser_terror` 引入本 crate，`pkg/parser/Cargo.toml`、`pkg/util/dbterror/Cargo.toml` 以及多个执行、会话、DDL、存储 crate 直接或间接依赖它。
+位于 SQL 解析器目录，但职责并不限于语法错误：`ClassDDL`、`ClassKV`、`ClassSession` 等 27 个内置 `ErrClass` 为多个子系统提供统一的 RFC 错误身份，并把规范化错误转换为 MySQL 协议 `SQLError`。
 
 ## 核心职责
 
@@ -84,9 +82,9 @@ Rust 实现用 `RwLock<HashMap<...>>` 保护类别描述、RFC 反向索引和�
 
 ## 与 Go 版本的对应关系
 
-Rust `ErrCode`、`ErrClass`、27 个类别、四个 code 常量、构造器、类别判断、SQL 转换和日志辅助均逐项对应 `pkg/parser/terror/terror.go`。`pkg/parser/terror/terror_test.rs` 按 Go `terror_test.go` 的测试组覆盖常量、错误生成、JSON、相等性、日志和栈；`migration_aster_unit_test.rs` 额外锁定未注册类别、合成错误与转换边界。
+`pkg/parser/terror/terror_test.rs` 按 Go `terror_test.go` 的测试组覆盖常量、错误生成、JSON、相等性、日志和栈；`migration_aster_unit_test.rs` 额外锁定未注册类别、合成错误与转换边界。
 
-主要实现差异如下：Go 的 `sync.Map` 在 Rust 中是封装 `RwLock<HashMap>` 的 `Code2ErrClassMap`；Go 的普通 map 注册表也在 Rust 中加锁，因此数据竞争被类型系统阻止。Go 包变量逐项调用 `RegisterErrorClass`，Rust 内置类别使用常量加 `ERROR_CLASSES` 一次性初始化，同时仍保留公开的动态注册函数。Go `atomic.Store/LoadUint32` 对应 Rust Release/Acquire 原子操作。Go `debug.PrintStack` 对应 Rust 强制捕获并输出 `Backtrace`。
+主要实现差异如下：Go 的 `sync.Map` 在 Rust 中是封装 `RwLock<HashMap>` 的 `Code2ErrClassMap`；Go 的普通 map 注册表也在 Rust 中加锁，因此数据竞争被类型系统阻止。Go 包变量逐项调用 `RegisterErrorClass`，Rust 内置类别使用常量加 `ERROR_CLASSES` 一次性初始化，同时仍保留公开的动态注册函数。
 
 Go `log.Fatal` 的副作用由 Rust `MustNil` 明确实现为 error 日志、logger flush 和 `process::exit(1)`；Go 的 zap 结构化字段与栈日志在 Rust 中简化成格式化消息，因此日志字段结构并非完全相同。Go `ToSQLError` 返回指针，Rust 返回拥有所有权的 `SQLError` 值。Go 构造 API 使用可变参数，Rust 的共享 errors API 使用参数切片/向量。
 
@@ -99,12 +97,3 @@ Go `log.Fatal` 的副作用由 Rust `MustNil` 明确实现为 error 日志、log
 修改 RFC code 格式、类别描述或注册时序会影响 `EqualClass`、`GetErrClass`、SQL 协议码以及持久化/日志中的错误身份，属于高兼容风险。修改全局表或锁顺序时要避免锁中毒与嵌套锁死；当前 `initError` 先释放 code 表写锁，随后才写反向表，不同时持有两把锁。性能上，构造/转换均访问全局锁；若优化缓存，必须保持注册完成前后的可见性及未知 code 回退语义。
 
 测试应继续放在独立文件 `pkg/parser/terror/terror_test.rs` 或 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。冻结或进程退出场景应继续使用子进程隔离，避免污染同一测试进程的全局状态。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/terror` 确认本目录六个 Rust/Go 源与测试文件；`node --file pkg/parser/terror/terror.rs --offset 1 --limit 500` 读取了完整 473 行目标源码，并报告 72 个符号及 35 个使用文件。
-- 符号查询：`query ToSQLError`、`query GetErrClass`、`query RegisterFinish` 分别区分出 Go 与 Rust 定义；精确 Rust symbol ID 的 `callers/callees` 未返回可用边，因此调用关系又以目标源码内部调用和 `rg` 的直接引用交叉验证，没有采用同名 `Call` 等歧义结果。
-- 已读生产与装配文件：`pkg/parser/terror/terror.rs`、`pkg/parser/terror/lib.rs`、`pkg/parser/terror/Cargo.toml`、`pkg/parser/terror/terror.go`；并检查根 `Cargo.toml` 及直接依赖者的 Cargo 声明。
-- 已读测试：`pkg/parser/terror/terror_test.rs`、`pkg/parser/terror/migration_aster_unit_test.rs`、`pkg/parser/terror/terror_test.go`。关键断言覆盖 27 类映射、重复类别 panic、注册/合成差异、未知类别/code 回退、冻结后 panic、全局初始化、相等性、日志、栈和 `MustNil` 退出码。
-- 直接调用证据：`pkg/parser/yy_parser.rs`、`pkg/parser/parser_semantic_support.rs`、`pkg/parser/charset/charset.rs`、`pkg/parser/charset/encoding_base.rs`、`pkg/server/internal/resultset/resultset.rs`，以及验证 SQL 转换和冻结时序的相邻独立测试。
-- 本任务只新增说明文档，按计划不运行 Cargo；最终以固定 11 章节结构命令和人工事实复核验证。

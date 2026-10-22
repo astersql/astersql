@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-generator-plan_cache` crate 的主体实现，负责**生成 Go 源码**，而不是在 Rust 运行时克隆物理计划。它输出 `pkg/planner/core/operator/physicalop/plan_clone_generated.go` 中各物理算子的 `CloneForPlanCache` 方法，使计划缓存命中后可以把旧计划复制到新的 `base.PlanContext`，同时避免跨会话误共享可变对象。crate 入口 `pkg/planner/core/generator/plan_cache/lib.rs` 公开本模块并再导出其公共 API；同文件还用 `#[path = "plan_clone_test.rs"]` 挂载独立 Rust 测试。
-
-`pkg/planner/core/generator/plan_cache/Cargo.toml` 没有常规运行时依赖。它声明的 physicalop 路径依赖位于 `target.'cfg(any())'.dependencies`，因而不会实际启用；Rust 版本通过本文件的静态字段目录代替 Go 的运行时反射。Bazel 的 `pkg/planner/core/generator/plan_cache/BUILD.bazel` 仍将 Go 原版构建为生成器二进制，并用 Go 测试核对已提交生成文件。
+用 `PHYSICAL_STRUCTURES` 固定 25 个需要生成克隆方法的物理计划类型及顺序，并由 `physical_structure_catalog`、`physical_structure_fields` 提供 Go 反射输入的 Rust 镜像。
 
 ## 核心职责
 
@@ -88,11 +86,11 @@ RustCodeGraph 显示核心内部边为：
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `GenPlanCloneForPlanCacheCode`、`gen_plan_clone_for_plan_cache`、`must_nil_field`、`allow_shallow_clone`、`CodeGen` 和固定前缀，分别对应 `plan_clone_generator.go` 中的同名/同职责实现。两边覆盖相同 25 个物理算子、相同字段特殊分支和类型克隆模板，目标都是生成 `physicalop` 包中的 `CloneForPlanCache` 方法。
+Rust 的 `GenPlanCloneForPlanCacheCode`、`gen_plan_clone_for_plan_cache`、`must_nil_field`、`allow_shallow_clone`、`CodeGen` 和固定前缀，分别对应 `plan_clone_generator.go` 中的同名/同职责实现。
 
-关键差异是元数据来源与格式化：Go 用 `reflect.TypeOf` 枚举真实结构字段并读取 `plan-cache-clone` tag，Rust 用 `physical_structure_fields` 手工镜像非标量字段和标签；Go 最后用 `go/format.Source` 校验并格式化，Rust 用带缩进状态的 `CodeGen` 直接产出目标格式。因此 Rust 版本新增了 `FieldKind`、`StructField`、`Structure` 和静态目录，也承担了手工同步风险。
+关键差异是元数据来源与格式化：Go 用 `reflect.TypeOf` 枚举真实结构字段并读取 `plan-cache-clone` tag，Rust 用 `physical_structure_fields` 手工镜像非标量字段和标签；Go 最后用 `go/format.Source` 校验并格式化，Rust 用带缩进状态的 `CodeGen` 直接产出目标格式。
 
-Go `main` 固定写 `plan_clone_generated.go` 并以日志终止报告失败；Rust 没有二进制 `main`，而是提供返回 `Result` 的库 API和通用 `write_generated_file`。Go 测试只比较重生成字节与提交文件；Rust 的 `plan_clone_test.rs::TestPlanClone` 除同样比较外，还验证二次生成确定性、25 个方法完整性，以及 `MustNil`、`Shallow`、嵌入基类、表达式切片等字段级模板。当前 `plan_clone_generated.go` 确实包含清单中全部 25 个方法及 Reader 展平分支。
+Go `main` 固定写 `plan_clone_generated.go` 并以日志终止报告失败；Rust 没有二进制 `main`，而是提供返回 `Result` 的库 API和通用 `write_generated_file`。Go 测试只比较重生成字节与提交文件；Rust 的 `plan_clone_test.rs::TestPlanClone` 除同样比较外，还验证二次生成确定性、25 个方法完整性，以及 `MustNil`、`Shallow`、嵌入基类、表达式切片等字段级模板。
 
 ## 扩展指南
 
@@ -101,13 +99,3 @@ Go `main` 固定写 `plan_clone_generated.go` 并以日志终止报告失败；R
 新增算子必须同时加入 `PHYSICAL_STRUCTURES` 和 `physical_structure_fields`，并与 Go `structures` 顺序保持一致。修改固定 import 或生成文件头时同步 `CODE_GEN_PLAN_CACHE_PREFIX` 与 Go 原版。若启用 `write_generated_file` 进入生产流程，应额外设计原子写、格式化和并发写约束；当前接口不提供这些保证。
 
 测试应继续放在独立文件 `pkg/planner/core/generator/plan_cache/plan_clone_test.rs`，不要嵌入生产源文件。字段模板变化应增加精确片段断言；全量目录变化应保持与 `pkg/planner/core/operator/physicalop/plan_clone_generated.go` 的字节对比。Go 侧同步更新 `plan_clone_generator.go` 和 `plan_clone_test.go`，并按仓库生成流程刷新目标文件。主要风险是：漏字段导致跨会话别名（正确性/隔离风险），错误深拷贝导致性能回退，错误 `MustNil` 导致计划缓存命中减少，以及 Rust 静态目录与 Go 反射结果漂移。
-
-## 验证依据
-
-- Rust 主实现：`pkg/planner/core/generator/plan_cache/plan_clone_generator.rs`，重点为 `PHYSICAL_STRUCTURES`、`gen_plan_clone_for_plan_cache`、`write_special_field`、`write_field_clone`、`physical_structure_catalog`、`physical_structure_fields`、`GenPlanCloneForPlanCacheCode` 和 `write_generated_file`。
-- crate/构建边界：`pkg/planner/core/generator/plan_cache/Cargo.toml`、`lib.rs`、`BUILD.bazel`。同目录没有 `doc.go`；包边界由上述三个文件及 Go 的 `package main` 声明核对。
-- Go 对照：`pkg/planner/core/generator/plan_cache/plan_clone_generator.go`，核对反射字段遍历、tag 语义、特殊字段、类型分派、gofmt、`main` 写文件入口和固定前缀。
-- 独立测试：`pkg/planner/core/generator/plan_cache/plan_clone_test.rs` 与 `plan_clone_test.go`。Rust 测试覆盖确定性、全量方法、提交文件漂移和字段模板；Go 测试覆盖重生成字节一致性。
-- 生成结果：`pkg/planner/core/operator/physicalop/plan_clone_generated.go`，核对 25 个 `CloneForPlanCache` 方法、递归失败分支及 Reader 展平调用确实落地。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/planner/core/generator/plan_cache` 找到 Rust/Go 实现与独立测试；`node --file` 完整读取 762 行实现；`query` 区分 Go/Rust 同名入口；`callees` 核对上述内部调用边。由于同名符号使 `callers` 结果不精确，另用限定目录的 `rg` 直接引用检索确认 Rust API 只有测试调用、`write_generated_file` 无仓库内调用。
-- 按任务约束未运行 Cargo。结构验证使用任务指定的 `test -f` 与 11 个固定二级标题计数；交付前还人工核对没有把生成期逻辑误述为 Rust 运行时计划克隆，也没有建议把测试放回生产源文件。

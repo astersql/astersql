@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/executor/distsql.rs` 属于 `astersql-executor` crate；crate 根在 `pkg/executor/lib.rs` 中以 `pub mod distsql` 公开它，Cargo 清单是 `pkg/executor/Cargo.toml`。文件实现 DistSQL 索引读取的 Rust 侧模型：`IndexReaderExecutor` 直接读取索引结果，`IndexLookUpExecutor` 则执行“索引取 handle、再按 handle 回表”的双读流程。
-
-当前实现通过本文件定义的 `DistSqlBackend`、`SelectResult` 抽象隔离真实存储访问。仓库搜索到的 Rust 直接使用点主要是 `pkg/executor/distsql_test.rs`、`pkg/executor/executor_pkg_test.rs`、`pkg/executor/table_readers_required_rows_test.rs` 和 `pkg/executor/test/issuetest/executor_issue_test.rs`；未发现生产构建器将这里的泛型执行器接到会话执行主链。因此它是可运行、可测试的移植实现，但不能据此断言已替代 Go `pkg/executor/distsql.go` 的生产路径。
+当前实现通过本文件定义的 `DistSqlBackend`、`SelectResult` 抽象隔离真实存储访问。
 
 ## 核心职责
 
@@ -97,7 +95,6 @@
 
 ## 与 Go 版本的对应关系
 
-- 直接对照文件是 `pkg/executor/distsql.go`。Rust 保留了 Go 的 `IndexReaderExecutor`、`IndexLookUpExecutor`、`lookupTableTask`、`indexWorker`、`tableWorker`、`CalculateBatchSize`、`GetLackHandles`、`getDatumRow` 和运行时统计等名称与总体双读结构。
 - Rust `CalculateBatchSize` 与 Go 的二倍增长/最大值规则一致；`pkg/executor/distsql_test.rs` 明确验证估算值小于初始值、超过最大值的行为。Rust `GetLackHandles` 也像 Go 一样消费已获得集合，所以重复期望 handle 会留下一个缺失项。
 - Go 生产实现直接使用 TiDB 的 `kv.Request`、DAG protobuf、`distsql.SelectResult`、session/statement context、chunk、table metadata、collation、paging、replica read、内存 tracker 和运行时统计集合。Rust 将这些压缩为 `Request`、`Datum` 和 `DistSqlBackend`，尚未表达全部请求属性和类型语义。
 - Go 的 IndexReader merge 路径使用多个 SelectResult 的排序封装；Rust 当前逐范围把所有行读入内存后调用 `sort_rows`。这保持结果排序意图，但流式性、峰值内存和关闭错误处理并不等价。
@@ -115,11 +112,3 @@
 - 改动一致性检查时，不应停留在 checksum 近似，应对照 Go `tableWorker::compareData` 的逐列类型/collation/截断语义和报告内容。
 - 测试必须继续放在独立文件。直接单元测试优先扩展 `pkg/executor/distsql_test.rs`；执行器构造、关闭和并发行为可扩展 `pkg/executor/executor_pkg_test.rs`、`pkg/executor/table_readers_required_rows_test.rs`；Go 对照回归位于 `pkg/executor/distsql_test.go`。不要把 `#[cfg(test)]` 测试内嵌进本源文件。
 - 若要接入真实生产主链，还需在 executor builder/adapter 层提供具体 `DistSqlBackend` 并验证真实存储请求；当前仓库没有该接线证据，应作为独立实现任务处理。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件、307296 个节点、1848419 条边；`node --file pkg/executor/distsql.rs` 覆盖 1–1406 行，并用于核对所有类型、函数和实现。精确 `query` 定位了 Rust `IndexLookUpExecutor`（424 行）、`fetchHandles`（918 行）、`executeTask`（1239 行）及两个执行器的 `Open`（316、476 行）；对应 `callers/callees` 查询无返回，故使用仓库搜索补证而未推测调用边。
-- crate 与装配：读取 `pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`，确认 crate 名、路径依赖、`pub mod distsql` 和独立 `distsql_test` 模块；目标包下未发现 `doc.go`。
-- Rust 测试：完整读取 `pkg/executor/distsql_test.rs`；另外通过引用搜索核对 `pkg/executor/executor_pkg_test.rs`、`pkg/executor/table_readers_required_rows_test.rs`、`pkg/executor/test/issuetest/executor_issue_test.rs` 的直接使用点。
-- Go 对照：读取 `pkg/executor/distsql.go` 的任务结构、两个执行器、range 构造、worker 启停、取数/关闭、handle 解码、一致性检查和运行时统计；检查 `pkg/executor/distsql_test.go` 的测试清单，包括不一致索引、分区回表、自适应 LIMIT、统计和 push-down 等覆盖面。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令，验证文档存在且恰有十一个固定二级标题；人工复核以上章节分别回答文件为何存在、如何运行、如何安全扩展，并明确当前未接线和简化语义的边界。

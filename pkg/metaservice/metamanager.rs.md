@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`metamanager.rs`](./metamanager.rs) 属于 `astersql-metaservice` crate。该 crate 由 [`lib.rs`](./lib.rs) 声明并重新导出 `metamanager`，其 manifest 是 [`Cargo.toml`](./Cargo.toml)。本文件位于 PD 成员发现与上层 etcd/Meta Service 建连之间：它把 keyspace 配置和 PD 地址归一化为 `Info { pd_addrs, group }`，决定后续访问全局 PD 地址还是 keyspace 专属 Meta Service group 地址。
-
-真实运行时接线位于 [`dial.rs`](./dial.rs) 的 `ResolveEtcdDialInfo`：该函数取得或接收 PD endpoints，将 `DialKeyspaceMeta` 转为本文件的 `KeyspaceMeta`，调用 `get_info`，再把 `Info::group_addrs()` 作为 etcd endpoint。`lib.rs` 对本模块做通配再导出，所以其他 crate 可通过 `astersql_metaservice::*` 使用这些类型和函数。`Cargo.toml` 表明本 crate 是工作区 library，依赖 `log`、`thiserror`、`etcd-client`、`tokio`、`tikv-client` 与 `astersql-util`；其中本文件直接使用标准库 `HashMap`、`log` 和 `thiserror`，PD/etcd 相关错误与接口则由同 crate 其他模块共享。
+定义 Meta Service 分组配置协议：`GROUP_ID_KEY`、`GROUP_ADDRS_KEY`、GC 管理键和值，以及默认 `GLOBAL_GROUP_ID = "0"`。
 
 ## 核心职责
 
@@ -92,19 +90,12 @@ RustCodeGraph 的文件图还显示 `metamanager.rs` 被 `dial.rs` 和若干跨�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`metamanager.go`](./metamanager.go)，独立测试是 [`metamanager_test.go`](./metamanager_test.go)。主要语义保持一致：
-
 - `GlobalGroupID`、`GroupIDKey`、`GroupAddrsKey` 值一致；Rust 额外公开 snake_case/全大写常量，并保留 Go 风格别名。
 - Go `keyspacepb.KeyspaceMeta` 在 Rust 中被缩减为本模块所需的 `KeyspaceMeta { name, config }`；`dial.rs` 在拨号边界完成转换。
 - Go 正则 `^[A-Za-z0-9_-]*[A-Za-z][A-Za-z0-9_-]*$` 与 Rust 的“全部字符在允许集合内且至少一个 ASCII 字母”语义等价。
-- 两端都要求专属 group 使用 keyspace-level GC，都会 trim 逗号分隔地址、忽略空段，并在缺失或全空地址时报 group/address 不匹配。
-- 两端 `GetInfo(nil/None, pdAddrs)` 都回退全局 group；直接 `GetGroup(nil/None, ...)` 都报错。
 - Go 通过指针返回 `*Info`/`*Group` 并让切片可能复用输入底层数组；Rust 返回拥有所有权的值并克隆输入地址，消除了借用/别名关系，但增加复制成本。
 - Go 的 `ServiceClient` 声明 `GetPDAddrs` 与 `GetPDServiceURLs`；Rust trait 同时保留 `get_pd_service_urls` 默认方法和兼容的 `get_pd_http_addrs`，这是相邻 URL 发现实现的接口适配差异。
 - Rust 将 Go 包级 sentinel/annotated errors 建模为结构化 `MetaServiceError` 变体；`KeyspaceLevelGcRequired` 直接携带 `name` 与 `group_id`，错误字符串仍保留 Go 测试要求的关键语义。
-- Rust 比 Go 文件多提供 `fetch_info` 和 `get_info_and_group_addrs` 的 snake_case 实现及 Go 风格门面；Go 文件中也已有同名组合 helper，因此功能意图一致。
-
-[`metamanager_test.rs`](./metamanager_test.rs) 与 Go 测试覆盖同一组核心表：nil/None、合法 group、统一 GC 拒绝、空白地址过滤、缺失/全空地址、全局回退、非法 ID 和 `GetInfo` 两条路径。`migration_aster_unit_test.rs` 还验证了 mock PD 成员发现后 `Info.pd_addrs` 与专属 `group_addrs` 的分离。
 
 ## 扩展指南
 
@@ -116,16 +107,3 @@ RustCodeGraph 的文件图还显示 `metamanager.rs` 被 `dial.rs` 和若干跨�
 - 改变 PD 获取流程：入口是 `fetch_info`，真正的成员发现应继续放在 `get_pd_addrs`/`PdClient` 实现。要用 mock `PdClient` 测试取消、错误传播和地址选择，不应在本文件内嵌网络测试。
 - 兼容门面：snake_case 实现是唯一业务逻辑来源；Go 风格导出函数应保持薄转发，避免两套实现漂移。
 - 测试必须继续放在独立文件，主要同步点是 `pkg/metaservice/metamanager_test.rs`；跨模块拨号行为可在现有 BR、Lightning、executor 的 `meta_service_group_test.rs` 中扩展。性能风险主要来自地址/配置的重复克隆与过大的日志载荷，而不是算法复杂度。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 `pkg/metaservice/metamanager.rs`、Go 对照和测试均在索引中。
-- RustCodeGraph `files --filter pkg/metaservice`：确认 crate 内 `lib.rs`、`dial.rs`、`etcd.rs`、本文件及独立 Rust/Go 测试的邻接结构。
-- RustCodeGraph `node --file pkg/metaservice/metamanager.rs --offset 1 --limit 500`：读取目标文件完整 287 行，核对常量、错误枚举、三个结构、trait、纯解析函数、组合入口、兼容别名和独立测试模块声明。
-- RustCodeGraph `node` 读取 `pkg/metaservice/lib.rs`、`pkg/metaservice/metamanager.go`、`pkg/metaservice/metamanager_test.rs`、`pkg/metaservice/metamanager_test.go`：核对模块再导出、Go 语义和测试边界。
-- RustCodeGraph `explore "pkg/metaservice/metamanager.rs MetaManager StateSyncer SchemaInfoReader"`：获得 `get_info → get_group`、`fetch_info → get_pd_addrs`、`get_info_and_group_addrs → fetch_info/group_addrs` 及 `dial.rs::ResolveEtcdDialInfo` 等候选调用证据。因索引存在大量同名符号，后续用文件限定查询和受限文本搜索复核。
-- `query get_group --kind function --json`：定位精确节点 `metamanager.rs::get_group`（第 139 行）及其直接/迁移测试。`callers/callees --file` 在本地索引查询中未及时返回，未将其缺失结果用于推断。
-- `rg --glob '*.rs'` 的限定直接引用检查与局部源码读取：确认生产直接调用点 `pkg/metaservice/dial.rs:299` 和 `Info::group_addrs` 消费点 `dial.rs:311`；确认其他命中主要是本文件内部转发和独立测试。
-- [`Cargo.toml`](./Cargo.toml) 与工作区 Cargo manifest 搜索：确认 crate 名、library 入口、直接依赖、porting 元数据，以及 store/session/server/BR/Lightning/executor 等 crate 的依赖边界。
-- [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 的 `migration_get_group_matches_go_validation_and_fallbacks`、`migration_get_group_rejects_invalid_or_incomplete_configuration`、`migration_get_info_and_combined_lookup_match_go`：确认纯解析不变量和 mock PD 组合链。
-- 人工复核：文档区分了本文件当前实现与相邻模块职责；未宣称本文件执行网络、重试或资源管理；没有把测试嵌入生产源文件；所有主要行为都可回溯到上述真实符号或对照测试。

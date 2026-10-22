@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-importinto` crate 的 IMPORT INTO 分布式规划层。模块由 `pkg/dxf/importinto/lib.rs` 以 `pub mod planner` 暴露；上游在 `pkg/dxf/importinto/job.rs` 中构造 `LogicalPlan` 并以 `ToTaskMeta` 持久化任务元数据，在 `pkg/dxf/importinto/scheduler.rs:887-905` 中按下一任务步骤构造 `PlanCtx`、用 `FromTaskMeta` 恢复逻辑计划、调用 `ToPhysicalPlan`，再将对应 `PipelineSpec` 序列化成子任务 meta。
-
-它不负责执行导入或调度状态机，而负责把作业级输入转换成当前步骤的处理器清单和线格式元数据。覆盖的步骤是 import/encode-and-sort、merge-sort、write-and-ingest、collect-conflicts、conflict-resolution 与 post-process（`LogicalPlan::ToPhysicalPlan`）。`pkg/dxf/importinto/Cargo.toml` 声明 crate 名为 `astersql-dxf-importinto`，`nextgen` feature 透传给 `astersql-config-kerneltype/nextgen`；本文件直接依赖 DXF proto/storage、importer、global sort/simple SST、KV、对象存储、table、auto-ID、MySQL 类型及 checksum 模块。
+聚合数据/索引 KV 冲突与后处理 checksum、allocator 最大值（`collectConflictInfos`、`PostProcessSpec::ToSubtaskMeta`）。
 
 ## 核心职责
 
@@ -82,10 +80,6 @@ RustCodeGraph 对目标文件报告其被包括 `pkg/dxf/importinto/job.rs`、`s
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/dxf/importinto/planner.go`，独立测试为 Rust 的 `planner_test.rs` 与 Go 的 `planner_test.go`。核心步骤、meta 类型、merge 跳过规则、range 拆分、冲突聚合、post-process checksum 和饱和冲突计数均沿用 Go 语义。
-
-Rust 为适应当前迁移状态做了几项显式接线：
-
 - Rust 在本文件定义本地 `PlanCtx`、`PhysicalPlan` 和 `PipelineSpec`，而 Go 使用 `pkg/dxf/framework/planner` 接口；文件头注释说明这是 framework wire adapter 未完成期间保留 typed meta 步骤边界的做法。实际 scheduler 已直接调用这些 Rust 类型。
 - Go 每次通过 `importer.GetSortStore` 打开并 defer 关闭；Rust 支持从 `PlanCtx` 注入共享 `ObjectStore`，否则由 `SortStoreLease` 自行打开和关闭。
 - Go 的 failpoint `forceMergeSort` 在 Rust 中由可注入的 `ForceMergeGroup` 表达；Go `mockWriteIngestSpecs` 测试 failpoint 没有出现在本文件的 Rust 生产逻辑中。
@@ -104,13 +98,3 @@ Rust 为适应当前迁移状态做了几项显式接线：
 - 测试必须继续放在独立的 `pkg/dxf/importinto/planner_test.rs`，不要内嵌回生产文件。优先扩展现有真实 memstore、wire bytes、range split、controller bridge 与冲突聚合测试。
 
 兼容性风险集中于 Go/Rust JSON 字段、步骤号和 external path 协议；正确性风险集中于漏消费前序 meta、range 重叠/缺口和错误跳过 merge；性能风险集中于对象存储 I/O、merge 分组与 range 子任务数量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件、4,415 个 Go 文件；`files --filter pkg/dxf/importinto` 确认目标、Go 对照、独立测试与模块入口均被索引。
-- RustCodeGraph 源码节点：完整读取 `pkg/dxf/importinto/planner.rs:1-1214`；查询确认 Rust/Go 两个 `LogicalPlan`、两个 `generateImportSpecs`、两个 `collectConflictInfos`，以及 Rust `split_for_one_subtask`。
-- 调用证据：RustCodeGraph 初始 explore 报告 `Plan`/`LogicalPlan` 在 `job.rs`、`scheduler.rs`、`task_executor.rs` 和相关测试中的使用面；进一步核对 `job.rs:161-196, 391-437` 与 `scheduler.rs:860-939`，确认提交、恢复、逐步骤规划及 meta 生成主链。
-- crate/模块证据：读取 `pkg/dxf/importinto/Cargo.toml` 和 `pkg/dxf/importinto/lib.rs`，确认 crate、feature、直接依赖、planner 再导出及独立测试模块声明。本目录不存在 `doc.go`；未把 `job_doc.go` 当作包级契约替代品。
-- Go 对照：完整读取 `pkg/dxf/importinto/planner.go:1-892`，核对逻辑计划往返、各步骤生成、外置 meta、range split、冲突聚合及饱和计数。
-- 测试证据：读取 `pkg/dxf/importinto/planner_test.rs`，实际 Rust 测试覆盖非法 JSON、merge overlap/强制 merge、存储打开错误、prepare 路径优先、外置 chunks、真实 stat 文件拆分与 commit TS、Go wire bytes、逻辑计划往返、post-process 列型、controller bridge、外部冲突信息、冲突聚合、合并/未合并 group 共存和饱和计数；`pkg/dxf/importinto/planner_test.go` 是 Go 对照测试面。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付结构检查要求本文恰好包含上述十一个固定二级标题。

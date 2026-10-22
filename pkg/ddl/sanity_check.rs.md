@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/sanity_check.rs` 属于 `astersql-ddl` crate；crate 根由 `pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/ddl/lib.rs` 通过 `pub mod sanity_check` 将本模块公开。文件实现 DDL 完成后的两类纯健全性校验：根据抽象后的删除范围作业推算应产生的 DeleteRange 数量，以及校验历史 DDL 作业保存的查询文本和语句种类。
-
-这不是 DDL 作业执行器、持久化层或 SQL 解析器。它不创建 DeleteRange 任务、不查询 `mysql.gc_delete_range`、不解析 SQL，也不参与 schema 状态转换、reorg、版本发布或同步。仓库级 Rust 使用搜索只找到 `pkg/ddl/sanity_check_test.rs`；因此当前 Rust 实现虽由 crate 公开，但尚未像 Go 的 `pkg/ddl/executor.go:8125` 那样接入“作业进入历史后”的运行时主链。它当前是可复用的校验核心和移植中的边界，而不是已经生效的线上检查。
+`check_delete_range_count` 把期望值与调用者提供的实际值比较，将不一致转换为包含作业 ID、期望数和实际数的结构化错误。
 
 ## 核心职责
 
@@ -90,14 +88,10 @@ Go 运行时链为 `pkg/ddl/executor.go` 取得历史作业后调用 `(*executor
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/sanity_check.go`：
-
-- `DeleteRangeCountContext` / `deduplicate_index_count` 对应 `delRangeCntCtx` / `deduplicateIdxCnt`。
-- `expected_delete_range_count` 对应 `expectedDeleteRangeCnt`，现有共同覆盖取消作业、删库/表/分区、索引增删、列变更和多 schema 递归的主要公式。
 - `check_delete_range_count` 只覆盖 Go `checkDeleteRangeCnt` 的“比较并报告差异”部分；Go 还会通过 session pool 查询 `mysql.gc_delete_range` 与 `mysql.gc_delete_range_done`，并对错误或不一致 panic。
 - `check_history_job` 加上上游的动作/AST 分类才对应 Go `checkHistoryJobInTest` 与 `checkHistoryJobStmtType`。Go 会读取会话 SQL mode 和 parser config 自行解析文本，Rust 只验证传入类别。
 
-当前并非完整等价移植。Go 已覆盖 `ActionDropMaterializedView*`、`ActionCreateMaterializedView*`、刷新切换等物化视图动作；Rust 的 `DeleteRangeAction` 和 `HistoryJobAction` 没有这些专门变体。Go 还检查 `historyJob.BinlogInfo.FinishedTS != 0`，Rust 无对应字段或逻辑。Go 的 parser 错误与作业参数解码错误也没有 Rust 表示。反过来，Rust 提供了结构化 `Result` 错误，便于调用者决定 panic、日志或测试断言，而不是在纯逻辑层直接中止。
+当前并非完整等价移植。Go 已覆盖 `ActionDropMaterializedView*`、`ActionCreateMaterializedView*`、刷新切换等物化视图动作；Rust 的 `DeleteRangeAction` 和 `HistoryJobAction` 没有这些专门变体。
 
 ## 扩展指南
 
@@ -111,14 +105,3 @@ Go 运行时链为 `pkg/ddl/executor.go` 取得历史作业后调用 `(*executor
 6. 兼容风险主要是漏计导致删除范围缺失未被发现、重复计数导致假阳性，以及动作到语句类型映射过宽。性能风险低于实际数据库查询；纯计数复杂度近似输入表/索引/子作业总量乘以 `BTreeSet` 插入的对数因子。
 
 由于这是 DDL 完成后的测试健全性检查，而不是作业推进逻辑，它本身不需要新增 schema 状态、reorg checkpoint、回滚持久化或 schema version 更新；这些仍由 DDL 主链负责。若新增动作改变上述生命周期，必须先在对应执行模块完成行为，再让本文件忠实校验结果。
-
-## 验证依据
-
-- 源码与符号：`pkg/ddl/sanity_check.rs` 的 `DeleteRangeCountContext`、`expected_delete_range_count`、`check_delete_range_count`、`HistoryStatementKind`、`HistoryJobAction`、`HistorySanityError`、`check_history_job`。
-- 输入模型与真实任务生成：`pkg/ddl/delete_range.rs` 的 `DeleteRangeAction`、`DeleteRangeJob`、`add_delete_range_job`、`insert_job_into_delete_range`。
-- crate 边界：`pkg/ddl/Cargo.toml` 的 package、dependencies 与 `[lib]`，以及 `pkg/ddl/lib.rs` 的模块声明。
-- Rust 独立测试：`pkg/ddl/sanity_check_test.rs`，覆盖 drop-index 缺参数 panic、删表/加索引公式、跨子作业去重、内部空查询、`"skip"`、语句数量和动作特定类别。
-- Go 对照及调用链：`pkg/ddl/sanity_check.go`、`pkg/ddl/executor.go:8125`；Go 类型匹配测试见 `pkg/ddl/ddl_test.go` 的 `TestCheckHistoryJobStmtType`。
-- 包级契约：`pkg/ddl/doc.go` 的 Online DDL 和 schema version 同步不变量；本文件只在作业完成后验证派生结果，不推进该状态机。
-- RustCodeGraph：索引状态显示本仓库 Rust/Go 均已索引；`node --file pkg/ddl/sanity_check.rs` 返回完整 243 行；`query` 定位四个核心函数；`callees` 确认 `check_delete_range_count -> expected_delete_range_count`、错误结构构造和去重调用；`callers` 未返回生产调用者，仓库级 Rust 使用搜索进一步确认只有独立测试引用。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务规定命令验证恰有十一个固定二级章节，并人工复核所有“已接线/已支持”结论均有上述源码或搜索证据。

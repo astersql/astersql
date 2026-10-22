@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-charset` crate；crate 根由 `pkg/parser/charset/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/parser/charset/lib.rs` 通过 `pub mod encoding_utf8` 装入并通过 `pub use encoding_utf8::*` 再导出本模块 API。它是字符集抽象 `pkg/parser/charset/encoding.rs::Encoding` 的 UTF-8 实现层，负责完整 UTF-8（MySQL `utf8mb4`）和限制为至多三字节的历史 `utf8`/utf8mb3 语义。
-
-该文件不是 SQL 解析入口，也不做字符集名称查找。上游先经 `encoding.rs::FindEncoding` 获得 `&'static dyn Encoding`：`CharsetUTF8MB4` 与 `CharsetUTF8` 默认都指向本文件的 `ENCODING_UTF8_IMPL`；需要拒绝四字节字符的路径必须显式调用 `EncodingUTF8MB3StrictImpl()`。例如 `pkg/types/datum.rs` 在 utf8mb3 场景使用严格实例，`pkg/session/runtime/dispatch.rs` 则通过 `FindEncoding(CharsetUTF8)` 使用普通实例。
+字符集抽象 `pkg/parser/charset/encoding.rs::Encoding` 的 UTF-8 实现层，负责完整 UTF-8（MySQL `utf8mb4`）和限制为至多三字节的历史 `utf8`/utf8mb3 语义。
 
 ## 核心职责
 
@@ -67,9 +65,7 @@ crate 入口 `lib.rs` 另有 `encoding_utf8_impl() -> Utf8Encoding`，它只是�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/charset/encoding_utf8.go`。Rust 的 `EncodingUtf8 { strict_mb3 }` 合并了 Go 的 `encodingUTF8` 与嵌入它的 `encodingUTF8MB3Strict` 两个类型；两个 Rust 静态实例对应 Go 的 `EncodingUTF8Impl` 和 `EncodingUTF8MB3StrictImpl`。Rust 不需要 Go `init()` 中设置 `encodingBase.self` 的自引用接线。
-
-行为对应如下：两侧 `Name` 都报告 `CharsetUTF8MB4`；普通模式接受完整 UTF-8，严格模式拒绝宽度大于 3 的字符；`Peek` 都只按首字节阈值分组并在输入不足时返回剩余部分；`Foreach` 都同步逐字符回调并允许提前停止；`Transform` 都对合法输入直接返回而不改写目标缓冲，对非法输入再进入公共转换策略。
+Rust 不需要 Go `init()` 中设置 `encodingBase.self` 的自引用接线。
 
 实现机制有所不同：Go 使用 `unicode/utf8.DecodeRune` 和 `encodingBase`/`encoding.Nop`，Rust 使用 `std::str::from_utf8`、`chars().len_utf8()` 及 `encoding.rs::utf8_chunk`。Go 普通 `Transform` 可返回原 `src` 切片；Rust 的返回类型要求拥有所有权，因此合法快路径返回内容相同的 `Vec<u8>`。Rust `ToUpper`/`ToLower` 是 trait 所需的本地实现，Go UTF-8 文件没有对应方法。上述差异不应被误写为零拷贝等价。
 
@@ -83,14 +79,3 @@ Go 的 `encoding_test.go::TestEncodingValidate` 与 Rust 的 `encoding_test.rs` 
 - 扩展查找行为需修改 `encoding.rs::FindEncoding`，而不是只添加本文件静态值。若希望 `CharsetUTF8` 默认采用严格实例，需要审计当前依赖非严格映射的解析器、session 和类型转换调用方，这是兼容性变更。
 - 测试必须放在独立文件。直接行为优先补充 `pkg/parser/charset/encoding_utf8_test.rs`；跨编码/查找行为补充 `encoding_test.rs`；同步核对 Go 的 `encoding_utf8.go` 与 `encoding_test.go`，覆盖空输入、截断序列、孤立续字节、过长/非法引导字节、U+FFFD、三/四字节边界、回调提前停止及各 `Op` 分支。
 - 性能敏感点是 `IsValid` 的整段扫描、严格模式的第二次字符遍历以及非法慢路径的分配。优化时需用测试证明错误分块、首次错误内容和 `dest` 生命周期没有变化。
-
-## 验证依据
-
-- 目标源码：`pkg/parser/charset/encoding_utf8.rs`，核对了 `EncodingUtf8`、两个静态实例、`EncodingUTF8MB3StrictImpl`、`peek_utf8`、`valid_chunk` 及完整 `Encoding` 实现。
-- crate 与模块：`pkg/parser/charset/Cargo.toml`、`pkg/parser/charset/lib.rs`；确认 crate 名、入口文件、模块公开方式，以及轻量 `Utf8Encoding` 与完整实现的区别。
-- 公共依赖：`pkg/parser/charset/encoding.rs`；确认 `Encoding` trait、`EncodingRef`、`EncodingTp`、`Op`、`FindEncoding`、`utf8_chunk`、`invalid_action`、`finish_transform` 及 ASCII 对 `peek_utf8` 的调用。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；查询了 `EncodingUtf8`、`EncodingUTF8MB3StrictImpl`、`peek_utf8`、`valid_chunk`，并核对 callers/callees。已确认的关键边为 `Foreach -> valid_chunk -> utf8_chunk`、`Transform -> IsValid/Foreach/invalid_action/finish_transform`；trait 动态调用方以源码引用补证。
-- Rust 测试：`pkg/parser/charset/encoding_utf8_test.rs`、`pkg/parser/charset/encoding_test.rs`；确认合法快路径的 `dest` 契约、utf8mb4/utf8mb3 边界、非法替换和 ASCII Peek 分组。
-- Go 对照：`pkg/parser/charset/encoding_utf8.go`、`pkg/parser/charset/encoding_test.go`；确认类型映射、首字节分组、RuneError 判定、严格三字节限制和验证用例意图。
-- 上游引用：`pkg/types/datum.rs`、`pkg/session/runtime/dispatch.rs`，以及 `rg` 得到的直接符号引用；用于确认严格实例与普通查找路径在应用中的真实接线。
-- 本任务是只读分析加文档，不运行 Cargo，也未据此声称运行时测试通过。交付结构以任务指定命令验证，内容另经人工复核，确保能回答文件为何存在、如何运行以及如何安全扩展。

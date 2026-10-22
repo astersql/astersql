@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-proto` crate，crate 根由 [`lib.rs`](./lib.rs) 以 `pub mod r#type` 声明模块，并通过 `pub use r#type::*` 将本文件的公开项同时暴露到 crate 根。之所以写成原始标识符 `r#type`，是因为 `type` 是 Rust 关键字；调用方既可以使用 `astersql_dxf_framework_proto::r#type::ImportInto`，也可以使用根级再导出的 `astersql_dxf_framework_proto::ImportInto`。
-
-该文件是 DXF（Distributed eXecution Framework）任务类型的协议常量与紧凑整数编码表。它不负责创建、调度或执行任务，而是给这些层提供稳定的类型标识。字符串类型本身定义在 [`task.rs`](./task.rs) 的 `pub type TaskType = &'static str`；本文件通过 `use super::task::TaskType` 复用该协议类型。
-
-[`Cargo.toml`](./Cargo.toml) 将 crate 的 Go 对照包声明为 `pkg/dxf/framework/proto`，并把 `lib.rs` 指定为库入口。`type.rs` 自身只依赖同 crate 的 `TaskType`，没有直接使用该 manifest 中的 `bytesize`、`chrono`、`serde` 或 `serde_json` 外部依赖。
+定义框架内置任务类型的规范字符串：测试/示例任务 `"Example"`、IMPORT INTO 任务 `"ImportInto"`、加索引回填任务 `"backfill"`。
 
 ## 核心职责
 
@@ -71,7 +67,7 @@ RustCodeGraph 对同名符号的全仓搜索会同时命中 Go 实现以及 `pkg
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`type.go`](./type.go)，对应测试是 [`type_test.go`](./type_test.go)。Rust 保留了 Go 的全部三个常量、精确字符串值、编号顺序以及默认分支：`Example/ImportInto/backfill <-> 1/2/3`，未知值分别落到 `0` 和空任务类型。
+Rust 保留了 Go 的全部三个常量、精确字符串值、编号顺序以及默认分支：`Example/ImportInto/backfill <-> 1/2/3`，未知值分别落到 `0` 和空任务类型。
 
 可见差异主要来自语言类型：Go 的 `TaskType` 是具名字符串类型、转换函数使用平台相关宽度的 `int`；Rust 的 `TaskType` 是 `&'static str` 别名、整数固定为 `i32`。在当前仅使用 `0..=3` 的协议范围内，整数宽度差异不改变结果。Rust 的函数和常量保留 Go 风格大写命名，并由 `lib.rs` 的 crate 级 `allow(non_snake_case, non_upper_case_globals)` 接受，以降低移植接口差异。
 
@@ -84,12 +80,3 @@ Rust 独立测试 [`type_test.rs`](./type_test.rs) 与 Go `TestTaskType` 使用�
 测试必须放在独立文件 [`type_test.rs`](./type_test.rs)，为新类型补充正向、反向与往返断言；若属于跨模块迁移契约，还应更新 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)。Go 对照测试 [`type_test.go`](./type_test.go) 也应同步。不要把 Rust 测试内嵌到 `type.rs`。
 
 若新任务有自己的业务 step，需要同步检查 [`step.rs`](./step.rs) 中的 `Step2Str`、合法性判断及独立 `step_test.rs`。若仅需要字符串任务类型而不需要持久化整数编码，应先确认是否应该进入本映射；随意加入编号会扩大兼容承诺。主要风险是持久化兼容和 Go/Rust 双实现漂移，性能风险很低，因为映射规模小且为常数分支。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共索引 11,467 个文件、307,296 个节点和 1,848,419 条边；用 `node --file pkg/dxf/framework/proto/type.rs` 读取了目标文件全部 54 行。
-- 符号查询：`query Type2Int --kind function`、`query Int2Type --kind function` 区分了 Go、proto Rust 与 storage Rust 的同名实现；`node TaskType --file pkg/dxf/framework/proto/task.rs` 确认别名为 `&'static str`。
-- 调用查询：对 `type.rs` 中 `Type2Int`、`Int2Type` 执行 `callers`/`callees`；两者均无下游调用，caller 图未给出目标限定结果。随后以精确 Rust 引用搜索核验实际调用点，仅目标 crate 的 `type_test.rs` 与 `migration_aster_unit_test.rs` 直接调用本文件函数；storage 调用落到其自有同名实现。
-- 已读生产/装配文件：[`type.rs`](./type.rs)、[`task.rs`](./task.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、[`step.rs`](./step.rs) 的相关引用，以及 storage 的 `lib.rs`、`task_table.rs::insertSubtasks`、`converter.rs::row2BasicSubTask` 作为同名边界辨析证据。
-- 已读对照与测试：[`type.go`](./type.go)、[`type_test.go`](./type_test.go)、[`type_test.rs`](./type_test.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)。这些文件共同证明已知映射、未知兜底和 Go/Rust 对齐关系。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `rg` 命令验证本文恰好包含十一个固定二级章节，并人工复核本文回答了文件存在目的、执行方式、直接依赖、真实调用边界和安全扩展方式。

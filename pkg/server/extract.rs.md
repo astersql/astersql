@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/extract.rs` 是 `astersql-server` crate 中 Extract status HTTP 接口的适配层。模块由 `pkg/server/lib.rs` 以公开模块 `pub mod extract` 装配，`pkg/server/http_status.rs` 的 status 路由构建逻辑创建 `ExtractTaskServeHandler`，并把 `/extract_task/dump` 请求交给 `handle`。文件本身不解析 Extract 参数、不执行计划抽取，也不直接访问对象存储；这些业务行为由依赖 crate `astersql-server-handler-extractorhandler` 的 canonical handler 和 `pkg/server/extract_runtime.rs` 的生产运行时实现。
-
-`pkg/server/Cargo.toml` 将本目录声明为 `astersql-server`（`lib.rs` 为 crate 根），并通过路径依赖 `handler/extractorhandler` 引入 `astersql-server-handler-extractorhandler`。因此本文件的职责是跨越 server 自有的 `Request`/`Response`、`Domain` 接口与 extractorhandler 的请求、响应写出器、运行时 trait 之间的边界。
+`SharedExtractRuntime` 用 `Arc<dyn ExtractRuntime>` 提供可克隆的运行时包装，并逐项转发 canonical handler 所需的时间、任务提交、对象读取、failpoint 和日志操作。
 
 ## 核心职责
 
@@ -79,12 +77,8 @@ RustCodeGraph 的目标文件查询确认 `pkg/server/extract.rs` 已索引、�
 
 `pkg/server/extract.go` 的 `(*Server).newExtractServeHandler` 是本文件 server 级构造逻辑的直接对照：Go 在 `s.dom != nil` 时把 `s.dom.GetExtractHandle()` 交给 `extractorhandler.NewExtractTaskServeHandler`，否则返回一个空 handler；Rust 则从抽象 `Domain::extract_runtime()` 取得 trait object，并在缺失时显式返回 503，避免空 handler 后续解引用。
 
-`pkg/server/handler/extractorhandler/extractor.go` 与同目录 Rust `extractor.rs` 承担真正业务逻辑。两边均支持 `type=plan`、默认/显式时间窗口、`isDump`/`isSkipStats`/`isHistoryView`、failpoint mock、任务名响应和 zip 产物流式读取。Go 直接使用 `http.Request.Context()`；本文件当前使用默认 `RequestContext`，取消传播并不等价。Go 的 `io.Copy` 直接写 `http.ResponseWriter`，Rust canonical handler 虽分块读取，但本适配器最终聚合为 `Vec<u8>`，内存行为也不完全等价。
+Go 直接使用 `http.Request.Context()`；本文件当前使用默认 `RequestContext`，取消传播并不等价。Go 的 `io.Copy` 直接写 `http.ResponseWriter`，Rust canonical handler 虽分块读取，但本适配器最终聚合为 `Vec<u8>`，内存行为也不完全等价。
 
-测试对应关系：
-
-- `pkg/server/extract_test.rs::server_extract_adapter_delegates_to_canonical_handler` 用自定义 `Domain`/`ExtractRuntime` 开启同名 failpoint，断言 adapter 返回 200 与 `mock`，证明 server 层委托链成立。
-- `pkg/server/handler/extractorhandler/extract_test.rs` 独立覆盖参数默认值、Go camelCase query key、Go 风格布尔值、时间解析错误记录以及 dump header/body；这些是 canonical 层测试，不应内嵌进本文件。
 - Go `pkg/server/handler/extractorhandler/extract_test.go` 通过真实 status client 和 `/extract_task/dump` 路由覆盖显式、默认时间范围以及 failpoint 成功响应。Rust 适配测试比 Go 集成测试更聚焦，尚未在本文件对应测试中覆盖 runtime 缺失的 503 或大 body 聚合行为。
 
 ## 扩展指南
@@ -95,11 +89,3 @@ RustCodeGraph 的目标文件查询确认 `pkg/server/extract.rs` 已索引、�
 - 若要实现真正的端到端 dump 流式响应，需要调整 server `Response`/router 的响应模型，而不仅是修改 canonical 读取循环；当前 `Vec<u8>` 聚合是架构边界。
 - 若扩展 URL 或 HTTP method，路由接线位于 `pkg/server/http_status.rs`，且属于 status HTTP API 行为变更；按 `pkg/server/AGENTS.md` 还必须同步 `docs/tidb_http_api.md`。
 - 保持 Go 兼容时应同步检查 `pkg/server/extract.go`、`pkg/server/handler/extractorhandler/extractor.go` 及其 Go/Rust 独立测试，重点关注 query key、时间格式、布尔解析、状态码、header、取消和内存行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引有效（11467 个文件），`files --filter pkg/server/extract.rs` 确认目标文件已索引；`node --file pkg/server/extract.rs --offset 1 --limit 500` 读取了完整 140 行并报告 24 个符号及 7 个使用文件；`query ExtractTaskServeHandler`、`query SharedExtractRuntime`、`query ResponseWriter` 用于消歧。精确 `callers/callees` 批量查询在 30 秒窗口内未产出结果，未据此声称额外调用边。
-- 目标与装配：`pkg/server/extract.rs`、`pkg/server/lib.rs`、`pkg/server/Cargo.toml`、`pkg/server/http_status.rs`、`pkg/server/server.rs`、`pkg/server/runtime.rs`、`pkg/server/extract_runtime.rs`。
-- canonical Rust 实现与测试：`pkg/server/handler/extractorhandler/extractor.rs`、`pkg/server/extract_test.rs`、`pkg/server/handler/extractorhandler/extract_test.rs`。
-- Go 对照与测试：`pkg/server/extract.go`、`pkg/server/handler/extractorhandler/extractor.go`、`pkg/server/handler/extractorhandler/extract_test.go`。
-- 人工事实复核：确认本文件为何存在（HTTP/trait 边界适配）、如何运行（status 路由到 canonical handler）、如何安全扩展（同步请求转换、runtime 转发、响应模型和独立测试），并明确了取消未传播和 body 聚合两项当前限制。

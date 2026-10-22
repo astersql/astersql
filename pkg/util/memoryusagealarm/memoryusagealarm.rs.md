@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`memoryusagealarm.rs`](./memoryusagealarm.rs) 是 `astersql-util-memoryusagealarm` crate 的业务实现文件；[`lib.rs`](./lib.rs) 通过 `#[path = "memoryusagealarm.rs"]` 装载该模块并重导出全部公开项。crate 边界和依赖由 [`Cargo.toml`](./Cargo.toml) 定义，未声明 feature：运行时依赖 `crossbeam-channel`、`backtrace`、`chrono`、`memory-stats`，并通过仓库内 crate 读取配置、磁盘、日志、内存与系统变量。
-
-它承担周期性内存风险检测及诊断材料落盘，不执行内存回收、SQL 终止或全局内存仲裁。`Handle::Run` 是循环入口，`memoryUsageAlarm` 保存跨轮次状态。当前可确认的真实 Rust 生产接线是 [`br/pkg/utils/memory_monitor.rs`](../../../br/pkg/utils/memory_monitor.rs) 的 `spawn_memory_alarm`：构造 `Handle`、在独立线程执行 `Run`，并在 BR context 取消时发送退出信号。`cmd/tidb-server/main.rs` 虽有 `MemoryUsageAlarmHandle().SetSessionManager(...).Run()` 启动形状，但当前返回的是 `cmd/tidb-server/stubs.rs` 中的占位 `Handle`，不是本文件的实现；`pkg/domain/Cargo.toml` 声明了本 crate 依赖，但源码搜索未发现实际引用，因此不能据此宣称 TiDB server 已完成真实 Rust 接线。
+当前可确认的真实 Rust 生产接线是 [`br/pkg/utils/memory_monitor.rs`](../../../br/pkg/utils/memory_monitor.rs) 的 `spawn_memory_alarm`：构造 `Handle`、在独立线程执行 `Run`，并在 BR context 取消时发送退出信号。
 
 ## 核心职责
 
@@ -109,8 +107,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`memoryusagealarm.go`](./memoryusagealarm.go)，行为测试对照是 [`memoryusagealarm_test.go`](./memoryusagealarm_test.go)。Rust 保留了 Go 的核心结构和顺序：100 ms ticker/timeout、60 秒变量刷新、server limit 优先、阈值与 10% 增长判定、告警字段、`oom_record/record<RFC3339>` 目录、Top 10 SQL、旧记录清理以及 heap/goroutine 两类文件。
-
 明确的适配差异如下：
 
 - Go `Handle` 用 `atomic.Pointer[sessmgr.Manager]`；Rust 用 `RwLock<Option<Arc<dyn SessionManager>>>`，且允许 manager 未设置，此时仍记录 profile、跳过 SQL。
@@ -120,7 +116,7 @@
 - Go 的 `recordSQL` 显式关闭文件并记录 close 错误；Rust 依赖 RAII，无法在当前返回值中报告 close 错误。
 - Go server 的真实 domain/session manager 接线存在于 Go 主链；当前 Rust `cmd/tidb-server` 的同形调用仍是 stub，已确认的本 crate 真实消费者是 BR。
 
-独立 Rust 测试并非内嵌在源文件：[`memoryusagealarm_test.rs`](./memoryusagealarm_test.rs) 覆盖阈值/冷却/增长、Top 10 完整输出、60 秒刷新、`MemTotal` 错误后的 Go 对齐初始化行为和线程回溯；[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 额外覆盖转换溢出语义、日志目录、目录排序与保留、最多十条输出、heap/线程文件和创建错误。Go 测试还证明预期基线来自相同的阈值、排序、刷新窗口和 goroutine 输出场景。
+独立 Rust 测试并非内嵌在源文件：[`memoryusagealarm_test.rs`](./memoryusagealarm_test.rs) 覆盖阈值/冷却/增长、Top 10 完整输出、60 秒刷新、`MemTotal` 错误后的 Go 对齐初始化行为和线程回溯；[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 额外覆盖转换溢出语义、日志目录、目录排序与保留、最多十条输出、heap/线程文件和创建错误。
 
 ## 扩展指南
 
@@ -131,17 +127,3 @@
 - 接入 TiDB server：不能只依赖 `pkg/domain/Cargo.toml` 的依赖声明；需要用真实 domain handle 构造本文件的 `Handle`、实现 `SessionManager` 快照转换、管理退出通道和线程生命周期，并替换 `cmd/tidb-server/stubs.rs` 的占位链。该工作超出本文档任务范围。
 - 改进 profile 兼容性：`write` 和 `recordGoroutineProfile` 是明确入口，但替换实现时要评估分配峰值、暂停时间、磁盘体积和敏感 SQL/栈信息暴露风险；不能假定 Rust 可直接生成 Go pprof 格式。
 - 调整目录命名或保留策略：同时检查 `initMemoryUsageAlarmRecord` 的发现/排序规则、`doRecord` 的追加顺序和 `tryRemoveRedundantRecords` 的失败语义，并覆盖同秒重复记录、负保留数及非目录名称包含 `record` 的情况。
-
-## 验证依据
-
-本说明以以下直接证据为准：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录中的 6 个 Go/Rust 文件均被索引；`files --filter pkg/util/memoryusagealarm` 确认文件集合。
-- RustCodeGraph `node --file pkg/util/memoryusagealarm/memoryusagealarm.rs --offset 1 --limit 500` 及 `--offset 499 --limit 400`：读取完整 757 行实现；文件级结果报告该文件被 16 个文件使用。
-- RustCodeGraph `query`：确认 Rust 与 Go 两侧的 `NewMemoryUsageAlarmHandle`、`alarm4ExcessiveMemUsage`、`recordSQL`、`recordProfile` 同名符号。精确 `callers/callees` 查询在本次会话 30 秒窗口内未返回结果，因此具体跨文件调用边由下述局部源码搜索补证，不将超时视作不存在调用。
-- crate/入口：`pkg/util/memoryusagealarm/{Cargo.toml,lib.rs}`；反向声明：根 `Cargo.toml`、`pkg/domain/Cargo.toml`、`br/pkg/utils/Cargo.toml`。
-- 真实调用与占位边界：`br/pkg/utils/memory_monitor.rs::{StartMemoryMonitor,spawn_memory_alarm}`、`cmd/tidb-server/main.rs` 的启动片段、`cmd/tidb-server/stubs.rs::{Domain::MemoryUsageAlarmHandle,Handle}`。
-- Go 对照与独立测试：`pkg/util/memoryusagealarm/{memoryusagealarm.go,memoryusagealarm_test.go,memoryusagealarm_test.rs,migration_aster_unit_test.rs}`。
-- 人工复核结论：该文件存在是为了在接近 OOM 时保留可诊断现场；运行方式是定时采样、阈值/增长判定、顺序落盘和保留清理；安全扩展必须维持配置缓存、错误后的部分状态、独立测试和 Go 语义边界。
-
-本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付检查仅验证文档结构、路径引用、源码事实和工作区差异。

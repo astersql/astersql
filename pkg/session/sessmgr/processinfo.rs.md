@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-session-sessmgr` crate 的进程快照与会话管理契约实现文件。crate 根 `pkg/session/sessmgr/lib.rs` 以 `pub mod processinfo; pub use processinfo::*;` 将这里的公开类型和函数暴露给执行器、服务器、会话运行时及 InfoSchema 协调代码；依赖边界由 `pkg/session/sessmgr/Cargo.toml` 声明。
-
-它处于“连接/语句运行状态的生产者”和“SHOW PROCESSLIST、INFORMATION_SCHEMA、KILL 等消费者”之间：服务器实现 `Manager` 并生产 `ProcessInfo`，展示层读取快照并编码成结果行。RustCodeGraph 显示该文件被 `pkg/executor/show.rs`、`pkg/server/server.rs`、`pkg/domain/crossks/coordinator.rs` 等上游引用；其中可直接核验的主链是 `FetchShowProcessListRows -> Manager::ShowProcessList -> ProcessInfo::ToRowForShow`。
+定义会话管理器对展示、终止连接、TLS 更新、内部会话和 InfoSchema/MDL 协调的公共契约（`Manager`、`InfoSchemaCoordinator`、`NormalCloseKiller`）。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ Go 零时间与 Rust `SystemTime` 的差异由 `go_zero_time` 和 `elapsed_secon
 
 ## 与 Go 版本的对应关系
 
-直接对照 `pkg/session/sessmgr/processinfo.go`：Rust 保留了 `ProcessInfo` 字段、8/20 列布局、浅拷贝、100 字符展示截断、StartTS 物理时间解码、状态位顺序、InfoSchema 协调接口、Manager 方法以及 normal-close kill 的能力探测/回退。`Arc` 对应 Go 指针、接口或切片头共享语义；`Option` 对应 nil；`ProcessListValue` 替代 Go 的 `any` 结果单元格。
-
 需注意以下已验证差异：
 
 - Go `ToRow` 会读取 `StmtCtx.MemTracker.MemArbitration()` 和 `WaitArbitrate()`；当前 Rust 所依赖的非仲裁器实现不暴露这些能力，所以索引 10、11、12 的三列固定为 `Null`。这不是“已完整支持内存仲裁”。
@@ -91,12 +87,3 @@ Go 零时间与 Rust `SystemTime` 的差异由 `go_zero_time` 和 `elapsed_secon
 扩展 `Manager` 时要检查 `pkg/server/server.rs`、`pkg/session/runtime_test/session.rs` 以及 executor 测试中的所有实现；没有安全通用语义的方法不应随意添加默认空实现。修改 kill 参数或能力探测时，需同步 `NormalCloseKiller`、自由函数及服务器实现，并测试非空原因、空原因和不支持扩展的三条分支。
 
 性能方面应保持行编码为线性扫描：状态位表和命令表都很小；避免为每行引入全局锁或深拷贝计划/tracker。兼容方面需保持 NULL 与空字符串、纳秒单位、StartTS 格式、IPv6 括号及 100 字符边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件且目标文件含 44 个符号；`files --filter pkg/session/sessmgr` 确认源、模块入口、Go 对照和测试均已索引；`node --file pkg/session/sessmgr/processinfo.rs` 核对全部 545 行；`explore` 给出 `ToRow -> ToRowForShow`，并指出 executor、server、domain 等引用面。
-- 源与 crate 边界：`pkg/session/sessmgr/processinfo.rs`、`pkg/session/sessmgr/lib.rs`、`pkg/session/sessmgr/Cargo.toml`。
-- 直接上游证据：`pkg/executor/show.rs::FetchShowProcessListRows`；`pkg/server/server.rs::{to_session_process_info, impl InfoSchemaCoordinator for Server, impl NormalCloseKiller for Server, impl SessionManager for Server}`。
-- Go 对照：`pkg/session/sessmgr/processinfo.go`；Go 浅拷贝测试 `pkg/session/sessmgr/processinfo_test.go::TestProcessInfoShallowCP`。
-- Rust 独立测试：`pkg/session/sessmgr/processinfo_test.rs::test_process_info_shallow_cp`；`pkg/session/sessmgr/migration_aster_unit_test.rs` 覆盖 SHOW 行、Unicode/IPv6/NULL、Go 零时间饱和、浅拷贝、20 列资源/事务/CPU、状态位顺序和 normal-close kill 回退。
-- 本任务为只读行为分析加文档产出，按计划不运行 Cargo；交付前使用任务给定的命令验证目标文件存在且固定二级标题恰为 11 个，并人工复核没有把非仲裁器占位或默认空能力写成已支持行为。

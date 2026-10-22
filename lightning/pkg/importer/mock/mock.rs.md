@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-importer-mock` crate 的主要行为实现，由同目录 `lib.rs` 通过 `#[path = "mock.rs"] mod mock` 装入并整体 `pub use`。它对应 Go 包 `lightning/pkg/importer/mock/mock.go`，专供 importer 相关测试构造两类可控替身：源端的 `ImportSource` 和目标端的 `TargetInfo`。
-
-该 crate 的 `Cargo.toml` 仅直接依赖 `astersql-lightning-pkg-importer-opts`；mydump、对象存储、PD HTTP、模型、错误等类型来自同 crate 的 `stubs.rs`。因此它是无真实 TiDB、TiKV、PD、数据库或网络依赖的测试基建，而不是生产导入链上的真实客户端。RustCodeGraph 显示本文件直接被 `lightning/pkg/importer/mock/mock_test.rs` 使用，并被索引为 `lightning/pkg/importer/get_pre_info_test.rs` 的依赖之一；精确符号调用则主要落在本 crate 的单元与 parity 测试中。
+`ImportSource` 同时保留原始输入、派生元数据和存储句柄，并通过 getter 提供不同观察视图。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `lightning/pkg/importer/mock/mock.go`：核心结构、构造顺序、`binary` 字符集、单层 `.gz` 剥离、三种数据类型、size 回退、store ID、`Up` 状态、空 region 展开、缺库错误和空表判断均保持一致。`mock_test.rs` 对应 Go 的 `TestMockImportSourceBasic` 与 `TestMockTargetInfoBasic`；`parity_test.rs` 进一步锁定 Go/Rust 公共契约。
-
 语言层面的显式差异包括：Go 指针和 nil 用 `Box`/`Option<Box<_>>` 表达；Go `int` 用 `isize` 表达；Go `maps.Clone` 用 `HashMap::clone` 表达；Go 返回 storage 接口，Rust 返回具体 `MemStorage`；Go 同包可访问 `srcStorage`，Rust 增加 `src_storage()`；Go 的 map 迭代和 Rust `HashMap` 迭代都不承诺业务顺序。
 
 最重要的迁移缺口是 trait：Go 测试含 `var _ importer.TargetInfoGetter = ti` 的编译期检查，Rust 测试明确省略，因为本 crate 为避免 importer/kv/domain 等依赖保持 slim。除此以外，Rust `_error_ty` 和 `CheckVersionRequirements` 内的默认值构造属于编译/依赖占位，不对应额外业务行为。
@@ -105,13 +101,3 @@ Rust 文件逐项对应 `lightning/pkg/importer/mock/mock.go`：核心结构、�
 - 测试必须继续放在独立文件 `mock_test.rs`/`parity_test.rs`，不要内嵌进生产 `mock.rs`。本文件是 Go 复刻实现，修改时应尽可能同步 Go 逻辑而非简化版本。
 
 兼容风险主要是 trait 方法形状、错误文本、nil/`Option` 语义与默认值；性能风险主要是克隆大 map/模型、保存全部文件字节，以及按空 region 计数逐项分配。作为 mock 这些通常可接受，但构造大规模压力场景时应显式评估内存。
-
-## 验证依据
-
-- 源码：`lightning/pkg/importer/mock/mock.rs`，核对全部 459 行及其中 38 个索引符号。
-- crate 边界：`lightning/pkg/importer/mock/Cargo.toml`、`lib.rs`；确认 crate 名、唯一直接依赖、stub/实现装配和测试模块位置。
-- Go 对照：`lightning/pkg/importer/mock/mock.go`，核对全部 337 行；`BUILD.bazel` 用于确认 Go 包的真实生产依赖与 mock 测试目标。
-- 独立测试：`lightning/pkg/importer/mock/mock_test.rs`，覆盖基本源端投影、单层 gzip 剥离、系统变量、副本数、store、region、表模型和空表判断；`mock_test.go` 提供原始 Go 用例意图。
-- 契约测试：`lightning/pkg/importer/mock/parity_test.rs`，覆盖正常、边界、错误、克隆/生命周期、Go `int` 宽度和负 region 计数 panic。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter lightning/pkg/importer/mock` 确认该目录 7 个索引源文件；`query NewImportSource --kind function` 定位 Go/Rust 两个实现；`query NewTargetInfo --kind function`、`query FetchRemoteTableModels --kind method` 区分 mock 与真实 getter；`node --file` 核对目标、Go 对照及两份 Rust 测试；`explore` 确认 `NewImportSource` 的直接 Rust 调用来自 `mock_test.rs`，并确认真实 `TargetInfoGetter` 位于 `get_pre_info.rs`。
-- 人工复核结论：本文件存在是为了用纯内存、可编程状态复刻 importer 测试所需的源端与目标端边界；运行方式是先构造状态再通过 getter/查询方法回放；安全扩展必须同时维护 Go 语义、独立测试、错误与生命周期契约，并正视当前未实现真实 Rust trait 的边界。

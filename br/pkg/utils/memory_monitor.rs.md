@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-utils` crate；crate 入口 `br/pkg/utils/lib.rs` 通过 `#[path = "memory_monitor.rs"] pub mod memory_monitor` 挂载它，但没有把 `RunMemoryMonitor` 再导出到 crate 根。其职责是把 BR 启动阶段得到的进程内存上限和 profile 输出目录适配到通用的 `astersql-util-memoryusagealarm` 告警框架。
-
-应用侧直接入口位于 `br/cmd/br/cmd.rs`：该文件在计算 BR 可用内存、保证至少 256 MiB、排除无法表示为 `i64` 的上限并调用 `debug_runtime::SetMemoryLimit` 后，以 `utils::RunMemoryMonitor(ctx, &dumpDir, memlimit)` 启动监控。`br/pkg/utils/Cargo.toml` 明确声明了本文件直接使用的 `astersql-util-memory`、`astersql-util-memoryusagealarm`、`astersql-br-pkg-logutil`、`astersql-errors` 和 `crossbeam-channel` 依赖。
+用固定阈值 `0.8`、固定保留数 `3` 和实际 dump 目录构造 `BRConfigProvider`，向通用告警组件提供 BR 配置。
 
 ## 核心职责
 
@@ -94,11 +92,11 @@
 
 Rust 文件明确移植自 `br/pkg/utils/memory_monitor.go`，常量、provider 四个 getter、空目录回退、仅正数写入全局上限、启动日志和“上下文取消后关闭退出通道”的主语义一致。Go 使用 `atomic.Float64` / `atomic.Int64` 指针；Rust 用内嵌的 `AtomicU64` 位模式和 `AtomicI64`，并由独立测试验证非简单小数的位精度。
 
-Go 在构造 handle 后显式调用 `handle.SetSessionManager(nil)`，表示 BR 不提供 SQL 会话快照。Rust 的 `Handle` 构造器已经把内部 `Option<Arc<dyn SessionManager>>` 初始化为 `None`，达到同样效果；Rust 的 `SetSessionManager` 接口只接受实际 `Arc`，因此无需也不能传入空值。
+Rust 的 `Handle` 构造器已经把内部 `Option<Arc<dyn SessionManager>>` 初始化为 `None`，达到同样效果；Rust 的 `SetSessionManager` 接口只接受实际 `Arc`，因此无需也不能传入空值。
 
-Go 启动一个外层 goroutine，并在其中再启动 `handle.Run` goroutine；Rust 对应为 watcher 线程加 alarm 线程。Rust 额外保留并 join alarm 线程，使测试能够证明取消后的资源收尾；Go 外层 goroutine 关闭通道后直接返回。Rust 以 60 秒超时等待可取消条件变量，Go 直接阻塞在 `ctx.Done()`；由于 Rust `cancel()` 会唤醒条件变量，正常取消语义相同。
+Rust 额外保留并 join alarm 线程，使测试能够证明取消后的资源收尾；Go 外层 goroutine 关闭通道后直接返回。
 
-`br/pkg/utils/memory_monitor_test.go` 只验证 provider 的四个 getter和目录回退。`br/pkg/utils/memory_monitor_test.rs` 保留这些断言，并额外验证 ratio 位精度以及告警循环确实轮询配置、取消后 watcher 可成功 join。
+`br/pkg/utils/memory_monitor_test.rs` 保留这些断言，并额外验证 ratio 位精度以及告警循环确实轮询配置、取消后 watcher 可成功 join。
 
 ## 扩展指南
 
@@ -109,13 +107,3 @@ Go 启动一个外层 goroutine，并在其中再启动 `handle.Run` goroutine�
 - 若要提供 session manager，不应在本文件复制告警逻辑；应扩展构造接线，在 alarm 线程启动前调用下游 `Handle::SetSessionManager`。
 - 优化取消延迟或线程数量时，必须维持“先通知句柄、再等待其退出”的顺序，并扩展 `run_memory_monitor_starts_alarm_and_stops_on_cancel` 覆盖提前退出、panic 或重复取消等边界。
 - 性能风险主要在告警器 100ms 轮询及 profile 生成，下游实现是评估入口；本文件的原子 getter 和每次目录字符串克隆通常不是主成本，但高频读取路径不应引入互斥锁或 I/O。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，其中 Rust 文件 7,032 个。
-- RustCodeGraph `explore`：确认 `br/pkg/utils/memory_monitor.rs` 的 `RunMemoryMonitor -> spawn_memory_alarm` 调用边；blast radius 显示 `spawn_memory_alarm` 同时由生产入口和 Rust 取消测试调用。
-- RustCodeGraph `query`：定位 `BRConfigProvider`、Rust/Go 两份 `RunMemoryMonitor`、`spawn_memory_alarm`、`NewMemoryUsageAlarmHandle` 和 `ServerMemoryLimit` 的真实定义。
-- RustCodeGraph `node --file`：读取 `br/cmd/br/cmd.rs` 的调用点、`br/pkg/utils/stubs.rs` 的 `Context` 等待实现、`pkg/util/memoryusagealarm/memoryusagealarm.rs` 的句柄循环与配置刷新、`pkg/util/memory/tracker.rs` 的全局上限定义。
-- 已阅读源码与配置：`br/pkg/utils/memory_monitor.rs`、`br/pkg/utils/lib.rs`、`br/pkg/utils/Cargo.toml`。
-- 已阅读语义对照和独立测试：`br/pkg/utils/memory_monitor.go`、`br/pkg/utils/memory_monitor_test.go`、`br/pkg/utils/memory_monitor_test.rs`。
-- 结构验证使用任务指定命令，要求目标文件存在且恰有上述 11 个固定二级标题。本任务只新增文档，按计划不运行 Cargo。

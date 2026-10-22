@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo crate `astersql-br-pkg-version` 的核心实现，源码由同目录的 `lib.rs` 通过 `#[path = "version.rs"] pub mod version` 装配并整体再导出。crate 的 `Cargo.toml` 将其标为对应 Go 包 `br/pkg/version` 的 library port，直接依赖 `astersql-br-pkg-errors`、`astersql-br-pkg-version-build`、`astersql-errors`、`regex` 与 `semver`。
-
-它位于 BR 建立集群连接和执行备份恢复动作之前的兼容性门禁层。当前 Rust 生产接线中，`br/pkg/conn/conn.rs::NewMgr` 通过 `VersionPdAdapter` 调用 `CheckClusterVersion`：普通 BR 使用 `CheckVersionForBR`，流式/PiTR 使用 `CheckVersionForBRPiTR`，需要 Domain 时再使用 `CheckVersionForDDL`。文件还提供数据库服务器版本识别、备份元数据版本规范化和通用半开版本区间检查。
-
-本文件没有直接依赖真实 PD protobuf、PD client 或 SQL driver；`Store`、`PdClient`、`QueryExecutor` 是为迁移边界保留的最小本地抽象。因而它实现兼容性策略和编排，但网络请求、PD 适配及数据库连接生命周期由调用方负责。
+因而它实现兼容性策略和编排，但网络请求、PD 适配及数据库连接生命周期由调用方负责。
 
 ## 核心职责
 
@@ -95,13 +91,13 @@ crate 级依赖职责为：`semver` 提供解析和顺序；`regex` 处理 Git h
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/version/version.go`，独立测试为 `br/pkg/version/version_test.go`。Rust 保留了 Go 的主要策略：相同版本阈值、排除 tombstone、TiFlash 分流、BR/PiTR/backup/DDL/Keyspace 判断、checkpoint 和 batch-KV 副作用、版本字符串净化、SQL 回退顺序、ServerType 数值顺序及 Cloud 年月映射。
+Rust 保留了 Go 的主要策略：相同版本阈值、排除 tombstone、TiFlash 分流、BR/PiTR/backup/DDL/Keyspace 判断、checkpoint 和 batch-KV 副作用、版本字符串净化、SQL 回退顺序、ServerType 数值顺序及 Cloud 年月映射。
 
 为避开完整 grpcio/protobuf/dbutil 依赖，Rust 用本地 `Store`、`PdClient`、`QueryExecutor` 替代 Go 的 `metapb.Store`、`pd.Client` 和 `dbutil.QueryExecutor`；context、PD option、SQL row scan 与日志由适配层或调用方处理。Rust 使用 `semver` crate，Go 使用 `coreos/go-semver`，相关边界由两侧同名测试矩阵校准。
 
 明确差异包括：Rust 测试版本覆盖是线程本地而非修改 Go 包全局变量；全局能力值用 Mutex 包装；Rust 的 `ParseServerInfo` 用 `Option<Version>` 表达字段但实际解析仍回落 `0.0.0`；Go 会记录解析/查询回退及 BR 过旧告警，Rust 当前没有等价日志；Rust `FetchVersion` 接口不携带 context。
 
-Rust `version_test.rs` 对齐 Go 的 `TestCheckClusterVersion`、版本比较、NextMajor、TiDB 抽取、区间检查、备份版本规范化、服务识别、查询回退和 TableInfo 常量测试；`parity_test.rs::go_rust_public_contract_matches` 另做公开契约冒烟。Rust 还增加了 TiFlash peer address、转义换行和线程隔离等迁移边界覆盖。
+Rust 还增加了 TiFlash peer address、转义换行和线程隔离等迁移边界覆盖。
 
 ## 扩展指南
 
@@ -112,10 +108,3 @@ Rust `version_test.rs` 对齐 Go 的 `TestCheckClusterVersion`、版本比较、
 - 若修正能力聚合语义，应设计为显式的“所有节点支持”归约并消除陈旧缓存，验证多节点异构版本、早退、重复检查和并发集群；这是行为变更，不能只改文档或测试。
 - 单元测试继续放在独立的 `version_test.rs` / `parity_test.rs`，不要内嵌到生产源文件；新增公开 API 还应核对 `lib.rs` 再导出和 Cargo/BUILD 装配。
 - 性能风险主要来自每次检查重新解析版本和遍历全部 Store，当前阈值函数开销很小；不要以缓存版本对象为由引入难以失效的跨集群状态。兼容风险则集中在 semver pre-release 顺序、上界只比较 major、Cloud 年份映射和错误类型/文案。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/version/version_test.rs::test_parse_server_info_nextgen` 覆盖 Cloud true、普通 TiDB/MySQL/MariaDB 及 X-CLOUD false；同名 Go ServerInfo/ParseServerInfo 保持相同设置点。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

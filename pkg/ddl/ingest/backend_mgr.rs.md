@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-ddl-ingest`（入口见 `pkg/ddl/ingest/Cargo.toml` 的 `[lib] path = "lib.rs"`），位于 DDL add-index/modify-column 的 ingest 快速回填子系统。它处在“创建单个 DDL job 的内存后端上下文”和“把 job ID 映射为本地排序目录名”这两个边界上：前者通过 `BackendContextBuilder` 组装 `crate::backend::BackendContext`，后者通过 `generate_job_sort_path`、`encode_backend_tag`、`decode_backend_tag` 统一目录命名。
-
-当前 Rust 接线必须与设计目标区分：`lib.rs` 公开了 `backend_mgr` 模块，`env.rs` 已直接调用标签编码/解码函数；但仓库内除测试外没有 `BackendContextBuilder` 或 `generate_job_sort_path` 的 Rust 调用者。因此，它目前是部分可用的移植组件，而不是 Go `pkg/ddl/ingest/backend_mgr.go` 所实现的完整后端创建、注册和全局资源登记流程。
+这个非对称约定是有意的：环境清理逻辑先用普通目录识别 job，再同时处理普通目录和对应的 `-dup` 目录（`pkg/ddl/ingest/env.rs::stale_temp_directories`）。
 
 ## 核心职责
 
@@ -77,9 +75,6 @@ builder 本身没有并发行为。checkpoint storage 要求 `Send + Sync`，并
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ddl/ingest/backend_mgr.go`：
-
-- Rust `BackendContextBuilder` 对应 Go `BackendCtxBuilder` 的缩减版本；`new`/`for_duplicate_check`/`build` 分别近似对应 `NewBackendCtxBuilder`/`ForDuplicateCheck`/`Build`。
 - Rust `encode_backend_tag` 与 Go `encodeBackendTag` 的字符串规则一致；Rust `decode_backend_tag` 与 Go `decodeBackendTag` 的十进制 `int64` 解析意图一致。`backend_mgr_test.rs` 和 `env_test.rs` 固定了符号、空白与 `-dup` 行为。
 - Rust `generate_job_sort_path(base, ...)` 只拼接显式 base；Go `genJobSortPath` 先从 `GenIngestTempDataDir` 获取已初始化的全局根目录，因而还可能返回环境未初始化错误。
 - Go builder 持有 context、KV storage、完整 `model.Job`、etcd client、session pool、physical/subtask ID 与 dist-task 回调，并会校验 job 类型和 `ReorgMeta`、创建普通或分布式 checkpoint manager、处理 failpoint/mock、注册 `LitDiskRoot` 与计数器。Rust builder 没有这些字段和行为。
@@ -95,13 +90,3 @@ builder 本身没有并发行为。checkpoint storage 要求 `Send + Sync`，并
 - 修改标签格式必须同步检查 `env.rs` 的活跃 job 识别和双目录清理，并更新 `backend_mgr_test.rs`、`env_test.rs`；格式还与已有磁盘目录兼容性相关，尤其不能让 `-dup` 目录被误判为独立普通 job。
 - 扩充 checkpoint 参数时，优先复用 `CheckpointManager::new_with_resume_options` 的物理表 ID 和本地数据有效性语义；需要验证实例切换、physical ID 不匹配、storage load 失败以及无本地数据时的恢复边界。
 - 保持资源失败原子性：任何新增的目录、backend、全局登记或计数操作都应在后续步骤失败时可回滚/关闭，并与 DDL owner 转移、重试和取消语义兼容。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ddl/ingest/backend_mgr.rs` 显示目标文件有 16 个符号并被 `backend_mgr_test.rs`、`env.rs`、`env_test.rs` 使用；`node --file ... --offset 1 --limit 420` 核对了目标文件全部 150 行；`query` 唯一定位 `BackendContextBuilder`，并定位三个公开辅助函数。`callers/callees` 没有返回可用边，调用关系随后以已定位文件的直接引用补证。
-- 目标源码：`pkg/ddl/ingest/backend_mgr.rs`，核对 builder 字段、三个方法、三个路径/标签函数以及不存在条件编译项的事实。
-- crate 与模块边界：`pkg/ddl/ingest/Cargo.toml`、`pkg/ddl/ingest/lib.rs`；Cargo 元数据将该 crate 对应到 Go package `pkg/ddl/ingest`，当前大量完整依赖只在 `cfg(windows)` 下声明。
-- 直接 Rust 依赖：`pkg/ddl/ingest/backend.rs`、`checkpoint.rs`、`config.rs`、`mem_root.rs`、`disk_root.rs`；用于核对构造参数、checkpoint 恢复和共享资源含义。
-- Rust 调用者与独立测试：`pkg/ddl/ingest/env.rs`、`backend_mgr_test.rs`、`env_test.rs`；覆盖标准/查重标签、整数解析、常见 base 路径、活跃 job 筛选及过期双目录清理。按任务约束，本次纯文档分析未运行 Cargo 测试。
-- Go 对照与主链：`pkg/ddl/ingest/backend_mgr.go`、`env.go`，以及 `pkg/ddl/backfilling.go`、`backfilling_read_index.go`、`backfilling_import_cloud.go`、`index.go` 中的 builder 调用；用于界定已对齐逻辑和未移植职责。
-- DDL 语境：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`、`03-reorg-backfill.md`、`06-add-index.md`；仅作为入口假设，具体结论均由上述源码和测试复核。

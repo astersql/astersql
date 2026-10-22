@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/executor/stmtsummary.rs` 属于 `astersql-executor` crate；crate 根由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/lib.rs` 通过 `pub mod stmtsummary` 公开本模块，并在测试配置下把独立的 `pkg/executor/stmtsummary_test.rs` 装配为测试模块。
-
-本文件是 information schema 语句摘要表的 Rust 检索骨架，覆盖 `STATEMENTS_SUMMARY`、`STATEMENTS_SUMMARY_HISTORY`、`STATEMENTS_SUMMARY_EVICTED`、`TIDB_STATEMENTS_STATS` 及其 `CLUSTER_*` 变体。它负责选择 Legacy/Persistent/Dummy 路径、按需创建行读取器、分页返回数据，以及把权限、实例地址、列投影和实际数据源操作委托给运行时适配器。
-
-当前接线状态必须与实现能力分开理解：RustCodeGraph 显示该文件由 `pkg/executor/stmtsummary_test.rs` 等测试文件引用；对 `buildStmtSummaryRetriever` 的调用者查询只命中该独立 Rust 测试，仓库 Rust 源码搜索也未发现生产侧构造调用。因此它目前是已公开、可测试的通用实现，但未验证已经接入 Rust 生产执行主链。相对地，Go 版本由 `pkg/executor/builder.go:2885` 构造并接入内存表执行。
+负责选择 Legacy/Persistent/Dummy 路径、按需创建行读取器、分页返回数据，以及把权限、实例地址、列投影和实际数据源操作委托给运行时适配器。
 
 ## 核心职责
 
@@ -78,7 +74,7 @@ Go 生产上游位于 `pkg/executor/builder.go:2870-2885`：识别语句摘要�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 `pkg/executor/stmtsummary.go` 的结构移植：常量、builder、Legacy/Persistent 两种检索策略、`rowsReader`、表分类、权限检查、实例地址及时间范围转换均有对应物。Rust 用 `RetrieverMode` 合并 Go 的 `dummyRetriever`、`stmtSummaryRetriever`、`stmtSummaryRetrieverV2`，再用 `StatementSummaryRuntime` 把 Go 中的 session、infoschema 与两代 stmtsummary 直接调用抽象出去。
+Rust 用 `RetrieverMode` 合并 Go 的 `dummyRetriever`、`stmtSummaryRetriever`、`stmtSummaryRetrieverV2`，再用 `StatementSummaryRuntime` 把 Go 中的 session、infoschema 与两代 stmtsummary 直接调用抽象出去。
 
 关键语义保持一致：空 digest 等于无过滤；skip 优先于持久化开关；每批最多 1024 行；驱逐表要求 PROCESS；集群驱逐表追加 INSTANCE；Persistent 当前表只读内存，历史表按“内存后磁盘”顺序读取；Persistent 累计表明确返回不支持；粗时间范围转成单个 begin/end 范围。
 
@@ -99,12 +95,3 @@ Rust 文件按 `pkg/executor/stmtsummary.go` 的结构移植：常量、builder�
 调整分页或 puller 生命周期时，必须保持“内存先于历史”“非空短页不表示 EOF”“空批次触发关闭”“错误不丢失资源句柄”等不变量。建议在 `pkg/executor/stmtsummary_test.rs` 增加 pull 错误、close 错误、零上限、多页大批次与提前 close 用例；若改变用户可见 SQL 结果，还应同步 Go 对照测试 `pkg/executor/stmtsummary_test.go` 的意图，并增加 Rust 侧 executor/information-schema 集成验证。
 
 性能风险主要是 runtime 一次性返回过大的 `Vec<Row>`，以及 `split_off` 分页时前缀保留在原 Vec、随后 `mem::replace` 移出造成的内存行为；兼容风险主要来自表名、列顺序、实例列、权限可见性和 Legacy/Persistent 结果差异。任何优化都应先用相同数据顺序和错误时机的测试固定契约。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引可用，包含 11,467 个文件；通过 `node --file pkg/executor/stmtsummary.rs` 阅读完整 438 行源码，并取得“由测试文件引用”的文件关系。
-- RustCodeGraph 符号/边：查询 `buildStmtSummaryRetriever` 同时定位 Go 与 Rust 定义；Rust 调用者结果为 `stmtsummary_test.rs::retriever` 与 `builder_and_evicted_privilege_match_go_contract`；callees 包含 Rust `StatementSummaryRuntime::persistent_enabled`、`digests_empty` 和 `buildTimeRanges`。同名查询会混入 Go 节点，故内部调用链另以目标源码核验。
-- 已读 Rust 路径：`pkg/executor/stmtsummary.rs`、`pkg/executor/stmtsummary_test.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`。目标 package 无 `pkg/executor/doc.go`。
-- 已读 Go 对照：`pkg/executor/stmtsummary.go`、`pkg/executor/stmtsummary_test.go`，并由 `pkg/executor/builder.go:2870-2885` 核验生产构造入口。
-- 独立 Rust 测试证明：简单 reader 分页和表分类；内存行与历史批次的顺序及 EOF 自动关闭一次；Persistent 当前/驱逐/历史路径；空 digest 与 Dummy 模式；驱逐权限拒绝与集群 host 附加；Persistent 累计表错误、reader 不初始化且不读取内存；Legacy 累计表仍可返回行。
-- Go 测试补充证明 v2 当前表 digest 聚合、驱逐计数、历史内存加磁盘结果，以及两种累计表返回标准 `ErrNotSupportedYet`。本任务按计划不运行 Cargo，所有结论来自结构、源码、调用图和现有测试意图核验。

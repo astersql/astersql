@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`statistics.rs` 属于 `astersql-store-pdtypes` crate；crate 根 `pkg/store/pdtypes/lib.rs` 以公开模块 `pub mod statistics` 暴露它。该文件不是统计计算器，也不访问 PD：它定义 PD Region 统计响应在 Rust 侧的传输对象 `RegionStats`，并定义六个按 Store 聚合字段的 JSON 空值兼容规则。
-
-`pkg/store/pdtypes/Cargo.toml` 指定库入口为 `lib.rs`，且以 `[package.metadata.porting].go-package = "pkg/store/pdtypes"` 标明 Go 对照包。此文件直接使用该 crate 的 `serde` 依赖；`serde_json` 只由相关测试和潜在调用方用于具体 JSON 编解码。
-
-当前 RustCodeGraph 文件关系显示，生产 Rust 文件尚未引用这里的 `RegionStats`，直接使用者是 `pkg/store/pdtypes/statistics_test.rs`，另有 crate 内迁移测试 `pkg/store/pdtypes/migration_aster_unit_test.rs`。因此它目前是已经公开、具备兼容性测试但尚未进入 Rust 生产请求链的 DTO 边界。Go 版本的生产链已接通，见“与 Go 版本的对应关系”。
+`RegionStats` 保存 PD 对某个 Region 集合返回的总量和分布统计：Region 总数、空 Region 数、存储大小、key 数量，以及各 Store 的 Leader/Peer 数量、大小和 key 数量。
 
 ## 核心职责
 
@@ -87,13 +83,11 @@ Go 生产链中 PD HTTP 请求的取消、客户端连接和 retriever 分批生
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/store/pdtypes/statistics.go::RegionStats`。十个字段及 JSON 名逐一一致：`Count`、`EmptyCount`、`StorageSize`、`StorageKeys` 和六个 `Store*` map 均保留 Go 导出字段命名，以便迁移时核对。
-
 类型映射如下：Go `int` 与 `int64` 在 Rust 中统一为 `i64`；Go `map[uint64]int` 和 `map[uint64]int64` 在 Rust 中统一为 `HashMap<u64, i64>`。统一后不再表达 Go 源码中 `int` 与 `int64` 的名义差异，但在项目支持的 64 位服务器平台上保留数值范围；`statistics_test.rs` 对超过 `i32` 范围的值进行了回归验证。
 
 Go 零值 struct 的 map 是 `nil`，`encoding/json` 将其编码为 `null`；Rust `HashMap::default()` 是已分配语义上的空集合，通常会编码为 `{}`。`nil_if_empty_map` 专门消除这一线协议差异：空 map 输出 `null`，输入 `null` 变为空 map。代价是 Rust 内存模型无法区分 Go 的 nil map 与非 nil 空 map。
 
-Go 当前已有真实生产接线：`pkg/store/helper/helper.go::GetPDRegionStats` 从 PD 获取数据，`pkg/executor/infoschema_reader.go` 将其用于表存储统计，TiFlash mock 也返回该类型。当前 Rust 版本只完成类型、序列化兼容和测试接线，未找到等价的 Rust 生产调用边；后续迁移不得把 Go HTTP/执行器逻辑误写进此 DTO 文件，也不能以 DTO 已存在推断整条功能已支持。
+当前 Rust 版本只完成类型、序列化兼容和测试接线，未找到等价的 Rust 生产调用边；后续迁移不得把 Go HTTP/执行器逻辑误写进此 DTO 文件，也不能以 DTO 已存在推断整条功能已支持。
 
 ## 扩展指南
 
@@ -106,14 +100,3 @@ Go 当前已有真实生产接线：`pkg/store/helper/helper.go::GetPDRegionStat
 - 若新增字段进入生产展示或计算，在相应 Rust 调用模块的独立测试中验证消费语义，并参照 Go 的 `pkg/store/helper/helper_test.go` 与 executor 测试，而不是仅验证 DTO 能编译。
 
 主要兼容风险是字段名漂移、整数宽度收窄、缺失字段不再可解码、空 map 从 `null` 变成 `{}`，以及 Store ID 键不再使用 JSON 字符串。性能风险集中在大集群的六张 map：完整 clone 和 JSON 编解码均随 Store 数量线性增长；新增功能应优先借用或移动快照，避免无意义的重复 clone。由于 DTO 不校验跨字段不变量，需要一致性校验时应放在拥有业务上下文的上层，而不是悄然改变通用解码行为。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件；目标目录文件清单包含 `statistics.rs`、Go 对照和两份相关 Rust 测试。
-- RustCodeGraph `node --file pkg/store/pdtypes/statistics.rs`：核对了文件全部 90 行、`RegionStats` 十个字段、Serde 属性及 `nil_if_empty_map::{serialize, deserialize}`；文件级关系显示直接使用者为 `statistics_test.rs`。
-- RustCodeGraph `query RegionStats --kind struct`：区分了本文件、Go 对照以及其他包中的同名结构，避免把 `pkg/store/helper/helper.rs` 或 `pkg/executor/internal/pdhelper/pd.rs` 的不同类型混为一谈。精确内部 ID 的后续 `node` 查询发生索引错配，因此未将该结果用于调用关系结论。
-- RustCodeGraph 文件节点：读取了 `pkg/store/pdtypes/lib.rs`、`statistics_test.rs`、`migration_aster_unit_test.rs`、`statistics.go`、`pkg/store/helper/helper.go`、`pkg/executor/infoschema_reader.go` 和 `pkg/domain/infosync/tiflash_manager.go` 的相关定义与调用片段。
-- Cargo 证据：`pkg/store/pdtypes/Cargo.toml` 确认 crate 名、`lib.rs` 入口、`serde` derive、`serde_json` 和 Go 包映射；无 feature 条件控制本模块。
-- 测试证据：`region_statistics_preserve_go_int_range`、`migration_json_missing_fields_use_go_zero_values`、`migration_region_statistics_use_stringified_store_ids`；Go 的 `TestGetPDRegionStatsKeyspaceEncoding` 仅验证上游 key range/HTTP 请求路径，不直接增加 Rust DTO 的行为保证。
-- 调用边补充搜索：精确 `rg` 引用确认 Rust 侧只有两份 crate 测试使用目标类型；Go 侧确认 `GetPDRegionStats -> pd.RegionStats -> tableStorageStatsRetriever` 的生产消费链。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的十一章节结构命令，并人工复查“为何存在、如何编解码、当前接线程度、如何安全扩展”均有源码或测试依据。

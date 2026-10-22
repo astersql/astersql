@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`model_stub.rs` 属于 `astersql-br-pkg-restore-ingestrec` library crate。`br/pkg/restore/ingestrec/lib.rs` 通过 `#[path = "model_stub.rs"]` 挂载该模块，并以 `pub use model_stub::*` 扁平再导出其公开符号。该文件不是 BR 恢复流程的独立入口，而是 `foreign_key.rs` 与 `ingest_recorder.rs` 共用的本地模型适配层。
-
-该适配层只复刻 ingest 索引录制与外键处理所需的 `meta/model`、`infoschema`、`ast.CIStr`、MySQL 主键标志和 `types.UnspecifiedLength` 子集。`Cargo.toml` 也印证了这一隔离目标：本 crate 唯一直接依赖是本地 `astersql-errors`，没有直接拉入完整元数据、解析器或存储依赖。它应被理解为迁移期的受限 stand-in，而不是这些上游包的完整替代实现。
+实现外键索引安全判断：`IsIndexPrefixCovered` 检查索引前缀，`IsIndexPrefixCoveredForForeignKey` 再检查部分索引谓词是否符合 MATCH SIMPLE 下的安全条件。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@ RustCodeGraph 确认文件已被索引（58 个符号），并给出关键内部
 
 ## 与 Go 版本的对应关系
 
-本文件没有同名 Go 文件；它聚合了多个 Go 包的最小投影。业务主流程对照文件是 `br/pkg/restore/ingestrec/foreign_key.go` 与 `ingest_recorder.go`，canonical 模型算法与常量来自 `pkg/meta/model/index.go`、`job.go`、`job_args.go`、`reorg.go`，名称类型和标志还分别对应 `pkg/parser/ast`、`pkg/parser/mysql` 与 `pkg/types`。
+本文件没有同名 Go 文件；它聚合了多个 Go 包的最小投影。
 
-已核对的语义包括：`ReorgType` 的 0..3 顺序；`ActionAddIndex=7`、`ActionDropIndex=8`、`ActionModifyColumn=12`、`ActionAddPrimaryKey=32`；`JobStateRollbackDone=3`、`Done=4`、`Synced=6`；索引前缀覆盖的列数、名称、offset 和 Flen 判定；以及 MATCH SIMPLE 下只有 FK 列的 `IS NOT NULL` 谓词可安全使用。
-
-差异必须保留在设计认知中：Go 使用真实 AST 解析部分索引谓词，Rust 只接受有限字符串形态；Go finished-args getter 支持版本化解码和更多动作状态，Rust 只读取预装入的两类字段；Go `context.Context` 可携带取消和调用值，Rust `Context` 当前为空；Go `ColumnArgs` 是 `[]any`，Rust 限定为 `Vec<String>`；完整 `infoschema.InfoSchema` 远大于这里的四方法 trait。因此扩展时不能假设该文件已经覆盖上游全部兼容面。
+差异必须保留在设计认知中：Go 使用真实 AST 解析部分索引谓词，Rust 只接受有限字符串形态；Go finished-args getter 支持版本化解码和更多动作状态，Rust 只读取预装入的两类字段；Go `context.Context` 可携带取消和调用值，Rust `Context` 当前为空；Go `ColumnArgs` 是 `[]any`，Rust 限定为 `Vec<String>`；完整 `infoschema.InfoSchema` 远大于这里的四方法 trait。
 
 ## 扩展指南
 
@@ -93,11 +89,3 @@ RustCodeGraph 确认文件已被索引（58 个符号），并给出关键内部
 扩展 `InfoSchema` 时只添加调用方确实需要的方法，并在 `parity_test.rs`、`foreign_key_test.rs`、`ingest_recorder_test.rs` 的独立 `MockIS` 实现中同步。若 `Context` 开始承载取消或资源生命周期，也必须把错误/取消传播接入直接调用者，而不能继续把它当作纯 API 占位。
 
 修改元数据 offset 或公开字段时，应复核所有直接索引点，尤其是 `ingest_recorder.rs::UpdateIndexInfo`；本文件的覆盖函数会安全拒绝越界，但其他路径可能 panic。测试逻辑继续放在独立 `*_test.rs` 文件中，不内嵌回生产源文件。
-
-## 验证依据
-
-事实取证使用 RustCodeGraph 状态和文件节点确认索引覆盖，并查询了 `IsIndexPrefixCovered`、`IsIndexPrefixCoveredForForeignKey`、`InfoSchema`、finished-args getter、错误包装函数的调用关系。直接读取并交叉核验的 Rust 文件为：`model_stub.rs`、`lib.rs`、`foreign_key.rs`、`ingest_recorder.rs`、`model_stub_test.rs`、`foreign_key_test.rs`、`ingest_recorder_test.rs`、`parity_test.rs`，crate 边界依据 `br/pkg/restore/ingestrec/Cargo.toml`。
-
-Go 对照依据为 `br/pkg/restore/ingestrec/foreign_key.go`、`ingest_recorder.go`，以及 `pkg/meta/model/index.go`、`job.go`、`job_args.go`、`reorg.go`。Rust 独立测试证据包括：枚举判别值和限定部分索引列测试；外键管理器对普通/部分索引及 PK-handle 的场景；录制器对 finished args、schema 查询和列参数的覆盖；`parity_test.rs` 串联 `TryAddJob -> RewriteTableID -> UpdateIndexInfo -> Iterate/IterateForeignKeys`。
-
-本任务仅做静态文档分析，按计划不运行 Cargo。交付结构检查要求目标文件存在，并且上述十一个固定二级标题各出现一次；人工复核还需确认文档没有把本地桩描述成完整生产实现，也没有建议把测试写回源文件。

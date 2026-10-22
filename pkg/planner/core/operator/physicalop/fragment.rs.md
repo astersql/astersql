@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate；`Cargo.toml` 将 crate 根指定为同目录的 `lib.rs`，后者以 `mod fragment` 纳入本模块，并通过 `pub use fragment::*` 向上层再导出公开项。源码见 [`fragment.rs`](fragment.rs)，crate 装配见 [`lib.rs`](lib.rs) 与 [`Cargo.toml`](Cargo.toml)。
-
-它位于 MPP 物理计划和执行协调器之间：输入是一棵以 `PhysicalExchangeSender` 为根的已选物理计划，输出是可派发的 `Fragment` 列表、供 UnionScan 使用的 KV ranges，以及参与执行的 TiFlash 节点地址。当前生产入口是 `pkg/executor/internal/mpp/local_mpp_coordinator.rs::NewLocalMppCoordinator`，该入口调用 `RootMppTaskGenerator::GenerateRootMPPTasks`，随后将各片段转换为 protobuf 派发请求。
-
-本文件既提供两个 ID 分配 API，也提供会话级拓扑生成器。它不负责物理优化、DAG protobuf 编码、请求发送或执行状态机；这些职责分别留在 planner 其他模块、`MPPSink::to_pb` 和 local MPP coordinator。
+既提供两个 ID 分配 API，也提供会话级拓扑生成器。
 
 ## 核心职责
 
@@ -109,8 +105,6 @@ RustCodeGraph 能识别本文件和 `build_sender` 等定义，但本次 `caller
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`fragment.go`](fragment.go) 和 [`fragment_test.go`](fragment_test.go)。对应关系如下：
-
 - Rust `AllocMPPTaskID` 保留 Go 的语句级原子计数语义；参数从完整 `sessionctx.Context` 收窄为 `StatementContext`。Rust 生产生成器当前另用实例内计数器分配任务，不通过该公开函数。
 - Rust `AllocMPPQueryID` 保留 Go 的全局初值 1、先加后取，因此首次返回 2。
 - Go `Fragment` 在切片阶段保存 `TableScan`、`ExchangeReceivers`、`CTEReaders` 和 Sink；Rust `Fragment` 只保存已调度 Sink、根标志及 singleton，扫描/Receiver 通过 DFS 临时发现。
@@ -131,15 +125,3 @@ RustCodeGraph 能识别本文件和 `build_sender` 等定义，但本次 `caller
 - 新增错误分支时返回 `expression::Error` 并在独立测试文件覆盖，不要把 Rust 单元测试写进生产 `.rs` 文件。若改变锁策略，需同时审查 coordinator 的 Sink 锁定与 `MPPSink` 实现，避免死锁或扩大 panic 面。
 - 若补齐 Go 的 CTE group/计数、相关列、分区裁剪或 request cache，应作为明确的跨模块移植任务处理，核对 Go 的完整流程和相关独立测试；不能用桩或仅编译通过替代行为验证。
 - 性能审查重点包括 DFS 深度、每层 `child.root_tasks.clone()`、每任务 session 字符串克隆、地址 HashMap/排序，以及共享 Sink 上的 Mutex 竞争。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph：`status` 显示索引含本文件；`files --filter pkg/planner/core/operator/physicalop` 确认源、Go 对照及两份 Rust 测试；`node --file .../fragment.rs --offset 1/261` 阅读完整 477 行；`query GenerateRootMPPTasks`、`query build_sender`、`query collect_receivers` 确认定义；`callees GenerateRootMPPTasks` 确认 Rust 实现调用 `build_sender`。动态 trait caller 未被图索引解析，已用直接源码补证。
-- 生产源码：`fragment.rs`；模块装配 `lib.rs`；crate 边界与依赖 `Cargo.toml`；`base/task_base.rs::MPPSink`；`physical_exchange_receiver.rs`；`physical_exchange_sender.rs`；`pkg/executor/internal/mpp/local_mpp_coordinator.rs::NewLocalMppCoordinator` 与 `append_mpp_dispatch_requests`。
-- Go 对照：`fragment.go::{GenerateRootMPPTasks, AllocMPPTaskID, AllocMPPQueryID, generateMPPTasksForFragment, constructMPPTasksImpl}`；`fragment_test.go::{TestFragmentInitSingleton, TestFillLocalCTECountsUsesLocalTaskCounts}`。
-- Rust 独立测试：`fragment_test.rs` 覆盖 query ID 单调性、singleton、构造、内存统计和 clone 共享 Sink；`fragment_aster_unit_test.rs` 覆盖根扫描任务/ranges/目标、Receiver 子片段连边和共享生产者复用。
-- 仓库契约：读取了最近的 `pkg/planner/core/base/doc.go`；其要求 base 接口保持抽象、避免具体实现耦合，与本文件用 `RootMppTaskGenerator`、`MppScanRangeEncoder` 和 `MPPSink` 分隔职责的做法一致。
-
-本任务为纯文档分析，按计划不运行 Cargo。结构验收应确认本文恰含规定的十一个二级标题；内容人工复核重点是没有把上述 Go 独有能力写成 Rust 已支持。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-executor-aggregate`；该包以同目录的 `lib.rs` 为 crate 根，并通过 `pub mod agg_hash_base_worker` 公开本模块。它定义 Hash 聚合 worker 可共享的最小状态对象 `BaseHashAggWorker`，意图对应 Go 版本中由 `HashAggPartialWorker` 与 `HashAggFinalWorker` 匿名嵌入的 `baseHashAggWorker`。
-
-对应生产源文件：[`agg_hash_base_worker.rs`](./agg_hash_base_worker.rs)。
-
-当前 Rust 接线状态需要与这一设计意图区分：全仓 Rust 引用仅见于 `agg_hash_base_worker_test.rs`，生产态的 `agg_hash_partial_worker.rs`、`agg_hash_final_worker.rs` 和 `agg_hash_executor.rs` 各自持有聚合状态，并未构造或嵌入 `BaseHashAggWorker`。因此本文件目前是已公开、已单测的公共状态组件，不是 Rust Hash 聚合执行主链上的实际 worker 基类。
+通过 `BaseHashAggWorker::new` 原样保存结束标志、聚合描述列表与输出 chunk 上限。
 
 ## 核心职责
 
@@ -66,12 +62,8 @@ Go 主链则已完整接线：`agg_hash_executor.go` 的 `initPartialWorkers` �
 
 ## 与 Go 版本的对应关系
 
-Go 原型是同目录 `agg_hash_base_worker.go`：
-
-- Rust `new` 对应 `newBaseHashAggWorker`，都原样保存聚合列表和 chunk 上限。
 - Rust `aligned_partial_result_len` 精确复现 `getPartialResultSliceLenConsiderByteAlign` 的分支和奇偶计算；类型从 Go `int` 变为 Rust `usize`。
 - Rust `is_finished` 对应 `checkFinishChClosed` 的“立即检查、绝不等待”语义，但机制从对只读 channel 的 `select/default` 改为原子布尔读取。
-- Go `aggFuncs []aggfuncs.AggFunc` 是可执行聚合函数对象；Rust `Arc<Vec<Aggregation>>` 是本 crate 自定义的描述数据，实际更新/合并由 `AggState` 和 worker 完成，两者不是逐类型等价。
 - Go 基座还有 `stats *AggWorkerStat` 和 `memTracker *memory.Tracker`；Rust 基座尚未包含统计与内存跟踪字段。虽然 `agg_util.rs` 已定义 Rust `AggWorkerStat`，本文件没有使用它。
 - Go partial/final worker 已匿名嵌入基座并由 executor 构造；Rust 对应 worker 当前没有包含本类型。这是迁移/接线缺口，不能把 Go 调用关系当成 Rust 已支持行为。
 
@@ -82,11 +74,3 @@ Go 原型是同目录 `agg_hash_base_worker.go`：
 若补齐 Go 的统计或内存跟踪语义，需要先确定 Rust 所有权和并发更新方式，并复用 `agg_util.rs` 的 `AggWorkerStat` 或现有 spill 内存统计，避免产生两套互不一致的计数。若改变槽位对齐公式，必须同时核对 partial result 的实际内存布局与 Go 兼容意图，不能仅凭函数名假定缓存行宽度。
 
 测试必须继续放在独立文件 `agg_hash_base_worker_test.rs`，不得内嵌进生产源文件。新增生产接线时还应同步扩展 `agg_hash_executor_test.rs`、`agg_hash_partial_worker_test.rs`，验证取消传播、并发退出、0/1/奇偶聚合数量、chunk 上限以及统计/内存生命周期。涉及 Go 对齐的修改应同步核对 `agg_hash_base_worker.go`、`agg_hash_executor.go`、`agg_hash_partial_worker.go` 和 `agg_hash_final_worker.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/executor/aggregate` 确认目标 Rust/Go/测试及相邻 worker 均已索引；`node --file pkg/executor/aggregate/agg_hash_base_worker.rs --offset 1 --limit 260` 读取完整 103 行并列出两个文件级测试使用方；`query BaseHashAggWorker` 确认 Rust 类型及 Go 对应符号；`callees aligned_partial_result_len` 与 `callees is_finished` 核对其直接操作，未发现生产 callers。
-- Rust 源与模块边界：`pkg/executor/aggregate/agg_hash_base_worker.rs`、`agg_util.rs`、`agg_hash_partial_worker.rs`、`agg_hash_final_worker.rs`、`agg_hash_executor.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 独立测试：`pkg/executor/aggregate/agg_hash_base_worker_test.rs` 覆盖构造直存、0 到 5 个聚合的对齐值，以及 Release 写/Acquire 读结束标志；`agg_hash_executor_test.rs` 仅提供同 crate 执行器行为背景，不是本类型的直接测试。
-- Go 对照：`pkg/executor/aggregate/agg_hash_base_worker.go` 定义原型；`agg_hash_executor.go` 负责构造；`agg_hash_partial_worker.go` 与 `agg_hash_final_worker.go` 展示嵌入字段及结束检查的真实调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证要求文档存在且恰有 11 个固定二级标题。

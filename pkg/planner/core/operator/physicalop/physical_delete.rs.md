@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate；其 crate 根是同目录的 `lib.rs`，后者以 `mod physical_delete` 装载模块并通过 `pub use physical_delete::*` 导出符号。`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/planner/core/operator/physicalop`，对应的 Go 定义位于 `physical_common_plans.go`，计划缓存克隆逻辑位于 `plan_clone_generated.go`。
-
-这里的 `Delete` 和 `Update` 是优化后 SELECT 子树外层的“非逻辑 DML 计划”。二者实现 `base::Plan`，但没有实现 `base::PhysicalPlan`：真正产出旧行或待删行的是字段 `SelectPlan: Box<dyn base::PhysicalPlan>`，外层 DML 计划保存执行器解释这些行所需的元数据，并声明自身结果 Schema 为空。Rust 构建入口分别在 `pkg/planner/core/planbuilder_runtime.rs::buildDelete` 和 `buildUpdate`。
+二者实现 `base::Plan`，但没有实现 `base::PhysicalPlan`：真正产出旧行或待删行的是字段 `SelectPlan: Box<dyn base::PhysicalPlan>`，外层 DML 计划保存执行器解释这些行所需的元数据，并声明自身结果 Schema 为空。
 
 ## 核心职责
 
@@ -81,11 +79,7 @@ UPDATE 主链相似：`buildUpdate` 重写赋值并优化保留投影的子计�
 
 ## 与 Go 版本的对应关系
 
-主要对应文件是 `pkg/planner/core/operator/physicalop/physical_common_plans.go`：Rust 的 `Update`、`Delete`、`TblColPosInfo`、`TblColPosInfoSliceExt::FindTblIdx`、`Update::ResolveIndices` 分别复刻同名 Go 语义；缓存克隆对应 `plan_clone_generated.go`。
-
-保持一致的关键点包括：DML 外层无结果 Schema；`FindTblIdx` 搜索第一个 `Start > colOrdinal` 再退一位；`Cmp` 只看 `Start`；索引布局不在 `TblColPosInfo::MemoryUsage` 重复计入；外键检查或级联使计划不可缓存；Update 赋值相对 `SelectPlan.Schema()` 重解索引。
-
-当前 Rust 数据模型不是 Go 结构的逐字段全集：Go `Update` 还有 `TblColPosInfos`、`PartitionedTable`、`TblID2Table`，Rust 本文件的 `Update` 没有这些字段；Go 的 `HandleCols` 是 `planner/util.HandleCols` 接口，Rust 使用 `Vec<expression::Column>`；Go 外键字段按表 ID 分组为 map，Rust 是扁平 `Vec<Box<_>>`；Go `Delete` 还有 `CleanTblID2HandleMap`/`matchingDeletingTable`，Rust 本文件没有对应方法。Rust 额外定义本地 `DeleteIndexLayout`/`DeleteIndexRowLayout` 以表达索引 ID 查询和稳定顺序。扩展时应按真实缺口评估，不能假设这些 Go 能力已经由本文件提供。
+当前 Rust 数据模型不是 Go 结构的逐字段全集：Go `Update` 还有 `TblColPosInfos`、`PartitionedTable`、`TblID2Table`，Rust 本文件的 `Update` 没有这些字段；Go 的 `HandleCols` 是 `planner/util.HandleCols` 接口，Rust 使用 `Vec<expression::Column>`；Go 外键字段按表 ID 分组为 map，Rust 是扁平 `Vec<Box<_>>`；Go `Delete` 还有 `CleanTblID2HandleMap`/`matchingDeletingTable`，Rust 本文件没有对应方法。Rust 额外定义本地 `DeleteIndexLayout`/`DeleteIndexRowLayout` 以表达索引 ID 查询和稳定顺序。
 
 ## 扩展指南
 
@@ -95,11 +89,3 @@ UPDATE 主链相似：`buildUpdate` 重写赋值并优化保留投影的子计�
 - 修改缓存能力时必须同时审查 `clone_for_plan_cache` 和 `cache_snapshot.rs` 两条路径；外键计划若要可缓存，需要证明其上下文、表元数据及级联子计划能安全克隆，不能只删除拒绝分支。
 - 接通执行器时，最可能的桥接点是 `pkg/executor/builder.rs::{UpdatePlanData, DeletePlanData, Plan}` 与具体 `physicalop::{Update, Delete}` 之间的适配层。当前仓库搜索未发现该实现，新增时应提供真实端到端构建测试，而不是只验证 trait 桩。
 - 兼容风险集中在 Go 未移植字段、混合行偏移和外键缓存规则；性能风险集中在重复克隆大子计划/赋值树及索引布局的额外复制。任何变更都应避免把 Rust 测试放回生产源文件。
-
-## 验证依据
-
-本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/operator/physicalop/physical_delete.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
-
-`logical_plans_test.rs::multi_table_update_partition_planner_marks_join_source` 检查 join UPDATE 标志；`operator/physicalop/cache_snapshot_test.rs` 的 DML 往返用例设置并断言恢复后的 Update.IsMultiTable，同时保留 Delete.IsMultiTable/IgnoreErr 与布局。`physical_delete_test.rs` 保留区间查找测试。
-
-RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

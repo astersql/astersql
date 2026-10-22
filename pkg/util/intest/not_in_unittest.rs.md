@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-intest` crate 的默认生产构建变体，源码入口为 [`not_in_unittest.rs`](not_in_unittest.rs)。它只定义一个进程级内部测试状态 `InTest`，初始值为 `false`。crate 根 [`lib.rs`](lib.rs) 在既不是当前 crate 单元测试、也未启用 feature `intest` 时编译本模块，并把该静态量再导出为 `astersql_util_intest::InTest`；测试或 `intest` feature 构建改选互斥的 [`in_unittest.rs`](in_unittest.rs)，其同名静态量初始值为 `true`。
-
-该文件不位于 SQL 请求的纵向主链中，而是为多个子系统提供横向的“当前是否按内部测试模式运行”信号。当前 Rust 生产调用包括 [`pkg/expression/scalar_function.rs`](../../expression/scalar_function.rs) 的哈希缓存一致性检查、[`pkg/util/codec/codec.rs`](../codec/codec.rs) 的序列化容量检查、[`pkg/util/rowcodec/common.rs`](../rowcodec/common.rs) 的 keyspace 前缀分支，以及 [`pkg/metrics/metrics.rs`](../../metrics/metrics.rs) 的测试环境初始化跳过逻辑。默认值为假使这些仅供测试的检查或分支在普通生产构建中保持关闭。
+不判断某个具体行为是否安全、不执行断言，也不自动恢复调用方写入的状态；这些策略均由读取或修改 `InTest` 的上层代码与测试负责。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ feature `enableassert` 不参与本文件的选择：只启用 `enableassert` �
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 [`not_in_unittest.go`](not_in_unittest.go)：其 `//go:build !intest` 对应 Rust `cfg(not(any(test, feature = "intest")))` 的默认分支，两者都把 `InTest` 初始化为 `false`。启用变体分别位于 [`in_unittest.go`](in_unittest.go) 和 [`in_unittest.rs`](in_unittest.rs)，初值都为 `true`。
-
 两端的主要差异如下：
 
 - Go 使用包级可变 `bool`；Rust 使用 `AtomicBool`，所有读写必须显式选择内存顺序，因而可以无数据竞争地跨线程访问。
@@ -93,15 +89,3 @@ Go 的 [`assert_test.go`](assert_test.go) 在 `intest` 测试构建中断言 `In
 若修改初值、类型或 cfg 选择，必须同步检查 [`in_unittest.rs`](in_unittest.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml) 和 Go 的 `in_unittest.go`/`not_in_unittest.go`，保持两个 Rust 变体具有完全相同的公开类型。回归测试应继续放在独立的 [`not_in_unittest_test.rs`](not_in_unittest_test.rs)，至少覆盖默认构建与 `intest` feature 构建的初值、跨线程可见性、运行时翻转、恢复以及不影响 `EnableInternalCheck`；不要把测试逻辑嵌入源文件。
 
 若要提供作用域式覆盖 API，应把恢复行为设计为 panic 安全的守卫，并解决并行测试间的全局状态竞争。若要把状态细化为线程或请求级别，则会改变现有所有调用方可见的进程级语义，必须评估 Go 对齐、API 兼容性以及跨线程任务传播成本，不能只改本文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/util/intest`：确认目标源、互斥变体、crate 入口、Go 对照和独立测试均在索引中。
-- RustCodeGraph `node --file pkg/util/intest/not_in_unittest.rs --offset 1 --limit 200` 与 `node 'not_in_unittest.rs::InTest'`：确认文件共 22 行，唯一业务符号位于第 22 行，签名为初始值 `false` 的公开 `AtomicBool`。
-- RustCodeGraph `query InTest --kind constant --json`：区分 `not_in_unittest.rs::InTest`、`in_unittest.rs::InTest` 和仓库内其他同名符号。精确 `callers` 查询持续无输出后终止，因此没有把图缺失误写为“无调用者”，而是用定点引用搜索补证。
-- 已读 Rust 证据：[`not_in_unittest.rs`](not_in_unittest.rs)、[`in_unittest.rs`](in_unittest.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`not_in_unittest_test.rs`](not_in_unittest_test.rs)、[`assert_common.rs`](assert_common.rs)。
-- 已读调用方证据：[`pkg/expression/scalar_function.rs`](../../expression/scalar_function.rs)、[`pkg/util/codec/codec.rs`](../codec/codec.rs)、[`pkg/util/rowcodec/common.rs`](../rowcodec/common.rs)、[`pkg/metrics/metrics.rs`](../../metrics/metrics.rs)，并用 `rg` 区分真实原子读取、同名符号、注释和 Go 引用。
-- 已读 Go 对照：[`not_in_unittest.go`](not_in_unittest.go)、[`in_unittest.go`](in_unittest.go)、[`assert_common.go`](assert_common.go)、[`assert_test.go`](assert_test.go)。
-- 人工复核结论：本文件只提供默认为假的进程级原子状态；cfg 保证真假变体互斥；运行时覆盖不会重算 `EnableInternalCheck`；文件自身无错误、异步、I/O、锁或事务生命周期。
-- 本任务为纯文档分析，依照计划未运行 Cargo；结构验证使用任务指定命令，结果在交付报告中记录。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate；crate 的清单是 `pkg/metrics/Cargo.toml`，库入口 `pkg/metrics/lib.rs` 通过 `pub mod resourcemanager` 公开该模块。它是资源管理器观测指标的定义与初始化单元，只创建 Prometheus 句柄，不采样 CPU、不管理线程池，也不自行注册 collector。
-
-包级中枢 `pkg/metrics/metrics.rs::InitMetrics` 调用 `resourcemanager::InitResourceManagerMetrics`，随后 `RegisterMetrics` 才把本文件的两个 collector 注册到默认 Prometheus registry。因此本文件位于“指标声明/构造”和“业务侧更新指标”之间，而不是资源调度主链本身。
+`InitResourceManagerMetrics` 构造资源管理器的两个指标句柄，并写入包级全局量。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ EMA 的并发写入发生在 `CPUObserver::Start` 启动的 worker 中；worker 
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/resourcemanager.go` 与本文件在两个指标的 namespace、subsystem、name、help、标签数量及初始化顺序上逐项一致。Go 使用非空类型的包级变量，Rust 用 `Option` 显式表达初始化前状态；Go 的 `*prometheus.GaugeVec` 对应 Rust 的 `prometheus::GaugeVec` 值。两侧都把并发度声明为 gauge vector，尽管变量名含 `Counter`。
+Go 使用非空类型的包级变量，Rust 用 `Option` 显式表达初始化前状态；Go 的 `*prometheus.GaugeVec` 对应 Rust 的 `prometheus::GaugeVec` 值。
 
 初始化与注册链也保持一致：Go 的 `pkg/metrics/metrics.go` 调用 `InitResourceManagerMetrics`，并在 `RegisterMetrics` 中注册两个句柄；Rust 的 `pkg/metrics/metrics.rs` 做同样接线，但额外用 `Once` 和错误缓存约束初始化。
 
@@ -83,12 +81,3 @@ EMA 的并发写入发生在 `CPUObserver::Start` 启动的 worker 中；worker 
 - 若接通线程池并发指标，应先决定是复用本文件的 `GaugeVec(type)` 还是保留 spool 的本地 `Gauge(pool)`，避免在同一 registry 注册同名但 descriptor 不一致的 collector；同时对齐 `Pool::new`、`Pool::tune` 和释放后的状态语义。
 - 若改变初始化模型，应优先消除或封装 `static mut`，并保持 `InitMetrics`/`RegisterMetrics` 的先后契约；不要让业务线程看到替换中的句柄。
 - 测试必须放在独立测试文件而非本源文件中。可扩展 `pkg/metrics/metrics_test.rs` 验证初始化/注册后两个 metric family、help 与标签；EMA 更新行为放在 `pkg/util/cpu/cpu_test.rs`；线程池创建与调容更新行为放在 `pkg/resourcemanager/pool/spool/spool_test.rs`。Go 对照测试入口是 `pkg/metrics/metrics_test.go` 及相应 CPU/资源池测试。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件；目标文件被识别为 61 行、2 个符号，并显示由 `pkg/metrics/metrics.rs` 使用。
-- RustCodeGraph 符号/调用证据：`InitResourceManagerMetrics` 位于 `pkg/metrics/resourcemanager.rs:39`，其调用者为 `pkg/metrics/metrics.rs::InitMetrics`；文件读取确认 `EMACPUUsageGauge`、`PoolConcurrencyCounter` 的定义和构造参数。
-- Rust 源码证据：`pkg/metrics/lib.rs`（模块公开与 `LblType` 再导出）、`pkg/metrics/metrics.rs`（初始化和注册）、`pkg/metrics/common/wrapper.rs`（常量标签及 panic 语义）、`pkg/util/cpu/cpu.rs`（EMA 写入和 worker 生命周期）、`pkg/resourcemanager/pool/spool/spool.rs`（当前独立并发 gauge）。
-- crate 证据：`pkg/metrics/Cargo.toml` 的 `[lib]`、Prometheus 与 metrics-common 依赖，以及 `go-package = "pkg/metrics"` 移植元数据。
-- Go 对照证据：`pkg/metrics/resourcemanager.go`、`pkg/metrics/metrics.go`、`pkg/resourcemanager/pool/spool/spool.go`、`pkg/util/cpu/cpu.go`。
-- 测试证据：`pkg/metrics/metrics_test.rs` 覆盖整包 `InitMetrics`/`RegisterMetrics` 冒烟路径；`pkg/util/cpu/cpu_test.rs` 覆盖 observer 启停与采样；`pkg/resourcemanager/pool/spool/spool_test.rs` 覆盖创建、调容和并发行为。检索未发现直接按 `EMACPUUsageGauge`、`PoolConcurrencyCounter` 或两个完整指标名断言的 Rust 专项测试，因此指标值与标签契约目前只有间接覆盖。

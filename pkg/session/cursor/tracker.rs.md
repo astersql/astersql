@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-session-cursor`；其 crate 根 `pkg/session/cursor/lib.rs` 公开 `state`、`tracker` 两个模块并再导出其中符号，`pkg/session/cursor/Cargo.toml` 用 `go-package = "pkg/session/cursor"` 标明对应的 Go 包。文件提供会话内服务端游标的注册表和句柄生命周期基础能力，不负责 SQL 执行、结果集读取或 MySQL 协议编码。
-
-当前 Rust 生产接线是不完整的：`pkg/session/sessmgr/processinfo.rs::ProcessInfo::CursorTracker` 可以保存 `Arc<CursorTracker>`，`pkg/sessionctx/context.rs::Context::GetCursorTracker` 也声明了关联类型返回边界，但仓库内 Rust 生产代码尚未调用本文件的 `Tracker::NewCursor`、`GetCursor` 或 `RangeCursor`。完整的上层用途目前由 Go `pkg/session/session.go::execStmtResult.TryDetach` 展示：为可分离结果集创建游标、保存事务 `StartTS`，再交给 `staticrecordset.WrapRecordSetWithCursor` 管理。
+完整的上层用途目前由 Go `pkg/session/session.go::execStmtResult.TryDetach` 展示：为可分离结果集创建游标、保存事务 `StartTS`，再交给 `staticrecordset.WrapRecordSetWithCursor` 管理。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@ RustCodeGraph 对 `tracker.rs::NewTracker` 的调用边显示，直接调用主�
 
 ## 与 Go 版本的对应关系
 
-Go 原实现位于 `pkg/session/cursor/tracker.go`。符号一一对应：Go `Tracker`/`cursorTracker`/`Handle`/`cursorHandle` 对应 Rust `Tracker`/`CursorTracker`/`Handle`/`CursorHandle`；`NewCursor`、`GetCursor`、`RangeCursor`、`remove`、`ID`、`Close`、`GetState` 保持同名语义。
-
 主要表示差异如下：
 
 - Go 用 `sync.Map`，Rust 用单个 `Mutex<HashMap<...>>`；两者均支持并发创建、查询和删除，但 Rust 遍历显式形成快照，Go `sync.Map.Range` 不承诺一致快照，故并发修改时可见集合不必完全相同。
@@ -90,12 +86,3 @@ Go 原实现位于 `pkg/session/cursor/tracker.go`。符号一一对应：Go `Tr
 把该实现接入 Rust 服务端主链时，最可能修改会话的构造/关闭、`GetCursorTracker` 实现、可分离结果集包装以及 `ProcessInfo` 填充点；必须新增位于独立 `*_test.rs` 文件中的集成测试，证明创建、FETCH/关闭、会话退出清理和错误回滚都会注销游标。不要把测试内嵌到 `tracker.rs`。
 
 性能风险主要来自单把互斥锁：高并发创建和查询会竞争同一临界区，`RangeCursor` 还会按当前游标数分配并克隆一个 `Vec`。若改成分片结构或并发映射，必须保留提前终止、回调可关闭自身和无固定遍历顺序这些契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/session/cursor/{lib.rs,state.rs,tracker.rs,tracker_test.rs}`；`node --file pkg/session/cursor/tracker.rs` 核对了 164 行完整源码和 21 个符号；`node NewTracker` 核对了文件限定的构造、实例化及测试调用边。
-- Rust 源与模块：`pkg/session/cursor/tracker.rs`、`state.rs`、`lib.rs`；crate 元数据：`pkg/session/cursor/Cargo.toml`。
-- Rust 上游边界：`pkg/session/sessmgr/processinfo.rs::ProcessInfo::CursorTracker`、`pkg/sessionctx/context.rs::Context::GetCursorTracker`。通过仓库搜索确认 Rust 生产调用尚未覆盖 `Tracker` 三个方法。
-- Go 对照与真实主链：`pkg/session/cursor/tracker.go`、`tracker_test.go`、`pkg/session/session.go::execStmtResult.TryDetach` 与 `session::GetCursorTracker`。
-- 独立 Rust 测试：`pkg/session/cursor/tracker_test.rs`、`pkg/session/cursor/migration_aster_unit_test.rs`，覆盖 ID、状态、同一性、缺失、遍历中断、关闭幂等和并发创建/删除。
-- 按任务约束未运行 Cargo；交付只执行文档的固定十一章节结构检查，并人工复核实现能力与当前接线状态没有混写。

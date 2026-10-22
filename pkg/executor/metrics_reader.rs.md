@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 指定，模块由 [`lib.rs`](lib.rs) 中的 `pub mod metrics_reader;` 公开。它承载 `METRICS_SCHEMA` 普通指标表、`metrics_summary` 和 `metrics_summary_by_label` 三类虚拟表读取逻辑：前者把 Prometheus range query 的矩阵结果转换为 SQL 行，后两者通过受限 SQL 再聚合指标表。
-
-当前 Rust 仓库事实需要与 Go 生产链区分：RustCodeGraph 能定位本文件的类型和测试实例化边，但仓库搜索未发现测试之外的 Rust 调用者或 `MetricsReaderBackend` 生产实现。因此这里是已实现、可独立验证但尚未接入 Rust 执行器构造主链的模块。Go 生产入口仍位于 [`builder.go`](builder.go) 的 `executorBuilder.buildMemTable`，它分别构造 Go 的三个 retriever。
+`MetricRetriever` 负责一次性读取单张指标表：解析表定义和时间范围，按请求或默认分位数生成 PromQL，有限重试查询 Prometheus，再按表定义的列顺序生成 `Datum` 行。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ Prometheus 客户端与查询上下文是 `queryMetric` 的局部值：每个 qu
 
 ## 与 Go 版本的对应关系
 
-[`metrics_reader.go`](metrics_reader.go) 是逐函数对照来源。Rust 的三个 retriever、`promReadTimeout`、`queryMetric/getQueryRange/genRows/genRecord`、默认 quantile、五次地址/查询重试、100 ms 等待、NaN 转 NULL、摘要权限与 SQL 形状均保持 Go 意图。Rust 用 `MetricsReaderBackend` 代替 Go 对 InfoSync、sessionctx、Prometheus API、failpoint 和 restricted SQL 的直接调用，并用自有 `Datum`/Prometheus 值模型代替 Go 类型。
+Rust 用 `MetricsReaderBackend` 代替 Go 对 InfoSync、sessionctx、Prometheus API、failpoint 和 restricted SQL 的直接调用，并用自有 `Datum`/Prometheus 值模型代替 Go 类型。
 
 仍有重要集成差异：Go 类型嵌入 `dummyCloser`、持有 `TableInfo`，并由 `builder.go` 接入 `MemTableReaderExec`；Rust 类型只保存 `table_name` 等最小状态，当前没有生产 backend 或 builder 调用。Go 在摘要查询前通过 `kv.WithInternalSourceType(..., InternalTxnOthers)` 标记内部事务来源；Rust trait/API 中没有等价显式动作，若未来接线需由 backend 或调用方证明该语义被保留。Go 的 Prometheus context 使用 `defer cancel()`，Rust 只把 context 构造委托给 backend。
 
@@ -84,11 +82,3 @@ Prometheus 客户端与查询上下文是 `queryMetric` 的局部值：每个 qu
 - 扩展摘要维度或聚合列时，同步修改两类摘要的 SQL 生成和 `RestrictedRow` 解码下标；特别保持 `instance` 首列约定、`store/store_id` 前缀、quantile 末列约定及确定性排序。
 - 修改权限/skip 行为时保持 `PROCESS` 检查顺序，除非 Go 版本也改变且有兼容性依据。新增表过滤规则应从 `metricEnabled` 和 `MetricSummaryTableExtractor.metrics_names` 入手。
 - 所有 Rust 行为调整都应同步独立测试 `metrics_reader_test.rs`，并逐项与 `metrics_reader.go` 核对，避免把尚未接线的能力误报为生产可用。
-
-## 验证依据
-
-- 源与模块：[`metrics_reader.rs`](metrics_reader.rs)；[`lib.rs`](lib.rs) 的 `pub mod metrics_reader` 及独立 `metrics_reader_test` 声明；[`Cargo.toml`](Cargo.toml) 的 crate 名、lib 路径、feature 与依赖边界。`pkg/executor` 下未发现 `doc.go`，因此无可读取的包级 Go 契约文件。
-- Go 对照与入口：[`metrics_reader.go`](metrics_reader.go) 的三个 retriever 及其辅助方法；[`builder.go`](builder.go) 的 `buildMemTable` 构造分支；[`metrics_reader_test.go`](metrics_reader_test.go) 经核对不含对应 retriever 测试。
-- Rust 测试：[`metrics_reader_test.rs`](metrics_reader_test.rs) 覆盖 mock 一次性读取/skip、地址与 query 各两次失败后成功、100 ms sleep 次数、10 秒 timeout、label 条件回填、NaN、摘要权限先行、缺表 warning、quantile SQL、按 label 分组和 `store_id:` 规范化。
-- RustCodeGraph：`status` 报告索引包含 7,032 个 Rust 文件；`query MetricRetriever`、`query MetricsSummaryRetriever`、`query MetricsSummaryByLabelRetriever`、`query metricEnabled` 均定位到本文件。`node MetricRetriever` 给出的 Rust trail 只有 `metrics_reader_test.rs` 的导入/实例化；限定符 `callers/callees` 查询未返回额外生产调用边。由于 `files --filter pkg/executor/metrics_reader` 未命中，源码细节按技能规则改由直接读取和 `rg` 复核。
-- 结构校验使用任务指定命令，要求目标文件存在且恰有十一个固定二级标题；本任务是纯文档分析，未运行 Cargo。

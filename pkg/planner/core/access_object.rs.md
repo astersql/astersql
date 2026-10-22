@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/planner/core/access_object.rs` 是 `astersql-planner-core` crate 根模块中的私有占位模块。`pkg/planner/core/lib.rs` 通过 `mod access_object;` 将它编译进 crate，但没有使用 `pub mod` 或 `pub use` 向 crate 外暴露它。目标文件只有许可证和边界说明注释，没有 Rust 项，因此它不是 EXPLAIN 访问对象的实现位置。
-
-相邻职责被刻意拆分：`pkg/planner/core/base/misc_base.rs::AccessObject` 定义接口语义，`pkg/planner/core/access/access_obj.rs` 定义扫描、其他文本和动态分区等对象。后者属于独立的 `astersql-planner-core-access` crate，其工作区声明见根 `Cargo.toml` 中的 `facade_planner_core_access`。
+与同路径 Go 文件 `pkg/planner/core/access_object.go` 保持“只有包边界，没有实现”的语义对应。
 
 ## 核心职责
 
@@ -59,9 +57,7 @@ RustCodeGraph 证据表明 `access_object.rs` “used by 0 files”，且没有�
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/core/access_object.go` 除 PingCAP Apache License 头外只有 `package core`，没有类型或函数。Rust 文件保留同样的空边界，额外的只是说明性注释；因此两者在可观测行为上一致：都不提供 Access Object 实现。
-
-Go 的真实实现在 `pkg/planner/core/access/access_obj.go`，Rust 对照实现在 `pkg/planner/core/access/access_obj.rs`。二者的扫描对象文本、归一化文本、索引 protobuf、其他对象和动态分区行为由独立 Rust 测试 `pkg/planner/core/access/migration_aster_unit_test.rs` 覆盖。这个对照证明实现已移到何处，不改变目标文件本身为空的结论。
+Rust 文件保留同样的空边界，额外的只是说明性注释；因此两者在可观测行为上一致：都不提供 Access Object 实现。
 
 ## 扩展指南
 
@@ -71,13 +67,3 @@ Go 的真实实现在 `pkg/planner/core/access/access_obj.go`，Rust 对照实�
 - 只有当 Go 同路径文件或 crate 分层发生明确变化时，才应考虑给本文件增加符号。这会改变当前空边界契约，需先检查 crate 依赖方向、重复类型风险和循环依赖，并把 Rust 测试放在独立文件中，不要内嵌到生产源文件。
 
 兼容风险主要来自 EXPLAIN 文本和 tipb 格式的变化；性能风险主要来自在高频计划展示路径中增加不必要的分配。但就本空文件而言，当前两类运行时风险均不存在。
-
-## 验证依据
-
-- 目标源文件：`pkg/planner/core/access_object.rs` 全部 26 行，仅含许可证与空边界注释。
-- 模块入口：`pkg/planner/core/lib.rs:137` 以 `mod access_object;` 私有声明本模块。目标包根目录下没有 `doc.go`；最近的 `pkg/planner/core/base/doc.go` 属于不同的 `base` 子包，不是本包契约。
-- crate 声明：`pkg/planner/core/Cargo.toml` 的 package 名为 `astersql-planner-core`，入口为 `lib.rs`；`pkg/planner/core/access/Cargo.toml` 另行定义 `astersql-planner-core-access`。
-- Go 对照：`pkg/planner/core/access_object.go` 只含 `package core`；真实 Go/Rust 实现分别在 `pkg/planner/core/access/access_obj.go` 和 `access_obj.rs`。
-- 测试搜索：未找到直接引用 `access_object.rs` 或 `access_object.go` 的独立测试，这与其无行为一致。真实实现的对照测试为 `pkg/planner/core/access/migration_aster_unit_test.rs`；算子层格式测试包括 `operator/physicalop/physical_table_scan_test.rs`、`physical_index_scan_test.rs` 和 `physical_mem_table_test.rs`。
-- RustCodeGraph：`status` 报告 11,467 个已索引文件；`files --filter pkg/planner/core/access_object.rs` 找到目标；`node --file ...` 显示完整 26 行且 `used by 0 files`；对文件执行 `callers`/`callees` 无定义可解析；`query AccessObject` 将 trait 定位到 `base/misc_base.rs`，`node --file access/access_obj.rs` 将实现定位到独立 access crate。
-- 结构验收要求：本文档必须存在，且上述固定二级标题必须恰好出现 11 个。本任务是纯文档分析，不运行 Cargo。

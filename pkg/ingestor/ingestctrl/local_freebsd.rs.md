@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate；该 crate 的入口是 [`lib.rs`](lib.rs)，Cargo 边界由 [`Cargo.toml`](Cargo.toml) 定义。`lib.rs` 通过 `pub mod local_freebsd;` 无条件公开本模块，因此其三个公开符号可以由 crate 使用者按 `local_freebsd` 路径访问。
-
-它是 FreeBSD 的 rlimit 数值与结构化日志字段适配层，对照 Go 的 [`local_freebsd.go`](local_freebsd.go)。不过当前 Rust 模块没有 `#[cfg(target_os = "freebsd")]`，也没有被 [`local_unix.rs`](local_unix.rs) 选作平台实现；后者明确导入 `crate::local_unix_generic::RlimT`。因此，本文件目前是可编译的公开兼容辅助，不在实际 rlimit 查询或提升流程中。
+不读取或修改操作系统资源限制，不执行日志输出，也不参与错误处理。
 
 ## 核心职责
 
@@ -60,7 +58,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `local_freebsd.go` 受 `//go:build freebsd` 限制，定义 `RlimT = int64`，并让 `zapRlimT` 返回 `zap.Int64(key, val)`。Rust 在数值宽度和有符号性上保持一致，也保留了函数名和“键 + 值”的结构化语义。
+Go 对照文件 `local_freebsd.go` 受 `//go:build freebsd` 限制，定义 `RlimT = int64`，并让 `zapRlimT` 返回 `zap.Int64(key, val)`。
 
 当前仍有三项显著差异：
 
@@ -80,16 +78,3 @@ Go 对照文件 `local_freebsd.go` 受 `//go:build freebsd` 限制，定义 `Rli
 - 测试必须放在独立文件中。可新增或扩展 `local_unix_test.rs` 以验证平台选择和 rlimit 流程，并为纯字段构造另建相邻 `*_test.rs`；应覆盖键所有权、负值/边界值、FreeBSD 与通用 Unix 类型差异以及条件编译。当前没有 `local_freebsd_test.rs`。
 
 兼容风险主要是条件编译导致的公共路径变化和整数符号转换；正确性风险集中在 rlimit FFI 布局；性能影响通常仅为每个字段一次键名分配。任何行为修改都应遵循仓库规则先补失败回归测试，本说明任务本身不修改运行时代码。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库，目标目录中的 `local_freebsd.rs` 已被索引。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/local_freebsd.rs`：核对完整 39 行源码、三个公开符号及其签名。
-- RustCodeGraph `query zapRlimT --kind function --json`：确认 Rust FreeBSD、Rust 通用 Unix及对应 Go 文件中的同名实现。
-- RustCodeGraph 精确 callers/callees 查询未返回可用调用边；随后用 `rg` 核对全仓直接引用，未发现目标 Rust 符号的文件外调用。此处不将缺失的图边推断为已接线。
-- [`local_freebsd.rs`](local_freebsd.rs)：核对 `i64` 别名、字段派生、键复制和无错误分支。
-- [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)：核对 crate 名称、入口、依赖边界和无条件模块声明。
-- [`local_freebsd.go`](local_freebsd.go)、[`local_unix.go`](local_unix.go)：核对 FreeBSD build tag、`int64`/`zap.Int64` 语义以及 Go rlimit 成功日志的真实调用点。
-- [`local_unix_generic.rs`](local_unix_generic.rs)、[`local_unix.rs`](local_unix.rs)：核对通用 Unix `u64` 版本和当前 Rust rlimit 流程实际选择的类型。
-- [`local_unix_test.rs`](local_unix_test.rs)：相关独立 Rust 测试覆盖 rlimit 上限、系统调用失败和复读校验，但不直接覆盖本文件；全仓未发现 `local_freebsd_test.rs` 或其他目标符号测试。
-- 本包不存在 `doc.go`，因此没有更近的包级 Go 契约可读取。任务为纯文档分析，按计划未运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`store.rs` 属于 Cargo 包 `astersql-br-pkg-backup`，由同目录 [`lib.rs`](./lib.rs) 以 `pub mod store` 注册并通过 `pub use store::*` 平铺导出。它位于 BR 备份编排层和单个 TiKV store 的 Backup 流之间：上游 [`client.rs`](./client.rs) 的 `Client::BackupRanges`/`Client::RunLoop` 负责全局进度与多 store 轮次，本文件负责把一份 store 请求拆分、并发发送、逐包转发，并把 PD 拓扑变化转换为重试策略。
-
-该 crate 的 [`Cargo.toml`](./Cargo.toml) 将 Go 包映射声明为 `br/pkg/backup`，且只直接依赖 `serde`、`serde_json`；Backup RPC、PD、context、工作池、退避和 store watcher 均来自本 crate 的 [`stubs.rs`](./stubs.rs)，因此当前 Rust 实现是可测试的本地移植边界，不等同于已接入真实 `kvproto/grpcio/pd-client` 网络栈。
+位于 BR 备份编排层和单个 TiKV store 的 Backup 流之间：上游 [`client.rs`](./client.rs) 的 `Client::BackupRanges`/`Client::RunLoop` 负责全局进度与多 store 轮次，本文件负责把一份 store 请求拆分、并发发送、逐包转发，并把 PD 拓扑变化转换为重试策略。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`store.go`](./store.go)。Rust 保留了 Go 的主要符号、字段命名和流程：请求均衡拆分、`len(SubRanges)+1` 限流、Backup 流逐包回调、每包刷新超时、工作池 + 退避、拓扑事件映射为 `All`/`One`，以及先等待任务再停止看门狗。
+实现层差异包括：Go 使用真实 `context`、gRPC/kvproto、PD client、`errgroup`、TiDB worker pool 和日志；Rust 使用 `stubs.rs` 的本地 trait/类型、OS 线程与 `std::sync::mpsc`。Go 的 `timeoutRecv.refresh` 是普通 channel，Rust 使用容量 1 的同步通道并以 `try_send` 合并刷新；Go 的 store watcher 通过 ticker `select` 可立即响应取消，Rust 使用 `thread::sleep`；Go 以 `io.EOF` 表示正常流结束，Rust `BackupStream::Recv` 以 `Ok(None)` 表示结束。
 
-实现层差异包括：Go 使用真实 `context`、gRPC/kvproto、PD client、`errgroup`、TiDB worker pool 和日志；Rust 使用 `stubs.rs` 的本地 trait/类型、OS 线程与 `std::sync::mpsc`。Go 的 `timeoutRecv.refresh` 是普通 channel，Rust 使用容量 1 的同步通道并以 `try_send` 合并刷新；Go 的 store watcher 通过 ticker `select` 可立即响应取消，Rust 使用 `thread::sleep`；Go 以 `io.EOF` 表示正常流结束，Rust `BackupStream::Recv` 以 `Ok(None)` 表示结束。Rust 另有 `TIMEOUT_OVERRIDE`，避免测试直接修改全局 `TimeoutOneResponse`。
-
-Go 的注释指出未来合并 SST 功能可能把 `SortedSubRangesGroups` 计入 `reqRangeSize`；Rust 当前与 Go 现状一致，只计算 `SubRanges + 1`。不能据此宣称已支持该未来能力。
+Go 的注释指出未来合并 SST 功能可能把 `SortedSubRangesGroups` 计入 `reqRangeSize`；Rust 当前与 Go 现状一致，只计算 `SubRanges + 1`。
 
 ## 扩展指南
 
@@ -93,11 +89,3 @@ Go 的注释指出未来合并 SST 功能可能把 `SortedSubRangesGroups` 计�
 - 改变 timeout/context 实现时，应保留 `Stop` 幂等、线程可退出、首包和包间超时都能取消派生 context；同步 `store_test.rs` 的首包、非首包、父取消和主动停止用例。
 - 接入真实网络依赖不能只改本文件：当前 Cargo manifest 明确依赖本地 `stubs`。应按仓库外部 Rust 依赖规则在上游仓库移植并发布 tag，再统一更新 Cargo Git 依赖；不得在本仓库复制 vendor 或使用本地 `[patch]`。
 - 性能风险集中在分片数量、请求 clone、线程数量、通道背压和 30 秒轮询；兼容风险集中在 Go/Rust 的取消传播、gRPC 错误分类与 watcher 事件顺序。任何改动都应先与 `store.go` 的实际增量对齐。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件；`files --filter br/pkg/backup` 确认目标、Go 对照和测试均已索引；`node --file br/pkg/backup/store.rs --offset ...` 读取完整 526 行并报告 5 个使用文件；`query` 分别确认 `doSendBackup`、`startBackup`、`ObserveStoreChangesAsync`、`SplitBackupReqRanges`、`StartTimeoutRecv` 的 Rust/Go 定义。精确 `callers/callees --file` 在 30 秒内未返回，调用边改由直接引用核验。
-- 生产源码与配置：`br/pkg/backup/store.rs`、`br/pkg/backup/client.rs`、`br/pkg/backup/lib.rs`、`br/pkg/backup/limit.rs`、`br/pkg/backup/stubs.rs`、`br/pkg/backup/Cargo.toml`。
-- Go 对照：`br/pkg/backup/store.go`；上游行为与拆分/观察测试对照还读取了 `br/pkg/backup/client_test.go`。
-- Rust 独立测试：`br/pkg/backup/store_test.rs` 覆盖首包与包间超时、父取消、`Stop` 取消；`br/pkg/backup/client_test.rs` 覆盖 watcher 的无变化/新 store/断连和多组拆分形状；`br/pkg/backup/parity_test.rs` 覆盖底层错误传播、响应流关闭、看门狗停止和响应载荷。
-- 本任务是只读分析加文档，不运行 Cargo。结构验收应确认本文恰有任务要求的 11 个二级标题。

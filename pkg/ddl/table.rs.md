@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/table.rs` 属于 `astersql-ddl` crate；`pkg/ddl/Cargo.toml` 通过 `[lib] path = "lib.rs"` 指定 crate 入口，`pkg/ddl/lib.rs` 以 `pub mod table;` 公开本模块。文件提供一个只依赖标准库 `BTreeMap`/`BTreeSet` 的表级 DDL 内存模型，覆盖表目录、删除与恢复、截断、重命名，以及一组表属性更新函数。
-
-这个文件不是当前 Rust DDL 持久化 Job 框架的完整实现：定向调用搜索只在独立 Rust 测试中发现 `TableCatalog` 和这些属性函数的使用，没有发现 `pkg/ddl/executor.rs`、`pkg/ddl/job_worker.rs` 等生产模块调用它们。完整应用中对应的 Go 主链是 `pkg/ddl/executor.go` 构造 `model.Job`，`pkg/ddl/job_worker.go:runOneJobStep` 按 `ActionType` 分派，最终由 `pkg/ddl/table.go` 的处理函数修改持久化元数据。因此，本文件应理解为已公开、可直接运行并用于语义回归的简化模型，而不是已经替代 Go DDL 主链的实现。
+以 `TableError` 提供有限、可比较的错误分类，便于独立测试断言；它没有承载 Go 版本的错误码、堆栈包装、Job 状态或事务错误上下文。
 
 ## 核心职责
 
@@ -78,10 +76,8 @@
 
 - `drop_table_step` 对应 `pkg/ddl/table.go:(*worker).onDropTableOrView` 的状态迁移意图，但 Rust 只保留 `Public → WriteOnly → DeleteOnly → None` 和 dropped 快照；Go 还通过 meta 事务、schema version、Job 状态、依赖约束和后续 GC 机制推进流程。
 - `recover_table` 对应 `(*worker).onRecoverTable` 的“GC safe point 允许后恢复元信息”核心约束；Go 使用恢复参数、meta mutator、placement/TTL 等外围协调，Rust 只处理一个内存 GC 开关和名称冲突。
-- `truncate_table` 对应 `(*worker).onTruncateTable` 的换表/分区 ID、重置 auto ID 和 TiFlash availability 意图。Go 还更新 schema diff、处理外键/placement/TTL、delete range 和 schema sync。
 - 重命名方法对应 `(*worker).onRenameTable`、`(*worker).onRenameTables`、`checkAndRenameTables` 及 `adjustForeignKeyChildTableInfoAfterRenameTable`。Rust 保留循环批量换名、外键名称修正和 auto-ID schema 归属，但没有两次 schema version 更新、持久化事务和完整的 involving-schema 信息。
 - `rebase_auto_increment`/`rebase_auto_random` 对应 `onRebaseAutoIncrementIDType`、`onRebaseAutoRandomType`、`onRebaseAutoID`。Go 会操作真实 allocator；Rust 只更新字段。非 force 行为也不同：Go 可调整到下一全局 ID 并记录 warning，Rust 对不增长直接返回 `false`。
-- `alter_shard_row_id_bits`、`alter_comment`、`alter_charset_and_collation` 分别对应 `onShardRowID`、`onModifyTableComment`、`onModifyTableCharsetAndCollate` 的局部字段语义；Go 有更完整的合法性校验、列级 charset 更新和 Job 可回滚性处理。
 - TiFlash 函数对应 `(*worker).onSetTableFlashReplica` 和 `onUpdateTiFlashReplicaStatus`。`pkg/ddl/table_test.rs` 的两个真实 Rust 单元测试专门确认历史最大 shard bits 不回退，以及非零副本数变更保留 availability；其余大量同文件测试函数是从 Go 迁移的占位说明，不能作为行为已实现的证据。
 - placement/attributes/cache/affinity 的 Rust 函数只修改 `TableInfo`。Go 的 `onAlterTablePlacement`、`onAlterTableAttributes`、`onAlterCacheTable`/`onAlterNoCacheTable`、`onAlterTableAffinity` 还会验证元数据并与 PD/label/affinity 资源交互。
 
@@ -94,11 +90,3 @@
 - 若目标是接入完整 Rust DDL 主链，不能只扩展本模型；还需明确 Job 持久化、owner/worker 分派、schema diff/version sync、回滚/取消、GC/delete-range、MDL，以及 PD/TTL/TiFlash 外部资源的生命周期。这属于本文件当前能力之外，应单独设计和验证。
 - 性能风险主要在全目录 clone（批量 rename）和全目录外键扫描（每次 rename）；表数量扩大后应考虑仅复制/扫描受影响 schema 或维护反向外键索引，但优化必须保持失败原子性和循环换名语义。
 - 新增 `TableError` 时应同时决定它与 Go 错误优先级、SQL 错误码及 Job cancel/rollback 状态的对应关系，避免测试只匹配枚举而掩盖生产差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/ddl/table.rs` 确认目标文件已索引；`node --file pkg/ddl/table.rs` 分段读取 702 行及 65 个符号；`query TableCatalog`、`query set_tiflash_replica` 定位符号。对 `TableCatalog`、`set_tiflash_replica` 等执行 `callers`/`callees` 未得到调用边，文档已按“图未覆盖”处理而未臆测。
-- Rust 源与装配：`pkg/ddl/table.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- Rust 独立测试：重点读取 `pkg/ddl/table_test.rs`；并通过定向引用核对 `pkg/ddl/table_rename_aster_unit_test.rs`、`pkg/ddl/db_rename_test.rs`、`pkg/ddl/db_change_test.rs`、`pkg/ddl/db_integration_test.rs`、`pkg/ddl/attributes_sql_test.rs`、`pkg/ddl/table_split_test.rs`、`pkg/ddl/tests/serial/serial_test.rs`、`pkg/ddl/tests/tiflash/ddl_tiflash_test.rs`。
-- Go 对照：`pkg/ddl/job_worker.go:runOneJobStep` 的 Action 分派，`pkg/ddl/table.go` 的 `onDropTableOrView`、`onRecoverTable`、`onTruncateTable`、`onRebaseAutoID`、`onShardRowID`、`onRenameTable`、`onRenameTables`、`onModifyTableComment`、`onModifyTableCharsetAndCollate`、`onSetTableFlashReplica`、`onUpdateTiFlashReplicaStatus`、`onAlterTableAttributes`、`onAlterTablePlacement`、`onAlterCacheTable`、`onAlterNoCacheTable`、`onAlterTableAffinity`，以及 `pkg/ddl/table_test.go`。
-- 结构验收使用任务指定命令，要求文件存在且恰有 11 个固定二级标题。任务是纯文档分析，按计划不运行 Cargo，也不以 `pkg/ddl/table_test.rs` 中的占位测试函数作为运行时能力证明。

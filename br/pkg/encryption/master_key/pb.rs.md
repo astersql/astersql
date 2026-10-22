@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pb.rs`](./pb.rs) 属于 `astersql-br-pkg-encryption-master-key` library crate。该 crate 由 [`Cargo.toml`](./Cargo.toml) 定义，入口 [`lib.rs`](./lib.rs) 以 `pub mod pb` 装配本模块，再以 `pub use pb::*` 将公开类型重导出到 crate 根。文件只有数据类型，没有加解密、文件访问、KMS 请求或 protobuf 编解码函数。
-
-本文件是 Go `encryptionpb` 消息在 Rust 主密钥子系统中的轻量字段投影，而不是由 `.proto` 生成的完整绑定。权威消息形状位于 [`pkg/util/resourcegrouptag/proto/kvproto/encryptionpb.proto`](../../../../pkg/util/resourcegrouptag/proto/kvproto/encryptionpb.proto)；当前投影只保留 `br/pkg/encryption/master_key` 已实际消费的密文、元数据和后端配置字段。
+例如 Rust `EncryptedContent` 没有 proto 中的 `master_key`、`iv`、`ciphertext_key` 字段，Rust `MasterKeyKms` 没有 Azure 具体配置；相邻后端目前把 IV、算法、KMS vendor 和被包装的数据密钥放进 `Metadata`。
 
 ## 核心职责
 
@@ -64,11 +62,11 @@ RustCodeGraph 的文件节点记录了 `multi_master_key_backend_test.rs`、`pb_
 
 ## 与 Go 版本的对应关系
 
-Go 生产代码直接使用 `github.com/pingcap/kvproto/pkg/encryptionpb` 生成类型；同仓 [`encryptionpb.proto`](../../../../pkg/util/resourcegrouptag/proto/kvproto/encryptionpb.proto) 是字段语义依据。Rust `MasterKeyBackend` 对应 Go oneof：`Plaintext`、`File`、`Kms` 分别映射三个分支，额外的 `Unset` 显式表达 Go 中 `Backend == nil`，`pb_test.rs::master_key_default_represents_unset_go_oneof` 固定了这一默认语义。
+Rust `MasterKeyBackend` 对应 Go oneof：`Plaintext`、`File`、`Kms` 分别映射三个分支，额外的 `Unset` 显式表达 Go 中 `Backend == nil`，`pb_test.rs::master_key_default_represents_unset_go_oneof` 固定了这一默认语义。
 
-Rust `MasterKeyFile.Path` 对齐 proto `path`。Rust `MasterKeyKms` 对齐 vendor、key_id、region、endpoint、aws_kms 和 gcp_kms，但省略 `azure_kms`；尽管枚举工厂识别 Azure vendor，当前 `createCloudBackend` 明确返回 `not implemented Azure KMS`。AWS/GCP 子配置使用 KMS crate 的轻量配置类型，而非 protobuf 生成类型。
+Rust `MasterKeyKms` 对齐 vendor、key_id、region、endpoint、aws_kms 和 gcp_kms，但省略 `azure_kms`；尽管枚举工厂识别 Azure vendor，当前 `createCloudBackend` 明确返回 `not implemented Azure KMS`。
 
-Rust `EncryptedContent.Content/Metadata` 对齐 proto 的同名字段，但省略 `master_key`、`iv` 和 `ciphertext_key`。当前 Go/Rust 后端共同依赖 metadata 协议完成 AES-GCM 与 KMS 解密，这能覆盖本包当前路径，却不等同于完整消息等价。字段采用 PascalCase 是为贴近 Go 使用面；`lib.rs` 通过 lint allow 接受这些非惯用 Rust 名称。
+Rust `EncryptedContent.Content/Metadata` 对齐 proto 的同名字段，但省略 `master_key`、`iv` 和 `ciphertext_key`。字段采用 PascalCase 是为贴近 Go 使用面；`lib.rs` 通过 lint allow 接受这些非惯用 Rust 名称。
 
 ## 扩展指南
 
@@ -77,11 +75,3 @@ Rust `EncryptedContent.Content/Metadata` 对齐 proto 的同名字段，但省�
 - 扩展 `EncryptedContent` 前先判断需求是 crate 内部字段还是 protobuf 持久化字段。后者应以 `.proto` 演进和兼容转换为中心，并验证未知字段、旧数据和 Go/Rust 往返；不应仅在轻量结构中添字段后宣称线格式已支持。
 - 修改默认值时必须保留未设置 oneof 的可表达性，或同步调整 `CreateBackend` 的错误契约和 `pb_test.rs`。对 map 键协议的修改还需同步 `common.rs`、内存/KMS 后端及其测试。
 - 性能方面优先沿用借用式解密接口，避免克隆 `EncryptedContent`；安全方面避免输出 `Debug` 全量内容，并评估敏感元数据在释放前是否需要显式清零。
-
-## 验证依据
-
-事实核验读取了：`br/pkg/encryption/master_key/pb.rs`、`Cargo.toml`、`lib.rs`、`pb_test.rs`、`master_key.rs`/`.go`、`mem_backend.rs`/`.go`、`file_backend.rs`、`kms_backend.rs`、`multi_master_key_backend.rs`、`parity_test.rs`、`br/pkg/encryption/manager.rs`，以及 `pkg/util/resourcegrouptag/proto/kvproto/encryptionpb.proto`。
-
-RustCodeGraph 证据包括：`status`（索引含 7032 个 Rust 文件）、`files --filter br/pkg/encryption/master_key`、`node --file br/pkg/encryption/master_key/pb.rs`，以及对 `EncryptedContent`、`MasterKeyFile`、`MasterKeyKms`、`MasterKeyBackend`、`MasterKey` 的查询。目标节点确认文件为 48 行、11 个符号，并给出五个测试侧文件使用者；数据类型没有函数调用边，生产消费者通过索引范围内的精确符号引用补证。
-
-独立测试证据包括：`pb_test.rs` 验证默认 `MasterKey` 对应未设置 oneof；`parity_test.rs::go_rust_public_contract_matches` 验证 `Plaintext`/`Unset` 错误、File 构造和 Azure 未实现分支；相邻 file/KMS/multi-master-key 测试覆盖 `EncryptedContent` 的实际构造与消费。按任务约束未运行 Cargo；交付只执行 11 个固定章节的结构检查，并人工复核链接、字段差异、调用关系和扩展风险。

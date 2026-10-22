@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`index_cop.rs` 属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/ddl/lib.rs` 以 `pub mod index_cop` 暴露。它把 Go 文件 `pkg/ddl/index_cop.go` 中“ADD INDEX 回填时通过 Coprocessor 扫描行并转换索引输入”的若干概念，压缩成可独立验证的 Rust 数据模型与纯函数。
-
-当前实现不是完整的 TiKV Coprocessor 客户端，也没有直接驱动 DDL job、schema state、checkpoint 或分布式回填。RustCodeGraph 对本文件公开函数的调用查询只找到测试/基准组合入口；生产 Rust 代码中主要是 `pkg/ddl/index_presplit.rs` 和 `pkg/ddl/index_auto_presplit.rs` 复用 `Datum`。因此它目前更准确的角色是“索引回填语义基础件与移植边界”，而不是已经接入 owner/worker 主链的扫描执行器。
+用 `build_table_scan` 模拟左闭右开 key range 扫描，并可选执行 selection 谓词。
 
 ## 核心职责
 
@@ -91,17 +89,12 @@ Go 对照的真实上游是 `pkg/ddl/backfilling_operators.go`，行转换调用
 
 ## 与 Go 版本的对应关系
 
-符号意图大致对应，但 Rust 是明显的语义子集：
-
 - Rust `wrap_in_begin_rollback` 对应 Go `wrapInBeginRollback` 的 begin/operation/rollback 顺序和“忽略 rollback 错误”；它没有真实 `sess.Session`、`Txn().StartTS()`、failpoint，也不保留 panic 时 defer 清理。
 - Rust `build_table_scan` 在内存中过滤 `ScanRow`；Go `buildTableScan` 调用 `buildDAGPB`，配置 startTS、key range、顺序、并发度、TiKV store、DDL request source，并通过 `distsql.Select`（可带 runtime stats）发请求。Rust 返回的布尔值只表示传入了 selection；Go 的 `conditionPushed` 表示表达式完整转换并实际下推成功，两者并不等价。
 - Rust `fetch_table_scan_result` 做 slice 分批；Go 版本调用 `SelectResult.Next` 并填充虚拟列，以空 chunk 表示完成。
 - Rust `complete_error` 改写抽象 `DuplicateKey`；Go `completeErr` 专门将函数索引的 invalid-JSON 错误补上索引名。
 - Rust `extract_datum_by_offsets` 有越界错误并返回克隆；Go `ExtractDatumByOffsets` 依据 expression 类型把 chunk row 写入预分配 buffer，依赖 offsets/列定义已正确。
-- Rust `build_handle` 的 Debug 文本编码不是 TiDB key codec。Go `BuildHandle` 会截断索引值、按 collation 和时区编码 common handle，并经 `errctx` 处理编码错误；整数分支构造 `kv.IntHandle`。
 - Rust `get_restore_data` 仅实现 common 开关与 Null 过滤。Go 还要求新 collation、有效 common-handle 版本和主键索引，并按字段类型执行截断与尾随空格计数转换。
-
-Go 集成测试 `pkg/ddl/index_cop_test.go::TestAddIndexFetchRowsFromCoprocessor` 使用 mock store 验证隐藏 row ID、整型聚簇主键和多列 common handle。Rust 测试覆盖相似形状，但仍是内存模型，不能作为真实 Coprocessor 集成等价证据。
 
 ## 扩展指南
 
@@ -113,11 +106,3 @@ Go 集成测试 `pkg/ddl/index_cop_test.go::TestAddIndexFetchRowsFromCoprocessor
 - 强化事务清理：若要求 panic/取消安全，应引入明确的 guard 或 unwind 策略，并测试清理次数与错误优先级。
 
 兼容风险主要在 handle 编码与 collation（会影响索引键兼容性）、selection 下推判定（会影响正确性）和 restore data（会影响唯一索引原值恢复）；性能风险主要是全量克隆、Debug 编码和非流式批处理。任何生产接线都应增加独立 Rust 集成测试，并继续与 Go `pkg/ddl/index_cop_test.go` 的三类句柄场景对齐。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/ddl/index_cop.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`、`pkg/ddl/doc.go`。
-- Rust 测试与组合调用：`pkg/ddl/index_cop_test.rs`、`pkg/ddl/export_test.rs`、`pkg/ddl/bench_test.rs`；生产类型复用：`pkg/ddl/index_presplit.rs`、`pkg/ddl/index_auto_presplit.rs`。
-- Go 对照与生产调用：`pkg/ddl/index_cop.go`、`pkg/ddl/index_cop_test.go`、`pkg/ddl/backfilling_operators.go`、`pkg/ddl/index.go`、`pkg/ddl/rollingback.go`。
-- RustCodeGraph：`status` 显示目标文件已被索引；`files --filter pkg/ddl/index_cop.rs` 识别 25 个符号；`node --file` 核对了 198 行完整源码；对七个公开函数执行 `query`、`callers`、`callees`，未发现 Rust 生产函数调用边，测试导入与源码引用由后续模块查询交叉确认。
-- 人工复核结论：文件存在是为了保存索引回填扫描/转换的最小 Rust 语义；当前运行方式是同步内存函数组合；安全扩展必须区分“简化模型增强”和“真实 Coprocessor 接线”，不能把前者误认为后者。

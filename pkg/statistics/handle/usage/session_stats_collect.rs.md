@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-statistics-handle-usage` crate，定义会话侧统计变化的内存收集层。crate 入口 `pkg/statistics/handle/usage/lib.rs` 以 `pub mod session_stats_collect` 声明模块，并通过 `pub use session_stats_collect::*` 再导出这里的公共类型和函数。`pkg/statistics/handle/usage/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认了这一边界；该清单列出的业务依赖全部位于 `cfg(any())`（恒假配置）下，因此本文件当前直接使用的运行时依赖只有 Rust 标准库的集合、同步原语和 `SystemTime`。
-
-在完整统计使用率链路中，本文件处于“各 Session 本地累计”与“统计句柄决定是否持久化”之间。相邻的 `predicate_column.rs::StatsUsageImpl` 持有 `Arc<SessionStatsList>`，通过 `new_session_stats_item` 向会话发放收集句柄，通过 `dump_stats_delta_to_kv` 和 `dump_column_stats_usage_to_kv` 先调用 `SessionStatsList::sweep`，再消费本文件的全局汇总。存储访问、schema 判断、刷盘比例和失败回并不在本文件内，而在 `predicate_column.rs` 的 `UsageStore`、`SchemaState` 与 `StatsUsageImpl` 中。
+用 `collect_pending_stats_delta_table_ids` 为刷盘层选择待处理表 ID：空目标表示全部，非空目标只保留仍有 pending delta 的唯一 ID，最终始终升序输出。
 
 ## 核心职责
 
@@ -84,15 +82,7 @@ RustCodeGraph 的精确 `callers collect_pending_stats_delta_table_ids` 查询�
 
 ## 与 Go 版本的对应关系
 
-直接对照 `pkg/statistics/handle/usage/session_stats_collect.go`：
-
-- Rust `TableDeltaMap::{update,merge,take,reset}` 对应 Go `TableDeltaMap::{Update,Merge,GetDeltaAndReset,Reset}`；Rust 把 Go `variable.TableDelta` 的必要字段本地化为 `TableDelta`。两者都累加数值，并在合并时保留最早 `InitTime`。
-- Rust `StatsUsage::{merge,merge_raw,take,reset}` 对应 Go `StatsUsage::{Merge,MergeRawData,GetUsageAndReset,Reset}`；同键均保留最新时间，谓词列入口都断言 `IsIndex` 为假。
-- Rust `SessionStatsItem::{delete,update,clear_for_test,update_column_usage}` 对应 Go `Delete`、`Update`、`ClearForTest`、`UpdateColStatsUsage`。
-- Rust `SessionStatsList::{new_item,sweep,table_delta,stats_usage,reset}` 对应 Go `NewSessionStatsItem`、`SweepSessionStatsList`、`SessionTableDelta`、`SessionStatsUsage`、`ResetSessionStatsList`。
-- Rust `collect_pending_stats_delta_table_ids` 保留 Go `collectPendingStatsDeltaTableIDs` 的空目标全选、目标去重、过滤不存在键和排序语义。
-
-实现结构存在已验证差异。Go 用带哨兵头节点的单链表，并在 sweep 中采用相邻节点锁接力，最多同时持有两个会话锁；Rust 用 `Mutex<Vec<SessionStatsItem>>`，sweep 持有向量锁并逐会话锁定。Go 的同一文件还包含刷盘阈值、SQL/KV 写入、批处理和指标逻辑；Rust 将这些职责拆到相邻 `predicate_column.rs` 的抽象存储实现中，因此不能把 Go 文件其余能力视为本文件已经实现。Go `ColStatsUsageEntry` 是格式化后的 `(TableID, ColumnID, LastUsedAt string)`，Rust 条目保留 `TableItemId` 与原始 `SystemTime`，格式化交给存储边界。Go `TableDeltaMap::Update` 不设置 `InitTime`，而当前 Rust 的两个 update 路径会在首次写入时设置；这与 Rust `predicate_column.rs` 的年龄判断配套。
+实现结构存在已验证差异。Go 用带哨兵头节点的单链表，并在 sweep 中采用相邻节点锁接力，最多同时持有两个会话锁；Rust 用 `Mutex<Vec<SessionStatsItem>>`，sweep 持有向量锁并逐会话锁定。Go 的同一文件还包含刷盘阈值、SQL/KV 写入、批处理和指标逻辑；Rust 将这些职责拆到相邻 `predicate_column.rs` 的抽象存储实现中，因此不能把 Go 文件其余能力视为本文件已经实现。Go `TableDeltaMap::Update` 不设置 `InitTime`，而当前 Rust 的两个 update 路径会在首次写入时设置；这与 Rust `predicate_column.rs` 的年龄判断配套。
 
 ## 扩展指南
 
@@ -102,11 +92,3 @@ RustCodeGraph 的精确 `callers collect_pending_stats_delta_table_ids` 查询�
 - 修改目标表选择策略时，集中在 `collect_pending_stats_delta_table_ids`，保持确定性排序，并在独立的 `session_stats_collect_test.rs` 增加空输入、重复、不存在键和顺序用例。
 - 改变锁布局或为 sweep 优化并发时，应验证固定锁序、注册与 sweep 的竞争、delete 与最后一次 update 的竞争，以及 take 后并发新写入不会丢失。测试仍应放在同目录独立测试文件，不能内嵌进生产源文件。
 - 涉及刷盘条件、错误回并、schema 或存储格式的需求，应修改 `predicate_column.rs` 及 `predicate_column_test.rs`，而不是把这些职责塞入本收集文件。需要与 Go 对齐时，还应检查 `session_stats_collect.go` 和 `session_stats_collect_test.go` 的相应语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 31 个已索引文件；`files --filter pkg/statistics/handle/usage` 确认源、模块入口和独立测试均入图；`node --file pkg/statistics/handle/usage/session_stats_collect.rs --offset 1 --limit 400` 返回完整 256 行及 31 个符号；`query` 分别定位 `TableDeltaMap`、`StatsUsage`、`SessionStatsItem`、`SessionStatsList`、`collect_pending_stats_delta_table_ids` 的 Rust/Go 定义。精确 callers 查询超时后的证据限制已在“依赖与调用关系”说明。
-- Rust 源与 crate：`pkg/statistics/handle/usage/session_stats_collect.rs`、`pkg/statistics/handle/usage/lib.rs`、`pkg/statistics/handle/usage/Cargo.toml`；该包及祖先目录未发现 `doc.go`。
-- Rust 直接调用与行为：`pkg/statistics/handle/usage/predicate_column.rs`、`predicate_column_test.rs`、`session_stats_collect_test.rs`。后者验证 sweep/删除、重复 sweep、delta 累加、最早时间、ID 去重排序及非正表 ID panic；前者的测试还验证最新列时间、pending delta、强制/比例刷盘、表不存在保留和写失败回并。
-- Go 对照：`pkg/statistics/handle/usage/session_stats_collect.go`、`session_stats_collect_test.go`，以及 `pkg/sessionctx/variable/session.go::TableDelta::MergeFrom`。Go 测试提供首次使用、时间节流和最早 `InitTime` 等集成语义，但本任务未运行 Go 测试，也未把 Go 集成行为误作 Rust 本文件的直接测试结果。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；交付前仅执行任务指定的 11 章节结构校验，并人工复核所有行为陈述均可回溯到上述符号和文件。

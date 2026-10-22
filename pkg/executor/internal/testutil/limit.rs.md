@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-executor-internal-testutil`，由同目录的 [`lib.rs`](lib.rs) 以 `pub mod limit` 声明，并通过 `pub use limit::*` 重新导出。它不是 Limit 执行器本身，而是执行器测试基础设施中的参数模型：用 `LimitCase` 描述一次 Limit 测试或基准所需的输入规模、截取区间、列裁剪开关和会话上下文，并由 `DefaultLimitTestCase` 提供与 Go 版本一致的默认场景。
-
-[`Cargo.toml`](Cargo.toml) 将该 crate 映射到 Go 包 `pkg/executor/internal/testutil`，常规依赖只有 `astersql-executor-internal-exec`；本文件实际使用的 `SessionContext`、`MemoryTracker`、`ColumnDef` 和 `FieldKind` 都来自同 crate 的 [`testutil.rs`](testutil.rs)。仓库根 `Cargo.toml` 将该 crate 纳入 workspace。当前 Rust 代码搜索只发现同 crate 回归测试直接调用 `DefaultLimitTestCase`，没有发现 Rust 版 Limit 基准消费 `LimitCase`；完整消费路径仍可在 Go 的 `pkg/executor/benchmark_test.go` 中看到。
+只描述和构造测试用例，不读取数据、不执行 `OFFSET`/`COUNT`、不实现列裁剪，也不创建执行器。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ RustCodeGraph 没有显示本文件调用实际 Limit 执行器；代码搜索�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`limit.go`](limit.go)：Rust 的 `LimitCase` 六个字段、`Columns`、字符串表示和默认构造均逐项对应 Go 实现。
-
 - Go 的 `sessionctx.Context` 接口在 Rust 测试工具中收敛为拥有型 `SessionContext`；Go 返回 `*LimitCase`，Rust 返回 `LimitCase` 值。
 - Go `Columns` 返回两个 `*expression.Column`，其 `RetType` 是 MySQL `TypeLonglong`；Rust 返回两个简化的 `ColumnDef`，类型为 `FieldKind::LongLong`。Rust 对象不是生产 `expression.Column` 的完整替代。
 - Go 通过 `vardef.DefInitChunkSize`、`vardef.DefMaxChunkSize` 和 `memory.NewTracker(-1, -1)` 初始化真实会话状态；Rust 通过测试工具的 `resetChunkSizes` 与简化 `MemoryTracker` 表达同样的默认契约。
@@ -105,16 +101,3 @@ RustCodeGraph 没有显示本文件调用实际 Limit 执行器；代码搜索�
 - 若移植 Go `BenchmarkLimitExec`，应分别覆盖 `UsingInlineProjection = false/true`，验证位图 `[false, true]` 在外接 Projection 和 Limit 内联裁剪两条路径得到一致 schema 与行数，并明确处理 `Offset + Count` 的安全加法。
 - 更改默认会话设置会影响共享测试夹具。需同时验证 Chunk 默认值、语句 tracker 与普通 tracker 的差异，避免把 `statement_memory_tracker` 和 `memory_tracker` 混为一谈。
 - 性能风险主要来自将 `Columns` 或位图处理放入高频循环造成重复分配；兼容风险来自改变稳定的 `Display` 文本、默认规模或 Go/Rust 字段语义。
-
-## 验证依据
-
-本说明基于以下可复核证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；目标目录和 `limit.rs` 均已索引。
-- RustCodeGraph `explore "pkg/executor/internal/testutil/limit.rs LimitTestSuite LimitExecutor"`：读取目标文件全貌，并报告 `DefaultLimitTestCase` 的调用者为 `testutil_test.rs::operator_cases_match_go_defaults`。
-- RustCodeGraph `query LimitCase`、`query DefaultLimitTestCase` 和 `node pkg/executor/internal/testutil/limit.rs::DefaultLimitTestCase`：核对 Rust/Go 同名符号、默认构造源码及调用轨迹。图的单独 `callers`/`callees` 命令未返回额外边，因此又以全仓 `rg` 核对直接引用。
-- 源文件：[`limit.rs`](limit.rs)；crate 入口与边界：[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)；下游测试工具定义：[`testutil.rs`](testutil.rs)。
-- Go 对照与真实消费：[`limit.go`](limit.go)、`pkg/executor/benchmark_test.go` 中的 `benchmarkLimitExec` 和 `BenchmarkLimitExec`。
-- Rust 独立测试：[`testutil_test.rs`](testutil_test.rs) 中的 `operator_cases_match_go_defaults`。同目录没有 `limit_test.rs` 或 `limit_tests.rs`，测试由 `lib.rs` 的 `#[cfg(test)]` 模块装配。
-- 人工复核结论：该文件存在是为了集中描述可复用 Limit 测试场景；当前 Rust 运行流程止于默认对象构造和对齐断言，Go 基准展示了完整预期消费；安全扩展需同步结构体、默认值、显示格式、独立测试及 Go 对照，并避免把未迁移的 Rust 执行链写成现状。
-

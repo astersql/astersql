@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate，由 [`lib.rs`](lib.rs) 以 `pub mod mem_root` 公开。它位于 DDL add-index ingest/reorg 的资源控制层：本地引擎和 writer 在创建时先查询共享内存预算，再把预留量登记到这个根计数器；配置选择和错误消息也从这里读取当前用量与上限。
-
-它不是系统内存采样器、分配器或 DDL job 持久化组件。`MemRootImpl` 只维护调用者显式报告的进程内账目，不会阻止真实分配，也不主动触发 flush/import。Rust 仓库中生产模块已经通过 `Arc<dyn MemRoot>` 接受并传播这一接口，但精确检索到的 `MemRootImpl::new` 构造点仅位于 Rust 单元测试和 `tests/realtikvtest/addindextest3/functional_test.rs`；Go 版本则由 `env.go` 初始化全局 `LitMemRoot`。因此当前 Rust 默认实现应视为已公开、可被局部链路使用且有测试覆盖的移植组件，不能据此宣称已经完成与 Go 全局 ingest 环境等价的生产接线。
+用 `MemRoot` trait 固定内存配额组件所需的查询、增减、按标签记账和刷新接口，并要求实现满足 `Send + Sync`。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 的文件节点报告 `mem_root.rs` 被 16 个文件引用，并�
 
 ## 与 Go 版本的对应关系
 
-Rust `MemRoot`/`MemRootImpl` 分别对应 [`mem_root.go`](mem_root.go) 的 `MemRoot`/`memRootImpl`。两端都提供相同类别的方法、允许相等于配额的申请、让同一标签累计、让重复标签释放成为空操作，并把 `RefreshConsumption` 保留为空操作。Rust 独立测试 [`mem_root_test.rs`](mem_root_test.rs) 重现了 Go [`mem_root_test.go`](mem_root_test.go) 的 1024 配额、普通增减、标签累计/释放和混合记账主流程，另补了有符号值与刷新空操作的边界覆盖。
-
 明确差异与迁移状态如下：
 
 - Go 用一把 `sync.RWMutex` 同时保护 `maxLimit`、`currUsage` 和 `structSize`，因此一次 `CheckConsume` 在同一读锁下取得用量和上限；Rust 使用两把 `Mutex` 并分两次读取，快照一致性更弱。两端仍都存在“检查后再消费”的跨调用 TOCTOU。
@@ -92,12 +88,3 @@ Rust `MemRoot`/`MemRootImpl` 分别对应 [`mem_root.go`](mem_root.go) 的 `MemR
 - 若改变负值或溢出策略，必须评估与 Go `int64` 行为和已有测试的兼容性，补充 `i64::{MIN,MAX}`、超额释放、负配额及标签/无标签混用测试。
 - 若改变锁粒度或 poison 策略，应增加多线程并发预留、配额更新与重复释放测试，确认不会丢计数或死锁。性能风险主要是所有 engine/writer 共享单一 `usage` mutex 的竞争。
 - Rust 测试应继续放在独立的 `mem_root_test.rs` 或相关模块测试文件中，不要把测试嵌入 `mem_root.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`files --filter pkg/ddl/ingest` 列出目标、Go 对照和测试；`node --file pkg/ddl/ingest/mem_root.rs --offset 1 --limit 400` 完整读取 120 行并报告 16 个引用文件；`query MemRoot`、`query MemRootImpl --kind struct --json` 及方法查询定位 trait、实现和主要 API。精确 `callers/callees` 查询超时且无可用输出，调用边以源码精确检索补证。
-- 目标与 crate 边界：[`mem_root.rs`](mem_root.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。前者确认 27 个索引符号、两类状态和全部方法；后两者确认公开模块、crate 名 `astersql-ddl-ingest`、库入口及 Go package 元数据。
-- Rust 直接调用者：[`engine.rs`](engine.rs)、[`backend.rs`](backend.rs)、[`backend_mgr.rs`](backend_mgr.rs)、[`config.rs`](config.rs)、[`message.rs`](message.rs)。它们分别证明标签预留/释放、共享传播、构造注入、配置读取和错误快照关系。
-- Go 对照：[`mem_root.go`](mem_root.go)、[`engine.go`](engine.go)、[`engine_mgr.go`](engine_mgr.go)、[`env.go`](env.go)；用于核对接口、锁语义、结构体大小记账和全局初始化。Rust 当前生产构造缺口由全仓 `MemRootImpl::new` 精确检索确认。
-- 测试：[`mem_root_test.rs`](mem_root_test.rs) 覆盖配额边界、普通/标签记账、重复释放、混合用法、负值与刷新空操作；[`mem_root_test.go`](mem_root_test.go) 提供原始主流程；`tests/realtikvtest/addindextest3/functional_test.rs` 提供 Rust RealTiKV 测试构造证据。按任务约束，本次纯文档分析未运行 Cargo。
-- DDL 语境：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md` 仅作为 add-index/reorg 入口背景，本文关于实际行为、接线和差异的结论均由上述源码与测试复核。

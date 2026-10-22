@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate。crate 根在 `pkg/executor/Cargo.toml` 中以 `lib.rs` 为入口，`pkg/executor/lib.rs:77-78` 通过 `pub mod checksum` 公开本模块；独立测试由 `pkg/executor/lib.rs:414-416` 的 `#[path = "checksum_test.rs"]` 接入。
-
-它移植了 Go 版 `ADMIN CHECKSUM TABLE` 执行器的核心算法：把逻辑表展开成表数据与 Public 索引的 DistSQL checksum 请求，并发执行，最后按逻辑表汇总 CRC64-XOR、KV 数和字节数。与 Go 版不同，Rust 文件不直接依赖具体的 session、KV、tipb 或 chunk 类型，而是用 `ChecksumBackend`、`ChecksumResultStream` 和 `ChecksumOutputChunk` 三个 trait 隔离生产设施（`pkg/executor/checksum.rs:126-192`）。
-
-当前接线状态必须谨慎理解：Rust 模块已由 crate 根导出，算法也有独立单元测试，但全仓 Rust 引用搜索只找到 `pkg/executor/checksum_test.rs` 对 `ChecksumTableExec` 和 `newChecksumContext` 的使用，没有找到生产 `ChecksumBackend` 实现或 builder 对该执行器的实例化。因此，本文件目前是可测试的移植核心，不应描述为已经接入 Rust SQL 执行主链。Go 生产主链则在 `pkg/executor/builder.go:763-777` 构造 `ChecksumTableExec`。
+从后端读取会话 checksum 并发度，建立 scoped worker 池，执行所有任务并收集每个任务的一份结果（`ChecksumTableExec::Open`、`checksumWorker`）。
 
 ## 核心职责
 
@@ -101,12 +97,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 主要逐项对应 `pkg/executor/checksum.go`：
-
-- `ChecksumTableExec::Open/Next/buildTasks/handleResult/checksumWorker/handleChecksumRequest` 对应同名 Go 方法（Go `pkg/executor/checksum.go:45-186`，Rust `pkg/executor/checksum.rs:204-363`）。
-- `ChecksumTask`、`ChecksumResult`、`ChecksumContext` 和 `newChecksumContext` 对应 Go 的小写类型/构造函数（Go `:188-217`，Rust `:365-401`）。
-- `ChecksumContext` 的任务展开、表/索引请求构建和响应合并对应 Go `:219-320`；算法和范围选择保持一致。
-- `getChecksumTableConcurrency` 与 `updateChecksumResponse` 对应 Go `:322-336`。XOR 与两项求和完全一致。
 - Go 直接调用 `distsql.RequestBuilder`、`distsql.Checksum`、session vars、SQLKiller、日志、failpoint 和 `chunk.Chunk`；Rust 把这些具体行为移到三个 trait，因而当前文件本身没有真实 TiKV 请求类型、protobuf 解码或生产日志实现。
 - Go worker 通过 goroutine/channel 消费预填充任务 channel；Rust 用 scoped threads + mutex deque。两者都允许任务完成乱序并在主线程合并，但 Rust 的线程创建成本和 channel 容量不变量不同。
 - Go 的 `res.Close` defer 会覆盖此前错误并随后触发 `afterHandleChecksumRequest` failpoint；Rust `handleChecksumRequest` 显式保留这一顺序。
@@ -124,16 +114,3 @@ Rust 主要逐项对应 `pkg/executor/checksum.go`：
 - 修改并发解析时要考虑 Rust `usize` 与 Go signed 64-bit 的差异，并增加非法、零值、超大值测试；生产代码还应在 session variable 层保证合理上限，避免无界创建 OS threads。
 - 修改输出列或顺序时需同步 SQL 层 schema、`ChecksumOutputChunk` 适配器和 `Next` 测试。多表顺序若需要稳定，必须显式排序，不能依赖 `HashMap` 遍历。
 - 性能风险集中在任务数量（物理表数 × Public 索引数）、外层线程数、每请求 DistSQL 并发度及全量响应聚合；兼容风险集中在 request metadata、snapshot TS、range 类型、错误优先级和 Go parity。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- Rust 实现：`pkg/executor/checksum.rs` 全部 543 行；重点核对 `ChecksumBackend`、`ChecksumTableExec::{Open,Next,buildTasks,checksumWorker,handleChecksumRequest}`、`ChecksumContext` 的请求构造方法、`checksumRequestCount`、`getChecksumTableConcurrency` 与 `updateChecksumResponse`。
-- Rust 独立测试：`pkg/executor/checksum_test.rs`，尤其是 `partitioned_table_checksum_builds_table_and_index_requests_per_physical_table`、`checksum_responses_xor_crc_and_sum_kv_totals`、`checksum_executor_matches_go_partitioned_table_result_and_request_contract`、`checksum_close_error_is_reported_after_every_stream_is_finalized`。
-- crate 边界：`pkg/executor/Cargo.toml:1-17`、其中的 porting metadata 与依赖表；模块/测试接线：`pkg/executor/lib.rs:77-78,414-416`。
-- Go 对照实现：`pkg/executor/checksum.go`；Go 生产入口：`pkg/executor/builder.go:763-777`；Go 回归：`pkg/executor/checksum_test.go:23-42`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query` 找到 Rust `ChecksumTableExec`（`:195`）、`ChecksumBackend`（`:138`）、`ChecksumContext`（`:382`）、`newChecksumContext`（`:390`）、`handleChecksumRequest`（`:335`）、`checksumRequestCount`（`:517`）和 `updateChecksumResponse`（`:539`）；`node pkg/executor/checksum.rs::ChecksumTableExec` 的 trail 显示测试导入及 `partitioned_executor` 实例化。精确 `callers/callees` 查询在 30 秒内未返回，因此调用边另由全仓 `rg` 复核，并未把超时结果当作“没有调用者”的依据。
-- 全仓引用核对：Rust 侧除 `pkg/executor/checksum_test.rs` 外未发现本文件公开执行器/构造函数的使用；同名 `br/pkg/checksum/executor.rs::updateChecksumResponse` 属于另一模块，不能视为调用本文件。Go 侧确认 builder 的生产构造边。
-
-本任务是纯文档分析，按计划未运行 Cargo 或代码测试。结构验收应使用任务指定命令，确认文件存在且恰好包含以上十一个固定二级标题；行为描述通过逐符号与 Go/Rust 独立测试人工交叉核对。

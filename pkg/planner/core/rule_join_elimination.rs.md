@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo 包 `astersql-planner-core`（见 `pkg/planner/core/Cargo.toml`），由 `pkg/planner/core/lib.rs` 以公开模块 `rule_join_elimination` 导出。它在简化的 Rust `JoinPlan` 计划树上实现外连接消除规则：当外连接的内表不会影响父节点所需列，并且重复行不会改变结果时，用外表子计划替换该连接。
-
-当前接线范围必须与 Go 主实现区分：Rust 仓库内对 `OuterJoinEliminator` 的直接使用仅见 `pkg/planner/core/rule_join_elimination_test.rs`；没有证据表明它已加入 Rust 优化器的规则序列。Go 对照实现则在 `pkg/planner/core/optimizer.go` 的 `optRuleList` 中注册 `&OuterJoinEliminator{}`，位于连接键类型改写之后、分区处理之前。
+Go 对照实现则在 `pkg/planner/core/optimizer.go` 的 `optRuleList` 中注册 `&OuterJoinEliminator{}`，位于连接键类型改写之后、分区处理之前。
 
 ## 核心职责
 
@@ -76,14 +74,11 @@
 
 Rust 符号名称总体与 `pkg/planner/core/rule_join_elimination.go` 对齐，但数据模型与覆盖范围明显简化：
 
-- 两边都支持左右外连接、父层内表列检查、重复无关聚合、唯一键/唯一索引思路，并返回规则名 `outer_join_eliminate`。
 - Go 在内表为零行 `LogicalTableDual` 时调用 `buildOuterJoinNullExtendedProjection`，保留原输出 schema、类型和输出名；Rust 虽定义同名帮助函数，却没有零行节点判定或调用点，而且其表达式只用字符串 `null` 表示。
 - Go 的唯一键检查覆盖 `PKOrUK` 与 `NullableUK`，索引检查遍历 `DataSource.AllPossibleAccessPaths` 并检查唯一索引、句柄路径、索引列及可空标志；Rust 只读取叶子的 `unique_keys`，所谓索引检查是同一逻辑的别名。
 - Go 的窗口模式严格要求单个 `row_number` 函数、完整的 `ROWS CURRENT ROW ... CURRENT ROW` frame、单个窗口结果列，并用真实表达式分析 `= 1` 或上界；Rust 仅检查简化节点字段和谓词名称编码。
 - Go 的递归覆盖 CTE、Apply、Projection、Aggregation、Join 及所有孩子；它还处理会话变量控制的相关子查询列、聚合参数及排序参数、Join 的左右/其它/NAEQ 条件。Rust 只特殊处理三类节点，Join 下游所需列只收集等值边与 `other_conditions` 的单一可选列。
 - Go `Optimize` 的 `planChanged` 当前始终为 `false`，但返回重写计划；Rust 返回 `doOptimize` 的实际变更标记。调用方若需要跨语言一致的变更标志，应先明确契约再调整。
-
-Go 回归 `pkg/planner/core/logical_plans_test.go::TestOuterJoinEliminator` 通过 SQL 与 golden 计划覆盖无列引用、左右外连接、`distinct`/重复无关聚合、复杂嵌套、`ORDER BY` 阻止消除和自然连接。对应输入/输出位于 `pkg/planner/core/testdata/plan_suite_unexported_{in,out}.json`。
 
 ## 扩展指南
 
@@ -94,14 +89,3 @@ Go 回归 `pkg/planner/core/logical_plans_test.go::TestOuterJoinEliminator` 通�
 - 扩展递归节点时，应修改 `doOptimize` 的列需求传播；尤其是 Join 新增条件类别、Apply 相关列、聚合函数参数和排序项时，必须把下层仍需使用的列纳入 `parentCols`。
 - 测试逻辑应继续放在独立的 `pkg/planner/core/rule_join_elimination_test.rs`，不要嵌入生产文件。至少同步增加：左右外连接、父层引用内表、复合/可空唯一键、NULL-safe 等值、重复无关聚合引用内表、连续消除、Join 条件保活、窗口边界和零行内表测试；需要证明完整 SQL 行为时再扩展集成测试或 fixture。
 - 兼容性风险主要是错误消除导致结果集行数或 NULL 语义变化；性能风险主要是遗漏消除以及计划克隆开销。任何放宽条件的修改都应先写一个修复前失败、修复后通过的回归测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust/Go 文件均可读取。
-- RustCodeGraph 文件节点：`pkg/planner/core/rule_join_elimination.rs`（完整 281 行）、`pkg/planner/core/rule_join_reorder.rs`（`JoinEdge`、`JoinNode`、`JoinPlan`、`Result`）、`pkg/planner/core/task.rs`（`JoinType`、`Expression`）。
-- RustCodeGraph 查询：`OuterJoinEliminator`、`tryToEliminateOuterJoin`、`JoinPlan`、`JoinNode`、`JoinEdge`、`JoinType`、`isSelectionPartitionedRowNumberWindowOneUnique`；索引的 `callers`/`callees` 命令未输出边，因此调用边又以文件节点和精确符号搜索交叉核对，没有据此虚构生产调用者。
-- crate 与装配：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。
-- Rust 独立测试：`pkg/planner/core/rule_join_elimination_test.rs` 覆盖聚合引用内表时拒绝、连续外连接消除、Join 条件列阻止错误消除和规则名。
-- Go 对照与生产注册：`pkg/planner/core/rule_join_elimination.go`、`pkg/planner/core/optimizer.go`。
-- Go 回归：`pkg/planner/core/logical_plans_test.go::TestOuterJoinEliminator` 及 `pkg/planner/core/testdata/plan_suite_unexported_in.json`、`plan_suite_unexported_out.json`；`pkg/planner/core/main_test.rs` 还验证该 fixture 分组存在且输入输出数量相等。
-- 本任务是纯文档分析，按计划未运行 Cargo、Go 测试或代码构建；最终仅执行任务指定的 11 章节结构验证，并人工复核上述事实与当前实现一致。

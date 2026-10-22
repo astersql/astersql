@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-property` crate。crate 根 `pkg/planner/property/lib.rs` 以私有模块 `stats_info` 装入它，再通过 `pub use stats_info::*` 暴露其 API；因此规划器其他 crate 通常以 `property::StatsInfo`、`property::DeriveLimitStats` 等名称使用这些定义。`pkg/planner/property/Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/planner/property`，直接的 Go 对照是同目录的 `stats_info.go`。
-
-它位于“统计收集/基数估算”和“逻辑、物理计划代价决策”之间：自身不读取表统计，也不计算选择率，而是承载计划节点输出的行数与 NDV 摘要，并提供缩放、列组 NDV 查询和 Limit/TopN 截断操作。`pkg/planner/cardinality/ndv.rs::init` 向本文件注册真正的 NDV 缩放算法；逻辑计划的 `LogicalLimit::DeriveStats`、`LogicalTopN::DeriveStats`，以及多个物理计划生成路径消费这里的结果。
+位于“统计收集/基数估算”和“逻辑、物理计划代价决策”之间：自身不读取表统计，也不计算选择率，而是承载计划节点输出的行数与 NDV 摘要，并提供缩放、列组 NDV 查询和 Limit/TopN 截断操作。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@ RustCodeGraph 索引显示本文件包含 13 个符号，并给出这些关键�
 
 ## 与 Go 版本的对应关系
 
-Rust 基本逐项移植 `pkg/planner/property/stats_info.go`：字段、`GroupNDV`、字符串化、`Count`、两种缩放、列组查找和 Limit 推导的数学意图一致。`pkg/planner/property/physical_property_test.rs::statistics_scaling_group_lookup_and_limit_match_go` 用线性回调验证 100 行按 0.5 缩放为 50、列/列组 NDV 同步缩放、版本保留、乱序输入列仍能命中，以及 Limit 后 NDV 截断和列组清空。
-
 需要注意的语言与迁移差异：
 
 - Go 直接保存 `*statistics.HistColl`；Rust 因 crate 边界保存 `Arc<dyn Any + Send + Sync>`，消费者需要 downcast。
@@ -102,7 +98,7 @@ Rust 基本逐项移植 `pkg/planner/property/stats_info.go`：字段、`GroupND
 - Go 的 `fmt` 直接打印 map，Rust `Display` 对列 ID 排序以获得确定输出；信息内容保持相同，但精确文本顺序不承诺与 Go map 展示一致。
 - Go `DeriveLimitStats` 依赖结构体零值使 `StatsVersion == 0`、`GroupNDVs == nil`；Rust 显式写 0 和空向量，语义等价但空容器表示不同。
 
-Go 侧 `pkg/planner/cardinality/ndv_test.go` 覆盖精确 GroupNDV 优先等下游语义；Rust 对应 `pkg/planner/cardinality/ndv_test.rs`。Go 的 `pkg/planner/core/casetest/stats_test.go` 使用 `property.ToString` 输出列组，Rust 对应 casetest 文件当前也通过同一 API 验证格式化逻辑属性。
+Go 的 `pkg/planner/core/casetest/stats_test.go` 使用 `property.ToString` 输出列组，Rust 对应 casetest 文件当前也通过同一 API 验证格式化逻辑属性。
 
 ## 扩展指南
 
@@ -112,11 +108,3 @@ Go 侧 `pkg/planner/cardinality/ndv_test.go` 覆盖精确 GroupNDV 优先等下�
 - 改动直方图类型时，应同步所有 `HistCollRef` 构造与 downcast 点；类型擦除错误只能在运行时发现，建议把转换集中在有明确错误返回的边界。
 - 测试逻辑应继续放在独立文件，不能内嵌到 `stats_info.rs`。直接行为优先扩展 `pkg/planner/property/physical_property_test.rs`；NDV 匹配/缩放算法联动扩展 `pkg/planner/cardinality/ndv_test.rs`；逻辑 Limit/TopN 或聚合传播则在相应 `logical_*_test.rs` 中补回归。
 - 兼容风险主要是 Go/Rust 浮点边界、零/NaN 输入、字符串稳定性及 `StatsVersion`/GroupNDV 传播差异；性能风险主要来自逐列/逐组重新分配、列排序和线性扫描。变更这些路径时应同时覆盖正常值、空集合、`RowCount <= 1`、期望值不小于原值、未命中和乱序列输入。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件且目标目录已索引；`files --filter pkg/planner/property` 确认 Rust/Go 对照与独立测试；`node --file pkg/planner/property/stats_info.rs --offset 1 --limit 260` 读取完整 196 行源文件；`query` 核对 `StatsInfo`、`SetScaleNDVFunc`、`ScaleByExpectCnt`、`GetGroupNDV4Cols`、`DeriveLimitStats` 符号；`explore`/调用查询确认关键调用边，并对同名符号噪声作源码复核。
-- 源与 crate 边界：`pkg/planner/property/stats_info.rs`、`pkg/planner/property/lib.rs`、`pkg/planner/property/Cargo.toml`。
-- Go 对照：`pkg/planner/property/stats_info.go`；下游 Go 测试证据包括 `pkg/planner/cardinality/ndv_test.go` 和 `pkg/planner/core/casetest/stats_test.go`。
-- Rust 调用与测试：`pkg/planner/cardinality/ndv.rs`、`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/core/operator/logicalop/logical_limit.rs`、`logical_top_n.rs`、`logical_aggregation.rs`、`pkg/planner/core/operator/physicalop/physical_lock.rs`、`physical_projection.rs`、`pkg/planner/property/physical_property_test.rs`、`pkg/planner/cardinality/ndv_test.rs`。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付前使用任务规定命令验证目标文件存在且恰有 11 个固定二级章节，并人工检查没有把类型擦除、回调初始化或 Go 指针语义误写成 Rust 已提供的行为。

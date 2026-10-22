@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-`pkg/session/runtime.rs` 是 `astersql-session` crate 的具体会话运行时模块根。`pkg/session/lib.rs` 以 `pub mod runtime` 暴露它；`pkg/session/Cargo.toml` 指定 crate 入口为 `lib.rs`、Go 移植归属为 `pkg/session`，并定义 `nextgen` feature。该文件不是单一执行器，而同时承担三种角色：声明并汇聚 `runtime/*` 子模块、重导出 `ConcreteSession` 等对外入口、为这些子模块提供进程级/Domain 级共享状态和通用辅助函数。
-
-文件头明确限定了边界：这里实现的是建立在规范 parser、`Domain` 和 KV 接口上的具体生命周期，主要服务 Go testutil 对齐和嵌入式服务器；完整 planner/executor 的 `sessionapi::Session` 仍是独立 ABI。具体 SQL 分派、事务、DML、查询、DDL、统计和会话对象分别落在 `runtime/dispatch.rs`、`transaction.rs`、`dml.rs`、`query.rs`、`ddl.rs`、`statistics.rs`、`session.rs`，本文件提供它们共同可见的状态与工具。
-
-本文件包含大量 `#[cfg(test)]` 子模块声明和少量 `*ForTest` 观察接口，但生产逻辑与测试逻辑仍位于独立文件；主独立测试入口是 `pkg/session/runtime_test.rs`，进一步拆到 `runtime_test/{ddl,planning,query,session,statistics,storage,typed_adapter_bridge}.rs`。源码顶部已保留 PingCAP Apache License，并有 `// Copyright 2026 AsterSQL.`。
+提供语句级公共策略：只读模式检查、parser 与 SQL mode 适配、会话 KV 表约束、简单 WHERE/分区表达式求值、split bound、日期时间、NULL 和错误文本转换。
 
 ## 核心职责
 
@@ -92,15 +88,13 @@ DDL 排队以 `Mutex + Condvar` 实现：提交顺序由 job ID 决定，同 sch
 
 ## 与 Go 版本的对应关系
 
-Go `pkg/session` 没有同名 `runtime.go`。Rust 把 Go `pkg/session/session.go`、事务、planner/executor glue、testkit 与 DDL owner 的部分行为聚合为 `runtime.rs` 模块树，因此只能按行为链对照，不能声称逐函数一一翻译。
+Rust 把 Go `pkg/session/session.go`、事务、planner/executor glue、testkit 与 DDL owner 的部分行为聚合为 `runtime.rs` 模块树，因此只能按行为链对照，不能声称逐函数一一翻译。
 
-Go `session.Execute` 执行 Parse 后要求单语句，再进入 `ExecuteStmt`；`executeStmtImpl` 准备事务上下文、加载全局变量、重置 statement context 并编译/执行。Rust 对应链是 `ConcreteSession` + `parse_with_sql_mode` + `runtime/dispatch.rs`/typed executor + transaction/query/DML 子模块。本文件只提供 parser、共享状态和辅助边界，不代表 Go 完整 session API。
+本文件只提供 parser、共享状态和辅助边界，不代表 Go 完整 session API。
 
-Go `PrepareStmt`/`ExecutePreparedStmt` 管理 prepared ID、schema version、dedup/plan cache 和 statement 生命周期；Rust 本文件的 Domain 级计数、generation、instance cache 与 `runtime/session.rs` 的会话状态共同对齐这些约束。Go `CommitTxn`/`RollbackTxn` 和 `Close` 的事务/资源清理在 Rust 主要由 `runtime/transaction.rs`、`session.rs` 及 Drop guard 承担，而非本文件单独实现。
+Go `CommitTxn`/`RollbackTxn` 和 `Close` 的事务/资源清理在 Rust 主要由 `runtime/transaction.rs`、`session.rs` 及 Drop guard 承担，而非本文件单独实现。
 
-DDL job 的提交顺序、history 和 failpoint 名称对齐 Go DDL owner/testutil 的可观察行为，但 Rust 这里的 `RuntimeDdlJobs` 是进程内协调/测试视图；持久 job 与恢复仍归 Domain 存储。简单 WHERE、分区、时间和 session-KV 辅助均为明确有限的兼容实现，不应外推为 Go expression/planner 的完整覆盖。
-
-`pkg/session/runtime_test.rs` 通过真实 mock KV/Domain 构造 `ConcreteSession`，其子测试覆盖规划、查询、DDL、统计、存储和 typed adapter；`datetime_parser_rejects_nonexistent_calendar_dates` 直接验证日期边界。Go 对照入口为 `pkg/session/session.go`、`pkg/session/sessionapi/session.go` 与 `pkg/session/session_test.go`；具体子模块行为还需继续对照相应 Go planner/executor/DDL 测试。
+DDL job 的提交顺序、history 和 failpoint 名称对齐 Go DDL owner/testutil 的可观察行为，但 Rust 这里的 `RuntimeDdlJobs` 是进程内协调/测试视图；持久 job 与恢复仍归 Domain 存储。
 
 ## 扩展指南
 
@@ -113,11 +107,3 @@ DDL job 的提交顺序、history 和 failpoint 名称对齐 Go DDL owner/testut
 DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任何退出都会归档并唤醒等待者”的不变量，并在独立 `pkg/session/runtime_test/ddl.rs` 或 `runtime/ddl_test.rs` 增加测试；不要把测试嵌进生产文件。内存动作变更应验证 fallback 只被正确调用、kill signal、日志一次性和所有 Drop 路径；并发 request 变更应继续验证每个 scan branch 拥有独立请求对象。
 
 性能风险主要来自全局 Mutex 热点、每次语句 parser/字符串转换、Domain map 清理、超大 OFFSET/DDL batch 参数和 DDL Condvar 冲突范围。兼容风险主要来自错误文本/错误码、SQL mode、prepared 配额作用域、NULL 哨兵、系统时区和 Go 的完整 expression 语义。改动前应在相应独立 Rust 测试中增加回归，并用 Go 同行为测试确认意图。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/runtime.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
-- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
-- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
-- 本文件 diff 仅增加 ValidateDiagnosticBootstrap 的 crate 内重导出；`dml_runtime_test.rs::start_diagnostic_preserves_persisted_bootstrap_versions` 验证旧版本诊断启动不推进版本。

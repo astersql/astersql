@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-importinto` crate 的分布式 IMPORT INTO 调度层。crate 由同目录 `Cargo.toml` 定义、由 `lib.rs` 的 `pub mod scheduler; pub use scheduler::*;` 暴露。当前仓库可检索到的工厂装配点位于 `pkg/session/runtime_test/ddl.rs`：它用 `ImportSchedulerServices::FromEncodeRuntime` 构造服务并调用 `RegisterImportSchedulerFactoryWithServices`；尚未从直接 Rust 引用中验证另一处生产启动装配。注册后，DXF 通用 `BaseScheduler` 通过 `framework_scheduler::Extension` 动态分派到 `ImportSchedulerExtension`，本文件再把通用框架任务转换成 IMPORT INTO 协议任务，并协调 `planner.rs`、`proto.rs`、importer、任务存储、对象存储、统计以及运行时。
-
-它不是子任务的数据处理器：编码排序、写入、冲突收集/解决和后处理由物理计划生成的子任务执行器完成。本文件负责的是任务级状态机、作业表状态、子任务批次生成所需的上下文和外围资源生命周期。`Cargo.toml` 的 `nextgen` feature 传递给 `astersql-config-kerneltype/nextgen`；同一份代码通过运行时的 Classic/NextGen 判断处理不同 keyspace 和准入规则。
+负责的是任务级状态机、作业表状态、子任务批次生成所需的上下文和外围资源生命周期。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 主对照文件是同目录 `scheduler.go`，独立测试为 `scheduler_test.go`、`scheduler_testkit_test.go`；Rust 对应测试放在 `scheduler_test.rs` 与 `scheduler_testkit_test.rs`，符合源文件与测试分离要求。
-
 - Go `NewImportScheduler`/`Init`/`OnTick`/`OnPrepare`/`OnNextSubtasksBatch`/`OnDone`/`GetNextStep` 对应 Rust factory + `ImportSchedulerExtension`、`prepareImportTask`、`nextImportSubtasksBatch`、`doneImportTask` 和 `importScheduler` 方法。Rust 将 Go 直接持有的 BaseScheduler/TaskRuntime 拆成通用框架 trait 与注入服务。
 - local/global 两条步骤链、前序 meta 收集、prepare-mode 的 StartJob/Job2Step 差异、多索引告警、post-process 行数与冲突数算法均保持 Go 逻辑。Rust 测试 `scheduler_local_sort_runs_go_import_validate_done_and_revert_phases` 与 `scheduler_global_sort_runs_go_seven_stage_subtask_matrix` 对应验证两条完整矩阵。
 - Go 的 etcd client + `TaskRegister` 被 Rust `ImportSchedulerRuntime::new_task_registration` 抽象；TTL、刷新节奏、失败仍节流、终态撤销和 owner Close 不撤销租约的语义保留。Rust 用 `Mutex<HashMap>` 替代 Go `sync.Map`。
@@ -94,11 +90,3 @@ Rust 主对照文件是同目录 `scheduler.go`，独立测试为 `scheduler_tes
 - 接入新的宿主能力优先扩展 `ImportSchedulerServices` 或 `ImportSchedulerRuntime`，明确其 ownership、取消传播和线程安全；不要在核心状态机内硬编码测试后端。若引入 owned 外部资源，仿照 `PreparedController`/`OwnedSortStore` 用 Drop 覆盖错误路径。
 - 调整重试或 best-effort 策略前必须区分核心一致性写入与外围恢复动作；尤其不要让统计、模式恢复或租约错误遮蔽原始任务结果。跨 keyspace 改动需复核 `job_doc.go` 描述的 job/task 分事务窗口和取消竞态。
 - 性能风险主要来自锁内网络调用、重复读取大量前序 metas、prepared meta/JSON 大小和节点数计算。兼容风险集中在持久 JSON、步骤编号/顺序、错误文本及 normalized code、Go 的 wrapping 整数行为和 Classic/NextGen 分支。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/dxf/importinto` 确认目标源、Go 对照和独立测试均已索引。
-- 查询：`explore "pkg/dxf/importinto/scheduler.rs scheduler ImportScheduler register_task unregister_task submit_task schedule_task"`；`query` 分别唯一定位 `prepareImportTask`、`nextImportSubtasksBatch`、`doneImportTask`、`NewImportSchedulerWithServices`、`RegisterImportSchedulerFactoryWithServices`。`callees` 证实准备路径到取消/重试/RAII/updateMeta，规划路径到空表检查、模式恢复、步骤与摘要，完成路径到恢复/注销/重试；trait 动态 caller 由 factory 与 `Extension` 源码补证。
-- 已读生产/边界文件：`pkg/dxf/importinto/scheduler.rs`（1710 行，RustCodeGraph 分段读取）、`pkg/dxf/importinto/Cargo.toml`、`pkg/dxf/importinto/lib.rs`、`pkg/dxf/importinto/job_doc.go`、`pkg/dxf/importinto/scheduler.go`、`pkg/session/runtime_test/ddl.rs` 的注册引用。
-- 已读测试：`pkg/dxf/importinto/scheduler_test.rs`、`pkg/dxf/importinto/scheduler_testkit_test.rs` 及 Go 对照 `scheduler_test.go`、`scheduler_testkit_test.go`。关键覆盖包括任务桥接、SQL 绑定、退避/取消、Classic 空表事务、stats 事务、用户 keyspace manager、JSON round-trip、模式节流、租约 Close、eligible/step matrix、prepare 文件发现、取消无副作用及 local/global 完整阶段。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行任务规定的 11 章节结构命令，并人工复核仅新增本文档、未修改 Rust/Go/Cargo/`plan.md`。

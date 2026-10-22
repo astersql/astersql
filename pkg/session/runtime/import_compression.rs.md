@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的具体会话运行时，由 `pkg/session/runtime.rs` 以私有模块 `import_compression` 装配。它实现的是 `IMPORT INTO ... FROM '<对象路径>'` 的同步、非 `split_file` 文件导入分支：`pkg/session/runtime/dispatch.rs` 识别 `ast::ImportIntoStmt` 并完成物化视图日志表、TTL 表和 `IMPORT INTO ... SELECT` 分流检查后，调用 `ConcreteSession::execute_import_file`；`pkg/session/runtime/import_file.rs::execute_import_file` 在选项中没有 `split_file` 时再调用本文件的 `ConcreteSession::execute_import_compression`。
-
-该分支把已注入的对象存储作为输入边界，负责文件匹配、按扩展名解压、CSV/SQL dump 解析、行值转换和一次性会话插入。它不是 Go 生产版分布式 IMPORT INTO 的完整调度器，也不创建导入任务、引擎或 SST；带 `split_file` 的路径由 `pkg/session/runtime/import_file.rs` 的其余实现处理。
+该分支把已注入的对象存储作为输入边界，负责文件匹配、按扩展名解压、CSV/SQL dump 解析、行值转换和一次性会话插入。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 仓库没有 `pkg/session/runtime/import_compression.go` 的一一同路径实现。生产 Go 主链位于 `pkg/executor/importer/import.go`：`LoadDataController`/`Plan` 解析选项、初始化数据文件，使用 `mydump.ParseCompressionOnFileExtension` 标记压缩类型，并为通配路径通过对象存储遍历与 `filepath.Match` 选择文件；后续导入由完整 importer/DXF 流程执行。`pkg/session/session.go::validateStatementInTxn` 还明确禁止在显式事务中执行 `IMPORT INTO`。
+本 Rust 文件保留的共同语义包括：默认 CSV 字段配置来源于 mydump；支持 CSV 和 SQL；压缩类型从文件扩展名推导；支持通配文件集合；`skip_rows` 非负且按文件生效；`thread` 必须为正；字段映射形态受到限制。
 
-本 Rust 文件保留的共同语义包括：默认 CSV 字段配置来源于 mydump；支持 CSV 和 SQL；压缩类型从文件扩展名推导；支持通配文件集合；`skip_rows` 非负且按文件生效；`thread` 必须为正；字段映射形态受到限制。Rust 独立测试用真实压缩 writer 验证 gzip/zstd/snappy 下 CSV 与 SQL 的行一致性，并验证损坏压缩流不会产生部分写入。
-
-需要明确的差异是：Go 版本支持更完整的选项验证、格式与存储规划、压缩大小估算、并行处理、任务调度和分布式写入；Go 通配路径使用转义后的 `filepath.Match`，而本文件只有 `*`；本 Rust 分支把文件和行全部缓存在内存，且 `thread` 不控制并发。文档中的“对应”因此是语义参照，而不是宣称实现架构完全等价。
+需要明确的差异是：Go 版本支持更完整的选项验证、格式与存储规划、压缩大小估算、并行处理、任务调度和分布式写入；Go 通配路径使用转义后的 `filepath.Match`，而本文件只有 `*`；本 Rust 分支把文件和行全部缓存在内存，且 `thread` 不控制并发。
 
 ## 扩展指南
 
@@ -88,14 +84,3 @@ Go 仓库没有 `pkg/session/runtime/import_compression.go` 的一一同路径�
 - 若增强 glob，应先决定是否与 Go 的 `filepath.Match`、对象存储 URI 查询参数和转义规则完全兼容，再替换 `source_matches` 并添加查询串、多个 `*`、空匹配及特殊字符用例。
 - 若实现真正并行或流式写入，必须显式设计文件顺序、内存上限、部分失败回滚、parser 关闭和 `execute_insert` 批次边界；这会改变当前“解析全部成功后才开始写”的重要性质。
 - 若增加列映射、隐藏列、默认值或二进制非 UTF-8 支持，入口校验、字段计数和 `Datum`→`ValueExpr` 转换必须一起调整，并与正常 DML 类型转换和 Go importer 控制器做兼容验证。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`node --file pkg/session/runtime/import_compression.rs` 核对了完整 230 行实现；`query` 唯一定位 `execute_import_compression`（第 38 行）和 `source_matches`（第 14 行）。精确 `callers/callees` 没有返回边，因此通过已索引文件节点和文本引用补足直接调用证据。
-- `pkg/session/runtime/dispatch.rs:1754-1784`：确认 `ImportIntoStmt` 的前置校验、query 分流及 `execute_import_file` 调用。
-- `pkg/session/runtime/import_file.rs:96-107`：确认没有 `split_file` 时直接调用 `execute_import_compression`；同文件 `ImportFiles` 定义确认 storage 状态来源。
-- `pkg/session/runtime.rs:59-60`：确认 `import_compression` 与 `import_file` 都是具体运行时的私有模块。
-- `pkg/session/Cargo.toml`：确认 crate 名、`nextgen` feature 以及 mydump、compressedio、parser AST 等工作区依赖。
-- `pkg/session/runtime/import_compression_test.rs`：`canonical_compressed_csv_and_sql_preserve_rows_and_skip_per_file` 覆盖 gzip/zstd/snappy、CSV/SQL、混合压缩与逐文件跳行；`canonical_corrupt_file_keeps_table_empty` 覆盖后续压缩文件损坏时无部分写入。
-- `pkg/executor/importer/import.go` 与 `pkg/executor/importer/import_test.go::TestInitCompressedFiles`：核对 Go 的默认字段配置、option 校验、通配文件发现、压缩扩展解析和压缩文件测试；`pkg/session/session.go::validateStatementInTxn` 核对显式事务限制。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核本文未把同步 Rust 分支描述为完整 Go 分布式导入实现。

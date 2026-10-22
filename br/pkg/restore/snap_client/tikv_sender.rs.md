@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-snap-client` library crate；crate 入口 `br/pkg/restore/snap_client/lib.rs` 通过 `pub mod tikv_sender` 装载它，并以 `pub use tikv_sender::*` 重导出公开符号。它对应 Go 包中的 `br/pkg/restore/snap_client/tikv_sender.go`，位于快照恢复的“已建表元数据/备份文件 → 下游物理表顺序 → region split 提示与 SST 文件组 → TiKV 导入”阶段。
-
-当前 Rust crate 的 `Cargo.toml` 明确标注为 arm64 darwin 可用的 local traits/stubs 边界；源码也依赖同 crate 的 `stubs.rs`，而不是直接依赖真实 PD、TiKV、kvproto 或 gRPC crate。因此本文所称“发送”和“恢复”首先描述该 Rust API 的控制流契约，不能等同于 Go 主程序已经具备的完整线上能力。RustCodeGraph 显示该文件由独立测试模块使用；仓库 Rust 源码文本搜索未发现 `RestoreTables` 的应用级调用者，Go 对应方法则由 `br/pkg/task/restore.go` 的 `runSnapshotRestore` 调用。
+没有定义网络协议实现、PD store 枚举算法、文件下载/ingest 细节或 rewrite 算法本体；这些能力分别来自 `ImporterClient`、`GetAllTiKVStoresWithRetry`、`SstRestorer` 和 `MergeAndRewriteFileRanges` 边界。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@ force partition range 的资源生命周期理想顺序为 add → restore → r
 
 ## 与 Go 版本的对应关系
 
-算法上，Rust 保留了 Go 的表/分区展开与按下游 ID 排序、rewrite 校验、跨表范围合并、1536 文件阈值、checkpoint 在 split 选择之后过滤、按表切分、CF 统计以及 add/remove 请求对 `Unimplemented` 的兼容策略。`tikv_sender_test.rs` 的主要矩阵对照 Go 测试，覆盖不同阈值、是否跨表合并、是否启用 checkpoint，以及非均匀 size/count 统计。
+`tikv_sender_test.rs` 的主要矩阵对照 Go 测试，覆盖不同阈值、是否跨表合并、是否启用 checkpoint，以及非均匀 size/count 统计。
 
 仍存在明确差异：
 
@@ -96,8 +94,6 @@ force partition range 的资源生命周期理想顺序为 add → restore → r
 - Go `RestoreSSTFiles` 带 failpoint、checkpoint runner，并把批次展开给完整 restorer；Rust 没有 failpoint，使用当前 `GetRestorer()` 边界，默认只是内存记录。
 - Go 记录真实阶段耗时；Rust对 merge duration 固定记录 0 秒，split 仅记数量。
 
-因此可以认为范围整理算法已被移植和测试，但真实 region split/scatter、并发 store RPC、下载/ingest 与应用主链接线仍未由本文件证明完成。
-
 ## 扩展指南
 
 - 扩展排序/分组策略时优先修改 `getSortedPhysicalTables` 或 `SortAndValidateFileRanges`，并同步扩展独立文件 `tikv_sender_test.rs`；必须保留“先选 split key、后 checkpoint 过滤”的重试确定性，以及按 `NewPhysicalID` 排序的不变量。
@@ -106,13 +102,3 @@ force partition range 的资源生命周期理想顺序为 add → restore → r
 - 接入真实 TiKV 请求时，应让 importer 缺失成为显式初始化错误，并评估是否复刻 Go 的并发/取消语义；测试至少覆盖 TiFlash/离线/空地址过滤、首错传播、`Unimplemented` 降级、多 store 并发和 context 取消。
 - 扩展 restorer 生命周期时修改 `RestoreSSTFiles` 和 `SnapClient::GetRestorer` 的实现边界，测试 `GoRestore` 失败时不等待、等待失败传播、后台任务汇合和 Close 所有权。测试逻辑继续放在 `tikv_sender_test.rs` 或其他独立 `*_test.rs`，不要内嵌进生产文件。
 - 调整 add/remove 清理策略时重点处理 restore 失败后的 remove 是否应执行、remove 错误是否应与主错误合并，以及 7200 秒 TTL 的兼容性；任何变化都要与 Go 行为和旧 TiKV 的 `Unimplemented` 约定对齐。
-
-## 验证依据
-
-- 生产源：`br/pkg/restore/snap_client/tikv_sender.rs`，核对了 1–452 行全部符号与控制流；直接结构来源还包括 `client.rs::SnapClient/GetRestorer`、`pipeline_items.rs::PhysicalTable`、`placement_rule_manager.rs` 和 `stubs.rs::ImporterClient/SstRestorer/SimpleRestorer/GetAllTiKVStoresWithRetry`。
-- crate 边界：`br/pkg/restore/snap_client/Cargo.toml` 与 `lib.rs`，确认 library 路径、porting 元数据、local stubs 约束、模块装载及公开重导出。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/restore/snap_client` 定位了 39 个相关 Go/Rust 文件；`query/node/explore` 核对了本文件符号、源码和直接调用边。图中关键边包括 `RestoreTables → SortAndValidateFileRanges/SplitPoints/compactAndCheckSSTRange/RestoreSSTFiles/removeForcePartitionRange`、`SortAndValidateFileRanges → getSortedPhysicalTables/filterOutFiles`、`filterOutFiles → getFileRangeKey`。
-- Rust 测试：`br/pkg/restore/snap_client/tikv_sender_test.rs`；确认 `test_get_sorted_physical_tables` 的分区展开排序断言，以及 `test_sort_and_validate_file_ranges` 对 threshold、split-on-table、checkpoint、非均匀 size/count 的矩阵覆盖。测试明确不发真实 TiKV RPC。
-- Go 对照：`br/pkg/restore/snap_client/tikv_sender.go` 与 `tikv_sender_test.go`，核对完整 split/scatter、并发 store 广播、进度、failpoint、restorer/checkpoint 和文件名契约；RustCodeGraph 还给出 Go 主链 `br/pkg/task/restore.go::runSnapshotRestore → RestoreTables`。
-- 接线限制：RustCodeGraph 将 `tikv_sender.rs` 标为由 `tikv_sender_test.rs` 使用；`rg -n 'RestoreTables\\(' --glob '*.rs'` 除定义外无结果。因此“Rust 应用主链尚未发现调用”是当前仓库证据，不推断未来接线状态。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核本文未把 stub 行为描述成完整生产能力。

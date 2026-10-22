@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`expand.rs` 属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs:102` 以 `pub mod expand;` 公开该模块，`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认其装配入口。文件只直接导入 `astersql_util_chunk::Chunk`，对应 manifest 中指向 `../util/chunk` 的 `astersql-util-chunk` 路径依赖。
-
-该文件移植的是 root/TiDB 侧 Expand 执行状态机：同一批子执行器输入要依次经过多组 grouping-set 投影，从而为 `GROUPING SETS`、`ROLLUP`、`CUBE` 的后续聚合生成多份输入。Go 主链由 `pkg/executor/builder.go:2517-2546` 的 `buildExpand` 构造 `ExpandExec`；Rust 仓库搜索只找到本文件定义和 `lib.rs` 的模块导出，未找到 `ExpandBackend` 实现、`ExpandExec` 构造或方法调用，因此当前 Rust 模块尚未接入 Rust executor builder/runtime。这里描述的是已实现的状态机能力，不等同于已端到端启用。
+移植的是 root/TiDB 侧 Expand 执行状态机：同一批子执行器输入要依次经过多组 grouping-set 投影，从而为 `GROUPING SETS`、`ROLLUP`、`CUBE` 的后续聚合生成多份输入。
 
 ## 核心职责
 
@@ -65,11 +63,11 @@ RustCodeGraph 对 `expand.rs` 的下游边显示：`Open -> backend.open + open`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/expand.go`。两版都使用 `levelIterOffset == -1` 表示需要拉取输入，都把输出的 required rows 传给缓存 chunk，都按内存差值记账，都让同一输入依次运行所有 level，并都把并行路径保留为明确的“未实现”错误。Rust 的 `Open`、`Next`、`isUnparalleled`、`unParallelExecute`、`parallelExecute`、`Close` 与 Go 同名方法逐项对应。
+两版都使用 `levelIterOffset == -1` 表示需要拉取输入，都把输出的 required rows 传给缓存 chunk，都按内存差值记账，都让同一输入依次运行所有 level，并都把并行路径保留为明确的“未实现”错误。
 
-Rust 通过 `ExpandBackend` 拆出了 Go 的具体基础设施：Go 的 `BaseExecutor.Open/Close` 对应 `backend.open/close`，`exec.Next` 对应 `next_child`，`EvaluatorSuite.Run` 对应 `run_level`，`memTracker` 对应内存方法，runtime concurrency stats 对应 `register_concurrency`。Go 从 `levelEvaluatorSuits` 的长度得到 level 数量，而 Rust 额外保存 `level_count`；移植接线时必须保证它们同源。
+Go 从 `levelEvaluatorSuits` 的长度得到 level 数量，而 Rust 额外保存 `level_count`；移植接线时必须保证它们同源。
 
-仍存在可观察差异。Go `open` 会创建或重置 tracker 并挂到 statement tracker，Rust 只要求后端重置，具体创建/挂载语义未在仓库实现中验证。Go 仅在 runtime stats 存在时登记并发信息，Rust 总是在 `Close` 调用 `register_concurrency(0)`。Go builder 会建立 evaluator suites 并设置初始并发度，Rust executor builder 尚无对应接线。Go `Close` 的 nil 检查覆盖 `BaseExecutor.Open` 失败场景，Rust 以 `Option` 达到相同的无缓存安全性。
+仍存在可观察差异。Go `open` 会创建或重置 tracker 并挂到 statement tracker，Rust 只要求后端重置，具体创建/挂载语义未在仓库实现中验证。Go 仅在 runtime stats 存在时登记并发信息，Rust 总是在 `Close` 调用 `register_concurrency(0)`。Go builder 会建立 evaluator suites 并设置初始并发度，Rust executor builder 尚无对应接线。
 
 ## 扩展指南
 
@@ -80,12 +78,3 @@ Rust 通过 `ExpandBackend` 拆出了 Go 的具体基础设施：Go 的 `BaseExe
 测试应放在独立 Rust 测试文件中，而不是内嵌到 `expand.rs`。最接近的新增位置可为 `pkg/executor/expand_test.rs`，并由 crate 测试模块显式装配；至少覆盖：一批输入按多个 level 复用且顺序正确、level 耗尽后才拉下一批、EOF、`RequiredRows`、内存增减平衡、`run_level`/`next_child` 错误保持游标、未 Open 的生命周期约束、零 level 构造拒绝、Close 幂等策略和并行未实现错误。接入 builder 后还需增加 SQL 级 `ROLLUP/GROUPING` 回归，核对 Go 结果和执行计划。
 
 兼容风险主要是 Go/Rust level 表达式数量或次序漂移；正确性风险是输入 chunk 被错误修改或 EOF 后非幂等拉取；性能风险是每批输入会执行 `level_count` 次投影且当前只能单线程；资源风险是遗漏 `Close` 或 tracker 挂载不一致。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/expand.rs:22-140`；RustCodeGraph `node --file` 确认文件共 140 行及其 20 个符号。
-- RustCodeGraph 查询：`query ExpandExec --kind struct`、`query ExpandBackend --kind trait` 确认 Rust/Go 对照定义；`callees pkg/executor/expand.rs::ExpandExec` 和 `callees ...::ExpandBackend` 得到本文件内部调用边。由于同名符号聚合，`callers` 查询未在时限内返回，故上游结论改由全仓精确引用搜索核验。
-- crate 与装配：`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs:102`；全仓 `rg` 只发现 `ExpandExec`/`ExpandBackend` 的本文件定义和模块声明，未发现具体后端或 Rust 构造调用。
-- Go 对照：`pkg/executor/expand.go:28-133`；Go 构造入口：`pkg/executor/builder.go:355-356,2517-2546`。
-- 规划侧关联：`pkg/planner/core/task.rs:1050-1062,1272`；相关但不覆盖本执行器的 Rust 测试包括 `pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs:1142-1173`、`pkg/planner/core/rule_resolve_grouping_expand_test.rs`、`pkg/planner/core/operator/logicalop/logical_relational_aster_unit_test.rs:201-237` 和 `pkg/planner/core/operator/logicalop/logical_expand_test.rs`。`pkg/executor` 中未找到直接命中 Expand/grouping-set 的 Rust 或 Go 执行器单测。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构校验只确认目标文档存在且恰有规定的十一个二级标题。

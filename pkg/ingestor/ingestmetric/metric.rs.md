@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 next-generation ingest 路径的 Prometheus 耗时指标，所属 Rust crate 是 `astersql-ingestor-ingestmetric`。crate 入口 [`lib.rs`](./lib.rs) 声明 `metric` 模块并重导出其全部公开项，因此调用方以 `astersql_ingestor_ingestmetric::InitIngestMetrics`、`WriteAPIDuration` 等路径使用这里的 API。
-
-[`Cargo.toml`](./Cargo.toml) 表明该 crate 只直接依赖 `astersql-metrics-common` 和 `prometheus 0.14`；端到端消费者是 `pkg/metrics/metrics.rs`（全局初始化和注册）及 `pkg/ingestor/ingestcli/client.rs`（记录 write/ingest 请求耗时）。它只负责定义、初始化和注册指标，不执行 SST 写入、HTTP 请求或 TiKV ingest。
+只负责定义、初始化和注册指标，不执行 SST 写入、HTTP 请求或 TiKV ingest。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph 对本文件识别出 3 个函数级/文件级符号并报告使�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`metric.go`](./metric.go)。两版保持以下语义一致：指标 namespace/subsystem/name/help、`api` 标签、`write`/`ingest` 标签值、`0.001 * 2^n` 的 20 个显式桶，以及初始化后取得两个已绑定标签的观察器。Go 注释给出的范围 `1ms ~ 524s` 与 Rust 测试验证的末桶 `524.288` 秒一致。
-
 实现差异主要来自语言和接线方式：
 
 - Go 使用包级可变变量和 `prometheus.Observer` 接口；Rust 使用 `LazyLock<RwLock<Option<_>>>`，观察器保存为具体 `Histogram`。
@@ -99,11 +95,3 @@ RustCodeGraph 对本文件识别出 3 个函数级/文件级符号并报告使�
 - 修改桶应评估观测范围和每个标签序列的内存/抓取开销，并同步 Rust 独立测试末桶断言及 Go 实现。增加标签会按基数乘法扩张时间序列，禁止把 region、SST ID 等高基数字段直接加入。
 - 若调整注册方式，应统一 `pkg/metrics/metrics.rs::register_external_metrics` 与本文件 `Register` 的职责，防止同一 registry 重复注册；若保留两个入口，应继续明确它们不可对同一 registry 重复调用。
 - 测试逻辑必须继续放在独立文件。初始化/注册/桶/标签测试应更新 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；实际计时边界应更新 `pkg/ingestor/ingestcli/client_test.rs`，全局装配应更新 `pkg/metrics/metrics_internal_test.rs`。不要把 `#[cfg(test)]` 测试嵌入本文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/ingestor/ingestmetric` 找到 `metric.rs`、`lib.rs` 和独立迁移测试；`query InitIngestMetrics --kind function --json` 定位 Rust/Go 对照定义；`node --file .../metric.rs` 返回完整 78 行源码并报告 `pkg/metrics/metrics.rs`、`pkg/ingestor/ingestcli/client_test.rs` 使用该文件。精确 `callers/callees` 查询未返回可用边，故未以其推断调用关系。
-- 源码与边界：[`metric.rs`](./metric.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、`pkg/metrics/metrics.rs`、`pkg/ingestor/ingestcli/client.rs`。
-- Rust 测试：[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 验证初始化、两个标签样本、注册后的全名/help 和首末桶；`pkg/ingestor/ingestcli/client_test.rs` 验证 write/ingest 实际耗时增长；`pkg/metrics/metrics_internal_test.rs` 验证全局初始化与外部注册。
-- Go 对照：[`metric.go`](./metric.go)、`pkg/metrics/metrics.go`、`pkg/ingestor/ingestcli/client.go`、`pkg/ingestor/ingestcli/client_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构校验要求本文恰有十一个规定的二级标题；最终交付前另行执行并记录退出码。

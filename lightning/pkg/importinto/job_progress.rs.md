@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明的真实源文件是 [`job_progress.rs`](job_progress.rs)。它属于 Cargo crate `astersql-lightning-pkg-importinto`；crate 在 `lightning/pkg/importinto/Cargo.toml` 中声明为库，入口 `lightning/pkg/importinto/lib.rs` 以 `#[path = "job_progress.rs"] mod job_progress` 装配本模块并将其符号重导出。它位于 Lightning 的 `IMPORT INTO` 作业监控链中：`DefaultJobMonitor::WaitForJobs` 创建一个 `jobProgressEstimator`，`processJobStatuses` 每轮读取 SDK 状态后调用 `updateJobProgress`，把离散的 phase、step、percent 转换成每个作业的预计总字节数和已完成字节数（`lightning/pkg/importinto/job_monitor.rs`）。
-
-本文件不是持久化进度、查询 SDK 或展示日志进度的组件；它只做纯计算、更新调用方提供的两个 `HashMap`，并在无法解析输入字符串时记录告警。实际状态轮询、终态统计和退出条件由 `job_monitor.rs` 负责。
+实际状态轮询、终态统计和退出条件由 `job_monitor.rs` 负责。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-`lightning/pkg/importinto/job_progress.go` 是直接语义基准。Rust 的构造器、总量来源优先级、全局排序识别集合、两套阶段表、百分比夹取、未知 phase/step 行为、完成量单调性以及 finished/failed/cancelled 分支均与 Go 对应实现一致。`job_progress_test.rs` 复刻 Go 的普通导入和全局排序主场景：普通模式 50% import 得到 0.25 和 25 MB，全局排序 50% encode 得到 0.0625，并验证检测全局排序后不回退；finished 状态缺少大小字段时仍用缓存总量完成到 100 MB。
-
-实现形式有三点值得区分：
+Rust 的构造器、总量来源优先级、全局排序识别集合、两套阶段表、百分比夹取、未知 phase/step 行为、完成量单调性以及 finished/failed/cancelled 分支均与 Go 对应实现一致。`job_progress_test.rs` 复刻 Go 的普通导入和全局排序主场景：普通模式 50% import 得到 0.25 和 25 MB，全局排序 50% encode 得到 0.0625，并验证检测全局排序后不回退；finished 状态缺少大小字段时仍用缓存总量完成到 100 MB。
 
 1. Go 使用 `units.FromHumanSize`，Rust 在本文件内以 `parseDockerHumanSize` 复刻其本路径语义，并额外由 `test_job_progress_estimator_scientific_notation_size` 固定 `1e3` → 1000 的兼容行为。
 2. Go 方法接收 `*ImportJob` 并显式检查 nil；Rust 接收 `&ImportJob`，类型上排除了空 job，但仍保留 `TableMeta: Option<_>` 的缺失分支。
@@ -97,12 +93,3 @@
 - 扩充大小单位解析时，应以 docker/go-units 的真实行为为基准修改 `parseDockerHumanSize`，覆盖大小写、空格、科学计数法、负数和非法后缀。不要改用 `stubs.rs::units::FromHumanSize` 而未验证其语义差异。
 - 若作业 group 可能混用普通导入与全局排序，应先确认 `isGlobalSort` 的 group 级状态是否仍成立；若需按作业区分，应把模式状态按 `jobID` 分区，并同步修改 `job_monitor.rs` 生命周期与测试。
 - 性能上当前阶段/步骤均为常量级小集合，线性查找和临时 `Vec` 成本很低；只有在阶段表显著增长或轮询频率大幅提高时才值得改为静态切片或索引映射，且要保持计算顺序不变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter lightning/pkg/importinto` 确认目标、Go 镜像及测试均已索引；`node --file lightning/pkg/importinto/job_progress.rs` 读取完整 367 行并报告目标被 `job_progress_test.rs`、`parity_test.rs` 使用；对方法 callers/callees 的查询没有产出可用边，因此以精确符号搜索补证生产调用。
-- 生产源码：`lightning/pkg/importinto/job_progress.rs`（估算器、解析器、阶段模型、测试辅助入口）、`lightning/pkg/importinto/job_monitor.rs`（构造、状态轮询与 `updateJobProgress` 调用）、`lightning/pkg/importinto/lib.rs`（模块装配、重导出及独立测试声明）、`lightning/pkg/importinto/stubs.rs`（当前 SDK、日志、错误与 clamp 边界）。
-- crate 配置：`lightning/pkg/importinto/Cargo.toml`，确认 crate 名、库入口、Go 包映射和实际依赖集合。
-- Go 对照：`lightning/pkg/importinto/job_progress.go`、`lightning/pkg/importinto/job_monitor.go`、`lightning/pkg/importinto/job_progress_test.go`。
-- Rust 测试：`lightning/pkg/importinto/job_progress_test.rs` 验证普通导入、全局排序、完成态和科学计数法大小；`lightning/pkg/importinto/parity_test.rs` 验证核心比例以及空 phase、`N/A` 百分比边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查文档固定章节、范围和上述源码事实。

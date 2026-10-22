@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-admin` crate 的业务实现，crate 入口 `pkg/util/admin/lib.rs` 通过 `mod admin; pub use admin::*;` 将其 API 全量导出。`pkg/util/admin/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/util/admin`，运行时依赖只有 `thiserror`；数据库会话、KV、表和索引能力均被压缩成文件内 trait，由调用方注入。
-
-它实现两类管理校验：`CheckIndicesCount` 在同一快照上比较表与索引的 `COUNT(*)`；`CheckRecordAndIndex` 扫描记录 KV、解码索引列并逐条探测索引。工作区的 `pkg/executor/Cargo.toml` 已声明对 `astersql-util-admin` 的依赖，但当前 Rust `pkg/executor/check_table_index.rs` 使用独立的 `CheckTableRuntime::{CheckIndicesCount, CheckRecordAndIndex}` 边界，仓库搜索未发现把本文件函数接入该 trait 的实现。因此，本文件当前有 crate 内实现与独立测试证据，但不能据此声称它已经成为 Rust `ADMIN CHECK TABLE` 的生产运行时实现。
+`iterRecords` 负责限定表记录前缀、解码 handle 与行值、构造全局索引所需的分区 handle，并通过 `RecordIterFunc` 把每行交给上层策略。
 
 ## 核心职责
 
@@ -84,11 +82,7 @@ Go 的 `iterRecords` 持有存储迭代器并用 `defer it.Close()` 释放；Rus
 
 ## 与 Go 版本的对应关系
 
-对应源文件为 `pkg/util/admin/admin.go`，主要流程保持如下对应：
-
-- 两版 `CheckIndicesCount` 都临时启用不可见索引、让显式快照覆盖事务 start TS、用 `%n` 参数执行表/索引 COUNT，并返回首个不一致方向和下标。Rust 的 `main_test.rs` 进一步验证了 snapshot=20 覆盖 txn_ts=10、第二个索引下标为 1，以及成功/错误路径均恢复标志。
 - 两版 `CheckRecordAndIndex` 都按索引列偏移取列，从最小 handle 开始扫描，把 NULL 视作原始默认值，并区分索引缺失与唯一键指向另一 handle。Rust `admin_integration_test.rs::TestAdminCheckTableCorrupted` 复现 Go `admin_integration_test.go::TestAdminCheckTableCorrupted` 的末字节篡改场景；Rust 另测了默认值回填。
-- 两版全局索引都把物理分区 ID 与行 handle 组合成分区 handle；两版都允许回调提前停止，并跳过当前行关联的辅助 KV。
 
 当前 Rust 是有意收窄的移植边界，而非 Go 实现的完整类型复用：
 
@@ -107,12 +101,3 @@ Go 的 `iterRecords` 持有存储迭代器并用 `defer it.Close()` 释放；Rus
 - 改进诊断：如对齐 Go `consistency.Reporter`，应保留 `Inconsistent` 的当前记录/索引记录语义，并明确脱敏、错误码、编码失败和日志 I/O 的处理，避免把报告失败吞成普通缺失。
 - 强化状态恢复：若会话实现可能 panic，可用作用域 guard 恢复 invisible-index 标志；需新增独立 panic/unwind 测试。正常错误路径已有 `main_test.rs` 覆盖。
 - 兼容性风险集中在快照一致性、索引列顺序、默认值求值、全局索引 handle 和标准错误映射；性能风险集中在 `Vec<KvPair>` 全量物化和每行 `BTreeMap`/值克隆。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、`pkg/util/admin/admin.rs` 有 42 个符号；通过 `node --file` 阅读完整 440 行，并用 `query/node` 核对 `CheckIndicesCount`、`getCount`、`CheckRecordAndIndex`、`iterRecords`、`makeRowDecoder`、`encode_record_key`、`decode_row_key` 的定义及上述调用轨迹。
-- Rust 源与边界：`pkg/util/admin/admin.rs`、`pkg/util/admin/lib.rs`、`pkg/util/admin/Cargo.toml`、工作区根 `Cargo.toml`、`pkg/executor/Cargo.toml`、`pkg/executor/check_table_index.rs`。
-- Rust 独立测试：`pkg/util/admin/main_test.rs` 覆盖计数方向、索引下标、快照优先级、COUNT 空结果和开关恢复；`pkg/util/admin/admin_integration_test.rs` 覆盖损坏 handle 导致重复句柄不一致、NULL 的 origin default 回填。
-- Go 对照：`pkg/util/admin/admin.go`、`pkg/util/admin/admin_integration_test.go`、`pkg/util/admin/main_test.go`。其中 `main_test.go` 只配置测试环境和 goroutine 泄漏检查，不直接验证 admin 算法。
-- 接线核查：对所有 Rust 源搜索 `CheckIndicesCount|CheckRecordAndIndex|iterRecords|makeRowDecoder|ErrAdminCheckTable`，并搜索 `astersql-util-admin|astersql_util_admin|facade_util_admin`；结果支持“测试直接调用、同文件内部调用、executor 仅有独立 trait 同名方法、manifest 有依赖但无适配源码引用”的结论。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前仅运行任务规定的 11 章节结构命令，并人工复核没有把未接线能力描述为已上线行为。

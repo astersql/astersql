@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor` crate 中的 CTE（Common Table Expression，公用表表达式）迭代输入读取器实现，由 [`pkg/executor/lib.rs`](./lib.rs) 以 `pub mod cte_table_reader` 导出。它把 [`astersql_util_cteutil::Storage`](../util/cteutil/storage.rs) 中按 chunk 保存的某一轮递归输入，转换为执行器上游逐次拉取的 `Chunk`。
-
-需要区分“文件内已实现的语义”和“当前主链接线”：本文件定义了公开的 `CTEReaderBase` 与 `CTETableReaderExec<B>`，但仓库搜索未发现 `CTEReaderBase` 的实现或 `CTETableReaderExec` 的 Rust 构造点。当前 [`builder.rs`](./builder.rs) 的 `buildCTETableReader` 委托给 `build_cte_table_reader_executor`，使用的是 `Arc<dyn CteStorage>`/`ExecutorBox` 抽象，而不是本文件的 `Box<dyn Storage>` 类型。因此本模块目前是已导出、可复用但尚未接入完整 Rust 构建主链的迁移实现，不能仅凭 Go 主链推断它已经承接 SQL 请求。
+把 [`astersql_util_cteutil::Storage`](../util/cteutil/storage.rs) 中按 chunk 保存的某一轮递归输入，转换为执行器上游逐次拉取的 `Chunk`。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/executor/cte_table_reader.go`](./cte_table_reader.go)。Rust 的字段和流程逐项对应 Go 的 `BaseExecutor`、`iterInTbl`、`chkIdx`、`curIter` 以及 `Open`、`Next`、`Close`、`reset`：两者都在新迭代复位 chunk 下标、拒绝迭代倒退、复制 chunk 防止上层修改共享存储，并以空 chunk 表示耗尽。
-
 当前差异主要来自迁移接线而不是核心算法：
 
 - Go 类型直接嵌入 `exec.BaseExecutor` 并实现完整 `exec.Executor`；Rust 用最小 `CTEReaderBase` trait 泛化基础生命周期，且没有完整 executor trait 的静态约束。
@@ -90,12 +86,3 @@ Go 的递归 CTE 行为回归集中在 [`pkg/executor/test/cte/cte_test.go`](./t
 - 若增加错误上下文，保持 `GetChunk` 失败时不推进 `chk_idx`，并保留迭代倒退错误中的两个迭代号。
 - 为本文件新增行为测试时，应创建同目录独立测试文件（例如 `cte_table_reader_test.rs`）并在 `lib.rs` 以 `#[cfg(test)]` 引入，不要把测试内嵌回生产源文件。至少覆盖生命周期复位、同轮顺序读取、迭代推进后从 chunk 0 重读、倒退报错、耗尽返回空 chunk、`GetChunk` 错误不推进以及副本隔离。
 - 完整接线后还应同步 Go 的 [`pkg/executor/test/cte/cte_test.go`](./test/cte/cte_test.go) 所表达的 SQL 级兼容预期，并新增 Rust 构建器测试证明物理 CTE table plan 实际构造并调用本读取器。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/executor/cte_table_reader.rs` 确认目标文件已索引并识别 9 个符号。
-- RustCodeGraph `explore "cte_table_reader.rs CteTableReaderExecutor"`：读取目标文件全貌，并报告 `Open`、`Close` 到 `reset` 的调用边；`query CTETableReaderExec` 同时定位 Go/Rust 两个同名结构体，`query CTEReaderBase` 定位本文件 trait。精确 `callers/callees` 命令在本次限定时间内未返回，因此没有把缺失的图结果当作已验证调用关系。
-- 直接阅读：[`pkg/executor/cte_table_reader.rs`](./cte_table_reader.rs)、[`pkg/executor/lib.rs`](./lib.rs)、[`pkg/executor/Cargo.toml`](./Cargo.toml)、[`pkg/executor/builder.rs`](./builder.rs)、[`pkg/executor/cte.rs`](./cte.rs)、[`pkg/util/cteutil/storage.rs`](../util/cteutil/storage.rs)。
-- Go 对照与整体回归：[`pkg/executor/cte_table_reader.go`](./cte_table_reader.go)、[`pkg/executor/builder.go`](./builder.go)、[`pkg/executor/cte.go`](./cte.go)、[`pkg/executor/test/cte/cte_test.go`](./test/cte/cte_test.go)。
-- Rust 下游存储测试：[`pkg/util/cteutil/storage_test.rs`](../util/cteutil/storage_test.rs)、[`pkg/util/cteutil/migration_aster_unit_test.rs`](../util/cteutil/migration_aster_unit_test.rs)。仓库搜索未发现 `CTEReaderBase` 实现、本 Rust `CTETableReaderExec` 构造点或专属 Rust 测试。
-- 本任务只新增文档，按任务约束未运行 Cargo；交付结构以固定 11 个二级标题的 shell 校验为准。

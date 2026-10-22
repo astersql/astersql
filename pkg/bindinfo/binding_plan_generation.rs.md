@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-bindinfo` crate 的候选执行计划生成层。模块由 `pkg/bindinfo/lib.rs` 声明并整体重新导出；crate 的清单 `pkg/bindinfo/Cargo.toml` 将库入口设为 `lib.rs`，关闭自动测试发现，并用 `package.metadata.porting.go-package = "pkg/bindinfo"` 标明 Go 对照包。
-
-在应用链路中，`pkg/bindinfo/binding_handle.rs::NewBindingHandle` 用运行时构造 `newBindingAuto`，后者在 `pkg/bindinfo/binding_auto.rs` 中把 `planGenerator` 装进 `bindingAuto`。调用 `BindingPlanEvolution::ExplorePlansForSQL` 时，历史计划之外的新候选由本文件的 `PlanGenerator::Generate` 产生。因此，本文件负责“枚举候选状态并包装绑定”，而 SQL 解析、真实优化器调用、会话变量应用等环境相关工作由 `PlanRuntime` 适配器承担。
+用 `PlanGenerator` 定义候选计划生成接口，并由 `planGenerator` 把生成结果转换为 `BindingPlanInfo`。
 
 ## 核心职责
 
@@ -79,15 +77,12 @@
 
 ## 与 Go 版本的对应关系
 
-算法骨架与 `pkg/bindinfo/binding_plan_generation.go` 对齐：相同的状态字段与编码顺序、BFS 去重、30/10,000 默认上限、摘要排序、变量白名单与步进规则、三个 fix-control 规则，以及空索引提示选项用于清除某张表提示。`pkg/bindinfo/binding_plan_generation_test.go` 的 `TestAdjustFixes`、`TestAdjustVars`、`TestStartState` 在 Rust 独立测试中有对应覆盖。
-
 关键迁移差异如下：
 
 - Go `planGenerator` 持有 session pool，校验 SELECT、借用会话并调用 `prepareHints`；Rust 持有抽象 `PlanRuntime`，不在本文件执行这些步骤，并额外写入 `StatusEnabled`、`SourceHistory`、字符集和排序规则。
 - Go `generatePlanWithSCtx` 直接解析 AST、设置当前库和 cost model v2、记录相关变量/fix，并发现表、查询块和索引；Rust 把这些职责收敛进 `PlanRuntime::generation_spec`。
 - Go `genPlanUnderState` 直接修改 session variables/fix-control、临时追加 AST hints、调用 `GenBriefPlanWithSCtx` 并用 `defer` 恢复部分 hints；Rust 只调用 `PlanRuntime::plan_under_state`，因此恢复和隔离责任在运行时实现。
 - Go 文件尾部是真实 AST visitor 与 infoschema 索引筛选；Rust 的同名 extractor 结构尚未接线，提取函数主要返回 `GenerationSpec` 中预先计算的字段。不能据这些符号推断 Rust 已独立实现 Go 的 AST/索引发现逻辑。
-- Go 总是在 `SELECT` 后构造 `/*+ ... */`（即使提示串为空）并随后准备提示；Rust 对空提示保持原 SQL，对非空提示按首个空白插入。
 
 ## 扩展指南
 
@@ -98,13 +93,3 @@
 - 修改 hint 注入时，应覆盖前导空白、注释、非 SELECT、无空白 SQL、空提示和提示校验；还要明确是否恢复 Go 的 SELECT 限制及 `prepareHints` 语义。
 - 并发或资源相关扩展应优先放在 `PlanRuntime` 实现中，并验证每次状态生成后的会话恢复；不要让 BFS 持有跨调用可变全局状态。
 - 测试逻辑继续放在同目录独立文件 `pkg/bindinfo/binding_plan_generation_test.rs`，不要嵌入生产源文件。
-
-## 验证依据
-
-- 目标源码：`pkg/bindinfo/binding_plan_generation.rs`（RustCodeGraph `node --file` 覆盖 1–656 行）。
-- crate 与装配：`pkg/bindinfo/Cargo.toml`、`pkg/bindinfo/lib.rs`。
-- 上下游直接证据：`pkg/bindinfo/binding_auto.rs` 中的 `PlanRuntime`、`newBindingAuto`、`ExplorePlansForSQL`，以及 `pkg/bindinfo/binding_handle.rs::NewBindingHandle`。
-- Go 对照：`pkg/bindinfo/binding_plan_generation.go`（`Generate`、状态编码、BFS、单状态生成、调整规则及 AST/索引提取全段）与 `pkg/bindinfo/binding_plan_generation_test.go`。
-- Rust 独立测试：`pkg/bindinfo/binding_plan_generation_test.rs`。已编译接入的测试覆盖布尔/比例/代价调整、fix 44855/45132、起始状态编码、非白名单拒绝、45132 严格解析与原文本保留、空索引选择；文件中的 `GO_PLAN_GENERATION_TEST_DRAFT` 只是字符串草稿，不算可执行测试。
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/bindinfo`、精确 `query` 和 `node` 确认符号及源码。对核心符号执行了 `callers`/`callees`，但命令在 30 秒内未返回结果；调用边改由上述相邻源码和局部 `rg` 交叉核对。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文恰好包含上述 11 个固定二级标题。

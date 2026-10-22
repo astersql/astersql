@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate；crate 入口 `pkg/ddl/ingest/lib.rs` 以公开模块 `engine_mgr` 导出它。它没有定义名为“manager”的结构体，而是在 `BackendContext` 之上提供两个薄的公开生命周期入口：`register_engines` 和 `finish_and_unregister_engines`，并定义注销选项的位布局。底层引擎集合、配额与重复值收集实际由 `pkg/ddl/ingest/backend.rs` 的 `BackendContext` 管理，引擎关闭及数据清理由 `pkg/ddl/ingest/engine.rs` 的 `EngineInfo` 完成。
-
-在完整 DDL 架构中，这组概念对应本地磁盘 ingest 加索引回填的“创建索引写入引擎—写入—结束并注销”边界。Go 生产实现通过 `BackendCtx.Register` / `BackendCtx.FinishAndUnregisterEngines` 接入 `pkg/ddl/backfilling.go` 和 `pkg/ddl/backfilling_read_index.go`。但当前 Rust 调用图和全仓搜索都表明，本文件的两个函数只被 `pkg/ddl/ingest/engine_mgr_test.rs` 调用，尚未接入 Rust 生产回填主链；不能把 Go 的生产接线视为 Rust 已支持的行为。
+只负责编排，不创建真实 Lightning engine、不刷新或导入数据、不推进 checkpoint，也不持有自己的锁或状态。
 
 ## 核心职责
 
@@ -72,15 +70,12 @@ Go 对照的生产链是 `pkg/ddl/backfilling.go` 或 `pkg/ddl/backfilling_read_
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/ddl/ingest/engine_mgr.go`。位布局完全对应：Rust 的 `u8` 常量值为 `1/2/4`，Go 的 `int` + `iota` 产生相同值；`engine_mgr_test.rs::unregister_options_match_go_bit_layout` 对此做了断言。两版都支持整组已有引擎的重复注册、拒绝部分重叠，都在注销时先关闭全部引擎，并且只在结束成功后清空注册表；因查重失败返回时，引擎保持关闭且仍被注册表引用。
-
 已确认的差异与迁移限制如下：
 
 - Go `Register` 接收 `table.Table`，创建真实 Lightning engine、检查 `MemRoot`、配置 import TS、记录 table，并在部分打开失败时清理已打开引擎；Rust 门面改为 `writer_memory`，下游只创建内存版 `EngineInfo`，没有真实 backend 打开、table 或日志行为。
 - Go 注销由 `unregisterMu` 保证并发安全；Rust 依靠 `&mut BackendContext`，没有对应运行时锁。
 - Go 只对 `ei.unique` 调用带 table 的远端重复检查，并保留具体存储/冲突错误和 failpoint；Rust 对所有 ID 调用简化的内存行值统计，由下游对非唯一索引返回空，错误统一为 `String`，没有该 failpoint。
 - Go map 的遍历次序不保证稳定；Rust `BTreeMap` 使关闭和首个重复错误按 index ID 排序。
-- `OPT_CLOSE_ENGINES` / `OptCloseEngines` 在两版结束函数中都不控制是否关闭：关闭始终执行。它表示调用场景，与 clean/check-dup 位组合兼容。
 - 当前 Go 接口已接入本地 ingest 回填生产链；当前 Rust 本文件只有测试调用，尚无等价生产入口证据。
 
 ## 扩展指南
@@ -92,13 +87,3 @@ Go 对照文件是 `pkg/ddl/ingest/engine_mgr.go`。位布局完全对应：Rust
 若要把该门面接入 Rust DDL 主链，应先定位 Rust add-index pipeline 的实际入口，建立与 Go `BackendCtx` 调用点等价的显式调用边，并补充失败、成功清理、重复冲突及并发生命周期测试。真实 Lightning backend、table 元数据、checkpoint/failpoint 和错误类型的缺口不应通过在本文件内堆叠简化桩来掩盖。
 
 修改结束顺序时需要重点评估：查重失败后映射是否保留、引擎何时关闭、数据是否仍可诊断、writer 是否可能存活、是否需要 flush，以及 `BackendContext::finish_and_unregister` 与本门面是否应合并。二者当前流程不同，合并必须以 Go 行为和现有回归测试为依据。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ddl/ingest` 确认目标、Go 对照和测试均已索引。
-- RustCodeGraph `node --file pkg/ddl/ingest/engine_mgr.rs --offset 1 --limit 260`：核对目标文件 74 行源码、公开符号、分支和唯一直接使用文件。
-- RustCodeGraph 精确查询及调用图探索：确认 `register_engines`、`finish_and_unregister_engines` 的上游仅为 `pkg/ddl/ingest/engine_mgr_test.rs`，并核对到 `BackendContext::register`、`EngineInfo::close`、`BackendContext::collect_remote_duplicate_rows` 的下游关系。自然语言 explore 对常见符号产生了大量歧义结果，因此结论只采用其中目标路径的精确条目及后续文件级 node 证据。
-- RustCodeGraph 文件节点：`pkg/ddl/ingest/backend.rs` 与 `pkg/ddl/ingest/engine.rs`，用于核对注册规则、重复值算法、`BTreeMap`/`Arc`/`Mutex` 状态、close 与 writer 生命周期。
-- 直接读取：`pkg/ddl/ingest/Cargo.toml`、`pkg/ddl/ingest/lib.rs`、`pkg/ddl/ingest/engine_mgr.go`、`pkg/ddl/ingest/backend.go`、`pkg/ddl/ingest/engine_mgr_test.rs`，以及 Go 生产调用片段 `pkg/ddl/backfilling.go`、`pkg/ddl/backfilling_read_index.go`。
-- 全仓 `rg`：确认 Rust 非测试生产文件没有调用两个门面函数；确认 Go 调用点的选项组合。`pkg/ddl/ingest` 没有直接覆盖 `Register` / `FinishAndUnregisterEngines` 的 Go `*_test.go`，当前细粒度回归证据来自独立 Rust 测试文件。
-- 按任务要求仅做文档事实与结构验证，不运行 Cargo；最终结构命令及退出状态在任务交付时报告。

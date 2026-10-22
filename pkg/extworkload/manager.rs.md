@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`manager.rs` 是 `astersql-extworkload` crate 中 `Manager` trait 的生产实现与构造入口。crate 由 [`pkg/extworkload/Cargo.toml`](./Cargo.toml) 定义，库入口是 [`pkg/extworkload/lib.rs`](./lib.rs)；后者以 `manager_impl` 模块加载本文件，并重新导出 `NewManager`、`NewManagerWithTLS` 和 `manager`。接口契约本身位于 [`pkg/extworkload/external_workload.rs`](./external_workload.rs)，本文件负责把该契约落到 `client::Client` RPC 调用上。
-
-在当前 Rust 应用链中，[`pkg/session/runtime/session.rs`](../session/runtime/session.rs) 调用 `NewManagerWithTLS` 创建管理器并把它挂入 domain；[`pkg/store/gcworker/gc_worker.rs`](../store/gcworker/gc_worker.rs) 从运行时取出 `Box<dyn Manager>`，在 GC safe point 成功推进后调用 `RecycleGCV2`，并按角色和有效 GC 生命周期调用 `RegisterGCV2`。因此本文件位于“session/domain 生命周期与 GC 等后台业务”到“external workload controller 客户端”的适配边界，而不是控制器协议或任务调度算法的实现位置。
-
-本文件没有条件编译项。它包含两个 30 秒超时常量、两个数据类型、一个 context 键类型、两个公开构造函数、一个内部拨号函数、`Manager for manager` 的完整实现，以及指标/context/错误辅助函数。
+`manager` 保存客户端、当前角色和 keyspace 元数据，实现 `Manager` 的 GC V2、TTL 和 Auto Analyze 转发方法。
 
 ## 核心职责
 
@@ -121,15 +117,10 @@ Cargo 边界上，直接声明的依赖是同目录 `astersql-extworkload-client
 
 主要语言映射与差异：
 
-- Go 的 `(Manager, error)` 中 `nil, nil` 映射为 Rust 的 `Result<Option<Box<dyn Manager>>, ManagerError>` 中 `Ok(None)`。
 - Go `*keyspacepb.KeyspaceMeta` 被 Rust 构造函数借用后克隆进 manager；因此 Go 测试断言指针相同，而 Rust 测试断言值相同/借用来自 manager 自身。
-- Go `defer cancel()` 映射为每条返回路径上的显式 `cancel()`；修改控制流时必须继续覆盖成功和错误路径。
-- Go 的 `math.MaxUint64` 映射为 `u64::MAX`。
 - Go 的 `time.Duration.Seconds()` 转 `int64` 与 Rust 的浮点秒转 `i64` 都截断小数秒；Rust 有专门回归测试锁定这一点。
-- `NewManagerWithTLS` 和显式 `tls_files` 是 Rust 生产接线需要的扩展；基础 `NewManager` 仍保持 Go 入口语义。
-- trait 同时提供 `RegisterTTLTask` 和默认别名 `RegisterTTLTableInfo`；本实现覆盖 `RegisterTTLTask`，调用 `RegisterTTLTableInfo` 时由 trait 默认方法转发，兼容已有 Rust 调用方 ABI。
 
-[`pkg/extworkload/manager_test.rs`](./manager_test.rs) 是本文件的独立 Rust 单元测试；[`pkg/extworkload/migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 再次验证 Go 参数、deadline、标签、角色谓词与错误语义。Go 侧对应测试是 [`pkg/extworkload/manager_test.go`](./manager_test.go)。
+[`pkg/extworkload/manager_test.rs`](./manager_test.rs) 是本文件的独立 Rust 单元测试；[`pkg/extworkload/migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 再次验证 Go 参数、deadline、标签、角色谓词与错误语义。
 
 ## 扩展指南
 
@@ -140,13 +131,3 @@ Cargo 边界上，直接声明的依赖是同目录 `astersql-extworkload-client
 - 修改 GC 生命周期转换、哨兵值或 safe point 映射会改变控制器协议，必须同步 Go 对照、客户端协议和 `manager_test.rs` 的精度/参数断言。
 - 测试逻辑应继续放在独立的 [`pkg/extworkload/manager_test.rs`](./manager_test.rs) 或迁移测试文件中，不要内嵌到生产源文件。至少补齐成功参数、deadline/标签、下游错误、资源关闭或 TLS 错误中的相关分支。
 - 性能风险主要来自同步持锁 RPC、每次请求创建 timeout context 和指标标签基数；新增高频动作前应确认调用频率、锁持有范围与标签是否有界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引存在，覆盖 7032 个 Rust 文件；`files --filter pkg/extworkload` 确认源、Go 对照和测试均在索引中。
-- RustCodeGraph `node --file pkg/extworkload/manager.rs --offset 1 --limit 260` 与 `--offset 261 --limit 220`：读取完整 446 行实现，并报告直接使用方 `manager_test.rs`、`migration_aster_unit_test.rs`、`session/runtime/session.rs`、`store/gcworker/gc_worker.rs`。
-- RustCodeGraph `query`：确认 `NewManager`、`NewManagerWithTLS`、`dialClient`、`metricsInterceptor`、`withMetric`、`withRequestTimeout` 的定义位置；精确 `callers/callees` 命令本次未返回边明细，因此上游/下游关系以索引的文件使用方和下列源码调用点交叉验证，没有把缺失图边当作已验证事实。
-- 源与边界文件：[`pkg/extworkload/manager.rs`](./manager.rs)、[`pkg/extworkload/Cargo.toml`](./Cargo.toml)、[`pkg/extworkload/lib.rs`](./lib.rs)、[`pkg/extworkload/external_workload.rs`](./external_workload.rs)、[`pkg/extworkload/real_client.rs`](./real_client.rs)。
-- 上游调用点：[`pkg/session/runtime/session.rs`](../session/runtime/session.rs) 的 `NewManagerWithTLS` / `InitializeGCV2`；[`pkg/store/gcworker/gc_worker.rs`](../store/gcworker/gc_worker.rs) 的 `notifyGCV2AfterGC`。
-- 语义对照与测试：[`pkg/extworkload/manager.go`](./manager.go)、[`pkg/extworkload/manager_test.go`](./manager_test.go)、[`pkg/extworkload/manager_test.rs`](./manager_test.rs)、[`pkg/extworkload/migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)。Rust 测试覆盖构造生命周期、Ping 失败、真实 gRPC 地址拒绝、全部方法的参数/deadline/标签、错误透传、有效生命周期和小数秒截断。
-- 本任务是纯文档分析；按任务约束不运行 Cargo。交付前以任务指定命令验证目标文件存在且固定二级标题恰好为 11 个，并人工复核没有把测试桩或期望设计描述成生产事实。

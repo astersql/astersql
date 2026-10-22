@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`statsfile_test_support.rs`](statsfile_test_support.rs) 是 `astersql-br-pkg-metautil` crate 的测试专用辅助模块。crate 根在 [`lib.rs`](lib.rs) 中用 `#[cfg(test)]` 和 `#[path = "statsfile_test_support.rs"]` 挂载它，因此普通库构建不会包含本模块；模块也没有从 crate 根再导出。它直接服务于同 crate 的 [`statsfile_test.rs`](statsfile_test.rs) 和 [`parity_test.rs`](parity_test.rs)，负责保护这两个测试会临时改写的 stats 文件阈值。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确定。本文件只依赖 Rust 标准库和同 crate 的 `statsfile` 模块，不引入新的外部依赖或 feature。
+不实现 stats 文件的写入或恢复；实际阈值消费点位于 `statsfile.rs` 的 `StatsWriter::BackupStats` 和 `StatsWriter::writeStatsFileAndClear`。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@ RAII 恢复适用于正常离开作用域和启用 unwinding 的 panic；若进�
 
 ## 与 Go 版本的对应关系
 
-Go 生产文件 `statsfile.go` 定义普通包变量 `maxStatsJsonTableSize = 32 * 1024 * 1024` 与 `inlineSize = 8 * 1024`。Go 测试 `statsfile_test.go::TestStatsWriter` 在第一张表前把两者设为 `1`，随后在第二张表前手工恢复默认值，以强制覆盖刷盘和非内联路径。
+Rust 的生产语义保持相同阈值和值比较，但因为 Rust 测试默认可并行执行，`statsfile.rs` 将变量实现为 `AtomicUsize`，本文件再增加 mutex + RAII 清理。Rust `statsfile_test.rs::test_stats_writer` 直接移植 Go 用例；`parity_test.rs` 复用同一守卫做额外契约验证。
 
-Rust 的生产语义保持相同阈值和值比较，但因为 Rust 测试默认可并行执行，`statsfile.rs` 将变量实现为 `AtomicUsize`，本文件再增加 mutex + RAII 清理。这是 Rust 测试隔离所需的局部接线，不对应独立 Go 源文件。Rust `statsfile_test.rs::test_stats_writer` 直接移植 Go 用例；`parity_test.rs` 复用同一守卫做额外契约验证。
-
-Go 用例依靠测试过程中的显式恢复，若中途断言失败可能留下修改；Rust 守卫则在 unwind 时恢复，并在下一次 `acquire` 后再次初始化，增强了同进程测试的抗污染能力。两边生产路径的默认值仍一致。
+Go 用例依靠测试过程中的显式恢复，若中途断言失败可能留下修改；Rust 守卫则在 unwind 时恢复，并在下一次 `acquire` 后再次初始化，增强了同进程测试的抗污染能力。
 
 ## 扩展指南
 
@@ -99,15 +95,3 @@ Go 用例依靠测试过程中的显式恢复，若中途断言失败可能留�
 5. 若需要嵌套覆盖或恢复调用前值，应设计独立的可嵌套机制；当前非重入 mutex 与固定默认值恢复不能安全满足该需求。
 
 兼容性风险主要是默认值与 Go 漂移；并发风险是新增测试绕过守卫；性能影响仅限测试进程中的串行等待，生产构建不包含本模块。
-
-## 验证依据
-
-- `br/pkg/metautil/statsfile_test_support.rs`：4 个核心符号、锁中毒恢复、两次默认值重置和析构顺序的直接依据。
-- `br/pkg/metautil/lib.rs`：模块只在 `cfg(test)` 下挂载，且未公开再导出的依据。
-- `br/pkg/metautil/Cargo.toml`：`astersql-br-pkg-metautil` crate 边界、库入口和依赖范围的依据。
-- `br/pkg/metautil/statsfile.rs`：两个 `AtomicUsize` 定义，以及 `BackupStats`、`writeStatsFileAndClear` 用 `SeqCst` 读取阈值的依据。
-- `br/pkg/metautil/statsfile_test.rs`：`test_stats_writer` 获取守卫、临时写入 1、恢复默认值并覆盖多种 cipher 的直接调用证据。
-- `br/pkg/metautil/parity_test.rs`：`stats_writer_inline_and_file_flush_matches_go` 获取守卫并验证刷盘、索引及恢复错误契约的直接调用证据。
-- `br/pkg/metautil/statsfile.go` 与 `br/pkg/metautil/statsfile_test.go`：Go 默认值、生产比较条件及测试改写顺序的对照依据。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter` 确认目标文件已索引；`query StatsConfigTestGuard` 定位结构体；`node --file ...` 返回完整 58 行源码和 `parity_test.rs` 使用边。精确 `callers/callees` 查询在本次执行中超时且无输出，因此调用方结论由上述两个 Rust 测试文件的直接引用检索补齐。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰有 11 个固定二级章节，并用 `git diff --check` 检查 Markdown 变更。

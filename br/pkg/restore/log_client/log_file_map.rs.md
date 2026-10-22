@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-br-pkg-restore-log-client` library crate。crate 入口 `br/pkg/restore/log_client/lib.rs` 通过 `#[path = "log_file_map.rs"] pub mod log_file_map` 挂载模块，并用 `pub use log_file_map::*` 把其中的公开类型和函数提升到 crate 根。`br/pkg/restore/log_client/Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/restore/log_client` 的 Rust 移植；本文件自身只依赖标准库 `std::collections::HashMap`，没有 feature 条件、外部 crate 或 I/O 依赖。
-
-它位于日志恢复的检查点恢复链路中：`br/pkg/restore/log_client/log_split_strategy.rs::NewLogSplitStrategy` 读取 `LogMetaManagerT::LoadCheckpointData` 返回的 `(groupKey, Goff, Foffs)`，把符合当前下游表 rewrite 规则的文件偏移插入 `LogFilesSkipMap`；随后 `LogSplitStrategy::ShouldSkip` 用日志数据文件的 `MetaDataGroupName`、`OffsetInMetaGroup` 和 `OffsetInMergedGroup` 查询该表，避免重新处理检查点已完成的文件，并在跳过时补报文件条目数和字节数。
+重复插入通过按位或保持幂等；未出现的 meta、group 或位图块统一解释为“不可跳过”，使缺失检查点记录采取安全的继续处理策略。
 
 ## 核心职责
 
@@ -91,11 +89,9 @@ RustCodeGraph 将 `log_file_map.rs` 的明确外部使用定位到 `log_split_st
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `br/pkg/restore/log_client/log_file_map.go`，Rust 保留了 Go 的类型层次、构造器/方法名称与判定顺序：Go `bitMap map[int]uint64` 对应 Rust `HashMap<i32, u64>`；`Set`/`Hit` 对应自由函数 `bitMapSet`/`bitMapHit`；`fileMap`、`LogFilesSkipMap` 及 Ext 结构逐层对应。两边都以 `off >> 6` 取块号、以 `1 << (off & 63)` 取位，并在缺失键时按零或“不跳过”处理。
-
 主要语言差异是：Go 构造器返回指针，Rust 构造器返回拥有所有权的值并由 `&mut self`/`&self` 区分修改与查询；Go 的嵌入式 `bitMap` 方法在 Rust 中展开为显式字段和自由函数；Go 偏移类型是平台宽度的 `int`，Rust 固定为 `i32`。当前生产路径中的检查点偏移也使用 `i32`，因此 Rust 内部一致，但扩大范围时需注意与 Go `int` 的上限差异。
 
-`br/pkg/restore/log_client/log_file_map_test.rs::test_log_files_skip_map` 移植了 Go `log_file_map_test.go::TestLogFilesSkipMap` 的基础版测试意图：以原生集合为真值，覆盖从稀疏到接近稠密的插入与全空间反向检查。Rust 使用固定种子的 LCG 代替 Go 全局随机源，使测试可复现。两个同名独立测试都没有覆盖 Ext；Rust 额外由 `parity_test.rs::go_rust_public_contract_matches` 验证整 meta、整 group、单 offset 及不同 group 不互相影响的公开契约。
+Rust 使用固定种子的 LCG 代替 Go 全局随机源，使测试可复现。两个同名独立测试都没有覆盖 Ext；Rust 额外由 `parity_test.rs::go_rust_public_contract_matches` 验证整 meta、整 group、单 offset 及不同 group 不互相影响的公开契约。
 
 ## 扩展指南
 
@@ -105,14 +101,3 @@ RustCodeGraph 将 `log_file_map.rs` 的明确外部使用定位到 `log_split_st
 - 若需要并发写，应在上层明确同步所有权和性能目标。简单加全局互斥锁可能把检查点加载或文件调度串行化，分片键则应优先按 `metaKey` 设计并用基准或压力测试验证。
 - 若要收紧负偏移或溢出边界，应在 Go/Rust 输入契约、检查点反序列化类型和调用处一并验证；单独改变本文件会造成跨语言行为漂移或破坏已存检查点兼容性。
 - 生产调用变化至少同步检查 `log_split_strategy.rs` 及其独立测试；公开契约变化同步 `parity_test.rs`；位图本身的行为变化同步 `log_file_map_test.rs` 和 Go 对照测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖本仓库 7032 个 Rust 文件，可用于本次符号与调用关系核对。
-- RustCodeGraph `node --file br/pkg/restore/log_client/log_file_map.rs`：读取全部 192 行实现，确认无条件编译项、无 I/O/错误路径，并核对所有类型、构造器、方法及内部调用。
-- RustCodeGraph 对 `NewLogFilesSkipMap`、`NewLogFilesSkipMapExt`、`Insert`、`NeedSkip` 的 explore/caller/callee 结果，以及仓库 `rg` 交叉检查：确认基础版生产使用位于 `log_split_strategy.rs`，Ext 版当前只见于 `parity_test.rs`。
-- `br/pkg/restore/log_client/Cargo.toml` 与 `br/pkg/restore/log_client/lib.rs`：确认 crate 名称、Go 包映射、模块挂载、公开再导出以及测试分文件挂载方式。
-- `br/pkg/restore/log_client/log_split_strategy.rs::{NewLogSplitStrategy, ShouldSkip}` 及 Go 对照 `log_split_strategy.go`：确认检查点坐标的写入来源、下游表过滤和生产查询/进度回调链。
-- `br/pkg/restore/log_client/log_file_map.go`：逐项核对位图计算、懒初始化、整层短路和缺失状态语义。
-- `br/pkg/restore/log_client/log_file_map_test.rs` 与 `log_file_map_test.go`：核对基础版稀疏/近稠密测试、真值集合和正反向断言；`br/pkg/restore/log_client/parity_test.rs::go_rust_public_contract_matches` 补充 Ext 与 64 位块边界证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文档存在且恰好包含 11 个固定二级章节，并人工复核唯一生产物、源码链接、测试位置和未接线事实。

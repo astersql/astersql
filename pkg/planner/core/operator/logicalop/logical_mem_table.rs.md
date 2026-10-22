@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件定义 Rust 规划器中的逻辑内存表扫描节点 `LogicalMemTable`，对应 Go 同目录文件中的同名类型。这里的“内存表”是由 TiDB/AsterSQL 进程或远端诊断接口动态提供的系统、诊断和虚拟表，而不是普通持久化表；典型对象包括 `INFORMATION_SCHEMA`、慢查询和语句摘要表。节点通过 `LogicalPlan` trait 进入逻辑优化阶段，再由物理规划代码转换为 `PhysicalMemTable`。
-
-crate 边界由同目录 `Cargo.toml` 声明：包名为 `astersql-planner-core-operator-logicalop`，库入口是 `lib.rs`；`lib.rs` 的 `mod logical_mem_table` 与 `pub use logical_mem_table::*` 将本文件的类型纳入逻辑算子公共 API。该 crate 直接依赖 `expression`、`base`、`model`、`parser_ast`、`property`、`statistics` 等规划与元数据 crate，没有为本文件设置条件 feature。
-
-当前 Rust 接线状态需要谨慎理解：代码搜索没有发现生产 Rust 文件直接用结构体字面量或构造函数创建 `LogicalMemTable`，唯一直接构造点在 `logical_mem_table_test.rs`；不过 `pkg/planner/cascades/pattern/pattern.rs` 已将该类型识别为 `OperandMemTableScan`，`pkg/planner/cascades/old/implementation_rules.rs::ImplMemTableScan` 和 `pkg/planner/core/operator/physicalop/physical_mem_table.rs::ExhaustPhysicalPlans4LogicalMemTable` 已提供下游物理化路径。因此，本文只确认“逻辑节点及下游消费已存在”，不声称 Rust SQL plan builder 已完成上游构造接线。
+实际扫描由后续 `PhysicalMemTable` 及执行器负责。
 
 ## 核心职责
 
@@ -99,7 +95,7 @@ crate 边界由同目录 `Cargo.toml` 声明：包名为 `astersql-planner-core-
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对照 `logical_mem_table.go`，总体流程保持一致：同名逻辑节点、可选抽取器、白名单列裁剪、TopN/Limit 提示、慢日志时间列识别、溢出保护以及伪统计缓存均有对应实现。`logical_mem_table_test.rs` 明确验证了 15 个 Go 白名单表、溢出饱和值、慢日志降序提示和伪表统计契约。
+Rust 文件直接对照 `logical_mem_table.go`，总体流程保持一致：同名逻辑节点、可选抽取器、白名单列裁剪、TopN/Limit 提示、慢日志时间列识别、溢出保护以及伪统计缓存均有对应实现。
 
 仍存在以下可见差异或简化，扩展时不能忽略：
 
@@ -123,15 +119,3 @@ Rust 文件直接对照 `logical_mem_table.go`，总体流程保持一致：同�
 - 补上上游构造接线：应从 Rust plan builder 或信息模式计划入口建立有真实 `TableInfo`、schema、列、抽取器和时间范围的节点，并增加独立集成/单元测试；在此之前不要仅凭下游类型存在就宣称端到端可用。
 
 兼容风险主要是剩余谓词被错误吞掉、schema/名称/列向量失配、提示被当成语义保证，以及 Go/Rust 白名单或特殊表名漂移；性能风险主要是少裁列、少下推过滤或伪统计变化导致的过量扫描和错误计划选择。
-
-## 验证依据
-
-本说明基于以下直接证据完成：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；随后用 `node --file` 完整读取本文件 226 行。
-- RustCodeGraph 对 `LogicalMemTable` 的查询同时定位 Go/Rust 定义，并定位 `physical_mem_table.rs::ExhaustPhysicalPlans4LogicalMemTable`；目标文件上下文报告 4 个使用文件。
-- 完整阅读 `pkg/planner/core/operator/logicalop/logical_mem_table.rs`、Go 对照 `logical_mem_table.go`、独立 Rust 测试 `logical_mem_table_test.rs`、crate 入口 `lib.rs` 与同目录 `Cargo.toml`。
-- 阅读直接下游 `pkg/planner/core/operator/physicalop/physical_mem_table.rs`、`pkg/planner/cascades/old/implementation_rules.rs` 和类型匹配入口 `pkg/planner/cascades/pattern/pattern.rs`。
-- 阅读谓词实现测试 `pkg/planner/core/memtable_extractors/memtable_extractors_test.rs` 以及 `logicalop_test/logical_mem_table_predicate_extractor_test.rs` 的相关内容，用于核对抽取器状态和边界；后者测试的是具体抽取器，不是本逻辑节点的直接调用。
-- 用 `rg` 搜索全仓 Rust 的 `LogicalMemTable {`、`LogicalMemTable`、`ExhaustPhysicalPlans4LogicalMemTable` 和 `MemTableScan`，确认当前直接构造点仅见于独立测试，并确认两条物理化与 cascades 匹配接线。
-- 本任务为纯文档分析，按计划不运行 Cargo。最终使用任务指定的命令验证目标文档存在且恰好包含 11 个固定二级标题，并人工复核所有“已支持”陈述均有上述源码或测试依据。

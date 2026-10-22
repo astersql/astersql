@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-session` crate。`pkg/session/Cargo.toml` 将 crate 根指定为 `pkg/session/lib.rs`，而 `lib.rs` 通过 `pub mod advisory_locks;` 公开本模块。模块只直接使用 crate 根的 `SessionError` 和 `SessionResult`，没有直接引入 Cargo 外部依赖，也没有条件编译分支。
-
-它实现的是一把“会话级命名咨询锁”的底层事务对象：用一条永不提交的悲观事务持有 `mysql.advisory_locks` 表中某个锁名对应的行锁，并用回滚释放。当前 Rust 仓库中，`advisoryLock`、`AdvisorySession` 和本文件的包级封装函数都没有文件外生产引用，生产 `AdvisorySession` 适配器未在本模块接线；因此该模块目前是已导出但尚未接入 Rust 会话主链的移植实现，不能据此宣称 Rust SQL 会话已经通过本模块持锁。
+`advisoryLock` 保存单个锁的执行上下文、专用内部会话、一次性清理回调、引用计数和所有者会话标识。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/session/advisory_locks.go`。Rust 保留了 Go 的 `advisoryLock` 五项状态和六个方法的总体算法：内部来源标记、设置等待超时、`BEGIN PESSIMISTIC`、向 `mysql.advisory_locks` 插入、插入失败回滚、引用计数以及一秒探测。
+Rust 保留了 Go 的 `advisoryLock` 五项状态和六个方法的总体算法：内部来源标记、设置等待超时、`BEGIN PESSIMISTIC`、向 `mysql.advisory_locks` 插入、插入失败回滚、引用计数以及一秒探测。
 
 主要移植差异如下：
 
@@ -94,10 +92,7 @@
 - Go 的 `clean` 必定存在且每次 `Close` 都调用；Rust 使用 `Option<FnOnce>`，清理最多执行一次。
 - Go 用 `terror.Log(err)` 记录回滚错误；Rust 委托 `AdvisorySession::LogCloseError`。
 - Go 的 SQL 参数统一由可变参数 `ExecuteInternal` 传入；Rust 按无参数、整数、字符串拆成三个方法。
-- 冻结版本 Go 与 Rust 的 `GetLock` 均在 SET、BEGIN 和 INSERT 的失败路径关闭资源。
 - Go 上层 `session.go` 已实现按名称缓存、同名引用累加、所有者查询、单锁与全部释放、会话关闭清理和迁移限制；Rust 本文件及当前生产搜索没有这些接线。
-
-Go 集成测试 `pkg/expression/integration_test/integration_test.go` 覆盖参数数量、超时、非法名称、大小写、引用计数、批量释放及跨会话竞争。Rust 的 `pkg/expression/integration_test/integration_part2_aster_unit_test.rs::TestGetLock` 移植了这些 SQL 场景，但它不是本文件的独立单元测试；`pkg/session/session_test.rs::advisory_lock_setup_failure_releases_session` 直接构造 `advisoryLock`，注入 SET/BEGIN 失败并验证清理回调与末次 SQL 为 ROLLBACK；这不构成完整生产适配器或回滚日志分支的验证。
 
 ## 扩展指南
 
@@ -111,11 +106,3 @@ Go 集成测试 `pkg/expression/integration_test/integration_test.go` 覆盖参�
 6. 保留并运行表达式层现有边界测试，另外增加真实 session 适配器的集成测试，证明 SQL 函数确实走到此模块。
 
 兼容风险主要是 MySQL 返回值和错误分类、锁名大小写/长度规则以及 `RELEASE_ALL_LOCKS()` 对引用次数的计数；正确性风险集中在失败路径泄漏内部会话或事务、重复清理和同名锁映射；性能风险来自每个唯一锁占用一个长期内部会话与悲观事务。任何优化都必须保留“不同锁可按任意顺序回滚”的资源模型。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/advisory_locks.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
-- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
-- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
-- `session_test.rs::advisory_lock_setup_failure_releases_session` 注入 SET/BEGIN 失败，验证清理回调及 ROLLBACK；Go `advisory_locks.go::GetLock` 同样覆盖三阶段失败清理。生产 trait 适配接线未由该测试证明。

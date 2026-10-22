@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`meta_kv.rs` 属于 Cargo 包 `astersql-br-pkg-stream`（`br/pkg/stream/Cargo.toml`），由 `br/pkg/stream/lib.rs` 通过 `#[path = "meta_kv.rs"] pub mod meta_kv` 纳入 crate，并由 `pub use meta_kv::*` 扁平再导出。它位于 BR 流式备份/恢复的元数据处理层：一端理解 TiDB 事务 meta key，另一端理解 TiKV write-CF value，使上层能够在不破坏事务编码的前提下重写数据库、表、时间戳和内联元数据。
-
-本文件是 `br/pkg/stream/meta_kv.go` 的 Rust 对照实现，不是独立存储引擎，也不负责扫描备份文件、选择映射规则或反序列化 DB/Table JSON。生产调用者主要是 `br/pkg/stream/rewrite_meta_rawkv.rs`、`br/pkg/stream/table_mapping.rs` 和 `br/pkg/stream/search.rs`；底层字节、meta key 与错误类型当前由同 crate 的 `stubs.rs` 提供。
+位于 BR 流式备份/恢复的元数据处理层：一端理解 TiDB 事务 meta key，另一端理解 TiKV write-CF value，使上层能够在不破坏事务编码的前提下重写数据库、表、时间戳和内联元数据。
 
 ## 核心职责
 
@@ -97,9 +95,7 @@ RustCodeGraph 对 `ParseTxnMetaKeyFrom` 给出的 Rust 调用者包括 `ParseDBI
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/stream/meta_kv.rs` 与 `br/pkg/stream/meta_kv.go` 的公开符号、字段含义、flag 字节、解析顺序和编码顺序逐项对应。Rust 的 `Result<T, Error>` 对应 Go 的 `(T, error)`；Rust `Vec<u8>` 替代 `[]byte`；Go 返回 `*RawMetaKey`，Rust 返回拥有所有权的 `RawMetaKey`。Rust 方法保留 Go 风格命名，以便迁移期对照。
-
-行为一致点包括：四种 write type、9 字节最小检查、short-value 两阶段边界检查、未知 flag 停止循环、last-change 的输出条件、txn source 位 OR，以及 `EncodeMetaKey` 的三段编码。`br/pkg/stream/meta_kv_test.rs` 与 `meta_kv_test.go` 具有相同的九组核心用例：DB/table key 往返、write type、无/有 short value、short-value 溢出保护、rollback、delete 和 GC fence。
+Rust 的 `Result<T, Error>` 对应 Go 的 `(T, error)`；Rust `Vec<u8>` 替代 `[]byte`；Go 返回 `*RawMetaKey`，Rust 返回拥有所有权的 `RawMetaKey`。
 
 需要注意的 Rust 表达差异：Go 测试可直接检查同包私有字段，Rust 测试通过公开 getter 和 `EncodeTo` 往返间接确认部分状态；Rust `GetShortValue` 克隆数据，而 Go 返回底层 slice；Rust 底层依赖目前指向 `stubs.rs` 中的本地移植实现，而非 Cargo.toml 中的独立 TiDB/TiKV codec crate。因此修改 stub 编码语义也会直接改变本文件行为，必须与 Go codec 布局共同核对。
 
@@ -111,14 +107,3 @@ RustCodeGraph 对 `ParseTxnMetaKeyFrom` 给出的 Rust 调用者包括 `ParseDBI
 - 若允许外部传入 short value，应在 `UpdateShortValue` 或更上层入口增加不超过 255 字节的约束，并为 256 字节边界补回归测试；不能依赖 `as u8` 截断。
 - 若要复用解析对象，应在 `ParseFrom` 开始处清空全部字段或新增返回新值的构造式 API，并为“先解析全字段、再解析简短记录”添加状态残留测试。
 - 改动 key 编码需同步检查 `rewrite_meta_rawkv.rs`、`table_mapping.rs`；改动 write-CF 语义还需检查 `search.rs`。兼容风险主要是字节级不可逆、错误分类变化和未知后缀丢失，性能风险主要来自额外克隆或重复编解码。
-
-## 验证依据
-
-- 目标源码：`br/pkg/stream/meta_kv.rs`，覆盖全部 287 行以及其中的公开类型、函数、方法、常量和私有 flag。
-- crate 与模块入口：`br/pkg/stream/Cargo.toml`、`br/pkg/stream/lib.rs`；确认 library 名称、模块挂载、扁平再导出和独立测试挂载方式。
-- Go 对照：`br/pkg/stream/meta_kv.go`；逐项核对 `RawMetaKey`、`RawWriteCFValue`、write type、flag、错误分支与编码顺序。
-- 独立测试：`br/pkg/stream/meta_kv_test.rs`、`br/pkg/stream/meta_kv_test.go`、`br/pkg/stream/parity_test.rs`、`br/pkg/stream/rewrite_meta_rawkv_test.rs`；确认往返、边界错误、类型谓词、物理导入来源位及 key 重写语义。
-- 直接调用证据：`br/pkg/stream/rewrite_meta_rawkv.rs`、`br/pkg/stream/table_mapping.rs`、`br/pkg/stream/search.rs`。
-- 底层布局证据：`br/pkg/stream/stubs.rs` 中 `LightningPhysicalImportTxnSource`、`codec::{Encode/DecodeBytes, Encode/DecodeUint, Encode/DecodeUintDesc, Encode/DecodeUvarint}`、`tablecodec::{EncodeMetaKey, DecodeMetaKey}` 和 `meta::ParseDBKey`。
-- RustCodeGraph：运行 `status`、`files --filter br/pkg/stream`、目标文件 `node --file ... --offset 1 --limit 500`、`query ParseTxnMetaKeyFrom`，并以 `explore` 核对 `ParseTxnMetaKeyFrom`、`RawWriteCFValue::ParseFrom`、`EncodeTo` 的调用关系。索引显示目标文件被 11 个文件使用，并列出上述生产与测试调用者。
-- 本任务仅新增说明文档；按计划不运行 Cargo。交付前另执行任务指定的 11 章节结构检查、路径存在性检查和 Git diff 检查。

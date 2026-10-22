@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo 包 `astersql-util-topsql-reporter`，由 [`lib.rs`](lib.rs) 以公开模块 `report_ticker` 挂载。它把 `crossbeam_channel::tick` 包装为一个可查询间隔、可阻塞或超时接收的周期触发器，并提供仅供测试缩短周期的进程级覆盖入口。
-
-需要区分“模块已公开”和“生产上报循环已接线”：当前 Rust [`reporter.rs`](reporter.rs) 的 `RemoteTopSQLReporter::collectWorker` 仍直接用 `crossbeam_channel::tick(DefTiDBTopSQLReportIntervalSeconds)`，没有调用本文件的 `new_report_ticker`。仓库内可检索到的 Rust 直接使用者是独立测试 `datamodel_1_aster_unit_test.rs`，以及 `pkg/server/tests/servertestkit/testkit.rs` 对 Go 风格测试入口的调用。因此，本文件目前是已实现、可复用的 ticker/测试覆盖工具，但尚未控制 Rust reporter 的生产收集循环。
+用 `ReportTicker` 同时保存创建时的间隔快照和 `crossbeam_channel::Receiver<Instant>`，隐藏 ticker 通道的构造细节。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ RustCodeGraph 的文件节点确认了本文件 95 行源码及主要符号；�
 
 ## 与 Go 版本的对应关系
 
-同路径 `report_ticker.go` 是直接语义基线。两版都从 `DefTiDBTopSQLReportIntervalSeconds` 得到默认值，都用进程级互斥状态保存覆盖值，都让非正输入恢复默认值，也都返回捕获旧值的恢复函数。
-
 主要表示差异如下：Go 的 `newReportTicker` 直接返回 `*time.Ticker`，使用方从 `Ticker.C` 接收并可调用 `Stop`；Rust 返回自定义 `ReportTicker`，用 `recv`/`recv_timeout` 隐藏 `Receiver<Instant>`，没有对应的显式 `Stop`。Go 的设置入口接收 `int` 并返回 `func()`；Rust 核心入口接收 `i64` 并返回 `Box<dyn FnOnce() + Send + 'static>`，另有 Go 风格名称的薄委托。
 
-接线状态尚不等价：Go `reporter.go::collectWorker` 确实通过 `newReportTicker` 取得周期并在退出时 `Stop`；Rust `reporter.rs::collectWorker` 仍绕过本模块直接创建固定默认周期。因此，Rust 测试覆盖函数目前不能缩短该生产 worker 的周期。文档只记录此迁移差距，不把 Go 的接线行为推断为 Rust 已支持。
+接线状态尚不等价：Go `reporter.go::collectWorker` 确实通过 `newReportTicker` 取得周期并在退出时 `Stop`；Rust `reporter.rs::collectWorker` 仍绕过本模块直接创建固定默认周期。
 
 ## 扩展指南
 
@@ -81,14 +77,3 @@ RustCodeGraph 的文件节点确认了本文件 95 行源码及主要符号；�
 若扩展测试覆盖 API，应维持以下不变量：非正数回到默认值；新 ticker 的 `interval()` 与实际构造间隔一致；覆盖仅影响之后创建的实例；恢复操作不在持锁期间执行外部代码。涉及并发覆盖时，建议新增专门的独立测试文件或在现有独立测试模块中加入序列化用例，明确规定嵌套恢复顺序，而不要把测试嵌入生产源文件。
 
 若需要可动态重配的生产 ticker，本文件现有“创建时快照”模型并不满足要求；应先定义重配、取消、积压 tick 和关闭时等待的兼容语义，再选择通道或任务模型。该改动会影响 `collectWorker` 的性能和关闭行为，不能只改全局 `Duration`。
-
-## 验证依据
-
-- 源码与模块：`pkg/util/topsql/reporter/report_ticker.rs`、`pkg/util/topsql/reporter/lib.rs`、`pkg/util/topsql/reporter/reporter.rs::collectWorker`。
-- crate 边界：`pkg/util/topsql/reporter/Cargo.toml`，确认 `crossbeam-channel`、`topsql_state`、`autotests = false` 以及独立测试模块的承载方式。
-- 默认状态：`pkg/util/topsql/state/state.rs::DefTiDBTopSQLReportIntervalSeconds`，当前值为 60。
-- Go 对照：`pkg/util/topsql/reporter/report_ticker.go::{newReportTicker, SetReportTickerIntervalSecondsForTest}` 与 `pkg/util/topsql/reporter/reporter.go::collectWorker`。
-- Rust 测试：`pkg/util/topsql/reporter/datamodel_1_aster_unit_test.rs::subscription_parsing_send_order_channel_full_and_ticker_match_go`；服务器测试生命周期见 `pkg/server/tests/servertestkit/testkit.rs::{create_tidb_test_top_sql_suite, Drop for TidbTestTopSqlSuite}`。
-- Go 测试使用面：`pkg/util/topsql/reporter/reporter_test.go` 和 `pkg/util/topsql/topsql_test.go` 多处安装覆盖并通过 cleanup 恢复，证明此 API 的测试作用域意图。
-- RustCodeGraph：执行 `status`、目标文件 `node --file`、`query ReportTicker --kind struct` 和 `query new_report_ticker --kind function`；索引确认文件及符号，精确 callers 查询超时后用限定源码搜索补齐直接引用证据。
-- 本任务为纯文档分析，未运行 Cargo。交付前使用任务指定命令确认目标文档存在且恰有 11 个固定二级章节，并人工复核未把未接线行为描述为已支持。

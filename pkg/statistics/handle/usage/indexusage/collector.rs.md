@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-statistics-handle-usage-indexusage` 的核心实现，crate 入口 `pkg/statistics/handle/usage/indexusage/lib.rs` 将其全部公开项重新导出。它位于统计信息 handle 的 usage 子系统内，负责把执行期间产生的“表 ID + 索引 ID”访问样本从语句级、会话级逐步汇总为节点级内存视图；文件本身不负责从执行器计算 KV 请求数或扫描行数，也不负责把结果持久化到系统表。
-
-`pkg/statistics/handle/usage/indexusage/Cargo.toml` 表明该 crate 的运行时依赖只有通用异步增量框架 `astersql-statistics-handle-usage-collector`、元数据模型 `astersql-meta-model` 和通道实现 `crossbeam-channel`（后者由通用 collector 使用）。`pkg/statistics/handle/types/interfaces.rs` 又把本文件的 `Sample` 和 `SessionIndexUsageCollector` 暴露为统计 handle 接口类型，说明它处在执行侧采样与统计 handle 查询/清理边界之间。仓库另有 `pkg/statistics/handle/usage/index_usage.rs` 的 snake_case 内存实现；两者是不同模块，本文只描述本 crate 中的 Go 风格 API，不能把另一实现的即时合并行为当作本文件现状。
+`Collector` 管理节点级 `index_usage` 视图，借助通用 `globalCollector` 在后台接收会话增量，并提供查询、worker 生命周期控制及失效索引 GC。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@ worker 调用 `mergeDelta` 时先获取节点写锁，再获取 delta 锁。会�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/usage/indexusage/collector.go`，主要结构一一对应：
-
 - Go `GlobalIndexID`、`Sample`、`bucketBound`、`getIndexUsageAccessBucket`、`NewSample` 对应同名 Rust 符号；字段含义、七桶边界和零总行数末桶规则一致。
 - Go `indexUsage.updateByKey`/`merge` 对应 Rust `updateByKey`/`mergeDelta`。Rust 显式使用 `wrapping_add`，复现 Go `uint64` 溢出回绕；两者都取较新的时间。
 - Go `sync.Pool` 对应 Rust `INDEX_USAGE_POOL`。Rust 以 `Mutex<Vec<HashMap>>` 实现，复用目标相同，但 Rust 池无 Go runtime 可随 GC 丢弃池项的语义。
@@ -111,14 +107,3 @@ worker 调用 `mergeDelta` 时先获取节点写锁，再获取 delta 锁。会�
 - 扩展 GC 条件时修改 `Collector::GCIndexUsage`，保持回调依赖最小化；同步更新 `migration_aster_unit_test.rs::gc_removes_missing_tables_and_indexes`，覆盖表缺失、索引缺失、元数据回调契约以及查询并发。
 - 在生产路径接入本 crate 前，应从 `pkg/statistics/handle/types/interfaces.rs::IndexUsage` 与执行器 reporter 边界核实类型转换；当前 Cargo 依赖并不等于所有声明者都已真实调用本实现。
 - 性能风险集中在节点写锁、每次会话 Update 的两层互斥锁、语句去重锁和全局池锁。增加高频字段或更细粒度事件时，应使用与现有 64 会话负载相当的并发测试/基准验证，而不能通过删除锁或缩减 Go 语义来换取测试通过。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件，目标目录六个文件均已索引；`node --file pkg/statistics/handle/usage/indexusage/collector.rs` 读取到完整 338 行与 26 个符号。
-- RustCodeGraph 精确符号查询：确认目标定义 `NewSample`（第 96 行）、`NewCollector`（第 178 行）、`GetIndexUsage`（第 193 行）、`GCIndexUsage`（第 228 行）、`NewStmtIndexUsageCollector`（第 312 行）及私有 `mergeDelta`、`updateByKey`、`getIndexUsageAccessBucket`。
-- RustCodeGraph callees：`NewCollector → NewGlobalCollector/takeIndexUsageMap/mergeDelta`；`NewSample → getIndexUsageAccessBucket`；`mergeDelta → updateByKey`；`SpawnSessionCollector`、`Report`、`Flush → takeIndexUsageDelta`。callers 查询曾超过 60 秒未返回，已停止该查询，并用下列本地直接证据限定上游结论。
-- 源码与边界：`pkg/statistics/handle/usage/indexusage/collector.rs`、`lib.rs`、`Cargo.toml`；通用异步实现 `pkg/statistics/handle/usage/collector/collector.rs`；接口再导出 `pkg/statistics/handle/types/interfaces.rs`；声明依赖者的 Cargo manifests。
-- Go 对照：`pkg/statistics/handle/usage/indexusage/collector.go` 与 `collector_test.go`。
-- 独立 Rust 测试：`pkg/statistics/handle/usage/indexusage/collector_test.rs`、`migration_aster_unit_test.rs`。测试覆盖桶边界、字段累加、异步可见性、通道拒绝保留、64 会话并发一致性、语句去重/Reset、Go 零时间及 GC。
-- 接线限制核验：精确 `rg` 只确认 `pkg/statistics/handle/types/interfaces.rs` 对公开类型的生产再导出；`pkg/session` 和 `pkg/executor/internal/exec` 虽有 Cargo 依赖声明，但未据此推断其已调用本文件 API。
-- 本任务是纯文档分析，遵循计划不运行 Cargo。交付前只执行任务指定的 11 章节结构验证，并人工复核标题、符号、调用边、边界和扩展建议均能回指上述文件。

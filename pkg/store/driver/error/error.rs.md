@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-driver-error` crate 的核心实现，位于存储驱动与 TiDB/AsterSQL 通用错误体系之间。crate 入口 [`lib.rs`](./lib.rs) 通过 `include!("error.rs")` 纳入本文件，并把其中的公开项重新导出；[`Cargo.toml`](./Cargo.toml) 将 crate 绑定到官方 `tikv-client` 的 `v0.4.2-aster.10` tag，同时依赖本仓库的 `dbterror`、`sqlkiller`、执行器错误和 parser 错误名模块。
-
-它不是网络客户端或重试器，而是错误语义适配层：接收 TiKV/PD 客户端产生的 `SharedError`，识别错误链中的具体类型，再转换成 `kv`、`terror`、`exeerrors` 或 TiKV 错误类中的稳定错误。当前可见的生产调用链是 [`pkg/store/driver/backoff/backoff.rs`](../backoff/backoff.rs) 的 `Backoff::Backoff` 与 `Backoff::BackoffWithMaxSleep` 在返回前调用 `ToTiDBErr`；同文件的 `map_backoff_type_to_error` 也构造本文件的 `TiKvError` 变体。
+用一组 `LazyLock<Box<terror::Error>>` 建立 TiKV/PD 错误码到 TiDB `dbterror::ClassTiKV` 错误类的稳定映射。
 
 ## 核心职责
 
@@ -88,17 +86,12 @@ RustCodeGraph 对 `ToTiDBErr` 给出的直接下游调用边是 `register_tikv_r
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`error.go`](./error.go)，测试对照是 [`error_test.go`](./error_test.go)。两版共同点包括：空错误原样返回、按错误链匹配来源类型、完整的 client-go 分支、相同的 TiDB 错误类和参数、资源组错误转换，以及最终 `errors.Trace` 回退。
-
 Rust 的主要结构差异如下：
 
 - Go 直接匹配 `client-go/v2/error` 与 PD client 的错误类型；Rust 定义 `TiKvError`/`PdError` 保留这些分支，并额外接受官方 `tikv-client` 错误。
 - Go 借助包初始化时的空标识符变量注册三个 TiKV 返回错误；Rust 使用 `Once`，由 `ToTiDBErr` 首次调用时触发。
-- Go 的 `error`/`nil` 对应 Rust 的 `Option<SharedError>`；Go `errors.As`/`errors.Is` 对应 `errors::Find` 加 `downcast_ref`。
 - Go 多个哨兵错误可直接返回全局对象；Rust 将 `terror::Error` 克隆进 `SharedError`，保持所有权安全。
 - Rust 的 `convert_official_tikv_error` 是 Go 文件没有的兼容分支；它不能被视作 client-go 全量替代，因为当前只处理三个官方变体。
-
-[`error_test.rs`](./error_test.rs) 对齐 Go 的 `TestConvertError` 和 `TestMemBufferOversizeError`；[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 进一步覆盖哨兵映射、字段参数、五种查询信号、GC、PD 资源组、一次注册以及官方客户端的映射/回退。Go `TestMain` 的公共环境和 goroutine 泄漏检查没有机械移植：本 crate 不启动 Go goroutine，Rust 测试由标准 harness 管理。
 
 ## 扩展指南
 
@@ -108,13 +101,3 @@ Rust 的主要结构差异如下：
 - 增加查询终止信号时：同时检查 `sqlkiller` 常量、执行器错误定义和 Go `ToTiDBErr`，明确未知 connection ID 等参数的占位策略。
 - 改变匹配顺序或回退策略时：重点验证被包装错误、类型重叠、原错误文本和堆栈；这类改动有兼容风险，因为上层可能按 `terror::Error::Equal`、错误码或消息参数判断行为。
 - 性能方面，转换仅在错误路径执行；仍应避免在热错误路径引入全链多次扫描或无必要的大字符串克隆。若扩展到更多来源类型，可评估保持当前优先级扫描是否足够。
-
-## 验证依据
-
-- 目标实现：[`error.rs`](./error.rs)，核对了两个公开枚举、18 个公开惰性错误、一次注册状态、五个私有辅助/转换函数和公开入口 `ToTiDBErr`，以及所有匹配与回退分支。
-- crate 边界：[`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)，核对 crate 名、固定的 `tikv-client` Git tag、本地依赖、`include!` 和公开再导出关系。本目录不存在 `doc.go`，因此没有额外包契约文件可读。
-- Go 对照：[`error.go`](./error.go) 与 [`error_test.go`](./error_test.go)，核对 client-go/PD 分支、注册方式、包装错误、结果不确定和超限消息语义。
-- Rust 测试：[`error_test.rs`](./error_test.rs) 与 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)，核对 `None`、重复注册、包装链、错误相等性、参数保留、全部五种已知查询信号、GC/资源组、官方客户端及保真回退。
-- RustCodeGraph：`status` 显示索引包含本目录的 `error.rs`、Go 对照和两份 Rust 测试；`query ToTiDBErr` 定位到 `error.rs:322`；`node pkg/store/driver/error/error.rs::ToTiDBErr` 确认其调用 `register_tikv_returned_errors`；三个转换函数和注册函数的 `node` 查询确认了源码位置与内部调用边。文件级 `node` 与部分 callers 查询无输出/超时，因此跨 crate 调用者另以 `rg` 核对。
-- 调用搜索：Rust 源码搜索确认 [`pkg/store/driver/backoff/backoff.rs`](../backoff/backoff.rs) 构造 `TiKvError`，并在 `Backoff`、`BackoffWithMaxSleep` 中调用 `ToTiDBErr`；[`pkg/ddl/split_region.rs`](../../../ddl/split_region.rs) 识别公开 `PdError`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文恰好包含上述 11 个固定二级标题。

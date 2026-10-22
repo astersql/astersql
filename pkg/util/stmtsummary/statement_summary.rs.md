@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-stmtsummary` crate 的 v1 语句摘要核心。`pkg/util/stmtsummary/lib.rs` 将其声明为私有模块并整体再导出，对外提供 `StmtExecInfo`、`StmtExecLazyInfo`、全局 `StmtSummaryByDigestMap` 及统计辅助类型。它位于语句执行完成后的观测链路上：`pkg/session/runtime/scan_adapter_runtime.rs` 组装 `StmtExecInfo` 并调用 `astersql_util_stmtsummary_v2::Add`；`pkg/util/stmtsummary/v2/stmtsummary.rs::Add` 在 v2 尚未 `Setup` 时回退到本文件的 `stmtSummaryByDigestMap::AddStatement`。聚合结果主要由 `pkg/util/stmtsummary/reader.rs` 转换为语句摘要信息模式行，也由 `pkg/server/extract_runtime.rs` 的诊断提取路径读取快照。
-
-`pkg/util/stmtsummary/Cargo.toml` 将该目录定义为独立 crate，直接依赖 `lru`、`prometheus`、`base64`、`snap`，并通过本地 crate 依赖接入 statement context、执行细节、CPU/RU、计划编码和类型系统；workspace 根清单及 executor、session、server、infoschema 等 crate 通过路径依赖引用它。
+将每次执行的 `StmtExecInfo` 同时并入跨窗口累计值 `cumulative` 和当前窗口 `history`，维护和/最大/最小值、集合及首次/末次时间。
 
 ## 核心职责
 
@@ -72,9 +70,9 @@ Go 版本在 map、digest 条目和窗口上使用分层 mutex；Rust 版本依�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/stmtsummary/statement_summary.go`。Rust 保留了 Go 的主要类型与方法命名、编译期默认值、LRU/other 模型、窗口对齐、至少保留当前窗口、首样本策略、计划失败降级、统计聚合、RU/网络辅助类型和按用户分组切换时清空数据的语义。`StmtDigestKeyPoolType` 对应 `sync.Pool`，`LruCache` 对应 `kvcache.SimpleLRUCache`，`VecDeque` 对应 `container/list`。
+Rust 保留了 Go 的主要类型与方法命名、编译期默认值、LRU/other 模型、窗口对齐、至少保留当前窗口、首样本策略、计划失败降级、统计聚合、RU/网络辅助类型和按用户分组切换时清空数据的语义。
 
-可见实现差异包括：Rust 把全局实例包在 `LazyLock<Mutex<_>>`，Go 的 mutex 嵌入 map 并在条目/窗口再加锁；Rust 用 `nowForTest` 代替 Go 的 failpoint 时间注入；Rust 的 `format_sql_with_limit` 会回退到合法 UTF-8 边界，而 Go 直接按字节切片；Rust 的 `formatBackoffTypes` 在计数相同的情况下按名称排序，使输出确定。Rust `newStmtSummaryStats` 返回 `Option`，当前路径总是 `Some`，为初始化失败传播保留接口。Go 对照仍是行为基准，修改聚合字段时应同时检查两边的 add/merge/reader 列语义，而不能只让 Rust 测试通过。
+可见实现差异包括：Rust 把全局实例包在 `LazyLock<Mutex<_>>`，Go 的 mutex 嵌入 map 并在条目/窗口再加锁；Rust 用 `nowForTest` 代替 Go 的 failpoint 时间注入；Rust 的 `format_sql_with_limit` 会回退到合法 UTF-8 边界，而 Go 直接按字节切片；Rust 的 `formatBackoffTypes` 在计数相同的情况下按名称排序，使输出确定。Go 对照仍是行为基准，修改聚合字段时应同时检查两边的 add/merge/reader 列语义，而不能只让 Rust 测试通过。
 
 ## 扩展指南
 
@@ -83,12 +81,3 @@ Go 版本在 map、digest 条目和窗口上使用分层 mutex；Rust 版本依�
 修改窗口策略应集中在 `AddStatement`、`stmtSummaryByDigest::add`、`stmtSummaryByDigestElement::{add,onExpire}` 和 `collectHistorySummaries`，并同步检查 `evicted.rs` 的窗口匹配。修改容量或清理行为要同时维护 `other` 和两个 gauge。惰性字段应优先扩展 `StmtExecLazyInfo`，但必须评估其所有实现者，尤其是 session adapter、v2 record 和测试桩。
 
 测试必须放在独立文件而非本源文件。优先扩展 `pkg/util/stmtsummary/statement_summary_test.rs`（Go 对齐的主行为与并发/reader 覆盖）和 `statement_summary_2_aster_unit_test.rs`（迁移补充边界），并对照 `statement_summary_test.go`。关键回归应覆盖同键多次执行、跨窗口、历史 0/缩容、LRU 淘汰、纯内部与混合条目、按用户分组切换、计划错误/超限、UTF-8 截断、零分母、缺失执行细节及 add/merge 一致性。性能风险主要来自扩大每条摘要、增加克隆量或延长全局 mutex 临界区。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件且目标文件已索引；`files --filter pkg/util/stmtsummary` 确认模块文件集合；`explore "StatementSummaryByDigestMap statement_summary.rs pkg/util/stmtsummary"` 核对主要符号、测试和 reader/v2 调用关系；`node --file pkg/util/stmtsummary/statement_summary.rs` 分段读取 1–1487 行；`callees AddStatement` 核对 `Get/Put/Init/Hash`、选项读取、`add`、指标更新和时钟依赖。
-- crate/入口：`pkg/util/stmtsummary/Cargo.toml`、`pkg/util/stmtsummary/lib.rs`、workspace 根 `Cargo.toml` 及引用该 crate 的 session/executor/server/infoschema 清单。
-- 上下游源码：`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/util/stmtsummary/v2/stmtsummary.rs`、`pkg/util/stmtsummary/reader.rs`、`pkg/server/extract_runtime.rs`。
-- Go 对照：`pkg/util/stmtsummary/statement_summary.go`，重点核对 `StmtDigestKey.Init`、`newStmtSummaryByDigestMap`、`AddStatement`、配置 setter、`stmtSummaryByDigest::{init,add}`、`newStmtSummaryStats`、窗口更新、统计 add、格式化/均值及 RU/网络汇总。
-- Rust 独立测试：`pkg/util/stmtsummary/statement_summary_test.rs` 覆盖历史清理/缩容、淘汰窗口、并发开关、内部条目、Point Get、权限、按用户分组、IA 统计等；`pkg/util/stmtsummary/statement_summary_2_aster_unit_test.rs` 覆盖键边界、完整聚合、窗口裁剪、容量、计划错误、SQL 长度、RU/网络辅助。Go 测试基准为 `pkg/util/stmtsummary/statement_summary_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅运行任务规定的 11 章节结构验证，并人工复核本文未把 v2 激活路径误写成 v1 直接路径。

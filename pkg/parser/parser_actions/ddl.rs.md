@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ddl.rs` 是 `astersql-parser` crate 内部的 DDL 语义动作分片，由 [`parser_actions/mod.rs`](./mod.rs) 私有声明为 `mod ddl`。它不负责词法分析或 LR 状态转移，而是在 [`parser_runtime.rs`](../parser_runtime.rs) 完成一次规约时，把已识别的稳定 `RuleId` 和右部语义值转换成 `parser_ast` 节点、选项值或列表。
-
-该文件直接对应 Rust 主语法 [`grammar/main.astergram`](../grammar/main.astergram) 中标有 `@action` 的 DDL 产生式，并以 Go 版 [`parser.y`](../parser.y) 的产生式动作为移植语义基线。[`Cargo.toml`](../Cargo.toml) 将它归入 `astersql-parser` 库，AST 主要来自本地路径依赖 `astersql-parser-ast`，错误、MySQL 常量、字符集和类型能力通过 crate 根模块及其他本地 parser crate 间接引入。
+在构造 AST 前执行 Go 规则中的局部语义校验，包括数值/长度、重复选项、分区定义、MariaDB/MySQL 兼容开关和严格 DOUBLE 类型等边界；错误通过 `yyLexer` 记录，必要时用 `Err(1)` 终止解析。
 
 ## 核心职责
 
@@ -61,7 +59,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照的真实位置不是同路径 `.go` 文件，而是 [`pkg/parser/parser.y`](../parser.y) 中的 goyacc 产生式动作；[`pkg/parser/parser.go`](../parser.go) 是对应生成结果。Rust [`grammar/main.astergram`](../grammar/main.astergram) 保留产生式形状，而本文件把 Go 中的 `$n`/`$$`、类型断言和 `return 1` 分别移植为 `Rhs` 索引、`Context.output`、downcast 和 `Err(1)`。例如 Go `DirectPlacementOption` 的 `FOLLOWERS > 0` 校验与错误文本，在 Rust `DirectPlacementOptionAlt03` 中逐项保留。
+Rust [`grammar/main.astergram`](../grammar/main.astergram) 保留产生式形状，而本文件把 Go 中的 `$n`/`$$`、类型断言和 `return 1` 分别移植为 `Rhs` 索引、`Context.output`、downcast 和 `Err(1)`。
 
 两端在表达机制上有必要差异：Go 直接将 `interface{}` 断言为 AST 指针/切片，Rust 使用 `Box<dyn Any>` 的受检 downcast；Go 候选分支直接嵌入动作，Rust 用稳定 RuleId 先映射成 `DdlRule` 再集中分派；Rust 还使用 `semantic_complete` 显式记录未完整移植的语义值。这些是实现差异，不代表可以删减 Go 分支逻辑；扩展时应以同一 Go 产生式的 AST 字段、默认值、警告/错误和 feature 开关为对齐单元。
 
@@ -72,15 +70,3 @@ Go 对照的真实位置不是同路径 `.go` 文件，而是 [`pkg/parser/parse
 3. 涉及 AST 字段时同步检查 `pkg/parser/ast` 中的根类型和 restore/visitor 行为；涉及错误时保留 MySQL 错误码、文本、警告降级和 parser feature 开关，不只验证“能否解析”。
 4. 测试首先更新 [`ddl_aster_unit_test.rs`](./ddl_aster_unit_test.rs) 的 `DDL_NONTERMINALS`/预期 inventory，并保持无 numeric fallback。真实 SQL -> AST 行为应在 [`parser_3_aster_unit_test.rs`](../parser_3_aster_unit_test.rs) 或更靠近的独立 parser 测试中增加回归；分区错误和语义边界可延伸 [`parser_semantic_support_test.rs`](../parser_semantic_support_test.rs)，Go 对照则查看 `parser_test.go` 及与具体 DDL 特性相关的测试。
 5. 兼容性风险主要是 Go/Rust AST 字段、默认值和错误级别漂移；正确性风险是 RHS 位置、downcast 类型或 RuleId 漏映射；性能风险是在长列表规约中新增不必要的 AST/`Vec` 克隆。
-
-## 验证依据
-
-- 增量回归证据：冻结 `parser_test.rs::view_check_option` 覆盖普通 SELECT、括号 SELECT、UNION、UNION ALL 四种 view，检查 `CheckOption == Cascaded` 且 SELECT 原文不含 CHECK OPTION；残缺 `WITH CHECK` 与混合 `CASCADED LOCAL` 应拒绝。Go `parser.y` 明确省略限定词等于 CASCADED。仅审阅，未运行。
-
-- 本次同步固定依据 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异与目标提交 blob；不采用工作区 Rust 源码或后续提交。只读审计与文档校验不表示 Rust 测试已执行。
-
-- RustCodeGraph：本次 `status` 显示 11,527 个文件且包含 Rust；该索引对应工作区。本次同步采用冻结 blob 作为事实依据，没有执行旧说明中记录的图节点/调用边查询。
-- 源码/边界：已读 [`ddl.rs`](./ddl.rs) 的全局符号、`identify` 末端、`owns`/`apply`、`apply_rule` 分支索引、错误与 parser-state 使用点；已读 [`Cargo.toml`](../Cargo.toml)、[`lib.rs`](../lib.rs)、[`parser_actions/mod.rs`](./mod.rs) 和 [`parser_runtime.rs`](../parser_runtime.rs)。
-- Go/语法对照：已查看 [`parser.y`](../parser.y) 的 ALTER TABLE、placement 等相关产生式，并对照 [`grammar/main.astergram`](../grammar/main.astergram) 的 Rust action 标记；`parser.go` 中的同文本 `FOLLOWERS must be positive` 进一步证明生成 Go 路径保留该语义。
-- 测试：[`ddl_aster_unit_test.rs`](./ddl_aster_unit_test.rs) 检查 DDL RuleId 的精确所有权及无 numeric fallback；冻结源码已有 597 条规则，而该测试仍断言 596，存在旧 inventory 计数漂移；[`remaining_aster_unit_test.rs`](./remaining_aster_unit_test.rs) 验证每个 action rule 恰有一个所有者；[`parser_3_aster_unit_test.rs`](../parser_3_aster_unit_test.rs) 覆盖 CREATE/DROP/TRUNCATE TABLE、ALTER TABLE、CREATE/DROP INDEX、RENAME/RECOVER/FLASHBACK/SPLIT、分区和 placement policy 等 SQL -> AST 路径；[`parser_semantic_support_test.rs`](../parser_semantic_support_test.rs) 验证分区错误码等语义边界。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时使用固定 11 章节命令做结构验证，并人工复核本文能回答文件的存在原因、运行主链与安全扩展点。

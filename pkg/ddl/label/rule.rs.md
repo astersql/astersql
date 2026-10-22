@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`rule.rs` 是 `astersql-ddl-label` crate 中把 SQL 表属性转换为 PD Label Rule 的核心实现。crate 入口 `pkg/ddl/label/lib.rs` 声明并重新导出 `rule` 模块，因此调用者可直接使用 `NewRule`、`NewRuleID`、`RestoreRuleID`、`NewRulePatch` 等 API。`pkg/ddl/label/Cargo.toml` 表明该 crate 默认采用 Classic 语义，`nextgen` feature 会同时启用内核类型和 table codec 的 NextGen 支持。
-
-在完整应用中，本文件位于 DDL 元数据变更与 PD Region Label 配置之间：例如 `pkg/session/runtime/create_table_resources.rs::update_labels` 在表或分区重命名时，用 `NewRuleID` 查找旧规则，克隆已有规则后调用 `Rule::Reset` 改写规则 ID、内部标签和键范围，最后通过 `astersql_domain_infosync::UpdateLabelRules` 提交更新。这里不创建或执行 DDL job，也不管理 schema state、reorg 或 schema version；它只构造要交给上层发送的 PD 数据。
+`NewRule`、`Rule::Clone`、`Rule::String` 和 `NewRulePatch` 提供创建、复制、JSON 表示及批量更新封装。
 
 ## 核心职责
 
@@ -88,12 +86,8 @@ RustCodeGraph 的文件级关系还列出 `rule_test.rs`、`migration_aster_unit
 
 直接对照文件为 `pkg/ddl/label/rule.go`，Rust 保留了相同的公开符号名、常量数值和主要分支：严格解析 attributes、空标签早返回、内部标签注入顺序、ID 格式、ID 排序、Classic/NextGen 编码、规则索引和 patch 形状均对应 Go 实现。
 
-需要注意的语言映射：
-
 - Go 用 `type Rule pd.LabelRule`，Rust 使用类型别名；Go 指针由 Rust `Box<Rule>` 表达。
-- Go `Clone` 的结构赋值对当前字段形成值复制；Rust 的派生 `Clone` 对容器执行深拷贝，外部可观察行为一致且更明确。
 - Go `Data` 是 `any` 持有 `[]any/map[string]string`，Rust 固定为 `serde_json::Value::Array`，序列化后的 PD JSON 形状一致。
-- Go variadic `ids ...int64` 对应 Rust `Vec<i64>`；两者都会原地排序各自拥有的参数集合。
 - Go `ids[i]+1` 在 `int64` 边界回绕；Rust 明确使用 `wrapping_add(1)` 保留该行为。
 - Rust 的 `Error::InvalidAttributesSpec` 包装 YAML 错误类型，而 Go 直接返回 YAML error；调用者都能判断失败，但具体错误类型不同。
 
@@ -107,13 +101,3 @@ RustCodeGraph 的文件级关系还列出 `rule_test.rs`、`migration_aster_unit
 - 改变 key range 编码时，需分别验证 Classic `EncodeBytes` 与 NextGen `EncodeRegionRange`，特别是半开区间、keyspace 前缀、空/极值 ID 和多个无序 ID。错误编码会令 PD 把标签绑定到错误 Region，属于高正确性风险。
 - 回归测试应放在独立文件 `pkg/ddl/label/rule_test.rs`；跨模块迁移不变量可补充在 `migration_aster_unit_test.rs`，并同步检查 Go 的 `rule_test.go` 意图。不要把测试嵌入 `rule.rs`。
 - 若扩展涉及远端提交、重试或 DDL 生命周期，应在 infosync 或 DDL 调用层实现，本文件保持确定性的规则构造职责。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ddl/label` 确认目标及 Go/Rust 测试文件；`node --file pkg/ddl/label/rule.rs --offset 1 --limit 400` 读取目标文件 281 行并报告 22 个符号、4 个使用文件；对主要符号执行了 `query`。`Reset` 的 callers/callees 因同名符号无法可靠消歧，已明确降级为精确源码搜索。
-- 源码与边界：`pkg/ddl/label/rule.rs`、`pkg/ddl/label/attributes.rs`、`pkg/ddl/label/errors.rs`、`pkg/ddl/label/lib.rs`。
-- crate 与 feature：`pkg/ddl/label/Cargo.toml`，以及 workspace 和直接消费者的 Cargo 清单搜索结果。
-- 生产入口：`pkg/session/runtime/create_table_resources.rs::update_labels`。
-- Go 对照：`pkg/ddl/label/rule.go`。
-- 独立测试：`pkg/ddl/label/rule_test.rs`、`pkg/ddl/label/migration_aster_unit_test.rs`、`pkg/ddl/label/rule_test.go`。覆盖合法/非法属性、Default/空属性、表/分区 Reset、Classic/NextGen、规则恢复、ID 排序、JSON/Clone/Patch 与 `i64::MAX` 回绕。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构检查要求本文恰好包含约定的 11 个二级章节。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-mathutil` crate 的基础数值工具实现，源码入口由 [`pkg/util/mathutil/Cargo.toml`](Cargo.toml) 指向 [`lib.rs`](lib.rs)，再由 `lib.rs` 的 `mod math` 装入，并在 crate 根公开再导出全部常量和函数。workspace 根还通过 `facade_util_mathutil` 依赖并在 `pkg/lib.rs` 的 `pkg::util::mathutil` 门面中再导出，因此仓库内调用者通常写作 `mathutil::...`，不直接引用私有模块 `math`。
-
-它对应 Go 包中的 [`math.go`](math.go)，只提供无状态、小粒度的整数与浮点辅助操作，不参与 SQL 请求调度、存储访问或事务管理。当前 Rust 生产调用集中在类型宽度推导和 planner 基数估算；其他 API 已移植并公开，但检索到的 Rust 使用点目前主要是测试。
+用 `NextPowerOfTwo` 计算不小于输入的最小 2 的幂；输入合法性由调用方负责。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ planner 的钳制路径直接调用 `Clamp`。`pkg/planner/cardinality/selectivi
 
 ## 与 Go 版本的对应关系
 
-Rust [`math.rs`](math.rs) 逐项对应 Go [`math.go`](math.go)：平台常量、补码 `Abs`、21 项十进制表、有限性表达式、`Clamp` 分支顺序、位清除算法和批次余数前置分配均保持一致。Go 的 `int`/`uint` 平台宽度映射为 Rust `isize`/`usize`；Go 返回的位数 `int` 映射为 `usize`。
+Go 的 `int`/`uint` 平台宽度映射为 Rust `isize`/`usize`；Go 返回的位数 `int` 映射为 `usize`。
 
 主要语言层差异如下：
 
@@ -84,7 +82,6 @@ Rust [`math.rs`](math.rs) 逐项对应 Go [`math.go`](math.go)：平台常量、
 - Go `Clamp` 约束为 `cmp.Ordered`，Rust 使用更宽的 `PartialOrd`，因此可实例化为含 NaN 的浮点类型；分支顺序与比较行为仍与 Go 当前实现一致。
 - Go `Divide2Batches` 约束为 `constraints.Integer`，Rust 通过操作 trait 组合表达需求，类型范围在类型系统层面更宽；实际契约仍是整数。Go 用 `size++`，Rust 用 `batches / batches` 构造同类型的 1。
 - Go 用 `intest.Assert`；Rust 根据 `formal-crate`、`test`、`intest`、`enableassert` 选择等价路径或无断言实现。
-- Rust 独立测试 [`math_test.rs`](math_test.rs) 除复刻 Go [`math_test.go`](math_test.go) 的位数、钳制、2 的幂和批次案例外，还覆盖 `Abs(i64::MIN)`、平台常量和 `IsFinite`。[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步覆盖所有常见有符号/无符号整数宽度的批次泛型行为。
 
 ## 扩展指南
 
@@ -93,12 +90,3 @@ Rust [`math.rs`](math.rs) 逐项对应 Go [`math.go`](math.go)：平台常量、
 修改 `uintSizeTable` 或位数算法时必须覆盖 0、每个 10 的幂边界、`i64::MIN` 和 `u64::MAX`；修改 `NextPowerOfTwo` 时必须明确 0、负数和溢出策略，不能悄然把当前“调用方负责”的契约改成另一种行为；修改 `Divide2Batches` 时必须保持总和、正数元素、前部余数分配和跨整数宽度行为，并评估是否需要容量预分配。修改 `Clamp` 时应回归 planner 的选择率和行数上下界，避免 NaN 或倒置区间语义发生未经设计的变化。
 
 兼容风险主要是 Go/Rust 边界行为漂移和公开返回类型变化；性能风险主要是把位数查表改为除法循环、在 planner 热路径增加分配，或让批次划分产生过多小向量元素。由于 crate 通过 workspace 门面广泛可见，即使当前没有生产调用的公开函数也应先做全仓调用检索再变更或删除。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/mathutil` 列出本目录 16 个已索引 Go/Rust 文件。
-- RustCodeGraph `node --file` 已读取：`pkg/util/mathutil/math.rs`（完整 173 行）、`lib.rs`、`math_test.rs`、`migration_aster_unit_test.rs`、Go `math.go`、Go `math_test.go`，以及三个生产调用片段 `pkg/types/field_type.rs`、`pkg/planner/cardinality/selectivity.rs`、`pkg/planner/cardinality/row_count_column.rs`。
-- RustCodeGraph `explore`/`query` 核对了七个公开函数及调用关系；其中图的宽泛查询准确给出 `Clamp` 的两个 planner 调用和本 crate 测试，但遗漏了 `pkg/types/field_type.rs` 的位数函数调用，因此又用限定 `*.rs` 的精确 `rg` 检索全仓补证。文档只把两种证据共同确认的直接调用写为当前事实。
-- crate 边界由 [`Cargo.toml`](Cargo.toml) 核对：包名为 `astersql-util-mathutil`，库入口是 `lib.rs`，默认启用 `formal-crate`，另有 `intest` 和 `enableassert` feature；porting 元数据指向 Go `pkg/util/mathutil`。
-- 行为边界由独立 Rust/Go 测试核对：百万次位数样本与手工边界、`i64::MIN`、NaN/无穷、数值和字符串钳制、2 的幂案例、零总量及不整除批次、`i8` 与 `u64` 泛型实例。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行任务指定的 11 章节结构检查，并人工复核“文件为何存在、如何运行、如何安全扩展”。

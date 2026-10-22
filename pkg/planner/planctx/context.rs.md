@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-planctx` crate 的核心契约文件：它不执行优化算法，而是把规划器需要的会话、元数据、KV、表达式、范围构建和内部 SQL 服务收敛成 `Common` / `PlanContext` trait，并定义物理计划转为 tipb 执行器时使用的 `BuildPBContext`。crate 根 `pkg/planner/planctx/lib.rs` 私有声明 `context` 模块后以 `pub use context::*` 对外再导出这些定义。
-
-`pkg/planner/planctx/Cargo.toml` 将该 crate 直接连接到 `util/context`、`expression/exprctx`、`infoschema/context`、`kv`、`meta/model`、`util/ranger/context`、`session/sessmgr`、`util/sqlexec`、`lock/context` 和 `sessionctx/variable`。因此它位于“会话提供能力，规划器消费能力”的接口边界，而不是具体会话或具体优化器实现中。
-
-Rust 主规划链还存在一个更窄、可作为 trait object 保存的适配接口 `pkg/planner/core/base/plan_base.rs::PlanContext`。该接口的注释明确说明：本文件的 `planctx::PlanContext` 继承了带关联类型的 `Common`，不便直接放入计划节点使用的 `Arc<dyn ...>`，所以 core/base 会抹去 InfoSchema 细节，只保留算子实际消费的能力。`pkg/session/runtime/planning.rs::SessionPlanContext` 当前实现并返回的是这个 core/base 接口，并通过 `GetBuildPBCtx` 暴露本文件的 `BuildPBContext`。
+`EmptyPlanContextExtended` 为不关心上述扩展行为的 mock 提供与 Go 一致的空操作方法，避免测试替身重复编写无意义状态。
 
 ## 核心职责
 
@@ -77,9 +73,9 @@ trait getter 多数返回引用，调用方必须遵循实现对象生命周期�
 
 ## 与 Go 版本的对应关系
 
-Go 可选窗口接口使用指针和 `func() error`，Rust 使用按值窗口、可借用 getter 及泛型返回值 T 的闭包；Rust callback 显式取得 `&mut Self`。接口本身不实现保存/恢复、并发同步或 panic 清理，这些取决于实现者；新增泛型 trait 不适合直接当作普通 dyn trait 使用。
+Go 可选窗口接口使用指针和 `func() error`，Rust 使用按值窗口、可借用 getter 及泛型返回值 T 的闭包；Rust callback 显式取得 `&mut Self`。
 
-直接对照文件是 `pkg/planner/planctx/context.go`。Rust 保留了 `Common`、`PlanContext`、`EmptyPlanContextExtended`、`BuildPBContext` 以及方法/字段的 Go 命名和主要语义；`Detach` 都是“复制结构体并只替换 ExprCtx”。`pkg/planner/planctx/context_test.go::TestContextDetach` 与 Rust `context_test.rs::test_context_detach` 都验证新外壳、标量字段相等以及 ExprCtx/Client/warning handler 的接口身份语义；Rust `migration_aster_unit_test.rs` 进一步用两个不同表达式上下文验证替换确实发生，并验证空扩展的 no-op 行为。
+Rust 保留了 `Common`、`PlanContext`、`EmptyPlanContextExtended`、`BuildPBContext` 以及方法/字段的 Go 命名和主要语义；`Detach` 都是“复制结构体并只替换 ExprCtx”。`pkg/planner/planctx/context_test.go::TestContextDetach` 与 Rust `context_test.rs::test_context_detach` 都验证新外壳、标量字段相等以及 ExprCtx/Client/warning handler 的接口身份语义；Rust `migration_aster_unit_test.rs` 进一步用两个不同表达式上下文验证替换确实发生，并验证空扩展的 no-op 行为。
 
 主要语言映射差异如下：Go interface 映射为 Rust trait object；可能为 nil 的接口字段映射为 `Option<Arc<...>>`；map 映射为 `HashMap<String, ()>`；`iter.Seq` 映射为 `dyn Iterator<Item = TableItemID>`；Go `error` 映射为线程安全的 boxed dynamic error；结构体指针返回映射为引用或 `Box`。Rust 的 InfoSchema context/error 使用关联类型显式化，导致完整 `PlanContext` 不适合直接作为未指定关联类型的通用 trait object，这也是 core/base 另设窄接口的依据。
 
@@ -94,14 +90,3 @@ Go `BuildPBContext` 注释说明 pushdown 字段暂时不能直接嵌入 `expres
 修改 `EmptyPlanContextExtended` 时应保持其用途明确：无状态 mock 可以继续 no-op，需要真实状态的测试替身应实现自己的存储和 trait，而不是悄悄改变所有 mock 的默认行为。重命名 `ExtraWarnghandler` 会破坏 Go 字段对齐和现有构造点，除非安排完整兼容迁移，不应仅为拼写进行局部更改。
 
 性能上，getter 应继续只借用或克隆 `Arc`，避免在规划热路径深拷贝表达式上下文、InfoSchema 或 client；`UpdateColStatsUsage` 应保留流式消费。兼容性上要重点验证 nil/`None`、pending transaction、临时表 InfoSchema 可见性和 `Detach` 后的共享身份。
-
-## 验证依据
-
-本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/planctx/context.rs` 并读取 `git show 2c944fb:pkg/planner/planctx/context.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/planner/planctx` 确认目标、Go 对照、两个独立 Rust 测试和 crate 根均已索引；`node --file pkg/planner/planctx/context.rs` 读取完整 204 行并报告 35 个符号、107 个使用文件；`query`/`explore` 核对 `Common`、`PlanContext`、`BuildPBContext`、`EmptyPlanContextExtended` 与计划上下文使用面。通用名称的 callers/callees 查询无精确输出且 explore 命中歧义，随后用精确文本搜索补足直接引用。
-- 生产源码：`pkg/planner/planctx/context.rs`、`pkg/planner/planctx/lib.rs`、`pkg/planner/core/base/plan_base.rs`、`pkg/planner/cardinality/lib.rs`、`pkg/session/runtime/planning.rs`、`pkg/planner/util/misc.rs`；抽样物理计划访问见 `pkg/planner/core/operator/physicalop/physical_projection.rs`。
-- crate 边界：`pkg/planner/planctx/Cargo.toml`，包括十个直接依赖、`exprstatic` dev-dependency，以及 `go-package = "pkg/planner/planctx"` 的移植元数据。
-- Go 对照：`pkg/planner/planctx/context.go` 与 `pkg/planner/planctx/context_test.go`。
-- Rust 独立测试：`pkg/planner/planctx/context_test.rs` 验证 Detach 的浅克隆和指针身份；`pkg/planner/planctx/migration_aster_unit_test.rs` 验证 ExprCtx 替换、其余 Arc 共享及空扩展 no-op。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核本文未把 core/base 同名 trait、mock 空行为或浅克隆描述成更强的运行时保证。

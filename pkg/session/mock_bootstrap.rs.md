@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-session` crate。`pkg/session/Cargo.toml` 将 crate 根指定为 `pkg/session/lib.rs`，后者以 `pub mod mock_bootstrap;` 公开本模块，因此其他 Rust crate 可以通过 `astersql_session::mock_bootstrap` 使用这里的测试辅助 API。
-
-它模拟“在正常 bootstrap 版本链末尾再追加一个最新版本”的测试场景：调用方可选择完整或精简 DDL 序列、观察生命周期回调，并用显式传入的版本号决定是否执行。不过，当前仓库搜索只找到 Rust 测试调用方 `pkg/session/test/bootstraptest/bootstrap_upgrade_test.rs` 和 `pkg/session/upgrade_backfill_test.rs`；Rust 的 `pkg/session/upgrade_run.rs` 没有调用本模块。与之相对，Go 主链 `pkg/session/upgrade_run.go::upgrade` 会调用同路径 Go 实现 `addMockBootstrapVersionForTest`。因此本文件目前是已导出的、可测试的移植机制，而不是已接入 Rust 生产升级主链的入口。
+用 `mockUpgradeToVerLatest` 执行完整 schema 变化，用 `mockSimpleUpgradeToVerLatest` 提供更快的代表性路径。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ Go 集成测试 `pkg/session/test/bootstraptest/bootstrap_upgrade_test.go::TestU
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/session/mock_bootstrap.go`。Rust 保留了 Go 的完整/精简 SQL 序列、版本短路、20 ms 间隔、三阶段 callback、HTTP 版本门槛和“向升级列表尾部追加 mock 最新版本”的核心语义。`pkg/session/test/bootstraptest/bootstrap_upgrade_test.rs` 明确以 Go 的升级测试契约为依据，验证完整路径为 11 条准备 SQL 加全部 `allDDLs`、每条迁移都 sleep，以及 callback 次数和简单动作选择。
-
 主要差异如下：
 
 - Go 的 `RegisterMockUpgradeFlag` 在 `flag.FlagSet` 注册命令行参数并令 `WithMockUpgrade` 为 `*bool`；Rust 接收自定义 `MockUpgradeFlags`，只同步内存状态，不注册 CLI。`cmd/tidb-server/main.rs` 中出现的 `session::RegisterMockUpgradeFlag` 来自其独立 stub 接线，仓库搜索未显示它调用本 Rust 模块。
@@ -103,12 +99,3 @@ Go 测试还在 `TestUpgradeWithPauseDDL` 中检查最终 `mysql.mock_sys_t` 和
 - 若要求与 Go 的并发 DDL 测试等价，需要让 callback 获得足够的 Session/runtime 上下文，或另设上下文 trait；当前无参数 callback 无法直接执行 Go 测试中的查询与异步 DDL。
 
 兼容风险主要来自 DDL 顺序、系统表最终结构、版本门槛和全局状态泄漏；性能风险集中在完整模式的多条 DDL 与逐条 20 ms 阻塞等待。测试应继续放在独立的 `*_test.rs` 文件中，不应嵌入生产源文件。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/session/mock_bootstrap.rs`、`pkg/session/lib.rs::mock_bootstrap`、`pkg/session/Cargo.toml`（crate 名 `astersql-session`、根 `lib.rs`）。目标包没有 `pkg/session/doc.go`，因此无可读取的包级 Go 契约文件。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query` 分别定位 Rust/Go 的 `addMockBootstrapVersionForTest`、`mockUpgradeToVerLatest`、`mockSimpleUpgradeToVerLatest`、`modifyBootstrapVersionForTest`、`RegisterMockUpgradeFlag`；`node --file pkg/session/mock_bootstrap.rs --symbols-only` 列出本文件全部 trait、struct、enum 和函数。图的宽泛 `explore` 还确认 `execute_sql` 被完整/精简路径调用、`sleep` 被完整路径调用、三个 callback 方法被相应流程调用。按文件限定的精确 callers/callees 命令在本地索引上超时，未把其缺失结果当作结论。
-- Rust 测试：`pkg/session/test/bootstraptest/bootstrap_upgrade_test.rs` 验证版本短路、四条精简 SQL、完整模式 11 条准备 SQL加 `allDDLs`、每条 20 ms sleep、callback 次数、开关/版本改写及 Simple 动作；其独立测试 crate 在 `pkg/session/test/bootstraptest/Cargo.toml` 以 dev-dependency 依赖 `astersql-session`。`pkg/session/upgrade_backfill_test.rs::canonical_mock_upgrade_retargets_only_supported_versions` 验证双重 HTTP 版本门槛。
-- Go 对照：`pkg/session/mock_bootstrap.go` 提供原始语义；`pkg/session/upgrade_run.go::upgrade` 是真实上游；`pkg/session/test/bootstraptest/bootstrap_upgrade_test.go::TestUpgradeWithPauseDDL` 验证 callback 驱动的并发 DDL 顺序和最终系统表 schema。
-- 全仓库 Rust 引用搜索只发现上述测试、`pkg/session/lib.rs` 的模块导出，以及 `cmd/tidb-server` 自身的同名 stub；未发现本模块的非测试 Rust 生产调用方。该搜索是“Rust 生产主链尚未接入”结论的直接依据。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。交付结构检查使用任务规定的命令，确保本文档存在且恰含 11 个固定二级标题。

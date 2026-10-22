@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 根由 `pkg/planner/core/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/planner/core/lib.rs` 通过 `pub mod indexmerge_unfinished_path` 将本模块公开。它处在 OR 型 IndexMerge 访问路径生成链中：上游 `pkg/planner/core/indexmerge_path.rs::generateOtherIndexMerge` 调用 `generateORIndexMerge`，本文件把过滤表达式转成若干候选索引的“未完成路径”，吸收顶层 AND 条件后物化为 `find_best_task::AccessPath`，并追加到 `IndexMergeDataSource.source.paths`。
-
-这里的“未完成”不是异步状态，而是规划阶段的中间表示：单个 OR 分支可能只收集到了复合索引的部分可用列条件，尚不足以直接形成最终范围；后续顶层 AND 条件可能补齐它。文件既处理普通索引，也处理 MV（multi-valued，多值）索引。它不执行查询、不访问存储，也不负责把最终访问路径转换成物理执行算子。
+`cmpAlternatives`、`estimateCountAfterAccessForIndexMergeOR` 及三个私有辅助函数提供候选排序、粗略基数估算、索引身份判重和简化 CNF 拆分。
 
 ## 核心职责
 
@@ -83,13 +81,12 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/indexmerge_unfinished_path.go`。Rust 保留了 Go 的主要阶段与同名符号：冻结初始候选、逐 OR 分支收集、用顶层 AND 补条件、普通/MV 两路物化、点/空范围优先、非 MV 单索引拒绝，以及最终行数估算。独立 Rust 测试 `pkg/planner/core/indexmerge_unfinished_path_test.rs` 还明确验证顶层 AND 条件会合入已有效的 OR 局部路径，这与 Go 的宽松收集策略一致。
+Rust 保留了 Go 的主要阶段与同名符号：冻结初始候选、逐 OR 分支收集、用顶层 AND 补条件、普通/MV 两路物化、点/空范围优先、非 MV 单索引拒绝，以及最终行数估算。
 
 但以下差异必须视为当前迁移边界：
 
 - Go 使用真实 `expression.Expression`、`logicalop.DataSource`、表元数据和下推上下文；Rust 使用 `task::Expression` 的简化字段及 `and:`、`or:`、`root-only:` 名称协议。
 - Go 会检查表达式能否下推 TiKV，并清理/保留局部路径上的 `TableFilters`、`IndexFilters`；Rust 主要通过 `needKeepFilter` 和最终 `table_filters` 表达残余过滤，没有完整复刻这些清理规则。
-- Go 最终保存所有 `PartialAlternativeIndexPaths`，这里只在规划阶段用比较器选定每个分支的一组 `partial_index_paths`，可能减少后续再选择空间。
 - Go 用真实索引 ID（表路径为 `-1`）判重；Rust 用 `index_identity` 的索引属性字符串判重。
 - Go 对非 MV 使用基数选择率、对 MV 使用专门选择率计算，并在估算错误时退回 `SelectionFactor`；Rust 只把分支 `count_after_access` 求和并以表行数封顶，`cmpAlternatives` 的 `_tableRows` 参数也未使用。
 - Go 会因计划缓存参数决定是否保留 OR 源过滤；Rust 只根据局部路径的残余过滤需求决定是否把 OR 放入 `table_filters`。
@@ -106,11 +103,3 @@
 - 改变 `index_identity` 时要防止不同物理索引被错误合并或同一索引被误判为多个；若 `AccessPath` 后续提供稳定索引 ID，应优先与 Go 的 ID 判重方式对齐。
 - 让错误可观察时，应明确区分“候选不适用”和“构建失败”，再决定是否把 `buildIntoAccessPath` 改为 `Result<Option<AccessPath>, _>` 并通过 `generateORIndexMerge` 传播；这属于兼容性变化。
 - 性能上应留意当前候选快照克隆、每个过滤对每个候选/索引列的嵌套扫描以及候选列表排序。优化时必须保持候选快照隔离和比较器排序语义。
-
-## 验证依据
-
-本说明直接读取并核对了以下文件：生产实现 `pkg/planner/core/indexmerge_unfinished_path.rs`；crate 声明 `pkg/planner/core/Cargo.toml`；模块与测试装配 `pkg/planner/core/lib.rs`；上游入口 `pkg/planner/core/indexmerge_path.rs::generateOtherIndexMerge`；Go 对照 `pkg/planner/core/indexmerge_unfinished_path.go`；独立 Rust 测试 `pkg/planner/core/indexmerge_unfinished_path_test.rs`。在 `pkg/planner/core` 根目录没有同包 `doc.go`；检索到的 `pkg/planner/core/base/doc.go` 属于 `base` 子包，不作为本模块契约。
-
-Rust 测试提供的具体行为证据包括：`top_level_and_uses_the_same_collection_path_as_go` 验证顶层 AND 合并；`non_mv_or_requires_more_than_one_physical_index` 验证非 MV 单索引拒绝；`unique_point_ranges_beat_lower_row_count_scans` 验证点范围优先于更低行数扫描；`final_path_keeps_top_level_and_filters_but_not_covered_or` 验证最终残余过滤；`mv_or_alternative_expands_each_json_value` 验证 MV OR 可展开多条局部路径。未发现直接引用这些同名函数的 Go `*_test.go`；Go 语义依据来自同路径生产实现，Rust 边界依据来自上述独立 Rust 测试。
-
-RustCodeGraph `status` 显示索引可用（11,467 个文件、307,296 个节点、1,848,419 条边）。`query generateORIndexMerge --json` 和 `query buildIntoAccessPath --json` 均定位到本文件及对应 Go 符号；但 `files --filter pkg/planner/core/indexmerge_unfinished_path` 返回 “No files found”，精确 `callers/callees` 查询也未能产生可信的限定调用边（按节点 ID 查询发生错误匹配）。因此调用关系使用 `rg` 和直接源码读取复核，不把错误图结果当作证据。本文档任务不改变运行时代码，按计划不运行 Cargo；最终结构验证要求文档存在且恰有上述 11 个固定二级标题。

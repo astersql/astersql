@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 的存储路径回归测试模块，不是生产实现。crate 根在 `pkg/session/Cargo.toml` 中声明为 `lib.rs`；`pkg/session/lib.rs:187-188` 仅在 `cfg(test)` 下装配 `runtime_test`，随后 `pkg/session/runtime_test.rs:330-331` 通过 `#[path = "runtime_test/storage.rs"] mod storage;` 引入本文件。因此其中九个无参数、无返回值的私有 `#[test]` 函数只会进入 Rust 测试构建，不构成应用运行时 API。
-
-被测生产逻辑主要位于 `pkg/session/runtime/relational_scan.rs`，覆盖关系型表记录计数、TiKV 聚合请求与响应、按主键和二级索引构造扫描范围、`LIMIT/OFFSET` 窗口扫描以及 `ConcreteSession` 的存储执行路径。测试使用 `runtime_test.rs` 中定义的 mock iterator/snapshot 和 `concrete_session()`，也使用 `crate::runtime::CreateAnalyzeSession()` 建立带内存存储的完整测试会话。
+主键游标把有符号和无符号 `BIGINT` 谓词转换为精确 record-key 范围，并通过真实 `ConcreteSession` 验证普通、降序、游标和无符号分页结果。
 
 ## 核心职责
 
@@ -78,9 +76,9 @@
 
 ## 与 Go 版本的对应关系
 
-仓库中没有与 `pkg/session/runtime_test/storage.rs` 一一对应的 Go 文件或同名测试；这是 Rust 迁移层针对 `ConcreteSession` 关系型 KV 路径新增的聚焦回归集合。Go 侧仍提供协议与编码语义来源：`pkg/tablecodec/tablecodec.go` 的 `EncodeRowKeyWithHandle`、`DecodeRecordKey`、`DecodeIndexHandle`、`GetTableIndexKeyRange` 对应本测试使用的 Rust tablecodec API，`pkg/kv/option.go` 将 `KeyOnly` 定义为仅取 key 的扫描选项。
+Go 侧仍提供协议与编码语义来源：`pkg/tablecodec/tablecodec.go` 的 `EncodeRowKeyWithHandle`、`DecodeRecordKey`、`DecodeIndexHandle`、`GetTableIndexKeyRange` 对应本测试使用的 Rust tablecodec API，`pkg/kv/option.go` 将 `KeyOnly` 定义为仅取 key 的扫描选项。
 
-SQL 行为可由现有 Go 测试作旁证而非逐函数镜像：`pkg/executor/executor_required_rows_test.go::TestLimitRequiredRows` 约束 LIMIT/OFFSET 所需行数，`pkg/executor/test/indexmergereadtest/index_merge_reader_test.go::TestOrderByWithLimit` 等覆盖索引、顺序与 LIMIT 的组合，其他 executor 测试广泛覆盖 `ADD INDEX` 后查询。Rust 文件更直接地检查 KV 字节范围、tipb 聚合结构和 mock iterator 模式，因此不能删除这些低层断言而仅依赖 Go SQL 测试。
+Rust 文件更直接地检查 KV 字节范围、tipb 聚合结构和 mock iterator 模式，因此不能删除这些低层断言而仅依赖 Go SQL 测试。
 
 ## 扩展指南
 
@@ -89,11 +87,3 @@ SQL 行为可由现有 Go 测试作旁证而非逐函数镜像：`pkg/executor/e
 - 修改二级索引选择或行查找时，应同步 `secondary_index_cursor_*` 与 `secondary_index_equality_*`，并明确新索引类型是否仍应被 `relational_secondary_index_access` 排除；修改 DML 索引维护时同步 `secondary_index_kv_tracks_*` 的 INSERT/UPDATE/DELETE/backfill 物理断言。
 - 新增场景优先延伸本独立测试文件，保持独立数据库名、确定性行序和 iterator 关闭；若引入共享线程或异步资源，应增加终止/回收断言。
 - 兼容性风险集中在 Go tablecodec 字节序、unsigned handle 映射、tipb protobuf 字段和 TiDB SQL 排序/NULL 语义；性能风险集中在错误地读取 OFFSET 前的 value、退化为全表扫描、过量 batch-get，以及遗漏索引范围导致回表放大。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标目录中的 `storage.rs` 已索引为含 10 个符号的文件。使用 `node --file` 分段读取了全部 742 行，并用 `query` 唯一定位九个测试函数。
-- 装配与夹具：`pkg/session/lib.rs:187-188`、`pkg/session/runtime_test.rs:16-43,96-303,320-333`；后者定义共享 mock、`concrete_session()` 和 `storage` 子模块装配。`pkg/session` 下不存在 `doc.go`，因此无额外包契约文件可读。
-- 生产符号查询：RustCodeGraph `node` 核对了 `pkg/session/runtime/relational_scan.rs` 中 `count_relational_rows`（193）、`relational_count_dag`（254）、`decode_relational_count_response`（460）、`relational_primary_key_scan_ranges`（1498）、`integer_handle_offset_candidate`（1810）、`scan_relational_rows_window_key_only_from`（1858）和 `relational_secondary_index_access`（1993）；其调用轨迹显示这些函数继续调用 KV iterator、tablecodec、谓词范围与二级索引 bounds 辅助逻辑。
-- crate 与 Go 对照：读取 `pkg/session/Cargo.toml`；检索并核对 `pkg/tablecodec/tablecodec.go:114,143,1014,1220`、`pkg/kv/option.go:38-39`、`pkg/executor/executor_required_rows_test.go:131` 和 `pkg/executor/test/indexmergereadtest/index_merge_reader_test.go:657`。未发现目标文件的一一对应 Go 测试，文中未将这些旁证冒充直接移植来源。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证目标文件存在且固定二级标题恰好为 11，并人工复核所有九个测试、生产实现位置、资源边界与扩展入口均有明确来源。

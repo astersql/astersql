@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`task.rs` 是 `astersql-dxf-framework-proto` crate 的任务协议定义文件。crate 入口 `pkg/dxf/framework/proto/lib.rs` 通过 `pub mod task` 声明模块并以 `pub use task::*` 重导出其公开项，因此调度器、任务执行器、存储转换层和 HTTP 管理入口可以共享同一组任务状态、任务数据结构及进程内调节参数。该 crate 的边界由 `pkg/dxf/framework/proto/Cargo.toml` 确认：库入口为 `lib.rs`，本文件直接使用的外部能力来自 `chrono` 与 `serde`；`serde_json` 主要供同 crate 测试验证协议形状。
-
-从完整 DXF 看，`pkg/dxf/framework/doc.go` 将 task 定义为按顺序推进的多个 step，每个 step 内含并行 subtask。owner 节点负责调度，所有节点可运行 task executor。本文件只承载这条主链共享的数据和局部纯逻辑，不负责持久化、状态迁移执行、subtask 创建或具体业务 step 的运行。
+定义向后兼容的 `ExtraParams` JSON：默认值字段不序列化，未知字段的兼容行为由 Serde 默认处理；本文件明确保证空默认参数编码为 `{}`。
 
 ## 核心职责
 
@@ -77,15 +75,13 @@ RustCodeGraph 对当前索引给出的直接上游证据包括：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/dxf/framework/proto/task.go`，Rust 基本逐项保留状态字符串、prepare mode、优先级、两个原子旋钮、`ExtraParams` JSON 名称、`TaskBase` 排名/槽位逻辑和 `Task` 字段。Rust static 初始化替代 Go `init()`；原子类型统一存储为 `i64`，公开并发接口转换为 `i32`，清理批量公开为 `i64`。
+Rust static 初始化替代 Go `init()`；原子类型统一存储为 `i64`，公开并发接口转换为 `i32`，清理批量公开为 `i64`。
 
 需要注意的语义/类型差异：
 
 - Go 的 `TaskState`/`TaskType` 是自有字符串类型，Rust 是 `&'static str` 别名，只能直接表示静态字符串；方法由扩展 trait 提供。
-- Go 的嵌入 `TaskBase` 由 Rust 命名字段加 `Deref`/`DerefMut` 模拟，结构布局和构造语法并不相同。
 - Go `time.Time` 对应 Rust `SystemTime`；`String` 输出都采用 RFC 3339，但 Rust 使用 UTC 转换与 `SecondsFormat::AutoSi`。测试目前验证排序而未逐字验证跨语言时间格式。
 - Go `Task.Error` 是 `error`，Rust 是 `Option<String>`，只对齐“可选错误信息”而非错误类型系统。
-- Go 测试 `task_test.go` 与 Rust 独立测试 `task_test.rs` 共同覆盖 prepare mode 与 JSON、终态、并发边界、清理批量、排名和运行槽位。Rust 测试还使用极小/极大 `i64` 检查清理批量拒绝路径。
 
 ## 扩展指南
 
@@ -95,12 +91,3 @@ RustCodeGraph 对当前索引给出的直接上游证据包括：
 - 修改排名时：同步 `Compare`、`CompareTask`、`pkg/dxf/framework/doc.go` 的 task rank 定义及两语言排序测试。排序是调度公平性/抢占顺序协议，改变字段顺序属于兼容性风险。
 - 新增进程内旋钮时：同时定义默认值、上下界、生产校验 setter、测试恢复函数和生产消费入口；明确是否持久化、owner 切换行为及资源风险。若需要跨节点一致性，不应复用当前仅本地 atomic 的模式。
 - 扩充 `Task` 字段时：核查 storage converter、数据库 schema、scheduler/taskexecutor 桥接和 Go 对照；大载荷仍应留在完整 `Task`，避免破坏 `TaskBase` 的轻量用途。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本地索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/framework/proto` 确认 Rust/Go 源与独立测试均被索引。
-- RustCodeGraph 源节点：`node --file pkg/dxf/framework/proto/task.rs --offset 1 --limit 500` 完整覆盖目标文件 1–439 行；另读取了索引中的 `task.go`、`task_test.rs`、`task_test.go` 和 `lib.rs`。
-- RustCodeGraph 查询：`query TaskBase --kind struct`、`query SetMaxConcurrentTask --kind function`、`query TaskStateExt --kind trait` 用文件路径消歧目标符号；精确 explore 查询核对了 `GetTaskCleanupBatchSize`、`SetTaskCleanupBatchSize`、`GetRuntimeSlots`、`Compare` 等调用边。图中同名符号较多，因此本说明只采纳路径明确的边，并明确标识 Go 与 Rust 接线差异。
-- 配置与包级证据：`pkg/dxf/framework/proto/Cargo.toml`、`pkg/dxf/framework/proto/lib.rs`、`pkg/dxf/framework/doc.go`。
-- 对照与测试证据：`pkg/dxf/framework/proto/task.go`、`pkg/dxf/framework/proto/task_test.go`、`pkg/dxf/framework/proto/task_test.rs`。
-- 人工复核结论：该文件存在是为了给 DXF 调度、执行、存储和管理入口提供共享任务协议与无副作用的派生逻辑；安全扩展的关键是同时维护状态机/排序契约、JSON 默认兼容、Go 对照、独立测试，以及 owner 本地原子配置的边界和生命周期说明。

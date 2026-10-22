@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-sessiontxn-staleread` crate 的本地错误模型，源文件为 [`errors.rs`](errors.rs)。crate 根 `lib.rs` 通过 `pub mod errors` 声明模块，并用 `pub use errors::*` 将 `ErrorKind` 和 `Error` 重导出。`Cargo.toml` 将 crate 命名为 `astersql-sessiontxn-staleread`，且所有业务依赖都放在 `target.'cfg(any())'` 下；因此当前错误文件自身只依赖 Rust 标准库 `std::fmt`，不会直接拉入其他 crate。
-
-它不负责判定 stale read 是否合法；真正的判定与构造点在同 crate 的 `processor.rs`、`util.rs` 和 `provider.rs`。本文件仅把这些路径的失败统一成可分类、可显示、可作为 `std::error::Error` 传播的值。
+提供通用构造器 `Error::new` 和两个高频快捷构造器 `Error::as_of`、`Error::backend`。
 
 ## 核心职责
 
@@ -74,17 +72,10 @@ RustCodeGraph 已索引该文件的 7 个符号；由于 `Error` 是仓库内高
 
 ## 与 Go 版本的对应关系
 
-Go 同路径 `errors.go` 只有版权头和 `package staleread`，没有对应的 `ErrorKind`/`Error` 声明。Rust 文件因此是为 Rust 静态错误边界新增的本地建模，不是 `errors.go` 的逐行翻译。
-
-行为对应需要看 Go 的真实构造点：
-
 - Rust `AsOf` 对应 Go `processor.go`/`util.go` 中的 `plannererrors.ErrAsOf.FastGenWithCause` 或 `GenWithStack`；Rust 保留了测试关心的消息和类别，但当前没有保留 TiDB SQL 错误码或堆栈。
-- Rust `AlreadyEvaluated` 对应 Go `processor.go` 的 `errors.New("already evaluated")`。
 - Rust `Unsupported` 对应 Go `processor.go`/`provider.go` 的通用 `errors.New("not supported"...)` 和 `errors.Errorf("Unsupported type: %v", tp)`。
 - Rust `InvalidTimestamp` 是 Rust 毫秒转换边界的细化分类；Go 的过早 TSO 路径仍使用 `plannererrors.ErrAsOf`，不存在同名 kind。
 - Rust `Backend` 是对 Go 中直接返回/`errors.Trace` 后端错误以及 Rust 特有锁中毒失败的统一包装。
-
-因此扩展时应优先保持 Go 分支条件和消息语义，不应把 Rust 的五个 kind 误认为 Go 对外错误类型的一一复刻。
 
 ## 扩展指南
 
@@ -94,13 +85,3 @@ Go 同路径 `errors.go` 只有版权头和 `package staleread`，没有对应�
 - 若需映射到 Go/TiDB 的 SQL 错误码，应在会话或协议边界明确增加转换，并与 `plannererrors.ErrAsOf` 校对；直接修改 `Display` 会改变所有现有消息，有兼容风险。
 - 生产构造点的回归测试应继续放在独立文件：Processor 分支同步 `processor_test.rs`，Provider 不支持分支同步 `provider_test.rs`，时间戳转换同步 `util_test.rs`，外部时间戳同步 `externalts_test.rs`；不要把测试内嵌到 `errors.rs`。
 - 性能方面，每次构造都可能分配 `String`；不要在成功热路径预构造错误。当前错误只在失败分支中构造，不影响正常 stale read 执行。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引，目标 `errors.rs` 显示 7 个符号；`node --file pkg/sessiontxn/staleread/errors.rs` 核对了 73 行完整定义。
-- RustCodeGraph 源码节点：`processor.rs` 100–344 行附近证明 `AlreadyEvaluated`/`AsOf`/`Backend` 构造和传播链；`util.rs` 210–346 行附近证明 `AsOf`/`Backend`/`InvalidTimestamp` 构造点；`provider.rs` 90–324 行附近证明 `Unsupported`/`Backend` 和无重试建议的边界。
-- crate 边界：`pkg/sessiontxn/staleread/Cargo.toml` 和 `lib.rs` 证明 crate 名称、Go 包对应、模块公开导出与条件化依赖。
-- Go 对照：`errors.go` 为空声明；`processor.go`、`util.go`、`provider.go` 的 `ErrAsOf`、`errors.New/Errorf/Trace` 构造点证明 Rust 分类的行为来源和差异。
-- 独立 Rust 测试：`processor_test.rs` 断言 `AsOf` 和 `AlreadyEvaluated`；`provider_test.rs` 断言 `Unsupported` 并覆盖语句错误动作；`util_test.rs` 和 `externalts_test.rs` 覆盖 AS OF/外部时间戳错误分类。`main_test.rs` 提供 mock 错误注入。
-- Go 测试：`processor_test.go` 明确覆盖过小/为零 TSO 的“2013-01-01 之前”消息，用于校对 Rust AS OF 路径语义。
-- 结构验证应使用任务指定的 `test -f` 与固定 11 标题计数命令。本任务是纯文档分析，不运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl` crate；`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 crate 入口，`pkg/ddl/lib.rs` 通过 `pub mod index_merge_tmp` 公开本模块，并仅在 `cfg(test)` 下装配独立测试 `index_merge_tmp_test.rs`。它对应在线 ADD INDEX 的 fast-reorg / txn-merge 阶段：历史数据回填期间，前台 DML 的增量先进入临时索引，回填完成后再把临时键空间中的有效操作重放到正式索引。
-
-当前 Rust 文件只移植了合并所需的纯数据结构与纯内存算法，没有移植 Go `mergeIndexWorker` 的存储事务、重试、指标和 worker 接线。RustCodeGraph 对本文件公开函数的 callers 查询未发现生产调用者，仓库文本检索也只找到模块自身与 `pkg/ddl/index_merge_tmp_test.rs` 的引用。因此它目前是**已公开、已做局部单元验证，但尚未接入 Rust DDL 生产链路**的基础模块，不能据此认定 Rust 已完整执行临时索引合并。
+这些完整职责在 Go 版本的 `mergeIndexWorker.BackfillData`、`fetchTempIndexVals` 及其上游 add-index reorg 流程中实现。
 
 ## 核心职责
 
@@ -80,18 +78,13 @@ RustCodeGraph 的符号查询确认六个主要公开函数位于本文件；对
 
 ## 与 Go 版本的对应关系
 
-Rust 文件来自同路径 `pkg/ddl/index_merge_tmp.go` 的局部移植：
-
 - `TemporaryIndexRecord` 对应 Go `temporaryIndexRecord`，但 Rust 额外直接保存 `temporary_key/original_key`；Go 的键分别位于 `tempIdxBuffers.tmpIdxKeys/originIdxKeys`。
 - `OriginalIndexValue` 是 Rust 为隔离存储访问引入的适配结构。Go `checkTempIndexKey` 会用 tablecodec 解码正式值，并在 handle 不同时经事务读取行；Rust 由调用者提前提供 `distinct` 和 `row_exists`。
-- `check_temporary_index_key` 对应 `checkTempIndexKey`，其插入冲突、skip 规则、删除 handle 匹配和存活行保护语义一致。
 - `batch_check_temporary_unique_key` 对应 `batchCheckTemporaryUniqueKey`，但 Go 会对正式键执行事务 `BatchGet` 并把底层重复键转成带索引上下文的错误；Rust 接受现成 `BTreeMap`，只返回粗粒度 `MergeError`。
-- `TemporaryIndexBuffers` / `TemporaryIndexResult` 对应 `tempIdxBuffers` / `tempIdxResult`。Rust 保留并行数组和容量复用思想，但扫描计数语义更简单。
 - `fetch_temporary_index_values` 对应 `fetchTempIndexVals` 的范围和分页骨架。Go 从 snapshot 读取、解码多版本临时值、`FilterOverwritten`、过滤 merge/delete key version 并生成正式键；Rust 只对已构造记录做内存筛选排序，不能替代真实存储扫描。
-- `find_index_info_by_decoding_key` 对应 `findIndexInfoByDecodingKey`，返回 ID 而不是 `IndexInfo`；两者都屏蔽临时索引高位并要求候选中存在该 ID。
 - `decode_temporary_index_handle` 只覆盖 Go `decodeTempIndexHandleFromIndexKV` 的简化来源选择。Go 使用 `tablecodec.DecodeIndexHandle` 兼容索引列数和具体编码，Rust 删除分支固定截取末八字节，非删除分支直接使用传入值。
 
-缺失于 Rust 的重要 Go 行为包括 `mergeIndexWorker` 构造与 worker trait、事务写删、临时键清理、可重试冲突退避、批大小自适应、metrics/failpoint/slow log，以及真实 tablecodec 临时值的版本过滤。扩展时应逐项移植并保持语义，不应把当前简化函数宣称为完整等价实现。
+扩展时应逐项移植并保持语义，不应把当前简化函数宣称为完整等价实现。
 
 ## 扩展指南
 
@@ -102,14 +95,3 @@ Rust 文件来自同路径 `pkg/ddl/index_merge_tmp.go` 的局部移植：
 若接入真实 DDL worker，需要在本文件之外补齐：tablecodec 完整解码、snapshot 范围扫描、覆盖版本过滤、同一事务内的正式键写删和临时键删除、retry/cancel/owner-transfer 处理、持久化 reorg 进度、指标与 failpoint。接线后再为本模块建立真实生产 callers，并以 Go `mergeIndexWorker.BackfillData` 为行为基准；不能仅复用当前内存扫描来替代存储引擎顺序和 MVCC 快照。
 
 兼容性风险集中在临时键编码及 index ID 掩码；正确性风险集中在唯一键冲突、错误删除仍存活行、批内多次修改顺序和事务原子性；性能风险集中在当前 `fetch_temporary_index_values` 每批全量过滤排序及 `batch_check_temporary_unique_key` 克隆整个正式值映射。生产接线前必须以范围迭代和批量读取替代这些测试友好实现。
-
-## 验证依据
-
-- 源码：`pkg/ddl/index_merge_tmp.rs`，逐项核对全部结构、构造器、方法、函数、错误分支与常量；文件无 trait、异步函数或条件编译项。
-- crate 与模块：`pkg/ddl/Cargo.toml`（package `astersql-ddl`、`[lib] path = "lib.rs"`、Go package 元数据）和 `pkg/ddl/lib.rs`（`pub mod index_merge_tmp`、独立 `cfg(test)` 测试模块）。
-- 包契约：`pkg/ddl/doc.go` 说明 DDL 的在线 schema 版本不变量；`docs/agents/ddl/README.md` 与 `docs/agents/ddl/06-add-index.md` 仅用作定位线索，并由源码核对了本文件涉及的临时索引 merge 阶段。
-- RustCodeGraph：运行 `status` 确认索引包含 7032 个 Rust 文件；用 `node --file pkg/ddl/index_merge_tmp.rs` 读取完整 297 行；用 `query` 定位五个关键公开函数，并对其执行 callers/callees 查询。`check_temporary_index_key` 的内部调用边来自 `batch_check_temporary_unique_key`，未发现生产调用者。
-- 调用检索：对 `pkg/ddl/**/*.rs` 检索模块名及关键函数，确认模块由 `lib.rs` 公开，外部使用仅在 `pkg/ddl/index_merge_tmp_test.rs`；`decode_temporary_index_handle` 当前无测试调用。
-- Go 对照：`pkg/ddl/index_merge_tmp.go`，核对 `batchCheckTemporaryUniqueKey`、`checkTempIndexKey`、`mergeIndexWorker.BackfillData`、`findIndexInfoByDecodingKey`、`fetchTempIndexVals`、`decodeTempIndexHandleFromIndexKV` 及事务重试、写删和指标逻辑。
-- 独立测试：`pkg/ddl/index_merge_tmp_test.rs` 覆盖插入命中/重复、删除 handle 命中/冲突、行存活/已删/查找错误、非 distinct 删除、批内重复、扫描排序与空扫完成、临时 index ID 掩码；尚未覆盖 `decode_temporary_index_handle`、非法扫描参数、非法键头和缓冲区位置不变量。仓库中的 Go `_test.go` 未检索到这些同名内部函数的直接测试引用。
-- 本任务为纯文档分析，按任务约束未运行 Cargo；结构检查用于确认目标文件存在且恰有规定的十一个二级标题。

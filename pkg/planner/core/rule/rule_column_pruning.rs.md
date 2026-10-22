@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-planner-core-rule` crate，由 `pkg/planner/core/rule/lib.rs` 以公开模块 `rule_column_pruning` 导出。它在 `rule_init.rs` 定义的精简逻辑计划 IR（`Plan`、`PlanKind`、`Expr`）上实现列裁剪规则，用于表达“从根节点所需输出列向子树反向传播列需求”的移植语义。
-
-需要区分这份精简规则与当前完整优化器的实际入口：`pkg/planner/core/optimizer_runtime.rs::logical_optimize_in_place` 对 `LogicalRule::PruneColumns` 和 `PruneColumnsAgain` 直接调用 `logicalop::LogicalPlanRef::PruneColumns`，没有构造本文件的 `ColumnPruner`。仓库中的精确引用只在模块声明和 Rust 独立测试中出现。因此，本文件目前是可测试的规则侧精简实现，而不是完整应用逻辑优化主链的直接执行实现。
-
-`pkg/planner/core/rule/Cargo.toml` 指定 crate 入口为 `lib.rs`，普通依赖包含 logicalop 与 rule-util 等本地 crate；本文件自身只直接使用同 crate 的 `rule_init` 和标准库 `BTreeSet`，没有条件编译项或文件级外部资源。
+在 `rule_init.rs` 定义的精简逻辑计划 IR（`Plan`、`PlanKind`、`Expr`）上实现列裁剪规则，用于表达“从根节点所需输出列向子树反向传播列需求”的移植语义。
 
 ## 核心职责
 
@@ -73,13 +69,11 @@ RustCodeGraph 将文件识别为 7 个符号，并确认 `optimize -> prune` 调
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/rule/rule_column_pruning.go`。两边都提供无状态 `ColumnPruner`，规则名均为 `column_prune`，都以根 schema 列为起点执行裁剪，并都按 Go 契约把 `planChanged` 报告为 `false`。Rust 独立测试 `column_pruner_preserves_go_rule_contract` 明确锁定了规则名、子节点列裁剪结果和该布尔值。
+两边都提供无状态 `ColumnPruner`，规则名均为 `column_prune`，都以根 schema 列为起点执行裁剪，并都按 Go 契约把 `planChanged` 报告为 `false`。Rust 独立测试 `column_pruner_preserves_go_rule_contract` 明确锁定了规则名、子节点列裁剪结果和该布尔值。
 
 实现层次存在重要差异：Go `Optimize` 克隆根 schema 后调用每个真实逻辑算子的多态 `lp.PruneColumns`，因此具体算子的完整裁剪规则分散在 logicalop 实现中；Rust 本文件则在精简 `PlanKind` 枚举上集中实现 Projection、Aggregation、Sort 和 Join 四类专属规则。Go 还用 `intest.AssertFunc(noUnexpectedZeroColumnSchema)` 递归验证裁剪后 schema，并豁免复用首个子节点 schema 的节点与 `LogicalTableDual`；Rust 没有同等断言，只对 `TableDual` 特判并尝试回填一列，也没有表达“schema 对象身份复用”的能力。
 
 Go 主优化器 `pkg/planner/core/optimizer.go` 在规则列表前段和靠后位置各注册一次 `&rule.ColumnPruner{}`，第二次裁剪位于构建 key 信息之后；当前 Rust 完整入口同样以 `PruneColumns`/`PruneColumnsAgain` 表示两次阶段，但执行的是 logicalop `PruneColumns`，不是本文件的精简 trait 实现。因此，本文件可用于语义移植和单元验证，但不能等同于 Go 完整算子覆盖率。
-
-在检索到的 Go 测试中没有直接点名 `ColumnPruner` 或 `noUnexpectedZeroColumnSchema` 的独立测试；相关 Go 行为主要由各 logicalop 的 `PruneColumns` 测试及更高层优化器测试间接覆盖。本文不据此推断未逐项读取的 Go 测试结果。
 
 ## 扩展指南
 
@@ -91,13 +85,3 @@ Go 主优化器 `pkg/planner/core/optimizer.go` 在规则列表前段和靠后�
 - 若要接入完整优化器，应先处理精简 `Plan` 与 `logicalop::LogicalPlanRef` 的架构边界，并明确是否替换 `optimizer_runtime.rs` 现有 `PruneColumns` 分派。仅向 `default_rule_names` 增加或修改字符串不会形成实际接线。
 - 性能上应关注每节点 schema 克隆和多个 `BTreeSet` 分配；任何改为哈希集合或复用缓冲区的优化都必须保持输出顺序、Projection 偏移语义与确定性测试结果。
 - Rust 测试必须继续放在独立 `*_test.rs` 文件，不应内嵌回本源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/planner/core/rule/rule_column_pruning.rs` 报告该文件有 7 个符号；`node --file ... --offset 1 --limit 500` 读取了完整 153 行；符号查询识别 `ColumnPruner`、`name`、`optimize`、`prune`，调用图确认 `optimize` 调用 `prune`。同名 trait 方法的精确 callers/callees 查询产生跨文件噪声，未作为唯一上游证据。
-- Rust 源与模块边界：`pkg/planner/core/rule/rule_column_pruning.rs`、`pkg/planner/core/rule/rule_init.rs`、`pkg/planner/core/rule/lib.rs`、`pkg/planner/core/optimizer_runtime.rs`。
-- crate 声明：`pkg/planner/core/rule/Cargo.toml`，核实 package 名、`lib.rs` 入口、普通依赖与 Windows 条件依赖；目标文件没有直接使用外部依赖。
-- Go 对照与主链：`pkg/planner/core/rule/rule_column_pruning.go`、`pkg/planner/core/optimizer.go`，核实 `Optimize`、`Name`、零列递归检查以及两次规则注册。
-- Rust 独立测试：`pkg/planner/core/rule/rule_column_pruning_test.rs::column_pruner_preserves_go_rule_contract`；`pkg/planner/core/rule/rule_aster_unit_test.rs::column_pruning_uses_original_projection_offsets`。
-- 精确文本检索：对 `rule_column_pruning|ColumnPruner|column_prune` 的仓库局部引用确认本文件的构造调用仅见测试；对 `default_rule_names`、`LogicalRule` 和优化入口的检索确认名称清单与完整运行时分派是不同接线面。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；最终以任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核当前事实、限制、扩展入口和测试位置均有直接来源。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/metrics/ttl.rs` 属于 `astersql-metrics` crate（见 `pkg/metrics/Cargo.toml`），由 crate 根 `pkg/metrics/lib.rs` 以 `pub mod ttl` 暴露。它是 TTL（Time To Live）观测面的指标定义层：声明进程级 Prometheus 句柄，并在 `InitTTLMetrics` 中配置指标名称、帮助文本、桶和变量标签。它不扫描表、不删除过期行，也不调度 TTL Job/Task。
-
-包级中枢 `pkg/metrics/metrics.rs::InitMetrics` 调用 `crate::ttl::InitTTLMetrics`，随后 `RegisterMetrics` 将本文件的 8 个根 collector 注册到默认 registry。两个预绑定事件 counter（`TTLSyncTimerCounter`、`TTLFullRefreshTimersCounter`）是 `TTLEventCounter` 的带标签子句柄，不会被重复注册。
+构造统一经过 `metricscommon::New*` 兼容封装；该封装会注入包级 const labels，并在选项或标签非法时通过 `expect` 失败（`pkg/metrics/common/wrapper.rs::NewCounter`、`NewCounterVec`、`NewGaugeVec`、`NewHistogramVec`）。
 
 ## 核心职责
 
@@ -78,16 +76,15 @@ Counter/CounterVec（过期行、phase 时间、插入行、事件）只累计�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metrics/ttl.go`。逐项源码对照表明，Rust 保留了 Go 的 10 个包变量、`InitTTLMetrics` 初始化顺序、8 个根指标的 namespace/subsystem/name/help、变量标签及查询耗时桶。相邻独立 crate 的 `pkg/ttl/metrics/migration_aster_unit_test.rs::metric_descriptors_and_query_buckets_match_go` 验证了同名 TTL worker collector 的关键描述符和桶，但它不直接覆盖本文件；仓库搜索未发现专门直接断言 `pkg/metrics/ttl.rs` 全部描述符的 Rust 测试。
+相邻独立 crate 的 `pkg/ttl/metrics/migration_aster_unit_test.rs::metric_descriptors_and_query_buckets_match_go` 验证了同名 TTL worker collector 的关键描述符和桶，但它不直接覆盖本文件；仓库搜索未发现专门直接断言 `pkg/metrics/ttl.rs` 全部描述符的 Rust 测试。
 
 主要语言差异如下：
 
 - Go 指针或接口句柄初始化前为 `nil`；Rust 用 `Option<...> = None` 表达同一状态。
 - Go 包变量可以直接赋值；Rust 因 `static mut` 要求初始化函数与读取路径进入 `unsafe`，部分读取还使用裸指针规避 Rust 2024 对可变静态量共享引用的限制。
-- Go 的 `WithLabelValues("value")` 在兼容层中对应 Rust 的 `WithLabelValues(&["value"])`。
 - Go 依赖包初始化约定；Rust 中枢显式使用 `Once` 约束初始化。Prometheus collector 的运行时语义仍由 Rust `prometheus` crate 提供。
 
-Go 测试 `pkg/session/test/meta/session_test.go` 和 Rust 对应测试 `pkg/session/test/meta/session_test.rs` 都验证 TTL 插入行 counter 的事务相关累计。Go timer 集成测试覆盖事件子句柄；仓库中未发现等价 Rust timer 消费测试，属于当前迁移覆盖差异，而不是本文件证明已支持的行为。
+Go timer 集成测试覆盖事件子句柄；仓库中未发现等价 Rust timer 消费测试，属于当前迁移覆盖差异，而不是本文件证明已支持的行为。
 
 ## 扩展指南
 
@@ -97,13 +94,3 @@ Go 测试 `pkg/session/test/meta/session_test.go` 和 Rust 对应测试 `pkg/ses
 - 若添加常用派生句柄，只注册其根向量，并在根向量初始化后派生。为避免别名重复注册，不要把子句柄加入 `RegisterMetrics`。
 - 若要消除 `static mut`，需统一评估 `InitMetrics`、注册宏/元组、session 裸指针读取以及跨 crate 消费，不能仅在本文件改成另一种全局容器。
 - 对同名指标的修改还应审查独立 `pkg/ttl/metrics` crate；当前它只覆盖查询、过期行、Job/Task、phase 与 watermark，未包含本文件的插入行和事件指标。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标查询期间索引可用。
-- RustCodeGraph `query InitTTLMetrics --kind function`：定位 `pkg/metrics/ttl.rs:53` 的 Rust 入口和 `pkg/metrics/ttl.go:46` 的 Go 对照入口。
-- RustCodeGraph `node --file pkg/metrics/ttl.rs --offset 1 --limit 180`：读取目标文件全部 131 行，确认 10 个静态句柄、唯一函数、桶、标签与派生顺序；节点报告该文件由 `pkg/metrics/metrics.rs` 使用。
-- RustCodeGraph `explore "pkg/metrics/ttl.rs TTL metrics symbols callers callees"`：确认 `InitTTLMetrics` 的直接调用方是 `pkg/metrics/metrics.rs::InitMetrics`。精确 `callers` 子命令在本地索引上持续无输出后被终止，因此调用边又以精确 `node` 和 `rg` 引用结果交叉验证。
-- RustCodeGraph 节点：读取独立 `pkg/ttl/metrics` crate 的标签预绑定、phase、watermark 消费及其描述符/桶/水位测试，用作相邻语义证据而非本文件直接测试；读取 `pkg/session/runtime.rs::increment_ttl_insert_rows_metric`；读取 `pkg/metrics/common/wrapper.rs` 的构造失败行为。
-- 原始文件核验：`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`、`pkg/metrics/session.rs`、`pkg/metrics/ttl.go`、`pkg/ttl/metrics/Cargo.toml`、`pkg/ttl/metrics/lib.rs`，以及 `rg` 找到的 Rust/Go 消费与独立测试路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构验证，并人工复核文档只描述可由上述源码、调用边、Cargo 或测试支持的事实。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 将 crate 根指定为 `lib.rs`，而 [`pkg/planner/core/lib.rs`](lib.rs) 通过 `pub mod rule_eliminate_empty_selection` 公开本模块，并仅在 `cfg(test)` 下挂载同目录的独立测试文件 `rule_eliminate_empty_selection_test.rs`。
-
-本文件提供基于 [`task::PlanNode`](task.rs) 的空 Selection 消除规则。这里的 `PlanNode` 是按值拥有子节点的通用计划树表示；完整应用的生产逻辑优化流水线使用 `logicalop::LogicalPlanRef`，并在 [`optimizer_runtime.rs`](optimizer_runtime.rs) 中由 `LogicalRule::EmptySelectionEliminator` 分支调用独立的 `eliminate_empty_selection_descendants`。因此，本文件是公开的 `PlanNode` 版规则实现和 Go 语义移植面，不是生产流水线对 trait-object 逻辑计划执行改写时直接调用的函数。
+`EmptySelectionEliminator` 负责移除“作为其他节点孩子出现、且 `conditions` 为空”的 `PlanKind::Selection`。
 
 ## 核心职责
 
@@ -65,11 +63,11 @@ RustCodeGraph 显示 `Optimize -> recursivePlan` 的直接调用边，而 `recur
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`rule_eliminate_empty_selection.go`](rule_eliminate_empty_selection.go)。符号逐项对应：Rust `EmptySelectionEliminator` 对应 Go 同名结构体，Rust `Optimize` 对应 `Optimize(context.Context, base.LogicalPlan)`，Rust `recursivePlan` 对应 Go 同名递归方法，Rust `Name` 与 Go 返回完全相同的规则名。
+符号逐项对应：Rust `EmptySelectionEliminator` 对应 Go 同名结构体，Rust `Optimize` 对应 `Optimize(context.Context, base.LogicalPlan)`，Rust `recursivePlan` 对应 Go 同名递归方法，Rust `Name` 与 Go 返回完全相同的规则名。
 
-两版的正常输入语义一致：不消除根、只消除作为孩子出现的无谓词 Selection、递归遍历其他孩子，并固定报告 `planChanged=false`。类型与错误面不同：Go 接口返回 `(plan, bool, error)` 且当前错误为 `nil`；Rust `PlanNode` 版省略上下文和错误，只返回 `(PlanNode, bool)`。Go 通过 `*logicalop.LogicalSelection` 类型断言识别算子，Rust 通过 `PlanKind::Selection` 枚举值识别。
+类型与错误面不同：Go 接口返回 `(plan, bool, error)` 且当前错误为 `nil`；Rust `PlanNode` 版省略上下文和错误，只返回 `(PlanNode, bool)`。
 
-Go 的 SQL 级回归位于 `pkg/planner/core/casetest/rule/rule_eliminate_empty_selection_test.go`，在 cascades 开/关两种模式下校验复杂查询的 `EXPLAIN plan_tree`。Rust 的同路径 casetest 移植了这组期望，并增加直接构造 `PlanNode` 的无条件/有条件分支检查；同目录单元测试则更精确地覆盖根保留、连续空 Selection 的单趟行为、条件 Selection 保留、固定 change flag 和规则名。
+Rust 的同路径 casetest 移植了这组期望，并增加直接构造 `PlanNode` 的无条件/有条件分支检查；同目录单元测试则更精确地覆盖根保留、连续空 Selection 的单趟行为、条件 Selection 保留、固定 change flag 和规则名。
 
 ## 扩展指南
 
@@ -78,13 +76,3 @@ Go 的 SQL 级回归位于 `pkg/planner/core/casetest/rule/rule_eliminate_empty_
 新增可消除条件时，最可能修改 `recursivePlan` 的分支判定。必须保留 Selection 一元性、根节点契约和谓词语义；若希望一次消除整条连续空 Selection 链，需要明确这是相对现有 Go 行为的改变，并同时更新 Go 对照或记录有意差异。若要改变 `changed`，还需检查逻辑规则调度方对该返回值的约定，不能仅根据树发生改写就自行改成 `true`。
 
 测试应继续放在独立文件中，不得嵌入生产 `.rs`。最低覆盖应包括：根空 Selection、父节点下单层与连续多层空 Selection、带谓词 Selection、零孩子/多孩子等不变量边界（若决定使其可恢复）、多分支父节点以及 `Name`/change flag。性能修改应关注深树递归栈和每层 `Vec` 重建，但不应以跳过后代遍历换取速度。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可由 `node --file pkg/planner/core/rule_eliminate_empty_selection.rs` 完整读取。
-- RustCodeGraph `query eliminate_empty_selection` 与 `node/callers/callees`：确认本文件的 `EmptySelectionEliminator`、`Optimize`、`recursivePlan`、`Name`，以及 `Optimize -> recursivePlan` 调用边；通用名称的 callers/callees 查询存在歧义，因此又用文件路径和仓库内精确引用交叉核对。
-- 源码证据：`pkg/planner/core/rule_eliminate_empty_selection.rs`、`pkg/planner/core/task.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/optimizer_runtime.rs`。
-- crate/装配证据：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/casetest/rule/Cargo.toml`、`pkg/planner/core/casetest/rule/lib.rs`。
-- Go 对照与测试证据：`pkg/planner/core/rule_eliminate_empty_selection.go`、`pkg/planner/core/casetest/rule/rule_eliminate_empty_selection_test.go`。
-- Rust 测试证据：`pkg/planner/core/rule_eliminate_empty_selection_test.rs`、`pkg/planner/core/casetest/rule/rule_eliminate_empty_selection_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前执行任务规定的 11 章节结构检查，并人工复核上述源码、调用关系、边界和扩展入口。

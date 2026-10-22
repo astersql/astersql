@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util` crate；crate 根模块 `pkg/planner/util/lib.rs` 将私有模块 `handle_cols` 的全部公开 API 再导出，因此上层通常通过 `planner_util::HandleCols`、`planner_util::NewIntHandleCols` 等路径使用它。`pkg/planner/util/Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/planner/util`，表明它对应同目录 Go 包。
-
-它位于“规划表达式列”与“存储层行标识”之间：规划阶段用 `expression::Column` 描述句柄在当前 schema/行中的位置，执行阶段通过 `HandleCols` 把普通行、Datum 行或索引回表行转换为 `kv::Handle`。`pkg/planner/core/logical_plan_builder_runtime.rs` 会按表的 `PKIsHandle`、`IsCommonHandle` 状态创建整型或公共句柄列；`pkg/planner/core/operator/physicalop/physical_union_scan.rs` 则在物理计划固化 schema 时调用 `ResolveIndices`。
+调用者无需按句柄类型分别处理构造、列迭代、比较、下标解析、Explain、哈希和相等判断。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ trait 方法只接收 `&self`，正常执行不修改句柄描述；`ResolveIndi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/util/handle_cols.go`。Rust 保留了 Go 的核心接口、两种实现、四条构造路径、行尾布局、前缀截断与时区编码、比较、字段类型、内存估算、构造器及 common-handle Datum 提取逻辑。
-
 主要表示差异如下：
 
 - Go 使用指针字段和 nil 语义；Rust 使用拥有型 `Box`/值字段，因此 `Hash64` 不需要 `NilFlag` 分支，`Equals` 也不表示 nil 接收者。
@@ -97,12 +93,3 @@ trait 方法只接收 `&self`，正常执行不修改句柄描述；`ResolveIndi
 - 修改索引行布局时，要成对更新 common/int 两种实现的普通与分区方法，并检查生产者是否仍把分区 ID 放在最后一列。
 - 测试应继续放在独立文件 `pkg/planner/util/handle_cols_test.rs`，不要嵌入生产源文件。建议补充公共/整型句柄的普通行、Datum 行、索引尾部布局、分区 ID、前缀截断、比较 collation、下标解析失败、哈希/相等与缓存快照往返测试。
 - 兼容风险主要是编码字节或行尾位置变化导致读错 KV；正确性风险是 schema 下标或 collator 下标错配；性能风险集中在每行 Datum 收集、元信息克隆和编码分配。新增字段时还应同步评估 `MemoryUsage`。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/planner/util/handle_cols.rs`、`pkg/planner/util/lib.rs`、`pkg/planner/util/Cargo.toml`。
-- Rust 独立测试：`pkg/planner/util/handle_cols_test.rs`。
-- Go 语义对照：`pkg/planner/util/handle_cols.go`；点查入口补充证据为 `pkg/planner/core/point_get_plan.go::buildHandleCols`。
-- Rust 直接入口与调用证据：`pkg/planner/core/logical_plan_builder_runtime.rs` 的 DataSource 句柄构造，`pkg/planner/core/operator/physicalop/physical_union_scan.rs::ResolveIndices`，以及 `pkg/planner/core/operator/physicalop/cache_snapshot.rs::CachedHandleCols::{capture,restore}`。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`node --file pkg/planner/util/handle_cols.rs --offset 1 --limit 700` 读取完整 575 行并报告 35 个文件级使用者；`query HandleCols`、`query IntHandleCols`、`query CommonHandleCols` 定位 Rust/Go 对应符号；`callers`/`callees` 查询暴露了同名歧义和部分自由函数调用边缺失，故再用精确 `rg` 核验上述入口。
-- 本任务为纯文档分析，没有运行 Cargo 或代码测试。交付前执行任务指定的 11 章节结构校验，并人工检查文档只描述源码能够支持的现状。

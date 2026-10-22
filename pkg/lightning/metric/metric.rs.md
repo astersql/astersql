@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-metric` crate 的主体实现；crate 入口 `pkg/lightning/metric/lib.rs` 声明 `metric` 模块并将其全部公开项重导出。`pkg/lightning/metric/Cargo.toml` 表明该 crate 只直接依赖 `astersql-util-promutil` 和 `prometheus`，并以 `pkg/lightning/metric` Go 包为迁移来源。
-
-它位于 Lightning/IMPORT INTO 的观测边界：一方面提供 Lightning 命名空间下的完整 `Metrics`，另一方面提供可指定 namespace、subsystem 与常量标签的 `Common`，供 `pkg/metrics/import.rs`、`pkg/metrics/ddl.rs` 等非 Lightning 路径复用。该文件只定义和管理指标句柄，不负责启动 HTTP exporter、抓取端点或驱动导入任务。
+`read_counter`、`read_histogram`、`read_all_counters`、`read_histogram_sum` 提供当前样本读取和聚合能力；其中 `read_all_counters` 明确保留 Go 的“任一给定标签匹配即纳入”语义。
 
 ## 核心职责
 
@@ -94,7 +92,7 @@ RustCodeGraph 将 `metric.rs` 标为被 19 个文件使用，并索引出 24 个
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/lightning/metric/metric.go`：标签常量、`Common`/`Metrics` 字段、collector 名称、help、label 维度、buckets、注册顺序、`Record*Count` 的 success/failure 选择以及上下文的完整/公共两级访问均保持一致。`pkg/lightning/metric/metric_test.go` 的计数、直方图、22 个 collector 注册注销和 context 用例在 `metric_test.rs` 中有对应覆盖；`migration_aster_unit_test.rs` 额外固定了标签聚合语义。
+`pkg/lightning/metric/metric_test.go` 的计数、直方图、22 个 collector 注册注销和 context 用例在 `metric_test.rs` 中有对应覆盖；`migration_aster_unit_test.rs` 额外固定了标签聚合语义。
 
 主要语言适配差异如下：
 
@@ -114,12 +112,3 @@ Rust 文件逐项对应 `pkg/lightning/metric/metric.go`：标签常量、`Commo
 - 修改 `read_all_counters` 时不要未经迁移决策把 OR 语义改成 AND；应同步更新 `migration_aster_unit_test.rs::read_all_counters_preserves_go_any_label_match_semantics` 并说明与 Go 的偏差。
 - 修改上下文行为时，应同步独立测试 `metric_test.rs::test_context`、`migration_aster_unit_test.rs::metric_context_exposes_full_and_common_metrics_like_go_context`，并检查 `pkg/lightning/worker/worker.rs` 的完整指标读取。
 - 测试逻辑应继续放在同目录独立的 `metric_test.rs` 或迁移测试文件中，不要内嵌回本生产文件；Rust 与 Go 测试应尽可能保持同一行为断言。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/lightning/metric` 列出 `metric.rs`、crate 入口、Go 对照和独立测试；`node --file pkg/lightning/metric/metric.rs` 完整读取 552 行并报告 24 个符号、19 个使用文件；`query new_metrics` 与 `query read_all_counters` 确认定义和迁移测试符号。对关键符号运行 `callers`/`callees` 没有返回可用边，故没有据此虚构调用链。
-- 生产实现：`pkg/lightning/metric/metric.rs`；crate 边界：`pkg/lightning/metric/Cargo.toml`、`pkg/lightning/metric/lib.rs`。
-- Go 对照：`pkg/lightning/metric/metric.go`；Go 测试：`pkg/lightning/metric/metric_test.go`。
-- Rust 独立测试：`pkg/lightning/metric/metric_test.rs`、`pkg/lightning/metric/migration_aster_unit_test.rs`；覆盖读取、success/failure、8/22 collector 注册注销、OR 标签聚合和两级上下文。
-- 直接调用证据：`pkg/lightning/worker/worker.rs`、`pkg/metrics/import.rs`、`pkg/metrics/ddl.rs`、`pkg/metrics/lib.rs`、`pkg/dxf/importinto/metrics.rs`、`pkg/dxf/importinto/scheduler.rs`。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；交付验证只检查文档存在且恰含规定的 11 个二级章节，并人工复核符号、调用点和 Go/Rust 差异均可回溯到上述文件。

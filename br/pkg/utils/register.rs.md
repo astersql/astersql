@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`register.rs`](./register.rs) 属于 `astersql-br-pkg-utils` crate；[`lib.rs`](./lib.rs) 以 `pub mod register` 暴露该模块，`Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/utils` 的 Rust 移植库。它是 BRIE 任务互斥注册的策略层：用带 lease 的 etcd key 表示正在运行的 Restore、Lightning 或 Import Into 任务，并负责续租、断流恢复、撤销和有效任务枚举。
-
-该文件不直接依赖具体 etcd SDK。`EtcdRegisterClient` 把所需 I/O 收敛为七个同步操作；生产侧由 [`metadata_register.rs`](./metadata_register.rs) 的 `MetadataRegisterClient` 接到 `astersql-metaservice::NamespacedEtcdClient`，测试侧由 [`register_test.rs`](./register_test.rs) 的 `MemEtcd` 实现。当前 Rust 生产调用链已接入 `lightning/pkg/importer/import.rs::registerTaskToPD`，因此本文件不是未接线门面或桩。
-
-注册 key 固定为 `/tidb/brie/import/<type>/<task-name>`。该命名空间用于让导入/恢复入口发现互斥任务；key 的 value 始终为空，存在性、绑定 lease 和 lease TTL 才是协议数据。
+用 `RegisterTaskType` 稳定生成 `restore`、`lightning`、`import-into` 三类路径段，并由 `NewTaskRegisterWithTTL`/`NewTaskRegister` 构造隐藏实现 `TaskRegisterImpl`。
 
 ## 核心职责
 
@@ -117,8 +113,6 @@ child context 将注册循环的取消与调用方父 context 分离：`Close` �
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 [`register.go`](./register.go) 的状态机逐项移植：三种任务类型、根前缀、10 秒重试间隔、3 分钟默认 TTL、grant 响应错误检查、持续注册、一次性续租、断流后按 `max(ttl/4, 20s)` 判断 re-grant、必要时 re-put、关闭撤销、有效任务枚举和用户消息格式均保持一致。四个 failpoint 名称及用途也与 Go 测试对齐。
-
 主要结构差异来自客户端与并发模型：
 
 - Go `taskRegister` 直接持有 `*clientv3.Client`；Rust 以 `EtcdRegisterClient` 隔离 SDK，并由 `MetadataRegisterClient` 提供生产实现。
@@ -127,7 +121,7 @@ Rust 文件按 [`register.go`](./register.go) 的状态机逐项移植：三种�
 - Go `RegisterTaskType.String()` 对未知整数返回 `default`；Rust enum 不允许未知值，`as_str` 无兜底分支。
 - Go failpoint 由编译注入框架提供；Rust 当前是始终编译的进程内全局 map，适合测试但不等同于 Go 的构建期插桩机制。
 
-[`register_test.go`](./register_test.go) 使用真实嵌入式 etcd，验证持续注册、一次性注册保持 lease ID 并提升 TTL、grant 失败恢复和 re-put 失败恢复。Rust [`register_test.rs`](./register_test.rs) 用 `MemEtcd` 保持同一测试意图，并额外精确断言 `MessageToUser` 文案、`Close` 不取消父 context、关闭后列表为空；模拟器不模拟真实时间自动过期。相邻 [`metadata_register_test.rs`](./metadata_register_test.rs) 还有一个需要 `ASTER_ETCD_TEST_ENDPOINT` 的 `#[ignore]` 测试，验证真实适配器的一次性 lease 复用、key 清理和重复关闭。
+Rust [`register_test.rs`](./register_test.rs) 用 `MemEtcd` 保持同一测试意图，并额外精确断言 `MessageToUser` 文案、`Close` 不取消父 context、关闭后列表为空；模拟器不模拟真实时间自动过期。
 
 ## 扩展指南
 
@@ -141,15 +135,3 @@ Rust 文件按 [`register.go`](./register.go) 的状态机逐项移植：三种�
 - 新生产调用者应采用 `RegisterTask` 失败也执行 `Close`、正常结束先关闭注册器再关闭客户端的资源顺序，并明确选择持续模式或周期性一次性模式，不能混用。
 
 兼容性风险集中在 etcd key 结构、消息格式、lease 复用和错误分类；正确性风险集中在断流恢复与关闭的竞态；性能风险主要是每个持续注册的线程占用、每秒取消轮询及失败时的固定间隔重试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 7,032 个 Rust 文件、11,467 个总文件；目标文件可从索引完整读取。
-- RustCodeGraph `node --file br/pkg/utils/register.rs --offset 1 --limit 500` 与 `--offset 489 --limit 120`：确认 572 行源码中的常量、类型、trait、状态机、任务枚举和 failpoint 实现。
-- RustCodeGraph `query TaskRegister`、`query NewTaskRegisterWithTTL --kind function --json`、`query GetImportTasksFrom --kind function --json`：区分 Go/Rust 同名符号并确认 Rust 定义位置；`explore` 还给出 `lightning/pkg/importer/import.rs::registerTaskToPD` 及 Rust 独立测试的直接调用关系。
-- RustCodeGraph `node --file lightning/pkg/importer/import.rs --offset 730 --limit 55`：核对 Lightning 生产入口的构造、注册失败清理以及返回清理闭包。
-- RustCodeGraph `node --file br/pkg/utils/metadata_register.rs` 与 `metadata_register_test.rs`：核对生产 I/O 适配、真实 etcd lease 复用与清理验证边界。
-- RustCodeGraph `node --file br/pkg/utils/register.go` 和 `register_test.go`：核对 Go 状态机、注释契约、failpoint、嵌入式 etcd 测试和 Rust/Go 差异。
-- RustCodeGraph `node --file br/pkg/utils/register_test.rs`：核对 `MemEtcd` 模拟边界，以及持续注册、一次性续租、消息格式、grant/re-put 恢复和关闭生命周期断言。
-- 直接读取 `br/pkg/utils/Cargo.toml` 与检索 `br/pkg/utils/lib.rs`：确认 crate 边界、`astersql-metaservice`/日志/错误依赖、公开模块及独立测试挂载；目标包没有 `doc.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试。交付前使用任务指定的结构命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核只新增本说明、没有修改源码、Cargo、Go 或只读 `plan.md`。

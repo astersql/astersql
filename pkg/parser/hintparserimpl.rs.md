@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`hintparserimpl.rs` 是 `astersql-parser` crate 中优化器 Hint 的词法适配层和解析入口实现。它不是独立模块：`pkg/parser/lib.rs` 的私有 `lexer_support` 模块依次 `include!` 生成的 Hint token 表、`hintparser.rs`、本文件、通用 `lexer.rs` 与 `misc.rs`，因此本文件可以直接使用 `Scanner`、`yyhintLexer`、`yyhintSymType`、`yyhintParse`、`hintTokenMap` 及各类 `hint*` token。`lib.rs` 再以 `pub use lexer_support::{ParseHint, Pos}` 对外导出公开入口。
-
-它位于两条调用路径的交汇处：外部调用者可直接调用 `ParseHint`；完整 SQL 解析则由 `pkg/parser/parser_actions/query.rs` 的 `QueryRule::TableOptimizerHintsAlt01` 取得 `hintComment` 文本、当前 SQL mode 和 Hint 起始位置，经 `Parser::parseHint` 复用一个 `hintParser`。两条路径最后都调用本文件的 `hintParser::parse`，产生 `Vec<Box<ast::TableOptimizerHint>>` 和诊断列表。
-
-crate 边界由 `pkg/parser/Cargo.toml` 确认：包名为 `astersql-parser`，库入口是 `lib.rs`；本文件使用的 AST、MySQL 错误码和错误类型分别来自同工作区依赖 `parser-ast`、`parser-mysql`、`parser-terror`，并依赖 crate 内的通用 lexer 与生成解析器，而没有独立 feature 开关或条件编译项。
+管理 `hintParser` 的输入重置、位置校正、SQL mode、解析结果、诊断优先级与可复用语义栈，并提供公开的一次性入口 `ParseHint`。
 
 ## 核心职责
 
@@ -107,7 +103,7 @@ RustCodeGraph 的符号 trail 明确记录：Rust `ParseHint` 调用 Rust `newHi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/hintparserimpl.go`。Rust 保留了 Go 的六个错误模板、`hintScanner`/`hintParser` 角色、六态 `SET_VAR` 有限状态机、token 映射分支、50 槽初始缓存、跳过 `/*+` 的位置规则、`inBangComment` 行为、errors 优先返回规则以及 `ParseHint`/`warnUnsupportedHint`/`lastErrorAsWarn` 接口意图。
+Rust 保留了 Go 的六个错误模板、`hintScanner`/`hintParser` 角色、六态 `SET_VAR` 有限状态机、token 映射分支、50 槽初始缓存、跳过 `/*+` 的位置规则、`inBangComment` 行为、errors 优先返回规则以及 `ParseHint`/`warnUnsupportedHint`/`lastErrorAsWarn` 接口意图。
 
 主要语言层差异如下：
 
@@ -117,8 +113,6 @@ RustCodeGraph 的符号 trail 明确记录：Rust `ParseHint` 调用 Rust `newHi
 - Go 的 `yyVAL` 是语义栈指针；Rust 字段是 `Option<usize>`，实际纯 Rust shift/reduce 循环主要维护本地 `states`/`values`，同时保留字段和 `cache` 以维持生成解析器形状。
 - Rust 为同时把 lexer 与 parser 传入 `yyhintParse` 使用 `mem::take`；Go 可直接传 `&hp.lexer, hp`。
 - Go 的 `warnUnsupportedHint` 被生成 `hintparser.go` 直接调用；当前 Rust `reduce_hint` 对相关规则直接调用 trait 的 `AppendWarn`，所以本文件同名方法主要是对齐保留，而 `lastErrorAsWarn` 仍被 Rust 规约直接调用。
-
-Rust 独立测试 `pkg/parser/hintparser_test.rs` 是 `hintparser_test.go` 的对应测试，覆盖主要 Hint AST、SQL mode、非法 token、整数溢出和 `SET_VAR` 小数/符号；`pkg/parser/go_merge_29_test.rs` 对应 Go 的最大 Hint 深度回归；`pkg/parser/yy_parser_test.rs` 与 `pkg/parser/parser_test.rs` 进一步验证完整 SQL 路径传递实时 mode/位置、产生 warnings 并把 Hint 写入 `SelectStmt.TableHints`。这些测试是独立文件，符合 Rust 生产逻辑与测试分离要求。
 
 ## 扩展指南
 
@@ -131,17 +125,3 @@ Rust 独立测试 `pkg/parser/hintparser_test.rs` 是 `hintparser_test.go` 的�
 - 改变 parser 复用：在 `hintParser::parse` 明确重置新增请求状态，并验证连续解析不会复用旧结果、warning、SQL mode 或 `SET_VAR` 上下文。
 
 测试应同步放在独立文件：词法/公开 API 与 AST 形状优先扩展 `pkg/parser/hintparser_test.rs`；完整 SQL 接线路径扩展 `pkg/parser/parser_test.rs` 或 `pkg/parser/yy_parser_test.rs`；Go 语义变化同时更新 `pkg/parser/hintparserimpl.go` 与 `pkg/parser/hintparser_test.go` 的对应断言。关键兼容风险是 token 分类、诊断顺序/级别、字节位置和 AST 字段；主要性能风险是关键字线性查找和解析栈分配。任何生成表变化还应走 parser 专用生成与验证流程，但本分析任务本身不修改或运行生成器。
-
-## 验证依据
-
-本说明使用以下直接证据核对，而未把架构概览当作实现事实：
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`pkg/parser/hintparserimpl.rs` 被识别为含 31 个符号的 Rust 文件。通过 `node --file` 阅读了该文件全部 326 行。
-- RustCodeGraph 符号查询：查询了 `ParseHint`、`newHintParser`、`hintScanner`、`Lex`、`acceptSetVarNumericValue`、`updateSetVarValueState`、`warnUnsupportedHint`、`lastErrorAsWarn` 和 `parseHint`；trail 显示公开入口、复用入口、状态机和词法方法之间的上述调用边。
-- crate/装配证据：`pkg/parser/Cargo.toml`，以及 `pkg/parser/lib.rs` 中 `lexer_support` 的 include 顺序和 `ParseHint` 再导出。
-- 运行链证据：`pkg/parser/yy_parser.rs::Parser::parseHint`、`pkg/parser/parser_actions/query.rs::TableOptimizerHintsAlt01`、`pkg/parser/hintparser.rs::{yyhintLexer, yyhintParse, reduce_hint}`、`pkg/parser/generated/hint_tables.rs`、`pkg/parser/lexer.rs` 与 `pkg/parser/misc.rs`。
-- Go 对照证据：完整阅读 `pkg/parser/hintparserimpl.go`，并核对 `pkg/parser/hintparser_test.go::TestParseHint`、`TestMaxOptimizerHintDepth` 及生成 `pkg/parser/hintparser.go` 的相关规约动作。
-- Rust 测试证据：完整阅读 `pkg/parser/hintparser_test.rs`；核对 `pkg/parser/go_merge_29_test.rs::go_merge_29_hint_depth_limit_public_api`、`pkg/parser/yy_parser_test.rs::hint_uses_live_scanner_mode_and_position`、`pkg/parser/parser_test.rs::test_optimizer_hints` 及相邻不支持 Hint/嵌套 SELECT 测试。
-- `pkg/parser` 下不存在 `doc.go`，因此没有可额外读取的包级 Go 契约文件。
-
-本任务是纯文档分析，按计划不运行 Cargo 或代码测试。交付前以任务指定命令确认目标文件存在且恰好包含上述十一个固定二级标题，并人工复核本文能够回答文件存在原因、执行链、状态与诊断边界、Go 对照和安全扩展位置。

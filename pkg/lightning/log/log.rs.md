@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-log` crate 的日志门面与运行时实现。crate 入口 `pkg/lightning/log/lib.rs` 将本模块声明为 `pub mod log` 并再导出其公共 API；相邻的 `filter.rs` 提供 `Core`、`Entry`、`Field`、`Level`、`FilterCore` 和 JSON 编码，本文件负责把这些原语组合成 Lightning 风格的 Logger、全局日志状态、初始化流程和任务计时接口。
-
-`pkg/lightning/log/Cargo.toml` 指定 `lib.rs` 为库入口，生产依赖只有启用 `preserve_order` 的 `serde_json`（实际由 `filter.rs` 使用），并以 `package.metadata.porting.go-package = "pkg/lightning/log"` 标明 Go 对照包。工作区及 `pkg/lightning/common`、`pkg/lightning/duplicate`、`pkg/executor`、`pkg/importsdk`、若干 DXF/ingestor crate 通过路径依赖接入该 crate；已确认的直接 Rust 业务调用包括 `pkg/lightning/duplicate/detector.rs` 和 `worker.rs` 的 `Logger::Begin`/`Task::End`。
+`Logger` 在抽象 `Core` 之上提供 Debug/Info/Warn/Error、固定字段、层级名称及任务起始日志；所有级别方法都经 `Logger::log` 做级别短路、调用位置采集和写出。
 
 ## 核心职责
 
@@ -65,9 +63,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/lightning/log/log.go`，测试为 `log_test.go`。一致点包括：配置字段与默认值、`warning` 别名、stdout 的 `"-"` 约定、非诊断模式白名单、全局 `L`/`Level`/`SetLevel`、`ShortError`、Logger 的 `With`/`Named`、任务开始/完成/取消/失败文案，以及成功才保留额外字段的规则。Rust `migration_aster_unit_test.rs` 进一步固定了默认值、字段合并、过滤匹配、JSON 形状和 Task 分支。
+一致点包括：配置字段与默认值、`warning` 别名、stdout 的 `"-"` 约定、非诊断模式白名单、全局 `L`/`Level`/`SetLevel`、`ShortError`、Logger 的 `With`/`Named`、任务开始/完成/取消/失败文案，以及成功才保留额外字段的规则。Rust `migration_aster_unit_test.rs` 进一步固定了默认值、字段合并、过滤匹配、JSON 形状和 Task 分支。
 
-当前 Rust 不是 Go zap 栈的逐对象复刻。Go `InitLogger` 还初始化 TiDB/GRPC logger、调用 `pingcap/log.InitLogger`、安装全局 zap logger、使用 lumberjack 风格滚动配置并关闭普通错误栈；Rust 只建立本 crate 的 JSON stdout/追加文件 Core。Go 的取消判断识别 `context.Canceled`、gRPC status、Smithy CanceledError/OperationError；Rust 用自有 `CancellationError` 和标准错误链模拟这些类别。Go `End2` 对失败使用完整 `zap.Error`，Rust 当前调用 `ShortError`。Go `SetAppLogger` 强制 DPanic 才附加栈，Rust只是克隆传入 Logger。这些都是扩展时需要保留或有意缩小的已知差异，不能在文档中宣称完全等价。
+Go `InitLogger` 还初始化 TiDB/GRPC logger、调用 `pingcap/log.InitLogger`、安装全局 zap logger、使用 lumberjack 风格滚动配置并关闭普通错误栈；Rust 只建立本 crate 的 JSON stdout/追加文件 Core。Go 的取消判断识别 `context.Canceled`、gRPC status、Smithy CanceledError/OperationError；Rust 用自有 `CancellationError` 和标准错误链模拟这些类别。Go `End2` 对失败使用完整 `zap.Error`，Rust 当前调用 `ShortError`。Go `SetAppLogger` 强制 DPanic 才附加栈，Rust只是克隆传入 Logger。这些都是扩展时需要保留或有意缩小的已知差异，不能在文档中宣称完全等价。
 
 ## 扩展指南
 
@@ -78,11 +76,3 @@
 - 扩展取消识别时修改 `CancellationError`/`IsContextCanceledError`，为直接、包装、多层 source 和非取消错误分别增加 `log_test.rs` 用例。若接入外部错误库，应显式记录与 Go `errors.Cause`/`errors.Is`/`errors.As` 的差异。
 - 修改任务协议时同时覆盖 `Begin`、`BeginTask`、`End`、`End2` 的消息、级别、额外字段、错误字段和耗时；Rust 单元测试必须继续位于独立测试文件，不能内嵌进 `log.rs`。
 - 任何性能优化都应特别测量文件目标每条日志 open 的成本、字段克隆和全局锁竞争；兼容性检查应覆盖 JSON 字段名、白名单路径、错误文本和 Go 调用签名。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/lightning/log` 找到本 crate 的 12 个 Go/Rust 文件；`node --file pkg/lightning/log/log.rs --offset 1 --limit 500` 完整读取 463 行并列出约 202 个使用文件；`query` 确认 Rust/Go 的 `InitLogger`、`BeginTask`、`IsContextCanceledError` 定义。对这些大写 Go 风格符号运行精确 `callers/callees --file pkg/lightning/log/log.rs` 未返回调用边，因此上游关系另用直接引用搜索核验，没有据此虚构边。
-- 源码与 crate 边界：`pkg/lightning/log/log.rs`、`lib.rs`、`filter.rs`（由目标文件的导入和符号边确认）、`Cargo.toml`；工作区和直接依赖清单由各级 `Cargo.toml` 中的 `astersql-lightning-log` 路径依赖核对。
-- Rust 独立测试：`pkg/lightning/log/log_test.rs` 覆盖默认调整、目录拒绝、JSON、stdout/诊断环境变量、动态级别和取消错误链；`migration_aster_unit_test.rs` 覆盖 Go 对齐的默认值、过滤、任务三分支和 Named/With；`filter_test.rs` 是过滤 Core 的相关测试面。
-- Go 对照：`pkg/lightning/log/log.go`、`log_test.go`；Go 应用接线参考 `lightning/pkg/server/lightning.rs`。Rust 直接业务使用由 `pkg/lightning/duplicate/detector.rs`、`worker.rs` 的 `Begin`/`End` 调用核对。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 章结构命令，并人工复核：文档区分已实现行为、Go 差异、尚未接线/未实现能力及安全扩展位置。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table-tables` crate；crate 由 `pkg/table/tables/Cargo.toml` 定义，入口 `pkg/table/tables/lib.rs` 通过 `pub mod mutation_checker` 对外公开模块。它提供一组针对“单行变更及其二级索引变更”的内存一致性检查类型和纯函数，设计来源是同目录 Go 实现 `pkg/table/tables/mutation_checker.go`。
-
-当前 Rust 接线需要特别区分两层事实：`Datum` 已被 `index.rs`、`partition.rs` 和 `tables.rs` 作为 crate 内通用值类型使用；但搜索仓库内 Rust 调用点后，`check_data_consistency`、`check_row_insertion_consistency`、`check_handle_consistency`、`check_index_keys`、`compare_index_and_value` 只由独立测试 `mutation_checker_test.rs` 调用，尚未接入 Rust 表写入主链。相对地，Go 的 `CheckDataConsistency` 已由 `tables.go` 的更新、插入和删除路径调用（`tables.go:547,957,1226`）。因此本文件是可执行且有测试的简化校验层，不应描述成已经覆盖 Rust 的每次表写入。
+提供一组针对“单行变更及其二级索引变更”的内存一致性检查类型和纯函数，设计来源是同目录 Go 实现 `pkg/table/tables/mutation_checker.go`。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@ RustCodeGraph 将本文件识别为已索引文件（23 个符号），`node --f
 
 ## 与 Go 版本的对应关系
 
-Rust 顶层保留了 Go 的主要意图和顺序：分区、pipelined、无 staging 快退；顶层暂不启用高成本行 value 检查；先核对 handle，再核对索引列；临时索引 ID 用掩码恢复；删除索引对照旧行，写入索引对照新行；untouched 临时值不提交所以跳过。Rust 独立测试分别覆盖这些契约，Go 测试 `TestCheckRowInsertionConsistency`、`TestCheckIndexKeysAndCheckHandleConsistency` 和 `TestCompareIndexData` 提供原始行为背景。
+Rust 顶层保留了 Go 的主要意图和顺序：分区、pipelined、无 staging 快退；顶层暂不启用高成本行 value 检查；先核对 handle，再核对索引列；临时索引 ID 用掩码恢复；删除索引对照旧行，写入索引对照新行；untouched 临时值不提交所以跳过。
 
 Rust 并非 Go 实现的完整一比一移植：
 
@@ -110,12 +108,3 @@ Rust 并非 Go 实现的完整一比一移植：
 - 性能风险集中在每次写入的线性扫描和比较分配；接入主链前应避免重复构造布局，并评估 `datum_bytes` 的 Vec 分配。Go 注释给出的完整实现复杂度是 `O(M*C + I)`，当前 Rust 已预解码版本更接近 mutation 与索引列总数的线性扫描，但输入准备成本在本文件之外。
 
 应同步维护 `pkg/table/tables/mutation_checker_test.rs`；若涉及真实编码或主链接线，还需扩展对应表写路径的独立 Rust 测试，并继续用 `pkg/table/tables/mutation_checker_test.go` 核对 Go 边界意图。
-
-## 验证依据
-
-- Rust 源码：`pkg/table/tables/mutation_checker.rs`，RustCodeGraph `node --file ... --offset 1 --limit 260` 完整读取 259 行；`query check_data_consistency --kind function` 与 `query check_row_insertion_consistency --kind function` 均唯一命中。
-- 模块与 crate：`pkg/table/tables/lib.rs:35,69` 分别声明生产模块和独立测试模块；`pkg/table/tables/Cargo.toml` 确认 crate 名、入口、feature 与 Go package 元数据；该包没有 `doc.go`。
-- Rust 调用证据：精确搜索五个公开检查函数的 `(...` 调用，仅命中 `pkg/table/tables/mutation_checker_test.rs`；生产文件 `index.rs`、`partition.rs`、`tables.rs` 只复用 `Datum`。RustCodeGraph 的通用 `explore` 结果因同名符号噪声过多未作为调用结论，精确 `callers` 本次持续运行无结果后中止，故调用结论由精确仓库搜索交叉验证。
-- Go 对照：`pkg/table/tables/mutation_checker.go` 的 `CheckDataConsistency`、`checkDataConsistency`、`checkHandleConsistency`、`checkIndexKeys`、`checkRowInsertionConsistency`、`compareIndexData`、`CompareIndexAndVal`、mutation 收集与列映射缓存；`pkg/table/tables/tables.go:547,957,1226` 的真实写路径调用。
-- 测试依据：Rust `pkg/table/tables/mutation_checker_test.rs` 覆盖数值比较、部分行列、多值成员、临时索引掩码、handle/布局错误、删除与 untouched、PUT/DELETE 源行选择、缺失源行和顶层快退；Go `pkg/table/tables/mutation_checker_test.go` 覆盖真实编码、时区、common/int handle、collation、前缀截断及行解码错误。
-- 本任务是纯文档分析，按总计划不运行 Cargo；完成前另行执行任务规定的 11 章节结构检查并人工复核上述“存在但未接线”边界。

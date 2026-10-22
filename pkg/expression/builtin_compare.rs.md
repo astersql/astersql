@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 中的标量比较语义内核，源码由 `pkg/expression/lib.rs` 以 `builtin_compare_kernel` 私有模块装入，再以 `pub(crate) use builtin_compare_kernel as builtin_compare` 在 crate 内提供统一路径。它覆盖比较类型决议、七种比较算子、`COALESCE`、`GREATEST`/`LEAST`、`INTERVAL` 和比较常量精化；直接依赖由 `pkg/expression/Cargo.toml` 声明的 `chrono`、`rust_decimal` 与 `serde_json`。
-
-当前接线边界需要特别说明：对 `pkg/expression/**/*.rs` 的精确引用搜索只发现 `builtin_compare_7_aster_unit_test.rs` 和 `builtin_compare_test.rs` 直接调用本文件 API；SQL 函数名注册、表达式构建和向量化实现分别仍位于 `builtin.rs`、其他表达式模块以及 `builtin_compare_vec*.rs`。因此它是已纳入 crate 的 Rust 标量语义/移植对照内核，但现有证据不足以称其已独立承接完整 SQL 执行主链。
+`coalesce`、`greatest`、`least` 与 `interval_int`/`interval_real` 实现多参数比较函数的短路、类型聚合、NULL 处理和线性/二分搜索选择。
 
 ## 核心职责
 
@@ -63,11 +61,7 @@ JSON 比较先按 Null、Bool、Number、String、Array、Object 排序；数组
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/expression/builtin_compare.go`。Rust 的 `get_base_cmp_type` 对应 Go `getBaseCmpType`，`get_accurate_cmp_type` 对应 `GetAccurateCmpType`；`coalesce`、`greatest`、`least` 和 `interval_*` 合并了 Go 中按求值类型展开的多组 signature；`CompareType` 与 `Op` 以共享执行代码表达 Go 的“类型 × 算子”签名矩阵。`compare_datums` 对应各 `builtinLT*Sig` 至 `builtinNullEQ*Sig` 的核心标量结果语义。
-
-常量精化只对齐 Go `compareFunctionClass.refineArgs`、`RefineComparedConstant` 和 `refineArgsByUnsignedFlag` 的局部结果规则。Go 版还包含 BuildContext、计划缓存防护、可变常量移除、Duration 的 NullEQ 特殊改写、数值常量到 datetime 的精化、表达式替换、protobuf signature 选择及 JSON cast 标志；这些上下文和接线不在本 Rust 文件中，不能把 `refine_*` 当作 Go 优化流程的完整替代。
-
-测试对照方面，`builtin_compare_7_aster_unit_test.rs` 覆盖 Go 语义内核的 NULL、求值顺序、类型决议、所有算子、复杂类型和精化路径；`builtin_compare_test.rs` 另覆盖构建上下文排序规则快照、NULL 前错误顺序和关联 Duration 列例外。Go 的 `builtin_compare_test.go` 则是更完整的原始行为基线，包含 `TestCompareFunctionWithRefine`、`TestCompare`、`TestCoalesce`、`TestIntervalFunc`、`TestGreatestLeastFunc` 及 unsigned/nullable 精化用例。
+Go 版还包含 BuildContext、计划缓存防护、可变常量移除、Duration 的 NullEQ 特殊改写、数值常量到 datetime 的精化、表达式替换、protobuf signature 选择及 JSON cast 标志；这些上下文和接线不在本 Rust 文件中，不能把 `refine_*` 当作 Go 优化流程的完整替代。
 
 ## 扩展指南
 
@@ -77,13 +71,3 @@ JSON 比较先按 Null、Bool、Number、String、Array、Object 排序；数组
 - 修改排序规则、JSON、时间或向量次序时，先确认 Go 对应 helper 的真实语义；当前 `Utf8Mb4GeneralCi` 和 JSON 实现是局部内核，存在与完整 TiDB collator/JSON 比较器偏离的兼容风险。
 - 修改 `INTERVAL` 时保持“可空边界走线性、全非 NULL 有序边界走二分”的分支，并在 `builtin_compare_7_aster_unit_test.rs` 同时覆盖 nullable、mixed-sign、目标 NULL 和边界等值。
 - 如果要把本内核接到更多生产路径，应从 `pkg/expression/lib.rs` 的模块边界、`builtin.rs` 的函数注册/构建逻辑和现有向量实现入手，先补直接生产调用与端到端测试，不能仅依据当前 crate 内再导出推断运行时已接通。
-
-## 验证依据
-
-- 源码全貌：`pkg/expression/builtin_compare.rs`（1092 行），逐项核对全部枚举、结构、公开函数、私有 helper 和错误分支；文件无条件编译项、全局可变状态或内嵌测试模块。
-- crate 与模块：`pkg/expression/Cargo.toml` 确认 crate 名称、`lib.rs` 入口以及 `chrono`、`rust_decimal`、`serde_json` 依赖；`pkg/expression/lib.rs` 确认 `builtin_compare_kernel` 装入、crate 内别名和两个独立测试模块。
-- RustCodeGraph：`status` 显示索引含 11467 个文件、307296 个节点、1848419 条边；`query compare_datums --kind function` 定位本文件符号。`files --filter pkg/expression/builtin_compare` 未匹配且精确 callers 查询未产出可用结果，故未据此虚构调用边，改用 `rg` 的精确符号引用补证。
-- Rust 测试：`pkg/expression/builtin_compare_7_aster_unit_test.rs` 与 `pkg/expression/builtin_compare_test.rs`；额外查阅 `pkg/expression/lib.rs` 的测试装配位置，确认测试与生产源文件分离。
-- Go 对照：`pkg/expression/builtin_compare.go` 与 `pkg/expression/builtin_compare_test.go`，重点核对 `getBaseCmpType`、`GetAccurateCmpType`、`compareFunctionClass.refineArgs`、`refineArgsByUnsignedFlag`、`getFunction`、`generateCmpSigs` 及 Coalesce/Greatest/Least/Interval/比较 signature 测试。
-- 调用范围复核：对 `pkg/expression/**/*.rs` 精确搜索本文件公开入口，只发现上述独立 Rust 测试的直接调用；`builtin_compare_vec.rs` 的同名 interval 函数为独立实现。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付结构以任务指定的 11 个固定二级标题命令验证。

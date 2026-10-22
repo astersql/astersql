@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate，由 [`pkg/planner/core/lib.rs`](lib.rs) 以公开模块 `recheck_cte` 装配。它位于逻辑计划完成构建之后、依赖 CTE 语义的优化规则运行之前：Rust 运行时构建入口 [`BuildBorrowedResultSetNode`](logical_plan_builder_runtime.rs) 在得到完整 `LogicalPlanRef` 后调用 `RecheckLogicalCTE`，重新计算整棵计划中共享 CTE 定义的 `IsOuterMostCTE` 标志。
-
-这里的“最外层”不是指 CTE 节点在树中的深度，而是指该共享 CTE 是否只被主查询引用。若同一 CTE 定义还从另一个 CTE 的种子或递归部分被引用，它必须标为非最外层。该标志随后约束 CTE 谓词下推和部分派生谓词行为，相关消费者可见于 [`LogicalCTE::PredicatePushDown`](operator/logicalop/logical_cte.rs) 与 [`LogicalJoin`](operator/logicalop/logical_join.rs)。
+只做标志重算，不构造、优化或替换逻辑算子，也不直接执行谓词下推。
 
 ## 核心职责
 
@@ -84,15 +82,11 @@ RustCodeGraph 能识别 `RecheckLogicalCTE -> RecheckCTE -> recheck_logical_ctes
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/planner/core/recheck_cte.go`](recheck_cte.go)：
-
 - Go `RecheckCTE` 创建 `intset.FastIntSet` 并调用 `findCTEs(..., true)`；Rust 使用 `HashSet<i32>` 和 `recheck_logical_ctes(..., true)`。
-- 两端都先识别 `LogicalCTE`，在非根上下文先写 `IsOuterMostCTE = false`，再检查存储 ID 是否访问过；首次访问时再把标志设为当前根上下文。这个顺序保留了“任何嵌套引用都使共享定义降级”的行为。
-- 两端都把种子与递归部分作为 CTE 专用后继，并以非根上下文递归；非 CTE 节点则沿普通子计划传播当前上下文。
 - Go 可直接递归共享类里的接口字段；Rust 因 `Rc<RefCell<_>>` 借用规则，必须先 `take()` 两个 `Option`、递归后再恢复。这是所有权实现差异，不是预期语义差异。
 - Go 公共入口只叫 `RecheckCTE`。Rust 同时导出同名入口和仅作接线兼容的 `RecheckLogicalCTE`；新增调用应优先使用 Go 对齐名称，除非正在维护现有运行时接线。
 
-Go 注释还说明这是完整采用 `Sequence` 优化 CTE 之前的临时方案。Rust 文件没有实现或替代该未来方案，因此应把当前逻辑视为对 Go 现状的移植，而不是更一般的 CTE 作用域分析器。
+Rust 文件没有实现或替代该未来方案，因此应把当前逻辑视为对 Go 现状的移植，而不是更一般的 CTE 作用域分析器。
 
 ## 扩展指南
 
@@ -102,14 +96,3 @@ Go 注释还说明这是完整采用 `Sequence` 优化 CTE 之前的临时方案
 - 若给递归过程增加可失败操作，应先引入能保证种子/递归计划恢复的作用域守卫或重构所有权，避免 `?` 提前返回后把共享类字段留为 `None`。
 - 测试应放在独立 Rust 测试文件中，不要内嵌到 `recheck_cte.rs`。最直接的回归测试应构造共享 `CTEClass` 的多个 `LogicalCTE` 读取节点，分别覆盖“仅主查询”“仅嵌套”“先根后嵌套”“先嵌套后根”“递归回引”和不同定义存储 ID 冲突保护，并断言标志及种子/递归计划均被恢复。
 - 兼容和性能复核重点是：谓词下推结果是否仍与 Go 一致、嵌套 CTE 是否避免错误派生谓词、共享定义是否只展开一次，以及深层嵌套的递归栈风险。
-
-## 验证依据
-
-- 目标源码：[`pkg/planner/core/recheck_cte.rs`](recheck_cte.rs)，核对 3 个函数、去重顺序、`take()`/恢复流程及无条件编译事实。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/planner/core/recheck_cte.rs` 报告该文件 6 个符号；`node --file ...`、`query RecheckCTE`、`query RecheckLogicalCTE`、`query recheck_logical_ctes`、`callers`/`callees` 核对了入口和内部调用边。图未给出动态 trait 调用和 Rust 上游调用边，已用文本搜索补充，并在本文中注明限制。
-- crate 与模块边界：[`pkg/planner/core/Cargo.toml`](Cargo.toml) 的包名、`logicalop-dependency` 和 feature 声明；[`pkg/planner/core/lib.rs`](lib.rs) 的 `pub mod recheck_cte`。
-- 上游接线：[`pkg/planner/core/logical_plan_builder_runtime.rs`](logical_plan_builder_runtime.rs) 的 `BuildBorrowedResultSetNode`；Go 正式与测试入口分别为 [`pkg/planner/optimize.go`](../optimize.go) 和 [`pkg/planner/core/optimizer.go`](optimizer.go)。
-- 数据和消费方：[`pkg/planner/core/operator/logicalop/logical_cte.rs`](operator/logicalop/logical_cte.rs) 的 `CTEClass`、`LogicalCTE`、`PredicatePushDown`；[`pkg/planner/core/operator/logicalop/base_logical_plan.rs`](operator/logicalop/base_logical_plan.rs) 的 `LogicalPlan`/`Children_mut`；[`pkg/planner/core/operator/logicalop/logical_join.rs`](operator/logicalop/logical_join.rs) 对 `IsOuterMostCTE` 的读取。
-- Go 语义对照：[`pkg/planner/core/recheck_cte.go`](recheck_cte.go) 的 `RecheckCTE` 与 `findCTEs`。
-- 测试证据：仓库搜索未发现 Rust 或 Go 测试直接调用 `RecheckCTE`/`RecheckLogicalCTE` 或直接断言 `IsOuterMostCTE`。相邻的 [`pkg/planner/core/casetest/tpcds/tpcds_test.rs`](casetest/tpcds/tpcds_test.rs) 覆盖嵌套 CTE 自连接能生成计划，但不直接证明本文件的各个状态分支；因此本文不把它视为该算法的完整回归覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的命令检查本文存在且恰有 11 个固定二级标题，并人工复核所有行为陈述均可回溯到上述符号或文件。

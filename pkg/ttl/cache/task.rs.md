@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`task.rs` 属于 `astersql-ttl-cache` crate，由 [`pkg/ttl/cache/lib.rs`](lib.rs) 以 `pub mod task` 公开。它描述 `mysql.tidb_ttl_task` 系统表中的扫描任务，提供 SQL 文本与绑定参数构造、扫描范围 Datum 的键编码/解码、任务状态模型以及系统表行到 `TTLTask` 的映射。
-
-crate 的移植元数据把它归入 Go 包 `pkg/ttl/cache`（[`pkg/ttl/cache/Cargo.toml`](Cargo.toml) 的 `package.metadata.porting`）。当前 Rust 生产链没有整体调用这里的 SQL/行映射门面：精确引用显示 [`pkg/ttl/ttlworker/persistent.rs`](../ttlworker/persistent.rs) 使用 `EncodeDatums` 持久化扫描范围，[`pkg/session/runtime/ttl_runtime.rs`](../../session/runtime/ttl_runtime.rs) 使用 `DecodeDatums` 恢复扫描范围；其余公开函数和数据模型目前由同目录独立测试覆盖。因而本文件既是 Go API 的语义移植面，也是已接入生产路径的范围编解码组件。
+描述 `mysql.tidb_ttl_task` 系统表中的扫描任务，提供 SQL 文本与绑定参数构造、扫描范围 Datum 的键编码/解码、任务状态模型以及系统表行到 `TTLTask` 的映射。
 
 ## 核心职责
 
@@ -88,13 +86,11 @@ JSON 解析拒绝缺少引号/冒号/逗号/右括号、非法或短 Unicode 转
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/ttl/cache/task.go`](task.go)，独立测试是 [`pkg/ttl/cache/task_test.go`](task_test.go) 与 [`pkg/ttl/cache/task_test.rs`](task_test.rs)。SQL 常量、查询条件、插入字段顺序、三种已知状态、任务/state 字段以及空 status 回退语义保持一致。
+主要表示差异：Go 使用 `types.Datum`、`chunk.Row`、`time.Time`、`codec.EncodeKey/Decode` 和 `encoding/json`；Rust 使用本地 `Datum`/`Row`、`i64` 时间、手写 key codec 和手写 JSON 子集。Go 的 `TaskStatus` 是字符串别名，Rust 以 `Other(String)` 保留未知值以维持兼容。
 
-主要表示差异：Go 使用 `types.Datum`、`chunk.Row`、`time.Time`、`codec.EncodeKey/Decode` 和 `encoding/json`；Rust 使用本地 `Datum`/`Row`、`i64` 时间、手写 key codec 和手写 JSON 子集。Go 的 `TaskStatus` 是字符串别名，Rust 以 `Other(String)` 保留未知值以维持兼容。Go 的 NULL 扫描范围为 nil slice，Rust 归一化为空 `Vec`。
+接线差异更重要：Go 的 `job_manager.go` 使用 job 查询、插入和 `RowToTTLTask`，`task_manager.go` 使用 peek、按 ID 查询和行映射；Rust 对应生产路径目前自行执行 SQL，只复用这里的范围 codec。未来若统一接线，应同时核对现有 runtime/persistent SQL 的时间转换、Datum 类型和 state 中额外字段，不能机械替换。
 
-接线差异更重要：Go 的 `job_manager.go` 使用 job 查询、插入和 `RowToTTLTask`，`task_manager.go` 使用 peek、按 ID 查询和行映射；Rust 对应生产路径目前自行执行 SQL，只复用这里的范围 codec。因此文档不能宣称整个 Rust TTL manager 经由 `TTLTask` API 运行。未来若统一接线，应同时核对现有 runtime/persistent SQL 的时间转换、Datum 类型和 state 中额外字段，不能机械替换。
-
-测试语义方面，Rust 测试覆盖 Go key codec 的整数/bytes 代表性字节、空范围、扫描索引、状态默认/未知值、JSON 转义/畸形输入、短行和 SQL 形态；Go 测试还通过真实内部 SQL 执行检查系统表 round trip。Rust 单测是独立文件，符合源码与测试分离约束。
+测试语义方面，Rust 测试覆盖 Go key codec 的整数/bytes 代表性字节、空范围、扫描索引、状态默认/未知值、JSON 转义/畸形输入、短行和 SQL 形态；Go 测试还通过真实内部 SQL 执行检查系统表 round trip。
 
 ## 扩展指南
 
@@ -104,11 +100,3 @@ JSON 解析拒绝缺少引号/冒号/逗号/右括号、非法或短 Unicode 转
 - 新增任务状态时，修改 `TaskStatus::{as_str,from_string}` 并保留 `Other` 的前向兼容；同步测试 NULL、空串、已知值和未知值。
 - 将 SQL/行映射 API 接入 Rust 生产 task manager 前，先比较现有直接 SQL 的事务与并发语义，特别是时间的 `FROM_UNIXTIME`/时区处理、任务重领条件和 state/cursor 字段；这不是单纯替换字符串。
 - 性能风险主要在每个扫描范围的重复分配和 JSON 手写解析；兼容风险主要在 Go codec 字节格式、系统表列顺序、未知状态保留和 NULL/空值区别。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 `pkg/ttl/cache/task.rs`；`node --file pkg/ttl/cache/task.rs` 核对了 544 行源码；对 `RowToTTLTask`、插入/查询函数、`EncodeDatums`、`DecodeDatums`、`parse_state` 执行了 `query`、`callers`、`callees`。图确认内部边为 `InsertIntoTTLTask → InsertIntoTTLTaskWithScanIndexID`、`RowToTTLTask → DecodeDatums/parse_state`，未发现这些 SQL/映射 API 的生产调用者。
-- 源码与 crate 边界：[`pkg/ttl/cache/task.rs`](task.rs)、[`pkg/ttl/cache/lib.rs`](lib.rs)、[`pkg/ttl/cache/Cargo.toml`](Cargo.toml)。
-- Rust 生产调用证据：[`pkg/ttl/ttlworker/persistent.rs`](../ttlworker/persistent.rs) 对 `EncodeDatums` 的引用；[`pkg/session/runtime/ttl_runtime.rs`](../../session/runtime/ttl_runtime.rs) 对 `DecodeDatums` 的引用。对 `pkg/**/*.rs` 的精确符号检索用于确认其他 API 只出现在定义和测试中。
-- Go 对照与调用证据：[`pkg/ttl/cache/task.go`](task.go)、[`pkg/ttl/ttlworker/job_manager.go`](../ttlworker/job_manager.go)、[`pkg/ttl/ttlworker/task_manager.go`](../ttlworker/task_manager.go)。
-- 测试证据：[`pkg/ttl/cache/task_test.rs`](task_test.rs) 和 [`pkg/ttl/cache/task_test.go`](task_test.go)。本任务只新增文档，按计划未运行 Cargo 或代码测试；交付验证以固定章节结构、路径/链接和事实复核为准。

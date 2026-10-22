@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-ossstore` crate 的底层 OSS SDK 适配层。模块入口 [`lib.rs`](lib.rs) 将其声明为私有 `interface` 模块后通过 `pub use interface::*` 重导出公开项；[`Cargo.toml`](Cargo.toml) 表明该 crate 直接依赖启用 `blocking`、`rust-tls` 的 `ali-oss-rs 0.2.5`，并依赖仓库内的 `storeapi`、`objectio`、`prefetch` 和 `s3like` crate。
-
-它位于高层 [`Client`](client.rs) 与阿里云 SDK 之间：`Client` 把带桶前缀的对象操作翻译成这里定义的请求类型并调用 `API` trait；[`store.rs`](store.rs) 的 `NewOSSStorage` 经 `build_api` 构造 `AliyunOssApi`，再将数据 API 和独立的公网预签名 API 注入 `Client::with_presign_api`。因此本文件处理 SDK 形状、重试、取消、错误码、响应元数据和访问统计，不负责对象键前缀、权限策略或存储生命周期的高层编排。
-
-文件没有条件编译项；测试由 [`lib.rs`](lib.rs) 中的 `#[cfg(test)] mod interface_test` 以独立文件 [`interface_test.rs`](interface_test.rs) 接入。
+定义 `API: Send + Sync` 以及对象 CRUD、列举、预签名和分片上传所需的 Rust 请求/响应 DTO，使高层 `Client` 可用 trait object 注入真实实现或测试替身。
 
 ## 核心职责
 
@@ -95,9 +91,7 @@ multipart session 的生命周期由上层 `Client` 编排：initiate 返回 `up
 
 ## 与 Go 版本的对应关系
 
-Go 的 [`interface.go`](interface.go) 只声明 SDK 子集 `API`，请求/响应直接使用 `alibabacloud-oss-go-sdk-v2/oss` 类型；Rust 文件同时承担 trait、等价 DTO 和真实 `ali-oss-rs` 适配实现，这是两种 SDK 形态不同造成的额外层次。两端都覆盖 bucket existence、presign、head/get/put/copy/delete/list 与完整 multipart 操作集合。
-
-[`client.go`](client.go) 与 [`client.rs`](client.rs) 的高层语义保持对应：对象键加前缀、`GetHTTPRange`、`NoSuchKey` 判断、空批量删除短路、分页参数、SSE/KMS/StorageClass 及从 1 开始的分片号。独立 Rust 测试 `migration_aster_unit_test.rs` 具体核对这些请求映射与分片顺序。
+Go 的 [`interface.go`](interface.go) 只声明 SDK 子集 `API`，请求/响应直接使用 `alibabacloud-oss-go-sdk-v2/oss` 类型；Rust 文件同时承担 trait、等价 DTO 和真实 `ali-oss-rs` 适配实现，这是两种 SDK 形态不同造成的额外层次。
 
 主要实现差异如下：
 
@@ -123,13 +117,3 @@ Go 的 [`interface.go`](interface.go) 只声明 SDK 子集 `API`，请求/响应
 - 修改 Range 规则时同时更新 `content_range_for_download`、`AliyunOssApi::get_object` 和 [`interface_test.rs`](interface_test.rs)，并与 Go `client.GetObject` 返回的 `ContentLength`/`ContentRange` 契约核对。
 
 兼容性风险集中在公开 DTO/trait 签名、错误码可下转性和 Go 可见响应字段；性能风险集中在缓冲下载、上传 body clone、Range 的额外 HEAD 以及同步退避占线程。任何变更都应以最小的独立 Rust 测试覆盖错误和边界分支，并保留 Go 测试意图。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/objstore/ossstore` 确认目标 Rust/Go/测试文件均已索引。
-- 文件与符号查询：`node --file pkg/objstore/ossstore/interface.rs` 阅读全部 870 行；`node interface.rs::API`、`node interface.rs::AliyunOssApi`、`node interface.rs::execute`、`node interface.rs::get_object`、`node interface.rs::content_range_for_download` 核对声明、源码与调用轨迹。
-- 关键图边：`NewOSSStorage → build_api → AliyunOssApi::new`；所有真实网络方法（预签名除外）`→ execute`；`get_object → content_range_for_download`；`s3like::store::{doReadFile, open} → PrefixClient::GetObject`；`s3like::store::Create → PrefixClient::MultipartWriter`。
-- crate/模块证据：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`store.rs`](store.rs)、[`client.rs`](client.rs)、[`retry.rs`](retry.rs)。目标包没有 `doc.go`；最近的模块契约由这些入口与 manifest 给出。
-- Go 对照：[`interface.go`](interface.go)、[`client.go`](client.go)、[`store.go`](store.go)、[`retry.go`](retry.go)。
-- 独立测试证据：[`interface_test.rs`](interface_test.rs) 验证 Range 元数据重建和长度不一致错误；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 验证 trait mock、错误码、请求映射、分页、SSE/存储类和 multipart 顺序。测试接线在 [`lib.rs`](lib.rs) 的 `#[cfg(test)]` 模块中。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 章节结构检查、`git diff --check`、变更范围检查和人工事实复核。

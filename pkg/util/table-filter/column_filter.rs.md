@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-util-table-filter` crate；crate 根 `pkg/util/table-filter/lib.rs` 以 `pub mod column_filter` 声明模块，并通过 `pub use column_filter::*` 重导出这里的公开 API。`pkg/util/table-filter/Cargo.toml` 将 `lib.rs` 设为库入口，声明的运行时依赖只有 `regex` 与 `regex-syntax`；这两个依赖由下游匹配器实现使用，本文件本身只通过同 crate 的 `columnRule`、`columnRulesParser`、`matcherParser` 和 `FilterError` 间接使用它们。
-
-在完整应用中，本文件提供“把列规则文本编译成可重复查询的列过滤器”这一层。已索引的直接生产接线位于 `dumpling/export/column_filter.rs`：`columnFilterFromToml` 调用 `ParseColumnFilterRules` 编译每一组 TOML `columns`，`columnFilterConfig::applyToColumns` 再针对通过表过滤器选中的规则组调用 `ColumnFilterRules::match_rule`，生成可写列及其原始下标。它不是 SQL 执行器或存储层组件，也不自行读取 Dumpling 配置。
+保证列名匹配不区分大小写，并通过反转解析结果实现“后写规则优先”。
 
 ## 核心职责
 
@@ -87,11 +85,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/table-filter/column_filter.go`。两侧共有 `ColumnFilter`、`ColumnFilterRules`、`ParseColumnFilter`、`ParseColumnFilterRules` 和 `MatchColumn` 概念，并保持以下核心语义：解析所有参数、将规则反转、把列名转为小写、首条命中决定正负、无命中返回 `false`。`pkg/util/table-filter/column_filter_test.go` 与 Rust 的独立 `column_filter_test.rs` 使用相同的通配、正则、否定、引号、转义、中文、大小写、导入和错误样例验证这些行为。
-
 表示层存在有意差异：Go 的 `ColumnFilterRules` 是 `[]columnRule` 类型别名，Rust 用私有字段的新类型封装；Go 接口值直接承载具体切片，Rust `ParseColumnFilter` 返回 `Box<dyn ColumnFilter>`；Rust 额外公开 `ParseColumnFilterRules` 的具体返回类型、`match_rule`、`len` 和 `is_empty`，以支持 Dumpling 的多规则组组合并验证具体容器。
 
-Rust 的 `match_rule -> Option<bool>` 没有 Go 同文件中的直接同名方法，而是为 Rust Dumpling 接线保留“未匹配”与“明确排除”的区别。其单组 `MatchColumn` 仍与 Go 完全相同地把未匹配变为 `false`。大小写实现也不是逐字翻译：Go 使用 `strings.ToLower`，Rust 使用逐字符 `to_lowercase().next()`；现有迁移测试覆盖 `BAR`/`bar` 和 `İ`/`i`，更广的 Unicode 差异仍应以新增对照测试验证。
+Rust 的 `match_rule -> Option<bool>` 没有 Go 同文件中的直接同名方法，而是为 Rust Dumpling 接线保留“未匹配”与“明确排除”的区别。大小写实现也不是逐字翻译：Go 使用 `strings.ToLower`，Rust 使用逐字符 `to_lowercase().next()`；现有迁移测试覆盖 `BAR`/`bar` 和 `İ`/`i`，更广的 Unicode 差异仍应以新增对照测试验证。
 
 ## 扩展指南
 
@@ -102,16 +98,3 @@ Rust 的 `match_rule -> Option<bool>` 没有 Go 同文件中的直接同名方�
 - 增加公开查询能力时优先保持 `ColumnFilterRules` 内部向量私有，避免调用方构造未小写或顺序错误的规则。若要跨线程共享动态 trait object，应显式设计并验证 `Send + Sync` API，而不是只修改调用处类型。
 - 测试逻辑必须继续放在独立的 `pkg/util/table-filter/column_filter_test.rs`，并与 `column_filter_test.go` 的意图尽量一致；Dumpling 组合行为则在 `dumpling/export/config_test.rs` 或相邻独立测试中覆盖。该任务不建议把测试内嵌进生产源文件。
 - 兼容风险主要是规则优先级、错误文本/位置、Unicode 小写和显式否定的三态组合；性能风险主要是每列分配小写字符串及规则线性扫描。任何优化都应保留首命中短路语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为包含 13 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/util/table-filter/column_filter.rs`：核对了全部 90 行、公开符号、反转规则、逐字符小写和默认拒绝实现；索引还指出该文件被 `dumpling/export/column_filter.rs` 使用。
-- RustCodeGraph `node/query/explore`：核对 `ParseColumnFilter -> ParseColumnFilterRules`、`applyToColumns -> match_rule` 调用边，以及 `columnFilterFromToml` 编译列规则、`buildColumnProjection` 消费应用结果的上游链。对名称歧义的查询使用了文件限定符或源码位置复核。
-- `pkg/util/table-filter/lib.rs`：核对模块声明、公开重导出和独立测试模块接线。
-- `pkg/util/table-filter/Cargo.toml`：核对 crate 名、`lib.rs` 入口、`regex`/`regex-syntax` 依赖与 Go 包迁移元数据。
-- `pkg/util/table-filter/parser.rs` 与 `matchers.rs`：核对空白/注释、否定、`@file`、禁止递归导入、诊断位置、模式小写化，以及 `columnRule`/`matcher` 的真实定义。
-- `pkg/util/table-filter/column_filter.go`：核对 Go 公共 API、规则反转、大小写不敏感、首条匹配与默认拒绝语义。
-- `pkg/util/table-filter/column_filter_test.rs` 与 `column_filter_test.go`：核对空规则、通配/正则/否定、后写优先、大小写、Unicode、引号/转义、解析错误、文件导入与递归导入边界；Rust 侧另验证具体规则容器的 `len`、`is_empty` 和公开匹配能力。
-- `dumpling/export/column_filter.rs`：核对本 crate 在应用中的直接生产入口、规则组组合方式和空选择错误边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务文件指定的命令验证目标文档存在且恰好包含 11 个固定二级章节，并人工检查上述结论均有符号或路径依据。

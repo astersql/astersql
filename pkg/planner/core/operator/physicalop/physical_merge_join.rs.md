@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate；crate 入口 `pkg/planner/core/operator/physicalop/lib.rs` 以私有模块 `mod physical_merge_join` 纳入它，再通过 `pub use physical_merge_join::*` 对外重导出公开符号。`Cargo.toml` 的 `package.metadata.porting.go-package` 指向同目录 Go 包，直接对照文件是 `physical_merge_join.go`。
-
-它描述规划阶段的物理 Merge Join 节点，而不是执行器本身：`PhysicalMergeJoin` 保存连接条件、连接键、排序方向和键比较器，接入通用 `PhysicalPlan`/`Plan` 接口，并为 EXPLAIN、代价查询、任务树挂接和列下标解析提供计划期行为。算子的上游生成入口可见于 `base_physical_plan.rs` 的 Merge Join 枚举分支和 `pkg/planner/cascades/old/implementation_rules.rs`；执行计划的通用 trait 接线由 `lib.rs` 中的 `join_operator_core!(PhysicalMergeJoin, BasePhysicalJoin)` 提供。
-
-当前 Rust 文件不是 Go 文件的完整逐函数复刻。Go 的 `GetMergeJoin` 同时负责候选枚举、排序属性匹配、提示冲突和强制 Merge Join；Rust 的同名函数只从 `LogicalJoin` 抽取基类字段并构造单个节点，候选属性处理由上游规划代码承担。阅读或扩展时必须连同这些上游入口核对，不能仅据函数同名推断行为等价。
+Go 的 `GetMergeJoin` 同时负责候选枚举、排序属性匹配、提示冲突和强制 Merge Join；Rust 的同名函数只从 `LogicalJoin` 抽取基类字段并构造单个节点，候选属性处理由上游规划代码承担。
 
 ## 核心职责
 
@@ -120,15 +116,7 @@ RustCodeGraph 的 `node --file` 报告该文件被六个文件使用，并明确
 
 ## 与 Go 版本的对应关系
 
-字段层面，Rust `PhysicalMergeJoin` 对应 Go 同名结构：都嵌入/持有 `BasePhysicalJoin`，并有 `Desc`、`CompareFuncs`。Rust 比较器槽位使用 `Arc` 封装的 `JoinCompareFunc`，Go 使用 `expression.CompareFunc`。
-
-已保持的主要语义包括：
-
-- `Clone` 保留基类、比较器和降序标志。
-- EXPLAIN 均按连接类型、左侧、左右键、左右条件、其他条件的顺序输出，且有归一化版本。
-- `MemoryUsage` 均按基类、比较器切片容量和布尔字段计量。
-- `ResolveIndices` 均分别用左右 schema 解析左右键/条件，以合并 schema 解析其他条件，并用单调扫描避免重复列错误；两种 outer-semi join 都跳过末尾生成列。
-- `find_max_prefix_len`、未用等值条件追加、偏移重排、前导常量键排序兼容与 Go 辅助函数的核心顺序语义一致。
+Rust 比较器槽位使用 `Arc` 封装的 `JoinCompareFunc`，Go 使用 `expression.CompareFunc`。
 
 明确差异如下：
 
@@ -138,8 +126,6 @@ RustCodeGraph 的 `node --file` 报告该文件被六个文件使用，并明确
 - Go `GetCost`/`Attach2Task`/两版计划代价委托 `utilfuncp` 中的专用回调；Rust 本文件分别使用简化和基类路径，另有 `PlanKind` 级专用函数存在于 core 文件中。
 - Go `initCompareFuncs` 同时根据成对的左右键和表达式上下文选择比较器；Rust 只依据左键 `RetType` 选择 chunk 比较器。左右键类型/排序规则兼容必须由上游维持。
 - Go 另有 `tryToGetChildReqProp`、`checkJoinKeyCollation`、`getNewJoinKeysByOffsets` 和 `getNewNullEQByOffsets`；Rust 本文件只有通用 `reorder_by_offsets`，未保留 NULL-equality 数组处理或完整属性传递方法。
-
-因此迁移状态应描述为“核心计划节点与若干辅助算法已实现，完整 Go 候选枚举语义分散在上游或尚需逐项核实”，而不是完整等价。
 
 ## 扩展指南
 
@@ -151,16 +137,3 @@ RustCodeGraph 的 `node --file` 报告该文件被六个文件使用，并明确
 - 改动代价或 task 挂接时，先判定使用的是具体 `PhysicalMergeJoin` 方法还是 `PlanKind::MergeJoin` 路径，并同步检查 `plan_cost_ver1.rs`、`task.rs`、`utilfuncp` 接口及旧 cascades 的 `BinaryJoinCostPlan`，避免两套表示漂移。
 - 追求 Go 对齐时，按功能逐项核实 Enum/Set、NULL-safe 等值、collation、hint 冲突、outer join 排序和强制 Merge Join；不应仅复制大段 Go 代码或把未接线 helper 当成已生效行为。
 - 性能风险集中在不完整排序兼容判断导致额外排序或错误选择、比较器与键不一致、以及输出 schema 解析退化。当前辅助算法均为线性扫描；不要无依据改成集合化处理而破坏顺序语义。
-
-## 验证依据
-
-本说明基于以下直接材料：
-
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_merge_join.rs`（410 行），核对全部 import、结构体、三个公开自由函数、`impl` 方法及四个 crate 内辅助函数。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`；模块声明、重导出、缓存契约及 trait 宏接线：同目录 `lib.rs`。
-- Go 对照：同目录 `physical_merge_join.go`（571 行），逐项比较结构、候选枚举、构造、代价、EXPLAIN、比较器、内存、索引解析和排序 helper。
-- 独立 Rust 测试：`physical_merge_join_test.rs` 验证最长前缀、稳定重排、未用等值条件追加以及只能跳过前导常量键；`joins_agg_aster_unit_test.rs` 验证 `ShouldSkipHashJoin` 的四种输入组合。目录内未检索到直接针对 Go `PhysicalMergeJoin` helper 的同名 Go 单元测试引用。
-- 上下游直接引用：`base_physical_plan.rs`、`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/core/flat_plan.rs`、`cache_snapshot.rs`、`pkg/planner/core/task.rs`、`pkg/planner/core/plan_cost_ver1.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query PhysicalMergeJoin/GetMergeJoin/BuildMergeJoinPlan/ShouldSkipHashJoin` 定位了 Rust/Go 对照符号；`node --file ... --offset 1 --limit 500` 返回目标文件全貌并报告六个使用文件。路径 `files --filter` 和精确 Rust 节点 `callers/callees` 未产生可用边，故调用关系又由直接引用搜索复核。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试。结构验证要求是目标文档存在且恰有本文的十一个固定二级标题；行为结论以源码、模块配置、Go 对照和既有独立测试交叉验证。

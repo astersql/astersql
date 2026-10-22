@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessionctx-variable` crate；crate 根在 [`lib.rs`](lib.rs) 中以 `pub mod setvar_affect` 公开该模块。它保存 `SET_VAR` 语句 Hint 的“已验证可临时更新”变量名白名单，并提供一个最小数据模型和批量打标函数。它不解析 Hint、不写会话变量，也不负责语句结束后的恢复；规划器真正消费的标志位定义在 [`variable.rs`](variable.rs) 的运行时 `SysVar` 上，并由 [`pkg/planner/optimize.rs`](../../planner/optimize.rs) 的 `setVarHintChecker` 检查。
-
-[`Cargo.toml`](Cargo.toml) 将本目录定义为独立库 `astersql-sessionctx-variable`（`lib.rs` 为入口，关闭自动测试发现和 doctest）。本文件自身只使用 Rust 标准库能力，没有直接调用 crate 的外部依赖。
+保存 `SET_VAR` 语句 Hint 的“已验证可临时更新”变量名白名单，并提供一个最小数据模型和批量打标函数。
 
 ## 核心职责
 
@@ -70,11 +68,7 @@ RustCodeGraph 的文件级索引报告本文件被 `sysvar_builtins.rs` 使用�
 
 ## 与 Go 版本的对应关系
 
-[`setvar_affect.go`](setvar_affect.go) 使用 `map[string]struct{}` 保存相同的 132 个名称，Rust 用 `&[&str]` 表示；前者平均常数时间查找，后者线性查找。两端 `setHintUpdatable` 都逐项原地把命中变量的 `IsHintUpdatableVerified` 设为 `true`，不处理未命中项，也不返回错误。
-
-关键迁移差异是类型和接线：Go 函数接收完整的 `[]*SysVar`，并由 [`variable.go`](variable.go) 对 `defaultSysVars` 批量调用；Rust 函数接收本模块自定义的精简 `[SysVar]`，没有对 [`variable.rs`](variable.rs) 完整 `SysVar` 的通用批量应用。Rust 当前仅复用常量为一个生产变量打标，同时在其他注册代码中直接设置若干变量。因此白名单内容已经对齐，但不能宣称 Go 的统一初始化机制已完整移植。
-
-相关 Go 测试包括 [`sysvar_test.go`](sysvar_test.go) 对 `tidb_dml_max_execution_time`、`tidb_max_keys_read` 的真值及 `tidb_paging_size_bytes` 的假值检查，以及 [`tests/variable_test.go`](tests/variable_test.go) 对短路表达式变量的检查。Rust 运行时对应断言分散在 [`sysvar_test.rs`](sysvar_test.rs)、[`sysvar_builtins_test.rs`](sysvar_builtins_test.rs) 和 [`tests/session_test.rs`](tests/session_test.rs)；本文件函数的直接边界测试位于 `error_1_aster_unit_test.rs`。
+关键迁移差异是类型和接线：Go 函数接收完整的 `[]*SysVar`，并由 [`variable.go`](variable.go) 对 `defaultSysVars` 批量调用；Rust 函数接收本模块自定义的精简 `[SysVar]`，没有对 [`variable.rs`](variable.rs) 完整 `SysVar` 的通用批量应用。Rust 当前仅复用常量为一个生产变量打标，同时在其他注册代码中直接设置若干变量。
 
 ## 扩展指南
 
@@ -83,13 +77,3 @@ RustCodeGraph 的文件级索引报告本文件被 `sysvar_builtins.rs` 使用�
 测试至少应覆盖：新变量命中、相近但不应支持的变量不命中、运行时 `GetSysVar` 返回的完整变量标志、有效/无效值的 Hint 设置，以及语句结束后的恢复行为。纯粹针对本模块的单元逻辑应继续放在独立测试文件中，不要把测试嵌入 `setvar_affect.rs`；可扩展现有 [`error_1_aster_unit_test.rs`](error_1_aster_unit_test.rs)，运行时行为则扩展 `sysvar_builtins_test.rs` 或 planner 的独立测试。
 
 兼容风险包括 Go/Rust 白名单漂移、名称大小写或别名处理不一致、只打标而缺少设置/恢复钩子；性能风险主要是列表持续增长后的线性查找。若把精简类型改为完整运行时类型，需谨慎处理模块依赖和现有公开 API，避免形成循环依赖或保留两套互不一致的 `SysVar`。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/setvar_affect.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/setvar_affect.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：从冻结 blob 抽取 Rust 字符串项与 Go map 键，两者均为 132 项且集合相同（排除 Go 注释中的 tidb_read_staleness）；`sysvar_builtins_test.rs::range_count_threshold_sysvar_matches_go_contract` 断言正式注册项的 Hint 标志。
-- 源码与接线：[`setvar_affect.rs`](setvar_affect.rs)、[`lib.rs`](lib.rs)、[`sysvar_builtins.rs`](sysvar_builtins.rs)、[`variable.rs`](variable.rs)、[`pkg/planner/optimize.rs`](../../planner/optimize.rs)。本包路径下不存在 `doc.go`，因此没有可补充读取的包级 Go 文档。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的 package、lib、dependencies 与 `package.metadata.porting`。
-- Go 对照：[`setvar_affect.go`](setvar_affect.go)、[`variable.go`](variable.go)；通过抽取并排序名称确认 Go/Rust 均为 132 项且无集合差异。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立库 crate `astersql-br-pkg-streamhelper-config`。crate 入口是同目录的 `lib.rs`，它以 `pub mod command_conf` 挂载本模块并用 `pub use command_conf::*` 扁平导出公开项；`Cargo.toml` 指定 `lib.rs` 为库入口。文件自身只使用标准库的 `HashMap`、`Duration` 以及本 crate `types.rs` 中的 `Config` trait，不直接使用该 crate 声明的 `astersql-sessionctx-vardef` 依赖；后者由相邻的 `tidb_conf.rs` 使用。
-
-它是 BR stream checkpoint advancer 的“命令行配置实现”。CLI 入口 `br/cmd/br/stream.rs::newStreamAdvancerCommand` 注册本模块的标志，`streamCommand` 在 `StreamCtl` 分支把标志解析成 `CommandConfig`，再复制到任务层的 `AdvancerCommandConfig`。运行时另一条直接使用路径位于 `br/pkg/streamhelper/advancer.rs::NewCommandCheckpointAdvancer`，该构造函数把 `DefaultCommandConfig()` 包装为内部 `Cfg::Command`。
+实现 `types.rs::Config`，把原始字段转换为推进器所需的六项查询：其中订阅异常轮询阈值派生为 `TryAdvanceThreshold * 9 / 20`，resolve-lock 间隔派生为 `TickDuration * 2`。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并明确列
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/streamhelper/config/command_conf.go`。五个键名、五个默认值、`CommandConfig` 字段、读取顺序，以及六个 `Config` 方法的计算都与 Go 对齐，特别是异常订阅阈值 `* 9 / 20` 与 resolve-lock 间隔 `* 2`。
-
 已确认的实现形态差异：
 
 - Go 使用 `pflag.FlagSet`，注册 duration 时附带帮助文本，并把 ownership flag 标记为隐藏；Rust `FlagSet` 只是 duration `HashMap`，没有帮助文本、字符串解析或单项 hidden 元数据。当前隐藏的是整个 advancer 子命令，不能据此声称 Rust 已实现 Go 的 flag 级隐藏行为。
@@ -92,7 +88,7 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并明确列
 - Go 的 flag 常量是包内私有；Rust 常量为 `pub`，且经 crate 入口再导出，测试和 CLI 可直接引用。
 - Go `GetDuration` 可返回解析/类型相关错误；Rust map 的值已经是 `Duration`，当前只可能因键缺失失败。
 
-Go 测试 `config_test.go` 与 Rust 独立测试 `config_test.rs` 都证明默认 lag-limit 为 48 小时、Command 配置不跟随 TiDB 全局 lag-limit 热更新，以及 resolve-lock 间隔随 tick 保持二倍关系。Rust 的 `parity_test.rs` 额外覆盖全部默认 trait 值、flag 回填、缺键错误的部分更新副作用和值相等语义。
+Rust 的 `parity_test.rs` 额外覆盖全部默认 trait 值、flag 回填、缺键错误的部分更新副作用和值相等语义。
 
 ## 扩展指南
 
@@ -105,12 +101,3 @@ Go 测试 `config_test.go` 与 Rust 独立测试 `config_test.rs` 都证明默�
 5. 对缺键行为的任何调整都要决定是否保留当前部分更新语义；若改为事务式更新，需要同步 Go 行为依据及 `get_from_flags_preserves_values_and_first_error_side_effects`。
 
 兼容风险主要是 flag 键和默认值改变会影响命令行行为，字段/trait 改动会影响两个配置实现及 advancer 分派；性能风险很小，正常读取仅为字段复制和常数时间算术。若把轻量 `HashMap` 替换为真实解析器，还需评估帮助文本、隐藏标志、重复注册和错误文本兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点；`node --file br/pkg/streamhelper/config/command_conf.rs` 读取完整 115 行并报告 8 个使用文件；`query` 定位 Rust/Go 的三个关键入口。`explore` 及精确 `callers/callees` 本次在 30 秒限制内未返回，未把它们当作调用关系证据。
-- 生产源码：`br/pkg/streamhelper/config/command_conf.rs`、`types.rs`、`tidb_conf.rs`、`lib.rs`、`br/pkg/streamhelper/advancer.rs`、`br/cmd/br/stream.rs`。
-- crate 边界：`br/pkg/streamhelper/config/Cargo.toml`；直接消费者依赖由 `br/pkg/streamhelper/Cargo.toml` 与 `br/cmd/br/Cargo.toml` 核对。
-- Go 对照：`br/pkg/streamhelper/config/command_conf.go`；Go 回归证据为 `config_test.go`，并参考 `br/pkg/streamhelper/advancer_test.go` 对活动配置的使用。
-- Rust 独立测试：`br/pkg/streamhelper/config/config_test.rs`、`parity_test.rs`；调用侧测试证据包括 `br/pkg/streamhelper/advancer_test.rs` 与 `export_test.rs`。
-- 本任务是只读逻辑分析加文档输出，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工检查本文能回答文件存在原因、CLI/advancer 执行链、错误副作用及安全扩展位置。

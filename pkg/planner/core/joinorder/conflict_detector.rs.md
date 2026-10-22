@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-joinorder` crate 的冲突检测与建边实现，由同目录 `lib.rs` 公开为 `conflict_detector` 模块。上游 `JoinOrder::optimize`（`join_order.rs`）先调用 `ConflictDetector::build` 把原始连接树拆成叶节点和连接边，再由 DP 或贪心枚举器反复调用 `check_connection`、`make_join`；最终用 `has_remaining_edges` 拒绝遗漏真实谓词边的结果。因此它位于“连接组抽取之后、候选连接树枚举之中”，负责保证外连接、半连接等非自由可交换连接的重排合法性。
-
-文件第 16—594 行是整段注释化的早期移植草稿，不参与编译。当前可执行实现从 `use crate::util` 开始，使用同 crate 的 `PlanNode`/`Expr` 简化模型；说明中的行为均以第 595 行后的有效代码为准。
+因此它位于“连接组抽取之后、候选连接树枚举之中”，负责保证外连接、半连接等非自由可交换连接的重排合法性。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@ RustCodeGraph 的文件节点确认本文件已被 `lib.rs` 模块装配；精�
 
 ## 与 Go 版本的对应关系
 
-同路径 `conflict_detector.go` 实现论文 CD-C 算法，是主要语义基准。Rust 保留了核心结构对应关系：`ConflictDetector`、边/节点/规则、内连接逐谓词拆边、非内连接原子边、退化谓词补全 TES、三张规则表、方向恢复、边消费和剩余边检查。`conflict_detector_test.rs` 验证左外连接即使反向提交也恢复原始左右顺序，以及空谓词边不被报告为剩余；`join_order_test.rs` 进一步验证内连接谓词成为独立边并全部消费、TES 按表达式引用而非整个原始侧计算，以及非等值边接受笛卡尔代价惩罚。
-
 当前 Rust 不是 Go 类型系统的一比一移植：它使用自包含 `PlanNode`/`Expr`，边统一放在 `Vec<Edge>`，没有 `ctx`、`groupRoot`、`allInnerJoin`、Selection 穿透、NAEQ 拒绝、真实统计派生和 NOT NULL 对齐。Go 的 `TryCreateCartesianCheckResult` 只允许全内连接组创建回退边；Rust 则把 `cartesian_join` 暴露给枚举器，由 `join_order.rs` 的 `all_inner`/`allow_cartesian` 条件约束调用。Go 注释说 TES 尚未按冲突规则扩展，Rust 同样把规则保留为运行时检查，而不是物化进 TES。
 
 规则类型也有映射差异：Go 当前不支持 Full Outer Join，而 Rust `JoinType` 含 `FullOuter` 并将其与 `RightOuter` 映射到同一个规则表索引；这只证明当前查表行为，不等于完成了完整 Full Outer 语义验证。
@@ -83,12 +79,3 @@ RustCodeGraph 的文件节点确认本文件已被 `lib.rs` 模块装配；精�
 - 扩展真实表达式或计划能力时，应在 `util.rs` 的 `Expr`/`PlanNode` 边界接入；若要追平 Go 的 Selection、NAEQ、NOT NULL 或统计派生，应作为明确移植任务实现并增加对应测试，不能只启用前半段注释代码。
 - 调整成本模型或笛卡尔策略时，需要同时审查 `make_join`、`cartesian_join` 与 `join_order.rs::apply_cartesian_factor`，防止重复放大、NaN 传播或误把合法正无穷当错误。
 - 性能敏感修改应运行 `bitset_bench_test.rs` 覆盖的规模矩阵；`BTreeSet` 到位集合的替换会影响集合语义、确定性和克隆成本，必须保持结果一致。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含目标文件；`node --file pkg/planner/core/joinorder/conflict_detector.rs` 分段核对了 1—1129 行；`query ConflictDetector --kind struct` 定位有效结构体于第 687 行。自然语言 `explore` 同时确认 Go 的 `MakeJoin -> makeNonInnerJoin/makeInnerJoin -> newCartesianJoin` 对照流。方法名查询未形成独立节点，故没有据此臆造调用边。
-- Rust 源与装配：`conflict_detector.rs`、`join_order.rs`、`util.rs`、`lib.rs`；其中 `JoinOrder::optimize`、DP、贪心和 bushy 回退是直接调用证据。
-- crate 边界：`pkg/planner/core/joinorder/Cargo.toml` 的 package、lib path、porting metadata 与条件依赖。
-- Go 对照：`pkg/planner/core/joinorder/conflict_detector.go`、`join_order.go`；核对 CD-C 概念、构图、规则表、连接适用、计划构造和剩余边语义。
-- 测试证据：`conflict_detector_test.rs`、`join_order_test.rs`、`bitset_bench_test.rs`，分别覆盖方向恢复/空谓词边、谓词拆边/TES/成本，以及 DP 与贪心在多规模下完整覆盖顶点。
-- 本任务是纯文档分析，按计划未运行 Cargo；结构验证用于确认目标文件存在且恰有十一项规定章节，人工复核用于确认没有把注释草稿或 Go 独有能力写成当前 Rust 已实现行为。

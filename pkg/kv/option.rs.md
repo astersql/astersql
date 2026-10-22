@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/kv/option.rs` 是 `astersql-kv` crate 的事务选项协议与请求来源定义文件。crate 根在 `pkg/kv/Cargo.toml` 中指定为 `pkg/kv/lib.rs`；后者通过 `#[path = "option.rs"] mod option_impl` 装入本文件并 `pub use option_impl::*`，因此这里的公开项最终直接暴露为 `astersql_kv::*`，而不是要求调用方经过 `option_impl`。
-
-本文件位于 SQL/session 层与存储驱动层之间：上层用整数选项 ID、`ReplicaReadType`、`TransactionSchemaChecker` 和请求来源值表达事务要求，下层 `Transaction` 实现解释这些异构值。它本身不执行 KV I/O，也不拥有事务；它定义跨实现必须一致的协议、轻量数据类型和 `TxnSource` 位图操作。直接依据是 `pkg/kv/option.rs`、`pkg/kv/kv.rs` 中 `Transaction::SetOption/GetOption`，以及 `pkg/store/driver/kv_adapter.rs` 的选项存储与消费逻辑。
+本身不执行 KV I/O，也不拥有事务；它定义跨实现必须一致的协议、轻量数据类型和 `TxnSource` 位图操作。
 
 ## 核心职责
 
@@ -78,13 +76,9 @@ RustCodeGraph 的文件节点报告本文件被 25 个文件使用，并列出 `
 
 ## 与 Go 版本的对应关系
 
-主要语义逐项对应 `pkg/kv/option.go`：
-
-- Rust 的 1..44 选项常量保持 Go `iota + 1` 顺序；`TxnSizeLimits` 字段、七种 `ReplicaReadType` 判别值和两个判断方法同构。
 - Go 的 `RequestSourceKey`、`RequestSource` 和两个 `WithInternal*` 直接别名到 client-go `util`；Rust 在本 crate 内定义相应类型，并把来源存入自有 `Context` 字段。外部表现对齐，但内部承载机制不同。
 - 来源字符串与别名保持一致，包括 `InternalTxnMViewMaintenance = "mview_maintain"`；Rust 独立测试 `pkg/kv/option_test.rs::go_merge_4_materialized_view_internal_source` 固定该合并点。
 - 位图布局、OR 写入、提取公式和错误文案与 Go 相同。Rust额外公开 `GetCDCWriteSource`、`IsCDCWriteSourceSet`、`GetLossyDDLReorgSource`、`IsLossyDDLReorgSourceSet` 包装，而 Go 同文件的对应 getter/checker 为包内小写函数。
-- `pkg/kv/option_test.rs` 复刻 Go `pkg/kv/option_test.go` 的核心表格：CDC 的 1、0、16，以及有损 DDL 的空位图、保留 CDC 低位、0、256。Rust测试对错误类别使用消息子串断言。
 
 当前迁移状态不是桩：请求来源已被 session/executor/statistics 等 Rust 路径调用，schema checker 和大小限制已被存储适配器消费，副本策略已有明确映射。不过 44 个选项并非都能仅凭本文件证明已在每个 Rust `Transaction` 实现中完整接线；具体支持度应以对应实现的 `SetOption/GetOption` 为准。
 
@@ -97,11 +91,3 @@ RustCodeGraph 的文件节点报告本文件被 25 个文件使用，并列出 `
 扩展 `TxnSource` 时，应先画定不重叠的位段，同时审计 setter 的清位/覆盖语义和所有“是否设置”函数是否严格掩码。尤其要为“仅设置其他高位”的情况添加回归测试，以免重复 `isLossyDDLReorgSourceSet` 当前的宽判定。若计划修正 CDC 上界或错误消息，必须作为 Go/Rust 兼容行为变更处理，并同步两侧 `option_test`。
 
 扩展副本读策略时，除本枚举和方法外，还必须更新 `pkg/store/driver/options/options.rs::GetTiKVReplicaReadType` 以及 session/distsql 的穷尽匹配；`#[repr(u8)]` 值属于可观察 ABI，不应复用或移动。性能风险主要来自选择更宽松的副本路由、为每次事务增加动态分配的 `Box<dyn Any>`，或在 schema checker 闭包中加入阻塞工作。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/kv/option.rs` 命中目标；`node --file pkg/kv/option.rs --offset 1 --limit 500` 读取完整 339 行并报告 25 个使用文件；`query` 核对了 `SetCDCWriteSource`、`WithInternalSourceType`、`IsLossyDDLReorgSourceSet` 的 Rust/Go 符号候选。精确 `callers/callees` 查询在 30 秒内无输出，未据此作负面结论。
-- crate 与装配：`pkg/kv/Cargo.toml`、`pkg/kv/lib.rs`；事务协议：`pkg/kv/kv.rs`；请求来源传播：`pkg/kv/txn.rs` 与 `pkg/kv/lib.rs::context`。
-- 真实消费者：`pkg/store/driver/kv_adapter.rs`（`SizeLimits`、`SchemaChecker`、异构选项 map）、`pkg/session/runtime/schema_validation.rs`（checker 构造）、`pkg/store/driver/options/options.rs`（副本策略映射），并通过限定范围 `rg` 核对 session、executor、statistics 等调用点。
-- Go 对照：`pkg/kv/option.go`；独立测试：`pkg/kv/option_test.rs` 与 `pkg/kv/option_test.go`。另参考 `pkg/kv/txn_test.rs` 中请求来源使用，但未将测试文件当作生产实现。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构以任务指定命令验证，人工复核重点为 11 个固定章节、真实符号/路径、当前边界而非理想化设计，以及扩展测试仍位于独立测试文件。

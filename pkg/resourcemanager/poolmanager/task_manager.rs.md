@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-resourcemanager-poolmanager` crate 的任务状态核心。crate 入口 `pkg/resourcemanager/poolmanager/lib.rs` 依次用 `include!` 合并本文件、`task_manager_iterator.rs` 和 `task_manager_scheduler.rs`，因此三个文件最终处于同一个模块作用域：本文件定义数据结构和基础操作，迭代器文件读取其私有字段选择调容候选，调度器文件公开 `Overclock`/`Downclock`。
-
-`pkg/resourcemanager/poolmanager/Cargo.toml` 将 `lib.rs` 指定为库入口，声明 Go 包映射为 `pkg/resourcemanager/poolmanager`，直接外部依赖只有 `crossbeam-channel = "0.5"`。生产侧直接使用者是 `pkg/resourcemanager/pool/spool/spool.rs`：建池时构造 `TaskManager`，并发任务提交时创建和注册 `Meta`，池容量变化时请求升频或降频，worker 则通过 `Meta::recv_event` 消费任务或退出。
+用 `TaskChannel` 把 `FnOnce + Send + 'static` 闭包排队，并提供“停止接受新任务但继续排空已有任务”的显式关闭语义。
 
 ## 核心职责
 
@@ -81,13 +79,9 @@ RustCodeGraph 将目标文件索引为 38 个符号，并识别它由大量编�
 
 ## 与 Go 版本的对应关系
 
-核心结构逐项对应 `pkg/resourcemanager/poolmanager/task_manager.go`：同为 8 分片、task ID 取模、每分片 map 加读写锁、`Meta` 保存创建时间/通道/ID/原子运行数/初始并发度，注册与删除语义以及原始并发度 getter 一致。`task_manager_iterator.go` 和 `task_manager_scheduler.go` 的候选规则及公开调度入口也被相邻 Rust 文件复刻。
-
 Rust 为承载 Go 原生 channel 语义新增了显式封装：`TaskChannel` 替代 `chan func()`，`SignalChannel` 替代 `chan struct{}`，`MetaEvent` 替代 worker 中的 Go `select` 分支。Rust 的 `Meta` 按值返回并通过 `Arc` 共享可变状态，Go 则传递 `*Meta`；可观察的任务队列和计数仍然共享。
 
 需要注意的差异：Go 的 `pauseTask` 用 `exitCh != nil` 判断是否可发；Rust 的 `SignalChannel` 不是可空值，并改用当前恒为 false 的 `is_closed` 检查。Go task channel 由外部 `close(fns)` 关闭，Rust 必须显式调用 `TaskChannel::close`，单纯丢弃某个 clone 不等同于逻辑关闭。Go worker 的 `select` 与 Rust `Meta::recv_event` 都不规定多个就绪分支的固定优先级；Rust 额外确保任务通道关闭时仍尝试取出一个已排队任务。
-
-独立 Rust 对照测试位于 `pkg/resourcemanager/poolmanager/migration_aster_unit_test.rs`，覆盖身份/计数/通道关闭、同分片精确删除、低于初始并发的升频选择、超频任务的非阻塞降频信号。`pkg/resourcemanager/pool/spool/migration_aster_unit_test.rs::task_meta_blocking_select_wakes_on_exit_without_polling` 进一步验证阻塞 worker 能被退出信号唤醒。本任务按要求只读取这些测试，不运行 Cargo。
 
 ## 扩展指南
 
@@ -97,12 +91,3 @@ Rust 为承载 Go 原生 channel 语义新增了显式封装：`TaskChannel` 替
 - 若补全 `SignalChannel` 关闭语义，应新增共享关闭发送端或明确的 close 操作，并让 `closed` 真正随生命周期变化；同时覆盖重复关闭、receiver 断开、容量已满和并发 `try_send`。不能仅修改 `is_closed` 而不定义谁拥有关闭权。
 - 若改变 `recv_event` 优先级或排空保证，应同步检查 `TaskChannel::recv` 与 `spool.rs::run_task`，并添加“任务与 Exit 同时就绪”“close 前存在多个排队任务”“多个 worker 同时等待”的确定性测试。公平性、关停延迟和任务丢弃风险需要明确记录。
 - 调整分片数会改变锁竞争、内存占用及 task ID 到分片的分布；虽然不影响 map 逻辑键，仍需与 Go 的 `shard` 常量保持一致并补充并发注册/扫描基准或测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/resourcemanager/poolmanager` 列出本 crate 的 8 个 Rust/Go 文件；`node --file pkg/resourcemanager/poolmanager/task_manager.rs` 读取目标文件 325 行并确认 38 个符号；另用 `node --file` 阅读相邻 Rust/Go 实现与测试。
-- 图查询限制：`query` 精确定位 `TaskManager`、`NewTaskManager`、`recv_event`、`RegisterTask`；对本文件精确 qualified name 的 `callers/callees` 返回空结果，按节点 ID 的查询无输出并被中止，因此没有伪造静态图调用边。
-- crate 与装配证据：`pkg/resourcemanager/poolmanager/Cargo.toml`、`pkg/resourcemanager/poolmanager/lib.rs`；目标包不存在 `doc.go`。
-- Go 对照证据：`pkg/resourcemanager/poolmanager/task_manager.go`、`task_manager_iterator.go`、`task_manager_scheduler.go`，以及生产接线 `pkg/resourcemanager/pool/spool/spool.go`。
-- Rust 调用与生命周期证据：`pkg/resourcemanager/pool/spool/spool.rs`；用 `rg` 精确核对 `NewTaskManager`、`NewMeta/new`、注册/删除、升降频、`recv_event` 和计数方法的 Rust/Go 调用点。
-- 测试证据：`pkg/resourcemanager/poolmanager/migration_aster_unit_test.rs` 与 `pkg/resourcemanager/pool/spool/migration_aster_unit_test.rs`。纯文档任务遵循总计划，不执行 Cargo；文档交付仅运行任务指定的 11 章节结构校验，并人工检查关键结论均可回溯到上述符号和路径。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/util/mock/metrics.rs`](./metrics.rs) 属于 `astersql-util-mock` crate；crate 由 `pkg/util/mock/Cargo.toml` 定义，以 `pkg/util/mock/lib.rs` 为入口。入口通过私有 `mod metrics` 装载本文件，再用 `pub use metrics::*` 将 `MetricsCounter` 从 crate 根导出。它是测试辅助计数器：不向 Prometheus registry 注册新指标，而是在内存中累计 `f64` 值，便于测试读取调用次数。
-
-`pkg/util/mock/Cargo.toml` 直接声明 `prometheus = "0.14"`，所以公开字段可以保留 `prometheus::Counter` 类型。本文件无模块级常量、trait、条件编译项或内嵌测试；独立 Rust 回归测试位于 `pkg/util/mock/migration_aster_unit_test.rs`。
+`MetricsCounter` 保留一个可选的 Prometheus counter 字段，同时用私有原子位模式保存可直接断言的浮点累计值。
 
 ## 核心职责
 
@@ -61,11 +59,11 @@ RustCodeGraph 的文件节点确认 `Inc -> Add`；索引还把 `pkg/util/mock/m
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/mock/metrics.go`。两端都定义 `MetricsCounter`，对外提供 `Add`、`Inc` 和 `Val`，且使用原子浮点累计以支持并发测试。Go 使用 `go.uber.org/atomic.Float64`；Rust 则将 `f64` 位模式放入 `AtomicU64` 并显式实现 CAS 循环。Rust `Inc` 调用 `Add(1.0)`，Go `Inc` 直接调用原子值的 `Add(1)`；两者可观测的计数意图一致。
+Go 使用 `go.uber.org/atomic.Float64`；Rust 则将 `f64` 位模式放入 `AtomicU64` 并显式实现 CAS 循环。Rust `Inc` 调用 `Add(1.0)`，Go `Inc` 直接调用原子值的 `Add(1)`；两者可观测的计数意图一致。
 
-Go 通过匿名嵌入 `prometheus.Counter` 获得接口方法集，其零值可为 `nil`。Rust 不能用字段嵌入获得同样的方法提升，因此保留公开 `Option<prometheus::Counter>` 字段，但没有实现 Prometheus counter trait 转发。这意味着 Rust 类型的当前可替换性只由它自身的方法和使用点证明，不应假设它已能代替所有需要 `prometheus::Counter` 的 Rust API。
+Rust 不能用字段嵌入获得同样的方法提升，因此保留公开 `Option<prometheus::Counter>` 字段，但没有实现 Prometheus counter trait 转发。这意味着 Rust 类型的当前可替换性只由它自身的方法和使用点证明，不应假设它已能代替所有需要 `prometheus::Counter` 的 Rust API。
 
-Go timer/TTL 测试证明原类型的典型用法是：把 mock 注入指标字段，执行被测流程，然后用 `Val` 断言增量。Rust 独立测试已验证原子累加，但全仓搜索未发现对应 timer/TTL Rust 路径使用本类型，因而该业务接线仍不能标记为已验证。
+Rust 独立测试已验证原子累加，但全仓搜索未发现对应 timer/TTL Rust 路径使用本类型，因而该业务接线仍不能标记为已验证。
 
 ## 扩展指南
 
@@ -74,11 +72,3 @@ Go timer/TTL 测试证明原类型的典型用法是：把 mock 注入指标字�
 - 若改变原子内存序或 CAS 逻辑，应保留并发累加的线性化性，并在 `pkg/util/mock/migration_aster_unit_test.rs` 扩展高竞争、混合增量和重复读取用例。正确性风险是丢失更新；性能风险是 `SeqCst` 和 CAS 重试在高竞争下的成本。
 - 若需要完整模拟 Prometheus 接口，应先查明 Rust 消费方要求的具体 trait/API，再在本类型或新适配器上实现；不能仅凭公开 `Counter` 字段宣称已完整对齐 Go 匿名嵌入。
 - 测试逻辑应继续放在独立 `*_test.rs` 文件，不应内嵌到 `metrics.rs`。现有最近落点是 `pkg/util/mock/migration_aster_unit_test.rs`，由 `pkg/util/mock/lib.rs` 的 `#[cfg(test)]` 模块声明接入。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`explore "pkg/util/mock/metrics.rs symbols callers callees"`；`node --file pkg/util/mock/metrics.rs --offset 1 --limit 240`；`query MetricsCounter --limit 20 --json`；以及对 `MetricsCounter`/`Add`/`Inc`/`Val` 的 `callers`/`callees` 尝试。文件节点确认源文件全部 64 行、`Inc -> Add` 和测试使用；精确 impl 方法图查询未返回额外边，本文未据此推测调用者。
-- Rust 源码与配置：`pkg/util/mock/metrics.rs`、`pkg/util/mock/lib.rs`、`pkg/util/mock/Cargo.toml`。它们分别证明实现、模块再导出、crate 边界与 `prometheus` 依赖。
-- Go 对照与消费测试：`pkg/util/mock/metrics.go`、`pkg/timer/runtime/runtime_test.go`、`pkg/timer/runtime/worker_test.go`、`pkg/ttl/ttlworker/integrationtest/timer_sync_test.go`。
-- 独立 Rust 测试：`pkg/util/mock/migration_aster_unit_test.rs::metrics_counter_is_atomic_across_threads`。该测试证明 8 线程混合调用 `Inc` 与 `Add(0.5)` 后的结果为 `12_000.0`，但没有覆盖 NaN、无穷、负数、精度上限或 `Counter: Some(_)` 的行为。
-- 引用复核：用 `rg` 对 `MetricsCounter`、`Add`、`Inc` 和 `Val` 执行 Rust/Go 精确搜索，确认 Rust 直接使用范围与 Go 侧典型测试用法。本任务为纯文档分析，按计划未运行 Cargo。

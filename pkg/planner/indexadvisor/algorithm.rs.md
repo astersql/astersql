@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-indexadvisor` crate（见同目录 `Cargo.toml`），实现索引顾问的代价驱动候选枚举和选择核心。crate 入口 `lib.rs` 将它公开为 `algorithm` 模块；当前生产调用链是 `indexadvisor.rs::advise_indexes_for_sql` 在完成 SQL 归并、schema 补全、系统表过滤和可索引列收集后调用 `algorithm.rs::advise_indexes`，再把返回的索引交给 `prepare_recommendations` 生成用户可见建议。
-
-本文件只负责在已给定的 workload、可索引列、what-if 优化器和参数快照上搜索索引集合，不负责解析用户选项、持久化结果、真正创建索引或维护数据库连接。源码含 3 个公开函数和 7 个私有辅助函数，没有类型、trait、模块常量、条件编译项或全局可变状态。
+`create_multi_column_indexes` 提供独立的、按表生成所有宽度不超过上限的有序排列的公开辅助 API。
 
 ## 核心职责
 
@@ -82,7 +80,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/indexadvisor/algorithm.go`。Rust 保留了 Go auto-admin 算法的这些语义：从单列索引起步、按最大宽度逐轮扩展、候选首列必须被查询引用、每查询保留最多三个最佳索引、候选小于等于 50 时先枚举至多两个索引再贪心扩展、使用 what-if workload 代价择优，以及统一超时错误。
+Rust 保留了 Go auto-admin 算法的这些语义：从单列索引起步、按最大宽度逐轮扩展、候选首列必须被查询引用、每查询保留最多三个最佳索引、候选小于等于 50 时先枚举至多两个索引再贪心扩展、使用 what-if workload 代价择优，以及统一超时错误。
 
 Rust 当前并非 Go 文件的完整同形实现，重要差异包括：
 
@@ -102,14 +100,3 @@ Rust 当前并非 Go 文件的完整同形实现，重要差异包括：
 - 若改变已有索引过滤，需同步 `optimizer.rs::Optimizer::prefix_contain_index` 及 `indexadvisor_test.rs::advisor_algorithm_propagates_existing_index_lookup_errors`，保持元数据错误向上传播。
 - 若改变多列生成，先决定目标是主链增量扩展 (`extend_indexes`) 还是独立全排列 API (`create_multi_column_indexes`)；二者不可互换。同步覆盖跨表隔离、列顺序、零宽度、宽度大于列数和重复列边界。
 - 性能改动应关注计划代价调用次数和 50 候选阈值；并行化还需解决 `Optimizer` 非线程安全契约。兼容性改动应保持公开签名和确定性 `BTreeSet` 结果，或明确迁移调用方。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/indexadvisor/algorithm.rs`，完整核对 338 行中的 10 个函数、公开性、分支和错误路径。
-- crate 与模块边界：`pkg/planner/indexadvisor/Cargo.toml`、`pkg/planner/indexadvisor/lib.rs`。
-- 生产入口与直接调用：`pkg/planner/indexadvisor/indexadvisor.rs::advise_indexes_for_sql`、`prepare_recommendations`。
-- 数据/代价/优化器契约：`pkg/planner/indexadvisor/model.rs::{Index::with_columns, Index::prefix_contains, IndexSetCost::less}`、`utils.rs::{collect_indexable_columns, evaluate_index_set_cost}`、`optimizer.rs::Optimizer`。
-- Rust 独立测试：`pkg/planner/indexadvisor/algorithm_test.rs::each_query_keeps_only_three_best_single_index_candidates`；`pkg/planner/indexadvisor/indexadvisor_test.rs::{multi_column_candidates_match_go_permutation_enumeration, advisor_algorithm_propagates_existing_index_lookup_errors, advisor_model_preserves_index_prefix_semantics}`；SQL 和 TPC-H 测试通过 `advise_indexes_for_sql` 间接覆盖主链。
-- Go 对照：`pkg/planner/indexadvisor/algorithm.go` 的 `adviseIndexes`、`autoAdmin.calculateBestIndexes`、`selectIndexCandidates`、`enumerateCombinations`、`enumerateGreedy`、`createMultiColumnIndexes`、`filterIndexes`、`cutDown`、`timeout`；相关行为测试位于 `indexadvisor_test.go`。
-- RustCodeGraph：`status` 显示索引包含该目录 27 个文件；文件节点显示 `algorithm.rs` 被 `indexadvisor.rs` 和 `indexadvisor_test.rs` 使用；精确符号查询确认 `advise_indexes`、`create_multi_column_indexes`、`cut_down`，调用图确认 `advise_indexes -> select_index_candidates/single_column_indexes/usable_candidates/choose_best_indexes/extend_indexes/cut_down/check_timeout` 以及 `advise_indexes_for_sql -> advise_indexes`。图工具对常见/限定名查询含同名噪声，未覆盖事实以同目录精确 `rg` 检索补证。
-- 本任务是纯文档分析，按计划未运行 Cargo；交付前使用任务给定命令验证文档存在且恰有 11 个固定二级标题，并人工复核无测试内嵌建议、无把 Go 缺失能力写成 Rust 已支持的结论。

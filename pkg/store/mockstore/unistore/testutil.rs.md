@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-unistore` crate。crate 入口 `pkg/store/mockstore/unistore/lib.rs` 以 `pub mod testutil` 声明该模块，并以 `pub use testutil::*` 将其公开项提升到 crate 根；`pkg/store/mockstore/unistore/Cargo.toml` 则把 `lib.rs` 指定为库入口，并用 `package.metadata.porting.go-package` 表明该 crate 对应 Go 包 `pkg/store/mockstore/unistore`。
-
-它是 UniStore mock RPC 的 TopSQL 资源标签诊断辅助层：面对本 crate 自己的 `crate::rpc::Request`，找出可代表目标表的起始键，识别 TiDB record/index 表键中的 `table_id`，并在 TopSQL 已启用、标签为空且表 ID 为正时生成诊断错误。它不处理请求、不写存储，也不负责生成资源标签。
-
-当前接线必须与能力本身区分：Rust 的 `lib.rs` 会编译和再导出本模块，但仓库精确引用搜索只找到 `pkg/store/mockstore/unistore/testutil_test.rs` 调用 snake_case API；Rust `rpc.rs` 尚未在 RPC 分发链中调用本文件。相对地，Go 对照实现由 `pkg/store/mockstore/unistore/rpc.go` 的 `checkResourceTagForTopSQL` 调用点接入。因此，当前 Rust 代码提供的是可调用的校验能力和一项最小回归测试，不能描述为已经覆盖 Rust UniStore 的每次 RPC。
+`checkResourceTagForTopSQL`、`getReqStartKey`、`getStack` 是保留 Go 命名习惯的兼容别名，分别委托给 snake_case 实现。
 
 ## 核心职责
 
@@ -81,8 +77,6 @@ Cargo 边界方面，本文件没有直接使用 `Cargo.toml` 中列出的 `aste
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/store/mockstore/unistore/testutil.go`：
-
 - Go `checkResourceTagForTopSQL` 自行读取进程级 `topsqlstate.TopSQLEnabled()` 和 `req.GetResourceGroupTag()`；Rust 主函数把 `top_sql_enabled` 与 `resource_group_tag` 作为参数。这降低了本模块对全局状态和 client-go 请求类型的耦合，但要求未来调用点正确传值。
 - Go 通过 `tablecodec.IsRecordKey`/`IsIndexKey` 和对应 Decode 函数取得表 ID；Rust `decode_table_id` 只实现当前固定前缀的最小解码。因此两者对扩展编码、带前缀键或畸形键的接受范围不应未经测试就视为完全等价。
 - Go 的 `getReqStartKey` 对多项字段直接访问 `[0]`，Rust 对 mutations/keys 使用 `.first()`，空集合时返回 `None`；Rust `Cop`/`CopStream` 直接读取其简化 `Request` 中的 `start_key`，Go 从第一个 range 读取 start。
@@ -98,12 +92,3 @@ Go 对照文件是 `pkg/store/mockstore/unistore/testutil.go`：
 - 扩展错误信息时保持 `ResourceTagError` 的标准错误语义，避免在成功或不可识别键路径捕获回溯；若错误文本被外部断言，需同步兼容性测试。
 - 兼容别名只是迁移门面。新 Rust 调用优先使用 snake_case API；删除别名前必须先通过全仓引用搜索确认没有下游依赖。
 - 测试必须继续放在独立的 `pkg/store/mockstore/unistore/testutil_test.rs`，不要把测试模块内嵌回生产文件。当前测试只覆盖 `Request::Empty`；安全扩展至少应补齐成功短路、合法 record/index 键缺标签时报错、已有标签放行、非表键放行和各个集合为空的情形。
-
-## 验证依据
-
-- 源码与符号：RustCodeGraph `node --file pkg/store/mockstore/unistore/testutil.rs --offset 1 --limit 500` 读取了完整 143 行；`query` 唯一定位 `check_resource_tag_for_top_sql`、`get_request_start_key`，并在多项同名结果中定位本文件的 `decode_table_id`。
-- 调用图：RustCodeGraph `callees check_resource_tag_for_top_sql` 确认其调用 `get_request_start_key`、`decode_table_id` 并构造 `ResourceTagError`；`callees get_request_start_key` 与 `callees decode_table_id` 辅助确认集合首项和长度检查。图的 callers 查询为空，因此又以精确 `rg` 核对全仓引用，确认 Rust 侧只有独立测试直接使用，未把缺失调用边臆测成已接线。
-- crate 与模块：读取 `pkg/store/mockstore/unistore/Cargo.toml`、`pkg/store/mockstore/unistore/lib.rs` 和 `pkg/store/mockstore/unistore/rpc.rs`，核对 crate 名、Go 包映射、模块再导出、测试挂接、`Request` 全部变体及 `command_type()`。
-- Go 对照：读取 `pkg/store/mockstore/unistore/testutil.go` 和 `pkg/store/mockstore/unistore/rpc.go` 的调用段，并搜索 `CheckResourceTagForTopSQLInGoTest` 的启用位置，核对全局开关、codec、请求映射、空集合行为、回溯实现和 Go 侧真实接线。
-- 独立测试：读取 `pkg/store/mockstore/unistore/testutil_test.rs`；现有唯一测试 `empty_request_is_ignored_like_go_cmd_empty` 证明 `Request::Empty` 同时在取键层返回 `Ok(None)`、在主校验层返回 `Ok(())`。它不证明合法表键报错、标签短路或所有变体映射，本文已明确该验证边界。
-- 本任务是纯文档分析；按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核唯一新增产物、无源码或总计划修改。

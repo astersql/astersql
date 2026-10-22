@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-jobsubmit` crate，是 DDL job 直接提交路径的公共类型层。crate 入口 `pkg/ddl/jobsubmit/lib.rs` 将 `types`、`submit`、`table_mode` 三个模块公开再导出；其中本文件定义提交实现所操作的 job 数据模型、版本化持久化编码、错误分类，以及会话、系统表、BDR、升级状态和 owner 通知等依赖抽象。
-
-在完整 DDL 链路中，本文件不执行 schema 变更，也不调度 worker。它承接已经构造好的 DDL job，供 `pkg/ddl/jobsubmit/submit.rs::submit_batch` 校验并补齐提交元数据，最终由 `insert_ddl_jobs_to_table` 编码后写入 `mysql.tidb_ddl_job`。因此它位于“DDL 语句构造 job”和“owner 调度持久化 job”之间的提交边界。
-
-crate 边界由 `pkg/ddl/jobsubmit/Cargo.toml` 明确：当前实际依赖只有 `astersql-meta-model` 与 `serde_json`；一批 DDL 子系统依赖被放在 `cfg(any())` 下，不参与当前编译。本文件的持久化 wire 类型实际来自 `astersql_meta_model::group_3`。
+用 `Job::encode` 将提交侧模型转换成 `astersql-meta-model` 的 `model::Job`，并生成与 Go `model.Job.Encode(true)` 对齐的 JSON wire 数据；`encode_job_args_v1`/`v2` 负责版本差异。
 
 ## 核心职责
 
@@ -107,12 +103,8 @@ RustCodeGraph 报告 `types.rs` 被 24 个文件引用；但对同名方法的�
 
 ## 与 Go 版本的对应关系
 
-Go 同路径 `pkg/ddl/jobsubmit/types.go` 只定义 `JobSpec` 和 `SubmitOptions`，直接复用 `pkg/meta/model.Job`、`model.JobArgs`、`kv.Storage`、DDL session pool、system-table manager 和 server-state syncer。Rust 文件为了形成可编译、可注入的独立 crate，额外建立精简 `Job`/`JobArgs` 模型和多个 trait；这是实现形态差异，不应误认为 Go 也有这些同名本地类型。
+Rust 文件为了形成可编译、可注入的独立 crate，额外建立精简 `Job`/`JobArgs` 模型和多个 trait；这是实现形态差异，不应误认为 Go 也有这些同名本地类型。
 
-语义对应关系：
-
-- Rust `JobSpec` 对应 Go `JobSpec`，都绑定 job、typed args 与 `IDAllocated`。
-- Rust `BeforeInsert`/`Cleanup` 对应 Go `BeforeInsertWithAssignedIDs func(specs []*JobSpec) (cleanup func())`，并由重试逻辑在失败 attempt 执行。
 - Rust `SessionPool`、`SystemTableManager`、`MinJobIdProvider`、`ServerState` 分解了 Go `SubmitOptions` 中的具体依赖；Rust 另外显式注入 `BdrPolicy`、重试次数与退避回调。
 - Go `SubmitBatch` 调用 `model.Job.NormalizeInvolvingSchemaInfo`、`CheckInvolvingSchemaInfo`、`MayNeedReorg`、`Started` 和 `Encode(true)`；Rust 在本文件中复刻这些提交所需语义，并由 `submit.rs` 以同样顺序调用。
 - Go `insertDDLJobs2Table` 将 `Job.Encode(true)` 结果写入 `mysql.tidb_ddl_job`；Rust `Job::encode` 注释虽说明对齐该格式，内部调用元模型 `encode(false)` 是因为 typed args 已由本文件提前写入 `raw_args`。
@@ -131,14 +123,3 @@ Go 同路径 `pkg/ddl/jobsubmit/types.go` 只定义 `JobSpec` 和 `SubmitOptions
 6. 若增加外部依赖，优先扩展细粒度 trait 与 `SubmitOptions`，维持所有权和 `Send + Sync` 契约；资源型钩子必须提供失败 cleanup。
 
 测试不得内嵌到本文件。编码回归应放在同目录独立文件 `pkg/ddl/jobsubmit/types_test.rs`；提交状态、BDR、升级、事务重试和资源清理行为应扩展 `pkg/ddl/jobsubmit/submit_test.rs`，并与 Go 的 `pkg/ddl/jobsubmit/submit_test.go` 对照。兼容风险最高的是 action code、V1 参数位置、V2 JSON 字段名、状态码和默认值；性能风险主要来自批量 job 的 JSON 分配、reorg 元数据二次 serde 转换，以及过大的 `involving_schemas`/`sub_jobs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引有效（11,467 文件、307,296 节点、1,848,419 边）；`files --filter pkg/ddl/jobsubmit` 确认目标及相邻 Rust/Go 文件均被索引。
-- RustCodeGraph：`node --file pkg/ddl/jobsubmit/types.rs` 分段读取 1–678 行，核对全部枚举、结构体、trait、别名、方法和编码辅助函数；索引报告该文件被 24 个文件使用。
-- RustCodeGraph：查询 `normalize_involving_schema_info`、`check_involving_schema_info`、`may_need_reorg`、`encode_job_args`、`JobSpec`、`SubmitOptions`，并读取 `pkg/ddl/jobsubmit/submit.rs`，确认提交前校验及系统表编码调用链。精确 `callers/callees` 对这些方法未返回静态边，此限制已在本文明确披露。
-- RustCodeGraph：读取 `pkg/ddl/jobsubmit/types_test.rs`，其 `encode_uses_go_job_json_and_versioned_raw_args` 验证 type/state/version/start_ts/BDR 与 V2 `raw_args`；读取 `pkg/ddl/jobsubmit/submit_test.rs` 的 `involving_schema_check_uses_job_name_fallback_and_wildcards`、`may_need_reorg_matches_job_type_and_sub_job_rules`，验证名称通配符和 reorg 分支。
-- crate/模块证据：`pkg/ddl/jobsubmit/Cargo.toml`、`pkg/ddl/jobsubmit/lib.rs`。
-- DDL 包契约：`pkg/ddl/doc.go`；DDL 阅读入口：`docs/agents/ddl/README.md`。后者仅用于定位，行为结论均由代码和测试复核。
-- Go 对照：`pkg/ddl/jobsubmit/types.go`、`pkg/ddl/jobsubmit/submit.go`、`pkg/ddl/jobsubmit/submit_test.go`；元模型相邻实现还由 RustCodeGraph 查询到 `pkg/meta/model/job.rs` 的同名方法。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰好包含十一个固定二级章节，并人工检查没有把未解析的静态调用边、理想架构或 Go 的具体依赖误写成 Rust 当前事实。

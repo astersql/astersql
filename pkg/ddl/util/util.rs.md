@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`util.rs` 是 `astersql-ddl-util` 子 crate 的通用工具实现，crate 入口 `pkg/ddl/util/lib.rs` 通过 `mod util` 装入本文件并以 `pub use util::*` 全量再导出。根工作区又以 `facade_ddl_util` 引入该 crate，`pkg/lib.rs` 将其暴露为 `ddl::util`。因此，本文件定义的是可被 DDL、session、domain、GC worker 等模块复用的公共边界，而不是某一种 DDL job 的 worker 或状态机执行器。
-
-本文件目前同时承担两类角色：一类是生产接线所需的协议常量和错误类型；另一类是以进程内状态模拟 Go 实现依赖的 etcd、SQL 会话和元数据对象。代码搜索显示 Rust 生产路径已经直接使用 `DDLOwnerKey`、`ServerGlobalState` 和 `DdlUtilError`，例如 `pkg/session/runtime/session.rs`、`pkg/session/runtime/session_factory.rs` 与 `pkg/ddl/db_integration_test.rs`；但本文件的大多数函数当前只由同 crate 的 `util_test.rs` 覆盖，或者尚未被 Rust 生产代码直接调用。不能仅因它们被公开导出就推断完整 DDL/GC 主链已经接入。
-
-`pkg/ddl/util/Cargo.toml` 声明包名为 `astersql-ddl-util`，库入口为 `lib.rs`，移植来源是 Go 包 `pkg/ddl/util`；其 `[dependencies]` 为空，说明本文件刻意只使用标准库和本地精简模型，不直接依赖真实 etcd client、sessionctx、TiDB model 或 KV codec。
+用精简 `Job` 模型实现系统库判断和暂停状态转换。
 
 ## 核心职责
 
@@ -121,8 +117,6 @@ Go 侧则通过 `pkg/ddl/util/util.go` 的真实 `sessionctx.Context`、etcd cli
 
 直接对照文件是 `pkg/ddl/util/util.go`，独立 Go 测试是 `pkg/ddl/util/util_test.go`；Rust 独立测试为 `pkg/ddl/util/util_test.rs`。
 
-保持一致的部分包括：etcd 路径和 TTL 常量；系统库判定；暂停时对 Pausing/Paused 与不可暂停状态的错误分支；删除范围的二元组主键语义；`ts < safePoint`；零次重试不执行操作而成功；CAS 写入的大致顺序；空键格式化为 `''`、非空键格式化为 `0x...`；目录不存在/为空返回 false；模拟器 GC 默认启用；内部资源标签为单字节 0。
-
 Rust 对 Go 的主要替代和差异如下：
 
 - Go 使用真实 `model.Job`、`sessionctx.Context`、etcd v3 client、SQL record set、KV key 与 table/index codec；Rust 在本文件中定义精简结构和内存后端，Cargo 也没有对应依赖。
@@ -146,13 +140,3 @@ Rust 对 Go 的主要替代和差异如下：
 扩展索引冲突解码时，优先复用或建立真正的 Rust index datum codec；当前 `GenKeyExistsErr` 的字节偏移和分隔符策略只适合已建模输入。应为 keyspace 前缀、多列、前缀索引、binary、非法 UTF-8、短键和空列分别补独立测试，并与 `pkg/ddl/ingest/util.rs` 的错误映射保持一致。
 
 全局状态修改需考虑测试隔离：修改 `KEYSPACE_NAME` 或模拟器 GC 开关的测试应保存并恢复原值。watch 并发扩展则需先处理持锁阻塞发送问题；若需要广播、前缀监听或取消，应改变数据结构并加入多线程生命周期测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ddl/util` 确认本 crate 的 Rust/Go 实现和独立测试文件。
-- RustCodeGraph `node --file pkg/ddl/util/util.rs --offset ...`：逐段核对了本文件 1,117 行源码、130 个符号及所有常量、类型、函数和 impl。
-- RustCodeGraph `query`：区分了 Rust/Go 的 `HasSysDB`、`PutKVToEtcdMono`、`GenKeyExistsErr` 同名符号；通用 `explore/callers/callees` 对该大仓库的同名结果不够精确，因此生产接线另以限定 Rust 文件的符号搜索核验。
-- crate/出口证据：`pkg/ddl/util/Cargo.toml`、`pkg/ddl/util/lib.rs`、根 `Cargo.toml` 的 `facade_ddl_util`、`pkg/lib.rs` 的 `ddl::util` 再导出。
-- Go 对照证据：`pkg/ddl/util/util.go`、`pkg/ddl/util/util_test.go`、`pkg/ddl/schemaver/syncer_test.go::TestPutKVToEtcdMono`。
-- Rust 测试与相邻实现证据：`pkg/ddl/util/util_test.rs`、`pkg/ddl/schemaver/syncer.rs`、`pkg/ddl/schemaver/syncer_test.rs`、`pkg/ddl/jobsubmit/submit.rs`、`pkg/ddl/ingest/util.rs`、`pkg/store/gcworker/gc_worker.rs`。
-- 已人工复核：文档明确回答了该文件的 crate 位置、当前生产接线范围、每组工具如何运行、共享状态和失败边界、Go 移植差异及安全扩展位置；未把公开 API 或 Go 调用关系误写成 Rust 已接线行为。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-autoanalyze-priorityqueue` crate 的底层最大堆实现。crate 入口 `pkg/statistics/handle/autoanalyze/priorityqueue/lib.rs` 将 `heap` 声明为内部模块，再通过 `pub use heap::*` 重导出其公开符号；`Cargo.toml` 用 `package.metadata.porting.go-package` 明确它对应 Go 包 `pkg/statistics/handle/autoanalyze/priorityqueue`。
-
-它位于自动 ANALYZE 调度链的“作业已经构造和打分、等待按优先级消费”这一层：`queue.rs::QueueState` 持有 `PqHeapImpl`，`AnalysisPriorityQueue::push_locked` 先用 `PriorityCalculator::CalculateWeight` 计算权重并写入作业，再调用 `PqHeapImpl::AddOrUpdate`；调度端通过 `AnalysisPriorityQueue::Pop` 取出权重最高的作业。堆不负责生成作业、计算权重、执行 ANALYZE、管理运行中作业或启动后台线程。
+同时维护 `HashMap<i64, HeapItem>` 与 `Vec<i64>`：map 支持按 key 常数期望时间查询，向量支持二叉堆调整；每个 `HeapItem.index` 把两种表示连接起来。
 
 ## 核心职责
 
@@ -94,8 +92,6 @@ RustCodeGraph 对目标文件内调用边识别完整，例如 `AddOrUpdate` 指
 
 ## 与 Go 版本的对应关系
 
-Rust `heap.rs` 是同路径 `heap.go` 的直接移植，最大堆算法和错误契约保持一致：两边都用表 ID 作为 key，用严格的 `GetWeight() >` 判定更高优先级；同 key 的 add/update 替换对象后修复堆；任意删除通过末尾元素填位再修复；空 `peek`/`pop` 的错误文本均为 `heap is empty`，缺失删除的错误文本均为 `object not found`。
-
 实现和接口上的已验证差异如下：
 
 - Go 用 `container/heap` 驱动 `heapData::{Less, Swap, Push, Pop}`；Rust 在 `PqHeapImpl` 内显式实现 `sift_up`、`sift_down` 和 `fix`，避免额外 trait 适配层。
@@ -115,13 +111,3 @@ Rust `heap.rs` 是同路径 `heap.go` 的直接移植，最大堆算法和错误
 - 若新增批量操作，需明确复杂度和原子性：逐项 `AddOrUpdate` 是 O(k log n)，而线性 heapify 需要新的构建流程；无论哪种方式，都必须在上层 `QueueState` 锁内完成或提供不会暴露半成品状态的替换策略。
 - 若改变 `Result<String>`、删除返回值或查询的 `Option` 形状，要同步修改 `queue.rs` 的调用路径及公开重导出使用者；同时核对 Go 兼容层，而不是只让当前单元测试编译。
 - 测试必须继续放在独立的 `heap_test.rs`，不要内嵌进生产文件。至少覆盖上浮和下沉更新、删除根/中间/末尾、重复 key、缺失 key、空堆、等权重，以及若引入浮点防御策略时的 NaN/无穷值；涉及上层锁和 running 状态的行为应放在 `queue_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/autoanalyze/priorityqueue` 确认目标 Rust/Go 源与独立测试均已索引。目标文件节点展示完整 202 行和 24 个符号。
-- RustCodeGraph 符号证据：`heap.rs::{PqHeapImpl, NewHeap, AddOrUpdate, DeleteByKey, Peek, Pop, List, ListKeys, GetByKey}`；节点 trail 明确显示 `AddOrUpdate -> {fix, sift_up}`、`DeleteByKey -> {swap, fix}`、`Pop -> DeleteByKey`，并列出 `heap_test.rs` 的直接调用者。精确 `callers`/`callees` 子命令在本地索引上未输出并达到超时，因此跨文件边由同一索引的文件节点补充核对，未把超时当成“无调用者”。
-- 生产 Rust 证据：`queue.rs::{QueueState, push_locked, RebuildWithoutLock, RefreshLastAnalysisDuration, Pop, Snapshot, DeleteByTableID, Close, ResetSyncFields}`；`job.rs::AnalysisJob` 的 `GetTableID`、`GetWeight` 及 `Send + Sync` 约束；`lib.rs` 的模块声明和公开重导出。
-- crate 证据：`pkg/statistics/handle/autoanalyze/priorityqueue/Cargo.toml` 的包名、`lib.rs` 入口、工作区依赖和 `package.metadata.porting.go-package`；目标文件本身只使用 `std::collections::HashMap` 与 `crate::job::AnalysisJob`。
-- Go 对照：`heap.go::{heapItem, heapData, pqHeapImpl, newHeap, addOrUpdate, update, delete, peek, pop, list, ListKeys, Get, getByKey, isEmpty}`，逐项核对了算法、错误文本及接口差异。
-- 测试证据：Rust `heap_test.rs::{TestHeap_AddOrUpdate, TestHeapEmptyPop, TestHeap_Delete, delete_missing_object_matches_go_error_and_preserves_heap, TestHeap_Update, TestHeap_Get, TestHeap_GetByKey, TestHeap_List, TestHeap_ListKeys, TestHeap_Peek, TestHeap_IsEmpty, TestHeap_Len, empty_heap_reports_canonical_error_and_stable_state}`；Go `heap_test.go` 中对应的十二组主用例。
-- 本任务只新增本说明文档，没有修改 Rust、Go、Cargo 或 `plan.md`，并按任务约束不运行 Cargo。结构完整性使用任务指定的 11 章节命令验证；人工复核覆盖文件存在原因、真实生产调用链、堆不变量、错误和浮点边界、所有权/并发边界、Go 差异与安全扩展点。

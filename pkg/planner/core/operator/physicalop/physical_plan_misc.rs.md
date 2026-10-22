@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate，由 [`lib.rs`](lib.rs) 的 `mod physical_plan_misc` 纳入并通过 `pub use physical_plan_misc::*` 公开。它不是单一算子，而是物理计划层共享的辅助数据与 Runtime Filter 协议：下推 Limit、虚拟列谓词拆分、分区剪枝元数据，以及 HashJoin/TableScan 之间的运行时过滤描述和 `tipb` 编码。crate 边界及其对 `base`、`expression`、`kv`、`parser_ast`、`types`、`tipb` 的依赖由 [`Cargo.toml`](Cargo.toml) 直接确认。
-
-当前 Rust 接线并不均匀：`PushedDownLimit` 和 `PhysPlanPartInfo` 已被多个 reader、缓存快照及内存统计路径使用；`RuntimeFilterListToPB` 已接入 `PhysicalHashJoin::to_pb`；但 `NewRuntimeFilter` 没有 Rust 生产调用者，仓库内也没有 `RuntimeFilterTargetNode` 的实现，所以 Runtime Filter 的“生成并绑定目标扫描”尚未形成与 Go 一致的完整生产链路。
+`PhysPlanPartInfo` 汇集动态分区剪枝所需的谓词、显式分区名、列和列名，提供读取、两种克隆语义及内存核算；`TableScanAndPartitionInfo` 再将该信息与任意 `dyn PhysicalPlan` 扫描计划捆绑。
 
 ## 核心职责
 
@@ -65,11 +63,11 @@ RustCodeGraph 的文件节点将目标文件识别为 53 个符号并显示被 1
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`physical_plan_misc.go`](physical_plan_misc.go)。Rust 保留了 Go 的四组概念、方法命名和大部分顺序语义，但利用所有权消除了 nil receiver，并用 `Box`/`Option`/trait object 表达指针与抽象节点。Rust `TableScanAndPartitionInfo::TableScan` 是 `Option<Box<dyn PhysicalPlan>>`，比 Go 的具体 `*PhysicalTableScan` 更宽；其 Rust 生产使用目前也远少于 Go。
+Rust 保留了 Go 的四组概念、方法命名和大部分顺序语义，但利用所有权消除了 nil receiver，并用 `Box`/`Option`/trait object 表达指针与抽象节点。Rust `TableScanAndPartitionInfo::TableScan` 是 `Option<Box<dyn PhysicalPlan>>`，比 Go 的具体 `*PhysicalTableScan` 更宽；其 Rust 生产使用目前也远少于 Go。
 
 克隆语义需特别注意：Go `CloneForPlanCache` 调用专门的表达式/列缓存克隆函数，而 Rust 当前对 `PruningConds`、`Columns` 使用容器 `clone`，只明确保证 `ColumnNames` 浅共享；普通 `Clone` 则显式深复制列名 `Arc` 内容。独立 Rust 测试验证了这两种列名身份语义和 `CIStr` 内存统计，但没有证明所有表达式内部状态完全等价于 Go 的专用缓存克隆函数。
 
-Go Runtime Filter 由 `runtime_filter_generator.go` 调用 `NewRuntimeFilter` 并执行 `Assign`，具体持有 `*PhysicalHashJoin`/`*PhysicalTableScan`；Rust 改为节点 trait 与整数 ID，但生成/目标登记接线尚不完整。Go 的 `Clone` 在克隆时从仍存活的节点读取执行器 ID；Rust 在创建/绑定时保存 ID，之后直接复制。Rust 的 `GetNextID` 使用饱和加法也是 Go `util.IDGenerator` 普通递增之外的边界差异。两版 PB 映射均将非 Global 模式落为 Local，并在表达式转换失败时返回错误。
+Go Runtime Filter 由 `runtime_filter_generator.go` 调用 `NewRuntimeFilter` 并执行 `Assign`，具体持有 `*PhysicalHashJoin`/`*PhysicalTableScan`；Rust 改为节点 trait 与整数 ID，但生成/目标登记接线尚不完整。Go 的 `Clone` 在克隆时从仍存活的节点读取执行器 ID；Rust 在创建/绑定时保存 ID，之后直接复制。Rust 的 `GetNextID` 使用饱和加法也是 Go `util.IDGenerator` 普通递增之外的边界差异。
 
 ## 扩展指南
 
@@ -78,12 +76,3 @@ Go Runtime Filter 由 `runtime_filter_generator.go` 调用 `NewRuntimeFilter` �
 补齐 Runtime Filter 生产链路时，最可能修改 `NewRuntimeFilter`、`RuntimeFilter::Assign`、`PhysicalHashJoin` 的 build trait 实现，并在 `PhysicalTableScan` 上实现 `RuntimeFilterTargetNode`；同时要把生成器接到真实物理计划遍历，而不是复用 `runtime_filter_generator.rs` 的简化同名类型而造成类型混淆。必须验证重复登记、首次等待时间、build 侧方向、join 类型限制、Fragment/Global 模式、未绑定过滤器不得编码，以及 HashJoin/Scan 两端 protobuf 和 EXPLAIN 一致性。
 
 增加过滤类型或模式时，需要同步 `Display`、默认值、`NewRuntimeFilter` 的展开、`ToPB` 枚举映射、Go 对照与 tipb 兼容性。新增复合列过滤时不能只放宽 `Vec`：还需确认等值条件聚合规则、列顺序、类型/排序规则、目标匹配及执行端是否支持。性能风险主要是表达式克隆、PB 转换和过滤器列表重复；兼容风险主要是 executor ID、枚举映射与计划缓存克隆语义。
-
-## 验证依据
-
-- RustCodeGraph：执行 `status`（索引 11,467 个文件、307,296 个节点）、`files --filter pkg/planner/core/operator/physicalop`、目标文件 `node --file ... --offset 1 --limit 500`，并对 `PushedDownLimit`、`SplitSelCondsWithVirtualColumn`、`PhysPlanPartInfo`、`TableScanAndPartitionInfo`、`RuntimeFilterIDGenerator`、`NewRuntimeFilter`、`RuntimeFilter`、`RuntimeFilterListToPB` 执行 `query`。`callers/callees` 查询超时且无结果，未将其作为调用边证据。
-- 源码与边界：完整读取 [`physical_plan_misc.rs`](physical_plan_misc.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)；目标包目录不存在 `doc.go`，故无额外包约定可读。
-- Rust 直接证据：读取/检索 `physical_hash_join.rs`、`physical_table_reader.rs`、`physical_index_reader.rs`、`physical_indexlookup_reader.rs`、`physical_indexmerge_reader.rs`、`physical_utils.rs`、`base_physical_plan.rs`、`cache_snapshot.rs`、`pkg/planner/core/runtime_filter_generator.rs` 与限定范围内的所有精确符号引用。
-- 测试证据：完整读取 [`physical_plan_misc_test.rs`](physical_plan_misc_test.rs)，并读取 `foundation_aster_unit_test.rs` 的 Limit、ID 生成、空条件拆分和空分区信息用例；相关 reader/快照测试通过符号搜索定位。按任务要求这是纯文档分析，未运行 Cargo。
-- Go 对照：完整读取 [`physical_plan_misc.go`](physical_plan_misc.go)，并用 `runtime_filter_generator.go`、`find_best_task.go`、`task.go`、各 reader/scan 文件及 `runtime_filter_generator_test.go` 的引用核对生产接线和测试入口。
-- 结构验收使用任务指定命令，要求本文恰好包含上述 11 个固定二级标题；另以 `git diff --check` 和人工复核检查链接、事实限定、迁移缺口及扩展建议。

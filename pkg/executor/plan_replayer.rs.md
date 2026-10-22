@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`plan_replayer.rs` 位于 `astersql-executor` crate；`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认 crate 根，`pkg/executor/lib.rs` 以 `pub mod plan_replayer` 对外公开本模块。它把 PLAN REPLAYER 的三类动作抽象成与具体会话、归档和结果集实现无关的 Rust 流程：按 digest 注册/移除 Capture 任务，导出 DUMP 现场，以及恢复 LOAD 现场。
-
-该文件处于“执行器流程与后端能力边界”这一层，而不是完整运行时实现层。`pkg/executor/builder.rs::buildPlanReplayer` 会解析 DUMP 中的 SQL，并把计划及语句交给 `ExecutorBuilderDependencies::build_plan_replayer_executor`；但仓库生产 Rust 代码中尚无 `PlanReplayerBackend` 的实现，现有两个实现都在独立测试文件 `pkg/executor/plan_replayer_test.rs` 和 `pkg/executor/test/planreplayer/plan_replayer_test.rs`。因此当前代码已经表达并测试核心控制流，但真实会话存取、内部 SQL、ZIP 解析、统计加载和文件传输仍须由未来的生产后端接线。
+`appendPlanReplayerDumpResult` 将本地文件 token 或远端预签名 URL 转换为两列表格结果；`isPlanReplayerDownloadURL` 负责二者判别。
 
 ## 核心职责
 
@@ -95,19 +93,7 @@ DUMP 文件是最关键资源：创建后由 `PlanReplayerDumpInfo.file` 持有�
 
 ## 与 Go 版本的对应关系
 
-直接基线是 `pkg/executor/plan_replayer.go`：Rust 的 `PlanReplayerExec`、`PlanReplayerCaptureInfo`、`PlanReplayerDumpInfo`、`PlanReplayerLoadExec`、`PlanReplayerLoadInfo` 以及多数 camelCase 函数都保留了 Go 名称和流程顺序，文件级 `#![allow(non_snake_case)]` 也服务于这种迁移对齐。
-
-已明确对齐的语义包括：
-
-- `Next` 首先 Grow/Reset 结果；Capture 优先于 DUMP；成功后设置结束标志。
-- 创建 DUMP 文件后读取 statement read TS；其后的错误路径关闭文件。
-- 外部 SQL 文件模式只登记/准备传输，由连接层稍后读取；普通模式立即 dump 并返回 token。
-- 多 SQL 输入只 trim 换行，保留空格；测试 `dump_sql_file_only_trims_newlines_like_go` 专门锁定这一点。
-- 预签名 URL 返回五行下载说明；无 host 的 HTTP 字符串仍按文件 token 处理。
-- LOAD 顺序为 variables → disable auto-analyze → tables → TiFlash → views → stats → bindings；Binding 错误降级为 warning。
-- EXPLAIN EXPLORE 先提取 `sql/sql0.sql` 目标 SQL，再恢复重放环境。
-
-Rust 当前是能力压缩后的抽象，而不是 Go 实现的逐函数完整落地。Go `PlanReplayerBackend` 等价逻辑分散在 session、domain、ZIP、parser、statistics 等真实组件中；Rust 将它们集中为 trait 方法。特别是 Go `PlanReplayerLoadInfo.createTable` 临时关闭外键检查、忽略 placement 并在 defer 中恢复，`loadSetTiFlashReplica` 在无 TiFlash 时建立 hypothetical replica，以及 `loadStats` 对无统计/null JSON 与 warning 的处理，都必须由未来 backend 保留，本文件本身无法证明已经实现。Go 的 typed session keys 和 `FileTransInConnHandlers` 映射在 Rust 这里只剩字符串常量与处理函数，生产连接层注册尚未找到。
+Rust 当前是能力压缩后的抽象，而不是 Go 实现的逐函数完整落地。特别是 Go `PlanReplayerLoadInfo.createTable` 临时关闭外键检查、忽略 placement 并在 defer 中恢复，`loadSetTiFlashReplica` 在无 TiFlash 时建立 hypothetical replica，以及 `loadStats` 对无统计/null JSON 与 warning 的处理，都必须由未来 backend 保留，本文件本身无法证明已经实现。Go 的 typed session keys 和 `FileTransInConnHandlers` 映射在 Rust 这里只剩字符串常量与处理函数，生产连接层注册尚未找到。
 
 另有一个需谨慎的签名差异：Go `loadBindings` 根据 `isSession` 生成 SESSION/GLOBAL Binding，Rust `loadBindings` 的 `_session` 参数当前被忽略并统一调用 `backend.load_bindings`；后端接口也没有 session 参数。若生产后端无法从归档自身区分两类 Binding，这会成为迁移缺口，不能仅靠现有 mock 测试判定已对齐。
 
@@ -120,14 +106,3 @@ Rust 当前是能力压缩后的抽象，而不是 Go 实现的逐函数完整�
 5. 修改 URL 判别或输出文案时同步 `appendPlanReplayerDumpResult`、`isPlanReplayerDownloadURL` 及 Go 同名函数；现有集成 Rust 测试覆盖 URL、有 scheme 无 host、普通 token 和过期文案。
 6. 完善 Binding 对齐前，应明确调整 `PlanReplayerBackend::load_bindings` 的输入，使 SESSION/GLOBAL 信息不会丢失，并新增分别验证两类归档的测试。
 7. 性能上，当前文件读取与归档接口使用完整 `Vec<u8>`，多 SQL 解析也把所有语句保存在 `Vec`；若支持超大重放包，应在不破坏 Go 行为和错误顺序的前提下评估流式接口，而不是局部替换造成生命周期不一致。
-
-## 验证依据
-
-- 生产源码：`pkg/executor/plan_replayer.rs`（495 行）完整读取；符号清单、DUMP/LOAD 顺序、错误关闭和 trait 边界均来自该文件。
-- crate 与模块：`pkg/executor/Cargo.toml` 的 `[package] name = "astersql-executor"`、`[lib] path = "lib.rs"`、`package.metadata.porting.go-package = "pkg/executor"`；`pkg/executor/lib.rs` 的 `pub mod plan_replayer` 与独立 `mod plan_replayer_test`。
-- Rust 上游：`pkg/executor/builder.rs::buildPlanReplayer`、`ExecutorBuilderDependencies::{parse_replayer_statement, build_plan_replayer_executor}`。全仓 `rg` 未找到生产 `PlanReplayerBackend` 实现，只有两处测试实现，因此“尚未完成生产接线”是当前代码事实。
-- 单元测试：`pkg/executor/plan_replayer_test.rs` 验证仅 trim 换行、LOAD 先重置结果、Capture helper 成功后结束。
-- 集成语义测试：`pkg/executor/test/planreplayer/plan_replayer_test.rs` 验证 Capture 生命周期、DUMP token、时间戳/prepare/dump/空 SQL 失败时关闭文件、预签名 URL、50 条 SQL、LOAD 顺序与软失败、建库错误优先、EXPLAIN EXPLORE、空路径和无效 SQL。
-- Go 对照：`pkg/executor/plan_replayer.go` 完整函数列表及关键实现，尤其 `PlanReplayerExec.Next`、`DumpSQLsFromFile`、`PlanReplayerLoadInfo.Update`、`createTable`、`loadSetTiFlashReplica`、`loadBindings`、`loadStats`；`pkg/executor/builder.go::buildPlanReplayer` 验证实际 Go 模式构造。
-- RustCodeGraph：执行 `status` 确认索引可用（11,467 个文件），但 `files --filter pkg/executor/plan_replayer` 返回无匹配，精确目标未被索引；因此没有采用宽泛 `explore` 返回的无关符号，调用边改由上述 `rg` 与源码核验。该限制只影响图索引证据，不影响直接源码事实。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按计划以结构检查和人工事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-privilege` crate 的权限门面定义，源码由 `pkg/privilege/lib.rs` 以 `privilege_api` 私有模块装入，再同时从 crate 根和 `privilege` 命名空间公开。它对应 Go 包入口 `pkg/privilege/privilege.go`，负责规定“上层会话如何持有并调用权限管理器”，而不负责读取 `mysql.*` 权限表或实现具体认证算法。
-
-`pkg/privilege/Cargo.toml` 将该 crate 的库入口设为 `lib.rs`，依赖认证身份、MySQL 权限类型、认证连接、会话变量、`Datum` 和受限 SQL 执行器等多个细粒度本地 crate。当前 Rust 仓库中，`BindPrivilegeManager`、`GetPrivilegeManager` 和本文件的 `Manager` trait 仅在 `pkg/privilege/migration_aster_unit_test.rs` 找到直接使用；具体权限逻辑位于独立的 `astersql-privilege-privileges` crate，但尚未实现本文件的 `Manager` trait。因此，本文件目前是已定义、已单测的迁移边界，不应描述成已经接入 Rust 完整应用主链。
+提供 `BindPrivilegeManager` 与 `GetPrivilegeManager` 两个薄包装，完成管理器的绑定、替换、解绑和读取（第 197—216 行）。
 
 ## 核心职责
 
@@ -66,13 +64,11 @@ Cargo 依赖搜索显示 session、server、DDL、executor、planner、infoschem
 
 ## 与 Go 版本的对应关系
 
-类型和方法集合基本逐项映射 `pkg/privilege/privilege.go`：`keyType`/`key` 对应 `KeyType`/`KEY`，`VerificationInfo` 三个字段一致，Go `Manager` 的 21 个方法在 Rust trait 中均有对应项，Bind/Get 也保留 Go 风格命名。
-
 关键语言适配包括：Go 的接口值改为 `Arc<dyn Manager>`；Go 的 `nil` 改为 `Option::None`；Go 的指针切片改为 Rust 值切片；Go `error` 改为 `PrivilegeError`；Go `context.Context` 映射为这里再导出的 `ExecutionContext`。Go 的上下文通过 `fmt.Stringer` 键和 `any` 做运行时类型断言，类型不匹配时返回 `nil`；Rust 把存储接口收窄为 `KeyType -> Option<Arc<dyn Manager>>`，因此类型匹配在编译期保证。
 
-行为差异是 Rust 明确支持 `BindPrivilegeManager(..., None)` 解绑，而 Go 参数虽可传 `nil`，其通用上下文实际如何保存由 Go 会话实现决定。Rust 的 `KeyType` 为公开类型但字段私有，Go 的 `keyType` 整体包私有。Rust 另增小写 `string` 别名以兼容 Go 命名习惯。
+行为差异是 Rust 明确支持 `BindPrivilegeManager(..., None)` 解绑，而 Go 参数虽可传 `nil`，其通用上下文实际如何保存由 Go 会话实现决定。Rust 的 `KeyType` 为公开类型但字段私有，Go 的 `keyType` 整体包私有。
 
-迁移状态并不等价：Go 的 `pkg/privilege/privileges/privileges.go` 有 `var _ privilege.Manager = (*UserPrivileges)(nil)`，且完整服务路径已使用 Bind/Get；Rust 的 `pkg/privilege/privileges/privileges.rs` 定义了自己的 `VerificationInfo` 与 `UserPrivileges` 固有方法，其 crate 清单也未依赖 `astersql-privilege`，没有实现本 trait。因此扩展时必须先决定是连接两套 API，还是继续把本门面视为迁移契约，不能假设二者已经可互换。
+迁移状态并不等价：Go 的 `pkg/privilege/privileges/privileges.go` 有 `var _ privilege.Manager = (*UserPrivileges)(nil)`，且完整服务路径已使用 Bind/Get；Rust 的 `pkg/privilege/privileges/privileges.rs` 定义了自己的 `VerificationInfo` 与 `UserPrivileges` 固有方法，其 crate 清单也未依赖 `astersql-privilege`，没有实现本 trait。
 
 ## 扩展指南
 
@@ -81,12 +77,3 @@ Cargo 依赖搜索显示 session、server、DDL、executor、planner、infoschem
 接通生产实现的最小合理位置是为真实权限对象提供本 trait 的适配实现，并让真实会话上下文实现 `PrivilegeManagerKeyProvider`/`SessionContext`，随后在 Rust 会话创建路径绑定、在 planner/executor/server 等消费者读取。接线时重点核对两个 Rust `VerificationInfo` 的字段差异、方法接收者可变性、`Datum` 与字符串表格返回类型，以及 `Context`/受限执行器/认证连接的适配，避免静默丢失 Go 语义。
 
 若只改变键存储，必须扩充现有往返测试，覆盖空值、替换、解绑和 `Arc` 身份/生命周期；若改变认证结果，扩充 `verification_info_default_matches_go_zero_value` 并增加具体错误与沙箱/资源组用例；若改变 trait 方法，除门面契约测试外还要同步具体实现 crate 的 `pkg/privilege/privileges/*_test.rs`。兼容风险主要是破坏下游 trait 实现，正确性风险主要是未绑定时被调用方错误地 `unwrap`，性能风险则集中在频繁克隆 `Arc` 与未来实现中的缓存/SQL 调用，而非当前薄包装。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/privilege` 确认目标及相关 Rust/Go/测试文件已索引；`node --file pkg/privilege/privilege.rs --offset 1 --limit 400` 读取了完整 217 行源码。
-- RustCodeGraph 精确查询：`query BindPrivilegeManager`、`query GetPrivilegeManager`、`query KeyType`、`query VerificationInfo`、`query Manager`；结合文件路径消歧后，`explore` 验证迁移测试到 Bind/Get、Bind 到 `set_value`、Get 到 `value` 的调用边。
-- crate 边界：读取 `pkg/privilege/Cargo.toml` 与 `pkg/privilege/lib.rs`；另查阅 `pkg/privilege/privileges/Cargo.toml`、`lib.rs` 和 `privileges.rs`，确认具体逻辑位于独立 crate 且当前没有实现本文件 trait。
-- Go 对照：读取 `pkg/privilege/privilege.go`；检索 `pkg/session/session.go`、`pkg/planner/**`、`pkg/executor/**`、`pkg/server/**` 等 Bind/Get 调用；`pkg/privilege/privileges/privileges.go` 的编译期断言证明 Go `UserPrivileges` 实现接口。
-- 测试证据：读取独立 Rust 测试 `pkg/privilege/migration_aster_unit_test.rs`，其三个测试覆盖键文本、`VerificationInfo::default` 以及 Bind/Get/替换/解绑；检索 Go `pkg/privilege/privileges/privileges_test.go` 与相关调用，确认成熟 Go 路径中的权限检查与连接认证用法。
-- 未运行 Cargo 或代码测试：任务明确为纯文档分析。交付仅执行任务指定的 11 章节结构检查，并人工复核本文只陈述可由上述源码、图查询、Cargo 和测试支持的事实。

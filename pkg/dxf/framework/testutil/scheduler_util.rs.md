@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-testutil` crate，由 [`lib.rs`](lib.rs) 以 `pub mod scheduler_util` 暴露并通过 `pub use scheduler_util::*` 再导出。它提供 DXF（Distributed eXecution Framework）测试使用的脚本化调度器对象，用来表达“任务从哪个步骤走到哪个步骤、每一步生成多少子任务、何时注入规划错误、完成回调何时失败”等场景。源码位置是 [`scheduler_util.rs`](scheduler_util.rs)，crate 边界与 Go 包迁移来源记录在 [`Cargo.toml`](Cargo.toml)。
-
-它位于生产目录中的 `testutil` crate，但职责是测试夹具，不是生产调度算法。生产调度扩展协议定义在 [`../scheduler/interface.rs`](../scheduler/interface.rs) 的 `Extension` trait；本文件的 `SchedulerExtension` 是一个简化的独立模型，没有直接实现该 trait。测试侧通过 [`disttest_util.rs`](disttest_util.rs) 的 `TaskTypeRegistry::register_scheduler`、`RegisterTaskType` 等抽象接收它，或直接调用其方法验证迁移语义。因此阅读调用链时应区分“复现扩展回调行为”和“已接入生产 scheduler trait”这两个层次。
+生产调度扩展协议定义在 [`../scheduler/interface.rs`](../scheduler/interface.rs) 的 `Extension` trait；本文件的 `SchedulerExtension` 是一个简化的独立模型，没有直接实现该 trait。
 
 ## 核心职责
 
@@ -93,17 +91,9 @@ RustCodeGraph 将本文件识别为被 DXF 示例、框架集成测试、schedul
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`scheduler_util.go`](scheduler_util.go)。主要一致点如下：
-
-- `SchedulerInfo`、`StepInfo` 及六类构造器保持同一场景含义和 Go 风格公开名称。
-- 通用转移均从 `StepInit` 串联输入步骤并以 `StepDone` 结束；缺失转移返回步骤零值。
-- 普通规划前若干次返回错误，之后生成 `subtask-%d`；基础、HA、不可重试错误和回滚的步骤数与子任务数相同。
-- `ModifyMeta`/`modify_meta` 都按输入顺序产生 `type=to` 并用逗号连接。
-- 特殊构造器都在第一次 INIT 规划时报 `retryable err`，之后生成三条 meta；ONE 阶段生成 `task4`；首次完成回调报 `not retryable err`，以后成功。
-
 主要差异也必须保留在迁移判断中：Go 版本用 gomock 构造真正的 `scheduler.Extension` mock，方法接收 context、storage handle、节点列表等完整参数；Rust 版本是具体 `SchedulerExtension`，暴露删去未使用参数的简化同步方法，且尚未实现生产 `Extension` trait。Go 的 `StepInfo.callCount` 位于复制进 map 的结构体中，Rust 用共享 `Mutex<HashMap<Step, i64>>` 单独计数。Go `ModifyMeta` 返回 `([]byte, error)`，Rust 直接返回 `Vec<u8>`。Go 的空 slice/nil 在 Rust 中都表现为 `Vec::new()`，无法保留 nil 与空切片的区别。
 
-[`scheduler_util_test.rs`](scheduler_util_test.rs) 专门固定了空配置 panic、负错误次数立即成功、未知步骤返回 `Step(0)` 三个边界；Rust 集成测试及同目录 Go 集成测试则证明预设构造器仍服务于相同的测试场景。没有发现同路径独立的 `scheduler_util_test.go`，Go 侧证据来自 `framework_*_test.go` 对这些构造器的使用。
+[`scheduler_util_test.rs`](scheduler_util_test.rs) 专门固定了空配置 panic、负错误次数立即成功、未知步骤返回 `Step(0)` 三个边界；Rust 集成测试及同目录 Go 集成测试则证明预设构造器仍服务于相同的测试场景。
 
 ## 扩展指南
 
@@ -114,12 +104,3 @@ RustCodeGraph 将本文件识别为被 DXF 示例、框架集成测试、schedul
 - 若要让该类型直接接入生产 scheduler，应该新增明确的适配器或实现 [`../scheduler/interface.rs`](../scheduler/interface.rs) 的 `Extension`，补齐 `TaskHandle`、生产 `Task`/`SchedulerError`、`on_prepare` 等契约；不能仅靠同名方法假定类型兼容。这会扩大到跨 crate 行为修改，不属于当前文档任务。
 - 若 meta 格式需要支持任意字符串或兼容持久化，必须替换当前无转义拼接，并同时更新 Go 对照与消费者；当前格式只适合受控测试输入。
 - 并发相关修改需验证克隆实例共享计数、同时调用时的一次性语义，以及锁中毒/原子排序策略；性能风险主要是扩大 `call_counts` 临界区。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标目录；`files --filter pkg/dxf/framework/testutil` 显示 `scheduler_util.rs`、Go 对照与独立 Rust 测试均已索引。
-- RustCodeGraph 文件节点：完整读取 [`scheduler_util.rs`](scheduler_util.rs) 的 281 行、[`scheduler_util.go`](scheduler_util.go) 的 211 行、[`scheduler_util_test.rs`](scheduler_util_test.rs) 的 58 行和 [`lib.rs`](lib.rs) 的模块装配。
-- RustCodeGraph 符号/调用查询：`query` 定位 `GetMockSchedulerExt`、`SchedulerExtension`、`next_subtasks_batch`、`next_step`、`modify_meta`、`on_done`；`callees` 确认构造和错误路径的直接依赖。限定文件的 `callers` 查询未在时限内返回，因此上游调用者改由精确 `rg` 引用检索并通过对应文件节点复核，没有把超时结果当作事实。
-- crate 与架构证据：[`Cargo.toml`](Cargo.toml) 确认 crate 名、`lib.rs` 入口及 Go 包迁移来源；[`../doc.go`](../doc.go) 说明 DXF 的 owner 调度器、全节点执行器和“任务由顺序步骤、每步由并行子任务组成”的总体模型；[`../scheduler/interface.rs`](../scheduler/interface.rs) 给出生产 `Extension` 契约。
-- 测试证据：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`scheduler_util_test.rs`](scheduler_util_test.rs)、[`../integrationtests/framework_scope_test.rs`](../integrationtests/framework_scope_test.rs)、[`../integrationtests/framework_ha_test.rs`](../integrationtests/framework_ha_test.rs)、[`../integrationtests/framework_err_handling_test.rs`](../integrationtests/framework_err_handling_test.rs) 和 [`../integrationtests/framework_rollback_test.rs`](../integrationtests/framework_rollback_test.rs)。Go 侧用 `rg` 核对 `framework_test.go`、`framework_ha_test.go`、`framework_scope_test.go`、`framework_err_handling_test.go`、`framework_rollback_test.go` 与 `modify_test.go` 的构造器调用。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在且恰有十一个规定的二级标题；最终交付前另行执行该命令并记录退出码。

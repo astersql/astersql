@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Lightning 的 **TiDB 逻辑导入后端**：它把解析后的 `Datum` 行编码为 `INSERT`、`INSERT IGNORE` 或 `REPLACE` SQL，再通过抽象的 `SqlExecutor` 发送给目标 TiDB，而不是像本地导入后端那样生成并导入 TiKV KV/SST。crate 入口 `pkg/lightning/backend/tidb/lib.rs` 私有声明 `mod tidb` 后用 `pub use tidb::*` 再导出本文件 API；`pkg/lightning/backend/tidb/Cargo.toml` 将该 crate 命名为 `astersql-lightning-backend-tidb`，并只直接依赖通用 `backend`、`encode`、`verification` 与 `uuid` crate。
-
-本文件同时占据三条边界：`NewEncodingBuilder`/`tidbEncoder` 实现输入行到 SQL 行的编码，`NewTargetInfoGetter`/`targetInfoGetter` 查询目标库表元数据，`NewTiDBBackend`/`tidbBackend`/`Writer` 实现通用 `Backend` 与 `EngineWriter` 写入接口。根工作区通过 `Cargo.toml` 中的 `facade_lightning_backend_tidb` 依赖和 `pkg/lib.rs` 的 facade 再导出接纳该 crate；当前 RustCodeGraph 与仓库搜索未发现生产 Rust 调用者直接构造上述三个入口，直接行为证据主要来自同目录独立测试 `tidb_test.rs`，因此不能把 Go 侧完整应用接线表述为已经在 Rust 主链启用。
+**通用后端适配**：`Backend` 的 engine 生命周期操作在逻辑导入中是无状态空操作；`LocalWriter` 返回共享后端状态的 `Writer`，由其 `AppendRows` 直接执行 SQL。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件以 `pkg/lightning/backend/tidb/tidb.go` 为直接移植基线，已保持的核心语义包括：三种 SQL 动词、`Ignore + MaxRecordRows` 内部改用 Error SQL、最多三次重试、批失败后逐行隔离、按大小/行数切块、列排列缓存、SQL 字节转义、Go 风格浮点文本、诊断编码回退、四/五列 `NEXT_ROW_ID` 兼容、auto-random 占位元数据、engine 空操作及 writer 的同步/关闭语义。`tidb_test.rs` 还覆盖了 Go Datum 分支、极端浮点、严格字符集校验、两种列数错误文本、重复键/类型错误阈值、预编译批量参数和共享错误状态。
+Rust 文件以 `pkg/lightning/backend/tidb/tidb.go` 为直接移植基线，已保持的核心语义包括：三种 SQL 动词、`Ignore + MaxRecordRows` 内部改用 Error SQL、最多三次重试、批失败后逐行隔离、按大小/行数切块、列排列缓存、SQL 字节转义、Go 风格浮点文本、诊断编码回退、四/五列 `NEXT_ROW_ID` 兼容、auto-random 占位元数据、engine 空操作及 writer 的同步/关闭语义。
 
 仍需明确记录的差异与未迁移能力：
 
@@ -106,12 +104,3 @@ Rust 文件以 `pkg/lightning/backend/tidb/tidb.go` 为直接移植基线，已�
 - 并行化 `FetchRemoteTableModels` 时才应使用 `fetchRemoteTableModelsConcurrency`；共享结果必须避免锁粒度过大，并保持“列查询硬失败、auto-ID 单表软失败”和结果小写 key 的现有契约。
 - 修改 chunk 算法时同步核对单行大于 `maxChunkSize`、`maxChunkRows == 0`、空行集及边界恰好相等的行为。当前 Rust 用 `splitRows.max(1)` 避免零行上限导致空 chunk，这一点与 Go 对配置有效性的隐含假设不同。
 - 若把 crate 接入 Rust Lightning 生产主链，应新增调用层集成测试，证明 facade 导出之外确有 `NewEncodingBuilder`、`NewTargetInfoGetter` 和 `NewTiDBBackend` 的真实装配；目前单元测试不能替代这项接线证据。
-
-## 验证依据
-
-- 源码全貌：RustCodeGraph `node --file pkg/lightning/backend/tidb/tidb.rs` 分段读取全部 1,281 行，核对了常量、数据类型、trait 实现、编码、元数据、写入、错误处理和 auto-ID 解析。
-- crate 边界：读取 `pkg/lightning/backend/tidb/Cargo.toml` 与 RustCodeGraph 中的 `pkg/lightning/backend/tidb/lib.rs`；另用仓库搜索核对根 `Cargo.toml` facade 依赖和 `pkg/lib.rs` 再导出。
-- 图查询：执行 RustCodeGraph `files --filter pkg/lightning/backend/tidb`、`explore`，以及对 `NewTiDBBackend`、`WriteRows`、`EncodeRowForRecord`、`FetchTableAutoIDInfos` 的 `query`；用精确 Rust symbol ID 执行 `callers`/`callees`，未得到跨文件生产 Rust 调用边，因此本文明确标注当前接线限制。
-- Go 对照：通过 RustCodeGraph 分段读取 `pkg/lightning/backend/tidb/tidb.go` 全部相关区域，核对 `NewTiDBBackend`、encoder、目标元数据、批/逐行写、错误管理、writer 与 `FetchTableAutoIDInfos`。
-- Rust 独立测试：通过 RustCodeGraph 读取 `pkg/lightning/backend/tidb/tidb_test.rs` 全部 989 行；关键证据包括 `TestWriteRowsIgnoreWithRecordingUsesErrorInsert`、`TestFetchRemoteTableModelsPreservesGoMetadata`、`TestWriteRowsErrorDowngradingAll`、`TestDuplicateThresholdCountsAffectedRowDifference`、`TestTypeErrorThresholdAndRecordClassification`、`TestStrictModeChecksColumnCharset`、`TestEncodeColumnCountErrorsMatchGo`、`TestLocalWriterSharesBackendErrorState`、`TestLogicalImportBatchPrepStmt` 和 `TestWriterCloseReturnsNilFlushStatus`。
-- Go 独立测试：RustCodeGraph 索引确认同目录 `tidb_test.go` 及其 `TestEncodeRowForRecord` 等符号存在；Go 实现和 Rust 独立测试已提供本任务所需的对应语义证据。本任务按计划为纯文档分析，未运行 Cargo 或代码测试。

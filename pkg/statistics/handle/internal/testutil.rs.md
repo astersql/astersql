@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-statistics-handle-internal`（见同目录 `Cargo.toml`），是 statistics handle 子系统的内部测试辅助实现，而不是线上 SQL 执行路径。crate 根 `pkg/statistics/handle/internal/lib.rs` 以私有 `mod testutil` 装载本文件，再通过 `pub use testutil::*` 对外暴露公开断言 `AssertTableEqual`；同一 crate 的测试由独立文件 `testutil_test.rs` 承载。
-
-该辅助函数用于核对两份 `statistics::Table` 快照中测试关心的表级统计是否一致。Go 对照 `pkg/statistics/handle/internal/testutil.go` 的调用场景包括统计信息持久化后清缓存并重新加载（`pkg/statistics/handle/handletest/statstest/stats_test.go`），因此它表达的是“统计核心内容往返后保持一致”的测试契约，不是 `Table` 所有字段的通用 `PartialEq`。
+该辅助函数用于核对两份 `statistics::Table` 快照中测试关心的表级统计是否一致。
 
 ## 核心职责
 
@@ -74,10 +72,6 @@ CMSketch 使用 `Option` 的严格相等：`None` 只与 `None` 相等，`Some` 
 
 ## 与 Go 版本的对应关系
 
-Go 基准实现是同目录 `testutil.go::AssertTableEqual(t, a, b)`。Rust 版本保留了相同的比较顺序和范围：实时/修改计数、列数量、逐列 histogram/CMSketch/TopN、索引数量、逐索引三类统计，最后是存在性映射。
-
-主要语言适配如下：
-
 - Go 通过 `testing.T` 与 `require` 报告断言；Rust 不接收测试上下文，直接使用标准断言并 panic。
 - Go 用 `ForEachColumnImmutable` / `ForEachIndexImmutable`；Rust直接借用公开的 `Columns` / `Indices` HashMap。两者都只读遍历所有条目。
 - Go 的 CMSketch 指针需要显式 nil 分支；Rust 的 `Option<CMSketch>` 直接使用派生相等，维持 nil/非 nil 区分。
@@ -91,13 +85,3 @@ Go 基准实现是同目录 `testutil.go::AssertTableEqual(t, a, b)`。Rust 版�
 新增列或索引内部统计结构时，最可能修改两个遍历体。若两者规则相同，可提取私有辅助函数，但仍应保持列/索引缺失时的明确诊断。涉及可选值时必须分别定义 `None` 与“空但存在”的等价规则，不能默认依赖派生 `PartialEq`。
 
 测试必须继续放在独立的 `pkg/statistics/handle/internal/testutil_test.rs`，不要内嵌进生产源文件。至少应覆盖：新增字段相等路径、每类不相等的 panic 路径、缺失列/索引、`None`/空/非空统计结构组合；若改变 Go 对齐语义，还应同步审阅 `pkg/statistics/handle/internal/testutil.go` 及其 `statstest` 调用场景。性能上应避免在每个条目中引入重复的全表扫描。
-
-## 验证依据
-
-- 源文件：`pkg/statistics/handle/internal/testutil.rs`，确认两个函数、可见性、断言顺序和全部字段访问。
-- crate 边界：`pkg/statistics/handle/internal/Cargo.toml` 与 `lib.rs`，确认包名、`statistics` 路径依赖、公开再导出和独立测试模块。
-- Rust 测试：`pkg/statistics/handle/internal/testutil_test.rs`，确认等价表成功、实时行数差异 panic，以及零计数 TopN 与缺失 TopN 等价。
-- 下游实现：`pkg/statistics/table.rs`、`cmsketch.rs`、`histogram.rs`，确认表/映射结构、查找与数量方法、TopN 总计数/相等语义及直方图比较参数。
-- Go 对照：`pkg/statistics/handle/internal/testutil.go`；Go 使用证据：`pkg/statistics/handle/handletest/statstest/stats_test.go`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`query/node` 定位 Go/Rust 两个 `AssertTableEqual` 和私有 `top_n_equal`；节点调用轨迹确认三个 Rust 测试调用者、`GetCol`/`GetIdx` 被调用关系；`explore` 再确认 `top_n_equal` 与 `AssertTableEqual` 的局部调用关系。
-- 仓库搜索：确认 Rust 侧无上述三个单元测试之外的直接调用，并确认 `handletest/statstest/Cargo.toml` 对本 crate 的依赖声明。

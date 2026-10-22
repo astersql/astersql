@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-br-pkg-restore-data` library crate。crate 入口 [`lib.rs`](lib.rs) 以公开模块 `recover` 装配它，并通过 `pub use recover::*` 再导出其公开类型和函数；[`Cargo.toml`](Cargo.toml) 将对应的 Go package 标为 `br/pkg/restore/data`，且当前没有外部 Rust 依赖。本文件本身不访问网络或磁盘，而是 `Recovery::MakeRecoveryPlan` 的纯内存决策层：把各 store 汇报的 Region peer 元数据归并为一致的有效 Region 集合，再为每个有效 Region 选择 leader。
-
-生产调用位于 [`data.rs`](data.rs) 的 `Recovery::MakeRecoveryPlan`：它先按 `RegionId` 汇集 `RecoverRegion`，调用 `SortRecoverRegions` 和 `CheckConsistencyAndValidPeer`，随后对有效 Region 调用 `LeaderCandidates` 与 `SelectRegionLeader`，最终写入 `Recovery::RecoveryPlan`。因此，本文件处在“读取 store 元数据”与“向各 store 下发恢复请求”之间，不负责元数据采集、RPC 下发、ID 分配或 flashback。
+用 `RecoverRegion` 把 protobuf 风格的 `RegionMeta` 与来源 `StoreId` 绑定，使后续计划既能比较 Raft 状态，也能定位请求目标 store。
 
 ## 核心职责
 
@@ -79,14 +77,10 @@ RustCodeGraph 的 `node` 显示 `recover.rs` 直接被 `parity_test.rs` 和 `rec
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`recover.go`](recover.go)，主链对照位于 [`data.go`](data.go) 的 `MakeRecoveryPlan`：
-
-- Rust `RecoverRegionInfo` 与 Go 同名结构字段一致；Go 的 `RecoverRegion` 定义在 `data.go`，Rust 将其放在 `recover.rs` 并以 `Deref` 模拟匿名嵌入的字段提升。
 - 两版 `SortRecoverRegions` 都按 term/index/commit 降序选择代表，再按 version 降序排列 Region 信息。Rust 使用比较器链，避免 Go 比较函数中无符号相减后转 `int` 的表达形式，但目标顺序一致。
 - Go 用 `github.com/emirpasic/gods/maps/treemap` 配合 `keyCmpInterface`，Rust 用标准库 `BTreeMap<Vec<u8>, _>`；ceiling、floor、重叠跳过和后续相邻检查的分支对应。
 - 两版均把 tombstone 代表和不连续区间包装为 BR 恢复错误；Rust 日志桩不携带 Go `zap` 字段，因此诊断字段丰富度不同，但控制流与错误类别保持对应。
 - Go `LeaderCandidates` 只显式拒绝 `nil` slice，非 nil 的空 slice 随后会在 `[0]` 处 panic；Rust 明确拒绝所有空切片并返回恢复错误。正常生产输入的语义相同，边界行为更严格。
-- 两版 `SelectRegionLeader` 都把缺失分数当零、只在严格更低时替换，因此同分保持首候选；两版都要求非空候选。
 - Rust crate 使用本地 `stubs::recovpb::RegionMeta` 而非外部 kvproto crate；这与 `Cargo.toml` 当前“无外部依赖、本地 traits/stubs”的迁移边界一致，不应误写为已直接接入真实 gRPC protobuf。
 
 Go 测试 [`key_test.go`](key_test.go) 验证排序、连续区间、并列候选和最低分选主；Rust 的 [`key_test.rs`](key_test.rs) 镜像这些用例，[`parity_test.rs`](parity_test.rs) 还把这些辅助函数放进 `MakeRecoveryPlan` 与恢复流程契约中，[`recover_test.rs`](recover_test.rs) 额外固定空 peer 分组 panic。
@@ -99,13 +93,3 @@ Go 测试 [`key_test.go`](key_test.go) 验证排序、连续区间、并列候�
 - 修改负载均衡策略时，入口是 `SelectRegionLeader`，状态更新则在 `data.rs::Recovery::MakeRecoveryPlan` 的 `storeBalanceScore` 递增处。必须共同验证缺失分数、同分稳定性、单候选和跨多个 Region 的分布；额外的全局状态可能引入并发与可复现性风险。
 - 替换本地 `stubs::recovpb` 为真实依赖时，应先处理 crate 依赖边界、protobuf getter/所有权差异与错误类型，再保持本文件的纯决策职责；根据仓库约束，外部 Rust 依赖必须来自带 tag 的上游 Git 依赖，不能复制到本仓库本地覆盖。
 - 任何逻辑变更都应继续把测试放在同目录的独立 `*_test.rs` / `parity_test.rs`，并对照 `recover.go` 和 `key_test.go`，避免 Rust 与 Go 恢复决策漂移。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/restore/data` 确认目标、模块、Go 对照和测试文件均在索引中。
-- RustCodeGraph `node --file br/pkg/restore/data/recover.rs --offset 1 --limit 500`：核对本文件 210 行全貌、两个公开结构、四个公开函数、`Deref`、错误分支和直接测试使用者。
-- RustCodeGraph `query`：分别定位 Rust/Go 的 `SortRecoverRegions`、`CheckConsistencyAndValidPeer`、`LeaderCandidates`、`SelectRegionLeader` 及 Go 测试同名符号。
-- RustCodeGraph `explore` 与 `node --file br/pkg/restore/data/data.rs --offset 660 --limit 90`：确认 `Recovery::MakeRecoveryPlan` 是生产入口，并核对收集、有效集、tombstone 请求、选主和 store 分数递增的调用顺序。
-- RustCodeGraph `node`：读取 `key.rs` 的键规范化/比较实现，以及 `stubs.rs` 的 `RegionMeta` 字段与 getter。
-- 直接读取的边界与对照文件：`br/pkg/restore/data/Cargo.toml`、`lib.rs`、`recover.go`、`data.go`、`key_test.go`、`key_test.rs`、`recover_test.rs`、`parity_test.rs`；精确 `rg` 检索交叉确认所有 Rust 生产与测试调用点。
-- 结构验证要求：目标文档存在，且固定的十一个二级标题各出现一次。该任务是纯文档分析，按计划不运行 Cargo。

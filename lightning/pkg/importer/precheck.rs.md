@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` crate；crate 根 `lightning/pkg/importer/lib.rs` 以 `#[path = "precheck.rs"] mod precheck` 装入并通过 `pub use precheck::*` 导出其接口。它对应 Go 文件 `lightning/pkg/importer/precheck.go`，处在 Lightning 导入控制器与具体预检实现 `precheck_impl.rs` 之间：上游把配置和运行时资源组装成 `PrecheckItemBuilder`，下游由 builder 根据 `CheckItemID` 创建实现了 `astersql_lightning_pkg_precheck::Checker` 的对象。本文件是接线和分发层，不实现每个检查项的判断算法。
-
-`lightning/pkg/importer/Cargo.toml` 将该目录声明为 library crate，并直接依赖 checkpoints、importer-opts、precheck 三个相邻 crate；目标端 SQL、PD HTTP、mydump 等边界目前由 importer crate 内模块提供。源码没有 feature 或条件编译分支；测试模块由 `lib.rs` 中独立的 `precheck_test.rs` 引入，测试没有嵌入生产文件。
+`NewPrecheckItemBuilder` / `NewPrecheckItemBuilderWithKeyspaceName` 支持调用方用现成依赖直接构造 builder，并把 PD leader 查询封装成带静态地址回退的闭包。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ PD leader 获取是刻意的容错边界：失败和空 URL 不向上传播，�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `precheck.go`：上下文键、builder 字段、完整配置构造、直接构造、PD leader 回退、检查 ID 分发和 getter 访问器均保留。14 个分发分支及各自依赖与 Go switch 对齐；Rust 测试和 Go 测试共同覆盖其中前 12 个基础检查项的 ID 回报一致性。
-
 需要注意的语言与迁移差异：
 
 - Go 的 `precheckContextKey` 是独立字符串类型，Rust 当前只是 `String` 别名；Rust 失去一层编译期键类型区分。
@@ -99,12 +95,3 @@ Rust 文件逐项对应 `precheck.go`：上下文键、builder 字段、完整�
 若新增依赖是所有检查共享的，应通过构造函数建立并存入 builder；若只属于单一检查，优先在对应构造器内部取得，避免扩大 builder 的资源生命周期。新增上下文值时要成对维护 key、写入值的动态类型和消费侧 downcast。新增 PD/DB/checkpoint I/O 时要明确取消传播、失败是否可回退以及资源关闭所有权，尤其不能误以为 checkpoint marker context 已继承 importer context。
 
 修改完整配置构造路径时，重点回归三类风险：部分 loader 结果不能被误判为致命失败；checkpoint 配置字段不能漏映射或被空实现掩盖；调用方 options 与 Lightning 最终并发覆盖的顺序不能颠倒。性能上应关注源数据扫描重复、过大的扫描并发、以及为不需要某资源的检查过早建立网络连接。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter lightning/pkg/importer` 确认目标、Go 对照、独立测试和相邻实现均在图中。
-- 源码与符号：`rustcodegraph node --file lightning/pkg/importer/precheck.rs` 完整读取 301 行；`node NewPrecheckItemBuilderFromConfig` 和 `node BuildPrecheckItem` 核对构造顺序、Go/Rust定义及下游构造器。
-- 调用证据：`node preCheckRequirements`、`node doPreCheckOnItem`、`node clusterResource` 核对 `Run -> preCheckRequirements -> 检查包装方法 -> doPreCheckOnItem -> BuildPrecheckItem -> Checker::Check`，以及 `clusterResource -> WithPrecheckKey`。
-- 契约证据：`lightning/pkg/precheck/precheck.rs::Checker` 明确 `Check` 的 `None`/失败结果语义；`lightning/pkg/importer/lib.rs` 明确模块导出和独立测试装配。
-- crate 边界：`lightning/pkg/importer/Cargo.toml` 声明 library、Go package 元数据，以及 checkpoints/importer-opts/precheck 等直接依赖。
-- 对照与测试：完整核对 `lightning/pkg/importer/precheck.go`、`precheck_test.go`、`precheck_test.rs`；Rust 测试覆盖 12 个基础分发分支和未知 checkpoint driver 错误，两个网络相关分支的构造语义由源码和 Go 对照确认，本任务按约束未运行 Cargo。

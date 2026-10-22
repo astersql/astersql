@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`conn.rs` 属于 `astersql-dumpling-export` library crate。它没有单独的 `mod` 边界，而是由 [`dumpling/export/lib.rs`](lib.rs) 在 `retry.rs`、`util.rs` 之后、`sql.rs` 之前通过 `include!("conn.rs")` 拼入 crate 根，因此可以直接使用 crate 根中的 `Conn`、`Rows`、`WithRetry`、`Error`、`Field` 和 `tcontext` 等名字。Cargo 元数据把该 crate 对应到 Go 包 `dumpling/export`；当前 Cargo 注释还明确说明 SQL/MySQL 等能力由本地桩提供，所以这里实际操作的是 [`stubs.rs`](stubs.rs) 中的脚本化连接抽象，并非直接依赖数据库驱动。
-
-在完整导出路径中，本文件位于“业务 SQL/元数据读取”与“连接/重试机制”之间：[`dump.rs`](dump.rs) 创建 `BaseConn` 并用它生产导出元数据，[`sql.rs`](sql.rs) 通过它执行 `SHOW`、`INFORMATION_SCHEMA`、隐式 `_tidb_rowid` 探测等查询；本文件本身不决定要导出的对象，也不生成 SQL。
+`ExecSQL` 把执行结果或执行错误交给调用方回调解释；回调返回值才决定本轮是否成功或进入 `WithRetry`。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@ crate 边界由 `Cargo.toml` 与 `lib.rs` 确认；本文件本身使用的大�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `BaseConn`、`newBaseConn`、`QuerySQL`、`queryRows`、`QuerySQLWithColumns` 和 `ExecSQL` 与 [`conn.go`](conn.go) 逐一对应；第二轮开始重建、重建参数为 `false`、失败时 reset、每次顶层调用后重置 backoffer、由 `ExecSQL` 回调解释错误等主干语义保持一致。Go 侧 `sql_test.go` 的“build order by clause with retry”用连续两次连接错误和第三次成功验证了重建重试意图，Rust 的 `conn_test.rs` 则直接覆盖了重建和状态清理。
+Go 侧 `sql_test.go` 的“build order by clause with retry”用连续两次连接错误和第三次成功验证了重建重试意图，Rust 的 `conn_test.rs` 则直接覆盖了重建和状态清理。
 
 已确认的差异如下：
 
@@ -101,12 +99,3 @@ Rust 的 `BaseConn`、`newBaseConn`、`QuerySQL`、`queryRows`、`QuerySQLWithCo
 - 改造连接所有权时，优先消除“公开 `Option` + 内部 `unwrap`”的不一致，并明确旧连接在重建时由谁关闭；兼容风险集中在 `dump.rs` 当前的 `DBConn.take()` 清理方式。
 - 修改关闭逻辑需区分处理器显式关闭和 `queryRows` 兜底关闭，覆盖关闭错误、行级错误与回调错误的优先级，避免重复关闭在真实驱动上产生新行为。
 - 性能上，重试会重复整个查询及结果处理；大型结果的 reset 与重新物化可能昂贵。扩展回调必须可重复执行，且不能留下外部不可回滚副作用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `dumpling/export/conn.rs`；`files --filter dumpling/export` 确认 Rust/Go 对照文件与测试；`node --file dumpling/export/conn.rs` 读取了完整 182 行；`query` 定位 `BaseConn`、`newBaseConn` 及各方法；`callees` 确认 `newBaseConn -> newRebuildConnBackOffer`、`QuerySQL -> queryRows`。Rust 方法的 `callers` 没有返回完整结果，故调用者部分用精确 `rg` 和相邻源码核验，未采用错误的跨文件同名匹配。
-- 已读实现：[`conn.rs`](conn.rs)、[`retry.rs`](retry.rs)、[`stubs.rs`](stubs.rs)、[`sql.rs`](sql.rs)、[`dump.rs`](dump.rs) 和 crate 入口 [`lib.rs`](lib.rs)。
-- 已读边界：[`Cargo.toml`](Cargo.toml) 的 crate 名、`[lib] path`、Go package 元数据、依赖及本地 SQL/MySQL stubs 说明。
-- 已读对照：[`conn.go`](conn.go)、`sql.go`，以及 Go `sql_test.go` 中重建连接重试场景。
-- 已读 Rust 测试：[`conn_test.rs`](conn_test.rs) 三个测试，覆盖执行错误由回调解释、空结果元数据、行错误后的 reset/重建、列投影关闭错误重试、最终行错误注释和 backoff 重置；`lib.rs` 以独立 `#[cfg(test)]` 模块挂载该文件。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一节结构检查和人工事实复核作为验证。

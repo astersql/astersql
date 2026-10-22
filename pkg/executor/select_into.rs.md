@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/executor/lib.rs` 以 `pub mod select_into` 对外公开。它实现 Rust 侧 `SELECT ... INTO OUTFILE` 的行序列化与本地文件写出能力：上游子执行器按 chunk 供给行，本执行器消费全部行并写入文件，自身不向调用者返回结果行。
-
-构建层已经存在与该语句对应的抽象路径：`pkg/executor/builder.rs` 的 `Plan::SelectInto` 分支调用 `executorBuilder::buildSelectInto`，后者先构建目标计划，再向 `ExecutorBuilderDependencies::build_executor` 传入 `ExecutorKind::SelectInto` 和唯一子执行器。然而，冻结 Rust 树只在本文件与独立测试找到具体 `SelectIntoExec`，没有找到将该 kind 构造成此结构体的依赖实现。因此可以确认文件内执行逻辑和构建器分派均已存在，但不能据此声称二者已完成运行时接线。
+`SelectIntoExec::dumpToOutfile` 逐行逐列执行 NULL 表示、类型到文本/字节的转换、可选包围、转义、字段与行分隔，并在整批成功写出后累计 affected rows。
 
 ## 核心职责
 
@@ -75,11 +73,11 @@ RustCodeGraph 对文件给出的引用集合包含 crate 使用者，但精确�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/select_into.go`，Go 集成测试为 `pkg/executor/select_into_test.go`，Rust 独立测试为 `pkg/executor/select_into_test.rs`。Rust 保留了 Go 的主要结构和顺序：`Open/Next/dumpToOutfile/Close`、四类复用缓冲、包围状态、独占创建及 Unix `0640`、逐类型格式化、BIT 不转义、NULL 表示、affected rows，以及浮点阈值。
+Rust 保留了 Go 的主要结构和顺序：`Open/Next/dumpToOutfile/Close`、四类复用缓冲、包围状态、独占创建及 Unix `0640`、逐类型格式化、BIT 不转义、NULL 表示、affected rows，以及浮点阈值。
 
 Rust 为可移植和可测试性引入了三个显式边界：`SelectIntoSource` 代替 Go 的 `BaseExecutor`/Children/StmtCtx，`SelectIntoSink` 代替 `bufio.Writer + os.File`，`SelectIntoContext` 代替 `context.Context`。Rust 还缓存 `FieldTypes`，而 Go 在每行每列通过 child schema 取得列类型。
 
-Go 测试覆盖文件已存在、point get、BIT/ENUM/JSON/unsigned/float、表与常量输出、NULL、全包围与可选包围、自定义多字节终止符、各种转义、YEAR、affected rows 和 `DumpRealOutfile`。Rust 测试覆盖浮点精度/阈值、非有限值拼写及行前缀，尚未覆盖完整 source/sink 生命周期、真实文件权限/独占性、全部类型序列化和转义矩阵。冻结 Go 与 Rust 均按前缀字节长度保留行缓冲头部；前缀包括分隔、包围或转义字符时仍原样输出，空前缀保留原行为。
+Rust 测试覆盖浮点精度/阈值、非有限值拼写及行前缀，尚未覆盖完整 source/sink 生命周期、真实文件权限/独占性、全部类型序列化和转义矩阵。冻结 Go 与 Rust 均按前缀字节长度保留行缓冲头部；前缀包括分隔、包围或转义字符时仍原样输出，空前缀保留原行为。
 
 ## 扩展指南
 
@@ -88,12 +86,3 @@ Go 测试覆盖文件已存在、point get、BIT/ENUM/JSON/unsigned/float、表�
 - 改变浮点输出时，修改 `DumpRealOutfile`，同步 Rust 与 Go `TestDumpReal` 的阈值、精度、指数符号和非有限值矩阵；保持默认精度移除 `+` 与固定精度保留 `+` 的区别。
 - 若补齐运行时接线，应在 `ExecutorBuilderDependencies::build_executor` 的具体实现中把 `ExecutorKind::SelectInto`、计划中的 `SelectIntoOption`/`LineFieldsInfo` 和唯一 child 适配为本文件的 `SelectIntoExec`，并使其满足主链统一 executor trait。必须增加端到端 Rust 测试，不能把 builder kind 的存在视为已接线。
 - 若增加非本地 sink 或异步写出，应保持 WriteAll/Flush/Close 的错误阶段、affected rows 提交点和关闭优先级，明确线程安全与持久化语义；不要隐式改变“已存在文件不覆盖”或失败后残留部分文件的兼容行为。
-
-## 验证依据
-
-- 冻结依据：逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/executor/select_into.rs`，并读取 `git show 2c944fb:pkg/executor/select_into.rs`；本文增量仅反映 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或后续提交行为。
-- 装配依据：冻结提交的 `pkg/executor/lib.rs` 与 `pkg/executor/Cargo.toml`；该包无 `doc.go`。RustCodeGraph `status` 与 `query UpdateRowTracker --limit 3` 确认当前索引含 Rust，但当前索引不能证明冻结历史，故历史行为与引用以 `git show` / `git grep 2c944fb` 为准。
-- 冻结 `select_into.go` 的 `lineBuf[:len(LinesStartingBy)]` 与 Rust 的 `line_prefix_length` / `truncate` 逐段对照，均每行复用字面前缀。
-- `select_into_test.rs::select_into_outfile_honors_lines_starting_by` 用内存 sink 验证三行均带前缀、NULL 字段、包含包围/转义字符的前缀、多字节行终止串与空前缀；它直接调用 `dumpToOutfile`，未通过真实文件或 SQL 请求。Go `select_into_test.go` 是 OUTFILE SQL 行为对照。
-- 全冻结树引用搜索只在本文件与测试找到具体 `SelectIntoExec`；builder 有抽象 SelectInto 分派，但没有找到实例化适配。
-- 交付使用 Ready 文档等价检查：五篇说明各有 11 个二级章节，检查文档差异和行尾空白，并人工复核生产接线、事务及资源边界。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`；按任务限定未运行 Cargo、Go 或 SQL 集成测试，所列测试仅作为静态证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-server-internal-util`，crate 根 `pkg/server/internal/util/lib.rs` 以私有模块 `mod util` 引入它，再通过 `pub use util::*` 对外公开其符号。`pkg/server/internal/util/Cargo.toml` 说明该 crate 对应 Go 包 `pkg/server/internal/util`，直接依赖 `astersql-config`、`encoding_rs` 和 `http`。它位于服务器协议边界：一部分函数解析 MySQL 线协议中的 NUL 终止串和 length-encoded 值，一部分负责把客户端字符集输入转成 UTF-8 字节，另有当前主要用于迁移验证的 CORS 包装器和测试配置构造器。
-
-Rust 生产链中的直接证据包括：`pkg/server/conn.rs::handleChangeUser` 使用 `ParseNullTermString` 读取 COM_CHANGE_USER 字段；`pkg/server/internal/parse/parse.rs::{read_lenenc_int,read_lenenc_bytes}` 分别调用 `ParseLengthEncodedInt` 和 `ParseLengthEncodedBytes` 解析握手连接属性；`pkg/server/conn_stmt_params.rs::parseBinaryParams` 使用 `InputDecoder` 处理字符串类预处理语句参数。`LengthEncodedIntSize`、`NewCorsHandler` 和 `NewTestConfig` 在当前 Rust 搜索结果中只见于本 crate 的独立测试，不能据 Go 侧接线宣称它们已进入 Rust 生产主链。
+位于服务器协议边界：一部分函数解析 MySQL 线协议中的 NUL 终止串和 length-encoded 值，一部分负责把客户端字符集输入转成 UTF-8 字节，另有当前主要用于迁移验证的 CORS 包装器和测试配置构造器。
 
 ## 核心职责
 
@@ -71,7 +69,7 @@ Rust 生产链中的直接证据包括：`pkg/server/conn.rs::handleChangeUser` 
 
 ## 与 Go 版本的对应关系
 
-主要符号与 `pkg/server/internal/util/util.go` 一一对应：NUL 切分、length-encoded 首字节规则、整数尺寸边界、失败时保留原输入的解码策略、CORS 头写入顺序及测试配置覆盖字段均保留。Rust 以 `Option<&[u8]>` 表达 Go 的 nil 切片，以 `Option<io::Error>` 模拟多返回值错误，并以借用切片避免协议解析复制。
+Rust 以 `Option<&[u8]>` 表达 Go 的 nil 切片，以 `Option<io::Error>` 模拟多返回值错误，并以借用切片避免协议解析复制。
 
 需要注意的实现层差异如下：Go `InputDecoder` 使用 `pkg/parser/charset` 的编码抽象，Rust 直接使用 `encoding_rs`，并明确把 `latin1` 映射为 Windows-1252；现有测试只确认代表性字符和不受支持标签的直通，不能证明所有字符映射完全一致。Go 构造器返回指针，Rust 构造器返回拥有所有权的值。Go CORS 包装器实现 `net/http.Handler` 并持有配置指针，已由 `http_status.go` 接入状态服务；Rust 使用包内最小 `Handler` trait、内存 body 和配置快照，目前只在迁移测试出现。Go `NewTestConfig` 被大量服务器测试复用，Rust 版本目前只由本 crate 迁移测试使用。
 
@@ -82,12 +80,3 @@ Rust 生产链中的直接证据包括：`pkg/server/conn.rs::handleChangeUser` 
 - 将 CORS 接入 Rust 生产 HTTP 服务前，应确认真实服务所用请求/响应类型与并发约束；若要求动态配置，当前按值保存 `Config` 的设计需要调整。不得把现有测试用最小 trait 直接当作完整 `net/http` 等价物。
 - 调整 `NewTestConfig` 时应与 Go 同名函数及服务器测试约定同步，并保持测试专用 API 与生产默认配置分离。
 - 所有 Rust 行为修改都应保留文件现有版权头，并在修改后执行仓库要求的格式化与针对性测试；本说明任务本身不修改源码，也未运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/server/internal/util` 确认目标、crate 根、Go 对照与独立测试均已索引。
-- RustCodeGraph 文件节点：`pkg/server/internal/util/util.rs`（1--218 行，20 个符号）；`util.go`；`util_test.rs`；`util_test.go`；`migration_aster_unit_test.rs`；`lib.rs`；以及直接调用点 `pkg/server/conn.rs::handleChangeUser`、`pkg/server/conn_stmt_params.rs::parseBinaryParams`、`pkg/server/internal/parse/parse.rs::{read_lenenc_int,read_lenenc_bytes}`。
-- 精确符号查询：`query ParseNullTermString`、`ParseLengthEncodedInt`、`ParseLengthEncodedBytes`、`LengthEncodedIntSize`、`NewInputDecoder`、`DecodeInput`、`NewCorsHandler`、`ServeHTTP`、`NewTestConfig`。节点 ID 形式的 `callers` 查询未在 30 秒内返回，因此调用关系又以已索引文件节点和限定 `pkg/server` 的直接引用搜索交叉核验，未用超时结果推断事实。
-- 配置证据：`pkg/server/internal/util/Cargo.toml` 的 crate 名、`lib.rs` 路径、三个直接依赖和 `package.metadata.porting.go-package`；crate 根的 `mod util`/`pub use util::*` 证明公开边界。
-- Go/测试证据：`pkg/server/internal/util/util.go`、`util_test.go`、`util_test.rs`、`migration_aster_unit_test.rs`；生产接线差异另由 `pkg/server/conn.go`、`conn_stmt_params.go`、`internal/parse/parse.go` 和 `http_status.go` 的直接引用确认。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证使用任务规定的 11 个固定二级标题结构检查，并人工复核所有“已接线”陈述都有上述源码或调用点依据。

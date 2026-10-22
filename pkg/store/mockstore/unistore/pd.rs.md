@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-store-mockstore-unistore` crate 的 PD（Placement Driver）模拟层。`pkg/store/mockstore/unistore/lib.rs` 通过 `pub mod pd` 声明模块并以 `pub use pd::*` 再导出公开符号；`pkg/store/mockstore/unistore/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/store/mockstore/unistore`，并直接依赖提供 URL 规范化的 `astersql-util` 及再导出为 `crate::tikv` 的 UniStore TiKV 子 crate。
-
-在嵌入式 UniStore 启动链中，`pkg/store/mockstore/unistore/mock.rs::New` 从 `server::new_mock` 获得 `Arc<MockPd>`，再调用 `PdClient::new`，最终把 `Arc<PdClient>` 与 RPC client、Cluster 一起返回。因此本文件不是独立 PD 服务，也不进行网络通信；它是在进程内为测试环境提供 TSO、PD 成员/服务发现、全局配置、外部时间戳和 Keyspace 元数据的状态门面。最近目录没有 `doc.go`，本说明以 Rust 源码、模块入口、同路径 Go 文件和独立测试为事实依据。
+`MockTsFuture` 模拟只能 `wait` 一次的异步 TSO 结果；`MockPdServiceDiscovery` 和 `MockPdServiceClient` 则提供无需真实连接、恒定可用的发现视图。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@ service discovery 与成员结果都是地址和 client 的克隆快照，不拥
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/store/mockstore/unistore/pd.go` 是直接对照。Rust 保留了 Go `pdClient` 的核心数据：嵌入/持有 `MockPD`、Keyspace manager、全局配置、原子外部时间戳、规范化地址和当前 Keyspace ID；配置前缀、固定 revision、Watch 最多十轮、local TSO 等同 global TSO、一次性 future、首成员为 leader、外部时间戳的 TSO 上限与单调 CAS、Keyspace 排序/唯一性/分页规则也相互对应。
+Rust 保留了 Go `pdClient` 的核心数据：嵌入/持有 `MockPD`、Keyspace manager、全局配置、原子外部时间戳、规范化地址和当前 Keyspace ID；配置前缀、固定 revision、Watch 最多十轮、local TSO 等同 global TSO、一次性 future、首成员为 leader、外部时间戳的 TSO 上限与单调 CAS、Keyspace 排序/唯一性/分页规则也相互对应。
 
-Rust 用 `Arc`、`RwLock` 和原子量显式提供并发保护；Go 的 `globalConfig` 普通 map 没有锁，`mockTSFuture.used` 也是普通布尔值。Rust Watch 在启动前克隆快照，Go goroutine 直接遍历 client map，因此两者面对并发修改时并不完全等价。两边都忽略配置 `path`/revision，且 discovery 不维护真实连接。
+Rust 用 `Arc`、`RwLock` 和原子量显式提供并发保护；Go 的 `globalConfig` 普通 map 没有锁，`mockTSFuture.used` 也是普通布尔值。Rust Watch 在启动前克隆快照，Go goroutine 直接遍历 client map，因此两者面对并发修改时并不完全等价。
 
-接口范围并非一比一。Go `pdClient` 为满足完整 `pd.Client` 还包含大量返回空值、空操作或 panic 的方法；Rust `PdClient` 是具体门面，没有实现该完整 trait，也没有移植这些无行为接口。反之，Rust `MockKeyspaceManager::update_state` 已实际修改状态，而当前 Go `UpdateKeyspaceState` 仍为 `panic("unimplemented")`。文档不把未出现在 Rust 类型上的 Go 接口视为已支持。
+接口范围并非一比一。Go `pdClient` 为满足完整 `pd.Client` 还包含大量返回空值、空操作或 panic 的方法；Rust `PdClient` 是具体门面，没有实现该完整 trait，也没有移植这些无行为接口。反之，Rust `MockKeyspaceManager::update_state` 已实际修改状态，而当前 Go `UpdateKeyspaceState` 仍为 `panic("unimplemented")`。
 
 地址规范化都委托同仓库 utility 语义；Go 测试包含 `unix://`，Rust `pd_test.rs::service_discovery_normalizes_injected_unix_and_http_addresses` 同样验证裸 host、HTTPS、Unix 地址和非法字符串。Keyspace 的 Go 实现用排序 slice 与二分搜索，Rust 用 `BTreeMap`，对外仍保持包含 `start_id`、按 ID 升序且 `limit == 0` 不限量的结果。
 
@@ -98,11 +96,3 @@ Rust 用 `Arc`、`RwLock` 和原子量显式提供并发保护；Go 的 `globalC
 - 调整外部时间戳时应保留“不得超过全局 TSO、不得回退、相等幂等”的三项契约，并为并发竞争补专门测试。改变 TSO 位宽必须与 PD/oracle 协议同步，不能只修改 `LOGICAL_BITS`。
 - 扩展服务发现时注意当前 member ID 仅按地址顺序临时生成，首项固定为 leader，client 没有连接对象。若引入动态 leader、连接缓存或重试，需要同步定义线程安全、连接回收和 `close/remove_client_conn` 的真实语义，并覆盖空地址与非法地址。
 - 若目标是兼容完整 Go `pd.Client`，应逐项记录真正被上层使用的方法，不应为了“接口齐全”批量加入返回成功的桩；每个新增行为都需对应 Go 差异和独立测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用（7,032 个 Rust 文件、307,296 个节点）；`files --filter pkg/store/mockstore/unistore/pd.rs` 确认目标文件被索引且含 72 个符号；`node --file ... --offset 1 --limit 500` 与 `--offset 498 --limit 80` 读取完整 534 行；`query MockPD`、`query PdClient --kind struct --json` 用于消除同名符号歧义。`explore` 及精确 `callers`/`callees` 本次没有返回可用调用边，故以源码搜索补证。
-- crate 与启动边界：`pkg/store/mockstore/unistore/Cargo.toml`、`pkg/store/mockstore/unistore/lib.rs`、`pkg/store/mockstore/unistore/mock.rs`、`pkg/store/mockstore/unistore/tikv/mock_region.rs`。
-- Go 对照：`pkg/store/mockstore/unistore/pd.go`，并以 `pkg/store/mockstore/unistore/pd_test.go` 核对配置、服务发现、成员和 Keyspace 语义。
-- Rust 独立测试：`pkg/store/mockstore/unistore/pd_test.rs` 覆盖配置读写/Watch、URL 规范化、成员 leader、Keyspace 排序分页、重复/非法 ID 与按 ID 查询；仓库搜索显示外部时间戳的直接测试目前位于底层 `tikv/mock_region_test.rs`，没有覆盖本文件 `PdClient::set_external_timestamp`，`MockTsFuture` 和 `update_keyspace_state` 也未检索到直接测试。
-- 本任务只新增说明文档，按约束未运行 Cargo。交付以任务指定的 11 个固定二级标题结构检查和人工事实复核为验证门槛。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-dbutil` crate 的结果集扫描辅助模块，由 `pkg/util/dbutil/lib.rs` 通过公开的 `query` 模块暴露。它位于 SQL 执行器产生的驱动无关结果与按行消费者之间：输入类型 `QueryResult` 和 `Value` 定义在 `pkg/util/dbutil/interface.rs`，本文件负责将已物化的行转成二维值数组，或将单行转成以列名索引的原始字节映射。
-
-`pkg/util/dbutil/Cargo.toml` 声明该 crate 的 Go 对照包是 `pkg/util/dbutil`。本文件本身只使用 `std::collections::HashMap` 和 crate 内部的 `QueryResult`/`Value`，没有直接调用数据库驱动，也没有 feature 或条件编译分支。
+位于 SQL 执行器产生的驱动无关结果与按行消费者之间：输入类型 `QueryResult` 和 `Value` 定义在 `pkg/util/dbutil/interface.rs`，本文件负责将已物化的行转成二维值数组，或将单行转成以列名索引的原始字节映射。
 
 ## 核心职责
 
@@ -65,14 +63,9 @@ Go 侧的直接上游包括 `pkg/util/dbutil/common.go` 中 `GetTidbLatestTSO` �
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/dbutil/query.go`：
-
 - Go `ScanRowsToInterfaces(rows *sql.Rows) ([][]any, error)` 从 `database/sql` cursor 读取列名，遍历 `rows.Next()`，并可传播 `Columns`/`Scan` 错误。Rust 版接收已物化的 `QueryResult`，因此只返回其行，没有对应的驱动 I/O 错误。
-- Go `ScanRow(rows *sql.Rows)` 获取当前 cursor 的列名，直接扫描为 `[][]byte`，再用 `nil` 判断 NULL。Rust 版由调用者传入对齐的 `columns` 与 `row`，并根据 `Value` 变体显式构造字节和 NULL 标志。
 - 两版的 `ColumnData` 都包含字节数据和 NULL 布尔值，同名列写入 map 时都是后值覆盖前值。Rust 输出直接存储 `ColumnData`，Go map 存储 `*ColumnData`；这不改变当前按列名读取的语义。
 - Rust 额外显式检查列/值数量，并为 `Value` 标量变体定义文本转换。这是已物化抽象所需的局部接线，不等于完整复刻 `database/sql.Rows` 生命周期。
-
-Rust 测试 `pkg/util/dbutil/query_test.rs` 验证特殊浮点格式、NULL/空字节区分和重复列名覆盖；`pkg/util/dbutil/common_test.rs` 中 `query_scanners_and_mysql_type_classification_match_go` 还验证全行取出、整数文本、NULL 和列数不匹配错误。仓库中没有独立的 `pkg/util/dbutil/query_test.go`；Go 侧的调用语义可由 `common.go` 和 `index.go` 的直接用法复核。
 
 ## 扩展指南
 
@@ -81,12 +74,3 @@ Rust 测试 `pkg/util/dbutil/query_test.rs` 验证特殊浮点格式、NULL/空�
 - 若需让 `ScanRowsToInterfaces` 验证行宽，其返回类型将需从不可失败的 `Vec` 变为 `Result`；这是对调用者可见的 API 变更，应与 `QueryResult` 的构造不变量一起设计。
 - 若要接入真实流式 SQL 驱动，应在 `pkg/util/dbutil/interface.rs` 的查询抽象层处理 cursor 与 `DbError`，本文件保持为纯转换层；需要同步测试扫描错误、提前结束、关闭和资源释放。
 - 优化性能时首先关注 `ScanRow` 的列名克隆、字节克隆和标量文本分配。借用型输出可减少复制，但会扩大生命周期约束，并可能破坏当前输出与输入独立的简单契约。
-
-## 验证依据
-
-- RustCodeGraph `status` 显示项目索引可用（包含 `pkg/util/dbutil/query.rs`）；`files --filter pkg/util/dbutil` 确认该文件有 7 个索引符号。
-- RustCodeGraph `node --file pkg/util/dbutil/query.rs --offset 1 --limit 240` 读取了完整 87 行源码；`query` 查询确认 `ScanRowsToInterfaces`、`ScanRow`、`ColumnData` 和 `format_scanned_float` 的定义。
-- RustCodeGraph 对 `ScanRowsToInterfaces`、`ScanRow` 的 `callers` 结果为空；由于其 `callees` 对标准库及字段访问覆盖不完整，下游关系以目标源码的穷尽 `match` 和直接调用为准。
-- 已读取 `pkg/util/dbutil/Cargo.toml`、`lib.rs`、`interface.rs`、`query.go`、`query_test.rs`、`common_test.rs` 中相关用例，以及 Go 调用点 `common.go` 和 `index.go`。
-- 仓库检索 `ScanRowsToInterfaces|ScanRow|ColumnData` 用于排除未被调用图捕获的 Rust 直接上游，并确认 Go 直接调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付时使用任务指定的 11 章结构检查，并人工复核符号、调用关系、Go 差异和扩展风险。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-util-traceevent`（见 [`Cargo.toml`](Cargo.toml)），位于 crate 根 [`lib.rs`](lib.rs) 声明并公开重导出的 `adapter` 模块。它处在 TiKV client-go 风格跟踪接口与 Rust traceevent 内核之间：把客户端类别转换为 `TraceCategory`，把客户端事件送入 `trace_event`，并从全局飞行记录器状态提取客户端控制位。
-
-当前 Rust crate 没有 client-go/client-rust 依赖，`register_with_client_go` 也没有安装真实回调；它只记录“已调用注册”的状态。因此本文件已经实现适配语义与可测试 API，但尚不是等同于 Go 版的外部客户端接线层。
+用 `ClientCategory` 表示 client-go 的四个已知类别，并用 `Other(u32)` 无损承载未来未知类别。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@ RustCodeGraph 将本文件索引为 13 个符号，但对 `handle_client_go_trac
 
 Rust 的 `map_category`、事件过滤、未知类别字段、类别启用查询，以及 extractor 的三个 TiKV flags 与立即日志判定，逐项对应 [`adapter.go`](adapter.go)。Go 的 `handleTraceControlExtractor` 也先计算类别 flags，再检查 context sink、具体 `*Trace` 类型、飞行记录器和 keep 条件；Rust `Context` 的 sink 类型已经固定为 `Arc<Trace>`，所以无需 Go 的运行时类型断言。
 
-主要差异在注册和接口类型：Go `RegisterWithClientGo` 调用 client-go `trace.SetTraceEventFunc`、`SetIsCategoryEnabledFunc`、`SetTraceControlExtractor`，形成真实回调链；Rust `register_with_client_go` 仅设置原子标记，Cargo 中也没有相应客户端依赖。Go handler 接收 `context.Context`、`trace.Category`、可变参数 `zap.Field`，Rust 接收自有 `Context`、`ClientCategory` 和 `Vec<Field>`。因此 Rust 当前验证的是语义适配，不是外部 client-go ABI/API 集成。
-
-测试对应关系：`adapter_test.rs` 对齐 Go `adapter_test.go` 的 flags、默认类别和并发场景；`adapter_1_aster_unit_test.rs` 补充映射、未知类别字段、真值表及模式布局；`test/integration_test.rs::test_trace_control_integration` 覆盖注册标记和控制位组合，但没有证明真实 TiKV 客户端会调用这些回调。
+主要差异在注册和接口类型：Go `RegisterWithClientGo` 调用 client-go `trace.SetTraceEventFunc`、`SetIsCategoryEnabledFunc`、`SetTraceControlExtractor`，形成真实回调链；Rust `register_with_client_go` 仅设置原子标记，Cargo 中也没有相应客户端依赖。
 
 ## 扩展指南
 
@@ -92,12 +88,3 @@ Rust 的 `map_category`、事件过滤、未知类别字段、类别启用查询
 若完成真实 Rust 客户端接线，应优先在独立上游客户端仓库实现并发布带 tag 的依赖，再由本仓库 Cargo 清单统一引用该 tag；不能在本仓库 vendor/third_party 复制依赖，也不能用本地 `[patch]`。接线完成后，`register_with_client_go` 应安装三个 handler，并补充能从客户端 API 触发事件/查询/flags 的独立集成测试；在此之前不要把 `client_go_registered == true` 解释为真实回调已安装。
 
 修改未知字段策略时要保持可诊断性，并决定重复 `client_go_category` 键的兼容规则。修改首次 `is_enabled` 过滤或下游二次过滤时，应评估 recorder 热切换下的竞态语义和额外事件构造成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/traceevent` 定位目标及相关 Go/Rust 文件；`node --file pkg/util/traceevent/adapter.rs --offset 1 --limit 260` 读取完整 172 行和 13 个符号；对四个关键入口执行 `callers`/`callees` 未得到跨文件边。
-- 源码与模块：`pkg/util/traceevent/adapter.rs`、`lib.rs`、`traceevent.rs`（类别、`Context`、`is_enabled`、`trace_event`）、`flightrecorder.rs`（全局 recorder、`should_keep`、真值表和生命周期）。
-- crate 边界：`pkg/util/traceevent/Cargo.toml` 和根 `Cargo.toml` workspace/path 声明；前者确认 Go 包映射与直接依赖列表。
-- Go 对照：`pkg/util/traceevent/adapter.go`；另以 `traceevent.go` 的初始化调用核验 Go 生产路径会执行 `RegisterWithClientGo`。
-- 独立测试：`pkg/util/traceevent/adapter_test.rs`、`adapter_1_aster_unit_test.rs`、`test/integration_test.rs`，以及 Go `adapter_test.go`、`test/integration_test.go`。
-- 文档任务按计划不运行 Cargo；结构验证要求本文恰好包含上述 11 个固定二级标题，并在交付前以任务文件给定命令检查。

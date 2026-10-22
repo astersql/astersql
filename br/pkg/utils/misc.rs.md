@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`br/pkg/utils/misc.rs` 是 `astersql-br-pkg-utils` library crate 的公开杂项模块。`br/pkg/utils/Cargo.toml` 用 `[lib] path = "lib.rs"` 指定 crate 根，`br/pkg/utils/lib.rs` 再以 `#[path = "misc.rs"] pub mod misc;` 暴露本文件；crate 根没有 `pub use misc::*`，因此外部调用者需要经过 `astersql_br_pkg_utils::misc` 路径访问其中符号。文件对应 Go `br/pkg/utils/misc.go`，把不适合归入重试、schema、进度等专门模块的 BR 共用逻辑集中在一起。
-
-当前 Rust 文件已经实现列类型兼容判定、Store 存活检查、限时清理、退出信号监听、Map 值收集、分区查找和备份文件汇总，并公开两个常量及 gRPC 抽象。不过迁移尚未完整接线：`GRPCConn` 固定使用 `NoopGrpcDialer` 返回错误；RustCodeGraph 对主要符号的调用边为空，全仓 Rust 精确搜索也只找到本目录独立测试对这里的直接调用。若干 Rust 生产模块仍使用各自 `stubs.rs` 中的同名实现。Go 侧则已有备份、恢复、流任务和命令入口等真实调用者，本文将其作为语义与迁移目标证据，而不当作 Rust 已接线事实。
+`WithCleanUp` 为必须执行但可能失败的清理操作提供超时取消上下文，并把清理错误排在既有业务错误之前合并。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@ NOT NULL 兼容改为单向约束：备份列允许 NULL 而目标 NOT NULL 时�
 
 ## 与 Go 版本的对应关系
 
-`IsTypeCompatible`、`CheckStoreLiveness`、集合函数、分区查找和 `SummaryFiles` 的核心分支及常量基本逐项对应 `br/pkg/utils/misc.go`。独立 Rust 测试 `misc_test.rs` 复刻 Go 的类型矩阵，包括 flag、EvalType、默认 flen/decimal、enum 超集、charset/collation、Blob 扩容和 Timestamp 默认精度；它还保留 Go 测试中 `SetFlag(99)` 的笔误场景。`WithCleanUp` 测试覆盖只有 cleanup 错、cleanup 与既有错合并、完全成功；`SummaryFiles` 固定验证 `0xF ^ 0xF0 ^ 0xF00 == 0xFFF` 及 KV/字节算术和。
+独立 Rust 测试 `misc_test.rs` 复刻 Go 的类型矩阵，包括 flag、EvalType、默认 flen/decimal、enum 超集、charset/collation、Blob 扩容和 Timestamp 默认精度；它还保留 Go 测试中 `SetFlag(99)` 的笔误场景。
 
 关键迁移差异如下：Go `GRPCConn` 是带 5 秒超时和 TLS 选择的真实阻塞拨号，Rust 是固定失败桩；Go `WithCleanUp` 支持 nil `errOut` 并写 Warn，Rust 参数类型排除了该分支；Go 用 timeout context 的 runtime timer，Rust 每次创建轮询线程；Go `AllStackInfo` 收集所有 goroutine 栈，Rust 只捕获当前 backtrace；Go 返回 `context.CancelFunc`，Rust 返回 child context clone；Go `time.Since` 对未来心跳产生负 duration 而不超过阈值，Rust通过忽略 `duration_since` 错误达到相似“放行”结果但机制不同。
 
@@ -101,10 +99,3 @@ Rust 测试比 Go 同目录测试多出退出监听用例：一个验证手动 c
 - 扩展退出处理时要保留“一次优雅取消、二次强退”的进程契约，同时明确 signal 注册注销、主动 cancel 后线程退出以及测试之间的全局信号干扰；测试继续放在独立 `misc_test.rs`，不要嵌入生产文件。
 - `Values`/`FlattenValues` 的调用方不得依赖顺序；需要确定性输出时应在调用侧排序或新增语义明确的 API。`SummaryFiles` 若用于并行流水线，应先核对全局 summary 是否允许并发/重复累计，不能只并行化局部循环。
 - 若统一目前散落在 `backup/checksum/snap_client` 桩中的同名实现，应逐个核对类型与错误契约后改用 canonical crate，避免仅凭名称替换。兼容风险集中在 label batch size 的 50/64 差异、错误类型和 stub 数据模型。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/utils/misc_test.rs` 的类型兼容矩阵明确断言 NOT NULL 源到可空目标允许、反向拒绝；与 misc.go 的单向 HasNotNullFlag 条件一致。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

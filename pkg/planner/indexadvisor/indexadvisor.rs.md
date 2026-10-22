@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-indexadvisor` crate，是索引顾问面向“调用者已经提供 SQL 文本”的编排入口。crate 由同目录 [`lib.rs`](./lib.rs) 暴露 `indexadvisor` 模块；[`Cargo.toml`](./Cargo.toml) 的 `package.metadata.porting.go-package` 将它明确映射到 Go 包 `pkg/planner/indexadvisor`。根 workspace 和 `pkg/planner/Cargo.toml` 均收录该 crate，`pkg/executor/Cargo.toml` 也声明了依赖，但当前仓库搜索与 RustCodeGraph 调用图均未找到生产 Rust 代码调用 `advise_indexes_for_sql`，已确认的调用者都在独立测试文件中。因此它目前是可复用的公开库 API，而不是已经接入 session/executor 的完整 `RECOMMEND INDEX` 服务入口。
-
-文件顶部第 23—124 行的大段内容全部位于块注释中，是 Go 管线的机械翻译草稿，不参与编译。实际活跃实现从 `use crate::algorithm::advise_indexes` 开始，只处理显式 SQL、内存中的查询与推荐结果；它不读取 statement summary、不保存 `mysql.index_advisor_results`、不追加 session warning，也不持有 session context。
+私有辅助函数提供加权 workload 代价、改善率、六位小数舍入、索引名存在性检查和 64 字节截断。
 
 ## 核心职责
 
@@ -91,7 +89,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`indexadvisor.go`](./indexadvisor.go)。当前 Rust 活跃实现保留了 Go 的核心推荐语义：显式 SQL workload、按频率加权的代价、候选逐个独立比较、零代价保护、六位小数舍入、单查询/整体收益阈值、前三条受影响查询、索引大小先于收益过滤，以及索引名的三段回退顺序。
+当前 Rust 活跃实现保留了 Go 的核心推荐语义：显式 SQL workload、按频率加权的代价、候选逐个独立比较、零代价保护、六位小数舍入、单查询/整体收益阈值、前三条受影响查询、索引大小先于收益过滤，以及索引名的三段回退顺序。
 
 主要差异如下：
 
@@ -113,13 +111,3 @@
 - 若接入 executor，先确认 `pkg/executor/recommend_index.rs` 的边界及 `Optimizer` 实现策略；当前只有 Cargo 依赖，不能假设调用链已存在。
 - 性能修改要保留确定性集合和排序。并行调用 `Optimizer` 前必须先定义其线程安全、连接复用和计划缓存约束，并评估 `候选数 × 查询数 × 2` 次计划估算的资源上限。
 - 修改 Rust 逻辑时应继续把测试放在同目录独立 `*_test.rs` 文件，并尽量与同名 Go 测试保持场景和断言一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/indexadvisor` 确认目标目录的 Rust/Go 文件均已索引。
-- RustCodeGraph `query/node`：确认 `advise_indexes_for_sql` 位于第 138 行、`prepare_recommendations` 位于第 174 行、`graceful_index_name` 位于第 286 行；`node indexadvisor.rs::advise_indexes_for_sql` 给出的下游边包括 `algorithm.rs::advise_indexes` 和本文件 `prepare_recommendations`，上游边仅来自三个独立 Rust 测试模块。CLI 的独立 `callers/callees` 子命令本次未输出内容，因此又用 `node` trail 和仓库文本搜索交叉核验。
-- 已完整阅读：[`indexadvisor.rs`](./indexadvisor.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、Go 对照 [`indexadvisor.go`](./indexadvisor.go) 和独立 Rust 测试 [`indexadvisor_test.rs`](./indexadvisor_test.rs)、[`indexadvisor_sql_test.rs`](./indexadvisor_sql_test.rs)、[`indexadvisor_tpch_test.rs`](./indexadvisor_tpch_test.rs)。
-- 已定点核验：`algorithm.rs::advise_indexes`、`optimizer.rs::Optimizer`、`options.rs::AdvisorOptions`，以及 `utils.rs` 的规范化、schema 恢复、系统表过滤和列收集入口。
-- Rust 测试证据：`recommendation_metrics_match_go_per_index_calculation` 验证 0.5 改善率和 reason；`graceful_index_name_uses_go_fallback_sequence` 验证命名回退；`specified_sqls_are_not_limited_by_statement_summary_max_query` 验证显式 SQL 不受摘要上限影响；`recommendation_checks_index_size_before_discarding_no_benefit_index` 验证错误顺序；SQL/TPC-H 测试验证单表、多表、类型、已有覆盖索引和 21 条 Go fixture workload。
-- Go 测试证据：`indexadvisor_sql_test.go` 的四组 SQL 场景、`indexadvisor_tpch_test.go` 的四组 TPC-H 场景，以及 `indexadvisor_test.go` 中非法查询、频率、已有/覆盖索引、运行时长和持久化等完整入口场景用于界定已对齐部分与未接线部分。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核：文档区分了活跃代码与注释草稿，没有把测试调用或 Cargo 依赖误写为生产接线，也没有建议把 Rust 测试内嵌到源文件。

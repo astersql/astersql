@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server-handler-optimizor` crate；`pkg/server/handler/optimizor/lib.rs` 以 `pub mod statistics_handler` 公开该模块。它把统计信息相关的三个 HTTP 处理流程拆成与 Web 框架和具体 `Domain` 类型无关的 Rust 控制流：当前统计导出、历史统计导出、统计任务优先级队列快照。
-
-这里的“HTTP 处理器”目前是可移植的处理核心而不是已经接入 Rust 服务器的完整端点。仓库内只有 `pkg/server/handler/optimizor/statistics_handler_test.rs` 实现 `StatisticsRuntime`；未找到生产运行时实现或 Rust 路由注册。实际在线路由仍见 Go 的 `pkg/server/http_status.go`：`/stats/dump/{db}/{table}`、`/stats/dump/{db}/{table}/{snapshot}` 和 `/stats/priority-queue` 分别接入三个 Go handler。
+`StatisticsRuntime<D>`：集中定义所有环境相关操作，包括路由/查询参数读取、表查找、统计服务调用、错误构造、日志以及响应写入，使三个 handler 只负责步骤次序和短路规则。
 
 ## 核心职责
 
@@ -86,15 +84,13 @@ Rust 上游仅发现模块声明和独立测试直接构造 handler；未发现�
 
 ## 与 Go 版本的对应关系
 
-Rust 的三个结构体、三个 `New...` 构造函数、`Domain`、三个 `ServeHTTP` 和 `getSnapshotTableInfo` 与 `pkg/server/handler/optimizor/statistics_handler.go` 同名或一一对应，流程分支保持一致：
-
 - 当前统计：Go 从 Gorilla mux 和 URL query 取值，Rust 委托 `route_value`/`query_values`；二者默认导出分区统计并使用 Go `strconv.ParseBool` 的字面量集合。
 - 表查找与 dump：Go 直接调用 `Domain.InfoSchema().TableByName` 和 `StatsHandle().DumpStatsToJSON`；Rust 分别抽象为 `current_table` 和 `dump_stats`。
 - 历史统计：Go 直接检查 `CheckHistoricalStatsEnable`，按本地时区解析微秒精度时间并转 TSO；Rust 把开关检查和解析放入运行时，但保留完全相同的先后次序。
 - 快照回退：Go 的 helper 先 `GetSnapshotInfoSchema(snapshot)` 再 `TableByName`，失败后记录 info 日志并使用最新 InfoSchema；Rust 用 `snapshot_table` 和 `log_snapshot_fallback` 表达同一策略。
 - 队列快照：Go 调用 `StatsHandle().GetPriorityQueueSnapshot`；Rust 对应 `priority_queue_snapshot`。
 
-当前迁移差异是 Rust 尚未实现把真实 `Domain`、HTTP 请求/响应和统计 handle 接到 `StatisticsRuntime` 的生产适配器，也未注册 Rust HTTP 路由。因此该文件已具备可单测的控制流语义，但不能单独证明 Rust 服务已对外提供这些端点。Go 的 `statistics_handler_test.go` 进一步覆盖真实服务器、统计导出/重新导入、分区开关、历史统计和队列未初始化/初始化状态；Rust 测试目前使用内存 fake，覆盖分支顺序而非端到端集成。
+当前迁移差异是 Rust 尚未实现把真实 `Domain`、HTTP 请求/响应和统计 handle 接到 `StatisticsRuntime` 的生产适配器，也未注册 Rust HTTP 路由。Go 的 `statistics_handler_test.go` 进一步覆盖真实服务器、统计导出/重新导入、分区开关、历史统计和队列未初始化/初始化状态；Rust 测试目前使用内存 fake，覆盖分支顺序而非端到端集成。
 
 ## 扩展指南
 
@@ -104,13 +100,3 @@ Rust 的三个结构体、三个 `New...` 构造函数、`Domain`、三个 `Serv
 - 增加真实 Rust 接线时，应在本 crate 或服务器 crate 中实现生产 `StatisticsRuntime`，把三个构造函数注册到与 Go 相同的路径，并补独立集成测试。要特别评估 HTTP 错误格式、并发 `Send + Sync` 约束、Domain 共享成本、表元数据回退兼容性以及大统计 payload 的序列化/内存开销。
 - 扩展队列快照时需保留“队列未初始化是错误”的现有语义，并覆盖初始化前后响应。
 - 若改变公开的 Go 风格名称，应同时检查 `#![allow(non_snake_case)]` 的必要性、模块调用者和迁移映射，避免只为 Rust 命名习惯破坏逐项对照。
-
-## 验证依据
-
-- 源码：`pkg/server/handler/optimizor/statistics_handler.rs`（231 行），核对了 trait、三个 handler、构造函数、helper、私有布尔解析器及全部分支。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/server/handler/optimizor` 确认源文件、Go 对照和两侧测试均被索引；`query StatsHandler` 定位 Rust/Go 同名定义；`node --file ...statistics_handler.rs` 读取完整文件；`callers/callees` 查询确认构造函数无已记录下游调用，且 `getSnapshotTableInfo` 调用 `snapshot_table`。图中 callers 对这些泛型/同名符号未给出结果，因此又用精确文本搜索核验上游。
-- crate 边界：`pkg/server/handler/optimizor/Cargo.toml` 与 `lib.rs`。前者声明 `astersql-server-handler-optimizor` 及其 domain/infoschema/statistics/server 依赖，后者公开 `statistics_handler` 并把 `statistics_handler_test.rs` 作为独立测试模块。
-- Rust 测试：`pkg/server/handler/optimizor/statistics_handler_test.rs`。覆盖默认分区参数、全部 Go 布尔字面量、首查询值、非法值、表查找与 dump 错误、历史开关/解析/快照回退、helper 参数传递及队列成功/失败。
-- Go 对照：`pkg/server/handler/optimizor/statistics_handler.go`、`statistics_handler_test.go`、`pkg/server/http_status.go`。它们分别提供具体实现、端到端行为证据和真实路由接线。
-- Rust 全仓精确搜索：除本文件和独立测试外，仅 `lib.rs` 声明模块；未找到 `StatisticsRuntime` 的生产实现或三个 Rust handler 的生产构造调用。因此文中将 Rust 状态描述为“控制流已实现、生产适配/路由未验证且当前未发现”。
-- 本任务按计划为纯文档分析，未运行 Cargo。交付前使用任务指定的固定标题命令验证文档存在且恰含 11 个规定章节，并人工复核所有运行状态陈述均有上述源码、图查询、配置或测试依据。

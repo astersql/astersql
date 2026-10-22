@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Rust crate `astersql-planner-core-constraint`，crate 根由同目录的 `Cargo.toml` 将 `lib.rs` 指定为入口。`lib.rs` 以私有模块 `mod exprs` 装入本文件，再通过 `pub use exprs::*` 对外暴露两个公开函数 `DeleteTrueExprs` 和 `DeleteTrueExprsBySchema`。它处在规划器的约束/谓词清理层：接收一组已经构造好的表达式，在谓词继续简化或下推前删除能够安全证明为真的项。
-
-当前 Rust 实现是迁移期隔离 crate，而不是完整表达式子系统的直接消费者。`lib.rs` 内定义了精简的 `expression` 兼容模块，并从 parser、session context 和 datum crate 再导出所需类型。全仓 Rust 引用显示该 crate 在 `pkg/planner/core/rule/Cargo.toml` 中仅作为 Windows 条件依赖出现；`pkg/planner/core/rule/rule_predicate_simplification.rs` 目前只有注释形式的 Go 对照调用。RustCodeGraph 的文件关系只发现独立测试 `migration_aster_unit_test.rs` 使用本文件，因而不能把 Go 侧已经接入的规划主链误写成 Rust 侧当前已接线。
+文件提供两种“恒真谓词删除”，共同遵守保守优化原则：只有证明充分时才删除，否则保留原表达式。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@ Go 侧的真实上游调用包括：`logical_selection.go` 的 `LogicalSelection
 
 ## 与 Go 版本的对应关系
 
-同路径 `exprs.go` 是直接语义基准。Rust `DeleteTrueExprs` 对应 Go 的 `slices.DeleteFunc`：Go 删除条件为“常量、没有计划缓存过优化风险、`ToBool` 无错误且结果为 1”；Rust 的过滤谓词取反后以 `matches!(..., Ok(1))` 表达完全相同的删除条件。Rust 额外对空向量提前返回，与 Go 对空 slice 的结果一致。
+Rust `DeleteTrueExprs` 对应 Go 的 `slices.DeleteFunc`：Go 删除条件为“常量、没有计划缓存过优化风险、`ToBool` 无错误且结果为 1”；Rust 的过滤谓词取反后以 `matches!(..., Ok(1))` 表达完全相同的删除条件。Rust 额外对空向量提前返回，与 Go 对空 slice 的结果一致。
 
-Rust `DeleteTrueExprsBySchema` 和 `isNullWithNotNullColumn` 逐层对应 Go 的类型断言与参数长度检查：外层 `UnaryNot`、单一参数、内层 `IsNull`、单一列参数、schema 成功找回列、列类型带 `NOT NULL`。Rust 的 `Option` 分支代替 Go 的 `(value, ok)` 与 `nil` 判断，保留逻辑相同。
-
-需要注意的迁移差异是类型环境而非本文件算法：Go 使用完整的 `pkg/expression` 接口对象和 planner schema；Rust 当前使用 `lib.rs` 内的精简 enum/struct 兼容模型。Go 已有三个生产调用点，Rust 的同类调用尚未实际启用；`rule_predicate_simplification.rs` 中仅保留了注释调用。因此可以确认单文件算法对齐，但不能据此宣称完整 Rust 优化器行为已经对齐。
+需要注意的迁移差异是类型环境而非本文件算法：Go 使用完整的 `pkg/expression` 接口对象和 planner schema；Rust 当前使用 `lib.rs` 内的精简 enum/struct 兼容模型。Go 已有三个生产调用点，Rust 的同类调用尚未实际启用；`rule_predicate_simplification.rs` 中仅保留了注释调用。
 
 ## 扩展指南
 
@@ -95,13 +91,3 @@ Rust `DeleteTrueExprsBySchema` 和 `isNullWithNotNullColumn` 逐层对应 Go 的
 测试应继续放在独立文件 `pkg/planner/core/constraint/migration_aster_unit_test.rs`，不要嵌入生产源文件。至少同步覆盖：可删除案例、每个结构检查失败分支、NULL 与求值错误、计划缓存可变常量、未知/可空/非空列、多个条件的顺序保持。若把 crate 接入真实 Rust planner，还应在实际调用 crate 增加规划器级测试，验证 Selection、Join 左右 child schema 和谓词简化的调用时机，并与 Go 的 `pkg/planner/core/casetest/rule/rule_predicate_simplification_test.go` 及相关 plan testdata 对照。
 
 兼容风险主要是错误删除导致查询结果变化；性能风险则来自过度保守导致冗余谓词继续参与估算与下推。新增优化必须先证明语义恒真，再考虑减少分配或扩大识别范围。若将精简 `expression` 模型替换为完整表达式 crate，还需核对 `Expression` 动态类型、函数名规范化、schema 列身份和 `Datum::ToBool` 错误语义没有漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/planner/core/constraint` 列出 `exprs.rs`、`exprs.go`、`lib.rs` 和 `migration_aster_unit_test.rs`；`node --file pkg/planner/core/constraint/exprs.rs` 读取 1–103 行并报告该文件由迁移测试使用；`query` 分别确认三个 Rust 函数及其 Go 同名对应；`callers`/`callees` 未返回额外 Rust 函数边。
-- 生产源码：[`exprs.rs`](exprs.rs)（两个公开入口和一个私有辅助函数）；[`lib.rs`](lib.rs)（兼容表达式模型、模块装配与公开再导出）。
-- crate 配置：[`Cargo.toml`](Cargo.toml)（crate 名、入口、四项直接依赖和 Go package 元数据）；根 [`Cargo.toml`](../../../../Cargo.toml)（workspace facade 登记）；[`pkg/planner/core/rule/Cargo.toml`](../rule/Cargo.toml)（Windows 条件依赖）。
-- Go 对照与调用点：[`exprs.go`](exprs.go)；[`logical_selection.go`](../operator/logicalop/logical_selection.go)；[`logical_join.go`](../operator/logicalop/logical_join.go)；[`rule_predicate_simplification.go`](../rule/rule_predicate_simplification.go)。
-- 独立 Rust 测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `deletes_only_safely_true_constants`、`deletes_not_isnull_only_for_schema_not_null_column` 和 `retains_non_matching_function_shapes_in_original_order`。
-- Go 规划器测试入口：[`rule_predicate_simplification_test.go`](../casetest/rule/rule_predicate_simplification_test.go) 的 `TestPredicateSimplification` 运行 SQL、检查 plan、warnings 和 plan-cache 复用状态；它提供集成层背景，但并非对这三个 helper 的逐分支白盒测试。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付前使用任务规定的命令验证文档存在且固定二级标题恰为 11 个，并另行检查 Markdown 路径引用与 diff 格式。

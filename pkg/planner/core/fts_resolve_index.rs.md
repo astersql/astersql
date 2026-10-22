@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate，crate 边界由 `pkg/planner/core/Cargo.toml` 定义；`pkg/planner/core/lib.rs` 以私有模块 `mod fts_resolve_index` 装配它，再通过 `pub use fts_resolve_index::*` 导出公开符号。文件处理轻量 `PlanNode` 逻辑计划中的全文检索解析：把 `FTS_MATCH_WORD(query, column)` 从 WHERE、ORDER BY 和 SELECT 的字符串表示转换为扫描节点可携带的全文下推元数据，并拒绝没有被规则消费的用法。
-
-当前可确认的应用入口是 `pkg/session/fts_runtime.rs` 的 `FtsSession::plan_select`：它先调用 `BuildFullTextPlan` 构造计划，再以表元数据中的全文索引和事务 dirty 状态调用 `ResolveFullTextPlan`。因此本文件位于 SQL AST 已被构造成轻量计划之后、会话返回已解析计划之前。它不负责执行 TiFlash 请求、建立全文索引或解析完整 SQL 语法。
+文件处理轻量 `PlanNode` 逻辑计划中的全文检索解析：把 `FTS_MATCH_WORD(query, column)` 从 WHERE、ORDER BY 和 SELECT 的字符串表示转换为扫描节点可携带的全文下推元数据，并拒绝没有被规则消费的用法。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ crate manifest 没有为本模块单独设置 feature；`nextgen` 是 crate 级 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/fts_resolve_index.go`，行为测试是 `pkg/planner/core/fts_resolve_index_test.go`。Rust 保留了 Go 的四条规则及顺序、规则名、仅匹配单列全文索引、评分模式切换、DESC 单项 TopN 优化、脏事务限制和主要错误文案；`pkg/planner/core/fts_resolve_index_test.rs` 也覆盖这些对应行为。
+Rust 保留了 Go 的四条规则及顺序、规则名、仅匹配单列全文索引、评分模式切换、DESC 单项 TopN 优化、脏事务限制和主要错误文案；`pkg/planner/core/fts_resolve_index_test.rs` 也覆盖这些对应行为。
 
-两者不是数据结构级等价实现。Go 在真实 `base.LogicalPlan`、typed `expression.Expression`、`model.IndexInfo` 和 `tipb.FTSQueryInfo` 上工作，并检查索引具有 `FullTextInfo`、状态公开、列 ID 匹配；它还写入 index ID、tokenizer、函数签名，并给 DataSource schema/columns 追加 `_FTS_SCORE` 虚拟列。Rust 在轻量 `PlanNode` 的字符串字段上工作，只以索引列名匹配并编码五项业务字段，不验证索引公开状态或 parser type，也不追加 typed score column。
+Rust 在轻量 `PlanNode` 的字符串字段上工作，只以索引列名匹配并编码五项业务字段，不验证索引公开状态或 parser type，也不追加 typed score column。
 
-Go 通过 statement context 的 `FTSFunctionIsUsed` 跳过无 FTS 计划，Rust 则直接遍历计划文本；Go 的 visitor 保存任意父链，Rust 对 TopN/Projection 只接受明确的窄树形。Go Projection 可改写多个投影表达式，Rust 的 `PlanNode::Projection` 只有一个 `operator_info` 字符串。因此新增行为时不能仅凭相同规则名假设两端已经完全对齐，必须逐项比较树形、元数据和错误顺序。
+Go 通过 statement context 的 `FTSFunctionIsUsed` 跳过无 FTS 计划，Rust 则直接遍历计划文本；Go 的 visitor 保存任意父链，Rust 对 TopN/Projection 只接受明确的窄树形。Go Projection 可改写多个投影表达式，Rust 的 `PlanNode::Projection` 只有一个 `operator_info` 字符串。
 
 ## 扩展指南
 
@@ -94,14 +92,3 @@ Go 通过 statement context 的 `FTSFunctionIsUsed` 跳过无 FTS 计划，Rust 
 - 修改 Top-K 规则时保持 `offset + count` 溢出和 `u32` 截断保护，并与 Go 的优化条件逐项核对；放宽条件可能改变 TiFlash 返回量及排序正确性。
 - 调整生产入口或四阶段顺序时，同步 `ResolveFullTextPlan`、session 的 `plan_select` 以及 Rust 独立测试；Reject 必须保持在消费规则之后。用户可见语义还应对照 Go 集成测试 `pkg/planner/core/fts_resolve_index_test.go`。
 - 性能风险主要来自对每个阶段整树递归和重复字符串大小写转换/编码；正确性风险主要来自字符串计划模型、树形限制及载荷分隔格式，兼容风险主要来自与 Go 错误顺序和元数据字段的漂移。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/fts_resolve_index.rs`，核对全部 557 行、公开/私有符号、四阶段流程及错误分支。
-- crate 与模块装配：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`；确认 crate 名、feature、模块声明、再导出和独立测试模块。
-- 数据模型：`pkg/planner/core/common_plans.rs` 的 `PlanKind`、`PlanNode`，确认本文件实际操作的节点变体和通用字段。
-- 直接入口：`pkg/session/fts_runtime.rs::FtsSession::plan_select`，确认 `BuildFullTextPlan` 后以全文索引列表及 dirty 状态调用 `ResolveFullTextPlan`。
-- Rust 独立测试：`pkg/planner/core/fts_resolve_index_test.rs`，覆盖规则名、单列索引、引号转义、根/非根 Selection、dirty transaction、TopN/Projection、查询不一致、UnionScan、残留用法、多谓词和参数化查询。
-- Go 对照与测试：`pkg/planner/core/fts_resolve_index.go`、`pkg/planner/core/fts_resolve_index_test.go`，核对 visitor、typed 元数据、规则顺序、Top-K 条件、错误语义和集成场景。
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件和 4,415 个 Go 文件；`node --file` 读取目标文件与 session 入口；`query ResolveFullTextPlan` 定位入口；文件限定 `callees` 核对 `plan_select`、`resolve_where`、`resolve_top_n`、`resolve_projection`、`reject_remaining` 的直接调用边。未限定的 `callers/callees` 两次超时且无输出，因此调用者另以仓库搜索 `ResolveFullTextPlan(` 核实，唯一生产调用位于 `pkg/session/fts_runtime.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务给定命令验证目标文档存在且恰有十一个固定二级章节，并人工复核所有“当前支持”结论均可回溯到上述源码或测试。

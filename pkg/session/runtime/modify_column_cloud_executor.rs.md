@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`modify_column_cloud_executor.rs` 属于 `astersql-session` crate（`pkg/session/Cargo.toml`），但没有在 `pkg/session/runtime.rs` 中直接声明模块，而是由 `pkg/session/runtime/modify_column_dist_backfill.rs` 通过 `#[path = "modify_column_cloud_executor.rs"] mod cloud;` 纳入分布式 MODIFY COLUMN / 索引回填实现。`modify_column_dist_backfill.rs` 的 `Extension::GetStepExecutor` 只在任务步骤为 `BackfillStepMergeSort` 或 `BackfillStepWriteAndIngest` 时构造 `cloud::CloudStep`；读取索引和临时索引归并仍由 `ReadIndex` 执行。
-
-本文件是 DXF 云端回填后半段的步骤执行器：第一阶段把读取阶段产出的重叠 KV 文件归并为有序对象，第二阶段把对象存储中的有序文件注册成 Lightning 外部引擎并导入 TiKV。它定义两个私有/包内类型 `Active`、`CloudStep`，一个清理守卫 `ActiveGuard`，以及 `CloudStep` 的构造、归并、导入和 `executor::StepExecutor` 实现；没有 feature gate。唯一条件编译项是 `#[cfg(test)] #[path = "modify_column_cloud_executor_test.rs"] mod tests;`，测试保持在独立文件。
+定义两个私有/包内类型 `Active`、`CloudStep`，一个清理守卫 `ActiveGuard`，以及 `CloudStep` 的构造、归并、导入和 `executor::StepExecutor` 实现；没有 feature gate。
 
 ## 核心职责
 
@@ -71,11 +69,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的一个 `CloudStep` 按 `step` 合并了 Go 的两个执行器：`pkg/ddl/backfilling_merge_sort.go` 的 `mergeSortExecutor` 对应 `run_merge` 和 Merge 分支资源调节；`pkg/ddl/backfilling_import_cloud.go` 的 `cloudImportExecutor` 对应 `Init`、`run_import`、导入摘要、任务 Meta 更新及 Import 分支资源调节。
-
-核心语义保持一致：归并使用每核内存、对象前缀 `<task>/<subtask>`、writer summary、重复键报错，成功后才写外置 Meta；导入合并排序组、兼容缺失 job keys 的旧 Meta、以表名和索引 ID 生成 engine UUID、注册 external engine 并动态调节 CPU/内存；空闲期资源修改返回可重试错误，CPU 未变时忽略 import 的 memory-only 更新；任务 Meta 修改只更新最大写速率。
-
-可见差异也必须保留：Go `cloudImportExecutor` 持有物理表和指标/对象存储计量，能尝试把重复键错误转换成带索引/表信息的 `ErrKeyExists`；Rust 当前从最新 snapshot 重取表，仅统一传播 backend/globalsort 错误，本文件没有 Go 的 metric collector、对象存储请求摘要或重复键错误再包装。Go 对旧 Meta 的 `EleIDs` 为空处理默认依赖索引列表，Rust 显式拒绝空索引列表；Rust 还显式支持 `legacy` 扁平排序元数据。仓库搜索未找到直接命名这些 Go 执行器的 `*_test.go`，因此 Go 对照依据是生产实现而非同名测试。
+可见差异也必须保留：Go `cloudImportExecutor` 持有物理表和指标/对象存储计量，能尝试把重复键错误转换成带索引/表信息的 `ErrKeyExists`；Rust 当前从最新 snapshot 重取表，仅统一传播 backend/globalsort 错误，本文件没有 Go 的 metric collector、对象存储请求摘要或重复键错误再包装。Go 对旧 Meta 的 `EleIDs` 为空处理默认依赖索引列表，Rust 显式拒绝空索引列表；Rust 还显式支持 `legacy` 扁平排序元数据。
 
 ## 扩展指南
 
@@ -86,11 +80,3 @@ Rust 的一个 `CloudStep` 按 `step` 合并了 Go 的两个执行器：`pkg/ddl
 资源与限速扩展应保持“先调真实对象，成功后提交缓存状态”的顺序，并为 idle、CPU 不变但内存变化、取消和锁失败定义行为。进度扩展若要覆盖 MergeSort，不能复用当前仅表示 import rows 的 `rows` 而混淆单位。
 
 回归测试应扩展独立文件 `pkg/session/runtime/modify_column_cloud_executor_test.rs`，不要把测试逻辑写入生产文件。现有用例应继续覆盖归并成功、重复键、取消和 Meta 原子发布；新增导入行为至少应覆盖 Init/Cleanup、旧/新 Meta、表或索引缺失、engine 注册/清理、导入失败、行数摘要、TaskMetaModified 及 ResourceModified 的运行中/空闲/CPU 不变分支。正确性风险集中在错误发布 Meta、错误索引 UUID 和清理遗漏；兼容风险集中在 Go JSON/旧任务 Meta；性能风险集中在每核内存、worker 并发和大规模 metadata 合并。
-
-## 验证依据
-
-本说明直接核对了生产源 `pkg/session/runtime/modify_column_cloud_executor.rs`、模块入口与工厂 `pkg/session/runtime.rs` 和 `pkg/session/runtime/modify_column_dist_backfill.rs`、crate 声明 `pkg/session/Cargo.toml`、独立 Rust 测试 `pkg/session/runtime/modify_column_cloud_executor_test.rs`、元数据与存储边界 `pkg/session/runtime/modify_column_cloud_meta.rs` 和 `pkg/session/runtime/modify_column_cloud_store.rs`、StepExecutor 契约 `pkg/dxf/framework/taskexecutor/interface.rs`，以及 Go 对照 `pkg/ddl/backfilling_merge_sort.go`、`pkg/ddl/backfilling_import_cloud.go`。`pkg/session` 下不存在 `doc.go`；仓库搜索也未发现直接覆盖这两个 Go 执行器名称/故障注入点的 `*_test.go`。
-
-RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime` 确认目标源和独立测试均已索引，`query CloudStep` 定位类型，`query RunSubtask` / `ResourceModified` / `TaskMetaModified` 同时定位 Rust 实现、StepExecutor trait 与两份 Go 对照，`node --file pkg/session/runtime/modify_column_cloud_executor.rs` 读取了完整 350 行源码并给出使用文件。精确 callers/callees 查询未在限定时间返回，因此具体构造边和下游调用由索引源码、`rg` 模块引用及直接文件读取交叉确认，不把查询超时解释为没有调用关系。
-
-本任务仅新增说明文档，按计划不运行 Cargo。交付前运行任务指定的结构命令确认文档存在且恰有 11 个固定二级章节，并人工复核本文能回答文件为何存在、两个步骤如何运行、状态何时发布/清理、与 Go 的差异以及如何安全扩展。

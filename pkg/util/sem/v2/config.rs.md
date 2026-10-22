@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sem-v2` crate 的配置边界：把磁盘上的 SEM（Security Enhanced Mode）v2 JSON 解码为 Rust 数据结构，并在配置进入运行时前完成最低 TiDB 版本、系统变量和命名 SQL 规则校验。crate 入口 `pkg/util/sem/v2/lib.rs` 以 `mod config; pub use config::*;` 装配本模块；其中结构体经 crate 根再导出，而 `parseSEMConfigFromFile` 与 `validateSEMConfig` 保持 `pub(crate)`，只供同 crate 的启用流程和测试辅助使用。
-
-运行主链是 `sem.rs::Enable` → `parseSEMConfigFromFile` → `sem.rs::EnableBy` → `validateSEMConfig` → `sem.rs::buildSEMFromConfig`。因此本文件负责“配置表示、读取、准入”，不负责把限制编译成查询集合、不维护全局启用状态，也不执行权限或 SQL 拒绝判定；这些职责分别位于 `pkg/util/sem/v2/sem.rs`、`sql_rule.rs` 和 `restricted_hint.rs`。
-
-`pkg/util/sem/v2/Cargo.toml` 将该目录声明为库 crate `astersql-util-sem-v2`，入口为 `lib.rs`、禁用 doctest；本文件直接使用标准库文件 I/O，以及 `serde`、`serde_json`、`semver`、`mysql`、`variable`、`vardef` 和同 crate 的 `sqlRuleNameMap`。
+`validateSEMConfig` 在配置生效前执行三类短路校验：当前 TiDB 版本不得低于配置下限；每个受限系统变量必须已注册，且非空强制值只能用于 `ScopeNone` 变量；每个命名 SQL 规则必须存在于 `sqlRuleNameMap`。
 
 ## 核心职责
 
@@ -94,15 +90,11 @@ crate manifest 中 `serde`、`serde_json`、`semver`、`mysql`、`variable`、`v
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/sem/v2/config.go` 是直接语义基线。五个 Rust 结构与 Go 的 `Config`、`TableRestriction`、`ColumnRestriction`、`VariableRestriction`、`SQLRestriction` 字段逐项对应；serde rename 对应 Go JSON tag，`RestrictedHints` 的空列表省略对应 `omitempty`。
-
-核心行为保持一致：
+五个 Rust 结构与 Go 的 `Config`、`TableRestriction`、`ColumnRestriction`、`VariableRestriction`、`SQLRestriction` 字段逐项对应；serde rename 对应 Go JSON tag，`RestrictedHints` 的空列表省略对应 `omitempty`。
 
 - Go `os.Open(filepath.Clean(filePath))` 与 Rust `File::open(Path::new(filePath))` 都打开给定配置文件；Rust 没有显式 `Clean`，由平台路径处理 `.`/`..`，但错误消息仍使用原始字符串。
 - Go `json.Decoder.Decode` 只消费一个值；Rust特意直接调用流式 deserializer 的一次 `Config::deserialize`，避免 `serde_json::from_reader` 的 EOF 检查改变尾随第二值语义。
 - Go 对 `null` 非指针字段保留零值；Rust用 `deserialize_null_default` 明确复现。Rust 测试比当前 Go `config_test.go` 多覆盖顶层/嵌套 `null` 和尾随 JSON 值，这是对 Go 库行为的迁移回归，不是新业务规则。
-- 两边均去掉可选小写 `v` 后做 semver 比较，均用系统变量注册表检查名称和 scope，并用规则名 map 拒绝未知命名规则。
-- 两边都没有校验 `Config.Version`，也都只在 `Value` 非空时要求 `ScopeNone`。
 
 实现层差异主要是所有权与错误表示：Go 返回 `*Config, error` 并 `defer file.Close()`；Rust 返回拥有值的 `Config` 和 `String` 错误，文件自动析构。Go 可安全直接读取包级版本变量；Rust 迁移值是 `static mut`，所以读取需要 `unsafe`。这些差异不应改变成功/失败分支或错误主文案。
 
@@ -114,16 +106,3 @@ crate manifest 中 `serde`、`serde_json`、`semver`、`mysql`、`variable`、`v
 - 若要求严格单文档、拒绝未知字段或拒绝尾随内容，应先确认这是有意偏离 Go 的兼容变更；改用 `serde_json::from_reader` 或调用 deserializer `end()` 会改变已由 Rust 回归测试固定的行为。
 - 若要支持配置格式多版本，应在 `Config.Version` 上设计显式分派/迁移，并明确空版本的兼容策略；当前不能把字段存在误认为已有版本校验。
 - 性能风险主要来自无上限地把 JSON 字符串和数组全部载入内存，以及逐项查系统变量和规则 map。常规 SEM 配置很小；若引入大规模配置限制，应在不破坏流式单值语义的前提下评估大小/数量上限。
-
-## 验证依据
-
-本说明依据以下本地事实完成，未运行 Cargo：
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件；`files --filter pkg/util/sem/v2` 显示目标目录 20 个已索引文件。
-- RustCodeGraph `node --file pkg/util/sem/v2/config.rs`：确认 209 行源码、五个配置结构、私有 null helper、解析和校验函数，以及索引记录的直接使用文件 `config_test.rs`、`migration_aster_unit_test.rs`、`sql_rule.rs`。
-- RustCodeGraph 文件节点：读取 `lib.rs`、`config_test.rs`、`config.go`、`config_test.go`；精确 callers/callees 查询因同名 Go/Rust 符号消歧结果不足，随后用 `rg` 与直接源码读取补齐 `sem.rs`、`testhelper.rs`、`sql_rule.rs` 和 `migration_aster_unit_test.rs` 的真实调用边。
-- `pkg/util/sem/v2/Cargo.toml`：确认 crate 名称、入口、直接依赖、测试依赖和 Go 包迁移元数据。
-- Rust 独立测试 `config_test.rs`：覆盖解析格式、null/尾随值、版本、变量和规则错误；`migration_aster_unit_test.rs`：覆盖 JSON tag、序列化名称、`EnableBy` 校验错误和配置进入运行时后的行为；Go 对照 `config_test.go`：确认原表驱动测试意图。
-- 人工核对主链：`sem.rs::Enable` → `parseSEMConfigFromFile` → `EnableBy` → `validateSEMConfig` → `buildSEMFromConfig`，以及 `testhelper.rs::EnableFromPathForTest` 的测试接线。
-
-文档结构另以任务指定命令验证，要求目标文件存在且恰好出现全部 11 个固定二级标题。

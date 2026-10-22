@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`builder.rs` 属于 `astersql-statistics` crate（`pkg/statistics/Cargo.toml`），负责把采样值或已经按值有序的数据构造成优化器可消费的 `Histogram` 与 `TopN`。模块在 `pkg/statistics/lib.rs` 中以 `mod builder` 装配，并通过 `pub use builder::*` 将公开符号重导出为 crate API。
-
-当前生产接线的直接上游是 `RuntimeStatsBuilder::build_histogram_with_buckets`（`pkg/statistics/runtime_stats_builder.rs`）：它把 SQL 行转换为 `SampleCollector`，区分列和索引的字段类型后调用 `BuildHistAndTopN`。`BuildColumnHist`、`BuildColumn` 和 `SortedBuilder` 还作为通用构建 API 对外暴露；仓库内可见的 Rust 直接使用主要位于统计集成测试和规划器测试。
-
-该文件不是持久化层，也不负责采样本身。采样输入由 `SampleCollector`/`SampleItem` 提供，直方图和 TopN 容器由同 crate 的 `histogram.rs`、`cmsketch.rs` 等模块提供；本文件承担“排序、分组、缩放、切桶和高频值剥离”的算法层。
+`BuildColumnHist`/`BuildColumn` 从列样本构造直方图，把样本桶的累计计数和重复数按总体行数缩放，并写回 NDV、NULL 数及列总大小。
 
 ## 核心职责
 
@@ -118,7 +114,7 @@ TopN 构建的临时资源包括全部编码值 `compared`、候选向量及排�
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/statistics/builder.go`，类型和函数基本一一对应：`TopNWithRange`、`SequentialRangeChecker`、`SortedBuilder`、`BuildColumnHist`、`buildHist`、`BuildColumn`、`BuildHistAndTopN`、`calcCorrelation`、`pruneTopNItem` 均保留了 Go 名称和总体意图。常量值、二进制排序规则、相关性公式、TopN 统计显著性阈值、默认值判定和“采样未覆盖真实 NDV 时至少留下一个直方图值”的保护也相对应。
+常量值、二进制排序规则、相关性公式、TopN 统计显著性阈值、默认值判定和“采样未覆盖真实 NDV 时至少留下一个直方图值”的保护也相对应。
 
 当前可见差异必须视为真实实现现状，而非自动假定等价：
 
@@ -130,7 +126,7 @@ TopN 构建的临时资源包括全部编码值 `compared`、候选向量及排�
 - Go 判定 TopN 是否覆盖全部样本不同值使用 `sampleNDV == lenTopN && lenTopN > 0`；Rust提前返回条件是 `candidates.len() as i64 == ndv`。两者在估算 NDV 与样本 NDV 不一致时并不完全相同，应由兼容性测试决定是否需要进一步对齐。
 - Go 的候选 TopN 在相同频次下主要由有界堆行为决定；Rust显式以编码字节升序作为 tie-break，任何 golden 输出对顺序敏感时都应复核。
 
-Go 基准 `pkg/statistics/builder_test.go` 覆盖高 NDV、低 NDV 性能场景和区间检查器（包括空、未排序范围）。Rust `pkg/statistics/builder_test.rs` 将两个基准场景改成规模更小的行为断言，并覆盖桶合并不拆重复值、区间推进及“TopN 不吞完采样值”。它验证核心契约，但不等同于 Go 的百万行性能证据。
+Rust `pkg/statistics/builder_test.rs` 将两个基准场景改成规模更小的行为断言，并覆盖桶合并不拆重复值、区间推进及“TopN 不吞完采样值”。
 
 ## 扩展指南
 
@@ -143,11 +139,3 @@ Go 基准 `pkg/statistics/builder_test.go` 覆盖高 NDV、低 NDV 性能场景�
 - 任何暴露新 API 的变更都应检查 `pkg/statistics/lib.rs` 的重导出；本 crate 当前无 builder feature gate，不应假定依赖方可通过 feature 隔离变化。
 
 兼容性风险主要是 Go/Rust统计输出差异会进一步影响优化器基数估计和计划选择；性能风险主要是候选每次全量排序、全部列值预编码和样本克隆；正确性风险集中在上下文敏感 Datum 比较、全局默认值、浮点取整以及区间检查器的单调查询前提。
-
-## 验证依据
-
-增量为 `BuildHistAndTopN` 的 `Unique` NDV 分支。完整读取 `builder.rs`，对照 `builder.go`，并核对 `sample.rs`、`lib.rs`、`Cargo.toml` 和冻结符号引用。独立测试 `builder_test.rs::schema_unique_ndv_uses_non_null_row_count_instead_of_the_sketch_estimate` 将 `Count` 设为 32,768、启用 `Unique`，断言 NDV 为 32,768 且无 TopN；`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 另覆盖 sampled sketch 被唯一性保证覆盖为 3,000。它们是源码级证据。
-
-本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/builder.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
-
-纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

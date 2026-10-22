@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-lightning-common`（见 `pkg/lightning/common/Cargo.toml`），实现 Lightning 公共层的键编码适配器。模块由 `pkg/lightning/common/lib.rs` 以 `mod key_adapter` 装配，并通过 `pub use key_adapter::*` 将公开符号提升到 crate 根，因此同 crate 的 `dupdetect.rs` 可以直接以 `crate::KeyAdapter` 使用，外部依赖此 crate 的代码也可从 crate 根导入。
-
-它位于“原始业务键”与“供重复检测排序、存储的键”之间：普通路径可以原样透传键，重复检测路径则把业务键编码成保持字典序的 memcomparable 前缀，并附加 RowID，避免同一业务键的不同记录在键值存储中互相覆盖。文件本身只负责纯内存编解码，不访问磁盘、网络或数据库。
-
-需要区分一个相邻但独立的实现：`pkg/ingestor/ingestctrl/iterator.rs` 自己定义了同名 `KeyAdapter`、`NoopKeyAdapter` 和 `DupDetectKeyAdapter`，签名也不同（RowID 为 `i64`，错误为该 crate 的 `Result`）。它不是本文件类型的调用者；RustCodeGraph 的同名搜索会同时返回两组符号。
+`NoopKeyAdapter` 为不需要区分重复行的路径提供零变换实现：忽略 RowID，只追加输入键或数据。
 
 ## 核心职责
 
@@ -83,11 +79,11 @@
 
 直接对照文件为 `pkg/lightning/common/key_adapter.go`，总体契约和线格式一致：Go `KeyAdapter` 的三个方法对应 Rust trait；Go `NoopKeyAdapter` 原样追加；Go `DupDetectKeyAdapter` 使用 `codec.EncodeBytes` 后追加 RowID 与两字节大端长度；两边的 `EncodedLen` 都使用每八字节增加一个九字节组并始终包含终止组的公式；`MinRowID` 都是九个零字节。
 
-Rust 将 Go 的 `codec.EncodeBytes`/`codec.DecodeBytes` 局部复刻为私有 `encode_bytes`/`decode_bytes`，测试覆盖了顺序保持、重复键因 RowID 区分、往返和非法 padding。Rust `CommonError` 承接 Go `errors.New`/codec 解码错误，但错误类型、包装栈和具体文本不保证完全相同。
+Rust `CommonError` 承接 Go `errors.New`/codec 解码错误，但错误类型、包装栈和具体文本不保证完全相同。
 
 缓冲实现存在可观察但契约兼容的差异：Go `reallocBytes` 在容量不足时按所需精确容量新建切片，Rust `reserve` 可选择更大容量；Go Decode 尝试让 codec 直接写进 `dst` 的剩余容量并处理别名结果，Rust先分配临时解码结果再 `extend` 到 `dst`。两者都保留 `dst` 前缀，相关 Rust/Go 测试都要求容量充足时最终结果复用原缓冲、容量不足时内容正确。
 
-Rust 测试 `key_adapter_test.rs` 基本对应 `key_adapter_test.go`，但还显式加入非法 marker/padding 拒绝测试。Go 的 `TestMinRowID` 使用真实 `kv.IntHandle`、`codec.EncodeKey` 和 `kv.NewCommonHandle`；Rust 测试使用 `EncodeIntRowID` 和手工构造的 common-handle 风格 payload 来验证相对顺序，因而不能把它描述成对全部 Go handle 编码的穷尽证明。
+Go 的 `TestMinRowID` 使用真实 `kv.IntHandle`、`codec.EncodeKey` 和 `kv.NewCommonHandle`；Rust 测试使用 `EncodeIntRowID` 和手工构造的 common-handle 风格 payload 来验证相对顺序，因而不能把它描述成对全部 Go handle 编码的穷尽证明。
 
 ## 扩展指南
 
@@ -97,12 +93,3 @@ Rust 测试 `key_adapter_test.rs` 基本对应 `key_adapter_test.go`，但还显
 - 若优化解码分配，可让解码器直接写入 `dst` 的备用容量，但必须谨慎处理扩容、已有前缀、错误时部分写入和别名安全，并保留三个预分配缓冲测试。
 - 若修改 `MinRowID`，需同时检查范围扫描边界和所有 RowID 编码类别的排序不变量，至少同步 Rust `test_min_row_id` 与 Go `TestMinRowID` 的意图。
 - ingestor 的 `pkg/ingestor/ingestctrl/iterator.rs` 有独立同名实现。若目标是统一两套代码，需要单独设计 trait 签名、RowID 表示和错误类型的迁移；不能只改本文件并假定 ingestor 自动获得变化。
-
-## 验证依据
-
-- 源码与装配：`pkg/lightning/common/key_adapter.rs`、`pkg/lightning/common/lib.rs`、`pkg/lightning/common/Cargo.toml`。
-- 直接消费与相邻实现：`pkg/lightning/common/dupdetect.rs`、`pkg/lightning/common/dupdetect_test.rs`、`pkg/ingestor/ingestctrl/iterator.rs`、`pkg/ingestor/ingestctrl/iterator_test.rs`、`pkg/ingestor/ingestctrl/duplicate.rs`。后两处用于确认同名 ingestor trait 的独立边界，而非证明对本文件的调用。
-- Go 对照与测试：`pkg/lightning/common/key_adapter.go`、`pkg/lightning/common/key_adapter_test.go`。
-- Rust 独立测试：`pkg/lightning/common/key_adapter_test.rs`，覆盖 Noop/DupDetect 往返、`EncodedLen`、业务键顺序、同键不同 RowID、无效 padding/marker/截断、预分配缓冲复用、容量不足重分配和 `MinRowID` 相对次序。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/lightning/common/key_adapter.rs` 返回完整 119 行及引用文件摘要；对 `KeyAdapter`、`NoopKeyAdapter`、`DupDetectKeyAdapter`、`reallocBytes`、`encode_bytes`、`decode_bytes`、`MinRowID` 的 `query` 确认符号位置。精确 `callers/callees` 未为这些 trait/零大小类型返回可用边，因此调用关系以索引的文件引用摘要和直接源码导入/调用交叉核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核本文未把同名 ingestor 实现误作本文件调用者。

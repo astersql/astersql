@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-standby` crate 的核心业务实现，定义按 keyspace 激活的 standby 控制器、管理 HTTP 路由、退出协调与正常重启记录。crate 入口 `pkg/standby/lib.rs` 通过 `pub mod standby` 暴露本模块，并再导出 `LoadKeyspaceController`、`ActivateRequest`、`State`、退出参数解析函数和状态常量；crate 边界与依赖声明见 `pkg/standby/Cargo.toml`。
-
-它通过 `impl StandbyController for LoadKeyspaceController` 接入 `pkg/server/standby.rs` 定义的生命周期接口。实际 Server 主链在 `pkg/server/server.rs`：`Server` 持有 `Arc<dyn StandbyController>`，启动时调用 `wait_for_activate -> prepare_for_activation -> end_standby`，关闭时调用 `on_server_shutdown`。普通 `Server::new` 使用 `NoopStandbyController`；只有调用 `Server::with_standby` 并注入本控制器时，本文件的 standby 行为才会进入 Server 主链。
+维护不可回退的 `Standby -> Activated -> Terminating` 生命周期，并保存本次激活的 keyspace、export ID、空闲阈值、元数据和 DDL/自动分析开关（`State`、`ControllerState`、`activate`）。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 将本文件列为 94 个符号，并显示文件级直接使用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/standby/standby.go`，Rust 的请求字段、三态字符串、四个 HTTP 端点、同 keyspace 激活幂等、24 小时 wait 上限、八小时默认连接等待、Starter 退出分支、AutoID 关闭顺序、三次 Manager free 重试和重启日志格式均对应 Go 逻辑。`pkg/standby/standby_test.go`、`standby_nextgen_test.go` 的关键意图由 Rust 独立测试 `standby_test.rs`、`standby_nextgen_test.rs` 覆盖。
-
 当前并非逐项等价，扩展时必须注意：
 
 - Go 使用包级 `mu/state/activateRequest/activateCh`，Rust 把状态收进每个控制器实例；多个 Rust 控制器不会共享激活状态。
@@ -103,12 +99,3 @@ RustCodeGraph 将本文件列为 94 个符号，并显示文件级直接使用�
 - 改退出语义：同时检查 `ExitOptions`/解析器、`exit_http`、`on_server_shutdown`、`StandbyShutdownServer` 能力接口和 `pkg/server/server.rs::close` 的调用顺序。需特别验证强制/优雅、Starter/非 Starter、AutoID owner、连接超时和 Manager 缺失的组合。
 - 改重启记录：保持跨进程可读格式兼容，或者同时迁移 Go 读写方与两套 Rust API；使用临时路径测试读取、删除、格式错误和 keyspace 不匹配，避免触碰默认 `/tmp` 文件。
 - 性能与兼容风险主要在长时间持有状态锁、同步 Manager 调用、等待连接实现和 duration 精度。任何把阻塞工作移入锁内的改动都可能阻塞 status/activate；任何状态码或正文换行变化都可能破坏管理端兼容。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`pkg/standby/standby.rs` 被识别为 94 个符号。使用了 `files --filter pkg/standby`、按文件 `node`、`query LoadKeyspaceController/wait_for_activate/prepare_for_activation/on_server_shutdown` 以及 `callers/callees` 查询。
-- 源码事实：`pkg/standby/standby.rs`（常量、数据结构、状态机、HTTP、同步、日志与辅助解析）；`pkg/server/standby.rs`（三个 trait 与默认 Noop）；`pkg/server/server.rs`（控制器持有、启动与关闭调用点）；`pkg/standby/lib.rs`（模块和再导出）。
-- crate 事实：`pkg/standby/Cargo.toml` 确认 crate 名为 `astersql-standby`、库入口为 `lib.rs`，并声明 server、deploymode、Serde 等依赖；metadata 指向 Go 包 `pkg/standby`。
-- Go 对照：`pkg/standby/standby.go` 的 `Handler`、`WaitForActivate`、`PrepareForActivation`、`EndStandby`、`OnServerShutdown`、`parseExitWait`、`reportManagerFree` 和正常重启辅助函数。
-- 测试依据：`pkg/standby/standby_test.rs` 验证元数据克隆、必填 keyspace、激活等待 Server、非 Starter 行为、状态 JSON、健康拒绝、checkconn 优先级及重启记录加载删除；`pkg/standby/standby_nextgen_test.rs` 验证 304 owner 跳过、连接排空成功/超时、Manager 重试、Starter export ID、非法退出参数、默认优雅等待、Manager 缺失及 duration 边界。对应 Go 测试为 `pkg/standby/standby_test.go` 与 `pkg/standby/standby_nextgen_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终以固定十一个二级标题的结构检查和人工逐项回查上述符号、调用边及 Go/Rust 差异作为完成证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`agg_to_pb.rs` 位于 `astersql-expression-aggregation` crate 内，是规划器聚合描述 `AggFuncDesc` 与 TiKV/TiFlash 下推协议 `tipb::Expr` 之间的转换边界。crate 由 `pkg/expression/aggregation/Cargo.toml` 定义，`lib.rs` 通过 `mod agg_to_pb` 装配并以 `pub use agg_to_pb::*` 导出本文件 API；其 Rust 生产调用主线之一是 `pkg/planner/core/operator/physicalop/physical_hash_agg.rs::to_pb`，该入口将每个物理聚合函数交给 `AggFuncToPBExpr`，再写入 `tipb::Aggregation.agg_func`。
-
-本文件不执行聚合，也不发送 RPC。它只负责协议类型选择、表达式子树转换、字段类型编码以及聚合元数据的编解码。真正的聚合状态与更新逻辑位于同 crate 的 `aggregation.rs` 及各具体聚合实现中。
+只负责协议类型选择、表达式子树转换、字段类型编码以及聚合元数据的编解码。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 对 `AggFuncToPBExpr` 的节点 Trail 识别到 `GetTiPBExpr`、`A
 
 可见的语言表达差异包括：Go `AggFunctionModeToPB` 返回枚举指针，Rust 返回枚举值交给 protobuf setter；Go 以 `nil` 表示缺失模式，Rust 以 `Option` 表示；Go 循环遇到 `nil` 子表达式返回错误，Rust 用 `collect::<Option<Vec<_>>>()` 实现同样的全有或全无行为；Go 的 PB 描述符字段是指针，Rust generated API 通过 `get_*`/`set_*` 访问。
 
-语义上需特别保留三点：模式字段缺失默认 `Partial1Mode`；`PBExprToAggFuncDesc` 不恢复 `HasDistinct`；`GROUP_CONCAT` 的最大长度编码进 `val`。Rust 独立测试 `agg_to_pb_test.rs` 对前两类正向行为和 DISTINCT 反解约定提供回归证据，Go 测试 `agg_to_pb_test.go` 还覆盖 `MaxCount/MinCount` 的正向映射；Rust 的对应补充覆盖位于 `go_merge_44_test.rs`。
-
 ## 扩展指南
 
 新增一种聚合协议类型时，至少应按数据流检查：AST 名称常量、`GetTiPBExpr` 正向映射、`PBExprToAggFuncDesc` 是否需要反向映射、`aggregation.rs::NewDistAggFunc` 是否存在执行实现、模式和返回类型是否能被存储端接受。若只支持下推而不支持协议反解，应在设计和测试中明确该非对称性。
@@ -93,14 +89,3 @@ RustCodeGraph 对 `AggFuncToPBExpr` 的节点 Trail 识别到 `GetTiPBExpr`、`A
 新增 `GROUP_CONCAT` 类专属元数据时，应在 `AggFuncDesc` 字段、正向 PB 编码、必要的反向恢复以及 Go 对照之间同步，而不能只添加 setter。修改模式枚举时，必须同时更新 `aggregation.rs::AggFunctionMode`、两个模式转换函数和 `aggregation_aster_unit_test.rs` 的往返/缺省测试。
 
 测试应继续放在独立文件：优先扩展 `agg_to_pb_test.rs` 验证普通正向转换、失败边界与 PB 反解；Go 新增行为对齐可扩展 `go_merge_44_test.rs`；若涉及规划器接线，再覆盖 `physical_hash_agg.rs` 所在模块的独立测试。重点兼容风险是 TiPB 枚举值和缺省模式，正确性风险是正反向类型集合漂移、cast 未补齐或 `DISTINCT` 契约被误改，性能风险是参数树重复转换和大 `ORDER BY` 列表分配。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/aggregation/agg_to_pb.rs`；确认 1 个公开 inherent method 和 4 个公开自由函数，无条件编译项。
-- crate 与模块边界：`pkg/expression/aggregation/Cargo.toml`、`pkg/expression/aggregation/lib.rs`。
-- 数据结构与运行时：`base_func.rs::baseFuncDesc`、`descriptor.rs::AggFuncDesc`、`aggregation.rs::AggFunctionMode`/`NewDistAggFunc`。
-- 生产调用与依赖：`pkg/planner/core/operator/physicalop/physical_hash_agg.rs::to_pb`、`pkg/expression/aggregation/window_func.rs::WindowFuncToPBExpr`、`pkg/expression/pushdown_context.rs`、`pkg/expression/expr_to_pb.rs`、`pkg/expression/pb_to_expr_runtime.rs`。
-- Go 对照：`pkg/expression/aggregation/agg_to_pb.go`。
-- 测试证据：`pkg/expression/aggregation/agg_to_pb_test.rs`、`pkg/expression/aggregation/agg_to_pb_test.go`、`pkg/expression/aggregation/go_merge_44_test.rs`、`pkg/expression/aggregation/aggregation_aster_unit_test.rs`。
-- RustCodeGraph 查询：`status`、`files --filter pkg/expression/aggregation`、`query agg_to_pb --json`、`node agg_to_pb.rs::AggFuncToPBExpr`、`callees` 查询；独立 `callers` 查询在当前索引上未及时返回，因此跨 crate 调用者由精确引用搜索核实。
-- 本任务为纯文档分析，按任务约束未运行 Cargo；最终以固定 11 个二级标题的结构命令验证。

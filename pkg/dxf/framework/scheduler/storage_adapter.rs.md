@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-dxf-framework-scheduler` crate 内，由 `lib.rs` 以 `pub mod storage_adapter` 声明并通过 `pub use storage_adapter::*` 再导出。它是调度状态机与持久化任务表之间的适配层：对上实现 `interface.rs` 定义的 `TaskManager: Send + Sync`，对下持有 `astersql_dxf_framework_storage::TaskManager`，把 scheduler 自有的 `Task`、`TaskBase`、`Subtask` 等值类型转换为 storage/proto 类型后调用持久化 API。
-
-该适配器是 Rust 迁移特有的接线。Go 版本的 `pkg/dxf/framework/scheduler/interface.go` 直接让 storage `TaskManager` 满足同一包内的 Go 接口，没有同路径 `storage_adapter.go`。Rust 的直接生产入口之一是 `pkg/session/runtime/modify_column_dist_backfill.rs`：它用 `StorageTaskManagerAdapter::new(manager.clone())` 构造 `Arc<dyn scheduler::TaskManager>`，随后交给节点、槽位和单任务调度流程。
+调度状态机与持久化任务表之间的适配层：对上实现 `interface.rs` 定义的 `TaskManager: Send + Sync`，对下持有 `astersql_dxf_framework_storage::TaskManager`，把 scheduler 自有的 `Task`、`TaskBase`、`Subtask` 等值类型转换为 storage/proto 类型后调用持久化 API。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ crate 边界由 `pkg/dxf/framework/scheduler/Cargo.toml` 确认：本 crate 直�
 
 ## 与 Go 版本的对应关系
 
-Go 对照入口是 `pkg/dxf/framework/scheduler/interface.go` 的 `TaskManager` 接口和 `pkg/dxf/framework/storage/task_table.go` 的实现。Rust trait 使用 snake_case 和 scheduler 自有值类型；本适配器把它们映射到 Go 风格命名的 Rust storage API，例如 `top_unfinished_tasks -> GetTopUnfinishedTasks`、`switch_task_step_in_batch -> SwitchTaskStepInBatch`、`previous_subtask_summaries -> GetAllSubtaskSummaryByStep`。
+Rust trait 使用 snake_case 和 scheduler 自有值类型；本适配器把它们映射到 Go 风格命名的 Rust storage API，例如 `top_unfinished_tasks -> GetTopUnfinishedTasks`、`switch_task_step_in_batch -> SwitchTaskStepInBatch`、`previous_subtask_summaries -> GetAllSubtaskSummaryByStep`。
 
-主要语义保持一致：unfinished/no-resource 查询的筛选排序由 storage 决定；普通切步把任务更新和子任务写入视作一个存储操作；批量切步保留稳定重试约束；prepare 切步暴露零行 CAS；previous meta 只取成功子任务；节点已用槽位和子任务状态计数直接透传。
-
-并非所有 Go 接口方法都在 Rust trait 中出现：例如 Go 的 session/transaction 回调以及面向外部请求的 cancel/pause 方法不由这个 scheduler trait 暴露。反之，Rust 将类型转换、默认 context 和错误字符串化显式放在适配器内。summary 模型也较窄：当前 scheduler 侧只保留 `RowCount`，Go storage 测试覆盖的 `Processed` 等字段不会由 `previous_subtask_summaries` 返回。上述差异应视为当前代码事实，而不是推断为完整等价。
+并非所有 Go 接口方法都在 Rust trait 中出现：例如 Go 的 session/transaction 回调以及面向外部请求的 cancel/pause 方法不由这个 scheduler trait 暴露。summary 模型也较窄：当前 scheduler 侧只保留 `RowCount`，Go storage 测试覆盖的 `Processed` 等字段不会由 `previous_subtask_summaries` 返回。上述差异应视为当前代码事实，而不是推断为完整等价。
 
 ## 扩展指南
 
@@ -88,11 +84,3 @@ Go 对照入口是 `pkg/dxf/framework/scheduler/interface.go` 的 `TaskManager` 
 测试应保持与源码分离。转换层的新增回归优先放在独立 `storage_adapter_test.rs`（当前 scheduler 目录尚无该文件）并从 `lib.rs` 的 `#[cfg(test)]` 模块声明接入；底层 SQL、事务/CAS、排序和 summary JSON 语义继续同步 `pkg/dxf/framework/storage/table_test.rs` 与 Go 的 `table_test.go`。完整接线可扩展现有 `pkg/session/runtime_test/ddl.rs`、`pkg/dxf/importinto/clean_up_test.rs` 或相应 scheduler 独立测试，避免把测试嵌入本生产文件。
 
 兼容风险主要是遗漏字段或改变空结果/错误映射；正确性风险集中在状态与步骤转换、批次稳定性和 CAS 结果；性能风险集中在批量转换的复制、逐次分配，以及 `TYPES` 的全局锁和不可回收字符串。改动后应分别验证转换单元、storage 事务语义和一条真实 Manager 调度链。
-
-## 验证依据
-
-- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/storage_adapter.rs`，不采用工作区未提交源码。
-- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
-- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
-- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
-- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

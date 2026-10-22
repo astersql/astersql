@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-profile` crate 内部的 pprof 火焰图构建与展示层。crate 入口 `pkg/util/profile/lib.rs` 以私有模块 `mod flamegraph` 装配它，只公开再导出 `profile` 模块，因此这里的类型和函数均为 `pub(crate)` 或私有实现，不是工作区外部可直接调用的 API。上游 `Collector::ProfileReaderToDatums` 在 `pkg/util/profile/profile.rs` 中完成字节读取、gzip/Protobuf 解码和 profile 校验，随后经 `profile_to_flamegraph_node` 与 `profile_to_datums` 调用本文件，把 `pprof::protos::Profile` 转成 performance schema 可消费的 `Vec<Vec<types::datum::Datum>>`。
-
-`pkg/util/profile/Cargo.toml` 将该 crate 定义为 `astersql-util-profile`，并声明本文件直接依赖的 `pprof`（启用 `prost-codec`）、内部 `astersql-types` 和 `astersql-util-texttree`；crate 没有控制本逻辑的 feature。目录内没有 `doc.go`，最近的模块契约由 `lib.rs`、`profile.rs` 和同路径 Go 实现给出。
+`FlamegraphCollector` 按累计值降序展开树，生成带文本树缩进、全局占比、父节点占比、根分组号、深度和源码位置的六列 Datum 行。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@ RustCodeGraph 给出的主调用链为 `ProfileReaderToDatums`（`profile.rs:121
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/profile/flamegraph.go`，Rust 基本保持其结构：`flamegraphNode`/`FlamegraphNode`、`newFlamegraphNode`/`new_flamegraph_node`、`add`、`sortedChildren`、collector 的 `collectChild`/`collect_child` 和 `collect`、以及 `percentage` 一一对应。两端都按 location ID 聚合，取 sample 最后一个 value，忽略零值，按累计值降序且按 location ID 处理平局，并输出相同六列。
+实现差异主要来自数据模型与安全边界：Go 的 `Sample` 直接持有 `*Location` 和 `*Function`，Rust protobuf 使用 ID，因此 Rust 增加 `ProfileIndex`，并由 `profile.rs::validate_profile` 先验证所有引用。Go 的 collector 原地填充 `rows`，Rust 的 `collect(mut self)` 消费 collector 并返回 rows。Go `fmt.Sprintf("%.2g")` 无 Rust 等价格式器，所以 Rust 用 `format_two_significant_digits` 显式模拟边界。
 
-实现差异主要来自数据模型与安全边界：Go 的 `Sample` 直接持有 `*Location` 和 `*Function`，Rust protobuf 使用 ID，因此 Rust 增加 `ProfileIndex`，并由 `profile.rs::validate_profile` 先验证所有引用。Go collector 只缓存 locations，Rust 同时缓存 functions 和 string table。Go 的 collector 原地填充 `rows`，Rust 的 `collect(mut self)` 消费 collector 并返回 rows。Go `fmt.Sprintf("%.2g")` 无 Rust 等价格式器，所以 Rust 用 `format_two_significant_digits` 显式模拟边界。
-
-`pkg/util/profile/flamegraph_test.go::TestProfileToDatum` 是 fixture 行为基准；`pkg/util/profile/flamegraph_test.rs::test_profile_to_datum` 复刻同一 41 行结果。Rust 额外的 `percentage_rounding_crosses_fixed_notation_boundary_like_go` 锁定四舍五入跨越固定/科学计数法边界；`migration_aster_unit_test.rs` 还验证原始 Protobuf 与 gzip 得到相同行序、极小百分比和畸形 profile 拒绝行为。
+Rust 额外的 `percentage_rounding_crosses_fixed_notation_boundary_like_go` 锁定四舍五入跨越固定/科学计数法边界；`migration_aster_unit_test.rs` 还验证原始 Protobuf 与 gzip 得到相同行序、极小百分比和畸形 profile 拒绝行为。
 
 ## 扩展指南
 
@@ -96,11 +92,3 @@ RustCodeGraph 给出的主调用链为 `ProfileReaderToDatums`（`profile.rs:121
 - 若改变排序或格式，应保持 `sorted_children` 的确定性平局规则，并为 `percentage` 的 0、1%、99.95/100.05、科学计数法阈值和负值增加表驱动测试。Rust 测试继续放在独立的 `flamegraph_test.rs` 或 `migration_aster_unit_test.rs`，不要嵌入生产源文件。
 - 若需要承受不可信但“结构合法”的超深栈，应考虑把 `add_locations` 与 `collect_child` 改成显式栈；同时用深链测试验证行序、缩进、depth 和资源上界。
 - 任何 Rust 行为变更都应先以 `flamegraph.go` 和 `flamegraph_test.go` 为语义基线；如果有意分叉，文档和兼容风险必须明确记录。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件，其中 `pkg/util/profile/flamegraph.rs` 被识别为 309 行、24 个符号；`files --filter pkg/util/profile` 确认实现、模块入口及 Rust/Go 测试均在该目录。
-- RustCodeGraph 源码与调用证据：`node --file pkg/util/profile/flamegraph.rs --offset 1 --limit 500` 覆盖全文件；精确 `explore` 给出 `ProfileReaderToDatums (profile.rs:121) → profile_to_datums (profile.rs:146) → new_flamegraph_collector (flamegraph.rs:162)`。单独的 `callers/callees` 查询在本地索引上未于 30 秒内返回，因此没有据此扩张结论，调用边又由同一索引的 `explore` 和源码交叉确认。
-- 已读生产与配置：`pkg/util/profile/flamegraph.rs`、`pkg/util/profile/profile.rs`、`pkg/util/profile/lib.rs`、`pkg/util/profile/Cargo.toml`、`pkg/util/profile/flamegraph.go`、`pkg/util/profile/profile.go` 的直接入口引用。
-- 已读测试：`pkg/util/profile/flamegraph_test.rs`、`pkg/util/profile/flamegraph_test.go`，以及 `pkg/util/profile/migration_aster_unit_test.rs` 中的 `protobuf_and_gzip_profiles_match_go_flamegraph_order_and_rows`、`fixture_and_small_percentages_match_go_formatting`、`malformed_profiles_are_rejected_like_go_check_valid`。
-- 本任务只生成文档，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工核对本说明能够回答文件存在目的、运行链、数据不变量、失败边界和安全扩展位置。

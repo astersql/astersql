@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/meta/reader.rs` 属于 `astersql-meta` crate，并由 [`pkg/meta/lib.rs`](lib.rs) 的私有 `reader` 模块挂载后整体再导出。这个文件位于 SQL/DDL 逻辑与底层 KV 元数据编码之间，实际包含三层访问面：与 Go `pkg/meta/reader.go` 对齐的 `Reader` trait 及 harness `Mutator` 适配、面向真实 MVCC 快照的 `SnapshotReader`、面向已有 SQL 事务的 `TransactionMutator`。后两者还承担 Go 兼容键布局与 DDL job JSON 边界转换，不能把整个文件仅理解为只读接口。
-
-crate 边界由 [`pkg/meta/Cargo.toml`](Cargo.toml) 确认：包名为 `astersql-meta`，直接依赖 `astersql-kv`、`astersql-util-codec`、`astersql-meta-model`、`serde_json` 与 `chrono`。`lib.rs` 通过 `pub use reader::*` 向 DDL、session、domain 等上层暴露本文件的公开类型和函数。
+`Reader` 定义数据库、表、AutoID、DDL 历史、schema diff、策略、资源组及 bootstrap 状态的统一读取契约；`impl Reader for Mutator` 将每个 trait 方法委托给 `Mutator` 的已有实现。
 
 ## 核心职责
 
@@ -71,9 +69,7 @@ RustCodeGraph 对 `pkg/meta/reader.rs` 识别出 118 个符号；精确节点确
 
 ## 与 Go 版本的对应关系
 
-`Reader` 的方法集合和 `new_reader` 的两项 request-source 设置直接对齐 [`pkg/meta/reader.go`](reader.go) 的 `Reader`/`NewReader`。Rust 用 `Option<T>` 表达 Go 的 nil 指针；仍以 `(value, isNull)` 保留必须区分零值和键不存在的接口；Go callback/iterator 错误停止语义也被保留。
-
-生产 `SnapshotReader` 与 `TransactionMutator` 是 Rust 接入真实 `astersql_kv` 所需的局部接线，不是一一存在于 `reader.go` 的同名类型。其数据库、表、schema version、history job 行为应同时对照 [`pkg/meta/meta.go`](meta.go) 中 `GetDatabase`、`ListDatabases`、`GetTable`、`ListTables`、`CreateDatabase`、`UpdateDatabase`、`CreateTableOrView`、`UpdateTable`、`GenSchemaVersion`、`AddHistoryDDLJob` 等方法，以及 Go `structure/type.go` 的键布局。
+Rust 用 `Option<T>` 表达 Go 的 nil 指针；仍以 `(value, isNull)` 保留必须区分零值和键不存在的接口；Go callback/iterator 错误停止语义也被保留。
 
 Rust/Go 模型的显著边界差异是 DDL job 错误：当前 Rust `Job` 保存显示字符串，Go wire 保存 terror 对象，所以本文件必须在持久化边界双向转换。另一个差异是生产 Rust reader 目前只暴露一部分 `Reader` 能力；完整旧 trait 能力由 harness `Mutator` 提供，不能据此宣称真实 MVCC reader 已覆盖 Go `Reader` 的全部方法。
 
@@ -84,11 +80,3 @@ Rust/Go 模型的显著边界差异是 DDL job 错误：当前 Rust `Job` 保存
 - 新增 DDL diff 分支时，最可能修改 `TransactionMutator::set_*_schema_diff`；应验证正常 release、错误 cleanup、affected ID 去重、old/new table 映射及 Go JSON 字段。相关现有测试面包括 `pkg/ddl/table_mode_test.rs`、`pkg/session/runtime/normal_ddl_*_test.rs` 和 `pkg/ddl/tests/partition/reorg_partition_test.rs`。
 - 修改 DDL job wire 时必须同时验证 `encode_go_ddl_job` 与 `decode_go_history_job`，覆盖 `err` 和 `warning`、已知/未知 class、V1/V2 args 以及 Go 端可解码性；现有直接断言见 `pkg/ddl/table_mode_test.rs::crossks_align_normal_ddl_error_wire_is_structured_and_roundtrips` 及多个 normal-DDL 测试。
 - 性能风险集中在 hash 全扫描与完整 JSON/model 解码；新增列表接口应维持精确前缀终止并及时关闭 iterator。兼容风险集中在 key 字节布局、magic byte、JSON 字段名及 error RFC code，任何变化都可能令 Go 与 Rust 互读失败。
-
-## 验证依据
-
-- 源码与边界：`pkg/meta/reader.rs`（921 行，`Reader`、`new_reader`、`SnapshotReader`、`TransactionMutator`、job/key/time helpers）、`pkg/meta/lib.rs`、`pkg/meta/Cargo.toml`、`pkg/meta/meta.rs`。
-- Go 对照：`pkg/meta/reader.go` 的完整接口与 `NewReader`；`pkg/meta/meta.go` 的 schema、数据库、表和历史 job 方法。
-- 独立 Rust 测试：`pkg/meta/meta_test.rs::go_merge_18_reader_exposes_starter_bootstrap_version`、`test_meta`、`test_snapshot`；`pkg/meta/migration_aster_unit_test.rs::database_table_and_reader_round_trip_match_go`；`pkg/ddl/table_mode_test.rs` 的真实事务、快照、stage cleanup 和错误 wire 往返测试。更上层使用证据来自 `pkg/ddl/persistent_*.rs`、`pkg/ddl/schema_version.rs`、`pkg/domain/crossks/ddl_submit.rs` 与 `pkg/session/runtime/*`。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/meta/reader.rs` 确认目标文件含 118 个符号；`query` 定位 `Reader` trait（第 36 行）、`new_reader`（第 298 行）、`SnapshotReader`（第 310 行）、`TransactionMutator`（第 499 行）和 `decode_go_history_job`（第 467 行）；`node new_reader` 核对构造源码。宽泛 `explore` 与 callers/callees 因同名符号和动态调用未给出可信完整边，故以精确 `rg` 引用结果补足上游证据。
-- 本任务是纯文档分析，未运行 Cargo。交付结构验证要求目标文档存在，并恰好包含本页所示 11 个固定二级标题。

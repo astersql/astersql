@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`bootstrap.rs`](bootstrap.rs) 是 `astersql-session` crate 中对 TiDB 集群首次初始化与版本升级公共语义的 Rust 建模文件，由 [`lib.rs`](lib.rs) 通过 `pub mod bootstrap` 对外公开。它集中保存系统库/系统表清单、bootstrap 元数据变量名、运行时能力 trait，以及首次初始化、系统表增量创建、初始化 SQL 和若干升级辅助函数。
-
-这个文件不是当前 Rust 服务端完整启动流程的唯一实现。生产态的具体 Domain/事务接线位于 [`runtime/session.rs`](runtime/session.rs) 的 `BootstrapCanonicalDomain` 及其辅助函数；其中 `bootstrap_canonical_nextgen_schemas` 已通过 `BootstrapSchemaRuntime` 调用本文件的 `bootstrapSchemas`，而本文件的通用 `bootstrap<R: BootstrapRuntime>` 尚未被生产 Rust 入口直接调用。理解或扩展本文件时必须区分“公共语义/可测试编排”与 `runtime/session.rs` 中“实际存储、Domain 和 SQL 执行接线”。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 声明：包名为 `astersql-session`，库入口为 `lib.rs`，`nextgen` feature 向 `astersql-config-deploymode` 和 `astersql-config-kerneltype` 透传；本文件直接使用 `astersql-meta-metadef` 提供的保留 ID 与建表 SQL。
+** 包括读取/写入 bootstrap 版本、补全全局变量、系统表约束检查、初始化 SQL 文件执行、旧密码转换和升级后的分区映射重建。
 
 ## 核心职责
 
@@ -99,7 +95,7 @@ RustCodeGraph 的文件节点报告该文件被 16 个文件使用，并准确�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`bootstrap.go`](bootstrap.go)，独立测试是 [`bootstrap_test.rs`](bootstrap_test.rs) 与 Go 的 [`bootstrap_test.go`](bootstrap_test.go)。Rust 保留了 Go 中同名的 `bootstrap`、`checkBootstrapped`、`getTiDBVar`、`acquireLock`、`bootstrapSchemas`、`doDDLWorks`、`doDMLWorks`、`doBootstrapSQLFile`、`oldPasswordUpgrade` 等概念，并复用相同的系统表保留 ID、schema 版本批次和关键错误文本。
+Rust 保留了 Go 中同名的 `bootstrap`、`checkBootstrapped`、`getTiDBVar`、`acquireLock`、`bootstrapSchemas`、`doDDLWorks`、`doDMLWorks`、`doBootstrapSQLFile`、`oldPasswordUpgrade` 等概念，并复用相同的系统表保留 ID、schema 版本批次和关键错误文本。
 
 主要对应与差异如下：
 
@@ -110,10 +106,7 @@ RustCodeGraph 的文件节点报告该文件被 16 个文件使用，并准确�
 - Go `internalSQLTimeout` 等于 `owner.ManagerSessionTTL + 15`；Rust 当前固定为 75 秒。若 Owner TTL 配置或常量变化，二者可能漂移。
 - Go 的 `DisableRunBootstrapSQLFileInTest` 检查 `intest.InTest`；Rust 版本直接执行原子写。
 - Go `doBootstrapSQLFile` 在非测试环境对读/解析错误会 fatal，在测试中返回错误，并记录单条执行错误；Rust 统一返回读/解析错误，忽略单条执行错误且要求运行时记录诊断。
-- Go `oldPasswordUpgrade` 通过 `hex.DecodeString` 后做 SHA1；Rust 的 `decode_hex` 与运行时 `sha1` 保留相同输入输出形状。
 - 现行 Rust `BootstrapCanonicalDomain` 复刻了大量 Go `doDDLWorks`/`doDMLWorks` 行为，但它是相邻文件中的独立生产实现。新增逻辑时应同步审查两处，直到通用 trait 编排真正成为生产入口。
-
-测试证据也必须分层看待：`bootstrap_test.rs` 前半保留许多来自 Go 测试的草稿 helper，其中部分是空实现，不能作为生产行为证明；文件后部的 `BootstrapRuntimeRecorder` 测试真实调用了 `oldPasswordUpgrade`、`doDMLWorks` 和约束函数，`nextgen_production_bootstrap_preserves_reserved_schema_ids_and_version` 则通过真实 mock KV/Domain 验证 next-gen 保留 ID、版本 4 与重复执行幂等性。`pkg/session/test/session_test.rs::bootstrap_sql_file_empty_parse_and_statement_errors_match_go` 真实覆盖初始化 SQL 的空输入、解析失败与单条执行失败继续行为。
 
 ## 扩展指南
 
@@ -124,12 +117,3 @@ RustCodeGraph 的文件节点报告该文件被 16 个文件使用，并准确�
 - **修改初始化 SQL：** 保持“读/解析失败终止、单条执行失败继续”的 Go 控制流，或明确记录兼容性变化；同步 `pkg/session/test/session_test.rs` 的真实 recorder 测试。
 - **把通用 `bootstrap` 接入生产：** 接线前必须实现完整 `BootstrapRuntime`，替换占位 SQL，证明 Owner/锁、事务、升级、Domain reload 与错误日志语义等价，并避免与 `BootstrapCanonicalDomain` 双重执行。当前不能假设该函数已经生产可用。
 - **性能风险：** 系统表数量增加会放大首次 bootstrap 的串行 SQL/metadata 工作；轮询间隔、内部 SQL 75 秒超时和每表预分裂都可能影响启动时间。应使用聚焦的 bootstrap/next-gen 测试观察，而不是删减 Go 流程。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/session/bootstrap.rs --offset 1 --limit 1000` 读取了完整 897 行并报告 16 个使用文件；`query` 确认 `bootstrap`、`checkBootstrapped`、`doDMLWorks`、`bootstrapSchemas`、`oldPasswordUpgrade` 等符号及行号。`callers`/`callees` 对精确节点在本次运行中超时且无输出，调用边因此用精确源码引用补证。
-- 生产源码：`pkg/session/bootstrap.rs`（完整文件）；`pkg/session/lib.rs`（模块公开与独立测试模块）；`pkg/session/runtime/session.rs`（`CanonicalBootstrapSchemaRuntime`、`bootstrap_canonical_nextgen_schemas`、`BootstrapCanonicalDomain`、`BootstrapOwnerLock`）；`pkg/session/upgrade_run.rs`（常量消费者）。
-- crate 配置：`pkg/session/Cargo.toml`（`astersql-session`、`lib.rs`、`nextgen` feature、`astersql-meta-metadef` 依赖与 `go-package = "pkg/session"` 移植元数据）。
-- Go 对照：`pkg/session/bootstrap.go`（同名常量、schema 版本清单、主流程、锁、DDL/DML、SQL 文件和旧密码逻辑）；`pkg/session/bootstrap_test.go`（原始回归意图）。
-- Rust 测试：`pkg/session/bootstrap_test.rs`（系统表清单/版本、旧密码、约束、root SQL 形状、next-gen 真实存储幂等性）；`pkg/session/test/session_test.rs`（`doBootstrapSQLFile` 错误与继续执行语义）。这些文件只作为证据读取，本任务未运行 Cargo。
-- 人工核对结论：该文件存在于 session bootstrap 的共享协议层；已生产接线的是版本化 next-gen schema 与约束检查，完整通用 `bootstrap` 仍是未接线抽象；安全扩展必须同步权威 metadef、Go 对照、现行 `BootstrapCanonicalDomain` 和独立 Rust 测试。

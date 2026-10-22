@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`stringer.rs` 是 `astersql-planner-core` crate 内的计划树文本化模块：`pkg/planner/core/lib.rs` 以私有 `mod stringer` 纳入它，再通过 `pub use stringer::*` 对 crate 调用者公开重导出。文件处在 SQL 规划主链的“观测/调试表示”边界，不构建、优化或执行计划。目前可确认的生产接入点是 `pkg/planner/core/optimizer.rs::DoOptimize`：物理优化和后优化完成后，它调用 `crate::ToString(&physical)` 填充 `Trace.final_plan`。
-
-该文件只依赖同 crate 的 `JoinType`、`PlanKind` 和 `PlanNode`；它不直接依赖 `pkg/planner/core/Cargo.toml` 中的外部 crate，也没有 feature 条件编译分支。`Cargo.toml` 声明本 crate 的 Go 对照包为 `pkg/planner/core`，与同路径 `stringer.go` 一致。
+`describe` 统一定义 `PlanKind` 到文本协议的映射，包括连接键、扫描范围、分区 ID、TopN 参数、MPP task ID 和 DML 子计划等载荷。
 
 ## 核心职责
 
@@ -68,14 +66,7 @@ FD 路径独立于上述计划描述路径：`FDToString` 从根开始调用 `fd
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/stringer.go`。顶层 API 同名：Go `ToString(base.Plan)`/`FDToString(base.LogicalPlan)` 对应 Rust `ToString(&PlanNode)`/`FDToString(&PlanNode)`。Rust 将 Go 的接口多态和具体逻辑/物理算子类型断言收敛为一个轻量 `PlanNode + PlanKind` 枚举，并把 Go 中的 `strs/idxs` 分支片段管理简化为 `needIncludeChildrenString + describe/child_string` 的直接递归。
-
-已有独立 Rust 测试 `pkg/planner/core/stringer_test.rs` 证明以下对齐点：
-
-- 一元计划自底向上使用 `->`，UnionAll 内嵌子计划。
-- FD 输出仅包含指定算子，并在 `Apply`/`Join`/`UnionAll` 处记录当前 FD 后停止。
-- TopN 集合使用 Go `%v` 风格的空格分隔、空 alias 回退到表名、IndexScan range 不带 Rust debug 引号。
-- `ExchangeReceiver` 跳过子计划遍历，并保留 Go task 列表的尾逗号格式。
+Rust 将 Go 的接口多态和具体逻辑/物理算子类型断言收敛为一个轻量 `PlanNode + PlanKind` 枚举，并把 Go 中的 `strs/idxs` 分支片段管理简化为 `needIncludeChildrenString + describe/child_string` 的直接递归。
 
 两者并非完整等价实现。Go 版本从 session expression context 格式化真实表达式，并覆盖 PointGet/BatchPointGet 等更多具体计划类型；Rust 当前使用 `PlanKind` 内预先字符串化的表达式/范围，未专门处理的变体只回退到 `name()`。Go 测试 `pkg/planner/core/stringer_test.go::TestPlanStringer` 还通过 SQL 构建和逻辑优化验证 Show extractor 格式；Rust 测试是直接构造 `PlanNode` 的单元级验证，尚不能代替这类 SQL 端到端覆盖。
 
@@ -87,13 +78,3 @@ Go 对照文件是 `pkg/planner/core/stringer.go`。顶层 API 同名：Go `ToSt
 - 修改格式时把输出当作兼容合同，同步更新独立的 `pkg/planner/core/stringer_test.rs`，并对照 `pkg/planner/core/stringer.go` 与 `stringer_test.go`。不要把 Rust 测试内嵌进生产文件。
 - 建议至少覆盖：单子链、UnionAll 即使少于两个子节点的内嵌行为、多子 Join 键、空/非空载荷、特殊 receiver、DML 有/无子计划以及 FD 停止边界。
 - 性能敏感的扩展应避免对同一大子树重复执行 `ToString`。如果改为 writer 或显式栈，必须先保留现有排序、分隔符和特殊分支格式，再用独立测试证明兼容。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；使用 `node --file pkg/planner/core/stringer.rs` 读取了目标文件全部 286 行。
-- RustCodeGraph 符号节点：`stringer.rs::ToString` （第 25 行）、`FDToString` （第 32 行）、`needIncludeChildrenString` （第 41 行）、`fdToString` （第 46 行）、`describe` （第 92 行）和 `toString` （第 271 行）。精确 `callers/callees` 查询未返回边，因此依技能回退规则用源码搜索核实调用点，没有把同名符号当作本模块证据。
-- 数据结构证据：RustCodeGraph `node --file pkg/planner/core/common_plans.rs` 核对 `JoinType`、`PlanKind`、`PlanKind::name` 和 `PlanNode`；`PlanNode` 的直接相关字段是 `kind`、`children` 和 `fd`。
-- 上游证据：RustCodeGraph 节点读取和 `rg` 都定位到 `pkg/planner/core/optimizer.rs:52`，其在 `DoOptimize` 中设置 `trace.final_plan = crate::ToString(&physical)`。
-- crate/模块证据：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`；后者的 `mod stringer`、`pub use stringer::*` 和 `#[path = "stringer_test.rs"]` 分别证明编译、公开导出与独立测试接线。
-- Go 对照证据：`pkg/planner/core/stringer.go`、`pkg/planner/core/stringer_test.go::TestPlanStringer`。Rust 独立测试证据：`pkg/planner/core/stringer_test.rs` 的五个 `#[test]` 用例。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时用任务指定的结构命令确认文件存在且恰有 11 个固定二级标题，并人工复核本文能回答文件为何存在、如何运行以及如何安全扩展。

@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-log-client`，由 `lib.rs` 公开挂载，文件名工具和块大小再导出；LogClient 方法供同 crate 编排调用。本目录没有 doc.go。本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
+把 TableMappingManager 映射包装为 BackupMeta 持久化，保存路由指纹，按当前任务或唯一前序任务读回。
 
 ## 核心职责
 
@@ -36,12 +36,8 @@ v2 路径为 `pitr_id_maps/v2/cluster-{clusterID}/upstream-{upstreamClusterID}/r
 
 ## 与 Go 版本的对应关系
 
-对应 `id_map.go` 的存储/表优先级、分段、schema 兼容和检查点时序。Rust 增量增加 v2 owner 文件及前序唯一性检查，不能沿用旧说明的“文件不存在返回空 Vec”或“文件只含 cluster/TS”。Go 使用真实 protobuf/MetaWriter，Rust 使用本地 Marshal/Unmarshal 与 BM 手工还原；Go 完整集成测试不能替代 Rust 实测。
+Rust 增量增加 v2 owner 文件及前序唯一性检查，不能沿用旧说明的“文件不存在返回空 Vec”或“文件只含 cluster/TS”。Go 使用真实 protobuf/MetaWriter，Rust 使用本地 Marshal/Unmarshal 与 BM 手工还原；Go 完整集成测试不能替代 Rust 实测。
 
 ## 扩展指南
 
 文件协议、owner 选择和指纹必须一起审查；保持“精确续跑不能改用前序”和“缺失与空映射不同”。新旧系统表键及 DELETE/REPLACE/SELECT 参数须成组维护。修改应扩展独立 id_map_test.rs、client_test.rs、parity_test.rs 和任务名称路由测试，不放源文件内。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 已读取完整 id_map blob 及增量、client 直接委托/合并入口、lib/Cargo、同名 Go 对照及 Rust 独立测试。`id_map_test.rs::truncated_id_map_metadata_is_rejected` 证明截断测试意图；`task/restore_name_route_test.rs::name_route_pitr_id_map_filename_is_task_scoped` 核对任务文件名，client/parity 测试核对往返和分段。冻结引用检索限定真实调用范围；RustCodeGraph 仅检查索引状态。未运行 Cargo，纯文档验收检查结构、空白和引用。

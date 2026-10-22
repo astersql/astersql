@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-lightning-config`（`pkg/lightning/config/Cargo.toml`），实现 Lightning 服务模式所需的“待导入配置队列”数据结构。模块由 `pkg/lightning/config/lib.rs` 的 `pub mod configlist` 纳入，并通过 `pub use configlist::*` 从 crate 根再导出；队列元素是同一 crate 的 `Config`。
-
-从接口语义看，它对应 Go 控制面在 `lightning/pkg/server/lightning.go` 中使用的 `config.List`：HTTP POST 入队，后台循环出队，GET 查询，DELETE 删除，PATCH 调整顺序。不过当前 Rust 接线尚未统一：RustCodeGraph 的调用者查询和全库检索显示，本文件的 `new_config_list` 及 snake_case 方法目前只被 `pkg/lightning/config/configlist_test.rs` 直接调用；`lightning/pkg/server/lightning.rs` 实际引用的是 `lightning/pkg/server/stubs.rs` 内另一套 `config::List`/Go 风格方法。因此，本文件是已实现并受独立测试覆盖的配置 crate API，但不能据此声称它已接入 Rust Lightning 服务主循环。
+该实现的关键不变量是：正常状态下，`State::order` 中的每个 ID 都在 `State::entries` 中有且仅有一个配置；`all_ids` 的返回顺序就是后续 `pop` 的顺序。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ RustCodeGraph 对 `new_config_list` 的调用者给出四个独立测试：`test
 
 ## 与 Go 版本的对应关系
 
-本文件逐项移植 `pkg/lightning/config/configlist.go`：Go 的 `taskIDMap + container/list + sync.Cond + lastID` 对应 Rust 的 `HashMap + VecDeque + Mutex/Condvar + last_id`；公开操作也一一对应 `NewConfigList`、`Push`、`Pop`、`Remove`、`Get`、`AllIDs`、`MoveToFront`、`MoveToBack`。`pkg/lightning/config/configlist_test.rs` 的四个测试明确对照同目录 Go 测试的 `TestNormalPushPop`、`TestContextCancel`、`TestGetRemove` 和 `TestMoveFrontBack`，验证 FIFO、阻塞唤醒、取消、查询删除与幂等重排。
-
 重要差异如下：
 
 - Go 构造器返回 `*List`，Rust 返回 `List`，跨线程共享由调用者显式增加 `Arc`。
@@ -101,13 +97,3 @@ RustCodeGraph 对 `new_config_list` 的调用者给出四个独立测试：`test
 - 若将本实现接入 Rust Lightning server，需要统一 `pkg/lightning/config/configlist.rs` 与 `lightning/pkg/server/stubs.rs::config::List` 的所有权、命名、错误类型和 `Config` 表示，迁移 `lightning/pkg/server/lightning_server_serial_test.rs` 后再删除重复实现，不能只做方法名适配。
 - 若队列可能变长，应评估 `remove`/移动方法的 O(n) 扫描；可引入稳定节点句柄或其他双向索引结构，但必须保持线程安全和 FIFO 可观察行为。
 - 测试逻辑应继续放在独立的 `pkg/lightning/config/configlist_test.rs`，不要内嵌回生产文件；Go 对照行为变化时同步检查 `configlist_test.go`。建议补足 `DeadlineExceeded`、多消费者、ID 极值和锁顺序/竞态场景。
-
-## 验证依据
-
-- 源码与符号：`pkg/lightning/config/configlist.rs`；RustCodeGraph `node` 核对了 `ContextError`、`Context`、`State`、`List`，`query` 定位了 `new_config_list`、`all_ids`、`move_to_front`、`move_to_back`。
-- 调用关系：RustCodeGraph `callers new_config_list --file pkg/lightning/config/configlist.rs` 返回四个 Rust 单元测试；`callees new_config_list` 为空。对重名方法使用文件限定查询时图索引仍产生跨仓库噪声，因此又以限定 Rust 路径的 `rg` 复核，确认生产侧没有本文件 snake_case API 的直接调用点，并记录这一索引限制而未采用噪声结果。
-- crate 边界：`pkg/lightning/config/Cargo.toml` 确认包名、`lib.rs` 入口及依赖；`pkg/lightning/config/lib.rs` 确认模块公开、根级再导出和独立测试装配。
-- 数据类型：`pkg/lightning/config/config.rs::Config` 与 `new_config` 确认 `task_id: i64` 及初值零。
-- Go 对照：`pkg/lightning/config/configlist.go`、`pkg/lightning/config/configlist_test.go`；应用位置由 `lightning/pkg/server/lightning.go::{RunServer, handleGetTask, handleGetOneTask, handlePostTask, handleDeleteOneTask, handlePatchOneTask}` 核对。
-- Rust 测试：`pkg/lightning/config/configlist_test.rs::{test_normal_push_pop, test_context_cancel, test_get_remove, test_move_front_back}`。Rust 服务当前重复实现由 `lightning/pkg/server/stubs.rs::config::{List, NewConfigList}` 及 `lightning/pkg/server/lightning.rs` 核对。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核本文区分了已验证实现、Go 设计对应和尚未统一的 Rust 生产接线。

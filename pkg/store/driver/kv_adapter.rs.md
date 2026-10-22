@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-driver` crate 内部的 canonical KV 适配层。`pkg/store/driver/lib.rs` 以私有模块 `mod kv_adapter` 装载它；外部并不直接构造本文件中的实现，而是通过公开的 `TikvStore` 和 `kv::Storage`、`kv::Client`、`kv::Transaction`、`kv::Snapshot` 等 trait 使用它。`pkg/store/driver/Cargo.toml` 表明该 crate 直接依赖 `astersql-kv`、`astersql-store-copr`、`astersql-store-driver-txn` 和固定 tag `v0.4.2-aster.10` 的 `tikv-client`，这正对应本文件连接统一 KV 接口、coprocessor 层与 client-rust 事务客户端的三侧边界。
-
-文件不是单纯转发门面：它实现事务、快照、内存写缓冲镜像、分页扫描、coprocessor 请求/响应转换、部分 PD/TiFlash 管理能力，以及 `TikvStore` 的完整 `kv::Storage` 接口。真实连接、runtime、RegionCache 和基础 store 生命周期仍由相邻的 `client_runtime.rs`、`tikv_driver.rs` 与 `astersql-store-copr` 提供。
+真实连接、runtime、RegionCache 和基础 store 生命周期仍由相邻的 `client_runtime.rs`、`tikv_driver.rs` 与 `astersql-store-copr` 提供。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ store 的 `ClientRuntime` 被 `Arc<RwLock<_>>` 共享；事务和快照 handle �
 
 ## 与 Go 版本的对应关系
 
-Rust 没有同名 `kv_adapter.go`；语义来源分散在 `pkg/store/driver/tikv_driver.go` 与 `pkg/store/driver/txn/{txn_driver.go,snapshot.go,scanner.go,unionstore_driver.go}`。Go `tikvStore.Begin` 由 client-go `KVStore.Begin` 后包装 `txn_driver.NewTiKVTxn`，`GetSnapshot` 包装 client-go snapshot；Rust 则在本文件直接用 client-rust handle 实现相同 canonical traits。`Name`、`Describe`、`CurrentVersion`、`GetLockWaits`、codec/cluster/keyspace 等 storage 方法对应 Go `tikvStore` 方法。
+Rust 没有同名 `kv_adapter.go`；语义来源分散在 `pkg/store/driver/tikv_driver.go` 与 `pkg/store/driver/txn/{txn_driver.go,snapshot.go,scanner.go,unionstore_driver.go}`。Go `tikvStore.Begin` 由 client-go `KVStore.Begin` 后包装 `txn_driver.NewTiKVTxn`，`GetSnapshot` 包装 client-go snapshot；Rust 则在本文件直接用 client-rust handle 实现相同 canonical traits。
 
-扫描语义刻意跟随 client-go：0/1 batch size 回落默认值、正反向半开范围、逐 Region 路由、keys-only 选项和按需取页。`kv_adapter_test.rs` 的测试名称和断言明确记录了这些对齐点。事务的 Get/Set/Delete/Iter/BatchGet/Commit/Rollback/LockKeys/SetOption 等接口对应 Go `tikvTxn`，snapshot 点读、批读和迭代对应 Go `tikvSnapshot`。
-
-并非所有 Go 能力已经等价：Go `GetMPPClient` 返回真实 copr MPP client，而 Rust 返回 `UnsupportedMppClient`；Go store option 使用 `sync.Map`，Rust storage option 仍为空；Rust 的部分 checkpoint/pipelined API 是显式桩。另一方面，本文件还集中实现了 Rust client 需要的 runtime 同步桥、错误快照、PD/TiFlash HTTP 与 cop 类型转换，不能简单按某一个 Go 文件逐行对应。
+并非所有 Go 能力已经等价：Go `GetMPPClient` 返回真实 copr MPP client，而 Rust 返回 `UnsupportedMppClient`；Go store option 使用 `sync.Map`，Rust storage option 仍为空；Rust 的部分 checkpoint/pipelined API 是显式桩。
 
 ## 扩展指南
 
@@ -88,11 +84,3 @@ Rust 没有同名 `kv_adapter.go`；语义来源分散在 `pkg/store/driver/tikv
 - 扩展 cop 字段时同时更新 `cop_request`、必要的 response 转换以及 `coprocessor_adapter_test.rs`；要区分 TiKV standard DAG 与 TiFlash batch cop 的合法组合，并保留限流器、runaway checker、RU 和 runtime evidence。
 - 增加 PD/TiFlash/DDL 能力时复用 `TikvStore` 的 PD 地址和 TLS，明确 keyspace v1/v2 编码差异；HTTP/RegionCache 失败必须带上下文返回。真实集群验证应继续放在独立且默认忽略的测试中。
 - 若要补齐 MPP、safe-ts、store options、pipelined flush 或 checkpoint，首先对照 Go 文件和 canonical trait 约束，再确认 client-rust 上游能力；这些是明确的迁移缺口，不应以假成功桩掩盖。
-
-## 验证依据
-
-- 源码与装配：`pkg/store/driver/kv_adapter.rs`（2489 行）、`pkg/store/driver/lib.rs`、`pkg/store/driver/Cargo.toml`。
-- RustCodeGraph：`status` 显示索引包含 11467 个文件；`node --file pkg/store/driver/kv_adapter.rs` 分段读取源码；`query` 定位 `begin_transaction`、`scan_region_page`、`cop_request`、`ClientIterator`、`ClientTransaction`；`callees` 确认关键构造/错误转换边，但 trait 动态调用的 callers 需结合源码引用核对。
-- Rust 测试：`pkg/store/driver/kv_adapter_test.rs` 验证 storage trait、PD store 计数、MaxVersion/历史时间戳、失败快照、batch size、KeyOnly、惰性分页、正反向 Region 边界和真实 TiKV MVCC；`pkg/store/driver/coprocessor_adapter_test.rs` 验证 cop 字段、TiFlash batch、限流、runaway/resource-control、stream/close 与运行时证据。真实 TiKV 用例标记 `#[ignore]` 且需要 `REAL_TIKV_PD`。
-- Go 对照：`pkg/store/driver/tikv_driver.go`，以及 `pkg/store/driver/txn/txn_driver.go`、`snapshot.go`、`scanner.go`、`unionstore_driver.go`。它们提供 storage、事务、快照与扫描的语义基线；Rust 特有的同步 runtime 和 client-rust 限制以当前 Rust 源码为准。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收只执行固定 11 章节的结构命令，并人工复核上述符号、边界、调用链和扩展风险均有本地代码或独立测试依据。

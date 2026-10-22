@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-infoschema-issyncer` crate 对外的 InfoSchema 同步编排器 `Syncer`。crate 根 `pkg/infoschema/issyncer/lib.rs` 以 `mod syncer` 装配本模块，并用 `pub use syncer::*` 导出其构造函数、trait 和方法；`Cargo.toml` 的 `[lib] path = "lib.rs"` 以及 `[package.metadata.porting] go-package = "pkg/infoschema/issyncer"` 明确了 crate 边界和 Go 移植来源。
-
-它位于“存储中的 schema 元数据”与“会话可见的最新 InfoSchema”之间：`Loader` 负责读取、增量/全量构建及缓存，本文件负责何时加载、如何续租 `SchemaValidator`、怎样发布本节点 schema 版本，以及怎样在 MDL（Metadata Lock）条件满足后按 DDL job 发布版本。生产接线可见 `pkg/session/runtime/session_factory.rs::prepare_normal_schema_runtime`，后台线程入口可见 `pkg/session/runtime/normal_ddl_service.rs::NormalSchemaRuntime::start`。
+通过 `RefreshMDLFromSQL`、`CheckMDL` 和 `MDLCheckLoop` 将 `mysql.tidb_mdl_info` 的待处理 job 转换为版本发布；跨 KS 模式只保留涉及系统保留表 ID 的 job。
 
 ## 核心职责
 
@@ -98,19 +96,16 @@ reload 由 `reload_lock` 串行化；MDL 快照由 `MDLCheckTableInfo` 自身锁
 
 ## 与 Go 版本的对应关系
 
-`pkg/infoschema/issyncer/syncer.go` 是直接语义基准。Rust 保留了普通/跨 KS 两类构造、MDL 表过滤、全局版本 watch、同步器断线恢复、半租约 reload、慢加载续租补偿、flashback TS 回退、validator 生命周期、unlock-table 缓存删除和 flashback-cluster 连接清理。
-
 需要注意的实现差异：
 
 - Go `Syncer` 直接持有 store/logger/channel；Rust 把存储访问集中到 `Loader`，用 `Condvar + bool` 代替 `mdlCheckCh`，当前只用 `eprintln!` 记录循环错误。
 - Go `refreshMDLCheckTableInfo` 在文件内显式借用系统 session、rollback、执行 SQL；Rust 把这些细节抽象为 `MDLSessionPool::ReadMDLRows`，便于由生产会话池实现并在单元测试替换。
 - Go `InitRequiredFields` 还给 Loader 注入 autoid client 和系统执行器工厂；当前 Rust 签名只注入 coordinator 与版本同步器，Loader 的生产依赖在构造时由 `SchemaStore`/`InfoCache` 提供。
 - Go ticker 与 channel 直接 select；Rust 每次最多等待 50ms 轮询 context/watch，并以 `Instant` 管理半租约期限。
-- Go 的 restart/reload 辅助函数独立存在；Rust 将相同重试策略内联进 `SyncLoop`，重试间隔仍分别为 1 秒和 200ms。
 - Rust 增加 `ReloadWithContext`、`CheckMDL` 等可取消或单步入口，供服务生命周期和确定性测试使用；Go `Reload`/循环主要使用 background context。
 - Go 还有 `FetchAllSchemasWithTables`，当前 Rust `Syncer` 未暴露同名方法；不能从本文件推断该 API 已对齐。
 
-测试对照方面，Go `syncer_test.go::TestSyncerSkipMDLCheck` 只覆盖跨 KS 过滤。Rust 独立测试 `syncer_test.rs` 保留该分支并额外覆盖 flashback 文本解析、真实 KV 元数据 reload、版本发布、validator 租约更新与同步器恢复；`pkg/session/tests/system_session.rs` 再以真实系统 SQL 路径验证旧事务阻挡、部分发布失败及循环重试。
+Rust 独立测试 `syncer_test.rs` 保留该分支并额外覆盖 flashback 文本解析、真实 KV 元数据 reload、版本发布、validator 租约更新与同步器恢复；`pkg/session/tests/system_session.rs` 再以真实系统 SQL 路径验证旧事务阻挡、部分发布失败及循环重试。
 
 ## 扩展指南
 
@@ -121,11 +116,3 @@ reload 由 `reload_lock` 串行化；MDL 快照由 `MDLCheckTableInfo` 自身锁
 - 并发修改需审视 `reload_lock`、`mdl_progress` 和 `MDLCheckTableInfo` 的锁顺序，避免在持锁期间加入可能回调 Syncer 的操作；若缩短锁范围，要保证并发 `CheckMDL` 不会重复破坏发布进度。
 - Rust 单元测试继续放在独立 `pkg/infoschema/issyncer/syncer_test.rs`，不要嵌入生产文件。跨模块生产路径可扩展 `pkg/session/tests/system_session.rs` 或同目录 runtime 测试；Go 语义变化时同步检查 `syncer.go` 与 `syncer_test.go`。
 - 若增加 crate 依赖或改变装配，更新 `pkg/infoschema/issyncer/Cargo.toml` 和相应 Bazel 元数据；本文件现有直接依赖可由 manifest 的常规 `[dependencies]` 复核，`cfg(any())` 区仅保留未启用的迁移声明，不能作为当前可执行依赖证据。
-
-## 验证依据
-
-- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/infoschema/issyncer/syncer.rs`，并用 `git show 2c944fb:pkg/infoschema/issyncer/syncer.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
-- Go `syncer.go::SyncLoop` 同样把 SQL 快照刷新和 MDL channel 通知放在诊断模式判断内；Rust 用条件变量表达通知。独立 `syncer_test.rs` 提供同步/恢复基线，但未发现冻结版本中直接覆盖此诊断门控的测试，结论来自分支源码复核。
-- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
-- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
-- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

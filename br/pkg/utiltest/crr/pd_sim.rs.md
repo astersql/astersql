@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-utiltest-crr` 测试夹具 crate 内的 PD 状态仿真核心。crate 由 `br/pkg/utiltest/crr/Cargo.toml` 定义，`lib.rs` 通过 `pub mod pd_sim` 纳入模块并用 `pub use pd_sim::*` 再导出公开符号。它不是生产 PD 客户端，也不负责真实网络 RPC；它在内存中的 `fakecluster::Cluster` 之上提供静态 Region 拓扑、TSO、Region checkpoint、全局 checkpoint 和散射行为，供 CRR/checkpoint advancer 测试使用。
-
-职责边界很明确：本文件维护 `PDSim` 的状态机；`pd_sim_service.rs` 把该状态机适配为 `TiKVClusterMeta`、`LogBackupService`、`StreamMeta` 等 streamhelper trait；`harness.rs` 再把 `PDSim`、`FlushSim`、复制 worker 和 `CheckpointAdvancer` 组合成完整测试线束。布局一旦由 `NewPDSimWithTestContext` 创建便不支持 split/merge。
+`upload_v3_global_checkpoint`、`get_global_checkpoint`、`clear_v3_global_checkpoint`、`wait_global_checkpoint_advance` 共同实现按单一任务名约束的全局 checkpoint 状态机。
 
 ## 核心职责
 
@@ -89,9 +87,7 @@ checkpoint 接口的错误文案是可测试契约：上传/读取/清空未知�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `br/pkg/utiltest/crr/pd_sim.go`，服务侧对照为 `pd_sim_service.go`。Rust 保留了 Go 的缺省布局/任务名、边界检查、确定性 TSO、store flush 配置、单副本 Region 初始化、查询封装、Scatter 更新顺序以及 checkpoint 错误文本。
-
-状态同步实现不同但目标语义一致：Go 使用 `sync.Mutex`、`checkpointWaiters []chan struct{}`，每次成功上传取出并关闭所有 waiter；Rust 使用 `Mutex<PDSimState>`、`Condvar` 和 `checkpoint_gen`，每次成功上传递增 generation 并唤醒全部等待者。两者都允许相同 checkpoint 的重复上传唤醒等待者，都拒绝更小值，都在 clear 时仅归零而不主动唤醒。
+状态同步实现不同但目标语义一致：Go 使用 `sync.Mutex`、`checkpointWaiters []chan struct{}`，每次成功上传取出并关闭所有 waiter；Rust 使用 `Mutex<PDSimState>`、`Condvar` 和 `checkpoint_gen`，每次成功上传递增 generation 并唤醒全部等待者。
 
 取消桥接是 Rust 特有接线：Go 可把 `context.Context` 直接交给 `ApplyCheckpointToStore`，Rust 的本地 `stubs::Context` 与 fakecluster context 类型不同，因此 `flushStore` 使用临时线程传播取消。`toRegionState` 在 Go 中用 `bytes.Clone` 显式复制 key；Rust 接收拥有型 `fakecluster::RegionState` 并移动其 `Vec<u8>` 字段，返回值同样不借用底层对象。
 
@@ -105,12 +101,3 @@ Go 的 `PDSim` 嵌入 `*fakecluster.Cluster`，Rust 改为具名公开字段 `cl
 - 修改 Scatter 时应保持“确定性 RNG、仅在真实迁移时 bump epoch、迁移后 checkpoint 回到全局值、返回 ID 排序”这些可复现性约束，并增加多 store 独立测试。
 - 修改 `flushStore` 的取消实现时，应证明调用前取消、调用中取消、正常完成和底层错误四条路径都回收桥接资源。当前回归入口是 `pd_sim_test.rs::flush_store_observes_cancellation_after_the_call_starts`。
 - 性能风险主要来自大布局下 `Scatter` 长时间持锁，以及每次 flush 新建轮询线程；若优化，不能牺牲 Go 对齐的取消与同步行为。兼容风险集中在错误字符串、默认任务名/起始 TS、Region epoch/checkpoint 更新顺序及 `pd_sim_service.rs` 的 trait 接线。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、7,032 个 Rust 文件；目标目录和 `pd_sim.rs` 均在索引内。`node --file br/pkg/utiltest/crr/pd_sim.rs` 核验了 391 行完整源码和文件级使用者。
-- RustCodeGraph 精确符号/调用证据：查询确认 `PDSim`、`PDSimState`、`NewPDSimWithTestContext`、`flushStore`、`wait_global_checkpoint_advance`；`explore` 给出 `NewPDSimWithTestContext` 被 `harness.rs`、`parity_test.rs`、`pd_sim_test.rs`、`pd_sim_service_test.rs` 调用，`flushStore` 被 `pd_sim_test.rs` 调用，checkpoint 内部方法被 `pd_sim_service.rs` 调用。单独的 `callers/callees` 对这些 impl 内函数未返回边，因此未把缺失边当作“无调用”。
-- 已读取生产与边界文件：`br/pkg/utiltest/crr/pd_sim.rs`、`Cargo.toml`、`lib.rs`、`pd_sim_service.rs`、`harness.rs`、`flush_sim.rs`。
-- 已读取 Go 对照：`br/pkg/utiltest/crr/pd_sim.go`、`pd_sim_service.go`。
-- 已读取独立 Rust 测试：`pd_sim_test.rs`、`pd_sim_service_test.rs`、`parity_test.rs`。当前目录不存在独立的 `pd_sim_test.go`；Go 语义以同路径生产文件及现有 CRR/streamhelper 测试引用为依据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查目标存在且固定二级标题恰好为 11，并人工复核文档没有把锁解析、split/merge、真实 RPC 或实时 Pause 事件写成已支持能力。

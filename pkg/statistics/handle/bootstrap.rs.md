@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`bootstrap.rs` 属于 `astersql-statistics-handle` crate；crate 边界由 `pkg/statistics/handle/Cargo.toml` 定义，`pkg/statistics/handle/lib.rs` 通过 `pub mod bootstrap` 与 `pub use bootstrap::*` 将本文件的公开项导出。本文件把 `mysql.stats_meta`、`mysql.stats_histograms`、`mysql.stats_top_n` 和 `mysql.stats_buckets` 的查询结果组装为 `handle.rs` 中的 `StatsCache` / `TableStats`，提供轻量初始化 `Handle::init_stats_lite` 与完整初始化 `Handle::init_stats` 两条路径。
-
-当前接线必须与算法本身分开理解：仓库内 `BootstrapBackend` 的实现仅见 `pkg/statistics/handle/bootstrap_test.rs` 的 `HistogramBackend` 和 `TransactionBackend`。生产 Domain 的启动与刷新入口 `pkg/domain/domain.rs::initialize_stats`、`update_stats` 调用的是 Domain 自身的 `init_stats_lite`，其数据来源为 `stats_store.init_tables_lite`，并没有调用本文件的 `Handle::init_stats_lite`。因此，本文件目前是已导出、受单元测试覆盖的通用 bootstrap 实现，但尚无生产后端把它接入 Domain 主启动链。
+定义 bootstrap 后端契约 `BootstrapBackend`，把事务控制、四类统计表查询、InfoSchema 存在性检查、表结构查询、内存探测、缓存配额和初始化进度更新隔离在算法之外。
 
 ## 核心职责
 
@@ -81,10 +79,6 @@ SQL 生成函数当前没有被本文件的加载流程直接调用：加载流�
 
 ## 与 Go 版本的对应关系
 
-主要一一对应关系如下：Rust `load_meta` 对应 Go `initStatsMeta` / `initStatsMeta4Chunk`；`load_histograms_lite` 对应 `initStatsHistograms4ChunkLite`；`load_histograms_full` 对应 `initStatsHistograms4Chunk`；`LoadStrategy` 对应 `loadStrategy`、`maxTidStrategy` 和 `tableListStrategy`；`load_top_n` 对应 `initStatsTopN4Chunk`；`load_buckets` 对应 `initStatsBuckets4Chunk`；两个公开入口对应 Go `InitStatsLite` / `InitStats` 及其 with-session 核心函数；`is_full_cache` 对应 Go `isFullCache`。
-
-已保持的关键语义包括：500 的分页步长、33% 的阶段进度、SQL 字面量和旧集群 `ORDER_INDEX(...,tbl)` 提示、meta 先于 histogram、snapshot 初始化分析版本、过滤已删除 schema 对象、列合成统计判定、旧版无 CMS 索引跳过 TopN、TopN 排序、内存四分之一或配置配额阈值、全量替换/局部合并和 defer 风格 commit。
-
 尚未完全对齐的地方必须视为迁移限制：
 
 - Go 使用 `initstats.RangeWorker` 按配置并发度执行 histogram、TopN、bucket 三阶段；Rust 读取并发度但串行执行。
@@ -92,7 +86,6 @@ SQL 生成函数当前没有被本文件的加载流程直接调用：加载流�
 - Go 对 CMS/TopN 做真实反序列化并保留对象；Rust 只根据字节是否为空记录 `cms_loaded`，没有解码 `cm_sketch` 内容。
 - Go 列/索引对象携带完整 schema 类型、主键属性、直方图对象及 loaded status；Rust 的 `TableInfo` 和统计结构是摘要模型。
 - Go 桶阶段调用 `CalcPreScalar` 计算标量；Rust 仅设置 `pre_scalar_ready` 布尔值。
-- Go 的 panic recovery、日志、failpoint、系统 session 池、内部事务来源标记和 record-set close 不在本文件的抽象实现中。
 - Go 生产 `Handle` 已接入该路径；Rust 本文件没有生产 `BootstrapBackend` 实现，Domain 当前使用另一条 lite 恢复实现。
 
 ## 扩展指南
@@ -104,13 +97,3 @@ SQL 生成函数当前没有被本文件的加载流程直接调用：加载流�
 若增强统计保真度，应修改 `IndexStats` / `ColumnStats` 及 `load_histograms_full`，真实解码 CMS，计算 pre-scalar，并明确畸形编码的错误策略。任何改变都要同步 `pkg/statistics/handle/bootstrap_test.rs`；SQL 文本变化还要同步 `pkg/statistics/handle/bootstrap_test.go`，并与 `bootstrap.go` 的对应 helper 核对旧集群索引提示兼容性。
 
 建议补充的回归边界包括：`last_histogram_version < snapshot`、删除表/删除列或索引、无 TopN 且无桶、TopN 有桶/无桶、版本 1 无 CMS、配额在三个阶段之间变满、业务错误与 commit 双重失败、commit 单独失败、局部刷新不影响未指定表，以及多范围任务末端超过最大 table ID。若未来改变当前断言，需决定无效 ID/范围应继续 panic 还是转为 `Error`，避免后端生成非法 SQL。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/bootstrap.rs` 确认目标文件已索引且含 56 个符号。
-- RustCodeGraph `node --file pkg/statistics/handle/bootstrap.rs --offset 1 --limit 620`：读取目标文件 551 行全貌；`query` 分别定位 `BootstrapBackend`、`init_stats`、`init_stats_lite`、`load_meta`、`load_histograms_full`、`load_top_n`、`load_buckets`、`finish_transaction` 和 `is_full_cache`。全局 `callers/callees` 查询在 30 秒限定内未返回，因此未把其空输出当作“没有调用者”的证据。
-- 源与边界文件：`pkg/statistics/handle/bootstrap.rs`、`pkg/statistics/handle/handle.rs`、`pkg/statistics/handle/lib.rs`、`pkg/statistics/handle/Cargo.toml`。
-- Go 对照：`pkg/statistics/handle/bootstrap.go`；重点核对 meta/histogram/TopN/bucket 组装、SQL helper、load strategy、`InitStatsLite`、`InitStats`、`isFullCache` 和并发 worker。
-- 独立测试：`pkg/statistics/handle/bootstrap_test.rs` 覆盖 SQL、索引直方图字段保留、内存探测失败、begin 失败后的 commit 与进度收尾；`pkg/statistics/handle/bootstrap_test.go` 覆盖同路径 SQL 字面量。
-- 接线搜索：仓库内 `BootstrapBackend` 仅有上述 Rust 测试的两个实现；`pkg/domain/domain.rs::initialize_stats`、`update_stats`、`init_stats_lite` 证明当前生产启动路径使用 restricted statistics store，而不是本文件的泛型入口。
-- 本任务只新增说明文档，不修改运行时代码，未运行 Cargo。交付前使用任务文件给定的结构命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核所有“当前支持”结论均有上述源码、测试或调用搜索依据。

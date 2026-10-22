@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`import_query.rs`](import_query.rs) 属于 `astersql-session` crate 的具体会话运行时。父模块 [`pkg/session/runtime.rs`](../runtime.rs) 以私有 `mod import_query;` 装配它，因此文件本身不形成对外 crate API；它通过 `impl ConcreteSession` 增加 `execute_import_query`，供同一运行时的语句分派器调用。
-
-直接入口位于 [`dispatch.rs`](dispatch.rs) 的 `ConcreteSession::execute_statement`：分派器先解析目标库表，拒绝带物化视图日志的基表，并调用 `astersql_executor_importer::CheckImportTableTTL`；当 `ImportIntoStmt.Select` 存在时才进入 `execute_import_query`，否则走文件导入路径。因而本文件负责的是 `IMPORT INTO ... FROM (SELECT ...)` 的同步执行路径，不负责 SQL 解析、TTL/MLog 的公共前置校验或文件导入。
-
-[`pkg/session/Cargo.toml`](../Cargo.toml) 将该目录声明为 `astersql-session`（库入口为 `lib.rs`），并直接依赖本文件使用的 importer、Lightning backend/encode/KV/verification/mydump、KV、元模型、MySQL 模式、tablecodec 与 types crate。当前 crate 的 `nextgen` feature 没有在本文件形成条件编译分支。
+`QueryRuntime` 实现 `importer::TableImporterRuntime`，把当前表元信息、SQL mode、DML 类型标志、自增分配器和查询 chunk 接收端适配给通用 importer。
 
 ## 核心职责
 
@@ -89,11 +85,7 @@ receiver 被包装成 `Arc<Mutex<_>>`，满足通用 importer 的共享接收接
 
 ## 与 Go 版本的对应关系
 
-Go 主入口在 [`pkg/executor/import_into.go`](../../executor/import_into.go) 的 `ImportIntoExec` 查询导入分支：它创建新 session，运行控制器前置检查和 TiKV 配置，用有界 channel 连接两个 `errgroup` goroutine；一个执行 SELECT 并流式生产 `QueryChunk`，另一个调用 `TableImporter.ImportSelectedRows`。成功后还刷新表统计、设置 affected rows 和 statement message。
-
-Go [`TableImporter.ImportSelectedRows`](../../executor/importer/table_import.go) 与本文件共享核心阶段：打开 data/index engine、query chunk 编码、磁盘 quota 检查、关闭并导入 engine、同步 allocator、checksum/post-process。Go 的 query processor 定义在 [`chunk_process.go`](../../executor/importer/chunk_process.go)，同样把 query rows 编为 data/index KV。
-
-Rust 当前保持的语义包括：SELECT 来源判定、目标元数据驱动编码、query 专用 chunk、data/index 分离、重复键由物理导入暴露、allocator 后处理与 checksum。明确差异包括：
+明确差异包括：
 
 - Rust 在单一 `ConcreteSession` 中同步执行并预先物化全部 SELECT 行；Go 使用新 session、并发 producer/importer 和有界 channel。
 - Rust 固定一次 `ProcessChunk`，`thread` 只校验；Go 按 `ThreadCnt` 启动多个 worker。
@@ -111,12 +103,3 @@ Rust 当前保持的语义包括：SELECT 来源判定、目标元数据驱动�
 - 若改变 engine 生命周期，应为“data 已导入/index 失败”“ProcessChunk 中途失败”“checksum 失败”和 cleanup 失败分别定义可恢复策略，避免留下部分物理结果。
 - Rust 测试不要内嵌到本文件。会话端到端回归应扩展同目录独立文件 [`normal_ddl_create_materialized_view_test.rs`](normal_ddl_create_materialized_view_test.rs)，或新增同目录 `*_test.rs` 并在 `runtime.rs` 的 `#[cfg(test)] mod` 中装配；通用 query processor/option 行为则应扩展 [`pkg/executor/importer`](../../executor/importer/) 下的独立测试。
 - 性能变更要重点量化 SELECT 全量物化、1024 固定批次、无界 channel、单 worker 编码、全表 checksum 扫描和固定 region split 参数。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/session/runtime/import_query.rs` 确认目标文件入图且含 15 个符号；`node --file ... --offset 1 --limit 400` 完整读取 295 行源码。精确 caller/callee 查询未产生可用边，已用限定路径源码补证，未采用通用名称的噪声结果。
-- 目标源码与模块边界：[`import_query.rs`](import_query.rs)、[`runtime.rs`](../runtime.rs)、[`dispatch.rs`](dispatch.rs)、[`system_session.rs`](system_session.rs)、[`pkg/session/Cargo.toml`](../Cargo.toml)。`pkg/session` 下未发现 `doc.go`，因此没有额外包契约文件可读。
-- Rust 下游实现：[`engine_process.rs`](../../executor/importer/engine_process.rs)、[`table_import.rs`](../../executor/importer/table_import.rs)、[`import_sst.rs`](import_sst.rs)。
-- Go 对照：[`import_into.go`](../../executor/import_into.go)、[`table_import.go`](../../executor/importer/table_import.go)、[`chunk_process.go`](../../executor/importer/chunk_process.go)、[`import_test.go`](../../executor/importer/import_test.go)。
-- 独立 Rust 测试：[`normal_ddl_create_materialized_view_test.rs`](normal_ddl_create_materialized_view_test.rs) 的 `normal_ddl_plan_create_materialized_view_2_import_select` 验证成功导入，`normal_ddl_plan_create_materialized_view_2_import_errors` 验证重复键不留行及非空目标拒绝，`import_select_rejects_enabled_ttl_even_with_disable_precheck` 验证 TTL 检查不能被该选项绕过。同名专用 `import_query_test.rs` 当前不存在。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证文件存在且恰有 11 个固定二级章节，并人工复核所有链接指向真实文件、差异描述没有提升为未证实的支持结论。

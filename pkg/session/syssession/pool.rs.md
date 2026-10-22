@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session-syssession` crate（`pkg/session/syssession/Cargo.toml`），实现可复用的系统内部会话池。crate 根 `pkg/session/syssession/lib.rs` 以私有模块 `pool` 装载本文件，再通过 `pub use pool::*` 公开导出 `AdvancedSessionPool`、`Pool`、`CancellationToken`、`Factory`、`PoolMaxSize` 和构造函数。
-
-它位于“具体数据库会话适配器”和各内部 SQL 使用方之间：工厂产生实现 `SessionContext` 的底层上下文，本文件把它包装成 `session.rs` 定义的共享内部会话，借出时返回具有独占所有权的 `Session`，归还时清理状态并缓存。当前生产接线至少包括 `pkg/session/runtime/system_session.rs::SystemResources`（DDL/通用系统会话，空闲容量 5）与 `pkg/session/runtime/ttl_timer_store.rs::new_ttl_timer_session_pool`（TTL timer 专用会话）。
-
-本文件只管理空闲会话和所有权转换，不实现 SQL、事务或注册表本身；这些行为由 `SessionContext` 具体实现以及同目录 `session.rs` 完成。
+只管理空闲会话和所有权转换，不实现 SQL、事务或注册表本身；这些行为由 `SessionContext` 具体实现以及同目录 `session.rs` 完成。
 
 ## 核心职责
 
@@ -87,15 +83,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/session/syssession/pool.go`。两版都保留 `PoolMaxSize`、工厂、`Pool` 接口、按需创建、所有权借出/归还、满池丢弃、脏会话拒绝、成功回调归还、失败回调关闭、幂等关闭以及 GC-blocking 注册重试的核心语义。Rust `VecDeque + Mutex` 对应 Go 的有缓冲 channel，Rust `AtomicBool + drain` 对应 Go `mu.closed + close(channel) + range drain`。
-
-所有权模型保持同一意图，但表示不同：Go 以对象身份作为 owner，并含 `noopOwnerHook`；Rust 用唯一数值的 `Owner::Pool/Session` 枚举，并在 `session.rs::transfer_owner` 中只对 Session owner 调用 `on_became_owner/on_resign_owner`，池 owner 天然是 no-op。Rust 在 `Get` 失败时以调用者 owner 有条件关闭，避免误关已经被并发转移给别人的对象。
+所有权模型保持同一意图，但表示不同：Go 以对象身份作为 owner，并含 `noopOwnerHook`；Rust 用唯一数值的 `Owner::Pool/Session` 枚举，并在 `session.rs::transfer_owner` 中只对 Session owner 调用 `on_became_owner/on_resign_owner`，池 owner 天然是 no-op。
 
 归还清理存在实现形态差异。Go 调 `CheckNoPendingTxn` 和 `OwnerResetState(p.ctx, p)`，池还保存带 `kv.InternalTxnOthers` 的 context；Rust `SessionContext` 把它拆为 `has_pending_transaction`、`rollback_transaction`、`reset_state`，本池不持有 Go context。文档应以 Rust 当前调用顺序为准，不能假设其适配器拥有 Go context 的取消/内部来源标记。
 
-GC 注册也有差异：Go 先用 `infosync.ContainsInternalSession` 检查，并在测试环境通过 failpoint 允许跳出重试；取消由 `context.Context` 提供。Rust 每轮直接调用抽象的 `register_internal_session`，没有 contains 快路径或 failpoint，取消由本地 `CancellationToken` 提供。因此 Rust 的 `false` 必然意味着继续重试，直至取消或成功。
-
-Go 测试 `pkg/session/syssession/pool_test.go` 覆盖容量、复用、旧 owner/重复 Put、in-use、avoid-reuse、未决事务、panic、满池、关闭池、回调错误/panic 和幂等关闭。Rust 的可执行对照位于独立文件 `pool_test.rs` 与 `session_integration_test.rs`。
+GC 注册也有差异：Go 先用 `infosync.ContainsInternalSession` 检查，并在测试环境通过 failpoint 允许跳出重试；取消由 `context.Context` 提供。Rust 每轮直接调用抽象的 `register_internal_session`，没有 contains 快路径或 failpoint，取消由本地 `CancellationToken` 提供。
 
 ## 扩展指南
 
@@ -107,13 +99,3 @@ Go 测试 `pkg/session/syssession/pool_test.go` 覆盖容量、复用、旧 owne
 - Rust 生产逻辑与测试必须继续分文件。优先扩展 `pkg/session/syssession/pool_test.rs` 的可执行测试，并在涉及真实适配器/注册生命周期时同步 `session_integration_test.rs`；与 Go 行为相关的改动还应核对 `pool.go` 和 `pool_test.go`。
 
 兼容风险集中在所有权 hook 次数、错误后是否复用、关闭竞态和 GC 注册取消语义；性能风险集中在超大默认容量、每次归还的回滚/重置、两层 mutex，以及注册失败时固定 100 ms 轮询。新增指标或日志不能在持有队列/内部状态锁时执行可能阻塞的外部工作。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/syssession` 确认目标、Go 对照和独立测试；`node --file pkg/session/syssession/pool.rs` 读取完整 297 行实现；`query AdvancedSessionPool`、`query NewAdvancedSessionPool`、`query WithForceBlockGCSession`、`query transfer_owner` 确认主要符号及位置。精确 `callers/callees` 查询受同名符号歧义影响，未把噪声边当作事实。
-- 目标与 crate 边界：`pkg/session/syssession/pool.rs`、`pkg/session/syssession/lib.rs`、`pkg/session/syssession/Cargo.toml`；目标包及上层 `pkg/session` 下未发现需要额外读取的 `doc.go`。
-- 所有权与资源下游：`pkg/session/syssession/session.rs::SessionContext`、`new_internal_session_for_pool`、`transfer_owner`、`close_internal`；测试可观测辅助为 `pkg/session/syssession/session_test_util.rs::AdvancedSessionPool::Size`。
-- 生产上游：`pkg/session/runtime/system_session.rs::SystemResources::{get,put,close}` 与 `SystemSessionPool::new_with_validator`；`pkg/session/runtime/ttl_timer_store.rs::new_ttl_timer_session_pool`。
-- Go 对照：`pkg/session/syssession/pool.go` 与 `pkg/session/syssession/pool_test.go`。
-- 独立 Rust 测试：`pkg/session/syssession/pool_test.rs::{advanced_pool_close_is_idempotent_and_rejects_get, advanced_pool_reuses_clean_sessions_and_closes_avoid_reuse_sessions, test_new_session_pool, test_session_pool_with_session, test_session_pool_put_rejects_unclean_or_unstorable_sessions, test_session_pool_with_force_block_gc_session}`；`pkg/session/syssession/session_integration_test.rs::{force_block_gc_registers_then_returns_clean_session_to_pool, public_session_ownership_has_one_registry_lifecycle, test_domain_advanced_session_pool_put_back_dirty_session}`。
-- 按任务约束未运行 Cargo。验证只执行固定十一章节结构检查，并人工复核“为何存在、如何运行、如何安全扩展”均可由上述源码与测试定位回答。

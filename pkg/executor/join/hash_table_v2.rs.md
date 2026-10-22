@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate；crate 入口 `pkg/executor/join/lib.rs` 以 `pub mod hash_table_v2` 暴露它，并由同 crate 的 `hash_join_v2.rs` 直接使用。它位于 Hash Join V2 的构建侧数据链中：`HashTableContext::build` 先把各分区的构建行编码为 `RowTable`，再交给 `HashTableV2::new` 建立按 hash 分桶的索引；probe 阶段经 `HashTableContext::lookup` 返回 `RowPos` 候选，随后仍由 `hash_join_v2.rs` 比较真实 join key，避免把 hash 相等误当成键相等。
-
-`pkg/executor/join/Cargo.toml` 将库入口设为 `lib.rs`，并声明 Go 包来源为 `pkg/executor/join`。本文件自身只直接依赖同 crate 的 `join_row_table::RowTable` 与 `join_table_meta::EncodedRow`，不直接引入外部 crate。当前 Cargo 清单的大部分移植依赖位于 `target.'cfg(windows)'.dependencies`；这属于整个 join crate 的构建配置，而不是本哈希表独有依赖。
+`HashTableV2` 管理全部可选分区，提供建表、分区替换、按分区 lookup、行读取、内存估算、spill 后清空及全局行号遍历（`HashTableV2` 的各方法）。
 
 ## 核心职责
 
@@ -66,7 +64,7 @@ RustCodeGraph 能定位 `HashTableV2`、`SubTable` 及文件源码，并显示 `
 
 ## 与 Go 版本的对应关系
 
-Rust 文件与 `pkg/executor/join/hash_table_v2.go` 对齐了分区子表、最小桶长、严格上取 2 的幂、全局行坐标/迭代、内存账面公式、分区清空以及“只索引 `validJoinKeyPos`”的核心语义。`hash_table_v2_test.rs` 还专门验证非前缀有效位置（只索引第 3 行）和清空后不重写空标志。
+Rust 文件与 `pkg/executor/join/hash_table_v2.go` 对齐了分区子表、最小桶长、严格上取 2 的幂、全局行坐标/迭代、内存账面公式、分区清空以及“只索引 `validJoinKeyPos`”的核心语义。
 
 主要实现差异如下：
 
@@ -85,12 +83,3 @@ Go 测试 `hash_table_v2_test.go` 还覆盖百万级 build、CAS 并发 build、
 - 改动全局遍历时，集中处理 `create_row_pos`、`create_row_iter` 和 `RowIter`，测试空/`None` 分区、多 segment、`0..0`、反向区间、恰好 total 和超过 total。测试必须继续放在独立的 `hash_table_v2_test.rs`，不要内嵌到生产文件。
 - 若要求真实并行建表，应先定义同步策略和内存模型，再改造 `atomic_update_hash_value`/`build` 及上游任务接线；应新增 Rust 并发压力测试，并以 Go `TestConcurrentBuild` 的“每行恰好出现一次”为最低行为基线。
 - 改动内存追踪时，不应继续把 tagged-pointer 兼容公式称为 Rust 实际内存；可保留兼容指标，同时另增明确命名的真实容量估算，并同步 `HashTableContext::memory_bytes` 的使用者。
-
-## 验证依据
-
-- 生产源码：`pkg/executor/join/hash_table_v2.rs`（全部 619 行）；直接入口与调用：`pkg/executor/join/hash_join_v2.rs` 的 `HashTableContext`、`HashJoinExecutorV2::probe_row`、`create_build_tasks`；模块入口：`pkg/executor/join/lib.rs`。
-- crate 边界：`pkg/executor/join/Cargo.toml`；目标目录没有 `doc.go`，包职责由 `lib.rs` 模块文档与真实调用链核验。
-- Rust 独立测试：`pkg/executor/join/hash_table_v2_test.rs`，覆盖容量/内存公式、build/lookup、分区替换与清空、跨空分区迭代、拆分区间、精确有效 key 位置及缓存空标志。
-- Go 对照：`pkg/executor/join/hash_table_v2.go`；Go 测试：`pkg/executor/join/hash_table_v2_test.go`，其中 `TestHashTableSize`、`TestBuild`、`TestConcurrentBuild`、`TestLookup`、`TestRowIter` 提供原始语义和并发差异证据。
-- RustCodeGraph：执行了 `status`（索引含 11,467 文件、307,296 节点、1,848,419 边）、`query HashTableV2`、`query SubTable`、按文件 `node` 读取目标源码与直接调用片段；方法级图查询无稳定结果后，以限定目录的 `rg` 补足直接引用。
-- 本任务是纯文档分析，按计划不运行 Cargo、Rust/Go 单元测试或构建；最终以固定十一章节结构命令、链接/事实人工复核和 diff 范围检查交付。

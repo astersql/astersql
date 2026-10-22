@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`constraint.rs`](constraint.rs) 属于 `astersql-ddl` crate；[`pkg/ddl/Cargo.toml`](Cargo.toml) 的 `[lib]` 将 crate 根设为 `lib.rs`，而 [`lib.rs`](lib.rs) 通过 `pub mod constraint` 公开本模块。文件提供一套针对 CHECK 约束的内存元数据模型和单步状态推进函数，并复用 [`column.rs`](column.rs) 的 `SchemaState`、`TableInfo`，以及 [`generated_column.rs`](generated_column.rs) 的简化表达式树。
-
-必须区分“模块已导出”和“已接入完整 DDL 主链”：截至本次分析，全仓 Rust 使用点中，`advance_add_check_constraint` 只有 [`constraint_test.rs`](constraint_test.rs) 的回滚测试直接调用；`advance_drop_check_constraint`、`advance_alter_check_constraint` 及两个列依赖检查函数没有目标文件外的调用者。真实 Rust 建表路径使用的是 `astersql_meta_model::ConstraintInfo`（例如 [`create_table.rs`](create_table.rs)），不是本文件自定义的 `ConstraintInfo`。因此，本文件当前是可复用的局部状态机实现，但不能据此断言 SQL 入口、持久化 job、owner worker、schema 同步或 DML 检查已经通过它接线。
+由 `advance_add_check_constraint`、`advance_drop_check_constraint`、`advance_alter_check_constraint` 每次推进一个状态，返回 `ConstraintOutcome`，由调用者负责重复驱动、持久化和失败后的后续动作。
 
 ## 核心职责
 
@@ -91,18 +89,13 @@ RustCodeGraph 给出的内部边包括 `advance_add_check_constraint -> validate
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`constraint.go`](constraint.go)，回归行为见 [`constraint_test.go`](constraint_test.go)。主要映射如下：
-
 | Rust | Go | 对齐情况与差异 |
 | --- | --- | --- |
-| `advance_add_check_constraint` | `(*worker).onAddCheckConstraint`、`checkAddCheckConstraint` | 核心状态顺序、非强制快速公开、重名/未知列检查及按名回滚意图相近；Rust 将元数据、扫描结果和版本抽象为内存参数，未包含 job 取消/回滚状态、持久化与 schema sync。 |
-| `advance_drop_check_constraint` | `onDropCheckConstraint`、`checkDropCheckConstraint` | 都是 `Public -> WriteOnly -> 移除`；Go 更新 `model.TableInfo` 并完成 job，Rust 只修改本地向量。 |
-| `advance_alter_check_constraint` | `(*worker).onAlterCheckConstraint`、`checkAlterCheckConstraint` | ENFORCED 的状态顺序和幂等路径对应；Rust 以布尔值代替真实存量扫描，并把回滚压缩进同一函数。 |
-| `build_constraint_info` | `buildConstraintInfo` | 字段意图对应；Go 从 AST 恢复规范 SQL 表达式，Rust 接受现成字符串，且使用独立类型。 |
-| `check_constraint_name` | `checkTooLongConstraint` | 都检查 64 字节下限语义；Go 返回 TiDB `ErrTooLongIdent`，Rust 返回领域枚举。 |
-| `find_dependent_columns` | `findDependentColsInExpr` | 都去重并规范列名；Rust 额外用 `BTreeSet` 固定迭代顺序，并只支持简化 `ExpressionNode`。 |
-| `set_names_for_constraints` | `setNameForConstraintInfo` | 都生成 `<table>_chk_<n>` 并跳过冲突。 |
-| 两个 `ensure_column_*` | `IsColumnDroppableWithCheckConstraint`、`IsColumnRenameableWithCheckConstraint` | 单列/多列删除规则及重命名规则对应；Go 使用 `ast.CIStr.L` 做规范化比较并返回 TiDB 错误。 |
+| `advance_add_check_constraint` | `(*worker).onAddCheckConstraint`、`checkAddCheckConstraint` | 核心状态顺序、非强制快速公开、重名/未知列检查及按名回滚意图相近；Rust 将元数据、扫描结果和版本抽象为内存参数，未包含 job 取消/回滚状态、持久化与 schema sync。|
+| `advance_drop_check_constraint` | `onDropCheckConstraint`、`checkDropCheckConstraint` | 都是 `Public -> WriteOnly -> 移除`；Go 更新 `model.TableInfo` 并完成 job，Rust 只修改本地向量。|
+| `build_constraint_info` | `buildConstraintInfo` | 字段意图对应；Go 从 AST 恢复规范 SQL 表达式，Rust 接受现成字符串，且使用独立类型。|
+| `check_constraint_name` | `checkTooLongConstraint` | 都检查 64 字节下限语义；Go 返回 TiDB `ErrTooLongIdent`，Rust 返回领域枚举。|
+| `find_dependent_columns` | `findDependentColsInExpr` | 都去重并规范列名；Rust 额外用 `BTreeSet` 固定迭代顺序，并只支持简化 `ExpressionNode`。
 
 Go 中 `verifyRemainRecordsForCheckConstraint` 会执行 `select 1 ... where not <expr> limit 1`，用真实行决定是否违反约束；Rust 仅消费 `remaining_records_valid`。Go 测试使用 failpoint 观察 `WriteOnly`、`WriteReorganization`、`Public` 各阶段的写入行为和回滚，Rust [`constraint_test.rs`](constraint_test.rs) 多数测试采用独立的简化 `Table/CheckConstraint` 测试模型，只有最后一个测试直接覆盖生产状态机函数。因此两套测试的意图相近，但 Rust 当前对生产 API 的直接覆盖明显不完整。
 
@@ -113,13 +106,3 @@ Go 中 `verifyRemainRecordsForCheckConstraint` 会执行 `select 1 ... where not
 若目标是让 CHECK 约束在真实 Rust SQL 主链可用，不能只增加本文件分支。需要先决定是复用 `pkg/meta/model/table.rs::ConstraintInfo` 还是提供显式转换，再接入 job 参数解码、表元数据持久化、worker 重试/回滚、schema 版本同步、DML 可写约束缓存和真实存量行扫描。相应测试应同时验证独立状态机与 SQL 可见行为，并与 Go `constraint_test.go` 的状态窗口意图保持一致。
 
 兼容性风险集中在状态顺序、错误类型/错误码、大小写与 Unicode 名称、自动命名冲突、旧元数据反序列化和回滚幂等性；性能风险集中在真实存量扫描及约束表达式求值，本文件当前的 `Vec` 线性查找只适合约束数量较小的表级元数据。任何并发接线都应把“状态和 schema 版本同一事务提交”作为不变量，而不是在本模块中添加进程内锁来模拟分布式一致性。
-
-## 验证依据
-
-- 源码全量阅读：[`constraint.rs`](constraint.rs)（443 行），并核对 [`column.rs`](column.rs) 的 `SchemaState`/`TableInfo`、[`generated_column.rs`](generated_column.rs) 的 `ExpressionNode`/`find_column_names_in_expr`、[`lib.rs`](lib.rs) 的模块导出。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 声明 package `astersql-ddl`、`[lib] path = "lib.rs"`；目标文件自身只使用标准库和同 crate 模块。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node` 查询确认三个 `advance_*`、两个列依赖函数、`build_constraint_info`、`find_dependent_columns`、`set_names_for_constraints` 与 `validate_dependencies` 的源码和内部调用边。`advance_add_check_constraint` 的已索引直接调用者只有 Rust 回滚测试；另外两个状态推进函数没有显示外部调用者。
-- 全仓使用核对：`rg` 搜索三个 `advance_*` 和本文件自定义类型，确认生产 Rust 路径未调用它们；真实建表代码使用 `astersql_meta_model::ConstraintInfo`。
-- Go 对照：全量阅读 [`constraint.go`](constraint.go)（435 行）和 [`constraint_test.go`](constraint_test.go)（247 行），核对 job 状态、真实数据验证、session pool、元数据版本更新以及各状态写入语义。
-- Rust 测试：全量阅读 [`constraint_test.rs`](constraint_test.rs)（313 行）；其简化模型覆盖状态下的写入意图，直接生产 API 测试覆盖添加回滚只删除命名目标。
-- 本任务只新增文档，按总计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核本文明确标示了“未接入真实 DDL 主链”的验证边界。

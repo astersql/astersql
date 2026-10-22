@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-ingestor-simplesst` crate 的统计文件顺序读取器。crate 由 `pkg/ingestor/simplesst/Cargo.toml` 定义、以 `lib.rs` 为入口，并在 `lib.rs::stat_reader` 中公开本模块；其移植元数据指向 Go 包 `pkg/ingestor/simplesst`。统计文件不是 SST 数据正文，而是 writer 为连续键范围写出的 `RangeProperty` 序列，供导入阶段归并属性、估算数据文件的安全 seek 偏移。
-
-当前 Rust 实现依赖 crate 内的内存对象存储 `MemoryStorage`，打开时将整个统计对象读入 `Vec<u8>`，再由 `ByteReader` 维护游标。因此它是 simplesst 内部数据格式与上层算法之间的薄解析边界，不负责创建统计、排序属性或执行真正的对象存储流式 I/O。直接上游见 `iter.rs::MergePropIter` 和 `util.rs::read_offsets_for_path`。
+`StatsReader::new` 把已加载的字节数组包装成从偏移 0 开始的 `ByteReader`，并把零缓冲参数规范化为 1。
 
 ## 核心职责
 
@@ -87,11 +85,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ingestor/simplesst/stat_reader.go`：两版都有 `StatsReader`、`NewStatsReader`、`NextProp`、`Close`，并使用相同的 4 字节大端长度前缀和 `decodeProp` 字段顺序。Go 的正文读取错误经过 `noEOF(err)`，Rust 在正文阶段显式把 EOF 映射成 `UnexpectedEof`，目的都是区分“记录边界的正常 EOF”和“半条记录的损坏 EOF”。
+Go 的正文读取错误经过 `noEOF(err)`，Rust 在正文阶段显式把 EOF 映射成 `UnexpectedEof`，目的都是区分“记录边界的正常 EOF”和“半条记录的损坏 EOF”。
 
-当前实现仍有明确边界差异：Go 构造器接收 `context.Context` 和抽象 `storeapi.Storage`，通过 `openStoreReaderAndSeek(..., 0, 250*1024)` 获得存储 reader，再用调用者的 `bufSize` 包装；Rust 构造器没有 context，只接受具体 `MemoryStorage`，并将对象整体加载到内存。Go 返回 `*StatsReader` 和 `*RangeProperty`，Rust 返回拥有型 `StatsReader` 和 `RangeProperty`。Rust 还提供 snake_case 原生 API，并保留 PascalCase 别名以方便移植调用点。
+当前实现仍有明确边界差异：Go 构造器接收 `context.Context` 和抽象 `storeapi.Storage`，通过 `openStoreReaderAndSeek(..., 0, 250*1024)` 获得存储 reader，再用调用者的 `bufSize` 包装；Rust 构造器没有 context，只接受具体 `MemoryStorage`，并将对象整体加载到内存。Go 返回 `*StatsReader` 和 `*RangeProperty`，Rust 返回拥有型 `StatsReader` 和 `RangeProperty`。
 
-这些差异意味着当前 Rust 版复刻了统计格式、顺序读取和错误分类，但尚不能据此声称已具备 Go 版的取消传播、通用对象存储或流式 I/O 能力。Go 侧 `iter.go`、`util.go`、`onefile_writer_test.go`、`writer_test.go` 是对应调用和测试意图的直接证据。
+这些差异意味着当前 Rust 版复刻了统计格式、顺序读取和错误分类，但尚不能据此声称已具备 Go 版的取消传播、通用对象存储或流式 I/O 能力。
 
 ## 扩展指南
 
@@ -102,12 +100,3 @@
 - 若改变缓冲或并发策略，需测量整对象复制和属性 key 复制的内存成本，并保留 `get_read_range_from_props_with_limit` 的并发上限以及 `PropertyGroup::stop` 的无泄漏/无死锁性质。
 
 兼容风险主要是 Go/Rust 线格式或 EOF 分类漂移；正确性风险是损坏记录被误判为正常耗尽、错误偏移被上层用于 seek；性能风险是整体加载大统计对象、恶意长度触发大读取请求，以及并发打开过多文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/ingestor/simplesst/stat_reader.rs` 命中目标文件并报告 12 个符号。
-- RustCodeGraph 源码/调用查询：`node --file pkg/ingestor/simplesst/stat_reader.rs`；`query StatsReader`、`query NewStatsReader`；文件限定的 `callers/callees` 查询。可稳定确认的关键边为 `next_prop -> read_n_bytes`、`next_prop -> decode_prop`、`NextProp -> next_prop`；同名 `new` 的图查询存在歧义，因此以文件节点和直接引用搜索补证。
-- 读过的生产与边界文件：`stat_reader.rs`、`byte_reader.rs`、`codec.rs`、`iter.rs`、`util.rs`、`lib.rs`、`Cargo.toml`。
-- Go 对照：`stat_reader.go`；并以 `iter.go`、`util.go` 的直接引用和 `onefile_writer_test.go`、`writer_test.go` 的回读用法核对移植意图。
-- Rust 独立测试证据：`onefile_writer_test.rs::test_onefile_writer_stat` 验证属性数和 Keys 汇总；`test_onefile_prop_offset` 验证偏移单调；`writer_test.rs::test_flush_kvs_retry` 验证重试后的统计仍可读且 FirstKey 有序；`util_test.rs` 验证偏移矩阵、空 job key、并发上限和提前停止；`iter_test.rs` 验证空文件、归并顺序、预开错误传播与关闭清理；`codec_test.rs` 验证字段往返、截断和尾随字节兼容。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行固定 11 章节结构检查，并人工复核文档只陈述上述源码、调用边、Cargo/Go 和独立测试能够支持的事实。

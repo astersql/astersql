@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-set` crate；crate 入口 `pkg/util/set/lib.rs` 以 `set_with_memory_usage` 模块加载并公开重导出其 API。`pkg/util/set/Cargo.toml` 表明它直接依赖 `astersql-util-hack`、`astersql-util-memory` 和 `astersql-types`，分别提供内存感知映射、内存追踪器和 `MyDecimal`。
-
-它是 Go `pkg/util/set/set_with_memory_usage.go` 的 Rust 对应实现：在集合/映射操作之上报告近似内存增量。当前 Rust 仓库中的实际引用集中在 `pkg/util/set/set_with_memory_usage_test.rs` 与 `pkg/util/set/migration_aster_unit_test.rs`；`pkg/executor/aggregate/agg_hash_executor.rs` 仅保留了注释中的拟接线代码。因此，该文件已提供可用的 crate API，但尚不能据现有调用证据声称已进入 Rust SQL 执行主链。
+用 `hack::MemAwareMap<K, V>` 实现五种容器：字符串映射、字符串到 Decimal 指针的映射，以及字符串、`f64`、`i64` 集合（`set_with_memory_usage.rs:34-359`）。
 
 ## 核心职责
 
@@ -81,13 +79,13 @@ Tracker 由 `Arc` 共享，`Tracker::Consume` 的消费计数使用原子操作�
 
 ## 与 Go 版本的对应关系
 
-Rust 五类结构、构造器和 `Insert` 主体与 `pkg/util/set/set_with_memory_usage.go` 一一对应；字符串类的“有 Tracker 时立即 Consume 并把返回 delta 清零”保持一致。Rust 用切片参数替代 Go 变参，并用 `Option<Arc<Tracker>>` 替代可空 `*memory.Tracker`。
+Rust 用切片参数替代 Go 变参，并用 `Option<Arc<Tracker>>` 替代可空 `*memory.Tracker`。
 
 Go 通过嵌入 `hack.MemAwareMap` 自动暴露方法；Rust 使用具名字段并显式转发 `Exist`、`Count`、`Len`、`Empty`、`Bytes`。Go Decimal 值是受 GC 管理的 `*types.MyDecimal`，Rust 对照为裸指针，生命周期保障并不等价，这是移植时最重要的安全差异。
 
-浮点集合在外观上对应 Go 的 `map[float64]struct{}`，但 Rust 必须借助 `FloatKey` 主动复现 Go 行为：零符号归一，多次 NaN 插入分别计数，NaN 不可查询。`migration_aster_unit_test.rs:202-210` 验证了这些语义。
+浮点集合在外观上对应 Go 的 `map[float64]struct{}`，但 Rust 必须借助 `FloatKey` 主动复现 Go 行为：零符号归一，多次 NaN 插入分别计数，NaN 不可查询。
 
-Go 测试文件是三组 allocation benchmark；Rust `set_with_memory_usage_test.rs` 保留相同行数表（含 425984/425985、851968/851969 边界），但稳定 test harness 中改为单轮插入并断言 `Count`，不提供 Go benchmark 的吞吐或分配统计。因此两者验证意图相关，但测量能力并不相同。
+Go 测试文件是三组 allocation benchmark；Rust `set_with_memory_usage_test.rs` 保留相同行数表（含 425984/425985、851968/851969 边界），但稳定 test harness 中改为单轮插入并断言 `Count`，不提供 Go benchmark 的吞吐或分配统计。
 
 ## 扩展指南
 
@@ -97,12 +95,3 @@ Go 测试文件是三组 allocation benchmark；Rust `set_with_memory_usage_test
 - 扩展浮点行为应同步 `FloatKey`，并覆盖 `±0`、无穷、重复普通值、多次 NaN 与 payload 上限；不要直接改用 `f64` 作为 Rust `HashMap` 键来简化。
 - 测试逻辑必须继续放在独立文件：功能/边界断言更新 `pkg/util/set/migration_aster_unit_test.rs`，批量插入边界更新 `pkg/util/set/set_with_memory_usage_test.rs`；若要对齐 Go 性能，应另建合适的 Rust benchmark，而不是把测试内嵌进生产文件。
 - 接入 Rust 执行器时，重点审查 tracker 生命周期、重复记账、容器析构未释放已消费量，以及 Go 生产调用点与 Rust 执行路径是否真正等价。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`node --file pkg/util/set/set_with_memory_usage.rs` 读取全部 361 行；`query` 定位 `NewStringToStringMapWithMemoryUsage`、`NewFloat64SetWithMemoryUsage`、`MemAwareMap`、`Tracker`、`FloatKey`；`callers/callees --file` 对重名 Go 风格方法未返回边，故未用空结果推断“无调用”。
-- 源码与模块：`pkg/util/set/set_with_memory_usage.rs`、`pkg/util/set/lib.rs`、`pkg/util/set/Cargo.toml`。
-- 直接依赖实现：`pkg/util/hack/map_abi.rs:388-516`、`pkg/util/memory/tracker.rs:697-749,966-970`、`pkg/util/set/float64_set.rs:16-59`。
-- Rust 测试：`pkg/util/set/set_with_memory_usage_test.rs`；`pkg/util/set/migration_aster_unit_test.rs:187-235` 覆盖去重、初始字节、零/NaN、空 Decimal 指针和 Tracker 消费。
-- Go 对照：`pkg/util/set/set_with_memory_usage.go`、`pkg/util/set/set_with_memory_usage_test.go`；RustCodeGraph 文件级使用关系与精确 `rg` 用于区分 Go 生产调用和 Rust 当前接线。
-- 人工复核结论：本文件存在是为了把集合成员关系与近似内存增量记账组合成统一 API；安全扩展的关键是不重复消费 delta、不误解 checkpoint `Bytes`、不越过 Decimal 指针生命周期边界，并保持 Go 浮点键语义。

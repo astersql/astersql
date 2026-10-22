@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-mydump` crate。crate 由 `pkg/lightning/mydump/Cargo.toml` 定义，`lib.rs` 通过 `mod csv_parser; pub use csv_parser::*;` 将这里的配置、构造函数和解析器公开给 Lightning、IMPORT/LOAD DATA 与 session 运行时。它实现 `parser.rs` 中统一的 `Parser` trait，是 `OpenReader` 针对 `SourceType::Csv` 选择的 CSV 分支；SQL dump 则走 `ChunkParser`。
-
-直接生产调用证据包括 `pkg/lightning/mydump/parser.rs::OpenReader`、`pkg/lightning/mydump/region.rs::openCSVParser`、`lightning/pkg/importer/chunk_process.rs`、`lightning/pkg/importer/get_pre_info.rs`、`pkg/session/runtime/import_compression.rs` 和 `pkg/session/runtime/load_data.rs`。因此该文件不是通用 CSV 工具的孤立副本，而是把 mydumper/LOAD DATA 风格文本转为统一 `Row` 的导入边界。
+`ReadColumns` 消费表头并保存小写列名；`Parser` 实现提供位置、行号、最近一行、列名及行向量回收能力。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ RustCodeGraph 将该文件识别为 58 个符号并报告 14 个使用文件；�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/mydump/csv_parser.go`，独立对照测试是 `pkg/lightning/mydump/csv_parser_test.go`。Rust 保留了 Go 的核心名称和语义骨架：`CSVParser/CsvParser`、`NewCSVParser`、`ReadRow`、`ReadColumns`、`readRecord`、定界符/转义辅助函数、行号先递增、字段长度求和、表头小写化、宽松未转义引号、空行与 `STARTING BY` 处理。
+Rust 保留了 Go 的核心名称和语义骨架：`CSVParser/CsvParser`、`NewCSVParser`、`ReadRow`、`ReadColumns`、`readRecord`、定界符/转义辅助函数、行号先递增、字段长度求和、表头小写化、宽松未转义引号、空行与 `STARTING BY` 处理。
 
 当前实现并非逐机制等价，扩展时不能直接假设 Go 行为全部存在：
 
@@ -86,7 +84,7 @@ RustCodeGraph 将该文件识别为 58 个符号并报告 14 个使用文件；�
 - Go 的 `Close`/seek/缓冲状态由底层 reader 与 block parser 管理；Rust 只在内存字节向量上定位，`Close` 无操作。
 - Rust 的 `trim_last_separators` 名称和处理位置与 Go `TrimLastEmptyField` 不同，但都覆盖常见的行尾空字段裁剪场景；复杂多个尾部分隔符需要以测试明确期望。
 
-Rust 测试刻意记录了多项 Go 契约，例如行号在失败读取前递增、`Row.length` 不含结构符号、空行终止符自动识别和 `STARTING BY` 行内匹配。尚未由 Rust 测试覆盖或接口缺失的 Go 能力应标记为迁移差异，而不是宣称已支持。
+尚未由 Rust 测试覆盖或接口缺失的 Go 能力应标记为迁移差异，而不是宣称已支持。
 
 ## 扩展指南
 
@@ -96,11 +94,3 @@ Rust 测试刻意记录了多项 Go 契约，例如行号在失败读取前递�
 - 若要恢复 Go 的大文件流式特性，需要重构 `data`/`pos` 与 reader 生命周期，连带审查 `SetPos`、`ScannedPos`、跨块多字节分隔符、行大小限制和 `ReadUntilTerminator`；这不是局部替换 `read_to_end` 即可完成的变更。
 - 修改位置或表头语义时同步检查 `region.rs::getHeaderColumn` 的 CRLF 边界修正、`Parser` trait 调用者和 importer 分片恢复逻辑。
 - 性能优化应保留多字节符号、宽松引号及密集转义行为；可用 `TestCSVParserUnescapeDenseRows`、两个 benchmark harness 和大行限制测试防止分配/状态回归。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标目录文件列表确认 `csv_parser.rs`、Rust/Go 对照及测试均被索引；`node --file pkg/lightning/mydump/csv_parser.rs` 读取完整 599 行；`query` 确认 `CsvParser`、Rust/Go `NewCSVParser`、`ReadColumns`、`unescapeString` 等符号。`explore`/`callers` 在限定时间内没有返回结果，故未用其输出证明调用关系。
-- 生产源码：`pkg/lightning/mydump/csv_parser.rs`；统一接口和工厂 `pkg/lightning/mydump/parser.rs`；reader 契约 `pkg/lightning/mydump/reader.rs`；错误类型 `pkg/lightning/mydump/common.rs`；crate 装配 `pkg/lightning/mydump/lib.rs`；表头/region 入口 `pkg/lightning/mydump/region.rs`。
-- crate/config：`pkg/lightning/mydump/Cargo.toml`；直接上游还核对了 `lightning/pkg/importer/chunk_process.rs`、`lightning/pkg/importer/get_pre_info.rs`、`pkg/executor/importer/sampler.rs`、`pkg/session/runtime/import_compression.rs`、`pkg/session/runtime/load_data.rs`。
-- Go 对照：`pkg/lightning/mydump/csv_parser.go` 与 `pkg/lightning/mydump/csv_parser_test.go`，重点核对构造、`unescapeString`、`readRecord`、`readQuotedField`、`ReadRow`、`ReadColumns` 和终止符读取。
-- Rust 独立测试：`pkg/lightning/mydump/csv_parser_test.rs`，覆盖 RFC4180/MySQL/TSV/CRLF、多字节符号、行前缀、空行、NULL、表头、字符集、EOF、语法/I/O 错误、整行限制、行号、长度和缓冲复用。本任务依约不运行 Cargo；完成判断采用源码/调用证据、人工事实复核和文档结构验证。

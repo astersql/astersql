@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate，是 Go `pkg/expression/builtin_json_vec.go` 的 Rust 向量化 JSON 运算内核。crate 根在 `pkg/expression/Cargo.toml` 中以 `lib.rs` 声明；`pkg/expression/lib.rs:231-232` 将本文件装配为私有模块 `builtin_json_vec_kernel`。
-
-当前接线必须特别区分：`builtin_json_vec_kernel` 会进入普通 crate 编译，但 `lib.rs:770-773` 只在 `#[cfg(test)]` 下通过 `expression_json_vec` 重导出它的公开符号。RustCodeGraph 查到的直接使用者主要是 `builtin_json_vec_test.rs`、`builtin_json_vec_13_aster_unit_test.rs` 等测试。因此，这里已经实现并验证了可复用内核，但尚未像 Go 的各 `builtin*Sig.vecEval*` 方法那样直接挂到生产表达式调度与 `chunk.Column` 执行链；不能把“函数存在”表述为“Rust SQL 主链已接入”。
-
-文件内没有条件编译项、全局可变状态或模块级运行时常量；唯一常量函数 `vectorized()` 固定返回 `true`，用于对应 Go 各签名的 `vectorized() bool` 声明。
+提供构造、比较和元数据操作：ARRAY/OBJECT、MEMBER OF、CONTAINS、OVERLAPS、TYPE、DEPTH、STORAGE_SIZE/FREE。
 
 ## 核心职责
 
@@ -70,11 +66,11 @@ SQL NULL 通常按行传播；需要构造 JSON 值的位置则转成 JSON null�
 
 ## 与 Go 版本的对应关系
 
-Rust 入口按功能对应 `pkg/expression/builtin_json_vec.go` 的 `vecJSONModify` 及各 `builtinJSON*Sig.vecEval*`：NULL 传播、JSON null 转换、路径多选限制、SEARCH 的 one/all 与 ESCAPE、OBJECT NULL 键、MERGE 旧别名逐非 NULL 行告警、ARRAY_APPEND 嵌套数组语义都按 Go 流程移植。`pkg/expression/builtin_json_vec_test.go` 的 benchmark case 覆盖 JSON_KEYS、ARRAY_APPEND、CONTAINS_PATH、EXTRACT、LENGTH、ARRAY_INSERT、CONTAINS、OBJECT、SET/SEARCH/REPLACE/REMOVE/MERGE 等签名形状；Rust 两个独立测试文件以具体结果补充这些语义。
+Rust 入口按功能对应 `pkg/expression/builtin_json_vec.go` 的 `vecJSONModify` 及各 `builtinJSON*Sig.vecEval*`：NULL 传播、JSON null 转换、路径多选限制、SEARCH 的 one/all 与 ESCAPE、OBJECT NULL 键、MERGE 旧别名逐非 NULL 行告警、ARRAY_APPEND 嵌套数组语义都按 Go 流程移植。
 
-两端架构并非一一同形：Go 方法直接拥有 signature、`EvalContext`、子 `Expression`、输入 `chunk.Chunk`、输出 `chunk.Column` 和 allocator；Rust API 接收已物化的强类型列，没有 signature 结构、表达式求值、session warning sink 或 chunk 内存复用。Rust 的弃用警告以 `JsonMergeOutcome` 返回，Go 则写入 `typeCtx(ctx).AppendWarning`。Rust 错误归一为字符串型 `JsonVecError`，Go 保留 TiDB 的结构化错误码/错误类型。
+两端架构并非一一同形：Go 方法直接拥有 signature、`EvalContext`、子 `Expression`、输入 `chunk.Chunk`、输出 `chunk.Column` 和 allocator；Rust API 接收已物化的强类型列，没有 signature 结构、表达式求值、session warning sink 或 chunk 内存复用。Rust 的弃用警告以 `JsonMergeOutcome` 返回，Go 则写入 `typeCtx(ctx).AppendWarning`。
 
-此外，Rust 文件提供 `vec_json_overlaps` 和 `vec_json_merge`/`vec_json_merge_with_warnings` 的函数式拆分，而 Go 文件按 signature 方法组织；`vectorized()` 常量函数只是对“这些签名在 Go 都声明可向量化”的概括，不是生产注册表。任何声称完全替代 Go 路径的结论目前均未验证。
+此外，Rust 文件提供 `vec_json_overlaps` 和 `vec_json_merge`/`vec_json_merge_with_warnings` 的函数式拆分，而 Go 文件按 signature 方法组织；`vectorized()` 常量函数只是对“这些签名在 Go 都声明可向量化”的概括，不是生产注册表。
 
 ## 扩展指南
 
@@ -83,14 +79,3 @@ Rust 入口按功能对应 `pkg/expression/builtin_json_vec.go` 的 `vecJSONModi
 修改现有能力时，最可能的接入点是：公共修改语义改 `vec_json_modify`；路径规则改 `parse_path` 或对应调用点；ARRAY_APPEND 改 `append_json_array`；MERGE 警告改 `vec_json_merge_with_warnings`；CRC 类型转换改 `crc32_cast`。不要把测试嵌入生产源文件，应同步更新独立的 `pkg/expression/builtin_json_vec_test.rs` 和更完整的 `builtin_json_vec_13_aster_unit_test.rs`，必要时也核对 Go 的 `builtin_json_vec_test.go` case。
 
 若要真正接入 Rust SQL 主链，需要在本文件之外增加 signature/dispatcher 到这些列函数的适配，并处理 `EvalContext`、子表达式求值、结构化错误、警告写入与列缓冲生命周期；这属于接线工作，不能仅把 `expression_json_vec` 的测试专用重导出改成公开就视为完成。性能方面应关注每行路径重复解析、`BinaryJSON` 与 `serde_json::Value` 往返、文档克隆和小向量分配，优化时必须维持 Go 的逐行错误顺序与 NULL 行为。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；本文件完整读取为 895 行。
-- RustCodeGraph `node --file pkg/expression/builtin_json_vec.rs`：核对全部类型、函数、实现、注释与内部调用；图谱显示它被 `builtin_json_vec_test.rs`、`builtin_json_vec_13_aster_unit_test.rs` 等测试使用。
-- RustCodeGraph 对 `vec_json_modify`、`json_result`、`parse_path`、`same_len` 等符号的 query/explore：核对公共入口、辅助函数复用和主要调用边；未发现生产 Rust 表达式调度器的直接 caller。
-- `pkg/expression/lib.rs:226-232,503-514,762-773`：核对模块装配、独立测试模块，以及仅测试环境存在的 `expression_json_vec` 重导出。
-- `pkg/expression/Cargo.toml`：核对 crate 名称、`lib.rs` 根及 `crc32fast`、`serde_json`、`types-json-functions` 依赖。
-- `pkg/expression/builtin_json_vec.go`：逐段核对 Go 的 chunk/allocator 流程、NULL/路径/错误/告警语义与函数覆盖面。
-- `pkg/expression/builtin_json_vec_test.go`：核对 Go 向量签名 case 与参数形状；`pkg/expression/builtin_json_vec_test.rs` 和 `pkg/expression/builtin_json_vec_13_aster_unit_test.rs`：核对 Rust 的修改、元数据、构造、比较、搜索、路径、合并、CRC32 及错误边界。
-- 本任务只新增说明文档，不修改运行时代码，按计划不运行 Cargo。交付前使用任务规定的命令验证十一章结构，并人工检查未把测试可调用能力误写成生产已接线。

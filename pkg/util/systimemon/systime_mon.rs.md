@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-systimemon` crate 的核心实现，负责检测进程所见的系统墙钟是否发生回退。crate 入口 `pkg/util/systimemon/lib.rs` 以私有模块加载本文件，并公开再导出其唯一 API `StartMonitor`；根 crate 又在 `pkg/lib.rs` 的 `pkg::util::systimemon` 门面中再导出该能力。`pkg/util/systimemon/Cargo.toml` 声明该 crate 仅依赖 `log`，没有 feature 开关。
-
-需要区分“能力已导出”和“生产入口已接线”：RustCodeGraph 当前只找到三个对本文件 `StartMonitor` 的直接调用，全部位于独立 Rust 测试。`cmd/tidb-server/main.rs::setupMetrics` 虽有同名调用，但其 `systimemon` 来自 `crate::stubs`，实际落到 `cmd/tidb-server/stubs.rs::systimemon::StartMonitor`，不是本文件。Go 生产入口 `cmd/tidb-server/main.go::setupMetrics` 则调用 `pkg/util/systimemon/systime_mon.go::StartMonitor`。
+通过注入的 `now: FnMut() -> SystemTime` 获取时间，使检测逻辑不绑定 `SystemTime::now`，也可由测试构造确定性的回退时钟。
 
 ## 核心职责
 
@@ -68,9 +66,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 实现直接对应 `pkg/util/systimemon/systime_mon.go::StartMonitor`：两者都以 100 ms 周期采样、比较等待前后的墙钟、严格回退时记错并同步执行回调，而且都设计为无限运行。Rust 的泛型 `FnMut` 对应 Go 的两个函数参数，`SystemTime` 的直接比较对应 Go 的 `UnixNano()` 整数比较。
-
-调度实现不是逐句翻译。Go 使用 `time.NewTicker` 并等待 `<-tick.C`；Rust 没有持有 ticker，而是用 `Instant` 和 `next_tick` 模拟固定节拍。`while next_tick <= tick_observed_at` 是保持语义的关键：当第一次 `now()` 很慢时，已经到达的 tick 可立即被消费，而不是额外等待 100 ms。`systime_mon_test.rs::slow_sample_does_not_restart_the_tick_interval` 专门锁定这一差异点。
+Go 使用 `time.NewTicker` 并等待 `<-tick.C`；Rust 没有持有 ticker，而是用 `Instant` 和 `next_tick` 模拟固定节拍。`while next_tick <= tick_observed_at` 是保持语义的关键：当第一次 `now()` 很慢时，已经到达的 tick 可立即被消费，而不是额外等待 100 ms。`systime_mon_test.rs::slow_sample_does_not_restart_the_tick_interval` 专门锁定这一差异点。
 
 日志实现也有边界差异：Go 通过 `logutil.BgLogger()` 和结构化 `zap.Int64("last", last)` 记录纳秒整数；Rust 通过 `log` facade 用 `Debug` 格式记录 `SystemTime`。Go 的 `defer tick.Stop()` 在无限循环正常路径上同样不会执行，但为异常返回保留资源清理；Rust 没有独立 ticker 资源。Go 测试 `TestSystimeMonitor` 与 Rust 的 `test_systime_monitor` 都构造约 2 秒回退并要求 1 秒内触发。
 
@@ -81,12 +77,3 @@ Rust 实现直接对应 `pkg/util/systimemon/systime_mon.go::StartMonitor`：两
 - 若改为跟踪历史最大时间、设置回退阈值或抑制重复告警，必须明确这会改变当前“相邻样本且严格小于”的行为，并在独立测试覆盖相等、小幅回退、连续回退、恢复前进和慢 handler。
 - 若把真实实现接入 Rust server，修改点不在本文件，而在 `cmd/tidb-server` 的依赖和 `main.rs` 导入：需要用真实 `astersql-util-systimemon`/根 facade 替换 `crate::stubs::systimemon`，并验证后台线程确实长期存活、指标回调真实触发。不能只保留当前桩的事件记录测试作为行为证据。
 - 修改日志字段时需考虑 Go 的结构化 `last` 字段兼容性和可观测性；修改闭包约束时需避免无必要地把 `Send + 'static` 强加给同步调用场景。
-
-## 验证依据
-
-- 源码与装配：`pkg/util/systimemon/systime_mon.rs`（完整 52 行）、`pkg/util/systimemon/lib.rs`、`pkg/util/systimemon/Cargo.toml`、根 `Cargo.toml` 与 `pkg/lib.rs`。
-- RustCodeGraph：索引状态为 11,467 个文件；`files --filter pkg/util/systimemon` 确认目标、Go 对照和测试均已索引；`node systime_mon.rs::StartMonitor` 核对函数签名与实现；`callers systime_mon.rs::StartMonitor` 得到三个测试调用者；`callees` 返回空列表。自然语言 `explore` 未返回内容，因此没有把它当作事实证据。
-- Rust 独立测试：`pkg/util/systimemon/systime_mon_test.rs` 验证 2 秒回退触发回调及慢采样后的固定 ticker 语义；`pkg/util/systimemon/migration_aster_unit_test.rs` 从公开 crate 名调用 API，再次验证回退检测；`pkg/util/systimemon/main_test.rs` 只负责公共测试 setup，不验证监控算法。
-- Go 对照：`pkg/util/systimemon/systime_mon.go`、`pkg/util/systimemon/systime_mon_test.go`、`pkg/util/systimemon/main_test.go`；应用入口证据为 `cmd/tidb-server/main.go::setupMetrics`。
-- Rust 应用接线：`cmd/tidb-server/main.rs::setupMetrics`、其顶部 `use crate::stubs::{..., systimemon, ...}` 以及 `cmd/tidb-server/stubs.rs::systimemon::StartMonitor`，共同证明当前 server 调用的是桩而非本文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终只执行固定十一章节的结构检查，并人工复核所有“当前已接线”结论均有上述源码或调用图依据。

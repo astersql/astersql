@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-schematracker` crate，由同目录 `lib.rs` 的私有模块 `mod checker` 编译并通过 `pub use checker::*` 对外再导出。它位于 DDL 执行器和内存 `SchemaTracker` 之间：同一条受支持的 DDL 命令先交给可注入的 `DdlExecutor`，再镜像到 `SchemaTracker`，最后比较真实元数据与跟踪元数据。它不是 DDL job 调度器，不负责持久化 job、owner 选举、schema state 推进或 reorg；这些属于真实 DDL 实现，本文件只做测试/校验包装和少量生命周期透传。
-
-crate 边界由 `pkg/ddl/schematracker/Cargo.toml` 定义，直接依赖 `astersql-ddl`、表达式静态能力、`astersql-meta-model`、`astersql-parser-ast` 和 `thiserror`。根 `pkg/lib.rs` 又把该 crate 暴露为 `ddl::schematracker` facade。Cargo manifest 显示 `pkg/session`、`pkg/testkit`、`pkg/domain`、`pkg/executor`、`pkg/ddl` 及 DDL 测试 crate 声明了此依赖，但当前 Rust 源码引用搜索中，`Checker`/`NewChecker` 的直接构造只在 `checker_test.rs` 出现；不能据 Cargo 依赖推断它已经像 Go 版本一样接入 bootstrap。
+提供 `StorageDDLInjector<T>` 的泛型包装/解包容器；当前 Rust 实现只保存 `storage`，没有 Go 版本中的 `Injector` 回调和 `kv.Storage` 能力组合，因此只是结构占位而非完整 bootstrap 注入器。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@ crate 边界由 `pkg/ddl/schematracker/Cargo.toml` 定义，直接依赖 `asters
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ddl/schematracker/checker.go`。两者共有的核心设计是：包装真实 DDL、维护 tracker、提供 Disable/Enable、真实执行后镜像、以 SHOW CREATE 比较元数据，并对 clustered-index、shard-row-id、pre-split 注释做例外处理。`DropTable` 即使真实执行失败仍更新 tracker，以及多个 TODO/panic 入口，也与 Go 行为相呼应。
-
 重要差异如下：
 
 - Go `Checker` 同时持有 `ddl.DDL`、`ddl.Executor`、`InfoCache`，真实元数据来自 `InfoCache.GetLatest()`；Rust 把执行、查询和渲染统一抽象为一个 `DdlExecutor`。
@@ -116,13 +112,3 @@ crate 边界由 `pkg/ddl/schematracker/Cargo.toml` 定义，直接依赖 `asters
 测试必须继续放在独立的 `pkg/ddl/schematracker/checker_test.rs`，不要嵌入生产文件。至少覆盖真实执行失败、tracker 失败/漂移、禁用状态、对象存在性两种单边缺失、渲染差异、注释归一化和新增操作的更新顺序。涉及 tracker 内部 DDL 语义时，还应同步同目录 `dm_tracker_test.rs`；Go 对齐依据来自 `checker.go`、`dm_tracker_test.go` 和使用 checker 注入的 `pkg/ddl/db_integration_test.go`/`pkg/ddl/tests/fail/fail_db_test.go`。
 
 兼容性风险主要是漏掉 Go 新增接口或误把占位成功当成真实执行；正确性风险主要是执行/镜像顺序导致双方永久漂移，以及过宽归一化掩盖差异；性能风险集中在每次 DDL 后两次元数据读取和两次 SHOW CREATE 渲染。扩展时不应把校验器引入常规生产热路径，除非上层明确接受该成本。
-
-## 验证依据
-
-- 源码与符号：`pkg/ddl/schematracker/checker.rs` 全部 577 行；重点符号为 `DdlCommand`、`DdlExecutor`、`Checker`、`NewChecker`、`execute`、`checkDBInfo`、`checkTableInfo`、归一化函数及 storage 包装器。
-- crate 与模块边界：`pkg/ddl/schematracker/Cargo.toml`、`pkg/ddl/schematracker/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`，以及声明该 crate 的 `pkg/{ddl,domain,executor,session,testkit}` 相关 Cargo manifest。
-- Rust 测试：`pkg/ddl/schematracker/checker_test.rs`，覆盖真实 schema 缺失、Disable 后 CreateTable 不镜像、DropTable/DropView 的错误顺序、直接成功入口不调用执行器，以及 `CreateSchemaWithInfo` 保留完整 metadata。
-- Go 对照：`pkg/ddl/schematracker/checker.go`；Go tracker 行为测试位于 `pkg/ddl/schematracker/dm_tracker_test.go`，注入/端到端使用证据位于 `pkg/ddl/db_integration_test.go` 和 `pkg/ddl/tests/fail/fail_db_test.go`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件，目标目录 12 个文件均已覆盖；`files --filter pkg/ddl/schematracker` 确认目标 Rust、Go 对照和测试均在索引中；`node --file ...checker.rs --offset 1 --limit 500` 与 `--offset 495 --limit 120` 读取完整源码；`query NewChecker`、`query Checker`、`query checkTableInfo` 确认 Rust/Go 对应符号。精确 `callers checker.rs::NewChecker` 在当前索引持续无输出并挂起，已中止，故调用方结论由文件级 used-by 信息和源码引用搜索交叉限定，未宣称未证实的运行时接线。
-- DDL 语境：`pkg/ddl/doc.go` 说明核心 DDL 的 schema-version 不变量；`docs/agents/ddl/README.md` 仅作为阅读入口，并由本文件/测试事实核验。该 checker 不推进 DDL job 或 schema state。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以固定 11 标题命令做结构验证，并人工核对文档能回答文件存在原因、运行顺序、边界和安全扩展点。

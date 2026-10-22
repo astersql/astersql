@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate，是 Index Lookup Join（索引查找连接）的 Rust 行为模型。模块由 [`pkg/executor/join/lib.rs`](lib.rs) 以 `pub mod index_lookup_join` 导出；crate 边界和依赖记录在 [`pkg/executor/join/Cargo.toml`](Cargo.toml)。当前可执行代码从源文件第 675 行开始，依赖同 crate 的 `joiner::{Joiner, NaajType, Predicate, Row}`、`row_table_builder::Value`，以及 `astersql-executor-internal-exec` 的自适应 LIMIT 控制器类型。
-
-文件第 22–674 行是一整段注释化的 Go 迁移草图，保留了 Go 版 worker、通道、内存 tracker、range/collation 等控制流以便对照，但不参与 Rust 编译。分析当前行为时必须以第 675 行之后的声明为准，不能把草图中的并发 worker、取消通道或内存跟踪器当成已经实现的 Rust 能力。
-
-在完整构建链中，物理 `IndexJoin` 由 [`pkg/executor/builder.rs`](../builder.rs) 的 `executorBuilder::buildIndexLookUpJoin` 进入 `build_index_join_kind`，后者校验 inner condition、创建 `DataReaderBuilder`，再调用 `ExecutorBuilderDependencies::build_index_join_executor`。该生产接线没有在本文件中直接展开；仓库内对 `IndexLookUpJoin::new` 的明确直接调用主要位于独立测试和 benchmark。因此本文件提供可执行 join 核心与 builder 抽象，但“物理计划一定实例化为本类型”不能仅凭本文件断言。
+当前实现是“分批但同步”的：`IndexLookUpJoin::execute` 在调用线程内创建一个借用 `InnerCtx` 的 `InnerWorker` 并立即执行 `handle_task`。
 
 ## 核心职责
 
@@ -96,8 +92,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`pkg/executor/join/index_lookup_join.go`](index_lookup_join.go)。两者保留的主干语义包括：外表批大小先增长再读取、过滤结果不参与 lookup、lookup key 排序去重、builder 拉取内表、key 到多行的 map、按外表顺序 probe、普通等值跳过 NULL、NULL-safe 等值允许 NULL、未匹配由 `Joiner` 处理，以及运行统计合并时不覆盖接收者 concurrency、快照保留首份。
-
 主要差异如下：
 
 | 方面 | Go 实现 | 当前可执行 Rust 实现 |
@@ -111,8 +105,6 @@ Go 对照文件是 [`pkg/executor/join/index_lookup_join.go`](index_lookup_join.
 | 输出 | `Next` 按 chunk 增量 probe | 首次有效 `next` 先物化全部输出，再切片 |
 | 自适应 LIMIT | 外表 reservation/commit 与读取协调 | 仅保存 eligibility/controller，并在 close 拍统计快照 |
 
-Go SQL 回归 [`pkg/executor/join/test/indexjoin/index_lookup_join_test.go`](test/indexjoin/index_lookup_join_test.go) 覆盖 SQL 计划选择、NULL-safe 单/多键与外连接、分区数据、panic/取消、延迟 worker 错误和 CTE 并发构建。Rust 对应语义测试 [`pkg/executor/join/test/indexjoin/index_lookup_join_test.rs`](test/indexjoin/index_lookup_join_test.rs) 直接驱动当前类型，覆盖 NULL-safe、外表顺序、分批、builder 错误、重复读取、大量重复 key、共享存储和空 inner 等场景；它验证行为子集，不代表上述 Go 并发与类型系统细节已完整移植。
-
 ## 扩展指南
 
 - 增加或修改 join 主流程时，优先改 `IndexLookUpJoin::execute`，并同步检查 `Joiner::try_to_match_inners` / `on_miss_match` 对 inner、outer、semi/anti/NAAJ 各类型的契约。回归应放在独立的 `index_lookup_join_test.rs` 或 `test/indexjoin/index_lookup_join_test.rs`，不要嵌入源文件。
@@ -122,17 +114,3 @@ Go SQL 回归 [`pkg/executor/join/test/indexjoin/index_lookup_join_test.go`](tes
 - 改变 `next` 的流式策略时要保持：`required_rows=0`、耗尽稳定空、错误后状态、close 后显式 reopen、外表过滤未命中仍保留外连接行。当前全量物化是主要性能风险，也是最值得独立设计的扩展点。
 - 修改自适应 LIMIT 时，不能只更新 close 快照；应与 `AdaptiveLimitController` 的 outer/lookup admission、consume、commit 协议一起接线，并增加提前停止和 outstanding 统计的测试。
 - 修改统计格式或合并规则时，同步 [`pkg/executor/join/join_stats_test.rs`](join_stats_test.rs)；修改批处理、去重、NULL、过滤或重开行为时同步 [`pkg/executor/join/index_lookup_join_test.rs`](index_lookup_join_test.rs)；SQL/Go 对齐场景同步 `test/indexjoin` 下独立 Rust 测试并对照同名 Go 测试。
-
-## 验证依据
-
-本说明基于以下可复核证据：
-
-- RustCodeGraph `status`：索引存在，覆盖 7,032 个 Rust 文件和 4,415 个 Go 文件；目标文件被识别为 1,171 行、41 个符号。
-- RustCodeGraph `files --filter pkg/executor/join`：确认同目录模块、Go 对照、crate 内测试和 `test/indexjoin` 语义测试的位置。
-- RustCodeGraph `node --file pkg/executor/join/index_lookup_join.rs`：完整核对注释化迁移草图（22–674）与可执行实现（675–1171），包括所有公开类型、方法、私有 helper 和统计格式。
-- RustCodeGraph `explore`、`query`：确认 `IndexLookUpJoin`、Go 同名符号、`startWorkers/newInnerWorker/Next/handleTask` 等 Go 调用链；Rust 方法级 `callers` 查询未在可接受时间内返回，因此用精确源码引用搜索补齐 Rust 直接调用者，并未把缺失图边当成“无调用者”。
-- RustCodeGraph `node`：读取 [`pkg/executor/join/lib.rs`](lib.rs)、[`pkg/executor/builder.rs`](../builder.rs)、[`pkg/executor/join/index_lookup_join.go`](index_lookup_join.go)、[`pkg/executor/join/index_lookup_join_test.rs`](index_lookup_join_test.rs)、[`pkg/executor/join/test/indexjoin/index_lookup_join_test.rs`](test/indexjoin/index_lookup_join_test.rs)、[`pkg/executor/join/test/indexjoin/index_lookup_join_test.go`](test/indexjoin/index_lookup_join_test.go) 和 [`pkg/executor/join/join_stats_test.rs`](join_stats_test.rs)。
-- 直接读取 [`pkg/executor/join/Cargo.toml`](Cargo.toml)：确认 crate 名、`lib.rs` 入口、porting 元数据、非 Windows 直接依赖和 Windows 条件依赖边界。
-- 测试事实：crate 内单测覆盖批增长/过滤、过滤错误、去重与 map 重建、普通等值 NULL、统计 merge、外表保序、左连接未命中和 close/reopen；`test/indexjoin` 的 Rust 语义测试进一步覆盖 NULL-safe、多键、分区式 workload、立即/延迟 builder 错误、probe 错误、重复 key 和空 inner；Go 测试提供 SQL 计划及并发/取消/故障注入对照。
-
-本任务是纯文档分析，按计划不运行 Cargo，也不声称这些测试在本次会话中执行通过。结构验证用于确认本文存在且恰好包含规定的十一个二级章节。

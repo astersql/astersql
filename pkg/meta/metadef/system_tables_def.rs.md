@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-meta-metadef` crate，是 `mysql` 与 `sys` 持久系统对象的权威 SQL 定义层。crate 根模块 `pkg/meta/metadef/lib.rs` 通过 `pub mod system_tables_def` 声明模块并用 `pub use system_tables_def::*` 重导出全部公开项，因此调用方通常直接以 `astersql_meta_metadef::CreateUserTable` 等路径引用。
-
-它位于“固定对象 ID”与“执行建表”之间：相邻的 `pkg/meta/metadef/system.rs` 为系统表分配稳定 ID，本文件提供与表名对应的完整 DDL；`pkg/session/runtime/session.rs`、`pkg/session/ddl_tables.rs` 等调用方负责解析或执行这些字符串。文件自身不连接存储、不创建 schema，也不实现升级调度。
-
-`pkg/meta/metadef/Cargo.toml` 表明该 crate 仅直接依赖 `astersql-parser-ast` 和 `astersql-parser-mysql`；本文件自身只使用 Rust 静态数据类型，没有第三方 API、feature gate 或条件编译项。
+位于“固定对象 ID”与“执行建表”之间：相邻的 `pkg/meta/metadef/system.rs` 为系统表分配稳定 ID，本文件提供与表名对应的完整 DDL；`pkg/session/runtime/session.rs`、`pkg/session/ddl_tables.rs` 等调用方负责解析或执行这些字符串。
 
 ## 核心职责
 
@@ -89,12 +85,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/metadef/system_tables_def.go`。Rust 保留了 Go 中的主要建表/视图/删表常量及 DDL/DXF 分组，包括物化视图维护表和 `tidb_storage_class_transition_history`；`pkg/meta/metadef/system_test.rs::go_merge_12_system_ids_and_sql` 专门检查近期合入字段和六个新增表名。
+Rust 保留了 Go 中的主要建表/视图/删表常量及 DDL/DXF 分组，包括物化视图维护表和 `tidb_storage_class_transition_history`；`pkg/meta/metadef/system_test.rs::go_merge_12_system_ids_and_sql` 专门检查近期合入字段和六个新增表名。
 
 Rust 侧为运行时接线增加了两类组织信息：
-
-- `SystemTableDefinition` 与 `BootstrapSystemTableDefinitions` 将 Go bootstrap 中分散的 `{Name, SQL}` 表目录集中为 53 项权威清单。
-- `SysSchemaCompatibilityObject`、`SysSchemaSupportedObjects`、MySQL 8 原生对象计数及未支持样本明确了 Rust 当前的 `sys` 暴露边界；`CreateSysConfigTable` 对应 Rust bootstrap 需要的 MySQL 8 兼容基表，不是当前 Go 对照文件中的同名常量。
 
 Go 侧 `pkg/session/bootstrap.go` 直接调用 `CreateSchemaUnusedIndexesView`，并在 bootstrap 表列表中组合固定 ID、名称和 SQL；Rust 将相同职责拆到 metadef 清单、`session/bootstrap.rs`、`session/runtime/session.rs` 和 `session/ddl_tables.rs`。这种接线差异不应被误写为表结构语义差异。
 
@@ -111,10 +104,3 @@ Go 侧 `pkg/session/bootstrap.go` 直接调用 `CreateSchemaUnusedIndexesView`�
 主要风险是磁盘 schema/升级兼容、BR 对权限表的读取兼容、重复 bootstrap 的幂等性和新增索引带来的写入/存储成本。修改字段顺序或删除兼容表前需要检查旧集群升级与 Go 路径，不能只验证新集群建表。
 
 核对恢复登记冲突时须连同过滤条件和路由 hash 一起比较，不能继续按旧 `unique_registration_params` 推断唯一性；NDV 采样选项的持久化使用方和升级补列属于调用方职责。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/meta/metadef/system_tables_def.rs` 定位增量、`git show 2c944fb:pkg/meta/metadef/system_tables_def.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：同目录 `lib.rs`、`Cargo.toml` 和 Go `system_tables_def.go`；变更直接核对 `CreateAnalyzeOptionsTable`、`CreateTiDBRestoreRegistryTable`。独立 `system_test.rs` 是原有系统表验证入口，未发现针对本次新增列的专用断言，不把既有表测试当成本增量运行证据。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

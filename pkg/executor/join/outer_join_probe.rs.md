@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-join` crate 中 Left Outer Join 与 Right Outer Join 共用的 Hash Join probe 实现。模块由 `pkg/executor/join/lib.rs` 以 `pub mod outer_join_probe` 暴露；实例并非在本文件内直接构造，而是由 `pkg/executor/join/base_join_probe.rs::new_join_probe` 根据 `JoinType` 和 `right_as_build_side` 创建，并以 `Box<dyn Probe>` 交给上层执行流程。
-
-文件的结构需要特别区分：第 19—419 行是对 Go `outerJoinProbe` 的映射注释，不参与 Rust 执行；可运行实现从 `use crate::...`、`OuterJoinProbe` 及其 `impl Probe` 开始。当前 Rust 实现使用内存中的 `Vec<Row>`、build 行下标和 `WorkerResult`，而注释保留了 Go v2 的 chunk、tagged pointer、SQL killer 与行表细节，不能把注释中的能力当作当前 Rust 路径已经接线的事实。
-
-`pkg/executor/join/Cargo.toml` 将 crate 根指定为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/executor/join"` 声明 Go 对照包。该文件的可执行代码只直接引用同 crate 的 `base_join_probe` 与 `joiner` 模块，没有自己的 feature 或条件编译项。
+`OuterJoinProbe` 负责维持外连接的核心不变量：outer 侧的每一行最终至少产生一行输出。
 
 ## 核心职责
 
@@ -84,17 +80,15 @@ RustCodeGraph 将目标文件识别为 14 个符号，并报告它被 `base_join
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/join/outer_join_probe.go`。两版保持了最重要的语义分叉：inner side build 时由 probe/outer 行跟踪匹配并即时补默认 inner；outer side build 时标记 build outer 行并在 probe 完成后扫描未匹配行。两版也都禁止在 inner-build 路径调用 row-table 扫描协议，并支持额外条件拒绝键匹配后仍保留 outer 行。
+两版也都禁止在 inner-build 路径调用 row-table 扫描协议，并支持额外条件拒绝键匹配后仍保留 outer 行。
 
-当前 Rust 是面向 `Row`/`Vec<Row>` 的独立实现，不是 Go 文件逐语句的运行时等价物。主要差异包括：
+主要差异包括：
 
 - Go 通过 `isNotMatchedRows`、`selected` 和 vectorized expression filter 维护逻辑行状态；Rust 把匹配判定与条件执行封装在 `Joiner::{try_to_match_inners,try_to_match_outers}` 的返回值中。
 - Go 根据 `buildColUsed`、`probeColUsed` 和结果 chunk offset 复制投影列；Rust 将列顺序和 `children_used` 投影交给 `Joiner`。`right_outer_used_column_matrix_preserves_go_projection_contract` 提供了对应回归证据。
 - Go row table 使用 tagged pointer、used flag、chunk 与 `rowIter`；Rust 使用 build 下标、`Vec<bool>` 和 `scan_row_index`。
 - Go probe 检查 `SQLKiller`、处理 incomplete chunk，并把错误写入 worker result；Rust 当前只传播装载错误与 Joiner 字符串错误，没有取消检查。
 - Go `ResetProbe` 清除 `rowIter` 后重置基座；Rust 基座重置 `scan_row_index`，但保留 build used 状态。Rust 的 `left_outer_reset_clears_partial_probe_and_scan_state` 明确覆盖这一当前契约。
-
-Go 的 left/right outer probe 测试位于 `left_outer_join_probe_test.go` 与 `right_outer_join_probe_test.go`；Rust 的对应行为测试位于独立的 `left_outer_join_probe_test.rs`、`right_outer_join_probe_test.rs` 和 `outer_join_probe_test.rs`，符合源文件与测试文件分离约束。
 
 ## 扩展指南
 
@@ -105,12 +99,3 @@ Go 的 left/right outer probe 测试位于 `left_outer_join_probe_test.go` 与 `
 测试应继续放在独立文件而非 `outer_join_probe.rs` 内。通用扫描误用放在 `outer_join_probe_test.rs`；Left/Right Outer 的匹配、条件、投影、NULL/复合键、容量续跑、spill 与 reset 分别扩展 `left_outer_join_probe_test.rs` 和 `right_outer_join_probe_test.rs`。若引入 Go 已有的 SQL kill、磁盘 spill 或 chunk 特性，需要先确认相关 Rust 基础设施真实接线，不能只照抄本文件顶部的 Go 映射注释。
 
 性能方面，当前每批会克隆 probe 行、build 下标切片和 build 行；扩大候选规模或增加状态时应关注这些分配。兼容性方面，修改 `outer_side_build` 的工厂计算、`Joiner::on_miss_match` 输入方向或 used bitmap 生命周期会同时影响 Left 与 Right Outer Join，必须成对验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/executor/join/outer_join_probe.rs` 报告 1 个文件、14 个符号；`node --file ... --offset 1 --limit 500` 与后续 500—568 行查询读取了完整文件，并给出被 `base_join_probe.rs` 及相关测试引用的文件级关系；`query OuterJoinProbe --limit 20 --json` 同时定位 Rust 结构体与 Go `outerJoinProbe`/`newOuterJoinProbe`。对 struct 的 `callers`/`callees` 查询未返回可用边，因此调用关系又由工厂、trait 和测试源码直接核验，未把缺失图边推断成事实。
-- Rust 源码：`pkg/executor/join/outer_join_probe.rs`（完整文件）、`base_join_probe.rs`（`Probe`、`BaseJoinProbe`、`new_join_probe`）、`joiner.rs`（`try_to_match_inners`、`try_to_match_outers`、`on_miss_match`）、`lib.rs`（模块装配）。
-- crate 声明：`pkg/executor/join/Cargo.toml`，确认 crate 名、`lib.rs` 入口、Go 包映射和依赖边界。
-- Go 对照：`pkg/executor/join/outer_join_probe.go`；并以 `left_outer_join_probe_test.go`、`right_outer_join_probe_test.go` 的 RustCodeGraph 符号检索确认 Go 回归面。
-- Rust 独立测试：`pkg/executor/join/outer_join_probe_test.rs`、`left_outer_join_probe_test.rs`、`right_outer_join_probe_test.rs`，覆盖扫描方向断言、匹配/补默认值、other condition、outer-build 扫描、spill 恢复、复合键/NULL、容量续跑、错误传播、投影与 reset。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `rg` 命令验证本文恰有十一个固定二级标题，并人工复核本文区分了注释映射与可执行 Rust 事实。

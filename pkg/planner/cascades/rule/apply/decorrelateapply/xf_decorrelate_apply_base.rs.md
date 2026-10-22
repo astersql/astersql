@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-rule-apply-decorrelateapply` 子 crate；crate 入口 `pkg/planner/cascades/rule/apply/decorrelateapply/lib.rs` 将它声明为公开模块并整体再导出。它位于 Cascades 逻辑变换规则层，服务于 Apply 解相关规则，但当前职责不等同于完整优化器运行时：文件头明确称其为“机械迁移阶段的自包含桩”，用最小的 Pattern、Rule、逻辑计划和 memo 组表达式模型支撑共享预检以及独立单元测试。
-
-直接使用者是相邻的 `xf_decorrelate_simple_apply.rs`。后者把 `XFDeCorrelateApplyBase` 组合进 `XFDeCorrelateSimpleApply`，复用本文件的轻量模型执行测试路径；与此同时，它另行实现 `cascades_rule::Rule`，通过真实的 `BoundPlan`、`logicalop::LogicalApply` 和 `coreusage` 接入 Cascades。因而，本文件是移植语义的共享底座和测试模型，不应被误写为生产优化器中全部 Apply 解相关能力的实现。
+定义 `XF_DECORRELATE_SIMPLE_APPLY_ID` 和 `APPLY_GEN_FROM_XF_DECORRELATE_RULE_FLAG`，分别表达简单解相关规则 ID 与“由解相关规则生成的中间 Apply”标志。
 
 ## 核心职责
 
@@ -85,11 +83,9 @@ RustCodeGraph 已索引本文件并识别 34 个符号，也识别相邻 Rust/Go
 
 ## 与 Go 版本的对应关系
 
-Go 同路径 `xf_decorrelate_apply_base.go` 的内容很小：`XFDeCorrelateApplyBase` 嵌入 `*rule.BaseRule`，并以 `PreCheck` 强制转换根计划为 `*logicalop.LogicalApply` 后返回 `!apply.NoDecorrelate`。Rust 的 `XFDeCorrelateApplyBase { base_rule }` 和 `pre_check`/`PreCheck` 与此语义直接对应；Go 的失败方式是类型断言 panic，Rust 的失败方式是 `expect` panic。
-
 Rust 文件明显比 Go 基类更宽：`Error`、Pattern、Rule、Schema、轻量计划枚举、组表达式、原子 ID 分配以及相关列提取都不是 Go 基类文件的逐项翻译，而是机械迁移阶段为自包含测试引入的桩。Go 的真实类型分别来自 `cascades/rule`、`cascades/pattern`、`core/base`、`logicalop` 与 `coreusage`；Rust 的真实对应依赖也已在 Cargo manifest 中声明，并由 `xf_decorrelate_simple_apply.rs` 的 `impl cascades_rule::Rule` 使用。
 
-相邻 Go `xf_decorrelate_simple_apply.go` 提供行为对照：模式为 `Apply(Any, Any)`；检查内层相对外层的相关列；无相关列时浅拷贝 Join 并重新分配 Cascades 因子；根据中间 Apply 标志决定是否删除源 memo 表达式。当前 Rust 轻量路径保留这一控制流，但其字符串列模型和简化重分配不具有 Go 生产类型的全部语义。Go 回归测试 `xf_decorrelate_apply_test.go::TestXFDeCorrelateShouldDeleteIntermediaryApply` 当前开头即 `t.Skip`；Rust 独立测试另有可执行的轻量断言，同时保留了 Go 测试参考文本。
+当前 Rust 轻量路径保留这一控制流，但其字符串列模型和简化重分配不具有 Go 生产类型的全部语义。Go 回归测试 `xf_decorrelate_apply_test.go::TestXFDeCorrelateShouldDeleteIntermediaryApply` 当前开头即 `t.Skip`；Rust 独立测试另有可执行的轻量断言，同时保留了 Go 测试参考文本。
 
 ## 扩展指南
 
@@ -99,13 +95,3 @@ Rust 文件明显比 Go 基类更宽：`Error`、Pattern、Rule、Schema、轻�
 - 若修改计划复制或重分配，必须同时检查轻量 `LogicalJoin::{shallow_ref,realloc_for_cascades}` 和相邻真实桥接中的 `LogicalJoinShallowRef`、schema/output names 恢复及 `ReAlloc4Cascades`，防止测试模型与生产路径漂移。
 - 单元测试继续放在独立的 `xf_decorrelate_apply_test.rs`，不要内嵌到生产源文件。至少同步覆盖：`no_decorrelate` 门禁、错误根类型/孩子数、相关列存在与不存在、孩子与 schema 保留、统计清空、计划 ID 变化、中间 Apply 删除标志。Go 语义变化时也应核对同目录 Go 实现和测试。
 - 性能风险集中在字符串克隆与二重线性查找；若轻量模型用于更大输入，可考虑集合化 schema，但必须保留输出顺序和重复项语义，或先明确改变契约。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_base.rs`，核对了全部 282 行以及常量、类型、trait、函数和 impl。
-- crate 与模块边界：同目录 `Cargo.toml`、`lib.rs`。
-- Rust 直接入口与真实桥接：`xf_decorrelate_simple_apply.rs`，重点核对构造函数、轻量 `Rule` 实现和真实 `cascades_rule::Rule` 实现。
-- Rust 独立测试：`xf_decorrelate_apply_test.rs`，核对无相关列 Apply→Join、孩子保留、统计清空、中间 Apply 删除、相关 Apply 保留和规则字符串断言。
-- Go 对照：`xf_decorrelate_apply_base.go`、`xf_decorrelate_simple_apply.go`、`xf_decorrelate_apply_test.go`；后者的主回归当前被 `t.Skip` 跳过。
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter .../decorrelateapply` 定位相邻 Rust/Go 文件；`query XFDecorrelateApplyBase`（实际命中大小写为 `XFDeCorrelateApplyBase`）与 `query extract_correlated_columns` 核对主要符号；`node --file ... --offset 1 --limit 420` 读取完整源码。callers/callees 查询超时后，使用 `rg` 对同目录直接引用作补充核验。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证文档存在且固定二级标题恰为 11 个，并人工复核没有把轻量桩描述成完整生产实现。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-property` crate，定义父物理算子对子计划提出的物理要求，以及比较、变换和编码这些要求所需的辅助类型。crate 根 `pkg/planner/property/lib.rs` 将本模块私有声明为 `physical_property`，再通过 `pub use physical_property::*` 对外导出；因此其他 planner crate 通常以 `property::PhysicalProperty`、`property::SortItem` 等名字使用这里的 API。
-
-它位于逻辑属性和物理计划之间：逻辑算子枚举物理实现时创建或改写属性，物理算子把属性继续传给子节点，Cascades/memo 和物理计划缓存用属性指纹区分候选。RustCodeGraph 的文件关系显示该文件被 21 个 Rust 文件使用；直接搜索可见主要使用点集中在 `pkg/planner/core/operator/logicalop/logical_projection.rs`、`pkg/planner/core/operator/physicalop/base_physical_plan.rs`、`physical_topn.rs`、`physical_window.rs`、`base_physical_agg.rs` 以及 `pkg/planner/cascades/old/implementation_rules.rs`。
+提供 Explain 文本、collation ID 转换、内存估算、关键字段克隆和任务类型枚举等配套操作。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/planner/property/physical_property.go` 也是 799 行，Rust 文件按同名类型和方法移植了主要语义：任务集合、排序项、MPP 类型/列、FD 等价判断、属性前缀/方向/keep-order、哈希字段、关键字段克隆和 Exchange 判定均可逐项对应。`pkg/planner/property/physical_property_test.go::TestNeedEnforceExchangerWithHashByEquivalence` 的六组 FD 用例由 Rust 测试 `need_enforce_exchanger_with_hash_by_equivalence_matches_go_cases` 对齐。
-
 语言层面的差异包括：Go 用指针和 `nil` 表示可选值，Rust 对必需列使用值类型、对可选结构使用 `Option`；Go 的 `HashCode` 原地填充 `[]byte`，Rust 用线程安全的 `OnceLock<Vec<u8>>`；Go `ChoosePartitionKeys` 复用键指针，Rust 返回深拷贝；Go Explain 接收 `bytes.Buffer` 并返回该 buffer，Rust直接写入 `&mut String`。
 
-当前 Rust 还包含 Go 文件中没有的 `PhysicalProperty::PreferTiFlash`，并将其编码进哈希、保留在关键字段克隆中；其生产使用点见 `base_physical_agg.rs` 和 `base_physical_plan.rs`。这是仓库当前 Rust 接线事实，不应误写成同路径 Go 的现有字段。另一方面，Go 生产代码直接在物理规划中调用 `property.NeedEnforceExchanger`，而 Rust 精确搜索只发现测试直接调用本文件函数；Rust 的物理计划文件目前还保留本地判定逻辑，因此这部分接线并非一比一。
+当前 Rust 还包含 Go 文件中没有的 `PhysicalProperty::PreferTiFlash`，并将其编码进哈希、保留在关键字段克隆中；其生产使用点见 `base_physical_agg.rs` 和 `base_physical_plan.rs`。另一方面，Go 生产代码直接在物理规划中调用 `property.NeedEnforceExchanger`，而 Rust 精确搜索只发现测试直接调用本文件函数；Rust 的物理计划文件目前还保留本地判定逻辑，因此这部分接线并非一比一。
 
 ## 扩展指南
 
@@ -96,12 +92,3 @@
 - 修改哈希字段后，应增加“字段变化导致指纹变化”和“重复调用缓存稳定”的回归用例，并审查所有哈希后仍可能修改属性的路径。
 - 扩展 `CloneEssentialFields` 前先确认该字段是必须跨算子传播，还是像 `CanAddEnforcer`、`VectorProp`、`IndexJoinProp` 一样应由特定路径显式接线；盲目复制会改变候选枚举范围。
 - 对照 Go 迁移时，应以 `physical_property.go` 和 `physical_property_test.go` 的具体分支为依据，同时记录 Rust 专有字段/接线，避免为了表面一致删除 Rust 已被生产路径消费的行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/property` 确认同目录 11 个 Go/Rust/Cargo 相关文件；`query` 定位 `PhysicalProperty`（第 413 行）、`SortItem`（第 38 行）、`MPPPartitionColumn`（第 170 行）、`NewPhysicalProperty`（第 469 行）、`NeedMPPExchangeByEquivalence`（第 512 行）和 `NeedEnforceExchanger`（第 771 行）；`node --file` 完整读取目标 799 行并报告 21 个 Rust 使用文件。精确 callers/callees 查询无输出，未将其当作“无调用”的证明。
-- 源与 crate：完整核对 `pkg/planner/property/physical_property.rs`、`pkg/planner/property/lib.rs`、`pkg/planner/property/Cargo.toml`。
-- Go 对照：完整核对 `pkg/planner/property/physical_property.go` 和 `pkg/planner/property/physical_property_test.go`。
-- Rust 测试：完整核对独立文件 `pkg/planner/property/physical_property_test.rs`；其中覆盖六组 FD 等价用例、Any/Broadcast/Single/Hash 分区规则、排序前缀与部分有序、指纹缓存及区分字段。该文件还包含 stats/task-type 测试，但不作为本文件行为的依据。
-- 调用点搜索：以 `rg` 核对 `NewPhysicalProperty`、`CloneEssentialFields`、`HashCode` 以及各物理属性字段在 `pkg/planner`、`pkg/executor`、`pkg/expression` 中的使用；确认当前 Rust 生产文件没有直接调用本文件 `NeedEnforceExchanger`。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构验证要求是目标文件存在且恰有十一个规定的二级标题。

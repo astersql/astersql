@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`errors.rs`](./errors.rs) 是 `astersql-util-timeutil` crate 的错误契约层，由 [`lib.rs`](./lib.rs) 以公开模块 `errors` 导出。它本身不解析时区，而是为同 crate 的 [`time_zone.rs`](./time_zone.rs) 提供 `TimeUtilError`、MySQL 未知时区分类器 `UnknownTimeZoneClass` 和全局实例 `ErrUnknownTimeZone`。上层组件通过 `ParseTimeZone`、`LoadLocation`、`GetSystemTZ`、`ConstructTimeZone` 等 `time_zone.rs` API 间接观察这些错误；例如 `pkg/session/runtime.rs` 和自动分析相关模块使用该 crate 的时区能力。
-
-crate 边界由 `pkg/util/timeutil/Cargo.toml` 确定：库名为 `astersql-util-timeutil`，入口是 `lib.rs`，生产依赖为 `chrono`、`chrono-tz`、`tokio` 和 `tokio-util`。本文件的直接依赖仅是标准库 `std::fmt`、`std::path::Path`、`std::io::Error` 与 `std::error::Error`；`chrono` 相关错误条件由 `time_zone.rs` 转换成本文件的变体。
+实现 `fmt::Display` 和 `std::error::Error`，使各变体能稳定进入 `Result`、日志或上层错误包装。
 
 ## 核心职责
 
@@ -67,9 +65,7 @@ crate 边界由 `pkg/util/timeutil/Cargo.toml` 确定：库名为 `astersql-util
 
 ## 与 Go 版本的对应关系
 
-Go 的 `pkg/util/timeutil/errors.go` 只声明 `ErrUnknownTimeZone = dbterror.ClassVariable.NewStd(mysql.ErrUnknownTimeZone)`。Rust 用 `UnknownTimeZoneClass` + `ErrUnknownTimeZone` 保留两个主要调用面：`GenWithStackByArgs` 生成指定类别的错误，`Equal` 忽略参数判断错误类。MySQL 模板的 64 字符精度由 Rust `Display` 明确实现，并由独立 `errors_test.rs` 覆盖。
-
-Rust 枚举的其他变体主要对应 `pkg/util/timeutil/time_zone.go` 中原先用 `fmt.Errorf` 或标准库错误表达的分支：`UnsupportedZoneInfoPath` 对应“path ... is not supported”，`InvalidSystemTimeZone` 对应 `systemTZ` 未设置，`InvalidTimeZoneName` 对应 `time.LoadLocation` 失败后的“invalid name ...”。`Io` 将 Go `errors.Annotatef` 式的操作和路径上下文收敛到显式字段。
+Rust 枚举的其他变体主要对应 `pkg/util/timeutil/time_zone.go` 中原先用 `fmt.Errorf` 或标准库错误表达的分支：`UnsupportedZoneInfoPath` 对应“path ... is not supported”，`InvalidSystemTimeZone` 对应 `systemTZ` 未设置，`InvalidTimeZoneName` 对应 `time.LoadLocation` 失败后的“invalid name ...”。
 
 `InvalidOffset` 和 `InvalidLocalTime` 是 Rust `chrono` 适配边界的结构化错误，不是 Go `errors.go` 中的独立错误类。Go `time.FixedZone` 和墙钟转换的 API 形状与 `chrono` 不同，因此这两个变体是为了在 Rust `Result` 中不丢失失败语义，不应宣称为 Go 错误类的逐一复刻。
 
@@ -80,14 +76,3 @@ Rust 枚举的其他变体主要对应 `pkg/util/timeutil/time_zone.go` 中原�
 - 修改 `UnknownTimeZone` 格式时，同步验证错误号 1298、`%-.64s` 精度、Unicode 截断、原始 `name` 保留以及 `ParseTimeZone` 的负/正偏移边界。关联测试包括 `errors_test.rs`、`time_zone_test.rs`、`migration_aster_unit_test.rs` 和 Go `time_zone_test.go`。
 - 如要让 `Io` 支持错误链或 `ErrorKind`，需要权衡与当前 `Clone + Eq` 派生的兼容性；直接存放 `std::io::Error` 会改变这些 trait 能力。性能上本文件只在错误路径分配字符串，不应在成功热路径额外格式化错误。
 - 增加字段或改变变体时，应搜索所有穷尽模式匹配。当前 `Equal` 只识别 `UnknownTimeZone`，新变体不会自动归入该类。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件，其中 7,032 个 Rust 文件；`files --filter pkg/util/timeutil` 确认 `errors.rs`、`errors_test.rs`、`lib.rs`、`time_zone.rs` 与 Go 对照文件均在索引中。
-- RustCodeGraph `node --file pkg/util/timeutil/errors.rs`：核对 110 行生产源码、枚举的 7 个变体、`io`、`Display`、`Error`、`GenWithStackByArgs`、`Equal` 和 `ErrUnknownTimeZone`。
-- RustCodeGraph `query TimeUtilError --kind enum`：定位 `time_zone.rs` 中 `Location::fixed`、`GetSystemTZ`、`LoadLocation`、`ConstructTimeZone`、`ParseTimeZone`、`infer_tz_name_from_file_name` 等返回/构造点；`node --file pkg/util/timeutil/time_zone.rs` 进一步核对各分支。
-- RustCodeGraph 精确 `callers/callees` 查询：对 `TimeUtilError`、`GenWithStackByArgs`、`Equal` 和 `io` 限定 `errors.rs` 后均未输出边；本文因此使用索引源码节点和 `pkg/util/timeutil` 限定引用搜索补齐，并未将空结果作为无调用的证据。
-- 已读生产与装配文件：`pkg/util/timeutil/errors.rs`、`time_zone.rs`、`lib.rs`、`Cargo.toml`；该目录没有 `doc.go`。
-- 已读 Go 对照：`pkg/util/timeutil/errors.go`、`time_zone.go`、`time_zone_test.go`，以及 MySQL 错误号/模板 `pkg/parser/mysql/errcode.rs` 和 `errname.rs`。
-- 已读 Rust 独立测试：`pkg/util/timeutil/errors_test.rs` 验证 64 字符显示精度、原名保留与分类器；`time_zone_test.rs` 与 `migration_aster_unit_test.rs` 验证 `SYSTEM`/IANA/偏移解析、未知时区类及 `-12:59`/`+14:00` 边界。
-- 本任务只生成文档，按计划不运行 Cargo。交付前使用任务指定的 `test` + `rg -c` 命令验证文档存在且恰有 11 个固定二级章节。

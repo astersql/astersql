@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明对应源码 [`reader_wrapper.rs`](./reader_wrapper.rs)。它属于 `astersql-dumpformat-parquetfile` crate，由 `lib.rs` 以公开模块 `reader_wrapper` 装配。它提供两组能力：一组是基于 `Arc<Vec<u8>>` 的随机读/定位兼容层（`ReaderWrapper`、`InMemoryReaderBase`），另一组是把 Parquet footer 中的列块元数据归并为 row group 与逐列字节范围（`row_group_range_from_meta`）。生产解码路径实际使用后一组能力：`file_parser.rs::FileParser::new` 构造 `FileMeta`、计算范围，再交给 `source_reader.rs::SourceReader::set_ranges` 驱动整文件、row group 或列流式读取。
-
-文件第 16～283 行的大段内容全部是注释，保存了 Go 对象存储 reader、并发预读和 `prepareReader` 的移植草案；它不参与 Rust 编译。当前真正可执行的实现从 `use crate::{Error, Result}` 开始。对象存储 `RangeOpener`、互斥缓存、关闭清理和实际 Parquet `ChunkReader` 接线位于 `source_reader.rs`，不能把注释草案当作本文件已经具备的运行能力。
+`InMemoryReaderBase` 将一个经校验的 row group 切片复制到共享的 `Arc<Vec<u8>>`，之后按文件绝对 offset 提供完整读取语义。
 
 ## 核心职责
 
@@ -69,9 +67,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `reader_wrapper.go`。Rust 保留了 64 KiB skip 思路、100 字节旧字典页头补偿、128 MiB row group 阈值、空组的 `MaxInt64` 起点，以及“字典页早于数据页时从字典页起算”的范围语义。`reader_wrapper_test.rs` 专门锁定空组哨兵、跨源文件尾的旧版 padding 和短读 EOF；`parser_test.rs` 还覆盖小跨度前跳、回读、关闭、字典页起点及正常旧版补偿。
-
-当前实现并非 Go 的完整等价移植。Go `readerWrapper` 包装 `storeapi.Storage.Open` 返回的 `ReadSeekCloser`，可借 failpoint 替换 reader；Rust `ReaderWrapper` 只包装内存字节且 `close` 不传播底层错误。Go `inMemoryReaderBase.loadRowGroup` 以 error group 并发执行对象存储 range GET；Rust `InMemoryReaderBase::new` 只从已有 slice 同步复制。Go 的 `prepareReader`、`inMemoryReaderWrapper`、whole-file 策略和真实 close 生命周期在本文件仅存于注释；Rust 的相应生产实现主要集中在 `source_reader.rs`。因此本文件属于“部分语义对齐 + 元数据范围已接线”，不是完整对象存储 reader 移植。
+当前实现并非 Go 的完整等价移植。Go `readerWrapper` 包装 `storeapi.Storage.Open` 返回的 `ReadSeekCloser`，可借 failpoint 替换 reader；Rust `ReaderWrapper` 只包装内存字节且 `close` 不传播底层错误。Go `inMemoryReaderBase.loadRowGroup` 以 error group 并发执行对象存储 range GET；Rust `InMemoryReaderBase::new` 只从已有 slice 同步复制。Go 的 `prepareReader`、`inMemoryReaderWrapper`、whole-file 策略和真实 close 生命周期在本文件仅存于注释；Rust 的相应生产实现主要集中在 `source_reader.rs`。
 
 ## 扩展指南
 
@@ -80,12 +76,3 @@ Go 对照文件是 `reader_wrapper.go`。Rust 保留了 64 KiB skip 思路、100
 若扩展随机读兼容层，应在 `ReaderWrapper` 中明确裸 `Read`、`Seek`、`read_at` 和失败后游标的共同契约，并在独立的 `reader_wrapper_test.rs` 增加短读后重试、seek 到文件外、clone/close 隔离等回归测试；不要把测试嵌入生产源文件。
 
 若目标是真实对象存储性能或资源管理，应从 `source_reader.rs` 的 `RangeOpener`、`SourceReader::cached/get_read/get_bytes/close` 接入，而不是激活本文件的注释草案。阈值调整应同步评估 `source_reader.rs::ROW_GROUP_THRESHOLD`，因为只改 `ROW_GROUP_IN_MEMORY_THRESHOLD` 不会改变当前生产行为。将 Go 并发分块预读移植到 Rust 时还需处理取消、首错传播、切片并发写安全、峰值内存和底层 reader 关闭，并新增独立测试验证请求数与缓存上限。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/dumpformat/parquetfile` 确认相邻实现与测试；`explore "pkg/dumpformat/parquetfile/reader_wrapper.rs ReaderWrapper"`、`node --file ...reader_wrapper.rs` 和符号查询核对了可执行边界、主要符号及使用文件。
-- 生产源码：`reader_wrapper.rs`；`file_parser.rs::FileParser::new` 第 262～305 行验证 metadata 转换、直接调用与 `SourceReader::set_ranges` 接线；`source_reader.rs` 验证实际缓存、流式读取、锁和关闭生命周期；`lib.rs` 验证模块公开性和测试装配。
-- crate 配置：`pkg/dumpformat/parquetfile/Cargo.toml` 验证 crate 名、`lib.rs` 入口及带 tag 的 `parquet` Git 依赖。
-- Go 对照：`reader_wrapper.go` 的 `readerWrapper`、`newReaderWrapper`、`inMemoryReaderBase`、`prepareReader`、`rowGroupRangeFromMeta`；`parser_test.go` 验证 Go 的阈值与预读/按需读取语义。
-- Rust 测试：`reader_wrapper_test.rs` 的三个边界回归；`parser_test.rs::reader_wrapper_supports_forward_gaps_random_reads_and_close`、`in_memory_reader_and_row_group_ranges_cover_boundaries`、`old_parquet_mr_range_adds_dictionary_header_padding`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务规定的 `rg` 命令确认恰有 11 个固定二级章节，并人工复核现行实现与注释草案已明确分离。

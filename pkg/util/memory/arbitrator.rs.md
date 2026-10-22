@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-memory` crate 的进程内内存仲裁核心。crate 入口 `pkg/util/memory/lib.rs` 以 `pub mod arbitrator; pub use arbitrator::*;` 暴露这里的 API；`pkg/util/memory/Cargo.toml` 将 crate 根设为 `lib.rs`，并声明 `mem-arbitrator` feature（当前 `lib.rs` 并未用该 feature 条件编译本模块）。仲裁器位于运行时内存采样与查询/算子内存池之间：`pkg/util/memory/global_arbitrator.rs` 创建 `MemArbitrator`、启动自动轮询并调用 `HandleRuntimeStats`，`pkg/util/memory/tracker.rs` 用 root-pool API 申请查询配额，`pkg/session/runtime.rs` 与 `pkg/session/runtime/control.rs` 使用 await-free 分片预算。
-
-它解决的是“进程硬限制之下，多个查询如何记账、等待、取消及在 OOM 风险时止损”的问题，不负责采集操作系统内存，也不直接实现查询终止；后者通过 `ArbitrateHelper` 和 `KillEventChan` 交给会话侧完成。
+在 `disable`、`standard`、`priority` 三种 `ArbitratorWorkMode` 下执行不同的准入与回收策略；priority 模式会优先处理高优先级请求，并通过 `cancel_lower_priority` 取消低优先级上下文。
 
 ## 核心职责
 
@@ -81,11 +79,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/memory/arbitrator.go`，主要命名和语义对应：`MemArbitrator`、三种 work mode、三档 priority、soft limit、root pool 生命周期、digest profile、await-free budget、risk/cancel 原因和 `ArbitrateHelper` 均保留。Rust 的独立测试注释与测试名明确映射 `TestMemArbitrator*`、`TestBasicUtils` 和 Go merge 场景。
+Rust 不是 Go 文件的逐行同构：Go 使用分片 entry map、quota shard、订阅/唤醒与更完整的 GC、持久化、profiling 和周期 action；Rust 当前以 `HashMap + VecDeque + Condvar` 和轻量 `StartAutoRun` 实现核心可用路径。Rust 的 `ConcurrentBudget` 直接用 atomics，root handle 也从 Go 指针式 entry 封装为 uid 句柄。
 
-Rust 不是 Go 文件的逐行同构：Go 使用分片 entry map、quota shard、订阅/唤醒与更完整的 GC、持久化、profiling 和周期 action；Rust 当前以 `HashMap + VecDeque + Condvar` 和轻量 `StartAutoRun` 实现核心可用路径。Go `AutoRun`/`executeTick` 的完整运行时控制面在 Rust 中由 `global_arbitrator.rs` 的采样与本文件轮询共同承担。Rust 的 `ConcurrentBudget` 直接用 atomics，root handle 也从 Go 指针式 entry 封装为 uid 句柄。
-
-因此扩展时应以 Go 行为作为语义基准，但只能声称 Rust 已实现本文件实际存在的路径；Go 中的 GC action、持久化策略或更复杂分片算法不能当作 Rust 当前能力。已验证的关键等价性包括：Reserve 是绝对容量、30 秒 digest 窗口、soft OOM 延迟、优先级选择、zero-quota context 仍可因 heap 使用被 kill，以及 await-free 在 OOM 余量不足时拒绝增长。
+因此扩展时应以 Go 行为作为语义基准，但只能声称 Rust 已实现本文件实际存在的路径；Go 中的 GC action、持久化策略或更复杂分片算法不能当作 Rust 当前能力。
 
 ## 扩展指南
 
@@ -95,12 +91,3 @@ Rust 不是 Go 文件的逐行同构：Go 使用分片 entry map、quota shard�
 - 修改 await-free 分片数时，要保持 2 的幂或改写 `await_free_index` 的位与索引逻辑；还要验证容量归还到总 `allocated`，以及超额 `ConsumeQuota` 已先增加 used 的契约。
 - 修改调优窗口/缓存时，联动 buffer、pool median、digest 和 mem magnification 的槽轮转边界，尤其测试时间跨槽和旧峰值过期。
 - 与 Go 同步功能时先比较 `pkg/util/memory/arbitrator.go` 的对应方法和 `pkg/util/memory/arbitrator_test.go`；Rust 测试继续使用 `arbitrator_test.rs` 或现有独立补充测试文件。性能风险集中在全局 `roots`/`pending` 锁、轮次内 helper 回调、候选排序和 10ms 轮询，不应在持锁区增加阻塞 I/O。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/util/memory/arbitrator.rs`；`files --filter pkg/util/memory` 定位了 Rust/Go 源与测试；`node --file pkg/util/memory/arbitrator.rs` 分段读取全部 1993 行并报告 18 个使用文件；`query MemArbitrator --kind struct` 同时定位 Rust 与 Go 定义。精确 `callers RequestQuota` 查询在本地索引中未及时返回，已停止，调用关系改由限定 Rust 路径的 `rg` 验证。
-- 源与 crate：`pkg/util/memory/arbitrator.rs`、`pkg/util/memory/lib.rs`、`pkg/util/memory/Cargo.toml`。
-- 直接 Rust 调用方：`pkg/util/memory/global_arbitrator.rs`、`pkg/util/memory/tracker.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/control.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`。
-- Go 对照：`pkg/util/memory/arbitrator.go`；Go 回归依据：`pkg/util/memory/arbitrator_test.go`。
-- Rust 独立测试：`pkg/util/memory/arbitrator_test.rs` 与 `pkg/util/memory/arbitrator_2_aster_unit_test.rs`。覆盖枚举/阈值、soft limit、budget、context 单次停止、root 生命周期、优先级回收与等待、OOM 受害者、digest 窗口、await-free、动态放大率和缓存清理。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付只执行固定 11 章节的结构检查，并人工核对上述路径和符号引用。

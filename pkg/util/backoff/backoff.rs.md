@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-backoff` crate 的核心实现，提供一个只负责“计算下一次等待时长”的无抖动指数退避策略。crate 根 `pkg/util/backoff/lib.rs` 通过 `pub mod backoff` 声明模块并用 `pub use backoff::*` 重新导出这里的公开符号；`pkg/util/backoff/Cargo.toml` 将库入口指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/util/backoff"` 记录 Go 来源。
-
-该 crate 已列入根 workspace，且被 `pkg/ddl`、`pkg/dxf/importinto`、`pkg/dxf/importinto/conflictedkv`、`pkg/dxf/framework/{handle,scheduler,taskexecutor}` 的 Cargo manifest 声明为依赖。不过当前生产 Rust 源码没有引用 `astersql_util_backoff` 或调用 `NewExponential`；Rust 侧可确认的直接使用者只有本 crate 的独立测试。因而它目前是已打包、已验证 API，但尚不能据此宣称已进入 Rust 应用运行主链。Go 对应实现则已用于 session、DDL 和 DXF/importinto 等重试路径。
+Go 对应实现则已用于 session、DDL 和 DXF/importinto 等重试路径。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ API 返回 `Duration` 而非 `Result`，没有显式错误传播。调用者必�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/util/backoff/backoff.go`：`Backoffer` 接口对应 trait，`Exponential` 四个字段和状态含义一致，`NewExponential` 初始化相同，`Backoff(0)` 复位以及后续“前值乘倍率再封顶”的顺序一致。Go 的 `var _ Backoffer = &Exponential{}` 编译期接口断言，在 Rust 中由 `impl Backoffer for Exponential` 表达。
-
 两端仍有可见语言/API 差异：Go 字段未导出，而 Rust 字段全部公开；Go 构造函数返回 `*Exponential`，Rust 返回拥有所有权的值；Go 接收 `int`，Rust 接收不允许负数的 `usize`；Rust 额外提供固有 `Exponential::Backoff` 作为 trait 方法转发入口。Go 直接把 `time.Duration` 转 `float64` 后再转回，Rust 为避免 `Duration::from_secs_f64` 的舍入行为，显式按纳秒截断。
 
-`backoff_test.go::TestExponential` 与 `backoff_test.rs::test_exponential` 覆盖相同三组序列。Rust 的 `migration_aster_unit_test.rs` 额外覆盖实例复位、1.5 倍纳秒截断和 `Box<dyn Backoffer>` 动态分发。未覆盖的极端浮点与超大时长行为不能仅凭常规序列推断为 Go 完全等价。
+Rust 的 `migration_aster_unit_test.rs` 额外覆盖实例复位、1.5 倍纳秒截断和 `Box<dyn Backoffer>` 动态分发。未覆盖的极端浮点与超大时长行为不能仅凭常规序列推断为 Go 完全等价。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@ Rust 文件逐项对应 `pkg/util/backoff/backoff.go`：`Backoffer` 接口对应
 - 修改公开字段可见性、trait 签名、返回所有权方式或浮点转换规则属于兼容性变化，应检查所有声明该 Cargo 依赖的 crate，并同步独立测试。
 - 测试逻辑继续放在 `pkg/util/backoff/backoff_test.rs` 或 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。至少同步 Go 的固定倍率/封顶用例，并为复位、跳号、`base > max`、小数倍率和大数精度等新增契约补回归。
 - 性能上单次调用为常数时间且无分配；引入随机源、锁或异步 sleep 会改变这一性质，应由上层生命周期与性能需求驱动。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件；`files --filter pkg/util/backoff` 找到目标、Go 对照、两个 Rust 测试及 crate 入口；`node --file pkg/util/backoff/backoff.rs` 读取完整 92 行和 7 个符号；同样读取了 `backoff.go`、`backoff_test.rs`、`backoff_test.go`、`lib.rs` 与 `migration_aster_unit_test.rs`。宽泛 `explore` 和同名 `callers` 查询存在歧义/超时，因此调用关系结论由下面的精确检索交叉验证。
-- crate/装配：`pkg/util/backoff/Cargo.toml`、`pkg/util/backoff/lib.rs`、根 `Cargo.toml`，以及声明 `astersql-util-backoff` 的 DDL/DXF Cargo manifests。
-- 实现与测试：`pkg/util/backoff/backoff.rs`、`pkg/util/backoff/backoff_test.rs`、`pkg/util/backoff/migration_aster_unit_test.rs`。
-- Go 对照：`pkg/util/backoff/backoff.go`、`pkg/util/backoff/backoff_test.go`；生产调用通过 `rg` 在 session、DDL、DXF/importinto 及其 framework 路径中核对。
-- Rust 接线核对：对全部 `*.rs` 精确检索 `NewExponential` 与 `astersql_util_backoff`，只命中目标实现和同 crate 测试；因此文中将生产接线状态标为“Cargo 已声明、当前未发现生产调用”。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定命令验证本文恰有 11 个固定二级章节，并人工复核定位、流程、边界、Go 差异和扩展入口均有上述路径或符号支撑。

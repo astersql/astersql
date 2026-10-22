@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser` crate 的解析器共享语义支持层。它不是独立模块：[`pkg/parser/parser.rs`](parser.rs) 先 `include!` `parser_value.rs`，再包含本文件，随后声明 `parser_actions` 并包含 `parser_runtime.rs`。因此这里的私有类型和函数与 LR 解析器语义值 `yySymType`、各类 `parser_actions::*::apply_rule` 处在同一父模块作用域，作用是把词法器产生的动态值和规约栈项目转换成 `parser_ast` 节点，并集中执行若干必须在构造 AST 时完成的兼容性校验。
-
-crate 边界由 [`pkg/parser/Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-parser`，库入口是 `lib.rs`；本文件直接使用同 crate 已接入的 `parser-ast`、`parser-auth`、`parser-mysql`、`parser-terror`、`parser-test-driver` 与 `parser-types` 等路径依赖。文件顶部虽保留 goyacc 生成文件声明与原始许可证，但当前文件实际承担的是从大型生成解析器中拆出的共享语义类型和手写辅助逻辑，真正的动作分发和 LR 状态机分别在 `parser_actions/` 与 `parser_runtime.rs`。
+因此这里的私有类型和函数与 LR 解析器语义值 `yySymType`、各类 `parser_actions::*::apply_rule` 处在同一父模块作用域，作用是把词法器产生的动态值和规约栈项目转换成 `parser_ast` 节点，并集中执行若干必须在构造 AST 时完成的兼容性校验。
 
 ## 核心职责
 
@@ -83,11 +81,11 @@ DDL 校验使用 MySQL 兼容错误码。分区边界包括：RANGE/LIST 定义�
 
 ## 与 Go 版本的对应关系
 
-直接一一对应的部分包括：`likeEscapeSpec`、`insertRowAlias` 和 `getMaskingPolicyRestrictOp` 对应 [`pkg/parser/parser.y`](parser.y) 及其生成的 `parser.go`；脱敏限制名先转大写，再映射四种合法操作，未知值返回 None/false。`validate_go_duration` 对应语义动作中的 `time.ParseDuration`，Rust 本地实现保留 Go 的单位、范围和错误文本。
+直接一一对应的部分包括：`likeEscapeSpec`、`insertRowAlias` 和 `getMaskingPolicyRestrictOp` 对应 [`pkg/parser/parser.y`](parser.y) 及其生成的 `parser.go`；脱敏限制名先转大写，再映射四种合法操作，未知值返回 None/false。
 
-`validate_column_def` 对应 [`pkg/parser/ast/ddl.go`](ast/ddl.go) 的 `ColumnDef.Validate`：仅当列含生成表达式时，`ON UPDATE`、`AUTO_INCREMENT`、`DEFAULT` 才非法。`validate_partition_clause` 和 `validate_partition_options` 对应同一 Go 文件中各 `PartitionDefinitionClause.Validate` 与 `PartitionOptions.Validate` 的检查和计数规范化；Rust 将这些校验放在 parser 共享层，由 DDL 动作构造节点后立即调用。
+`validate_partition_clause` 和 `validate_partition_options` 对应同一 Go 文件中各 `PartitionDefinitionClause.Validate` 与 `PartitionOptions.Validate` 的检查和计数规范化；Rust 将这些校验放在 parser 共享层，由 DDL 动作构造节点后立即调用。
 
-其余多数 `*Semantic` 类型、`semantic_value_*` 和所有权提取助手是 Rust 适配层，并非 Go 中都有同名结构。Go 的 yacc `%union` 使用 `interface{}` 和类型断言，动作中直接构造 AST；Rust 使用 `Box<dyn Any>`、显式 downcast 与具名中间结构表达相同规约意图。`semantic_value_expr` 对应 Go test driver 的 `newValueExpr`/`DefaultTypeForValue` 组合，关键要求是不能把 decimal、hex、bit、unsigned 等值先统一文本化而丢失 SQL datum 种类。
+其余多数 `*Semantic` 类型、`semantic_value_*` 和所有权提取助手是 Rust 适配层，并非 Go 中都有同名结构。Go 的 yacc `%union` 使用 `interface{}` 和类型断言，动作中直接构造 AST；Rust 使用 `Box<dyn Any>`、显式 downcast 与具名中间结构表达相同规约意图。
 
 ## 扩展指南
 
@@ -96,12 +94,3 @@ DDL 校验使用 MySQL 兼容错误码。分区边界包括：RANGE/LIST 定义�
 - 扩展集合运算时同时检查 `SetOprSemantic`、`nested_set_op_list` 和 `parser_actions/query.rs` 的操作符/节点对齐，以及 WITH、ORDER BY、LIMIT、`AfterSetOperator` 的归属。尤其要保留首个括号操作数与后续括号操作数不同的 `retain_select_with` 语义。
 - 新增中间语义结构应放在本文件、消费逻辑放在相应 `parser_actions/<domain>.rs`；不要把 Rust 单元测试嵌入生产文件。优先扩展同目录独立的 `parser_semantic_support_test.rs`，跨规则动作可扩展相应 `parser_actions/*_test.rs`。
 - 修改前后需核对 [`pkg/parser/parser.y`](parser.y)、Go AST 校验和 Rust 动作调用点；动态类型生产者与消费者必须同步修改，否则会走 `None`、占位文本或 panic 边界。性能风险主要来自不必要的 AST 深克隆、频繁字符串格式化和大分区定义列表的重复遍历。
-
-## 验证依据
-
-- RustCodeGraph 索引状态和文件查询确认目标文件已索引；`node --file pkg/parser/parser_semantic_support.rs` 读取了 1–587 行全部源码。
-- RustCodeGraph `explore` 确认主要调用边：query 动作调用 `nested_set_op_list`/`take_subquery_statement`/`result_set_from_item`，DDL 动作调用列与分区校验，admin 动作调用 duration 与数值转换，expression 动作调用字面量转换。
-- 已读接线与调用文件：[`pkg/parser/parser.rs`](parser.rs)、[`pkg/parser/lib.rs`](lib.rs)、`pkg/parser/parser_actions/query.rs`、`ddl.rs`、`admin.rs`、`expression.rs`；精确使用搜索还覆盖 `dml.rs`、`misc.rs`、`security.rs`。
-- 已读 crate/Go 对照：[`pkg/parser/Cargo.toml`](Cargo.toml)、[`pkg/parser/parser.y`](parser.y)、[`pkg/parser/parser.go`](parser.go)、[`pkg/parser/ast/ddl.go`](ast/ddl.go)。
-- 已读独立 Rust 测试 [`pkg/parser/parser_semantic_support_test.rs`](parser_semantic_support_test.rs)：覆盖 duration 的 `i64` 纳秒边界、分数与微秒单位、错误详情，分区 MySQL 1479 错误，以及嵌套集合运算 WITH 的保留位置和共享引用；`parser_3_aster_unit_test.rs` 另覆盖生成列 1221 错误文本。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以固定标题结构命令和 diff 人工复核验证文档完整性、链接与事实边界。

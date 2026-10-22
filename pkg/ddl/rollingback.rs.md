@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate：`pkg/ddl/Cargo.toml` 的 `[lib]` 将 crate 根设为 `pkg/ddl/lib.rs`，而 `lib.rs` 以 `pub mod rollingback;` 公开本模块，并在 `#[cfg(test)]` 下装配独立测试 `pkg/ddl/rollingback_test.rs`。
-
-它提供一个不依赖真实元数据、事务或 worker 的 DDL 回滚决策模型：输入简化的 `RollbackJob`，依据 `JobAction` 与 `SchemaState` 改写内存中的作业状态。当前它不是完整应用中实际驱动 DDL 回滚的执行器。RustCodeGraph 对 `convert_job_to_rollback`、`update_columns_null_to_not_null` 和 `record_rollback_conversion_error` 未找到生产调用方，仓库搜索只发现 `rollingback_test.rs` 使用这些 API；实际在线主链仍是 Go 的 `pkg/ddl/job_worker.go::runOneJobStep` 调用 `pkg/ddl/rollingback.go::convertJob2RollbackJob`。
-
-因此，本文件目前更准确的角色是 Go 回滚分支的局部 Rust 移植/语义契约，而不是会持久化 `mysql.tidb_ddl_job`、推进 schema version 或等待集群 schema 同步的 owner-side worker 实现。
+`args_rewritten: bool` 只是“参数已改写”的标志，不包含 Go 中 `FillFinishedArgs`/`FillRollBackArgsForAddColumn` 等真实参数；它也不读取表结构、不更新元数据、不生成 schema version、不删除索引键。
 
 ## 核心职责
 
@@ -84,14 +80,13 @@ RustCodeGraph 的内部调用边为：
 
 主要意图对应 `pkg/ddl/rollingback.go`，但属于显著简化的局部模型：
 
-- Rust `convert_job_to_rollback` 对应 Go `convertJob2RollbackJob` 的动作分派；Rust 帮助函数名称大体对应 Go `rollingbackAddColumn`、`rollingbackDropColumn`、`rollingbackModifyColumn`、`rollingbackDropIndex`、`rollingbackExchangeTablePartition` 等。
 - Rust `update_columns_null_to_not_null` 对应 Go `UpdateColsNull2NotNull`。Go 从真实 `TableInfo`/`IndexInfo` 找列并操作 MySQL flag；Rust 使用 `ColumnNullability` 和列 ID。Go 的 `getNullColInfos` 只返回已有的相关列且函数总是返回 `nil`，Rust 对缺失 ID 返回 `InvalidState`，语义并非完全相同。
 - Rust `record_rollback_conversion_error` 对应 Go `convertJob2RollbackJob` 尾部的 `job.ErrorCount++` 与 `ErrorCount > TiDBDDLErrorCountLimit` 分支，保留了限制为 3 时第 4 次取消及相同核心错误文案；它省略全局变量加载、结构化 `terror`、日志和正常取消错误的特殊处理。
 - Go 各帮助函数会读取真实表/索引/分区/约束元数据，解码和重写 job args，更新 table info/schema version，并保留原错误类别；Rust 只改简化字段和布尔标志。
 - Go switch 还覆盖 columnar index、物化视图及 shadow/log、sequence、foreign key、multi-schema change、remove/alter partitioning、charset/collation、placement 等动作；Rust `JobAction` 未覆盖这些分支。
 - Go 修改列逻辑还区分 `ModifyColumnType`、旧列 flag 与 reorg 类型；Rust 仅依据 `SchemaState`。Go add index 会处理多个索引、主键列标志、分区 ID 与 duplicate-key 错误；Rust 没有这些数据。
 
-Go 回归测试 `pkg/ddl/rollingback_test.go::TestCancelAddIndexJobError` 使用 failpoint 和真实 DDL job 验证第四次转换错误后的历史 job 状态。Rust 独立测试用内存模型复现计数、主要动作分支、约束与列标志行为，但不能替代 Go 集成覆盖。
+Rust 独立测试用内存模型复现计数、主要动作分支、约束与列标志行为，但不能替代 Go 集成覆盖。
 
 ## 扩展指南
 
@@ -101,12 +96,3 @@ Go 回归测试 `pkg/ddl/rollingback_test.go::TestCancelAddIndexJobError` 使用
 - 修改错误计数时，同时对照 Go `pkg/ddl/rollingback_test.go` 的第 4 次失败边界和错误文案，并覆盖 `limit = 0` 等边界。
 - 修改列批处理时，应明确是否保留当前“遇错前的修改不回滚”语义；若要求原子性，应先验证所有 ID，再统一写入，并增加“中途缺失 ID”回归测试。
 - 性能上，各动作分派为常数成本；列更新为 `O(index_column_ids × columns)` 的嵌套线性查找。若真实宽表或大索引会调用该模型，再考虑一次构建 ID 到下标的映射，同时维持重复 ID 和错误行为。
-
-## 验证依据
-
-- Rust 源码：`pkg/ddl/rollingback.rs`（RustCodeGraph `node --file` 读取全部 339 行；查询到 58 个符号）。
-- Rust 模块与 crate：`pkg/ddl/lib.rs`（`pub mod rollingback` 与 `#[cfg(test)] mod rollingback_test`）；`pkg/ddl/Cargo.toml`（package `astersql-ddl`、`[lib] path = "lib.rs"`、Go package porting metadata）。
-- Rust 测试：`pkg/ddl/rollingback_test.rs`，覆盖第四次转换错误取消、添加/删除动作、exchange/partition、约束及列标志更新/缺失列。
-- RustCodeGraph：`callers` 对三个公开函数未发现生产调用边；`callees rollingback.rs::convert_job_to_rollback` 列出 13 个私有帮助函数；仓库 `rg` 进一步确认公开 API 只由独立 Rust 测试直接引用。
-- Go 对照：`pkg/ddl/rollingback.go` 的 `UpdateColsNull2NotNull`、各动作帮助函数、`convertJob2RollbackJob`；`pkg/ddl/job_worker.go::worker.runOneJobStep` 的实际调用边；`pkg/ddl/rollingback_test.go::TestCancelAddIndexJobError` 的失败计数集成证据。
-- 人工复核结论：本文件存在是为了保存可测试的 Rust 回滚决策子集；它通过动作/状态分派运行；安全扩展必须同时维护状态分支与独立测试，并在宣称生产可用前补齐当前不存在的 worker、元数据和持久化接线。

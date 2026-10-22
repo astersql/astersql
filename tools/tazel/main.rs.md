@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`tools/tazel/main.rs`](main.rs) 是 `astersql-tools-tazel` crate 的业务入口模块，负责把“扫描 Go 测试数量、确认仓库根目录、遍历并改写 `BUILD.bazel`”串成一条完整流程。crate 边界由 `tools/tazel/Cargo.toml` 定义：库入口是 `lib.rs`，二进制入口是 `bin_main.rs`；`bin_main.rs::main` 调用 `astersql_tools_tazel::entry`，再由 `lib.rs::entry` 转发到本文件的 `main`。因此，本文件不是操作系统直接加载的薄入口，而是可由二进制和测试共同复用的主流程实现。
-
-该工具属于仓库构建辅助面，不参与数据库 SQL 请求链。它原地维护仓库内 Bazel `go_test` 规则的 `timeout`、`flaky` 和 `shard_count` 属性。RustCodeGraph 的文件视图确认本文件被 `tools/tazel/lib.rs` 和 `tools/tazel/parity_test.rs` 使用；`tools/tazel/BUILD.bazel` 则描述仍存在的 Go 版 `tazel` 构建目标。
+`walk_build_files` 递归访问目录，只处理文件名为 `BUILD.bazel` 且未命中 `skipTazel` 的文件，完成读取、补丁和写回。
 
 ## 核心职责
 
@@ -106,12 +104,3 @@ Rust 文件直接对应 `tools/tazel/main.go`：两者均定义 `maxShardCount =
 - 若要支持一个 BUILD 文件中的全部 `go_test`，必须明确这是对当前 Go 契约的扩展；同时更新 Go 对照或记录有意差异，并增加“多个顶层规则”的独立测试，防止只验证文本中仍有第二个规则而漏掉属性语义。
 - 若要使写回具备故障原子性或可回滚性，应在 `util.rs::write` 实现临时文件/重命名策略，并为中途失败设计集成级测试；本文件的逐文件顺序不提供全仓库事务。
 - 若要允许并发 `run_from`，必须先移除或按执行实例隔离全局 `testMap`。仅依赖 `Mutex` 不足以保护跨多个调用步骤的一致性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `tools/tazel` 的 11 个 Go/Rust 文件；`files --filter tools/tazel` 列出本文件及装配、测试和 Go 对照；`node --file tools/tazel/main.rs --offset 1 --limit 260` 返回完整 185 行，并报告本文件被 `tools/tazel/lib.rs`、`tools/tazel/parity_test.rs` 使用。
-- RustCodeGraph 限制：对 `run_from`、`patch_go_test_file`、`walk_build_files`、`walk_path_string` 执行的 `query/callers/callees` 未返回可用符号或调用边；因此上述调用关系又由 `main.rs` 的函数体、`lib.rs::entry`、`bin_main.rs::main` 和 `parity_test.rs` 的直接导入/调用交叉核验，没有把缺失的图边当作已验证事实。
-- 源码与配置：阅读了 `tools/tazel/main.rs`、`ast.rs`、`util.rs`、`lib.rs`、`bin_main.rs`、`Cargo.toml` 和 `BUILD.bazel`；它们分别证明流程实现、计数状态、过滤/写回、crate 装配、二进制转发和两种构建边界。
-- Go 对照：阅读 `tools/tazel/main.go`，逐项核对入口顺序、首个 `go_test`、默认属性、跳过条件、分片上限与错误出口。
-- 独立测试：`tools/tazel/parity_test.rs` 覆盖完整 `run_from` 写回、首个顶层规则、属性保留、单测试删除分片、跳过名单、缺少 `WORKSPACE`、语法保真和资源清理；`tools/tazel/ast_test.rs` 属于下游扫描模块测试，不直接调用本文件。仓库搜索未发现其他直接引用本文件公开符号的测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文件存在且恰有 11 个固定二级章节，并人工复查文档能够回答文件为何存在、如何运行及如何安全扩展。

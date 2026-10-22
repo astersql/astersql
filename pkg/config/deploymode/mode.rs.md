@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust crate `astersql-config-deploymode` 的核心实现，定义 TiDB 进程级部署模式及其配置编解码接口。crate 入口 `pkg/config/deploymode/lib.rs` 通过 `pub mod mode` 声明该模块，并用 `pub use mode::*` 将其公开 API 提升到 crate 根；同时还保留 `deploymode::deploymode::*` 兼容重导出路径。`pkg/config/deploymode/Cargo.toml` 指定 `lib.rs` 为库入口，并通过 `nextgen` feature 透传 `astersql-config-kerneltype/nextgen`。
-
-部署模式不是 SQL 会话级状态，而是整个 TiDB 进程共享的配置。启动接线的直接例子是 `cmd/tidb-server/main.rs:555`：它把 `cfg.DeployMode` 交给 `deploymode::Set`；随后服务器启动流程以及 `pkg/session`、`pkg/ddl`、`pkg/expression`、`pkg/planner` 等下游通过 `IsStarter` 等查询函数选择行为。更完整的产品语义由同目录 `doc.go`/`doc.rs` 描述：这些模式仅对 NextGen 内核有实际判定意义，且不同实例若以不同组件配置启动，进程级值可能不一致。
+在规范字符串和 `Mode` 之间转换：`Parse` 负责解析，`Mode::String` 负责展示，`Mode::Valid` 负责合法性判断，`ModeList` 提供稳定的合法值顺序。
 
 ## 核心职责
 
@@ -86,13 +84,11 @@ RustCodeGraph 将 `mode.rs` 标记为被 123 个文件使用；其调用图摘�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/config/deploymode/mode.go`，相关测试是 `mode_test.go`。Rust 实现保留了 Go 的主要结构和顺序：`Mode int32` 对应 `Mode(pub i32)`，三个 `iota` 值对应 `Mode(0..=2)`，`atomic.Int32` 对应 `AtomicI32`，`Load/Store` 对应 `SeqCst` 原子操作，所有公开函数和方法仍使用 Go 风格名称。
-
-行为对齐点包括：默认值为 Premium；部署模式判定受 `kerneltype.IsNextGen` 门控；`Set` 先检查内核再检查合法值；`Parse` 只做大小写归一化而不去空白；未知值可被构造、可显示为 `unknown(N)`、但不可 JSON 编码；JSON/TOML 解码只接受字符串；`ModeList` 顺序固定。
+Rust 实现保留了 Go 的主要结构和顺序：`Mode int32` 对应 `Mode(pub i32)`，三个 `iota` 值对应 `Mode(0..=2)`，`atomic.Int32` 对应 `AtomicI32`，`Load/Store` 对应 `SeqCst` 原子操作，所有公开函数和方法仍使用 Go 风格名称。
 
 语言适配差异是：Go 的 `error` 变为 `Result<_, String>`；Go 的接口自动分派改为显式方法调用；Go `UnmarshalTOML(any)` 的运行时类型断言改为匹配 `&toml::Value`；Rust `Parse` 错误分支没有 Go 所需的占位返回模式，只返回 `Err`。这些差异不改变成功路径或测试覆盖的错误语义。
 
-Rust 独立测试 `pkg/config/deploymode/mode_test.rs` 对照 Go 的 `TestModeJSON`、`TestModeTOML`、`TestCurrentMode`；`migration_aster_unit_test.rs` 额外验证大小写、不裁剪空白、未知整数、列表顺序和 JSON/TOML 错误路径。测试不嵌入生产文件，而是由 `lib.rs` 以 `#[path]` 声明独立测试模块；`mode_test.rs` 内部的 `include!("mode.rs")` 是测试访问私有原子的现有机制。
+Rust 独立测试 `pkg/config/deploymode/mode_test.rs` 对照 Go 的 `TestModeJSON`、`TestModeTOML`、`TestCurrentMode`；`migration_aster_unit_test.rs` 额外验证大小写、不裁剪空白、未知整数、列表顺序和 JSON/TOML 错误路径。
 
 ## 扩展指南
 
@@ -103,13 +99,3 @@ Rust 独立测试 `pkg/config/deploymode/mode_test.rs` 对照 Go 的 `TestModeJS
 修改文本解析时要评估配置兼容性：增加别名可以兼容旧配置，改变规范输出或开始裁剪空白则会偏离 Go 语义。修改序列化 API 时要注意当前方法不是 Rust `Serialize/Deserialize` trait 实现；若引入 trait，应确认上层配置框架的调用方式，并保留现有显式方法兼容面。
 
 修改全局状态模型时风险最高。真正强制“一次设置”会破坏当前测试恢复模式，也可能影响启动失败重试；降低内存序则需证明调用方不依赖发布顺序。对应回归应继续放在 `pkg/config/deploymode/mode_test.rs` 或 `migration_aster_unit_test.rs`，不要写回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本地索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/config/deploymode` 确认目标源、Go 对照和两份 Rust 测试均已索引；`node --file pkg/config/deploymode/mode.rs` 读取了完整 165 行与 13 个符号。`explore` 的调用图摘要确认 `Parse -> UnmarshalJSON/UnmarshalTOML`，以及 `IsStarter` 在 session、DDL、expression、DXF、planner、domain 等模块的调用关系。
-- Rust 实现与边界：`pkg/config/deploymode/mode.rs`；crate 入口与测试装配：`pkg/config/deploymode/lib.rs`；产品级包契约：`pkg/config/deploymode/doc.go` 与 `doc.rs`。
-- crate 边界：`pkg/config/deploymode/Cargo.toml`，确认库名、`nextgen` feature、kerneltype 路径依赖及 `serde_json`/`toml` 依赖。
-- Go 对照：`pkg/config/deploymode/mode.go`；Go 测试：`pkg/config/deploymode/mode_test.go`。
-- Rust 测试：`pkg/config/deploymode/mode_test.rs` 与 `pkg/config/deploymode/migration_aster_unit_test.rs`，覆盖 JSON/TOML、大小写、空白、未知值、模式列表、classic/NextGen 门控和全局状态恢复。
-- 直接接线抽查：`cmd/tidb-server/main.rs`、`pkg/session/starter_bootstrap_file.rs`、`pkg/ddl/index.rs`、`pkg/expression/builtin_inference.rs`、`pkg/planner/core/planbuilder.rs`。这些证据只用于说明调用边，未把相邻模块实现扩展为本任务范围。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅运行任务指定的 11 章节结构验证，并人工复核上述结论均有源码、调用图、Cargo、Go 对照或测试依据。

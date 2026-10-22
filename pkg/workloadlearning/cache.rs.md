@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-workloadlearning`（`pkg/workloadlearning/Cargo.toml`），由 `pkg/workloadlearning/lib.rs` 的 `mod cache` 纳入模块，并通过 `pub use cache::*` 对外导出。根 `Cargo.toml` 又以 `facade_workloadlearning` 引用该包，`pkg/lib.rs` 将其公开项重新导出。它位于“指标已经由 `Handle::SaveTableReadCostMetrics` 写入版本化存储”之后，负责把某一最新版本的表读代价加载成进程内快照并提供按表 ID 查询。
-
-当前 Rust 仓库中，`NewWLCacheWorker`、`UpdateTableReadCostCache` 和 `GetTableReadCostMetrics` 的直接使用只出现在独立测试 `pkg/workloadlearning/cache_test.rs`；未检索到 Rust 生产调用者。因此，这个文件已经实现缓存能力并纳入 workspace/facade，但尚不能据此断言它已接入 Rust 服务的后台运行主链。完整应用中的定时接线目前可在 Go 的 `pkg/domain/domain.go::{SetupWorkloadBasedLearningWorker,readTableCostWorker}` 找到。
+也不提供刷新定时器或后台任务生命周期，调用时机由上层负责。
 
 ## 核心职责
 
@@ -96,13 +94,3 @@ Rust 文件直接对应 `pkg/workloadlearning/cache.go`：两者都有 `TableRea
 - 若增强坏数据处理，需决定“跳过并推进版本”“整批失败”或“保留旧条目”的兼容语义，并为全坏、部分坏 JSON 增加测试。日志或错误聚合不应延长写锁持有时间。
 - 若接入 Rust 服务主链，应在上层生命周期组件中创建工作器和定时任务，而不是把调度塞入本文件；同时验证关闭信号、owner 语义、重试和错误观测。当前 Go 接线可作为行为参照，但不能直接假定 Rust 已具备相同基础设施。
 - Rust 单元测试继续放在 `pkg/workloadlearning/cache_test.rs`，通过 `lib.rs` 的 `#[cfg(test)] #[path = "cache_test.rs"]` 挂载，不要内嵌到生产源文件。
-
-## 验证依据
-
-- 目标实现：`pkg/workloadlearning/cache.rs`，核对了两个结构体、构造函数和三个方法的完整源码。
-- crate 与模块边界：`pkg/workloadlearning/Cargo.toml`、`pkg/workloadlearning/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`；确认 workspace 成员、serde 依赖和 facade 再导出。
-- 直接依赖：`pkg/workloadlearning/handle.rs::{WorkloadStore,Handle::SaveTableReadCostMetrics}` 与 `pkg/workloadlearning/metrics.rs::TableReadCostMetrics`。
-- Rust 测试：`pkg/workloadlearning/cache_test.rs::{TestUpdateTableCostCache,TestGetTableReadCacheMetricsWithNoData,get_table_read_cost_metrics_matches_go_projection}`。
-- Go 对照与运行接线：`pkg/workloadlearning/cache.go`、`pkg/workloadlearning/cache_test.go`、`pkg/domain/domain.go::{SetupWorkloadBasedLearningWorker,readTableCostWorker}`。
-- RustCodeGraph：`status` 显示索引包含 `pkg/workloadlearning/cache.rs`；`files --filter pkg/workloadlearning` 列出相关 Rust/Go 文件；`query` 确认 `WLCacheWorker`、`NewWLCacheWorker`、`UpdateTableReadCostCache`、`updateTableReadCostCacheWithMetrics`、`GetTableReadCostMetrics` 的 Rust 节点。方法调用边查询为空，因此调用位置和“暂无 Rust 生产调用者”由 `rg` 全仓 Rust 检索补证，未把空图边单独当作结论。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；最终以固定十一章节结构命令和人工事实复核验收。

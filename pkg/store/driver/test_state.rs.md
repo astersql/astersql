@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`test_state.rs`](test_state.rs) 是 `astersql-store-driver` crate 的测试专用状态协调模块。crate 入口在 [`lib.rs`](lib.rs) 中以 `#[cfg(test)]` 和 `#[path = "test_state.rs"] mod test_state;` 挂载它，因此普通库构建和线上 SQL/存储请求链不会编译或执行本文件；它只存在于该 crate 的单元测试二进制中。
-
-该文件虽然位于生产目录并由计划纳入逐文件说明，但其真实角色不是 TiKV driver 的运行时实现，而是让会修改进程级配置或 failpoint 的 Rust 移植测试串行执行。crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[package] name = "astersql-store-driver"` 与 `[lib] path = "lib.rs"` 确定；本模块只使用 Rust 标准库，不直接依赖清单中的 TiKV、Tokio 或其他 workspace crate。
+调用测试在修改共享状态前取得返回的 guard，并让 guard 在测试作用域结束时自动释放，从而避免同一测试进程内多个相关用例并行覆盖全局配置、常量标签或 failpoint。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 的 [`main_test.go`](main_test.go) 通过 `TestMain` 为 driver 测试统一执行 setup、启用 TiKV failpoints 并做 goroutine 泄漏检查；Go 目录中没有 `test_state.go` 或与 `global_state_guard` 一一对应的 helper。因此本文件是 Rust 测试运行模型所需的局部接线，不是 Go 生产逻辑的直接翻译。
-
 语义对应体现在被保护的移植测试：Go [`config_test.go`](config_test.go) 的 `TestSetDefaultAndOptions` 读取全局 TiKV 配置并临时设置 metrics const labels，通过 `t.Cleanup` 恢复 labels；Rust [`config_test.rs`](config_test.rs) 还会设置可变的 Rust 全局配置并在末尾恢复，所以用本锁避免与其他 Rust 用例并行冲突。Go [`sql_fail_test.go`](sql_fail_test.go) 的 `TestFailBusyServerCop` 启用同名 `tikvclient/rpcServerBusy` failpoint并由 goroutine 延迟关闭；Rust 对照测试用线程和 RAII failpoint handle 实现同一生命周期，并额外用本锁隔离进程级 failpoint 状态。
 
-Rust helper 没有改变对应测试的业务断言：它只约束测试调度。不能据此推断 Go 测试也被同一全局 mutex 串行化，也不能把它视为 driver 线上并发控制的一部分。
+Rust helper 没有改变对应测试的业务断言：它只约束测试调度。
 
 ## 扩展指南
 
@@ -88,12 +84,3 @@ Rust helper 没有改变对应测试的业务断言：它只约束测试调度�
 若新场景需要在辅助函数内部再次进入临界区，应把现有 guard 作为参数向下传递或重构调用边界，不要递归调用 `global_state_guard`。若要保护跨进程资源，应另选文件锁、动态端口或独立临时目录等机制，而不是扩展此进程内 mutex 的职责。
 
 修改中毒处理或 guard 生命周期时，应同步更新独立测试 [`test_state_test.rs`](test_state_test.rs)，并至少保留“持锁线程 panic 后再次获取成功”的回归场景。新增共享状态调用者的业务断言仍应放在各自独立的 `*_test.rs` 文件中，不要把测试逻辑内嵌进 `test_state.rs`。兼容性风险主要是遗漏调用导致测试不稳定，性能风险是临界区过宽降低测试并行度；由于模块仅在 `cfg(test)` 下挂载，不存在生产运行时性能影响。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/store/driver` 确认目标、入口和相关测试均已索引。
-- RustCodeGraph `node --file pkg/store/driver/test_state.rs`：核实文件共 11 行、唯一函数签名、`OnceLock<Mutex<()>>` 初始化以及 poison 恢复分支。
-- RustCodeGraph 对 `global_state_guard` 的 `query`/`explore`：核实符号位置及 `sql_fail_test.rs`、`test_state_test.rs` 调用关系；精确 `callers` 查询在本次环境中长时间无输出，已中止，并用限定 Rust 源文件的源码检索补齐调用者。
-- RustCodeGraph `node`：读取 [`test_state_test.rs`](test_state_test.rs)、[`sql_fail_test.rs`](sql_fail_test.rs)、[`config_test.rs`](config_test.rs)、[`driver_lifecycle_test.rs`](driver_lifecycle_test.rs) 和 [`lib.rs`](lib.rs)，核实 panic、中毒恢复、failpoint、全局配置及模块挂载语义。
-- 配置与 Go 对照：读取 [`Cargo.toml`](Cargo.toml)、[`main_test.go`](main_test.go)、[`config_test.go`](config_test.go) 和 [`sql_fail_test.go`](sql_fail_test.go)，核实 crate 边界、依赖范围及移植测试的原始意图。目标目录及其上级 `pkg/store` 下没有 `doc.go` 可供补充包契约。
-- 这是纯文档分析，按计划不运行 Cargo。交付结构验证要求文档存在且固定二级标题恰好为 11 个。

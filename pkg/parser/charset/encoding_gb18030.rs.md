@@ -2,19 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-charset` crate 的 GB18030 编码实现，源码入口是
-[`encoding_gb18030.rs`](encoding_gb18030.rs)。`lib.rs` 以
-`pub mod encoding_gb18030` 声明模块并以 `pub use encoding_gb18030::*`
-公开其符号；`encoding.rs::FindEncoding` 在字符集名等于
-`CharsetGB18030` 时返回静态实例 `ENCODING_GB18030_IMPL`。因此它位于“字符集名
-解析 -> 统一 `Encoding` trait -> GB18030 编解码”链路的具体实现端，而不是 SQL
-解析器入口本身。
-
-该 crate 的边界由 `pkg/parser/charset/Cargo.toml` 定义，包名为
-`astersql-parser-charset`，库入口是 `lib.rs`。本文件直接使用 crate 内的统一编码
-抽象和 GB18030 大小写表，并依赖外部 `encoding_rs = 0.8.35` 完成实际字符集转换。
-Cargo 元数据把对应 Go 包标为 `pkg/parser/charset`，未为本实现设置条件 feature；
-源码也没有条件编译项。
+`EncodingGb18030` 实现统一的 `encoding.rs::Encoding` trait，提供名称、类型、。
 
 ## 核心职责
 
@@ -171,9 +159,6 @@ Cargo 元数据把对应 Go 包标为 `pkg/parser/charset`，未为本实现设�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/charset/encoding_gb18030.go`；相关码表位于
-`encoding_gb18030_data.go`。对应关系如下：
-
 - Rust `EncodingGb18030` / `ENCODING_GB18030_IMPL` 对应 Go
   `encodingGB18030` / `EncodingGB18030Impl`；Rust 用静态无状态实例实现 trait，
   Go 通过嵌入 `encodingGBK`/`encodingBase` 和 `init` 设置 `self`。
@@ -220,32 +205,3 @@ Cargo 元数据把对应 Go 包标为 `pkg/parser/charset`，未为本实现设�
 - 兼容风险集中在 MySQL/TiDB 对 `0x80` 的特殊处理、非法块重新同步方式、U+FFFD
   的合法编码和特殊大小写规则；性能风险集中在逐字符分配及最终复制。任何优化都应
   以相同字节级用例验证输出和首错片段。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；目标目录中确认
-  `encoding_gb18030.rs`、数据模块、独立测试和 Go 对照均已索引。
-- RustCodeGraph `node --file pkg/parser/charset/encoding_gb18030.rs`：读取全部 243 行，
-  核对所有常量、结构、函数、trait 实现及无条件编译事实；图报告目标文件的直接跨文件
-  使用者为 `pkg/util/collate/gb18030_bin.rs`。
-- RustCodeGraph `explore` / `callers` / `callees`：确认
-  `transform_gb18030 -> foreach_gb18030 -> decode_gb18030/encode_gb18030`，以及
-  `Encoding::{Foreach,IsValid,Transform}` 到这些内部函数的委托关系。
-- `pkg/parser/charset/lib.rs` 与 `pkg/parser/charset/encoding.rs`：核对模块公开、测试
-  挂载、`Encoding` trait、`Op` 位标志、`FindEncoding`、`utf8_chunk`、
-  `invalid_action` 和 `finish_transform`。
-- `pkg/parser/charset/Cargo.toml`：核对 crate 名称、库入口、Go 包元数据和
-  `encoding_rs` 版本；未发现影响目标实现的 feature。
-- Go 对照：`pkg/parser/charset/encoding_gb18030.go`、
-  `encoding_gb18030_data.go`、`encoding_base.go`；调用证据还包括
-  `pkg/lightning/mydump/charset_convertor.go`、`reader.go` 和
-  `pkg/util/collate/gb18030_bin.go`。这些 Go 调用点说明上游设计意图，不代表同名 Rust
-  custom API 当前已有等量调用者。
-- Rust 独立测试：`encoding_gb18030_2_aster_unit_test.rs` 覆盖查找、2022 映射、
-  1/2/4 字节往返、Peek/MbLen 和 U+FFFD；`encoding_test.rs` 覆盖 Go 对齐的合法、
-  非法、替换及往返矩阵；`charset_1_aster_unit_test.rs` 与
-  `encoding_gb18030_data_test.rs` 覆盖补充映射和特殊大小写。
-- Go 测试：`pkg/parser/charset/encoding_test.go::TestEncodingGB18030` 提供对应转换
-  矩阵，包括 `0x80`、U+FFFD 编码及补充字符。
-- 按任务约束，本次为纯文档分析，未运行 Cargo 或代码测试；最终使用任务指定命令
-  校验本文恰含 11 个固定二级章节，并人工复核文件定位、运行方式与安全扩展入口。

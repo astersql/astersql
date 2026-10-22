@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 由 [`pkg/planner/core/Cargo.toml`](Cargo.toml) 声明，并由 [`pkg/planner/core/lib.rs`](lib.rs) 通过公开模块 `pub mod rule_eliminate_projection` 暴露。它在通用的 [`task::PlanNode`](task.rs) 树上提供一组投影消除辅助 API，包括逻辑树重写与物理树的严格透传投影删除。
-
-这里需要区分“公开可调用的轻量移植接口”和“完整应用的实际优化主链”。RustCodeGraph 的调用轨迹显示，本文件的 `ProjectionEliminator` 当前由独立测试导入，`eliminatePhysicalProjection` 也只在本文件递归引用和规则测试中直接使用；完整逻辑/物理优化流程目前由 [`optimizer_runtime.rs`](optimizer_runtime.rs) 中的 `eliminate_identity_projections`、`eliminate_redundant_physical_projections` 等更完整实现接线。因此不能仅凭本文件公开导出，就认定其直接驱动所有 SQL 请求的生产优化。
+在通用的 [`task::PlanNode`](task.rs) 树上提供一组投影消除辅助 API，包括逻辑树重写与物理树的严格透传投影删除。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@ RustCodeGraph 记录的内部边包括：`eliminatePhysicalProjection -> doPhysi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`rule_eliminate_projection.go`](rule_eliminate_projection.go)。名称和主干控制流保持一致：逻辑根从不可消除开始，`UnionAll` 阻断许可，聚合/Projection/Window 开启许可，CTE 独立优化，规则名相同，逻辑规则对外不设置 `planChanged`；物理路径同样先递归孩子再判断删除，并保留空 schema 特例。
-
 Rust 当前是简化移植，不等价于 Go 完整行为：
 
 - Go 宽松判定拒绝 `Proj4Expand`，Rust `PlanNode` 没有对应字段。
@@ -89,19 +85,10 @@ Rust 当前是简化移植，不等价于 Go 完整行为：
 - Go 物理流程会进入 TiFlash `PhysicalTableReader.TablePlan`、重建扁平计划，并保护 update 计划引用及某些子 Projection schema；Rust 只遍历 `children`。
 - Go 逻辑流程按列哈希更新 schema 和所有计划表达式，特殊重建 Apply schema，并合并无副作用的相邻 Projection、替换表达式和折叠常量；Rust 只按位置改写两个表达式列表。
 
-Go 的规则注册证据在 [`optimizer.go`](optimizer.go) 的 `optRuleList`，物理入口证据在同文件 `postOptimize`。Go 回归 [`logical_plans_test.go`](logical_plans_test.go) 的 `TestProjectionEliminator` 覆盖相邻投影/聚合场景；[`casetest/rule/rule_eliminate_projection_test.go`](casetest/rule/rule_eliminate_projection_test.go) 覆盖 Apply 与表达式索引查询。Rust 的同名 case test 保留了这些 SQL 意图，并额外提供通用 `PlanNode` 的规则级断言。
+Rust 的同名 case test 保留了这些 SQL 意图，并额外提供通用 `PlanNode` 的规则级断言。
 
 ## 扩展指南
 
 若继续完善这个轻量 API，应从语义缺口对应的最小符号切入：宽松资格规则修改 `canProjectionBeEliminatedLoose`，物理保护条件修改 `canProjectionBeEliminatedStrict` 或 `doPhysicalProjectionElimination`，逻辑边界与替换策略修改 `ProjectionEliminator::eliminate`。不要把 Rust 测试写入本源文件；应同步更新同目录独立测试 [`rule_eliminate_projection_test.rs`](rule_eliminate_projection_test.rs)，跨 crate/SQL 回归放在 [`casetest/rule/rule_eliminate_projection_test.rs`](casetest/rule/rule_eliminate_projection_test.rs)，物理顺序属性可沿用 `rule_common_handle_ordering_test.rs` 的模式。
 
 扩展前应先决定本文件是否仍需作为公开轻量接口，还是应复用/委托 `optimizer_runtime.rs` 的生产实现，避免形成两套漂移规则。若保留本实现，优先引入稳定列标识和有作用域的替换环境，并补充多兄弟、嵌套复合表达式、空 schema 带表达式、无效列下标、Expand、MPP 聚合、update schema 与副作用表达式测试。兼容风险主要是误删为类型对齐或执行语义专门保留的 Projection；性能风险主要来自表达式深克隆和深树递归。
-
-## 验证依据
-
-- 源码全貌：[`rule_eliminate_projection.rs`](rule_eliminate_projection.rs)；数据模型：[`task.rs`](task.rs)；模块导出：[`lib.rs`](lib.rs)；crate 边界：[`Cargo.toml`](Cargo.toml)。
-- RustCodeGraph：`status` 显示仓库索引可用；`query ProjectionEliminator`、`query eliminatePhysicalProjection`、`query canProjectionBeEliminatedStrict` 定位 Rust/Go 定义；`node ProjectionEliminator` 与 `node eliminatePhysicalProjection` 给出源码和调用轨迹。宽泛的文件过滤/探索未返回目标，故按技能规则用源码和 `rg` 补齐上游证据。
-- Rust 测试：[`rule_eliminate_projection_test.rs`](rule_eliminate_projection_test.rs)、[`casetest/rule/rule_eliminate_projection_test.rs`](casetest/rule/rule_eliminate_projection_test.rs)、[`casetest/rule/rule_common_handle_ordering_test.rs`](casetest/rule/rule_common_handle_ordering_test.rs)。
-- Go 对照与测试：[`rule_eliminate_projection.go`](rule_eliminate_projection.go)、[`optimizer.go`](optimizer.go)、[`logical_plans_test.go`](logical_plans_test.go)、[`casetest/rule/rule_eliminate_projection_test.go`](casetest/rule/rule_eliminate_projection_test.go)。
-- 应用接线复核：[`optimizer_runtime.rs`](optimizer_runtime.rs) 中 `LogicalRule::EliminateProjection`、`eliminate_identity_projections` 和 `eliminate_redundant_physical_projections`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构检查，并人工复核链接、符号名和现状/Go 差异表述。

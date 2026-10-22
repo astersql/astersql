@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于根工作区中的 `astersql-executor` crate。`pkg/executor/Cargo.toml` 以 `lib.rs` 为库入口，并直接依赖 `astersql-util-chunk`；`pkg/executor/lib.rs` 通过 `pub mod recommend_index` 公开本模块。文件实现 `RECOMMEND INDEX` 结果集执行阶段的 Rust 语义：将动作分派给索引顾问，并把顾问结果编码进 `Chunk`。
-
-冻结版本以 `lib.rs` 导出本模块，并由 `recommend_index_test.rs` 实例化执行器及测试顾问；尚无已验证的 Rust SQL builder 到此入口的生产接线。Go 的完整调用链见 `pkg/executor/builder.go::buildRecommendIndex` 与 `recommend_index.go`。
+`IndexAdvisor` 将会话上下文、选项存取、推荐算法和错误构造从执行器中抽象出去，使本文件不依赖某个具体索引顾问实现。
 
 ## 核心职责
 
@@ -81,15 +79,11 @@
 
 ## 与 Go 版本的对应关系
 
-冻结版本中 `RecommendIndexActionReturn` 对应 `RETURN RESULT`，与 `run` 共享分析、SQL 拆分和写行流程，但传给顾问的 `persist` 为 false；Go 对应 `AdviseIndexesWithoutPersist`，`run` 对应 `AdviseIndexes`。默认动作的选择属于 parser，上述执行器不把空动作默认为 return；持久化是否真正被抑制仍依赖具体顾问遵守此契约。
-
-`pkg/executor/recommend_index.go` 是逐项语义基准：两者都先重置结果、用 `done` 保证只执行一次、支持 `set/show/run/return`、按分号拆分 SQL、过滤空片段、先写顾问结果再返回顾问错误，并生成相同形状的八列表格与 `CREATE INDEX` 文本。`advise_id` 在两个版本中都未被读取。
-
 Rust 为解除具体包耦合做了三处抽象：Go 的 `exec.BaseExecutor`/`sessionctx` 被 `A::Context` 代替；`ast.RecommendIndexOption` 被 `A::Option` 代替；`indexadvisor` 包函数被 `IndexAdvisor` trait 代替。因此 Rust 类型本身尚未实现 Go 的 `exec.Executor` 接口等价物，也没有 Go builder 的 Rust 对应接线。
 
-结果表达存在明确差异。Go 接收顾问的嵌套结果，在执行器内用 `fmt.Sprintf` 格式化 `IndexSize`、读取 `Reason`、用 `json.Marshal` 序列化 `TopImpactedQueries`；Rust 的 `RecommendIndexResult` 已包含三个格式化后的字符串。这减少了执行器依赖，但把格式与 JSON 正确性的责任转移给 trait 实现。
+结果表达存在明确差异。Go 接收顾问的嵌套结果，在执行器内用 `fmt.Sprintf` 格式化 `IndexSize`、读取 `Reason`、用 `json.Marshal` 序列化 `TopImpactedQueries`；Rust 的 `RecommendIndexResult` 已包含三个格式化后的字符串。
 
-直接边界证据主要来自 Go 测试 `pkg/planner/indexadvisor/indexadvisor_test.go`：它覆盖单条/多条 SQL、空片段、非法 SQL，并在 `TestIndexAdvisorCreateIndexStmt` 验证第八列等于 `CREATE INDEX idx_a ON t(a);`。Rust 的 `pkg/planner/indexadvisor/indexadvisor_sql_test.rs` 与 `options_test.rs` 覆盖顾问算法和选项语义，但没有实例化本文件的执行器，不能替代其独立回归测试。
+Rust 的 `pkg/planner/indexadvisor/indexadvisor_sql_test.rs` 与 `options_test.rs` 覆盖顾问算法和选项语义，但没有实例化本文件的执行器，不能替代其独立回归测试。
 
 ## 扩展指南
 
@@ -99,11 +93,3 @@ Rust 为解除具体包耦合做了三处抽象：Go 的 `exec.BaseExecutor`/`se
 - 修改结果列时，同时核对 `RecommendIndexResult`、`Next` 的列序、planner schema、Go `recommend_index.go` 和下游客户端；第 6 列 JSON 与第 7 列 DDL 的字符串契约需要专门测试。
 - 建议新增独立文件 `pkg/executor/recommend_index_test.rs`，并由 `lib.rs` 使用 `#[cfg(test)] mod recommend_index_test;` 接入，遵守测试与源文件分离规则。用假 `IndexAdvisor` 覆盖：三种动作、未知动作、一次性 `done`、SQL 分段、空输入差异、选项缺失、顾问错误伴随部分结果、八列顺序和 DDL 文本。
 - 性能上，本文件会复制 `all_options`、分配 SQL 字符串、连接列名并格式化每条 DDL；通常相对顾问算法成本很小，但大结果集扩展前应评估 `Chunk` 容量及字符串分配。正确性风险集中在公开字段导致的不完整初始化、无转义 DDL、预序列化 JSON，以及错误后不可重试。
-
-## 验证依据
-
-- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/executor/recommend_index.rs`，不把工作区后续变化作为行为依据。
-- `pkg/executor/recommend_index_test.rs::recommend_index_return_result_does_not_persist` 记录 return=false、run=true；Go 对照 `pkg/executor/recommend_index.go`。
-- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
-- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
-- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

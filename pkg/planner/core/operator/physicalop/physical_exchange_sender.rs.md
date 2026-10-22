@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现 MPP（Massively Parallel Processing）执行计划片段边界上的发送端 `PhysicalExchangeSender`。它既是一个 `PhysicalPlan`，又通过 `MPPSink` trait 充当 fragment 的输出汇点：当前 fragment 的结果由它按照 PassThrough、Broadcast 或 Hash 方式发送给父 fragment 的目标任务。源码通过 `PhysicalSchemaProducer` 复用物理计划、schema、统计信息和子节点能力（`PhysicalExchangeSender.PhysicalSchemaProducer`）。
-
-crate 边界由 `pkg/planner/core/operator/physicalop/Cargo.toml` 定义，包名为 `astersql-planner-core-operator-physicalop`；`lib.rs` 以 `mod physical_exchange_sender` 装入模块、以 `pub use physical_exchange_sender::*` 导出类型，并通过 `direct_operator_core!(PhysicalExchangeSender, PhysicalSchemaProducer)` 接入统一物理算子接口。该目录没有 `doc.go`；最近的直接包级事实来自上述 Cargo/lib 接线、同路径 Go 实现和调用代码，而不是额外的包说明文件。
+保存调度阶段产生的两组任务：`Tasks` 是 sender 所在 fragment 的任务，`TargetTasks` 是接收数据的目标任务；`MPPSink` 实现使 fragment 构建器可以用统一接口写入它们。
 
 ## 核心职责
 
@@ -80,9 +78,9 @@ MPP 调度阶段由 `fragment.rs::SessionRootMppTaskGenerator::GenerateRootMPPTa
 
 ## 与 Go 版本的对应关系
 
-同路径 `physical_exchange_sender.go` 是直接对照实现。字段集合、默认/初始化方式、交换类型、任务访问器、EXPLAIN 条件、索引解析顺序、代价委托和 protobuf 字段总体一一对应。Rust 的 `PhysicalSchemaProducer` 对应 Go 内嵌的 `BasePhysicalPlan` 能力；Rust `Vec<kv::MPPTask>` 对应 Go `[]*kv.MPPTask`，因此 Rust 值语义会克隆任务，而 Go 保存指针。
+Rust 的 `PhysicalSchemaProducer` 对应 Go 内嵌的 `BasePhysicalPlan` 能力；Rust `Vec<kv::MPPTask>` 对应 Go `[]*kv.MPPTask`，因此 Rust 值语义会克隆任务，而 Go 保存指针。
 
-两边克隆都不复制已调度的 `Tasks` 与 `TargetTasks`，并保留 `ExchangeType`、`HashCols` 和 `CompressionMode`。Rust 对 `HashCols` 逐项调用 `Clone`，Go 则复制 slice 头并共享列指针；语义目标相同，但后续原地修改列对象时的别名行为不同。Rust 测试 `cloning_a_sender_preserves_plan_configuration_but_not_scheduled_tasks` 锁定任务清空和压缩保留行为。
+Rust 对 `HashCols` 逐项调用 `Clone`，Go 则复制 slice 头并共享列指针；语义目标相同，但后续原地修改列对象时的别名行为不同。
 
 Rust 增加了显式错误边界：缺少孩子、返回类型或 PB client 时返回错误，而 Go 在其中部分路径依赖非空前置条件并可能索引/解引用失败。压缩映射在 Go 中委托 `ToTipbCompressionMode`，Rust 在 `ToPB` 内显式 match。Go `MemoryUsage` 对 nil receiver 返回 0；Rust 方法要求有效引用，因此不存在 nil receiver 分支。Go 的 `fragment_test.go::TestFragmentInitSingleton` 与 Rust `fragment_test.rs::fragment_init_tracks_pass_through_singleton_semantics` 都证明：存在 PassThrough 接收边界时 fragment 为 singleton，而全 Broadcast 不会触发 singleton。
 
@@ -93,13 +91,3 @@ Rust 增加了显式错误边界：缺少孩子、返回类型或 PB client 时�
 新增 sender 状态时，应先判断它是计划配置还是调度状态：前者通常要进入 `Clone`、`MemoryUsage`、EXPLAIN/ToPB，后者通常必须像任务列表一样在克隆时清空。新增 Vec/拥有型字段要按容量和元素内容更新 `MemoryUsage`。新增 Hash 键属性时，要同时维护表达式、字段类型、collation 的相同顺序，并补齐缺失元数据的错误测试。
 
 调整 `ToPB` 时需保持孩子固定下推 TiFlash、调用者 store 用于字段类型检查、目标任务顺序不变、executor ID 与细粒度 shuffle 参数完整。兼容风险主要是 protobuf 字段和 EXPLAIN 文本变化；正确性风险主要是 Hash 列索引/类型/collation 错位和错误的目标任务拓扑；性能风险主要是无意深拷贝任务/表达式、重复序列化，以及错误的 stream count 或 batch size。
-
-## 验证依据
-
-- 源码：`pkg/planner/core/operator/physicalop/physical_exchange_sender.rs`，完整核对结构体、全部固有方法和 `MPPSink` 实现。
-- 模块与 crate：`pkg/planner/core/operator/physicalop/lib.rs`；`pkg/planner/core/operator/physicalop/Cargo.toml`。确认模块导出、统一物理算子接线、crate 名和直接依赖。
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`node --file ...physical_exchange_sender.rs` 返回完整 377 行及 14 个使用文件；`explore 'PhysicalExchangeSender ...'` 定位 sender 的方法、receiver 关系和测试；`explore 'MPPSink ... GenerateRootMPPTasks build_sender'` 给出 `GenerateRootMPPTasks → build_sender` 调用边及 `operator_to_pb` 接线。
-- 直接调用证据：`pkg/planner/core/operator/physicalop/fragment.rs` 的 `GenerateRootMPPTasks`/`build_sender`；`physical_exchange_receiver.rs::GetExchangeSender`；`pkg/planner/core/base/task_base.rs::MPPSink`。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_exchange_sender.go`；`pkg/planner/core/operator/physicalop/fragment_test.go`。
-- Rust 测试：`physical_exchange_sender_test.rs` 覆盖追加重复任务和空 sender 内存公式；`physical_exchange_sender_aster_unit_test.rs` 覆盖 trait 任务访问、EXPLAIN 与克隆清空任务；`fragment_test.rs` 覆盖 PassThrough singleton、sink 内存委托及共享锁生命周期。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构验证另以任务指定命令检查文件存在且恰有十一个固定二级标题。

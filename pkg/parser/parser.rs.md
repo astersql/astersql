@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/parser.rs` 是 `astersql-parser` crate 内 SQL 主语法分析器的组装边界，而不是公开入口本身。`pkg/parser/lib.rs` 的 `parser_impl` 模块先引入词法器、AST、错误、MySQL mode 等上下文，再以 `include!("parser.rs")` 把本文件展开到同一模块；公开的 `Parser`、`New`、`ParseSQL` 等随后由 `pub use parser_impl::*` 导出。crate 边界由 `pkg/parser/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认。
-
-文件保留 goyacc 生成文件的版权与生成来源说明，但当前主体已被拆成四个稳定组成件：`parser_value.rs`、`parser_semantic_support.rs`、`parser_actions` 和 `parser_runtime.rs`。因此它“为何存在”的核心答案是：在不改变 `parser_impl` 词法/AST 上下文的前提下，固定纯 Rust LALR(1) 解析器各部分的展开顺序与可见域。
+通过 `include!("parser_semantic_support.rs")` 提供跨语法类别共享的中间语义结构及校验/转换辅助，例如生成列、分区定义和 Go duration 校验。
 
 ## 核心职责
 
@@ -84,13 +82,13 @@ runtime 栈是 `Vec<yySymType>`。`New` 预分配 200 个元素的容量，`yyPa
 
 ## 与 Go 版本的对应关系
 
-Go 对照主文件是 `pkg/parser/parser.go`：`yySymType`、`yyLexer`、`yyLexerEx`、`yylex1` 和 `yyParse` 的总体协议一致，状态机都执行移进/规约/接受及三阶段错误恢复。Rust 将 Go 单个巨大生成文件拆为值类型、共享语义辅助、分类动作和 runtime，并使用 `generated/main_tables.rs` 的稀疏表及稳定 `RuleId` 路由。
+Rust 将 Go 单个巨大生成文件拆为值类型、共享语义辅助、分类动作和 runtime，并使用 `generated/main_tables.rs` 的稀疏表及稳定 `RuleId` 路由。
 
-公开生命周期对照位于 `pkg/parser/yy_parser.go` 与 `pkg/parser/yy_parser.rs`：两侧的 `New`、`Reset`、`ParseSQL`、`Parse`、`ParseOneStmt`、`SetSQLMode`、`EnableWindowFunc` 保持同一职责。Rust 以 `Result<(statements, warnings), error>` 表示 Go 的三返回值，并额外提供 `ParseSQLWithWarnings` 保留失败时的 warnings 合约。
+Rust 以 `Result<(statements, warnings), error>` 表示 Go 的三返回值，并额外提供 `ParseSQLWithWarnings` 保留失败时的 warnings 合约。
 
 重要实现差异是 Rust 不能克隆 `Box<dyn Node>`，所以默认规约通过 `Rhs::take_default` 移动 `$1`；同时用 `semantic_complete` 和规约计数显式拒绝缺失语义动作。Go 栈以固定长度切片起步并按需扩容，Rust 以容量 200 的 `Vec` 起步并跨调用复用。Rust 还在 AST 生成前增加深表达式链防护，以避免在达到 Go 语义深度限制前发生宿主栈溢出，但最终 AST 深度检查仍是权威边界。
 
-`pkg/parser/parser_test.rs` 是独立 Rust 主测试集，对应 Go parser 测试意图而非内嵌在生产文件；它覆盖 SELECT/DDL/DML、SQL mode、特殊注释、hint warning、错误文本、字符集、MariaDB、窗口函数、多语句、内存分配等。更贴近拆分 runtime 的用例在 `parser_3_aster_unit_test.rs`、`parser_runtime_aster_unit_test.rs` 和 `parser_semantic_support_test.rs`。
+`pkg/parser/parser_test.rs` 是独立 Rust 主测试集，对应 Go parser 测试意图而非内嵌在生产文件；它覆盖 SELECT/DDL/DML、SQL mode、特殊注释、hint warning、错误文本、字符集、MariaDB、窗口函数、多语句、内存分配等。
 
 ## 扩展指南
 
@@ -100,13 +98,3 @@ Go 对照主文件是 `pkg/parser/parser.go`：`yySymType`、`yyLexer`、`yyLexe
 - 新的公开配置或入口应接入 `yy_parser.rs` 的 `Parser`/`ParserConfig`/`ParseParam`，同时确认每次解析的重置语义以及 Go 同名 API。
 - 测试必须继续放在独立文件：通用解析行为扩展 `pkg/parser/parser_test.rs`；状态机/缓存扩展 `parser_3_aster_unit_test.rs` 或 `parser_runtime_aster_unit_test.rs`；共享校验扩展 `parser_semantic_support_test.rs`；具体动作模块使用其同目录独立测试文件。
 - 兼容风险主要是 token/规则编号漂移、MySQL 错误码和文本变化、SQL mode 分支变化以及 Go/Rust AST 形状不一致；性能风险主要是语义值克隆、缓存失效、深链递归和动作分派热路径。变更后应同时核对 Go 对照和 Rust 合约测试，不得用“能解析”代替 AST/错误/警告一致性。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标 `pkg/parser/parser.rs` 已索引，但因其只有 `include!`/模块装配，图中仅识别 1 个文件级符号。
-- RustCodeGraph 文件/源码查询：`pkg/parser/parser.rs`（41 行）、`parser_value.rs`（11 个符号）、`parser_semantic_support.rs`（34 个符号）、`parser_runtime.rs`（43 个符号）、`parser_actions`（15 个文件）和 `yy_parser.rs`（70 个符号）。
-- RustCodeGraph 调用查询：`callees yyParse` 确认 Rust runtime 到 `yylex1`、错误接口和规约回调的边；`callees ParseSQL` 确认 Rust 入口到 `yyParse`、深度检查、参数应用和 AST flag 的边。同名 Go/Rust 定义使无限定 callers 结果为空，未据此推断上游。
-- 直接读取并核对：`pkg/parser/Cargo.toml`、`pkg/parser/lib.rs`、`pkg/parser/parser.go`、`pkg/parser/yy_parser.go`、`pkg/parser/parser_test.rs`；并以 `rg` 核对 Rust 应用侧调用点和独立测试覆盖面。
-- 相关直接实现证据：`pkg/parser/parser_value.rs`、`pkg/parser/parser_semantic_support.rs`、`pkg/parser/parser_actions/mod.rs`、`pkg/parser/parser_runtime.rs`、`pkg/parser/yy_parser.rs`、`pkg/parser/generated/main_tables.rs`。
-- 相关独立测试证据：`pkg/parser/parser_test.rs`、`pkg/parser/parser_3_aster_unit_test.rs`、`pkg/parser/parser_runtime_aster_unit_test.rs`、`pkg/parser/parser_semantic_support_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；验收以 11 个固定章节的结构检查、链接/路径检查和上述源码事实复核为准。

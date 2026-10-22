@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-br-pkg-task-operator` crate，模块由 `br/pkg/task/operator/lib.rs` 以 `pub mod crr_checkpoint` 挂载并通过 `pub use crr_checkpoint::*` 平铺导出。它是 Go 文件 `br/pkg/task/operator/crr_checkpoint.go` 的 Rust 对照，负责把 CRR（cross-region replication）checkpoint 所需的外部存储、连接管理器、keyspace-aware etcd 元数据连接、对象同步判定器和断点状态存储组装成一个服务，并返回一次性清理闭包。
-
-当前迁移状态必须分层理解：`dialEtcdWithCfgAndFactory` 已调用 `astersql-metaservice` 的真实 `DialEtcdClient`；但 `CRRService`、`CRRDeps`、`NewCRRService`、`ExternalStorage`、`NewMgr` 等仍来自 `br/pkg/task/operator/stubs.rs`。特别是该桩 `NewCRRService` 只校验任务名并保存配置，没有接入 `br/pkg/stream/crr/service/service.rs` 中真实的 checkpoint 计算循环。RustCodeGraph 显示本文件目前只被 `br/pkg/task/operator/crr_checkpoint_test.rs` 直接引用；因此它是可导出的迁移接线层，不能据此宣称 Rust CLI 已运行完整 CRR 服务。
+Go 文件 `br/pkg/task/operator/crr_checkpoint.go` 的 Rust 对照，负责把 CRR（cross-region replication）checkpoint 所需的外部存储、连接管理器、keyspace-aware etcd 元数据连接、对象同步判定器和断点状态存储组装成一个服务，并返回一次性清理闭包。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@
 
 ## 与 Go 版本的对应关系
 
-保持一致的部分包括：上下游打开与 lock 校验策略、下游校验仅告警、同步检查器选择、resume-state 文件名和 JSON 整体读写、3 秒最大退避、30 秒自动同步、5 秒拨号超时、keepalive 参数及 `PermitWithoutStream`、四项拨号选项契约，以及清理闭包覆盖的四类资源。
-
 关键差异如下：
 
 - Go `NewCRRCheckpointService` 接收 `context.Context`，并创建真实 `streamhelper.CliEnv`、metadata watcher 和 `service.Service`；Rust 入口没有调用方 context，默认创建 metaservice `Context`，且最终调用 `operator/stubs.rs::NewCRRService`。
@@ -108,13 +104,3 @@
 - 调整拨号配置应修改 `newEtcdClientConfig`/`dialEtcdWithCfgAndFactory`，同步 Go 对照和 keyspace namespace 测试。TLS、超时、keepalive 与 metadata group 路由属于兼容性边界。
 - 改动资源创建次序时，逐个审计 `NewCRRCheckpointService` 的所有提前返回，确保每个已创建资源只关闭一次且后续资源仍能清理。建议用独立测试注入各阶段失败并记录关闭次序。
 - 不要把测试写回生产源文件；本仓库对应独立测试为 `br/pkg/task/operator/crr_checkpoint_test.rs`，Go 语义基准为 `br/pkg/task/operator/crr_checkpoint_test.go`。涉及真实服务交互时还应扩展 `br/pkg/stream/crr/service/*_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边，其中 Rust 文件 7,032 个；目标文件被完整索引为 382 行、25 个符号。
-- RustCodeGraph 源码与调用图：`br/pkg/task/operator/crr_checkpoint.rs`；`NewCRRCheckpointService -> NewCRRService`；Rust 直接调用者为 `br/pkg/task/operator/crr_checkpoint_test.rs`；`lib.rs` 负责模块声明和再导出。
-- crate 与模块证据：`br/pkg/task/operator/Cargo.toml`、`br/pkg/task/operator/lib.rs`、`br/pkg/task/operator/config.rs`、`br/pkg/task/operator/stubs.rs`。
-- Go 对照：`br/pkg/task/operator/crr_checkpoint.go`、`br/pkg/task/operator/crr_checkpoint_test.go`。
-- Rust 独立测试：`br/pkg/task/operator/crr_checkpoint_test.rs`，覆盖 etcd 配置常量、缺失必填 flag、非日志备份上游、上下游 lock 标签、两种同步 checker、无能力错误，以及需外部 etcd 的 keyspace metadata group 路由。
-- 真实服务语义对照：`br/pkg/stream/crr/service/service.rs`，用于确认 resume-state 在完整计算循环中的加载、推进保存和关机 flush 角色；本文件当前未直接调用该实现。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构检查，并人工核对上述路径和符号。

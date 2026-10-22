@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`alloc.rs`](alloc.rs) 是 `astersql-br-pkg-restore-internal-prealloc-table-id` library crate 的算法实现文件；[`lib.rs`](lib.rs) 以 `#[path = "alloc.rs"] pub mod alloc` 挂载并扁平再导出全部公开项。该 crate 的 [`Cargo.toml`](Cargo.toml) 把 Go 来源标为 `br/pkg/restore/internal/prealloc_table_id`，运行时依赖只有 `sha2 = "0.10"`，其余 meta、checkpoint 与错误类型都在本文件内以最小局部模型表达。
-
-它解决恢复前的表 ID/分区 ID 冲突：从备份表定义收集原 ID，读取目标集群的全局 ID 水位，保留仍安全的原 ID，并把冲突或异常大的 ID 映射到新预占区间。checkpoint 可保存区间和输入 ID 摘要，供重启后验证并重建相同映射。
-
-当前接线有明确边界：RustCodeGraph 将 `NewAndPrealloc`、`ReuseCheckpoint`、`RewriteTableInfo` 的调用边定位在本文件及独立测试中；restore 主链中的 `SnapClient::AllocTableIDs` 则调用 [`snap_client/stubs.rs`](../../snap_client/stubs.rs) 的 `NewAndPreallocTableIDs` / `ReusePreallocatedTableIDs`，不是本 crate 的同名算法。因此本文件是已实现且有契约测试的独立移植 crate，但不能据此声称 snap restore 主链已经统一使用它。
+解决恢复前的表 ID/分区 ID 冲突：从备份表定义收集原 ID，读取目标集群的全局 ID 水位，保留仍安全的原 ID，并把冲突或异常大的 ID 映射到新预占区间。
 
 ## 核心职责
 
@@ -92,8 +88,6 @@ RustCodeGraph 核对到的文件内主调用边为：
 
 ## 与 Go 版本的对应关系
 
-主要算法与 [`alloc.go`](alloc.go) 逐项对应：常量阈值、`Allocator` 两方法、`PreallocIDs` 字段、空输入哨兵、ID 收集排序、正常 ID 保留规则、冲突 ID 连续重写、区间计算、表/分区克隆改写、checkpoint 字段和 SHA-256 大端编码均保持一致。`Display` 对应 Go `String()`。
-
 Rust 为独立编译引入了局部差异：
 
 - Go 使用真实 `metautil.Table`、`model.TableInfo`、`checkpoint.PreallocIDs` 和 PingCAP errors；Rust 文件只建模此算法需要的字段与错误 code。
@@ -102,7 +96,7 @@ Rust 为独立编译引入了局部差异：
 - Go 哈希写入理论上处理 `hash.Write` 错误并 panic；Rust `Sha256::update` 不返回错误。
 - Go 在获取全局 ID 失败时使用结构化 logger；Rust 当前使用 `eprintln!`，错误本身仍原样传播。
 
-[`alloc_test.rs`](alloc_test.rs) 移植 Go `TestAllocator` 的用例矩阵，包括分区、已占用水位、异常大 ID 和大但仍正常的 ID；但 Go `TestAllocatorBound` 的真实 kv/meta 测试仅以本地 allocator 模拟。额外的 [`parity_test.rs`](parity_test.rs) 覆盖空输入、摘要、溢出边界、错误包装、重复调用守卫、checkpoint 成功/失败复用和分区改写。
+额外的 [`parity_test.rs`](parity_test.rs) 覆盖空输入、摘要、溢出边界、错误包装、重复调用守卫、checkpoint 成功/失败复用和分区改写。
 
 ## 扩展指南
 
@@ -113,14 +107,3 @@ Rust 为独立编译引入了局部差异：
 - 错误语义变化要保留 `ErrInvalidRange` code 与上下文包装，否则上层可能无法区分 checkpoint 不兼容与 allocator 基础设施失败。
 - 测试必须放在独立文件。算法用例更新 [`alloc_test.rs`](alloc_test.rs)，Go/Rust 边界与错误契约更新 [`parity_test.rs`](parity_test.rs)；若完成生产接线，还需在 snap-client 的独立测试中证明实际调用已切换。不要把测试内嵌回 `alloc.rs`，现有两个 `cfg(test)` helper 只提供测试可达性。
 - 性能上，当前复杂度主要是收集 O(n)、排序 O(n log n)、建表 O(n)，内存为 ID 向量与映射 O(n)。批量恢复规模扩大时，避免额外复制或重复排序，并用基准数据确认 HashMap 容量和摘要成本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/restore/internal/prealloc_table_id` 确认 `alloc.rs` 有 33 个符号，并列出 Go/Rust 实现与独立测试。
-- RustCodeGraph `node --file br/pkg/restore/internal/prealloc_table_id/alloc.rs --offset 1 --limit 560`：核对全部 498 行源码、公开 API、状态字段、条件编译 helper 和算法分支。
-- RustCodeGraph `explore`：核对 `NewAndPrealloc → New/PreallocIDs`、`New/ReuseCheckpoint → collectTableIDs/computeSortedIDsHash`、`RewriteTableInfo → AllocID` 等调用边；未发现本 crate API 的生产调用边。
-- RustCodeGraph 对 [`snap_client/client.rs`](../../snap_client/client.rs) 与 [`snap_client/stubs.rs`](../../snap_client/stubs.rs) 的节点/调用结果：确认当前 `AllocTableIDs` 使用平行的 `NewAndPreallocTableIDs` / `ReusePreallocatedTableIDs` 实现。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)。前者确认 library 名、Go 来源 metadata 和唯一外部依赖 `sha2`；后者确认再导出与独立测试挂载。
-- Go 对照：[`alloc.go`](alloc.go) 与 [`alloc_test.go`](alloc_test.go)，用于核对生产算法、真实 meta allocator 边界测试和错误/区间语义。
-- Rust 测试：[`alloc_test.rs`](alloc_test.rs) 与 [`parity_test.rs`](parity_test.rs)，用于核对纯算法用例矩阵、平台验证限制、checkpoint、哈希、错误路径和表/分区改写。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付验证仅检查固定章节结构、链接/路径和事实依据。

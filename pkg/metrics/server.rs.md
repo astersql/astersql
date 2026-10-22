@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`server.rs` 是 `astersql-metrics` crate 的 Server 层 Prometheus 指标定义文件，由 [`pkg/metrics/lib.rs`](lib.rs) 以公开模块 `server` 暴露。它负责创建和保存连接、SQL/命令耗时、扫描、计划缓存、慢查询、Token、TiFlash、PD API、TLS 等服务器入口侧 collector，但不负责监听网络、执行 SQL 或把 collector 注册到 Prometheus 注册表。
-
-包级总入口 [`metrics::InitMetrics`](metrics.rs) 调用 `server::InitServerMetrics` 创建句柄，随后 [`metrics::RegisterMetrics`](metrics.rs) 才逐项注册这些句柄。crate 边界与依赖见 [`pkg/metrics/Cargo.toml`](Cargo.toml)：本文件使用本 crate 的标签常量和兼容层，底层依赖 `prometheus = "0.14"` 与路径依赖 `astersql-metrics-common`；没有本文件专属 feature 或条件编译分支。
+常量 `ServerStart`、`ServerStop`、`EventKill` 定义 `ServerEventCounter` 的生命周期事件标签值。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/metrics/server.go`](server.go)。Rust 的全局名称、三种事件常量、指标 namespace/subsystem/name/help、标签集合和直方图桶基本逐项复刻 Go 的 `InitServerMetrics`，包括 `RCCheckTSWriteConfilictCounter`、`ResettablePlanCacheCounterFortTest` 等历史拼写和 Token 耗时单位文字的不一致。
-
 主要迁移差异有三类：
 
 - Go collector 全局变量是指针或接口值；Rust 用 `Option<T>` 显式表达初始化前状态，并因机械迁移允许 `static mut`。
@@ -88,11 +84,3 @@
 修改标签时要同步所有 `with_label_values` 调用和仪表盘/告警消费者，并评估标签基数。数据库名、资源组、地址等动态标签尤其可能扩大时序数量。修改桶或单位会改变监控解释和聚合结果，应先与 Go 行为及现有 dashboard 对齐。若扩展记录函数，继续通过 `PACKAGE_INIT_LOCK` 或迁移到具备等价同步保证的状态容器，不应新增裸 `static mut` 竞态。
 
 测试逻辑必须继续放在独立文件，不要嵌入 `server.rs`。优先扩展 `pkg/metrics/metrics_test.rs` 验证注册后的完整指标名、标签、样本和桶；错误标签兼容同时更新 `pkg/metrics/metrics_2_aster_unit_test.rs`；若 Go 契约变化，也核对 `pkg/metrics/metrics_test.go`。生产接线的行为测试应放在对应调用模块的独立 `*_test.rs` 中。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/metrics/server.rs`；`files --filter pkg/metrics/server.rs` 与 `node --file ...` 核对 613 行、67 个符号；`query`/`explore` 确认 `InitServerMetrics`、三个 `Record*`、`ExecuteErrorToLabel` 及调用边。图结果显示该文件被 `pkg/metrics/metrics_test.rs` 与 `pkg/session/runtime/scan_adapter_runtime.rs` 使用。
-- Rust 源码：`pkg/metrics/server.rs`；crate/模块和生命周期入口：`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`；生产调用点：`pkg/session/runtime/scan_adapter_runtime.rs::ObserveStatementDuration`；构造失败语义：`pkg/metrics/bindinfo.rs` 与 `pkg/metrics/common/wrapper.rs`。
-- Go 对照：`pkg/metrics/server.go::InitServerMetrics`、`ExecuteErrorToLabel`，以及 `pkg/metrics/metrics.go::InitMetrics`；Go 测试：`pkg/metrics/metrics_test.go::TestExecuteErrorToLabel`。
-- Rust 独立测试：`pkg/metrics/metrics_test.rs` 覆盖初始化/注册、错误标签、IA 扫描 collector 和 SQL/命令独立直方图；`pkg/metrics/metrics_2_aster_unit_test.rs` 补充初始化成功边界和错误标签映射。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文恰有上述 11 个固定二级章节；事实复核还确认本文没有把句柄构造误写为注册，也没有把仅在测试中调用的 `RecordCommandDuration` 描述为已接入生产链路。

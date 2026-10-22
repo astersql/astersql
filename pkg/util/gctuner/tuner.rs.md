@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-gctuner` crate 中的 GOGC 百分比调谐实现。crate 入口 `pkg/util/gctuner/lib.rs` 以 `pub mod tuner` 暴露本模块；仓库门面 `pkg/lib.rs` 又通过 `facade_util_gctuner` 暴露整个 gctuner crate。它和同 crate 的 `finalizer.rs`、`mem.rs` 配合：周期驱动到来时读取进程堆占用，根据一个字节阈值计算目标 GOGC，再交给 `task_util::gogc` 保存运行时兼容值。
-
-这里的 “GOGC” 是从 Go 版本迁移而来的 GC 触发比例语义。当前 Rust 后端 `pkg/util/gogc.rs` 只维护原子数值，不控制 Rust 分配器或 Rust GC（Rust 本身没有 Go 式 tracing GC）；实际周期驱动和分配器空闲页回收由 `pkg/util/gctuner/finalizer.rs` 实现。因此本文件是兼容层中的策略计算与生命周期控制，不应被理解为完整的 Rust 垃圾收集器。
-
-`pkg/util/gctuner/Cargo.toml` 声明 crate 名为 `astersql-util-gctuner`，库入口为 `lib.rs`，运行时依赖为 `task-memory`（经同 crate 的内存探测间接使用）和 `task-util`（本文件直接调用 `task_util::gogc`）。Cargo 元数据将其 Go 对照包指定为 `pkg/util/gctuner`。
+管理进程级调谐配置：`minGCPercent`、`maxGCPercent`、`EnableGOGCTuner` 和从 `GOGC` 环境变量惰性读取的 `DEFAULT_GC_PERCENT`。
 
 ## 核心职责
 
@@ -96,17 +92,12 @@ Rust 版本用 `Mutex<Option<Arc<Tuner>>>` 串行化全局实例创建、更新�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/gctuner/tuner.go`，Rust 基本保留了公开命名、默认值、计算公式、分支顺序和 `SetGOGC` 旧值记录语义：
-
-- Go 的 `atomic.Uint32/Uint64/Bool` 对应 Rust 原子类型；`tuner` 对应 `Tuner` 加类型别名。
 - Go 的 `newFinalizer(t.tuning)` 对应 Rust 闭包升级 `Weak<Tuner>` 后调用 `tuning`。
 - `calcGCPercent` 的无效输入、超过阈值、向下取整和先 min 后 max 的顺序一致；Go/Rust 固定表都期望 4 GiB 阈值下得到 300、166、100 等结果。
 - Go 的包级 `init()` 自动执行；Rust 的 `init()` 只是普通公开函数，当前未发现生产调用。Rust 静态原子已直接带默认上下限，默认 GOGC 则按首次访问惰性解析。
 - Go 明确说 `globalTuner` 非线程安全；Rust 为单例槽位增加 `Mutex`，允许并发管理入口。
 - Go 由 tracing-GC finalizer 触发；Rust 无对应运行时钩子，改为 `finalizer.rs` 的 300 ms 后台周期、分配器空闲页回收和显式 `run`。因此触发时机与内存统计源不可能完全等同。
 - Go 测试通过分配 `testHeap` 改变 `HeapInuse` 并调用 `runtime.GC()`；Rust 测试根据每次实测进程占用反推阈值并显式运行 finalizer，以保持占用/阈值比例断言。
-
-`pkg/util/gctuner/tuner_test.rs` 覆盖调谐从最大值、中间区间到最小值的收敛、超过阈值、停止后不能运行、固定计算表及倒置上下限。`migration_aster_unit_test.rs` 另外覆盖全局 `Tuning` 的创建、阈值更新和 `Tuning(0)` 清理后 `GetGOGC` 回到默认值。
 
 ## 扩展指南
 
@@ -115,15 +106,3 @@ Rust 版本用 `Mutex<Option<Arc<Tuner>>>` 串行化全局实例创建、更新�
 任何策略变化都应同步独立测试 `pkg/util/gctuner/tuner_test.rs`，不要把 Rust 测试嵌入生产源文件。涉及全局生命周期时还应同步 `migration_aster_unit_test.rs`；涉及 Go 语义对齐时核对 `tuner.go` 与 `tuner_test.go` 的分支和期望。测试要继续使用串行保护，并在结束前恢复进程级开关和上下限，避免污染其他用例。
 
 兼容风险包括：改变 `setGCPercent` 保存旧值的行为会改变 `GetGOGC` 的观测时序；调整首次 `Tuning(0)` 的分支会偏离现有 Go 行为；将倒置边界改为排序或 panic 会破坏已有回归；自动调用 `init()` 或改变环境变量解析时机会影响进程启动配置。性能风险主要来自缩短 finalizer 周期、增加内存探测频率、扩大锁持有范围或采用更激进的低 GOGC 值。若要把 API 接入 Rust 生产主链，必须先找到对应配置生命周期，并新增独立集成/单元验证，不能仅依据 Go 的 `sysvar.go` 调用位置推定接线。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/gctuner` 列出 `tuner.rs` 及相邻实现/测试；`node --file pkg/util/gctuner/tuner.rs --offset 1 --limit 260` 返回完整 210 行源码、35 个符号的文件视图及 13 个使用文件；`query Tuning --kind function --json` 定位 `tuner.rs::Tuning` 和 `tuner.rs::tuning`。精确 `callers` 查询在本次环境中未在限定时间内返回，因此调用关系又以仓库文本检索核对，没有把超时解释成“无调用者”。
-- 生产源码：`pkg/util/gctuner/tuner.rs`、直接下游 `finalizer.rs`、`mem.rs`、`pkg/util/gogc.rs`，以及模块入口 `pkg/util/gctuner/lib.rs` 和门面 `pkg/lib.rs`。
-- crate 配置：`pkg/util/gctuner/Cargo.toml`，用于确认 crate 名、入口、依赖和 Go 包映射。
-- Go 对照：`pkg/util/gctuner/tuner.go` 与 `tuner_test.go`；Go 上游位置通过 `pkg/sessionctx/variable/sysvar.go` 的文本/图索引结果核对。
-- Rust 测试：`pkg/util/gctuner/tuner_test.rs` 和 `pkg/util/gctuner/migration_aster_unit_test.rs`。它们分别验证比例计算、限幅顺序、周期收敛/停止，以及全局实例生命周期。
-
-本任务是纯文档分析，按计划未运行 Cargo，也未修改 Rust、Go、Cargo 或总计划。人工复核重点为：文件存在的兼容目的、全局入口与周期执行流程、旧值观测语义、弱引用/线程生命周期、Go 差异、当前生产接线证据边界，以及安全扩展时需要同步的独立测试文件。

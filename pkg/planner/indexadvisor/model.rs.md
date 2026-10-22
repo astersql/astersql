@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-indexadvisor` crate 的纯数据模型层。crate 根 `pkg/planner/indexadvisor/lib.rs` 通过 `pub mod model` 暴露它；`pkg/planner/indexadvisor/Cargo.toml` 指定入口为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/planner/indexadvisor"` 标明对应的 Go 包。文件本身不解析 SQL、不访问元数据，也不执行 what-if 优化，而是为这些流程提供查询、列、索引、索引集合代价及最终推荐结果的统一表示。
-
-在完整推荐链中，上游入口 `indexadvisor.rs::advise_indexes_for_sql` 先把 SQL 归并为 `Query`，工具层收集 `Column`，算法层组合并比较 `Index`/`IndexSetCost`，最后 `indexadvisor.rs::prepare_recommendations` 组装 `Recommendation`。因此这里既是算法的值对象边界，也是对外推荐结果的 DTO 边界。
+文件本身不解析 SQL、不访问元数据，也不执行 what-if 优化，而是为这些流程提供查询、列、索引、索引集合代价及最终推荐结果的统一表示。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 显示 `model.rs` 已被索引，并报告它被多个 planner 文
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/indexadvisor/model.go`：Rust 的八类公开结构与 Go 的 `Query`、`Column`、`Index`、`IndexSetCost`、`ImpactedQuery`、`WorkloadImpact`、`IndexDetail`、`Recommendation` 一一对应；构造器、键生成、前缀判断和三级代价比较也按相同顺序移植。
-
 已确认的语言层差异：
 
 - Go `Query.Frequency` 和 `IndexSetCost.TotalNumberOfIndexColumns` 为 `int`，Rust 使用 `usize`，因而 Rust 类型层面不允许负数。
@@ -93,8 +89,6 @@ RustCodeGraph 显示 `model.rs` 已被索引，并报告它被多个 planner 文
 - Go 的 `strings.ToLower` 与 Rust 字符迭代 API 不完全同构；私有 `go_lowercase` 采用“每个字符的小写映射取首字符”以满足当前 Go 对齐测试，相关 Unicode 行为由 `model_test.rs` 固化。
 - Go 推荐结果用 `*IndexDetail`、`*WorkloadImpact`、`[]*ImpactedQuery` 表达可空指针；Rust 对前两者使用 `Option<T>`，对查询列表使用拥有值的 `Vec<T>`，列表元素本身不可为 null。
 - Go 的泛型 set 可依据 `Key()` 去重，而 Rust 的 `BTreeSet` 依据派生 `Ord` 的全部字段。`Query::key` 和 `Index::key` 保留了 Go 风格稳定键，但不是 Rust 集合的比较器；这是扩展集合操作时必须显式评估的迁移差异。
-
-Go 侧没有单独的 `model_test.go`；模型行为分散在 `algorithm.go`、`indexadvisor_test.go`、`optimizer_test.go` 和 `utils_test.go` 的调用与断言中。Rust 则将构造语义放在 `model_test.rs`，前缀与稳定键放在 `indexadvisor_test.rs::advisor_model_preserves_index_prefix_semantics`，成本比较放在 `optimizer_test.rs::optimizer_cost_order_matches_go_tie_breakers`。
 
 ## 扩展指南
 
@@ -105,12 +99,3 @@ Go 侧没有单独的 `model_test.go`；模型行为分散在 `algorithm.go`、`
 - 若 `Index::with_columns` 需要拒绝混合库表列，应先确认 Go 兼容要求；当前测试明确要求保留“首列身份覆盖后续列”的 Go 语义，不能仅以更严格校验替换。
 - 新增测试必须继续放在同目录独立 `*_test.rs` 文件，并由 `lib.rs` 的 `#[cfg(test)]` 模块接线，不应把测试嵌入 `model.rs`。
 - 性能敏感扩展应关注候选枚举中的 `String`/`Vec<Column>` 克隆和重复 `key()` 分配；若引入缓存，需要重新说明并发、失效和身份一致性，而不能改变稳定排序结果。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/planner/indexadvisor` 确认目标源码、Go 对照和测试均已索引；`node --file pkg/planner/indexadvisor/model.rs --offset 1 --limit 400` 读取了目标文件完整 272 行。
-- 目标与 crate 边界：`pkg/planner/indexadvisor/model.rs`、`pkg/planner/indexadvisor/lib.rs`、`pkg/planner/indexadvisor/Cargo.toml`。
-- Rust 直接调用证据：`pkg/planner/indexadvisor/algorithm.rs`（候选构造、代价比较、前缀淘汰）、`utils.rs::evaluate_index_set_cost`（加权成本、总列数、稳定键）、`indexadvisor.rs::advise_indexes_for_sql` 与 `prepare_recommendations`（查询和推荐对象生产）、`optimizer.rs`（模型与元数据/成本接口边界）。
-- Go 对照：`pkg/planner/indexadvisor/model.go` 完整定义；同目录 `algorithm.go`、`indexadvisor_test.go`、`optimizer_test.go`、`utils_test.go` 提供实际消费和行为断言。
-- Rust 测试：`model_test.rs::constructors_use_unicode_lowercase_like_go`、`model_test.rs::with_columns_rebuilds_all_columns_from_the_first_table_like_go`、`indexadvisor_test.rs::advisor_model_preserves_index_prefix_semantics`、`optimizer_test.rs::optimizer_cost_order_matches_go_tie_breakers`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令校验文件存在且恰有十一个固定二级章节，并人工复核未把注释中的旧草案当作当前实现。

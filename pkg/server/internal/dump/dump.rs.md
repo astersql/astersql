@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-internal-dump` crate 的协议编码实现，提供 MySQL 线协议所需的基础字节拼接原语。crate 入口 [`lib.rs`](./lib.rs) 通过 `#[path = "dump.rs"] mod dump_impl` 装入本文件，并用 `pub use dump_impl::*` 导出全部公开函数；[`Cargo.toml`](./Cargo.toml) 将该 crate 定义为工作区库，运行时只直接依赖 `time = 0.3.44` 和本仓库的 `astersql-types-time`。
-
-它位于 server 的底层编码边界，不负责网络发送、包头、行遍历或字符集转换。直接的 Rust 生产使用方是 [`../column/column.rs`](../column/column.rs)：该模块先决定列/行的协议布局和字段类型，再调用这里的函数写入单个整数、长度编码值或时间值。`../column/Cargo.toml` 以依赖名 `dump` 引用本 crate。
+`LengthEncodedInt`、`LengthEncodedString` 实现 MySQL 长度编码整数及其上的字符串表示。
 
 ## 核心职责
 
@@ -83,9 +81,9 @@ Cargo 边界证据是本 crate 的 `Cargo.toml` 和 `../column/Cargo.toml`；工
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`dump.go`](./dump.go)，七个 Rust 公开函数与 Go 同名函数一一对应，分支顺序和字节布局保持一致。主要语言映射是 Go `append`/`binary.LittleEndian` 对应 Rust `Vec::push`、`extend_from_slice` 与 `to_le_bytes`；Go `time.Duration` 对应 `time::Duration`，但 Rust 显式收窄到 `i64` 并使用 `wrapping_neg` 复现 Go 最小整数回绕。
+主要语言映射是 Go `append`/`binary.LittleEndian` 对应 Rust `Vec::push`、`extend_from_slice` 与 `to_le_bytes`；Go `time.Duration` 对应 `time::Duration`，但 Rust 显式收窄到 `i64` 并使用 `wrapping_neg` 复现 Go 最小整数回绕。
 
-[`dump_test.rs`](./dump_test.rs) 移植了 Go [`dump_test.go`](./dump_test.go) 的三组测试：零值及日期时间形态、四类长度编码整数、`Uint64` 小端往返。[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 是 AsterSQL 的额外独立测试，补齐全部长度切换点、已有缓冲区追加、三种定宽整数、TIME 正负/跨天/微秒/`i64::MIN` 和 DATETIME 各长度形态。
+[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 是 AsterSQL 的额外独立测试，补齐全部长度切换点、已有缓冲区追加、三种定宽整数、TIME 正负/跨天/微秒/`i64::MIN` 和 DATETIME 各长度形态。
 
 当前可见差异主要是 Rust `BinaryTime` 接受范围更宽的 `time::Duration` 类型后主动收窄为 `i64`，以 Go 语义为准；另外 Rust 对未知 `types::Time` 类型显式使用空匹配臂，而 Go `switch` 自然落空，外部行为相同。
 
@@ -96,11 +94,3 @@ Cargo 边界证据是本 crate 的 `Cargo.toml` 和 `../column/Cargo.toml`；工
 修改时间编码时应优先保持 `dump.go` 的真实分支和字节级输出，尤其是长度标记、负号、天字段、纳秒到微秒截断、零日期和未知类型原样返回。任何修正 Go 既有兼容行为的设计都可能影响 MySQL 客户端协议兼容，必须先用明确的协议依据决定是否同时修改 Go，并增加跨边界回归用例。
 
 性能上应继续允许调用者传入并复用 `Vec`；在热路径增加中间字符串或临时缓冲区会放大逐行编码成本。若要消除 `BinaryTime` 在 `DumpBinaryRow` 中的临时分配，可考虑新增“追加到已有缓冲区”的 API，但应保留或有计划地迁移现有签名，并用等价测试证明所有字节形态不变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、目标目录 6 个已索引源码/测试文件；`node --file pkg/server/internal/dump/dump.rs --offset 1 --limit 260` 读取了完整 165 行实现；`query` 核对 `LengthEncodedString`、`LengthEncodedInt`、`BinaryTime`、`BinaryDateTime` 的 Rust/Go 定义；`node LengthEncodedInt` 确认 `LengthEncodedString -> LengthEncodedInt` 调用边；`callers` 查询用于检查上游，但其跨语言结果不稳定，故未单独作为生产接线结论。
-- 已读生产与装配文件：`pkg/server/internal/dump/dump.rs`、`pkg/server/internal/dump/lib.rs`、`pkg/server/internal/dump/Cargo.toml`、`pkg/server/internal/column/column.rs`、`pkg/server/internal/column/Cargo.toml`，以及工作区根 `Cargo.toml` 的成员/依赖声明。目标目录不存在 `doc.go`。
-- 已读 Go 对照与测试：`pkg/server/internal/dump/dump.go`、`dump_test.go`；已读独立 Rust 测试：`dump_test.rs`、`migration_aster_unit_test.rs`。
-- 精确引用搜索确认 Rust 生产调用集中在 `pkg/server/internal/column/column.rs`，并核对了列定义、文本行和二进制行三条使用路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题。

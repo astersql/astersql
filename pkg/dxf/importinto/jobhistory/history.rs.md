@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-importinto-jobhistory` crate 的核心实现。crate 入口在 `pkg/dxf/importinto/jobhistory/lib.rs`：它以 `#[path = "history.rs"] pub mod jobhistory` 装入本文件，并通过 `pub use jobhistory::*` 对外再导出这里的类型与函数。crate 边界由同目录 `Cargo.toml` 定义，并由根 `Cargo.toml` 的 workspace 成员列表以及 `pkg/dxf/importinto/Cargo.toml` 的 `astersql-dxf-importinto-jobhistory` 路径依赖接入 IMPORT INTO 子系统。
-
-它负责从已经归档的 `mysql.tidb_global_task_history` 与 `mysql.tidb_background_subtask_history` 读取单个 IMPORT INTO 作业，并转换成适合 JSON 展示的汇总信息。Go 应用中的真实入口是 `pkg/server/handler/tikvhandler/dxf.go` 的 `DXFImportIntoHistoryJobInfoHandler.ServeHTTP`：处理器校验 keyspace 和正整数 job ID，取得 DXF `TaskManager`，设置请求超时后调用 Go 同名实现 `jobhistory.GetFromHistory`，把未找到映射为 HTTP 404。当前 Rust 仓库搜索到的 `GetFromHistory` 直接调用者是独立 Rust 测试；尚未发现对应的 Rust HTTP 生产入口，因此不能把 Go 入口描述成已经由 Rust 请求链调用。
+负责从已经归档的 `mysql.tidb_global_task_history` 与 `mysql.tidb_background_subtask_history` 读取单个 IMPORT INTO 作业，并转换成适合 JSON 展示的汇总信息。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 对 `GetFromHistory` 的 callee 结果确认了它构造 `Info` �
 
 ## 与 Go 版本的对应关系
 
-`pkg/dxf/importinto/jobhistory/history.go` 是逐项对照基准，`Cargo.toml` 的 `[package.metadata.porting]` 也把 Go 包声明为 `pkg/dxf/importinto/jobhistory`。Rust 保留了 Go 导出名和字段名（以 `#[allow(non_snake_case)]` 兼容），两版的两轮 SQL、NULL 处理、KV 分类、时间窗合并、步骤映射、平均行长与吞吐公式一致。
-
 可见语言差异包括：Go 返回 `*Info`，Rust 返回拥有所有权的 `Info`；Go 的 `int` 在 Rust 中固定为 `i32`，历史表值从 `i64` 转换时使用 `as i32`，超出范围会截断而非返回错误；Go 用 `time.Duration.String` 和 `docker/go-units.BytesSize`，Rust 以 `formatDuration`、`formatBytesValue`、`formatFourSignificantDigits` 手工复现当前测试覆盖的输出；Go 使用 `math.Round`，Rust 使用 `f64::round`。
 
 验证语义来自两组独立 Rust 测试与 Go 测试：`history_test.rs` 覆盖主聚合和未找到，`migration_aster_unit_test.rs` 进一步覆盖重复步骤边界、所有步骤映射、NULL 零值、格式化边界及 JSON 名称；`history_test.go` 在真实测试表迁移后验证相邻大 task ID 不污染目标聚合。Rust 测试用规范 `TaskManager` 的注入结果验证业务聚合，但没有完整执行 Go 测试所用的真实 JSON SQL 函数链，相关限制在 `job_testkit_test.rs` 注释中明确记录。
@@ -98,11 +94,3 @@ RustCodeGraph 对 `GetFromHistory` 的 callee 结果确认了它构造 `Info` �
 - 格式化变更应以 Go 库在边界值上的真实输出为基准，特别关注四位有效数字、科学计数、单位跃迁、零值和极大值。不能只让现有样例通过而缩减 Go 语义。
 - 若接入 Rust HTTP 生产链，应在调用层负责方法、keyspace/job ID 校验、超时与 `ErrTaskNotFound` 到 404 的映射；不要把这些传输层职责塞入本文件。同时增加独立集成测试，而不是把测试写进 `history.rs`。
 - 性能方面，当前第二轮 SQL 在数据库内按 `step, kv_group` 聚合，内存规模与分组数而非子任务数成正比。扩展 group-by 维度或取消 SQL 聚合会扩大返回集与内存/网络成本，应先评估。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，`files --filter pkg/dxf/importinto/jobhistory` 列出本 crate 的 6 个 Rust/Go 实现与测试文件；`node --file pkg/dxf/importinto/jobhistory/history.rs` 读取了 395 行完整源码；`query GetFromHistory` 区分出 Go 与 Rust 同名实现；`callees history.rs::GetFromHistory` 确认 `Info` 构造和四个格式化调用。精确 `callers` 没有返回边，且 `callees` 存在宽匹配噪声，因此调用方用仓库文本搜索复核。
-- 源码与配置：`pkg/dxf/importinto/jobhistory/history.rs`、`lib.rs`、`Cargo.toml`，以及 `pkg/dxf/importinto/Cargo.toml`、根 `Cargo.toml`/`Cargo.lock` 的 crate 接线。
-- Go 对照与应用入口：`pkg/dxf/importinto/jobhistory/history.go`、`history_test.go`、`pkg/server/handler/tikvhandler/dxf.go::DXFImportIntoHistoryJobInfoHandler.ServeHTTP`。
-- Rust 独立测试：`pkg/dxf/importinto/jobhistory/history_test.rs`、`migration_aster_unit_test.rs`、`pkg/dxf/importinto/job_testkit_test.rs::large_task_ids_isolate_history_aggregation`。
-- 本任务是纯文档分析，按计划不运行 Cargo。仓库指令引用的 `.agents/skills/tidb-verify-profile/SKILL.md` 在当前检出中不存在，无法加载其 Ready 配置；交付验证使用任务文件规定的 11 章节结构命令，并人工复核本文没有把未验证的 Rust 生产接线写成既成事实。

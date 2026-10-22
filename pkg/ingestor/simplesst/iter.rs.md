@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-simplesst` crate；crate 入口 `pkg/ingestor/simplesst/lib.rs` 以 `pub mod iter` 暴露它。它位于简化 SST 管线的读取侧：`KVReader` 解码数据文件，`StatsReader` 解码范围属性文件，本文件在这些单文件 reader 之上提供有序多路归并。
-
-当前 Rust 仓库中，`MergeKVIter`、`MergePropIter` 的直接使用主要在独立测试 `pkg/ingestor/simplesst/iter_test.rs`；RustCodeGraph 将本文件列为被 `pkg/ingestor/globalsort/merge.rs` 等文件使用，但逐符号文本核验没有找到这些构造器在 Rust 生产代码中的调用。相应的完整生产接线目前仍可在 Go 的 `pkg/ingestor/globalsort/merge.go`（`NewMergeKVIter`）和 `pkg/ingestor/globalsort/split.go`（`NewMergePropIter`）看到。因此，本文件应理解为已实现并受测的 Rust 移植 API，而不是已经确认接入全部 Rust ingest 主链的组件。
-
-`pkg/ingestor/simplesst/Cargo.toml` 声明此 crate 的 Go 对照包为 `pkg/ingestor/simplesst`；当前依赖只在 `cfg(windows)` 下列出，文件自身主要依赖 crate 内部模块和 Rust 标准库。
+所有迭代器把正常 EOF 当作源耗尽，把非 EOF 错误保存在迭代器中，供 `error`/`Error` 查询；显式 `close` 负责停止并发活动并释放 reader。
 
 ## 核心职责
 
@@ -102,13 +98,9 @@ RustCodeGraph 的文件级结果列出 `pkg/dxf/importinto/task_executor.rs`、`
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/ingestor/simplesst/iter.go`，测试位于 `iter_test.go`。
-
 - Rust `HeapEntry`/`MergeKVIter` 对应 Go 通用 `mergeHeap`、`mergeIter` 和外层 `MergeKVIter` 的组合；Rust 将 KV 专用路径直接展开，并保留同名大写别名。
-- 两端都按 readerMemorySize 和每并发缓冲大小计算热点并发度，封顶 256；都仅在某一路严格占周期多数时切换并发读取。
 - Go `MergeKVIter` 还持有 `membuf.Pool`、设置 merge-sort 读取指标并接受 context/通用对象存储；Rust 当前使用 `MemoryStorage`，没有 context、指标或显式内存池。这些是当前移植边界，不能视为生产等价接线。
 - Rust `LimitSizeMergeIter<T>` 使用预装入内存的 `Vec<Result<T>>`，主要用于验证带权窗口算法；Go 版本持有 reader opener 和真正的 reader 生命周期，泛化程度更高。
-- Rust `MergePropIter` 把 Go 的两层 `mergePropBaseIter` + `limitSizeMergeIter` 结构展开为 groups/sources/全局堆。两端都按 `MinKey` 排组、按 `MaxOverlappingNum + 1` 打开组内窗口、异步预开剩余 stat reader，并暴露最近是否关闭底层 reader。
 - Go 外层属性归并还用各组 `MaxOverlappingNum` 作为权重，并用 `maxMergeSortOverlapThreshold * 2` 限制同时打开的组；Rust 当前为每个统计组立即建立一个组内窗口，没有实现该外层总权重阈值。因此大规模多组场景的连接/内存上界并不完全等价。
 - Rust 独立测试覆盖了 Go 的 `TestCorruptContent`、`TestOneUpstream`、`TestAllEmpty`、热点切换、带权归并、空属性文件和半途关闭意图，并额外验证属性预开关闭时的阻塞/错误清理。
 
@@ -121,13 +113,3 @@ Go 对照实现位于 `pkg/ingestor/simplesst/iter.go`，测试位于 `iter_test
 - 若追求 Go 等价的大规模属性归并，需要补上外层组权重上限，而不是仅调整单组 `limit`；相应测试应构造多个 `MultipleFilesStat` 并断言总活跃 reader 上界与全局有序性。
 - Rust 测试必须继续放在独立的 `pkg/ingestor/simplesst/iter_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] mod iter_test` 接入，不能内嵌到生产文件。
 - 所有变更应重新核对 `pkg/ingestor/simplesst/iter.go` 与 `iter_test.go`，明确哪些差异是已知移植边界，哪些是回归。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ingestor/simplesst` 确认 Rust/Go 源与独立测试；`node --file pkg/ingestor/simplesst/iter.rs --offset 1 --limit 500` 和 `--offset 496 --limit 360` 覆盖本文件全部 800 行，并给出文件级使用者。
-- 生产源：`pkg/ingestor/simplesst/iter.rs`（全部符号和流程）、`kv_reader.rs`/`stat_reader.rs`/`codec.rs`/`writer.rs`（由导入及被调用符号确认下游边界）、`lib.rs`（模块、错误、存储）。
-- crate 声明：`pkg/ingestor/simplesst/Cargo.toml`（crate 名、入口和 Go package 映射）。
-- Rust 测试：`pkg/ingestor/simplesst/iter_test.rs`，覆盖全局顺序、空输入、损坏尾部、单输入、热点切换、输入大小/并发上限、带权窗口、属性 reader 耗尽、异步预开错误和关闭清理。
-- Go 对照：`pkg/ingestor/simplesst/iter.go` 与 `iter_test.go`；生产调用证据为 `pkg/ingestor/globalsort/merge.go` 和 `pkg/ingestor/globalsort/split.go`。
-- 调用检索：对 `NewMergeKVIter|MergeKVIter|NewMergePropIter|MergePropIter|get_concurrent_reader_concurrency|LimitSizeMergeIter` 在相关 Rust/Go 目录执行精确 `rg`，用于消除 RustCodeGraph 对常见方法名形成的粗粒度关联。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证仅检查目标文件存在、固定十一个二级标题恰好各一个，并人工复核源码链接、当前接线状态与安全扩展说明。

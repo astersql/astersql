@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-sessionctx-variable` crate，由 `pkg/sessionctx/variable/lib.rs` 以公开模块 `slow_log` 暴露。它位于会话变量层与执行器慢日志路径的边界：一方面定义一条慢查询日志的共享数据载体和基础文本格式，另一方面定义可配置慢日志规则的解析、字段取值与阈值匹配协议。执行器侧 `pkg/executor/adapter_slow_log.rs` 消费这些协议，负责组合会话/全局规则、补齐字段、判断是否写日志，并最终调用 `SessionVars::SlowLogFormat`。
-
-crate 边界由 `pkg/sessionctx/variable/Cargo.toml` 确认：本文件直接使用标准库集合/同步/时间类型、`crc` 的 CRC64-ECMA 实现，以及工作区 `astersql-util-execdetails`（依赖别名 `execdetails`）。会话数据来自同 crate 的 `session::{SessionVars, RewritePhaseInfo}`。本文件不负责慢日志文件轮转、logger 配置、SQL 执行或完整执行计划生成。
+执行器侧 `pkg/executor/adapter_slow_log.rs` 消费这些协议，负责组合会话/全局规则、补齐字段、判断是否写日志，并最终调用 `SessionVars::SlowLogFormat`。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ accessor 闭包装在 `Arc<dyn Fn + Send + Sync>` 中，可跨线程共享；它
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/sessionctx/variable/slow_log.go`，完整行为测试对照位于 `pkg/sessionctx/variable/tests/slowlog/slow_log_test.go` 与同目录 Rust 文件。Rust 保留了 Go 的核心规则语义：字段名大小写不敏感、数值条件使用实际值大于等于阈值、字符串/布尔使用等值、单规则 AND、多规则 OR、规则最多十条、会话级禁止 `Conn_ID`、全局按连接分组、缺失详情可匹配零阈值，以及 CRC64-ECMA 哈希。
+Rust 保留了 Go 的核心规则语义：字段名大小写不敏感、数值条件使用实际值大于等于阈值、字符串/布尔使用等值、单规则 AND、多规则 OR、规则最多十条、会话级禁止 `Conn_ID`、全局按连接分组、缺失详情可匹配零阈值，以及 CRC64-ECMA 哈希。
 
-Rust 用 `Threshold` 取代 Go 的 `any`，用 `BTreeMap/BTreeSet` 取代 Go map，使重编码顺序稳定；用上下文类型安全查询替代 Go `context.Value` 的类型断言；用执行器注册 factory 的方式补入 Go 中由 executor `init` 添加的 `Plan_digest` accessor。`pkg/executor/adapter_slow_log.rs` 的初始化段是该 Go `init` 契约的 Rust 对应物。
+Rust 用 `Threshold` 取代 Go 的 `any`，用 `BTreeMap/BTreeSet` 取代 Go map，使重编码顺序稳定；用上下文类型安全查询替代 Go `context.Value` 的类型断言；用执行器注册 factory 的方式补入 Go 中由 executor `init` 添加的 `Plan_digest` accessor。
 
-当前 Rust `SlowLogFormat` 明确只输出本文件已拥有的字段，Go 函数还格式化用户/主机、预处理子查询、统计、cop/backoff、告警、CPU 等更完整字段。不能据此文件宣称 Go 的全部慢日志文本格式都已迁移；执行器或其他模块提供的详情也只有在实际接入格式化路径后才会出现。另一方面，Rust 已额外以类型化结构和显式可选值表达缺失状态，这属于实现机制差异，不改变已覆盖字段的外部语义。
+当前 Rust `SlowLogFormat` 明确只输出本文件已拥有的字段，Go 函数还格式化用户/主机、预处理子查询、统计、cop/backoff、告警、CPU 等更完整字段。另一方面，Rust 已额外以类型化结构和显式可选值表达缺失状态，这属于实现机制差异，不改变已覆盖字段的外部语义。
 
 ## 扩展指南
 
@@ -91,12 +89,3 @@ Rust 用 `Threshold` 取代 Go 的 `any`，用 `BTreeMap/BTreeSet` 取代 Go map
 新增格式化字段时，应在 `SlowQueryLogItems` 增加数据，确定零值是否省略、单位与字段顺序，再修改 `SlowLogFormat`；同步 `pkg/sessionctx/variable/slow_log_test.rs` 的格式测试，并对照 Go `SlowLogFormat` 及 `pkg/sessionctx/variable/tests/slowlog/slow_log_test.{go,rs}`。不要把测试写回生产源文件。若字段由 session runtime 或 executor 产生，还需同步其构造/补齐路径，尤其是延后到协议响应完成才可得的 `WriteSQLRespTotal`。
 
 兼容风险集中在日志字段名/顺序/单位、规则规范化字符串及哈希、大小写策略、缺失详情的零阈值行为和初始化顺序。性能风险集中在无条件采集昂贵计划或执行详情；应继续依赖有效字段集合和 Setter 的惰性采集。并发字段新增时必须明确原子快照或锁的语义，不能把统计读取误作同步屏障。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`node --file pkg/sessionctx/variable/slow_log.rs` 读取完整 1,308 行并列出 12 个使用文件；`explore` 确认 Rust 规则解析链 `ParseSessionSlowLogRules → parse_slow_log_rule_set → parse_slow_log_rule_entry → ParseSlowLogFieldValue`，并定位执行器 `MatchSessionVars`；精确 `query` 确认会话/全局解析函数与 `RegisterPlanDigestAccessor` 的符号。
-- 源与边界：`pkg/sessionctx/variable/slow_log.rs`、`pkg/sessionctx/variable/Cargo.toml`、`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/session.rs`。
-- 上下游证据：`pkg/executor/adapter_slow_log.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/control.rs`。
-- Go 对照：`pkg/sessionctx/variable/slow_log.go`、`pkg/sessionctx/variable/tests/slowlog/slow_log_test.go`。
-- Rust 独立测试：`pkg/sessionctx/variable/slow_log_test.rs` 覆盖字段注册、正则式兼容片段、digest/等待 TS Setter、IA/read-pool、存储来源和 RU 格式；`pkg/sessionctx/variable/tests/slowlog/slow_log_test.rs` 覆盖 39 个 accessor、AND/OR 匹配、类型/负值/非有限值、重复字段、十条上限、会话/全局解析、plan digest 注册及 Go 对齐行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅运行固定 11 章节结构检查并人工复核引用和范围。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/ddl.rs` 是 `astersql-ddl` crate 公开的 DDL 基础模型模块，由 `pkg/ddl/lib.rs` 中的 `pub mod ddl` 暴露。它集中定义轻量的 Job 数据模型、管理命令状态机、进程内 DDL 容器，以及恢复 DROP/TRUNCATE 元数据时使用的筛选函数。crate 边界由 `pkg/ddl/Cargo.toml` 的 `[package] name = "astersql-ddl"` 和 `[lib] path = "lib.rs"` 确认；该 manifest 还用 `package.metadata.porting.go-package = "pkg/ddl"` 标明 Go 对照包。
-
-这个文件不是当前 Rust DDL 完整执行框架的总入口。生产模块会直接复用这里的 `Job`、`JobState` 和 `ActionType`（例如 `job_submitter.rs`、`job_scheduler.rs`、`job_worker.rs`），但仓库搜索未发现非测试代码构造本文件的 `Ddl`，也未发现非测试代码使用本文件的 `JobWrapper`、`recover_snapshot_ts` 或 `drop_or_truncate_table_info_from_jobs`。持久化提交、owner 调度、逐步执行和 schema diff 分别另在 `job_submitter.rs`、`job_scheduler.rs`、`job_worker.rs`、`schema_version.rs`；因此 `Ddl` 应理解为已测试的进程内语义模型，而不是 Go `ddl` 对象的完整生产移植。
+集中定义轻量的 Job 数据模型、管理命令状态机、进程内 DDL 容器，以及恢复 DROP/TRUNCATE 元数据时使用的筛选函数。
 
 ## 核心职责
 
@@ -101,7 +99,6 @@
 - Rust `switch_metadata_lock` 先拒绝诊断模式，否则更新布尔值并以 `Ok(changed)` 报告变化；Go `SwitchMDL` 同样先拒绝诊断模式，之后会检查运行中 Job、写全局变量和持久化元数据，且可能返回 session/KV 错误。
 - Rust `process_jobs`/`process_jobs_transactionally` 对照 Go `CancelJobs`、`PauseJobs`、`ResumeJobs` 与底层 `processJobs` 的逐 Job 结果和事务提交语义。Rust 测试覆盖提交失败回滚，但没有 SQL 系统表查询、并发冲突重试和真正事务。
 - Rust `all_jobs` 对应 Go “运行中后历史”的遍历意图，但它只读取内存集合；Go `GetAllDDLJobs`/`IterAllDDLJobs` 查询 job 表并继续遍历持久化历史。
-- `recover_snapshot_ts` 精确对齐 Go `GetRecoverSnapshotTS` 的 `RealStartTS` 优先规则。候选过滤保留 DROP/TRUNCATE、GC 安全点和短路意图，但 Go 还从快照 InfoSchema 取表、区分可忽略错误，并允许回调返回错误。
 
 ## 扩展指南
 
@@ -112,10 +109,3 @@
 - 若增强恢复函数，需要决定是否对齐 Go 的 table snapshot 获取和回调错误传播，并在 `ddl_test.rs` 添加 GC 相等边界、首个过期候选、跳过非候选、回调错误/短路等用例。
 - 若使跟踪器并发共享，应评估复用或合并 `job_scheduler.rs::UnSyncedJobTracker`，避免长期保留两个语义相近但容量和同步策略不同的类型。
 - 性能风险主要在批量 `process_jobs` 的逐项查找、事务快照全量克隆与 `all_jobs` 的全量复制；兼容风险主要在 Job 状态/版本、管理权限和恢复时间戳规则。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/ddl.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
-- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
-- 冻结 `pkg/ddl/ddl_test.rs::diagnostic_mode_disallows_switch_mdl` 检查诊断错误与开关；Go 对照 `pkg/ddl/ddl.go::SwitchMDL`。测试为源码审阅，未运行。
-- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。

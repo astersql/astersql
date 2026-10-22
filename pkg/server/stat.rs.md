@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/stat.rs` 属于 `astersql-server` crate；crate 根 `pkg/server/lib.rs` 以 `pub mod stat` 公开该模块。它为 `server::Server` 增加服务器级状态查询能力，当前只覆盖 TLS 服务端证书有效期与进程 `Uptime`。这里的“统计”是 MySQL `SHOW STATUS` 风格的状态变量，不是查询优化器统计信息，也不是 `COM_STATISTICS` 的连接摘要；后者由 `pkg/server/conn.rs::ClientConn::writeStats` 独立生成。
-
-当前 Rust 生产代码中没有 `Server::statistics` 或 `Server::status_scope` 的调用点，也没有将 `Server` 实现并注册到 `pkg/sessionctx/variable/statusvar.rs::Statistics` 聚合链。已确认的调用者是 `pkg/server/stat_test.rs` 和 `pkg/server/tests/tls/tls_test.rs`。因此本文件现在是公开、可直接调用且有测试覆盖的状态快照 API，但尚不能据此断言 SQL 状态变量聚合路径已经接线。
+当前 Rust 生产代码中没有 `Server::statistics` 或 `Server::status_scope` 的调用点，也没有将 `Server` 实现并注册到 `pkg/sessionctx/variable/statusvar.rs::Statistics` 聚合链。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ TLS 热加载由 `Server::update_tls_config/reload_tls_config` 替换整个 `Arc
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/server/stat.go`：`GetScope`、`Stats`、三个同名状态键和“先填默认值，再尽力覆盖”的失败隔离策略均被保留。`pkg/server/stat_test.go::TestUptime` 验证 Go 版本从 `infosync.GetServerInfo` 计算 Uptime；Rust 独立测试改为注入实现 `Domain::start_timestamp` 的 `TestDomain`。
+`pkg/server/stat_test.go::TestUptime` 验证 Go 版本从 `infosync.GetServerInfo` 计算 Uptime；Rust 独立测试改为注入实现 `Domain::start_timestamp` 的 `TestDomain`。
 
 存在以下已核实差异：
 
@@ -95,12 +93,3 @@ Go 对照为 `pkg/server/stat.go`：`GetScope`、`Stats`、三个同名状态键
 若要完成 `SHOW STATUS` 接线，不应仅在本文件增加调用：需要在不混淆两个 `StatusValue` 类型的前提下，让 `Server` 适配 `pkg/sessionctx/variable/statusvar.rs::Statistics`，并在 Server 构造/销毁生命周期中成对注册、注销。必须补独立测试验证注册聚合、重复实例生命周期、作用域和错误传播，避免只测试直接方法。
 
 证书格式变更要同时核对 `pkg/server/server.rs::load_tls_config` 和 `pkg/server/tests/tls/tls_test.rs::test_tls_basic`，并注意外部兼容性：当前真实加载路径输出 OpenSSL 风格时间字符串，而 Unix 回退输出十进制秒。修改 Uptime 时需保持秒单位，并明确未来启动时间、epoch 前系统时钟和整数边界的兼容行为。测试继续放在独立 `stat_test.rs` 或集成测试目录，不要内嵌进生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件及 `pkg/server/stat.rs`；`files --filter pkg/server/stat.rs` 报告该文件含 16 个符号；`node --file pkg/server/stat.rs --offset 1 --limit 500` 展示完整 110 行源码及文件级使用者。精确方法查询 `node/callers/callees stat.rs::Server::statistics` 未命中，故没有把缺失的方法级图边当成事实。
-- 源码：`pkg/server/stat.rs`；状态来源与同步机制：`pkg/server/server.rs::{TlsConfig, Domain, Server, load_tls_config, update_tls_config, reload_tls_config, tls_config, domain}`；模块入口：`pkg/server/lib.rs`；crate 声明：`pkg/server/Cargo.toml`。
-- Rust 测试：`pkg/server/stat_test.rs::statistics_include_tls_dates_and_non_negative_uptime`；真实 TLS 集成：`pkg/server/tests/tls/tls_test.rs::{test_tls_basic, test_update_tls_config_runtime_state}`。
-- Go 对照：`pkg/server/stat.go::{defaultStatus, Server.GetScope, Server.Stats}`、`pkg/server/server.go::NewServer` 的注册调用，以及 `pkg/server/stat_test.go::TestUptime`。
-- 聚合接口对照：`pkg/sessionctx/variable/statusvar.rs::{StatusValue, Statistics, RegisterStatistics, UnregisterStatistics, GetStatusVars}`。仓库文本搜索确认 Rust 生产代码中不存在对本文件两个方法的调用，也不存在 Server 的对应 trait 实现/注册。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定命令校验 11 个固定二级标题，并人工复核上述符号、调用边、当前未接线事实和扩展风险。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源码 `flag.rs`](flag.rs) 属于 `astersql-parser-ast` crate；crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，入口是同目录的 [`lib.rs`](lib.rs)。该文件在 `lib.rs` 中以 `crate::flag` 公开，同时又被 [`functions.rs`](functions.rs) 通过 `#[path = "flag.rs"] pub mod flag` 挂载为 `crate::functions::flag`，因此同一份源码会形成两个模块路径。
-
-本文件承担两类职责：定义表达式性质的 64 位标志常量，以及为精简表达式模型 `FlagExpr` 实现自底向上的标志传播。它不是当前 SQL 解析主链直接操作的真实 AST 实现：`pkg/parser/yy_parser.rs` 在语法分析完成后调用根级 `parser_ast::SetFlag`，而 `pkg/parser/ast/lib.rs` 的根级再导出来自 `node_flags.rs`，作用对象是实际的 `ExprNode`/`Node`。`node_flags.rs` 会复用本文件的标志常量；本文件的 `FlagExpr` 传播器主要作为 Go 语义的独立、可直接构造的模型和测试面。
+用 `FlagExpr` 覆盖 Go `flagSetter.Leave` 所处理的主要表达式形态，并在每个复合节点保存或派生 `u64` 标志。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@ RustCodeGraph 对 `pkg/parser/ast/flag.rs` 识别到 9 个顶层符号，并将 
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/parser/ast/flag.go`。两端的核心语义一致：子节点先完成，再在父节点按位或；参数、函数、聚合、窗口、引用、变量、默认值和子查询拥有各自固有位；`HasAggFlag`/`HasWindowFlag` 都通过掩码判断。
+实现载体不同。Rust 本文件没有通用 `Node` visitor，而是递归一个独立的 `FlagExpr` 枚举；其测试因而手工构造与 Go SQL 用例结构等价的树。
 
-实现载体不同。Go 的 `SetFlag(n Node)` 使用 `Walk` 和 `flagSetter.Enter/Leave` 直接遍历完整 AST，并通过类型断言覆盖具体表达式节点。Rust 本文件没有通用 `Node` visitor，而是递归一个独立的 `FlagExpr` 枚举；其测试因而手工构造与 Go SQL 用例结构等价的树。当前 Rust 真实 AST 的等价生产实现位于 `node_flags.rs`，由 `lib.rs` 根级导出并被 `yy_parser.rs` 调用。
-
-`pkg/parser/ast/flag_test.go` 会用真实 Go parser 解析 21 类表达式，再调用 `ast.SetFlag`；`pkg/parser/ast/flag_test.rs` 对应覆盖 Between、Case、子查询、IN/LIKE/REGEXP、Row、参数、函数、聚合、变量、DEFAULT、引用和一元表达式等传播，但明确说明尚未通过本 crate 的 SQL parser 驱动这些 `FlagExpr` 用例。`flag_test.rs` 还补充窗口与部分剩余分支；`flag_5_aster_unit_test.rs` 覆盖嵌套聚合/窗口以及容器组合。真实节点的保存、重算和共享子查询遍历由 `node_flags_test.rs` 验证。
+`pkg/parser/ast/flag_test.go` 会用真实 Go parser 解析 21 类表达式，再调用 `ast.SetFlag`；`pkg/parser/ast/flag_test.rs` 对应覆盖 Between、Case、子查询、IN/LIKE/REGEXP、Row、参数、函数、聚合、变量、DEFAULT、引用和一元表达式等传播，但明确说明尚未通过本 crate 的 SQL parser 驱动这些 `FlagExpr` 用例。
 
 ## 扩展指南
 
@@ -96,12 +92,3 @@ Go 对照文件是 `pkg/parser/ast/flag.go`。两端的核心语义一致：子�
 新增 `FlagExpr` 变体时，编译器会迫使更新穷尽的 `get_flag` 和两个 `set_flag` 匹配；仍需明确它是缓存自身 flag、动态读取子树，还是保留调用者预置值。若真实 parser 也新增 `ExprKind`，必须独立更新 `node_flags.rs`，因为修改本文件的精简枚举不会自动影响生产解析主链。
 
 测试应放在独立文件而不是本源文件中。精简模型的 Go 对齐用例更新 `pkg/parser/ast/flag_test.rs`，组合分支可更新 `flag_5_aster_unit_test.rs`；真实 AST visitor 或 parser 接线应更新 `node_flags_test.rs` 及 parser 相关测试，并与 `pkg/parser/ast/flag_test.go` 的预期交叉核对。兼容风险主要是 bit 值改变或遗漏传播导致绑定/优化判断错误；性能风险主要来自新增重复遍历或在每个父节点重复扫描深层子树。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点，目标文件被索引且含 9 个符号；`files --filter pkg/parser/ast/flag.rs`、`explore 'pkg/parser/ast/flag.rs Flag HasFlag AddFlag DelFlag PushDownNot'`、`node --file pkg/parser/ast/flag.rs --offset 1 --limit 260`、`node --file ... --offset 260 --limit 140`、`query get_flag`、`query set_flag` 用于确认源码符号、递归边和直接使用者。自然语言查询包含同名噪声，本文只采用路径明确落在 `pkg/parser/ast/flag.rs` 的结果。
-- 源码：完整核对 `pkg/parser/ast/flag.rs`；读取 `pkg/parser/ast/lib.rs` 的模块声明、`ExprNode::GetFlag/SetFlag` 和根级再导出；读取 `pkg/parser/ast/functions.rs` 的第二模块挂载；读取 `pkg/parser/ast/node_flags.rs` 与 `pkg/parser/yy_parser.rs` 的真实解析接线。
-- crate：读取 `pkg/parser/ast/Cargo.toml`，确认包名、库入口、本地 parser 依赖与 metadata 中的 Go 包对应关系。
-- Go 对照：读取 `pkg/parser/ast/flag.go` 和 `pkg/parser/ast/flag_test.go`，核对 visitor 后序传播、节点分支与真实 SQL 测试预期。
-- Rust 测试：读取 `pkg/parser/ast/flag_test.rs`、`pkg/parser/ast/flag_5_aster_unit_test.rs` 和 `pkg/parser/ast/node_flags_test.rs`，区分精简树测试和真实节点测试。
-- 按任务约束未运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查，并人工检查本文没有把精简模型误写成真实 parser 的唯一实现。

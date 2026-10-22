@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-example` crate 的示例调度端实现，源码由 [`lib.rs`](lib.rs) 的 `mod scheduler` 纳入并通过 `pub use scheduler::*` 再导出。它演示一个固定的两阶段 DXF（Distributed eXecution Framework）任务：`StepInit(-1) -> StepOne(1) -> StepTwo(2) -> StepDone(-2)`，每个业务阶段生成相同数量的子任务元数据。包级说明 [`doc.go`](doc.go) 也把该示例定义为帮助开发者理解 DXF 集成的最小应用。
-
-当前 Rust 移植有明确边界：`schedulerImpl` 只提供与 Go scheduler 扩展同名的固有方法，尚未实现一个 Rust scheduler trait，也没有接入完整 scheduler/handle/storage 后台循环。`Cargo.toml` 将这些尚未接线的框架 crate 放在永不成立的 `target.'cfg(any())'` 下；现有 [`app_test.rs`](app_test.rs) 手工驱动这些真实调度方法，再把产生的元数据交给已移植的 task executor。因而本文件是可执行的示例调度逻辑，但不是完整 Rust DXF 调度服务入口。
+提供 scheduler 生命周期兼容钩子：`OnTick`、`OnPrepare`、`OnDone`、`GetEligibleInstances`、`IsRetryableErr`。
 
 ## 核心职责
 
@@ -81,13 +79,10 @@ RustCodeGraph 的文件关系显示 `scheduler.rs` 被 [`app_test.rs`](app_test.
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`scheduler.go`](scheduler.go)。两端保留了相同的业务状态机、每阶段固定 `SubtaskCount`、`subtask {i} of step {name}` 消息、空 eligible instances、恒可重试以及无业务准备/完成/清理逻辑。
-
 主要差异是：
 
 - Go `schedulerImpl` 嵌入 `BaseScheduler`，在 `Init` 中设置 `Extension = s` 并调用 `BaseScheduler.Init()`；Rust 结构只保存 `Task`，没有基类初始化或 scheduler trait 接线。
 - Go 构造器接收 `scheduler.Param` 并创建带 task ID 的 logger；Rust 构造器只有 `Context` 与 `Task`，忽略 context，也没有 logger。
-- Go `OnTick`、`OnDone`、`Clean` 会写日志；Rust 对应方法是无操作成功。
 - Go `OnNextSubtasksBatch` 还接收 `storage.TaskHandle`；Rust 当前签名省略该句柄，且 Cargo 中 scheduler/storage 依赖被 `cfg(any())` 禁用。
 - Go 使用框架 `proto.Step2Str`；Rust 本文件局部复制了阶段常量与 `Step2Str` 逻辑。框架 crate 另有 `pkg/dxf/framework/proto/step.rs`，未来接线时要避免两份定义漂移。
 - Go 的 `TestExampleApplication` 通过完整 DXF 注册、提交和等待任务；Rust `test_example_application` 明确使用内存 `FakeTaskTable` 手工推进 scheduler，再调用真实 task executor。这验证了本 crate 内部链路，但不等价于完整 scheduler/handle/storage 集成验证。
@@ -100,13 +95,3 @@ RustCodeGraph 的文件关系显示 `scheduler.rs` 被 [`app_test.rs`](app_test.
 - 接入完整 Rust DXF 时，应优先复用框架的 step/trait/base scheduler 定义，恢复 `Cargo.toml` 中当前禁用的 scheduler、storage、handle 依赖，并对照 Go `scheduler.go` 保留 base initialization、task handle、日志和注册语义。该工作超出本文件当前事实，不能只靠增加固有方法宣称完成。
 - 若错误不再全部可重试，应在 `IsRetryableErr` 中按错误类别区分，并补充永久错误不会进入重试循环的独立回归测试。
 - 性能风险集中在一次性分配 `subtaskCount` 个 `Vec<u8>`：真实业务应约束数量或做分页生成；兼容风险集中在局部 step 数值/字符串与框架 proto 的同步，以及消息 JSON 与 Go `encoding/json` 的一致性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/dxf/example/scheduler.rs`（21 个符号），`files --filter pkg/dxf/example` 显示本文件由 `pkg/dxf/example/app_test.rs` 使用；`query` 区分了 Rust/Go 的 `schedulerImpl`、`newScheduler` 和 `Step2Str`。对 callers/callees 的精确查询在 30 秒内无结果，调用关系因此以直接引用搜索和测试源码核验。
-- 目标源码：[`scheduler.rs`](scheduler.rs)，核对 5 个 step 常量、`schedulerImpl`、9 个调度/格式化方法和 `postCleanImpl`，以及 panic/错误分支。
-- crate 边界：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`doc.go`](doc.go)，核对路径依赖、禁用的完整 DXF 依赖、模块再导出和示例目的。
-- 数据协议与下游：[`proto.rs`](proto.rs)、[`task_executor.rs`](task_executor.rs)，核对 meta 编解码以及生成字节的消费方式。
-- Rust 测试：[`app_test.rs`](app_test.rs) 覆盖两阶段各 3 个子任务、状态推进、meta 往返、done/clean、未知阶段 panic 和负数量 panic；[`task_executor_test.rs`](task_executor_test.rs) 覆盖下游 meta 解析成功/失败。未发现独立的同名 `scheduler_test.rs`。
-- Go 对照：[`scheduler.go`](scheduler.go)、[`app_test.go`](app_test.go)，核对 BaseScheduler、注册、完整框架驱动、日志及清理差异。
-- 本任务按计划仅做文档分析，未运行 Cargo；交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级章节。

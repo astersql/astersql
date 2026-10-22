@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于根 crate `astersql-ddl`；`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`，而 `pkg/ddl/lib.rs` 通过 `pub mod placement_policy` 将其公开。它提供一套只依赖标准库集合类型的放置策略内存模型，覆盖策略配置、名称/ID 索引、创建与修改、分步删除、引用归一化和占用检查。
-
-需要特别区分当前 Rust 接线与完整 TiDB DDL：仓库内生产 Rust 文件没有直接调用这里的 `PlacementPolicyCatalog` 或辅助函数，直接使用集中在 `pkg/ddl/placement_policy_test.rs`、`pkg/ddl/placement_policy_ddl_test.rs` 和 `pkg/ddl/placement_sql_test.rs`。因此它目前是对 Go 放置策略语义的可测试内存化子集，不是 Go `pkg/ddl/placement_policy.go` 中持久化 DDL job、InfoSchema/Meta、PD rule bundle 更新链的完整替代品。
+`normalize_ref`、`handle_table_placement` 和 `remove_table_placement` 处理表及一级分区的策略引用；名称 `default` 表示清除引用。
 
 ## 核心职责
 
@@ -76,15 +74,15 @@ Go 主链中，SQL/DDL executor 构造 job 后由 `onCreatePlacementPolicy`、`o
 
 ## 与 Go 版本的对应关系
 
-`PlacementPolicyCatalog::create` 对应 Go `onCreatePlacementPolicy` 的关键局部语义：忽略调用者状态、先校验、名称冲突、OR REPLACE 保留旧 ID、`None -> Public` 和版本推进。差异是 Go 写 Meta、设置/结束 DDL job 并返回具体 TiDB 错误；Rust 仅改内存。
+差异是 Go 写 Meta、设置/结束 DDL job 并返回具体 TiDB 错误；Rust 仅改内存。
 
-`alter` 对应 `onAlterPlacementPolicy` 的“先取旧策略、再验证新 settings、替换配置、推进版本”。Go 的 `updateExistPlacementPolicy` 还查询依赖对象、重建 rule bundles 并通知 PD；Rust 的 `depended_object_ids` 只返回 ID，不被 `alter` 自动调用，也不更新任何外部规则。
+Go 的 `updateExistPlacementPolicy` 还查询依赖对象、重建 rule bundles 并通知 PD；Rust 的 `depended_object_ids` 只返回 ID，不被 `alter` 自动调用，也不更新任何外部规则。
 
-`drop_step` 对应 `onDropPlacementPolicy` 的三阶段状态迁移和使用中拒绝。Go 根据 InfoSchema 版本选择 cache 或 Meta 检查，并额外访问 global/meta 特殊 range；Rust 只查调用方维护的三个内存容器，range 后端错误无法在这里出现。
+Go 根据 InfoSchema 版本选择 cache 或 Meta 检查，并额外访问 global/meta 特殊 range；Rust 只查调用方维护的三个内存容器，range 后端错误无法在这里出现。
 
-`build_policy_info`/`set_direct_placement_opt` 对应 Go `buildPolicyInfo`/`SetDirectPlacementOpt` 的直接赋值职责；`get_range_placement_policy_name` 对应 Go `GetRangePlacementPolicyName` 中对第一条 rule ID 的字符串解析部分，但省略 `infosync.GetRuleBundle`。`remove_table_placement`、`handle_table_placement` 和 `normalize_ref` 对应 Go 同名/相邻辅助逻辑的表与分区子集；Go ignore 模式还追加 statement note，严格模式从事务 InfoSchema 查询。
+`build_policy_info`/`set_direct_placement_opt` 对应 Go `buildPolicyInfo`/`SetDirectPlacementOpt` 的直接赋值职责；`get_range_placement_policy_name` 对应 Go `GetRangePlacementPolicyName` 中对第一条 rule ID 的字符串解析部分，但省略 `infosync.GetRuleBundle`。
 
-Rust 独立测试验证了这些局部对齐：`placement_policy_test.rs` 覆盖创建/替换/修改/删除、错误优先级、直接选项赋值、引用归一化、ignore/default 和 rule ID；`placement_policy_ddl_test.rs` 对照 Go 的 InfoSchema/Meta 使用检查与依赖枚举；`placement_sql_test.rs` 覆盖 ignore 模式在简化 SQL 模型中的效果。Go 的 `placement_policy_test.go`、`placement_policy_ddl_test.go` 和 `placement_sql_test.go` 则覆盖真实 SQL、Meta、InfoSchema、PD bundle 与警告行为。
+Rust 独立测试验证了这些局部对齐：`placement_policy_test.rs` 覆盖创建/替换/修改/删除、错误优先级、直接选项赋值、引用归一化、ignore/default 和 rule ID；`placement_policy_ddl_test.rs` 对照 Go 的 InfoSchema/Meta 使用检查与依赖枚举；`placement_sql_test.rs` 覆盖 ignore 模式在简化 SQL 模型中的效果。
 
 ## 扩展指南
 
@@ -93,11 +91,3 @@ Rust 独立测试验证了这些局部对齐：`placement_policy_test.rs` 覆盖
 - 扩展引用范围时，统一更新 `PlacementObject` 的表达能力、`object_uses_policy`、`depended_object_ids`、`remove_table_placement`、`handle_table_placement` 与 `collect_policy_ids`，避免“阻止删除”和“依赖枚举”覆盖范围不一致。
 - 若接入真实 DDL 主链，不能只调用当前内存目录：还需对齐 Go 的 job 持久化/取消、Meta 事务、InfoSchema cache 版本判断、全局 schema version/sync、PD bundle 更新失败传播及 owner 重试语义。对应测试至少要扩展独立 Rust DDL/SQL 测试，而不是用零测试或桩替代。
 - 修正 schedule 注释或加入规范化前先决定兼容目标。当前 Go 与 Rust 测试都把直接 setter 视为机械赋值；若改为大写转换，会改变现有可观察行为，应先新增失败用例再修改实现。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件和 7,032 个 Rust 文件；`files --filter pkg/ddl/placement_policy.rs` 找到唯一目标；`node --file ... --offset 1 --limit 500` 读取完整 430 行并列出 50 个符号；`query PlacementPolicyCatalog`、`query handle_table_placement`、`query check_policy_validation` 定位核心符号。`callers handle_table_placement` 在 30 秒内无结果并被终止，因此调用者结论改由精确文本搜索核验。
-- Rust 源与 crate 边界：`pkg/ddl/placement_policy.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`；DDL 总体契约参考 `pkg/ddl/doc.go` 和 `docs/agents/ddl/README.md`，并以源码为最终事实。
-- Rust 独立测试：`pkg/ddl/placement_policy_test.rs`、`pkg/ddl/placement_policy_ddl_test.rs`、`pkg/ddl/placement_sql_test.rs`；其中生产逻辑的集中断言位于前两者的实际 `#[test]` 区段以及 SQL 简化模型用例。
-- Go 对照：`pkg/ddl/placement_policy.go`；相关真实行为测试为 `pkg/ddl/placement_policy_test.go`、`pkg/ddl/placement_policy_ddl_test.go`、`pkg/ddl/placement_sql_test.go`。它们证明完整 Go 路径还包含 DDL job、Meta/InfoSchema、PD bundles、SQL 错误码与 statement note。
-- 人工复核结论：该文件存在于 Rust 迁移中，用确定性的内存结构保存并验证放置策略核心局部语义；其运行方式是显式构造目录并调用同步方法；安全扩展必须同时维护双索引、版本、状态机、引用扫描和独立测试，并不得宣称当前已经替代完整 Go DDL 链。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`fips.rs`](./fips.rs) 是 `astersql-cmd-tidb-server` crate 的进程启动安全钩子，位于命令入口与 `astersql-server` 的 TLS 实现之间。它由 [`lib.rs`](./lib.rs) 通过 `#[path = "fips.rs"] pub mod fips` 纳入库 crate；共享入口 `lib.rs::main` 先调用 `fips::enable_fips_only()`，再进入 `entry::main()`。二进制壳 [`bin_main.rs`](./bin_main.rs) 在启动分配器分析后调用这个共享入口，因此正常可执行文件会在配置解析、网络监听和后台任务启动之前执行 FIPS 检查。
-
-[`Cargo.toml`](./Cargo.toml) 将该包声明为同时具有 `lib.rs` 库入口和 `bin_main.rs` 二进制入口的 `astersql-cmd-tidb-server` 包，并通过路径依赖 `astersql-server = { path = "../../pkg/server" }` 获得实际 crypto provider 安装能力。本文件不是独立二进制、TLS 协议实现或运行时开关解析器；它只负责把构建选择转换为启动期动作。
+只判断变量是否存在，不解析其字符串值；因此即使值为空或为 `0`，只要构建环境定义了该变量，`requested` 就是 `true`。
 
 ## 核心职责
 
@@ -75,11 +73,7 @@ RustCodeGraph 对目标文件显示 `enable_fips_only → enable_fips_only_for_b
 
 ## 与 Go 版本的对应关系
 
-同目录 [`fips.go`](./fips.go) 只在 `//go:build boringcrypto` 条件成立时参与编译，并通过匿名导入 `_ "crypto/tls/fipsonly"` 利用包初始化副作用强制 TLS 的 FIPS-only 行为。没有该构建标签时，这个 Go 文件完全不进入构建。
-
 Rust 版本保留了“由构建选择、在进程主逻辑之前生效”的意图，但机制并非逐语句翻译：它始终编译 `fips` 模块，以 `ASTERSQL_FIPS_ONLY` 是否在编译时存在模拟构建选择，并显式验证/安装 rustls AWS-LC provider。相比 Go 的匿名导入，Rust 路径公开返回错误的策略函数，生产入口则 panic；这样既可测试普通与 FIPS 请求分支，也明确提供了 fail-closed 失败行为。
-
-现有证据不能证明发布流水线已经设置 `ASTERSQL_FIPS_ONLY` 或链接了经验证的 AWS-LC FIPS 构建；仓库内搜索没有找到对应注入点。因此文档只确认代码在标记存在时的行为，不宣称当前产物已获得 FIPS 认证。
 
 ## 扩展指南
 
@@ -90,17 +84,3 @@ Rust 版本保留了“由构建选择、在进程主逻辑之前生效”的意
 - 若调整入口组装，必须保持 `lib.rs::main` 中 FIPS 初始化先于 `entry::main`，并同步检查 `bin_main.rs`，避免库模式与二进制模式分叉。
 
 兼容风险集中在构建标记语义和启动失败行为；安全风险集中在误用非 FIPS provider或初始化过晚；性能影响仅限进程启动时一次 provider 检查/安装，本文件不在请求热路径上。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter cmd/tidb-server` 确认目标文件、入口文件和独立测试均已索引。
-- RustCodeGraph `node --file cmd/tidb-server/fips.rs --offset 1 --limit 200`：确认完整 35 行源码、两个公开函数、编译期标记与下游全限定调用。
-- RustCodeGraph `query enable_fips_only --kind function`、`query enable_fips_only_for_build --kind function` 以及对应 `callers`/`callees`：确认目标符号和模块内调用边；图未展开的 crate 入口与跨 crate 边由源码和 Cargo 交叉核验。
-- `cmd/tidb-server/lib.rs`、`bin_main.rs`、`Cargo.toml`：确认模块组装、启动先后顺序、库/二进制边界及 `astersql-server` 依赖。
-- `pkg/server/server.rs::install_fips_crypto_provider` 与 `pkg/server/Cargo.toml`：确认 FIPS 检查、默认 provider 安装、两类错误及 rustls 版本声明。
-- `cmd/tidb-server/fips.go`：确认 Go `boringcrypto` 构建约束和 `crypto/tls/fipsonly` 匿名导入语义。
-- `cmd/tidb-server/parity_test.rs::contract_normal_paths`：确认独立 Rust 回归覆盖普通构建安全调用、`requested == false` 成功及显式请求可能返回“未验证/已安装”错误。仓库搜索未发现同名独立测试或其他 `cmd/tidb-server` FIPS 测试。
-
-本任务是纯文档分析，按计划不运行 Cargo。最终结构检查应确认该文件存在且恰有上述十一个固定二级章节；人工复核重点是调用顺序、编译期/运行时边界、fail-closed 错误和未验证的发布构建声明。

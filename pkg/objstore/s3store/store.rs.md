@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-s3store` crate 的 S3 存储工厂与凭证装配层。模块入口 `pkg/objstore/s3store/lib.rs` 以 `mod store` 引入并用 `pub use store::*` 导出这里的公开符号；crate 边界和 AWS SDK、HTTP、序列化、异步运行时等依赖由 `pkg/objstore/s3store/Cargo.toml` 定义。
-
-它位于调用方配置与数据面实现之间：`NewS3Storage` 接收 `backuppb::S3` 和 `storeapi::Options`，组装 AWS SDK 客户端及 `S3Client`，再交给 `s3like::NewStorage` 形成统一对象存储门面。当前已确认的生产入口有 `pkg/session/runtime/modify_column_cloud_store.rs` 的云存储构造分支，以及 `pkg/objstore/s3store/ks3.rs::NewKS3Storage` 对通用 S3 工厂的复用。对象的 Get/Put/List 等数据面行为不在本文件，而在 `client.rs`、`interface.rs` 和 `s3like` crate 中。
+`NewS3StorageForTest` 提供可注入 `S3API` 的测试构造路径，不执行真实凭证装载、区域探测或权限检查。
 
 ## 核心职责
 
@@ -80,11 +78,9 @@ AWS SDK 的 client、credentials provider、共享 HTTP client 和访问统计�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/s3store/store.go`。主流程在两版中一致：默认 region、profile 优先、静态/腾讯/默认凭证选择、阿里云 AWS-chain-first fallback、S3 局部 endpoint、可选 HTTP client、AssumeRole、`SendCredentials`、AWS 区域探测、前缀规范化、权限检查、对象锁回写和测试注入构造。
+Rust 用 `AwsS3Api` 和自有 `S3Client` 适配 AWS SDK，用显式 Tokio runtime 把异步 SDK 封装进当前同步接口；Go 直接使用 SDK v2 client。Go 的区域探测调用 `manager.GetBucketRegion` 并指定专用 retryer，Rust 通过 `ClientPurpose::RegionProbe` 构建独立 API 达到相同隔离目的。
 
-Rust 用 `AwsS3Api` 和自有 `S3Client` 适配 AWS SDK，用显式 Tokio runtime 把异步 SDK 封装进当前同步接口；Go 直接使用 SDK v2 client。Go 的区域探测调用 `manager.GetBucketRegion` 并指定专用 retryer，Rust 通过 `ClientPurpose::RegionProbe` 构建独立 API 达到相同隔离目的。Go 的访问记录通过 Smithy middleware 注入，Rust 由 `AwsS3Api::new` 接收 `AccessRecording`。
-
-Rust 额外保留 `credential_source`、`parse_aliyun_ram_credential`、`createOssRAMCred` 等可直接测试辅助符号，并手工实现 GCS URL 边界以贴合 Go 解析行为。两版对象锁查询失败都降级为 false；两版腾讯初始化失败都警告并回退。迁移状态不是桩：真实 AWS client、凭证 provider、权限与 region 流程均已接线，并有独立 Rust 测试覆盖；但本次纯文档任务没有运行这些测试。
+Rust 额外保留 `credential_source`、`parse_aliyun_ram_credential`、`createOssRAMCred` 等可直接测试辅助符号，并手工实现 GCS URL 边界以贴合 Go 解析行为。迁移状态不是桩：真实 AWS client、凭证 provider、权限与 region 流程均已接线，并有独立 Rust 测试覆盖；但本次纯文档任务没有运行这些测试。
 
 ## 扩展指南
 
@@ -94,12 +90,3 @@ Rust 额外保留 `credential_source`、`parse_aliyun_ram_credential`、`createO
 - 修改 region 或凭证回写时，要明确 `backend` 与 `query` 两份状态的可见性，复核 `SendCredentials=false` 不泄漏 secret，并同步 `test_send_creds`、`test_s3_storage_bucket_region`、AssumeRole 缓存测试及 KS3 回写行为。
 - 修改阿里云/腾讯元数据时，要评估网络超时、锁持有时间、旧凭证是否仍有效和日志中是否泄漏秘密；同步 `s3_test.rs` 的 fallback/expiration 测试与 `tencent_cos_test.rs` 的刷新、不完整凭证测试。
 - 修改构造顺序或权限检查时，应同步 `s3like/permission_test.rs` 和 S3/GCS 工厂测试，防止在权限探测前错误地进行 AWS region 请求，或把 STS endpoint 改写成 S3 endpoint。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标 `store.rs` 有 67 个符号；`files --filter pkg/objstore/s3store` 确认 crate 内源/测试集合；`node --file pkg/objstore/s3store/store.rs --offset 1 --limit 500` 与后续 `--offset 500 --limit 400` 覆盖全部 771 行。`query` 确认 Rust/Go 两版 `NewS3Storage`、`autoNewCred`、`IsObjectLockEnabled`、`createTencentCOSCred` 以及 Rust `is_gcs_s3_compatible`。精确 `callers`/`callees` 未输出函数边，因此调用者由下述直接引用搜索补证，不把缺失图边推断成“无调用者”。
-- 源与边界：`pkg/objstore/s3store/store.rs`、`lib.rs`、`Cargo.toml`；直接下游 `client.rs`、`interface.rs`、`pkg/objstore/s3like/permission.rs`、`pkg/objstore/s3like/store.rs`、`pkg/objstore/storeapi/storage.rs`。
-- 上游直接引用：`pkg/session/runtime/modify_column_cloud_store.rs`、`pkg/objstore/s3store/ks3.rs`；`rg` 还确认测试从 crate 公开门面调用工厂和辅助函数。
-- Go 对照：`pkg/objstore/s3store/store.go`；腾讯 Go 辅助实现位于 `pkg/objstore/s3store/tencent_cos.go`。
-- Rust 测试证据：`s3_test.rs` 覆盖静态/默认凭证、阿里云主链优先与 fallback、RAM expiration、SendCredentials、对象锁、region、region-probe retry 隔离、AssumeRole 缓存；`gcs_s3_test.rs` 覆盖跳过区域探测、签名请求和 endpoint 边界；`tencent_cos_test.rs` 覆盖 endpoint 选择、静态密钥优先、轮换和不完整凭证；`client_1_aster_unit_test.rs` 覆盖对象锁与 Options 中重试/HTTP client 的选择。
-- 本任务只生成说明文档，按计划未运行 Cargo。交付前以任务指定命令检查目标存在且恰有 11 个固定二级章节，并人工复核无运行能力的无依据声明。

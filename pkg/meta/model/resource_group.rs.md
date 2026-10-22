@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`resource_group.rs` 定义资源组在元数据层的 Go 兼容数据模型：资源配额、调度优先级、失控查询规则、后台任务限制，以及资源组的 ID、名称和 schema 状态。它只负责保存、克隆、序列化和格式化这些数据，不负责校验 DDL、写事务或向 Resource Manager 下发配置。
-
-该文件不是独立模块入口。`pkg/meta/model/internal/group3/lib.rs` 在私有 `resource_group` 模块中以 `include!("../../resource_group.rs")` 编译它，并通过 `pub use resource_group::*` 导出；顶层 `pkg/meta/model/lib.rs` 再以 `group_3` 暴露该 crate。实际 Rust API 因而通常写作 `astersql_meta_model::group_3::{ResourceGroupInfo, ResourceGroupSettings, ...}`。
-
-crate 边界由 `pkg/meta/model/internal/group3/Cargo.toml` 定义为 `astersql-meta-model-group3`，直接依赖 `group-1`、`serde`（启用 `derive` 和 `rc`）、`serde_repr`、`serde_json`；顶层 `pkg/meta/model/Cargo.toml` 的 `astersql-meta-model` 仅聚合 group1–group4。`SchemaState` 和 `ast` 的真实类型身份由 group3 从 group1 复用，并非本文件的本地替代类型。
+不执行业务合法性校验。
 
 ## 核心职责
 
@@ -96,13 +92,9 @@ RustCodeGraph 将目标文件标记为被 17 个文件使用。已核对的直�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/model/resource_group.go`，当前 Rust 版本逐项保留其主要语义：
-
-- `unlimitedRURate` 都取 `math.MaxInt32`/`i32::MAX`。
 - 三个设置结构和 `ResourceGroupInfo` 的 JSON 键、字段含义与 Go 一致；Rust 用 `#[serde(flatten)]` 模拟 Go 的匿名嵌入。
 - Go 的 `*ResourceGroupRunawaySettings`、`*ResourceGroupBackgroundSettings` 对应 Rust `Option<Arc<...>>`，从而让浅克隆共享子对象。
 - Go 构造器返回指针，Rust 构造器返回拥有所有权的值；默认优先级都为 medium。
-- `GetBurstLimitAdjusted`、`Adjust`、`String` 的分支及输出顺序与 Go 对齐。时长最终委托 `placement::formatGoDuration`，覆盖诸如 1500ms -> `1.5s`、2000ms -> `2s` 的 Go 风格输出。
 - Go 的 `Clone` 返回新指针；Rust 返回新值。两者都复制外层结构并共享原本的指针型子设置。
 
 需要注意，Rust 的派生 `Default` 与 `NewResourceGroupSettings` 是两个不同入口：只有后者设置 medium 优先级。这是 Rust API 形态差异，不应在文档或新代码中把它们描述成等价构造。
@@ -119,13 +111,3 @@ RustCodeGraph 将目标文件标记为被 17 个文件使用。已核对的直�
 6. 测试必须放在独立文件。优先扩展 `pkg/meta/model/resource_group_test.rs`：JSON 契约、每个格式化分支、特殊值和 clone 指针身份均应有断言；涉及下发校验时同步 `pkg/ddl/resourcegroup/migration_aster_unit_test.rs` 或 `pkg/resourcegroup/tests/resource_group_test.rs`，不要把测试内嵌进生产源文件。
 
 兼容风险主要是已持久化 JSON 键/默认值、SHOW/日志字符串的精确格式以及 Go/Rust 浅拷贝差异；性能风险主要来自把当前 `Arc` 浅拷贝改成深拷贝，或在频繁格式化路径增加不必要分配。涉及 action/watch 枚举扩展时，还必须同步 AST 到 protobuf 的映射，避免未知枚举被静默降级。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/meta/model` 确认目标、Go 对照和独立测试均被索引；`node --file pkg/meta/model/resource_group.rs` 核对全部 295 行及“used by 17 files”；`query ResourceGroupInfo`、`query ResourceGroupSettings`、`query writeSettingItemToBuilder` 用于消除同名符号歧义；对 `placement.rs`、`meta.rs`、`reader.rs`、`ddl/resourcegroup/group.rs`、`session/runtime/control.rs` 和 `session/runtime/paging.rs` 的文件节点核对直接调用/数据流。
-- 源文件：`pkg/meta/model/resource_group.rs`，核对常量、三个设置/信息结构、方法、serde 属性、特殊值和格式化分支。
-- crate 与模块入口：`pkg/meta/model/Cargo.toml`、`pkg/meta/model/internal/group3/Cargo.toml`、`pkg/meta/model/internal/group3/lib.rs`、`pkg/meta/model/lib.rs`，核对 group3 编译归属、依赖、`include!` 与再导出关系。
-- Go 对照：`pkg/meta/model/resource_group.go`，核对字段、JSON tag、构造器、调整、格式化和浅克隆语义。同目录没有专用 `resource_group_test.go`；Go 测试中的相关使用主要散见 `job_args_test.go`，本文件自身的直接行为由独立 Rust 测试补齐。
-- Rust 测试：`pkg/meta/model/resource_group_test.rs` 验证 `utilization_limit` 等 Go JSON 键、完整格式化字符串、有限/无限 RU 调整和 `Arc::ptr_eq` 浅拷贝；`pkg/meta/model/job_3_aster_unit_test.rs` 另验证 job 使用场景中的 `Adjust`/`GetBurstLimitAdjusted`。
-- 应用证据：`pkg/meta/meta.rs::{list_resource_groups,get_resource_group,add_resource_group,update_resource_group}`、`pkg/meta/reader.rs::SnapshotReader::get_resource_group`、`pkg/ddl/resourcegroup/group.rs::NewGroupFromOptions`、`pkg/session/runtime/control.rs`、`pkg/session/runtime/paging.rs::resource_group_allows_paging_size_bytes`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级标题，并人工检查未把模型层能力、下游校验或同名结构混为一谈。

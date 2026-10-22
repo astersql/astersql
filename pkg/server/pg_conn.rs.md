@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pg_conn.rs` 是 `astersql-server` crate 内独立 PostgreSQL TCP 端口的连接级协议边界。模块由 `pkg/server/lib.rs` 公开为 `pub mod pg_conn`，生产入口是 `Server::start_postgres_accept`：它在 `Server::run` 完成监听器初始化、Domain 激活及 MySQL/status 服务启动后，将 PostgreSQL `TcpListener`、共享 `SessionDriver`、`ConnectionDomain` 和全局 `RequireSecureTransportEnabled()` 结果交给 `PgService::start`（`pkg/server/server.rs`）。停服时 `Server::close_listeners` 与 `Drop for Server` 都调用 `PgService::close`。
-
-这个文件不实现另一套 SQL 引擎。它负责 PostgreSQL 3.0/3.2 的连接协商、认证接线、消息循环、取消请求和连接资源回收，然后把查询落到 `crate::conn::{SessionDriver, TiDBContext}` 所代表的 canonical 会话。启动包的结构解析在 `pkg/server/pg_protocol.rs`，扩展查询、名称/语句适配、catalog 和结果编码分别下沉到 `pg_extended.rs`、`pg_name.rs`、`pg_session.rs`、`pg_catalog.rs`、`pg_result.rs`。
+认证后消息循环同时承接简单查询 `Q` 和 `pg_extended::Extended::handle` 已实现的扩展查询消息；SQL 最终经 `TiDBContext` 执行，结果经 `pg_result::write_result` 编码。
 
 ## 核心职责
 
@@ -88,11 +86,3 @@ accept 线程和每连接一个 worker 都由 `PgService` 持有 `JoinHandle`。
 - 新增错误映射：只在 `sqlstate` 中基于稳定 `ConnError` 变体或 canonical 明确契约匹配，并扩展 `pg_error_test.rs`；避免从任意消息提取 SQLSTATE。
 - 修改取消：保持“只取消正在执行的目标连接”“每命令重置 token”“命令退出必清理”三个不变量，并同步 `pg_conn_test.rs::startup_cancel_is_scoped_and_consumed`。密钥格式变化还需覆盖 3.0/3.2 客户端兼容。
 - 修改线程/资源模型：必须维持 connection ID、context、socket、worker 的对称释放，并扩展 `catalog_error_recovery_and_cleanup` 与 server 双监听关闭测试；性能风险集中在每连接一线程、10 ms accept 轮询以及全局 `active` 锁的高并发竞争。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共 11,467 个已索引文件，目标 `pkg/server/pg_conn.rs` 被识别为含 53 个符号；读取了该文件全部 685 行。精确查询定位 `PgService`、`negotiate`、`with_query`、帧辅助函数与 `sqlstate`；`callees negotiate` 确认其到 `parse_startup`、取消/查询保护和消息辅助函数的直接边。通用名 `start` 存在跨仓库歧义，因此上游调用以明确的 `pkg/server/server.rs::start_postgres_accept` 源码为准。
-- 已读生产证据：`pkg/server/pg_conn.rs`、`pkg/server/pg_protocol.rs`、`pkg/server/server.rs`、`pkg/server/lib.rs`、`pkg/server/Cargo.toml`；并用仓库搜索确认不存在同路径 `pkg/server/pg_conn.go`。
-- 已读独立测试：`pkg/server/pg_conn_test.rs` 全部 622 行。它覆盖启动认证、协议版本与密钥尺寸、服务端参数、DataGrip 参数、取消隔离、secure mode 拒绝、双 listener 停服、错误恢复及资源清理。相关更深层测试还由 `lib.rs` 装配在 `pg_query_test.rs`、`pg_extended_test.rs`、`pg_error_test.rs`、`pg_catalog_test.rs`、`pg_types_test.rs` 和 `pg_client_integration_test.rs`。
-- 人工事实复核结论：该文件存在的原因、生产入口、连接状态机、查询下沉路径、错误/取消边界、线程与资源关闭顺序以及安全扩展接入点，均可由上述符号和文件反查；未将缺少 Go 同路径实现的部分描述成 Go 已有能力。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证使用任务文件指定命令，结果记录在最终交付信息中。

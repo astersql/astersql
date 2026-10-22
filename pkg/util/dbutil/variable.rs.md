@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-dbutil` crate 的 MySQL/TiDB 变量与授权查询辅助模块，由 [`pkg/util/dbutil/lib.rs`](./lib.rs) 以公开的 `variable` 模块挂载。它位于数据库驱动抽象之上：调用者提供实现了 `QueryExecutor` 的对象，模块只负责拼接 `SHOW GLOBAL VARIABLES` / `SHOW GRANTS`、解释返回值和规范化授权文本，不建立连接，也不管理事务。
-
-当前 Rust 工作区中的直接接线仍很窄。RustCodeGraph 对文件的反向关系只找到 [`pkg/util/dbutil/variable_test.rs`](./variable_test.rs)，仓库搜索也未找到这些公开函数的生产调用点；因此这里是可复用 API 与已测试的移植实现，不能描述为已经进入服务请求主链。
+位于数据库驱动抽象之上：调用者提供实现了 `QueryExecutor` 的对象，模块只负责拼接 `SHOW GLOBAL VARIABLES` / `SHOW GRANTS`、解释返回值和规范化授权文本，不建立连接，也不管理事务。
 
 ## 核心职责
 
@@ -67,11 +65,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/dbutil/variable.go`](./variable.go)，Go 回归测试是 [`pkg/util/dbutil/variable_test.go`](./variable_test.go)，Rust 独立测试是 [`pkg/util/dbutil/variable_test.rs`](./variable_test.rs)。六个公开函数的名称、固定变量名、SQL 形状、空 host 的 `%` 默认值、空 user 的 `CURRENT_USER`、密码占位修补以及有角色时的二次查询意图均保持一致。
+六个公开函数的名称、固定变量名、SQL 形状、空 host 的 `%` 默认值、空 user 的 `CURRENT_USER`、密码占位修补以及有角色时的二次查询意图均保持一致。
 
 关键迁移差异有三项。第一，Go 将 `context.Context` 传给 `database/sql`，Rust 签名没有上下文。第二，Go 通过 `Scan`、`rows.Next`、`rows.Err` 和延迟 `Close` 消费驱动结果；Rust 使用已物化的 `QueryResult` 和位置型 `Value`。第三，Go 用完整 TiDB parser 将授权语句解析为 `ast.GrantRoleStmt` 并使用 `auth.RoleIdentity::String`；Rust 用 `granted_roles` 的轻量引号扫描近似识别，不具备完整语法验证或规范化能力。
 
-Rust 测试覆盖固定变量包装器、`server_id = 42` 解析、当前/显式用户 SQL、三类密码占位、NULL 授权错误、原样插值，以及引号内含 ` ON ` 的角色。内嵌 `GO_REFERENCE` 只是历史对照文本，实际运行断言位于同一独立测试文件后半部。
+Rust 测试覆盖固定变量包装器、`server_id = 42` 解析、当前/显式用户 SQL、三类密码占位、NULL 授权错误、原样插值，以及引号内含 ` ON ` 的角色。
 
 ## 扩展指南
 
@@ -81,10 +79,3 @@ Rust 测试覆盖固定变量包装器、`server_id = 42` 解析、当前/显式
 - 支持更多角色语法时，修改 `keyword_outside_quotes`、`split_roles` 或 `granted_roles` 前，应先从 Go parser 行为提取独立回归用例。轻量扫描与完整 AST 的差异是主要正确性风险；复杂转义、注释、字符集前缀和畸形引号都需要明确决策。
 - 若要接入生产主链，应在真实 `QueryExecutor` 适配层补足取消、超时、流式结果关闭和错误映射，并评估将原样 SQL 插值改为安全标识符处理的兼容影响。不能仅在本文件宣称这些能力已存在。
 - 角色很多或授权结果很大时，当前实现会物化两轮完整结果并进行线性扫描；通常成本很小，但性能敏感场景应测量结果规模与二次查询开销。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引包含 11,467 个文件且可用；`files --filter pkg/util/dbutil` 确认 Rust/Go 源与测试集合；`node --file pkg/util/dbutil/variable.rs --offset 1 --limit 260` 读取全部 199 行并显示该文件只被 `variable_test.rs` 使用；对 `ShowGrants`、`normalize_grant`、`read_grants`、`granted_roles`、`keyword_outside_quotes`、`split_roles` 的查询确认符号位置。
-- 源码与边界：[`variable.rs`](./variable.rs)（公开 API、查询和轻量角色解析）、[`interface.rs`](./interface.rs)（`Value`、`DbError`、`QueryResult`、`QueryExecutor` 契约）、[`lib.rs`](./lib.rs)（模块公开与测试挂载）、[`Cargo.toml`](./Cargo.toml)（crate 名、入口和依赖边界）。目标目录不存在 `doc.go`，因此无更近的包级 Go 契约可读。
-- 对照与测试：[`variable.go`](./variable.go)、[`variable_test.go`](./variable_test.go)、[`variable_test.rs`](./variable_test.rs)。仓库级 `rg` 搜索未发现排除本文件和其测试之外的 Rust 调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令确认文档存在且固定二级标题恰好为 11 个，并人工复核唯一生产物、相对链接、无运行能力臆测及扩展风险说明。

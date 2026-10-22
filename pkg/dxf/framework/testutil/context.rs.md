@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-testutil` crate，是 DXF（Distributed eXecution Framework）集成测试复用的上下文与内存集群夹具。crate 入口 `pkg/dxf/framework/testutil/lib.rs` 将 `context` 声明为公开模块并再导出其公开 API，因此测试通常可直接从 `astersql_dxf_framework_testutil` 引入 `NewTestDXFContext`、`TestDXFContext`、`TestContext` 等符号。
-
-它不实现真正的任务调度、持久化或执行器业务逻辑。真实副作用由调用方提供的 `Arc<dyn DxfRuntime>` 承担；本文件只编排资源覆盖、节点扩缩容、owner 选举、异步下线和测试观测。直接使用者包括 `pkg/dxf/framework/integrationtests/framework_test.rs`、`pkg/dxf/framework/integrationtests/framework_ha_test.rs`，而 `pkg/dxf/framework/testutil/disttest_util.rs` 会将执行过的子任务写入这里定义的 `TestContext`。
+通过 `TestContext` 按 `(task_id, step)` 去重记录已执行的子任务，并提供线程安全的计数与调用序号。
 
 ## 核心职责
 
@@ -83,13 +81,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/testutil/context.go`。两版共同保留了 `:4000` 起始编号、容量 100 的可回收节点 ID 池、按节点维护 executor/owner、无 owner 时补选、异步关闭先 cancel 后等待、子任务去重计数、32 GiB/100 GiB 默认资源以及相同的短轮询间隔数值。
+Rust 版把这些环境职责抽象为 `DxfRuntime`，`TidbNode` 只保存 ID/owner，因此其当前定位是可测试的生命周期编排层，而非完整 Go 测试环境的内嵌重建。
 
-Rust 版不是对 Go 结构的字段级复制。Go `TestDXFContext` 直接持有 `testing.TB`、`kv.Storage`、`storage.TaskManager`、gomock controller，以及真实 `taskexecutor.Manager`/`scheduler.Manager`；初始化还负责 mock store、session pool 和 failpoint。Rust 版把这些环境职责抽象为 `DxfRuntime`，`TidbNode` 只保存 ID/owner，因此其当前定位是可测试的生命周期编排层，而非完整 Go 测试环境的内嵌重建。
+恢复机制也不同：Go 通过 `testing.TB.Cleanup` 和 `WaitGroupWrapper` 清理；Rust 通过 `CheckIntervalGuard`、`Drop for TestDxfInner` 与显式 `WaitAsyncOperations` 实现 RAII。Go 随机节点数和节点抽样使用 `math/rand`；Rust 的构造器用系统时间纳秒取模，节点抽样用原子计数器控制环形起点。
 
-恢复机制也不同：Go 通过 `testing.TB.Cleanup` 和 `WaitGroupWrapper` 清理；Rust 通过 `CheckIntervalGuard`、`Drop for TestDxfInner` 与显式 `WaitAsyncOperations` 实现 RAII。Go 随机节点数和节点抽样使用 `math/rand`；Rust 的构造器用系统时间纳秒取模，节点抽样用原子计数器控制环形起点。因此只能依赖区间、数量和去重语义，不应假设两版生成相同序列。
-
-Go 的 `CallTime` 是由调用者在锁约束下管理的普通整数；Rust 的 `next_call_time` 是 `AtomicU64`。Go 的任务/子任务类型来自 `framework/proto`，Rust 当前在本文件定义迁移所需的轻量模型。相关等价性由 `migration_aster_unit_test.rs` 和 Rust 集成测试覆盖，而不是由类型同一性保证。
+Go 的 `CallTime` 是由调用者在锁约束下管理的普通整数；Rust 的 `next_call_time` 是 `AtomicU64`。
 
 ## 扩展指南
 
@@ -100,12 +96,3 @@ Go 的 `CallTime` 是由调用者在锁约束下管理的普通整数；Rust 的
 - 修改 Go 对齐语义时同步核对 `context.go`；若差异是 Rust 有意设计（如 trait 注入、确定性环形抽样），应在独立 Rust 测试中固定可观察契约，而不是假称实现细节完全一致。
 - 测试应继续放在独立文件：局部回归优先加入 `pkg/dxf/framework/testutil/context_test.rs` 或 `migration_aster_unit_test.rs`；跨组件的 owner/HA/并发行为放入 `pkg/dxf/framework/integrationtests/framework_test.rs` 或 `framework_ha_test.rs`，不要把测试内嵌回 `context.rs`。
 - 兼容风险集中在公开的 Go 风格符号名、步骤/状态值、节点 ID 规则和幂等边界；性能风险集中在删除节点时重建索引、全量 clone 存活 ID、顺序一致性原子及单集群锁竞争，但这些路径面向测试，优化前应优先保持可预测语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/dxf/framework/testutil` 确认目标源、模块入口和独立测试均已索引；`node --file pkg/dxf/framework/testutil/context.rs` 分段核对了全部 642 行和主要符号；文件节点报告被 28 个文件使用。对 `context.rs::NewTestDXFContext` 的精确 `callers` 查询在限定时间内未返回，因此精确上游边使用仓库 `rg` 结果补证，未据此臆造图边。
-- 源码与 crate 边界：`pkg/dxf/framework/testutil/context.rs`、`pkg/dxf/framework/testutil/lib.rs`、`pkg/dxf/framework/testutil/Cargo.toml`。
-- Go 对照：`pkg/dxf/framework/testutil/context.go`；重点核对节点 ID 池、扩缩容、owner、异步关闭、清理、子任务收集和检查间隔。
-- 独立 Rust 测试：`pkg/dxf/framework/testutil/context_test.rs` 验证 ID 池容量；`pkg/dxf/framework/testutil/migration_aster_unit_test.rs` 验证常量、节点生命周期、资源与间隔恢复、缺失节点幂等行为。
-- 集成证据：`pkg/dxf/framework/integrationtests/framework_test.rs` 验证 owner/扩缩容/存活节点和并发子任务观测；`pkg/dxf/framework/integrationtests/framework_ha_test.rs` 验证随机节点范围、异步下线、多 owner 与并发收集；`pkg/dxf/framework/testutil/disttest_util.rs` 展示 `CollectSubtask` 的实际注册入口。
-- 本任务是纯文档分析，按计划未运行 Cargo；使用规定的 11 标题结构命令验证文档形状，并人工复核符号、流程、已知差异和未事务化失败边界均有上述代码或测试依据。

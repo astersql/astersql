@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate，是表达式“可选求值属性”机制中的权限适配层。本文对应源码为 [`priv.rs`](./priv.rs)。crate 入口 `pkg/expression/expropt/lib.rs` 通过 `#[path = "priv.rs"] mod priv_provider` 装入本模块并公开再导出其符号；`pkg/expression/expropt/Cargo.toml` 表明它直接依赖 `astersql-expression-exprctx`（属性描述与 Provider trait）、`astersql-parser-mysql`（权限枚举）和 `anyhow`（Reader 取值错误）。
-
-它不实现权限规则，也不保存用户、角色或授权表。它把权限能力抽象为 `PrivilegeChecker`，再以 `OptPropPrivilegeChecker` 这一可选属性注入求值上下文，使表达式代码不必依赖会话或权限子系统的具体类型。当前 Rust 生产调用链可在 `pkg/expression/sessionexpr/sessionctx.rs` 和 `pkg/expression/extension.rs` 中看到。
+Reader 返回 checker 后，是否允许访问完全由 checker 实现决定；本文件不缓存结果、不解释权限位，也不把拒绝转换成 SQL 错误。
 
 ## 核心职责
 
@@ -64,11 +62,9 @@ Provider 中的闭包与其捕获资源随 Provider 一同存活，Provider 通�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/expropt/priv.go`。两版都包含同名概念：两方法的 `PrivilegeChecker`、绑定 `OptPropPrivilegeChecker` 的 Provider、声明单键依赖的 Reader，以及“先按类型取 Provider、再调用 Provider”的读取流程。`pkg/expression/expropt/optional_test.go` 的对应分支验证缺失时返回错误、注册后返回同一 mock checker，并验证可直接调用 Provider。
+行为意图未简化：两种权限检查、固定属性键、缺失错误及按需调用均保留。
 
-Rust 为适应所有权和线程边界做了类型层面的改写：Go Provider 是函数类型 `func() PrivilegeChecker`，Rust 是持有 boxed 闭包的结构体；Go 接口值对应 Rust 的 `Arc<dyn PrivilegeChecker>`；Go 泛型类型断言对应 Rust 的 `Any` downcast；Rust Reader 接受更窄的 `OptionalEvalPropContext`，完整 `exprctx::EvalContext` 通过 blanket impl 自动兼容。行为意图未简化：两种权限检查、固定属性键、缺失错误及按需调用均保留。
-
-当前移植覆盖并不意味着 Go 的所有消费者都已迁移。Go 搜索显示 `pkg/expression/builtin_info.go` 多处使用此 Reader，而当前 Rust 生产搜索只确认 `pkg/expression/extension.rs` 使用它；新增或移植其他内建函数时应按对应 Go 调用点逐项接线和测试，不能据此文档宣称所有 Go 权限表达式均已接入 Rust。
+Go 搜索显示 `pkg/expression/builtin_info.go` 多处使用此 Reader，而当前 Rust 生产搜索只确认 `pkg/expression/extension.rs` 使用它；新增或移植其他内建函数时应按对应 Go 调用点逐项接线和测试，不能据此文档宣称所有 Go 权限表达式均已接入 Rust。
 
 ## 扩展指南
 
@@ -78,13 +74,3 @@ Rust 为适应所有权和线程边界做了类型层面的改写：Go Provider 
 - 需要保持 checker 身份或复用昂贵状态时，应在构造闭包外创建 `Arc` 并在闭包内克隆；不要假设 `PrivilegeCheckerProvider::call` 自带缓存。
 - 测试应继续放在独立文件，优先扩展 `pkg/expression/expropt/optional_test.rs` 或 `migration_aster_unit_test.rs`；会话注册/角色转发行为应扩展 `pkg/expression/sessionexpr/sessionctx_test.rs`，具体表达式拒绝行为应在消费者自己的独立测试中覆盖。
 - 兼容风险集中在 Go/Rust 接口语义、动态权限名与 `grantable` 传递；性能风险集中在求值热路径反复构造 checker。若改变生产闭包策略，应测量而不是把缓存假设写进接口。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件节点完整显示 `priv.rs:1-90`。
-- RustCodeGraph 符号查询：确认 `PrivilegeChecker`、`PrivilegeCheckerProvider`、`PrivilegeCheckerPropReader`、`get_privilege_checker` 及两种请求方法；`get_privilege_checker` 的下游边指向 `PrivilegeCheckerProvider::call`，测试调用边指向 `migration_aster_unit_test.rs`。
-- RustCodeGraph 流程查询：`extension.rs::checkPrivileges` 调用 `request_dynamic_verification`，调用者为 `getFunction` 和 `evaluate_context`；`evaluate_context` 的调用者为 `evalString` 与 `evalInt`；`sessionctx.rs::NewEvalContext` 实例化 `ContextPrivilegeChecker` 并注册 Provider。
-- 阅读的生产文件：`pkg/expression/expropt/priv.rs`、`lib.rs`、`optional.rs`、`Cargo.toml`、`pkg/expression/sessionexpr/sessionctx.rs`、`pkg/expression/extension.rs`。
-- 阅读的 Go 对照：`pkg/expression/expropt/priv.go`、`optional_test.go`、`pkg/expression/sessionexpr/sessionctx.go`、`pkg/expression/extension.go`；并用仓库搜索核对 `pkg/expression/builtin_info.go` 的 Go 消费点。
-- 阅读的独立 Rust 测试：`pkg/expression/expropt/optional_test.rs`、`migration_aster_unit_test.rs`、`pkg/expression/sessionexpr/sessionctx_test.rs`。覆盖缺失 Reader 路径、属性键集合、同一 checker 的 `Arc` 身份、静态/动态请求转发，以及会话权限启用前后的行为。
-- 本任务是纯文档分析，未运行 Cargo。交付前另运行任务规定的 11 章节结构命令，并人工复核仅新增本说明文件、不改源码/Cargo/Go/总计划。

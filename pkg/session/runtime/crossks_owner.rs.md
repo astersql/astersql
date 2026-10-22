@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的 `runtime` 模块：`pkg/session/lib.rs` 公开 `runtime`，`pkg/session/runtime.rs` 再公开 `crossks_owner`。它实现目标 keyspace（target keyspace）运行时中的一个专用 DDL owner，负责从目标 keyspace 的 `mysql.tidb_ddl_job` 持久队列消费 `ACTION_ALTER_TABLE_MODE` 作业，并把终态写入 `mysql.tidb_ddl_history`。
-
-生产装配入口是 `pkg/session/runtime/crossks_runtime.rs::CrossKSProductionRuntimeFactory::create_runtime`：该函数创建 `CrossKSSchemaSyncer`、`CrossKSJobSubmitter` 与 `CrossKSDdlOwner`，调用 `install_schema_syncer` 和 `start`，随后把 owner 同目标 `Domain`、同步器和最小 job ID 刷新循环一起放入 `SessionManager` 的生命周期列表。因而本文件不是通用 DDL 引擎，也不是作业提交器，而是跨 keyspace 运行时中面向 `AlterTableMode` 的持久队列执行端。
+`process_one` 按 `job_id` 顺序寻找可处理作业，`process_job` 负责加锁认领、解码、执行表模式变更、等待 schema 版本传播、写历史并删除活动队列记录。
 
 ## 核心职责
 
@@ -99,11 +97,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 中不存在与 `pkg/session/runtime/crossks_owner.rs` 一一对应的同路径文件。当前 Go 路径 `pkg/domain/crossks/cross_ks.go::createSessionManager` 组装目标 store、session pool、schema/version syncer、系统表 manager 和 `ddlClient`，但不创建一个只消费 `AlterTableMode` 的本地 owner；`pkg/domain/crossks/ddl_submit.go::ddlClient.alterTableMode` 构建并提交 job、通过 etcd 通知 DDL owner，然后等待历史结果，真正消费仍由完整 Go DDL owner 完成。
+当前 Go 路径 `pkg/domain/crossks/cross_ks.go::createSessionManager` 组装目标 store、session pool、schema/version syncer、系统表 manager 和 `ddlClient`，但不创建一个只消费 `AlterTableMode` 的本地 owner；`pkg/domain/crossks/ddl_submit.go::ddlClient.alterTableMode` 构建并提交 job、通过 etcd 通知 DDL owner，然后等待历史结果，真正消费仍由完整 Go DDL owner 完成。
 
 Rust 文件保留的 Go 兼容契约包括：共享 `DDLOwnerKey`/生产选举协议、`mysql.tidb_ddl_job` 与 `mysql.tidb_ddl_history` 表、`meta/model.Job` 编码和 `JobState`、`ACTION_ALTER_TABLE_MODE` 类型、取消不应用表变更、成功后发布并等待 schema 版本，以及通过历史 job 向提交端返回终态。Rust 为尚未移植完整 DDL owner 的运行时增加了专用消费器；因此遇到其他 DDL 类型会主动让权，而不是尝试用简化逻辑执行它。
-
-独立 Rust 测试名称中的 `go_merge_43` 记录了该移植批次意图：测试覆盖成功完成并移入历史、共享选举交接、mock 选举关闭释放、失败 job 记录、Cancelling job 不改变表，以及非 `AlterTableMode` 作业触发让权。这些测试比“实现应当如何”更直接地界定当前与 Go 语义对齐的范围。
 
 ## 扩展指南
 
@@ -114,15 +110,3 @@ Rust 文件保留的 Go 兼容契约包括：共享 `DDLOwnerKey`/生产选举�
 - 修改 schema 等待策略时同步检查 `crossks_schema.rs`；应覆盖发布失败、等待超时及关闭取消，评估 90 秒等待对关闭延迟和提交端可见延迟的影响。
 - 新测试应继续放在独立的 `pkg/session/runtime/crossks_owner_test.rs`，不要内嵌进生产文件。至少保留成功、失败、暂停/取消、双 owner 竞争、失去 owner、外来 DDL、事务失败和关闭中的等待等边界。
 - 性能风险主要在每轮扫描全部匹配 job ID、每个 job 多次 SQL 往返、100 ms 空闲轮询以及 schema 全节点等待；兼容风险主要在 job 编码、系统表事务语义和 owner key；正确性风险主要在租约丢失窗口与两阶段持久化恢复。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime` 确认目标文件被索引且含 37 个符号。
-- RustCodeGraph `node --file pkg/session/runtime/crossks_owner.rs --offset 1 --limit 420`：读取本文件全部 349 行，核对结构体、辅助函数、所有 impl 与状态机。
-- RustCodeGraph `query CrossKSDdlOwner`、`query process_one --kind function --json`：分别定位结构体、`crossks_runtime.rs::new` 接线候选、测试使用者及核心方法；`callers/callees` 查询在本地索引上超时且未返回边，因此没有把缺失输出当成调用证据。
-- RustCodeGraph `node --file pkg/session/runtime/crossks_runtime.rs`：核对 `create_runtime` 的创建/启动/清理，以及 backend 到 `notify`、`history_job` 的直接调用。
-- RustCodeGraph `node --file pkg/session/runtime/crossks_owner_test.rs`：核对六项独立测试及其实际断言；本任务是纯文档分析，按计划不运行 Cargo。
-- `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime.rs`：核对 crate、依赖、公开模块和独立测试模块边界。
-- `pkg/domain/crossks/cross_ks.go::createSessionManager` 与 `pkg/domain/crossks/ddl_submit.go::ddlClient.alterTableMode`：核对 Go 运行时只提交、通知并等待完整 DDL owner 的对应语义，以及不存在一一对应专用 owner 的架构差异。
-
-人工复核结论：本文能从生产装配、选举、队列认领、实际执行、schema 传播、历史查询和关闭清理解释“文件为何存在、如何运行、如何安全扩展”；所有“已支持”陈述均落到上述源码符号或独立测试，没有把预期架构写成当前事实。

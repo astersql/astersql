@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`row_codec.rs` 是 `astersql-session` crate 内部的关系行存储适配层，由 `pkg/session/runtime.rs` 以私有模块 `mod row_codec` 装配。它位于 SQL 运行时的字符串行表示与底层 TiDB 兼容 `Datum`/KV 编码之间：DML、DDL 回填、关系扫描、系统会话和 mlog 调用这里，把 `HashMap<String, Option<String>>` 形式的运行时行转换为记录 KV、索引 KV 或反向可显示的值。
-
-该文件不是通用 rowcodec 的实现；实际字节格式由 `astersql-tablecodec`（例如 `EncodeRow`、`EncodeRowKeyWithHandle`、`GenIndexKey`、`GenIndexValuePortal`）提供。本文件负责结合 session 的表元数据、SQL 类型标志、DDL 中间状态和行写入配置正确调用这些编码器。`pkg/session/Cargo.toml` 声明 crate 名为 `astersql-session`，并直接依赖 `astersql-kv`、`astersql-meta-model`、`astersql-parser-{ast,mysql}`、`astersql-sessionctx-stmtctx`、`astersql-tablecodec`、`astersql-types`、`serde_json` 与 `uuid`。
+负责结合 session 的表元数据、SQL 类型标志、DDL 中间状态和行写入配置正确调用这些编码器。
 
 ## 核心职责
 
@@ -95,15 +93,10 @@ RustCodeGraph 的精确 `query` 为 `encode_relational_row`、`encode_relational
 
 ## 与 Go 版本的对应关系
 
-仓库没有同路径 `pkg/session/runtime/row_codec.go`；Rust 文件把 Go 中分散在 table、tablecodec、tables/index 与 DML 层的职责收束到 session runtime 适配层。因此应按语义而非文件名对齐：
+仓库没有同路径 `pkg/session/runtime/row_codec.go`；Rust 文件把 Go 中分散在 table、tablecodec、tables/index 与 DML 层的职责收束到 session runtime 适配层。
 
 - `origin_default_runtime_value` / `insert_default_runtime_value` 对应 `pkg/table/column.go` 的 `GetColOriginDefaultValue` / `GetColDefaultValue`。Go 版本通过 expression context 完整处理默认值；Rust 当前显式覆盖持久化默认值及常见表达式，并保留旧 Rust catalog 的 timestamp 拼写兼容。
-- 记录键和值分别对齐 `pkg/tablecodec/tablecodec.go::EncodeRowKeyWithHandle` 与 `EncodeRow`；Rust 直接调用其已移植 crate API，避免自定义字节格式。
-- 索引 key/value 对齐 `pkg/tablecodec/tablecodec.go::GenIndexKey` 与 `GenIndexValuePortal`；索引维护行为对应 `pkg/table/tables/index.go::index.Create` 及相关 DML mutation 路径。
 - SQL 类型转换与 SQL mode 语义在 Go 中由 statement/expression context 驱动；Rust 通过 `NewStmtCtx().TypeCtx().WithFlags(flags)` 传递当前支持的转换标志。warning 仅由 `typed_literal_to_runtime_value_with_warning` 显式返回布尔量，不能假设等同于 Go 完整 warning 列表。
-- online DDL changing column、temp index、部分索引、多值索引和 restored data 都通过共享元数据与 tablecodec API对齐；任何状态分支调整都应同时查验 Go 的 table/index mutation 与 DDL backfill 路径，而不能只比较本文件。
-
-独立 Rust 测试 `pkg/session/runtime/row_codec_test.rs` 验证 timestamp 默认表达式（含带引号 FSP 和旧 `.000000` 后缀）、逐行 UUID v4，以及 DECIMAL 索引游标编码对 precision/scale 的保持。Go 默认值的邻近测试在 `pkg/table/column_test.go`；底层行/索引编码测试位于 `pkg/tablecodec/tablecodec_test.go` 和 table/index 相关测试。
 
 ## 扩展指南
 
@@ -114,11 +107,3 @@ RustCodeGraph 的精确 `query` 为 `encode_relational_row`、`encode_relational
 - 新增索引形态应检查 `relational_index_value_rows`（值展开）、`encode_relational_index_entries`（是否应维护）、`encode_relational_unique_index_entries`（冲突语义）和 `relational_index_mutations`（DDL 状态机）四层，并同步底层 tablecodec 与 Go 行为。
 - 性能修改需关注每列 Datum clone、整表/索引元数据 clone、MVIndex 笛卡尔积、重复 `relational_index_value_rows` 计算及 BTree 容器排序成本；优化不能改变 key/value 字节或 mutation 顺序语义。
 - 本文件所有 API 都是 runtime 私有边界。若要复用，优先在 session runtime 内新增窄接口，不应直接扩大为跨 crate 公共 API，除非同时定义清晰的字符串行不变量。
-
-## 验证依据
-
-- 源与装配：`pkg/session/runtime/row_codec.rs`（985 行、31 个图索引符号）、`pkg/session/runtime.rs`（`mod row_codec` 与独立 `#[cfg(test)] mod row_codec_test`）、`pkg/session/Cargo.toml`（crate/feature/依赖边界）。
-- Rust 测试：`pkg/session/runtime/row_codec_test.rs`；调用证据：`pkg/session/runtime/{dml.rs,ddl.rs,relational_scan.rs,system_session.rs,mlog.rs,admin.rs,session.rs,ttl_runtime.rs,dxf_session.rs,import_query.rs}` 和 `normal_ddl_test.rs`。
-- Go 对照：`pkg/table/column.go::{GetColOriginDefaultValue,GetColDefaultValue}`、`pkg/tablecodec/tablecodec.go::{EncodeRowKeyWithHandle,EncodeRow,GenIndexKey,GenIndexValuePortal}`、`pkg/table/tables/index.go::index.Create`；邻近测试为 `pkg/table/column_test.go` 与 `pkg/tablecodec/tablecodec_test.go`。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件、目标文件 31 个符号；`files --filter pkg/session/runtime/row_codec.rs` 命中目标；`explore` 与精确 `query` 核验主要符号及调用半径。精确 `callers/callees` 命令本次退出成功但未产生文本，因此以 `explore` 结果和直接引用搜索交叉验证。
-- 人工复核范围：本文能说明该文件存在原因、记录/索引编码流程、类型与 DDL 状态边界、错误和安全扩展点；没有把底层 rowcodec 字节实现或事务提交职责误归于本文件，也未声称 Cargo/运行时测试已执行。

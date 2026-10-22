@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-infoschema-context`，crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，入口 [`lib.rs`](./lib.rs) 将本模块全部公开导出。它位于完整 InfoSchema 实现与上层 SQL 组件之间，提供两类低耦合契约：一类是对 `TableInfo` 的特殊属性过滤器及其分组结果，另一类是只暴露元数据查询能力的 `MetaOnlyInfoSchema` trait 族。这样，表达式、规划、表会话等调用方可以依赖窄接口，而不必依赖完整 `pkg/infoschema` 实现。
-
-本 crate 只直接依赖 `astersql-meta-model` 与 `astersql-ddl-placement`；`ast`、`model` 和 `placement` 名称由 [`lib.rs`](./lib.rs) 再导出。因此，本文件定义的是元数据边界和纯查询逻辑，不负责加载、持久化或更新 InfoSchema。
+位于完整 InfoSchema 实现与上层 SQL 组件之间，提供两类低耦合契约：一类是对 `TableInfo` 的特殊属性过滤器及其分组结果，另一类是只暴露元数据查询能力的 `MetaOnlyInfoSchema` trait 族。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@ Cargo 反向引用还覆盖 session、DDL、executor、distsql、TTL、statistic
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`infoschema.go`](./infoschema.go)。Rust 保留了 Go 的符号命名、过滤顺序、TTL public 限制、`GetPartitionInfo` 的启用分区语义，以及 `AllPlacementPolicyAttribute` 忽略 `Partition.Enable` 的差异。
+Rust 保留了 Go 的符号命名、过滤顺序、TTL public 限制、`GetPartitionInfo` 的启用分区语义，以及 `AllPlacementPolicyAttribute` 忽略 `Partition.Enable` 的差异。
 
-主要语言映射如下：Go 的包级函数变量映射为公开函数，`AllSpecialAttribute` 映射为 `const` 函数指针；Go 指针切片映射为 `Vec<Arc<T>>`；`nil`/布尔命中结果映射为 `Option`；Go 的 `context.Context` 与 `error` 分别抽象为 `SchemaAndTable::Context` 和 `Error` 关联类型。Rust 将 Go 接口嵌入明确表达为 `MetaOnlyInfoSchema: SchemaAndTable + Misc`。
-
-`DBInfoAsInfoSchema` 的 Go 版本是 `[]*DBInfo` 的定义类型，Rust 是 `Vec<Arc<DBInfo>>` 的元组结构体。二者都按名称线性查找并返回 `Deprecated.Tables`；Go 未命中返回 `nil, nil`，Rust 返回 `Ok(Vec::new())`。Rust 独立测试还确认返回值与输入共享同一 `Arc` 指向的元数据对象。
+`DBInfoAsInfoSchema` 的 Go 版本是 `[]*DBInfo` 的定义类型，Rust 是 `Vec<Arc<DBInfo>>` 的元组结构体。二者都按名称线性查找并返回 `Deprecated.Tables`；Go 未命中返回 `nil, nil`，Rust 返回 `Ok(Vec::new())`。
 
 ## 扩展指南
 
@@ -96,12 +92,3 @@ Cargo 反向引用还覆盖 session、DDL、executor、distsql、TTL、statistic
 扩展元数据查询能力时，应把核心库表遍历放在 `SchemaAndTable`，策略/资源组等旁路能力放在 `Misc`，其余仅元数据通用查询放在 `MetaOnlyInfoSchema`。新增必需方法会影响所有实现者和测试桩，应先用 RustCodeGraph/`rg` 枚举 `impl MetaOnlyInfoSchema`、`impl SchemaAndTable`、`impl Misc` 以及 trait object 类型别名；同时对齐 [`infoschema.go`](./infoschema.go) 的接口意图。若方法可能失败，应使用实现者的 `Self::Error`，不要以空集合掩盖错误。
 
 修改返回集合或 `Arc` 策略前，要评估 V1/V2 枚举实现、顺序兼容、元数据复制成本和跨线程约束。测试逻辑必须继续放在独立的 `migration_aster_unit_test.rs` 等测试文件中，不应嵌入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标 `infoschema.rs` 含 42 个符号；`files --filter pkg/infoschema/context` 确认 Go/Rust 对照、crate 入口和独立测试；`node --file ...` 读取了目标文件全部 223 行；`query` 确认 `MetaOnlyInfoSchema`、`SchemaAndTable`、`Misc`、`DBInfoAsInfoSchema` 和 `HasSpecialAttributes` 的目标定义。精确 `callers/callees` 未返回这些 trait/函数的可用明细，因此引用关系用 `rg` 及图的 `explore` 结果补证。
-- 源码与 crate：[`infoschema.rs`](./infoschema.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)。目标包不存在 `doc.go`。
-- Go 对照：[`infoschema.go`](./infoschema.go)，逐项核对过滤器、trait 对应接口、结果结构与适配器行为。
-- 独立 Rust 测试：[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)，覆盖 TTL public 条件、TiFlash、表级/分区级 placement、禁用分区差异、表锁、亲和性、组合过滤器、schema 命中/未命中及 `Arc` 共享身份。
-- 生产调用证据：`pkg/infoschema/infoschema.rs`、`pkg/infoschema/infoschema_v2.rs`、`pkg/lock/lock.rs`、`pkg/expression/expropt/infoschema.rs`、`pkg/expression/sessionexpr/sessionctx.rs`、`pkg/planner/planctx/context.rs`、`pkg/table/tblctx/table.rs`、`pkg/meta/metabuild/context.rs`。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前以任务指定命令验证恰有 11 个固定二级章节，并人工复核没有把 trait 契约描述成具体实现保证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-storage` crate。crate 入口 `pkg/statistics/handle/storage/lib.rs` 以 `pub mod json` 挂载本模块，并用 `pub use json::*` 重导出其公开项。它位于统计信息内存表示与历史统计持久化之间：把 `TableStats` 包装成 `JsonTable`，将其编码、gzip 封装并切成可写入 `mysql.stats_history.stats_data` 的块，也提供逆向恢复和按快照查询历史统计的入口。
-
-`pkg/statistics/handle/storage/Cargo.toml` 指明该 crate 对应 Go 包 `pkg/statistics/handle/storage`。当前实际 Rust 实现只直接使用标准库和同 crate 的共享类型；清单中的迁移依赖均置于 `cfg(any())`，不会因此证明本文件已经接入完整 TiDB 类型系统。
+`json_table_to_blocks` / `blocks_to_json_table` 实现确定性的私有二进制 payload、hex JSON 外壳、未压缩 DEFLATE gzip member 和定长分块的往返转换。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ Rust 的 `gzip_store` 每次新建 `Vec`，不使用共享压缩器；因此没�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/statistics/handle/storage/json.go`。公开职责一一对应 `GenJSONTableFromStats`、`TableStatsFromJSON`、`JSONTableToBlocks`、`BlocksToJSONTable` 和 `TableHistoricalStatsToJSON`，并保留以下核心语义：逐项取消检查、旧版本有数据项提升为 stats version 1、空 blocks 报 `Block empty error`、按快照选择最新历史版本、按 `seq_no` 重组以及用 meta 计数覆盖历史 payload。
-
 当前 Rust 并非 Go 的完整等价实现：Go 在导出时转换真实列类型、统计内存并释放 FM sketch/直方图资源；导入时按 `TableInfo` 名称匹配列/索引、恢复字段类型和存在性映射。Rust 只克隆简化 `TableStats` 并重绑定 ID。Go 使用标准 JSON 和通用 gzip 压缩及对象池；Rust 使用私有二进制+hex JSON，并只支持未压缩 DEFLATE。Go 的谓词列来自 `TableItemID/ColStatsTimeInfo`，Rust 使用简化 `HashMap<i64, ...>` 且主动排序。
 
-Go 测试 `dump_test.go::TestLoadPredicateColumns` 验证谓词列使用信息落库，`TestJSONTableToBlocks` 验证 JSON/gzip 往返，`TestLoadStatsFromOldVersion` 验证旧格式空统计保持未初始化。Rust 对应测试集中在 `dump_test.rs`、`json_aster_unit_test.rs` 和 `stats_read_writer_test.rs`，但没有直接覆盖本文件的历史 SQL 查询入口。
+Rust 对应测试集中在 `dump_test.rs`、`json_aster_unit_test.rs` 和 `stats_read_writer_test.rs`，但没有直接覆盖本文件的历史 SQL 查询入口。
 
 ## 扩展指南
 
@@ -88,11 +84,3 @@ Go 测试 `dump_test.go::TestLoadPredicateColumns` 验证谓词列使用信息�
 扩大 gzip 支持时应修改 `gzip_store`/`gunzip_store` 及 `handle.rs::validate_historical_gzip_member` 的共同契约，不能只改一端。修改分块逻辑必须维持块顺序和 `MAX_COLUMN_SIZE` 调用约束。修改历史 SQL 时要同步检查 Go `TableHistoricalStatsToJSON` 的版本选择、计数覆盖和空结果语义，并为 Rust 增加独立 mock `SqlStore` 测试。
 
 测试应继续放在独立文件：常规转换/兼容场景放 `pkg/statistics/handle/storage/dump_test.rs`，编码损坏和确定性边界放 `json_aster_unit_test.rs`；不要把测试嵌入 `json.rs`。若要接入真实表元数据、类型转换或内存控制，应在任务范围内明确补齐上层适配，而不能用当前简化结构冒充 Go 完整能力。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、目标目录 25 个文件；`files --filter pkg/statistics/handle/storage` 确认目标、模块和独立测试；`node --file pkg/statistics/handle/storage/json.rs --offset 1 --limit 500` 读取目标 487 行与 29 个符号；`node --file pkg/statistics/handle/handle.rs --offset 760 --limit 140` 确认生产编解码调用。精确 `callers/callees` 查询在限定时间内未返回可用输出，调用边以引用搜索补齐。
-- 源码与 crate：`pkg/statistics/handle/storage/json.rs`、`lib.rs`、`Cargo.toml`、`stats_read_writer.rs`。
-- Rust 调用与测试：`pkg/statistics/handle/handle.rs`、`storage/dump_test.rs`、`storage/json_aster_unit_test.rs`、`storage/stats_read_writer_test.rs`。
-- Go 对照与测试：`pkg/statistics/handle/storage/json.go`、`pkg/statistics/handle/storage/dump_test.go`。
-- 人工复核重点：公开/私有符号、二进制字段顺序、确定性排序、错误分支、历史查询顺序、Rust 与 Go 的已知差异，以及当前未接线的公开入口均按代码事实描述，未把预期架构写成现状。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-br-pkg-registry` 中的恢复任务注册表实现，源码由 `br/pkg/registry/lib.rs` 以 `pub mod registration` 挂载，并经 `pub use registration::*` 作为 crate 的公开接口导出。`br/pkg/registry/Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/registry` 的 library 移植，依赖 restore 路由实现、hex 和 serde_json；TiDB session、domain、filter、错误类型等依赖面由同 crate 的 `stubs.rs` 提供，心跳线程由 `heartbeat.rs` 提供。因此它既不是单纯的声明门面，也还不是直接连接完整 TiDB Rust 基础设施的最终形态。
-
-文件管理 SQL 表 `mysql.tidb_restore_registry` 中恢复任务的创建、恢复、暂停、注销、过期判断、冲突检查和全局配置操作协调。当前仓库中可见的生产 Rust 上游是 `br/pkg/task/stream.rs::restoreStreamWithTiKVConfigControl`，它调用 `OperationAfterWaitIDs` 和 `GlobalOperationAfterSetResettingStatus` 来串行化 TiKV 全局配置的修改与恢复；其余公开接口主要由本 crate 的对齐测试调用。Go 同名文件的调用面更广，不能据此推断所有 Go 上游都已接入 Rust 实现。
+文件管理 SQL 表 `mysql.tidb_restore_registry` 中恢复任务的创建、恢复、暂停、注销、过期判断、冲突检查和全局配置操作协调。
 
 ## 核心职责
 
@@ -88,11 +86,9 @@ crate 边界值得特别注意：`br/pkg/registry/Cargo.toml` 引入 restore、h
 
 ## 与 Go 版本的对应关系
 
-Rust 的常量、SQL 模板、结构体字段、公开方法及主要状态机对应 `br/pkg/registry/registration.go`。关键一致点包括：两个独立 session；悲观事务和当前 session 选项；暂停任务恢复；重复运行任务拒绝；五轮心跳过期检测；带旧心跳条件的原子暂停；10 个 ID 分块等待；75 次累计重试上限；仅在不存在非 `resetting` 任务时执行全局操作；abort 对不确定状态采取跳过策略。
+关键一致点包括：两个独立 session；悲观事务和当前 session 选项；暂停任务恢复；重复运行任务拒绝；五轮心跳过期检测；带旧心跳条件的原子暂停；10 个 ID 分块等待；75 次累计重试上限；仅在不存在非 `resetting` 任务时执行全局操作；abort 对不确定状态采取跳过策略。
 
 可观察差异主要是迁移基础设施而非预期产品语义：Rust 通过本地 trait/stub 表达 Go 的 `domain`、`glue.Session`、`sqlexec`、filter、failpoint/ticker；Go 记录大量日志，而 Rust 省略日志；Go 的 ticker 在函数退出时显式停止，Rust 的 `maybe_sleep` 是同步循环且没有独立 ticker 资源。Rust `Registry` 使用 `Arc<Mutex<_>>` 表达跨线程 session 共享，Go 版本依赖接口对象和 heartbeat goroutine。后续替换 stub 时应维持上述返回值、错误分类、SQL 条件与保守失败策略，而不是只保持方法名称。
-
-直接 Rust 单元对齐位于 `br/pkg/registry/parity_test.rs::go_rust_public_contract_matches`，覆盖创建、心跳、暂停/恢复、活动任务冲突、表/schema 冲突、显式 `RestoredTS` 不匹配、自动复用、全局操作、缺表快速路径、abort 与资源关闭。`tests/realtikvtest/brietest/registry_test.rs` 与 Go RealTiKV 场景同名，但导入 `astersql_tests_realtikvtest_brietest::harness::registry`；它验证独立 harness 行为，不能作为本 crate 已连接真实 TiKV 的证据。
 
 ## 扩展指南
 
@@ -103,15 +99,3 @@ Rust 的常量、SQL 模板、结构体字段、公开方法及主要状态机�
 修改心跳/过期策略时，应优先保持“观察期间有任一次心跳变化即活跃”和“更新时再次比较旧心跳”的双重保护，并在独立测试文件 `br/pkg/registry/parity_test.rs` 增加活跃、消失、查询失败、取消和竞争更新用例。不要把 Rust 测试嵌回生产文件。
 
 修改全局操作协调时，应同步检查 `br/pkg/task/stream.rs::restoreStreamWithTiKVConfigControl` 的调用顺序和错误替换语义，评估累计重试计数跨 chunk 的行为、超时仍执行回调的兼容性，以及长时间持锁/事务对性能的影响。若要接入真实 TiDB Rust 依赖，应在 crate 层替换 stub 契约并增加真正调用该 crate 的集成测试，不能把现有 RealTiKV harness 镜像当作完成证据。
-
-## 验证依据
-
-- `br/pkg/registry/Cargo.toml`、`br/pkg/registry/lib.rs`、`br/pkg/registry/BUILD.bazel`：核对 crate 名称、Go 包映射、模块导出、restore/hex/serde_json 依赖和 Go 依赖边界。
-- `br/pkg/registry/parity_test.rs`：核对直接 Rust 单元对齐场景；`tests/realtikvtest/brietest/registry_test.rs` 与 `harness.rs`：确认 RealTiKV 风格测试使用独立 harness 镜像。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前用任务指定命令确认文档存在且恰好包含 11 个固定二级章节。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/registry/registration.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/registry/registration.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-`registry/parity_test.rs::go_rust_public_contract_matches` 是既有事务、冲突与心跳证据，未见新增路由路径的专用测试。Go `registration.go` 包含对应规范化、route schema 检查和目标冲突逻辑。Cargo 新增 `astersql-br-pkg-restore`、`hex`、`serde_json`，session/domain/filter 仍由本地 stub 提供。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` crate；crate 根在 `lightning/pkg/importer/lib.rs` 中以 `mod get_pre_info` 装入它，再通过 `pub use get_pre_info::*` 暴露其公开符号。它位于 Lightning 正式导入之前的“预信息采集”边界：一侧读取 mydumper 发现的源数据库、表、schema 文件和数据文件，另一侧通过 SQL/PD 抽象探测目标集群，向预检规则提供表结构、样例行、容量估算和集群状态。
-
-生产接线可从 `lightning/pkg/importer/precheck.rs:104-127` 看到：`NewPrecheckItemBuilder` 先创建 `TargetInfoGetterImpl`，再把 loader 取得的 `dbMetas`、`srcStorage` 交给 `NewPreImportInfoGetter`。其结果作为 `Arc<dyn PreImportInfoGetter>` 被 `lightning/pkg/importer/precheck_impl.rs` 的容量、版本、存储、schema 等 checker 消费。该文件不是导入写入器，也不修改源数据或目标表；它负责在导入前构造决策依据。
-
-`lightning/pkg/importer/Cargo.toml` 将本 crate 标成对应 Go 包 `lightning/pkg/importer` 的 library port，并声明本文件直接使用的 `flate2`、`parquet`、`bytes`、mydump、importer-opts 等依赖。Cargo 注释还说明当前 Rust crate 以已移植组件和本地边界实现覆盖 Go importer，因此阅读时必须把“当前可运行的瘦实现”和 Go 完整能力分开。
+提供默认目标端实现 `TargetInfoGetterImpl`：通过 `DB` 执行 `SHOW DATABASES`、`SHOW TABLES` 和空表查询，通过可选 `pdhttp::Client` 返回副本、store、region 信息。
 
 ## 核心职责
 
@@ -106,7 +102,7 @@ parser 生命周期分两类。流式 Parquet 的局部 parser 随函数退出�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `lightning/pkg/importer/get_pre_info.go`，独立 Go 测试是 `lightning/pkg/importer/get_pre_info_test.go`。公开 trait/结构名、表结构合并、首行预览、估算结果字段和 `newTableInfo` 均沿用 Go 命名与总体意图，但当前 Rust 并非逐行为完整移植：
+公开 trait/结构名、表结构合并、首行预览、估算结果字段和 `newTableInfo` 均沿用 Go 命名与总体意图，但当前 Rust 并非逐行为完整移植：
 
 - Go `NewTargetInfoGetterImpl` 根据 backend 创建 TiDB/local 专用 backend getter；Rust 直接在本类型中执行基础 SQL/PD 内存 client 查询。
 - Go 通过 context 注入 dbMetas 并执行真实版本检查；Rust local 分支只要求 PD client 存在，TiDB/其他已接受分支直接成功。
@@ -126,12 +122,3 @@ parser 生命周期分两类。流式 Parquet 的局部 parser 随函数退出�
 - 补齐 Go 估算：最可能修改 `EstimateSourceDataSize`、构造器/`Init` 以及 sampling 辅助逻辑；需要同时接入 `ioWorkers`、`encBuilder`、表结构和系统变量，并验证索引比率、无序大表、TiFlash、缓存和 local 压缩。性能风险主要是对每张大表采样及重复并发刷新。
 - 调整缓存：必须明确空 map 是否算有效缓存、并发 miss 是否允许重复 I/O、失败是否缓存。若更换锁策略，要保留 trait 的 `Send + Sync` 与 clone 隔离语义。
 - 对公开结果或字段做兼容变更时，同时检查 `precheck_impl.rs` 的容量计算和 Cargo crate 的再导出使用者；Go 命名风格虽不符合 Rust 惯例，却是移植 API 的兼容面，不宜单独重命名。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter lightning/pkg/importer/get_pre_info.rs` 命中目标；`query get_pre_info` 定位 Rust/Go 文件、trait、构造器和独立测试；`node --file ... --offset/--limit` 覆盖目标 1-936 行；文件使用边列出 `import.rs`、`precheck.rs`、`precheck_impl.rs` 和测试。精确 trait callers/callees 查询无输出，因此动态分派调用用 `rg` 补证。
-- 已读实现与装配：`lightning/pkg/importer/get_pre_info.rs`、`lightning/pkg/importer/lib.rs`、`lightning/pkg/importer/Cargo.toml`、`lightning/pkg/importer/opts/get_pre_info_opts.rs`、`lightning/pkg/importer/precheck.rs`、`lightning/pkg/importer/precheck_impl.rs`。
-- Go 对照：`lightning/pkg/importer/get_pre_info.go`、`lightning/pkg/importer/get_pre_info_test.go`；重点核对构造/初始化、结构合并、文件预览、采样估算和目标端查询。
-- Rust 独立测试：`lightning/pkg/importer/get_pre_info_test.rs` 覆盖 `newTableInfo`、auto-random/default、结构缓存与强制刷新、从存储加载 schema、CSV/SQL/Parquet/gzip 首行、估算缓存、空表 SQL 形状、backend 校验、PD store/region/副本，以及大 Parquet page/多 row group/NULL/行上限。
-- 调用搜索：`rg` 确认生产调用集中在 `precheck.rs` 和 `precheck_impl.rs`，并确认 `parse_csv_records`、`ioWorkers`、`encBuilder` 当前无消费点。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核本文没有把 Go 的完整实现写成 Rust 当前能力。

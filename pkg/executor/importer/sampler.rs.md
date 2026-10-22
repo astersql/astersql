@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-importer` crate，由 `pkg/executor/importer/lib.rs` 的 `mod sampler; pub use sampler::*;` 挂载并向 crate 外重导出。它位于 IMPORT INTO/LOAD DATA 的资源估算链路，不执行整个导入，而是从最多 3 个源文件中总计抽样约 30 行，把行编码成 TiKV KV，返回源字节、Data KV 字节和 Index KV 字节。
-
-主应用链路中，`LoadDataController::CalResourceParams` 仅在表会生成索引 KV 时通过 `ImportResourceCalculator::SampleIndexSizeRatio` 请求采样；`HandleImportResourceCalculator::SampleIndexSizeRatio` 再调用本文件的 `LoadDataController::sampleIndexSizeRatio`（`pkg/executor/importer/import.rs:1116`、`pkg/executor/importer/production_resource.rs:94`）。另一条 SDK 链路由 `pkg/importsdk/file_scanner.rs::estimateOneTableSize` 调用 `SampleFileImportKVSizeWithTableInfo`，用抽样的 KV/源字节比例外推全表体量。
+为 importsdk 提供不依赖完整 `LoadDataController` 的 `TableInfo` 入口：它构造 `TableDefinition` 和 `BaseKVEncoder`，并按可见、Public、非生成列的原始 offset 放置数据。
 
 ## 核心职责
 
@@ -70,8 +68,6 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/importer/sampler.go` 是直接语义对照：常量、结果字段、配置、校验、最多 3 文件/30 行、10 MiB 截断、源字节计算、checksum 分类、首错误和关闭错误不覆盖主结果均保持一致。`pkg/executor/importer/sampler_test.go` 还提供真实 CSV/SQL、多索引、keyspace codec、短文件与超长行的预期比例和资源关闭证据。
-
 可见差异有：
 
 - Go sampler 直接持有 storage/logger/context，并内部创建 parser/encoder；Rust 完整路径把两者抽象为 `KVSizeSamplerService`，便于由 host 注入真实 I/O 边界。
@@ -88,12 +84,3 @@
 - 若允许 SDK 路径支持列列表或赋值，不能只移除入口拒绝；还需复制完整路径的字段映射、表达式上下文、同步和 encoder 契约。
 - 改变错误策略时保持“继续采样后续文件、最终返回首错误”及“close 失败不覆盖主结果”的 Go 契约，并在 `sampler_test.rs` 中增加失败注入。
 - Rust 单元测试应继续放在独立的 `pkg/executor/importer/sampler_test.rs`，由 `lib.rs` 的 `#[cfg(test)] mod sampler_test;` 挂载，不要嵌入本源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引检查：`rustcodegraph status` 显示已索引 11,467 个文件；`files --filter pkg/executor/importer` 确认 `sampler.rs`、`sampler_test.rs`、Go 对照文件和测试均在图中。
-- RustCodeGraph 符号/源码查询：`node --file pkg/executor/importer/sampler.rs --offset 1 --limit 500` 及 `--offset 489 --limit 100` 覆盖全文；`query SampleFileImportKVSize --kind function --json`、`query sampleIndexSizeRatio --kind function --json`、`query sampleRows --kind function --json` 确认入口、签名和定位。精确 `callers/callees` 在本地索引上两次超过 90 秒无输出后中止，调用边因此用下列直接源码与 `rg` 结果交叉验证。
-- 已读 Rust 路径：`pkg/executor/importer/sampler.rs`、`lib.rs`、`Cargo.toml`、`sampler_test.rs`、`import.rs`、`production_resource.rs`，以及直接 SDK 调用者 `pkg/importsdk/file_scanner.rs`。目标目录没有 `doc.go`。
-- 已读 Go 对照：`pkg/executor/importer/sampler.go`、`sampler_test.go`，并检查 `pkg/executor/importer/import.go::CalResourceParams` 与 `pkg/importsdk/file_scanner.go` 的直接调用和降级行为。
-- Rust 独立测试确认：`TotalKVSize` 环绕加法；选中下标数量、唯一性和边界；格式/前缀验证；4 文件时仅关闭 3 个 parser、总计采样 300 源字节且生成两类 KV；parser close 错误不导致失败。
-- 本任务仅生成文档，按计划不运行 Cargo；交付前使用任务指定的 `test -f` + `rg -c` 命令验证固定的 11 个二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`modify_column_cloud_store.rs` 属于 `astersql-session` crate（见 `pkg/session/Cargo.toml`），由 `pkg/session/runtime.rs` 的 `mod modify_column_cloud_store;` 直接纳入 session runtime。它位于分布式 MODIFY COLUMN / 索引回填的云端 global-sort 数据通路中，负责把仓库内两套对象存储 API 统一适配为 `astersql_ingestor_globalsort::Storage`，并额外实现 `astersql_ingestor_simplesst::writer::WriterSink`。
-
-该类型不是通用公开 API：`CloudStore` 为 `pub(super)`，只对 `runtime` 的父模块范围可见。当前直接构造点包括 `modify_column_cloud_planner.rs::Planner::cloud_plans`、`modify_column_cloud_executor.rs::CloudStep::RunSubtask`、`modify_column_dist_backfill.rs` 的读取/写外存路径，以及独立测试。文件没有 feature gate 或条件编译项；测试由 `pkg/session/runtime.rs` 通过独立文件 `modify_column_cloud_store_test.rs` 接入，生产源中不内嵌测试。
+位于分布式 MODIFY COLUMN / 索引回填的云端 global-sort 数据通路中，负责把仓库内两套对象存储 API 统一适配为 `astersql_ingestor_globalsort::Storage`，并额外实现 `astersql_ingestor_simplesst::writer::WriterSink`。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@ reader 生命周期从 `open/open_at` 成功开始，到包装对象析构结束
 
 ## 与 Go 版本的对应关系
 
-Go 路径没有一个与本文件同名、逐类型对应的 `cloud_store.go`；Rust 把散布在 Go DDL 与 objstore/global-sort 调用点中的存储行为集中成适配器。`pkg/ddl/backfilling_merge_sort.go` 使用 `handle.NewObjStoreWithRecording` 打开 `storeapi.Storage` 并交给 `globalsort.NewMergeOperator`；`pkg/ddl/backfilling_operators.go::NewWriteIndexToExternalStoragePipeline` 把外部 store 交给 simple-SST 写入管线；`pkg/ddl/backfilling_clean_s3.go::BackfillCleaner.Clean` 用 `objstore.ParseBackend`、`NewWithDefaultOpt` 和 `globalsort.CleanUpFiles` 执行任务级清理。
+Go 路径没有一个与本文件同名、逐类型对应的 `cloud_store.go`；Rust 把散布在 Go DDL 与 objstore/global-sort 调用点中的存储行为集中成适配器。
 
-语义对齐点包括：按 URI 创建对象存储；全量和带起始偏移的读取；通过 writer close/finish 提交上传；前缀遍历与批量删除；取消 context 贯穿 I/O；归并失败仍 defer/析构关闭对象；对象记录格式采用 Go 的大端 64 位长度编码。Rust 独立测试对 `open_at(75)` 明确验证底层 range 已定位后不会再次跳过前缀，这是与 Go range-reader 语义兼容的关键边界。
-
-当前可见差异是 Rust 对 S3 单独使用新 `s3store`，其余后端保留 legacy API，并把错误压平为字符串/`InvalidData`；Go merge executor 还通过 recording wrapper 汇总对象存储请求，Rust `CloudStore` 本身没有计量或请求摘要。Rust 的 `Drop` 关闭失败仅 `eprintln!`，Go 通常在 defer 中调用 `Close`，部分位置同样不能改变已经形成的主错误。不能由本文件推断两边拥有完全相同的 backend 支持、日志字段或指标。
+当前可见差异是 Rust 对 S3 单独使用新 `s3store`，其余后端保留 legacy API，并把错误压平为字符串/`InvalidData`；Go merge executor 还通过 recording wrapper 汇总对象存储请求，Rust `CloudStore` 本身没有计量或请求摘要。Rust 的 `Drop` 关闭失败仅 `eprintln!`，Go 通常在 defer 中调用 `Close`，部分位置同样不能改变已经形成的主错误。
 
 ## 扩展指南
 
@@ -100,13 +96,3 @@ Go 路径没有一个与本文件同名、逐类型对应的 `cloud_store.go`；
 修改流式写入时，应保留 `finish` 可报告 close 错误、`Drop` 可兜底且幂等的性质。若底层增加真正的 flush 语义，需明确它是否只是发送缓冲还是保证对象可见，不能继续用无条件 no-op 掩盖契约差异。
 
 回归测试应扩展独立文件 `pkg/session/runtime/modify_column_cloud_store_test.rs`，不要写进生产源。现有测试覆盖真实本地文件上的 simple-SST 写入、range read、元数据解码、前缀遍历/删除，以及取消后禁止读写；新增 backend 或错误路径时还应覆盖 URI 字段映射、超大 offset、close/finish 失败、重复 finish、读取中取消和无序列表假设。需要验证上层 merge/import 生命周期时，同步扩展 `modify_column_cloud_executor_test.rs`。正确性风险集中在偏移/记录格式和关闭提交；兼容风险集中在 URI/S3 字段与旧对象；性能风险集中在额外复制、缓冲和把流式操作误改成整对象操作。
-
-## 验证依据
-
-本说明直接核对了目标源 `pkg/session/runtime/modify_column_cloud_store.rs`、模块入口 `pkg/session/runtime.rs`、上游 `modify_column_cloud_planner.rs`、`modify_column_cloud_executor.rs`、`modify_column_dist_backfill.rs`、`modify_column_pipeline.rs`，crate 声明 `pkg/session/Cargo.toml`，独立测试 `modify_column_cloud_store_test.rs` 与 `modify_column_cloud_executor_test.rs`，以及 globalsort trait/格式使用位置 `pkg/ingestor/globalsort/lib.rs`、`reader.rs`、`split.rs`、`merge.rs`。`pkg/session` 下不存在 `doc.go`。
-
-Go 对照读取了 `pkg/ddl/backfilling_merge_sort.go`、`pkg/ddl/backfilling_operators.go`、`pkg/ddl/backfilling_dist_scheduler.go`、`pkg/ddl/backfilling_clean_s3.go`，并用 `pkg/objstore/parse.go`、`storage.go`、`storeapi/storage.go` 确认对象存储边界。DDL 框架定位参考了 `docs/agents/ddl/README.md`，具体结论仍以代码和测试为准。
-
-RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query CloudStore` 定位目标类型，并给出 `run_merge`、`run_import`、cloud planner 与测试关联；`node CloudStore` 核对了结构字段。组合 explore 和精确同名 `open` callers/callees 查询分别超时或发生消歧污染，因此具体调用边由索引结果、`rg` 引用位置和直接源码交叉确认，未把工具空输出当作否定证据。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定命令确认文件存在且恰有 11 个固定二级章节，并人工复核文档覆盖文件存在原因、后端选择、读写/取消/关闭流程、Go 对照和安全扩展入口。

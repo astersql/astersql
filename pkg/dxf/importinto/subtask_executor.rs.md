@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应源码 [`subtask_executor.rs`](./subtask_executor.rs)。该文件属于 `astersql-dxf-importinto` crate（边界见 `pkg/dxf/importinto/Cargo.toml`），承接 IMPORT INTO 的两段执行逻辑：一是把单个 `importStepMinimalTask` 的输入 chunk 送入真实 importer 编码管线；二是执行最终 post-process，包括 allocator rebase、本地 checksum 合并与远端 checksum 校验。模块由 `pkg/dxf/importinto/lib.rs` 公开导出。
-
-在最小任务主链上，直接上游是 `encode_and_sort_operator.rs` 的 `chunkWorker::HandleTask`，它准备 global-sort writer 后调用 `runImportMinimalTask`。在 post-process 主链上，`planner.rs` 的 `PostProcessSpec::ToSubtaskMeta` 聚合此前步骤的 checksum、删除行 checksum 和最大 allocator ID，生成本文件消费的 JSON；`task_executor.rs::GetImportStepExecutor` 当前把 `ImportStepPostProcess` 委托给 `ImportStepHost::NewStepExecutor`，而本文件的 `GetPostProcessStepExecutor`/`NewPostProcessStepExecutor` 提供可由该宿主边界采用的具体实现。也就是说，Rust 代码已经具备后处理执行逻辑，但从顶层任务执行器到该具体构造器的生产接线由宿主实现决定，不能仅凭本文件断言所有运行环境都直接调用它。
+`PostProcessStepExecutor` 按“先 rebase、再构造最终 checksum、必要时校验”的顺序执行后处理，并依据 Classic/NextGen 内核选择远端 checksum 实现。
 
 ## 核心职责
 
@@ -94,7 +92,6 @@
 - Go `importMinimalTaskExecutor.Run` 与 Rust `runImportMinimalTask` 都复制/包装 chunk、设置 parquet location、按 local/global sort 选择 `ProcessChunk` 或 writer 版本、累积 checksum。Rust 用 `LocatedImportChunk` 视图避免修改持久化 chunk wire；Go 直接复制 chunk 并设置 `ParquetMeta.Loc`。
 - Go local sort 直接把 engine 传给 `ProcessChunk`；Rust 在进入管线前显式检查 `Option`，缺失时返回可诊断错误。global sort 同理检查 writer。
 - Go 文件含 `beforeSortChunk`、`errorWhenSortChunk`、`syncBeforeSortChunk` failpoint；目标 Rust 函数中没有对应 failpoint，现有 Rust 重试测试通过 importer/engine host 注入错误覆盖失败清理，而非复刻这些注入点。
-- Go `postProcess` 的顺序是 rebase、合并 checksum、减去删除 checksum、冲突过多则跳过验证，再选择 NextGen manager 或 Classic SQL。Rust 的 `runPostProcessWith` 与 `RunMetaWithContext` 保持这一顺序。
 - Go 具体持有 store、task table、keyspace 和 logger，并直接创建 TiKV checksum manager或新 session；Rust 把这些 I/O 收敛到 `PostProcessHost`。因此 Rust 是可执行的算法与框架适配层，但具体存储/session 行为取决于宿主实现。
 - Go NextGen 使用 `defer mgr.Close()`；Rust 使用 `Drop` guard，错误路径同样关闭。Go 还附加 internal source type 与 logger；这些上下文装饰不在本文件中，若宿主需要完全等价，应在 host 实现中提供。
 - Go 的日志与排序前/后处理 failpoint 更完整；Rust 本文件只把 logger 传入 importer，不复刻 post-process task log。它们是可观测性差异，不能描述为已对齐。
@@ -108,13 +105,3 @@
 - 改动 checksum 顺序时，必须保持 rebase 错误短路、冲突过多仅跳过 verify、删除 checksum 在 verify 前扣除，以及 NextGen manager 必关闭。对应测试放在独立的 `subtask_executor_test.rs` 或较高层 `task_executor_testkit_test.rs`，不要内嵌到生产文件。
 - 若要把具体后处理接入所有 Rust 生产运行时，应实现/核对 `ImportStepHost::NewStepExecutor` 对 `ImportStepPostProcess` 的分支并调用 `GetPostProcessStepExecutor`；不要绕过 `TaskMeta::Unmarshal` 和 step 校验。
 - 性能风险主要在每 chunk checksum 锁、writer 生命周期及远端 checksum I/O；兼容风险集中在 Go JSON 字段、allocator enum 和 checksum 策略语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/dxf/importinto` 确认目标及相邻模块；`node --file pkg/dxf/importinto/subtask_executor.rs --offset 1 --limit 500` 返回目标文件全部 396 行及被 7 个文件使用的信息。对主要符号执行了 `callers/callees`，命令未返回可用边，因此调用关系另以直接引用核验，未把缺失图边当作不存在调用。
-- 目标源码：`pkg/dxf/importinto/subtask_executor.rs`，核对全部 trait、struct、函数、impl、错误分支和资源 guard；文件无条件编译项，只有运行时 `IsNextGen()` 分支。
-- crate/模块：`pkg/dxf/importinto/Cargo.toml`、`pkg/dxf/importinto/lib.rs`，核对 crate 名、`nextgen` feature、直接依赖和测试模块装配。
-- 直接 Rust 调用与元数据来源：`pkg/dxf/importinto/encode_and_sort_operator.rs`、`pkg/dxf/importinto/task_executor.rs`、`pkg/dxf/importinto/planner.rs`、`pkg/dxf/importinto/proto.rs`。
-- Go 对照：`pkg/dxf/importinto/subtask_executor.go` 与 `pkg/dxf/importinto/task_executor.go`，核对 minimal-task 分派、post-process 顺序、具体存储/session I/O、manager 关闭及顶层 step 分派。
-- 独立测试：`pkg/dxf/importinto/subtask_executor_test.rs` 覆盖 wire 解码、host 调用顺序、parquet location、跳过校验、错误传播；`pkg/dxf/importinto/task_executor_testkit_test.rs` 覆盖 Required/Optional/Off 策略；Go 的 `pkg/dxf/importinto/task_executor_testkit_test.go` 覆盖真实表 checksum 成功、mismatch 与策略行为。
-- 本任务为纯文档分析，按计划未运行 Cargo；交付结构检查要求文档存在且恰有十一个固定二级标题。

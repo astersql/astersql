@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate，是 Rust 物理计划枚举中为 IndexJoin 构造并选择内侧 probe（逐外表行查找）访问计划的专用实现。模块由 `pkg/planner/core/operator/physicalop/lib.rs` 私有声明，主要入口 `best_probe` 也是 `pub(crate)`，因此它不是跨 crate API。
-
-当前唯一生产调用点在 `base_physical_plan.rs` 的物理 Join 候选构造路径：当 IndexJoin 的内侧逻辑子树已有可构造的 lookup scan，且内侧连接键多于一列时，调用者以“连接输出行数 / 外侧行数”计算每次 probe 的平均输出行数，再调用 `best_probe`。成功返回的候选会替换默认 lookup plan，并把动态范围、可用连接键映射和尾列比较器回填到 `PhysicalIndexJoin`；没有候选时仍沿用原有 `build_index_join_lookup_scan` 路径。
+把连接等值条件转换为 ranger 可消费的占位模板，保留运行时真正需要的相关外表列表达式；必要时从 `OtherConditions` 提取索引下一列的动态不等式范围，并据此构造 `PhysicalTableReader`、`PhysicalIndexReader` 或 `PhysicalIndexLookUpReader`。
 
 ## 核心职责
 
@@ -85,14 +83,10 @@ RustCodeGraph 将本文件标记为被 `base_physical_plan.rs` 使用；图查�
 
 ## 与 Go 版本的对应关系
 
-Rust 实现不是对某个同路径 Go 文件的逐函数翻译；对应逻辑分布在 `pkg/planner/core/index_join_path.go` 与 `pkg/planner/core/exhaust_physical_plans.go`。
-
-- Rust `ProbePathResult` 对应 Go `indexJoinPathResult` 中的 `usedColsLen`、`eqUsedColsNDV`、`lastColIsRange`、`idxOff2KeyOff`、`lastColManager` 以及已选路径/范围信息。
 - Rust 的路径枚举、mapping 和最佳结果选择对应 Go `getBestIndexJoinPathResultByProp`、`indexJoinPathBuild` 与 `indexJoinPathCompare`；Go 按 `IndexJoinRuntimeProp` 向下构造任务，Rust 在 `base_physical_plan.rs` 中直接为已枚举的物理 Join 生成 boxed 内侧计划，因此装配层级不同。
 - Rust `access_rows_floor` 对应 Go `indexJoinProbeAccessRowsFloor`：都只在范围使用部分连接键、纯等值前缀 NDV 有效且没有尾列范围/比较管理器时返回 `TableStats.RowCount / eqUsedColsNDV`，并共享默认开启的 Fix44855 门控。
 - Rust `ndv_lower_bound` 对应 Go `getColsNDVLowerBoundFromHistColl`；两者都按单列、完全匹配索引列集合、已初始化列最大值的顺序寻找下界。Rust 返回 `f64` 以直接进入本地行数计算，Go 返回 `int64` NDV。
 - Rust 对二级索引的过滤拆分、NDV 上界和行数反推对应 Go `constructDS2IndexScanTask`；主键/表路径下界对应 `constructDS2TableScanTask`。Rust 在同一函数内直接建立三类 reader，Go 则先形成 `CopTask` 再转换/挂接。
-- Go 回归 `pkg/planner/core/casetest/join/join_test.go::TestIssue69974IndexJoinProbeAccessRows` 验证 Fix44855 开启时选择覆盖两个连接键的 `idx_k1_k2`，关闭时恢复只使用 clustered PK 前缀的旧估算。Rust 独立测试用更小的结构化输入验证相同下界开关和路径元数据，不等同于完整 SQL 集成覆盖。
 
 需要注意的已验证差异是：Go probe 构造还包含大 IN-list 残余过滤的 root/coprocessor 拆分等任务层逻辑；本 Rust 文件没有对应分支，不能据此声称该策略已由此模块支持。
 
@@ -105,13 +99,3 @@ Rust 实现不是对某个同路径 Go 文件的逐函数翻译；对应逻辑�
 调整 Fix44855 时必须同时审查 `access_rows_floor` 的默认 ON 语义、`ndv_lower_bound` 上界的默认 OFF 语义、`RecordRelevantOptFix` 调用，以及 Go 的 `indexJoinProbeAccessRowsFloor`、`getColsNDVLowerBoundFromHistColl` 和相关构造函数。性能验证应关注候选数、范围内存、表达式克隆、选择率调用和每个候选的 `get_plan_cost_ver2`。
 
 最低测试同步面是 `pkg/planner/core/operator/physicalop/index_join_probe_test.rs`：为纯行数函数增加表驱动边界，为范围模板增加 collator/槽位/manager 断言，为候选选择增加至少两个竞争路径。若改动影响最终 SQL 计划选择，还应同步 Go 对照回归或 Rust 对应的计划集成测试；现有 Go 证据包括 Issue 69974 场景。
-
-## 验证依据
-
-- 源文件：`pkg/planner/core/operator/physicalop/index_join_probe.rs`，RustCodeGraph 分段读取完整 734 行；主要符号为 `ProbePathResult`、`ProbeCandidate`、`best_probe`、`source_probe`、`access_rows_floor`、`apply_index_floor`、`ndv_lower_bound`、`ndv_is_close`。
-- 调用图：`rustcodegraph query` 分别定位 `best_probe`、`access_rows_floor`、`apply_index_floor`、`ndv_lower_bound`；`callees best_probe` 给出 `source_probe`，`callees source_probe` 给出四个辅助函数、两个结果结构以及计划/表达式依赖。文件级索引显示生产使用者为 `pkg/planner/core/operator/physicalop/base_physical_plan.rs`。
-- 上游接线：`base_physical_plan.rs` 约 10459--10549 行，验证多连接键门控、`avg_rows` 计算、键/范围/比较器回填和默认 lookup 回退。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml` 与 `lib.rs`，验证 crate 名、私有模块声明、独立测试模块以及直接依赖；manifest 未声明 feature。
-- Rust 独立测试：`pkg/planner/core/operator/physicalop/index_join_probe_test.rs`。`index_floor_preserves_filter_ratio_and_unique_limit` 覆盖比例与唯一限制；`usable_keys_floor_guards_and_fix_control_recording` 覆盖所有下界门控及 Fix44855；`index_upper_bound_uses_initialized_column_and_matching_index_ndv` 覆盖 NDV 查找顺序；`dynamic_tail_range_keeps_typed_collators_and_comparison_manager` 覆盖 common-handle 前缀、动态尾列、collator 等宽和下界禁用。
-- Go 对照：`pkg/planner/core/index_join_path.go` 的 `indexJoinPathResult`、`getBestIndexJoinPathResultByProp`；`pkg/planner/core/exhaust_physical_plans.go` 的 `indexJoinProbeAccessRowsFloor`、`constructDS2TableScanTask`、`getColsNDVLowerBoundFromHistColl`、`constructDS2IndexScanTask`；集成回归 `pkg/planner/core/casetest/join/join_test.go::TestIssue69974IndexJoinProbeAccessRows`。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付结构检查要求文档存在且恰有上述 11 个固定二级标题。

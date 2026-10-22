@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate，crate 根由 `pkg/planner/core/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定。`pkg/planner/core/lib.rs` 以私有模块 `mod schema_table_key;` 装配本文件，再通过 `pub use schema_table_key::*;` 将其中的公开类型和构造函数重导出到 crate 根；同目录的 `schema_table_key_test.rs` 只在 `#[cfg(test)]` 下装配。
-
-它提供 SQL 标识符的规范化字符串以及两类可哈希查找键。当前 Rust 生产代码中，`CIString` 被 `util.rs` 和 `common_plans.rs` 等模块使用；RustCodeGraph 与精确引用搜索没有发现三个键构造函数的生产调用者，它们目前只由 `schema_table_key_test.rs` 直接验证。因此，本文件是 Go 规划器同名键语义的已实现移植基础，但不能据此声称 Rust 规划器已经接通 Go 端的别名检查、锁目标绑定或视图递归检测流程。
+三个构造函数集中执行从 `CIString` 到键的转换，避免调用者误把保留大小写的 `O` 字段用于相等比较或哈希。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@ Go 端 `buildingViewStack` 的压栈/删除和预处理 map 的作用域属于�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/schema_table_key.go`：
-
 - Rust `SchemaTableKey` 对应 Go `schemaTableKey`，字段和构造器都只保存 `ast.CIStr.L`。
 - Rust `TableAliasKey` 对应 Go `tableAliasKey`；未限定构造器使用空 schema 和 false，限定构造器使用两个 `L` 字段和 true。
 - Rust 自建了 `CIString`；Go 版本直接使用 `pkg/parser/ast.CIStr`。因此 Rust 的 `CIString::New` 是局部兼容载体，不等同于已经完整移植 parser AST 的所有标识符规则。
@@ -98,13 +94,3 @@ Go 的行为测试证据包括 `pkg/planner/core/preprocess_test.go` 中大小�
 - 若要收紧不变量，可考虑将字段私有化或提供访问器，但这是公开 API 兼容变更；需先盘点 crate 外调用者。
 - 不要把测试嵌入本文件。现有独立测试位于 `pkg/planner/core/schema_table_key_test.rs`，crate 根以 `#[cfg(test)] mod schema_table_key_test;` 接入。
 - 性能上，每次 `CIString::New` 都分配并计算小写字符串；热路径扩展应复用已有规范化值，避免无依据的重复转换，同时保持 Go 语义一致。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/planner/core/schema_table_key.rs --offset 1 --limit 400`：读取目标文件全部 84 行，并报告直接使用者 `schema_table_key_test.rs`、`util.rs`、`util_test.rs`。
-- RustCodeGraph `query SchemaTableKey`、`query TableAliasKey`、`query newTableAliasKey`、`query newQualifiedTableAliasKey`：确认 Rust 与 Go 对应符号及位置。对三个 Rust 构造器执行 `callers`/`callees` 未返回调用边，因此用精确引用搜索补充核验。
-- 已读 Rust 文件：`pkg/planner/core/schema_table_key.rs`、`pkg/planner/core/schema_table_key_test.rs`、`pkg/planner/core/util.rs`、`pkg/planner/core/util_test.rs`、`pkg/planner/core/lib.rs`；`pkg/planner/core` 不存在 `doc.go`。
-- 已读 crate 配置：`pkg/planner/core/Cargo.toml`，确认 crate 名、库入口、feature 与端口元数据。
-- 已读 Go 直接证据：`pkg/planner/core/schema_table_key.go`、`pkg/planner/core/preprocess.go`、`pkg/planner/core/planbuilder.go`、`pkg/planner/core/logical_plan_builder.go`、`pkg/planner/core/preprocess_test.go`，并搜索相关 integration test/test result。
-- 按任务约束未运行 Cargo 或代码测试；本次只新增说明文档，结构检查是指定的交付验证。

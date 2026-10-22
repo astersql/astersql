@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`splitter.rs` 属于 `astersql-br-pkg-restore-split` library crate。该 crate 的入口是 [`lib.rs`](./lib.rs)，后者把本文件声明为 `pub mod splitter` 并扁平再导出其公开项。其 Cargo 清单 [`Cargo.toml`](./Cargo.toml) 说明这是 Go 包 `br/pkg/restore/split` 的 Rust 移植；本文件直接依赖同 crate 的 `client`、`region`、`split`、`sum_sorted` 与 `stubs`，并依赖 `astersql-br-pkg-restore-utils` 的键改写规则和 `astersql-errors` 的共享错误。
-
-它位于日志/SST 恢复的“统计待恢复键范围 -> 按 PD Region 切片 -> 选择 split key -> 调用 RegionSplitter -> 等待 scatter”链路中，算法下游是 [`split.rs`](./split.rs) 的 `RegionSplitter`、`ScanRegionsWithRetry`，上游策略实例包括 `br/pkg/restore/log_client/log_split_strategy.rs` 与 `br/pkg/restore/log_client/compacted_file_strategy.rs` 对 `BaseSplitStrategy` 的复用。
-
-需要区分“API 已实现”和“Rust 生产链已接线”：当前 Rust 全仓搜索中，`NewPipelineRegionsSplitter` 只被本目录独立测试 `splitter_test.rs` 构造；`SplitPoint` 除文件内部外由 `split_test.rs` 与 `parity_test.rs` 调用。`br/pkg/restore/restorer.rs` 使用的是 `br/pkg/restore/stubs.rs` 中另一套本地 `PipelineRegionsSplitter`/`SplitStrategy` 接口，而 Rust `log_client/client.rs::PreSplitRegions` 当前累计后直接 `ResetAccumulations`，没有调用本文件的 `ExecuteRegions`。因此本文件是可调用的完整拆分库实现，但尚不能据此声称 Rust 主恢复流程已与 Go 完整接线。
+用 `Splitter` 抽象单 Region 拆分、全局有序键拆分和 scatter 等待，并让 `RegionSplitter` 与流水线实现共享该契约。
 
 ## 核心职责
 
@@ -109,14 +105,6 @@ Cargo 边界方面，本 crate 的唯一生产反向依赖清单是 `br/pkg/rest
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`splitter.go`](./splitter.go)。以下逻辑保持一致：
-
-- `Splitter`、`SplitStrategy`、`BaseSplitStrategy`、`RewriteSplitter`、`SplitHelperIterator`、`PipelineRegionsSplitter` 的职责与主要字段对应。
-- 按重写后 table prefix 排序；以 `tableID + 1` 前缀作为表扫描上界。
-- `SplitPoint` 以 64 个 Region 为一批扫描，重写键后求交，对跨 Region 的 Size/Number 做整数均摊。
-- split point 的阈值为“加入当前区间后严格大于 size 或 keys 阈值”，且跳过与上一 key 相同的点。
-- encoded key 解码错误被忽略；单 Region 拆分失败后排序并走全局拆分；scatter 最长等待一分钟。
-
 已验证的差异与迁移状态：
 
 - Go `ExecuteRegions` 异步提交拆分并等待 errgroup，再关闭 channel、等待 scatter goroutine；Rust 串行拆分，仅以 Mutex Vec 聚合结果，忽略 scatter 返回值。
@@ -125,7 +113,7 @@ Cargo 边界方面，本 crate 的唯一生产反向依赖清单是 `br/pkg/rest
 - Go 生产链在 `log_client/client.go` 三个入口实际构造/执行流水线；Rust 目前只有策略侧 crate 依赖与测试调用，生产恢复 wrapper 仍使用本地 stubs，属于未完成接线。
 - Rust 通过克隆 `RewriteRules`/`SplitHelper` 生成迭代器，Go 使用指针；Rust 快照与原累积状态隔离，但有额外复制成本。
 
-Go 测试 `split_test.go::{TestSplitPoint,TestSplitPoint2}` 与 Rust `split_test.rs::{test_split_point,test_split_point2}` 使用相同的旧表 50 -> 新表 100 改写、Region 布局及跨 256+ Region 场景，验证首尾片段、均摊值和回调 Region。Rust 独有 `splitter_test.rs::malformed_encoded_split_key_matches_go_ignored_decode_error` 固化 Go 忽略解码错误的细节。
+Go 测试 `split_test.go::{TestSplitPoint,TestSplitPoint2}` 与 Rust `split_test.rs::{test_split_point,test_split_point2}` 使用相同的旧表 50 -> 新表 100 改写、Region 布局及跨 256+ Region 场景，验证首尾片段、均摊值和回调 Region。
 
 ## 扩展指南
 
@@ -136,16 +124,3 @@ Go 测试 `split_test.go::{TestSplitPoint,TestSplitPoint2}` 与 Rust `split_test
 - 若要完成 Rust 生产接线，应统一 `br/pkg/restore/stubs.rs` 与本 crate 的 trait/type 边界，让 `restorer.rs::PipelineRestorerWrapper` 使用真实 `SplitHelperIterator`，并在 `log_client/client.rs` 的 wrapper/pre-split 入口构造真实 `NewPipelineRegionsSplitter`。这属于跨文件功能工作，不应在本说明任务中假定已经完成。
 - 若恢复 Go 的并发模型，需要明确最大并发、首错取消、channel 关闭顺序和 scatter 收集生命周期；同时移除 `ExecuteRegions` 中依赖同步回调的裸指针，并验证同一 splitter 是否允许并发调用。
 - 性能风险集中在 `GetAccumulations` 克隆整棵 `SplitHelper`、每次扫描最多 64 Region、scatter 缓冲整体克隆，以及当前串行拆分。优化前应以等价行为测试保护键顺序、错误传播和取消语义。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；目标 `br/pkg/restore/split/splitter.rs` 已索引，报告 57 个符号。通过 `node --file ... --offset 1/500` 阅读完整 558 行源码，并以 `query SplitPoint`、`query PipelineRegionsSplitterImpl`、`query NewPipelineRegionsSplitter` 和精确 `explore` 核对符号与调用者。
-- 目标实现：[`splitter.rs`](./splitter.rs)；crate 声明与模块装配：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)。
-- Go 对照：[`splitter.go`](./splitter.go)；Go 上游接线：`br/pkg/restore/restorer.go::PipelineRestorerWrapper::WithSplit`、`br/pkg/restore/log_client/client.go::{WrapCompactedFilesIterWithSplitHelper,WrapLogFilesIterWithSplitHelper,PreSplitRegions}`。
-- Rust 上游与迁移状态：`br/pkg/restore/log_client/{log_split_strategy.rs,compacted_file_strategy.rs,client.rs}`、`br/pkg/restore/{restorer.rs,stubs.rs}` 及 `br/pkg/restore/log_client/Cargo.toml`。
-- 独立 Rust 测试：[`splitter_test.rs`](./splitter_test.rs)、[`split_test.rs`](./split_test.rs)、[`parity_test.rs`](./parity_test.rs)；Go 对照测试：[`split_test.go`](./split_test.go) 的 `TestSplitPoint`、`TestSplitPoint2`。
-- 全仓文本核验：`NewPipelineRegionsSplitter(` 的 Rust 命中仅为定义和 `splitter_test.rs`；`ExecuteRegions(` 的 Rust 生产命中位于本文件及 `restorer.rs` 的本地 stub trait 调用，从而支持“真实 splitter 尚未接入 Rust 生产恢复链”的结论。
-
-本任务为纯文档分析，按计划未运行 Cargo 或代码测试。交付前使用任务规定的结构命令确认文件存在且恰有 11 个固定二级标题，并人工复核所有“已支持”陈述都有上述源码、调用边、Cargo、Go 或测试证据。

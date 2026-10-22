@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[目标源文件](brie_utils.rs)位于 `astersql-executor` crate。`pkg/executor/Cargo.toml` 将 crate 根指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/executor"` 声明其 Go 对照包；`pkg/executor/lib.rs` 通过 `pub mod brie_utils` 公开本模块，并仅在 `cfg(test)` 下装配独立测试 `pkg/executor/brie_utils_test.rs`。
-
-它是 BRIE（Backup/Restore/Import/Export）恢复阶段的 DDL 辅助层：把“渲染恢复用 CREATE SQL、暂存会话可观察状态、调用建库/建表、批量过大时拆分重试”抽象到泛型 trait `BrieDDLContext` 后面。当前仓库的 Rust 生产代码没有 `BrieDDLContext` 的实现，也没有从 `pkg/executor/brie.rs` 调用这些函数；RustCodeGraph 与仓库搜索只确认了测试中的实现和调用。因此本文件目前是已移植并有单元测试的公共能力，尚不能据此认定 Rust BRIE 主执行链已经接入。
-
-对应的 Go 线上实现位于 `pkg/executor/brie_utils.go`，由 `pkg/executor/brie.go` 的 glue session 建库、建表入口调用。
+不解析 SQL、不持有真实 session/domain/DDL executor，也不识别具体 TiKV 错误类型；这些职责都由 `BrieDDLContext` 的实现者提供。
 
 ## 核心职责
 
@@ -112,7 +108,6 @@ Rust 用 `BrieDDLContext` 抽象了 Go 中对 `sessionctx.Context`、`domain.Get
 - Go 使用 `defer` 恢复 session 状态；Rust 在普通返回路径显式恢复。两者都不把拆分后的已成功 DDL回滚，但 Rust 显式恢复不具备 panic 时的 `defer` 等价保证。
 - Go 会对部分错误使用 `errors.Trace` 并记录批量失败/拆批日志；Rust 保留原 `C::Error`，本文件没有日志。
 - Go 暴露 `SplitBatchCreateTableForTest` 变量；Rust 直接公开 `splitBatchCreateTable` 并从独立测试模块调用。
-- Go 测试 `TestBRIECreateDatabase`、`TestBRIECreateTable`、`TestBRIECreateTables` 使用真实 mock store/domain 验证 DDL 结果；`TestSplitTablesQueryMatch` 验证拆分 query 与成功表一一对应。Rust 测试使用 `SplitContext` 验证抽象算法和状态契约，但不是实际 domain/DDL 集成测试。
 
 ## 扩展指南
 
@@ -123,13 +118,3 @@ Rust 用 `BrieDDLContext` 抽象了 Go 中对 `sessionctx.Context`、`domain.Get
 若新增可变 session 状态，应与 query string/外键开关一样在全部普通成功和错误路径恢复；更稳妥的方向是建立统一 guard，以补足 panic 安全。若改变跨库容器或并行化批次，应先明确是否允许改变数据库执行顺序、部分成功语义和 session query 的可观察时序。
 
 性能扩展应关注失败节点重复构造 SQL 的成本。可以在不改变每批 query 内容及顺序的前提下评估复用容量或按范围构造字符串，但不能让 query string 与实际提交表集合失配。
-
-## 验证依据
-
-- 源文件：`pkg/executor/brie_utils.rs`，RustCodeGraph `node --file` 覆盖 1–211 行，确认 2 个常量、`BrieDDLContext`、6 个 DDL/渲染/拆批入口和 `mergeQuerys` 的完整实现。
-- 符号与调用图：对 `BrieDDLContext`、`showRestoredCreateDatabase`、`BRIECreateDatabase`、`showRestoredCreateTable`、`BRIECreateTable`、`BRIECreateTables`、`mergeQuerys`、`splitBatchCreateTable` 执行 `query`/`callees`；图结果确认本文“依赖与调用关系”所列下游边。`callers` 子命令没有产出有效结果，因此上游接线结论另由 `explore` 和精确仓库搜索交叉验证，不把空图结果当作不存在调用的唯一依据。
-- crate 边界：`pkg/executor/Cargo.toml` 确认包名 `astersql-executor`、crate 根 `lib.rs`、Go 包元数据；`pkg/executor/lib.rs` 确认公开 `brie_utils` 以及独立 `cfg(test)` 测试装配。`pkg/executor` 下没有 `doc.go`。
-- Go 对照：`pkg/executor/brie_utils.go` 1–186 行；上游入口来自 `pkg/executor/brie.go` 中 glue session 的建库、建表和批量建表方法。
-- Rust 测试：`pkg/executor/brie_utils_test.rs` 1–269 行，覆盖递归顺序、query 拼接、默认字符集、状态恢复、渲染错误、单项过大错误及非大小错误。
-- Go 测试：`pkg/executor/brie_utils_test.go` 的 `TestBRIECreateDatabase`、`TestBRIECreateTable`、`TestBRIECreateTables`、`TestSplitTablesQueryMatch`，以及其单项过大错误检查，提供真实 Go DDL 行为和 query 对齐证据。
-- 接线限制：`rg` 对 `BrieDDLContext`、`BRIECreateDatabase`、`BRIECreateTable`、`BRIECreateTables` 和 `brie_utils::` 的 Rust 搜索仅命中本文件与 `pkg/executor/brie_utils_test.rs`，未发现生产 trait 实现或 `pkg/executor/brie.rs` 调用。因此“尚未接入 Rust 生产主链”是当前仓库事实，而非设计推测。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`planning.rs` 是 `astersql-session` crate 中 `runtime` 模块的会话规划实现。模块由 `pkg/session/runtime.rs` 以私有 `mod planning` 装配，并按用途再导出 `PlannedKVResult`、三个会话数据源/统计适配器以及若干规划辅助函数。它位于 SQL AST 与物理执行器之间：读取 `ConcreteSession` 的 `SessionVars`、`Domain`/`InfoSchema` 和统计缓存，调用 planner 构造逻辑计划与物理计划，再把计划交给 KV 扫描或 typed adapter 执行。
-
-该文件不是通用 planner 的替代品。真正的建树、规则优化、物理计划与缓存计划捕获分别在 `pkg/planner/core`、`pkg/planner/core/operator/*` 中实现；本文件负责把这些能力接到具体会话生命周期。`pkg/session/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/session`，并直接依赖 planner、expression、executor、domain、infoschema、statistics/syncload、kv、tablecodec 等 crate；唯一 feature `nextgen` 没有在本文件中形成条件编译分支。
+真正的建树、规则优化、物理计划与缓存计划捕获分别在 `pkg/planner/core`、`pkg/planner/core/operator/*` 中实现；本文件负责把这些能力接到具体会话生命周期。
 
 ## 核心职责
 
@@ -120,9 +118,7 @@ RustCodeGraph 的文件节点列出 `runtime/scan_adapter_runtime_test.rs`、`ru
 
 ## 与 Go 版本的对应关系
 
-- `pkg/session/session.go` 的 `PrepareStmt`、`ExecutePreparedStmt` 和 `GetPlanCtx` 是 prepared 生命周期与会话规划上下文的主要 Go 对照。Rust 将面向本运行时的窄 SELECT 路径集中在本文件，并使用 `PreparedPlannedKVSelect`/`PreparedKVPhysicalPlan` 表达 prepare、plan、execute、finish 四阶段。
 - `pkg/planner/optimize.go` 的 `Optimize`/`buildLogicalPlan` 与 `pkg/planner/core/optimizer.go` 的 `DoOptimize`、`adjustOptimizationFlags` 对应 Rust 的 builder + `DoOptimize` 流程。Rust `OptimizeParsedSelect` 显式补入 `FLAG_COLLECT_PREDICATE_COLUMNS_POINT` 和 `FLAG_SYNC_WAIT_STATS_LOAD_POINT`，注释说明这是对齐 Go 正常 SELECT 的 flags 调整。
-- `pkg/statistics/handle/syncload/stats_syncload.go` 的 `SendLoadRequests`/`SyncWaitStatsLoad` 和 `pkg/planner/core/rule/rule_collect_plan_stats.go` 的同步等待点对应 `SessionStatsSyncLoadAdapter`。Rust 保留 statement timeout、needed items、异步 worker 与最终等待的顺序。
 - Go prepared plan cache 会把 schema、session variables、参数类型、range 配额和运行反馈纳入可复用性判断；Rust 的 `PlanCacheKeyContext`、`CachedPlan::restore`、`physical_plan_cache_ranges_fit_quota` 与延迟 `FinishPreparedKVPhysicalPlan` 复刻这组行为，而不是仅按 SQL 文本缓存最终 plan 对象。
 - Go 使用 Domain statistics handle、pseudo estimate 与 isolation read 选择访问路径；Rust 的 `SessionDomainDataSourceProvider` 和 `populate_session_data_source` 提供相应接线。当前 Rust 适配对 CMSketch、主键 handle 等统计元数据仍是受限映射，文档不将其描述为 Go 全量统计结构的完全等价实现。
 - Go 正常 session 的 statement reset 涉及更广泛事务/执行状态；本文件只实现 executor direct-SELECT 所需子集。该边界由 `runtime.rs` 顶部说明确认：`ConcreteSession` 是窄运行时，不冒充完整 `sessionapi::Session` ABI。
@@ -137,12 +133,3 @@ RustCodeGraph 的文件节点列出 `runtime/scan_adapter_runtime_test.rs`、`ru
 - 修改直接 SELECT statement boundary 时，以 `reset_statement_context` 为唯一集中入口，并验证时区保留、hint restore/start、TaskID、CTE、killer、SQL mode flags 与动态分区裁剪不会跨语句泄漏。
 - Rust 单元测试必须继续放在独立文件。首选扩展 `pkg/session/runtime_test/planning.rs`（普通 planning/statement boundary）、`pkg/session/plan_cache_runtime_test.rs`（prepared cache/range/snapshot）、`pkg/session/runtime/scan_adapter_runtime_test.rs`（typed adapter 与执行终点）、`pkg/session/runtime_test/session.rs`（统计同步加载）、`pkg/session/cached_table_runtime_test.rs`（table-cache 标志）或 `pkg/session/runtime_pessimistic_test.rs`（事务导致的缓存失效），不要在 `planning.rs` 内嵌测试。
 - 兼容性风险主要是错误文本、cache key 漏项、schema/MDL 版本选择和 Go flags 不一致；性能风险主要是错误回退 pseudo、重复启动统计 worker、提前扫描表做估算、range 爆炸或不可缓存计划误准入。
-
-## 验证依据
-
-- RustCodeGraph：`status --json` 确认索引初始化且包含 11,467 个文件；`node --file pkg/session/runtime/planning.rs` 读取全部 2,769 行并获得文件关联；`query` 定位 `ExecutePlannedKVSelect`、`PreparePlannedKVSelect`、`ExecutePreparedPlannedKVSelect`、`OptimizeParsedSelect`、`SyncWaitStatsLoad` 和 `reset_statement_context`。`callers`/`callees` 对这些重名/impl 方法没有返回可用边，故调用边以索引文件关联和精确源码引用补证，没有据此臆造边。
-- 源码与装配：`pkg/session/runtime/planning.rs`、`pkg/session/runtime.rs`、`pkg/session/plan_cache_runtime.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/session/runtime/relational_scan.rs`、`pkg/session/runtime/explain_query.rs`、`pkg/session/runtime/control.rs`、`pkg/session/runtime/typed_adapter_bridge.rs`。
-- crate 边界：`pkg/session/Cargo.toml` 的 `[package.metadata.porting]`、`[features]` 与 planner/executor/domain/statistics/kv 等 path dependencies。
-- Go 对照：`pkg/session/session.go`（`PrepareStmt`、`ExecutePreparedStmt`、`GetPlanCtx`）、`pkg/planner/optimize.go`（`Optimize`、`buildLogicalPlan`）、`pkg/planner/core/optimizer.go`（`adjustOptimizationFlags`、`DoOptimize`）、`pkg/planner/core/rule/rule_collect_plan_stats.go`、`pkg/statistics/handle/syncload/stats_syncload.go`。
-- 独立 Rust 测试：`pkg/session/runtime_test/planning.rs` 覆盖 statement boundary、canonical builder/optimizer/KV 路径、hint 和索引选择；`pkg/session/plan_cache_runtime_test.rs` 覆盖 covering/double-read 计划、跨会话实例缓存、参数 range 重建、range 配额回退、延迟缓存准入；`pkg/session/runtime_test/session.rs` 覆盖统计同步加载成功和零超时；`pkg/session/runtime/scan_adapter_runtime_test.rs` 覆盖 prepared typed adapter/执行终点；`pkg/session/cached_table_runtime_test.rs` 与 `pkg/session/runtime_pessimistic_test.rs` 分别覆盖 table-cache marker 和事务状态导致的计划缓存失效。
-- Go 测试证据：`pkg/statistics/handle/syncload/stats_syncload_test.go` 覆盖同步等待与错误结果；`pkg/session/test/common/prepare_dedup_cache_test.go` 记录 prepared statement 独立 AST/缓存语义。本文只用于结构与语义分析，按任务约束未运行 Cargo 或代码测试。

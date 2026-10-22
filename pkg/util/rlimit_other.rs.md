@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util` crate 在非 Windows 平台上的进程文件描述符软上限查询实现。文件级 `#![cfg(not(windows))]` 保证其中代码只在非 Windows 目标参与编译；模块由 [`pkg/util/lib.rs`](lib.rs) 的 `pub mod rlimit_other` 暴露。crate 边界由 [`pkg/util/Cargo.toml`](Cargo.toml) 定义，实际使用的直接外部依赖是 `libc`（调用 `getrlimit`、读取 `rlimit`）与 `log`（失败告警）。
-
-当前 Rust 仓库内没有发现生产代码调用 `rlimit_other::GenRLimit`；Rust 侧直接消费点均为测试。完整应用中对应能力目前可从 Go 同名实现的两个生产调用点观察：表导入在 `pkg/executor/importer/import.go` 中把结果写入 `BackendConfig.MaxOpenFiles`，DDL ingest 在 `pkg/ddl/ingest/env.go` 中把结果保存到 `litRLimit` 并记录初始化日志。因此，本文件已经提供与 Go 对齐的公共查询能力，但不能据现有证据声称 Rust 主链已经接线。
+完整应用中对应能力目前可从 Go 同名实现的两个生产调用点观察：表导入在 `pkg/executor/importer/import.go` 中把结果写入 `BackendConfig.MaxOpenFiles`，DDL ingest 在 `pkg/ddl/ingest/env.go` 中把结果保存到 `litRLimit` 并记录初始化日志。
 
 ## 核心职责
 
@@ -64,7 +62,7 @@
 
 实现结构的主要差异是 Rust 将策略拆成可注入的 `gen_rlimit_with` 以支持独立单元测试，并用 `MaybeUninit` 明确表示 C 函数写入前的未初始化状态；Go 使用已零初始化的 `syscall.Rlimit` 局部变量。Go 使用结构化 `logutil.BgLogger`/`zap` 字段，Rust 使用 `log::warn!` 格式化文本，但都保留来源、错误和默认值信息。
 
-Windows 对照由 `pkg/util/rlimit_windows.go` 与 `pkg/util/rlimit_windows.rs` 提供，均固定返回 `1024`。未发现 Go 侧专门的 rlimit 单元测试；Rust 的专用测试因此是当前最直接的成功/错误分支证据。
+未发现 Go 侧专门的 rlimit 单元测试；Rust 的专用测试因此是当前最直接的成功/错误分支证据。
 
 ## 扩展指南
 
@@ -74,12 +72,3 @@ Windows 对照由 `pkg/util/rlimit_windows.go` 与 `pkg/util/rlimit_windows.rs` 
 - 若修改 `unsafe` 区域，必须继续保证非零返回时不读取输出缓冲区，并优先围绕系统调用建立可测试的安全封装。
 - 若调整平台条件，应同时检查 `pkg/util/rlimit_windows.rs` 和 `pkg/util/lib.rs` 的模块装配，避免同一目标缺失实现或产生名称冲突。
 - 性能上一次调用对应一次同步系统调用；若未来引入缓存，需要明确进程限制动态变化时的失效策略，而不能假定限制永久不变。
-
-## 验证依据
-
-- 源码与装配：`pkg/util/rlimit_other.rs`、`pkg/util/lib.rs`、`pkg/util/Cargo.toml`、`pkg/util/rlimit_windows.rs`。
-- Rust 测试：`pkg/util/rlimit_other_test.rs` 验证成功值、失败回退及告警内容；`pkg/util/cpu_posix_1_aster_unit_test.rs::printer_and_rlimit_are_operational` 验证公共入口可执行并在当前环境返回正数。
-- Go 对照与生产用途：`pkg/util/rlimit_other.go`、`pkg/util/rlimit_windows.go`、`pkg/executor/importer/import.go`、`pkg/ddl/ingest/env.go`。
-- RustCodeGraph：`query GenRLimit --kind function` 与 `node rlimit_other.rs::GenRLimit` 确认公共符号和到 helper 的调用；`node rlimit_other.rs::gen_rlimit_with` 确认签名、分支及来自公共入口和专用测试的调用。精确 `callers/callees` 子命令对同名符号存在结果消歧限制，因此生产调用者结论另以仓库范围 `rg` 核对。
-- 人工边界复核：确认文件仅查询软限制、不写资源限制；失败不传播、固定回退 `1024`；无共享状态、异步任务或资源持有；当前没有生产 Rust 调用点。
-

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`bundle.rs` 是 `astersql-ddl-placement` crate 中把元数据层的 `model::PlacementSettings` 转换成 PD placement rule group 的核心实现。crate 入口 `pkg/ddl/placement/lib.rs` 以私有模块 `mod bundle` 装载本文件，再通过 `pub use bundle::*` 暴露其 API；`pkg/ddl/placement/Cargo.toml` 则声明该 crate 直接依赖 `astersql-store-pdtypes`、`astersql-meta-model` 和 `astersql-tablecodec`，分别提供 PD 规则类型、表/分区/策略模型和 key 编码能力。
-
-在完整 DDL 链路中，本文件负责“计算规则”，而不负责提交 DDL job 或直接调用 PD。当前可确认的 Rust 生产入口有两处：`pkg/ddl/persistent_create_table.rs::create_table` 在事务中以 `Policies` 实现 `PolicyGetter`，调用 `NewFullTableBundles` 后通过 `JobExecutionContext::put_create_table_bundles` 写入 PD；`pkg/ddl/persistent_masking_actions.rs` 的表 ID 重建路径采用同样流程。因而它属于 job 驱动 DDL 的一个局部计算/接线组件：没有自己的 schema state machine、reorg/backfill、checkpoint、回滚状态或系统表写入，错误由上层 DDL job 路径决定是否取消。
+提供 bundle 身份、复制、判空、JSON 表示和 leader DC 查询等辅助行为（`Bundle::{String,Clone,IsEmpty,ObjectID,GetLeaderDC}`）。
 
 ## 核心职责
 
@@ -78,13 +76,13 @@ RustCodeGraph 对 `bundle.rs` 的文件索引和内部边可用，并确认 `New
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/placement/bundle.go`。Rust 文件保留了 Go 的主要 API 名称、字段名和流程：两套 options 构建、followers 上限、survival preferences、`Tidy` 合并矩阵、range 重建、`Reset` 规则命名与 key 编码、对象 ID 解析、leader DC 查询以及表/分区 bundle 组合。`pkg/ddl/placement/Cargo.toml` 的 `package.metadata.porting.go-package` 也明确指向 `pkg/ddl/placement`。
+Rust 文件保留了 Go 的主要 API 名称、字段名和流程：两套 options 构建、followers 上限、survival preferences、`Tidy` 合并矩阵、range 重建、`Reset` 规则命名与 key 编码、对象 ID 解析、leader DC 查询以及表/分区 bundle 组合。
 
 已确认的表示差异包括：Go `Bundle` 包装 `pd.GroupBundle` 且规则使用指针，Rust `Bundle` 直接拥有 `Vec<pd::Rule>`；Go `PolicyGetter` 返回 `*PolicyInfo`，Rust 返回拥有所有权的 `PolicyInfo`；Go 的 policy helper 接收完整 `PolicyRefInfo`，Rust 只把可选 policy ID 传入私有 helper。这些差异没有改变当前组合语义。
 
-需谨慎对待的行为差异是 `String`：Go 可借助 failpoint 强制造成 marshal 失败，Rust 仅通过 `unwrap_or_default` 保留“失败返回空串”的接口语义，当前测试未能注入序列化失败。另一个验证边界是接线覆盖：Go 的 RustCodeGraph 调用图显示 placement bundle 被建表、表/分区变更和 GC 等多处使用；Rust 仓库检索目前只确认建表和表 ID 重建路径调用 `NewFullTableBundles`。这说明文件级逻辑已经较完整，但不能宣称所有 Go 上游都已迁移。
+需谨慎对待的行为差异是 `String`：Go 可借助 failpoint 强制造成 marshal 失败，Rust 仅通过 `unwrap_or_default` 保留“失败返回空串”的接口语义，当前测试未能注入序列化失败。另一个验证边界是接线覆盖：Go 的 RustCodeGraph 调用图显示 placement bundle 被建表、表/分区变更和 GC 等多处使用；Rust 仓库检索目前只确认建表和表 ID 重建路径调用 `NewFullTableBundles`。
 
-测试对应关系也很明确：`bundle_test.rs` 后半段包含可执行 Rust 回归，覆盖 Go 的 options 表、Reset、Tidy、range、身份和 JSON；文件前半还保留大量注释化的 Go 迁移参考，不应把注释用例计作可执行覆盖。`bundle_1_aster_unit_test.rs` 提供较小的端到端行为组；`meta_bundle_test.rs` 可执行测试覆盖 `PolicyGetter` 与表/分区组合。
+测试对应关系也很明确：`bundle_test.rs` 后半段包含可执行 Rust 回归，覆盖 Go 的 options 表、Reset、Tidy、range、身份和 JSON；文件前半还保留大量注释化的 Go 迁移参考，不应把注释用例计作可执行覆盖。
 
 ## 扩展指南
 
@@ -95,12 +93,3 @@ RustCodeGraph 对 `bundle.rs` 的文件索引和内部边可用，并确认 `New
 - 若修正 `GetLeaderDC` 的“验证任意约束但读取第一条约束”限制，应同时修改 Go/Rust，并增加目标 DC 约束不在首位的独立测试；单边更改会破坏版本对齐。
 - Rust 单元测试继续放在同目录独立测试文件，由 `lib.rs` 的 `#[cfg(test)]` 模块声明接入，不要嵌入 `bundle.rs`。任何生产 Rust 修改完成后按仓库规则先执行 `cargo fmt --all`；本次仅新增文档，没有运行 Cargo。
 - 兼容风险主要是 PD JSON 字段、group/rule ID、rule index 和 key range；正确性风险集中在副本计数、约束冲突和继承/覆盖；性能风险主要来自规则数约为“模板规则数 × 物理 ID 数”，以及构建过程中多次克隆规则和 label。扩展时应避免无界增加规则组合。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 7,032 个 Rust 文件；`files --filter pkg/ddl/placement` 找到目标、Go 对照和独立测试；`node --file pkg/ddl/placement/bundle.rs` 分段读取全部 697 行；`explore` 核对内部调用链和 Go 上游；对 `NewFullTableBundles`、`NewBundleFromOptions` 执行了 `query`、`callers`、`callees`。精确 Rust 跨 crate callers 未返回结果，因此又用 `rg` 定位实际生产调用，没有把图的缺边解释成“无调用”。
-- 生产源码：`pkg/ddl/placement/bundle.rs`、`pkg/ddl/placement/lib.rs`、`pkg/ddl/persistent_create_table.rs`、`pkg/ddl/persistent_masking_actions.rs`；DDL 包契约读取自 `pkg/ddl/doc.go` 和 `docs/agents/ddl/README.md`。
-- crate/依赖：`pkg/ddl/placement/Cargo.toml`、`pkg/ddl/Cargo.toml`，以及引用 `astersql-ddl-placement` 的 workspace manifests。
-- Go 对照：`pkg/ddl/placement/bundle.go` 全部 705 行；RustCodeGraph 还显示其 Go 上游包括 `pkg/ddl/create_table.go`、`pkg/ddl/table.go`、`pkg/ddl/partition.go` 等。
-- 测试证据：`pkg/ddl/placement/bundle_test.rs`（可执行测试自约 1600 行开始）、`pkg/ddl/placement/bundle_1_aster_unit_test.rs`、`pkg/ddl/placement/meta_bundle_test.rs`，并对照 `bundle_test.go`、`meta_bundle_test.go` 的测试符号。按任务约束，本次没有运行 Cargo，因此这里记录的是测试源码所表达的边界，而不是新的测试执行结果。
-- 文档交付只要求结构验证：确认目标文件存在且恰有“文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据”十一个固定二级标题；该命令的实际退出码在任务完成时记录。

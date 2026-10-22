@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-tablecodec-rowindexcodec` crate 的实际分类逻辑，源码入口由同目录 `lib.rs` 的 `pub mod rowindexcodec` 引入并通过 `pub use rowindexcodec::*` 再导出。crate 在工作区根 `Cargo.toml` 中注册，`pkg/tablecodec/lib.rs` 又把它挂到 `tablecodec::rowindexcodec`，根门面 `pkg/lib.rs` 则通过 `facade_tablecodec_rowindexcodec` 暴露同一 API。
-
-它位于 SQL 层与存储键格式之间，只做 TiDB 表键的轻量类别识别：不解码 table id、handle 或 index id，也不负责键的构造。当前可确认的生产调用者是 `pkg/util/resourcegrouptag/resource_group_tag.rs` 中的 `GetResourceGroupLabelByKey`，后者把分类结果转换为资源组的 Row、Index 或 Unknown 标签。
+以只读切片和前缀比较完成判断，不进行完整反序列化、分配或错误对象构造。
 
 ## 核心职责
 
@@ -85,9 +83,7 @@ RustCodeGraph 将目标文件标记为被 `pkg/util/resourcegrouptag/resource_gr
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/tablecodec/rowindexcodec/rowindexcodec.go`。两版共同采用 0/1/2 三个类别值、`t`/`_r`/`_i` 三个字节前缀，以及“先查长度、再查表前缀、跳过 9 字节、依次查 row/index”的完全相同控制流。Rust 的 `starts_with` 对应 Go 的 `bytes.HasPrefix`，共享切片 `&key[9..]` 对应 Go 的 `key = key[9:]`。
-
-语言层面的差异是：Go 前缀变量为包内私有可变切片，Rust 前缀目前声明为公开的不可变 `static`；Go `KeyKind` 是独立命名类型，Rust 是 `i32` 类型别名。因此 Rust 对非法整数值的静态隔离较弱，但现有生产调用点用通配分支把其他值映射为 Unknown。
+语言层面的差异是：Go 前缀变量为包内私有可变切片，Rust 前缀目前声明为公开的不可变 `static`；Go `KeyKind` 是独立命名类型，Rust 是 `i32` 类型别名。
 
 `rowindexcodec_test.go::TestGetKeyKind` 的典型 row、index、空切片和 nil 用例已迁移到 `rowindexcodec_test.rs::TestGetKeyKind`；Go 的 nil 字节切片在 Rust 中由空切片表达。额外的 `migration_aster_unit_test.rs` 明确验证全部 0..10 长度、非表前缀、错误位置/未知分隔符和任意后缀，这些是对相同生产语义的边界加固，并未改变 Go 算法。
 
@@ -98,16 +94,3 @@ Go 对照文件是 `pkg/tablecodec/rowindexcodec/rowindexcodec.go`。两版共�
 若改变现有前缀、判别顺序或最短长度，必须先核对 Go `rowindexcodec.go` 及其测试，因为这会改变跨语言兼容行为。若目标是完整校验键结构，建议新增语义清晰的严格 API，而不是悄悄收紧 `GetKeyKind`：当前资源标签调用者依赖它的低成本、宽松分类特征。
 
 性能方面应继续保持无分配和固定前缀检查；不要为类别识别引入完整 table id/handle 解码。类型安全方面，未来可评估把别名升级为 enum，但这会影响数值兼容、公开 API、通配回退和门面再导出，不能作为局部重构处理。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 生产实现：`pkg/tablecodec/rowindexcodec/rowindexcodec.rs`，重点符号为 `KeyKind`、三个 `KeyKind*` 常量、三个 `*Prefix` 静态量和 `GetKeyKind`。
-- crate/模块边界：`pkg/tablecodec/rowindexcodec/Cargo.toml`、同目录 `lib.rs`、`pkg/tablecodec/lib.rs`、根 `pkg/lib.rs`，以及工作区根 `Cargo.toml`。
-- 生产调用点：`pkg/util/resourcegrouptag/lib.rs` 的再导出和 `pkg/util/resourcegrouptag/resource_group_tag.rs::GetResourceGroupLabelByKey`。
-- Go 语义：`pkg/tablecodec/rowindexcodec/rowindexcodec.go::GetKeyKind` 与 `rowindexcodec_test.go::TestGetKeyKind`。
-- Rust 测试：`rowindexcodec_test.rs::TestGetKeyKind`、`migration_aster_unit_test.rs` 的四个迁移回归，以及 `main_test.rs::TestMain`。
-- RustCodeGraph：`status` 显示项目索引含目标文件；`files --filter pkg/tablecodec/rowindexcodec` 列出相关 Rust/Go 文件；`node --file` 核对目标实现、测试、Go 对照、门面和生产调用点；目标函数的 `callers`、`callees`、`impact` 查询均为空，已用精确调用点与 Cargo 依赖补证。
-
-人工复核结论：文档区分了轻量分类与完整解码，说明了实际接线、所有返回分支、状态/资源特性、Go 差异和安全扩展位置；没有把索引缺失的调用边或未校验的键后缀描述为已验证能力。

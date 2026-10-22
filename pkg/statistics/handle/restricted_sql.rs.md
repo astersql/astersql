@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle` crate；模块由 [`lib.rs`](lib.rs) 的 `pub mod restricted_sql` 声明并整体再导出。它不是通用 SQL 引擎，而是 statistics handle 的持久化适配层：把一组已知的 `mysql.stats_*` / `mysql.tidb` 受限 SQL 模板映射到 `astersql_kv` 的键、快照和事务接口，同时在提交成功后同步内存 `Handle`。crate 边界和直接依赖见 [`Cargo.toml`](Cargo.toml)：核心依赖包括 `astersql-kv`、本 crate 的 `lockstats`、`storage`、`util` 以及统计模型类型。
-
-生产接线位于 [`../../domain/domain.rs`](../../domain/domain.rs)：`Domain::new_with_storage_handle` 构造 `KvStatsStore`，schema 发布调用 `reconcile_tables`，统计 delta flush 调用 `apply_stats_flush_batch`，会话启动路径通过 `restricted_system_sql_in_transaction` 借用既有事务。底层 `StatsKvStorage` 的真实实现是 [`../../domain/canonical_domain.rs`](../../domain/canonical_domain.rs) 中的 `StorageHandle`。
+提供 `KvStatsStore` 高层 API，并实现 `StatsSession` 与 `storage::SqlStore`，供 lockstats、统计 GC 和 Domain 调用。
 
 ## 核心职责
 
@@ -71,14 +69,9 @@ KV 错误统一经 `stats_error` 转为 `StatsError`；NotFound 由 `get` 映射
 
 ## 与 Go 版本的对应关系
 
-仓库没有同名 `restricted_sql.go`；该 Rust 文件把 Go 中依赖真实内部 SQL session 与 `mysql.stats_*` 表的多处分散语义集中成 KV 适配器。因此对照应按行为面而不是按文件一一映射。
+仓库没有同名 `restricted_sql.go`；该 Rust 文件把 Go 中依赖真实内部 SQL session 与 `mysql.stats_*` 表的多处分散语义集中成 KV 适配器。
 
-- [`bootstrap.go`](bootstrap.go) 的 `InitStatsLite`：只加载 meta 与列/索引存在性，不加载 TopN、bucket、FM Sketch；全量替换缓存，指定 table IDs 时只合并目标表。对应 `init_tables_lite` / `reconcile_table_ids`。
-- [`lockstats/lock_stats.go`](lockstats/lock_stats.go) 与 [`lockstats/unlock_stats.go`](lockstats/unlock_stats.go)：插入锁记录、提升 meta version、读取/合并 delta、最后删锁；对应 `RestrictedSQLExecutor` 实现，count 同样不得变为负数。
-- [`storage/gc.go`](storage/gc.go)：表 GC、单直方图 GC、history 保留期及 `tidb_stats_gc_last_ts`；对应 `storage::SqlStore` 实现。soft 删除仍清 bucket/FM，单直方图删除同步清其 bucket/FM。
-- [`storage/save.go`](storage/save.go)、[`storage/read.go`](storage/read.go)、[`history/history_stats.go`](history/history_stats.go) 提供 histogram/FM/history SQL 模板来源。
-
-差异是 Rust 目前用私有 KV layout 模拟这些系统表，而 Go 通过完整 SQL/事务/session 执行；Rust 仅实现已接线模板，且 TopN 等部分语句为空操作。文档所称“对齐”限于上述已验证的可观察行为，不代表完整 SQL 兼容。
+差异是 Rust 目前用私有 KV layout 模拟这些系统表，而 Go 通过完整 SQL/事务/session 执行；Rust 仅实现已接线模板，且 TopN 等部分语句为空操作。
 
 ## 扩展指南
 
@@ -89,11 +82,3 @@ KV 错误统一经 `stats_error` 转为 `StatsError`；NotFound 由 `get` 映射
 测试必须放在独立 Rust 测试文件。最直接的集成面是 [`../../testkit/mockstore_domain_stats_test.rs`](../../testkit/mockstore_domain_stats_test.rs)；GC trait 算法位于 [`storage/gc_test.rs`](storage/gc_test.rs)，异步损坏 bucket 读取位于 [`../asyncload/async_load_test.rs`](../asyncload/async_load_test.rs)，lockstats 语义位于 [`lockstats/lock_stats_test.rs`](lockstats/lock_stats_test.rs) 与 [`lockstats/unlock_stats_test.rs`](lockstats/unlock_stats_test.rs)。涉及 Go 对齐时同步核对对应 `.go` 测试，而不是缩减 Rust 行为。
 
 兼容风险主要是键格式/载荷升级和 SQL 模板漂移；正确性风险是提交后缓存同步、锁表 delta 重复应用或丢失；性能风险是全前缀物化扫描、整表 delete-and-rewrite 和全局 operation lock 串行化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter` 确认文件被索引；`node --file ... --offset/--limit` 覆盖 1–2895 行；`query` 定位 `KvStatsStore`、`KvRestrictedExecutor`、`with_executor`、`reconcile_tables`、`apply_stats_flush_batch`、`system_sql_in_transaction`；`explore` 与 callees 结果确认 `execute/system_sql_in_transaction -> ExecRestrictedSQL`、各入口到 `with_executor`，以及 `with_executor -> begin/StartTS/commit/Rollback`。
-- Rust 源与接线：[`restricted_sql.rs`](restricted_sql.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`../../domain/domain.rs`](../../domain/domain.rs)、[`../../domain/canonical_domain.rs`](../../domain/canonical_domain.rs)、[`../../session/runtime/admin.rs`](../../session/runtime/admin.rs)、[`../../session/runtime/statistics.rs`](../../session/runtime/statistics.rs)。目标包未发现 `doc.go`。
-- Rust 独立测试：[`../../testkit/mockstore_domain_stats_test.rs`](../../testkit/mockstore_domain_stats_test.rs) 覆盖原子批量 flush 失败重试、锁表 delta、整表/选择性 GC、history 保留、GC 时间戳跨 store 重建及普通/受限查询一致性；[`storage/gc_test.rs`](storage/gc_test.rs) 覆盖 GC 算法；[`../asyncload/async_load_test.rs`](../asyncload/async_load_test.rs) 覆盖损坏 bucket 边界。
-- Go 对照：[`bootstrap.go`](bootstrap.go)、[`lockstats/lock_stats.go`](lockstats/lock_stats.go)、[`lockstats/unlock_stats.go`](lockstats/unlock_stats.go)、[`storage/gc.go`](storage/gc.go)、[`storage/save.go`](storage/save.go)、[`storage/read.go`](storage/read.go)、[`history/history_stats.go`](history/history_stats.go) 及其相邻测试。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终以固定 11 章节结构检查和人工事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。`pkg/expression/Cargo.toml` 指定 `lib.rs` 为库入口并关闭自动测试发现；`pkg/expression/lib.rs:324-325` 通过 `#[path = "errors.rs"] mod expression_errors_kernel;` 将本文件作为私有内核模块编入 crate，`lib.rs:850-853` 只在 `cfg(test)` 下把该模块内容重导出为 `expression_errors`，供独立测试使用。
-
-它对应 Go 的 `pkg/expression/errors.go`：集中构造 Expression 错误类的标准错误，并提供三条依赖求值上下文的错误/警告分流逻辑。它不是通用 Rust `Error` 枚举，也不负责解析 SQL、求值表达式或定义 `EvalContext`。当前 Rust 生产接线仍是局部的：直接源码引用可确认 `pkg/expression/builtin.rs:4234` 调用无效时间处理器，`pkg/expression/extension.rs:209` 使用权限错误；大量已定义错误目前没有来自其他生产 Rust 文件的直接引用，不能因为定义已存在就推断 Go 表达式错误路径已经全部迁移。
+对应 Go 的 `pkg/expression/errors.go`：集中构造 Expression 错误类的标准错误，并提供三条依赖求值上下文的错误/警告分流逻辑。
 
 ## 核心职责
 
@@ -74,13 +72,10 @@ warning 的并发安全和生命周期由具体 `EvalContext`/`WarnAppender` 实
 
 ## 与 Go 版本的对应关系
 
-主对照文件 `pkg/expression/errors.go` 与本文件的错误目录、三个特殊消息及三个处理函数基本逐项对应：
-
 - Go 包级 `var` 由 Rust `LazyLock<Box<terror::Error>>` 表达；`standard_error!` 消除重复声明，但仍使用同一个 `ClassExpression` 和 errno。
 - Go 的普通 `error`/`nil` 对应 Rust 的 `Option<SharedError>`；`handleInvalidTimeError` 保留 nil 短路、六类 `Equal` 判断与非目标错误原样返回。
 - Go `handleDivisionByZeroError` 直接把 `ErrDivisionByZero` 交给 `HandleError`；Rust 先用 `shared` 转成上下文需要的共享错误，策略结果一致。
 - Go 包溢出函数用 `FastGenByArgs(exprName, size)`，在 `TruncateAsWarning || IgnoreTruncateErr` 时追加 warning，否则 `errors.Trace(err)`；Rust 保留同一参数顺序、分支和 trace 语义，只把返回类型表示为 `Result<(), SharedError>`。
-- `pkg/expression/errors_35_aster_unit_test.rs` 验证 Warn/Error/Ignore 的除零分支、两个截断标志及消息参数、五个已分组时间错误、未分组 week-mode 行为、严格模式、无关错误身份与空错误。
 
 差异主要在接线范围而非本文件算法：Go 的同包未导出符号天然可供大量 builtin 文件使用，Rust 的私有内核必须显式通过限定路径或门面访问；当前 Rust 直接生产引用远少于 Go。Go 文件中的每个声明也不等于 Rust 同名声明已替代所有运行路径。
 
@@ -91,12 +86,3 @@ warning 的并发安全和生命周期由具体 `EvalContext`/`WarnAppender` 实
 3. 修改除零或包溢出策略时，覆盖 Error/Warn/Ignore 及 `TruncateAsWarning`/`IgnoreTruncateErr` 的组合，保留 warning 数量和格式化参数断言；还应核对 Go 的算术、字符串和 cast 调用点。
 4. 若把更多 Rust builtin 接入本模块，使用 `crate::expression_errors_kernel::<symbol>` 或设计明确的生产再导出，并验证实际调用边。不要误用 `core_support.rs` 中同名但类型不同的错误常量。
 5. 错误目录变更的主要兼容风险是 MySQL 错误码、文本参数和错误组路由；性能风险很低，主要是首次 `LazyLock` 初始化、错误克隆和 warning 追加。引入带会话参数的缓存或全局可变状态前必须重新评估隔离与并发。
-
-## 验证依据
-
-- 源码与模块：通过 RustCodeGraph 完整读取 `pkg/expression/errors.rs:1-157`；源码复核 `pkg/expression/lib.rs:324-325, 659-662, 850-853`、`pkg/expression/builtin.rs:4234-4241`、`pkg/expression/extension.rs:209` 和同名边界 `pkg/expression/core_support.rs:153`。
-- crate 声明：读取 `pkg/expression/Cargo.toml`，确认 crate 名、`lib.rs` 入口、`autotests = false`、相关本地依赖及 `go-package = "pkg/expression"` 迁移元数据。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/expression/errors.rs --offset 1 --limit 260` 返回完整文件和 5 个使用文件；`query` 同时定位到 Go/Rust 同名处理器。`callers`/`callees` 因同名消歧未给出结果，故使用精确限定路径搜索补齐直接边。
-- Go 对照：完整读取 `pkg/expression/errors.go`；精确搜索确认 `builtin_time.go`、`builtin_cast.go`、`builtin_arithmetic.go`、`builtin_string.go` 及向量化文件的调用范围。
-- Rust 测试：完整读取 `pkg/expression/errors_35_aster_unit_test.rs`，确认三个处理器的分支、不变量、消息参数与错误身份；`lib.rs` 显式装配该独立测试。RustCodeGraph 还列出三个使用错误模块的相邻测试文件，但它们不是三个处理器的主行为测试。
-- 本任务只新增本文档，未运行 Cargo。交付检查包括固定 11 个二级标题的结构命令、文档 diff 人工复核和仓库状态复核；没有把未执行的代码测试作为完成证据。

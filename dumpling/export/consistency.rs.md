@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`consistency.rs`](consistency.rs) 属于 Cargo 包 `astersql-dumpling-export`。该包由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 定义为库，`package.metadata.porting.go-package = "dumpling/export"` 指明它对照 Go 的 `dumpling/export` 包。crate 根 [`lib.rs`](lib.rs) 不是用独立子模块封装本文件，而是在 `sql.rs` 之后、`metadata.rs` 之前通过 `include!("consistency.rs")` 把它并入 crate 根，因此本文件中的公开符号直接成为 `astersql-dumpling-export` 的公开 API，并可直接使用 crate 根已经导入或定义的 `Config`、`DB`、`Conn`、`Error`、`ServerType`、`HashMap` 与 `tcontext`。
-
-本文件位于 Dumpling 导出主链的“一致性保护”边界：[`dump.rs`](dump.rs) 的 `Dumper::Dump` 在生成元数据、表任务和文件之前创建控制器并执行 `Setup`，在导出闭包结束后执行 `TearDown`。它把配置字符串分派为无操作、全局读锁或逐表读锁策略；快照本身由其他查询配置实现，本文件对 TiDB 的 `snapshot` 只返回无操作控制器。`auto` 的选择也不在本文件完成，而由 `dump.rs::resolveAutoConsistency` 在更早阶段把它解析成具体模式。
+`ConsistencyNone` 为 `none` 以及合法 TiDB `snapshot` 提供统一但无副作用的生命周期实现。
 
 ## 核心职责
 
@@ -102,7 +100,7 @@ flush 与非空 lock 的资源顺序是“取得专用连接 -> 加锁 -> 导出
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`consistency.go`](consistency.go)，直接 Go 测试是 [`consistency_test.go`](consistency_test.go)。两版保留了相同模式字符串、控制器三段接口、flush/lock/none 三种实现、TiDB snapshot 限制、TiDB table-lock 开关检查、1146 跳过缺失表以及空锁 SQL 转 no-op 的整体意图。
+两版保留了相同模式字符串、控制器三段接口、flush/lock/none 三种实现、TiDB snapshot 限制、TiDB table-lock 开关检查、1146 跳过缺失表以及空锁 SQL 转 no-op 的整体意图。
 
 主要差异如下：
 
@@ -115,8 +113,6 @@ flush 与非空 lock 的资源顺序是“取得专用连接 -> 加锁 -> 导出
 - Go `TearDown` 通过 defer 保证关闭并置空；Rust 用 `Option::take` 获得同样的重复调用幂等形状。两版都忽略关闭错误并优先返回解锁结果。
 - Go `snapshotFieldIndex` 是包内常量；Rust 将其公开，但当前没有观察到 Rust 使用者。
 
-Rust [`consistency_test.rs`](consistency_test.rs) 覆盖模式基本路径、1146 恰好一次重试、唯一基表消失后的空锁状态、非法模式/服务端组合和 TiDB 开关关闭。Go 测试还明确验证控制器具体动态类型、精确 SQL mock，以及 `auto` 在 unknown/MariaDB、无 SUPER 权限回退到 lock 等路径；这些 `auto` 逻辑属于 `dump.rs::resolveAutoConsistency`，不是本文件职责。Rust parity 测试补充了 none 生命周期、非 TiDB snapshot、TiDB flush 和关闭连接后 ping 失败等契约。
-
 ## 扩展指南
 
 - 新增一致性模式时，在本文件增加模式常量与 `NewConsistencyController` 分支，并同步检查 `dump.rs::resolveAutoConsistency`、`needRepeatableRead`、CLI 默认值/校验和 `config.rs`。测试应扩展独立的 [`consistency_test.rs`](consistency_test.rs) 与 [`parity_test.rs`](parity_test.rs)，不要把测试写入生产文件。
@@ -126,14 +122,3 @@ Rust [`consistency_test.rs`](consistency_test.rs) 覆盖模式基本路径、114
 - 修改 TiDB 开关检测时，要统一 `CheckTiDBEnableTableLock` 实际 SQL、Rust 测试 seed 和 Go 对照语义，并分别覆盖“查询失败”“无行”“false/0”“true/1”。
 - 修改 trait 签名或线程使用方式时，评估 `Send`/`Sync`、context 传播和锁连接的线程亲和性。不要仅为跨线程共享加 `Sync`，除非 `Conn` 和所有实现状态都满足真实并发安全要求。
 - 正确性风险集中在锁覆盖区间、错误后资源释放和配置副本回写；兼容风险集中在公开 Go 风格名称、错误文本及 SQL；性能风险主要是锁持有时间和大表集合反复重建 SQL/配置，而不是本文件内的 CPU 并行度。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件、307,296 个节点和 1,848,419 条边；`files --filter dumpling/export/consistency.rs` 确认目标已索引且有 26 个符号。
-- RustCodeGraph `node --file dumpling/export/consistency.rs --offset 1 --limit 500`：读取全部 223 行，核对五个模式常量、错误工厂、trait、工厂、三个控制器、锁 setup 循环和快照列索引。
-- RustCodeGraph `query`：确认 `NewConsistencyController` 同时存在 Go/Rust 定义，`consistency_lock_setup` 只有 Rust 定义，并定位两个具体控制器；`explore` 确认 Rust 工厂由 `dump.rs::Dump` 与独立测试调用，`consistency_lock_setup` 由控制器 `Setup` 调用，下游包含 `newLockTablesBackoffer`、`buildLockTablesSQL`、`CheckTiDBEnableTableLock` 与 `filterTablesFunc`。
-- RustCodeGraph 精确 `callers/callees` 命令已执行，但在 30 秒限制内没有产出；具体调用边随后由索引 `explore` 和直接入口/helper 源码交叉核验。
-- 已读 crate 与生产接线：`dumpling/export/Cargo.toml`、`dumpling/export/lib.rs`、`dumpling/export/dump.rs`、`dumpling/export/sql.rs`、`dumpling/export/retry.rs`、`dumpling/export/block_allow_list.rs`。
-- 已读 Go 对照与测试：`dumpling/export/consistency.go`、`dumpling/export/consistency_test.go`；已读独立 Rust 测试：`dumpling/export/consistency_test.rs`、`dumpling/export/parity_test.rs`。这些证据覆盖模式分派、锁 SQL、1146 收敛、空锁、错误分支、连接关闭与 Go/Rust 差异。
-- 仓库搜索确认 `snapshotFieldIndex` 当前只在本文件定义；`ConsistencyTypeAuto` 的生产解析位于 `dump.rs::resolveAutoConsistency`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令验证文档存在且恰有十一个固定二级章节，并人工复核本说明能回答文件为何存在、如何进入导出主链、各模式如何运行以及扩展时必须同步哪些独立测试。

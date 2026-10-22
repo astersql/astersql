@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-chunk` crate。`pkg/util/chunk/Cargo.toml` 以 `lib.rs` 为 crate 入口，并用 `package.metadata.porting.go-package = "pkg/util/chunk"` 记录 Go 来源；`pkg/util/chunk/lib.rs` 通过 `#[path = "row.rs"] pub mod row` 挂载模块，再把 `Row` 重导出到 crate 根。文件直接依赖 crate 内的 `Chunk`、`Column`、`mysql` 和 `types`，标准库依赖只有 `Arc`。
-
-它位于列式 `Chunk` 与按行消费数据的上层逻辑之间：`Chunk` 负责按列保存数据，`Row` 只保存 Chunk 地址和物理行下标，把 `Column` 的读取接口包装成行视角。`Chunk::GetRow` 是主要构造入口；`List::GetRow`、`MutRow::ToRow`、迭代器以及磁盘行容器再通过这一入口或内部构造器向 executor、expression 等上层提供行访问。RustCodeGraph 的目标文件节点显示它被 45 个索引文件使用，说明它是 chunk crate 的基础数据视图，而不是独立存储格式。
+位于列式 `Chunk` 与按行消费数据的上层逻辑之间：`Chunk` 负责按列保存数据，`Row` 只保存 Chunk 地址和物理行下标，把 `Column` 的读取接口包装成行视角。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ Row 使用裸 `*mut Chunk`，但所有公开读取方法把它解引用成 `&Chu
 
 ## 与 Go 版本的对应关系
 
-Rust 实现逐项对应 `pkg/util/chunk/row.go`：`RowSize`、行句柄、类型化 getter、Datum 转换 switch、raw/NULL 访问、深拷贝和 `ToString` 的分支顺序均保留 Go 意图。关键兼容点包括整数 unsigned flag、YEAR 恒为有符号、字符串 collation、Decimal 未指定 scale 时使用真实 fraction、Enum/Set 的字符串显示和 `NULL` 字面量。
-
 语言和所有权差异包括：Go Row 只有 `*Chunk + int`，Rust 额外增加 `Option<Arc<Chunk>>` 以支持安全保活已复制或磁盘读回的数据；因此 Rust `RowSize` 是 Rust 句柄大小，不保证数值等于 Go。Go `Chunk()` 可返回 nil，Rust `Chunk()` 在空行上 panic；Go 的 slice/string 可直接引用 Column backing storage，Rust `GetBytes` 和 `GetString` 返回拥有值。Go `GetMyDecimal` 返回指针，Rust 返回值类型。Go 的 `CopyConstruct` 依赖逃逸分析保持新 Chunk 存活，Rust 显式用 Arc 保活。
 
 Go `GetDatumRowWithBuffer` 同样按传入 datumRow 长度循环，Rust保留了短缓冲只转换前缀的语义。Go `ToString` 也遍历全部 Chunk 列并索引对应 FieldType；Rust 独立测试据此把短字段切片定义为调用契约违例。Go `row_in_disk_test.go` 比较原 Chunk 行与磁盘读回行的 `GetDatumRow`，Rust 的 `row_container_4_aster_unit_test.rs` 则覆盖类型读取、NULL、`ToString`、`CopyConstruct` 和磁盘读回。
@@ -88,13 +84,3 @@ Go `GetDatumRowWithBuffer` 同样按传入 datumRow 长度循环，Rust保留了
 修改生命周期或构造路径时重点检查 `Row::{view, from_owned, CopyConstruct, clone}`、`Chunk::GetRow`、`MutRow::ToRow` 和 `DataInDiskByRows::GetRow`。任何新增借用式构造都必须证明 Chunk 地址和存活期稳定；任何自持有构造都必须保证裸指针来自最终 Arc 分配。修改并发声明前必须审计 Chunk/Column 的可变访问，不能仅凭读取方法签名维持 `unsafe Send/Sync`。
 
 测试必须继续放在独立文件，不得嵌入 `row.rs`。直接同步 `pkg/util/chunk/row_test.rs`；基础行访问、深拷贝和磁盘生命周期可扩展 `pkg/util/chunk/row_container_4_aster_unit_test.rs`，Go 对照应核查 `pkg/util/chunk/row.go`、`chunk_test.go`、`row_in_disk_test.go`。建议覆盖每种 MySQL 类型、NULL、unsigned/YEAR、Decimal 未指定 scale、未知类型的缓冲复用、selection vector、空 Row、非法列/行下标、短/长 buffer、短 FieldType、复制后销毁或重置原 Chunk，以及仅在具备同步保证时才添加跨线程读取测试。性能风险主要来自新增克隆/分配、把直接 Column 访问改成重复转换，以及无意让常用 getter 进入锁或 Arc 热路径。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，其中 Rust 文件 7,032 个；`files --filter pkg/util/chunk` 确认目标、模块入口和独立测试均已索引。
-- 目标源码：`node --file pkg/util/chunk/row.rs --offset 1 --limit 400` 完整读取 342 行，核对 `RowSize`、`Row` 三个字段、trait impl、两个构造器、全部 getter、Datum switch、深拷贝和格式化逻辑；`query CopyConstruct`、`query DatumWithBuffer`、`query GetDatumRowWithBuffer` 和 `query from_owned` 用文件路径消歧 Rust/Go 同名符号。
-- crate 与入口：`pkg/util/chunk/Cargo.toml`、`pkg/util/chunk/lib.rs`；后者在 106--108 行挂载并重导出 Row，在 195--197 行把 `row_test.rs` 作为独立测试模块挂载。
-- 直接构造与调用链：`pkg/util/chunk/chunk.rs` 的 `GetRow`/`AppendRow`，`pkg/util/chunk/list.rs` 的 `GetRow`，`pkg/util/chunk/mutrow.rs` 的 `ToRow`，`pkg/util/chunk/row_in_disk.rs` 的 `GetRow`/`GetRowAndAppendToChunk`；生产消费示例经精确源码搜索核对 `pkg/expression/column.rs`、`pkg/expression/builtin.rs` 和 `pkg/dxf/framework/storage/*`。
-- Go 对照与测试：`pkg/util/chunk/row.go`、`pkg/util/chunk/row_test.rs`、`pkg/util/chunk/row_container_4_aster_unit_test.rs`、`pkg/util/chunk/row_in_disk_test.go`、`pkg/util/chunk/chunk_test.go`。仓库中不存在独立的 `pkg/util/chunk/row_test.go`，因此 Go 证据来自上述相邻测试。
-- 调用图限制：对三个精确 Rust 方法 ID 执行 `callers/callees` 时在 30 秒窗口内未产生输出；文档已用目标文件节点的 used-by 信息、精确符号查询和调用点源码搜索补齐，不把无输出解释为无调用者。
-- 已人工核对：本文说明了文件存在原因、行读取与 Datum 转换流程、裸指针/Arc 生命周期、panic 与未知类型边界、Go 对齐关系和安全扩展位置。任务是纯文档分析，按计划未运行 Cargo。

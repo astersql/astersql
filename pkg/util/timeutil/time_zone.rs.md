@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-timeutil` crate 的时区实现，模块入口由 `pkg/util/timeutil/lib.rs` 的 `pub mod time_zone` 暴露。crate 在 `pkg/util/timeutil/Cargo.toml` 中声明为 `astersql-util-timeutil`，时区实现直接依赖 `chrono = 0.4.45` 和 `chrono-tz = 0.10`；`tokio`/`tokio-util` 属于同 crate 的时间辅助功能，并非本文件的执行依赖。
-
-它位于 SQL 会话与后台调度共同使用的基础工具层：生产代码中，`pkg/session/runtime.rs::parse_stale_datetime_micros` 通过 `SystemLocation` 和 `Zone` 把无时区 SQL 时间解释为系统墙钟时间；`pkg/statistics/handle/autoanalyze/exec/exec.rs::CheckAutoAnalyzeWindow` 以及 `pkg/session/runtime/ttl_runtime.rs` 的 TTL 窗口判断通过 `WithinDayTimePeriod` 复用日内窗口语义。RustCodeGraph 显示该文件被 64 个文件引用；其中也包含测试和注释引用，因此具体生产链以这些已核对调用点为准。
-
-对应的 Go 基准实现是 `pkg/util/timeutil/time_zone.go`，独立 Rust 测试位于 `pkg/util/timeutil/time_zone_test.rs`，迁移补充测试位于 `pkg/util/timeutil/migration_aster_unit_test.rs`，Go 对照测试位于 `pkg/util/timeutil/time_zone_test.go`。
+用 `Location` 统一表示 IANA 命名时区、固定 UTC 偏移和进程本地时区，并提供名称、指定 UTC 时刻偏移和本地墙钟时间转 UTC 的操作。
 
 ## 核心职责
 
@@ -87,13 +83,9 @@
 
 ## 与 Go 版本的对应关系
 
-整体结构对应 `pkg/util/timeutil/time_zone.go`：Rust `location_cache` 对应 Go `locCache`，`RwLock<HashMap<...>>` 对应 `sync.RWMutex + map`；`system_timezone` 和 `SET_SYSTEM_TIMEZONE_ONCE` 对应 `atomic.String` 与 `sync.Once`；`LoadLocation`、`Zone`、`ZoneName`、`ConstructTimeZone`、`WithinDayTimePeriod` 和 `ParseTimeZone` 保留相同分支意图。
-
-重要一致点包括：`System` 映射进程本地时区；输出时把 `Local` 改名为 `System`；有名称时 `ConstructTimeZone` 忽略偏移以保留 DST；无名时固定偏移；日内窗口转 UTC 后按分钟、闭区间和跨午夜规则判断；MySQL 固定偏移范围为 `-12:59` 到 `+14:00`；最终解析错误使用 `ErrUnknownTimeZone` 类。
-
 Rust 为承载 Go `*time.Location` 增加了显式 `Location` 枚举和 `local_datetime_to_utc`，并把 Go `time.LoadLocation` 替换为编译期 chrono-tz 数据。Go 固定偏移构造对任意 `int` 直接创建位置，Rust `Location::fixed` 还受 `FixedOffset::east_opt` 范围限制并可能返回 `InvalidOffset`。Go `types.ParseDuration` 的完整语义由 Rust 的局部 `parse_duration_seconds` 复刻为本任务所需格式；扩展格式时必须重新逐项核对，而不能假设两者天然等价。
 
-系统探测的错误可观测性也有差异：Go 会写日志后回退或返回空串，Rust 本文件不依赖日志组件，只通过返回值表达结果。Go 测试可直接重写包内原子变量，而 Rust 一次性设置无法重置，因此采用子进程测试隔离。`pkg/util/timeutil/time_zone_test.rs` 覆盖原 Go 用例主干，`migration_aster_unit_test.rs` 补充非法路径、偏移边界、缓存和跨午夜窗口。
+系统探测的错误可观测性也有差异：Go 会写日志后回退或返回空串，Rust 本文件不依赖日志组件，只通过返回值表达结果。Go 测试可直接重写包内原子变量，而 Rust 一次性设置无法重置，因此采用子进程测试隔离。
 
 ## 扩展指南
 
@@ -106,12 +98,3 @@ Rust 为承载 Go `*time.Location` 增加了显式 `Location` 枚举和 `local_d
 若改变缓存策略，应保持错误不缓存、并发读安全和 `Location` 值语义；引入淘汰或写锁二次检查前，应评估启动热路径和长期不同名称数量。若改变 `WithinDayTimePeriod`，需同步检查自动分析和 TTL 两条生产链，并明确相同起止点、秒精度、时区转换和跨午夜含义，避免把分钟窗口误改成瞬时时间比较。
 
 兼容风险主要来自 MySQL 错误类型和偏移范围、`Local`/`System` 名称映射、DST 歧义选择及 Go 的分钟窗口语义；性能风险集中在缓存锁竞争、重复冷加载和无界键增长。任何行为变更都应先增加对应独立回归测试，再修改生产实现。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被索引为 25 个符号并显示被 64 个文件使用。
-- RustCodeGraph 文件节点：完整读取 `pkg/util/timeutil/time_zone.rs`、`pkg/util/timeutil/time_zone_test.rs`、`pkg/util/timeutil/time_zone.go`、`pkg/util/timeutil/time_zone_test.go`、`pkg/util/timeutil/lib.rs`、`pkg/util/timeutil/errors.rs`，以及生产调用片段 `pkg/session/runtime.rs`、`pkg/session/runtime/ttl_runtime.rs`、`pkg/statistics/handle/autoanalyze/exec/exec.rs`。
-- RustCodeGraph 查询：`query ParseTimeZone`、`query SystemLocation`、`query GetSystemTZ`、`query ConstructTimeZone` 消除 Go/Rust 同名歧义；`explore` 确认 `ParseTimeZone -> SystemLocation -> system_timezone` 调用链及目标文件使用范围。直接 `callers/callees` 批量查询未稳定返回输出，因此没有把该轮空输出当作无调用边证据，具体边由已索引源码节点和精确 `rg` 调用点交叉核对。
-- 配置与模块证据：`pkg/util/timeutil/Cargo.toml` 确认 crate 名、`lib.rs` 路径、chrono/chrono-tz 依赖和 `go-package = "pkg/util/timeutil"`；`pkg/util/timeutil/lib.rs` 确认公开模块及独立测试装配。
-- 测试证据：`time_zone_test.rs` 覆盖 zoneinfo 路径、单步软链、子进程 `TZ`、SYSTEM/IANA/固定偏移、`Local`、名称格式与构造优先级；`migration_aster_unit_test.rs` 补充非法路径、非法/边界偏移、跨午夜窗口和缓存；`time_zone_test.go` 提供原 Go 行为基线。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前另运行任务指定的 11 章节结构命令，并人工检查文档只描述已由上述源码、调用点、配置或测试支持的事实。

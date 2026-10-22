@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` crate；crate 入口 `lightning/pkg/importer/lib.rs` 通过 `#[path = "meta_manager.rs"]` 装入模块并 `pub use meta_manager::*`，因此这里的公开常量、trait、构建器和管理器会成为 importer crate 的导出面。`lightning/pkg/importer/Cargo.toml` 将该 crate 标记为 Go 包 `lightning/pkg/importer` 的 Rust library 移植，当前主要依赖 crate 内的 SQL、PD、校验和、上下文与 `TableImporter` 抽象，而没有为本文件单独声明 feature。
-
-在 Lightning 导入链中，本文件位于“导入编排/单表导入”和“持久化协调状态”之间：
-
-- `lightning/pkg/importer/import.rs::NewImportControllerWithPauser` 按后端与 `ParallelImport` 选择 `dbMetaMgrBuilder`、`singleMgrBuilder` 或 `noopMetaMgrBuilder`，并保存为 `Controller::metaMgrBuilder`。
-- `lightning/pkg/importer/import.rs::Controller::preCheckRequirements` 调用 `metaMgrBuilder.Init`，让真实 DB 实现在正式导入前创建元数据 schema 和表。
-- `lightning/pkg/importer/check_info.rs::Controller::checkClusterRegion` 通过 `taskMetaMgr::CheckTasksExclusively` 判断已有任务是否已经越过初始状态，以决定是否跳过启动前 region 检查。
-- `lightning/pkg/importer/table_import.rs::TableImporter::postProcess` 通过表级管理器推进 checksum 状态并调用 `FinishTable` 清理表级元数据。
-
-这是一个实际行为文件，不是纯门面：DB 实现会发出建库、插入、锁定查询、更新、删除和清理 SQL；同时它也包含 no-op 与单任务内存实现。不过，与 `lightning/pkg/importer/meta_manager.go` 相比，Rust 当前仍是收窄后的移植，不能把接口同名理解为 Go 全部生产语义已经具备。
+通过 `taskMetaMgr` 协调整批任务：记录来源大小、独占检查任务集合、暂停/恢复 PD scheduler、判断是否应恢复集群与清理元数据，并提供单任务和 no-op 兼容实现。
 
 ## 核心职责
 
@@ -115,7 +106,7 @@ schema 生命周期为：builder 创建 schema/两张表，表完成后删除表
 
 ## 与 Go 版本的对应关系
 
-同路径 `lightning/pkg/importer/meta_manager.go` 是最直接的语义基准。Rust 对齐了 trait/struct 的分层、两张表的主要列、状态字符串、row-ID 跨 task 排序、checksum 的加法/XOR 聚合、任务完成判断，以及 no-op/single-task 替代实现。
+Rust 对齐了 trait/struct 的分层、两张表的主要列、状态字符串、row-ID 跨 task 排序、checksum 的加法/XOR 聚合、任务完成判断，以及 no-op/single-task 替代实现。
 
 当前已确认的差异与迁移缺口包括：
 
@@ -128,7 +119,7 @@ schema 生命周期为：builder 创建 schema/两张表，表完成后删除表
 - Go `CleanupAllMetas` 对表计数查询错误直接失败；Rust 特判 `not_found` 后允许继续，并可能把非法 count 当零。Go `Close` 关闭 PD；Rust `Close` 为空。
 - Go no-op `AllocTableRowIDs` 返回 nil checksum，Rust 因返回类型不是 `Option<KVChecksum>` 而返回全零 checksum；其余 no-op 合同（任务存在、无需 switch-back、允许 cleanup、需要远端 duplicate 检查）保持一致。
 
-Go 测试 `meta_manager_test.go` 使用 sqlmock 与 mockstore 覆盖 auto-ID 非零、已有数据 checksum、跳过 checksum、多 task 分配、checksum 冲突重试和真实事务期望；Rust 测试中的多个同名用例只对空内存夹具重复断言零基线，不能作为这些 Go 分支已移植的证据。Rust 目前更强的专门证据是 `test_alloc_table_row_ids_uses_locked_meta_ranges` 和 `test_local_checksum_aggregates_finished_peer`。
+Go 测试 `meta_manager_test.go` 使用 sqlmock 与 mockstore 覆盖 auto-ID 非零、已有数据 checksum、跳过 checksum、多 task 分配、checksum 冲突重试和真实事务期望；Rust 测试中的多个同名用例只对空内存夹具重复断言零基线，不能作为这些 Go 分支已移植的证据。
 
 ## 扩展指南
 
@@ -139,17 +130,3 @@ Go 测试 `meta_manager_test.go` 使用 sqlmock 与 mockstore 覆盖 auto-ID 非
 - 调整任务完成判定时，同步验证 `state` 与 `taskMetaStatus` 的二维状态机，尤其是“当前任务失败退出”“当前完成但其他任务仍在运行”“全部完成”三种结果，以及 DB 镜像何时刷新。
 - 修改清理函数前先确定调用者是否传入可信标识符，并增加非法 count、表不存在、仍有表记录、空/非空 `tableName` 的独立测试。schema 删除属于破坏性动作，不应通过放宽错误处理来提高表面成功率。
 - 测试继续放在独立的 `lightning/pkg/importer/meta_manager_test.rs`，不要内嵌到生产文件；需要对齐的 Go 回归仍以 `lightning/pkg/importer/meta_manager_test.go` 为行为清单，而不是把 Rust 现有简化测试当作完整规格。
-
-## 验证依据
-
-本说明基于以下可复核证据编写：
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；用 `node --file` 完整读取 `lightning/pkg/importer/meta_manager.rs` 1–1005 行，并查询 `metaMgrBuilder`、`dbTableMetaMgr`、`dbTaskMetaMgr`、`AllocTableRowIDs`、`CheckAndUpdateLocalChecksum`、`CheckAndPausePdSchedulers`、`CheckAndFinishRestore`、`MaybeCleanupAllMetas`。
-- RustCodeGraph 调用证据：`preCheckRequirements -> metaMgrBuilder::Init`，`checkClusterRegion -> taskMetaMgr::CheckTasksExclusively`，`TableImporter::postProcess -> UpdateTableStatus/FinishTable`；图查询还定位到 Rust 独立测试对各 builder/manager 方法的直接调用。由于 `callers` 子命令对重名 trait 方法未返回可区分结果，调用边又用精确 `explore` 与对应源码节点复核。
-- crate/模块证据：`lightning/pkg/importer/Cargo.toml`、`lightning/pkg/importer/lib.rs`。
-- Rust 上下游源码：`lightning/pkg/importer/import.rs`、`lightning/pkg/importer/check_info.rs`、`lightning/pkg/importer/table_import.rs`。
-- Rust 独立测试：`lightning/pkg/importer/meta_manager_test.rs`，重点是状态字符串、no-op 合同、单任务初始化/回调、SQL 发射、锁定范围分配和 peer checksum 聚合。
-- Go 对照：`lightning/pkg/importer/meta_manager.go` 全部相关实现段，以及 `lightning/pkg/importer/meta_manager_test.go` 的 row-ID、auto-ID、checksum、重试、任务排他与单任务用例。
-- 人工事实复核：确认本文件无条件编译项；确认真实 DB、no-op、single-task 三套实现的返回值与副作用；确认当前 Rust 与 Go 的事务、重试、auto-ID、PD 配置和资源关闭差异均在文档中显式标注，未将未接线能力写成已支持。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付结构验证应确认文件存在且恰好包含本文固定的十一个二级标题。

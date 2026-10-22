@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；`pkg/executor/Cargo.toml` 以 `lib.rs` 为库入口，而 `pkg/executor/lib.rs:136` 通过 `pub mod load_data` 对外公开本模块，`lib.rs:138` 将独立测试文件 `load_data_test.rs` 仅在测试构建中装入。文件提供一套以 `LoadDataBackend` 为边界的 LOAD DATA 执行模型：`LoadDataExec` 负责物理算子的打开、执行和关闭，`LoadDataWorker` 负责数据源分派与流水线编排，`encodeWorker` 和 `commitWorker` 分别负责行转换和事务写入。
-
-这套类型当前是公开的 executor crate API，也被 `pkg/executor/test/writetest/write_test.rs` 直接用于行为测试。但代码搜索没有找到生产 Rust 调用者构造 `LoadDataExec` 或调用 `NewLoadDataWorker`；当前 SQL 会话的实际 LOAD DATA 入口是 `pkg/session/runtime/load_data.rs::execute_load_data`，它自行读取文件、解析 CSV、构造 `InsertStmt` 并执行插入。因此，不应把本文件描述成已接入当前 Rust SQL 主链的唯一实现；它更准确地是 Go executor 路径的可复用移植边界和测试覆盖对象。
+文件提供一套以 `LoadDataBackend` 为边界的 LOAD DATA 执行模型：`LoadDataExec` 负责物理算子的打开、执行和关闭，`LoadDataWorker` 负责数据源分派与流水线编排，`encodeWorker` 和 `commitWorker` 分别负责行转换和事务写入。
 
 ## 核心职责
 
@@ -92,12 +90,9 @@ RustCodeGraph 记录的关键下游边包括：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/load_data.go`。Rust 保留了 Go 的主体分层和命名：`LoadDataExec`/`LoadDataWorker`、编码与提交双 worker、容量 1/16 的通道、字段映射、用户变量大小写不敏感、生成列占位、缺失非空时间列默认值、三种冲突策略、告警上限、受限 seek 包装和三个会话键。
-
-主要语义对应如下：
+Rust 保留了 Go 的主体分层和命名：`LoadDataExec`/`LoadDataWorker`、编码与提交双 worker、容量 1/16 的通道、字段映射、用户变量大小写不敏感、生成列占位、缺失非空时间列默认值、三种冲突策略、告警上限、受限 seek 包装和三个会话键。
 
 - Go `errgroup.WithContext` 的相互取消在 Rust 中由 `AtomicBool`、首错槽和 scoped threads 表达；Rust 用 `try_send + yield_now` 实现可检查取消的背压。
-- Go `terror.Log(dataParser.Close())` 对应 Rust 丢弃 `parser.close()` 错误，且 Rust 独立测试明确锁定该行为。
 - Go `parserData2TableData` 的严格/非严格分支、用户变量、生成列、时间默认值和 `ErrInvalidAutoRandom` 特例均有 Rust 对应。Rust backend 将 Go 的 session、expression 和 `InsertValues::getRow` 细节抽象成 `evaluate_assignment` 与 `normalize_row`。
 - Go Replace/Ignore 使用 `batchCheckAndInsert`，Error 逐行 `addRecord` 并应用 shard size hint；Rust保持同一分支结构。
 - Go `setResult` 按记录数复制初始化表达式告警并限制到 `math.MaxUint16`；Rust 使用 `MAX_WARNINGS` 和饱和算术实现同一结果形状。
@@ -123,13 +118,3 @@ Go 回归意图还由 `pkg/executor/test/writetest/write_test.go` 的 `TestLoadD
 - 若要把本模块接入实际 Rust SQL 主链，必须在 executor builder/session runtime 中提供真实 `LoadDataBackend` 并明确替换还是复用 `execute_load_data`；在完成接线前，不应把仅通过测试 backend 的能力声明为生产已支持。
 - 扩展 `SimpleSeekerOnReadCloser` 前先确认 parser/解压器真实 seek 契约；当前对象只承诺位置查询，不承诺随机访问或文件大小。
 - Rust 单元测试继续放在独立 `pkg/executor/load_data_test.rs`，跨 crate 的 Go 对齐回归放在现有 `pkg/executor/test/writetest/write_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标 `pkg/executor/load_data.rs` 可按行读取，共 956 行。
-- 已读取源码与边界：`pkg/executor/load_data.rs`、`pkg/executor/lib.rs` 的模块声明、`pkg/executor/Cargo.toml`、`pkg/executor/builder.rs::buildLoadData`、`pkg/session/runtime/load_data.rs::execute_load_data`。
-- 已读取测试：`pkg/executor/load_data_test.rs`；`pkg/executor/test/writetest/write_test.rs` 中 LOAD DATA backend 与 `TestLoadDataMissingColumn`、`TestIssue18681`、`TestIssue34358`；对应 Go 测试位于 `pkg/executor/test/writetest/write_test.go`。
-- 已读取 Go 对照：`pkg/executor/load_data.go` 的执行器生命周期、worker 构造、双 worker 流水线、字段转换、提交策略、测试辅助、受限 seeker 和会话键。
-- 已执行 RustCodeGraph `query`：`LoadDataExec`、`LoadDataWorker`、`encodeWorker`、`commitWorker`、`NewLoadDataWorker`、`initEncodeCommitWorkers`、`createInsertValues`、`SimpleSeekerOnReadCloser`、`LoadDataVarKey`。
-- 已执行 RustCodeGraph `callees`：`NewLoadDataWorker`、`load`、`processStream`、`commitOneTask`、`checkAndInsertOneBatch`、`execute_load_data`。图查询的 `callers` 对本文件关键方法未返回生产调用边，随后用模块引用搜索确认公开模块和测试调用者，并核对 session 当前独立入口。
-- 人工复核结论：本文区分了本文件的可复用 worker 能力和当前 SQL 主链接线事实；所有“已支持”描述均限定在本文件及 backend 契约内，没有把测试 backend 或 Go 行为推断成未验证的生产实现。

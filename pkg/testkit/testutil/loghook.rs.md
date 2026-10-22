@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-testkit-testutil` crate，是测试辅助层中的 `tracing` 日志捕获器，而不是数据库运行时日志主链。crate 入口 `pkg/testkit/testutil/lib.rs` 通过私有 `loghook` 模块 `include!("loghook.rs")`，再用 `pub use loghook::*` 暴露公开类型和函数；因此调用方从 crate 根使用 `WithLogHook`、`LogHook`、`LogField` 等 API。`pkg/testkit/testutil/Cargo.toml` 声明直接依赖 `tracing = "0.1"` 与 `tracing-subscriber = "0.3"`，对应事件模型和订阅层实现。
-
-当前仓库中实际执行该辅助器的 Rust 测试位于 `pkg/testkit/testutil/migration_aster_unit_test.rs::log_hook_filters_messages_and_retains_fields`。`pkg/session/test/session_test.rs` 中的相关行仍是注释形式，不能视为已接线调用。RustCodeGraph 对文件的索引显示 27 个符号；对限定到本文件的 `WithLogHook`、`Logs`、`on_event` 运行 callers/callees 查询时没有发现额外跨文件调用边。
+`Layer::on_event` 将 `tracing::Event` 的消息与结构化字段转换为本文件的 `LogEntry`/`LogField` 表示。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ dispatcher 由调用方负责在合适作用域安装和持有。当前测试用
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/testkit/testutil/loghook.go`。两版都有日志条目、字段断言、消息子串过滤、写入缓存、日志计数诊断和 `WithLogHook` 装配入口。Rust 的 `CheckMsg`/`CheckField`/`CheckFieldNotEmpty` 对应 Go 同名方法；`Check` 都在消息不含过滤串时拒绝条目；`CheckLogCount` 都先编码条目以便计数失败时展示内容。
-
 重要差异如下：
 
 - Go 版包装 `zapcore.Core`，用 `context.WithValue(..., logutil.CtxLogKey, logger)` 返回替换 logger 的 context；Rust 版实现 `tracing_subscriber::Layer`，返回需由调用方局部安装的 `Dispatch`，不接受 context 或测试对象。
@@ -86,8 +82,6 @@ dispatcher 由调用方负责在合适作用域安装和持有。当前测试用
 - Go 字段沿用完整 `zapcore.Field` 语义，Rust 只保存 `Visit` 暴露的六类值，并只向外提供字符串与 `i64` 期望值构造器。
 - Go `encode` 使用 zap 文本 encoder，包含其格式策略；Rust `encode` 是本地简化的制表符格式，且省略 target。二者都用于诊断，但输出文本不保证逐字相同。
 - Go 的 `Logs` 是公开切片字段且没有同步保护；Rust 使用私有互斥缓存和克隆快照，更适合 dispatcher 克隆体之间共享。
-
-因此当前 Rust 版本对齐的是测试意图和主要筛选/断言行为，不是 zap API、上下文传播或编码格式的逐项复制。
 
 ## 扩展指南
 
@@ -98,12 +92,3 @@ dispatcher 由调用方负责在合适作用域安装和持有。当前测试用
 若要支持清空或排空缓存，应在 `LogHook` 上新增显式方法并定义并发语义：是返回原子快照并清空，还是只清空已观察条目。需测试 dispatcher 克隆仍在写入时的行为。若日志量可能很大，当前无界 `Vec` 和 `Logs` 全量克隆会带来内存与复制成本；可考虑有界缓存，但必须明确丢弃策略并保留 `CheckLogCount` 的可诊断性。
 
 若要改变安装模型，入口是 `WithLogHook`。当前 API 有意把 dispatcher 的安装责任交给调用方；改为全局订阅器会引入一次性初始化和测试互相干扰风险，不应在没有隔离设计与并发回归测试时直接替换。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，其中目标 `pkg/testkit/testutil/loghook.rs` 有 27 个符号；读取了该文件全部 253 行。
-- RustCodeGraph 查询：对 `WithLogHook`、`LogHook`、`CheckLogCount` 做了精确查询；对限定到本文件的 `WithLogHook`、`Logs`、`on_event` 做了 callers/callees 查询。图确认内部调用，但未返回额外跨文件调用边，因此跨文件使用由文本搜索补证。
-- 源码与模块边界：`pkg/testkit/testutil/loghook.rs`、`pkg/testkit/testutil/lib.rs`、`pkg/testkit/testutil/Cargo.toml`。
-- Go 对照：`pkg/testkit/testutil/loghook.go` 全部 116 行。
-- 独立 Rust 测试：`pkg/testkit/testutil/migration_aster_unit_test.rs::log_hook_filters_messages_and_retains_fields`；文本搜索还发现 `pkg/session/test/session_test.rs` 中只有注释掉的 Go 风格示例，不计为执行覆盖。
-- 人工复核结论：文件是局部 tracing 测试捕获器；主要运行链、共享状态、panic 边界、Go 差异和安全扩展点均可回溯到上述符号与文件，没有把注释调用或未提供的能力描述为已支持。

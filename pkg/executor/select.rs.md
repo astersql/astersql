@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`select.rs` 属于 `astersql-executor` crate 的 SELECT 执行层。crate 根在 `pkg/executor/Cargo.toml` 中把库入口指定为 `lib.rs`，而 `pkg/executor/lib.rs:192` 以 `pub mod select` 暴露本模块。文件不是 SQL 解析或物理计划构造入口；它把 SELECT 阶段常见的拉取式执行算法、悲观锁处理以及语句上下文辅助操作表达为可由具体会话/存储适配器实现的 Rust 泛型代码。
-
-当前生产接线必须与“源码已存在”区分：仓库内可确认的 Rust 生产调用是 `pkg/executor/physical_plan_runtime.rs:45,91` 调用 `ExecuteLimitValues`，把已经解码的物理计划行应用 LIMIT/OFFSET。`SelectLockExec`、`SelectionExec`、`TableDualExec`、`TableScanExec`、`MaxOneRowExec` 和语句上下文包装函数虽有完整控制流，但没有在本文件中绑定真实 session/chunk/table/TiKV 类型；除测试外也未检索到这些泛型执行器的 Rust 构造点。因此它们目前是可适配的算法边界，而不是已证明接入全部 Rust SQL 主链的具体执行器。
-
-直接 Go 对照为 `pkg/executor/select.go`。Rust 模块保留 Go 风格的类型和方法名以方便逐项迁移，但以 `SelectRuntime`/`LimitRuntime` 将 Go 中的 `sessionctx`、`chunk`、`table`、事务和诊断副作用抽象出去。
+通过 `ExecuteLimitValues` 为已解码的 `Vec<T>` 提供真实可调用的 LIMIT 适配层；它构造单子节点运行时并严格执行 Open/Next/Close（`select.rs:664-811`）。
 
 ## 核心职责
 
@@ -117,7 +113,6 @@ Go 生产上游更完整：`pkg/executor/builder.go` 会构造 `SelectLockExec`�
 - `TableDualExec`：Go 版约束 0/1 行，并对零列 schema 使用 virtual row；Rust 统一调用 `append_null_row`，允许多行，具体零列行为由运行时决定。
 - `SelectionExec`：两版都有向量化/非批路径。Go 版用表达式可向量化性决定 batched，维护 memory tracker，并在非批路径逐行求值以保证 SETVAR/GETVAR 顺序；Rust 由运行时报告 `selection_batched` 并执行过滤，未在本文件内表达内存记账和该 SQL 副作用原因。
 - `TableScanExec`：两版都懒加载信息表全部记录再逐 chunk 输出。Go 版负责列转换、`IterRecords` 和 chunk list；Rust 将全部物化过程交给 `table_scan_all`。
-- `MaxOneRowExec`：0 行补 NULL、首批多行报错、恰好一行再探测下一批的语义一致。
 - StatementContext：Go `ResetContextOfStmt` 是近两百行的实际 session 状态重置流程；Rust 同名函数只委托 trait。`ResetUpdateStmtCtx`、`ResetDeleteStmtCtx`、TopSQL 和弱一致读同样只是转发，因此不能宣称已逐字段移植。
 - 全局 tracker：Rust 定义了原子容器与初始化标志，但没有在目标文件中实现 Go 的全局 tracker 挂接、消费链或后台监控逻辑，属于接口/状态骨架。
 
@@ -131,12 +126,3 @@ Go 生产上游更完整：`pkg/executor/builder.go` 会构造 `SelectLockExec`�
 - 修改 `MaxOneRowExec` 时，必须保留“恰好一行仍需再拉一次”的探测，否则跨 chunk 的第二行会漏报。
 - 扩展 StatementContext 时，应在具体 runtime 中逐项对齐 `pkg/executor/select.go:941` 起的 session 状态逻辑，而不是扩大本文件 trait 默认实现；同步 Rust 独立测试，并参考 `pkg/executor/select_test.go` 的 TiKV short-circuit 与 INSERT/IMPORT flags 用例。
 - Rust 单元测试继续放在 `pkg/executor/select_test.rs`，由 `lib.rs` 装配，不能内嵌回 `select.rs`。本文件已经保留 PingCAP 许可证并带有 `// Copyright 2026 AsterSQL.`，后续不得删除。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件、4,415 个 Go 文件；`node --file pkg/executor/select.rs --offset 1 --limit 500` 与 `--offset 500 --limit 650` 完整读取 1,096 行源码；`query` 定位了 Rust/Go 两版 `SelectLockExec`、`LimitExec`、`SelectionExec`、`ResetContextOfStmt` 和 Rust `ExecuteLimitValues`。通用名 callers/callees 查询未返回可用符号边，故调用点由后续精确检索核验。
-- Rust 源与装配：`pkg/executor/select.rs`、`pkg/executor/lib.rs`、`pkg/executor/physical_plan_runtime.rs`、`pkg/executor/Cargo.toml`。
-- Rust 独立测试：`pkg/executor/select_test.rs` 验证共享锁升级开关传播、稳定锁键去重、LIMIT 跨 chunk/边界/输入不足/count=0、锁键跨批缓冲至 EOF，以及 LOCK TABLES 过滤开关。
-- Go 对照：`pkg/executor/select.go`；Rust 对应类型在 Go 中的生产构造点由 `pkg/executor/builder.go` 精确检索确认。Go 语句重置测试为 `pkg/executor/select_test.go`，LIMIT/Selection required rows 还可见 `pkg/executor/executor_required_rows_test.go`。
-- 人工边界复核：区分了 Rust 已接入的 `ExecuteLimitValues` 与仅有泛型算法/测试证据的其他符号；没有把 Go builder 接线、session 副作用或 TiKV 细节误写为 Rust 当前事实。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行固定十一章节结构检查，并检查变更范围不包含 Rust、Go、Cargo 或只读 `plan.md`。

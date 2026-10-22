@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文对应的真实源文件是 [`pkg/planner/core/rule_predicate_push_down.rs`](rule_predicate_push_down.rs)。它属于 `astersql-planner-core` crate（`pkg/planner/core/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/planner/core/lib.rs` 以公开模块 `rule_predicate_push_down` 暴露。它提供一套基于简化 `PlanNode`/`Expression` 数据模型的谓词下推规则，以及给分片索引访问条件追加前缀表达式的辅助函数。
-
-当前实现是迁移中的局部基线，而不是 Go 规划器谓词下推子系统的完整等价实现：`pkg/planner/core/optimizer.rs::logicalOptimize` 的规则表会记录 `predicate_push_down`，但其 `normalize` 当前只实际处理 `projection_eliminate`，没有构造或调用 `PPDSolver`。已确认的 Rust 上游是直接调用 `PPDSolver::Optimize` 的独立测试与 case test。
+`exprPrefixAdder` 根据 `shardColumn` 与 `shardBits`，为命中该列的简化 `eq:`/`in:` 条件构造 `shard(...)` 条件。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ RustCodeGraph 将目标文件识别为 108 行并列出 `PPDSolver`、`Optimize`
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/planner/core/rule_predicate_push_down.go`。名称和高层意图对应，但能力差异明显：
+名称和高层意图对应，但能力差异明显：
 
 - Go `Optimize` 调用逻辑算子的 `lp.PredicatePushDown(nil)` 并传播 `error`，仍故意令 `planChanged` 为 `false`；Rust 固定返回 `false` 的兼容点有单测，但只在简化 `PlanNode` 上执行本地 `push`。
 - Go `addPrefix4ShardIndexes` 从 `DataSource` 检查 `ContainExprPrefixUk` 和所有可能访问路径，只处理 `IsUkShardIndexPath`，失败时记录连接、库、表、索引并回退原条件；Rust 接收调用者预先构造的 adder 列表，没有 DataSource 筛选、日志或失败回退。
@@ -98,12 +96,3 @@ Go 对照为 `pkg/planner/core/rule_predicate_push_down.go`。名称和高层意
 若补齐分片索引语义，应围绕 `exprPrefixAdder`、`addPrefix4ShardIndexes`、`addExprPrefixCond` 对齐 Go 的 DataSource/path 筛选、真实表达式求值、DNF 重组、错误回退及索引前缀长度。兼容风险包括 NULL/类型转换/排序规则语义和条件顺序；性能风险包括对每个路径或 adder 重复克隆整组表达式。
 
 若要接入应用优化主链，应修改实际规则调度位置，使 `optimizer.rs::logicalOptimize` 调用本 solver（或统一到完整逻辑算子 API），并验证 trace、禁用规则和 flag 行为。仅保留相同规则名不能视为已接线。
-
-## 验证依据
-
-- 生产源码：`pkg/planner/core/rule_predicate_push_down.rs`（108 行）、`pkg/planner/core/task.rs`、`pkg/planner/core/find_best_task.rs`、`pkg/planner/core/optimizer.rs`、`pkg/planner/core/lib.rs`。
-- crate 边界：`pkg/planner/core/Cargo.toml`；包名为 `astersql-planner-core`，库入口为 `lib.rs`，`package.metadata.porting.go-package` 指向 `pkg/planner/core`。该目录不存在 `doc.go`，因此无可读取的目标包契约文件。
-- Rust 测试：`pkg/planner/core/rule_predicate_push_down_test.rs` 验证固定 `planChanged=false`、匹配列的 EQ/IN 前缀规则及非 OR 保留；`pkg/planner/core/casetest/rule/rule_predicate_pushdown_test.rs` 验证穿过 Projection 到 TableScan；`pkg/planner/core/casetest/rule/rule_predicate_simplification_test.rs` 验证嵌套 Selection 折叠及条件顺序。`pkg/planner/core/logical_plans_test.rs::test_predicate_push_down` 属于更广的 fixture 覆盖。
-- Go 对照：`pkg/planner/core/rule_predicate_push_down.go`、`pkg/planner/core/logical_plans_test.go::{TestPredicatePushDown, TestJoinPredicatePushDown, TestOuterWherePredicatePushDown}`、`pkg/planner/core/casetest/rule/rule_predicate_pushdown_test.go`。
-- RustCodeGraph：运行了 `status`、目标文件 `node --file`、`query PPDSolver`、`query predicate_push_down`、四个 shard 辅助符号查询以及 callers/callees 查询；索引确认符号与 Go 对照，但精确调用边没有给出可用于本文件的唯一结果，故上游调用以 `rg` 的直接源码命中复核。
-- 按任务约束未运行 Cargo；本文只陈述静态源码与测试意图，不声称这些测试在本会话实际执行通过。

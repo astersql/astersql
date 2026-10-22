@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-topsql-state` crate 的测试专用共享工具。crate 入口 `pkg/util/topsql/state/lib.rs` 通过 `#[cfg(test)]` 和 `#[path = "test_util.rs"]` 挂载它，因此它只参与本 crate 的测试构建，不进入普通库构建或 TopSQL 的生产请求链。`pkg/util/topsql/state/Cargo.toml` 将 `lib.rs` 声明为库入口，并以 `package.metadata.porting.go-package = "pkg/util/topsql/state"` 标明对应 Go 包。
-
-尽管文件名为 `test_util.rs`，它不是独立测试集合：文件本身没有 `#[test]`，而是服务于 `state_test.rs` 和 `migration_aster_unit_test.rs` 两个独立测试模块。其存在原因是这两个模块都会修改 `state.rs` 中的进程级 `GlobalState`，需要共享一种串行化和复位协议，避免并行测试彼此污染。
+不实现 TopSQL/TopRU 的生产状态机，也不绕过公开状态 API；实际原子状态、引用计数 CAS 循环和 interval 校验均位于 `pkg/util/topsql/state/state.rs`。
 
 ## 核心职责
 
@@ -81,9 +79,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 同路径没有对应的 `test_util.go`。`pkg/util/topsql/state/state_test.go` 在每个测试开头直接执行 `GlobalState.ruConsumerCount.Store(0)` 与 `ResetTopRUItemInterval()`；它能访问同 Go package 的私有字段。Rust 版本保持测试逻辑与 Go 用例一致，但因测试拆成独立 Rust 模块、生产字段保持私有，改用公开 API 循环耗尽引用计数，并增加 `TEST_LOCK` 处理 Rust 测试默认可并行执行造成的共享状态竞争。
+Rust 版本保持测试逻辑与 Go 用例一致，但因测试拆成独立 Rust 模块、生产字段保持私有，改用公开 API 循环耗尽引用计数，并增加 `TEST_LOCK` 处理 Rust 测试默认可并行执行造成的共享状态竞争。
 
-复位语义与 Go 生产实现一致：`DisableTopRU` 每次减少一个活跃消费者、禁止下溢，并在最后一个消费者离开时重置 interval。Rust 工具末尾额外无条件复位 interval，是测试隔离措施，不改变生产函数语义。对应测试继续覆盖 Go 的三项意图：引用计数与最后退出复位、合法 interval 后写覆盖、非法 interval 不覆盖已有合法值；迁移测试另覆盖 TopSQL/TopRU 组合开关和默认常量。
+Rust 工具末尾额外无条件复位 interval，是测试隔离措施，不改变生产函数语义。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Go 同路径没有对应的 `test_util.go`。`pkg/util/topsql/state/state_test.g
 若生产 `State` 新增可变全局字段或测试开始修改目前未复位的三个配置原子，应同步评估并扩展 `reset_global_state`，同时在 `state_test.rs` 或专门的同目录独立测试文件中加入“前一测试写入、复位后恢复默认”的回归证据。若新增状态只能通过可能失败的 setter 复位，则应重新设计本函数的返回类型或提供不会掩盖失败的清理 guard，而不是静默忽略错误。
 
 兼容性风险主要是遗漏新状态导致测试顺序依赖；正确性风险是调用者未持有统一 guard；性能风险仅限测试阶段，串行化会降低这些小型状态测试的并发度，但不影响发布产物。改变毒锁策略时还需考虑 panic 后是否能可靠复位，改变循环策略时必须保留任意正引用计数归零以及不下溢的 Go 对齐语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 `pkg/util/topsql/state` 的 7 个 Go/Rust 文件；文件查询确认 `test_util.rs` 共 26 行、3 个符号，并被 `state_test.rs` 与 `migration_aster_unit_test.rs` 使用。
-- RustCodeGraph `node --file pkg/util/topsql/state/test_util.rs`：确认静态锁、毒锁接管和复位调用顺序。
-- RustCodeGraph `node --file` 对 `lib.rs`、`state.rs`、`state_test.rs`、`migration_aster_unit_test.rs` 的查询：确认测试条件编译边界、生产原子状态语义、两个真实调用者及测试覆盖。
-- `rg -n --glob '*.rs' '\\b(lock_global_state|reset_global_state)\\b' pkg/util/topsql/state`：精确核对所有 Rust 定义和引用；RustCodeGraph 的精确 `callers` 查询在本地未及时返回，未把其结果作为调用边证据。
-- `pkg/util/topsql/state/Cargo.toml`：确认 crate 名称、`lib.rs` 入口、Go 包映射及依赖边界。
-- RustCodeGraph 对 `state.go` 与 `state_test.go` 的文件查询：确认 Go 的引用计数、CAS/复位行为和测试直接清零方式。
-- 未运行 Cargo：本任务仅新增分析文档，任务计划明确禁止运行 Cargo；文档结构由任务指定的 11 标题命令验证。

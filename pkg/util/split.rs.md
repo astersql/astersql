@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/split.rs` 是 `astersql-util` crate 中的字节键均匀切分工具。模块由 `pkg/util/lib.rs` 的 `pub mod split` 公开，核心入口是 `GetValuesList`：它把两个边界键去掉最长公共前缀后，将剩余部分近似映射到大端 `u64` 区间，再生成 `num - 1` 个切分键。文件只依赖 Rust 标准库；`pkg/util/Cargo.toml` 没有为它引入专用依赖。
-
-从当前 Rust 接线看，该 API 已公开但尚未接入 Rust 业务主链：仓库内的直接 Rust 使用仅见 `pkg/util/security_2_aster_unit_test.rs` 的一致性测试。对应 Go 实现 `pkg/util/split.go` 已被 Region/索引预切分流程调用，例如 `pkg/util/regionsplit/split_handle.go` 的 `GetSplitTableKeys`、`GetSplitIndexKeys`，以及 `pkg/ddl/index_presplit.go` 的 `getSplitIdxPhysicalKeysFromBound`。因此，这个 Rust 文件目前是对 Go 通用算法的移植和待复用能力，不能据此宣称 Rust 端已经完成完整业务接线。
+边界顺序、`num` 的有效性，以及生成键是否适合作为存储层切分键，均由上游负责。
 
 ## 核心职责
 
@@ -77,10 +75,7 @@ Go 侧的业务关系提供算法所处主链的直接对照：`pkg/util/regions
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐函数对应 `pkg/util/split.go`：`GetValuesList`、`longestCommonPrefixLen`、`getStepValue`、`getUint64FromBytes` 的算法顺序和补位规则一致。关键语义映射包括：
-
 - Go 的 `[]byte`/`[][]byte` 映射为 Rust 的 `Vec<u8>`/`Vec<Vec<u8>>`；Go 通过 `append` 返回可能扩容后的 slice，Rust 通过取得并返回 `Vec` 所有权表达同一数据流。
-- Go 的 `binary.BigEndian.Uint64` 和 `PutUint64` 对应 Rust 的 `u64::from_be_bytes` 和 `to_be_bytes`。
 - Go `uint64` 的减法和加法溢出语义由 Rust 的 `wrapping_sub`、`wrapping_add` 显式表达，避免 debug 构建因溢出 panic。
 - Go 1.22 的 `for range num - 1` 对有效正数 `num` 循环 `num - 1` 次；Rust 使用 `0..num.saturating_sub(1)`。不过两版都会先用 `num` 做除数，因此 `num == 0` 仍是无效输入。
 - Go helper 在输入至少 8 字节时可直接借用原 slice；Rust helper 总是复制到临时 `Vec`。输出数值一致，但 Rust 当前实现有额外分配成本。
@@ -94,12 +89,3 @@ Rust 文件逐函数对应 `pkg/util/split.go`：`GetValuesList`、`longestCommo
 - 若要消除临时分配，可把 `getUint64FromBytes` 改为直接填充固定数组；必须保持“短输入右侧补 `pad`、长输入只取前 8 字节”的结果不变，并用现有表驱动用例防止补位方向改变。
 - 测试必须继续放在独立文件 `pkg/util/split_test.rs`，不要嵌入生产源文件。建议新增公开入口用例，覆盖保留已有列表、`num == 1`、零步长、公共前缀输出、长后缀截断和明确约定的无效输入行为；若改变 panic/校验契约，还应同步 Go 测试或记录有意差异。
 - 兼容风险主要是生成键字节变化会改变 Region 边界；性能风险主要来自每个结果键的分配和每次数值转换的后缀复制。优化时应先以字节级等价测试固定行为，再评估大 `num` 下的分配量。
-
-## 验证依据
-
-- 源码与符号：`pkg/util/split.rs`；RustCodeGraph `node --file` 确认全文件 106 行，`query` 定位 `GetValuesList`、`longestCommonPrefixLen`、`getStepValue`、`getUint64FromBytes`。对精确符号 ID 执行 `callers`/`callees` 均返回空数组，因此没有把图中缺失的边写成已证实的生产调用。
-- crate 边界：`pkg/util/lib.rs` 的 `pub mod split` 与独立测试模块声明；`pkg/util/Cargo.toml` 的 crate 名 `astersql-util`、`lib.rs` 入口和依赖列表。目标目录没有 `doc.go`，因此没有可补充读取的包级 Go 契约文件。
-- Go 对照：`pkg/util/split.go` 的四个同名函数；`pkg/util/split_test.go` 的两个表驱动测试。
-- Rust 测试：`pkg/util/split_test.rs` 的 `TestLongestCommonPrefixLen`、`TestGetStepValue`；`pkg/util/security_2_aster_unit_test.rs::split_matches_go_big_endian_algorithm` 的公开入口正常路径。后者由 `pkg/util/security_formal_aster_unit_test.rs` 通过 `include!` 引入，并由 `pkg/util/Cargo.toml` 的显式测试目标承载。
-- 业务位置：`pkg/util/regionsplit/split_handle.go` 的 common handle/索引切分调用，以及 `pkg/ddl/index_presplit.go::getSplitIdxPhysicalKeysFromBound` 的索引预切分调用；这些证据仅说明对应 Go 算法的应用位置。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 个固定章节结构检查，并人工复核重要结论均可回溯到上述符号或路径。

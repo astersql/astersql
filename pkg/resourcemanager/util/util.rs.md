@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-resourcemanager-util` crate 的公共契约层，源码由 `pkg/resourcemanager/util/lib.rs` 的 `pub mod util` 声明并通过 `pub use util::*` 再导出。它不执行调度，也不拥有任务队列，而是定义资源管理器、调度器、分片池映射和具体池实现之间共同使用的时长原语、池接口、池容器及组件标识。
-
-crate 边界由 `pkg/resourcemanager/util/Cargo.toml` 确认：包名为 `astersql-resourcemanager-util`，库入口为 `lib.rs`，未声明 feature 或第三方运行时依赖。本文件自身只依赖标准库的原子类型、共享所有权、时间类型。
+不执行调度，也不拥有任务队列，而是定义资源管理器、调度器、分片池映射和具体池实现之间共同使用的时长原语、池接口、池容器及组件标识。
 
 ## 核心职责
 
@@ -80,17 +78,12 @@ crate 边界由 `pkg/resourcemanager/util/Cargo.toml` 确认：包名为 `asters
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/resourcemanager/util/util.go`：
-
-- Go 的 `atomic.NewDuration(200 * time.Millisecond)` 对应 Rust 的 `AtomicDuration::new(Duration::from_millis(200))`；`Load`/`Store` 名称保持一致。
 - Go `GoroutinePool` 的七个方法在 Rust trait 中逐项保留，参数与返回值也保持同形；Go `string` 值返回在 Rust 中收紧为借用的 `&str`，避免每次查询分配。
 - Go 接口值对应 Rust `Arc<dyn GoroutinePool>`。Rust 额外显式要求 `Send + Sync`，并用 `Arc` 表达共享生命周期。
 - Go `PoolContainer` 的两个字段和 Rust 完全同名；Rust 的字段名保留非惯用的大写形式以便迁移对照。
 - Go `Component int` 的 `iota` 顺序 0..4 对应 Rust `#[repr(i32)]` 的显式值；五个包级常量别名保留 Go API 名称。
 - Go `time.Duration`/`atomic.Duration` 以有符号纳秒工作，而 Rust 包装使用无符号纳秒；负值和超出 `u64` 纳秒的输入并非完整语义等价。当前已验证用例只覆盖非负、可表示范围。
 - 调度使用方式也保持一致：对照 `pkg/resourcemanager/schedule.go` 与 `schedule.rs`，两侧都跳过 `DistTask`，用最小间隔防抖，并把超频限制在原始并发加 1。Rust 对整数增减使用 `wrapping_add`/`wrapping_sub` 显式模拟 Go `int32` 运行时回绕。
-
-Go 同目录没有独立的 `util_test.go`；Go 侧容器行为由 `pkg/resourcemanager/util/shard_pool_map_test.go`、调度行为由 `pkg/resourcemanager/schedule_test.go` 覆盖。Rust 的直接原子时长测试位于独立文件 `pkg/resourcemanager/util/util_test.rs`，常量与枚举迁移断言还位于 `pkg/resourcemanager/util/migration_aster_unit_test.rs`。
 
 ## 扩展指南
 
@@ -100,13 +93,3 @@ Go 同目录没有独立的 `util_test.go`；Go 侧容器行为由 `pkg/resource
 - 修改 `PoolContainer` 生命周期时，应明确 `Unregister` 是否负责 `ReleaseAndWait`；自动释放可能阻塞持锁或调度线程，也可能改变当前“外部 `Arc` 可继续使用”的兼容行为。
 - 性能方面，本文件的原子读取位于周期调度热路径，但每 100 ms 每池通常只读取一次；新增锁或分配应结合 `schedule.rs` 的遍历频率评估。组件判定和容量查询应保持轻量。
 - 相关 Rust 测试应继续放在独立文件：本文件的原子值与常量测试放 `util_test.rs`/`migration_aster_unit_test.rs`，容器并发与映射行为放 `shard_pool_map_test.rs`，调度策略放 `pkg/resourcemanager/schedule_test.rs` 或现有资源管理器测试文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/resourcemanager/util` 确认 `util.rs`、`util_test.rs`、Go 对照和相邻实现均已索引。
-- RustCodeGraph：`node --file pkg/resourcemanager/util/util.rs --offset 1 --limit 260` 读取了目标文件全部 110 行；精确查询确认 `AtomicDuration`、`GoroutinePool`、`PoolContainer`、`Component`、`MinSchedulerInterval`、`MaxOverclockCount` 等符号。对这些 trait/常量执行的 `callers`/`callees` 没有返回可用边，故使用下列直接源码证据补足动态分派关系。
-- crate 与入口：`pkg/resourcemanager/util/Cargo.toml`、`pkg/resourcemanager/util/lib.rs`。
-- 生产调用链：`pkg/resourcemanager/rm.rs`、`pkg/resourcemanager/schedule.rs`、`pkg/resourcemanager/scheduler/scheduler.rs`、`pkg/resourcemanager/util/shard_pool_map.rs`、`pkg/resourcemanager/pool/spool/spool.rs`。
-- Go 对照：`pkg/resourcemanager/util/util.go`、`pkg/resourcemanager/schedule.go`、`pkg/resourcemanager/rm.go`、`pkg/resourcemanager/util/shard_pool_map_test.go`、`pkg/resourcemanager/schedule_test.go`。
-- Rust 独立测试：`pkg/resourcemanager/util/util_test.rs` 验证纳秒精度的构造、读取、更新；`pkg/resourcemanager/util/migration_aster_unit_test.rs` 验证 200 ms、超频上限、枚举别名及容器行为；`pkg/resourcemanager/schedule_test.rs` 和 `pkg/resourcemanager/migration_aster_unit_test.rs` 验证调度边界。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的命令验证目标文档存在且恰好包含 11 个固定二级标题，并人工复核唯一新增产物与引用路径。

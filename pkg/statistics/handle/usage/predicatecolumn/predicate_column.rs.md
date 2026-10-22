@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-usage-predicatecolumn` crate 的业务实现，crate 入口 `pkg/statistics/handle/usage/predicatecolumn/lib.rs` 通过 `mod predicate_column` 加载它并重新导出全部公共符号。它负责以受限 SQL 访问系统表 `mysql.column_stats_usage`，在 Rust 侧承载 Go 包 `pkg/statistics/handle/usage/predicatecolumn` 中列统计使用时间的读取、谓词列查询、残留记录清理和保存语义。
-
-该 crate 已列入根 `Cargo.toml` workspace，直接依赖由同目录 `Cargo.toml` 声明：`chrono`/`chrono-tz` 提供时间转换，`astersql-meta-model` 提供 `TableItemID`，`astersql-statistics-handle-types` 提供统计时间、会话、InfoSchema 和受限 SQL 抽象。其移植元数据状态仍是 `candidate`。上层 `pkg/statistics/handle/usage/Cargo.toml` 和 `pkg/statistics/handle/storage/Cargo.toml` 对此 crate 的依赖位于 `target.'cfg(any())'.dependencies`，而生产 Rust 源码中没有这些公共函数的调用点；因此当前事实是“实现和独立测试已存在，但尚未接入 Rust 应用主链”，不能把 Go 主链的可用性等同于 Rust 已接线。
+负责以受限 SQL 访问系统表 `mysql.column_stats_usage`，在 Rust 侧承载 Go 包 `pkg/statistics/handle/usage/predicatecolumn` 中列统计使用时间的读取、谓词列查询、残留记录清理和保存语义。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ Go 主链则已明确接通：`pkg/statistics/handle/usage/predicate_column.go` 
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `loadColumnStatsUsage`、`LoadColumnStatsUsage`、`LoadColumnStatsUsageForTable`、`GetPredicateColumns`、`cleanupDroppedColumnStatsUsage`、`SaveColumnStatsUsageForTable` 与同目录 Go 文件中的同名逻辑逐一对应，五条 SQL 的字段、过滤条件和时区方向保持一致。
+Rust 额外引入 trait 和类型化中间记录，以替代 Go 直接依赖 `sessionctx.Context`、`chunk.Row` 和类型断言的方式。
 
-关键语义也保持一致：空表/列 ID 行先跳过；有效时间先按 UTC 解释再转目标 location；谓词查询前尝试清理已删列；表不存在时跳过清理；清理列 ID 转字符串列表；转换后的 `last_used_at` 为空时过滤；缺失保存时间使用字符串 `"NULL"`；逐行 `REPLACE` 且首错返回。Rust 额外引入 trait 和类型化中间记录，以替代 Go 直接依赖 `sessionctx.Context`、`chunk.Row` 和类型断言的方式。
-
-独立 Rust 测试 `pkg/statistics/handle/usage/predicatecolumn/predicate_column_test.rs` 覆盖通用 `ExecRows` 参数/行适配、空 ID 时不解析坏时间、谓词时间只检查 NULL、时区转换、按表绑定、清理顺序、表缺失、`"NULL"` 参数和写错误传播。Go 的跨层回归位于 `pkg/statistics/handle/usage/predicate_column_test.go`，其中 `TestCleanupPredicateColumns` 证明删列后调用 `GetPredicateColumns` 只返回现存列；其余 ANALYZE 测试说明谓词列结果在 Go 应用主链中的用途。当前 Rust 测试没有证明上层生产接线或真实数据库 SQL 展开。
+独立 Rust 测试 `pkg/statistics/handle/usage/predicatecolumn/predicate_column_test.rs` 覆盖通用 `ExecRows` 参数/行适配、空 ID 时不解析坏时间、谓词时间只检查 NULL、时区转换、按表绑定、清理顺序、表缺失、`"NULL"` 参数和写错误传播。当前 Rust 测试没有证明上层生产接线或真实数据库 SQL 展开。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Rust 的 `loadColumnStatsUsage`、`LoadColumnStatsUsage`、`LoadColumnStatsUsage
 若要将实现接入 Rust 主链，优先在上层 usage 实现中用真实 `SessionContext` 与最新 `InfoSchema` 构造 `ExecRowsPredicateColumnSession`，实现 `StatsUsage` 对应方法，并把依赖从 `cfg(any())` 候选区移入实际 target；这属于后续代码任务，不应在本文档任务中宣称已经完成。接线测试至少要覆盖 session pool/事务选项、真实 InfoSchema、系统表 SQL 参数展开以及 Go 集成测试表达的删列与 ANALYZE 行为。
 
 改变清理行为时需关注空列集合、并发 DDL、最新 schema 与 SQL 操作之间的竞态；改变保存行为时需明确是否要求事务原子性、稳定顺序或批量性能。涉及时间时必须同时验证非 UTC 会话时区、夏令时边界、无效 MySQL 时间和小数秒。保持测试逻辑在独立的 `predicate_column_test.rs`，不要嵌入生产源文件。
-
-## 验证依据
-
-- 源码与边界：`pkg/statistics/handle/usage/predicatecolumn/predicate_column.rs`、同目录 `lib.rs` 和 `Cargo.toml`；根 `Cargo.toml` 的 workspace 成员与 facade 条目。
-- RustCodeGraph：`status` 显示索引包含本目录的 Rust/Go 文件；`files --filter` 定位四个文件；`node --file ... --offset 1 --limit 500` 读取目标 418 行与 56 个符号；`query` 定位四个公共入口、内部加载/清理函数和 `ExecRowsPredicateColumnSession`。精确 `callers`/`callees` 本次没有返回边，故调用状态由仓库源码搜索交叉验证，而非据此假定无调用。
-- Rust 调用与 crate 状态：源码搜索公共入口和适配器只命中本实现、独立测试以及 `StatsUsage` 的相近接口声明；`pkg/statistics/handle/usage/Cargo.toml`、`pkg/statistics/handle/storage/Cargo.toml` 将本 crate 放在 `cfg(any())` 依赖区。
-- Go 对照：`pkg/statistics/handle/usage/predicatecolumn/predicate_column.go`；上层包装 `pkg/statistics/handle/usage/predicate_column.go`。
-- 测试证据：`pkg/statistics/handle/usage/predicatecolumn/predicate_column_test.rs`；Go 集成测试 `pkg/statistics/handle/usage/predicate_column_test.go`，重点为 `TestCleanupPredicateColumns` 及谓词列 ANALYZE 场景。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前仅运行任务指定的 11 章节结构验证，并人工复核“职责、流程、扩展点、当前未接线限制”均有上述直接证据。

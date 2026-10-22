@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate：`pkg/planner/core/Cargo.toml` 将 `lib.rs` 设为库入口，`pkg/planner/core/lib.rs` 以私有模块 `mod trace;` 装载它，再通过 `pub use trace::*;` 将 `Trace` 暴露到 crate 根。文件不受 feature 或条件编译控制，默认构建与 `nextgen` feature 下都会参与编译。
-
-它是紧凑计划模型优化链的诊断数据容器，而不是优化算法本身。直接生产者是 `pkg/planner/core/optimizer.rs::DoOptimize`：该函数创建 `Trace::default()`，把同一个可变引用依次交给逻辑优化和物理优化，最后写入最终计划文本，并把轨迹与物理计划、总代价一起返回。
-
-需要特别区分两条同名路径：`pkg/planner/core/trace.go::Trace` 是 SQL `TRACE` 语句的计划节点，持有语句、解析上下文、格式与 `OptimizerTrace` 选项；本文件的 Rust `Trace` 只保存紧凑优化器的三个字符串字段，不是该 Go 计划节点的逐字段移植。
+`Default` 提供空轨迹：两个列表为空且 `final_plan` 为空字符串；`Clone`、`Debug`、`Eq`、`PartialEq` 使轨迹可复制、调试打印和做精确断言。
 
 ## 核心职责
 
@@ -75,9 +71,9 @@
 
 同路径 `pkg/planner/core/trace.go::Trace` 与本类型只有名称和“trace”领域概念相同，职责不同：Go 类型嵌入 `physicalop.SimpleSchemaProducer`，保存 `ast.StmtNode`、`resolve.Context`、输出格式、优化器追踪标志和目标，用于 `planbuilder.go::buildTrace` 构造 SQL `TRACE` 计划；Rust 类型不含计划节点能力，也没有这些字段。
 
-Go 的真实优化主链位于 `pkg/planner/core/optimizer.go`：`doOptimize` 根据会话配置选择 `CascadesOptimize` 或 `VolcanoOptimize`，返回逻辑计划、物理计划、代价和错误；Go 的会话级优化追踪状态则由 `pkg/sessionctx/stmtctx/stmtctx.go` 中的 `EnableOptimizeTrace`/`OptimizeTracer` 与 `pkg/util/tracing/opt_trace.go::OptimizeTracer` 承载。Rust 本文件把规则名、路线标签和最终计划摘要集中在一个返回值中，是紧凑优化器的简化诊断模型，不能宣称已对齐 Go SQL `TRACE PLAN` 的输出、上下文或错误语义。
+Rust 本文件把规则名、路线标签和最终计划摘要集中在一个返回值中，是紧凑优化器的简化诊断模型，不能宣称已对齐 Go SQL `TRACE PLAN` 的输出、上下文或错误语义。
 
-现有独立 Rust 测试 `pkg/planner/core/optimizer_test.rs` 以 `DoOptimizeCompact` 调用该紧凑优化链，验证并行 Apply 和探测次数传播，但将第三个返回值写成 `_`，未断言 `logical`、`physical` 或 `final_plan`。同目录未发现 `trace_test.rs`；Go 侧同路径也没有独立 `trace_test.go`。
+现有独立 Rust 测试 `pkg/planner/core/optimizer_test.rs` 以 `DoOptimizeCompact` 调用该紧凑优化链，验证并行 Apply 和探测次数传播，但将第三个返回值写成 `_`，未断言 `logical`、`physical` 或 `final_plan`。
 
 ## 扩展指南
 
@@ -87,13 +83,3 @@ Go 的真实优化主链位于 `pkg/planner/core/optimizer.go`：`doOptimize` �
 - 若需要失败轨迹，现有 `Result<(PlanNode, f64, Trace), String>` 无法携带部分值；应先设计错误返回结构，再同步所有调用方，不能在本类型内静默吞错。
 - 若目标是对齐 Go 的 SQL `TRACE` 计划节点，应修改 Rust 的计划构建/执行链，而不是把字段直接塞入这个优化轨迹容器。
 - 测试应继续放在独立文件。优先扩展 `pkg/planner/core/optimizer_test.rs`，至少覆盖：规则位与禁用集合决定的顺序、Cascades/Volcano 标签、后优化后 `final_plan` 非空且与返回计划一致、错误时轨迹是否可见的约定；若测试聚焦本值类型，可新建并在 `lib.rs` 的 `#[cfg(test)]` 区域声明 `trace_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/planner/core/trace.rs` 确认目标文件含 4 个符号。
-- RustCodeGraph 源码/符号查询：`node --file pkg/planner/core/trace.rs`、`query AppendLogical`、`query AppendPhysical`、`node AppendLogical`、`node AppendPhysical`，确认类型字段及两个追加方法；方法级 callers/callees 未返回边，因此用精确源码检索补证。
-- RustCodeGraph 调用链源码：`node --file pkg/planner/core/optimizer.rs`，确认 `DoOptimize`、`logicalOptimize`、`physicalOptimize`、后优化及最终计划赋值；`node --file pkg/planner/core/optimizer_test.rs`，确认独立 Rust 测试仅间接覆盖优化入口而未校验轨迹值。
-- crate/模块证据：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`，确认 crate 名、入口、feature、模块装载和公开再导出。
-- Go 对照证据：`pkg/planner/core/trace.go`、`pkg/planner/core/planbuilder.go::buildTrace`、`pkg/planner/core/optimizer.go::{doOptimize,CascadesOptimize,VolcanoOptimize}`、`pkg/sessionctx/stmtctx/stmtctx.go`、`pkg/util/tracing/opt_trace.go`。
-- 测试检索：对 `pkg/planner/core` 和 `pkg/planner` 中独立 Rust/Go 测试检索 `Trace::default`、`AppendLogical`、`AppendPhysical`、`final_plan` 与优化入口，未发现直接字段断言或同名独立 trace 测试。
-- 本任务是纯文档分析，按计划未运行 Cargo；交付前以任务指定命令校验固定的 11 个二级章节。

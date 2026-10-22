@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-impl` crate，是 Cascades 优化器从逻辑 Memo 搜索空间进入物理计划选择与代价计算的 Rust 移植边界。crate 入口 `pkg/planner/cascades/impl/lib.rs` 将本模块与 `find_best_task_router` 一并私有声明后公开重导出；`pkg/planner/cascades/impl/Cargo.toml` 未声明外部依赖，并用 `autotests = false` 将测试显式挂在 `lib.rs` 下。
-
-当前 Rust 文件自带一套简化的 `Group`、`GroupExpression`、`PhysicalProperty`、`Task` 和 `PhysicalPlan` 抽象，并没有直接使用 `pkg/planner/cascades/memo` 等其他 crate 的真实 Memo 类型。全仓 Rust 引用搜索只发现本文件内部调用、Go 风格包装导出和相邻路由测试对基础类型的使用，未发现生产 Rust 入口调用 `implement_memo_and_cost` 或 `implement_group_and_cost`。因此它是已实现但尚未接入完整 Rust 规划主链的兼容/移植单元，不能描述成已经替代 Go 优化入口。
+`BasicTask`、`CallbackCostEngine` 等类型提供最小可用实现，既支撑上述流程，也供相邻 `find_best_task_router` 及其独立测试复用。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ Go 生产调用链则已接通：`pkg/planner/core/optimizer.go::physicalOptimiz
 
 ## 与 Go 版本的对应关系
 
-直接参考文件是 `pkg/planner/cascades/impl/impl_and_cost.go`。两边都以根门户和单 Group 门户分工：根门户构造 Root/最大期望行数属性、实现根组、清理 `TaskMapBakTS`、处理无计划提示、收集警告、解析索引并计算 Root 代价；Group 门户先查属性缓存，未命中时遍历全部逻辑等价表达式、调用找任务路由并比较代价，最后缓存最佳任务。
-
 关键差异如下：
 
 - Go 使用真实 `memo.Group`、`base.Task`、`base.PhysicalPlan`、`property.PhysicalProperty`、全局配置和会话上下文；Rust 文件使用本地简化类型和注入式 `CostEngine`，尚未接入真实 Rust Memo/Session。
@@ -100,12 +96,3 @@ Go 生产调用链则已接通：`pkg/planner/core/optimizer.go::physicalOptimiz
 - 应新增同目录独立测试文件（例如 `impl_and_cost_test.rs`，并在 `lib.rs` 的 `#[cfg(test)]` 区声明），不要把测试嵌入生产源文件。最低覆盖应包括缓存命中/未命中、成本上限返回 `None`、无效任务缓存、候选比较与错误短路、空根组、TiFlash/MPP 提示、警告与索引/代价调用顺序、缺计划错误，以及 `take_plan` 不破坏缓存副本。
 - 相邻路由行为继续同步 `find_best_task_router_aster_unit_test.rs` 和 `find_best_task_router_test.rs`；这些测试当前只间接覆盖 `BasicTask` 和 `PhysicalPlan` 接口，不能替代门户测试。
 - 性能风险集中在每次缓存返回和写入都深复制计划，以及首次未命中时线性枚举全部表达式；引入共享计划或并行枚举前必须重新审视可变计划、警告与回调状态的所有权。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：目标仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/cascades/impl` 确认目标源码、模块入口及两个独立测试均已索引。
-- 源码与符号：`pkg/planner/cascades/impl/impl_and_cost.rs` 的 `PhysicalProperty::cache_key`、`Task`、`BasicTask`、`Group`、`CostEngine`、`implement_group_and_cost`、`implement_memo_and_cost` 及两个 Go 风格包装函数。
-- crate 边界：`pkg/planner/cascades/impl/Cargo.toml` 和 `pkg/planner/cascades/impl/lib.rs`；前者确认独立 crate、无声明依赖、关闭自动测试，后者确认模块重导出与测试装配。
-- Go 对照与生产调用：`pkg/planner/cascades/impl/impl_and_cost.go`、`pkg/planner/core/optimizer.go`、`pkg/planner/core/find_best_task.go`。
-- Rust 相关测试：`pkg/planner/cascades/impl/find_best_task_router_aster_unit_test.rs` 验证叶子/一元路由与代价；`pkg/planner/cascades/impl/find_best_task_router_test.rs` 验证子枚举错误在有效候选之前或之后都立即传播。精确搜索未发现直接调用两个 Rust 门户函数的测试。
-- 本任务是只读代码分析加文档新增，按计划不运行 Cargo；最终以固定十一个二级标题的结构命令检查文档形态，并人工核对以上路径、符号和调用关系。

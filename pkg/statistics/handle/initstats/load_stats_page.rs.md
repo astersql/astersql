@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-statistics-handle-initstats`，由同目录 `lib.rs` 的私有模块 `load_stats_page` 引入并通过 `pub use load_stats_page::*` 对外再导出。它提供一个按表 ID 范围分发初始化统计加载工作的通用并发 worker，以及非 lite 初始化过程使用的全局百分比。crate 的 `Cargo.toml` 表明直接依赖仅包括 `anyhow`、`crossbeam-channel`、配置桥接和日志桥接；本文件实际使用其中的 `anyhow`、通道与日志桥接。
-
-当前 Rust 仓库搜索只找到同目录 `migration_aster_unit_test.rs` 调用 `NewRangeWorker`、`LoadStats`、`SendTask` 和 `Wait`，未找到 Rust 生产调用者。因此，该文件是已经实现并有迁移测试的公开能力，但其在 Rust 完整应用中的生产接线尚未验证。对应的 Go 实现则由 `pkg/statistics/handle/bootstrap.go` 接入完整统计初始化主链。
+`RangeWorker` 把调用方提供的 `Task` 送入容量为 1 的有界通道，并由指定数量的 OS 线程并发调用 `processTask`。
 
 ## 核心职责
 
@@ -73,9 +71,7 @@ Rust 上游证据目前限于 `lib.rs` 的公开再导出和 `migration_aster_un
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/initstats/load_stats_page.go`。Rust 保留了 Go 的公开命名、`Task` 字段、容量 1 通道、阶段基线与权重公式、失败后继续、关闭后发送失败以及等待全部消费者的核心语义。
-
-实现映射为：Go `atomicutil.Float64` 对应 `AtomicFloat64`；Go `chan Task` 对应 crossbeam `Sender/Receiver`；Go `util.WaitGroupWrapper` 对应 `Vec<JoinHandle<()>>`；Go `atomic.Uint64.Add` 对应 `AtomicU64::fetch_add`；Go 采样日志工厂对应 Rust 的 `OnceLock<Logger>`。Rust 额外公开 `completed_task_count` 供测试/观察，并用 `Mutex<Option<Sender<_>>>` 表示发送端只能关闭一次。
+Rust 额外公开 `completed_task_count` 供测试/观察，并用 `Mutex<Option<Sender<_>>>` 表示发送端只能关闭一次。
 
 两端值得注意的差异是错误日志格式：Go 通过结构化 `zap.Error` 写错误字段，Rust 当前将完整错误链格式化进字符串。线程 panic、mutex poisoning 是 Rust 实现特有的失败表面；Go goroutine panic 也会失败，但没有 join 时再传播这一阶段。Rust `NewRangeWorker` 返回值而非 Go 指针，但内部共享状态使其仍可通过共享引用驱动。
 
@@ -87,13 +83,3 @@ Rust 上游证据目前限于 `lib.rs` 的公开再导出和 `migration_aster_un
 - 新增生产接线时，应从 Rust 统计 handle 的阶段编排处调用本 crate，并逐一对照 Go `bootstrap.go` 的 histogram、TopN、bucket 回调与策略；不能仅证明 worker 自身可编译就声称完整初始化已迁移。
 - 修改 `Task` 的范围约定时，应同时核对 Go `maxTidStrategy`、`tableListStrategy`、分页 SQL 生成逻辑及对应 Rust 调用方，尤其避免闭区间/半开区间造成重复或漏表。
 - 至少同步覆盖：失败仍计数并继续、请求并发度、关闭后发送、零并发/零任务策略、回调 panic、重复关闭和进度单调性。现有直接 Rust 测试文件是 `pkg/statistics/handle/initstats/migration_aster_unit_test.rs`；应用级 Go 行为测试集中在 `pkg/statistics/handle/handletest/initstats/init_stats_test.go`，但没有同名 Go 单元测试专门覆盖 worker。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/statistics/handle/initstats/load_stats_page.rs` 读取了目标文件 1–230 行并列出 13 个符号。`query RangeWorker`、`query LoadStats`/`loadStats` 定位 Rust/Go 对照符号；精确 `callers`/`callees` 没有返回可判读边，因此未把它作为生产接线证据。
-- 目标源码：`pkg/statistics/handle/initstats/load_stats_page.rs`，核对 `AtomicFloat64`、`InitStatsPercentage`、日志器、`Task`、`RangeWorker` 及全部方法。
-- crate 边界：`pkg/statistics/handle/initstats/Cargo.toml` 与 `pkg/statistics/handle/initstats/lib.rs`，核对依赖、模块声明、公开再导出和独立测试挂载。
-- Go 对照与生产入口：`pkg/statistics/handle/initstats/load_stats_page.go`、`pkg/statistics/handle/bootstrap.go`，核对字段、公式、通道生命周期、任务策略以及 histogram/TopN/bucket 阶段调用顺序。
-- Rust 直接测试：`pkg/statistics/handle/initstats/migration_aster_unit_test.rs`，覆盖失败任务仍完成与推进进度、四消费者并发、`Wait` 后发送 panic。Go 应用级相关测试路径为 `pkg/statistics/handle/handletest/initstats/init_stats_test.go`。
-- 全仓 `rg` 复核：Rust 侧除目标实现与上述迁移测试外未发现这些 API 的生产调用；Go 侧调用集中于 `bootstrap.go`。仓库在 `pkg/statistics` 下未发现 `doc.go`，因此没有可补读的目标包契约文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行固定 11 章节结构检查，并人工复核唯一生产物与源码路径、符号和接线状态一致。

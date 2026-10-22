@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate；crate 根 `pkg/session/lib.rs` 通过 `pub mod global_init` 暴露该模块，Cargo 入口由 `pkg/session/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定。它描述的是完整 Domain 启动前，从持久化系统表读取进程级时区与排序规则开关的初始化流程。
-
-当前 Rust 代码的定位需要与 Go 生产实现区分：`pkg/session/global_init.rs::initGlobalVarFromSystemDB` 是由 `GlobalInitRuntime` 驱动的可注入流程，仓库内没有该 trait 的生产实现，也没有生产代码调用此函数；精确检索只找到 `pkg/session/global_init_test.rs` 的测试实现与调用。实际应用启动链仍由 `pkg/session/session.go` 调用 `pkg/session/global_init.go::initGlobalVarFromSystemDB`。因此本文件已表达并验证核心控制流，但尚不能单独证明 Rust 启动链已经接通。
+`GlobalInitRuntime` 把建 Domain、建会话、读取系统表、设置进程全局量与清理 Domain 等真实副作用定义成运行时边界，避免流程函数伪造默认成功路径。
 
 ## 核心职责
 
@@ -71,9 +69,7 @@ RustCodeGraph 能索引本文件（报告 25 个符号、9 个使用文件），
 
 ## 与 Go 版本的对应关系
 
-Rust 主流程逐步对应 `pkg/session/global_init.go`：Go 的 `domap.getDomainForGlobalVarInit`、`createSessionWithOpt`、`sess.getTableValue(ctx, mysql.TiDBTable, tidbSystemTZ)`、`timeutil.SetSystemTZ`、`loadCollationParameter`、`collate.SetNewCollationEnabledForTest` 和 `defer dom.Close()`，分别映射为 `GlobalInitRuntime` 的同职责方法及闭包后的 `close_domain`。
-
-过滤语义也保持一致：Go 将 `dbInfo.Name.L` 传给 `metadef.IsSystemDB`，而该函数只接受 `mysql.SystemDB`；Rust 的 `is_system_database` 同样只接受 `mysql`，但额外容忍 ASCII 大小写差异。`pkg/session/global_init_test.rs::system_db_filter_matches_go_metadef_is_system_db` 明确断言 `mysql`/`MySQL` 被保留，`information_schema`、`performance_schema`、`metrics_schema`、`sys`、`workload_schema` 与普通业务库被跳过。
+过滤语义也保持一致：Go 将 `dbInfo.Name.L` 传给 `metadef.IsSystemDB`，而该函数只接受 `mysql.SystemDB`；Rust 的 `is_system_database` 同样只接受 `mysql`，但额外容忍 ASCII 大小写差异。
 
 Go 版本额外记录了必须使用独立 Domain 的原因：TableCommon 会捕获 `new_collate` 设置，若复用完整 Domain 的 schema cache 可能保留无效值；它还说明读取系统变量存在循环依赖，但 `mysql.tidb` 固定以 `utf8mb4_bin` 创建，因此在正确排序规则开关初始化前仍可安全解码。Rust 流程保留了独立 Domain 的接口和顺序，却没有把这些前提编码成类型或验证逻辑。
 
@@ -87,11 +83,3 @@ Go 版本额外记录了必须使用独立 Domain 的原因：TableCommon 会捕
 - 若把占位 `DBInfo`、`SchemaDiff`、`InfoSchema` 替换为真实类型，应保持 trait 对加载器的语义兼容，并检查 Cargo 是否已经直接声明相应 crate 依赖。不要为了接线复制外部类型或扩大本文件职责。
 - 若让 setter 或 `close_domain` 可失败，需要决定多个错误同时出现时的优先级，并增加“业务失败 + 清理失败”的回归测试；当前 `()` 返回值刻意只传播读取/创建错误。
 - 性能风险主要来自误加载业务 schema 或意外复用完整 Domain；兼容性风险主要来自更改初始化顺序、`mysql.tidb` 的键名或 `new_collate` 捕获时机；正确性风险主要来自失败路径漏关 Domain、会话晚于 Domain 析构及并发写进程全局量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/session/global_init.rs` 确认目标已索引；`node --file pkg/session/global_init.rs` 读取完整 151 行并报告 25 个符号、9 个使用文件；`query` 分别识别 `initGlobalVarFromSystemDB` 的 Rust/Go 定义、Rust `GlobalInitRuntime`、Rust/Go `systemDBFilter` 与私有 `is_system_database`。对入口、trait 和辅助函数运行 `callers`/`callees` 返回空集合，因此再用精确文本检索补证。
-- 已读生产与装配文件：`pkg/session/global_init.rs`、`pkg/session/lib.rs`、`pkg/session/Cargo.toml`、`pkg/session/tidb.rs`、`pkg/session/global_init.go`、`pkg/session/tidb.go`、`pkg/session/session.go`、`pkg/meta/metadef/db.go`、`pkg/meta/metadef/db.rs`、`pkg/domain/serverinfo/syncer.rs`。`pkg/session` 目录不存在 `doc.go`，没有额外包级契约可读。
-- 已读测试：`pkg/session/global_init_test.rs` 提供过滤范围、完整成功顺序以及全部四类错误分支的直接证据；`pkg/meta/metadef/db_test.go`/`db_test.rs` 佐证严格 `IsSystemDB` 只接受 `mysql`；`pkg/util/timeutil/time_zone_test.go` 仅作为 Go 时区 setter 的相邻行为证据，不等同于本入口测试。
-- 生产接线检索：`rg` 对 `initGlobalVarFromSystemDB`、`GlobalInitRuntime`、`systemDBFilter` 及过滤方法的全仓 Rust 查询只发现本文件、独立测试和相邻字符串接线；Go 查询定位到 `pkg/session/session.go` 的 bootstrap 调用及 `pkg/session/tidb.go` 的 Domain 创建路径。
-- 本任务为纯文档分析，按计划不运行 Cargo。仓库说明引用的 `.agents/skills/tidb-verify-profile` 在当前检出中不存在，无法加载额外 Ready profile；交付使用任务指定的固定 11 章节结构检查、路径/链接事实复核和 diff 自审，不据此声称 Rust 生产链已运行验证。

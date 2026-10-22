@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本说明对应生产源码 [`chunk_process.rs`](./chunk_process.rs)。该文件属于 `astersql-executor-importer` crate；crate 根 `pkg/executor/importer/lib.rs` 以 `mod chunk_process` 挂载并 `pub use chunk_process::*` 导出其公共接口，包的 Go 来源由 `pkg/executor/importer/Cargo.toml` 中的 `package.metadata.porting.go-package = "pkg/executor/importer"` 标明。
-
-它位于单个导入 chunk 的执行中段：上游 `pkg/executor/importer/engine_process.rs::ProcessChunkWithWriterAndLogger` 已取得表 KV 编码器、keyspace 和 data/index writer 后，按 `DataSourceType` 调用 `NewFileChunkProcessor` 或 `NewQueryChunkProcessor`；本文件负责“读取一行 -> 编码成表/索引 KV -> 分批 -> 写入两个 writer”。文件不负责打开或导入 Lightning engine，也不负责整表后处理；这些职责分别留在 `engine_process.rs` 和 `table_import.rs`。
-
-此外，`IndexRouteWriter` 是全局排序路径的索引 writer 适配器。`pkg/dxf/importinto/encode_and_sort_operator.rs::newChunkWorker` 通过 `NewIndexRouteWriter` 为每个 `index_id` 创建独立的 `GlobalIndexSstWriter`，减少不同索引数据在后续归并排序时的范围重叠。
+位于单个导入 chunk 的执行中段：上游 `pkg/executor/importer/engine_process.rs::ProcessChunkWithWriterAndLogger` 已取得表 KV 编码器、keyspace 和 data/index writer 后，按 `DataSourceType` 调用 `NewFileChunkProcessor` 或 `NewQueryChunkProcessor`；本文件负责“读取一行 -> 编码成表/索引 KV -> 分批 -> 写入两个 writer”。
 
 ## 核心职责
 
@@ -98,8 +94,6 @@ RustCodeGraph 的 `query` 能精确区分同名 Go/Rust 符号，并确认目标
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/importer/chunk_process.go`。Rust 保留了 Go 版的核心结构：32 容量队列、96 KiB/4096 行双阈值、文件/查询 reader、data/index 分流、分组校验和、编码与投递并行、两个 processor 构造器，以及按索引 ID 路由的 `IndexRouteWriter`。
-
 需要注意的当前差异：
 
 - Go `rowToEncode` 用 `resetFn` 在编码后回收 parser 行；Rust 在 `ParserEncodeReader::ReadRow` 中先复制 datum，再立即 `RecycleRow`，所有权模型不同但目标相同。
@@ -121,14 +115,3 @@ RustCodeGraph 的 `query` 能精确区分同名 Go/Rust 符号，并确认目标
 - 修改并发或取消行为时，要保持有界背压、sender 释放、scoped thread join、错误优先级和所有退出路径清理；特别需要增加“查询通道无数据时取消”和“delivery 先失败且 encoder 被背压”测试。
 - 为全局排序增加索引 writer 能力时，在 `WriterFactory`/`RoutedIndexWriter` 边界扩展，并同步 `pkg/dxf/importinto/encode_and_sort_operator.rs` 的构造逻辑与其独立测试；需关注大量索引 writer 的资源占用、部分创建失败和多 writer 关闭错误。
 - Rust 单元测试必须继续放在独立 `*_test.rs` 文件，由 `lib.rs` 的 `#[cfg(test)] mod ...` 挂载，不应内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/executor/importer/chunk_process.rs` 确认目标已索引，`node --file` 完整读取 635 行及其 62 个符号。
-- 主要符号查询：`query BaseChunkProcessor`、`query NewFileChunkProcessor`、`query encodeLoop`、`query IndexRouteWriter`，用于区分 `pkg/executor/importer` 的 Go/Rust 同名实现；精确 `callers/callees` 无输出的限制已在“依赖与调用关系”记录。
-- 生产源码：`pkg/executor/importer/chunk_process.rs`、`engine_process.rs::ProcessChunkWithWriterAndLogger`、`table_import.rs::ImportSelectedRows`、`lib.rs`、`pkg/dxf/importinto/encode_and_sort_operator.rs::newChunkWorker`。
-- crate/移植边界：`pkg/executor/importer/Cargo.toml`；直接依赖包括 Lightning backend/encode/kv/mydump/verification、DXF collector 与 tablecodec。
-- Go 对照：`pkg/executor/importer/chunk_process.go` 的 `parserEncodeReader`、`queryChunkEncodeReader.readRow`、`chunkEncoder.encodeLoop`、`baseChunkProcessor.Process`、`dataDeliver.deliverLoop`、`newQueryChunkProcessor` 和 `IndexRouteWriter`。
-- Rust 测试：`chunk_process_test.rs` 验证源行数独立于记录 KV 数；`chunk_process_testkit_test.rs` 验证文件主流程、两类解析/编码错误、data/index writer 错误、空查询 chunk、索引 writer factory 错误、校验和/collector 与日志字段；`engine_process_test.rs` 覆盖上游装配调用。
-- Go 测试：`chunk_process_testkit_test.go` 直接覆盖 `NewFileChunkProcessor` 与 `NewIndexRouteWriter`，用于核对移植测试意图。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务文件指定命令验证恰有 11 个固定二级标题，并人工复核文档能回答文件存在原因、主流程及安全扩展位置。

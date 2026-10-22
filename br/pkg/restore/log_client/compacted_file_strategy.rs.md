@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-log-client` library crate；crate 边界由 [`Cargo.toml`](Cargo.toml) 声明，根模块 [`lib.rs`](lib.rs) 通过 `#[path = "compacted_file_strategy.rs"]` 挂载并扁平再导出其公开符号。它对应 Go 包 `br/pkg/restore/log_client` 中的 [`compacted_file_strategy.go`](compacted_file_strategy.go)，处理 PiTR/日志还原里已压缩 SST 集合的 region 预切分统计和 checkpoint 过滤。
-
-当前 Rust 文件是“策略核心已移植，生产 pipeline 接线尚未完成”的状态：[`client.rs`](client.rs) 导入了 `NewCompactedFileSplitStrategy`，但没有构造或调用它；`PreSplitRegions` 实际构造的是 `NewLogSplitStrategy`。目标类型也尚未实现 `astersql_br_pkg_restore_split::splitter::SplitStrategy<T>`，而 Go `LogClient.WrapCompactedFilesIterWithSplitHelper` 已将同名策略交给 `PipelineRestorerWrapper.WithSplit`。因此不应将 Go 的生产调用链当作 Rust 已接线的事实。
+对应 Go 包 `br/pkg/restore/log_client` 中的 [`compacted_file_strategy.go`](compacted_file_strategy.go)，处理 PiTR/日志还原里已压缩 SST 集合的 region 预切分统计和 checkpoint 过滤。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@
 
 ## 与 Go 版本的对应关系
 
-核心数据流与 [`compacted_file_strategy.go`](compacted_file_strategy.go) 对应：`impactFactor` 同为 16，`inspect` 对 rewritten SST 选择目标表 ID，`Accumulate` 按表懒创建 helper、对每文件增加计数、跳过零 KV/零 size 的 merge、将非零小值下限为 1，`ShouldSplit` 使用严格大于 256，`ShouldSkip` 则保留无 rule/全 checkpoint/部分 checkpoint 三类分支的返回值和副作用。
-
 需注意的 Rust 表达差异：
 
 - Go 通过编译期断言 `var _ split.SplitStrategy[SSTs] = &CompactedFileSplitStrategy{}` 证明实现完整协议；Rust 类型目前没有 `impl SplitStrategy<...>`，也缺少 `GetAccumulations`/`ResetAccumulations` 协议方法。
@@ -99,12 +95,3 @@ Go 的 `client_test.go` 还验证了 `PipelineRestorerWrapper.WithSplit` 下的 
 - 补齐 Rust 生产接线时，不应只是在 `client.rs` 构造本类型；还需设计与 Rust `SplitStrategy<T>` 一致的所有权/可变性签名，实现累计导出与 reset，再对齐 Go `WrapCompactedFilesIterWithSplitHelper` 的 pipeline 生命周期。不要通过删减 checkpoint 副作用来迁就现有 trait。
 - 性能风险主要在 `GetSSTs()` 返回 `Vec<File>` 可能产生的克隆、大 checkpoint set 的查找、每表区间合并以及过早/过晚 split。优化前必须保持 Go 的输出分组和阈值行为。
 - Rust 测试逻辑保持在独立文件中。策略分支应更新 [`compacted_file_strategy_test.rs`](compacted_file_strategy_test.rs)；跨模块公开契约可同步 [`parity_test.rs`](parity_test.rs)；客户端接线和 pipeline 生命周期应更新 [`client_test.rs`](client_test.rs)，并参考 Go `client_test.go` 的 `TestCollectSSTFileSets`、`TestCompactedSplitStrategyWithCheckpoint` 及 wrapper split cases。
-
-## 验证依据
-
-- 目标源码：[`compacted_file_strategy.rs`](compacted_file_strategy.rs) 全文，包括 `impactFactor`、`CompactedFileSplitStrategy`、`NewCompactedFileSplitStrategy`、`SstIdentity`、`inspect`、`Accumulate`、`ShouldSplit`、`ShouldSkip`、`TableSplitter` 和 `hasRule`。
-- RustCodeGraph：`status` 确认索引含 7,032 个 Rust 文件；`files --filter br/pkg/restore/log_client` 确认目标、Go 对照与测试在索引中；`explore` 和 `node` 确认了上述主要符号、Rust 测试调用者、`client.rs::PreSplitRegions` 的普通日志策略调用链，以及 `SSTs`、`RewrittenSSTs`、`BaseSplitStrategy`、`SplitStrategy`、`SplitHelper::Merge`、`GetRewriteRawKeys` 的签名/边界。
-- crate 与模块：[`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)，确认 library 边界、path dependencies、公开再导出和独立测试挂载。目标目录及上级 `br/pkg/restore` 未找到 `doc.go`。
-- Rust 测试：[`compacted_file_strategy_test.rs`](compacted_file_strategy_test.rs) 覆盖严格 split 阈值、每文件计数、空文件、小值下限、无 rule/全 checkpoint/部分 checkpoint 和 rewritten 目标表分组；[`client_test.rs`](client_test.rs) 的 `test_compacted_split_strategy` 验证部分跳过后继续累计；[`parity_test.rs`](parity_test.rs) 提供跨模块 Go/Rust 公开契约覆盖。
-- Go 对照：[`compacted_file_strategy.go`](compacted_file_strategy.go) 确认策略语义；[`client.go`](client.go) 的 `WrapCompactedFilesIterWithSplitHelper` 确认生产 pipeline 位置；[`client_test.go`](client_test.go) 确认 checkpoint 统计、文件集合筛选与 pipeline region split 的期望。
-- 本任务是纯文档分析，按计划不运行 Cargo。验收仅执行任务指定的结构命令，确认文档存在且恰有十一个固定二级章节。

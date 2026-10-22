@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-`force_v1.rs` 属于独立 crate `astersql-ddl-testargsv1`，crate 边界由
-`pkg/ddl/testargsv1/Cargo.toml` 定义。它不是 DDL 作业执行器，也不参与元数据持久化、
-schema state 转换或回填；它只在编译期 feature `ddlargsv1` 启用时提供一个“测试必须使用
-DDL Job V1 参数格式”的布尔开关。
-
-模块入口 `pkg/ddl/testargsv1/lib.rs` 始终声明 `force_v1` 和 `normal` 两个模块，但通过
-互斥的 `cfg` 条件选择 crate 根的公开再导出：启用 `ddlargsv1` 时再导出本文件，未启用时
-再导出 `normal.rs`。工作区根 `Cargo.toml` 又把根包 feature `ddlargsv1` 转发为
-`facade_ddl_testargsv1/ddlargsv1`，`pkg/lib.rs` 则把该 crate 暴露在
-`ddl::testargsv1` 门面下。
+schema state 转换或回填；它只在编译期 feature `ddlargsv1` 启用时提供一个“测试必须使用。
 
 ## 核心职责
 
@@ -92,11 +83,9 @@ Go 侧的行为消费者位于 `pkg/ddl/ddl.go`：`(*ddl).detectAndUpdateJobVers
 
 `force_v1.rs` 对应 `pkg/ddl/testargsv1/force_v1.go`：Go 使用
 `//go:build ddlargsv1` 选择文件，并声明 `const ForceV1 = true`；Rust 使用
-`#[cfg(feature = "ddlargsv1")]` 和 `lib.rs` 的条件再导出实现等价的构建选择。
-Rust 额外提供 `FORCE_V1` 作为惯用名称，再以 `ForceV1` 保留 Go 公共标识符。
+`#[cfg(feature = "ddlargsv1")]` 和 `lib.rs` 的条件再导出实现等价的构建选择。Rust 额外提供 `FORCE_V1` 作为惯用名称，再以 `ForceV1` 保留 Go 公共标识符。
 
-默认分支也保持对称：Go 的 `normal.go` 在 `!ddlargsv1` 下令 `ForceV1 = false`，Rust 的
-`normal.rs` 在相反 feature 条件下提供两个值为 `false` 的名称。Go 生产代码已经在
+Go 生产代码已经在
 `pkg/ddl/ddl.go` 的 `detectAndUpdateJobVersion` 中消费该值；仓库内尚未找到对应的 Rust
 生产消费者，这是当前迁移状态的明确限制。
 
@@ -112,20 +101,3 @@ Rust 额外提供 `FORCE_V1` 作为惯用名称，再以 `ForceV1` 保留 Go 公
   两种构建下模块内名称、crate 根再导出名称及值的一致性，不要把测试嵌入本源文件。
 - 若将开关接入 Rust 生产 DDL 逻辑，需要另行验证 Job V1/V2 编解码、升级兼容和全局状态
   并发；这些均超出本常量文件的职责。
-
-## 验证依据
-
-- 源码：`pkg/ddl/testargsv1/force_v1.rs`（`FORCE_V1`、`ForceV1` 及其 `cfg` 条件）。
-- crate 与 feature：`pkg/ddl/testargsv1/Cargo.toml`、`pkg/ddl/testargsv1/lib.rs`、根
-  `Cargo.toml`、`pkg/lib.rs`。
-- Rust 独立测试：`pkg/ddl/testargsv1/migration_aster_unit_test.rs`；其中
-  `ddlargsv1_feature_forces_v1_jobs` 同时断言模块路径与 crate 根再导出均为 `true`，
-  `default_build_uses_current_ddl_args` 验证默认分支均为 `false`。
-- Go 对照与行为证据：`pkg/ddl/testargsv1/force_v1.go`、`normal.go`、
-  `pkg/ddl/ddl.go` 的 `detectAndUpdateJobVersion`、`pkg/ddl/ddl_test.go` 的
-  `TestDetectAndUpdateJobVersion`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter
-  pkg/ddl/testargsv1` 列出本 crate 的 6 个 Go/Rust 文件；文件节点读取确认本文件 33 行且
-  `used by 0 files`。精确常量调用图未被索引，因此以局部 `rg` 核验引用，未发现 Rust
-  生产消费者。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构检查应确保本文恰有规定的 11 个二级标题。

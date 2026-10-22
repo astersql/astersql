@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-vitess` crate 的业务实现文件，提供与 Vitess/TiDB Go 实现兼容的 64 位分片键哈希。crate 边界由 `pkg/util/vitess/Cargo.toml` 定义，库入口是 `pkg/util/vitess/lib.rs`；入口通过 `pub mod vitess_hash` 声明模块，并用 `pub use vitess_hash::*` 再导出本文件的公开函数。workspace 根 `Cargo.toml` 同时把该 crate 纳入成员列表，并以 `facade_util_vitess` 依赖名接入 `pkg/lib.rs` 的 `util::vitess` 门面。
-
-当前接线需要区分 Go 与 Rust：Go 的 SQL 表达式实现 `pkg/expression/builtin_miscellaneous.go` 和向量实现 `pkg/expression/builtin_miscellaneous_vec.go` 会直接调用 Go 版 `vitess.HashUint64`；代码搜索未发现生产 Rust 文件直接调用本文件的 `HashUint64`。Rust expression 侧目前在 `pkg/expression/builtin_miscellaneous.rs::vitess_hash_u64` 和 `pkg/expression/builtin_miscellaneous_vec.rs::vitess_hash` 中各自保留了同算法实现。因此，本文件已经是公开的兼容工具，但不能据现有证据声称它已经成为 Rust SQL 表达式执行主链的唯一实现。
+文件还负责缓存 DES cipher：`NULL_KEY_BLOCK` 通过 `LazyLock<Des>` 在首次使用时初始化一次，后续调用共享同一不可变 cipher，避免每次哈希都重新建立密钥调度。
 
 ## 核心职责
 
@@ -62,15 +60,10 @@ Go 应用链则是明确的：`builtinVitessHashSig::evalInt` 实现 SQL `VITESS
 
 ## 与 Go 版本的对应关系
 
-Go 基准实现位于 `pkg/util/vitess/vitess_hash.go`。对应关系如下：
-
 - Go 的包级 `nullKeyBlock cipher.Block` 加 `init()` 对应 Rust 的 `LazyLock<Des>`；前者在包初始化期构造，后者推迟到首次访问，但可观察的哈希结果相同。
 - Go 的 `des.NewCipher(make([]byte, 8))` 对应 Rust 的 `Des::new_from_slice(&[0_u8; 8])`，都使用 8 字节全零密钥。
-- Go 的 `binary.BigEndian.PutUint64`/`Uint64` 对应 Rust 的 `to_be_bytes`/`from_be_bytes`。
 - Go 的 `nullKeyBlock.Encrypt(hashed[:], keybytes[:])` 对应 Rust 的 `encrypt_block(&mut hashed)`；两者都是对一个 8 字节块的原地/等价单块加密，没有 IV 或 padding。
 - Go 声明返回 `(uint64, error)` 且正常实现总是返回 `nil` error；Rust 返回 `Result<u64, Infallible>`，以类型明确没有可恢复失败。
-
-`pkg/util/vitess/vitess_hash_test.go::TestVitessHash` 的五个固定向量被 `pkg/util/vitess/vitess_hash_test.rs::TestVitessHash` 逐项迁移，Rust 测试还保持了大端、大写十六进制比较。`migration_aster_unit_test.rs` 重复核验数值向量并补充确定性/非恒等性质。现有测试没有覆盖输入 `0`，也没有跨 crate 调用或与 Rust expression 重复实现的一致性测试；这些是覆盖现状，不应被描述为已验证。
 
 ## 扩展指南
 
@@ -79,11 +72,3 @@ Go 基准实现位于 `pkg/util/vitess/vitess_hash.go`。对应关系如下：
 若要消除 Rust expression 中的重复实现，最可能的接入点是 `pkg/expression/builtin_miscellaneous.rs::vitess_hash_u64` 与 `pkg/expression/builtin_miscellaneous_vec.rs::vitess_hash`。接线时应复用本 crate 的公开函数，并同步 expression 的标量、向量测试；还需处理 `Result<u64, Infallible>`，验证 SQL NULL 传播、负 `i64` 到 `u64` 的按位转换和 `TIDB_SHARD` 取模行为不变。该重构超出本文档任务范围，当前文件没有做行为修改。
 
 若要改变算法、密钥或端序，必须把它视为兼容性变更：已有分片键到 keyspace 的映射和固定测试向量都会变化。若 `des` 依赖 API 或密钥初始化可能失败，则需要把 `NULL_KEY_BLOCK` 改为可表达失败的初始化状态，并将公开错误类型从 `Infallible` 扩展到真实错误；同时评估所有门面与调用者。性能修改应保留一次性密钥调度和无额外分配的单块路径，并用独立基准或针对性测试证明结果不变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/util/vitess/vitess_hash.rs`；`files --filter pkg/util/vitess` 列出实现、crate 入口及测试；`node --file pkg/util/vitess/vitess_hash.rs --offset 1 --limit 240` 核对完整 43 行源码；`query HashUint64 --kind function` 精确定位 Rust 与 Go 同名实现；对精确 Rust 符号执行 `callers`/`callees` 未返回调用边。
-- 生产源码：`pkg/util/vitess/vitess_hash.rs`（`NULL_KEY_BLOCK`、`HashUint64`）；`pkg/util/vitess/lib.rs`（模块声明和再导出）；`pkg/lib.rs`（`util::vitess` 门面）；`pkg/expression/builtin_miscellaneous.rs` 与 `builtin_miscellaneous_vec.rs`（当前 Rust expression 的同算法独立实现）。
-- 配置：`pkg/util/vitess/Cargo.toml`（crate 名、`des = "0.8"`、测试依赖和 Go 包映射）；根 `Cargo.toml`（workspace 成员与 `facade_util_vitess` 依赖）。
-- Go 对照：`pkg/util/vitess/vitess_hash.go`（全零密钥 DES 与大端转换）；`pkg/expression/builtin_miscellaneous.go` 和 `builtin_miscellaneous_vec.go`（Go SQL 标量、`TIDB_SHARD` 与向量调用位置）。
-- 独立测试：`pkg/util/vitess/vitess_hash_test.rs`、`pkg/util/vitess/migration_aster_unit_test.rs`，以及对应的 `pkg/util/vitess/vitess_hash_test.go`。测试证明五个固定向量、输出大端 hex、确定性和一个非恒等样例；本纯文档任务按计划未运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是表列元数据的 Rust 实现，定义持久化形状 ColumnInfo、默认值兼容表示、DDL 改列/删列期间的临时命名，以及 TiDB 隐式系统列构造器。它不单独形成 crate：pkg/meta/model/internal/group1/lib.rs:446-448 通过 path 属性编译并公开再导出本模块，pkg/meta/model/lib.rs:11-14,37 再由 astersql-meta-model 包根导出。
-
-pkg/meta/model/Cargo.toml 表明顶层包仅聚合 group1–group4，且 package.metadata.porting.go-package 指向 pkg/meta/model。这里使用的 ast、charset、mysql、types、SchemaState、TableInfo 和三个额外列 ID 均来自 group1 父模块。
+表列元数据的 Rust 实现，定义持久化形状 ColumnInfo、默认值兼容表示、DDL 改列/删列期间的临时命名，以及 TiDB 隐式系统列构造器。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ RustCodeGraph 将目标文件标为被 68 个文件使用。因为 ColumnInfo、
 
 ## 与 Go 版本的对应关系
 
-权威对照是 pkg/meta/model/column.go，回归对照是 column_test.go:TestDefaultValue。Rust 保留版本常量、JSON 键、临时命名规则、FieldType 转发、生成列判定、BIT 旁路、类型描述、查找及三种额外列的主语义。column_test.rs:test_default_value 按 Go 用例覆盖普通/BIT 新旧写法、空 origin default、JSON 往返和物理表 ID 列。
+Rust 保留版本常量、JSON 键、临时命名规则、FieldType 转发、生成列判定、BIT 旁路、类型描述、查找及三种额外列的主语义。
 
 差异包括：
 
@@ -95,11 +93,3 @@ RustCodeGraph 将目标文件标为被 68 个文件使用。因为 ColumnInfo、
 - 修改临时命名时同步检查 IsChanging、IsRemoving、两个 origin-name getter 与 persistent_modify_column.rs；bdr_1_aster_unit_test.rs:64-66 已覆盖大小写冲突和墓碑幂等。
 - 修改额外列时检查 planner/table/regionsplit 特殊 ID 分支，保持 handle 的 PK+NOT NULL、physical table ID 的 NOT NULL、commit TS 的 UNSIGNED，以及三者的 BIGINT/binary 属性。
 - FindColumnInfo* 是线性查找。若性能证据要求索引，应由拥有 TableInfo 快照生命周期的上层维护并处理 DDL 失效，不宜在本模块引入长寿命全局缓存。
-
-## 验证依据
-
-- RustCodeGraph status：11467 文件、307296 节点、1848419 边；node --file pkg/meta/model/column.rs 读取全部 607 行，目标文件显示被 68 个文件使用。
-- 编译/导出：pkg/meta/model/Cargo.toml、internal/group1/lib.rs:446-448、pkg/meta/model/lib.rs:11-14,31-37,46-47。
-- 生产调用：pkg/ddl/create_table.rs:517-520、persistent_drop_column.rs:239、persistent_modify_column.rs:547,873,915、physical_index_scan.rs:231,242,564-566、base_physical_plan.rs:168-171、logical_plan_builder_runtime.rs:4847,4869,4964、pkg/table/column.rs:150,942、session/runtime/statistics.rs:2488,2559。
-- 对照与测试：pkg/meta/model/column.go、column_test.go、column_test.rs、bdr_1_aster_unit_test.rs:49-68，以及 pkg/table/column_test.rs:587-618。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时运行任务指定的 11 标题结构检查和 git diff --check，并人工复核事实与范围。

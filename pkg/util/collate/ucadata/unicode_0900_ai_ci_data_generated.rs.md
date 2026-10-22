@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-collate-ucadata` crate 中的 Unicode Collation Algorithm（UCA）9.0.0 默认排序元素表（DUCET）生成产物。crate 入口 `pkg/util/collate/ucadata/lib.rs` 将它声明为 `unicode_0900_ai_ci_data_generated` 模块，并通过 glob re-export 暴露其公共项；所属 crate 由 `pkg/util/collate/ucadata/Cargo.toml` 定义，未声明额外 feature 或第三方依赖。
-
-它不实现排序、比较或字符转换算法，只把生成器根据 Unicode 9.0.0 `allkeys.txt` 计算出的结果固化为只读 Rust 数据。直接运行时消费者是 `pkg/util/collate/unicode_0900_ai_ci_impl.rs` 的 `convertRuneUnicodeCI0900`，后者为 `unicode0900Impl::GetWeight` 和 `unicode0900AICIPattern::DoMatch` 提供字符权重，因此该表间接参与 `utf8mb4_0900_ai_ci` 风格的权重查询和通配符等值判断。
-
-源文件头明确标记 `Code generated ... DO NOT EDIT`；权重或布局变化应从 `pkg/util/collate/ucadata/generator/main.rs`、`generator/data_0900.rs.tpl` 和输入 `generator/allkeys-9.0.0.txt` 发起，而不是手改这 184031 行生成数据。
+不实现排序、比较或字符转换算法，只把生成器根据 Unicode 9.0.0 `allkeys.txt` 计算出的结果固化为只读 Rust 数据。
 
 ## 核心职责
 
@@ -72,14 +68,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated.go`。两端具有相同的 183969 项主表、相同的 27 项长权重数据和相同的 `DUCET0900Table` 名称。对应关系为：
-
-- Go 匿名结构体的 `[183969]uint64 MapTable4` 对应 Rust `UcaDataTable<183969>::map_table4`。
-- Go `map[rune][2]uint64 LongRuneMap` 对应 Rust `&'static [(u32, [u64; 2])]`。Rust 选择有序切片以避免运行时哈希表，并支持消费者的二分查找；这要求生成顺序稳定。
 - Go 通过 map 下标读取长权重；Rust 显式二分搜索并在缺项时 `expect`。正常生成数据的返回语义相同，损坏数据时 Rust 的失败更明确。
-- Go 与 Rust 的运行时转换函数都先查主表，再在 `LongRune8` 分支取两段权重，并对表外码点计算隐式权重。
 
-`unicode_0900_ai_ci_data_test.go` 与 Rust `unicode_0900_ai_ci_data_test.rs` 一一覆盖 Hangul Jamo 单权重和长表首段非零。Rust 额外的 `unicode_0900_ai_ci_data_generated_2_aster_unit_test.rs` 校验表长、TAB、`A`、U+FFFD 和两项长权重代表值；`unicode_ci_data_test.rs` 与 Go 同名测试还检查 9.0.0 长权重组合互不重复。
+Rust 额外的 `unicode_0900_ai_ci_data_generated_2_aster_unit_test.rs` 校验表长、TAB、`A`、U+FFFD 和两项长权重代表值；`unicode_ci_data_test.rs` 与 Go 同名测试还检查 9.0.0 长权重组合互不重复。
 
 ## 扩展指南
 
@@ -88,12 +79,3 @@ Go 对照文件是 `pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated.g
 修改表布局时须同步检查 `pkg/util/collate/unicode_0900_ai_ci_impl.rs::convertRuneUnicodeCI0900`：若改变哨兵、长表容器或排序规则，二分查找和失败条件也必须一起调整。新增运行时代码不应放进本生成文件；应放在实现文件，并在同目录独立测试文件中覆盖，遵守 Rust 源码与测试逻辑分离要求。
 
 验证更新至少应覆盖：生成器迁移测试 `generator/migration_aster_unit_test.rs`、表形状测试 `unicode_0900_ai_ci_data_test.rs`、代表值测试 `unicode_0900_ai_ci_data_generated_2_aster_unit_test.rs`、唯一性测试 `unicode_ci_data_test.rs`，以及对应 Go 测试。兼容性风险集中在排序结果变化和 Go/Rust 数据漂移；性能风险集中在增大主表静态体积或破坏长表有序性后退化/失效的查找；正确性风险集中在哨兵与长表不同步、权重打包顺序变化和覆盖上界的 off-by-one。
-
-## 验证依据
-
-- 目标数据与符号：`pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated.rs` 第 16–30 行及第 184002–184031 行；RustCodeGraph `node --file` 核验了文件头、类型、静态实例和完整长表尾部。
-- crate 与模块边界：`pkg/util/collate/ucadata/Cargo.toml`、`pkg/util/collate/ucadata/lib.rs`；该目录没有 `doc.go`，模块说明以 Rust crate 入口为准。
-- 运行时调用边：`pkg/util/collate/unicode_0900_ai_ci_impl.rs::convertRuneUnicodeCI0900`、`unicode0900Impl::GetWeight`、`unicode0900AICIPattern::DoMatch`。RustCodeGraph 精确查询同时定位了 Go/Rust 两个同名转换函数；静态量节点缺失后以 `rg` 的直接引用结果补齐调用证据。
-- 生成依据：`pkg/util/collate/ucadata/data.rs::LongRune8`、`generator/main.rs::{calcImplicitWeight,getImplicitWeight0900,selectOutputTarget,buildTable,generateOutputTarget}`、`generator/data_0900.rs.tpl` 和 `generator/allkeys-9.0.0.txt`。
-- Go 对照：`pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated.go`、`pkg/util/collate/unicode_0900_ai_ci_impl.go`。
-- 测试依据：`unicode_0900_ai_ci_data_test.rs`、`unicode_0900_ai_ci_data_generated_2_aster_unit_test.rs`、`unicode_ci_data_test.rs`，以及对应的 `unicode_0900_ai_ci_data_test.go`、`unicode_ci_data_test.go`。本任务按计划不运行 Cargo；这些文件用于核对既有不变量与迁移语义。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现一个名为 `conn_ip_example`、版本为 `1` 的审计插件示例。它属于 Cargo 包 `astersql-plugin-conn_ip_example`：该包以同目录 `lib.rs` 为 crate 根并依赖父目录的 `astersql-plugin`；根 `Cargo.toml` 将其列为 workspace 成员，并以 `facade_plugin_conn_ip_example` 别名提供给 `pkg/lib.rs` 的门面模块。`lib.rs` 公开重导出本文件的符号，因此外部使用者可以从 crate 根访问 `plugin_manifest()` 等 API。
-
-`plugin_manifest()` 是框架接线入口：它生成 `Kind::Audit` 的 `AuditManifest`，将基础生命周期回调与连接、通用语句事件回调交给插件框架。仓库内可见的完整加载路径由独立测试 `conn_ip_example_test.rs::test_load_plugin` 证明：测试钩子导出该清单，随后依次调用 `load`、`init`、`foreach_plugin` 和 `shutdown`。同目录 `manifest.toml` 则记录 Go 动态插件的同名、同版本和对应扩展点；它不是本 Rust 文件读取的运行时配置。
+`on_general_event()` 输出一次语句事件的会话状态、SQL、摘要、表、用户、事件阶段和命令；清单中的适配闭包负责把框架数据转换成本文件的简化视图。
 
 ## 核心职责
 
@@ -72,9 +70,9 @@
 
 ## 与 Go 版本的对应关系
 
-`Cargo.toml` 的 `package.metadata.porting.go-package` 明确指向 `pkg/plugin/conn_ip_example`。Rust 的 `validate`、`on_init`、`on_shutdown`、`on_general_event`、`on_connection_event` 与 Go 的 `Validate`、`OnInit`、`OnShutdown`、`OnGeneralEvent`、`OnConnectionEvent` 一一对应；变量名、默认值、双作用域、ASCII/字符串小写规范化、设置回调日志、连接信息日志及原子计数的基本意图保持一致。Rust 独立测试复刻 Go `TestLoadPlugin` 的加载、初始化、一次 Completed 事件、五次 Connected 事件、计数断言和 shutdown 清零断言，并额外验证拒绝原因存在/缺失两种情况。
+Rust 的 `validate`、`on_init`、`on_shutdown`、`on_general_event`、`on_connection_event` 与 Go 的 `Validate`、`OnInit`、`OnShutdown`、`OnGeneralEvent`、`OnConnectionEvent` 一一对应；变量名、默认值、双作用域、ASCII/字符串小写规范化、设置回调日志、连接信息日志及原子计数的基本意图保持一致。Rust 独立测试复刻 Go `TestLoadPlugin` 的加载、初始化、一次 Completed 事件、五次 Connected 事件、计数断言和 shutdown 清零断言，并额外验证拒绝原因存在/缺失两种情况。
 
-已确认的差异包括：Rust 用进程内示例注册表代替 Go 服务器的 `variable.RegisterSysVar`；Rust `validate()` 不打印上下文本身；Rust 通过 `plugin_manifest()` 在代码中组装清单，而 Go 测试手工构造 `plugin.AuditManifest`，同目录 `manifest.toml` 也描述 Go 导出点；Rust 的框架会话适配丢弃真实 digest，并把表转换为字符串；Go 直接读取 `StmtCtx.SQLDigest()` 和原始表结构；Rust 用户回退为连接 ID，而 Go 直接打印 `sctx.User`；Rust 枚举匹配没有 Go 的未知事件兜底输出。此外，Rust 注册表锁失败会静默降级，这不是 Go 全局变量 API 在此示例中展示的行为。
+已确认的差异包括：Rust 用进程内示例注册表代替 Go 服务器的 `variable.RegisterSysVar`；Rust `validate()` 不打印上下文本身；Rust 通过 `plugin_manifest()` 在代码中组装清单，而 Go 测试手工构造 `plugin.AuditManifest`，同目录 `manifest.toml` 也描述 Go 导出点；Rust 的框架会话适配丢弃真实 digest，并把表转换为字符串；Go 直接读取 `StmtCtx.SQLDigest()` 和原始表结构；Rust 用户回退为连接 ID，而 Go 直接打印 `sctx.User`；Rust 枚举匹配没有 Go 的未知事件兜底输出。
 
 ## 扩展指南
 
@@ -84,13 +82,3 @@
 - 若要按 IP 实施策略，应在 `on_connection_event()` 中明确限定事件类型、校验 `ConnectionInfo.host`，并返回可解释的 `PluginError`；同时确认框架如何处理该错误。不要复用 `CONNECTIONS` 充当在线连接数。
 - 行为变更应同步独立测试 `pkg/plugin/conn_ip_example/conn_ip_example_test.rs`，保持 Rust 测试不嵌入生产源文件；对照语义还应检查 `conn_ip_example.go` 和 `conn_ip_example_test.go`。涉及全局状态的测试需继续串行并在前后清理状态。
 - 兼容性风险集中在插件名称/版本、系统变量名、作用域和回调签名；性能风险主要来自每次事件的字符串克隆、表名格式化和同步标准输出。高频审计路径扩展时应避免持锁、减少分配，并评估日志量。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，其中 7,032 个 Rust 文件；`files --filter pkg/plugin/conn_ip_example` 列出本模块的 Go/Rust 实现、测试与 crate 入口。
-- RustCodeGraph `node --file pkg/plugin/conn_ip_example/conn_ip_example.rs --offset 1 --limit 260` 及 `--offset 260 --limit 40`：核对本文件全部 278 行、类型、函数、闭包适配和原子操作；`query plugin_manifest --kind function` 唯一定位第 218 行。
-- RustCodeGraph `node AuditManifest` 与 `node --file pkg/plugin/audit.rs --offset 180 --limit 90`：核对审计清单的四种可选回调、导出到 `Manifest.extension` 的方式以及拒绝原因键的值类型。
-- RustCodeGraph 对 `plugin_manifest`、`on_general_event`、`on_connection_event` 执行了 `callers`/`callees` 查询，但未返回可用结果；因此用目标源码内部引用和仓库精确搜索确认调用边，并把“当前可见调用者”限定为测试证据。
-- Cargo/入口证据：`pkg/plugin/conn_ip_example/Cargo.toml`、`pkg/plugin/conn_ip_example/lib.rs`、根 `Cargo.toml` 第 428/1376 行、`pkg/lib.rs` 第 1176-1177 行，以及同目录 `manifest.toml`。
-- Go 对照与测试证据：`pkg/plugin/conn_ip_example/conn_ip_example.go`、`conn_ip_example_test.go`、`main_test.go`；Rust 独立测试证据：`conn_ip_example_test.rs::{test_reject_reason_from_context,test_load_plugin}`。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核文档只描述有上述文件或符号支撑的当前行为。

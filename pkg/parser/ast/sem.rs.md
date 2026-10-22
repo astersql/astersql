@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-ast` crate，由 [`lib.rs`](lib.rs) 中的 `pub mod sem` 公开。它位于 SQL 已被解析成 AST 节点之后，提供一层不依赖 SQL 还原文本的“语句命令类别”元数据：调用方通过 `SEMCommand::sem_command` 得到稳定的静态字符串，例如 `SelectStmt -> "SELECT"`、`CreateTableStmt -> "CREATE TABLE"`。
-
-该层的设计用途是供权限、审计或其他只关心语句类别的逻辑使用，但仓库内 Rust 生产源码目前没有检索到 `sem_command()` 的外部调用；可确认的调用者均位于独立测试文件。因此应把它理解为已公开、已覆盖测试的 AST 分类能力，而不是声称它已经接入 Rust SQL 执行主链。依据是本文件第 14--23 行、[`lib.rs`](lib.rs) 的模块声明，以及全仓库对 `.sem_command()`/`SEMCommand::sem_command` 的检索结果。
+只负责分类，不解析 SQL、不还原 SQL、不执行语句，也不检查权限。
 
 ## 核心职责
 
@@ -70,14 +68,12 @@ RustCodeGraph 对 `sem_command` 找到 trait 声明及 8 组实现定义，并�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`sem.go`](sem.go)，Rust 的公开常量值和具体节点映射总体逐项复刻 Go 的 `SEMCommand() string`。Go 为每个 AST 类型分别声明方法；Rust 用 trait 加 `fixed_sem_command!` 合并重复样板。两者都为 `DropTableStmt`、`InsertStmt`、`ExplainStmt`、`ShowStmt`、`AdminStmt`、`BRIEStmt` 和物化视图取消节点保留字段驱动分支。
+Go 为每个 AST 类型分别声明方法；Rust 用 trait 加 `fixed_sem_command!` 合并重复样板。
 
 语义表示存在两点差异：
 
 - Go 的 Show/Admin/BRIE 判别类型可通过整数落入 `default -> UnknownCommand`；Rust 使用带 `Unknown`/`None` 变体或穷尽枚举。当前 `ShowStmt` 的 `None` 映射为 `UNKNOWN`，物化视图取消类型的 `Unknown(_)` 也映射为 `UNKNOWN`，而 Admin/BRIE 的生效 Rust 枚举没有额外未知分支。
 - `SemStatement` 是 Rust 为独立分类和迁移接线提供的辅助枚举，Go 同路径文件没有对应类型；它不能替代新增具体 AST 节点的 trait 实现。
-
-Go 测试 [`sem_test.go`](sem_test.go) 通过遍历枚举计数检查 Show/Admin/BRIE 不返回 `UNKNOWN`，并覆盖物化视图命令。Rust 的 [`sem_test.rs`](sem_test.rs) 使用显式 `(变体, 命令)` 表核对实际值，另由合并回归测试覆盖新增 Show 类型和物化视图行为。Rust 的显式表更精确，但新增枚举或常量时必须人工同步测试表。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Go 测试 [`sem_test.go`](sem_test.go) 通过遍历枚举计数检查 Show/Admin
 5. 搜索实际调用者，确认下游是否依赖字符串的精确拼写。常量值属于兼容面，改名 Rust 标识符与修改字符串值的风险不同。
 
 主要风险是兼容性而非性能：拼写变化会影响按字符串聚合的潜在审计/权限消费者；漏映射会导致未知分类或编译失败；错误地固定映射会混淆两个 SQL 动词。当前没有生产调用证据，因此新增功能若要接入执行主链，还需在目标消费模块单独设计和验证，不能只增加这里的实现。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标仓库索引包含 `pkg/parser/ast/sem.rs`；`files --filter` 显示该文件有 242 个索引符号；`query SEMCommand`、`query sem_command` 和 `node sem_command` 定位 trait/实现，并展示 Show/Admin/BRIE/物化视图分支到命令常量的引用边。通用 `callers/callees` 未给出可靠的宏展开调用者，因此用精确源码检索补足。
-- 生产源码：完整阅读 [`sem.rs`](sem.rs)；读取 [`lib.rs`](lib.rs) 的公开模块声明；读取 [`Cargo.toml`](Cargo.toml) 的 crate 名称、入口、依赖和 Go 迁移元数据。
-- Go 对照：阅读 [`sem.go`](sem.go) 的常量、固定节点方法以及 Drop/Insert/Show/Admin/BRIE/Explain/物化视图动态分支。
-- 测试证据：阅读 [`sem_test.rs`](sem_test.rs)、[`sem_test.go`](sem_test.go)、[`model_7_aster_unit_test.rs`](model_7_aster_unit_test.rs)、[`go_merge_13_test.rs`](go_merge_13_test.rs) 与 [`go_merge_16_test.rs`](go_merge_16_test.rs) 中直接涉及 SEM 的用例。
-- 静态计数与调用检索：`rg -c '^pub const ' pkg/parser/ast/sem.rs` 得到 225；全仓库 Rust 检索 `.sem_command()` 和 `SEMCommand::sem_command` 只命中上述测试文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核本文区分了源码事实、设计用途和未接线状态。

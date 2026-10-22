@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-parser` crate 的 SQL 规范化与摘要能力：把字面量不同但结构相同的 SQL 归一成稳定文本，并对该文本计算 SHA-256。它不是完整 SQL parser，也不构造 AST；核心路径是文件内的轻量 `Scanner` 加 `SqlDigester` 状态机。模块入口位于 [`lib.rs`](./lib.rs)：`digester_impl` 通过 `include!("digester.rs")` 纳入实现并公开再导出，因此调用方既可从 crate 根使用 `astersql_parser::NormalizeDigest`，也可经 `digester_impl` 使用这些 API。
-
-该能力处在“收到或还原 SQL 文本”与“按语句形状聚合、匹配或观测”之间。RustCodeGraph 的调用边显示，实际生产调用者包括 `pkg/sessionctx/stmtctx/stmtctx.rs`（缓存原始 SQL 的 normalized/digest）、`pkg/session/runtime/planning.rs` 与 `control.rs`（会话规划和观测）、`pkg/session/runtime/dispatch.rs` 及 `pkg/bindinfo/binding.rs`（binding 规范化）、`pkg/expression/builtin_info.rs`（SQL digest 内建功能）和 `pkg/util/topsql/collector/mock/mock.rs`（TopSQL 收集测试支撑）。
+`NormalizeDigest` 与 `NormalizeDigestForBinding` 在同一路径上同时生成规范文本和 SHA-256；`DigestNormalized` 只哈希调用者承诺已规范化的字符串，`DigestHash` 是“先规范化再哈希”的兼容 API（同名公开函数及 `do_*` 方法）。
 
 ## 核心职责
 
@@ -71,11 +69,11 @@ RustCodeGraph 对 `NormalizeDigest` 给出的边是 `NormalizeDigest -> with_dig
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`digester.go`](./digester.go)，独立 Go 测试是 [`digester_test.go`](./digester_test.go)。公开 API、`Digest`、`sqlDigester`/`SqlDigester`、token deque、主循环以及 `reduceLit`、`reduceOptimizerHint`、binding/plan-replayer reducer 基本按名称和顺序一一对应；Rust 测试中的固定摘要、等价/非等价 SQL 分组也复现了 Go 测试意图。
+公开 API、`Digest`、`sqlDigester`/`SqlDigester`、token deque、主循环以及 `reduceLit`、`reduceOptimizerHint`、binding/plan-replayer reducer 基本按名称和顺序一一对应；Rust 测试中的固定摘要、等价/非等价 SQL 分组也复现了 Go 测试意图。
 
-主要实现差异如下：Go 复用项目完整 `Scanner`、`charset.GetCharsetInfo` 和 `sync.Pool`，Rust 在本文件内实现轻量 scanner、有限字符集白名单并逐调用创建实例；Go 的 `Digest.Bytes()` 暴露可变 slice 语义，Rust 返回不可变 `&[u8]`；Go 返回 `*Digest`，Rust 按值返回；Go 的 hasher 显式 `Reset`，Rust 用 `finalize_reset`。Rust 还显式处理特殊注释展开和残缺块注释输出空格，以测试锁定当前对齐结果。
+主要实现差异如下：Go 复用项目完整 `Scanner`、`charset.GetCharsetInfo` 和 `sync.Pool`，Rust 在本文件内实现轻量 scanner、有限字符集白名单并逐调用创建实例；Go 的 `Digest.Bytes()` 暴露可变 slice 语义，Rust 返回不可变 `&[u8]`；Go 返回 `*Digest`，Rust 按值返回；Go 的 hasher 显式 `Reset`，Rust 用 `finalize_reset`。
 
-“对应”不意味着可脱离测试假设二者永远完全相同。尤其 scanner 词类、关键字/内置函数列表、字符集支持、SQL mode、特殊注释 feature 和非法输入截断策略是最易漂移的区域。新增 Go 行为时应同时核对 Rust scanner 和归并顺序，而不是只添加一个最终字符串特例。
+新增 Go 行为时应同时核对 Rust scanner 和归并顺序，而不是只添加一个最终字符串特例。
 
 ## 扩展指南
 
@@ -85,11 +83,3 @@ RustCodeGraph 对 `NormalizeDigest` 给出的边是 `NormalizeDigest -> with_dig
 - 修改列表折叠必须维护“只看队尾、命中后精确 pop”的不变量，并分别覆盖普通 Normalize、binding 与 plan-replayer reload；`IN (?)`、`IN (...)`、`IN(ROW(...))`、多行 `VALUES` 和混合字面量/标识符不能互相误伤。
 - 修改摘要编码或 hash 算法会破坏持久化/跨组件键兼容。必须保留 Go 固定 SHA-256 向量并审计所有 `String()` 消费者；不要只验证 `NormalizeDigest == Normalize + DigestNormalized`，因为两条路径同时漂移仍可能互相一致。
 - 测试逻辑应继续放在独立 [`digester_test.rs`](./digester_test.rs) 和 [`digester_1_aster_unit_test.rs`](./digester_1_aster_unit_test.rs)，不要嵌回生产文件。前者保持 Go 测试结构，后者适合补 Rust/Go 差异、完整用例表和回归边界。
-
-## 验证依据
-
-- 源码全量读取：[`digester.rs`](./digester.rs)，包括 15 类 scanner token、`Digest` 和 8 个公开构造/规范化/摘要入口、`SqlDigester` 主循环、所有 reducer、`Token`/`TokenDeque` 及合成 kind。
-- 模块与依赖：[`lib.rs`](./lib.rs) 的 `digester_impl` include/re-export 和独立测试模块声明；[`Cargo.toml`](./Cargo.toml) 的 `astersql-parser` crate、`lib.rs` 入口、`sha2` 依赖与 `pkg/parser` Go 包移植元数据。本包未发现 `doc.go`，故以这些最近入口作为包级契约证据。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`node pkg/parser/digester.rs::NormalizeDigest`、`NormalizeForBinding`、`DigestNormalized`、`Normalize`、`normalize`、`reduce_lit` 核对了公开入口、内部 callees 和已解析 callers。另用 Rust 源码调用点搜索补足图未解析到的生产调用者。
-- Go 对照：[`digester.go`](./digester.go) 的公开 API、pool、状态机和 reducer；[`digester_test.go`](./digester_test.go) 的 Normalize、MARKER、keep-hint、固定 digest、等价/非等价分组及 Digest 构造用例。
-- Rust 独立测试：[`digester_test.rs`](./digester_test.rs) 的 Go 结构移植，以及 [`digester_1_aster_unit_test.rs`](./digester_1_aster_unit_test.rs) 的固定 SHA-256、全量 Go normalize 表、数值边界、特殊注释、关键字/窗口函数和状态泄漏回归。按任务约束未运行 Cargo；本任务仅以源码、调用图、对照测试和文档结构检查作验证。

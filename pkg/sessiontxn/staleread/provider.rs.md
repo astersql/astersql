@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`provider.rs` 定义 Rust 侧的过期读（stale read）事务上下文 Provider，用固定历史时间戳组装只读事务、语句读时间戳和 KV 快照。它由 `pkg/sessiontxn/staleread/lib.rs` 声明并重导出，所属 crate 是 `astersql-sessiontxn-staleread`（`pkg/sessiontxn/staleread/Cargo.toml`）。
-
-当前 Rust 实现是一个已可单元测试的轻量移植边界：它使用 `util.rs` 中的 `SessionRef`/`SessionBackend`/`Transaction`/`Snapshot` 模型，而 `Cargo.toml` 中真实 `sessionctx`、`kv`、`infoschema` 等依赖全部位于 `target.'cfg(any())'.dependencies`，永不会在正常构建中启用。全库 Rust 引用搜索也只找到本文件、`lib.rs`、`provider_test.rs` 和注释性引用，没有生产 Rust 调用者。因此，Go 侧的实际 SQL 事务主链是设计对照，不是当前 Rust 已接入真实 TiKV 的证据。
+保存不变的历史读时间戳 `ts`，并把所有语句读和快照请求钉在该时间点（`new`、`stmt_read_ts`、`snapshot_with_stmt_read_ts`）。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ RustCodeGraph 对精确方法的 callers 主要是 `provider_test.rs` 中的测�
 
 ## 与 Go 版本的对应关系
 
-Rust `StalenessTxnContextProvider` 逐项对应 `pkg/sessiontxn/staleread/provider.go` 的同名类型：`new` 对应 `NewStalenessTxnContextProvider`，`on_initialize`/`activate_stale_txn`/`enter_new_stale_txn_with_replace_provider` 对应 Go 的初始化三件套，`stmt_read_ts` 保留 issue #64198 所需的 autocommit=0 自动激活语义，`snapshot_with_stmt_read_ts` 保留活跃事务快照复用、临时表 interceptor、follower-read 透传和 stale-only 标记。ForUpdate 两个 API 的拒绝语义也一致。
+Rust `StalenessTxnContextProvider` 逐项对应 `pkg/sessiontxn/staleread/provider.go` 的同名类型：`new` 对应 `NewStalenessTxnContextProvider`，`on_initialize`/`activate_stale_txn`/`enter_new_stale_txn_with_replace_provider` 对应 Go 的初始化三件套，`stmt_read_ts` 保留 issue #64198 所需的 autocommit=0 自动激活语义，`snapshot_with_stmt_read_ts` 保留活跃事务快照复用、临时表 interceptor、follower-read 透传和 stale-only 标记。
 
 主要移植差异是：
 
@@ -92,13 +90,3 @@ Go `provider_test.go` 通过 `testkit`/mockstore 验证真实事务管理器、g
 - 如要接入 Rust 生产主链，需先定义并实现与 `sessiontxn.TxnContextProvider` 等价的 trait，将 `cfg(any())` 下的真实依赖转成可构建依赖，并用真实 session/kv 适配器取代 `util.rs` 的轻量类型。这是跨 crate 集成工作，不应只在本文件中补一个表面 trait impl。
 - 对齐 Go 时优先保留 `provider.go` 的完整副作，包括 context 取消、KV vars/options、`CreateTime`、row-ID shard 生成器、系统变量错误和真实临时表 interceptor；不应以当前内存模型通过单测作为删减这些语义的理由。
 - 需要特别评估的风险包括：锁持有期间的 backend 回调死锁（并发）、错误后会话半更新（正确性）、scope 或 follower 偏好丢失（兼容性），以及无效事务下频繁重建快照（性能）。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/sessiontxn/staleread` 列出本 crate 的 20 个 Go/Rust 文件。
-- RustCodeGraph `node --file pkg/sessiontxn/staleread/provider.rs --offset 1 --limit 420`：核对了全文 326 行、所有公开/私有符号、分支和状态写入。
-- RustCodeGraph `query StalenessTxnContextProvider --json`、`query on_initialize --json`、`query activate_stale_txn --json` 与定向 `explore`：核对 Rust/Go 同名类型、核心调用边及 `provider_test.rs` 的直接 callers。
-- 已读生产与配置证据：`provider.rs`、`util.rs`、`errors.rs`、`lib.rs`、`Cargo.toml`、Go 对照 `provider.go`。目标目录与上级 `pkg/sessiontxn` 均没有 `doc.go`，因此无额外包约定可读。
-- 已读测试证据：Rust `provider_test.rs`、`main_test.rs`，Go `provider_test.go`。Rust 用例覆盖两种激活进入、替换 Provider、Unsupported/ForUpdate 错误、scope、非 autocommit 惰性激活、事务缓存、快照复用/新建和 follower read；Go 用例补充了真实 TxnManager/testkit 与 RPC 层证据。
-- `rg` 只用于补足图未清晰表达的生产接线边界：全库 Rust 直接引用未发现非测试的 `StalenessTxnContextProvider` 构造或调用。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另行执行固定 11 章节的结构验证。

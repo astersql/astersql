@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 DXF（Distributed eXecution Framework）持久化层的“全局任务状态写路径”，对应源码为 [`task_state.rs`](task_state.rs)。它不定义状态枚举，而是在 `TaskManager` 上实现取消、失败、回滚、等待决议、暂停/恢复、运行参数修改和成功终结等写操作。所有状态最终落入 `mysql.tidb_global_task`；其中错误暂停和修改完成还会同步 `mysql.tidb_background_subtask`（`task_state.rs:32-337`）。
-
-crate 根通过 `include!("task_state.rs")` 把这些符号直接并入 `astersql-dxf-framework-storage` 根模块，并在测试构建中以独立文件模块加载 `task_state_test.rs`（`lib.rs:1247-1262`）。`Cargo.toml` 指定 `lib.rs` 为库入口、关闭自动测试发现，并声明 `nextgen` feature；本文件自身没有 `cfg` 分支，feature 不改变这里的状态转换。清单中的 `proto-crate`、`serde`/`serde_json` 等依赖支撑协议类型和 JSON，但当前实现通过 crate 根提供的 `proto`、`json`、session/SQL 兼容层工作。
+不定义状态枚举，而是在 `TaskManager` 上实现取消、失败、回滚、等待决议、暂停/恢复、运行参数修改和成功终结等写操作。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ crate 根通过 `include!("task_state.rs")` 把这些符号直接并入 `astersq
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`task_state.go`](task_state.go)。Rust 按相同顺序保留了常量/取消判断、14 个公开 `TaskManager` 方法和 `transitTaskStateOnErr` 私有 helper，SQL 的目标表、状态谓词、更新时间/结束时间、错误列、修改参数及 subtask 联动均与 Go 对齐（Go `task_state.go:30-339`；Rust `task_state.rs:24-338`）。
+表示层差异主要来自语言：Go 的 `error` 可为 nil，Rust 用 `impl Into<Option<Error>>` 兼容 `Error` 与 `None`；对应 Rust 测试明确验证四条错误写路径对 `None` 写空字节（`task_state_test.rs:54-80`）。Go 的 `*proto.ModifyParam`、`*proto.Task` 在 Rust 中按值传递；Go `json.RawMessage(bytes)` 的 SQL 参数在 Rust 由 `Vec<u8>`/crate 根值转换层承接。
 
-表示层差异主要来自语言：Go 的 `error` 可为 nil，Rust 用 `impl Into<Option<Error>>` 兼容 `Error` 与 `None`；对应 Rust 测试明确验证四条错误写路径对 `None` 写空字节（`task_state_test.rs:54-80`）。Go 的 `*proto.ModifyParam`、`*proto.Task` 在 Rust 中按值传递；Go `json.RawMessage(bytes)` 的 SQL 参数在 Rust 由 `Vec<u8>`/crate 根值转换层承接。Rust 的 `Context` 当前是 crate 兼容类型，方法仍保留 Go 风格命名以便逐函数比对。
-
-Go 测试连接真实 mock store/system tables，验证读回状态、错误归类、事务回滚、子任务恢复以及真实并发竞争（`task_state_test.go:40-403`）。Rust 的同路径测试使用内存 SQL executor，重点验证生成的 SQL、参数顺序、受影响行分支和 nil-error 契约（`task_state_test.rs:23-218`）。因此 Rust 测试证明写路径形状和局部控制流，但不能单独替代 Go 测试对真实 SQL 执行、数据库锁与提交行为的覆盖。
+Rust 的同路径测试使用内存 SQL executor，重点验证生成的 SQL、参数顺序、受影响行分支和 nil-error 契约（`task_state_test.rs:23-218`）。因此 Rust 测试证明写路径形状和局部控制流，但不能单独替代 Go 测试对真实 SQL 执行、数据库锁与提交行为的覆盖。
 
 ## 扩展指南
 
@@ -93,11 +89,3 @@ Go 测试连接真实 mock store/system tables，验证读回状态、错误归�
 - 扩展可修改参数时同步 `proto::ModifyParam`/serde、`CanMoveToModifying`、`ModifyTaskByID` 的写入和 `ModifiedTask` 的应用字段；明确哪些 subtask 状态应更新，避免误改终态记录。修改 concurrency 还要关注源码注释指出的未来“不同 subtask 并发度”需求（`task_state.rs:307-318`）。
 - 回归测试应放在独立文件 `pkg/dxf/framework/storage/task_state_test.rs`；需要更真实 SQL/并发验证时同步 Go `task_state_test.go`，或按 Cargo 清单注册新的独立 Rust 测试目标。不要把 Rust 测试内嵌到生产源文件。
 - 性能风险主要是额外 session/事务往返和大范围 subtask 更新。新增写操作应保持精确的 task key、step、state 谓词，并评估索引命中与受影响行规模；兼容风险主要是状态字符串、错误序列化和零行返回语义。
-
-## 验证依据
-
-- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/storage/task_state.rs`，不采用工作区未提交源码。
-- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
-- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
-- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
-- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-utils-iter` crate 的“数据源状态机”实现层。crate 边界由 `br/pkg/utils/iter/Cargo.toml` 定义，库入口是同目录 `lib.rs`；`lib.rs` 先挂载核心协议模块 `iter.rs`，再挂载本文件和公开工厂层 `source.rs`，并通过 `pub use source_types::*` 与 `pub use source::*` 扁平导出。
-
-调用关系上，应用代码通常不直接构造这里的内部工厂，而是调用 `source.rs` 的 `FromSlice`、`OfRange`、`Fail`、`Func`，它们分别装箱 `new_slice`、`new_range`、`new_failure`、`new_func` 的结果为 `Box<dyn TryNextor<T>>`。`empty` 是例外：它本身公开，并被 `combinators.rs` 与 `combinator_types.rs` 用作 `JoinIter` 的初始或终止哨兵。
+这些类型只负责“单次拉取如何改变本地状态”。
 
 ## 核心职责
 
@@ -75,14 +73,6 @@ RustCodeGraph 将 `source.rs` 标为被恢复日志相关代码及测试等 7 �
 
 `empty()` 产生的新装箱对象是独立的无状态哨兵。它在 `JoinIter` 中既避免 `Option` 分支，也确保子流失败后后续拉取不会重新访问被屏蔽的来源。
 
-## 与 Go 版本的对应关系
-
-直接对照文件是 `br/pkg/utils/iter/source_types.go` 与 `source.go`：Rust 的 `SliceIter`、`OfRangeIter`、`EmptyIter`、`FailureIter`、`FuncIter` 分别对应 Go 的 `fromSlice`、`ofRange`、`empty`、`failure`、`ofFunc`；公开工厂也一一对应 `FromSlice`、`OfRange`、`Fail`、`Func`。
-
-主要等价点包括 FIFO 产出、默认半开区间、空源稳定结束、失败源稳定报错，以及函数源每次调用生成器。Rust 为所有权和动态分派做了显式适配：用拥有所有权的 `Vec<T>`/`VecDeque<T>` 代替 Go slice 窗口，用 `String` 代替 `error` 接口，用 `Box<dyn TryNextor<T>>` 与装箱 `FnMut` 代替 Go interface/函数类型，并添加 `Send + 'static` 约束。
-
-整数覆盖由两个 Rust 文件共同完成：本文件实现 32/64 位有符号、无符号及指针宽度整数，`source.rs` 补充 8/16 位类型，对齐 Go `constraints.Integer` 的固定宽度及 `int`/`uint`/`uintptr` 范围。Rust 未提供 Go 中“nil 的 `*fromSlice`”状态；公开 `FromSlice(Vec<T>)` 总会创建有效对象，空输入直接表现为队列耗尽。Go 失败源保留具体 `error` 值，Rust 则在工厂边界转换为字符串，因此不保留错误类型身份或包装链。
-
 ## 扩展指南
 
 - 新增来源类型时，在本文件实现独立结构体及 `TryNextor` 状态机，把公开装箱工厂放在 `source.rs`；保持实现与测试分文件，不要把单元测试内嵌进本文件。
@@ -93,13 +83,3 @@ RustCodeGraph 将 `source.rs` 标为被恢复日志相关代码及测试等 7 �
 - 测试应扩展同目录独立文件：基础公开契约放在 `parity_test.rs`，整数宽度放在 `source_test.rs`，组合链和失败传播放在 `combinator_test.rs`；Go 语义变化还应同步相应 `*.go` 测试。
 
 兼容性风险集中在结果三态、错误文本、区间边界和错误后是否继续产出；性能风险主要是切片构造时的容器转换、失败字符串的逐次克隆，以及函数源闭包内由调用者引入的阻塞或分配。
-
-## 验证依据
-
-本说明依据以下直接材料完成：
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件；`node --file br/pkg/utils/iter/source_types.rs` 读取目标文件全部 133 行，并识别 16 个符号。
-- RustCodeGraph 文件/源码节点：`source.rs`、`iter.rs`、`lib.rs`、`combinator_types.rs`、`combinators.rs`、`source_test.rs`、`parity_test.rs`。对内部工厂运行了 `query` 与 `callers/callees`；名称查询定位到目标符号，函数边查询无输出，故调用边又以这些源码节点逐项核对。
-- crate 与 Go 对照：`br/pkg/utils/iter/Cargo.toml`、`source_types.go`、`source.go`、`iter.go`、`combinator_types.go`、`combinators.go`。
-- 测试证据：`parity_test.rs::go_rust_public_contract_matches` 验证切片顺序、半开区间、失败三态、函数源状态和空输入；`source_test.rs::of_range_supports_all_go_fixed_width_integer_types` 验证补充整数宽度；Rust/Go `combinator_test` 验证重复 `Done` 与上游失败传播。
-- 任务是纯文档分析，按计划不运行 Cargo；交付只执行文档结构检查、差异检查与 Git 提交范围检查。

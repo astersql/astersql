@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-testkit` crate（`pkg/testkit/Cargo.toml`）中，由 crate 根模块 `pkg/testkit/lib.rs` 以 `pub mod dbtestkit` 装配，并以 `pub use dbtestkit::DBTestKit` 再导出。它不是 SQL 引擎生产请求链的一部分，而是测试侧的同步、失败即终止（panic）数据库操作门面：调用者提供一个 `Arc<dyn Database>`，它将 SQL 执行交给 `pkg/testkit/db_driver.rs` 中的 `DbDriver`。
-
-RustCodeGraph 将目标文件识别为 10 个符号（文件、`DBTestKit` 及其 8 个方法）。仓库文本检索没有发现 `pkg/testkit/dbtestkit.rs` 和 `pkg/testkit/lib.rs` 之外的 Rust `DBTestKit` 构造或方法调用，因此当前 Rust 侧属于已导出、可复用但尚无直接消费点的测试辅助 API。不能据此推断它已经替代 Go server/handler 测试中的 `DBTestKit`。
+`DBTestKit` 把线程安全的 `Arc<dyn Database>` 包装成 `DbDriver`，提供直接执行、直接查询和预编译句柄三类便利操作（`DBTestKit::new`、`MustExec`、`MustQuery`、`MustPrepare`）。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 将目标文件识别为 10 个符号（文件、`DBTestKit` 及�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/testkit/dbtestkit.go`。两边都提供构造、prepare、prepared exec/query、直接 exec/query、至少一行查询和取得底层 DB 的同名能力，并采用“错误立即使测试失败”的意图。
-
 关键差异如下：
 
 - Go `NewDBTestKit(t, *sql.DB)` 保存 `testing.T` 绑定的 `require.Assertions`/`assert.Assertions` 和连接池；Rust `new(Arc<dyn Database>)` 不持有测试上下文，失败通过 panic 表达。
@@ -96,16 +92,3 @@ Go 版本已由 `pkg/server/internal/testserverclient/server_client.go`、`pkg/s
 若要补齐 Go `MustQueryRows` 语义，应先决定 Rust 的物化查询是否可能携带“迭代后错误”；当前 `QueryRows` 类型没有该状态，也无需 close，不能机械增加无效检查。若要补齐 `GetDB().Begin()` 类能力，则应扩展数据库/driver 的事务抽象，而非暴露某个具体后端并破坏 trait 边界。
 
 测试必须放在独立文件，不能内嵌进 `dbtestkit.rs`。最接近的现有独立测试是 `pkg/testkit/db_driver_test.rs`，它验证共同下游的 query、exec、prepare、空结果、NULL 扫描、参数标记和资源关闭；针对本门面的 panic 文本、空行断言、克隆共享以及 prepared 延迟失败，宜新增独立的 `pkg/testkit/dbtestkit_test.rs`，并在 `pkg/testkit/lib.rs` 的 `#[cfg(test)]` 区域挂载。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/testkit` 确认目标、Go 对照、crate 根与相关测试均已索引。
-- RustCodeGraph `node --file pkg/testkit/dbtestkit.rs --offset 1 --limit 260`：读取目标文件全部 92 行，确认 `DBTestKit`、8 个公开方法及无条件编译分支。
-- RustCodeGraph `query DBTestKit`、`query MustQuery`、`query MustExec`：确认 Rust/Go 对照符号；同名方法过多，因此没有把未消歧的全仓调用结果作为目标调用边证据。
-- RustCodeGraph `node --file pkg/testkit/lib.rs`：确认模块装配、公开再导出和 crate 级非 snake case 许可。
-- RustCodeGraph `node --file pkg/testkit/db_driver.rs`：核对 `Database`、`ExecutionResult`、`QueryRows`、`PreparedStatement`、`DbDriver` 的实际委托关系和资源接口。
-- `pkg/testkit/Cargo.toml`：核对 crate 名、库入口、Go 包映射和依赖边界；目标文件没有直接第三方依赖。
-- `pkg/testkit/dbtestkit.go`：核对 Go API、测试断言机制、游标关闭和 nil 检查语义。
-- `pkg/testkit/db_driver_test.rs`：核对共同下游的执行、查询、prepare、扫描边界及显式资源关闭；未发现同名独立 Rust `dbtestkit` 测试。
-- 精确 `rg` 检索 `DBTestKit::new`、类型名和 `NewDBTestKit(`：确认 Rust 侧除定义/再导出外无直接调用，并确认 Go server/handler 测试已有实际调用。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以 11 个固定二级标题的结构命令和人工事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`checker.rs` 属于 `astersql-util-ranger` crate。crate 根在 `pkg/util/ranger/lib.rs`，通过 `#[path = "checker.rs"] mod checker_impl;` 私有装配本文件；它没有被 crate 根重新导出，因此不是面向其他 crate 的公开 API。`pkg/util/ranger/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/util/ranger`，直接对照实现是 `pkg/util/ranger/checker.go`。
-
-本文件位于“表达式条件”到“索引/列扫描区间”的边界：它不生成端点或 `Range`，只判断一个谓词是否适合作为 access condition，以及即使参与建 range 后是否还必须作为 residual filter 保留。直接使用者是同 crate 的 `pkg/util/ranger/detacher.rs`；后者再被规划器的基数估算、选择率估算、逻辑数据源和索引连接等路径使用。RustCodeGraph 对 `detacher.rs` 给出的上游文件包括 `pkg/planner/cardinality/cross_estimation.rs`、`pkg/planner/cardinality/selectivity.rs`、`pkg/planner/core/operator/logicalop/logical_datasource.rs` 和 `pkg/planner/core/operator/physicalop/index_join_probe.rs`。
+围绕一个目标索引列识别可用于构造 range 的表达式，入口是 `conditionChecker::check`。
 
 ## 核心职责
 
@@ -91,18 +89,11 @@ crate 根 `lib.rs` 只私有装配本模块并公开 `detacher_impl` 的外层 A
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/ranger/checker.rs` 的结构和分支顺序与 `pkg/util/ranger/checker.go` 基本一一对应：同名 `conditionChecker` 字段、六个方法，以及比较、逻辑、NULL、真值、NOT、IN、LIKE、参数占位的返回策略均保留。`Cargo.toml` 也明确声明 Go package 为 `pkg/util/ranger`。
+`pkg/util/ranger/checker.rs` 的结构和分支顺序与 `pkg/util/ranger/checker.go` 基本一一对应：同名 `conditionChecker` 字段、六个方法，以及比较、逻辑、NULL、真值、NOT、IN、LIKE、参数占位的返回策略均保留。
 
-已核对的重要一致性包括：
+显式差异是 Rust 用 `Option<Column>` 表达 Go 的可空指针，并在缺列时保守返回；Rust 对非恒定 LIKE escape 使用默认字节 0，而 Go 假定参数是常量并直接类型断言。
 
-- `isAccessCond`/`shouldReserve` 的语义和 CNF/DNF 调用方消费方式一致。
-- 前缀索引上的 `NE` 拒绝、其他比较保留 filter，`OptPrefixIndexSingleScan` 对 `IS NULL` 的特殊处理一致。
-- 二进制 collation 下 `EQ/NullEQ/IN` 可建近似 range 并保留 filter；普通不兼容 collation 拒绝。
-- LIKE 的前导通配符拒绝、escape 跳过、PAD SPACE 保留 filter、enum 通配符拒绝和中途通配符保留策略一致。
-
-显式差异是 Rust 用 `Option<Column>` 表达 Go 的可空指针，并在缺列时保守返回；Rust 对非恒定 LIKE escape 使用默认字节 0，而 Go 假定参数是常量并直接类型断言。另有命名风格保留 Go 形式，因此文件级允许 `non_snake_case` 和 `non_camel_case_types`。
-
-测试对应关系：Rust 独立测试位于 `pkg/util/ranger/ranger_test.rs`，其中 `test_prefix_index_range_scan` 验证前缀值裁剪后条件仍在 `RemainedConds`，`test_min_access_conds_for_dnf_cond` 验证 DNF 路径，`test_bin_collation_range_for_index` 验证二进制字符串点范围。Go 的 `pkg/util/ranger/ranger_test.go` 提供更完整的行为基线：`TestPrefixIndexRangeScan`、`TestIndexRange`、`TestPrefixIndexRange`、`TestBinCollationRangeForIndex` 覆盖 LIKE、IN、逻辑组合、collation、前缀索引、NULL 与 should-reserve 分支。当前没有同名 `checker_test.rs`，也没有只针对私有检查器方法的 Rust 单元测试。
+测试对应关系：Rust 独立测试位于 `pkg/util/ranger/ranger_test.rs`，其中 `test_prefix_index_range_scan` 验证前缀值裁剪后条件仍在 `RemainedConds`，`test_min_access_conds_for_dnf_cond` 验证 DNF 路径，`test_bin_collation_range_for_index` 验证二进制字符串点范围。当前没有同名 `checker_test.rs`，也没有只针对私有检查器方法的 Rust 单元测试。
 
 ## 扩展指南
 
@@ -112,11 +103,3 @@ crate 根 `lib.rs` 只私有装配本模块并公开 `detacher_impl` 的外层 A
 - 修改逻辑组合或 NOT 时同时审查 `detacher.rs` 的 CNF/DNF 拆分及表达式规范化假设，尤其是“任一 OR 分支没有 access 条件时不能抽取部分 DNF”的不变量。
 - 新增 Rust 回归测试应放在独立的 `pkg/util/ranger/ranger_test.rs`（或新建独立 `*_test.rs` 并在 `lib.rs` 的 `#[cfg(test)]` 下装配），不要内嵌到 `checker.rs`。还应对照并在需要时同步 `pkg/util/ranger/ranger_test.go` 的测试意图。
 - 性能风险主要来自递归检查深层逻辑树和重复的类型/collation 查询；正确性风险则是错误返回 `(true, false)` 导致残余过滤被删除。评审时应优先证明“不会漏行或误收行”，再考虑减少 filter。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录列出 `checker.rs` 的 8 个符号。使用 `node --file` 阅读了 `pkg/util/ranger/checker.rs`、`pkg/util/ranger/lib.rs`、`pkg/util/ranger/detacher.rs`、`pkg/util/ranger/ranger_test.rs`、`pkg/util/ranger/checker.go` 和 `pkg/util/ranger/ranger_test.go`。
-- RustCodeGraph 精确查询确认 Rust/Go 两侧都有 `conditionChecker`、`checkScalarFunction`、`checkLikeFunc`、`matchColumn` 等对应符号。图的 `callers`/`callees` 命令对这些私有/重名方法没有返回可用结果，且目标文件的文件级 “used by” 显示无关文件，因此调用边改用精确文本搜索补证，没有把该误配结果当作事实。
-- `rg` 在 `pkg/util/ranger/detacher.rs` 找到 `conditionChecker` 的导入、多个构造点，以及 `checker.check(...)` 在 CNF、DNF、逐列和简化筛选路径中的调用；RustCodeGraph 对 `detacher.rs` 的文件级使用关系提供了规划器上游证据。
-- crate 边界由 `pkg/util/ranger/Cargo.toml` 与 `pkg/util/ranger/lib.rs` 核对：crate 名为 `astersql-util-ranger`，依赖 `astersql-expression`，本模块私有、detacher/ranger 外层接口公开。
-- Go 对照与边界测试由 `pkg/util/ranger/checker.go`、`pkg/util/ranger/ranger_test.go` 核对；Rust 独立测试由 `pkg/util/ranger/ranger_test.rs` 核对。未运行 Cargo，符合本纯文档任务要求。

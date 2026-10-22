@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-dumpformat-parquetfile` crate 的 schema 构建层。crate 根模块 [`lib.rs`](./lib.rs) 通过 `pub mod schema_builder` 暴露它；crate 内生产写出入口 [`writer.rs`](./writer.rs) 中的 `ParquetWriter::new` 调用 `build_parquet_schema_from_columns`，把 SQL 驱动提供的 `ColumnInfo` 转换为写出阶段统一使用的 `Column`，并生成一份可检查的轻量 `Schema`。crate 外的 [`../../../dumpling/export/writer_util.rs`](../../../dumpling/export/writer_util.rs) 也由 `parquet_columns` 直接调用该函数，将 Dumpling 表元数据规范化为 Parquet 写出列。
-
-这里的 `Schema`/`PrimitiveNode` 不是 parquet-rs 的 `parquet::schema::types::Type`。当前 `ParquetWriter::new` 丢弃返回元组中的轻量 `Schema`，保留 `Vec<Column>`，再由 `writer.rs::parquet_schema` 构造实际交给 `SerializedFileWriter` 的 parquet-rs schema。因此，本文件承担“校验并规范化列元数据”的边界职责，而真实文件 schema 的最终物化仍在 `writer.rs`。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义：库入口是 `lib.rs`，直接依赖带固定 tag 的 AsterSQL `arrow-rs` Parquet 分支，但本文件本身只使用 crate 内的 `column_type` 类型和统一 `Error`/`Result`；底层 Parquet 类型的实际构造由 writer 层完成。
+`build_parquet_schema_from_columns` 保持输入列顺序，逐列调用 `to_column_type`，构造同时服务 schema 与值编码的 `Column` 列表。
 
 ## 核心职责
 
@@ -85,16 +81,12 @@ DECIMAL 校验刻意只覆盖 precision `1..=38`：超出范围的 DECIMAL 会�
 
 直接对照文件是 [`schema_builder.go`](./schema_builder.go)：Rust 的三个 snake_case 主函数分别对应 Go 的 `buildParquetSchemaFromColumns`、`validateColumnInfo`、`newPrimitiveNode`，camelCase 别名用于保留移植命名。
 
-共同语义包括：保持列顺序；校验空名称及有效 DECIMAL 的 scale；用 `toColumnType`/`to_column_type` 映射类型；让 timestamp 逻辑类型无条件支持 NULL；根名为 `schema`；返回解析后的列描述供 writer 使用。Go 注释称 TIMESTAMP 和 DATETIME 可能携带非法 MySQL 值，Rust 通过两者都映射到 `LogicalType::Timestamp` 来实现相同结果。
-
 实现差异包括：
 
 - Go 输入是 `[]*ColumnInfo`，需要显式拒绝 nil；Rust 输入是值切片引用，没有对应空指针状态。
 - Go 直接创建 Arrow Go 的 `schema.Node`/`GroupNode`；Rust 本文件先创建自有轻量 `PrimitiveNode`/`Schema`，真正的 parquet-rs `Type` 在 `writer.rs::parquet_schema` 中另行创建。
 - Go 的内部 `column` 同时保存 `Repetition`；Rust 的 `Column` 保存 `allows_null_encoding`，重复度在轻量节点和最终 writer schema 中按需推导。
 - Go 根据逻辑类型是否为 none 选择两个底层叶子构造器，并为构造错误添加列名上下文；Rust 统一填充自有节点字段，只单独校验定长宽度。
-
-Go 回归测试 [`writer_core_test.go`](./writer_core_test.go) 通过实际 Arrow reader 验证物理类型、逻辑注解、definition level、非法 MySQL 零时间的 NULL 编码、输入错误和 9 字节无符号 BIGINT。Rust 的 [`writer_core_test.rs`](./writer_core_test.rs) 覆盖相应 schema 与写出行为，独立 [`schema_builder_test.rs`](./schema_builder_test.rs) 补充越界 DECIMAL 精度降级语义。
 
 ## 扩展指南
 
@@ -104,13 +96,3 @@ Go 回归测试 [`writer_core_test.go`](./writer_core_test.go) 通过实际 Arro
 - 改动 timestamp/DATETIME 行为时，应同步检查 `column_value` 的非法时间转换和 definition level 写出，避免 `allows_null_encoding` 与实际 NULL 行为分离。
 - 测试逻辑应放在独立文件，不要内嵌到生产文件。优先扩展 `schema_builder_test.rs` 做构建器边界回归，扩展 `writer_core_test.rs` 做真实 writer/schema 联动验证，并与 `writer_core_test.go` 的同类用例保持语义一致。
 - 兼容风险主要是已生成 Parquet 的类型注解、required/optional 层级和错误契约；性能风险主要来自每列克隆及重复 schema 物化。当前列数通常较小，但若改变对象结构或在热路径重复构建，应重新评估分配成本。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录及 `schema_builder.rs` 均在索引内。
-- RustCodeGraph 查询：`query` 精确定位 `build_parquet_schema_from_columns`、`validate_column_info`、`new_primitive_node`；`node` 源码与 Trail 核对了主入口到校验、类型映射、叶子构造的下游边，以及 `ParquetWriter::new`、别名和测试的上游边；`explore` 另定位到 Dumpling 的 `parquet_columns` 生产调用，并以对应源码复核。
-- 已核对生产源码：[`schema_builder.rs`](./schema_builder.rs)、[`column_type.rs`](./column_type.rs)、[`writer.rs`](./writer.rs)、[`lib.rs`](./lib.rs)、[`../../../dumpling/export/writer_util.rs`](../../../dumpling/export/writer_util.rs)。
-- 已核对 crate 配置：[`Cargo.toml`](./Cargo.toml)。
-- 已核对 Go 对照与测试：[`schema_builder.go`](./schema_builder.go)、[`writer.go`](./writer.go)、[`writer_core_test.go`](./writer_core_test.go)。
-- 已核对 Rust 独立测试：[`schema_builder_test.rs`](./schema_builder_test.rs)、[`writer_core_test.rs`](./writer_core_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用固定章节结构命令，并人工复核本文能够回答文件存在理由、生产执行链、状态不变量、错误边界、Go 差异和安全扩展位置。

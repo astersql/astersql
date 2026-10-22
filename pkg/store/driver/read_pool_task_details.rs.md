@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应源码](read_pool_task_details.rs) 位于 `astersql-store-driver` crate 内，是 TiKV 客户端/本仓库 Coprocessor 读池统计到规范 KV 接口类型之间的边界适配器。crate 由 `pkg/store/driver/Cargo.toml` 定义，模块在 `pkg/store/driver/lib.rs` 中以 `mod read_pool_task_details` 装配；其中 `read_pool_task_details` 被公开再导出，供 session 层处理点读统计，`cop_read_pool_task_details` 保持 crate 内模块路径调用，供 `kv_adapter.rs` 转换 Coprocessor 响应。
-
-它不负责采集、聚合、格式化或合并统计，只把已有聚合从两种来源类型完整搬运为 `astersql_kv::kv::PoolTaskDetails`。因此它处在“客户端/传输实现类型”与“SQL 执行层可消费的规范 KV 类型”之间，避免上层直接依赖 `tikv-client` 或 `astersql-store-copr` 的内部数据结构。
+因此它处在“客户端/传输实现类型”与“SQL 执行层可消费的规范 KV 类型”之间，避免上层直接依赖 `tikv-client` 或 `astersql-store-copr` 的内部数据结构。
 
 ## 核心职责
 
@@ -99,13 +97,9 @@ RustCodeGraph 对目标文件给出的文件级使用者是 `pkg/session/runtime
 
 仓库中没有 `pkg/store/driver/read_pool_task_details.go` 的一对一 Go 文件。该 Rust 文件是为类型分层新增的显式桥接：Go 主链可直接使用 client-go 的 `util.PoolTaskDetails`，而 Rust 同时存在 client-rust、`astersql-store-copr` 与规范 KV 三种类型，必须在 driver 边界转换。
 
-语义对应由以下 Go 证据核对：
-
 - `pkg/util/execdetails/execdetails.go::SyncExecDetails.MergeReadPoolTaskDetails` 把空聚合视为无操作，并在锁内克隆或合并非空统计；Rust 转换返回 `None` 后由对应 Rust 合并函数执行同一空值语义。
-- `pkg/executor/slow_query_sql_test.go::TestReadPoolTaskDetailsInDiagnostics` 注入 protobuf 读池统计，并断言点读、批量点读和 Coprocessor 等诊断路径输出完整字段。其期望字符串覆盖 poll、dispatch、wall、queue、wake、fair queue、poll CPU 和 poll wall 各组数据。
-- `pkg/store/copr/pool_task_details.rs::merge_from_pb` 对 protobuf 单任务明细进行聚合，承担计数、样本和极值计算；本文件接收其结果后不得重复聚合。
 
-Rust 相比 Go 的可见差异是用 `Option<PoolTaskDetails>` 表达 Go 的 nil/empty 边界，并显式保留两套来源类型的转换函数。字段映射和空聚合语义应继续与 Go 保持一致。
+Rust 相比 Go 的可见差异是用 `Option<PoolTaskDetails>` 表达 Go 的 nil/empty 边界，并显式保留两套来源类型的转换函数。
 
 ## 扩展指南
 
@@ -118,15 +112,3 @@ Rust 相比 Go 的可见差异是用 `Option<PoolTaskDetails>` 表达 Go 的 nil
 5. 若字段影响聚合或展示，分别同步 `pkg/store/copr/pool_task_details_test.rs`、`pkg/util/execdetails/execdetails_test.rs` 以及 Go 侧诊断回归。
 
 若要改变“空”的定义，应同时审查两转换函数、规范类型的 `Empty`、`SyncExecDetails::MergeReadPoolTaskDetails` 和所有 `Option` 消费方。风险包括：错误丢弃零任务但带其他数据的聚合、平均值分母改变、最小值零哨兵处理错误，以及慢日志格式兼容性变化。
-
-## 验证依据
-
-- 目标源码：`pkg/store/driver/read_pool_task_details.rs`，核实两个函数、`task_count == 0` 分支及完整逐字段映射。
-- crate 边界：`pkg/store/driver/Cargo.toml` 和 `pkg/store/driver/lib.rs`，核实 crate 名、三项核心依赖、模块可见性与公开再导出。
-- 调用点：`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/session/runtime/explain_read.rs`、`pkg/store/driver/kv_adapter.rs`。
-- 规范类型与合并：`pkg/util/execdetails/internal/group1/lib.rs`、`pkg/util/execdetails/execdetails.rs`。
-- Coprocessor 来源聚合：`pkg/store/copr/pool_task_details.rs`。
-- 独立 Rust 测试：`pkg/store/driver/read_pool_task_details_test.rs`、`pkg/store/driver/coprocessor_adapter_test.rs`、`pkg/store/copr/pool_task_details_test.rs`、`pkg/util/execdetails/execdetails_test.rs`。
-- Go 对照：`pkg/util/execdetails/execdetails.go` 和 `pkg/executor/slow_query_sql_test.go`；未发现同路径 Go 转换文件，因此没有把 Rust 桥接误写成逐函数机械翻译。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/store/driver/read_pool_task_details.rs` 核实源码及文件级使用者；`query` 核实两个函数；`callees` 指向读池统计结构，函数级 `callers` 无返回，故用精确源码搜索补齐调用证据。
-- 任务为纯文档分析，按计划不运行 Cargo；验收以固定章节结构检查和上述人工事实复核为准。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`job.rs`](job.rs) 定义 AsterSQL Rust 侧 DDL Job 的持久化协议、状态判断、参数缓存、multi-schema 子任务代理和完成态历史快照。它位于 SQL DDL 提交、持久化、调度、执行与历史展示的共同模型边界：上游把一次 DDL 组织为 `Job`，元数据层把它编码进 DDL job 表，执行器根据 `ActionType`、`JobState` 与 `SchemaState` 推进状态，完成时再把最终 DB/Table 快照写入 `HistoryInfo`。
-
-本文件并非由顶层 [`lib.rs`](lib.rs) 直接声明。`pkg/meta/model/internal/group3/lib.rs` 在私有 `job` 模块中用 `include!("../../job.rs")` 纳入源码，注入 `JobArgs`、`FinishedJobArgs`、`DDLReorgMeta`、`SchemaState`、DB/Table 类型和若干适配模块，再用 `pub use job::*` 公开；顶层 `astersql-meta-model` crate 通过 `group_3` 再导出该 API。顶层 [`Cargo.toml`](Cargo.toml) 只依赖四个内部 group crate，实际编译本文件的 `astersql-meta-model-group3` 在 `internal/group3/Cargo.toml` 声明 `group-1`、`serde`、`serde_repr` 与 `serde_json`。
-
-目标文件没有条件编译模块；唯一测试门控行为是 `update_job_args_for_test` 内部的 `cfg!(test)`。文件内没有 trait 定义，`JobArgs` 与 `FinishedJobArgs` 由 group3 模块入口提供。
+表达 Job 生命周期：`JobState` 是持久化 FSM，`Job` 上的谓词集中定义完成、回滚、暂停、恢复、同步、可暂停、可修改和可回滚边界。
 
 ## 核心职责
 
@@ -108,8 +104,6 @@ RustCodeGraph 文件节点报告本文件被 25 个文件使用，列出的代�
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`job.go`](job.go)，测试对照是 [`job_test.go`](job_test.go)。Rust 的动作编号、展示文本、modify type、Job 字段、FSM 谓词、rollback 分支、multi-schema 代理字段、涉及对象约束和 `HistoryInfo` 操作整体逐项对应 Go。
-
 主要实现差异如下：
 
 - Go `Job` 直接靠 JSON tags 编解码；Rust 用私有 `JobWire` 隔离 `Mutex` 和运行期缓存，并显式在 `reorg_meta` 与 `JobMutable` 间迁移 warnings。
@@ -119,9 +113,6 @@ RustCodeGraph 文件节点报告本文件被 25 个文件使用，列出的代�
 - Go `JobVersion` 是开放的整数新类型，`String` 可输出 `unknown(n)`；Rust 是只含 V1/V2 的 repr 枚举，Display 只有两种分支，未知 JSON 枚举值会反序列化失败。
 - Go 包 `init()` 自动按 kernel 类型设置默认协议版本；Rust 暴露 `init_job_version()`，但当前未发现生产调用点，且 group3 的 `kerneltype` 是恒 classic 的适配桩。
 - Go `JobW` 嵌入 `*Job`；Rust `JobW` 按值拥有 `Job`。Go 的 `TimeZoneLocation` 仍在 `job.go`，Rust 已由 group1 的正式类型再导入，不在本文件重复定义。
-- Go 的 `sync.Mutex` 字段与 Rust `Mutex<JobMutable>` 都不序列化；Rust API 允许 `&self` 更新受锁字段，语义对应 Go 指针 receiver。
-
-独立 Rust 测试 [`job_test.rs`](job_test.rs) 覆盖 codec、旧 wire 缺省值、clone、proxy 映射、状态集合、V2 参数、涉及对象约束和暂停/恢复 wire；`go_merge_15_test.rs` 另行覆盖物化视图回滚边界。测试不是内嵌在生产源文件中。
 
 ## 扩展指南
 
@@ -134,13 +125,3 @@ RustCodeGraph 文件节点报告本文件被 25 个文件使用，列出的代�
 调整状态机时，应把 `is_finished`、`in_final_state`、pause/resume、rollback 和 display/parse 作为一组审查。新增 `JobState` 或整数枚举值必须保持向后编号兼容，并验证旧 JSON、未知值处理和 system-table 读取行为。
 
 涉及对象规则直接影响 DDL 并发排序。新增对象类别需要同步 `InvolvingSchemaInfo`、规范化、对象类型计数、校验错误、提交器依赖 key 构造和 `job_test.rs` 的合法/非法矩阵；兼容风险是作业错误并发或永久等待。性能风险主要来自频繁 encode 时克隆大型 query、args、warnings、session vars 和 table snapshots，以及热路径锁竞争；新增大字段应评估 wire 大小和 clone 成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件（7,032 个 Rust、4,415 个 Go）；`files --filter pkg/meta/model/job.rs` 确认目标文件 1,433 行、230 个符号且被 25 个文件使用；`node --file` 分段读取源码；`query` 定位 `encode`、`is_rollbackable`、`to_proxy_job`、`check_involving_schema_info` 和 `init_job_version`。精确 `callers/callees` 对这些 include 模块方法未返回边，因此调用关系由限定 Rust 文件的精确检索补证。
-- 源码与 crate 装配：`pkg/meta/model/job.rs`、`pkg/meta/model/internal/group3/lib.rs`、`pkg/meta/model/internal/group3/Cargo.toml`、`pkg/meta/model/lib.rs`、`pkg/meta/model/Cargo.toml`。
-- 直接 Rust 调用证据：`pkg/ddl/jobsubmit/submit.rs`、`pkg/meta/meta.rs`、`pkg/ddl/systable/manager.rs`、`pkg/ddl/delete_range.rs`、`pkg/ddl/table_mode.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/session/runtime/crossks_owner.rs`、`pkg/session/runtime/modify_column_dist_backfill.rs`。
-- Rust 独立测试：`pkg/meta/model/job_test.rs`（完整 Job 协议和边界矩阵）、`pkg/meta/model/job_3_aster_unit_test.rs`（动作/状态/回滚、wire、warnings 与涉及对象抽查）、`pkg/meta/model/go_merge_15_test.rs`（物化视图动作与回滚边界）、`pkg/meta/model/dependency_tests.rs`（独立 include 编译依赖验证）。
-- Go 对照：`pkg/meta/model/job.go` 与 `pkg/meta/model/job_test.go`；逐项核对动作编号、Job 字段与 tags、V1/V2 参数、状态谓词、rollback 分支、SubJob 映射、涉及对象、HistoryInfo 和初始化逻辑。
-- 人工复核：确认文档能回答文件为何存在、如何编译和运行、持久化/运行态边界、锁与原子状态、主要调用者以及安全扩展点；明确记录 graph 调用边缺失、group3 适配桩和 Rust 初始化调用未发现，没有把预期设计写成已接线事实。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并核对最终变更只包含本说明文档以及完成后删除编号任务文件，未修改 Rust、Go、Cargo 或只读 `plan.md`。

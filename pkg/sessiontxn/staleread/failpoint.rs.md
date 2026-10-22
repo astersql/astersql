@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-sessiontxn-staleread` crate 中的测试断言辅助，源文件为 [`failpoint.rs`](failpoint.rs)。crate 根 [`lib.rs`](lib.rs) 通过 `pub mod failpoint` 声明模块，并用 `pub use failpoint::*` 将唯一公开函数 `assert_stmt_staleness` 重导出到 crate 根。它位于 stale read（按历史 TSO 读取快照）判定与事务 Provider 之间，用于检查“语句被标记为过期读”与“当前 Provider 已是过期读 Provider”两层状态是否一致。
-
-[`Cargo.toml`](Cargo.toml) 将该 crate 命名为 `astersql-sessiontxn-staleread`，并记录其 Go 对照包为 `pkg/sessiontxn/staleread`。当前函数只使用本 crate 的 `SessionRef` 和 `is_stmt_staleness`，不直接依赖 Cargo 中置于 `target.'cfg(any())'` 下的外部会话、KV 或 planner crate。文件名虽然是 `failpoint.rs`，但 Rust 实现本身不注册、启用或调度 failpoint；它只是可由测试钩子调用的断言函数。
+位于 stale read（按历史 TSO 读取快照）判定与事务 Provider 之间，用于检查“语句被标记为过期读”与“当前 Provider 已是过期读 Provider”两层状态是否一致。
 
 ## 核心职责
 
@@ -70,14 +68,9 @@ RustCodeGraph 将目标文件识别为 2 个节点，并准确返回 `assert_stm
 
 ## 与 Go 版本的对应关系
 
-Go 同路径 [`failpoint.go`](failpoint.go) 的 `AssertStmtStaleness(sctx, expected)` 是直接语义来源：先比较 `IsStmtStaleness(sctx)`，再仅在 expected 为真时取 `sessiontxn.GetTxnManager(sctx).GetContextProvider()` 并断言其动态类型为 `*StalenessTxnContextProvider`。
-
-Rust 保留了同样的分支次序和单向不变量，但做了适配：
-
 - Go 使用完整 `sessionctx.Context` 与事务管理器接口；Rust 使用本 crate 的轻量 `SessionRef`。
 - Go 通过 Provider 动态类型断言验证真实对象；Rust 读取 `provider_is_staleness` 布尔标记。该标记由真实 Rust Provider 安装路径写入，但类型保证弱于 Go 的运行时类型检查。
 - Go 的断言目前已接入 executor failpoint；Rust 函数当前没有调用者。Rust 测试通过 `processor_test.rs`/`externalts_test.rs` 直接检查 `is_stmt_staleness`，通过 `provider_test.rs::provider_is_marked_when_it_is_installed` 检查 Provider 标记，尚未把两者组合成该函数的直接回归测试。
-- Rust 的 `Mutex` 中毒降级行为是 Go 版本不存在的边界。
 
 ## 扩展指南
 
@@ -86,12 +79,3 @@ Rust 保留了同样的分支次序和单向不变量，但做了适配：
 - 应补充独立 Rust 回归测试，至少覆盖：两标记皆假且 expected 为假时通过；语句标记与 expected 不符时 panic；语句标记为真但 Provider 标记为假时 panic；两标记皆真时通过。测试可放在新的 `failpoint_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] mod failpoint_test;` 接入，保持源文件与测试分离。
 - 若改为返回 `Result` 或显式报告锁中毒，会改变现有 panic 型测试 API；需同步 Go 兼容性说明及所有未来调用点。
 - 本函数只做两次互斥锁读取，正常测试成本很低；不要在生产热路径无条件调用。若并发模型允许状态在两次读取间变化，应改为一次锁内读取两个字段并增加并发回归测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含 7,032 个 Rust 文件；`files --filter pkg/sessiontxn/staleread` 显示目标文件含 2 个节点；`node --file pkg/sessiontxn/staleread/failpoint.rs` 核对了完整 42 行源码；`query assert_stmt_staleness --kind function --json` 定位到第 25 行公开函数。精确 callers 查询持续无输出后中止，调用者结论改由源码检索补证。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 证明 crate 名称、Go 包映射和 `cfg(any())` 条件依赖；[`lib.rs`](lib.rs) 证明模块声明、公开重导出及独立测试模块布局。
-- Rust 状态链：[`util.rs`](util.rs) 的 `Session`、`SessionRef`、`begin_statement`、`is_stmt_staleness`；[`processor.rs`](processor.rs) 的 `BaseProcessor::set_evaluated_values`；[`provider.rs`](provider.rs) 的 `activate_stale_txn`、`enter_new_stale_txn_with_replace_provider`。
-- 独立 Rust 测试：[`processor_test.rs`](processor_test.rs) 与 [`externalts_test.rs`](externalts_test.rs) 验证语句级 stale 标记；[`provider_test.rs`](provider_test.rs) 的 `provider_is_marked_when_it_is_installed` 验证 Provider 标记。仓库检索确认没有 Rust 测试直接调用本函数。
-- Go 对照与调用点：[`failpoint.go`](failpoint.go)；`pkg/executor/compiler.go`、`adapter.go`、`builder.go` 中的五类 failpoint 调用；`tests/realtikvtest/txntest/stale_read_test.go` 启用 prepared-statement stale-read 断言。该 RealTiKV 测试中的 `assertStmtCtxIsStaleness` 路径字符串拼写为 `exector`，本文不据此声称该特定钩子已成功触发。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证使用任务指定的固定 11 标题结构命令，并人工复核本文没有把未接线的 Rust helper 描述成已运行的应用主链。

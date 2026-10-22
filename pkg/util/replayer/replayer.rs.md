@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-replayer` crate 的核心实现，crate 入口 `pkg/util/replayer/lib.rs` 通过 `pub mod replayer` 声明模块，并用 `pub use replayer::*` 再导出这里的公开 API。它不负责收集 SQL、执行计划或统计信息，也不负责 ZIP 内容编码；它只提供 Plan Replayer 产物的命名规则、固定对象目录，以及一个将上下文绑定到对象写入器的薄适配层。
-
-当前 Rust 生产链的实际接线范围需要特别区分：`pkg/session/runtime/dispatch.rs::execute_plan_replayer_dump` 调用 `GeneratePlanReplayerFileName` 后自行编码归档并写入全局扩展存储；同文件以及 `pkg/server/http_status.rs::plan_replayer_download_response` 调用 `GetPlanReplayerDirName` 形成写入/下载路径。`GeneratePlanReplayerFile` 和本文件自定义的 `Storage`、`ObjectWriter`、`Context` 目前没有活跃的生产 Rust 调用者，只由 `pkg/util/replayer/migration_aster_unit_test.rs` 直接验证；它们是尚未连接共享 Rust 对象存储抽象的局部移植边界。
-
-crate 边界由 `pkg/util/replayer/Cargo.toml` 定义：运行时直接依赖只有 `base64 = "0.22"` 和 `getrandom = "0.3"`，没有 feature 开关；`[package.metadata.porting]` 将其对应到 Go 包 `pkg/util/replayer`。
+`GeneratePlanReplayerFileName` / `generatePlanReplayerFileName` 生成 `{模式前缀}_{随机键}_{纳秒时间戳}.zip`，其中模式前缀必须与下载和清理逻辑所理解的命名约定一致。
 
 ## 核心职责
 
@@ -89,8 +85,6 @@ RustCodeGraph 对 `GeneratePlanReplayerFile` 给出的直接下游边为 `genera
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/replayer/replayer.go`。Rust 保留了 Go 的目录常量、任务键字段、三个命名布尔参数、前缀选择顺序、16 字节随机 key、URL-safe padded Base64、Unix 纳秒后缀、ZIP 扩展名，以及把同一上下文传给 create/write/close 的适配行为。
-
 已确认的差异如下：
 
 - Go 使用真实的 `context.Context`、`storeapi.Storage`、`objectio.Writer` 与 `io.WriteCloser`；Rust 当前定义本地占位 `Context` 和最小 traits，尚未接到 `astersql-planner-extstore` 或 `pkg/objstore` 的共享接口。
@@ -111,13 +105,3 @@ Go 测试 `pkg/domain/plan_replayer_test.go::TestPlanReplayerDifferentGC` 通过
 - 若启用 `PlanReplayerPath`，应提供封装函数把 `Once` 与 `Mutex` 的操作绑定起来，并明确锁中毒、重复初始化和空路径语义；相应测试继续放在独立的 `migration_aster_unit_test.rs` 或新的同目录测试文件。
 - 若要统一任务键，应先核对 `pkg/domain/plan_replayer.rs::PlanReplayerTaskKey` 的排序需求和字段语义；本类型只有 `Eq + Hash`、没有 `Ord`，不能直接替换 domain 的 `BTreeSet` 键。
 - 修改 API 时必须保持 `lib.rs` 再导出和各消费者 Cargo 依赖可用，并注意 Go 风格公开名当前依赖 crate 的 lint allowance。任何功能修改都应先做失败回归测试，再修复生产代码；本说明任务本身不修改运行时行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/replayer` 列出 `lib.rs`、`replayer.rs`、独立测试和 Go 对照；`node --file pkg/util/replayer/replayer.rs --offset 1 --limit 500` 读取目标文件全部 172 行；`query GeneratePlanReplayerFile --kind function` 定位 Rust/Go 同名实现；`callees GeneratePlanReplayerFile` 确认 Rust 的四条核心下游边。对同名方法和动态派发无法可靠消歧之处没有强行采用图结果。
-- Rust 源与入口：`pkg/util/replayer/replayer.rs`、`pkg/util/replayer/lib.rs`。
-- crate 与反向依赖：`pkg/util/replayer/Cargo.toml`，以及通过 Cargo 文本搜索确认的 `pkg/session/Cargo.toml`、`pkg/server/Cargo.toml`、`pkg/domain/Cargo.toml`、`pkg/executor/Cargo.toml` 等。
-- 活跃 Rust 调用点：`pkg/session/runtime/dispatch.rs::execute_plan_replayer_dump`、`pkg/server/http_status.rs::plan_replayer_download_response`。
-- 独立 Rust 测试：`pkg/util/replayer/migration_aster_unit_test.rs`；消费者测试：`pkg/server/handler/optimizor/plan_replayer_test.rs::plan_replayer_file_names_preserve_capture_modes`。
-- Go 对照与测试：`pkg/util/replayer/replayer.go`、`pkg/domain/plan_replayer_test.go::TestPlanReplayerDifferentGC`、`pkg/domain/plan_replayer_test.go::TestDumpGCFileParseTime`；`pkg/domain/extract.go` 另证实 Go 的 `NewFileWriter` 被生产代码复用。
-- 人工边界复核：文档将已接线的名称/目录 API、仅测试覆盖的本地存储适配层和未使用的兼容静态量分别陈述；未把 Cargo 依赖、注释或 Go 行为冒充 Rust 活跃调用事实。

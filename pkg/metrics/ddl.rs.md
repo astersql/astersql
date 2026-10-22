@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-metrics` crate 的 DDL 指标定义与生命周期管理模块，由 [`pkg/metrics/lib.rs`](lib.rs) 以 `pub mod ddl` 暴露。它不执行 DDL，也不决定 DDL 状态机；它负责构造供 DDL、schema syncer、Owner、回填和 Lightning ingest 路径使用的 Prometheus collector、固定标签与辅助注册表。
-
-包级入口 [`metrics::InitMetrics`](metrics.rs) 调用 `ddl::InitDDLMetrics` 创建 collector，随后 [`metrics::RegisterMetrics`](metrics.rs) 将其中 14 个向量注册到默认 Prometheus registry。`pkg/metrics/Cargo.toml` 将本目录声明为 `astersql-metrics`，并直接依赖 `prometheus`、`astersql-metrics-common`、`astersql-util-promutil` 与 `astersql-lightning-metric`；这些依赖分别提供 collector 类型/默认 registry、Go 兼容构造器、工厂和 Lightning 通用指标集合。
+不执行 DDL，也不决定 DDL 状态机；它负责构造供 DDL、schema syncer、Owner、回填和 Lightning ingest 路径使用的 Prometheus collector、固定标签与辅助注册表。
 
 ## 核心职责
 
@@ -95,11 +93,9 @@ collector 本身由 Prometheus 类型提供并发安全更新；`static mut` 的
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/metrics/ddl.go`](ddl.go)。Rust 保留了 Go 的 collector 名称、帮助文本、标签顺序、桶参数、阶段 observer、动态标签格式、按 table ID 清理和按 job ID 缓存语义。Go 的 `map[int64]map[string]struct{}` 对应 Rust `HashMap<i64, HashSet<String>>`；Go 指针 collector 对应 Rust `Option<collector>`；Go `*metric.Common` 的 `nil` 注销参数对应 Rust `Option<&metric::Common>`。
+锁的布局略有不同：Go 的回填 registry 自带 `mu`，Rust 把整个 registry 包在 `Mutex` 中；Go Lightning map 使用独立包级 `mu`，Rust 把 map 直接包进 `Mutex`。Go `clear` 先删 map 项再在锁外复制标签；Rust `remove` 直接取得集合所有权，减少一次复制。
 
-锁的布局略有不同：Go 的回填 registry 自带 `mu`，Rust 把整个 registry 包在 `Mutex` 中；Go Lightning map 使用独立包级 `mu`，Rust 把 map 直接包进 `Mutex`。Go `clear` 先删 map 项再在锁外复制标签；Rust `remove` 直接取得集合所有权，减少一次复制。两者都在 Prometheus 删除动作前释放回填锁。
-
-Go 侧 [`pkg/ddl/backfill_metrics_test.go`](../ddl/backfill_metrics_test.go) 覆盖了普通表、分区表、重组分区使用逻辑表 ID、series 实际删除和幂等清理；`pkg/ddl/ingest/testutil/testutil.go::CheckIngestLeakageForTest` 用 `GetRegisteredJob` 检查 job 指标泄漏。当前没有同等的独立 Rust DDL 回填指标测试，且 Rust 生产侧未检索到这些辅助 API 的调用，因此它们的代码级移植不等于完整运行时行为已迁移。
+当前没有同等的独立 Rust DDL 回填指标测试，且 Rust 生产侧未检索到这些辅助 API 的调用，因此它们的代码级移植不等于完整运行时行为已迁移。
 
 ## 扩展指南
 
@@ -110,11 +106,3 @@ Go 侧 [`pkg/ddl/backfill_metrics_test.go`](../ddl/backfill_metrics_test.go) 覆
 新增 Lightning job 指标调用点必须成对安排注册与注销，所有提前返回和错误路径都要执行注销；可用 `GetRegisteredJob` 只读快照做泄漏断言。更改全局初始化模型时，优先把 `static mut Option<_>` 收敛到 `OnceLock`/不可变访问器，并同时调整 `InitMetrics`、`RegisterMetrics` 与现有测试，避免仅在本文件局部增加第二套初始化状态。
 
 兼容风险主要是指标名、标签名/顺序或桶变化导致仪表盘与告警失配；正确性风险主要是初始化前访问、回填标签未清理、table ID 选择错误和 job 指标未注销；性能风险主要来自高基数动态标签、全局 mutex 竞争以及在 Lightning 锁内执行 registry 操作。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/metrics` 确认 `ddl.rs`、Go 对照和相关测试在索引中；`node --file pkg/metrics/ddl.rs --offset 1/240` 读取完整 483 行并报告该文件由 `pkg/metrics/metrics.rs`、`pkg/metrics/bindinfo_1_aster_unit_test.rs` 使用；`query InitDDLMetrics` 同时定位 Go/Rust 定义；`callees InitDDLMetrics` 识别 `ExponentialBuckets` 依赖。
-- Rust 源与配置：[`pkg/metrics/ddl.rs`](ddl.rs)、[`pkg/metrics/lib.rs`](lib.rs)、[`pkg/metrics/metrics.rs`](metrics.rs)、[`pkg/metrics/Cargo.toml`](Cargo.toml)。
-- Rust 测试：[`pkg/metrics/metrics_test.rs`](metrics_test.rs) 的 `test_register_metrics`；[`pkg/metrics/bindinfo_1_aster_unit_test.rs`](bindinfo_1_aster_unit_test.rs) 的 `all_metric_initializers_accept_go_metadata`。目录中没有 `ddl_test.rs`，仓库搜索也未发现回填/Lightning 辅助 API 的 Rust 调用者。
-- Go 对照与边界测试：[`pkg/metrics/ddl.go`](ddl.go)、[`pkg/ddl/backfill_metrics_test.go`](../ddl/backfill_metrics_test.go)、`pkg/ddl/ingest/testutil/testutil.go`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行任务规定的 11 章节结构检查，并检查 git diff 仅包含本说明文档与任务文件删除。

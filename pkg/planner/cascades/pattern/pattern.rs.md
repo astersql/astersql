@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-pattern` crate，crate 根 `pkg/planner/cascades/pattern/lib.rs` 将本文件的公开项与 `engine.rs` 的引擎位集公开重导出。`Cargo.toml` 表明它唯一的直接 Rust 依赖是 `logicalop`（包名 `astersql-planner-core-operator-logicalop`）；本文件借此把完整的 `LogicalPlan` 动态对象压缩成适合规则索引和树形匹配的 `Operand`。
-
-它位于 Cascades 规划器的规则描述层，而不是计划执行层：规则以 `Pattern` 声明期望的算子树，优化器或 Binder 再用 `GetOperand` 识别 memo 中的逻辑计划。当前仓库中可见的直接生产入口包括 `pkg/planner/cascades/rule/binder.rs` 的 `match`、`pkg/planner/cascades/task/task_opt_group_expression.rs` 的 `getValidRules`，以及旧优化器 `pkg/planner/cascades/old/optimize.rs` 的 `GetImplementationRules` 和 `findMoreEquiv`。
+`Operand::Match`、`Pattern::Match` 和 `Pattern::MatchOperandAny` 定义节点级匹配判断；其中后两者同时检查引擎集合。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ RustCodeGraph 对目标文件报告 11 个符号并识别上述 crate 文件；�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/cascades/pattern/pattern.go`，测试对照为 `pattern_test.go`。Rust 保留了 Go 的 Operand 集合、字符串、类型映射顺序、双向 Any 匹配、Pattern 三元数据以及两个构造入口。
-
 关键表示差异如下：Go `Operand` 是 `int` 加 `iota` 常量，Rust 是封闭枚举并额外提供同名常量；Go 的 Pattern 匿名嵌入 Operand/EngineTypeSet，Rust 使用同名公开字段；Go `Children` 是 `[]*Pattern`，空构造结果为 `nil`，Rust 是 `Vec<Pattern>`，空构造结果为空向量；Go 构造函数返回指针且子节点为可变参数，Rust 返回拥有值并接收 `Vec<Pattern>`。两者在“没有子模式”的匹配意义上对应，但 nil 与空向量、指针共享与值所有权并非表示级等价。
 
-Go `Operand.String()` 的 `default` 会把任意未知整数显示为 `OperandUnsupported`；Rust `Display` 对封闭枚举逐项穷举。Go 与 Rust 当前测试都只覆盖 `GetOperand` 的前 14 类，且都未直接测试 BuildPattern 和 Pattern 的引擎匹配。Rust 测试额外以循环压缩了相同的 Operand 匹配断言，但没有改变语义。
+Go 与 Rust 当前测试都只覆盖 `GetOperand` 的前 14 类，且都未直接测试 BuildPattern 和 Pattern 的引擎匹配。Rust 测试额外以循环压缩了相同的 Operand 匹配断言，但没有改变语义。
 
 ## 扩展指南
 
@@ -94,12 +90,3 @@ Go `Operand.String()` 的 `default` 会把任意未知整数显示为 `OperandUn
 需要让引擎约束真正参与某条匹配链时，应在对应消费者中明确调用 `Pattern::Match`/`MatchOperandAny` 或等价检查，并增加消费者侧独立测试；仅设置 `EngineTypeSet` 不足以证明约束被执行。此类改动还应关注旧优化器和新 Binder 两条路径的一致性。
 
 测试逻辑应继续放在同目录独立文件 `pkg/planner/cascades/pattern/pattern_test.rs`，不要内嵌进生产源。高风险点是 Apply/Join 判断顺序、未知类型的 Unsupported 兜底、空 Children 的通配子树语义、子节点位置，以及 Go 指针树向 Rust 值树迁移产生的所有权差异；性能风险主要来自深/宽 Pattern 的克隆和 Binder 的组合增长，而非本文件的 Operand 比较。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标 `pattern.rs` 有 11 个符号；`files --filter pkg/planner/cascades/pattern` 确认 Rust/Go 源与测试；`node --file` 完整读取 `pattern.rs`、`pattern_test.rs`、`lib.rs`、`engine.rs`、`pattern.go`、`pattern_test.go`，并读取 `rule/binder.rs`、`task/task_opt_group_expression.rs`、`old/optimize.rs`、`old/transformation_rules.rs` 的直接消费片段。
-- crate 边界：`pkg/planner/cascades/pattern/Cargo.toml` 声明库入口 `lib.rs`、关闭自动测试与 doctest，并只直接依赖 `logicalop`；porting 元数据指向 Go 包 `pkg/planner/cascades/pattern`。
-- Rust 独立测试：`pattern_test.rs::TestGetOperand`、`TestOperandMatch`、`TestNewPattern`、`TestPatternSetChildren`。
-- Go 对照：`pattern.go::{Operand.String, GetOperand, Operand.Match, Pattern.Match, Pattern.MatchOperandAny, NewPattern, Pattern.SetChildren, BuildPattern}` 与 `pattern_test.go` 四组对应测试。
-- 调用证据：`binder.rs::match/dfsMatch`、`task_opt_group_expression.rs::getValidRules`、`old/optimize.rs::GetImplementationRules/findMoreEquiv`、`old/transformation_rules.rs::NewRulePushSelDownTableScan/NewRulePushSelDownIndexScan/NewRulePushSelDownTiKVSingleGather`。
-- 本任务是只新增说明文档的分析任务，按计划不运行 Cargo；交付前以任务指定命令验证文档存在且固定二级标题恰好为 11 个，并人工复核未将未接线的引擎过滤描述成已生效行为。

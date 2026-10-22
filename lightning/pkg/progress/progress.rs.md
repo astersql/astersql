@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Lightning 导入进度的进程内状态机，是 Go 包 [`progress.go`](./progress.go) 的 Rust 对齐版本。crate 入口 [`lib.rs`](./lib.rs) 将本模块的全部公开项重新导出；[`Cargo.toml`](./Cargo.toml) 声明 crate 名为 `astersql-lightning-pkg-progress`，只直接依赖已移植的 `astersql-lightning-pkg-checkpoints`、`serde` 和 `serde_json`。`common`、`mydump`、`errors` 并非真实 Lightning crate，而由 [`stubs.rs`](./stubs.rs) 提供本文件所需的最小边界。
-
-在完整 Rust 应用中，CLI [`../../cmd/tidb-lightning/main.rs`](../../cmd/tidb-lightning/main.rs) 根据 `StatusAddr` 启用进度；server [`../server/lightning.rs`](../server/lightning.rs) 广播任务开始、初始化和结束，并把两个序列化入口暴露给 HTTP；importer [`../importer/import.rs`](../importer/import.rs) 也会建立任务生命周期、初始化表、上报表 checkpoint 和表错误。它不是持久化 checkpoint 的所有者，而是保存适合状态接口读取的深拷贝快照。
+实现 Lightning 导入进度的进程内状态机，是 Go 包 [`progress.go`](./progress.go) 的 Rust 对齐版本。
 
 ## 核心职责
 
@@ -93,17 +91,14 @@ Go 注释说明 checkpoint 写入来自单个 `listenCheckpointUpdates` goroutin
 
 ## 与 Go 版本的对应关系
 
-结构和主流程逐项对应 [`progress.go`](./progress.go)：`checkpointsMap`、`totalWritten`、`taskStatus`、`tableProgress`、`tableInfo`、`taskProgress` 以及十个公开函数均有同名或直译实现。状态值、表名生成、checkpoint 深拷贝、差量聚合公式、错误文本入口和摘要 JSON 字段保持一致。
-
 关键实现差异如下：
 
 - Go 使用裸全局指针加 `atomic.Bool`，并明确 `EnableCurrentProgress` 非线程安全；Rust 使用 `OnceLock<Mutex<Option<TaskProgress>>>` 包装槽位，避免直接可变静态，但仍要求生命周期开始时一次性初始化。
 - Go 的 `Tables` 是 `map[string]*tableInfo`，Rust 用 `Option<HashMap<String, TableInfo>>` 表达 nil，并通过借用视图保持 `"t": null`。
-- Go 直接 `json.Marshal(TableCheckpoint)`；Rust checkpoints 类型的 serde 外观不直接等价，因此 `marshal_table_checkpoint` 手工选择字段。这是最容易产生兼容漂移的位置。
 - Go 依赖真实 `common`、`mydump` 和 `pingcap/errors`；Rust crate 当前依赖本地桩，只保留本模块使用的字段/行为，错误堆栈也只返回消息文本。
 - Go 的生产 importer 已调用阶段进度和 checkpoint 差量广播；Rust 当前生产引用搜索没有这两类调用，只有对齐测试覆盖 API 行为。
 
-Go 同目录没有 `progress_test.go`；最接近的 Go 行为证据来自 [`../importer/table_import_test.go`](../importer/table_import_test.go)（初始化与 checkpoint 上报）和 [`../server/lightning_server_serial_test.go`](../server/lightning_server_serial_test.go)（用 `sync.Once` 启用全局进度）。Rust 的直接契约测试集中在独立 [`parity_test.rs`](./parity_test.rs)，没有把测试嵌入生产源文件。
+Rust 的直接契约测试集中在独立 [`parity_test.rs`](./parity_test.rs)，没有把测试嵌入生产源文件。
 
 ## 扩展指南
 
@@ -115,12 +110,3 @@ Go 同目录没有 `progress_test.go`；最接近的 Go 行为证据来自 [`../
 - 并发模型变更必须维持固定锁顺序，避免同时持有 checkpoint 与任务写锁；若确认 HTTP 读取出现竞争，再考虑分片 map，不能使用无法保护值内部变更的等价 `sync.Map` 方案。
 - 测试应继续放在独立 [`parity_test.rs`](./parity_test.rs) 或相邻独立测试文件中，不放入 `progress.rs`。至少覆盖正常状态流、未启用/缺失表、错误传播、清理、JSON 外观和新增生产接线。
 - 兼容风险主要是 JSON 外观和错误分类；正确性风险主要是初始化顺序、键不一致和差量基线；性能风险主要是全局槽位锁让所有读取/广播串行进入，以及单 checkpoint map 写锁遍历全部差量。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引覆盖 11,467 个文件，其中 Rust 7,032 个；目标目录索引到 `progress.rs`、`lib.rs`、`stubs.rs`、`parity_test.rs` 和 `progress.go`。
-- RustCodeGraph 符号图：目标文件列出 28 个符号；精确查询确认 Rust/Go 两套同名公开函数；内部 callees 查询确认 `BroadcastTableCheckpoint → CheckpointsMap::insert/current`、`BroadcastCheckpointDiff → CheckpointsMap::update/current`、`MarshalTableCheckpoints → CheckpointsMap::marshal/current`。公开函数 caller 查询无结果，因此额外用源码引用搜索核对上游。
-- 已读生产与边界文件：[`progress.rs`](./progress.rs)、[`lib.rs`](./lib.rs)、[`stubs.rs`](./stubs.rs)、[`Cargo.toml`](./Cargo.toml)、[`progress.go`](./progress.go)、[`../../cmd/tidb-lightning/main.rs`](../../cmd/tidb-lightning/main.rs)、[`../server/lightning.rs`](../server/lightning.rs)、[`../importer/import.rs`](../importer/import.rs)，以及 Go importer 的 [`../importer/table_import.go`](../importer/table_import.go)。
-- 已读测试：Rust [`parity_test.rs`](./parity_test.rs)；Go [`../importer/table_import_test.go`](../importer/table_import_test.go) 与 [`../server/lightning_server_serial_test.go`](../server/lightning_server_serial_test.go)。直接 Rust 测试验证正常状态推进、step 去重、两种写入量公式、Go 风格 checkpoint JSON、未启用错误、空表状态、not-found、错误传播、checkpoint 清理和表名转义。
-- Cargo 依赖引用搜索确认 Rust CLI、server、importer 三个 crate 直接依赖本 crate；Rust 源引用搜索同时确认 `BroadcastTableProgress`、`BroadcastCheckpointDiff` 尚无生产调用。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务规定的 11 章节结构命令，并人工检查本文只描述可由上述符号、调用点、配置或测试复核的事实。

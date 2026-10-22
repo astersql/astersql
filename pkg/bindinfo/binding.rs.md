@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`binding.rs` 是 `astersql-bindinfo` crate 的核心模型与匹配层。crate 根模块 `pkg/bindinfo/lib.rs` 以私有模块 `mod binding` 装入它，再通过 `pub use binding::*` 将这里的公开常量、结构体、trait 与函数暴露给会话、计划缓存和绑定管理代码。`pkg/bindinfo/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/bindinfo`，直接依赖 `astersql-parser`、`astersql-util-hint`、`astersql-util-parser` 和 `serde`。
-
-它位于 SQL 进入优化器之前的计划基线链路：`pkg/session/hint_runtime.rs::StartStatementHintsWithBindings` 将解析后的 AST 转换为 `Statement`，同步 fuzzy-binding 与 usage 开关，调用 `MatchSQLBinding`，再把命中绑定的 hint 交给语句 hint 生命周期。`pkg/planner/core/plan_cache_utils.rs` 则调用 `NormalizeStmtForBinding` 和 `CollectTableNames`，在 prepared statement 的 AST 被后续重写前保存 `BindingMatchInfo`。显示绑定时，`pkg/session/runtime/dispatch.rs::show_binding_record_set` 使用 `RestoreDBForBinding` 恢复默认库。
-
-本文件既不是单纯门面也不是桩：它实际实现绑定状态与元数据、SQL/AST 归一化、表名和参数收集、会话优先的绑定匹配、跨库候选选择、hint 准备、缓存版本合并以及使用时间更新。具体的绑定目录、持久化、增删改和 hint 应用生命周期分别由同 crate 的其他模块及 `pkg/session/hint_runtime.rs` 承担。
+通过 `BindingMatchContext` 把会话实现与匹配算法解耦；`MatchSQLBindingWithCache` 负责前置过滤、语句级缓存、自检模式和耗时记录，`matchSQLBindingCore` 负责生成匹配键并执行“会话级优先、全局级次之”的查找。
 
 ## 核心职责
 
@@ -103,7 +99,6 @@
 
 ## 与 Go 版本的对应关系
 
-- 对照文件是 `pkg/bindinfo/binding.go`。状态常量、`Binding` 的主要字段、启用判定、size 统计口径、会话优先于全局的匹配顺序、全局 usage 更新、跨库最少通配符选择、hint warning 升错以及删除墓碑语义均有直接对应。
 - Rust 用 `BindingTime(i64)` 替代 Go `types.Time`，用 `Arc<Mutex<Option<BindingTime>>>` 替代 `atomic.Pointer[time.Time]`；持久化表示和同步原语不同，但保留“未使用为 None、命中全局后更新时间”的意图。
 - Go 匹配函数直接依赖 `sessionctx.Context`、`SessionBindingHandle`、全局 handle、metrics 和 statement context；Rust 用 `BindingMatchContext` 隔离这些尚未完全同构的会话设施，生产接线落在 `SessionBindingCatalog`。Go 在 domain 初始化、session binding handle 或 global handle 缺失时显式返回；Rust 由适配器返回 `None` 表达目录不可用。
 - Go 缓存键依赖 AST 对象身份且在核心函数内写缓存；Rust 生成包含 SQL、参数标记与表事实的字符串键，并在外层统一缓存命中和未命中。Rust 测试 `matching_avoids_cache_aliases_recomputes_partial_info_and_session_usage` 验证相同 SQL、不同表事实不会错误复用。
@@ -123,12 +118,3 @@
 - 增强校验生命周期时，建议为 plan-baseline 状态引入可析构恢复的 guard，确保错误和 panic 都恢复原状态；同时在独立测试中记录校验调用次数、失败传播和状态恢复。
 - 调整版本仲裁时，先明确同一 `UpdateTime` 的冲突规则。若要兑现注释中的 `CreateTime` 次序，应同步 Go 行为或记录明确差异，并补充“同更新时间、一条墓碑一条有效记录”的确定性测试。
 - 性能敏感修改应关注 parser 重复解析、AST 遍历分配、每个候选调用 `noDBDigestFromBinding`、cache key 字符串分配和 usage mutex 竞争；计划缓存传入完整 `BindingMatchInfo` 是当前避免重复归一化的主要接口。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 `pkg/bindinfo/binding.rs`（1087 行、98 个符号）；文件被 `pkg/session/hint_runtime.rs`、`pkg/planner/core/plan_cache_utils.rs`、`pkg/session/runtime/dispatch.rs` 和绑定测试等直接使用。
-- RustCodeGraph 调用证据：`MatchSQLBindingWithCache -> matchSQLBindingCore -> NormalizeStmtForBinding`；`StartStatementHintsWithBindings -> MatchSQLBinding`；`CollectTableNames` 的调用方包括 `BindingStatementFromAST`、计划缓存与核心匹配；`prepareHints`、跨库函数及 `pickCachedBinding` 均被独立 Rust 测试覆盖。
-- 已阅读生产与边界文件：`pkg/bindinfo/binding.rs`、`pkg/bindinfo/lib.rs`、`pkg/bindinfo/Cargo.toml`、`pkg/session/hint_runtime.rs`、`pkg/planner/core/plan_cache_utils.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/upgrade_run.rs`。
-- 已阅读 Go 对照：`pkg/bindinfo/binding.go`，重点核对匹配缓存、会话/全局顺序、跨库匹配、AST visitor、hint 准备、版本仲裁、SQL 规范化与校验生命周期。
-- 已阅读 Rust 测试：`pkg/bindinfo/binding_test.rs` 和 `pkg/bindinfo/tests/bind_test.rs`；补充证据来自 `pkg/bindinfo/binding_operator_test.rs::canonical_cached_binding_prefers_newer_and_honors_delete_tombstone`。测试固定了 size 口径、摘要来源、跨库 tie、墓碑、参数识别、嵌套表收集、hint 快捷路径、规范化、缓存隔离、INSERT/REPLACE 过滤和真实会话命中等边界。
-- 本任务是只读行为分析和文档新增，按计划不运行 Cargo。结构验收以任务文件指定命令确认目标文件存在且恰有 11 个固定二级章节；结论中的“当前实现”均来自上述源码、调用图或测试，没有把 Go 特例写成 Rust 已支持事实。

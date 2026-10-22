@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tools/gen-parquet/main.rs` 是一个生成 Parquet 测试夹具的独立命令实现。Cargo 清单 `tools/gen-parquet/Cargo.toml` 将它注册为二进制 `astersql-tools-gen-parquet`，同时 `tools/gen-parquet/lib.rs` 又以 `#[path = "main.rs"] pub mod main` 挂载同一份实现，供 `parity_test.rs` 和库调用方复用。根 `Cargo.toml` 把该 crate 列为 workspace member。
-
-这个工具不在 SQL 请求、事务或存储运行时主链中。它的 Go 对照程序由 `Makefile` 的 `build_for_lightning_integration_test` 目标构建成 `bin/parquet_gen`，因此其业务位置是 Lightning 集成测试的夹具生成侧。Rust Cargo 清单只声明 `parquet` 依赖，并通过固定 tag `astersql-parquet-v60.0.0-streaming-pages.1` 使用 AsterSQL 的 Arrow Rust 分支。
+`WriteWrapper` 将 `std::fs::File` 暴露为 writer 所需接口；它的 `Read`/`Seek` 实现只是兼容占位，不提供真实读取或定位能力。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@ RustCodeGraph 对本文件给出的内部主链是：
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对照同目录 `main.go`：`WriteWrapper` 对应 `writeWrapper`，`get_parquet_writer` 对应 `getParquetWriter`，`write_column` 对应 `writeColumn`，`write_simple_parquet_file` 对应 `writeSimpleParquetFile`，`Flags`/`parse_flags` 对应五个全局 `flag` 定义与 `flag.Parse`，`run` 加 `main` 对应 Go `main` 的 chunk 循环。
-
-保持一致的行为包括：默认参数、双列名与物理类型、optional 字段、字段 type length/id 参数 `8`、required 根 schema、逐列字典编码和 Snappy、单行组、三种 writer 类型分支、四位 chunk 序号、顺序生成及出错即停。Go 的 `log.Fatalf` 对运行错误退出 `1`；Rust 显式使用 `process::exit(1)`，并另行把参数错误设为退出 `2`。
+Go 的 `log.Fatalf` 对运行错误退出 `1`；Rust 显式使用 `process::exit(1)`，并另行把参数错误设为退出 `2`。
 
 已确认的实现差异包括：Rust 显式拒绝 schema 数组长度不一致和负行数；Rust 将库 API 错误转成 `Result<_, String>`，而 Go 的 `getParquetWriter` 忽略 schema 构造错误并直接返回 writer；Go `writeWrapper.Close` 关闭文件，Rust 固有 `close` 只 flush，但主流程在 Parquet writer 关闭/析构后释放文件；Go 的不支持类型错误包含动态类型，Rust 返回固定字符串。以上差异均应视为现有可观察契约，修改前需同步评估 parity 测试。
 
@@ -94,12 +90,3 @@ Rust 文件逐项对照同目录 `main.go`：`WriteWrapper` 对应 `writeWrapper
 - 改变关闭策略时，应区分“批量写错误”和“结束 footer/flush 错误”的优先级；若开始传播关闭错误，需要同步 Go 版本和资源清理测试，防止产生表面成功但不可读的文件。
 - 若引入并发，应先定义 chunk 输出冲突、错误取消、峰值内存和确定性；当前串行行为及“保留先前成功文件”是兼容基线。
 - crate 依赖升级必须继续通过 `tools/gen-parquet/Cargo.toml` 的已发布 tag 完成，不应复制或用本地 `[patch]` 覆盖外部 Arrow/Parquet 实现。
-
-## 验证依据
-
-- 源实现：`tools/gen-parquet/main.rs`，重点符号为 `WriteWrapper`、`get_parquet_writer`、`write_column`、`write_simple_parquet_file`、`Flags`、`parse_flags`、`chunk_file_name`、`chunk_file_path`、`run`、`main`。
-- Crate/入口证据：`tools/gen-parquet/Cargo.toml`、`tools/gen-parquet/lib.rs`、根 `Cargo.toml`；构建用途证据为 `Makefile::build_for_lightning_integration_test` 和 `tools/gen-parquet/BUILD.bazel`。
-- Go 对照：`tools/gen-parquet/main.go`，核对 schema、值生成、flag 默认值、文件命名、关闭顺序和错误停止策略。
-- 独立 Rust 测试：`tools/gen-parquet/parity_test.rs` 的 `contract_normal_paths`、`contract_boundary`、`contract_error_paths`、`contract_write_column_type_switch`、`contract_resource_cleanup`。同目录没有 Go `*_test.go`；本次未把生产源码内嵌为测试文件。
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,305 个节点和 1,849,011 条边；`files --filter tools/gen-parquet` 确认 `main.rs`、`lib.rs`、`main.go`、`parity_test.rs`、`stubs.rs` 均被索引。`node --file tools/gen-parquet/main.rs` 读取到 306 行及 18 个符号；`query` 定位了主要函数；`callees` 验证了上述内部主链，且图中测试函数 `contract_write_column_type_switch` 直接调用 `get_parquet_writer` 和 `write_column`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收以固定十一个二级标题检查为准；内容人工复核覆盖“为何存在、如何运行、如何安全扩展”。

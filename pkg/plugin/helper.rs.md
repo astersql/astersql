@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`helper.rs`](helper.rs) 是 `astersql-plugin` crate 的清单适配、插件 ID 解析和测试装载辅助模块。crate 入口 [`lib.rs`](lib.rs) 通过 `pub mod helper` 声明该模块，并以 `pub use helper::*` 将全部公开符号重导出到 crate 根；[`Cargo.toml`](Cargo.toml) 指定库入口为 `lib.rs`，没有为本模块设置 feature 条件或生产外部依赖，唯一列出的 crate 级依赖是测试使用的 `serial_test`。
-
-该文件位于 SPI 类型与插件运行时之间：[`audit.rs`](audit.rs) 和 [`spi.rs`](spi.rs) 定义通用/专用 `Manifest` 及扩展回调的存取方式，[`plugin.rs`](plugin.rs) 使用 `Id::decode` 驱动加载，并提供 `load_plugin_for_test` 所调用的全局注册、加载、初始化和关闭操作。它不负责动态库 I/O、版本校验细节、插件遍历或事件派发。
+`load_plugin_for_test` 构造内存中的静态审计插件，重置旧的进程级插件状态，依次执行 `load` 和 `init`，让集成测试能够注入 `GeneralEventCallback` 而无需真实 `.so`。
 
 ## 核心职责
 
@@ -87,11 +85,9 @@ RustCodeGraph 精确列出了 `helper.rs` 的 11 个符号，并通过文件节�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 [`helper.go`](helper.go) 提供同名的 `DeclareAuditManifest`、`DeclareAuthenticationManifest`、`DeclareSchemaManifest`、`DeclareDaemonManifest`、`ID.Decode` 和 `LoadPluginForTest`。
-
 Go 的四个声明函数依赖结构布局并通过 `unsafe.Pointer` 将 `*Manifest` 强制转换为专用清单；Rust 不能安全复刻这种别名/布局转换，因此 `export_manifest` 把额外回调存入类型擦除扩展，声明函数再 downcast 和克隆 `Arc`。Schema/Daemon 没有额外字段，Rust 直接进行拥有所有权的包装。结果目标相同，但 Rust 不保留 Go 指针身份；错误扩展类型也不会造成未定义行为，而会得到空回调。
 
-两侧 ID 都按最后一个 `-` 拆分，并且都只在完全没有分隔符时报告非法 ID，因此名称可含连字符，空片段也未在此层拒绝。Go 返回命名字符串和 `errInvalidPluginID.GenWithStackByArgs`；Rust 返回拥有所有权的字符串元组及不带 Go errno/栈的 `PluginError`。
+Go 返回命名字符串和 `errInvalidPluginID.GenWithStackByArgs`；Rust 返回拥有所有权的字符串元组及不带 Go errno/栈的 `PluginError`。
 
 Go `LoadPluginForTest` 安装 `SetTestHook(loadOne)` 来绕过真实动态库，并用 `testing.T` 内部断言 `Load/Init` 成功；Rust 改为注册静态工厂，主动清除旧静态插件/test hook/全局集合，并用 `Result` 把错误交给调用方。两者构造相同的 `audit_test-1`、`go=1112` 环境和成功生命周期回调，但 Rust 版本的额外全局清理是为可重复测试服务的迁移差异，不应描述为普通生产加载 API。
 
@@ -102,11 +98,3 @@ Go `LoadPluginForTest` 安装 `SetTestHook(loadOne)` 来绕过真实动态库，
 - 扩展测试插件时，优先修改 `load_plugin_for_test` 中的 `Manifest`/`AuditManifest` 工厂及 [`integration_test.rs`](integration_test.rs) 的调用断言。若增加 flush、etcd 或后台线程，必须定义 watcher 的取消与 shutdown 顺序，避免测试退出后泄漏线程。
 - 任何操作全局插件状态的新测试都应遵循现有 `#[serial]` 隔离，并在失败路径检查残留注册表和全局集合。不要假定多个锁保护就等同于完整装载事务。
 - 声明函数位于事件派发热路径时只做 `Arc` 克隆和 downcast；增加深拷贝、日志或锁会改变成本。公共 `Id` 元组字段和函数签名由 crate 根重导出，变更会影响 `plugin.rs` 及外部 crate 的源码兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/plugin` 列出 31 个相关 Go/Rust 文件；`node --file pkg/plugin/helper.rs --offset 1 --limit 400` 完整读取目标文件 128 行；`query` 精确定位四个 `declare_*` 函数和 `load_plugin_for_test`。`explore` 因 `Id`/`helper` 等泛名返回大量跨仓同名项，精确 `callers declare_audit_manifest` 在 30 秒内无结果，故使用精确源码引用检索补足调用边。
-- 目标与 crate 边界：`pkg/plugin/helper.rs`、`pkg/plugin/Cargo.toml`、`pkg/plugin/lib.rs`。目录中不存在 `doc.go`；最近的模块说明是 `pkg/plugin/README.md`，仅链接插件框架设计文档。
-- 直接 Rust 证据：`pkg/plugin/audit.rs` 的 `AuditManifest`、`ExportManifest`、`audit_callbacks`；`pkg/plugin/spi.rs` 的通用/认证/Schema/Daemon manifest 及 `authentication_callbacks`；`pkg/plugin/plugin.rs` 的全局注册表、`load`、`load_one`、`init`、`shutdown`；`pkg/plugin/errors.rs` 的错误分类。
-- 调用与测试：`pkg/plugin/helper_test.rs::test_plugin_declare/test_decode`、`pkg/plugin/spi_test.rs`、`pkg/plugin/integration_test.rs::emit_query_events` 及其串行集成测试、`pkg/plugin/conn_ip_example/conn_ip_example_test.rs`。Go 对照为 `pkg/plugin/helper.go`、`pkg/plugin/helper_test.go`、`pkg/plugin/plugin.go` 和 `pkg/plugin/integration_test.go`。
-- 本任务仅新增静态说明，按计划未运行 Cargo。交付前运行任务指定的结构命令，确认文件存在且恰有 11 个固定二级标题；人工检查本文能回答文件为何存在、清单/ID/测试加载路径如何运行、全局状态风险及安全扩展位置。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`structure.rs` 是 `astersql-structure` crate 的核心状态门面。`pkg/structure/lib.rs` 将它包含在私有的 `structure_impl` 模块中，再以 `pub use structure_impl::*` 导出其中的构造器、类型和错误；同一 crate 的 `string.rs`、`list.rs`、`hash.rs`、`type.rs` 继续为这里定义的 `TxStructure` 增加数据操作与键编码方法。
-
-它位于业务数据结构语义与底层 `astersql-kv` 抽象之间：调用者提供一个只读 `kv::Retriever`、一个可选的 `kv::RetrieverMutator` 和命名空间前缀，后续 String、List、Hash 操作据此完成编码、读取和写入。`pkg/structure/Cargo.toml` 表明该 crate 直接依赖 `astersql-kv`、`astersql-util-dbterror` 和 `astersql-util-codec`，没有 feature 条件；本文件自身也没有条件编译项。
+用 `TxStructure::writer` 集中实施“只读快照不得写入”的能力检查，并向具体 String/List/Hash 写方法提供可变的 `RetrieverMutator` 引用。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/structure/structure.go` 是直接语义基线：四个错误变量、`NewStructure` 的三个输入以及 `TxStructure` 的 `reader/readWriter/prefix` 字段逐项对应。Rust 使用 `LazyLock<Box<errors::Error>>` 表达延迟初始化的包级错误，用 trait object 表达 Go 接口，并用 `Option` 明确表达 Go `nil` 写入器。
+Rust 使用 `LazyLock<Box<errors::Error>>` 表达延迟初始化的包级错误，用 trait object 表达 Go 接口，并用 `Option` 明确表达 Go `nil` 写入器。
 
 主要差异如下：
 
@@ -83,7 +81,7 @@
 - Go 文件没有单独的 `writer()`；Go 的各写方法直接检查或使用 `readWriter`。Rust 增加该 crate 内辅助方法来统一安全地取得可变写入器，同时保留相同的快照写错误。
 - Go 的 `nil` 同时可能出现在接口和值语义中；Rust 的 `Option<Box<dyn RetrieverMutator>>` 将“无写能力”显式化，但构造器仍不验证 reader 与 writer 的底层身份。
 
-Go `structure_test.go` 覆盖 String/List/Hash 的可写事务与 nil writer 快照分支；Rust 的 `migration_aster_unit_test.rs` 移植主干行为，`structure_test.rs` 补充快照写和错误码验证。两边的核心不变量都是：读路径可在快照上使用，所有实际写路径必须失败且使用注册错误。
+Go `structure_test.go` 覆盖 String/List/Hash 的可写事务与 nil writer 快照分支；Rust 的 `migration_aster_unit_test.rs` 移植主干行为，`structure_test.rs` 补充快照写和错误码验证。
 
 ## 扩展指南
 
@@ -93,14 +91,3 @@ Go `structure_test.go` 覆盖 String/List/Hash 的可写事务与 nil writer 快
 - 修改字段类型或构造签名会影响 `string.rs`、`list.rs`、`hash.rs`、`type.rs` 以及测试辅助构造器 `migration_aster_unit_test.rs::writable`。应特别评估 trait object 所有权、对象安全和 reader/writer 是否仍共享一致视图。
 - 修改前缀语义必须同步审查 `type.rs` 的全部编码/解码方法和 `pkg/tablecodec/tablecodec.rs` 对 `HashData`/`TypeFlag` 的兼容使用；风险包括已有元数据不可读和键范围扫描越界。
 - 测试逻辑应继续放在独立文件 `structure_test.rs` 或 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。至少覆盖可写与只读构造、四类错误映射及新增 API 的 Go 对齐边界。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/structure` 列出本模块 16 个已索引文件。
-- RustCodeGraph 源码/符号查询：`node --file pkg/structure/structure.rs --offset 1 --limit 260`；`query TxStructure --limit 20`；`node pkg/structure/structure.rs::TxStructure`；`node pkg/structure/structure.rs::writer`；`node NewStructure`。查询确认本文件 4 个静态错误、1 个工厂、1 个结构体、1 个内部方法，并给出 `NewStructure` 的测试调用边。
-- crate 与装配：`pkg/structure/Cargo.toml`、`pkg/structure/lib.rs`。
-- Rust 直接实现证据：`pkg/structure/structure.rs`、`pkg/structure/type.rs`、`pkg/structure/string.rs`、`pkg/structure/list.rs`、`pkg/structure/hash.rs`。
-- Rust 独立测试证据：[structure_test.rs](./structure_test.rs)、[migration_aster_unit_test.rs](./migration_aster_unit_test.rs)；其中 `writable` 构造共享 reader/writer，快照测试以 `None` 构造只读门面。
-- Go 对照证据：[structure.go](./structure.go)、[structure_test.go](./structure_test.go)，并参考同目录 `string.go`、`list.go`、`hash.go`、`type.go` 的方法职责。
-- 外部直接依赖证据：`pkg/tablecodec/Cargo.toml`、`pkg/tablecodec/tablecodec.rs`。当前证据只支持编码常量复用，不支持声称生产 Rust 已调用 `NewStructure`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构检查要求文档存在且恰有 11 个固定二级标题。

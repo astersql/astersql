@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-util-workloadrepo` crate；crate 根 `pkg/util/workloadrepo/lib.rs` 以私有 `mod table` 装配它，并用 `pub use table::*` 再导出其中的公开函数。`pkg/util/workloadrepo/Cargo.toml` 将 `lib.rs` 指定为库入口，当前直接外部依赖只有 `chrono`，Go 包映射为 `pkg/util/workloadrepo`。
-
-它位于工作负载仓库启动和采集链的表结构层：`worker::startRepository` 在 owner 节点调用 `Worker::createAllTables`，随后所有节点调用 `Worker::checkTablesExists`；`sampling.rs::Worker::samplingTable` 与 `snapshot.rs::Worker::snapshotTable` 则在第一次写入前调用 `buildInsertQuery`。文件不负责定时调度、快照编号分配或旧分区清理，这些分别位于 `worker.rs`、`snapshot.rs` 和 `housekeeper.rs`。
+`Worker::createAllTables` 跳过已存在的目标表，为缺失表选择动态或预置建表语句，追加 RANGE 分区定义，重试执行 DDL，最后确保所有表都有所需分区。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@ SQL 生成边界包括：标识符内部反引号被转义，列注释内部单�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/workloadrepo/table.go`。Rust 保留了动态复制源列、快照/采样占位符顺序、元数据表拒绝路径、`BEGIN_TIME`/`TS` 分区列选择、建表后补分区，以及“最晚分区必须晚于明天”的核心语义。`table_test.rs` 专门固定了 Go 中先 `TableByName`、再拒绝元数据表的错误优先级。
+Rust 保留了动态复制源列、快照/采样占位符顺序、元数据表拒绝路径、`BEGIN_TIME`/`TS` 分区列选择、建表后补分区，以及“最晚分区必须晚于明天”的核心语义。
 
 主要适配差异如下：Go 通过 session transaction InfoSchema 读取表和列并从 session pool 执行 SQL；Rust 改由 `RepositoryBackend` 提供列、表、分区和执行能力。Go `createAllTables` 会显式创建缺失的 `WORKLOAD_SCHEMA` 并刷新 InfoSchema，Rust 方法没有建库步骤，后端或更外层必须保证 schema 可用。Go 的 `zeroTime` 表示仅查表，Rust 用 `Option<DateTime<Local>>` 表达相同模式，但 `Worker::createAllTables` 直接调用 `table_exists`。
 
@@ -90,12 +88,3 @@ Go 的 `buildInsertQuery` 只为明确的 `samplingTable` 写 `now(), %?`，而�
 测试应保持在独立文件，直接单元用例放在 `pkg/util/workloadrepo/table_test.rs`；跨启动、建表和分区生命周期用例放在 `worker_test.rs`。与 Go 移植语义有关的修改还应对照 `table.go` 和 `worker_test.go` 的对应场景。建议补充成功 SQL 文本、标识符/注释转义、未知类型、分区查询失败、空/乱序分区和日期边界用例；不要把测试内嵌到 `table.rs`。
 
 兼容性风险主要是生成 SQL 文本及参数顺序变化；正确性风险集中在原样 SQL 片段和分区排序假设；性能风险主要来自每次就绪检查持锁执行多次后端查询。若后端契约变化，应先更新 `RepositoryBackend` 的实现与测试替身，再调整本文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 `pkg/util/workloadrepo/table.rs`（155 行、9 个符号）；`node --file ...` 读取了完整文件；`files --filter pkg/util/workloadrepo` 确认相邻 Rust/Go 文件；call graph 确认 `buildInsertQuery -> identifier`、`createAllTables -> buildCreateQuery`，同时暴露 trait/方法边缺失，故未把空图结果当作“无调用者”。
-- Rust 源码：`pkg/util/workloadrepo/table.rs`、`lib.rs`、`worker.rs`、`sampling.rs`、`snapshot.rs`、`housekeeper.rs`、`utils.rs`。
-- crate 边界：`pkg/util/workloadrepo/Cargo.toml`，确认库入口、`chrono` 依赖及 Go 包映射。
-- 独立 Rust 测试：`pkg/util/workloadrepo/table_test.rs` 验证元数据路径错误顺序；`worker_test.rs` 的内存 `RepositoryBackend`、`TestRaceToCreateTablesWorker`、`TestCreatePartition` 等提供建表和分区生命周期证据。
-- Go 对照：`pkg/util/workloadrepo/table.go`；相关调用和测试来自 `sampling.go`、`snapshot.go`、`worker.go`、`worker_test.go::TestAddNewPartitionsOnStart` 及其分区辅助断言。
-- 本任务是纯文档分析，未修改运行时代码，未运行 Cargo。交付前使用任务指定命令确认目标文档存在且恰有十一个固定二级章节，并人工检查所有行为陈述都可回溯到上述符号或文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-dbterror` crate 的基础错误分类适配层。crate 入口 `pkg/util/dbterror/lib.rs` 通过 `#[path = "terror.rs"] mod terror_impl` 装入它并以 `pub use terror_impl::*` 公开全部 API；同一入口随后装入的 `ddl_terror.rs` 以及仓库中的 KV、Types、InfoSchema、Server、Store Driver 等模块都以这些 API 创建可复用的错误原型。
-
-它位于业务子系统与 `astersql-parser-terror` 通用错误框架之间：不重新实现错误格式化、RFC code 或 MySQL 协议转换，只包装底层 `terror::ErrClass`，补齐 Go `pkg/util/dbterror/terror.go` 的错误类门面，并从 `astersql-errno` 的标准消息表选择模板。`pkg/util/dbterror/Cargo.toml` 表明该 crate 只有 `astersql-errno` 和 `astersql-parser-terror` 两个运行时依赖，且没有 feature 或条件依赖。
+位于业务子系统与 `astersql-parser-terror` 通用错误框架之间：不重新实现错误格式化、RFC code 或 MySQL 协议转换，只包装底层 `terror::ErrClass`，补齐 Go `pkg/util/dbterror/terror.go` 的错误类门面，并从 `astersql-errno` 的标准消息表选择模板。
 
 ## 核心职责
 
@@ -71,13 +69,10 @@
 
 `pkg/util/dbterror/terror.go` 是直接对照：Go `ErrClass` 匿名嵌入 `terror.ErrClass`，Rust 用公开 `inner` 字段显式组合；22 个 Go 包变量与 Rust 静态值逐项对应；Go `NewStd(code terror.ErrCode)` 与 Rust `NewStd(code: impl IntoErrCode)` 都从 `errno.MySQLErrName[uint16(code)]` 选模板并委托 `NewStdErr`。
 
-Rust 的有意适配有三点：
-
-1. 通过 `IntoErrCode` 同时接收迁移后 errno crate 的 `u16` 常量和 parser terror 的 `ErrCode`，而 Go 依靠统一的命名类型。
 2. `NewStdErr` 在 Rust 包装层显式声明，以替代 Go 匿名嵌入带来的方法提升；其底层语义仍由 parser terror 实现。
 3. Go 包变量可直接调用构造器，Rust 消费者多用 `LazyLock` 延迟执行非 `const` 构造与注册。
 
-测试意图也保持对应。Go `pkg/util/dbterror/terror_test.go::TestErrorRedact` 在 Enable/Marker 两种模式下覆盖标准模板、敏感参数和 `GenWithStackByArgs`/`FastGenByArgs`；Rust `pkg/util/dbterror/terror_test.rs::test_error_redact` 使用同一组 19 个 errno 场景，并进一步逐条断言完整消息字符串。Rust 测试位于独立文件并由 `lib.rs` 的 `#[cfg(test)] mod terror_test` 接入。
+Go `pkg/util/dbterror/terror_test.go::TestErrorRedact` 在 Enable/Marker 两种模式下覆盖标准模板、敏感参数和 `GenWithStackByArgs`/`FastGenByArgs`；Rust `pkg/util/dbterror/terror_test.rs::test_error_redact` 使用同一组 19 个 errno 场景，并进一步逐条断言完整消息字符串。
 
 ## 扩展指南
 
@@ -87,13 +82,3 @@ Rust 的有意适配有三点：
 - 修改 `IntoErrCode` 或数值转换时，应保留 `ErrCode` 的完整宽度直到注册，只在标准 MySQL 消息查表边界转换为 `u16`，并明确评估越界/截断兼容风险。
 - 同步测试放在独立的 `pkg/util/dbterror/terror_test.rs`，不要内嵌到生产文件。至少覆盖新类型转换、缺失模板/冻结注册等边界（若可在隔离进程安全测试），以及 Enable/Marker 脱敏模式；Go 行为发生变化时也要对照 `terror_test.go`。
 - 兼容性风险主要是错误类/RFC 前缀、MySQL code、消息模板与脱敏位置变化；性能风险主要来自把注册构造移入热路径造成锁写入和堆分配。本文件没有异步或 I/O 性能面。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的 Rust/Go 源与测试均已收录。
-- RustCodeGraph `files --filter pkg/util/dbterror`：确认 `terror.rs`、`lib.rs`、`ddl_terror.rs`、Rust/Go 对照测试和相关子 crate 的文件边界。
-- RustCodeGraph `node --file`：完整读取 `pkg/util/dbterror/terror.rs`（1–164）、`pkg/util/dbterror/lib.rs`（1–63）、`pkg/util/dbterror/terror_test.rs`（1–269）、`pkg/util/dbterror/terror.go`（1–57）、`pkg/util/dbterror/terror_test.go`（1–95），以及直接下游 `pkg/parser/terror/terror.rs` 的类别、注册和 `NewStdErr` 实现。
-- RustCodeGraph/源码调用证据：`pkg/util/dbterror/ddl_terror.rs`、`pkg/kv/error.rs`、`pkg/types/errors.rs`，并以 `rg` 精确核对 `pkg/tablecodec/tablecodec.rs`、`pkg/infoschema/error.rs`、`pkg/store/driver/error/error.rs` 等实际消费者。图的同名方法查询结果过宽，未把它用于声称完整调用覆盖。
-- Cargo 证据：`pkg/util/dbterror/Cargo.toml`；另以消费者 Cargo manifest 的 `astersql-util-dbterror` 路径依赖核对跨 crate 接线。
-- 测试证据：`pkg/util/dbterror/terror_test.rs::test_error_redact` 与 Go `pkg/util/dbterror/terror_test.go::TestErrorRedact`。本任务是纯文档分析，按计划未运行 Cargo 或代码测试。
-- 人工复核结论：该文件存在是为了保留 Go dbterror 的错误类门面并集中桥接标准 errno 消息；运行时沿“类别选择 → 错误码转换 → 标准/显式模板 → parser terror 注册与规范化 → 参数化错误生成”工作；扩展必须保持类别、码、模板、脱敏信息和初始化时序一致。

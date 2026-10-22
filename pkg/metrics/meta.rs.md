@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-[源文件](meta.rs) `pkg/metrics/meta.rs` 属于 `astersql-metrics` crate（`pkg/metrics/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/metrics/lib.rs` 以 `pub mod meta` 公开。它是 Meta/AutoID Prometheus 指标的定义与初始化单元，不负责元数据读写或 AutoID 分配本身。包级入口 `pkg/metrics/metrics.rs::InitMetrics` 在初始化各子系统指标时调用本文件的 `init_meta_metrics`。
+当前 Rust 状态必须区分“指标已构造”与“端到端已接线”：仓库检索中，这些 Rust 静态量除本文件赋值外没有生产读取点，`pkg/metrics/metrics.rs::RegisterMetrics` 的 Rust 注册列表也未包含它们。
 
 ## 核心职责
 
@@ -70,8 +70,6 @@ collector 内部计数/观测操作由 `prometheus` crate 提供线程安全实�
 
 ## 与 Go 版本的对应关系
 
-Rust `pkg/metrics/meta.rs` 与 Go `pkg/metrics/meta.go` 的常量值、三个 collector 类型、namespace/subsystem/name/help、`[LblType, LblResult]` 标签顺序以及 `ExponentialBuckets(0.0005, 2, 29)` 一致。Go 的 nil 指针全局量在 Rust 中对应 `Option`，Go `InitMetaMetrics` 对应 Rust `unsafe fn init_meta_metrics`。
-
 主要差异和迁移缺口是：
 
 - Go 包初始化模式依赖单线程包初始化；Rust 额外使用 `PACKAGE_INIT_LOCK` 和外层 `Once`，但仍保留 `static mut`/`unsafe`。
@@ -86,12 +84,3 @@ Rust `pkg/metrics/meta.rs` 与 Go `pkg/metrics/meta.go` 的常量值、三个 co
 - 补齐 Rust 生产功能时，最小必要接线点包括 `pkg/metrics/metrics.rs::RegisterMetrics`、AutoID 分配/rebase 路径、Meta schema diff/历史 DDL 路径以及 AutoID 连接重置路径；需分别核对 Go 对照点，不应只通过增加注册行就宣称完成。
 - 如果消除 `unsafe`，应将三个全局值改为 `OnceLock`/`LazyLock` 或返回显式所有者，并同步调整注册、读取与测试隔离策略，避免 registry clone 指向旧 collector。
 - 测试应保持在独立 Rust 文件中，不嵌入 `meta.rs`。可扩展 `pkg/metrics/bindinfo_1_aster_unit_test.rs` 或新建同目录 `meta_test.rs` 并在 `lib.rs` 以 `#[cfg(test)]` 挂载；应断言三个公开 metric 名、两个标签名、桶边界、计数/观测可写入，以及注册后可被 gather。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件（其中 Rust 7,032）；`files --filter pkg/metrics` 确认 `meta.rs`、`meta.go`、crate 入口和相关测试在索引中。
-- RustCodeGraph `node --file pkg/metrics/meta.rs --offset 1 --limit 240`：读取 89 行全文，并报告文件级使用方 `pkg/metrics/metrics.rs` 与 `pkg/metrics/bindinfo_1_aster_unit_test.rs`。
-- RustCodeGraph `query init_meta_metrics --kind function --json`：定位唯一函数 `pkg/metrics/meta.rs:55`。精确 `callers/callees` 查询在 30 秒内未返回，因此调用点由 `rg` 直接引用补齐，没有据此推测额外边。
-- 已读路径：`pkg/metrics/meta.rs`、`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`、`pkg/metrics/bindinfo.rs`、`pkg/metrics/meta.go`、`pkg/metrics/metrics.go`、`pkg/metrics/bindinfo_1_aster_unit_test.rs`，并抽查 `pkg/meta/meta.rs` 以区分同名 metrics 抽象。
-- Rust 测试证据：同目录无 `meta_test.rs`；`all_metric_initializers_accept_go_metadata` 直接调用初始化函数，但没有对本文件 metric 名、标签、桶或注册状态做专项断言。Go 搜索则确认了 `metrics.go::RegisterMetrics` 的三个注册点和 AutoID/Meta 生产观测点。
-- 本件为纯文档分析，按任务约束未运行 Cargo。

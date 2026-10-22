@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`table.rs` 位于 `astersql-parsergen` crate 的“LALR 自动机之后、Rust 解析器数据渲染之前”。`pkg/parser/parsergen/lib.rs` 以 `pub mod table` 声明该模块并重导出其公开 API；直接生产调用者 `GeneratedParser::build`（`pkg/parser/parsergen/render.rs`）先执行 `Automaton::build`，再调用 `ParseTable::build` 和 `ParseTable::encode`。因此本文件不读取文法文件、不构造 LR 项目闭包，也不执行语义动作；它把已经构造好的 `Grammar` 与 `Automaton` 转换成经过冲突消解的 action/goto 表，并进一步生成确定性的稀疏整数表示。
-
-crate 边界由 `pkg/parser/parsergen/Cargo.toml` 确定：库入口是同目录 `lib.rs`，同时有 `main.rs` 二进制入口，当前没有外部依赖。本文件只使用标准库集合/错误接口和 crate 内 `grammar.rs`、`automaton.rs` 导出的模型。
+因此本文件不读取文法文件、不构造 LR 项目闭包，也不执行语义动作；它把已经构造好的 `Grammar` 与 `Automaton` 转换成经过冲突消解的 action/goto 表，并进一步生成确定性的稀疏整数表示。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ RustCodeGraph 已索引 `table.rs`（报告 35 个符号），并能展示文件
 
 ## 与 Go 版本的对应关系
 
-同目录没有 `table.go`，所以不存在可证明的逐函数 Go 复刻。最接近的 Go 对照是 `pkg/parser/goyacc/main.go`：它从 goyacc 处理结果的 `p.Table` 生成 token 翻译、符号名、归约信息和稀疏解析表，并把 shift 记为正参数、reduce 记为负参数、accept 作特殊处理；`pkg/parser/parser.go` 是该 Go 流程生成的实际解析器产物。Rust 的 `GeneratedParser::build/render_rust` 与本文件合起来承担相邻职责。
-
 两侧共同目标是把语法分析状态表转成紧凑、可由表驱动运行时消费的数据，但编码不可直接互换：Go 生成器使用 `TabOfs` 偏移和无符号位宽选择来让零单元表示空值；Rust 明确定义 `0`、正数、负数和 `i32::MIN`，并单独保留 `columns`/`reduction_rules`。Go 的冲突统计和消解主要由其 `y.ProcessFile` 所属 yacc 实现产生，而 Rust 在 `ParseTable::build` 内显式收集候选并以 `PrecedenceIndex` 消解，未解冲突直接返回错误。
 
-语义对照应关注这些行为而非要求字节级一致：终结符/非终结符表项含义、shift/reduce/accept/error 的解析结果、优先级和结合性决议、归约弹栈长度与 goto，以及相同输入的确定性生成。当前独立 Rust 测试验证的是 Rust 契约；本任务没有运行 Go 或 Rust 测试，不能据此宣称两套生成器已对完整 TiDB 文法实现结果等价。
+当前独立 Rust 测试验证的是 Rust 契约；本任务没有运行 Go 或 Rust 测试，不能据此宣称两套生成器已对完整 TiDB 文法实现结果等价。
 
 ## 扩展指南
 
@@ -89,13 +85,3 @@ RustCodeGraph 已索引 `table.rs`（报告 35 个符号），并能展示文件
 - 若引入更激进压缩，必须维持缺失项等价于 error、按状态查询、列到符号的可逆关系及归约编号映射；若仍使用 `SparseRow::get`，条目升序是不可破坏的不变量。
 - 若要支持超出 `i32` 的状态或归约规模，应设计新的生成格式和兼容迁移，不能只去掉 `encode_cell` 的检查。
 - Rust 单元测试继续放在独立的 `pkg/parser/parsergen/table_aster_unit_test.rs`，不要嵌入 `table.rs`；涉及渲染或完整 trace 的行为还应同步 `render_aster_unit_test.rs`/`render_test.rs`。如需对齐 Go 行为，再以 `pkg/parser/goyacc/main.go` 与生成的 `pkg/parser/parser.go` 为对照，但不要假定编码格式相同。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引包含 7,032 个 Rust 文件；`files --filter pkg/parser/parsergen/table.rs` 命中唯一目标并报告 35 个符号；`node --file ... --offset 1 --limit 500` 及后续 `--offset 480 --limit 160` 覆盖了目标文件 574 行。对 `ParseTable::build`/`ParseTable::encode` 的 callers/callees 查询没有返回可用边，调用边改由源码核实。
-- 目标源码：`pkg/parser/parsergen/table.rs`，核对了所有公开/内部类型、函数、impl、编码协议、冲突分支和断言；文件没有条件编译项。
-- crate 与入口：`pkg/parser/parsergen/Cargo.toml`、`pkg/parser/parsergen/lib.rs`。
-- 直接调用者/消费者：`pkg/parser/parsergen/render.rs`，尤其是 `GeneratedParser::build`、`GeneratedParser::trace` 和渲染所需的 `EncodedTable` 数据。
-- 独立 Rust 测试：`pkg/parser/parsergen/table_aster_unit_test.rs`，覆盖优先级/结合性/`%prec`、未解 shift/reduce 与 reduce/reduce 诊断、完整稳定列、稀疏行查询/展开、goto、accept 哨兵和重复构建确定性。
-- Go 对照：`pkg/parser/goyacc/main.go` 的符号/归约/解析表生成区段，以及生成产物 `pkg/parser/parser.go`；同目录不存在一一对应的 `table.go`。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付前仅运行任务指定的 11 章节结构验证，并人工复核本文所有运行时结论均指向以上源码、调用者或测试证据。

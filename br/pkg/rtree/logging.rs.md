@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`logging.rs` 是 `astersql-br-pkg-rtree` library crate 的日志适配层，不参与区间树的插入、查找或合并。crate 根 `br/pkg/rtree/lib.rs` 通过 `pub mod logging` 编入它，再用 `pub use logging::*` 将其公开函数提升到 crate 根。因此消费者可以从 `astersql_br_pkg_rtree::ZapRanges` 调用它，而不必知道子模块路径。
-
-Cargo 边界由 `br/pkg/rtree/Cargo.toml` 确定：包名为 `astersql-br-pkg-rtree`，library 入口是同目录的 `lib.rs`，本文件惟一声明的跨 crate 依赖是路径依赖 `astersql-br-pkg-logutil`。对应的 Go 实现是 `br/pkg/rtree/logging.go`。
+提供 `ZapRanges`，把一组 `KeyRange` 转为键名固定为 `"ranges"` 的 `Field`。
 
 ## 核心职责
 
@@ -68,13 +66,9 @@ Cargo 边界由 `br/pkg/rtree/Cargo.toml` 确定：包名为 `astersql-br-pkg-rt
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/rtree/logging.go` 只包含与 Rust 对应的两个行为：
-
 - Go `(KeyRange).String()` 通过 `fmt.Sprintf("[%s, %s)", redact.Key(...), redact.Key(...))` 实现；Rust 用 `Display::fmt` 提供同样的半开区间文本。Rust 当前的本地 `redact_key` 固定做小写 hex，而不是直接调用 Go `pkg/util/redact.Key`；两侧现有金标测试对 ASCII 键的结果一致。
 - Go `ZapRanges([]KeyRange)` 返回 `logutil.AbbreviatedStringers("ranges", ranges)`；Rust `ZapRanges(&[KeyRange])` 返回自己 logutil crate 的同名抽象。差异是 Rust 为满足所有权参数而显式克隆切片。
 - `br/pkg/rtree/logging_test.go::TestLogRanges` 与 `br/pkg/rtree/logging_test.rs::test_log_ranges` 共享同一组 0、1、2、3、4、5、6、1024 长度及完全相同的 JSON 期望值。Rust 测试使用十进制字符串的字节构造键，对齐 Go `fmt.Appendf(nil, "%d", j)`。
-
-因此现有可见格式与缩写阈值已被双语言金标固定；动态 redact 开关下的更广泛 Go 语义未由该独立测试覆盖，不应据此声称已完全验证。
 
 ## 扩展指南
 
@@ -83,13 +77,3 @@ Cargo 边界由 `br/pkg/rtree/Cargo.toml` 确定：包名为 `astersql-br-pkg-rt
 - 任何可见格式变更都应与 `br/pkg/rtree/logging.go` 和 `br/pkg/rtree/logging_test.go` 对照，保留双语言日志的键名、空格、括号、十六进制大小写与 `skip` 计数兼容性。
 - 若优化大切片的克隆开销，需要调整 `AbbreviatedStringers` 的入参/所有权设计或增加借用版 API，而不是在不保留 `Field` 所有权安全的情况下简单删除 `to_vec()`。性能修改应补充大列表测量，同时保留 1024 项金标断言。
 - 若要对齐更完整的脱敏策略，必须先核对 Go `redact.Key` 在各 redact 模式下的契约，再决定复用 `astersql-br-pkg-logutil` 中的现有脱敏类型还是扩展共享 API；应增加非 UTF-8、空键和各脱敏模式的回归测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/rtree` 列出 `logging.rs`、`logging_test.rs`、Go 对照文件与 crate 相关文件。
-- RustCodeGraph `node --file br/pkg/rtree/logging.rs --offset 1 --limit 240`：核对了 `redact_key`、`Display for KeyRange` 和 `ZapRanges` 的完整源码。
-- RustCodeGraph `query ZapRanges --json` 和 `query redact_key --json`：区分了 Go/Rust 同名符号，以及 `logging.rs` 的私有 `redact_key` 与 `stubs.rs` 的公开同名函数。针对精确 Rust 符号的 `callers`/`callees` 查询未返回边，因此又用定向 `rg` 核对产品调用面，未把缺失的图边猜测为调用关系。
-- RustCodeGraph `query AbbreviatedStringers --json` 及 `node --file br/pkg/logutil/logging.rs --offset 560 --limit 80`：确认了小于 4 时全量、大于等于 4 时首/skip/尾的真实下游逻辑。
-- 已读路径：`br/pkg/rtree/Cargo.toml`、`br/pkg/rtree/lib.rs`、`br/pkg/rtree/logging.go`、`br/pkg/rtree/logging_test.rs`、`br/pkg/rtree/logging_test.go`；并用 `rg` 检查 `ZapRanges`、模块声明及 `KeyRange` 的 Rust 引用。
-- `logging_test.rs::test_log_ranges` 与 `logging_test.go::TestLogRanges` 是主要行为证据：两者逐字符比较 0–6 与 1024 项的 JSON 结果，覆盖空列表、阈值分支、`skip` 数量、首尾保留和十六进制键。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证是固定 11 章的结构检查与人工证据复核。

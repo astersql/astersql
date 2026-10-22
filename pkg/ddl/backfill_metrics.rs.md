@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl` crate：`pkg/ddl/Cargo.toml` 以 `lib.rs` 为库入口，`pkg/ddl/lib.rs` 通过 `pub mod backfill_metrics;` 暴露本模块，并在 `cfg(test)` 下把独立测试文件 `backfill_metrics_test.rs` 挂入 crate。它位于 DDL 回填观测层，描述回填动作的指标标签、指标应归属的表 ID，以及一个确定性遍历的进程内指标容器；它不驱动 DDL job、schema state、checkpoint 或回填扫描。
-
-当前接线状态需要特别区分：仓库内 Rust 生产文件没有引用本模块的公开符号，直接使用者只有 `pkg/ddl/backfill_metrics_test.rs`。因此，这里已经移植了可测试的标签与表 ID 选择语义，但尚不能据此认定 Rust DDL 主链已实际发布 Prometheus 指标。Go 生产链的对应调用位于 `pkg/ddl/reorg.go:updateBackfillProgress` 和 `pkg/ddl/backfilling.go:newBackfillCtx`。
+`BackfillMetrics` 以 `MetricKey` 为键，提供累计量、百分比和按表清理的纯内存模型，供独立 Rust 测试验证基本生命周期。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ Go 对照的真实生产边为：`reorg.go:updateBackfillProgress` → `backfill
 
 ## 与 Go 版本的对应关系
 
-`backfill_progress_label` 逐分支对应 `pkg/ddl/backfill_metrics.go:backfillProgressLabel`；三个分类函数对应 `isPartitionReorgDDL`、`isPartitionDropOrTruncateDDL` 和 `isPartitionReorgBackfillMetricLabel`；`backfill_metrics_table_id` 对应 `backfillMetricsTableID`。Rust 用 `BackfillAction` 代替 `model.ActionType`，用 `logical_table_id: Option<i64>` 压缩表达 Go 的 `rInfo.Job != nil` 与 `Job.TableID`，测试覆盖了 job/逻辑 ID 存在和缺失的分支。
+Rust 用 `BackfillAction` 代替 `model.ActionType`，用 `logical_table_id: Option<i64>` 压缩表达 Go 的 `rInfo.Job != nil` 与 `Job.TableID`，测试覆盖了 job/逻辑 ID 存在和缺失的分支。
 
 关键差异是 Go 文件还提供 `getBackfillTotalByTableID` 与 `getBackfillProgressByTableID`，直接返回 `pkg/metrics` 的 Prometheus counter/gauge，并由生产回填代码调用；Rust 文件没有这两个包装器，也没有生产调用边。Rust 新增的 `MetricKey`/`BackfillMetrics` 是本地内存抽象，并非 Go 文件中的类型，也未复刻 Prometheus registry 的 label 追踪与 `DDLClearBackfillMetrics` 全局删除行为。
 
@@ -82,12 +80,3 @@ Go 测试 `pkg/ddl/backfill_metrics_test.go` 验证真实 collector 中序列注
 新增指标标签时，需要确认它是精确标签还是前缀族，并与 Go `pkg/metrics` 的字符串保持一致。改变 `LABEL_REORG_PARTITION_RATE` 或其前缀判定会影响 `-conflict` 等派生序列的清理归属；改变清理标签的精确匹配可能造成残留序列。任何键字段变更都应评估指标 cardinality 和 `clear_table` 是否仍能完整回收。
 
 若要把模块接入 Rust 生产链，最小必要工作不是简单实例化 `BackfillMetrics`：需要在 Rust 的回填进度更新与 worker/context 创建点映射真实 action 和 job/table 信息，并对接 `astersql-metrics` 的 collector/清理 API，保证 DDL 成功、失败、取消与回滚路径都清理相同 ID。还应补独立测试验证 collector 可见性与清理，而不是以当前内存模型测试替代 Go 的生产语义；并发共享方案及 counter 非负约束也必须在该接线设计中确定。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/ddl/backfill_metrics.rs` 核对目标文件 203 行的全部符号；`query backfill_metrics_table_id --kind function` 精确定位到第 136 行；`explore "pkg/ddl/backfill_metrics.rs metrics backfill"` 找到 Rust 测试符号及 Go 对应符号。精确 callers 查询超过约 90 秒无输出后中止，随后用精确仓库引用搜索补证。
-- Rust 源与装配：`pkg/ddl/backfill_metrics.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`；Cargo 证明 crate 名为 `astersql-ddl`、库入口为 `lib.rs`，目标模块没有条件编译，测试模块受 `cfg(test)` 控制。
-- Rust 独立测试：`pkg/ddl/backfill_metrics_test.rs` 的 `backfill_progress_labels_match_go_actions`、`production_metrics_store_accumulates_and_cleans_by_table_id`、`metric_table_id_selection_matches_go_job_presence_rules`。
-- Go 对照与调用方：`pkg/ddl/backfill_metrics.go`、`pkg/ddl/reorg.go:updateBackfillProgress`、`pkg/ddl/backfilling.go:newBackfillCtx`；Go 独立测试为 `pkg/ddl/backfill_metrics_test.go`。
-- DDL 包契约与阅读入口：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`。本文件只涉及回填观测辅助逻辑，不直接更改 job、schema version、schema state、持久化 checkpoint、取消/回滚或 MDL 行为。
-- 交付验证按任务要求只执行 Markdown 结构与人工事实检查，不运行 Cargo；目标结构命令应确认文件存在且恰有十一个固定二级标题。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-源文件为 [`dispatch.rs`](./dispatch.rs)。它是 `astersql-session` crate 中 `runtime` 模块的 SQL 请求分发层。模块入口 `pkg/session/runtime.rs` 以私有 `mod dispatch;` 装入它；文件的大部分实现通过 `impl ConcreteSession` 扩展 `runtime/session.rs` 定义的具体会话，而不是定义新的会话类型。对外执行入口是 `ConcreteSession::execute`，测试/工具可通过 `TestSession` 实现或 `ExecuteWithSlowLogLogger`、`execute_with_failpoint_hook` 进入同一生命周期。
-
-它位于“SQL 文本/AST”与具体执行子模块之间：先解析并建立逐语句上下文，再由 `execute_statement` 按 AST 类型路由到 `ddl.rs`、`dml.rs`、`query.rs`、`system_query.rs`、`statistics.rs`、`control.rs` 等实现。它本身也承载跨执行器的会话级契约，例如事务边界、MDL 清理、stale read 限制、绑定与计划缓存、日志、告警、内存跟踪和结果状态发布。
-
-crate 归属由 `pkg/session/Cargo.toml` 的 `[package] name = "astersql-session"` 和 `[lib] path = "lib.rs"` 确认；`nextgen` feature 会把内核/部署模式 feature 传给配置 crate，`execute_statement` 还会在 NextGen 模式拒绝若干系统对象 DDL。该文件不是薄门面：当前源码约 4,638 行，包含真实分发、状态维护和资源回收逻辑。
+`SessionPlanReplaySource` 把当前 `ConcreteSession` 适配为 Domain Plan Replayer 的数据源，并由 `execute_plan_replayer_dump/load` 负责归档写入和回放。
 
 ## 核心职责
 
@@ -108,8 +104,6 @@ RustCodeGraph 的文件节点报告 `dispatch.rs` 被 11 个文件使用，并�
 
 ## 与 Go 版本的对应关系
 
-`pkg/session/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/session"` 指明 Go 对照包。最接近的主链位于 `pkg/session/session.go`：
-
 - Rust `execute`/`execute_with_logger_and_hook` 对应 Go `(*session).Execute` 的文本解析入口，以及 `ExecuteStmt`/`executeStmtImpl` 的逐语句生命周期；Rust 当前支持多语句列表，而 Go 注释标明的旧 `Execute` API只接受单语句。
 - Rust `execute_statement` 将一部分 Go `executeStmtImpl` 中的前置/收尾职责与具体 AST 分发集中在同一文件；Go 主路径通过 compile 后的 `executor.ExecStmt` 统一执行，因此两者是契约对齐而非结构一一对应。
 - Rust `execute_prepare` 明确采用“PREPARE 只解析，EXECUTE 再计划”的 SQL 路径；Go `PrepareStmt` 当前会创建 `PrepareExec`、预处理并支持 prepare dedup cache。Rust `execute_prepared` 自行维护 named plan-cache 与 typed adapter 快路径，不能视为 Go `PlanCacheStmt` 内部实现的逐行翻译。
@@ -128,15 +122,3 @@ RustCodeGraph 的文件节点报告 `dispatch.rs` 被 11 个文件使用，并�
 修改 SQL 文本拆分或引用规则时，在 `pkg/session/runtime/dispatch_test.rs` 扩展独立单元测试，至少覆盖引号、转义、块/行注释和 MySQL `--` 空白规则。日志、慢日志和 statement 生命周期场景主要在 `pkg/session/runtime_test/session.rs`；failpoint 的真实 TiKV 入口在 `tests/realtikvtest/sessiontest/session_fail_test.rs`。本文件的其他行为还由大量 session compatibility/runtime 测试间接覆盖。
 
 Plan Replayer 扩展应优先补齐 `SessionPlanReplaySource` 的真实 stats/TiFlash/config/metadata 数据，并为 load 期间 `FOREIGN_KEY_CHECKS` 使用可恢复 guard；同时核对 Go 对应归档布局与错误契约。涉及并行 SELECT 观察时，应保留 scoped join、确定性排序与 request 所有权不变量。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/dispatch.rs` 与 `git show 2c944fb:pkg/session/runtime/dispatch.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：`pkg/session/diagnostic_sql_test.rs::diagnostic_sql_execution_guard_rejects_unauthorized_sql` 覆盖允许/拒绝 SQL、view、二进制 prepare 和 restricted 绕过；正常执行后的 guard Finish、tracker detach 与结果错误合并顺序由冻结 dispatch 源码复核。
-- 源码与模块：`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/session.rs`；后两者确认模块装配、重导出和 `SplitSQLStatements` 调用。
-- crate/feature：`pkg/session/Cargo.toml`，确认 crate 名、库入口、Go package 映射、`nextgen` feature，以及 parser/domain/KV/planner/executor/sessionctx/memory/log/trace 等依赖边界。
-- 独立 Rust 测试：`pkg/session/runtime/dispatch_test.rs` 验证 MySQL `--` 注释切分规则及 EXPLAIN ANALYZE RU 的 schema、行数、错误与 plan-cache context；`pkg/session/lib.rs` 通过 `#[path = "runtime/dispatch_test.rs"] mod runtime_dispatch_test;` 独立挂载，符合测试不与源文件同置的约束。
-- 直接调用点：`pkg/session/runtime_test/session.rs`、`tests/realtikvtest/sessiontest/session_fail_test.rs`、`pkg/session/runtime/ttl_timer_store.rs`、`pkg/session/runtime/ttl_worker_session.rs`、`pkg/session/starter_bootstrap_file.rs`。
-- Go 对照：`pkg/session/session.go` 中 `Execute`、`ExecuteStmt`、`executeStmtImpl`、`PrepareStmt`、`ExecutePreparedStmt`、`logGeneralQuery`。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

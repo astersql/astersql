@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`source.rs` 位于 `astersql-br-pkg-utils-iter` crate 的“数据源公开工厂”层。`lib.rs` 先声明 `iter` 核心协议、再声明 `source_types` 和本模块，并通过 `pub use source::*` 将这里的 API 扁平导出。因此调用方通常直接从 crate 根引入 `FromSlice`、`OfRange`、`Fail`、`Func`，而不直接依赖底层构造函数 `new_slice`、`new_range`、`new_failure`、`new_func`。
-
-该文件不负责消费、组合或调度迭代器；它把调用方给出的值、区间、错误或闭包装箱为统一的 `Box<dyn TryNextor<T>>`。真正保存状态并实现 `TryNext` 的类型位于 `source_types.rs`。例如，`combinators.rs::ConcatAll` 用 `FromSlice` 把一组迭代器变成外层迭代源；`br/pkg/restore/log_client/log_file_manager.rs` 则用 `FromSlice` 返回元数据流、用 `Fail` 把存储或反序列化错误变成流内错误。
+真正保存状态并实现 `TryNext` 的类型位于 `source_types.rs`。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ RustCodeGraph 对 `source.rs` 的文件关系报告 7 个直接使用文件，�
 
 ## 与 Go 版本的对应关系
 
-`source.go` 的四个公开函数与本文件一一对应：Go `FromSlice` 包装 `fromSlice`，`OfRange` 创建排他上界的 `ofRange`，`Fail` 包装固定 `error`，`Func` 包装函数；`source_types.go` 则给出各自的 `TryNext` 状态机。Rust 版本保持了 FIFO、半开区间、重复失败以及闭包逐次调用的核心行为。
+`source.go` 的四个公开函数与本文件一一对应：Go `FromSlice` 包装 `fromSlice`，`OfRange` 创建排他上界的 `ofRange`，`Fail` 包装固定 `error`，`Func` 包装函数；`source_types.go` 则给出各自的 `TryNext` 状态机。
 
 主要语言适配差异如下：
 
@@ -101,13 +99,3 @@ Go `combinator_test.go` 使用 `OfRange` 和 `Fail` 验证组合器的顺序与�
 - 若来源需要取消或阻塞 I/O，优先让其显式检查 `Context` 并记录资源关闭契约；不要假设本工厂层会自动处理取消。
 - 若需要多消费者并发拉取，应在上层设计同步包装并测试顺序、终止和错误可见性，不应给现有状态类型随意加内部锁而改变单消费者成本。
 - 修改公开工厂后至少同步 `source_test.rs` 与 `parity_test.rs`；涉及 `Func` 的逐次或背压行为时同步 `as_seq_test.rs`、`transform_backpressure_test.rs`；涉及组合错误传播时同步 `combinator_test.rs`，并与 `combinator_test.go` 的原始意图对照。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utils/iter` 确认本 crate 的 Rust/Go 对照文件与独立测试均已入图。
-- RustCodeGraph 文件读取：`source.rs`（8 个符号、61 行）、`source_types.rs`、`iter.rs`、`lib.rs`、`source_test.rs`、`parity_test.rs`、`combinators.rs`、`log_file_manager.rs`、`restore/restorer.rs`。
-- RustCodeGraph 符号查询：`FromSlice`、`OfRange`、`Fail`、`Func`、`SliceSource`；精确 `callers/callees` 对泛型工厂无输出，因此没有据此虚构调用边。
-- 配置证据：`br/pkg/utils/iter/Cargo.toml` 的 crate 名、库入口和 Go porting 元数据。
-- Go 对照：`br/pkg/utils/iter/source.go`、`source_types.go`、`iter.go`、`combinator_test.go`。
-- Rust 测试：`source_test.rs` 验证四种补充整数；`parity_test.rs::go_rust_public_contract_matches` 验证切片顺序与耗尽、半开区间、失败三态和有/无状态闭包；`as_seq_test.rs`、`transform_backpressure_test.rs`、`combinator_test.rs` 提供函数源及组合传播证据。
-- 直接引用搜索确认生产调用位于 `br/pkg/restore/log_client/log_file_manager.rs`、`migration.rs`、`stubs.rs` 和 `br/pkg/restore/restorer.rs`。本任务为纯文档分析，按计划不运行 Cargo。

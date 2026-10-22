@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate，由 [`lib.rs`](lib.rs) 以 `pub mod checkpoint` 暴露。它位于 DDL add-index ingest/reorg 链路的进度管理层：扫描任务先把索引键写入本地排序引擎，随后再导入远端存储；本模块用“本地已刷入”和“全局已导入”两级水位线描述这两个阶段，并为中断恢复提供状态快照。
-
-Rust 侧当前接线从 [`BackendContextBuilder::build`](backend_mgr.rs) 开始：仅当 builder 配置了 `checkpoint_storage` 时创建 `CheckpointManager`，再交给 [`BackendContext`](backend.rs) 持有。后端的 `add_chunk`、`update_chunk`、`finish_chunk`、`advance_watermark`、`next_start_key`、`total_key_count` 和 `import_ts` 都是对本文件同名能力的可选转发。它不是 DDL job 调度器，也不直接扫描表、写本地引擎或执行远端 ingest。
-
-crate 边界见 [`Cargo.toml`](Cargo.toml)：crate 名为 `astersql-ddl-ingest`，Go 对照包标记为 `pkg/ddl/ingest`。本文件本身只使用标准库的 `BTreeMap`、`Arc` 和 `Mutex`；系统表、PD、分布式任务等 Go 侧依赖尚未进入这里。
+通过 `CheckpointStorage` 隔离加载/保存方式，并提供测试及轻量接线使用的 `MemoryCheckpointStorage`。
 
 ## 核心职责
 
@@ -98,8 +94,6 @@ RustCodeGraph 对目标文件建立了 30 个符号，并报告该文件被 `bac
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`checkpoint.go`](checkpoint.go)，行为测试是 [`checkpoint_test.go`](checkpoint_test.go)。两版共同保留了两级水位线、连续任务 ID 前缀、reader/writer 双边完成条件、物理表与实例/本地数据恢复判断、未知 writer 任务不推进、最终保存等核心语义；Rust 的独立测试把这些规则拆成更聚焦的用例。
-
 当前 Rust 实现是 Go 版本的同步、可注入存储子集，不能视为完整等价：
 
 - Go 提供 `NormalCheckpointStorage`（`mysql.tidb_ddl_reorg.reorg_meta`）和 `DistTaskCheckpointStorage`；Rust 这里只定义 trait 和内存实现。
@@ -122,12 +116,3 @@ RustCodeGraph 对目标文件建立了 30 个符号，并报告该文件被 `bac
 - 变更关闭语义：同时检查 [`BackendContext::close`](backend.rs) 的资源链，避免只关闭 engines 而遗漏最终 checkpoint；持久化失败需要可观测且可重试。
 
 主要风险是错误地信任已丢失的本地排序数据导致跳过回填、越过未完成任务导致数据缺失、过早推进全局水位线导致恢复错误，以及格式/TS 不兼容破坏 Go/Rust 交替运行。性能上应避免每个小批次同步持久化；当前设计仅在 import 或显式 close 保存。
-
-## 验证依据
-
-- 源码与模块：[`checkpoint.rs`](checkpoint.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- 直接 Rust 调用者：[`backend_mgr.rs`](backend_mgr.rs)、[`backend.rs`](backend.rs)、[`mock.rs`](mock.rs)。
-- Rust 独立测试：[`checkpoint_test.rs`](checkpoint_test.rs) 覆盖持久化、local/global 分离、物理表/本地数据恢复、末批与批次数门槛、连续前缀、计数和未知任务；[`mock_test.rs`](mock_test.rs) 覆盖 backend/mock 转发契约。
-- Go 对照：[`checkpoint.go`](checkpoint.go) 的 `CheckpointStorage`、`CheckpointManager`、`AdvanceWatermark`、`resumeOrInitCheckpoint`、`updateCheckpointLoop`；[`checkpoint_test.go`](checkpoint_test.go) 的 `TestCheckpointManager`、`TestCheckpointManagerUpdateReorg`、`TestCheckpointManagerResumeReorg`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ddl/ingest/checkpoint.rs` 确认目标文件含 30 个符号；`node --file ... --offset 1 --limit 500` 读取全部 354 行；对 `CheckpointManager`、`new_with_resume_options`、`advance_watermark`、`is_key_processed` 的查询用于消歧，直接调用边以调用者源码复核。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核所有行为陈述均可回溯到上述源码或测试。

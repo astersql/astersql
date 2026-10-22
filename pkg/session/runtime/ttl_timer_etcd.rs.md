@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的会话运行时内部模块，由 `pkg/session/runtime.rs` 以私有模块 `mod ttl_timer_etcd` 装配。它不是 TTL 业务调度器，而是一个边界适配器：把 `etcd_client::Client` 的异步 lease/watch/put API 包装成 `astersql_timer_tablestore::EtcdClient` 所要求的同步 Rust trait，并维持与 Go 定时器通知相同的 JSON 线协议。
-
-实际接线从 `pkg/session/runtime/ttl_runtime.rs` 的 `EtcdTtlWatchTransport::timer_notifier` 开始：它构造 `RealTimerEtcdClient`，再由 `start_domain_ttl_job_manager_with_interval` 传入 `astersql_timer_tablestore::NewTableTimerStore`。因此该适配器位于“Session/Domain 启动 TTL timer runtime”与“TableTimerStore 跨节点通知”之间，不直接处理 SQL、TTL 扫描或 timer 持久化。
+`RealTimerEtcdClient` 保存可 clone 的 etcd client、keyspace namespace、全局停止标志和已启动线程句柄，实现定时器 table store 定义的 `EtcdClient` 边界。
 
 ## 核心职责
 
@@ -75,9 +73,7 @@ JSON 整体非法或缺少数组形式的 `events` 时，`decode_timer_notify_me
 
 ## 与 Go 版本的对应关系
 
-Go 的业务对照是 `pkg/timer/tablestore/notifier.go`，而非 `pkg/session` 下的同名文件。Go `etcdNotifier` 把通知缓冲、一秒节流、60 秒 lease、keep-alive、20 秒 PUT、prefix watch 和 JSON 转换放在同一类中。Rust 将其拆成两层：`pkg/timer/tablestore/notifier.rs` 保留事件聚合、lease 重建、节流和 notifier 关闭；本文件仅提供真实 etcd 传输与线协议。
-
-对齐点包括：通知路径 `/tidb/timer/cluster/{clusterID}/notify/`、每进程/通知器独立 key、`create|update|delete` 字符串、`timer_id` 与 `timestamp` 字段、只处理 etcd PUT、按前缀 watch、lease 绑定以及关闭时等待 worker。`pkg/session/runtime/ttl_timer_etcd_test.rs` 明确检查 Rust 编码产物的 Go 字段形状和三种事件映射中的 create/update/delete 子集。
+Rust 将其拆成两层：`pkg/timer/tablestore/notifier.rs` 保留事件聚合、lease 重建、节流和 notifier 关闭；本文件仅提供真实 etcd 传输与线协议。
 
 当前可观察差异必须保留为兼容风险：Go JSON unmarshal 遇到缺失 `events` 会得到空切片响应，Rust 解码器则返回 `timer notice missing events`并丢弃该 KV；Go 对无效单项记错误日志，Rust 静默过滤；Go watch 同时直接 select 调用 context 和 notifier context，Rust 以 100 毫秒轮询提供取消响应。Go 也会在 watch 建立后记录生命周期和解码错误，本 Rust 适配器当前没有等价日志。
 
@@ -88,13 +84,3 @@ Go 的业务对照是 `pkg/timer/tablestore/notifier.go`，而非 `pkg/session` 
 - 改动 namespace/key 组合时，不能只修改 `key()`；还需与 `EtcdNotifier::NewEtcdNotifier` 生成的以 `/` 开头的 prefix 以及 `EtcdTtlWatchTransport` 中其他 etcd key 保持一致，并测试空 namespace、带尾斜杠 namespace 和 keyspace namespace，避免跨 keyspace 监听或双斜杠不兼容。
 - 若要增加可观测性，最合适的接入点是 `watch_prefix` 的 spawn/runtime/watch/decode 失败分支、`keep_alive` 稳态退出分支和 `track` 的已完成 worker 回收；日志不应包含未脱敏的完整 payload。
 - 若要改为共享 Tokio runtime 或增加有界 watch 通道，需要重新证明同步 trait 不会在 runtime 内嵌 `block_on`、慢消费者不会阻塞 etcd 保活，以及 `Drop` 不会在持锁期间与 worker 形成循环等待。
-
-## 验证依据
-
-- 源码全貌：`pkg/session/runtime/ttl_timer_etcd.rs`，核对 `RealTimerEtcdClient`、两个 JSON helper、四个 `EtcdClient` 方法和 `Drop`。
-- 模块与 crate：`pkg/session/runtime.rs` 声明生产模块和独立测试模块；`pkg/session/Cargo.toml` 声明 `astersql-session` 库边界及 timer API/table store、Tokio、etcd client、crossbeam 依赖。`pkg/session` 下未找到 `doc.go`，因此包契约以 `runtime.rs` 的模块注释和实际接线为准。
-- 上下游：`pkg/session/runtime/session.rs` 创建 `EtcdTtlWatchTransport`；`pkg/session/runtime/ttl_runtime.rs` 的 `timer_notifier` 构造本适配器，`start_domain_ttl_job_manager_with_interval` 将其传入 `NewTableTimerStore`；`pkg/timer/tablestore/notifier.rs` 定义 trait、lease 管理、批处理和重建语义；`pkg/timer/api/store.rs` 定义 context 和 watch 数据结构。
-- Go 对照：`pkg/timer/tablestore/notifier.go` 的 `notifyEvent`、`etcdNotifier.Watch`、`notifyLoop`、`newLease`、`takeEvents`、`sendEvents` 和 `Close`。
-- 测试证据：`pkg/session/runtime/ttl_timer_etcd_test.rs::go_merge_43_timer_etcd_notice_matches_go_wire_shape` 覆盖编码字段、create/update 解码和混合未知/delete 批次；`pkg/timer/tablestore/sql_test.rs::test_etcd_notifier_close_cancels_watchers` 验证 notifier 关闭会取消已有 watcher 且不再建立新 watch；`pkg/session/runtime/ttl_runtime_test.rs::go_merge_43_ttl_two_domains_real_etcd_timer_event` 以两个 Domain 的真实 etcd transport 覆盖跨节点 timer 事件与接管路径。
-- RustCodeGraph：`status` 显示仓库索引可用；`query RealTimerEtcdClient --limit 20` 定位结构体到目标文件；`query decode_timer_notify_message --limit 20` 定位函数和测试引用。`files --filter pkg/session/runtime/ttl_timer_etcd` 与 callers/callees 未给出可用文件/调用边，因此调用关系改由上述直接源码搜索核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证仅执行任务指定的结构检查，并人工复核了“为何存在、如何运行、如何安全扩展”三项。

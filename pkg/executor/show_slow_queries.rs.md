@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor` crate，由 `pkg/executor/lib.rs` 以公开模块 `show_slow_queries` 装配。它承载 `ADMIN SHOW SLOW` 结果物化与分批写入 `Chunk` 的 Rust 核心模型，对照实现是同目录的 `show_slow_queries.go`。
-
-当前接线状态需要特别区分：`pkg/executor/builder.rs` 能把 `Plan::ShowSlow` 映射为 `ExecutorKind::ShowSlow` 并交给 `ExecutorBuildDependencies::build_executor`，但仓库内生产代码没有 `ShowSlowSource` 的实现，也没有把本文件的泛型 `ShowSlowExec<S>` 构造成 `ExecutorBox` 的代码；仅 `pkg/executor/show_slow_queries_test.rs` 提供两个测试数据源。因此，本文件已经实现并测试执行器核心，但不能据此宣称 Rust 主执行链已经接通 Go `Domain.ShowSlowQuery`。
+`SlowQueryInfo` 定义本执行器消费的一条慢查询快照，覆盖 SQL、时间、执行详情、连接/事务、用户/库表、内部查询标志、digest、session alias 和 IA remote-read 扫描统计。
 
 ## 核心职责
 
@@ -65,11 +63,11 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/show_slow_queries.go` 的 `ShowSlowExec.Open` 先打开 `BaseExecutor`，再通过 `domain.GetDomain(e.Ctx()).ShowSlowQuery(e.ShowSlow)` 取得结果；Rust 用 `ShowSlowSource` 抽象这两步，但当前没有生产适配器。两版 `Next` 的分页条件、cursor 递增时机、0/1 布尔编码和 17 列顺序一致，最后三列都由 `GetIARemoteReadSegmentStats` 得出。
+`pkg/executor/show_slow_queries.go` 的 `ShowSlowExec.Open` 先打开 `BaseExecutor`，再通过 `domain.GetDomain(e.Ctx()).ShowSlowQuery(e.ShowSlow)` 取得结果；Rust 用 `ShowSlowSource` 抽象这两步，但当前没有生产适配器。
 
 表示层存在刻意差异：Go 在 `Next` 内把 `time.Time`/`time.Duration` 转成 TiDB SQL 时间类型并把结构化详情格式化为字符串；Rust 的 `SlowQueryInfo` 已持有 `astersql_types::datum::Time`、`Duration` 和 `String`，转换责任属于数据源。Go 的 `SlowQueryInfo.Detail` 同时携带扫描详情；Rust 将展示字符串 `detail` 与 `scan_detail` 分开保存。
 
-Go `Open` 同样不显式重置 cursor，Rust 测试 `open_preserves_cursor_like_go_executor` 固化了这一行为。Go 测试 `TestAdminShowSlowIARemoteReadStats` 还覆盖 recent/top/internal/all 命令、17 列元数据、缺失统计为零和 `4/4096/0.015` 输出；Rust 测试目前只覆盖一行 IA 数据的最后三列和 Open 保留 cursor，尚未端到端覆盖请求筛选与 Domain 接线。
+Go 测试 `TestAdminShowSlowIARemoteReadStats` 还覆盖 recent/top/internal/all 命令、17 列元数据、缺失统计为零和 `4/4096/0.015` 输出；Rust 测试目前只覆盖一行 IA 数据的最后三列和 Open 保留 cursor，尚未端到端覆盖请求筛选与 Domain 接线。
 
 ## 扩展指南
 
@@ -78,13 +76,3 @@ Go `Open` 同样不显式重置 cursor，Rust 测试 `open_preserves_cursor_like
 - 扩展 `SlowQueryInfo` 时先核对 Domain 中多个同名类型，明确转换归属；不要因名称相同而直接假设可互换。
 - 若允许 `show_slow_query` 失败，需要修改 trait 返回类型、`Open` 的传播逻辑及所有数据源实现，并测试失败后 `result`/`cursor` 的状态。若数据量可能很大，可评估流式数据源，但这会改变当前“Open 全量物化、Next 只分页”的生命周期与内存特征。
 - 测试应继续放在 `pkg/executor/show_slow_queries_test.rs`，不要内嵌到生产源文件。涉及 SQL 可见行为时还应同步 `pkg/executor/show_test.go` 或对应的独立 Rust 集成测试。
-
-## 验证依据
-
-- 源码与模块：`pkg/executor/show_slow_queries.rs`、`pkg/executor/lib.rs`、`pkg/executor/builder.rs`。
-- crate 声明：`pkg/executor/Cargo.toml` 中 `[lib] path = "lib.rs"` 以及 `astersql-types`、`astersql-util-chunk`、`astersql-util-execdetails` 依赖。
-- Rust 独立测试：`pkg/executor/show_slow_queries_test.rs` 的 `next_appends_ia_remote_read_stats_after_existing_columns` 与 `open_preserves_cursor_like_go_executor`。
-- Go 对照与测试：`pkg/executor/show_slow_queries.go`、`pkg/executor/builder.go::buildShowSlow`、`pkg/executor/show_test.go::TestAdminShowSlowIARemoteReadStats`、`pkg/domain/domain.go::ShowSlowQuery`。
-- 下游转换：`pkg/util/execdetails/execdetails.rs::GetIARemoteReadSegmentStats`，缺失 `ScanDetail` 时返回默认零统计。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`query ShowSlowExec --kind struct`、`query ShowSlowSource --kind trait`、`query SlowQueryInfo --kind struct` 均定位到目标符号及相关同名结构。文件过滤与 callers/callees 没有给出可用边，故调用关系用上述源码与 `rg` 结果交叉核验。
-- 结构验收使用任务指定命令，只检查文档存在且恰有 11 个固定二级章节；本任务按计划不运行 Cargo。

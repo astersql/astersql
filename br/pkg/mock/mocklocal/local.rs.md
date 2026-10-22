@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-mock-mocklocal` crate 中的 MockGen 风格实现层，由 [`lib.rs`](./lib.rs) 以 `pub mod local` 装入并平铺导出。它逐组移植 Go 生成文件 [`local.go`](./local.go) 中的 `DiskUsage`、`TiKVModeSwitcher` 和 `StoreHelper` mock，供 Lightning ingest 控制面相关契约测试使用；它不是磁盘管理、TiKV 模式切换、TSO 或 key codec 的生产实现。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 确定：库入口是 `lib.rs`，唯一直接依赖是父 crate `astersql-br-pkg-mock`。本地 [`stubs.rs`](./stubs.rs) 代替 `kvproto`、`grpcio`、Lightning backend 等较重依赖，因此该 crate 被刻意保持为可在 darwin/arm64 上独立验证的轻量测试组件。
+`MockDiskUsage` 回放 `EngineFileSizes`，返回预置的 `Vec<EngineFileSize>`。
 
 ## 核心职责
 
@@ -77,16 +75,11 @@ RustCodeGraph 将本文件识别为 23 个符号；对三个 `NewMock*` 的精�
 
 ## 与 Go 版本的对应关系
 
-[`local.go`](./local.go) 是 `mockgen` 针对 `pkg/ingestor/ingestctrl` 三个接口生成的文件。本文件保留了三组类型、构造函数、`EXPECT`、方法名以及主要返回值形状：
-
 - Go `[]backend.EngineFileSize` 对应 Rust `Vec<stubs::EngineFileSize>`。
 - Go `context.Context` 与 `...*import_sstpb.Range` 对应轻量 `Context` 与 `&[stubs::Range]`。
-- Go `(int64, int64, error)` 对应 `(i64, i64, Option<Error>)`。
 - Go `tikv.Codec` 对应本地字段型 `stubs::Codec`。
 
 差异必须保留在评审视野内：Go recorder 保存 mock 引用并通过反射记录真实 receiver、方法类型和实参；Rust recorder 直接保存 controller，方法类型只是诊断字符串，参数匹配被省略。Go 的类型断言失败通常得到零值，Rust 的 `take_one` / `take_ts` 也采取宽松回落，但 Rust 错误槽使用显式 `Option<Error>`。此外，canonical Rust ingestctrl traits 已采用自己的 `CancellationToken`、`KeyRange`、`Result` 或 `String` 类型，本 mock 尚未与它们接线。
-
-Go 的真实使用证据位于 `pkg/ingestor/ingestctrl/disk_quota_test.go` 与 `engine_mgr_test.go`：前者用 `NewMockDiskUsage` 测磁盘配额，后者用 `NewMockStoreHelper` 测 engine manager。Rust 当前对应行为主要由本 crate 的 `parity_test.rs` 自包含验证，而 ingestctrl 自己的 Rust 测试使用各自的手写替身。
 
 ## 扩展指南
 
@@ -100,13 +93,3 @@ Go 的真实使用证据位于 `pkg/ingestor/ingestctrl/disk_quota_test.go` 与 
 6. 若目标是让这些类型实现 canonical `DiskUsage`、`TiKVModeSwitcher` 或 `StoreHelper`，需要先解决类型差异并在 ingestctrl 的独立测试中验证注入链。这属于跨 crate 接线，不能通过把本地 stand-in 强制包装成生产类型来简化。
 
 主要兼容风险是偏离 Go 生成 API 或进一步扩大“只按方法名匹配”的语义差距；主要正确性风险是宽松解包把错误配置变成默认值；当前数据量很小，性能风险主要来自每次调用的动态装箱、range 克隆和 mutex，但该文件只用于测试，不应进入性能敏感的生产路径。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/mock/mocklocal` 返回 `lib.rs`、`local.rs`、`stubs.rs`、`parity_test.rs` 和 Go 对照 `local.go`。
-- RustCodeGraph `node --file br/pkg/mock/mocklocal/local.rs --offset 1 --limit 400`：读取本文件 244 行全貌，确认三组 mock/recorder、三个构造函数和全部方法实现。
-- RustCodeGraph 对 `NewMockDiskUsage`、`NewMockTiKVModeSwitcher`、`NewMockStoreHelper` 的 function query：每项均同时定位到 `local.go` 与 `local.rs` 对应符号。
-- RustCodeGraph file node：核对 [`local.go`](./local.go)、[`lib.rs`](./lib.rs)、[`stubs.rs`](./stubs.rs)、[`parity_test.rs`](./parity_test.rs) 以及父 controller 的 [`../stubs.rs`](../stubs.rs)。
-- Cargo 证据：[`Cargo.toml`](./Cargo.toml) 声明 `go-package = "br/pkg/mock/mocklocal"`、`kind = "library"`，库入口为 `lib.rs`，直接依赖仅 `astersql-br-pkg-mock`。
-- 调用与测试搜索：Rust 直接构造调用只在 `br/pkg/mock/mocklocal/parity_test.rs`；Go 使用位于 `pkg/ingestor/ingestctrl/disk_quota_test.go`、`engine_mgr_test.go`；canonical Rust 接口定义位于 `disk_quota.rs`、`tikv_mode.rs`、`engine_mgr.rs`。
-- 独立 Rust 测试覆盖：预置磁盘大小、空列表、空/多 range、TSO 的 `None` 与具体错误、codec 返回、期望耗尽、drop，以及未登记调用 panic。本任务为纯文档分析，按任务约束未运行 Cargo。

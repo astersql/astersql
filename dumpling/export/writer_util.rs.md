@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpling-export` library crate；`dumpling/export/Cargo.toml` 把 crate 根设为 `lib.rs`，而 `lib.rs` 通过 `include!("writer_util.rs")` 将本文件放进与 Go `dumpling/export` 包相似的单包命名空间。它位于导出执行面的格式化与落盘边界：上游 `Writer::WriteTableData` 负责启动 `TableDataIR`、命名文件和选择分片策略，本文件把 `SQLRowIter` 中的行转换为 SQL、CSV 或 Parquet 字节，并写入 `ObjectWriter`。
-
-生产数据主链是 `Writer::handleTask` → `Writer::WriteTableData` → `FileFormat::WriteInsert` → `WriteInsertSQL` / `WriteInsertInCsv` / `WriteInsertInParquet`。开启 SQL/CSV 文件大小分片时，`writer.rs` 会持有同一个迭代器并直接反复调用私有的 `writeSQLFile` 或 `writeCSVFile`，使下一文件从尚未消费的下一行继续。`WriteMeta` 与辅助函数 `write` 虽是公开符号，但当前 Rust 生产路径 `Writer::writeMetaToFile` 自行完成同类写入；仓库内对 `WriteMeta` 的直接调用来自 `writer_serial_test.rs`，因此不能把它描述为已接线的元数据生产入口。
+位于导出执行面的格式化与落盘边界：上游 `Writer::WriteTableData` 负责启动 `TableDataIR`、命名文件和选择分片策略，本文件把 `SQLRowIter` 中的行转换为 SQL、CSV 或 Parquet 字节，并写入 `ObjectWriter`。
 
 ## 核心职责
 
@@ -81,12 +79,9 @@ SQL/CSV 的 iterator 生命周期是“Rows → 单文件函数一次或多次 �
 
 ## 与 Go 版本的对应关系
 
-主要接口与 `dumpling/export/writer_util.go` 对齐：格式枚举和字符串、SQL/CSV/Parquet 写出、列种类判断、multipart 上限注解、标识符工具及元数据写出均有同名或等价实现。`writer_util_test.rs` 与 `writer_serial_test.rs` 复核了 Go 的特殊注释顺序、全生成列输出、CSV dialect、statement splitting、指标回滚和 Parquet 可读性；Go 的对照测试是 `writer_serial_test.go` 与 `writer_test.go`。
-
 需要明确以下当前差异：
 
 - Go 三个数据入口返回 `(uint64, error)`，Rust 公开入口返回 `Result<()>`；行数仅写 metrics/日志，调用者不能取得返回计数。
-- Go SQL 入口名为 `WriteInsert`，Rust 将它命名为 `WriteInsertSQL`，把 `FileFormat::WriteInsert` 留作统一分派器。
 - Go `wrapBackTicks` 对已有首/尾反引号的输入不再包裹；Rust 总是先转义内部反引号并包一层。Rust parity test 明确期待 `a\`b → \`a\`\`b\``，因此文档以 Rust 当前行为为准。
 - Go 使用 `newSink(context, writer)`、压缩对象 writer 和完整日志/summary；Rust 当前 `CSVObjectWriter` 直接适配 crate stub `ObjectWriter`，没有 context-aware write、成功 summary 或失败日志。
 - Go Parquet 由 `parquetfile.NewWriter` 封装；Rust 显式建立 parquet-rs schema 与列 writer。Rust Cargo 为 parquet-rs 固定了上游 tag，并在当前文件自行实现 row-group 组装。
@@ -102,12 +97,3 @@ SQL/CSV 的 iterator 生命周期是“Rows → 单文件函数一次或多次 �
 - 改变指标：保留每 1000 行批量更新与失败回滚的对称性；若 Parquet 增加中途指标，也要定义错误时如何撤销。`metrics: None` 必须继续安全。
 - 改变 lazy writer：所有 option 必须在首写之前冻结；需要 close 重试时不能沿用当前 `take`-before-close 语义。若引入共享并发写，必须重新设计同步，而不能仅依赖 traits 的 `Send`/`Sync`。
 - 改变标识符转义：这是跨 `sql.rs`、`dump.rs`、`ir.rs`、`column_filter.rs`、`schema_projection.rs` 的公共契约，应先补 `parity_test.rs` 和相关 SQL 测试，再修改实现。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter dumpling/export/writer_util.rs` 找到目标文件及 48 个符号；`node --file ... --offset 1/401` 阅读了完整 781 行源码。针对 `WriteInsert` 的 `explore` 给出 Rust 调用边：`FileFormat::WriteInsert → WriteInsertSQL / WriteInsertInCsv / WriteInsertInParquet`，并列出 `writer_serial_test.rs`、`dump_test.rs`、`writer_util_test.rs` 的直接调用证据。未限定文件的 `callers/callees` 查询曾超时，因此调用主链另由下述源码调用点交叉核实。
-- 源码与入口：`dumpling/export/writer_util.rs`；`dumpling/export/lib.rs` 的 `include!("writer_util.rs")` 及独立测试模块声明；`dumpling/export/writer.rs` 的 `NewWriter`、`WriteTableData`、`writeSplitSql`、`writeMetaToFile`；`dumpling/export/ir.rs` 的 `TableDataIR`、`TableMeta`、`SQLRowIter`、`MetaIR` traits；`dumpling/export/stubs.rs` 的 `ObjectWriter`、`Storage` 和 `ColumnInfo`。
-- crate 边界：`dumpling/export/Cargo.toml`，确认 library 根、Go package 元数据、三个 dumpformat crate、objstore storeapi 与固定 tag 的 parquet 依赖。
-- Go 对照：`dumpling/export/writer_util.go`，核对 `WriteMeta`、SQL/CSV/Parquet 流程、`FileFormat`、part-limit 注解和 lazy/intercept writer；`dumpling/export/writer_serial_test.go` 与 `writer_test.go` 核对输出、错误、指标和分片意图。
-- Rust 测试证据：`dumpling/export/writer_util_test.rs` 覆盖 unknown format 字符串、反引号转义、selected field、special comments、全生成列、CSV header、Parquet 标准 reader 可读性、指标回滚、multipart 错误身份和 statement split；`dumpling/export/writer_serial_test.rs` 覆盖元数据、SQL/CSV 编码、类型和 iterator error；`dumpling/export/writer_test.rs` 覆盖生产 writer 的文件创建与分片接线；`dumpling/export/dump_test.rs` 覆盖 CSV 列投影调用。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有十一个固定二级标题，并人工复核没有把未接线符号、未使用常量或 Go 行为写成 Rust 已实现事实。

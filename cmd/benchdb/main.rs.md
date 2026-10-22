@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cmd/benchdb/main.rs` 是 workspace 成员 `astersql-cmd-benchdb` 的可测试命令实现模块。它不是 Rust 进程最外层的 `fn main`：真实装配链是 `cmd/benchdb/bin_main.rs::main` 调用 `astersql_cmd_benchdb::main`，后者由 `cmd/benchdb/lib.rs::main` 转发到本文件的 `entry::main`。`cmd/benchdb/Cargo.toml` 通过 `[lib] path = "lib.rs"`、`[[bin]] path = "bin_main.rs"` 明确了这层边界，并用 `package.metadata.porting.go-package = "cmd/benchdb"` 标记其 Go 对照目录。
-
-该 crate 的 `[dependencies]` 为空。当前 Rust 命令并未连接真实 TiKV、DDL owner 或 TiDB session；本文件调用的 `Storage`、`SessionFactory`、`RecordingSession` 等都来自同目录 `stubs.rs`。因此它目前是用于保存和验证 Go `cmd/benchdb/main.go` 控制流与 SQL 契约的可执行迁移桩，而不是可对真实集群做性能测量的完整 benchdb。
+`create_table`、`truncate_table`、`insert_rows`、`update_random_rows`、`update_range_rows`、`select_rows`、`query` 生成与 Go 版本一致的内部 SQL；`must_exec` 负责执行、读空和关闭结果集，`run_count_times` 负责聚合耗时。
 
 ## 核心职责
 
@@ -80,11 +78,9 @@ RustCodeGraph 的 `callers/callees` 精确查询在当前本地索引上未返�
 
 ## 与 Go 版本的对应关系
 
-Rust 符号基本逐一映射 `cmd/benchdb/main.go`：`BenchDB ↔ benchDB`、`new_bench_db ↔ newBenchDB`、`must_exec ↔ mustExec`、四个解析方法、七个作业方法、`run_count_times ↔ runCountTimes` 以及两种彩色日志函数。作业分派名称、SQL 模板、参数顺序、`disableGC=true`、bootstrap 后的 `use test`、batch 取整公式、半开区间和 blob 减半均保持一致。
-
 主要迁移差异是依赖真实性：Go 版直接导入 `pkg/ddl`、`pkg/session`、`pkg/store`、TiKV client 和日志组件；Rust crate 没有依赖这些实现，只调用 `stubs.rs`。Go `main` 在解析 flag 后直接包含全部初始化和分派，Rust 则额外抽出 `run_with_flags(flags, factory)` 供测试注入。Go `benchDB` 只存 store/session，Rust 还保存 flags，以替代 Go 的包级 flag 指针。
 
-Rust 的 `must_exec` 显式在成功路径末尾关闭结果集；Go 用 defer，但 `log.Fatal` 会退出进程而不执行 defer，因此错误路径均不保证 Close。Rust 使用 i64 对齐受支持平台上的 Go int 宽度。计时函数还显式处理负 count，使其行为与 Go 整数 range 保持一致。默认 `gc` 在 Go 和当前 Rust switch 中都没有 case，故两者都会把它作为未知作业并停止，而不是实际触发 GC。
+Rust 的 `must_exec` 显式在成功路径末尾关闭结果集；Go 用 defer，但 `log.Fatal` 会退出进程而不执行 defer，因此错误路径均不保证 Close。Rust 使用 i64 对齐受支持平台上的 Go int 宽度。默认 `gc` 在 Go 和当前 Rust switch 中都没有 case，故两者都会把它作为未知作业并停止，而不是实际触发 GC。
 
 ## 扩展指南
 
@@ -93,12 +89,3 @@ Rust 的 `must_exec` 显式在成功路径末尾关闭结果集；Go 用 defer�
 - 若替换为真实 TiKV/TiDB 依赖，应优先保持 `Session`/`SessionFactory` 注入边界，明确 store/session 的 Close、事务失败 rollback、owner manager 生命周期和线程安全；同时更新 `Cargo.toml`，并按仓库规定在独立上游仓库处理任何外部 Rust 依赖及 tag。
 - 扩充规格语法时，修改 `must_parse_work/must_parse_spec/query`，补充缺段、多段、零/负 count、空区间、`end == start` 随机更新、非正 batch 和非法 blob 大小测试。不要把测试写回 `main.rs`；继续放在同目录独立 `parity_test.rs` 或新增独立测试文件。
 - 调整 SQL 时必须保留 `%n` 与 `%?` 的类型化参数边界，核对范围上下界及事务包围顺序；否则会产生兼容或注入风险。高频循环中的 blob 克隆、随机生成和逐条 `ExecuteInternal` 是主要性能敏感点，优化时需证明没有改变 Go 工作负载形状。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 `cmd/benchdb/main.rs`；`files --filter cmd/benchdb` 列出 `main.rs`、`lib.rs`、`bin_main.rs`、`stubs.rs`、`parity_test.rs` 和 Go 对照；`node --file cmd/benchdb/main.rs` 读取了全文件；`query run_with_flags --kind function` 和 `query new_bench_db --kind function` 精确定位入口。`callers/callees` 查询无输出且长时间未完成，已中断，未据此推断调用关系。
-- 生产与装配文件：`cmd/benchdb/main.rs`、`cmd/benchdb/lib.rs`、`cmd/benchdb/bin_main.rs`、`cmd/benchdb/stubs.rs`。
-- crate 配置：`cmd/benchdb/Cargo.toml` 及根 `Cargo.toml` 的 workspace 成员项，确认该包是独立 binary、Go 映射为 `cmd/benchdb` 且当前依赖为空。
-- Go 对照：`cmd/benchdb/main.go`，逐项核对 flags、初始化顺序、作业分派、SQL 模板、事务、计时与错误路径。
-- 独立测试：`cmd/benchdb/parity_test.rs`；覆盖默认 flag、入口副作用、SQL/参数、batch 上取整、随机范围、未知作业停止、解析失败、执行/关闭失败、结果集读空和关闭、负 count 以及帮助参数。仓库搜索未发现与本模块相关的其他 Rust/Go 测试；同名 `insert_rows` 的其他命中属于无关模块。
-- 本任务是纯文档分析，依计划不运行 Cargo。交付前使用任务规定的标题计数命令验证本文恰有十一个固定二级章节，并人工复核没有把 stub 能力表述成真实集群能力。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-session` crate 的私有 `runtime::modify_column_backfill` 模块（模块声明见 `pkg/session/runtime.rs:90`），为会话运行时提供持久化 `MODIFY COLUMN`/索引重组所需的 KV 批处理原语。它不负责创建 DDL job、推进 schema state 或提交事务；这些边界由 DDL worker 和 `SystemSession` 调用方管理。文件内六个函数中，`batch`、`temporary_value`、`merge`、`ingest`、`ingest_with_options` 仅在父模块可见，`translate_fixed_timestamp` 仅供本文件使用。
-
-从应用主链看，`SystemSession::backfill_modified_column` 调用 `batch`，`SystemSession::merge_modified_indexes` 在非分布式路径调用 `merge`，分布式 merge 子任务也复用 `merge`；普通 DML 写入路径调用 `temporary_value` 保存唯一临时索引的操作历史；索引回填的 ingest 路径调用 `ingest_with_options`。证据分别位于 `pkg/session/runtime/system_session.rs:1417-1433`、`:1640-1659`、`:2288-2310`，`pkg/session/runtime/modify_column_dist_backfill.rs:889-933` 和 `pkg/session/runtime/dml.rs:765-829`。
+这些函数共同提供“单批、调用方控制事务或子任务生命周期”的底层执行能力，不包含重试、任务调度、checkpoint 持久化或 DDL schema 状态机。
 
 ## 核心职责
 
@@ -96,15 +94,11 @@ SST 路径的线性资源顺序是 backend -> manager -> opened engine -> local 
 
 ## 与 Go 版本的对应关系
 
-`batch` 对应 Go `pkg/ddl/column.go` 的 `updateColumnWorker.fetchRowColVals`、`getRowRecord` 和 `BackfillData`：两者都在事务内按范围/批量扫描、解码旧行、转换新列、重编码并写回。Rust 当前实现是较集中的版本，并非逐行等价复刻：Go 还显式处理 changing column 已由 DML 写入时跳过、cast warning 聚合、generated expression、row checksum、txn source、priority/resource group 和错误重格式化；这些行为在本文件中未出现，不能从 Go 实现推断 Rust 已支持。反之，Rust 对固定偏移 `TIMESTAMP` 的显式日历转换由 `translate_fixed_timestamp` 完成，并由本仓库 Rust 测试覆盖。
+Rust 当前实现是较集中的版本，并非逐行等价复刻：Go 还显式处理 changing column 已由 DML 写入时跳过、cast warning 聚合、generated expression、row checksum、txn source、priority/resource group 和错误重格式化；这些行为在本文件中未出现，不能从 Go 实现推断 Rust 已支持。反之，Rust 对固定偏移 `TIMESTAMP` 的显式日历转换由 `translate_fixed_timestamp` 完成，并由本仓库 Rust 测试覆盖。
 
-`temporary_value` 对应 Go `pkg/table/tables/index.go` 在唯一临时索引写入/删除时读取原值并调用 `TempIndexValueElem.Encode(originValue)` 追加历史的语义。Rust 把这一步放在 session mutation 落 KV 之前统一处理。
+Go worker 还设置 txn priority/resource group、对 retryable error 缩小 batch 并重试、记录 metrics/failpoint，并把 `TempIndexKeyTypeDelete` 也作为无需回放的版本过滤；Rust 本函数自身没有这些 worker 层机制，且只显式跳过 `TempIndexKeyTypeMerge`。
 
-`merge` 对应 Go `pkg/ddl/index_merge_tmp.go` 的 `mergeIndexWorker.BackfillData`、`fetchTempIndexVals`、`batchCheckTemporaryUniqueKey`：共同点是有界扫描临时键、`FilterOverwritten`、跳过已双写版本、回放正式索引并删除临时键。Go worker 还设置 txn priority/resource group、对 retryable error 缩小 batch 并重试、记录 metrics/failpoint，并把 `TempIndexKeyTypeDelete` 也作为无需回放的版本过滤；Rust 本函数自身没有这些 worker 层机制，且只显式跳过 `TempIndexKeyTypeMerge`。扩展时必须按任务链整体比较，不能仅凭函数名认定完全对齐。
-
-`ingest_with_options` 对应 Go `pkg/ddl/ingest/engine.go` 的 local writer/`AppendRows` 阶段及 `pkg/ddl/ingest/backend.go::unsafeImportAndReset` 的 closed engine import/cleanup 阶段。Rust 将单批所需步骤压缩为一次调用，固定 split 参数；Go backend 上下文还管理多 engine、TS、reset、分布式锁、指标与更丰富的错误转换。
-
-相关 Go 测试证据包括 `pkg/ddl/modify_column_test.go`（NULL、类型转换和回填行为）、`pkg/ddl/tests/indexmerge/merge_test.go`（临时索引并发/merge 行为）与 `pkg/ddl/ingest/integration_test.go`（ingest modify-column 流程）。它们说明上游意图，但不是 Rust 实现已经通过同等覆盖的证据。
+Rust 将单批所需步骤压缩为一次调用，固定 split 参数；Go backend 上下文还管理多 engine、TS、reset、分布式锁、指标与更丰富的错误转换。
 
 ## 扩展指南
 
@@ -113,12 +107,3 @@ SST 路径的线性资源顺序是 backend -> manager -> opened engine -> local 
 - 修改临时索引格式或 merge 规则时必须同时审查 `temporary_value` 与 `merge`，并对照 `tablecodec::TempIndexValueExt`、`dml.rs` 两条事务路径及 `modify_column_dist_backfill.rs`。至少扩展独立测试覆盖：多元素覆盖顺序、merge/delete key version、唯一值相同/冲突、handle 存活/孤儿、键在扫描后消失、batch 边界和不匹配 index ID。
 - 修改 SST 导入流程时在 `ingest_with_options` 保持 writer/engine 状态机顺序，明确失败时清理策略，并同步 `import_sst_test.rs` 的限速、取消、duplicate/value error 测试。性能风险集中在一次性 `Vec<KvPair>`、固定 split 参数和磁盘引擎清理。
 - 调整扫描范围或检查点时，保证返回键严格前进，并维持物理表/临时索引范围验证。调用方当前会把不前进视为分布式任务错误；零 batch size 应由上游归一化为至少 1（分布式调用点已用 `max(1)`）。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/session/runtime/modify_column_backfill.rs` 确认目标文件含 10 个符号；`node --file ... --offset 1 --limit 500` 读取了完整 431 行并给出 7 个使用文件；`query --json` 精确确认 `temporary_value`、`ingest_with_options`、`translate_fixed_timestamp` 的签名与位置。一次 `callers modify_column_backfill.rs::temporary_value` 查询超过 60 秒无输出后终止，调用关系改由索引使用集合和精确引用验证。
-- Rust 源与接线：`pkg/session/runtime/modify_column_backfill.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/system_session.rs`、`pkg/session/runtime/dml.rs`、`pkg/session/runtime/modify_column_dist_backfill.rs`。
-- crate 边界：`pkg/session/Cargo.toml`；crate 名为 `astersql-session`，本文件所需 Lightning、KV、table/tablecodec、expression、meta/model、chrono 依赖均在该 manifest 的依赖集合中，文件本身没有条件 feature。
-- 独立 Rust 测试：`pkg/session/runtime/normal_ddl_masking_policy_test.rs::modify_column_temporary_unique_delete_removes_orphaned_handle`、`masking_policy_sql_modify_timestamp_uses_captured_timezone`、`masking_policy_sql_modify_datetime_to_timestamp_converts_local_calendar`、`masking_policy_sql_modify_timestamp_uses_named_timezone`；`pkg/session/runtime/import_sst_test.rs::read_index_task_meta_updates_live_physical_import_limiter` 与 `read_index_cancel_stops_existing_physical_write_limiter`。测试模块由 `pkg/session/runtime.rs:1807-1812` 独立接入。
-- Go 对照：`pkg/ddl/column.go` 的 `updateColumnWorker`，`pkg/table/tables/index.go` 的临时索引历史编码，`pkg/ddl/index_merge_tmp.go` 的 `mergeIndexWorker`，`pkg/ddl/ingest/engine.go` 与 `pkg/ddl/ingest/backend.go` 的写入/导入生命周期；相关测试路径为 `pkg/ddl/modify_column_test.go`、`pkg/ddl/tests/indexmerge/merge_test.go`、`pkg/ddl/ingest/integration_test.go`。
-- 本任务只增加说明文档，未运行 Cargo 或代码测试。交付验证以固定 11 章节结构检查、链接/路径检查和人工事实复核为准。

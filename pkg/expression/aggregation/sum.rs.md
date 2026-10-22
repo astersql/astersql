@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression-aggregation` crate 中行式 `SUM` 聚合的薄运行时适配层。源码见 [`sum.rs`](sum.rs)；[`lib.rs`](lib.rs) 以私有模块 `mod sum` 装入它，再通过 `pub use sum::*` 导出 `sumFunction`；crate 边界和依赖见同目录 [`Cargo.toml`](Cargo.toml)。它不负责类型推断、表达式构造或具体数值相加，而是实现 [`aggregation.rs`](aggregation.rs) 定义的 `Aggregation` trait，并把这些公共职责委托给内嵌的 `aggFunction`。
-
-运行时有两条直接构造路径：`aggregation.rs::newDistAggFunc` 在下推表达式类型为 `tipb::ExprType::Sum` 时构造 `sumFunction`；`descriptor.rs::AggFuncDesc::GetAggFunc` 在描述符名称为 `ast::AggFuncSum` 时构造它。因而本文件位于“聚合描述符/下推表达式已经完成解析”与“逐行维护分组状态”之间，而不是 SQL 语法解析入口。
+没有自定义常量、枚举、条件编译项或自由函数；其唯一生产类型是公开结构体 `sumFunction`，唯一实现块是 `impl Aggregation for sumFunction`。
 
 ## 核心职责
 
@@ -84,11 +82,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/sum.go`。两端都有同名 `sumFunction`，`Update` 都把 `StatementContext.TypeCtx()`、分组上下文和当前行交给 `updateSum`；`GetResult` 都返回上下文的 `Value`；`GetPartialResult` 都返回单元素结果。
-
 Rust 版额外显式实现 `CreateContext` 和 `ResetContext`，只是因为 Rust trait 实现不能像 Go 的匿名嵌入那样自动提升 `aggFunction` 方法，行为仍委托给同一层公共逻辑。所有权上的差异是 Go 返回 Datum 值，而 Rust 明确 `clone`；Go 上下文使用接口/指针，Rust 使用 `Arc<dyn EvalContext>` 与可变借用。
-
-语义证据也对齐：Go `aggregation_test.go::TestSum` 验证初始 NULL、加权输入和为 `338350`、NULL 不改变结果、单列部分结果及 DISTINCT 和 `5050`；Rust `aggregation_test.rs::TestSum` 转发到 `aggregation_aster_unit_test.rs::avg_and_sum_match_go_weighted_input_and_distinct_cases`，验证相同结果与边界。Rust 共享用例还同时证明 SUM 与 AVG 复用求和逻辑。
 
 ## 扩展指南
 
@@ -98,14 +92,3 @@ Rust 版额外显式实现 `CreateContext` 和 `ResetContext`，只是因为 Rus
 - 若新增构造模式或聚合名称，需要同时检查 `aggregation.rs::newDistAggFunc`、`descriptor.rs::GetAggFunc`、`agg_to_pb.rs` 和描述符返回类型推断；仅新增结构体而不接线不会进入运行时。
 - 若调整状态生命周期或 DISTINCT 实现，保持“每组独立状态、Reset 后无旧键、失败时不递增 Count”的不变量，并在独立测试文件中覆盖状态复用。
 - 兼容风险主要是 MySQL 数值类型提升、空集 NULL、DISTINCT 编码语义和分布式部分结果形状；性能风险主要来自每次 `GetResult` 的 Datum 克隆以及 DISTINCT 的键编码与集合增长。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标仓库；`files --filter pkg/expression/aggregation/sum.rs` 显示该文件含 7 个符号；`node --file ... --offset 1 --limit 400` 完整读取 52 行并报告使用方为 `aggregation.rs`、`descriptor.rs`。
-- 目标与模块边界：`pkg/expression/aggregation/sum.rs`、`lib.rs`、`Cargo.toml`。
-- 公共状态和执行逻辑：`aggregation.rs::{Aggregation, AggEvaluateContext, aggFunction::CreateContext, aggFunction::ResetContext, aggFunction::updateSum, newDistAggFunc}`。
-- 构造入口：`descriptor.rs::AggFuncDesc::GetAggFunc`。
-- 数值与 DISTINCT 逻辑：`util.rs::{calculateSum, distinctChecker::Check}`。
-- Rust 独立测试：`aggregation_test.rs::TestSum` 与 `aggregation_aster_unit_test.rs::avg_and_sum_match_go_weighted_input_and_distinct_cases`。
-- Go 对照及测试：`sum.go`、`aggregation.go::aggFunction.updateSum`、`aggregation_test.go::TestSum`。
-- 人工复核结论：该文件存在是为了把共享的 `aggFunction` 求和逻辑适配到 `Aggregation` trait；运行时由两个构造入口选择，逐行更新分组状态，安全扩展点按“trait 适配 / 共享更新 / 数值运算 / 构造接线”分层。

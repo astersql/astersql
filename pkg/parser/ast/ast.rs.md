@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-ast` crate 中面向 Go `pkg/parser/ast/ast.go` 的兼容接口层。crate 入口 `pkg/parser/ast/lib.rs` 通过 `#[path = "ast.rs"] pub mod ast;` 装配它；`pkg/parser/ast/Cargo.toml` 将 crate 名定义为 `astersql-parser-ast`，并把 `lib.rs` 设为库入口。它不负责 SQL 词法或语法分析，也不保存完整 AST 结点实现，而是集中提供表达式标志常量、若干分类 trait、两个轻量语义结构，以及语句种类到观测标签的映射。
-
-需要特别区分同一 crate 根部的具体数据类型：`lib.rs` 还定义了具体的 `ExprNode`、`ResultSetNode` 等结构/枚举，而本文件的 `ast::ExprNode`、`ast::ResultSetNode` 是 trait。调用者应通过完整模块路径判断所指类型，不能仅凭同名符号推断。
+不负责 SQL 词法或语法分析，也不保存完整 AST 结点实现，而是集中提供表达式标志常量、若干分类 trait、两个轻量语义结构，以及语句种类到观测标签的映射。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ RustCodeGraph 能索引 `ast.rs` 并识别 `ExprNode`、`StmtNode`、`GetStmtLab
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/parser/ast/ast.go`。标志位名称和值、`OptBinary`、`VectorElementType`、接口分类和标签文本整体按其移植。`pkg/parser/ast/ast_1_aster_unit_test.rs` 覆盖全部旧有标签特例和物化视图扩展标签，并验证 `Explain(show=true, analyze=true)` 仍优先得到 `DescTable`。
-
 关键差异如下：
 
 - Go `GetStmtLabel` 接收动态 `StmtNode` 并通过具体类型 switch 分类；Rust 接收预先归类的 `StatementKind`，因此类型到枚举的转换责任已移到调用者，但本文件尚无转换适配器。
@@ -85,8 +81,6 @@ Go 对照文件为 `pkg/parser/ast/ast.go`。标志位名称和值、`OptBinary`
 - Go `ExprNode::SetType` 接收 `*FieldType`，`Format` 没有错误返回；Rust 按值接收 `FieldType`，返回借用，并让 `Format` 返回 `std::io::Result<()>`。
 - Go `Node`、`Visitor`、`InPlaceVisitor` 的完整接口位于同一文件；Rust 的实际基础协议在 `lib.rs`，本文件仅重新导出，且访问者回调签名与 Go 的结点替换模型不同。
 - Go 的 `ResultSetNode` 注释提到 `ResultFields` 属性；Rust trait 只有标记方法，没有声明该属性。
-
-因此这里的“对应”是语义契约对齐，不是逐签名 ABI 对齐，也不能据此推断所有 Go 实现类型都已有 Rust trait 实现。
 
 ## 扩展指南
 
@@ -96,11 +90,3 @@ Go 对照文件为 `pkg/parser/ast/ast.go`。标志位名称和值、`OptBinary`
 - 为分类 trait 增加方法会影响所有实现者；当前没有搜索到实现时也应先用 RustCodeGraph/`rg` 复核，因为后续迁移可能已增加实现。测试逻辑继续放在独立 `*_test.rs`，不要内嵌进生产源文件。
 - 扩展 `VectorElementType` 时应决定校验发生在解析动作还是构造 API，避免让任意 `u8` 静默进入下游。修改 `SensitiveStmtNode` 时应以不可泄露凭据为兼容底线。
 - 性能上，频繁调用 `GetStmtLabel` 会分配 `String`；若生产接线需要消除分配，必须同步评估调用接口和 Go 兼容语义，而不能只局部改返回类型。
-
-## 验证依据
-
-- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/ast/ast.rs`，并用 `git show 2c944fb:pkg/parser/ast/ast.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
-- Go `ast.go::GetStmtLabel` 对 `*RecommendIndexStmt` 返回同名标签；Rust `ast_1_aster_unit_test.rs` 的标签表包含 `(StatementKind::RecommendIndex, "RecommendIndex")`。crate 根部 `lib.rs` 定义标签常量并公开 `ast` 模块。
-- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
-- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
-- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

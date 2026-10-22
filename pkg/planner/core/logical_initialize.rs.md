@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/planner/core/logical_initialize.rs` 是 `astersql-planner-core` crate 内的私有占位模块。`pkg/planner/core/lib.rs` 通过 `mod logical_initialize;` 将它纳入编译，但没有 `pub mod` 或再导出，因此它不构成 crate 的公开 API。`pkg/planner/core/Cargo.toml` 指定 `lib.rs` 为库入口，并用 `package.metadata.porting.go-package = "pkg/planner/core"` 标记 Go 包对应关系。
-
-该文件当前只有版权、许可证和说明性注释，没有 `use`、常量、静态量、类型、trait、函数、`impl` 或条件编译项。RustCodeGraph 将它识别为含 1 个文件节点、0 个代码符号，并报告 `used by 0 files`；这里的“模块被 `lib.rs` 声明”和“没有符号级使用边”应分开理解。
+当前 Rust 真实实现集中在 `pkg/planner/core/operator/logicalop/*.rs`，例如 `LogicalUnionAll::Init` 位于 `logical_union_all.rs`，公共基座构造函数 `NewBaseLogicalPlan` 位于 `base_logical_plan.rs`。
 
 ## 核心职责
 
@@ -72,11 +70,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/core/logical_initialize.go` 只有许可证和 `package core`，没有声明、初始化函数或副作用；Rust 文件以空私有模块保持同路径语义，二者在“无运行时行为”这一点上对齐。
+例如 `pkg/planner/core/operator/logicalop/logical_union_all.go` 的 `LogicalUnionAll.Init` 调用 Go 版 `NewBaseLogicalPlan`；Rust 的 `logical_union_all.rs` 采用相同局部布局和同样的基座初始化意图。两版仍有语言级差异：Go 返回指针并把 `self` 传给基座，Rust 消费并返回 `Self`，且当前 Rust `BaseLogicalPlan` 不保存 Go 式自引用，而通过 trait 和所属算子访问。
 
-Go 的真实逻辑算子初始化同样位于具体算子旁。例如 `pkg/planner/core/operator/logicalop/logical_union_all.go` 的 `LogicalUnionAll.Init` 调用 Go 版 `NewBaseLogicalPlan`；Rust 的 `logical_union_all.rs` 采用相同局部布局和同样的基座初始化意图。两版仍有语言级差异：Go 返回指针并把 `self` 传给基座，Rust 消费并返回 `Self`，且当前 Rust `BaseLogicalPlan` 不保存 Go 式自引用，而通过 trait 和所属算子访问。
-
-相关测试也位于真实算子旁，而非本文件旁。Rust 的 `logical_union_all_test.rs`、`logical_partition_union_all_test.rs` 以及 `optimizer_logical_entry_aster_unit_test.rs` 会通过具体 `Init` 构建计划；Go 的 `operator/logicalop/logicalop_test/hash64_equals_test.go` 等测试也直接调用各算子 `Init`。它们验证算子初始化后的行为或等价性，不构成本空模块的单元测试。
+Rust 的 `logical_union_all_test.rs`、`logical_partition_union_all_test.rs` 以及 `optimizer_logical_entry_aster_unit_test.rs` 会通过具体 `Init` 构建计划；Go 的 `operator/logicalop/logicalop_test/hash64_equals_test.go` 等测试也直接调用各算子 `Init`。
 
 ## 扩展指南
 
@@ -85,17 +81,3 @@ Go 的真实逻辑算子初始化同样位于具体算子旁。例如 `pkg/plann
 测试应放在对应的独立 Rust 测试文件中，遵守源文件与单元测试分离要求。例如修改 `LogicalUnionAll::Init` 时同步更新 `logical_union_all_test.rs`，修改跨算子初始化契约时考虑 `optimizer_logical_entry_aster_unit_test.rs` 或 `operator/logicalop/logicalop_test/*` 的相关用例，并与 Go 同名测试意图保持一致。
 
 只有在 Go 上游或 Rust 架构确实新增了包级统一初始化职责时，才应向本文件加入代码。届时需要同时：将 API 可见性写清楚；在 `lib.rs` 评估是否再导出；在本文件对应的独立测试模块中覆盖调用顺序、重复调用、失败边界和并发约束；检查 Cargo feature 是否需要门控。主要兼容风险是改变计划 ID、类型标签或查询块偏移；性能风险是把每节点的轻量构造变成全局注册、锁竞争或重复分配。
-
-## 验证依据
-
-本说明依据以下直接证据完成：
-
-- RustCodeGraph `status`：索引包含目标仓库；目标文件查询显示 23 行、1 个文件节点、0 个代码符号和 `used by 0 files`。
-- RustCodeGraph `node --file pkg/planner/core/logical_initialize.rs`：确认文件只有许可证和占位说明。
-- RustCodeGraph 对 `NewBaseLogicalPlan` 的 `query`/`node`：确认 Rust 定义位置、`alloc_plan_id` 下游调用，以及多个逻辑算子 `Init` 上游调用。单独的 `callers`/`callees` ID 查询返回空数组，与 `node` 的 Trail 摘要不一致，因此本文只把 Trail 和源码交叉验证后的边用于架构定位，不把空数组解释为没有真实调用。
-- `pkg/planner/core/lib.rs`：确认私有模块声明；`pkg/planner/core/Cargo.toml`：确认 crate 名称、入口、feature 和 Go 包元数据。
-- `pkg/planner/core/logical_initialize.go`：确认 Go 同路径文件无声明。
-- `pkg/planner/core/operator/logicalop/logical_union_all.rs`、`base_logical_plan.rs` 及对应 Go 文件：确认真实 `Init` 与公共基座构造的位置和语义。
-- `pkg/planner/core/operator/logicalop/logical_union_all_test.rs`、`logical_partition_union_all_test.rs`、`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs` 和 Go 的 `operator/logicalop/logicalop_test/hash64_equals_test.go`：确认相关测试直接覆盖具体算子初始化，而非本空模块。
-
-人工复核结论：这个文件为保持 Go/Rust 包布局对应而存在；它在编译时作为空私有模块被解析，但运行时不执行；安全扩展的默认位置是具体算子 `Init` 和 `NewBaseLogicalPlan`，不是向本文件堆叠无关初始化逻辑。

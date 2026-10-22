@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/meta/metadef/db.rs` 是 `astersql-meta-metadef` crate 中的库名定义与分类模块。crate 根模块 `pkg/meta/metadef/lib.rs` 通过 `pub mod db` 声明它，再用 `pub use db::*` 将本文件的公开符号重导出到 crate 根。因此上层既可以按 `astersql_meta_metadef::IsMemOrSysDB` 调用，也可以在局部别名为 `metadef` 后调用。
-
-本文件不读写元数据，也不管理 schema 对象；它提供的是纯字符串分类边界，供 DDL、规划器、锁、备份以及 schema 过滤等上层路径共享。直接源文件是 `pkg/meta/metadef/db.rs`，crate 声明在 `pkg/meta/metadef/Cargo.toml`。
+不读写元数据，也不管理 schema 对象；它提供的是纯字符串分类边界，供 DDL、规划器、锁、备份以及 schema 过滤等上层路径共享。
 
 ## 核心职责
 
@@ -84,14 +82,9 @@ RustCodeGraph 对 `pkg/meta/metadef/db.rs` 报告有 7 个使用文件。结合�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/meta/metadef/db.go`，公开名称、分类集合、判定顺序和前缀字面量均保持一致：
-
 - Go 的包级 `var` 使用 `ast.NewCIStr`；Rust 使用 `LazyLock<ast::CIStr>` 保留运行时构造，而不假设 `CIStr` 可在 `const` 上下文初始化。
 - Go `switch` 的三个 case 被 Rust `matches!` 守卫表达，识别集合没有缩减。
-- Go 的 `strings.HasPrefix` 对应 Rust 的 `str::starts_with`，两者在这里均为大小写敏感。
 - Go 的 `ClusterTableInstanceColumnName` 位于 `var` 块，Rust 将不可变字面量表达为 `pub const &str`；对外值不变。
-
-`pkg/meta/metadef/db_test.rs` 保留 `pkg/meta/metadef/db_test.go` 的三组主要断言，但两者都未直接覆盖 `IsMemOrSysDB`、`IsBRRelatedDB` 和所有公开常量；Rust 的 `pkg/meta/metadef/migration_aster_unit_test.rs::database_names_match_go_case_sensitive_classification` 补充了 `InformationSchemaName.O/L`、组合分类和 BR 大小写边界。
 
 ## 扩展指南
 
@@ -101,13 +94,3 @@ Rust 文件直接对应 `pkg/meta/metadef/db.go`，公开名称、分类集合�
 - 新增或改变分类行为时，应将 Rust 回归断言放在独立的 `pkg/meta/metadef/db_test.rs` 或已有的 `migration_aster_unit_test.rs`，不要内嵌到 `db.rs`。若该行为来自 Go 迁移，应同步核对 `pkg/meta/metadef/db_test.go`。
 - 回归用例至少覆盖：每个命中值、一个普通业务库、大写/混合大小写输入、`sys` 在两个 system API 间的差异，以及 BR 前缀的大小写反例。
 - 性能上应继续保持无分配的 `&str` 比较。不要在这些热路径函数内通过 `to_lowercase()` 隐式分配；大小写归一化仍由持有 `CIStr` 或输入名称的调用方完成。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：当前项目索引包含 11,467 个文件，其中 7,032 个 Rust 文件；`rustcodegraph files --filter pkg/meta/metadef` 确认目标、Go 对照和测试均被索引。
-- 源码全貌：`rustcodegraph node --file pkg/meta/metadef/db.rs --offset 1 --limit 240` 读取了全部 85 行，确认三个惰性静态量、两个字符串常量与五个公开判定函数。
-- 符号查询：对 `IsMemDB`、`IsSystemRelatedDB`、`IsBRRelatedDB`、`IsMemOrSysDB` 和 `IsSystemDB` 执行了 RustCodeGraph `query`，确认 Rust/Go 同名实现与部分直接使用点。`node` 对目标文件报告 7 个使用文件。
-- 调用边复核：RustCodeGraph 的 `callers/callees` 命令在当前环境中持续无输出，已中止；随后使用索引 `node` 读取 `pkg/ddl/persistent_create_materialized_view_log.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/planner/util/misc.rs`、`pkg/util/filter/schema.rs` 和 `pkg/lock/lock.rs` 的命中上下文，并用 `rg` 列出 Rust 直接引用，避免将本地复制逻辑误写成调用边。
-- crate 边界：`pkg/meta/metadef/Cargo.toml` 声明 crate 名 `astersql-meta-metadef`、库入口 `lib.rs` 及 `astersql-parser-ast` / `astersql-parser-mysql` 两个依赖；无 feature 声明。`pkg/meta/metadef/lib.rs` 确认模块声明、重导出与独立测试接线。
-- Go 对照：逐项阅读 `pkg/meta/metadef/db.go` 和 `pkg/meta/metadef/db_test.go`，确认常量、分类逻辑、大小写契约与主要断言一致。
-- Rust 测试：阅读 `pkg/meta/metadef/db_test.rs` 和 `pkg/meta/metadef/migration_aster_unit_test.rs::database_names_match_go_case_sensitive_classification`，确认内存/system/BR 的正反例。本任务为纯文档分析，按计划不运行 Cargo。

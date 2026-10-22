@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-topsql-reporter` crate 的 RU（Request Unit）在线聚合层。`lib.rs` 以 `mod ru_window_aggregator` 装入模块并公开重导出；生产入口 `reporter.rs` 的 `RemoteTopSQLReporter` 持有一个 `RUWindowAggregator`，收集线程把 `RUBatch` 写入它，周期上报时再取出 `tipb::TopRuRecord`。因此它位于“语句 RU 增量 → 15 秒基础桶 → 60 秒闭合窗口 → TopRU protobuf”链路中，不负责采集 RU、注册 SQL/Plan 元数据或把报告发送给 sink。
-
-crate 边界由 `pkg/util/topsql/reporter/Cargo.toml` 确认：本文件直接使用同 crate 的 `ru_datamodel`，使用 `topsql_stmtstats`（在 crate 中重导出为 `stmtstats`）承载输入，并使用启用 `protobuf-codec` 的 `tipb` 生成输出；迟到丢弃指标来自路径依赖 `reporter_metrics`。本模块没有 feature 条件编译项。
+`addBatch` 将批次时间戳向下对齐到 15 秒，校验 RU 版本和 handover 丢弃边界，并把增量累加到对应 `ruCollecting`。
 
 ## 核心职责
 
@@ -75,13 +73,11 @@ RustCodeGraph 的文件节点显示本文件直接被 `reporter.rs` 和 `ru_wind
 
 ## 与 Go 版本的对应关系
 
-同路径 `ru_window_aggregator.go` 是直接语义基准。Rust 的 `RUBatch`、`RUPointBucket`、`RUWindowAggregator` 及四个主方法分别对应 Go 的 `ruBatch`、`ruPointBucket`、`ruWindowAggregator`、`addBatch/resetForHandover/dropReportData/takeReportRecords`；15 秒桶、60 秒窗口、三层容量、迟到移位、handover 和窗口只取一次的规则一致。Rust 将 Go 结构体中分散的字段组合进 `AggregatorState`，将 Go 的指针 nil 状态表达为 `Option<Box<ruCollecting>>`，并保留 Go 风格别名/函数名以方便移植对照。
+Rust 的 `RUBatch`、`RUPointBucket`、`RUWindowAggregator` 及四个主方法分别对应 Go 的 `ruBatch`、`ruPointBucket`、`ruWindowAggregator`、`addBatch/resetForHandover/dropReportData/takeReportRecords`；15 秒桶、60 秒窗口、三层容量、迟到移位、handover 和窗口只取一次的规则一致。
 
-两端均在取桶后于锁外构建报告。Go 用方法 `takeBucketsForWindow` 和接收者方法 `rotateBucketsBefore` 拆分临界区；Rust 将前者内联进 `takeReportRecords`，将后者实现为接收 `&mut AggregatorState` 的私有函数，行为未简化。
+Go 用方法 `takeBucketsForWindow` 和接收者方法 `rotateBucketsBefore` 拆分临界区；Rust 将前者内联进 `takeReportRecords`，将后者实现为接收 `&mut AggregatorState` 的私有函数，行为未简化。
 
-可见差异有两点。第一，Go 的迟到丢弃只更新全局 Prometheus counter，Rust 除同步更新这些 counter 外还保留 `droppedLateKeys/droppedLateRUBits` 及读取方法，支持独立并发断言。第二，Go 注释要求 `itemInterval` 必须为 15/30/60，函数本身不修正非法值；Rust 显式将非法值回退到 60 秒。这是 Rust 的防御性边界，不应据此鼓励传入其他值。另因 Rust `RUIncrementMap` 的 value 是值类型，不存在 Go 侧可能出现的 nil increment 分支。
-
-Rust 测试 `ru_window_aggregator_test.rs` 与 Go 测试 `ru_window_aggregator_test.go` 对齐验证报告粒度、基础桶压缩、单窗口单次 take、handover、背压保留开放窗口、并发压力、迟到移位/可观测丢弃、100×100 上限、稀疏桶和热点保留；Rust 还直接断言实例级丢弃计数。
+可见差异有两点。第二，Go 注释要求 `itemInterval` 必须为 15/30/60，函数本身不修正非法值；Rust 显式将非法值回退到 60 秒。
 
 ## 扩展指南
 
@@ -91,12 +87,3 @@ Rust 测试 `ru_window_aggregator_test.rs` 与 Go 测试 `ru_window_aggregator_t
 - 改动迟到策略或锁范围时，要保留“报告与迟到写入竞态下，迟到 RU 等于已报告量加可观测丢弃量”的测试，并检查实例原子计数与两个全局指标仍同步。不要把昂贵的压缩/编码重新放回状态锁内。
 - 新增测试必须放在独立的 `pkg/util/topsql/reporter/ru_window_aggregator_test.rs`（必要时同步 Go 测试），不要嵌入生产源文件。若新行为进入 reporter 主链，还应扩展 `reporter_test.rs` 的集成断言。
 - 兼容性风险集中在 protobuf 时间戳粒度、others 标签、keyspace 透传、RU 版本过滤和窗口去重；性能风险集中在高基数批次遍历、预容量放大、锁竞争及报告构建时的克隆/合并。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/topsql/reporter/ru_window_aggregator.rs` 确认目标文件有 33 个符号并由 `reporter.rs`、`ru_window_aggregator_test.rs` 使用；`node --file ... --offset 1 --limit 400` 阅读了目标文件完整 368 行；另用 `query`/`explore` 查询 `RUWindowAggregator`、`addBatch`、`takeReportRecords`、`rotateBucketsBefore`、`buildReportRecords`，并用 `node` 核对 `ru_datamodel.rs` 的 `addBatch/compactWithLimits/mergeFrom/toTopRURecords`。
-- 源码与装配：`pkg/util/topsql/reporter/ru_window_aggregator.rs`、`pkg/util/topsql/reporter/reporter.rs`、`pkg/util/topsql/reporter/ru_datamodel.rs`、`pkg/util/topsql/reporter/lib.rs`。
-- crate 与指标：`pkg/util/topsql/reporter/Cargo.toml`、`pkg/util/topsql/reporter/metrics/metrics.rs`。
-- Go 对照：`pkg/util/topsql/reporter/ru_window_aggregator.go`、`pkg/util/topsql/reporter/reporter.go`、`pkg/util/topsql/reporter/ru_window_aggregator_test.go`。
-- Rust 独立测试：`pkg/util/topsql/reporter/ru_window_aggregator_test.rs`；补充生产链断言见 `pkg/util/topsql/reporter/reporter_test.rs`。这些既有测试是行为证据，本次纯文档任务按计划未运行 Cargo。
-- 人工复核结论：文件存在是为了隔离在线 RU 窗口状态机与 reporter 通道/sink；运行方式是写入对齐桶、逐层压缩、闭窗取出；安全扩展必须维护版本/窗口水位、锁内状态不变量、others 总量守恒和独立测试边界。

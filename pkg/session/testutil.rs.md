@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/session/testutil.rs` 是 `astersql-session` crate 的测试适配层；`pkg/session/lib.rs` 通过 `pub mod testutil` 无条件导出它，`pkg/session/Cargo.toml` 则把该 crate 定位在 Go 包 `pkg/session` 的移植边界。它不处理线上连接或协议入口，而是把“创建 mock store、bootstrap Domain、创建单连接 Session、执行测试 SQL”收敛为一组与具体存储实现解耦的 trait 和便利函数。
-
-实际执行能力不在本文件中：`pkg/session/runtime/session.rs` 的 `ConcreteTestRuntime<S, F>`、`RuntimeStore<S>`、`RuntimeDomain` 和 `ConcreteRecordSet` 实现主要 trait，`pkg/session/runtime/dispatch.rs` 的 `ConcreteSession` 实现 `TestSession`。因此本文件是测试调用方与会话运行时之间的窄接口，而不是另一套 session 实现。
+不处理线上连接或协议入口，而是把“创建 mock store、bootstrap Domain、创建单连接 Session、执行测试 SQL”收敛为一组与具体存储实现解耦的 trait 和便利函数。
 
 ## 核心职责
 
@@ -80,10 +78,6 @@ Go 侧的直接消费者主要是 `pkg/session/bootstrap_test.go`、`pkg/session
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/session/testutil.go`。主流程保持一致：创建 embedded Unistore mock store 后 bootstrap；会话创建后分配递增 connection ID；无参数 SQL 走 `Execute`，有参数 SQL 走 prepare/execute；`MustExec` 关闭结果集；旧版本回退在 `<= version195` 时关闭 `tidb_enable_dist_task`。
-
-Rust 为适应 crate 边界做了以下显式改造：
-
 - Go 直接依赖 `kv.Storage`、`*domain.Domain`、`sessionapi.Session` 和 `sqlexec.RecordSet`；Rust 通过五个 trait 和 `Any::as_any` 解耦具体类型。
 - Go 通过 `testing.T` 与 `require.NoError` 报告失败；Rust 可恢复核心返回 `SessionResult`，`Must*` 包装使用 `expect` panic。
 - Go 的 `GetBootstrapVersion` 是函数别名，另外两个是普通版本变量；Rust 当前三个符号均为尚待注入的 `OnceLock<i64>`，语义并非完全等价。
@@ -100,13 +94,3 @@ Rust 为适应 crate 边界做了以下显式改造：
 若要启用顶层便利入口，应在明确的进程级测试初始化位置调用一次 `InstallTestRuntime`，并为未安装、重复安装、异源 store、重复 bootstrap、未 bootstrap 建 session 与并发 connection ID 增加独立测试。由于 `OnceLock` 不可重置，测试设计必须避免多个用例争用不同全局 runtime，或先把可替换性设计成显式实例 API。
 
 兼容风险主要在 Go/Rust 参数类型和 bootstrap 版本变量的语义差异；正确性风险集中在结果集关闭责任、只返回首个结果集和全局 runtime 初始化顺序；性能风险较低，但全局共享 runtime、`Arc`/锁和 prepared 字符串重写不应被引入生产热路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/session/testutil.rs`；`node --file pkg/session/testutil.rs --offset 1 --limit 260` 读取了全部 189 行；`query` 确认 `CreateStoreAndBootstrap`、`CreateSessionAndSetID`、`InstallTestRuntime`、`RevertVersionAndVariables` 的定义。精确 `callers/callees` 未返回边，因此调用证据由后续文本检索补齐。
-- 源码与装配：`pkg/session/testutil.rs`、`pkg/session/lib.rs`、`pkg/session/Cargo.toml`。
-- 具体实现：`pkg/session/runtime/session.rs` 中的 `ConcreteTestRuntime`、`RuntimeStore`、`RuntimeDomain`、`ConcreteRecordSet`；`pkg/session/runtime/dispatch.rs` 中的 `impl TestSession for ConcreteSession` 与 `bind_parameters`。
-- Go 对照：`pkg/session/testutil.go`；真实 Go 使用点抽查了 `pkg/session/bootstrap_test.go`、`pkg/session/starter_bootstrap_file_test.go`、`pkg/session/upgrade_backfill_test.go` 和 `pkg/session/tidb_test.go`。
-- Rust 测试证据：`pkg/session/runtime_test.rs` 与 `pkg/session/dml_runtime_test.rs` 直接构造 `ConcreteTestRuntime`；`pkg/session/runtime_test/typed_adapter_bridge.rs` 使用 `TestSession` 验证具体会话边界；`pkg/session/test/bootstraptest2/boot_test.rs` 的 Go 风格辅助调用仅存在于 `_GO_DRAFT_ARCHIVE`，不参与运行。
-- 仓库全局检索：未发现 `InstallTestRuntime` 的调用，故文档将全局便利函数标记为“实现存在但当前未接线”，而非声称已被测试框架自动初始化。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务给定命令验证恰有 11 个固定二级章节，并人工检查重要结论均能回溯到上述符号或路径。

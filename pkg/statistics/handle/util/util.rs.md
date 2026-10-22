@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-statistics-handle-util` crate 中，由同目录 `lib.rs` 的 `pub mod util` 装配并通过 `pub use util::*` 对外导出。它不是统计估算算法本身，而是统计 Handle 访问内部会话、事务和受限 SQL 的公共适配层，同时承载统计会话需要刷新的系统变量、统计历史来源常量、时间戳换算和特殊全局索引判定等小型公共能力。
-
-`pkg/statistics/handle/util/Cargo.toml` 表明当前可编译依赖只有 `astersql-sessionctx-vardef` 和 `astersql-testkit-testfailpoint`；大量 Go 侧真实会话、元数据和 SQL 执行依赖仍列在 `cfg(any())` 下。因此，本文件用本地 trait 和轻量 DTO 表达这些边界。当前 Rust 生产接线可见于 `pkg/statistics/handle/cache/statscache.rs`，DDL 事务路径的直接使用位于 `pkg/statistics/handle/ddl/testutil/util.rs`；`pkg/statistics/handle/types/interfaces.rs` 还会再导出其中的执行接口和类型。
+`exec`/`exec_with_ctx` 和 `exec_rows`/`exec_rows_with_ctx`/`exec_with_opts` 分别封装流式内部 SQL 与物化受限 SQL；`ExecRowsTimeout`、`EXEC_ROWS_TIMEOUT`、`IN_TEST` 提供与 Go failpoint/测试 mock 对齐的注入点。
 
 ## 核心职责
 
@@ -93,8 +91,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项复刻同目录 `util.go` 的核心语义：历史来源常量、`StatsCtx`/当前会话选项、`CallWithSCtx`、变量刷新、事务包装、start TS、内部/受限 SQL、时长转 TSO 以及特殊全局索引判定均有对应符号。
-
 主要表示差异如下：
 
 - Go 直接依赖 `sessionctx.Context`、`syssession.Pool`、`sqlexec`、`model.TableInfo`；Rust 用本地 trait 和 DTO 解耦。这与 Cargo 中真实依赖仍被放在 `cfg(any())` 下的迁移状态一致。
@@ -113,13 +109,3 @@ Rust 文件逐项复刻同目录 `util.go` 的核心语义：历史来源常量�
 - 修改特殊全局索引规则时，同步 `IndexInfo`/`TableInfo` 的最小元数据表示、Go `IsSpecialGlobalIndex` 和 `util_test.rs::test_is_special_global_index` 的普通全局列、非全局表达式、虚拟生成列及前缀列矩阵。
 - 若把 `cfg(any())` 中的真实依赖接回生产 crate，应逐步以真实 AsterSQL 类型替换本地 DTO/trait，并核对 `pkg/statistics/handle/types/interfaces.rs` 的再导出和所有依赖 crate；这属于跨文件迁移，不应在本文件文档任务中假定已完成。
 - 性能风险主要在每次借会话逐项访问全局变量和字符串/列表克隆；兼容风险集中在 SQL 执行 context、panic 恢复和事务错误优先级，调整前应以 Go 行为及调用方需求共同验证。
-
-## 验证依据
-
-- 目标源码：`pkg/statistics/handle/util/util.rs`，完整核对 606 行源码及公开/私有符号。
-- crate 与装配：`pkg/statistics/handle/util/Cargo.toml`、`pkg/statistics/handle/util/lib.rs`、`pkg/statistics/handle/types/interfaces.rs`。
-- Rust 直接调用证据：`pkg/statistics/handle/cache/statscache.rs`、`pkg/statistics/handle/ddl/testutil/util.rs`、`pkg/statistics/handle/restricted_sql.rs`。
-- Go 对照：`pkg/statistics/handle/util/util.go`；Go 独立测试：`pkg/statistics/handle/util/util_test.go`。调用面通过统计目录中 `CallWithSCtx`、`ExecRowsWithCtx`、`GetStartTS`、`DurationToTS`、`IsSpecialGlobalIndex` 等精确搜索确认。
-- Rust 独立测试：`pkg/statistics/handle/util/util_test.rs`，覆盖特殊索引判定、回调错误时释放会话、panic 恢复、每次调用刷新语句时区、超时 failpoint、skip-column 白名单和废弃 merge concurrency 不再读取。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/statistics/handle/util` 确认 Rust/Go/测试文件；`node --file ... --offset ...` 阅读目标源码；精确 `node` 查询确认 `update_sctx_vars_for_stats`、`call_with_sctx`、`exec_rows_with_ctx`、`is_special_global_index`、`duration_to_ts` 的定义及文件内调用边。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以任务指定的 11 个固定二级标题检查和人工事实复核为验收依据。

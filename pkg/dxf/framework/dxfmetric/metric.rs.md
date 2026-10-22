@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-dxf-framework-dxfmetric`，crate 根 `pkg/dxf/framework/dxfmetric/lib.rs` 以 `pub mod metric` 声明本模块，并用 `pub use metric::*` 将其公共 API 再导出。它不采集任务快照（该职责在同 crate 的 `collector.rs`），而是定义 DXF（Distributed eXecution Framework）运行路径主动写入的五组 Prometheus `GaugeVec`/`CounterVec`、事件标签常量，以及统一初始化和注册入口。
-
-应用级接线位于 `pkg/metrics/metrics.rs`：`InitMetrics` 调用 `InitDistTaskMetrics`，`register_external_metrics` 调用 `Register`。因此本文件位于“DXF 业务事件 -> Prometheus 向量 -> TiDB 全局指标注册表”的边界，自己不启动后台任务，也不决定何时发生某个业务事件。
-
-`pkg/dxf/framework/dxfmetric/Cargo.toml` 指明 crate 的 Go 对照包为 `pkg/dxf/framework/dxfmetric`。本文件直接使用 `prometheus` 和内部 `metricscommon`；清单中的 `proto`、`uuid` 是整个 crate（尤其 `collector.rs`）的依赖，不是本文件的直接依赖。
+由 `InitDistTaskMetrics` 构造并缓存唯一一份 `DistTaskMetrics`，使不同 DXF 子系统写入同一组进程内指标向量。
 
 ## 核心职责
 
@@ -85,8 +81,6 @@ RustCodeGraph 的文件关系将 `metric.rs` 指向 `scheduler_manager.rs`、`sc
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/dxfmetric/metric.go`。两版保持五个指标的 namespace、subsystem、名称、Help 文本、标签顺序、事件字符串和注册顺序一致；`migration_aster_unit_test.rs::migration_metric_names_labels_and_registration_match_go` 对完整指标名及标签组合做了实际采集断言。
-
 主要结构差异如下：
 
 - Go 使用五个可重新赋值的包级指针变量，`InitDistTaskMetrics()` 负责赋值且不返回对象；Rust 用 `DistTaskMetrics` 加 `OnceLock`，初始化函数返回共享静态引用，因此初始化是幂等且不可替换的。
@@ -101,12 +95,3 @@ RustCodeGraph 的文件关系将 `metric.rs` 指向 `scheduler_manager.rs`、`sc
 新增事件类型通常只需在本文件增加与 Go 对齐的公开字符串常量，并在实际生产路径使用；测试应放在独立 `*_test.rs` 文件，不能嵌入本源文件。涉及任务终态分类或清理行为时，优先扩展 `scheduler_nokit_test.rs` 或 `scheduler_manager_nokit_test.rs`；涉及指标描述与注册协议时扩展同 crate 的 `migration_aster_unit_test.rs`。
 
 修改标签必须视为监控兼容性变更：标签名称、顺序或 subsystem 改动会改变时间序列及仪表盘查询；加入无界 ID 会增加内存和采集成本。新增注册项还需考虑 `Register` 部分成功的错误边界。若希望支持自定义 Registry 包装器，需要有意评估是否把参数从 `&Registry` 泛化，而不能只改调用点。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/dxf/framework/dxfmetric` 确认同 crate 的 Rust/Go/测试文件；`node --file pkg/dxf/framework/dxfmetric/metric.rs` 读取 150 行完整实现并给出四个文件级使用者。对 `InitDistTaskMetrics`、`Register` 的精确 `callers/callees --file ...` 未返回函数级边，已用直接引用核验补齐。
-- 目标实现与边界：`pkg/dxf/framework/dxfmetric/metric.rs`、`lib.rs`、`Cargo.toml`，以及 `pkg/metrics/common/wrapper.rs` 中 `NewCounterVec`/`NewGaugeVec` 的签名。
-- Go 对照：`pkg/dxf/framework/dxfmetric/metric.go`；业务侧补充对照包括 `pkg/dxf/framework/scheduler/*.go`、`taskexecutor/*.go`、`metering/metering.go` 与 `pkg/dxf/importinto/scheduler.go` 的引用搜索结果。
-- Rust 调用者：`pkg/metrics/metrics.rs`、`pkg/dxf/framework/scheduler/scheduler.rs`、`scheduler_manager.rs`、`pkg/dxf/framework/metering/metering.rs`、`pkg/dxf/importinto/scheduler.rs`。
-- 独立测试：`pkg/dxf/framework/dxfmetric/migration_aster_unit_test.rs` 验证五个指标的名称、标签和值；`scheduler_nokit_test.rs` 验证完成状态分类与终态累加；`scheduler_manager_nokit_test.rs` 验证清理失败事件；`pkg/metrics/metrics_internal_test.rs` 验证全局初始化和注册接线。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认目标文件存在且恰有规定的十一个二级标题；人工复核确认本文区分了已验证 Rust 行为、Go 对照协议和当前未见 Rust 调用的公共事件常量。

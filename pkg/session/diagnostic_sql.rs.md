@@ -4,7 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` 的私有 `diagnostic_sql` 模块，由 `lib.rs` 装配，为普通客户端诊断 SQL 提供 AST allowlist。`Cargo.toml` 单独注册 `diagnostic_sql_test.rs` 集成测试目标。它不是通用“只读 SQL”判定器，允许范围必须逐项审核。
+只接受系统表 SELECT/集合查询、USE、明确列举的元数据 SHOW，以及不执行查询的 EXPLAIN SELECT/集合查询。
 
 ## 核心职责
 
@@ -47,15 +47,8 @@ SELECT、集合语句和集合列表进入/离开时 push/pop scope。递归 CTE
 
 ## 与 Go 版本的对应关系
 
-对应 `diagnostic_sql.go::isDiagnosticSQLAllowed` 和 diagnosticSQLChecker：顶层 allowlist、实际系统表要求、视图拒绝、CTE 可见性及副作用检查意图一致。Go 用 ast.Walk、MetaOnlyInfoSchema 与 map；Rust 用 accept/Visitor、embedded hooks 和注入 is_view 闭包。Go 显式直接 walk CTE query，Rust 依赖 AST 对 embedded CTE 的遍历行为，不能只检查顶层类型推断安全。
+Go 用 ast.Walk、MetaOnlyInfoSchema 与 map；Rust 用 accept/Visitor、embedded hooks 和注入 is_view 闭包。Go 显式直接 walk CTE query，Rust 依赖 AST 对 embedded CTE 的遍历行为，不能只检查顶层类型推断安全。
 
 ## 扩展指南
 
 新增 SQL、SHOW 或函数时同时核对 Go allowlist 和 AST 遍历，增加独立允许/拒绝用例，尤其覆盖嵌套子查询、CTE shadowing、scope 逃逸、set_var hint、视图和当前库。不能为执行器暂不支持的 EXPLAIN 扩大允许面；应区分 admitted 与成功执行。新增内部绕过路径必须在会话入口测试，不能仅改此 predicate。
-
-## 验证依据
-
-- 读取冻结新增源码全貌、`diagnostic_sql.go`、`runtime/dispatch.rs` 的 guard、`lib.rs` 与 `Cargo.toml`；`pkg/session/doc.go` 不存在。RustCodeGraph status 当前含 Rust，但本次依据为冻结 blob。
-- `diagnostic_sql_test.rs::diagnostic_sql_execution_guard_rejects_unauthorized_sql` 覆盖系统表/嵌套查询/CTE/集合查询允许、普通表与视图拒绝、副作用/锁/输出/提示拒绝、SHOW/EXPLAIN 限制、prepare 拒绝和 restricted 绕过；最后 COUNT 为 0 验证拒绝 INSERT 未改数据。
-- 两个 EXPLAIN 集合/CTE 用例仅 assert_admitted（不出现只读拒绝），不声称执行成功；测试正常模式 SELECT 1 成功，诊断模式拒绝 SELECT 1。本文未执行这些测试。
-- 纯文档 Ready 等价验证为八篇各 11 个二级章节、局部链接、尾随空白与 diff 检查；Ready skill 缺失，按计划不运行 Cargo、Go 测试或构建。

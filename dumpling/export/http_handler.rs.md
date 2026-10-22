@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`http_handler.rs` 属于 `astersql-dumpling-export` library crate；crate 边界由 `dumpling/export/Cargo.toml` 声明，`dumpling/export/lib.rs` 通过 `include!("http_handler.rs")` 将它并入与 Go `dumpling/export` 包相似的单包符号空间。它位于导出器的运行期基础设施层，给 Dumpling 暴露状态、Prometheus 文本和调试端点，不参与数据扫描或文件写入。
-
-应用主链是 `NewDumper` 引用初始化步骤 `dump.rs::startHTTPService`，后者在 `StatusAddr` 非空时调用本文件的 `startDumplingServiceWithDumper`，再由后台线程进入 `startHTTPServer`。因此，这个文件是 Dumper 初始化与状态/指标观测面之间的桥梁，而不是通用 TiDB HTTP server。
-
-当前文件是真实绑定 TCP 端口的可运行实现，但依赖 `stubs.rs` 中的本地 `Registry`、`HttpServiceHandle` 等轻量边界；这些桩的能力不等同于完整 Prometheus 或生产 HTTP 框架。依据：`dumpling/export/lib.rs`、`dumpling/export/Cargo.toml`、`dumpling/export/dump.rs::startHTTPService`、`dumpling/export/stubs.rs`。
+`isErrNetClosing_pub` 暴露与 Go `isErrNetClosing` 一致的空值/错误文本判定面，主要用于兼容和测试。
 
 ## 核心职责
 
@@ -95,7 +91,7 @@
 
 ## 与 Go 版本的对应关系
 
-共同点：两版都暴露 `/metrics`、`/status` 和五个 `/debug/pprof/*` 路由；监听错误带 `start listening` 上下文；状态来自 Dumper；指标优先使用配置注册表，并在注册表不能 gather 时使用默认 gatherer；网络关闭错误以稳定子串识别。Rust 独立测试与 Go `http_handler_test.go` 都锁定了进度字段、未就绪时省略进度、轮询不更新速度，以及只服务配置注册表的指标族。
+Rust 独立测试与 Go `http_handler_test.go` 都锁定了进度字段、未就绪时省略进度、轮询不更新速度，以及只服务配置注册表的指标族。
 
 主要差异：
 
@@ -106,7 +102,7 @@
 - Go 的关闭由 listener/cmux 生命周期驱动并过滤 `http.ErrServerClosed`；Rust 通过原子停止标志轮询，公开句柄但不 join。
 - Go `startHTTPService` 自己开 goroutine并总是返回 nil；Rust 的完整入口开线程并返回句柄，上游 `startHTTPService` 将句柄存入 `Dumper.http`，还对非法地址与其他监听失败作不同处理。
 
-因此当前 Rust 版对观测数据契约有较强对齐，但 HTTP 协议、pprof 能力和并发模型是明确的简化实现。依据：`dumpling/export/http_handler.go`、`dump.go::startHTTPService`、两侧 `http_handler_test`。
+因此当前 Rust 版对观测数据契约有较强对齐，但 HTTP 协议、pprof 能力和并发模型是明确的简化实现。
 
 ## 扩展指南
 
@@ -117,13 +113,3 @@
 - 若要补齐 pprof，不能继续返回占位空 body；应引入或接线真实 profiling 实现，并先评估 `Cargo.toml` 依赖、平台支持、安全暴露和性能成本。
 - 调整生命周期时需同时修改 `stubs.rs::HttpServiceHandle` 和 `dump.rs::startHTTPService`/Dumper 关闭路径；`started` 当前不是健康状态，改变其含义可能影响调用方兼容性。
 - 保持 `// Copyright 2026 AsterSQL.` 与原 PingCAP Apache 版权行，不要因文档化或重构删除。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 7032 个 Rust 文件；`node --file dumpling/export/http_handler.rs` 读取了完整 149 行，并显示直接使用方 `dumpling/export/dump.rs`。
-- RustCodeGraph 精确查询/探索：查询了 `HttpServiceHandle`、`Registry`、`DefaultRegistry`、`DumpStatus`、`startHTTPService`；调用流确认 `NewDumper → startHTTPService → startDumplingServiceWithDumper → startHTTPServer → serveHTTPConnection → {DumpStatus::toJSON, metricsHandler}`。
-- 已读 Rust 生产路径：`dumpling/export/http_handler.rs`、`lib.rs`、`dump.rs::startHTTPService`、`status.rs::{GetStatus, RefreshStatus, DumpStatus::toJSON}`、`stubs.rs::{Registry, DefaultRegistry, DefaultGatherer, HttpServiceHandle}`。
-- 已读 crate 声明：`dumpling/export/Cargo.toml`，确认 package 为 `astersql-dumpling-export`、lib 入口为 `lib.rs`，HTTP/指标边界由本地 stub 与标准库承担。
-- 已读 Rust 独立测试：`dumpling/export/http_handler_test.rs`，覆盖路由、监听失败、关闭错误匹配、503、状态快照/并发轮询、配置指标注册表、默认 gatherer 回退。
-- 已读 Go 对照：`dumpling/export/http_handler.go`、`dumpling/export/dump.go::startHTTPService`、`dumpling/export/http_handler_test.go`，用于核对路由、cmux、状态与指标契约及迁移差异。
-- 按任务约束未运行 Cargo；交付验证仅执行任务指定的 11 章节结构命令，并人工复查本文能够回答文件为何存在、如何运行、如何安全扩展。

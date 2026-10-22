@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate 的计划缓存参数化组件。`pkg/planner/core/lib.rs` 通过 `mod plan_cache_param` 编译该模块，并以 `pub use plan_cache_param::*` 将六个公开函数重导出到 crate 根：`GetParamSQLFromAST`、`ParameterizeAST`、`TryParameterizeAST`、`RestoreASTWithParams`、`Params2Expressions` 和 `ParseParameterizedSQL`。因此测试和潜在调用者使用 `astersql_planner_core::...`，而不直接引用私有模块路径。
-
-它位于“把字面量 SQL 归一化为可复用计划缓存键”的边界：输入是单条 SQL 文本，输出是规范化 SQL 和按出现顺序提取的 `Datum`。当前实现不解析或修改真正的 parser AST；名称中的 `AST` 是与 Go API 对齐的兼容命名。全仓 Rust 引用搜索只发现本文件内部包装调用及 `pkg/planner/core/casetest/plancache/plan_cache_param_test.rs`，未发现生产规划主链调用，因此应将其描述为已经公开、已有独立测试但尚无可验证生产调用边的移植实现，而不是已接入 plan-cache 执行链的组件。
+当前实现不解析或修改真正的 parser AST；名称中的 `AST` 是与 Go API 对齐的兼容命名。
 
 ## 核心职责
 
@@ -78,10 +76,6 @@ RustCodeGraph 对目标文件报告 34 个符号且“used by 0 files”；其�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/plan_cache_param.go`，回归用例是 Go 的 `pkg/planner/core/casetest/plancache/plan_cache_param_test.go` 与 Rust 的同名 `.rs` 测试。
-
-共同语义包括：SELECT 投影、GROUP BY、ORDER BY、LIMIT 不参数化；格式日期/时间函数只改写第一个参数；普通 WHERE 和 INSERT VALUES 字面量按顺序提取；标识符规范化；并发调用不能污染参数；公开函数名称保持对应。Rust 表驱动测试覆盖了当前 Go `TestParameterize` 的 13 个场景，另有并发对齐测试及参数顺序/还原/解析往返测试。
-
 实现和类型并非一一等价：
 
 - Go 接收 `ast.StmtNode`，`ParameterizeAST` 通过 visitor 把 `ValueExpr` 原地换成带 offset 的 `ParamMarkerExpr`，随后 `RestoreASTWithParams` 恢复原 AST；Rust 接收 SQL 文本并生成新文本，从不修改 AST，因为它没有 AST 参数。
@@ -101,13 +95,3 @@ RustCodeGraph 对目标文件报告 34 个符号且“used by 0 files”；其�
 - 若要接入生产 plan-cache 主链，应从真实调用点显式选择 fallible API，并补充集成测试证明生成文本参与缓存键、参数仍供执行期绑定；目前没有生产调用边，不能仅依赖公开重导出判断已接线。
 - 测试逻辑应继续放在独立文件 `pkg/planner/core/casetest/plancache/plan_cache_param_test.rs`，不要内嵌进生产源文件。优先扩展现有三个 Rust 测试，并与 Go 同路径测试保持案例、错误语义和并发意图一致。
 - 性能优化若引入缓冲池或复用容器，必须保持跨线程隔离、错误路径清理和返回值所有权；兼容性风险主要集中在 SQL 规范化文本变化，因为它可能改变计划缓存键。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `pkg/planner/core/plan_cache_param.rs` 已索引，共报告 34 个符号。
-- RustCodeGraph 源码/符号查询：读取目标文件 1–738 行；精确查询确认 `TryParameterizeAST`、`GetParamSQLFromAST`、`ParameterizeAST`、`RestoreASTWithParams` 的定义位置；对六个公开 API 的 callers 查询未返回跨文件边，目标文件摘要为 `used by 0 files`。
-- RustCodeGraph 关联源码：读取 `pkg/planner/core/lib.rs` 的模块声明与重导出（167、230 行）、`pkg/planner/core/expression_codec_fn.rs` 的 `Datum` 定义（24–35 行）以及 Rust 独立测试 `pkg/planner/core/casetest/plancache/plan_cache_param_test.rs`（1–177 行）。
-- Cargo/模块证据：读取 `pkg/planner/core/Cargo.toml`、`pkg/planner/core/casetest/plancache/Cargo.toml` 和测试 crate 的 `lib.rs`；确认 crate 名称、无目标模块专属 feature、测试 dev-dependency 及 `#[cfg(test)]` 独立测试挂载。
-- Go 对照证据：读取 `pkg/planner/core/plan_cache_param.go` 和 `pkg/planner/core/casetest/plancache/plan_cache_param_test.go`，核对 visitor/pool/AST 恢复、类型推断、session parser 以及表驱动和并发测试意图。
-- 全仓 `rg` 证据：Rust 生产源码中六个公开 API 只在本文件出现；跨文件 Rust 命中位于独立 plan-cache 测试。该结果用于补足调用图未覆盖的模块/测试装配证据。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前以任务指定命令检查文档存在且恰含 11 个固定二级标题，并人工复核所有“已支持”陈述均限定于当前源码和测试证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-globalconn` crate，crate 入口 [`lib.rs`](lib.rs) 将私有模块 `pool` 的公开项全部重导出。它提供连接 ID 分配器的底层本地 ID 池：[`globalconn.rs`](globalconn.rs) 中的 `SimpleAllocator` 使用 `AutoIncPool`，`GlobalAllocator` 同时使用 `LockFreeCircularPool`（32 位本地 ID）和 `AutoIncPool`（64 位本地 ID）。因此本文件不负责 GCID 的位编码或 ServerID 管理，而负责本地 ID 的申请、归还和并发复用。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-util-globalconn`，库入口是 `lib.rs`，运行时外部依赖仅有 `log`；本文件本身只使用 Rust 标准库。根工作区 `Cargo.toml` 将 `pkg/util/globalconn` 列为 workspace member，并以 `facade_util_globalconn` 映射该包。
+`LockFreeCircularPool` 以 `head`、`tail` 和每槽 `seq` 实现多生产者、多消费者 FIFO；它只保存 32 位值，用于 `GlobalAllocator` 的 32 位本地连接号池。
 
 ## 核心职责
 
@@ -88,11 +86,9 @@ RustCodeGraph 对带类型限定的方法名执行 `callers/callees` 时未返�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 [`pool.go`](pool.go)：`IDPoolInvalidValue`、`IDPool`、`AutoIncPool`、`LockFreeCircularPool` 及其初始化、容量、获取、归还和字符串接口均保留。主要机械映射为：Go `atomic.AddUint64` 对应 `AtomicU64::fetch_add(...).wrapping_add(1)`；`sync.Mutex + map` 对应 `Mutex<HashSet>`；`atomic.Uint32` 与槽位原子函数对应 `AtomicU32`；`runtime.Gosched` 对应 `thread::yield_now`；无符号溢出通过 `wrapping_add`、`wrapping_sub` 显式表达。
-
 可见差异包括：Rust 用 `(value, bool)` 代替 Go 多返回值，用 trait 加 `Display` 代替 interface 加 `fmt.Stringer`；Go 的独立 `mu` 和 `existed` 字段合并为 `Option<Mutex<HashSet<_>>>`；Rust 把槽值也做成 `AtomicU32`；Rust 的 `tryCnt: i32` 在初始化时被截为非负 `usize`，因此 Go 中负数迭代次数等价于零次尝试。Go 在文件中用编译期赋值断言两个实现满足接口，Rust 则通过显式 `impl IDPool` 在编译期保证。
 
-测试意图也保持对应：[`pool_test.rs`](pool_test.rs) 对齐 [`pool_test.go`](pool_test.go) 的顺序分配、回绕、耗尽、释放复用、满空 FIFO、空池初始化、多生产者/消费者总和和接近 `u32` 溢出场景；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 另以较小数据集检查 Go 行为及并发值集合完整性。Rust 的 `BenchmarkPoolConcurrency` 目前只是未接入 bench harness 的普通函数，而 Go 版本是实际 benchmark，这一点不能视为 Rust 已具备等价基准入口。
+Rust 的 `BenchmarkPoolConcurrency` 目前只是未接入 bench harness 的普通函数，而 Go 版本是实际 benchmark，这一点不能视为 Rust 已具备等价基准入口。
 
 ## 扩展指南
 
@@ -102,12 +98,3 @@ Rust 文件逐项对应同目录 [`pool.go`](pool.go)：`IDPoolInvalidValue`、`
 - 若希望支持任意容量，应把当前 `& (cap - 1)` 假设改为经验证的索引策略，并新增非 2 的幂、零容量和最小容量测试；不能只改 `Cap`。
 - 若希望无锁池支持 64 位值，需要同时扩大槽值类型、重新评估内存布局/伪共享和性能，并确认 `GlobalAllocator` 的 32/64 位职责是否仍合理。
 - 测试应继续放在同目录独立文件 `pool_test.rs` 或 `migration_aster_unit_test.rs`，不要嵌入生产源文件；Go 对齐行为变化还应同步检查 `pool.go`、`pool_test.go` 与上层 `globalconn.rs`/`globalconn_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/globalconn` 列出本 crate 的 Rust/Go 实现与测试。
-- RustCodeGraph `node --file pkg/util/globalconn/pool.rs --offset 1 --limit 500`：读取目标文件 437 行全貌，并得到其五个直接使用文件。
-- RustCodeGraph 精确查询 `AutoIncPool`、`LockFreeCircularPool`、`InitExt`：确认 Rust/Go 同名符号、测试入口和 `SimpleAllocator` 使用关系；对 `AutoIncPool::Get`、`LockFreeCircularPool::Put/Get` 的 `callers/callees` 查询未返回方法级结果，故调用关系进一步由直接入口源码核验。
-- RustCodeGraph 文件节点：读取 `globalconn.rs` 的构造、申请、释放主链，读取 `pool.go`、`pool_test.rs`、`pool_test.go` 和 `migration_aster_unit_test.rs` 的对应实现与边界测试。
-- 原始文件核验：`pkg/util/globalconn/Cargo.toml`、`pkg/util/globalconn/lib.rs` 与根 `Cargo.toml`，确认 crate 名称、入口、依赖、公开重导出和 workspace 接线；目标目录没有 `doc.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认本文档存在且恰好包含 11 个固定二级章节，并人工复核唯一新增生产物为本文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-collate-ucaimpl` crate 的 Unicode CI Go 源码生成器实现，不是 SQL 请求运行时的排序规则实现。`pkg/util/collate/ucaimpl/lib.rs` 通过 `#[path = "main.rs"] pub mod generator` 纳入它，并将其公开项重导出；根 `Cargo.toml` 又将该 crate 列为 workspace 成员和 `facade_util_collate_ucaimpl` 路径依赖，`pkg/lib.rs::util::collate::ucaimpl` 最终对外重导出它。
-
-`pkg/util/collate/ucaimpl/Cargo.toml` 只声明了 `[lib] path = "lib.rs"`，没有 Rust `[[bin]]` 目标；因此文件中名为 `main` 的函数是库内公开 API，不会因名称自动成为 Cargo 可执行文件入口。仓库中现行 Go 生成链仍由 `pkg/util/collate/unicode_0400_ci_impl.go` 和 `unicode_0900_ai_ci_impl.go` 的 `//go:generate go run ./ucaimpl/main.go -- ...` 指令驱动。
+用 `Data` 提供校对器类型名和底层实现名，并由 `render_unicode_ci_template` 替换模板中仅有的 `{{.Name}}` 与 `{{.ImplName}}` 占位符。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ Rust `UNICODE_CI_IMPL` 对应 Go 的 `//go:embed unicode_ci.go.tpl` 与 `unicode
 - Go `os.Create` 后通过打开的 `*os.File` 执行模板，而且原实现没有显式 `Close`；Rust 先构造整份输出，再用 `std::fs::write` 创建/截断、写入和关闭。对成功产物和覆盖旧文件的可观察结果一致，但失败时机和资源管理路径不同。
 - Go `generateFile` 自身无返回值并将所有错误 panic；Rust `generate_file` 保留 `io::Result` 给库调用者，只有 Rust `main` 将其转为 panic。
 
-`migration_aster_unit_test.rs` 对 4.0.0 和 9.0.0 两组参数分别生成临时文件，并与仓库 Go `*_generated.go` 产物全文相等比较；另一个测试验证重复生成会截断旧内容。它们证明当前模板与固定参数的成功路径对齐，但没有直接调用 Rust `main`，也没有覆盖非法参数、I/O 失败或并发同路径写入。
+它们证明当前模板与固定参数的成功路径对齐，但没有直接调用 Rust `main`，也没有覆盖非法参数、I/O 失败或并发同路径写入。
 
 ## 扩展指南
 
@@ -82,12 +80,3 @@ Rust `UNICODE_CI_IMPL` 对应 Go 的 `//go:embed unicode_ci.go.tpl` 与 `unicode
 - 引入新模板语法前，先决定是扩展 `render_unicode_ci_template` 还是引入真正的模板引擎，并增加占位符遗留、多次出现、特殊字符与非法数据测试。这是与 Go `text/template` 语义偏离风险最高的扩展点。
 - 如果要让 Rust `main` 成为真正命令行工具，需在 Cargo manifest 中增加明确 bin 目标或单独的 `bin.rs`，并将输出路径、退出码、用法信息和错误链作为可观察契约测试；不应仅依赖当前库函数的名称。
 - 若需要可恢复或并发安全的生成，可在目标同目录创建临时文件，完整写入并刷盘后原子替换，同时为同路径竞争和中途失败增加独立回归测试。这会改变失败语义，需与 Go 工具的预期一并评估。
-
-## 验证依据
-
-- 源文件：`pkg/util/collate/ucaimpl/main.rs`，核对了常量 `UNICODE_CI_IMPL`、结构体 `Data`、`generate_file`、`render_unicode_ci_template` 和 `main` 的完整定义。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/util/collate/ucaimpl` 列出已索引的 `lib.rs`、`main.rs`、`main.go` 和迁移测试；`node --file .../main.rs` 确认文件的 5 个符号；`node ...::main`、`node ...::generate_file` 和 `node ...::render_unicode_ci_template` 确认 `main -> generate_file -> render_unicode_ci_template` 调用边。单独 `callers` 查询在 30 秒内无输出，所以外部调用面另用全仓 `rg` 核验。
-- crate 与装配：`pkg/util/collate/ucaimpl/Cargo.toml`、`pkg/util/collate/ucaimpl/lib.rs`、根 `Cargo.toml` 的 workspace 成员与 `facade_util_collate_ucaimpl` 声明，以及 `pkg/lib.rs::util::collate::ucaimpl`。
-- Go 对照与生成边：`pkg/util/collate/ucaimpl/main.go`、`unicode_ci.go.tpl`、`pkg/util/collate/unicode_0400_ci_impl.go`、`unicode_0900_ai_ci_impl.go`、`unicode_0400_ci_generated.go` 和 `unicode_0900_ai_ci_generated.go`。`ucaimpl/BUILD.bazel` 另证明 Go 侧将 `main.go` 与嵌入模板组装为可执行目标。
-- Rust 运行时边界：`pkg/util/collate/lib.rs`、`unicode_0400_ci_impl.rs`、`unicode_0900_ai_ci_impl.rs`、`unicode_0400_ci_generated.rs` 和 `unicode_0900_ai_ci_generated.rs`，用于区分 Go 生成工具与 Rust SQL 运行时校对实现。
-- 独立测试：`pkg/util/collate/ucaimpl/migration_aster_unit_test.rs`，覆盖两份参考产物的全文相等性和覆盖写截断语义。本任务是纯文档分析，按计划不运行 Cargo；没有将测试执行结果当作本文档的新验证证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-util-rowcodec` crate 内，是新格式行（new-format row）的底层内存表示与字节布局实现。crate 入口 `pkg/util/rowcodec/lib.rs` 在同一个 `rowcodec_impl` 模块中依次 `include!` `common.rs`、本文件、`encoder.rs` 和 `decoder.rs`，因此本文件能够直接使用 `CodecVer`、切片转换函数、错误构造器和 `encodeValueDatum`，编码器与解码器也能访问 `row` 的私有字段和方法。
-
-它不是 SQL 请求入口，也不直接操作存储。上层 `Encoder` 用它组织列 ID、offset、数据和 checksum；`DatumMapDecoder`、`ChunkDecoder`、`BytesDecoder` 则通过它解析 TiKV row value，再完成 Datum、Chunk 或旧格式 datum bytes 的转换。crate 的 `nextgen` feature 只向 `kerneltype`、`kv` 依赖传递，本文件没有条件编译分支。
+暴露 checksum 是否存在及版本信息；保留 extra checksum、NULL 判断和 raw checksum 计算的内部实现。
 
 ## 核心职责
 
@@ -87,13 +85,11 @@ Rust 解析结果拥有数据，不会悬垂到调用者的 `rowData`；这是�
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/rowcodec/row.go` 是逐函数对照来源：常量、字段顺序、small/large 格式、二分查找三元返回、checksum 版本白名单、缺列默认值语义和 v8.3.0 raw-key 兼容分支均保持一致。Rust 用 `Result<_, errors::SharedError>` 代替 Go `error`，用 `Option<&[u8]>` 区分 Go 的 nil default slice，用 `&dyn kv::Handle` 表示接口值。
+Rust 用 `Result<_, errors::SharedError>` 代替 Go `error`，用 `Option<&[u8]>` 区分 Go 的 nil default slice，用 `&dyn kv::Handle` 表示接口值。
 
 主要实现差异是内存所有权：Go 的 `bytesToU32Slice`/`bytes2U16Slice` 和 `data` 是原输入的视图，Rust helper 返回拥有型 Vec，small 列 ID 与 data 也显式 `to_vec`。因此 Go 的解析接近零拷贝，而当前 Rust 实现选择复制。`CalculateRawChecksum` 中 Rust 用 `min(dst.len(), data.len())` 后局部复制，精确对应 Go `copy` 的短者长度规则。
 
-可见性也不同：Rust 的 `row`、`fromBytes`、`findColID`、`getData` 部分被声明为 `pub`，但位于私有 `rowcodec_impl` 的内部组合模型中；`ColumnIsNull`、`GetExtraChecksum` 和 `CalculateRawChecksum` 仍为私有，并通过相邻 include 文件或尚未接线的路径使用。Go 同名方法虽首字母大写，但接收者类型 `row` 本身未导出，通常通过嵌入它的 Decoder/Encoder 暴露。
-
-测试对应关系包括：Rust `common_1_aster_unit_test.rs` 验证列排序、NULL 查找、`getData`、large 列 ID 和 raw-handle checksum；Rust `rowcodec_test.rs::TestCodecUtil` 验证 `ColumnIsNull` 的实际 NULL、非空、缺列无默认值和缺列有默认值四种分支，`TestEncodeDecodeRowWithChecksum` 验证无/有 checksum 及版本 2。Go `rowcodec_test.go` 还覆盖 small/large 编码、large→small 编码器复用和相同的 checksum/NULL 行为。
+可见性也不同：Rust 的 `row`、`fromBytes`、`findColID`、`getData` 部分被声明为 `pub`，但位于私有 `rowcodec_impl` 的内部组合模型中；`ColumnIsNull`、`GetExtraChecksum` 和 `CalculateRawChecksum` 仍为私有，并通过相邻 include 文件或尚未接线的路径使用。
 
 ## 扩展指南
 
@@ -103,13 +99,3 @@ Rust 解析结果拥有数据，不会悬垂到调用者的 `rowData`；这是�
 - 对外接通 `CalculateRawChecksum` 或 extra checksum 前，应先确定预期公共入口和 TiCDC 调用链，并补齐 checksum 版本、raw key/handle、缺列/NULL、值长度变化与 extra bit 的独立测试；当前无 Rust 调用边，不应仅提高可见性就宣称完成。
 - 若优化为零拷贝解析，需要为 `row` 引入与输入绑定的生命周期或经过审计的安全表示，并评估 encoder 所需可变拥有状态；不能直接照搬 Go 的 unsafe slice alias。
 - 测试应继续放在独立文件，而非嵌入 `row.rs`。优先扩展 `common_1_aster_unit_test.rs` 做内部布局/查找测试，扩展 `rowcodec_test.rs` 做公共 decoder 行为与 checksum 往返，并与 `rowcodec_test.go` 的边界用例保持一致。
-
-## 验证依据
-
-- 源码：`pkg/util/rowcodec/row.rs`（完整 403 行）、`common.rs`、`encoder.rs`、`decoder.rs`、`lib.rs`。
-- crate 边界：`pkg/util/rowcodec/Cargo.toml`；workspace 由根 `Cargo.toml` 纳入 `pkg/util/rowcodec` 并提供 `facade_util_rowcodec` 依赖别名。
-- Go 对照：`pkg/util/rowcodec/row.go`；相关行为测试为 `pkg/util/rowcodec/rowcodec_test.go`。
-- Rust 独立测试：`pkg/util/rowcodec/common_1_aster_unit_test.rs`、`pkg/util/rowcodec/rowcodec_test.rs`；本目录没有 `row_test.rs` 或同名 `row.rs` 测试文件。
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；索引包含本目录 19 个 Go/Rust 文件。
-- RustCodeGraph 查询：`node --file pkg/util/rowcodec/row.rs` 核对全文件；`node fromBytes` 确认 Rust 调用者为 `ColumnIsNull`，并确认 decoder wrapper 的调用者为 `DecodeToDatumMap`、`DecodeToChunk`、`decodeToBytesInternal`；`node findColID` 确认调用者为 `ColumnIsNull`、`CalculateRawChecksum`；`node CalculateRawChecksum` 确认其下游为 `getOffsets`、`toBytes`、`findColID`、`ChecksumVersion`；`node DecodeToDatumMap`、`node DecodeToChunk`、`node decodeToBytesInternal` 核对上层解码主链。
-- 人工复核结论：本文件存在的原因是集中维护新格式 row 的布局与共享访问不变量；运行时由 encoder 写、decoder 读；安全扩展必须同时维护格式两端、Go 兼容语义和独立测试。按任务约束未运行 Cargo，也未把未接线的内部 checksum 方法描述为现有公共能力。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-aggfuncs` crate（crate 根为 [`lib.rs`](./lib.rs)），由 `lib.rs` 以 `pub mod func_stddevsamp` 公开。它是 Rust 侧 `STDDEV_SAMP`（样本标准差）的最终数值计算内核：复用 [`func_varpop.rs`](./func_varpop.rs) 已累计或合并好的方差状态，再对样本方差开平方。
-
-文件刻意很薄：它不读取表达式、不遍历 executor 的行、不分配或合并部分结果，也不把结果写入 chunk。`builder.rs` 已能把 `FunctionName::StddevSamp` 区分为普通、original DISTINCT、partial DISTINCT 三种 `AggImplementation` 元数据变体，但 RustCodeGraph 对本文件两个函数的调用者查询只找到测试，未找到生产代码把这些函数接入 `AggFunc::append_final_result_to_chunk`。所以当前可确认的是“计算内核和构建元数据存在”，不能据此声称 Rust 生产执行主链已完整接通。
+`stddev_sample_distinct`：对 `DistinctVariance` 做同样的最终计算；去重、NULL 过滤和跨 partial result 合并均由该状态类型负责，而非本文件负责。
 
 ## 核心职责
 
@@ -69,9 +67,7 @@ DISTINCT 路径先由 `DistinctVariance::update` 过滤 NULL 并按浮点键语�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 [`func_stddevsamp.go`](./func_stddevsamp.go) 定义三个执行器类型：普通 `stddevSamp4Float64`、original DISTINCT 和 partial DISTINCT。三者在 `AppendFinalResult2Chunk` 中读取部分结果，`count <= 1` 时向目标列追加 NULL，否则计算 `sqrt(variance/(count-1))` 并直接追加 Float64。
-
-Rust 将共同计算折叠为两个自由函数：普通路径的 `VarianceState::sample_variance` 对应 Go 的计数判断与除法，`stddev_sample` 对应最后的 `math.Sqrt`；两个 Go DISTINCT 执行器共享的最终语义在 Rust 中由一个 `stddev_sample_distinct` 表达。Rust 别名对应 Go 的嵌入状态，但不是带 ordinal 和 chunk 输出行为的执行器结构体。
+Rust 别名对应 Go 的嵌入状态，但不是带 ordinal 和 chunk 输出行为的执行器结构体。
 
 因此数学语义与 Go 对齐，但接口层级不同：Go 文件已经实现 `AppendFinalResult2Chunk` 并写 chunk；本 Rust 文件只返回 `Option<f64>`。Go 测试 `TestMergePartialResult4Stddevsamp` 和 `TestStddevsamp` 的输入/期望值已在独立 Rust 测试中复现；Rust 还额外明确验证了单值、NULL 和 DISTINCT 跨部分结果去重。
 
@@ -82,14 +78,3 @@ Rust 将共同计算折叠为两个自由函数：普通路径的 `VarianceState
 若调整累计、合并、浮点键或 NaN/零值语义，真正的修改点在 `func_varpop.rs`，并会同时影响 VAR_POP、VAR_SAMP、STDDEV_POP 和 STDDEV_SAMP；需要扩大回归到相邻独立测试，而不能只改本文件。若要完成生产执行接线，应从 `builder.rs` 的三个 `AggImplementation::StddevSamp*` 变体追到具体 `AggFunc` 实例化和 `append_final_result_to_chunk`，补齐类型擦除、状态分配/更新/合并、chunk NULL/Float64 输出以及 spill/内存记账，并用执行器级测试证明，而不是仅依赖计算函数单测。
 
 兼容性风险主要有三类：改变少于两个有效值时的 NULL 行为会破坏 SQL 语义；改变 DISTINCT 浮点键规则会影响 `±0` 与 NaN；改变累计或开方次序会带来浮点结果差异。性能风险集中在 DISTINCT 最终重建状态的 O(U) 时间与 O(U) 集合存储，其中 U 为唯一值数。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/aggfuncs/func_stddevsamp.rs`，确认两个公开函数、两个公开别名及无条件编译分支。
-- 状态实现：`pkg/executor/aggfuncs/func_varpop.rs`，核对 `VarianceState::{update, merge, sample_variance}`、`DistinctVariance::{update, merge, state, sample_variance}` 的实际逻辑。
-- crate 边界：`pkg/executor/aggfuncs/Cargo.toml` 与 `pkg/executor/aggfuncs/lib.rs`，核对包名、crate 根、公开模块和独立测试装配。
-- 构建接线：`pkg/executor/aggfuncs/builder.rs`，核对 `FunctionName::StddevSamp`、三个 `AggImplementation` 变体和 `build_variance` 的模式选择。
-- RustCodeGraph：检查索引状态后查询目标文件、`stddev_sample`、`stddev_sample_distinct` 及 callers/callees；直接调用边仅落在上述 Rust 测试，未发现目标函数到生产 `AggFunc` 的接线。
-- Rust 测试：`pkg/executor/aggfuncs/func_stddevsamp_test.rs`，以及 DISTINCT 并行场景的 `func_distinct_agg_test.rs`、`go_scenario_coverage_test.rs`。
-- Go 对照：`pkg/executor/aggfuncs/func_stddevsamp.go` 与 `pkg/executor/aggfuncs/func_stddevsamp_test.go`，核对最终 chunk 输出、`N-1` 分母和合并 fixture。
-- 本任务仅做文档分析，按计划不运行 Cargo；交付验证只执行固定十一章节的结构检查，并人工复核以上事实链。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate：`pkg/executor/Cargo.toml` 将库入口指定为 `lib.rs`，而 `pkg/executor/lib.rs:60` 以 `pub mod batch_point_get` 对外公开该模块。它承载批量点查的 Rust 业务模型：把一组主键句柄或唯一索引值转换为 KV 键，批量读取行，在需要时加悲观锁，最后按 `Chunk` 分批解码输出。
-
-生产构建主链的相邻入口是 `pkg/executor/builder.rs:5090` 的 `buildBatchPointGet`：它校验临时表/缓存表、做分区裁剪、取得快照并调用 `build_batch_point_get_executor`。RustCodeGraph 能确认该入口由 `builder.rs:2381` 的 `build` 调用，但当前索引没有给出该依赖接口直接实例化本文件 `BatchPointGetExec<R>` 的边。因此，可确认两者处于同一批量点查业务链，不能仅凭现有证据断言具体运行时适配器已接到这个泛型结构体。直接、可验证的 Rust 使用者是 `pkg/executor/batch_point_get_test.rs`。
+承载批量点查的 Rust 业务模型：把一组主键句柄或唯一索引值转换为 KV 键，批量读取行，在需要时加悲观锁，最后按 `Chunk` 分批解码输出。
 
 ## 核心职责
 
@@ -82,16 +80,12 @@ Rust 的 `initialized: bool` 是普通状态位，而 Go 对照使用 `uint32` �
 
 ## 与 Go 版本的对应关系
 
-主要结构与 `pkg/executor/batch_point_get.go` 一一对应：Rust 的 `BatchPointGetExec`、`Open`、`Close`、`Next`、`initialize`、`cacheTableSnapshot`、`MockNewCacheTableSnapShot`、`LockKeys`、`PessimisticLockCacheGetter` 均保留了 Go 名称和流程。两阶段索引/行读取、重复索引键去重、升降序、无符号整型句柄排序、全局/本地索引分区 ID 来源、RR/RC 的锁时机、不一致报告、checksum/虚拟列填充等关键分支与 Go `batch_point_get.go:254-501` 对齐。
+已观察到的差异/限制包括：
 
-Rust 通过 trait 和摘要结构拆出 Go 里直接依赖的 session、transaction、snapshot、tablecodec、rowcodec 和 consistency reporter，因此“控制流已移植”不等于“所有 TiDB 具体设施已在本文件实现”。已观察到的差异/限制包括：
-
-- Go `Open` 明确组合事务 mem-buffer、悲观锁缓存、表缓存和 snapshot，Rust 将其压入 `open_batch_getter`。
 - Go `Close` 展开合并 scan/read-pool/CPU/index-usage 统计，Rust 只调用两个统计钩子。
 - Go 用 context deadline 实现最大执行时间，Rust只把毫秒数传给 `batch_get`。
 - Go failpoint 使用上下文通道协调并发步骤，Rust函数仅顺序执行两个 `fail::eval`，没有在本文件中实现相同的通道协调。
 - Go 在多分区保序处有断言/TODO；Rust 没有对应断言，调用者仍需保证句柄或索引键排序后物理 ID 的位置关系正确。
-- Go `PessimisticLockCacheGetter` 从事务上下文动态读取，Rust结构体持有独立的 `BTreeMap` 快照。
 
 测试证据也不等量：`pkg/executor/batch_point_get_test.rs` 当前只覆盖锁缓存 getter 的正常/拒绝 commit-ts 行为，以及本地索引不应用全局分区名过滤；Go 的 `pkg/executor/batch_point_get_test.go` 还覆盖 RR/RC 下主键与唯一键的并发锁行为、缓存快照和临时表点查。
 
@@ -102,13 +96,3 @@ Rust 通过 trait 和摘要结构拆出 Go 里直接依赖的 session、transact
 涉及锁语义时要分别验证 `pessimistic_read_consistency() == false/true`：前者必须覆盖存在和不存在候选键并在读取前锁，后者只能在读取后锁实际存在键。修改 `LockKeys` 时还需保持“先检查最大执行时间、锁成功后仅在悲观事务缓存返回值”的顺序。缓存 getter 若新增选项，应同步审查三个拒绝 `return_commit_ts` 的入口。
 
 测试应放在独立的 `pkg/executor/batch_point_get_test.rs`，不要内嵌回生产文件。至少同步覆盖：重复索引值去重、升降序及无符号句柄排序、全局/本地索引分区过滤、无效物理 ID、索引行不一致与弱一致性、RR/RC 锁键集合、初始化失败后的状态、Chunk 分页及虚拟列。需要保持 Go 行为时还应对照 `pkg/executor/batch_point_get_test.go` 和 `pkg/executor/executor_failpoint_test.go` 的并发场景。兼容性风险主要是错锁/漏锁和输出顺序变化；性能风险主要是额外克隆、全量排序、两次 `batch_get` 以及 `BTreeMap/BTreeSet` 的对数开销。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标源码可由 `node --file pkg/executor/batch_point_get.rs` 完整读取（560 行）。
-- RustCodeGraph 源码/符号查询：读取 `pkg/executor/batch_point_get.rs:1-560`；`query BatchPointGetExec --kind struct` 同时定位 Go/Rust 类型；`query cacheTableSnapshot --kind struct` 定位两端对应实现；`query LockKeys --kind function` 定位 Rust `batch_point_get.rs:528` 与 Go `batch_point_get.go:505`。
-- RustCodeGraph 调用链：`node pkg/executor/builder.rs::buildBatchPointGet` 确认 `builder.rs:2381 build` 调用 `builder.rs:5090 buildBatchPointGet`，后者调用 `ExecutorBuilderDependencies::build_batch_point_get_executor`。精确查询 `BatchPointGetExec::Next/initialize` 只命中 Go method，未产生本文件 Rust 泛型方法的 callers/callees，故本文没有虚构直接生产调用边。
-- crate/模块：读取 `pkg/executor/Cargo.toml` 与 `pkg/executor/lib.rs:60,527-528`，确认 crate 边界、`Chunk`/failpoint 依赖、公开模块及独立测试模块。
-- Go 对照：通过 RustCodeGraph 完整读取 `pkg/executor/batch_point_get.go:1-591`，核对结构、生命周期、两阶段读取、锁语义、缓存与差异。
-- 测试：通过 RustCodeGraph 完整读取 `pkg/executor/batch_point_get_test.rs:1-212` 和 `pkg/executor/batch_point_get_test.go:1-233`；前者直接验证本地索引分区过滤及悲观锁缓存 getter，后者提供锁并发、缓存快照与临时表行为证据。`pkg/executor` 下不存在 `doc.go`，因此没有额外包契约可读取。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的结构命令确认目标存在且恰有 11 个固定二级章节，并人工复核没有把索引缺失的接线写成已验证事实。

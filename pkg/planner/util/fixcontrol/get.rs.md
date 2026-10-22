@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util-fixcontrol` crate。crate 根 `pkg/planner/util/fixcontrol/lib.rs` 以 `pub mod get` 声明模块，并通过 `pub use get::*` 将本文件的编号常量和读取函数提升到 crate 根，因此调用方使用 `fixcontrol::Fix44855`、`fixcontrol::GetBoolWithDefault` 这类路径，而不需要显式经过 `get` 模块。
-
-`pkg/planner/util/fixcontrol/Cargo.toml` 将库入口设为 `lib.rs`、关闭自动测试发现和 doctest，并用 `package.metadata.porting.go-package` 指向 Go 包 `pkg/planner/util/fixcontrol`。本文件本身只依赖标准库的 `HashMap` 和 `IntErrorKind`；crate 清单中的 `anyhow` 供同 crate 的其他实现使用，不是本文件的直接依赖。
+定义以 TiDB issue 编号为值的 17 个 `u64` fix-control 常量，供优化器各处以稳定键名读取会话级兼容开关。
 
 ## 核心职责
 
@@ -79,9 +77,9 @@ RustCodeGraph 的文件节点把 `get.rs` 标为被 `index_join_probe.rs` 及其
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/util/fixcontrol/get.go`。17 个常量的名称和值一一对应，8 个公开 getter 的分层、存在标志和默认回退条件也保持一致。Rust 的 `Option<&HashMap<...>>` 显式表达 Go 的 nil map；Rust 的 `Result<(), String>` 表达 Go 数值 getter 的 `error`，同时把解析得到的数值作为独立元组元素保留。
+Rust 的 `Option<&HashMap<...>>` 显式表达 Go 的 nil map；Rust 的 `Result<(), String>` 表达 Go 数值 getter 的 `error`，同时把解析得到的数值作为独立元组元素保留。
 
-需要注意的实现差异：Go 使用 `strconv.ParseInt(..., 10, 64)`，Rust 通过 `IntErrorKind` 显式恢复 Go 在范围错误时返回 `MaxInt64`/`MinInt64` 的行为；Go 使用 `strconv.ParseFloat(..., 64)`，Rust 额外检查“非显式无穷字面量却解析为无穷”的情况，以恢复 Go 的范围错误。对应证据在 `get_test.rs` 的两个回归测试中。
+需要注意的实现差异：Go 使用 `strconv.ParseInt(..., 10, 64)`，Rust 通过 `IntErrorKind` 显式恢复 Go 在范围错误时返回 `MaxInt64`/`MinInt64` 的行为；Go 使用 `strconv.ParseFloat(..., 64)`，Rust 额外检查“非显式无穷字面量却解析为无穷”的情况，以恢复 Go 的范围错误。
 
 Go 的 `fixcontrol_test.go::TestFixControl` 通过 SQL 会话和记录数据验证整条集成链；Rust 的 `fixcontrol_test.rs::TestFixControl` 以独立的解析与类型化读取测试回放成功数据和默认值语义，但不启动 SQL session。该差异说明当前 Rust 测试覆盖的是 crate 逻辑对齐，而不是 Go 测试的完整会话集成环境。
 
@@ -93,12 +91,3 @@ Go 的 `fixcontrol_test.go::TestFixControl` 通过 SQL 会话和记录数据验�
 - 生产接线应在实际消费点选择默认值，并在优化器需要追踪时像 `index_join_probe.rs` 一样调用 `RecordRelevantOptFix`；getter 本身不应承担业务默认值或使用记录。
 - 测试应继续放在独立文件：通用读取矩阵扩展 `pkg/planner/util/fixcontrol/fixcontrol_test.rs`，Go 兼容的解析边界扩展 `pkg/planner/util/fixcontrol/get_test.rs`；涉及具体优化行为时还应同步相应消费模块的独立测试，例如 `index_join_probe_test.rs` 或 ranger 测试。
 - 兼容风险主要是改变已存在值与缺失值的区分、默认值触发条件或 Go 的范围错误返回值；性能风险主要来自在热点中重复解析整张映射或不必要地克隆长字符串，而不是单次标量 getter。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 7,032 个 Rust 文件；`files --filter pkg/planner/util/fixcontrol` 确认目标源、Go 对照、crate 入口和独立测试均已索引。
-- RustCodeGraph `node --file pkg/planner/util/fixcontrol/get.rs`：核对 216 行源码、17 个常量、8 个公开 getter、私有 `is_go_infinity` 及文件级使用者。
-- RustCodeGraph 文件节点：读取 `get.go`、`lib.rs`、`get_test.rs`、`fixcontrol_test.rs`、`index_join_probe.rs` 和 `pkg/util/ranger/detacher.rs`，核对 Go 语义、模块重导出、测试边界和生产消费流程。
-- RustCodeGraph 精确查询：`query` 找到 `get.rs::GetBool`、`GetFloat`、`GetFloatWithDefault`、`is_go_infinity` 等符号；按函数 ID查询 `GetBool` callers 得到空数组，已通过文件节点与 `rg` 精确引用补证该索引限制。批量按名称查询曾无输出并被中止，未作为结论依据。
-- 配置与文本核验：读取 `pkg/planner/util/fixcontrol/Cargo.toml`；检索各 Cargo 清单中的 `astersql-planner-util-fixcontrol` 依赖；检索非测试 Rust 源中的 `fixcontrol::Get*`/`Fix*` 直接引用。
-- 未运行 Cargo 或代码测试：本任务只新增文档，按任务约束以事实复核和固定章节结构检查作为验证。

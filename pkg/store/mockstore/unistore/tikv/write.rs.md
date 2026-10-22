@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-store-mockstore-unistore-tikv` crate，crate 入口 `pkg/store/mockstore/unistore/tikv/lib.rs` 通过 `pub mod write` 导出它。它用纯内存数据结构表达 UniStore 的写批、版本记录和锁表更新，目标是复刻同目录 `write.go` 中 `writeBatch`/`dbWriter` 的核心语义，供 Rust 移植代码和独立测试使用。
-
-当前接线范围必须特别区分：`pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs` 另行定义了 Go 风格的 `DBWriter`、`WriteBatch` trait，但本文件的同名具体类型没有实现这些 trait；当前 Rust `MvccStore` 在自己的 `RwLock<StoreState>` 上直接完成预写、提交和回滚，`Server::kv_delete_range` 也调用 `MvccStore::delete_file_in_range`，而不是调用这里的 `DbWriter::delete_range`。仓库搜索到的直接使用者是 `write_test.rs` 和 `main_test.rs`。因此，本文件目前是可执行、被测试的写路径组件，但不是 Rust RPC 主链的底层存储实现。
-
-`Cargo.toml` 的 `[lib] path = "lib.rs"` 确认其 crate 边界；本文件自身只依赖标准库和同 crate 的 `mvcc::{Lock, MutationOp, MAX_SYSTEM_TS}`。Cargo 的 Windows 条件依赖列出了完整 UniStore 周边 crate，但这里没有直接使用它们。
+由 `MemoryWriteBackend` 保存按 `(user key, version)` 排序的版本条目和按 user key 索引的锁，并执行 Go 对齐的锁条目大小检查。
 
 ## 核心职责
 
@@ -97,18 +93,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/tikv/write.go`：
-
 - Rust `WriteBatch` 对应 Go `writeBatch`；五个事务方法的主要分支一致。普通提交写 `commitTS` 版本，悲观锁提交不写版本，`Op_Lock` 仅为主键写额外状态，之后删锁；回滚写 commitTS=0 的状态记录。
 - `encode_user_meta` 对应 `mvcc.NewDBUserMeta`。Rust 测试 `commit_user_meta_uses_go_little_endian_layout` 用固定十六进制时间戳验证两个小端 `u64` 的精确字节序。
-- `extra_txn_status_key` 对应 `mvcc.EncodeExtraTxnStatusKey`：降序时间戳等价为 `!start_ts` 的大端字节，首字节加一把辅助状态记录移出普通 user key 排序区。`rollback_key_matches_go_extra_txn_status_encoding` 验证了该布局。
 - 锁大小检查对齐 Go 的 `len(entry.Key.UserKey)+len(entry.Value)`，Rust 用 `40 + primary + value + secondaries` 重建 `Lock.MarshalBinary()` 长度；`lock_limit_counts_go_marshaled_header` 防止只计算业务 value 的错误简化。
 - 两者都要求 DB 提交先完成，再处理锁批，避免先删除锁造成不一致；Rust 是同步的两个函数调用，Go 是容量 1024 的 DB/lock 通道、两个 worker、批次等待与错误回传。
 - Go `dbWriter` 写真实 Badger `DBBundle` 与 `LockStore`，支持 worker 合批；Rust `MemoryWriteBackend` 是进程内 `BTreeMap`/`HashMap`，没有持久化、合批或真实锁存储编码。
 - Go `DeleteRange` 使用读事务、DB reader、按 user key 计算 latch hash、每批获取/释放 latch，并通过 DB worker 删除；Rust 只对内存 map 分块加写锁，没有 latch 参数。两者的批大小 4096、空 end panic 和半开范围意图一致。
 - Go `updateLatestTS` 是 load 后单次 CAS；Rust `fetch_max` 在并发下更直接保证单调最大值，且两者都忽略最大系统时间戳。
-
-Go 测试通过 `mvcc_test.go::NewTestStore` 把 `NewDBWriter(dbBundle)` 接入真实 Go `MVCCStore`/`Server`，覆盖主链集成；Rust 对应测试目前是 `write_test.rs` 和 `main_test.rs` 的直接组件测试，不能据此宣称已达到同等接线覆盖。
 
 ## 扩展指南
 
@@ -119,19 +110,3 @@ Go 测试通过 `mvcc_test.go::NewTestStore` 把 `NewDBWriter(dbBundle)` 接入�
 - 若补齐 Go worker 语义，需要重新设计 `BATCH_CHANNEL_SIZE`、关闭时排空/拒绝策略、批间错误隔离与等待机制；不能仅增加线程而保持当前非原子的错误模型。
 - 优化 `delete_range` 时要保持 `[start, end)`、全版本删除和 4096 分批不变量；若支持并发插入或主链接入，应引入与 user key 对应的 latch 或定义一致性保证，并新增并发回归测试。
 - 性能风险集中在 `versions` 的全量 clone、范围删除先收集全部 key、每批反复获取写锁，以及锁大小每次遍历全部 secondaries；在引入优化前应保留字节布局和操作顺序测试。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件已被索引。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore/tikv/write.rs --offset 1 --limit 520`：读取目标文件全部 277 行，核对全部常量、类型、impl 和私有编码函数。
-- RustCodeGraph `query WriteBatch`、`query MemoryWriteBackend`、`query DbWriter`、`query encode_user_meta`、`query extra_txn_status_key`：确认同名 trait/Go 类型的歧义，以及本文件符号和测试导入位置。
-- RustCodeGraph `callees new_write_batch`：确认 `new_write_batch -> update_latest_ts` 及 `WriteBatch` 构造边；`callees commit` 的目标节点确认 `commit -> encode_user_meta/extra_txn_status_key`。
-- RustCodeGraph 文件节点：`mvcc/db_writer.rs`、`lib.rs`、`mvcc.rs`、`server.rs`，用于核对 trait 边界、模块导出和当前 Rust 主链没有接入本 writer 的事实。
-- 读取 `pkg/store/mockstore/unistore/tikv/Cargo.toml`，核对 crate 名称、lib 入口、porting 元数据和依赖边界。
-- 读取 Go 对照 `write.go`、`mvcc/mvcc.go` 及 `mvcc_test.go::NewTestStore`，核对 worker、Badger/lockstore、元数据编码、额外状态 key、范围删除和 Go 主链接线。
-- 读取独立 Rust 测试 `write_test.rs`，以及 `main_test.rs` 中 `memory_db_writer_preserves_lock_then_commit_order`、`memory_db_writer_rejects_oversized_lock_entries`，核对现有回归覆盖。
-- 使用 `rg` 搜索 `MemoryWriteBackend|DbWriter|new_write_batch|delete_range` 的 Rust 引用，确认生产 Rust 主链无直接使用者；测试文件是当前具体实现的直接调用者。
-
-本任务为纯文档分析，未运行 Cargo 或代码测试。结构验收应确认文件存在，并且上述十一个固定二级标题各出现一次；人工复核重点是当前接线限制、DB 后锁顺序、编码布局、并发差异及扩展测试位置均有源码或对照文件支持。

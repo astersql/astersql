@@ -2,19 +2,7 @@
 
 ## 文件定位
 
-`copr_ctx.rs` 是 `astersql-ddl-copr` crate 的核心实现文件。它由
-`pkg/ddl/copr/lib.rs` 声明为私有模块，再通过 `pub use copr_ctx::*` 从 crate
-根导出公共类型和函数。该文件不执行 DDL job，也不直接发起存储请求；它负责在
-索引回填扫描前，把表、索引、条件和行 handle 元数据整理成统一的
-`CopContext`。下游可据此确定要读取的列、输出列位置以及可下推的索引条件。
-
-这属于 DDL reorg/backfill 的数据扫描准备层，而不是 owner、job 状态机、schema
-version 或 checkpoint 持久化层。Go 生产链中，
-`pkg/ddl/backfilling_txn_executor.go::NewReorgCopContext` 创建表达式上下文和
-push-down flags 后调用同路径 Go 实现 `copr.NewCopContext`；其上游包括
-`NewAddIndexIngestPipeline` 和 `NewWriteIndexToExternalStoragePipeline`。当前 Rust
-仓库中没有检索到这些生产入口对本文件 `NewCopContext` 的直接调用，故本文只把
-这条链描述为 Go 对照和预期接线位置，不声称 Rust 已进入该生产主链。
+不执行 DDL job，也不直接发起存储请求；它负责在。
 
 ## 核心职责
 
@@ -157,9 +145,7 @@ SQL parser：关键字集合、数字扫描和操作数状态机均是有限实�
 
 ## 与 Go 版本的对应关系
 
-Rust 基本保留 `pkg/ddl/copr/copr_ctx.go` 的公开形状和核心语义：单/多索引分派、最小
-读取列集合、三种 handle 模式、生成列依赖展开、索引与 handle 偏移、多条件 `OR`
-组合，以及虚拟生成列条件不下推。Rust 测试中的 handle 模式用例直接对应 Go
+Rust 测试中的 handle 模式用例直接对应 Go
 `TestNewCopContextSingleIndex`，handle 顺序和虚拟列测试也复刻 Go 用例。
 
 需要明确的差异和迁移边界：
@@ -195,25 +181,3 @@ Rust 基本保留 `pkg/ddl/copr/copr_ctx.go` 的公开形状和核心语义：�
   中引入 DDL job/checkpoint 逻辑。
 - 性能上应避免重复复制大型元数据或在热路径反复解析条件；若引入缓存，需要明确上下文
   构造后不可变的约束以及跨线程共享要求。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；
-  `files --filter pkg/ddl/copr/copr_ctx.rs` 确认目标文件已索引且含 57 个符号。
-- RustCodeGraph `node --file pkg/ddl/copr/copr_ctx.rs`：核对完整 911 行源码、类型、工厂、
-  trait 实现、条件解析和辅助函数。
-- RustCodeGraph `query` / `explore`：核对 `NewCopContext`、三个构造器、
-  `fillUsedColumns`、`GetCondition`、偏移函数的内部调用边；精确 `callers` 查询在本地长时间
-  无输出后中止，因此又以仓库 Rust 搜索确认没有生产调用点。
-- RustCodeGraph `node NewReorgCopContext`：确认 Go 调用
-  `pkg/ddl/copr/copr_ctx.go::NewCopContext`，以及来自两个回填 pipeline 的上游边。
-- 已读源码与配置：`pkg/ddl/copr/copr_ctx.rs`、`pkg/ddl/copr/lib.rs`、
-  `pkg/ddl/copr/Cargo.toml`、根 `Cargo.toml`、`pkg/ddl/Cargo.toml`。
-- Go 对照：`pkg/ddl/copr/copr_ctx.go`、
-  `pkg/ddl/backfilling_txn_executor.go::NewReorgCopContext`，并参考 RustCodeGraph 给出的
-  `pkg/ddl/backfilling_operators.go` 上游边。
-- 独立测试：`pkg/ddl/copr/copr_ctx_test.rs` 覆盖 handle 三模式、handle 顺序、虚拟列、
-  条件合法性/引用列/虚拟列拒绝和多索引查询；`pkg/ddl/copr/copr_ctx_test.go` 覆盖对应
-  Go 行为及固定 collation。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构检查，
-  并人工复核本文没有把 Go 生产链或迁移目标误写成 Rust 当前已接线能力。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core-access` crate，定义规划器“访问对象”的 Rust 数据模型、EXPLAIN 文本格式和 `tipb::ExplainOperator` protobuf 写入逻辑。访问对象描述物理算子触达的表、索引和分区，是 EXPLAIN access object 列与二进制计划之间的表示边界。crate 入口 `pkg/planner/core/access/lib.rs` 公开 `access_obj` 模块并再导出全部类型；工作区根 `Cargo.toml` 以 `facade_planner_core_access` 引入该 crate，`pkg/lib.rs` 再通过 facade 导出。
-
-当前接线仍处于迁移阶段：`pkg/planner/core/base/misc_base.rs` 声明了 Rust `AccessObject` trait，但本文件只有同名风格的固有方法，没有为任何类型实现该 trait。仓库内 Rust 实例化点也只在 `pkg/planner/core/access/migration_aster_unit_test.rs` 中；例如 `physical_mem_table.rs::AccessObject` 当前直接返回 `String`，并未构造本文件的 `ScanAccessObject`。因此本文件已经具备与 Go 对齐的表示和转换能力，但不能据此认定 Rust 物理计划主链已普遍使用这些对象。
+`IndexAccess` 保存索引名称、列顺序和聚簇属性，并转换为 `tipb::IndexAccess`。
 
 ## 核心职责
 
@@ -72,11 +70,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/access/access_obj.go`。Rust 的 5 个公开类型与 Go 的 `ScanAccessObject`、`IndexAccess`、`OtherAccessObject`、`DynamicPartitionAccessObject`、`DynamicPartitionAccessObjects` 字段和分支逐项对应；文本常量、分隔符、判断顺序和 protobuf oneof 选择保持一致。
-
 语言层差异主要有三点。第一，Go 方法接收者或索引指针可为 `nil`；Rust 的有效 `&self` 不可为空，所以 `ScanAccessObject`/`IndexAccess` 无需对应的 nil-self 分支，但 protobuf 目标仍以 `Option` 保留 nil-target no-op。第二，Go 动态集合是对象指针切片，Rust 以 `Vec<Box<_>>` 表达非空所有权元素；Rust 不支持集合中 nil 元素，因此没有复刻 Go 对 nil 元素解引用的行为。第三，Go 类型通过方法集满足 `base.AccessObject` 接口，Rust 当前只提供 PascalCase 固有方法，尚未实现 `misc_base.rs::AccessObject` 的 snake_case trait 方法。
 
-Go 生产调用者包括物理批量点查和索引扫描等文件，RustCodeGraph 也能看到 Go 的调用边；但 Rust 仓库检索没有发现同等生产构造点。因此 Go 版本说明了设计语义和目标接线，不能作为 Rust 已接入运行时的证据。
+Go 生产调用者包括物理批量点查和索引扫描等文件，RustCodeGraph 也能看到 Go 的调用边；但 Rust 仓库检索没有发现同等生产构造点。
 
 ## 扩展指南
 
@@ -87,15 +83,3 @@ Go 生产调用者包括物理批量点查和索引扫描等文件，RustCodeGra
 要把本文件接入 Rust 主链，最小合理入口是为相应类型实现 `pkg/planner/core/base/misc_base.rs::AccessObject`，将 snake_case trait 方法委托给现有固有方法，再由物理算子的 `DataAccesser`/`PartitionAccesser` 返回 trait 对象。接线前还需解决 trait 的 `&mut ExplainOperator` 与现有 `Option<&mut ExplainOperator>` 签名差异，并为具体物理算子增加独立回归测试；不要在调用点重复实现格式化。
 
 性能方面，当前每次输出都会分配，protobuf 写入还会克隆全部名称和列表。若改为缓存或借用表示，需要特别评估计划对象变更后的缓存失效、tipb 所有权要求和 EXPLAIN 并发读取安全。兼容风险集中在用户可见字符串和 protobuf 字段布局，这两类变更都可能影响计划摘要、EXPLAIN 黄金文件或远端消费者。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust/Go 源文件和迁移测试均已索引。
-- RustCodeGraph `files --filter pkg/planner/core/access`：确认 `access_obj.rs`、`access_obj.go`、`lib.rs`、`migration_aster_unit_test.rs` 四个代码证据文件。
-- RustCodeGraph `node --file pkg/planner/core/access/access_obj.rs`：读取完整 233 行，核对所有 5 个类型、12 个方法、分支和 protobuf 写入逻辑。
-- RustCodeGraph `query AccessObject`、`query DynamicPartitionAccessObject` 及 callers/callees 查询：确认 Rust trait 位于 `base/misc_base.rs`，目标文件内部调用边，以及调用方名称歧义；精确 callers 对结构体无结果，因此结合仓库 `rg` 复核生产接线。
-- `rg` 对 Rust 构造、trait impl、方法调用和 facade 依赖的检索：只发现同目录迁移测试实例化目标类型，没有发现这些类型的 `AccessObject` trait impl；发现 `physical_cte.rs` 中只有注释掉的拟议用法。
-- `pkg/planner/core/access/Cargo.toml`、`pkg/planner/core/access/lib.rs`、根 `Cargo.toml` 和 `pkg/lib.rs`：核对 crate 名称、入口、依赖版本、再导出链和迁移元数据。
-- `pkg/planner/core/access/access_obj.go`：核对全部 Go 字段、文本格式、nil 防御、动态错误零值槽位和 protobuf oneof 语义。
-- `pkg/planner/core/access/migration_aster_unit_test.rs`：核对真实分区与 `?`、前导分隔符、普通/聚簇索引、覆盖语义、空值 no-op、动态 error/all/dual/list、多对象格式和错误槽位。
-- 人工复核结论：文件存在的目的、每条执行路径、当前未完成的 trait/生产接线和安全扩展位置均有上述源码或检索证据；没有把 Go 生产调用关系误写成 Rust 已接入事实。

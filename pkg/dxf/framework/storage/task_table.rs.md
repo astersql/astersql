@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`task_table.rs` 是 `astersql-dxf-framework-storage` crate 中任务表与子任务表的核心持久化实现。crate 根 `pkg/dxf/framework/storage/lib.rs` 通过 `include!("task_table.rs")` 将它直接纳入同一模块，因此本文件可使用 crate 根定义的 `Error`、`Value`、`sessionctx`、`sqlexec`、`proto`、行转换函数以及测试 SQL 执行器，而不是一个拥有独立命名空间的子模块。`pkg/dxf/framework/storage/Cargo.toml` 声明该 crate，并提供 `nextgen` feature；该 feature 经 `astersql-config-kerneltype/nextgen` 影响 `GetDXFSvcTaskMgr` 的路由判断。
-
-它处在 DXF 控制面的持久化边界：上游 Planner 通过 `pkg/dxf/framework/planner/planner.rs` 的 `TaskCreator for storage::TaskManager` 调用 `CreateTaskWithSession`；Scheduler 通过 `pkg/dxf/framework/scheduler/storage_adapter.rs` 调用任务查询、切步与清理接口；TaskExecutor 的轮询循环在 `pkg/dxf/framework/taskexecutor/manager.rs::handleTasks` 使用 `GetTaskExecInfoByExecID` 决定启动、暂停或回滚执行器。下游是 Session 池以及 `mysql.tidb_global_task`、`mysql.tidb_background_subtask` 和对应 history 表。
+提供子任务读取与统计：按执行节点、step、state 查询，汇总状态、错误、summary、row count，并在用户可见查询需要时合并活跃表和 history 表。
 
 ## 核心职责
 
@@ -86,11 +84,9 @@ Session 池获取、SQL、事务提交、JSON 编解码和 CPU 查询错误均�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/storage/task_table.go`。Rust 基本保持相同的列清单、哨兵错误文本、Session/事务顺序、CPU 校验、任务排序、CAS 条件、history 合并、SQL 表名和 JSON 错误形状。Rust 使用 `Vec`/`Option`/`Result` 表达 Go slice/nil/error，用 `AtomicGoPointer` 与原子整数表达 Go `atomic.Pointer`/`atomic.Int64`，并以 `runWithRestoredSystemVar` 显式模拟 Go `defer`。
+Rust 使用 `Vec`/`Option`/`Result` 表达 Go slice/nil/error，用 `AtomicGoPointer` 与原子整数表达 Go `atomic.Pointer`/`atomic.Int64`，并以 `runWithRestoredSystemVar` 显式模拟 Go `defer`。
 
 值得记录的当前差异：Rust `splitSubtasks` 仅在当前批非空时才因超限封批，因此首条 meta 已超限时产生一个单元素批；同路径 Go 当前代码无此非空判断，可能先产生空批，但 Rust 的 `task_table_test.rs::TestSplitSubtasks` 和独立 `task_table_2_aster_unit_test.rs::oversized_first_subtask_never_creates_an_empty_batch` 明确把“不产生空批”作为 Rust 边界契约。Rust 还增加 `serializeErrOption` 来映射 `Option<Error>`，Go 直接接受 nil error。Rust `TaskExecInfo` 内嵌语义改为具名 `TaskBase` 字段，但上层适配器维持相同信息。
-
-Go 行为证据主要来自 `task_table_test.go::TestSerializeErr`、`TestSplitSubtasks` 以及 `table_test.go::TestSwitchTaskStep`、`TestSwitchTaskStepInBatch`、`TestGetSubtaskSummaries`。Rust 的轻量 SQL 记录测试位于 `table_test.rs`，基础错误/分批/系统变量恢复测试位于 `task_table_test.rs`，可独立运行的公开 API 测试位于 `task_table_2_aster_unit_test.rs`。测试逻辑没有嵌入生产文件。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@ Go 行为证据主要来自 `task_table_test.go::TestSerializeErr`、`TestSplitS
 - 扩展错误字段时保留 PingCAP RFC/MySQL code 与普通错误的兼容 JSON；同步 `task_table_test.rs::TestSerializeErr`、`task_table_2_aster_unit_test.rs::serialize_error_matches_pingcap_json_shape` 和 Go `task_table_test.go::TestSerializeErr`。
 - 引入新的全局管理器或 keyspace 路由时，应在 `GetDXFSvcTaskMgr` 附近实现，检查 Cargo `nextgen` feature，并增加不同 kernel/keyspace 组合的测试。不要绕过 Session 池直接长期持有 Session。
 - 性能风险集中在动态 `IN` 列表、大批量 meta 克隆、逐条 exec ID 更新和活跃/history 双表扫描；优化前须保持参数绑定、排序和事务/快照语义，并用真实规模数据证明收益。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/framework/storage` 确认目标及 Go/Rust 测试文件；`node --file pkg/dxf/framework/storage/task_table.rs` 读取完整 1,311 行并报告 34 个使用文件；`query` 定位了 Rust `SwitchTaskStep`、`GetTaskExecInfoByExecID`、`CreateTaskWithSession` 以及同名 Go/测试符号。对精确符号执行 `callers`/`callees` 未在 30 秒内返回结果，因此调用边又由下列直接源码位置核实，而未臆测图结果。
-- 目标实现：`pkg/dxf/framework/storage/task_table.rs`；crate 边界和 include 入口：`pkg/dxf/framework/storage/Cargo.toml`、`pkg/dxf/framework/storage/lib.rs`。
-- 直接上游：`pkg/dxf/framework/planner/planner.rs`、`pkg/dxf/framework/scheduler/storage_adapter.rs`、`pkg/dxf/framework/taskexecutor/manager.rs`；共享错误调用：`pkg/dxf/framework/storage/task_state.rs`、`pkg/dxf/framework/storage/subtask_state.rs`。
-- Go 对照：`pkg/dxf/framework/storage/task_table.go`；Go 测试：`pkg/dxf/framework/storage/task_table_test.go`、`pkg/dxf/framework/storage/table_test.go`。
-- Rust 测试：`pkg/dxf/framework/storage/task_table_test.rs`、`pkg/dxf/framework/storage/task_table_2_aster_unit_test.rs`、`pkg/dxf/framework/storage/table_test.rs`。这些测试覆盖错误 JSON、分批边界、系统变量恢复、CAS 切步、summary 与大 task ID 字符串绑定。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前使用任务指定命令验证目标存在且恰有 11 个固定二级标题，并人工复查本文能回答文件为何存在、主流程如何运行、并发/错误边界以及安全扩展位置。

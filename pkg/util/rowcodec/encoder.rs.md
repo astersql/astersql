@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-rowcodec` crate 的新格式行编码器。crate 入口 `pkg/util/rowcodec/lib.rs` 通过 `include!("encoder.rs")` 把它纳入私有模块 `rowcodec_impl`，随后在 crate 根和 `rowcodec` 命名空间重新导出。其输出遵循 `row.rs` 定义的 Row Format：版本、标志、非空/空列计数、列 ID、非空列 offset、数据区，以及可选 checksum。
-
-它位于“SQL Datum → TiKV 行 value”路径的底层。一个已接线的生产入口是 `pkg/table/tblctx/buffers.rs::EncodeRowBuffer::WriteMemBufferEncoded`：该函数准备列 ID、Datum、复用缓冲和可选 `RawChecksum`，调用 `pkg/tablecodec/tablecodec.rs::EncodeRow`；后者在 `rowcodec::Encoder.Enable` 为 `true` 时调用本文件的 `Encoder::Encode`，否则走旧格式 `EncodeOldRow`。
+`Checksum` 策略把“是否追加校验和”与主体编码分离；当前实现有 `NoChecksum` 和基于 raw handle 的 `RawChecksum`。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ small/large 的两个触发条件是 `col_id > 255` 或非空数据区长度超�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/rowcodec/encoder.go`。Rust 保留了 `Encoder`、`Encode`、状态整理函数、`Checksum`/`NoChecksum`/`RawChecksum`、两个 checksum 版本常量以及各 Datum 分支，核心 wire-format 流程一致：非空/空列分组排序、small/large 切换、timestamp 转 UTC、raw-handle CRC32 和小端 checksum。
-
 已确认的实现差异：
 
 - Go `Encoder` 可用零值；Rust 必须使用 `Encoder::new(enable)`，因为字段私有且未实现 `Default`。
@@ -99,8 +95,6 @@ small/large 的两个触发条件是 `col_id > 255` 或非空数据区长度超�
 - Go 用 `multierr.Append` 返回可枚举的错误组；Rust 当前把多个错误文本拼成单个共享错误。
 - Go 在 `encodeValueDatum` 出错时命名返回值仍保留当时 buffer；Rust 的所有权转移使错误路径不会把已取出的数据区恢复到 encoder。不过两者的公开 `Encode` 都在错误时不返回成功编码字节。
 - Go 原地复用 slice；Rust `reformatCols` 有临时 Vec 和 clone/collect，可能有额外分配，属于性能审查点。
-
-说明中的对应关系以当前两份源码为准；“接口形状相似”不代表错误类型和分配行为已经完全等价。
 
 ## 扩展指南
 
@@ -112,15 +106,3 @@ small/large 的两个触发条件是 `col_id > 255` 或非空数据区长度超�
 - 接入新调用方：通常应通过 `tablecodec::EncodeRow`，由它执行长度校验和新旧格式选择；直接调用 `Encoder::Encode` 时必须自行决定是否清空 `buf`、保证列 ID/Datum 契约并提供正确 handle。
 
 相关独立测试位于 `pkg/util/rowcodec/encoder_test.rs`、`common_1_aster_unit_test.rs`、`rowcodec_test.rs`，上层接线测试位于 `pkg/table/tblctx/buffers_test.rs` 和 `migration_aster_unit_test.rs`。Rust 单元测试应继续保存在这些独立文件中。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/util/rowcodec` 确认本模块的 Rust/Go 源与测试均被索引。
-- RustCodeGraph 源码/符号：`node --file pkg/util/rowcodec/encoder.rs`；`node Encoder`；`node encodeRowCols`；`node encodeValueDatum`；`node RawChecksum`。图边确认 Rust `Encode -> encodeRowCols -> encodeValueDatum`，并显示 `encode_from_old_row -> encodeRowCols`。
-- RustCodeGraph 上游证据：`node --file pkg/tablecodec/tablecodec.rs --offset 380` 验证 `EncodeRow` 的长度检查、`Enable` 分支和调用；`node --file pkg/table/tblctx/buffers.rs --offset 1` 验证行级 checksum 与 MemBuffer 写入链。
-- 格式证据：`node --file pkg/util/rowcodec/row.rs --offset 1` 验证 flags、small/large 字段宽度、checksum header 和 row 内部状态。
-- crate/装配证据：`pkg/util/rowcodec/Cargo.toml` 与 `pkg/util/rowcodec/lib.rs`，核对 crate 名、feature、依赖、`include!` 和再导出边界。
-- Go 对照：`pkg/util/rowcodec/encoder.go`，逐项核对输入整理、Datum 分支、large 迁移、multierr 和 checksum 算法。
-- Rust 测试：`encoder_test.rs::encode_ignores_values_without_column_ids_like_go`；`common_1_aster_unit_test.rs::{encoder_sorts_columns_and_preserves_nulls,large_row_and_checksum_follow_go_layout}`；`rowcodec_test.rs::{TestEncodeLargeSmallReuseBug,TestEncodeKindNullDatum,TestEncodeDecodeRowWithChecksum}`，以及该文件中的类型往返和 65,535 字节边界用例。
-- Go 测试：`pkg/util/rowcodec/rowcodec_test.go` 中对应的 large/small 复用、Datum 编码、65,535 字节和 checksum 测试；它用于确认迁移意图，而 Rust 独立测试用于确认当前实现。
-- 本任务是只读分析加文档输出，按计划不运行 Cargo。最终以任务指定的 11 个固定二级标题结构命令校验文档形状，并人工复核上述符号与路径均可追溯。

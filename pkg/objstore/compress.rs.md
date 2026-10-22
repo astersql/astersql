@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`compress.rs` 是 `astersql-objstore` crate 的存储装饰层，由 `pkg/objstore/lib.rs` 以 `pub mod compress` 公开。它不实现某一个对象存储后端，而是在任意 `storeapi::Storage` 之上叠加 Gzip、Snappy 或 Zstd 的透明压缩读写。完整文件 API 通过 `WriteFile`/`ReadFile` 在内存中转换，流式 API 则在 `Create`/`Open` 返回的 writer/reader 外加包装。
-
-crate 边界和依赖由 `pkg/objstore/Cargo.toml` 确认：此文件使用内部 `objectio` 与 `storeapi` crate，并直接依赖 `anyhow`、`flate2`、`snap` 和 `zstd`。目标包下没有 `doc.go`；模块入口证据来自 `pkg/objstore/lib.rs`。
+`WithCompression<S>` 保存底层 `Storage`、`CompressType` 和 `DecompressConfig`，实现一个与后端无关的压缩装饰器。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ Go 主链则明确有生产调用：`pkg/lightning/mydump/parser.go` 和 `reader
 
 ## 与 Go 版本的对应关系
 
-Rust `WithCompression`/`with_compression`、`intercept_decompress_reader`、`new_limited_intercept_reader` 和 `CompressReader` 分别对应 `pkg/objstore/compress.go` 的 `withCompression`/`WithCompression`、`InterceptDecompressReader`、`NewLimitedInterceptReader` 和 `compressReader`。两边共同的核心合同包括：无压缩透传；整文件先压缩后存储/先读取后解压；流式 reader 仅允许查询底层当前偏移；不支持文件大小；负限制报错；正限制在解压前生效。
+两边共同的核心合同包括：无压缩透传；整文件先压缩后存储/先读取后解压；流式 reader 仅允许查询底层当前偏移；不支持文件大小；负限制报错；正限制在解压前生效。
 
 已确认的差异与迁移边界是：
 
@@ -87,8 +85,6 @@ Rust `WithCompression`/`with_compression`、`intercept_decompress_reader`、`new
 - Go 通用 `compressedio.NewReader`，其 Zstd 实现使用 `DecompressConfig` 的并发度；本 Rust 文件直接构造同步 `zstd::stream::read::Decoder` 并忽略配置的行为效果。
 - Go 文件后半还定义 `flushStorageWriter` 及访问统计逻辑；Rust `compress.rs` 没有这组符号，流式写的缓冲与可选 `AccessStats` 能力在 `pkg/objstore/objectio/writer.rs` 中实现。
 - Go 返回 PingCAP 分类错误（如 `ErrStorageInvalidConfig`、`ErrUnsupportedOperation`）；Rust 用 `anyhow` 与 `io::ErrorKind::{InvalidInput, Unsupported, InvalidData}` 表达对应边界，错误类型身份并非一一相同。
-
-`pkg/objstore/compress_test.go::TestWithCompressReadWriteFile` 是 Rust `test_with_compress_read_write_file` 的主要对照。Rust 测试另外锁定了 Go 默认的 Gzip multistream 语义和非法 Gzip header 在 `Open` 阶段立即拒绝的行为。
 
 ## 扩展指南
 
@@ -99,12 +95,3 @@ Rust `WithCompression`/`with_compression`、`intercept_decompress_reader`、`new
 - 修改 `Create` 时必须验证底层已是 `BufferedWriter` 的情形，并与 Go 的解包意图对齐；关注是否双重分块、访问统计是否重复、尾块与底层 close 的顺序。
 - 整文件 API 的内存占用与额外克隆是性能风险。若要优化 `SharedBuffer::bytes` 的克隆，需保证 codec 已 close 且无其他强引用，并保留错误时不向底层提交不完整对象的不变量。
 - 测试仍应位于独立 `pkg/objstore/compress_test.rs`，不要内嵌回生产文件；需跨 writer 层验证时可同步 `pkg/objstore/objectio/writer_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个符号、1848419 条边；`node --file pkg/objstore/compress.rs --offset 1 --limit 520` 读取了全部 434 行。
-- RustCodeGraph 符号查询确认 `WithCompression`、`with_compression`、`CompressReader`、`intercept_decompress_reader`、`new_limited_intercept_reader` 和 `new_decompress_reader`的定义位置；对后四者执行了 `callers`/`callees`，精确边输出为空，因此另以原始引用搜索补齐调用证据。
-- 已读 Rust 源码/配置：`pkg/objstore/compress.rs`、`pkg/objstore/Cargo.toml`、`pkg/objstore/lib.rs`、`pkg/objstore/compressedio/def.rs`、`pkg/objstore/compressedio/reader.rs`、`pkg/objstore/objectio/interface.rs`、`pkg/objstore/objectio/writer.rs` 和 `pkg/objstore/storeapi/storage.rs`。
-- 已读独立 Rust 测试：`pkg/objstore/compress_test.rs`、`pkg/objstore/objectio/writer_test.rs` 的压缩存储入口与 Zstd 解码段，以及 `pkg/objstore/azblob_1_aster_unit_test.rs` 的组合验证段。
-- 已读 Go 对照：`pkg/objstore/compress.go`、`pkg/objstore/compress_test.go`；并搜索到 `pkg/lightning/mydump/{parser,reader,loader}.go`、`pkg/executor/load_data.go` 和 `dumpling/export/writer_util.go` 的生产调用点。
-- 本任务只新增文档，按计划不运行 Cargo；最终用任务指定的 `test` + `rg -c` 命令确认文件存在且恰好包含 11 个固定二级章节。

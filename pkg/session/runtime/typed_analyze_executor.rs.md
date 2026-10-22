@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的 session runtime，实现 `astersql_executor::adapter::ExecExecutor` 与会话统计分析管线之间的专用桥接器。模块由 [`pkg/session/runtime.rs`](../runtime.rs) 私有声明，类型 `SessionTypedAnalyzeExecutor` 也仅以 `pub(super)` 暴露给 runtime 父模块，因此它不是对外 API。
-
-上游在 [`SessionBoundAdapterOwner::BuildExecutor`](scan_adapter_runtime.rs) 识别 `PlanKind::Analyze` 后，从 owner 中取得预先绑定的规范 SQL，并构造该执行器；下游由 `ConcreteSession::execute_analyze`（[`statistics.rs`](statistics.rs)）执行实际统计收集与持久化。本文件本身不实现采样、直方图或 TopN 算法，而是把适配层的 `Open/Next/Close` 生命周期转换为一次 session 级 ANALYZE 调用。
+本身不实现采样、直方图或 TopN 算法，而是把适配层的 `Open/Next/Close` 生命周期转换为一次 session 级 ANALYZE 调用。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@
 
 ## 与 Go 版本的对应关系
 
-最直接的 Go 对照位于 [`pkg/executor/adapter.go`](../../executor/adapter.go) 的 statement 执行路径：当计划是 `*plannercore.Analyze` 且 `InRestrictedSQL` 为真时，它保存原 `tidb_build_stats_concurrency`、分析扫描并发和事务隔离级别，读取 `tidb_auto_build_stats_concurrency` / `tidb_sysproc_scan_concurrency`，临时设置 `READ-COMMITTED`，并用 `defer` 恢复。Rust 的 `RestrictedAnalyzeGuard::drop` 对应 Go 的 `defer`，目的和恢复字段一致。
-
 Go 的实际分析执行器是 [`pkg/executor/analyze.go`](../../executor/analyze.go) 中 `AnalyzeExec::Next`，负责收集任务、选择构建并发、启动 worker 并保存结果；Rust 本文件只相当于 session/adapter 边界，真正算法下沉到 Rust `ConcreteSession::execute_analyze` 与 `astersql_executor::analyze::AnalyzeExec`。
 
-当前可见差异包括：Rust 以 `state.in_restricted_sql || SessionVars.InRestrictedSQL` 判定受限模式，Go 对照片段只检查 `SessionVars.InRestrictedSQL`；Rust 对读取值做显式范围过滤且静默降级，Go 借助 sysvar 校验/解析并用 `terror.Log` 记录错误；Rust 为防止绑定错配会在执行时重新解析并检查 AST。以上是当前代码事实，不应据此推断二者所有诊断日志或非法 sysvar 行为完全等价。
+当前可见差异包括：Rust 以 `state.in_restricted_sql || SessionVars.InRestrictedSQL` 判定受限模式，Go 对照片段只检查 `SessionVars.InRestrictedSQL`；Rust 对读取值做显式范围过滤且静默降级，Go 借助 sysvar 校验/解析并用 `terror.Log` 记录错误；Rust 为防止绑定错配会在执行时重新解析并检查 AST。
 
 ## 扩展指南
 
@@ -90,14 +86,3 @@ Go 的实际分析执行器是 [`pkg/executor/analyze.go`](../../executor/analyz
 - 若要支持返回行或延迟结果集，需要联合修改 `schema`、`ChunkConfig`、`NewChunk`、`Next` 和 `CalculateNoDelay`，并复核 adapter 的 `handleNoDelay` 分支，而不能只向 chunk 写数据。
 - 若要支持 detach/跨线程执行，当前 `Rc<ConcreteSession>`、`RefCell` 借用和 thread-bound session contract 都必须重新设计；简单把 `Detach` 改成 `Some` 不安全。
 - 性能敏感点是并发 sysvar 到 `SessionAnalyzeRuntime` 和扫描请求的传递。变更范围过滤或默认降级策略时，应同时核对 `tidb_vars.rs` / `sysvar_builtins.rs` 的合法范围、Go adapter 行为与统计测试，防止内部 ANALYZE 过度并发。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件且目标文件已索引；`files --filter pkg/session/runtime/typed_analyze_executor.rs` 确认单一目标；`explore "pkg/session/runtime/typed_analyze_executor.rs TypedAnalyzeExecutor"` 返回文件完整源码；`query SessionTypedAnalyzeExecutor` 与 `node SessionTypedAnalyzeExecutor` 定位结构体。泛化的 `callers/callees` 对 `execute`、`Open`、`Next` 等重名符号产生歧义，因此关键边进一步用精确源码引用核验。
-- 目标源码：[`typed_analyze_executor.rs`](typed_analyze_executor.rs)，核对两个结构体、`Drop`、构造/执行方法和完整 `ExecExecutor` 实现；文件无条件编译项。
-- Rust 入口与调用边：[`typed_adapter_bridge.rs`](typed_adapter_bridge.rs) 的 `BindAnalyzeStatement`， [`scan_adapter_runtime.rs`](scan_adapter_runtime.rs) 的 `BuildExecutor`，以及 [`pkg/executor/adapter.rs`](../../executor/adapter.rs) 的 `ExecExecutor`、`handleNoDelay` 和执行生命周期。
-- Rust 下游：[`statistics.rs`](statistics.rs) 的 `ConcreteSession::execute_analyze` / `SessionAnalyzeRuntime`，以及 [`relational_scan.rs`](relational_scan.rs) 对 `restricted_analyze_scan_concurrency` 的消费。
-- crate 边界：[`pkg/session/Cargo.toml`](../Cargo.toml)；`pkg/session` 根目录未发现 `doc.go`，故无可读取的 package contract 文件。
-- 独立 Rust 回归测试：[`scan_adapter_runtime_test.rs`](scan_adapter_runtime_test.rs) 的 `restricted_adapter_analyze_publishes_stats_and_restores_temporary_session_settings`，覆盖绑定、无结果立即执行、统计发布，以及成功/失败后的三项状态恢复。未发现与目标文件同名的独立测试文件。
-- Go 对照：[`pkg/executor/adapter.go`](../../executor/adapter.go) 的受限 ANALYZE 临时设置与 `defer` 恢复；[`pkg/executor/analyze.go`](../../executor/analyze.go) 的 `AnalyzeExec::Next`；sysvar 定义见 `pkg/sessionctx/vardef/tidb_vars.go` 与 `pkg/sessionctx/variable/sysvar.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证文档恰有十一个固定二级章节，并人工复核所有行为陈述均指向上述源码或测试证据。

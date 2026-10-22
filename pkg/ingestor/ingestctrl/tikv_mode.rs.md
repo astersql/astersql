@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate。`pkg/ingestor/ingestctrl/Cargo.toml` 以 `[lib] path = "lib.rs"` 指定 crate 根，并通过 `package.metadata.porting.go-package = "pkg/ingestor/ingestctrl"` 声明对应的 Go 包；`lib.rs` 的 `pub mod tikv_mode` 将本模块公开，同时在独立文件 `tikv_mode_test.rs` 中注册单元测试。上层 `pkg/ingestor/doc.go` 将“在写入 KV 和 ingest 前准备环境，包括把 TiKV 切到 import mode”列为 ingestor 子系统职责之一。
-
-本文件提供 TiKV Store 模式切换的 Rust 抽象和默认批量实现：从 `StoreCatalog` 获取 Store 快照，筛选可参与切换的节点，并通过 `ModeClient` 并发下发 Import/Normal 请求。源码检索显示，当前 Rust 生产代码尚未调用 `NewTiKVModeSwitcher` 或本文件的 `TiKVModeSwitcher`；直接实例化只出现在 `tikv_mode_test.rs`。因此它是已具备核心行为、但尚未接入 Rust 导入主链的迁移边界，不能视为 Go 生产接线已经完整移植。
+提供 TiKV Store 模式切换的 Rust 抽象和默认批量实现：从 `StoreCatalog` 获取 Store 快照，筛选可参与切换的节点，并通过 `ModeClient` 并发下发 Import/Normal 请求。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ RustCodeGraph 对目标文件报告了大量“used by”文件，但精确符�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/ingestor/ingestctrl/tikv_mode.go`。两端都提供 `TiKVModeSwitcher`、`NewTiKVModeSwitcher`、Import/Normal 两个门面，并把失败视为非致命；都选择状态不高于 Offline 的 Store，即包含 `Up` 和 `Offline`、排除 `Tombstone`。`pkg/lightning/tikv/tikv_test.go::TestForAllStores` 用 Up、Offline、Tombstone 三种状态验证了该筛选语义。
-
 当前差异包括：
 
 - Go 构造器持有 TLS、PD HTTP client 和 logger，`switchTiKVMode` 调用真实的 `tikv.ForAllStores` 与 `tikv.SwitchMode`；Rust 构造器接收两个抽象 trait，仓库内尚无本文件对应的生产适配器或接线。
@@ -92,14 +88,3 @@ Go 对照文件是 `pkg/ingestor/ingestctrl/tikv_mode.go`。两端都提供 `TiK
 - Store 数量可能很大时，应把“一节点一 OS 线程”替换为有界 worker pool或异步批处理，并验证取消、慢节点、部分失败和批次完成语义；这是主要性能与资源风险。
 - 若要序列化 Import/Normal 批次，应增加独立的调用级互斥或状态机，并测试同时切入/切回时的确定性。不要复用 `failures` 锁充当生命周期锁。
 - 所有测试继续放在 `tikv_mode_test.rs`，不要嵌入生产文件。建议新增 catalog 失败、client 部分失败、Normal 模式、空 Store、空 ranges、失败记录与取消传播测试；若改动 Rust 行为，保持 Go 版本意图，不用简化实现换取测试通过。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/tikv_mode.rs --offset 1 --limit 500`：读取目标全部 133 行，核对枚举、三个 trait、构造器、默认实现、并发和失败记录。
-- RustCodeGraph `query NewTiKVModeSwitcher --kind function`、`query switchTiKVMode --kind function`、`query ToImportMode --kind method`：定位 Rust/Go 同名符号。精确 callers/callees 消歧未返回边，因此又用限定为 `*.rs` 的源码检索核实；目标 Rust 构造器仅由 `tikv_mode_test.rs` 调用，公开门面仅在该实现和测试出现。
-- 已读 crate/模块证据：`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ingestor/ingestctrl/lib.rs`；包约定证据：`pkg/ingestor/doc.go`。
-- 已读 Go 对照与下游实现：`pkg/ingestor/ingestctrl/tikv_mode.go`、`pkg/lightning/tikv/tikv.go`；仓库检索核对了 Go 生产调用点 `pkg/ingestor/ingestctrl/local.go`、`lightning/pkg/importer/import.go`、`pkg/dxf/importinto/scheduler.go`。
-- 已读独立 Rust 测试 `pkg/ingestor/ingestctrl/tikv_mode_test.rs`：`switches_up_and_offline_stores_concurrently` 用 barrier 证明 Up/Offline 两个调用发生重叠，同时证明 Tombstone/Disconnected 被过滤、ranges 与 Import 模式原样传递。该测试没有覆盖 Normal、错误记录、枚举失败、取消或生产接线。
-- 已读相关 Go 测试 `pkg/lightning/tikv/tikv_test.go::TestForAllStores`：验证 Up/Offline 被包含、Tombstone 被排除；同路径没有 `tikv_mode_test.go`，故本文未声称 Go 对照文件有专属测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前只运行任务指定的 11 章节结构检查，并人工复核唯一新增生产物、源文件链接、调用边和未接线边界。

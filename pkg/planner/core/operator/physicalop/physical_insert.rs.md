@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`（`pkg/planner/core/operator/physicalop/Cargo.toml`），由 `lib.rs` 的 `mod physical_insert` 纳入并以 `pub use physical_insert::*` 从 crate 根导出。它定义 INSERT/REPLACE 的语句级物理计划 `Insert`，以及该计划直接依赖的目标表适配、生成列状态和外键检查/级联节点。它位于“AST 已完成目标表解析、表达式改写，执行器尚未真正写行”的边界：`pkg/planner/core/planbuilder_runtime.rs` 负责构造并填充计划，本文件负责保存和校验可执行规划状态，不实现 INSERT 行写入算法。
-
-该文件不是普通的、具有 `children()` 的关系算子。`Insert` 通过 `base::Plan` 暴露空输出 Schema 和计划元数据；`SelectPlan`、`FKChecks`、`FKCascades` 则由 `pkg/planner/core/flat_plan.rs` 特别识别和遍历。文件已在源码首部带有 `// Copyright 2026 AsterSQL.`，表明其 Rust 移植逻辑已经过处理。
+定义 INSERT/REPLACE 的语句级物理计划 `Insert`，以及该计划直接依赖的目标表适配、生成列状态和外键检查/级联节点。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ RustCodeGraph 将目标文件索引为 89 个符号节点，并报告被 `planbu
 
 ## 与 Go 版本的对应关系
 
-主要 Go 基准分散在 `physical_common_plans.go`、`foreign_key.go`、`plan_clone_generated.go` 及 `planbuilder.go`：
-
 - Rust `InsertGeneratedColumns` 与 Go 同名类型字段一致，克隆均深拷贝表达式和赋值；Rust `MemoryUsage` 累加内容对象，但未复刻 Go 对 slice 头/capacity 的固定开销。
 - Rust `Insert` 基本逐字段对应 Go `Insert`，`New` 对应 Go 的 `Init`。Rust 用 `Option` 表示 Go 的 nil interface/pointer，用 `Vec` 表示 slice，用 `isize` 表示 Go `int`。Rust 构造器额外保证输出 Schema 为空。
 - 两端 `ResolveIndices` 都先处理 schema producer，再分别以目标表 Schema 和 duplicate Schema 解析左/右表达式。Go 对 ON DUPLICATE 的 nil 右值有 `LazyErr` 特判；Rust 的当前类型和实现没有该分支，这是需要保留关注的语义差异。
@@ -92,11 +88,3 @@ RustCodeGraph 将目标文件索引为 89 个符号节点，并报告被 `planbu
 - 接入真实写执行前，必须区分 `MetadataTableAdapter` 与真实表。若需要改变后备行为，应优先完善 `table::BuildTableFromMeta` 的运行时安装边界，而不是让规划用适配器静默写入；这关系到事务、索引、分区和 allocator 正确性。
 - 扩展外键 explain、访问对象或内存统计时，应修改 `FKCheck`/`FKCascade` 或 `impl_foreign_key_plan!`，并同步 `flat_plan.rs` 和缓存拒绝测试。不能仅让它们实现普通物理孩子，因为 Go/Rust 当前都把这些节点作为 DML 特殊孩子处理。
 - 性能风险集中在大批 VALUES 的表达式深克隆/内存遍历、分区名线性查找以及每行分区路由；兼容性风险集中在 Go 的 nil/空 slice、`LazyErr`、错误码/错误文本和 explain 输出差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点，目标文件已索引且含 89 个符号；执行了目标目录 `files`、目标文件两段 `node --file`、`NewInsertTargetTable`/`ResolveIndices`/`MemoryUsage`/`HasForeignKeyPlans` 精确查询，以及 callers/callees 尝试。图查询对重载方法未给出可消歧调用边，故未把模糊结果作为事实。
-- 已读 Rust 源与接线：`physical_insert.rs`、`physicalop/lib.rs`、`physicalop/Cargo.toml`、`planbuilder_runtime.rs`、`flat_plan.rs`、`cache_snapshot.rs`；路径限定搜索还核对了 `expression_rewriter.rs`、`statement_ru_result.rs` 和 `table/table.rs` 的直接引用/定义位置。
-- 已读独立 Rust 测试：`physical_insert_test.rs` 验证无表达式时不需要 builder Schema；`physical_insert_aster_unit_test.rs` 验证 Schema/Table/SelectPlan 的延迟初始化、生成列深克隆和 Insert 对精确外键节点类型的所有权。`cache_snapshot_test.rs` 的引用位置也通过搜索确认，但本任务未逐段复述其全部测试。
-- 已读 Go 对照：`physical_common_plans.go` 的生成列、Insert、内存与索引解析，`foreign_key.go` 的外键节点/类型/说明和内存，`plan_clone_generated.go` 的 Insert 缓存克隆，以及 `planbuilder.go` 使用 `NewPartitionTableWithGivenSets` 的目标表接线。
-- 人工复核结论：本文区分了规划状态与真正写入、真实表与元数据后备表、普通物理孩子与特殊 DML 子节点，也明确列出了未完整移植的 Go 细节；没有把未见到的执行器接线或测试结果写成“已支持”。本任务是纯文档分析，按计划未运行 Cargo。

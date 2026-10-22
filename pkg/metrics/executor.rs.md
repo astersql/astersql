@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate（见 `pkg/metrics/Cargo.toml`），由 `pkg/metrics/lib.rs` 以公开模块 `pub mod executor` 暴露。它不是执行器本身，而是执行器、语句调度和相关事务/MPP/IndexLookUp 路径共用的 Prometheus 指标定义与初始化层。包级初始化中枢 `pkg/metrics/metrics.rs::InitMetrics` 调用 `executor::InitExecutorMetrics`，随后 `RegisterMetrics` 把本文件拥有的向量 collector 注册到默认 registry。
-
-当前 Rust 运行链上，本文件还提供 `IncStatementCounter`，供 `pkg/session/runtime/dispatch.rs::record_statement_metric` 在识别语句 AST 后更新语句计数。RustCodeGraph 将 `pkg/session/runtime/dispatch.rs` 标为 `executor.rs` 的直接使用者；`rg` 进一步定位到该调用发生在 `dispatch.rs:595`。
+只定义和初始化指标，不决定何时观测执行阶段、MPP 延迟、影响行数或 IndexLookUp 数据；这些写入点位于各消费模块。
 
 ## 核心职责
 
@@ -76,15 +74,13 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/executor.go` 是直接对照文件。两边的指标名、Help、标签顺序、指数桶参数以及普通 DML、NT-DML、`PurgeMLog` 标签值一致；Rust 用 `Option` 表达 Go 指针型包变量在初始化前未赋值，用 clone 表达多个句柄共享 collector。
+两边的指标名、Help、标签顺序、指数桶参数以及普通 DML、NT-DML、`PurgeMLog` 标签值一致；Rust 用 `Option` 表达 Go 指针型包变量在初始化前未赋值，用 clone 表达多个句柄共享 collector。
 
 关键实现差异有三点：
 
 1. Go 的 `InitExecutorMetrics` 直接赋包变量；Rust 先构造局部值、持有 `PACKAGE_INIT_LOCK`，再集中写入 `static mut Option`。
 2. Go 本文件没有 `IncStatementCounter`。Go 的 `pkg/executor/compiler.go` 根据 type/db/resource group 直接同时增加 `DbStmtNodeCounter` 和 `StmtNodeCounter`；Rust 将此动作封装为函数，由 session dispatch 调用。
 3. 当前 Rust dispatch 只识别有限 AST 类型，并传入空数据库名与 `"default"` 资源组；Go compiler 会从语句上下文取得数据库标签和资源组，也包含更完整的语句分类路径。因此指标定义已对齐不等于所有生产采集点均已完全对齐。
-
-Go 的 `pkg/session/test/nontransactionaltest/nontransactional_test.go` 验证 NT-DML 计数增加且普通 DML 指标不增加；Rust 同路径 `nontransactional_test.rs` 保留了相同断言意图。该测试覆盖这些全局指标的消费语义，但不是 `executor.rs` 的独立同名单元测试。
 
 ## 扩展指南
 
@@ -95,12 +91,3 @@ Go 的 `pkg/session/test/nontransactionaltest/nontransactional_test.go` 验证 N
 - 修改初始化：保持“先构造、后集中发布”的顺序，并通过包级 `InitMetrics`/`RegisterMetrics` 测试验证。不要绕过 `PACKAGE_INIT_LOCK` 写 `static mut`。
 
 建议的测试落点是 `pkg/metrics/metrics_test.rs`（初始化与注册）、`pkg/metrics/metrics_internal_test.rs`（collector 元数据/内部约束）或新增独立的 `pkg/metrics/executor_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 区域挂载；跨模块读取可扩展 `telemetry_test.rs`，语句执行行为则扩展 session 的独立测试。按仓库规则，测试逻辑不得写入 `executor.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件且目标 `pkg/metrics/executor.rs` 已索引；`files --filter pkg/metrics` 显示该文件有 27 个索引符号；`node --file pkg/metrics/executor.rs` 显示完整 298 行源码并给出直接使用文件 `pkg/session/runtime/dispatch.rs`；`query InitExecutorMetrics` 找到 Go/Rust 两个对照定义，`query IncStatementCounter` 找到 Rust 唯一定义。`callers/callees`/`explore` 查询在本次环境中超时，调用边改由索引的 used-by 结果与精确 `rg` 位置交叉核验。
-- 源码：`pkg/metrics/executor.rs`（22 个全局句柄、两个公开函数、标签和桶配置）；`pkg/metrics/lib.rs`（公开模块和标签常量）；`pkg/metrics/metrics.rs`（`PACKAGE_INIT_LOCK`、`INIT_METRICS_ONCE`、初始化与注册链）；`pkg/session/runtime/dispatch.rs`（语句分类和唯一 Rust 调用点）。
-- crate/兼容层：`pkg/metrics/Cargo.toml`（`astersql-metrics` 边界和依赖）；`pkg/metrics/bindinfo.rs`、`pkg/metrics/common/wrapper.rs`（Go 风格指标构造/适配入口）。
-- Go 对照：`pkg/metrics/executor.go`（指标定义与初始化）；`pkg/metrics/metrics.go`（包初始化/注册）；`pkg/executor/compiler.go`（语句 counter 的真实 Go 写入点）。
-- 测试：`pkg/metrics/bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata`（直接初始化冒烟）；`pkg/metrics/telemetry_test.rs::telemetry_getters_read_the_shared_session_and_executor_metrics`（共享 `StmtNodeCounter` 的跨模块读取）；`pkg/metrics/metrics_test.rs` 与 `metrics_internal_test.rs`（包级初始化/注册）；`pkg/session/test/nontransactionaltest/nontransactional_test.rs` 及其 Go 对照（NT-DML 与普通 DML 的指标隔离意图）。未发现专门只测试 `executor.rs` 的独立同名 Rust 测试。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终结构检查要求目标文件存在且恰有 11 个固定二级标题。

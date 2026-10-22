@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-autoid_service` crate 的核心服务实现，源码入口为 [`autoid.rs`](autoid.rs)，由 [`lib.rs`](lib.rs) 的 `mod autoid` 纳入并通过 `pub use autoid::*` 重新导出。它把 `pkg/meta/autoid` 提供的事务性 ID 存储抽象包装成按表缓存号段的服务，同时提供进程内 `AutoIdClient` 与 kvproto gRPC `AutoIdAlloc` 两种调用面。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：关键依赖包括别名 `autoid_dependency = astersql-meta-autoid`（请求、错误、存储 trait 和进程内客户端协议）、`owner_dependency = astersql-owner`（etcd owner 选举）、`kvproto`/`grpcio`（线协议）、`etcd-client`、`metrics`、`fail` 与 `tokio-util`。文件自身不创建 SQL 表元数据，也不决定何时采用单点分配器；已验证的上层接线在 `pkg/session/runtime/create_table_resources.rs`，其中单点 allocator 通过 `ClientDiscover` 使用远程服务，mock storage 则注入 `mock_for_test`。
+实现普通 rebase（只前进）和 force rebase（允许回退），并把 rebase 结果记录到 `tidb_autoid_rebase_seconds` 指标。
 
 ## 核心职责
 
@@ -99,8 +97,6 @@ etcd client 被 manager 接管；`Service::close().await` 是显式清理入口�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`autoid.go`](autoid.go)，独立测试对照为 [`autoid_test.go`](autoid_test.go) 与 Rust 的 [`autoid_test.rs`](autoid_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。主要映射如下：
-
 | Go | Rust | 对齐情况 |
 | --- | --- | --- |
 | `autoIDValue.alloc4Signed/alloc4Unsigned` | `AutoIdValue::allocate_signed/allocate_unsigned` | 对齐缓存补段、4000 默认 batch、存储脱节重载、signed/unsigned 上界 |
@@ -124,14 +120,3 @@ etcd client 被 manager 接管；`Service::close().await` 是显式清理入口�
 - 新增租户隔离字段时，不能只改请求 proto；还需同步 `AutoIdStorage`、选举 namespace、缓存键和 mock 全局键，防止不同 keyspace 共享缓存或 owner 路径。
 - 若要完成生产服务端接线，应从实际 server 生命周期创建 `Service::new`、注册 `create_grpc_service`、在 shutdown 调用 `close`，并新增覆盖真实 etcd campaign/leader 切换的独立集成测试；当前搜索结果不足以声称这部分已接线。
 - 调整 `BATCH` 会改变持久事务频率、故障空洞大小和热点表锁持有时间，应同时评估吞吐与 ID 浪费，不应只以功能测试判断。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录列出 `autoid.rs` 72 个符号。读取了目标文件全部 863 行。
-- RustCodeGraph `node autoid.rs::allocate`：调用 `ensure_owner`、`get_allocator`、signed/unsigned 分配和 `response_error`；调用者包含两个 `alloc_auto_id` 适配入口及迁移测试。
-- RustCodeGraph `node autoid.rs::rebase_ids`：调用三种 rebase、owner 检查与响应编码；调用者为进程内/gRPC `rebase` 及并发迁移测试。
-- RustCodeGraph `node autoid.rs::allocate_unsigned`、`node autoid.rs::rebase_unsigned`、`node calc_needed_batch_size`：确认补段、rebase、对齐 helper 的调用边；`calc_needed_batch_size` 由 signed/unsigned 分配路径调用。
-- RustCodeGraph `node autoid.rs::new_with_client` 与 `node autoid.rs::OnBecomeOwner`：确认选举路径、listener 实例化和当选清缓存逻辑。`node create_grpc_service` 的直接调用者仅为本 crate 测试。
-- 已读源码/配置：[`autoid.rs`](autoid.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`client.rs`](client.rs)、`pkg/session/runtime/create_table_resources.rs`。
-- 已读 Go 对照与测试：[`autoid.go`](autoid.go)、[`autoid_test.go`](autoid_test.go)、[`autoid_test.rs`](autoid_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)；测试断言提供了上述区间、边界、并发、keyspace、缓存重置、mock 复用及 gRPC 证据。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前仅执行任务指定的 11 章结构验证，并人工复核文档没有把未找到的生产服务端接线写成既成事实。

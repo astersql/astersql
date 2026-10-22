@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema` crate，模块入口是 `pkg/infoschema/lib.rs` 中的 `pub mod cache`，并由 crate 根重新导出 `Data`、`InfoCache`、`NewCache` 和 `SchemaRef`。它位于元数据加载器与会话可见 `InfoSchema` 快照之间：`pkg/domain/domain.rs` 创建主 keyspace/附加 keyspace 的缓存，将加载完成的快照写入缓存，并在普通读取和历史 MVCC 读取时复用缓存；`pkg/infoschema/issyncer/loader.rs::InfoCache` 还把同一个缓存包装为 schema 同步器的共享快照层。
-
-`pkg/infoschema/Cargo.toml` 将该目录定义为 `astersql-infoschema`，crate 根为 `lib.rs`。本文件自身只依赖 Rust 标准库以及同 crate 的 `infoschema::InfoSchema` trait，不直接依赖存储、元数据或指标 crate。
+Rust 版本也没有实现 Go `gcOldVersion` 的存储侧旧版本回收。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ RustCodeGraph 已索引 `pkg/infoschema/cache.rs`（29 个符号），并识别 
 
 ## 与 Go 版本的对应关系
 
-主要对照文件为 `pkg/infoschema/cache.go`，独立行为测试分别是 `pkg/infoschema/test/cachetest/cache_test.go` 与其 Rust 对照 `cache_test.rs`。Rust 保留了降序窗口、版本回退、timestamp 0、版本缺口、空版本容量、扩缩容和过旧拒绝等核心分支；Rust 测试用 `Arc::ptr_eq` 验证返回的是同一个 schema 对象实例。
-
 已确认的差异：
 
 - Go `NewCache(store, capacity)` 保存 `kv.Storage`，达到 `gcCheckInterval`/一分钟门槛后异步调用 `gcOldVersion`，查询最老 schema version 并执行 `Data.GCOldVersion`；Rust 构造函数没有 store，门槛分支只更新时间/版本，注释也声明存储侧 GC 不在本 crate 中。
@@ -105,12 +101,3 @@ RustCodeGraph 已索引 `pkg/infoschema/cache.rs`（29 个符号），并识别 
 - 调整 `Reset`/`ReSize`/`Upsert` 时，先决定是否也应清理 `empty_schema_versions`、`first_known_schema_version`、GC 窗口；这些当前保留状态属于兼容行为，不能顺带改变。
 - 性能风险集中在线性 snapshot 扫描、写锁内向量搬移和空版本集合超限时的全量排序；默认缓存很小（Go 注释给出现行值 16），若扩大容量，应重新评估复杂度与锁竞争。
 - 兼容风险集中在 `GetByVersion` 的历史窗口判定、timestamp 0 对旧区间的阻断、V1/V2 同版本更新规则，以及 Rust/Go `Upsert` 和 GC 行为差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/infoschema/cache.rs` 确认目标文件已索引；`node --file pkg/infoschema/cache.rs --offset 1 --limit 420` 读取完整 305 行和 29 个符号；`query InfoCache/NewCache/GetByVersion/GetBySnapshotTS/InsertEmptySchemaVersion` 核对 Rust/Go 对照符号。通用 callers/explore 因跨仓库重名产生噪声，未把其模糊结果作为唯一证据。
-- 生产源码：`pkg/infoschema/cache.rs`（全部类型、常量与实现）、`pkg/infoschema/lib.rs`（模块和重新导出）、`pkg/infoschema/Cargo.toml`（crate 边界与依赖）。该包不存在 `pkg/infoschema/doc.go`，因此无可读取的最近包级 Go contract 文件。
-- 上游调用：`pkg/domain/domain.rs`（构造、发布、latest 查询、snapshot 查询、keyspace cache）、`pkg/infoschema/issyncer/loader.rs`（共享包装、按版本复用与发布）。
-- Go 对照：`pkg/infoschema/cache.go`（缓存、指标、store GC、Upsert 行为）。
-- 独立测试：`pkg/infoschema/test/cachetest/cache_test.rs` 与 `cache_test.go`（插入、查询、淘汰、timestamp 0、缺口、扩缩容、空版本）；`pkg/infoschema/test/infoschemav2test/v2_test.rs::test_get_and_reset_recent_info_schema_ts` 与对应 Go 测试（min-TS/reset 及当前接线差异）；`v2_test.rs::test_issue_54926`（V1/V2 历史版本与 snapshot 查询）。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` 与 11 章节计数命令进行结构验证，并人工复核本文只描述已由上述源码、调用点和测试支持的事实。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；`pkg/ddl/Cargo.toml` 将库入口设为 `lib.rs`，`pkg/ddl/lib.rs` 通过 `pub mod metabuild` 公开该模块，并仅在 `#[cfg(test)]` 下挂载独立测试 `metabuild_test.rs`。它的设计位置是 DDL 语句进入表、索引等元数据构造逻辑之前的适配层：把会话侧默认值与调用方显式选项合并成一次元数据构建所需的上下文。
-
-当前 Rust 事实必须与这一设计位置区分开：全仓精确引用搜索和 RustCodeGraph 的调用轨迹只发现 `pkg/ddl/metabuild_test.rs` 调用 `new_meta_build_context_with_session`，没有 Rust 生产调用者。Rust 文件还定义了自己的字符串化 `SessionBuildContext`、`MetaBuildContext` 和 `BuildOption`，没有调用同 workspace 中更完整的 `astersql-meta-metabuild` 实现。因此它目前是可独立验证的会话默认值合并模型，不是已经接入 Rust DDL 生产主链的适配器。
-
-从 DDL 框架角度看，本文件既不创建持久 DDL job，也不推进 schema state，不做 reorg/backfill，不更新 schema version；它只是构建进程内参数快照。对应 Go 入口会在创建/修改表、视图、索引和 schema tracker 等路径中被调用，但这些 Go 调用边不能作为 Rust 已接线的证据。
+不校验 `shard_row_id_bits`、`pre_split_regions` 的业务上限，也不消费上下文来构造 `TableInfo`/`IndexInfo`；这些职责应由真实会话适配层、变量校验层和下游 metabuild 实现承担。
 
 ## 核心职责
 
@@ -82,9 +78,9 @@ Go 生产上游由 `pkg/ddl/metabuild.go::NewMetaBuildContextWithSctx` 承接；
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/ddl/metabuild.go`。命名对应为 Rust `new_meta_build_context_with_session` ↔ Go `NewMetaBuildContextWithSctx`，Rust `SessionVariables` 字段 ↔ `sctx.GetSessionVars()` 中的同名设置，Rust `BuildOption` ↔ `pkg/meta/metabuild.Option`。两边已对齐的局部规则包括：从 session 获取表达式环境和最新 InfoSchema；复制生成列自增、聚簇索引、shard bits、pre-split regions；以 `!InRestrictedSQL && PrimaryKeyRequired` 计算默认主键要求；把额外选项追加在 session-derived 默认选项之后，使后面的设置覆盖前面的设置；suppress-too-long-index-error 无额外选项时为 false。
+两边已对齐的局部规则包括：从 session 获取表达式环境和最新 InfoSchema；复制生成列自增、聚簇索引、shard bits、pre-split regions；以 `!InRestrictedSQL && PrimaryKeyRequired` 计算默认主键要求；把额外选项追加在 session-derived 默认选项之后，使后面的设置覆盖前面的设置；suppress-too-long-index-error 无额外选项时为 false。
 
-`pkg/ddl/metabuild_test.go::TestNewMetaBuildContextWithSctx` 还验证了真实 Go 上下文保持表达式对象身份、SQL mode、UTF8MB4 默认 collation、warning/note sink 和 InfoSchema 对象身份。Rust `pkg/ddl/metabuild_test.rs` 只验证字符串值、标量复制、三种聚簇模式、选项顺序和空字符串 panic；没有等价验证真实表达式或 InfoSchema 行为。
+Rust `pkg/ddl/metabuild_test.rs` 只验证字符串值、标量复制、三种聚簇模式、选项顺序和空字符串 panic；没有等价验证真实表达式或 InfoSchema 行为。
 
 主要迁移差异如下：
 
@@ -92,8 +88,6 @@ Go 生产上游由 `pkg/ddl/metabuild.go::NewMetaBuildContextWithSctx` 承接；
 - Go 表达式上下文与 InfoSchema 是可调用接口对象；Rust 此处是 `String`。Go warnings/notes 写入表达式 eval context；Rust 此处只有未接线的 `Vec<String>`。
 - Go option 是对完整 context 应用的可扩展行为对象；Rust option 是封闭枚举，新增选项必须同时修改枚举与 match。
 - Go 入口已有广泛生产调用；Rust 入口目前只有独立单元测试调用。
-
-所以本文件证明的是默认值合并规则的局部移植，不证明 DDL metabuild 适配层已经完整生产化。
 
 ## 扩展指南
 
@@ -104,13 +98,3 @@ Go 生产上游由 `pkg/ddl/metabuild.go::NewMetaBuildContextWithSctx` 承接；
 测试必须继续放在独立的 `pkg/ddl/metabuild_test.rs`。至少覆盖：新字段从 session 复制、显式 option 覆盖、重复 option 后者胜出、受限 SQL 与显式覆盖的预期关系、无效输入的准确失败行为。若切换到真实 `astersql-meta-metabuild` 类型，还应增加对象身份、SQL mode/collation、warning/note 转发和可选 InfoSchema 的测试，并参考 `pkg/meta/metabuild/context_test.rs`。
 
 兼容风险集中在公开结构体字段和 `BuildOption` 枚举变体的变化；正确性风险集中在 option 顺序、受限 SQL 主键策略以及将字符串占位误当成真实上下文；性能风险较小，主要是每次构造克隆字符串和分配 warnings 向量。接入共享 trait object 后则需额外评估 `Arc` 克隆和快照生命周期，而不是复制 Go 的指针假设。
-
-## 验证依据
-
-- 目标源码：`pkg/ddl/metabuild.rs`，核对了全部 151 行、三个公开结构体、两个公开枚举、唯一函数、断言和全部 option 分支。
-- crate 与模块：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、根门面 `pkg/lib.rs`；确认 crate 为 `astersql-ddl`、模块公开、测试独立挂载，以及 manifest 已声明但本文件未使用 `astersql-meta-metabuild`。
-- Rust 独立测试：`pkg/ddl/metabuild_test.rs`；覆盖所有 session-derived 字段、受限 SQL、全部 option、重复 option、三种聚簇模式和空表达式上下文 panic。
-- Rust 真实 metabuild 对照：`pkg/meta/metabuild/context.rs` 与 `pkg/meta/metabuild/context_test.rs`；用于确认 workspace 已有真实表达式/InfoSchema 接口和左到右 option 语义。
-- Go 对照：`pkg/ddl/metabuild.go`、`pkg/ddl/metabuild_test.go`、`pkg/meta/metabuild/context.go`；并通过精确引用搜索核对 Go 生产调用分布。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/ddl/metabuild.rs` 读取完整文件；`query` 唯一定位 `new_meta_build_context_with_session`、`MetaBuildContext` 和 `ClusteredIndexMode`；函数节点列出的调用者均在 `metabuild_test.rs`，`callees` 返回无调用。
-- 仓库搜索交叉验证：Rust 非测试源码没有引用本文件公开 API；Go 非测试源码中同名入口被多个 DDL 构造路径调用。因此人工结论是：该文件存在于会话配置到元数据构建上下文的适配位置，但当前 Rust 仅实现并测试了简化合并规则；安全扩展应优先复用真实 metabuild context 并补齐生产接线证据。

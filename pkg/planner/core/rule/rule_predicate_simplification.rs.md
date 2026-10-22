@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-rule` crate；crate 入口 `pkg/planner/core/rule/lib.rs` 以 `pub mod rule_predicate_simplification` 公开该模块。可执行部分从 `rule_init` 引入精简逻辑计划 IR（`Plan`、`Expr`、`Value`、`FieldType`）和 `LogicalRule` trait，用标准库的 `BTreeMap`/`BTreeSet` 保存按列归组的约束。
-
-文件在迁移期同时保留两层内容：第 16—630 行是被整块注释的 Go 来源及设计说明，不参与 Rust 编译；第 631 行之后才是当前可执行 Rust 实现。当前实现是基于精简 IR 的局部规则及其单元测试表面，并不是完整 Go 谓词简化器的逐函数 Rust 实现。真实 Rust 优化器的规则枚举位于 `pkg/planner/core/optimizer_runtime.rs`，其 `LogicalRule::PredicateSimplification` 分支调用真实 `logicalop::LogicalPlanRef` 的 `PredicateSimplification()`；该路径依靠 `rule_init::init()` 安装到 `rule/util` 的钩子和 `logicalop` 内实现，不调用本文件的 `PredicateSimplification::optimize` 或 `simplify_cnf`。因此，本文件当前在完整应用中的作用更接近可执行的迁移模型与独立行为规格。
-
-同目录未提供 `doc.go`；最近的包级边界证据是 `pkg/planner/core/rule/lib.rs`、`Cargo.toml` 和 `rule_init.rs`。
+文件在迁移期同时保留两层内容：第 16—630 行是被整块注释的 Go 来源及设计说明，不参与 Rust 编译；第 631 行之后才是当前可执行 Rust 实现。
 
 ## 核心职责
 
@@ -77,9 +73,7 @@ SQL 三值逻辑边界体现在 `NULL = NULL` 与 `NULL != NULL` 均不被折叠
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/rule/rule_predicate_simplification.go`。两者共同保留规则名，并且 `Optimize` 都允许改写计划却固定返回 `planChanged=false`。Rust 的后序遍历也概括了 Go 通过各逻辑算子 `PredicateSimplification()` 递归处理计划树的意图。
-
-但当前 Rust 可执行范围只是 Go 语义的子集。Go 入口 `applyPredicateSimplificationHelper` 依次执行 `PushDownNot`、可选的普通/Join 常量传播、逻辑常量短路、`IN`/`!=` 合并、重复 OR 分支删除、与其他谓词矛盾的 OR 分支裁剪及 `DeleteTrueExprs`；它还检查参数标记导致的计划缓存过度优化、字符串 collation 兼容性和表达式构造错误。上述逻辑目前只存在于本文件顶部的注释副本，不能作为 Rust 已接线证据。
+但当前 Rust 可执行范围只是 Go 语义的子集。Go 入口 `applyPredicateSimplificationHelper` 依次执行 `PushDownNot`、可选的普通/Join 常量传播、逻辑常量短路、`IN`/`!=` 合并、重复 OR 分支删除、与其他谓词矛盾的 OR 分支裁剪及 `DeleteTrueExprs`；它还检查参数标记导致的计划缓存过度优化、字符串 collation 兼容性和表达式构造错误。
 
 Rust `simplify_cnf` 额外以精简 IR 直接维护列等值/排除集合，这不是 Go 文件同名函数的逐行翻译，而是对部分矛盾检测的局部模型。真实 Rust SQL 行为由 `logicalop` 钩子路径承担；`pkg/planner/core/casetest/rule/rule_predicate_simplification_test.rs` 复用 Go fixture，覆盖计划、warning、plan-cache 形状以及矛盾折叠，但其通过完整 testkit/优化器运行，不能证明本文件的精简实现参与执行。
 
@@ -90,11 +84,3 @@ Rust `simplify_cnf` 额外以精简 IR 直接维护列等值/排除集合，这�
 若目标是补齐 Go 功能，先判断行为应进入本精简 IR，还是进入真实 `logicalop`/`rule_util` 钩子路径。完整 SQL 语义应优先沿真实优化器链接入，并同步 `pkg/planner/core/casetest/rule/rule_predicate_simplification_test.rs` 与 Go fixture；不能只增加本文件单元测试后宣称完整应用已支持。
 
 具体风险包括：`NULL` 三值逻辑、参数化计划缓存、字符串 charset/collation、可变/副作用表达式、常量位于比较式左侧时的方向性、浮点/文本值键的 SQL 等价性，以及 `optimize` 固定 false 的迭代合约。性能上应注意当前顶层去重的二次扫描、递归深度和大常量克隆。任何扩展都应保持 `LogicalRule::name()` 与优化器注册名一致，并验证真实与精简两条路径没有产生互相矛盾的规则语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 11,467 个文件；`files --filter pkg/planner/core/rule` 收录目标 Rust、Go 对照和独立测试；`node --file ... --offset 1/497` 读取了目标文件全貌；`query` 精确定位 `simplify_plan`（653）、`simplify_cnf`（666）、`simplify_expr`（706）。`callers`/`callees` 查询在 30 秒内未返回，因此调用边由直接源码引用补证。
-- 生产源码：`pkg/planner/core/rule/rule_predicate_simplification.rs`、`rule_init.rs`、`lib.rs`、`Cargo.toml`；真实接线路径对照 `pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/operator/logicalop/base_logical_plan.rs`、`logical_selection.rs`、`logical_datasource.rs`、`logical_join.rs` 和 `pkg/planner/core/rule/util/misc.rs`。
-- Go 对照：`pkg/planner/core/rule/rule_predicate_simplification.go`、`rule_init.go`，以及真实算子调用点 `pkg/planner/core/operator/logicalop/logical_selection.go`、`logical_datasource.go`、`logical_join.go`。
-- 测试证据：`pkg/planner/core/rule/rule_predicate_simplification_test.rs` 验证固定 changed 标志、非确定 OR 重复保留和 `NULL` 自比较边界；`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs` 验证真实规则枚举顺序/实际计划改写；`pkg/planner/core/casetest/rule/rule_predicate_simplification_test.rs` 与同名 `.go` 测试提供完整 SQL fixture 对照。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工检查文档只陈述上述源码、调用搜索与测试能够支持的事实。

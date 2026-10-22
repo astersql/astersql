@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-expression-exprstatic` crate 的静态表达式构建上下文。crate 入口 `pkg/expression/exprstatic/lib.rs` 以 `exprctx_impl` 模块加载并公开再导出这里的符号；`Cargo.toml` 则声明它依赖表达式上下文接口 crate、静态求值所需的字符集/MySQL 常量、会话变量默认值、校对、随机数与计划缓存工具。
-
-这里的“静态”表示上下文不借用完整会话对象，而是持有表达式构建期间所需的一组快照或共享资源。生产代码可直接构造它，例如 `pkg/session/runtime/planning.rs::plan_context_with_params_and_explain` 为带参数的规划流程创建 `EvalContext`、`ExprContext` 和共享的会话列 ID 分配器；`pkg/expression/sessionexpr/sessionctx.rs::ExprContext::IntoStatic` 则通过 `MakeExprContextStatic` 把会话绑定上下文物化为该静态类型。DDL、分区表达式和无会话表达式构建也直接调用 `NewExprContext`。
+实现 `exprctx::BuildContext`、`exprctx::ExprContext` 和 `exprctx::StaticConvertibleExprContext`，让规划器和表达式代码只依赖接口。
 
 ## 核心职责
 
@@ -80,11 +78,9 @@ RustCodeGraph 的文件节点报告 `exprctx.rs` 被 27 个索引文件使用；
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/exprstatic/exprctx.go`。Rust 保留了 Go 的 `exprCtxState`/`ExprCtxOption`、默认构造、浅复制 `Apply`、三个上下文接口、系统变量加载和静态化总体流程；字段集合也与 Go 对齐，包括后加入的 `newCollationEnabled`。
-
 语言层差异主要是所有权表达：Go 使用指针和 variadic options，Rust 使用 `Arc`、trait object 和 `Vec<ExprCtxOption>`；Go 构造器先允许字段为空、应用选项后补默认对象，Rust 先建立完整默认对象再覆盖。为保持 Go 的关键语义，Rust 构造器额外检测“EvalCtx 已替换但 tracker 仍是默认实例”，并重新绑定 tracker 告警接收器。
 
-静态化语义一致：求值上下文是独立快照，RNG 与 tracker 保持指针共享，列 ID 从最后值继续但使用新分配器。Rust 通过 `GetRngArc`/`GetPlanCacheTrackerArc` 允许已知实现零损复用；不提供 `Arc` 的其他 trait 实现走种子复制和 `Save`/`Restore` 回退。Rust 的 `LoadSystemVars` 使用共享的 `ParsedSystemVars`，替代 Go 临时构造 `SessionVars`，但测试覆盖的大小写、裁剪、枚举和字符集联动语义与 Go 一致。
+Rust 通过 `GetRngArc`/`GetPlanCacheTrackerArc` 允许已知实现零损复用；不提供 `Arc` 的其他 trait 实现走种子复制和 `Save`/`Restore` 回退。Rust 的 `LoadSystemVars` 使用共享的 `ParsedSystemVars`，替代 Go 临时构造 `SessionVars`，但测试覆盖的大小写、裁剪、枚举和字符集联动语义与 Go 一致。
 
 ## 扩展指南
 
@@ -93,16 +89,3 @@ RustCodeGraph 的文件节点报告 `exprctx.rs` 被 27 个索引文件使用；
 测试优先扩展独立文件 `pkg/expression/exprstatic/exprctx_test.rs`：默认/全选项字段放入 `checkDefaultStaticExprCtx` 与 `checkOptionsStaticExprCtx`，共享或替换语义放入 `TestStaticExprCtxApplyOptions`，静态化字段放入 `TestMakeExprContextStatic`，系统变量放入 `TestExprCtxLoadSystemVars` 或规范化测试。跨层解析规则还应同步检查 `evalctx_test.rs` 和 `migration_aster_unit_test.rs`；Go 行为变化则对照 `exprctx_test.go`。
 
 兼容风险集中在默认值、系统变量规范化和 trait 新方法；遗漏静态化字段会造成会话/静态上下文行为分叉。性能风险集中在无意把共享资源改成深复制、重复构造 tracker，以及在热路径增加字符串克隆。并发风险集中在更换列 ID 分配器或 tracker 时破坏现有共享语义。若增加新的资源型字段，应明确 `Apply` 是共享还是复制、`MakeExprContextStatic` 是否需要独立化，并以指针身份和状态传播测试固定契约。
-
-## 验证依据
-
-本说明读取并核对了以下直接证据：
-
-- 生产实现与装配：`pkg/expression/exprstatic/exprctx.rs`、`lib.rs`、`Cargo.toml`、`evalctx.rs` 中被本文件调用的系统变量解析/静态化接口。
-- 接口与并发基础：`pkg/expression/exprctx/context.rs` 中的 `BuildContext`、`ExprContext`、`StaticConvertibleExprContext`、`PlanColumnIDAllocator` 和原子简单分配器。
-- Go 对照：`pkg/expression/exprstatic/exprctx.go`。
-- 独立测试：`pkg/expression/exprstatic/exprctx_test.rs`、`exprctx_test.go`、`migration_aster_unit_test.rs`；覆盖默认值、完整选项、tracker 告警绑定、`Apply` 共享、列 ID 替换、静态化、系统变量加载及非法输入。
-- 生产调用点：`pkg/session/runtime/planning.rs`、`pkg/expression/sessionexpr/sessionctx.rs`，并通过仓库符号搜索确认 DDL、表和表达式/规划器中的其他直接使用点。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/expression/exprstatic` 定位目标与相邻 Go/Rust 文件；`node --file pkg/expression/exprstatic/exprctx.rs --offset 1 --limit 500` 返回完整 469 行源码并报告 27 个使用文件；`query NewExprContext --json` 区分出 Go、静态 Rust 和会话 Rust 的同名符号。精确 `callers/callees` 查询未在限定时间内返回，故未据此声称具体边。
-
-本任务为纯文档分析，按计划不运行 Cargo。人工复核确认本文分别回答了文件存在原因、默认构造/派生/系统变量加载/静态化的运行方式，以及扩展时必须同步的状态、接口和独立测试。

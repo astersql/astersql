@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-topsql` crate 的包级业务入口。`lib.rs` 将 `collector`、`stmtstats`、`topsql_state` 重新导出，并将本文件的公开项整体 re-export；因此调用方通过 `astersql_util_topsql::*` 使用这里的初始化、元数据注册和 profiling 上下文挂接 API，而不直接依赖私有 `topsql` 模块。
-
-它位于 SQL 执行路径与 TopSQL/TopRU 子系统之间：上游提供 SQL/Plan digest、规范化文本、连接与语句标识；本文件把数据写入 `collector::ProfileContext` 或转交 reporter，并负责把 reporter、单目标 data sink、语句统计聚合器和 RU 版本提供者按固定顺序装配。`pkg/session/runtime/scan_adapter_runtime.rs` 的 `TopSQLStart` 是当前可见的 Rust 运行时调用点之一：先检查 `TopProfilingReporterAvailable`，再调用 `RegisterSQL` 和 `RegisterPlan`。
-
-`pkg/util/topsql/Cargo.toml` 声明该 crate 直接依赖 collector、parser、plancodec、stmtstats、state 和 reporter 子 crate；可选 feature `failpoints` 仅控制高 CPU 模拟钩子的真实启用。该 crate 还被 session、server、DDL、executor 和 planner 等 Cargo 包依赖，但依赖声明本身不等同于这些包必然调用本文件的每个入口。
+位于 SQL 执行路径与 TopSQL/TopRU 子系统之间：上游提供 SQL/Plan digest、规范化文本、连接与语句标识；本文件把数据写入 `collector::ProfileContext` 或转交 reporter，并负责把 reporter、单目标 data sink、语句统计聚合器和 RU 版本提供者按固定顺序装配。
 
 ## 核心职责
 
@@ -100,9 +96,7 @@ RustCodeGraph 将本文件标记为被 16 个文件使用，并能准确定位�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 `topsql.go`：两个大小常量、包级 reporter/sink、Setup/Close、SQL/Plan 注册、三个 attach 函数、high-CPU failpoint 和两个内部 link helper 均保留。Go `init()` 被 Rust 的 `LazyLock(default_pipeline)` 代替；Go 的接口类型断言被 `SupportsRUCollector` 和带默认实现的 trait 方法表达。
-
-生命周期顺序保持一致：Setup 中先绑定并启动 reporter/sink，再注册 statement/RU collector、绑定版本提供者和启动 aggregator；Close 中先注销 RU、再关 sink/reporter/aggregator 并解绑版本提供者。`migration_aster_unit_test.rs` 将该顺序作为迁移基线验证。
+Go `init()` 被 Rust 的 `LazyLock(default_pipeline)` 代替；Go 的接口类型断言被 `SupportsRUCollector` 和带默认实现的 trait 方法表达。
 
 存在以下实现层差异：
 
@@ -112,7 +106,7 @@ Rust 文件逐项对应同目录 `topsql.go`：两个大小常量、包级 repor
 - Go failpoint 值直接断言为 bool；Rust `failpoint_enabled` 尝试解析布尔文本，无法解析时为 `false`，未启用 feature 时完全关闭。
 - Rust 额外公开 `InitializeTopProfiling`、`TopProfilingReporterAvailable`、`current_thread_profile_labels`，用于显式接线、调用保护和测试可观测性；Go 原文件没有这些同名 API。
 
-独立测试的对应关系明确标注在 `topsql_test.rs`：`test_top_sql_cpu_profile`、`test_top_sql_reporter`、`test_max_sql_and_plan_test`、`test_top_sql_pub_sub`、`test_pub_sub_when_reporter_is_stopped`、`test_top_ru_only_registers_sql_and_plan` 分别对照相应 Go 测试意图。Rust CPU 测试因运行时 profiling 能力差异采用 collector 边界注入，不应把它描述成完整复刻 Go 的 goroutine 采样链。
+Rust CPU 测试因运行时 profiling 能力差异采用 collector 边界注入，不应把它描述成完整复刻 Go 的 goroutine 采样链。
 
 ## 扩展指南
 
@@ -123,16 +117,3 @@ Rust 文件逐项对应同目录 `topsql.go`：两个大小常量、包级 repor
 - 改动全局管线时要避免在持有 `PIPELINE` 锁时调用外部 trait 方法，并明确重复 Setup/Close、替换现有 reporter、跨线程 TLS 清理的行为。
 - 接入新的运行时路径时，参考 `pkg/session/runtime/scan_adapter_runtime.rs::TopSQLStart`：先确认 reporter 可用和 digest 非空，再注册文本；不要把 Cargo 依赖存在误认为初始化已完成。
 - failpoint/忙等逻辑只应用于测试验证。生产功能不得依赖 `MockHighCPULoad` 的耗时或循环次数；调整它时同步 Go 前缀和 mysql 系统表过滤规则。
-
-## 验证依据
-
-本说明读取并核对了以下直接材料：
-
-- 生产源：`pkg/util/topsql/topsql.rs`（559 行，RustCodeGraph `node --file` 分段读取）。
-- crate/模块边界：`pkg/util/topsql/Cargo.toml`、`pkg/util/topsql/lib.rs`，以及各消费 crate 的 Cargo 依赖定向搜索。
-- Go 对照：`pkg/util/topsql/topsql.go`；测试对照：`pkg/util/topsql/topsql_test.go`。
-- Rust 独立测试：`pkg/util/topsql/topsql_test.rs`、`pkg/util/topsql/migration_aster_unit_test.rs`。
-- 真实调用点：`pkg/session/runtime/scan_adapter_runtime.rs::TopSQLStart`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/topsql` 确认目录对象；目标文件节点报告 73 个符号并列出 16 个使用文件。`query AttachAndRegisterSQLInfo --kind function --json` 区分了 Go 与 Rust 同名函数。精确 `callers`/`callees` 查询在本环境多次 30 秒超时且无输出，故未用其推导细粒度调用边，改用上述已读源码和定向 `rg` 交叉验证。
-
-行为事实由测试意图支撑：迁移基线覆盖 Setup/Close/PubSub 顺序、默认管线、None digest、字节上限、attach 开关和 CPU 负载过滤；独立 `topsql_test.rs` 覆盖 CPU collector 边界、remote reporter、SQL/Plan 上限、pub/sub 停止以及仅启用 TopRU 时仍注册元数据。根据任务范围未运行 Cargo；最终仅执行文档的 11 章节结构校验和文档交付检查。

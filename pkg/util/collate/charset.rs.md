@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-collate` crate。crate 入口 `pkg/util/collate/lib.rs` 通过 `#[path = "charset.rs"] pub mod charset_switch` 将它注册为 `charset_switch` 模块，以避免与同一入口重新导出的 `parser_charset::charset` 模块重名。其唯一生产函数 `switchDefaultCollation` 是“新排序规则开关”与字符集元数据之间的适配层：它不实现字符串比较，而是同步 GBK、GB18030 的默认排序规则元数据。
-
-`pkg/util/collate/Cargo.toml` 表明该 crate 直接依赖 `astersql-parser-charset`，并在 `lib.rs` 中将其以 `pub use parser_charset::{charset, mysql}` 暴露。本文件因此通过 `crate::charset` 操作真正的字符集注册表。默认 feature `full_collate` 控制其他 Unicode collator 的编译范围，不改变本文件的逻辑，也没有条件编译分支。
+其唯一生产函数 `switchDefaultCollation` 是“新排序规则开关”与字符集元数据之间的适配层：它不实现字符串比较，而是同步 GBK、GB18030 的默认排序规则元数据。
 
 ## 核心职责
 
@@ -75,15 +73,13 @@ RustCodeGraph 将 `pkg/util/collate/charset.rs` 标记为被两个文件使用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/collate/charset.go`，两版的业务语义一致：`true` 将 GBK/GB18030 默认值切到 `chinese_ci`，`false` 切到 `bin`，并同步四个 `IsDefault` 标志。
-
 实现形态有三点差异：
 
 - Go 直接写包级 map 中的指针对象；Rust 的 `CharacterSetInfos` 是 `LazyLock<RwLock<HashMap<...>>>`，因此必须取得写锁。
 - Go 包初始化已经准备好 collation 表；Rust 显式调用 `charset::init()` 触发 `Once` 驱动的惰性登记。
 - Go 展开写出两组赋值；Rust 用二元组数组循环复用完全相同的算法，但没有删减任一字段更新。
 
-Go 的 `pkg/util/collate/collate.go::SetNewCollationEnabledForTest` 与 Rust 同名入口都先调用本切换函数，再更新原子开关；Go 注释要求相关测试串行。Go 的 `pkg/util/collate/collate_test.go::TestSetNewCollateEnabled` 验证高层开关，Rust 的 `pkg/util/collate/charset_test.rs::switch_default_collation_updates_both_charset_catalogs` 进一步逐项验证本文件负责的两个默认名称与四个标志。
+Go 的 `pkg/util/collate/collate.go::SetNewCollationEnabledForTest` 与 Rust 同名入口都先调用本切换函数，再更新原子开关；Go 注释要求相关测试串行。
 
 ## 扩展指南
 
@@ -92,12 +88,3 @@ Go 的 `pkg/util/collate/collate.go::SetNewCollationEnabledForTest` 与 Rust 同
 若增加可失败的动态注册或允许规则缺失，应重新设计当前 `expect` 契约和部分写入风险，优先在拿锁后先完成所有目标查找/校验，再统一修改，或返回可诊断的错误。若把接口用于测试之外的运行期并发切换，还需将目录状态与 `newCollationEnabled` 的一致性协议一并设计，不能只依赖当前单表写锁。
 
 兼容性重点是默认 collation 会影响依赖字符集元数据的 SQL/DDL 行为；性能重点是切换持有全局目录写锁并执行固定数量查找，目前复杂度为常数。不要为此函数引入 I/O 或昂贵的 collator 构建。修改后应同步比较 `pkg/util/collate/charset.go`，并保留 GBK、GB18030 两组行为一致。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/util/collate/charset.rs` 读取全部 57 行并报告使用者为 `pkg/util/collate/collate.rs`、`pkg/util/collate/charset_test.rs`；`query switchDefaultCollation` 定位 Go/Rust 两个实现；`callers` 未返回静态边，`callees` 对两个同名实现均未解析下游边，因此调用关系又以直接源码引用交叉核验。
-- 目标与模块边界：`pkg/util/collate/charset.rs`、`pkg/util/collate/lib.rs`、`pkg/util/collate/Cargo.toml`。
-- Rust 下游状态：`pkg/parser/charset/charset.rs` 中的 `CharacterSetInfos`、四个 collation 常量、`CharsetGBK`/`CharsetGB18030`、`add_collation`、`init`/`ensure_initialized`。
-- Rust 调用与测试：`pkg/util/collate/collate.rs::SetNewCollationEnabledForTest`；`pkg/util/collate/charset_test.rs::switch_default_collation_updates_both_charset_catalogs`。
-- Go 对照：`pkg/util/collate/charset.go::switchDefaultCollation`、`pkg/util/collate/collate.go::SetNewCollationEnabledForTest`、`pkg/util/collate/collate_test.go::TestSetNewCollateEnabled`。
-- 人工复核结论：本文件存在是为了让新 collation 测试开关同步修改 GBK/GB18030 的共享默认元数据；运行时先初始化目录、再在独占锁内切换名称与标志；安全扩展必须同时维护注册、成对标志、独立测试及全局并发约束。

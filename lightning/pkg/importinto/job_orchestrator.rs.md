@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-importinto` crate 中 IMPORT INTO 作业的编排层，源码由 [`lib.rs`](lib.rs) 作为 `job_orchestrator` 模块装配并重导出。它位于导入器与三个可替换边界之间：上游 [`Importer::buildOrchestrator`](importer.rs) 构造它、[`Importer::runOnce`](importer.rs) 调用 `SubmitAndWait`，下游则分别由 [`JobSubmitter`](job_submitter.rs) 提交单表作业、[`CheckpointManager`](checkpoint.rs) 持久化恢复状态、[`JobMonitor`](job_monitor.rs) 等待远端作业结束，并通过 `importsdk::SDK` 查询和取消远端作业。
-
-最近的 [`Cargo.toml`](Cargo.toml) 声明包名为 `astersql-lightning-pkg-importinto`、库入口为 `lib.rs`，移植元数据把它对应到 Go 包 `lightning/pkg/importinto`。清单中的显式外部依赖只有 precheck、`serde`、`serde_json`、`url`、`uuid`；本文件使用的 `context`、`importsdk`、`log`、`zap`、`failpoint` 等接口来自同 crate 的 [`stubs.rs`](stubs.rs) 重导出，因此这里描述的是当前 Rust crate 内的可观察行为，而不是独立上游 SDK crate 的实现细节。
+为“请求已经发出但父上下文随后取消”的竞态提供宽限上下文：已开始的提交仍有机会取得 Job ID，checkpoint 记录又获得一个新的独立宽限期，从而让后续清理可以定位远端作业。
 
 ## 核心职责
 
@@ -101,7 +99,7 @@ RustCodeGraph 对本文件内部的关键边给出：`Cancel -> getGroupKey / ca
 
 ## 与 Go 版本的对应关系
 
-主要结构与 [`job_orchestrator.go`](job_orchestrator.go) 一一对应：相同的公开接口、配置字段、默认值、两阶段主流程、checkpoint 恢复规则、group 取消、五次指数退避、`task not found` 特判、取消后 checkpoint 映射，以及两种提交宽限上下文。Rust 用 `Arc<dyn Trait>` 对应 Go interface，用 `Arc<Mutex<_>>` 对应 Go 的共享切片保护，用线程加 `SemGuard` 对应 `errgroup.SetLimit`，并用短周期检查实现 Go `select { ctx.Done(), timer.C }` 的可中断退避。
+Rust 用 `Arc<dyn Trait>` 对应 Go interface，用 `Arc<Mutex<_>>` 对应 Go 的共享切片保护，用线程加 `SemGuard` 对应 `errgroup.SetLimit`，并用短周期检查实现 Go `select { ctx.Done(), timer.C }` 的可中断退避。
 
 需要注意的实现差异：
 
@@ -111,8 +109,6 @@ RustCodeGraph 对本文件内部的关键边给出：`Cancel -> getGroupKey / ca
 - Go 的 `newStartedSubmitContext` 用 timer 和 `select`，完成时能立即观察 grace context 已结束；Rust `AfterFunc` 回调直接 sleep 到宽限期，cancel function 通过 `stop()` 尝试终止回调。文档只确认对外测试覆盖的“父取消后短期仍存活”与“最终取消”行为，不推断底层线程实现完全等价。
 - Go 在 checkpoint 查询、提交和 checkpoint 记录作用域结束时均 `defer cancel()`；Rust 当前只保存 `_cancelCheckpoint`、`_cancel`、`_cancelRecord` 而不调用，因此不能认为具有同样的提前释放时机。
 - Go `SubmitAndWait` 含 `FailAfterSubmission` failpoint；当前 Rust 没有。两端的 `setSubmitGraceTimeout` 均有对应测试。
-
-独立 Rust 测试 [`job_orchestrator_test.rs`](job_orchestrator_test.rs) 与 Go 测试 [`job_orchestrator_test.go`](job_orchestrator_test.go) 对齐覆盖：空输入、成功提交、已完成跳过、运行中恢复、失败后重提、提交/监控失败清理、部分提交仍记录与取消、恢复作业在兄弟失败后仍取消、提交和记录各自的宽限期、finished/running 取消对账、无 active job 的组级取消、`task not found` 重试，以及上下文可中断退避。
 
 ## 扩展指南
 
@@ -125,12 +121,3 @@ RustCodeGraph 对本文件内部的关键边给出：`Cancel -> getGroupKey / ca
 - 新增真实外部 Rust 依赖时应遵守仓库规则：在独立上游仓库移植并发布 tag，本仓库只引用统一 tag；本文件当前依赖均通过本 crate 接口注入，不应把临时本地副本复制进来。
 
 兼容性风险主要在上下文取消时机、首错后的兄弟提交、group key 选择和 checkpoint 状态映射；性能风险主要在每表 OS 线程、1ms 获取令牌轮询、2ms 取消退避轮询以及 `activeJobs`/结果向量的互斥锁竞争。任何调整都应优先保持 Go 的可观察语义，而不是仅让 Rust 测试通过。
-
-## 验证依据
-
-- 生产源码：[`job_orchestrator.rs`](job_orchestrator.rs) 的 `NewJobOrchestrator`、`SubmitAndWait`、`Cancel`、`submitAllJobs`、`cancelJobWithRetry`、`updateCheckpointsAfterCancel`、`recordSubmission` 和两个宽限上下文构造函数。
-- 上游与模块边界：[`importer.rs`](importer.rs) 的 `buildOrchestrator`、`Run`、`runOnce`；[`lib.rs`](lib.rs) 的模块装配；[`Cargo.toml`](Cargo.toml) 的 crate/Go package 元数据与依赖声明。
-- Go 对照：[`job_orchestrator.go`](job_orchestrator.go) 的同名接口、结构、工厂、提交、取消、重试和宽限期函数。
-- 测试证据：[`job_orchestrator_test.rs`](job_orchestrator_test.rs) 的 9 个独立测试，以及 [`job_orchestrator_test.go`](job_orchestrator_test.go) 的 8 个同族测试；Rust 额外显式验证取消退避可被上下文快速中断。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；查询确认 `NewJobOrchestrator -> NewJobMonitor`、`SubmitAndWait -> submitAllJobs / WaitForJobs / Cancel`、`Cancel -> getGroupKey / cancelJobsInGroup / updateCheckpointsAfterCancel`、`cancelJobWithRetry -> shouldRetryCancelJobErr / sleepWithContext`，以及 `Importer` 中的直接上游调用。图对闭包和动态 trait 调用不完整的部分已用上述源码补证。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收以固定章节结构检查和人工事实复核为准。

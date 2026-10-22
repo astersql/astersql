@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate，是表达式“可选求值属性”（Optional Eval Prop）体系中的序列能力边界。它不实现序列的缓存、步长、循环或持久化算法，而是定义表达式层可依赖的最小序列操作接口，并把会话层提供的 `(db, name) -> operator` 工厂注册为 `OptPropSequenceOperator`。模块由 `pkg/expression/expropt/lib.rs` 的 `mod sequence; pub use sequence::*;` 纳入并公开再导出；crate 边界和依赖见 `pkg/expression/expropt/Cargo.toml`。
-
-会话侧入口位于 `pkg/expression/sessionexpr/sessionctx.rs::NewEvalContext`：它捕获 `Arc<C>`，构造 `SequenceOperatorProvider`，并把调用转发给 `SessionContext::sequence_operator`。因此本文件位于“表达式声明能力”与“具体会话/InfoSchema/序列表实现”之间，不拥有数据库对象本身。
+权限检查、名称解析、对象不存在错误、序列值规则以及会话最近值缓存都应由调用方或具体 `SequenceOperator` 实现负责；目标文件本身没有这些策略。
 
 ## 核心职责
 
@@ -72,13 +70,11 @@ Provider 闭包要求 `Send + Sync + 'static`，所以注册表可以持有捕�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/expropt/sequence.go`。Rust `SequenceOperator` 的三个方法逐项对应 Go `GetSequenceID`、`GetSequenceNextVal`、`SetSequenceVal`；Rust 将 Go 的尾部 `error` 映射为 `anyhow::Result`，并把 `SetSequenceVal` 的两个成功返回值放入元组。
+Rust `SequenceOperator` 的三个方法逐项对应 Go `GetSequenceID`、`GetSequenceNextVal`、`SetSequenceVal`；Rust 将 Go 的尾部 `error` 映射为 `anyhow::Result`，并把 `SetSequenceVal` 的两个成功返回值放入元组。
 
-Go 用命名函数类型 `type SequenceOperatorProvider func(db, name string) ...` 同时充当 Provider 和可调用值；Rust 因 trait 实现与类型擦除需要，改为持有 boxed `Fn` 的结构体，并提供 `new`/`call`。Rust 额外实现 `as_any`，用于替代 Go 的运行时类型断言并返回可诊断错误。两端 Reader 都声明相同属性键，并执行“取 Provider后再传入 db/name”的流程。
+Go 用命名函数类型 `type SequenceOperatorProvider func(db, name string) ...` 同时充当 Provider 和可调用值；Rust 因 trait 实现与类型擦除需要，改为持有 boxed `Fn` 的结构体，并提供 `new`/`call`。Rust 额外实现 `as_any`，用于替代 Go 的运行时类型断言并返回可诊断错误。
 
-Go 的生产会话适配器 `pkg/expression/sessionexpr/sessionctx.go::sequenceOperatorProp` 使用 `util.GetSequenceByName` 解析对象，并由 `sequenceOperator` 转发到 `SequenceTable`。Rust 对应会话 trait 和 Provider 注册已存在，但目标文件不包含 Go 中的具体 `SequenceTable` 适配器；目前只能从 `SessionContext::sequence_operator` 的实现获得它。并且 Rust 现有 `builtin_info.rs` 序列函数走 `SequenceService`，所以生产主链是否最终统一到本接口仍是未接线/未验证边界。
-
-`pkg/expression/expropt/optional_test.go` 与 Rust `optional_test.rs::verify_sequence_operator` 对齐验证：`db1/name1` 参数不变、无 Provider 时失败、Provider 可返回同一语义的 Operator，以及 Provider 错误经直接调用和 Reader 调用均不被改写。
+Rust 对应会话 trait 和 Provider 注册已存在，但目标文件不包含 Go 中的具体 `SequenceTable` 适配器；目前只能从 `SessionContext::sequence_operator` 的实现获得它。并且 Rust 现有 `builtin_info.rs` 序列函数走 `SequenceService`，所以生产主链是否最终统一到本接口仍是未接线/未验证边界。
 
 ## 扩展指南
 
@@ -87,14 +83,3 @@ Go 的生产会话适配器 `pkg/expression/sessionexpr/sessionctx.go::sequenceO
 - 改变属性键时，必须同步 `exprctx::OptPropSequenceOperator`、描述表顺序、`required_optional_eval_props`、注册表测试以及 Go 常量顺序；键位变化会影响所有属性集合。
 - 若要把 Rust `NEXTVAL/LASTVAL/SETVAL` 接到此 Provider，应先明确 `SequenceService` 与 `SequenceOperator` 的职责映射，尤其是权限校验和 `SessionInfo::sequence_state` 更新，避免重复推进序列或改变 `LASTVAL` 语义。
 - 测试应继续放在独立文件。至少扩展 `pkg/expression/expropt/optional_test.rs::verify_sequence_operator`，并在涉及会话装配时同步 `pkg/expression/sessionexpr/migration_aster_unit_test.rs`；Go 语义变更还应核对 `pkg/expression/expropt/optional_test.go`。关注错误原样透传、低于 base 的布尔语义、并发闭包捕获和 Operator 非 `Send` 边界。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/expropt` 确认目标 Rust/Go 文件及独立测试均已索引。
-- 源码与符号：`rustcodegraph node --file pkg/expression/expropt/sequence.rs` 完整读取 88 行；`query SequenceOperator`、`query SequenceOperatorProvider`、`query SequenceOperatorPropReader` 核对公开 trait、结构体、构造/调用方法和 Reader。
-- 调用图：`callees get_sequence_operator` 得到 `get_sequence_operator -> call`；`callers get_sequence_operator` 未返回生产调用者；`node sequence_operator` 显示 `SessionContext::sequence_operator <- NewEvalContext`。
-- 装配与公共框架：已核对 `pkg/expression/expropt/lib.rs`、`pkg/expression/expropt/optional.rs`、`pkg/expression/exprctx/optional.rs`、`pkg/expression/sessionexpr/sessionctx.rs` 和 `pkg/expression/expropt/Cargo.toml`。
-- Go 对照：已核对 `pkg/expression/expropt/sequence.go`、`pkg/expression/expropt/optional_test.go`、`pkg/expression/exprctx/optional.go` 和 `pkg/expression/sessionexpr/sessionctx.go`。
-- Rust 测试证据：已核对 `pkg/expression/expropt/optional_test.rs::verify_sequence_operator`、`pkg/expression/expropt/migration_aster_unit_test.rs::registry_and_missing_reader_paths_match_go`，以及 `pkg/expression/sessionexpr/migration_aster_unit_test.rs` 的 `SessionContext::sequence_operator` 测试实现。
-- 应用链边界：`rustcodegraph node next_val/last_val/set_val` 表明 `pkg/expression/builtin_info.rs` 当前依赖 `SequenceService`；这支持“本 Provider 已注册但未证明被这些生产内核消费”的限定结论。
-- 本任务是纯文档分析，按计划未运行 Cargo；交付前仅执行任务指定的 11 章节结构验证，并人工复核没有把未解析的调用边写成已支持行为。

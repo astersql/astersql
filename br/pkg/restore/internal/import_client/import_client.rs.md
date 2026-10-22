@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-br-pkg-restore-internal-import-client` 的主体实现。包入口 `br/pkg/restore/internal/import_client/lib.rs` 以 `#[path = "import_client.rs"]` 挂载该模块并 `pub use import_client::*`，因此调用方从 crate 根即可取得 `ImporterClient`、`ImportClient`、请求/响应占位类型和构造函数。`Cargo.toml` 将它声明为 workspace 内的 library crate，并通过 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/restore/internal/import_client`。
-
-它位于 BR 恢复链路中“恢复编排”与 TiKV ImportSST RPC 之间：上层 `br/pkg/restore/snap_client/import.rs` 使用 `ImporterClient` 探测节点能力、下载 SST、设置限速并执行 `MultiIngest`；`br/pkg/restore/snap_client/tikv_sender.rs` 使用它发送强制分区范围请求。当前 Rust 文件不是生成的 gRPC stub，也没有真实网络依赖；它用本地 trait 和数据结构模拟 `kvproto/grpcio` 边界，默认构造出的 dialer 会返回不可用错误。测试或其他集成方必须经 `NewImportClientWithDialer` 注入可用传输实现。
+以 `ImporterClient` 定义恢复侧需要的 ImportSST 操作集合，包括清理、应用、下载、批量下载、最新 MVCC 下载、导入、限速、能力探测和强制分区范围管理。
 
 ## 核心职责
 
@@ -86,9 +84,7 @@ RPC 实际调用发生在取得 `Arc<dyn ImportSSTClient>` 并释放缓存锁之
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `ImporterClient` 方法集合、3 秒退避、PeerAddress 优先、普通/ingest 双连接池、能力探测分支及关闭成功后删除的规则，均对应 `br/pkg/restore/internal/import_client/import_client.go`。`br/pkg/restore/internal/import_client/import_client_test.rs::test_import_client` 也复刻了 Go `TestImportClient` 的 RPC 回显、MultiIngest 故障预算、能力探测和关闭行为。
-
-关键差异是网络边界：Go 直接依赖 `grpc.ClientConn`、kvproto 生成 client、TLS credentials 和真实 `grpc.DialContext`；Rust 的 `Cargo.toml` 无外部依赖，`TlsConfig`、protobuf 类型和 gRPC client 都是局部最小替身，真实行为只能由注入的 dialer/client 提供。Rust 测试虽然用 `TcpListener` 取得地址字符串，但不启动 gRPC 服务。
+关键差异是网络边界：Go 直接依赖 `grpc.ClientConn`、kvproto 生成 client、TLS credentials 和真实 `grpc.DialContext`；Rust 的 `Cargo.toml` 无外部依赖，`TlsConfig`、protobuf 类型和 gRPC client 都是局部最小替身，真实行为只能由注入的 dialer/client 提供。
 
 Rust 将 Go 的 `checkStoreBatchDownloadLatestMVCCSupport` 私有辅助逻辑内联到两个探测方法（布尔版本是 trait 默认实现），可观察语义仍保持：成功为支持、`Unimplemented` 为不支持、其他错误带 store ID 上抛。Rust 的 `Context` 也只是近似 Go `context.Context`，没有 deadline、value 或自动中断阻塞操作的能力。
 
@@ -101,13 +97,3 @@ Rust 将 Go 的 `checkStoreBatchDownloadLatestMVCCSupport` 私有辅助逻辑内
 若要接通真实生产 gRPC，正确扩展点是实现或替换 `GrpcDialer`、`ClientConn` 和 `import_sstpb::ImportSSTClient` 边界，而不是让上层绕过 `ImporterClient`。同时需要把完整 protobuf 字段、TLS 证书语义、取消/超时传播和连接关闭行为纳入独立测试；当前占位类型不能证明这些能力已经实现。
 
 能力探测扩展应区分“可以安全回退”的 `Ok(false)` 与“配置要求此能力”的强错误。新增探测还应保持短路顺序、错误中 store ID 上下文以及空 store 集合的确定语义，并在 `import_client_test.rs` 中覆盖成功、`Unimplemented` 和其他错误三类分支。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`node --file br/pkg/restore/internal/import_client/import_client.rs` 读取了完整 815 行实现，并报告该文件被 7 个文件使用；`query ImportClient`、`query NewImportClient`、`query CheckBatchDownloadSupport`、`query cachedConnectionFrom` 用于核对 Rust/Go 对应符号。精确 `callers/callees` 对动态 trait 方法未返回可用结果，因此未据此臆造调用边。
-- 目标实现：`br/pkg/restore/internal/import_client/import_client.rs`，核对了全部常量、类型、trait、构造函数、连接缓存、RPC 转发、能力探测和关闭逻辑。
-- crate 边界：`br/pkg/restore/internal/import_client/Cargo.toml` 与 `br/pkg/restore/internal/import_client/lib.rs`，确认 library 入口、Go 包映射、空外部依赖和扁平再导出。
-- Go 对照：`br/pkg/restore/internal/import_client/import_client.go` 与 `br/pkg/restore/internal/import_client/import_client_test.go`，核对真实 gRPC 拨号、双池缓存、探测语义和端到端测试意图。
-- Rust 独立测试：`br/pkg/restore/internal/import_client/import_client_test.rs`，核对拨号参数、请求字段回显、双池关闭、MultiIngest 错误传播、latest-MVCC 的布尔/严格探测及空 store 行为。
-- 直接上游：`br/pkg/restore/snap_client/client.rs`、`br/pkg/restore/snap_client/import.rs`、`br/pkg/restore/snap_client/tikv_sender.rs`、`br/pkg/restore/log_client/import.rs`，核对恢复主链中的创建回调、能力选择、导入、强制分区范围和资源关闭位置。
-- 本任务为纯文档分析，按任务约束未运行 Cargo；交付验证只执行固定 11 章节结构检查，并人工检查没有把本地 trait 占位误写为真实网络能力。

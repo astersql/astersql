@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `row_number.rs`](row_number.rs) 属于 Cargo crate `astersql-executor-aggfuncs`；crate 根在 `pkg/executor/aggfuncs/lib.rs`，其中以 `pub mod row_number` 公开本模块，crate 声明及 Go 包映射见 `pkg/executor/aggfuncs/Cargo.toml`。它把 Go `pkg/executor/aggfuncs/row_number.go` 的 `partialResult4RowNumber` 提炼为一个小型 Rust 状态对象，用于表达 `ROW_NUMBER()` 在单个窗口分区内的递增序号。
-
-需要区分两条同名路径：本文件的 `row_number::RowNumber` 当前由 `pkg/executor/aggfuncs/row_number_test.rs` 和 `pkg/executor/aggfuncs/window_func_test.rs` 直接使用；SQL 窗口执行框架实际实现 `WindowFunction` 的类型是 `pkg/executor/windows/window.rs::RowNumber`。`pkg/executor/aggfuncs/builder.rs::build_window_function` 会把 `FunctionName::RowNumber` 映射为 `AggImplementation::RowNumber`，但该元数据路径没有在本文件中实例化 `row_number::RowNumber`。因此本文件目前是已导出的、受测试的移植状态模型，而不是可单独证明已经接入完整 SQL 执行链的实现。
+`next_value` 负责真正推进并产出序号；相同排序值不会并列，也不会跳号。
 
 ## 核心职责
 
@@ -64,13 +62,13 @@ RustCodeGraph 对目标文件给出的直接使用文件为 `pkg/executor/aggfun
 
 ## 与 Go 版本的对应关系
 
-Go 源文件 `pkg/executor/aggfuncs/row_number.go` 将执行对象 `rowNumber`（含 `baseAggFunc` 和输出列 ordinal）与状态 `partialResult4RowNumber { curIdx int64 }` 分开。本 Rust 文件只对应后者及其状态变换，没有移植 `baseAggFunc`、ordinal、`PartialResult` 类型擦除或 `chunk.AppendInt64` 写出动作。
+本 Rust 文件只对应后者及其状态变换，没有移植 `baseAggFunc`、ordinal、`PartialResult` 类型擦除或 `chunk.AppendInt64` 写出动作。
 
 对应关系如下：Go `AllocPartialResult` 创建零值并返回 `DefPartialResult4RowNumberSize`，Rust 以 `Default` 和 `DEF_PARTIAL_RESULT_ROW_NUMBER_SIZE` 分别表达；Go `ResetPartialResult` 对应 `reset`；Go `UpdatePartialResult` 返回零内存增量和 nil 错误，对应无错误的 `update() -> 0`；Go `AppendFinalResult2Chunk` 先执行 `curIdx++` 再写 chunk，Rust `next_value` 只完成递增并返回值；Go `Slide` 返回 nil 且不改状态，对应 `slide`。
 
-Go 构建器 `pkg/executor/aggfuncs/builder.go::buildRowNumber` 会构造带 `baseAggFunc` 的 `rowNumber`，因此已直接接入 Go `AggFunc` 协议。本 Rust 文件没有实现等价 trait；Rust 相邻构建器仅产出 `AggImplementation::RowNumber`，实际 SQL 窗口执行类型位于 `pkg/executor/windows/window.rs`。这是一项当前接线差异，而不是可以从局部测试推断为完成的迁移。
+本 Rust 文件没有实现等价 trait；Rust 相邻构建器仅产出 `AggImplementation::RowNumber`，实际 SQL 窗口执行类型位于 `pkg/executor/windows/window.rs`。这是一项当前接线差异，而不是可以从局部测试推断为完成的迁移。
 
-Go `pkg/executor/aggfuncs/row_number_test.go::TestMemRowNumber` 主要验证分配和更新内存增量。Rust 独立测试保留这些参数契约，并额外直接验证连续编号、重置和溢出回绕。Go `pkg/executor/aggfuncs/window_func_test.go` 还通过通用窗口测试验证四行输出 `1,2,3,4`；Rust `window_func_test.rs` 对目标状态验证同一序列。
+Rust 独立测试保留这些参数契约，并额外直接验证连续编号、重置和溢出回绕。Go `pkg/executor/aggfuncs/window_func_test.go` 还通过通用窗口测试验证四行输出 `1,2,3,4`；Rust `window_func_test.rs` 对目标状态验证同一序列。
 
 ## 扩展指南
 
@@ -79,14 +77,3 @@ Go `pkg/executor/aggfuncs/row_number_test.go::TestMemRowNumber` 主要验证分�
 若目标是让本类型进入完整 Rust SQL 窗口链，需要先决定它与 `pkg/executor/windows/window.rs::RowNumber` 的唯一所有权边界，再补齐从 `AggImplementation::RowNumber` 到运行时实例的接线；不得同时维护两份悄然漂移的计数逻辑。相关验证至少应覆盖 builder 选择、分区重置、frame 被忽略、输出类型/可空性，以及实际执行器的多分区 SQL 行为。相应测试应放在同目录独立 `*_test.rs` 文件或现有 `pkg/executor/windows/window_executor_test.rs`、`window_sql_test.rs` 中。
 
 兼容风险主要有三类：把推进动作从结果阶段移到 update 阶段会造成重复或错位编号；改变 `i64`、回绕或首值语义会偏离 Go；让 `slide` 改状态会错误地把 frame 变化当成分区位置变化。性能上当前操作为常数时间、零堆分配，新增行缓存或共享同步应有明确执行链需求与内存计量测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，目标文件可按路径读取。
-- RustCodeGraph `node --file pkg/executor/aggfuncs/row_number.rs`：核对了 58 行完整源码、模块常量、结构、全部方法和唯一条件编译项；图同时报告三个使用文件。
-- RustCodeGraph `query RowNumber --kind struct`：区分了目标 `row_number.rs::RowNumber`、Go `rowNumber`/`partialResult4RowNumber` 与 `windows/window.rs::RowNumber`，避免同名类型混淆。
-- RustCodeGraph 文件节点：核对 `pkg/executor/aggfuncs/builder.rs::build_window_function` 的 `AggImplementation::RowNumber` 映射、`pkg/executor/windows/window.rs` 的实际 `WindowFunction` 实现，以及 `pkg/executor/aggfuncs/window_func_test.rs` 的 `1..=4` 序列测试。
-- 直接读取 `pkg/executor/aggfuncs/Cargo.toml` 与 `pkg/executor/aggfuncs/lib.rs`：核对 crate 名、库入口、Go 包映射、公开模块和独立测试模块。
-- 直接读取 Go 对照 `pkg/executor/aggfuncs/row_number.go`、`builder.go`、`row_number_test.go`、`window_func_test.go`：核对分配、重置、更新、结果写出、滑动、构建接线及内存/序列测试语义。
-- 直接读取 Rust 独立测试 `pkg/executor/aggfuncs/row_number_test.rs`：核对固定体积、零更新增量、连续编号、重置和 `i64` 回绕边界。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；最终以任务指定的 11 章节结构命令验证文档形态，并人工检查未把相邻执行实现误写为目标文件的直接接线。

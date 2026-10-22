@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`types.rs` 是 `astersql-util-dbutil` crate 中的 MySQL 字段类型分类模块，由 [`pkg/util/dbutil/lib.rs`](./lib.rs) 以 `pub mod types` 暴露。它位于数据库工具层，不负责解析协议、读取元数据或解码具体值；它把上游传入的 MySQL `field_type` 字节归入整数、浮点/定点数、需要从统计桶解码的时间三类。
-
-crate 边界由 [`pkg/util/dbutil/Cargo.toml`](./Cargo.toml) 定义，Go 包对应路径是 `pkg/util/dbutil`。本文件自身只使用 Rust 基本类型、常量和 `matches!`，没有外部 crate 依赖，也没有条件编译项。
+提供三个纯布尔分类函数，让调用方不必重复枚举类型码。
 
 ## 核心职责
 
@@ -72,15 +70,7 @@ RustCodeGraph 对三个精确 Rust 函数执行 `callers`/`callees` 没有返回
 
 ## 与 Go 版本的对应关系
 
-[`types.go`](./types.go) 定义完全同名的三个函数，分类集合与 Rust 一致：
-
-- `IsNumberType`：TINY、SHORT、LONG、LONGLONG、INT24、YEAR。
-- `IsFloatType`：FLOAT、DOUBLE、NEWDECIMAL。
-- `IsTimeTypeAndNeedDecode`：DATETIME、TIMESTAMP、DATE。
-
-实现形式不同但语义等价：Go 用 `switch`/条件表达式并引用 `pkg/parser/mysql`；Rust 用 `matches!` 和本地 `u8` 常量。Go 的 [`common.go`](./common.go) 在 `AnalyzeValuesFromBuckets` 中同样只用时间分类决定是否调用桶时间解码；[`common_test.go`](./common_test.go) 的 `TestAnalyzeValuesFromBuckets` 覆盖三类时间的可读字符串与 packed 数字。
-
-Rust 的 [`common_test.rs`](./common_test.rs) 除迁移桶解析案例外，还新增了对三个分类函数正例集合与负例的直接断言。没有发现 Go 中针对 `IsNumberType` 或 `IsFloatType` 的同名独立单元测试。
+实现形式不同但语义等价：Go 用 `switch`/条件表达式并引用 `pkg/parser/mysql`；Rust 用 `matches!` 和本地 `u8` 常量。
 
 ## 扩展指南
 
@@ -92,14 +82,3 @@ Rust 的 [`common_test.rs`](./common_test.rs) 除迁移桶解析案例外，还�
 4. 若新增常量与解析器模块重复，优先评估改为复用 `astersql-parser-mysql` 是否合适；这会涉及 [`Cargo.toml`](./Cargo.toml) 的依赖边界，不能只修改本文件。
 
 主要兼容风险是错误类型码导致值走错解析分支；主要正确性风险是扩大时间集合后对普通字符串执行 packed 数字解析。分类操作本身是常数时间，性能风险很低；不要用动态集合替代当前固定匹配，除非确有运行时配置需求。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件已索引。
-- RustCodeGraph `files --filter pkg/util/dbutil`：确认 `types.rs`、Go 对照、模块入口、`common.rs` 与独立测试均在索引中。
-- RustCodeGraph `node --file pkg/util/dbutil/types.rs`：确认 13 个常量、3 个公开函数、无 trait/struct/impl/条件编译项，并给出文件级使用者 `common.rs`、`common_test.rs`。
-- RustCodeGraph `query`：分别定位 Rust/Go 两套 `IsNumberType`、`IsFloatType`、`IsTimeTypeAndNeedDecode`。
-- RustCodeGraph `callers`/`callees`：对三个 Rust 函数的精确符号查询均无输出；结合文件级关系和文本引用，将已证实调用范围限定为本文所述。
-- 已读源码与配置：[`types.rs`](./types.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`common.rs`](./common.rs)、[`common_test.rs`](./common_test.rs)、[`types.go`](./types.go)、[`common.go`](./common.go)、[`common_test.go`](./common_test.go)、[`pkg/parser/mysql/type.rs`](../../parser/mysql/type.rs)、[`pkg/parser/mysql/type.go`](../../parser/mysql/type.go)。
-- 测试事实：`common_test.rs::query_scanners_and_mysql_type_classification_match_go` 覆盖整数 `[1,2,3,8,9,13]`、浮点/定点 `[4,5,246]`、需解码时间 `[7,10,12]`，并以 `4`、`3`、`8` 验证三类负例；桶解析的 Rust/Go 测试覆盖已格式化值与 packed 值。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构通过任务指定的 11 章节检查，并人工复核链接、调用关系和边界陈述。

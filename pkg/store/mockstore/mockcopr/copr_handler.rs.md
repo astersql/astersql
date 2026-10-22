@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-mockcopr` crate 的核心协议模型与请求分发层。crate 入口 [`lib.rs`](lib.rs) 将其声明为私有模块 `copr_handler`，再通过 `pub use copr_handler::*` 导出其中的类型和函数；相邻的 `cop_handler_dag.rs`、`analyze.rs`、`checksum.rs` 则继续为这里定义的 `coprHandler` 增加具体请求处理方法。
-
-它位于 mockstore 的存储侧协处理器边界：上游 [`rpc_copr.rs`](rpc_copr.rs) 把单次或批量 RPC 请求交给 `coprHandler`，下游 DAG 路径通过 [`executor.rs`](executor.rs) 中的 `executor` trait 拉取扫描、过滤、聚合、TopN 和 Limit 的结果。这里的协议结构是仓库内 mock 实现，不是 kvproto/tipb 生成类型的完整替代品。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认，包名为 `astersql-store-mockstore-mockcopr`，Go 对照包为 `pkg/store/mockstore/mockcopr`。清单中的 TiDB 子 crate 依赖均为 optional；本文件自身只直接使用 Rust 标准库，具体执行能力由同 crate 模块提供。
+通过 `KvReader` 抽象存储读取，并提供 `MemoryReader`，让独立测试无需真实 TiKV 即可按键范围和 `start_ts` 读取数据。
 
 ## 核心职责
 
@@ -91,9 +87,9 @@ RustCodeGraph 已索引本文件 97 个符号及同目录 27 个 Go/Rust 文件�
 
 ## 与 Go 版本的对应关系
 
-Go 基准文件 [`copr_handler.go`](copr_handler.go) 中，`coprHandler` 嵌入 `*testutils.RPCSession`；Rust 将其所需能力拆成 `Arc<dyn KvReader>` 和可注入 `region_error`。两版批路径都逐项构建 DAG、持续调用执行器 `Next`、按 `OutputOffsets` 追加行数据，并在构建或执行失败时立即返回错误。
+Go 基准文件 [`copr_handler.go`](copr_handler.go) 中，`coprHandler` 嵌入 `*testutils.RPCSession`；Rust 将其所需能力拆成 `Arc<dyn KvReader>` 和可注入 `region_error`。
 
-两版请求形态存在结构差异：Go `BatchRequest` 按 `Regions` 遍历，并为每个 region 用公共 `Data`、`StartTs` 和该 region 的 ranges 临时构造 DAG `coprocessor.Request`；Rust `BatchRequest` 直接持有完整 `Vec<Request>`。因此 Rust 复现的是逐请求/逐 region 的执行意图，而不是 kvproto 对象布局。
+两版请求形态存在结构差异：Go `BatchRequest` 按 `Regions` 遍历，并为每个 region 用公共 `Data`、`StartTs` 和该 region 的 ranges 临时构造 DAG `coprocessor.Request`；Rust `BatchRequest` 直接持有完整 `Vec<Request>`。
 
 Go 的 `drainRowsFromExecutor` 只填 `tipb.Chunk.RowsData`；Rust `Chunk` 额外保留 `rows` 供测试检查，并在投影前显式验证偏移。Go `mockBatchCopDataClient` 持有 `[]tipb.Chunk`，每次 `Recv` 把一个 chunk marshal 为 `SelectResponse.Data`，耗尽返回 `io.EOF`；Rust 客户端持有已包装的 `BatchResponse`，返回结构化 `Response.chunks`，耗尽返回 `CopError::EndOfStream`。
 
@@ -107,13 +103,3 @@ Go 的 `drainRowsFromExecutor` 只填 `tipb.Chunk.RowsData`；Rust `Chunk` 额�
 - 改变批流行为时，重点修改 `handleBatchCopRequest`、`drainRowsFromExecutor` 和 `mockBatchCopDataClient::Recv`，并同步 `copr_handler_test.rs` 与 `rpc_copr_test.rs`。若改为惰性执行，需要重新设计错误出现时机、取消传播、背压及 reader/executor 生命周期。
 - 扩展存储模型优先实现新的 `KvReader`，不要把真实 TiKV 细节塞入 `MemoryReader`。若需要多版本/锁语义，应为相同 key 的版本选择、锁错误映射、重叠 ranges 和正反向扫描各加独立回归测试。
 - 与 Go 对齐时要分别核对 `copr_handler.go` 的排空逻辑、`cop_handler_dag.go` 的流客户端及 `rpc_copr.go` 的 RPC/租约逻辑，避免只凭同名文件判断完整行为。兼容风险主要是协议编码和错误出现时机；性能风险主要是全量预计算、行克隆及 `rows_data`/`rows` 双份保存。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/store/mockstore/mockcopr` 确认同目录 27 个文件；`node --file ... --offset ...` 读取了 `copr_handler.rs` 全部 653 行；`query` 定位 `coprHandler` 与 Rust/Go 两个 `drainRowsFromExecutor`。精确 callers/callees 查询未产生结果，调用边改由直接源码引用验证。
-- 目标源码：[`copr_handler.rs`](copr_handler.rs)，核对错误/值/范围/reader/表达式/协议结构、批处理入口、排空函数和流客户端。
-- crate 与模块：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)，核对包名、Go 对照元数据、optional 依赖、公开再导出和独立测试模块。
-- Rust 直接依赖与调用者：[`cop_handler_dag.rs`](cop_handler_dag.rs)、[`executor.rs`](executor.rs)、[`analyze.rs`](analyze.rs)、[`checksum.rs`](checksum.rs)、[`rpc_copr.rs`](rpc_copr.rs)。
-- Rust 测试：[`copr_handler_test.rs`](copr_handler_test.rs) 验证 65 行批 DAG 被排入单 chunk，并验证空执行器错误在返回客户端前传播；[`main_test.rs`](main_test.rs) 覆盖 NULL 语义、开放倒序范围和摘要开关；[`cop_handler_dag_test.rs`](cop_handler_dag_test.rs) 覆盖空 ranges 拒绝。
-- Go 对照：[`copr_handler.go`](copr_handler.go)、[`cop_handler_dag.go`](cop_handler_dag.go)、[`rpc_copr.go`](rpc_copr.go)，分别核对批 DAG 排空、数据流 `Recv`/EOF、单请求分发和租约生命周期。
-- 本任务是纯文档分析，未运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工检查所有关键行为均能回指上述符号或文件。

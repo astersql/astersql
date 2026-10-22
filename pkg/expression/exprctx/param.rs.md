@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-exprctx` crate。crate 入口
-[`pkg/expression/exprctx/lib.rs`](./lib.rs) 以私有模块 `mod param` 装配它，再用
-`pub use param::*` 将本文件的公开项提升为 `exprctx` 的公共 API。它位于表达式上下文的最底层：只定义“按位置读取预处理语句参数”的协议、统一越界错误和空实现，不负责解析 MySQL 协议参数，也不拥有真实会话参数列表。
-
-[`pkg/expression/exprctx/Cargo.toml`](./Cargo.toml) 将该目录声明为
-`astersql-expression-exprctx`，入口为 `lib.rs`。本文件返回的 `types::Datum` 由入口模块从
-`astersql-types` 的 `types_crate::datum::Datum` 重导出；因此本文件的直接数据依赖只有标准库格式化/错误 trait 与该 Datum 类型。
+`EmptyParamValues` / `EMPTY_PARAM_VALUES` 提供零分配的空参数上下文，供字符串化、解释输出和没有执行期绑定值的路径显式拒绝任何索引。
 
 ## 核心职责
 
@@ -114,12 +108,6 @@ RustCodeGraph 对本文件的文件节点报告 19 个使用文件；其调用�
 
 ## 与 Go 版本的对应关系
 
-Go 原型是 [`pkg/expression/exprctx/param.go`](./param.go)：
-
-- Go `ParamValues.GetParamValue(idx int) (types.Datum, error)` 对应 Rust
-  `GetParamValue(idx: usize) -> Result<Datum, ParamError>`。Rust 将任意 `error` 收窄为专用错误类型，并排除了负下标输入。
-- Go `ErrParamIndexExceedParamCounts = errors.New(...)` 对应 Rust 的
-  `ParamError::IndexExceedsParamCount`、Go 风格常量别名和独立错误文本常量；文本完全一致。
 - Go `EmptyParamValues` 是保存 `&emptyParamValues{}` 的接口变量；Rust 同时公开零大小类型
   `EmptyParamValues` 和静态值 `EMPTY_PARAM_VALUES`。两者都对任意下标返回哨兵错误。
 - Go 空实现失败时返回 `types.Datum{}` 与错误；Rust `Result::Err` 不携带无效 Datum，迫使调用者先处理错误，避免误用失败路径的零值。
@@ -128,7 +116,7 @@ Go 原型是 [`pkg/expression/exprctx/param.go`](./param.go)：
 Go 静态上下文测试
 [`pkg/expression/exprstatic/evalctx_test.go`](../exprstatic/evalctx_test.go) 验证参数顺序以及输入参数表重置后快照仍保留；Rust
 [`pkg/expression/exprstatic/evalctx_test.rs`](../exprstatic/evalctx_test.rs) 验证同样的值顺序、输入
-`Vec` 解耦，并额外断言越界失败。Go builtin 测试还验证标量与向量 GetParam 路径把越界保留为相同哨兵错误。
+`Vec` 解耦，并额外断言越界失败。
 
 ## 扩展指南
 
@@ -142,26 +130,3 @@ Go 静态上下文测试
   [`pkg/expression/exprstatic/evalctx_test.rs`](../exprstatic/evalctx_test.rs) 的参数列表/越界用例，以及会话上下文相关测试。测试逻辑应继续与对应 Go 测试保持一致，且不要把 Rust 测试嵌入 `param.rs`。
 - 新增展示用途的调用点若允许没有参数，应显式传 `EmptyParamValues`；真正执行参数标记的路径必须传实际上下文，不能用空实现掩盖接线遗漏。
 - 兼容风险集中在错误文本、错误类型判等、0 起始顺序和快照/动态可见性；性能风险主要是每次成功读取的 Datum 克隆。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 源文件：[`pkg/expression/exprctx/param.rs`](./param.rs)，核对全部常量、枚举、trait、实现和静态值。
-- crate 边界：[`pkg/expression/exprctx/Cargo.toml`](./Cargo.toml) 与
-  [`pkg/expression/exprctx/lib.rs`](./lib.rs)，核对 crate 名、入口、`astersql-types` 依赖、模块私有装配及公共重导出。
-- 上下文与调用点：`exprctx/context.rs` 的 `EvalContext: ParamValues` 和覆盖包装转发；
-  `exprstatic/evalctx.rs`、`sessionexpr/sessionctx.rs` 的生产实现；`constant.rs` 的
-  `ParamMarker::GetUserVar`；`planner/core/expression_rewriter.rs` 的 `toParamMarker`。
-- Go 对照：[`pkg/expression/exprctx/param.go`](./param.go)；相关测试
-  `pkg/expression/exprstatic/evalctx_test.go`、`pkg/expression/builtin_other_test.go` 和
-  `pkg/expression/builtin_other_vec_test.go`。
-- Rust 独立测试：`pkg/expression/exprctx/migration_aster_unit_test.rs` 的
-  `empty_param_values_returns_the_go_sentinel_error`，以及
-  `pkg/expression/exprstatic/evalctx_test.rs` 的 `TestParamList`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和
-  1,848,419 条边；对 `param.rs ParamValues EmptyParamValues GetParamValue ParamError` 的
-  `explore`、对主要符号的 `query`/文件 `node`、以及 `ParamMarker GetUserVar GetParamValue`
-  的精确 `explore` 用于核对使用文件、实现者和消费链。
-
-任务为纯文档分析，按总计划不运行 Cargo。结构验收应确认文件存在，且上述固定二级标题恰好出现 11 个；人工复核重点是所有行为结论均能回溯到列出的源码、Go 对照或独立测试，而未把接口未保证的线程安全或容器语义写成既成事实。

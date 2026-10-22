@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-privilege-privileges-ldap`，由同目录 `lib.rs` 以 `pub mod sasl` 暴露。它承接 LDAP SASL 认证中的协议编排：先把账户名与认证字符串解析成可绑定的 DN，再在 LDAP 服务端和 TiDB 客户端之间转发多轮 challenge/response。LDAP 配置、DN 搜索和连接池实现位于 `ldap_common.rs`，SASL 方法名常量位于 `const.rs`。
-
-当前 Rust 仓库中，生产代码可识别 `authentication_ldap_sasl`（`pkg/parser/mysql/const.rs`、`pkg/executor/utils.rs`），但除本文件自身外，`LdapSaslAuthImpl`/`LDAPSASLAuthImpl` 的直接 Rust 使用者只在 `migration_aster_unit_test.rs` 中找到。因此本文件已经实现并测试了认证循环，却尚无证据表明它已接入 Rust 权限认证主链。Go 版本的接线位于 `pkg/privilege/privileges/privileges.go`。
+以读写锁保存可运行期修改的 SASL 方法名，并提供进程级惰性默认实例。
 
 ## 核心职责
 
@@ -70,9 +68,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 DN 两分支、多轮 `ServerBindStep`、每轮写入并刷新、成功轮仍发送最后凭证、非成功轮读取下一包，以及 SASL 方法的并发配置，均对应 `sasl.go`。独立 Rust 测试明确固定了最关键的“成功前仍发送最终 credential”行为；方法名常量另由 `sasl_method_constants_match_go` 校验。
+独立 Rust 测试明确固定了最关键的“成功前仍发送最终 credential”行为；方法名常量另由 `sasl_method_constants_match_go` 校验。
 
-主要差异是依赖倒置和资源所有权。Go 的 `AuthLDAPSASL` 自行锁住公共配置快照、搜索/规范化 DN、从池取出 `*ldap.Conn`、执行真实 `ServerBindStep` 并延迟归还；Rust 将真实 LDAP 单步和客户端 I/O 分别抽象为 trait，由调用者传入可变会话。Rust 的 DN 搜索会在 `search_user` 内自行短暂取连接，但认证循环使用的 `SaslSession` 与该连接不是同一对象。Rust 也只对方法名加锁，没有像 Go 那样在 DN 决策和取连接阶段持有 `ldapAuthImpl` 的配置读锁。因此可以认定循环语义已经对齐，但真实生产连接获取、同一配置快照和上层权限接线尚不能从当前 Rust 代码证实。
+主要差异是依赖倒置和资源所有权。Go 的 `AuthLDAPSASL` 自行锁住公共配置快照、搜索/规范化 DN、从池取出 `*ldap.Conn`、执行真实 `ServerBindStep` 并延迟归还；Rust 将真实 LDAP 单步和客户端 I/O 分别抽象为 trait，由调用者传入可变会话。Rust 也只对方法名加锁，没有像 Go 那样在 DN 决策和取连接阶段持有 `ldapAuthImpl` 的配置读锁。
 
 ## 扩展指南
 
@@ -81,15 +79,3 @@ Rust 的 DN 两分支、多轮 `ServerBindStep`、每轮写入并刷新、成功
 - 改动挑战循环时必须保持“先写并 flush 服务端凭证，再判断成功”的协议顺序；相关回归测试应继续放在独立的 `migration_aster_unit_test.rs` 或新增同目录独立测试文件，不应内嵌进 `sasl.rs`。
 - 应补充错误分支测试：`server_bind_step`、write、flush、read 分别失败时停止后续操作；还应覆盖空 DN 的搜索失败、原样 DN、锁配置快照以及异常非零结果的终止策略。
 - 若要达到 Go 生产等价，应重点验证配置读锁范围、认证所用连接与搜索连接的关系、连接归还、底层 LDAP result code 映射。这里涉及兼容性和资源泄漏风险；无限轮交换还具有慢客户端占用连接的性能/拒绝服务风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖本仓库 7,032 个 Rust 文件；目标文件已索引。
-- RustCodeGraph `node --file pkg/privilege/privileges/ldap/sasl.rs`：读取全部 131 行，确认两个 trait、实现结构、五个方法/实现入口和全局单例。
-- RustCodeGraph 精确查询与 `explore`：确认 `AuthLDAPSASL`、`auth_with_session`、`search_user`、`canonicalize_dn` 的定义，以及 `AuthLDAPSASL -> auth_with_session`、`search_user -> get_connection/search_filter` 调用边；未发现 Rust 生产上游调用者。
-- `pkg/privilege/privileges/ldap/Cargo.toml`、`lib.rs` 与根 `Cargo.toml`：核对 crate 名、模块公开边界、依赖 feature/tag、workspace 成员及 facade 别名。
-- `pkg/privilege/privileges/ldap/ldap_common.rs`：核对 `LdapAuthImpl`、DN 规范化、用户搜索、连接池获取与锁语义。
-- `pkg/privilege/privileges/ldap/sasl.go`、`pkg/privilege/privileges/privileges.go`：核对 Go 原始认证循环、配置锁、连接池生命周期及权限主链接线。
-- `pkg/privilege/privileges/ldap/migration_aster_unit_test.rs`：核对方法常量、DN 规则与两轮 SASL 交换的真实断言；同目录未发现专门的 `sasl_test.rs`，SASL 回归集中在该独立迁移测试文件。
-- `pkg/executor/utils.rs`、`pkg/parser/mysql/const.rs`：核对 Rust 对 LDAP SASL 插件名和认证字符串透传的支持边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅执行固定十一章节的结构校验。

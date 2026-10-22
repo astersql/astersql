@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义物理计划节点 `PhysicalApply`，位于 `astersql-planner-core-operator-physicalop` crate。它表示仍保留相关性的子查询执行：外侧子计划每产生一行，内侧子计划都可能基于该行携带的相关列重新求值。节点复用 `PhysicalHashJoin` 的连接类型、条件、统计信息、子节点和 schema 基础设施，但在 `Init` 中明确使用 `plancodec::TypeApply`，因此不会在诊断和 `EXPLAIN` 中被误认成已经解相关的 HashJoin。
-
-模块由 `physicalop/lib.rs` 的 `mod physical_apply` 装配并以 `pub use physical_apply::*` 再导出；同文件中的 `impl ConcretePhysicalOperator for PhysicalApply` 和 `impl_concrete_physical_plan!(PhysicalApply)` 将本文件的方法接到通用 `Plan`、`PhysicalPlan` 动态分发路径。crate 边界和直接依赖见同目录 `Cargo.toml`：本文件直接使用 `base`、`costusage`、`expression`、`property`、`cardinality` 与 `plancodec`。
+通过 `Attach2Task` 把两个孩子都转换成 Root 任务，克隆节点和孩子，重建连接输出 schema，形成新的 `RootTask`。
 
 ## 核心职责
 
@@ -96,16 +94,6 @@ RustCodeGraph 对 `PhysicalApply` 类型没有返回可靠的 Rust 上游调用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `physical_apply.go`。类型字段、`Init`、`PhysicalJoinImplement`、深克隆、相关列提取、旧局部成本、内存估算和索引解析都有明确对应。
-
-保持一致的关键语义包括：
-
-- Apply 复用 HashJoin 数据结构，但 `Init` 必须建立 `TypeApply`。
-- Apply 有两个孩子，附着到 Root，并按 JoinType 重建输出 schema。
-- 外侧 schema 已提供的相关列不继续向上传递。
-- 旧成本公式为条件 CPU 成本加外侧成本，再加“外侧过滤后行数 × 内侧成本”；半连接类连接条件乘 `0.5`。
-- `OuterSchema` 按 `UniqueID` 去重，并对外侧 schema 解析；Apply 等值条件需要对合并 schema 再解析。
-
 当前可见差异与迁移限制：
 
 - Go `Attach2Task` 直接重用并改写接收者，并复制左右 `RootTask` 的 warnings；Rust 克隆接收者和孩子，当前返回的 `RootTask::New(..., None)` 没有在本方法中显式合并 warnings。
@@ -114,7 +102,7 @@ RustCodeGraph 对 `PhysicalApply` 类型没有返回可靠的 Rust 上游调用�
 - Go 去重通过 map 保留最后一个同 ID 指针，但输出顺序不保证；Rust 保留最后一个对象且保持确定顺序。
 - Go 假定两个孩子都存在；Rust 对 `ResolveIndices` 的零/单孩子情况有提前返回保护，但 `Attach2Task` 仍严格要求两个孩子。
 
-相关 Rust 测试位于独立文件 `physical_apply_test.rs`，符合源文件与测试分离约束。当前没有发现同目录专门针对 `PhysicalApply` 的 Go 单测；Go 行为依据生产实现及 planner/core 的 Apply 专用辅助函数核对。
+当前没有发现同目录专门针对 `PhysicalApply` 的 Go 单测；Go 行为依据生产实现及 planner/core 的 Apply 专用辅助函数核对。
 
 ## 扩展指南
 
@@ -125,18 +113,3 @@ RustCodeGraph 对 `PhysicalApply` 类型没有返回可靠的 Rust 上游调用�
 - 修改并发或保序行为时，本文件只适合承载规划属性；还需定位真正的执行器 worker、重排缓冲和缓存实现，验证 `Concurrency`、`KeepOrder` 与 `CanUseCache` 被消费。不要在没有执行器证据时宣称功能生效。
 - 修改计划身份或序列化时，必须保持 `TypeApply`、`PhysicalJoinImplement == false` 和通用 trait 的 `PhysicalApply` 分支，否则可能影响 EXPLAIN、类型分发、计划缓存判断和执行器选择。
 - 性能风险主要来自外侧行数放大内侧成本、缓存命中率判断、相关列去重和条件重复解析；兼容风险主要来自 schema 列索引、半连接折扣、孩子角色以及 Go/Rust 成本入口差异。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_apply.rs`，逐项核对 `PhysicalApply` 及其全部 11 个方法。
-- crate 与装配：`pkg/planner/core/operator/physicalop/Cargo.toml`；`physicalop/lib.rs` 的模块声明、再导出、`ConcretePhysicalOperator` 实现和 `impl_concrete_physical_plan!`。
-- 上游构造：`physicalop/base_physical_plan.rs` 中 `PhysicalApply::New(...).Init(...)`、相关列复制、缓存资格和 `NoDecorrelate` 赋值；`pkg/planner/cascades/old/implementation_rules.rs` 中 `ImplApply` 与 `ApplyCostPlan`。
-- 下游消费：`pkg/planner/core/flat_plan.rs` 的 Apply 孩子角色标注；`pkg/planner/core/plan_cacheable_checker.rs` 的 `PlanKind::Apply` 排除规则。
-- Go 对照：`physical_apply.go`；`pkg/planner/core/task.go::attach2Task4PhysicalApply`；`plan_cost_ver1.go::{getCost4PhysicalApply,getPlanCostVer14PhysicalApply}`；`plan_cost_ver2.go::getPlanCostVer24PhysicalApply`。
-- Rust 辅助对照：`pkg/planner/core/task.rs::attach2Task4PhysicalApply` 与 `pkg/planner/core/plan_cost_ver1.rs::getCost4PhysicalApply`，用于确认仓库内扁平 `PlanNode` 路径也把 Apply 视为逐外侧行执行内侧的节点，但它们不是本类型方法的直接实现。
-- 独立测试：`physical_apply_test.rs` 的 `resolve_indices_deduplicates_and_resolves_outer_schema_columns` 验证保留最后重复列并解析索引；`get_cost_matches_go_filter_and_semi_join_accounting` 验证过滤与半连接折扣；`attach_to_task_builds_the_join_output_schema` 验证二元输出 schema。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query PhysicalApply --kind struct` 定位 Rust/Go 两个类型；`node physical_apply.rs::PhysicalApply` 与按文件 `node` 核对源码；`callers` 未返回 Rust 类型上游，`callees` 对同名方法存在跨语言噪声，因此调用关系改用精确源码引用补证，未采用噪声边。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试。结构验证只检查目标文档存在且恰好具有计划要求的十一个二级标题；人工复核还需确认以上陈述都能回溯到列出的符号和文件，并且未把字段意图误写成已实现的运行时行为。

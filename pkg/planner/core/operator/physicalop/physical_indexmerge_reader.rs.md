@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件定义 Rust 规划器中的 `PhysicalIndexMergeReader`，即用多条 partial 访问路径读取同一张表、再按 union 或 intersection 语义合并 handle 的物理读算子。它属于 `astersql-planner-core-operator-physicalop` crate；`Cargo.toml` 将该 crate 的入口设为同目录 `lib.rs`，后者声明 `mod physical_indexmerge_reader`、公开再导出本文件内容，并通过 `impl ConcretePhysicalOperator for PhysicalIndexMergeReader` 与 `impl_concrete_physical_plan!` 把类型接入 `base::PhysicalPlan` 的统一接口。
-
-在物理计划树中，`PartialPlansRaw` 是索引合并的构建侧路径，`TablePlan`（若存在）是根据合并后的 handle 回表取行的探测侧路径。`pkg/planner/core/flat_plan.rs` 据此为 partial 子节点标记 `BuildSide`，并将最后的表侧子节点标记为 `ProbeSide`。本文件保存、初始化和遍历这些子计划，但不实现执行器中的并行扫描或 handle 去重/求交算法。
+保存、初始化和遍历这些子计划，但不实现执行器中的并行扫描或 handle 去重/求交算法。
 
 ## 核心职责
 
@@ -103,7 +101,7 @@ RustCodeGraph 将本文件标为 21 个符号，并显示它被 `pkg/planner/cor
 
 ## 与 Go 版本的对应关系
 
-对应文件为 `pkg/planner/core/operator/physicalop/physical_indexmerge_reader.go`。字段和 explain 文本保留了主要命名与语义，但当前差异必须视为迁移状态而非等价实现：
+字段和 explain 文本保留了主要命名与语义，但当前差异必须视为迁移状态而非等价实现：
 
 - Go 同时缓存 `PartialPlans`、`TablePlans` 和 `HandleCols`；Rust 只保存 raw partial 与单个 table，并在需要时临时 flatten。
 - Go `Init` 总会展平所有路径、从表扫描提取 handle、在 `KeepOrder` 时复制首扫描的 `ByItems`；Rust 未保存 flattened 列表或 handle，也未自动填充 `ByItems`。
@@ -113,9 +111,6 @@ RustCodeGraph 将本文件标为 21 个符号，并显示它被 `pkg/planner/cor
 - Go `AccessObject` 只在动态分区裁剪开启且有表路径时构造分区访问对象；Rust 仅返回合并类型字符串。
 - Go `ResolveIndices` 还解析虚拟列及保序 handle；Rust 只递归解析 producer 和子计划。
 - Go 本文件没有 `ToPB` 方法；其 flattened 路径由其他接线用于构造执行器。Rust 当前 `ToPB` 只序列化 table 或首 partial 子节点。
-- Rust 新增 `Clone` 与空的 normalized explain，并通过 `cache_snapshot.rs` 提供独立的计划缓存快照机制。
-
-因此，安全比较应逐个方法核对，不能仅凭同名结构体认定行为一致。
 
 ## 扩展指南
 
@@ -127,12 +122,3 @@ RustCodeGraph 将本文件标为 21 个符号，并显示它被 `pkg/planner/cor
 - 所有 Rust 测试应继续放在独立 `*_test.rs` 文件，不应嵌入生产源文件；行为移植需尽量保持 Go 分支和错误语义，不用桩或简化逻辑替代。
 
 兼容性风险主要是 EXPLAIN 文本、children 顺序、Schema 来源和计划缓存快照格式；正确性风险集中在 index-only Schema、关联列重复收集、列下标解析与完整 PB 构造；性能风险集中在真实行宽、DistSQL 并发代价和 `MemoryUsage` 的重复计数。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter ...physical_indexmerge_reader.rs` 确认目标文件含 21 个符号；`node --file ... --offset 1 --limit 400` 返回完整 297 行源码并列出 7 个使用文件。对 `PhysicalIndexMergeReader`、`ExtractCorrelatedCols`、`ResolveIndices`、`ToPB`、`MemoryUsage` 执行了 `query/callers/callees`；名称歧义查询未返回可用的逐方法跨文件边，因此上游关系只采用文件级使用信息并由下列源码直接核验。
-- 生产源码：`physical_indexmerge_reader.rs` 的结构体及全部方法；`physicalop/lib.rs` 的模块声明、公开再导出、`ConcretePhysicalOperator` 实现和宏接线；`pkg/planner/core/flat_plan.rs` 的 BuildSide/ProbeSide children 标记；`physicalop/cache_snapshot.rs` 的 capture/restore。
-- crate 边界：`physicalop/Cargo.toml` 的 `lib.rs` 入口、路径依赖、`tipb` 依赖和 `package.metadata.porting.go-package`。
-- Go 对照：`physical_indexmerge_reader.go` 的结构、初始化、统计行宽、代价、内存、分区访问、统计加载、explain 与列解析；`pkg/planner/core/plan_cost_ver2.go` 的 IndexMerge 专用 v2 代价；`pkg/planner/core/plan_cost_ver1.rs` 的 Rust 扁平计划代价实现。
-- 独立测试：`physical_indexmerge_reader_test.rs` 验证 union/intersection 与 Limit 文本、normalized 空串、index-only Schema/统计版本初始化，以及 raw/flatten 双重内存计数；`cache_snapshot_test.rs` 覆盖 `PhysicalIndexMergeReader` 快照恢复；`readers_scans_aster_unit_test.rs` 验证类型满足物理计划接口。
-- 本任务仅创建说明文档，按总计划不运行 Cargo；最终以固定 11 个二级标题的结构命令和人工事实复核验收。

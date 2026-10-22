@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`foreign_key.rs` 属于 `astersql-ddl` crate；[`pkg/ddl/Cargo.toml`](Cargo.toml) 以 `lib.rs` 为库入口，而 [`pkg/ddl/lib.rs`](lib.rs) 通过 `pub mod foreign_key` 公开本模块。它依赖同 crate 的 [`column.rs`](column.rs) 中 `ColumnInfo`、`ColumnKind`、`IndexInfo`、`SchemaState` 和 `TableInfo`，用一个内存 `ForeignKeyCatalog` 表达外键相关的元数据与规则。
-
-当前接线边界必须特别说明：RustCodeGraph 对本文件的公开函数未找到生产调用者，仓库直接引用集中在 [`foreign_key_test.rs`](foreign_key_test.rs) 和 [`tests/fk/foreign_key_test.rs`](tests/fk/foreign_key_test.rs)；生产 DDL 执行器中另有 [`executor.rs`](executor.rs) 的外键 API，以及 [`persistent_actions.rs`](persistent_actions.rs) 的持久化删除动作。因此，本文件是已实现并有独立测试覆盖的外键规则/状态机模型，不应被描述成已经接入 owner、持久化 job、InfoSchema 和真实 SQL 执行器的完整生产链路。
+用 `ForeignKeyInfo`、`ForeignKeyTable` 和 `ForeignKeyCatalog` 保存父子表关系、引用动作、Schema 状态、索引和表属性，并提供大小写不敏感的目录查找。
 
 ## 核心职责
 
@@ -89,16 +87,11 @@
 
 ## 与 Go 版本的对应关系
 
-主要语义映射到 [`foreign_key.go`](foreign_key.go)：
-
-- Rust `advance_create_foreign_key` 对应 Go `(*worker).onCreateForeignKey` 的三阶段状态机；Rust `drop_foreign_key` 对应 Go `dropForeignKey`。
-- Rust `check_foreign_key_definition` 对应 Go `checkTableForeignKey`，`check_add_foreign_key_valid` 对应 `checkAddForeignKeyValidInOwner` 的查重、父表和两侧索引检查。
 - Rust 的列修改、父表引用、索引删除和列删除保护分别对应 Go `checkModifyColumnWithForeignKeyConstraint`、`checkTableHasForeignKeyReferred`、`checkIndexNeededInForeignKey`、`checkDropColumnWithForeignKeyConstraint`。
-- Rust `build_foreign_key_check_sql` 对应 Go `checkForeignKeyConstrain` 中的 SQL 形状：过滤所有子列的 NULL，按列顺序进行元组 `NOT IN`，并以 `LIMIT 1` 探测违规行。
 
-Rust 保留了关键规则和状态顺序，但并非 Go 生产实现的等价替换。Go 通过 `worker`、`jobContext`、`model.Job`、InfoSchema/Meta、`updateVersionAndTableInfo` 和 session pool 运行，写入持久元数据、更新 job 状态、执行受限 SQL、带有异步提交延迟和 failpoint，并用具体数据库错误码报告失败；Rust 本文件用内存目录、调用者提供的版本计数和 `existing_rows_valid` 布尔值模拟这些结果。Go 还会根据 `FKVersion1` 过滤旧元数据，并含数据库级引用检查和 owner 包装函数，这些不在本文件中。
+Rust 保留了关键规则和状态顺序，但并非 Go 生产实现的等价替换。Go 通过 `worker`、`jobContext`、`model.Job`、InfoSchema/Meta、`updateVersionAndTableInfo` 和 session pool 运行，写入持久元数据、更新 job 状态、执行受限 SQL、带有异步提交延迟和 failpoint，并用具体数据库错误码报告失败；Rust 本文件用内存目录、调用者提供的版本计数和 `existing_rows_valid` 布尔值模拟这些结果。
 
-细节差异也需保留：Go 的整数类型判断覆盖多种 MySQL 整数类型，并对 `TypeNewDecimal` 保持精度/小数位不变；Rust `ColumnKind` 只用一个 `Integer` 变体且没有 Decimal 变体。Go 使用参数化的 `%n` 标识符格式执行检查 SQL，Rust 返回直接反引号拼接的字符串。Go 的 PK-handle 特例基于主键 flag，Rust 模型依赖 `primary_key_is_handle`、索引元数据和列状态。
+细节差异也需保留：Go 的整数类型判断覆盖多种 MySQL 整数类型，并对 `TypeNewDecimal` 保持精度/小数位不变；Rust `ColumnKind` 只用一个 `Integer` 变体且没有 Decimal 变体。Go 使用参数化的 `%n` 标识符格式执行检查 SQL，Rust 返回直接反引号拼接的字符串。
 
 ## 扩展指南
 
@@ -109,13 +102,3 @@ Rust 保留了关键规则和状态顺序，但并非 Go 生产实现的等价�
 - 若要支持带反引号的标识符或执行真实存量校验，应把 `build_foreign_key_check_sql` 改为可靠的标识符转义/参数化接口，并把执行、事务和会话生命周期放在实际执行层。
 - 若需求来自 SQL 用户路径，应先追踪 `executor.rs`、`persistent_actions.rs` 和 job 分发链，决定是接入本模型还是同步修改两套实现；只更改本文件目前主要影响直接调用它的测试/未来调用者。
 - 与 Go 行为对齐时至少同步阅读 `foreign_key.go`、[`foreign_key_test.go`](foreign_key_test.go) 和 [`tests/fk/foreign_key_test.go`](tests/fk/foreign_key_test.go)，避免把 Go 的 owner、持久化、错误码或并发语义简化掉。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可通过 `node --file pkg/ddl/foreign_key.rs` 完整读取。
-- RustCodeGraph 源码与符号查询：读取 `foreign_key.rs:1-789`；查询并核对 `check_foreign_key_definition`、`check_add_foreign_key_valid`、`advance_create_foreign_key`、`drop_foreign_key`、`check_modify_column_with_foreign_key`、`check_table_has_foreign_key_referred`、`check_index_needed_in_foreign_key`、`check_drop_column_with_foreign_key`、`build_foreign_key_check_sql` 的定义和调用边。
-- crate/模块证据：读取 `pkg/ddl/Cargo.toml`，并核对 `pkg/ddl/lib.rs:63` 的 `pub mod foreign_key`。
-- Go 对照证据：读取 `pkg/ddl/foreign_key.go`，核对创建/删除状态机、定义与列/索引/表保护、存量 SQL 执行；用 `rg` 定位 `pkg/ddl/foreign_key_test.go` 和 `pkg/ddl/tests/fk/foreign_key_test.go` 的外键回归测试集合。
-- Rust 测试证据：读取 `pkg/ddl/foreign_key_test.rs:1-246` 和 `pkg/ddl/tests/fk/foreign_key_test.rs:1-1179`。测试覆盖状态推进、违规行回滚、定义矩阵、引用动作、大小写不敏感、前缀索引、PK-handle、列修改、删除保护和复合检查 SQL。
-- 接线证据：RustCodeGraph 对主要公开函数的 `callers` 查询没有生产调用边；`rg` 的直接引用仅落在本文件和上述测试中，而 `executor.rs`/`persistent_actions.rs` 各自存在另一套外键行为。
-- 本任务是纯文档分析，未运行 Cargo。交付前另以任务指定命令验证本文恰含十一个固定二级标题，并人工复核每个行为结论都能回指上述源码、调用图、Go 文件或测试。

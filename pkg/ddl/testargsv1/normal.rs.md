@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`normal.rs`](normal.rs) 属于 `astersql-ddl-testargsv1` crate 的默认编译分支。该 crate 由 [`Cargo.toml`](Cargo.toml) 定义，默认不启用任何 feature；当 `ddlargsv1` feature 未启用时，[`lib.rs`](lib.rs) 通过 `pub use normal::*` 将本文件的常量再导出到 crate 根。工作区根 [`Cargo.toml`](../../../Cargo.toml) 又把根 crate 的同名 feature 转发给 `facade_ddl_testargsv1/ddlargsv1`，因此默认构建与强制 V1 构建在编译期互斥。
-
-它是测试参数版本选择的兼容开关，不负责创建、持久化或执行 DDL Job。就 DDL 执行框架而言，本文件本身不涉及 owner、schema state、reorg、回滚、系统表或 schema version 同步。
+两个常量均受 `#[cfg(not(feature = "ddlargsv1"))]` 约束，与 [`force_v1.rs`](force_v1.rs) 中 feature 开启时为 `true` 的定义组成互斥分支。
 
 ## 核心职责
 
@@ -60,9 +58,9 @@ Go 生产代码可能根据对应开关修改进程级 Job 版本状态，但那
 
 ## 与 Go 版本的对应关系
 
-直接对照文件 [`normal.go`](normal.go) 使用 `//go:build !ddlargsv1` 并声明 `const ForceV1 = false`；其注释同样说明 V2 自 8.4.0 起成为默认格式，同时保留 V1 兼容测试轮次。Rust 的 `#[cfg(not(feature = "ddlargsv1"))]`、`ForceV1 = false` 与该语义一一对应，并额外提供惯用名称 `FORCE_V1`。
+Rust 的 `#[cfg(not(feature = "ddlargsv1"))]`、`ForceV1 = false` 与该语义一一对应，并额外提供惯用名称 `FORCE_V1`。
 
-Go 的互补文件 [`force_v1.go`](force_v1.go) 在 `ddlargsv1` build tag 下返回 `true`，对应 Rust 的 [`force_v1.rs`](force_v1.rs)。Go 侧实际生产接线位于 [`pkg/ddl/ddl.go`](../ddl.go) 的 `detectAndUpdateJobVersion`：无 etcd 客户端的测试/uni-store 路径根据 `testargsv1.ForceV1` 选择 `model.JobVersion1` 或 `JobVersion2`；[`pkg/ddl/ddl_test.go`](../ddl_test.go) 的 `TestDetectAndUpdateJobVersion` 覆盖这个分支。
+Go 的互补文件 [`force_v1.go`](force_v1.go) 在 `ddlargsv1` build tag 下返回 `true`，对应 Rust 的 [`force_v1.rs`](force_v1.rs)。
 
 Rust 当前只有开关 crate、条件再导出与局部单元测试，仓库引用搜索没有发现 Rust 版 `detectAndUpdateJobVersion` 使用该常量。因此常量值和构建选择已对齐 Go，但完整运行时接线不能视为已移植。
 
@@ -73,13 +71,3 @@ Rust 当前只有开关 crate、条件再导出与局部单元测试，仓库引
 - 若把开关接入 Rust DDL 运行时，应在实际版本选择模块新增独立测试，覆盖默认与 `ddlargsv1` 两种构建配置，并参照 Go 的 `TestDetectAndUpdateJobVersion` 核对状态变化；测试逻辑不要内嵌到 `normal.rs`。
 - 不应在本文件加入运行时探测、全局可变状态或 Job 编解码逻辑。此处适合保留为小型配置边界，实际决策应放在拥有 DDL Job 版本状态的模块中。
 - 兼容风险主要是 feature/build-tag 语义漂移和公开名称变化；性能风险可忽略，因为读取编译期常量没有运行时分配或 I/O。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`node --file pkg/ddl/testargsv1/normal.rs --offset 1 --limit 260` 读取了本文件完整 36 行；`files --filter pkg/ddl/testargsv1` 确认 crate 相关的 Rust/Go 文件集合。常量级 `query/node/callers/callees` 未能唯一定位本文件符号，限制已在“依赖与调用关系”记录。
-- 源码与配置：[`normal.rs`](normal.rs)、[`force_v1.rs`](force_v1.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、根 [`Cargo.toml`](../../../Cargo.toml) 和 [`pkg/lib.rs`](../../lib.rs)。
-- Go 对照与行为测试：[`normal.go`](normal.go)、[`force_v1.go`](force_v1.go)、[`pkg/ddl/ddl.go`](../ddl.go) 的 `detectAndUpdateJobVersion`、[`pkg/ddl/ddl_test.go`](../ddl_test.go) 的 `TestDetectAndUpdateJobVersion`。
-- Rust 独立测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `ddlargsv1_feature_forces_v1_jobs` 与 `default_build_uses_current_ddl_args`。
-- 仓库引用搜索：`rg -n 'astersql-ddl-testargsv1|testargsv1|FORCE_V1|ForceV1' --glob '*.rs' --glob '*.toml' --glob '*.go' --glob '*.bazel' --glob 'BUILD*'`，用于核验 façade、Cargo feature、Go 消费点和 Rust 测试引用。
-
-本任务为纯文档分析，按计划不运行 Cargo。结构验证另行执行，以确认目标文件存在且恰好包含规定的十一个二级章节。

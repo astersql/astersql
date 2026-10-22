@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 MySQL 旧式 `mysql_native_password` 认证所需的双重 SHA-1 密码摘要、摘要文本编解码以及握手响应校验。它属于 Cargo 包 `astersql-parser-auth`；该包以 `pkg/parser/auth/lib.rs` 为 crate 根，并由公开模块 `mysql_native_password` 直接导出。因此，这里是认证算法的无状态基础工具层，不负责网络握手、用户记录读取或认证插件选择。
-
-在当前 Rust 调用链中，`EncodePassword` 已被 `pkg/executor/utils.rs::encodedPassword` 用于默认/原生认证插件的用户密码落库编码，也被 `pkg/expression/builtin_encryption.rs::mysql_password` 用于兼容已弃用的 SQL `PASSWORD()`。RustCodeGraph 将目标文件列为由上述表达式实现和两个测试文件使用；仓库内文本检索还确认了执行器调用。`CheckScrambledPassword`、`DecodePassword`、`EncodePasswordBytes` 和 `Sha1Hash` 是公开 API，但当前仓库内可见 Rust 调用主要集中在独立测试，仍可能供 crate 外部消费者调用。
+RustCodeGraph 将目标文件列为由上述表达式实现和两个测试文件使用；仓库内文本检索还确认了执行器调用。
 
 ## 核心职责
 
@@ -76,9 +74,9 @@ SQL 兼容流程由 `pkg/expression/builtin_encryption.rs::mysql_password` 发�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/parser/auth/mysql_native_password.go`，独立测试为 `pkg/parser/auth/mysql_native_password_test.go`。五个 Rust 公开函数分别对应同名 Go 函数，核心公式、空密码规则、`*` 前缀大写 hex 格式、首字节跳过解码和无效 auth 长度拒绝语义一致。Rust 测试沿用 Go 的固定期望：`"123"` 编码为 `*23AE809DDACAF96AF0FD78ED04B6A265E05AA257`；`"abc"` 的固定 salt/auth 向量可以通过校验；短 auth 返回 `false`。
+五个 Rust 公开函数分别对应同名 Go 函数，核心公式、空密码规则、`*` 前缀大写 hex 格式、首字节跳过解码和无效 auth 长度拒绝语义一致。Rust 测试沿用 Go 的固定期望：`"123"` 编码为 `*23AE809DDACAF96AF0FD78ED04B6A265E05AA257`；`"abc"` 的固定 salt/auth 向量可以通过校验；短 auth 返回 `false`。
 
-实现层差异包括：Go 用 `crypto/sha1`、`encoding/hex` 和 `fmt.Sprintf("*%X")`，Rust 用 RustCrypto `sha1` 与 `hex` crate；Go 对理论上的 `hash.Write` 错误执行 `terror.Log(errors.Trace(err))`，Rust 的 digest/update API 不产生对应错误；Go 的 `DecodePassword` 用字符串字节切片 `pwd[1:]` 并用 PingCAP errors 包装解码错误，Rust 用 `password.as_bytes()[1..]` 保留字节切片语义并直接返回 `hex::FromHexError`。两版对空字符串解码都会在跳过首字节时越界，而正常调用应先通过编码/存储格式约束排除该输入。
+实现层差异包括：Go 用 `crypto/sha1`、`encoding/hex` 和 `fmt.Sprintf("*%X")`，Rust 用 RustCrypto `sha1` 与 `hex` crate；Go 对理论上的 `hash.Write` 错误执行 `terror.Log(errors.Trace(err))`，Rust 的 digest/update API 不产生对应错误；Go 的 `DecodePassword` 用字符串字节切片 `pwd[1:]` 并用 PingCAP errors 包装解码错误，Rust 用 `password.as_bytes()[1..]` 保留字节切片语义并直接返回 `hex::FromHexError`。
 
 Rust 额外的 `migration_aster_unit_test.rs::mysql_native_password_vectors_match_go` 覆盖空密码编码和多字节前缀解码错误；这些是移植语义的补充证据，不改变 Go 算法。
 
@@ -89,12 +87,3 @@ Rust 额外的 `migration_aster_unit_test.rs::mysql_native_password_vectors_matc
 - 若要支持新的认证插件，不应复用或改写 SHA-1 公式来模拟新协议；应新增独立模块，并在 `pkg/executor/utils.rs::encodedPassword` 的插件分派层接线，避免改变既有 `mysql_native_password` 存量账号行为。
 - 若要强化解码校验，可在 `DecodePassword` 中验证非空、`*` 前缀、41 字节规范长度和 20 字节结果，但这会收紧当前接受面，必须先调查所有 crate 外调用者并与 Go 行为协调。至少应为当前空输入 panic 和任意前缀接受行为添加明确回归测试，再决定兼容策略。
 - 性能上每次编码会生成两个摘要向量和一个格式化字符串。除非基准证明它处于热点，不应为减少小额分配而牺牲清晰度；任何优化都必须保持原始字节入口，避免强制 UTF-8 转换。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中的 Rust、Go 实现及测试均已索引。
-- RustCodeGraph `files --filter pkg/parser/auth` 与 `node --file pkg/parser/auth/mysql_native_password.rs`：确认目标文件的五个公开函数、文件内流程，以及索引报告的使用文件 `pkg/expression/builtin_encryption.rs`、`pkg/parser/auth/migration_aster_unit_test.rs`、`pkg/parser/auth/mysql_native_password_test.rs`。
-- RustCodeGraph `query`：分别定位 Rust/Go 的 `CheckScrambledPassword`、`Sha1Hash`、`EncodePassword`、`EncodePasswordBytes`、`DecodePassword`；`node` 读取了执行器、表达式和迁移测试中的直接调用位置。对目标自由函数运行 `callers/callees` 未返回图边，因此调用关系另用索引文件内容和精确文本检索复核，没有扩大推断范围。
-- 已读源码与配置：`pkg/parser/auth/mysql_native_password.rs`、`pkg/parser/auth/lib.rs`、`pkg/parser/auth/Cargo.toml`、`pkg/executor/utils.rs`、`pkg/expression/builtin_encryption.rs`。
-- 已读 Go 对照与测试：`pkg/parser/auth/mysql_native_password.go`、`pkg/parser/auth/mysql_native_password_test.go`；已读 Rust 独立测试：`pkg/parser/auth/mysql_native_password_test.rs`、`pkg/parser/auth/migration_aster_unit_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰有十一个固定二级章节，并人工复核本说明只陈述上述源码、调用和测试能够支持的事实。

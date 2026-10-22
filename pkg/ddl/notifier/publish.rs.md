@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-notifier` crate 的 schema 变更事件发布边界。crate 入口 `pkg/ddl/notifier/lib.rs` 通过 `mod publish; pub use publish::*;` 将这里的类型和函数公开给 DDL 执行层；crate 归属和本地依赖见 `pkg/ddl/notifier/Cargo.toml`。它不负责生成 DDL 事件或消费事件，只把已经构造好的 `SchemaChangeEvent` 组装为持久化记录并交给存储层。
-
-当前 Rust 生产主链的直接入口是 `pkg/ddl/persistent_actions.rs::async_notify_event`：该函数跳过内存库/系统库、解析 multi-schema 子任务编号后，调用 `PubSchemaChangeInTransaction`，使通知记录与 worker 已有 SQL 事务共用生命周期。另一公开入口 `PubSchemeChangeToStore` 面向 `Store` 抽象，主要由 notifier 的独立 Rust 测试以及可注入的存储实现使用；RustCodeGraph 文件节点同时显示 `publish.rs` 被 `store.rs`、`testkit_test.rs` 和 `persistent_actions.rs` 引用。
+提供两种持久化适配方式：`PubSchemeChangeToStore` 委托动态分派的 `Store::Insert`；`PubSchemaChangeInTransaction` 则构造固定的 `mysql.tidb_ddl_notifier` 插入，通过调用者提供的单次执行闭包复用 worker 活跃事务。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/notifier/publish.go` 是 `PubSchemeChangeToStore` 和 `SchemaChange` 的直接语义来源。两版均构造 `(ddlJobID, subJobID, event, processedByFlag=0)` 记录并委托 `Store.Insert`；普通 DDL 使用 `subJobID=-1`，multi-schema 或批量建表使用子任务索引。Rust 用按值 `SchemaChangeEvent` 和 `Result<(), Error>`，Go 用事件指针、`context.Context`、session 指针和 `error`，但持久化字段语义一致。
+Rust 用按值 `SchemaChangeEvent` 和 `Result<(), Error>`，Go 用事件指针、`context.Context`、session 指针和 `error`，但持久化字段语义一致。
 
 Rust 额外提供 `PubSchemaChangeInTransaction`，用闭包桥接当前 Rust worker 的事务执行接口；Go 生产路径在 `pkg/ddl/ddl.go` 直接把 session 和 store 传给 `PubSchemeChangeToStore`。Rust 的事务内入口不是简化掉存储语义：它复用 `store.rs::InsertSchemaChangeSQL` 的同一 JSON/INSERT 逻辑，只把事务所有权保留在 worker。
 
@@ -94,12 +92,3 @@ Go 的 `pkg/ddl/notifier/testkit_test.go::TestPublishEventError` 通过 failpoin
 - 改变事务行为时，必须保持 `PubSchemaChangeInTransaction` 不自行提交的契约，否则可能出现 DDL 回滚但通知仍可见。建议在独立测试文件中新增一个直接覆盖该函数的回滚/执行器失败测试；不要把测试嵌入 `publish.rs`。
 - 新 handler 不应修改发布初值；处理位分配与更新属于 `subscribe.rs`/`Store::UpdateProcessed`。handler 数量、位宽和兼容性变化需评估 `u64` 上限以及旧节点对位编号的解释。
 - 性能方面，每次调用都会序列化完整事件并执行一次插入；批量化或去重必须保留 `(ddlJobID, subJobID)` 唯一性、事件顺序和外层事务原子性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ddl/notifier` 确认目标目录 15 个文件、`publish.rs` 5 个符号；`node --file pkg/ddl/notifier/publish.rs` 读取全部 78 行，并给出 `store.rs`、`testkit_test.rs`、`persistent_actions.rs` 三个文件级引用。`query publish` 定位两个 Rust 函数和 `SchemaChange`。对两个函数执行精确 `callers`/`callees` 查询均返回空集合，因此函数级调用边由后续源码引用搜索补足，未把空图结果推断为“无人调用”。
-- 生产源码：`pkg/ddl/notifier/publish.rs`；`pkg/ddl/persistent_actions.rs::async_notify_event`；`pkg/ddl/notifier/store.rs::{Store, TableStore::Insert, InsertSchemaChangeSQL}`；`pkg/ddl/notifier/events.rs::SchemaChangeEvent`；`pkg/ddl/notifier/lib.rs`；`pkg/ddl/notifier/Cargo.toml`。
-- Go 对照：`pkg/ddl/notifier/publish.go`、`pkg/ddl/notifier/store.go`、`pkg/ddl/ddl.go`。
-- Rust 独立测试：`pkg/ddl/notifier/testkit_test.rs::test_publish_to_table_store`、`test_publish_event_error` 以及 pub/sub 顺序与重试用例；`pkg/ddl/notifier/store_test.rs::insert_initializes_processed_by_flag_to_zero`、`open_table_store_instances_share_the_same_persistent_table`、`table_store_uses_real_ddl_session_sql_transactions`。当前搜索未发现直接调用 `PubSchemaChangeInTransaction` 的 `*_test.rs`，这是已记录的覆盖缺口，而非已验证结论。
-- Go 测试：`pkg/ddl/notifier/testkit_test.go::TestPublishToTableStore`、`TestPublishEventError`、`Test2OwnerForAShortTime` 等提供移植语义参照。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构检查要求目标文件存在且恰好包含上述 11 个固定二级标题。

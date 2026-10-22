@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate，由 `pkg/metrics/lib.rs` 通过 `pub mod owner` 公开。它不是 owner 选举算法本身，而是 owner 生命周期的 Prometheus 指标定义与初始化层：定义新建 etcd session、监听 owner key 以及竞选 owner 三类观测对象，并把构造结果发布到包级静态槽位。
-
-包级总入口 `pkg/metrics/metrics.rs::InitMetrics` 在一次性初始化序列中调用 `owner::init_owner_metrics`；随后 `metrics.rs::RegisterMetrics` 才把三个 collector 注册到默认 Prometheus registry。初始化、注册与业务侧写入是三个独立阶段，不能仅凭本文件存在就推断 Rust owner 流程已经产生样本。
+通过 `init_owner_metrics` 一次构造并发布上述三个 collector，保持指标名称、帮助文本、变量标签和直方图桶与 `pkg/metrics/owner.go::InitOwnerMetrics` 一致。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ collector 通常随进程存活。注册时克隆 collector handle；若之后�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metrics/owner.go`。Rust 与 Go 均定义三个 collector、六个 watch 结果字符串和一个 campaign 结果字符串；namespace、subsystem、metric name、help、标签顺序以及 `ExponentialBuckets(0.0005, 2, 22)` 均一致。Rust 的大写下划线符号对应 Go 的导出驼峰符号，例如 `NEW_SESSION_HISTOGRAM` 对应 `NewSessionHistogram`，`PUT_VALUE` 对应 `PutValue`。
-
 Rust 使用 `Option<Collector>` 表示 Go 指针初始化前的 nil，并把初始化函数标为 `unsafe`；Go 通过包 `init()` 自动调用 `InitMetrics`，Rust 则由显式入口和 `Once` 管理。Go `RegisterMetrics` 与 Rust `RegisterMetrics` 都注册三个 owner collector，且两侧简化模式都只切换 campaign 指标。
 
-最重要的迁移差异在业务接线：Go `pkg/util/etcd.go` 在 session 创建结束时记录耗时和成功/失败标签；Go `pkg/owner/manager.go` 在竞选错误、失去 owner、watcher 关闭/取消、key 删除/写入、session/context 结束等分支递增计数。当前 Rust 全仓没有相应 collector 或事件常量的业务写入引用。因此文档只能确认“指标定义、初始化和注册已移植”，不能确认“owner 运行路径采样已移植”。
+最重要的迁移差异在业务接线：Go `pkg/util/etcd.go` 在 session 创建结束时记录耗时和成功/失败标签；Go `pkg/owner/manager.go` 在竞选错误、失去 owner、watcher 关闭/取消、key 删除/写入、session/context 结束等分支递增计数。当前 Rust 全仓没有相应 collector 或事件常量的业务写入引用。
 
 ## 扩展指南
 
@@ -91,13 +87,3 @@ Rust 使用 `Option<Collector>` 表示 Go 指针初始化前的 nil，并把初�
 - 测试应放在独立 Rust 测试文件，不要嵌入 `owner.rs`。可扩展 `pkg/metrics/metrics_2_aster_unit_test.rs`，或新增同目录 `owner_test.rs` 并在 `lib.rs` 的 `#[cfg(test)]` 下挂载。
 - 至少补测三个 descriptor 的全名/help/变量标签、22 个桶的首末边界、所有固定事件字符串、初始化后非空、注册后可 gather，以及简化模式只切换 campaign 指标。若补业务写入，还需对每个 Go 分支断言准确标签和增量。
 - 兼容风险主要是监控查询/告警因重命名或标签变化失效、Go/Rust 事件分类不一致；正确性风险是初始化顺序或静态槽位替换导致 panic/状态分裂；性能风险是动态错误文本和其他无界标签值造成时间序列基数膨胀。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/metrics/owner.rs` 报告目标文件及 2 个索引符号。
-- RustCodeGraph `node --file pkg/metrics/owner.rs`：核对三个静态 collector、七个事件常量和 `init_owner_metrics` 的完整定义；文件关系报告唯一使用文件为 `pkg/metrics/metrics.rs`。
-- RustCodeGraph `query init_owner_metrics`：定位到 `pkg/metrics/owner.rs:52`；`explore` 报告 Rust `init_owner_metrics` 的上游为 `pkg/metrics/metrics.rs::InitMetrics`。精确 `callers`/`callees` 命令未产生可见输出，因此调用细节又由已索引的 `metrics.rs` 源码核对。
-- 已读 crate/模块与下游实现：`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`、`pkg/metrics/common/wrapper.rs`。
-- 已读 Go 对照与业务证据：`pkg/metrics/owner.go`、`pkg/metrics/metrics.go`、`pkg/owner/manager.go`、`pkg/util/etcd.go`；全仓 Rust/Go 精确引用搜索用于确认写入点和 Rust 接线缺口。
-- 已读相关独立测试：`pkg/metrics/metrics_2_aster_unit_test.rs::package_metrics_initialization_covers_go_success_boundary_and_error_paths` 直接验证初始化后 `NEW_SESSION_HISTOGRAM` 的全名；未发现 owner 专属 Rust 测试，也未发现两个计数器、桶、事件常量和业务写入分支的直接 Rust 断言。
-- 本任务为纯文档分析，按计划不运行 Cargo；验证采用文档结构命令与人工源码/调用证据复核。

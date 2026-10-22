@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ttl-ttlworker` crate；crate 入口 `pkg/ttl/ttlworker/lib.rs` 以 `pub mod timer_sync` 导出它，Cargo 包边界由 `pkg/ttl/ttlworker/Cargo.toml` 定义。它把 `crate::session::PhysicalTable` 映射为 TTL 定时器的键、标签、调度间隔和载荷，并用 `TtlTimersSyncer` 提供一套纯内存同步语义。
-
-需要区分两条接线：当前 Rust 测试直接使用 `TtlTimersSyncer`；生产运行时 `pkg/session/runtime/ttl_timer.rs::sync_ttl_timers` 则只复用本文件的 `timer_key`、`timer_tags` 和 `TIMER_HOOK_CLASS`，自行通过 SQL 同步 `mysql.tidb_timers`。仓库搜索未发现生产代码实例化 `TtlTimersSyncer`，所以不能把这个内存缓存描述成生产定时器存储或完整 Go 客户端的替代品。
+用 `OLD_DEFAULT_TTL_JOB_INTERVAL` 为缺失或空调度表达式提供 `24h` 的升级兼容回退。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ RustCodeGraph 确认内部调用边为：`sync_timers -> timer_key`、`sync_time
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/ttl/ttlworker/timer_sync.go`。共同语义包括：相同的 key prefix 和 hook class；按逻辑/物理 ID 建键；旧版本空 job interval 回退为 `24h`；TTL disabled 的表仍拥有 disabled timer；记录消失后按 timer `CreateTime` 而非首次消失时间应用十分钟宽限期；标签、间隔或 enable 变化时更新；truncate 后新旧物理 ID 分离。
+Go `TTLTimersSyncer` 持有 system session pool、`timerapi.TimerClient`、定期全量拉取缓存时间和真实 `TimerRecord`，并记录指标、日志、存储错误；Rust 类型只持有本地值。Go `syncOneTimer` 在创建时读取 TTL table status 选择 watermark，并通过 client 创建/更新后重新读取记录；Rust `sync_timers` 不包含 watermark、timezone、policy type、版本或外部 I/O。Go 手动触发会真正请求 timer client 并返回等待闭包，Rust `manual_trigger` 仅返回两段标识。
 
-Rust 内存模型保留了上述核心决策，但不是逐项完整移植。Go `TTLTimersSyncer` 持有 system session pool、`timerapi.TimerClient`、定期全量拉取缓存时间和真实 `TimerRecord`，并记录指标、日志、存储错误；Rust 类型只持有本地值。Go `syncOneTimer` 在创建时读取 TTL table status 选择 watermark，并通过 client 创建/更新后重新读取记录；Rust `sync_timers` 不包含 watermark、timezone、policy type、版本或外部 I/O。Go 手动触发会真正请求 timer client 并返回等待闭包，Rust `manual_trigger` 仅返回两段标识。
-
-另一个可见差异是 Go 分区标签包含 `partition=<name>`，而 Rust `timer_tags` 不包含分区名。当前生产 SQL 同步复用了 Rust 标签助手，因此这是现有 Rust 行为，不应在文档中假定已经与 Go 完全一致。
+另一个可见差异是 Go 分区标签包含 `partition=<name>`，而 Rust `timer_tags` 不包含分区名。
 
 ## 扩展指南
 
@@ -90,13 +86,3 @@ Rust 内存模型保留了上述核心决策，但不是逐项完整移植。Go 
 - 若补齐 Go 的分区标签，应使用 `PhysicalTable::partition_name`，并同步生产 SQL 路径与测试；需评估标签改变是否触发现有 timer 更新及查询兼容性。
 - 若把 `manual_trigger` 接入真实 timer client，不应只扩写当前字符串返回值；需对齐 Go 的强制同步、版本冲突/存储错误、超时、取消、事件 ID 和 job history 完成判定，并把 I/O 测试放在独立测试文件而非本源文件。
 - 若要在生产侧直接采用 `TtlTimersSyncer`，必须先明确它与 `sync_ttl_timers` 的单一所有权，避免内存模型和 SQL 同步器同时管理同一 key 空间。
-
-## 验证依据
-
-- 源码：`pkg/ttl/ttlworker/timer_sync.rs`（全部 3 个常量、2 个数据结构、`TtlTimersSyncer` 的 7 个方法和 3 个自由函数）；模块入口 `pkg/ttl/ttlworker/lib.rs`；数据来源类型 `pkg/ttl/ttlworker/session.rs::PhysicalTable`。
-- crate 边界：`pkg/ttl/ttlworker/Cargo.toml` 的 `[package]`、`[lib]`、常规依赖和 `cfg(windows)` 依赖声明。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ttl/ttlworker` 覆盖目标、Go 对照和两组 Rust 测试；`explore`/`callers`/`callees` 核对了 `sync_timers`、`manual_trigger`、`timer_key`、`timer_tags`、`should_sync_timer` 及生产运行时引用。
-- Go 对照：`pkg/ttl/ttlworker/timer_sync.go` 的 `TTLTimersSyncer`、`SyncTimers`、`syncOneTimer`、`ManualTriggerTTLTimer`、`getTimerTags`、`buildTimerKeyWithID` 和 `getTTLSchedulePolicy`。
-- 测试：`pkg/ttl/ttlworker/timer_sync_test.rs` 验证老记录立即删除及 disabled 表重新出现时清除墓碑；`pkg/ttl/ttlworker/integrationtest/timer_sync_test.rs` 验证创建、默认间隔、增量更新、truncate、延迟删除、reset 和手动触发三条分支。Go 集成测试入口为 `pkg/ttl/ttlworker/integrationtest/timer_sync_test.go`。
-- 生产接线：`pkg/session/runtime/ttl_timer.rs::sync_ttl_timers` 和 `pkg/session/runtime/ttl_runtime.rs::trigger_ttl_command`。仓库级 Rust 引用搜索确认 `TtlTimersSyncer` 本体目前没有非测试实例化点。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付前仅执行任务指定的 11 章节结构检查，并人工复核所有现状结论均能回指以上符号或文件。

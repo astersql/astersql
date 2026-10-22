@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-dxf-framework-mock`（见同目录 `Cargo.toml`），由 `lib.rs` 以私有模块 `scheduler_mock` 装入，再通过 `pub use scheduler_mock::*` 公开导出。它不是 DXF 调度器或存储层的生产实现，而是为测试提供 GoMock 风格、可注入闭包的替身，覆盖三类协作对象：任务调度生命周期 `MockScheduler<H>`、任务结束后的清理器 `MockCleaner`，以及读写任务状态的 `MockTaskManager`。
-
-DXF 的系统位置由 `pkg/dxf/framework/doc.go` 给出：owner 节点运行 scheduler manager、task scheduler、node manager 和 balancer，所有节点运行 task executor。此文件模拟的正是 owner 调度路径中的扩展回调、清理回调和状态存储边界，但自身不做调度、持久化或资源分配。RustCodeGraph 显示当前 Rust 文件的直接使用文件只有 `pkg/dxf/framework/mock/migration_aster_unit_test.rs`；生产行为应到 `pkg/dxf/framework/scheduler/` 和 `pkg/dxf/framework/storage/` 查阅。
+只提供“派发到测试闭包”的机制，不验证参数匹配、调用顺序或期望调用次数，也不会自动构造成功返回值。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ mock 自身不保存业务任务状态；所有业务结果均由测试闭包产
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/mock/scheduler_mock.go`，其头部注明由 MockGen 从 Go `Scheduler`、`Cleaner`、`ExpiredFileCleaner`、`TaskManager` 接口生成。两版共享大部分公开方法名和参数语义，但机制不同：Go 版把调用交给 `gomock.Controller`，独立 recorder 负责参数匹配与调用期望；Rust 版把 recorder 别名设为 mock 自身，由每个 `Handler` 直接持有闭包，controller 参数仅保留构造签名兼容性。
+两版共享大部分公开方法名和参数语义，但机制不同：Go 版把调用交给 `gomock.Controller`，独立 recorder 负责参数匹配与调用期望；Rust 版把 recorder 别名设为 mock 自身，由每个 `Handler` 直接持有闭包，controller 参数仅保留构造签名兼容性。
 
-重要类型映射包括：Go `error` 对应 `storage::Error`，`*Task` 的可空查询对应 `Option<Box<Task>>`，可修改指针对应 `&mut Task`，slice/map 对应 `Vec`/`HashMap`，`func(sessionctx.Context) error` 对应 `FnOnce`。Go 的 `storage.TaskHandle` 在 Rust 版由 `MockScheduler<H>` 的泛型参数表示。
-
-当前方法集合并非完整一一对应。Go 生成文件包含 `MockExpiredFileCleaner`/`CleanExpiredFiles`，Rust 本文件没有对应类型；Go `MockTaskManager` 有 `GetCleanupTasks` 和 `GetTaskCleanupInfoByIDs`，Rust mock 没有；Rust mock 另有动态参数形式的 `GetTasksInStates`。Rust scheduler trait 的当前接口又采用 `init/schedule_once/task/extension` 等 snake_case 方法，Rust `TaskManager` trait 采用无显式 `storage::Context` 的借用参数。故维护时不能只按名称判断已完成迁移，应同时核对 Go 生成源接口与 `pkg/dxf/framework/scheduler/interface.rs`。
+当前方法集合并非完整一一对应。Go 生成文件包含 `MockExpiredFileCleaner`/`CleanExpiredFiles`，Rust 本文件没有对应类型；Go `MockTaskManager` 有 `GetCleanupTasks` 和 `GetTaskCleanupInfoByIDs`，Rust mock 没有；Rust mock 另有动态参数形式的 `GetTasksInStates`。
 
 ## 扩展指南
 
@@ -93,13 +89,3 @@ mock 自身不保存业务任务状态；所有业务结果均由测试闭包产
 - 扩充 `WithNewSession`/`WithNewTxn` 时必须保留 `FnOnce` 和资源结果传播，并用独立测试证明 callback 的执行次数、错误路径以及事务语义；mock 本身不应伪造生产提交/回滚保证。
 - 所有测试逻辑应继续放在独立的 `migration_aster_unit_test.rs` 或调用方的独立 `*_test.rs`，不要内嵌进本生产文件。至少补充：参数和错误原样转发、可变任务修改、未配置 panic、重复/并发调用，以及回调自替换行为。
 - 同步 Go 生成文件时重点检查 `ExpiredFileCleaner`、cleanup 查询方法和 task manager trait 的差异；这些是当前已知兼容缺口。大量任务/子任务向量和 map 会被闭包取得所有权，扩展高频测试路径时应评估不必要克隆和装箱的成本。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为 391 行、22 个符号，直接使用者为 `pkg/dxf/framework/mock/migration_aster_unit_test.rs`。
-- RustCodeGraph `node --file`：完整读取 `pkg/dxf/framework/mock/scheduler_mock.rs`、`pkg/dxf/framework/mock/lib.rs`、`pkg/dxf/framework/mock/migration_aster_unit_test.rs`、`pkg/dxf/framework/scheduler/interface.rs` 的相关 trait 段，以及 `pkg/dxf/framework/doc.go`。
-- RustCodeGraph `query/node/callers/callees/explore`：核对 `MockScheduler`、`MockCleaner`、`MockTaskManager`、三个 `NewMock*` 入口和 Go 侧 scheduler/task-manager 调用面。图对宏展开的 Rust 方法调用覆盖有限，因此文档没有把 Go callers 冒充 Rust 编译调用边。
-- Cargo 证据：`pkg/dxf/framework/mock/Cargo.toml` 的 crate 名、`lib.rs` 入口、Go package 元数据，以及 proto、storage、taskexecutor execute、planner、sessionctx 依赖。
-- Go 对照：`pkg/dxf/framework/mock/scheduler_mock.go` 的 MockGen 来源、构造器、recorder 和全部公开方法签名。
-- Rust 测试：`pkg/dxf/framework/mock/migration_aster_unit_test.rs` 中 `cleanup_mock_preserves_go_mutable_task_pointer_semantics`、`handler_does_not_hold_callback_lock_during_callback`、`scheduler_mock_dispatches_lifecycle_handlers`。
-- 辅助搜索：`rg` 核对 Rust 引用、Cargo 依赖者、Go 方法集合和最近的 `doc.go`。本任务是纯文档分析，按计划未运行 Cargo，也未把未索引或未接线文本当作已验证运行行为。

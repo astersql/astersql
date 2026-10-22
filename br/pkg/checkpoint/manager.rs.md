@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`manager.rs` 属于 Cargo crate `astersql-br-pkg-checkpoint`。该 crate 的入口是 [`br/pkg/checkpoint/lib.rs`](./lib.rs)，入口先装配 `checkpoint`、`external_storage`、`storage` 等底层模块，再挂载本文件并通过 `pub use manager::*` 展平公开 API。Cargo 清单 [`br/pkg/checkpoint/Cargo.toml`](./Cargo.toml) 将它声明为 library crate；本文件直接使用 `serde` 的序列化约束，其余会话、对象存储、Domain 和错误类型由 crate 内 `stubs.rs` 提供。
-
-本文件是恢复检查点的“后端选择与生命周期编排层”，不是检查点文件格式或 SQL 细节的实现层。它把快照恢复和日志恢复需要的管理操作抽象为 `SnapshotMetaManager`、`LogMetaManager`，再分别用 TiDB 系统表后端 `TableMetaManager` 和外部对象存储后端 `StorageMetaManager` 实现。实际刷盘循环在 [`checkpoint.rs`](./checkpoint.rs) 的 `CheckpointRunner`，表读写在 [`storage.rs`](./storage.rs)，对象路径和对象存储适配在 [`external_storage.rs`](./external_storage.rs)。
-
-RustCodeGraph 的文件索引显示本文件由 `checkpoint_test.rs`、`restore.rs`、`log_restore.rs`、`storage.rs`、`external_storage.rs` 等 7 个文件使用。直接引用搜索进一步确认：正式的恢复适配函数 `StartCheckpointRunnerForRestore` 与 `StartCheckpointRunnerForLogRestore` 接收 trait 对象并调用本文件的 `StartCheckpointRunner`；当前 Rust 构造器的直接实例化主要出现在 checkpoint crate 测试、`br/pkg/task/stream_test.rs` 等测试路径，上层生产模块通常持有并消费 `dyn LogMetaManager`/`dyn SnapshotMetaManager`，不能据此推断所有 Go 构造接线均已迁移。
+把快照恢复和日志恢复需要的管理操作抽象为 `SnapshotMetaManager`、`LogMetaManager`，再分别用 TiDB 系统表后端 `TableMetaManager` 和外部对象存储后端 `StorageMetaManager` 实现。
 
 ## 核心职责
 
@@ -132,22 +128,14 @@ manager 本身没有 Drop 实现，因此调用方应显式 `Close()` 表后端�
 
 ## 与 Go 版本的对应关系
 
-[`manager.go`](./manager.go) 是直接语义基准。主要对应关系如下：
-
 | Go | Rust | 说明 |
 | --- | --- | --- |
-| 泛型 `MetaManager[K,SV,LV,M]` | `SnapshotMetaManager` | Rust 固定快照类型，避免公开泛型组合。 |
-| 泛型 `LogMetaManager[...]` | `LogMetaManager` | Rust 固定日志类型，并保留额外 progress/ingest/storage 方法。 |
-| 泛型 `TableMetaManager[...]` | 单个 `TableMetaManager` + 两个 trait impl | Rust 用 trait impl 区分快照/日志。 |
-| 泛型 `StorageMetaManager[...]` | 单个 `StorageMetaManager` + 两个 trait impl | 路径、cipher 和 Storage 语义对齐。 |
-| `manager.runnerSe = nil` | `Mutex<Option<_>>::take()` | 都把 runner session 单次转移；Rust 重复调用显式报错。 |
-| restore lock tick `0` | `Duration::ZERO` | Runner 启动参数对齐。 |
-| table `TryGetStorage() == nil` | `None` | 后端能力探测对齐。 |
-| storage 返回底层 Storage | `Some(self.storage.clone())` | Rust 用 `Arc` 表达共享所有权。 |
+| 泛型 `MetaManager[K,SV,LV,M]` | `SnapshotMetaManager` | Rust 固定快照类型，避免公开泛型组合。|
+| 泛型 `LogMetaManager[...]` | `LogMetaManager` | Rust 固定日志类型，并保留额外 progress/ingest/storage 方法。
 
-数据库名 `{dbName}_{restoreID}`、taskName `{clusterID}/{prefix}_{restoreID}`、五类表清理、progress/ingest 独立位置及 Runner 构造顺序均与 Go 对齐。明确差异包括：Rust trait 要求 `Send + Sync`；table session 有 mutex 和关闭后错误；Rust meta 保存不接受 nil；Rust 构造器返回 trait object；当前 `kind` 字段是 Rust 侧角色记录而非 Go 字段。
+明确差异包括：Rust trait 要求 `Send + Sync`；table session 有 mutex 和关闭后错误；Rust meta 保存不接受 nil；Rust 构造器返回 trait object；当前 `kind` 字段是 Rust 侧角色记录而非 Go 字段。
 
-测试证据来自独立文件 [`checkpoint_test.rs`](./checkpoint_test.rs) 与 [`parity_test.rs`](./parity_test.rs)：两种后端都执行 snapshot/log meta 往返、progress 与 repair SQL 往返、Runner data/checksum、清理、重试和无重复写入；parity 测试额外核对公开 JSON 字段及 `InLogRestoreAndIdMapPersisted` 契约。Go 对照测试 [`checkpoint_test.go`](./checkpoint_test.go) 覆盖同类 table/storage 场景。
+测试证据来自独立文件 [`checkpoint_test.rs`](./checkpoint_test.rs) 与 [`parity_test.rs`](./parity_test.rs)：两种后端都执行 snapshot/log meta 往返、progress 与 repair SQL 往返、Runner data/checksum、清理、重试和无重复写入；parity 测试额外核对公开 JSON 字段及 `InLogRestoreAndIdMapPersisted` 契约。
 
 ## 扩展指南
 
@@ -158,14 +146,3 @@ manager 本身没有 Drop 实现，因此调用方应显式 `Close()` 表后端�
 - 修改表 session 模型时，保持“元数据 session 与 Runner session 分离”这一不变量，并增加重复启动、关闭后调用、并发关闭的独立测试。当前测试覆盖主功能，但直接搜索未发现对 `runner session missing` 或 `session closed` 的专门断言，这是值得补充的边界测试，不代表现有行为未实现。
 - 修改 Go 对齐行为时，先比较同名 Go 方法。特别注意 Go `SaveCheckpointMetadata(nil)` 只建表的分支，若 Rust 需要支持，应设计显式 API，而不是用默认元数据偷偷替代 nil 语义。
 - 性能风险主要在 `with_session` 的长时间持锁、对象目录遍历、清理大前缀及多个 Runner 写同一路径；兼容风险主要在数据库/对象路径命名、序列化字段和进度状态顺序。
-
-## 验证依据
-
-本说明基于以下可复核证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标文件已索引；`files --filter br/pkg/checkpoint` 列出 `manager.rs`、Go 对照和全部独立测试。
-- RustCodeGraph `node --file br/pkg/checkpoint/manager.rs --offset 1 --limit 420` 与 `--offset 421 --limit 600`：读取目标文件 951 行全貌，确认两个 trait、两个 manager、四个构造器、四组 trait impl、资源转移与所有路径。
-- RustCodeGraph `query NewSnapshotTableMetaManager`、`query NewLogStorageMetaManager`：同时定位 Go/Rust 同名构造器。精确 `callers/callees` 命令在限定时间内未返回，因此使用 `rg` 的直接引用结果补充调用边，没有把缺失图结果猜成调用关系。
-- 源码与配置：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`manager.go`](./manager.go)、[`restore.rs`](./restore.rs)、[`log_restore.rs`](./log_restore.rs)、[`br/pkg/restore/log_client/id_map.rs`](../restore/log_client/id_map.rs)。
-- 独立测试：[`checkpoint_test.rs`](./checkpoint_test.rs)、[`parity_test.rs`](./parity_test.rs) 和 Go [`checkpoint_test.go`](./checkpoint_test.go)。重点场景为 `test_checkpoint_meta_for_restore_*`、`test_checkpoint_restore_runner_*`、`test_checkpoint_runner_retry_*`、`test_checkpoint_runner_no_retry_*`、`test_checkpoint_log_restore_runner_*`、`go_rust_public_contract_matches`。
-- 任务是纯文档分析，按计划未运行 Cargo。交付结构检查要求本文恰含规定的 11 个二级标题，并人工复核公开符号、调用边、Go 差异、错误与生命周期均有源码依据。

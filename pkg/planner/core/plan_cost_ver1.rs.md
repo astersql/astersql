@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate，是第一版（Ver1）物理计划代价模型的 core 侧实现。`pkg/planner/core/lib.rs` 以公开模块 `plan_cost_ver1` 暴露它；`pkg/planner/core/Cargo.toml` 表明该 crate 直接依赖物理算子、计划基类、基数估计、统计信息、会话变量、物理属性和代价选项等 crate。
-
-文件同时服务两种计划表示：
-
-- `GetCanonicalPlanCostVer1` 面向真正的 `dyn base::PhysicalPlan` 树，是运行时优化链和 Explain 使用的入口。`optimizer_runtime.rs` 将它安装到 `physicalop::InstallPlanCostVer1Router`，物理算子的 `get_plan_cost_ver1` 会优先经过该全局路由。
-- `GetPlanCostVer1` 面向 `crate::task::PlanNode`，使用本文件定义的 `PlanCostOption`/`CostFactors`。它被 `plan_cost_ver2.rs::GetPlanCost` 用作版本不为 2 时的标量回退，并由同目录独立测试直接验证。
-
-因此，阅读或修改本文件时必须先区分 canonical 真实计划路径与 `PlanNode` 路径；两者目标相同，但类型、配置来源、错误模型和覆盖的算子细节并不完全相同。
+对轻量 `PlanNode` 表示提供可配置的 Ver1 公式及递归分派，包括读算子、扫描、连接、聚合、排序、点查、UnionAll 和 ExchangeReceiver。
 
 ## 核心职责
 
@@ -102,16 +95,9 @@ RustCodeGraph 对 `GetCanonicalPlanCostVer1` 的节点解析确认其调用 `can
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/plan_cost_ver1.go`。Rust 保留了 Go 的主要结构：标志判断、基数选择、按物理算子递归、Reader 网络/seek/并发折算、三类 IndexJoin、Apply、Merge/Hash Join、两类聚合、Sort/TopN、点查、UnionAll、ExchangeReceiver，以及 MPP 强制计划的极小代价偏置。
-
-已由源码和测试明确对齐的例子包括：
-
-- Ver1 估计基数允许为零；`plan_cost_ver1_test.rs::ver1_zero_cardinality_and_small_sort_match_go_flooring_rules` 同时验证小 Sort 的 `max(2)` 下限。
 - UnionAll 使用“最大子代价 + `(1 + 子数) * concurrencyFactor`”，并非子代价总和；独立 Rust 测试期望结果为 `30.0`。
-- ExchangeReceiver 使用“子成本 + 子基数 * networkFactor”，不乘行宽；独立 Rust 测试期望结果为 `33.0`。
-- `main_test.rs::go_merge_46_full_join_tail_scan_increases_both_cost_models` 验证 FullOuter HashJoin 的 Ver1 成本高于普通内连接。
 
-不能把两套实现视为逐行等价：canonical Rust 是面向真实类型的集中路由，`PlanNode` 是可配置的简化表示；Go 则由每个具体物理计划的 `GetPlanCostVer1` 委托同文件中的算子函数。Rust 的默认因子表也把部分 Go 会话变量固化为本地默认值。已观察到的细节差异还包括 canonical 空 range 至少计一次 seek，以及未知非叶算子仅保留子成本。后续对齐应以 Go 公式、真实算子字段和独立回归测试共同决定，不能只修改其中一套 Rust 路径。
+不能把两套实现视为逐行等价：canonical Rust 是面向真实类型的集中路由，`PlanNode` 是可配置的简化表示；Go 则由每个具体物理计划的 `GetPlanCostVer1` 委托同文件中的算子函数。已观察到的细节差异还包括 canonical 空 range 至少计一次 seek，以及未知非叶算子仅保留子成本。
 
 ## 扩展指南
 
@@ -121,12 +107,3 @@ RustCodeGraph 对 `GetCanonicalPlanCostVer1` 的节点解析确认其调用 `can
 - 任何可能改变已缓存结果的上下文或配置，都要确认调用方何时设置 `CostFlagRecalculate`，避免缓存跨配置复用。
 - 测试必须继续放在独立文件。轻量公式与边界应扩展 `pkg/planner/core/plan_cost_ver1_test.rs`；真实 `PhysicalPlan` 路由行为可扩展 `pkg/planner/core/main_test.rs` 或相应 `operator/physicalop/*_test.rs`，不要把测试内嵌回生产文件。
 - 与 Go 对齐时应逐项核对 `pkg/planner/core/plan_cost_ver1.go` 的同名函数，并关注 session factor、true cardinality、range/row-size、FullOuterJoin、MPP 强制偏置和错误传播。性能风险主要来自递归重复遍历（特别是 seek 与 AVG partial 检测）和错误的并发缩放；兼容风险主要来自 canonical 与 `PlanNode` 公式漂移。
-
-## 验证依据
-
-- 完整阅读：`pkg/planner/core/plan_cost_ver1.rs`、`pkg/planner/core/plan_cost_ver1_test.rs`、`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`、`pkg/planner/core/plan_cost_ver1.go`。
-- 直接调用证据：`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/operator/physicalop/lib.rs`、`pkg/session/runtime/explain_query.rs`、`pkg/planner/core/plan_cost_ver2.rs`、`pkg/planner/core/main_test.rs`。
-- RustCodeGraph：`status` 显示索引可用；`query GetCanonicalPlanCostVer1 --kind function` 定位到本文件第 172 行；`node`/`callees GetCanonicalPlanCostVer1` 确认 canonical 辅助函数调用。初次 `files --filter pkg/planner/core/plan_cost_ver1` 没有命中，且部分 callers 解析不完整，因此模块、路由与 Explain 边使用 `rg` 和源码读取补齐。
-- 符号清单通过 `rg` 提取本文件的常量、结构体、实现和函数，并与 Go 文件全部顶层函数名对照。
-- 独立测试证据：`plan_cost_ver1_test.rs` 的三个测试覆盖零基数/Sort、UnionAll 和 ExchangeReceiver；`main_test.rs` 覆盖真实计划 FullOuter HashJoin 的相对代价。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构校验，并人工检查唯一生产物、源码链接、无整段源码复制和未验证结论的边界表述。

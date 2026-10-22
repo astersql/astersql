@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`collector.rs` 属于 Cargo 包 `astersql-br-pkg-streamhelper`；该包以 `br/pkg/streamhelper/lib.rs` 为入口，通过 `#[path = "collector.rs"] pub mod collector` 装入模块，再以 `pub use collector::*` 暴露公开接口。`br/pkg/streamhelper/Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `br/pkg/streamhelper`，因此本文件是 Go 文件 `br/pkg/streamhelper/collector.go` 的 Rust 移植，而不是一个通用指标收集器。
-
-它位于日志备份检查点推进链中：`CheckpointAdvancer::tryAdvance` 创建 `ClusterCollector`，`CheckpointAdvancer::GetCheckpointInRange` 用 `IterateRegion` 扫描目标 key range 并逐个调用 `CollectRegion`，最后 `Finish` 返回全局最保守的 region flush TS 和需要重扫的子区间（`br/pkg/streamhelper/advancer.rs:454-517`）。该收集器的生命周期短于一次 advancer tick，每轮推进都重新创建。
+将获取客户端或执行 RPC 的 store 级错误上抛，并在 RPC 错误时调用 `Env::ClearCache`，促使下次重建连接。
 
 ## 核心职责
 
@@ -87,13 +85,10 @@ Rust 使用无界 `std::sync::mpsc::channel`，而 Go `newStoreCollector` 创建
 
 ## 与 Go 版本的对应关系
 
-符号关系基本一一对应：`storeCollector`/`StoreCollector`、`clusterCollector`/`ClusterCollector`、`sendPendingRequests`/`send_pending`、`recvLoop`/`recv_loop`、`StoreCheckpoints.merge`/`StoreCheckpoints::merge`。批大小、按 store 懒创建、关闭输入时冲刷尾批、checkpoint 取最小值、无 leader/region error 转失败范围、未知 region id 得到零值范围，以及 RPC 失败后清连接缓存等核心语义保持一致。
-
 已验证的对齐证据包括：Go `advancer_test.go::TestBasic` 与 Rust `advancer_test.rs::test_basic` 都扫描全范围并断言结果等于跨 store 最小 checkpoint；Go `TestCollectorFailure` 断言永久客户端失败时 `Finish` 必须报错且不能卡死；Rust `collector_test.rs` 额外固定满批后的空尾请求和未知 region 的零值范围；Rust `parity_test.rs::go_rust_public_contract_matches` 验证 `merge` 取较小 TS、累计失败范围，以及 direct collector `Finish` 得到 checkpoint 88。
 
 当前差异也必须保留在认知中：
 
-- Go 输入 channel 容量为 1024，Rust channel 无界。
 - Go 用 `context.Context` 取消 worker/RPC，并允许 `Finish(ctx)` 等待超时；Rust 用原子取消标志，仅阻止新投递，不能打断正在执行的同步 RPC。
 - Go `clusterCollector` 有 mutex 保护并可从共享指针调用；Rust 用 `&mut self` 在类型层限制控制器的并发修改。
 - Go `utils.PanicToErr` 可把 recv loop panic 变成错误；Rust 忽略 `JoinHandle::join` 的 panic 结果。
@@ -107,13 +102,3 @@ Rust 使用无界 `std::sync::mpsc::channel`，而 Go `newStoreCollector` 创建
 - 增加成功 hook 行为时，应在第一次 `CollectRegion` 前完成配置，或明确实现对已启动 worker 的传播；hook 必须短小、无阻塞、避免 panic。相关回归应放在独立文件 `collector_test.rs` 或 `subscription_test.rs`，不要把测试嵌入生产文件。
 - 若接入真实异步客户端，优先补齐 Go 的有界背压、context 取消、RPC 超时和 panic/任务失败传播，再评估是否从 OS thread 改为异步任务；这些变化会影响内存、停止延迟和兼容性，不能仅以编译通过替代行为验证。
 - 如需优化 `regionMap` 内存，应证明服务端响应与批次严格对应后再按批清理；当前跨响应查找和未知 id 的 Go 零值兼容行为都必须保留。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件（其中 Rust 7,032 个）；`files --filter br/pkg/streamhelper` 确认目标、Go 对照、模块入口和独立测试均已索引。
-- RustCodeGraph：`node --file br/pkg/streamhelper/collector.rs --offset 1 --limit 400` 读取完整 318 行，并确认该文件被 `advancer.rs`、`collector_test.rs`、`advancer_test.rs`、`parity_test.rs`、`stream_metas.rs` 等使用。
-- RustCodeGraph：读取 `br/pkg/streamhelper/advancer.rs:454-590`，确认 `GetCheckpointInRange`、`tryAdvance`、`optionalTick` 和全局检查点树之间的调用关系。
-- RustCodeGraph：读取 `br/pkg/streamhelper/collector.go:1-321`，核对 Go 的批处理、context、错误、缓存清理、尾批与合并语义。
-- RustCodeGraph：读取 `br/pkg/streamhelper/collector_test.rs:1-146`、`advancer_test.rs:124-139`、`parity_test.rs:400-543`、`subscription_test.rs:248-295`，核对 Rust 边界与主链行为；读取 `advancer_test.go:42-61,399-426` 和 `subscription_test.go:239-268`，核对 Go 基础、失败和 hook 使用意图。
-- 文件读取：`br/pkg/streamhelper/Cargo.toml` 核对 crate 名、`lib.rs` 入口和 Go package 元数据；RustCodeGraph 读取 `br/pkg/streamhelper/lib.rs:20-145` 核对模块装配、独立测试挂载与公开再导出。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构检查，并人工检查文档只描述已有符号、调用边、测试与明确列出的移植差异。

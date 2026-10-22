@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/objstore/local.rs` 是 `astersql-objstore` crate 的本地文件系统后端，实现 `file://` 对象存储。crate 入口 `pkg/objstore/lib.rs` 以 `pub mod local` 暴露本模块；通用构造器 `pkg/objstore/storage.rs::New` 在收到 `StorageBackend::Local` 时调用 `NewLocalStorage`，并把结果包装成 `Arc<dyn storage::Storage>`。此外，`pkg/executor/importer/production_storage.rs::ServerDiskImportStorageFactory::Open` 直接用它打开服务器磁盘上的 `IMPORT INTO` 数据源父目录。
-
-文件同时实现两套接口：仓库内的兼容层 `crate::storage::Storage`，以及独立 crate `storeapi::Storage`。后一套实现通过 `StoreapiLocalReader`、`StoreapiLocalWriter` 把前一套的读写器适配为 `objectio::Reader` / `objectio::Writer`，使同一个 `LocalStorage` 可服务仍依赖旧抽象和已经迁移到新抽象的调用方。依赖边界由 `pkg/objstore/Cargo.toml` 中的 `objectio`、`storeapi` 路径依赖及 `uuid`、`walkdir` 外部依赖确认。
+后一套实现通过 `StoreapiLocalReader`、`StoreapiLocalWriter` 把前一套的读写器适配为 `objectio::Reader` / `objectio::Writer`，使同一个 `LocalStorage` 可服务仍依赖旧抽象和已经迁移到新抽象的调用方。
 
 ## 核心职责
 
@@ -99,8 +97,6 @@ Unix `mkdirAll` 为对齐 Go 行为会暂时修改进程级 umask，并用 RAII 
 
 ## 与 Go 版本的对应关系
 
-主要行为对应 `pkg/objstore/local.go`：`LocalStorage` 字段、`Base`、删除策略、UUID 临时文件加 rename、整文件读、存在性判断、遍历选项、URI、范围 reader、流式 Create、Rename、basename 式 Presign、空 Close、硬链接 CopyFrom、`pathExists` 和 `NewLocalStorage` 均有直接同名或等价实现。平台建目录逻辑对应 `local_unix.go` / `local_windows.go`。
-
 Rust 有几处为保持或加强兼容而显式实现的差异：
 
 - Rust `PathBuf::join` 遇到绝对后件会替换 base，因此 `object_path` 去掉根/prefix；`local_test.rs::test_absolute_object_name_stays_under_base` 固化了 Go `filepath.Join` 语义。
@@ -111,8 +107,6 @@ Rust 有几处为保持或加强兼容而显式实现的差异：
 - Go `Create` 通过 `newFlushStorageWriter` 管理 flush、文件关闭及可选 `PartSize` 缓冲；Rust `LocalWriter` 只 flush 并逻辑关闭，文件句柄依赖 drop。新 `storeapi` 路径支持 `PartSize`，旧 Rust `storage::WriterOption` 是空类型。
 - Rust 在一个类型上同时实现旧 `crate::storage::Storage` 和新 `storeapi::Storage`，这是移植期双接口接线；Go 文件只实现其原生 `storeapi.Storage` 形状。
 
-`pkg/objstore/local_test.go` 与 `pkg/objstore/local_test.rs` 共同证明删除、软链接遍历、前缀过滤、缺失目录、跳过子目录、`start_after`、URI、范围读和断裂软链接 size=0 的对齐。Rust 独立测试还覆盖新接口取消检查、绝对对象名约束、不可读旧子树剪枝、tombstone 的 `.` 前缀语义及 `PartSize` 缓冲。
-
 ## 扩展指南
 
 - 修改对象名映射或增加安全校验时，应集中在 `object_path`，并同步 `pkg/objstore/local_test.rs` 的绝对路径测试；若要拒绝 `..`，必须先核对 Go 兼容性和所有通过 `storage::New`、服务器磁盘导入入口传入的对象名。
@@ -122,12 +116,3 @@ Rust 有几处为保持或加强兼容而显式实现的差异：
 - 扩展列举选项时，应在两套 `WalkOption` 的转换处、`WalkDir` 过滤顺序及 `should_skip_local_subtree` 同步实现。尤其要保持“`obj_prefix` 相对 `sub_dir`、callback 名相对 storage base、`start_after` 与 callback 名同域比较”的不变量，并在 Rust/Go 独立测试中验证稳定顺序、目录剪枝、tombstone 和并发删除。
 - 扩展复制能力时，不应悄悄改变 `CopyFrom` 的硬链接语义。跨文件系统或跨后端复制应另行设计字节复制/服务端复制路径，并明确覆盖已有目标、权限、原子性和大文件性能。
 - 新增生产行为后，测试继续放在 `pkg/objstore/local_test.rs`；Go 对齐行为应同步核对 `pkg/objstore/local.go` 与 `pkg/objstore/local_test.go`。涉及平台目录行为时还需核对 `local_unix.rs`、`local_windows.rs` 及对应 Go 文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/objstore/local.rs` 确认目标文件被索引并含 66 个符号。
-- RustCodeGraph 源码与结构查询：`node --file pkg/objstore/local.rs` 阅读 1–551 行；精确 `node` 查询 `NewLocalStorage`、`create_buffered`、`should_skip_local_subtree`、`StoreapiLocalReader`、`StoreapiLocalWriter`、`LocalFile`，核对构造、调用者、被调用者与实例化边。
-- crate 与模块证据：`pkg/objstore/Cargo.toml`、`pkg/objstore/lib.rs`；接口及工厂证据：`pkg/objstore/storage.rs`、`pkg/objstore/storeapi/storage.rs`、`pkg/objstore/objectio/interface.rs`。
-- 直接入口与平台证据：`pkg/executor/importer/production_storage.rs`、`pkg/objstore/local_unix.rs`、`pkg/objstore/local_windows.rs`。
-- Go 对照证据：`pkg/objstore/local.go`、`pkg/objstore/local_test.go`。
-- Rust 独立测试证据：`pkg/objstore/local_test.rs`，覆盖双接口桥接和取消、删除、绝对对象名、遍历过滤/剪枝/tombstone、软链接、URI、范围读与写缓冲。本文仅分析这些测试，未运行 Cargo，符合本任务纯文档约束。

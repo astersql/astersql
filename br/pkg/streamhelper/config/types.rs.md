@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-streamhelper-config` crate 的配置契约层。crate 入口 `br/pkg/streamhelper/config/lib.rs` 以 `pub mod types` 挂载本模块，并用 `pub use types::*` 扁平导出其中的 `Config` 和 `DefaultMaxConcurrencyAdvance`。`br/pkg/streamhelper/config/Cargo.toml` 将该目录声明为 library crate，并以 `br/pkg/streamhelper/config` 标记其 Go 对照包；本文件本身只依赖 Rust 标准库的 `AtomicI32` 与 `Duration`，不直接使用该 crate 唯一的外部工作区依赖 `astersql-sessionctx-vardef`。
-
-它位于日志备份检查点推进器与具体配置来源之间：`command_conf.rs` 提供命令行配置实现，`tidb_conf.rs` 提供 TiDB 进程内配置实现，`br/pkg/streamhelper/advancer.rs` 再通过内部枚举 `Cfg` 屏蔽两种来源的差异。这里不是配置解析器，也不包含推进算法。
+位于日志备份检查点推进器与具体配置来源之间：`command_conf.rs` 提供命令行配置实现，`tidb_conf.rs` 提供 TiDB 进程内配置实现，`br/pkg/streamhelper/advancer.rs` 再通过内部枚举 `Cfg` 屏蔽两种来源的差异。
 
 ## 核心职责
 
@@ -73,14 +71,10 @@ RustCodeGraph 的文件节点将 `types.rs` 标为被 `config/tidb_conf.rs` 和 
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `br/pkg/streamhelper/config/types.go`。Rust 的六个 trait 方法与 Go `Config` interface 的六个方法逐项同名，返回值也都表达 `time.Duration`/`Duration`。`DefaultMaxConcurrencyAdvance` 的初始值同为 8。
-
-两处语言适配值得注意：
+Rust 的六个 trait 方法与 Go `Config` interface 的六个方法逐项同名，返回值也都表达 `time.Duration`/`Duration`。
 
 - Go 使用可直接赋值的包变量 `int`；Rust 使用 `AtomicI32`，修改必须通过 `load`/`store` 等原子操作。`parity_test.rs` 明确验证了这项可变语义。
 - Go 推进器已用 `DefaultMaxConcurrencyAdvance` 构建容量为该值及其四倍的 worker pool；当前 Rust 端没有对应读取点。因此“符号和可变性已移植”成立，但“生产并发上限已接线”不成立。
-
-具体实现语义由邻近文件保持对齐：`CommandConfig` 返回字段值，并以 `TryAdvanceThreshold * 9 / 20` 和 `TickDuration * 2` 推导两个阈值；`TiDBConfig` 除滞后上限外均委托给命令配置，滞后上限读取共享 vardef 原子量。`config_test.rs`、`tidb_conf_test.rs` 和 `parity_test.rs` 覆盖这些对应关系。
 
 ## 扩展指南
 
@@ -93,13 +87,3 @@ Go 对照文件为 `br/pkg/streamhelper/config/types.go`。Rust 的六个 trait 
 5. 测试应继续放在独立文件：通用契约放 `config/parity_test.rs`，Go 同名行为放 `config/config_test.rs`，TiDB 全局量行为放 `config/tidb_conf_test.rs`，推进器效果放 `streamhelper/advancer_test.rs`，不要把测试嵌入 `types.rs`。
 
 若要把 `DefaultMaxConcurrencyAdvance` 接入 Rust 生产路径，应先设计非正值处理、整数转换、读取时机以及运行中修改是否影响已创建 worker；还应为实际并发容量增加独立回归测试，而不能仅依赖原子值可读写测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/streamhelper/config` 列出目标、Go 对照及三个独立 Rust 测试文件；`node --file br/pkg/streamhelper/config/types.rs` 确认文件共 21 行、一个静态值和一个 trait，并标出 `advancer.rs`、`tidb_conf.rs` 使用关系。
-- 源码与入口：`br/pkg/streamhelper/config/types.rs`、`br/pkg/streamhelper/config/lib.rs`、`br/pkg/streamhelper/config/command_conf.rs`、`br/pkg/streamhelper/config/tidb_conf.rs`、`br/pkg/streamhelper/advancer.rs`。
-- crate 边界：`br/pkg/streamhelper/config/Cargo.toml`，以及三个消费者的 Cargo manifest 搜索结果。
-- Go 对照：`br/pkg/streamhelper/config/types.go`、`command_conf.go`、`tidb_conf.go`、`br/pkg/streamhelper/advancer.go`。
-- 独立测试：`br/pkg/streamhelper/config/config_test.rs`、`parity_test.rs`、`tidb_conf_test.rs` 与 `br/pkg/streamhelper/advancer_test.rs`；Go 行为参考 `config/config_test.go`。
-- 仓库引用搜索确认：Rust 生产代码目前仅通过 `Cfg`/具体配置实现 trait，四个阈值方法进入推进器决策；`DefaultMaxConcurrencyAdvance` 在 Rust 中仅由 parity 测试读取，而 Go 推进器存在两个 worker-pool 读取点。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证恰有 11 个固定二级章节。

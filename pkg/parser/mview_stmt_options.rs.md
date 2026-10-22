@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-parser` crate 的解析器内部实现。`pkg/parser/Cargo.toml` 将 crate 的库入口设为 `lib.rs`；`pkg/parser/lib.rs` 又在私有实现模块 `parser_impl` 中通过 `include!("mview_stmt_options.rs")` 展开本文件。因此这里的两个结构体与词法/语法分析器、生成的语法表以及 `parser_actions` 处于同一模块作用域，而不是独立的公开模块。
-
-本文件只定义 `mviewCreateOptions` 和 `mlogCreateOptions` 两个私有中间状态类型，不定义函数、trait、impl、常量或条件编译项。它们不是最终 AST，也不直接执行 SQL；其作用是让物化视图相关语法归约在构造最终 `parser_ast` 节点之前暂存并合并建表选项。实际归约逻辑位于 `pkg/parser/parser_actions/mview.rs::apply`。
+布尔字段记录某类选项是否已经出现，用于识别重复项；`comment` 保存注释文本；`options` 按 SQL 中出现的顺序保存需进入最终 AST 的 `ast::TableOption`。
 
 ## 核心职责
 
@@ -84,11 +82,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/mview_stmt_options.go`。Rust 的两个结构体保留了 Go 的类型名和字段名，并保持字段集合一致：
-
-- Go `string` 对应 Rust `String`。
 - Go `[]*ast.TableOption` 对应 Rust `Vec<ast::TableOption>`；Rust 向量直接拥有表选项值，而不是保存指针，但对当前的构造、顺序追加和最终 AST 传递语义等价。
-- Go 零值与 Rust `#[derive(Default)]` 均产生 false/空字符串/空列表状态。
 
 Go 的核心语义依据位于 `pkg/parser/parser.y`，生成结果可在 `pkg/parser/parser.go` 的相应 action 中看到；Rust 将同样的逻辑手工落在 `pkg/parser/parser_actions/mview.rs::apply`。Go 测试 `pkg/parser/parser_test.go::TestMaterializedViewDDLStatements`、`TestMaterializedViewDuplicateOptionsErrMsg`、`TestMaterializedViewCreateOptionOrder` 和 `TestMaterializedViewLogCreatePurgeClauseSyntax`，分别在 Rust 的 `pkg/parser/go_merge_35_test.rs` 中有还原与错误行为对照；`pkg/parser/go_merge_33_test.rs` 还直接断言最终 AST 字段和选项顺序。
 
@@ -102,14 +96,3 @@ Go 的核心语义依据位于 `pkg/parser/parser.y`，生成结果可在 `pkg/p
 4. Rust 测试必须继续放在独立测试文件中。优先扩展 `pkg/parser/go_merge_33_test.rs` 的 AST 字段断言和 `pkg/parser/go_merge_35_test.rs` 的 Go 对齐还原/错误用例；Go 侧同步扩展 `pkg/parser/parser_test.go` 的对应测试。
 
 主要兼容风险是 Rust 与 Go 字段或重复检测规则漂移、错误文本变化、空字符串选项被误判为未出现，以及追加次序变化导致 SQL 还原不同。当前状态量很小，性能风险主要来自不必要的克隆；扩展时应沿用移动所有权和向量追加的模式。
-
-## 验证依据
-
-- 目标源码：`pkg/parser/mview_stmt_options.rs`，确认仅有两个派生 `Default` 的私有结构体及其字段。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引可用；`query mviewCreateOptions --kind struct`、`query mlogCreateOptions --kind struct` 和对应 `node` 定位 Rust/Go 定义；调用轨迹将 `pkg/parser/parser_actions/mview.rs::apply` 标为实例化使用者；按文件读取该 action 核对构造、合并、报错及 AST 落地分支。
-- crate 与装配：`pkg/parser/Cargo.toml`、`pkg/parser/lib.rs`。
-- Rust 直接实现：`pkg/parser/parser_actions/mview.rs::apply`。
-- Go 对照：`pkg/parser/mview_stmt_options.go`、`pkg/parser/parser.y`、生成的 `pkg/parser/parser.go`。
-- Rust 测试：`pkg/parser/go_merge_33_test.rs::go_merge_33_materialized_view_options_and_log`、`pkg/parser/go_merge_35_test.rs::go_merge_35_materialized_view_restore`、`go_merge_35_materialized_view_option_errors`。
-- Go 测试：`pkg/parser/parser_test.go::TestMaterializedViewDDLStatements`、`TestMaterializedViewDuplicateOptionsErrMsg`、`TestMaterializedViewCreateOptionOrder`、`TestMaterializedViewLogCreatePurgeClauseSyntax`。
-- 本任务为纯文档分析，按计划不运行 Cargo；验证限于索引查询、源码/语法/Cargo/测试交叉核对和文档结构检查。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现统计 usage 子系统可复用的“会话增量 → 节点全局状态”异步收集框架。它属于独立 crate `astersql-statistics-handle-usage-collector`；crate 入口 `pkg/statistics/handle/usage/collector/lib.rs` 公开 `collector` 模块并再导出本文件的公开项，crate 清单 `pkg/statistics/handle/usage/collector/Cargo.toml` 只引入 `crossbeam-channel = "0.5"`（测试另用 `rand`）。
-
-当前生产侧直接使用者是 `pkg/statistics/handle/usage/indexusage/collector.rs`：其中 `Collector::NewCollector` 用 `NewGlobalCollector` 注册 `mergeDelta`，`Collector::{StartWorker, Close, SpawnSessionCollector}` 分别转发本文件的 worker、关闭和会话派生能力；`SessionIndexUsageCollector::{Report, Flush}` 分别调用 `SendDelta` 与 `SendDeltaSync`。因此本文件不理解索引统计的数据结构，只负责有界排队、调度、关闭和回调执行。
+因此本文件不理解索引统计的数据结构，只负责有界排队、调度、关闭和回调执行。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@ Cargo 层面，`pkg/statistics/handle/usage/indexusage/Cargo.toml` 以路径 `..
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/statistics/handle/usage/collector/collector.go`。常量（五分钟、容量 10）、双数据通道、嵌套 select 的高优先级倾向、会话超时降级、关闭后 flush、可多次启动 worker 和一次性关闭的总体结构一致。Go 的 goroutine/`sync.WaitGroup` 对应 Rust 的线程/`Vec<JoinHandle<()>>`，`sync.Once` 对应 `Once`，关闭 `closeCh` 对应丢弃 Rust 的 `close_sender`。
-
 需要注意以下当前实现差异：
 
 - Go `NewGlobalCollector` 返回 `GlobalCollector[T]` 接口，Rust 返回公开具体类型 `globalCollector<T>`，同时另行实现 trait。
@@ -97,7 +93,7 @@ Go 对照文件为 `pkg/statistics/handle/usage/collector/collector.go`。常量
 - Rust 用 `closed` 阻止 `Close` 之后启动新 worker；Go 没有对应字段，关闭后调用 `StartWorker` 会启动一个观察到已关闭 `closeCh`、随后 flush 并退出的 goroutine。
 - Rust 的 `SendDelta` 在 `try_send` 失败时消费并丢弃传入值；Go 传值语义也不把失败值返回，但调用方变量本身仍可继续使用。当前 index usage 发送的是共享增量句柄，并由外层在成功前保留状态，符合两侧测试意图。
 
-Go 测试 `collector_test.go` 与 Rust `collector_test.rs` 都覆盖：单会话普通发送的“接受数等于最终合并数”、多会话并发普通发送的同一不变量，以及并发同步发送无丢失。Rust 的 `migration_aster_unit_test.rs` 额外覆盖高优先级队列填满且无 worker 时，`Close` 解除阻塞并使发送返回 `false`。
+Rust 的 `migration_aster_unit_test.rs` 额外覆盖高优先级队列填满且无 worker 时，`Close` 解除阻塞并使发送返回 `false`。
 
 ## 扩展指南
 
@@ -109,12 +105,3 @@ Go 测试 `collector_test.go` 与 Rust `collector_test.rs` 都覆盖：单会话
 - 任何生命周期改动都应同步 Go 对照或明确记录迁移差异，并至少保留四类独立测试：普通路径接受计数、并发普通路径、并发同步路径、关闭解除阻塞；涉及 index usage 状态时还需同步 `pkg/statistics/handle/usage/indexusage/collector_test.rs`。
 
 兼容风险主要是公开命名/返回类型和布尔语义；正确性风险集中在关闭与发送竞态、回调并发和未显式关闭；性能风险集中在有界容量导致的拒绝、同步发送阻塞、每次 `StartWorker` 创建 OS 线程，以及 `merge_fn` 在 worker 中直接执行造成的消费停顿。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/usage/collector` 确认实现、crate 入口及三份测试文件均已索引。
-- RustCodeGraph `node --file pkg/statistics/handle/usage/collector/collector.rs --offset 1 --limit 420`：读取本文件完整 259 行，并确认它被 `collector_test.rs`、`migration_aster_unit_test.rs` 和 `indexusage/collector.rs` 等文件使用。
-- RustCodeGraph 对 `NewGlobalCollector`、`StartWorker`、`SpawnSession`、`SendDelta`、`SendDeltaSync`、`flush` 执行过 `query`、`callers`、`callees`/`explore` 查询；常见短名产生跨仓库噪声，因此调用边又以已索引的 `indexusage/collector.rs` 第 150–329 行及精确调用位置复核。
-- 源与配置证据：`collector.rs`；`collector/Cargo.toml`；`collector/lib.rs`；`indexusage/collector.rs`；`indexusage/Cargo.toml`；根 `Cargo.toml` 的 workspace facade 条目。
-- 对照与测试证据：`collector/collector.go`；`collector/collector_test.go`；`collector/collector_test.rs`；`collector/migration_aster_unit_test.rs`；调用方测试位于 `indexusage/collector_test.rs` 和 `indexusage/migration_aster_unit_test.rs`。
-- 人工事实复核：文档中的队列容量、超时、优先选择、失败布尔值、关闭广播、flush、panic 边界、多 worker 行为及 Go/Rust 差异均能回指上述符号和文件；没有把未运行的测试结果表述为已验证。本任务按要求不运行 Cargo。

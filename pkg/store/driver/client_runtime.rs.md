@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-driver` crate（见 `pkg/store/driver/Cargo.toml`），位于 TiDB 风格的同步存储接口与官方异步 `tikv-client` 之间。它不实现事务、快照或 Coprocessor 协议本身，而是集中持有一个多线程 Tokio runtime 和一个 `tikv_client::TransactionClient`，让 `tikv_driver.rs` 与 `kv_adapter.rs` 可以从同步方法中执行异步 PD/TiKV 请求。
-
-模块由 `pkg/store/driver/lib.rs` 公开，并再导出 `ClientConfig`、`ClientRuntime`、`ClientRuntimeError` 和 `KeyspaceConfig`。生产创建入口是 `TiKVDriver::OpenWithOptions`：该函数解析 PD 地址、超时、TLS 和 keyspace 后调用 `ClientRuntime::connect`，再把结果包装为 `Arc<RwLock<ClientRuntime>>`，供 `OfficialBackend`、事务锁解析器及 KV 适配器共享（`pkg/store/driver/tikv_driver.rs:540-568`）。
+不实现事务、快照或 Coprocessor 协议本身，而是集中持有一个多线程 Tokio runtime 和一个 `tikv_client::TransactionClient`，让 `tikv_driver.rs` 与 `kv_adapter.rs` 可以从同步方法中执行异步 PD/TiKV 请求。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@ Tokio runtime 在每个生产 `ClientRuntime` 构造时创建一次，并通过 
 
 ## 与 Go 版本的对应关系
 
-Go 同目录没有独立的 `client_runtime.go`；对应职责分散在 `pkg/store/driver/tikv_driver.go` 以及 `client-go` 的 `KVStore`、PD client 和 RPC client 中。Rust 文件是为同步 Rust 移植新增的集中边界，不应按文件名寻找一一对应实现。
-
 - Go `TiKVDriver.OpenWithOptions` 创建 PD client、按空/非空 keyspace 选择 API V1/V2 codec、创建 RPC client 与 `tikv.KVStore`；Rust `OpenWithOptions` 把地址、TLS、超时和 keyspace 收敛到 `ClientConfig`，再由 `ClientRuntime::connect` 创建官方事务客户端。
 - Go `tikvStore.Begin` 委托 `KVStore.Begin`，`CurrentVersion` 委托 `KVStore.CurrentTimestamp`；Rust 的 `TikvStore::Begin`/`CurrentVersion` 经 `OfficialBackend::current_timestamp` 进入本文件，完整事务对象则由 `kv_adapter::begin_transaction` 使用 `transaction_client` 和共享 runtime 创建。
 - Go `GetLockWaits` 遍历 RegionCache 中的 TiKV Store，逐个发送 `CmdLockWaitInfo`，对错误或空响应继续处理；Rust `ClientRuntime::lock_waits` 调用官方客户端的 `get_lock_waits` 并做字段转换，上层仍保留“失败响应不阻断汇总”的行为，但请求拓扑由 client-rust 封装。
@@ -104,17 +100,3 @@ Go 同目录没有独立的 `client_runtime.go`；对应职责分散在 `pkg/sto
 - 扩展锁字段或退避策略时，应同步 `astersql_store_copr::TransactionLock`、`OfficialTransactionLockResolver`、client-rust tag 和 Go `ResolveLocksWithOpts` 路径；共享锁信息尤其不能只在本文件单边补字段。
 - 测试必须继续放在独立的 `pkg/store/driver/client_runtime_test.rs`，不要内嵌到源文件。配置校验、keyspace 分支、锁转换/活锁错误目前缺少直接单元覆盖，是新增相应行为时最应补齐的用例；真实连接测试需要 `REAL_TIKV_PD`，应继续保持显式忽略而非成为默认单测依赖。
 - `tikv-client` 是带 tag 的外部 Git 依赖。若扩展需要上游能力，必须在独立 client-rust 仓库移植、提交并发布新 tag，再统一更新 Cargo manifest；不要使用本地 `[patch]` 或复制依赖源码。
-
-## 验证依据
-
-- 增量复核：`keyspace_id` 只经 `Option::as_ref().and_then(TransactionClient::keyspace_id)` 读取；`close` 取走 client 后自然返回 `None`。现有 `client_runtime_test.rs` 直接覆盖命令错误和关闭后命令拒绝，未直接断言新增 ID accessor 的真实 API V2 结果。
-
-本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
-
-- 目标源码：`pkg/store/driver/client_runtime.rs`，核对常量、枚举、配置、错误、时间戳来源、runtime 方法和 `Drop` 实现。
-- crate 边界：`pkg/store/driver/Cargo.toml` 与 `pkg/store/driver/lib.rs`，核对 crate 名、固定的 client-rust tag、Tokio feature、模块声明和公开再导出。
-- Rust 直接入口/调用者：`pkg/store/driver/tikv_driver.rs:312-357`、`:540-568`、`:730-810`、`:930-995`；`pkg/store/driver/kv_adapter.rs:720-875`、`:1025-1070`，核对共享所有权、生产构造、锁解析、时间戳、事务及快照接线。
-- 独立 Rust 测试：`pkg/store/driver/client_runtime_test.rs`，核对解码上限、客户端错误传播、显式关闭后的拒绝，以及被忽略的真实 PD 连接、原始时间戳转换和 TSO 单调性测试。测试未直接覆盖重复关闭、TLS、三种 keyspace 构造分支、配置校验和锁解析。
-- Go 对照：`pkg/store/driver/tikv_driver.go:90-240`、`:400-485`，以及 `pkg/store/copr/coprocessor.go:80`、`:1660-1705`、`:2680-2730`，核对 Open/API 模式、事务时间戳、锁等待、关闭及 `ResolveLocksWithOpts` 退避语义。
-- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题。

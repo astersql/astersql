@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 Rust 规划器中的逻辑 `Expand` 算子，目标是为 `ROLLUP`、`CUBE` 和 `GROUPING SETS` 把一行输入展开为多个分组层级。它属于 `astersql-planner-core-operator-logicalop` crate；`Cargo.toml` 以 `lib.rs` 为 crate 入口，`lib.rs` 通过 `mod logical_expand` 装入本文件并以 `pub use logical_expand::*` 对外导出。
-
-在当前 Rust 主链中，`optimizer_runtime.rs::resolve_expand_descendants` 后序遍历逻辑计划树并对 `LogicalExpand` 调用 `GenLevelProjections`；`expression_rewriter.rs` 在改写 `GROUPING()` 时读取该算子的分组列、GID 和分组标记；`logical_apply.rs::extract_correlated_columns` 会把它纳入关联列提取。仓库内生产 Rust 代码尚未检索到 `LogicalExpand { ... }` 或 `LogicalExpand::default().Init(...)` 的实际构造点，`planbuilder_runtime.rs` 目前只保存 `outerBlockExpand`/`currentBlockExpand` 字段，因此“由 Rust plan builder 从 SQL 创建 Expand”在现有直接证据中仍未接线或未验证。Go 对照的物理化入口是 `physicalop.ExhaustPhysicalPlans4LogicalExpand`，Rust 中未找到同名物理化入口。
+`LogicalExpand` 保存展开所需的原始分组表达式、投影后的唯一分组列、分组集合、每层 GID、列到 GID 集合的映射，以及最终的逐层投影 `LevelExprs`。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@
 - Go `ExtractFD` 直接继承 `LogicalSchemaProducer` 的结果；Rust 额外把 FD 投影到当前输出列并缓存。Rust `BuildKeyInfo` 还显式计算 `MaxOneRow`，而 Go 对照方法只清空 key。
 - Go 数值 GID 读取 `RollupGroupingIDs[offset]`；Rust用去重集合的首次出现位置重建相同的共享编号。独立 Rust 测试覆盖了重复集合共享 ID 的行为。
 
-因此本文只能确认本文件已有的 Rust 行为与上述直接接线，不能据 Go 的完整 builder/physical planner 实现宣称 Rust 已端到端支持 SQL 的 ROLLUP/CUBE/GROUPING SETS。
-
 ## 扩展指南
 
 新增或调整分组层级编码时，优先修改 `GroupingMode`、`GenerateGroupingMarks` 和两个 GID 生成函数，并同步 `expression_rewriter.rs` 中生成 GROUPING marks 的分支，避免算子缓存与表达式元数据采用不同算法。若增加超过 64 列/参数的策略，应把模式选择放在真实构造点并新增边界测试，而不是依赖 `u64` 自然截断。
@@ -96,14 +92,3 @@
 收紧 GROUPING 参数验证时，需要协调 `ResolveGroupingFuncArgsInGroupBy` 与 `expression_rewriter.rs` 的错误归属，并保持 `ErrFieldInGroupingNotGroupBy` 的参数编号兼容。改变 canonical hash 替换策略时，应加入哈希碰撞或结构等价性测试。
 
 测试应继续放在独立文件：本算子的局部行为放入 `logical_expand_test.rs`；跨算子关系放入 `logical_relational_aster_unit_test.rs`；键语义可同步 `logicalop_test/logical_operator_test.rs`；哈希/相等变化同步 `logicalop_test/hash64_equals_test.rs`。若未来接通 plan builder 和物理计划，还应在 planner core 的 SQL/优化器测试中证明 SQL 能构造 Expand、优化后生成全部层级并物理化执行。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust、Go、测试和调用文件均可通过精确文件节点读取。
-- 主实现：`pkg/planner/core/operator/logicalop/logical_expand.rs`，已核对 339 行全部源码以及 `GroupingMode`、`GroupingSet(s)`、`LogicalExpand` 和全部 impl 方法。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml`、`pkg/planner/core/operator/logicalop/lib.rs`。
-- Rust 直接入口与调用：`pkg/planner/core/optimizer_runtime.rs::resolve_expand_descendants`、`pkg/planner/core/expression_rewriter.rs` 的 GROUPING 重写、`pkg/planner/core/operator/logicalop/logical_apply.rs::extract_correlated_columns`、`pkg/planner/core/operator/logicalop/hash64_equals_generated.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_expand.go` 全文件；RustCodeGraph 还确认 Go 文件被 cascades memo、物理计划枚举、表达式重写及逻辑计划测试使用。
-- 独立 Rust 测试：`pkg/planner/core/operator/logicalop/logical_expand_test.rs`；`pkg/planner/core/operator/logicalop/logical_relational_aster_unit_test.rs` 中 Expand 层级投影和 key/MaxOneRow 测试；`pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.rs::TestLogicalExpandBuildKeyInfo`；`logicalop_test/hash64_equals_test.rs::TestLogicalExpandHash64Equals`。
-- 调用图限制：RustCodeGraph 的 `callers/callees` 子命令对精确节点 ID 返回了全库同名噪声，未将其作为调用证据；调用关系以索引的文件使用关系、精确符号查询及目标调用点源码交叉确认。生产 Rust 全局精确检索只发现上述消费点和 plan builder 状态字段，未发现实际构造点。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务规定的 11 章节结构命令验证文档形态。

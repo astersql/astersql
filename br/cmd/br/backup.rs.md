@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-cmd-br` crate 的 BR 命令装配层。`br/cmd/br/lib.rs` 以 `pub mod backup` 暴露该模块，`br/cmd/br/main.rs::main` 调用 `NewBackupCommand`，把它作为 `br` 根命令下的 `backup` 一级子命令。文件本身不实现扫描 Region、发送备份 RPC 或写备份元数据等核心算法；它负责定义命令树、汇总 flag、建立命令运行环境，再把请求分派到 `astersql-br-pkg-task`。
-
-crate 边界由 `br/cmd/br/Cargo.toml` 确认：包名为 `astersql-br-cmd-br`，直接依赖路径 crate `astersql-br-pkg-task`、trace、operator 和 streamhelper-config。当前 crate 被标记为从 Go `br/cmd/br` 迁移而来的 binary lane；文件中大量 CLI、日志、配置和 glue 类型来自 `crate::stubs`，这是 slim BR Rust 移植的一部分，而非完整生产依赖的原样替换。
+文件本身不实现扫描 Region、发送备份 RPC 或写备份元数据等核心算法；它负责定义命令树、汇总 flag、建立命令运行环境，再把请求分派到 `astersql-br-pkg-task`。
 
 ## 核心职责
 
@@ -88,10 +86,6 @@ EBS、raw、txn 没有上述两个恢复守卫。EBS 在 tracing 闭包中持有
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `br/cmd/br/backup.go`。Rust 保留了 Go 的三类执行入口、五个子命令、命令名常量、flag 注册位置、预运行初始化顺序、解析失败显示 usage、指标先于任务运行、EBS 提前分流、普通逻辑备份关闭 tuner/安装过滤器，以及错误日志文案。
-
-Go 的 `defer` 在 Rust 中分别由 `with_tracing` 和两个 Drop 守卫表达。`scopeguard_restore_filter` 的 unwind 测试补充验证了 Go defer 到 Rust RAII 的关键清理语义。`no_args = true` 对应 Go 的 `cobra.NoArgs`。
-
 需要明确的当前差异：
 
 - Go 调用 `task.RunBackup/RunBackupRaw/RunBackupTxn` 并连接真实 manager/client；Rust 命令层调用 `RunBackup*WithDefaults`，后者当前构造 `MemBackupClient` 等默认桩。
@@ -99,7 +93,7 @@ Go 的 `defer` 在 Rust 中分别由 `with_tracing` 和两个 Drop 守卫表达�
 - Go tracing 把 `TracerStartSpan` 返回的新 context 继续传给任务；Rust `with_tracing` 当前把原 `ctx` 传给闭包。
 - Go 的 TiDB glue 是直接共享值；Rust 以 mutex 保护全局 glue，增加了串行化和 poisoned-lock panic 边界。
 
-同目录没有 `backup_test.go`；Go 侧最接近的命令包测试是 `br/cmd/br/main_test.go`，未直接覆盖这些函数。Rust 独立测试 `br/cmd/br/backup_test.rs` 覆盖 filter unwind 清理，`br/cmd/br/parity_test.rs` 覆盖命令树、默认过滤器、summary 单位、全局清理与 tracing 配对。端到端脚本如 `br/tests/br_full/run.sh`、`br/tests/br_rawkv/run.sh`、`br/tests/br_txn/run.sh` 展示 Go BR 的真实 CLI 使用面，但不等同于对当前 Rust slim 后端的执行验证。
+端到端脚本如 `br/tests/br_full/run.sh`、`br/tests/br_rawkv/run.sh`、`br/tests/br_txn/run.sh` 展示 Go BR 的真实 CLI 使用面，但不等同于对当前 Rust slim 后端的执行验证。
 
 ## 扩展指南
 
@@ -109,17 +103,3 @@ Go 的 `defer` 在 Rust 中分别由 `with_tracing` 和两个 Drop 守卫表达�
 - 将 slim 路径替换为真实后端时，修改重点是四个任务调用边和 EBS storage 构造；同时核对 `br/pkg/task` 的独立测试，而不是在命令层复制任务算法。真实依赖应继续由 Cargo crate 边界引入，不能把外部 Rust 依赖复制进 vendor/third_party 或使用本地 patch。
 - 修改 tracing 时应优先验证任务闭包是否应接收派生 context，并同步 `cmd.rs::with_tracing` 及 `parity_test.rs` 的资源清理测试。
 - 兼容风险集中在命令名/顺序、flag 继承、usage 展示和日志文案；性能风险集中在 glue 锁持有范围、全局 cache 关闭、任务层并发参数；正确性风险集中在过滤器恢复、tuner 恢复、EBS 分流和 raw/txn key 范围语义。
-
-## 验证依据
-
-- 目标源码：`br/cmd/br/backup.rs`（296 行）；模块与生产入口：`br/cmd/br/lib.rs`、`br/cmd/br/main.rs`；crate 声明：`br/cmd/br/Cargo.toml`。
-- Go 对照：`br/cmd/br/backup.go`；未发现同目录 `backup_test.go`，补读测试 `br/cmd/br/main_test.go` 的存在性并以 Rust 独立测试为直接命令契约证据。
-- Rust 测试：`br/cmd/br/backup_test.rs::backup_filter_cleanup_runs_during_unwind`；`br/cmd/br/parity_test.rs::contract_normal_command_tree_and_filters`、`contract_resource_cleanup`。
-- 任务层直接证据：`br/pkg/task/backup.rs::{BackupConfig, DefineBackupFlags, RunBackupWithDefaults}`、`backup_ebs.rs::RunBackupEBS`、`backup_raw.rs::{RawKvConfig, RunBackupRawWithDefaults}`、`backup_txn.rs::{TxnKvConfig, RunBackupTxnWithDefaults}`，以及 `br/cmd/br/stubs.rs::effective_task_flags`。
-- 文档只描述已读源码能证明的现状；没有运行 Cargo，也没有把 Go 集成脚本视为 Rust 后端通过证据。结构验证按任务规定检查文件存在且恰有十一个固定二级标题。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/cmd/br/backup.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/cmd/br/backup.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-`backup_test.rs::backup_filter_cleanup_runs_during_unwind` 和 `parity_test.rs::contract_resource_cleanup` 是清理契约的既有证据，未覆盖本次删除地址覆写的专用断言。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

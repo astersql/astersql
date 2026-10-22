@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-disjointset` crate 的通用、稀疏并查集 `Set<T>`。它面向任意满足 `Eq + Hash + Clone` 的键：先把原值映射成连续的内部 `usize` 下标，再在 `parent` 数组上执行查找、路径压缩和合并。连续整数且元素全集已知时，应优先使用同 crate 的 `SimpleIntSet`，以省去两张 `HashMap` 的开销（`set.rs:27-44`、`int_set.rs`）。
-
-crate 入口 `pkg/util/disjointset/lib.rs` 将本模块私有挂载为 `mod set`，再用 `pub use set::*` 导出 `Set` 和 `NewSet`。工作区根通过 `facade_util_disjointset` 依赖并在 `pkg/lib.rs` 的 `util::disjointset` 门面重导出；`pkg/util/chunk/Cargo.toml` 也以 `disjointset-crate` 直接依赖该 crate。
-
-当前可见的生产调用点是 `pkg/util/chunk/chunk_util.rs:382-419` 的 `ColumnSwapHelper::mergeInputIdxToOutputIdxes`：它把引用同一底层列的输入列下标合并为一组，再按代表列汇总输出列映射。本文件本身不属于 SQL 请求主链，只是该列引用归并流程使用的底层数据结构。
+由 `findRootInternal` 沿父指针寻找根并迭代执行路径压缩，避免深链查找使用递归栈。
 
 ## 核心职责
 
@@ -84,7 +80,7 @@ API 不返回 `Result`，正常路径没有显式错误。未知原值不是错�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项移植 `pkg/util/disjointset/set.go`：`Set` 的四个字段、惰性下标分配、双向映射、`InSameGroup`/`Union`/`FindRoot`/`FindVal` 的语义和“`b` 根挂到 `a` 根”的方向均保持一致。Rust 用 `usize` 对应 Go `int`，构造函数返回拥有值的 `Set<T>` 而非指针；调用方通过可变绑定获得与 Go 指针接收器相同的原地修改效果。
+Rust 用 `usize` 对应 Go `int`，构造函数返回拥有值的 `Set<T>` 而非指针；调用方通过可变绑定获得与 Go 指针接收器相同的原地修改效果。
 
 主要实现差异有三点：
 
@@ -92,7 +88,7 @@ Rust 文件逐项移植 `pkg/util/disjointset/set.go`：`Set` 的四个字段、
 - Go `findRootInternal` 递归压缩路径；Rust 使用两段迭代循环，保持结果一致，并由 `migration_aster_unit_test.rs:82-94` 的十万节点深链用例验证不会因递归栈溢出失败。
 - Go `FindVal` 用 map 查询返回真实的 `ok`，内部下标不存在时可返回零值和 `false`；Rust 在查 map 前先索引 `parent[idx]`，非法下标会 panic，而有效下标返回 `(value, true)`。因此 Rust 的布尔值目前仅为 API 对齐保留，不能视为越界保护。
 
-Go `set_test.go` 覆盖连通性与组间合并；Rust `set_test.rs` 保留这些断言，并额外验证根不变性和 `FindVal`。Go 的 `main_test.go` 只建立通用测试环境和 goroutine 泄漏检查，没有对应本数据结构的并发行为。
+Go `set_test.go` 覆盖连通性与组间合并；Rust `set_test.rs` 保留这些断言，并额外验证根不变性和 `FindVal`。
 
 ## 扩展指南
 
@@ -102,12 +98,3 @@ Go `set_test.go` 覆盖连通性与组间合并；Rust `set_test.rs` 保留这�
 - 若增加删除、清空或下标复用，必须同步维护 `parent`、`val2Idx`、`idx2Val`、`tailIdx` 四者不变量，并考虑已向调用方暴露的旧下标是否失效。
 - 性能改动应同时评估哈希/克隆成本、深链行为和路径压缩效果；至少更新 `set_test.rs` 与 `migration_aster_unit_test.rs`，并核对 Go `set.go`/`set_test.go` 是否需要保持同样语义。
 - 源码修改完成后应按仓库协议保留 PingCAP 版权并保留顶部 AsterSQL 标记，运行 `cargo fmt --all`；本说明任务不修改源码，也不运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 `pkg/util/disjointset` 的 11 个文件；`files --filter pkg/util/disjointset` 确认 Rust/Go 实现与测试；`node --file pkg/util/disjointset/set.rs` 读取全部 132 行并识别 9 个符号；对 `NewSet`、`InSameGroup`、`Union`、`FindRoot`、`FindVal`、两个内部查根函数查询 callers/callees，确认本文件内部调用链。泛型方法反向边存在名称歧义，故未把歧义输出当作生产调用证据。
-- 源文件与入口：`pkg/util/disjointset/set.rs`、`pkg/util/disjointset/lib.rs`、`pkg/util/disjointset/Cargo.toml`、工作区 `Cargo.toml:1079`、`pkg/lib.rs:1850-1851`、`pkg/util/chunk/Cargo.toml:19`。
-- 生产调用：RustCodeGraph `node --file pkg/util/chunk/chunk_util.rs --offset 340 --limit 95`，重点为 `ColumnSwapHelper::mergeInputIdxToOutputIdxes` 的 `NewSet`、`Union`、`FindRoot`、`FindVal` 链；限定 `*.rs` 搜索用于补足图未可靠解析的泛型反向调用。
-- Go 对照：`pkg/util/disjointset/set.go`、`set_test.go`、`main_test.go`，以及同一生产逻辑 `pkg/util/chunk/chunk_util.go:373-393`。
-- Rust 测试：`pkg/util/disjointset/set_test.rs`；RustCodeGraph 读取 `migration_aster_unit_test.rs:48-94`，覆盖惰性注册、代表值和十万元素深链。测试均在独立文件，由 `lib.rs` 的 `#[cfg(test)]` 模块装配。
-- 未运行 Cargo 或运行时测试：任务是纯文档分析，计划明确禁止 Cargo；本次以源码、调用图、Go 对照、既有测试和文档结构检查作为验证证据。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是实例级资源管理器的状态与生命周期核心，源码见 [`rm.rs`](rm.rs)。它负责构造并持有进程内的池注册表、调度器、CPU 观察器、退出状态和后台任务等待器；具体的单轮调度决策与调容执行位于相邻的 [`schedule.rs`](schedule.rs)，二者通过多个 `impl ResourceManager` 共同组成完整实现。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-resourcemanager`，库入口是 [`lib.rs`](lib.rs)，后者公开 `rm` 模块并再导出 `InstanceResourceManager`、`NewResourceManger`、`RandomName` 和 `ResourceManager`。直接依赖中，`uuid` 为测试辅助名生成 v4 UUID；CPU 观察能力来自路径依赖 `astersql-util-cpu`；调度器与池公共类型来自路径依赖 `astersql-resourcemanager-scheduler`。
-
-在应用主链上，[`cmd/tidb-server/main.rs`](../../cmd/tidb-server/main.rs) 在创建存储、Domain 和 Server 前调用全局单例 `Start`，在信号退出与 keyspace 激活退出路径调用 `Stop`。池侧的直接接线见 [`pool/spool/spool.rs`](pool/spool/spool.rs)：`Pool::new` 注册自身，`release_and_wait` 在回收 worker 后注销。因此本文件连接了服务进程生命周期、可调度池生命周期和 [`schedule.rs`](schedule.rs) 的周期调容流程。
+负责构造并持有进程内的池注册表、调度器、CPU 观察器、退出状态和后台任务等待器；具体的单轮调度决策与调容执行位于相邻的 [`schedule.rs`](schedule.rs)，二者通过多个 `impl ResourceManager` 共同组成完整实现。
 
 ## 核心职责
 
@@ -92,13 +88,9 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-resource
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`rm.go`](rm.go)，调度延伸实现是 [`schedule.go`](schedule.go)。Rust 保留了 `InstanceResourceManager`、拼写为 `Manger` 的构造函数、`RandomName`、`Start`、`Stop`、`Register`、`Unregister` 和 `Reset` 等 Go 风格名字。默认调度器、100 ms 调度周期、重复注册报错、缺失注销忽略、停止后不可重开以及测试用重置意图均与 Go 版本一致。
-
 主要实现差异来自所有权与线程模型。Go 返回 `*ResourceManager`，Rust 返回含 `Arc` 的可克隆值；Go 直接持有池映射指针，Rust 用 `RwLock<Arc<_>>` 支持并发快照和安全替换；Go 关闭 `exitCh` 广播退出，Rust 以 `stopped` 加一次发送来模拟永久关闭状态；Go 将 `cpuObserver.Start` 本身交给 `WaitGroupWrapper.Run`，Rust 的 `Observer::Start` 同步创建并保存自己的采样线程，因此外层只用 `wg` 跟踪调度线程。
 
 Go 的 `Start` 用 `time.Ticker`，Rust 用 `recv_timeout(100ms)` 同时承担时钟与退出选择。Rust 在超时后调用 `schedule`，在消息或发送端断开时返回；行为目的相同，但不是严格的固定相位 ticker。Rust 额外用显式锁中毒消息暴露同步失败，并用 `wrapping_*` 在 [`schedule.rs`](schedule.rs) 对齐 Go `int32` 边界算术。
-
-独立 Rust 测试 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 覆盖了 Go 测试之外的重要迁移契约：UUID、重复注册、注销/重置后重注册、调度器顺序与降频守卫、整数回绕、`DistTask` 跳过、正常启停以及先停后启不恢复。Go/Rust 的 [`schedule_test.go`](schedule_test.go) 与 [`schedule_test.rs`](schedule_test.rs) 都覆盖超频不能超过原始并发加 `MaxOverclockCount`。
 
 ## 扩展指南
 
@@ -109,12 +101,3 @@ Go 的 `Start` 用 `time.Ticker`，Rust 用 `recv_timeout(100ms)` 同时承担�
 - 若增加对新池类型的接线，该类型必须实现 `GoroutinePool`，在成功构造后注册，并在全部 worker 回收后注销；组件分类会影响 [`schedule.rs`](schedule.rs) 是否跳过该池。
 - 测试代码必须继续放在独立文件中。生命周期和注册契约扩展 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，调容行为扩展 [`schedule_test.rs`](schedule_test.rs)，并同步对照 Go 的 [`rm.go`](rm.go) / [`schedule_test.go`](schedule_test.go)。
 - 兼容风险集中在公开 Go 风格命名、重复 `Stop` 的 panic、停止后不可重启和池映射快照语义；性能风险集中在 100 ms 轮询、分片遍历期间持读锁，以及调度回调执行时间。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/resourcemanager/rm.rs` 确认目标文件已索引，`node --file pkg/resourcemanager/rm.rs --offset 1 --limit 260` 读取了全部 211 行和 14 个符号。
-- RustCodeGraph 查询：`explore "pkg/resourcemanager/rm.rs ResourceManager ..."`、目标文件 `node`、以及对 [`schedule.rs`](schedule.rs)、[`pool/spool/spool.rs`](pool/spool/spool.rs)、[`util/shard_pool_map.rs`](util/shard_pool_map.rs)、[`cmd/tidb-server/main.rs`](../../cmd/tidb-server/main.rs)、CPU 观察器和 `WaitGroupWrapper` 的文件节点查询。直接调用链由这些查询确认：服务入口 `Start/Stop`，池构造 `Register`，池释放 `Unregister`，调度线程 `schedule`。
-- crate 与模块证据：[`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)。
-- Go 对照证据：[`rm.go`](rm.go) 与 [`schedule.go`](schedule.go)。
-- 独立测试证据：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`schedule_test.rs`](schedule_test.rs) 和 [`schedule_test.go`](schedule_test.go)。其中已覆盖 UUID、注册表操作、调度守卫、调容边界、`DistTask` 跳过及启停；重复 `Start` 与并发 `Reset` 没有专项测试，本文只按源码陈述其当前行为。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付验证使用任务指定的结构命令确认本文存在且恰含 11 个固定二级章节，并人工检查重要结论均可回溯到上述符号、调用边、Cargo、Go 对照或独立测试。

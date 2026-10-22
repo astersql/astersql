@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-affinity` crate 的包级门面。crate 入口 `pkg/domain/affinity/lib.rs` 公开 `interface` 模块并再导出其符号；这里用一个进程内共享状态，把调用者连接到 `pkg/domain/affinity/manager.rs` 中的 `Manager`/`PdClient` 抽象。它本身不编码 key range、不发 HTTP，也不实现旧 PD 兼容回退；这些职责分别属于上游建组逻辑、`http_client.rs` 和 `manager.rs`。
+`package_state` 提供惰性创建、全进程唯一的 `PackageState`。
 
 ## 核心职责
 
@@ -79,7 +79,7 @@ crate 边界由 `pkg/domain/affinity/Cargo.toml` 定义，包名为 `astersql-do
 
 主要差异有三点。其一，Go 的 `InitManager` 明确由 infosync 初始化调用；当前 Rust 搜索未发现生产初始化调用，默认状态因而是 mock，且真实存储的 session 路径选择临时 manager。其二，Go `SetPDClientForTest` 同样只替换 client，但 Rust 用 `impl FnOnce()` 强化“一次恢复”的类型约束并用锁保护替换。其三，Go 的完整 `AffinityGroupState` 来自 PD client，包含 SHOW AFFINITY 所需字段；当前 Rust `manager.rs::AffinityGroupState` 只保存 group 标识和 `range_count`，因此不能据此宣称 Rust 已具备 Go SHOW AFFINITY 的完整展示语义。
 
-Go 的 `manager_test.go` 主要验证 manager 层兼容回退和过滤，而本文件自身的 Rust 对齐证据集中在 `interface_test.rs` 与 `migration_aster_unit_test.rs`。扩展时应继续区分门面契约测试与 manager 策略测试。
+Go 的 `manager_test.go` 主要验证 manager 层兼容回退和过滤，而本文件自身的 Rust 对齐证据集中在 `interface_test.rs` 与 `migration_aster_unit_test.rs`。
 
 ## 扩展指南
 
@@ -90,11 +90,3 @@ Go 的 `manager_test.go` 主要验证 manager 层兼容回退和过滤，而本�
 若把该 API 引入异步执行链，应避免直接复用 `thread::sleep`；需要选择与运行时匹配的异步计时方式，并重新评估锁跨下游调用的问题。若接入 Rust SHOW AFFINITY，则还需补齐状态模型与生产初始化，不能仅调用现有 `get_group_states` 就假定与 Go 输出等价。
 
 性能风险主要来自持读锁执行 manager 调用、同步睡眠和请求 ID 过多导致返回大 map；兼容风险来自公开函数签名、默认 mock 行为、空输入短路以及 Go/Rust 错误与日志语义。对应回归应放在同目录独立测试文件，并为真实上游接线保留 session/executor 层测试。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/affinity/interface.rs` 差异及目标 blob `aa33ff58b0a304b0ed99e5e7fa1f20793da58eb9` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/affinity/interface.rs` 和 `git show 2c944fb:pkg/domain/affinity/interface.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/affinity/interface_test.rs`，Go 对照为 `pkg/domain/affinity/interface.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

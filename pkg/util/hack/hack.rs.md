@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-util-hack`，包入口是 [`pkg/util/hack/lib.rs`](lib.rs)：入口以 `pub mod hack` 装入本模块，并以 `pub use hack::*` 把这里的公开类型、函数和常量提升到 crate 根。[`pkg/util/hack/Cargo.toml`](Cargo.toml) 指定 `lib.rs` 为库入口，没有普通依赖，只有测试初始化用的 `testsetup` 开发依赖；其 `package.metadata.porting.go-package` 指向 Go 包 `pkg/util/hack`。
-
-它是低层兼容工具的一部分，负责两组能力：一是字节、字符串和裸指针之间的无拷贝只读视图；二是保留 Go Swiss map 默认桶大小的估算常量。它不实现 map 容器本身；Go 1.25/1.26 ABI 镜像和 `MemAwareMap` 分别位于 `map_abi.rs`、`map_abi_go126.rs`。`pkg/util/codec/lib.rs` 还通过 `pub use hack_crate::hack::*` 再导出本模块 API。
+低层兼容工具的一部分，负责两组能力：一是字节、字符串和裸指针之间的无拷贝只读视图；二是保留 Go Swiss map 默认桶大小的估算常量。
 
 ## 核心职责
 
@@ -80,13 +78,13 @@
 
 ## 与 Go 版本的对应关系
 
-[`pkg/util/hack/hack.go`](hack.go) 是直接对照源：符号名称与六个常量值逐项一致。Go `String` 用 `unsafe.String(unsafe.SliceData(b), len(b))` 生成 `MutableString`，Rust 用 `from_utf8_unchecked` 生成 `&str`；Rust 因 `str` 不变量额外要求合法 UTF-8，而 Go `string` 可以容纳任意字节。Go `MutableString` 是具名字符串类型，Rust `MutableString` 只是 `&str` 类型别名，不形成新的类型边界。
+Go `String` 用 `unsafe.String(unsafe.SliceData(b), len(b))` 生成 `MutableString`，Rust 用 `from_utf8_unchecked` 生成 `&str`；Rust 因 `str` 不变量额外要求合法 UTF-8，而 Go `string` 可以容纳任意字节。Go `MutableString` 是具名字符串类型，Rust `MutableString` 只是 `&str` 类型别名，不形成新的类型边界。
 
 Go `Slice` 返回可写的 `[]byte` 并与字符串共享存储，Rust `Slice` 返回不可变 `&[u8]`，保留零拷贝但主动收窄了可变能力。Go `GetBytesFromPtr(unsafe.Pointer, int)` 与 Rust 裸指针版本都不复制；Rust 额外为零长度/空指针分支返回 `&[]`，因为 `slice::from_raw_parts` 即使长度为零也要求非空指针。
 
-Go 的包级 `init()` 在导入包时自动执行，并由 Go 1.26 版本的 `checkMapABI` 检查 runtime 版本、不匹配即 panic。Rust 同名函数没有特殊初始化语义，而且 Rust `map_abi_go126.rs::checkMapABI` 当前为空；因此这里只保留了结构上的调用关系，没有等价的自动 ABI 防线。
+Rust 同名函数没有特殊初始化语义，而且 Rust `map_abi_go126.rs::checkMapABI` 当前为空；因此这里只保留了结构上的调用关系，没有等价的自动 ABI 防线。
 
-`hack_test.go` 的 `TestString`、`TestByte`、`TestMutable` 在 `hack_test.rs` 中有对应测试。Rust 测试为复现 Go 的可变别名效果使用裸指针；迁移补充测试则用指针相等验证零拷贝，并额外覆盖 `GetBytesFromPtr`。Go 测试没有零长度空指针用例，该边界由 Rust 独立测试补充。
+Rust 测试为复现 Go 的可变别名效果使用裸指针；迁移补充测试则用指针相等验证零拷贝，并额外覆盖 `GetBytesFromPtr`。Go 测试没有零长度空指针用例，该边界由 Rust 独立测试补充。
 
 ## 扩展指南
 
@@ -97,13 +95,3 @@ Go 的包级 `init()` 在导入包时自动执行，并由 Go 1.26 版本的 `ch
 调整桶估算常量时，需要先用对应 Go runtime/`pkg/util/hack/hack.go` 验证数值，并检查 `map_abi.rs`、`map_abi_go126.rs` 的布局公式；常量是兼容/内存记账契约，错误值可能导致内存估算偏差。若要恢复 Go 的启动 ABI 检查，接入点是 `init` 与 `map_abi_go126::checkMapABI`，同时必须提供真实、可自动触发的 Rust 初始化机制和独立测试，不能仅依赖名为 `init` 的普通函数。
 
 性能方面应维护“无分配、常数时间”的性质；兼容方面要注意 `Slice` 的不可变返回与 Go 可变切片并不完全等价；正确性方面最重要的风险是 `String` 的 UTF-8/别名约束和 `GetBytesFromPtr` 的人为生命周期。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点，目标目录可见 `hack.rs`、Go 对照与独立测试；`files --filter pkg/util/hack` 显示目标文件有 14 个符号。
-- RustCodeGraph `node --file pkg/util/hack/hack.rs --offset 1 --limit 260`：核对完整 84 行源码、公开 API、常量、标准库调用和 `init -> checkMapABI` 源码边。
-- RustCodeGraph `query 'pkg/util/hack/hack.rs' --json`：核对 `MutableString`、四个函数和六个常量节点；对四个函数执行 `callers`/`callees`，图查询均返回空数组，因此又以精确 `rg` 搜索补查引用。
-- RustCodeGraph 读取 `pkg/util/hack/lib.rs`、`hack_test.rs`、`hack_test.go`、`hack.go`、`map_abi_go126.rs`、`migration_aster_unit_test.rs`：核对 crate 装配、Go/Rust 对照、测试边界与 ABI 检查现状。
-- 直接读取 `pkg/util/hack/Cargo.toml`：核对包名、库入口、开发依赖和 Go 包迁移元数据；目标目录不存在 `doc.go`。
-- 精确 `rg` 检索 crate 引用、四个函数与六个常量：确认测试调用、`pkg/util/codec` 再导出、常量当前无消费者，并排除其他 crate 内同名 `hack` 兼容模块造成的假调用边。
-- 本任务是纯文档分析，依计划不运行 Cargo。交付前使用任务指定命令验证本文件恰有十一个固定二级章节，并人工复查所有当前行为与迁移差异都有上述源码或搜索证据。

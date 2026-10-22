@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义逻辑计划叶子节点 `LogicalTableDual`，属于 Cargo crate `astersql-planner-core-operator-logicalop`。crate 在 `lib.rs` 中以 `mod logical_table_dual` 装入该模块并通过 `pub use logical_table_dual::*` 对外导出。它表示不读取真实表的常量行源：`RowCount == 0` 表示空结果，`RowCount == 1` 表示一行结果；常见来源是无 `FROM` 的 `SELECT`、`DO`，以及被常量条件或零行 `LIMIT` 折叠的计划。
-
-该节点位于“SQL 构建/逻辑改写 -> 逻辑优化 -> 物理计划”的中间层。`logical_plan_builder_runtime.rs::build_select_source` 为无 `FROM` 的查询建立一行、零列 Dual，`build_do_runtime` 也以它作为表达式求值的叶子；`build_limit_runtime` 和 `LogicalSelection` 的谓词下推路径可建立零行 Dual。物理规划由 `physicalop::ExhaustPhysicalPlans4LogicalTableDual` 将其转换为 `PhysicalTableDual`。
+提供 EXPLAIN 文本以及用于逻辑计划识别的稳定字节编码。
 
 ## 核心职责
 
@@ -96,19 +94,13 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项移植 `logical_table_dual.go`：结构字段、`Init`、EXPLAIN、12 字节 `HashCode`、谓词原样返回、列裁剪、键信息及统计推导均有直接对应。`Cargo.toml` 的 `go-package` 元数据也明确绑定到 `pkg/planner/core/operator/logicalop`。
+Rust 文件逐项移植 `logical_table_dual.go`：结构字段、`Init`、EXPLAIN、12 字节 `HashCode`、谓词原样返回、列裁剪、键信息及统计推导均有直接对应。
 
-已核对的等价点：
-
-- 两端 `Init` 都保留调用者给出的 `RowCount`，并以 `TypeDual` 和 query-block offset 初始化基类。
-- 两端 `HashCode` 都按 PlanType、Select/QueryBlockOffset、RowCount 顺序编码为三个 uint32；Rust 的负数转 `u32` 与 Go 编码低 32 位的意图一致，独立 Rust 测试覆盖 `-1 -> u32::MAX`。
-- 两端谓词下推均不消费谓词。
 - 两端裁剪均根据父用列过滤 schema，并允许得到零列；Rust 额外提供无 `SCtx` 时的 `UniqueID` 回退。
-- 两端统计都令 `RowCount` 与每列 NDV 相等，并在未要求 reload 时复用缓存。
 
-需要注意的差异：Go `BuildKeyInfo` 只在 `RowCount == 1` 时设 true，未显式清除既有 true；Rust 使用 `SetMaxOneRow(self.RowCount == 1)` 明确刷新真假。Rust 测试将该行为作为防陈旧状态契约。Go 的方法签名还会返回计划自身或接收 child/self schema 参数；Rust trait 已把计划保留在 `&mut self` 上，并从节点自身读取 schema，因此签名更简洁但语义目标相同。
+需要注意的差异：Go `BuildKeyInfo` 只在 `RowCount == 1` 时设 true，未显式清除既有 true；Rust 使用 `SetMaxOneRow(self.RowCount == 1)` 明确刷新真假。Go 的方法签名还会返回计划自身或接收 child/self schema 参数；Rust trait 已把计划保留在 `&mut self` 上，并从节点自身读取 schema，因此签名更简洁但语义目标相同。
 
-Go 测试 `logicalop_test/hash64_equals_test.go::TestLogicalTableDualHash64Equals` 与 Rust 对应测试共同验证 schema/RowCount 参与 `Hash64`/`Equals`；`logical_operator_test.go::TestLogicalTopNPruneColumnsRefreshesSchemaBeforeInlineProjection` 使用 Dual 作为列裁剪链路的叶子。测试逻辑保持在独立测试文件中，没有内嵌到生产源文件。
+Go 测试 `logicalop_test/hash64_equals_test.go::TestLogicalTableDualHash64Equals` 与 Rust 对应测试共同验证 schema/RowCount 参与 `Hash64`/`Equals`；`logical_operator_test.go::TestLogicalTopNPruneColumnsRefreshesSchemaBeforeInlineProjection` 使用 Dual 作为列裁剪链路的叶子。
 
 ## 扩展指南
 
@@ -119,17 +111,3 @@ Go 测试 `logicalop_test/hash64_equals_test.go::TestLogicalTableDualHash64Equal
 - 新增可能失败的步骤应返回带上下文的规划错误，并补充失败路径测试；当前几个 `Result` 方法“不会失败”不是永久保证。
 - 扩展物理属性能力时同步审查 `physical_table_dual.rs::ExhaustPhysicalPlans4LogicalTableDual` 与 `base_physical_plan.rs` 的类型路由。
 - 性能上应保留叶子节点的 O(列数) 裁剪/统计推导及 O(1) 哈希、EXPLAIN；避免为无存储访问的 Dual 引入扫描或异步资源。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/planner/core/operator/logicalop/logical_table_dual.rs`（`LogicalTableDual`、全部固有方法及 `LogicalPlan` 实现）。
-- crate 与模块边界：`pkg/planner/core/operator/logicalop/Cargo.toml`、`pkg/planner/core/operator/logicalop/lib.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_table_dual.go`。
-- 独立 Rust 测试：`pkg/planner/core/operator/logicalop/logical_table_dual_test.rs`，覆盖初始化/EXPLAIN、负数哈希、零列裁剪、MaxOneRow 刷新和统计缓存/reload。
-- 结构哈希测试：`pkg/planner/core/operator/logicalop/logicalop_test/hash64_equals_test.rs`；Go 对照测试位于同目录 `hash64_equals_test.go` 和 `logical_operator_test.go`。
-- 上下游证据：`logical_plan_builder_runtime.rs`、`base_logical_plan.rs`、`logical_selection.rs`、`logical_top_n.rs`、`logical_plans_misc.rs`、`physicalop/physical_table_dual.rs`、`physicalop/base_physical_plan.rs`。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 边；`query LogicalTableDual` 命中本文件结构体及 Go 对照；目标文件节点显示完整 152 行源码并列出 27 个引用文件。精确 Rust 方法 callers/callees 查询未产生结果，因此方法级调用边改由上述局部源码引用核对。
-
-这是纯文档分析，没有运行 Cargo 或代码测试。交付验证采用任务指定的结构命令，确认目标文件存在且恰有 11 个固定二级章节；另人工复核章节覆盖“为何存在、如何运行、如何安全扩展”，且未把未返回的图查询解释为已验证调用边。

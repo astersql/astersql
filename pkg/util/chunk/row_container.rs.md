@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-chunk` crate。crate 由 `pkg/util/chunk/Cargo.toml` 定义，`lib.rs` 通过 `#[path = "row_container.rs"]` 注册模块并 `pub use row_container::*`，因此这里的公开类型是 chunk crate 的直接 API。它位于列式 `Chunk`/`List` 与按行临时磁盘结构 `DataInDiskByRows` 之间：常态在内存中保存多个 Chunk，内存压力触发后把既有数据迁移到磁盘，并让后续读取和追加继续访问磁盘表示。
-
-当前 Rust 应用侧的直接接线包括：`pkg/util/cteutil/storage.rs` 的 `StorageRC` 用 `RowContainer::New`、`Add`、`GetChunk`、`GetRow`、Tracker 和 `ActionSpill` 实现可溢写存储；`pkg/util/chunk/iterator.rs::NewIterator4RowContainer` 用行指针遍历容器；`pkg/util/chunk/row_container_reader.rs` 通过本文件实现的 `RowContainerSource` 异步预取行。RustCodeGraph 将本文件列为被 46 个文件引用，但其中包含测试和间接/同名匹配，具体调用关系应以可定位的上述源码为准。
+`RowContainer`：维护单一的内存/磁盘状态，提供追加、计数、按 Chunk/`RowPtr` 读取、重置、关闭及用量 Tracker。
 
 ## 核心职责
 
@@ -73,7 +71,6 @@
 
 ## 与 Go 版本的对应关系
 
-- 主体结构和行为逐项对应 `pkg/util/chunk/row_container.go`：内存 List/磁盘按行存储二选一、spill 错误持久化、`QueryForceDisk` 计数、每 Chunk kill-signal 检查、一次异步动作与 fallback、排序指针预记账、10% spill 阈值和四个 failpoint 均已移植。
 - Rust 用 `Arc`、`RwLock`、原子量和闭包替代 Go 指针、`sync.RWMutex`、`sync.Once` 和接口 `spillHelper`；Go 的 `BaseOOMAction` fallback 在 Rust 中是一个显式闭包槽。
 - Go 的磁盘 Tracker 通过子 Tracker `AttachTo` 汇总；Rust 在迁移和后续追加时手工计算/累加磁盘字节，并在 `Reset`/`Close` 清零。修改磁盘写入路径时必须继续保持增量记账一致。
 - Go `GetChunk` 内存分支返回底层 Chunk 指针，Rust 返回 `CopyConstruct` 的拥有型副本；Rust API 因所有权要求产生了可观察的复制成本。Go `GetRowAndAlwaysAppendToChunk` 保证返回原 Chunk 指针，Rust 返回拥有型 `Chunk`。
@@ -88,11 +85,3 @@
 - 修改动作状态机时重点检查首次触发、并发第二次调用等待、spill 后 fallback、Reset 后重触发、Close 与在途线程的竞争；相应测试应串行化全局 failpoint。若要对齐 Go 的浅拷贝降争用设计，需要重新设计锁集合，不能仅调整 `ShallowCopyWithNewMutex` 名称或注释。
 - 新增错误类型时避免继续仅字符串化，否则会失去可判别性；这可能影响与 Go 错误文本的兼容，应先补错误传播回归测试。
 - 性能敏感修改应关注内存 `GetChunk` 深拷贝、`RowsOfChunk` 整块物化、排序期间反复 `GetRow` 加锁，以及磁盘逐行解码。本文档任务未运行基准或 Cargo，不能据此量化这些成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/chunk` 确认目标、模块、Go 对照与独立测试均已索引；`node --file pkg/util/chunk/row_container.rs` 阅读了 1-690 全文件；并读取 `row_container_test.rs`、`row_container_4_aster_unit_test.rs`、`row_container_reader.rs`、`iterator.rs`、`pkg/util/cteutil/storage.rs` 的直接证据。
-- RustCodeGraph 调用查询：对 `spillToDisk` 使用 `query`、`callers --file pkg/util/chunk/row_container.rs`、`callees --file ...`；确认动作闭包、排序 spill、测试入口及下游磁盘/Tracker 操作。由于同名 Go/Rust 符号导致部分噪声，文中只采用了能回到具体 Rust 文件的边。
-- crate/模块证据：`pkg/util/chunk/Cargo.toml`、`pkg/util/chunk/lib.rs`。
-- Go 对照：`pkg/util/chunk/row_container.go`、`pkg/util/chunk/row_container_test.go`；Rust 测试：`pkg/util/chunk/row_container_test.rs`、`pkg/util/chunk/row_container_4_aster_unit_test.rs`。这些测试证明当前已有覆盖范围，不代表本次纯文档任务执行过测试。
-- 人工复核结论：本文件存在是为了让大量 Chunk 在统一 API 下由内存原子切换到临时磁盘，并为排序和 Tracker 超限动作提供可复用生命周期；安全扩展的关键是状态切换、错误持久化、锁时序、资源记账与 Go 对照行为同时成立。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore-tikv-mvcc` crate 的编解码适配层。crate 入口 `pkg/store/mockstore/unistore/tikv/mvcc/lib.rs` 通过 `#[path = "codec_adapter.rs"] pub mod codec;` 将它挂载为公开的 `codec` 模块，因此调用端看到的是 `crate::codec::*`，而不是文件名 `codec_adapter`。
-
-它不独立实现一套 MVCC 编码算法，而是在编译期用 `include!` 引入 `pkg/util/codec/number.rs` 和 `pkg/util/codec/bytes.rs` 的实现，再只公开 MVCC 当前需要的六个入口。这样可以复用与 Go `pkg/util/codec` 对齐的字节格式，同时给 MVCC crate 提供本地的 `errors` 与 `binary::MaxVarintLen64` 名称环境。
-
-crate 边界由 `pkg/store/mockstore/unistore/tikv/mvcc/Cargo.toml` 确定：库入口是 `lib.rs`，本适配文件没有独立 feature；编码错误最终使用该 crate 依赖的 `astersql-errors`，并经 `lib.rs::errors` 暴露的 `SharedError`、`New` 和 `Errorf` 构造。
+定义 `binary::MaxVarintLen64 = 10`，满足被引入的 compact-bytes 实现对 Go `encoding/binary.MaxVarintLen64` 名称和容量上界的依赖。
 
 ## 核心职责
 
@@ -82,11 +78,6 @@ RustCodeGraph 已索引目标文件和共享实现；目标文件被识别为 28
 
 Rust 没有同路径同名的 Go 适配文件；对应语义来自 `pkg/util/codec/number.go`、`pkg/util/codec/bytes.go`，实际使用方式由同目录 `mvcc.go`、`tikv.go` 给出。
 
-- `EncodeUint`、`EncodeUintDesc`、`DecodeUintDesc` 与 Go 版本一样使用 8 字节大端，降序变体写入/读取按位取反值。
-- `EncodeUvarint`、`DecodeUvarint` 对齐 Go `binary.PutUvarint`/`binary.Uvarint` 的字节向量、10 字节上限、后缀保留和不足/溢出错误分类。
-- `EncodeCompactBytes` 与 Go 一样用 `EncodeVarint` 写长度，再追加 payload，并只承诺紧凑而不承诺字典序可比较。
-- `mvcc.go::DecodeKeyTS`、`EncodeExtraTxnStatusKey` 与 Rust 同名函数采用相同 codec 操作；`tikv.go` 的 Write CF/Lock CF 字段顺序也与 Rust `tikv.rs` 相同。
-
 Rust 的结构性差异是：Go 直接导入全局 `pkg/util/codec` 包；Rust 因 crate 边界用 `include!` 建立局部实现副本和错误命名环境，再以窄 API 再导出。Rust 错误类型是 `SharedError`/枚举映射，Go 返回 `error`；字节切片追加在 Rust 中表现为消费并返回 `Vec<u8>`。
 
 ## 扩展指南
@@ -98,15 +89,3 @@ Rust 的结构性差异是：Go 直接导入全局 `pkg/util/codec` 包；Rust �
 最可能的接入点是文件末尾的 `pub use`、`binary` 兼容常量、`bytes_codec` 的作用域绑定，以及直接消费者 `mvcc.rs`/`tikv.rs`。测试应保持独立文件：MVCC 布局或字段组合扩展 `migration_aster_unit_test.rs`；通用整数/字节算法扩展 `pkg/util/codec/number_test.rs`、`float_2_aster_unit_test.rs`、`bytes_1_aster_unit_test.rs` 或 `codec_test.rs`，并与 Go `codec_test.go` 向量对齐。
 
 兼容风险高于代码体量所暗示的程度：这些字节进入键排序和 CF 值布局，格式变化可能破坏旧数据读取或跨实现互操作。性能风险主要是额外分配、重复复制和误用非 memcomparable 格式；正确性风险主要是端序、取反、字段顺序、后缀消费和错误边界漂移。
-
-## 验证依据
-
-本说明读取并核对了以下直接证据：
-
-- 目标与装配：`pkg/store/mockstore/unistore/tikv/mvcc/codec_adapter.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 实现与调用：`pkg/util/codec/number.rs`、`pkg/util/codec/bytes.rs`、`pkg/store/mockstore/unistore/tikv/mvcc/mvcc.rs`、`tikv.rs`。
-- Go 对照：`pkg/util/codec/number.go`、`bytes.go`、`pkg/store/mockstore/unistore/tikv/mvcc/mvcc.go`、`tikv.go`。
-- 独立测试：`pkg/store/mockstore/unistore/tikv/mvcc/migration_aster_unit_test.rs` 验证时间戳键、Write CF、Lock CF；`pkg/util/codec/float_2_aster_unit_test.rs` 验证 uvarint 向量、10 字节最大值和不足/溢出错误；`bytes_1_aster_unit_test.rs` 验证 compact bytes 前缀/payload/错误；`codec_test.rs` 验证固定宽度、降序、uvarint 与 compact bytes 往返。
-- RustCodeGraph：`status` 确认本地索引包含 11,467 个文件；`files --filter .../codec_adapter.rs` 确认目标已索引；`node --file` 读取目标、共享实现、调用者和测试；`query` 定位六个公开函数的共享实现节点；`callers` 对这些再导出名称未返回可归属边，随后以精确引用搜索补齐调用证据。
-
-人工复核结论：本文件存在的理由是跨 crate 复用 Go 兼容 codec 实现并控制 MVCC 暴露面；运行路径由键时间戳、Write CF 和 Lock CF 三条调用链构成；安全扩展必须同时维护 include 作用域、公开门面、Go/Rust 字节兼容和独立测试覆盖。

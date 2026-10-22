@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-timer-api` crate 的内存版定时器存储和内存 Watch 通知器实现。crate 根模块在 [`lib.rs`](lib.rs) 中公开 `mem_store` 并再导出其公共项；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 指向 `pkg/timer/api`，对应的 Go 来源是 [`mem_store.go`](mem_store.go)。
-
-`NewMemoryTimerStore() -> TimerStore` 把 `MemoryStoreCore` 装进 [`TimerStore`](store.rs) 门面。它适合测试、运行时夹具和不需要持久化的本地场景，不提供跨进程共享或重启恢复。`NewMemTimerWatchEventNotifier()` 则是可独立复用的通知器；表存储 [`../tablestore/store.rs`](../tablestore/store.rs) 在没有外部通知器时也会采用它，因此通知器并不只服务于内存 CRUD。
+实现 [`TimerStoreCore`](store.rs) 的 Create、List、Update、Delete、Watch 和 Close 契约，并把创建、更新、删除转换为单事件 `WatchTimerResponse`。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ Rust 逐项保留了 [`mem_store.go`](mem_store.go) 的主要契约：双索引�
 
 实现层差异主要来自语言运行时：Go 使用 `sync.RWMutex`、goroutine、context channel 和 `WaitGroup`；Rust 使用 `parking_lot::Mutex`、OS thread、轮询式 `Context`、crossbeam channel 和 `JoinHandle`。Go 的记录以指针保存并在边界 Clone，Rust 直接保存拥有所有权的值并显式 clone。Go UUID 经 `hex.EncodeToString`，Rust 使用 `Uuid::simple()`，二者都产生 32 位小写十六进制字符串。
 
-Rust 的关闭信号通过丢弃零容量 channel 的唯一 sender 来广播断开；Go 通过取消 notifier context。Rust 还显式用 `closed` 阻止关闭后的注册。两版都不承诺 List 顺序，也都把 Notify 放在成功变更之后。对应 Go 集成测试在 [`../store_intergartion_test.go`](../store_intergartion_test.go)，Rust 可执行对照测试集中在 [`../store_intergartion_test.rs`](../store_intergartion_test.rs)。
+Rust 的关闭信号通过丢弃零容量 channel 的唯一 sender 来广播断开；Go 通过取消 notifier context。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Rust 的关闭信号通过丢弃零容量 channel 的唯一 sender 来广播断�
 - 新增事件类型或批量事件时，同步 `WatchTimerEventType`/`WatchTimerResponse`、三个写方法和通知器测试；明确事件顺序、丢失、背压和关闭语义。
 - 调整并发模型时，保持“数据变更完成后再通知”“不持有数据锁等待消费者”“Close 可终止并回收所有 worker”三项约束。若把每次满缓冲创建线程改为固定 worker 或异步 runtime，应增加慢消费者和高频通知压力测试。
 - 测试不要嵌入本文件。存储契约应扩展 [`../store_intergartion_test.rs`](../store_intergartion_test.rs)；客户端行为放在 `client_test.rs` 或 `client_1_aster_unit_test.rs`；表存储复用通知器的变化还需同步 `../tablestore/sql_test.rs`。同时核对 Go 的 `mem_store.go` 与 `store_intergartion_test.go`，避免移植语义漂移。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 7,032 个 Rust 文件；`files --filter pkg/timer/api` 找到本文件、Go 对照及相邻独立测试。
-- RustCodeGraph `node --file pkg/timer/api/mem_store.rs`：核对 378 行完整源码和 22 个符号；`explore` 核对 `NewMemoryTimerStore`、`NewMemTimerWatchEventNotifier`、CRUD/Watch/Notify 的调用范围。精确 `callers`/`callees` 查询已尝试，但因共享图查询长时间占用而未返回，调用点另用定向文本检索复核。
-- 源码：[`mem_store.rs`](mem_store.rs)、[`store.rs`](store.rs)、[`timer.rs`](timer.rs)、[`error.rs`](error.rs)、[`lib.rs`](lib.rs)。
-- crate/config：[`Cargo.toml`](Cargo.toml)，确认 crate 名、根文件和 `chrono`、`chrono-tz`、`crossbeam-channel`、`parking_lot`、`uuid` 等依赖及 Go 包映射。
-- Go 对照：[`mem_store.go`](mem_store.go)；相关 Go 集成测试为 [`../store_intergartion_test.go`](../store_intergartion_test.go)。
-- Rust 独立测试：[`../store_intergartion_test.rs`](../store_intergartion_test.rs) 的 `test_mem_timer_store_crud_update_delete_and_validation`、`test_mem_timer_store_list_conditions_match_go`、`test_mem_timer_store_watch_and_context_cleanup`、`test_mem_notifier_broadcast_order_close_and_cancel`、`test_mem_timer_store_timezone_and_time_fields`，分别验证 CRUD/错误与乐观并发、条件组合、事件、广播/取消/关闭及时区字段。
-- 本任务是只读行为分析加 Markdown 文档，不运行 Cargo；最终以固定 11 章节结构命令、链接检查和人工事实复核验收。

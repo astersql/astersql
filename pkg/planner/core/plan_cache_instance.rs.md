@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 AsterSQL Rust 侧的实例级计划缓存。它位于 `astersql-planner-core` crate；`pkg/planner/core/Cargo.toml` 把该 crate 的入口指定为 `lib.rs`，`pkg/planner/core/lib.rs` 通过 `mod plan_cache_instance` 编译本模块，并用 `pub use plan_cache_instance::*` 导出其公开 API。文件没有 feature gate 或条件编译项，生产构建会包含 `InstancePlanCache` 和 `NewInstancePlanCache`；独立测试则由 `lib.rs` 中的 `#[path = "plan_cache_instance_test.rs"]` 接入。
-
-运行时入口位于 `pkg/session/runtime.rs::runtime_instance_plan_cache`：它按 Domain 标识在进程级弱引用表中复用 `Arc<InstancePlanCache>`。`pkg/session/runtime/session.rs::ConcreteSessionInner::instance_plan_cache` 持有该共享缓存，因此它不是单个 session 私有的 LRU，而是同一 Domain 下多个会话共同使用的 prepared-plan 缓存。当前运行时工厂用 `(i64::MAX, i64::MAX)` 创建缓存，实际软/硬限制的动态接线不能仅从本文件推断；本文件只负责执行传入和后来由 `SetLimits` 设置的限制。
+实现 AsterSQL Rust 侧的实例级计划缓存。
 
 ## 核心职责
 
@@ -92,14 +90,13 @@ LRU 使用 `u64` 单调逻辑时钟而非墙钟，避免同一系统时钟 tick 
 
 ## 与 Go 版本的对应关系
 
-冻结 Go 容器通过 `PlanCacheValue.matchesParamTypes` 选择桶，Rust 本次改为对应值方法，保持查找与写入去重/替换采用同一规则。`pkg/planner/core/casetest/plancache/plan_cache_suite_test.rs::coalesce_plan_cache_update` 分别验证 LRU 和实例缓存中三种 DECIMAL 签名独立驻留、逐个命中，以及未标记值仍允许宽度兼容；这是容器行为证据，不代表 SQL 主链已自动采集标记。
+冻结 Go 容器通过 `PlanCacheValue.matchesParamTypes` 选择桶，Rust 本次改为对应值方法，保持查找与写入去重/替换采用同一规则。
 
-直接对照文件是 `pkg/planner/core/plan_cache_instance.go`，独立测试分别是 `pkg/planner/core/plan_cache_instance_test.go` 与 `pkg/planner/core/plan_cache_instance_test.rs`。两版保留的核心语义包括：按字符串键分组、同键按参数类型兼容性选计划、硬限制拒绝写入、重复兼容计划不重复插入、软限制触发近似 LRU 淘汰、全部清空、内存/数量计数以及可动态设置限制。
+两版保留的核心语义包括：按字符串键分组、同键按参数类型兼容性选计划、硬限制拒绝写入、重复兼容计划不重复插入、软限制触发近似 LRU 淘汰、全部清空、内存/数量计数以及可动态设置限制。
 
 实现并非机械同构：
 
 - Go 用 `sync.Map` 加带哨兵头的原子单链表，插入用 CAS，并用 `inEvict` 与独立 `evictMutex` 协调淘汰；Rust 用一把 `Mutex<InstancePlanCacheState>` 串行化所有结构访问，没有 lock-free/CAS 路径。
-- Go 用原子 `time.Time` 记录真实时间并按阈值删除所有 `lastUsed <= threshold` 的节点；同一时间戳可能使实际删除数多于估算数。Rust 用单调序号排序后精确取 `target` 个 `Arc` victim，结果更确定。
 - Go `Put` 在淘汰中可直接失败，也可能因 CAS 竞争失败；Rust 持锁后不存在这两种竞争失败，`false` 仅表示硬限制或兼容重复项。
 - Go 构造器返回 `sessionctx.InstancePlanCache` 接口，`Evict` 还返回说明文本；Rust 构造器返回具体类型，固有 API 的类型化参数和返回值与 Rust `sessionctx` trait 不同。
 - Go 的 domain 初始化会把构造函数接到全局钩子并按配置管理缓存；Rust 当前由 session runtime 自己按 Domain 建立弱引用共享表，且工厂传入无限限制。配置到 `SetLimits`/后台部分淘汰的完整等价接线在所读直接证据中未验证，不能声称已经与 Go 完全一致。
@@ -114,20 +111,3 @@ Rust 独立测试覆盖基本命中、硬限制、重复拒绝、确定性 LRU�
 - 改变淘汰算法时，应保持“最近访问受保护”“全部淘汰后 Size/MemUsage 为零”“外部 `Arc` 不被强制失效”三个行为，并增加不同条目大小、软限制等于当前占用、限制动态降低以及访问时钟并列/饱和的独立测试。
 - 若为生产补齐动态限制或后台部分淘汰，应从 `runtime_instance_plan_cache`、全局变量更新路径和内存仲裁入口接线，并验证同一 Domain 共享、不同 Domain 隔离。该工作涉及本文件之外的生命周期，不应通过在缓存内部读取全局配置来隐式耦合。
 - 若为性能将实现改回细粒度锁或 lock-free 结构，必须保持计数与桶的并发不变量，并用独立 Rust 测试覆盖重复并发插入、读写与淘汰交叠、限制并发更新；不能把测试逻辑内嵌到本生产文件。
-
-## 验证依据
-
-本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/plan_cache_instance.rs` 并读取 `git show 2c944fb:pkg/planner/core/plan_cache_instance.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可按行完整读取。
-- RustCodeGraph `node --file pkg/planner/core/plan_cache_instance.rs`：核对 214 行源文件中的三个内部/公开结构、构造器、全部固有方法及无条件编译事实。
-- RustCodeGraph `node InstancePlanCache`、`node NewInstancePlanCache`：核对 Rust/Go/sessionctx 三种同名定义，并确认 Rust 构造器的四个独立测试调用者。
-- RustCodeGraph 对限定符号 `pkg/planner/core/plan_cache_instance.rs::Get`、`::Put`、`::Evict` 的查询：确认 `Get -> state`、`Put -> state/touch`，以及生产调用边 `clear_memory_sensitive_plan_cache -> Evict`。对 `Get`/`Put` 的生产调用由 `pkg/session/runtime/planning.rs` 直接源码核对补足。
-- `pkg/planner/core/Cargo.toml` 与 `pkg/planner/core/lib.rs`：核对 crate 入口、`types-dependency`、模块声明、公开再导出和独立测试装配。
-- `pkg/session/runtime.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/planning.rs`、`pkg/session/runtime/control.rs`：核对按 Domain 共享、session 持有、prepared 计划命中/写入和内存压力清空主链。
-- `pkg/planner/core/plan_cache_utils.rs`：核对 `PlanCacheValue`、`MemoryUsage` 和 `PlanCacheValue::MatchesParamTypes` 的真实语义。
-- `pkg/planner/core/plan_cache_instance.go`、`pkg/planner/core/plan_cache_instance_test.go`、`pkg/planner/core/plan_cache_instance_test.rs`：核对 Go/Rust 实现差异、容量与匹配边界、淘汰行为和并发测试意图。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` 加固定标题计数命令验证文档存在且恰有 11 个规定二级章节，并人工检查未把未验证的配置接线写成已支持事实。

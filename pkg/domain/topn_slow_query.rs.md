@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate；crate 根 `pkg/domain/lib.rs` 以 `pub mod topn_slow_query` 公开该模块，测试则通过同一 crate 中的独立文件 `pkg/domain/topn_slow_query_test.rs` 引入。`pkg/domain/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/domain"` 共同确认了 crate 边界与 Go 移植来源。
-
-它提供一个内存中的、线程安全的慢查询最近队列与 Top-N 容器。当前全仓 Rust 调用搜索只发现模块声明和 `topn_slow_query_test.rs` 对公开 API 的使用；`pkg/domain/domain.rs` 目前维护另一套 `SlowQueryInfo`/`SlowQueryState`，没有接入这里的 `TopNSlowQueries`。因此本文件目前是可复用的公开实现与 Go 语义移植件，不应描述成已经驱动 Rust `Domain` 的 `SHOW SLOW` 主链。
-
-文件第 24—280 行是整段注释掉的机械翻译草稿，不参与编译；实际实现从 `use std::collections::VecDeque` 开始。
+因此本文件目前是可复用的公开实现与 Go 语义移植件，不应描述成已经驱动 Rust `Domain` 的 `SHOW SLOW` 主链。
 
 ## 核心职责
 
@@ -73,13 +69,13 @@ RustCodeGraph 已索引 `pkg/domain/topn_slow_query.rs` 并识别 `TopNSlowQueri
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/domain/topn_slow_query.go`，测试对照为 `pkg/domain/topn_slow_query_test.go`。Rust 保留了 Go 的三个主要数据结构语义：定长 recent FIFO、按用户/内部拆分的 Top-N、严格 `Start + period > now` 的保留边界；`pkg/domain/topn_slow_query_test.rs` 逐项复刻了 Go 的堆替换、过期和队列顺序用例。
+Rust 保留了 Go 的三个主要数据结构语义：定长 recent FIFO、按用户/内部拆分的 Top-N、严格 `Start + period > now` 的保留边界；`pkg/domain/topn_slow_query_test.rs` 逐项复刻了 Go 的堆替换、过期和队列顺序用例。
 
-实现机制存在明确差异：Go 用 `container/heap` 维护小根堆，Rust 每次变更后完整升序排序；Go 的 `topNSlowQueries` 由 `ch`/`msgCh` 和 `Domain.topNSlowQueryLoop` 单 owner 串行处理，Rust 用 `RwLock` 让调用者直接同步调用；Go `Close` 关闭输入 channel，Rust 设置标记并让 `append` 返回 `false`。Go 的查询种类来自 `ast.ShowSlowKind`，Rust 本文件定义独立 `ShowSlowKind`。
+实现机制存在明确差异：Go 用 `container/heap` 维护小根堆，Rust 每次变更后完整升序排序；Go 的 `topNSlowQueries` 由 `ch`/`msgCh` 和 `Domain.topNSlowQueryLoop` 单 owner 串行处理，Rust 用 `RwLock` 让调用者直接同步调用；Go `Close` 关闭输入 channel，Rust 设置标记并让 `append` 返回 `false`。
 
 数据模型也不是逐字段类型复用：Go `Detail` 使用 `execdetails.ExecDetails`，Rust 定义本地 `ExecDetails`；字段改成 snake_case。Rust 额外处理零容量而不会索引空 Top-N，且用 `checked_add` 处理时间溢出。另一方面，Rust `close_event` 尚无等待端，不能等同于 Go 关闭 channel 对接收循环的唤醒效果。
 
-此外，当前 `pkg/domain/domain.rs` 自己定义了更精简的慢查询记录和单一 Top 列表；它不区分用户/内部 Top-N，也未复用本模块。后续接线必须先决定数据模型、枚举和生命周期的统一方式，不能简单假设两套类型可互换。
+此外，当前 `pkg/domain/domain.rs` 自己定义了更精简的慢查询记录和单一 Top 列表；它不区分用户/内部 Top-N，也未复用本模块。
 
 ## 扩展指南
 
@@ -88,13 +84,3 @@ RustCodeGraph 已索引 `pkg/domain/topn_slow_query.rs` 并识别 `TopNSlowQueri
 - 若改变 Top-N 相同耗时替换规则、排序方式或过期边界，必须同步 Go 对照意图及 Rust 的三个对齐测试。性能上，当前 `rebuild` 每次插入为排序成本；切换到 `BinaryHeap` 时仍须保持“最短项可淘汰、查询降序、等值不替换”的外部行为。
 - 若真正需要等待关闭，应在 `close_event` 上增加带谓词循环的等待 API，处理虚假唤醒，并补并发测试；否则可评估移除当前未消费的条件变量。任何选择都应说明与 Go worker 退出语义的关系。
 - 测试必须继续放在独立 `pkg/domain/topn_slow_query_test.rs`，不要嵌入生产文件。建议补充零容量、时间加法溢出、关闭与并发追加竞争、关闭后查询/清理以及锁中毒策略的用例。
-
-## 验证依据
-
-- 源码：`pkg/domain/topn_slow_query.rs`，重点符号 `ExecDetails`、`SlowQueryInfo`、`ShowSlowKind`、`SlowQueryHeap`、`SlowQueryQueue`、`SlowQueryState`、`TopNSlowQueries` 及其公开方法。
-- crate 与模块入口：`pkg/domain/Cargo.toml`、`pkg/domain/lib.rs`；目标包没有 `pkg/domain/doc.go`。
-- Rust 调用与迁移现状：`pkg/domain/domain.rs` 的独立 `SlowQueryInfo`、`SlowQueryState::add`、`Domain::log_slow_query`、`Domain::show_slow_queries`，以及全仓 `.rs` 精确符号搜索。
-- Go 对照及真实主链：`pkg/domain/topn_slow_query.go`、`pkg/domain/domain.go` 的 `slowQuery` 字段、构造位置和 `topNSlowQueryLoop`。
-- 测试：`pkg/domain/topn_slow_query_test.rs` 与 `pkg/domain/topn_slow_query_test.go`；覆盖 Top-N 替换、严格过期边界、recent 容量/顺序、用户与内部分类及关闭后拒绝追加。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/domain/topn_slow_query.rs` 返回完整 548 行及符号上下文；`query` 定位了 `TopNSlowQueries`、`SlowQueryHeap`、`push_top_n`、`query_top` 和 `remove_expired`。callers/callees 命令在超时窗口内未产生文本结果，因此调用面结论以精确仓库搜索交叉验证，并未把图的“used by”摘要误当成真实 Rust 调用者。
-- 结构验收使用任务指定命令，要求目标文件存在且恰有十一个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

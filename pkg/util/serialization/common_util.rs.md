@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`common_util.rs` 属于 `astersql-util-serialization` crate，是序列化与反序列化两侧共享的线格式常量表。模块本身在 `pkg/util/serialization/lib.rs` 中以私有模块 `common_util` 挂载，但其中所有公开项又通过 `pub use common_util::*` 从 crate 根导出，因此调用方使用的是 `astersql_util_serialization::BoolType`、`IntLen` 等路径，而不是直接访问模块。
-
-该文件不执行 I/O，也不自行编解码数据；它定义两类协议事实：`SerializeInterface`/`DeserializeInterface` 使用的 9 个异构值类型码，以及本机布局下各标量和结构的字节宽度。直接运行链位于同 crate 的 `serialization_util.rs` 与 `deserialization_util.rs`，主要业务入口则是 `pkg/executor/aggfuncs` 的聚合中间结果 spill（落盘与恢复）逻辑。
+不执行 I/O，也不自行编解码数据；它定义两类协议事实：`SerializeInterface`/`DeserializeInterface` 使用的 9 个异构值类型码，以及本机布局下各标量和结构的字节宽度。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ RustCodeGraph 能确认目标文件已索引并读取其源码，但索引把该
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/serialization/common_util.go`。Rust 保留了 Go 的公开符号命名和常量序列：Go 通过 `iota` 生成 `0..=8`，Rust 显式写出相同数值；Go 用 `unsafe.Sizeof`，Rust用 `size_of::<T>()`。`TimeDurationLen` 在 Go 中取 `time.Duration` 大小，在 Rust 中以其语义等价的纳秒 `i64` 计算。`UnsafePointerLen` 则以 `*const ()` 对齐指针宽度。
+Rust 保留了 Go 的公开符号命名和常量序列：Go 通过 `iota` 生成 `0..=8`，Rust 显式写出相同数值；Go 用 `unsafe.Sizeof`，Rust用 `size_of::<T>()`。
 
 存在三点实现差异：
 
@@ -81,7 +79,7 @@ RustCodeGraph 能确认目标文件已索引并读取其源码，但索引把该
 2. Go `DeserializeInterface` 读取标签后用 `InterfaceTypeCodeLen` 推进位置；Rust 调用 `DeserializeByte`，因此同样推进一字节但没有直接引用该常量。
 3. Go 的标签由无类型 `iota` 常量产生，Rust 明确使用 `i64` 并在写入时转成 `u8`。
 
-`migration_aster_unit_test.rs` 是当前最直接的 Rust/Go 迁移证据：它校验类型码顺序、本机宽度、全部 9 种 interface 值往返，以及未知标签和不支持值的 panic 文案。Go 目录没有独立的 `*_test.go`；相关真实 Go 消费点位于 `pkg/executor/aggfuncs/spill_serialize_helper.go` 与 `spill_deserialize_helper.go`。
+`migration_aster_unit_test.rs` 是当前最直接的 Rust/Go 迁移证据：它校验类型码顺序、本机宽度、全部 9 种 interface 值往返，以及未知标签和不支持值的 panic 文案。
 
 ## 扩展指南
 
@@ -94,14 +92,3 @@ RustCodeGraph 能确认目标文件已索引并读取其源码，但索引把该
 5. 同步更新 Go 对照常量与 type switch，或明确记录 Rust 独有格式为何不会与 Go 数据互换。
 
 修改宽度常量前应先确认对应 `Serialize*`/`Deserialize*` 的实际字段布局，而不是只改常量。尤其应评估旧 spill 数据兼容性、32/64 位差异、端序、`types::Time` 布局和内存记账偏差。若目标是跨进程或跨架构持久化，应另行定义固定端序和固定宽度协议，不能继续依赖 `size_of::<isize>()`。
-
-## 验证依据
-
-- 目标源码：`pkg/util/serialization/common_util.rs`，确认 9 个类型码、16 个宽度/协议常量以及唯一的 `types::Time` 依赖。
-- 模块与 crate：`pkg/util/serialization/lib.rs`、`pkg/util/serialization/Cargo.toml`，确认私有模块、crate 根重导出、本地类型依赖和 Go package 元数据。
-- 对称实现：`pkg/util/serialization/serialization_util.rs::SerializeInterface`、`pkg/util/serialization/deserialization_util.rs::{DeserializeInterface, DeserializedInterface}`，确认类型码的写入和分派。
-- 业务调用：`pkg/executor/aggfuncs/spill_serialize_helper.rs::serialize_spill_value`、`pkg/executor/aggfuncs/spill_deserialize_helper.rs::deserialize_spill_value`，确认聚合 spill 上游入口；`pkg/executor/aggregate/agg_spill.rs` 用于区分另一套局部标签协议。
-- Go 对照：`pkg/util/serialization/common_util.go`、`serialization_util.go::SerializeInterface`、`deserialization_util.go::DeserializeInterface`，以及 `pkg/executor/aggfuncs/spill_serialize_helper.go`、`spill_deserialize_helper.go` 的真实消费点。
-- 独立测试：`pkg/util/serialization/migration_aster_unit_test.rs` 的 `constants_match_go_type_codes_and_native_layout`、`interface_dispatch_round_trips_every_go_supported_variant`、两个非法 interface panic 测试和截断缓冲测试。`go_merge_32_test.rs`、`go_merge_34_test.rs` 只覆盖向量缓冲，不直接验证本文件常量。
-- RustCodeGraph：`status` 显示当前索引含目标目录 10 个文件；`files --filter pkg/util/serialization` 确认 Rust/Go 对照文件；`node --file pkg/util/serialization/common_util.rs` 读取 76 行完整源码。精确常量查询未返回节点，因此调用引用另以 `rg` 核对。
-- 结构验证按任务指定命令执行；本任务是纯文档分析，按总计划不运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根在 `pkg/executor/lib.rs` 以 `pub mod compiler` 对外公开它，并在测试构建中以 `mod compiler_test` 挂载独立测试 `pkg/executor/compiler_test.rs`。它位于 SQL 前端从 AST 到执行器的边界：输入是 `astersql_parser_ast::NodeRef`，输出是 `crate::adapter::ExecStmt`，中间协调预处理、优化、指标、计划追踪、PointGet 缓存复用、事务预热和语句 RU 所有者安装。
-
-当前 Rust 实现不是直接绑定具体会话/规划器的生产适配器，而是通过 `CompilerDependencies` 抽象所有外部行为。仓库文本搜索只确认模块公开与独立单元测试引用，未发现生产 Rust 代码构造或调用此处 `Compiler`；因此它是已实现的编译流程核心和迁移契约，但其生产接线在本次证据范围内未验证。Go 的生产实现位于 `pkg/executor/compiler.go`。
+`CountStmtNode`、`getStmtDbLabel` 与 `getDbFromResultNode` 实现非受限 SQL 的语句计数及数据库标签抽取。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ region 生命周期由 RAII 守卫限定为整个 `Compile` 调用。info schema
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/compiler.go` 是逐项对照基线。Rust `Compile` 保留了 Go 的 tracing region、选择性 panic 恢复、只读判定、preprocess、事务断言、事务 info schema、prepared EXECUTE、optimizer、staleness 断言、计数、低优先级判定、statement context 计划、计划 digest trace、PointGet 缓存复用、事务预热和最终 `ExecStmt` 构建顺序。
+Rust `Compile` 保留了 Go 的 tracing region、选择性 panic 恢复、只读判定、preprocess、事务断言、事务 info schema、prepared EXECUTE、optimizer、staleness 断言、计数、低优先级判定、statement context 计划、计划 digest trace、PointGet 缓存复用、事务预热和最终 `ExecStmt` 构建顺序。
 
 Rust 的主要结构差异是把 Go 对全局配置、metrics、sessionctx、planner、AST 类型断言及 failpoint 的直接调用抽进 `CompilerDependencies`，并用视图枚举表达计划/AST 分类；这是适配边界变化，不应解释为已存在具体生产实现。Rust 还显式设置 `TypedPlan`、必要时包装 `RuntimeExecute`，并安装 statement RU owner；Go 版本在构造 `ExecStmt` 后调用 `installStatementRUOwner`，其 plan 字段使用 Go 的具体接口对象。
 
@@ -91,13 +89,3 @@ Go 对 `CREATE MATERIALIZED VIEW` 在优化期间临时设置 `InMViewMaintenanc
 - 修改 prepared/PointGet：同时审查 `ReusePointGetPlan`、`preparedCacheForExec`、最终 `TypedPlan` 包装和 `adapter.rs` 的 PointGet 构建路径。普通 EXECUTE 不得错误附带 prepared cache。
 - 增加 trace 字段或 panic 类型：分别同步 `CompilerPlanTrace`/`EmitPlanTrace` 或 `RecoverCompilePanic`/`LogCompilePanic`，并维持脱敏与不可恢复 panic 重新抛出的兼容性。
 - 接通生产实现前，应先证明具体 `CompilerDependencies` 完整映射 Go 行为，尤其是 materialized view maintenance、事务断言、stale read、metrics、计划缓存和 RU owner；现有测试覆盖不足，不能只以编译通过作为完成证据。
-
-## 验证依据
-
-- 源码：`pkg/executor/compiler.rs`，核对全部类型、trait、函数、`impl Compiler`、错误传播和生命周期；文件无条件编译项。
-- crate/模块：`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`，确认 crate 边界、直接依赖、`pub mod compiler` 和独立 `compiler_test` 挂载。
-- 下游对象：`pkg/executor/adapter.rs` 的 `ExecStmt`/`TypedPlan`/PointGet 构建路径，`pkg/executor/statement_ru_result.rs` 的 `install_statement_ru_owner`，`pkg/planner/core/planbuilder_runtime.rs` 的 `RuntimeExecute`。
-- Rust 测试：`pkg/executor/compiler_test.rs` 验证 `preparedCacheForExec(Some, false) == None`、`(Some, true) == Some`、`(None, true) == None`。
-- Go 对照：`pkg/executor/compiler.go` 的 `Compiler.Compile`、`needLowerPriority`、`isPhysicalPlanNeedLowerPriority`、`CountStmtNode`、`getStmtDbLabel`、`getDbFromResultNode`。
-- RustCodeGraph：`status` 显示索引包含 `pkg/executor/compiler.rs`；`query Compiler/needLowerPriority/CountStmtNode` 定位 Rust 与 Go 符号；`callees` 确认 `Compile`、`compileInner` 及辅助函数的下游边。`callers` 对跨语言同名方法未给出可靠 Rust 生产调用方，故以 `rg` 对 `.rs` 的直接引用补充并将生产接线标为未验证。
-- 结构验证按任务命令执行；本任务是纯文档分析，依计划未运行 Cargo 或代码测试。

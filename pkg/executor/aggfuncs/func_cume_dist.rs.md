@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor-aggfuncs` crate；crate 入口 [`lib.rs`](./lib.rs) 以 `pub mod func_cume_dist` 暴露模块，[`Cargo.toml`](./Cargo.toml) 则用 `[lib] path = "lib.rs"` 声明 crate 根。它保存 SQL 窗口函数 `CUME_DIST` 的 Rust 状态机：先收集一个已按窗口 `ORDER BY` 排序的分区，再逐行输出“不大于当前 peer group 的行数 / 分区总行数”。
-
-这里需要区分算法实现与生产接线。Rust [`builder.rs`](./builder.rs) 已能把 `FunctionName::CumeDist` 选择为 `AggImplementation::CumeDist`，但仓库内 `.rs` 引用检索只发现 `CumeDist<T>` 本体由 [`func_cume_dist_test.rs`](./func_cume_dist_test.rs) 和 [`window_func_test.rs`](./window_func_test.rs) 实例化；未发现执行器依据该枚举变体创建本状态机的 Rust 生产调用。因此当前证据支持“算法状态机已实现并有单元测试”，不支持声称它已经接入完整 Rust SQL 执行主链。
+`next_by` 接受调用者提供的 peer 比较器，使 peer 判定能够对应多列 `ORDER BY`、排序方向、NULL 与排序规则等上层语义；本文件自身不解释 SQL 排序规则。
 
 ## 核心职责
 
@@ -80,16 +78,14 @@ RustCodeGraph 对 `CumeDist` 给出的文件使用者也是上述两份测试；
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 [`func_cume_dist.go`](./func_cume_dist.go)：`partialResult4CumeDist.curIdx/lastRank/rows` 分别对应 Rust 的 `cur_idx/last_rank/rows`；`ResetPartialResult` 对应 `reset`；`UpdatePartialResult` 对应 `update`；`AppendFinalResult2Chunk` 的 peer 扫描、游标推进和 `lastRank/numRows` 对应 `next_by`。
-
-两者保留了相同的关键语义和内存估算：缓存整个分区、peer 组共享末秩、每批新增行按固定 `DefRowSize` 计量。Rust 的差异主要是接口拆分：
+Rust 的差异主要是接口拆分：
 
 - Go 的 `cumeDist` 同时嵌入 `baseAggFunc` 和 `rowComparer`，直接向结果 `chunk` 的目标列追加 `float64`；Rust 状态机只返回 `Option<f64>`，结果落列由尚未在本文件中出现的上层负责。
 - Go 的 `buildCumeDist` 通过 `buildRowComparer(orderByCols)` 注入真实 SQL 比较规则；Rust 用调用时参数 `compare` 保持泛型，`next` 只是简单等值便捷路径。
 - Go `AllocPartialResult` 同时返回新状态和固定内存增量；Rust 用 `Default` 创建状态，把固定大小公开为独立常量。
 - Go 生产路径由 `BuildWindowFunctions` 明确调用 `buildCumeDist`；当前 Rust 证据只确认 builder 选出实现枚举，未确认状态机的生产实例化与结果写出。
 
-Go [`func_cume_dist_test.go`](./func_cume_dist_test.go) 验证 partial result 固定大小和按行更新的内存变化；Go [`window_func_test.go`](./window_func_test.go) 验证单行、无排序 peer 组和四个唯一排序值的输出。Rust 两份独立测试覆盖这些意图，并额外覆盖重复 peer 序列、自定义比较器、耗尽返回 `None` 和 reset 复用。
+Rust 两份独立测试覆盖这些意图，并额外覆盖重复 peer 序列、自定义比较器、耗尽返回 `None` 和 reset 复用。
 
 ## 扩展指南
 
@@ -98,13 +94,3 @@ Go [`func_cume_dist_test.go`](./func_cume_dist_test.go) 验证 partial result �
 若完成 Rust 生产接线，至少需要从 `builder.rs` 的 `AggImplementation::CumeDist` 追到执行期实例工厂、将真实 `ORDER BY` 比较器传给 `next_by`，并把 `f64` 写入正确结果列；同时新增独立集成测试证明这条链路，而不能仅以 builder 枚举或零测试编译作为完成证据。应特别核对 Go `BuildWindowFunctions/buildCumeDist` 的 ordinal、无 `ORDER BY` 时全分区同 peer、NULL 和多列排序行为。
 
 性能方面应保留单调 `last_rank`，避免退化为每行重新扫描整个分区的 `O(n^2)`；内存方面若改变 `T` 的所有权或计量协议，必须同步 `DEF_PARTIAL_RESULT_CUME_DIST_SIZE`、`DEF_ROW_SIZE` 约定及内存测试。若引入流式或 spill 方案，需要证明仍能在输出当前行前得知整个 peer group 的末端和分区总行数。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/executor/aggfuncs/func_cume_dist.rs`：读取全部 88 行，并报告使用者为 `func_cume_dist_test.rs`、`window_func_test.rs`。
-- RustCodeGraph `query CumeDist`、`query DEF_PARTIAL_RESULT_CUME_DIST_SIZE`、`node CumeDist`：核对目标结构、常量、builder 枚举及直接测试导入；精确方法名 `next_by` 未被当前索引单独建成可查询 method 节点，因此以目标文件源码和直接测试补证。
-- RustCodeGraph 文件节点：读取 [`lib.rs`](./lib.rs)、[`builder.rs`](./builder.rs)、[`func_cume_dist_test.rs`](./func_cume_dist_test.rs)、[`window_func_test.rs`](./window_func_test.rs)、[`func_cume_dist.go`](./func_cume_dist.go)、[`builder.go`](./builder.go)、[`func_cume_dist_test.go`](./func_cume_dist_test.go) 和 [`window_func_test.go`](./window_func_test.go) 的相关段落。
-- [`Cargo.toml`](./Cargo.toml)：核对 crate 名称 `astersql-executor-aggfuncs`、crate 根和包移植元数据；目标文件自身只使用标准库及同 crate 的 `DEF_ROW_SIZE`。
-- `rg` 补充检索：核对所有 Rust `CumeDist`/常量/实现枚举引用，以及 Go 的 builder、实现和测试位置；该检索用于补足 RustCodeGraph 未生成的方法调用边。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构校验要求本文恰有十一个约定的二级标题，并人工复核“文件为何存在、如何运行、如何安全扩展”均能由上述源码和测试追溯。

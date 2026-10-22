@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-signal` crate 的 Windows 平台实现。crate 根文件 `pkg/util/signal/lib.rs` 仅在 `cfg(windows)` 下声明 `signal_windows` 模块并公开重导出其内容，因此这里的 API 在 Windows 构建中承担 `SetupUSR1Handler`、`SetupSignalHandler` 和 `TiDBExit` 的平台适配；Unix 与 WASM 分别由同目录的其他实现提供。
-
-该 crate 在 `pkg/util/signal/Cargo.toml` 中把库入口指定为 `lib.rs`，并只在 `cfg(windows)` 依赖 `ctrlc = "3"`。文件不实现业务协议，而是把 Windows 控制台中断转换为服务器关机回调能够消费的整数信号值。
+通过 `SetupSignalHandler` 注册进程级控制台中断处理器，并保证传入的 `FnOnce` 关机回调最多执行一次。
 
 ## 核心职责
 
@@ -83,7 +81,6 @@ RustCodeGraph 能定位 `signal_windows.rs::SetupSignalHandler`、`SetupUSR1Hand
 
 Go 对照文件为 `pkg/util/signal/signal_windows.go`。两者都保留三个同名公开入口，`SetupUSR1Handler` 都是空操作，关机处理也都只消费一次通知；但实现和行为存在重要差异：
 
-- Go 使用容量为 1 的 `chan os.Signal`、`signal.Notify` 和 goroutine，登记 SIGHUP、SIGINT、SIGTERM、SIGQUIT，并把实际收到的 `os.Signal` 交给回调。
 - Rust 使用 `ctrlc::set_handler`，没有信号通道，把所有受支持的控制台中断统一映射为整数 `2`，通过 `Mutex<Option<FnOnce>>` 保证只调用一次。
 - Go 通过仓库日志器记录实际信号；Rust 直接写标准错误。
 - Go `TiDBExit` 会查找当前进程并尽力调用 `p.Signal(sig)`；Rust `TiDBExit` 完全忽略参数。因此 Rust 版本只是 Windows 平台 API 兼容门面，不能宣称已经移植 Go 侧的自发信号能力。
@@ -98,13 +95,3 @@ Go 对照文件为 `pkg/util/signal/signal_windows.go`。两者都保留三个�
 - 测试逻辑应放在独立文件中，建议新增 Windows 条件测试文件并由 `lib.rs` 挂载，覆盖首次触发、重复触发、注册失败/重复注册边界和上层整数映射；不要把测试内嵌回 `signal_windows.rs`。
 - `ctrlc` 处理器具有进程级全局状态，测试应使用可隔离的内部分发函数或串行进程测试，避免多个用例竞争注册器。
 - 任何改动都应继续保留 PingCAP Apache License 注释，并在行为真正可用后保留文件顶部的 AsterSQL 处理标记。
-
-## 验证依据
-
-- 源实现：`pkg/util/signal/signal_windows.rs`，符号 `Signal`、`WINDOWS_INTERRUPT`、`SetupUSR1Handler`、`SetupSignalHandler`、`TiDBExit`。
-- crate 边界：`pkg/util/signal/lib.rs` 的 `cfg(windows)` 模块声明与重导出；`pkg/util/signal/Cargo.toml` 的 `[lib]` 和 Windows `ctrlc` 条件依赖。
-- 应用接线：`cmd/tidb-server/stubs.rs::signal::{SetupUSR1Handler, SetupSignalHandler, deliver}`；`cmd/tidb-server/main.rs::run_main_inner` 中的注册位置和关机闭包。
-- Go 对照：`pkg/util/signal/signal_windows.go`。
-- 测试边界：`pkg/util/signal/migration_aster_unit_test.rs` 仅含 `cfg(unix)` 测试；仓库检索未找到 Windows 专用 Rust 测试。
-- RustCodeGraph：`status` 显示索引包含 `pkg/util/signal/signal_windows.rs`；`files --filter pkg/util/signal` 列出 Rust/Go 平台实现；`node --file` 核对目标文件及 `lib.rs`；`query` 核对三个公开函数的跨平台同名实现；精确 callers/callees 查询未返回可用调用边，故调用证据改由上述真实入口文件补足。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定章节结构命令和人工事实复核验收。

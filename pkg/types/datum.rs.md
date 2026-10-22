@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`datum.rs` 是 AsterSQL Rust 类型系统的统一标量值实现，对应 Go 的 `pkg/types/datum.go`。它并非未接线的平行文件：内部 crate `pkg/types/internal/datum/lib.rs` 在末尾通过 `include!("../../datum.rs")` 编译本文件，根 crate `pkg/types/lib.rs` 再以 `pub use astersql_types_datum as datum` 暴露该模块。`pkg/types/Cargo.toml` 将这个内部 crate 声明为 `astersql_types_datum` 依赖，因此 executor、ranger、statistics 等消费者最终使用的就是这里的实现。
-
-本文件处于 SQL 类型语义的基础层：上游把常量、行值、范围端点和中间计算结果包装成 `Datum`；本文件负责保存实际类型标签及载荷，并提供比较、转换、序列化、格式化和边界值操作。时间、DECIMAL、JSON、ENUM/SET、BIT、字符集/校对和向量的具体算法由相邻类型 crate 提供，本文件负责把它们组织为统一的分派入口。
+处于 SQL 类型语义的基础层：上游把常量、行值、范围端点和中间计算结果包装成 `Datum`；本文件负责保存实际类型标签及载荷，并提供比较、转换、序列化、格式化和边界值操作。
 
 ## 核心职责
 
@@ -84,7 +82,7 @@ Rust 文件声明由 `pkg/types/datum.go` 迁移而来，Kind 编号、字段布
 
 主要语言适配包括：Go type switch 改为 `Any::downcast_ref`；Go 的任意字节字符串与 Rust UTF-8 `String` 不完全等价，因此字符串裁剪显式寻找字符边界；Go `sort.Slice` 式错误闭包在 Rust 中通过外部 `Option<Error>` 暂存；Go JSON marshal/unmarshal 由手工构造 `serde_json::Value` 实现；Go interface 的动态打印由 `DatumValue` 和专门格式化补齐。
 
-`pkg/types/datum_test.rs` 与 `pkg/types/datum_test.go` 的同名用例证明当前移植意图：二者都覆盖布尔/整数/浮点转换、JSON、NULL、字节输出、Clone、内存估算、反向边界修正、BIT、Marshal、DECIMAL 精度、NULL 比较、行格式化和可打印判断。仍需注意测试并非逐断言完全等价：例如 Go 的 unsigned 溢出用例还检查饱和值，而 Rust 当前测试只断言错误；Go DECIMAL 测试区分 warning 与 overflow，Rust 对部分 case 只检查 error presence 与结果字符串。扩展时应以 Go 行为和两侧测试共同校准，而不能因 Rust 现有覆盖较窄而简化语义。
+仍需注意测试并非逐断言完全等价：例如 Go 的 unsigned 溢出用例还检查饱和值，而 Rust 当前测试只断言错误；Go DECIMAL 测试区分 warning 与 overflow，Rust 对部分 case 只检查 error presence 与结果字符串。扩展时应以 Go 行为和两侧测试共同校准，而不能因 Rust 现有覆盖较窄而简化语义。
 
 ## 扩展指南
 
@@ -95,12 +93,3 @@ Rust 文件声明由 `pkg/types/datum.go` 迁移而来，Kind 编号、字段布
 修改 JSON 序列化要维持 Go 字段名与零值兼容，并验证历史的 base64 字节表示及数组兼容输入。修改 Clone 或内存估算时应分别验证 `b` 的所有权、`x` 的共享/重装箱、vector/decimal/time 的专门计量。修改 `Hash64ForDatum` 契约时必须联动 codec 注入点，并确保 `Equals` 与哈希保持一致。
 
 性能风险主要在跨类型解析、反复克隆 `Vec`/`String`、collator 构造、JSON 编解码和行级格式化。兼容风险主要在 Kind 编号、比较全序、错误/告警分类、时区、字符集、JSON wire shape 与 Go 的任意字节字符串语义。
-
-## 验证依据
-
-- 源实现：`pkg/types/datum.rs`，通过 RustCodeGraph 按行读取全部 3005 行；重点核验 `Datum`、`Compare`、`ConvertTo`、`Produce*WithSpecifiedTp`、JSON、边界值和内存估算实现。
-- 编译接线：`pkg/types/internal/datum/lib.rs:677` 的 `include!("../../datum.rs")`；`pkg/types/internal/datum/Cargo.toml` 的依赖与测试目标；`pkg/types/lib.rs:10` 的 crate 再导出；`pkg/types/Cargo.toml` 的 `astersql_types_datum` 依赖。
-- 调用图：`rustcodegraph status` 显示索引含 11467 文件、307296 节点、1848419 边；`node --file pkg/types/datum.rs` 显示本文件被 45 个文件使用；`explore`/call graph 识别出 ranger、executor、statistics 等调用者，以及本文件向转换、时间、decimal、JSON、vector 与 collate 辅助函数的调用边。
-- Go 对照：完整读取 `pkg/types/datum.go` 的类型/核心入口，并以同名符号和布局核对迁移；完整读取 `pkg/types/datum_test.go` 的 827 行用例。
-- Rust 测试：完整读取独立文件 `pkg/types/datum_test.rs` 的 762 行；确认覆盖存取、转换、比较、clone、内存、边界修正、BIT、JSON 往返、DECIMAL 和诊断格式。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查，并人工复核所有结论均能回指上述源码、接线、调用图或测试证据。

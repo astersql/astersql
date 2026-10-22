@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[目标源码](add_column.rs)属于 Cargo 包 `astersql-ddl`（`pkg/ddl/Cargo.toml`，库入口为 `pkg/ddl/lib.rs`），并由 `lib.rs` 以 `pub mod add_column` 暴露。它把 ADD COLUMN 的一部分 Go 语义移植为纯 Rust 内存模型：校验 `ColumnDefinition`、构造 `ColumnInfo`、把列追加到 `TableInfo`，以及逐次推进 `SchemaState`。
-
-必须注意当前接线边界：仓库内对 `start_add_column`、`advance_add_column` 和 `create_new_column` 的直接引用都来自 Rust 测试；生产侧 `pkg/ddl/executor.rs::Executor::add_column` 直接插入其自身的列模型并提交 `DdlAction::AddColumn`，没有调用本文件。因此，本文件当前不是完整 SQL → 持久化 DDL job → owner worker → schema sync 主链的实现，而是可独立验证的校验与状态迁移模型。`adjust_blob_type_length` 在仓库内也没有调用者。
+`overwrite_collation_with_binary_flag`、`process_column_flags` 和 `adjust_blob_type_length` 提供 MySQL/TiDB 字段类型归一化的局部实现。
 
 ## 核心职责
 
@@ -78,11 +76,7 @@ crate 内依赖来自 `crate::column` 与 `crate::generated_column`；本文件�
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/ddl/add_column.go`：
-
 - Rust 的约束与 TiFlash 检查对应 Go `checkUnsupportedColumnConstraint`、`checkUnsupportedCharsetForTiFlash`；允许字符集集合与 Go 的 `charset.TiFlashSupportedCharsets` 意图一致，但 Rust 使用硬编码白名单。
-- `create_new_column` 对应 Go `CreateNewColumn` 的一小部分：二者都拒绝 stored generated column、验证依赖/顺序/自增引用并拒绝 `nextval/rand/uuid/uuid_to_bin/replace/upper` 默认函数；Go 还处理 AST、会话变量、schema/table 字符集解析、长度/标识符、origin default、EMBED_TEXT 和更完整的类型/default 校验。
-- `process_column_flags` 对应 Go `processColumnFlags`，`pkg/ddl/add_column_test.rs::string_binary_flag_follows_charset_like_go` 明确锁定“字符串 binary 标志跟随 charset”语义。
 - `adjust_blob_type_length` 对应 Go `adjustBlobTypesFlen`，但 Rust 把字符集最大字节数作为参数并增加溢出/超上限错误；当前没有接入 `create_new_column`。
 - `advance_add_column` 的前进状态序列与 Go `worker.onAddColumn` 相同；差异是 Go 每阶段更新持久元数据/schema version，WriteOnly → WriteReorganization 后 `MarkNonRevertible`，Public 前后同步物化视图日志、校验表元数据、发 notifier 并结束 job。Rust 无这些行为。
 - Go rolling back 路径调用 `onDropColumn`；Rust 直接删除内存列。Go 先初始化列再检查列数，Rust `start_add_column` 在追加前检查，因此失败时的内存中间态也不同。
@@ -96,11 +90,3 @@ crate 内依赖来自 `crate::column` 与 `crate::generated_column`；本文件�
 若要让生产执行器复用本文件，不能只调用 `advance_add_column`：还必须设计 job 参数持久化、幂等恢复、owner worker 调度、schema version/diff、同步屏障、取消/不可逆边界、真实回填 checkpoint、notifier 与 GC，并解决 `executor.rs` 和 `column.rs` 两套列/表模型的转换。此类接线应对照 Go `worker.onAddColumn`，并按 DDL 测试流程增加独立的 job/集成测试。
 
 修改类型规则时，应同时检查 create/add 与 modify/change 的一致性：Go 特意让 `processColumnFlags` 被两类语句共享。若接入 `adjust_blob_type_length`，需先决定 Rust 超长报错与 Go 当前行为的兼容策略，并为字符集倍数、边界值和乘法溢出补测试。还应决定当前未消费的 `comment`、`Null`、`Binary`、`OnUpdateCurrentTimestamp` 是实现缺口还是仅供上层预处理，避免静默接受却不生效。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`node --file pkg/ddl/add_column.rs` 读取完整 462 行；`query` 精确定位 `create_new_column`、`start_add_column`、`advance_add_column`、约束/字符集/标志/BLOB 辅助函数；`callees` 核对了上述核心下游边。批量 `callers` 查询超时，因此调用者集合另用精确 `rg` 核对。
-- 源码与边界：`pkg/ddl/add_column.rs`、`pkg/ddl/column.rs`、`pkg/ddl/generated_column.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/executor.rs`、`pkg/ddl/Cargo.toml`。
-- Go 对照：`pkg/ddl/add_column.go` 的 `worker.onAddColumn`、`checkUnsupportedCharsetForTiFlash`、`checkUnsupportedColumnConstraint`、`CreateNewColumn`、`processColumnFlags`、`adjustBlobTypesFlen`。
-- Rust 测试：`pkg/ddl/add_column_test.rs`、`pkg/ddl/column_change_test.rs`、`pkg/ddl/db_change_test.rs`、`pkg/ddl/db_integration_test.rs`、`pkg/ddl/integration_validation_aster_unit_test.rs`。它们证明标志归一化、默认函数拒绝、默认值跨状态保持、位置移动和版本逐步递增；未证明生产 executor 已接线或分布式 job 生命周期。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅执行固定的 11 章节结构校验，并人工核对重要陈述均指向上述符号或路径。

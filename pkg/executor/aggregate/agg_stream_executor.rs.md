@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor-aggregate` crate；crate 的入口 `pkg/executor/aggregate/lib.rs` 以 `pub mod agg_stream_executor` 公开本模块。它提供当前 Rust 侧可执行的 `StreamAggExec`：在输入已按分组键连续排列的前提下，顺序扫描行、在键变化处完成上一组聚合，并把结果切成若干 `Chunk` 供调用方读取。
-
-当前接线范围需要谨慎理解：仓库内 `StreamAggExec::new` 的直接 Rust 调用位于独立测试和 benchmark（`pkg/executor/executor_required_rows_test.rs`、`pkg/executor/aggregate/agg_spill_test.rs`、`pkg/executor/test/aggregate/aggregate_test.rs`、`pkg/executor/benchmark_test.rs`）。`pkg/executor/builder.rs` 虽定义了 `StreamAggPlanData`、`StreamAggBuildConfig` 和依赖注入式的 `build_stream_agg_executor`，但搜索不到它直接构造本文件的 `StreamAggExec`；因此不能把本实现描述成已经完整接入主执行器 trait/会话执行链。
-
-文件第 21—106 行及末尾第 254 行是从 Go 控制流保留下来的注释性迁移材料，不参与 Rust 编译。真正生效的实现从 `use crate::agg_util...` 开始。
+`consume_groups` 负责识别组边界、更新每个聚合状态、生成结果行并按 `max_chunk_size` 切块。
 
 ## 核心职责
 
@@ -92,7 +88,7 @@ RustCodeGraph 对目标文件的文件节点报告 12 个符号，并把 `agg_sp
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggregate/agg_stream_executor.go`。两者保持的核心意图是：输入按 group key 排序、跨 child chunk 延续同一组、组结束后输出聚合结果、支持 executor 的打开/读取/关闭生命周期。Rust 的 `get_group_key` + `current_key` 对应 Go `VecGroupChecker.SplitIntoGroups/GetNextGroup` 所承担的组边界识别；Rust `AggState::update/result` 对应 Go `AggFunc.UpdatePartialResult/AppendFinalResult2Chunk` 的简化模型。
+Rust 的 `get_group_key` + `current_key` 对应 Go `VecGroupChecker.SplitIntoGroups/GetNextGroup` 所承担的组边界识别；Rust `AggState::update/result` 对应 Go `AggFunc.UpdatePartialResult/AppendFinalResult2Chunk` 的简化模型。
 
 重要差异如下：
 
@@ -103,7 +99,7 @@ Go 对照文件是 `pkg/executor/aggregate/agg_stream_executor.go`。两者保�
 - Go 支持 context、failpoint、child 打开/关闭、panic 清理和 `DefaultVal`；Rust 均未接线。
 - Go 空输入的默认结果由 builder 条件和 `DefaultVal` 控制；Rust 对无分组列总是生成一行空状态结果。
 
-因此，该文件是可运行且有独立测试覆盖的简化 Rust 流聚合实现，但不是 Go `StreamAggExec` 的字段级或运行时资源语义完整复刻。顶部大段注释准确保存了部分 Go 迁移线索，不应与生效代码混为一谈。
+因此，该文件是可运行且有独立测试覆盖的简化 Rust 流聚合实现，但不是 Go `StreamAggExec` 的字段级或运行时资源语义完整复刻。
 
 ## 扩展指南
 
@@ -115,12 +111,3 @@ Go 对照文件是 `pkg/executor/aggregate/agg_stream_executor.go`。两者保�
 - 性能风险集中在 `open` 全量物化、分组值克隆、每行重新编码 group key、每组重建状态，以及 `Vec::drain` 移动后缀；兼容风险集中在空输入、NULL、DISTINCT、数值转换和错误类型与 Go 的差异。
 
 建议至少同步或扩展以下独立测试：`pkg/executor/executor_required_rows_test.rs`（请求行数契约）、`pkg/executor/aggregate/agg_spill_test.rs`（跨行分组边界）、`pkg/executor/test/aggregate/aggregate_test.rs`（聚合种类和输出大小一致性）、`pkg/executor/benchmark_test.rs`（排序前置及生命周期复用）。若实现 Go 级语义，还需以同名 Go 测试为对照新增 Rust 回归，而不是声称现有简化测试已覆盖。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标 `pkg/executor/aggregate/agg_stream_executor.rs` 已索引；`files --filter` 返回该文件；`node --file ... --offset 1 --limit 500` 展示完整 254 行和生效符号；精确 `explore` 未建立可靠的完整静态调用路径，因此调用边以文件节点使用者和精确引用搜索交叉核对。
-- 生产源码：`pkg/executor/aggregate/agg_stream_executor.rs` 的 `StreamAggExec::{new,open,close,next,next_required,consume_groups}`、`append_group` 与公开阈值；`pkg/executor/aggregate/agg_util.rs` 的 `Value`、`Row`、`Chunk`、`Aggregation`、`AggState::{new,update,result}` 和 `get_group_key`。
-- crate 与装配：`pkg/executor/aggregate/Cargo.toml`、`pkg/executor/aggregate/lib.rs`；主链接线边界参考 `pkg/executor/builder.rs::{StreamAggPlanData,StreamAggBuildConfig,buildStreamAgg,buildStreamAggFromChildExec}`。
-- Rust 测试/benchmark：`pkg/executor/executor_required_rows_test.rs::stream_aggregate_required_rows_are_preserved_between_calls`、`stream_aggregate_zero_required_rows_does_not_consume_a_group`；`pkg/executor/aggregate/agg_spill_test.rs::stream_aggregate_preserves_sorted_group_boundaries`；`pkg/executor/test/aggregate/aggregate_test.rs::{test_parallel_stream_agg_group_concat,test_issue20658}`；`pkg/executor/benchmark_test.rs::{build_stream_aggregate_executor,benchmark_aggregate_executor_reuses_open_next_close_lifecycle}`。
-- Go 对照：`pkg/executor/aggregate/agg_stream_executor.go` 的 `Open/OpenSelf/Close/Next/consumeOneGroup/consumeGroupRows/consumeCurGroupRowsAndFetchChild/appendResult2Chunk`；`pkg/executor/executor_required_rows_test.go::TestStreamAggRequiredRows`；`pkg/executor/test/aggregate/aggregate_test.go::TestStreamAggPendingMemDeltaBatching`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务文件指定的命令验证目标文档存在且恰好包含 11 个固定二级标题，并人工复核文档明确回答文件定位、运行方式、真实接线限制与安全扩展点。

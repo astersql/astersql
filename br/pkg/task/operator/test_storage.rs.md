@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 BR `test-storage` 运维子命令的核心探测逻辑，是 Go 文件 [`test_storage.go`](./test_storage.go) 的 Rust 移植。它属于 Cargo 包 `astersql-br-pkg-task-operator`（见 [`Cargo.toml`](./Cargo.toml)），由 [`lib.rs`](./lib.rs) 以 `pub mod test_storage` 挂载并通过 `pub use test_storage::*` 平铺公开。直接命令入口是 [`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs) 的 `newTestStorageCommand`：注册参数、调用 `TestStorageConfig::ParseFromFlags`，再调用 `RunTestStorage`。
-
-虽然文件名含 `test_storage`，它不是 Rust 单元测试文件，而是可由 BR CLI 调用的生产候选模块，用于在备份/恢复前主动检查外部存储配置、权限及接口语义。真正的独立 Rust 测试位于 [`test_storage_test.rs`](./test_storage_test.rs) 与 [`parity_test.rs`](./parity_test.rs)。
+`formatBytes`、`printStep`、`printSuccess`、`printError` 只负责终端呈现，不改变存储判定。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ reader 在 `testOpen`/`testOpenWithRange` 的正常和大部分错误分支显�
 
 ## 与 Go 版本的对应关系
 
-Rust 的常量、报告字段、参数名、主步骤顺序、64 KiB 流式写块、范围 `[100, 200)`、分页数量 10/页大小 3、错误文案和最终失败策略都直接对应 [`test_storage.go`](./test_storage.go)。[`br/cmd/br/operator.go`](../../../cmd/br/operator.go) 与 Rust `operator.rs` 也都把该逻辑挂到 `test-storage` 子命令。
-
 主要实现差异如下：
 
 - Go 通过 `context.Context` 调用每个存储接口；Rust `RunTestStorage` 无 context 参数，使用同步 `ExternalStorage` trait。
@@ -89,13 +85,3 @@ Rust 的常量、报告字段、参数名、主步骤顺序、64 KiB 流式写�
 新增范围或切片场景时，应同步强化 `ParseFromFlags` 的最小数据长度约束，或让步骤按实际数据长度选择合法区间，防止 panic。新增 writer 循环应处理零进展写入。若要把报告用于机器消费，应新增独立的结构化输出层，不能解析带颜色的人类文本。
 
 测试逻辑必须继续放在独立文件：低层错误注入放入 [`test_storage_test.rs`](./test_storage_test.rs)，公开契约、配置边界和 `MemStorage` 全流程放入 [`parity_test.rs`](./parity_test.rs)。涉及 Go 对齐时同步检查 [`test_storage.go`](./test_storage.go) 及 Go CLI 入口。真实云后端的凭证、权限、分页一致性和 rename 支持仍需集成环境验证，不能由 `MemStorage` 用例替代。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/task/operator/test_storage.rs` 确认目标文件已索引。
-- RustCodeGraph `node --file ... --offset 1/500`：读取并核对目标文件 1–1207 行及 42 个符号；文件关系标明由 `parity_test.rs`、`test_storage_test.rs` 使用。
-- RustCodeGraph `query TestStorage`、`callees RunTestStorage`、`callees testWriteFile`、`callees testWalkDirWithPagination`：核对公开类型、主流程步骤及结果汇总调用边。因 Go/Rust 同名定义导致按名称的 callers 查询无明确输出，调用上游另以源码验证。
-- crate 与入口证据：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs)。
-- Go 对照证据：[`test_storage.go`](./test_storage.go)、[`br/cmd/br/operator.go`](../../../cmd/br/operator.go)。
-- 测试证据：[`test_storage_test.rs`](./test_storage_test.rs) 验证随机源错误传播；[`parity_test.rs`](./parity_test.rs) 验证报告计数、flag 解析、空 URI 错误和 `MemStorage` 全流程。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证文档恰含十一个固定二级标题，并人工检查所有关键结论均可回溯到上述符号或文件。

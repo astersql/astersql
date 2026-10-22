@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`scan.rs` 位于 `astersql-ttl-ttlworker` crate 的扫描/删除流水线前半段，由 [`lib.rs`](lib.rs) 以 `pub mod scan` 暴露。它把一个持久化 TTL 扫描分片描述成 `TtlScanTask`，按键范围分页查询已经过期的行，再把表主键行交给删除侧；本文件本身不执行 `DELETE`。上游的 `TaskManager::reschedule`（[`task_manager.rs`](task_manager.rs)）从 waiting 队列产出 `TtlScanTask`，下游删除实现（[`del.rs`](del.rs)）与扫描侧共享 `TtlStatistics`。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名为 `astersql-ttl-ttlworker`，Go 对照包元数据是 `pkg/ttl/ttlworker`。当前普通依赖仅声明 `astersql-ttl-cache`；大批完整移植依赖被放在 Windows 条件目标下。因此本文只描述当前 `scan.rs` 的可见 Rust 行为，不把 Go 版会话池、指标、后台 goroutine 等尚未在此文件接线的能力表述为已具备。
+`ScanIndex` 保存用于 `FORCE_INDEX`、投影和排序的索引布局；索引扫描仍补投影表主键，因为删除侧按表键删除。
 
 ## 核心职责
 
@@ -79,13 +77,11 @@ SQL 标识符处理并不完全一致：索引名和分区名显式转义反引�
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 [`scan.go`](scan.go)，主要对应关系是：`ttlStatistics` ↔ `TtlStatistics`，`ttlScanTask` ↔ `TtlScanTask`，`doScanWithSession` ↔ `execute_with_checkpoint`，`ttlScanWorker` 的调度约束 ↔ `ScanWorker`。两端都在超过 10,000 行且错误率超过 40% 时停止，都只在删除任务成功派发后增加扫描总数，并都允许初次 SQL 加五次重试。
-
 Rust 将 Go `sqlbuilder.ScanQueryGenerator` 的部分行为直接放进 `scan_sql`，以参数数组而不是完整 SQL 字面量执行；它还增加了显式 `ScanIndex`、耐久游标恢复与 `checkpoint` 回调。Rust 测试 `go_merge_43_scan_restarts_after_durable_cursor_and_stops_on_checkpoint_error` 表明该检查点行为属于后续对齐扩展，而不是当前 Go `scan.go` 中同名 API。
 
-当前 Rust 不是 Go worker 的完整等价实现。Go `doScanWithSession` 还负责会话池获取/恢复、安全过期时间复核、指标 phase tracer、两秒重试间隔、任务/worker 双 context、`KillStmt` 重发以及后台 goroutine；Go `ttlScanWorker` 带锁、消息通道和生命周期循环。Rust 的这些职责仅由 `WorkerSession`/回调抽象部分承接，`ScanWorker` 不执行后台循环。Go 的终止原因只有 finished/error/workerStop，而 Rust 将取消和错误率等原因细分，并保留尚未由本执行函数构造的 `TableChanged`。
+Rust 的这些职责仅由 `WorkerSession`/回调抽象部分承接，`ScanWorker` 不执行后台循环。Go 的终止原因只有 finished/error/workerStop，而 Rust 将取消和错误率等原因细分，并保留尚未由本执行函数构造的 `TableChanged`。
 
-测试对应方面，Rust [`scan_test.rs`](scan_test.rs) 覆盖单槽调度、SQL/范围/游标、分区、索引投影、重试、派发计数、检查点失败和熔断；[`scan_integration_test.rs`](scan_integration_test.rs) 对照 Go [`scan_integration_test.go`](scan_integration_test.go) 的扫描中取消和语句边界取消。Go [`scan_test.go`](scan_test.go) 还覆盖真实 worker 生命周期、会话检查、重试等待和 kill-statement 等 Rust 当前抽象未直接实现的行为。
+Go [`scan_test.go`](scan_test.go) 还覆盖真实 worker 生命周期、会话检查、重试等待和 kill-statement 等 Rust 当前抽象未直接实现的行为。
 
 ## 扩展指南
 
@@ -95,10 +91,3 @@ Rust 将 Go `sqlbuilder.ScanQueryGenerator` 的部分行为直接放进 `scan_sq
 - 新增错误分类时，同时审查 `TaskTerminateReason`、`ScanResult.error` 与 `TaskManager::report_finished`，尤其不能误把应重排的 worker 停止当成永久完成。
 - 若把 `ScanWorker` 扩展为真实并发 worker，应在独立源文件中实现线程/通道/锁与停止生命周期，并把测试放在同目录独立 `*_test.rs`，不要把测试内嵌到 `scan.rs`。还需决定 `Clone` 语义，避免误以为克隆共享状态。
 - 性能风险主要来自每页字符串生成、索引游标 OR 条件随复合键宽度增长、返回行克隆及线性列名查找；优化时必须保留 NULL 排序、非唯一索引主键后缀和参数顺序的兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引含 11,467 个文件、307,296 个节点，目标目录可见 `scan.rs`（34 symbols）；`node --file pkg/ttl/ttlworker/scan.rs --offset 1 --limit 500` 读取了完整 465 行，并报告文件级使用者 `del.rs`、`del_test.rs`、`scan_test.rs`。对 `TtlScanTask`、`ScanWorker` 的 `query` 找到 Rust/Go 对照符号；方法名查询与 `callers/callees` 未返回可用边，已用源码搜索补足。
-- 生产源码：完整阅读 [`scan.rs`](scan.rs)、[`scan.go`](scan.go)、[`session.rs`](session.rs)、[`task_manager.rs`](task_manager.rs)、[`del.rs`](del.rs)、[`lib.rs`](lib.rs) 与 [`Cargo.toml`](Cargo.toml)，核对 crate、上游任务、会话、删除统计和结果消费边界。
-- 测试证据：完整阅读 [`scan_test.rs`](scan_test.rs) 与 [`scan_integration_test.rs`](scan_integration_test.rs)；用 Go [`scan_test.go`](scan_test.go) 和 [`scan_integration_test.go`](scan_integration_test.go) 核对调度、重试、取消及原实现的额外生命周期职责。
-- 本任务是纯文档分析，没有运行 Cargo。交付前按任务文件执行固定十一章节结构命令，并人工复核文档只陈述上述源码与测试可验证的当前行为。

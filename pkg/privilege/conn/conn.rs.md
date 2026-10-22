@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 workspace crate `astersql-privilege-conn`。`pkg/privilege/conn/Cargo.toml` 将 `lib.rs` 设为 crate 根，并用 `package.metadata.porting.go-package = "pkg/privilege/conn"` 标明它对照 Go 包；`pkg/privilege/conn/lib.rs` 声明 `conn` 模块并公开再导出本文件的符号。因此，本文件提供的是认证期间“插件与客户端继续交换协议包”的最小连接契约，而不是网络连接、MySQL 包编解码或权限判断的具体实现。
-
-该契约位于会话/协议连接与认证实现之间：`pkg/privilege/privilege.rs` 的 `Manager::ConnectionVerification` 接受绑定了上下文和错误类型的 `dyn AuthConn`；`pkg/session/sessionapi/session.rs` 的 `Session::AuthConnection` 也要求实现本 trait；`pkg/extension/lib.rs` 则将其以 `RawAuthConn` 名义再导出，供 `pkg/extension/auth.rs::AuthConnAdapter` 接入扩展认证 API。
+明确协议职责边界：`WriteAuthMoreData` 的调用方只提供负载，协议规定的 `0x01` 标记由具体连接实现封装；`ReadPacket` 返回普通包内容，不在 trait 内处理认证协议状态（`conn.rs:33-42`，并由 `conn.go:20-31` 的注释核对）。
 
 ## 核心职责
 
@@ -78,13 +76,11 @@ RustCodeGraph 对目标文件识别出 5 个索引符号并显示文件被 privi
 
 ## 与 Go 版本的对应关系
 
-Rust `AuthConn` 逐项对应 `pkg/privilege/conn/conn.go::AuthConn`：
-
 - Go `WriteAuthMoreData(data []byte) error` 对应 Rust 借用切片并返回关联错误类型；两者都把 `0x01` 前缀交给具体连接。
 - Go `ReadPacket() ([]byte, error)` 对应 Rust `Result<Vec<u8>, Error>`；Rust 用所有权明确返回缓冲归调用方。
 - Go `Flush(ctx context.Context) error` 对应 Rust `Flush(&Self::Context)`；Rust 没有硬编码 Go context，而用关联类型承载宿主上下文。
 
-命名通过 `#[allow(non_snake_case)]` 原样保留，以降低迁移对照成本。语义差异主要是 Rust 把同一实现的上下文/错误类型静态绑定，并以 `&mut self` 表达连接操作的可变独占访问。Go 生产实现 `pkg/server/conn.go:2930-2946` 证明 `clientConn` 负责加 AuthMoreData 标记、委托普通读包和刷新；它是协议行为的对照证据，不代表仓库中已经存在等价的 Rust `clientConn: AuthConn` 实现。
+语义差异主要是 Rust 把同一实现的上下文/错误类型静态绑定，并以 `&mut self` 表达连接操作的可变独占访问。
 
 ## 扩展指南
 
@@ -97,12 +93,3 @@ Rust `AuthConn` 逐项对应 `pkg/privilege/conn/conn.go::AuthConn`：
 5. 若上层需要跨线程，显式增加 `Send`/`Sync` 边界并审查内部连接状态；不要假设本 trait 已提供这些保证。
 
 修改本 trait 的签名会影响 privilege `Manager`、session `Session::AuthConnection`、extension `AuthConnAdapter` 和所有实现者。测试逻辑应继续放在独立文件：直接契约测试同步更新 `pkg/privilege/conn/migration_aster_unit_test.rs`；扩展适配行为同步更新 `pkg/extension/auth_1_aster_unit_test.rs`；若新增真实 Rust 协议连接实现，还应在该实现同目录的独立测试文件覆盖精确帧字节、读包、刷新上下文、错误与断连场景。不要把测试内嵌进 `conn.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库；`files --filter pkg/privilege/conn` 找到 `conn.rs`、`lib.rs`、Go 对照和独立迁移测试；`node --file pkg/privilege/conn/conn.rs --offset 1 --limit 400` 核对完整 47 行源码；`query AuthConn`、`query WriteAuthMoreData`、`query ReadPacket` 及目标符号的 `callers`/`callees` 查询用于识别同名接口并确认目标 trait 没有可依赖的静态调用边。
-- 源与 crate 边界：`pkg/privilege/conn/conn.rs`、`pkg/privilege/conn/lib.rs`、`pkg/privilege/conn/Cargo.toml`、根 `Cargo.toml`。
-- Rust 入口与消费者：`pkg/privilege/lib.rs`、`pkg/privilege/privilege.rs`、`pkg/session/sessionapi/lib.rs`、`pkg/session/sessionapi/session.rs`、`pkg/extension/lib.rs`、`pkg/extension/auth.rs`，以及各自 Cargo 路径依赖。
-- Go 对照：`pkg/privilege/conn/conn.go`（接口与首包说明）、`pkg/server/conn.go:2930-2946`（具体连接实现）、`pkg/privilege/privileges/ldap/sasl.go:32-94`（多轮认证顺序）、`pkg/privilege/privileges/privileges.go:251-262,632`（认证插件与连接校验入口）。
-- 独立测试：`pkg/privilege/conn/migration_aster_unit_test.rs` 覆盖写/读/按上下文刷新及错误保真；`pkg/extension/auth_1_aster_unit_test.rs::auth_conn_adapter_uses_the_migrated_privilege_connection_contract` 覆盖扩展适配转发。`pkg/privilege/migration_aster_unit_test.rs` 仅证明 `Manager` 签名接入该 trait；LDAP 的 Rust 测试使用其局部同名 trait，不作为本文件实现证据。
-- 未运行 Cargo 或代码测试：任务为纯文档分析，计划明确排除 Cargo；结构验证和 diff 自审作为交付验证。

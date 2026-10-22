@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`recovery.rs` 是 `astersql-session` crate 内 `ConcreteSession` 的 RECOVER/FLASHBACK 执行分支，由 [`pkg/session/runtime.rs`](../runtime.rs) 中的私有 `mod recovery` 纳入会话运行时。SQL AST 已在通用执行入口被解析后，[`pkg/session/runtime/dispatch.rs`](dispatch.rs) 会将 `ast::RecoverTableStmt`、`ast::FlashBackTableStmt` 和 `ast::FlashBackDatabaseStmt` 分别下沉到本文件的三个 `pub(super)` 方法。
-
-该实现面向 AsterSQL 当前的进程内 session runtime：历史 DDL 作业来自 `RUNTIME_DDL_JOBS`，表和库元数据通过 `Domain` 接口写入。它不是 Go TiDB 持久化 DDL owner/worker 状态机的逐行复制。crate 边界由 [`pkg/session/Cargo.toml`](../Cargo.toml) 声明，直接使用 `astersql-meta-model`、`astersql-parser-ast`、`astersql-testkit-testfailpoint` 以及 `chrono`。
+从 `mysql.tidb` 读取并解析 `tikv_gc_safe_point`，转换为 TiDB TSO 的 `physical << 18` 形式（`runtime_gc_safe_point`）。
 
 ## 核心职责
 
@@ -76,9 +74,9 @@ GC safe point 是从系统表中读取的文本时间，解析成 UTC offset-awa
 
 Go 主入口在 [`pkg/executor/ddl.go`](../../executor/ddl.go)：`executeRecoverTable`/`getRecoverTableByJobID`/`getRecoverTableByTableName`、`executeFlashbackTable`、`executeFlashbackDatabase`/`getRecoverDBByName` 对应 Rust 的三个公开执行分支与历史选取 helper。两者共同保留了 drop/truncate 类型限制、GC safe point 检查、同名对象冲突、改名恢复以及 TTL 强制关闭等意图。
 
-Go 的完整表恢复在 [`pkg/ddl/table.go`](../../ddl/table.go) 中经 `onRecoverTable`/`recoverTable` 进入持久化 DDL job，并包含 `none -> write only -> public` 状态迁移、GC 开关保存/恢复、delete-range 撤销、auto ID 恢复、placement/label rule 处理和 schema diff/version 推进。Rust 文件目前只调用 runtime `Domain` 元数据接口并刷新本节点版本，未在本文件中实现上述持久化状态机。
+Rust 文件目前只调用 runtime `Domain` 元数据接口并刷新本节点版本，未在本文件中实现上述持久化状态机。
 
-Go `mockRecoverTableCommitErr` 通过首次 commit error 验证作业重试；Rust 组合同名 failpoint 后只更新 job detail，然后继续一次元数据尝试。这是可观测的兼容模拟，不应解读为真实事务提交重试。
+Go `mockRecoverTableCommitErr` 通过首次 commit error 验证作业重试；Rust 组合同名 failpoint 后只更新 job detail，然后继续一次元数据尝试。
 
 ## 扩展指南
 
@@ -88,12 +86,3 @@ Go `mockRecoverTableCommitErr` 通过首次 commit error 验证作业重试；Ru
 - 扩展库恢复时，重点处理中途失败的原子性/补偿、所有表的 job 可观测性，以及同名对象并发创建竞态。
 - Rust 测试必须保持为独立文件。当前直接回归位于 [`pkg/ddl/tests/serial/serial_test.rs`](../../ddl/tests/serial/serial_test.rs)，已覆盖 TTL、BY JOB、GC safe point、drop/truncate、flashback database 和 commit-failpoint 场景；新的 session-runtime 窄单元测试应放在同目录独立 `recovery_test.rs` 并由 `runtime.rs` 在 `cfg(test)` 下接线，不得内嵌到 `recovery.rs`。
 - 兼容性风险集中在错误文本、大小写/改名、历史选择顺序和 Go DDL 状态机语义；性能风险集中在反向线性扫描全部历史和 flashback database 串行建表。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件；`files --filter pkg/session/runtime` 列出目标文件 9 个符号；`node --file pkg/session/runtime/recovery.rs` 读取全文并报告唯一使用方 `pkg/session/runtime/dispatch.rs`；`query execute_recover_table` 与 `query execute_flashback_database` 确认 Rust 入口及 Go/Rust 同名候选。
-- Rust 源码：[`pkg/session/runtime/recovery.rs`](recovery.rs)、[`pkg/session/runtime.rs`](../runtime.rs)、[`pkg/session/runtime/dispatch.rs`](dispatch.rs)、[`pkg/session/runtime/ddl.rs`](ddl.rs)、[`pkg/domain/domain.rs`](../../domain/domain.rs)。`pkg/session` 下无 `doc.go`。
-- crate 边界：[`pkg/session/Cargo.toml`](../Cargo.toml) 的 package、feature 和 dependencies 声明。
-- Go 对照：[`pkg/executor/ddl.go`](../../executor/ddl.go) 的恢复入口/历史查找，以及 [`pkg/ddl/table.go`](../../ddl/table.go) 的 `onRecoverTable`/`recoverTable`。
-- 独立测试：[`pkg/ddl/tests/serial/serial_test.rs`](../../ddl/tests/serial/serial_test.rs) 的 `test_recover_table_with_ttl`、`test_recover_table_by_job_id`、`test_recover_table_uses_real_start_ts_for_queued_drop_table`、`test_flashback_database_uses_real_start_ts_for_queued_drop_schema`、`test_recover_table_by_job_id_fail`、`test_recover_table_by_table_name_fail`；Go 基线为 [`pkg/ddl/tests/serial/serial_test.go`](../../ddl/tests/serial/serial_test.go) 和 [`pkg/executor/test/recovertest/recover_test.go`](../../executor/test/recovertest/recover_test.go)。
-- 本件是纯文档分析，未运行 Cargo 或代码测试；不将未经代码证据确认的 Go 完整 DDL 能力声称为 Rust 已支持。

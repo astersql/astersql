@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 Dumpling 导出流水线的“任务协议层”：生产者把数据库、表、视图、序列、placement policy 的 DDL，或某个表数据分块，包装成任务；消费者再按任务种类选择具体写出路径。它属于 Cargo package `astersql-dumpling-export`，由 [`dumpling/export/lib.rs`](lib.rs) 的 `include!("task.rs")` 直接拼入 crate 根作用域，而不是独立的 Rust 子模块。因此，同一 crate 中的 `dump.rs`、`writer.rs` 和 `ir.rs` 可直接使用这里的类型以及 `TableMeta`、`TableDataIR` 等相邻文件定义的协议。
-
-对应的 Go 源文件是 [`dumpling/export/task.go`](task.go)。本文件不是门面或生成代码，也不执行查询或文件 I/O；它只承载任务数据、统一摘要接口以及静态分发枚举。crate 的边界和依赖由 [`dumpling/export/Cargo.toml`](Cargo.toml) 确认；本文件自身只直接依赖 crate 内 `ir.rs` 的两个 trait 和 Rust 标准库的 `String`、`Box`。
+各结构体的 `Task::Brief` 实现产生与 Go 版本一致的日志/进度摘要。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@ crate 层面，`lib.rs` 先公开 `stubs.rs`，随后依次 `include!` `prepare.
 
 ## 与 Go 版本的对应关系
 
-[`task.go`](task.go) 的 `Task` 接口、六个结构体、六个构造函数和六种 `Brief` 格式在 Rust 中均有直接对应。字段含义和摘要文本保持一致，包括 `dababase` 拼写以及数据摘要的零基分块值。Rust 的 `impl Into<String>` 比 Go 的 `string` 参数多接受了可转换的所有权形式，但落入结构体后仍是拥有的 `String`。
+Rust 的 `impl Into<String>` 比 Go 的 `string` 参数多接受了可转换的所有权形式，但落入结构体后仍是拥有的 `String`。
 
 主要语言映射差异如下：
 
@@ -104,16 +102,3 @@ Go 版 `dumpDatabases` 还包含更丰富的取消、collation 调整和部分�
 调整现有任务字段时，应同时核对 `dump.rs::dumpDatabases`/`newTaskTableData` 的构造参数与 `writer.rs::handleTask` 的消费方式。修改 `TaskTableData` 时还要同步 `ir.rs` 的 `TableMeta`、`TableDataIR` 合约、分块文件命名和最后一块回调规则。不要把 Rust 测试内嵌到本源文件；应扩展同目录独立的 `parity_test.rs` 或 `writer_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] #[path = ...]` 声明挂载。
 
 建议补充的回归点包括：六种 `Brief` 全覆盖、`TaskEnum::Brief` 委派、空字符串与特殊字符格式、分块 `(0, 1)` 和多块边界、每个枚举变体到正确 writer 方法的映射。若打算修正 `dababase`、改变零基展示、扩大整数宽度或开放外部自定义任务，需明确评估日志兼容、Go 对齐、文件命名和通道 API 的破坏性影响。性能方面，本文件主要成本是字符串拥有与每次 `Brief()` 分配；避免在高频路径无必要地反复生成摘要。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标文件已索引；`files --filter dumpling/export` 确认 Rust/Go 实现及相邻独立测试均在图中。
-- RustCodeGraph `node --file dumpling/export/task.rs`：核对了 190 行完整源码、23 个索引符号以及 `dump.rs`、`writer.rs`、`parity_test.rs`、`writer_test.rs` 四个直接使用文件。
-- RustCodeGraph `query/node/callers/callees`：确认 `dump.rs::dumpDatabases -> NewTask* -> TaskEnum`、`Dumper::newTaskTableData -> NewTaskTableData`，以及 `Writer::handleTask -> Write*` 的调用边；`NewTaskTableData` 还由 `writer_test.rs` 直接调用。
-- [`dumpling/export/Cargo.toml`](Cargo.toml) 与 [`dumpling/export/lib.rs`](lib.rs)：确认 library crate 边界、`include!` 组织方式、没有 task 专属 feature，以及独立测试模块的挂载位置。
-- [`dumpling/export/ir.rs`](ir.rs)：确认 `TableMeta: Send + Sync` 和 `TableDataIR: Send` 的方法、可变性与资源协议。
-- [`dumpling/export/dump.rs`](dump.rs) 与 [`dumpling/export/writer.rs`](writer.rs)：核对任务创建顺序、MPSC 载荷、发送错误、六路写出分发、IR 生命周期和最后一块回调。
-- [`dumpling/export/task.go`](task.go) 与 [`dumpling/export/writer.go`](writer.go)：逐项核对 Go 的字段、构造函数、摘要文本、动态 type switch 以及未知任务分支。
-- [`dumpling/export/parity_test.rs`](parity_test.rs)：`contract_normal` 固定数据库、表、policy 的摘要，包含 `dababase` 兼容拼写。
-- [`dumpling/export/writer_test.rs`](writer_test.rs)：`test_handle_task_runs_table_callback_only_for_last_chunk` 证明两块任务均被处理，但整表回调只在第二块触发。同目录未发现 `task_test.rs`；任务协议的现有 Rust 回归分散在上述两个独立测试文件中。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前另以指定 shell 命令验证目标文件存在且恰好包含十一个固定二级标题，并人工复核文档没有把上游/下游行为误写成本文件自身实现。

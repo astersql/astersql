@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-cmd-importer` crate；crate 根在 [`cmd/importer/lib.rs`](lib.rs) 以 `pub mod parser` 暴露它，二进制入口 [`cmd/importer/bin_main.rs`](bin_main.rs) 经 crate 根转入 [`cmd/importer/main.rs`](main.rs)。主流程 `run_with_args` 依次调用 `newTable`、`parseTableSQL`、`parseIndexSQL`，先把配置中的建表/建索引 SQL 转成 importer 专用的轻量表视图，再加载统计信息、执行真实 DDL 并启动造数任务。因此本文件位于“命令配置输入”与“统计加载/INSERT 生成”之间，不是通用 SQL parser。
-
-[`cmd/importer/Cargo.toml`](Cargo.toml) 将该目录声明为同时具有 library 和 `astersql-cmd-importer` binary 的独立 crate，移植元数据指向 Go 包 `cmd/importer`，并明确采用本地 stubs 避免引入完整 TiDB 重依赖。源码直接使用 `regex::Regex`，但当前清单的显式依赖仅列出 `toml`、`serde_json`；本任务按要求未运行 Cargo，故这里只记录清单事实，不声称该依赖配置已通过独立编译验证。
+同步构造 `TableInfo`、有序列列表以及普通/唯一索引映射，供 [`cmd/importer/stats.rs`](stats.rs) 查直方图、[`cmd/importer/db.rs`](db.rs) 生成列值和 INSERT SQL。
 
 ## 核心职责
 
@@ -91,7 +89,7 @@ RustCodeGraph 的文件节点显示 `parser.rs` 被 `main.rs`、`parser_test.rs`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`cmd/importer/parser.go`](parser.go)。类型和流程基本逐项映射：Go `column/table` 对应 Rust 同名结构；Go `parseRule`、`parseColumnComment`、`parseColumnOptions`、`parseTableConstraint`、`parseTable(SQL)`、`parseIndex(SQL)` 均有对应实现；规则键、错误文本意图、列顺序和空 index SQL 行为保持一致。
+类型和流程基本逐项映射：Go `column/table` 对应 Rust 同名结构；Go `parseRule`、`parseColumnComment`、`parseColumnOptions`、`parseTableConstraint`、`parseTable(SQL)`、`parseIndex(SQL)` 均有对应实现；规则键、错误文本意图、列顺序和空 index SQL 行为保持一致。
 
 关键实现差异：
 
@@ -112,11 +110,3 @@ RustCodeGraph 的文件节点显示 `parser.rs` 被 `main.rs`、`parser_test.rs`
 - 改善错误恢复：当前 comment 数值错误是 fatal/panic；若改为 `Result` 会改变 Go 可观察契约及多个签名，不能仅在局部吞错。
 - 若复用同一 `table` 多次解析：先决定是否应清空索引映射并添加回归测试；当前只重置列，不重置索引。
 - 修改后应优先扩展同目录独立测试文件 `parser_test.rs`，并保留 `parity_test.rs` 中正常、边界、错误主链对照；本仓库规则禁止把 Rust 单元测试放回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter cmd/importer` 确认目标及 Go/Rust 对照文件；`node --file cmd/importer/parser.rs` 读取完整 412 行并显示使用方；`query` 定位 `parseTableSQL`、`parseIndexSQL`、`parseIndex`、`parse_one_stmt`、`build_table_info_from_ast`、`fatal`；相邻 Rust 文件通过 `node --file` 核验。
-- 生产与配置：[`cmd/importer/parser.rs`](parser.rs)、[`cmd/importer/lib.rs`](lib.rs)、[`cmd/importer/main.rs`](main.rs)、[`cmd/importer/bin_main.rs`](bin_main.rs)、[`cmd/importer/Cargo.toml`](Cargo.toml)、[`cmd/importer/stubs.rs`](stubs.rs)、[`cmd/importer/data.rs`](data.rs)、[`cmd/importer/db.rs`](db.rs)。
-- Go 对照：[`cmd/importer/parser.go`](parser.go)；逐项核验结构、规则、解析顺序、索引分类、错误与空输入行为。
-- 独立测试：[`cmd/importer/parser_test.rs`](parser_test.rs) 验证 set 调试格式和缺失列 nil 语义；[`cmd/importer/parity_test.rs`](parity_test.rs) 验证类型、`IF NOT EXISTS`、comment 规则、列列表、唯一索引、空索引 SQL、非法语句及表名不匹配；[`cmd/importer/stats_test.rs`](stats_test.rs) 验证 `tblInfo` 可供统计恢复使用。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证命令及结果在任务交付时记录。

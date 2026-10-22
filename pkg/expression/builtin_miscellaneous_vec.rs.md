@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。`pkg/expression/Cargo.toml` 将 crate 根指定为 `lib.rs`；`lib.rs:243-244` 以 `builtin_miscellaneous_vec_kernel` 私有模块名装入本文件，并在 `cfg(test)` 下通过 `builtin_miscellaneous_vec` 重导出，供独立测试使用（`lib.rs:789-791`）。
-
-它是 Go `pkg/expression/builtin_miscellaneous_vec.go` 的 Rust 列式算法层：输入通常是 `&[Option<T>]`，输出保持相同行序并以 `Option` 表示 SQL NULL。当前生产接线并不等于 Go 文件的完整 `vecEval*` 框架：RustCodeGraph 的调用证据表明，`builtin.rs::CoreBuiltin::evalInt` 的 `CoreBuiltinKind::Sleep` 分支会调用 `vec_sleep`；其余公开列函数在当前索引中主要由 `builtin_miscellaneous_vec_17_aster_unit_test.rs` 和 `builtin_miscellaneous_vec_test.rs` 调用。因此，本文件既包含已接线的 SLEEP kernel，也包含可供后续表达式签名委托的、经过独立测试的迁移算法。
+SLEEP：`vec_sleep` 按行处理休眠、严格错误/宽松 warning、kill 轮询及中断后剩余行填 `1`；`SleepSession` 保存本实现所需的最小会话状态。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ UUID v1/v4/v7 的时间/随机源以及标准库 IP 解析均由依赖库管理�
 
 ## 与 Go 版本的对应关系
 
-Go 对照主文件为 `pkg/expression/builtin_miscellaneous_vec.go`，标量/函数类与更多边界测试位于 `builtin_miscellaneous.go`、`builtin_miscellaneous_test.go`，向量测试位于 `builtin_miscellaneous_vec_test.go`。
-
 - Rust 的 `VECTORIZED_SIGNATURES` 对应 Go 文件内 32 个返回 `true` 的 `vectorized()` 方法；泛型 `vec_any_value`/`vec_name_const` 合并了 Go 按 JSON、Real、String、Decimal、Duration、Int、Time 分开的 `vecEval*` 方法。
 - IP 算法保留 Go 的 NULL、非法值、缩写 IPv4、mapped/compat 前缀与文本格式语义；Rust 使用 `std::net` 代替 Go `net.ParseIP` 的缓冲区写入过程。
 - UUID 生成对应 Go `uuid.NewUUID`、`NewRandom`、`NewV7`；解析兼容 google/uuid 的已测试形式。时间戳仍只对 v1/v6/v7产生值，Rust 以 `DecimalSeconds` 的整数微秒替代 Go `MyDecimal`。
@@ -92,13 +88,3 @@ Go 对照主文件为 `pkg/expression/builtin_miscellaneous_vec.go`，标量/函
 - 修改 UUID 时同时回归裸 32 位十六进制、连字符、URN、38 字节包装、首尾空白、v1/v6/v7 时间戳、16 字节约束和双向 swap；不要破坏 `DecimalSeconds` 的微秒精度。
 - 修改 SLEEP 时必须保留严格/宽松模式、浮点溢出、kill 轮询、普通 SELECT 复位和有副作用语句保留 kill 的不变量；将其接入真实会话时应替换/桥接 `SleepSession`，而不是另造一套未同步的状态。
 - 性能方面，当前通用接口会为结果列和多数字符串逐行分配；若接入真正的批量执行器，应复用 chunk/column 缓冲区，但必须保持本文件已验证的行为。SLEEP 是有意的同步阻塞路径，不宜在普通计算线程池中无界并发。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；精确 `query` 定位了 `vec_sleep`、`vec_uuid_to_bin`、`SleepSession`、`vec_inet_aton`。
-- RustCodeGraph `node vec_sleep`：确认其调用 `do_sleep`、构造 `SleepOutcome`，生产调用者为 `builtin.rs::evalInt`，测试调用者为两个独立 Rust 测试文件。
-- RustCodeGraph `node vec_uuid_to_bin`：确认其调用 `validate_flags_len`、`wrong_value`、`swap_binary_uuid`；调用者仅见独立测试。`node vec_uuid_timestamp`、`vec_bin_to_uuid`、`vec_vitess_hash`、`vec_inet6_aton` 进一步核对了内部边和当前测试侧调用状态。
-- 完整阅读：`pkg/expression/builtin_miscellaneous_vec.rs`、`pkg/expression/Cargo.toml`、`pkg/expression/builtin_miscellaneous_vec_test.rs`；读取模块接线 `pkg/expression/lib.rs` 与生产委托 `pkg/expression/builtin.rs` 的相邻代码。
-- Go 对照：`pkg/expression/builtin_miscellaneous_vec.go`、`pkg/expression/builtin_miscellaneous_vec_test.go`，并检索 `pkg/expression/builtin_miscellaneous.go`、`pkg/expression/builtin_miscellaneous_test.go` 的对应函数与边界测试。
-- 扩展测试证据：`pkg/expression/builtin_miscellaneous_vec_17_aster_unit_test.rs` 覆盖 IP、UUID、透传、SLEEP、Vitess Hash 和签名清单；`builtin_miscellaneous_vec_test.rs` 覆盖冒烟路径与 Go `time.Duration` 溢出行为。
-- 结构验收使用任务指定命令，要求本文存在且固定二级标题恰好 11 个。本任务是纯文档分析，按计划不运行 Cargo 或代码测试。

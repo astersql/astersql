@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-taskexecutor` crate 的执行侧契约层。`lib.rs` 将 `interface` 声明为私有模块后用 `pub use interface::*` 公开其类型；同 crate 的 `manager.rs`、`slot.rs`、`task_executor.rs` 和 `register.rs` 分别消费这些契约，完成节点轮询、槽位分配、单任务执行和工厂注册。它位于 DXF（Distributed eXecution Framework）执行节点一侧：调度侧决定任务及步骤，本文件描述执行节点看到的任务数据、取消信号、持久化访问接口和业务扩展点，本身不实现轮询或数据库访问。
-
-`Cargo.toml` 将 crate 名定义为 `astersql-dxf-framework-taskexecutor`，Go 对照包为 `pkg/dxf/framework/taskexecutor`。当前正常构建依赖只有 `astersql-lightning-log`；大量未来依赖被放在 `target.'cfg(any())'`（恒假条件）下，说明当前 Rust crate 仍是聚焦移植边界，不能仅因 trait 存在就推断真实存储、会话或指标组件已经接入。
+提供最小基类：`BaseStepExecutor` 直接采用 `StepExecutor` 默认方法，适用于无需业务执行的占位或默认扩展，但不等于完整业务实现。
 
 ## 核心职责
 
@@ -90,18 +88,13 @@ slot 和内存配额只是逻辑预算，不在本文件中申请线程、内存
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/taskexecutor/interface.go`。核心分层一致：Go 的 `TaskTable`、`TaskExecutor`、`Extension` 和 `BaseStepExecutor` 分别对应 Rust 同名 trait/类型；`TaskExecutor` 的 manager/task/step 上下文树、两级取消、执行器关闭语义，及 `Extension` 的幂等、步骤工厂和瞬态错误判断均被保留。
-
 主要移植差异如下：
 
 - Go 复用 `proto.Task`/`proto.Subtask`/`proto.StepResource`、`storage.TaskExecInfo` 和 `execute.StepExecutor`；Rust 当前把这些基础模型及一个较小的 `StepExecutor` 契约直接放在本文件。另有 `taskexecutor/execute/interface.rs` 的执行管线接口，不能与本 trait 因同名而混淆。
-- Go `context.Context` 的取消通道、deadline/value 能力在 Rust 中缩减为轮询式父子取消和可选原因。
 - Go `TaskTable` 每个方法都必须由实现者提供；Rust 为渐进移植给大量方法提供默认值，降低了测试 fake 成本，也增加了生产实现遗漏覆盖却静默成功的风险。Rust 还增加了 `GetTasksInStates`、`AcquireTaskRuntime`、`UpdateSubtaskSummaryJSON` 等当前执行链需要的能力。
 - Go `WithNewSession` 把 `sessionctx.Context` 传给回调；Rust 当前回调无会话参数且默认原地执行，所以不能声称已经等价提供独立数据库会话。
 - Go `BaseStepExecutor` 嵌入 `execute.StepExecFrameworkInfo`；Rust `BaseStepExecutor` 是零字段 no-op 类型，不携带该框架信息。
 - Rust 额外暴露 `RealtimeSummaryJSON` 以持久化重试累计等完整计数；Go 同路径接口仅展示 `RealtimeSummary`。
-
-Go 回归证据集中在 `task_executor_test.go`（步骤工厂、幂等恢复、取消、修改和错误分支）、`task_executor_testkit_test.go`（真实执行流程）以及 `slot_test.go`（任务排序/slot 行为）。Rust 对应独立测试是同目录的 `task_executor_test.rs`、`task_executor_testkit_test.rs`、`manager_test.rs`、`slot_test.rs` 和 `register_test.rs`，符合测试逻辑不内嵌生产源文件的仓库约束。
 
 ## 扩展指南
 
@@ -112,12 +105,3 @@ Go 回归证据集中在 `task_executor_test.go`（步骤工厂、幂等恢复�
 新增 `TaskTable` 实现时，应把默认方法视为待办清单：尤其要覆盖所有会改变 durable state 的方法，并验证 exec ID 所有权条件、状态机条件和失败原子性。`WithNewSession` 若用于真实存储，必须提供隔离的新会话语义；不要沿用默认直接回调后声称具备 Go 等价性。
 
 修改状态、排序或资源公式时，要同步检查 `slot.rs`、`manager.rs` 和 `task_executor.rs` 的分支，并更新同目录独立测试。兼容风险包括持久化状态值与 Go 不一致、错误字符串改变分支、默认 no-op 掩盖数据丢失；性能风险包括取消轮询延迟、父链递归、过多监测线程、频繁加锁和浮点资源换算。任何 Rust 行为调整都应以 Go 文件及 Go 测试为基准，不为通过局部测试删减语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点，目标目录已索引；`files --filter pkg/dxf/framework/taskexecutor` 定位 29 个 Go/Rust 文件；`node --file pkg/dxf/framework/taskexecutor/interface.rs --offset 1 --limit 500` 完整读取 447 行并确认 96 个符号；`query` 精确确认四个 trait 位于本文件。对 trait ID 执行 `callers`/`callees` 未产生静态边，因此再用引用搜索核实真实消费点。
-- 生产源码：`pkg/dxf/framework/taskexecutor/interface.rs`（全部类型与默认实现）、`lib.rs`（模块装配与公开再导出）、`manager.rs`（任务发现与执行器生命周期）、`register.rs`（工厂类型）、`slot.rs`（`Compare` 消费点）、`task_executor.rs`（主循环、trait 调用、取消树、资源修改和清理顺序）、`pkg/dxf/example/task_executor.rs`（具体扩展示例）。
-- crate 边界：`pkg/dxf/framework/taskexecutor/Cargo.toml`（crate 名、Go 包映射、正常依赖与 `cfg(any())` 下尚未启用的依赖）。
-- Go 对照：`pkg/dxf/framework/taskexecutor/interface.go`（165 行完整接口及上下文树注释），以及 `task_executor_test.go`、`task_executor_testkit_test.go`、`slot_test.go` 的对应行为测试引用。
-- Rust 独立测试：`slot_test.rs::test_task_base_compare_uses_priority_then_create_time_then_id`；`task_executor_test.rs::test_cancel_running_subtask_propagates_to_step_context`、`test_is_retryable_error_delegates_to_extension`、`test_task_base_get_runtime_slots` 和完整摘要持久化测试；`manager_test.rs`、`register_test.rs`、`task_executor_testkit_test.rs` 的 trait fake 与生命周期覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证文档存在且恰好包含十一个固定二级标题，并人工复核所有“已支持”陈述均有上述源码或测试依据。

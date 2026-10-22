@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`，由同目录 `lib.rs` 以 `pub mod physical_indexlookup` 暴露。它描述本地索引回表（local index lookup）的一个轻量 Rust 表示：索引侧计划先产生行句柄，表侧计划再按句柄取完整行。直接依赖 `physical_common_plans.rs` 中的简化计划树类型，并通过 `kv`、`model` 和 `tipb` 编码存储类型、额外句柄列 ID 与下推协议。
-
-它目前不是 Go `PhysicalLocalIndexLookUp` 的完整 `base::PhysicalPlan` 移植。仓库中的说明和引用共同表明它仍是独立骨架：`physical_utils_test.rs` 明确说该类型尚未加入 `base::PhysicalPlan` 体系；RustCodeGraph 对本文件公开构建/拆分入口未找到生产调用者；现有非本文件引用集中在独立测试、计划缓存克隆和缓存快照。因而它当前服务于局部语义保存和缓存表示，而不是已经接入 SQL 优化、执行器构建的完整主链。
+`explain_info` 与 `memory_usage` 分别提供偏移说明和近似内存计量。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@ protobuf 对象完全在栈上的局部构造流程中创建后移交给调用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `physical_indexlookup.go`。两边一致的局部语义包括：公共句柄不写 offset；整数句柄从尾部跳过特殊负列，选择最后一个非负列或 `ExtraHandleID`；仅 TiKV 可编码 `TypeIndexLookUp`；EXPLAIN 输出句柄偏移；表侧计划重编号而索引侧保持原 ID。
-
 Rust 版本仍有重要结构差异。Go 类型嵌入 `PhysicalSchemaProducer`，通过 `Init` 注册为完整物理计划并从 table scan 设置 children/stats/schema；Rust 类型只持有简化 `PhysicalPlanNode`。Go `buildPushDownIndexLookUpPlan` 先克隆 table plan、调用 `detachRootTableScanPlan`，将 lookup 插入 Selection/Projection 等包装链的扫描位置；Rust `build_push_down_plan` 消费已有表计划，不克隆、不拆扫描，直接把整个表侧作为 lookup 第二个孩子。Go 还实现 `Clone`、nil 安全的 `MemoryUsage`，Rust 的缓存克隆在 `plan_clone_generated.rs` 中另行提供，计量公式也不完全等价。
 
-Go 的 `PhysicalLocalIndexLookUp` 已可作为 `base.PhysicalPlan` 用于 `FlattenTreePushDownPlan` 测试；Rust 对应测试明确改用 `PhysicalIndexLookUpReader`，证明本地 lookup 尚未完整接线。因此本文只把已由 Rust 代码/测试证明的局部行为称为“支持”，不推断其已进入生产 SQL 执行链。
+Go 的 `PhysicalLocalIndexLookUp` 已可作为 `base.PhysicalPlan` 用于 `FlattenTreePushDownPlan` 测试；Rust 对应测试明确改用 `PhysicalIndexLookUpReader`，证明本地 lookup 尚未完整接线。
 
 ## 扩展指南
 
@@ -80,13 +76,3 @@ Go 的 `PhysicalLocalIndexLookUp` 已可作为 `base.PhysicalPlan` 用于 `Flatt
 新增句柄类型或隐藏列时，应集中更新 `index_handle_offsets_for_schema`，并在独立的 `physical_indexlookup_test.rs` 增加正常、空 schema、分区隐藏列、公共句柄和错误路径用例。改变 protobuf 时同步验证 TiKV 正例、TiFlash 拒绝以及 tipb 字段；改变树改写时至少覆盖裸 Scan、一元包装链、分叉、非 Scan 叶子、ID 顺序和原索引侧不重编号。
 
 若字段布局或克隆规则变化，还必须同步 `plan_clone_generated.rs`、`cache_snapshot.rs`、`cache_snapshot_test.rs` 与 `lib.rs` 中的缓存契约。测试逻辑应继续放在独立 `*_test.rs` 文件，不嵌入生产源文件。性能风险主要是无谓深克隆和递归树遍历；兼容风险主要是句柄 offset、孩子顺序、计划 ID、schema/stats 与 Go 不一致。
-
-## 验证依据
-
-- 目标实现：`pkg/planner/core/operator/physicalop/physical_indexlookup.rs`，核对结构体、六个公开方法/函数与内部 `locate`。
-- 模块和 crate：`pkg/planner/core/operator/physicalop/lib.rs`、`Cargo.toml`，核对公开模块、测试模块、缓存契约及 `kv`/`model`/`tipb` 依赖。
-- 公共计划模型：`physical_common_plans.rs`，核对 `PhysicalKind`、`PhysicalPlanNode`、`Stats`、`reset_ids` 和递归内存计量。
-- Go 对照：`physical_indexlookup.go`，核对构建、拆扫描、offset、PB、EXPLAIN、内存和克隆语义；`physical_utils_test.go` 与 Rust 的 `physical_utils_test.rs` 证明两侧主计划体系的当前接线差异。
-- 独立 Rust 测试：`physical_indexlookup_test.rs` 覆盖解释文本、仅重编号表侧、非法 Scan 形状、分区/公共句柄和 TiKV/TiFlash；`cache_snapshot_test.rs` 覆盖缓存往返字段保持。
-- 缓存接线：`plan_clone_generated.rs`、`cache_snapshot.rs`，核对深克隆变体与快照捕获/恢复。
-- RustCodeGraph：索引状态为 11,467 文件、307,296 节点、1,848,419 边；查询识别 `PhysicalLocalIndexLookup`、`index_handle_offsets_for_schema`、`build_push_down_plan`、`explain_info`、`to_pb`、`memory_usage`、`detach_root_table_scan`/`locate`。对关键入口执行 callers/callees 后未发现生产调用者；其中泛型方法名的 callee 解析出现跨文件误匹配，故调用结论以直接引用和源码复核补强。

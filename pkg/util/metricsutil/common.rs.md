@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`common.rs` 是 `astersql-util-metricsutil` crate 的指标注册与 Keyspace 常量标签实现。crate 入口 `pkg/util/metricsutil/lib.rs` 以 `pub use common::*` 对外重导出本文件的公开 API；`pkg/util/metricsutil/Cargo.toml` 将 Go 对照包声明为 `pkg/util/metricsutil`，并列出配置、PD/Store 以及各子系统 metrics crate 依赖。
-
-它实现普通 `RegisterMetrics` 与 BR 的 `RegisterMetricsForBR`。冻结 TiDB/BR 启动仍通过各自 `stubs.rs`，尚未调用本文件完整注册流程；但 TiDB stub 在 Starter 模式已转发 `EnableKeyspaceIDGatherer`，并在存储初始化后把 codec 的数字 ID 经 `SetKeyspaceID` 转发到本实现。应区分完整注册未接线与采集标签局部接线，不能再笼统称为全部空实现。
+通过 `PdClient`/`PdClientFactory` 和 `SetPdClientFactory` 隔离网络实现，使独立 Rust 测试可验证 PD 参数、重试和关闭语义。
 
 ## 核心职责
 
@@ -104,17 +102,14 @@
 
 诊断模式 Go 向 PD 客户端附加 `diagclient.PDClientOption()`；Rust 则先装共享 RPC guard。Rust 注释说明此 metrics 客户端涉及 GetMembers/LoadKeyspace 白名单，但完整 BR 启动仍走 stub，不能据函数内部守卫声称所有 BR 注册已受该入口保护。
 
-Rust `common.rs` 以 `pkg/util/metricsutil/common.go` 为直接对照，保留了主要分支和顺序：NextGen 的 `keyspace_name`、BR 的空 Keyspace 快速路径、TLS 选项、PD 超时与禁用 PD 自身 metrics、特定错误重试、`keyspace_id` 注入、observability 标签合并、子系统 `InitMetricsVars` 顺序以及 UniStore 条件注册。
-
 主要差异如下：
 
 - Go 直接使用 `pd.Client`、`task.TLSConfig`、`keyspacepb.KeyspaceMeta` 和 `util.RunWithRetry`；Rust 为了可测性定义本地 TLS/security/meta/error 类型、PD trait 和可注入 sleep 的重试函数。
 - Go `defer pdCli.Close()` 在建客户端后立即安排关闭；Rust 在组合 `Result` 后显式 `Close` 再返回。对当前普通成功/错误路径语义一致，但 panic 安全性不同。
 - Go `maps.Copy` 与 Rust `HashMap::extend` 都是后来的 observability 标签覆盖同键基础标签。Go map 迭代顺序不定；Rust 在展平前按键排序，多了确定性。
-- Go 通过 `metrics.InitMetrics()` 和 `metrics.RegisterMetrics()` 初始化中央 collector。Rust 注释说明 metrics 已拆分到 owner crates，因此用 `initParentMetricsCollectors` 逐个初始化本地父 collector，并为 RCCheckTS counter 手工补齐一次性构造。
 - Go 的 Starter gatherer 包装 `prometheus.DefaultGatherer`；Rust 通过 `metricscommon::GatherMetrics` 处理采集快照，并由 TiDB stub 局部转发启用与 ID 设置。两条完整注册主链仍使用 stub，BR stub 依旧恒返回成功。
 
-Go `common_test.go` 包含 observability 标签合并和 gatherer 相关回归；Rust 新增快照采集标签测试。Rust `common_test.rs` 除对齐该用例外，还覆盖 TLS 启用判定、生产工厂存在性、PD 建连参数、两类可重试错误、非预期错误立即返回、建连失败、客户端关闭及退避序列。
+Go `common_test.go` 包含 observability 标签合并和 gatherer 相关回归；Rust 新增快照采集标签测试。
 
 ## 扩展指南
 
@@ -125,12 +120,3 @@ Go `common_test.go` 包含 observability 标签合并和 gatherer 相关回归�
 - 改动客户端生命周期时，同时验证成功、查询失败、工厂失败三条路径。如将显式 `Close` 改为 RAII，需保持 Go `defer` 所覆盖的早退出语义。
 - 将本实现真正接入 TiDB/BR Rust 主链是另一个接线任务：需替换 `cmd/tidb-server/stubs.rs` 和 `br/cmd/br/stubs.rs` 的同名模块，并处理 BR `task::TLSConfig` 与本地 `TlsConfig` 的类型边界。不应在单独修改本文件时声称主链已接通。
 - Rust 测试必须继续保持在独立 `pkg/util/metricsutil/common_test.rs`，不要内嵌回生产源文件。涉及全局配置、工厂或常量标签的新测试应使用现有 `TEST_LOCK` 和 reset/restore guard，避免并行污染。
-
-## 验证依据
-
-- 冻结实现、依赖和装配：`common.rs`、`Cargo.toml`、`lib.rs`，以及 `pkg/metrics/common/wrapper.rs` 的开关、ID 和采集 helper。
-- 冻结 `cmd/tidb-server/main.rs` 存储初始化后的 `metricsutil::SetKeyspaceID(codec.GetKeyspaceID())` 与 `stubs.rs::metricsutil` 证明局部转发；BR `backup.rs`/`restore.rs` 仍指向 `br/cmd/br/stubs.rs` 空注册。
-- 独立 `common_test.rs::test_keyspace_id_labels_every_gathered_metric_and_preserves_existing_values` 覆盖早/晚注册、未知 ID 空值、已有 43 保留、新值 42、无重复标签、排序与四线程 gather；原有 PD 工厂、重试、TLS、关闭测试继续作为边界证据。Go 对照为 `common.go`、`common_test.go`。
-- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/metricsutil/common.rs` 审计增量，并以 `git show 2c944fb:pkg/util/metricsutil/common.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
-- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
-- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-sessionctx-variable` crate，由 `pkg/sessionctx/variable/lib.rs` 以 `pub mod sequence_state` 公开。它实现一个会话级的 SEQUENCE 最近值缓存，目标语义是按 sequence ID 记录最近一次 `NEXTVAL` 的结果，供 `LASTVAL` 和会话状态迁移使用。crate 边界由 `pkg/sessionctx/variable/Cargo.toml` 定义；本文件自身只依赖 Rust 标准库的 `HashMap` 与 `Mutex`，不直接使用该 manifest 中的外部依赖，也没有 feature 条件编译。
-
-需要区分模块能力和当前接线状态：全仓 Rust 引用中，生产代码只有 `lib.rs` 的模块声明；直接调用 `NewSequenceState` 及其方法的是独立测试 `pkg/sessionctx/variable/error_1_aster_unit_test.rs::sequence_state_is_concurrent_and_copies_state`。当前 Rust 表达式实现 `pkg/expression/builtin_info.rs` 使用另一份 `SessionInfo.sequence_state: HashMap<i64, i64>`，其 `next_val`/`last_val` 直接读写该 map，尚未接入本文件的 `SequenceState`。
+实现一个会话级的 SEQUENCE 最近值缓存，目标语义是按 sequence ID 记录最近一次 `NEXTVAL` 的结果，供 `LASTVAL` 和会话状态迁移使用。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ Go 对照链路是完整的：`pkg/sessionctx/variable/session.go::NewSessionVar
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/sessionctx/variable/sequence_state.go`。字段布局和四个方法的核心语义一致：两者都以单 mutex 保护 `map[int64]int64`/`HashMap<i64, i64>`；`UpdateState` 覆盖单值；`GetLastValue` 用第二返回值表达缺失；`GetAllStates` 返回副本；`SetAllStates` 使用复制合并且不移除输入中缺失的键。
-
 可见差异有三点。第一，Go `NewSequenceState` 返回 `*SequenceState`，Rust 返回值类型，由上层决定是否装入 `Arc`。第二，Go 错误类型是 `error` 且当前返回 `nil`，Rust 用 `Option<String>` 模拟且当前恒为 `None`；它不是通用错误抽象。第三，Go 已把该对象作为 `SessionVars.SequenceState` 接入 `NEXTVAL`、`LASTVAL` 与会话状态编解码，Rust 本文件目前只导出模块并受单测覆盖；Rust 表达式层另用 `SessionInfo.sequence_state`。
 
-Go 的集成行为还由 `pkg/sessionctx/sessionstates/session_states_test.go` 中 `check SequenceState` 用例验证：状态迁移后 `LASTVAL` 仍为 1，继续 `NEXTVAL` 得到 2。对应的 Rust 文件 `pkg/sessionctx/sessionstates/session_states_test.rs` 当前保留了同形测试文本，但本文件没有被该测试引用；不能把它当成本模块已完成会话迁移接线的证据。
+对应的 Rust 文件 `pkg/sessionctx/sessionstates/session_states_test.rs` 当前保留了同形测试文本，但本文件没有被该测试引用；不能把它当成本模块已完成会话迁移接线的证据。
 
 ## 扩展指南
 
@@ -86,15 +82,3 @@ Go 的集成行为还由 `pkg/sessionctx/sessionstates/session_states_test.go` �
 若目标是接入生产 SQL 主链，需同步审查 `pkg/expression/builtin_info.rs::SessionInfo`、`next_val`、`last_val` 以及 Rust 会话状态编码/解码实现，保证 `NEXTVAL` 写入、`LASTVAL` 读取和会话迁移使用同一个状态对象。迁移时必须保留 Go 的权限检查顺序、NULL/缺失语义、合并恢复行为和独立会话隔离，并增加端到端 Rust 测试；不能仅删除表达式层 `HashMap` 或把本类型接到单一入口。
 
 兼容风险主要是改变 `GetLastValue` 三元组、把 `SetAllStates` 从合并改为替换、或使 mutex poisoning 从 panic 改成静默恢复。性能风险集中在锁竞争和全量 clone/extend；优化可考虑缩短临界区或批量 API，但应先用实际会话状态规模验证，且不能牺牲快照一致性。若引入可恢复错误，应使用 crate 的统一错误类型并同步 Go 对照调用契约，而不是继续扩张 `Option<String>`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标仓库已初始化。
-- RustCodeGraph `node --file pkg/sessionctx/variable/sequence_state.rs --offset 1 --limit 240`：读取目标文件全部 82 行，并确认符号、字段、签名和锁内实现。
-- RustCodeGraph `query SequenceState/NewSequenceState/GetLastValue` 与 callers/callees 查询：确认 Rust/Go 同名定义；调用边对 Go 风格大写方法未能可靠消歧，因此用全仓精确引用搜索补齐。
-- RustCodeGraph `node`：核对 `pkg/expression/builtin_info.rs::SessionInfo`、`next_val`、`last_val` 的独立 Rust 状态路径，以及 `pkg/sessionctx/variable/error_1_aster_unit_test.rs::sequence_state_is_concurrent_and_copies_state` 的测试行为。
-- 直接读取 `pkg/sessionctx/variable/Cargo.toml` 与 `lib.rs`：确认 crate 名称、无 feature 声明、模块公开方式和独立测试挂载位置。
-- 直接读取 `pkg/sessionctx/variable/sequence_state.go`、`session.go`、`pkg/expression/builtin_info.go`：确认 Go 数据结构、SQL 调用链和会话状态编解码接线。
-- 读取 `pkg/sessionctx/sessionstates/session_states_test.go` 与 `.rs` 的 `check SequenceState` 段落：确认 Go 会话迁移期望，并识别 Rust 测试文本不构成本模块调用证据。
-- `rg` 全仓 Rust 引用：除 `lib.rs` 和 `error_1_aster_unit_test.rs` 外未发现本模块调用者；因此文档将生产接线状态明确标为尚未接入，而未推断为已支持。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务指定命令验证目标文档存在且固定二级章节恰为 11 个。

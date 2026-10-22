@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`aggfuncs.rs`](./aggfuncs.rs) 是 `astersql-executor-aggfuncs` crate 的公共契约与聚合中间状态定义文件。crate 入口 [`lib.rs`](./lib.rs) 以 `pub mod aggfuncs` 声明并用 `pub use aggfuncs::*` 重新导出这里的 API；[`Cargo.toml`](./Cargo.toml) 的 `package.metadata.porting.go-package` 则把该 crate 明确对应到 Go 的 `pkg/executor/aggfuncs`。
-
-它位于 SQL 执行层的聚合边界：上游 hash/stream/window 执行逻辑持有按分组键组织的 partial result，下游具体函数模块负责 COUNT、SUM、AVG、MAX/MIN、FIRST_ROW 等状态的更新与求值。文件本身不解析 SQL，也不选择聚合函数；选择实现的工厂位于 [`builder.rs`](./builder.rs)，具体算法分散在同目录的 `func_*.rs` 中。
-
-当前 Rust 接线需要分两层理解：`AggFunc`/`Serializer` 定义通用契约，但仓库搜索到的显式 `AggFunc` 实现目前主要是 [`func_max_min_count.rs`](./func_max_min_count.rs) 的 `CountExtrema<T>`；已经落地的 typed spill 主链则通过本文件的 `BuiltAggFunc::spill_function`、`StateSerializer<T>` 和 `merge_spilled_partial_result` 工作。因此不能仅凭 trait 定义推断所有 Go 聚合实现都已统一接入该 trait。
+定义常用 partial-result 数据形状及内存计量常量，供具体函数模块共享，避免每种实现重复声明状态协议。
 
 ## 核心职责
 
@@ -93,18 +89,12 @@ spill helper 的可复用 buffer 属于传入的 `SerializeHelper`，序列化�
 
 ## 与 Go 版本的对应关系
 
-[`aggfuncs.go`](./aggfuncs.go) 是最近的权威对照。两端核心对应如下：
-
 - Go `PartialResult unsafe.Pointer` 对应 Rust `Box<dyn Any + Send>`：Rust 用拥有型类型擦除替代裸指针，代价是每次具体操作需要运行时 downcast。
 - Go `*hack.MemAwareMap[string, []PartialResult]` 对应 Rust boxed `MemAwareMap<String, Arc<Vec<PartialResult>>>`：Rust 用 `Arc` 明确共享 backing storage 的所有权。
-- Go `serializer`、`AggFunc`、`SlidingWindowAggFunc`、`MaxMinSlidingWindowAggFunc` 分别对应同名/同义 Rust trait；Go `AggFuncUpdateContext` 类型别名在 Rust 中直接表现为 `&dyn EvalContext` 参数。
 - `baseAggFunc` 的 `args`/`ordinal`/`retTp` 与 `BaseAggFunc` 的字段一一对应，且两端未实现的 merge/serializer 默认方法都会 panic。
-- `deserializePartialResultCommon` 与 Rust helper 都逐行恢复、累计内存并强制结果数等于 chunk 行数。
 - 大小常量保持同一目的；Rust 的 `DEF_INTERFACE_SIZE` 根据平台计算两个 `usize`，而 Go 代码固定为 16，二者在 64 位平台一致。
 
 Rust 文件 396 行之后的通用 `SpillState`、`StateSerializer`、`BuiltAggFunc::spill_function` 和 typed merge 并不是 `aggfuncs.go` 中逐段同形的声明，而是对 Go 各具体 `SerializePartialResult`/`DeserializePartialResult` 及 `aggregate/agg_spill.go::restoreFromOneSpillFile` 行为的集中式 Rust 接线。它保留“函数配置不落盘、只编码 partial data”“同键恢复后合并”和内存增量返回等意图，但当前支持矩阵是枚举白名单，不能等同于 Go 文件顶部列出的全部实现集合。
-
-测试对应上，[`aggfuncs_test.rs`](./aggfuncs_test.rs) 仅验证 `BaseAggFunc::return_type` 的可空契约和导出的真实 `FieldType`；Go 的 [`aggfunc_test.go`](./aggfunc_test.go) 及各 `func_*_test.go` 覆盖更完整的聚合语义。Rust typed spill 的主要行为证据实际位于 [`spill_helper_test.rs`](./spill_helper_test.rs) 和 [`aggregate/agg_spill_test.rs`](../aggregate/agg_spill_test.rs)。
 
 ## 扩展指南
 
@@ -121,13 +111,3 @@ Rust 文件 396 行之后的通用 `SpillState`、`StateSerializer`、`BuiltAggF
 如果新增 `SpillValue` 变体，必须同时更新其 `memory_usage`、`SerializeHelper` 的值分派和 `DeserializeHelper` 的对应解码；遗漏任一处都会形成无法往返或少计内存的协议不一致。修改 `PartialResult` 或 mapper 值所有权则会影响并行 worker 和内存追踪，应先搜索所有构造与传递点。
 
 兼容风险主要是 spill 格式和 Go/Rust 状态语义漂移；正确性风险主要是 downcast 类型矩阵不一致、NULL 状态丢失和 partial merge 非结合；性能风险主要是无意克隆大状态、按长度而非 capacity 记账以及 mapper/状态堆分配增加。
-
-## 验证依据
-
-- 目标源码：[`aggfuncs.rs`](./aggfuncs.rs)，完整读取 1–737 行；声明清单覆盖常量、类型别名、traits、通用状态、typed spill factory 与 merge。
-- crate/模块：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`builder.rs`](./builder.rs)。
-- 直接辅助与调用路径：[`spill_serialize_helper.rs`](./spill_serialize_helper.rs)、[`spill_deserialize_helper.rs`](./spill_deserialize_helper.rs)、[`aggregate/agg_hash_partial_worker.rs`](../aggregate/agg_hash_partial_worker.rs)。
-- Rust 测试：[`aggfuncs_test.rs`](./aggfuncs_test.rs)、[`spill_helper_test.rs`](./spill_helper_test.rs)、[`aggregate/agg_spill_test.rs`](../aggregate/agg_spill_test.rs)；观察到 round-trip、NULL percentile、并行 typed distinct spill/no-spill 对照、恢复合并等覆盖。
-- Go 对照：[`aggfuncs.go`](./aggfuncs.go)、[`aggregate/agg_hash_partial_worker.go`](../aggregate/agg_hash_partial_worker.go)、[`aggregate/agg_hash_final_worker.go`](../aggregate/agg_hash_final_worker.go)、[`aggregate/agg_spill.go`](../aggregate/agg_spill.go)、[`benchmark_test.go`](../benchmark_test.go)。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/executor/aggfuncs` 找到目标文件 108 个符号；`query` 精确定位 `PartialResult`（第 67 行）、`deserialize_partial_result_common`（第 201 行）、`spill_function`（第 460 行）、`merge_spilled_partial_result`（第 604 行）；`node --file ... --offset ...` 读取全文件并报告其被 12 个文件使用。精确 `callers`/`callees` 查询在 30 秒内无输出，因此调用边由 `rg` 与上述相邻文件补证。
-- 本任务为纯文档分析，按任务说明不运行 Cargo。交付前使用任务规定的命令验证本文恰有 11 个固定二级标题，并人工复核没有把 trait 契约、注释占位或 Go 完整实现列表误写成 Rust 已接线事实。

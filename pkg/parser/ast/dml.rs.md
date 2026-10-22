@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/ast/dml.rs` 是 `astersql-parser-ast` crate 中公开的轻量 DML AST 与 SQL 文本还原模块。crate 入口 `pkg/parser/ast/lib.rs` 通过 `pub mod dml` 暴露它，crate 边界由 `pkg/parser/ast/Cargo.toml` 定义；该文件自身只依赖 Rust 标准库，没有直接使用 Cargo 清单里的其他 parser crate 或第三方库。
-
-本文件不是完整的 DML 语句层：它只覆盖表名、索引 Hint、LIMIT、通配符、排序/分组项、窗口 Frame、结果集与 Join 等基础结构。`lib.rs` 中仍存在另一套字段名保持 Go 风格、实现 `Node`/`Visitor` 协议的完整 AST 类型。仓库搜索到的 `crate::dml::*`、`dml::TableName`、`dml::FrameClause`、`dml::Join` 等直接使用目前集中在 `pkg/parser/ast/dml_3_aster_unit_test.rs`、`pkg/parser/ast/dml_test.rs` 和 `pkg/parser/ast/go_merge_13_test.rs`；没有检出生产解析主链直接调用本模块的证据。因此，它当前应被理解为公开但尚未替代 crate 根完整 AST 的值语义移植面，而不是 SQL parser 的唯一 DML AST。
+将这些值还原为规范化 SQL 文本：`quote_name` 负责 MySQL 反引号转义，各类型的 `restore`/`try_restore` 负责固定关键字、空格、逗号和子节点顺序。
 
 ## 核心职责
 
@@ -123,21 +121,8 @@
 
 Go 权威对照是 `pkg/parser/ast/dml.go`，相关回归是 `pkg/parser/ast/dml_test.go`；Rust 独立测试位于 `pkg/parser/ast/dml_test.rs` 与 `pkg/parser/ast/dml_3_aster_unit_test.rs`。
 
-### 已保持的语义
-
-- `NewCrossJoin` 对应 Go 同名函数：保留显式括号作用域、沿右树最左叶插入，并在特定右连接节点上交换孩子改写为左连接。
-- 表名、分区与 Hint 的输出顺序一致；标识符内部反引号均成对转义。
-- `Limit` 保持 `LIMIT offset,count` 格式；通配符、Group/Order/Partition By 分隔符、Join 关键字及 `USING` 列分隔符与相关 Go 恢复测试一致。
-- `ByItem` 与 Go 一样忽略 `NullOrder`；`FrameClause` 与 Go 一样只接受 ROWS/RANGE 并拒绝 GROUPS。
-- `pkg/parser/ast/dml_test.rs` 的 `TestTableNameRestore`、`TestLimitRestore`、`TestWildCardFieldRestore`、`TestJoinRestore`、`TestByItemRestore`、`TestGroupByClauseRestore`、`TestOrderByClauseRestore`、`TestFrameBoundRestore`、`TestFrameClauseRestore`、`TestPartitionByClauseRestore` 镜像了 Go 测试意图。
-
 ### 有意或当前存在的表示差异
 
-- Go 节点嵌入 `node`、实现 `Node.Restore/Accept` 并持有真实 `ExprNode`、`ResultSetNode`、`OnCondition`、`ColumnName`；本文件使用字符串和小型枚举，不实现访问者协议。
-- Go `TableName` 还包括 `TableSample`、`AsOf`、`IsAlias`，并受 `RestoreCtx` 的默认库、CTE 与 flags 影响；轻量 `TableName` 只保留 schema/name/partition/hints。
-- Go `GroupByClause` 有 `Rollup`，`OrderByClause` 有 `ForUnion`；轻量子句不保存这些字段。
-- Go `FrameBound` 分开保存边界类型、`UnBounded`、表达式和时间单位；轻量枚举把已格式化表达式（包括 `INTERVAL ...`）作为字符串保存。
-- Go `Restore` 把子节点错误加上下文后传播；轻量接口大多返回 `String`，只为不支持的 Frame 类型保留 `Result`。
 - crate 根的同名完整 AST 与 `dml` 子模块类型是不同 Rust 类型，不能直接互换。新增功能前必须先决定改的是生产完整 AST、轻量迁移 API，还是两者都要同步。
 
 ## 扩展指南
@@ -150,25 +135,3 @@ Go 权威对照是 `pkg/parser/ast/dml.go`，相关回归是 `pkg/parser/ast/dml
 6. 修改 Join 树时保持 `right == None`、显式括号、嵌套 Join、Right-to-Left 改写和最左叶插入不变量；回归测试应放在独立文件 `pkg/parser/ast/dml_3_aster_unit_test.rs` 或 `pkg/parser/ast/dml_test.rs`，不要内嵌进 `dml.rs`。
 7. 性能敏感扩展应关注各 `restore` 中 `collect::<Vec<_>>().join(...)` 与递归字符串拼接带来的分配；优化时必须保持输出字节级兼容。
 8. 本任务仅分析文档，不改变 Rust 行为；若后续修改 Rust 源码，按仓库规则同步独立测试、运行 `cargo fmt --all`，并使用适用验证流程。
-
-## 验证依据
-
-### RustCodeGraph
-
-- `rustcodegraph status`：索引可用，包含 11,467 个文件、307,296 个节点、1,848,419 条边。
-- `rustcodegraph files --filter pkg/parser/ast/dml.rs`：目标文件已索引，报告 68 个符号。
-- `rustcodegraph node --file pkg/parser/ast/dml.rs --offset 1 --limit 420` 与 `--offset 421 --limit 220`：覆盖源文件全部 559 行，并列出 29 个引用该文件的索引文件。
-- `rustcodegraph node NewCrossJoin`：核对 Rust `pkg/parser/ast/dml.rs:525` 与 Go `pkg/parser/ast/dml.go:132` 两个定义及源码。
-- `rustcodegraph query TableName --kind struct`、`query Join --kind struct`、`query FrameClause --kind struct`：确认同名符号分布；`FrameClause` 查询同时定位完整 AST、轻量 AST、Go 实现和 Rust 测试。通用符号名的 callers/callees 查询产生歧义，因此未把模糊边当作生产调用证据。
-
-### 已阅读文件
-
-- 目标源码：`pkg/parser/ast/dml.rs`。
-- crate 边界与模块入口：`pkg/parser/ast/Cargo.toml`、`pkg/parser/ast/lib.rs`。目标目录无 `doc.go`，因此没有可读取的包级 Go 契约文件。
-- Go 对照：`pkg/parser/ast/dml.go`，重点核对 `Join`/`NewCrossJoin`、`TableName`、`IndexHint`、`WildCardField`、`ByItem`、Group/Order/Partition By、`Limit`、`FrameClause` 与 `FrameBound`。
-- Rust 独立测试：`pkg/parser/ast/dml_3_aster_unit_test.rs`、`pkg/parser/ast/dml_test.rs`，并通过仓库搜索确认 `pkg/parser/ast/go_merge_13_test.rs` 的 Full Join 直接用例。
-- Go 测试：`pkg/parser/ast/dml_test.go`，重点核对同名 Restore 测试和 Join 优先级用例。
-
-### 验证结论与限制
-
-人工复核确认本文说明了文件存在目的、构造与恢复流程、关键树改写、不变量、错误边界、迁移差异和安全扩展位置。按任务约束未运行 Cargo 或代码测试；本文记录的是源码、调用图和已有测试意图，不宣称本轮重新执行过测试。结构验证命令及退出码在任务交付时记录。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-infoschema-isvalidator` crate 的核心实现，crate 入口 `pkg/infoschema/isvalidator/lib.rs` 将它作为 `validator` 模块导出。它位于 InfoSchema 同步与事务提交之间：`pkg/infoschema/issyncer/syncer.rs` 在 reload、PD 重连和 schema 版本变化时维护校验器状态，`pkg/session/runtime/schema_validation.rs::SharedValidator` 则在提交前把事务时间戳、起始 schema 版本和相关物理表交给 `Validator::check`。
-
-该文件解决的是“事务仍能否安全使用开始时看到的 schema”这一问题。它不加载 InfoSchema，也不执行 DDL；它只保存最近的 schema 变更摘要和 lease 窗口，并输出 `ResultSucc`、`ResultFail` 或 `ResultUnknown`。接口契约来自 `pkg/infoschema/validatorapi/interface.rs::Validator`，具体数据来源和生命周期接线位于 `pkg/infoschema/issyncer/syncer.rs`。
+`VALIDATOR_METRICS` 与日志记录 stop/restart/reset、缓存空/缺失和 lease 到期时间；`snapshot` 与 `validator_metrics_snapshot` 提供只读诊断视图。
 
 ## 核心职责
 
@@ -103,9 +101,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/infoschema/isvalidator/validator.go`，Rust 基本保留其字段、判定顺序和日志意图：
-
-- Go `validator` / `deltaSchemaInfo` 对应 Rust `Validator` / `DeltaSchemaInfo`；`sync.RWMutex` 对应 `RwLock<ValidatorState>`。
 - Go `New` 返回 `validatorapi.Validator`，Rust同时提供 `new -> Box<Validator>` 和 `Validator::new`，并通过 trait impl 保留 Go 风格方法名。
 - Go `oracle.GetTimeFromTS` 对应 `time_from_ts`；Rust额外提供反向转换和可测试的 Unix 秒转换。
 - Go slice 的 nil/empty 差异由 Rust `Option<&[i64]>` 明确编码，这是 `check` 行为正确的关键兼容点。
@@ -125,13 +120,3 @@
 - 若要返回实际 `RelatedSchemaChange`，需同步 `validatorapi`、`SharedValidator` 的映射、domain 错误载荷和 Go 对照；当前测试大多只断言三态，必须新增负载断言。
 - 性能优化应关注读锁内三重扫描、队首 `Vec::remove(0)` 的移动成本和锁内日志，但任何索引化/容器替换都要保持版本顺序、重复项和 `-1` 通配语义。
 - 测试必须继续放在独立文件。Go 对照回归更新 `validator_test.go`；Rust Go 风格端口更新 `validator_test.rs`；Rust 特有边界与迁移一致性更新 `migration_aster_unit_test.rs`。不要把测试内嵌到 `validator.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，目标目录中的 `validator.rs`、`validator_test.rs`、`migration_aster_unit_test.rs`、`lib.rs` 及 Go 对照均已索引。
-- 目标实现：`pkg/infoschema/isvalidator/validator.rs`，重点核对了 `Validator::{new, stop, restart, reset, update, check, is_related_tables_changed_locked, find_newer_deltas, enqueue_locked}`、`contain_in`、时间转换与 trait impl。
-- crate/API：`pkg/infoschema/isvalidator/Cargo.toml`、`pkg/infoschema/isvalidator/lib.rs`、`pkg/infoschema/validatorapi/interface.rs`。
-- 生产调用链：`pkg/infoschema/issyncer/syncer.rs::{SyncLoop, ReloadWithContext}`、该文件对 `astersql_infoschema_isvalidator::Validator` 的适配实现、`pkg/session/runtime/schema_validation.rs::{SharedValidator, checker}`、`pkg/domain/schema_checker.rs::SchemaChecker`。
-- Go 对照：`pkg/infoschema/isvalidator/validator.go::{New, Update, Check, enqueue, containIn}`。
-- 测试证据：`pkg/infoschema/isvalidator/validator_test.go`、`pkg/infoschema/isvalidator/validator_test.rs`、`pkg/infoschema/isvalidator/migration_aster_unit_test.rs`。其中独立 Rust 测试验证后台 lease 模拟、生命周期与队列行为，迁移测试补充 MDL、nil/empty、零 lease、时间边界和 trait 契约。
-- 本任务为纯文档分析，按任务要求未运行 Cargo。结构验证要求本文恰有十一个规定的二级标题；链接、符号名和行为陈述均以上述源码及 RustCodeGraph 节点/调用流人工复核。

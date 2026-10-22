@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-chunk` crate。crate 入口 `pkg/util/chunk/lib.rs` 通过 `#[path = "iterator.rs"] pub mod iterator` 挂载它；`pkg/util/chunk/Cargo.toml` 指定该 crate 的入口为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/util/chunk"` 记录 Go 来源。文件本身不直接引入第三方 crate，而是在 crate 内组合 `Chunk`、`Row`、`List`、`RowPtr`、`RowContainer` 与统一的 `ChunkError`。
-
-它位于列式数据容器和上层 SQL 逻辑之间：把 `Chunk` 或由多个 `Chunk` 组成的容器统一成 Go 风格的行游标。当前可核实的生产 Rust 调用包括 `pkg/planner/cardinality/selectivity.rs` 中对 `chunk::NewIterator4Chunk` 的三处使用；`pkg/planner/cardinality/lib.rs` 对该构造器进行再导出。部分 executor 文件只保留了对应 Go 调用的迁移注释，因此不能据此认定那些路径已经接线。
+定义对象安全的 `Iterator` trait，以 `Begin`、`Next`、`Current`、`End`、`ReachEnd`、`Len`、`Error` 统一六类行源。
 
 ## 核心职责
 
@@ -66,11 +64,9 @@ RustCodeGraph 的文件节点显示 `pkg/util/chunk/iterator.rs` 被 19 个索�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐类对应 `pkg/util/chunk/iterator.go`：trait 对应 Go interface，五个具体数据源迭代器和 `multiIterator` 的游标转移、空行哨兵、长度计算、`Current`、`ReachEnd` 与错误传播顺序保持一致。`pkg/util/chunk/iterator_test.go` 的 `TestIteratorOnSel`、`TestMultiIterator`、`TestIterator` 分别在 Rust 的 `iterator_test.rs` 和 `iterator_3_aster_unit_test.rs` 中得到对应覆盖。
+语言层差异主要来自所有权与类型：Go 使用指针/切片和可空 `error`，Rust 构造器接收 `Box`/`Vec` 并返回具体 `Box` 或 `Box<dyn Iterator>`，错误为 `Option<ChunkError>`；Go 的 `int`/`int32` 游标在 Rust 中是 `usize`，RowContainer 为表示 `-1` 起始位单独使用 `isize`。Go `NewMultiIterator` 是可变参数，Rust 接收 `Vec<Box<dyn Iterator>>`；Go 保存 `curIter` 接口值，Rust 以 `curPtr` 直接索引 `iters`。
 
-语言层差异主要来自所有权与类型：Go 使用指针/切片和可空 `error`，Rust 构造器接收 `Box`/`Vec` 并返回具体 `Box` 或 `Box<dyn Iterator>`，错误为 `Option<ChunkError>`；Go 的 `int`/`int32` 游标在 Rust 中是 `usize`，RowContainer 为表示 `-1` 起始位单独使用 `isize`。Go `NewMultiIterator` 是可变参数，Rust 接收 `Vec<Box<dyn Iterator>>`；Go 保存 `curIter` 接口值，Rust 以 `curPtr` 直接索引 `iters`。Rust 的 `Begin` 还显式清理 RowContainer 和 multiIterator 的旧错误，避免复用时泄漏前一轮状态。
-
-Go 的 `Iterator4Chunk::ResetChunk` 同样只替换 Chunk；Rust 额外提供 `Reset` 和 `GetChunkMut`。Rust 通过 `Box` 保持 Chunk 地址稳定，因为 `Row` 内含原始 Chunk 指针；这是内存模型上的必要适配，而非业务语义变化。
+Go 的 `Iterator4Chunk::ResetChunk` 同样只替换 Chunk；Rust 额外提供 `Reset` 和 `GetChunkMut`。
 
 ## 扩展指南
 
@@ -79,11 +75,3 @@ Go 的 `Iterator4Chunk::ResetChunk` 同样只替换 Chunk；Rust 额外提供 `R
 修改 Chunk 迭代时优先检查 `Iterator4Chunk::{Begin, Next, Current, Reset, ResetChunk}` 之间的快照约定及 selection-vector 行映射；修改跨块逻辑时检查 `iterator4List::{Begin, Next, Current}` 和 `iterator4RowContainer::{setNextPtr, Next, Current}` 的块边界；修改组合行为时检查 `NewMultiIterator` 的空项过滤、缓存长度以及 `multiIterator::{Begin, Next, Current, Error}` 的错误短路。
 
 测试必须继续放在独立文件，不能嵌入 `iterator.rs`。至少同步 `pkg/util/chunk/iterator_test.rs`；若保持 Go 对齐，还要核对 `pkg/util/chunk/iterator_test.go`。涉及通用迭代器回归时也应同步检查 `pkg/util/chunk/iterator_3_aster_unit_test.rs`。新增测试应覆盖空输入、单行/跨块末端、重复 `Begin`、`Current` 的开始前与结束后状态、`ReachEnd`、selection vector、无效 RowPtr 的预期策略，以及可失败子迭代器在 `multiIterator` 中的错误短路。兼容性风险集中在哨兵等价、游标 off-by-one 和 Go/Rust 重启语义；性能风险集中在额外 Row 克隆、重复 `Len`/锁调用和破坏 Chunk 稳定地址。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 7,032 个 Rust 文件，`files --filter pkg/util/chunk` 找到目标及相邻实现；`node --file pkg/util/chunk/iterator.rs --offset 1 --limit 500` 完整读取 492 行和 70 个符号；`query Iterator`、`query Iterator4Chunk` 用于消歧；`node NewIterator4Chunk`、`node NewMultiIterator`、`node NewIterator4RowContainer` 提供定义、下游 `Len` 调用和测试调用边。批量 `callers/callees` 查询曾在 30 秒窗口内未返回，因此生产调用以精确源码搜索补齐，没有把超时结果当作“无调用者”。
-- 源码与 crate 边界：`pkg/util/chunk/iterator.rs`、`pkg/util/chunk/lib.rs`、`pkg/util/chunk/Cargo.toml`。
-- 直接数据依赖：`pkg/util/chunk/chunk.rs` 的 `NumRows`/`GetRow`/`SetSel`，`pkg/util/chunk/row.rs` 的 `Row::default`/`IsEmpty` 与生命周期说明，`pkg/util/chunk/list.rs` 的块非空约束和 `GetRow`，`pkg/util/chunk/row_container.rs` 的 `Num*`/`GetRow` 内存与磁盘分支。
-- Go 对照与测试：`pkg/util/chunk/iterator.go`、`pkg/util/chunk/iterator_test.go`、`pkg/util/chunk/iterator_test.rs`、`pkg/util/chunk/iterator_3_aster_unit_test.rs`。
-- 已人工核对：文档区分当前生产接线与迁移注释，说明每个迭代器为何存在、游标如何运行、错误和资源如何结束，以及扩展时应修改的符号和独立测试位置。任务为纯文档分析，按计划不运行 Cargo。

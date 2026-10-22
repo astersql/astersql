@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`info.rs`](./info.rs) 是 `astersql-domain-infosync` crate 的核心门面。crate 入口 [`lib.rs`](./lib.rs) 以 `mod info; pub use info::*;` 重新导出本文件 API，因此调用方通常通过 `astersql_domain_infosync::*` 使用它，而不是直接引用私有模块。[`Cargo.toml`](./Cargo.toml) 的 `package.metadata.porting.go-package` 指向 `pkg/domain/infosync`，表明本文件以同目录 [`info.go`](./info.go) 为主要移植对照。
-
-它位于 Domain 元数据协调层：用进程级 `InfoSyncer` 聚合 etcd、PD HTTP、标签规则、放置规则、调度配置、TiFlash 和资源组管理器，并向规划、会话、服务器状态页及测试暴露统一查询/更新 API。RustCodeGraph 对该文件记录 116 个符号，并识别出 `pkg/planner/core/preprocess.rs`、`pkg/server/http_status.rs`、`pkg/session/runtime/normal_ddl_service.rs` 等使用文件；仓库搜索还确认 `GetAllServerInfo` 被 `pkg/session/runtime/ttl_metadata.rs`、`pkg/session/runtime/modify_column_cloud_planner.rs` 和 `pkg/util/disttask/idservice.rs` 调用。
-
-当前 Rust 文件只实现了 Go 版本的一部分运行时接线。特别是 `InfoSyncer::init` 及五个 `init*Manager` 方法仍是空实现，不能把 Go 侧 etcd session、拓扑注册、完整 PD/资源管理初始化视为 Rust 已具备的能力。
+** `GlobalInfoSyncerInit` 根据是否提供 `PdHttpClient` 选择真实的标签/放置/调度管理器或内存 mock，创建 TiFlash mock 与资源组 mock，构造本机 `ServerInfo`，然后注册全局实例。
 
 ## 核心职责
 
@@ -82,8 +78,6 @@ RustCodeGraph 的 callee 证据包括：`GlobalInfoSyncerInit -> setGlobalInfoSy
 
 ## 与 Go 版本的对应关系
 
-Rust 与 `pkg/domain/infosync/info.go` 保持的关键语义包括：Bundle 的 service error 不重试、普通错误最多尝试 `maxRetry + 1` 次；TiFlash 进度优先读缓存并取 TiFlash/columnar 最小值；分区表清理分区缓存而保留表 ID 缓存；PD 状态 404/412 兼容成功；列存全文索引要求 `fts-index-ready`；Tombstone store 采集失败可跳过；TiProxy/TiCDC JSON 字段和 TiCDC 版本前导 `v` 处理一致。
-
 已确认的差异和未迁移能力如下：
 
 - Go `GlobalInfoSyncerInit` 包装 PD HTTP caller/response handler，创建 `serverinfo.Syncer`，建立 etcd server/topology session，初始化全部 manager 与 affinity；Rust 的 `init` 和五个 `init*Manager` 为空，且资源组固定使用 mock，TiFlash 也固定以 mock context 起步。
@@ -105,12 +99,3 @@ Rust 与 `pkg/domain/infosync/info.go` 保持的关键语义包括：Bundle 的 
 - 修改重试策略时，同步验证总尝试次数、不可重试错误分类和 sleep 边界；生产代码中若引入取消能力，应避免无条件 `thread::sleep`。
 - 将内部会话接回真正 session manager 时，需要先定义类型安全的会话标识/trait，明确 `managerMu` 与 `internal_sessions` 谁是权威状态，并核对 `pkg/server/server.rs` 与 `pkg/session/sessmgr/processinfo.rs` 的接口语义。
 - 所有可用 Rust 生产修复都应保留 PingCAP Apache License，并在顶部保留/增加仓库要求的 `// Copyright 2026 AsterSQL.`；格式化后运行适用验证，但本次纯文档任务不运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、`info.rs` 为 956 行/116 个符号；执行了目标文件 `node`、目录 `files`，以及 `GlobalInfoSyncerInit`、`ReportMinStartTS`、`MustGetTiFlashProgressWithCircuitBreaker`、`MustGetTiFlashProgress`、`PutRuleBundlesWithRetry`、`CalculateColumnarIndexProgress`、`GetAllServerInfo`、`GetPrometheusAddr`、`GetTiProxyServerInfo`、`GetTiCDCServerInfo`、`StoreInternalSession` 的 `query`/`callers`/`callees` 查询。反向 callers 对这些自由函数未产出完整结果，已用索引的文件级 use 信息和 `rg` 补证，未据此虚构调用边。
-- 生产源码：`pkg/domain/infosync/info.rs`；crate 边界与测试装配：`pkg/domain/infosync/lib.rs`、`pkg/domain/infosync/Cargo.toml`。
-- Rust 独立测试：`pkg/domain/infosync/info_test.rs`。重点覆盖 `test_put_bundles_retry`、`test_tiflash_manager`、`columnar_index_progress_uses_index_type_and_rejects_old_tikv_for_fulltext`、三个 Keyspace 配置用例、`tiflash_progress_cache_and_partition_cleanup_match_go`、`pd_status_and_tiflash_rule_contract_match_go`、`configure_partitions_preserves_existing_table_rule`、`etcd_injection_and_topology_decoding_match_go`、`tiflash_progress_store_partition_excludes_compute_nodes`。
-- Go 对照：`pkg/domain/infosync/info.go`；Go 回归意图：`pkg/domain/infosync/info_test.go`，尤其是 `TestPutBundlesRetry`、`TestTiFlashManager`、`TestInfoSyncerMarshal` 和 Keyspace 配置测试。
-- 直接依赖实现：`pkg/domain/infosync/{types,label_manager,placement_manager,schedule_manager,resource_manager_client,tiflash_manager,mock_info,error}.rs`；上游用例由 RustCodeGraph 文件级 use 及仓库搜索核验。
-- 本文只描述当前源码，不把 Go 独有逻辑、空初始化钩子或未出现的调用边写成 Rust 已支持。结构验收以恰好存在本文规定的 11 个二级标题为准。

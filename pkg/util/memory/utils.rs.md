@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-memory` crate 的内部基础工具集合。crate 根文件 [`lib.rs`](./lib.rs) 通过 `pub mod utils { include!("utils.rs"); ... }` 把它编译进 `utils` 模块，并在同一模块补充 `prime64`、`initHashKey` 与 `baseQuotaUnit`；随后 `pub(crate) use utils::*` 让 crate 内的仲裁器、heap profile 和 tracker 可直接使用其中的 crate-private 符号。crate 边界和依赖由 [`Cargo.toml`](./Cargo.toml) 定义，默认 feature 为空，另有 `mem-arbitrator` feature；本文件直接使用标准库、`crossbeam-utils` 和 `memory-stats`。
-
-它不是 SQL 请求入口，而是内存治理链的叶层组件：当前 Rust 生产路径中，会话运行时用 digest builder 生成内存画像键，内存仲裁器和 heap profile 用千分比运算，global arbitrator 用进程内存采样结果更新风险状态。文件中的可复用链表、通知器、分片函数和若干兼容工具目前只在本 crate 的独立测试中出现；不能据 Go 版的接线推断它们已经接入 Rust 仲裁器生产路径。
+`wrapList<V>` 以槽位数组、活跃下标队列和空闲下标栈实现可复用 FIFO/LRU 风格容器，避免删除后反复分配节点。
 
 ## 核心职责
 
@@ -78,9 +76,9 @@ digest builder 仅维护一个 `u64`，各算术步骤都显式 wrapping，结�
 
 Go 对照文件是 [`utils.go`](./utils.go)，核心命名和算术意图被保留，但实现并非完全等价。Go `wrapList` 使用 `container/list` 和尾部哨兵复用 `list.Element`；Rust 使用 `Vec<Option<V>> + VecDeque<usize> + free`，保持顺序与槽位复用语义，却增加了“旧下标句柄在槽位复用后可能别名”的 Rust 特有边界。Go `Notifer` 使用容量 1 的 `chan struct{}` 和 `atomic.Int32`；Rust 用 `sync_channel(1)`、`Mutex<Receiver>` 与 `AtomicI32` 映射相同的合并唤醒协议。
 
-`DigestIDBuilder` 与当前 Go 版逐步对应：长度、8 字节小端块、尾块和最终 avalanche 常量一致，并同样避开零 ID。`HashEvenNum`、配额分桶、幂和千分比运算也保留 Go 算法；Rust 的 wrapping 运算明确固定了 Go 整数回绕语义。当前 Go `utils.go` 中没有 `HashStr`，所以只能确认 Rust 测试黄金值，不能声称它与当前 Go 同名实现逐行对应。
+`HashEvenNum`、配额分桶、幂和千分比运算也保留 Go 算法；Rust 的 wrapping 运算明确固定了 Go 整数回绕语义。当前 Go `utils.go` 中没有 `HashStr`，所以只能确认 Rust 测试黄金值，不能声称它与当前 Go 同名实现逐行对应。
 
-最大差异在运行时内存统计。Go `SampleRuntimeMemStats` 通过 `runtime/metrics` 读取堆对象、unused/free/released、总内存、累计 frees 和 GC cycles，使用 `sync.Pool` 复用采样数组，并在 GC 次数增长时更新近似 GC 时间。Rust 版用 `memory-stats` 的进程物理/虚拟内存近似，固定 `TotalFree`/`NumGC` 为零且不更新 `gcTracker`，因此字段形状对齐但信息精度和 GC 语义尚未对齐。Rust 的 `RustMemStats` 是为测试与显式映射增加的本地输入类型，Go 直接接收 `runtime.MemStats`。
+最大差异在运行时内存统计。Rust 版用 `memory-stats` 的进程物理/虚拟内存近似，固定 `TotalFree`/`NumGC` 为零且不更新 `gcTracker`，因此字段形状对齐但信息精度和 GC 语义尚未对齐。Rust 的 `RustMemStats` 是为测试与显式映射增加的本地输入类型，Go 直接接收 `runtime.MemStats`。
 
 Go 的生产仲裁器已经把 `wrapList`、`Notifer`、`shardIndexByUID`、`getQuotaShard` 和 `nextPow2` 接入任务队列、分片表和构造流程；当前 Rust 精确引用只证明这些工具受独立测试覆盖，未证明同样的生产接线。该迁移差异应保持显式，后续若接线需以 Rust 仲裁器现有结构为准。
 
@@ -93,11 +91,3 @@ Go 的生产仲裁器已经把 `wrapList`、`Notifer`、`shardIndexByUID`、`get
 修改 digest 算法会改变画像 cache 键，是跨版本兼容风险；应同步核对 `pkg/session/runtime.rs::build_mem_arbitrator_digest_id`、tracker 的 `InvalidDigestID` 分支和 [`go_merge_30_test.rs`](./go_merge_30_test.rs) 的组件边界测试。若需要版本化，宜新增域标签或版本前缀，而不是无提示地改变 `AddString`/`Sum64`。
 
 改进 `SampleRuntimeMemStats` 时，应明确是进程 RSS 还是 allocator/堆语义，并同步检查 `global_arbitrator.rs` 风险判断和 heap profile 阈值；若补 GC 数据，还要真正更新 `gcTracker` 并为失败/回退路径增加测试。数值工具扩展需补零除数、负配额、最大整数和 `nextPow2` 溢出边界；现有回绕语义由 [`utils_test.rs`](./utils_test.rs) 专门验证，不应改成饱和计算而不评估 Go 兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/memory` 确认目标、Go 对照和独立测试均已索引；`node --file pkg/util/memory/utils.rs` 读取全部 445 行并报告目标被 18 个文件使用；`query` 核对了 `wrapList`、`NewNotifer`、`HashStr`、`DigestIDBuilder`、`HashEvenNum`、`shardIndexByUID`、`getQuotaShard`、比例函数和内存采样符号。批量 `callers/callees` 曾超时，随后以精确文件节点和引用搜索收敛调用边，未把不完整图结果当作事实。
-- 生产源码：[`utils.rs`](./utils.rs)、[`lib.rs`](./lib.rs)、`pkg/session/runtime.rs`、[`arbitrator.rs`](./arbitrator.rs)、[`heap_profile.rs`](./heap_profile.rs)、[`global_arbitrator.rs`](./global_arbitrator.rs)、[`tracker.rs`](./tracker.rs)。
-- crate/Go 对照：[`Cargo.toml`](./Cargo.toml)、[`utils.go`](./utils.go) 和 [`arbitrator.go`](./arbitrator.go)。
-- 测试证据：[`utils_5_aster_unit_test.rs`](./utils_5_aster_unit_test.rs) 覆盖槽位复用、通知合并、哈希/分片/比例/幂、时间与内存字段映射；[`utils_test.rs`](./utils_test.rs) 覆盖 Go `int64` 回绕；[`go_merge_30_test.rs`](./go_merge_30_test.rs) 覆盖 digest 组件边界与非零稳定性；[`arbitrator_test.rs`](./arbitrator_test.rs) 提供内嵌 Go 对齐用例；Go [`arbitrator_test.go`](./arbitrator_test.go) 的 `TestBasicUtils` 覆盖原版 digest、分片、通知、链表、时间和幂行为。
-- 人工复核结论：文档区分了已接入 Rust 生产路径与仅测试覆盖的工具，列出了输入前提、panic/回绕/降级边界、并发生命周期、Go 内存采样差异以及安全扩展所需的独立测试位置；没有运行 Cargo，因为任务和总计划明确排除代码构建测试。

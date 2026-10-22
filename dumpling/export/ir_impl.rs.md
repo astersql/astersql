@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ir_impl.rs` 是 `astersql-dumpling-export` crate 中导出中间表示（IR）的具体实现层。crate 入口 [`dumpling/export/lib.rs`](lib.rs) 先 `include!("ir.rs")` 定义协议，再在第 63 行 `include!("ir_impl.rs")`，最后加载 writer 与 dump 流程；因此本文件不是独立模块，而是和同 crate 的 [`ir.rs`](ir.rs)、[`writer.rs`](writer.rs)、[`dump.rs`](dump.rs) 共享一个包级命名空间。
-
-[`dumpling/export/Cargo.toml`](Cargo.toml) 将该目录声明为库 crate，入口为 `lib.rs`，迁移元数据指向 Go 包 `dumpling/export`。文件直接使用的数据库游标、连接、错误、日志和服务端类型等基础对象来自同 crate 的 [`stubs.rs`](stubs.rs) 及 `lib.rs` 引入的 `astersql-dumpling-context`、`astersql-dumpling-log`；它并不自行负责 CLI、任务调度或存储写入。
+`tableMeta` 实现 `TableMeta`，向 SQL/CSV/Parquet writer 提供库表名、列投影、类型、建表语句及统计信息。
 
 ## 核心职责
 
@@ -96,13 +94,11 @@ RustCodeGraph 对 Rust 源只找到 `newMultiQueriesChunk` 的自定义义边，
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`dumpling/export/ir_impl.go`](ir_impl.go)，独立测试是 [`ir_impl_test.go`](ir_impl_test.go) 与 [`ir_impl_test.rs`](ir_impl_test.rs)。Rust 保留了 Go 的类型划分、Go 风格方法名、首行预取、跨空查询跳转、元 SQL 后缀修正、列元信息投影和不同服务端 special comments。
+Rust 保留了 Go 的类型划分、Go 风格方法名、首行预取、跨空查询跳转、元 SQL 后缀修正、列元信息投影和不同服务端 special comments。
 
 主要语言适配如下：Go 的 `*sql.Rows`/`*sql.Conn` 对应 Rust `Rows`/`Conn`；Go `[]any` 扫描目的地对应复用的 `Vec<RawBytes>`；Go `error` 对应 `Result` 与 `Option<Error>`；Go 接口嵌入对应 Rust 的显式 `Option<Box<dyn SQLRowIter>>` 和 trait 实现。
 
 需要特别注意的差异是 Go 的 `tableData.Rows()` 返回并缓存同一个接口值，Rust 因 trait 签名返回 `Box` 所有权而用 `Option::take` 移交，重复调用语义不等价。Go 的 `multiQueriesChunk` 生产路径由 `buildConcatTask` 接线，但当前 Rust 调用图未证明同等接线。Rust 还显式检查 closed 状态，并在部分无资源状态返回成功或空哨兵，属于迁移时为所有权/桩类型增加的防护；扩展时应以可观察行为和独立测试为准，不能仅按结构逐行翻译 Go。
-
-两侧 `TestRowIter/test_row_iter` 都验证首行预取、重复 `HasNext` 不推进、解码与 `Next` 的顺序；`TestChunkRowIter/test_chunk_row_iter` 都验证部分消费后仍有下一行，以及关闭底层结果集后解码报错。现有同名测试没有直接覆盖多查询切换、`tableData` 重复 `Rows`、`metaData` 后缀和 special comments；相关修改必须补充独立 Rust 测试，不能把测试内嵌回生产文件。
 
 ## 扩展指南
 
@@ -113,11 +109,3 @@ RustCodeGraph 对 Rust 源只找到 `newMultiQueriesChunk` 的自定义义边，
 新增列属性时应扩展 `ColumnInfo` 与 `tableMeta::ColumnInfos`，同时检查 SQL、CSV、Parquet writer 对 `ColumnTypes/ColumnNames/sourceColumn*` 的使用，避免混淆源列与投影列。新增服务端方言时修改 `getSpecialComments`，并为语句内容和顺序增加 parity/单元测试；这些语句会进入导出文件，存在导入兼容和安全风险。
 
 性能上应继续复用 `args`，避免逐行分配；不要在热路径的 `HasNext` 或 `Next` 中克隆查询/元信息。正确性风险集中在预取造成的游标偏移、列数不匹配、错误被 `Close` 掩盖和迭代器所有权丢失。Rust 单元测试继续放在 `dumpling/export/ir_impl_test.rs`，Go 对照回归放在 `ir_impl_test.go`，不要把测试加入本源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、7032 个 Rust 文件；目标 `dumpling/export/ir_impl.rs` 已索引，共 507 行，显示被 `dump.rs`、`http_handler.rs`、`ir.rs`、`ir_impl_test.rs` 等文件使用。
-- 通过 RustCodeGraph 完整读取：`dumpling/export/ir_impl.rs`、协议文件 `dumpling/export/ir.rs`、crate 入口 `dumpling/export/lib.rs`、Rust 测试 `dumpling/export/ir_impl_test.rs`、Go 实现 `dumpling/export/ir_impl.go`、Go 测试 `dumpling/export/ir_impl_test.go`。
-- 通过 RustCodeGraph 核对主链：`dumpling/export/sql.rs::SelectAllFromTable`，`dump.rs::{dumpWholeTableDirectly,dumpSQL,dumpTableMeta}`，`writer.rs::{Writer::WriteTableData,writeMetaToFile}`；调用图明确给出 `newTableData`、`getSpecialComments` 与 trait 方法的上述调用边。
-- 通过 `dumpling/export/Cargo.toml` 核对 crate 名、`lib.rs` 入口、Go 包映射、本地 Dumpling 依赖和 writer 格式相关依赖；该文件无 feature 条件，`ir_impl.rs` 也没有条件编译项、模块级常量、独立 trait 或枚举。
-- 测试事实：`ir_impl_test.rs::{test_row_iter,test_chunk_row_iter}` 与 Go 的 `TestRowIter/TestChunkRowIter` 覆盖预取、稳定 `HasNext`、逐行解码推进及关闭后解码失败。本任务按计划不运行 Cargo；结构校验命令及结果在交付时记录。

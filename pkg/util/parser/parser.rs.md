@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-parser`（入口为 [`pkg/util/parser/lib.rs`](lib.rs)，依赖声明见 [`pkg/util/parser/Cargo.toml`](Cargo.toml)）。它不是 SQL 语法解析器的主体：`pub use crate::parser_core::Parser` 把 `astersql-parser` 中的完整 `Parser` 类型暴露到本 crate，而本文件只提供该类型的复用池，以及一组消费输入前缀的轻量字节匹配函数。
-
-在当前 Rust 生产代码中，直接使用对象池的已确认入口是 `pkg/util/generatedexpr/generated_expr.rs::parse_expression`：它从这里取得 `Parser`，解析包装成 `select <expr>` 的表达式，再将解析器归还。`lib.rs` 通过 `pub use parser::*` 将本文件的公开项提升到 crate 根，因此调用方使用 `astersql_util_parser::GetParser`、`DestroyParser` 等名称。
+`Match` / `MatchOne` 实现公共的“从开头连续匹配，失败不消费输入”协议。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ RustCodeGraph 对 `parser.rs` 报告多个“used by”文件，但其中包含 
 
 主要表示差异是：Go 输入输出使用 `string`，Rust 使用泛型字节输入和拥有所有权的 `Vec<u8>`；Go 返回 `error`，Rust 返回 `Option<ParseError>`；Go `int` 对应 Rust `isize`。Go 的 `sync.Pool.New` 对应 Rust 池空时调用 `parser_core::New`。由于完整 Rust `Parser` 含非 `Send` 对象，Rust 有意把全局并发池改成线程局部池，而不是不安全地强制跨线程共享。
 
-测试对照为 `pkg/util/parser/parser_test.go` 与 `pkg/util/parser/parser_test.rs`：两者覆盖空白、数字、数值、指定字符和任意字符的同一组成功/失败表。Rust 的 `migration_aster_unit_test.rs` 额外固定了负 `times`、数值溢出、非 ASCII 单字节标点、空输入、UTF-8 拆字节以及池取还行为。这些额外断言是迁移边界证据，不表示 Go API 新增了不同能力。
+Rust 的 `migration_aster_unit_test.rs` 额外固定了负 `times`、数值溢出、非 ASCII 单字节标点、空输入、UTF-8 拆字节以及池取还行为。这些额外断言是迁移边界证据，不表示 Go API 新增了不同能力。
 
 ## 扩展指南
 
@@ -86,12 +84,3 @@ RustCodeGraph 对 `parser.rs` 报告多个“used by”文件，但其中包含 
 - 新增池调用点时，应确保解析器在成功和失败路径都传给 `DestroyParser`。若将来 `Parser` 变为可跨线程移动，仍需单独评估是否值得改回共享池；不能仅删除线程局部约束。
 - 若扩展完整 SQL 解析行为，应修改 `astersql-parser` 中的 `pkg/parser/yy_parser.rs` 及其独立测试，而不是在本门面复制解析逻辑。
 - 性能上，匹配函数每次都会复制前缀/尾部；若要引入借用切片或零复制变体，应保留现有兼容 API，并用调用点证明生命周期设计不会改变 Go 式返回语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/parser` 确认本 crate 的源码和测试集合；`node --file pkg/util/parser/parser.rs` 读取完整 152 行及符号；`query`/`node` 核对 `GetParser`、`Number`；`node --file pkg/util/generatedexpr/generated_expr.rs --offset 210 --limit 55` 核对生产池调用；`node --file pkg/parser/yy_parser.rs --offset 250 --limit 115` 核对 `Parser`、`New`、`Reset`。
-- crate 与模块边界：`pkg/util/parser/Cargo.toml`、`pkg/util/parser/lib.rs`；生产调用依赖：`pkg/util/generatedexpr/Cargo.toml`、`pkg/util/generatedexpr/generated_expr.rs::parse_expression`。
-- Go 对照：`pkg/util/parser/parser.go`；Go 测试：`pkg/util/parser/parser_test.go`。
-- Rust 独立测试：`pkg/util/parser/parser_test.rs`、`pkg/util/parser/migration_aster_unit_test.rs`。覆盖的关键边界包括不足最小次数时原输入不变、负次数、溢出、标点高位字节、空输入、UTF-8 单字节消费和解析器池取还。
-- 人工复核：本文件没有条件编译项或隐藏 `impl`；文档只把仓库搜索确认的 `generatedexpr::parse_expression` 称为生产调用点，并将完整 SQL 解析实现明确定位到 `pkg/parser/yy_parser.rs`，未把测试引用推断为生产接线。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构以任务文件指定的 11 个固定二级标题命令验证。

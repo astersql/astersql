@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table-tables` crate，并且只在 `expression-runtime` feature 开启时由 `lib.rs` 公开为 `canonical_partition_expr` 模块。它把完整的 `model_dependency::TableInfo` 分区元数据编译成 `partition_expr.rs` 定义的运行时 `PartitionExpr`，供表元数据装载后的分区路由与裁剪使用。
-
-直接生产入口位于 `tables.rs::table_from_meta_for_validation`：该函数为当前 `PartitionInfo` 调用一次 `build`，在 REORGANIZE/REMOVE/ALTER PARTITIONING 期间还会为 adding/dropping definitions 再构造一份重组表达式；同一文件也复用 `context` 解析部分索引条件。未启用 `expression-runtime` 时，本模块不参与编译，含分区表达式或条件索引的元数据装载会由 `tables.rs` 返回“runtime is required”错误。
+只负责“从目录元数据构造表达式状态”。
 
 ## 核心职责
 
@@ -92,16 +90,13 @@ RustCodeGraph 能按文件读取本实现，但本次索引把该文件报告为
 
 ## 与 Go 版本的对应关系
 
-主要 Go 对照是 `pkg/table/tables/partition.go`：
-
 - Rust `context` 对应 Go `NewPartitionExprBuildCtx` 的非严格日期/截断策略；Go 随后用表实例的 `UseNewCollate()` 覆盖排序规则，Rust canonical 路径当前直接取全局 `NewCollationEnabled()`。相邻模块提供的 `PartitionExpr::ForTable` 可以按具体 `TableCommon` 重绑 KEY/LIST COLUMNS 状态，但本次搜索只发现测试调用，未发现 canonical 生产装载链调用它。
 - Rust `build` 合并了 Go `partitionedTable.newPartitionExpr`、`generateHashPartitionExpr`、`generateKeyPartitionExpr`、`generateRangePartitionExpr`、`generateListPartitionExpr` 及其若干辅助函数，同时改用完整 canonical `TableInfo` 作为入口。
-- RANGE 的定位条件、旧式上界常量回退求值、`MAXVALUE`/无符号标志，以及 LIST 的 NULL/DEFAULT/比较编码均保持 Go 的核心数据语义。
 - Go LIST 使用泛型 B-tree 保存值映射，Go LIST COLUMNS 同时维护 map 与有序 B-tree；Rust 使用 `BTreeMap` 承担查找与排序两种职责。
 - Go 未知分区类型走不可达 panic；Rust 返回 `unknown partition type` 错误。Rust 还把多种下游错误统一降为字符串，因此不保留 Go `errors.Trace` 的类型和堆栈信息。
 - Go 解析 HASH 时先建立 parser AST 再由 AST 构建表达式；Rust 的运行时表达式走 `ParseSimpleExpr`，原始 AST 单独走 `generatedexpr::ParseExpression`。两条结果仍分别填充 `Expr` 与 `OrigExpr`。
 
-现有 Rust 直接回归证据是 `tables_test.rs::normal_ddl_plan_table_validation_canonical_key_and_reorganization`，验证 KEY 的列偏移、裁剪列和重组表达式均经 canonical 入口生成。`partition_expr_test.rs` 验证相邻模块 `NewPartitionExprBuildCtx` 的标志、按表重绑定排序规则以及下游裁剪结构；它不直接调用本文件的 `context`，也没有逐分支直接调用本文件 `build` 的完整 HASH/RANGE/LIST 边界矩阵。Go 同目录未发现以 `newPartitionExpr` 等构造函数命名的直接测试；相关行为主要由该包更广泛的分区测试间接覆盖。
+现有 Rust 直接回归证据是 `tables_test.rs::normal_ddl_plan_table_validation_canonical_key_and_reorganization`，验证 KEY 的列偏移、裁剪列和重组表达式均经 canonical 入口生成。`partition_expr_test.rs` 验证相邻模块 `NewPartitionExprBuildCtx` 的标志、按表重绑定排序规则以及下游裁剪结构；它不直接调用本文件的 `context`，也没有逐分支直接调用本文件 `build` 的完整 HASH/RANGE/LIST 边界矩阵。
 
 ## 扩展指南
 
@@ -111,12 +106,3 @@ RustCodeGraph 能按文件读取本实现，但本次索引把该文件报告为
 - 调整 LIST/LIST COLUMNS 编码时必须保持 SQL 类型转换、statement error context、排序规则模式、有符号比较序及 DEFAULT/NULL 回退一致；相关消费逻辑位于 `partition_expr.rs`，两侧数据结构应一起审查。
 - 若把 canonical 构建上下文改为表级排序规则，需核对 `tables.rs` 的活动/重组表达式装载及 `PartitionExpr::ForTable`，避免一份表达式使用全局模式、另一份使用表模式。
 - 性能方面，当前 LIST COLUMNS 为每列、每 definition、每 value group 解析和编码，并克隆一份 `BTreeMap`；大分区元数据上的改动应关注构建耗时与内存，但不能用无序映射破坏有序范围查询语义。
-
-## 验证依据
-
-- 源码与类型：`pkg/table/tables/canonical_partition_expr.rs`、`pkg/table/tables/partition_expr.rs`、`pkg/table/tables/lib.rs`、`pkg/table/tables/tables.rs`。
-- crate 边界：`pkg/table/tables/Cargo.toml` 的 `expression-runtime` feature、依赖列表和 `package.metadata.porting.go-package = "pkg/table/tables"`。
-- Go 对照：`pkg/table/tables/partition.go` 中 `NewPartitionExprBuildCtx`、`newPartitionExpr`、`PartitionExpr`、`dataForRangePruning`、四个 `generate*PartitionExpr` 及 LIST 构建辅助函数。
-- 测试：`pkg/table/tables/tables_test.rs::normal_ddl_plan_table_validation_canonical_key_and_reorganization`；`pkg/table/tables/partition_expr_test.rs` 中相邻构建上下文、排序规则及裁剪结构测试。未发现直接以本模块名或 `build` 为目标、覆盖全部构建分支的独立 Rust 测试。
-- RustCodeGraph：`status` 显示项目已索引 11,467 个文件；`node --file pkg/table/tables/canonical_partition_expr.rs` 读取了全文件 355 行；`explore/query/callers/callees` 未给出可用调用边，文件节点显示 `used by 0 files`，故调用关系另由 `rg` 定位并读取 `tables.rs` 直接验证。
-- 文档结构使用任务指定命令校验，要求目标存在且固定二级标题恰好 11 个；本任务是纯文档分析，按计划不运行 Cargo。

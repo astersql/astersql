@@ -2,18 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-importsdk` crate 的数据源扫描实现，crate 边界由
-[`pkg/importsdk/Cargo.toml`](Cargo.toml) 定义，模块由 [`lib.rs`](lib.rs) 中的
-`mod file_scanner` 装配并通过 `pub use file_scanner::*` 导出。它位于导入 SDK 的前半段：
-调用方先通过 `NewImportSDK`（[`sdk.rs`](sdk.rs)）间接创建 `NewFileScanner`，扫描
-MyDumper/Aurora 风格的外部文件并得到 `TableMeta`，后续再由 SQL 生成器生成
-`IMPORT INTO`，或由 schema importer 在目标数据库执行建库建表。
-
-该文件既是对外 API 边界，也是多个子系统的适配层：向下连接 `astersql-objstore`
-（外部存储）、`astersql-lightning-mydump`（文件发现和 schema 导入）、
-`astersql-executor-importer`（KV 大小采样）、parser/DDL/meta（从 schema SQL 构造
-`TableInfo`）；向上由 `ImportSDK` 委托全部 `FileScanner` 方法。它不是薄门面：URL
-脱敏、文件元数据组装、通配路径、大小估算及资源关闭逻辑都在这里实现。
+体量估算和关闭资源；`fileScanner` 保存实现这些操作所需的存储、loader、数据库和。
 
 ## 核心职责
 
@@ -174,16 +163,10 @@ objstore 使用 background context，schema adapter 给 `JobDatabase` 传 `&()`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`file_scanner.go`](file_scanner.go)，独立测试分别为
-[`file_scanner_test.rs`](file_scanner_test.rs) 和
-[`file_scanner_test.go`](file_scanner_test.go)。公开接口、构造流程、loader 选项、表元数据、
-坏表跳过、schema 选择和 TiKV 样本比例外推均保持 Go 语义。
-
 Rust 为适配现有 crate 边界增加了明确接线：Go 直接使用 `sql.DB`、store 和
 `SampleFileImportKVSize`，Rust 使用 `JobDatabase`、`LoaderStorage`、
 `ScannerKVSizeParserService` 及 `SampleFileImportKVSizeWithTableInfo`；Rust 还补齐列/索引
-`StatePublic` 和 PK-handle 的主键索引元数据，使 sampler 看见与 Go 表对象相同的结构。
-Go schema importer 接收 logger、SQL mode 和 context，Rust importer 通过
+`StatePublic` 和 PK-handle 的主键索引元数据，使 sampler 看见与 Go 表对象相同的结构。Go schema importer 接收 logger、SQL mode 和 context，Rust importer 通过
 `SchemaDatabaseAdapter` 接线，并额外过滤可能被转发的 `DROP TABLE`。
 
 两处可观察的实现差异需保留在维护视野内：Go 在 loader 返回“文件过多”且仍有 loader 时
@@ -194,8 +177,7 @@ Go schema importer 接收 logger、SQL mode 和 context，Rust importer 通过
 
 Rust 独立测试没有照抄 Go `sqlmock` 的 SQL 字面量，而以 `CanonicalDatabase` 捕获当前 Rust
 schema importer 的真实语句；它仍验证相同意图：CREATE DATABASE/TABLE 被执行、DROP
-TABLE 被忽略、未知表报错。其余测试覆盖 Go 中的数据文件汇总、路径脱敏、真实压缩大小、
-`skip_invalid_files`、CSV/SQL KV 采样、多语句 schema、Aurora 自动映射及远端路径编码。
+TABLE 被忽略、未知表报错。
 
 ## 扩展指南
 
@@ -216,23 +198,3 @@ TABLE 被忽略、未知表报错。其余测试覆盖 Go 中的数据文件汇�
 - 本仓库约定 Rust 测试与生产源码分离；所有回归继续放在同目录
   `pkg/importsdk/file_scanner_test.rs`，不要嵌入本文件。兼容风险主要在 Go 行为偏移和错误
   分类，性能风险主要在全量目录遍历、压缩真实大小估算、schema 解析以及逐表 KV 采样。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/importsdk`
-  确认目标、Go 对照和独立测试均已索引；`node --file pkg/importsdk/file_scanner.rs` 读取了
-  971 行目标源码并显示 61 个符号。对 `NewFileScanner` 的 `query --json` 精确定位到 Rust
-  函数 `function:fd555917014dae6b037f6cef9fc68621`（第 328 行）；精确 ID 的
-  `callers/callees` 在 30 秒内无输出，未据此作否定结论。
-- 生产源码：完整检查 `pkg/importsdk/file_scanner.rs`；检查 `pkg/importsdk/sdk.rs` 的
-  `NewImportSDK` 与全量委托实现、`pkg/importsdk/lib.rs` 的模块装配和再导出。
-- crate/调用证据：检查 `pkg/importsdk/Cargo.toml` 的直接及测试依赖；仓库引用搜索确认
-  `pkg/importsdk/sdk.rs`、`lightning/pkg/importinto/importer.rs` 与
-  `tests/realtikvtest/importintotest/sdk_test.rs` 的上游使用。
-- Go 对照：完整检查 `pkg/importsdk/file_scanner.go`，逐段核对 trait/API、构造、schema、
-  元数据、大小估算、schema 选择和格式映射。
-- 测试证据：完整检查 `pkg/importsdk/file_scanner_test.rs`，并用
-  `pkg/importsdk/file_scanner_test.go` 的测试清单核对 Go 原始意图；覆盖数据大小、scheme、
-  Aurora、脱敏、DDL、DROP 过滤、KV 采样、压缩真实大小和坏表跳过。
-- 本任务只新增说明文档，不运行 Cargo；交付结构检查要求本文恰好包含本计划规定的 11 个
-  二级章节，并人工复核没有把图查询超时、Go/Rust 差异或下游并发实现写成未经验证事实。

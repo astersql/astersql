@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore-s3store` crate（见 `pkg/objstore/s3store/Cargo.toml`），由私有模块 `gcs_s3_signer` 装配进 crate（`pkg/objstore/s3store/lib.rs`）。它位于 S3 客户端配置构造阶段与 AWS SDK 请求签名阶段之间，专门修正 Google Cloud Storage（GCS）S3/XML API 对 AWS SigV4 规范实现差异的兼容问题。
-
-生产调用链是 `NewS3Storage` → `store.rs::build_api` → `store.rs::is_gcs_s3_compatible` → `configure_gcs_signer`。只有 provider 被识别为 GCS，或 endpoint 的主机名匹配 `storage.googleapis.com` 及其子域时，`build_api` 才把本文件的 interceptor 注入 `aws_sdk_s3::config::Builder`。因此它不是所有 S3 请求的全局签名器，也不负责 GCS 检测、凭证加载、区域探测或实际 SigV4 算法。
+位于 S3 客户端配置构造阶段与 AWS SDK 请求签名阶段之间，专门修正 Google Cloud Storage（GCS）S3/XML API 对 AWS SigV4 规范实现差异的兼容问题。
 
 ## 核心职责
 
@@ -72,11 +70,9 @@ Rust AWS SDK 与 Go SDK 的 hook 时序不同。Rust SDK 原生的 `InvocationId
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/objstore/s3store/gcs_s3_signer.go`。Go 的 `gcsS3CompatibleSigner.SignHTTP` 包装 `v4.Signer`：复制并删除 `Accept-Encoding`，调用真实 signer，无论 signer 成功与否都恢复保存值，再返回原错误。Rust 版保留同一用户可见契约：发送该头但不把它列入签名，并在签名失败时恢复请求。
-
 实现形态不同是 SDK 扩展点造成的。Go 可通过 `s3.Options.HTTPSignerV4` 替换 signer；Rust 通过 `Intercept` 包围 SDK 原生 signer。Rust 版还必须提前运行并快照 `InvocationIdInterceptor`、`RequestInfoInterceptor`，因为 Rust SDK 默认在签名后才添加这两个头，而 Go 请求会将其签入。Go signer 只保存 `Accept-Encoding`；Rust 版保存三种头，并显式支持全部重复值、重试 attempt 变化及 finalizer 失败路径。
 
-Go 集成测试 `pkg/objstore/s3store/gcs_s3_test.go::TestGCSS3CompatibleSignerSkipsAcceptEncoding` 验证 GCS provider/endpoint 下权限请求有签名且排除 `accept-encoding`。Rust 对应文件 `pkg/objstore/s3store/gcs_s3_test.rs` 除覆盖相同主流程外，还覆盖多值头、缺失头、一次重试及签名失败恢复；这些是 Rust SDK 生命周期差异所需的额外回归证据。
+Rust 对应文件 `pkg/objstore/s3store/gcs_s3_test.rs` 除覆盖相同主流程外，还覆盖多值头、缺失头、一次重试及签名失败恢复；这些是 Rust SDK 生命周期差异所需的额外回归证据。
 
 ## 扩展指南
 
@@ -85,12 +81,3 @@ Go 集成测试 `pkg/objstore/s3store/gcs_s3_test.go::TestGCSS3CompatibleSignerS
 若要改变启用范围，应修改并测试 `store.rs::is_gcs_s3_compatible` 或 `build_api`，而不是让 interceptor 自行解析 endpoint。若 AWS SDK 改名或改变 `InvocationIdInterceptor` / `RequestInfoInterceptor` 时序，必须同步检查 `modify_before_signing` 的按名称筛选；字符串名称是升级 SDK 时最脆弱的兼容点。若 SDK 提供稳定的“签名前生成元数据”接口，应优先迁移到该接口，同时保持现有签名头集合测试。
 
 兼容风险主要是 signed headers 与实际发送 headers 不一致会导致 GCS 拒绝签名；正确性风险是失败路径未恢复、重试复用旧 attempt 值或重复追加头；性能成本是每个 attempt 遍历 interceptor 列表并复制至多三种头，当前数据量很小。同步测试应放在独立的 `pkg/objstore/s3store/gcs_s3_test.rs`，不要嵌入生产文件；Go 语义发生变化时还应对照 `gcs_s3_signer.go` 与 `gcs_s3_test.go`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`explore` 读取了 `gcs_s3_signer.rs` 全文。
-- 符号查询：`query`/`node` 确认 `SavedHeaders`、`GcsS3CompatibleSigner`、`restore_headers`、`configure_gcs_signer` 及三个 `Intercept` hook 的位置和可见性。
-- 调用边：`callers configure_gcs_signer` 返回 `store.rs::build_api`、`gcs_s3_test.rs::gcs_signer_excludes_accept_encoding_but_sends_all_values`、`gcs_s3_test.rs::signer_client`；`callers restore_headers` 返回正常发送与 attempt completion 两条恢复路径。SDK 外部函数的精细 callee 边未由本仓索引展开，相关结论以 trait hook 源码和测试为准。
-- crate 与装配：读取 `pkg/objstore/s3store/Cargo.toml` 和 `pkg/objstore/s3store/lib.rs`，确认直接依赖、路径依赖、私有模块及独立测试模块。
-- 生产接线：读取 `pkg/objstore/s3store/store.rs` 的 `NewS3Storage`、`build_api` 与 `is_gcs_s3_compatible` 附近代码，确认条件注入和主链位置。
-- 对照与测试：完整读取 `pkg/objstore/s3store/gcs_s3_signer.go`、`pkg/objstore/s3store/gcs_s3_test.rs` 与 `pkg/objstore/s3store/gcs_s3_test.go`。Rust 测试实际断言签名集合、多值恢复、缺失头、重试元数据及失败时错误保留；本任务按要求不运行 Cargo。

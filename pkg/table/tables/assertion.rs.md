@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-table-tables` crate，由 `pkg/table/tables/lib.rs` 以公开模块 `pub mod assertion` 装配；crate 的 Go 映射在 `pkg/table/tables/Cargo.toml` 中声明为 `pkg/table/tables`。它提供事务内存缓冲区键断言的最小领域模型和“首次有效断言优先”的写入算法，用来承接 Go `pkg/table/tables/assertion.go` 的语义。
-
-当前 Rust 生产接线仍有限：RustCodeGraph 将本文件标为仅被 `pkg/table/tables/assertion_test.rs` 和 `pkg/table/tables/export_test.rs` 使用，仓库搜索也未发现 `pkg/table/tables/tables.rs` 或 `pkg/table/tables/index.rs` 调用 `set_assertion`。因此它现在是一个公开、可测试的兼容抽象，而不是已进入 Rust 表 DML 主链的真实事务适配层。Go 版本则已经由 `tables.go` 和 `index.go` 的行/索引变更路径调用。
+`AssertionBuffer` 将读取标志、识别未找到错误和更新断言三项能力从具体事务内存缓冲实现中抽离。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ Go 的实际主链更完整：`pkg/table/tables/tables.go` 在 `UpdateRecord`、
 
 Rust `set_assertion` 逐分支对应 Go `setAssertion`：Go 先从 `txn.GetMemBuffer()` 读取 `GetFlags`，忽略 `kv.IsErrNotFound`，遇到其它错误返回；若 `HasAssertionFlags()` 为真则短路；否则调用 `UpdateAssertionFlags`。Rust 将事务和 mem buffer 折叠为 `AssertionBuffer` 泛型参数，并把 Go 位集判断简化为 `Option::is_some()`。
 
-已对齐的可观察语义包括首次 `AssertExist`/`AssertNotExist`/`AssertUnknown` 不可被后续值覆盖、`AssertNone` 后可设置有效断言、已有键但无断言时可初始化，以及非 not-found 错误禁止写入。这些分别由 Rust `assertion_test.rs` 与 Go `assertion_test.go` 支持。
-
 尚未对齐或未验证之处：Rust 枚举是独立类型，未直接复用 `pkg/kv` 的 `AssertionOp`；`KeyFlags` 不是完整位集；没有真实 `kv.Transaction` 适配器；Rust 生产 `tables.rs`/`index.rs` 未调用本入口；Go 测试对其它 flag 保留、真实 mock store、锁键以及事务 rollback 的覆盖没有等价地出现在本文件的 Rust 测试中。因此当前迁移状态应描述为“核心决策逻辑已移植并由替身测试覆盖，生产集成未完成”。
 
 ## 扩展指南
@@ -85,13 +81,3 @@ Rust `set_assertion` 逐分支对应 Go `setAssertion`：Go 先从 `txn.GetMemBu
 修改决策逻辑时应同步独立测试文件 `pkg/table/tables/assertion_test.rs`，不要把测试内嵌进生产源文件；若改变公开可见性或外部调用方式，还应同步 `pkg/table/tables/export_test.rs`。生产适配应补充等价于 Go `assertion_test.go` 中 `k5`/`k6`/`k7` 的集成测试，尤其验证断言更新不清除其它标志、锁键不凭空获得断言以及事务清理。
 
 兼容风险主要是断言枚举映射错误和 not-found 分类错误；正确性风险是覆盖首次断言或丢失其它 key flags；性能上当前算法是一次查找加至多一次更新，扩展时应避免额外 snapshot 读取或键复制。若让更新可失败，应显式传播错误并增加“更新失败不伪装成功”的测试。
-
-## 验证依据
-
-- Rust 源码：`pkg/table/tables/assertion.rs`，核对 `AssertionOp`、`KeyFlags`、`AssertionBuffer` 和 `set_assertion` 的完整定义。
-- crate 边界：`pkg/table/tables/Cargo.toml` 与 `pkg/table/tables/lib.rs`，核对 crate 名称、Go 包映射、公开模块和独立测试模块装配；断言模块不受 `expression-runtime` feature 控制。
-- Rust 测试：`pkg/table/tables/assertion_test.rs`、`pkg/table/tables/export_test.rs`，核对四类分支、不覆盖不变量、错误路径零更新及公开入口。
-- Go 对照：`pkg/table/tables/assertion.go`、`pkg/table/tables/assertion_test.go`，核对真实事务 mem buffer 算法、其它标志保留和事务生命周期。
-- Go 调用点：`pkg/table/tables/tables.go` 的记录新增/更新/删除断言，以及 `pkg/table/tables/index.go` 的索引新增/删除断言。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/table/tables` 找到目标及对照文件；`node --file pkg/table/tables/assertion.rs` 显示完整 73 行源码并报告仅两个测试使用者；`explore` 识别 `set_assertion` 的五个测试调用和三个 trait 方法下游；带文件限定的 `callers/callees` 未返回额外生产边。仓库 `rg` 复核也未发现目标 crate 的生产调用。
-- 未运行 Cargo：任务是纯文档分析，计划明确禁止 Cargo。结构验证在文档落盘后单独执行。

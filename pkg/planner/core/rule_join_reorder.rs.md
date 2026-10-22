@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 将 `lib.rs` 定为 crate 根，`pkg/planner/core/lib.rs` 公开声明 `rule_join_reorder`，并同时公开相邻的 `rule_join_reorder_dp`、`rule_join_reorder_greedy` 和 `rule_join_reorder_projection_inline` 模块。文件定义一套自包含的简化逻辑计划模型，以及 Join 组抽取、共享建树能力和 DP/贪心选择入口；DP 与贪心算法的主体分别位于相邻文件。
-
-RustCodeGraph 对 `JoinReOrderSolver::Optimize` 的查询只确认了本文件内 `Optimize -> optimizeRecursive`，没有发现它被 Rust 生产优化器管线调用。仓库中的直接使用者主要是 `pkg/planner/core/casetest/ch/ch_test.rs`、`pkg/planner/core/casetest/rule/rule_join_reorder_test.rs` 等测试，以及若干相邻 Rust 规则对 `JoinPlan`、`JoinNode`、`JoinEdge` 的复用。因此它是已公开、可独立执行和测试的移植模块，但不能据此认定它已经替代 `pkg/planner/core/rule_join_reorder.go` 在 Go 优化主链中的位置。
+`baseSingleGroupJoinOrderSolver` 为两种求解器提供连接性检查、条件消费、表达式投影注入、提示传播、Join 构造、累计代价和笛卡尔分量拼接等共同操作。
 
 ## 核心职责
 
@@ -90,10 +88,6 @@ Cargo 清单声明了 planner core 的大量真实子系统依赖，但本文件
 
 ## 与 Go 版本的对应关系
 
-Rust 文件以 `pkg/planner/core/rule_join_reorder.go` 为同路径语义对照，保留了 `JoinReOrderSolver`、`jrNode`、`joinTypeWithExtMsg`、`basicJoinGroupInfo`、`extractJoinGroup`、`optimizeRecursive`、`restoreSchemaIfChanged`、`baseNodeCumCost`、`checkConnection`、`injectExpr`、`makeJoin`、`makeBushyJoin` 和 `calcJoinCumCost` 等核心概念。
-
-已对齐的骨架包括：递归处理计划、抽取 Join 组、按阈值选择 DP/贪心、累计子树行数作为基础代价、把互不连通分量组成 bushy 树、重排后恢复输出 schema，以及为非列 Join 表达式预留投影注入能力。
-
 仍存在的重要差异：
 
 - Go 操作真实 `base.LogicalPlan`、`logicalop.LogicalJoin/Projection/Selection`、真实表达式 schema 与统计信息；Rust 使用本文件定义的简化枚举和整数列号。
@@ -114,13 +108,3 @@ Rust 文件以 `pkg/planner/core/rule_join_reorder.go` 为同路径语义对照�
 - 改变条件吸收逻辑时，重点审查 `makeJoin` 对 `otherConds` 的消耗、贪心候选克隆隔离及剩余条件最终落点；必须覆盖单侧条件、跨侧条件、无列条件和非确定性表达式。
 - 调整注入列/id 分配时，应先接入不会与既有计划冲突的分配器，再修改 `injectExpr` 与 `restoreSchemaIfChanged`；不能继续假设默认 0 安全。
 - Rust 单元测试应继续放在独立 `*_test.rs` 文件，由 `lib.rs` 的 `#[cfg(test)] mod ...` 挂接，不应内嵌回生产文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；本次通过索引读取了目标文件全部 579 行。
-- RustCodeGraph 源码/调用查询：`node --file pkg/planner/core/rule_join_reorder.rs`；`query Optimize --kind method`；`callers/callees JoinReOrderSolver::Optimize`；`callers/callees baseSingleGroupJoinOrderSolver::makeJoin`。确认 `Optimize -> optimizeRecursive -> extractJoinGroup/map_children -> DP 或 greedy -> restoreSchemaIfChanged`，以及求解器回调 `makeJoin`/`estimate_join_rows` 的关系。
-- crate 与模块证据：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。
-- Rust 下游实现：`pkg/planner/core/rule_join_reorder_dp.rs`、`pkg/planner/core/rule_join_reorder_greedy.rs`、`pkg/planner/core/rule_join_reorder_projection_inline.rs`。
-- 独立 Rust 测试：`pkg/planner/core/rule_join_reorder_test.rs` 验证累计代价包含后代以及四叶 bushy 树；`pkg/planner/core/rule_join_reorder_dp_test.rs` 验证节点定位与错误；`pkg/planner/core/casetest/ch/ch_test.rs` 直接覆盖 DP/贪心入口；`pkg/planner/core/casetest/rule/rule_join_reorder_test.rs` 覆盖公开入口和节点定位。
-- Go 对照：`pkg/planner/core/rule_join_reorder.go`；相关 Go 测试包括 `pkg/planner/core/rule_join_reorder_dp_test.go` 与 `pkg/planner/core/casetest/rule/rule_cdc_join_reorder_test.go`。
-- 本任务为只读行为分析和单文档新增，按计划未运行 Cargo，也未把现有测试结果当作本次验证证据；最终结构检查用于确认 11 个固定章节完整存在。

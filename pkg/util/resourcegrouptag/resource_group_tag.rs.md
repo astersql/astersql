@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应源文件](./resource_group_tag.rs)是 `astersql-util-resourcegrouptag` crate 的业务实现文件，由同目录 `lib.rs` 声明为 `resource_group_tag` 模块并把公开项重新导出。crate 边界由 `pkg/util/resourcegrouptag/Cargo.toml` 定义；它依赖 `astersql-tablecodec-rowindexcodec` 做 TiDB 键分类、依赖固定为 2.8.0 的 `protobuf` 生态生成 KV/TiPB 消息，并用 `thiserror` 定义可比较的解码错误。
-
-它位于 SQL 请求到 TiKV RPC 的资源归因边界：一方面解析随 RPC 携带的 `tipb.ResourceGroupTag`，取回 SQL digest；另一方面根据请求首键确定行键/索引键标签。直接的生产接线见 `pkg/kv/kv.rs`：`ResourceGroupTagBuilder::Build` 调用首键提取，`EncodeTagWithKey` 调用键分类并构造标签。反向解码的直接例子见 `pkg/util/deadlockhistory/deadlock_history.rs`，死锁等待链使用 `DecodeResourceGroupTag` 恢复 SQL digest。
+`GetFirstKeyFromRequest` / `GetFirstKeyFromRequestMut` 从九类 KV/Coprocessor 请求的固定位置取“第一个键”，分别提供只读借用和可写借用；`RequestPayload::Other` 明确表示不支持的请求。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ PessimisticLock 特意保留 Go 的异常边界：类型化 nil 请求体会 `ex
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现是 `pkg/util/resourcegrouptag/resource_group_tag.go`。三个原始公开能力一一对应：Go 使用生成的 `tipb.ResourceGroupTag.Unmarshal`，Rust 为兼容 protobuf 2.8 与 gogo 的未知 group 行为实现轻量扫描器；两者都只返回 SQL digest，并在畸形输入时报告包含原字节十六进制的错误。键分类分支完全相同。
+三个原始公开能力一一对应：Go 使用生成的 `tipb.ResourceGroupTag.Unmarshal`，Rust 为兼容 protobuf 2.8 与 gogo 的未知 group 行为实现轻量扫描器；两者都只返回 SQL digest，并在畸形输入时报告包含原字节十六进制的错误。
 
-Go 的 `GetFirstKeyFromRequest` 对 `tikvrpc.Request.Req` 做类型开关；Rust 用 `RequestPayload` 做等价枚举分派。九类已知请求的取键位置一致，且都只取第一项。Go 的 PessimisticLock 分支不检查类型化 nil，也不检查首 mutation 是否 nil，Rust 以 `expect` 明确保留相同 panic 边界。
+Go 的 `GetFirstKeyFromRequest` 对 `tikvrpc.Request.Req` 做类型开关；Rust 用 `RequestPayload` 做等价枚举分派。
 
-生成 protobuf Rust 类型无法完整表达 Go 的 nil/空切片别名语义，所以 Rust 额外提供 `InMemoryRequest`、六个投影结构和 `GetFirstKeyFromRequestMut`。这些不是 Go 新功能的简化，而是用于保存 Go 原始内存状态和“返回切片别名原存储”的契约。`resource_group_tag_test.rs` 的 presence、指针相等和写回测试验证了这一点；`migration_aster_unit_test.rs` 则逐分支验证基础移植行为。
+生成 protobuf Rust 类型无法完整表达 Go 的 nil/空切片别名语义，所以 Rust 额外提供 `InMemoryRequest`、六个投影结构和 `GetFirstKeyFromRequestMut`。这些不是 Go 新功能的简化，而是用于保存 Go 原始内存状态和“返回切片别名原存储”的契约。
 
 ## 扩展指南
 
@@ -89,12 +87,3 @@ Go 的 `GetFirstKeyFromRequest` 对 `tikvrpc.Request.Req` 做类型开关；Rust
 调整标签 schema 时，先以 `proto/tipb/resourcetag.proto` 的字段号和 wire type 为依据，再同步 `decode_tag` 的已知字段规则及 `build.rs` 生成输入。不得改变既有字段号；新增字段应验证合法未知字段仍可跳过、各类截断仍报错。若要返回 plan digest 等更多内容，应设计新的结果类型，避免静默改变 `DecodeResourceGroupTag` 现有返回契约。
 
 改变键分类规则应在 `rowindexcodec` 的真实键规则基础上修改 `GetResourceGroupLabelByKey`，并同步本目录 Rust 独立测试与 Go 测试。性能上应保持首键提取零拷贝、未知 group 非递归；兼容性上重点防止把 nil 和空值混同、跳过第一个空元素、或改变 PessimisticLock 的 panic 行为。Rust 单元测试继续放在同目录独立 `*_test.rs` 文件，不内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引含 11,467 个文件；`files --filter pkg/util/resourcegrouptag` 列出目标实现、模块入口和两份独立 Rust 测试；`node --file ... --offset ...` 读取了目标文件全部 380 行并给出“45 个符号、29 个使用文件”。对四个公开入口执行 `callers`/`callees` 没有返回边，故未据此推断具体调用数量。
-- 实现与边界：完整读取 `pkg/util/resourcegrouptag/resource_group_tag.rs`，并核对 `proto/tipb/resourcetag.proto` 的字段号、类型和标签枚举。
-- crate 与生成边界：读取 `pkg/util/resourcegrouptag/Cargo.toml`、`lib.rs`、`build.rs`；确认 crate 再导出、三项运行依赖，以及 kvproto/tipb 绑定的生成来源。
-- Go 对照：读取 `pkg/util/resourcegrouptag/resource_group_tag.go` 和 `resource_group_tag_test.go`，核对解码、键分类、请求类型开关和 nil/空列表预期。
-- Rust 测试：读取 `pkg/util/resourcegrouptag/resource_group_tag_test.rs` 与 `migration_aster_unit_test.rs`；证据覆盖 protobuf 编码、畸形/未知 wire、深层 group、所有请求分支、PessimisticLock panic、借用别名、内存态 presence 和可写视图。
-- 生产调用：读取 `pkg/kv/kv.rs`、`pkg/kv/lib.rs` 和 `pkg/util/deadlockhistory/deadlock_history.rs` 的直接调用段；另以 Cargo/源码引用搜索核对依赖声明。此次为纯文档分析，依任务约束未运行 Cargo 或代码测试。

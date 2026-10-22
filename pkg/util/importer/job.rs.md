@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`job.rs` 是 `astersql-util-importer` crate 的并发作业调度层，位于“DDL 已解析并执行、数据库连接已建立”之后，负责把配置中的作业数转换为批量事务写入。crate 入口 `pkg/util/importer/lib.rs` 将 `job` 声明为公开模块并重导出其公开项；直接生产调用入口是 `pkg/util/importer/importer.rs::process`，它把解析完成的 `Arc<Table>`、每个 worker 对应的数据库连接、`job_count`、`worker_count` 和 `batch` 传给 `process_jobs`。
-
-该文件不解析 SQL、不创建或关闭连接，也不实现数据库驱动。表结构与生成规则来自 `parser::Table`，INSERT 文本由 `db::generate_row_data_batch` 生成，事务能力通过 `db::Database` / `db::DatabaseTransaction` 注入。`pkg/util/importer/Cargo.toml` 将本目录定义为 `astersql-util-importer` 库；当前普通 `[dependencies]` 为空，解析器等路径依赖只列在永不成立的 `target.'cfg(any())'.dependencies` 下，因此本文所述实现目前依赖 crate 内部模块和标准库抽象，而不是直接绑定外部 SQL 驱动。
+线程 panic、数据生成错误、开启事务/执行/提交错误会转换或透传为 `ImporterError`；只有所有线程和写入均成功时才返回报告。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ RustCodeGraph 索引将 `job.rs` 识别为 11 个符号的 Rust 文件，并识�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/importer/job.go`：Rust 生产者循环对应 `addJobs`，`do_insert` 对应 `doInsert`，`do_job` 对应 `doJob`，`process_jobs` 合并了 Go 的 `doProcess` 与 `doWait`。两边都使用容量为 `16 * workerCount` 的空 token 通道、每 worker 一个数据库连接、满批提交和关闭通道后的尾批提交，并在完整秒数为零时报告 `-1`，否则用作业数除以秒数。
-
 主要差异如下：
 
 - Go 写入错误调用 `log.Fatal`，进程级终止；Rust 将生成、数据库和提交错误作为 `Result` 返回，线程 panic 映射为 `WorkerPanic`，更适合库边界。
@@ -95,12 +91,3 @@ RustCodeGraph 索引将 `job.rs` 识别为 11 个符号的 Rust 文件，并识�
 - 若报告要表达真实“事务每秒”，不能继续用 `job_count` 作分子；需要从 worker 汇总实际提交批次数，并评估字段语义变化对调用者的兼容影响。若只优化性能，应保留现有 jobs/sec 行为或另增字段。
 - 新增配置约束时应在 `process_jobs` 和上层 `importer.rs::process` 之间明确唯一责任，避免错误消息不一致；同步更新 `config.rs::ImporterError` 和 `job_test.rs`。
 - 增加真实数据库实现或外部依赖时，应在 `pkg/util/importer/Cargo.toml` 建立实际启用且可复现的依赖声明；当前 `cfg(any())` 下的依赖不会参与编译，不能把它们视作现有运行时接线。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/importer` 确认目标、Go 对照和独立测试均在索引中；`node --file pkg/util/importer/job.rs --offset 1 --limit 260` 读取了完整 132 行并报告该文件有 11 个符号；`query process_jobs/do_job/do_insert` 确认目标函数签名。`callers job.rs::process_jobs` 在 30 秒内未返回，故调用边改由文本检索验证。
-- 源码：`pkg/util/importer/job.rs`（完整实现）、`pkg/util/importer/importer.rs`（生产入口）、`pkg/util/importer/lib.rs`（模块公开与重导出）、`pkg/util/importer/db.rs`（数据库/事务接口与批量 SQL 生成）、`pkg/util/importer/config.rs`（配置与错误）、`pkg/util/importer/parser.rs`（`Table` 定义）。该目录不存在 `doc.go`。
-- crate 边界：`pkg/util/importer/Cargo.toml`，包名为 `astersql-util-importer`、库入口为 `lib.rs`，普通依赖为空，路径依赖位于 `cfg(any())` 条件段。
-- Go 对照：`pkg/util/importer/job.go`；生产调用与更外层流程另核对 `pkg/util/importer/importer.rs`。同目录未找到针对 job 调度的 Go `*_test.go`。
-- Rust 测试：`pkg/util/importer/job_test.rs::worker_error_does_not_deadlock_a_full_job_channel`；`pkg/util/importer/tests.rs::generation_and_job_processing_preserve_row_and_batch_counts`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行固定章节结构检查，并人工复核本文区分了已验证事实、实现限制和扩展风险。

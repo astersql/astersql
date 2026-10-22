@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/etc.rs` 是 `pkg/types` 类型系统中的“杂项类型语义”实现：它把 MySQL 类型码、`FieldType`、Datum Kind、字符集/校对规则和公共错误类型连接成一组轻量查询及错误构造 API。源码本身没有 `mod` 声明；实际编译入口是 `pkg/types/internal/metadata/lib.rs` 的私有模块 `etc_defs`，该模块先把 `ast`、`mysql`、`FieldType`、Datum Kind 常量、`collate`、`errors`、`opcode` 等名字引入作用域，再以 `include!("../../etc.rs")` 纳入本文件，并通过 `pub use etc_defs::*` 对外再导出。
-
-因此，这些函数的运行时归属是 `astersql-types-metadata` crate，而根 `astersql-types` crate 又在 `pkg/types/lib.rs` 以 `pub use types_group_4 as metadata` 暴露该子 crate。调用方通常通过依赖别名的 `metadata`/`types` 门面访问函数，而不是直接引用本文件模块。文件没有模块级常量、类型、trait、`impl` 或条件编译项；当前 28 个定义均为公开函数（包括小写的 `overflow`）。
+`pkg/types/etc.rs` 是 `pkg/types` 类型系统中的“杂项类型语义”实现：它把 MySQL 类型码、`FieldType`、Datum Kind、字符集/校对规则和公共错误类型连接成一组轻量查询及错误构造 API。
 
 ## 核心职责
 
@@ -82,9 +80,9 @@ Go 的 `EOFAsNil` 以 `terror.ErrorEqual(err, io.EOF)` 判断 EOF；Rust 当前�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/etc.go`，Rust 保留了相同函数集合和主要集合语义。Go 的三个函数变量 `IsTypeBlob`、`IsTypeChar`、`IsTypeVector` 在 Rust 中改成委托函数；Go 的 `kind2Str` map 在 Rust 中改为 `KindStr` 的穷举 `match`，未知 key 仍得到空字符串；Go 的 `TypeStr`/`TypeToStr` 函数变量在 Rust 中也是委托函数。`InvOp2` 用 Rust 泛型、`Debug` 与 `type_name` 模拟 Go `%v`/`%T`，成功占位从 Go `any` 映射成 `Option<Box<dyn Any>>`。
+Go 的三个函数变量 `IsTypeBlob`、`IsTypeChar`、`IsTypeVector` 在 Rust 中改成委托函数；Go 的 `kind2Str` map 在 Rust 中改为 `KindStr` 的穷举 `match`，未知 key 仍得到空字符串；Go 的 `TypeStr`/`TypeToStr` 函数变量在 Rust 中也是委托函数。`InvOp2` 用 Rust 泛型、`Debug` 与 `type_name` 模拟 Go `%v`/`%T`，成功占位从 Go `any` 映射成 `Option<Box<dyn Any>>`。
 
-类型集合与 restored data 条件和 Go 当前实现一致，包括 `IsTypeStoredAsInteger` 不含 Enum/Set、`IsTypeNumeric` 不含 Year、Varchar 在普通 `_bin` 校对下的恢复数据特例，以及 `utf8mb4_0900_bin` 排除项。Rust `NeedRestoredDataWithCollate` 的显式开关也对应 Go 同名函数，使编码/解码路径复用一次捕获的校对模式。
+Rust `NeedRestoredDataWithCollate` 的显式开关也对应 Go 同名函数，使编码/解码路径复用一次捕获的校对模式。
 
 已确认的差异是 EOF 表示：Go 测试传入 `io.EOF`，Rust `pkg/types/etc_test.rs::TestEOFAsNil` 构造 `UnexpectedEof`。另外 Rust 的 `pkg/types/etc_test.rs::TestIsNonBinaryStr` 直接调用目标函数，修正了 Go 同名测试中实际误调用 `IsBinaryStr` 的覆盖缺口。Rust 独立测试还比 Go 同路径测试更明确覆盖 `NeedRestoredData` 的 charset/collation 矩阵；`pkg/types/enum_4_aster_unit_test.rs` 则验证更完整的分类、错误文案和 errno 对应。
 
@@ -97,13 +95,3 @@ Go 的 `EOFAsNil` 以 `terror.ErrorEqual(err, io.EOF)` 判断 EOF；Rust 当前�
 新增或调整 collation 时，应优先修改 `NeedRestoredDataWithCollate`，并同步独立 Rust 测试 `pkg/types/etc_test.rs::TestNeedRestoredData` 与 `pkg/types/enum_4_aster_unit_test.rs::type_helpers_match_go_classification_and_restored_data_rules`；还要核对 `pkg/tablecodec/tablecodec.rs` 的 restored column 编解码契约以及 `pkg/table/raw_row.rs` 等直接调用点。这里的错误会带来索引兼容性或数据还原风险，不能只验证布尔函数本身。
 
 修改错误行为时，同步 `pkg/types/etc_test.rs::TestEOFAsNil` 和 `pkg/types/enum_4_aster_unit_test.rs::error_helpers_preserve_eof_invalid_operation_and_mysql_codes`。测试逻辑必须继续放在独立测试文件，不嵌入 `etc.rs`。若追求 Go 对齐，需明确记录 `io.EOF` 与 Rust `UnexpectedEof` 的语义选择。性能方面，这些函数处于编码和类型推断热路径，应维持无锁、常量时间判定；避免在分类函数中引入分配，`KindStr`/错误路径以外尤其如此。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/types/etc.rs` 找到目标，`node --file pkg/types/etc.rs --offset 1 --limit 280` 读取了 234 行及 28 个符号，并报告 36 个使用文件。
-- RustCodeGraph 符号查询：查询了 `NeedRestoredDataWithCollate`、`EOFAsNil`、`InvOp2`、`IsTypeStoredAsInteger`、`KindStr`；图中确认本文件内部调用边及 Go/Rust 同名定义。限定名 callers 输出存在多定义混合，因此上游调用点另用精确 Rust 源码检索复核，未把歧义输出当作单一调用结论。
-- 编译与 crate 边界：读取 `pkg/types/internal/metadata/lib.rs`、`pkg/types/internal/metadata/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`，确认 `include!`、再导出和 workspace 路径依赖链；`pkg/types` 下不存在 `doc.go`，因此无更近的包契约文件可读。
-- Go 对照：完整读取 `pkg/types/etc.go`，并读取 `pkg/types/etc_test.go` 中与本文件相关的分类、类型名、EOF、时间/字符串边界测试。
-- Rust 测试：完整读取 `pkg/types/etc_test.rs`；另读取 `pkg/types/enum_4_aster_unit_test.rs` 中 `type_helpers_match_go_classification_and_restored_data_rules` 与 `error_helpers_preserve_eof_invalid_operation_and_mysql_codes`。
-- 生产调用证据：读取 `pkg/tablecodec/tablecodec.rs::buildRestoredColumn`、`pkg/expression/planner_bridge.rs::ResolveType4Between`、`pkg/types/datum.rs::invalidConv`，并精确检索 table/raw-row/lightning/session 等直接调用点。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工检查只新增本文档、未修改 Rust/Go/Cargo/`plan.md`，且文中没有把未验证设计写成已支持事实。

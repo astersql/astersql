@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑 `LogicalTopN` 的 Rust 物理算子、候选计划枚举和存储下推序列化。它属于 `astersql-planner-core-operator-physicalop` crate；crate 的 [`Cargo.toml`](Cargo.toml) 以 `lib.rs` 为入口，并通过 `lib.rs` 中的 `mod physical_topn` 与 `pub use physical_topn::*` 对外暴露本文件符号。`impl_sort_operator!(PhysicalTopN, PhysicalSchemaProducer, {})` 又把本文件的方法接入 `ConcretePhysicalOperator`/`PhysicalPlan` 的统一动态分派。
-
-在传统物理计划枚举主链中，`base_physical_plan.rs` 将 `LogicalTopN` 路由到 `ExhaustPhysicalPlans4LogicalTopN`；该函数返回两组候选：真正需要排序的 `PhysicalTopN`，以及子节点已能满足顺序时的 `PhysicalLimit`。运行时的 `pkg/executor/physical_plan_runtime.rs` 识别 `PhysicalTopN`，递归执行唯一子节点，再以 `sortexec::TopNExec` 执行 offset/count TopN。另一路 `pkg/planner/cascades/old/implementation_rules.rs::ImplTopN` 也会直接构造本类型。
+实现逻辑 `LogicalTopN` 的 Rust 物理算子、候选计划枚举和存储下推序列化。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@ RustCodeGraph 对 `PhysicalTopN` 给出的显式实例化边包括 `cache_snapsh
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 [`physical_topn.go`](physical_topn.go)。Rust 保留了 Go 的字段集合、两组候选设计、固定 task-type 枚举顺序、部分有序前缀索引、IndexMerge advisory 属性、向量 TopK、Explain 脱敏、成本公式、PB 结构和 TopN-as-Limit 思路。
+Rust 保留了 Go 的字段集合、两组候选设计、固定 task-type 枚举顺序、部分有序前缀索引、IndexMerge advisory 属性、向量 TopK、Explain 脱敏、成本公式、PB 结构和 TopN-as-Limit 思路。
 
 已确认的实现差异：
 
@@ -106,13 +104,3 @@ RustCodeGraph 对 `PhysicalTopN` 给出的显式实例化边包括 `cache_snapsh
 - 修改下推编码时，在 `ToPB` 保留错误上下文和 TiFlash 一元子节点要求，并扩充 `physical_topn_test.rs`；若字段参与 plan cache，再扩充 `cache_snapshot_test.rs`。
 - 修改 root 执行语义时应同步检查 `pkg/executor/physical_plan_runtime.rs` 与 sortexec 的独立测试，尤其是 `PartitionBy`、前缀优化、空输入、offset 超过输入、count 为零以及溢出边界。
 - 测试必须继续放在独立文件；本模块现有直接测试是 `physical_topn_test.rs`，缓存复制测试在 `cache_snapshot_test.rs`。不要把 `#[cfg(test)]` 测试内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；查询定位到 Rust/Go 两个 `PhysicalTopN` 定义，并显示 Rust 类型被 `cache_snapshot.rs::restore` 实例化。读取了索引中的 `physical_topn.rs` 全部 631 行和 `physical_topn_test.rs` 全部 165 行；图对宏与动态分派调用边无完整结果，已用下列源码补证。
-- 目标源码：`physical_topn.rs` 的 `PhysicalTopN`、全部公开方法、`ExhaustPhysicalPlans4LogicalTopN` 与六个私有辅助函数。
-- crate/trait 接线：`Cargo.toml`、`lib.rs` 的模块声明、公开重导出、`impl_sort_operator!` 及 TopN 缓存契约。
-- 上下游证据：`base_physical_plan.rs` 的 `LogicalTopN` 路由与 reader pushdown，`pkg/planner/cascades/old/implementation_rules.rs` 的 TopN implementation/cost adapter，`pkg/executor/physical_plan_runtime.rs` 的 `TopNExec` 消费点，以及 `cache_snapshot.rs::CachedTopN`。
-- Go 对照：同目录 `physical_topn.go`，覆盖字段、候选生成、部分有序、向量、Explain、PB、成本、索引解析与任务挂接接口。
-- 独立 Rust 测试：`physical_topn_test.rs::tiflash_protobuf_carries_explain_id_like_go` 验证 TiFlash PB executor id；`mpp_allowed_enumerates_all_go_task_types_for_a_root_request` 验证四种任务类型顺序及重算后的统计。`cache_snapshot_test.rs` 还验证 TopN 字段缓存往返。
-- 本任务是纯文档分析，按任务约束不运行 Cargo。交付前以任务指定命令验证目标文件存在且恰有十一个固定二级标题，并人工复核本文能回答文件存在原因、主流程、安全扩展点及已知验证边界。

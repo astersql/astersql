@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-intset` crate 的核心整数集合 `FastIntSet`。crate 边界由 [`pkg/util/intset/Cargo.toml`](Cargo.toml) 定义，入口 [`pkg/util/intset/lib.rs`](lib.rs) 通过 `pub mod fast_int_set` 声明模块并用 `pub use fast_int_set::*` 扁平重导出这里的公开 API；该 crate 没有声明第三方 Rust 依赖，生产实现只使用标准库的 `BTreeSet`、格式化和错误 trait。
-
-它位于通用工具层，不承载 SQL 语义，而为上层保存小型或稀疏的 `i32` 标识集合。实际接线包括：[`pkg/expression/util.rs`](../../expression/util.rs) 收集表达式中的列 `UniqueID`；[`pkg/planner/funcdep/fd_graph.rs`](../../planner/funcdep/fd_graph.rs) 表示函数依赖的决定列、被决定列、非空列与等价类；逻辑聚合、连接、投影、选择等算子构造列集合；[`pkg/sessionctx/stmtctx/stmtctx.rs`](../../sessionctx/stmtctx/stmtctx.rs) 保存更新计划引用的列。因此它处在“表达式/逻辑计划提取标识 -> 集合运算 -> 规划性质或语句状态判断”的基础数据结构位置，而不是请求入口或存储访问层。
+提供确定性的升序遍历、复制、相等/子集/相交判断、差并交、整体平移、闭区间加入与压缩字符串表示。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ RustCodeGraph 对目标文件的文件节点报告 34 个符号，并标识 17 �
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 [`pkg/util/intset/fast_int_set.go`](fast_int_set.go)。两者共享 `smallCutOff = 64`、位图加大表示的双层设计、首次越界时提升全集、删除越界值后不自动降级、`Next` 跳过负数、集合运算和字符串压缩规则。Rust 的 [`fast_int_set_test.rs`](fast_int_set_test.rs) 与 Go [`fast_int_set_test.go`](fast_int_set_test.go) 也保留了相同的基础、随机往返、双集合、区间、位掩码和字符串测试主题；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 额外点名迁移契约。
+Rust 的 [`fast_int_set_test.rs`](fast_int_set_test.rs) 与 Go [`fast_int_set_test.go`](fast_int_set_test.go) 也保留了相同的基础、随机往返、双集合、区间、位掩码和字符串测试主题；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 额外点名迁移契约。
 
 实现载体存在有意差异：Go 的大表示是 `golang.org/x/tools/container/intsets.Sparse`，Rust 使用标准库 `BTreeSet<i32>`；Go 整数是平台宽度 `int`，Rust API 固定为 `i32`；Go 构造器是 `values ...int`，Rust 是 `Vec<i32>`；Go `GetSmallUInt64` 返回普通 `error`，Rust 返回具体的 `SmallValueError`。Go 的 `SortedArray` 对空集返回 `nil`，Rust 返回空 `Vec`，在各自语言中都表示零元素结果，但容器表现并非逐字等同。
 
@@ -94,13 +92,3 @@ Go `toLarge` 在已有大表示时返回原指针，Rust `toLarge` 返回拥有�
 - 若增加可失败 API，优先返回明确的 Rust 错误类型；不要把新的普通输入错误改成 panic。`AddRange` 的 panic 是既有 Go 兼容契约。
 - 行为修改应同步更新独立测试文件 [`fast_int_set_test.rs`](fast_int_set_test.rs)，而不是把测试写进生产源文件；涉及 Go 对齐状态时也更新 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，并对照 [`fast_int_set_test.go`](fast_int_set_test.go)。性能路径变化可扩展 [`fast_int_set_bench_test.rs`](fast_int_set_bench_test.rs) 的差集与插入场景。
 - 上层接线变化至少复核 expression 列集合提取和 planner 函数依赖/逻辑算子消费者；固定 `i32` ID、复制成本、排序顺序和字符串格式都可能构成兼容或性能风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/util/intset` 找到目标、Go 对照及独立测试；`node --file pkg/util/intset/fast_int_set.rs --offset 1 --limit 400` 读取目标的 34 个符号并报告 17 个使用文件。对常见方法名执行的精确 `callers/callees` 没有产生可消歧输出，随后以文件级使用关系和局部引用搜索补证，未将噪声结果当作调用边。
-- 生产实现与边界：[`fast_int_set.rs`](fast_int_set.rs)；crate 名、入口与无外部依赖事实：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)。目标目录没有 `doc.go`。
-- Go 对照：[`fast_int_set.go`](fast_int_set.go)，核对双表示、状态迁移、全部公开操作、`Next`、panic、错误和字符串规则。
-- Rust 测试：[`fast_int_set_test.rs`](fast_int_set_test.rs) 覆盖基础/随机操作、正负及 64 边界、复制、集合运算、区间、位掩码和文本；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 验证提升后不降级、Go 对齐的运算/平移/字符串及非法区间 panic；[`fast_int_set_bench_test.rs`](fast_int_set_bench_test.rs) 提供差集和插入路径的成本对照。
-- Go 测试：[`fast_int_set_test.go`](fast_int_set_test.go) 与 [`fast_int_set_bench_test.go`](fast_int_set_bench_test.go)，用于确认测试意图和原实现性能动机。
-- 代表性上游：[`pkg/expression/util.rs`](../../expression/util.rs)、[`pkg/planner/funcdep/fd_graph.rs`](../../planner/funcdep/fd_graph.rs)、[`pkg/planner/core/operator/logicalop/`](../../planner/core/operator/logicalop/)、[`pkg/sessionctx/stmtctx/stmtctx.rs`](../../sessionctx/stmtctx/stmtctx.rs)，并核对其相邻 `Cargo.toml` 对 `astersql-util-intset` 的路径依赖。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务给定命令验证目标文档存在且恰含 11 个固定二级章节，并人工复核未建议把 Rust 测试内嵌到生产文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-util-skip` 的行为实现，包入口 [`lib.rs`](./lib.rs) 通过 `pub mod skip` 声明模块并用 `pub use skip::*` 在 crate 根重新导出这里的公开 API。根工作区把该包列为 member，并以 `facade_util_skip` 暴露同一个 path 依赖；包自身只依赖 `astersql-testkit-testflag`，没有 feature 或可选依赖（依据：[`Cargo.toml`](./Cargo.toml) 与仓库根 `Cargo.toml`）。
-
-它不参与 SQL 请求、规划或存储运行链，而是把 Go `pkg/util/skip` 的测试跳过约定移植给 Rust 测试：根据 `-short` 或 `-long` 状态决定是否终止当前用例。当前 Rust 仓库中，目标文件的公开能力只由同 crate 的独立测试 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 引用；RustCodeGraph 未找到其他 Rust 调用者。因此它目前是已实现、已做迁移回归，但尚未接入其他 Rust 测试套件的测试基础设施。
+`TestContext` 的具体实现必须由接入它的 Rust 测试框架或适配层提供。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ RustCodeGraph 正确识别了两个 `*_with` 到 `helper`/`skip` 以及 Rust `No
 
 ## 与 Go 版本的对应关系
 
-[`skip.go`](./skip.go) 定义相同的两个公开概念：`UnderShort` 先 `t.Helper()`，在 `testing.Short()` 为真时以 `"disabled under -short"` 为首参数调用 `t.Skip`；`NotUnderLong` 在 `testflag.Long()` 为假时以 `"disabled not under -short"` 为首参数跳过。Rust 的 `UnderShort`/`NotUnderLong`、无条件 helper 调用、判断极性、固定文案和附加参数顺序均与之对应。
+Rust 的 `UnderShort`/`NotUnderLong`、无条件 helper 调用、判断极性、固定文案和附加参数顺序均与之对应。
 
 Rust 为可测试性增加了 Go 文件中没有的边界：`TestContext` trait、显式布尔值的两个 `*_with` 函数，以及 `short_from_args`。Rust 不能直接使用 Go `testing.T`，因此由调用方实现适配器；当前仓库只在迁移测试中提供 `RecordingTest`，尚未提供通用测试框架适配器。
 
-解析层不是逐字等价实现。Go `UnderShort` 读取 `testing.Short()` 已注册的测试标志；Rust `short_from_args` 自行扫描参数，并额外接受用户侧 `short` 拼写、双横线写法和后值覆盖，同时忽略非目标/非法参数继续扫描。因而公开意图和已覆盖形式对齐，但遇到未知参数、位置参数或解析错误时不能据此宣称与 Go `flag`/测试驱动器完全等价。`NotUnderLong` 委托的 Rust `testflag::long_from_args` 则会在位置参数、`--`、未知或非法标志处停止，两个解析器的边界策略也不相同。
+Go `UnderShort` 读取 `testing.Short()` 已注册的测试标志；Rust `short_from_args` 自行扫描参数，并额外接受用户侧 `short` 拼写、双横线写法和后值覆盖，同时忽略非目标/非法参数继续扫描。`NotUnderLong` 委托的 Rust `testflag::long_from_args` 则会在位置参数、`--`、未知或非法标志处停止，两个解析器的边界策略也不相同。
 
 ## 扩展指南
 
@@ -89,11 +87,3 @@ Rust 为可测试性增加了 Go 文件中没有的边界：`TestContext` trait�
 - 若调整跳过原因或附加参数布局，应同时修改 `under_short_with`/`not_under_long_with` 及对应测试，并核对 [`skip.go`](./skip.go)；这些字符串可能出现在测试日志或外部筛选脚本中，属于兼容风险。
 - 若增加新的测试模式，应复用 `*_with` 的“显式状态 + 真实进程入口”分层，并在独立测试文件注入状态；涉及 `-long` 的解析规则应在 `astersql-testkit-testflag` 内维护，避免两个 crate 各自演化。
 - 当前 API 在跳过分支会分配一个小向量。只有分析证明测试基础设施中该成本重要时才考虑改动；任何无分配方案仍须保持异构 `Any` 参数的顺序和借用生命周期安全。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 `pkg/util/skip/{lib.rs,skip.rs,migration_aster_unit_test.rs,skip.go}`；`node --file pkg/util/skip/skip.rs` 覆盖源文件 125 行及全部 10 个索引符号。
-- RustCodeGraph 符号/边查询：`short_from_args`、`under_short_with`、`not_under_long_with` 各只有一个 Rust 定义；两个 `*_with` 的下游包含 `TestContext::helper` 与 `TestContext::skip`；Rust `NotUnderLong` 的下游包含 `not_under_long_with`。调用者查询与文本引用搜索均只找到同目录迁移测试。
-- 直接阅读：[`skip.rs`](./skip.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)、[`skip.go`](./skip.go)、`pkg/testkit/testflag/flag.rs`、根 `Cargo.toml`、`pkg/util/skip/BUILD.bazel`。
-- Go 使用面核验：`pkg/executor/test/unstabletest/memory_test.go` 的两个内存测试调用 `UnderShort`；`pkg/ttl/ttlworker/job_manager_integration_test.go::TestJobManagerWithFault` 调用 `NotUnderLong`。
-- 独立 Rust 测试覆盖的事实：非 short/short 分支、helper 次数、固定原因与附加参数顺序、long/非 long 分支、Go 布尔拼写与最后值优先，以及 `skip` 不返回。按任务约束本次不运行 Cargo，故这里只记录源码级测试证据，不声称执行了测试。

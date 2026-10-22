@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/ddl/lib.rs` 以 `pub mod storage_class_transition` 对外导出。它不是 DDL owner、轮询线程或 SQL 表访问层，而是存储类型迁移（storage-class transition）的共享领域模型：定义运行中迁移的状态与物理目标，提供从 `astersql_meta_model::TableInfo` 推导迁移操作的纯函数，并用进程内缓存保存最近一次观测。
-
-在实际链路中，上游分为两条。DDL 执行侧的 `pkg/ddl/persistent_actions.rs::modify_engine_attribute` 在表/分区 storage class 改变时调用 `snapshot_physical_storage_classes`，随后由 `stage_storage_class_transitions` 调用本文件的差异、校验、分组函数并写入 `mysql.tidb_storage_class_transition_history`。owner 服务侧的 `pkg/session/runtime/normal_ddl_service.rs::{transition_statuses,poll_storage_class_transitions}` 读取运行中历史行，恢复本文件的操作对象，轮询 TiKV 状态并维护 `StorageClassTransitionManager`。
+统一字符串协议：`DIRECTION_TO_IA`、`DIRECTION_TO_STANDARD` 和三种状态常量定义持久化记录与展示使用的值；`normalized_target`、`direction`、`target_for_direction` 在空 tier、目标 tier 和迁移方向之间转换。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ RustCodeGraph 未发现 `targets_exist`、`replacement_physical_ids`、`topology
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/storage_class_transition.go` 是逐符号对照来源：Rust 的 status/key/target/physical state/operation、tier/方向转换、快照、变化检测、操作分组、目标设置与校验、拓扑辅助、缓存匹配、进度和 schema version 判断都能找到同名语义的 Go 实现。`pkg/ddl/storage_class_transition_test.rs` 也复现了 Go 单测的核心意图：按方向分组、父表为真实物理目标、只比较存活目标、替代目标过滤、一次完整观测完成、严格目标校验与精确缓存身份。
-
 但当前接线并非完整等价。Go 的 `storageClassTransitionManager` 同时维护 `active` 与 `observed`，能从 InfoSchema 刷新当前名称并在 schema version 发布后才展示；Rust manager 只有 `observed`，Rust `transition_statuses` 直接使用历史行中的名称，且 `schema_published` 暂无生产调用。Go `poll` 会用 `storageClassTransitionTargetsExist`、`storageClassTransitionTopologyIsStable` 和 `reconcileStorageClassTransitionTopology` 等待/替换发生变化的分区拓扑；Rust `normal_ddl_service.rs::poll_storage_class_transitions` 当前没有调用对应辅助函数。Go 的观测还使用请求超时并拒绝 `ready > total`；Rust 当前轮询直接调用 store helper，没有在本文件或所读轮询段中体现同等校验。
 
 因此本文件可视为 Go 领域模型和部分协调算法的 Rust 移植基础，而不能单凭这些 helper 的存在宣称完整 Go 运行行为已接通。Go 的 `storage_class_transition_poll_test.go` 与 `storage_class_transition_history_test.go` 覆盖拓扑稳定、协调失败、保留最后观测、owner 切换和终态条件更新等集成语义；Rust 独立单测目前主要覆盖纯函数与缓存。
@@ -93,12 +89,3 @@ RustCodeGraph 未发现 `targets_exist`、`replacement_physical_ids`、`topology
 - 若要完成 Go 拓扑协调语义，接入点应在 `normal_ddl_service.rs::poll_storage_class_transitions`，复用 `targets_exist`、`topology_is_stable`、`replacement_physical_ids`、`touches`，并补充独立 Rust 集成测试；不能只扩写本文件 helper 后宣称行为完成。
 - 若统一进度计算，应让生产轮询调用 `update_progress` 或删除重复逻辑，同时补充 `ready > total`、部分目标未观测、零副本及旧 progress 清理用例。若启用 `schema_published`，还需明确当前 InfoSchema/name 解析的所有权。
 - 测试逻辑应继续放在独立的 `pkg/ddl/storage_class_transition_test.rs` 或更高层独立测试文件，不嵌入本生产文件。兼容风险集中在历史 JSON/字符串协议和已有 RUNNING 行；性能风险主要是每轮对目标数乘 store 数的轮询，而非这些本地 `BTree*` 操作。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库索引可用，目标文件 `pkg/ddl/storage_class_transition.rs` 被识别为 405 行、39 个符号；通过 `node --file` 阅读了文件全貌。
-- RustCodeGraph 精确符号证据：查询/读取了 `build_operations`、`snapshot_physical_storage_classes`、`changed_physical_ids`、`set_targets`、`validate_targets`、拓扑辅助函数、进度/schema 辅助函数和 manager 方法；`node` trail 验证了 `persistent_actions.rs::stage_storage_class_transitions` 及 `normal_ddl_service.rs::{transition_statuses,poll_storage_class_transitions}` 的调用边。通用 `callers` 命令在本地长时间无输出后中止，随后用 `node` 的 `Called by`/`Calls` trail 获得等价图证据。
-- 已读 Rust 文件：`pkg/ddl/storage_class_transition.rs`、`pkg/ddl/storage_class_transition_test.rs`、`pkg/ddl/persistent_actions.rs` 的 staging 函数、`pkg/ddl/job_worker.rs` 的执行上下文边界、`pkg/session/runtime/normal_ddl_service.rs` 的状态读取/轮询、`pkg/session/runtime/system_session.rs` 的 manager 持有处、`pkg/ddl/lib.rs` 和 `pkg/ddl/Cargo.toml`。
-- 已读 Go 对照与测试：`pkg/ddl/storage_class_transition.go`、`pkg/ddl/storage_class_transition_test.go`、`pkg/ddl/storage_class_transition_poll_test.go`、`pkg/ddl/storage_class_transition_history_test.go`。
-- 人工复核结论：本文件存在的原因是让 DDL staging、owner 轮询和状态读取共享同一操作身份、目标序列化和缓存匹配规则；安全扩展必须同时维护持久化协议、调用者接线与独立测试，并区分已存在 helper 和已接通生产行为。
-- 本任务为纯文档分析，按计划未运行 Cargo；最终结构通过任务规定的 11 标题命令验证。

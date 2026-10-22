@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-cascades-task`，包入口是同目录的 `lib.rs`，后者通过 `mod task_opt_group` 装配并通过 `pub use task_opt_group::*` 导出本文件 API。它位于 Cascades 优化器的 Memo 探索链上：`pkg/planner/cascades/cascades.rs` 的 `Optimizer::NewOptimizer` 初始化根 `Group` 后创建 `NewOptGroupTask`，`SimpleTaskScheduler::ExecuteTasks` 再从 LIFO 任务栈弹出并执行它。
-
-文件只负责“展开一个等价组”的调度步骤，不负责模式匹配、规则变换或把新表达式写回 Memo；这些职责分别落在 `task_opt_group_expression.rs`、`task_apply_rule.rs` 和 `Context` 接口中。目标目录不存在 `doc.go`；包边界以 `Cargo.toml`、`lib.rs` 和相邻实现为准。
+真正的规则筛选、Binder 遍历、`XForm`、`CopyInWithChildren` 和新表达式继续调度由相邻任务实现。
 
 ## 核心职责
 
@@ -93,7 +91,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/task/task_opt_group.go`。Rust 保留了 Go 的类型、构造器、`Execute`/`Desc` 名称和主要顺序：检查 `IsExplored`，遍历组表达式并压表达式级任务，调用 `SetExplored`，最后返回成功；描述文本也一致。
+Rust 保留了 Go 的类型、构造器、`Execute`/`Desc` 名称和主要顺序：检查 `IsExplored`，遍历组表达式并压表达式级任务，调用 `SetExplored`，最后返回成功；描述文本也一致。
 
 主要表示差异：
 
@@ -102,8 +100,6 @@
 - Go 的 `ForEachGE` 遍历链表；Rust 的 `GetLogicalExpressions` 克隆句柄向量后遍历。两者当前都为每个当时可见表达式压任务，但 Rust 明确提供对遍历期间容器变更更稳健的快照语义。
 - Go 的 `Group.String` 直接写入 writer；Rust 的 `Group::String` 返回 `String`，`Desc` 再写入。最终格式保持一致。
 - Go 返回 `nil`，Rust 返回 `Ok(())`；本文件均无主动错误分支。
-
-Go 的相邻 `task_opt_group_expression.go` 同样逆序压入输入子组，以满足“子组先探索、然后应用当前表达式规则”的 LIFO 前置条件。Rust 对这一调度语义保持一致。
 
 ## 扩展指南
 
@@ -118,13 +114,3 @@ Go 的相邻 `task_opt_group_expression.go` 同样逆序压入输入子组，以
 5. 新增可失败操作时，让错误通过 `Task::Execute` 返回，避免把“已经 explored”留在与实际调度进度不一致的状态。
 
 测试应继续放在独立文件 `pkg/planner/cascades/task/task_test.rs`，不要内嵌到生产源文件。最直接的新增用例包括：已 explored 时不入栈、空组仍安全完成、多表达式的 LIFO 顺序、派生任务失败后组标志语义，以及规则新增表达式仍被显式调度。对应 Go 行为变更时同步检查 `task_opt_group.go` 及相关 Go 测试；若只是 Rust 特有借用/生命周期回归，应在独立 Rust 测试中说明差异缘由。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；目标目录的 `files --filter` 结果识别出 Rust/Go 成对实现与独立测试文件。
-- RustCodeGraph `query OptGroupTask --kind struct`、`query NewOptGroupTask --kind function` 和路径限定 `node`：确认 Rust/Go 符号、签名与目标源码位置。
-- RustCodeGraph 路径读取：`task_test.rs` 第 272 行起的 `task_chain_uses_real_memo_and_rule_contracts`，`memo/group.rs` 中 `GetLogicalExpressions`、`IsExplored`、`SetExplored`，以及 `cascades.rs::Optimizer::NewOptimizer`/`Execute`。
-- RustCodeGraph 的通用 `Execute` 调用边查询出现同名消歧噪声，未把其跨包结果作为依据；上游和下游关系由路径限定源码与 `rg` 引用结果交叉核对。
-- 读取的 Rust 直接证据：`task_opt_group.rs`、`lib.rs`、`base.rs`、`task.rs`、`task_scheduler.rs`、`task_opt_group_expression.rs`、`task_apply_rule.rs`、`task_test.rs`、`task_scheduler_test.rs`、`memo/group.rs`、`cascades.rs`。
-- 读取的 Cargo/Go 直接证据：`pkg/planner/cascades/task/Cargo.toml`、`task_opt_group.go`、`task_opt_group_expression.go`、`task_test.go`、`task_scheduler_test.go`、`pkg/planner/cascades/memo/group.go`、`pkg/planner/cascades/cascades.go`。
-- 相关独立 Rust 测试 `task_chain_uses_real_memo_and_rule_contracts` 断言任务链结束后组已 explored、组内因规则变换共有两个逻辑表达式、原表达式已记录 rule 0；`TestSimpleTaskScheduler` 证明调度为 LIFO 且错误会短路。按任务约束，本次纯文档分析未运行 Cargo，也未执行测试二进制。

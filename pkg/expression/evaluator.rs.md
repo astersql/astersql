@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-`evaluator.rs` 属于 `astersql-expression` crate。crate 根文件 `pkg/expression/lib.rs` 用 `#[path = "evaluator.rs"] mod evaluator_kernel;` 将它编译为私有子模块；同一根文件只在 `cfg(test)` 下装入独立测试 `pkg/expression/evaluator_test.rs`。模块没有在 `lib.rs` 中公开再导出，因此文件内虽然有 `pub` 符号，它们仍受私有父模块限制，当前不能作为 crate 外 API 访问。
-
-这个文件负责“一组表达式对一个输入 `Chunk` 的批量投影”：纯 `Column` 表达式可交给 `chunk::ColumnSwapHelper` 复用列存储，其他表达式由内部 `defaultEvaluator` 选择向量或逐单元格求值。它位于表达式树（`Expression`、`ScalarFunction`）与底层 chunk 求值内核（`chunk_executor.rs`）之间。
-
-`pkg/expression/Cargo.toml` 声明包名为 `astersql-expression`、库入口为 `lib.rs`，关闭自动测试发现和 doctest，并以 `[package.metadata.porting].go-package = "pkg/expression"` 指向 Go 对照包。目标文件直接使用 crate 根再导出的 expression、context、error、type、chunk API；chunk 实现来自 path 依赖 `astersql-util-chunk`，可选求值属性来自 path 依赖 `astersql-expression-exprctx`。本模块没有独立 feature gate。
-
-当前接线状态需要特别注意：精确 Rust 引用搜索只找到 `lib.rs` 的模块声明和 `evaluator_test.rs` 的测试使用，没有找到 Rust 生产模块对 `NewEvaluatorSuite`、`EvaluatorSuite` 或 `GetOptionalEvalPropsForExpr` 的调用。相对地，Go 同名实现已被 executor projection/expand、detach 和 mock coprocessor 等路径使用。因此本文描述的是已编译、已有单元测试的 Rust 实现，不把 Go 生产接线等同于 Rust 已接线事实。
+这个文件负责“一组表达式对一个输入 `Chunk` 的批量投影”：纯 `Column` 表达式可交给 `chunk::ColumnSwapHelper` 复用列存储，其他表达式由内部 `defaultEvaluator` 选择向量或逐单元格求值。
 
 ## 核心职责
 
@@ -94,7 +88,6 @@ RustCodeGraph 能定位目标符号和内部边，例如 `EvaluatorSuite::Run ->
 
 ## 与 Go 版本的对应关系
 
-- Rust `defaultEvaluator`、`EvaluatorSuite`、`NewEvaluatorSuite`、`Vectorizable`、`Run`、`RequiredOptionalEvalProps` 与 `GetOptionalEvalPropsForExpr` 逐一对应 `pkg/expression/evaluator.go` 的同名概念，保持“列/其他表达式分流、其他表达式先执行、属性递归取并集”的主要结构。
 - Go 的 `defaultEvaluator.run` 在整组可重排但单个表达式不走向量路径时调用 `evalOneColumn`；Rust 直接对 `0..input.NumRows()` 调用 `evalOneCell`。对普通无 selection 的 chunk，两者都是逐行填充该输出列；若未来 Rust chunk 引入/启用 Go iterator 的 selection 语义，需要重新核对这一差异。
 - Go 使用内嵌 `*defaultEvaluator`，Rust 使用 `Option<defaultEvaluator>` 并提供显式转发方法；空/纯列 suite 的外部语义相同。
 - Go 列索引是 `int` map key；Rust helper 要求 `usize`，因此 Rust 新增了负数/未解析索引的 panic 边界。
@@ -113,13 +106,3 @@ RustCodeGraph 能定位目标符号和内部边，例如 `EvaluatorSuite::Run ->
 7. 与 Go 对齐时同步检查 `pkg/expression/evaluator.go` 和 `pkg/expression/evaluator_test.go::TestOptionalProp`，保留分支和错误语义；不得以只覆盖常量或空 suite 的简化实现代替生产行为。
 
 性能风险主要来自把可安全整列执行的表达式退化为逐单元格循环、破坏列引用复用，或对同一表达式树重复递归收集属性。正确性风险集中在求值顺序、列交换时机、无效列下标以及错误后的部分输出；兼容性风险集中在 Go iterator/selection 语义和 Rust 模块对外暴露边界。
-
-## 验证依据
-
-- RustCodeGraph 索引：`rustcodegraph status` 显示本仓库已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`node pkg/expression/evaluator.rs --file ...` 核对了目标文件全部 194 行与真实符号。
-- RustCodeGraph 符号/调用查询：对 `defaultEvaluator`、`EvaluatorSuite`、`NewEvaluatorSuite`、`GetOptionalEvalPropsForExpr` 执行 `query`；对构造、运行、向量化和属性函数执行 `callers`/`callees`。图确认内部 `EvaluatorSuite::Run -> defaultEvaluator::run`，并定位 `chunk_executor.rs` 的 `Vectorizable`、`evalOneVec`、`evalOneCell` 以及 `chunk_util.rs` 的 `ColumnSwapHelper`、`SwapColumns`、`mergeInputIdxToOutputIdxes`。图的 callers 为空且部分 callees 缺失，故未把空结果作为“无调用”的唯一证据。
-- Rust 装配与精确引用：读取 `pkg/expression/lib.rs` 的 `evaluator_kernel` 和 `evaluator_test` 声明；用 `rg` 搜索 Rust 全仓 `evaluator_kernel|NewEvaluatorSuite|GetOptionalEvalPropsForExpr`，确认除目标文件外只有模块声明与独立测试引用，当前未发现 Rust 生产调用者。
-- crate 边界：读取 `pkg/expression/Cargo.toml`，核对库入口、`autotests = false`、path 依赖、无独立 feature，以及 porting metadata。目标包不存在 `pkg/expression/doc.go`。
-- Go 对照：读取 `pkg/expression/evaluator.go` 全部实现；精确搜索并核对 `pkg/executor/builder.go`、`projection.go`、`detach.go` 与 `pkg/store/mockstore/unistore/cophandler/mpp_exec.go` 的生产调用位置。
-- 测试证据：读取完整 `pkg/expression/evaluator_test.rs`，覆盖列交换/共享引用、禁用优化、向量/标量常量一致性、空 suite、非标量属性和递归属性并集；读取 `pkg/expression/evaluator_test.go::TestOptionalProp` 核对 Go 属性语义。测试文件与源文件保持分离。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付时执行固定十一章节结构检查，并人工复核本文能够回答文件为何存在、实际如何运行、当前接线程度以及如何安全扩展。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-tikv` crate。crate 入口 `pkg/lightning/tikv/lib.rs` 以私有模块 `prop_collector` 装载它，再用 `pub use prop_collector::*` 重新导出其公开符号。`pkg/lightning/tikv/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/lightning/tikv`；本文件自身只直接依赖标准库的 `HashMap` 和 crate 内的 `TikvError`，没有条件编译项。
-
-它位于 Lightning 本地 SST 生成链路中：`pkg/lightning/tikv/local_sst_writer.rs` 的 `write_sst` 创建 `MvccPropCollector` 与 `RangePropertiesCollector`，逐条喂入待写记录，然后把二者生成的 `tikv.*` 用户属性合入 SST property block。属性用于描述 MVCC 行/版本统计以及按键范围采样的累计大小和键数。
+用 `TablePropertyCollector` 抽象统一逐条收集（`Add`）、结束写出（`Finish`）和注册名（`Name`）三个操作；`MockCollector` 提供无副作用实现。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ MVCC 数值属性均为 8 字节大端整数：`min_ts` 与 `max_ts` 等于构�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/tikv/prop_collector.go`。Rust 的 `MockCollector`、`MvccPropCollector`、`IndexHandle`、`RangePropertiesCollector` 分别对应 Go 的 `mockCollector`、`mvccPropCollector`、`indexHandleKV`、`rangePropertiesCollector`；默认阈值、10,000 键 MVCC 锚点、属性名、收集器名称与大端编码布局保持一致。
-
 主要表示差异是：Go 直接实现 Pebble 的 `sstable.TablePropertyCollector`，属性字典值为 `string`；Rust 定义本地同形 trait，使用 `InternalKey` 与 `HashMap<String, Vec<u8>>`。Go 构造器返回指针，Rust 构造器返回拥有型值。Go MVCC props 结构预留 TTL 的最大/最小过期时间，且只在存在时输出对应属性；Rust 当前没有 TTL 字段，因此不会生成 `tikv.max_expire_ts` 或 `tikv.min_expire_ts`。这属于当前移植差异，不能将 TTL 描述为已支持。
 
 Go 与 Rust 都会在短 MVCC 键切片时 panic，也都保留 `Finish` 后的尾区段状态；独立 Rust 回归测试专门固定了这两个容易被“安全化”或“幂等化”改写的语义。Go 的 `local_sst_writer_test.go` 原计划逐属性比较 TiKV 样例 SST，但相关属性比较代码当前被注释且测试被跳过；Rust 的 `local_sst_writer_test.rs` 只对关键属性做聚焦断言，不能据此宣称所有属性与 TiKV 样例逐字节一致。
@@ -91,13 +87,3 @@ Go 与 Rust 都会在短 MVCC 键切片时 panic，也都保留 `Finish` 后的�
 - 改动索引线格式必须同步所有消费者并验证大端 `u64` 长度及累计偏移语义；这是兼容性风险，旧 TiKV/工具可能无法解析不兼容格式。
 - 优化键复制可降低大量记录下的分配成本，但必须保持锚点拥有稳定字节；改为借用或缓冲复用前要证明生命周期安全。
 - 若要把 trait 接到其他 SST writer，应确认其传入的是用户键而非包含 RocksDB sequence trailer 的完整 internal key，并继续满足 MVCC 末尾 8 字节的前置条件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件；`files --filter pkg/lightning/tikv` 确认目标 Rust/Go 源与独立测试均被索引。
-- RustCodeGraph `node --file pkg/lightning/tikv/prop_collector.rs --offset 1 --limit 400`：读取目标文件完整 312 行，核对全部类型、trait、函数、impl、可见性与编码逻辑。
-- RustCodeGraph `query RangePropertiesCollector --kind struct`、`query newRangePropertiesCollector --kind function`：区分 Lightning、ingestor 及 Go/Rust 同名实现，避免把别处 collector 当成本文件调用关系。
-- RustCodeGraph 对 `pkg/lightning/tikv/local_sst_writer.rs` 第 200 行起的节点读取：确认 `write_sst` 的 `new -> Add -> Finish -> property block` 生产调用链。
-- 已读 crate/模块边界：`pkg/lightning/tikv/Cargo.toml`、`pkg/lightning/tikv/lib.rs`。
-- 已读 Go 对照：`pkg/lightning/tikv/prop_collector.go`；已读独立 Rust 测试：`pkg/lightning/tikv/prop_collector_test.rs`、`pkg/lightning/tikv/local_sst_writer_test.rs`；已读 Go 相关测试：`pkg/lightning/tikv/local_sst_writer_test.go`。
-- 人工复核结论：本文件存在是为了让本地生成的 SST 携带 TiKV 可识别的 MVCC 与范围索引属性；运行时由 `write_sst` 对同一记录流串行驱动；安全扩展必须保持 MVCC 键前提、大端线格式、累计偏移、单次 `Finish` 生命周期和独立测试约束。

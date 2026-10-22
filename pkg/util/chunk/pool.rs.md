@@ -4,10 +4,7 @@
 
 ## 文件定位
 
-- 本文件由 crate 入口 [`lib.rs`](lib.rs) 通过 `#[path = "pool.rs"] pub mod pool` 挂入 `astersql-util-chunk`；crate 边界及直接依赖声明在 [`Cargo.toml`](Cargo.toml)。`Pool` 使用的 `Chunk`、`Column`、`getFixedLen`、`newFixedLenColumn`、`newVarLenColumn` 和 `types::FieldType` 都由 crate 根重导出。
-- 它位于 Chunk 内存构造链上：[`chunk.rs`](chunk.rs) 的 `NewChunkFromPoolWithCapacity` 调用 crate 内的 `getChunkFromPool` 包装，最终进入本文件的 `getChunkFromPool`；`Chunk::Destroy` 沿相反方向调用 `putChunkFromPool` 归还列。
-- [`internal/group1/lib.rs`](internal/group1/lib.rs) 提供按值接收 `Vec<FieldType>`/`Chunk` 的适配函数，把调用转发给本文件按切片和可变引用接收的接口。这是 `chunk.rs` 经 `include!` 注入后的实际接线，不是另一套池实现。
-- 此池优化的是具有相同 `initCap` 和物理列宽的反复分配。普通的 `New`、`NewChunkWithCapacity`、`NewEmptyChunk` 不经过它。
+只实现显式复用。
 
 ## 核心职责
 
@@ -100,11 +97,3 @@
 - 若想降低全局命中路径竞争，可调整 `globalChunkPool` 的同步策略，但必须保留“同一个 `initCap` 只发布一个共享池”的不变量，并为并发首次创建添加回归测试。
 - 调用方新增池化路径时，取用和归还必须携带相同的 `initCap` 与字段顺序；最安全的接线位置是现有 `NewChunkFromPoolWithCapacity` 和 `Chunk::Destroy`，避免绕开转换/所有权约束。
 - 性能风险主要来自全局互斥、逐列桶锁、锁内首次分配和无上限缓存；兼容风险主要来自宽度表不同步及错误字段布局。任何优化都应保留五类物理布局、归还后 Chunk 零列、列内容清空和跨线程唯一所有权。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 `pkg/util/chunk/pool.rs`；文件节点显示 161 行、12 个符号，并给出 `global_pool → NewPool`、`getChunkFromPool → global_pool/GetChunk`、`putChunkFromPool → global_pool/PutChunk`、`GetChunk → get_column → cache`、`PutChunk → cache` 等调用边。
-- 已读生产源码：[`pool.rs`](pool.rs)、[`chunk.rs`](chunk.rs) 中 `NewChunkFromPoolWithCapacity`/`Chunk::Destroy`、[`internal/group1/lib.rs`](internal/group1/lib.rs) 中两个适配入口、[`codec.rs`](codec.rs) 中 `VarElemLen`/`getFixedLen`、[`column.rs`](column.rs) 中列构造与 `Column::reset`、crate 入口 [`lib.rs`](lib.rs) 及 [`Cargo.toml`](Cargo.toml)。
-- 已读 Go 对照：[`pool.go`](pool.go)，核对全局表、五个 `sync.Pool`、构造/取用/归还流程；[`pool_test.go`](pool_test.go)，核对构造、布局、清空和并行 benchmark 的原始意图。
-- 已读 Rust 独立测试：[`pool_test.rs`](pool_test.rs)，覆盖全部五种池宽、容量/布局、reset 与列所有权释放、4 线程往返以及 `Destroy` 到全局池的复用链。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证本文恰好包含 11 个固定二级章节，并人工复核所有行为结论均可追溯到上述符号或文件。

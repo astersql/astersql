@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-infosync` crate 的统一错误边界。crate 入口 `pkg/domain/infosync/lib.rs` 以私有模块 `mod error` 装配它，再通过 `pub use error::*` 对外重新导出 `Error` 与 `Result<T>`；因此 crate 内的 InfoSyncer、PD/etcd、标签、放置规则、资源组、Region 和 TiFlash 相关接口都可直接使用这两个名称。crate 归属及 `serde_json`、`thiserror` 依赖由 `pkg/domain/infosync/Cargo.toml` 确认。
-
-文件只声明错误数据模型，不执行网络请求、重试或状态更新。具体错误何时产生、是否重试，由 `info.rs`、`region.rs`、各 manager 等调用方决定。
+为所有变体提供 `std::error::Error`、`Display` 和 `Debug` 能力；其中 `Display` 文本由 `thiserror::Error` 派生及各 `#[error(...)]` 属性确定。
 
 ## 核心职责
 
@@ -84,12 +82,9 @@ PD 状态映射的边界由 `info.rs::pdResponseHandler` 给出：`200`、`404`�
 
 ## 与 Go 版本的对应关系
 
-Go 对照不是单文件逐项映射，而是分散定义：
-
 - `pkg/domain/infosync/error.go` 只定义 `ErrHTTPServiceError = dbterror.ClassDomain.NewStd(errno.ErrHTTPServiceError)`。Rust 用 `DomainService(String)` 承担相应 HTTP 服务错误类别，并在展示文本中保留 `[domain:8243]`；Go 侧则保留 `dbterror` 的标准错误类和 `Equal` 判断能力。
 - Go `info.go::getGlobalInfoSyncer` 直接构造文本 `infoSyncer is not initialized`；Rust 将其结构化为 `NotInitialized`，但保持展示文本一致。
 - Go `info.go` 与 `region.go` 通过 PD client 的 `ErrClientGetLeader.FastGenByArgs("pd http cli is nil")` 表达客户端缺失；Rust 将其收敛为 `PdHttpClientMissing`，保留消息但不保留 Go 的 PD 错误类型。
-- Go `ErrPrometheusAddrIsNotSet` 是 `dbterror` 标准错误；Rust 对应 `PrometheusAddressNotSet`，保留语义和消息，不携带 Go 错误码对象。
 - Go 使用 `errors.Trace` 传播 JSON 等一般错误；Rust 用专用 `Json` 透明包装 `serde_json::Error`。`External` 则覆盖当前尚无专用 Rust 类型的其他字符串错误。
 
 控制流对齐比错误表示完全同构更重要：Go `PutRuleBundlesWithRetry` 用 `ErrHTTPServiceError.Equal(err)` 识别后立即返回，Rust 对应地匹配 `Error::DomainService(_)`；Go 与 Rust 的 PD 状态处理都接受 `200/404/412`，其余状态进入领域服务错误。
@@ -101,12 +96,3 @@ Go 对照不是单文件逐项映射，而是分散定义：
 - 修改 `#[error(...)]` 文本或 `[domain:8243]` 前缀属于外部可见兼容性变化，应与 Go 的 `dbterror` 消息/错误码契约一起核对。
 - 如果新增变体携带非线程安全资源，会改变整个 `Error` 的自动 `Send`/`Sync` 能力；错误负载宜保持拥有型、轻量且不持锁。
 - 测试逻辑必须继续放在独立文件。变体产生与控制流测试应扩展同目录 `info_test.rs`、`region_test.rs` 或对应 manager 的 `*_test.rs`；若要验证纯展示文本、错误来源链和 JSON 自动转换，应新建独立 `error_test.rs` 并在 `lib.rs` 以 `#[cfg(test)]` 接入，而不是把测试嵌入 `error.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件并覆盖 `pkg/domain/infosync/error.rs`；`files --filter pkg/domain/infosync` 确认目标及相邻生产/测试文件；`node --file pkg/domain/infosync/error.rs --offset 1 --limit 240` 核对完整 45 行源码和 13 个使用文件；`node pkg/domain/infosync/error.rs::Error` 核对枚举源码。精确 `callers` 没有返回变体引用，`callees` 因同名 `Error` 发生歧义，故未把该错误图输出当作调用事实。
-- Rust 源与 crate 边界：`pkg/domain/infosync/error.rs`、`pkg/domain/infosync/lib.rs`、`pkg/domain/infosync/Cargo.toml`。
-- 直接调用证据：`pkg/domain/infosync/info.rs`、`region.rs`、`label_manager.rs`、`types.rs`、`placement_manager.rs`、`resource_manager_client.rs`、`tiflash_manager.rs`、`mock_info.rs`、`schedule_manager.rs`；使用 `rg` 精确检索六个 `Error` 变体和 `Result<`。
-- Rust 独立测试：`pkg/domain/infosync/info_test.rs::test_put_bundles_retry` 验证 `DomainService` 不重试而其他错误重试；`test_set_keyspace_config_without_pdhttp_client` 验证客户端缺失；`pd_status_and_tiflash_rule_contract_match_go` 验证状态码与响应体映射。`pkg/domain/infosync/region_test.rs::replication_state_and_missing_client_match_go_fallbacks` 验证四个 Region API 的缺失客户端边界。未发现直接覆盖 `NotInitialized`、`PrometheusAddressNotSet`、`Json` 展示/来源链的专项 Rust 测试。
-- Go 对照：`pkg/domain/infosync/error.go`、`info.go`、`region.go`、`info_test.go`，用于核对错误类、消息、状态码边界和重试分类。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构检查用于确认目标文档存在且恰有 11 个固定二级章节。

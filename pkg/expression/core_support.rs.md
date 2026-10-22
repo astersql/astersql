@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`core_support.rs` 属于 `astersql-expression` crate，是表达式核心类型周围的集中兼容与支撑层。模块由 [`lib.rs`](lib.rs) 通过 `#[path = "core_support.rs"] mod core_support` 挂载，并用 `pub use core_support::*` 向 crate 使用者整体再导出，因此其中的公开函数既可经 `crate::core_support::...` 调用，也可经 `expression::...` 调用。它不负责定义 `Expression`、`Constant`、`Column` 或 `ScalarFunction` 本体，而是基于这些类型提供函数分类表、ROW/列树辅助、CAST 包装、常量折叠、常量向量填充和动态向下转型。
-
-该文件把 Go 版本分散在 `function_traits.go`、`util.go`、`builtin_cast.go`、`constant_fold.go`、`vectorized.go`、`expression.go` 和 `builtin_vectorized.go` 的若干能力集中到一个 Rust 文件中。crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确定；本文件通过 `use crate::*` 使用 crate 根再导出的 AST、MySQL 类型、chunk、错误、日志及表达式类型，而不是自行声明外部依赖。
+`logicalOps`、`unFoldableFunctions`、`DisableFoldFunctions`、`TryFoldFunctions` 和 `noopFuncs` 保存构建、优化与常量折叠阶段使用的函数分类。
 
 ## 核心职责
 
@@ -85,7 +83,6 @@ Rust 的 `ExprBox`、`String`、`Datum`、`Column` 等由所有权和析构管�
 ## 与 Go 版本的对应关系
 
 - `GetRowLen`、`CheckArgsNotMultiColumnRow`、`GetFuncArg`、`DatumToConstant`、`GetIntFromConstant`、`SetExprColumnInOperand`、`ExtractColumnsMapFromExpressions`、`logicalOps`、`MaybeOverOptimized4PlanCache` 对应 [`util.go`](util.go) 的同名或相邻逻辑。Rust `GetFuncArg` 对非标量输入 panic，而 Go 返回 `nil`；Rust 的列提取结果存值克隆，Go 存指针。
-- CAST 包装对应 [`builtin_cast.go`](builtin_cast.go) 的 `BuildCastFunctionWithCheck`、`CanImplicitEvalReal` 和 `WrapWithCastAs*`。当前 Rust 保留 `_in_union` 参数但不使用；实际 CAST 构建委托 Rust `formal_registry`。Go 测试 [`builtin_cast_test.go`](builtin_cast_test.go) 覆盖数值、字符串、时间、unsigned flag、FSP 与字符集等意图，是扩展时的重要对照。
 - 折叠算法对应 [`constant_fold.go`](constant_fold.go)：均保留根元数据、跳过不可折叠/扩展函数、对四类函数短路、处理 null-reject 探测、延迟常量和子查询引用。一个已验证差异是 Go `ifNullFoldHandler` 在首参数折叠为 NULL 时会把原函数返回类型的 charset/collation 改成第二参数；本文件 `foldIfNull` 直接返回第二参数折叠结果，没有同样的原函数类型写回动作。
 - 函数表对应 [`function_traits.go`](function_traits.go)，但不是当前 Go 文件的完全相同快照：Go 的 `unFoldableFunctions` 还包含 `ast.EmbedText`，共 19 项；本文件和 [`core_support_test.rs`](core_support_test.rs) 固定为 18 项。其他三张受该 Rust 测试检查的表与读取到的 Go 条目一致。
 - `genVecFromConstExpr` 对应 [`vectorized.go`](vectorized.go)；占位池对应 [`expression.go`](expression.go) 的表达式/选择/零值池以及 [`builtin_vectorized.go`](builtin_vectorized.go) 的列池，但 Rust 当前只保持调用面，不提供复用语义。
@@ -100,12 +97,3 @@ Rust 的 `ExprBox`、`String`、`Datum`、`Column` 等由所有权和析构管�
 - 新增表达式节点种类时审查 `SetExprColumnInOperand`、`ExtractColumnsMapFromExpressions`、`MaybeOverOptimized4PlanCache` 和四个 `as_*` 方法是否需要识别它；任何结构变更都应清除相关哈希缓存。
 - 若把占位池替换成真实复用池，必须定义归还前清理规则、容量上限和并发语义，并用独立测试验证无旧数据泄漏；不能仅为性能把 Go 指针复用机械翻译到 Rust 所有权模型。
 - 对外扩展错误模板时，应决定是否只需要文本兼容，还是需要可匹配的错误码/类型；当前 `ExpressionErrorKind` 仅提供字符串构造。
-
-## 验证依据
-
-- 目标源码：[`core_support.rs`](core_support.rs)，完整读取 860 行，核对了所有模块级类型、静态值、trait、函数、impl 和分支。
-- crate 装配与依赖：[`lib.rs`](lib.rs) 的模块声明和再导出；[`Cargo.toml`](Cargo.toml) 的 crate 名称、lib 入口及 expression 所需本地依赖。
-- Rust 测试：[`core_support_test.rs`](core_support_test.rs) 独立于生产源文件，验证 `logicalOps`、函数 trait 表和空 `noopFuncs`；相关调用与覆盖意图还参考 `builtin_cast_4_aster_unit_test.rs`、`builtin_test.rs`、`constant_fold_38_aster_unit_test.rs` 等独立文件，但本纯文档任务未运行 Cargo。
-- Go 对照：[`function_traits.go`](function_traits.go)、[`util.go`](util.go)、[`builtin_cast.go`](builtin_cast.go)、[`constant_fold.go`](constant_fold.go)、[`vectorized.go`](vectorized.go)、[`expression.go`](expression.go)、[`builtin_vectorized.go`](builtin_vectorized.go)、[`builtin.go`](builtin.go)；测试对照包括 `util_test.go`、`builtin_cast_test.go` 和 `builtin_test.go`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；文件节点展示本文件及 39 个使用文件；`query FoldConstant --kind function --json` 区分了本文件、分拆 Rust 文件和 Go 文件中的同名符号。自然语言 `explore` 无输出，精确 `callers`/`callees` 两次超时无边，因此调用关系又以 `rg` 的全仓引用和 `lib.rs` 装配交叉验证。
-- 文档完成后按任务要求执行固定标题结构检查；本任务只生成说明文档，不运行 Cargo，也不声称运行时测试通过。

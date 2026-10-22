@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义逻辑优化规则 `AggregationPushDownSolver`，目标是在简化的 Rust `LogicalPlan` 上把可分解聚合穿过 `Join` 或 `UnionAll`，在孩子侧形成 Partial 聚合、在原位置保留 Final 聚合，从而在连接或并集之前减少行数。模块由 `pkg/planner/core/lib.rs` 公开声明，所属 crate 是 `astersql-planner-core`（`pkg/planner/core/Cargo.toml`）。
-
-当前接线边界需要特别注意：仓库内对该 Rust 类型的直接使用只出现在独立测试 `pkg/planner/core/rule_aggregation_push_down_test.rs`；未找到把它注册进 Rust 生产优化器规则列表的调用。Go 对照实现则由 `pkg/planner/core/optimizer.go` 的 `optRuleList` 注册。Rust 生产规划路径中另有 `pkg/planner/core/optimizer_runtime.rs` 的聚合下推相关逻辑，因此本文件应视为基于简化计划模型的规则实现/迁移单元，不能仅凭模块公开性断言它已经进入完整应用主链。
+定义逻辑优化规则 `AggregationPushDownSolver`，目标是在简化的 Rust `LogicalPlan` 上把可分解聚合穿过 `Join` 或 `UnionAll`，在孩子侧形成 Partial 聚合、在原位置保留 Final 聚合，从而在连接或并集之前减少行数。
 
 ## 核心职责
 
@@ -77,9 +75,7 @@ Go 生产上游是 `pkg/planner/core/optimizer.go` 的 `optRuleList`；Go 规则
 
 ## 与 Go 版本的对应关系
 
-Rust 方法名基本逐一对应 `pkg/planner/core/rule_aggregation_push_down.go`：分解白名单、函数侧归属、Join 类型门槛、`COUNT -> SUM`、唯一键收益判断、UNION ALL 分支下推和递归遍历均保留了核心意图。`pkg/planner/core/rule_aggregation_push_down_test.rs::decomposable_function_lists_match_go` 直接验证两类白名单；其余测试验证父层 Final 改写、COUNT/SUM 对另一侧下推的抑制，以及常量聚合在 Inner Join 中归右。
-
-两者不是等价的完整数据结构移植。Go `AggregationPushDownSolver` 嵌入 `aggregationEliminateChecker` 并在生产 `optRuleList` 注册；Rust 类型只保存 `next_column_id`，当前直接调用者仅测试。Go 通过 session 的 `AllowAggPushDown` 控制 Join/UNION 下推，Rust 无此参数。Go 会从等值、左右及 other Join conditions 收集分组列，Rust 只从聚合分组项和 `equal_conditions` 收集。Go 还处理 Projection、`LogicalPartitionUnionAll`、表达式替换、外连接 null-generating 侧类型标记与默认值、key info 重建，以及下推前后的聚合消除；本文件未实现这些完整行为。
+Go `AggregationPushDownSolver` 嵌入 `aggregationEliminateChecker` 并在生产 `optRuleList` 注册；Rust 类型只保存 `next_column_id`，当前直接调用者仅测试。Go 会从等值、左右及 other Join conditions 收集分组列，Rust 只从聚合分组项和 `equal_conditions` 收集。Go 还处理 Projection、`LogicalPartitionUnionAll`、表达式替换、外连接 null-generating 侧类型标记与默认值、key info 重建，以及下推前后的聚合消除；本文件未实现这些完整行为。
 
 模式拆分也更简化：Go 使用 `physicalop.BuildFinalModeAggregation`，可表达 Partial1/Partial2 等模式和多输出分解；Rust `decompose` 固定每个函数产生一个 Partial 和一个 Final。Rust 的 UNION 白名单允许 `Avg`，但 `splitPartialAgg` 仅切模式，没有在本文件内展示 Go 构建器所做的 SUM/COUNT 多结果拆分，故不能据此宣称完整 AVG 语义已与 Go 等价。
 
@@ -94,14 +90,3 @@ Go 的 `Optimize` 当前返回的 `planChanged` 初始化为 `false` 且未更�
 若要接入生产 Rust 优化主链，应先定位 `optimizer_runtime.rs` 的现有聚合下推路径，避免并行规则重复改写；还需明确会话开关、全局列 ID 分配、schema/key/nullability 更新和规则顺序。接线不能只注册 `Optimize`，因为当前简化 `LogicalPlan` 与完整运行时计划类型不同。
 
 性能方面应监控 UNION 分支 clone、schema clone、`Vec::contains` 去重的二次复杂度，以及过宽分组键抵消预聚合收益。正确性方面最敏感的是列下标重映射、外连接空匹配默认值、复杂表达式列依赖和 AVG/多输出聚合分解。
-
-## 验证依据
-
-- 源码全貌：`pkg/planner/core/rule_aggregation_push_down.rs`，核对了 `AggregationPushDownSolver` 的全部公开方法、私有 `recurse` 与 `add_unique`，文件无条件编译分支、模块级常量或 trait 实现。
-- 类型与计划模型：`pkg/planner/core/rule_aggregation_elimination.rs`、`pkg/planner/core/task.rs`；确认 `Result<String>`、`LogicalPlan`、聚合描述符、表达式列下标和 Join 枚举的真实定义。
-- crate 与模块装配：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`；确认 crate 名、库入口、显式测试模块以及模块公开性。目标包根目录无 `doc.go`，最近发现的 `pkg/planner/core/base/doc.go` 属于子 crate/package，并非本文件所属包契约。
-- RustCodeGraph：执行了 `status`（索引含 11,467 文件、307,296 节点、1,848,419 边）、`query AggregationPushDownSolver`、`node rule_aggregation_push_down.rs::AggregationPushDownSolver`、`callers`、`callees`。图确认测试导入及主要内部调用边；`files --filter`/首次 `explore` 未返回目标结果，故按技能规则对图未覆盖部分使用源码和 `rg` 补证。
-- Rust 测试：`pkg/planner/core/rule_aggregation_push_down_test.rs` 的四个测试覆盖函数白名单、Join 下推的 Partial/Final 改写、跨侧 COUNT/SUM 限制和常量聚合归属。
-- Go 对照与回归：`pkg/planner/core/rule_aggregation_push_down.go`、`pkg/planner/core/optimizer.go`、`pkg/planner/core/logical_plans_test.go::TestEagerAggregation`；用于核对注册位置、完整 Go 分支及与 Rust 简化实现的差异。
-- 调用点核验：仓库范围 Rust 文本搜索仅找到目标定义、独立测试使用和 `optimizer_runtime.rs` 的对照注释，未发现生产注册或调用；因此文档将生产接线标为“未验证/当前未找到”，没有推断已支持。
-- 本任务是纯文档分析，按总计划不运行 Cargo；完成条件使用任务指定的 11 章节结构命令验证。

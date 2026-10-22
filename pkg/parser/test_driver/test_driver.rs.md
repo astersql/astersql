@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-test_driver` crate；crate 根 `pkg/parser/test_driver/lib.rs` 以私有模块 `test_driver` 装入本文件，再用 `pub use test_driver::*` 导出其公共符号。`pkg/parser/test_driver/Cargo.toml` 表明它直接依赖 parser 的 charset、format、mysql、types 子 crate 以及 `hex`，并通过 `[package.metadata.porting]` 对应 Go 包 `pkg/parser/test_driver`。
-
-它提供 Go 测试驱动中 `ValueExpr`、`ParamMarkerExpr` 及访问者接口的 Rust 迁移实现。`pkg/parser/yy_parser.rs::New` 会调用 `init_test_driver`，因而形成主 parser crate 到本 crate 的显式链接；但该函数当前为空。Rust 主 AST 的值表达式路径目前由 `pkg/parser/ast/lib.rs::NewValueExpr` 和 `ExprNode::typed_value` 实现，并不通过本文件的 `newValueExpr` 动态注册。因此，本文件更准确的当前角色是轻量测试/迁移兼容实现，而不是 Rust 解析器所有字面量节点的唯一生产实现。
+`ParamMarkerExpr` 在 `ValueExpr` 形状之上保存预处理语句参数的源码偏移、顺序和执行期标志，并能还原成 `?`。
 
 ## 核心职责
 
@@ -93,8 +91,6 @@ RustCodeGraph 对 `Restore`、`Accept` 等常见重名方法产生了跨文件�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/parser/test_driver/test_driver.go`。Rust 保留了 Go 的两个节点、Restore/Format、投影偏移、参数 Offset/Order 以及 visitor Enter/Leave 流程。`migration_aster_unit_test.rs` 验证了布尔、字符串、浮点、十六进制、不支持 kind、已有 ValueExpr 复用和替换 visitor；`test_driver_test.rs` 验证 Go `strconv.Quote` 的 `\a`/`\v`；`go_merge_35_test.rs` 验证两个叶子节点无论 skip 与否均调用 Enter 和 Leave。Go 的 `accept_in_place_test.go` 还以源码结构测试约束所有生产 AcceptInPlace 方法必须检查 skipChildren 并调用 Leave。
-
 关键差异包括：
 
 - Go `init` 会把构造函数注册到 `ast.NewValueExpr`、`ast.NewParamMarkerExpr` 等包级变量；Rust `init_test_driver` 当前为空，主 AST 在 `pkg/parser/ast/lib.rs` 有独立静态实现。
@@ -115,14 +111,3 @@ RustCodeGraph 对 `Restore`、`Accept` 等常见重名方法产生了跨文件�
 若实现 `ParamMarkerExpr::Format`、InExecute 行为或实际参数输出，需要明确是否仍应隐藏绑定值，并对预处理语句的 Offset/Order 生命周期增加测试。若改变 `Format` 的错误处理，需评估 API 兼容性；若让动态节点跨线程，则必须审计 Datum 载荷并显式引入 `Send`/`Sync` 约束。
 
 新增依赖或改变 crate 边界时同步检查 `pkg/parser/test_driver/Cargo.toml` 和 `pkg/parser/Cargo.toml`。本任务只记录现状，不修改 Rust、Go 或 Cargo。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件和 307,296 个节点；`files --filter pkg/parser/test_driver` 列出本 crate 的 Rust/Go 源与测试。
-- RustCodeGraph `node --file pkg/parser/test_driver/test_driver.rs --offset 1 --limit 500`：读取目标文件全部 331 行，确认 32 个符号以及文件级使用者 `pkg/parser/ast/lib.rs`、`pkg/parser/test_driver/go_merge_35_test.rs`、`pkg/parser/yy_parser.rs`。
-- RustCodeGraph `query "test_driver.rs" --limit 50` 与 `query newValueExpr --json --limit 20`：确认公开/私有符号集合，并区分 Go、test_driver Rust、types/parser_driver Rust 和 ast Rust 的同名构造器。
-- RustCodeGraph callers/callees 查询：确认图对常见同名方法存在消歧限制；有效的本地被调关系包括 `ValueExpr::new -> DefaultTypeForValue/SetValue`、Restore/Format -> `format_float`、Format -> `quote_go_string`，其余结论均再由源码核验。
-- 已读生产与配置路径：`pkg/parser/test_driver/test_driver.rs`、`lib.rs`、`Cargo.toml`、`test_driver.go`、`pkg/parser/Cargo.toml`、`pkg/parser/yy_parser.rs`、`pkg/parser/ast/lib.rs`。目标目录没有 `doc.go`，因此以 crate 根 `lib.rs` 作为最近的包契约。
-- 已读独立测试：`pkg/parser/test_driver/test_driver_test.rs`、`migration_aster_unit_test.rs`、`go_merge_35_test.rs`、`accept_in_place_test.go`。
-- 人工复核重点：Rust 初始化为空、AST 存在独立实现、正常构造偏移为 `-1`、Restore/Format 的错误差异、visitor 的替换与 skip 分支、无并发资源，以及 Go/Rust 所有权和注册机制差异。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构验证要求本文恰含上述 11 个固定二级标题。

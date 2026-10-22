@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ttl-metrics` crate 中的 TTL 运行时指标适配层。crate 根 `pkg/ttl/metrics/lib.rs` 以 `#[path = "metrics.rs"] pub mod ttl_metrics` 暴露它；同一 crate 的 `metrics` 模块负责定义 Prometheus `HistogramVec`、`CounterVec` 和 `GaugeVec`，本文件则预绑定常用标签，并实现 worker 相位计时与 TTL 水位延迟聚合。
-
-`pkg/ttl/metrics/Cargo.toml` 表明该 crate 仅直接依赖 `prometheus = "0.14"`，没有 feature 开关。Rust 全局指标初始化链已经接入：`pkg/util/metricsutil/common.rs::initMetrics` 调用 `ttl_metrics::InitMetricsVars`。但截至当前源码，`pkg/ttl/ttlworker` 和 `pkg/ttl/session` 的 Rust 生产模块没有调用本文件的 worker tracer、行计数或水位更新 API；这些 API 的完整生产使用链仍见同路径 Go 文件。故本文件是已实现且有独立测试的迁移模块，不能据此宣称 Rust TTL worker 已完整接线。
+用 `LazyLock` 为查询耗时、处理行数、Job/Task 状态等向量指标预绑定稳定的标签组合，向调用方提供可直接 `observe`、`inc_by` 或 `set` 的句柄。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ tracer 没有 `Drop` 实现，离开作用域不会自动结算最后相位。Go
 
 ## 与 Go 版本的对应关系
 
-主要实现逐项对应 `pkg/ttl/metrics/metrics.go`：相位字符串、预绑定标签、scan/delete 相位表、`PhaseTracer` 切换规则、context 存取、水位数据结构、首个上界分桶算法、更新与清空语义均保持一致。`pkg/ttl/metrics/metrics_test.go::TestPhaseTracer` 与 Rust `metrics_test.rs::test_phase_tracer` 使用可控时钟验证了相同的首次进入、切换、同名再进入和结束行为。
-
 语言差异包括：Go 使用包初始化和可重赋值全局变量，Rust 使用 `LazyLock` 并由全局 metricsutil 显式强制初始化；Go tracer 是可为 `nil` 的指针且方法对 `nil` 安全，Rust `PhaseTracer` 是值类型，不存在 nil receiver；Go 使用通用 `context.Context` 的私有 key，Rust 使用专用 `PhaseContext` 和 `Arc<Mutex<_>>`；Go 延迟记录使用指针 map，Rust 使用借用的 `HashMap<i64, DelayMetricsRecord>`。
 
 `migration_aster_unit_test.rs` 额外锁定重复分桶阈值、空 map 归零、`ClearDelayMetrics` 删除样本、context 往返和指标 descriptor/bucket 配置。Rust 的测试覆盖比原 Go `metrics_test.go` 更宽，但不等于 Rust TTL worker 已完成运行时接线。
@@ -99,10 +95,3 @@ tracer 没有 `Drop` 实现，离开作用域不会自动结算最后相位。Go
 - 接入 Rust scan/delete/session/job manager 时，应优先复用现有 API，并以 Go 的 `scan.go`、`del.go`、`session.go`、`job_manager.go` 和 `task_manager.go` 为行为基线；测试必须放在独立 `*_test.rs` 文件，不得内嵌到本源文件。
 - 调整水位桶前先确认是否要修复还是保持 Go 的重复阈值；任何修复都应同步 dashboard/告警预期，并更新 `migration_aster_unit_test.rs::watermark_buckets_preserve_go_thresholds_and_order`。桶展示名是指标标签，重命名会形成新的时间序列。
 - 若要让 tracer 自动收尾，可引入 guard，但需避免 `Drop` 中锁中毒或 panic，并证明与 Go defer 的异常/取消路径等价。不要以自动收尾替代明确的相位边界测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ttl/metrics` 确认目标、crate 根、Go 对照和三份测试材料均已索引；`node --file pkg/ttl/metrics/metrics.rs --offset 1/260` 读取了完整 331 行并显示目标文件被索引引用；`query` 核对了 `initWorkerPhases`、`NewScanWorkerPhaseTracer`、`NewDeleteWorkerPhaseTracer`、`newPhaseTracer`、`CtxWithPhaseTracer`、`PhaseTracerFromCtx` 和 `UpdateDelayMetrics` 的 Go/Rust同名符号。批量 `callers/callees` 查询在等待窗口内未返回，因此调用边另以直接源码检索核验。
-- Rust 源与 crate：`pkg/ttl/metrics/metrics.rs`、`pkg/ttl/metrics/lib.rs`、`pkg/ttl/metrics/Cargo.toml`、`pkg/util/metricsutil/common.rs`、`pkg/util/metricsutil/Cargo.toml`，以及作为当前接线状态证据的 `pkg/ttl/ttlworker/Cargo.toml`、`pkg/ttl/session/Cargo.toml`。
-- Go 对照与生产调用：`pkg/ttl/metrics/metrics.go`、`pkg/ttl/session/session.go`、`pkg/ttl/ttlworker/scan.go`、`del.go`、`job_manager.go`、`task_manager.go`。
-- 独立测试：`pkg/ttl/metrics/metrics_test.rs`、`pkg/ttl/metrics/migration_aster_unit_test.rs`、`pkg/ttl/metrics/metrics_test.go`。本任务是纯文档分析，按计划未运行 Cargo。

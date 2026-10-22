@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-log-client` crate（入口与依赖见 [`lib.rs`](./lib.rs) 和 [`Cargo.toml`](./Cargo.toml)），实现日志恢复阶段把外部存储中的 KV 日志文件按目标 TiKV Region 下载并 Apply 的导入器。`lib.rs` 通过 `pub mod import` 和 `pub use import::*` 暴露本模块；上层 [`client.rs`](./client.rs) 的 `LogRestoreManager.fileImporter` 持有 `LogFileImporter`，`LogClient::InitClients` 负责构造它，`LogClient::CleanUpKVFiles` 和 `LogRestoreManager::Close` 分别接入清理与关闭生命周期。
-
-当前 Rust 迁移状态需要特别区分“实现存在”和“已接入生产主链”：仓库内非测试 Rust 源码会构造、清理和关闭 `LogFileImporter`，但代码搜索未发现生产 Rust 调用 `LogFileImporter::ImportKVFiles`。批量/逐文件编排函数 `ApplyKVFilesWithBatchMethod`、`ApplyKVFilesWithSingleMethod` 目前也只接受通用回调，未在生产 Rust 中绑定到本文件。因此本文件的 Apply 主路径已有实现并受独立测试覆盖，但不能据此声称 Rust PiTR 生产编排已经完整接线。
+`ImportKVFiles` 先计算所有文件经 rewrite 后的编码键范围，再通过 [`import_retry.rs`](./import_retry.rs) 的 `CreateRangeController` 遍历/重试 Region；每个 Region 仅处理与之相交的文件。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ Region 回调次数通过 `Arc<AtomicI64>` 以 `Ordering::Relaxed` 累加；该�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`import.go`](./import.go)，回归对照是 [`import_test.go`](./import_test.go)。Rust 保留了 Go 的核心结构：`LogFileImporter` 字段、非批多文件拒绝、rewrite 后全局范围、Region 过滤、RangeController 指标与重试、DefaultCF 时间戳选择、批/单 ApplyRequest、leader 路由、两类可跳过错误、逐 Up-store 清理和关闭客户端。
-
 已确认的差异与迁移限制：
 
 - Go `cacheKey` 使用格式化时间加 `rand.Int63()`；Rust 使用 Unix 秒和确定性乘积，格式与随机性并不完全一致。
@@ -94,8 +90,6 @@ Region 回调次数通过 `Arc<AtomicI64>` 以 `Ordering::Relaxed` 累加；该�
 - Go 通过 `multierr.Errors` 检查嵌套错误；Rust 只检查当前 `Error.code`。
 - Go 的生产日志恢复链会把文件批处理回调接到 importer；当前 Rust 仓库中 `ImportKVFiles` 只在测试中直接调用，生产接线尚未由搜索证据确认。
 - Rust 使用本 crate `stubs` 中的 PD、proto、import client 和指标外观；这说明当前 crate 为精简移植边界，不能把内存桩测试等同于真实 TiKV 集成验证。
-
-Rust 独立测试 [`import_test.rs`](./import_test.rs) 对齐 Go 三组意图：非批多文件报 `ErrInvalidArgument`；多个 Region 边界（含空 `EndKey`）的过滤结果；内存 PD/importer 下 Clear、批/非批 Import、Close 生命周期。测试代码与生产文件分离，符合仓库 Rust 测试组织要求。
 
 ## 扩展指南
 
@@ -106,12 +100,3 @@ Rust 独立测试 [`import_test.rs`](./import_test.rs) 对齐 Go 三组意图：
 - 若并行化 `ClearFiles` 或 Region Apply，需证明 `ImporterClient`/`SplitClient` 的线程安全契约、取消传播、指标计数和 cache namespace 不变，并评估 store 数/Region 数放大后的资源占用。
 - 若调整 cache key 生成，需同时核对 Go 格式、TiKV `StorageCacheId` 的作用域和并发会话碰撞风险；不要仅为测试方便使用固定全局值。
 - 本任务只创建说明文档。未来修改 Rust 源码时，应保持顶部 AsterSQL/PingCAP 版权注释，并按仓库要求将测试继续放在独立 `*_test.rs` 文件中。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/restore/log_client` 确认目标及 Go/Rust 测试均已索引。
-- RustCodeGraph `node --file br/pkg/restore/log_client/import.rs --offset 1 --limit 500`：读取目标文件 445 行及其 34 个符号，并报告直接使用文件为 `client.rs`、`export_test.rs`、`import_test.rs`、`parity_test.rs`、`br/pkg/utiltest/crr/harness.rs`。
-- RustCodeGraph `query LogFileImporter`、`query ImportKVFiles`、`query filterFilesByRegion`：确认 Rust/Go 同名符号及测试导出位置。精确 `callers/callees` 查询两次在 30 秒窗口内未返回结果，因此未把缺失图输出当成事实依据。
-- 已读生产/配置路径：[`import.rs`](./import.rs)、[`client.rs`](./client.rs)、[`lib.rs`](./lib.rs)、[`import_retry.rs`](./import_retry.rs) 的图调用关系、[`Cargo.toml`](./Cargo.toml)，以及仓库范围 `rg` 对非测试 Rust 调用点的核查。
-- 已读对照与测试路径：[`import.go`](./import.go)、[`import_test.go`](./import_test.go)、[`import_test.rs`](./import_test.rs)、[`export_test.rs`](./export_test.rs)、[`parity_test.rs`](./parity_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证只检查固定章节、目标文件存在、链接/符号事实和提交范围；真实 PD/TiKV 行为、取消时序及未接线的生产 Apply 主链未在本任务本地执行验证。

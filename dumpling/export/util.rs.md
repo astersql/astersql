@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`util.rs` 是 `astersql-dumpling-export` library crate 的包级辅助实现。它不是独立 Rust 模块：[`dumpling/export/lib.rs`](lib.rs) 先在 crate 根导入 `HashMap`、`mpsc::{Sender, Receiver}`、`thread` 等标准库符号和 `astersql_dumpling_context as tcontext`，再以 `include!("util.rs")` 把本文件直接拼入 crate 根。因此这里的公开函数成为 crate 根符号，且可以直接使用同一作用域中的 `DB`、`EtcdClient`、`ServerType`、`Result` 等桩类型。
-
-[`dumpling/export/Cargo.toml`](Cargo.toml) 将该 crate 声明为 Go 包 `dumpling/export` 的 Rust library 移植；注释明确说明当前在 arm64 Darwin 上用本地 stubs 代替 SQL/MySQL/storage/HTTP/metrics 等重依赖。本文件所用的 etcd 能力正来自 [`dumpling/export/stubs.rs`](stubs.rs) 的内存实现，不是 Cargo 中声明的真实 etcd 客户端。
+这些职责对应 [`dumpling/export/util.go`](util.go) 的同名实现，但 Rust 版本仍处在迁移期：集群检查依赖可注入错误的离线 `EtcdClient` 桩，且 RustCodeGraph 未找到 `checkSameCluster` 和 `infiniteChan` 的生产调用者。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 对本文件识别出 12 个符号，并确认以下下游边：`c
 
 ## 与 Go 版本的对应关系
 
-[`dumpling/export/util.go`](util.go) 是直接对照源。常量值、ID 尾段提取、排序后向量比较、下标配对、重复 key 覆盖、RR 判定布尔式和无限通道的 FIFO/drain 意图均保持一致。
-
 差异主要来自迁移基础设施：Go `getPdDDLIDs` 从父 context 派生 10 秒超时并访问真实 `clientv3.Client`；Rust 接受不带 context 的内存 `EtcdClient`，仅把 10 秒记录到桩状态。Go `checkSameCluster` 创建真实 etcd client，Rust 构造离线桩。Go `infiniteChan` 用一个 goroutine 和 `select` 在接收与发送间调度；Rust 用桥接线程加转发线程模拟，并用 `try_recv` 偏向吸收新输入，队列数据结构也从切片头移除变为 `Vec::remove(0)`。因此行为目标相同，但调度、公平性、内存与 CPU 特性不能视为完全等价。
 
 Go 当前生产代码在 `dump.go` 中使用 `infiniteChan` 分发导出任务，并在经典集群 GC 初始化中调用 `checkSameCluster`；对应 Rust `dump.rs` 尚未出现这两个调用。Go `sql.go` 与 `dump.go` 使用 `string2Map`，Rust 已有对应调用；两边都用 `needRepeatableRead` 控制连接隔离级别。
@@ -87,13 +83,3 @@ Go 当前生产代码在 `dump.go` 中使用 `infiniteChan` 分发导出任务�
 修改 ID 解析或同集群判定时，应同步 [`dumpling/export/util_test.rs`](util_test.rs) 中的前缀过滤、超时、读取错误和排序比较用例，并考虑空 key、尾随斜杠、重复 ID、两侧空集合以及 SQL 查询/关闭错误。若改 `string2Map` 的长度约束或重复键策略，需同步它的 panic 与覆盖测试，并复查 `GetPrimaryKeyAndColumnTypes`、`getNumericIndex` 的列名/类型等长不变量。
 
 修改 `needRepeatableRead` 时应同步 Rust 的 server × consistency 矩阵、[`dumpling/export/parity_test.rs`](parity_test.rs) 的 Go/Rust 契约锚点及 Go `util_test.go`。修改 `infiniteChan` 时应保留顺序、无丢失、输入关闭后 drain、输出提前关闭不泄漏线程等性质；相关测试继续放在独立 `util_test.rs`，不要内嵌到生产源文件。性能扩展宜优先消除 `Vec::remove(0)` 的线性成本，并明确是否仍接受真正无界内存增长。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter dumpling/export/util.rs` 确认目标已索引并含 12 个符号。
-- RustCodeGraph `node --file`：完整读取 `dumpling/export/util.rs`，并读取 `lib.rs`、`util_test.rs`、`util.go`、`util_test.go`、`stubs.rs`、`sql.rs`、`dump.rs`、`consistency.rs` 与 `parity_test.rs` 的相关区段。
-- RustCodeGraph `query`：定位 `getPdDDLIDs`、`checkSameCluster`、`string2Map`、`needRepeatableRead`、`infiniteChan` 及其 Go 对照；定位 `EtcdClient`、`EtcdClientConfig`、`GetTiDBDDLIDs`、`DB`、`ServerType`、`ConsistencyTypeSnapshot` 的真实定义。
-- RustCodeGraph `callers/callees`：确认 `checkSameCluster -> getPdDDLIDs` 及常量引用；caller 结果为空后，以 `rg` 核验 Rust 与 Go 的实际调用点，并据此明确未接线边界。
-- Cargo/模块证据：`dumpling/export/Cargo.toml` 的 `[lib] path = "lib.rs"`、porting metadata 和依赖声明；`lib.rs` 的 crate 根 imports、`pub use stubs::*`、`include!("util.rs")` 与独立 `#[cfg(test)] mod util_test`。
-- 测试证据：`util_test.rs` 覆盖 RR 组合、10,000 项 FIFO、关闭后 drain、etcd 前缀/10 秒超时/错误传播、空 endpoints、重复 map key 和短 values panic；`parity_test.rs` 再覆盖 TiDB snapshot 与 MySQL snapshot 的关键差异。Go `util_test.go` 覆盖原始 RR 矩阵与 10,000 项无限通道顺序。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终只执行固定十一章节的结构验证，并人工复核当前实现、Go 对照和未接线限制均有直接证据。

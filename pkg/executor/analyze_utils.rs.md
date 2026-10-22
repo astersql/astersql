@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-executor` crate 的 ANALYZE 共用工具模块，由 [`pkg/executor/lib.rs`](lib.rs) 通过 `pub mod analyze_utils` 暴露。它位于 SQL 执行层的统计信息采集支撑面，提供错误分类与 panic 归一化、自适应 DistSQL 扫描并发、会话变量读取、通知通道、等待组包装和协作式取消信号；它本身不解析 SQL，也不负责生成或持久化统计信息。
-
-[`pkg/executor/Cargo.toml`](Cargo.toml) 将 crate 根指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/executor"` 标明 Go 对照包。当前文件的实现只直接使用 Rust 标准库；crate 清单中的大量 executor 依赖属于整个 crate，不能据此推断本文件直接依赖这些子系统。
-
-当前 Rust 生产接线需要区分两层事实：模块已经公开且所有工具都有实现，但仓库内非测试 Rust 调用搜索只确认 [`pkg/executor/analyze.rs`](analyze.rs) 直接使用 `getAnalyzePanicErr`、`errAnalyzeWorkerPanic` 和 `errAnalyzeOOM`；其他工具目前主要由 [`pkg/executor/analyze_utils_test.rs`](analyze_utils_test.rs) 验证。Go 版本的同名工具具有更广泛的生产调用面，不能直接当作 Rust 已接线证据。
+`normalizeCtxErrWithCause` 保留取消/超时背后的根因；`KillSignal` 提供原子、协作式的取消检查。
 
 ## 核心职责
 
@@ -81,8 +77,6 @@ OOM 识别是严格字符串协议：只有 panic 载荷消息精确等于 `GLOB
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/executor/analyze_utils.go`](analyze_utils.go)。两版保留了 Go 风格符号名与核心阈值：显式配置优先、store 数量分段乘数、PD/store 查询失败回退、两个系统变量入口、panic/OOM 区分、取消 cause 替换，以及“首个 Run 等待全部任务后关闭 channel”的 wrapper 语义。
-
 Rust 为 Go 隐式接口补上显式类型边界：`AnalyzeSessionContext` 代替具体 `sessionctx.Context`/storage type assertion，`StoreStatusError` 保留失败阶段，`AnalyzeErrorKind` 代替 Go 哨兵错误比较，`WorkerPool` 代替 `gp.Pool + util.WaitGroupPool`，`NotifyChannel`/`WaitGroup` 则在标准库上重建 channel/WaitGroup 行为。
 
 存在以下重要差异：
@@ -93,8 +87,6 @@ Rust 为 Go 隐式接口补上显式类型边界：`AnalyzeSessionContext` 代�
 - Go `context.Context` 同时承载取消、deadline 和 cause；Rust 将 cause 简化到 `AnalyzeContext`，取消检测另由 `KillSignal` 提供，二者没有自动关联。
 - Go 生产代码已经在 builder、column sampling、table reader 等路径调用这些工具；Rust 仓库当前仅确认 panic 工具接入 `analyze.rs`，其余能力仍不能标记为完整生产接线。
 
-[`pkg/executor/analyze_utils_test.go`](analyze_utils_test.go) 目前直接回归 panic 错误格式问题；Rust 独立单测在此基础上补充阈值、失败回退、变量解析、cause 和关闭时序。SQL 级 panic 行为由 `pkg/executor/test/analyzetest/panictest/panic_test.rs` 与 Go 同目录用例对应。
-
 ## 扩展指南
 
 - 增加新的 panic 分类时，修改 `AnalyzeErrorKind`、`getAnalyzePanicErr` 和必要的构造函数，并同步 [`pkg/executor/analyze_utils_test.rs`](analyze_utils_test.rs)；如果用户可见的 ANALYZE 行为改变，还要同步 `test/analyzetest/panictest` 的独立 SQL/failpoint 测试。不要只改文本匹配而遗漏 `analyze.rs` 的适配与分类判断。
@@ -103,12 +95,3 @@ Rust 为 Go 隐式接口补上显式类型边界：`AnalyzeSessionContext` 代�
 - 扩展通知载荷或 worker pool 时，保持“先 Add、后 Run、首任务最终关闭”的协议；补充任务发送数据、任务 panic、关闭后发送、等待者唤醒、错误 pool 行为等独立测试。若要支持可复用批次或 bounded channel，应新设计状态机，不能只重置 `cnt`。
 - 若将当前仅测试覆盖的工具接入 Rust 生产路径，应在具体调用模块增加局部接线与测试，并显式记录与 Go 调用点的对应关系；不要把 Go 的调用存在性当作 Rust 接线完成。
 - Rust 测试继续放在独立文件 `pkg/executor/analyze_utils_test.rs` 或独立测试 crate 中，不把 `#[cfg(test)]` 测试嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/analyze_utils.rs` 确认目标文件已索引，`node --file` 分段读取了全部 526 行与 57 个符号。
-- RustCodeGraph 符号查询：查询了 `adaptiveAnlayzeDistSQLConcurrency`、`NewAnalyzeResultsNotifyWaitGroupWrapper`、`newNotifyErrorWaitGroupWrapper`、`getAnalyzePanicErr`、`normalizeCtxErrWithCause`；callee 查询确认了自适应并发到 trait 方法、panic 转换到 OOM/worker-panic 构造函数的边。callers 查询无有效输出，因此没有把图中笼统的 “used by” 文件计数解释为真实调用者。
-- 生产源码：完整读取 [`pkg/executor/analyze_utils.rs`](analyze_utils.rs)；读取 [`pkg/executor/lib.rs`](lib.rs) 的模块与测试装配；读取 [`pkg/executor/analyze.rs`](analyze.rs) 的错误适配和多个 `catch_unwind`/join 使用点。
-- crate/Go 对照：读取 [`pkg/executor/Cargo.toml`](Cargo.toml) 的 package、lib、feature、porting metadata 与依赖边界；完整读取 [`pkg/executor/analyze_utils.go`](analyze_utils.go)，并以精确符号搜索核对 Go 的 `analyze.go`、`analyze_col_sampling.go`、`builder.go`、`table_reader.go` 等调用点。
-- 测试证据：完整读取 [`pkg/executor/analyze_utils_test.rs`](analyze_utils_test.rs) 与 [`pkg/executor/analyze_utils_test.go`](analyze_utils_test.go)；读取 `pkg/executor/test/analyzetest/panictest/lib.rs` 和 `panic_test.rs`，确认生产文件复用方式及 SQL 级 panic 转错误场景。
-- 人工边界复核：文档明确区分 Rust 已实现能力、Rust 已接线调用与 Go 对照调用；未声称运行任何 Cargo 测试。本任务是纯文档分析，按计划只执行结构验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`sli.rs` 是 `astersql-util-sli` crate 中负责“单笔事务写入吞吐 SLI”状态机的实现文件。crate 入口 `pkg/util/sli/lib.rs` 以 `#[path = "sli.rs"] mod sli` 装载它，并只对外再导出 `TxnWriteThroughputSLI`。`pkg/util/sli/Cargo.toml` 指定 `lib.rs` 为库入口，声明唯一直接第三方依赖 `prometheus = "0.14"`，并通过 `package.metadata.porting.go-package = "pkg/util/sli"` 标出 Go 来源。
-
-该类型目前作为 Rust 会话状态的一部分存在：`pkg/session/runtime/session.rs` 的 `SessionState::txn_write_throughput_sli` 持有一个实例，并在 `SessionState::default` 中初始化。生产 Rust 接线在 `pkg/session/runtime/scan_adapter_runtime.rs::OnFinishStatement` 中从语句执行详情提取 processed keys、write size 和 write keys，再调用本文件的累计方法。仓库搜索未发现生产 Rust 路径调用本类型的 `FinishExecuteStmt` 或 `SetInvalid`；因此“提交时上报并清零”和显式失效标记虽然已实现并由独立测试验证，但当前 Rust 应用主链只完成了部分接线，不能表述为已经与 Go 端到端等价。
+为迁移回归提供稳定的状态字符串、显式重置以及 `CheckTxnWriteThroughput` failpoint 保留状态能力。
 
 ## 核心职责
 
@@ -103,8 +101,6 @@ Go 的完整调用链比当前 Rust 接线更完整：`pkg/executor/adapter.go::
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/sli/sli.go`。Rust 保留了 Go 的结构字段、方法名、判断顺序、两个阈值、指标公式、commit 补时逻辑以及 failpoint 位于上报之后/重置之前的顺序。`migration_aster_unit_test.rs` 还复现了 Go `pkg/executor/executor_failpoint_test.go::TestTxnWriteThroughputSLI` 的关键样例：2 行/58 字节小事务、20 行与 1 MiB 包含式边界、21 行大事务、读键多于写键、显式失效、commit 后重置和 failpoint 保留状态。
-
 已知差异和迁移状态：
 
 - Go `int`/`int64` 对应 Rust `isize`/`i64 -> isize`，需要调用方保证范围与非负性。
@@ -127,16 +123,3 @@ Go 的完整调用链比当前 Rust 接线更完整：`pkg/executor/adapter.go::
 - 调整时长格式：扩展 `format_go_duration` 的独立测试，覆盖单位切换、复合小时/分钟和尾零裁剪；不要把测试辅助格式化器无审查地推广为通用 API。
 
 任何 Rust 逻辑修改都应保持测试位于独立的 `migration_aster_unit_test.rs`（或新的独立 `*_test.rs`）中，不把测试嵌回 `sli.rs`。性能风险主要来自在每条语句热路径增加额外工作或锁；兼容风险主要来自阈值、耗时口径、重置时机和 Go 指标名称/单位漂移；正确性风险主要来自事务间状态泄漏、重复上报以及无效事务被错误纳入。
-
-## 验证依据
-
-本说明基于以下可复核证据：
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/sli` 定位 `lib.rs`、`sli.rs`、`migration_aster_unit_test.rs` 和 Go 对照；`node --file pkg/util/sli/sli.rs --offset 1 --limit 500` 读取了 224 行完整实现；`query` 定位 `TxnWriteThroughputSLI`、`FinishExecuteStmt`、`AddReadKeys`、`AddTxnWriteSize` 和 `format_go_duration` 的 Rust/Go 同名节点。方法级 callers/callees 输出存在同名解析噪声，故未作为单独结论依据。
-- 源与 crate：`pkg/util/sli/sli.rs`、`pkg/util/sli/lib.rs`、`pkg/util/sli/Cargo.toml`。
-- Rust 调用和状态：`pkg/session/runtime/session.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/util/mock/context.rs`，以及精确符号搜索结果。
-- Rust 独立测试：`pkg/util/sli/migration_aster_unit_test.rs`，覆盖累计、边界、两类指标、无效跳过、commit reset 和 failpoint。
-- Go 对照与主链：`pkg/util/sli/sli.go`、`pkg/executor/adapter.go`、`pkg/executor/insert_common.go`、`pkg/server/conn.go`、`pkg/session/session.go`、`pkg/executor/executor_failpoint_test.go::TestTxnWriteThroughputSLI`。
-- 人工事实复核：确认本文件为何存在（事务写 SLI 状态机）、如何运行（累计—判定—上报—重置）、如何安全扩展（保持 Go 语义、事务隔离和独立测试），并明确当前生产 Rust 只接入累计而未找到结束上报/显式失效调用。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求本文档存在，且上述固定二级标题恰好为 11 个。

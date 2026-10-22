@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate；crate 根在 `pkg/executor/aggfuncs/lib.rs` 中以 `pub mod func_varpop` 暴露它，`pkg/executor/aggfuncs/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认了这一边界。它不负责解析 SQL 表达式或直接读写结果 `Chunk`，而是提供 `VAR_POP`、`VAR_SAMP`、`STDDEV_POP`、`STDDEV_SAMP` 共用的浮点方差部分状态和合并算法。
-
-该状态已经接入 Rust 聚合框架：`pkg/executor/aggfuncs/aggfuncs.rs` 的部分结果绑定逻辑把四种普通方差/标准差实现绑定为 `VarianceState`，把 original/partial 两阶段的 DISTINCT 变体绑定为 `DistinctVariance`；同文件的 merge 分派再调用两种状态各自的 `merge`。因此这里是聚合执行过程中“累计、跨分区合并、最终统计量计算”的数值核心，不是尚未接线的占位文件。
+`VarianceState` 保存非 DISTINCT 浮点输入的 `count`、`sum` 和可合并中间方差量 `variance`，跳过 SQL `NULL` 对应的 `None`。
 
 ## 核心职责
 
@@ -87,16 +85,10 @@ DISTINCT 的 NaN 人造键最多使用 52 位 payload；耗尽时 `assert!` 会 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/aggfuncs/func_varpop.go`，对应测试为 `func_varpop_test.go`。语义对应如下：
-
-- Rust `VarianceState` 对应 Go `partialResult4VarPopFloat64`，字段和空状态一致。
 - Rust `calculate_intermediate` 与 Go `calculateIntermediate` 使用代数等价的在线公式；Rust `calculate_merge` 与 Go `calculateMerge` 使用代数等价的两组均值差补偿公式。
-- Rust `update`、`merge`、`population_variance` 分别承载 Go `UpdatePartialResult`、`MergePartialResult`、`AppendFinalResult2Chunk` 中的数值部分。
 - Rust `DistinctVariance` 对应 Go `partialResult4VarPopDistinctFloat64.valSet`；Rust 最终通过普通在线状态计算，Go `calculateDistinctFloat64Variance` 则先求均值再二次遍历集合，算法路径不同但目标统计量相同。
 - Go 类型实现完整 `AggFunc` 生命周期，包括表达式 `EvalReal`、错误包装、`Chunk` 输出、精确内存常量和序列化入口；Rust 把通用绑定/merge 放在 `aggfuncs.rs`，spill 放在 `spill_serialize_helper.rs`，本文件本身只提供类型与数值方法。不能把 Go 文件中的完整接口误认为均定义在此 Rust 文件内。
 - Go original/partial DISTINCT 使用不同 wrapper 类型；Rust 的两个阶段名只是同一 `DistinctVariance` 的类型别名，阶段差异由上层 `AggImplementation` 枚举保留。
-
-Go `TestVarpop` 验证空输入及 `0..4` 的总体方差 2，`TestMergePartialResult4Varpop` 验证部分结果合并，`TestMemVarpop` 还验证 Go 的内存增量。Rust `func_varpop_test.rs` 覆盖空值、NULL 跳过、reset、分区合并以及正负零 DISTINCT；内存/序列化对应证据在 `spill_helper_test.rs`，样本与标准差复用证据在各自独立测试文件中。
 
 ## 扩展指南
 
@@ -107,12 +99,3 @@ Go `TestVarpop` 验证空输入及 `0..4` 的总体方差 2，`TestMergePartialR
 增加新的方差派生函数时，优先复用 `population_variance` 或 `sample_variance`，像现有标准差模块一样只实现收尾转换；同时在 `aggfuncs.rs` 的状态绑定、merge 分派和 spill 类型覆盖中确认新枚举路径。Rust 单元测试必须继续放在同目录独立 `*_test.rs` 文件，不能内嵌回生产源码。
 
 兼容性风险主要是 SQL NULL/少行返回规则、DISTINCT 的 `±0`/NaN 语义和 spill 布局；正确性风险主要是在线公式调用时序及合并方向；性能风险主要是 DISTINCT 集合的 O(k) 内存、最终 O(k) 扫描及潜在的确定性排序开销。
-
-## 验证依据
-
-- 源码与装配：`pkg/executor/aggfuncs/func_varpop.rs`、`lib.rs`、`aggfuncs.rs`、`Cargo.toml`。
-- 直接复用与持久化：`func_varsamp.rs`、`func_stddevpop.rs`、`func_stddevsamp.rs`、`spill_serialize_helper.rs`。
-- Rust 独立测试：`func_varpop_test.rs`、`func_varsamp_test.rs`、`func_stddevpop_test.rs`、`func_stddevsamp_test.rs`、`func_distinct_agg_test.rs`、`spill_helper_test.rs`、`go_scenario_coverage_test.rs`。
-- Go 对照：`pkg/executor/aggfuncs/func_varpop.go`、`func_varpop_test.go`，并通过同目录 `func_varsamp.go`、`func_stddevpop.go`、`func_stddevsamp.go` 核对复用关系。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`explore`/`query`/`node VarianceState` 定位目标符号，并返回 `update -> calculate_intermediate`、`merge -> calculate_merge`、最终方法 `-> state` 的调用证据。精确 `callers func_varpop.rs::calculate_intermediate` 超过 60 秒无输出后中止，跨文件关系改由上述相邻源码核验。
-- 结构验收要求：文档必须存在，且恰好包含任务规定的十一个二级标题；本任务是纯文档分析，按计划不运行 Cargo。

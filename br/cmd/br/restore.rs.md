@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`restore.rs` 是 Rust 版 BR 可执行 crate `astersql-br-cmd-br` 中的恢复命令装配层。`br/cmd/br/lib.rs` 以 `pub mod restore` 纳入本模块，`br/cmd/br/main.rs::main` 再通过 `NewRestoreCommand()` 把它挂到顶层 `br` 命令。因此它位于“命令行解析/进程环境准备”和 `astersql_br_pkg_task` 恢复任务实现之间，而不是数据恢复算法所在处。
-
-crate 边界由 `br/cmd/br/Cargo.toml` 确认：该包既有 `lib.rs`，也以 `bin_main.rs` 生成 `astersql-br-cmd-br`，并直接依赖路径 crate `../../pkg/task`（包名 `astersql-br-pkg-task`）。Cargo 元数据把它标为对齐 Go 包 `br/cmd/br` 的 binary 迁移单元。当前实现使用本 crate 的 `Command`、glue、日志和配置桩；不能仅凭函数名推断它已经具有 Go 版全部外部 I/O 能力。
-
-直接对照文件是 `br/cmd/br/restore.go`。Rust 文件保留了 Go 文件的三类运行入口、一个用户提示函数和六个子命令构造器，但以 Rust 的 `Result`、`Arc` 回调和 Drop 守卫表达错误传播与清理。
+`runRestoreCommand` 负责 full/db/table/point 的共享前置编排：解析配置、注册指标、设置进程级恢复环境、选择 EBS 分支、管理 schema 过滤器和 tracing，最后调用任务层 `RunRestore`。
 
 ## 核心职责
 
@@ -102,17 +98,14 @@ RawKV 和 TxnKV 路径较短：各自构造配置、合并并解析 flag、读�
 
 ## 与 Go 版本的对应关系
 
-`br/cmd/br/restore.go` 是逐函数对照基线。命令名、子命令顺序、flag 组合、配置解析错误显示 usage、PITR 追加解析、SkipGrantTable、metrics、普通恢复环境调整、schema 过滤、三种 KV 路径以及 workaround 文案均有一一对应的 Rust 符号。
-
 主要表达差异如下：
 
-- Go 的 `*cobra.Command` 对应本地 `Command` 替身；Go 闭包对应 `Arc` 回调；Go `errors.Trace` 对应 `Error::Trace`/`map_err`。
 - Go 的 `defer GlobalMemoryLimitTuner.EnableAdjustMemoryLimit()` 在 Rust 中由 Drop 守卫实现；Go 的 `defer restore()` 在 Rust 中是任务返回后的显式 `FnOnce` 调用。
 - Go 直接使用 `gluetidb`/`gluetikv`、appdash 和真实任务依赖；Rust 通过 `tidbGlue`、`TikvGlue`、`with_tracing` 及 `stubs.rs` 的平台适配运行。
 - Go 的 EBS prepare 调用 `RunRestoreEBSMeta`，Rust CLI 调用 `RunRestoreEBSMetaWithDefaults`；Go resolve 路径由任务配置取得存储，当前 Rust CLI 显式传入 `MemStorage`。因此文档只能确认控制流和契约对齐，不能声称 EBS 外部存储集成完全等价。
 - Rust 在普通 restore 完成后手动恢复 schema filter；语义覆盖普通成功/错误返回，但 panic 清理保证弱于 Go `defer`。
 
-Go 同目录没有直接针对 `restore.go` 的独立测试；Rust 使用同目录独立文件 `parity_test.rs` 固定公开命令树和错误分类。更深的执行语义由 `br/pkg/task/*_test.rs` 覆盖。
+Go 同目录没有直接针对 `restore.go` 的独立测试；Rust 使用同目录独立文件 `parity_test.rs` 固定公开命令树和错误分类。
 
 ## 扩展指南
 
@@ -123,17 +116,3 @@ Go 同目录没有直接针对 `restore.go` 的独立测试；Rust 使用同目�
 - 新增可操作错误提示时，在 `printWorkaroundOnFullRestoreError` 使用稳定错误身份比较，不以字符串匹配；在 `parity_test.rs` 增加独立断言，并核对 Go 文案和触发条件。
 - 本仓库要求 Rust 测试与生产源分离。该文件的 CLI 契约测试应继续放在 `br/cmd/br/parity_test.rs` 或新建独立 `*_test.rs`；任务执行细节应在 `br/pkg/task/restore_test.rs`、`restore_nokit_test.rs`、`restore_lifecycle_test.rs`、`restore_raw_test.rs`、`restore_txn_test.rs`、`restore_data_test.rs`、`restore_ebs_meta_test.rs` 等对应测试文件扩展。
 - 兼容性风险集中在 CLI 名称/flag 默认值、错误展示、全局状态恢复和 Go/Rust 分支顺序；性能风险主要来自扩大 `tidbGlue` 锁临界区、增加全局 cache/metrics 开销或改变任务层并发配置。
-
-## 验证依据
-
-- 已读 Rust 源：`br/cmd/br/restore.rs`、`br/cmd/br/main.rs`、`br/cmd/br/lib.rs`、`br/cmd/br/cmd.rs`、`br/cmd/br/stubs.rs`。
-- 已读 crate 配置与 Go 对照：`br/cmd/br/Cargo.toml`、`br/cmd/br/restore.go`；同目录未发现 `doc.go`。
-- 已读直接 Rust 测试：`br/cmd/br/parity_test.rs`，其中 `contract_normal_command_tree_and_filters` 验证恢复子命令恰为 `full/db/table/raw/txn/point`，`contract_error_paths` 覆盖普通错误和两类特定 workaround 错误。
-- 已核对任务层入口及测试位置：`br/pkg/task/restore.rs`、`restore_raw.rs`、`restore_txn.rs`、`restore_data.rs`、`restore_ebs_meta.rs`；相关独立测试包括 `restore_test.rs`、`restore_nokit_test.rs`、`restore_lifecycle_test.rs`、`restore_raw_test.rs`、`restore_txn_test.rs`、`restore_data_test.rs`、`restore_ebs_meta_test.rs` 与 `parity_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定的 shell 命令验证目标文件存在且恰有 11 个固定二级标题，并人工检查所有重要陈述均能回溯到上述符号或文件。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/cmd/br/restore.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/cmd/br/restore.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-`parity_test.rs::contract_error_paths` 是既有命令错误证据；目标版本未见针对 `rejectRestoreRenameFlag` 的独立 Rust 用例。Go `restore.go` 同样在 raw/txn 解析前拒绝显式 rename。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

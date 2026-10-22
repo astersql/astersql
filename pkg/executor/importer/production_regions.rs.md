@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-importer` crate；crate 根在 `pkg/executor/importer/lib.rs` 中声明并公开重导出 `production_regions`。它不是通用导入算法的主体，而是生产环境适配层：`HostTableImporterService` 包装宿主提供的 `TableImporterService`，只接管需要生产存储/元服务语义的 Region 划分和 allocator rebase，其余方法保持委托。直接装配入口是 `pkg/dxf/importinto/scheduler.rs` 的 `ImportSchedulerRuntime::FromEncodeRuntime`，其中 `ImporterService` 工厂把原服务包装成该类型。
-
-`pkg/executor/importer/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/executor/importer`，并直接依赖 `astersql-lightning-mydump`、`astersql-lightning-common`、`astersql-lightning-backend*` 与 `astersql-metaservice`；这些依赖分别承载文件切分、allocator 通用逻辑、导入后端接口和 keyspace-aware etcd 访问。
+`HostTableImporterService::MakeTableRegions` 仅对绝对路径走本文件的本地文件切分；非绝对路径回退到宿主服务，保留云存储或宿主自定义路径的既有行为。
 
 ## 核心职责
 
@@ -84,13 +82,9 @@ RustCodeGraph 将本文件列为被 `pkg/dxf/importinto/scheduler.rs`、`pkg/exe
 
 ## 与 Go 版本的对应关系
 
-最接近的 Go 实现位于 `pkg/executor/importer/table_import.go`。
-
 - Go 的 `LoadDataController.PopulateChunks` 同样构造 `MDTableMeta`/`DataDivideConfig`、调用 `mydump.MakeTableRegions`，再按 engine ID 转成 chunks；Rust 把“生产 server-disk 的 Region 生成”拆到本包装器，通用的 Region-to-Chunk 转换仍在 `table_import.rs`。
 - 两版都传递列数、调整后 engine 大小、线程并发、严格格式、字符集和 CSV 配置。Go 配置还显式包含 `MaxChunkSize`、I/O workers、invalid-character replacement、read block size、parquet row-count 策略和通用 data store；当前 Rust 本地分支使用 `NewDataDivideConfig` 的这些字段默认值，且 `TableRegion` 投影未携带 Go chunk 的 `ParquetMeta`。因此不能宣称本分支覆盖 Go 的全部格式/存储能力。
 - Go 使用 controller 的抽象 `dataStore`；Rust 仅在绝对路径时用 `LocalRegionStorage`，其他路径交回宿主。这是适配边界差异，不是 mydump 算法差异。
-- Go `RebaseAllocatorBases` 同样先判断 `TableHasAutoID`，创建元服务感知 etcd client，构造 auto-ID requirement，调用 `common.RebaseTableAllocators`，关闭 client 后 reset 连接。Rust 将 auto-ID 短路放在 `table_import.rs`，将 metadata group client 和 bindings 注入留在本文件。
-- Rust 明确逐项构造 common `TableInfo` 和 allocator 类型映射；Go 直接传递 TiDB table info 与 `map[autoid.AllocatorType]int64`。两者都以 DB ID、目标表 metadata 和导入观测到的最大 ID 为 rebase 输入。
 
 ## 扩展指南
 
@@ -100,12 +94,3 @@ RustCodeGraph 将本文件列为被 `pkg/dxf/importinto/scheduler.rs`、`pkg/exe
 - 新增 allocator 类型时，需要同时更新 backend-to-common 的 `match`、Lightning common 实现及独立测试；当前穷尽匹配会在编译期提示新增 enum variant。
 - 调整 rebase 资源清理时，应维持主要错误优先级，并在 `meta_service_group_test.rs` 验证 client 关闭先于 reset、keyspace namespace 正确、bindings/rebase 失败路径也清理资源。
 - 若增加新的生产特化方法，优先只覆盖必要方法，其余继续透明委托 `Host`，并在 scheduler 构造路径及 `TableImporterService` trait 处同步检查。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标 `production_regions.rs` 被识别为 28 个符号，并显示 5 个使用文件。
-- RustCodeGraph 读取/查询：`production_regions.rs`、`production_regions_test.rs`、`lib.rs`、`table_import.rs`、`pkg/dxf/importinto/scheduler.rs`、`pkg/dxf/importinto/subtask_executor.rs`、`meta_service_group_test.rs`；精确查询确认 `HostTableImporterService`、`RebaseAllocatorsWithMetadata` 及 trait 方法定义。trait 动态分派的 callers/callees 查询无输出，已用精确引用搜索补足。
-- crate/装配依据：`pkg/executor/importer/Cargo.toml`、`pkg/executor/importer/lib.rs`。
-- Go 对照：`pkg/executor/importer/table_import.go` 的 `PopulateChunks`、`PostProcess`、`RebaseAllocatorBases` 和 `newEtcdClientForAllocatorRebase`。
-- 独立 Rust 测试：`production_regions_test.rs::local_region_storage_streams_large_csv_split` 验证未压缩 CSV 可流式切成多个连续 Region，首 offset 为 0、末 end offset 等于文件长度；`meta_service_group_test.rs::allocator_rebase_consumes_scoped_discovery_and_resets_after_close` 验证 scoped namespace、rebase 值和 close-before-reset（该用例需真实 etcd endpoint，源码标记为 ignored）。
-- 人工复核结论：本文件存在的原因是把 DXF 宿主服务适配到 server-disk Region 切分和 metadata-group-aware allocator rebase；安全扩展点分别是 `Storage::open`、`MakeTableRegions` 配置/投影、allocator 类型映射和显式清理顺序。

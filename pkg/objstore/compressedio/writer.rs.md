@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore-compressedio` crate 的压缩写出层。crate 入口 [`lib.rs`](lib.rs) 将 `writer` 声明为公开模块并重导出其 API；[`Cargo.toml`](Cargo.toml) 表明该 crate 直接依赖 `flate2`、`snap` 和 `zstd`，分别承载 Gzip、Snappy framed stream 和 Zstandard 的编码实现。
-
-它位于“明文字节 → 流式压缩器 → 任意 `std::io::Write` 输出”的边界。直接入口是 `new_writer`；上层既可像 [`../compress.rs`](../compress.rs) 的 `WithCompression::WriteFile` 一样直接压缩整块数据，也可由 [`buffer.rs`](buffer.rs) 的 `new_buffer` 包成可复用压缩缓冲，再进入 [`../objectio/writer.rs`](../objectio/writer.rs) 的分块上传链。
+为 Gzip、Snappy、Zstd 三种第三方编码器提供相同的动态分发形态 `Box<dyn Writer>`。
 
 ## 核心职责
 
@@ -87,7 +85,7 @@ RustCodeGraph 索引将 `writer.rs` 识别为 20 个符号，并显示它由 25 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`writer.go`](writer.go)：Go 的 `Writer` 组合 `io.WriteCloser` 与 `Flusher`，Rust 的 `Writer: Write + Flusher` 再增加显式 `close`，能力集合一致。两边工厂都按 `Gzip`、`Snappy`、`Zstd` 创建对应流式编码器，其他值（包括 `NoCompression`）返回空值。
+直接对照文件是 [`writer.go`](writer.go)：Go 的 `Writer` 组合 `io.WriteCloser` 与 `Flusher`，Rust 的 `Writer: Write + Flusher` 再增加显式 `close`，能力集合一致。
 
 主要实现差异如下：
 
@@ -95,8 +93,6 @@ RustCodeGraph 索引将 `writer.rs` 识别为 20 个符号，并显示它由 25 
 - Go 的 Zstd 构造错误通过结构化日志告警后返回 `nil`；Rust 当前通过 `eprintln!` 输出并返回 `None`。两者都不从工厂单独返回错误，但日志设施不同。
 - Rust 明确定义了重复 close 成功、关闭后 write/flush 为 `BrokenPipe`；Go 侧这些细节由各第三方 writer 自身决定，不能假定错误文本完全相同。
 - Go 使用 `klauspost/compress` 的 gzip/snappy/zstd；Rust 分别使用 `flate2`、`snap`、`zstd`。兼容目标是流格式和上层行为，而不是压缩字节逐字节相同。
-
-[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `compressed_buffer_round_trips_all_go_formats` 验证三种格式在 write/flush/close 后均可由对应 reader 还原原文，`no_compression_factories_match_go_nil_semantics` 验证无压缩空值语义。[`../objectio/writer_test.rs`](../objectio/writer_test.rs) 的 `test_compress_reader_writer` 进一步覆盖对象存储写入、磁盘直接解压和 Storage 读取链。
 
 ## 扩展指南
 
@@ -109,12 +105,3 @@ RustCodeGraph 索引将 `writer.rs` 识别为 20 个符号，并显示它由 25 
 5. 对构造失败、close 失败、重复 close、关闭后 write/flush 建立独立回归测试。当前现有测试覆盖格式往返和无压缩空值，但没有直接锁定全部关闭态语义。
 
 若仅需新增压缩级别或字典配置，最可能改动 `new_writer` 的签名和三个构造分支；这会穿透 `buffer::new_buffer`、`objectio::new_intercept_buffer` 和 `WithCompression` 配置链，应避免静默改变现有默认压缩比、CPU 消耗或产物兼容性。若要让 Zstd 构造错误可区分于无压缩，优先考虑把工厂改为 `io::Result<Option<Box<dyn Writer>>>`，并同步所有直接调用者，而不是继续扩大 `None` 的含义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/objstore/compressedio` 列出本 crate 的 12 个 Go/Rust 文件；`node --file pkg/objstore/compressedio/writer.rs --offset 1 --limit 240` 返回完整 153 行及 20 个符号；`query new_writer --kind function --json`、`query open_mut --kind function --json`、`query GzipWriter/SnappyWriter/ZstdWriter --kind struct` 确认主要符号及位置。
-- 源码：[`writer.rs`](writer.rs)；直接上游 [`buffer.rs`](buffer.rs)、[`../compress.rs`](../compress.rs)、[`../objectio/writer.rs`](../objectio/writer.rs)；crate 边界 [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)；公共定义 [`def.rs`](def.rs)。
-- Go 对照：[`writer.go`](writer.go)、[`buffer.go`](buffer.go)、[`def.go`](def.go)。
-- 独立测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`buffer_test.rs`](buffer_test.rs)、[`../objectio/writer_test.rs`](../objectio/writer_test.rs)，以及外部包风格的 Go 对照测试 [`../objectio/writer_test.go`](../objectio/writer_test.go)。
-- 人工事实复核：文档分别回答了文件为何存在（统一三种压缩 writer）、如何运行（工厂—写入—刷新—关闭）、如何安全扩展（同步枚举、writer、reader、上层配置与独立测试），并区分已验证行为和当前未直接测试的关闭态细节。
-- 本任务为纯文档分析，依照任务约束未运行 Cargo 或代码测试；交付验证只检查文档结构、路径链接和 diff 范围。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-signal` crate（见 `pkg/util/signal/Cargo.toml`），提供 Unix/POSIX 平台向当前进程投递信号的实现。`pkg/util/signal/lib.rs` 仅在 `cfg(unix)` 下声明 `mod exit` 并公开重导出其符号，因此这里的 API 不会进入 Windows 或 WASM 构建；Windows 的同名兼容入口位于 `signal_windows.rs`。
-
-该文件对应 Go 的 `pkg/util/signal/exit.go`。它是信号发送端，不负责注册信号处理器；Unix 的 SIGUSR1 诊断和关机信号监听由相邻的 `signal_posix.rs` 承担。
+`TiDBExit` 提供与 Go 同名的公开兼容 API，把发送动作包装成尽力而为操作；失败时写标准错误，但不 panic、不中止调用线程，也不把错误继续返回。
 
 ## 核心职责
 
@@ -64,9 +62,9 @@
 
 Unix Rust 实现逐步对应 `pkg/util/signal/exit.go::TiDBExit`：两者都取得当前 PID、向自身发送调用者指定的信号，并在失败时仅记录错误。Rust 将系统调用拆成可返回 `io::Result` 的 `send_to_current_process` 和吞错兼容层 `TiDBExit`；Go 版本没有对应的公开可测试底层函数，而是直接调用 `syscall.Kill(syscall.Getpid(), sig)`。
 
-类型上，Go 接收 `syscall.Signal`，Rust 接收其 ABI 整数表示 `libc::c_int`。日志上，Go 记录结构化错误与 `sig.String()`，Rust 输出整数信号号和 `Display` 格式错误。平台边界也不同：Go 的 `exit.go` 由 `//go:build !windows` 覆盖所有非 Windows 目标；Rust 本文件由 `cfg(unix)` 限定。Windows 两侧另有 `signal_windows.go/.rs`，其中当前 Rust `TiDBExit` 是明确的空操作，不应与本文件的 POSIX 行为混用。
+平台边界也不同：Go 的 `exit.go` 由 `//go:build !windows` 覆盖所有非 Windows 目标；Rust 本文件由 `cfg(unix)` 限定。
 
-Go 的 `pkg/standby/standby_nextgen_test.go` 通过替换 `tidbExit` 验证 graceful 路径选择 `SIGTERM`、拒绝路径不发送信号等上层策略；它没有执行真实 `kill`。Rust 独立测试只验证非法信号的错误返回，尚未覆盖 `TiDBExit` 的标准错误输出或成功投递。
+Rust 独立测试只验证非法信号的错误返回，尚未覆盖 `TiDBExit` 的标准错误输出或成功投递。
 
 ## 扩展指南
 
@@ -75,12 +73,3 @@ Go 的 `pkg/standby/standby_nextgen_test.go` 通过替换 `tidbExit` 验证 grac
 - 回归测试应继续放在独立的 `pkg/util/signal/migration_aster_unit_test.rs` 或新增同目录独立测试文件，不要嵌入 `exit.rs`。安全测试优先使用必然失败的信号号或隔离子进程；不要在测试进程中直接发送具有默认终止动作的信号。
 - 若把 `TiDBExit` 接入 Rust standby，应同步补充独立上层测试，像 Go 测试一样以可替换发送器验证 `SIGTERM`/`SIGINT` 选择，避免用真实进程退出替代业务断言。
 - 性能风险很低，因为每次调用只有取得 PID、一次 `kill` 和可能的错误格式化；主要风险是兼容性与正确性，包括错误被吞掉、平台条件编译差异、错误信号导致非预期进程动作，以及把“已投递”误判为“已完成关机”。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引可用；`files --filter pkg/util/signal` 确认相关 Rust/Go 文件；`query send_to_current_process` 与 `query TiDBExit` 定位符号；精确 `node` 确认源码和 `TiDBExit -> send_to_current_process` 调用边。泛化 `callers/callees` 查询未返回完整边，因此未据此推断不存在内部调用。
-- Rust 源与装配：`pkg/util/signal/exit.rs`、`pkg/util/signal/lib.rs`、`pkg/util/signal/migration_aster_unit_test.rs`、`pkg/util/signal/signal_windows.rs`。
-- Cargo 边界：`pkg/util/signal/Cargo.toml`、workspace 根 `Cargo.toml`、`cmd/tidb-server/Cargo.toml`、`pkg/standby/Cargo.toml`。
-- Go 对照与调用/测试：`pkg/util/signal/exit.go`、`pkg/util/signal/signal_windows.go`、`pkg/standby/standby.go`、`pkg/standby/idle_watcher.go`、`pkg/standby/standby_nextgen_test.go`。
-- 全仓引用核对：对 `.rs` 文件搜索 `TiDBExit`、`send_to_current_process` 和 `astersql_util_signal`，确认当前 Rust 测试与生产接线范围；对 `.go` 文件搜索 `TiDBExit`，确认 Go standby 调用路径。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证目标文件存在且固定二级标题恰好为 11 个，并人工复核没有把 Go 主链或 Cargo 依赖误写成 Rust 已接线行为。

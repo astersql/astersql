@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-extsort` crate 的磁盘外排实现，crate 入口 `pkg/util/extsort/lib.rs` 将它与 `external_sorter.rs` 一并公开。它实现 `ExternalSorter`、`Writer` 和 `Iterator` 定义的“多 Writer 写入 → 一次排序/压缩 → 多 Iterator 有序读取”契约，主要使用方是 Lightning 重复键检测链：`pkg/lightning/duplicate/detector.rs::Detector` 创建 Writer、触发 `sort` 并取得首末键，`pkg/lightning/duplicate/worker.rs::Worker::scan_task` 为扫描区间创建 Iterator。
-
-crate 边界由 `pkg/util/extsort/Cargo.toml` 确认：运行时依赖只有 `serde`、`serde_json` 和 `tokio-util`，其中前两者保存 KV 直方图，`CancellationToken` 承担取消检查。文件没有条件编译项；独立测试由 `lib.rs` 以 `#[cfg(test)]` 引入 `disk_sorter_test.rs` 和 `disk_sorter_1_aster_unit_test.rs`，测试逻辑没有内嵌在生产文件中。
+`MergingIter` 延迟打开可能覆盖当前最小 key 的文件，提供全局有序、跨文件去重的 `seek`/`first`/`next`/`last` 读取。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 的文件索引显示本文件被多个模块和测试引用，并
 
 ## 与 Go 版本的对应关系
 
-算法和接口结构直接对应 `pkg/util/extsort/disk_sorter.go`：`DiskSorterOptions` 默认值、WRITING/SORTING/SORTED 阶段、Writer 缓冲排序去重、`sorted` 标记恢复、最小打开集多路归并、扫描线选文件、连通分组、直方图切分和每 1000 条取消检查均有同名或蛇形命名对应。`pkg/util/extsort/disk_sorter_test.go` 的测试主题也在 Rust 的 `disk_sorter_test.rs` 中逐项出现。
-
 当前实现仍有重要技术差异，扩展时不能只依据 Go 行号机械修改：
 
 - Go 使用 Pebble `sstable.Writer/Reader`、8 MiB cache、`vfs.FS`，空目录名代表内存文件系统；Rust 使用自定义 `EXTSORT1` 文件、真实 `std::fs`，空路径代表系统临时磁盘目录。
@@ -93,13 +89,3 @@ RustCodeGraph 的文件索引显示本文件被多个模块和测试引用，并
 - 修改并发或资源管理时需保持“文件号唯一、pending 发布受锁保护、输入引用归零后删除、所有打开 Iterator 最终 unref”四项不变量；建议优先补充独立测试而不是在生产文件中加入测试模块。
 - 若要解决大文件内存放大，接入点是 `SstReader::new_iter`、`VecIterator`、`write_file_atomic` 和 `run_compaction`；替换为流式实现时必须保持 `Iterator` 错误所有权、seek、跨文件去重和原子 rename 契约。
 - 增加新的调用方时依赖 `ExternalSorter` trait，而非内部 `Sst*` 类型；生命周期应是关闭全部 Writer 后调用 `sort`，再创建 Iterator，最后 `close_and_cleanup`。
-
-## 验证依据
-
-- 生产源码：`pkg/util/extsort/disk_sorter.rs`（完整 1402 行）、`pkg/util/extsort/external_sorter.rs`、`pkg/util/extsort/lib.rs`。
-- crate/config：`pkg/util/extsort/Cargo.toml`，确认 crate 名、入口、依赖和 Go 包迁移元数据。
-- Go 对照：`pkg/util/extsort/disk_sorter.go`，核对 Writer、ReaderPool、MergingIter、状态机和三段压缩算法。
-- 独立测试：`pkg/util/extsort/disk_sorter_test.rs`、`pkg/util/extsort/disk_sorter_1_aster_unit_test.rs`、`pkg/util/extsort/disk_sorter_test.go`；覆盖公共外排契约、reopen、并发、SST 读写/错误、ReaderPool、归并、压缩和错误合并。
-- 上游证据：`pkg/lightning/duplicate/detector.rs` 和 `pkg/lightning/duplicate/worker.rs` 的 trait 调用；测试构造证据见 `pkg/lightning/duplicate/detector_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/util/extsort` 返回目标、trait、Go 对照和测试；`node --file` 读取目标全貌；`query` 定位 `disk_sorter.rs::open_disk_sorter`、`pick_compaction_files`、`MergingIter`。精确 callers/callees 查询无输出，该限制已在“依赖与调用关系”中说明并由直接源码搜索补证。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付前以任务给定命令验证恰有 11 个固定二级标题，并人工复查文件角色、流程、边界、Go 差异和扩展入口均有对应路径或符号证据。

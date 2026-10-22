@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-br-pkg-utils-consts` 的实际常量定义文件，源文件为 [`consts.rs`](./consts.rs)。[`lib.rs`](./lib.rs) 通过 `#[path = "consts.rs"] pub mod consts` 挂载模块，并用 `pub use consts::*` 将常量提升到 crate 根，因此调用方使用 `astersql_br_pkg_utils_consts::{DefaultCF, WriteCF}`，无需感知内部模块路径。
-
-[`Cargo.toml`](./Cargo.toml) 将该目录声明为不发布的 workspace library，库入口是 `lib.rs`，没有运行时依赖或 feature。当前可确认的 Cargo 直接依赖者是 `br/pkg/stream/Cargo.toml` 与 `br/pkg/task/Cargo.toml`；它们分别在流备份/恢复逻辑和任务层测试中使用这组列族标识。
+只负责集中定义 BR 识别 TiKV MVCC 两个核心列族时使用的稳定字符串：默认列族 `"default"` 和写列族 `"write"`。
 
 ## 核心职责
 
@@ -66,8 +64,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 [`consts.go`](./consts.go)，包名同为 `consts`，并在一个 `const` 块中定义 `DefaultCF = "default"` 与 `WriteCF = "write"`。Rust 版本在名称、可见性意图和字节值上逐项一致；`parity_test.rs::go_rust_public_contract_matches` 专门锁定这一公开契约。
-
 语言层差异仅在表示方式：Go 常量是无显式类型的字符串常量，Rust 常量显式为 `&str`，并由独立的 crate 入口再导出。Rust 消费者给拥有型 `String` 字段赋值时需要 `.into()`/`.to_string()`，Go 侧则可直接赋给 string 字段。当前文件不是门面或桩；它是 Rust crate 中的真实定义，但 restore/log_client 的移植桩仍保留另一组局部同名常量，体现了尚未完全统一依赖边界的现状。
 
 ## 扩展指南
@@ -80,13 +76,3 @@ Go 对照文件为 [`consts.go`](./consts.go)，包名同为 `consts`，并在�
 4. 如果希望 restore/log_client 共享此 crate，应作为单独的依赖接线任务处理，移除重复桩之前先证明所有行为与测试保持一致；不要在常量文档任务中悄然改变依赖图。
 
 主要兼容风险是旧备份无法识别变更后的字面量或错误进入另一解析分支；正确性风险是把不同值体格式按 WriteCF/DefaultCF 错解；性能风险通常不在常量本身，而在新增分流是否引入额外复制、哈希表或跨文件配对。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utils/consts` 确认本目录的 `consts.rs`、`lib.rs`、`parity_test.rs` 与 Go 对照文件均被索引。
-- RustCodeGraph `node --file`：完整读取 `consts.rs` 和 `lib.rs`，确认仅有两个常量，以及模块挂载、测试模块和 crate 根再导出关系。
-- RustCodeGraph `query DefaultCF/WriteCF`：定位到 `br/pkg/stream` 的导入和相关分流符号；图对常量的 `callers/callees` 未给出有效直接边，因此用精确文本引用查询补齐直接证据，未把“0 个使用文件”误当成无人使用。
-- Cargo 证据：读取 `br/pkg/utils/consts/Cargo.toml`，并核对 `br/pkg/stream/Cargo.toml`、`br/pkg/task/Cargo.toml` 对 `astersql-br-pkg-utils-consts` 的路径依赖。
-- Go/测试证据：读取 `consts.go` 与 `parity_test.rs`；引用搜索还核对了 `br/pkg/stream/{parity_test,search_test,rewrite_meta_rawkv_test,table_mapping_test}.rs` 和 `br/pkg/task/stream_test.rs`。
-- 行为抽样：通过 RustCodeGraph 读取 `table_mapping.rs::ParseMetaKvAndUpdateIdMapping`、`search.rs::Search/searchFromDataFile`、`rewrite_meta_rawkv.rs::rewriteValue` 的相关源码，验证常量实际承担 CF 分流判别作用。
-- 按任务约束，本任务是纯文档分析，未运行 Cargo 或代码测试；交付验证采用固定章节结构检查和人工事实复核。

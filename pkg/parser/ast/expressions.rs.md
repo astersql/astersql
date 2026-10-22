@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`expressions.rs` 是 `astersql-parser-ast` crate 的表达式 AST 兼容层。crate 入口通过 `pkg/parser/ast/lib.rs:4973-4975` 以公开模块 `expressions` 装入本文件；crate 本身由 `pkg/parser/ast/Cargo.toml` 定义，未为本模块声明单独 feature。文件头说明其来源是同目录的 Go 实现 `pkg/parser/ast/expressions.go`。
-
-它位于“语法树已经形成、需要保存/遍历/重新输出表达式”的边界，而不是表达式求值器：本文件不执行 SQL 语义，不访问存储，也不负责完整 SQL 解析。当前 Rust 代码把表达式表示为 `Expr` 枚举，提供 SQL 还原、结构遍历、名称匹配和结构相等比较。RustCodeGraph 将本文件识别为 1246 行、199 个符号，并显示被 52 个文件使用；可确认的直接生产接线包括 `pkg/types/parser_driver/value_expr.rs` 对 `ValueExpr`/`ParamMarkerExpr` 的实现，以及 `pkg/expression/util.rs` 的 `ParamMarkerInPrepareChecker`。
+** `Expr::restore` 是统一分派入口；各节点的私有 `restore` 负责关键字、标识符引用、列表分隔和标志位处理。
 
 ## 核心职责
 
@@ -93,9 +91,7 @@ crate 边界由 `pkg/parser/ast/Cargo.toml` 给出：本 crate 直接依赖相�
 
 ## 与 Go 版本的对应关系
 
-Rust 节点名和主要还原文本直接对照 `pkg/parser/ast/expressions.go`。`pkg/parser/ast/expressions_test.rs:931-1088` 复刻了 Go 测试中的一元运算、列名、真假/空值、`BETWEEN`、`CASE`、二元运算、括号、`IN`、`LIKE`、正则、行、变量和全文检索用例；对应 Go 表格位于 `pkg/parser/ast/expressions_test.go:108-421`。`pkg/parser/ast/expressions_4_aster_unit_test.rs` 另验证优先级省略、CTE/schema 规则、全文修饰符冲突和 Visitor 顺序。
-
-已经对齐的核心语义包括：关键字大写、标识符反引号转义、二元运算空格标志、`BETWEEN`/二元括号联动、优先级与结合律、`LIKE` 转义输出、变量 scope、全文检索修饰符互斥，以及 Visitor 的 enter/skip/leave 顺序。
+`pkg/parser/ast/expressions_4_aster_unit_test.rs` 另验证优先级省略、CTE/schema 规则、全文修饰符冲突和 Visitor 顺序。
 
 仍需明确的差异：
 
@@ -117,13 +113,3 @@ Rust 节点名和主要还原文本直接对照 `pkg/parser/ast/expressions.go`�
 6. 涉及参数标记时还要检查 `pkg/types/parser_driver/value_expr.rs` 与 `pkg/expression/util.rs`；涉及 crate 暴露方式时检查 `pkg/parser/ast/lib.rs`，但通常无需改 Cargo 依赖。
 
 兼容风险集中在还原文本的精确格式、括号语义、Visitor 覆盖完整性和 Go 等价规则；性能风险主要来自深递归、字符串反复增长以及 `CiString`/AST 深克隆。若要把子查询从字符串升级为真实 AST，属于跨文件接口变更，不能只改本文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11467 文件、307296 节点、1848419 边；`files --filter pkg/parser/ast` 确认目标及独立测试均已索引；`node --file pkg/parser/ast/expressions.rs --offset 1/421/841` 完整读取 1246 行源码，并报告本文件被 52 个文件使用；`query expression_deep_equal` 定位到 `expressions.rs:1239`。对 `try_to_sql_with_flags` 的 method 查询无结果，故未以缺失的逐方法调用边作结论。
-- crate/模块：`pkg/parser/ast/Cargo.toml`、`pkg/parser/ast/lib.rs:4963-5039`。
-- Rust 直接接线：`pkg/types/parser_driver/value_expr.rs:448-497`、`pkg/expression/util.rs:1271-1300`。
-- Rust 测试：`pkg/parser/ast/expressions_test.rs`、`pkg/parser/ast/expressions_4_aster_unit_test.rs`；补充的旧/新 AST 桥接覆盖见 `pkg/parser/ast/go_merge_25_test.rs:396-426`。
-- Go 对照：`pkg/parser/ast/expressions.go`、`pkg/parser/ast/expressions_test.go`；深相等实现核对 `expressions.go:1687-1735`。
-- 人工复核结论：本文件存在是为了在 Rust parser AST crate 中集中表达、还原和遍历表达式；运行时由 `Expr::restore`/`accept` 两条递归主链驱动；安全扩展必须同时维护枚举分派、运算优先级、Visitor 子树覆盖和独立对照测试，并显式记录尚未与 Go 等价的部分。
-

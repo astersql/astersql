@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-old` crate，是旧版 Cascades 优化器的 memo `Group` 图字符串化工具。模块在 `pkg/planner/cascades/old/lib.rs` 中以私有 `mod stringer` 装配，再通过 `pub use stringer::*` 将唯一公开入口 `ToString` 重导出。它不参与计划选择或执行，只把探索阶段形成的逻辑等价类图转换为稳定的逐行文本，供调试与 golden 结果比较使用。
-
-当前 Rust 仓库内，`ToString` 的直接调用只出现在独立测试 `pkg/planner/cascades/old/stringer_test.rs`；未发现生产 Rust 调用点。因此应把它理解为已接线的诊断/测试 API，而不是 SQL 请求主链的必经步骤。其输入通常由 `astersql_planner_memo::Convert2Group` 建立，并可在 `Optimizer::onPhaseExploration` 改写后用于观察 memo 结构。
+文件不会计算 Schema、键信息或执行探索；它只读取调用方已经构造好的 memo 状态。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/old/stringer.go`。Rust 保留了 Go 的五层函数划分、前序遍历、先登记直接子 Group、四空格缩进、Schema/UniqueKey 格式、叶与非叶 ExplainInfo 分支以及子输入列表格式。
-
 实现层面的等价改写包括：Go 以 `map[*memo.Group]int` 按指针标识 Group，Rust 以稳定 `Group::ID() -> u64` 为键；Go 的 `Equivalents` 是链表，Rust 是保持兼容顺序的 `Vec`；Go 在递归间返回累积切片，Rust使用共享的 `&mut Vec<String>`；Go 调用 `ExprNode.ExplainID().String()`，Rust显式依据 `SCtx().ignore_explain_id_suffix()` 在 `TP` 与 `TP_ID` 之间选择。
 
-Go 独立测试 `pkg/planner/cascades/old/stringer_test.go::TestGroupStringer` 从 SQL 解析、构建逻辑计划、预处理、探索、`BuildKeyInfo`，再与 `testdata/stringer_suite_out.json` 比较，覆盖了真实 SQL 与 UniqueKey 输出。Rust 独立测试因当前窄运行时没有复刻整条 SQL 构建链，改用手工逻辑计划覆盖三个关键事实：未探索 Group 树的编号/Schema/子引用、探索规则把零行 Limit 改写成空 TableDual 后的可观察结果，以及忽略 Explain ID 后缀的会话选项。Rust 测试保留了 Go 的核心观察意图，但并未逐项复刻 Go testdata 的全部 SQL 与 UniqueKey 场景。
+Rust 独立测试因当前窄运行时没有复刻整条 SQL 构建链，改用手工逻辑计划覆盖三个关键事实：未探索 Group 树的编号/Schema/子引用、探索规则把零行 Limit 改写成空 TableDual 后的可观察结果，以及忽略 Explain ID 后缀的会话选项。Rust 测试保留了 Go 的核心观察意图，但并未逐项复刻 Go testdata 的全部 SQL 与 UniqueKey 场景。
 
 ## 扩展指南
 
@@ -92,11 +88,3 @@ Go 独立测试 `pkg/planner/cascades/old/stringer_test.go::TestGroupStringer` �
 - 若改变子输入格式，集中修改 `getChildrenGroupID`，并覆盖零、一、多个子 Group 以及共享子 Group。
 - 测试逻辑必须继续放在独立的 `stringer_test.rs`，由 `optimize.rs` 的 `#[path = "stringer_test.rs"]` 挂载；不要把测试内嵌回生产源文件。
 - 格式是 golden 接口，空格、逗号、缩进、编号和 Explain 后缀都可能被测试依赖。任何“美化”都属于兼容性变更，应同步 Go 对照、Rust 测试及相关 testdata，并评估大 memo 上新增字符串分配的性能影响。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，覆盖本仓库 Rust/Go 文件；`files --filter pkg/planner/cascades/old/stringer.rs` 确认目标文件已索引且包含 8 个索引符号，`node --file ...` 读取了目标源码全貌。
-- RustCodeGraph `query` 确认目标文件中的 `ToString`、`toString`、`groupToString`、`groupExprToString`、`getChildrenGroupID`；`node` 读取了 `stringer.rs`、`stringer_test.rs`、Go 对照与 Go 测试。由于全仓存在大量同名 `ToString`，`callers --file` 仍返回跨文件同名噪声，调用点结论另以限定 `*.rs`/`*.go` 的仓库检索复核。
-- 已读源码/配置：`pkg/planner/cascades/old/stringer.rs`、`lib.rs`、`Cargo.toml`，`pkg/planner/memo/group.rs`、`group_expr.rs`，以及逻辑计划契约 `pkg/planner/core/operator/logicalop/base_logical_plan.rs`。目标目录不存在 `doc.go`。
-- 已读测试与 Go 证据：`pkg/planner/cascades/old/stringer_test.rs`、`stringer.go`、`stringer_test.go`、`testdata/stringer_suite_out.json`；另外通过限定检索确认 Go transformation rule 测试也把 `ToString` 用作 golden 观察器。
-- 任务为纯文档分析，按计划不运行 Cargo。交付前以任务给定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核本文未把未接线的生产调用或未覆盖的 Rust 测试场景写成已支持事实。

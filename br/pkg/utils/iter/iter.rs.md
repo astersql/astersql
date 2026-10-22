@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`iter.rs` 是 `astersql-br-pkg-utils-iter` crate 的核心协议层：它定义可取消上下文、单步迭代结果和 `TryNextor<T>` trait，并提供收集、标准 `Iterator` 适配与观测包装。`br/pkg/utils/iter/lib.rs` 以 `#[path = "iter.rs"] pub mod iter` 挂载它，再通过 `pub use iter::*` 将公开符号扁平导出。
-
-`br/pkg/utils/iter/Cargo.toml` 将该 crate 定义为不发布的 library，移植元数据指向 Go 包 `br/pkg/utils/iter`。它的直接使用者包括 `br/pkg/restore/Cargo.toml`、`br/pkg/restore/log_client/Cargo.toml` 和 `br/pkg/stream/Cargo.toml`；因此本文件处在 BR 恢复与流式日志处理的惰性数据管道底层，不是独立业务入口。
+用 `Context`/`CancelFunc` 实现局部的 Go `context.WithCancel` 对等语义，使组合器可在跨线程管道中观测取消。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/utils/iter/iter.go` 是直接对照文件。`IterResult`、`Indexed`、`TryNextor`、`DoneBy`、`Done`、`Emit`、`Throw`、`CollectAll`、`Tap`、`AsSeq` 和 `WithEmitSizeTrace` 均有一一对应。两版共同保持：成功 `CollectAll` 是带集合的产出态而非 `Finished`；中途错误不返回部分结果；`Tap` 仅观测产出值；`AsSeq` 把错误交给消费者，并由消费者是否继续决定后续拉取。
-
 主要差异是：
 
 - Go 使用标准 `context.Context` 和 `error`；Rust 在本文件中实现简化 context，错误降级为 `String`。
@@ -86,12 +82,3 @@
 - 要扩展 context 能力（deadline、原因、等待通知）时，需同时检查 `combinator_types.rs` 的并发处理和所有自定义 `TryNextor` 对 `Done`/`Err` 的使用，并增加父取消下传、子取消不上传、多次 `Cancel` 和线程间可见性测试。
 - 要强化 `IterResult` 不变式，优先评估改为 enum 对 Go 字段对齐和现有直接字段访问的兼容影响；在完成全部调用点迁移前，构造器与字段优先级不应被随意改动。
 - 性能风险集中在 `CollectAll` 的无界内存、`Context::Done` 的祖先链递归以及每元素 `Tap` 回调；兼容风险则集中在错误字符串、`Display` 格式和 Go/Rust 三态对齐。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引有 7032 个 Rust 文件；`files --filter br/pkg/utils/iter` 列出本 crate 的 Rust/Go 源和独立测试；`node --file br/pkg/utils/iter/iter.rs --offset 1 --limit 420` 返回全部 273 行、29 个符号，并报告该文件被 60 个文件使用。
-- RustCodeGraph 精确查询：`query AsSeq --kind function`、`query CollectAll --kind function`、`query WithEmitSizeTrace --kind function` 均定位到本文件；`query TryNextor --kind trait` 同时暴露 `source.rs`、`combinators.rs` 和 restore/stream 上层入口。`callers`/`callees` 命令两次在 30 秒限制内未返回，因此具体调用点改用定向 `rg` 核对。
-- 已读生产与声明路径：`br/pkg/utils/iter/iter.rs`、`lib.rs`、`Cargo.toml`、`source.rs`、`source_types.rs`、`combinators.rs`，以及依赖 manifest `br/pkg/restore/Cargo.toml`、`br/pkg/restore/log_client/Cargo.toml`、`br/pkg/stream/Cargo.toml`。
-- 已读 Go 对照与调用路径：`br/pkg/utils/iter/iter.go`、`combinator_types.go`、`combinators.go`、`br/pkg/stream/stream_metas.go`、`br/pkg/task/stream.go`。
-- 已读独立测试：`br/pkg/utils/iter/as_seq_test.rs`、`parity_test.rs`、`combinator_test.rs`、`source_test.rs`、`transform_backpressure_test.rs` 和 Go `br/pkg/utils/iter/combinator_test.go`。其中 `as_seq_test.rs` 验证顺序、错误后继续和提前停止；`parity_test.rs`/`combinator_test.rs` 验证三态展示、空收集、中途错误不返回部分值、Tap 调用次数和 context 跨线程取消。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时使用任务文件指定的 11 章节结构命令验证。

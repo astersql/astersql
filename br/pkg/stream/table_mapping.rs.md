@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-stream` library crate。`br/pkg/stream/Cargo.toml` 将 crate 根设为 `lib.rs`，而 `br/pkg/stream/lib.rs` 通过 `#[path = "table_mapping.rs"] pub mod table_mapping` 装配本模块，并在 crate 根执行 `pub use table_mapping::*`。它是 BR 日志备份/PiTR 迁移中的库、表、分区上下游 ID 映射实现：解析 TiDB meta KV，先为日志中发现的对象分配负临时下游 ID，再合并快照或已有 PITR 映射，最后按需批量替换成正式全局 ID。
-
-当前 Rust 接线需要特别区分两层事实。目标文件已提供完整的 canonical `TableMappingManager` API，并被 `table_mapping_test.rs`、`parity_test.rs`、`rewrite_meta_rawkv_test.rs` 等测试直接调用；但 `br/pkg/restore/log_client/batch_meta_processor.rs` 的恢复编排目前导入的是 `crate::stubs::stream::TableMappingManager`，该桩的 `ParseMetaKvAndUpdateIdMapping` 和 `CleanTempKV` 不执行本文件逻辑。因此，Go 版的生产恢复主链是本文件的设计归属，但 Rust 跨 crate 生产接线尚未完成，不能把测试可用等同于恢复流程已经使用 canonical 实现。
+BR 日志备份/PiTR 迁移中的库、表、分区上下游 ID 映射实现：解析 TiDB meta KV，先为日志中发现的对象分配负临时下游 ID，再合并快照或已有 PITR 映射，最后按需批量替换成正式全局 ID。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ WriteCF Put 缺少对应 DefaultCF 时采取延迟报错：错误被 commit time
 
 ## 与 Go 版本的对应关系
 
-主体实现逐段对应 `br/pkg/stream/table_mapping.go`：管理器字段、meta key 分类、DefaultCF/WriteCF 配对、short value、Delete/Rollback/非 Put 分支、全局 ID 复用、三阶段基线合并、过滤、数据库 ID 复用、临时 ID 排序替换、proto 往返及预分配区间语义保持一致。Rust 用 trait 替代 Go 的 `MetaInfoCollector`、`*utils.PiTRIdTracker` 和 `infoschema.InfoSchema`，用拥有值的 `HashMap`/protobuf 结构替代 Go 指针 map，并把 Go 的 `context.Context + genGenGlobalIDs` 收窄为同步函数指针。
+Rust 用 trait 替代 Go 的 `MetaInfoCollector`、`*utils.PiTRIdTracker` 和 `infoschema.InfoSchema`，用拥有值的 `HashMap`/protobuf 结构替代 Go 指针 map，并把 Go 的 `context.Context + genGenGlobalIDs` 收窄为同步函数指针。
 
 已确认的差异包括：Rust 未实现 Go 文件末尾的 `UpdateDownstreamIds`，该方法在 Go 中从 snapshot restore 的数据库/建表结果构造基线后调用 `MergeBaseDBReplace`；Rust 的 `SetPreallocatedRange` 不写日志；Rust 缺少 Go 在 CF 数量异常和缺失 DefaultCF 时的结构化 warning；Rust 的恢复 log-client 仍使用本地空桩而非本实现。`ReuseExistingDatabaseIDs` 还显式跳过空名称，语义上避免无意义查询；Go 通过 `SchemaByName("")` 自然不命中。上述差异均应在后续接线/移植任务中单独核验，本文档不把它们描述为已支持。
 
-独立 Rust 测试 `br/pkg/stream/table_mapping_test.rs` 对应 Go `table_mapping_test.go` 的核心场景：proto 往返与 FilteredOut、空/非空基线合并、过滤、负 ID 替换及重复冲突、DefaultCF+WriteCF 的 DB meta 解析、延迟错误清理、已有数据库 ID 复用。`parity_test.rs` 提供跨模块公开契约冒烟，`rewrite_meta_rawkv_test.rs` 验证映射与 schema rewrite 的组合。Rust 测试覆盖比 1710 行 Go 测试更聚焦，不能据此声称所有 Go 边界均已移植。
+独立 Rust 测试 `br/pkg/stream/table_mapping_test.rs` 对应 Go `table_mapping_test.go` 的核心场景：proto 往返与 FilteredOut、空/非空基线合并、过滤、负 ID 替换及重复冲突、DefaultCF+WriteCF 的 DB meta 解析、延迟错误清理、已有数据库 ID 复用。
 
 ## 扩展指南
 
@@ -93,10 +91,3 @@ WriteCF Put 缺少对应 DefaultCF 时采取延迟报错：错误被 commit time
 完成生产接线时，优先让 `br/pkg/restore/log_client` 直接使用 `astersql_br_pkg_stream::TableMappingManager` 及真实 `LogBackupTableHistoryManager` 适配，而不是扩写其 `stubs::stream`；同时补齐跨 crate 类型转换和 Go `UpdateDownstreamIds` 所需的快照恢复接口。此类改动应同步更新 `batch_meta_processor` 的独立测试，并验证 DefaultCF 必须早于 WriteCF、批次残留、`CleanTempKV` 收尾和 `ReportIfError` 的调用位置。
 
 性能方面，解析路径每个对象至少进行一次 `HashMap` 查询，分区更新会先收集待插入项以满足借用规则；大表分区数、长时间未清理的 DefaultCF 暂存和一次性 `ToProto` 克隆是主要内存关注点。若引入稳定输出排序，会增加 `O(n log n)` 成本，但可改善持久化和测试的确定性。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/stream/table_mapping_test.rs`、`rewrite_meta_rawkv_test.rs`、`parity_test.rs` 和 `br/pkg/task/restore_name_route_test.rs::name_route_table_mapping_binds_shared_target_database_identity`；冻结 log-client 的 batch_meta_processor 仍导入 stubs。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

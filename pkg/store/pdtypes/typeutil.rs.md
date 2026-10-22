@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-pdtypes` crate，提供 PD 配置模型使用的字符串列表兼容类型。crate 入口 `pkg/store/pdtypes/lib.rs` 通过 `pub mod typeutil` 公开本模块；工作区根 `Cargo.toml` 以 `facade_store_pdtypes` 注册该 crate，`pkg/lib.rs` 又在 `store::pdtypes` 下整体再导出。因此 `StringSlice` 是公开的数据边界类型，但本文件本身不访问 PD、不读取配置，也不执行任何存储或调度操作。
-
-当前生产 Rust 直接使用点是 `pkg/store/pdtypes/config.rs::ReplicationConfig::LocationLabels`。RustCodeGraph 的文件关系还识别出独立测试 `pkg/store/pdtypes/migration_aster_unit_test.rs`；精确仓库搜索没有发现其他 Rust 生产调用者。它在完整应用中的作用是固定 PD 复制配置中 `location-labels` 的 wire 表示，而不是一条独立运行的业务主链。
+`serde::Serialize` / `serde::Deserialize` 自定义实现，供包含 `StringSlice` 的结构体（目前是 `ReplicationConfig`）自动参与 Serde 编解码。
 
 ## 核心职责
 
@@ -95,11 +93,11 @@ RustCodeGraph 的 `node StringSlice` 报告 `config.rs` 的导入、迁移测试
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/pdtypes/typeutil.go`。Go 的 `type StringSlice []string` 与 Rust 的 tuple struct 都封装字符串切片；Go `MarshalJSON` 使用 `strings.Join` 后 `strconv.Quote`，Rust 使用 `join` 后 `serde_json::to_vec`，两者目标都是合法的单个 JSON 字符串。Go `UnmarshalJSON` 先 `strconv.Unquote`，再把空串设为空切片、其他值用 `strings.Split`；Rust 保持相同的空串分支和逗号拆分语义。
+Go 的 `type StringSlice []string` 与 Rust 的 tuple struct 都封装字符串切片；Go `MarshalJSON` 使用 `strings.Join` 后 `strconv.Quote`，Rust 使用 `join` 后 `serde_json::to_vec`，两者目标都是合法的单个 JSON 字符串。Go `UnmarshalJSON` 先 `strconv.Unquote`，再把空串设为空切片、其他值用 `strings.Split`；Rust 保持相同的空串分支和逗号拆分语义。
 
-两端都不会转义分隔用逗号，因此都具有相同的非无损边界。Rust 额外实现通用 Serde trait，使 `ReplicationConfig` 的派生编解码能自动采用该格式；Go 则由 `encoding/json` 自动发现命名为 `MarshalJSON` / `UnmarshalJSON` 的方法。Rust 保留同名公开方法，是为了显式调用与迁移对照，而不是 Serde 自动调用它们。
+Rust 额外实现通用 Serde trait，使 `ReplicationConfig` 的派生编解码能自动采用该格式；Go 则由 `encoding/json` 自动发现命名为 `MarshalJSON` / `UnmarshalJSON` 的方法。
 
-错误模型存在语言差异：Go `MarshalJSON` 固定返回 `nil` 错误，Rust 返回 `anyhow::Result` 并传播 JSON 库错误；Go 解码用 `errors.WithStack` 包装，Rust 用带固定消息的 `anyhow::Context`。Go 的显式方法直接调用 `strconv.Unquote`，Rust 的显式方法则要求严格 JSON 字符串，因此对脱离 `encoding/json` 直接传入的 Go 原始字符串字面量等扩展语法不能声称完全等价。两边都在成功解引号/解析后才赋值，因此非法输入不破坏旧值。当前目录没有同名 Go 测试，Go 语义证据来自生产实现；Rust 的兼容回归位于独立文件 `pkg/store/pdtypes/migration_aster_unit_test.rs`。
+错误模型存在语言差异：Go `MarshalJSON` 固定返回 `nil` 错误，Rust 返回 `anyhow::Result` 并传播 JSON 库错误；Go 解码用 `errors.WithStack` 包装，Rust 用带固定消息的 `anyhow::Context`。Go 的显式方法直接调用 `strconv.Unquote`，Rust 的显式方法则要求严格 JSON 字符串，因此对脱离 `encoding/json` 直接传入的 Go 原始字符串字面量等扩展语法不能声称完全等价。当前目录没有同名 Go 测试，Go 语义证据来自生产实现；Rust 的兼容回归位于独立文件 `pkg/store/pdtypes/migration_aster_unit_test.rs`。
 
 ## 扩展指南
 
@@ -108,18 +106,3 @@ RustCodeGraph 的 `node StringSlice` 报告 `config.rs` 的导入、迁移测试
 修改 `serialize`/`deserialize` 时还要检查 `pkg/store/pdtypes/config.rs::ReplicationConfig::LocationLabels` 及测试 `migration_configuration_and_placement_keep_pd_json_shape`，因为即使显式方法仍正确，Serde trait 的偏差也会改变 PD 配置 JSON。反之，修改 `MarshalJSON`/`UnmarshalJSON` 时要防止两套入口产生不一致结果。
 
 若未来必须支持含逗号的任意字符串，兼容风险高：直接改成 JSON 数组会改变既有 PD/Go wire shape，加入转义又可能被旧端按字面拆分。应先确认上游 PD 协议、Go 行为和已有持久化/网络数据，再设计版本化或双读方案。性能上，现实现每次连接和拆分都会分配；除非实际出现超大标签列表，否则保持简单协议通常比引入缓存更安全。
-
-## 验证依据
-
-本说明依据以下直接证据编写：
-
-- `pkg/store/pdtypes/typeutil.rs`：`StringSlice`、两个公开 JSON 方法和两个 Serde trait 实现的完整源码。
-- `pkg/store/pdtypes/config.rs`：唯一已找到的生产 Rust 字段 `ReplicationConfig::LocationLabels` 及其派生 Serde 调用场景。
-- `pkg/store/pdtypes/lib.rs`：`typeutil` 模块公开方式与独立迁移测试的装配。
-- `pkg/store/pdtypes/Cargo.toml`：`astersql-store-pdtypes` crate 边界、`anyhow`/`serde`/`serde_json` 依赖和 Go package 迁移元数据。
-- 根 `Cargo.toml` 与 `pkg/lib.rs`：`facade_store_pdtypes` 注册和 `store::pdtypes` 再导出路径。
-- `pkg/store/pdtypes/typeutil.go`：Go 类型及 `MarshalJSON`/`UnmarshalJSON` 的直接对照实现。
-- `pkg/store/pdtypes/migration_aster_unit_test.rs`：逗号连接输出、Serde 输出、正常/空串解码、错误不修改旧值，以及嵌入 `ReplicationConfig` 后的 JSON shape。
-- RustCodeGraph `status`、`files --filter pkg/store/pdtypes`、目标文件节点、`StringSlice`/`MarshalJSON`/`serialize`/`deserialize` 节点与调用关系查询：索引覆盖目标 Rust、Go 和测试文件，并确认主要符号及已知使用点。对同名符号产生歧义或错误跨文件边的结果未作为结论，另用精确路径搜索交叉核验。
-
-人工复核结论：该文件存在是为了让 PD 字符串列表遵循 Go 侧的单字符串 JSON 契约；运行时行为由显式 JSON 方法或 Serde trait 被动触发；安全扩展的关键是维持两套入口一致、保留失败原子性，并同步独立迁移测试。按任务约束未运行 Cargo。

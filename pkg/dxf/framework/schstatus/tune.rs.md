@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`tune.rs`](./tune.rs) 属于 `astersql-dxf-framework-schstatus` crate，该 crate 的入口 [`lib.rs`](./lib.rs) 声明 `pub mod tune` 并通过 `pub use tune::*` 重导出本文件的公开 API。[`Cargo.toml`](./Cargo.toml) 将该 crate 映射到 Go 包 `pkg/dxf/framework/schstatus`，并且只直接依赖 `chrono`、`serde` 和 `serde_json`；其中本文件实际使用后两者，TTL 的时间表示由同 crate 的 [`status.rs`](./status.rs) 提供。
-
-它不负责读写存储或执行资源调度，而是 DXF（Distributed eXecution Framework）调度调优配置的数据契约层：定义取值边界、默认值、持久化 JSON 形状和带 TTL 的封装。直接上游包括 `framework/handle`、`framework/storage`、`framework/scheduler` 以及 server handler，这些依赖在各自 `Cargo.toml` 中指向本 crate。
+只定义数据与转换：TTL 是否过期由 [`handle.rs`](../handle/handle.rs) 的 `GetScheduleTuneFactors` 判断，放大因子如何影响资源数量由 [`autoscaler.rs`](../scheduler/autoscaler.rs) 的 `ResourceCalc` 实现。
 
 ## 核心职责
 
@@ -75,16 +73,13 @@ TTL 边界也不在本文件执行：`GetScheduleTuneFactors` 使用严格小于
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`tune.go`](./tune.go)：
-
-- 三个常量的数值和默认值关系相同：`1.0`、`10.0`、`default = min`。
 - Go `TuneFactors.AmplifyFactor float64 \`json:"amplify_factor,omitempty"\`` 对应 Rust 的 rename、default 与零值省略组合。
 - Go `TTLTuneFactors` 匿名嵌入 `TTLInfo` 和 `TuneFactors`；Rust 以命名字段加 `serde(flatten)` 复制 JSON 形状。[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 确认序列化结果顶层含 `ttl`、`expire_time`、`amplify_factor`，且不含 Rust 字段名嵌套层。
 - Go `(*TTLTuneFactors).String()` 忽略 `json.Marshal` 错误；Rust `String(&self)` 以 `unwrap_or_default()` 保留“不向上返错”的契约。Rust 是固有方法而非 `Display` trait 实现，因此不能自动用 `{}` 格式化。
 - Go `GetDefaultTuneFactors() *TuneFactors` 返回指针；Rust 返回拥有值。两者都给调用者独立配置，但 Rust 调用方通过借用或显式克隆传递。
 - Go 没有为这些结构定义业务化 `Default`；Rust 的派生 `Default` 为零值语义，它对齐 Go 结构体零值，但不等于 `GetDefaultTuneFactors` 的业务默认值。
 
-Go 目录没有独立 `tune_test.go`；相关 Go 行为由 [`handle/status_testkit_test.go`](../handle/status_testkit_test.go) 的 `TestGetScheduleTuneFactors` 和 [`scheduler/autoscaler_test.go`](../scheduler/autoscaler_test.go) 的 `TestTuneFactors` 覆盖。Rust 对应测试位于独立文件，未嵌入生产源文件。
+Rust 对应测试位于独立文件，未嵌入生产源文件。
 
 ## 扩展指南
 
@@ -93,12 +88,3 @@ Go 目录没有独立 `tune_test.go`；相关 Go 行为由 [`handle/status_testk
 - 扩展 `TTLTuneFactors` 的 JSON 时，保持 `flatten` 后的键唯一，并考虑旧读取器是否能忽略新字段。如需更可靠的错误诊断，应新增返回 `Result` 的 API，而不实质改变已对齐 Go 的 `String` 容错行为。
 - 测试应保持在独立文件。默认值、边界和 JSON 展平应扩展 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；缺失/过期语义应扩展 [`status_testkit_test.rs`](../handle/status_testkit_test.rs)；资源估算影响应扩展 [`autoscaler_test.rs`](../scheduler/autoscaler_test.rs)；HTTP 输入边界应扩展 server handler 的独立测试。
 - 本文件没有条件编译项；如果引入 feature 分支，必须同时说明持久化数据在不同 feature 组合下的兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引包含 7,032 个 Rust 文件；`files --filter pkg/dxf/framework/schstatus` 找到本文件、crate 入口、Go 对照和独立测试；`node --file pkg/dxf/framework/schstatus/tune.rs --offset 1 --limit 260` 读取全部 81 行并报告 9 个引用文件；`query GetDefaultTuneFactors --limit 10` 确认 Go/Rust 各有一个对应定义；`explore "pkg/dxf/framework/schstatus/tune.rs symbols callers callees"` 确认 `GetDefaultTuneFactors` 的 handle 与测试边。`callers`/`callees` 命令本次无额外输出，已用直接引用搜索补齐证据。
-- 源码与 crate 边界：[`tune.rs`](./tune.rs)、[`status.rs`](./status.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、[`handle.rs`](../handle/handle.rs)、[`autoscaler.rs`](../scheduler/autoscaler.rs)，以及 `handle`、`scheduler`、`storage`、server handler 的 Cargo 依赖声明。
-- Go 对照：[`tune.go`](./tune.go)、[`handle.go`](../handle/handle.go)、[`autoscaler.go`](../scheduler/autoscaler.go)、[`pkg/server/handler/tikvhandler/dxf.go`](../../../server/handler/tikvhandler/dxf.go)。
-- 独立测试：[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 验证默认/边界/JSON 展平；[`status_testkit_test.rs`](../handle/status_testkit_test.rs) 验证缺失、有效与过期分支；[`autoscaler_test.rs`](../scheduler/autoscaler_test.rs) 验证资源计算效果；Go 对照测试为 [`handle/status_testkit_test.go`](../handle/status_testkit_test.go) 和 [`scheduler/autoscaler_test.go`](../scheduler/autoscaler_test.go)。同目录未发现独立 `tune_test.go`。
-- 人工复核结论：本文件存在于稳定调度调优的跨语言数据契约；运行时由 handle 选择默认或有效配置，由 scheduler 消费；安全扩展需同步 Go/Rust JSON、业务默认、入口校验和三层独立测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 shell 命令校验文件存在且恰有 11 个固定二级章节。

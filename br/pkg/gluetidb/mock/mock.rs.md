@@ -2,18 +2,7 @@
 
 ## 文件定位
 
-该文件是 crate `astersql-br-pkg-gluetidb-mock` 的主体实现，由同目录
-[`lib.rs`](lib.rs) 通过 `#[path = "mock.rs"] mod mock` 挂载并扁平导出。它实现
-[`br/pkg/glue/glue.rs`](../../glue/glue.rs) 定义的 `Glue`、`Session`、
-`BatchCreateTableSession` 和 `Progress` 抽象，为 BR 测试提供轻量 TiDB Glue 替身；
-它不是 BR 命令或 SQL 请求的生产入口。
-
-同目录 [`Cargo.toml`](Cargo.toml) 将该 crate 标为对应 Go 包
-`br/pkg/gluetidb/mock` 的 library，只依赖 `astersql-br-pkg-glue` 与
-`astersql-errors`。因此这里没有直接引入真实 `kv`、`domain`、`sessionapi` 或
-gRPC 类型，而是用本地接口和占位类型保持测试所需的调用形状。当前可见的外部
-Rust 使用点是 [`br/pkg/utiltest/suite.rs`](../../utiltest/suite.rs) 中的
-`TestRestoreSchemaSuite::MockGlue`。
+`MockGlue` 实现 `Glue` 工厂接口，创建 mock session、空 storage、无 I/O 的。
 
 ## 核心职责
 
@@ -165,25 +154,18 @@ session，任一实例调用 `Close` 都作用于同一底层对象。
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`mock.go`](mock.go)：
-
 - Go `mockSession.se sessionapi.Session` 对应 Rust 可选的共享 `SessionAPI` trait 对象；
   Rust 多出的 `Mutex` 满足 trait 对象可变调用与并发共享要求。
-- 两端 `Execute` 都委托给 `ExecuteInternal`；都先标记 `InternalTxnBR`，传播底层执行
-  错误，对非空结果集只调用一次 `Next`，吞掉 `Next` 错误，并确保关闭结果集。
 - Go `GlobalVars` map 与 Rust `MockGlue::GlobalVars`/`MockSession::globalVars` 保持
   “命中返回值、缺失返回 `True`”语义；一次性 session 均不携带该 map。
 - Go 未实现方法调用 `log.Fatal` 后写形式上的 `return nil`；Rust 用 panic 表达不可用。
   二者都不应被正常测试流程调用，但故障机制并非逐字等价。
 - Go `GetDomain`、`Open`、`StartProgress` 返回 nil；Rust 因 trait 返回非可空对象，
   分别返回空 `Domain`、`NilStorage`、`NopProgress`。
-- 两端 `OwnsStorage`、`GetVersion`、`Record`、`GetClient` 的可观察结果一致。
 
 独立 Rust 测试 [`parity_test.rs`](parity_test.rs) 覆盖固定版本/客户端、变量覆盖、SQL
 转发、事务来源、底层错误、`Next` 错误、结果集关闭、session 关闭、一次性 session、
-未实现路径 panic 与进度计数。Go 侧真实使用样例还可见
-`br/pkg/backup/client_test.go`、`br/pkg/restore/data/data_test.go`、
-`br/pkg/task/restore_test.go` 和 `br/pkg/utiltest/suite.go`。
+未实现路径 panic 与进度计数。
 
 ## 扩展指南
 
@@ -202,22 +184,3 @@ session，任一实例调用 `Close` 都作用于同一底层对象。
   `AtomicI64::fetch_add` 会按 Rust release 模式的整数规则运行，未做上限校验。
 - 新增直接消费者时，在其独立测试文件验证契约；若增加 crate 依赖，应同步
   `Cargo.toml`，并评估是否破坏当前避开重型 TiDB/gRPC 依赖的目的。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；目标文件可完整读取，索引将
-  `Execute -> ExecuteInternal`、`ExecuteInternal -> WithInternalSourceType/NewChunk/Next`
-  和 `CloseRecordSet::drop -> Close` 等边解析出来。
-- RustCodeGraph `node --file br/pkg/gluetidb/mock/mock.rs`：核对了 383 行实现中的全部
-  常量、线程局部状态、trait、结构体与 impl；`node` 同时列出该文件与 checkpoint、
-  restore、utiltest 和 parity 测试区域的关联。
-- RustCodeGraph `node --file br/pkg/gluetidb/mock/lib.rs`：确认模块挂载、公开再导出和
-  独立测试模块。
-- RustCodeGraph `node --file br/pkg/glue/glue.rs`：确认 `Glue`、`Session`、
-  `BatchCreateTableSession`、`Progress` 的上游接口契约。
-- RustCodeGraph `node --file br/pkg/utiltest/suite.rs`：确认直接 crate 导入和
-  `CreateRestoreSchemaSuite` 的装配生命周期。
-- 直接读取 [`Cargo.toml`](Cargo.toml)、[`mock.go`](mock.go) 与
-  [`parity_test.rs`](parity_test.rs)：分别核对 crate 边界、Go 对照语义和独立测试覆盖。
-- 使用 `rg` 复核 Rust crate 名及 Go 包使用点；未运行 Cargo，符合本任务纯文档分析
-  的明确范围。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是嵌入式 unistore 的建服与装配层，属于 Cargo crate `astersql-store-mockstore-unistore-server`。crate 入口 `pkg/store/mockstore/unistore/server/lib.rs` 公开 `server` 模块并再导出本文件的公开项；上层 `pkg/store/mockstore/unistore/mock.rs::New` 调用 `server::new_mock`，将这里返回的 `tikv::Server`、`MockRegionManager` 和 `MockPd` 继续包装成进程内 RPC 客户端、PD 门面与 Cluster。
-
-它位于配置、锁存储和 tikv 行为实现之间：从 `Config`/`Engine` 生成数据库选项，创建初始 Store/Region 元数据，再把 Region 管理、MVCC 存储和内部服务组合为可供 mockstore 使用的 `Server`。它不实现 SQL、RPC 请求处理或 MVCC 算法；这些行为分别留在上层 mockstore 和 `pkg/store/mockstore/unistore/tikv/`。
+位于配置、锁存储和 tikv 行为实现之间：从 `Config`/`Engine` 生成数据库选项，创建初始 Store/Region 元数据，再把 Region 管理、MVCC 存储和内部服务组合为可供 mockstore 使用的 `Server`。
 
 ## 核心职责
 
@@ -88,10 +86,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/store/mockstore/unistore/server/server.go`：Rust 的 `new_mock`、`new`、`get_region_options`、`setup_stand_alone_inner_server` 和 `create_db` 分别对应 Go 的 `NewMock`、`New`、`getRegionOptions`、`setupStandAlongInnerServer` 和 `createDB`。
-
-保持一致的关键点包括：TSO 的 physical 左移 18 位后与 logical 相加、8 MiB lock store、拒绝 raft 引擎/RaftStore、managed transaction、4 MiB value-log 写缓冲、三个 value-log 文件、七层 Badger 压缩配置、safe point 存在时启用 compaction filter，以及 standalone 启动前成为死锁检测 leader。
-
 当前 Rust 的重要结构差异也必须视为现状而非完整 Go 等价：
 
 - Rust `Database` 只是选项与状态句柄，不是 `badger.DB`；`MvccStore` 是内存实现。
@@ -108,14 +102,3 @@ Go 对照文件是 `pkg/store/mockstore/unistore/server/server.go`：Rust 的 `n
 - 修改 mock Region 校验或分裂时，关注 `MockRegionAdapter::{context,split_region}` 的缓存失效和 latch 复用；测试应放在独立的 `server_test.rs` 或 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。
 - 引入真实死锁检测或后台任务时，应明确线程/任务句柄、失败回滚、stop/join 顺序与重复停止行为，不能继续只依赖 `Database` 的布尔标志。
 - 兼容性风险主要是 Go 行为差异（TSO 溢出、压缩数组形状、错误时机）；性能风险主要在全局共享 latch、`changed.contains` 的线性缓存失效和 RegionContext 缓存增长。改动后应优先补充针对这些边界的独立测试。
-
-## 验证依据
-
-- 目标源码：`pkg/store/mockstore/unistore/server/server.rs`，核对了全部常量、类型、trait、函数与 impl。
-- crate 边界：`pkg/store/mockstore/unistore/server/Cargo.toml` 与 `pkg/store/mockstore/unistore/server/lib.rs`。
-- 上游入口：`pkg/store/mockstore/unistore/mock.rs::New` 对 `server::new_mock` 的直接调用。
-- 下游实现：`pkg/store/mockstore/unistore/tikv/{inner_server.rs,server.rs,region.rs,mock_region.rs,mvcc.rs}`，用于核对装配、停止顺序、Region 校验/分裂、latch 与 safe point 语义。
-- Go 对照：`pkg/store/mockstore/unistore/server/server.go`。
-- 独立测试：`server_test.rs::new_composes_timestamp_with_go_uint64_wrapping`，以及 `migration_aster_unit_test.rs` 中压缩选项形状、mock 引导/幂等停止、外部 PD ID 与生命周期测试。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、目标文件包含 58 个符号；`files --filter pkg/store/mockstore/unistore/server` 确认相关 Rust/Go 文件；`node --file .../server.rs --offset 1 --limit 500` 读取完整 460 行；`query` 定位 `server.rs::create_db`、`server.rs::setup_stand_alone_inner_server` 和 `server.rs::MockRegionAdapter`。精确 `callers/callees` 未返回可用边，跨文件直接调用以源码检索和相邻实现核实。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用固定 11 章节的结构命令，并人工检查本文能回答文件存在原因、运行路径和安全扩展位置。

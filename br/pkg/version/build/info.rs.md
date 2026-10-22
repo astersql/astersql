@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-br-pkg-version-build` 的实际实现文件；包入口 `br/pkg/version/build/lib.rs` 通过 `#[path = "info.rs"] pub mod info` 挂载它并用 `pub use info::*` 重导出全部公开项。`br/pkg/version/build/Cargo.toml` 将该包声明为 library，并以 `package.metadata.porting.go-package = "br/pkg/version/build"` 标明其 Go 对照包。
-
-它位于 BR 的版本/构建元数据层，负责把解析器中的发布版本、`versioninfo` 中的构建注入值、Rust 编译器版本、竞态检测标志和内核类型汇总为稳定的文本接口。当前 Rust 生产代码中，`br/pkg/version/version.rs` 使用发布版本和 Git 分支做兼容性判断，`br/pkg/gluetikv/glue.rs::Glue::GetVersion` 使用 `Info` 形成 `BR\n...` 版本文本。
-
-需要注意迁移期边界：`br/cmd/br/*.rs` 中形如 `build::Info()`、`build::LogInfo(build::BR)` 的调用目前解析到 `br/cmd/br/stubs.rs::build`，而 `br/cmd/br/Cargo.toml` 没有依赖本 crate；因此不能把这些 CLI 位点当作本文件已经接线的调用者。RustCodeGraph 对目标文件给出的文件级 “used by” 结果包含同名符号造成的宽泛关联，本文以上述 Cargo 依赖和精确导入为准。
+位于 BR 的版本/构建元数据层，负责把解析器中的发布版本、`versioninfo` 中的构建注入值、Rust 编译器版本、竞态检测标志和内核类型汇总为稳定的文本接口。
 
 ## 核心职责
 
@@ -91,8 +87,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `br/pkg/version/build/info.go`，对应测试为 `info_test.go`。
-
 - Go 的 `ReleaseVersion`、`BuildTS`、`GitHash`、`GitBranch` 是包初始化时求值的变量；Rust 用各函数内的 `OnceLock` 在首次访问时惰性求值。首次读取后保持快照的语义一致，但初始化时点不同。
 - Go `getReleaseVersion` 对 `None` 和完整占位片段回落；Rust保持同一判断和 `nightly-dirty` 回落值。
 - Go 使用 `runtime.Version()` 和 `Go Version` 标签；Rust使用 `rustc_version_runtime`、`rustc ...` 日志值和 `Rust Version` 标签，这是语言迁移所需差异。
@@ -110,14 +104,3 @@
 修改输出格式时，应把 `Info` 的七行文本视为外部展示契约，把 `LogInfo` 的单行字段顺序视为日志消费者契约；同步更新两个 Rust 独立测试和 Go 对照测试意图。若要把 BR Rust CLI 接到真实实现，正确的接线点包括 `br/cmd/br/Cargo.toml` 和当前 `br/cmd/br/stubs.rs::build` 使用处，但这属于跨 crate 的迁移任务，不应仅在本文件内假装完成。
 
 若把 `AppName` 放宽为动态字符串，应评估公开 API 兼容性和分配生命周期。若改为结构化日志，应保留 Go 中临时确保 Info 级别并恢复旧级别的行为，或明确记录差异。性能上当前主要成本是返回缓存字符串的克隆和格式化分配；只有在高频调用证据出现时才值得改为借用或共享字符串。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件、7,032 个 Rust 文件，目标分析时索引可用。
-- RustCodeGraph `files --filter br/pkg/version/build`：确认生产实现、crate 入口、两份独立 Rust 测试及 Go 对照文件均在该目录。
-- RustCodeGraph `node --file br/pkg/version/build/info.rs`：读取目标文件 1–136 行并确认 22 个符号；同时读取了 `lib.rs`、`info_test.rs`、`parity_test.rs`、`info.go`、`info_test.go`。
-- RustCodeGraph 精确查询 `TiDBReleaseVersion`、`ReleaseVersion`、`Info`、`GetRawInfo`，并读取 `pkg/parser/mysql/const.rs`、`pkg/util/versioninfo/versioninfo.rs`、`pkg/config/kerneltype/{lib.rs,type.rs}`、`pkg/util/israce/lib.rs`，核对元数据来源与 feature 语义。
-- 调用证据：读取 `br/pkg/version/version.rs` 的 `effective_release_version`、`git_branch`、`CheckVersionForBRPiTR`、`CheckVersionForBR`，以及 `br/pkg/gluetikv/glue.rs::Glue::GetVersion`；用相邻 Cargo manifest 核实这两个 crate 对 `astersql-br-pkg-version-build` 的依赖。
-- 接线边界证据：读取 `br/cmd/br/stubs.rs::build` 与 `br/cmd/br/Cargo.toml`，确认命令代码中的同名调用当前指向本地桩且 manifest 未依赖目标 crate。
-- RustCodeGraph 的 `callers` / `callees` 命令在本地大索引上连续 30 秒未返回；因此调用边最终由其文件级使用关系、精确符号查询、源码导入和 Cargo 依赖交叉验证，没有据此推断未接线关系。
-- 结构检查应确认本文存在且恰好包含任务规定的十一个二级标题；本任务是纯文档分析，按计划不运行 Cargo。

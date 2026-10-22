@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-plancodec` crate 中的二进制执行计划展示层：它接收由 `codec.rs` 定义的 base64 + Snappy 字符串，反序列化为 tipb `ExplainData`，再生成类似 `EXPLAIN ANALYZE` 的文本表格或连接侧所需的二维列值。模块由 `pkg/util/plancodec/lib.rs:85-90` 通过 `include!` 纳入并公开再导出；crate 边界和生成 `ExplainData` protobuf 的构建脚本由 `pkg/util/plancodec/Cargo.toml`、`build.rs` 与 `lib.rs:91-96` 确定。
-
-当前 Rust 生产链中，`pkg/server/extract_runtime.rs:293-298` 的 `decode_binary_plan` 调用 `DecodeBinaryPlan`，用于生成计划提取包中的已解码计划。Go 对照还把两个公开入口接到 SQL 函数 `tidb_decode_binary_plan`、`EXPLAIN FOR CONNECTION` 和 TopSQL/内存告警路径；这些 Go 调用说明该移植文件所保持的接口语义，但不代表所有 Go 上游都已在 Rust 中接线。
+当前 Rust 生产链中，`pkg/server/extract_runtime.rs:293-298` 的 `decode_binary_plan` 调用 `DecodeBinaryPlan`，用于生成计划提取包中的已解码计划。
 
 ## 核心职责
 
@@ -76,13 +74,9 @@ RustCodeGraph 索引状态为 11,467 个文件、307,296 个节点；目标文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/plancodec/binary_plan_decode.go`。Rust 保留了 Go 的三段完整解码流程、主树/CTE/子查询顺序、连接侧省略子查询、Build/Probe 重排、表头与列投影、访问对象文案和资源统计规则。
-
-明确做过的兼容修正包括：`formatFloatFixed2` 输出 `+Inf`、`-Inf`、`NaN`，对应 `strconv.FormatFloat(..., 'f', 2, 64)`；`act_rows as i64` 对大于 `MaxInt64` 的 protobuf 值进行与 Go 转换相同的补码回绕。`binary_plan_decode_test.rs:7-48` 分别固定这两项行为。
+Rust 保留了 Go 的三段完整解码流程、主树/CTE/子查询顺序、连接侧省略子查询、Build/Probe 重排、表头与列投影、访问对象文案和资源统计规则。
 
 Rust 的 `Option<Vec<Vec<String>>>` 显式表达 Go `nil, nil`，而正常的未知格式仍对应 Go 的非 nil 行集合、每行零列。访问对象的生成 Rust oneof 避免了 Go 指针包装的部分 nil 形态；Rust 对 `None` 静默跳过，而 Go 对某些带 nil 包装/消息的分支直接返回空字符串。现有迁移测试覆盖正常协议对象，未覆盖所有 Go nil-only 边界。
-
-Go 集成测试 `pkg/planner/core/casetest/binaryplan/binary_plan_core_test.go:326-416` 将多类 `EXPLAIN ANALYZE FORMAT='verbose'`（含 join、递归 CTE、静态/动态分区）与 `tidb_decode_binary_plan` 结果逐字段比较。它是 Go 行为基线；本任务没有运行 Go 或 Cargo 测试。
 
 ## 扩展指南
 
@@ -92,12 +86,3 @@ Go 集成测试 `pkg/planner/core/casetest/binaryplan/binary_plan_core_test.go:3
 - 改动树遍历时要保持主树、CTE、子查询的入口差异以及 Build-before-Probe 不变量；若加入深度保护或迭代遍历，需要验证文本树缩进和顺序完全一致。
 - 调整错误语义时要同时审视 Rust 的 `extract_runtime.rs` 降级逻辑及 Go 的 SQL warning 行为，避免把“无计划”“被丢弃”“解码失败”无意合并或拆分。
 - 性能修改应关注大计划的解压峰值、中间 `Vec<Vec<String>>`、连接投影克隆和递归栈，并保留 Unicode 字节容量与字符填充的双重计算语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用；`files --filter pkg/util/plancodec` 确认目标、Go 对照、模块入口和独立测试均已索引；`node --file pkg/util/plancodec/binary_plan_decode.rs --offset 1 --limit 500` 读取 429 行及 19 个符号；对三个关键函数执行了 `query`、`callers`、`callees`，图未返回调用边，随后用精确文本引用补证。
-- 源与边界：`pkg/util/plancodec/binary_plan_decode.rs`、`pkg/util/plancodec/lib.rs`、`pkg/util/plancodec/Cargo.toml`。
-- Go 对照与上游：`pkg/util/plancodec/binary_plan_decode.go`、`pkg/expression/builtin_info.go:1463-1487`、`pkg/planner/core/common_plans.go:955-966`、`pkg/util/memoryusagealarm/memoryusagealarm.go:297-307`。
-- Rust 调用与测试：`pkg/server/extract_runtime.rs:293-298`、`pkg/util/plancodec/binary_plan_decode_test.rs`、`pkg/util/plancodec/migration_aster_unit_test.rs:183-299`。
-- Go 行为测试：`pkg/planner/core/casetest/binaryplan/binary_plan_core_test.go:326-416`。
-- 人工复核结论：本文说明了文件存在原因、两个入口的运行路径、内部不变量、已接线范围、Go 对照差异和安全扩展点；未把 Go 上游误写为已完成的 Rust 接线，也未将测试逻辑建议放回生产源文件。

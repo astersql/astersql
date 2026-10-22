@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`pkg/session/txn.rs` 属于 `astersql-session` crate；crate 根在 `pkg/session/lib.rs` 通过 `pub mod txn` 公开本模块，manifest 为 `pkg/session/Cargo.toml`。它提供一个会话侧事务兼容层：用 `LazyTxn` 包装抽象的 `TransactionBackend`，在底层事务尚未取得时保存 `TransactionFuture`，并集中处理语句级 staging、提交/回滚、悲观锁、公平加锁和事务摘要。
-
-该文件不是底层 KV 事务实现。真正的存储行为均由 `TransactionBackend` trait 注入；本文件只定义生命周期协调规则。当前 Rust 生产代码中，`LazyTxn` 可通过 `impl SessionTransaction for LazyTxn` 接入 `pkg/session/session.rs` 的会话提交/回滚抽象，但仓库搜索没有找到生产路径直接构造 `LazyTxn`，也没有找到生产路径直接调用本文件的 `StmtCommit`、`StmtRollback` 或 `HasDirtyContent`。因此它目前更准确地说是已公开、可接线的移植边界，而不是 `ConcreteSession` 已使用的唯一事务实现。显式的跨文件 Rust 使用主要是 `KeyNeedToLock`/`KeyFlags` 测试。
+这些是 Go 同文件职责的 Rust 移植接口，不等于所有 Go 行为均已实现。
 
 ## 核心职责
 
@@ -102,9 +100,7 @@ future 的所有权在 `changePendingToValid` 中通过 `take()` 一次性消费
 
 ## 与 Go 版本的对应关系
 
-冻结增量对应 Go `txn.go::cleanupStmtBuf` 的保存旧标记、置 true、defer 恢复；Rust 用 catch/resume unwind 表达恢复。Go `session.go` 的内存 hook 检查该标记以完成清理记账后再传播取消。Rust 标记的存在不等于完整 hook 已接线：`test/txn/txn_test.rs::statement_cleanup_memory_reconciliation_ignores_pending_cancellation` 直接验证 tracker 的 cleanup API 更新 4096 字节且保留 kill signal，随后普通 Consume 仍触发取消，不能将其说成本类型标记的端到端测试。
-
-主要对照文件是 `pkg/session/txn.go`。Rust 保留了 `LazyTxn` 三态、语句 staging、digest 上限、提交/回滚、公平加锁、锁键筛选、future、脏内容判断和语句钩子的总体形状，但不是逐字段完整实现。
+冻结增量对应 Go `txn.go::cleanupStmtBuf` 的保存旧标记、置 true、defer 恢复；Rust 用 catch/resume unwind 表达恢复。
 
 - Go 的 `LazyTxn` 直接嵌入 `kv.Transaction`；Rust 用本地 `TransactionBackend` trait 解耦，且当前没有看到生产 KV adapter。
 - Go 的 `txnFuture.wait` 等待 TSO、按 scope/pipelined 参数调用 storage `Begin`，并在 TSO 失败时区分 UniStore；Rust `txnFuture::Wait` 只转发内部 future，保存的 scope/pipelined 参数尚未生效。
@@ -126,11 +122,3 @@ future 的所有权在 `changePendingToValid` 中通过 `take()` 一次性消费
 - 修改 `StmtCommit`/`StmtRollback` 的错误策略时，要保留或明确改变“hook 错误仅记录、缓冲仍收尾”的契约，并为 `StatementTxnManager` 使用 mock 后端添加独立测试。
 - 性能敏感点是 `KeysNeedToLock` 对 stage 生成完整三元组向量再过滤，以及 digest 字符串克隆。后端接口若支持 visitor/iterator，可在保持语义和生命周期安全的前提下减少分配。
 - 与 Go 对齐时应限制在真实差异的增量范围内；当前未接线的完整 KV adapter、监控子系统和会话运行时集成应作为独立任务处理，不能用本文件的局部改动伪装成全链完成。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/txn.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
-- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
-- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
-- 对照冻结 `txn.go::cleanupStmtBuf`、`session.go` 的内存 hook，以及 `test/txn/txn_test.rs::statement_cleanup_memory_reconciliation_ignores_pending_cancellation`；后者验证 cleanup tracker API，并非 LazyTxn 标记的端到端验证。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/executor/insert_common.rs` 是 `astersql-executor` crate 中 INSERT/REPLACE 公共语义的 Rust 移植文件，由 [`pkg/executor/lib.rs`](lib.rs) 以 `pub mod insert_common` 导出。它把 Go 版 [`pkg/executor/insert_common.go`](insert_common.go) 中依赖会话、表、事务和表达式包的操作压缩到 `InsertBackend` trait 后面，并在 `InsertValues<B>` 上实现行构造、默认值、自增/自随机 ID、重复键预检、写表和运行时统计等算法。
-
-必须区分“已定义”和“已接线”：仓库搜索没有找到 `InsertBackend` 的具体实现，也没有找到 Rust `insertRows`、`insertRowsFromSelect` 或 `batchCheckAndInsert` 的生产调用。因此这些泛型算法目前是可编译的移植骨架，不是 Rust INSERT 执行器的现行入口。当前有直接生产调用的是 `is_terminal_auto_id_error`（[`pkg/executor/insert.rs`](insert.rs)）和 `evaluate_embedding_inputs`（[`pkg/session/runtime/dml.rs`](../session/runtime/dml.rs)）；错误补全小边界由独立 Rust 测试使用。
-
-crate 边界由 [`pkg/executor/Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-executor`，入口是 `lib.rs`，`nextgen` feature 只透传给 `astersql-dxf-importinto/nextgen`，本文件本身没有条件编译项。源码直接依赖标准库，以及工作区 crate `astersql-meta-autoid` 和 `astersql-expression`；其余数据库能力通过 `InsertBackend` 注入。
+必须区分“已定义”和“已接线”：仓库搜索没有找到 `InsertBackend` 的具体实现，也没有找到 Rust `insertRows`、`insertRowsFromSelect` 或 `batchCheckAndInsert` 的生产调用。
 
 ## 核心职责
 
@@ -95,9 +91,9 @@ RustCodeGraph 对该文件报告 8 个文件级引用，但精确 `callers` 查�
 
 ## 与 Go 版本的对应关系
 
-Rust 的主要名称和分支与 [`pkg/executor/insert_common.go`](insert_common.go) 基本一一对应：`InsertValues`、`insertCommon`、两条 `insertRows*` 主路径、行求值/默认值/生成列、自增与 auto-random、重复键批检、REPLACE 删除、写表和 `InsertRuntimeStat` 均保留了 Go 的控制流。`resolve_get_row_cast_error` 对齐 Go `getRow` 在 LOAD 与普通 INSERT 中选择补全错误或原始错误的差异；`is_terminal_auto_id_error` 对齐 Go `autoid.IsRPCRetryLimitError` 的不可忽略行为。
+`resolve_get_row_cast_error` 对齐 Go `getRow` 在 LOAD 与普通 INSERT 中选择补全错误或原始错误的差异；`is_terminal_auto_id_error` 对齐 Go `autoid.IsRPCRetryLimitError` 的不可忽略行为。
 
-Rust 通过 `InsertBackend` 将 Go 中 `sessionctx.Context`、`table.Table`、`kv.Transaction`、`types.Datum`、chunk 和统计类型抽象为关联类型。这是移植结构差异，不应被理解为已有完整适配：当前没有发现 trait 实现，所以大部分算法还没有连接 Rust 生产执行器。Go 的同名代码仍有真实执行入口及具体依赖。
+Rust 通过 `InsertBackend` 将 Go 中 `sessionctx.Context`、`table.Table`、`kv.Transaction`、`types.Datum`、chunk 和统计类型抽象为关联类型。这是移植结构差异，不应被理解为已有完整适配：当前没有发现 trait 实现，所以大部分算法还没有连接 Rust 生产执行器。
 
 存在一项重要功能差异：Go 的 `insertRows` 和 `insertRowsFromSelect` 在每批 `exec` 前调用 `fillEmbedTextValues`，并由同文件完成生成列发现、参数求值、部署模式校验、provider 调用和结果写回；Rust 的两条泛型主路径没有调用 `evaluate_embedding_inputs`。Rust 只把 provider 并发核心留在本文件，参数准备与结果写回已迁到 `pkg/session/runtime/dml.rs`，由会话运行时直接调用。现有 Go 测试 [`pkg/executor/executor_pkg_test.go`](executor_pkg_test.go) 覆盖完整 fill 流程；Rust 独立测试只覆盖并发核心，所以不能宣称两边接线位置完全等价。
 
@@ -114,14 +110,3 @@ Rust 通过 `InsertBackend` 将 Go 中 `sessionctx.Context`、`table.Table`、`k
 扩展 EMBED_TEXT 时，应保持“会话层准备参数/写回，`evaluate_embedding_inputs` 只做 provider 调度”的现有边界。若改变并发上限、取消优先级或 fail-fast 策略，应同步修改 `insert_common_test.rs` 的顺序、NULL、参数错误、provider 错误、取消与 800 上限用例，并对照 Go [`pkg/executor/executor_pkg_test.go`](executor_pkg_test.go) 的完整行级行为。
 
 新增或修改公开错误格式时，同时检查 [`pkg/executor/benchmark_test.rs`](benchmark_test.rs) 中 `Complete*ErrorForColumn` 用例。修改统计格式需同步 Go [`pkg/executor/insert_test.go`](insert_test.go) 的 `TestInsertRuntimeStat` 意图，并为 Rust 增加独立测试；当前 Rust 独立测试尚未直接覆盖 `InsertRuntimeStat`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可由 `node --file pkg/executor/insert_common.rs` 完整读取，报告 8 个文件级使用者。
-- RustCodeGraph `query`：确认 Rust/Go 的 `insertRows`、`insertRowsFromSelect`、`batchCheckAndInsert`、`fillRow`、`lazyAdjustAutoIncrementDatum`，以及 Rust `evaluate_embedding_inputs`、`InsertValues`、`InsertBackend` 的定义位置。`callees insertRows` 和 `callees batchCheckAndInsert` 核对了行求值、批事务、内存、事务读、外键、预取和冲突处理下游边；精确 qualified-name `callers` 没有返回结果，因此实际上游又用源码引用搜索核验。
-- 已读源与装配文件：[`pkg/executor/insert_common.rs`](insert_common.rs)、[`pkg/executor/lib.rs`](lib.rs)、[`pkg/executor/Cargo.toml`](Cargo.toml)。目标包不存在 `pkg/executor/doc.go`。
-- 已读直接生产调用：[`pkg/executor/insert.rs`](insert.rs) 的终止性 auto-id 错误分支，以及 [`pkg/session/runtime/dml.rs`](../session/runtime/dml.rs) 的 embedding 参数准备、provider 调用和结果写回。
-- 已读 Go 对照：[`pkg/executor/insert_common.go`](insert_common.go)，重点核对两条插入主路径、错误处理、`getRow`、embedding fill、自增/auto-random、重复键/REPLACE、写表和运行时统计。
-- 已读测试：[`pkg/executor/insert_common_test.rs`](insert_common_test.rs)；[`pkg/executor/benchmark_test.rs`](benchmark_test.rs) 中错误补全用例；[`pkg/executor/executor_pkg_test.go`](executor_pkg_test.go) 中 EMBED_TEXT 完整流程；[`pkg/executor/insert_test.go`](insert_test.go) 中运行时统计测试位置。
-- 仓库引用搜索没有发现 `impl InsertBackend`，也没有发现 Rust 泛型 `insertRows`/`insertRowsFromSelect`/`batchCheckAndInsert` 的生产调用；因此文档将其标为未接线移植框架，而没有用 Go 的现行行为代替 Rust 事实。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收命令与 Ready 文档检查结果在任务完成时记录于最终交付。

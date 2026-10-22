@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-util-ddl-checker`，包入口是同目录的 [`lib.rs`](./lib.rs)，后者公开导出本文件的 `DBConfig`、`UpstreamDatabase`、`UpstreamDatabaseFactory`、`DDLSyncer` 和 `NewDDLSyncer`。它位于“从上游读取表定义”和“在隔离的 TiDB 检查会话中执行 SQL”之间：上游访问由两个 trait 隔离，实际落地委托给 [`ExecutableChecker`](./executable_checker.rs)。
-
-当前仓库事实是：这些符号虽然已从 crate 根公开，但对 Rust 源码做精确引用搜索只找到本文件和 `lib.rs`，没有生产调用者，也没有 `ddl_syncer_test.rs` 或覆盖这些 API 的测试。因此它是已实现、可注入的迁移边界，但尚不能据此宣称已接入应用主链。
+位于“从上游读取表定义”和“在隔离的 TiDB 检查会话中执行 SQL”之间：上游访问由两个 trait 隔离，实际落地委托给 [`ExecutableChecker`](./executable_checker.rs)。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `ddl_syncer.go` 是直接语义依据。两版都持有上游数据库与 `ExecutableChecker`，都按“后台 context 拉取 DDL → 调用方 context 删除表 → 调用方 context 执行 CREATE”的顺序同步，也都在关闭时尝试两个资源并优先返回检查器错误。
-
 Rust 为可测试性和类型隔离增加了几处显式抽象：Go 直接使用 `*sql.DB`、`dbutil.DBConfig`、`dbutil.OpenDB/GetCreateTableSQL/CloseDB`，Rust 则使用本地 `DBConfig`、`UpstreamDatabaseFactory` 和 `UpstreamDatabase` trait；`from_parts`、`checker`、`checker_mut` 也没有 Go 同名入口。Rust 构造函数因此要求调用方额外传 factory，当前仓库未发现具体实现。
 
 错误语义基本对齐但表达不同：Go 用 `errors.Trace` 包装每一步，Rust 用 `CheckerResult` 和 `?` 传播 factory/trait/检查器返回的错误，不在 `SyncTable` 中新增 trace 层。Go 的 `context.Background()` 对应 Rust 的 `ExecutionContext::background()`，后者只是最小化数据结构，并不等同于完整 Go context 的 deadline/value/cancellation 传播能力。
@@ -104,13 +100,3 @@ Rust 为可测试性和类型隔离增加了几处显式抽象：Go 直接使用
 - 扩展上游能力时，在 `UpstreamDatabase` 增加最小必要方法；若仅影响创建策略，则优先扩展 factory，避免让 `DDLSyncer` 依赖具体数据库类型。
 - 应新增独立测试文件（建议 `pkg/util/ddl-checker/ddl_syncer_test.rs`），并从 `lib.rs` 的 `#[cfg(test)]` 区域挂载，避免把测试内嵌进生产 `.rs`。至少覆盖：factory 成败、后台/调用方 context 分离、get/Drop/Execute 调用顺序、每阶段错误短路、Create 失败后的非回滚状态、两个 close 都被调用、双错误时检查器错误优先、重复 Close，以及访问器借用行为。同步修改 Go 行为时还应补同目录 Go 独立测试并保持断言一致。
 - 兼容性风险集中在公开 trait 和 `DBConfig` 字段变更（会破坏实现方/结构体字面量）；正确性风险集中在非原子的 Drop/Create 与错误遮蔽；性能风险主要来自每张表一次上游查询加两次本地 SQL 执行，本文件当前没有批量、缓存或并行机制。
-
-## 验证依据
-
-- 源文件：[`ddl_syncer.rs`](./ddl_syncer.rs)，核对全部 137 行以及 `DBConfig`、两个 trait、`DDLSyncer`、构造/同步/关闭/访问器和错误转换实现。
-- 相邻实现：[`executable_checker.rs`](./executable_checker.rs)，核对 `ExecutionContext::background`、`DropTable`、`Execute`、一次性 `Close` 和 `CheckerError` 的真实语义。
-- crate 边界：[`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)，核对包名、Go 包元数据、依赖、模块声明、公开再导出及当前测试挂载。
-- Go 对照：[`ddl_syncer.go`](./ddl_syncer.go) 与 [`executable_checker_test.go`](./executable_checker_test.go)，核对 OpenDB/GetCreateTableSQL/Drop/Execute/Close 顺序及 Go 测试覆盖范围。
-- Rust 测试：[`executable_checker_test.rs`](./executable_checker_test.rs)，确认现有独立测试只覆盖 `ExecutableChecker` 的解析/执行行为，未直接覆盖同步器。
-- RustCodeGraph：`status` 显示索引含目标文件；`node --file pkg/util/ddl-checker/ddl_syncer.rs` 读取完整源码；精确 query 确认 15 个目标符号；callees 确认构造、取 DDL、关闭的 trait 调用边。callers 查询无结果，随后以 `rg` 精确引用搜索复核，除 `lib.rs` 再导出外未发现 Rust 调用者。
-- 未运行 Cargo：本任务只新增说明文档，计划明确排除 Cargo 验证。最终结构验证以任务文件指定命令为准。

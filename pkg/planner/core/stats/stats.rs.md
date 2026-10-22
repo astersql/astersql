@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-planner-core-stats` 的业务实现；crate 入口 `pkg/planner/core/stats/lib.rs` 公开 `stats` 模块，根工作区在 `Cargo.toml` 中把该目录列为 member，并通过 `facade_planner_core_stats` 暴露它。它负责把“按物理表 ID 取得统计快照”这一规划期需求压缩成一组可独立测试的 Rust 数据模型和函数。
-
-在完整 TiDB/AsterSQL 规划链中的对应位置可由 Go 代码确认：`pkg/planner/core/stats.go:initStats` 调用 Go 的 `stats.GetStatsTable` 初始化逻辑数据源的行数、直方图和版本，并记录 UsedStats；各类物理读计划的 `LoadTableStats` 方法则在执行前记录语句实际用到的统计信息。当前 Rust 侧尚未接入这些生产调用者：RustCodeGraph 与 `rg` 均只发现 `pkg/planner/core/stats/stats_aster_unit_test.rs` 直接调用本文件的三个公开函数。因此，本文件当前是已实现且有行为回归测试的独立移植边界，而不是 Rust 规划主链上已经完成接线的统计服务。
-
-`pkg/planner/core/stats/Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/planner/core/stats`；其历史依赖只声明在 `target.'cfg(windows)'.dependencies` 下，而本文件实际只使用标准库 `BTreeMap`。这意味着本文描述的是当前可编译源码的局部模型，不应把 Cargo 中列出的 Go 侧领域依赖误写成当前 Rust 实现的运行时依赖。
+负责把“按物理表 ID 取得统计快照”这一规划期需求压缩成一组可独立测试的 Rust 数据模型和函数。
 
 ## 核心职责
 
@@ -132,17 +128,3 @@ Rust 三个公开函数分别对应 `pkg/planner/core/stats/stats.go` 的 `GetTb
 - 接入真实统计系统：实现或替换 `StatsSource` 边界，并在生产规划调用点接线；同时考虑 Go 版本中的指标、存在性断言、完整伪表构造和 UsedStats 生命周期，不能只让现有单元测试通过。
 
 兼容风险集中在布尔参数顺序、物理 ID 路由和伪版本语义；性能风险主要是未来真实 `TableInfo`/统计对象的克隆成本，以及每次名称解析或记录时线性扫描 `partitions`。若分区数量增大或函数进入热点，可在上游提供 ID 索引，但必须保持缺失回退与名称规则。新增 Rust 测试应继续放在独立的 `pkg/planner/core/stats/stats_aster_unit_test.rs`，不要内嵌到生产文件。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/planner/core/stats/stats.rs`（RustCodeGraph `node --file ... --offset 1 --limit 400` 完整读取 349 行）。
-- 模块入口与测试装配：`pkg/planner/core/stats/lib.rs`。
-- crate 边界：`pkg/planner/core/stats/Cargo.toml`；workspace 注册和 facade：根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照：`pkg/planner/core/stats/stats.go`；生产调用位置包括 `pkg/planner/core/stats.go`、`pkg/planner/core/operator/physicalop/physical_index_reader.go`、`physical_table_reader.go`、`physical_batch_point_get.go`、`physical_indexlookup_reader.go`、`physical_indexmerge_reader.go`，以及 `pkg/planner/cardinality/trace.go`。
-- 独立 Rust 回归测试：`pkg/planner/core/stats/stats_aster_unit_test.rs`，覆盖名称四种情况、全局/分区路由、确定性副本语义、可加载伪表、缺失与零行数、初始化/过期开关、UsedStats 去重和伪版本。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/planner/core/stats` 列出实现、入口、Go 对照和独立测试；精确 `query/callers/callees` 确认 `get_stats_table -> StatsSource::physical_stats`、`load_table_stats -> get_stats_table`，且没有测试外 Rust caller。
-- 文本交叉检查：`rg` 只在目标实现与 `stats_aster_unit_test.rs` 中找到 Rust 三个入口的使用，并定位上述 Go 生产调用者。
-
-本任务按约束未运行 Cargo 或代码测试。结构验收使用任务指定命令，要求目标文件存在且恰有 11 个固定二级章节；除此之外还人工复核了固定章节顺序、源码链接、当前未接线事实和独立测试路径。

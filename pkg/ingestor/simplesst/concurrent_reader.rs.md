@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-simplesst` crate；该 crate 的入口是同目录的 `lib.rs`，其中以 `pub mod concurrent_reader` 暴露本模块。上层 `pkg/ingestor/doc.go` 将整个 ingestor 子系统定位为直接写入底层存储的 SST 导入能力，以及编码 KV 的排序、外部存储中间文件和归并排序等辅助能力。本文件处在 simplesst 读取侧，负责把一段已在内存中的完整对象按固定大小划成多个范围，并用作用域线程并行复制这些范围。
-
-当前实现并不是 Go 版对象存储范围读取器的完整替代：`ConcurrentFileReader` 持有 `Arc<Vec<u8>>`，不持有存储接口、对象名或取消上下文。直接上游 `ByteReader` 会创建和重建它，并在关闭并发模式时读取它的偏移，但当前 `ByteReader::read_n_bytes` 直接切片 `self.data`，没有调用 `ConcurrentFileReader::read`。因此该类型的并发读取算法已实现且由独立测试覆盖，生产读取链上的并发预取消费尚未接通（依据：`byte_reader.rs` 的 `read_n_bytes`、`switch_concurrent_mode`）。
-
-`Cargo.toml` 声明 crate 名为 `astersql-ingestor-simplesst`，库入口为 `lib.rs`，没有定义 feature；列出的内部依赖全部位于 `cfg(windows)` 目标段。本文件自身只依赖标准库的 `Arc`、线程 API，以及 crate 根定义的 `Error` 和 `Result`，没有直接使用 Cargo 中的外部依赖。
+处在 simplesst 读取侧，负责把一段已在内存中的完整对象按固定大小划成多个范围，并用作用域线程并行复制这些范围。
 
 ## 核心职责
 
@@ -115,16 +111,12 @@ RustCodeGraph 已索引目标文件和 `ConcurrentFileReader`/`newConcurrentFile
 
 ## 与 Go 版本的对应关系
 
-结构和算法对应关系如下：
-
-- Rust `ConcurrentFileReader` 对应 Go `concurrentFileReader`；`concurrency`、分片大小、`offset`、`file_size` 的概念一致。
-- 两版 `read` 都在一批内最多调度 `concurrency` 个范围，先推进 offset，末片按文件大小截短，等待整批完成，并在耗尽后报告 EOF。
 - Go 通过 `errgroup.Group` 等待 goroutine；Rust 使用 `std::thread::scope` 和 `JoinHandle::join`，再显式按提交序号排序。
 - Go 构造函数基本只保存字段；Rust 构造函数额外提前验证零参数和读取窗口，因而错误会更早暴露。
 
 关键差异是数据源与缓冲所有权：Go reader 持有 `context.Context`、`storeapi.Storage` 和对象名，由调用方提供可复用 `bufs`，每个 goroutine 调用 `objstore.ReadDataInRange` 原地填充缓冲，底层 I/O 错误附带 offset/readSize。Rust reader 持有完整的 `Arc<Vec<u8>>`，每次线程从内存切片新建 `Vec<u8>`；没有上下文取消、外部存储 I/O、缓冲池复用或等价错误注释。
 
-`concurrent_reader_test.go::TestConcurrentRead` 随机选择起点、1 到 4 的并发度和 1 到 100 的分片大小，最终拼回 `data[offset:]`。Rust `concurrent_reader_test.rs::concurrent_reader_reassembles_every_go_parameter_shape` 用确定性参数矩阵覆盖相同契约，并额外检查最终 offset；`canonical_concurrent_reader_returns_ordered_non_overlapping_ranges` 明确覆盖批次顺序、末片截短与 EOF。
+Rust `concurrent_reader_test.rs::concurrent_reader_reassembles_every_go_parameter_shape` 用确定性参数矩阵覆盖相同契约，并额外检查最终 offset；`canonical_concurrent_reader_returns_ordered_non_overlapping_ranges` 明确覆盖批次顺序、末片截短与 EOF。
 
 因此移植语义在“范围划分、顺序重组、末尾处理”上对齐；在“真实外部存储并发 I/O、缓冲复用、取消与 I/O 错误传播”上尚未对齐。
 
@@ -137,14 +129,3 @@ RustCodeGraph 已索引目标文件和 `ConcurrentFileReader`/`newConcurrentFile
 若要真正接入生产并发预取，不能只在本文件中调用更多线程：还需明确 `ByteReader::read_n_bytes` 如何消费分片、跨记录保存剩余数据、在顺序/并发模式间同步精确偏移，并决定是否继续使用内存数据源。若目标是对齐 Go，则需要在 crate 边界引入存储抽象、对象标识、取消机制和可复用缓冲，并验证 Cargo 的目标条件依赖；这属于跨文件设计，不能把 Go 代码的能力假定为当前 Rust 已存在。
 
 性能变更应关注每批线程创建成本、`to_vec` 的总复制量、并发度上限和排序开销。错误语义变更应特别决定失败批次是否回滚 offset；若选择可重试语义，必须避免重复/跳过数据并添加 panic 或可注入读取失败的回归测试。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ingestor/simplesst` 列出目标源、Go 对照和两版测试。
-- RustCodeGraph 源码/符号：`explore "pkg/ingestor/simplesst/concurrent_reader.rs ConcurrentFileReader ConcurrentFileReader read_range"`、`query ConcurrentFileReader`、`query newConcurrentFileReader`、`node --file pkg/ingestor/simplesst/concurrent_reader.rs --offset 1 --limit 220`，确认目标文件全貌、类型和兼容构造函数。
-- RustCodeGraph 调用调查：对 `ConcurrentFileReader::new/read/offset`、`newConcurrentFileReader` 及精确节点 ID 执行 `callers`/`callees`；Rust `impl` 方法未返回边。随后以 `rg` 精确核对 `pkg/ingestor/simplesst/*.rs` 的引用，确认上游只在 `byte_reader.rs` 构造/重建 reader 和读取 offset，`read` 仅见于独立测试。
-- 包与 crate 边界：读取 `pkg/ingestor/doc.go`、`pkg/ingestor/simplesst/Cargo.toml`、`pkg/ingestor/simplesst/lib.rs`。
-- 上游实现：RustCodeGraph 读取 `pkg/ingestor/simplesst/byte_reader.rs` 的 `enable_concurrent_read`、`switch_concurrent_mode` 和 `read_n_bytes`，确认当前消费路径直接复制 `self.data`，并未调用本文件的 `read`。
-- Rust 测试：读取 `pkg/ingestor/simplesst/concurrent_reader_test.rs`，确认有序非重叠范围、末片、EOF、参数矩阵重组和最终 offset 契约。
-- Go 对照：读取 `pkg/ingestor/simplesst/concurrent_reader.go` 与 `concurrent_reader_test.go`，核对 `errgroup`、`objstore.ReadDataInRange`、调用方缓冲和随机参数测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；完成前使用任务指定命令验证本文档存在且恰有 11 个固定二级章节，并人工复查未把未接线能力写成现状。

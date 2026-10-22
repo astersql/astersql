@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore` library crate。crate 根 [`lib.rs`](./lib.rs) 以 `#[path = "misc.rs"] pub mod misc` 挂载本模块，并通过 `pub use misc::*` 将公开符号扁平再导出；[`Cargo.toml`](./Cargo.toml) 说明该 crate 对应 Go 包 `br/pkg/restore`，直接依赖 restore-utils、`base64`、`sha2`、`kvproto` 和 `grpcio`。本文件不是一个单一算法模块，而是与 Go [`misc.go`](./misc.go) 对齐的恢复辅助集合，横跨 PiTR 黑名单文件、集群元数据检查、PD 时间戳、Region 扫描以及重叠 SST 分组。
-
-当前 Rust 生产主链中最清晰的直接入口是 [`restorer.rs`](./restorer.rs) 的 `BatchRestorer::GoRestore`：它把待恢复文件集展平后调用 `GroupOverlappedBackupFileSetsIter`，再把每个批次交给 worker 导入。黑名单和通用检查 API 已公开并由独立测试覆盖，但在仓库 Rust 生产文件中未找到 `MarshalLogRestoreTableIDsBlocklistFile`、`CheckTableTrackerContainsTableIDsFromBlocklistFiles`、`TruncateLogRestoreTableIDsBlocklistFiles`、`AssertUserDBsEmpty` 或本文件 `GetTSWithRetry` 的直接调用；因此这些符号是迁移后的可用库接口，不能仅依据 Go 调用链宣称 Rust 上层已经完整接线。`HasRestoreIDColumn` 的相邻 `log_client` 调用目前经过该 crate 自己的 `stubs::restore_misc`，并非直接链接本模块实现。
+定义 `LogRestoreTableIDsBlocklistFile`，生成固定命名的 PiTR 表/库 ID 黑名单文件，以 SHA-256 校验内容，并手工实现与 Go gogo protobuf 字段编号兼容的编码和解码。
 
 ## 核心职责
 
@@ -101,7 +99,7 @@ SST 分组流程：
 
 ## 与 Go 版本的对应关系
 
-同路径 [`misc.go`](./misc.go) 是语义基准。Rust 已对齐：粒度常量；黑名单字段与 protobuf 编号；文件名格式；小端 checksum；时间窗过滤；表/分区/库冲突错误；lost 只告警；commit TS 截断条件；fresh-cluster 的系统库与空 `test` 例外；PD TSO 合成与 aggressive retry；`restore_id` 探测；Region 缓存刷新；rewrite 后键范围排序、重叠合并和 Region 批切分。
+Rust 已对齐：粒度常量；黑名单字段与 protobuf 编号；文件名格式；小端 checksum；时间窗过滤；表/分区/库冲突错误；lost 只告警；commit TS 截断条件；fresh-cluster 的系统库与空 `test` 例外；PD TSO 合成与 aggressive retry；`restore_id` 探测；Region 缓存刷新；rewrite 后键范围排序、重叠合并和 Region 批切分。
 
 当前可见差异与迁移边界：
 
@@ -125,13 +123,3 @@ SST 分组流程：
 - 修改 SST 分组时，保持 rewrite 后键排序、半开区间 Region 边界、同 Table ID/规则约束与稳定回调顺序。新增场景应写入 [`misc_test.rs`](./misc_test.rs)，至少覆盖空输入、嵌套范围、相等端点、跨 Region 间隙、不同规则错误和 scanner 空返回。
 - 若性能分析表明线性 Region 查找或全量黑名单预读成为瓶颈，可分别恢复二分查找和有界流水线；优化必须保留错误传播及确定性排序，不能以减少校验为代价。
 - 新增生产调用时应优先复用本 crate 扁平导出，并明确替换相邻 crate 的同名 stubs；否则同名函数会让代码搜索产生“已接线”的假象。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/restore` 显示目标 `misc.rs` 有 58 个符号，并列出 Rust/Go 源与独立测试。
-- RustCodeGraph `node --file br/pkg/restore/misc.rs --offset 1 --limit 500` 与 `--offset 500 --limit 500`：完整读取目标 1–934 行；索引报告该文件被 15 个文件使用。`query` 分别定位了 Rust/Go 同名 `MarshalLogRestoreTableIDsBlocklistFile`、`CheckTableTrackerContainsTableIDsFromBlocklistFiles`、`TruncateLogRestoreTableIDsBlocklistFiles`、`AssertUserDBsEmpty`、`GetTSWithRetry`、`HasRestoreIDColumn` 和 `GroupOverlappedBackupFileSetsIter`；`callees` 进一步确认 marshal 到 `filename`/checksum/`proto_marshal`，冲突检查到 `fastWalk` 的边。
-- RustCodeGraph 的部分 `callers` 查询没有输出，故按技能回退到 `rg` 核验直接使用：确认 [`restorer.rs`](./restorer.rs) 的生产调用、[`misc_test.rs`](./misc_test.rs) 与 [`parity_test.rs`](./parity_test.rs) 的测试调用，以及 [`log_client/id_map.rs`](./log_client/id_map.rs) 实际指向局部 stub 的同名调用。
-- 已核对 crate 边界文件 [`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)，确认 library 身份、模块挂载、公开再导出、依赖以及独立测试文件。
-- 已核对 Go 对照 [`misc.go`](./misc.go) 的黑名单、元数据/TS、Region scanner 和 SST 分组实现，以及 Go 测试 [`misc_test.go`](./misc_test.go) 的时间窗、截断、PD 重试和 Region 场景。
-- 已核对 Rust 独立测试 [`misc_test.rs`](./misc_test.rs)：覆盖布尔转换、表查询、fresh-cluster、PD 健康/失败/切主、文件名、protobuf round-trip 与拆分 packed 字段、冲突时间窗、截断、scanner/分组、边界过滤、空数组和非法文件名；[`parity_test.rs`](./parity_test.rs) 提供补充 parity 覆盖。
-- 本任务仅生成文档，按任务要求未运行 Cargo。交付前使用任务指定的 `test -f ... && test "$(rg -c ...)" -eq 11` 做结构验证，并人工复核本文未把 Go 调用链或本地 stubs 描述成 Rust 已完成生产接线。

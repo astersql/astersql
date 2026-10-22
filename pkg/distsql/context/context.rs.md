@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件实现独立 crate `astersql-distsql-context` 的核心数据结构 `DistSQLContext<'a>`。它把一次 DistSQL/Coprocessor 请求需要的会话、语句、KV、TiFlash、资源控制和观测信息收拢为一个可传递的上下文，并提供默认构造、告警转发和脱离会话后的复制语义。crate 入口 [`lib.rs`](./lib.rs) 将本文件声明为私有模块后公开重导出全部符号；[`Cargo.toml`](./Cargo.toml) 以 `pkg/distsql/context` 为 Go 对照包，并声明 KV、错误上下文、执行统计、内存追踪、CPU 统计、SQLKiller 和 TiFlash 等依赖。
-
-当前 Rust 接线并不等同于 Go 的完整应用范围。明确的生产消费者是 [`pkg/ddl/backfilling_txn_executor.rs`](../../ddl/backfilling_txn_executor.rs) 中的 `new_default_reorg_dist_sql_context` 与 `new_reorg_dist_sql_context_with_reorg_meta`，它们为 DDL 回填扫描设置 Chunk RPC、跳过块缓存和资源组。主 `astersql-distsql` crate 仅在 Windows 条件依赖中引用本 crate，其 [`pkg/distsql/distsql.rs`](../distsql.rs) 仍有一套不同的本地 `DistSQLContext`；因此不能把本文件描述成所有 Rust DistSQL 请求已经统一使用的唯一上下文。
+`Default::default` 提供可安全构造和逐字段覆盖的零值基线，并保证 `WarnHandler` 与 `ErrCtx` 共享同一个静态告警接收器（`default`）。
 
 ## 核心职责
 
@@ -80,9 +78,9 @@ RustCodeGraph 将 `context.rs` 标记为被 12 个文件使用，并识别 `Dist
 
 ## 与 Go 版本的对应关系
 
-Go 基准实现是 [`context.go`](./context.go)，测试是 [`context_test.go`](./context_test.go)。Rust 保留了字段名和总体顺序，`[package.metadata.porting]` 也明确记录 `go-package = "pkg/distsql/context"`。主要类型映射为：Go 接口/指针转为 `Option<Arc<dyn ...>>`、`Arc<具体类型>` 或借用；Go `int` 转为 `isize`；`atomic.Uint64/Uint32` 转为标准库原子类型；Go `time.Location` 转为 `chrono_tz::Tz`；尚未在本 crate 建模的具体接口转为 `SharedContextValue`。
+主要类型映射为：Go 接口/指针转为 `Option<Arc<dyn ...>>`、`Arc<具体类型>` 或借用；Go `int` 转为 `isize`；`atomic.Uint64/Uint32` 转为标准库原子类型；Go `time.Location` 转为 `chrono_tz::Tz`；尚未在本 crate 建模的具体接口转为 `SharedContextValue`。
 
-`Detach` 与 Go 一致地先浅复制全部字段，再单独处理 `SQLKiller`、`CPUUsage`、`KVVars`、`MaxKeysReadCounter`：killer 共享，CPU 与 KV 容器独立，KV 的 killed signal 指向共享 killer，读键计数器重新置零。Rust 额外通过 `Option::expect` 明确了 Go 中对 nil 解引用会失败的隐含前置条件，并通过生命周期防止引用悬垂。
+Rust 额外通过 `Option::expect` 明确了 Go 中对 nil 解引用会失败的隐含前置条件，并通过生命周期防止引用悬垂。
 
 差异和迁移限制包括：Rust 的 `KvExecCounter`、`RunawayChecker`、`RUConsumptionReporter` 被类型擦除，无法在本 crate 调用 Go 接口能力；`Client` 是 `Option<Arc<dyn kv::Client>>`；默认实现是 Rust 为便于构造补充的 API；主 Rust DistSQL 尚未在所有目标和执行路径统一采用本 crate。Go 测试用递归深拷贝断言覆盖大量字段，Rust [`context_test.rs`](./context_test.rs) 和迁移测试用显式值与 `Arc::ptr_eq`/原始指针比较表达同一不变量。
 
@@ -93,11 +91,3 @@ Go 基准实现是 [`context.go`](./context.go)，测试是 [`context_test.go`](
 新增行为测试应放在独立 [`context_test.rs`](./context_test.rs) 或迁移测试文件中，不要内嵌进生产文件。测试至少覆盖：默认值是否可用、普通 `Clone` 的对象身份、`Detach` 后共享与独立状态、原对象变更是否影响副本、可选字段的 `None` 分支，以及必需字段缺失时的 panic 合约。涉及主 DistSQL 接线时还要核对 Windows 条件依赖和 [`pkg/distsql/context_test.rs`](../context_test.rs)；涉及 DDL 则同步检查回填构造器及其独立测试。
 
 性能上应避免把大对象从 `Arc` 浅复制改为深复制；正确性上不要让分离后的计数器意外共享或让 kill signal 意外断开；兼容性上保持 Go `int`/时长/枚举的宽度与零值语义。若要用具体 trait 替换 `SharedContextValue`，需要先在实际拥有接口语义的 crate 建立稳定边界，而不是在本文件猜造缩减版接口。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标目录 6 个文件；`files --filter pkg/distsql/context`；`node --file` 完整读取 [`context.rs`](./context.rs)、[`context_test.rs`](./context_test.rs)、[`lib.rs`](./lib.rs)、[`context.go`](./context.go)、[`context_test.go`](./context_test.go)；`query` 定位 Rust `DistSQLContext`、`Detach`、`AppendWarning`；精确 `callers`/`callees` 未返回边，已用直接引用搜索补证。
-- crate 与入口：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`pkg/distsql/Cargo.toml`](../Cargo.toml)、[`pkg/distsql/lib.rs`](../lib.rs)。目标包及父包均无 `doc.go`。
-- Rust 调用与测试：[`pkg/ddl/backfilling_txn_executor.rs`](../../ddl/backfilling_txn_executor.rs)、[`pkg/distsql/context_test.rs`](../context_test.rs)、[`context_test.rs`](./context_test.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)。
-- Go 对照：[`context.go`](./context.go)、[`context_test.go`](./context_test.go)。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证要求本文恰好包含上述 11 个固定二级标题。

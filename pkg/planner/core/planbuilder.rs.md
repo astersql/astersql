@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`planbuilder.rs`](planbuilder.rs) 位于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 以 `lib.rs` 为 crate 根，`lib.rs` 通过 `pub mod planbuilder` 暴露本模块，并仅在测试配置下以 `#[path = "planbuilder_test.rs"]` 装入独立测试。该文件不负责 SQL 文本解析，也不是最终执行器；它接收已经类型化的 `Statement`、表/列元数据和表达式，构造 `BuiltPlan` 或辅助规划数据。
-
-文件顶部已经标记 `// Copyright 2026 AsterSQL.`，且保留 PingCAP Apache License。实现使用 `crate::task` 的 `PlanNode`、`PlanKind`、`Expression`、`FieldType`、`TypeCode`，以及 `crate::find_best_task` 的 `AccessPath`、`IndexInfo`；因此它位于“语句/元数据输入”到“逻辑计划、管理命令及统计任务输出”的规划边界。
-
-需要注意当前 Rust 边界与 Go 主实现并不完全相同：Go 的 `PlanBuilder.Build` 接收带 resolve context 的 AST 节点并依赖 session、infoschema、hint 与表达式重写器；本文件的 `Statement` 和 `BuiltPlan` 是较小的 typed 模型，`Statement::Select` 甚至直接携带已有 `PlanNode`。解析器驱动的完整 SELECT/CTE 路径由相邻的运行时规划模块承担，测试通过 `crate::main_test` 进入该路径。
+**生成访问与统计元数据**：构造/筛选 TiKV、TiFlash、索引访问路径；计算 handle 列、物理分区 ID、ANALYZE 列集合、持久化选项合并与 index/column tasks。
 
 ## 核心职责
 
@@ -96,15 +92,12 @@ ANALYZE 新增 `NDVRate`，同 SampleRate 以 `f64::to_bits` 存入 `u64` map，
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/planner/core/planbuilder.go`，manifest 也通过 `package.metadata.porting` 指向 `pkg/planner/core`。名称与职责对齐项包括 `PlanBuilder`、构造选项、`ResetForReuse`、`Build` 分派、权限收集、访问路径、ANALYZE 选项、INSERT/IMPORT、SHOW/ADMIN schema 和 DDL job 参数。
-
 但两者并非逐类型等价：
 
 - Go `Build(ctx, *resolve.NodeW)` 接收真实 parser AST/resolution context，并先执行 SEM 检查、设置 resolve context 和列裁剪 flag；Rust `Build(&Statement)` 接收精简枚举，没有 context 参数。
 - Go `PlanBuilder` 持有 session context、infoschema、外层 schema/name、hint processor/state、表达式重写器池和更多 DML/CTE 状态；Rust 本文件只保留可表达当前 typed 路径的子集。
 - Go SELECT 从 AST 自底向上构造计划；Rust 本文件的 `Statement::Select` 直接克隆已有 `PlanNode`。Rust parser-backed 主流程由其他相邻模块覆盖，不能仅凭本文件断言 SELECT 已与 Go 完整等价。
 - Rust 使用拥有所有权的枚举代替 Go 的接口/指针层次，并将部分 command payload 简化为字符串向量；错误是 `BuilderError(String)`，不保留 Go 错误类型层级。
-- 对齐测试集中在可验证边界：`pkg/planner/core/planbuilder_test.rs` 对应 Go `planbuilder_test.go` 的 SHOW、索引路径、ANALYZE、权限、IMPORT、DDL job 和 S3 SEM 用例；Go 文件仍覆盖更多 expression rewriter、clone 和真实 planner 语义。
 
 因此修改时应以“保持当前 Rust 行为并对照 Go 对应规则”为原则，而不是机械复制 Go 全文件或把 Go 未移植子系统递归拉入本任务。
 
@@ -118,12 +111,3 @@ ANALYZE 新增 `NDVRate`，同 SampleRate 以 `f64::to_bits` 存入 `u64` map，
 - 调整 IMPORT URI 时同时考虑 `s3`/`oss`、下划线/连字符 key 别名、Starter 与非 Starter、认证二选一、重复 query key 的 first-value 语义，并使用 nextgen 条件测试隔离全局 deploy mode。
 - 访问路径扩展应维护 invisible、multi-valued、vector、global、temporary、prefix length、TiFlash 和 FORCE/USE/IGNORE 的组合含义；性能风险主要来自候选路径集合膨胀及不必要 clone。
 - 保持错误文本兼容时参考 Rust 的 `go_error_messages_and_table_plan` 及 Go 原测试。所有测试继续放在 `pkg/planner/core/planbuilder_test.rs`，遵守生产源码与测试分离要求。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
-
-- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/planbuilder.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
-- REFRESH 分派及权限由 `casetest/mview/mv_refresh_test.rs::test_planbuilder_dispatches_mview_refresh` 提供静态测试证据；NDVRATE 以 `handleAnalyzeOptions`、`buildAnalyze`、`AnalyzeOptionDefault` 的冻结实现为准；相邻独立测试为 `planbuilder_test.rs`，Go 对照 `planbuilder.go`。
-- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
-- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ticker.rs` 属于 Cargo crate `astersql-br-pkg-checkpoint`（`br/pkg/checkpoint/Cargo.toml`），由 crate 入口 `br/pkg/checkpoint/lib.rs` 以 `pub mod ticker` 装配并通过 `pub use ticker::*` 展平导出。它不负责保存 checkpoint 数据，而是为 `checkpoint.rs` 的两个后台循环提供统一的周期事件接口：主循环用它驱动 meta、checksum 和锁续期，刷盘循环用它驱动失败批次重试。
-
-本文件直接对齐 Go 的 `br/pkg/checkpoint/ticker.go`。其存在的主要原因是：Go 的 `select` 可以安全接收 nil channel，从而用 `dispatcherTicker(0)` 禁用可选的锁 ticker；Rust 的 `crossbeam_channel::Select` 不能注册一个不存在的接收端，因此以 `TimeTicker::Ch() -> Option<&Receiver<Instant>>` 显式表达“有周期事件”或“该分支未启用”。
+默认 flush/checksum/lock/retry 周期定义在 `br/pkg/checkpoint/checkpoint.rs`，事件对应的刷盘、校验和锁续期逻辑也由该文件处理。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `TimeTicker::{Ch, Stop}` 对应 Go `TimeTicker` 接口；`timeTicker`、`manualTicker` 和 `dispatcherTicker` 也逐名对应 `br/pkg/checkpoint/ticker.go`。正周期的外部行为目标是 Go `time.Ticker`：周期产生时间事件、慢接收者不会积累无界事件、停止后不再产生新事件。零周期的 Rust `None` 对应 Go nil channel，使 `select` 分支永久不可选。
-
 实现方式存在以下差异：
 
 - Go 正周期实现直接包装运行时 `time.Ticker`；Rust 显式创建线程、单槽 crossbeam channel 和原子停止位。
@@ -99,14 +95,3 @@ Rust `TimeTicker::{Ch, Stop}` 对应 Go `TimeTicker` 接口；`timeTicker`、`ma
 若要修复停止延迟或未显式停止时的线程泄漏，建议引入可唤醒的停止通道/条件变量并在 `Stop` 或 `Drop` 中完成确定性收尾；同时避免工作线程 join 自身，并为“长周期能够快速停止”“重复 Stop 幂等”“drop 后无线程继续运行”增加独立测试。Rust 单元测试应继续放在同目录的 `ticker_test.rs`，不要内嵌回生产文件。
 
 修改 Go/Rust 公共契约时，应同时复核 `br/pkg/checkpoint/ticker.go`、`checkpoint.go`、`checkpoint.rs` 和两个 Rust 测试文件；性能风险集中在线程数量、唤醒频率、丢 tick 策略及停止等待时间。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件；`files --filter br/pkg/checkpoint` 确认目标源、Go 对照、crate 入口和独立测试均已索引。
-- RustCodeGraph `node --file br/pkg/checkpoint/ticker.rs`：核对了全部 96 行、所有 trait/结构体/实现/函数及无条件编译结构；该文件没有 `cfg` 分支。
-- RustCodeGraph `explore 'br/pkg/checkpoint/ticker.rs symbols callers callees checkpoint ticker'`：确认 `dispatcherTicker` 的 Rust 测试调用边，以及 `Ch`/`Stop` 在目标与测试中的调用关系。精确 `callers/callees` 因 Go/Rust 同名符号查询超时，未将其作为唯一依据。
-- RustCodeGraph 对 `br/pkg/checkpoint/checkpoint.rs` 的文件节点：确认主循环第 572–574 行的三类 ticker、`Select` 注册、退出时第 691–693 行的停止，以及刷盘循环第 886、918 行的 retry ticker 接线。
-- `br/pkg/checkpoint/Cargo.toml` 与 `lib.rs`：确认 crate 名、library 边界、`crossbeam-channel` 依赖、模块装配和测试文件挂载；目录中不存在 `doc.go`。
-- `br/pkg/checkpoint/ticker.go` 与 `checkpoint.go`：核对 Go 接口、nil-channel manual ticker、`time.NewTicker` 行为及主/刷盘循环的实际业务接线。
-- `br/pkg/checkpoint/ticker_test.rs`：核对单槽丢 tick 的回归断言；`br/pkg/checkpoint/parity_test.rs`：核对零周期 manual ticker 和默认周期的对齐断言。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构检查要求目标文档恰好包含规定的 11 个二级章节。

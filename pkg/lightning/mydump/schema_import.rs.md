@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-mydump` crate 的 schema 执行层。crate 根模块 [`lib.rs`](lib.rs) 以 `mod schema_import; pub use schema_import::*;` 导出这里的公开 API；crate 元数据在 [`Cargo.toml`](Cargo.toml) 中把它对应到 Go 包 `pkg/lightning/mydump`，直接依赖中本文件实际使用 `regex`，其余核心类型通过 `crate::*` 来自同一 crate。
-
-应用侧已验证的直接入口位于 [`pkg/importsdk/file_scanner.rs`](../../importsdk/file_scanner.rs)：`fileScanner::schemaImporter` 用数据库适配器、loader 的 `Storage` 和配置并发度调用 `NewSchemaImporter`，`FileScanner::CreateSchemasAndTables` 随后把 `loader.GetDatabases()` 交给 `SchemaImporter::Run`。RustCodeGraph 将本文件列为被 `pkg/importsdk/file_scanner.rs` 和独立测试 [`schema_import_test.rs`](schema_import_test.rs) 使用。
-
-本文件不负责扫描 dump 目录，也不负责解析视图依赖图；它消费 loader 生成的 `MDDatabaseMeta`，调用 [`view_import.rs`](view_import.rs) 的 `NewSchemaImportPlan` 获得视图拓扑计划，再查询下游对象并执行 DDL。
+`createIfNotExistsStmtWithMode` 是本文件的 SQL 文本处理核心：拆分语句，限制可接受的 schema 语句类别，选择性忽略破坏性 DDL，重写数据库、表或视图限定名，并规范化 `CREATE TABLE` 顶层列定义。
 
 ## 核心职责
 
@@ -84,7 +80,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`schema_import.go`](schema_import.go)，Go 回归在 [`schema_import_test.go`](schema_import_test.go)。两版都保留 `SchemaImporter`/job/语句类别、三阶段 `Run`、既有数据库跳过、视图拓扑顺序、下游对象类型验证、逐句执行，以及为目标库表重写 schema SQL 的总体结构。Rust 测试中的 `TestSchemaImporter`、`TestNewSchemaImportPlan`、`TestSchemaImporterManyTables` 和视图占位清理用例对应这些主要意图。
+Rust 测试中的 `TestSchemaImporter`、`TestNewSchemaImportPlan`、`TestSchemaImporterManyTables` 和视图占位清理用例对应这些主要意图。
 
 已核验的现行差异包括：
 
@@ -107,12 +103,3 @@
 - Rust 单元测试必须继续放在独立的 `schema_import_test.rs`，由 `lib.rs` 的 `#[path]` 挂载；不要把测试嵌入生产文件。任何行为移植都应同时核对 `schema_import.go` 和 `schema_import_test.go`，避免用简化实现替代 Go 语义。
 
 兼容性风险主要是 SQL mode 与错误分类，正确性风险主要是破坏性 DDL、部分执行和视图依赖，性能风险主要是当前串行导入在大量表上的时延。`TestSchemaImporterManyTables` 只验证执行数量，不证明配置并发度已经生效。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`node --file pkg/lightning/mydump/schema_import.rs --offset 1 --limit 500` 与后续 `--offset 495` 覆盖本文件 571 行；`query` 确认 Rust `NewSchemaImporter` 与 `createIfNotExistsStmtWithMode` 的签名和符号 ID；文件关系显示直接使用方为 `pkg/importsdk/file_scanner.rs` 与 `pkg/lightning/mydump/schema_import_test.rs`。`callers`/`callees` 查询在限定时间内未返回，因此调用链结论改由直接入口源码核验。
-- 生产源码：[`schema_import.rs`](schema_import.rs)、[`lib.rs`](lib.rs)、[`view_import.rs`](view_import.rs)、[`pkg/importsdk/file_scanner.rs`](../../importsdk/file_scanner.rs)。
-- crate/工作区证据：[`Cargo.toml`](Cargo.toml)、仓库根 `Cargo.toml` 的 `facade_lightning_mydump` 路径项、`pkg/importsdk/Cargo.toml` 的 `astersql-lightning-mydump` 路径依赖。
-- Rust 独立测试：[`schema_import_test.rs`](schema_import_test.rs)，覆盖建表执行失败恢复、后续语句失败、三阶段与视图顺序、延迟视图校验、大量表计数、SQL 改写与语法错误、已有数据库/无 schema 表、集合归一化、空语句、已有视图及非视图冲突。
-- Go 对照：[`schema_import.go`](schema_import.go) 与 [`schema_import_test.go`](schema_import_test.go)，用于核验 worker pool、parser/SQL mode、重试/连接、表存在恢复和对应回归意图。
-- 本任务是纯文档分析，未运行 Cargo；交付前使用任务指定命令确认本文档存在且恰有 11 个固定二级章节，并人工复核未把未验证的图调用边或 Go 能力写成 Rust 当前事实。

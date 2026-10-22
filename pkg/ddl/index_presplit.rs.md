@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/ddl/lib.rs` 以公开模块 `pub mod index_presplit` 挂载。它提供 add-index 前的索引 Region 预切分原语：把手工或统计规划得到的索引值转成切分 key，并提供一个抽象的 split/scatter 执行包装器。
-
-当前真实接线中，`pkg/session/runtime/ddl.rs` 的 add-index 路径调用 `get_split_index_keys`；`pkg/ddl/index_auto_presplit.rs::plan_auto_pre_split` 和 `run_pre_split` 调用 `get_split_keys_from_value_list`。该文件不创建或持久化 DDL job，不推进 schema state，也不执行回填；它位于 DDL job 的 add-index 准备阶段，是预切分辅助层，而不是 DDL 状态机本身。
+提供 add-index 前的索引 Region 预切分原语：把手工或统计规划得到的索引值转成切分 key，并提供一个抽象的 split/scatter 执行包装器。
 
 ## 核心职责
 
@@ -77,10 +75,6 @@ Go 对照中的 `splitIndexRegionAndWait` 会派生带 `tidb_split_region_timeou
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/index_presplit.go`。命名和大体分工对应如下：`get_split_index_keys` 对应 `getSplitIdxKeys`，值列表与范围函数分别对应 `getSplitIdxKeysFromValueList`/`getSplitIdxPhysicalKeysFromValueList` 和 `getSplitIdxKeysFromBound`/`getSplitIdxPhysicalKeysFromBound`，执行包装器对应 `splitIndexRegionAndWait`，求值帮助器对应 `evalSplitDatumFromArgs`/`evalConstExprNodes`。
-
-已对齐的局部语义包括：显式行按给定顺序生成 key；范围 lower 必须小于 upper；`regions = 1` 不产生内部点；范围插值采用与 Go `util.GetValuesList` 相同风格的公共前缀和前八字节大端等分算法。`pkg/ddl/index_presplit_test.rs` 用本地 `go_values_list` 复算该算法。
-
 尚未对齐的关键能力包括：Go 使用 `tables.NewIndex(...).GenIndexKey` 和 statement context 生成真实可路由索引 key，并加入索引起止边界；按普通表、global index 与本地分区扩展 physical IDs；校验值数量和列类型；支持默认 MinNotNull/MaxValue 边界；区分不支持 split 的存储；带超时执行 split 并等待 scatter；保留具体 TiDB 错误。Rust 的 `SplitError`、简化编码和回调 API 只覆盖这些行为的一个小子集。
 
 从 DDL 框架视角，本功能是 add-index job 内的优化准备动作，不独立修改 schema version，不产生额外 schema state，不负责 reorg checkpoint，也没有自身 rollback/delete-range 语义；job 的暂停或取消仍应由上层 job/context 链处理。
@@ -92,13 +86,3 @@ Go 对照中的 `splitIndexRegionAndWait` 会派生带 `tidb_split_region_timeou
 若要补齐分区/global index、首尾边界或临时索引语义，应先决定职责位于调用者还是本模块，避免两层重复展开 physical table 或重复转换 temp index key。若要让 `split_index_region_and_wait` 接入存储，应加入 context/超时、unsupported-store 表达、可诊断 scatter 错误及取消语义，并与 Go 手工模式“严格失败”、AUTO 模式“best effort”的策略保持一致。
 
 所有行为修改都应放在独立测试文件中，不把测试嵌入本生产文件。至少同步 `pkg/ddl/index_presplit_test.rs`；路由前缀行为同步 `pkg/ddl/index_nokit_test.rs`；SQL 接线和错误语义同步 `tests/realtikvtest/addindextest3/functional_test.rs`；AUTO 复用变化同步 `pkg/ddl/index_auto_presplit_test.rs`。兼容风险集中在 key 字节格式和已有调用签名，正确性风险集中在排序、重复点、分区/global/temp index 路由，性能风险集中在大量切分点分配以及串行 scatter 等待。
-
-## 验证依据
-
-- 源码与边界：`pkg/ddl/index_presplit.rs`；`pkg/ddl/backfilling.rs::Key`；`pkg/ddl/index_cop.rs::Datum`。
-- crate 与模块接线：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`。
-- Rust 上游：`pkg/session/runtime/ddl.rs`、`pkg/ddl/index_auto_presplit.rs`。
-- 独立 Rust 测试：`pkg/ddl/index_presplit_test.rs`、`pkg/ddl/index_nokit_test.rs`；SQL/RealTiKV 覆盖位于 `tests/realtikvtest/addindextest3/functional_test.rs`（本纯文档任务未运行测试）。
-- Go 对照：`pkg/ddl/index_presplit.go`；其中 `preSplitIndexRegions`、`getSplitIdxKeys*`、`splitIndexRegionAndWait`、`evalSplitDatumFromArgs`、`evalConstExprNodes` 用于核对当前移植范围与差异。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，`files --filter pkg/ddl/index_presplit.rs` 显示目标文件有 17 个符号；`query` 定位了 `get_split_index_keys`、`get_split_keys_from_value_list`、`split_index_region_and_wait`、`eval_split_datums` 的签名。`callers`/`callees` 未返回边，故调用边另用精确仓库搜索验证。
-- 人工复核结论：本文件存在是为了集中索引预切分 key 计算和抽象执行；当前真正运行的主路径是 add-index 参数到 key 生成，真实存储 split/scatter 仍未在该 Rust 路径中接通；安全扩展必须优先维护 key 编码、physical ID 和手工/AUTO 错误策略的一致性。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ttl_runtime.rs` 位于 `astersql-session` crate 的 `runtime` 模块中，由 `pkg/session/runtime.rs` 以 `pub mod ttl_runtime` 暴露。它是 Domain 完成 SQL bootstrap 之后的 TTL 作业运行时编排层：把 infoschema 中的 TTL 表定义、持久化 timer、etcd 通知、owner 选举、SQL 系统表状态，以及 `astersql-ttl-ttlworker` 提供的扫描/删除原语串成可停止、可接管的一次作业执行链。实际启动点是 `pkg/session/runtime/session.rs` 对 `start_domain_ttl_job_manager_with_transport` 的调用；无 etcd 的公开入口是 `start_domain_ttl_job_manager`。
-
-该文件不是 TTL SQL 构造或元数据模型的唯一实现位置。表发现与分片规划来自同目录 `ttl_metadata.rs`，timer hook 位于 `ttl_timer.rs`，SQL session 适配位于 `ttl_worker_session.rs`；扫描、删除、重试和持久作业操作分别由 `astersql-ttl-ttlworker::{scan,del,persistent}` 提供。本文件负责这些组件的生命周期和正确调用顺序。
+Domain 完成 SQL bootstrap 之后的 TTL 作业运行时编排层：把 infoschema 中的 TTL 表定义、持久化 timer、etcd 通知、owner 选举、SQL 系统表状态，以及 `astersql-ttl-ttlworker` 提供的扫描/删除原语串成可停止、可接管的一次作业执行链。
 
 ## 核心职责
 
@@ -84,10 +82,8 @@
 ## 与 Go 版本的对应关系
 
 - Go 启动链为 `pkg/session/session.go` 调用 `Domain.StartTTLJobManager`，后者在 `pkg/domain/domain.go` 根据角色创建并启动 `ttlworker.JobManager`；Rust 将 Domain 生命周期接线放到 `runtime/session.rs`，核心循环集中在本文件。
-- Go 的主要对照实现是 `pkg/ttl/ttlworker/job_manager.go`：`NewJobManager`/`jobLoopWithSession` 对应 Rust 的启动函数与 Domain loop；`onTimerTick`、`triggerTTLJob`、`rescheduleJobs`、`lockHBTimeoutJob`、`lockNewJob`、`updateHeartBeatForJob` 和 `checkFinishedJob` 分别对应 timer 同步/命令触发、领取或接管、心跳和完成路径。
 - 两版都以 owner/leader、系统表和 timer 为协调基础，都要求全局开关及调度窗口允许后才创建作业，并保留超时作业接管语义。Rust 的 `run_ttl_tick_inner` 把 Go manager、task manager 和 job 的关键调用顺序压缩为同步的一次执行流程，但复用拆分后的 Rust TTL worker crate，而不是逐类型镜像 Go 对象图。
 - Rust 特有的显式 RAII 容器负责线程/runtime/pool 析构；Go 版主要通过 context、WaitGroup、`Stop`/`WaitStopped` 管理。Rust watcher transport trait 也把真实 etcd 与测试 transport 分离。
-- `ttl_runtime_test.rs` 测试名带 `go_merge_43`，验证的是移植语义：watch 重连、timer hook、双 manager 单次领取与接管、真实 etcd、跨午夜窗口、心跳失主、持久范围、Domain 停止、过期行删除、取消保留作业、原水位恢复、游标恢复和多范围恢复。Go 侧的主要回归面是 `pkg/ttl/ttlworker/job_manager_test.go` 与 `job_manager_integration_test.go`。
 
 ## 扩展指南
 
@@ -98,12 +94,3 @@
 - 调整扫描/删除批处理时，必须维持“删除及重试成功后才能 checkpoint”的不变量，评估 `batch_size=128`、`TTLDeleteRateLimit`、心跳间隔 10 秒和超时接管 240 秒之间的性能与所有权风险。
 - 修改 timer 生命周期时，同时检查 `ttl_timer.rs`：只有 hook 应关闭并汇总 timer event。普通 tick、手动命令等待和 timer runtime 停止的职责不可混合。
 - 增加线程或异步任务时，应放入现有 RAII 所有者或新增可 join 的所有者；禁止创建无法由 Domain close 停止的 detached worker。涉及真实 etcd 的行为应保留可替换 transport 测试，并在环境允许时补真实 etcd 场景。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`pkg/session/runtime/ttl_runtime.rs` 已索引为 1,434 行、112 个符号。`query/node` 确认 `start_domain_ttl_job_manager` 调用 transport 版本，`run_ttl_tick` 与 `run_ttl_event` 均汇入 `run_ttl_tick_inner`；图还确认 `run_ttl_tick` 的直接测试调用者。
-- 生产源码：`pkg/session/runtime/ttl_runtime.rs`（本文全部符号与流程）、`pkg/session/runtime/session.rs`（bootstrap 后启动与 etcd transport 构造）、`pkg/session/runtime/ttl_timer.rs`（timer hook 调用 `run_ttl_event`）、`pkg/session/runtime.rs`（模块声明）。
-- crate 边界：`pkg/session/Cargo.toml` 的 package 名为 `astersql-session`，porting 元数据指向 `pkg/session`；直接依赖包含 Domain、owner、timer API/runtime/tablestore、TTL worker/cache、session syssession、Tokio 与 etcd client。
-- Rust 独立测试：`pkg/session/runtime/ttl_runtime_test.rs`；相邻集成式覆盖还在 `pkg/session/runtime/normal_ddl_create_table_test.rs`。测试分别覆盖 watcher、timer、owner 竞争、心跳、范围持久化、停止、删除、取消和接管恢复。
-- Go 对照：`pkg/session/session.go::BootstrapSession`、`pkg/domain/domain.go::{StartTTLJobManager,shouldStartTTLJobManager,TTLJobManager}`、`pkg/ttl/ttlworker/job_manager.go`，相关测试为 `pkg/ttl/ttlworker/job_manager_test.go` 和 `job_manager_integration_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰有十一个固定二级标题，并人工复核未修改 Rust、Go、Cargo 或只读 `plan.md`。

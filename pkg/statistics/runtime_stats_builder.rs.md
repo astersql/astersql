@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics` crate。`pkg/statistics/Cargo.toml` 将 crate 根声明为 `lib.rs`，而 `pkg/statistics/lib.rs` 通过 `mod runtime_stats_builder;` 装入本模块并以 `pub use runtime_stats_builder::*;` 重导出其公开 API。因此调用者通常使用 `astersql_statistics::RuntimeStatsBuilder` 等 crate 级名称，而不是模块路径。
-
-它是 Rust 运行时统计链路中的“类型化样本适配层”：接收会话侧已经解码成 `Vec<Vec<Option<String>>>` 的 SQL 行，把文本值恢复为带类型的 `Datum`，再复用统计 crate 已有的 `SampleCollector`、`BuildHistAndTopN` 和 `FMSketch` 实现。生产主链可由 `pkg/session/runtime/statistics.rs` 的 ANALYZE 构建阶段追到 `pkg/statistics/handle/runtime_stats.rs::BuildRuntimeTableStatsSelectionWithBuilder`，后者调用本文件的直方图、边界编码和 FM Sketch 方法。SHOW 统计值时，`pkg/session/runtime/statistics.rs::value_to_string` 又调用本文件的类型化解码入口。
-
-本文件不是 Go 同路径文件的逐行翻译；Go 仓库没有 `runtime_stats_builder.go`。它把 Rust 会话运行时的文本行边界接到 Go 统计语义对应的底层实现，并显式补齐 Go 行编解码路径天然具备、但文本回读路径需要恢复的行为。
+`RuntimeStatsBuilder` 持有一个贯穿整批统计构建的 `stmtctx::StatementContext`，统一提供时区、宽松类型转换标志和内存跟踪器。
 
 ## 核心职责
 
@@ -103,14 +99,9 @@ RustCodeGraph 文件索引报告本文件含 34 个符号，并被多个生产/�
 
 ## 与 Go 版本的对应关系
 
-- Rust 最终调用的 `BuildHistAndTopN` 对应 `pkg/statistics/builder.go::BuildHistAndTopN`：二者都从 `SampleCollector` 的 count、NDV、NULL、样本与 TotalSize 构建 Histogram/TopN，并区分列值比较编码与索引 bytes 比较。
 - `MaxSampleValueLength` 截断对应 `pkg/statistics/sample.go::SampleCollectorFromProto`。Go 在反序列化 collector 时丢弃过长样本；Rust 运行时不经过 protobuf 往返，因此在调用 builder 前显式 `retain`，同时保留完整 TotalSize。
 - `stored_value_flags` 是 Rust 文本回读路径的适配。Go ANALYZE 样本从 row codec 直接得到 Datum，不会对已接受并落盘的零日期/非法日期再次执行 SQL mode 校验；Rust 因输入是字符串，必须显式放宽这些错误标志。
-- BIT 的 `0x…` 快速恢复是 Rust 会话 DML 文本形态与 Go Datum 形态间的桥接，避免整数 0 与文本 `"0"` 在中间表示上混淆。
-- `encode_histogram_bound` 的 BIT 分支对应 `pkg/statistics/handle/storage/save.go::convertBoundToBlob`；Go 转成 Blob 时把可表示的 BIT 格式化为十进制。逆过程对应 `pkg/statistics/handle/storage/read.go::convertBoundFromBlob`，需要字段 `flen`，因此落在 Rust handle 层 `canonical_histogram`。
 - 对非 BIT 列，当前 Rust 仍保存 `EncodeKey` 字节，以兼容既有 SHOW/解码消费者；源码注释明确这是尚未整体迁移到 Go `convertBoundFromBlob` 语义的兼容边界。不能把它描述成与 Go 所有类型完全同形。
-- 复合索引的 FM Sketch 使用 `InsertRowValue`、直方图使用完整 `EncodeKey`；列使用单 Datum。这与 Go `row_sampler.go` 对列 FM Sketch 和 column group/index 行 FM Sketch 的区分一致。
-- 当前 Rust API 还提供默认 builder 的便捷函数和展示字符串解码，这是 Rust 运行时集成所需接口，不存在同名 Go API。
 
 ## 扩展指南
 
@@ -121,11 +112,3 @@ RustCodeGraph 文件索引报告本文件含 34 个符号，并被多个生产/�
 - 并发扩展应继续采用“每 worker 一个 builder”。若需要共享，必须先证明 `StatementContext`、内存跟踪器及所有方法满足同步要求，不能仅在外层包一个引用。
 - 测试应继续放在独立文件，而不是内嵌本源文件。直接行为优先扩展 `pkg/statistics/handle/analyze_runtime_aster_unit_test.rs`；边界重建和分区合并扩展 `pkg/statistics/handle/runtime_stats_test.rs`；统计 handle 的查询行为可扩展 `pkg/statistics/handle/handletest/handle_test.rs`。Go 语义变更还应对照 `pkg/statistics/sample_test.go`、`fmsketch_test.go` 和 handle storage 测试。
 - 性能风险集中在每值字符串转换、复合索引为 TotalSize 额外执行的逐分量 `EncodeValue`、完整键编码和 `collector_memory` 每行扫描现有样本。优化必须保持记账、样本顺序和 Go 兼容结果，不应以删减逻辑换取速度。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/statistics/runtime_stats_builder.rs` 报告 34 个符号；`node --file ... --offset 1/261` 完整读取 509 行源码；精确 `query` 命中 `RuntimeStatsBuilder`、`BuildRuntimeStatsHistogram`、`DecodeRuntimeStatsValueWithTypes` 及四个核心方法，并定位到 handle/session 上游。通用未限定方法名的 `callers/callees` 未能产生可消歧结果，因此调用边又以目标文件级图读取和 `rg` 引用搜索复核。
-- Rust 源与 crate 边界：`pkg/statistics/runtime_stats_builder.rs`、`pkg/statistics/lib.rs`、`pkg/statistics/Cargo.toml`、`pkg/statistics/handle/runtime_stats.rs`、`pkg/session/runtime/statistics.rs`。
-- 独立 Rust 测试：`pkg/statistics/handle/analyze_runtime_aster_unit_test.rs` 验证时区敏感边界、文本排序规则、复合索引编码/TopN、解码数量错误和成功/失败内存释放；`pkg/statistics/handle/runtime_stats_test.rs` 验证分区合并、BIT/ENUM/SET/时间边界重建；`pkg/statistics/handle/handletest/handle_test.rs` 以解码后的桶和 TopN 执行行数估算。
-- Go 对照：`pkg/statistics/builder.go::BuildHistAndTopN`、`pkg/statistics/sample.go::{SampleCollectorFromProto, SampleCollector.collect, MaxSampleValueLength}`、`pkg/statistics/row_sampler.go`、`pkg/statistics/fmsketch.go`、`pkg/statistics/handle/storage/save.go::convertBoundToBlob`、`pkg/statistics/handle/storage/read.go::convertBoundFromBlob`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付验证以固定章节结构、源码链接和人工事实复核为准。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-backend-kv` crate；crate 入口 `pkg/lightning/backend/kv/lib.rs` 以 `mod context` 装入它，并通过 `pub use context::*` 对外再导出公开项。`pkg/lightning/backend/kv/Cargo.toml` 将该 crate 标记为 Go 包 `pkg/lightning/backend/kv` 的移植，并声明本文件直接使用的 `encode`（`Datum`）和 `tablecodec`（时区解析）路径依赖。
-
-它位于 Lightning/IMPORT INTO 的 SQL 行到 KV 编码边界：`pkg/lightning/backend/kv/session.rs::NewSession` 从 `encode::SessionOptions` 建立 `litExprContext` 和 `litTableMutateContext`，随后 `NewBaseKVEncoder`、`NewTableKVDecoder` 等持有这个轻量 `Session`。本文件只定义求值和表变更所需的上下文状态，不负责解析输入行、生成键、提交事务或写入 TiKV。
-
-RustCodeGraph 的文件节点显示本文件被 `pkg/lightning/backend/kv/session.rs`、三个独立 Rust 测试文件以及 `pkg/executor/importer/import.rs` 使用。图查询没有为构造器生成可展示的精确 `callers/callees` 边，因此下述调用链同时以这些使用文件和源码引用为准，不把图中缺失的边当作“不存在调用”。
+`RowIDShardGenerator` 提供可克隆、可跨线程共享的原子伪随机状态；当前上下文保持一个有效生成器以避免未来调用方取得空对象，但实际 Lightning Row ID 仍主要由导入编码链自身生成（对应 `context.go::newLitTableMutateContext` 的说明）。
 
 ## 核心职责
 
@@ -80,11 +76,11 @@ RustCodeGraph 的文件节点显示本文件被 `pkg/lightning/backend/kv/sessio
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/backend/kv/context.go`，测试对照是同目录 `context_test.go`。类型和构造器一一对应于 Go 的 `litExprContext`、`newLitExprContext`、`litTableMutateContext` 和 `newLitTableMutateContext`；SQL mode 分支、主要系统变量、时间戳语义、用户变量大小写不敏感、row format、全局 row checksum、mutation checker、断言等级及 shard step 是当前 Rust 测试刻意覆盖的共同语义。
+类型和构造器一一对应于 Go 的 `litExprContext`、`newLitExprContext`、`litTableMutateContext` 和 `newLitTableMutateContext`；SQL mode 分支、主要系统变量、时间戳语义、用户变量大小写不敏感、row format、全局 row checksum、mutation checker、断言等级及 shard step 是当前 Rust 测试刻意覆盖的共同语义。
 
-Rust 是轻量重建而非完整框架对象移植。Go 表达式上下文嵌入 `exprstatic.ExprContext`，包含共享 warning handler、plan-cache tracker、RNG、可选属性、location 对象等；Rust 仅保存编码链目前读取的字段，没有 `setNewCollationEnabled`，也没有完整 `exprctx.ExprContext` trait。Go 表上下文实际实现 `table.MutateContext`/`StatisticsSupport`，持有 `tblctx.RowEncodingConfig`、真实 mutate buffers 和 `ReservedRowIDAlloc`；Rust 用同名方法和简化结构表达所需子集。
+Go 表达式上下文嵌入 `exprstatic.ExprContext`，包含共享 warning handler、plan-cache tracker、RNG、可选属性、location 对象等；Rust 仅保存编码链目前读取的字段，没有 `setNewCollationEnabled`，也没有完整 `exprctx.ExprContext` trait。Go 表上下文实际实现 `table.MutateContext`/`StatisticsSupport`，持有 `tblctx.RowEncodingConfig`、真实 mutate buffers 和 `ReservedRowIDAlloc`；Rust 用同名方法和简化结构表达所需子集。
 
-还有两项重要所有权差异：Go 表上下文保存同一个 `*litExprContext` 指针，Rust 构造器克隆它；Go 的 `RowIDShardGenerator` 用 `math/rand` 源，Rust 使用共享原子 xorshift。若新增功能依赖 Go 对象身份、动态警告状态、精确随机序列或真实 table trait，不能把当前轻量字段视作等价实现，必须先补齐对应抽象和独立测试。
+还有两项重要所有权差异：Go 表上下文保存同一个 `*litExprContext` 指针，Rust 构造器克隆它；Go 的 `RowIDShardGenerator` 用 `math/rand` 源，Rust 使用共享原子 xorshift。
 
 Go 测试覆盖比 Rust 更广，包括 warning 共享、CurrentTime 重复读取、plan cache、RNG、可选属性和接口返回对象。Rust 的 `context_test.rs` 覆盖当前实现拥有的配置与验证分支；未在 Rust 类型中出现的 Go 能力应记为尚未移植，而不是由测试缺失推断为隐式支持。
 
@@ -97,13 +93,3 @@ Go 测试覆盖比 Rust 更广，包括 warning 共享、CurrentTime 重复读�
 - 改变全局 checksum 或 Row ID 并发策略：保持全局测试串行化与状态恢复，明确所需内存序；如要求确定性，给生成器注入 seed，而不是在测试中依赖系统纳秒。
 - 调整行编码开关时同步检查 `base.rs::AddRecord`、编码/解码测试和 Go 的 `tblctx.RowEncodingConfig`。该开关直接改变落盘行值格式，存在数据兼容和性能风险。
 - Rust 测试必须继续放在独立的 `context_test.rs` 或相邻集成测试文件，不能嵌入 `context.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/lightning/backend/kv` 确认 Rust/Go 源与独立测试均已索引；`node --file pkg/lightning/backend/kv/context.rs --offset 1 --limit 500` 返回完整 372 行、46 个符号并列出 5 个使用文件。
-- RustCodeGraph 精确查询：`query newLitExprContext`、`query newLitTableMutateContext`、`query SetGlobalRowLevelChecksumEnabled`、`query setUserVarVal`、`query unsetUserVar`、`query GetRowEncodingConfig` 确认 Rust 定义、Go 对照及测试候选；对应 `callers/callees` 命令未输出静态边，故调用关系再由源码引用交叉验证。
-- 生产源码：`pkg/lightning/backend/kv/context.rs`（所有本文符号）、`lib.rs`（模块装配与再导出）、`session.rs`（构造、过滤和用户变量转发）、`base.rs`（行格式消费）、`kv2sql.rs`（解码 session 构造）、`pkg/executor/importer/import.rs`（表达式上下文消费）。
-- crate 边界：`pkg/lightning/backend/kv/Cargo.toml` 的 package、lib path、路径依赖和 Go package 元数据。
-- 语义对照：`pkg/lightning/backend/kv/context.go` 与 `context_test.go`。
-- Rust 独立测试：`pkg/lightning/backend/kv/context_test.rs` 直接覆盖 SQL mode、配置范围、用户变量、默认值、checksum、行格式、mutation checker、断言等级和 shard generator；`session_internal_test.rs`、`sql2kv_test.rs` 覆盖经 Session/编码链的装载与消费。
-- 本任务是只增说明文档的静态分析，按计划不运行 Cargo；最终以固定 11 章节结构命令和人工证据复核验收。

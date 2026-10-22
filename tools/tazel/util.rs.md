@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tools/tazel/util.rs` 是 `astersql-tools-tazel` crate 的写回与路径过滤辅助模块，由 [`tools/tazel/lib.rs`](lib.rs) 通过 `pub mod util` 暴露。它不负责遍历仓库、解析 BUILD 文件或计算测试数量；这些职责分别位于 [`tools/tazel/main.rs`](main.rs)、[`tools/tazel/stubs.rs`](stubs.rs) 和 [`tools/tazel/ast.rs`](ast.rs)。运行时主链是 `bin_main.rs -> lib::entry -> main::main -> run_from -> walk_build_files`，`walk_build_files` 和 `patch_go_test_file` 在需要过滤或落盘时调用本文件的函数。
-
-crate 边界由 [`tools/tazel/Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-tools-tazel`，库入口是 `lib.rs`，二进制入口是 `bin_main.rs`，移植元数据指向 Go 包 `tools/tazel`。该 crate 没有声明外部 Rust 依赖；本文件只使用标准库和本 crate 的 `stubs::build`。
+`skipFlaky`、`skipTazel`、`skipShardCount` 集中保存 Go 工具既有的例外路径，供主流程决定是否设置 `flaky`、是否处理整个 BUILD 文件、是否更新 `shard_count`。
 
 ## 核心职责
 
@@ -76,14 +74,6 @@ RustCodeGraph 将 `util.rs` 识别为被 `ast_test.rs` 和 `parity_test.rs` 使�
 
 `write` 在函数内独占一个 `File` 句柄，`write_all` 返回后由 RAII 关闭。它没有文件锁；如果多个进程或线程同时写同一路径，最后结果取决于竞争顺序，且可能发生交错或截断风险。正常主流程 `walk_build_files` 是同步递归、逐文件调用，因此单次 `tazel` 执行内部不会并发调用它。`parity_test.rs::contract_resource_cleanup` 在完整运行后能够删除临时目录，间接验证正常成功路径没有遗留打开的文件句柄。
 
-## 与 Go 版本的对应关系
-
-[`tools/tazel/util.go`](util.go) 是逐函数对照来源：Rust `write` 对应 Go `write`，均按 `Rewrite -> Format -> 覆盖写入(0644)` 排序；Rust 的 `OpenOptions`/`write_all` 对应 Go 的 `os.WriteFile`。两者都不是临时文件 rename 方案。
-
-Rust `skipFlaky` 与 Go `skipFlaky` 使用相同的唯一精确路径；Rust `skipTazel` 与 Go `skipTazel` 也使用相同的唯一精确路径。Go 通过 `pkg/util/set.StringSet` 表达名单，Rust 为避免引入该包对应的外部依赖而使用标准库 `HashSet`；`Cargo.toml` 的注释明确记录了这一选择。
-
-Rust `skipShardCount` 与 Go 版本的 `strings.HasPrefix` 条件逐项相同，包括 `tests/readonlytest`、`pkg/util` 总体排除和五个白名单前缀。当前 Rust 函数名保留 Go 风格的驼峰命名，crate 根通过 lint allow 接受该迁移接口形状。
-
 ## 扩展指南
 
 - 新增或删除跳过路径时，应先确认它属于 `flaky`、整个 tazel 处理还是 `shard_count` 三类中的哪一类，只修改对应函数；同时同步 `util.go`，除非任务明确允许 Rust/Go 产生差异。
@@ -93,14 +83,3 @@ Rust `skipShardCount` 与 Go 版本的 `strings.HasPrefix` 条件逐项相同，
 - 测试逻辑应继续放在独立的 [`tools/tazel/parity_test.rs`](parity_test.rs)，不要内嵌进 `util.rs`。名单变更至少增加命中与未命中断言；写回变更应覆盖原内容保留、错误路径、权限/清理行为和必要的平台差异。
 
 兼容性风险主要来自路径匹配范围和写回语义；性能风险较低，但三个过滤函数会对遍历到的 BUILD 文件反复调用，若名单显著增大，应避免每次重建大型集合。正确性上尤其要防止扩大 `skipTazel` 导致文件完全漏处理，或缩小 `skipShardCount` 导致不适合分片的包被自动改写。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，其中 `tools/tazel` 有 11 个文件，`util.rs` 有 5 个索引符号；索引文件视图确认本文件共 76 行及四个公开函数的实现。
-- RustCodeGraph `node --file tools/tazel/util.rs`：核对 `write` 的打开选项、Unix 模式、调用顺序和三个路径谓词。
-- RustCodeGraph `node --file tools/tazel/main.rs`：核对 `skipFlaky`、`skipShardCount`、`skipTazel`、`write` 在 `patch_go_test_file`/`walk_build_files` 中的真实调用位置和控制流。
-- RustCodeGraph `node --file tools/tazel/parity_test.rs`：核对跳过名单正反例、BUILD 内容保真、单测试分片删除及资源清理证据。
-- RustCodeGraph `node --file tools/tazel/util.go`：逐项核对 Go `write`、`skipFlaky`、`skipTazel`、`skipShardCount` 的语义。
-- [`tools/tazel/Cargo.toml`](Cargo.toml)、[`tools/tazel/lib.rs`](lib.rs)、[`tools/tazel/BUILD.bazel`](BUILD.bazel) 与 [`tools/tazel/stubs.rs`](stubs.rs)：分别核对 crate/二进制边界、模块装配、Go Bazel 目标，以及 `Rewrite`/`Format` 的当前实现边界。
-- `rg` 精确引用搜索：补足 RustCodeGraph 调用查询未输出调用边的部分，确认生产直接调用集中在 `main.rs`，独立回归测试集中在 `parity_test.rs`。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按计划以事实核对和固定章节结构检查作为验证。

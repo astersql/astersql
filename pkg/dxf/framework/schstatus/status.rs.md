@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 DXF（Distributed eXecution Framework）调度状态的 Rust 数据契约，以及该契约与 Go JSON 表示之间的转换规则。crate 入口 [`lib.rs`](lib.rs) 将 `status` 声明为公开模块并再导出全部公共项；[`Cargo.toml`](Cargo.toml) 将该目录声明为独立 crate `astersql-dxf-framework-schstatus`，只依赖 `chrono`、`serde` 和 `serde_json`。`pkg/dxf/framework/handle/status.rs` 的 `GetScheduleStatus` 是最直接的生产构造方：它查询任务、节点和标志后组装本文件的 `Status`。因此，本文件位于“调度运行时事实 → 稳定状态快照/JSON”边界，不负责采集事实、持久化状态或执行扩缩容。
-
-Go 端的应用入口可以在 `pkg/server/handler/tikvhandler/dxf.go` 中复核：状态 HTTP 处理逻辑调用 Go `handle.GetScheduleStatus`，而后者在 `pkg/dxf/framework/handle/status.go` 中构造同路径 Go `schstatus.Status`。RustCodeGraph 将本文件识别为 16 个符号，并确认其被 `handle`、`storage`、`scheduler` 等 DXF crate 引用；精确 `callers` 查询在本次分析中超时，因此具体生产边以源码引用复核为准，未把模糊图结果当作调用结论。
+定义 DXF（Distributed eXecution Framework）调度状态的 Rust 数据契约，以及该契约与 Go JSON 表示之间的转换规则。
 
 ## 核心职责
 
@@ -98,18 +96,13 @@ RustCodeGraph 的 `files --filter pkg/dxf/framework/schstatus` 显示该区域�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`status.go`](status.go)，对应关系如下：
-
-- Go `Version int` / `Version1 = iota + 1` 对应 Rust `Version = i32` / `Version1 = 1`。
-- 六个主要结构及 JSON 字段逐项对应；Rust 的 serde `rename` 保留 Go 的 snake_case tag，`flatten` 模拟 Go 匿名嵌入。
 - Go `time.Duration` 的 JSON 是整数纳秒；Rust 通过专用适配器保持该线格式。差异是 Go duration 可为负，而 Rust `Duration` 不可为负，所以负值在 Rust 反序列化时明确失败。
-- Go `time.Time{}` 的零值不是 Unix epoch；Rust 自定义 `go_zero_time` 保持 `0001-01-01T00:00:00Z` 语义。
 - Go 的 `Flag` 是独立 string 类型；Rust 用 `type Flag = String`，因此没有新的名义类型约束。Go `PauseScaleInFlag` 的常量类型是 `Flag`，Rust 常量是 `&str`，插入 map 时需 `to_owned()`。
 - Go 两个 `String` 方法使用指针接收者并忽略 `json.Marshal` 错误；Rust 使用不可变借用并以 `unwrap_or_default()` 返回空串。
 - Go `Status.String` 复制顶层结构后对切片做截断和 append；Rust 深克隆整个结构后修改克隆。可观察结果一致，Rust 的隔离更直接地保证原向量不变。
 - Rust 字段和方法保留 Go 风格大写命名，由 `lib.rs` 的 lint allow 支持；这是迁移兼容选择，不代表通常的 Rust 命名建议。
 
-`status_test.go::TestStatusPrint` 与 `status_test.rs::test_status_print` 一一核对截断结果和非修改语义。`migration_aster_unit_test.rs` 额外覆盖版本、字段名、零值省略、flatten、纳秒与 RFC3339 表示，是 Rust 移植特有的契约回归证据。
+`migration_aster_unit_test.rs` 额外覆盖版本、字段名、零值省略、flatten、纳秒与 RFC3339 表示，是 Rust 移植特有的契约回归证据。
 
 ## 扩展指南
 
@@ -121,12 +114,3 @@ RustCodeGraph 的 `files --filter pkg/dxf/framework/schstatus` 显示该区域�
 - 若扩大版本 schema，应新增版本常量并让构造方显式选择版本；不能只添加字段却继续假设 `Version1` 消费者一定理解它。
 - 性能上，`Status::String` 会克隆所有字段，忙碌节点很多时成本与完整状态大小成正比。若要优化，必须先证明不会改变输出与原对象隔离，并添加大列表等价测试；不能通过原地截断换取性能。
 - crate API 或依赖变化还需同步 `Cargo.toml` 及直接消费者 manifest；本次文档任务未更改任何代码或 Cargo 配置。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/dxf/framework/schstatus` 确认同目录 8 个 Rust/Go 源与测试文件；`node --file pkg/dxf/framework/schstatus/status.rs --offset 1 --limit 260` 和后续 251 行读取覆盖完整 269 行源码；`query` 确认 `TaskQueue`、`Node`、`NodeGroup`、`TTLInfo`、`TTLFlag`、`Status` 及四个 serde 适配函数。精确 `callers` 查询超时并被中止，未作为完成证据。
-- 生产源码：[`status.rs`](status.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、`pkg/dxf/framework/handle/status.rs`、`pkg/dxf/framework/storage/nodes.rs`、`pkg/dxf/framework/handle/handle.rs`、`pkg/dxf/framework/scheduler/lib.rs`。
-- Go 对照：[`status.go`](status.go)、`pkg/dxf/framework/handle/status.go`、`pkg/server/handler/tikvhandler/dxf.go`。
-- 独立测试：[`status_test.rs`](status_test.rs)、[`status_test.go`](status_test.go)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，并参考 `pkg/dxf/framework/handle/status_testkit_test.rs` 验证生产构造结果与过期标志行为。
-- 人工复核结论：本文件存在的理由是集中维护 DXF 调度状态的跨语言数据/JSON 契约；运行时由 handle 层组装值、由 serde 或两个 `String` 方法输出；安全扩展必须同时维护 Go 对照、构造方和独立契约测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构验证命令与退出码在交付时记录。

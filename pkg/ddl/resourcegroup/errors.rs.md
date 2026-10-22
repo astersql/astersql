@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`errors.rs` 是 `astersql-ddl-resourcegroup` crate 的资源组转换错误定义层。crate 根模块 `pkg/ddl/resourcegroup/lib.rs` 以 `pub mod errors; pub use errors::*;` 将本文件公开到 crate 根；相邻的 `group.rs` 在将 `meta_model::ResourceGroupSettings` 转为 Resource Manager protobuf 时返回这些错误。`pkg/ddl/resourcegroup/Cargo.toml` 声明该 crate 直接依赖 `thiserror = "2"`，本文件正是该依赖的使用点。
-
-这不是 DDL job 状态机或持久化层，而是输入校验/转换的值类型错误边界。当前 Rust 工作区中，主要实际消费者是 `pkg/ddl/resourcegroup/group.rs::NewGroupFromOptions` 以及独立测试；虽然 `pkg/ddl/Cargo.toml` 在 Windows 目标依赖中列出该 crate，精确搜索未找到 DDL Rust 主链对这些符号的生产调用，因此不应将 Go DDL 接线当作已完成的 Rust 接线。
+通过每个变体上的 `#[error("...")]` 产生稳定的 `Display` 文案并实现标准 `std::error::Error`。
 
 ## 核心职责
 
@@ -71,10 +69,6 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/resourcegroup/errors.go` 定义了同名的 9 个 `errors.New(...)` 变量；Rust 的 9 个枚举变体和 `Err...` 常量与它们在名称和文案上一一对应。`pkg/ddl/resourcegroup/group.go::NewGroupFromOptions` 与 Rust 的 `group.rs::NewGroupFromOptions` 使用同样的七类转换错误，并保持空设置、名称长度、Runaway 规则以及 RU/Raw 冲突的判定顺序。
-
-Go 回归 `pkg/resourcegroup/tests/resource_group_test.go::TestNewResourceGroupFromOptions` 覆盖空设置、RU 正常路径、Raw 未支持、重复模式、超长名称和空 SwitchGroup 目标；Rust 的 `pkg/ddl/resourcegroup/migration_aster_unit_test.rs` 与 `pkg/resourcegroup/tests/resource_group_test.rs` 对应验证错误变体、顺序和文案。
-
 已知接线差异是：Go `pkg/ddl/executor.go::DropResourceGroup` 在删除默认保留组时直接返回 `ErrDroppingInternalResourceGroup`；当前 Rust 侧只定义了对应变体/常量并验证文案，未找到生产调用。`ErrInvalidResourceGroupFormat` 在当前 Go/Rust `group` 转换函数中也没有返回点，属于保留的兼容符号。
 
 ## 扩展指南
@@ -85,13 +79,3 @@ Go 回归 `pkg/resourcegroup/tests/resource_group_test.go::TestNewResourceGroupF
 - 如果 Go 对照也变更，同步检查 `pkg/ddl/resourcegroup/errors.go`、`group.go` 和 `pkg/resourcegroup/tests/resource_group_test.go::TestNewResourceGroupFromOptions`。
 - 若变体需要携带字符串、下游错误或其他非 `Copy` 数据，需重新评估 `Copy` 派生、公开常量形式、相等性语义和上游模式匹配；这是 API 兼容风险，不应为方便附加文案而轻率改动。
 - 当错误真正进入 DDL Rust 主链时，应另行验证上层如何将其映射为 SQL 错误，不能仅依赖本文件的 `Display` 文案。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引，目标目录列出 `errors.rs` 的 2 个顶层符号；`query ResourceGroupError` 定位到 `pkg/ddl/resourcegroup/errors.rs:30`。
-- RustCodeGraph `node pkg/ddl/resourcegroup/errors.rs::ResourceGroupError` 核对了 9 个变体及其文案；该枚举无 callers/callees 函数边，符合纯数据类型的实现。
-- RustCodeGraph `callers pkg/ddl/resourcegroup/group.rs::NewGroupFromOptions` 找到 `migration_aster_unit_test.rs::ru_mode_matches_go_protobuf_shape`、`runaway_and_background_settings_match_go_fields` 以及 `pkg/resourcegroup/tests/resource_group_test.rs` 的跨 crate 测试；`callees` 列出 `runaway_action` 和 `runaway_watch_type`。常量/变体的引用边未由图查询返回，因此用精确 `rg` 补齐。
-- 已读 Rust 源与边界：`pkg/ddl/resourcegroup/errors.rs`、`group.rs`、`lib.rs`、`Cargo.toml`。
-- 已读 Rust 测试：`pkg/ddl/resourcegroup/migration_aster_unit_test.rs`、`pkg/resourcegroup/tests/resource_group_test.rs` 及其 `Cargo.toml`。
-- 已读 Go 对照与测试：`pkg/ddl/resourcegroup/errors.go`、`group.go`、`pkg/resourcegroup/tests/resource_group_test.go::TestNewResourceGroupFromOptions`；并用 `pkg/ddl/executor.go::DropResourceGroup` 核对保留组删除错误的 Go 生产接线。
-- 本任务为纯文档分析，按计划不运行 Cargo；验收依靠源码/调用边事实核对与 11 章结构检查。

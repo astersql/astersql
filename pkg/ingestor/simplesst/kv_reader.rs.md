@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-simplesst` crate；crate 入口 `pkg/ingestor/simplesst/lib.rs` 通过 `pub mod kv_reader` 暴露该模块。它位于 ingest 的简化 SST 数据读取链上，把 writer 产生的连续字节流解析为一条条键值记录，主要供 `pkg/ingestor/simplesst/iter.rs` 的 `MergeKVIter` 多路归并使用，也被 writer/file 的独立测试用于回读产物。
-
-文件线格式与 Go 同路径实现一致：每条记录是 `<key-len><value-len><key><value>`，两个长度均为 8 字节大端 `u64`。这里的 “SST” 是 simplesst 自有的顺序 KV 文件格式；本文件不负责 RocksDB SST 构建、键排序、去重或统计属性解析。
-
-`pkg/ingestor/doc.go` 将该子系统定位为 ingest 所需的编码 KV 排序与外部存储归并工具。当前 Rust crate 的 `Cargo.toml` 记录 Go 包来源为 `pkg/ingestor/simplesst`；其路径依赖只在 `cfg(windows)` 下声明，而本文件实际只直接依赖 crate 内的 `ByteReader`、`MemoryStorage`、`Error` 和 `Result`。
+`KVReader::next_kv` 精确读取两个长度头和记录正文，检查长度加法与平台 `usize` 转换，返回拥有所有权的 `(Vec<u8>, Vec<u8>)`。
 
 ## 核心职责
 
@@ -89,12 +85,6 @@ RustCodeGraph 的文件查询显示该文件被 `iter.rs`、`file_test.rs`、`it
 
 ## 与 Go 版本的对应关系
 
-共同语义：
-
-- `DefaultReadBufferSize` 均为 64 KiB，构造时均把用户缓冲分为三份并保证每份至少 1 字节。
-- 记录格式、两个大端 `u64` 长度头、首头 EOF 表示结束、记录内部 EOF 表示截断，以及并发模式切换/关闭入口均对应 `pkg/ingestor/simplesst/kv_reader.go`。
-- Rust 的 Go 风格别名保留了迁移期间的 API 名称，核心逻辑集中在 snake_case 方法中。
-
 当前差异：
 
 - Go `NewKVReader` 接收 `context.Context` 和通用 `storeapi.Storage`，通过 storage reader 从偏移流式读取；Rust 接收 `MemoryStorage`，先克隆完整对象，没有 context、远端存储或文件大小查询接口。
@@ -114,14 +104,3 @@ RustCodeGraph 的文件查询显示该文件被 `iter.rs`、`file_test.rs`、`it
 - 若调整 EOF 规则，必须保持“记录边界 EOF”和“记录内部 UnexpectedEOF”的区分，并同步 `file_test.rs::test_kv_reader_rejects_truncated_record_body`、正常读尽用例及 Go `file_test.go`/`iter_test.go` 对照行为。
 - 若调整并发阈值或切换时机，修改责任主要在 `byte_reader.rs` 与 `iter.rs::rebalance_hotspot`；本文件应继续只做受检委托。同步测试 `iter_test.rs::test_read_after_close_conn_reader` 及热点切换测试。
 - 性能关注点包括整对象克隆、每条记录正文分配以及 key/value 二次复制；任何优化都应同时验证小缓冲、跨预取块、初始偏移和关闭后读取，且不得用零复制改变现有拥有所有权的 API 而不评估调用方。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/ingestor/simplesst` 找到目标及同目录 Go/Rust 测试；`node --file pkg/ingestor/simplesst/kv_reader.rs --offset 1 --limit 260` 核对了全部 210 行、主要符号及“被 8 个文件使用”的文件级关系。精确 callers/callees 未返回边，故调用点由后续源码搜索核验。
-- 目标实现：`pkg/ingestor/simplesst/kv_reader.rs` 的 `KVReader`、`new`、`from_storage`、`next_kv`、并发委托、别名、`no_eof` 和 `NewKVReader`。
-- crate/模块边界：`pkg/ingestor/simplesst/Cargo.toml`、`pkg/ingestor/simplesst/lib.rs`，以及子系统定位 `pkg/ingestor/doc.go`。
-- 下游实现：`pkg/ingestor/simplesst/byte_reader.rs` 的精确读取、1 GiB 上限、EOF、偏移、并发模式与关闭行为；`pkg/ingestor/simplesst/lib.rs` 的 `MemoryStorage`、`Error` 和 `Result`。
-- 上游主链：`pkg/ingestor/simplesst/iter.rs` 的 `MergeKVIter::new_with_options`、`next`、`rebalance_hotspot`、`close` 和 `reader_concurrent_mode`。
-- Rust 独立测试：`pkg/ingestor/simplesst/file_test.rs`（正常往返、正常 EOF、截断正文、缓冲大小 1/2/3/7/31）、`onefile_writer_test.rs` 与 `writer_test.rs`（存储产物回读）、`iter_test.rs`（退出并发态后 EOF 与热点模式）。
-- Go 对照：`pkg/ingestor/simplesst/kv_reader.go`；相关 `file_test.go`、`onefile_writer_test.go`、`writer_test.go`、`byte_reader_test.go`、`iter_test.go` 用于核对随机缓冲、正常 EOF、并发切换和资源清理意图。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务文件规定的 11 章节结构校验，并人工复核本文没有把注释草案或 Go 的真实对象存储能力写成当前 Rust 已支持事实。

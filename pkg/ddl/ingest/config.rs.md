@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`config.rs` 属于 `astersql-ddl-ingest` crate；crate 入口 `pkg/ddl/ingest/lib.rs` 以公开模块 `pub mod config` 暴露它。该 crate 对应 Go 包 `pkg/ddl/ingest`，用于 DDL reorg/backfill 的本地 ingest 加速路径：索引等键值先在本地排序，再批量导入存储层。仓库 DDL 入口文档 `docs/agents/ddl/03-reorg-backfill.md` 将该目录定位为 Lightning 风格的 ingest 加速实现，而不是 DDL job、schema state 或 checkpoint 的持久化驱动层。
-
-当前 Rust 文件是一组配置数据与纯计算辅助函数。RustCodeGraph 的文件节点显示它直接被 `pkg/ddl/ingest/backend_mgr.rs` 和 `pkg/ddl/ingest/config_test.rs` 使用；源码搜索进一步确认，生产代码目前只引用 `IngestConfig` 类型，配置生成、内存调整、引擎配置和重要变量函数尚未接入 Rust 生产主链。因此本文描述的是现有部分移植状态，不能据此声称 Rust ingest 已具有 Go 版本的完整配置能力。
+`default_important_variables` 提供可能影响 KV 编码结果的系统变量缺省值。
 
 ## 核心职责
 
@@ -77,16 +75,12 @@ Rust 当前实际生产调用只到 `BackendContextBuilder::build(config, ...)`�
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/ddl/ingest/config.go`：
-
 - Rust `generate_config` 对应 Go `genConfig` 的一小部分。两者都有 `2 * concurrency` worker、原始 concurrency/range、512 MiB 引擎缓存、128 MiB writer 缓存和排序路径；Rust 省略 Go 的 context、资源组、keyspace、写速率、重复检测、global sort、checkpoint、TiKV 检查和大量 Lightning 参数，并固定最大打开文件数为 1024。Go `genConfig` 还会立即调用 `adjustImportMemory`，Rust `generate_config` 不会。
 - Rust `cop_read_batch_size` 对应 Go `CopReadBatchSize`。正提示语义相同；Rust 零值固定使用 `10 * 256`，Go 则读取动态的 `vardef.GetDDLReorgBatchSize()` 后乘十，所以运行期变量变化不会反映到 Rust。
 - Rust `generate_local_engine_config` 对应 Go `generateLocalEngineConfig` 的字段子集，用字符串 map 表达 Go 的强类型 `backend.EngineConfig`。核心默认值一致，但 Rust 没有构造空 `TableInfo`。
 - `adjust_import_memory` 与 `try_aggressive_memory` 保留 Go 的两套内存公式、整数缩放规则和不消费 `MemRoot` 的行为。Rust 省略 `context.Context` 和调整日志，并使用 wrapping 算术。
 - `default_important_variables` 的八组键值与 Go `defaultImportantVariables` 一致；Go 在 `backend_mgr.go` 创建 backend context 时传入该 map，Rust 当前没有生产调用。
 - Go `backend_mgr.go:CreateLocalBackend` 已调用 `genConfig`，并把配置传给 `ingestctrl.NewBackend`；Rust `BackendContextBuilder::build` 目前忽略 `IngestConfig`。这是一项明确的迁移缺口，而不是等价接线。
-
-相关 Rust 单元测试在独立文件 `pkg/ddl/ingest/config_test.rs`，验证默认值、批大小分支、本地引擎字段、激进检查不记账和整数缩放规则。限定搜索未发现 Go `*_test.go` 对这些私有函数的直接测试，因此当前细粒度回归证据主要来自 Rust 测试及 Go 生产实现本身。
 
 ## 扩展指南
 
@@ -96,12 +90,3 @@ Rust 当前实际生产调用只到 `BackendContextBuilder::build(config, ...)`�
 - 若使 `try_aggressive_memory` 保持只读，应考虑把参数收窄为 `&IngestConfig`；这是 API 兼容性变化，必须先检查仓库外调用者。若未来让它预留额度，则必须明确回滚/释放生命周期并处理并发竞态。
 - 增加本地引擎键或重要系统变量时，应同时核对 Go 的强类型结构/变量清单、消费层解析规则以及 KV 编码兼容性；不要依赖 `BTreeMap` 的遍历顺序传达语义。
 - 性能风险集中在并发倍增、缓存缩放、cop batch 大小和 compact 参数；兼容风险集中在系统变量默认值、动态 DDL reorg batch 与 Go/Rust 配置字段缺失。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/ddl/ingest/config.rs`、`pkg/ddl/ingest/lib.rs`、`pkg/ddl/ingest/Cargo.toml`、`pkg/ddl/doc.go`。
-- 直接生产证据：`pkg/ddl/ingest/backend_mgr.rs` 的 `BackendContextBuilder::build`；内存接口证据：`pkg/ddl/ingest/mem_root.rs` 的 `MemRoot` 与 `MemRootImpl`。
-- Go 对照：`pkg/ddl/ingest/config.go` 的 `genConfig`、`CopReadBatchSize`、`generateLocalEngineConfig`、`adjustImportMemory`、`tryAggressiveMemory`、`defaultImportantVariables`，以及 `pkg/ddl/ingest/backend_mgr.go` 的 `CreateLocalBackend` 和 backend context 创建路径。
-- 测试证据：`pkg/ddl/ingest/config_test.rs` 的五个独立单元测试；没有把测试逻辑内嵌进生产源文件。
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/ddl/ingest/config.rs` 命中一文件；文件 `node` 显示 133 行、10 个符号以及两个直接使用文件；`query` 核对主要类型和函数。`callers/callees` 在本机索引查询超时，调用边由文件节点与限定源码搜索交叉核实。
-- 人工复核结论：该文件存在于 DDL ingest 配置边界；当前能运行的是纯配置计算，生产侧仅有类型参数接线且未消费；安全扩展必须同时补消费链和独立测试，不能把 Go 的完整行为视为 Rust 现状。

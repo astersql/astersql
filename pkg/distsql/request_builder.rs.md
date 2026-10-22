@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-distsql` crate。crate 入口 [`lib.rs`](./lib.rs) 通过 `pub mod request_builder` 公开该模块；[`Cargo.toml`](./Cargo.toml) 的 `[lib] path = "lib.rs"` 确认了这一边界。它位于 SQL 执行层与 KV 客户端之间：上游把 DAG、Analyze 或 Checksum 的序列化载荷、扫描范围和会话选项写入 `RequestBuilder`，`Build` 产出 `KvRequest`；下游 [`distsql.rs`](./distsql.rs) 中的 `Select`、`Analyze`、`Checksum` 再把该值交给 `KvClient::send` 或 `send_with_options`。
-
-文件只负责“描述和编码请求”，不发送 RPC、不切分 Region，也不消费响应。`lib.rs` 还定义了一个 API 和约束均不同的包级简化 `RequestBuilder`；本文只讨论 `request_builder` 模块中的完整版，二者不能混用。
+`RequestBuilder` 以链式 setter 收集请求类型、载荷、key ranges、MVCC 时间戳、扫描方向、并发、存储类型、作用域、资源组和批处理控制，并在 `Build` 中生成可发送的 `KvRequest`。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ range 编码是另一条独立流程：`encode_i64` 翻转符号位后使用大�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`request_builder.go`](./request_builder.go)，测试对照为 [`request_builder_test.go`](./request_builder_test.go)。Rust 保留了 Go 的主要形状：链式 setter、构造后 `Build`、Analyze/Checksum 不填 cache、会话并发为上限、table/index key 前缀、连续 handle 合并及 hints、txn scope 校验，以及三个批处理控制字段。
-
 当前 Rust 并非 Go 的等价完整移植，重要差异包括：
 
 - Rust 载荷 setter 接收已经序列化的 `Vec<u8>`；Go 接收 tipb protobuf 并在 builder 内 Marshal，还会分析 DAG executor、limit 和默认并发。
@@ -89,8 +85,6 @@ range 编码是另一条独立流程：`encode_i64` 翻转符号位后使用大�
 - Go `BuildTableRanges` 根据 `TableInfo` 展开分区和 public/global index；Rust 按调用方传入的单表 ID 与 index IDs 机械生成前缀范围。
 - Go 只在测试模式检查 builder 重用，且失败返回策略与 Rust 不完全一致；Rust 在所有构建中都拒绝成功后的重用。
 
-因此扩展 Rust 时应以 Go 行为和现有 Rust 独立测试共同约束，不能因为当前接口更简单就推断缺失能力已经由其他层实现。
-
 ## 扩展指南
 
 - 新增请求元数据时，应同时修改 `RequestBuilder` 暂存字段、对应 setter、`KvRequest` 字段和 `Build` 的复制/default 逻辑；若发送入口会覆盖字段，还要核对 `distsql.rs`。
@@ -99,11 +93,3 @@ range 编码是另一条独立流程：`encode_i64` 翻转符号位后使用大�
 - 修改 key 编码前必须同步核对 `request_builder.go` 中 `encodeHandleKey`、`TableHandlesToKVRanges`、`PartitionHandlesToKVRanges`、`EncodeIndexKey` 和 `BuildTableRanges`；重点回归开闭端点、空区间、`i64::MAX`、跨分区连续值、common handle、多表展开和 prefix-next 全 `0xff` 情况。
 - 启用 `estimatedRegionRowCount` 相关优化时，应复刻 Go 对 DAG executor/Limit/IndexLookup 的判定，而不是仅凭 range 数量简化。
 - 需要补测试时优先扩展同目录独立文件 `request_builder_test.rs`；跨发送边界的字段再扩展 `distsql_test.rs`。Go 对照回归在 `request_builder_test.go`，但本纯文档任务未运行这些测试。
-
-## 验证依据
-
-- 完整读取：`pkg/distsql/request_builder.rs`（661 行）、`pkg/distsql/request_builder_test.rs`、`pkg/distsql/request_builder.go`、`pkg/distsql/request_builder_test.go`、`pkg/distsql/Cargo.toml`、`pkg/distsql/lib.rs`、`pkg/distsql/distsql.rs` 及相关 `pkg/distsql/distsql_test.rs` 片段。目标包不存在 `doc.go`。
-- RustCodeGraph：`rustcodegraph status` 显示项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；但针对目标路径的 `explore` 无输出，`files --filter pkg/distsql/request_builder` 返回无匹配，故没有把缺失图边当成“无调用者”。
-- 源码搜索：符号枚举确认本文件的全部公开类型、trait、函数、setter 和私有编码辅助；仓库范围调用搜索确认 `distsql.rs` 消费 `KvRequest`，`lib.rs` 公开模块，两个独立 Rust 测试文件覆盖构造与发送边界。
-- 测试证据（仅阅读，未执行）：`request_builder_test.rs` 覆盖连续 handle 合并、分区隔离、开闭端点与空范围、多表索引展开、零值构建、请求字段透传、Analyze/Checksum cache 语义、会话并发上限、单次使用、txn scope、signed/unsigned 顺序、整表范围及 limiter/批处理字段。
-- 任务是纯文档分析，按计划未运行 Cargo、Rust 或 Go 测试。交付结构检查要求本文恰有 11 个指定二级标题；最终还应检查只新增本文档且没有修改源代码、Cargo 或只读 `plan.md`。

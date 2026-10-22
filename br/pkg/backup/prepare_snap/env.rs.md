@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`env.rs` 是 `astersql-br-pkg-backup-prepare-snap` library crate 的环境与协议适配层。crate 入口 `br/pkg/backup/prepare_snap/lib.rs` 以 `pub mod env` 挂载并 `pub use env::*` 重导出本文件；`Cargo.toml` 将该 crate 映射到 Go 包 `br/pkg/backup/prepare_snap`，但当前 `[dependencies]` 为空。
-
-它位于 `prepare.rs` 状态机与 PD、TiKV、RegionCache、StoreManager、PrepareSnapshot 双向流之间。`prepare::Preparer` 持有 `Arc<dyn Env>`，在 `PrepareConnections` 中枚举并连接 store，在 `workOnPendingRanges` 中重新装载 region，在 `streamOf` 中懒建流。本文件因此定义主流程所依赖的边界，而不负责 WaitApply 完成判定、lease 驱动或 Finalize。
-
-当前 Rust 文件没有接入真实 `kvproto`、`tikv-client` 或 gRPC 依赖；协议结构、上下文和外部客户端均为 crate 内本地抽象。Go 生产入口 `br/pkg/task/operator/prepare_snap.go` 会构造真实 `CliEnv` 和 `RetryAndSplitRequestEnv`，当前 Rust 对应文件 `br/pkg/task/operator/prepare_snap.rs` 则使用 `stubs::NewPreparer`，没有直接依赖本 crate。故这里已经具备可测试的控制流语义，但不能据此宣称 Rust 运维入口已经完成真实集群接线。
+提供 `Context`/`CancelFunc` 的最小取消传播模型，供连接重试和上层状态机检查取消。
 
 ## 核心职责
 
@@ -102,8 +98,6 @@
 
 ## 与 Go 版本的对应关系
 
-`Env`、`PrepareClient`、`SplitRequestClient`、`Region`、`CliEnv`、`gRPCGoAdapter` 和 `RetryAndSplitRequestEnv` 均直接对应 `br/pkg/backup/prepare_snap/env.go` 的同名概念。1 MiB 阈值、仅拆 `WaitApply`、独立 send/recv 锁、过滤 TiFlash、空 end key 替换以及默认 10 秒重连退避均保持 Go 意图。
-
 主要差异如下：
 
 - Go `CliEnv` 持有真实 `*tikv.RegionCache` 和 `*utils.StoreManager`；Rust 改为可注入 trait，并使用本地协议结构。
@@ -123,12 +117,3 @@ Go `prepare_test.go::TestRetryEnv` 与 Rust `prepare_test.rs::test_retry_env` �
 - 修改重试或取消语义应同步覆盖零次数、多错误顺序、失败后取消、等待中取消和默认策略可终止性。若改成异步 runtime，需重新审视阻塞 sleep 与 trait 的 `Send + Sync` 边界。
 - 扩充 `Context` 时应明确 deadline、value、取消原因以及父子传播方向，不能悄悄改变当前 `context canceled` 文案和“返回累计业务错误”的 `WithRetryV2` 契约。
 - 将本 crate 接到 `br/pkg/task/operator/prepare_snap.rs` 属于跨 crate 生产接线，需要另行核对 Cargo 依赖、真实网络资源回收和完整运维流程；本文件现状不能作为该接线已完成的证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`node --file br/pkg/backup/prepare_snap/env.rs` 读取了目标文件 1–669 行；`query Env`、`query WithRetryV2` 定位到本文件符号；`explore` 给出 `Env`、取消与 prepare 测试调用面。精确 `callers/callees` 命令在本地超时且无输出，随后用限定在 `br/pkg/backup/prepare_snap` 的 `rg` 补齐直接调用边。
-- 源与 crate 边界：`br/pkg/backup/prepare_snap/env.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 上游与测试：`prepare.rs` 的 `Preparer`/`PrepareConnections`/`workOnPendingRanges`/`streamOf`；`env_test.rs`；`prepare_test.rs` 的 `test_retry_env`、`test_split_env`、取消/TiFlash/多错误测试；`parity_test.rs` 的拆包与重试契约。
-- Go 对照：`br/pkg/backup/prepare_snap/env.go`、`prepare.go`、`prepare_test.go`；生产接线对照 `br/pkg/task/operator/prepare_snap.go`。
-- Rust 生产接线限制：`br/pkg/task/operator/prepare_snap.rs` 与根 `Cargo.toml` workspace 成员记录。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证要求文档存在且恰有十一个规定的二级标题。

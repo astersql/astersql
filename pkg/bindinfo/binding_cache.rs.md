@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-bindinfo` crate；`pkg/bindinfo/lib.rs` 以私有模块 `binding_cache` 装配它，并通过 `pub use binding_cache::*` 把公开接口重新导出。它位于绑定持久化与 SQL 匹配路径之间：全局路径由 `binding_handle.rs::NewBindingHandle` 创建 `BindingCacheUpdater`，写操作由 `binding_operator.rs` 触发重新加载；会话路径由 `session_handle.rs::NewSessionBindingHandle` 直接创建不设实际上限的 `BindingCache`。
-
-`pkg/bindinfo/Cargo.toml` 声明该 crate 的 Go 对照包为 `pkg/bindinfo`。缓存文件自身只直接使用标准库集合与同步原语；SQL 解析、摘要和绑定结构由同 crate 的 `binding.rs` 提供，持久化边界和使用信息回写由 `utils.rs` 提供。
+定义 `BindingCache`，提供按完整 SQL digest 精确访问、按 no-DB digest 跨库匹配、容量调整、占用统计和关闭清理。
 
 ## 核心职责
 
@@ -90,7 +88,6 @@
 - Go 底层使用 Ristretto，带异步缓冲、准 LRU/准入策略、淘汰/拒绝回调、指标和关闭标志；Rust 使用同步 `HashMap + VecDeque` FIFO，写入操作完成时结果已可见，无淘汰日志或指标副作用，`Close` 后可复用。
 - Go 增量加载会读取全局动态配额、应用 10 秒时钟偏差容忍、记录日志与 Prometheus 指标；Rust直接以精确水位线调用抽象存储，`fromRemote` 与 `memQuota` 未发挥作用。
 - Go 的使用信息回写检查全局开关并捕获 panic；Rust直接调用 `utils.rs::updateBindingUsageInfoToStorage`，没有本文件级开关或 panic 恢复。
-- Go 的 Ristretto 淘汰可能让摘要映射暂时含有已经不存在的缓存键，并在匹配时跳过 miss；Rust 的同步淘汰立即清理索引，目标是不保留这类不一致窗口。
 - Rust `digestBiMapImpl::Add` 在已有 SQL digest 改映射时会从旧 bucket 移除它，比 Go 当前只覆盖反向映射更严格地维护双向一致性；`All` 和 `GetAllBindings` 还额外排序以提供确定性结果。
 - 构造参数也不同：Go 更新器接受会话池并从全局变量取配额，Rust接受 `BindingStore` 与显式容量；这是 Rust 持久化适配边界的设计，不应与 Go 的会话池实现混用。
 
@@ -104,14 +101,3 @@
 - 若补齐 Go 的动态配额、时钟容忍、指标、日志、使用信息开关或关闭语义，应明确新增适配接口，而不是复用当前未使用的 `memQuota` 字段制造隐式行为；同时核对 Go 测试 `TestBindCache`、`TestBindingCacheEvictLog` 的原始意图。
 - 调整返回类型或可变性时要审查所有 `Arc<Binding>` 持有者。现有 API 返回共享对象，不能假设淘汰或关闭会使调用者手中的绑定立即失效。
 - 测试继续放在同目录独立文件 `pkg/bindinfo/binding_cache_test.rs`，并由 `lib.rs` 的 `#[cfg(test)]` 模块声明接入，不要把测试逻辑放回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引覆盖 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/bindinfo` 找到目标 Rust/Go 源与独立测试。
-- RustCodeGraph 文件/符号证据：完整读取 `binding_cache.rs` 451 行；`explore` 确认 `NewBindingCacheUpdater <- NewBindingHandle`、`newBindingCache <- NewBindingCacheUpdater/NewSessionBindingHandle`，以及 `SetBinding`、`RemoveBinding`、`MatchingBinding`、`evict_to_capacity` 的内部调用关系。
-- crate 与装配证据：`pkg/bindinfo/Cargo.toml`、`pkg/bindinfo/lib.rs`。
-- 下游语义证据：`pkg/bindinfo/binding.rs::{noDBDigestFromBinding, crossDBMatchBindings, pickCachedBinding}`，`pkg/bindinfo/utils.rs::{BindingStore, updateBindingUsageInfoToStorage}`。
-- 上游入口证据：`pkg/bindinfo/binding_handle.rs::NewBindingHandle`、`pkg/bindinfo/binding_operator.rs`、`pkg/bindinfo/session_handle.rs::NewSessionBindingHandle`。
-- Rust 测试证据：`pkg/bindinfo/binding_cache_test.rs` 覆盖双向索引增删与去重、重复写入占用不增长、非法 SQL 原子拒绝、缩容 FIFO 淘汰和关闭清空。
-- Go 对照证据：`pkg/bindinfo/binding_cache.go` 全文件及 `pkg/bindinfo/binding_cache_test.go::{TestCrossDBBindingCache, TestDuplicatedBinding, TestBindCache, TestBindingCacheEvictLog}`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构检查并人工复核上述事实。

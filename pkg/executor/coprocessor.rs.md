@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/executor/lib.rs` 以 `pub mod coprocessor` 公开。它是 TiDB/AsterSQL 进程内的本地 Coprocessor DAG 处理器：将序列化 DAG 请求转换为物理执行器，拉取结果，再以 unary 或 stream 响应形式编码。
-
-实现不直接依赖 protobuf、会话、权限、规划器或具体 chunk 类型，而是通过 `CoprocessorBackend`、`DagExecutor`、`CopChunk` 和 `CoprocessorStream` 四个 trait 定义边界。这使文件内保留了 Go 主流程，但实际类型适配与系统接线必须由其他模块提供。当前代码搜索和 RustCodeGraph 均未找到 `CoprocessorDAGHandler` 的 Rust 外部调用者，因此它是已公开但尚未证明接入 Rust RPC 主链的移植实现，不应解读为已在生产路径运行。
+TiDB/AsterSQL 进程内的本地 Coprocessor DAG 处理器：将序列化 DAG 请求转换为物理执行器，拉取结果，再以 unary 或 stream 响应形式编码。
 
 ## 核心职责
 
@@ -72,13 +70,8 @@ unary 执行器的理想生命周期是 build -> open -> 多次 next -> close，
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/executor/coprocessor.go`，名称和流程高度一致：`copHandlerCtx`、`CoprocessorDAGHandler`、`NewCoprocessorDAGHandler`、`HandleRequest`、`HandleStreamRequest`、`buildDAGExecutor`、`buildChunk`、两种 encode 和 `appendRow` 均可逐段对照。Rust 以 trait 方法替代 Go 的具体 API：
+Rust 以 trait 方法替代 Go 的具体 API：
 
-- Go `proto.Unmarshal` / `proto.Marshal` 对应 backend 的 decode/marshal 方法。
-- Go `privilege.GetPrivilegeManager`、`MatchIdentity`、`GetDefaultRoles` 对应 backend 权限方法组。
-- Go `timeutil.ConstructTimeZone`、`StmtCtx.InitFromPBFlagAndTz` 对应 `construct_time_zone` 与 `set_time_zone_and_statement_flags`。
-- Go `core.NewPBPlanBuilder(...).Build`、`core.InjectExtraProjection`、`newExecutorBuilder(...).build` 对应三个计划/执行器 backend 边界。
-- Go `exec.Open/Next/Close`、`TryNewCacheChunk`、`RetFieldTypes` 对应 `DagExecutor` trait。
 - Go `codec.EncodeValue` 会通过 statement error context 处理编码错误；Rust 将这一语义整体交给 `CoprocessorBackend::encode_value`，因而 backend 实现必须保留时区与 error-context 行为才能达到完整对齐。
 
 已保留的关键语义包括：只支持 DAG 类型、权限管理器不存在时跳过认证填充、extra projection 注入、unary 内存记账、Default 每 64 行分块、Chunk 编码单块输出、空执行摘要占位、stream 终止空 chunk 和 `OtherError` 转换。差异是 Rust 把生产类型抽象掉，而且当前没有 Go `pkg/server/rpc_server.go` 那样的真实调用接线。
@@ -92,12 +85,3 @@ Rust 文件直接对应 `pkg/executor/coprocessor.go`，名称和流程高度一
 - 改进执行器清理时，首先明确与 Go 的兼容目标，然后为 unary Next/编码失败和 stream 成功/失败各增独立测试，避免 close 错误覆盖原始错误。
 - 建议新建同目录独立 `coprocessor_test.rs`（并在测试模块装配处引入），不要把测试写入生产文件。最小覆盖应包括：非 DAG 错误，解码/时区/计划失败，权限管理器缺失和身份匹配分支，两种编码，63/64/65 行分块，offset 投影，摘要数量，unary 内存记账，stream 终止帧和发送失败，Open/Next/Close/marshal 错误。
 - 与 RPC 层集成时还应扩展 `pkg/server/rpc_server_test.rs`，用真实适配而非 `TestExecutor` 证明请求类型转换、会话状态和响应编码已连通。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/coprocessor.rs` 全部 525 行，重点符号为 `copHandlerCtx`、`CoprocessorBackend`、`CoprocessorDAGHandler`、`HandleRequest`、`HandleStreamRequest`、`buildDAGExecutor`、`buildChunk`、`encodeDefault`、`encodeChunk` 和 `appendRow`。
-- crate 与模块：`pkg/executor/Cargo.toml` 确认 crate 名为 `astersql-executor` 且 library 入口为 `lib.rs`；`pkg/executor/lib.rs:86` 以 `pub mod coprocessor` 公开模块。
-- Go 对照：`pkg/executor/coprocessor.go` 全部 305 行；`pkg/server/rpc_server.go:131-132` 和 `:215-216` 提供 Go stream/unary 生产调用边。
-- Rust 相邻边界：`pkg/server/rpc_server.rs` 定义独立 `CoprocessorExecutor` 抽象；`pkg/server/rpc_server_test.rs` 只测试该 RPC 抽象和会话生命周期，不直接覆盖本 handler。全库搜索未找到本文件的独立 Rust 测试或外部实例化。
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/executor/coprocessor.rs` 报告该文件有 64 个符号。`query` 定位 Rust/Go 同名入口；`node --file` 用于阅读 Rust 与 Go 全文；`explore` 找到 handler 到上下文、executor 和 chunk 方法的内部边；精确 callers 对 Rust `HandleRequest` 返回空集，精确 callees 因泛型 trait 调用未给出边，本文档因而同时使用索引源码与 `rg` 接线搜索交叉核验。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收以十一个固定章节的结构检查与上述代码证据复核为准。

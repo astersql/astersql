@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate（见 `pkg/planner/core/Cargo.toml`），由 crate 根 `pkg/planner/core/lib.rs` 以私有模块 `mod stats` 挂载，并在 `pkg/planner/core/lib.rs` 通过 `pub use stats::*` 将其中的公开类型和函数重导出到 crate 根。它依赖同一 crate 的轻量计划树模型 `PlanKind` 与 `PlanNode`（定义于 `pkg/planner/core/common_plans.rs`、`:222`），提供一组统计摘要结构和确定性的简化推导函数。
-
-从当前调用证据看，它不是 Rust 规划器完整生产统计链路的实现：原有通用函数的直接测试证据位于 `pkg/planner/core/stats_test.rs`，新增 mlog API 另由 planner/mview 重导出并在 mview casetest 中使用。对应的 Go 文件 `pkg/planner/core/stats.go` 则接入真实逻辑计划、直方图、基数估计、range 构造和访问路径裁剪。因此，本文件当前更准确的角色是统计语义的轻量兼容模型与测试辅助层，而非 Go 实现的等价全量移植。
+提供 range 展示截断、路径最小选择率汇总和按过滤条件数估算数据源行数三个小型辅助函数（`stats.rs`）。
 
 ## 核心职责
 
@@ -90,15 +88,15 @@ Go 生产调用链明显更宽：`pkg/planner/core/stats.go` 的数据源推导�
 
 ## 与 Go 版本的对应关系
 
-`RecursiveDeriveStats4Test` 与 Go 同名入口只有“供测试触发递归推导”的意图一致。Go 版直接调用逻辑计划对象的 `RecursiveDeriveStats(nil)`，返回 `(*property.StatsInfo, bool, error)`（`pkg/planner/core/stats.go`）；Rust 版作用于轻量 `PlanNode`，采用本文件固定公式，且不返回错误。Go 的 `pkg/planner/core/casetest/stats_test.go` 使用该入口验证真实优化计划的 GroupNDV 传播；Rust 的 `pkg/planner/core/stats_test.rs` 只验证 Selection、Limit 和聚合的数值链路，测试名虽包含 Join，但当前测试体没有构造 Join。
+Go 版直接调用逻辑计划对象的 `RecursiveDeriveStats(nil)`，返回 `(*property.StatsInfo, bool, error)`（`pkg/planner/core/stats.go`）；Rust 版作用于轻量 `PlanNode`，采用本文件固定公式，且不返回错误。Go 的 `pkg/planner/core/casetest/stats_test.go` 使用该入口验证真实优化计划的 GroupNDV 传播；Rust 的 `pkg/planner/core/stats_test.rs` 只验证 Selection、Limit 和聚合的数值链路，测试名虽包含 Join，但当前测试体没有构造 Join。
 
 `getGeneralAttributesFromPaths` 是最接近逐分支移植的函数：Rust 与 Go 都在总行数为正时区分表/IndexMerge 路径和普通索引路径，取最小选择率，并独立汇总 `forced`（Rust `stats.rs`；Go `stats.go`）。Rust 用轻量 `StatsAccessPath` 替代 Go `util.AccessPath`。
 
-`deriveStatsByFilter` 仅保留“根据过滤条件更新数据源统计”的外形。Go 版通过 `cardinality.Selectivity` 结合会话、直方图、表达式和已填充路径估计选择率，失败时采用 `cost.SelectionFactor`，再缩放完整表统计（`stats.go`）；Rust 版只按条件个数应用固定 `0.8`。Rust 测试 `stats_test.rs` 固化了三条件得到 `0.512`、10000 行得到 5120 行的当前行为。
+Go 版通过 `cardinality.Selectivity` 结合会话、直方图、表达式和已填充路径估计选择率，失败时采用 `cost.SelectionFactor`，再缩放完整表统计（`stats.go`）；Rust 版只按条件个数应用固定 `0.8`。
 
 `pruneEstimateRange` 的名称和“保留前缀列”目的对应，但数据模型和正确性处理并不等价：Go 版处理 `ranger.Range`、边界包含性、collator、range 合并和错误；Rust 版只对 `Vec<String>` 做 `take(keep)`。Rust 测试 `stats_test.rs` 仅覆盖两个字符串 range 保留一个元素。
 
-`StatsInfo`、`StatsAccessPath`、`DataSourceStats` 也是轻量本地模型，不等同于 Go 的 `property.StatsInfo`、`util.AccessPath`、`logicalop.DataSource`。特别是 Go 统计包含直方图、版本、列唯一 ID 映射等生产信息（例如 `stats.go`），当前 Rust 结构未承载这些数据。迁移状态应描述为“局部语义覆盖”，不能声称 Go/Rust 完整对齐。
+特别是 Go 统计包含直方图、版本、列唯一 ID 映射等生产信息（例如 `stats.go`），当前 Rust 结构未承载这些数据。迁移状态应描述为“局部语义覆盖”，不能声称 Go/Rust 完整对齐。
 
 ## 扩展指南
 
@@ -109,11 +107,3 @@ Go 生产调用链明显更宽：`pkg/planner/core/stats.go` 的数据源推导�
 若目标是继续移植 Go 生产统计逻辑，不应在现有固定公式上直接宣称对齐。应先接入真实的逻辑计划、`property::StatsInfo`、基数估计、统计表和 ranger 类型，再逐段对照 `pkg/planner/core/stats.go` 的错误传播和不变量；尤其要保留 `TableStats.RowCount >= stats.RowCount >= CountAfterAccess` 的 Go 数据源语义说明（`stats.go`），以及 `pruneEstimateRange` 对开闭边界和重复前缀合并的处理。此类改动会影响规划正确性和性能，需要对应的独立 Rust 回归测试，并与 Go `pkg/planner/core/casetest/stats_test.go` 的真实计划测试意图对齐。
 
 性能方面，当前递归每个节点都会分配一个直接子统计 `Vec`，range 截断会克隆字符串，`deriveStatsByFilter` 会克隆统计向量。若计划树或 range 很大，可在保持行为与测试的前提下评估减少分配；不能通过删除 NDV 数据或跳过子节点推导来换取表面性能。
-
-## 验证依据
-
-本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/stats.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
-
-`stats_test.rs` 保留固定公式、路径选择率与 range 截断测试；`casetest/mview/mv_refresh_test.rs` 的 normalize、bound/selectivity、disjoint lower 与 derive stats 用例覆盖归一、反向条件、0.6 比例、回退下界不能证明空集及显式下界得到零选择率。
-
-RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

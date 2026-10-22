@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/errno/errname.rs`](./errname.rs) 属于 `astersql-errno` crate。该 crate 的入口是 [`pkg/errno/lib.rs`](./lib.rs)，其中以 `pub mod errname` 暴露本模块，并把 `astersql-parser-mysql` 的 `errname` 模块重导出为 `mysql`。因此，本文件位于“数字错误码定义”与“可供协议错误、日志和诊断使用的标准消息元数据”之间：键来自同 crate 的 [`errcode.rs`](./errcode.rs)，值的类型和构造器来自 `pkg/parser/mysql/errname.rs`。
-
-[`pkg/errno/Cargo.toml`](./Cargo.toml) 表明该 crate 没有 feature 分支，运行时仅直接依赖工作区路径依赖 `astersql-parser-mysql`；本文件也没有条件编译项。它保存 TiDB/AsterSQL 自有 errno 消息表，不应与 `pkg/parser/mysql/errname.rs` 中 parser/mysql 自己的默认消息表混为一张表。
+`mysql::Message` 在 `pkg/parser/mysql/errname.rs` 中仅把模板复制到 `ErrMessage.Raw`、把脱敏下标复制到 `ErrMessage.RedactArgPos`；真正的错误构造和输出发生在调用方。
 
 ## 核心职责
 
@@ -60,20 +58,12 @@ RustCodeGraph 能定位 `MySQLErrName`（`pkg/errno/errname.rs:42`），但当�
 
 ## 与 Go 版本的对应关系
 
-Go 对照是 [`pkg/errno/errname.go`](./errname.go) 的包级 `var MySQLErrName = map[uint16]*mysql.ErrMessage{...}`。Rust 保留相同的“错误码 → 模板与脱敏位置”模型和当前相同的 1,157 个表项，但做了语言层适配：Go 的包初始化改为首次访问的 `LazyLock`；Go 的 `*mysql.ErrMessage` 改为 map 内拥有的 `ErrMessage` 值；Go 的 `nil`/`[]int{...}` 改为 `&[]`/`&[...]`，随后由 `Message` 复制成 `Vec<usize>`。
+Rust 保留相同的“错误码 → 模板与脱敏位置”模型和当前相同的 1,157 个表项，但做了语言层适配：Go 的包初始化改为首次访问的 `LazyLock`；Go 的 `*mysql.ErrMessage` 改为 map 内拥有的 `ErrMessage` 值；Go 的 `nil`/`[]int{...}` 改为 `&[]`/`&[...]`，随后由 `Message` 复制成 `Vec<usize>`。
 
-[`errname_test.go`](./errname_test.go) 与 Rust 的 `errname_test.rs` 都从 `errcode.go` 提取 `ErrXxx = N`，验证消息覆盖与 `[8800, 8900)` 预留区间。Rust 另有 `errname_2_aster_unit_test.rs` 提供表规模和代表性内容回归。Go 和 Rust 的 map/`HashMap` 迭代顺序都不应成为契约；调用方应按 errno 查找，而不是依赖声明或遍历顺序。
+Go 和 Rust 的 map/`HashMap` 迭代顺序都不应成为契约；调用方应按 errno 查找，而不是依赖声明或遍历顺序。
 
 ## 扩展指南
 
 新增或调整 errno 时，最可能同时修改 [`errcode.rs`](./errcode.rs) 中的数值常量与本文件 `MySQLErrName` 初始化项，并同步同路径 Go 文件以保持移植语义。若消息含用户输入、键、SQL 或其他敏感字段，必须逐个核对 printf 参数顺序并为 `mysql::Message` 提供正确的零基 `RedactArgPos`；不能因为当前日志路径未使用某参数就省略脱敏元数据。
 
 测试逻辑应继续放在独立文件，而不是嵌入 `errname.rs`：覆盖性/预留区间更新放在 `errname_test.rs`，具体消息和脱敏回归放在 `errname_2_aster_unit_test.rs`，并同步 `errname_test.go` 或相应 Go 测试。安全扩展至少检查：错误码不冲突且不进入预留区、表中存在键、模板文本/占位符兼容、敏感参数位置准确、现有直接索引调用不会遇到缺键。表规模增长会增加首次访问时的分配和构建成本，但稳态读取不引入重复初始化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引可用（11,467 files）；`files --filter pkg/errno` 确认 Rust/Go 源与测试均在索引中；`query MySQLErrName --json` 和 `node pkg/errno/errname.rs::MySQLErrName` 定位公开静态量；`node --file pkg/errno/errname.rs --offset 1 --limit 260` 核对声明与初始化开头。图索引未产出可靠 callers 边，已明确记录限制并用源码搜索补证。
-- 源与 crate 边界：`pkg/errno/errname.rs`、`pkg/errno/errcode.rs`、`pkg/errno/lib.rs`、`pkg/errno/Cargo.toml`、`pkg/parser/mysql/errname.rs`。
-- Rust 调用证据：`pkg/util/dbterror/terror.rs`、`pkg/domain/domain.rs`、`pkg/types/errors.rs`、`pkg/server/err/lib.rs`，并以 `rg -n "MySQLErrName" --glob '*.rs' --glob '*.go' pkg` 复核引用。
-- Go 与测试证据：`pkg/errno/errname.go`、`pkg/errno/errname_test.go`、`pkg/errno/errname_test.rs`、`pkg/errno/errname_2_aster_unit_test.rs`。按表项声明模式统计，Rust 与 Go 当前均为 1,157 项。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证恰有十一个固定二级章节，并人工复核本文回答了文件为何存在、首次访问如何运行以及新增错误时应同步哪些源码与独立测试。

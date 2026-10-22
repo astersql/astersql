@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 crate `astersql-planner-core-operator-baseimpl`，由同目录 `lib.rs` 的 `mod plan; pub use plan::*;` 对外导出。它定义物理算子和简单非物理计划可复用的最小公共元数据 `Plan`，位于规划上下文与具体算子之间：上游由 `physicalop::BasePhysicalPlan::New`、`physicalop::SimpleSchemaProducer::New` 等构造入口创建，下游依赖 `base::ContextRef` 分配节点 ID、读取 EXPLAIN 配置，并持有 `property::StatsInfo`。
-
-它不是完整的计划树节点实现：文件本身不保存 schema、孩子、代价或表达式，也没有直接为 `Plan` 实现 `base::Plan` trait。完整物理节点由 `pkg/planner/core/operator/physicalop/base_physical_plan.rs` 等上层基座组合并转发这些公共能力。当前 Rust 的 `BaseLogicalPlan` 在 `pkg/planner/core/operator/logicalop/base_logical_plan.rs` 中独立保存上下文、类型、ID、查询块和统计字段，没有嵌入本文件的 `Plan`；因此“逻辑/物理共用”是 Go 设计来源和接口语义目标，不应理解为当前 Rust 两条路径已经共用同一个结构体。
+`CloneForPlanCache` 明确采用“默认不支持”策略，要求具体算子或更高层基座显式实现安全的缓存克隆。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ RustCodeGraph 的精确 `query` 能区分 Rust/Go 的 `NewBasePlan`，但当前�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/baseimpl/plan.go`。字段与大部分方法一一对应：Go 的 `planctx.PlanContext` 映射为 `base::ContextRef`，`*property.StatsInfo` 映射为 `Option<Arc<StatsInfo>>`，`int` 映射为 `i32`；`NewBasePlan`、Cascades 重分配、空输出名/列替换、Explain 信息、普通克隆、默认缓存克隆失败和首次原因保留均维持 Go 语义。
-
 需要特别注意的差异：
 
 - Go 的 `Plan` 同时嵌入逻辑与物理实现；当前 Rust `BaseLogicalPlan` 是独立移植，只有物理/简单计划路径明确组合本结构。
@@ -88,7 +84,7 @@ RustCodeGraph 的精确 `query` 能区分 Rust/Go 的 `NewBasePlan`，但当前�
 - Rust 额外提供 `SetQueryBlockOffset`，为物理算子初始化和移植接线更新查询块；所对照的 Go `plan.go` 只有 getter。
 - Rust `CloneWithNewCtx` 返回值而非指针；统计的 `Arc` 浅共享对应 Go 字段上的 `plan-cache-clone:"shallow"` 标记。
 
-同目录没有 Go `*_test.go`。Go 行为依据来自 `plan.go` 本身及其真实调用点；Rust 回归由独立的 `plan_test.rs` 与 `plan_aster_unit_test.rs` 覆盖，不应把测试代码移入生产源文件。
+Go 行为依据来自 `plan.go` 本身及其真实调用点；Rust 回归由独立的 `plan_test.rs` 与 `plan_aster_unit_test.rs` 覆盖，不应把测试代码移入生产源文件。
 
 ## 扩展指南
 
@@ -99,14 +95,3 @@ RustCodeGraph 的精确 `query` 能区分 Rust/Go 的 `NewBasePlan`，但当前�
 若让基础 `CloneForPlanCache` 成功，必须先证明所有字段的缓存安全语义，并检查具体算子的显式克隆和生成代码是否会重复或绕过深拷贝；默认拒绝是安全边界，不能仅为方便改成普通 `clone()`。不可缓存原因若改变覆盖规则，也会影响缓存资格诊断与快照恢复。
 
 测试应继续放在同目录独立文件：通用行为扩展 `plan_aster_unit_test.rs`，延迟 EXPLAIN 格式化场景扩展 `plan_test.rs`。至少覆盖初始值、重分配保留/清空集合、跨上下文克隆的共享关系、缓存克隆返回契约、Unicode 字节计数以及首次原因策略；涉及上层组合时，在对应 `physicalop` 独立测试中补充集成覆盖。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中收录 `plan.rs`、`plan.go`、`plan_test.rs`、`plan_aster_unit_test.rs` 与 `lib.rs`。
-- RustCodeGraph `node --file pkg/planner/core/operator/baseimpl/plan.rs`：读取完整 188 行源码并确认 31 个符号、文件级 42 个使用方；`query NewBasePlan` 同时定位 Rust 第 57 行与 Go 第 41 行。
-- RustCodeGraph 精确查询：执行了 `query`、`callers`、`callees`；索引能定位函数和文件级使用关系，但未解析本文件多数 inherent method 的独立调用节点，随后用已索引调用方源码和限定 `rg` 补证。
-- crate 与模块边界：读取 `pkg/planner/core/operator/baseimpl/Cargo.toml` 和 `pkg/planner/core/operator/baseimpl/lib.rs`，确认 crate 名、路径依赖、模块导出及两个独立测试模块。
-- Go 对照：读取 `pkg/planner/core/operator/baseimpl/plan.go` 全文，并检索 `base_logical_plan.go`、`base_physical_plan.go`、`plan_clone_generated.go` 等调用点。
-- Rust 上下游：读取 `pkg/planner/core/base/plan_base.rs` 的 `PlanContext`/`Plan` trait，`pkg/planner/core/operator/physicalop/base_physical_plan.rs` 的构造、克隆、统计与内存路径，`physical_schema_producer.rs` 的简单计划路径，`cache_snapshot.rs` 的捕获/恢复路径，以及 `logicalop/base_logical_plan.rs` 的独立逻辑基座。
-- 测试证据：`pkg/planner/core/operator/baseimpl/plan_test.rs` 验证 EXPLAIN 延迟读取；`plan_aster_unit_test.rs` 验证 ID、重分配、查询块、统计浅共享、setter/no-op、缓存克隆失败、首次原因和 UTF-8 字节计数。同目录不存在 Go 测试文件。
-- 按任务约束，本次是纯文档分析，未运行 Cargo；交付前另运行固定 11 章节结构验证，并人工复核文档仅陈述上述源码、调用和测试能够支持的事实。

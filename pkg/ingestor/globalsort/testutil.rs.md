@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-[`testutil.rs`](./testutil.rs) 属于 `astersql-ingestor-globalsort` crate（见 [`Cargo.toml`](./Cargo.toml)），由 [`lib.rs`](./lib.rs) 以 `pub mod testutil` 暴露。它不是全局排序的生产入口，而是同 crate 独立 Rust 测试共用的辅助层：[`reader_test.rs`](./reader_test.rs) 用它验证多文件读回，[`split_test.rs`](./split_test.rs) 用它构造切分器输入，[`testutil_test.rs`](./testutil_test.rs) 专门验证辅助函数的前置条件。包级 [`../doc.go`](../doc.go) 将 globalsort 放在 Ingestor 的“借助外部存储完成全局排序和归并”职责内；本文件只为这条路径提供测试装配和往返断言。
+不读取文件，也不生成范围属性；每个 `FilePair.properties` 初始为空。
 
 ## 核心职责
 
@@ -58,7 +58,6 @@
 
 ## 与 Go 版本的对应关系
 
-- 直接对照文件是 [`testutil.go`](./testutil.go)：函数名、单一 `MultipleFilesStat` 包装、`NewRangeSplitter` 阈值、逐 group 读回、末键 `Next()` 上界、组内按键排序和关闭切分器的总体意图一致。
 - Go `mockOneMultiFileStat` 直接按 `data` 索引访问 `stat[i]`；Rust 先验证等长并返回 `Result`，这是安全化差异，`test_mock_one_multi_file_stat_rejects_mismatched_counts` 固化了该行为。
 - Go 在空 `kvs` 时会因访问最后元素失败；Rust 将该前置条件显式化为 `InvalidArgument`，由 `test_read_and_compare_rejects_empty_expected_kvs` 覆盖。
 - Go 通过 `simplesst.GetReadRangeFromProps` 从 stat 文件计算读偏移，并复用 `membuf` pool；Rust fixture 路径以 `0..完整文件长度` 读取后按键过滤，且每组新建 `MemKvsAndBuffers`。二者验证目标相同，但 I/O 精度、缓冲复用和性能特征不等价。
@@ -71,11 +70,3 @@
 - 若要对齐 Go 的范围读取性能，应接入与 stat 属性等价的 offset 计算，而不是只调整 `starts`/`ends` 常量；同时验证 `RecordFormat::GoBigEndian64` 与 legacy fixture 两条路径。
 - 若允许空期望集，需要先定义是否仍应访问/校验文件、末组上界如何确定，再同时修改前置检查和回归测试，不能简单删除错误分支。
 - 若辅助数据规模增大，应评估 `actual` 全量累计和完整对象长度探测的内存/I/O 成本；正确性风险集中在半开区间、重复/遗漏 KV、路径错配及失败时资源关闭。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`query mockOneMultiFileStat --kind function --json` 与 `query testReadAndCompare --kind function --json` 同时定位 Rust 和 Go 定义；文件节点确认 `testutil.rs` 的三个使用文件。精确 `callers`/`callees` 查询在 30 秒内未返回，具体调用点随后用源码搜索核实。
-- 已读 Rust 源：`testutil.rs`、`testutil_test.rs`、`reader_test.rs`、`split_test.rs`、`reader.rs`、`split.rs`、`lib.rs`；包契约为 `pkg/ingestor/doc.go`。
-- 已读边界声明：`pkg/ingestor/globalsort/Cargo.toml`（crate 名、`lib.rs` 入口、Go 包映射与依赖）；Go 语义对照为 `pkg/ingestor/globalsort/testutil.go`。
-- 独立测试证据：`testutil_test.rs` 验证等长路径配对、错配拒绝和空期望拒绝；`reader_test.rs` 验证单/多文件读回；`split_test.rs` 验证辅助统计能驱动切分器及 group 边界行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证为固定 11 节结构检查及人工事实复核。

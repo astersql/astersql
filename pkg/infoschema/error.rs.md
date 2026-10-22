@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-infoschema` crate 的错误元数据目录，由 crate 根模块
-[`pkg/infoschema/lib.rs`](./lib.rs) 通过 `pub mod error` 公开。crate 边界由
-[`pkg/infoschema/Cargo.toml`](./Cargo.toml) 定义；虽然该 manifest 已声明
-`astersql-util-dbterror`，本文件的当前可执行实现只依赖标准库 `std::fmt`，并没有构造
-`dbterror::Error`。文件顶部保留的 `LazyLock<dbterror::Error>` 方案位于块注释中，仅用于说明迁移历史，不参与编译或运行。
-
-它位于 InfoSchema 元数据查询与上层 SQL/DDL 错误协议之间：为库、表、列、索引、外键、
-Placement Policy、Resource Group 等对象定义稳定的错误分类和 MySQL 错误符号名。当前 Rust
-接线范围很窄，生产代码 [`pkg/infoschema/infoschema.rs`](./infoschema.rs) 只直接使用
-`ErrTableNotExists`；不能把文件中的全部常量理解为全部业务路径已经完成迁移。
+`astersql-util-dbterror`，本文件的当前可执行实现只依赖标准库 `std::fmt`，并没有构造。
 
 ## 核心职责
 
@@ -118,14 +109,8 @@ RustCodeGraph 对 `SchemaError::message` 的通用名称查询混入大量其他
 
 ## 与 Go 版本的对应关系
 
-[`pkg/infoschema/error.go`](./error.go) 是直接对照文件。Rust 生效表保留了 Go 变量名、错误类别
-和 errno 符号映射：45 项来自 `dbterror.ClassSchema.NewStd(...)`，资源组无效后台任务名这一项
-来自 `dbterror.ClassExecutor.NewStd(...)`。`ErrDatabaseNotExists` / `ErrEmptyDatabase` 共享
-`ErrBadDB` 等别名关系也被保留。
-
 关键差异是表示能力：Go 变量是带错误类、数值码和标准消息模板的 `terror.Error`，可生成带参数
-错误、比较错误和读取错误码；Rust `SchemaError` 目前只是 `{ class, mysql_name }` 描述符。
-例如 Go `TableByName` 通过 `FastGenByArgs(schema, table)` 生成标准错误，而 Rust
+错误、比较错误和读取错误码；Rust `SchemaError` 目前只是 `{ class, mysql_name }` 描述符。例如 Go `TableByName` 通过 `FastGenByArgs(schema, table)` 生成标准错误，而 Rust
 `TableByName` 自行建立 `InfoSchemaError`，只写入字符串代码与 `schema.table` 细节。因此当前 Rust
 实现保持了分类和名称协议，但尚未完整复刻 Go 的错误对象语义。
 
@@ -149,20 +134,3 @@ Go 测试 `pkg/infoschema/infoschema_test.go` 覆盖 `ErrTableNotExists.Equal(er
   `message`；涉及业务接线时同步扩展 `infoschema_nokit_test.rs`。不要把测试嵌入 `error.rs`。
 - 兼容风险主要是错误名/类别被外部逻辑识别；性能风险主要来自高频路径调用 `message` 的字符串
   分配。当前常量读取本身无分配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter
-  pkg/infoschema/error.rs` 找到目标文件，报告 5 个显式符号；`query SchemaError --kind struct
-  --json` 将目标结构定位到 `error.rs:122`。对 `SchemaError::message` 的 callers/callees 查询因
-  同名符号产生跨模块噪声，未将其当作目标调用边。
-- 已读 Rust/Cargo 路径：`pkg/infoschema/error.rs`、`pkg/infoschema/lib.rs`、
-  `pkg/infoschema/Cargo.toml`、`pkg/infoschema/infoschema.rs`、
-  `pkg/infoschema/infoschema_nokit_test.rs`、`pkg/util/dbterror/terror.rs`、
-  `pkg/errno/errcode.rs`、`pkg/errno/errname.rs`。
-- 已读 Go/测试路径：`pkg/infoschema/error.go`、`pkg/infoschema/infoschema.go`、
-  `pkg/infoschema/infoschema_test.go`、`pkg/resourcegroup/tests/resource_group_test.go`；并以 `rg`
-  查找目标类型、模块路径和全部错误名的 Rust/Go 测试引用。
-- 人工复核结论：当前文件存在是为了集中保存 InfoSchema 错误分类与 MySQL 名称映射；实际运行
-  只确认 `ErrTableNotExists` 接入 InfoSchema 查找和脱敏缓存分支；安全扩展必须同步 Go/errno
-  映射和独立测试，不能把迁移期描述符误当成完整 `dbterror::Error`。

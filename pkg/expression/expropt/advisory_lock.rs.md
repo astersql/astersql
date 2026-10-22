@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate（见 `pkg/expression/expropt/Cargo.toml`），定义咨询锁（advisory lock）在“会话能力”与“表达式求值上下文”之间的可选属性适配层。`pkg/expression/expropt/lib.rs` 通过 `mod advisory_lock` 加载它，并用 `pub use advisory_lock::*` 再导出全部公开符号。
-
-它不实现锁表、超时策略或 SQL 函数语义：会话层实现 `AdvisoryLockContext`，`AdvisoryLockPropProvider` 把该实现注册为 `OptPropAdvisoryLock`，消费者则用 `AdvisoryLockPropReader` 声明并取得这项依赖。
+用 `AdvisoryLockPropProvider` 持有 `Arc<dyn AdvisoryLockContext>`，为对象安全的可选求值属性提供稳定生命周期，并将四项操作原样转发给真实会话实现。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ Rust 文件逐项对应 `pkg/expression/expropt/advisory_lock.go`：Go `Advisory
 - Go `ReleaseAllAdvisoryLocks() int` 在 Rust 边界映射为 `i32`；这与当前测试和接口一致，但扩展时需留意计数范围。
 - Go 的五类 SQL 函数已直接消费 Reader；Rust 当前仅完成 sessionexpr 注册和测试验证，Rust 内置函数仍使用独立 trait。这是可观测的迁移差距，不是本文件已实现的行为。
 
-Go 的 `pkg/expression/expropt/optional_test.go::TestOptionalEvalPropProviders` 验证 Provider 注册与获取；Rust 将对应事实放在独立的 `optional_test.rs` 和 `migration_aster_unit_test.rs` 中。
-
 ## 扩展指南
 
 - 增加或改变咨询锁后端操作时，首先修改 `AdvisoryLockContext`，同步 Provider 的委派 impl，再更新真实 `SessionContext` 实现和独立测试。若需保持 Go 对齐，还必须核对 `advisory_lock.go` 的 interface 及五类 SQL 函数消费点。
@@ -86,13 +82,3 @@ Go 的 `pkg/expression/expropt/optional_test.go::TestOptionalEvalPropProviders` 
 - 若把 Rust 内置函数接入本 Reader，需先解决 `builtin_miscellaneous.rs::AdvisoryLockContext` 与本 trait 在 `&mut self`/`&self`、`AdvisoryLockError`/`anyhow::Result`、`u64`/`i32` 计数上的差异，而不是只做类型别名。
 - 新增 Reader 路径或改变属性键时，需同步 `exprctx::OPTIONAL_PROPERTY_DESC_LIST`、`OptionalEvalPropProviders` 的注册逻辑与需求集合验证，并注意键值是全 crate 共享的 ABI 式协议。
 - 测试逻辑应继续放在独立文件：优先更新 `pkg/expression/expropt/optional_test.rs` 的通用 Provider/Reader 验证、`migration_aster_unit_test.rs` 的精确转发与缺失属性回归，以及 `pkg/expression/sessionexpr/sessionctx_test.rs` 的生产注册链验证。若完成 builtin 接线，还需扩展对应的独立 `builtin_miscellaneous_*_test.rs` 和 SQL 集成测试。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/expropt/advisory_lock.rs`，核对了 trait、Provider、Reader、所有 impl 和方法签名；文件无条件编译项。
-- crate 与公共机制：`pkg/expression/expropt/Cargo.toml`、`lib.rs`、`optional.rs`，核对了 crate 边界、再导出、`get_prop_provider` 的三类错误及属性键描述。
-- Rust 生产接线：`pkg/expression/sessionexpr/sessionctx.rs`，核对 `SessionContext` trait 约束和 `NewEvalContext` 的 Provider 注册；`pkg/expression/builtin_miscellaneous.rs` 用于确认当前 builtin 仍使用独立 trait。
-- Rust 独立测试：`pkg/expression/expropt/optional_test.rs::verify_advisory_lock`、`pkg/expression/expropt/migration_aster_unit_test.rs::advisory_lock_reader_returns_the_registered_provider_and_forwards_calls` 与 `registry_and_missing_reader_paths_match_go`、`pkg/expression/sessionexpr/sessionctx_test.rs::test_session_eval_context_opt_props`。这些覆盖缺失 Provider、注册/下转、同一 Provider 引用、四项委派和会话状态可见性。
-- Go 对照：`pkg/expression/expropt/advisory_lock.go`、`pkg/expression/expropt/optional_test.go`、`pkg/expression/sessionexpr/sessionctx.go`、`pkg/expression/builtin_miscellaneous.go`，核对了接口、注册点、Reader 消费者及 SQL 层边界归属。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`query AdvisoryLockPropProvider`、`query AdvisoryLockPropReader`、`query advisory_lock_ctx`、`node`/`explore` 查询确认了符号位置、Rust 直接调用者及 trait object 动态边界。图对泛化/动态调用的噪声以直接源码引用搜索交叉验证。
-- 本任务为纯文档分析，按任务约定不运行 Cargo；结构验证确保目标文件存在且恰好包含规定的十一个二级章节。

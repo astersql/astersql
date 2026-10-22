@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`version.rs` 属于 `astersql-kv` crate，是 KV 层表示 MVCC 版本（通常是时间戳/TSO）的基础值类型文件。crate 根 `pkg/kv/lib.rs` 通过 `#[path = "version.rs"] mod version_impl;` 装入该文件，并用 `pub use version_impl::*;` 将其公开，因此上层通常以 `astersql_kv::Version`、`astersql_kv::NewVersion`、`astersql_kv::MaxVersion` 等路径使用这些符号。
-
-该文件不负责分配时间戳、打开快照或执行事务；它只定义版本值、两个边界哨兵、构造与比较规则，以及一个尚未接入 Rust 生产实现的版本供给接口。真正消费版本的 KV 抽象位于 `pkg/kv/kv.rs` 的 `Storage::GetSnapshot` 和 `Storage::CurrentVersion`。
+不负责分配时间戳、打开快照或执行事务；它只定义版本值、两个边界哨兵、构造与比较规则，以及一个尚未接入 Rust 生产实现的版本供给接口。
 
 ## 核心职责
 
@@ -79,15 +77,9 @@ RustCodeGraph 的文件节点报告 `pkg/kv/version.rs` 被 28 个文件使用�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/kv/version.go`，Rust 版本逐项保留其公开结构：
-
-- Go `VersionProvider.CurrentVersion() (Version, error)` 对应 Rust `Result<Version, Box<dyn Error>>`。
-- Go `Version{Ver uint64}` 对应 Rust `Version { pub Ver: u64 }`。
-- Go 包变量 `MaxVersion`/`MinVersion` 对应 Rust `const`，数值分别是 `math.MaxUint64` 与 `0`。
-- Go `NewVersion` 与 Rust `NewVersion` 都原样包装输入。
 - Go `Cmp` 返回 `int`，Rust 返回 `i32`，但三路比较分支及 `-1/0/1` 结果一致。
 
-`pkg/kv/version_test.go::TestVersion` 与 `pkg/kv/version_test.rs::test_version` 的四项断言一致。Rust 测试文件还承载同一 Go 测试文件中的 MPP 与 Exchange 压缩测试，但那些行为分别来自其他模块，不属于 `version.rs`。
+Rust 测试文件还承载同一 Go 测试文件中的 MPP 与 Exchange 压缩测试，但那些行为分别来自其他模块，不属于 `version.rs`。
 
 迁移差异需要特别记录：Rust 生产存储接口已有带 `txn_scope` 的 `Storage::CurrentVersion`，而本文件的 `VersionProvider` 保留 Go 的无参数签名且当前未接线。若未来收敛两套接口，应先确认 Go 上游语义与 Rust keyspace/事务作用域要求，不能简单删除参数或静默固定为 `"global"`。
 
@@ -99,12 +91,3 @@ RustCodeGraph 的文件节点报告 `pkg/kv/version.rs` 被 28 个文件使用�
 - 实现或替换 `VersionProvider` 时，应明确错误类型、事务作用域、单调性、`Send + Sync` 和取消/重试契约，并检查它与 `Storage::CurrentVersion` 是否应桥接；当前代码没有可复制的生产实现。
 - 为 `Version` 增加字段会影响公开结构体字面量、`Copy` 成本和 Go 对齐，应先搜索 `Version { Ver: ... }` 的调用点。Rust 测试逻辑应继续放在独立的 `version_test.rs`，不要内嵌到生产文件。
 - 性能上现有路径是零分配、常数时间；扩展时避免在高频快照构造和比较路径引入字符串解析、锁或网络调用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/kv/version.rs` 读取完整 63 行并报告 28 个使用文件；`query NewVersion`、`query VersionProvider` 定位 Rust/Go 对照定义；`node NewVersion` 给出 `pkg/domain/domain.rs::snapshot` 等 Rust 调用边。路径限定 `callers/callees` 没有返回结果，因此对调用面补用了源码搜索。
-- Rust 源码：`pkg/kv/version.rs`；模块出口：`pkg/kv/lib.rs`；生产接口：`pkg/kv/kv.rs`。
-- crate 边界与 feature：`pkg/kv/Cargo.toml`。
-- Rust 独立测试：`pkg/kv/version_test.rs::test_version`；相关存储转发与消费证据：`pkg/kv/fault_injection.rs`、`pkg/store/driver/kv_adapter.rs`、`pkg/domain/domain.rs`、`pkg/domain/canonical_domain.rs`、`pkg/session/runtime/relational_scan.rs`。
-- Go 对照：`pkg/kv/version.go`；Go 测试：`pkg/kv/version_test.go::TestVersion`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构校验要求本文恰好含有指定的 11 个二级标题；交付前另行执行该命令并检查退出码。

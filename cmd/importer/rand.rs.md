@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cmd/importer/rand.rs` 属于 `astersql-cmd-importer` crate，由 [`cmd/importer/lib.rs`](lib.rs) 以 `pub mod rand` 装配。该 crate 的 manifest 是 [`cmd/importer/Cargo.toml`](Cargo.toml)：库入口为 `lib.rs`，二进制入口为 `bin_main.rs`，移植元数据把它标记为 Go `cmd/importer` 对应的 binary crate。本文件只依赖同 crate 的 `data`、`parser`、`stats`（通过 `column.hist`）和 `stubs`，没有直接使用 manifest 中的 `toml`、`serde_json` 外部依赖。
-
-它处在“列定义已经解析、INSERT 字面量即将生成”的中间层。生产调用者是 [`cmd/importer/db.rs`](db.rs) 的 `genColumnData`：当列不是 `incremental` 时，`TypeDate`、`TypeDatetime | TypeTimestamp`、`TypeDuration`、`TypeYear` 分支分别调用 `randDate`、`randTimestamp`、`randTime`、`randYear`，再由 `db.rs` 加单引号形成 SQL 文本。本文件自身返回不带 SQL 引号的已格式化字符串。
+字符串随机算法本身不在这里，实际实现位于 [`cmd/importer/data.rs`](data.rs)。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`cmd/importer/rand.go`](rand.go)。Rust 保留了四个函数名、四个布局常量、直方图优先级、缺边界分支、格式宽度、闭区间随机选择以及解析失败后继续使用 Go 零时间的可观察语义。`cmd/importer/db.go` 与 `db.rs` 也都在相同 SQL 类型分支调用这些入口。
+Rust 保留了四个函数名、四个布局常量、直方图优先级、缺边界分支、格式宽度、闭区间随机选择以及解析失败后继续使用 Go 零时间的可观察语义。
 
 主要实现差异是：Go 直接使用 `time.Time`、`time.Parse`、`time.Now` 和包级 `math/rand`；Rust 使用轻量 `CivilTime`、手写解析/日期运算以及线程局部 xorshift 随机桩。Rust 的 `CivilTime::now()` 按 UTC 近似墙钟，而 Go `time.Now()` 使用本地位置；时区边界附近的默认年份可能不同。Go 的 `randTimestamp`/`randYear` 中 `int` 宽度随平台，Rust 明确使用 `i64` 避免长秒跨度缩窄；`rand_test.rs::temporal_ranges_wider_than_i32_seconds_match_go_int_range` 为此提供回归证据。
 
@@ -94,12 +92,3 @@ Go 文件还定义 `randInt`、`randInt64`、`randString` 与字符表常量；R
 - 若需要真实本地时区或跨线程随机独立性，应修改 `stubs.rs` 的时间/随机抽象并评估整个 importer，而不是在某个 `rand*` 函数内增加特例。
 
 兼容风险主要是输出格式、范围端点和失败回退漂移；正确性风险主要是反向范围 panic、宽跨度转 `i32`、轻量解析未做完整日历校验；性能风险较低，每次调用只做常数次解析、随机数和字符串格式化，直方图路径的代价由 `stats.rs` 决定。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 7032 个 Rust 文件；查询 `randDate`、`randTime`、`randTimestamp`、`randYear` 定位到本文件及 Go/统计同名符号。
-- RustCodeGraph `node --file cmd/importer/rand.rs`：核对 243 行完整源文件、公开/私有符号和 `rand_test.rs` 引用。
-- RustCodeGraph `explore "cmd/importer/rand.rs randDate randTime randTimestamp randYear callers callees"`：确认独立测试对四个入口的调用，并区分 Go `rand.go`、Rust `rand.rs` 与 `stats.rs` 的同名 `randDate`。
-- RustCodeGraph 文件节点：核对 `db.rs::genColumnData` 的四个生产调用分支、`parser.rs::column` 字段、`stats.rs::histogram::randDate`、`data.rs::{randInt, randInt64}`、`stubs.rs` 的解析/差值/日期运算实现。
-- 直接读取 [`cmd/importer/Cargo.toml`](Cargo.toml)、[`cmd/importer/lib.rs`](lib.rs)、[`cmd/importer/rand.go`](rand.go)、[`cmd/importer/rand_test.rs`](rand_test.rs)；用精确源码搜索确认 `db.rs` 与 `db.go` 的调用点。Cargo 与 Go 文件不属于 RustCodeGraph Rust 源节点的完整 crate/对照证据，因此单独核验。
-- 按任务约束未运行 Cargo；这是纯文档分析。结构验证要求本文恰好包含任务规定的 11 个二级标题。

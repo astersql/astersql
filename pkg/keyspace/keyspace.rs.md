@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-keyspace` crate 的 keyspace 核心工具实现。crate 根 `pkg/keyspace/lib.rs` 以私有模块 `mod keyspace` 挂载它，再用 `pub use keyspace::*` 将其公开符号提升到 crate 根。包级契约来自 `pkg/keyspace/doc.go`：keyspace 把同一物理集群划分成逻辑集群，`SYSTEM` 是系统服务使用的保留 keyspace；本文件提供这种隔离在配置、etcd 路径、日志和客户端上下文上的基础表达。
-
-`pkg/keyspace/Cargo.toml` 将该 crate 命名为 `astersql-keyspace`，默认是 Classic；`nextgen` feature 同时打开 `kerneltype/nextgen` 与 `deploymode_dependency/nextgen`。本文件直接依赖 crate 根重导出的 `config` 和 `kerneltype`，不负责创建 keyspace、访问 PD/TiKV，也不管理 etcd 客户端。
+通过 `GetKeyspaceNameBySettings` 读取当前全局配置，并通过 `GetKeyspaceNameBytesBySettings` 提供一次初始化、进程期稳定的字节快照。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@ RustCodeGraph 对目标文件记录了 18 个符号并显示它被 34 个文件�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/keyspace/keyspace.go`。`System`、etcd 前缀、V1/V2 路径分支、全局名称读取、空串判断和空/非空 API context 选择保持相同语义。Rust 用本地 `Codec` / `BasicCodec` 代替 Go `tikv.Codec` 的宽接口，用本地 `ApiContext` 枚举代替 `pd.APIContext`，因此这些 Rust 类型是所需契约的轻量表达，不等同于外部库完整类型。
+Rust 用本地 `Codec` / `BasicCodec` 代替 Go `tikv.Codec` 的宽接口，用本地 `ApiContext` 枚举代替 `pd.APIContext`，因此这些 Rust 类型是所需契约的轻量表达，不等同于外部库完整类型。
 
 Go `CodecV1` 是事务模式的 client-go codec；Rust 静态值只保存本文件路径逻辑需要的 API 版本和 ID。Go 日志函数返回 `zap.Option` 并通过 `zap.WrapCore` 延迟包装；Rust 函数直接接收实现 `LogCore` 的核心并返回新核心。二者对空名称不加字段、非空名称添加 `keyspaceName` 的可观察结果一致，但类型和包装时机不同。
 
@@ -101,12 +99,3 @@ Go 用 `sync.Once` 和包级 `[]byte` 缓存；Rust 用 `OnceLock<Vec<u8>>`。Cl
 - 新增日志字段时通过 `LogCore` 抽象表达可观察行为，并在 `migration_aster_unit_test.rs` 的 `TestCore` 中验证空/非空配置分支；不要把具体日志库资源管理塞进本文件。
 - 将 `ApiContext` 接入真实客户端前，要核对目标客户端的 V1/V2 类型、错误与生命周期，而不是仅依赖当前本地枚举。测试逻辑继续放在独立 `*_test.rs` 文件，不嵌入生产源文件。
 - 任何行为改动都应同步核对 `pkg/keyspace/keyspace.go` 和 `pkg/keyspace/keyspace_test.go`，保留 Go 分支、边界和测试意图；路径格式、日志字段名和 Classic/NextGen 差异都属于兼容性风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标目录中 `keyspace.rs` 有 18 个符号；`node --file pkg/keyspace/keyspace.rs` 读取完整 178 行并报告 34 个使用文件；对七个公开函数做了精确 `query`，再以文件符号 ID 查询 `callers` / `callees`，结果均为空边，故使用直接引用搜索补足图未覆盖关系。
-- 生产与装配：`pkg/keyspace/keyspace.rs`、`pkg/keyspace/lib.rs`、`pkg/keyspace/Cargo.toml`、`pkg/keyspace/doc.go`。
-- Go 对照：`pkg/keyspace/keyspace.go`、`pkg/keyspace/keyspace_test.go`。
-- Rust 测试：`pkg/keyspace/keyspace_test.rs`、`pkg/keyspace/migration_aster_unit_test.rs`。
-- 直接调用证据：`pkg/store/etcd.rs`、`pkg/keyspace/username_policy.rs`、`pkg/kv/paging_resource_control.rs`、`pkg/dxf/importinto/taskkey/task_key.rs`、`cmd/tidb-server/main.rs`；补充引用搜索还确认 `pkg/kv/kv_test.rs` 使用字节缓存。
-- 人工复核重点：V1/V2 路径分支、空名称边界、即时字符串与一次性字节快照的区别、Classic/NextGen 分支、日志字段名、Rust 与 Go 类型适配差异，以及当前仅测试覆盖的 API。

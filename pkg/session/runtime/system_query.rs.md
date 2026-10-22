@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`system_query.rs` 属于 `astersql-session` crate（见 `pkg/session/Cargo.toml`），由 `pkg/session/runtime.rs` 以 `pub(crate) mod system_query` 装配，并通过 `use system_query::*` 把实现加入 `ConcreteSession`。它位于解析后的 SQL AST 与会话/Domain 元数据之间，负责三类不走普通持久表扫描的行为：SHOW 与常量查询、虚拟系统目录查询，以及若干依赖会话状态的系统函数。
-
-调用入口主要在 `pkg/session/runtime/dispatch.rs`：SHOW COLLATION/PROCESSLIST 分派到 `execute_show_collation`、`execute_show_process_list`，集合操作和 SELECT 分别尝试 `execute_constant_set_operation`、`execute_information_schema_select`、`execute_constant_select`。`pkg/session/runtime/source.rs::ConcreteSession::relational_source` 还会为单源虚拟系统表调用 `execute_information_schema_select`。MySQL `COM_FIELD_LIST` 则沿 `pkg/server/runtime.rs::field_list_on_session` 到达公开方法 `ConcreteSession::field_list`。
-
-本文件不是完整 SQL 执行器。多表系统目录查询、普通用户表查询，以及无法由这里的专用快路径完整表达的语句会返回 `Ok(None)`，让调用方继续走通用关系执行路径（`execute_information_schema_select`、`execute_constant_select`）。
+实现协议和 SHOW 元数据：`field_list` 提供 COM_FIELD_LIST 所需的公开列；SHOW COLLATION/PROCESSLIST 生成兼容 MySQL 的列名、类型和标志。
 
 ## 核心职责
 
@@ -105,13 +101,9 @@ SHOW 流程较短：`execute_show_collation` 从会话变量读取 utf8mb4 默�
 
 ## 与 Go 版本的对应关系
 
-`pkg/session/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/session"` 明确该 crate 对照 Go `pkg/session`。
+Rust 当前把常用表的行物化与有限投影集中到 `execute_information_schema_select`/`project_virtual_rows`；源码明确在多源时返回 `None`，避免把 Go 的完整关系语义简化为“取第一张表”。
 
-最直接的一一对应是 `pkg/session/session.go::(*session).FieldList`：Go 版本读取当前 InfoSchema、以活动角色和 `AllPrivMask` 检查权限、按表名解析表并为每列填写 Column/Table/DB identity；Rust `ConcreteSession::field_list` 保留相同顺序与权限意图，并由 `pkg/session/runtime/system_query_test.rs::field_list_enforces_go_table_privilege_check` 验证拒绝后授权成功。
-
-系统表在 Go 中主要由 `pkg/executor/infoschema_reader.go` 的 memtable retriever、InfoSchema 注册表及普通 Join/Selection/Projection/Sort executor 分工完成。Rust 当前把常用表的行物化与有限投影集中到 `execute_information_schema_select`/`project_virtual_rows`；源码明确在多源时返回 `None`，避免把 Go 的完整关系语义简化为“取第一张表”。这说明该文件是兼容快路径与运行时桥接，不应被描述为 Go 系统表执行框架的完整替代。
-
-函数侧 Go 对照分散在 `pkg/expression` builtin 实现和 executor 中，例如用户锁、TiDB key 函数与 EMBED_TEXT。Rust 版本只在无表常量 SELECT 专用路径中直接匹配这些函数，并对其他表达式回落到统一表达式求值器。`routines`/`parameters` 分支明确承认 stored-program execution 尚未支持，只保留标准列契约；部分已登记 PERFORMANCE_SCHEMA/METRICS_SCHEMA 表也可能返回空行。因此“表已登记”不等于“数据源已完整移植”。
+Rust 版本只在无表常量 SELECT 专用路径中直接匹配这些函数，并对其他表达式回落到统一表达式求值器。`routines`/`parameters` 分支明确承认 stored-program execution 尚未支持，只保留标准列契约；部分已登记 PERFORMANCE_SCHEMA/METRICS_SCHEMA 表也可能返回空行。
 
 ## 扩展指南
 
@@ -122,12 +114,3 @@ SHOW 流程较短：`execute_show_collation` 从会话变量读取 utf8mb4 默�
 - 扩展共享状态：明确键的隔离维度、所有者和释放时机；临界区不得包围网络或 embedding 调用。若新增测试，应放在同目录独立 `*_test.rs` 文件，不能内嵌到生产源文件。
 - 测试入口：FIELD_LIST 语义扩展 `pkg/session/runtime/system_query_test.rs`；系统表/常量函数可在同目录新增或扩展独立测试，并参考 Go 的 `pkg/session/session_test.go`、`pkg/executor/infoschema_reader.go` 邻近测试及 `pkg/infoschema/test`。修改 Rust 行为时应保持 Go 边界和错误意图，不以空结果或桩替代。
 - 兼容风险集中在列顺序/类型/NULL 表示、权限过滤、快照一致性和 MySQL 错误文本；性能风险集中在每次查询克隆整个目录、为所有候选行构造字符串 HashMap、内存排序，以及持全局 mutex 扫描锁历史。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，`files --filter pkg/session/runtime` 确认 `system_query.rs`（377 个符号）与 `system_query_test.rs` 均已索引；`query --kind function` 确认 `execute_information_schema_select`、`execute_constant_select`、`field_list`、`project_virtual_rows` 的定义位置。`node --file pkg/session/runtime/system_query.rs` 分段读取了源码及其“used by 23 files”关系。
-- 源码：`pkg/session/runtime/system_query.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/source.rs`、`pkg/session/runtime/query.rs`、`pkg/server/runtime.rs`、`pkg/server/driver_tidb.rs`。
-- crate 边界：`pkg/session/Cargo.toml` 的 package、feature、porting metadata 与直接依赖。
-- Rust 测试：`pkg/session/runtime/system_query_test.rs`，覆盖 FIELD_LIST 权限拒绝、GRANT 后成功和列顺序。
-- Go 对照：`pkg/session/session.go::FieldList`；系统表架构对照 `pkg/executor/infoschema_reader.go` 与 `pkg/infoschema` 注册/测试目录；系统函数对照 `pkg/expression` builtin 文件。
-- 人工复核结论：该文件存在是为了让会话运行时在不访问普通持久表执行链时提供系统目录、协议元数据和会话函数；安全扩展必须保持单源快路径边界、权限/快照语义、列契约及独立测试。

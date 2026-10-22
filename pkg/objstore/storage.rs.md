@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`storage.rs` 是 `astersql-objstore` crate 的实例化与统一操作边界，由 `pkg/objstore/lib.rs` 以 `pub mod storage` 对外暴露。它位于 URI/后端配置解析层 `pkg/objstore/parse.rs` 与具体存储实现之间：对上提供 `Storage` trait、取消上下文、读写选项和构造函数，对下分派到 `local.rs`、`hdfs.rs`、`memstore.rs`、`noop.rs` 或调用方注入的云后端工厂。
-
-`pkg/objstore/Cargo.toml` 将 crate 命名为 `astersql-objstore`，入口为同目录 `lib.rs`。本文件直接使用 `anyhow` 统一错误，其余直接依赖为标准库的 IO trait、`Arc`、`AtomicBool` 和时间类型。
-
-生产上游包括 `pkg/dxf/importinto/planner.rs::LogicalPlan::sort_store`、`pkg/dxf/importinto/scheduler.rs::prepareImportTask`、`pkg/dxf/importinto/conflictrows.rs::CleanConflictRowFiles`、`pkg/importsdk/file_scanner.rs::NewFileScanner` 和 `pkg/planner/extstore/extstore.rs::NewExtStorage`；它们通过 `NewFromURL` 或 `New` 创建可共享的 `StorageRef`。
+位于 URI/后端配置解析层 `pkg/objstore/parse.rs` 与具体存储实现之间：对上提供 `Storage` trait、取消上下文、读写选项和构造函数，对下分派到 `local.rs`、`hdfs.rs`、`memstore.rs`、`noop.rs` 或调用方注入的云后端工厂。
 
 ## 核心职责
 
@@ -90,10 +86,6 @@ reader/writer 是显式关闭资源：`ObjectWriter::close(ctx)` 是提交边界
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/objstore/storage.go` 是构造器、HTTP 辅助和范围读的主要对照，而 Go 的完整 `Storage`、options 和 reader/writer 契约位于 `pkg/objstore/storeapi/storage.go`。Rust 将这些界面类型合并到本文件，便于本 crate 的 local/memory/noop/HDFS 实现共用。
-
-已对齐的主要意图包括：`TombstoneSize == -1`；`Create` 仅保留 send-credentials 兼容参数；`NewWithDefaultOpt` 转发默认 options；`NewFromURL` 拒绝空输入并特判 memstore；`New` 按 backend 分派；HTTP 客户端把空闲连接数对齐并发度；`ReadDataInRange` 使用左闭右开范围并要求填满整个缓冲区。
-
 当前实现差异必须保留为明确事实：
 
 - Go `New` 直接分派 S3/KS3/OSS/GCS/Azure 的生产构造器，并对 protobuf oneof 中的 nil 配置返回 `ErrStorageInvalidConfig`。Rust 的自有 `StorageBackend` 枚举不需要相同 nil 检查，但云后端统一依赖 `external_factory`；当前未发现仓库内注入点。
@@ -102,7 +94,7 @@ reader/writer 是显式关闭资源：`ObjectWriter::close(ctx)` 是提交边界
 - Go `ReadDataInRange` 用 `start + int64(len(p))` 后的回绕判断溢出；Rust 同时使用 `i64::try_from` 和 `checked_add`。Go 用 logger 记录 reader close 错误，Rust 写入 stderr；两者都不覆盖原读结果。
 - Go 通过包装的 `berrors` 保留结构化错误身份；Rust 使用 `anyhow` 文本与错误链，上游不应假设两者可做同样的错误身份匹配。
 
-`pkg/objstore/storage_test.rs` 与 `storage_test.go` 共同固定默认 HTTP transport、并发度连接池和 `memstore://` 构造；Rust 测试额外覆盖 HDFS 构造及已取消 context 不阻止该构造的现状。`helper_2_aster_unit_test.rs::noop_and_range_read_keep_go_edge_cases` 直接覆盖范围读的成功值和负偏移错误。
+`pkg/objstore/storage_test.rs` 与 `storage_test.go` 共同固定默认 HTTP transport、并发度连接池和 `memstore://` 构造；Rust 测试额外覆盖 HDFS 构造及已取消 context 不阻止该构造的现状。
 
 ## 扩展指南
 
@@ -113,12 +105,3 @@ reader/writer 是显式关闭资源：`ObjectWriter::close(ctx)` 是提交边界
 - 修改 reader/writer 生命周期时，重点覆盖短读、范围边界、close 失败、close 后写、重复 close 和取消。`ReadDataInRange` 的关闭错误优先级是显式兼容契约，若要改变必须评估 Go 对齐。
 - 测试保持在独立文件：核心构造/HTTP 契约放在 `pkg/objstore/storage_test.rs`，跨模块范围读现有用例在 `pkg/objstore/helper_2_aster_unit_test.rs`，具体后端行为应同步各自的 `*_test.rs`；涉及迁移语义时对照 `storage_test.go` 和具体 Go 后端测试。
 - 兼容风险主要在公开 trait 破坏、URI 分派、云工厂默认行为、错误文本/身份和 close 语义；性能风险主要在 `DeleteFiles` 串行执行、`wait_timeout` 轮询和范围读强制填满整个缓冲区。没有基准或后端契约证据时，不应擅自并行化批量删除或缓存存储实例。
-
-## 验证依据
-
-- RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/objstore/storage.rs --offset 1 --limit 420` 覆盖源文件 1–368 行，并报告它被 90 个文件使用。
-- RustCodeGraph `query` 区分了 `ReadDataInRange`、`NewFromURL`、`CloneDefaultHTTPTransport` 的 Rust/Go 定义；`node <symbol> --file pkg/objstore/storage.rs` 核对了 `Storage`、`Context`、`Create`、`New`、`NewFromURL`、`GetDefaultHTTPClient` 和 `ReadDataInRange` 的源码、文件内 callees 及可靠测试调用者。精确 `callers ReadDataInRange --file ...` 查询长时间无输出后被中止，模糊 `New` 边不作为证据；生产调用用完整路径搜索与局部源码补齐。
-- 已阅读生产与 crate 边界：`pkg/objstore/storage.rs`、`pkg/objstore/Cargo.toml`、`pkg/objstore/lib.rs`、`pkg/objstore/parse.rs.md`、`pkg/dxf/importinto/planner.rs`、`pkg/dxf/importinto/scheduler.rs`、`pkg/dxf/importinto/conflictrows.rs`、`pkg/importsdk/file_scanner.rs`、`pkg/planner/extstore/extstore.rs` 和 `br/pkg/task/operator/base64ify.rs`。
-- 已阅读 Go 对照与独立测试：`pkg/objstore/storage.go`、`pkg/objstore/storage_test.go`、`pkg/objstore/storage_test.rs` 以及 `pkg/objstore/helper_2_aster_unit_test.rs` 的范围读/writer 生命周期用例。
-- 精确源码搜索核对了 `Storage` 生产 impl、`New`/`NewFromURL` 上游和 `external_factory` 的仓库内出现位置。其结果支持“默认未接通云工厂”的限制说明，不延伸为对未搜索的运行时注入的推测。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的命令验证本文档存在且恰好包含 11 个固定二级章节，并人工复核所有重要结论均能追溯到上述符号、调用点或测试。

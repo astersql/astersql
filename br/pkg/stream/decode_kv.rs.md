@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`decode_kv.rs` 是 `astersql-br-pkg-stream` crate 中的流备份 KV 事件编解码模块。crate 根 `br/pkg/stream/lib.rs` 通过 `#[path = "decode_kv.rs"] pub mod decode_kv` 装载它，并以 `pub use decode_kv::*` 扁平再导出公开符号，因此同 crate 代码既可写 `crate::decode_kv::NewEventIterator`，外部依赖也可从 crate 根使用这些 API。
-
-该文件处理的是流备份数据文件内部的单条记录边界，而不是 TiDB 行编码或 MVCC 键本身。每条记录的物理布局固定为 `u32 little-endian key_len | key bytes | u32 little-endian value_len | value bytes`；上层 `br/pkg/stream/search.rs::StreamBackupSearch::searchFromDataFile` 在校验文件 SHA-256 后，用这里的迭代器切分记录，再继续解析键尾时间戳、MemComparable 键和 WriteCF 值。
-
-`br/pkg/stream/Cargo.toml` 将该目录声明为库 crate（`[lib] path = "lib.rs"`，porting 元数据的 Go 包为 `br/pkg/stream`）。本文件自身只使用 Rust 标准库，不直接使用 Cargo 中列出的外部依赖。
+`EventIterator` 持有整块缓冲区和当前位置，将连续记录逐条暴露为 `Key`/`Value`，并把第一次解码错误保存在迭代器中。
 
 ## 核心职责
 
@@ -96,15 +92,6 @@ RustCodeGraph 的文件反向引用还列出 `br/pkg/stream/crr/internal/checkpo
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/stream/decode_kv.go`，独立测试是 `br/pkg/stream/decode_kv_test.go` 与 `br/pkg/stream/decode_kv_test.rs`。两版共同保持以下语义：
-
-- 相同的双 `u32` 小端长度前缀布局；
-- 相同的 `pos: uint32/u32` 推进模型；
-- `Next` 先检查有效性，失败后保存错误并停止继续迭代；
-- `Valid` 拒绝总缓冲超过 `MaxUint32`；
-- 截断记录使用 `invalid buff` 核心文案；
-- 调用方先 `Valid`、再 `Next`，并在推进后检查错误。
-
 已验证的实现差异如下：
 
 - Go `NewEventIterator` 返回 `Iterator` 接口并持有调用者切片；Rust 返回具体 `EventIterator` 并取得 `Vec<u8>` 所有权。
@@ -123,13 +110,3 @@ Go/Rust 两份独立测试都覆盖多条拼接记录往返和尾部脏字节错
 - 若优化为零拷贝，应评估让 `EventIterator` 保存范围而非 `Vec` 副本，并用借用生命周期表达当前记录；这会影响 trait 对象安全性、上层在推进后复制数据的时机和公开 API 兼容性。
 - 若引入结构化错误，应保留上层可添加文件路径上下文的能力，并考虑与 Go `ErrInvalidArgument` 的分类语义对齐，而不只匹配字符串。
 - 本仓库要求 Rust 测试与源文件分离；新增回归应放在 `br/pkg/stream/decode_kv_test.rs`，跨模块公开契约才放入 `parity_test.rs`，不要内嵌到 `decode_kv.rs`。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/stream` 确认目标、Go 对照和独立测试均被索引。
-- RustCodeGraph 源码节点：`node --file br/pkg/stream/decode_kv.rs` 核对 136 行完整实现及反向引用；`node --file br/pkg/stream/lib.rs` 核对模块装载、测试挂载和公开再导出。
-- RustCodeGraph 调用证据：针对 `NewEventIterator`、`EncodeKVEntry`、`DecodeKVEntry`、`EventIterator::{Next,Valid,Key,Value,GetError}` 的查询确认 `searchFromDataFile` 生产调用边，以及 `search_test.rs`、`decode_kv_test.rs`、`parity_test.rs` 的测试调用边。
-- crate 边界：`br/pkg/stream/Cargo.toml`；生产入口：`br/pkg/stream/search.rs::searchFromDataFile`；模块入口：`br/pkg/stream/lib.rs`。
-- Go 对照：`br/pkg/stream/decode_kv.go`；Go 测试：`br/pkg/stream/decode_kv_test.go`。
-- Rust 测试：`br/pkg/stream/decode_kv_test.rs`、`br/pkg/stream/parity_test.rs`，以及使用相同编码布局构造数据文件的 `br/pkg/stream/search_test.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核文档只描述已由上述源码、调用边、Cargo 或对照测试支持的事实。

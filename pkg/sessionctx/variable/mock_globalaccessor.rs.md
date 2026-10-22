@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`mock_globalaccessor.rs` 位于 `astersql-sessionctx-variable` crate；crate 边界由 `pkg/sessionctx/variable/Cargo.toml` 定义，入口 `pkg/sessionctx/variable/lib.rs` 以 `pub mod mock_globalaccessor` 公开本模块，并在 `cfg(test)` 下挂载独立测试 `mock_globalaccessor_test.rs`。它是系统变量访问行为的内存测试替身，不负责持久化，也不是会话生产路径当前使用的访问器。
-
-文件名和公开方法沿用 Go `pkg/sessionctx/variable/mock_globalaccessor.go` 的 `MockGlobalAccessor` API 形状，但需要注意当前 Rust 接线边界：本文件只提供同名固有方法，没有为 `MockGlobalAccessor` 实现 `pkg/sessionctx/variable/variable.rs::GlobalVarAccessor` trait。会话对象持有的是 `Box<dyn GlobalVarAccessor>`，`pkg/sessionctx/variable/session.rs::SessionVars::new` 实际安装 `DefaultGlobalVarAccessor`。因此，本文件当前直接服务于测试，不在完整应用的生产系统变量读写主链中。
+文件名和公开方法沿用 Go `pkg/sessionctx/variable/mock_globalaccessor.go` 的 `MockGlobalAccessor` API 形状，但需要注意当前 Rust 接线边界：本文件只提供同名固有方法，没有为 `MockGlobalAccessor` 实现 `pkg/sessionctx/variable/variable.rs::GlobalVarAccessor` trait。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ RustCodeGraph 能识别本文件的构造器和六个方法节点，但对精确
 
 ## 与 Go 版本的对应关系
 
-Rust 与 Go `mock_globalaccessor.go` 保留了双模式读取、未知变量分支、全局设置的“验证 → hook → 写入”、实例设置不写 map、`SetGlobalSysVarOnly` 跳过校验，以及 TiDB 表读写的受限/panic 行为。独立的 Go `mock_globalaccessor_test.go::TestMockAPI` 与 Rust `mock_globalaccessor_test.rs::test_mock_api` 覆盖相同的主要成功和失败路径。
+Rust 与 Go `mock_globalaccessor.go` 保留了双模式读取、未知变量分支、全局设置的“验证 → hook → 写入”、实例设置不写 map、`SetGlobalSysVarOnly` 跳过校验，以及 TiDB 表读写的受限/panic 行为。
 
 当前迁移并非接口级等价，主要差异如下：
 
@@ -92,13 +90,3 @@ Rust 与 Go `mock_globalaccessor.go` 保留了双模式读取、未知变量分�
 - 新增 `mysql.tidb` 表键时，应扩展 `GetTiDBTableValue` 的支持集合并为每个键补独立成功、缺失和不支持边界测试；实现 `SetTiDBTableValue` 时还要明确写入 `vals`、`registered_defaults` 还是单独的表状态，不能破坏 GC 生命周期“注册默认值为真源”的现有测试契约。
 - 若引入内部并发可变性，应重新评估 `Send + Sync` 测试、锁中执行用户闭包导致的死锁风险以及失败后的状态回滚。当前同步、先 hook 后提交的顺序是重要不变量。
 - 性能风险主要来自测试套件构造时完整 map 克隆和每次读取的字符串克隆；当前用途为小范围测试辅助。若复制 Go 的全注册表且高频构造，应先量化成本，不要把 Go 注释所警告的测试套件模式带入生产热路径。
-
-## 验证依据
-
-- 源码全貌：`pkg/sessionctx/variable/mock_globalaccessor.rs`，RustCodeGraph 文件节点显示 141 行、11 个符号；逐项核对一个 struct、两个构造函数和六个方法，无常量、trait impl 或条件编译。
-- crate 与模块边界：`pkg/sessionctx/variable/Cargo.toml` 的包名、`[lib] path = "lib.rs"`、`autotests = false`，以及 `pkg/sessionctx/variable/lib.rs` 的公开模块和独立测试挂载；目标目录不存在 `doc.go`。
-- 正式接口/生产实现对照：`pkg/sessionctx/variable/variable.rs::GlobalVarAccessor`、`SessionVars::GlobalVarsAccessor`，以及 `pkg/sessionctx/variable/session.rs::DefaultGlobalVarAccessor` 和 `SessionVars::new`。
-- Go 对照：`pkg/sessionctx/variable/mock_globalaccessor.go::{MockGlobalAccessor, NewMockGlobalAccessor, NewMockGlobalAccessor4Tests}` 及其六个接口方法。
-- 测试证据：`pkg/sessionctx/variable/mock_globalaccessor_test.rs::{test_mock_api, mock_global_accessor_remains_send_and_sync, missing_gc_lifetime_registry_entry_panics}`、`pkg/sessionctx/variable/error_1_aster_unit_test.rs::mock_accessor_matches_normal_and_testsuite_lookup_and_set_order`、`pkg/sessionctx/variable/mock_globalaccessor_test.go::TestMockAPI`。
-- RustCodeGraph 查询：执行了 `status`、目标文件 `explore`、文件 `node`、主要符号 `query`，并尝试对精确 Rust 节点执行 `callers`/`callees`；索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边。精确方法调用边未由图返回，故使用索引 file-use 与直接调用点补证，没有据此虚构生产调用链。
-- 本任务只新增说明文档，没有修改或运行 Rust/Go 代码；按任务约束不运行 Cargo。交付结构由任务规定的 11 标题命令验证，并人工复核“文件为何存在、如何运行、如何安全扩展”三类问题。

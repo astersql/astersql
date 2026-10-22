@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件](./delete.rs)位于 `astersql-executor` crate，crate 根为 `pkg/executor/lib.rs`，并由其中的 `pub mod delete;` 公开为 DELETE 执行模块。`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/executor"` 表明它属于 Go `pkg/executor` 的 Rust 移植范围。
-
-当前实现是一个以 `DeleteRuntime` trait 隔离具体执行环境的泛型 DELETE 算法内核：它描述如何从子执行器按 chunk 拉取候选行、选择单表或多表路径、删除记录、处理外键以及维护统计和内存账本。仓库搜索只发现 `pkg/executor/delete_test.rs` 中的 `TestRuntime` 和 `multi_table_delete_partition_test.rs` 的 `PartitionDeleteRuntime` 实现 `DeleteRuntime`，没有生产运行时实现或生产代码构造 `DeleteExec<R>`；因此本文件目前可由单元测试验证，但尚无证据表明它已接入 Rust SQL 请求主链。Go 生产路径仍由 `pkg/executor/delete.go` 的具体 `DeleteExec` 承担。
+当前实现是一个以 `DeleteRuntime` trait 隔离具体执行环境的泛型 DELETE 算法内核：它描述如何从子执行器按 chunk 拉取候选行、选择单表或多表路径、删除记录、处理外键以及维护统计和内存账本。
 
 ## 核心职责
 
@@ -99,8 +97,6 @@ Go 测试 `pkg/executor/delete_test.go::TestDeleteLockKey` 还验证了真实悲
 
 ## 与 Go 版本的对应关系
 
-Rust 的方法布局和主要分支对应 `pkg/executor/delete.go`：`Next`、`deleteOneRow`、单/多表 chunk 路径、`doBatchDelete`、映射收集/删除、`removeRow`、`onRemoveRowForFK`、Open/Close 及三个 FK 查询方法均有直接同名来源。核心语义也保持一致：单表可 batch、多表按 handle 去重、外连接未匹配行跳过、IGNORE 在删除前做 FK 预检、删除后处理 FK 并增加 affected rows。
-
 两者的实现层级不同：
 
 - Go `DeleteExec` 直接嵌入 `BaseExecutor`，持有表对象、列位置信息、内存 tracker、FK maps 和写入统计，并调用具体的 `exec.Next`、事务、`table.RemoveRecord` 等设施；Rust 将这些能力全部抽象为 `DeleteRuntime`，当前只有测试 runtime。
@@ -109,7 +105,7 @@ Rust 的方法布局和主要分支对应 `pkg/executor/delete.go`：`Next`、`d
 - Go Open 创建并挂载 `memory.Tracker`，按需创建 `WriteRuntimeStats`；Rust Open 只调用运行时 hooks。Go Close 注册统计并 defer 清空 tracker；Rust 对应行为必须由 runtime hooks 实现。
 - Go 的 handle、datum、FK 和错误都是具体 TiDB 类型；Rust 通过关联类型表达，算法覆盖得到验证，但真实类型集成尚未验证。
 
-测试对应关系也不同。`pkg/executor/delete_test.rs` 是算法级独立单元测试，覆盖 batch、IGNORE、统计、内存、去重、外连接和生命周期；`pkg/executor/delete_test.go` 是 SQL/事务级测试，覆盖悲观锁键和单表/多表/batch DELETE IGNORE 的真实 FK 告警。Rust 测试没有复现 Go 的端到端锁等待、SQL warning 文本或真实事务回滚。
+测试对应关系也不同。Rust 测试没有复现 Go 的端到端锁等待、SQL warning 文本或真实事务回滚。
 
 ## 扩展指南
 
@@ -122,11 +118,3 @@ Rust 的方法布局和主要分支对应 `pkg/executor/delete.go`：`Next`、`d
 - 若接入真实 Rust executor 主链，需要新增生产 `DeleteRuntime` 适配和构造点，并用调用图确认上游 builder/Executor 接线；还应补真实 session/KV 集成测试，尤其覆盖 Go `TestDeleteLockKey` 和 `TestDeleteIgnoreWithFK` 的锁、告警、回滚与多表行为。
 
 兼容性风险集中在 handle 构造与行切片、IGNORE/FK 副作用顺序、batch 的事务边界和多表无序遍历；性能风险集中在多表 DELETE 全量物化、重复 clone、HashMap 容量及内存估算偏差。任何优化都不应以零测试或仅编译成功替代上述行为证据。
-
-## 验证依据
-
-- 冻结依据：逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/executor/delete.rs`，并读取 `git show 2c944fb:pkg/executor/delete.rs`；本文增量仅反映 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或后续提交行为。
-- 装配依据：冻结提交的 `pkg/executor/lib.rs` 与 `pkg/executor/Cargo.toml`；该包无 `doc.go`。RustCodeGraph `status` 与 `query UpdateRowTracker --limit 3` 确认当前索引含 Rust，但当前索引不能证明冻结历史，故历史行为与引用以 `git show` / `git grep 2c944fb` 为准。
-- Go 对照为冻结 `delete.go`：非聚簇分区表用 `kv.NewPartitionHandle` 去重，写入前剥离包装；Rust 的两个 runtime hook 承接同一边界，但默认只 clone handle，不自动提供分区语义。
-- `delete_test.rs` 覆盖 batch/IGNORE/FK、统计、内存与生命周期；新增 `multi_table_delete_partition_test.rs::multi_table_delete_partition_keeps_same_rowid_from_each_partition` 覆盖两个分区相同 rowid、各自重复输入只删除一次，以及写入端收到原始 handle、affected rows 为 2。测试采用整数编码模拟物理身份，不是真实分区表集成测试。
-- 交付使用 Ready 文档等价检查：五篇说明各有 11 个二级章节，检查文档差异和行尾空白，并人工复核生产接线、事务及资源边界。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`；按任务限定未运行 Cargo、Go 或 SQL 集成测试，所列测试仅作为静态证据。

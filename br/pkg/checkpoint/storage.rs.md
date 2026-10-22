@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 库 `astersql-br-pkg-checkpoint` 的 SQL 表检查点后端。`br/pkg/checkpoint/Cargo.toml` 以 `lib.rs` 为 crate 根，`lib.rs` 通过 `pub mod storage` 纳入本文件并用 `pub use storage::*` 展平公开项。它位于 `CheckpointRunner` 与 TiDB 内部 SQL 会话之间：runner 把 data/checksum 字节交给 `tableCheckpointStorage`，恢复管理器则通过本文件的查询和 meta 辅助函数重新装载状态。
-
-该文件不是通用 KV `Storage` 实现，也不是对象存储后端；对象存储路径、文件命名和锁协议在 `external_storage.rs`。表后端以临时数据库中的 `cpt_data`、`cpt_checksum`、`cpt_metadata`、`cpt_progress`、`cpt_ingest` 五类表保存检查点，其中前两类按 UUID 分组，后三类按单一 segment 序列保存。生产接线主要在 `manager.rs::TableMetaManager`，`MemSession`/`MemRestricted` 仅是 Rust 对等测试使用的内存 SQL 替身。
+定义三类临时检查点数据库名前缀、五张表的名称以及创建、写入、读取所用 SQL 模板；`IsCheckpointDB` 用前缀识别 BR 临时库及带 restore ID 的后缀变体。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@ data/checksum 与 meta 对不完整数据采用不同策略：`mergeSelectCheckp
 
 ## 与 Go 版本的对应关系
 
-本文件逐项对应 `br/pkg/checkpoint/storage.go`：数据库/表常量、524288 字节块大小、两类表结构、分片函数、`tableCheckpointStorage`、UUID 合并状态机、data/checksum 解析、meta JSON 往返以及“库为空才删库”的顺序均保持一致。Rust 的 `Uuid::new_v4` 对应 Go `uuid.New`，`serde_json` 对应 `encoding/json`，`Mutex<Option<Box<dyn Session>>>` 则把 Go 可空 session 的所有权与关闭状态显式化。
+Rust 的 `Uuid::new_v4` 对应 Go `uuid.New`，`serde_json` 对应 `encoding/json`，`Mutex<Option<Box<dyn Session>>>` 则把 Go 可空 session 的所有权与关闭状态显式化。
 
 已确认的语义差异包括：Go 的 `initialLock`/`updateLock` 调用 `log.Fatal` 后形式上返回 `nil`，Rust 直接 panic；Go 在空 UUID 和保留非空数据库时写 warning，Rust 不记录日志；Go 为受限 SQL 设置 `kv.InternalTxnBR`，Rust `Context`/`RestrictedSQLExecutor` stub 接口没有等价调用；Go `close` 没有把 `se` 置空，而 Rust `close` 取走 session，使后续 flush 得到 `session closed`。这些差异都应由调用方约束或未来移植任务评估，不能为了文档任务改动实现。
-
-Rust 独有的 `MemSession`/`MemRestricted` 不存在于 `storage.go`，属于独立测试支撑。`storage_test.rs::ddl_identifiers_use_go_percent_n_binding` 验证 DDL 标识符仍以 `%n` 参数传递；`parity_test.rs::go_rust_public_contract_matches` 覆盖数据库前缀、块边界、连续 segment 合并和空洞组丢弃。Go 同目录没有 `storage_test.go`，相关原始 Go 行为主要由 `checkpoint_test.go` 通过管理器/runner 链路间接覆盖。
 
 ## 扩展指南
 
@@ -97,12 +93,3 @@ Rust 独有的 `MemSession`/`MemRestricted` 不存在于 `storage.go`，属于�
 - 新接线到 `tableCheckpointStorage` 前确认 runner 的 lock tick 为零；否则 `initialLock`/`updateLock` 会 panic。若要支持锁，应在表后端定义清晰协议并更新 `checkpointStorage` 的独立测试，而不是吞掉调用。
 - 扩展 `MemSession` 时保持它是明确受限的测试替身；需要验证真实 SQL 事务、唯一键或 InfoSchema 行为时，应使用适合的集成测试表面，不能不断把生产数据库语义复制进该内存实现。
 - 修改 SQL 标识符绑定或清理策略时同步 `storage_test.rs::ddl_identifiers_use_go_percent_n_binding`；修改公共 Go/Rust 契约时同步 `parity_test.rs::go_rust_public_contract_matches` 和相应 Go 测试。保留源文件的 PingCAP Apache License 与 `// Copyright 2026 AsterSQL.`。
-
-## 验证依据
-
-- 源码与模块：`br/pkg/checkpoint/storage.rs`（607 行，全部常量、函数、trait 实现和测试替身）；`br/pkg/checkpoint/lib.rs`（模块声明、独立测试挂载、根级再导出）；`br/pkg/checkpoint/Cargo.toml`（crate 名、library target、`serde`/`serde_json`/`uuid` 依赖）。同目录不存在 `doc.go`。
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/checkpoint` 定位 26 个 Go/Rust 文件；`node --file br/pkg/checkpoint/storage.rs --offset 1 --limit 320` 与 `--offset 321 --limit 320` 覆盖完整 607 行；`query` 定位 `tableCheckpointStorage`、`mergeSelectCheckpoint`、`selectCheckpointData`、`insertCheckpointMeta`、`dropCheckpointTables`、`IsCheckpointDB`；精确 `explore` 给出 `selectCheckpointData -> mergeSelectCheckpoint`、`selectCheckpointChecksum -> mergeSelectCheckpoint` 调用边及测试调用点。
-- 上游接线：`br/pkg/checkpoint/manager.rs` 中 `TableMetaManager` 的快照/日志 trait 实现负责加载、保存、删除和启动 runner；`br/pkg/checkpoint/log_restore.rs::newTableCheckpointStorage` 是公开构造包装。
-- Go 对照：`br/pkg/checkpoint/storage.go`，逐项核对常量、SQL、分片、合并、错误、清理及日志行为；`br/pkg/checkpoint/checkpoint_test.go` 是同包 Go 回归入口。
-- Rust 独立测试：`br/pkg/checkpoint/storage_test.rs::ddl_identifiers_use_go_percent_n_binding` 核对 `%n` 标识符参数；`br/pkg/checkpoint/parity_test.rs::go_rust_public_contract_matches` 核对三个数据库前缀、524288 字节分段、连续 segment 合并与空洞 UUID 组丢弃；`checkpoint_test.rs` 覆盖管理器和 runner 的表存储主链。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付结构验证要求本文恰好包含固定的十一个二级章节；人工复核重点为测试替身不冒充生产实现、锁方法的 panic 边界、meta 查询排序依赖与 Rust/Go 已知差异均有明确证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-resourcegroup` crate；crate 根 `pkg/resourcegroup/lib.rs` 公开 `ruv2`，`pkg/resourcegroup/ruv2/mod.rs` 再公开 `model`，因此其他 crate 通过 `astersql_resourcegroup::ruv2::model` 使用这里的类型和函数。`pkg/resourcegroup/Cargo.toml` 表明该 crate 的 Go 对照包是 `pkg/resourcegroup`，本文件唯一直接外部依赖是带 derive 功能的 `serde`。
-
-它是 RU v3 语句计量的纯数据与数学内核：接收执行层采集的原始单位，以配置权重计算总 RU。它不采集执行统计、不读取全局配置，也不负责 TiFlash 溢价、按引擎归因或上报；这些接线分别位于 `pkg/executor/statement_ru_plan_walk.rs`、`pkg/executor/statement_ru_result.rs` 和 `pkg/executor/statement_ru_reporting.rs`。
+用 `StmtUnits::add`/`sub` 做不带校验的逐字段值运算，供执行层聚合或计算增量；最终合法性由调用者或 `calculate` 检查。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@ EXPLAIN 路径在 `pkg/executor/statement_ru_plan_walk.rs` 中分别对算子自
 
 ## 与 Go 版本的对应关系
 
-直接对照 `pkg/resourcegroup/ruv2/model.go`：Rust 的 `StmtUnits`、`StmtWeights`、`DDLWeights`、`StmtResult` 分别对应 Go 同名结构；`valid`/`add`/`sub`/`calculate` 对应 `Valid`/`Add`/`Sub`/`Calculate`，字段和点积项一致。Go 的 `(StmtResult, bool)` 在 Rust 中表达为 `Option<StmtResult>`，失败时都不暴露部分结果。
-
-两端都规定：默认语句与 DDL 权重是未经校准的占位值；跨 AZ 默认系数为零；单位和权重必须有限且非负；跨 AZ 字节不得超过总网络字节；算术方法不就地修改接收者；结果溢出必须拒绝。`pkg/resourcegroup/ruv2/model_test.rs` 的三个测试分别覆盖默认值/验证、算术/点积/溢出以及跨 AZ 不变量，与 `model_test.go` 的测试意图一致。
+两端都规定：默认语句与 DDL 权重是未经校准的占位值；跨 AZ 默认系数为零；单位和权重必须有限且非负；跨 AZ 字节不得超过总网络字节；算术方法不就地修改接收者；结果溢出必须拒绝。
 
 可见差异包括：Go 通过 TOML/JSON `"-"` 标签隐藏跨 AZ 权重，Rust 通过 serde skip 实现；Go 的 `validValues` 同时显式检查 NaN/Inf，Rust 的 `is_finite` 等价覆盖；Rust 为无穷错误文本显式生成 `+Inf`/`-Inf`。更重要的是，Go 的 DDL 权重处于 Go 配置和 DDL 使用链中，而 Rust 配置当前使用 `pkg/config/config.rs` 的独立同名结构，尚未复用这里的 DDL 类型。
 
@@ -93,12 +89,3 @@ EXPLAIN 路径在 `pkg/executor/statement_ru_plan_walk.rs` 中分别对算子自
 若新增可配置权重，要明确三种默认值：派生 `Default` 的零值、业务函数返回的占位值、部分 serde 对象缺失字段的回落值。调整 `cross_az_net_byte` 的序列化策略会改变配置兼容性和重复收费风险，必须与 Go 标签和配置测试同步评审。
 
 若接通 DDL 权重，应先决定消除还是转换 `pkg/config/config.rs::DDLWeights` 与本文件类型，避免两个同名结构长期漂移；然后接入 DDL 生产调用并补独立测试。所有 Rust 测试继续放在同目录 `model_test.rs`，不要内嵌到生产文件；Go 行为同步在 `model.go`/`model_test.go` 核验。重点回归负数、NaN、正负无穷、有限输入导致的结果溢出、跨 AZ 子集约束，以及 `add`/`sub` 的所有字段对称性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引包含 11,467 个文件；`files --filter pkg/resourcegroup/ruv2` 确认 Rust/Go 源及独立测试；`node --file pkg/resourcegroup/ruv2/model.rs` 读取 207 行和 16 个符号，并报告 7 个使用文件。精确 `callers/callees` 查询没有返回可用结果，故没有将缺失图边解释为“无调用”。
-- 目标与模块边界：`pkg/resourcegroup/ruv2/model.rs`、`pkg/resourcegroup/ruv2/mod.rs`、`pkg/resourcegroup/lib.rs`、`pkg/resourcegroup/Cargo.toml`。
-- Rust 上游证据：`pkg/config/config.rs`、`pkg/executor/statement_ru_result.rs`、`pkg/executor/statement_ru_reporting.rs`、`pkg/executor/statement_ru_plan_walk.rs`、`pkg/executor/adapter.rs`；使用位置由 `rg` 补查。
-- Go 对照：`pkg/resourcegroup/ruv2/model.go` 与 `pkg/resourcegroup/ruv2/model_test.go`。
-- Rust 独立测试：`pkg/resourcegroup/ruv2/model_test.rs`，覆盖默认值和错误文本、逐字段加减、总 RU 为 440、最大有限数乘二溢出、跨 AZ 计费及非法输入。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查并人工复核上述事实链。

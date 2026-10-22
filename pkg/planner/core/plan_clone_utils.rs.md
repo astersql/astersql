@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文对应真实源文件 [`plan_clone_utils.rs`](./plan_clone_utils.rs)。它属于 `astersql-planner-core` crate，集中提供三类计划复制辅助能力：访问路径的“清空分析状态后重建”、Point Get 缓存计划的快速深克隆，以及受支持逻辑算子子树的带新 ID 克隆。`pkg/planner/core/lib.rs` 以私有模块 `mod plan_clone_utils` 装配该文件，再通过 `pub use plan_clone_utils::*` 将公开类型和函数提升为 crate API；独立测试由 `#[cfg(test)] mod plan_clone_utils_test` 显式挂载。
-
-本文件不是计划缓存容器、优化规则或计划构建入口。RustCodeGraph 与全仓精确引用搜索显示，当前 Rust 生产代码尚未调用 `freshAccessPath`、`FastClonePointGetForPlanCache` 或 `cloneLogicalSubtree`；直接调用来自同目录单元测试和计划缓存 casetest。因此这里应视为已实现、已导出、已有验证但尚未完整接入 Rust 生产主链的迁移边界。Go 对照实现则分别接入 `rule_correlate.go` 和 `plan_cache.go`。
-
-文件包含两个公开结构体、三个公开函数和五个私有辅助函数；没有模块级常量、trait、`impl` 或条件编译项。`pkg/planner/core/Cargo.toml` 声明 crate 入口为 `lib.rs`、`autotests = false`，所以测试必须由模块入口显式注册。
+`FastClonePointGetForPlanCache` 把缓存中的 `PointGetPlan` 深克隆到调用者提供的目标对象，并把规划上下文替换为本次执行的 `PlannerContext`，避免不同会话共享可变计划状态。
 
 ## 核心职责
 
@@ -74,13 +70,13 @@ ID 分配使用 `checked_add(1).unwrap_or(i32::MIN)` 和后续 `wrapping_add`，
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/plan_clone_utils.go`。Rust 保留了三个同名能力及八种逻辑算子白名单，但数据模型与接线尚不完全等价。
+Rust 保留了三个同名能力及八种逻辑算子白名单，但数据模型与接线尚不完全等价。
 
 - Go `FastClonePointGetForPlanCache` 操作完整的 `physicalop.PointGetPlan`：目标可为 `nil`；有选择地共享不可变元数据；按 `SafeToShareAcrossSession` 决定常量共享或克隆；复用目标切片容量；清空 `PartitionIdx`、`Handle` 等重建字段；刻意不复制 cost 等缓存。Rust 的轻量 `PointGetPlan` 没有这些字段与策略，而是深克隆全部现有字段、换绑上下文并返回第二份克隆。它验证了会话隔离，但不能据此宣称覆盖 Go 的全部性能和重建语义。
 - Go `cloneLogicalSubtree` 按具体逻辑算子调用 `cloneDataSource`、`cloneJoin` 等函数，为每类节点重建基础计划、schema 和易变条件切片，并共享被认定为不可变的元数据；新 ID 来自 `NewBaseLogicalPlan` 的规划上下文。Rust 使用统一 `PlanNode` 值模型整体克隆，再替换 children 和 ID；它没有 Go 中 `PreferCorrelate = false`、DataSource access path 深克隆、schema 克隆和 stats 保留等类型专属处理。
 - Go `freshAccessPath` 保留 Index、StoreType、handle/hint 标志等多项结构字段，并清空范围、条件和 Index Merge 分析字段。Rust `AccessPath` 只有 `index_name` 可作为结构身份，因此当前仅保留该字段。
 
-Go 注释说明逻辑克隆用于相关子查询优化：谓词下推修改 Apply 备选 inner plan 时不能污染 Join 原始 inner 子树。Rust 的深拷贝和整体失败策略与此安全意图一致，但 Rust 生产规则尚无调用边；将来接线时需逐项补齐 Go 的算子专属状态，而不能只依赖统一 `Clone` 即认定语义完成。
+Rust 的深拷贝和整体失败策略与此安全意图一致，但 Rust 生产规则尚无调用边；将来接线时需逐项补齐 Go 的算子专属状态，而不能只依赖统一 `Clone` 即认定语义完成。
 
 ## 扩展指南
 
@@ -89,13 +85,3 @@ Go 注释说明逻辑克隆用于相关子查询优化：谓词下推修改 Appl
 - 扩充 `AccessPath` 字段时，先按 Go 的“结构身份”与“可重新推导分析状态”分类，再决定 `freshAccessPath` 保留或清空；同步 `fresh_access_path_preserves_identity_and_clears_analysis_state`，特别覆盖嵌套 Index Merge 字段。
 - 扩充 `PointGetPlan` 字段时，必须同步 `FastClonePointGetForPlanCache` 与 `casetest/plancache/plan_cache_rebuild_test.rs`。需明确字段应换绑、深克隆、共享、清空还是留给 rebuild 填充，并评估重复全量克隆的性能成本。
 - 将这些函数接入 Rust 生产链时，应分别选择计划缓存命中/重建路径和 correlate 规则入口，并新增接近 Go 场景的独立回归测试。特别要验证两个优化备选互不污染、缓存跨会话隔离，以及不支持算子会安全放弃优化而不是修改原计划。
-
-## 验证依据
-
-- 源文件：`pkg/planner/core/plan_clone_utils.rs`，核对两个公开结构体、三个公开函数、五个私有辅助函数及全部分支。
-- crate 边界：`pkg/planner/core/Cargo.toml` 与 `pkg/planner/core/lib.rs`，核对 crate 名、`autotests = false`、模块装配、公开再导出和独立测试注册。
-- 直接类型定义：`pkg/planner/core/common_plans.rs` 中 `PlanKind`、`PlanNode`、`PlannerContext`，核对算子白名单以外的变体、节点被整体克隆的字段和上下文值语义。
-- Rust 测试：`pkg/planner/core/plan_clone_utils_test.rs` 覆盖访问路径清空、新 ID 唯一性和不支持子节点整体失败；`pkg/planner/core/casetest/plancache/plan_cache_rebuild_test.rs` 覆盖 Point Get 换绑上下文、字段保留和深拷贝隔离。
-- Go 对照与生产调用者：`pkg/planner/core/plan_clone_utils.go`、`pkg/planner/core/plan_cache.go`、`pkg/planner/core/rule_correlate.go`，用于核对移植意图、类型专属克隆策略和真实 Go 接线。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query` 精确区分本文件与 Go 文件的同名函数；文件节点与 `explore` 验证 Rust 递归调用链，并定位同目录测试调用。精确批量 callers/callees 查询长时间无结果后已终止，再以全仓符号引用搜索补齐调用证据；未发现 Rust 生产调用点。
-- 验收范围：本任务只新增说明文档，不修改 Rust、Go、Cargo 或总计划，不运行 Cargo。结构验收使用任务指定命令，要求恰好存在十一个固定二级标题；另人工复核本文明确区分当前 Rust 事实、Go 对照与尚未接线部分。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-domain-sqlsvrapi-mock` crate，是 `pkg/domain/sqlsvrapi/server.rs` 中 `Server` trait 的 Rust 测试替身。crate 入口 `pkg/domain/sqlsvrapi/mock/lib.rs` 通过 `pub mod server_mock` 挂载本文件，并在 `domain::sqlsvrapi::mock` 下再导出其公开项，以模拟 Go 包路径。它不是 SQL 请求的生产实现，也不启动服务器；调用者在测试中配置预期，让被测代码只依赖 `Arc<dyn Server>` 接口。
-
-`pkg/domain/sqlsvrapi/mock/Cargo.toml` 将该 crate 声明为 workspace 成员 `astersql-domain-sqlsvrapi-mock`，直接依赖 `mockall = "0.13"` 和相邻的 `astersql-domain-sqlsvrapi`。后者经 `lib.rs` 再导出 `domain::sqlsvrapi` 与 `owner`，供本文件引用真实 trait 和返回类型。
+`mockall::mock!` 生成公开的 `MockServer`，并令其实现真实的 `Server` trait（`server_mock.rs:34-46`）。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ RustCodeGraph 将 `server_mock.rs` 识别为含 7 个符号的已索引文件，
 
 ## 与 Go 版本的对应关系
 
-`pkg/domain/sqlsvrapi/mock/server_mock.go` 是 MockGen 生成的直接对照。Rust 保留相同的三个业务方法、参数顺序和 Go 风格名称，也保留 `NewMockServer`、`EXPECT`、`ISGOMOCK` 迁移入口。`pkg/domain/sqlsvrapi/server.go` 与 `server.rs` 进一步证明接口职责一致。
-
 关键差异如下：
 
 - Go `MockServer` 显式保存 `ctrl` 和独立的 `MockServerMockRecorder`；Rust 的记录状态由 mockall 生成，`EXPECT()` 只是返回 `&mut MockServer`。
@@ -100,14 +96,3 @@ Go 测试 `pkg/dxf/framework/dxfutil/util_test.go` 与 Rust 的 `util_test.rs` �
 新增返回资源时，应明确其 `Arc` 所有权、显式释放协议和错误类型，并用测试验证正常值、错误值、参数匹配、调用次数以及资源释放。性能风险通常不在本薄 mock 本身，而在过度克隆大型捕获值或在 `returning` 闭包中加入阻塞工作；兼容风险主要来自 trait 签名与 Go 对照漂移，以及期望命名随方法变化而变化。
 
 如果需要改变生产行为，应修改真实 `Server` 实现及独立生产测试，而不是让此 mock 自行补业务逻辑。该文件的职责是不多不少地反映接口契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`files --filter pkg/domain/sqlsvrapi/mock` 确认目标及相邻 Go/Rust 文件被索引；`node --file pkg/domain/sqlsvrapi/mock/server_mock.rs` 读取 65 行源码并报告 7 个符号；`query MockServer`、`query server_mock`、`query NewMockServer --json` 核对类型、三个 trait 方法和兼容辅助函数。`callers`/`callees` 对宏生成边未产生可用输出，因此用直接引用搜索补证。
-- 目标源码：`pkg/domain/sqlsvrapi/mock/server_mock.rs`。
-- crate 与装配：`pkg/domain/sqlsvrapi/mock/Cargo.toml`、`pkg/domain/sqlsvrapi/mock/lib.rs`、根 `Cargo.toml`。
-- 真实 Rust 契约：`pkg/domain/sqlsvrapi/server.rs`。
-- Go 对照：`pkg/domain/sqlsvrapi/server.go`、`pkg/domain/sqlsvrapi/mock/server_mock.go`。
-- Rust 测试：`pkg/domain/sqlsvrapi/mock/migration_aster_unit_test.rs`、`pkg/dxf/framework/dxfutil/util_test.rs`；后者的 `Cargo.toml` 证明 mock crate 是 dev-dependency。
-- Go 测试对照：`pkg/dxf/framework/dxfutil/util_test.go`，并通过引用搜索确认 taskexecutor、scheduler、importinto 与 DDL 测试对 mock 包的使用范围。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定的 11 章节结构命令、路径存在性和差异范围检查作为验证。

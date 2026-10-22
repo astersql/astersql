@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-objstore-compressedio`，包入口 `pkg/objstore/compressedio/lib.rs` 将 `reader` 模块及其公开项重新导出。它位于对象存储与导入链路的流式解压边界：调用方提供实现了 `Read + Send` 的压缩字节源，本文件依据 `CompressType` 返回对应的解压 `Read`。包的格式枚举和 `DecompressConfig` 定义在 `pkg/objstore/compressedio/def.rs`；直接外部依赖由 `pkg/objstore/compressedio/Cargo.toml` 声明为 `flate2`、`snap` 和 `zstd`。
-
-公开入口只有 `new_reader`。RustCodeGraph 索引显示它被导入文件扫描、会话层 `LOAD DATA`/导入压缩处理、对象存储测试以及 RealTiKV 导入测试使用，例如 `pkg/importsdk/file_scanner.rs::open`、`pkg/session/runtime/load_data.rs::decode_load_data_file`、`pkg/session/runtime/import_compression.rs::execute_import_compression` 和 `tests/realtikvtest/importintotest3/harness.rs::decode_import_file`。文件本身不识别文件后缀、不打开对象存储，也不管理外层文件句柄；压缩类型选择和源 Reader 生命周期由调用方负责。
+异步 Zstd 路径负责把后台线程的解压数据、错误和 EOF 转换成标准 `Read` 语义，同时用有界通道施加背压。
 
 ## 核心职责
 
@@ -91,13 +89,13 @@ Gzip、Snappy 和并发度为 `1` 的 Zstd 都在调用 `read` 的线程上执�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/compressedio/reader.go` 和 `def.go`。格式分派一致：Gzip、Snappy、Zstd 返回解码 Reader，默认/无压缩返回 `nil`；Rust 用 `Result<Option<...>>` 表达 Go 的 `(io.Reader, error)` 加 `nil`。
+格式分派一致：Gzip、Snappy、Zstd 返回解码 Reader，默认/无压缩返回 `nil`；Rust 用 `Result<Option<...>>` 表达 Go 的 `(io.Reader, error)` 加 `nil`。
 
-Gzip 语义刻意对齐 Go：Go `gzip.NewReader` 构造期检查头部且默认启用 multistream；Rust 因此选择 `MultiGzDecoder` 并显式检查 `header()`。`reader_test.rs` 的非法头测试和拼接 member 测试记录了这两个兼容要求。
+Gzip 语义刻意对齐 Go：Go `gzip.NewReader` 构造期检查头部且默认启用 multistream；Rust 因此选择 `MultiGzDecoder` 并显式检查 `header()`。
 
-Go 对 Zstd 仅在 `ZStdDecodeConcurrency > 0` 时传入 `WithDecoderConcurrency`；其配置注释规定“不为 1 时异步”。Rust 复刻调用方可观察的同步/异步分界：`== 1` 同步，其他值异步。不过 Rust 非 1 分支只启动一个后台解码线程，并未按正整数值创建对应数量的 Zstd worker，因此吞吐和 CPU 并行度不应被描述为与 Go 实现完全等价。
+不过 Rust 非 1 分支只启动一个后台解码线程，并未按正整数值创建对应数量的 Zstd worker，因此吞吐和 CPU 并行度不应被描述为与 Go 实现完全等价。
 
-Go `zstd.NewReader` 的构造/预读细节由上游库决定；Rust 同步分支特意惰性初始化，以避免在构造阶段消费管道。两端已由对象存储管道测试验证关键可观察行为，但所有损坏流的精确报错文本并未证明逐字一致。
+Go `zstd.NewReader` 的构造/预读细节由上游库决定；Rust 同步分支特意惰性初始化，以避免在构造阶段消费管道。
 
 ## 扩展指南
 
@@ -107,14 +105,3 @@ Go `zstd.NewReader` 的构造/预读细节由上游库决定；Rust 同步分支
 - 若要真正实现数值型多 worker 并发，不能只增加线程数：需要确认 zstd 帧能否安全分区、输出顺序、错误仲裁和取消方式，并以 Go `WithDecoderConcurrency` 的可观察行为为兼容基线。
 - 若要增加显式取消或等待线程结束，应在 `AsyncZstdReader` 中加入生命周期协议，并考虑底层阻塞 `Read` 无法仅靠关闭 receiver 中断的问题。
 - 改变公开签名时要审查所有 RustCodeGraph 调用者，尤其是导入 SDK、session runtime 和 RealTiKV harness；`NoCompression` 的 `None` 约定不能静默改成返回原 Reader。
-
-## 验证依据
-
-- 生产源码：`pkg/objstore/compressedio/reader.rs`（`SendReader`、`LazyZstdReader`、`DecodeMessage`、`AsyncZstdReader`、`decode_zstd`、`new_reader`）。
-- 模块与类型：`pkg/objstore/compressedio/lib.rs`、`pkg/objstore/compressedio/def.rs`。
-- crate 边界：`pkg/objstore/compressedio/Cargo.toml`；工作区成员及 facade 声明见根 `Cargo.toml`。
-- Go 对照：`pkg/objstore/compressedio/reader.go`、`pkg/objstore/compressedio/def.go`；对象存储接线参考 `pkg/objstore/compress.go`。
-- 独立 Rust 测试：`pkg/objstore/compressedio/reader_test.rs` 覆盖非法 Gzip 头和多 member；`pkg/objstore/compressedio/migration_aster_unit_test.rs` 覆盖三格式往返、同步 Zstd 和无压缩 `None`；`pkg/objstore/objectio/writer_test.rs` 覆盖对象存储往返与 Zstd 管道同步/异步差异。
-- 调用点证据：`pkg/importsdk/file_scanner.rs`、`pkg/session/runtime/load_data.rs`、`pkg/session/runtime/import_compression.rs`、`tests/realtikvtest/importintotest3/harness.rs`。
-- RustCodeGraph：`status` 显示索引含 `pkg/objstore/compressedio/reader.rs`；`files --filter pkg/objstore/compressedio` 列出源码和独立测试；`explore 'pkg/objstore/compressedio/reader.rs new_reader LazyZstdReader AsyncZstdReader decode_zstd'` 返回完整目标源码、`new_reader` 的 10 个调用者及 `decode_zstd` 的内部调用关系。精确 `callers/callees/node` 命令本次退出成功但未产生文本，因此调用关系又以索引 `explore` 结果和上述调用点源码交叉核验。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令校验文档存在且恰有 11 个固定二级标题，并人工复核未把测试写入生产源码、未把未验证行为写成现状。

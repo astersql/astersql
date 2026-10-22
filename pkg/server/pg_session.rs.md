@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server` crate：`pkg/server/Cargo.toml` 以 `lib.rs` 为库入口，`pkg/server/lib.rs` 通过私有模块 `mod pg_session;` 装配它。它位于 PostgreSQL 协议兼容入口与原生 TiDB 执行上下文之间，保存单条 PostgreSQL 连接的 `search_path`，并识别少量必须具有 PostgreSQL 会话语义的语句。模块注释明确限定：这里的路径是 connection-private 状态，不会切换或改写底层原生 SQL mode。
-
-真实上游有两条。简单查询协议由 `pkg/server/pg_conn.rs` 在收到 `Q` 消息后先调用 `SessionQuery::parse`，命中时直接通过 `extended.session.execute` 执行；扩展查询协议由 `pkg/server/pg_extended.rs` 在 Parse 阶段保存 `SessionQuery` 及其元数据，在 Execute 阶段才用同一个 `PgSession` 执行。未命中的 SQL继续进入 `CatalogQuery`、`pg_name::adapt` 或原生引擎。
+`PgSession` 保存连接私有的 schema 搜索顺序；默认值为 `public`，可设置为 `public`、`pg_catalog` 的无重复组合或空列表。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ SessionQuery 在扩展协议中的生命周期跨 Parse、Bind、Describe、Exec
 
 `pkg/server/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/server"` 给出包级对照，但 `pkg/server` 的 Go 文件中检索不到 `pg_session`、`search_path`、`current_schema` 或对应 PostgreSQL 会话实现，也不存在 `pkg/server/pg_session.go`。因此本文件不是同路径 Go 源的逐函数移植，而是 Rust 服务端新增的 PostgreSQL 协议兼容层；Go `pkg/server` 主要承载既有 MySQL 协议连接与执行服务。
 
-它复用的 Go/TiDB 语义边界是 `TiDBContext` 背后的当前数据库和事务状态：`current_database()` 委托原生 `SELECT DATABASE()`，而不是在 PG 兼容层另建数据库状态。相反，`search_path` 明确保持为 PG 连接私有状态，不能写入 TiDB session SQL mode 或把 `public` 假装成真实 TiDB database。后续对齐应以现有 Rust PG 协议测试和原生 context 行为为依据，不能假定存在尚未找到的 Go 等价实现。
+后续对齐应以现有 Rust PG 协议测试和原生 context 行为为依据，不能假定存在尚未找到的 Go 等价实现。
 
 ## 扩展指南
 
@@ -79,13 +77,3 @@ SessionQuery 在扩展协议中的生命周期跨 Parse、Bind、Describe、Exec
 扩展 search_path 支持时，必须同步审计 `public_precedes_catalog`、`has_public`、`schema`、`pg_catalog.rs` 的隐式关系遮蔽和 `pg_name.rs` 的关系改写。任意 schema、`$user` 或大小写/引号规则不能只放宽解析器；还需证明该名字如何映射到 TiDB database/infoschema，并保持显式 `pg_catalog`、隐式 catalog、CTE 和原生表的优先级。
 
 测试逻辑必须继续放在独立文件。解析器边界优先扩展 `pkg/server/pg_session_test.rs`；连接隔离、错误恢复、名称可见性与简单/扩展协议行为扩展 `pkg/server/pg_query_test.rs`；目录遮蔽扩展 `pkg/server/pg_catalog_test.rs`；Parse/Bind/Describe/Execute 的元数据或 portal 生命周期可补在 `pkg/server/pg_extended_test.rs`。重点兼容风险是客户端依赖的 SQLSTATE、列标签/类型、CommandComplete 标签、路径优先级和 prepared statement 的执行时状态。
-
-## 验证依据
-
-- 生产源码：`pkg/server/pg_session.rs`；核对了 `SessionQuery` 五个变体、`PgSession` 默认值和三个观察方法，以及 parse/metadata/command/execute 全部分支。
-- crate 与装配：`pkg/server/Cargo.toml`、`pkg/server/lib.rs`；`pkg/server/doc.go` 不存在，故无额外 package contract 可读。
-- 上游与下游接线：`pkg/server/pg_conn.rs`（简单查询分类和执行）、`pkg/server/pg_extended.rs`（Parse/Bind/Describe/Execute 与资源区分）、`pkg/server/pg_catalog.rs`（路径遮蔽和当前 schema）、`pkg/server/pg_name.rs`（public 可见性与关系改写）。
-- 独立测试：`pkg/server/pg_session_test.rs` 覆盖分类与拒绝边界；`pkg/server/pg_query_test.rs` 覆盖默认值、空路径、连接隔离、SQLSTATE、RESET、关系可见性和 Execute 时读取最新 schema；`pkg/server/pg_catalog_test.rs` 覆盖 public/pg_catalog 遮蔽与 CTE 优先级。
-- Go 对照：检索 `pkg/server/**/*.go` 未发现 search_path/current_schema/current_database 的 PG 会话实现；只把 `Cargo.toml` 的包级 porting 声明及 `TiDBContext` 原生数据库语义作为对照。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`query PgSession`、`query SessionQuery`、`query public_precedes_catalog`、`query has_public`、`query command/metadata/parse` 均定位到目标符号。`files --filter pg_session` 与精确 callers/callees 未产出有效边，已用上述直接调用点补证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级章节，并人工检查唯一生产物、事实可追溯性及无内嵌测试建议。

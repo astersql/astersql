@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的 `runtime` 模块中，由 `pkg/session/runtime.rs` 以 `pub mod crossks_job_submit` 暴露。它是跨 keyspace 表模式 DDL 的“持久化提交适配器”：上游 `pkg/domain/crossks/ddl_submit.rs` 已完成目标元数据解析、模式迁移合法性判断和会话变量采集，本文件把得到的 `AlterTableModeJob` 转成 `astersql_ddl_jobsubmit::JobSpec`，并通过目标 keyspace 的真实 SQL 会话池写入 `mysql.tidb_ddl_job`。
-
-生产接线位于 `pkg/session/runtime/crossks_runtime.rs`：`CrossKSProductionRuntimeFactory::create_runtime` 构造提交器并放入 `CrossKSProductionDdlBackend`；后端的 `DdlBackend::submit` 再调用 `CrossKSJobSubmitter::submit_table_mode`。因此本文件处在跨 keyspace DDL 客户端与通用 DDL jobsubmit 子系统之间，不负责解析 SQL，也不负责 owner 执行 Job。
+`CrossKSJobSubmitter::new` 把跨 keyspace 的会话池、flashback guard、最小 Job ID 提供器、可选 server state 组装成通用 `jobsubmit::SubmitOptions`，固定配置最多 5 次尝试和线性退避。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ JSON 编码使用 `expect("serialize table-mode DDL arguments")`。当前字段�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 `pkg/domain/crossks/ddl_submit.go` 与 `pkg/ddl/jobsubmit/{table_mode.go,submit.go}`。Go 的 `ddlClient.alterTableMode` 在一个流程内完成目标解析、构建 Job、刷新 server state、`SubmitBatch`、etcd 通知和等待历史终态；Rust 将该流程拆为领域层 `DdlClient`、本文件的 session 适配器以及生产 backend/owner。
+Go 的 `ddlClient.alterTableMode` 在一个流程内完成目标解析、构建 Job、刷新 server state、`SubmitBatch`、etcd 通知和等待历史终态；Rust 将该流程拆为领域层 `DdlClient`、本文件的 session 适配器以及生产 backend/owner。
 
-字段语义保持对齐：Job version 为 2、类型为 `ActionAlterTableMode`/数值 75、schema/table ID 与名称被复制、query 沿用上游构建出的 `"skip"`、BinlogInfo 非空，并保留 `CDCWriteSource`、`SQLMode` 与 involving schema。表模式参数的数值对应为 Normal=0、Import=1、Restore=2，version-2 载荷字段为 `table_mode`、`schema_id`、`table_id`。
-
-Go `SubmitBatch` 与 Rust `submit_batch` 都负责 flashback guard、BDR role/start TS、involving schema、升级期暂停、全局 ID 和系统表插入。Rust 构造器把这些依赖显式注入 `SubmitOptions`，并使用 5 次上限及 10/20/30/40/50 毫秒线性退避；这属于当前 Rust 接线参数，不应泛化为所有 Go 调用点的固定策略。
+Rust 构造器把这些依赖显式注入 `SubmitOptions`，并使用 5 次上限及 10/20/30/40/50 毫秒线性退避；这属于当前 Rust 接线参数，不应泛化为所有 Go 调用点的固定策略。
 
 ## 扩展指南
 
@@ -93,12 +89,3 @@ Go `SubmitBatch` 与 Rust `submit_batch` 都负责 flashback guard、BDR role/st
 - 若要增加 owner 通知、取消或等待行为，应修改 `pkg/domain/crossks/ddl_submit.rs` 和 `pkg/session/runtime/crossks_runtime.rs` 的相应 backend 方法，而不是扩张 `submit_table_mode` 的职责。
 - 本文件的直接回归测试应继续放在独立文件 `pkg/session/runtime/crossks_job_submit_test.rs`，不要把测试内嵌到生产源文件。端到端 owner 消费可扩展 `crossks_owner_test.rs`，完整 runtime/RealTiKV 路径可扩展 `crossks_runtime_test.rs`；通用提交边界则属于 `pkg/ddl/jobsubmit/submit_test.rs`。
 - 兼容性风险集中在 Job type/version、参数 JSON、名称规范化和状态字段；正确性风险集中在成功前错误回填 ID、绕过 flashback/BDR/upgrade 检查；性能风险集中在线性退避、同步阻塞和有限会话池容量。
-
-## 验证依据
-
-- 目标源码：`pkg/session/runtime/crossks_job_submit.rs`，核对 `CrossKSBDRPolicy`、`CrossKSJobSubmitter::{new,submit_table_mode}` 的全部实现。
-- 模块与 crate：`pkg/session/runtime.rs` 确认生产模块公开且测试独立；`pkg/session/Cargo.toml` 确认 `astersql-domain-crossks`、`astersql-ddl-jobsubmit`、`astersql-ddl-bdr` 和 `serde_json` 依赖。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`explore "pkg/session/runtime/crossks_job_submit.rs CrossKSJobSubmitter submit_table_mode CrossKSBDRPolicy"` 找到生产 runtime、直接测试和 owner 测试；文件节点进一步核对 `crossks_runtime.rs`、`domain/crossks/ddl_submit.rs`、`ddl/jobsubmit/submit.rs`、`ddl/jobsubmit/types.rs`、`crossks_session_pool.rs` 的调用与生命周期边界。图对 `submit_table_mode` 的部分方法边未完整解析，因此以这些精确文件节点交叉确认。
-- Rust 测试：`pkg/session/runtime/crossks_job_submit_test.rs` 验证提交后 ID 大于零，system-table manager 可按 ID 解码 Job，且 `mysql.tidb_ddl_job` 中 schema ID=100、table ID=200、type=75、processing=0；`crossks_owner_test.rs` 继续验证持久化 Job 被 owner 消费并进入历史；`pkg/ddl/jobsubmit/submit_test.rs` 覆盖通用提交的会话归还、拒绝、重试和状态边界。
-- Go 对照：`pkg/domain/crossks/ddl_submit.go`、`pkg/ddl/jobsubmit/table_mode.go`、`pkg/ddl/jobsubmit/submit.go` 及其 `*_test.go`，用于核对端到端职责拆分、Job 字段、提交语义和系统表结果。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付时仅执行任务指定的 11 章节结构检查，并人工复核没有把通知、等待或 owner 执行误写为本文件职责。

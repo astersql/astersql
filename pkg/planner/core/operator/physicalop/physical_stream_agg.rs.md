@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义物理流式聚合的具体 Rust 类型 `PhysicalStreamAgg`。它属于 Cargo 包 `astersql-planner-core-operator-physicalop`（`pkg/planner/core/operator/physicalop/Cargo.toml`），由同目录 `lib.rs` 声明为 `mod physical_stream_agg` 并公开再导出。`lib.rs` 中的 `agg_operator_core!(PhysicalStreamAgg)` 又把它接入 `base::Plan`、`base::PhysicalPlan` 和该 crate 的 `ConcretePhysicalOperator` 通用接口，因此优化器、任务树和 PB 编码路径能够把它作为一个具体物理计划节点处理。
-
-流式聚合要求输入按分组键有序，以连续扫描相同分组的方式计算聚合；相较 `PhysicalHashAgg`，它不需要为全部分组维护哈希表，但其可用性依赖子计划提供正确顺序。这个文件是薄具体类型层：共享的聚合描述、分组表达式、schema、统计信息、子节点和 MPP 字段都存放在 `BasePhysicalAgg` 中；候选生成、属性筛选、部分/最终聚合拆分等逻辑不在本文件内。
+流式聚合要求输入按分组键有序，以连续扫描相同分组的方式计算聚合；相较 `PhysicalHashAgg`，它不需要为全部分组维护哈希表，但其可用性依赖子计划提供正确顺序。
 
 ## 核心职责
 
@@ -84,12 +82,9 @@ RustCodeGraph 的 `PhysicalStreamAgg` 节点 trail 确认了 `InitForStream`、�
 
 ## 与 Go 版本的对应关系
 
-同路径 `physical_stream_agg.go` 是直接对照来源。类型字段、`GetPointer`、`Clone`、`MemoryUsage`、`ToPB`、`GetCost`、两个计划成本入口和 `Attach2Task` 在 Rust 中都有对应项，方法命名也保留 Go 风格以方便迁移核对。
-
 主要对应与差异是：
 
 - Rust `ToPB` 与 `PhysicalHashAgg` 共用 `aggregate_to_pb`，并通过 `TypeStreamAgg` 区分 executor；Go 在本文件中展开表达式转换与 executor 构造。可观察目标相同，但 Rust 共享实现还统一写入细粒度 shuffle stream 数。
-- Go `GetCost` 转调 `utilfuncp.GetCost4PhysicalStreamAgg`；Rust 在本文件内直接实现相同核心公式。`physical_stream_agg_test.rs::get_cost_matches_go_cpu_and_distinct_memory_accounting` 分别覆盖 root/coprocessor CPU 因子及一个 DISTINCT 聚合的 `0.8` 内存因子。
 - Go `GetPlanCostVer1/2` 和 `Attach2Task` 转调 `utilfuncp` 的 StreamAgg 专用函数；Rust 方法表面先委托公共基础计划/trait，具体类型路由和 StreamAgg 分支位于 `lib.rs`、`base_physical_plan.rs` 等相邻模块，不能仅凭本文件断言所有 Go 专用分支都在这里逐行复刻。
 - Go `MemoryUsage` 接受 nil receiver 并返回零；安全 Rust 的 `&self` 调用不存在 nil receiver。
 - Go 文件还定义 `getStreamAggs` 和 `getEnforcedStreamAggs`，负责 Flash/index join 限制、顺序属性、FinalMode、GROUP BY 表达式形态、DISTINCT 下推和 hint 强制候选等筛选。本 Rust 文件没有这两个函数；这些 Go 行为不能算作本文件已实现。
@@ -102,20 +97,3 @@ RustCodeGraph 的 `PhysicalStreamAgg` 节点 trail 确认了 `InitForStream`、�
 - 若改变候选可用条件或排序要求，应从产生 StreamAgg 的逻辑到物理转换/属性代码入手，而不是只改这个薄包装；重点验证 GROUP BY 顺序、强制 sort、index join、DISTINCT 下推及 TiFlash/MPP 边界。
 - 若改变任务拆分或下推，检查 `base_physical_plan.rs` 中所有 `PhysicalStreamAgg` downcast 分支，并补 planner 集成测试和执行器物理计划运行测试。尤其要防止把只适用于 HashAgg 的 MPP partial/final 路径错误复用给 StreamAgg。
 - 性能风险主要来自错误的基数/成本导致计划误选、失去输入有序性导致语义错误，以及 PB 共享转换的额外克隆；兼容风险集中在 Go 成本、计划缓存快照和 TiDB/TiKV/TiFlash executor 形状差异。
-
-## 验证依据
-
-已核对的直接文件与符号：
-
-- `physical_stream_agg.rs`：完整类型和八个公开方法；无条件编译项、无额外模块级常量。
-- `physicalop/Cargo.toml`：crate 名、`lib.rs` 入口、`base`/`costusage`/`expression`/`kv`/`property`/`tipb` 等依赖，以及 Go 包映射 metadata。
-- `physicalop/lib.rs`：模块声明、公开再导出、`agg_operator_core!(PhysicalStreamAgg)` 和缓存快照类型契约。
-- `base_physical_agg.rs`：`BasePhysicalAgg` 数据布局、`InitForStream`、克隆/索引解析等共享聚合行为。
-- `physical_hash_agg.rs::aggregate_to_pb`：StreamAgg 实际调用的共享 PB 编码实现。
-- `base_physical_plan.rs`：trait 默认任务挂接、StreamAgg 的 downcast 分派、root/cop/MPP 与 partial/final 边界。
-- `physical_stream_agg.go` 与 `pkg/planner/core/plan_cost_ver1.go::getCost4PhysicalStreamAgg`：Go 类型、候选生成职责和 v1 成本语义对照。
-- `physical_stream_agg_test.rs`：root/cop CPU 因子及 DISTINCT 内存成本回归；`cache_snapshot_test.rs`：计划缓存往返；`pkg/executor/physical_plan_runtime_test.rs`：StreamAgg 执行计划构造；`pkg/planner/core/enforce_mpp_test.rs`：TiFlash/MPP StreamAgg 形状证据。
-
-RustCodeGraph 查询包括 `status`、`query PhysicalStreamAgg`、`query physical_stream_agg`、主要方法的 `query/node`；索引包含目标 Rust/Go/测试节点，并在结构节点 trail 中报告 `InitForStream`、缓存恢复与测试实例化边。精确 `callers/callees` 查询在当前索引上超时且没有返回方法级边，故没有据此声称不存在调用者，而是用已返回的 node trail 与上述源码接线补证。
-
-本任务只新增文档，按计划不运行 Cargo。结构验收应确认目标文件存在，且上述十一个固定二级标题各出现且仅出现一次；人工复核重点是区分本文件的薄包装职责、相邻模块的通用接线和 Go 文件尚未归属于本文件的候选生成逻辑。

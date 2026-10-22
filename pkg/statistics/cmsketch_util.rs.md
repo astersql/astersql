@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics` crate（见 `pkg/statistics/Cargo.toml`），由 `pkg/statistics/lib.rs` 以 `mod cmsketch_util` 纳入并通过 `pub use cmsketch_util::*` 对外重导出。它位于统计信息的 TopN 编码值与类型化 `Datum` 之间：TopN 在 `TopNMeta::Encoded` 中保存扁平编码字节，而直方图合并、运行时统计构造等消费者需要按“索引值”或“列值”的语义恢复数据。文件本身不构建 CMSketch/TopN，也不维护统计计数。
+同样先解出一个值，但对字符串字段保留解码所得的原始比较字节，避免 `Unflatten` 改变用于排序/比较的字节表示；非字符串类型则恢复为字段自身的 Datum kind。
 
 ## 核心职责
 
@@ -66,14 +66,10 @@ RustCodeGraph 的 `explore/query` 结果显示，Rust 上游中 `topNMetaToDatum
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/statistics/cmsketch_util.go`，Rust 保留了两个同名入口和相同分支顺序：
-
 - Go `topNMetaToDatum` 在 `isIndex` 时用 `SetBytes` 返回索引字节；Rust 用 `NewBytesDatum(value.Encoded.clone())` 达到同样的拥有式结果。否则两边都先 `DecodeOne`，再按字段类型与时区 `Unflatten`。
 - Go `DecodeColumnTopNValue` 在解码错误或字符串类型时返回当前 Datum/错误；Rust 用 `?` 先传播错误，再对字符串成功结果直接返回，外部可观察语义一致。
 - Go 使用 `*time.Location`，Rust 使用 `chrono_tz::Tz` 并包装为 `Some(location)`；Timestamp 时区差异由 Rust 的 `go_merge_47_top_n_timestamp_respects_location` 验证。
 - Go 注释明确列出 ENUM、SET、BIT、时间和 Float 的扁平表示原因；Rust 当前用更简短的模块注释表达同一契约。Rust 的 `cmsketch_util_test.rs::top_n_meta_decodes_double_through_unflatten` 直接验证 Float64 恢复，`go_merge_47_test.rs` 补充 Duration、字符串、索引和 Timestamp 行为。
-
-未发现本文件相对 Go 的有意功能删减；命名保留 Go 风格是 crate 全局 `#![allow(non_snake_case)]` 下的移植兼容选择。
 
 ## 扩展指南
 
@@ -82,12 +78,3 @@ RustCodeGraph 的 `explore/query` 结果显示，Rust 上游中 `topNMetaToDatum
 - 改动列语义时同步检查 `DecodeColumnTopNValue` 与 `pkg/statistics/handle/runtime_stats.rs::canonical_histogram`；字符串类型判断变化必须验证二进制字节、排序/比较语义及各种 MySQL 字符串类型。
 - 回归测试继续放在独立文件，不能内嵌到生产源文件。小范围函数测试放入 `pkg/statistics/cmsketch_util_test.rs`；Go 合并语义兼容可扩展 `pkg/statistics/go_merge_47_test.rs`；必要时与 `pkg/statistics/cmsketch_test.go` 的 Duration/字符串用例保持一一对应。
 - 至少覆盖：非法/空编码、索引原样返回、字符串原始字节、数值与 Duration 反扁平化、Timestamp 多时区、以及若改变尾部策略则覆盖多值/尾随字节。兼容风险集中在 Datum kind 与排序语义，性能风险集中在热路径复制和反扁平化开销。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/statistics/cmsketch_util.rs`、`pkg/statistics/cmsketch.rs::TopNMeta`、`pkg/statistics/lib.rs`、`pkg/statistics/Cargo.toml`。
-- Rust 上游：`pkg/statistics/histogram.rs::MergePartitionHist2GlobalHistWithLocation`、`pkg/statistics/merge_global.rs::decode`、`pkg/statistics/handle/runtime_stats.rs::canonical_histogram`。
-- Go 对照：`pkg/statistics/cmsketch_util.go`；Go 边界测试：`pkg/statistics/cmsketch_test.go::TestDecodeColumnTopNValueDuration` 与 `TestDecodeColumnTopNValuePreservesStringComparisonBytes`。
-- Rust 独立测试：`pkg/statistics/cmsketch_util_test.rs::top_n_meta_decodes_double_through_unflatten`，以及 `pkg/statistics/go_merge_47_test.rs::go_merge_47_decode_duration_and_preserve_string_comparison_bytes`、`go_merge_47_top_n_timestamp_respects_location`。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点和 1,848,419 条边；`query` 同时定位 Rust/Go 两个实现；`explore` 给出上述 Rust 调用者。精确 `callers/callees/node` 命令本次未产生额外文本，故调用关系又以直接源码引用复核。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test`/`rg` 命令验证文档存在且固定二级标题恰好为 11 个，并人工复核仅新增本说明、未修改 Rust/Go/Cargo/`plan.md`。

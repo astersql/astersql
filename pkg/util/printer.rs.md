@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/printer.rs` 是根工具 crate `astersql-util` 中的轻量构建信息模块。`pkg/util/lib.rs` 通过 `pub mod printer;` 将它暴露为 `astersql_util::printer`；对应 crate 的清单是 `pkg/util/Cargo.toml`，其中 `[lib] path = "lib.rs"`，并直接声明了本文件使用的 `log` 与 `rustc_version_runtime` 依赖。
-
-本文件只管理四项通用构建元信息并提供字符串/日志两种输出，不负责 TiDB 服务端的完整版本、内核类型、部署模式或配置打印。仓库另有独立子 crate `pkg/util/printer/`，其 `printer.rs` 提供 `PrintTiDBInfo`、`GetTiDBInfo` 和表格渲染；两者名称相近但不是同一模块，扩展时不能混用。
+用 `Version`、`BuildTS`、`GitHash`、`GitBranch` 保存进程级构建元信息，初始值均为 `"None"`。
 
 ## 核心职责
 
@@ -64,10 +62,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/printer.go`。Rust 保留了 `Version`、`BuildTS`、`GitHash`、`GitBranch` 以及 `GetRawInfo`、`PrintInfo` 的名称和字段顺序；两边默认值都是 `"None"`。主要差异如下：
+主要差异如下：
 
 - Go 的包级 `string` 可直接由包内或链接参数赋值；Rust 使用 `LazyLock<RwLock<String>>`，并新增 `SetBuildInfo` 作为安全写入口。
-- Go 原始文本末行是 `Go Version`，来源为 `runtime.Version()`；Rust 对应为 `Rust Version`，来源为 `rustc_version_runtime::version()`。
 - Go `PrintInfo` 使用 PingCAP 日志和结构化 `zap.String` 字段；Rust使用 `log::info!` 生成单条插值消息。字段语义相同，但 Rust 日志不是结构化字段，查询和编码行为取决于后端。
 - Go 没有锁中毒概念；Rust 在锁中毒时 panic。Rust 逐字段锁也使并发更新期间可能观察到混合快照，而 Go 代码本身没有同步保护并会产生数据竞争；两者都隐含“启动时写入、运行时读取”的调用约束。
 - Go 文件没有 `SetBuildInfo`；这是 Rust 为受控修改全局值增加的迁移接口。仓库现有 Rust 测试覆盖该接口，Go 同路径没有独立 `printer_test.go`。
@@ -80,12 +77,3 @@
 - 若要接入生产启动流程，应在真实入口显式调用 `SetBuildInfo`/`PrintInfo`，并增加对应入口的独立测试。当前代码搜索没有生产调用证据，因此不能只修改本模块就宣称启动日志已经生效。
 - 不要将这里的轻量 API 扩展成 `pkg/util/printer/` 子 crate 的完整 TiDB 信息打印器；完整 TiDB 版本、配置和表格输出应在后者维护，避免两个同名模块继续漂移。
 - 性能风险主要来自高频调用时的锁和字符串格式化；这些 API 预期用于低频启动/诊断场景。若改变为热路径调用，应增加并发与分配基准，而不仅是功能断言。
-
-## 验证依据
-
-- 源码：`pkg/util/printer.rs`，核对四个公开静态量、`SetBuildInfo`、`GetRawInfo`、`PrintInfo`、锁策略、格式字符串和 panic 路径。
-- crate 边界：`pkg/util/lib.rs` 的 `pub mod printer` 与 `pkg/util/Cargo.toml` 的 `astersql-util` 包定义、`log`/`rustc_version_runtime` 依赖。
-- Rust 测试：`pkg/util/printer_test.rs` 验证 info 日志的单消息、无换行和字段集合；`pkg/util/cpu_posix_1_aster_unit_test.rs::printer_and_rlimit_are_operational` 验证 `SetBuildInfo` 后 `GetRawInfo` 可观察应用名、版本和 Rust 版本。
-- Go 对照：`pkg/util/printer.go`，核对默认字段、原始文本顺序和欢迎日志字段；同目录未发现根 Go 包对应的 `pkg/util/printer_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/printer` 定位了根文件与同名子目录；`query` 精确定位本文件三个函数节点。`callers/callees` 本次没有返回可用结果，故调用点结论由 `rg` 对全部 Rust 源文件的直接调用检索补充，并明确限制为当前仓库静态可见调用。
-- 结构验收使用任务规定的命令，要求目标文档存在且恰好包含本页 11 个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。

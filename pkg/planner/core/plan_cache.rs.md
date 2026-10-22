@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文对应真实源文件 [`plan_cache.rs`](./plan_cache.rs)。它属于 `astersql-planner-core` crate 的会话级计划缓存辅助层。`pkg/planner/core/lib.rs` 以私有模块 `mod plan_cache` 装配它，再通过 `pub use plan_cache::*` 将其中三个函数作为 crate API 导出。它不负责缓存键生成、计划构建、LRU/实例缓存存储或计划重建；这些职责分别位于相邻的 `plan_cache_utils.rs`、`plan_cache_lru.rs`、`plan_cache_instance.rs` 和 `plan_cache_rebuild.rs`。
-
-当前文件只有三个公开函数，没有模块级常量、自定义类型、trait、`impl` 或条件编译项。Rust 全仓引用搜索显示，三个函数目前只由独立测试直接调用；尚未发现 Rust 生产调用点。因此它们是已实现、已导出且有测试覆盖的迁移边界，而不能据此声称 Rust 运行主链已经完整接入。Go 对照实现则已接入计划缓存预处理、hint-only 策略和 Point Get executor 复用链路。
+该设计令函数易于独立测试，但也意味着输入真实性由上游负责。
 
 ## 核心职责
 
@@ -69,10 +67,8 @@ Point Get 辅助使用严格 schema 版本相等，保守拒绝任何版本变�
 Go 对照文件为 `pkg/planner/core/plan_cache.go`，三个同名/同用途函数的核心意图一致，但 Rust 当前是聚焦后的边界实现：
 
 - Go `SetParameterValuesIntoSCtx` 接收 plan context、non-prepared 标记、marker 和待求值表达式；它逐个求值、处理 `getvar` binary literal、更新 session `PlanCacheParams` 并记录缓存种类。Rust 接收已经求值的 `Datum`，只更新 `PlanCacheStmt.Params`，且额外在自身入口做长度检查。Go 的数量检查位于调用它的 `planCachePreprocess`，不是该函数内部。
-- Go hint 辅助接收实际 `Binding` 指针，检查 binding 已匹配、非空、hint 非空且包含 `HintUsePlanCache`。Rust 用 `binding_hint` 和 `matched` 两个布尔量表达后半段结果；实际 binding 解析和空值检查必须在上游完成。
-- Go `IsSafeToReusePointGetExecutor` 从 session 与 infoschema 读取 stale-read、自动提交/事务组合和 schema 版本。Rust 把这些环境查询外提为五个值，并显式区分 `autocommit` 与 `in_txn`。
 
-因此，Rust 保留了三个判定/写入核心，但尚不能替代 Go 函数的全部 session 副作用、表达式求值、binding 解析和生产链路接线。扩展时应以 Go 行为作为语义对照，同时保持 Rust 逻辑与测试位于独立文件。
+因此，Rust 保留了三个判定/写入核心，但尚不能替代 Go 函数的全部 session 副作用、表达式求值、binding 解析和生产链路接线。
 
 ## 扩展指南
 
@@ -81,13 +77,3 @@ Go 对照文件为 `pkg/planner/core/plan_cache.go`，三个同名/同用途函�
 - 若增加 Point Get 安全条件，应修改 `IsSafeToReusePointGetExecutor` 的参数/逻辑，并同步 `pkg/planner/core/casetest/plancache/plan_cache_test.rs` 与 `pkg/planner/core/tests/pointget/point_get_plan_test.rs`。新增 session 状态必须注意判定时刻与 executor 复用时刻之间的竞态。
 - 参数写入行为变化应优先扩展独立的 `pkg/planner/core/plan_cache_test.rs`，尤其覆盖零参数、重复执行覆盖旧值、类型边界与失败不修改；Rust 单元测试不要内嵌回生产文件。
 - 对外签名已经由 `lib.rs` 再导出，改名或改变错误类型会影响 crate 消费者。迁移到结构化错误时应评估与 planner error 体系的兼容性；加入克隆或额外分配时应评估高频 EXECUTE 路径性能。
-
-## 验证依据
-
-- 源文件：`pkg/planner/core/plan_cache.rs`，核对三个公开函数的全部实现及无其他符号/条件编译项。
-- crate 边界：`pkg/planner/core/Cargo.toml` 与 `pkg/planner/core/lib.rs`，核对 crate 名、显式测试装配、私有模块和公开再导出。
-- 数据定义：`pkg/planner/core/plan_cache_utils.rs` 中 `PlanCacheParamMarker`、`PlanCacheStmt`，核对被读写字段及其状态含义。
-- Rust 测试：`pkg/planner/core/plan_cache_test.rs`、`pkg/planner/core/casetest/plancache/plan_cache_test.rs`、`pkg/planner/core/tests/pointget/point_get_plan_test.rs`。
-- Go 对照与调用者：`pkg/planner/core/plan_cache.go`、`pkg/planner/optimize.go`、`pkg/executor/compiler.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；精确 `query` 将三个 Rust 函数定位到本文件，并定位同名 Go 实现。`files --filter pkg/planner/core/plan_cache` 未返回目标文件，批量 callers/callees 查询超时，因此调用关系又以全仓精确符号引用搜索复核；当前未发现 Rust 生产调用点。
-- 结构验收使用任务规定的命令，要求本文恰好出现十一个固定二级标题；本任务为纯文档分析，未运行 Cargo 或代码测试。

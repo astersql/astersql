@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`sessionctx.rs` 是 `astersql-expression-sessionexpr` crate 的核心实现文件。它位于会话子系统与表达式子系统之间，把一个满足本文件 `SessionContext` trait 的活动会话适配成 `exprctx::BuildContext`、`exprctx::ExprContext`、`exprctx::EvalContext` 及两种静态转换接口。模块入口 `pkg/expression/sessionexpr/lib.rs` 以私有模块加载本文件并 `pub use sessionctx::*`，所以本文件的公开类型和函数构成 crate 的主要 API。
-
-crate 边界由 `pkg/expression/sessionexpr/Cargo.toml` 定义，直接依赖表达式上下文/可选属性/静态上下文、会话变量、InfoSchema、权限、类型、错误上下文、排序规则和数学工具等相邻 crate。根 `Cargo.toml` 通过 `facade_expression_sessionexpr` 注册该 crate，`pkg/lib.rs` 再将它纳入 facade；`pkg/session/Cargo.toml` 与 `pkg/executor/Cargo.toml` 也声明了依赖。不过，对全仓库 Rust 源码的精确搜索只找到 facade 再导出和本 crate 测试引用，没有找到生产代码直接构造本文件 `NewExprContext` 或 `NewEvalContext`。因此当前可确认的事实是“适配层实现与测试已存在”，不能据此断言 Rust 会话主链已经实际接线。
+用 `getStmtTimestamp`/`resolve_statement_timestamp` 实现语句时间优先级：非零 stale TSO 优先，其次 `timestamp` 系统变量，值为 `0` 时使用调用方提供的当前时间。
 
 ## 核心职责
 
@@ -84,13 +82,9 @@ crate 边界由 `pkg/expression/sessionexpr/Cargo.toml` 定义，直接依赖表
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/sessionexpr/sessionctx.go`，对应测试是 `sessionctx_test.go`。Rust 保留了 Go 的两个上下文、两个构造入口、完整 optional-property 组装、会话字段转发、权限默认放行、stale TSO 优先级、`timestamp` 小数秒和静态转换语义。
-
-主要结构差异是：Go 直接持有 `sessionctx.Context` 接口并用嵌入指针暴露 `EvalContext`；Rust 以泛型 `C: SessionContext` 和 `Arc<C>` 表达同一关系。Go 的序列 operator 在本文件内通过 InfoSchema 查表后包装 `SequenceTable`，Rust 则把构造责任下推到 `SessionContext::sequence_operator`。Go 从全局绑定表取得权限 manager，Rust 从会话 trait 方法取得，并用窄 `PrivilegeManager` 适配。Rust 还显式暴露 embedding session provider，并为静态转换提供 RNG/tracker/warn-handler 的 `Arc` 获取方法。
+主要结构差异是：Go 直接持有 `sessionctx.Context` 接口并用嵌入指针暴露 `EvalContext`；Rust 以泛型 `C: SessionContext` 和 `Arc<C>` 表达同一关系。Go 的序列 operator 在本文件内通过 InfoSchema 查表后包装 `SequenceTable`，Rust 则把构造责任下推到 `SessionContext::sequence_operator`。Go 从全局绑定表取得权限 manager，Rust 从会话 trait 方法取得，并用窄 `PrivilegeManager` 适配。
 
 时间解析存在实现层面的强化：Rust 拒绝非有限浮点数，检查 TSO 与 Unix 时间范围，并正确归一化负数小数秒；Go 使用 `types.StrToFloat`、`math.Modf` 和 `time.Unix`。这些差异已有 Rust 的 `resolve_statement_timestamp` 独立测试覆盖部分边界，但任何进一步变更仍应同时核对 Go 的兼容语义。
-
-Rust `sessionctx_test.rs` 的五个测试与 Go 五个测试一一对应：基础字段/告警、当前时间、权限、可选属性和构建上下文。`migration_aster_unit_test.rs` 还补充了 block encryption 默认值、静态转换、参数越界、所有 provider、序列、stale TSO 失败回退及错误时间文本等证据。
 
 ## 扩展指南
 
@@ -101,12 +95,3 @@ Rust `sessionctx_test.rs` 的五个测试与 Go 五个测试一一对应：基�
 - 调整共享状态时审查 `Arc` 快照还是实时查询的选择。RNG、plan-cache tracker、warn handler 和 session vars 当前在构造期捕获；角色、InfoSchema、Store、executor、DDL owner 与权限 manager 多数在调用期查询。改变时序可能影响并发可见性和语句一致性。
 - 把本 crate 接入生产 Rust 会话主链时，最可能新增的是某个真实会话类型的 `SessionContext` impl，以及创建 `NewExprContext/NewEvalContext` 的调用点。应增加独立集成测试证明真实 session、planner/executor 与本适配层连通；当前单元夹具只能证明适配逻辑，不能证明生产接线。
 - 性能风险集中在 `readonly_user_vars()` 每次返回集合、`parameter_values()` 每次返回 `Vec`、权限角色值克隆以及大量 provider 动态分派。若改成借用或缓存，需要保持 trait object 生命周期、静态转换快照和并发安全不变量。
-
-## 验证依据
-
-- 生产源码：`pkg/expression/sessionexpr/sessionctx.rs`；模块入口：`pkg/expression/sessionexpr/lib.rs`；crate 声明：`pkg/expression/sessionexpr/Cargo.toml`。
-- Go 对照：`pkg/expression/sessionexpr/sessionctx.go`；独立测试：`pkg/expression/sessionexpr/sessionctx_test.rs`、`pkg/expression/sessionexpr/sessionctx_test.go`、`pkg/expression/sessionexpr/migration_aster_unit_test.rs`。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/expression/sessionexpr` 确认目标源、模块入口、Go 文件及测试均已索引；`query` 定位 `sessionctx.rs::NewExprContext`（第 209 行）、`NewEvalContext`（第 375 行）、`resolve_statement_timestamp`（第 670 行）和本文件 `SessionContext` trait（第 39 行）。对这些符号执行 `callers/callees` 未返回边，因此没有把缺失图边解释成生产调用关系。
-- 图未覆盖后的精确搜索：全仓库 Rust 搜索表明本文件构造函数的直接调用仅在 `sessionctx_test.rs` 和 `migration_aster_unit_test.rs`，内部边为 `NewExprContext -> NewEvalContext`、`EvalContext::CurrentTime -> getStmtTimestamp -> resolve_statement_timestamp`；Cargo 搜索确认根 facade、session 与 executor manifest 的依赖声明。
-- 测试证据（仅阅读，按任务要求未运行 Cargo）：Rust/Go 五组对应测试覆盖基本字段与告警、语句时间、权限、optional properties 和 build context；迁移测试额外覆盖静态化、序列、参数越界、时间优先级、非法文本与 stale TSO 错误回退。
-- 人工复核结论：本文件存在的原因是隔离完整会话与 expression 叶包；主要运行方式是构造完整 provider 集合并通过 trait 转发状态；安全扩展要求保持 provider 完整性、时间/权限兼容语义、`Arc` 生命周期以及测试文件独立。生产接线未由当前 Rust 调用证据确认，文档已明确保留这一限制。

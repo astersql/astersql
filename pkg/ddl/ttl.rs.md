@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/ttl.rs` 属于 `astersql-ddl` crate（见 `pkg/ddl/Cargo.toml`），由 `pkg/ddl/lib.rs` 以 `pub mod ttl` 对外暴露。它位于 SQL 表选项与 DDL 元数据更新之间，负责 TTL（Time To Live）配置的聚合、局部合法性检查和变更合并；它不执行过期行扫描或删除，真正的 TTL 调度与工作器在其他模块中。
-
-本文件同时存在两层 API。`TtlTable`、`TtlInfo`、`TtlOption` 等是便于独立校验的精简模型；`apply_model_ttl_change` 则直接操作 `astersql_meta_model::TableInfo`，已接入实际 ALTER TABLE TTL 路径。RustCodeGraph 显示生产调用包括 `pkg/ddl/persistent_actions.rs::alter_ttl`、`pkg/domain/domain.rs::ddl_alter_table_ttl`，建表和会话入口还调用 `check_ttl_job_interval_for_ddl`。因此不能把所有精简模型函数都视为已接入完整 DDL 主链。
-
-从 DDL 生命周期看，TTL 配置变更是保持表为 `Public` 的元数据更新，不需要 delete-only/write-only/reorg 状态迁移，也不做 backfill。持久化、schema version 发布、作业完成及外部 TTL workload 同步由调用方完成，而非本文件完成（`pkg/ddl/persistent_actions.rs::alter_ttl`、`pkg/domain/domain.rs::ddl_alter_table_ttl`）。
+位于 SQL 表选项与 DDL 元数据更新之间，负责 TTL（Time To Live）配置的聚合、局部合法性检查和变更合并；它不执行过期行扫描或删除，真正的 TTL 调度与工作器在其他模块中。
 
 ## 核心职责
 
@@ -97,8 +93,6 @@ RustCodeGraph 的关键边如下：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/ttl.go`，测试对照是 `pkg/ddl/ttl_test.go`。
-
 - Rust `apply_model_ttl_change` 对应 Go `onTTLInfoChange` 中 TTLInfo/Enable/JobInterval 的合并部分：新定义继承旧开关与周期、非 TTL 表拒绝独立选项、显式选项最终覆盖。Go 函数还负责取表、持久化版本、同步外部 workload 和结束 job；Rust 将这些职责放在 `persistent_actions::alter_ttl` 或 domain 路径。
 - Rust `check_ttl_job_interval` / `check_ttl_job_interval_for_ddl` 对应 Go `checkTTLJobInterval`，Starter 仅允许 `StarterDefaultTTLJobInterval`。Rust 精简错误与 DDL 错误映射分成两层。
 - Rust `get_ttl_info_in_options` 对应 Go 同名函数的聚合顺序、默认值和覆盖规则。Rust 精简 Definition 只能携带整数表达式，而 Go 会 Restore AST 表达式文本并保存枚举时间单位。
@@ -117,13 +111,3 @@ Rust 测试 `get_ttl_info_in_options_matches_go_cases` 复现 Go `Test_getTTLInf
 扩展完整合法性校验时，要先决定逻辑属于精简模型还是标准 `TableInfo` 路径。涉及 SQL 表达式、InfoSchema 外键反向引用或真实 MySQL 类型时，不应继续堆叠无法表达上下文的布尔字段，而应接入标准模型与调用方上下文。性能风险主要来自未来加入的 catalog/InfoSchema 查询；当前函数均为列数/主键列数线性扫描。
 
 测试必须放在独立文件 `pkg/ddl/ttl_test.rs`，不要内嵌到 `ttl.rs`。涉及真实 SQL/DDL job 或外部 workload 的行为还应扩展现有 Go/Rust 集成测试入口，而不只验证精简模型。若修改 Starter 全局模式测试，务必恢复全局状态；若增加生产错误，应优先使用 `astersql-util-dbterror` 保持兼容错误码与消息。
-
-## 验证依据
-
-- 源文件：`pkg/ddl/ttl.rs`，逐段核对 336 行内全部常量、枚举、结构体、trait 实现和 9 个公开函数；文件无条件编译项。
-- crate 与模块：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`，确认 crate 名为 `astersql-ddl`、`ttl` 是公开模块，相关依赖已声明，测试以独立 `mod ttl_test` 组织。
-- RustCodeGraph：索引状态为 11,467 files / 307,296 nodes / 1,848,419 edges；查询了 `apply_model_ttl_change`、`get_ttl_info_in_options`、`validate_ttl_info`、`check_ttl_job_interval_for_ddl` 的 node/callers/callees，并读取了 `persistent_actions::alter_ttl` 及直接调用片段。
-- 生产调用证据：`pkg/ddl/persistent_actions.rs::alter_ttl`、`pkg/ddl/create_table.rs`、`pkg/session/runtime/ddl.rs`、`pkg/domain/domain.rs::ddl_alter_table_ttl`。
-- Rust 测试：`pkg/ddl/ttl_test.rs`，覆盖 Go 对齐的选项聚合、无 Definition 时延迟周期校验、Starter 默认/拒绝、common-handle 主键以及无关表标志不应被拒绝。
-- Go 对照：`pkg/ddl/ttl.go` 的 `onTTLInfoRemove`、`onTTLInfoChange`、`checkTTLInfoValid`、`checkTTLJobInterval`、`checkDropColumnWithTTLConfig`、`checkPrimaryKeyForTTLTable`、`getTTLInfoInOptions`；`pkg/ddl/ttl_test.go` 的对应单元测试。
-- 结构校验采用任务指定命令，验证目标文件存在且恰好包含 11 个固定二级标题。本任务是纯文档分析，按计划不运行 Cargo，也不据此声称运行时测试通过。

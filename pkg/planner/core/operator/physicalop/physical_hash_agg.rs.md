@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明的真实源码是 [`physical_hash_agg.rs`](./physical_hash_agg.rs)。它定义规划器中的物理哈希聚合节点 `PhysicalHashAgg`，位于 `astersql-planner-core-operator-physicalop` crate。模块由同目录 `lib.rs` 声明为私有模块并通过 `pub use physical_hash_agg::*` 再导出；`agg_operator_core!(PhysicalHashAgg)` 再把这里的方法接入统一的 `PhysicalPlan`/`ConcretePhysicalOperator` 接口。
-
-它处在逻辑聚合与执行层之间：`base_physical_agg.rs::ExhaustPhysicalPlans4LogicalAggregation` 和旧 Cascades 规则 `implementation_rules.rs::ImplHashAgg::OnImplement` 从 `LogicalAggregation` 枚举/构造它；选中的计划随后由 Task 接线、TiPB 下推编码或 `pkg/executor/physical_plan_runtime.rs::execute_node` 消费。这里保存和转换计划元数据，不实现哈希表、分组桶或逐行聚合算法；本地 Rust 行级执行逻辑在 executor 运行时。
+这里保存和转换计划元数据，不实现哈希表、分组桶或逐行聚合算法；本地 Rust 行级执行逻辑在 executor 运行时。
 
 ## 核心职责
 
@@ -92,10 +90,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/physicalop/physical_hash_agg.go`。字段、`GetPointer`、克隆、内存估算、CPU 并发摊销、Task 挂接、TiPB 编码和构造器均有同名或等价入口。
-
-已对齐的关键语义包括：物理优化前克隆聚合描述符；DISTINCT 与双并发为 1 时禁用 CPU 除数；其他情况使用较小并发度和并发总和；TiFlash PB 携带 child、explain id、预聚合模式和 shuffle 参数；非法预聚合模式报错。
-
 当前实现结构与 Go 有几处重要差异：
 
 - Go 的 `NewPhysicalHashAgg` 同时接收统计和孩子属性并调用 `InitForHash`；Rust 构造器只复制逻辑内容，调用方随后显式 `InitForHash`。
@@ -114,13 +108,3 @@
 - Rust 测试继续放在独立文件 `physical_hash_agg_aster_unit_test.rs`（并由 `lib.rs` 的 `#[cfg(test)] mod` 注册），不要在生产源文件内新增测试模块。
 
 兼容性风险集中在 Explain 类型名、成本选择、MPP 阶段/分区、TiPB 字段和聚合描述符深拷贝；性能风险集中在错误的并发摊销及 PB/计划克隆开销。任何改动都应与 Go 同路径实现逐项核对，而不是只验证编译成功。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_hash_agg.rs`，RustCodeGraph 显示 258 行、19 个符号，并列出 executor、Cascades 和 planner 等使用者。
-- crate 与模块边界：`pkg/planner/core/operator/physicalop/Cargo.toml`；`pkg/planner/core/operator/physicalop/lib.rs` 的模块声明、再导出、`agg_operator_core!(PhysicalHashAgg)` 和独立测试注册。
-- 构造与候选调用边：`pkg/planner/core/operator/physicalop/base_physical_agg.rs::ExhaustPhysicalPlans4LogicalAggregation`；`pkg/planner/cascades/old/implementation_rules.rs::ImplHashAgg::OnImplement`。RustCodeGraph 查询确认 `NewPhysicalHashAgg` 的调用者包括这两个入口。
-- 本地执行边界：`pkg/executor/physical_plan_runtime.rs::execute_node` 对 `PhysicalHashAgg` 的 downcast 分支及标量聚合辅助逻辑。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_hash_agg.go` 的 `PhysicalHashAgg`、`getHashAggs`、`tryToGetMppHashAggs`、成本/Task/PB 方法和 `NewPhysicalHashAgg`。
-- 独立 Rust 测试：`pkg/planner/core/operator/physicalop/physical_hash_agg_aster_unit_test.rs`，直接覆盖描述符克隆、CPU 除数和 TiFlash 模式；同目录 `canonical_router_aster_unit_test.rs` 与 `cache_snapshot_test.rs` 还覆盖候选路由和计划快照中的 `PhysicalHashAgg`。
-- 未运行 Cargo：总计划和任务明确规定纯文档分析不运行 Cargo。本说明只做源码、代码图、Cargo/Go/测试证据核对以及固定章节结构验证。

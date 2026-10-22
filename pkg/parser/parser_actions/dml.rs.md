@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser` crate 的 DML 语义动作实现。它不负责词法分析或 LR 状态迁移，而是在 `pkg/parser/parser_runtime.rs` 完成一次语法归约时，由 `parser_actions::apply` 按稳定的 `RuleId` 分派到这里，把归约栈中的 `yySymType` 值组装成 `parser_ast` 节点。模块入口位于 `pkg/parser/parser_actions/mod.rs`；语法来源是 `pkg/parser/grammar/main.astergram`，Go 对照实现是 `pkg/parser/parser.y` 中相同产生式的动作块。
-
-文件覆盖 INSERT、REPLACE、DELETE、UPDATE、LOAD DATA、IMPORT INTO、非事务批量 DML、CANCEL IMPORT，以及这些语句共用的赋值、列/用户变量列表、RETURNING、字段和行格式选项。它是 crate 私有实现：对父模块只暴露 `owns` 和 `apply`，不会成为解析器的外部 API。`pkg/parser/Cargo.toml` 表明本 crate 名为 `astersql-parser`，AST、MySQL 常量、字面量和字符集等能力分别来自同 workspace 的 `parser-ast`、`parser-mysql`、`parser-test-driver` 等依赖；本文件主要直接构造 `parser_ast` 类型。
+`identify` 把生成器提供的稳定字符串 `RuleId` 映射为私有 `DmlRule`。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/parser.y`，生成后的 `pkg/parser/parser.go` 也包含同一组动作。Rust 将 Go yacc 动作从产生式旁移入稳定 `RuleId` 分派，但数据流保持对应：Go 的 `$n`/`$$` 对应 Rust 的 `rhs[rhs_len - back]`/`Context.output`，Go 的类型断言对应 Rust `Any` 下转型，Go 指针 AST 对应 Rust 的 owned/boxed AST。
+Rust 将 Go yacc 动作从产生式旁移入稳定 `RuleId` 分派，但数据流保持对应：Go 的 `$n`/`$$` 对应 Rust 的 `rhs[rhs_len - back]`/`Context.output`，Go 的类型断言对应 Rust `Any` 下转型，Go 指针 AST 对应 Rust 的 owned/boxed AST。
 
 已核对的关键等价点包括：INSERT 先创建值或 SELECT 形态再补目标表；REPLACE 拒绝行别名；DELETE/UPDATE 保留优先级、IGNORE、提示、ORDER/LIMIT/RETURNING 和 WITH；LOAD DATA LOCAL 将默认重复键策略改为 Ignore，并从列/用户变量混合列表派生纯列列表；字段终止符执行相同长度校验；IMPORT FROM SELECT 禁止用户变量与 SET；BATCH DML 保留 dry-run 三态、分片列、限制和内部语句。
 
@@ -82,13 +80,3 @@
 若新增 INSERT/REPLACE 形态，优先扩展 `apply_insert_rule` 并维持“中间 InsertStmt 后绑定目标表”的两阶段结构；若新增 LOAD/IMPORT 格式项，保持明确的 `Option`/空列表语义，并确认文件形式和 SELECT 形式是否都适用；若新增最终语句字段，要同时检查 AST restore/visitor 行为以及 Go 动作是否设置相同字段。
 
 测试逻辑继续放在独立文件：行为回归扩展 `pkg/parser/parser_actions/dml_test.rs`；规则所有权、数量和禁止数值回退等结构约束扩展 `pkg/parser/parser_actions/dml_aster_unit_test.rs`。建议覆盖成功 AST 字段、拒绝路径的错误码/错误文本、空选项与显式选项、单表/多表和括号 SELECT。兼容风险主要来自 Go/Rust AST 字段遗漏、nil/空集合差异和错误消息差异；性能风险主要来自把现有 `take` 改成深克隆或在长列表归约中反复复制。
-
-## 验证依据
-
-- 目标实现：`pkg/parser/parser_actions/dml.rs`，完整读取 1–1621 行；主要实现位置为 `identify`（119）、入口（305/309）、三段动作（399/851/1194）及 `mark_select_in_braces`（1176）。
-- 运行时与模块入口：`pkg/parser/parser_runtime.rs` 归约循环（约 180–230 行）；`pkg/parser/parser_actions/mod.rs` 的 `Context`、`apply`、`has_semantic_action`。
-- crate 边界：`pkg/parser/Cargo.toml`；语法事实：`pkg/parser/grammar/main.astergram` 中 DML 产生式。
-- Go 对照：`pkg/parser/parser.y` 的 `insertRowAlias`、DELETE、CANCEL IMPORT、INSERT/REPLACE、UPDATE、LOAD DATA/IMPORT INTO、BATCH DML 动作；生成文件 `pkg/parser/parser.go` 的对应动作位置通过搜索确认。
-- 独立 Rust 测试：`pkg/parser/parser_actions/dml_test.rs` 验证 DELETE、INSERT、REPLACE、LOAD DATA、IMPORT INTO 的关键字段；`pkg/parser/parser_actions/dml_aster_unit_test.rs` 验证 95 条规则的完整且唯一所有权，以及无数值规则回退。Go AST 相关测试位于 `pkg/parser/ast/dml_test.go`。
-- RustCodeGraph：`status` 显示目标仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/parser_actions` 确认目标及独立测试已索引；`query` 精确定位本文件的五个关键函数。`explore/node/callers/callees` 在本次 CLI 调用中未返回正文/边，故调用关系改由上述源码直接核验，未把缺失图输出当作结论。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证文档存在且恰有 11 个固定二级章节，并人工检查只新增本说明、链接指向真实路径、未建议把测试嵌入生产源文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`metadata_codec.rs` 位于 `astersql-meta-model` crate 的 Group 1 模型层，是 `TableInfo` 与 `DBInfo` 的 Go 兼容 JSON 编解码入口。文件本身只有四个公开函数，不定义存储键、事务或模型字段；它把模型值与元存储所使用的 JSON 字节连接起来。
-
-该文件由 `pkg/meta/model/internal/group1/lib.rs` 通过 `#[path = "../../metadata_codec.rs"] mod metadata_codec` 纳入 Group 1，并经 `pub use metadata_codec::*`、顶层 `pkg/meta/model/lib.rs` 的 `pub use ::group_1::*` 导出为 `astersql_meta_model::{EncodeTableInfo, DecodeTableInfo, EncodeDBInfo, DecodeDBInfo}`。`pkg/meta/model/Cargo.toml` 表明顶层 crate 名为 `astersql-meta-model`，并通过内部 `group-1` 路径依赖取得这套实现；这里没有条件编译项或 feature 分支。
+文件本身只有四个公开函数，不定义存储键、事务或模型字段；它把模型值与元存储所使用的 JSON 字节连接起来。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ RustCodeGraph 对四个入口的查询显示主要上游关系为：
 
 ## 与 Go 版本的对应关系
 
-当前 Go 树没有 `pkg/meta/model/metadata_codec.go` 或四个同名函数。Go 对照行为分散在 `pkg/meta/meta.go`：`Mutator::{CreateDatabase, UpdateDatabase, CreateTableOrView, UpdateTable}` 直接调用 `json.Marshal`，而 `IterDatabases`、`IterTables`、`ListDatabases`、`GetDatabase`、`ListTables`、`GetTable` 等直接调用 `json.Unmarshal`。Rust 四函数把这些重复的 JSON 操作集中为模型层 API，但目标 wire format 仍应与 Go `encoding/json` 和模型 tag 保持一致。
+当前 Go 树没有 `pkg/meta/model/metadata_codec.go` 或四个同名函数。Rust 四函数把这些重复的 JSON 操作集中为模型层 API，但目标 wire format 仍应与 Go `encoding/json` 和模型 tag 保持一致。
 
 已验证的对齐证据包括：Go `pkg/meta/model/db.go::DBInfo` 与 Rust `pkg/meta/model/db_test.rs` 的字段名/忽略字段；Go `pkg/meta/model/table.go::TableInfo` 的 JSON tag 与 Rust `pkg/meta/model/table_test.rs` 的字段形状断言；`pkg/meta/model/internal/group1/migration_aster_unit_test.rs` 对数字枚举和未知枚举值的 metadata JSON 行为。差异是错误类型：Go 返回 `error`，Rust 此边界返回字符串；此外 Rust 的薄入口不复刻 Go 元存储函数内的存在性检查、键布局或事务逻辑，那些职责由 `pkg/meta/reader.rs` 等上游承担。
 
@@ -80,14 +78,3 @@ RustCodeGraph 对四个入口的查询显示主要上游关系为：
 任何 wire-format 变更都应同时检查：Go 模型 JSON tag；Rust 模型的 `Serialize`/`Deserialize`；`pkg/meta/model/db_test.rs` 或 `table_test.rs` 中的独立兼容测试；使用四个入口的 `pkg/meta/reader.rs`、`pkg/domain/canonical_domain.rs` 和 `pkg/infoschema/issyncer/loader.rs`。测试应保留在独立 `*_test.rs` 文件，不嵌入 `metadata_codec.rs`。
 
 兼容风险主要是已有 KV 中旧 JSON 的可读性、Go/Rust 双向字段形状和默认值；正确性风险是错误地省略或重命名字段；性能风险是大表模型的完整 `Vec<u8>` 分配与全量解析。若要优化分配或流式处理，必须先证明所有调用者仍获得相同 JSON 字节语义，并评估 Go 侧 `IsTableInfoMustLoad` 对字段顺序的历史依赖，不能仅替换实现后假定兼容。
-
-## 验证依据
-
-- 源文件与导出路径：`pkg/meta/model/metadata_codec.rs`、`pkg/meta/model/internal/group1/lib.rs`、`pkg/meta/model/lib.rs`。
-- crate 边界：`pkg/meta/model/Cargo.toml`（`astersql-meta-model` 顶层 crate、内部 group 依赖和 Go package 移植元数据）。
-- 直接实现：`pkg/parser/ast/lib.rs::metadata_json::{encode, decode}`。
-- 生产调用链：`pkg/meta/reader.rs`、`pkg/domain/canonical_domain.rs::{publish_tidb_schema_metadata, read_catalog, encode_catalog, decode_catalog}`、`pkg/infoschema/issyncer/loader.rs::KvMetaReader`。
-- Go 对照：`pkg/meta/meta.go` 的 `json.Marshal/json.Unmarshal` 读写点，以及 `pkg/meta/model/{db.go,table.go}` 的 JSON tag。
-- 独立 Rust 测试：`pkg/meta/model/db_test.rs::db_info_json_matches_go_field_names_and_omissions`、`pkg/meta/model/table_test.rs::table_metadata_json_matches_go_field_names_and_embedding`、`pkg/meta/model/internal/group1/migration_aster_unit_test.rs`；没有发现同名 `metadata_codec_test.rs`。
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；文件查询识别出 5 个节点（文件加四个函数），符号查询确认四个公开签名，`explore` 给出编码/解码入口到 reader、Domain、InfoSchema 及测试夹具的调用者集合。
-- 本任务是纯文档分析，按计划未运行 Cargo；交付前使用任务指定命令验证恰有 11 个固定二级章节，并人工核对没有把上游事务、外层 catalog 格式或模型 serde 规则误写成本文件职责。

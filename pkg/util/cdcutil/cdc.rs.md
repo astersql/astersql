@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-cdcutil` crate 的核心实现，负责从 etcd 的 TiCDC 元数据中枚举 changefeed，并依据运行状态及安全时间戳判断哪些 changefeed 仍在运行或可能与恢复操作不兼容。crate 入口 `pkg/util/cdcutil/lib.rs` 通过 `pub mod cdc` 和 `pub use cdc::*` 公开本文件的 API；依赖边界由 `pkg/util/cdcutil/Cargo.toml` 定义。
-
-当前 Rust 生产接线可在 `lightning/pkg/importer/stubs.rs` 的 `etcd::Client` 与 `streamhelper::GetCDCPiTRStatus` 找到：前者实现本文件的 `KvClient`，后者调用 `GetRunningChangefeeds` 做 Lightning 的 CDC/PiTR 预检查。仓库内未检索到 Rust 生产代码调用 `GetIncompatibleChangefeedsWithSafeTS`；它当前主要由独立 Rust 测试验证，并与 Go 的 BR 流恢复检查入口保持语义对齐。
+用 `EtcdHttpClient` 提供一个具体的 etcd v3 JSON gateway 适配器，处理 range 请求、前缀上界和 base64 编解码。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ Go 上游调用显示两类用途：`pkg/executor/importer/precheck.go` 和 `lig
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/cdcutil/cdc.rs` 基本按 `pkg/util/cdcutil/cdc.go` 的同名结构移植：常量、两种 `keyVersion`、changefeed 路径构造、扫描过滤、状态集合、checkpoint/start-ts 取最大值、`invalidTs` 哨兵、`CDCNameSet` 分组和两个公开入口均一一对应。`pkg/util/cdcutil/cdc_test.rs` 也复现了 `cdc_test.go` 的 safe-ts 42/40/48、finished/failed、缺 status、新旧路径和 `__backup__` 噪声场景。
-
 主要实现差异如下：
 
 - Go 直接依赖 `clientv3.Client` 和 `context.Context`；Rust 抽出通用 `KvClient`，并额外提供 `EtcdHttpClient` JSON-gateway 实现。Rust API 没有显式 context 参数。
@@ -98,13 +94,3 @@ Go 上游调用显示两类用途：`pkg/executor/importer/precheck.go` 和 `lig
 - 若需要取消、超时、认证或 mTLS，最合适的接入点是 `KvClient` 的调用契约及 `EtcdHttpClient` 构造配置；这属于跨调用方 API 变更，应评估 Lightning 和未来 BR 接线的兼容性。
 - 若要并发读取大量 changefeed，可在 `get_incompatible` 引入有界并发，但必须保留单个 changefeed 的错误上下文、避免无界请求冲击 etcd，并决定结果排序/首错语义。当前串行行为是性能风险基线。
 - 修改用户消息格式时要同步 Go 的 `CDCNameSet.MessageToUser` 及依赖该文本的上层错误/测试；若要求确定性展示，应对 namespace 与桶内 id 排序，而不能依赖 `HashMap` 顺序。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/cdcutil` 列出本模块的 Go/Rust 源及测试。
-- RustCodeGraph 源码/符号证据：`node --file pkg/util/cdcutil/cdc.rs`（完整 470 行、54 个符号）；目标文件的使用者列表包含 `lightning/pkg/importer/stubs.rs`。对同名 Go/Rust 公开函数执行 `query` 得到两种语言各自定义；通用 `callers` 查询未在限定时间内返回可用结果，因此生产调用关系另以精确引用检索和调用点源码核实。
-- 已核对 Rust 源与边界：`pkg/util/cdcutil/cdc.rs`、`pkg/util/cdcutil/lib.rs`、`pkg/util/cdcutil/Cargo.toml`、`lightning/pkg/importer/stubs.rs`、`lightning/pkg/importer/Cargo.toml`。
-- 已核对独立 Rust 测试：`pkg/util/cdcutil/cdc_test.rs`、`pkg/util/cdcutil/migration_aster_unit_test.rs`、`pkg/util/cdcutil/export_for_test.rs`。
-- 已核对 Go 对照及调用点：`pkg/util/cdcutil/cdc.go`、`pkg/util/cdcutil/cdc_test.go`、`pkg/executor/importer/precheck.go`、`lightning/pkg/importer/precheck_impl.go`、`br/pkg/task/stream.go`。
-- 精确引用检索确认：Rust 生产引用 `GetRunningChangefeeds` 位于 `lightning/pkg/importer/stubs.rs`；未发现 Rust 生产引用 `GetIncompatibleChangefeedsWithSafeTS`。Go 的两个公开入口分别服务导入预检查与 BR 流恢复兼容性检查。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查文档存在且恰好包含 11 个固定二级标题，并人工复核所有“已接线”表述均有上述源码依据。

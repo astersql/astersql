@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-regionsplit` crate。crate 入口 `pkg/util/regionsplit/lib.rs` 将其作为私有模块 `model_handle` 装配，并通过 `pub use model_handle::*` 暴露公开 API。它位于 DDL 持久化 Region split policy 与底层 TiDB 键编码之间：上游 `pkg/ddl/split_region.rs::split_table_regions` 先求值 policy 的字符串边界并转换成真实 `astersql_types::datum::Datum`，本文件再依据 `astersql_meta_model::{TableInfo, IndexInfo, ColumnInfo}` 生成表记录或索引切分键。
-
-与同 crate 的 `split_handle.rs` 相比，本文件不是另一套简化模型，而是“真实元信息路径”：它复用其中的 `StatementContext`、`SplitError`、`MinRegionStepValue`、`gen_table_record_prefix`、`encode_i64` 和 `get_values_list`，同时把真实 model、Datum、tablecodec 和 kv handle 接到该算法上。Cargo 元数据把此 crate 对应到 Go 包 `pkg/util/regionsplit`；直接依赖包括 `astersql-kv`、`astersql-meta-model`、`astersql-parser-mysql`、`astersql-tablecodec`、`astersql-types` 和 `astersql-util-codec`。
+文件只计算键并返回结果；实际 `SplitRegions`、scatter、错误日志和“失败后继续”的 DDL 策略都由 `pkg/ddl/split_region.rs::split_table_regions` 负责。
 
 ## 核心职责
 
@@ -82,15 +80,10 @@ RustCodeGraph 将 `model_handle.rs` 标记为由 `pkg/ddl/split_region.rs` 使�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/regionsplit/split_handle.go`：
-
 - `GetHandleColumnInfos` 对应同名 Go 函数，三个分支及缺失主键/主索引时返回空集合的语义一致；Rust 返回克隆的 `ColumnInfo`，Go 返回指针。
 - `ConvertValueToColumnType` 对应同名 Go 函数。Rust 额外识别当前标量转换层以普通文本呈现的截断错误，作为 typed cause 尚未完整保留时的兼容路径；其余错误仍不吞并。
 - `ModelHandleCols` 合并了 Go 的 `intHandleCols`、`commonHandleCols` 和 `BuildHandleColsForSplit`。common handle 的“复制后截断前缀索引值”与 Go 相同，Rust 返回编码字节而非 `kv.Handle` trait object。
-- `GetSplitTableKeysForModel` 对应 Go `GetSplitTableKeys` 与 `calculateIntBoundValue`：索引/记录分界、unsigned 判定、最小步长、`number-1` 个整数切分点和 common handle 字节插值一致。
 - `GetSplitIndexKeysForModel` 对应 Go `GetSplitIndexKeys` 与 `GetSplitIdxPhysicalStartAndOtherIdxKeys`：使用最小整数 handle 编码边界、非首索引加入起始前缀、总是加入结束前缀，再调用相同形状的插值算法。Rust 错误消息比 Go 的表/索引名格式更简化，错误类型也统一为本 crate 的 `SplitError`。
-
-相关 Go 回归证据位于 `pkg/ddl/split_region_test.go`，其中 `oneShotCommonHandleSplitKeys` 验证前缀 common handle 的一次性切分路径；时间戳索引辅助函数验证语句时区进入索引键编码。Rust 的专门模型测试位于独立文件 `pkg/util/regionsplit/tests/go_merge_32_test.rs`，符合测试与生产源码分离约束。
 
 ## 扩展指南
 
@@ -99,12 +92,3 @@ RustCodeGraph 将 `model_handle.rs` 标记为由 `pkg/ddl/split_region.rs` 使�
 - 修改表/索引边界算法时，应保持键严格排序、只产生内部切分点、索引起止前缀规则以及 `i64::MIN` handle 后缀。表路径覆盖放在 `go_merge_32_test.rs`，完整 DDL 接线覆盖放在独立的 `pkg/ddl/split_region_test.rs`；索引模型入口目前没有同文件级直接单元测试，扩展时应优先补到 `pkg/util/regionsplit/tests/`，不要把测试内嵌到生产 `.rs`。
 - 性能敏感点是 `TableInfo`/`IndexInfo`/Datum 的克隆、每个切分点的前缀克隆及 `get_values_list` 的分配。优化必须用等价字节结果验证，不能通过跳过前缀截断、时区或真实 tablecodec 简化。
 - 兼容风险集中在 TiDB 可比较编码、unsigned 跨 `i64` 边界的 wrapping 语义、排序规则开关和 Go 错误文本。任何变更都应与 `pkg/util/regionsplit/split_handle.go` 同步核对。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/util/regionsplit` 显示 `model_handle.rs` 有 12 个符号；`node --file ...` 读取完整 296 行；使用关系显示其生产调用者为 `pkg/ddl/split_region.rs`；`node GetSplitTableKeysForModel` 给出内部调用 trail。
-- 源码与配置：`pkg/util/regionsplit/model_handle.rs`、`pkg/util/regionsplit/split_handle.rs`、`pkg/util/regionsplit/lib.rs`、`pkg/util/regionsplit/Cargo.toml`。
-- 上游接线：`pkg/ddl/split_region.rs::split_table_regions` 与 `policy_bounds`，涵盖表/分区 physical ID、索引筛选、边界转换、存储 split 和 scatter 的职责边界。
-- Go 对照：`pkg/util/regionsplit/split_handle.go`；辅助集成证据为 `pkg/ddl/split_region.go` 和 `pkg/ddl/split_region_test.go`。
-- Rust 测试：`pkg/util/regionsplit/tests/go_merge_32_test.rs` 验证 handle 列选择、common handle 前缀截断且不修改输入、表切分键和坏数字错误规范化；`pkg/ddl/split_region_test.rs::persisted_policy_bounds_are_converted_to_handle_column_types` 验证 DDL policy 的整数表键、字符串索引边界等价和非法整数不触发存储调用。`pkg/util/regionsplit/tests/split_handle_test.rs` 为共享简化算法提供整数/common/index 编码证据，但不直接调用本文件的索引模型入口。
-- 本任务按计划为纯文档分析，未运行 Cargo 或代码测试；最终以固定 11 章节的结构命令和人工事实复核作为交付验证。

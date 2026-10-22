@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-statistics-handle-ddl`；包入口 `pkg/statistics/handle/ddl/lib.rs` 将 `ddl` 与 `subscriber` 两个模块公开并重新导出其符号。它位于统计信息对 DDL（schema 变更）作出响应的边界：本文件负责持有事件 FIFO 和调用订阅者，具体的事件分派与统计元数据写入规则位于同 crate 的 `subscriber.rs`。
-
-源文件：[ddl.rs](./ddl.rs)。
-
-当前 Rust 接线必须与设计意图区分开。`DdlHandler<B>` 使用本 crate 自己的 `subscriber::SchemaChangeEvent` 枚举；全仓 Rust 引用检索只发现 `ddl_test.rs` 直接构造和调用它。生产测试辅助 `testutil/util.rs` 使用的则是 `aster_sql_ddl_notifier::SchemaChangeEvent`，并通过 `TransactionalDDLHandle` 抽象访问真实会话池和 `Receiver`。因此，本文能确认本文件的队列与分发逻辑已实现并有独立测试，但不能确认它已接到 Rust 生产 DDL notifier 主链。
+用 `DdlHandler<B>` 把一个实现 `StatsBackend` 的后端包装成 `Subscriber<B>`，同时创建容量目标为 1,000 的本地 FIFO（`new`）。
 
 ## 核心职责
 
@@ -74,13 +70,13 @@
 
 ## 与 Go 版本的对应关系
 
-`DdlHandler<B>` 对应 `ddl.go` 的 `ddlHandlerImpl`，`Subscriber<B>` 对应其 `sub` 字段。Rust 的 `DDL_EVENT_CHANNEL_CAPACITY = 1_000` 对齐 Go `make(chan *notifier.SchemaChangeEvent, 1000)`；Rust 用显式 `VecDeque` 与满队列错误表示有界队列，Go 通道发送的阻塞/调度语义并未在本文件中复刻。
+Rust 的 `DDL_EVENT_CHANNEL_CAPACITY = 1_000` 对齐 Go `make(chan *notifier.SchemaChangeEvent, 1000)`；Rust 用显式 `VecDeque` 与满队列错误表示有界队列，Go 通道发送的阻塞/调度语义并未在本文件中复刻。
 
 Rust `handle_ddl_event` 与 Go `HandleDDLEvent` 都把订阅者错误视为 best effort 并向调用者返回成功。差异是 Go 接收 `context.Context`、`sessionctx.Context` 与 notifier 事件，记录采样日志并在测试模式断言错误属于允许集合；Rust 接收本地事件枚举，只通过抽象后端告警钩子报告错误，没有上下文或会话参数。
 
-Rust 的 `_for_test` 函数对应 Go `UpdateStatsWithCountDeltaAndModifyCountDeltaForTest`，但依赖注入层次不同：Go 传入 session context 并由存储/锁表工具执行 SQL；Rust 传入 `StatsBackend`，下游算法保留“锁定表允许负增量、非锁定表结果不小于零”的语义。`ddl_test.rs` 的锁表测试直接验证了这一分支。
+Rust 的 `_for_test` 函数对应 Go `UpdateStatsWithCountDeltaAndModifyCountDeltaForTest`，但依赖注入层次不同：Go 传入 session context 并由存储/锁表工具执行 SQL；Rust 传入 `StatsBackend`，下游算法保留“锁定表允许负增量、非锁定表结果不小于零”的语义。
 
-Go `DDLEventCh()` 返回实际 channel 并已被 `pkg/ddl/ddl.go` 接线。Rust 本文件只提供 `enqueue`/`next_event`，且事件类型与 `testutil` 的生产 notifier 类型不同；生产适配、系统表过滤和持续消费循环均未在本文件中得到验证。
+Rust 本文件只提供 `enqueue`/`next_event`，且事件类型与 `testutil` 的生产 notifier 类型不同；生产适配、系统表过滤和持续消费循环均未在本文件中得到验证。
 
 ## 扩展指南
 
@@ -90,15 +86,3 @@ Go `DDLEventCh()` 返回实际 channel 并已被 `pkg/ddl/ddl.go` 接线。Rust 
 - 若改变 best-effort 策略，应同时审查 Go `HandleDDLEvent` 的确认语义、重试风险和可观测性；若开始传播错误，调用方可能重复处理已有部分副作用的事件。
 - 若改变增量更新规则，修改真实实现 `subscriber::update_stats_with_count_delta_and_modify_count_delta`，保留本文件测试包装的薄转发，并覆盖锁定/未锁定、缺失元数据、负数钳制和后端错误。
 - 测试逻辑继续放在 `ddl_test.rs`，不要嵌入 `ddl.rs`。兼容性风险集中在事件确认和 Go 语义差异；性能风险集中在 1,000 条积压、事件载荷克隆成本以及同步逐事件处理。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/statistics/handle/ddl` 确认目标、Go 对照与独立测试均已索引；`node --file pkg/statistics/handle/ddl/ddl.rs --offset 1 --limit 500` 读取目标全部 96 行；精确 `query` 定位 `DdlHandler`、`handle_ddl_event`、`SchemaChangeEvent`、`StatsBackend` 与两个增量更新函数。
-- 目标源码：`pkg/statistics/handle/ddl/ddl.rs`，核对常量、结构体字段、全部公开方法、错误吞并分支与测试转发函数。
-- crate 边界：`pkg/statistics/handle/ddl/Cargo.toml`、`pkg/statistics/handle/ddl/lib.rs`，核对包名、库入口、Go 包映射、模块与重新导出。
-- 直接下游：`pkg/statistics/handle/ddl/subscriber.rs`，核对本地事件枚举、`StatsBackend` 告警钩子、`Subscriber::handle` 和增量更新规则。
-- Go 对照与生产接线：`pkg/statistics/handle/ddl/ddl.go`、`pkg/ddl/ddl.go`，核对 1,000 容量、best-effort 返回、会话/上下文差异和 Go channel 接线。
-- 独立 Rust 测试：`pkg/statistics/handle/ddl/ddl_test.rs`，核对建表、截断、物化视图切换、分区、DropSchema、加列、Flashback、锁表增量、队列满/出队和调用方系统表过滤策略。
-- 相邻接口证据：`pkg/statistics/handle/ddl/testutil/util.rs`，核对生产 notifier 事件、事务包装与接收端接口和本文件并非同一事件/队列抽象。
-- 全仓 `rg` 复核：排除目标及其直接测试后未发现 `DdlHandler`、`handle_ddl_event`、`enqueue`/`next_event` 的生产调用；因此文中将生产 Rust 接线标为“未验证”，没有用 Go 架构推断 Rust 现状。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前用任务给定命令验证恰有 11 个固定二级标题，并人工复查没有把未接线能力写成已支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-util-partitionpruning` crate 的核心实现，使用规划规则 crate 提供的精简表达式与分区元数据，在规划期把查询谓词转换为“需要访问的分区定义下标”。crate 根 `pkg/planner/util/partitionpruning/lib.rs` 公开模块并再导出全部公共项；`pkg/planner/util/partitionpruning/Cargo.toml` 将库入口设为 `lib.rs`，直接依赖只有 `astersql-planner-core-rule`。
-
-当前 Rust 接线状态必须与算法能力分开理解：RustCodeGraph 把本文件列为 18 个符号，并显示直接使用方为 `partition_prune_test.rs` 和 `physical_insert.rs`；但进一步按符号搜索确认，`partition_pruning`、`PartitionedTable` 和 `FULL_RANGE` 的实际调用/构造只存在于 `pkg/planner/util/partitionpruning/partition_prune_test.rs`。`physical_insert.rs` 使用的是 `table::PartitionedTable` trait，并未调用本文件的同名结构或函数。根 workspace 和 `pkg/lib.rs` 暴露本 crate，`pkg/executor/Cargo.toml` 也声明依赖，但 `pkg/executor/*.rs` 尚无对该 API 的使用。因此它目前是“可独立测试、已公开、尚未接入 Rust 生产规划链”的移植实现，而不是当前 Rust SQL 请求必经路径。
+结果协议为：空向量表示没有匹配分区，普通非负值表示 `PartitionInfo.definitions` 的下标，单元素 `[FULL_RANGE]`（`-1`）表示全部定义。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 同路径 `partition_prune.go` 的 `PartitionPruning` 是生产门面：Hash/Key 委托 `PartitionProcessor.PruneHashOrKeyPartition`，Range 调用 `PruneRangePartition`、`ConvertToIntSlice` 和 `handleDroppingForRange`，List 调用 `PruneListPartition`；未知类型返回 `rule.FullRange`。它接收 `PlanContext`、真实 `table.PartitionedTable`、完整 expression、分区名、列与输出名，错误类型也是 Go `error`。
-
 Rust `partition_pruning` 保留了返回定义下标、空结果、全范围哨兵、显式分区名以及 Range dropping 合并等核心意图，但把 Go 各剪枝器内聚为基于精简 IR 的局部实现。Rust 还为 List 增加显式的 dropping 映射处理；Go 同文件的 List 分支直接委托规则层，相关行为位于其下游实现而非此门面。
 
 `handle_dropping_for_range` 与 Go 函数的主要流程一致：无替代则跳过、普通分区保留、连续 dropping 区间归并到重叠定义、显式名称限制替代定义、最终全集压缩。差异是 Go 在函数内可将输入 `[FullRange]` 展开，并基于真实 `PartitionInfo` 查询 DDL 状态；Rust 内部从不把哨兵传入该函数，而由入口先持有完整下标集，并使用调用方预构造的 `overlapping_dropping` 映射。
@@ -93,14 +89,3 @@ Rust `partition_pruning` 保留了返回定义下标、空结果、全范围哨�
 - 接入生产规划链前，需要明确从真实表元数据/表达式到精简结构的无损转换，核对 `FULL_RANGE` 与空集消费者，并与 Go 的 `fragment.go`、`physical_index_scan.go`、`physical_utils.go` 调用时机逐一对齐。`pkg/executor/Cargo.toml` 中已有依赖不能视为接线完成。
 - 测试必须放在独立的 `pkg/planner/util/partitionpruning/partition_prune_test.rs`，不要内嵌到源文件。优先补足 Hash/Key、AND/OR/IN、分区名大小写、Range/ListColumns 多列、dropping 异常映射和所有受支持 `Value` 类型；生产接线后还需增加规划器/执行器层回归。
 - 性能改动应保持有序、去重和保守回退不变量，并用大量分区及深组合谓词评估集合分配；兼容性改动需同时对照 Go 返回下标顺序、DDL 中间态和 SQL 类型/collation 语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/util/partitionpruning` 找到 `lib.rs`、Go/Rust 对照源及 Rust 测试，目标文件含 18 个符号。
-- RustCodeGraph `node --file pkg/planner/util/partitionpruning/partition_prune.rs --offset 1 --limit 500`：读取目标文件完整 373 行，核对全部常量、结构、impl、函数和内部流程。
-- RustCodeGraph 对目标文件报告的文件级使用方为 `pkg/planner/core/operator/physicalop/physical_insert.rs` 与 `partition_prune_test.rs`；精确 `callers partition_pruning` 查询长时间无结果后终止。随后用符号搜索核验：前者只有 `table::PartitionedTable` trait，同名但不调用本 API；后者是当前唯一真实 Rust 调用者。此处以精确符号证据修正文件级近似关系。
-- 已读 `pkg/planner/util/partitionpruning/lib.rs` 与 `Cargo.toml`，核对公开再导出、测试模块、crate 名、库入口、Go 包元数据和直接依赖；已查根 `Cargo.toml`、`pkg/lib.rs`、`pkg/executor/Cargo.toml` 的 facade/依赖声明。
-- 已读 `pkg/planner/core/rule/rule_init.rs` 中 `Value`、`Expr`、`PartitionKind`、`PartitionDefinition`、`PartitionInfo`，核对本算法输入 IR 的真实字段与能力边界。
-- 已读 Go 对照 `pkg/planner/util/partitionpruning/partition_prune.go` 全部 97 行，并搜索其真实调用者 `fragment.go`、`physical_index_scan.go`、`physical_utils.go` 与 Go integration test，核对生产门面和 dropping 流程。
-- 已读独立 Rust 测试 `pkg/planner/util/partitionpruning/partition_prune_test.rs` 全部 160 行，核对现有回归覆盖及尚未覆盖的边界。
-- 人工复核结论：本文件存在是为了提供 Rust 分区剪枝算法与 Go 迁移落点；运行时先解析谓词集合、按分区类型定位、处理 DDL 映射并编码结果；安全扩展必须保留保守全集回退、返回协议和独立测试，并在生产接线前补齐真实 SQL 语义差距。

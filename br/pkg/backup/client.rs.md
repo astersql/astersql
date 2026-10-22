@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`client.rs` 属于 Cargo 包 `astersql-br-pkg-backup`。该包由 [`br/pkg/backup/Cargo.toml`](./Cargo.toml) 声明为 library，入口 [`br/pkg/backup/lib.rs`](./lib.rs) 通过 `#[path = "client.rs"] pub mod client` 注册本模块，并用 `pub use client::*` 平铺导出公共 API。它对应 Go 文件 [`br/pkg/backup/client.go`](./client.go)，承担 BR 快照备份客户端的编排职责，而真正拆分并发送单个 store 请求、维护 range 树和备份 schema 的细节分别下沉到 `store.rs`、`limit.rs`、`stubs.rs` 与 `schema.rs`。
-
-RustCodeGraph 显示本文件被 `br/cmd/br/debug.rs`、`br/pkg/kms/aws.rs` 以及 `client_test.rs`、`parity_test.rs`、`schema_test.rs` 直接使用；其中调试命令会读取 `Client::GetStorage`。但核心构造函数 `NewBackupClient` 的 Rust 调用者目前是 `NewTableBackupClient` 和测试夹具，`BackupRanges` 的直接调用链也停留在本模块和测试；`br/pkg/task/backup.rs` 当前仍通过 task 层接口/桩组织备份。因此，本文件是已接入 crate 导出面的 Rust 移植实现，不能据此宣称 Rust BR 命令主链已经完全改用该实现。
-
-源文件顶部已有 `// Copyright 2026 AsterSQL.` 与 PingCAP Apache-2.0 版权行；本任务只新增说明，不修改运行时代码。
+本模块不直接创建真实网络连接：`ClientMgr` 提供 PD、TiKV BackupClient、KV Storage、GC Manager 与 LockResolver；外部存储由 `objstore::New` 创建；RPC 的单 store 发送由 `store::startBackup` 执行。
 
 ## 核心职责
 
@@ -105,8 +101,6 @@ Rust 用 `std::thread::spawn` 和 `std::sync::mpsc` 模拟 Go goroutine/channel�
 
 ## 与 Go 版本的对应关系
 
-结构上，Rust 逐项对应 Go 的 `ClientMgr`、`ProgressUnit`、`MainBackupLoop`、`MainBackupSender`、`Client` 及同名函数/方法；常量、主要分支、错误类别、checkpoint 语义、schema 清洗和 DDL version 窗口都保留。独立测试文件中的注释和用例名称也直接对应 Go 的 `TestGetTS`、`TestGetHistoryDDLJobs`、`TestSkipUnsupportedDDLJob`、`TestCheckBackupIsLocked`、`TestOnBackupResponse`、`TestMainBackupLoop`、`TestBuildProgressRangeTree` 与 `TestObserveStoreChangesAsync`。
-
 需要特别留意的移植差异：
 
 - Rust 的 `BuildBackupRangeAndInitSchema`/`BuildBackupSchemas` 接受注入的 `meta::Reader`，因为本地 `Storage`/snapshot 是轻量抽象；Go 在函数内从指定 snapshot 新建 reader。Rust 为满足 `'static` schema 回调，先物化 DB/table 结果和错误。
@@ -130,21 +124,3 @@ Rust 用 `std::thread::spawn` 和 `std::sync::mpsc` 模拟 Go goroutine/channel�
 - 性能敏感修改应评估 1ms 汇聚轮询、每 store OS thread、15 秒刷新间隔、`rangeLimit` 和 `FreeListG` 容量，避免为了 Go 表面一致而引入忙等或无界线程增长。
 
 Rust 测试必须继续放在独立的 `client_test.rs`、`schema_test.rs` 或 `parity_test.rs`，不要内嵌到 `client.rs`。
-
-## 验证依据
-
-本说明依据以下直接证据编写：
-
-- Rust 源码：[`br/pkg/backup/client.rs`](./client.rs)，完整检查了 1–1518 行的常量、trait、结构体、impl、自由函数及重导出；该文件无条件编译分支。
-- crate 边界：[`br/pkg/backup/Cargo.toml`](./Cargo.toml) 与 [`br/pkg/backup/lib.rs`](./lib.rs)。前者确认 package、library 入口、本地轻依赖和 Go package 映射，后者确认模块注册、测试模块和公共重导出。
-- Go 对照：[`br/pkg/backup/client.go`](./client.go)，核对了同名类型、发送/汇聚/多轮循环、Client 配置、存储/checkpoint、schema、DDL、进度树和响应处理。
-- Rust 测试：[`br/pkg/backup/client_test.rs`](./client_test.rs)、[`br/pkg/backup/schema_test.rs`](./schema_test.rs)、[`br/pkg/backup/parity_test.rs`](./parity_test.rs)。关键覆盖包括 TS/GC 边界、DDL 过滤与排序、lock+SST、checkpoint 续跑、可工作的 schema iterator、响应分类、store 迁移/取消/同轮重试、进度树边界与 Go/Rust 公共契约。
-- Go 测试：[`br/pkg/backup/client_test.go`](./client_test.go)，确认对应测试意图和命名，包括 `TestGetTS`、`TestGetHistoryDDLJobs`、`TestSkipUnsupportedDDLJob`、`TestCheckBackupIsLocked`、`TestOnBackupResponse`、`TestMainBackupLoop`、`TestBuildProgressRangeTree`、`TestObserveStoreChangesAsync` 与 range 拆分测试。
-
-本任务是纯文档分析，按计划不运行 Cargo。人工复核结论是：本文能够回答该文件为何存在、配置和备份循环如何运行、状态/错误/并发生命周期如何约束，以及扩展时应修改哪些符号与独立测试；凡是不能由当前调用图证明的生产接线均已明确标为未完成证明，而没有按 Go 设计推测 Rust 现状。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/backup/client.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/backup/client.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-`client_test.rs` 的 checkpoint fixture 显式填 `BackupID: 0`；这是兼容数据构造证据，不能视为非零 ID 持久化或恢复校验已通过。Go `client.go::StartCheckpointRunner` 同样向元数据写入 backup ID。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

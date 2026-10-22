@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate（`pkg/planner/core/Cargo.toml` 的 `[lib] path = "lib.rs"`）中，并由 `pkg/planner/core/lib.rs` 以 `pub mod rule_eliminate_unionall_dual_item` 公开。它是 Go 文件 `pkg/planner/core/rule_eliminate_unionall_dual_item.go` 的轻量 Rust 移植，操作的是 `crate::task::{PlanNode, PlanKind}` 值类型计划树，而不是生产优化器使用的 `Box<dyn logicalop::LogicalPlan>`。
-
-当前接线必须特别区分：仓库搜索和 RustCodeGraph 调用边只找到 `pkg/planner/core/rule_eliminate_unionall_dual_item_test.rs` 调用本文件的 `EliminateUnionAllDualItem::Optimize`；完整应用的逻辑优化流水线在 `pkg/planner/core/optimizer_runtime.rs` 中通过 `LogicalRule::EliminateUnionAllDualItem => eliminate_union_all_dual_items(plan)` 执行另一份 `dyn LogicalPlan` 实现。因此，本文件目前是可独立验证的移植/模型实现，不是 SQL 主链上该规则的实际执行入口。
+文件顶部注释称“若剔除后仅剩一个分支，则整个 UnionAll 可退化为该分支”，但本文件实现没有执行这一折叠；实际代码只在子节点数变为零时替换为 `TableDual`。
 
 ## 核心职责
 
@@ -76,15 +74,13 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/rule_eliminate_unionall_dual_item.go`。名称、入口委托、当前层先过滤再递归、直接零行 Dual、Projection 包裹零行 Dual、空 UnionAll 转换为 Dual并保留 schema，以及“部分过滤不设置 changed”这些核心语义在本文件中均有对应实现。
+两侧表示和接口不同：Go 接收 `context.Context` 与 `base.LogicalPlan` 接口并返回 `(plan, bool, error)`；本文件接收拥有所有权的具体 `PlanNode`，没有 context 或 error。Go 替代 Dual 使用原 UnionAll 的 session context 初始化，Rust 模型没有等价上下文字段。
 
-两侧表示和接口不同：Go 接收 `context.Context` 与 `base.LogicalPlan` 接口并返回 `(plan, bool, error)`；本文件接收拥有所有权的具体 `PlanNode`，没有 context 或 error。Go 通过类型断言识别 `LogicalUnionAll`、`LogicalProjection`、`LogicalTableDual`，Rust 本文件通过 `PlanKind` 和字符串识别。Go 替代 Dual 使用原 UnionAll 的 session context 初始化，Rust 模型没有等价上下文字段。
+Rust 对空 Projection 使用 `first()`，而 Go 代码假定 Projection 至少有一个孩子。Rust 通过消费并重建 `Vec` 安装递归结果；Go 仅在 `changed` 为真时把递归返回的孩子写回。
 
-Rust 对空 Projection 使用 `first()`，而 Go 代码假定 Projection 至少有一个孩子。Rust 通过消费并重建 `Vec` 安装递归结果；Go 仅在 `changed` 为真时把递归返回的孩子写回。就当前规则返回约定而言，两者对“后代 UnionAll 变空”的可见结果一致。
+还应与生产 Rust 实现区分：`optimizer_runtime.rs::eliminate_union_all_dual_items` 使用真实 `logicalop` 类型，采用先递归后过滤，只删除直接 `LogicalTableDual`，并在只剩一个孩子时折叠 UnionAll；它没有复刻本文件/Go 文件的 Projection+Dual、零孩子转 Dual和 changed 返回协议。
 
-还应与生产 Rust 实现区分：`optimizer_runtime.rs::eliminate_union_all_dual_items` 使用真实 `logicalop` 类型，采用先递归后过滤，只删除直接 `LogicalTableDual`，并在只剩一个孩子时折叠 UnionAll；它没有复刻本文件/Go 文件的 Projection+Dual、零孩子转 Dual和 changed 返回协议。这是现有仓库的实现分流事实，不应由本说明推断二者已经语义等价。
-
-没有发现按规则名或符号名命名的独立 Go 单元测试；本文件的直接回归证据来自同目录 Rust 测试 `rule_eliminate_unionall_dual_item_test.rs`。Go 优化器注册顺序可由 `optimizer.go` 的 `optRuleList` 与 `optRuleFlags` 核对。
+没有发现按规则名或符号名命名的独立 Go 单元测试；本文件的直接回归证据来自同目录 Rust 测试 `rule_eliminate_unionall_dual_item_test.rs`。
 
 ## 扩展指南
 
@@ -99,19 +95,3 @@ Rust 对空 Projection 使用 `first()`，而 Go 代码假定 Projection 至少�
 - 调整替代 Dual 的元数据：检查 `PlanNode::default` 的所有字段，明确哪些应从 UnionAll 继承，并为每项新增独立断言。
 
 测试逻辑应继续放在同目录的独立 `*_test.rs` 文件，不嵌入生产源文件。此类变更还应评估兼容风险（规则标志与返回协议）、正确性风险（错误删除非空分支、schema/元数据丢失）和性能风险（重复遍历或克隆整棵子树）。
-
-## 验证依据
-
-本说明依据以下直接证据整理：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `explore "pkg/planner/core/rule_eliminate_unionall_dual_item.rs EliminateUnionAllDualItem unionAllEliminateDualItem"`：定位 Rust/Go 实现，显示 Rust 递归函数的两个调用者为 `Optimize` 与自身，并给出独立 Rust 测试源码。
-- RustCodeGraph `query`/`node`：确认 `EliminateUnionAllDualItem`、`unionAllEliminateDualItem`、`task.rs::PlanNode` 的定义，以及 `lib.rs` 的模块声明。
-- `pkg/planner/core/rule_eliminate_unionall_dual_item.rs`：规则符号、过滤顺序、返回标志和 schema 转移的主要事实来源。
-- `pkg/planner/core/task.rs`：`PlanKind`、`PlanNode`、默认构造和孩子建造器的数据模型来源。
-- `pkg/planner/core/rule_eliminate_unionall_dual_item_test.rs`：规则名、直接/投影 Dual 删除、空 UnionAll 替换、schema 保留、changed 协议和过滤先于递归的回归证据。
-- `pkg/planner/core/rule_eliminate_unionall_dual_item.go`、`optimizer.go`：Go 语义与规则注册顺序的对照证据；仓库范围符号检索未发现该规则的专门 Go 测试。
-- `pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`：crate 归属、公开模块和独立测试装配依据。
-- `pkg/planner/core/optimizer_runtime.rs`：生产 Rust `LOGICAL_RULES`、规则分派和真实 `logicalop` 实现的依据，证明目标文件当前未接入该主链。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前另以规定命令验证本文恰好包含十一个固定二级章节，并人工检查所有“已支持”陈述均能回指以上源码、图查询或测试证据。

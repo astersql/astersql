@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`no_assert.rs` 是 `astersql-util-intest` crate 的默认生产构建断言门面。crate 入口 `pkg/util/intest/lib.rs` 在未启用 `test`、`intest`、`enableassert` 任一条件时编译本模块，并将 `Assert`、`AssertNoError`、`AssertNotNil`、`AssertFunc` 与 `EnableAssert` 原名再导出。启用上述任一条件时，入口改为选择同签名的 `pkg/util/intest/assert.rs`，两个实现不会同时编译。
-
-该文件存在的目的，是让生产默认构建保留稳定的内部断言 API，同时避免默认执行这些检查；运行期仍可通过共享的 `EnableInternalCheck` 开关显式启用检查。crate 的包名、入口和 feature 集合由 `pkg/util/intest/Cargo.toml` 定义：库入口是 `lib.rs`，`default` 为空，另有互相独立的 `intest` 与 `enableassert` feature。
+为四类断言提供与启用版一致的公开函数签名。
 
 ## 核心职责
 
@@ -62,11 +60,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/intest/no_assert.go`。Go 用 `//go:build !intest && !enableassert` 选择默认变体，将 `EnableAssert` 设为 `false`，并且四个公开函数都只在 `EnableInternalCheck` 为真时调用同名共同实现；Rust 的 `lib.rs` cfg 与本文件逐项镜像这一结构。
+Go 用 `//go:build !intest && !enableassert` 选择默认变体，将 `EnableAssert` 设为 `false`，并且四个公开函数都只在 `EnableInternalCheck` 为真时调用同名共同实现；Rust 的 `lib.rs` cfg 与本文件逐项镜像这一结构。
 
-语义上的类型映射为：Go `error` 对应 Rust `Option<&dyn Display>`，Go `any` 的 nil 检查对应 Rust `Option<T>`，Go `func() bool` 的 nil/调用检查对应 Rust `Option<fn() -> bool>`，Go `...any` 对应受限的 `&[AssertArg]`。因此 Rust 不是动态类型的一比一复刻：消息参数和可断言函数的类型范围更窄，但开关条件、短路行为和共同失败路径保持一致。
+语义上的类型映射为：Go `error` 对应 Rust `Option<&dyn Display>`，Go `any` 的 nil 检查对应 Rust `Option<T>`，Go `func() bool` 的 nil/调用检查对应 Rust `Option<fn() -> bool>`，Go `...any` 对应受限的 `&[AssertArg]`。
 
-`pkg/util/intest/assert.go` / `assert.rs` 是互斥的启用版对照：它们额外读取初值为真的 `EnableAssert`。不要把启用版测试观察到的“修改 `EnableAssert` 可控制检查”误写为默认 `no_assert.rs` 的行为。
+`pkg/util/intest/assert.go` / `assert.rs` 是互斥的启用版对照：它们额外读取初值为真的 `EnableAssert`。
 
 ## 扩展指南
 
@@ -75,13 +73,3 @@
 测试逻辑应继续放在独立文件，而不是嵌入生产源文件。共同失败语义和启用版开关行为应扩展 `pkg/util/intest/assert_test.rs` 与 `migration_aster_unit_test.rs`；默认变体的行为应增加或扩展独立集成测试，使库在非 `cfg(test)` 方式编译后验证：两开关默认关闭、写 `EnableAssert` 不触发检查、写 `EnableInternalCheck` 才触发检查，以及关闭时 `AssertFunc` 不调用函数。修改全局原子开关的测试必须保存并恢复旧值，并串行化并发测试以免互相污染。
 
 兼容风险主要是 cfg 条件或门控开关漂移导致生产环境意外 panic；正确性风险是两变体签名/共同实现不一致；性能风险是默认热路径新增格式化、分配或强内存序。扩展时应保持关闭路径只有一次廉价原子读取，并确认 workspace feature 合并不会意外选择启用版。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引包含目标文件；`node --file pkg/util/intest/no_assert.rs` 核对 5 个公开符号和全部 62 行源码；文件节点报告唯一装配者为 `pkg/util/intest/lib.rs`。
-- RustCodeGraph 源码节点：`pkg/util/intest/lib.rs` 核对互斥 cfg 与再导出；`assert_common.rs` 核对四条共同失败路径、`EnableInternalCheck` 初值和 panic/message 行为；`assert.rs` 核对启用版同签名 API 与双开关差异。
-- crate 边界：`pkg/util/intest/Cargo.toml` 核对包名、`lib.rs` 入口、空默认 feature、`intest`/`enableassert` feature，以及无普通依赖。
-- Go 对照：`pkg/util/intest/no_assert.go` 核对默认 build tag、`EnableAssert = false` 与仅由 `EnableInternalCheck` 门控；`assert.go` 核对启用版差异；`assert_test.go` 核对 nil、错误、函数和消息行为。
-- Rust 测试：`pkg/util/intest/assert_test.rs` 和 `migration_aster_unit_test.rs` 覆盖共同断言语义、消息与开关切换；`not_in_unittest_test.rs` 以集成测试方式核对默认 feature 下公开全局状态可跨线程观察。由于 crate 单元测试的 `cfg(test)` 会选择 `assert.rs`，现有测试不直接编译并执行 `no_assert.rs` 的四个门面函数，这是当前验证边界而非已覆盖结论。
-- 调用点补证：对 `*.rs` 搜索 `intest::Assert*`、`EnableAssert`、`EnableInternalCheck`，核对该 crate 在表达式、表、行编解码等模块的使用；RustCodeGraph 同名调用边无法稳定区分 `assert.rs` 与 `no_assert.rs`，故未声称这些调用点必然在所有构建中落到本文件。
-

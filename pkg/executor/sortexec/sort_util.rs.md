@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-executor-sortexec` crate 的基础类型与公共工具层。crate 入口 `pkg/executor/sortexec/lib.rs` 通过 `pub mod sort_util` 装配本模块，并向 crate 使用者再导出 `DataChunk`、`Row`、`SortError`、`SortKey`、`SortValue`。上层 `sort.rs` 与 `topn.rs` 用这些类型构造排序执行器；`sort_partition.rs`、`parallel_sort_spill_helper.rs`、`topn_spill.rs` 和 `multi_way_merge.rs` 用本文件的比较器、内存计数、spill 状态和 `DiskRun` 完成分区排序、落盘模拟与归并。
-
-`pkg/executor/sortexec/Cargo.toml` 声明 crate 名为 `astersql-executor-sortexec`、入口为 `lib.rs`，并把 Go 对照包标为 `pkg/executor/sortexec`。其实际依赖目前全部位于 `cfg(windows)` 条件段；本文件自身只依赖 Rust 标准库的比较、格式化、`Arc` 和原子类型，不直接调用这些外部 crate。
+提供 spill 公共协议：状态常量、每块行数 `spillChunkSize`、错误构造器、内存中的 `DiskRun` 抽象及 chunk 游标。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ spill 状态码是跨模块协议。`SortPartition` 通常走 `notSpilled -> inS
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/sortexec/sort_util.go`。两端一致保留了两个错误文案、`spillChunkSize = 1024`、比较检查点 10240、四个 spill 状态值，以及 `rowWithPartition`、`rowWithError`、`chunkWithMemoryUsage`、`dataCursor`、`NewDataCursor`、`reloadCursor` 的结构意图。
-
 Rust 文件同时承担 Go 版本分散在其他组件中的基础能力：Go 的真实 SQL 值、行、chunk、tracker 和磁盘 chunk 由 `pkg/util/chunk`、`pkg/util/memory` 等包提供；Rust 当前以 `SortValue`/`Row`/`DataChunk`、`MemoryTracker` 和内存向量实现自包含模型。因此 Rust `DiskRun` 名为磁盘 run，但当前没有文件 I/O，`memory_usage` 也是近似核算，不能把它描述成 Go `chunk.DataInDiskByChunks` 的完整持久化等价物。
 
 Go 的 `reloadCursor` 被 `multi_way_merge.go` 与 `sort_partition.go` 调用，逐 chunk 从 `DataInDiskByChunks` 恢复；Rust 当前生产路径改用 `DiskRun::into_rows` 和 `SortPartition.diskRows`，导致 Rust 游标接口尚未接线。Go 文件还包含 panic 恢复/日志与 failpoint 注入函数，Rust `sort_util.rs` 没有对应实现；Rust 的取消检查在 `sort_partition.rs::sort` 中通过原子 kill 标志和 panic 捕获完成。这些都是当前实现差异，不应推断为等价功能已经存在。
@@ -95,12 +91,3 @@ Go 的 `reloadCursor` 被 `multi_way_merge.go` 与 `sort_partition.go` 调用，
 - 修改 tracker：保持 release 不产生负值，并明确是否需要比 Relaxed 更强的可见性或原子“检查并预留”操作；所有 owner 的 `close`/错误路径都要回归。
 - 扩展测试辅助：不要在源文件内嵌测试。全局 `spillChunkSize` 的修改应始终通过恢复 guard/闭包，并考虑并行测试串扰。
 - 对齐 Go 时应以 `sort_util.go`、`sort_partition.go` 和 `multi_way_merge.go` 的实际调用为证据；不要把 Go 的 failpoint、日志、真实磁盘 chunk 能力写成 Rust 已支持。
-
-## 验证依据
-
-- 源码与 crate：`pkg/executor/sortexec/sort_util.rs`、`pkg/executor/sortexec/lib.rs`、`pkg/executor/sortexec/Cargo.toml`。
-- 生产调用证据：`sort.rs`、`topn.rs`、`topn_chunk_heap.rs`、`sort_partition.rs`、`parallel_sort_spill_helper.rs`、`topn_spill.rs`、`multi_way_merge.rs`、`sort_spill.rs`。
-- Rust 独立测试证据：`sort_test.rs::serial_sort_honors_null_ordering_and_descending_values`，`parallel_sort_test.rs::parallel_sort_honors_multi_column_asc_desc_order` 与 `constant_ordering_items_do_not_change_parallel_sort_order`，`sort_spill_test.rs::disk_run_preserves_chunk_boundaries_and_rejects_after_close`，以及 `topn_spill_test.rs`、`sort_partition_test.rs`、`multi_way_merge_test.rs`、`benchmark_test.rs` 中对比较器、tracker、spill 状态和归并的使用。
-- Go 对照：`pkg/executor/sortexec/sort_util.go`；游标调用由 `multi_way_merge.go` 与 `sort_partition.go` 交叉验证；小 chunk 测试辅助的 Go 实现在 `sort_partition.go::SetSmallSpillChunkSizeForTest`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query` 精确定位 Rust `compare_rows`（第 139 行）、`comparator`（第 177 行）、`reloadCursor`（第 378 行）、`SetSmallSpillChunkSizeForTest`（第 410 行），并定位 Go 同名对应项。精确 `callers/callees` 未返回结果，调用边改由上述限定目录源码搜索核验。
-- 未运行 Cargo：本任务为纯文档分析，按计划以结构检查和源码事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate：`pkg/ddl/Cargo.toml` 将 crate 根设为 `lib.rs`，而 `pkg/ddl/lib.rs` 通过 `pub mod ddl_history;` 暴露本模块。它提供一个进程内的 DDL 历史任务容器 `HistoryStore`，承接 Go `pkg/ddl/ddl_history.go` 中“按任务 ID 查询、读取最近任务、遍历全部任务、分页扫描”等接口的部分语义。
-
-这里不是当前 Rust DDL 完成归档主链的持久化实现。仓库搜索只发现独立测试 `pkg/ddl/ddl_history_test.rs` 直接构造和调用 `HistoryStore`，没有发现生产 Rust 调用者；模块也不访问事务、KV、系统表或 `mysql.tidb_ddl_history`。因此它目前更准确的定位是“已公开、已做局部语义移植并由单元测试约束的内存实现”，不能据此推断完整应用已经通过它保存历史任务。
+提供三种读取顺序：`get_by_id` 定点读取，`last_n`/`iter_batches`/`scan` 按新到旧读取，`all` 按旧到新返回完整集合。
 
 ## 核心职责
 
@@ -74,9 +72,6 @@ RustCodeGraph 将目标识别为 10 个符号，并确认 `ddl_history_test.rs` 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/ddl_history.go`，Cargo 元数据也声明 `go-package = "pkg/ddl"`。语义对应关系如下：
-
-- `DEFAULT_SCAN_LIMIT` 对应 `DefNumGetDDLHistoryJobs = 2048`。
 - `add_history_job` 近似 `AddHistoryDDLJob` 的“归档并按 ID 可查询”目的，但 Rust 只写内存；Go 会先尝试向 `mysql.tidb_ddl_history` 插入编码后的任务，再写入 `meta.Mutator` 的历史 job list，并且表写失败只记录日志、后者错误才返回。Rust 不编码、不双写、不记录日志，且忽略 `updateRawArgs`。
 - `get_by_id` 对应 `GetHistoryJobByID` 的结果语义，但 Go 会创建并提交只读事务并从 meta 读取；Rust 线性读取内存。
 - `last_n` 对应 `GetLastNHistoryDDLJobs`；两者都从最新任务开始并限制条数。
@@ -93,12 +88,3 @@ RustCodeGraph 将目标识别为 10 个符号，并确认 `ddl_history_test.rs` 
 若要把该模块接入真实 DDL 完成归档链路，不能只在某个 worker 中塞入一次 `add_history_job` 调用。需要先对齐 Go `AddHistoryDDLJob` 的持久化/事务/失败语义，明确系统表与 meta 历史列表的兼容策略、owner failover 后可恢复性、何时从运行队列移除，以及进程重启后如何读取；这些是当前实现缺失的能力。接线时还应在生产调用处验证锁顺序和生命周期，避免仅靠无界 `Vec` 累积历史。
 
 若改变 `iter_batches`，建议考虑让闭包返回 `Result<bool, E>` 以对齐 Go 的错误传播；若改变写入策略，需新增重复 ID、空存储、乱序/负数 ID、大量记录和早停测试。兼容风险集中在扫描顺序和边界值，性能风险集中在每次写入全量排序、全量克隆和无界内存增长。
-
-## 验证依据
-
-- 源码：`pkg/ddl/ddl_history.rs`（`DEFAULT_SCAN_LIMIT`、`HistoryStore` 及六个公开方法）；`pkg/ddl/ddl.rs`（`Job` 定义与 `Job::new`）。
-- crate 与装配：`pkg/ddl/Cargo.toml`（`astersql-ddl`、`lib.rs`、Go 包映射）；`pkg/ddl/lib.rs`（公开 `ddl_history` 模块与独立测试模块）。
-- Rust 测试：`pkg/ddl/ddl_history_test.rs`，覆盖乱序写入后的排序、ID 查询、最近 N 条、全量升序、带起点扫描、默认 2048 上限、非法参数、重复替换及批次早停。
-- Go 对照：`pkg/ddl/ddl_history.go` 与 `pkg/ddl/ddl_history_test.go`，用于核对事务/持久化、批次、顺序、默认上限、failpoint 和错误行为差异。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/ddl/ddl_history.rs` 命中该文件；`node --file ...` 读取 112 行与 10 个符号；`query ddl_history --json` 核对 Rust/Go 源和测试符号；`node ddl_history.rs::HistoryStore` 给出测试导入边。`callers` 查询超时后，使用 `rg` 补查并确认生产 Rust 没有本模块的直接调用点。
-- 结构验证应由任务指定命令确认文档存在且恰好包含本文的 11 个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。

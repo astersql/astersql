@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-topsql-stmtstats` crate 的 TopRU 基础数据模型层：它不主动采样、调度或上报 RU（Request Unit），而是定义这些阶段共同使用的版本值、聚合键、单次执行上下文和增量容器。crate 入口 `pkg/util/topsql/stmtstats/lib.rs` 以私有 `mod rustats` 装载本文件，再通过 `pub use rustats::*` 将其所有公开项暴露给同 crate 的 `stmtstats.rs`、`aggregator.rs` 以及 reporter 等下游 crate。
-
-`pkg/util/topsql/stmtstats/Cargo.toml` 将该 crate 命名为 `astersql-util-topsql-stmtstats`，并通过 `execdetails-dependency` 引入 `astersql-util-execdetails`；`lib.rs::execdetails` 再重导出 `RUDetails`，因此本文件的 `crate::execdetails::RUDetails` 实际来自执行详情 crate。根 `Cargo.toml` 用 `facade_util_topsql_stmtstats` 指向本 crate。
+只提供数据结构和无 I/O 的合并操作；TopRU 是否启用、何时采样、版本切换清理、key 数量上限以及向 reporter 投递均由相邻实现负责。
 
 ## 核心职责
 
@@ -92,16 +90,13 @@ RustCodeGraph 的精确结果确认了关键边：`NormalizeRUVersion` 被 `Rese
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/topsql/stmtstats/rustats.go`。主要语义一一对应：
-
-- Go `rmclient.RUVersion` 对应 Rust `i32` 别名和本地 v1/v2 常量；两端默认版本当前都是 v1，零值都规范为默认值。
 - Go `RUVersionProvider.GetRUVersion()` 对应 Rust trait 方法；Rust 额外声明 `Send + Sync` 以满足线程共享约束。
 - Go `RUKey` 三字段对应 Rust 同名三字段；Rust 的 `RUKey::new` 是额外的拥有化便利构造器。
 - Go `ExecutionContext.RUDetails` 是 `*util.RUDetails`；Rust 是 `Option<Arc<RwLock<RUDetails>>>`，用 `Option` 表达 nil、用共享所有权和锁表达并发可变性。
 - Go `RUIncrementMap` 是 `map[RUKey]*RUIncrement`；Rust 是 `HashMap<RUKey, RUIncrement>`，避免空 value 指针，并以 `Default` 创建缺失槽位。
 - Go 只给 `RUIncrement` 定义 `Merge`；Rust 因无法给标准库类型直接添加固有方法，额外定义 `RUIncrementMapMerge` trait 来保留 `map.Merge(...)` 风格和按键合并语义。
 
-测试证据显示 Rust 保留了 Go 的关键行为：`stmtstats_test.rs::TestOnExecutionBeginFinishRU` 覆盖 v1 的 RRU+WRU；`go_merge_20_topru_v2_uses_finalized_total_only` 与 `go_merge_40_finish_uses_version_specific_ru_total` 覆盖 v2 只在 finish 使用最终总量；`TestMergeRUIntoInFlightSamplingAndFinishDedup` 覆盖跨 tick 去重；`aggregator_test.rs::TestAggregatorDetectsRUVersionHandover` 覆盖版本切换清理和通知；`aggregator_1_aster_unit_test.rs::aggregator_caps_distinct_ru_keys_and_records_drops` 覆盖 distinct key 上限。Go 的对应测试位于 `stmtstats_test.go` 和 `aggregator_test.go`。
+测试证据显示 Rust 保留了 Go 的关键行为：`stmtstats_test.rs::TestOnExecutionBeginFinishRU` 覆盖 v1 的 RRU+WRU；`go_merge_20_topru_v2_uses_finalized_total_only` 与 `go_merge_40_finish_uses_version_specific_ru_total` 覆盖 v2 只在 finish 使用最终总量；`TestMergeRUIntoInFlightSamplingAndFinishDedup` 覆盖跨 tick 去重；`aggregator_test.rs::TestAggregatorDetectsRUVersionHandover` 覆盖版本切换清理和通知；`aggregator_1_aster_unit_test.rs::aggregator_caps_distinct_ru_keys_and_records_drops` 覆盖 distinct key 上限。
 
 ## 扩展指南
 
@@ -112,13 +107,3 @@ RustCodeGraph 的精确结果确认了关键边：`NormalizeRUVersion` 被 `Rese
 新增增量字段时，应修改 `RUIncrement` 的默认值和 `Merge`，同时更新 producer（`stmtstats.rs`）、aggregator、reporter data model/协议转换以及 Go 对照。遗漏任一合并层会在跨 tick 或跨会话时静默丢数。测试应放在现有独立文件中，不要把测试嵌入 `rustats.rs`；至少覆盖同 key 合并、异 key 隔离、跨 tick、finish、版本切换和并发顺序。
 
 若要改变 `SharedRUDetails` 的锁或所有权模型，先审查执行详情的所有写入方及锁顺序。当前读锁范围很短；在锁内加入 reporter I/O 或获取 `StatementStats`/aggregator 锁会增加死锁和延迟风险。性能优化应关注 key 克隆、digest 字节复制、map 扩容和批次 clone，但不能以共享可变 key 或跳过完整三字段比较换取速度。
-
-## 验证依据
-
-- 源码与 crate 边界：`pkg/util/topsql/stmtstats/rustats.rs`、`lib.rs`、`Cargo.toml`、根 `Cargo.toml`。
-- 直接生产调用：`pkg/util/topsql/stmtstats/stmtstats.rs` 的 `add_ru_on_begin`、`add_ru_on_finish`、`sample_active_ru_delta`、`current_ru_total`；`aggregator.rs` 的 `current_ru_version`、`aggregate_all`、`drain_and_push_ru`。
-- 下游消费：`pkg/util/topsql/reporter/reporter.rs::CollectRUIncrements`、`ru_window_aggregator.rs::addBatch`、`ru_datamodel.rs::addBatch`。
-- Go 对照：`pkg/util/topsql/stmtstats/rustats.go`，以及同目录 `stmtstats.go`、`aggregator.go` 的对应生产链。
-- Rust 独立测试：`pkg/util/topsql/stmtstats/stmtstats_test.rs`、`aggregator_test.rs`、`aggregator_1_aster_unit_test.rs`；Go 独立测试：`stmtstats_test.go`、`aggregator_test.go`。这些文件验证版本口径、在途 delta、水位去重、begin-based 计数、key 隔离、finish/tick 并发、版本切换和 key 上限。
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、目标文件已索引；`files --filter pkg/util/topsql/stmtstats` 确认模块文件集；`node --file .../rustats.rs` 核对 131 行源码及 12 个使用文件；`query`/`explore` 核对 `RUIncrementMapMerge`、`GetRUVersion`、`NormalizeRUVersion`、`MergeRUInto`、`drain_and_push_ru` 与 reporter 的调用关系。宽泛同名 `Merge` 查询存在跨仓库噪声，因此结论只采用带目标路径的结果并用相邻源码复核。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，计划明确禁止 Cargo；完成验证采用固定章节结构检查与人工事实复核。

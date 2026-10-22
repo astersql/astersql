@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-expression` crate 中一组基于遗留列式运行时的数学 SQL 内建函数实现。`pkg/expression/lib.rs` 通过 `#[path = "builtin_math_vec.rs"] mod builtin_math_vec_kernel;` 将它编入 crate；测试配置下，`expression_group_15` 再导出其符号供独立测试使用。它依赖 `pkg/expression/legacy_vectorized_runtime.rs` 提供的 `Chunk`、`Column`、`EvalContext`、`ExprRef` 与 `MathBase`，以“一次求值一批行”的方式实现 Go `pkg/expression/builtin_math_vec.go` 的主要行为。
-
-当前接线边界需要特别说明：该模块是私有 kernel，仓库内非测试 Rust 代码没有直接引用这里定义的 `builtin*Sig` 类型；正式表达式体系的标量数学函数和签名选择位于 `pkg/expression/builtin_math.rs`，PB 反序列化入口位于 `pkg/expression/pb_to_expr_runtime.rs`。因此，本文件目前是已编译、可由 crate 内部使用并有独立测试覆盖的遗留向量化实现，而不是已经接入 `builtinFunc`/`Expression` 正式执行主链的公开 API。`pkg/expression/Cargo.toml` 将其归入包名 `astersql-expression`、库入口 `lib.rs`，并提供这里直接用到的 `crc32fast`、`mathutil` 与 `types-dependency`。
+用 `define_signature!` 生成 46 个持有 `MathBase` 的签名壳，并统一提供 `new`、`from_base` 和 `vectorized() == true`；`builtinConvSig` 单独实现且故意返回 `false`。
 
 ## 核心职责
 
@@ -79,10 +77,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/builtin_math_vec.go`。两端按相同签名名称组织，并保持主要流程：先列式求值参数、合并 NULL、逐行运算、把对数定义域问题记为 warning、把数值溢出作为错误返回；`builtinConvSig.vectorized()` 在两端都故意为 false，同时保留列式实现。
-
-已验证的关键一致点包括：ACOS/ASIN 对 NaN 使用 Go 同样的严格范围比较；双参数 LOG 在置 NULL 后仍计算并写入比值；NULL RAND 种子按 0；整数/DECIMAL 的 CEIL、FLOOR、ROUND、TRUNCATE 分支方向；CONV 的有符号基数与非法基数行为。独立 Rust 测试明确以 Go 行为为断言来源。
-
 仍需注意的实现层差异：Go 复用 `bufAllocator`，Rust 每次创建临时列；Go 的 EXP 溢出表达式使用参数的格式化文本，Rust 使用当前数值；Rust REAL ROUND 的辅助函数依赖 `round_ties_even`，而 DECIMAL 明确使用 `ModeHalfUp`；Rust 目前位于遗留运行时 kernel，未直接实现正式 `builtinFunc` 接口。后续接线时应以这些差异为兼容性审查点，不能只凭同名函数认定已经完全替代 Go 主链。
 
 ## 扩展指南
@@ -92,11 +86,3 @@
 扩展时必须同步检查：NULL 是否应合并还是转默认值；非法输入是 NULL、warning 还是 error；非有限浮点结果是否允许；参数 unsigned 标志是否改变位模式解释；DECIMAL 舍入模式与返回 `ret_decimal`；批次中途错误后的部分写入语义。新增测试应放在独立文件，首选扩展 `pkg/expression/builtin_math_vec_test.rs`；若属于 Go 对齐的组合场景，也应同步 `pkg/expression/builtin_like_vec_15_aster_unit_test.rs`，不要把测试嵌入本源文件。
 
 若目标是让新函数进入真实 SQL/PB 执行主链，还需在 `pkg/expression/builtin_math.rs` 的标量实现和签名选择、`pkg/expression/pb_to_expr_runtime.rs` 的 PB 名称映射及正式表达式适配层完成必要接线，并验证 `vectorized()` 的选择机制。对 CONV，只有解决注释所述 hybrid-type 向量匹配问题后才能把标志改为 true。
-
-## 验证依据
-
-- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/builtin_math_vec.rs`，不把工作区后续变化作为行为依据。
-- `pkg/expression/builtin_math_vec_test.rs::test_vectorized_builtin_math_round_truncate_and_overflow` 覆盖正负半值、大整数、NULL、unsigned 值、unsigned fraction 原值返回与 signed 溢出；Go 对照 `pkg/expression/builtin_math_vec.go`。
-- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
-- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
-- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-cache` crate 的完整统计表缓存门面。crate 入口 `pkg/statistics/handle/cache/lib.rs` 将本模块私有声明后再导出其公开项；`pkg/statistics/handle/cache/Cargo.toml` 的 `[lib] path = "lib.rs"` 证明其 crate 边界。它把底层 `StatsCache`（实际存储、配额和驱逐）包装成实现 `stats_types::StatsCache` 的 `StatsCacheImpl`，并负责从 `mysql.stats_meta` 增量刷新表统计、批量提交变更和刷新健康度指标。
-
-RustCodeGraph 的文件节点把本文件列为被 `stats_table_row_cache.rs`、`statscache_test.rs` 和 `restricted_sql.rs` 使用；进一步精确搜索表明，仓库内 Rust 代码对 `NewStatsCacheImpl`、`StatsCacheImpl` 的直接引用目前只出现在本文件、独立测试和基准中。因此可以确认接口已实现且由测试覆盖，但不能据此宣称它已经由 Rust 生产主链构造。Go 对照文件 `statscache.go` 则有来自 domain、session、executor、planner、DDL 等模块的生产调用者，这是 Go 主链现状而不是 Rust 调用证据。
+把底层 `StatsCache`（实际存储、配额和驱逐）包装成实现 `stats_types::StatsCache` 的 `StatsCacheImpl`，并负责从 `mysql.stats_meta` 增量刷新表统计、批量提交变更和刷新健康度指标。
 
 ## 核心职责
 
@@ -97,13 +95,11 @@ Cargo 直接依赖与这些调用一致：`statistics`、`stats-types`、`stats-
 
 ## 与 Go 版本的对应关系
 
-主对照为 `pkg/statistics/handle/cache/statscache.go`，Rust 基本逐段保留：五倍 lease 回看、两种索引提示、指定 ID 排序去重、按版本读取、每 10 条批量提交、旧直方图复用、DDL 竞态时跳过、snapshot 补 `LastAnalyzeVersion`、quota 原地更新与 map copy-on-write 分支、旧缓存关闭、健康度分类和 100 的闭区间桶。
+Rust 为支持具体 handle 与动态 `Arc<dyn StatsHandle>` 增加了 `StatsCacheHandle`/`SharedHandle`，并为测试增加 `settings`，这些不是业务简化。
 
-显式语言适配包括：Go 的 `atomic.Pointer[StatsCache]` 对应 `RwLock<Arc<StatsCache>>`；Go interface 对应 `stats_types::StatsCache` trait；Go `context.Context` 对应 `ExecutionContext`；Go `[]any` SQL 参数对应 `SqlValue`；Go 指针表对象对应 `Arc<StatisticsTable>`；Go defer 计时对应 `LoadTimer::Drop`。Rust 为支持具体 handle 与动态 `Arc<dyn StatsHandle>` 增加了 `StatsCacheHandle`/`SharedHandle`，并为测试增加 `settings`，这些不是业务简化。
+差异和迁移状态必须注意：Rust `Update` 接受 `&[i64]` 并复制后排序，不修改调用者切片；Go 原地排序/compact 可变参数。Rust `statsHealthyBucketIndex` 使用 `debug_assert!`，Go 使用 `intest.Assert`。更重要的是，Go 文件已有 14 个生产使用文件，而 Rust 构造器当前未检索到生产调用，因此只能确认实现和测试对齐，不能确认应用主链已经切换到它。
 
-差异和迁移状态必须注意：Rust `Update` 接受 `&[i64]` 并复制后排序，不修改调用者切片；Go 原地排序/compact 可变参数。Rust `Clear` 可在测试 settings 下重建指定后端。Rust `integer` 显式校验行类型。Rust `statsHealthyBucketIndex` 使用 `debug_assert!`，Go 使用 `intest.Assert`。更重要的是，Go 文件已有 14 个生产使用文件，而 Rust 构造器当前未检索到生产调用，因此只能确认实现和测试对齐，不能确认应用主链已经切换到它。
-
-Rust 独立测试覆盖范围明显超过同路径 Go 单测：除 Go 的批处理和指标桶外，还覆盖 TSO 偏移、put 后 delete 顺序、SQL 选择与参数、双后端版本推进、直方图复用、缺失/失败加载、取消时部分批、替换快照、动态 lease、配置/指标/failpoint、真实 schema/分区和动态 trait handle 构造。Go 测试仍是分类规则和原始移植意图的重要证据。
+Rust 独立测试覆盖范围明显超过同路径 Go 单测：除 Go 的批处理和指标桶外，还覆盖 TSO 偏移、put 后 delete 顺序、SQL 选择与参数、双后端版本推进、直方图复用、缺失/失败加载、取消时部分批、替换快照、动态 lease、配置/指标/failpoint、真实 schema/分区和动态 trait handle 构造。
 
 ## 扩展指南
 
@@ -115,15 +111,3 @@ Rust 独立测试覆盖范围明显超过同路径 Go 单测：除 Go 的批处�
 - 若要让 `Replace` 接受异构实现，不能只移除 `expect`；应先扩展 `stats_types::StatsCache` 的快照/克隆契约，明确资源所有权和旧缓存关闭责任。
 - 若接入 Rust 生产主链，首先应在实际 handle 构造位置注入 `NewStatsCacheImpl`，并补独立集成测试证明周期性全量刷新、指定表刷新和关闭顺序；当前没有直接调用证据，不应仅靠现有单元测试宣称已接线。
 - Rust 测试逻辑继续放在同目录独立 `statscache_test.rs`（由 `lib.rs` 的 `#[path]` 引入），不要内嵌回生产文件。性能变更可同步 `bench_test.rs` 的 update/put/get 基准。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引存在，包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录文件清单包含 `statscache.rs`、Rust/Go 测试和 Go 对照。
-- RustCodeGraph `node --file pkg/statistics/handle/cache/statscache.rs`：完整读取 553 行，确认全部常量、trait、结构、函数、impl、错误分支和 `stats_types::StatsCache` 适配；文件节点报告三个文件级使用者。
-- RustCodeGraph 精确查询：`query NewStatsCacheImpl --kind function --json` 同时定位 Go 和 Rust 构造器；`query statsHealthyBucketIndex --kind function --json` 定位两种语言的桶函数。通用 `explore` 对常见调用词产生跨仓库噪声，精确 callers/callees 命令未返回可用边，因此没有把噪声结果当作事实。
-- 已读模块与依赖：`pkg/statistics/handle/cache/lib.rs`、`pkg/statistics/handle/cache/Cargo.toml`。目标目录不存在 `doc.go`。
-- 已读直接实现证据：`pkg/statistics/handle/cache/statscache.rs`；精确 `rg` 搜索 `StatsCacheImpl|StatsCacheHandle|NewStatsCacheImpl|UpdateStatsCache|statsHealthyBucketIndex` 用于补足调用图未解析出的引用，并确认生产构造调用缺失。
-- 已读 Go 对照：`pkg/statistics/handle/cache/statscache.go`；RustCodeGraph 显示该 Go 文件被 domain、session、executor、planner、DDL 等 14 个文件使用。
-- 已读独立测试：`pkg/statistics/handle/cache/statscache_test.rs` 全部 855 行、`pkg/statistics/handle/cache/statscache_test.go` 全部 202 行；另由精确引用确认 `pkg/statistics/handle/cache/bench_test.rs` 覆盖更新可见性与性能路径。
-- 已读相邻直接证据：`pkg/statistics/handle/cache/stats_table_row_cache.rs` 和 `pkg/statistics/handle/restricted_sql.rs` 的相关文件节点，用于辨别 RustCodeGraph 的文件级“used by”关系与本实现真实构造调用的差异。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核每项结论均能回指上述符号、配置、Go 对照或独立测试。

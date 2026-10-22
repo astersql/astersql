@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-copr` crate；crate 根由 `pkg/store/copr/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/store/copr/lib.rs` 以 `pub mod range_diagnostics` 装配模块，并通过 `pub use range_diagnostics::*` 将其公开项重导出。它位于 coprocessor 请求按 TiKV Region/bucket 拆分和构建任务的诊断侧：输入是 `crate::key_ranges::{KeyRange, KeyRanges}` 表示的半开键区间 `[start, end)`，空 `end` 统一表示正无穷。
-
-该文件不负责发送请求、刷新 Region 缓存或执行 fallback。它只计算无副作用的诊断结果；调用方再决定排序、记录信息或继续自愈流程。当前 Rust 接线见 `pkg/store/copr/coprocessor.rs` 的 `ensure_monotonic_key_ranges`、`range_issue_stats`、`build_cop_tasks`，以及 `pkg/store/copr/region_cache.rs` 的 bucket fallback 分支。
+这些函数是诊断和防御性检查，不证明输入已覆盖完整键空间，也不修复区间本身。
 
 ## 核心职责
 
@@ -91,11 +89,9 @@ RustCodeGraph 能查询到本文件的 `RangeIssueStats`、`classify_pair` 和�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/copr/range_diagnostics.go`，共享的分类基础定义位于 `pkg/store/copr/coprocessor.go` 的 `rangeIssueStats`、`compareRangeEnd`、`rangeContains`、`rangesOverlap`、`classifyRangePair`。
+主要语言层差异是：Go 接受可能为 `nil` 的 `*KeyRanges`，Rust 接受必然有效的 `&KeyRanges`；Go 用 `(-1, zero range, "")` 表示未命中，Rust 用 `None`；Go 的最小/最大键返回底层切片引用语义，Rust 返回拥有所有权的克隆；Go 通过字符串类别和 `add` 更新计数，Rust 的私有分类器直接更新强类型字段。
 
-Rust 的六项统计、分类优先级、空 end 为 `+inf`、相邻扫描、越界原因字符串及其判断次序均与 Go 对应逻辑一致。主要语言层差异是：Go 接受可能为 `nil` 的 `*KeyRanges`，Rust 接受必然有效的 `&KeyRanges`；Go 用 `(-1, zero range, "")` 表示未命中，Rust 用 `None`；Go 的最小/最大键返回底层切片引用语义，Rust 返回拥有所有权的克隆；Go 通过字符串类别和 `add` 更新计数，Rust 的私有分类器直接更新强类型字段。
-
-接线尚非完全对等。Go 在 `coprocessor.go` 和 `region_cache.go` 的多个错误日志中记录统计、最小/最大边界和越界原因；当前 Rust 只在排序、bucket fallback 和 `build_cop_tasks` 的非致命检查中使用部分入口，且 `min_start_and_max_end_key_of_key_ranges` 尚无 Rust 生产调用。因此本文件提供了对应计算能力，但不能据此推断所有 Go 诊断日志都已移植。
+Go 在 `coprocessor.go` 和 `region_cache.go` 的多个错误日志中记录统计、最小/最大边界和越界原因；当前 Rust 只在排序、bucket fallback 和 `build_cop_tasks` 的非致命检查中使用部分入口，且 `min_start_and_max_end_key_of_key_ranges` 尚无 Rust 生产调用。
 
 ## 扩展指南
 
@@ -106,14 +102,3 @@ Rust 的六项统计、分类优先级、空 end 为 `+inf`、相邻扫描、越
 测试必须放在独立文件，不能内嵌到本源文件。最合适的直接单元测试位置是同目录新建 `range_diagnostics_test.rs` 并由 `lib.rs` 的 `#[cfg(test)] #[path = ...]` 接入；这会同时要求按仓库规则更新构建元数据。当前可扩展的间接回归位于 `pkg/store/copr/coprocessor_test.rs`（`ensure_monotonic_key_ranges_sorts_only_invalid_input`）和 `pkg/store/copr/region_cache_test.rs`（重叠、无限端点、越界后 fallback 场景），Go 对照回归位于 `pkg/store/copr/coprocessor_test.go` 与 `pkg/store/copr/region_cache_test.go`。
 
 建议直接测试覆盖：六个分类计数各自及优先级；相接/gap 不计异常；多个无限尾后继的计数；空输入与空 start/end；所有五个越界 reason 及多原因优先级；最大 end 的 `+inf` 语义。性能敏感改动应保持单次线性扫描，避免为诊断复制整组 ranges。
-
-## 验证依据
-
-- 目标实现：`pkg/store/copr/range_diagnostics.rs`；逐项核对了结构体、方法、五个公开函数和私有 `classify_pair`。
-- 类型与集合操作：`pkg/store/copr/batch_request_sender.rs` 的 `KeyRange/KeyRanges`，以及 `pkg/store/copr/key_ranges.rs` 的 `ref_at/iter` 等实现。
-- crate 边界：`pkg/store/copr/Cargo.toml` 与 `pkg/store/copr/lib.rs`。
-- Rust 调用方：`pkg/store/copr/coprocessor.rs` 的 `ensure_monotonic_key_ranges`、`range_issue_stats`、`build_cop_tasks`；`pkg/store/copr/region_cache.rs` 的 bucket fallback。
-- Go 对照：`pkg/store/copr/range_diagnostics.go`、`pkg/store/copr/coprocessor.go`、`pkg/store/copr/region_cache.go`。
-- 测试证据：没有发现直接引用本文件公开符号的独立 Rust 测试；间接行为证据来自 `pkg/store/copr/coprocessor_test.rs` 和 `pkg/store/copr/region_cache_test.rs`，对应 Go 场景来自 `pkg/store/copr/coprocessor_test.go`、`pkg/store/copr/region_cache_test.go`。该事实是覆盖限制，不等同于本任务运行过代码测试。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query` 定位到 `RangeIssueStats`（第 26 行）、`classify_pair`（第 71 行）、`range_issues_for_key_ranges`（第 84 行）、`min_start_and_max_end_key_of_key_ranges`（第 108 行）、`first_out_of_bound_key_range_in_location`（第 128 行）。这些节点的 `callers/callees` 查询返回空数组，故调用关系另以源码引用核验。
-- 本任务是纯文档分析，依计划未运行 Cargo 或代码测试；交付前仅执行任务指定的 11 章节结构验证，并人工检查没有把 Go 已接线能力写成 Rust 现状。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sys-linux` crate 的 Windows 平台实现。crate 入口 [`lib.rs`](lib.rs) 只在 `cfg(target_os = "windows")` 下声明 `sys_windows`，并用 `pub use sys_windows::*` 将本文件的公共函数再导出到 crate 根；Linux 和其他平台分别选择 `sys_linux.rs` 与 `sys_other.rs`，因此三个实现不会在同一目标中同时成为公共 API。
-
-[`Cargo.toml`](Cargo.toml) 指定 crate 名为 `astersql-util-sys-linux`、库入口为 `lib.rs`。它只为 Unix 目标声明 `libc`/`nix` 依赖，所以 Windows 实现仅使用 Rust 标准库。工作区根 `Cargo.toml` 以 `facade_util_sys_linux` 收录该 crate，`pkg/server/Cargo.toml` 也声明了路径依赖；当前 Rust 源码搜索未发现生产代码实际调用这里的 API，已确认的直接使用者是条件编译测试。
+模块级 `#![allow(non_snake_case)]` 用于保留 Go 导出函数的命名，降低迁移调用接口的差异。
 
 ## 核心职责
 
@@ -63,11 +61,11 @@ Go 应用主链提供迁移意图证据：`cmd/tidb-server/main.go::setCPUAffini
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`sys_windows.go`](sys_windows.go)。Go `OSVersion` 使用 `runtime.GOOS + "." + runtime.GOARCH`；Rust 将已知 Rust 架构名转换为 Go 命名并固定 OS 名为 `windows`，在常见 x86、x86-64 和 ARM64 Windows 目标上保持相同输出形状。未知架构走原名回退，属于需要随目标扩展复核的差异点。
+Go `OSVersion` 使用 `runtime.GOOS + "." + runtime.GOARCH`；Rust 将已知 Rust 架构名转换为 Go 命名并固定 OS 名为 `windows`，在常见 x86、x86-64 和 ARM64 Windows 目标上保持相同输出形状。未知架构走原名回退，属于需要随目标扩展复核的差异点。
 
-两种语言的 `SetAffinity` 都忽略 CPU 列表并返回成功。Go `GetSockUID(net.UnixConn)` 返回零 UID 加固定错误；Rust 用 `Result<u32>`，错误分支不携带占位 UID，并额外赋予 `Unsupported` 分类。Rust 的 socket 参数是无约束泛型，接口约束弱于 Go，但当前行为仍然是无条件失败。
+Go `GetSockUID(net.UnixConn)` 返回零 UID 加固定错误；Rust 用 `Result<u32>`，错误分支不携带占位 UID，并额外赋予 `Unsupported` 分类。Rust 的 socket 参数是无约束泛型，接口约束弱于 Go，但当前行为仍然是无条件失败。
 
-Go 测试 [`sys_test.go`](sys_test.go) 只要求 `OSVersion` 无错误且非空。Rust 的 [`sys_test.rs`](sys_test.rs)保留该冒烟断言，[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步验证 Windows 前缀、亲和性空操作以及 `GetSockUID` 的固定错误文本。
+Rust 的 [`sys_test.rs`](sys_test.rs)保留该冒烟断言，[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步验证 Windows 前缀、亲和性空操作以及 `GetSockUID` 的固定错误文本。
 
 ## 扩展指南
 
@@ -76,12 +74,3 @@ Go 测试 [`sys_test.go`](sys_test.go) 只要求 `OSVersion` 无错误且非空�
 - 若 Windows 将来具备可替代的对端身份机制，不应悄然改变 `GetSockUID` 的 Unix 语义；应先定义调用方所需的身份与安全边界，再收紧泛型参数并补充资源生命周期测试。
 - 任何公共签名变更都需同时检查 `lib.rs` 再导出、`pkg/server/Cargo.toml` 的消费边界，以及 `migration_aster_unit_test.rs`、`sys_test.rs`。当前没有 Rust 生产调用者，新增接线时还应补充调用方测试，不能以本模块单测代替应用路径验证。
 - 维持平台隔离：Windows 专属依赖和代码必须受 `cfg(target_os = "windows")` 或 Cargo target 条件保护，避免破坏 Linux/其他 Unix 构建。
-
-## 验证依据
-
-- Rust 源码与装配：[`sys_windows.rs`](sys_windows.rs) 的 `go_arch`、`OSVersion`、`SetAffinity`、`GetSockUID`；[`lib.rs`](lib.rs) 的 Windows 条件模块与再导出。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的库入口、平台依赖和迁移元数据；工作区根 `Cargo.toml` 的 `facade_util_sys_linux`；`pkg/server/Cargo.toml` 的路径依赖。
-- Rust 测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `windows_fallbacks_match_go`；[`sys_test.rs`](sys_test.rs) 的 `test_get_os_version`。本任务按纯文档约束未运行 Cargo，因此没有 Windows 目标的动态测试证据。
-- Go 对照与调用意图：[`sys_windows.go`](sys_windows.go)、[`sys_test.go`](sys_test.go)、`cmd/tidb-server/main.go::setCPUAffinity`、`pkg/server/server.go::init` 及其 Unix socket 凭据路径。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/sys/linux` 列出本 crate 的 12 个 Go/Rust 文件；文件限定 `node` 确认本文件 51 行和 4 个函数，`node OSVersion --file ...` 确认 `OSVersion -> go_arch`。对同名符号的自然语言探索会混入其他平台实现，因此调用关系最终以文件限定节点和精确文本引用复核。
-- 结构验证要求：本文应恰好包含任务规定的十一个二级标题；最终交付前使用任务中的 `test`/`rg -c` 命令检查。

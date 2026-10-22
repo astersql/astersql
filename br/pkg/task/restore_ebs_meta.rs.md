@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-task` crate 中 EBS 快照恢复的“元数据准备阶段”实现，对照 Go 文件 [`br/pkg/task/restore_ebs_meta.go`](./restore_ebs_meta.go)。crate 根 [`br/pkg/task/lib.rs`](./lib.rs) 通过 `pub mod restore_ebs_meta` 挂载并通配重导出其公开符号；[`br/cmd/br/restore.rs`](../../cmd/br/restore.rs) 在 `full-backup-type = aws-ebs` 且 `prepare = true` 时调用 `RunRestoreEBSMetaWithDefaults`，否则转入后续数据恢复路径。
-
-它负责注册隐藏的 EBS 恢复参数、读取并校验 `backupmeta`、通知 PD 进入恢复状态并重置时间戳、可选地通过 AWS 从快照创建卷、写出带恢复卷 ID 的元数据。它不负责把卷内 KV 数据导入 TiKV。当前 CLI 接线使用内存存储的默认入口，且生产默认 `ConfiguredPDController` 是无操作适配器；因此“真实外部存储读取”和“真实 PD RPC”尚未在这个 Rust 文件内接通，不能把接口顺序等同于已完成真实集群操作。
+负责注册隐藏的 EBS 恢复参数、读取并校验 `backupmeta`、通知 PD 进入恢复状态并重置时间戳、可选地通过 AWS 从快照创建卷、写出带恢复卷 ID 的元数据。
 
 ## 核心职责
 
@@ -67,9 +65,7 @@ controller 由 `Arc<dyn RestoreEBSController + Send + Sync>` 持有，并在 hel
 
 ## 与 Go 版本的对应关系
 
-Rust 的标志名、默认值、隐藏策略、helper 阶段划分、PD 操作顺序、SkipAWS 的每 store 进度与 `1234` 返回值、FSR/卷创建清理，以及最终元数据写出，均直接对应 `restore_ebs_meta.go` 中的同名逻辑。
-
-当前差异必须保留为事实：Go `preRestore` 通过 `GetStorage`/`config.NewMetaFromStorage` 读取真实外部存储并创建真实 `pdutil.PdController`，Rust 默认 controller 仍是无操作实现；Go CLI 直接传配置进入真实入口，Rust CLI 调用 `WithDefaults` 的内存 fixture；Go 输出使用 `os.WriteFile(..., 0600)` 写本地路径，Rust写入抽象 `Storage`；Go 还带 context 取消、tracing span、成功/失败 summary 日志和真实 TLS/PD controller 配置，Rust文件未实现这些部分。Go AWS 会话使用 `cfg.S3.Region`，Rust使用已解析元数据的 `Region`。仓库中未找到直接针对该 Go 文件的 `*_test.go`，因此 Go 行为依据来自生产实现，边界回归主要由独立 Rust 测试承载。
+当前差异必须保留为事实：Go `preRestore` 通过 `GetStorage`/`config.NewMetaFromStorage` 读取真实外部存储并创建真实 `pdutil.PdController`，Rust 默认 controller 仍是无操作实现；Go CLI 直接传配置进入真实入口，Rust CLI 调用 `WithDefaults` 的内存 fixture；Go 输出使用 `os.WriteFile(..., 0600)` 写本地路径，Rust写入抽象 `Storage`；Go 还带 context 取消、tracing span、成功/失败 summary 日志和真实 TLS/PD controller 配置，Rust文件未实现这些部分。Go AWS 会话使用 `cfg.S3.Region`，Rust使用已解析元数据的 `Region`。
 
 ## 扩展指南
 
@@ -79,11 +75,3 @@ Rust 的标志名、默认值、隐藏策略、helper 阶段划分、PD 操作�
 - 调整进度算法时，不要继续假定每台 store 卷数相同；可对所有 stores 的卷数求和，并新增异构卷数回归测试。
 - 测试逻辑继续放在独立的 [`br/pkg/task/restore_ebs_meta_test.rs`](./restore_ebs_meta_test.rs)，不要内嵌进生产文件。至少同步覆盖非法元数据、空 PD、controller 失败仍关闭、AWS 各阶段清理、未知字段保留以及进度线程终止。
 - 与 Go 语义发生有意差异时，应先核对 `restore_ebs_meta.go` 并记录原因；不要为了让测试通过而省略真实 PD、存储或 AWS 生命周期。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；查询 `restore_ebs_meta` 定位了本文件的 7 个常量、3 个类型/trait、公开入口和内部 helper 函数。
-- RustCodeGraph 流图确认：`RunRestoreEBSMetaWithDefaults → RunRestoreEBSMeta → RunRestoreEBSMetaWithController`，以及 `restore → preRestore → validate_meta`；对文件节点的分段读取覆盖了 399 行源码。
-- 源码与配置证据：[`restore_ebs_meta.rs`](./restore_ebs_meta.rs)、[`restore_ebs_meta.go`](./restore_ebs_meta.go)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`br/cmd/br/restore.rs`](../../cmd/br/restore.rs)。
-- 独立测试证据：[`restore_ebs_meta_test.rs`](./restore_ebs_meta_test.rs) 覆盖缺失输入/非 EBS 类型、SkipAWS 的进度总量和未知字段保留、空 PD 在进度前失败、controller 的 mark/reset/close 顺序；[`parity_test.rs`](./parity_test.rs) 覆盖默认入口能完成。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；交付验证仅检查固定 11 章节、链接与事实证据，并人工复核当前未接线能力没有被描述成已支持。

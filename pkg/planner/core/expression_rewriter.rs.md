@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core` crate 中的 AST 表达式重写实现。`pkg/planner/core/lib.rs` 以私有模块 `mod expression_rewriter;` 装配它，仅把 `subQueryCtx` 与 `unknowClause` 以 `pub(crate)` 重导出；因此大量 `pub fn` 主要是 crate 内部可见的移植接口，而不是跨 crate 的稳定公共 API。它位于 SQL 规划链的“解析器 AST → 可求值 `expression::ExprBox`，必要时同时改写逻辑计划”边界。
-
-`pkg/planner/core/Cargo.toml` 将该目录定义为 `astersql-planner-core`，默认无 feature，`nextgen` 只向配置依赖传递。本文涉及的直接依赖包括 parser AST、expression/aggregation/expropt、logicalop/physicalop、planner base/rule/coreusage、infoschema/model/table、session variable/vardef、hint、plannererrors 与 stringutil。包内没有 `doc.go`；最近的契约文档 `pkg/planner/core/base/doc.go` 只约束 base 接口抽象，不应被误读为本文件的行为定义。
-
-源文件带有 `// Copyright 2026 AsterSQL.`，不是门面、生成代码或桩：其 5,585 行包含完整访问器、子查询计划改写、表达式构造及错误处理逻辑。文件内没有条件编译项。
+通过 `expressionRewriter` 实现 `ast::ExprNodeVisitor`，以 `Enter`/`Leave` 深度优先遍历 AST，并维护表达式栈与名称栈。
 
 ## 核心职责
 
@@ -84,11 +80,9 @@ FTS 明确拒绝非字符串列、非常量/非字符串搜索值、LIKE 回退�
 
 ## 与 Go 版本的对应关系
 
-权威对照是同目录 `pkg/planner/core/expression_rewriter.go`。Go 文件的 `evalAstExprWithPlanCtx`、`buildSimpleExpr`、`rewriteWithPreprocess`、`expressionRewriter.Enter/Leave`、四类子查询 handler、FTS 双路径、表达式转换、列解析和 DEFAULT 求值，在 Rust 中均有同名或显式 receiver 参数版本；Rust 源码注释也逐段注明“对应 Go 的同名函数”。
+Go 文件的 `evalAstExprWithPlanCtx`、`buildSimpleExpr`、`rewriteWithPreprocess`、`expressionRewriter.Enter/Leave`、四类子查询 handler、FTS 双路径、表达式转换、列解析和 DEFAULT 求值，在 Rust 中均有同名或显式 receiver 参数版本；Rust 源码注释也逐段注明“对应 Go 的同名函数”。
 
-Rust 的结构性差异有四类：Go receiver 被改为自由函数加 `&mut expressionRewriter`；Go 的 `map[*ast.AggregateFuncExpr]int` 改为规范化结构字符串键；Go 可直接替换接口计划值，Rust 用 `MovableLogicalPlan`；Go 指针共享 builder，Rust 用受严格同步生命周期约束的 `PlanBuilderPtr`。这些是语言适配，不应改变 SQL 行为。
-
-测试证据需区分覆盖层级。`pkg/planner/core/expression_rewriter_test.rs` 目前只有 `planner_factory_installation_is_idempotent`，验证 `InstallPlannerExpressionFactory` 重复安装；它不覆盖本文件大部分重写分支。Go 的 `pkg/planner/core/expression_test.go` 覆盖 BETWEEN、CASE、CAST、CAST 类型不共享、IN、IS NULL、行比较、真值和一般表达式构建；`pkg/planner/core/tests/subquery/subquery_test.go`、`pkg/planner/core/casetest/scalarsubquery/cases_test.go`、`pkg/planner/core/casetest/windows/window_with_exist_subquery_test.go` 进一步覆盖 collation、EXPLAIN 标量子查询及窗口内子查询。维护 Rust 行为时应保持这些 Go 意图，并在独立 Rust `*_test.rs` 文件中补对应回归，不能把测试嵌入本源文件。
+Rust 的结构性差异有四类：Go receiver 被改为自由函数加 `&mut expressionRewriter`；Go 的 `map[*ast.AggregateFuncExpr]int` 改为规范化结构字符串键；Go 可直接替换接口计划值，Rust 用 `MovableLogicalPlan`；Go 指针共享 builder，Rust 用受严格同步生命周期约束的 `PlanBuilderPtr`。
 
 ## 扩展指南
 
@@ -101,12 +95,3 @@ Rust 的结构性差异有四类：Go receiver 被改为自由函数加 `&mut ex
 测试应放在同目录独立 Rust 文件，例如扩展 `pkg/planner/core/expression_rewriter_test.rs`，并与 `lib.rs` 的 `#[cfg(test)] mod ...` 装配保持一致；复杂 SQL 行为可在既有 `tests/subquery`、`casetest/scalarsubquery` 或窗口测试面增加用例。任何语义修改都应逐项对照 `expression_rewriter.go` 和相关 Go 测试，除非任务明确要求有意分叉。
 
 性能风险集中在 AST key 字符串化、行比较组合爆炸、IN 列表表达式构造、子查询规划期优化/执行和 FTS 元数据查询；兼容风险集中在 NULL、collation、Hint、列名空间与计划缓存。修改前后应针对这些分支做聚焦回归。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标文件已索引为 5,585 行。
-- RustCodeGraph `node --file pkg/planner/core/expression_rewriter.rs`：分段核对了入口、状态结构、visitor、子查询、普通表达式、FTS、列解析和 DEFAULT 的实现；`files --filter pkg/planner/core` 确认模块、Go 对照与测试位置。
-- RustCodeGraph 精确调用探索：确认 `planbuilder_runtime.rs::buildInsert/buildUpdate`、`logical_plan_builder_runtime.rs` 到 `rewriteInsertOnDuplicateUpdate`、`rewrite`、`rewriteWithPreprocess` 的上游边，并确认 `Enter` 到子查询 handler 的内部关系。泛化查询存在同名噪声，本文没有把噪声结果当作事实。
-- 读取的直接文件：`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`、`pkg/planner/core/base/doc.go`、`pkg/planner/core/expression_rewriter.go`、`pkg/planner/core/expression_rewriter_test.rs`。
-- 查阅的相关测试入口：`pkg/planner/core/expression_test.go`、`pkg/planner/core/tests/subquery/subquery_test.go`、`pkg/planner/core/casetest/scalarsubquery/cases_test.go`、`pkg/planner/core/casetest/windows/window_with_exist_subquery_test.go`。
-- 本任务是纯文档分析，按任务要求未运行 Cargo。交付前运行固定 11 章节结构检查，并人工复核本文能够回答文件为何存在、主流程如何运行、状态/错误/生命周期边界以及如何安全扩展。

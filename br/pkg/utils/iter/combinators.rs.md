@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-utils-iter`（见同目录 `Cargo.toml`），是 BR 惰性迭代器 crate 的公开“组合器工厂”层。`lib.rs` 以 `pub mod combinators` 挂载本文件，并通过 `pub use combinators::*` 将这里的 API 扁平导出；具体的 `TryNextor` 实现位于 `combinator_types.rs`，核心协议 `Context`、`IterResult`、`TryNextor` 与 `CollectAll` 位于 `iter.rs`，数据源工厂位于 `source.rs`/`source_types.rs`。
-
-因此本文件不直接实现逐项拉取算法，而是把上游 `Box<dyn TryNextor<T>>`、用户闭包及配置组装为具体迭代器。RustCodeGraph 显示该文件被 15 个文件使用；实际业务调用集中在 `br/pkg/restore/log_client/{migration.rs,log_file_manager.rs}` 和 `br/pkg/restore/restorer.rs`，测试入口则包括 `combinator_test.rs`、`parity_test.rs`、`transform_backpressure_test.rs` 与 `migration_test.rs`。
+统一以 `Box<dyn TryNextor<_>>` 隐藏具体实现类型，使恢复链路可以动态拼装不同来源和组合器；代价是堆分配、动态分派，并且输入迭代器所有权会被消费。
 
 ## 核心职责
 
@@ -88,11 +86,11 @@ Cargo 清单没有 `[dependencies]`；这些依赖均为同一 crate 内部模�
 
 ## 与 Go 版本的对应关系
 
-`combinators.rs` 主要逐项对应 `br/pkg/utils/iter/combinators.go`：配置闭包、默认 buffer、默认 worker pool、`buffer >= quota.Limit()` 校正，以及 `FilterOut`、`TakeFirst`、`FlatMap`、`Map`、`MapFilter`、`TryMap`、`ConcatAll`、`Enumerate` 的组合结构均保持 Go 语义。`CollectMany` 的 Go 定义位于 `iter.go` 而非 `combinators.go`；Rust 为便于公开工厂归类把它放在本文件，仍保持 `TakeFirst + CollectAll` 的实现。
+`CollectMany` 的 Go 定义位于 `iter.go` 而非 `combinators.go`；Rust 为便于公开工厂归类把它放在本文件，仍保持 `TakeFirst + CollectAll` 的实现。
 
 关键语言差异是：Go 用泛型接口值和可变参数，Rust 使用 `Box<dyn TryNextor<_>>` 与 `Vec<TransformConfig>` 并显式消费所有权；Go mapper 返回 `error`，Rust 使用 `Result<_, String>`；Go `FilterOut` 的谓词按值接收元素，Rust 为避免消费后无法保留而接收 `&T`；Go `ConcatAll(items ...TryNextor<T>)` 对应 Rust 的 `ConcatAll(Vec<Box<dyn TryNextor<T>>>)`。
 
-`combinator_test.rs` 与 `combinator_test.go` 场景一一对照，覆盖并发变换、过滤/展平、枚举、拼接失败、有限收集和错误传播；`parity_test.rs::go_rust_public_contract_matches` 补充全部公开组合器的烟雾级契约。当前 Rust `TransformIter` 以标准线程、channel 和自旋配额模拟 Go context、worker pool 与 buffered mapping，结构不同但目标行为相同。
+当前 Rust `TransformIter` 以标准线程、channel 和自旋配额模拟 Go context、worker pool 与 buffered mapping，结构不同但目标行为相同。
 
 ## 扩展指南
 
@@ -101,12 +99,3 @@ Cargo 清单没有 `[dependencies]`；这些依赖均为同一 crate 内部模�
 修改 `Transform` 配置或调度时，重点维持：实际 buffer 至少为 1、buffer 不小于并发上限、只有消费结果才释放 outstanding、任何错误/取消都能终止生产且不丢失已发送错误。除 `combinator_test.rs` 的正常/错误路径外，必须同步扩展 `transform_backpressure_test.rs`；涉及实际恢复使用方式时，还应检查 `restore/log_client` 与 `restorer.rs` 的调用链及其独立测试。
 
 修改 `FlatMap`/`ConcatAll` 时应验证空输入、连续空子流、当前子流报错后不再消费后续子流；修改 `Enumerate` 时要明确索引类型与溢出策略；修改 `CollectMany` 时要保留 `CollectAll` 的 `Item`/`Err`/`Finished` 契约。性能评审应关注 trait-object 分派、每层 box 分配、`JoinIter` 递归深度以及 `Transform` 每任务建线程和自旋等待的成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 检查本地索引；`files --filter br/pkg/utils/iter` 定位模块；`node --file br/pkg/utils/iter/combinators.rs` 读取全部 172 行并确认 15 个使用文件；`query` 精确定位 `Transform`、`FlatMap`、`MapFilter`、`TryMap`、`CollectMany`；`node` 读取 `combinator_types.rs` 和 `transform_backpressure_test.rs`，核对下游状态机、取消、反压与错误路径。
-- 源码与 crate 边界：`br/pkg/utils/iter/combinators.rs`、`combinator_types.rs`、`iter.rs`、`lib.rs`、`Cargo.toml`。
-- Go 对照：`br/pkg/utils/iter/combinators.go` 与 `iter.go`。
-- 独立测试：`br/pkg/utils/iter/combinator_test.rs`、`combinator_test.go`、`parity_test.rs`、`transform_backpressure_test.rs`；调用侧测试还包括 `br/pkg/restore/log_client/migration_test.rs`/`.go`。
-- 业务调用搜索：`br/pkg/restore/log_client/migration.rs`、`log_file_manager.rs`、`br/pkg/restore/restorer.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文件存在且固定二级标题恰为 11 个，并人工复核只新增本文档、未修改 Rust/Go/Cargo/`plan.md`。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-structure` crate 中 `TxStructure` 的 Hash 视图：一个业务 `key` 下的每个 `field` 都编码成独立 KV 数据键，值保持为任意字节。它不是独立 Rust 模块文件，而是由 [`pkg/structure/lib.rs`](lib.rs) 的私有 `hash_impl` 模块通过 `include!("hash.rs")` 编入；`HashPair`、`ReverseHashIterator` 和两个反向迭代器构造函数随后被 crate 根重导出，`TxStructure` 上的公开方法则天然成为该类型的 API。
-
-crate 边界由 [`pkg/structure/Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-structure`。本文件使用 crate 根注入的 `errors`、`kv` 以及 `TxStructure` 等符号；键编解码来自同 crate 的 [`pkg/structure/type.rs`](type.rs)，读写能力与命名空间前缀来自 [`pkg/structure/structure.rs`](structure.rs)。当前仓库的 RustCodeGraph 和 `rg` 结果只发现 crate 重导出及 `pkg/structure` 独立测试直接调用这些 Rust API，没有发现其他生产 Rust 文件直接调用本实现，因此不应把 Go 侧已有的全部元数据调用链描述成当前 Rust 已接线的生产主链。
+`HSet`、`HGet`、`HDel`、`HClear` 提供字段级增删改查；缺失字段用 `None` 表示。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ crate 边界由 [`pkg/structure/Cargo.toml`](Cargo.toml) 定义，包名为 `ast
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/structure/hash.go`](hash.go)。Rust 保留了 Go 的公开符号命名、键布局、缺失字段语义、字节相等短路、十进制整数、正反向扫描、范围扫描跳过非法键，以及 `num == 0` 时 `HGetLastN` 仍可能返回一项的现有行为。`migration_aster_unit_test.rs` 的测试名 `hash_crud_integer_and_reverse_iteration_match_go` 与 `key_encoding_and_bounded_hash_iteration_match_go` 明确记录了这类迁移目标。
+Rust 保留了 Go 的公开符号命名、键布局、缺失字段语义、字节相等短路、十进制整数、正反向扫描、范围扫描跳过非法键，以及 `num == 0` 时 `HGetLastN` 仍可能返回一项的现有行为。
 
 语言适配差异包括：Go 的 `nil` 用 Rust `Option<Vec<u8>>` 表示；Go 错误的 `errors.Trace` 包装在 Rust 中主要变为 `?` 传播；Go 可变参数删除接口变为切片；Go 整数自然的固定宽度环绕在 Rust 中显式写成 `wrapping_add`。Rust 还加强了资源管理：内部迭代显式关闭，公开反向迭代器实现 `Drop`，而当前 Go `ReverseHashIterator.Close` 是空实现。
 
@@ -92,11 +90,3 @@ crate 边界由 [`pkg/structure/Cargo.toml`](Cargo.toml) 定义，包名为 `ast
 - 调整整数语义时必须明确 UTF-8、十进制、负数、越界和溢出策略，并同步 Go 对照。不要把 `wrapping_add` 静默改为检查溢出，除非兼容契约也随之改变。
 - 改动公开行为应把 Rust 测试放在独立文件，而不是嵌入 `hash.rs`。CRUD/整数/范围扫描优先扩展 `migration_aster_unit_test.rs`；快照错误、反向迭代器状态机和错误码优先扩展 `structure_test.rs`。至少覆盖缺失值、空值、非法整数、回调错误、`num == 0`、空 Hash、field 边界和迭代器关闭。
 - 性能风险集中在全量扫描与复制、`HClear` 的两阶段内存、每字段一次 KV 删除，以及 `HDel` 的“先读后删”。若批量化，应先确认底层事务和错误时部分进度的兼容语义。
-
-## 验证依据
-
-- 源码：[`pkg/structure/hash.rs`](hash.rs) 全文；模块装配 [`pkg/structure/lib.rs`](lib.rs)；键格式 [`pkg/structure/type.rs`](type.rs)；`TxStructure` 和写错误 [`pkg/structure/structure.rs`](structure.rs)；crate 清单 [`pkg/structure/Cargo.toml`](Cargo.toml)。
-- Go 对照：[`pkg/structure/hash.go`](hash.go) 全文，逐项核对公开 API、内部更新流程、迭代边界和错误分支。
-- Rust 独立测试：[`pkg/structure/migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 中 `hash_crud_integer_and_reverse_iteration_match_go`、`key_encoding_and_bounded_hash_iteration_match_go`；[`pkg/structure/structure_test.rs`](structure_test.rs) 中 `TestListAndHashSnapshotWritesFail`、`TestHashNilEquivalentAndReverseIterator`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`explore "pkg/structure/hash.rs TxStructure HSet HGet HInc IterateHash ReverseHashIterator"` 核对了 `HSet/HInc -> updateHash`、集合 API `-> IterateHash`、`HGetLastN -> iterReverseHash`、构造函数 `-> newHashReverseIter` 以及上述测试调用者。图查询未显示本 crate 之外的生产 Rust 调用者，另以 `rg` 对全仓 `.rs` 引用复核。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节、文件存在性、链接路径及事实与源码的一致性。

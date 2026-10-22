@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Rust 版 `VecGroupChecker`：它接收一个已经按分组表达式结果有序的 `chunk::Chunk`，把相邻且分组键相等的行切成若干半开区间 `[begin, end)`。这种“只比较相邻行”的前提来自调用方，而不是由检查器排序或验证；若输入中相同键不连续，同一个逻辑分组会被拆成多个区间。
-
-crate 边界由同目录 `Cargo.toml` 定义，包名为 `astersql-executor-internal-vecgroupchecker`，真实实现由 `lib.rs` 的 `mod vec_group_checker; pub use vec_group_checker::*;` 导出。其直接依赖是 Chunk、codec、expression、MySQL 类型常量和 Datum 类型 crate。workspace 根 `Cargo.toml` 纳入该成员，`pkg/lib.rs` 又通过 `pkg::executor::internal::vecgroupchecker` facade 重导出。`pkg/executor`、`aggregate`、`join`、`windows` 的 Cargo 清单声明了依赖，但仓库搜索未发现这些 Rust 生产文件中未注释的 `vecgroupchecker::` 调用；因此当前可确认的是 API、测试与依赖接线已经存在，不能据此宣称 Rust 执行器主链已经实际调用它。
-
-Go 同路径实现明确说明其通常服务于 Stream Aggregation，并且实际调用者还包括窗口分区、Merge Join 和有序 Shuffle。Rust 文件是这些语义的移植实现，但当前应用主链位置应区分“Go 已接线”与“Rust 尚未找到活跃调用”这两个事实。
+`GetNextGroup`、`IsExhausted` 和 `GroupCount` 向消费方提供顺序迭代与计数接口。
 
 ## 核心职责
 
@@ -102,8 +98,6 @@ Go 生产上游已接线且可作为设计意图证据：`aggregate/agg_stream_e
 
 ## 与 Go 版本的对应关系
 
-Rust 的结构字段、构造器、切分两阶段、首尾快路径、NULL 比较、collation 转换、offset 迭代和跨批末键，均直接对应 `vec_group_checker.go` 的同名实现。Rust 独立测试复刻了 Go 测试的 DATARACE、跨 Chunk 组数、字符串 collation/padding 和 Issue 53867 场景，并补充了任意 `Expression`、临时列借还及分配失败传播测试。
-
 需要注意的实现差异：
 
 - Go 假定非空 Chunk；Rust 在有分组项时显式拒绝空 Chunk。无分组项时二者都把整个批次视为一组并返回 `true`。
@@ -123,18 +117,3 @@ Rust 的结构字段、构造器、切分两阶段、首尾快路径、NULL 比�
 - 性能敏感点包括首尾相等快路径、`sameGroup` 的短路比较、Vec 容量复用、每个表达式一次整列求值，以及当前 `GroupByItems.clone()` 的成本。优化必须保留任意 Expression（不仅是列引用）的语义，测试 `constant_expression_is_evaluated_through_the_expression_contract` 专门约束这一点。
 - 测试必须继续放在独立文件 `vec_group_checker_test.rs`，不要内嵌到生产 `.rs`。至少同步覆盖：新类型的 NULL/非 NULL 边界、跨 Chunk 连续与不连续、首尾快路径、错误传播、资源归还以及 Go 对照行为。
 - 若把该 crate 接入 Rust 执行器主链，应先选择具体消费者（聚合、窗口、Join 或 Shuffle），增加真实生产调用和对应独立执行器测试；Cargo 中已有依赖声明本身不等于接线完成。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust/Go 源与测试均在索引中。
-- RustCodeGraph `files --filter pkg/executor/internal/vecgroupchecker`：确认 `lib.rs`、目标文件、Rust 测试及 Go 对照文件均被索引。
-- RustCodeGraph `node --file pkg/executor/internal/vecgroupchecker/vec_group_checker.rs --offset 1 --limit 500`：完整读取目标文件 386 行，核对类型、函数、分支和文件内调用。
-- RustCodeGraph `query VecGroupChecker`、`query SplitIntoGroups`、`query split_into_groups`：区分 Rust/Go 同名符号、测试符号以及其他模块的同名函数。精确 `callers SplitIntoGroups --file ...` 在本地 SQLite 后端超过 60 秒未返回并被中止；未把缺失结果推断成“无调用者”。
-- 读取 `pkg/executor/internal/vecgroupchecker/Cargo.toml`、`lib.rs`、workspace `Cargo.toml`、`pkg/lib.rs` 及 executor/aggregate/join/windows Cargo 清单，核对 crate、依赖与 facade 边界。
-- 读取 `vec_group_checker.go`、`vec_group_checker_test.go`、`vec_group_checker_test.rs` 和 `main_test.rs`，核对 Go 移植语义、边界条件、测试初始化及 Rust 增补用例。
-- 搜索 Rust `vecgroupchecker::`、公开符号和 Cargo 依赖，并读取 `pkg/executor/shuffle.rs`、`aggregate/agg_stream_executor.rs`、`join/merge_join.rs` 的相关位置，确认活跃调用与注释化代码的边界。
-- 搜索并读取 Go 生产调用位置：`pkg/executor/aggregate/agg_stream_executor.go`、`shuffle.go`、`windows/builder.go`、`windows/window.go`、`windows/pipelined_window.go`、`join/merge_join.go` 与 `builder.go`。
-
-本任务是纯文档分析，按计划不运行 Cargo 或代码测试。结构验收只要求目标文档存在并且恰好包含本页的十一个固定二级标题。

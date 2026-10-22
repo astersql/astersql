@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`context.rs` 是 `astersql-util-mock` crate 的测试会话上下文实现。crate 入口 `pkg/util/mock/lib.rs` 以 `mod context; pub use context::*;` 导出本文件的公开项，并由 `pkg/util/mock/fortest.rs::NewContext` 在测试侧构造 `Context`。它模拟 Go `pkg/util/mock/context.go::Context` 的常用表面，使规划器、执行器、会话变量和存储相关测试可以在不启动完整 TiDB/AsterSQL 会话的情况下取得会话状态、规划上下文和事务句柄。
-
-这个类型不是正式会话实现：Go 的 `NewContextDeprecated` 明确要求新生产代码使用真实 Context；Rust 也保留同名遗留入口 `NewContextDeprecated`，而常规测试入口位于独立文件 `fortest.rs`。RustCodeGraph 显示本文件被 56 个文件引用，直接测试使用包括 `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_test.rs`、`pkg/planner/core/casetest/physicalplantest/physical_plan_test.rs`、`pkg/sessionctx/variable/tests/session_test.rs`、`pkg/table/tblsession/table_test.rs` 和 `pkg/dxf/importinto/scheduler_test.rs`。
+通过全局 `SetMockInfoschemaFactory`/`MockInfoschema` 提供可注入的 InfoSchema 构造钩子，允许测试用自身的元数据实现替代真实 Domain 路径。
 
 ## 核心职责
 
@@ -71,9 +69,7 @@ RustCodeGraph 对精确符号的结果确认：`context.rs::GetDistSQLCtx` 调�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Context`、`wrapTxn`、`fakeTxn`、构造器、事务入口、键值存取、规划上下文生成以及大量默认接口逐项对应 `pkg/util/mock/context.go`。关键一致点包括默认 chunk 大小和系统变量、无 Store 时的 StartTS=1 假事务、pending future 选择 StartTS、提交/回滚后清除 `InTxn`、SQL 接口返回 “Not Supported”、DDL Owner/沙箱开关和默认锁行为。`mock_test.rs` 对齐 Go `mock_test.go::TestContext`，`migration_aster_unit_test.rs` 补充覆盖迁移后的事务与边界语义。
-
-Rust 不是 Go `Context` 的完整等价实现。Go 类型直接实现 `sessionctx.Context`、`planctx.PlanContext` 和 SQL executor 接口，并持有完整 `SessionVars`、表达式/表上下文、内存/磁盘 tracker 和语句上下文；Rust 当前是具名方法集合与轻量快照，没有在本文件声明这些 trait 实现。Go `GetInfoSchema` 优先检查 snapshot/事务 InfoSchema，Rust只使用实例缓存与工厂；Go `DistSQLContext`/`RangerContext`/`BuildPBContext` 携带更多错误、统计、表达式和 tracker 句柄；Rust仅保留已迁移测试需要的字段。Go 的 fake transaction 在读时记录危险用法警告，Rust静默返回空值。因此扩展时应以调用者实际契约为准，不能把当前缩减面推广为生产等价性。
+Go 类型直接实现 `sessionctx.Context`、`planctx.PlanContext` 和 SQL executor 接口，并持有完整 `SessionVars`、表达式/表上下文、内存/磁盘 tracker 和语句上下文；Rust 当前是具名方法集合与轻量快照，没有在本文件声明这些 trait 实现。Go `GetInfoSchema` 优先检查 snapshot/事务 InfoSchema，Rust只使用实例缓存与工厂；Go `DistSQLContext`/`RangerContext`/`BuildPBContext` 携带更多错误、统计、表达式和 tracker 句柄；Rust仅保留已迁移测试需要的字段。Go 的 fake transaction 在读时记录危险用法警告，Rust静默返回空值。
 
 ## 扩展指南
 
@@ -82,12 +78,3 @@ Rust 不是 Go `Context` 的完整等价实现。Go 类型直接实现 `sessionc
 扩展事务行为应围绕 `TransactionState`、`wrapTxn`、`Context::newTxn`、`PrepareTSFuture`、`CommitTxn` 和 `RollbackTxn` 保持状态不变量：pending 必须是 `Empty + Some(future)`，成功等待后必须是 `Real + None`，无 Store 的兼容路径才使用 `Fake`。需要真实存储语义的测试应使用 `mockstorage_crate`，不要增强 `fakeTxn::Get` 去伪造业务数据；新增回归放在独立的 `*_test.rs`（优先扩展 `migration_aster_unit_test.rs` 或创建同目录独立测试文件），不要把测试嵌入本源文件。
 
 扩展 InfoSchema 钩子时要处理全局工厂的测试隔离：测试应保存/清理工厂，避免并行测试互相污染。若为现有桩接口增加真实行为，应同步 Go 对照与 trait/调用方需求，明确原固定返回值是否被测试依赖，并评估额外锁、分配和 Store 调用的性能风险。新生产代码不应依赖 `NewContextDeprecated`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/mock` 确认 Rust/Go 源及独立测试；`node --file pkg/util/mock/context.rs` 完整核对 993 行和 148 个符号；`node` 核对 `lib.rs`、`fortest.rs`、Go 对照与测试；文件级结果报告目标被 56 个文件使用。
-- 关键图查询：`query MockSessionVars`、`query wrapTxn` 定位 Rust/Go 对应符号；`callees Context::GetDistSQLCtx` 确认读取 `GetSessionVars` 并构造 `DistSQLContext`；对 `Txn`、`Wait`、InfoSchema 和 future 入口执行了 callers/callees 查询。常见方法名存在跨仓库重名，文档只采用能由目标文件、精确路径或直接引用复核的边。
-- 源与边界：`pkg/util/mock/context.rs`、`pkg/util/mock/lib.rs`、`pkg/util/mock/fortest.rs`、`pkg/util/mock/Cargo.toml`。
-- Go 对照：`pkg/util/mock/context.go`（接口断言、事务状态、构造默认值、桩返回和遗留构造器）与 `pkg/util/mock/mock_test.go`（键值生命周期及构造基准）。
-- Rust 测试：`pkg/util/mock/mock_test.rs` 覆盖 Set/Value/Clear；`pkg/util/mock/migration_aster_unit_test.rs` 覆盖默认值、标志、假事务、future、取消、不支持接口及 Domain panic；`pkg/util/mock/go_merge_30_test.rs` 覆盖查询级 Store 限流器。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前执行固定 11 章节结构命令，并人工检查文档没有把桩行为描述为生产能力。

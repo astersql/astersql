@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`ddl.rs`](./ddl.rs) 不是生产 DDL 实现，而是 `astersql-session` crate 的测试专用会话运行时回归模块。它由 [`pkg/session/lib.rs`](../lib.rs) 在 `#[cfg(test)]` 下装入 [`pkg/session/runtime_test.rs`](../runtime_test.rs)，后者再以 `#[path = "runtime_test/ddl.rs"] mod ddl;` 纳入本文件。因而这里的 15 个入口只由 Rust 测试 harness 调用，不形成 crate 公共 API，也不会进入非测试构建。
-
-[`pkg/session/Cargo.toml`](../Cargo.toml) 声明包名 `astersql-session`、库入口 `lib.rs` 和可选 feature `nextgen`；本文件没有自己的 feature gate。它通过父模块的 `use super::*` 取得 `Arc`、原子 `Ordering`、`ConcreteSession` 等测试上下文，并直接使用 crate 依赖中的 `astersql-ddl`、`astersql-dxf-*`、`astersql-executor-importer`、`astersql-infoschema`、`astersql-meta-model`、`astersql-objstore`、`astersql-errors` 与 `astersql-testkit-testfailpoint`。`pkg/session` 下没有 `doc.go`，所以这里以 Cargo、`lib.rs` 和模块入口界定包边界。
+验证 classic DDL 会话与 DXF IMPORT INTO 的生产适配，包括事务起始时间戳、空表检查、统计增量、持久化 task/subtask 调度及提交时切换 `TableMode`。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-- 散布语义直接对应 [`tests/realtikvtest/ddltest/ddl_test.go`](../../../tests/realtikvtest/ddltest/ddl_test.go) 中 session/global `tidb_scatter_region`、`preSplitAndScatter` 回调、SHOW REGIONS leader 分布的用例；生产算法对应 [`pkg/ddl/executor.go`](../../ddl/executor.go) 的 `preSplitAndScatter`/`preSplitAndScatterTable`。Rust 使用内存 runtime topology 做确定性断言，不等同于启动真实 TiKV。
 - 三次 etcd 故障后 CREATE/DROP 仍成功，对应同一 Go 测试文件的 `TestUpdateSelfVersionFail`，注入点的 Go 实现在 [`pkg/ddl/util/util.go`](../../ddl/util/util.go) 的 `PutKVToEtcd`。Rust 额外通过 value-call 计数明确断言发生三次 retry。
-- IMPORT INTO 提交的 Go 主链位于 [`pkg/dxf/importinto/job.go`](../../dxf/importinto/job.go) 的 `SubmitTask`/`doSubmitTask`，executor 接线见 [`pkg/executor/import_into.go`](../../executor/import_into.go)。Rust 测试使用 storage-backed service 显式注入 manager，更适合 canonical 内存会话，但仍核对 job/task ID 与 classic table mode。
 - 空表检查、统计刷新和 scheduler 的 Rust 真实实现位于 [`pkg/dxf/importinto/scheduler.rs`](../../dxf/importinto/scheduler.rs)；相关独立 Rust 单元测试还有 [`pkg/dxf/importinto/scheduler_test.rs`](../../dxf/importinto/scheduler_test.rs) 和 [`pkg/dxf/importinto/job_test.rs`](../../dxf/importinto/job_test.rs)。本文件关注这些实现与 `astersql-session` canonical transaction adapter 的集成，不替代下游细粒度测试。
 - 其余 database/index/foreign-key/admin/planner 用例是 Rust 会话运行时的聚焦回归集合；仓库中没有与本文件一一同路径、同函数名的 Go 文件，因此只能按具体 SQL/生产入口关联，不能宣称逐函数机械翻译。
 
@@ -93,11 +89,3 @@
 - 新增进程级开关、failpoint 或全局 factory 覆盖时，必须使用 RAII guard 恢复，并考虑 Rust 测试默认并行；若事件可能来自其他测试，应使用唯一键或严格过滤，而不是依赖执行顺序。
 - 扩展 DXF 用例时，区分 adapter 集成与下游算法：需要编码/RPC/worker 行为时，应在 `pkg/dxf/importinto/*_test.rs` 增加独立测试，不应继续向这里的 `unreachable!()` 最小 services 填充完整子系统。
 - 变更 Go 对齐行为时，应同步复核 `tests/realtikvtest/ddltest/ddl_test.go`、`pkg/ddl/executor.go`、`pkg/ddl/util/util.go`、`pkg/dxf/importinto/job.go` 及相关 Rust 独立测试；兼容风险主要是错误码、session/global 继承、schema version 幂等和 task 状态，性能风险主要由真实 region/etcd/分布式调度路径承担，本内存测试不能测量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 报告 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/session/runtime_test/ddl.rs` 确认目标已索引且有 23 个符号；`query scatter_scope_inherits_globally_and_show_regions_comes_from_table_metadata --kind function` 定位到 `ddl.rs:396`，`callees` 仅返回部分动态边。对较长测试名的后续 callers/callees 查询没有产生可用输出，因此调用关系又以直接源码核验，未将图缺边当成事实结论。
-- 目标与装配：[`pkg/session/runtime_test/ddl.rs`](./ddl.rs)、[`pkg/session/runtime_test.rs`](../runtime_test.rs)、[`pkg/session/lib.rs`](../lib.rs)。目标源码确认 15 个 `#[test]`、一个局部 `Drop` 实现和一个局部 `ImportSchedulerRuntime` 实现。
-- crate 与生产入口：[`pkg/session/Cargo.toml`](../Cargo.toml)、[`pkg/session/runtime/session.rs`](../runtime/session.rs) 的 `ConcreteSession`/`CreateAnalyzeSession`、[`pkg/session/runtime/dispatch.rs`](../runtime/dispatch.rs) 的 `execute`、[`pkg/session/runtime/ddl.rs`](../runtime/ddl.rs)。
-- Go 与下游对照：[`tests/realtikvtest/ddltest/ddl_test.go`](../../../tests/realtikvtest/ddltest/ddl_test.go)、[`pkg/ddl/executor.go`](../../ddl/executor.go)、[`pkg/ddl/util/util.go`](../../ddl/util/util.go)、[`pkg/dxf/importinto/job.go`](../../dxf/importinto/job.go)、[`pkg/dxf/importinto/scheduler.rs`](../../dxf/importinto/scheduler.rs)。相关独立 Rust 测试为 [`pkg/dxf/importinto/scheduler_test.rs`](../../dxf/importinto/scheduler_test.rs)、[`pkg/dxf/importinto/job_test.rs`](../../dxf/importinto/job_test.rs) 及 [`pkg/session/runtime/ddl_test.rs`](../runtime/ddl_test.rs)。
-- 本任务只新增分析文档，按计划不运行 Cargo 或代码测试；交付时运行任务指定的固定章节结构检查，并人工复核相对链接、测试边界及“不把内存适配测试扩大成真实集群证明”的表述。

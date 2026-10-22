@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-dbterror-exeerrors` crate 的执行层错误原型表。crate 入口 `pkg/util/dbterror/exeerrors/lib.rs` 通过 `pub mod exeerrors { include!("errors.rs"); }` 将这里的公开静态项暴露为 `astersql_util_dbterror_exeerrors::exeerrors::*`；`pkg/util/dbterror/exeerrors/Cargo.toml` 又把该 crate 对应到 Go 包 `pkg/util/dbterror/exeerrors`。因此它位于业务代码与底层 `terror` 错误模型之间：调用方选取一个具名错误原型，再通过 `GenWithStackByArgs`、`FastGenByArgs`、`Equal` 或显示格式化生成、比较和传播具体错误。
-
-它不是错误发生条件的判断器，也不负责执行器控制流。比如 `pkg/util/sqlkiller/sqlkiller.rs::getKillError` 判断 kill signal 后选择查询中断、超时、内存或 runaway 原型；`pkg/executor/importer/precheck.rs::CheckImportTableTTL` 和 `validate_global_sort_uri` 判断导入前置条件后分别使用 `ErrLoadDataPreCheckFailed`、`ErrLoadDataInvalidURI`。本文件只固定这些错误的 MySQL 数值码、RFC 错误类和消息模板。
+因此它位于业务代码与底层 `terror` 错误模型之间：调用方选取一个具名错误原型，再通过 `GenWithStackByArgs`、`FastGenByArgs`、`Equal` 或显示格式化生成、比较和传播具体错误。
 
 ## 核心职责
 
@@ -75,11 +73,11 @@ RustCodeGraph 报告目标文件被 225 个文件使用，但这包括同路径 
 
 ## 与 Go 版本的对应关系
 
-Go 基准文件是 `pkg/util/dbterror/exeerrors/errors.go`。Rust 保留了全部 82 个变量的公开名称、声明顺序、错误类、errno 映射和 4 个自定义模板。Go 在包初始化时立即执行 `dbterror.Class*.NewStd/NewStdErr` 并得到 `*terror.Error`；Rust 用 `LazyLock<Box<terror::Error>>` 延迟到首次访问，`Box` 对应拥有的指针对象，外部通过解引用使用同一原型。
+Go 在包初始化时立即执行 `dbterror.Class*.NewStd/NewStdErr` 并得到 `*terror.Error`；Rust 用 `LazyLock<Box<terror::Error>>` 延迟到首次访问，`Box` 对应拥有的指针对象，外部通过解引用使用同一原型。
 
-语义上需要特别关注：Go 的 `parser_mysql.Message(template, nil)` 在 Rust 中写成 `Message(template, &[])`；这是空参数集合的表示差异，不是提前格式化消息。`migration_aster_unit_test.rs` 通过 `Code()`、`RFCCode()`、`GetMsg()` 验证标准项的数值码/类别/标准文案，并逐项验证 4 个自定义模板；该测试是 Rust 移植语义最直接的独立回归依据。
+语义上需要特别关注：Go 的 `parser_mysql.Message(template, nil)` 在 Rust 中写成 `Message(template, &[])`；这是空参数集合的表示差异，不是提前格式化消息。
 
-当前 Rust 生产代码对这些原型的接线并不均匀：LOAD DATA、SQL killer、存储错误转换、用户名策略等已有真实消费者，而许多兼容项目前主要用于保持 API 与 Go 的错误目录对齐。不能仅凭声明存在就声称所有 Go 业务路径都已经 Rust 化。
+当前 Rust 生产代码对这些原型的接线并不均匀：LOAD DATA、SQL killer、存储错误转换、用户名策略等已有真实消费者，而许多兼容项目前主要用于保持 API 与 Go 的错误目录对齐。
 
 ## 扩展指南
 
@@ -88,11 +86,3 @@ Go 基准文件是 `pkg/util/dbterror/exeerrors/errors.go`。Rust 保留了全�
 测试逻辑应继续放在独立的 `pkg/util/dbterror/exeerrors/migration_aster_unit_test.rs`，不要内嵌进本生产文件。至少增加 `Code()`、`RFCCode()`、`GetMsg()` 断言；参数化模板还应检查代表性调用方的参数顺序和生成结果。若新错误用于具体子系统，也应扩展该子系统已有的独立测试，例如导入前置检查对应 `pkg/executor/importer/precheck_test.rs`，用户名规则对应 `pkg/keyspace/migration_aster_unit_test.rs`/`keyspace_test.rs`，signal 映射对应 `pkg/store/driver/error/migration_aster_unit_test.rs`。
 
 兼容性风险高于性能风险：错误码、RFC 类别和文本会被客户端、重试/分类逻辑及测试识别；错误类或模板变化可能破坏 `Equal`、下游诊断和 MySQL 兼容性。性能方面，每项仅一次惰性分配，除非新增构造器执行昂贵工作，否则影响很小。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/dbterror/exeerrors` 找到 `errors.rs`、`lib.rs`、`errors.go`、`migration_aster_unit_test.rs`；`node --file` 完整读取这四个文件及代表性调用点。对 `ErrGetStartTS`、`ErrFuncNotEnabled` 执行 `query/callers/callees` 时，图未建立静态项定义，因此改用 `rg` 补充调用证据。
-- 源与边界：`pkg/util/dbterror/exeerrors/errors.rs`（82 个静态原型）、`lib.rs`（`include!` 和公开模块）、`Cargo.toml`（crate 依赖和 Go 包映射）、`pkg/util/dbterror/terror.rs::ErrClass::{NewStd, NewStdErr}`（标准消息查表与底层构造）。
-- Go 对照与测试：`pkg/util/dbterror/exeerrors/errors.go`；`pkg/util/dbterror/exeerrors/migration_aster_unit_test.rs::{standard_errors_preserve_go_codes_and_classes, custom_errors_preserve_go_templates_and_classes, all_go_error_instances_initialize_with_their_standard_message}`。
-- 生产调用与相关独立测试：`pkg/util/sqlkiller/sqlkiller.rs::getKillError`、`pkg/store/driver/error/error.rs`、`pkg/store/driver/error/migration_aster_unit_test.rs`、`pkg/executor/importer/precheck.rs`、`pkg/executor/importer/precheck_test.rs`、`pkg/keyspace/username_policy.rs`、`pkg/keyspace/migration_aster_unit_test.rs`、`pkg/dxf/importinto/task_executor.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付仅执行任务规定的 11 章节结构检查，并人工复核文档没有把声明存在误写成所有业务路径均已接线。

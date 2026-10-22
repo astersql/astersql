@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`generate.rs`](./generate.rs) 属于 `astersql-parser` crate。crate 根 [`lib.rs`](./lib.rs) 以 `pub mod generate { include!("generate.rs"); }` 装入本文件，因此唯一符号可通过 `astersql_parser::generate::GENERATED_RUST_TABLES` 访问；它没有被再导出到 crate 根。
-
-本文件是解析器生成流程的兼容与发现入口，只声明已提交到仓库的三份 Rust 解析表路径。它不是生成器实现，也不在普通构建时执行生成。真正的显式生成与防漂移检查位于 `pkg/parser/parsergen` 的独立 `astersql-parsergen` crate；运行时解析器则由 [`lib.rs`](./lib.rs) 直接 `include!` 三份已提交产物。
+文件级说明记录维护契约：`astersql-parsergen generate` 从 `.astergram` 文法显式生成产物，普通 parser 构建只消费已提交文件。
 
 ## 核心职责
 
@@ -57,7 +55,7 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 [`generate.go`](./generate.go) 只包含 `//go:generate ./genkeyword`，用于生成 Go 关键字表 `keywords.go`；它不枚举 Go yacc 解析表，也不等价于 `GENERATED_RUST_TABLES`。相邻 `generate_keyword/genkeyword.go` 读取 `parser.y` 的关键字段并写 `keywords.go`，其独立测试 `generate_keyword/genkeyword_test.go` 只验证关键字行提取。
+同路径 [`generate.go`](./generate.go) 只包含 `//go:generate ./genkeyword`，用于生成 Go 关键字表 `keywords.go`；它不枚举 Go yacc 解析表，也不等价于 `GENERATED_RUST_TABLES`。
 
 Rust 侧已经采用不同维护链：`.astergram` 输入交给 `astersql-parsergen`，输出三份静态 Rust 模块并由 `lib.rs` 包含；目标常量只是这条 Rust 链的清单。二者可对应到“显式维护生成代码”这一目的，但输入、输出、执行命令和实现均不同，不应把 Go 的 `go:generate` 行为移植推断到该常量上。
 
@@ -67,12 +65,3 @@ Rust 侧已经采用不同维护链：`.astergram` 输入交给 `astersql-parser
 - 若希望让清单成为真实单一事实来源，需要显式改造生成器或契约测试来消费它；在此之前不要删除其他位置的路径声明，也不要假设修改本常量会改变生成或编译行为。
 - 生成器行为测试继续放在独立 [`parsergen/generate_aster_unit_test.rs`](./parsergen/generate_aster_unit_test.rs)，parser crate 的静态消费契约继续放在独立 [`parser_generated_sources_aster_unit_test.rs`](./parser_generated_sources_aster_unit_test.rs)，不要把测试嵌入本生产文件。
 - 路径变化会影响源码包含、发布包内容和维护命令，兼容性风险高于本常量本身的表面改动；必须同时验证产物存在、内容无漂移和普通构建不依赖 `OUT_DIR`/`build.rs`。清单读取本身没有可观测性能风险。
-
-## 验证依据
-
-- 目标源码：RustCodeGraph `explore "pkg/parser/generate.rs ..."` 返回完整文件，确认唯一符号与三条路径；精确 `query/node/callers/callees GENERATED_RUST_TABLES` 均未解析到符号，随后用 `rg` 核实仓库内除定义外无引用。
-- crate 与装配：读取 [`Cargo.toml`](./Cargo.toml) 和 [`lib.rs`](./lib.rs)，确认 crate 名、`lib.rs` 入口、`astersql-parsergen` 开发依赖、公开 `generate` 模块，以及三份生成表的直接 `include!` 位置。本包未发现 `doc.go`，故使用最近的 crate 入口作为包级契约。
-- 生成实现：RustCodeGraph `node --file` 读取 [`parsergen/generate.rs`](./parsergen/generate.rs) 与 [`parsergen/generate_aster_unit_test.rs`](./parsergen/generate_aster_unit_test.rs)，并读取 `parsergen/main.rs`、`parsergen/lib.rs`、`parsergen/Cargo.toml`；证据覆盖确定性生成、写入、只读防漂移检查、错误分类和三输出顺序。
-- 独立测试：[`parser_generated_sources_aster_unit_test.rs`](./parser_generated_sources_aster_unit_test.rs) 检查产物存在、静态包含且无 `build.rs`/`OUT_DIR`；`parsergen/generate_aster_unit_test.rs` 检查输出命名与确定性、缺失/陈旧分类、check 不写入及已提交产物一致性。任务约束明确不运行 Cargo，因此只读取测试意图。
-- Go 对照：读取 [`generate.go`](./generate.go)、`generate_keyword/genkeyword.go` 与 `generate_keyword/genkeyword_test.go`，确认 Go 同路径文件只负责关键字生成，不能作为该 Rust 清单的一一实现对照。
-- 索引状态：RustCodeGraph 报告 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可由 `explore` 读取，但常量未形成可查询节点，因此调用者结论同时以仓库文本搜索校验。交付前按任务命令检查文档恰含 11 个固定二级章节，并人工复核未把静态关系误写为调用关系。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`ttl.rs`](ttl.rs) 属于 `astersql-telemetry` crate 的 TTL（Time To Live，生存时间）功能用量采集层。模块由 [`lib.rs`](lib.rs) 以 `mod ttl` 装配并通过 `pub use ttl::*` 重导出；上游 [`getFeatureUsage`](data_feature_usage.rs) 调用 `getTTLUsageInfo`，把结果放入 `featureUsage::TTLUsage`，随后 `featureUsage::ttl_json` 将它编码为遥测 JSON。该文件只读取遥测视角的 [`SessionContext`](telemetry.rs) 摘要和进程级开关，不执行 TTL 删除任务，也不改变表元数据。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名是 `astersql-telemetry`，库入口是 `lib.rs`。清单中的依赖全部位于 `target.'cfg(any())'`，因此当前 `ttl.rs` 的可编译实现仅使用标准库以及 crate 内的 `SessionContext`；Go 版本依赖的 infoschema、sessionctx、SQL executor 等真实组件尚未接入这条 Rust 路径。
+实际输入来自 `SessionContext::TTLDeletedRows` 和 `SessionContext::TTLDelayHours`，因此它们目前主要用于移植语义留存和 [`TestTTLQueriesMatchGoFilters`](data_feature_usage_test.rs) 的文本一致性检查。
 
 ## 核心职责
 
@@ -64,7 +62,7 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名是 `astersql-telemetr
 
 ## 与 Go 版本的对应关系
 
-Rust 的类型、桶边界、严格小于比较、public/TTL 表计数、无历史表投入最大桶以及两条 SQL 文本均直接对应 [`ttl.go`](ttl.go)。[`data_feature_usage_test.rs::TestTTLTelemetry`](data_feature_usage_test.rs) 复现了 Go [`data_feature_usage_test.go::TestTTLTelemetry`](data_feature_usage_test.go) 的主要断言：一个、两个及三个 TTL 表的计数，删除行和延迟落桶，以及关闭 TTL 的表仍计入 TTL 表总数。`TestTTLQueriesMatchGoFilters` 额外锁定查询字符串中的窗口、状态、JSON 错误过滤和分组条件。
+`TestTTLQueriesMatchGoFilters` 额外锁定查询字符串中的窗口、状态、JSON 错误过滤和分组条件。
 
 关键差异是 Go `getTTLUsageInfo` 从真实 infoschema 枚举表，并用 `sqlexec.RestrictedSQLExecutor` 执行两条查询；对每个表还根据 TTL interval 动态执行 SQL，把分钟延迟换算成相对过期区间的小时数。Rust 只消费 `SessionContext` 中预先算好的 `TTLDeletedRows` 和 `(table_id, hours)`，`TTLIntervalHours` 也未使用。因此 Rust 目前是可测试的遥测数据模型与聚合实现，不等价于 Go 的生产数据库采集接线。另一个差异是 Go 的日期基于本地时间减 24 小时，而 Rust 使用 UTC 日序减一。
 
@@ -73,12 +71,3 @@ Rust 的类型、桶边界、严格小于比较、public/TTL 表计数、无历�
 若接入真实 Rust TTL 遥测，最可能修改的是 `getTTLUsageInfo`：应把 infoschema 枚举、受限 SQL 执行、每表 interval 换算及警告记录接到现有计数器上，同时保持两条查询的过滤契约和“失败返回部分统计”语义。此工作还需调整 `Cargo.toml` 中目前受 `cfg(any())` 屏蔽的依赖，而不能仅让常量看似被使用。需要同步扩展独立文件 [`data_feature_usage_test.rs`](data_feature_usage_test.rs)，不要把测试内嵌进 `ttl.rs`；至少覆盖查询失败、未知表、边界值恰等于桶上界、重复表历史、非 public 表、日期时区和 interval 换算。
 
 若只新增直方图桶，必须保持升序、严格小于语义和最终 `LessThanMax` 桶，并同步 `featureUsage::ttl_json` 的兼容性断言及 Go 对照测试。改变 JSON 字段、桶边界或日期含义会破坏遥测后端的序列兼容性；引入真实 infoschema/SQL 后还要评估全表扫描、逐表查询造成的性能开销以及采集期间 schema 变化的一致性。全局开关若扩展成多字段配置，应避免用多个独立原子产生混合快照。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/telemetry/ttl.rs`；`files --filter pkg/telemetry` 确认模块及独立测试；`explore 'pkg/telemetry/ttl.rs TTLUsagePayload collect_ttl_usage'` 给出本文件 9 个符号及调用范围；`callees getTTLUsageInfo --file pkg/telemetry/ttl.rs` 确认三个直接下游方法。部分 `callers` 查询未返回边，故上游以精确源码引用交叉验证。
-- 生产源码：[`ttl.rs`](ttl.rs)（全部符号与聚合流程）、[`data_feature_usage.rs`](data_feature_usage.rs)（`getFeatureUsage` 调用和 JSON 消费）、[`telemetry.rs`](telemetry.rs)（输入模型及报告入口）、[`data.rs`](data.rs)（载荷接线）、[`lib.rs`](lib.rs)（模块装配和重导出）。`pkg/telemetry` 不存在 `doc.go`。
-- crate 配置：[`Cargo.toml`](Cargo.toml)（包名、库入口、移植元数据及 `cfg(any())` 依赖边界）。
-- Go 对照：[`ttl.go`](ttl.go)（真实 infoschema/SQL 算法、错误降级和桶定义）、[`data_feature_usage_test.go::TestTTLTelemetry`](data_feature_usage_test.go)（SQL 历史过滤、表计数和桶期望）。
-- Rust 测试：[`data_feature_usage_test.rs::TestTTLTelemetry`](data_feature_usage_test.rs)（当前注入模型的聚合行为）和 `TestTTLQueriesMatchGoFilters`（SQL 文本契约）。没有同名 `ttl_test.rs`，也未发现对两个 `FailTTL*` 分支的直接测试。
-- 本任务为纯文档分析，按计划不运行 Cargo 或代码测试；交付验证仅检查固定十一节结构、路径链接和工作区变更范围。

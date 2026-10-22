@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-workloadrepo` crate 的快照协调层。crate 入口 `pkg/util/workloadrepo/lib.rs` 以私有模块 `snapshot` 装入本文件，再通过 `pub use snapshot::*` 暴露自由函数；文件中的方法则扩展 `pkg/util/workloadrepo/worker.rs` 定义的 `worker`（在本文件中别名为 `Worker`）。`pkg/util/workloadrepo/Cargo.toml` 指定 crate 根为 `lib.rs`，唯一直接外部依赖是 `chrono`；本文件自身只使用 crate 内的后端抽象、表描述、常量和 SQL 构造函数。
-
-它处在“生成全局快照号”和“把一组 INFORMATION_SCHEMA 表写入 WORKLOAD_SCHEMA 历史表”之间：`takeSnapshot` 分配并发布快照号，`startSnapshot` 按已经给定的快照号执行一次落库。当前 Rust 版本不是 Go 版本中的常驻监听任务；`startSnapshot(snapID)` 返回一个只执行一次的 `FnOnce` 闭包，调用者必须显式调用该闭包。
+为每张 `snapshotTable` 惰性生成并缓存 `INSERT ... SELECT`，绑定同一个 snap ID 和当前实例 ID，并行执行各表快照（`Worker::snapshotTable`、`Worker::startSnapshot`）。
 
 ## 核心职责
 
@@ -76,11 +74,8 @@ KV 的 create/CAS 是跨节点并发控制点，保证竞争者只有一个能�
 
 ## 与 Go 版本的对应关系
 
-主要算法直接对应 `pkg/util/workloadrepo/snapshot.go`：KV create/get/CAS、缺失 snap ID 时查询 SQL 最大值、先 upsert 后 CAS、按表并行 INSERT、错误合并写回，以及间隔字符串解析的意图均被保留。`snapshot_test.rs` 验证 Rust 错误拼接和目标表上下文；`worker_test.rs::TestRecoverSnapID`、`TestAdminWorkloadRepo`、`TestSnapshotTimingWorker` 验证恢复、全局入口和参数绑定。
-
 当前差异必须视为尚未等价接线，而不是简化后的同等实现：
 
-- Go 的 `startSnapshot(ctx)` 是长期运行的 etcd watch + ticker 循环；watch 收到多个事件时取最后一个 ID，ticker 只由 owner 调 `takeSnapshot`。Rust 的 `startSnapshot(snapID)` 是给定 ID 的一次性执行闭包，不监听 KV、不判断 owner、也不负责周期触发。
 - Go 的 KV 操作使用带 `etcdOpTimeout` 的 context；Rust 后端 trait 没有 context/timeout 参数。
 - Go 每张表从 session pool 获取独立 session 并归还；Rust 共享 `RepositoryBackend`，资源隔离由后端实现承担。
 - Go 的 ticker 在 `resetSnapshotInterval` 中立即 reset；Rust 没有 ticker，只更新状态。Rust 测试 `change_snapshot_interval_matches_go_hook_without_extra_clamping` 仅证明解析和状态赋值。
@@ -95,12 +90,3 @@ KV 的 create/CAS 是跨节点并发控制点，保证竞争者只有一个能�
 - 若允许运行时修改 `workloadTables`，应把索引任务改成稳定身份或快照副本，避免扫描后重排导致索引指向另一张表。
 - 若要让调用者感知部分表失败，需要改变 `startSnapshot` 的返回契约，同时仍保证 `updateHistSnapshot` 被调用；这属于兼容性变化。并行表数当前等于快照表数，表规模扩张时应评估线程上限或有界执行器。
 - 外部后端实现必须保证 `kv_create`/`kv_cas` 真正具备原子条件语义；仅返回布尔值但非原子实现会破坏全局唯一 snap ID。
-
-## 验证依据
-
-- 生产源码：`pkg/util/workloadrepo/snapshot.rs`（本文件全部 13 个已索引符号）、`worker.rs`（类型、后端 trait、全局 `takeSnapshot`、默认表）、`table.rs`（`buildInsertQuery`）、`const.rs`（键、重试数、表名和系统变量）、`lib.rs`（模块与再导出）。包内不存在 `doc.go`。
-- crate 配置：`pkg/util/workloadrepo/Cargo.toml`，确认 crate 名、`lib.rs` 入口、`chrono` 依赖和 Go 包映射元数据。
-- Go 对照：`pkg/util/workloadrepo/snapshot.go` 与 `worker.go`，核对 etcd 协议、ticker/watch、owner、session pool、后台任务接线和系统变量范围职责。
-- 独立测试：`pkg/util/workloadrepo/snapshot_test.rs`；`worker_test.rs` 中 `TestAdminWorkloadRepo`、`TestSnapshotTimingWorker`、`TestSettingSQLVariables`、`TestRecoverSnapID`；Go 的 `worker_test.go` 中竞争建表/手动快照、周期快照、停止重启和 snap ID 恢复场景。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件并列出本包 22 个文件；查询得到 `snapshot.rs` 13 个符号、`startSnapshot -> snapshotTable` 和 `snapshotTable -> buildInsertQuery/runQuery`。因未限定语言的同名查询含无关节点，Rust 上游接线另以 `rg` 全仓引用结果核验。
-- 未运行 Cargo 或运行时测试：任务为纯文档分析，按计划只执行文档结构检查；行为结论来自上述源码、调用图和已有测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义逻辑算子共享的 `LogicalSchemaProducer` 基座；对应的真实源码是 [`logical_schema_producer.rs`](./logical_schema_producer.rs)。它位于 `astersql-planner-core-operator-logicalop` crate 中，由同目录 `lib.rs` 声明为私有模块并通过 `pub use logical_schema_producer::*` 重新导出。`LogicalLimit`、`LogicalTopN`、`LogicalJoin`、`LogicalProjection`、`LogicalDataSource`、各类 Scan 等会把它作为具名字段嵌入自身，以复用逻辑计划基础状态、输出 Schema/列名访问和默认列裁剪、键传播行为。
-
-与 Go 版本不同，Rust 的 `LogicalSchemaProducer` 本身只含 `BaseLogicalPlan`；Schema 和输出列名实际保存在 `BaseLogicalPlan.schema` 与 `BaseLogicalPlan.output_names`。因此它是逻辑算子公共行为的薄基座，但不是无行为的门面。证据见本文件的结构体定义、`base_logical_plan.rs` 中 `BaseLogicalPlan` 字段及 `LogicalPlan` trait 默认访问器。
+实现 `LogicalPlan` 的 `as_any`/`as_any_mut` 和 `base`/`base_mut` 四个必需入口，使该基座自身也可作为 `Box<dyn LogicalPlan>` 节点使用。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ RustCodeGraph 能识别本文件符号以及 `InlineProjection -> SCtx/Schema/Sc
 
 ## 与 Go 版本的对应关系
 
-对应文件为 `logical_schema_producer.go`。两版共同保留了设置 Schema/列名、内联裁剪、单子节点键传播以及按输出列参与哈希/相等判断的意图，但存储布局与若干边界不同：
+两版共同保留了设置 Schema/列名、内联裁剪、单子节点键传播以及按输出列参与哈希/相等判断的意图，但存储布局与若干边界不同：
 
 - Go 结构体有独立的 `schema *expression.Schema` 和 `names types.NameSlice`；Rust 把二者收敛到 `BaseLogicalPlan` 的按值字段，因此没有 nil Schema/列名状态。
 - Go 的 `Schema()` 和 `OutputNames()` 会在 nil 且只有一个子节点时惰性继承；Rust 访问器只返回当前基座内容，调用方必须显式刷新或设置。`LogicalLimit`/`LogicalTopN` 的裁剪实现已在调用 `InlineProjection` 前克隆子 Schema，体现了这一接线要求。
@@ -99,13 +97,3 @@ RustCodeGraph 能识别本文件符号以及 `InlineProjection -> SCtx/Schema/Sc
 若要让裁剪同步输出名或键元数据，需要先明确 Go 兼容语义和优化阶段顺序；不能仅按列下标删除，因为当前调用者可能在稍后统一重建键。若扩展键传播，应区分 `PKOrUK` 与 `NullableUK`，并为零、单、多子节点以及复合键部分缺失分别定义行为。
 
 测试必须放在独立文件：本类型行为优先扩展 `logical_schema_producer_test.rs`；哈希/相等性扩展 `logicalop_test/hash64_equals_test.rs`；涉及具体算子裁剪顺序时扩展该算子的 `*_test.rs`。至少覆盖有/无规划上下文、空父使用列、相同 `UniqueID` 的重复列、缺失 `RetType`、复合键完全/部分命中，以及多子节点不错误传播键。同步核对 Go 的 `logical_schema_producer.go` 及相关 Go 测试，避免无依据简化移植逻辑。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/logicalop/logical_schema_producer.rs`，核对结构体、全部 8 个固有方法与 `LogicalPlan` 实现；文件无条件编译项。
-- crate 与模块边界：`pkg/planner/core/operator/logicalop/Cargo.toml`、`pkg/planner/core/operator/logicalop/lib.rs`，核对 crate 名、`expression`/`types` 等本地依赖、模块声明及公开重导出。
-- 基座与数据语义：`base_logical_plan.rs` 的 `LogicalPlan`、`BaseLogicalPlan`、默认 `BuildKeyInfo`；`pkg/expression/schema.rs` 的 `Schema::Equal`、`ColumnIndex`、`ColumnsIndices`、`GetUsedList`。
-- RustCodeGraph：`query LogicalSchemaProducer`、`query InlineProjection`、`query BuildKeyInfo`、`node LogicalSchemaProducer`、`callers/callees InlineProjection`、`callees BuildKeyInfo`。索引确认目标符号和下游边；callers 对字段内嵌调用为空，故上游另由源码调用点核验。
-- Rust 上游与测试：`logical_limit.rs`、`logical_top_n.rs`、`logical_join.rs`、`logical_datasource.rs`；`logical_schema_producer_test.rs` 覆盖陈旧键清除、零/多子节点和单子节点键重映射；`logicalop_test/hash64_equals_test.rs` 覆盖 Schema 对哈希/相等性的影响。
-- Go 对照：`logical_schema_producer.go`、`logicalop_test/hash64_equals_test.go`、`logicalop_test/logical_operator_test.go`，核对惰性 Schema/列名、内联裁剪、键传播和哈希意图。
-- 本任务只新增说明文档，未运行 Cargo。交付前使用任务指定命令验证恰有 11 个固定二级章节，并人工复查未修改 Rust、Go、Cargo 或只读 `plan.md`。

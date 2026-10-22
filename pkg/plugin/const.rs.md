@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/plugin/const.rs` 属于 `astersql-plugin` crate。crate 入口 `pkg/plugin/lib.rs` 以 `pub mod r#const` 声明本模块，并通过 `pub use r#const::*` 将其中的 `Kind` 和 `State` 重导出到 crate 根，因此同 crate 的 `plugin.rs`、`spi.rs`、`helper.rs` 以及外部使用者都可以写成 `crate::Kind` / `crate::State`。
-
-这个文件只定义插件框架共享的两个值域及其显示文本，不负责装载动态库、保存全局插件集合或执行回调。`pkg/plugin/Cargo.toml` 表明它所在的包名为 `astersql-plugin`、库入口为 `lib.rs`，并通过 `[package.metadata.porting] go-package = "pkg/plugin"` 指向对应 Go 包。
+当前文件没有提供整数到枚举的解析或不安全 FFI 转换接口。
 
 ## 核心职责
 
@@ -73,15 +71,11 @@ RustCodeGraph 对两个枚举能定位定义与源码，但精确 `callers/calle
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/plugin/const.go`，对应测试是 `pkg/plugin/const_test.go`：
-
-- Go `type Kind uint8` 的 `Audit = 1 + iota`、`Authentication`、`Schema`、`Daemon` 对应 Rust `#[repr(u8)] enum Kind` 的 1–4。
-- Go `type State uint8` 的 `Uninitialized = iota`、`Ready`、`Dying`、`Disable` 对应 Rust `#[repr(u8)] enum State` 的 0–3。
 - Go 的两个 `String()` 与 Rust 的 `as_str`/`Display` 返回相同英文文本。`pkg/plugin/const_test.rs:test_const_to_string` 与 Go `TestConstToString` 对这些合法值逐项核对。
 - Go 的命名整数类型允许构造未知数值，其 `String()` 对未命中值返回空串；Rust 使用闭合枚举，安全代码中不存在未知成员，因而没有对应的空串分支。这是类型安全差异，不应误写成 Rust 支持未知值兼容。
 - Go `Kind` 的零值是未命名的 `0`；Rust `Kind` 没有默认值。Rust 的 `Manifest::default` 选择 `Audit` 仅是清单往返测试需要的占位策略。
 
-Go `plugin.go` 与 Rust `plugin.rs` 的关键迁移语义一致：校验/初始化可将插件置为 `Disable`，成功初始化置为 `Ready`，关闭置为 `Dying`，分发和 flush 前检查 `Ready`。本文件只是这些状态名称和数值的共同定义处。
+本文件只是这些状态名称和数值的共同定义处。
 
 ## 扩展指南
 
@@ -90,12 +84,3 @@ Go `plugin.go` 与 Rust `plugin.rs` 的关键迁移语义一致：校验/初始�
 新增生命周期状态时，应先定义允许的迁移和门控含义，再同步 `State::as_str`、Go 常量/String、两侧测试，以及 `plugin.rs` 中 `load`、`init`、`shutdown`、`foreach_plugin`、`is_enabled`、`supports_flush` 等所有状态判断。尤其要决定新状态是否允许回调、是否仍持有 watcher、是否与 `disabled` 原子位正交。
 
 若新增整数解析或序列化，应使用 `TryFrom<u8>`（或等价的显式失败 API），覆盖全部合法判别值和未知值，测试继续放在独立的 `pkg/plugin/const_test.rs`，不要把测试嵌入生产源文件。若仅修改显示文本，也必须视为 Go/Rust 兼容变更并同步两侧测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/plugin` 显示 `const.rs` 有 5 个符号；`node --file pkg/plugin/const.rs` 读取完整 84 行并报告五个使用文件；精确 `query`/`node` 确认 `Kind` 位于第 24 行、`State` 位于第 56 行。枚举级 `callers/callees` 未返回更细边，故没有据此臆造符号调用。
-- 生产源码：`pkg/plugin/const.rs`、`pkg/plugin/lib.rs`、`pkg/plugin/spi.rs`、`pkg/plugin/plugin.rs`、`pkg/plugin/helper.rs`。
-- crate 与移植边界：`pkg/plugin/Cargo.toml`、`pkg/plugin/README.md`。
-- Go 对照：`pkg/plugin/const.go`，并以 `pkg/plugin/plugin.go` 的状态写入与检查点核对生命周期语义。
-- 独立测试：`pkg/plugin/const_test.rs`、`pkg/plugin/const_test.go`；此外 `pkg/plugin/plugin_test.rs` 和 `pkg/plugin/integration_test.rs` 提供分类索引、就绪过滤和审计分发的使用证据。
-- 按任务约束，本次是纯文档分析，未运行 Cargo 或代码测试；交付验证仅执行固定 11 章节的结构命令，并人工核对本文没有把相邻模块行为归因给常量文件。

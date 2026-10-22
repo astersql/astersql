@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-planner` crate 的任务创建入口，位于 DXF（Distributed eXecution Framework）逻辑计划与任务存储之间。crate 入口 `pkg/dxf/framework/planner/lib.rs` 以 `pub mod planner` 声明该模块，并通过 `pub use planner::*` 导出这里的 `Planner`、`TaskCreator` 和 `new_planner`。
-
-它不负责生成处理器 DAG 或子任务；这些能力属于相邻的 `plan.rs` 中的 `LogicalPlan::to_physical_plan`、`PhysicalPlan` 和 `PipelineSpec`。本文件只消费 `LogicalPlan` 的任务级 meta 与额外参数，再把 `PlanCtx` 中的任务创建字段转交给存储层。
-
-`pkg/dxf/framework/planner/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/dxf/framework/planner`，直接依赖 `framework/handle`、`framework/proto` 和 `framework/storage`。可选的 `kv-runtime` feature 只改变 `plan.rs` 的 `PlanStore` 类型，本文件没有条件编译分支。
+通过 `TaskCreator` trait 把任务创建行为抽象为可注入边界，同时为真实的 `storage::TaskManager` 提供适配实现。
 
 ## 核心职责
 
@@ -89,15 +85,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/dxf/framework/planner/planner.go`。两版均使用无状态 `Planner`，并保持以下核心顺序：先 `ToTaskMeta`，再确定 target scope，最后将 `PlanCtx` 字段、额外参数与 meta 传给 `CreateTaskWithSession`。字段映射保持 `ThreadCnt/thread_count → requiredSlots/required_slots`，并保留 keyspace 与最大节点数。
+两版均使用无状态 `Planner`，并保持以下核心顺序：先 `ToTaskMeta`，再确定 target scope，最后将 `PlanCtx` 字段、额外参数与 meta 传给 `CreateTaskWithSession`。
 
-Rust 版为了 crate 与测试边界作了三项显式适配：
-
-1. `TaskCreator` trait 替代 Go 中固定的 `*storage.TaskManager` 参数，使测试不需要真实 session 或全局 TaskManager。
-2. `run_with_target_scope` 允许跳过全局 handle runtime；Go 文件没有此公开入口。
 3. Rust `handle::GetTargetScope` 返回 `Result<String>`，而 Go 版直接返回 `string`，因此 Rust 标准入口多一个 runtime 获取失败分支。
 
-Rust 还需要用 `to_storage_extra_params` 连接 planner proto 与 storage proto 两个 crate 的同形类型。`planner_test.rs` 验证所有五个字段均保留；Go 测试 `planner_test.go::TestPlanner` 通过真实 mock store 验证 required slots、任务类型和 `ManualRecovery` 已落库。Rust 测试验证参数转发与序列化短路，但没有在此文件的独立测试中复现 Go 测试的真实存储查询。
+Rust 测试验证参数转发与序列化短路，但没有在此文件的独立测试中复现 Go 测试的真实存储查询。
 
 ## 扩展指南
 
@@ -107,17 +99,3 @@ Rust 还需要用 `to_storage_extra_params` 连接 planner proto 与 storage pro
 - 若需要异步创建、重试或补偿，应优先放在清晰的上层编排或存储边界，而不是给无状态 `Planner` 隐式增加全局状态。重试必须评估任务键幂等性，避免重复插入全局任务。
 - 若生产代码要使用 `run_with_target_scope`，调用方必须证明 scope 与 handle runtime 的规则一致；否则可能改变 next-gen/service-scope 路由。
 - 性能风险集中在 meta 序列化和存储调用。本文件对 `Vec<u8>`、`String` 与额外参数采用所有权转移，没有额外复制；新增日志或校验时应避免复制大型 meta。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中的 `planner.rs`、`plan.rs`、`planner_test.rs`、Go 对照与测试均已索引。
-- RustCodeGraph `node --file pkg/dxf/framework/planner/planner.rs`：核对了本文件 153 行全貌、全部 trait/函数/impl、调用顺序和无条件编译事实。
-- RustCodeGraph `query/node new_planner`：确认符号位置及两个 Rust 单元测试调用者。
-- RustCodeGraph `query/node GetTargetScope`：确认 Go 返回字符串，Rust 返回 `Result<String>`，以及 Rust runtime 的 next-gen/service-scope 分支。
-- RustCodeGraph `query/node CreateTaskWithSession`：确认真实 Rust/Go 存储边界的 CPU slot 校验、额外参数序列化、任务表插入和任务 ID 获取流程。
-- `pkg/dxf/framework/planner/plan.rs`：核对 `PlanCtx`、`LogicalPlan` 与 `PlannerError` 的定义和字段语义。
-- `pkg/dxf/framework/planner/lib.rs`：核对模块声明、公开再导出及测试文件以独立模块接入。
-- `pkg/dxf/framework/planner/Cargo.toml`：核对 crate 名称、Go 包映射、直接依赖和 `kv-runtime` feature。
-- `pkg/dxf/framework/planner/planner.go` 与 `planner_test.go`：核对 Go 的调用顺序、字段映射、真实存储测试及资源池清理。
-- `pkg/dxf/framework/planner/planner_test.rs`：核对完整参数转发、固定任务 ID、序列化错误短路和全部额外参数字段转换。
-- 本任务为纯文档分析，未运行 Cargo；最终使用任务文件指定的 11 章节命令验证结构，并人工检查本文只描述有上述直接证据支持的行为。

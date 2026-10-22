@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-log-client` library crate；crate 入口 `br/pkg/restore/log_client/lib.rs` 以 `pub mod log_split_strategy` 挂载并通过 `pub use log_split_strategy::*` 扁平导出。它位于日志恢复（PiTR）的 DML 文件扫描与 Region 预切分之间：把 `LogDataFileInfo` 过滤、按表累积成 `SplitHelper` 区间，并在文件数达到批次阈值时建议上层执行拆分。
-
-当前 Rust 接线与 Go 不完全相同。Rust 的直接生产调用者是 `LogClient::PreSplitRegions`（`client.rs:579`），该调用者会执行过滤、累积和阈值判断，但阈值命中后只调用 `BaseSplitStrategy::ResetAccumulations`，并未把 `GetAccumulations` 交给 `PipelineRegionsSplitter::ExecuteRegions`。Go 的 `WrapLogFilesIterWithSplitHelper` 则把策略交给 `PipelineRestorerWrapper.WithSplit`，会实际执行 split/scatter。因此，本文件提供了拆分决策所需状态，不能据此宣称 Rust 预切分链已经完整执行 Region 拆分。
+`Accumulate` 按上游 `TableId` 懒建 `SplitHelper`，合并文件键范围、字节数和 entry 数，为后续按容量/键数选择分裂点提供输入。
 
 ## 核心职责
 
@@ -88,7 +86,7 @@ checkpoint skip map 在构造后只读查询。进度回调仅在 checkpoint 命
 
 ## 与 Go 版本的对应关系
 
-`log_split_strategy.rs` 逐项对应同目录 `log_split_strategy.go`：常量值、下游 ID checkpoint 过滤、`Valued` 字段、4096 阈值、skip 顺序、checkpoint 进度回调及 30 秒指标节流均保持一致。Rust 用 `HashMap<i64, RewriteRules>` 持有规则值，Go 使用 `map[int64]*RewriteRules`；Rust 的 `Box<dyn FnMut + Send>` 对应 Go 函数值。
+Rust 用 `HashMap<i64, RewriteRules>` 持有规则值，Go 使用 `map[int64]*RewriteRules`；Rust 的 `Box<dyn FnMut + Send>` 对应 Go 函数值。
 
 可观察差异如下：
 
@@ -110,15 +108,3 @@ Go 的 `client_test.go::TestLogSplitStrategy` 还验证实际 mock PD region 边
 - 若改善错误诊断，可让 Rust 无规则日志带 `TableId`，但应保持跳过行为不变并同步 Go/Rust parity 期望。
 
 相关测试应继续放在独立文件 `br/pkg/restore/log_client/log_split_strategy_test.rs`；跨模块公开契约可补充到 `parity_test.rs`，真实拆分链的行为则应在 client/pipeline 对应的独立测试中覆盖。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标文件可解析。
-- RustCodeGraph `node --file br/pkg/restore/log_client/log_split_strategy.rs`：核对全部 161 行、所有字段、函数、分支和 `Accumulate -> maybeUpdateMemUsage` 内部调用。
-- RustCodeGraph `explore "br/pkg/restore/log_client/log_split_strategy.rs LogSplitStrategy LogSplitHelper iterator traverse"`：确认目标文件被 `client.rs`、`client_test.rs`、`log_split_strategy_test.rs`、`parity_test.rs` 使用，并确认 `PreSplitRegions -> NewLogSplitStrategy` 调用边。
-- RustCodeGraph `node --file br/pkg/restore/log_client/client.rs --offset 540 --limit 120`：核对 Rust 上层 `PreSplitRegions` 的加载、过滤、累积、阈值判断与仅重置的当前接线。
-- RustCodeGraph `node --file br/pkg/restore/split/splitter.rs --offset 1 --limit 250`：核对 `SplitStrategy` trait、`BaseSplitStrategy` 状态、`GetAccumulations` 和 `ResetAccumulations`。
-- RustCodeGraph `node` 读取 `log_split_strategy_test.rs` 及 `parity_test.rs:350-439`：核对 1 MiB、4096/4097、meta/无规则/checkpoint、dropped table、进度回调和缺少 manager 的测试证据。
-- 读取 `br/pkg/restore/log_client/Cargo.toml` 与 `lib.rs`：核对 crate 边界、直接依赖、公开再导出和独立测试挂载；该目录不存在 `doc.go`，无额外包契约文件可读。
-- 读取 `br/pkg/restore/log_client/log_split_strategy.go`、`client.go` 与 `client_test.go::TestLogSplitStrategy`：核对 Go 算法、pipeline 接线和 mock PD 集成语义。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核所有“当前已支持”陈述均有上述源码或测试证据。

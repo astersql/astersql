@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 [`unicode_0400_ci_generated.rs`](unicode_0400_ci_generated.rs) 的配套说明；源文件是 `astersql-util-collate` crate 中 Unicode 4.0.0、大小写不敏感（`unicode_ci`）排序规则的生成实现。`pkg/util/collate/lib.rs` 以 `unicode_0400_ci_generated` 模块装入并重导出它；crate 的 `default = ["full_collate"]` 特性使 `pkg/util/collate/collate.rs::group2_collator` 能为 `utf8_unicode_ci` 和 `utf8mb4_unicode_ci` 构造 `unicodeCICollator`。按 ID 查找时，同一工厂路径覆盖 ID 192 和 224（见 `collate_test.rs::test_get_collator`）。关闭新 collation 开关或未启用 `full_collate` 时，工厂不会走到本实现。
-
-文件头声明它由 `util/collate/ucaimpl` 生成；展开专用代码的目的，是让 `GetWeight`、`Preprocess` 等热路径可内联，避免在逐字符比较中引入额外多态开销。具体 Unicode 4.0 权重查询和通配符实现不在本文件，而在 `unicode_0400_ci_impl.rs` 与 `ucadata` 数据模块。
+为 Rust 的 `&str` API 和可携带非法 UTF-8 的 Go string 语义同时提供入口：`CompareBytes`/`KeyBytes` 处理原始字节，避免 trait 默认的 lossy UTF-8 转换改变行为。
 
 ## 核心职责
 
@@ -74,10 +72,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/unicode_0400_ci_generated.go`。Rust 保留了 Go 的结构体、`Clone`、`Compare`、`Key`、`ImmutableKey`、`KeyWithoutTrimRightSpace`、`Pattern`、`MaxKeyLen` 以及两段 `u64` 权重循环；权重的低 `u16` 优先比较、key 的每个权重按高低字节输出也一致。
-
-主要语言适配如下：
-
 - Go `string` 可以包含非法 UTF-8；Rust 的 `&str` 不可以。因此 Rust 增加 trait 的 `CompareBytes`/`KeyBytes` 覆盖，并由 `decodeRune` 复刻 `utf8.DecodeRuneInString` 的非法序列判定。
 - Go 的 `Compare` 直接调用 `Preprocess`；Rust `Compare` 委托 `CompareBytes`，由字节级裁尾函数达到相同 PAD SPACE 结果。合法 `&str` 上行为一致。
 - Go 只有一组固有方法即满足接口；Rust 同时保留固有方法和显式 `impl Collator` 转发，以支持静态调用和动态分派。
@@ -97,14 +91,3 @@
 - 通配符语义：真实实现点在 `unicode_0400_ci_impl.rs::unicodePattern`；本文件只负责构造委托。
 
 测试逻辑必须继续放在独立测试文件。功能回归优先扩展 `collate_test.rs`（工厂、无效字节、trait 行为）和 `general_ci_2_aster_unit_test.rs`（Unicode 4.0 权重、key、PAD SPACE、pattern）；性能或内联变化参考 `collate_bench_test.rs` 的短、中、长字符串 compare/key 基准。兼容性风险集中在索引排序次序、唯一性判断、LIKE 等价类和 Go/Rust 双实现偏差；性能风险集中在逐字符虚调用、额外分配和破坏 `GetWeight` 内联。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 11,467 个文件；目标文件被识别为 22 个符号。
-- RustCodeGraph `node --file pkg/util/collate/unicode_0400_ci_generated.rs`：核对了完整 241 行源码，并得到直接使用文件 `collate.rs`、`collate_bench_test.rs`、`collate_test.rs`、`general_ci_2_aster_unit_test.rs`。
-- RustCodeGraph `query Unicode0400`、`query unicode_0400`：定位 `unicode0400Impl::{Clone, Preprocess, GetWeight, Pattern}`、Go/Rust 生成文件及 Unicode 数据测试。
-- RustCodeGraph 文件节点：读取 `collate.rs` 的 `Collator` trait、工厂、尾空格/解码辅助函数，以及 `unicode_0400_ci_impl.rs` 的权重表和 pattern 委托实现。
-- crate/模块证据：`pkg/util/collate/Cargo.toml`、`pkg/util/collate/lib.rs`。
-- Go 对照：`pkg/util/collate/unicode_0400_ci_generated.go`、`pkg/util/collate/collate_test.go`。
-- Rust 测试证据：`pkg/util/collate/collate_test.rs::test_get_collator`、`test_campare_invalid_utf8_rune`，`pkg/util/collate/general_ci_2_aster_unit_test.rs::unicode_0400_matches_go_weights_padding_and_pattern`，以及 `pkg/util/collate/collate_bench_test.rs` 的 Unicode CI compare/key 基准入口。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收采用固定章节结构检查，并人工核对上述符号、调用边、边界与扩展入口。

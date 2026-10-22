@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cache.rs` 是 `astersql-privilege-privileges` crate 的权限数据层与判定内核。crate 入口 `pkg/privilege/privileges/lib.rs` 将它作为私有模块声明并把其公开项重新导出；相邻的 `privileges.rs` 在此基础上叠加会话身份、SEM 和系统 schema 特例。Cargo 元数据把本 crate 对应到 Go 包 `pkg/privilege/privileges`，直接依赖 `astersql-util`、`sem` 与 `serde_json` 等组件（`pkg/privilege/privileges/Cargo.toml`）。
-
-文件把 `mysql.user`、`mysql.global_priv`、`mysql.global_grants`、`mysql.db`、`mysql.tables_priv`、`mysql.columns_priv`、`mysql.default_roles` 和角色边转换为内存快照，并提供连接身份匹配、静态/动态权限判断、数据库可见性、`SHOW GRANTS`/`USER_PRIVILEGES` 输出及增量刷新能力（`MySQLPrivilege`、`Handle`）。它不是 SQL 查询执行器：系统表访问由 `PrivilegeDataSource` 抽象注入。
+用 `PrivilegeType = u64` 及 `CreatePriv`、`SelectPriv` 等位常量表示静态权限；`ALL_GLOBAL_PRIVS`、`ALL_DB_PRIVS`、`ALL_TABLE_PRIVS` 定义各作用域可枚举集合，刻意排除只作为后缀呈现的 `GrantPriv`。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ Host CIDR 只接受 IPv4 `network/dotted-mask`，并要求网络地址未设置�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/privilege/privileges/cache.go`。Rust 保留了 Go 的主要类型和方法命名、权限层级、角色闭包、Host 排序、动态权限的 `SUPER` 回退、数据库可见性与 `SHOW GRANTS` 顺序。Rust 独立测试 `cache_test.rs` 与 Go `cache_test.go` 都覆盖 user/global_priv/db/table/column/default-role 加载、通配 Host、角色 BFS、排序、TLS REQUIRE 和 DB 可见性。
-
 重要边界差异如下：
 
 - Go `Handle` 通过 session pool 实时执行 SQL，以原子指针 CAS 合并权限；Rust 用注入的 `PrivilegeDataSource` 和 `Arc<RwLock<_>>`，并保留 `source_data` 支持本地按需合并。
@@ -91,12 +87,3 @@ Host CIDR 只接受 IPv4 `network/dotted-mask`，并要求网络地址未设置�
 修改身份或 Host 规则时集中评估 `baseRecord::{hostMatch,match,fullyMatch}`、`compareHost`、`parseHostIPNet` 和 `wildcard_match`，并保留精确 Host 优先、大小写规则、loopback、CIDR、转义和恶意长模式测试。修改角色规则时同时验证撤销后的陈旧活动角色不能继续生效以及有环图能终止。
 
 改变并发更新协议前，应明确是否仍保证“失败不发布半成品”和读者只见完整快照；若要减少 `Get` 的深克隆成本，可评估发布 `Arc<MySQLPrivilege>`，但需同时重做 `data/source_data/active_users/full_data` 的一致性设计。相应测试仍放在 `pkg/privilege/privileges/cache_test.rs`，不要嵌入生产文件。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；目标文件被索引为 2,270 行、218 个符号。文件级使用者包括 `pkg/privilege/privileges/privileges_test.rs` 与多个 `pkg/session/runtime*.rs` 文件。
-- RustCodeGraph 调用边：`LoadAll -> LoadUserTable/LoadGlobalPrivTable/LoadGlobalGrantsTable/LoadDBTable/LoadTablesPrivTable/LoadColumnsPrivTable/LoadDefaultRoles/LoadRoleGraph`；`RequestVerification -> FindAllUserEffectiveRoles/matchUser/matchDB/matchTables/MatchColumns`；`showGrants -> FindAllUserEffectiveRoles/escape_identifier/*PrivToString/collectColumnGrant`；`UpdateAll -> LoadAll`。
-- 已读 Rust 路径：`pkg/privilege/privileges/cache.rs`、`lib.rs`、`privileges.rs`、`cache_test.rs` 和 `Cargo.toml`。测试证实默认认证插件、密码寿命、SSL/SAN、Host/DB 通配、角色环与撤销、ANSI_QUOTES、DB 可见性及增量 grant/revoke/drop 行为。
-- 已读 Go 对照：`pkg/privilege/privileges/cache.go` 与 `cache_test.go`，重点核对 `MySQLPrivilege::LoadAll`、静态/动态验证、`DBIsVisible`、`Handle` 全量/活跃用户刷新及对应测试名。
-- 精确上游搜索确认 `privileges.rs` 是主要适配层，并确认会话 runtime 的授权、SHOW GRANTS 和数据库可见性路径直接使用本缓存 API。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；交付验证仅检查文档存在且恰含规定的十一个二级章节。

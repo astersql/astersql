@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/ddl/lib.rs` 以 `pub mod job_scheduler` 对外暴露。它位于 Rust 正常 DDL 的 owner 侧调度层：生产入口 `pkg/session/runtime/normal_ddl_service.rs::NormalDDLService::start` 创建名为 `normal-ddl-scheduler` 的线程，取得 owner 身份后构造 `JobScheduler`，再周期性调用 `JobScheduler::schedule_persisted`。
-
-当前文件同时保留两套表面：`enqueue` + `schedule` 驱动内存 `VecDeque<ScheduledJob>`，用于轻量迁移语义及冲突测试；`schedule_persisted` 每轮从 `mysql.tidb_ddl_job` 读取 Go wire 格式的持久任务，是已接入正常 DDL 服务的生产路径。二者共享 `RunningJobs`、General/Reorg 两类 `JobWorker`，但不可把内存队列路径理解为生产持久化或故障恢复机制。
-
-从 DDL 生命周期看，这是 job-based 路径而非 metadata-only fast path：scheduler 本身不实现具体 schema 状态转换或回填，它选择可运行任务并委托 `pkg/ddl/job_worker.rs`；worker/executor 负责事务、状态推进、持久化和 schema-version barrier。是否需要 delete-only/write-only/reorg/public 等状态、回填检查点、回滚或 delete-range GC，由具体 job executor 决定。
+从 DDL 生命周期看，这是 job-based 路径而非 metadata-only fast path：scheduler 本身不实现具体 schema 状态转换或回填，它选择可运行任务并委托 `pkg/ddl/job_worker.rs`；worker/executor 负责事务、状态推进、持久化和 schema-version barrier。
 
 ## 核心职责
 
@@ -93,11 +89,6 @@ owner/cancellation 在查询前和逐行处理前检查，但长时间运行的�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/ddl/job_scheduler.go`。两边共同语义包括：仅 owner 调度、接管后强制重载 schema、按 `mysql.tidb_ddl_job` 的 `reorg/job_meta` 读取任务、根据 involving schema 信息做冲突控制、普通与 reorg worker 分流，以及单步推进后等待 schema version 同步。
-
-对应关系如下：
-
-- Rust `schedule_persisted` 对应 Go `schedule` 循环中的 `loadAndDeliverJobs` 核心读取与筛选部分；Rust 正常服务外层线程承担 Go `scheduleLoop` 的重试/owner 生命周期。
 - Rust `must_reload_schemas_with` 对应 Go `mustReloadSchemas`；二者均持续重试至成功或取消。Go 成功后还调用 `markStorageClassTransitionReady`，Rust 由正常服务在 scheduler 之外轮询 storage-class transition，当前函数自身不发布该 ready 信号。
 - Rust `RunningJobs` 调用对应 Go `runningJobs.checkRunnable/addPending/addRunning/finishOrPendJob/resetAllPending`。
 - Rust `UnSyncedJobTracker` 的接口和容量行为对应 Go `unSyncedJobTracker`，但当前 Rust 生产持久调度没有直接持有或调用它；Go 在 `transitOneJobStepAndWaitSync` 中用于换主后的未同步版本恢复。
@@ -113,14 +104,3 @@ Go 对照文件为 `pkg/ddl/job_scheduler.go`。两边共同语义包括：仅 o
 改变 owner 接管行为时，要保持顺序不变量：先同步 cluster upgrade state，再重载 schema，确认 owner epoch 未变，最后打开持久队列并执行 job。必须覆盖“查询前失主”“步骤提交后同步失败”“重启重新读取同一 job”“系统暂停与用户暂停并发”等情况。
 
 测试应保持独立文件：基础重载/tracker 行为放在 `pkg/ddl/job_scheduler_test.rs`；内存调度冲突和 Go 归一化序列放在 `pkg/ddl/job_scheduler_testkit_test.rs`；持久调度及故障恢复优先扩展 `pkg/session/runtime/durable_scheduler_test.rs` 或相应 `normal_ddl*_test.rs`。性能改动需特别评估当前串行“一步 + wait”是否成为瓶颈；若引入并发，必须同时解决 session/worker 所有权、running/pending 原子性、worker 容量、公平性和换主取消，不能只并行循环。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标 `pkg/ddl/job_scheduler.rs` 被索引为 330 行、43 个符号。
-- 目标源码：`pkg/ddl/job_scheduler.rs`，核对了常量、`UnSyncedJobTracker`、`JobType`、`ScheduledJob`、`JobScheduler` 的全部实现及 `schedule_persisted` 完整控制流。
-- crate 与模块边界：`pkg/ddl/Cargo.toml`（`astersql-ddl`、`astersql-meta`、`astersql-meta-model` 路径依赖）和 `pkg/ddl/lib.rs`（公开模块及两个独立测试模块）。
-- 生产上游：`pkg/session/runtime/normal_ddl_service.rs:410-559`，确认专用线程、owner epoch、schema reload、session 获取、`schedule_persisted` 调用、300 ms 周期及换主/关闭生命周期。
-- Go 对照：`pkg/ddl/job_scheduler.go:120-359` 与 `:397-722`，核对 `jobScheduler` 字段、`scheduleLoop`、`loadAndDeliverJobs`、`mustReloadSchemas`、异步 `deliveryJob`、同步恢复及 worker-pool 背压。
-- 独立 Rust 测试：`pkg/ddl/job_scheduler_test.rs` 验证 schema reload 成功/重试/取消和 tracker 增删；`pkg/ddl/job_scheduler_testkit_test.rs` 验证 owner 门禁、冲突组不交错、状态推进和无 involving 信息的 view job；持久路径的直接调用证据来自 `pkg/session/runtime/durable_scheduler_test.rs` 与 `pkg/session/runtime/normal_ddl*_test.rs`。
-- RustCodeGraph 调用证据：`on_become_owner` 调用 `must_reload_schemas`；Go `scheduleLoop` 调用 `schedule`、`loadAndDeliverJobs` 调用 `deliveryJob`；`schedule_persisted` 的生产调用者包含 `normal_ddl_service.rs`，并由大量 normal DDL/durable scheduler 测试覆盖。对图中未精确解析的 Rust trait 动态调用，使用目标源码和直接调用点核验，没有据此推断静态边。
-- 本任务为纯文档分析，按任务约束不运行 Cargo；最终只执行固定十一章节的结构验证，并人工检查所有“已接入/未接入”结论均有上述源码、调用边、Cargo、Go 或测试证据。

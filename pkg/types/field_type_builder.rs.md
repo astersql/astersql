@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-types` 类型 crate 中 `FieldType` 的链式建造器实现。它本身不声明模块依赖；`pkg/types/internal/metadata/lib.rs` 的 `field_type_builder_defs` 模块先把 `crate::FieldType` 引入作用域，再用 `include!("../../field_type_builder.rs")` 编译本文件，并以 `pub use field_type_builder_defs::*` 对外导出。`pkg/types/Cargo.toml` 表明顶层包名为 `astersql-types`，同时通过 `types-group-4 = astersql-types-metadata` 组织这组元数据实现；本文件实际操作的 `FieldType` 最终是 `pkg/parser/types/field_type.rs` 中的结构。
-
-它位于“收集字段类型参数”与“消费完整 `FieldType`”之间：调用方逐项设置 MySQL 类型码、标志、长度、小数位、字符集、排序规则、ENUM/SET 元素或数组标记，最后取得值快照或内部值的可变借用。当前 Rust 生产调用的直接证据是 `pkg/util/schemacmp/type.rs::decodeFieldTypeFromLattice`，该函数用建造器把格编码还原为 `FieldType`；`pkg/util/schemacmp/lib.rs` 则从 `tidb_types` 再导出 `NewFieldTypeBuilder`。
+`FieldTypeBuilder` 只持有一个私有 `ft: FieldType`，集中转发 `FieldType` 的常用读写 API，避免调用方先构造临时对象再逐句修改。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ RustCodeGraph 已索引目标文件并报告 22 个符号；精确 `node` 查询
 
 ## 与 Go 版本的对应关系
 
-`pkg/types/field_type_builder.go` 是逐方法对照文件：结构体同样只含 `ft FieldType`，构造器返回指针，getter/setter 名称和顺序一致，设置方法返回接收者以支持链式调用，`Build` 返回值，`BuildP` 返回内部字段地址。Rust 将 Go 的 `byte`/`uint`/`int` 映射为 `u8`/`usize`/`isize`，将字符串和切片入参映射为拥有型 `String`/`Vec<String>`。
+两端的关键语义差异来自语言所有权：Go 的 `Build` 按结构体值复制，但切片底层存储可能仍共享；Rust 的 `Build` 调用派生 `Clone`，会深复制 `String` 和 `Vec`。Go 的 `BuildP` 指针可在建造器引用不可见后继续存活（由逃逸分析/GC 管理），Rust 的 `&mut FieldType` 必须受建造器生命周期约束。
 
-两端的关键语义差异来自语言所有权：Go 的 `Build` 按结构体值复制，但切片底层存储可能仍共享；Rust 的 `Build` 调用派生 `Clone`，会深复制 `String` 和 `Vec`。Go 的 `BuildP` 指针可在建造器引用不可见后继续存活（由逃逸分析/GC 管理），Rust 的 `&mut FieldType` 必须受建造器生命周期约束。Rust 的 `Box` 对齐“构造器在堆上”的使用形状，但链式方法返回的是借用而非新的所有权指针。
-
-Go 回归证据包括 `pkg/types/datum_test.go` 中用 `BuildP` 构造 DECIMAL 类型并验证精度/截断行为，以及 `pkg/types/etc_test.go` 中用 `Build` 构造字符串类型并验证 `NeedRestoredData`。Rust 的独立测试更直接覆盖建造器自身；这些 Go 测试验证消费语义，但其业务断言不属于本文件内部逻辑。
+Rust 的独立测试更直接覆盖建造器自身；这些 Go 测试验证消费语义，但其业务断言不属于本文件内部逻辑。
 
 ## 扩展指南
 
@@ -87,14 +83,3 @@ Go 回归证据包括 `pkg/types/datum_test.go` 中用 `BuildP` 构造 DECIMAL �
 修改 `Build` 或 `BuildP` 时必须维持两项独立契约：前者是后续修改不影响的拥有型快照，后者是直接别名内部字段的可变借用。相应回归应扩展独立测试文件 `pkg/types/enum_4_aster_unit_test.rs`，不要把测试嵌入本生产文件。新增 `FieldType` 字段时还要检查建造器是否需要 getter/setter、`Clone` 是否仍满足快照语义，以及 `pkg/util/schemacmp/type.rs::decodeFieldTypeFromLattice` 是否需要参与编码/解码。
 
 兼容风险主要是默认值、链式顺序和 Go/Rust 数值宽度差异；正确性风险集中在标志位覆盖/增删与 array/type 联动；性能风险集中在 `Build` 对长元素列表的深克隆。只有在生命周期允许且调用方确实需要原地借用时才选择 `BuildP`，不要为了避免克隆而扩大可变借用范围。
-
-## 验证依据
-
-- 目标源码：`pkg/types/field_type_builder.rs`，核对 1 个结构体、1 个公开构造函数、6 个 getter、12 个链式 setter/flag 操作以及 `Build`/`BuildP`；未发现常量、trait 或条件编译项。
-- 模块与 crate：`pkg/types/internal/metadata/lib.rs`、`pkg/types/Cargo.toml`、`pkg/util/schemacmp/lib.rs`。
-- 底层类型与转发语义：`pkg/parser/types/field_type.rs::FieldType` 及其 `Default`/`Clone` 派生、getter/setter 实现。
-- Rust 生产调用：`pkg/util/schemacmp/type.rs::decodeFieldTypeFromLattice`。
-- Rust 独立测试：`pkg/types/enum_4_aster_unit_test.rs::field_type_builder_forwards_all_fields_and_buildp_aliases_builder_field`。
-- Go 对照与测试：`pkg/types/field_type_builder.go`、`pkg/types/field_type.go`、`pkg/types/datum_test.go`、`pkg/types/etc_test.go`；另以生产调用搜索确认 Go API 的使用范围。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，`files --filter pkg/types/field_type_builder.rs` 确认目标在图中且有 22 个符号；`query FieldTypeBuilder`/`query NewFieldTypeBuilder` 同时定位 Go/Rust 定义；`node pkg/types/field_type_builder.rs::FieldTypeBuilder` 与 `node pkg/types/field_type_builder.rs::NewFieldTypeBuilder` 核对源码，并由构造器 trail 得到 Rust 测试调用边。`explore` 和部分 `callers/callees` 组合查询达到 30 秒预算，impl 方法限定名也未被解析，因此未把图中缺失误判为无调用。
-- 结构检查按任务命令验证本文恰好包含 11 个固定二级章节；本任务只新增文档，按计划不运行 Cargo。

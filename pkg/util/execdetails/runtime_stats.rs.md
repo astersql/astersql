@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现 SQL 执行期统计的核心数据模型：它把根执行器本地采样、下推到 TiKV/TiFlash 的 Cop 任务摘要、事务提交/加锁明细、并发度和 RU 等异构信息，按物理计划节点 `planID` 聚合，并提供 EXPLAIN、慢查询及资源核算可消费的字符串或值快照。源码不是单独的 Rust 模块声明；`pkg/util/execdetails/internal/group1/lib.rs` 的 `runtime_stats_impl` 通过 `include!("../../runtime_stats.rs")` 编译它并 `pub use`，随后 `pkg/util/execdetails/lib.rs` 以 `execdetails_group_1::*` 对外再导出。
-
-所属 crate 是 `astersql-util-execdetails`。其 `Cargo.toml` 将 `lib.rs` 作为入口，并依赖承载主体实现的 `astersql-util-execdetails-group1`、RUv2 与 util 子 crate，以及 protobuf/百分位计算依赖；因此本文件中的 `kv`、`tipb`、`Percentile`、`TiflashStats`、`FormatDuration` 和 `util::*` 均来自 `runtime_stats_impl` 外层的 `use crate::*`，而不是本文件自己的显式导入。
-
-在应用链路中，`pkg/distsql/select_result.rs` 将远端响应的扫描、时间、线程池和 `ExecutorExecutionSummary` 写入 `RuntimeStatsColl`；`pkg/executor/statement_ru_plan_walk.rs` 读取根/Cop 行数快照进行 RU 归属；`pkg/session/runtime/scan_adapter_runtime.rs` 通过共享收集器登记提交统计；hash join/hash aggregate 执行器登记 `HashStateRuntimeStats`。这些统计最终由计划展示、语句上下文和进程信息持有者读取。
+实现 SQL 执行期统计的核心数据模型：它把根执行器本地采样、下推到 TiKV/TiFlash 的 Cop 任务摘要、事务提交/加锁明细、并发度和 RU 等异构信息，按物理计划节点 `planID` 聚合，并提供 EXPLAIN、慢查询及资源核算可消费的字符串或值快照。
 
 ## 核心职责
 
@@ -93,11 +89,11 @@ RustCodeGraph 将本文件标记为被 12 个文件引用，并能精确定位 `
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/execdetails/runtime_stats.go`，核心布局与流程基本逐项对应：`RuntimeStats` 接口、root/cop/basic 统计、按 plan id 聚合、summary executor id 重定向、Cop 展示、提交/锁键/RU 格式化，以及扫描字节和行数证据快照都有同名实现。Rust 采用 `Option` 代替 nil、`Box<dyn RuntimeStats>` 代替 Go interface、`AtomicI*` 代替 `atomic.Int*`、RAII mutex guard 代替手动 Lock/Unlock。
+Rust 采用 `Option` 代替 nil、`Box<dyn RuntimeStats>` 代替 Go interface、`AtomicI*` 代替 `atomic.Int*`、RAII mutex guard 代替手动 Lock/Unlock。
 
-Rust 为可运行的跨线程对象模型增加了 `as_any`、`CloneBox` 和 trait 的 `Send + Sync`；还增加 `sharedRootStats`、`RegisterStatsShared`、`GetRootStatsStringShared`，用以支持 `Arc<RuntimeStatsColl>` 下的 commit 统计登记。`GetObservedCopScanDetail`/`scanDetailObserved` 是 presence-aware bridge，而 Go 兼容 getter 仍保留零值语义。Rust `GetRootWriteCPUWork` 和 hash-state getter通过 downcast 返回 typed 快照。
+Rust 为可运行的跨线程对象模型增加了 `as_any`、`CloneBox` 和 trait 的 `Send + Sync`；还增加 `sharedRootStats`、`RegisterStatsShared`、`GetRootStatsStringShared`，用以支持 `Arc<RuntimeStatsColl>` 下的 commit 统计登记。
 
-Go 测试 `pkg/util/execdetails/execdetails_test.go` 验证 Cop/TiFlash 汇总、摘要覆盖、扫描估算、root rows、read-pool、事务格式等语义；Rust 对应测试集中在独立文件 `pkg/util/execdetails/execdetails_test.rs` 和 group1 crate 挂载的 `pkg/util/execdetails/execdetails_1_aster_unit_test.rs`。后者额外覆盖共享收集器、同类型合并、plan id 重定向、退避去重和 RU clone/merge。测试没有内嵌在生产文件，符合仓库约束。
+后者额外覆盖共享收集器、同类型合并、plan id 重定向、退避去重和 RU clone/merge。
 
 ## 扩展指南
 
@@ -108,12 +104,3 @@ Go 测试 `pkg/util/execdetails/execdetails_test.go` 验证 Cop/TiFlash 汇总�
 增加并发读 API 时，优先返回标量或 owned snapshot，仿照 `GetRootRowsSnapshot`/`GetObservedCopScanDetail`，不要把 mutex 内部引用暴露到 guard 外。若需要可共享写入，沿用 `sharedRootStats` 模式并保持 `mu -> 子锁` 的锁顺序。增加原子复合状态前先确认是否允许弱一致观察。
 
 修改显示格式或事务字段时，应同步 `pkg/util/execdetails/execdetails_test.rs`、`execdetails_1_aster_unit_test.rs` 与 Go 的 `execdetails_test.go`；关注单位（内部纳秒）、零值过滤、标点顺序、退避去重排序及 mutex/atomic 字段。修改对象复用时应覆盖所有字段，特别检查 `stmtCopStats` 和 `tiFlashExecutionUnits` 是否按预期重置。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/execdetails` 找到目标 Rust/Go 文件与独立测试；`node --file pkg/util/execdetails/runtime_stats.rs` 完整检查了 1,659 行实现并报告 174 个符号、12 个引用文件；`query RuntimeStatsColl`、`query RuntimeStats`、`query RecordCopStats --json`、`query RegisterStatsShared --json`、`query EstimateScanBytes --json` 核对了关键签名及 Go 对照。`callers/callees` 因 `include!` 未产生方法边，此限制用下列源码引用补证。
-- 编译与导出边界：`pkg/util/execdetails/Cargo.toml`、`pkg/util/execdetails/lib.rs`、`pkg/util/execdetails/internal/group1/lib.rs`；后者的 `runtime_stats_impl` 是目标文件的真实编译入口。
-- 生产调用：`pkg/distsql/select_result.rs`、`pkg/executor/statement_ru_plan_walk.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/sessionctx/stmtctx/stmtctx.rs`、`pkg/session/sessmgr/processinfo.rs`、`pkg/executor/aggregate/agg_hash_executor.rs`、`pkg/executor/join/hash_join_v1.rs`、`pkg/executor/join/hash_join_v2.rs`。
-- Go 对照：`pkg/util/execdetails/runtime_stats.go`，重点核对 `RuntimeStatsColl`、`EstimateScanBytes`、root/Cop snapshots、`RecordCopStats`、`RecordOneCopTask`、并发和 commit/RU 统计。
-- 独立测试：`pkg/util/execdetails/execdetails_test.rs`、`pkg/util/execdetails/execdetails_1_aster_unit_test.rs`、`pkg/util/execdetails/tiflash_execution_units_test.rs`，以及 Go 的 `pkg/util/execdetails/execdetails_test.go`、`tiflash_execution_units_test.go`。覆盖真实零行与摘要完整性、无效扫描估算、首次 Cop 明细不重复、TiKV/TiFlash 格式、共享/owned 合并、hash-state 溢出、事务/锁键/RU 格式和复用清理。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务规定的 11 章节结构检查，并人工复核所有行为描述均可回溯到上述符号、调用点或测试。

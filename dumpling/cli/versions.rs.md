@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`versions.rs`](versions.rs) 是 Cargo 包 `astersql-dumpling-cli` 的版本元数据实现文件，对应 Go 包中的 [`versions.go`](versions.go)。[`Cargo.toml`](Cargo.toml) 将 crate 根设为 [`lib.rs`](lib.rs)；crate 根再用 `#[path = "versions.rs"] mod versions;` 挂载本文件，并通过 `pub use versions::*;` 把公开状态和函数提升到 `astersql_dumpling_cli::*`。因此它不是独立二进制入口，而是 Dumpling 命令行和导出初始化流程共享的版本信息服务。
-
-生产调用有两条直接主链。命令行侧，[`dumpling/cmd/dumpling/main.rs`](../cmd/dumpling/main.rs) 的 `long_version_output` 调用 `cli::LongVersion()`，供 `-V` 版本提前退出路径打印；导出侧，[`dumpling/export/dump.rs`](../export/dump.rs) 的 `initLogger` 在自行创建应用 logger 后调用 `cli::LogLongVersion(&d.tctx.L())`，写入启动欢迎日志。RustCodeGraph 将本文件标记为被 `dumpling/cli/parity_test.rs` 与 `dumpling/export/dump.rs` 使用；跨 crate 的命令行调用由 Cargo 路径依赖和源码引用补充确认。
+由 `rust_version` 在未覆盖时读取实际运行时 rustc 版本；由 `read_var` 统一普通字符串槽的读锁与中毒处理。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ RustCodeGraph 对 `LongVersion` 的精确 callee 结果确认其引用四个元�
 
 ## 与 Go 版本的对应关系
 
-Go 对照 [`versions.go`](versions.go) 定义 `ReleaseVersion`、`BuildTimestamp`、`GitHash`、`GitBranch`、`GoVersion`，以及同名的 `LongVersion`、`LogLongVersion`。Rust 保留前四个名称和默认值，并保持两种输出的字段顺序、文本标签布局、构建时间 `Z` 后缀、欢迎语及日志字段顺序。
-
 明确差异如下：
 
 - Go 用无锁包级 `string`，Rust 用 `RwLock<&'static str>` 提供线程安全共享读写。
@@ -107,14 +103,3 @@ Go 对照 [`versions.go`](versions.go) 定义 `ReleaseVersion`、`BuildTimestamp
 - 修改文本标签、空格、顺序、时间后缀或末尾换行属于用户可见兼容变更，应同时核对 Go 对照、CLI parity 测试和可能解析版本输出的外部脚本。
 - 新测试继续放在独立的 `parity_test.rs` 或同目录独立 `*_test.rs` 中，不要把测试逻辑嵌入生产 `versions.rs`。修改锁行为时应增加锁中毒或并行访问的独立回归测试。
 - 性能风险主要来自误把格式化/日志调用放到高频路径；当前启动级调用无需优化。正确性风险主要是多字段非原子更新、锁中毒 panic、全局测试污染，以及 Go/Rust 展示契约漂移。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；目标文件已索引。
-- RustCodeGraph `node --file dumpling/cli/versions.rs`：确认文件共 92 行、五个公开静态槽、两个私有辅助函数和三个公开函数；无类型、trait、`impl` 或条件编译项。
-- RustCodeGraph `query LongVersion`、`query LogLongVersion`、`query reset_version_vars`：确认 Rust/Go 同名定义及 Rust 符号位置；文件限定 callee 查询确认 `LongVersion`/`LogLongVersion` 到元数据槽和辅助函数的关系。对内部节点 ID 的调用图查询出现模糊消歧，因此未把其无关结果作为证据。
-- RustCodeGraph 已读路径：`dumpling/cli/lib.rs`、`dumpling/cli/versions.go`、`dumpling/cli/parity_test.rs`、`dumpling/cmd/dumpling/main.rs`、`dumpling/cmd/dumpling/parity_test.rs`、`dumpling/export/dump.rs`。
-- 配置与源码交叉核对：`dumpling/cli/Cargo.toml`、`dumpling/cmd/dumpling/Cargo.toml`、`dumpling/export/Cargo.toml`、`dumpling/export/lib.rs`，以及 `rg` 对全部 Dumpling Rust/Go 引用的检索。
-- Go 直接证据：`dumpling/cli/versions.go`、`dumpling/cmd/dumpling/main.go:48`、`dumpling/export/dump.go:1646`。同目录没有 Go 测试文件。
-- Rust 独立测试证据：`dumpling/cli/parity_test.rs` 覆盖默认格式、自定义/空值、Info 等级过滤、nop sink 和全局复位；`dumpling/cmd/dumpling/parity_test.rs` 覆盖 `-V` 提前退出及双换行字节契约。
-- 本任务是纯文档分析，按计划不运行 Cargo；完成检查仅包含固定章节结构、链接/事实人工复核和差异范围自审。

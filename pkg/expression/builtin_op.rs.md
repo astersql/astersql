@@ -2,12 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-expression`（见 [`pkg/expression/Cargo.toml`](Cargo.toml)），在 [`pkg/expression/lib.rs`](lib.rs) 中以私有模块 `builtin_op_kernel` 装入。它把 Go [`pkg/expression/builtin_op.go`](builtin_op.go) 中与执行上下文无关的标量运算符语义拆成纯 Rust 数据类型、求值函数、函数类门面和签名选择逻辑。
-
-当前接线必须区分两层：
-
-- `builtin_op_kernel` 会随 library 编译，但没有从 crate 根公开导出；`lib.rs` 只在 `#[cfg(test)]` 下用 `mod builtin_op { pub use crate::builtin_op_kernel::*; }` 为测试提供兼容路径。
-- 仓库搜索没有发现测试之外对本文件符号的引用。生产侧的函数注册与动态执行接口由 [`pkg/expression/builtin.rs`](builtin.rs) 作为 `expression_builtin` 模块提供，并由 crate 根公开 `formal_registry`。因此，本文件目前是已验证的移植语义内核和签名模型，不应被描述为已经取代 Go 完整表达式执行器或已经接入 Rust 生产注册链。
+实现逻辑与/或/异或、位运算、真假判断、一元 `NOT`、一元负号和 `IS NULL` 的无上下文求值语义，尤其保留 MySQL 三值逻辑、从左到右求值和短路边界。
 
 ## 核心职责
 
@@ -117,17 +112,12 @@ Go 侧 [`pkg/expression/builtin_op.go`](builtin_op.go) 则被 `builtin.go`、生
 
 ## 与 Go 版本的对应关系
 
-对应基线是 [`pkg/expression/builtin_op.go`](builtin_op.go)：
-
 - `EvalResult<T>` 对应各 Go `eval*` 的 `(value, isNull, error)`；Rust 用 `Option` 显式承载 NULL。
-- `logical_*` 对齐 Go 的左到右求值和三值真值表；`FnOnce` 代替 Go 中从 `b.args[n]` 读取行值的动作。
-- 位运算与移位对齐 Go 的 `uint64` 转换；签名元数据中的 `unsigned_result` 对应 Go 返回类型的 `mysql.UnsignedFlag`。
 - `truth_signature` 对齐 Go 对 `ETTimestamp`/`ETDatetime`/`ETDuration`/`ETJson`/`ETString` 到 `ETReal` 的归并、`keepNull` 分支和 PB 码。向量真假签名在 Go 中同样注释掉 PB 码设置，Rust 因而返回 `None`。
 - `unary_not_signature` 对齐 Go 类型提升与 JSON 布尔上下文 warning；Rust 仅把 warning 作为元数据返回，不操作 `EvalContext`。
 - `handle_int_overflow`、`unary_minus_signature` 和三个求值函数对齐 Go 常量溢出提升、类型选择、列宽规则和运行期整数边界。Rust 用 `rust_decimal::Decimal`，Go 用 `types.MyDecimal`，二者的具体表示和极限不是同一类型。
-- `is_null_signature` 和泛型 `is_null` 合并了 Go 针对每个输入族的多个签名实现，同时保留 PB 码选择和“结果本身非 NULL、错误照常传播”的行为。
 
-重要差异与迁移状态：Go 函数类持有 `baseFunctionClass`，通过 `BuildContext` 构建带参数表达式和返回 `FieldType` 的 `builtinFunc`，求值时读取 `EvalContext` 与 `chunk.Row`；Rust 本文件只保留无上下文算法和元数据，不持有表达式树，也未注册到生产 `formal_registry`。Rust 生产侧 [`pkg/expression/builtin.rs`](builtin.rs) 另有正式函数类与执行对象。因此新增行为时，不能只修改本文件就假定完整 Rust SQL 路径已经改变。
+重要差异与迁移状态：Go 函数类持有 `baseFunctionClass`，通过 `BuildContext` 构建带参数表达式和返回 `FieldType` 的 `builtinFunc`，求值时读取 `EvalContext` 与 `chunk.Row`；Rust 本文件只保留无上下文算法和元数据，不持有表达式树，也未注册到生产 `formal_registry`。
 
 ## 扩展指南
 
@@ -141,17 +131,3 @@ Go 侧 [`pkg/expression/builtin_op.go`](builtin_op.go) 则被 `builtin.go`、生
 6. 与 Go 保持一致：逐段核对 `builtin_op.go` 的函数类、签名 `eval*` 和 PB code。Go 后续若改变短路、类型归并或显示宽度规则，应同步更新 Rust 实现及两个独立测试。
 
 主要风险是 SQL NULL 与错误混淆、破坏右侧求值边界、把算术右移误作逻辑右移、遗漏 unsigned `2^63` 特例、给向量真假测试错误声明 PB 能力，以及只更新语义内核却遗漏生产注册链。性能上应保留短路和按值/闭包的一次求值模型，避免为简单标量操作引入不必要的克隆或分配。
-
-## 验证依据
-
-本说明依据以下直接证据编写：
-
-- 目标源文件 [`pkg/expression/builtin_op.rs`](builtin_op.rs)：完整读取 942 行，核对全部常量、类型、宏、函数类、签名门面和签名选择函数。
-- crate 边界 [`pkg/expression/Cargo.toml`](Cargo.toml)：确认 crate 名、`autotests=false`、`lib.rs` 入口，以及 `rust_decimal`、`serde_json`、`thiserror` 直接依赖。
-- 模块入口 [`pkg/expression/lib.rs`](lib.rs)：确认 `builtin_op_kernel` 是私有生产模块，`builtin_op` 别名仅在测试配置下再导出；确认生产注册接口来自 `expression_builtin::formal_registry`。
-- Go 对照 [`pkg/expression/builtin_op.go`](builtin_op.go)：核对逻辑/位运算求值、真假与 NULL、类型归并、PB code、warning、一元负号溢出/宽度和 Go 的并发共享约束。
-- Rust 独立测试 [`pkg/expression/builtin_op_test.rs`](builtin_op_test.rs) 与 [`pkg/expression/builtin_op_20_aster_unit_test.rs`](builtin_op_20_aster_unit_test.rs)：核对三值真值表、短路、NULL/错误传播、64 位移位、所有真值族、整数边界、PB 码、`flen` 上限和克隆门面。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`node`/`query` 确认 `logical_and`、`truth_signature`、`unary_minus_signature`、`is_null_signature` 和 `IsTrueOrFalseFunctionClass` 的定义与直接调用轨迹。`unary_minus_signature` 的图调用者包括本文件 `get_function` 及独立测试，`truth_signature` 的图调用者包括真假函数类及测试，`is_null_signature` 的图调用者为 `IsNullFunctionClass::get_function`。
-- 仓库精确搜索：除 `lib.rs` 的模块装入/测试再导出和上述两个测试外，没有找到本文件核心符号的 Rust 使用点；这支持“尚未接入生产注册链”的限定，而不是从设计意图推断接线状态。
-
-这是纯文档分析任务，依计划不运行 Cargo。验收使用固定十一章节的结构检查，并人工复核以上路径、符号和边界陈述。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`watching.rs`](watching.rs) 是 `astersql-br-pkg-utils-storewatch` library crate 的 store 生命周期差分实现。crate 根 [`lib.rs`](lib.rs) 通过 `#[path = "watching.rs"] pub mod watching` 挂载本文件，并把公开项扁平再导出；[`Cargo.toml`](Cargo.toml) 则把 crate 映射到 Go 包 `br/pkg/utils/storewatch`。它负责比较连续两次取得的 TiKV store 快照并产生“首次出现、掉线、重启”事件，本身不负责定时调度。
-
-当前 Rust 接线需要与设计用途分开理解：根 `Cargo.toml` 已把该 crate 纳入 workspace，但仓库内没有其他 Cargo manifest 声明 `astersql-br-pkg-utils-storewatch` 依赖。RustCodeGraph 能确认本文件内部 `Step -> updateStore/retain` 的边，却没有确认来自 Rust 生产代码的真实调用边；`br/pkg/backup/store.rs` 和 `br/pkg/restore/data/data.rs` 当前使用各自 `stubs.rs` 中的同名 `storewatch`/`StoreWatcher` 适配。因此，本文件当前是独立可测试的移植实现，不能据此声称它已替代备份、恢复主链里的适配实现。
+用 `Callback` 抽象三类通知，并用 `DynCallback`、`WithOn*` 与 `MakeCallback` 提供可选闭包式组装。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ RustCodeGraph 的宽泛 `Step` 查询曾把 `lightning/pkg/importinto/job_progre
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Callback`、`DynCallback`、三个 `WithOn*`、`MakeCallback`、`Watcher`、`New`、`Step`、`updateStore` 和 `retain` 均能在 [`watching.go`](watching.go) 找到直接对应物。核心事件规则、首见提前结束、disconnect 先于 reboot、消失项清理以及错误前缀均保持一致；`watching_test.rs` 逐项复刻 Go 的注册、掉线、重启三项测试，`parity_test.rs` 另外覆盖 retain、双事件顺序和错误注解。
-
 仍存在明确的移植边界差异：
 
 - Go 使用 `metapb.Store` 与 `metapb.StoreState`；Rust 使用本地裁剪结构和枚举，尚未证明能无损承载完整 PD 元数据。
@@ -102,12 +98,3 @@ Rust 的 `Callback`、`DynCallback`、三个 `WithOn*`、`MakeCallback`、`Watch
 修改差分规则时重点保护这些兼容约束：首轮全为 new；只有 `Up -> Offline` 为 disconnect；时间戳变化独立为 reboot；同轮双事件顺序为 disconnect 后 reboot；读取失败不改变基线；列表消失后再次出现为 new。若要处理重复 ID 或 Tombstone，需先决定与 Go 的兼容性和是否会改变通知风暴/缓存语义。
 
 性能上，单轮时间复杂度约为 `O(L + C)`，其中 `L` 是输入列表长度，`C` 是旧缓存长度；每个输入 store 当前至少克隆一次。若 store 结构扩充为完整 protobuf，克隆成本可能显著增加，应考虑以所有权移动或引用/共享表示优化，同时保持回调生命周期安全。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`node --file br/pkg/utils/storewatch/watching.rs` 完整读取了 185 行源码。
-- RustCodeGraph `explore "br/pkg/utils/storewatch/watching.rs Watcher::Step"` 与精确文件查询：确认 `Step -> GetAllTiKVStores/updateStore/retain`、`updateStore -> GetId/GetState/三类回调` 的文件内边；对宽泛查询给出的 `isGlobalSortStatus` 上游又读取 `lightning/pkg/importinto/job_progress.rs` 复核，确认其为同名误配。
-- crate 与接线：读取 `br/pkg/utils/storewatch/Cargo.toml`、`br/pkg/utils/storewatch/lib.rs` 和根 `Cargo.toml`；用仓库搜索检查 `astersql-br-pkg-utils-storewatch`、`storewatch::`、`Watcher` 等引用，并读取 `br/pkg/backup/store.rs`、`br/pkg/restore/data/data.rs` 的相邻实现。
-- Go 对照：读取 `br/pkg/utils/storewatch/watching.go`、`br/pkg/backup/store.go`、`br/pkg/restore/data/data.go`，区分算法对应关系与实际生产接线。
-- 测试证据：读取 `br/pkg/utils/storewatch/watching_test.rs`、`br/pkg/utils/storewatch/parity_test.rs` 和 `br/pkg/utils/storewatch/watching_test.go`；覆盖注册、掉线、重启、同轮双事件顺序、读取错误与 retain 后重新注册。
-- 本任务只新增说明文档，按任务约束不运行 Cargo。交付检查以固定 11 章节结构、引用路径存在、diff/空白检查和人工事实复核为准。

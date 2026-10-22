@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-sessionctx-vardef`（`pkg/sessionctx/vardef/Cargo.toml`），由 `pkg/sessionctx/vardef/lib.rs` 的私有模块 `runtime` 装入，并通过 `pub use runtime::*` 将全部公开函数暴露给 session、Domain、server 等上层 crate。它不是独立的调度器，而是 Go `pkg/sessionctx/vardef/runtime.go` 的 Rust 对照：集中保存进程级 lease/保留期，并提供 NextGen 系统变量只读集合的判定函数。
-
-在完整应用中，`cmd/tidb-server/main.rs` 启动时通过三个 setter 写入配置中的 schema、stats 和 plan-replayer GC 周期；session 初始化与 DDL runtime 使用 `GetSchemaLease` 构造 schema validator、同步器及 DDL 运行环境；Domain 的 plan-replayer 文件 GC 使用当前文件保留期；session 的 `SET` 执行路径调用 `IsReadOnlyVarInNextGen` 拒绝 NextGen 下不允许修改的变量。
+用四个进程级 `AtomicI64` 保存 schema lease、stats lease、plan-replayer GC lease 和非 capture plan-replayer 文件保留时间，并提供一一对应的公开 setter/getter。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ NextGen 判定流程是：调用方先决定当前是否为 NextGen，再把规�
 
 `pkg/sessionctx/vardef/runtime.go` 与本文件拥有相同的四组状态、八个 getter/setter 和一个只读判定函数；默认值也一致。Go 使用 `atomic.StoreInt64`/`atomic.LoadInt64` 保存 `time.Duration` 的底层纳秒值，Rust 使用 `AtomicI64` 和 `Duration` 做显式转换。
 
-`IsReadOnlyVarInNextGen` 保留 Go 的 `strings.ToLower` 后 `switch` 的语义和六元素集合。`pkg/sessionctx/vardef/runtime_test.go::TestIsReadOnlyVarInNextGen` 覆盖未知值、常量值和大写的 metadata-lock 名称；`pkg/sessionctx/vardef/runtime_test.rs::test_is_read_only_var_in_next_gen` 镜像这些用例并保留 Classic kernel 的提前返回。
-
 可见差异是 Go 的默认 plan-replayer 文件保留期引用 `DefTiDBPlanReplayerFileRetentionTime`，Rust 当前在本文件中直接写出 7 天表达式，尽管 `tidb_vars.rs` 也定义了对应常量；两者当前数值一致，但未来修改默认值时必须同步检查。另一个表示差异是 Go API 原生接受可为负的 `time.Duration`，Rust `Duration` 不能表示负值。
 
 ## 扩展指南
@@ -83,12 +79,3 @@ NextGen 判定流程是：调用方先决定当前是否为 NextGen，再把规�
 扩展 NextGen 只读集合时，应修改 `IsReadOnlyVarInNextGen` 的匹配分支，并同步 `runtime_test.rs`、`runtime_1_aster_unit_test.rs` 和 Go 对照测试；还应确认 session 的所有相关 `SET` 路径确实调用该判定。当前生产接线只直接展示 metadata-lock 分支，因此不能仅把名称加入集合就推断其他变量已经受到拒绝逻辑保护。
 
 性能方面，getter/setter 是热路径友好的常数时间原子操作；扩大只读集合时保持无分配的常量比较较理想，但当前 `to_lowercase()` 会分配新字符串。任何改变大小写规则、修剪行为或内存序的优化都属于行为/并发契约变更，应以 Go 兼容测试和调用方需求为依据。
-
-## 验证依据
-
-- 源码与装配：`pkg/sessionctx/vardef/runtime.rs`、`pkg/sessionctx/vardef/lib.rs`、`pkg/sessionctx/vardef/Cargo.toml`。
-- Go 对照：`pkg/sessionctx/vardef/runtime.go`、`pkg/sessionctx/vardef/runtime_test.go`。
-- Rust 独立测试：`pkg/sessionctx/vardef/runtime_test.rs`、`pkg/sessionctx/vardef/runtime_1_aster_unit_test.rs`；后者验证四个默认值、setter/getter 往返、状态恢复、大小写不敏感和空白不匹配。
-- 生产调用证据：`cmd/tidb-server/main.rs`、`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/control.rs`、`pkg/sessionctx/variable/sysvar_builtins.rs`、`pkg/domain/plan_replayer.rs`。
-- RustCodeGraph：`status` 显示本仓库索引包含 Rust/Go 文件；`query IsReadOnlyVarInNextGen --kind function` 定位 Rust、Go 定义及 Go 测试，`query GetSchemaLease --kind function` 定位 Rust/Go 对照定义。对 `callers`/`callees` 的查询未返回边，因此调用关系使用上述精确源码搜索补证，未把缺失的图边当作不存在调用。
-- 本文只进行静态分析和结构检查，依任务约束未运行 Cargo 或运行时测试；关于实际调用范围的结论限于列出的直接源码证据。

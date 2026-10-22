@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggregate` crate，由 [`lib.rs`](./lib.rs) 以 `pub mod agg_spill` 暴露。它位于并行 Hash 聚合的内存态与磁盘态之间：[`HashAggPartialWorker::update_partial_result`](./agg_hash_partial_worker.rs) 生成并持有 `AggMap`，内存达到阈值后调用本文件的 `ParallelHashAggSpillHelper` 落盘；[`HashAggFinalWorker::restore_from_disk`](./agg_hash_final_worker.rs) 再按分区取回 `AggMap` 并合并；[`HashAggExec::execute`](./agg_hash_executor.rs) 负责创建和共享 helper、协调 partial/final 阶段。
-
-文件第 13–451 行主要是从 Go 版本保留下来的注释化迁移草稿，不参与编译。当前可执行实现始于 `SpillStatus`，并非 Go 文件中 OOM action、tracker、条件变量和逐聚合函数恢复逻辑的完整等价移植。
+`next_partition`/`restore_partition` 提供从最高分区到 0 的单次领取与恢复接口；恢复后的数据仍是 `AggMap`，由 final worker 负责跨 worker 合并。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ helper 设计为放入 `Arc` 后由多个 scoped partial 线程共享。磁盘�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`agg_spill.go`](./agg_spill.go)，Go 测试是 [`agg_spill_test.go`](./agg_spill_test.go)。两版共同保留四态概念、五分之一触发阈值、key 哈希分区、倒序分区恢复、共享错误标志，以及 spill 后由 final 阶段合并 partial result 的总体语义。
-
 当前 Rust 实现存在明确差异：
 
 - Go 固定 `spilledPartitionNum = 256`；Rust 由 `HashAggExec` 传入 `final_concurrency`，且至少为 1。
@@ -107,13 +103,3 @@ helper 设计为放入 `Arc` 后由多个 scoped partial 线程共享。磁盘�
 - 若对齐 Go 的 OOM action/tracker/等待语义，接入点是 `HashAggExec::execute` 的 helper 创建、`HashAggPartialWorker::update_partial_result` 的触发处及 helper 状态机。应单独实现 action/fallback 和资源 tracker，而不能仅把注释草稿当成已实现功能。
 - 修改错误策略时要统一 `spill`/`restore_partition` 的 `Result` 与 `disk_bytes`/`is_empty` 的 `unwrap`，并覆盖 mutex poison、IO 失败、serializer/deserializer panic 后能否重试和临时文件是否释放。
 - 性能敏感点包括：整个 `AggMap` 的所有权搬移、每个 entry 的动态装箱、`SpillEntry` 深克隆、单 storage mutex 串行写入、每个字节 key/value 的复制，以及 `Vec::remove(0)`。优化必须保留序列化兼容和错误清理不变量。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点，目标目录中的 `agg_spill.rs` 被识别为含 34 个符号；查询日期为 2026-10-08。
-- RustCodeGraph `node --file`：完整读取 `pkg/executor/aggregate/agg_spill.rs` 第 1–769 行，并读取直接调用者 `agg_hash_executor.rs::execute`、`agg_hash_partial_worker.rs::{update_partial_result, spill_remaining, PartialResultSpill}`、`agg_hash_final_worker.rs::restore_from_disk`。
-- RustCodeGraph `query`：确认 `ParallelHashAggSpillHelper`、`spill`、`restore_partition`、`next_partition`、`has_enough_data_to_spill`、`SpillEntry`、`write_spill`、`read_spill` 的定义位置；图的宽泛 `callers/callees` 查询未在限定时间内返回，因此调用边又以已索引源码节点直接核对，未据此推测未验证调用。
-- crate/模块证据：`pkg/executor/aggregate/Cargo.toml`、`pkg/executor/aggregate/lib.rs`。
-- Go 对照证据：`pkg/executor/aggregate/agg_spill.go`，以及 `agg_hash_executor.go`、`agg_hash_partial_worker.go`、`agg_hash_final_worker.go` 中 helper 的创建、spill、恢复和关闭调用；测试语义参考 `agg_spill_test.go`。
-- Rust 测试证据：`pkg/executor/aggregate/agg_spill_test.rs` 中 `aggregate_spill_partitions_and_restores_real_states`、`spill_uses_go_partition_order_and_worker_hash`、`spilling_creates_a_disk_file_and_releases_memory_partitions`、`distinct_growth_in_one_group_spills_and_merges_overlapping_workers`、`typed_spill_io_error_and_serializer_panic_cleanup_files_and_allow_retry`、`parallel_typed_distinct_matrix_matches_no_spill_results_for_fifty_thousand_rows`。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前以任务指定命令验证本文恰好包含 11 个固定二级章节，并人工复核链接、符号和现状/草稿边界。

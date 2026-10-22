@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 入口 `pkg/planner/core/lib.rs` 以 `pub mod rule_inject_extra_projection` 导出该模块，并在 `cfg(test)` 下装配独立测试 `rule_inject_extra_projection_test.rs`。它操作的不是 Go 侧 `base.PhysicalPlan` trait object，而是 `crate::task` 中的轻量值类型 `PlanNode`、`PlanKind` 和 `Expression`（`pkg/planner/core/task.rs:24-213`）。
-
-模块意图与 Go 同名规则一致：在物理计划中将聚合、排序、TopN、名义排序和 MPP `UnionAll` 所需的表达式提前物化为 `Projection`。不过当前 RustCodeGraph 的 `InjectExtraProjection` 节点没有生产调用者，仓库内精确 Rust 引用也只有本文件和独立测试；因此当前事实是“模块已公开、规则及单元测试已存在，但未发现它接入 Rust 优化器生产主链”，不能把 Go 的运行时接线当成 Rust 已接线。
+这些职责均是树结构改写；本文件不执行表达式、不分配真实计划列 ID，也不直接访问会话、统计管理器或存储。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ Go 主链不同：`pkg/planner/core/optimizer.go:467` 在 `postOptimize` 中调�
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/planner/core/rule_inject_extra_projection.go`。Rust 保留了入口、注入器和四类 helper 的总体分工，以及“先孩子、后父节点”“排序键上下双投影”“NominalSort 消除”“MPP Union 类型对齐”等核心形状，但属于基于轻量 `PlanNode` 的移植，尚非 Go 完整语义的等价实现。
+Rust 保留了入口、注入器和四类 helper 的总体分工，以及“先孩子、后父节点”“排序键上下双投影”“NominalSort 消除”“MPP Union 类型对齐”等核心形状，但属于基于轻量 `PlanNode` 的移植，尚非 Go 完整语义的等价实现。
 
 主要差异如下：
 
@@ -90,8 +88,6 @@ Go 主链不同：`pkg/planner/core/optimizer.go:467` 在 `postOptimize` 中调�
 - Go 创建投影时保留 session context、query block offset、child required property，并按期望行数缩放统计，还会用 `refine4NeighbourProj` 合并相邻投影；Rust只复制轻量统计和 `expected_count`，不做相邻投影整理。
 - Go `NominalSort` 的 `OnlyColumn` 来自实际节点；Rust `PlanKind::NominalSort` 没有对应字段，总入口固定按 `false` 路径处理。
 
-`pkg/planner/core/casetest/rule/rule_inject_extra_projection_test.go` 及其 Rust 对照测试验证的是 `WrapCastForAggFuncs` 的类型/模式矩阵，并不直接覆盖本文件的轻量 helper。直接行为证据应以 `pkg/planner/core/rule_inject_extra_projection_test.rs` 为准。
-
 ## 扩展指南
 
 若要新增受支持算子，优先在 `projInjector::inject` 的后序分派中增加 `PlanKind` 分支，并把具体构造逻辑放在独立 helper；同时在 `pkg/planner/core/rule_inject_extra_projection_test.rs` 增加同目录独立测试，不要把测试嵌入生产源文件。若新增节点拥有不在 `children` 中的嵌套计划，还必须显式递归该字段，参考 Go 的 TiFlash TableReader 特例。
@@ -99,14 +95,3 @@ Go 主链不同：`pkg/planner/core/optimizer.go:467` 在 `postOptimize` 中调�
 若要提高 Go 语义一致性，应先扩展 `crate::task` 的表达式/字段/计划上下文能力，再逐项移植：聚合参数和 ORDER BY 层级、真实 cast 构造、nullable 比较、唯一列 ID、required property、统计缩放、相邻投影整理、failpoint，以及生产优化器/coprocessor 接线。不要在本文件用字符串名称继续模拟这些完整能力。
 
 修改各路径时至少同步验证：非 TiFlash Union 不变、相同 schema 不插入投影、类型不匹配只转换对应列、常量不物化、重复表达式复用、无标量表达式不改写、错误孩子数保守返回、排序附加列最终被上层投影裁剪、NominalSort 两个分支，以及递归确实先处理子树。兼容风险集中在输出 schema/列下标和 Go 语义差异；性能风险集中在重复表达式查找与多余相邻投影。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被完整索引为 247 行。
-- RustCodeGraph 源码/调用查询：`node --file pkg/planner/core/rule_inject_extra_projection.rs`、`node InjectExtraProjection`、`node injectProjBelowUnion`、`node InjectProjBelowAgg`、`node InjectProjBelowSort`、`node TurnNominalSortIntoProj`、`node projection`，用于确认符号实现、内部调用边、测试调用者和生产入口缺失。
-- 数据模型查询：`node --file pkg/planner/core/task.rs --offset 1 --limit 230`，用于核对 `StoreType`、`FieldType`、`Expression`、`PlanKind`、`PlanNode` 及默认值。
-- crate 与装配：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs:97-99`。
-- Go 实现与真实 Go 调用点：`pkg/planner/core/rule_inject_extra_projection.go`、`pkg/planner/core/optimizer.go:467`、`pkg/executor/coprocessor.go:200`。
-- 直接 Rust 测试：`pkg/planner/core/rule_inject_extra_projection_test.rs`，覆盖 Union、聚合、Sort 和 NominalSort 的主要分支。
-- 邻近 Go/Rust 对照测试：`pkg/planner/core/casetest/rule/rule_inject_extra_projection_test.go` 与 `.rs`，只证明 `WrapCastForAggFuncs` 对照，不作为本文件 helper 已实现该能力的证据。
-- 未运行 Cargo：本任务只新增说明文档，计划明确禁止运行 Cargo；结构检查和人工事实复核是本任务的验证手段。

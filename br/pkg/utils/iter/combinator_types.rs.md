@@ -2,18 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-utils-iter`，crate 边界由同目录
-`Cargo.toml` 的 `[lib] path = "lib.rs"` 确定。`lib.rs` 将本文件注册为
-`combinator_types` 模块并以 `pub use combinator_types::*` 重导出其公开类型；不过业务调用方通常不直接构造这些类型，而是使用 `combinators.rs` 中的
-`Transform`、`FilterOut`、`TakeFirst`、`Map`、`MapFilter`、`TryMap`、
-`FlatMap`、`ConcatAll` 和 `Enumerate` 工厂。
-
-它位于 BR 工具链的惰性拉取迭代器层：上游遵循 `iter.rs::TryNextor<T>`，每次
-`TryNext` 返回 `Emit`、`Throw` 或 `Done` 三态之一；本文件把映射、过滤、截断、
-展平和编号行为实现为新的 `TryNextor`。恢复流程会组合这些积木，例如
-`restore/restorer.rs::PipelineRestorerWrapper::WithSplit` 用 `FilterOut` 与 `TryMap`
-串起跳过、累积和分区切分，`restore/log_client/log_file_manager.rs::FilterDataFiles`
-用 `FlatMap`、`Enumerate`、`FilterOut`、`Map` 展开并过滤日志元数据。
+`WorkerPool` 与 `TransformIter` 实现带并发上限、结果背压和取消传播的可失败异步映射。
 
 ## 核心职责
 
@@ -127,17 +116,8 @@ RustCodeGraph 将目标文件收录为 24 个符号，并显示它被包括 `br/
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/utils/iter/combinator_types.go`，公开行为由
-`combinator_test.go` 定义。类型对应为：`bufferedMappingCfg` ↔
-`BufferedMappingCfg`、`bufferedMapping` ↔ `TransformIter`、`filter` ↔
-`FilterIter`、`take` ↔ `TakeIter`、`pureMap` ↔ `PureMapIter`、`filterMap` ↔
-`FilterMapIter`、`tryMap` ↔ `TryMapIter`、`join` ↔ `JoinIter`、`withIndex` ↔
-`WithIndexIter`。
-
 两版共同契约包括：Transform 懒启动、buffer 限制未消费结果、并发结果不保证顺序、
-错误触发取消；FilterOut 谓词真表示丢弃；MapFilter 的 bool 真表示 skip；Join 当前子流错误后禁止后续拼接；下标只在成功产出后递增。Rust 的
-`combinator_test.rs` 对拍 Go 的并发、过滤、编号、失败、截断收集和 Transform 错误场景，`parity_test.rs::go_rust_public_contract_matches` 进一步覆盖全部公开组合器，
-`transform_backpressure_test.rs::transform_does_not_pull_past_unconsumed_buffer` 专门约束 buffer=2 时消费一个结果后最多发生三次上游拉取。
+错误触发取消；FilterOut 谓词真表示丢弃；MapFilter 的 bool 真表示 skip；Join 当前子流错误后禁止后续拼接；下标只在成功产出后递增。
 
 实现机制并非逐句相同：Go 使用 buffered `outstanding`/`results` channel、goroutine、
 `sync.WaitGroup` 和 `util.WorkerPool`；Rust 使用无界结果 channel、原子 outstanding、
@@ -160,19 +140,3 @@ RustCodeGraph 将目标文件收录为 24 个符号，并显示它被包括 `br/
   `restore/restorer.rs::WithSplit` 与 `restore/log_client/log_file_manager.rs::FilterDataFiles`，尤其不要颠倒 `FilterOut` 和 MapFilter 的布尔方向。
 - 下标类型当前对齐为 `i32`；若扩为更大类型，需要同步 `iter.rs::Indexed`、
   `WithIndexIter`、公开 API、Go 兼容性与序列化/调用点假设。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter
-  br/pkg/utils/iter` 确认目标、模块入口、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file br/pkg/utils/iter/combinator_types.rs`：核对文件全部
-  429 行及 24 个符号；`query` 精确定位 `TransformIter`、`FilterIter`、
-  `JoinIter`、`WithIndexIter`。
-- RustCodeGraph `node` 读取 `combinators.rs`，确认九个公开工厂到本文件类型的构造关系；读取 `iter.rs`，确认 `Context`、三态 `IterResult`、`TryNextor`、
-  `DoneBy` 与 `CollectAll` 契约。
-- 读取 `Cargo.toml` 与 `lib.rs`，确认 crate 名、无第三方依赖、模块注册、测试模块独立挂载及公开重导出。
-- 读取 Go `combinator_types.go` 与 `combinator_test.go`，确认移植类型、背压/取消流程和行为断言；读取 Rust `combinator_test.rs`、`parity_test.rs`、
-  `transform_backpressure_test.rs`，确认并发无序、错误传播、过滤方向、展平、编号和背压边界。
-- RustCodeGraph/源码检查生产调用点 `restore/restorer.rs::WithSplit` 与
-  `restore/log_client/log_file_manager.rs::FilterDataFiles`，确认这些组合器参与恢复流水线和日志文件筛选，而非仅供测试使用。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的命令验证目标文档存在且恰好具有上述 11 个固定二级章节，并人工检查未把预期设计写成当前事实。

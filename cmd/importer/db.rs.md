@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-cmd-importer` crate，由 [`cmd/importer/lib.rs`](lib.rs) 以 `pub mod db` 导出。它位于 DDL 解析结果与导入 worker 之间：[`cmd/importer/main.rs`](main.rs) 使用 `createDBs`、`execSQL`、`closeDBs` 管理连接和执行建表语句，[`cmd/importer/job.rs`](job.rs) 的 `doInsert` 使用 `genRowDatas` 为事务批次生成 INSERT。crate 在 [`cmd/importer/Cargo.toml`](Cargo.toml) 中声明为二进制工具，Rust 侧不依赖真实 MySQL 驱动，而由本地 `stubs.rs` 提供数据库抽象。
+第一组把 `parser::table` 及其列元数据转换成可直接执行的单行 INSERT：选择随机或递增取值，处理列级范围、候选集合和直方图，并按 MySQL 类型形成 SQL 字面量。
 
 ## 核心职责
 
@@ -53,8 +53,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 函数基本逐一对应 [`cmd/importer/db.go`](db.go) 的同名函数，并保留直方图/集合/随机值优先级、唯一索引强制递增、各整数类型边界、时间族引号、空 SQL no-op、批量连接创建及尽力关闭语义。[`cmd/importer/db_test.go`](db_test.go) 与 `db_test.rs` 对 `intToDecimalString` 使用相同十组输入输出。
-
 主要实现差异是连接层：Go `createDB` 构造 `go-sql-driver/mysql` connector 并返回 `*sql.DB`，Rust 当前调用本地 `stubs::open_db`，只生成可观测的内存 `DB`；因此 Rust 能验证调用顺序、错误传播和资源状态，但不能据此声称已验证真实 MySQL 网络/连接池行为。Rust 的 `pow10_i64` 对 `n >= 19` 直接返回 `i64::MAX`，以稳定替代 Go `math.Pow10` 到 `int64` 的溢出路径。Rust 生成列函数接收列下标而非列指针，越界边界也因此不同。
 
 ## 扩展指南
@@ -62,12 +60,3 @@ Rust 函数基本逐一对应 [`cmd/importer/db.go`](db.go) 的同名函数，�
 新增 MySQL 类型时应在 `genColumnData` 增加分支，并同步核对类型上下界、unsigned、递增/随机两条路径以及是否需要 SQL 引号；测试应放在独立的 `cmd/importer/db_test.rs` 或 crate 的 `parity_test.rs`，不要嵌入生产文件。修改取值规则时需同时检查 `parser.rs` 如何填充列元数据、`data.rs` 的递增器和 `rand.rs`/`stats.rs` 的随机与直方图语义。
 
 若替换真实数据库实现，应保持 `execSQL` 的空串约定、`createDBs` 返回数量、错误 trace 边界和 `closeDBs` 的尽力清理语义，并补独立集成测试验证连接失败、部分创建失败和关闭错误。调整并发前必须联动 `job::doProcess` 的单 worker 约束；否则唯一列和递增列可能重复或乱序。字符串生成若允许外部 `set` 任意内容，应在明确 Go 兼容策略后增加转义，而不能只在一个分支局部处理。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 7,032 个 Rust 文件；读取 `cmd/importer/db.rs` 全部 416 行并确认 15 个符号；查询显示目标文件内部调用链 `genRowDatas -> genRowData -> genColumnData`、`createDBs -> createDB`、`closeDBs -> closeDB`，以及 parity 测试对各入口的直接调用。
-- 运行链证据：`cmd/importer/main.rs::run_with_args` 调用 `createDBs`、两次 `execSQL`、`closeDBs`；`cmd/importer/job.rs::doInsert` 调用 `genRowDatas` 并在事务中执行结果。
-- crate 边界：`cmd/importer/lib.rs` 导出 `db` 并将 `db_test.rs` 作为独立测试模块；`cmd/importer/Cargo.toml` 声明 `astersql-cmd-importer` 的 lib/bin 入口和轻依赖策略。
-- 对照与测试：完整核对 `cmd/importer/db.go`、`cmd/importer/db_test.go`、`cmd/importer/db_test.rs`，并读取 `cmd/importer/parity_test.rs` 中正常、边界、错误和资源清理契约。
-- 资源实现：`cmd/importer/stubs.rs::DB::{Exec, Begin, Close}`、`Tx::{Exec, Commit}` 与 `open_db` 说明当前为带锁、可注入失败的内存数据库替身。
-- 本任务是纯文档分析，按计划未运行 Cargo；结构验证命令及退出状态在任务交付时记录。

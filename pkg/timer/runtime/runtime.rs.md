@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`runtime.rs` 是 `astersql-timer-runtime` crate 的分组定时器调度核心。crate 入口 `pkg/timer/runtime/lib.rs` 将本文件声明为 `runtime` 模块，并把同 crate 的 `cache.rs` 与 `worker.rs` 分别作为内存状态层和 Hook 执行层；`pkg/timer/runtime/Cargo.toml` 则表明它通过 `timer-api` 依赖定时器存储、条件、记录、Hook 与可取消上下文，并直接使用 `crossbeam-channel`、`chrono` 和 `uuid`。
-
-应用中的已接线入口位于 `pkg/session/runtime/ttl_runtime.rs:920-1010`：TTL Job Manager 创建表存储，以 TTL timer key 前缀设置 `TimerCond`，注册 `SqlTtlTimerHook` 工厂，调用 `NewTimerRuntimeBuilder(...).Build()` 后启动运行时。`DomainTtlTimerRuntime::drop`（同文件 `538-575`）停止运行时，并关闭存储与会话池。因此本文件不是通用进程入口，而是把某一 `groupID` 下、满足基础条件的一组 timer 驱动起来的可复用运行时。
+只负责调度和内存协调；具体的 schedule 计算与缓存排序在 `cache.rs`，存储接口和 Hook 契约在 `timer-api`，PreSched/落库/OnSched 流程在 `worker.rs:359` 起实现。
 
 ## 核心职责
 
@@ -93,8 +91,6 @@ RustCodeGraph 对 `loopOnce` 的调用边确认了 `fullRefreshTimersWithContext
 
 ## 与 Go 版本的对应关系
 
-直接对照 `pkg/timer/runtime/runtime.go`，Rust 保留了 builder、分组运行时、全量/增量刷新、触发优先级、Worker 懒创建、Watch 批处理/重连、等待关闭刷新、panic 恢复以及触发间隔上下界等核心语义。Rust 独立测试 `runtime_test.rs` 的测试主题也逐项对应 Go 的 `runtime_test.go`：启动停止、Worker 创建、触发/优先级、响应处理、刷新、Watch、端到端流程与 panic 恢复。
-
 主要实现差异如下：
 
 - Go 用 `select`、ticker/timer 和 WaitGroup 驱动事件循环；Rust 用 `Instant` 截止时间、crossbeam 非阻塞收发和 5ms sleep 轮询。目标行为相同，但唤醒与批处理时序不是逐指令等价。
@@ -116,12 +112,3 @@ RustCodeGraph 对 `loopOnce` 的调用边确认了 `fullRefreshTimersWithContext
 - 改造主循环为阻塞 select/更低频轮询：需要同时保留取消、全量刷新、WaitTriggerClose、Watch 批窗口、重订阅截止时间、Worker 响应后重算 nextTry、panic 恢复七类唤醒源。性能收益应与 Watch 积压和触发延迟一起基准验证。
 - 补齐 Go 可观测性：可在 `Counter` 或错误分支接入 crate 统一的 metrics/logging，但不得让观测失败改变 Store 错误时保留缓存、Worker 忙时退避等行为；同时核对 `Cargo.toml` 依赖与上层 dashboard/标签兼容性。
 - 若要支持 Stop 后 Restart，需同时重置 `RunState.ctx`、处理旧 Worker map/已取走的 JoinHandle 和响应 channel 中的陈旧消息；只放宽 `Start` 的判断会复用已退出 Worker，是不安全的。应新增独立生命周期回归测试后再改变契约。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/timer/runtime/runtime.rs` 返回该文件，`node --file ...` 显示 724 行、61 个符号，并标识直接使用方 `pkg/session/runtime/ttl_runtime.rs` 与 `pkg/timer/runtime/runtime_test.rs`。
-- RustCodeGraph 符号查询：`query TimerGroupRuntime --kind struct` 与 `query NewTimerRuntimeBuilder --kind function` 均定位到本文件；`query tryTriggerTimerEvents --kind function` 和 `query loopOnce --kind function` 定位核心流程。`callees runtime.rs::loopOnce` 确认刷新、触发、响应、Watch 与收尾调用边；`callees runtime.rs::tryTriggerTimerEvents` 确认时钟、Worker、上下文与请求构造关系。工具对同名 `runtime.rs` 会返回额外候选，本文只采用路径明确为 `pkg/timer/runtime/runtime.rs` 的边。
-- 已读生产路径：`pkg/timer/runtime/runtime.rs` 全文；`pkg/timer/runtime/lib.rs`；`pkg/timer/runtime/Cargo.toml`；直接下游 `pkg/timer/runtime/cache.rs:140-340`、`pkg/timer/runtime/worker.rs:40-125,180-380`；直接上游 `pkg/session/runtime/ttl_runtime.rs:520-575,920-1069`。
-- Go 对照：`pkg/timer/runtime/runtime.go` 全文，并核对 `pkg/timer/runtime/runtime_test.go` 的测试清单（13 个 `Test*`，覆盖生命周期、触发、刷新、Watch、完整流程和 panic 恢复）。
-- Rust 测试：`pkg/timer/runtime/runtime_test.rs` 全文，共 14 个 `#[test]`，除与 Go 测试主题对应外，还覆盖 Watch 手动触发及时性。关键边界证据包括 Store List 失败保留缓存、busy Worker 延迟重试、nextTry 上下界、Watch 断线 5s 重连、panic 重试可被 Stop 立即取消。
-- 本任务是纯文档分析，按计划未运行 Cargo，也未把测试逻辑嵌入生产源文件。交付前运行任务指定的 11 章节结构命令，并人工复核所有路径、符号与行为陈述均可由上述源码或测试反查。

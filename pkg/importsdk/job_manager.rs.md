@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-importsdk` crate（见 `pkg/importsdk/Cargo.toml`），实现异步导入作业的提交、状态查询、取消和按组查询。crate 入口 `pkg/importsdk/lib.rs` 将 `job_manager` 的公开项重新导出；统一门面 `ImportSDK` 在 `NewImportSDK` 中创建 `JobManagerImpl`，并在其 `JobManager` 实现中逐项委托。因此，本文件位于“生成 `IMPORT INTO` SQL”之后、数据库执行 `IMPORT`/`SHOW IMPORT`/`CANCEL IMPORT` 语句之前，是 SDK 与 SQL 数据库连接之间的作业生命周期适配层。
-
-生产调用链的直接证据包括：`lightning/pkg/importinto/job_submitter.rs` 调用 `SDK::SubmitJob`；`job_monitor.rs` 与 `job_orchestrator.rs` 调用 `GetJobsByGroup`；`job_orchestrator.rs` 还调用 `CancelJob`。这些调用通常先经过 `pkg/importsdk/sdk.rs` 中 `ImportSDK` 的委托实现，再进入本文件。
+用 `JobManager` trait 定义提交、单作业查询、取消、分组摘要和组内作业列表五类操作，并提供保留 Go 双返回值形状的 `*Parts` 默认适配方法。
 
 ## 核心职责
 
@@ -81,13 +79,13 @@ RustCodeGraph 将本文件标为被 22 个文件使用，并能定位上述公�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/importsdk/job_manager.go`，五个公开操作、SQL 文本、空组键校验、单引号加倍、21/9 列扫描顺序和时间布局保持一致。Rust 用 `JobDatabase`/`JobRows` 替代 Go 的 `*sql.DB`/`*sql.Rows`，用 `SQLValue` 显式表达扫描后的值类型；`Arc<dyn JobDatabase>` 对应可共享的数据库句柄。
+Rust 用 `JobDatabase`/`JobRows` 替代 Go 的 `*sql.DB`/`*sql.Rows`，用 `SQLValue` 显式表达扫描后的值类型；`Arc<dyn JobDatabase>` 对应可共享的数据库句柄。
 
 Rust `Result<T, SharedError>` 对应 Go 的 `(T, error)`；trait 上的 `*Parts` 方法专门保留双返回值观察方式。Go 返回 `*JobStatus`、`*GroupStatus` 和 `[]*JobStatus`，Rust 返回拥有所有权的值和 `Vec<JobStatus>`。
 
 Rust 额外显式检查结果列数和类型，避免依赖驱动的 `rows.Scan` 报错；时间回退通过 `zeroTime` 精确采用公历一年，弥合 chrono 最小值与 Go 零值的差异。一个实现层面的差异是 Rust 的 `JobRows::Next` 直接返回行或读取错误，因此没有 Go 独立的 `rows.Err()` 收尾步骤；错误由每次 `Next` 直接传播。
 
-对应测试为 `pkg/importsdk/job_manager_test.go` 与独立 Rust 文件 `pkg/importsdk/job_manager_test.rs`。Rust 测试用 `CanonicalDatabase`/`CanonicalRows` 替代 `sqlmock`，逐项保留成功、空结果和错误分支，并增加 SQL 文本、组键引号转义和零时间断言。
+Rust 测试用 `CanonicalDatabase`/`CanonicalRows` 替代 `sqlmock`，逐项保留成功、空结果和错误分支，并增加 SQL 文本、组键引号转义和零时间断言。
 
 ## 扩展指南
 
@@ -97,13 +95,3 @@ Rust 额外显式检查结果列数和类型，避免依赖驱动的 `rows.Scan`
 - 拼接新的字符串条件时至少采用与组键相同的 SQL 字面量转义；若条件变复杂，优先在 `JobDatabase` 边界引入参数绑定能力，而不是继续手写不完整的转义。
 - 若希望区分 NULL、非法时间和真实零值，应先把模型字段改为可表达这些状态的类型，并同步 Go 兼容契约和所有上层消费者；这不是局部解码器改动。
 - 性能风险主要在高频轮询和大组结果：当前每次调用都访问数据库，`GetJobsByGroup` 会一次性收集全部行。引入分页、流式处理或缓存时需同时考虑调用者的顺序/完整性假设和并发失效策略。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 `pkg/importsdk/job_manager.rs`；`files --filter pkg/importsdk` 确认同目录 Rust/Go/测试文件；`node --file pkg/importsdk/job_manager.rs` 阅读全部 376 行；`query JobManager`、`query NewJobManager`、`query SubmitJob` 核对主要符号。`callers` 查询发生超时，调用边以源码和 `rg` 交叉验证。
-- 生产源码：`pkg/importsdk/job_manager.rs`、`pkg/importsdk/lib.rs`、`pkg/importsdk/sdk.rs`、`pkg/importsdk/model.rs`、`pkg/importsdk/error.rs`。
-- crate 边界：`pkg/importsdk/Cargo.toml`，确认 crate 名、入口、移植元数据及 `astersql-errors`、`chrono` 等依赖。
-- Go 对照：`pkg/importsdk/job_manager.go`；Go 独立测试：`pkg/importsdk/job_manager_test.go`。
-- Rust 独立测试：`pkg/importsdk/job_manager_test.rs`，覆盖五类操作、底层错误、空结果、SQL 生成、转义和零时间。
-- 上游调用搜索：`pkg/importsdk/sdk.rs`、`lightning/pkg/importinto/job_submitter.rs`、`lightning/pkg/importinto/job_monitor.rs`、`lightning/pkg/importinto/job_orchestrator.rs`。
-- 本任务是纯文档分析，按任务约束不运行 Cargo；交付只执行标题数量和文件存在性的结构验证，并人工复核本页能回答文件定位、运行流程和安全扩展方式。

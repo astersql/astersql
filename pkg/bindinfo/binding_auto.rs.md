@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-bindinfo` crate（见 `pkg/bindinfo/Cargo.toml`），实现 SQL 绑定子系统中的“候选计划探索与推荐”编排层。crate 根 `pkg/bindinfo/lib.rs` 将 `binding_auto` 声明为私有模块并重新导出其公开项，因此外部调用者看到的是 `BindingPlanEvolution`、`ExploreContext`、`BindingPlanInfo`、`PlanRuntime`、`newBindingAuto` 和 `IsSimplePointPlan`，而不是模块路径本身。
-
-它不直接解析 SQL、访问绑定系统表、调用优化器或执行查询；这些环境相关操作被压缩到 `PlanRuntime` trait。默认对象由 `pkg/bindinfo/binding_handle.rs` 的 `NewBindingHandle` 调用 `newBindingAuto` 组装，并作为 `bindingHandle.BindingPlanEvolution` 暴露。RustCodeGraph 给出的直接上游边是 `NewBindingHandle → newBindingAuto`，目前对 `ExplorePlansForSQL` 的已索引 Rust 调用者主要是同目录独立测试；这意味着运行时的完整 SQL 语句接线仍取决于更上层对 `BindingPlanEvolution` trait 对象的使用，不能仅凭本文件断言已经覆盖 Go 的 `EXPLAIN EXPLORE` 执行链。
+用 `BindingPlanEvolution::ExplorePlansForSQL` 定义并实现一次探索的总流程：取历史候选、生成新候选、可选试跑新候选、合并候选并推荐一个计划。
 
 ## 核心职责
 
@@ -90,17 +88,12 @@ Rust 标准库层面只直接依赖 `std::sync::Arc`。本文件引用的其余�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/bindinfo/binding_auto.go`，总体骨架一致：`BindingPlanInfo`、`BindingPlanEvolution`、`bindingAuto`、`newBindingAuto`、`ExplorePlansForSQL`、`runToGetExecInfo`、`getBindingPlanInfo`、`fillRecommendation`、`getPlanExecInfo`、`planExecInfo` 和 `IsSimplePointPlan` 均有对应物。两版都先取历史候选、再生成候选；analyze 只试跑生成候选；推荐先规则后 LLM；简单点查白名单及空计划为 false 的语义一致。
-
 关键迁移差异如下：
 
 - Go 直接持有 `DestroyableSessionPool`，在本文件中解析/规范化 SQL、读系统表、查询 statements stats、切换并恢复会话变量及执行绑定；Rust 把这些能力全部委托给 `PlanRuntime`。所以 Rust 的正确性取决于适配器是否复现 Go 的 SQL/digest 判别、默认库规范化、统计表选择和会话恢复。
-- Go 遇到缺失 `PlanDigest` 会调用优化器补算；补算或统计查询失败时记录日志并跳过该绑定。Rust 对缺摘要保留候选但不查统计，其他运行时错误整体向上传播。
 - Go 的 analyze 执行临时关闭 plan baselines，并用 defer 恢复当前库和开关；Rust 本文件没有可见的等价操作，它属于 `execute_binding` 实现必须承担的契约风险。
 - Go 在生产路径直接从会话收集耗时、扫描键和返回行；Rust 由运行时返回 `PlanExecInfo` 后统一换算。
 - Go 用数组直接索引预测器输出，默认要求等长；Rust 对缺项更防御，但仍没有显式验证长度。
-
-`pkg/bindinfo/binding_auto_test.rs` 说明迁移状态不是“所有 Go 集成测试均已原生 Rust 化”：文件前半保留了一大段不执行的 Go 测试草稿，实际可执行测试包括简单点查冒烟测试、`analyze_executes_only_generated_candidates_like_go` 和 `non_positive_historical_exec_count_leaves_candidate_stats_empty_like_go`。Go 的 `binding_auto_test.go` 仍提供更完整的 `EXPLAIN EXPLORE`、提示生成、analyze、verify-and-bind 和多种计划文本边界证据。
 
 ## 扩展指南
 
@@ -111,13 +104,3 @@ Rust 标准库层面只直接依赖 `std::sync::Arc`。本文件引用的其余�
 - 修改执行统计时集中调整 `PlanExecInfo` 与 `apply_exec_info`，覆盖 `ExecCount <= 0`、`ResultRows == 0`、大整数转 `f64` 的精度及运行时返回异常值；同步检查规则预测器的排序和 50% 阈值。
 - 若补齐完整应用接线，需要从 `bindingHandle.BindingPlanEvolution` 的上层语句执行入口建立并验证调用边；当前索引只证明构造接线和测试调用，不能把 Go 的 `EXPLAIN EXPLORE` 端到端覆盖视为 Rust 已验证事实。
 - 兼容风险主要在 Go/Rust 的错误粒度、缺摘要处理和会话状态恢复；性能风险主要在 analyze 串行执行全部无统计新候选、候选搜索规模及同步预测延迟。
-
-## 验证依据
-
-- 源码：`pkg/bindinfo/binding_auto.rs`（328 行），逐项核对全部结构体、trait、函数、impl、别名及无条件编译事实。
-- crate 与装配：`pkg/bindinfo/Cargo.toml`、`pkg/bindinfo/lib.rs`、`pkg/bindinfo/binding_handle.rs`。
-- 直接下游：`pkg/bindinfo/binding_plan_generation.rs`、`pkg/bindinfo/binding_plan_evolution.rs`。
-- Rust 独立测试：`pkg/bindinfo/binding_auto_test.rs`；可执行用例验证简单点查正反例、analyze 只执行生成候选、非正历史执行次数保持空统计。该文件也明确标注其大部分 Go 迁移草稿不参与编译。
-- Go 对照与测试：`pkg/bindinfo/binding_auto.go`、`pkg/bindinfo/binding_auto_test.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/bindinfo/binding_auto.rs` 列出完整源码及 5 个使用文件；`query/node` 核对了 `ExplorePlansForSQL`、`newBindingAuto`、`IsSimplePointPlan`、`fillRecommendation`、`runToGetExecInfo`、`getBindingPlanInfo`。关键图边包括 `NewBindingHandle → newBindingAuto`、`ExplorePlansForSQL → getBindingPlanInfo/runToGetExecInfo/Generate`、`runToGetExecInfo → execute_binding/apply_exec_info`，以及两个可执行测试对 `ExplorePlansForSQL` 的调用。
-- 验证限制：本任务按计划不运行 Cargo；因此这里只验证源码结构、图索引、Go 对照和现有测试意图，不声称运行时适配器或 `EXPLAIN EXPLORE` 端到端行为已在本任务中执行。仓库说明提到的 `.agents/skills/tidb-verify-profile` 在当前工作区不存在，无法额外执行其 Ready 配置；任务文件指定的精确结构验证作为交付门槛。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl-ingest` crate，由 [`pkg/ddl/ingest/lib.rs`](lib.rs) 以公开模块 `message` 暴露。它位于 DDL 加索引的 ingest（本地排序、写引擎后批量导入）子系统，但自身不执行 DDL 状态迁移、回填、写盘或导入；它只集中定义日志/错误文案，以及把内存分配失败现场转换成结构化快照。
-
-crate 边界由 [`pkg/ddl/ingest/Cargo.toml`](Cargo.toml) 确定，Go 包映射为 `pkg/ddl/ingest`。本文件的唯一直接 Rust 模块依赖是 [`crate::mem_root::MemRoot`](mem_root.rs)，不直接使用 Cargo 中列出的外部依赖。
+位于 DDL 加索引的 ingest（本地排序、写引擎后批量导入）子系统，但自身不执行 DDL 状态迁移、回填、写盘或导入；它只集中定义日志/错误文案，以及把内存分配失败现场转换成结构化快照。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ Go 对照链更完整：[`engine_mgr.go`](engine_mgr.go) 的引擎配额检查�
 
 [`message.go`](message.go) 是直接语义对照文件：33 个 Rust 常量与 Go 常量的文本逐项一致，且 [`message_test.rs`](message_test.rs) 对每一项固定文本做了断言。
 
-`engine_alloc_memory_failed` 对应 Go `genEngineAllocMemFailedErr` 的诊断字段：job ID、多个 index ID、当前内存用量和最大配额。`writer_alloc_memory_failed` 对应 `genWriterAllocMemFailedErr`，区别是单个 index ID 被 Rust 统一存入 `Vec<i64>`。
-
 关键差异是 Go 函数有两项副作用/结果：通过上下文 logger 写 warning，并返回统一的 `ErrIngestFailed("memory used up")`；Rust 函数只返回结构化数据，不写日志、不返回标准错误。Go 调用点已接入引擎和 writer 的真实配额拒绝分支，而 Rust 侧目前只在测试中使用。因此迁移状态应表述为“文案和失败现场数据已移植，生产错误传播与调用接线未验证/未检出”，不能视为完整等价。
 
 ## 扩展指南
@@ -85,13 +81,3 @@ Go 对照链更完整：[`engine_mgr.go`](engine_mgr.go) 的引擎配额检查�
 - 若实现 `Display`/`Error` 或转换到数据库错误，需保留 job/index/配额诊断信息，同时验证外部可见错误是否必须与 Go 的 `ErrIngestFailed("memory used up")` 兼容。
 - 若要求严格一致的用量/配额快照，应扩展 `MemRoot` 提供单次一致读取，而不是假设现有两个 getter 原子组合；这会影响 trait、实现及 [`mem_root_test.rs`](mem_root_test.rs)，需要单独评估并发和兼容风险。
 - 性能上，engine 构造函数的主要额外成本是复制索引 ID；通常索引数较小，但高频错误路径或超大切片场景仍应避免不必要重复构造。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ddl/ingest` 覆盖 `message.rs`、`message_test.rs`、`mem_root.rs` 及 Go 对照；`explore "pkg/ddl/ingest/message.rs ..."` 返回目标文件全貌；`query IngestMemoryError` 定位结构与两个构造函数；两个函数的 `callers`/`callees` 查询未给出生产调用边。
-- 源码：[`message.rs`](message.rs) 核对 33 个常量、结构字段和两个函数；[`mem_root.rs`](mem_root.rs) 核对 trait 读取方法、`Send + Sync` 约束及默认互斥锁实现；[`lib.rs`](lib.rs) 核对公开模块和独立测试模块。
-- crate 配置：[`Cargo.toml`](Cargo.toml) 核对 crate 名、入口、Go 包映射和依赖边界。
-- Go 对照：[`message.go`](message.go) 核对文案、日志字段和数据库错误；[`engine_mgr.go`](engine_mgr.go) 与 [`engine.go`](engine.go) 核对 Go 生产调用点。
-- 测试：[`message_test.rs`](message_test.rs) 验证全部常量，以及配额 1,024、当前用量 256 时 engine/writer 快照的消息、job/index ID 和用量字段。
-- 仓库搜索：`rg` 仅发现 Rust 构造函数在 `message_test.rs` 被调用，未发现其他 Rust 常量消费者；这支持“Rust 生产接线未检出”的限定结论。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行固定十一章节的结构验证，并人工复查上述结论均指向源码、索引、配置或测试证据。

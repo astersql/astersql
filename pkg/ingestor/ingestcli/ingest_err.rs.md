@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ingest_err.rs` 属于 `astersql-ingestor-ingestcli` crate。crate 根 `pkg/ingestor/ingestcli/lib.rs` 将它声明为私有模块 `ingest_err`，再用 `pub use ingest_err::*` 重导出公开类型和函数。`pkg/ingestor/ingestcli/Cargo.toml` 的 `package.metadata.porting.go-package` 指向同路径 Go 包，说明这里是 `pkg/ingestor/ingestcli/ingest_err.go` 的 Rust 移植面。
-
-该 crate 位于 SST 导入链的 TiKV HTTP 客户端边界。包契约 `pkg/ingestor/doc.go` 把 `pkg/ingestor` 定义为直接向底层存储导入 SST 并协助排序、Region 切分/散射及 import mode 准备的组件；具体到本文件，它不发送请求，而负责把“HTTP 传输已经完成、TiKV 响应体却携带 Region 逻辑错误”的结果解码并归类。当前 Rust 生产入口是 `pkg/ingestor/ingestcli/client.rs::ClientImpl::ingest`：非 200 响应先调用 `decode_error_pb`，再调用 `NewIngestAPIError`，最后包装成 `client::Error::IngestApi`。
+包契约 `pkg/ingestor/doc.go` 把 `pkg/ingestor` 定义为直接向底层存储导入 SST 并协助排序、Region 切分/散射及 import mode 准备的组件；具体到本文件，它不发送请求，而负责把“HTTP 传输已经完成、TiKV 响应体却携带 Region 逻辑错误”的结果解码并归类。
 
 ## 核心职责
 
@@ -82,13 +80,11 @@ protobuf 边界由 `fields` 统一约束：field number 不能为 0 或大于 `i
 
 ## 与 Go 版本的对应关系
 
-Rust `IngestAPIError` 对应 Go 同名结构，`err/new_region` 对应 `Err/NewRegion`；Rust `Display`、`Cause`、`Unwrap` 分别覆盖 Go `Error`、`Cause`、`Unwrap` 的可观察语义。Rust 用 `CategorizedError` 显式保存类别和 detail，以 RFC code 实现 Go `errors.Is` 所依赖的类别身份。
+Rust 用 `CategorizedError` 显式保存类别和 detail，以 RFC code 实现 Go `errors.Is` 所依赖的类别身份。
 
-Rust `NewIngestAPIError` 的分类顺序与 `ingest_err.go` 的 `switch` 一致，`getIngestFailedMsg` 的 15 个变体顺序和三种拼接结果也与 Go 一致。独立的 Rust 测试 `test_convert_pb_error_to_error`、`test_get_ingest_failed_msg` 与 Go 的 `TestConvertPBError2Error`、`TestGetIngestFailedMsg` 对齐；Rust 另有 EpochNotMatch 回调和畸形 protobuf 边界测试。
+差异主要在输入与接线：Go 直接接收生成的 `*errorpb.Error`，Rust 为避免依赖完整 protobuf 类型而在本文件手写 wire 子集解码。Go `pkg/ingestor/ingestctrl/region_job.go` 的生产调用会传 `extractRegionFromErr` 风格闭包；当前 Rust `client.rs` 调用传 `None`，而 Rust ingestctrl 文件中只检索到测试注释，没有等价生产调用边。
 
-差异主要在输入与接线：Go 直接接收生成的 `*errorpb.Error`，Rust 为避免依赖完整 protobuf 类型而在本文件手写 wire 子集解码。Go `pkg/ingestor/ingestctrl/region_job.go` 的生产调用会传 `extractRegionFromErr` 风格闭包；当前 Rust `client.rs` 调用传 `None`，而 Rust ingestctrl 文件中只检索到测试注释，没有等价生产调用边。因此“能够通过回调产生 `new_region`”已由 Rust 单测证明，但“当前 Rust 生产 ingest 主链会产生 `new_region`”并不成立。
-
-Go `TestIngestAPIErrorRetryable` 还通过 `pkg/lightning/common.IsRetryableError` 验证 `ErrKVIngestFailed` 可重试、`ErrKVDiskFull` 不可重试。Rust `test_ingest_api_error_categories_are_distinct` 只验证两者 RFC code 不同，并明确说明 ingestcli crate 不依赖该上层分类器；不能把这个局部测试描述为完整重试策略集成测试。
+Rust `test_ingest_api_error_categories_are_distinct` 只验证两者 RFC code 不同，并明确说明 ingestcli crate 不依赖该上层分类器；不能把这个局部测试描述为完整重试策略集成测试。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@ Go `TestIngestAPIErrorRetryable` 还通过 `pkg/lightning/common.IsRetryableErro
 5. 若把 Region 提取接入 Rust 生产链，需要修改实际调用方而非只改本文件，并验证 EpochNotMatch 后续阶段消费 `new_region` 的行为；当前 `client.rs` 固定传 `None` 是明确的迁移限制。
 
 兼容风险包括 RFC code 或分类顺序变化、protobuf field number/wire type 不匹配、raft dropped 文案变化及错误 detail 格式变化。性能风险集中在大错误体的多层 `Vec` 和内容克隆；并发风险当前不存在，但若未来保存回调或异步执行，必须重新定义闭包的所有权与 `Send`/`Sync` 边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/ingestor/ingestcli` 确认目标、调用方和独立测试均已索引；`node --file` 完整读取 `ingest_err.rs`（1—373）、`client.rs` 的错误类型与 ingest 路径（1—130、525—604）、`interface.rs` 的 Region 类型（20—174）和 `ingest_err_test.rs`（1—337）。
-- RustCodeGraph 符号查询：确认 `NewIngestAPIError` 位于 `ingest_err.rs:120`、`getIngestFailedMsg` 位于 `:165`、`decode_error_pb` 位于 `:207`；目标文件共 22 个索引符号。精确 `callers/callees` 命令在本地索引上连续超时，因此调用边进一步用目标目录及 `pkg/ingestor` 的精确 `rg` 检索复核，没有以同名 `Error` 的宽泛图结果代替证据。
-- Rust/Cargo 证据：`pkg/ingestor/ingestcli/Cargo.toml`、`lib.rs`、`client.rs`、`interface.rs`、`ingest_err.rs`、`ingest_err_test.rs`。
-- Go 对照证据：`pkg/ingestor/doc.go`、`pkg/ingestor/ingestcli/ingest_err.go`、`ingest_err_test.go`、`client.go`，以及用于确认 Go 上层 Region 回调接线的 `pkg/ingestor/ingestctrl/region_job.go`。
-- 人工复核结论：本文区分了解码、分类与上层重试决策，标出了当前 Rust 生产调用只传 `None` 的限制，没有把测试能力或 Go 接线写成 Rust 已接线事实，也没有建议把测试内嵌回生产文件。
-

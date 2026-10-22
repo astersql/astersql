@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的会话运行时层，由 `pkg/session/runtime.rs` 以公开模块 `crossks_store` 装配。它是跨 keyspace 运行时与 TiKV 驱动之间的资源适配层：为目标 keyspace 单独打开一个 `TikvStore`，再把它包装成 `astersql_domain_crossks::Store`，供 `pkg/session/runtime/crossks_runtime.rs` 创建目标 keyspace 的 Domain、会话池和 DDL 后端。
-
-当前生产调用链是 `CrossKSProductionRuntimeFactory::new` 构造 `store_opener` 闭包，`CrossKSProductionRuntimeFactory::create_runtime` 调用该闭包并取得 `Arc<CrossKSStore>`。仓库内对 `CrossKSProductionRuntimeFactory` 的直接使用目前只见于 `pkg/session/runtime/crossks_runtime_test.rs`；因此这条生产实现已经具备完整装配逻辑，但其仓库内可见接线主要由测试覆盖，不能据此宣称所有服务启动路径都使用它。
+`Store` trait 实现定义关闭语义：调用底层 `TikvStore::Close`，并声明该包装器拥有独立打开的客户端，运行时关闭时应一并关闭，即使目标名为 `SYSTEM`。
 
 ## 核心职责
 
@@ -81,11 +79,8 @@ RustCodeGraph 能定位 `CrossKSStore` 和四个打开函数，但当前索引�
 
 ## 与 Go 版本的对应关系
 
-Go 主链在 `pkg/domain/crossks/cross_ks.go`：`Manager.createSessionManager` 调用 `getOrCreateStore`；非 SYSTEM keyspace 进入 `pkg/store/store.go::InitStorage`，以 `?keyspaceName=<name>` 构造 Store URL；SYSTEM 则复用 `kvstore.GetSystemStorage()`。若后续创建失败，Go 用 defer 关闭新取得的 Store；`SessionManager.close` 负责正常资源回收。
-
 Rust 文件保留了 Go 的核心语义：以目标 keyspace 打开 TiKV API V2 Store、将其用于独立运行时、在装配失败和生命周期结束时关闭，并由 Driver 使用包含 keyspace 的缓存身份。Rust 版本存在三点明确差异：
 
-1. `open_target_store_with_tls` 显式传递 serving Store 捕获的 TLS 文件，避免重新读取可能已变化的全局默认值；Go 的 `InitStorage` 从当前全局配置构造并打开 Store。
 2. Rust 使用 `form_urlencoded::Serializer` 编码 keyspace；Go `InitStorage` 当前通过 `fmt.Sprintf` 直接插入 `keyspaceName`。
 3. Rust 的 `CrossKSStore` 总是由目标运行时拥有，`close_on_runtime_shutdown()` 对 SYSTEM 也返回 `true`；Go 的 `getOrCreateStore` 对 SYSTEM 复用全局 Store。Rust trait 的默认实现仍保留“不关闭共享 SYSTEM Store”的 Go 语义，只有该独立打开适配器覆盖它。
 
@@ -99,15 +94,3 @@ Rust 文件保留了 Go 的核心语义：以目标 keyspace 打开 TiKV API V2 
 - 若增加 TLS 行为，应测试 `None`、完整三元组、空字符串以及证书/私钥不匹配，并验证错误仍带目标 keyspace 上下文。测试逻辑继续放在独立的 `pkg/session/runtime/crossks_store_test.rs`，不要内嵌回生产源文件。
 - 若引入自动析构或异步关闭，需要明确与 `TikvStore::Close` 的幂等性、锁顺序、后台任务停止顺序及错误可观察性的关系；当前显式关闭允许上层控制“先停使用者，后关 Store”的不变量。
 - 性能风险集中在每个目标 keyspace 的独立 PD/TiKV 客户端及相关后台资源；新增重试或缓存时必须保持 keyspace 隔离，避免跨租户复用错误身份或重复创建连接。
-
-## 验证依据
-
-- 目标实现：`pkg/session/runtime/crossks_store.rs`，核对 `CrossKSStore`、`Store` trait 实现及四个打开函数的完整源码。
-- 模块与 crate：`pkg/session/runtime.rs`、`pkg/session/Cargo.toml`，核对公开模块、独立测试模块、`astersql-domain-crossks`、`astersql-store-driver` 与 `url` 依赖。
-- 直接上游：`pkg/session/runtime/crossks_runtime.rs`，核对 `store_opener`、`create_runtime`、`inner()` 使用、成功交接与失败清理。
-- trait 与关闭顺序：`pkg/domain/crossks/cross_ks.rs`，核对 `Store` 默认 SYSTEM 策略和 `SessionManager::close` 的幂等关闭顺序。
-- Driver 行为：`pkg/store/driver/tikv_driver.rs`，核对 `parse_path`、`WithSecurity`、API V2 keyspace 配置、缓存身份、内部共享状态与 `Close`。
-- Rust 测试：`pkg/session/runtime/crossks_store_test.rs` 验证不同 keyspace 身份、独立关闭及 shutdown 所有权；`pkg/session/runtime/crossks_runtime_test.rs` 提供忽略的真实 TiKV 使用路径和 Store 打开失败清理证据。
-- Go 对照：`pkg/domain/crossks/cross_ks.go::createSessionManager/getOrCreateStore`、`pkg/store/store.go::InitStorage`、`pkg/store/driver/tikv_driver.go`，核对目标 Store 创建、SYSTEM 复用、API V2 与错误清理语义。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`query` 精确定位 `crossks_store.rs::CrossKSStore`、`open_target_store`、`open_target_store_with_tls`、`open_target_store_with_driver`、`open_target_store_with_driver_and_tls`。这些符号的 callers/callees 查询返回空，调用边改由上述精确源码搜索验证。
-- 本任务为纯文档分析，未运行 Cargo；交付前使用任务指定命令验证文档存在且恰好包含 11 个固定二级标题，并人工复查没有把未接线范围或未覆盖测试写成已支持事实。

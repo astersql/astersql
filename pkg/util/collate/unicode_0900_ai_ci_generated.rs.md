@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-collate` crate 中 Unicode 9.0.0、accent-insensitive/case-insensitive（`utf8mb4_0900_ai_ci`）排序器的生成代码移植。crate 入口 `pkg/util/collate/lib.rs` 将它声明为 `unicode_0900_ai_ci_generated` 模块并公开重导出；`pkg/util/collate/Cargo.toml` 的默认特性包含 `full_collate`，因此 `pkg/util/collate/collate.rs::group2_collator` 在默认构建中可按名称构造 `unicode0900AICICollator`。该文件负责通用 `Collator` 接口与 Unicode 9.0.0 权重实现之间的高频、可内联适配；具体字符到权重的映射和通配符匹配器位于 `unicode_0900_ai_ci_impl.rs`，权重数据位于 `ucadata` 子 crate/模块。
-
-源码声明其由 `util/collate/ucaimpl` 生成，原因是避免在 `GetWeight`、`Preprocess` 的热循环上引入额外多态分派。Rust 文件当前同时保留 PingCAP Apache License 和 `// Copyright 2026 AsterSQL.` 标记；维护时应把它视为生成产物，而不是独立手改的算法源。
+`Pattern` 不在生成层重复实现 LIKE 逻辑，而是委托 `unicode0900Impl::Pattern` 创建按相同两段权重判断字符等价的匹配器。
 
 ## 核心职责
 
@@ -79,15 +77,13 @@ API 不返回 `Result`。合法 `&str` 路径不能产生 UTF-8 解码错误；`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/unicode_0900_ai_ci_generated.go`。结构体、`Clone`、`Compare`、`Key`、`ImmutableKey`、`KeyWithoutTrimRightSpace`、`Pattern`、`MaxKeyLen` 以及两段权重循环均逐项对应。Go 的 `unicode_0900_ai_ci_impl.go` 对应 Rust 的 `unicode_0900_ai_ci_impl.rs`，两者都把预处理定义为 no-op，并使用同一 DUCET 0900 权重策略。
+Go 的 `unicode_0900_ai_ci_impl.go` 对应 Rust 的 `unicode_0900_ai_ci_impl.rs`，两者都把预处理定义为 no-op，并使用同一 DUCET 0900 权重策略。
 
 需要明确的语言边界差异有三项：
 
 1. Go `string` 可携带任意字节，生成代码直接调用 `utf8.DecodeRuneInString`；Rust 的常规 API 使用合法 `&str`，另增 `CompareBytes`/`KeyBytes` 承接 Go 的原始字节语义。
 2. Go `ImmutableKey`/`Key` 返回 `[]byte`，Rust 两者都返回新拥有的 `Vec<u8>`；当前并不存在只读借用或共享缓冲优化。
 3. Go 以 `int` 做差和 rune 计数，Rust 用 `i64` 中间差值、`usize` 固有上界并在 trait 边界转 `i32`；正常 Unicode 权重与可分配字符串范围内结果一致。
-
-`ucaimpl/migration_aster_unit_test.rs::generates_unicode_0900_source_identical_to_go_generator` 验证 Rust 生成器产生的 Go 文件与仓库 Go 参考产物全文一致；它验证的是生成模板的 Go 输出，不表示 Rust 文件本身由测试逐字生成。行为对照还由 Rust `general_ci_2_aster_unit_test.rs`、`collate_test.rs` 与 Go `collate_test.go` 共同覆盖。
 
 ## 扩展指南
 
@@ -96,12 +92,3 @@ API 不返回 `Result`。合法 `&str` 路径不能产生 UTF-8 解码错误；`
 任何权重布局变化都必须同时保持三个不变量：`Compare` 的首个差异顺序与 key 的字典序一致；最多两段 `u64` 时 `MaxKeyLen == rune_count * 16` 仍是安全上界；`LongRune8` 的表项与长权重映射完整一致。若增加第三段权重，当前四槽状态机、两个 key 展开循环和最大长度公式都必须一起修改，不能只扩数据表。
 
 测试必须放在独立文件而非生产 `.rs` 内。优先扩展 `general_ci_2_aster_unit_test.rs` 验证具体 Unicode 等价类、尾空格、key 和 pattern；扩展 `collate_test.rs` 验证工厂/ID、trait object 与无效字节；权重表边界放入 `ucadata/unicode_0900_ai_ci_data_test.rs`；生成模板变化同步扩展 `ucaimpl/migration_aster_unit_test.rs`；性能形态变化用 `collate_bench_test.rs` 与 Go 基准对照。兼容风险集中在索引 key 字节变化（可能要求重建索引）、排序/唯一性语义变化和 LIKE 等价关系变化；性能风险集中在破坏内联、增加每字符分配或查表次数。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件且目标目录已索引；`files --filter pkg/util/collate` 确认目标及其 impl、测试、生成器文件；`node --file ... --offset 1 --limit 500` 读取目标完整 275 行；`query unicode0900AICICollator --json` 定位 Rust/Go 同名结构体；`node unicode_0900_ai_ci_generated.rs::unicode0900AICICollator` 确认结构体定义与 `Clone` 实例化边。通用名称的 `explore` 结果噪声较大，固有方法也未形成精确节点，因此调用边另由下列源码搜索核验。
-- 生产源码：`pkg/util/collate/unicode_0900_ai_ci_generated.rs`（全部符号与算法）、`unicode_0900_ai_ci_impl.rs`（预处理、查权重、pattern）、`collate.rs`（trait、名称工厂与 feature 门控）、`lib.rs`（模块边界和重导出）、`ucadata/unicode_0900_ai_ci_data_generated.rs`（实际表来源，通过 impl 间接引用）。
-- crate 配置：`pkg/util/collate/Cargo.toml`，确认 crate 名、`lib.rs` 入口、默认 `full_collate` 特性、依赖与 Go package 元数据。
-- Go 对照：`pkg/util/collate/unicode_0900_ai_ci_generated.go`、`unicode_0900_ai_ci_impl.go`、`collate.go`，确认生成算法、权重委托和工厂注册。
-- 独立测试：`general_ci_2_aster_unit_test.rs::unicode_0900_matches_go_weights_without_space_preprocessing`，`collate_test.rs::test_get_collator` 与 `test_campare_invalid_utf8_rune`，`ucaimpl/migration_aster_unit_test.rs::generates_unicode_0900_source_identical_to_go_generator`；Go 侧对照为 `collate_test.go::TestGetCollator`、`TestCampareInvalidUTF8Rune`。`collate_bench_test.rs`/`.go` 提供热路径性能入口。
-- 本任务是纯文档分析，按总计划不运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题；交付前还人工检查仅新增本说明、未修改 Rust/Go/Cargo/`plan.md`，且文档没有建议把 Rust 测试内嵌进生产文件。

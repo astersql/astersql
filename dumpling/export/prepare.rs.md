@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`prepare.rs`](./prepare.rs) 属于 `astersql-dumpling-export` library crate。crate 根文件 [`lib.rs`](./lib.rs) 通过 `include!("prepare.rs")` 把它直接并入 crate 根作用域，而不是建立独立的 `prepare` 模块；因此这里的公开常量、类型和函数都直接成为 crate 级符号，并可与其他 `include!` 文件共享 `HashMap`、`OnceLock`、`tcontext`、`Conn`、`Config`、`OutputTemplate` 等导入或定义。
-
-它位于 Dumpling 真正创建导出任务之前，提供三组准备期能力：输出文件名模板入口、数据库目标校验，以及表示库表清单的基础数据结构。常规主链为 `dump.rs::prepareTableListToDumpInner` → `prepareDumpingDatabases` → `sql.rs::ShowDatabases`/`block_allow_list.rs::filterDatabases`，随后再由 `sql.rs::ListAllDatabasesTables` 形成 `Config::Tables`。本文件本身不读取表数据、不写导出文件，也不启动 worker。
-
-[`Cargo.toml`](./Cargo.toml) 将该 crate 声明为 Go 包 `dumpling/export` 的 Rust library 移植；此文件直接使用的 Dumpling context 来自 `astersql-dumpling-context`，SQL 连接、错误类型和模板实现目前来自同 crate 的 `stubs.rs`。Cargo 没有为本文件设置条件 feature。
+这些职责只负责“准备导出什么”和“如何命名输出”；实际表枚举在 `sql.rs`，实际过滤接线和任务生成在 `dump.rs`，模板执行实现则在 `stubs.rs::OutputTemplate`。
 
 ## 核心职责
 
@@ -84,13 +80,11 @@
 
 ## 与 Go 版本的对应关系
 
-对应源文件是 [`prepare.go`](./prepare.go)，直接回归文件是 [`prepare_test.go`](./prepare_test.go) 与 [`prepare_test.rs`](./prepare_test.rs)。数据库发现、过滤顺序、显式白名单返回顺序、缺失项汇总错误、三种表类型、`Equals` 忽略行长、append/merge 不去重，以及 base-table-only map 投影均与 Go 结构保持一致。
-
 主要表示差异如下：Go 的 `DefaultOutputFileTemplate` 是初始化时构造的 `*template.Template` 全局变量，Rust 用 `OnceLock<OutputTemplate>` 惰性初始化并通过函数返回 clone；这强化了调用方隔离。Go `DatabaseTables` 保存 `[]*TableInfo`，Rust 保存拥有所有权的 `Vec<TableInfo>`，避免空指针但复制/合并会移动或 clone 值。Go 用接收者方法，Rust 因类型别名不能定义固有方法，改用同作用域可见的 `DatabaseTablesExt` trait。
 
-模板能力尚未完全等价：Go 使用完整 `text/template`、`missingkey=error` 和正则驱动的文件名转义；Rust 当前由 `stubs.rs::OutputTemplate` 实现有限模式解析和替换。默认模板定义的回归测试覆盖 schema、event、function、procedure、sequence、trigger、view、table、data、placement-policy 的输出，但不能证明任意 Go 模板语法均兼容。
+模板能力尚未完全等价：Go 使用完整 `text/template`、`missingkey=error` 和正则驱动的文件名转义；Rust 当前由 `stubs.rs::OutputTemplate` 实现有限模式解析和替换。
 
-测试范围也要区分：`prepare_test.rs` 中数据库清单测试直接覆盖本文件；同文件的 table-list 测试主要覆盖 `sql.rs::ListAllDatabasesTables`，只是复用了这里的数据类型与 helper。文档不把后者误归为本文件实现。
+测试范围也要区分：`prepare_test.rs` 中数据库清单测试直接覆盖本文件；同文件的 table-list 测试主要覆盖 `sql.rs::ListAllDatabasesTables`，只是复用了这里的数据类型与 helper。
 
 ## 扩展指南
 
@@ -100,12 +94,3 @@
 - 调整 `AppendTables` API 时，应显式决定长度不匹配是继续 panic、返回 `Result` 还是截断；静默 `zip` 会改变 Go 行为，不应作为无说明的简化。
 - 若要在 Rust 主链使用 `DatabaseTablesToMap`，应先追踪 Go 调用点的锁表/区域选择语义，并补生产调用与独立回归测试，不能只因函数存在就假定功能已迁移。
 - 性能方面，默认模板 clone 和多个清单投影都会分配/复制字符串；在超大 schema 数量下若要优化，应以 profiling 证据决定是否引入共享不可变模板或容量预估，同时保持调用者不可污染全局默认值这一不变量。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件；`node --file dumpling/export/prepare.rs` 读取了目标文件 1–238 行并确认 38 个符号。
-- RustCodeGraph 调用证据：`explore "prepareDumpingDatabases in dumpling/export/prepare.rs callers and callees"` 确认 Rust 主链调用者 `prepareTableListToDumpInner` 与测试调用者；针对 `ParseOutputFileTemplate`、`DefaultOutputFileTemplate`、`DatabaseTablesToMap` 的 explore 确认配置、测试和 Go/Rust调用差异。
-- 已读生产文件：`dumpling/export/prepare.rs`、`dumpling/export/lib.rs`、`dumpling/export/Cargo.toml`、`dumpling/export/dump.rs`、`dumpling/export/config.rs`、`dumpling/export/sql.rs`、`dumpling/export/block_allow_list.rs`、`dumpling/export/stubs.rs`。
-- 已读对照与测试：`dumpling/export/prepare.go`、`dumpling/export/prepare_test.go`、`dumpling/export/prepare_test.rs`。
-- 关键测试事实：Rust 测试验证默认模板十类定义；数据库测试验证显式顺序、默认发现结果、查询失败和多个缺失项的精确错误。Go 测试提供相同数据库行为基线。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证恰好存在十一个固定二级章节，并人工复核源文件链接、符号名、调用边、边界说明和扩展建议。

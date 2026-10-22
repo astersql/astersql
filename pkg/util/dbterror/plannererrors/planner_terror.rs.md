@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-dbterror-plannererrors` crate 的规划相关静态错误表，源码入口为 [`planner_terror.rs`](planner_terror.rs)。它不负责发现 SQL 错误，也不实现规划算法；它把规划器、表达式和预处理语句路径会用到的 MySQL 错误码预先构造成统一的 `terror::Error` 原型，供调用方附加参数和栈后返回。
-
-crate 根 [`lib.rs`](lib.rs) 通过 `pub mod planner_terror` 和 `pub use planner_terror::*` 同时提供模块路径与顶层再导出。其平台启动段静态量 `PLANNERERRORS_PACKAGE_INIT` 在进程或测试主体运行前调用 `planner_terror::initialize_planner_errors()`，以模拟 Go 包级 `var` 的初始化时机。[`Cargo.toml`](Cargo.toml) 表明该 crate 直接依赖 errno、errors、parser/mysql、parser/terror 和上层 `dbterror` 包装；planner、expression、executor、session、DDL 及若干测试 crate 再以路径依赖消费它。
+用私有 `PLANNER_ERRORS` 收齐全部 98 个惰性静态量，防止某个较少使用的错误直到注册表冻结后才首次构造。
 
 ## 核心职责
 
@@ -82,9 +80,9 @@ RustCodeGraph 能定位本文件和 `initialize_planner_errors`，但当前索�
 
 ## 与 Go 版本的对应关系
 
-Rust [`planner_terror.rs`](planner_terror.rs) 逐项迁移 Go [`planner_terror.go`](planner_terror.go) 的单个 `var` 块。两边均有 98 个错误，声明次序、93/1/4 的 Optimizer/Expression/Executor 分类以及上述异名 errno 映射保持一致。Go 在包初始化时立即调用构造函数；Rust 不能在普通 `static` 初始化器中执行这些非 const 操作，因此采用 `LazyLock`，再由启动构造器集中强制初始化来恢复 Go 的时序语义。
+Go 在包初始化时立即调用构造函数；Rust 不能在普通 `static` 初始化器中执行这些非 const 操作，因此采用 `LazyLock`，再由启动构造器集中强制初始化来恢复 Go 的时序语义。
 
-Go 的 `ErrAccessDenied = ClassOptimizer.NewStdErr(ErrAccessDenied, MySQLErrName[ErrAccessDeniedNoPassword])` 在 Rust 中保持同样的“码与消息来源不同”行为。Go 的 `ErrPartitionNoTemporary` 注释及预处理语句四项的 Executor 分类也被保留。
+Go 的 `ErrAccessDenied = ClassOptimizer.NewStdErr(ErrAccessDenied, MySQLErrName[ErrAccessDeniedNoPassword])` 在 Rust 中保持同样的“码与消息来源不同”行为。
 
 测试对应关系：Go [`errors_test.go`](errors_test.go) 的 `TestError` 遍历一组代表错误，断言 `ToSQLError` 不返回 unknown 且数值码等于原错误；Rust [`errors_test.rs`](errors_test.rs) 保持同一测试意图。Rust 额外的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 覆盖全部 98 项的类别前缀、SQL code、总数、`ErrAccessDenied` 模板差异，以及注册表冻结后仍能访问预初始化尾项的行为。
 
@@ -99,11 +97,3 @@ Go 的 `ErrAccessDenied = ClassOptimizer.NewStdErr(ErrAccessDenied, MySQLErrName
 5. 若增加新的下游 crate 使用点，更新该 crate 的 Cargo 路径依赖并复用 crate 根再导出；不要复制错误原型。
 
 兼容性风险主要是错误码、RFC 类、客户端消息文本和参数脱敏位置漂移；正确性风险是新项漏进初始化清单；性能风险较低，仅增加启动时一次性构造与常驻错误原型的成本。改变启动段或注册冻结顺序属于 crate 级生命周期变更，不能当作单个错误表编辑处理。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/dbterror/plannererrors` 找到目标 Rust/Go/Cargo/测试上下文；`node --file ... --offset ...` 覆盖目标文件 350 行；`query initialize_planner_errors --kind function` 定位第 346 行。`callers` 无有效输出、`callees` 报告无边，已明确作为索引限制处理。
-- 生产源码：[`planner_terror.rs`](planner_terror.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`pkg/util/dbterror/terror.rs`](../terror.rs)、[`pkg/parser/terror/terror.rs`](../../../parser/terror/terror.rs)。其中静态声明计数为 98，构造调用计数为 Optimizer `NewStd` 92、Optimizer `NewStdErr` 1、Expression 1、Executor 4。
-- Go 对照与独立测试：[`planner_terror.go`](planner_terror.go)、[`errors_test.go`](errors_test.go)、[`errors_test.rs`](errors_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。目标目录未发现 `doc.go`，因此没有额外的包契约文件可读。
-- 调用点抽查：[`pkg/planner/core/expression_rewriter.rs`](../../../planner/core/expression_rewriter.rs)、[`pkg/planner/core/logical_plan_builder_runtime.rs`](../../../planner/core/logical_plan_builder_runtime.rs)、[`pkg/planner/optimize.rs`](../../../planner/optimize.rs)、[`pkg/util/ranger/points.rs`](../../ranger/points.rs)、[`pkg/session/runtime.rs`](../../../session/runtime.rs)、[`pkg/executor/stmtsummary.rs`](../../../executor/stmtsummary.rs)。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前以任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核仅新增本说明文件、未修改 Rust/Go/Cargo 或总计划。

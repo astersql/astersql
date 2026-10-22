@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-collate` crate（`pkg/util/collate/Cargo.toml` 的 `[lib] path = "lib.rs"`），提供 Unicode Collation Algorithm 9.0.0 的 `utf8mb4_0900_ai_ci` 底层策略。`pkg/util/collate/lib.rs` 将它声明为 `unicode_0900_ai_ci_impl` 模块并公开重导出；紧邻的生成文件 `unicode_0900_ai_ci_generated.rs` 持有面向调用方的 `unicode0900AICICollator`，内部字段 `impl_: unicode0900Impl` 才把比较、排序 key 和 LIKE pattern 的字符语义落到本文件。
-
-它不是 collator 工厂入口。开启新 collation 且 crate 启用默认的 `full_collate` feature 时，`collate.rs::group2_collator` 才会把名称 `utf8mb4_0900_ai_ci` 构造成 `unicode0900AICICollator`；关闭新 collation 时，`GetCollatorWithCollate` 返回 `derivedBinCollator`，不会进入这里。
+`unicode0900Impl` 为生成 collator 提供四个小而稳定的策略入口：克隆、字符串预处理、字符到 UCA 权重的映射和通配符匹配器构造。
 
 ## 核心职责
 
@@ -72,11 +70,11 @@ LIKE/通配符主链为：`unicode0900AICICollator::Pattern` → `unicode0900Imp
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/unicode_0900_ai_ci_impl.go`。类型与方法一一对应：Go 空结构体对应 Rust 零字段结构体；值接收者 `Clone`/`Preprocess`/`GetWeight`/`Pattern` 对应 Rust 的共享借用方法；Go `rune` 对应 Rust `char`；两个命名返回值对应 `(u64, u64)` 元组；Go `WildcardPattern` 接口对应 `Box<dyn WildcardPattern>`。
+类型与方法一一对应：Go 空结构体对应 Rust 零字段结构体；值接收者 `Clone`/`Preprocess`/`GetWeight`/`Pattern` 对应 Rust 的共享借用方法；Go `rune` 对应 Rust `char`；两个命名返回值对应 `(u64, u64)` 元组；Go `WildcardPattern` 接口对应 `Box<dyn WildcardPattern>`。
 
-权重分支和位运算形状保持一致。Go 的 `LongRuneMap` 可按 rune 做 map 索引，Rust 生成数据改为有序切片并使用二分查找，这是数据表示差异，返回的两段权重语义不变。该差异要求 Rust 生成器保持排序，并使缺项由显式 `expect` 暴露。
+Go 的 `LongRuneMap` 可按 rune 做 map 索引，Rust 生成数据改为有序切片并使用二分查找，这是数据表示差异，返回的两段权重语义不变。该差异要求 Rust 生成器保持排序，并使缺项由显式 `expect` 暴露。
 
-pattern 两端都复用各自语言的 `CompilePatternInner` 和 `DoMatchCustomized`；比较闭包都要求 `(first, second)` 完全相等。Rust 的 `Preprocess` 需要复制成拥有所有权的 `String`，而 Go 可直接返回不可变 string 值；可观察内容一致。生成关系方面，Go 文件含 `go:generate` 指令，本文件只在注释中记录关系，Rust 生成流程不由该属性触发。
+Rust 的 `Preprocess` 需要复制成拥有所有权的 `String`，而 Go 可直接返回不可变 string 值；可观察内容一致。生成关系方面，Go 文件含 `go:generate` 指令，本文件只在注释中记录关系，Rust 生成流程不由该属性触发。
 
 现有对齐证据包括：`general_ci_2_aster_unit_test.rs::unicode_0900_matches_go_weights_without_space_preprocessing` 验证大小写折叠、尾空格不裁剪、key 长度和重音 wildcard；`collate_test.rs::test_get_collator` 验证名称与 ID 路由；Go 的 `collate_test.go` 包含相同 collator 的比较、key 与工厂断言表。
 
@@ -88,11 +86,3 @@ pattern 两端都复用各自语言的 `CompilePatternInner` 和 `DoMatchCustomi
 - 改变 wildcard 语义时保持测试逻辑在独立 `*_test.rs` 文件中，扩展 `general_ci_2_aster_unit_test.rs` 的 0900 pattern 场景，并与 Go `unicode_0900_ai_ci_impl.go`/相关 Go 测试核对 escape、`%`、`_` 和双段权重行为。
 - 若调整表边界或 panic 策略，应保留 `unicode_0900_boundary_test.rs` 的等号边界回归，并为 `raw == map_table4.len()`、首个表外码点、普通短权重和 `LongRune8` 路径补独立回归测试；冻结 Go 同样采用 `>=`，应继续保持边界行为一致。
 - 性能上该路径位于逐字符比较、key 和 LIKE 热循环。避免引入每字符分配或动态查找；生成文件说明内联会影响 20%–50% 性能。任何结构变化都应评估 `GetWeight` 的内联与长权重二分查找成本。
-
-## 验证依据
-
-- 冻结完整实现 `unicode_0900_ai_ci_impl.rs` 与 Go `unicode_0900_ai_ci_impl.go` 均使用 `>=`；`lib.rs`、`Cargo.toml`、`collate.rs`、`unicode_0900_ai_ci_generated.rs` 核对模块、feature 与生成层调用。
-- 新增独立回归 `unicode_0900_boundary_test.rs::unicode_0900_boundary_rune_uses_implicit_weight` 检查 `len - 1`、`len`、`len + 1`，断言等号隐式权重、Key、Compare 顺序与 pattern 自匹配。已有 ucadata 数据测试、`general_ci_2_aster_unit_test.rs` 保留长权重与 NO PAD 对照意图。
-- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/collate/unicode_0900_ai_ci_impl.rs` 审计增量，并以 `git show 2c944fb:pkg/util/collate/unicode_0900_ai_ci_impl.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
-- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
-- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

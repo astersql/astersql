@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`base_func.rs` 位于 `astersql-expression-aggregation` crate，是聚合函数与窗口函数共用的规划期基础层，而不是执行期逐行累加器。它定义 `baseFuncDesc`，统一保存函数名、参数表达式和推导后的返回类型；`AggFuncDesc`（`pkg/expression/aggregation/descriptor.rs`）和 `WindowFuncDesc`（`pkg/expression/aggregation/window_func.rs`）都内嵌并通过 `Deref` 暴露这份描述。
-
-crate 边界由 `pkg/expression/aggregation/Cargo.toml` 与 `lib.rs` 确定：本文件作为私有 `mod base_func` 编译，但其公开项经 `pub use base_func::*` 导出。它直接依赖同 workspace 的 `expression`、字段/Datum 类型门面、parser 的 AST/MySQL 常量、planner util 和内存大小工具；crate 没有为本文件声明独立 feature。
+`GetDefaultValue` 给出空输入组的聚合默认值；`WrapCastForAggArgs` 使执行/下推阶段看到与返回求值类型匹配的参数。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@ RustCodeGraph 的文件节点显示 `base_func.rs` 被 14 个文件引用；精�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/base_func.go`。Rust 保留了 Go 的结构字段、函数分派、类型宽度/精度规则、默认值表、cast 跳过规则和 planner-only 定位，并以 `Option<FieldType>` 对应 Go 的可空 `*FieldType`、以 `ExprBox` 对应接口表达式、以 `AggCastKind` 对应 Go 的局部 cast 函数变量。
+Rust 保留了 Go 的结构字段、函数分派、类型宽度/精度规则、默认值表、cast 跳过规则和 planner-only 定位，并以 `Option<FieldType>` 对应 Go 的可空 `*FieldType`、以 `ExprBox` 对应接口表达式、以 `AggCastKind` 对应 Go 的局部 cast 函数变量。
 
 需要注意的现状差异：
 
@@ -92,12 +90,3 @@ RustCodeGraph 的文件节点显示 `base_func.rs` 被 14 个文件引用；精�
 修改现有推断时应同步 `pkg/expression/aggregation/base_func_test.rs` 的独立入口及其委托的 `aggregation_aster_unit_test.rs` 用例，并与 `base_func_test.go` 的类型、clone、collation 与 AVG/SUM 精度断言对照。窗口参数及可空性还应同步 `window_func_test.rs`，PB 行为同步 `agg_to_pb_test.rs`。
 
 兼容风险集中在返回类型元数据（会影响协议、表达式求值和下推）、decimal 精度、collation、NULL flag 和参数 cast；性能风险主要是额外表达式包装、重复构造免 cast 集合和深克隆。扩展时不要把 SQL 参数合法性完全依赖于数组索引前提，并应保留错误文本或明确评估兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件且目标目录已索引；`node --file pkg/expression/aggregation/base_func.rs` 分四段核对了全部 797 行、47 个文件符号及“被 14 个文件使用”的文件级关系；`query` 核对了 Rust/Go 的 `baseFuncDesc` 与 `newBaseFuncDesc`。同名跨语言符号的 `callers/callees` 未产生可用输出，故未据此臆造边。
-- 生产源码：完整读取 `pkg/expression/aggregation/base_func.rs`；调用边核对 `descriptor.rs`、`window_func.rs`、`agg_to_pb.rs`、`pkg/planner/core/logical_plan_builder_runtime.rs` 和 `pkg/planner/core/operator/physicalop/base_physical_agg.rs`。
-- crate 边界：读取 `pkg/expression/aggregation/Cargo.toml` 与 `lib.rs`，确认包名、依赖、模块声明、再导出和测试模块接线。
-- Go 对照：读取 `pkg/expression/aggregation/base_func.go` 与 `base_func_test.go`，逐项核对构造、类型推断、默认值、cast、内存估算和测试意图。
-- Rust 测试：读取 `base_func_test.rs`；其 clone/hash、返回类型与 AVG/SUM 用例委托到 `aggregation_aster_unit_test.rs`，另直接断言 APPROX_PERCENTILE 的错误屏蔽契约。还通过精确搜索确认 `aggregation_aster_unit_test.rs`、`go_merge_44_test.rs` 和 `window_func_test.rs` 对默认值、免 cast 集合及窗口描述有覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构校验命令及最终退出状态在任务交付时记录。

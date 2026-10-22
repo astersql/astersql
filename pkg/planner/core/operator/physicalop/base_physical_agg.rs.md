@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core-operator-physicalop` crate 中，是物理聚合算子的公共实现与逻辑聚合物理化入口。crate 根模块 `pkg/planner/core/operator/physicalop/lib.rs` 以 `mod base_physical_agg` 装载它，并通过 `pub use base_physical_agg::*` 向 planner 与 executor 暴露其公开类型和函数；`Cargo.toml` 的 `[package.metadata.porting]` 又把该 crate 对应到 Go 包 `pkg/planner/core/operator/physicalop`。
-
-它处于“逻辑聚合 → 物理候选 → task attach/执行计划”的中段：`base_physical_plan.rs` 中的物理计划路由把 `logicalop::LogicalAggregation` 交给 `ExhaustPhysicalPlans4LogicalAggregation`；生成的 `PhysicalHashAgg`/`PhysicalStreamAgg` 随后可能在下推阶段调用 `CheckAggCanPushCop`、`NewPartialAggregate` 和 `ConvertAvgForMPP`。本文件不执行数据聚合，真正的执行器构建在 executor 层完成。
+从 `LogicalAggregation` 枚举 Root、TiKV Cop 与 TiFlash MPP 上的 HashAgg/StreamAgg 候选，处理分区键、提示、CTE、锁读、缓存表、标量子查询及若干计划选择边界。
 
 ## 核心职责
 
@@ -106,16 +104,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/physicalop/base_physical_agg.go`。Rust 保留了同名核心类型与方法：`BasePhysicalAgg`、初始化、克隆、代价、相关列、内存估算、AVG 改写、partial/final 拆分、下推判断、EXPLAIN、索引解析和物理候选枚举。
-
-已对齐的关键语义包括：final/complete 判定；空聚合在 MPP 下使用 first-row 级低成本；AVG 拆成 COUNT+SUM 并用 projection 恢复；MPP final COUNT 改 SUM；DISTINCT 参数成为 partial 分组键；冗余 first_row 仅对相同非常量分组键删除；HashAgg/StreamAgg hint 选择。
-
-仍需把 Rust 视为独立移植实现而非逐行等价：
-
 - Go 的 `CheckAggCanPushCop` 还检查参数/分组表达式是否能编码下推、能否转 protobuf，并向 statement context 写 warning；当前 Rust 版本只检查虚拟列、相关列及 `CheckAggPushDown`。
 - Go 的三阶段 DISTINCT 支持由 session 变量控制，并包含多 DISTINCT grouping sets；当前 Rust 的 `Scale3StageForDistinctAgg` 只是更窄的纯条件判断。
 - Go 的 `BuildFinalModeAggregation` 处理 GROUP_CONCAT separator/ORDER BY、Partial1/Partial2 及 first-row map 等更完整状态；Rust 目前集中覆盖 DISTINCT、AVG、count-extrema、COUNT 和 GROUP BY/first_row 的现有调用需求。
-- Rust 的 `ResolveIndices` 比所读 Go 实现多了 projection/下层聚合重映射与 CTE 列 ID 恢复逻辑。
 - Rust 的候选枚举内含针对 root index join、CTE、运行时标量与 TiFlash 路径的显式递归判断；验证时应以当前 Rust 测试和最终计划为准，不能仅凭 Go 函数体推断完全一致。
 
 ## 扩展指南
@@ -127,14 +118,3 @@
 - 修改 `ResolveIndices` 时必须覆盖普通列、projection 表达式、两阶段聚合 group 输出、CTE 列 ID 漂移、同名/同类型歧义与失败错误文本。
 - 测试逻辑应继续放在独立文件。最直接的单元测试位置是 `base_physical_agg_test.rs`；两阶段 schema 使用 `physical_utils_test.rs`；候选路由与 MPP 模式使用 `canonical_router_aster_unit_test.rs`。涉及最终执行树时还应选择 `base_physical_plan` 或 executor 的独立测试文件。
 - 兼容风险主要是 Go/Rust 计划形状、PlanColumnID、EXPLAIN 文本和 hint 行为差异；性能风险主要是错误选择一/两阶段、漏用 MPP 或引入多余 exchange/projection；正确性风险主要是中间列类型、排序规则和 final 参数索引错误。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件可按行读取，共 1,524 行。查询确认 Rust 与 Go 均存在 `BasePhysicalAgg`、`BuildFinalModeAggregation`、`CheckAggCanPushCop`、`RemoveUnnecessaryFirstRow`、`ExhaustPhysicalPlans4LogicalAggregation` 和 `ConvertAvgForMPP`。
-- 目标实现：`pkg/planner/core/operator/physicalop/base_physical_agg.rs`，已核对全部源码范围及主要符号。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`；模块装载和公开再导出：`pkg/planner/core/operator/physicalop/lib.rs`。
-- 上游与下游调用证据：`pkg/planner/core/operator/physicalop/base_physical_plan.rs` 中 AVG 改写、下推检查、partial/final 拆分和 LogicalAggregation 路由。
-- Go 对照：`pkg/planner/core/operator/physicalop/base_physical_agg.go`，核对公共结构、AVG 改写、first_row 删除、下推判断、两阶段拆分、EXPLAIN、索引解析及物理候选入口。
-- Rust 独立测试：`pkg/planner/core/operator/physicalop/base_physical_agg_test.rs` 验证匹配的非常量分组键才删除 first_row；`physical_utils_test.rs` 验证 `max_count`/`min_count` partial schema 保留计数列和带 collation 的值列；`canonical_router_aster_unit_test.rs` 验证 MPP 标量边界、分区要求及 count-extrema 运行模式。
-- Go 测试入口由 RustCodeGraph 查询定位到 `pkg/planner/core/plan_test.go` 的 `TestBuildFinalModeAggregation` 与 `TestBuildFinalModeAggregationMaxMinCountSchema`，作为拆分语义的直接回归参考。
-- 结构验收使用任务指定命令，要求文件存在且恰有十一个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

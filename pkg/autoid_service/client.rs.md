@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`client.rs` 是 `astersql-autoid_service` crate 的生产客户端适配层，并由 `lib.rs` 以 `pub mod client` 暴露。它不实现 AutoID 的分配算法，也不维护表级 ID 水位；它把 `astersql-meta-autoid`（在本 crate 的 `Cargo.toml` 中别名为 `autoid_dependency`）定义的 `LeaderDiscovery`、`AutoIdClientConnector`、`AutoIdClient` 和 `ClientConnection` 四个抽象，落到 etcd、grpcio 与 kvproto 的真实实现上。
-
-当前应用接线位于 `pkg/session/runtime/create_table_resources.rs::requirement`：非 `mock-storage` 路径读取 PD/etcd endpoints、集群 TLS 文件和 keyspace namespace，调用本文件的 `client_discover`，再把得到的 `Arc<ClientDiscover>` 放入建表所需的 `Requirement`。mock-storage 路径使用内存客户端并绕过本文件的真实网络实现。
+因此，本文件负责“发现和传输”，而连接缓存、版本化重置、Leader 未产生时的退避、RPC 失败重试及业务错误解释均在 `pkg/meta/autoid/autoid_service.rs::ClientDiscover` 与 `SinglePointAllocator` 中完成。
 
 ## 核心职责
 
@@ -85,11 +83,7 @@ grpcio `Environment` 由 `Arc` 共享且只有一个线程。每次 Leader 建�
 
 ## 与 Go 版本的对应关系
 
-Go 的对应实现不在 `pkg/autoid_service` 下的同名文件，而在 `pkg/meta/autoid/autoid_service.go`：`ClientDiscover.GetClient` 用 etcd `WithFirstCreate` 查 `GetAutoIDServiceLeaderEtcdPath`，建立 gRPC client 并缓存连接；`singlePointAlloc.alloc` 与 rebase 路径组装同一组 protobuf 字段；`ResetConn` 清缓存并延迟 200ms 关闭连接。Rust 将这些职责拆成 `pkg/meta/autoid/autoid_service.rs` 的策略层和本文件的真实 I/O 适配层。
-
-已对齐的关键语义包括：Leader key 按最早 create revision 选择；nullspace 使用 `tidb/autoid/leader`，keyspace 路径带前导 `/`；分配请求包含 keyspace oneof；返回范围为 `(min, max]`；RPC 错误后由发现器版本化重置连接；旧连接延迟关闭。`pkg/autoid_service/client_test.rs::normal_ddl_plan_create_table_autoid_rpc_rebase_and_allocate` 还验证了真实 grpcio 服务上的 rebase 110 后分配一个 ID 得到 `(110, 111)`，并显式关闭连接与服务。
-
-可见差异是 Go 直接持有 `clientv3.Client` 和 `grpc.ClientConn`，并从全局配置内部取得 TLS；Rust 由会话资源接线显式传入 endpoints/TLS/namespace，并以 trait 拆分发现、连接、RPC 和关闭。Go 会记录连接/reset 日志与指标；本文件自身不记录日志或指标。Rust 的每个 RPC 固定 30 秒 deadline，而 Go 主要依赖传入 context。上述差异是当前源码事实，不代表功能等价性之外的设计承诺。
+可见差异是 Go 直接持有 `clientv3.Client` 和 `grpc.ClientConn`，并从全局配置内部取得 TLS；Rust 由会话资源接线显式传入 endpoints/TLS/namespace，并以 trait 拆分发现、连接、RPC 和关闭。Rust 的每个 RPC 固定 30 秒 deadline，而 Go 主要依赖传入 context。上述差异是当前源码事实，不代表功能等价性之外的设计承诺。
 
 ## 扩展指南
 
@@ -99,14 +93,3 @@ Go 的对应实现不在 `pkg/autoid_service` 下的同名文件，而在 `pkg/m
 - 调整错误分类时，应同步检查 `SinglePointAllocator::retry_rpc` 只针对 `AutoIdError::Rpc` 的分支；错误类别决定是否重连重试，错误映射不当会把瞬时故障变成直接失败，或把永久配置错误变成重试风暴。
 - 调整超时/取消时，要区分 etcd 的 5 秒 connect/30 秒 request timeout、grpcio 的 30 秒 call timeout和上层 `Context`。建议新增取消前、I/O 中取消、deadline 到期三个独立测试场景。
 - 调整并发模型或资源复用时，应保持 `Connection::close` 幂等、旧连接不立即影响 in-flight RPC，以及 `ClientDiscover` 双检锁只建立一个已发布客户端的不变量。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/autoid_service` 确认目标、模块入口及测试均在索引中。
-- RustCodeGraph 源码/符号查询：`node --file pkg/autoid_service/client.rs`；`node client_discover`；`node client.rs::leader`、`client.rs::connect`、`client.rs::alloc_auto_id`、`client.rs::rebase`、`client.rs::close`。索引同时报告目标文件由 `pkg/session/runtime/create_table_resources.rs` 使用。
-- 生产接线：`pkg/session/runtime/create_table_resources.rs::requirement`，核对 endpoints、TLS 文件、namespace、mock 分支和 `client_discover` 调用。
-- trait 与策略层：`pkg/meta/autoid/autoid_service.rs`，核对 `LeaderDiscovery`、`AutoIdClientConnector`、`AutoIdClient`、`ClientConnection`、`ClientDiscover::{get_client,reset_conn}` 以及 `SinglePointAllocator::{alloc_inner,rebase_inner}`。
-- crate 边界：`pkg/autoid_service/Cargo.toml` 与 `pkg/autoid_service/lib.rs`，核对模块公开方式、依赖 feature、kvproto tag 和 Go package metadata。
-- Go 对照：`pkg/meta/autoid/autoid_service.go` 的 `NewClientDiscover`、`GetClient`、`singlePointAlloc.alloc`、rebase 请求和 `ResetConn`；`pkg/domain/domain.go` 的 Go 侧 `NewClientDiscover` 接线。
-- 独立测试：`pkg/autoid_service/client_test.rs::normal_ddl_plan_create_table_autoid_rpc_rebase_and_allocate`。该测试覆盖非 TLS gRPC 通道、rebase、alloc、响应范围与显式关闭；当前没有覆盖 etcd Leader 查询、TLS、非法 UTF-8、取消或锁中毒的本文件专属测试。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证仅包括固定章节结构命令、链接/路径核对和人工事实复查。

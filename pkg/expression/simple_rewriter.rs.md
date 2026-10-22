@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate，是 SQL AST 与内部 `Expression` 之间的轻量适配层，同时提供字段名解析工具。`pkg/expression/lib.rs` 以 `expression_simple_rewriter` 私有模块装入该文件，并通过 `pub use expression_simple_rewriter::*` 将四个函数作为 crate 公共 API 再导出。crate 边界由 `pkg/expression/Cargo.toml` 的 `[package] name = "astersql-expression"` 与 `[lib] path = "lib.rs"` 确认；该清单还用 `package.metadata.porting.go-package = "pkg/expression"` 标明 Go 对照包。
-
-它不实现完整表达式重写器：`ParseSimpleExpr` 只负责把一段表达式文本变成 `SELECT` 的首个投影 AST，再将该节点交给 `BuildSimpleExpr`；真正从 AST 构造内部表达式的逻辑由安装在 `pkg/expression/expression.rs` 中的 `BUILD_SIMPLE_EXPR_FACTORY` 完成。`FindFieldName` 和 `FindFieldNameIdxByColName` 则是规划、DDL、表元数据等调用方可复用的名称查找函数。
+不实现完整表达式重写器：`ParseSimpleExpr` 只负责把一段表达式文本变成 `SELECT` 的首个投影 AST，再将该节点交给 `BuildSimpleExpr`；真正从 AST 构造内部表达式的逻辑由安装在 `pkg/expression/expression.rs` 中的 `BUILD_SIMPLE_EXPR_FACTORY` 完成。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ RustCodeGraph 显示 `ParseSimpleExpr` 的生产调用者跨越表与 DDL/规划
 
 ## 与 Go 版本的对应关系
 
-对照文件为 `pkg/expression/simple_rewriter.go`，测试为 `pkg/expression/simple_rewriter_test.go`。四个公开函数逐一对应：
-
 - Go `ParseSimpleExprWithTableInfo` 同样是外部兼容入口并标记 deprecated；Rust 注释建议新调用直接使用 `ParseSimpleExpr` 与 `WithTableInfo`。
 - 两版 `ParseSimpleExpr` 都拒绝空串、包装成 `select ...`、优先采用上下文 SQL parser、追加 warnings，最后调用 `BuildSimpleExpr`。Rust 用 `Option<Result<...>>` 表达上下文是否提供 parser，并对 SELECT/字段 AST 形状增加显式检查。
 - 两版 `FindFieldName` 都使用 `.L` 比较名称，空 schema/table 充当通配限定，跳过不可显式引用列，优先非冗余候选，并在两个非冗余候选冲突时报告 field-list 歧义。Rust 还跳过 `NameSlice` 中的 `None`；返回的 `Option<usize>` 对应 Go 的索引与 `-1` 哨兵。
@@ -96,15 +92,3 @@ Go 测试把优化后的 `FindFieldName` 与保留的原实现逐例比较，并
 - 仅需首个裸列名位置时才扩展 `FindFieldNameIdxByColName`；若需要库表限定、可用性或歧义语义，应改用前者而非不断给这个简化函数叠加规则。
 - 兼容风险集中在 parser 上下文优先级、warning 的写入时机、错误文本和歧义选择；性能风险主要是名称查找的线性扫描与错误路径分配。若要建立索引加速，必须证明候选顺序和 redundant 优先级仍与 Go 一致。
 - 表达式构建失败应在 `BuildSimpleExpr`/工厂及其独立测试中处理，本文件不应复制构建器逻辑。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11467 个文件，其中 Rust 7032 个；目标文件可完整读取。
-- RustCodeGraph `node --file pkg/expression/simple_rewriter.rs`：核对 124 行源文件及四个公开函数的完整实现。
-- RustCodeGraph `callers`/`callees` 与精确 `explore`：确认 `ParseSimpleExpr -> BuildSimpleExpr`、`ParseSimpleExprWithTableInfo -> ParseSimpleExpr`，以及表、DDL、planner 和测试调用点；确认 `FindFieldName` 的 planner 调用点。
-- RustCodeGraph `node BuildSimpleExpr`：确认 Rust 构建函数从 `BUILD_SIMPLE_EXPR_FACTORY` 取工厂，未安装时返回错误。
-- `pkg/expression/lib.rs`：确认私有模块挂载、公共再导出和独立 `#[cfg(test)]` 测试模块。
-- `pkg/expression/Cargo.toml`：确认 crate 名、库入口、parser/model/types/intest 等本地依赖，以及 Go 包迁移元数据。
-- `pkg/expression/simple_rewriter.go` 与 `pkg/expression/simple_rewriter_test.go`：核对 Go 主流程、错误/冗余列语义、表驱动案例和 benchmark。
-- `pkg/expression/simple_rewriter_test.rs`：核对 Rust 的 Go 等价案例，以及 Rust 特有的空槽、不可用列、空输入与自定义 parser 边界。
-- 人工复核结果：文档区分了解析适配与实际表达式构建，列明了正常路径、错误边界、状态副作用、直接调用关系和安全扩展位置；没有把未运行的 Cargo 测试或未测性能写成已验证事实。

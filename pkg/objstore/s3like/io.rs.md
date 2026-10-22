@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-s3like` crate 的流式 I/O 适配层，把 S3 兼容客户端返回的对象正文包装成 `objectio::Reader`，并把并发分片上传器包装成 `objectio::Writer`。模块入口 `pkg/objstore/s3like/lib.rs` 以 `#[path = "io.rs"] mod io_impl` 装入本文件并公开再导出，因此 `S3ObjectReader`、`AsyncWriter` 可由 crate 的 `Storage` 实现直接使用；它不是网络 SDK，也不解析 HTTP Range，本层所需的 `RangeInfo` 和底层 `Storage::open` 均由 `pkg/objstore/s3like/store.rs` 提供。
-
-crate 边界由 `pkg/objstore/s3like/Cargo.toml` 定义：包名为 `astersql-objstore-s3like`，本文件直接使用其中声明的 `anyhow`、`objectio`、`os_pipe`、`prefetch`、`storeapi`，并通过 crate 内部接口依赖 `Storage`、`ReadCloser`、`Uploader`。在完整对象存储链路中，上游是 `Storage::Open` / `Storage::Create`，下游是 `PrefixClient::GetObject`、预取包装器、对象访问统计和具体 multipart uploader。
+两个适配器分别实现 `objectio::Reader` 与 `objectio::Writer`，使 S3-like 后端能够进入仓库统一的对象 I/O 缓冲、压缩和统计层；本文件本身不选择分片大小、并发度或写缓冲大小，这些决策在 `Storage::Create` 中完成。
 
 ## 核心职责
 
@@ -85,9 +83,6 @@ RustCodeGraph 的文件查询确认 `pkg/objstore/s3like/io.rs` 已索引、共 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/objstore/s3like/io.go`，入口对照为同目录 `store.go`：
-
-- Rust `S3ObjectReader` 对应 Go `s3ObjectReader`，字段 `storage/name/reader/pos/rangeInfo/ctx/prefetchSize` 一一对应；`read` 的三次重试、从当前偏移重开、尾端参数 `0`、64 KiB 内顺序丢弃、远距 Range Get、越界 seek 钳制到 `Size` 均保留。
 - Go `Read` 用 `(0, io.EOF)` 表达末尾，Rust 按 `std::io::Read` 约定用 `Ok(0)`；Go 会显式排除 `io.EOF` 重试，Rust 的普通 EOF 不以错误出现。Rust 还显式拒绝 `SeekFrom::Start` 的 `u64 -> i64` 溢出，因为标准库接口类型不同。
 - Go 的短 seek 用 `io.CopyN(io.Discard, r, delta)`；Rust 用 `discard_exact` 循环自身 `read`，保持同样的“必须丢弃足量，否则报 EOF”约束。
 - Go `asyncWriter` 保存 pipe 两端、`WaitGroup`、uploader、共享错误和对象名，并由 `start` 启 goroutine；Rust `AsyncWriter::new` 直接 spawn 线程，只保留写端和 join handle。Rust 不需要单独的锁/等待组或共享错误槽，上传结果随 join 返回；日志中的文件名也不在本层保存。
@@ -103,12 +98,3 @@ RustCodeGraph 的文件查询确认 `pkg/objstore/s3like/io.rs` 已索引、共 
 若要改变异步上传的取消、错误或并发行为，接入点是 `AsyncWriter::new/write/close`，并应先确认 `Uploader::Upload` 的各实现和 `Storage::Create` 外层 `NewBufferedWriter` 的 flush/close 顺序。尤其要避免在 join 前保留 pipe 写端造成死锁。新增验证应放在独立测试中，覆盖 uploader 提前失败、线程 panic、close 两次、close 后 write、未写数据 close 以及 context 取消；同时对照 Go `asyncWriter` 是否需要同步行为变化。
 
 性能风险主要来自把短 seek 阈值设得过大、重复创建预取器、pipe/外层缓冲组合造成额外复制或阻塞；兼容风险主要来自改变 EOF 表达、Range 端点约定、重试时返回哪个错误，以及 close 是否等待并传播上传失败。任何公开行为变化都应同步核对 `pkg/objstore/s3like/io.go` 和相应 Go 测试，不能为了 Rust 测试方便而简化 Go 逻辑。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引可用；`files --filter pkg/objstore/s3like/io.rs` 确认目标文件；`node --file pkg/objstore/s3like/io.rs --offset 1 --limit 360` 返回完整 266 行源码与 21 个符号；`query S3ObjectReader --kind struct`、`query AsyncWriter --kind struct` 同时定位 Rust 类型和 Go 对应类型。精确 `impl` callers/callees 查询存在节点歧义，故未用其模糊输出支撑具体调用结论。
-- 源与模块：`pkg/objstore/s3like/io.rs`（全部类型、impl 和条件项；本文件没有条件编译项）、`pkg/objstore/s3like/lib.rs`（模块装入、公开再导出及独立测试装配）、`pkg/objstore/s3like/store.rs`（`Storage::Open`、`Storage::open`、`Storage::Create`、常量和 `RangeInfo`）、`pkg/objstore/s3like/interface.rs`（`Uploader` / `PrefixClient`）、`pkg/objstore/objectio/interface.rs`（统一 `Reader` / `Writer` 契约）。
-- crate：`pkg/objstore/s3like/Cargo.toml` 核对包名、库入口和 `objectio`、`os_pipe`、`prefetch`、`storeapi` 等依赖；无 feature 开关声明。
-- Rust 测试：`pkg/objstore/s3like/io_test.rs` 验证重开失败保留原读错误和短 seek 提前 EOF；`pkg/objstore/s3like/migration_aster_unit_test.rs` 验证 wrapping 偏移、读/seek/EOF 与同步/并发创建路径；`pkg/objstore/s3store/s3_test.rs` 验证慢读、短/长/后退/越界 seek、取消、重试上限和重置、并发上传错误传播。
-- Go 对照：`pkg/objstore/s3like/io.go`、`pkg/objstore/s3like/store.go`；相关回归位于 `pkg/objstore/s3store/s3_test.go`，包括 `TestOpenSeek`、`TestS3RangeReaderRetryReadAndUnRetryableCase`、`TestS3ReaderWithRetryEOF`、`TestS3ReaderWithRetryFailed`、`TestS3ReaderResetRetry`、`TestMultiUploadErrorNotOverwritten`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务规定的 shell 命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核所有重要结论均能回溯到上述符号或文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-domainutil` crate 的修复模式状态实现，对应 Go 文件 `pkg/util/domainutil/repair_vars.go`。crate 入口 `pkg/util/domainutil/lib.rs` 将本模块声明为私有模块，再用 `pub use repair_vars::*` 重导出其公开项；元数据类型则由 `lib.rs` 的 `model` 模块从 `astersql-meta-model` 重导出。
-
-它保存 `ADMIN REPAIR TABLE` 所需的进程级状态：修复模式开关、配置指定的 `db.table` 名单，以及从元数据加载过程中隔离出来的待修复 `DBInfo`/`TableInfo`。需要注意迁移状态：该 crate 已在根 workspace 中登记，也被 `pkg/ddl`、`pkg/infoschema` 和 `pkg/infoschema/issyncer` 的 Cargo manifest 声明为依赖，但代码搜索没有找到这些生产 Rust 模块对本文件 API 的直接调用；当前 Rust 服务启动路径 `cmd/tidb-server/main.rs` 使用的仍是 `cmd/tidb-server/stubs.rs` 中独立的精简 `domainutil` 状态桩，而不是这里的 `RepairInfo`。
+为规划/执行修复提供按库筛选表 ID、按名称查询缓存、修复完成后清理状态等操作。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ Go 的 `repairInfo` 内嵌 `sync.RWMutex`，每个方法自行加锁；Rust 把�
 
 字段和主要分支逐项对应 `repair_vars.go`：Go 的 `map[int64]*DBInfo` 对应 Rust 的 `HashMap<i64, DBInfo>`，Go 的 `[]*TableInfo` 对应数据库副本里的 `Vec<Arc<TableInfo>>`，`slices.Delete` 对应 `Vec::remove`，包级 `init` 对应 `repairInfo::new`、`LazyLock` 与供测试使用的 `init()`。
 
-Rust 保留了关键 Go 语义：设置名单时小写化；大小写不敏感地反查表 ID；模式关闭时拒绝缓存；首次命中只复制数据库并重建表集合；查询区分“库存在但表不存在”；清空缓存后关闭模式；两个 session key 的字符串不变。`pkg/util/domainutil/migration_aster_unit_test.rs` 对这些状态转换和边界逐项回归。
+Rust 保留了关键 Go 语义：设置名单时小写化；大小写不敏感地反查表 ID；模式关闭时拒绝缓存；首次命中只复制数据库并重建表集合；查询区分“库存在但表不存在”；清空缓存后关闭模式；两个 session key 的字符串不变。
 
 差异包括：Go getter 返回 slice，Rust 返回受 `&self` 生命周期约束的切片；Go 指针由 Rust 的值拥有权加 `Arc` 表达；Go 每个方法内部锁定，而 Rust 要求外层调用者持锁；Go 的未知 `repairKeyType` 可返回空字符串，Rust enum 不存在无效变体；Rust `init()` 是普通公开函数而非自动执行的语言钩子。最关键的迁移差异是当前 Rust 服务使用启动桩，尚未由实际 infoschema/planner/DDL Rust 主链完整消费本实现。
 
@@ -88,12 +86,3 @@ Rust 保留了关键 Go 语义：设置名单时小写化；大小写不敏感�
 - 若优化性能，可考虑预规范化结构或集合索引，但必须保留名单顺序/重复项现状、大小写语义以及 Go 可观察行为，并用基准或真实调用规模证明收益。
 - 测试应继续放在独立文件 `pkg/util/domainutil/migration_aster_unit_test.rs`，覆盖新增字段或分支；生产接线还应在对应 infoschema、planner、DDL 的独立测试中验证。不得把测试模块内嵌回 `repair_vars.rs`。
 - 修改 session key 名称属于兼容性变更，因为 Go planner/executor 用它们在同一 session context 中传递对象；修改缓存对象所有权或锁粒度则需评估并发、内存存活期和锁中毒处理。
-
-## 验证依据
-
-- Rust 源码与符号：RustCodeGraph `node --file pkg/util/domainutil/repair_vars.rs --offset 1 --limit 400` 完整读取 232 行，并用 `query` 核对 `repairInfo`、各状态方法、`repairKeyType` 等定义；`files --filter pkg/util/domainutil` 确认模块内 Rust/Go 文件集合。
-- crate 边界：读取 `pkg/util/domainutil/lib.rs` 与 `pkg/util/domainutil/Cargo.toml`；根 `Cargo.toml` workspace/依赖项及 `pkg/ddl/Cargo.toml`、`pkg/infoschema/Cargo.toml`、`pkg/infoschema/issyncer/Cargo.toml` 的反向声明由精确搜索确认。
-- Rust 接线：搜索所有 `.rs` 中相关符号，只发现 `cmd/tidb-server/main.rs` 调用 `cmd/tidb-server/stubs.rs` 的独立桩；没有把这些同名边误认为本文件调用者。
-- Go 对照与调用链：读取 `pkg/util/domainutil/repair_vars.go`，并核对 `cmd/tidb-server/main.go`、`pkg/infoschema/builder.go`、`pkg/infoschema/issyncer/loader.go`、`pkg/planner/core/preprocess.go`、`pkg/ddl/executor.go` 的直接调用。
-- 测试证据：读取独立 Rust 测试 `pkg/util/domainutil/migration_aster_unit_test.rs`；读取 Go 回归 `pkg/ddl/repair_table_test.go` 的模式/名单/缓存/修复流程场景，以及 `tests/realtikvtest/importintotest/import_into_test.go` 的并发导入修复用例。按任务约束未运行 Cargo 或 Go 测试。
-- 文档结构通过任务指定命令校验，固定标题数量必须恰为 11；人工复核重点是区分已实现 crate、Go 预期链路和当前 Rust 启动桩三种事实层级。

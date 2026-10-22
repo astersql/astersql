@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-planner-cascades-impl`，crate 根为同目录的 `lib.rs`，并由该文件通过 `pub use find_best_task_router::*` 公开重导出。根工作区在 `Cargo.toml` 中把 `pkg/planner/cascades/impl` 列为成员，并以 `facade_planner_cascades_impl` 指向它；该 crate 自身的 `Cargo.toml` 没有声明外部依赖，因此本文件只依赖标准库和同 crate 的 `impl_and_cost` 模块。
-
-它是 Cascades Memo 中“为一个逻辑 GroupExpression 在指定物理属性下选择最低代价 Task”的适配层：一侧用 `LogicalPlan`、`RoutePhysicalPlan`、`RoutedGroupExpression` 和 `RouteGroup` 表达路由所需的最小模型，另一侧复用 `impl_and_cost::{PhysicalPlan, PhysicalProperty, Task, TaskType}` 的任务与代价接口。仓库搜索未发现测试以外对 `route_find_best_task`、`InstallDefaultCascadesFindBestTaskRouter` 或其 Go 风格别名的调用，因此当前可确认的是 crate 内能力与测试接线，不能据此声称它已经进入 Rust SQL 优化主链。
+用进程级 `OnceLock<FindBestTaskHandler>` 提供一次性 handler 注入点，隔离“如何把 GroupExpression 路由到具体 FindBestTask 实现”的依赖方向。
 
 ## 核心职责
 
@@ -95,8 +93,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 的主链证据分散在三个文件：
-
 - `pkg/planner/cascades/impl/impl_and_cost.go::ImplementGroupAndCost` 先查询 Group 的属性缓存，再遍历 GroupExpression，通过 `physicalop.FindBestTask` 求候选、用 `CompareTaskCost` 更新最优值，遇错立即停止，最后回写缓存。本文件的 `find_best_task_for_group` 对齐了缓存、表达式遍历、错误短路和最优候选回写，但没有 Go 的 `costLimit`、InvalidTask 或 `CompareTaskCost` 抽象。
 - `pkg/planner/core/find_best_task.go::prepareIterationDownElems` 在识别到 `memo.GroupExpression` 后选择 `iteratePhysicalPlan4GroupExpression`；后者逐个读取物理计划对子节点的属性要求，并递归调用 `impl.ImplementGroupAndCost`。本文件以 `child_required_properties`、`expression.inputs` 和递归的 `find_best_task_for_group` 对齐这条结构，但没有 Go 的 `taskTypeSatisfied`、InvalidTask 跳过及 cost-limit 传播。
 - `pkg/planner/cascades/memo/group_expr.go::ExhaustPhysicalPlans4GroupExpression` 根据被包装逻辑算子的具体 Go 类型分派到各算子穷举函数；`GroupExpression.FindBestTask` 再转到 `physicalop.FindBestTask`。本文件把具体算子分派下沉到 `LogicalPlan::exhaust_physical_plans` trait 实现，并用 `TypeId`/`plan_type` 形成路由身份；源码中没有 Go `switch` 的全量算子列表，也没有 `hintCanWork` 和二维候选切片语义。
@@ -112,13 +108,3 @@ Go 的主链证据分散在三个文件：
 - 接入生产主链：应在明确的 crate 边界增加 `RoutedGroupExpression` 与真实 Memo/逻辑算子类型的转换或适配，并用调用图证明安装时机早于 `route_find_best_task`；当前无生产调用证据，不应依赖测试中的隐式全局安装。
 - 增强并发：若需要避免重复求解，必须设计“求解中/成功/失败”状态及递归环处理，不能在持有父 Group `Mutex` 时直接递归，否则容易形成锁顺序问题。
 - 修改后测试仍应放在独立的 `find_best_task_router_test.rs` 或 `find_best_task_router_aster_unit_test.rs`，不要把 `#[cfg(test)]` 测试嵌入生产源文件；这也符合当前 `lib.rs` 的测试模块组织。
-
-## 验证依据
-
-- 生产源码：`pkg/planner/cascades/impl/find_best_task_router.rs`，核对了全部 trait、类型别名、结构体、枚举、静态量、内部函数、公开函数和 Go 风格转发入口。
-- crate 边界：`pkg/planner/cascades/impl/Cargo.toml` 与 `pkg/planner/cascades/impl/lib.rs`；工作区成员和 facade 别名由根 `Cargo.toml` 核对。
-- RustCodeGraph：`status` 显示索引包含目标文件；`query` 定位 `route_find_best_task`（第 255 行）、`find_best_task_for_group`（第 136 行）、`find_best_task_for_group_expression`（第 231 行）和 `FindBestTask4GroupExpression`（第 290 行）。`callees` 证实 Group 入口调用缓存与表达式入口，默认表达式入口调用物理枚举、子属性、递归 Group 求解和 Task 挂接；`callers` 未返回文件外调用方。
-- Rust 测试：`find_best_task_router_test.rs` 验证子错误在有效候选之前或之后都立即传播；`find_best_task_router_aster_unit_test.rs` 验证具体逻辑类型身份、叶子/一元默认枚举与 Task 构造、物理候选数量及二次 handler 安装被拒绝。
-- Go 对照：`pkg/planner/cascades/impl/impl_and_cost.go::ImplementGroupAndCost`、`pkg/planner/cascades/memo/group_expr.go::{ExhaustPhysicalPlans4GroupExpression, GroupExpression.FindBestTask}`、`pkg/planner/core/find_best_task.go::{prepareIterationDownElems, iteratePhysicalPlan4GroupExpression}`。
-- 仓库搜索：使用 `rg` 核对公开入口的定义与引用，未发现上述路由 API 的 Rust 生产调用点；该结论仅表示当前检出版本没有静态文本引用，不等同于未来不会通过新增适配接线。
-- 本任务为纯文档分析，按计划不运行 Cargo；完成前以任务指定命令验证文档存在且恰有十一个固定二级章节，并人工复核没有把 Go 的完整能力误写成当前 Rust 已支持。

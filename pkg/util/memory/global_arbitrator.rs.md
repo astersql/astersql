@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-memory` crate 的进程级全局内存仲裁门面。模块由 [`lib.rs`](./lib.rs) 以 `pub mod global_arbitrator` 暴露，核心算法不在这里，而在 [`arbitrator.rs`](./arbitrator.rs) 的 `MemArbitrator` 中；本文件负责把核心仲裁器接到服务器配置、运行时内存采样、堆剖析和状态持久化上。
-
-生产主链有三类入口。会话创建在 `pkg/session/runtime/session.rs` 调用 `InitializeGlobalMemArbitratorMode` 应用默认/持久化系统变量；`pkg/session/runtime/control.rs` 通过 `SetGlobalMemArbitratorWorkMode`、`SetGlobalMemArbitratorSoftLimit` 和 `SetGlobalMemArbitratorLimit` 响应配置变化，并通过 `GlobalMemArbitrator` 为语句建立仲裁上下文；`pkg/util/servermemorylimit/servermemorylimit.rs` 每 100ms 调用 `HandleGlobalMemArbitratorRuntime` 推进运行时采样。`tracker.rs`、GC tuner、内存告警等消费者则通过 `GlobalMemArbitrator` 或 `UsingGlobalMemArbitration` 判断是否接入全局策略。
+提供独立测试所需的全局状态、采样器和 profiler 注入/清理接口；测试实现位于独立的 `global_arbitrator_test.rs` 与 `global_arbitrator_3_aster_unit_test.rs`，没有嵌入生产源文件。
 
 ## 核心职责
 
@@ -88,11 +86,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`global_arbitrator.go`](./global_arbitrator.go)。两版共同保留了默认模式、模式/软限制原文、全局仲裁器访问、启用标志、运行时 handler 串行化、状态目录规则、`mem-state.v1.json` 临时文件原子替换，以及 `AjustGlobalMemArbitratorLimit` 的历史拼写。`parse_soft_limit` 明确复制 Go 的“先 uint、后 float”顺序，所以 `"1"` 作为比例而非绝对 1 字节。
+两版共同保留了默认模式、模式/软限制原文、全局仲裁器访问、启用标志、运行时 handler 串行化、状态目录规则、`mem-state.v1.json` 临时文件原子替换，以及 `AjustGlobalMemArbitratorLimit` 的历史拼写。
 
-Rust 版的局部接线并非逐字段同构：Go 的 `globalArbitrator.metrics` 会向指标包报告等待任务、配额、根池和执行计数，Rust 本文件只维护三个可查询的本地计数；Go 的自动循环传入 GC、运行时统计更新和日志动作，Rust 调用核心的 `StartAutoRun(Duration::from_millis(10))`。Rust 还提供 `InitializeGlobalMemArbitratorMode`，用 `mode_configured` 防止服务器默认值覆盖显式模式。
+Rust 版的局部接线并非逐字段同构：Go 的 `globalArbitrator.metrics` 会向指标包报告等待任务、配额、根池和执行计数，Rust 本文件只维护三个可查询的本地计数；Go 的自动循环传入 GC、运行时统计更新和日志动作，Rust 调用核心的 `StartAutoRun(Duration::from_millis(10))`。
 
-状态方面，Go 的 recorder 接受强类型 `RuntimeMemStateV1`，Rust 使用 `serde_json::Value`；Rust handler 在首次自动风险时构造状态，并额外把中型池变化和放大率下降持续落盘。Rust 的 `load` 会同步 `last_state`，且失败写不会覆盖它，这些行为由独立 Rust 回归测试覆盖。以上差异应视为当前实现事实；不能据此推断 Go 中未出现的 Rust 行为已由其它组件完全等价替代。
+状态方面，Go 的 recorder 接受强类型 `RuntimeMemStateV1`，Rust 使用 `serde_json::Value`；Rust handler 在首次自动风险时构造状态，并额外把中型池变化和放大率下降持续落盘。以上差异应视为当前实现事实；不能据此推断 Go 中未出现的 Rust 行为已由其它组件完全等价替代。
 
 ## 扩展指南
 
@@ -102,11 +100,3 @@ Rust 版的局部接线并非逐字段同构：Go 的 `globalArbitrator.metrics`
 - 增加周期动作应接入 `HandleGlobalMemArbitratorRuntime` 的单持有者区间，评估 100ms 外部 tick 的延迟预算，避免在持有 `runtime_handler` 时阻塞或再次获取顺序相反的锁。可注入采样器和 `HeapProfileRuntime` 适合做确定性测试。
 - 改变生命周期时需保持 `enabled` 与核心模式之间的时序不变量，并确保所有自动循环在测试 cleanup 中停止。测试仍应放在同目录独立 `*_test.rs` 文件，使用 `GLOBAL_TEST_LOCK`，不要写入生产文件。
 - 性能风险集中在每 tick 的采样、JSON 写盘和锁竞争；兼容风险集中在公开的 Go 风格函数名、未知值回退、状态文件名/字段，以及 session/tracker 对 `Option<Arc<_>>` 的禁用语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件且目标文件已索引；`files --filter pkg/util/memory/global_arbitrator.rs` 报告 59 个符号；`query SetGlobalMemArbitratorWorkMode --kind function`、`query HandleGlobalMemArbitratorRuntime --kind function` 和 `query RuntimeMemStateRecorder` 均定位到本文件及 Go 对照。精确 `callers`/`callees` 查询未返回可用输出，因此没有据此声称调用边，而用下述源码检索补证。
-- 已读生产路径：`pkg/util/memory/global_arbitrator.rs`、`pkg/util/memory/arbitrator.rs` 的被调用符号、`pkg/util/memory/lib.rs`、`pkg/util/memory/Cargo.toml`、`pkg/util/memory/global_arbitrator.go`，以及直接调用位置 `pkg/session/runtime/session.rs`、`pkg/session/runtime/control.rs`、`pkg/session/runtime/planning.rs`、`pkg/util/servermemorylimit/servermemorylimit.rs`、`pkg/util/memory/tracker.rs`、`pkg/util/gctuner/memory_limit_tuner.rs`、`pkg/util/memoryusagealarm/memoryusagealarm.rs`。
-- 已读独立 Rust 测试：`pkg/util/memory/global_arbitrator_test.rs` 和 `pkg/util/memory/global_arbitrator_3_aster_unit_test.rs`。它们验证状态目录、惰性恢复、profiler 重入/重置、精确版本文件名、失败写保留旧状态、中型池与放大率持久化、陈旧状态清理、默认模式不覆盖显式禁用、软限制回退和运行时风险更新。
-- 已读 Go 对照测试入口：`pkg/util/memory/heap_profile_test.go` 及 `pkg/util/memory/global_arbitrator.go` 中 recorder/handler 语义；调用边另以 `rg` 对上述公开符号在非测试 Rust 文件中的精确出现位置复核。
-- 本任务只新增说明文档，不改变 Rust/Go/Cargo 行为，按计划不运行 Cargo。交付前使用任务指定命令校验本文恰有 11 个固定二级标题，并人工复核所有“已支持”结论均可回溯到上述符号或测试。

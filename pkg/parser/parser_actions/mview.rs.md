@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`mview.rs` 是 `astersql-parser` crate 内物化视图（materialized view）及物化视图日志（materialized view log）语法的语义动作分片。它不负责分词、LR 状态迁移或真正执行 DDL；`pkg/parser/parser_runtime.rs` 在 grammar reduction 时取得稳定 `RuleId`、构造 `Rhs` 与 `parser_actions::Context`，`pkg/parser/parser_actions/mod.rs::apply` 再通过本文件的 `owns`/`apply` 将规约结果组装为 `parser-ast` 中的 statement 或中间语义值。
-
-crate 边界由 `pkg/parser/Cargo.toml` 确认：库名是 `astersql-parser`，AST 来自本地依赖 `parser-ast`。目标文件只使用解析器内部的 `Context`、`Rhs`、`RuleId`、生成规则表以及 `mviewCreateOptions`/`mlogCreateOptions`，所有入口均为 `pub(super)` 或私有函数，不是 crate 的公开 API。
+只表达语法与 AST 字段映射；它不检查表是否存在、不调度刷新或清理任务、不访问 catalog，也不实现物化视图数据维护。
 
 ## 核心职责
 
@@ -78,14 +76,8 @@ RustCodeGraph 的文件节点确认目标共 470 行，并给出了 `item`、`ex
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照不是同名 `.go` action 文件，而是 `pkg/parser/parser.y` 的 Materialized View Statements 区段；辅助 accumulator 的 Go 定义位于 `pkg/parser/mview_stmt_options.go`，Rust 对应定义位于 `pkg/parser/mview_stmt_options.rs`。Rust `apply` 把 Go yacc action 中的 `$N` 类型断言、slice append 和 AST 指针构造改写为一基 `Rhs` 读取、`Any` downcast、`Vec` 追加和 Rust AST 构造。
+直接 Go 对照不是同名 `.go` action 文件，而是 `pkg/parser/parser.y` 的 Materialized View Statements 区段；辅助 accumulator 的 Go 定义位于 `pkg/parser/mview_stmt_options.go`，Rust 对应定义位于 `pkg/parser/mview_stmt_options.rs`。
 
-关键对应关系如下：
-
-- CREATE VIEW/LOG 的表名、列、选项、refresh/purge/alert、attributes 与 SELECT 均保持 `parser.y` 的字段位置和空值语义；两个 option accumulator 保留同样的重复检测标志。
-- ALTER VIEW/LOG 的 action 以输入顺序聚合；空 `ALTER ... REFRESH` 构造 FAST refresh，裸 `ALTER ... LOG ... PURGE` 构造默认 purge clause。
-- DROP、PURGE、CANCEL 保留 `IF EXISTS`、refresh/log-purge job 类型及 `i64` job ID。
-- REFRESH 保留 FAST/COMPLETE、WITH ASYNC MODE、三种 COMPLETE mode、DRY RUN/WITH PROFILE，以及仅 FAST 可携带的 `AsOfClause`。
 - Go 的 `MViewStartWithOrNextOpt` 特意避免 typed-nil；Rust 直接用 `Option<Box<dyn Any>>`/`Option<MViewRefreshClause>` 表示缺失，不存在 Go interface typed-nil 陷阱。
 
 `pkg/parser/parser_test.go` 是 Go 语法与 restore 意图的主要证据；`pkg/parser/go_merge_33_test.rs` 和 `go_merge_35_test.rs` 验证 Rust 公开 parser 的 AST 字段、合法/非法语法与重复错误消息。两边当前证据一致，但后续修改仍需逐项同步，不能以共同 grammar 名称替代行为验证。
@@ -99,13 +91,3 @@ RustCodeGraph 的文件节点确认目标共 470 行，并给出了 `item`、`ex
 测试必须放在独立文件，不能嵌入 `mview.rs`：端到端解析和 AST 字段优先扩展 `pkg/parser/go_merge_33_test.rs` 或 `pkg/parser/go_merge_35_test.rs`；owner/数字回退约束扩展 `pkg/parser/parser_actions/remaining_aster_unit_test.rs`；Go 对照同步 `pkg/parser/parser_test.go`；AST restore、visitor 或语义命令行为应放入 `pkg/parser/ast/*_test.rs` 的相应独立测试。
 
 主要兼容风险是 Rust/Go 的 nil/default 语义漂移、规则后缀或 RHS 位置变化导致字段错填、漏接规则被兜底为“已处理”，以及重复选项错误文本变化。当前动作只在规约时线性合并短 option/action 列表；若未来支持大列表，应注意反复取出与追加的分配成本，但本文件目前没有执行期性能或并发热点。
-
-## 验证依据
-
-- 目标源码：`pkg/parser/parser_actions/mview.rs`；RustCodeGraph `node --file` 完整核对 470 行，确认模块级符号仅为 `item`、`expression`、`owns`、`apply`，无类型、trait、impl 或条件编译项。
-- 主链：`pkg/parser/parser_runtime.rs` 的 reduction、稳定 `RuleId`、`Rhs`/`Context` 调用和默认 `$1` 移动；`pkg/parser/parser_actions/mod.rs` 的优先分派与 `has_semantic_action`。
-- crate 与辅助状态：`pkg/parser/Cargo.toml`、`pkg/parser/mview_stmt_options.rs`；Go 辅助对照为 `pkg/parser/mview_stmt_options.go`。
-- Go 行为：`pkg/parser/parser.y` 的 Materialized View Statements 全段；`pkg/parser/parser_test.go::TestMaterializedViewDDLStatements`、`TestRefreshMaterializedViewStatements`、`TestMaterializedViewDuplicateOptionsErrMsg`、`TestMaterializedViewCreateOptionOrder`、`TestMaterializedViewLogCreatePurgeClauseSyntax`。
-- Rust 测试：`pkg/parser/go_merge_33_test.rs` 的 create/alter/drop/purge/cancel/refresh、option、log 与变体字段用例；`pkg/parser/go_merge_35_test.rs` 的 restore、重复错误和无效顺序用例；`pkg/parser/parser_actions/remaining_aster_unit_test.rs` 的唯一 owner、`mview_count == 53` 与禁止数字回退；`pkg/parser/parser_3_aster_unit_test.rs` 的全部生成 action 已接线断言。
-- RustCodeGraph：检查了本地索引状态，使用 `files --filter pkg/parser/parser_actions`、`explore` 和目标文件 `node --file`；宽泛 `explore` 混入其他 materialized-view 模块，因此关键调用边又以 `parser_runtime.rs` 和 `parser_actions/mod.rs` 的直接引用核验。
-- 本任务为纯文档分析，依计划未运行 Cargo。交付前使用任务指定命令验证文件存在且恰有 11 个固定二级章节，并人工复查没有把 parser 之外的执行行为写成本文件职责。

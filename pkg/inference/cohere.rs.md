@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/inference/cohere.rs` 是 `astersql-inference` crate 中面向 Cohere Embed API 的 provider 适配器。模块由 [`pkg/inference/lib.rs`](lib.rs) 公开为 `cohere`，并通过同一文件再导出的 `Embedder` trait 接入通用嵌入运行时。应用侧在 [`pkg/domain/domain.rs`](../domain/domain.rs) 的 `Domain::init_inference_providers` 中以名称 `cohere` 注册 `CohereEmbedder`；因此模型名形如 `cohere/<model>` 时，真正的远端协议转换由本文件完成。
-
-该文件不是批处理、缓存或 SQL 函数入口。批处理、缓存、请求合并和 provider 分派位于 [`pkg/inference/embed_fn.rs`](embed_fn.rs)，SQL 层再通过 Domain 持有的 `EmbedFn` 使用它。本模块只负责 Cohere 特有的配置提示、请求约束、HTTP 参数以及响应格式。
+实现 `Embedder`：对空输入、模型名和 `embedding_types` 做前置校验，动态读取 API key，合并固定字段与调用者选项，然后调用共享 HTTP 执行器。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ crate 边界由 [`pkg/inference/Cargo.toml`](Cargo.toml) 定义，crate 名为 `
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 [`pkg/inference/embedding/cohere/cohere.go`](embedding/cohere/cohere.go)，协议结构位于 [`pkg/inference/embedding/cohere/protocol.go`](embedding/cohere/protocol.go)。核心语义保持一致：默认完整 endpoint、空输入短路、模型必填、只接受 float 类型、固定字段不能被选项覆盖、Bearer 鉴权、数组/typed-float 两种响应、401 专用提示、远端 `message` 以及输入输出数量校验。
+Go 通过 `context.Context` 取消；Rust 同时保留 `AtomicBool` 兼容入口和可携带原始 cause 的 `ProviderContext`。Go 把响应协议拆为 `Response`/`ErrorResponse` 类型；Rust 直接用 `serde_json::Value` 读取字段。Go 的 `validateEmbeddingTypes` 接受运行时的 `[]string` 或 `[]any`，Rust 的调用边界本来就是 JSON 值，因此以与 `["float"]` 的 JSON 等值比较实现同一约束。
 
-Rust 将 Go 的 `Embedder`、`APIKeyProviderConfig` 和共享 `ExecuteJSONEmbeddingCall` 分别映射到 `CohereEmbedder`、`base::APIKeyProviderConfig` 与 `base::execute_json_embedding_call`。Go 通过 `context.Context` 取消；Rust 同时保留 `AtomicBool` 兼容入口和可携带原始 cause 的 `ProviderContext`。Go 把响应协议拆为 `Response`/`ErrorResponse` 类型；Rust 直接用 `serde_json::Value` 读取字段。Go 的 `validateEmbeddingTypes` 接受运行时的 `[]string` 或 `[]any`，Rust 的调用边界本来就是 JSON 值，因此以与 `["float"]` 的 JSON 等值比较实现同一约束。
-
-Rust `new` 接收 key/base URL 两个 getter 并内置 TiDB 系统变量提示，而 Go 的 `NewCohereEmbedder` 接收完整配置对象；Rust 的 `with_config` 对应后者的测试/高级用法。当前两端都把自定义 base URL 解释为完整 endpoint，模型不会附加到 URL。
+Rust `new` 接收 key/base URL 两个 getter 并内置 TiDB 系统变量提示，而 Go 的 `NewCohereEmbedder` 接收完整配置对象；Rust 的 `with_config` 对应后者的测试/高级用法。
 
 ## 扩展指南
 
@@ -91,13 +87,3 @@ Rust `new` 接收 key/base URL 两个 getter 并内置 TiDB 系统变量提示�
 - 若改请求字段，继续通过 `json_fields_with_options` 保证协议必需字段覆盖用户同名选项。需要允许用户覆盖时，应先评估批次键、缓存键和 Go 行为，而不是交换合并顺序。
 - 测试应继续放在独立文件 `pkg/inference/cohere_test.rs`，不要嵌入生产文件；协议共性可复用其中的 `provider_contract`、`protocol_call` 和 `invalid_endpoints_and_missing_keys`。Go 语义变更还应同步检查 `pkg/inference/embedding/cohere/cohere_test.go`。
 - 性能风险主要在响应体大小、批量文本数和 JSON/f32 转换；并发、缓存或批量策略应优先在 `embed_fn.rs` 扩展，避免在 provider 内重复实现。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共索引 11,467 个文件；`files --filter pkg/inference` 确认目标、模块入口、独立 Rust 测试及 Go 对照均在索引中。
-- RustCodeGraph 源码与调用查询：`node --file pkg/inference/cohere.rs` 列出 13 个文件级符号；对 `create_embeddings_with_context` 的 callees 查询确认其调用 `endpoint`、`json_fields_with_options`、`provider_auth_headers`、`execute_json_embedding_call`，并引用 `decode_embeddings`；对解码器的查询确认下游为 `decode_float_rows`。
-- 应用接线证据：`pkg/domain/domain.rs` 的 `Domain::init_inference_providers` 注册 `cohere` 并动态读取 `tidb_exp_embed_cohere_api_key`；`pkg/inference/embed_fn.rs` 的 `EmbedFn::request`、`run_batch` 证明 provider/model 分派、批处理和取消边界。
-- crate 与基础设施证据：`pkg/inference/Cargo.toml`、`pkg/inference/lib.rs`、`pkg/inference/base.rs`。
-- Rust 独立测试证据：`pkg/inference/cohere_test.rs` 覆盖 POST/Bearer/payload、typed float 与普通数组、固定字段优先级、非法类型、缺 key、URL 校验、401/404、响应长度、响应体上限、取消 cause、传输 cause 和 secret 脱敏。
-- Go 对照证据：`pkg/inference/embedding/cohere/cohere.go`、`protocol.go`、`cohere_test.go`；其成功、选项、错误、endpoint、长度和通用 provider contract 与 Rust 测试意图对应。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时另执行任务指定的 11 章节结构检查，并人工复核只新增本说明文档且未修改源文件、Cargo 或总计划。

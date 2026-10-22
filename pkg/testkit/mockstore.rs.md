@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/testkit/mockstore.rs` 属于 `astersql-testkit` crate；crate 根模块 `pkg/testkit/lib.rs` 以 `pub mod mockstore` 暴露它，`pkg/testkit/Cargo.toml` 则声明它直接依赖 `astersql-domain`、`astersql-session`、mock storage、TiKV driver 等运行时 crate。它不是生产服务器的存储实现，而是测试代码进入“存储 + Domain + SQL 会话”环境的统一入口。
-
-文件同时提供两种不同层次的后端。`MockStore` 是按规范化 SQL 查表返回预注册结果的轻量 `Database`；`AnalyzeStatsStore` 与 `AnalyzeSessionDatabase` 则在真实 `Domain`、mock KV（或显式 TiKV driver）和 canonical `ConcreteSession` 上执行 SQL，用于需要 DDL、统计信息、事务和运行时观测的集成测试。调用者不应把二者混为一谈：前者没有 SQL 引擎，后者的 store 本身也不执行 SQL，必须先通过 `Database::create_session` 创建会话。
-
-RustCodeGraph 对本文件的文件节点报告 42 个使用文件，示例包括 `pkg/ddl/tests/partition/reorg_partition_test.rs`、`pkg/domain/plan_replayer_test.rs`、`pkg/dxf/importinto/job_testkit_test.rs` 和 `pkg/executor/join/hash_join_v1.rs`，说明它位于多子系统测试的公共底座，而不是应用请求主链。
+`AnalyzeSessionDatabase` 把一个非线程自由迁移的 `ConcreteSession` 固定在专用线程，通过 `SessionRequest` 消息转发执行、预处理语句和大量测试观测操作。
 
 ## 核心职责
 
@@ -80,11 +76,11 @@ store 只弱持有用户 session，所以用户释放最后一个 `Arc` 会触�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/testkit/mockstore.go`。两端都有 `WithCascades`、三个 `RunTestUnderCascades*`、`CreateMockStoreAndDomain` 与 schema-lease 变体；Go 当前的 Cascades helper 也只列出 `off`，Rust 注释追踪了移除第二轮的 Go commit。Rust `test_callback_caller` 用闭包类型名近似 Go 的 `runtime.Caller`。
+两端都有 `WithCascades`、三个 `RunTestUnderCascades*`、`CreateMockStoreAndDomain` 与 schema-lease 变体；Go 当前的 Cascades helper 也只列出 `off`，Rust 注释追踪了移除第二轮的 Go commit。Rust `test_callback_caller` 用闭包类型名近似 Go 的 `runtime.Caller`。
 
-Rust canonical 路径保留 Go 的核心测试意图：创建 mock KV、bootstrap Domain、让多个会话共享同一 Domain、为内部工作使用 restricted session，并在清理时关闭 Domain/store 相关资源。`GO_STATS_SYSTEM_TABLES` 明确以 Go `bootstrapTables` 为规范补齐统计表。Rust 的 `CreateMockStoreAndDomainWithSchemaLease` 与 Go 同名入口都传播 lease。
+Rust canonical 路径保留 Go 的核心测试意图：创建 mock KV、bootstrap Domain、让多个会话共享同一 Domain、为内部工作使用 restricted session，并在清理时关闭 Domain/store 相关资源。
 
-二者并非逐行同构。Go `CreateMockStore` 还处理 `WithTiKV` flag、bootstrap image、全局配置、owner manager、gctuner/view cleanup 和 mockstore options；Rust 把真实 TiKV 分成显式 `CreateTiKVStoreAndDomain(path)`，没有 Go 的 `testing.TB` cleanup 或可变 opts。Go 的 `DistExecutionContext`、bootstrap image 与 `SetTiFlashReplica` 不在此 Rust 文件中；Rust 额外提供线程固定 adapter、细粒度 runtime 探针、InfoSchema v2 和 `CrossKeyspaceTestCluster`。因此扩展时应对齐行为目标，而不是假设 API 一一对应。
+二者并非逐行同构。Go `CreateMockStore` 还处理 `WithTiKV` flag、bootstrap image、全局配置、owner manager、gctuner/view cleanup 和 mockstore options；Rust 把真实 TiKV 分成显式 `CreateTiKVStoreAndDomain(path)`，没有 Go 的 `testing.TB` cleanup 或可变 opts。Go 的 `DistExecutionContext`、bootstrap image 与 `SetTiFlashReplica` 不在此 Rust 文件中；Rust 额外提供线程固定 adapter、细粒度 runtime 探针、InfoSchema v2 和 `CrossKeyspaceTestCluster`。
 
 ## 扩展指南
 
@@ -95,12 +91,3 @@ Rust canonical 路径保留 Go 的核心测试意图：创建 mock KV、bootstra
 修改参数协议或结果转换时必须同步检查 `protocol_arguments`、`execute_concrete_session`、`drain_record_set` 和 `pkg/testkit/db_driver.rs` 的扫描语义，特别关注 SQL NULL、bytes/数值类型、多个结果集、statement 清理和错误优先级。修改生命周期时必须保持 `shutdown` 幂等、锁外 join、弱引用用户会话及 auto-analyze 不计入用户计数这些不变量。
 
 测试逻辑应继续放在独立文件，而非目标源文件。至少同步 `pkg/testkit/mockstore_test.rs`（prepared statement 生命周期）、`pkg/testkit/mockstore_domain_stats_test.rs`（共享统计状态和 worker 生命周期）、`pkg/testkit/mockstore_domain_ddl_test.rs`（DDL/跨 keyspace）及 `pkg/testkit/mockstore_domain_infoschema_v2_test.rs`（v2 loader）；涉及 Go 对齐时同时核对 `pkg/testkit/mockstore.go`。兼容风险集中于 TestKit 公共 API、Go 行为差异和全局 Domain 状态；性能风险主要是每会话一线程、同步请求等待及惰性长期系统会话。
-
-## 验证依据
-
-- 源码全貌：`pkg/testkit/mockstore.rs`，核对了模块常量、公开构造函数、两个 `Database` 实现、`AutoAnalyzeExecutor`、跨 keyspace 类型、消息枚举及 Drop/关闭路径。
-- crate 与模块边界：`pkg/testkit/Cargo.toml`、`pkg/testkit/lib.rs`；该目录没有 `doc.go`，因此以 crate 根注释和 Cargo 声明为最近权威边界说明。
-- Go 对照：`pkg/testkit/mockstore.go`，重点核对 Cascades helpers、mock/domain bootstrap、schema lease、TiKV、资源清理和缺失/新增能力。
-- 独立测试：`pkg/testkit/mockstore_test.rs`、`pkg/testkit/mockstore_domain_stats_test.rs`、`pkg/testkit/mockstore_domain_ddl_test.rs`、`pkg/testkit/mockstore_domain_infoschema_v2_test.rs`；分别提供参数化语句释放、共享 Domain/会话线程生命周期、DDL/跨 keyspace、InfoSchema v2 的行为证据。
-- RustCodeGraph：`status` 显示索引含 11,467 文件与 307,296 节点；`files --filter pkg/testkit` 确认目标、Go 对照和测试均已索引；`query AnalyzeStatsStore`、`query AnalyzeSessionDatabase`、`query CreateMockStoreAndDomain` 定位主要符号；目标文件节点报告 42 个使用文件；`callees execute_concrete_session` 给出到 `drain_record_set`、`ExecutionResult`、`SessionReply` 的边。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认本文恰有“文件定位”至“验证依据”共 11 个固定二级标题；人工复核重点是两种 store 的区别、canonical 执行链、错误边界、线程/引用生命周期和 Go 差异均有上述源码或测试依据。

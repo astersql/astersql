@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（见 `pkg/ddl/Cargo.toml`），实现持久化普通 DDL worker 对 `ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES`（动作值 91）的单步处理。模块由 `pkg/ddl/lib.rs` 公开声明，直接入口是 `persistent_actions::step` 中的动作分派；它对应 Go 的 `pkg/ddl/mview_worker.go::onAlterMaterializedViewAttributes`。
-
-这是一个基于持久化 DDL job 的元数据快速路径：它更新物化视图的告警属性与 schema 版本，不扫描用户数据、不执行 reorg/backfill，也不改变表的 schema state。事务、owner 调度和后续 schema 同步由外层普通 DDL worker 负责，本文件只实现该 job 的动作步骤。
+事务、owner 调度和后续 schema 同步由外层普通 DDL worker 负责，本文件只实现该 job 的动作步骤。
 
 ## 核心职责
 
@@ -81,14 +79,6 @@
 
 旧表克隆只存活到事件构造结束，新表值在事件构造时克隆一次，并最终通过 `Arc<TableInfo>` 交给 `finish_table_job`。没有长期缓存或后台资源。owner failover、lease 检查、schema barrier 与历史 job 迁移属于外层 scheduler/executor 生命周期；本文件依靠幂等的事务回滚和通知唯一键处理重试，而不自行协调并发。
 
-## 与 Go 版本的对应关系
-
-Rust `step` 按顺序对应 `pkg/ddl/mview_worker.go::onAlterMaterializedViewAttributes`：参数解码失败即取消、读取并校验表、拒绝非物化视图、multi-schema 从可回滚转不可回滚、克隆旧表、覆盖三个字段、更新版本与表、发布新旧快照事件、以 `Done/Public` 完成 job。Rust 注释也明确记录此对照。
-
-Rust 将 Go 的 `jobContext`、`sess.Session` 和 `metaMut` 抽象为 `JobExecutionContext` 及事务回调；Go 直接调用 `GetTableInfoAndCancelFaultJob`、`updateVersionAndTableInfo`、`asyncNotifyEvent`，Rust 分别复用 `public_table`、`update_version_and_table`、`async_notify_event`。Rust 的 `update_version_and_table` 显式保留 `multi_schema_info.skip_version`，通知辅助函数显式从 `MultiSchemaInfo.Seq` 推导 sub-job ID。
-
-Go 回归测试 `TestAlterMaterializedViewAttributesUpdatesAlertThresholds` 验证 SQL 层更新三个属性且不影响刷新计划，并验证前端非法属性输入。Rust 直接行为测试位于独立文件 `pkg/session/runtime/normal_ddl_test.rs`，覆盖持久化 worker 的事件、事务回滚、multi-schema、V1 参数、对象类型与 Public 状态等边界；参数编解码的 Rust 对照还在 `pkg/meta/model/go_merge_15_test.rs::go_merge_15_legacy_and_v2_only_args`。当前证据未显示本文件相对 Go 核心处理流程有意删减。
-
 ## 扩展指南
 
 - 新增持久化告警属性时，应同步修改 `AlterMaterializedViewAttributesArgs`、`MaterializedViewInfo`、创建 job 的前端、Go/Rust 参数兼容解码、本文件的字段赋值以及 notifier 序列化；必须决定旧 V1 job 缺字段时的默认值。
@@ -97,13 +87,3 @@ Go 回归测试 `TestAlterMaterializedViewAttributesUpdatesAlertThresholds` 验�
 - 保持 `old` 在首次修改前克隆，且事件发布必须发生在 job 完成之前；否则订阅者会丢失准确差异或看到已完成但没有事件的状态。
 - 测试逻辑应继续放在独立测试文件，不嵌入本生产文件。至少同步 `pkg/session/runtime/normal_ddl_test.rs` 的持久化 worker 回归、`pkg/meta/model/go_merge_15_test.rs` 的参数兼容用例，以及 Go 对照测试 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go`/`pkg/meta/model/job_args_test.go`。
 - 兼容性风险集中在持久化 job 编码、事件 JSON 和旧版本默认值；正确性风险集中在事务原子性、multi-schema 两阶段和系统库通知跳过；此路径只改小型元数据，没有按数据量增长的扫描性能成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/ddl/persistent_alter_materialized_view_attributes.rs` 核对了完整 75 行实现；`query step`、`callers`/`callees` 因同名 `step` 存在歧义，图结果未可靠解析精确调用边，因此又以索引文件内容和分派源码交叉核验。
-- 生产源码：`pkg/ddl/persistent_alter_materialized_view_attributes.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/job_worker.rs`、`pkg/meta/model/job_args.rs`、`pkg/meta/model/table.rs`、`pkg/ddl/lib.rs`。
-- crate/依赖证据：`pkg/ddl/Cargo.toml`。
-- Go 对照：`pkg/ddl/mview_worker.go::onAlterMaterializedViewAttributes`、`pkg/ddl/materialized_view.go`、`pkg/meta/model/job_args.go`。
-- 测试证据：`pkg/session/runtime/normal_ddl_test.rs` 中 `normal_ddl_plan_notifier_persistent_worker_publishes_full_event_once`、`normal_ddl_plan_notifier_metadata_conflict_rolls_back_then_owner_retries`、`normal_ddl_plan_notifier_duplicate_commit_error_rolls_back_metadata`、`normal_ddl_plan_notifier_v1_multi_boundary_keys_and_validation`；`pkg/meta/model/go_merge_15_test.rs::go_merge_15_legacy_and_v2_only_args`；Go 的 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go::TestAlterMaterializedViewAttributesUpdatesAlertThresholds` 和 `pkg/meta/model/job_args_test.go::TestGetAlterMaterializedViewAttributesArgs`。
-- DDL 包契约：`pkg/ddl/doc.go`；DDL 工作流入口说明：`docs/agents/ddl/README.md`，其描述仅作导航，本文结论均由上述源码和测试复核。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核唯一产物、链接路径、关键符号与边界描述。

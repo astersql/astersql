@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`sysvar.rs`](sysvar.rs) 是 `astersql-sessionctx-vardef` crate 中的 MySQL/TiDB 系统变量名称词汇表。crate 根文件 [`lib.rs`](lib.rs) 以私有模块 `mod sysvar` 装入它，再通过 `pub use sysvar::*` 将全部常量暴露给上层；因此调用方通常写 `vardef::AutoCommit` 或 `astersql_sessionctx_vardef::CharacterSetConnection`，而不直接访问 `sysvar` 模块。
-
-该文件处于“名称定义”和“行为实现”的边界：它为系统变量注册、`SET`/`SHOW`、表达式求值上下文、会话规划以及诊断输出提供统一且大小写固定的键，但不定义变量的默认值、作用域、校验器、读写钩子或持久化方式。这些行为主要位于相邻的 [`tidb_vars.rs`](tidb_vars.rs)、上层 `pkg/sessionctx/variable` 以及具体会话/表达式实现中。
+处于“名称定义”和“行为实现”的边界：它为系统变量注册、`SET`/`SHOW`、表达式求值上下文、会话规划以及诊断输出提供统一且大小写固定的键，但不定义变量的默认值、作用域、校验器、读写钩子或持久化方式。
 
 ## 核心职责
 
@@ -84,14 +82,11 @@ RustCodeGraph 的文件节点报告 6 个直接使用文件，列出的代表包
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`sysvar.go`](sysvar.go)。Rust 保留 Go 的公开标识符和字符串值，并基本保持声明顺序，便于逐项审查。关键表示差异是：
+关键表示差异是：
 
 - Go 的 `SetNamesVariables` 和 `SetCharsetVariables` 是可变长度 `[]string` 包变量；Rust 使用不可变、编译期定长的 `[&str; 3]` 与 `[&str; 2]`，从类型层固定成员数并消除运行时分配。
-- Go `const` 对应 Rust `pub const &'static str`，语义均是不变字面量；Rust 通过 `lib.rs` 重导出模拟 Go 包级访问方式。
 - 名称集合比较显示 Rust 比当前同路径 Go 文件多 `TiDBDMLMaxExecutionTime = "tidb_dml_max_execution_time"`。该项是 Rust 侧额外名称，不能表述为当前 Go 文件的逐项复刻；若调整它，应先查明上游 Go 版本或其他 Go 定义位置。
 - `InnodbFtEnableStopword` 的 Go 行尾 `#nosec G101` 在 Rust 中保留为相邻注释；它只是安全扫描抑制说明，不改变字符串值。
-
-独立 Rust 测试 [`runtime_1_aster_unit_test.rs`](runtime_1_aster_unit_test.rs) 中的 `set_statement_variable_groups_match_go_order` 明确校验两个数组的顺序、密码掩码和事务模式值。事务模式还由 `pkg/sessionctx/variable/tests/variable_test.rs::dynamic_global_defaults_match_classic_and_next_gen_go_branches` 与 `pkg/sessionctx/variable/sysvar_test.rs::TestGlobalSystemVariableInitialValue` 覆盖；敏感值的实际使用由 `pkg/server/handler/tikvhandler/global_variables_test.rs` 覆盖。同目录没有专名 `sysvar_test.rs`，当前常量测试遵守“测试与源文件分离”的仓库规则。
 
 ## 扩展指南
 
@@ -103,12 +98,3 @@ RustCodeGraph 的文件节点报告 6 个直接使用文件，列出的代表包
 4. 若修改 `SET NAMES`/`SET CHARSET` 成员或顺序，更新独立 Rust 测试 `runtime_1_aster_unit_test.rs`，并补充相应语句级/回滚边界测试。其他变量应优先扩展 `pkg/sessionctx/variable/sysvar_test.rs` 或 `pkg/sessionctx/variable/tests/variable_test.rs`；敏感展示变更同步 `global_variables_test.rs`。
 5. 兼容性风险集中在拼写、别名、scope 和默认值：改动常量值可能使注册端与读取端失配，也可能改变 SQL 客户端可见协议。性能风险通常很低，但新增特殊分派不应引入每次求值的重复解析或分配。
 6. 不要把单元测试内嵌到 `sysvar.rs`；按仓库约定放入独立测试文件，并保持 Go 测试意图和分支覆盖。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标目录已索引；`files --filter pkg/sessionctx/vardef` 找到 `sysvar.rs`、Go 对照和相关独立测试；`node --file pkg/sessionctx/vardef/sysvar.rs --offset 1/261` 完整读取 374 行并报告 6 个使用文件；对常量的 `query/callers/explore` 显示常见名称存在跨语言同名碰撞，因此调用点以路径限定搜索补强。
-- 源码：完整检查 `pkg/sessionctx/vardef/sysvar.rs`，确认 161 个 `pub const`，且不存在函数、类型、trait、可变静态项或条件编译项。
-- crate：检查 `pkg/sessionctx/vardef/Cargo.toml` 与 `pkg/sessionctx/vardef/lib.rs`，确认包名、入口、`nextgen` feature 和重导出边界。
-- Go 对照：检查 `pkg/sessionctx/vardef/sysvar.go`；抽取 Go/Rust 名称集合后确认两个数组的表示差异以及 Rust 额外的 `TiDBDMLMaxExecutionTime`。
-- 调用与测试：检查 `pkg/sessionctx/variable/sysvar_builtins.rs`、`pkg/expression/exprstatic/evalctx.rs`、`pkg/session/runtime/planning.rs`、`pkg/server/handler/tikvhandler/global_variables.rs`、`pkg/sessionctx/vardef/runtime_1_aster_unit_test.rs`、`pkg/sessionctx/variable/sysvar_test.rs`、`pkg/sessionctx/variable/tests/variable_test.rs`、`pkg/server/handler/tikvhandler/global_variables_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务指定的标题计数命令做结构验证，并人工复核本说明没有把名称常量误写成已注册或已支持的运行时行为。

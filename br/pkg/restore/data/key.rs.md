@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-restore-data`。crate 入口 `br/pkg/restore/data/lib.rs` 以 `pub mod key` 装配本模块，并通过 `pub use key::*` 将其函数暴露到 crate 根；`br/pkg/restore/data/Cargo.toml` 声明该 crate 是 Go 包 `br/pkg/restore/data` 的 Rust 移植库，当前没有外部 Cargo 依赖。
-
-它位于 BR 恢复数据规划的纯内存算法层：`br/pkg/restore/data/recover.rs` 先从各 store 的 Region peer 选择代表，再用本文件提供的字节比较和前缀编码构造有序键空间、消解重叠并检查区间连续性。本文件本身不访问 PD、TiKV、磁盘或网络，也不拥有恢复任务的生命周期。
+位于 BR 恢复数据规划的纯内存算法层：`br/pkg/restore/data/recover.rs` 先从各 store 的 Region peer 选择代表，再用本文件提供的字节比较和前缀编码构造有序键空间、消解重叠并检查区间连续性。
 
 ## 核心职责
 
@@ -71,14 +69,10 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/restore/data/key.go`，五个 Rust 函数与 Go 同名函数逐一对应：
-
-- `keyEq` 保留“先长度、后逐字节”的实现和布尔结果。
 - `keyCmp` 保留 `-1/0/1` 三值约定、首个差异字节优先以及公共前缀相同时按长度裁决的逻辑。
 - Go 的 `keyCmpInterface(a, b any)` 会在运行时把参数断言为 `[]byte`；Rust 的 `keyCmpInterface(&[u8], &[u8])` 去掉了动态类型断言，错误类型无法通过编译，但对合法字节参数的结果一致。
-- `PrefixStartKey` 都分配新缓冲区并添加字符 `'z'`；`PrefixEndKey` 都把空结束键编码为 `'z' + 1`，非空时委托起点编码。
 
-Go 的 `recover.go` 使用 `treemap.NewWith(keyCmpInterface)` 提供容器比较器；Rust 的 `recover.rs` 改用标准库 `BTreeMap<Vec<u8>, _>`，因此当前 Rust 生产路径没有直接调用 `keyCmpInterface`，但保留该函数作为 Go API/语义镜像。显式区间判断仍调用 `keyCmp`，并由 `br/pkg/restore/data/parity_test.rs` 固定其行为。
+Go 的 `recover.go` 使用 `treemap.NewWith(keyCmpInterface)` 提供容器比较器；Rust 的 `recover.rs` 改用标准库 `BTreeMap<Vec<u8>, _>`，因此当前 Rust 生产路径没有直接调用 `keyCmpInterface`，但保留该函数作为 Go API/语义镜像。
 
 ## 扩展指南
 
@@ -90,13 +84,3 @@ Go 的 `recover.go` 使用 `treemap.NewWith(keyCmpInterface)` 提供容器比较
 - 如果目标是继续保持移植对齐，还应同步审查 `br/pkg/restore/data/key.go` 和 `recover.go`，明确记录任何有意差异。
 
 兼容性风险集中在持久化/跨模块键序变化和空结束键含义；性能风险集中在恢复 Region 数量较大时的重复分配与复制。若要优化分配，必须先证明不会改变 `RecoverRegionInfo` 对键的独立所有权。
-
-## 验证依据
-
-- Rust 源码：`br/pkg/restore/data/key.rs`（五个公开函数的实现与签名）。
-- crate 边界：`br/pkg/restore/data/Cargo.toml`（crate 名、`lib.rs` 入口、Go 包映射、空依赖表）；`br/pkg/restore/data/lib.rs`（模块装配与公开重导出）。
-- 生产调用方：`br/pkg/restore/data/recover.rs` 中的 `SortRecoverRegions`、`CheckConsistencyAndValidPeer`。
-- Go 对照：`br/pkg/restore/data/key.go`、`br/pkg/restore/data/recover.go`。
-- 独立测试：`br/pkg/restore/data/key_test.rs`、`br/pkg/restore/data/parity_test.rs`；Go 测试为 `br/pkg/restore/data/key_test.go`。
-- RustCodeGraph：`node --file br/pkg/restore/data/key.rs` 确认文件全貌及使用文件；针对 `keyEq`、`keyCmp`、`PrefixStartKey`、`PrefixEndKey` 的调用关系查询确认 `recover.rs` 与 `parity_test.rs` 的调用边，以及 `keyCmpInterface -> keyCmp`、`PrefixEndKey -> PrefixStartKey` 的文件内调用。
-- 按任务要求未运行 Cargo；该任务只新增说明文档，结构验证命令及结果在交付检查中记录。

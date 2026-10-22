@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate，是规划器把表达式或聚合描述编码为 TiPB 时使用的持有式上下文。`pkg/expression/lib.rs` 以 `pushdown_context_kernel` 挂载该文件，并在 crate 根公开再导出 `NewPushDownContext`、`PushDownContext` 及三个引用别名，因此规划器和聚合模块通过 `expression::PushDownContext` 使用它，而不需要知道内部模块名。
-
-这里的 `PushDownContext` 不等同于 `pkg/expression/infer_pushdown.rs::PushDownContext`：后者位于 `expression::infer_pushdown` 命名空间，保存黑名单判定、强制下推和调试开关；本文件的类型保存真实 `BuildContext`、KV 客户端、告警追加器和 `GROUP_CONCAT` 上限，服务于 PB 构造。两者名称相同但当前接线和职责不同，扩展时不可混用。
+用 `Arc<dyn ...>` 持有规划器提供的表达式构建上下文、KV 客户端和告警追加器，使下推上下文可克隆且不受构造函数局部变量生命周期限制。
 
 ## 核心职责
 
@@ -82,15 +80,9 @@ Cargo 边界由 `pkg/expression/Cargo.toml` 确认：crate 名为 `astersql-expr
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照位于 `pkg/expression/infer_pushdown.go` 的 `PushDownContext`、`NewPushDownContext`、`EvalCtx`、`PbConverter`、`Client`、`GetGroupConcatMaxLen` 和 `AppendWarning`。
-
-- 字段一一对应：Go 的 `EvalContext`、`kv.Client`、`contextutil.WarnAppender`、`uint64` 在 Rust 中分别映射为 `Arc<dyn BuildContext>`（再取其 `EvalContext`）、可选 `Arc<dyn kv::Client + Send + Sync>`、可选 `Arc<dyn WarnAppender + Send + Sync>`、`u64`。
-- 告警路由完全保留 Go 分支：两个 handler 都非空才选择；EXPLAIN 用普通 handler，其他情况用 extra handler。
 - Go 的接口值可为 `nil`；Rust 用 `Option<Arc<dyn ...>>` 表达客户端和 handler 的可空性。Rust `Client` 明确 panic，而 Go 返回 nil 接口后通常会在实际调用处触发 nil 问题，因此 Rust 把失败位置和消息固定下来。
 - Go `PbConverter` 按值保存接口；Rust `PbConverter<'_>` 借用上下文中对象，减少额外所有权并由生命周期保证有效性。
 - Go 还提供 `NewPushDownContextFromSessionVars`；本文件没有该便捷构造器，Rust 目前由规划器桥接函数显式拆出各字段。
-
-Go `aggregation/agg_to_pb_test.go` 使用会话变量构造上下文并验证聚合 PB，尤其验证 `GROUP_CONCAT` 的长度上限进入协议值。Rust `aggregation/agg_to_pb_test.rs::TestAggFunc2Pb` 对应验证 `GetGroupConcatMaxLen` 编码为 `Expr.val`，并验证常见聚合类型、返回类型和 `DISTINCT` 标志；`TestAggFuncSumIntToPb` 验证同一上下文在 TiKV/TiFlash 编码路径可用。
 
 ## 扩展指南
 
@@ -100,13 +92,3 @@ Go `aggregation/agg_to_pb_test.go` 使用会话变量构造上下文并验证聚
 - 若希望缺少客户端变为可恢复错误，需要同时改造 `Client`/`PbConverter` 签名及所有消费者，尤其是 `AggFuncToPBExpr`、窗口函数 PB 路径和规划器桥接；单独把 panic 改成默认客户端会掩盖接线错误。
 - 新增字段需评估 `Clone` 是否仍应浅克隆、是否引入锁或跨线程约束，以及 Cargo 中是否已有相应 crate 依赖。协议字段变化还应同步 Go 聚合测试与 Rust `aggregation/*_test.rs`。
 - 性能方面，本文件当前构造和克隆仅涉及少量 `Arc` 计数及标量复制；避免在频繁的表达式逐节点编码路径中加入分配、锁获取或深复制。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/pushdown_context.rs` 确认目标文件被索引且含 8 个符号。
-- RustCodeGraph 源码/符号：读取 `pushdown_context.rs` 全部 101 行，并查询 `PushDownContext`、`NewPushDownContext`、`PbConverter`；`PbConverter` 的调用边指向本文件的 `Client`、`EvalCtx`，再落到 `expr_to_pb.rs::NewPBConverter`。
-- RustCodeGraph 上下游：核对 `pkg/expression/lib.rs` 的模块挂载与再导出、`pkg/planner/util/misc.rs::GetPushDownCtxFromBuildPBContext`、`physical_hash_agg.rs::aggregate_to_pb`、`aggregation/agg_to_pb.rs::AggFuncToPBExpr`、`expr_to_pb.rs::NewPBConverter`。
-- crate/trait 边界：读取 `pkg/expression/Cargo.toml`、`pkg/expression/exprctx/context.rs::BuildContext`、`pkg/kv/kv.rs::Client`、`pkg/util/context/warn.rs::WarnAppender`。
-- Go 对照：读取 `pkg/expression/infer_pushdown.go` 的上下文实现、`pkg/expression/aggregation/agg_to_pb.go::AggFuncToPBExpr` 和 `agg_to_pb_test.go`。
-- Rust 测试：读取 `pkg/expression/aggregation/agg_to_pb_test.rs`、`go_merge_44_test.rs`、`window_func_test.rs` 和 `aggregation_aster_unit_test.rs` 的直接构造与消费路径。未发现与 `pushdown_context.rs` 同名的独立测试；现有测试以聚合/窗口行为间接覆盖该上下文，告警选择和缺少客户端 panic 尚未见针对本类型的独立断言。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定 11 章节结构命令和人工事实复核验证。

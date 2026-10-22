@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`harness.rs` 属于 Cargo crate `astersql-br-pkg-utiltest-crr`（见同目录 `Cargo.toml`），是 CRR（跨区域复制）本地测试设施的组合层。它不实现真实 CRR 协议，而是把 `PDSim`、`FlushSim`、`CRRWorker`、上下游 `Storage` 和 `CheckpointAdvancer` 接成可确定性驱动的测试环境。模块由 `lib.rs` 声明为 `pub mod harness`，并通过 `pub use harness::*` 暴露给 crate 使用者。
-
-该文件位于 `br/pkg/utiltest`，服务于 BR 日志备份、复制和 checkpoint 行为验证，不在数据库 SQL 请求主链中。RustCodeGraph 的文件关系显示它被 `br/pkg/utiltest/crr/harness_test.rs`、`br/pkg/utiltest/crr/parity_test.rs` 和 `br/pkg/restore/log_client/log_file_manager.rs` 引用；其中可确认的直接运行用例位于前两个独立测试文件，后者属于索引记录的文件依赖，未在本次范围内确认存在对公开构造函数的直接调用。
+不实现真实 CRR 协议，而是把 `PDSim`、`FlushSim`、`CRRWorker`、上下游 `Storage` 和 `CheckpointAdvancer` 接成可确定性驱动的测试环境。
 
 ## 核心职责
 
@@ -89,14 +87,11 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `br/pkg/utiltest/crr/harness.go`，保留了 `TestHarness` 聚合字段、构造顺序、worker 委托方法、checkpoint 上传、metadata/log 恢复断言和 Close 时关闭存储的主体逻辑。错误文本也尽量保留 Go 中的操作与路径上下文。
-
 已确认的差异如下：
 
 - Go 用 `tc.T.TempDir()` 获得测试框架管理的目录，并通过 `tc.T.Cleanup(h.Close)` 注册清理；Rust 用系统临时目录加 seed/PID/原子 ID，自身保存 `_base_dir`，由 `Close`/`Drop` 删除。
 - Go `TestHarness` 保存 `tc`；Rust 不保存，因为构造 `FlushSim` 后不再需要该引用。
 - Go 直接调用 `advancer.StartTaskListener(ctx)`；Rust 以本地 `start_task_listener` 同步复刻 `Begin` 后的 Add/Pause/Resume 处理，再调用无 context 参数的 `SpawnSubscriptionHandler`。
-- Go 的 `Tick`/上传 API 把 `context.Context` 继续传给下游；Rust 对应底层签名不接收 context，因此形参命名为 `_ctx`。
 - Go `Close` 只关闭存储，临时目录由 Go 测试框架负责；Rust `Close` 还删除整个根目录，并有 `Drop` 兜底。
 
 这些差异属于当前 Rust 测试替身和运行时接口的适配，不应被描述为真实 BR 生产实现已完全移植。
@@ -109,13 +104,3 @@ Rust 文件直接对应 `br/pkg/utiltest/crr/harness.go`，保留了 `TestHarnes
 - 改动 task 监听时，需同时核对 `StreamMeta::Begin` 事件、`EventType` 分支和 `CheckpointAdvancer` 的订阅生命周期，并增加独立测试覆盖 Begin 失败、Pause/Resume、重复 Add 等边界。
 - 改动临时目录或清理策略时，应扩展 `harness_test.rs`，至少保持同 seed 多实例隔离、关闭一个不影响另一个、显式 Close 与 Drop 均可安全清理。
 - 若要宣称真实存储兼容，需另加真实对象存储或 TiKV 集成验证；当前 crate 的本地 `stubs::Storage` 与 Cargo 依赖边界不足以证明该结论。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust 文件；`files --filter br/pkg/utiltest/crr` 确认该模块文件集合；`node --file br/pkg/utiltest/crr/harness.rs` 读取完整 325 行源码并报告三个引用文件；`node --symbols-only` 列出 `TestHarness`、三个自由函数、六个公开方法、`Drop` 和三个辅助函数。精确 `callers`/`callees` 查询未返回可用结果，因此调用结论另由实际调用点核验。
-- 目标源码：`br/pkg/utiltest/crr/harness.rs`，核对构造、task listener、委托方法、恢复断言和清理逻辑。
-- crate 边界：`br/pkg/utiltest/crr/Cargo.toml` 与 `br/pkg/utiltest/crr/lib.rs`，核对包名、依赖、模块声明、再导出及独立测试模块。
-- 直接实现依赖：`br/pkg/utiltest/crr/crr_sim.rs`、`flush_sim.rs`、`pd_sim.rs`，核对事件缓冲/最新优先复制、flush 记录、checkpoint 锁与上传约束。
-- Go 对照：`br/pkg/utiltest/crr/harness.go`，核对 API、装配顺序、错误语义、metadata 路径提取和生命周期差异。
-- 独立 Rust 测试：`br/pkg/utiltest/crr/harness_test.rs` 验证目录隔离；`br/pkg/utiltest/crr/parity_test.rs::go_rust_public_contract_matches` 验证 flush→pull→replicate→upload→restore 正常链及 checkpoint 落后错误。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构校验要求本文恰好具有以上 11 个固定二级章节。

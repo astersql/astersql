@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-charset` crate；`pkg/parser/charset/Cargo.toml` 将 `lib.rs` 声明为 crate 根，`lib.rs` 再在 `encoding_bin` 模块中以 `include!("encoding_bin.rs")` 纳入本文件，并把该模块的公开项重新导出。它实现的是按原始字节处理的轻量 Binary 编码对象，主要供 `EncodingBase` 的回指派发和直接调用使用。
-
-需要区分同 crate 中的另一条实现路径：`pkg/parser/charset/encoding.rs` 内还有一个私有 `EncodingBin` 和私有静态 `ENCODING_BIN_IMPL`，用于统一 `Encoding` trait、`FindEncoding` 与 `FindEncodingTakeUTF8AsNoop`。两处同名符号位于不同 Rust 模块，当前不是同一个实例；本文只描述 `encoding_bin.rs` 中由 `parser_charset::encoding_bin` 导出的实现。
+用 `ENCODING_BIN_IMPL` 保存全局只读的 `EncodingBin`，并由 `init_encoding_bin` 建立 `EncodingBase` 到具体 Binary 实现的回指。
 
 ## 核心职责
 
@@ -72,11 +70,7 @@ RustCodeGraph 对 `init_encoding_bin` 识别出的直接调用者是上述 Rust 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/parser/charset/encoding_bin.go`：
-
 - Go 的包级 `EncodingBinImpl = &encodingBin{encodingBase{enc: encoding.Nop}}` 对应 Rust 的 `OnceLock` 加 `init_encoding_bin` 构造；Go `init()` 自动设置 `self`，Rust 当前需要显式调用初始化函数。
-- Go 的嵌入字段 `encodingBase` 对应 Rust 的命名字段 `encoding_base`；Go 保存接口回指，Rust 保存 `EncodingRef::Bin`。
-- `Name`、`Tp`、`Peek`、`IsValid` 和 `Foreach` 的返回值、逐字节边界以及回调短路语义一致。
 - Go `Transform` 返回原 `src` 与 `nil`，Rust 返回 `TransformResult::Borrowed(src)` 与 `Ok`，明确表达同一零拷贝和别名语义。
 - Go 类型通过嵌入 `encodingBase` 获得 `MbLen`、大小写等接口方法；本文件没有实现 crate 中 `encoding.rs::Encoding` trait，而是只在 `lib.rs` 中实现较窄的 `EncodingView`。统一 trait 查找当前由 `encoding.rs` 内另一份私有 Binary 实现承担，这是迁移结构差异，不应误认为完全等价接线。
 
@@ -90,15 +84,3 @@ Go 的 `encoding_test.go` 广泛验证统一编码接口，但没有为 `encodin
 - 若要统一 `encoding_bin.rs` 与 `encoding.rs` 的两个 Binary 实现，应先核对两套公开类型（crate 根轻量类型与 `encoding.rs` trait 类型）、返回所有权差异（`Borrowed` 与 `Vec` 拷贝）和所有调用者，不能只删除其中一个同名结构。
 - 测试逻辑应继续放在独立文件，例如扩展 `pkg/parser/charset/charset_1_aster_unit_test.rs` 或新增同目录 `encoding_bin_test.rs` 并在 `lib.rs` 的 `#[cfg(test)]` 区接线，不应内嵌到生产源文件。
 - 性能风险主要是误把 `Borrowed` 改为复制，或在 `foreach` 中引入字符解码；兼容风险主要是开始拒绝高位字节、解释 `Op`，或改变空输入及短路行为。
-
-## 验证依据
-
-- 目标源码：`pkg/parser/charset/encoding_bin.rs`，核对了全局实例、初始化函数、结构体及六个固有方法。
-- crate 装配与适配：`pkg/parser/charset/lib.rs`，核对了 `include!`、公开再导出、`EncodingView`、`encoding_by_ref`、`TransformResult`、轻量枚举和测试模块声明。
-- 基座实现：`pkg/parser/charset/encoding_base.rs`，核对了 `set_self`、基于 `encoding_by_ref` 的校验/遍历/变换派发和未初始化 panic 边界。
-- 统一编码路径：`pkg/parser/charset/encoding.rs`，核对了私有 Binary 实现、`Encoding` trait、`FindEncoding` 与 `FindEncodingTakeUTF8AsNoop`，确认它与目标模块是两套符号。
-- crate 清单：`pkg/parser/charset/Cargo.toml`，核对 crate 名、`lib.rs` 入口及依赖边界。
-- Go 对照：`pkg/parser/charset/encoding_bin.go`、`pkg/parser/charset/encoding.go`；测试参考：`pkg/parser/charset/encoding_test.go`。
-- Rust 独立测试：`pkg/parser/charset/charset_1_aster_unit_test.rs::binary_encoding_is_a_zero_copy_byte_passthrough`，验证任意字节合法、变换成功、返回 `Borrowed` 且指针与输入相同。
-- RustCodeGraph：`status` 显示索引包含 `pkg/parser/charset/encoding_bin.rs`；文件节点列出 83 行源码；`query init_encoding_bin --kind function` 定位到第 24 行；`explore` 识别其直接调用者为上述 Binary 专项测试。常见方法名存在大量同名项，因此调用关系再用限定目录的源码搜索消歧。
-- 结构验证按任务命令执行；本任务为纯文档分析，依照计划不运行 Cargo。

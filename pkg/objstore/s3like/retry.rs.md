@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`retry.rs` 是 `astersql-objstore-s3like` crate 的通用重试策略适配层。crate 根在 `pkg/objstore/s3like/lib.rs` 中以 `mod retry` 装配并 `pub use retry::*` 导出本文件 API；`pkg/objstore/s3like/Cargo.toml` 声明其依赖 `anyhow`、`fail`、`storeapi` 和 `tracing`。它不实现某一云厂商的完整重试算法，而是用 `StandardRetryer` 抽象接收 S3/OSS 后端实现，再叠加 AsterSQL 共享的连接错误、IMDS 快速失败、日志和指标规则。
-
-主要上游构造点是 `pkg/objstore/s3store/retry.rs::newRetryer` / `newBucketRegionDetectionRetryer` 与 `pkg/objstore/ossstore/retry.rs::new_retryer`。辅助函数 `IsHTTP2ConnAborted` 和 `IsDeadlineExceedError` 还被 `pkg/objstore/s3like/store.rs::ReadFile` / `doReadFile` 直接用于读路径判定。
+不实现某一云厂商的完整重试算法，而是用 `StandardRetryer` 抽象接收 S3/OSS 后端实现，再叠加 AsterSQL 共享的连接错误、IMDS 快速失败、日志和指标规则。
 
 ## 核心职责
 
@@ -64,9 +62,7 @@ RustCodeGraph 能确认包装方法到 trait 方法的调用边（`Retryer::IsEr
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/objstore/s3like/retry.go`。Rust 保留了同名的 `StandardRetryer`、`Retryer`、`NewRetryer`、五个 SDK 重试方法、IMDS 钩子和四个文本分类器，且 `IsErrorRetryable` 的分支顺序、可重试指标、告警语义与 1 秒退避下限一致。S3/OSS 后端分别对应 Go 的 AWS/Alibaba SDK 实现。
-
-语言差异包括：Go 用 interface 和函数值，Rust 用 `Box<dyn StandardRetryer>` 与带线程边界的闭包；Go `NewRetryer` 返回指针且 `WithLogSuppressor` 就地修改，Rust 构造器返回值且 builder 消费 `self`；Go release token 接收 `error`，Rust 用 `Option<&Error>` 表示成功/失败；Go 使用 PingCAP logger/metrics，Rust 使用 `tracing` 与 crate 内 metrics 函数。Go failpoint 仅在输入错误非 nil 时替换，Rust API 接收非可空 `&Error`，因此触发时始终有可替换的错误。
+语言差异包括：Go 用 interface 和函数值，Rust 用 `Box<dyn StandardRetryer>` 与带线程边界的闭包；Go `NewRetryer` 返回指针且 `WithLogSuppressor` 就地修改，Rust 构造器返回值且 builder 消费 `self`；Go release token 接收 `error`，Rust 用 `Option<&Error>` 表示成功/失败；Go 使用 PingCAP logger/metrics，Rust 使用 `tracing` 与 crate 内 metrics 函数。
 
 ## 扩展指南
 
@@ -76,13 +72,3 @@ Go 对照文件是 `pkg/objstore/s3like/retry.go`。Rust 保留了同名的 `Sta
 - 改动退避下限或令牌语义时，同步 `pkg/objstore/s3store/retry_test.rs` 的总退避/边界/万次令牌测试、`pkg/objstore/ossstore/migration_aster_unit_test.rs` 以及 Go 对照测试 `pkg/objstore/s3store/retry_test.go`。重点风险是放大请求、总延迟漂移、凭证获取卡顿和令牌泄漏。
 - 扩大日志抑制范围时，保持“只抑制 warning，不改变分类/指标”的不变量，并扩展 `pkg/objstore/s3store/retry_test.rs::only_probe_suppresses_expected_warning`。
 - Rust 单元测试应继续放在独立 `*_test.rs` / `migration_aster_unit_test.rs` 文件，不应内嵌到 `retry.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 `pkg/objstore/s3like/retry.rs` 全部 162 行和 24 个符号；`node --file` 核对了 trait、类型别名、构造器、impl 和四个辅助函数。
-- RustCodeGraph 查询：`query NewRetryer/IsErrorRetryable/RetryDelay/IsHTTP2ConnAborted/IsDeadlineExceedError`核对 Rust/Go 对应符号；`explore "retry.rs::Retryer ..."` 给出包装方法向 trait 方法的调用边，并定位 `RecordRetryableError` 指标边。
-- crate/模块依据：`pkg/objstore/s3like/Cargo.toml`、`pkg/objstore/s3like/lib.rs`、`pkg/objstore/s3like/metrics.rs::RecordRetryableError`。
-- 上下游依据：`pkg/objstore/s3store/retry.rs`、`pkg/objstore/ossstore/retry.rs`、`pkg/objstore/s3like/store.rs::ReadFile/doReadFile`。
-- Go 对照：`pkg/objstore/s3like/retry.go`；Go 行为测试：`pkg/objstore/s3store/retry_test.go`。
-- Rust 独立测试：`pkg/objstore/s3like/migration_aster_unit_test.rs::retryer_matches_connection_rules_and_one_second_floor`、`metadata_deadline_fast_fails_without_standard_fallback`；`pkg/objstore/s3store/retry_test.rs::only_probe_suppresses_expected_warning`、`test_s3_tidb_retryer_never_exhaust_tokens`、`test_s3_tidb_retryer`、`retry_delay_matches_aws_exponential_jitter_boundary`、`test_retryer_is_instance_metadata_error`。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证要求本文档存在且恰好包含上述 11 个固定二级标题。

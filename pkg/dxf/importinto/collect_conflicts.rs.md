@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-dxf-importinto` crate；crate 根 `pkg/dxf/importinto/lib.rs` 以 `pub mod collect_conflicts` 声明并公开再导出本模块。它位于全局排序 IMPORT INTO 的冲突处理链中：规划器生成 `CollectConflictsStepMeta`，本文件负责把冲突 SST 中的 KV 交给 `conflictedkv::Collector`，汇总冲突行、checksum 和持久化文件信息；后续冲突删除还复用这里的索引识别、按行路由、键空间解码和有界通道发送逻辑。
-
-当前 Rust 接线必须与 Go 版本区别看待：`collectConflictsStepExecutor` 提供子任务状态和按组编排方法，但未实现 Rust 的 `execute::StepExecutor`，仓库内也没有生产调用 `RunGroups` 或 `CollectConflictGroup`；`CollectConflictGroup` 的直接调用者目前是 `pkg/dxf/importinto/conflict_resolution_test.rs`。另一方面，`pkg/dxf/importinto/conflict_resolution.rs` 已在生产实现中直接复用 `getKVGroupIndexInfo`、`conflictWorkerForPair`、`sendConflictPair` 和 `decodeConflictKey`。因此本文件不是空桩，但 collect-conflicts 步骤尚不能仅凭此文件视为完成了 Go 版端到端框架接线。
+位于全局排序 IMPORT INTO 的冲突处理链中：规划器生成 `CollectConflictsStepMeta`，本文件负责把冲突 SST 中的 KV 交给 `conflictedkv::Collector`，汇总冲突行、checksum 和持久化文件信息；后续冲突删除还复用这里的索引识别、按行路由、键空间解码和有界通道发送逻辑。
 
 ## 核心职责
 
@@ -99,12 +97,3 @@
 - 修改 checksum/元数据时，从 `applyCollectResult` 和 `CollectResult::Merge` 的边界入手，保持五个持久化字段与 Go 一致；特别关注 `TooManyConflictsFromIndex` 对 post-process 校验的兼容影响。
 - 修改冲突行路径时同步检查 `conflictrows.rs` 和清理逻辑；路径必须继续位于任务临时目录之外，并保证并发/重试生成唯一文件名。
 - 性能风险集中在每对 KV 的 handle 解码与 CRC、1ms 重试、每 worker 有界缓存、行键集合内存上限和结果文件数量；优化前应保留正确性不变量，并增加基于真实非空 SST 的独立测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，`files --filter pkg/dxf/importinto/collect_conflicts.rs` 命中目标；`node --file ... --offset 1 --limit 1200` 读取了 481 行完整源码；`query` 定位 `CollectConflictGroup`、`conflictWorkerForPair`、`sendConflictPair`、`applyCollectResult` 和 `getConflictRowFilenamePrefix`。精确 callers/callees 返回空数组，调用边因此又用仓库搜索验证。
-- 生产源码：`pkg/dxf/importinto/collect_conflicts.rs`、`lib.rs`、`conflict_resolution.rs`、`planner.rs`、`scheduler.rs`、`task_executor.rs`、`subtask_executor.rs`、`proto.rs`；其中 `conflict_resolution.rs` 提供直接生产调用证据，任务执行器搜索提供 collect 主入口尚未接线的证据。
-- crate/架构：`pkg/dxf/importinto/Cargo.toml`、`docs/agents/dxf/README.md`、`docs/agents/import-into/README.md`。目标 Go package 没有 `doc.go`；读取了最近的 DXF/IMPORT INTO 导航说明作为包级背景。
-- Go 对照：`pkg/dxf/importinto/collect_conflicts.go`、`collect_conflicts_internal_test.go`、`collect_conflicts_test.go`；关键对应点包括完整 `StepExecutor` 生命周期、跨组去重、MVI CRC32 路由、keyspace codec、取消、输出关闭和 meta 写回。
-- Rust 独立测试：`pkg/dxf/importinto/collect_conflicts_test.rs` 验证五字段写回、冲突文件路径、MVI 路由与 keyspace、索引元数据错误、取消和通道关闭；`pkg/dxf/importinto/conflict_resolution_test.rs` 以真实非空 SST 调用 `CollectConflictGroup`，验证行数、local set、checksum、输出内容、进度和重复执行文件名唯一性。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构检查要求文档存在且恰好包含规定的 11 个二级标题。

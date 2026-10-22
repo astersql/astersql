@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-cpuprofile` crate，是全局 CPU 采样器与调用方之间的“按请求收集”层：下游从同 crate 的 [`cpuprofile.rs`](./cpuprofile.rs) 接收周期性 `ProfileData`，上游则可通过 `Collector` 获取合并后的 pprof protobuf，或通过传输无关的 `ProfileHTTPHandler` 使用精简的 `HttpRequest`/`HttpResponse` 完成一次 HTTP 风格采集。[`lib.rs`](./lib.rs) 以 `pub use pprof_api::*` 再导出这里的公开符号。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义；本文件直接依赖 `crossbeam-channel`、启用 `prost-codec` 的 `pprof` 和 `prost`。当前 Rust 生产代码中，[`pkg/util/profile/profile.rs`](../profile/profile.rs) 的 `Collector::cpu_profile_graph` 会创建本文件的 `Collector`，采集后把 protobuf 转成火焰图行。`ProfileHTTPHandler` 已公开并有端到端测试，但代码搜索未发现 Rust 服务路由调用它；相对地，Go 版本由 [`pkg/server/http_status.go`](../../server/http_status.go) 挂载到 `/debug/pprof/profile`。因此不能把 Rust HTTP 适配器描述为已经接入 Rust 服务主链。
+将合并结果编码后写入线程安全的 `ProfileWriter`；`shared_buffer_writer` 提供内存缓冲适配器。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ RustCodeGraph 显示 `ProfileHTTPHandler` 下调用 `parse_profile_seconds`、`d
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/cpuprofile/pprof_api.go`。两边都实现：seconds 默认 30；达到 WriteTimeout 即拒绝；下载头与 pprof 错误头；单次启动保护；等待最多两个 profile interval；注册/注销消费者；错误包传播；合并多段 profile；输出前仅保留 `sql` 标签；无 profile 时成功空返回。
-
 Rust 用精简请求/响应值取代 Go 的 `http.ResponseWriter`/`*http.Request`，因此需要外部服务器适配。Go 可从 request context 取得 `http.Server.WriteTimeout`，Rust 则要求构造 `HttpRequest` 时显式传入。Go 工作协程以 context cancel 和 `sync.WaitGroup` 管理，Rust 使用 `AtomicBool`、10ms `recv_timeout` 和 `JoinHandle`。Go 依赖 `github.com/google/pprof/profile.Merge`，Rust 在本文件中显式完成字符串与 ID 重映射、元数据合并。
 
 Go 的 `ProfileHTTPHandler` 已在 `pkg/server/http_status.go` 注册为 `/debug/pprof/profile`；当前 Rust 搜索只发现测试调用，没有发现对应 Rust 路由接线。这是迁移状态差异，不应从 Go 路由推断 Rust 已具备同样的线上入口。
@@ -101,12 +97,3 @@ Go 的 `ProfileHTTPHandler` 已在 `pkg/server/http_status.go` 注册为 `/debug
 - 修改标签策略时，应同步检查 `removeLabel`、TopSQL 在 `pkg/util/topsql/collector/cpu.rs` 对 `sql` 标签的消费，以及 Go `removeLabel` 语义。放宽标签会改变对外 profile 信息暴露面和文件大小。
 - 修改 channel 容量或等待策略时，应评估全局 profiler 的非阻塞投递、丢包概率、停止延迟和高并发 profile 请求的内存/线程成本。
 - 修改 HTTP 默认值或错误文本时，应同步 `cpuprofile_test.rs::TestProfileHTTPHandler`、`migration_aster_unit_test.rs::http_helpers_match_go_defaults_timeout_and_error_headers`、Go 对照测试及真实路由适配。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；读取了 `pprof_api.rs` 全部 534 行，并查询了 `ProfileHTTPHandler`、`StartCPUProfile`、`StopCPUProfile`、`handle_profile_data`、`buildProfileData`、`merge_profiles` 的调用关系。图明确给出 handler 到辅助函数、Start 到 Register/Unregister、Stop 到 profile_duration/buildProfileData、merge 到兼容性校验/字符串重映射的边。
-- 源码与 crate：`pkg/util/cpuprofile/pprof_api.rs`、`cpuprofile.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 上游与测试：`pkg/util/profile/profile.rs`、`pkg/util/cpuprofile/pprof_api_test.rs`、`cpuprofile_test.rs`、`migration_aster_unit_test.rs`、`pkg/util/topsql/collector/cpu.rs`。
-- Go 对照与路由：`pkg/util/cpuprofile/pprof_api.go`、`cpuprofile_test.go`、`pkg/server/http_status.go`。
-- 全仓文本检索确认：Rust 中 `ProfileHTTPHandler` 的非定义调用仅出现在 cpuprofile 测试；`pkg/util/profile/profile.rs` 是本文件 `Collector` 的生产调用点；Cargo manifest 中存在多个 crate 依赖，但未据此推断调用关系。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证命令及最终退出状态在任务交付时记录。

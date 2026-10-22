@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`flags.rs` 定义 SQL 执行请求使用的 13 个 `u64` 位标志（位 0 至位 12），对应 Go 文件 [`pkg/meta/model/flags.go`](flags.go) 中供 `tipb.SelectRequest.Flags` 使用的协议常量。该文件本身没有函数、类型、trait、`impl` 或条件编译项，只保存跨模块共享的位编号与 Rust 命名兼容别名。
-
-它由 [`internal/group1/lib.rs`](internal/group1/lib.rs) 通过 `#[path = "../../flags.rs"] mod flags; pub use flags::*;` 编入 `astersql-meta-model-group1`，再由包根 [`lib.rs`](lib.rs) 的 `pub use ::group_1::*` 经 `astersql-meta-model` 门面导出。当前可见的主要 Rust 消费者是 [`pkg/sessionctx/stmtctx/stmtctx.rs`](../../sessionctx/stmtctx/stmtctx.rs)：`StatementContext::PushDownFlags` 编码这些位，`StatementContext::InitFromPBFlagAndTz` 解码其中一部分。
+固定执行模式与错误处理策略的二进制协议位：截断、溢出、零日期、除零，以及 INSERT、UPDATE/DELETE、SELECT、集合运算、LOAD DATA、受限 SQL 和 TiKV 短路求值上下文。
 
 ## 核心职责
 
@@ -88,9 +86,7 @@ RustCodeGraph 已索引 `flags.rs` 的 27 个常量符号，并能定位 `FlagIg
 
 ## 与 Go 版本的对应关系
 
-[`flags.go`](flags.go) 同样声明 13 个常量，顺序和值与 Rust 的 `Flag*` 一一对应：从 `FlagIgnoreTruncate uint64 = 1` 到 `FlagEnableTiKVShortCircuitExpression = 1 << 12`。Go 注释提供了更完整的策略背景，例如只读语句忽略截断/零日期错误、严格模式决定错误或 warning、受限 SQL可用于 Auto Analyze；这些是协议意图，具体决策仍由调用方实现。
-
-Rust 额外提供 13 个 `SCREAMING_SNAKE_CASE` 别名，Go 没有对应的第二套名称。除此之外，当前 `stmtctx.rs` 的 `PushDownFlags`、`PushDownFlagsWithTypeFlagsAndErrLevels` 和 `InitFromPBFlagAndTz` 分支结构与 [`stmtctx.go`](../../sessionctx/stmtctx/stmtctx.go) 对齐，包括位 1 与位 6 联动、主语句类型互斥、位 4 解码为 DELETE，以及短路位往返。
+Rust 额外提供 13 个 `SCREAMING_SNAKE_CASE` 别名，Go 没有对应的第二套名称。
 
 迁移状态不是“每个位均有完整 Rust 运行路径”：精确搜索只在 `flags.rs` 自身发现位 2 和位 9，且当前反向初始化不处理若干已定义位。它们应记录为协议常量已移植、当前仓库 Rust 消费接线未验证，而不是宣称完整支持。
 
@@ -104,14 +100,3 @@ Rust 额外提供 13 个 `SCREAMING_SNAKE_CASE` 别名，Go 没有对应的第�
 4. 同步 Go 对照测试 [`pkg/sessionctx/stmtctx/stmtctx_test.go`](../../sessionctx/stmtctx/stmtctx_test.go)，并核对接收该请求的 TiKV/Tipb 端是否认识新位。
 
 兼容风险高于性能风险：位号复用或双方语义不一致会静默改变远端执行方式；单次按位运算的性能成本可忽略。若删除历史位，优先保留占位避免后续位号漂移。
-
-## 验证依据
-
-- 目标定义：[`pkg/meta/model/flags.rs`](flags.rs)，人工核对 13 个原始常量、13 个别名以及位 0—12。
-- Go 对照：[`pkg/meta/model/flags.go`](flags.go)，核对常量值、协议用途和注释语义。
-- 模块与 Cargo 边界：[`internal/group1/lib.rs`](internal/group1/lib.rs)、[`internal/group1/Cargo.toml`](internal/group1/Cargo.toml)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs) 以及 [`pkg/sessionctx/stmtctx/Cargo.toml`](../../sessionctx/stmtctx/Cargo.toml)。
-- Rust 生产调用方：[`pkg/sessionctx/stmtctx/stmtctx.rs`](../../sessionctx/stmtctx/stmtctx.rs) 的 `StatementContext::PushDownFlags`、`PushDownFlagsWithTypeFlagsAndErrLevels`、`StatementContext::InitFromPBFlagAndTz`。
-- Rust 独立测试：[`pkg/sessionctx/stmtctx/stmtctx_test.rs`](../../sessionctx/stmtctx/stmtctx_test.rs) 覆盖主要单个位、组合和短路位往返；[`pkg/sessionctx/stmtctx/stmtctx_1_aster_unit_test.rs`](../../sessionctx/stmtctx/stmtctx_1_aster_unit_test.rs) 覆盖编码/解码边界组合；[`bdr_1_aster_unit_test.rs`](bdr_1_aster_unit_test.rs) 与 [`go_merge_15_test.rs`](go_merge_15_test.rs) 固定关键位值。
-- Go 测试：[`pkg/sessionctx/stmtctx/stmtctx_test.go`](../../sessionctx/stmtctx/stmtctx_test.go) 的 `TestStatementContextPushDownFLags` 覆盖与 Rust 对应的编码组合和短路位恢复。
-- RustCodeGraph：`status` 显示索引含 `pkg/meta/model/flags.rs`（27 symbols）；`query`/`node` 定位 `flags.rs::FlagIgnoreTruncate`、`flags.rs::FlagEnableTiKVShortCircuitExpression`；`node --file pkg/meta/model/internal/group1/lib.rs --offset 450 --limit 30` 验证路径模块和公开再导出。图对跨再导出常量的 caller 边不完整，故调用边由精确 `rg` 与上述源码交叉验证。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构检查要求目标文件存在且恰有 11 个规定二级标题。

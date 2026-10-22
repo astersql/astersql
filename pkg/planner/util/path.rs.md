@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util` crate。crate 根 `pkg/planner/util/lib.rs` 以私有模块 `mod path` 装入本文件，再通过 `pub use path::*` 向规划器其他 crate 暴露公开 API；`pkg/planner/util/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/planner/util`。它不是最终物理计划的实现，而是 SQL 优化阶段在候选路径生成、谓词转访问范围、基数估算、排序属性匹配和 Index Join 筛选之间传递“怎样访问一张表”的共享数据模型。
-
-直接的 Rust 主链证据是 `pkg/planner/core/operator/logicalop/logical_datasource.rs:979-985`：数据源为索引路径构造访问条件时调用 `AccessPath::SplitCorColAccessCondFromFilters`，把可在执行时重建范围的相关列条件追加到 `AccessConds`，并回写剩余的 `TableFilters`。后续 `pkg/planner/core/operator/logicalop/logical_index_scan.rs:196-227` 使用路径携带的 `ConstCols` 判断索引序是否满足物理排序属性；`pkg/planner/core/operator/physicalop/index_join_probe.rs:184-204` 又用 `IsTablePath` 去重，并用 `IsIndexJoinUnapplicable` 排除不能安全用于 Index Join 的路径。
+用 `CompareCol2Len` 比较两份列覆盖摘要，为候选路径覆盖/优劣判断提供偏序结果。
 
 ## 核心职责
 
@@ -115,16 +113,12 @@ Cargo 证据见 `pkg/planner/util/Cargo.toml`：上述 crate 都是 `astersql-pl
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/util/path.go`，Rust 基本保留其公开名称、字段分组和算法：
-
 - `IndexLookUpPushDownByType` 三个值和判别值 `0/1/2` 一致；Rust 用 `#[repr(i32)]` 固定表示。
 - `AccessPath` 字段覆盖 Go 的索引列、range、过滤、估算、IndexMerge、存储类型、排序强制、分组 range 和不可缓存原因；Go 指针/切片分别映射为 Rust 的 `Option`/`Vec`/拥有型元素。
-- `Clone` 复制同一组状态，并刻意让 Go 结构体字面量没有列出的 `IndexMergeAccessMVIndex`、`IndexLookUpPushDownBy` 保持零值。Rust 测试 `test_access_path_clone_preserves_go_zero_value_semantics` 专门锁定这一点。
-- 三个表路径判定、相关列条件拆分、比较表达式的双向操作数与 collation 检查、点查/全扫/不确定路径判定、`Col2Len` 提取和比较均对应同名 Go 实现。
 
 存在一项有注释依据的 Rust 局部接线差异：`SplitCorColAccessCondFromFilters` 末尾还扫描 `IndexFilters` 中完整索引列的常量等值并补记 `ConstCols`，但不移动或删除过滤；源码注释说明 Rust detacher 会把部分此类等值留在 `IndexFilters`。此外，Go 测试需要创建 mock context 并关闭 stats handle，Rust 的独立测试使用包级 `setup_for_planner_util_test`，本文件本身没有资源差异。
 
-测试对照：`pkg/planner/util/path_test.go` 覆盖 `CompareCol2Len` 与 `OnlyPointRange`；`pkg/planner/util/path_test.rs` 保留相同用例，并增加 Clone 零值语义回归。Rust 测试还明确验证：整数句柄允许 NULL 点；普通索引拒绝 NULL 点和区间；多列索引若 range 只覆盖一列也不是完整点查。
+Rust 测试还明确验证：整数句柄允许 NULL 点；普通索引拒绝 NULL 点和区间；多列索引若 range 只覆盖一列也不是完整点查。
 
 ## 扩展指南
 
@@ -134,17 +128,3 @@ Cargo 证据见 `pkg/planner/util/Cargo.toml`：上述 crate 都是 `astersql-pl
 - 调整 `OnlyPointRange` 时，至少同步覆盖整数句柄 NULL、普通索引 NULL、区间、多列未完全匹配和空 range 语义，并评估点查优化调用方。
 - 调整 `Col2Len` 时，要同时维护 `ExtractCol2Len`、`compareLength`、`dominate`、`CompareCol2Len` 以及 Go 对照。特别注意 `-1` 的“整列”语义与同列数不可比规则；不要只按普通整数大小理解所有分支。
 - 性能方面，避免在热路径中无条件深克隆大型 IndexMerge 候选树；添加嵌套字段会进一步放大 `Clone` 成本。兼容性方面，公开 API 的 Go 风格名称和字段被多个 planner crate 直接使用，重命名或收紧可见性需要先核对全部调用者。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph 索引状态：项目索引有效，包含 `pkg/planner/util/path.rs`；`node --file` 读取该文件 1-582 行，确认 32 个索引符号及全部实现。
-- RustCodeGraph `query`：确认 Rust 符号 `path.rs::SplitCorColAccessCondFromFilters`、`path.rs::OnlyPointRange`、`path.rs::GetCol2LenFromAccessConds`、`path.rs::ExtractCol2Len`、`path.rs::CompareCol2Len`，并确认对应 Go 符号。图的 Rust `callers/callees` 对这些 `impl`/函数未返回边，因此调用关系按技能规则用下述精确文本搜索补证。
-- Rust 上游与消费方：`pkg/planner/core/operator/logicalop/logical_datasource.rs:950-1019`、`pkg/planner/core/operator/logicalop/logical_index_scan.rs:180-227`、`pkg/planner/core/operator/physicalop/index_join_probe.rs:173-224`、`pkg/planner/cardinality/selectivity.rs:416-452`。
-- crate 边界：`pkg/planner/util/Cargo.toml`、`pkg/planner/util/lib.rs`。
-- Go 对照：`pkg/planner/util/path.go:32-598`。
-- 独立测试：`pkg/planner/util/path_test.rs:1-171`、`pkg/planner/util/path_test.go:1-123`。
-- 精确调用搜索：对 `pkg/**/*.rs` 搜索本文件公开方法和 `AccessPath`，确认 `IsTablePath`、相关条件拆分和 Index Join 判定的生产接线，以及部分公开 API 当前只有测试/内部包装调用的事实。
-
-本任务是纯文档分析，没有运行 Cargo 或代码测试。交付检查只验证文档存在、固定 11 个二级标题齐全，并人工复核上述源码、调用边、Cargo、Go 和测试证据；运行结果记录在任务交付信息中。

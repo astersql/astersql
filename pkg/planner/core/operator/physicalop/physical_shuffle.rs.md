@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`，其 crate 根为同目录的 [`lib.rs`](lib.rs)。`lib.rs` 以 `pub mod physical_shuffle` 公开本模块，并在 `#[cfg(test)]` 下挂接独立测试文件 [`physical_shuffle_test.rs`](physical_shuffle_test.rs)。包清单 [`Cargo.toml`](Cargo.toml) 通过 `[package.metadata.porting]` 把本 crate 对应到 Go 包 `pkg/planner/core/operator/physicalop`。
-
-需要特别区分两套当前并存的 Rust 表示：本文件定义基于 `physical_common_plans::{PhysicalPlanNode, PhysicalExpr, Stats, PhysicalProperty}` 的轻量值模型；[`physical_window.rs`](physical_window.rs) 另有接入 `base::PhysicalPlan` trait 的 `PhysicalShuffle` 与 `PhysicalShuffleReceiverStub`，并由 [`lib.rs`](lib.rs) 中的 `ConcretePhysicalOperator` 实现接入规划主链。精确引用搜索显示，本文件的两个轻量结构目前只被本模块方法和独立测试直接使用；主链只复用这里的 `PartitionSplitterType`。因此本文不会把 Go 执行器的完整运行接线归属于这套轻量结构。
-
-源文件保留了一段注释化的早期 Go 直译草案；实际可执行定义从 `use crate::physical_common_plans` 开始。草案不是编译单元，也不是“已支持”证据。
+`PhysicalShuffle` 保存并发度、worker 尾计划、数据源、分区策略、逐数据源分区表达式及输出 schema；它能估算部分内存、生成 EXPLAIN 文本、校验表达式列引用，并折叠为一个通用 `PhysicalPlanNode`。
 
 ## 核心职责
 
@@ -85,17 +81,12 @@ Go 的 `PhysicalShuffleReceiverStub` 含 `unsafe.Pointer Receiver`，执行器�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`physical_shuffle.go`](physical_shuffle.go)：
-
-- `PartitionHashSplitterType` / `PartitionRangeSplitterType` 对应 Rust `Hash` / `Range`。
 - Go `PhysicalShuffle` 的 `Concurrency`、`Tails`、`DataSources`、`SplitterType`、`ByItemArrays` 在轻量结构中都有字段；Rust 另显式保存通用节点需要的 `schema`。
-- `explain_info` 保留“并发度 + 数据源 ExplainID”的意图和测试字符串形状。
-- `resolve_indices` 同样按每个 DataSource 的 schema 解析对应 ByItems，而非使用普通 `children[0]`。
 - 两侧内存函数都递归考虑 tails、数据源与分区表达式，但 Rust 轻量表达式的统计口径更窄，且 Go 会先解析 `BasePhysicalPlan` 并统计接口/切片头。
 - Go `Init` 建立 `BasePhysicalPlan`、required properties 与 stats；本文件以 `into_plan(stats, property)` 完成较简化的组装，没有 PlanContext、query block offset 或基础计划方法。
 - Go receiver stub 保存 `unsafe.Pointer Receiver` 和 `DataSource`，执行器可由指针返回实际 receiver；本文件用 `receiver_index` 替代指针，转换后仅得到无孩子通用节点，不能执行 Go 的 worker 对接。
 
-Go 优化器只在并发度大于 1、输入形状合适且估算 NDV 大于 1 等条件下插入 Shuffle，并把并发度限制到 NDV；本文件不实现这些策略。Go builder 根据 splitter type 实例化具体 hash/range splitter；本文件也不实现数据重分区算法。因此它应被描述为可测试的计划值骨架，而不是 Go Shuffle 子系统的完整移植。
+Go 优化器只在并发度大于 1、输入形状合适且估算 NDV 大于 1 等条件下插入 Shuffle，并把并发度限制到 NDV；本文件不实现这些策略。
 
 ## 扩展指南
 
@@ -105,15 +96,3 @@ Go 优化器只在并发度大于 1、输入形状合适且估算 NDV 大于 1 �
 - 修改孩子顺序时必须保留执行语义并同步 `into_plan_preserves_every_worker_tail_after_data_sources`；Go builder 对 `DataSources`、`Tails` 和普通 child 的角色不同，不能把它们任意扁平化。
 - 完善内存估算时，应统一 `PhysicalExpr` 深层堆分配、外层 Vec capacity 与可选数据源的计费口径，并避免与 `size_of::<Self>()` 重复计数。
 - receiver 扩展如需真实通道或共享执行状态，应明确线程安全、关闭顺序和所有权；不能从 Go 的 `unsafe.Pointer` 直接机械翻译。测试仍应放在独立的 `physical_shuffle_test.rs`，不要嵌入生产源文件。
-
-## 验证依据
-
-- 源码：[`physical_shuffle.rs`](physical_shuffle.rs)；逐项核对了 1 个枚举、2 个结构、7 个可执行方法以及注释化草案与实际代码的边界。
-- 公共值模型：[`physical_common_plans.rs`](physical_common_plans.rs)；核对 `PhysicalExpr::resolve_indices`、`PhysicalKind`、`PhysicalPlanNode` 与其 `memory_usage`。
-- crate 与模块接线：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)；确认包名、Go package 映射、公开模块、独立测试模块和主链 trait 实现位置。
-- Rust 主链对照：[`physical_window.rs`](physical_window.rs)、[`pkg/planner/core/optimizer_runtime.rs`](../../optimizer_runtime.rs)、[`pkg/executor/statement_ru_plan_walk.rs`](../../../../executor/statement_ru_plan_walk.rs)；确认同名主链结构与本文件轻量结构并存，主链复用 `PartitionSplitterType`。
-- Go 对照：[`physical_shuffle.go`](physical_shuffle.go)、[`pkg/planner/core/plan.go`](../../plan.go)、[`pkg/executor/builder.go`](../../../../executor/builder.go)；确认优化器插入条件、计划切分角色、splitter/worker/receiver 构建与错误边界。
-- 独立 Rust 测试：[`physical_shuffle_test.rs`](physical_shuffle_test.rs)；覆盖 EXPLAIN 数据源 ID、逐数据源 schema 解析、数据源在前/tails 在后的孩子顺序，以及 receiver 可选数据源内存计入。
-- Go 测试引用：`pkg/planner/core/plan_test.go`、`pkg/planner/core/integration_test.go`、`pkg/executor/statement_ru_plan_walk_test.go` 与 `pkg/executor/benchmark_test.go`；它们证明 Go 主链和执行器使用 Shuffle，但不直接证明本文件轻量结构已接线。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`explore/query/callers/callees` 查询了 `PhysicalShuffle`、`PartitionSplitterType`、`PhysicalShuffleReceiverStub` 及各方法。由于同名符号造成图查询歧义，调用结论再由精确 Rust 引用搜索核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文档存在且恰有 11 个固定二级标题，并人工检查只新增本文件、链接指向真实相邻源码、没有把 Go 或另一套 Rust 类型的能力误写成本文件能力。

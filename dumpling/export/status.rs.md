@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`status.rs`](status.rs) 属于 `astersql-dumpling-export` library crate；[`lib.rs`](lib.rs) 通过 `include!("status.rs")` 将它并入与 Go `dumpling/export` 包相似的单包命名空间，而不是建立独立 Rust module。其上游主入口位于 [`dump.rs`](dump.rs) 的 `Dumper::Dump`：表清单准备完成后先用 `calculateTableCount` 写入 `Dumper.totalTables`，再以 `startLogProgress` 启动后台状态采样，writer 完成任务时更新指标，最后停止并等待采样线程发布终态。缓存的 `DumpStatus` 同时供进度日志和 [`http_handler.rs`](http_handler.rs) 的 `/status` 响应读取。
-
-该文件不是单纯的数据类型定义：它集中实现了导出状态快照、周期刷新与日志、线程停止协议、基础表计数、JSON 表示以及最近吞吐速率。crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 和 `package.metadata.porting.go-package = "dumpling/export"` 确认；本文件直接使用的上下文、日志和其他包内类型经 `lib.rs` 的共享导入或 `include!` 获得。
+`Dumper::startLogProgress`/`runLogProgress` 管理后台线程：默认每 5 秒刷新、每 2 分钟记录一次进度，取消时再刷新一次并退出。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@ HTTP 服务只持有 `status` 的 `Arc`，不会延长数据库或存储句柄�
 
 本次增量用于跟随 Rust `Dumper` 新增的 keyspace 状态，保持后台视图构造完整；Go 的 goroutine/接收者模型没有这个独立 Rust 值视图构造要求，不能据字段复制推导额外的 Go GC 生命周期行为。
 
-直接对照文件是 [`status.go`](status.go)，Rust 保留了 `statusRefreshTick`、`logProgressTick`、`DumpStatus`、`GetStatus`、`RefreshStatus`、`calculateTableCount`、`SpeedRecorder`、`NewSpeedRecorder` 和 `GetSpeed` 的命名与核心分支。两端都在启动时刷新、取消退出时刷新；正常每 5 秒采样，每 2 分钟记录日志；`EnableLogProgress` 将日志缩短到 1 秒并先刷新；进度未知时省略进度字段，零 chunk 为完成，超过 100% 时钳制并告警。
+两端都在启动时刷新、取消退出时刷新；正常每 5 秒采样，每 2 分钟记录日志；`EnableLogProgress` 将日志缩短到 1 秒并先刷新；进度未知时省略进度字段，零 chunk 为完成，超过 100% 时钳制并告警。
 
-实现机制存在语言差异：Go 用 `atomic.Pointer[DumpStatus]` 发布快照，并在 `GetStatus` 中复制结构体及百分比指针；Rust 用 `Arc<Mutex<DumpStatus>>` 加 `Clone`。Go 的 `SpeedRecorder` 自带 `sync.Mutex`，Rust 将无锁字段结构包在 `Dumper.speedRecorder: Arc<Mutex<SpeedRecorder>>` 中。Go `startLogProgress` 返回闭包并通过 `WaitGroupWrapper` 等待，Rust 返回带 `Drop` 的 `LogProgressGuard`。Go 用 `time.Ticker/select`，Rust 用 `Instant` 截止点、短睡眠和上下文轮询模拟相同生命周期。
+实现机制存在语言差异：Go 用 `atomic.Pointer[DumpStatus]` 发布快照，并在 `GetStatus` 中复制结构体及百分比指针；Rust 用 `Arc<Mutex<DumpStatus>>` 加 `Clone`。Go `startLogProgress` 返回闭包并通过 `WaitGroupWrapper` 等待，Rust 返回带 `Drop` 的 `LogProgressGuard`。Go 用 `time.Ticker/select`，Rust 用 `Instant` 截止点、短睡眠和上下文轮询模拟相同生命周期。
 
-Rust 还包含服务自身需要的私有 `toJSON`；Go 依赖 `encoding/json` 和结构体 tag。Rust 手工 JSON 会拒绝非有限数值，并在字段为空/缺失时实现 `omitempty` 效果。以上差异是实现手段而非行为简化；新增字段时需同时更新 Go tag 语义与 Rust JSON 输出。
+Rust 还包含服务自身需要的私有 `toJSON`；Go 依赖 `encoding/json` 和结构体 tag。以上差异是实现手段而非行为简化；新增字段时需同时更新 Go tag 语义与 Rust JSON 输出。
 
 ## 扩展指南
 
@@ -98,10 +96,3 @@ Rust 还包含服务自身需要的私有 `toJSON`；Go 依赖 `encoding/json` �
 - 改变表计数：`calculateTableCount` 同时影响状态分母与列投影容量；若把视图或序列纳入，必须检查实际 task 生成与完成计数是否一致，防止长期无法达到 100%。
 
 主要风险是：状态字段/JSON 不同步造成 API 兼容性变化；采样锁或周期变化造成并发时序回归；更频繁采样增加锁与指标读取开销；表/chunk 分母与完成计数口径分裂导致错误进度。这些修改均应保持 Rust 与 Go 的逻辑和独立测试尽可能一致。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`progressView` 的完整构造与 `startLogProgress`/guard stop；独立 `status_test.rs` 及 `status.go` 用于状态/生命周期背景，字段复制行为直接由冻结源码证明。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

@@ -6,9 +6,7 @@ Go 对照：[helper.go](helper.go)
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。crate 根在 [lib.rs](lib.rs) 中通过 `#[path = "helper.rs"] mod helper_kernel;` 将它作为私有模块挂载；当前没有面向其他 crate 的常规 `pub use`，只有 `#[cfg(test)]` 下的 `expression_files_36::helper` 对测试重导出。因此它目前是表达式 crate 内部的默认时间值辅助实现，而不是稳定的跨 crate 公共 API。
-
-[Cargo.toml](Cargo.toml) 声明该 crate 对应 Go 包 `pkg/expression`。本文件直接使用 `chrono`、`chrono-tz` 和 `thiserror`，分别承担日历/时刻处理、IANA 时区转换和错误类型派生。
+`MysqlTime` 及其 `Display` 实现保存并格式化墙钟时间、零日期、时间类型和小数秒精度。
 
 ## 核心职责
 
@@ -88,13 +86,6 @@ Go 对照：[helper.go](helper.go)
 
 ## 与 Go 版本的对应关系
 
-对齐点：
-
-- `bool_to_int64` 与 `boolToInt64` 都实现布尔到 `0`/`1`。
-- `is_valid_current_timestamp_expr` 保留 Go 的大小写无关函数名判断、字段 decimal 规则以及“只检查首个参数”的细节。
-- 当前时间路径使用冻结语句时间、按 fsp 截断并转换到会话时区；`DATE` 清零日内部分。
-- 字符串当前时间立即求值，函数 AST 形式保留大写函数名延迟求值；零日期、整数时间和非法输入的主要测试分支与 Go 测试一致。
-
 尚未等价或模型更窄的部分：
 
 - Go 入口接收真实 `EvalContext`/`BuildContext`、`ast.ExprNode`、`types.Datum` 和完整类型上下文；Rust 使用本地轻量枚举和结构，尚未与 crate 的主表达式 AST/Datum 体系直接接线。
@@ -112,12 +103,3 @@ Go 对照：[helper.go](helper.go)
 - 若要让 `explicit_timezone` 生效，应先定义“无时区墙钟文本”的解释与存储规则，再补显式时区与会话时区不同的回归测试，避免无意改变显示值。
 - 修改 `MysqlTime::Display` 时同时覆盖 `Date`、零时间、fsp `0`/`6` 和纳秒截断；格式化位于可见行为边界，兼容风险高于普通内部重构。
 - 性能上当前解析每次分配 `String` 并调用 chrono 格式解析；高频接线前应评估是否复用 AsterSQL 类型系统解析器，而不是平行维护第二套解析路径。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 `11,467` 个文件、`307,296` 个节点和 `1,848,419` 条边；查询了 `pkg/expression/helper.rs` 全部 374 行及 `is_valid_current_timestamp_expr`、`get_time_current_timestamp`、`get_time_value`、`current_mysql_time` 的调用流。
-- 图中确认的核心边：`get_time_current_timestamp -> current_mysql_time`、`get_time_value -> current_mysql_time`；调用者包括 `helper_test.rs` 与 `fts_to_like_36_aster_unit_test.rs` 中的对应测试。
-- 已核对源码与装配：[helper.rs](helper.rs)、[lib.rs](lib.rs)、[Cargo.toml](Cargo.toml)。
-- 已核对 Go 对照与测试：[helper.go](helper.go)、[helper_test.go](helper_test.go)。
-- 已核对 Rust 独立测试：[helper_test.rs](helper_test.rs)、[fts_to_like_36_aster_unit_test.rs](fts_to_like_36_aster_unit_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构检查用于确认目标文档存在且恰有规定的十一个二级章节。

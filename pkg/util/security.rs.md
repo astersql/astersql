@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util` crate 的通用 TLS 边界；对应源码为 [`pkg/util/security.rs`](security.rs)，并由 `pkg/util/lib.rs` 以 `pub mod security` 导出。它把证书材料和验证策略转换成 `rustls` 客户端/服务端配置，并进一步提供阻塞 HTTP 客户端、明文/TLS TCP 监听器及流类型。应用侧的直接入口包括 `pkg/server/server.rs` 的 SQL TLS 配置与对端 CN 校验、`pkg/server/http_status.rs` 的状态端口 TLS，以及 BR 等组件调用的 `ToTLSConfig`；因此它位于配置输入与实际网络握手之间，不负责读取全局配置或管理服务器任务。
-
-crate 边界由 `pkg/util/Cargo.toml` 确认：运行时直接依赖 `anyhow`、`reqwest`（blocking + rustls）、`rustls`、`rustls-native-certs`、`rustls-pemfile`、`rustls-webpki`（源码别名 `webpki`）和 `x509-parser`；证书生成仅在测试依赖 `rcgen` 中出现。
+`TLS::WrapListener`、`Listener::accept`、`Connection` 把同一配置用于阻塞 TCP 服务端，并让明文和 TLS 连接共同实现 `Read`/`Write`。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ TLS 1.0/1.1 和未知版本在 `protocol_versions` 被拒绝。`Listener::accept
 
 ## 与 Go 版本的对应关系
 
-主要 API 对应 `pkg/util/security.go` 的同名 `TLS`、`ToTLSConfig[WithVerify]`、选项函数、`NewTLSConfig`、`NewTLS`、`ClientWithTLS` 和 `WrapListener`。共同语义包括：空路径式 CA 禁用 TLS、默认最低 TLS 1.2、路径优先于内容、密钥对路径支持轮转、CN 值 trim 后匹配，以及 CA/CN/密钥错误的主要错误文本。
-
 实现并非逐字段等价。Go 用 `crypto/tls` 回调和 `x509.CertPool`，Rust 用 rustls verifier trait；Go 的 CN 回调遍历 `verifiedChains`，Rust只检查 verifier 收到的叶证书。Go builder 的默认 `InsecureSkipVerify=true` 由自定义 CA/CN 回调弥补，Rust则拆成标准 server-name、只验链和完全信任三种验证器。Go 路径证书由 `GetClientCertificate` / `GetCertificate` 回调按握手加载；Rust是在每次创建 rustls config 时加载，当前 HTTP 每请求、监听器每 accept 都会重新创建 config，因此现有封装下仍能观察轮转。
 
 协议方面，Rust明确只实现 TLS 1.2/1.3；Go 测试通过设置 Min/Max 测试 1.0/1.1 失败。Go `NewTLSConfig` 源码的 ALPN 含 `http/1.2`，路径构造为 `h2`/`http/1.1`；Rust两条路径统一为 `http/1.1`/`h2`。Go `TestCA` 的“无 CA”场景会在测试中注入可信 roots，Rust对应测试直接覆盖完全信任兼容分支，安全强度不同，不能据测试名称误认为二者验证链完全一致。
@@ -88,12 +84,3 @@ TLS 1.0/1.1 和未知版本在 `protocol_versions` 被拒绝。`Listener::accept
 - CN 规则若迁移到 SAN、大小写归一化或多证书链语义，应集中修改 `verify_common_name`，并同步 `CommonNameServerVerifier`、`CommonNameClientVerifier`、Rust/Go 对照测试及用户可见错误文本。
 - 若追求 HTTP 连接复用或减少 provider/config 构建成本，应调整 `HttpClient` 持有预建 reqwest client；但需先定义证书轮转触发和并发一致性，否则会改变当前“每次 GET 重读路径密钥对”的行为。
 - 服务端热重载若改为缓存 `ServerConfig`，必须保留或显式替代当前每次 accept 读取路径证书的生命周期，并在 server 集成测试中验证旧/新连接边界。
-
-## 验证依据
-
-- 生产源码：`pkg/util/security.rs`，核对全部 769 行；关键符号为 `NewTLSConfig`、`TlsConfig::{client_config,server_config}`、`ToTLSConfigWithVerify`、四个 verifier、`NewTLS`、`Listener::accept` 和 `TLS::WrapListener`。
-- crate/装配：`pkg/util/Cargo.toml`、`pkg/util/lib.rs`；前者确认依赖和两个测试入口，后者确认公开模块与 `security_test.rs` 独立挂载。目标目录没有 `doc.go`。
-- Go 对照：`pkg/util/security.go`、`pkg/util/security_test.go`；核对构造优先级、CN、轮转、TLS 版本、CA 和监听器行为。
-- Rust 测试：`pkg/util/security_test.rs` 的 `test_invalid_tls`、`test_verify_common_name_and_rotate`、`test_tls_version`、`test_ca`；`pkg/util/security_2_aster_unit_test.rs` 的 `security_builder_validates_input_and_common_names`；`pkg/util/security_formal_aster_unit_test.rs` 确认正式 target 挂载。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/util/security.rs` 分段核对全文件；`explore "pkg/util/security.rs TLSConfig ToTLSConfig NewTLS"` 得到主调用链及 server/BR/测试调用方；`query ToTLSConfig`、`query TLSConfig` 消除 Go/Rust 同名歧义；`callees NewTLSConfig`、`callees ToTLSConfigWithVerify`、`callees WrapListener` 核对直接下游。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收只执行任务规定的十一章结构命令，并人工检查上述结论均能回溯至源码、图查询、Cargo、Go 或测试证据。

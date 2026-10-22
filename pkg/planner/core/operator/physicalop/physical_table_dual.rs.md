@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-core-operator-physicalop`。同目录 `Cargo.toml` 以 `lib.rs` 为 crate 根，并通过 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `pkg/planner/core/operator/physicalop`；`lib.rs` 用 `mod physical_table_dual` 纳入实现、用 `pub use physical_table_dual::*` 公开符号，并仅在测试配置下装入独立的 `physical_table_dual_test.rs`。
-
-直接说明对象是 [`physical_table_dual.rs`](physical_table_dual.rs)，以下结论均以该源文件的当前实现为准。
-
-`PhysicalTableDual` 是不访问真实表的叶子物理算子，承接 `LogicalTableDual`，为无 `FROM` 的常量查询、已知空结果等场景提供固定行数的行源。它位于逻辑计划枚举与执行器构建之间：本文件创建和初始化物理计划，`pkg/executor/builder.rs::build_typed_physical_plan` 再将其转换为 `TypedTableDual`。目标包没有 `doc.go`，包契约以 `Cargo.toml`、`lib.rs`、统一枚举路由和 Go 对照实现为准。
+定义 `PhysicalTableDual`，同时保存通用 Schema 生产者、固定输出行数 `RowCount` 和该算子专有的输出字段名 `names`。
 
 ## 核心职责
 
@@ -74,15 +70,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/physicalop/physical_table_dual.go`。
-
-- 两版结构都嵌入/持有 `PhysicalSchemaProducer`，保存 `RowCount` 和专有 `names`，并提供初始化、输出名读写、内存估算和 `rows:N` EXPLAIN 文本。
 - Go `Init` 在方法内新建 `BasePhysicalPlan`；Rust 将这一步拆为 `New` 与 `Init`，从而可以验证初始化不会重复分配计划 ID。Go 返回指针，Rust 消费并返回值。
 - Go `OutputNames` 直接返回切片；Rust 用 `NameSlice::Shallow` 复制容器并共享内部 `Arc`。Rust `Clone` 显式深克隆 Schema 与字段名，用于跨上下文计划复制；Go 的计划缓存克隆由生成文件 `plan_clone_generated.go::CloneForPlanCache` 处理。
 - Go `MemoryUsage` 对 nil 接收者返回零，并用 `size.SizeOfInt`、`size.SizeOfSlice`、指针容量和字段名内存计费；Rust 有效引用排除了 nil，并按 `i32`、向量本体、容量和字段名内存计算。两者意图一致，但 Rust 的 `RowCount` 固定为 32 位。
 - Go `findBestTask4LogicalTableDual` 返回 RootTask，拒绝 IndexJoin 或“多行且需排序”的属性；Rust `ExhaustPhysicalPlans4LogicalTableDual` 保留相同拒绝条件和 Schema/统计/偏移复制，但只返回物理候选，由统一任务枚举层包装。
 - Go 文件还包含 `findBestTask4LogicalMockDatasource`，用一行 Dual 代替 MockDataSource；该逻辑不在本 Rust 文件中。Rust 另有旧 Cascades `ImplTableDual` 路径，其排序匹配条件比本文件的零/一行特例更严格。
-- Go 结构本身没有在同目录发现专属 `physical_table_dual_test.go`；最近的 Go 使用证据包括 `pkg/planner/core/common_plans_test.go` 和多个 executor 测试。Rust 的专属回归集中在独立文件 `physical_table_dual_test.rs`。
 
 ## 扩展指南
 
@@ -92,15 +84,3 @@
 - 改变输出名所有权时，应扩展独立测试 `physical_table_dual_test.rs`，分别验证 `OutputNames` 的浅共享、`Clone` 的字段名独立性、缓存快照的预期共享/复制行为和内存容量计费。Rust 测试必须保留在独立测试文件，不能嵌入本源文件。
 - 改变构造或初始化时，应保留“每次 `New` 只分配一个计划 ID、`Init` 不再分配”的不变量，并同步 `init_reuses_the_constructor_plan_id`。
 - 兼容性风险主要在计划类型、EXPLAIN 文本、属性接受范围、Schema/名称克隆和 Go 对齐；性能风险主要在字段名深克隆、名称容量计费和缓存快照复制。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，Rust 与 Go 均已纳入。
-- RustCodeGraph `query PhysicalTableDual`：定位到 Rust `physical_table_dual.rs::PhysicalTableDual` 和 Go 同名结构，并列出 Rust `New` 的 executor/cascades/测试消费者；`query ExhaustPhysicalPlans4LogicalTableDual` 定位到本文件第 129 行的公开枚举入口。
-- RustCodeGraph `node --file pkg/planner/core/operator/physicalop/physical_table_dual.rs`：读取完整 148 行源码，并报告 11 个使用文件。精确 `callers/callees` 查询本次未返回边，因此又用下列直接源码接线核验，未把无输出解释成“无调用者”。
-- 源、crate 与模块边界：`pkg/planner/core/operator/physicalop/physical_table_dual.rs`、`Cargo.toml`、`lib.rs`、`base_physical_plan.rs`。
-- 规划与缓存路径：`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/core/operator/physicalop/cache_snapshot.rs`。
-- 执行边界：`pkg/executor/builder.rs`；该文件直接证明当前 `RowCount` 仅允许 `0..=1`。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_table_dual.go`、`plan_clone_generated.go`；最近的 Go 测试使用点为 `pkg/planner/core/common_plans_test.go`。
-- 独立 Rust 测试：`pkg/planner/core/operator/physicalop/physical_table_dual_test.rs`，验证输出名浅共享、跨上下文克隆的字段名独立性、容量相关内存估算，以及 `Init` 复用构造阶段计划 ID。
-- 人工复核结论：该文件存在是为了将不依赖存储的固定基数逻辑行源转换为带 Schema、统计和稳定计划元数据的物理叶子；它通过属性拒绝、上下文缺失回退和克隆错误传播覆盖规划边界。安全扩展必须同步统一枚举、旧 Cascades、缓存快照、typed executor builder、独立测试和 Go 语义基线。

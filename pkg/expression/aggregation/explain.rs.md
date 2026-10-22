@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应源文件 [`explain.rs`](./explain.rs)。它属于 Cargo 包 `astersql-expression-aggregation`（见同目录 `Cargo.toml`），负责把规划期的单个 `AggFuncDesc` 格式化为聚合算子的 EXPLAIN 片段。模块在 `lib.rs` 中以 `mod explain` 装配，并通过 `pub use explain::*` 将两个公开函数重导出到 crate 根，因此调用方使用 `aggregation::ExplainAggFunc`，无需知道私有模块名。
-
-当前 Rust 生产代码中，直接调用点是 `pkg/planner/core/operator/physicalop/base_physical_agg.rs` 的 `BasePhysicalAgg::explain`：它先输出可选的 `group by:`，再逐个调用 `ExplainAggFunc` 输出 `funcs:`，最后追加聚合结果列。由此，本文件位于“物理计划生成/展示 → 聚合函数描述文本化”链路上，不负责解析 SQL、构造聚合描述、执行聚合或输出完整 EXPLAIN 行。
+`normalized` 决定所有参数及排序表达式走 `Expression::ExplainNormalizedInfo` 还是 `Expression::ExplainInfo(ctx)`；前者用于规范化计划文本，后者保留求值上下文相关的可读信息。
 
 ## 核心职责
 
@@ -85,15 +83,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/explain.go`。Rust `ExplainAggFunc` 保留了 Go 版的核心顺序和标点：可选 mode、`distinct `、参数逗号、`GROUP_CONCAT` 的 ` order by `、可选 ` desc`、` separator `，以及 normalized/非 normalized 两套表达式格式化。
-
 主要实现差异：
 
 - Go 用 `bytes.Buffer` 与 `fmt.Fprintf`，Rust 用 `String`、`format!` 和 `push_str`。
 - Go 每次调用通过 failpoint `show-agg-mode` 读取局部 `showMode`；Rust 用进程级 `AtomicBool`，并提供 `SetExplainAggModeForTest`。两者输出语义对齐，但启停机制与测试隔离方式不同。
 - Go 当前还有 `pkg/planner/core/operator/logicalop/logical_aggregation.go` 和物理聚合两个生产调用点；全仓库 Rust 搜索只找到物理聚合调用点。因此不能据本文件声称 Rust 已覆盖 Go 的逻辑聚合 EXPLAIN 接线。
 
-Go 测试 `pkg/executor/test/tiflashtest/tiflash_test.go::TestMppAggShouldAlignFinalMode` 启用 failpoint 后，断言 `complete`、`partial1`、`partial2`、`final` 出现在 EXPLAIN 中，是模式文本及插入位置的直接对照证据。Rust 当前没有对 `SetExplainAggModeForTest` 的直接测试。
+Rust 当前没有对 `SetExplainAggModeForTest` 的直接测试。
 
 ## 扩展指南
 
@@ -103,12 +99,3 @@ Go 测试 `pkg/executor/test/tiflashtest/tiflash_test.go::TestMppAggShouldAlignF
 - 建议在同目录新增独立 `explain_test.rs`，并从 `lib.rs` 以 `#[cfg(test)] #[path = "explain_test.rs"] mod explain_test;` 装配；不要把测试写进 `explain.rs`。至少覆盖普通参数/DISTINCT、normalized 分支、多个 ORDER BY 项及 DESC、separator、各 mode、空参数边界，并妥善恢复全局开关。
 - 端到端文本变化还应同步检查 `pkg/planner/core/tests/null/null_test.rs` 的 `GROUP_CONCAT` EXPLAIN 断言，以及物理计划相关测试数据。若补齐 Rust 模式测试，应以 Go `TestMppAggShouldAlignFinalMode` 为行为基准，但不必复制其完整 TiFlash 环境才能验证纯字符串函数。
 - 兼容风险主要是 EXPLAIN 文本和 normalized 计划摘要变化；性能风险主要来自在计划展示路径增加额外表达式格式化或分配。函数本身不执行聚合，因此不应在这里加入运行时求值副作用。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/expression/aggregation` 确认目标 Rust/Go 文件、描述符、模块入口与邻近独立测试均已索引。
-- RustCodeGraph `explore "pkg/expression/aggregation/explain.rs ExplainAggFunc"`：读取了目标文件完整源码，并给出 Rust 调用者 `pkg/planner/core/operator/physicalop/base_physical_agg.rs::explain`。随后 `query ExplainAggFunc --kind function --json` 区分出 Go/Rust 两个同名符号。限定名称的 `callers/callees` 命令未在 30 秒内返回结果，因此调用边又以精确 `rg` 搜索和调用点源码核验。
-- 已读 Rust 生产路径：`pkg/expression/aggregation/explain.rs`、`lib.rs`、`Cargo.toml`、`descriptor.rs`、`aggregation.rs`，`pkg/planner/util/byitem.rs`，以及 `pkg/planner/core/operator/physicalop/base_physical_agg.rs`。
-- 已读 Go 对照与测试：`pkg/expression/aggregation/explain.go`、`pkg/executor/test/tiflashtest/tiflash_test.go::TestMppAggShouldAlignFinalMode`；Go 调用搜索还确认了逻辑与物理聚合两个入口。
-- 已读/搜索 Rust 测试：`pkg/planner/core/tests/null/null_test.rs` 直接断言 `group_concat(... order by ... separator ...)` 的完整 EXPLAIN 片段；`pkg/planner/core/integration_test.rs::test_agg_with_json_push_down_to_ti_flash` 覆盖含 `GROUP_CONCAT` 的聚合规划，但不直接断言本函数全部字符串分支；同目录测试搜索未找到 `ExplainAggFunc` 或 `SetExplainAggModeForTest` 的直接用例。
-- 本任务只新增说明文档，未运行 Cargo。结构验证按任务文件给定命令执行；其退出码记录在任务完成交付中。

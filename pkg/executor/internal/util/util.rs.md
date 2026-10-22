@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-internal-util` crate（见同目录 `Cargo.toml`），实现 executor 内部的测试与调试辅助：生成随机 ASCII 字符串、从调用栈识别调用方，以及递归检查临时目录中是否残留指定前缀的文件。`lib.rs` 以私有模块 `mod util` 装入本文件，再通过 `pub use util::*` 将其公开项从 crate 根导出。
-
-它不参与 SQL 请求的规划或执行数据路径。RustCodeGraph 对本文件公开函数的调用边只指向 `migration_aster_unit_test.rs`；仓库文本检索也未发现其他 Rust 调用方。因此当前 Rust 版本的真实角色是已移植且有独立测试覆盖的辅助 API，尚无证据表明 executor 的 Rust spill 测试或生产逻辑已经接入它。Go 对照文件 `util.go` 的调用者则主要是聚合、排序和 Join 的测试代码。
+`GenerateRandomString` 从固定的 62 字符字母表中独立抽样，生成调用者指定字节长度的伪随机字符串，适合构造测试数据，不提供密码学安全保证。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ Go 侧的对应 API 使用范围更广：`GenerateRandomString` 用于 `pkg/exec
 
 ## 与 Go 版本的对应关系
 
-`LETTER_BYTES` 与 Go `letterBytes` 内容完全一致；两版 `GenerateRandomString` 都逐位置从同一字母表随机抽样。差异是 Go 接受 `int` 且使用包级 `math/rand`，Rust 接受 `usize` 且使用 `rand::thread_rng()`；两者都只适合测试随机数据。
+差异是 Go 接受 `int` 且使用包级 `math/rand`，Rust 接受 `usize` 且使用 `rand::thread_rng()`；两者都只适合测试随机数据。
 
-Go `GetFunctionName` 通过 `runtime.Caller(1)` 和 `path.Base` 返回直接调用函数的基名。Rust 因没有相同运行时接口而捕获完整 backtrace，并返回最近合格的 demangle 符号；测试只断言结果包含 `function_name_probe`，没有承诺与 Go 一样只返回 basename。因此依赖精确字符串格式会形成跨平台兼容风险。
+Rust 因没有相同运行时接口而捕获完整 backtrace，并返回最近合格的 demangle 符号；测试只断言结果包含 `function_name_probe`，没有承诺与 Go 一样只返回 basename。
 
-Go `CheckNoLeakFiles` 接受 `*testing.T`，从全局配置读取 `TempStoragePath`，先断言该路径与 `t.TempDir()` 同父目录，再通过 `require` 直接令测试失败。Rust 版本改为显式传入扫描根目录并返回结构化 `Result`，没有复制全局配置与父目录约束；调用者负责选择正确目录并处理错误。两版都递归遍历、忽略目录、按 basename 前缀检查所有非目录项。Rust 的 `LeakCheckError` 是为可组合错误处理新增的类型，在 Go 文件中没有直接对应物。
+Rust 版本改为显式传入扫描根目录并返回结构化 `Result`，没有复制全局配置与父目录约束；调用者负责选择正确目录并处理错误。Rust 的 `LeakCheckError` 是为可组合错误处理新增的类型，在 Go 文件中没有直接对应物。
 
 ## 扩展指南
 
@@ -85,12 +83,3 @@ Go `CheckNoLeakFiles` 接受 `*testing.T`，从全局配置读取 `TempStoragePa
 扩展泄漏检查时，最合适的接入点是 `CheckNoLeakFiles` 的遍历过滤与 `LeakCheckError` 的错误分类；相关测试必须继续放在独立的 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。新增“跟随链接”“收集全部泄漏”“按原始字节匹配”或“自动删除”等行为都会改变现有边界及安全性，应使用显式选项或新 API，并补充循环链接、权限错误、非 UTF-8 名称、空前缀和并发清理等测试。若 Rust spill 测试开始接线，应在被测工作完成清理后调用，并同时验证扫描根目录来源，避免遗漏 Go 版本的全局临时目录约束。
 
 性能风险主要来自完整 backtrace 捕获和大型目录树的线性遍历；兼容风险主要来自函数名格式、符号链接处理和 Go/Rust 临时目录来源不同。修改公开错误枚举还可能影响下游穷举匹配，应谨慎新增变体。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/internal/util/util.rs`，共 110 行；RustCodeGraph `node --file` 核对了常量、三个公开函数、错误枚举及其 `path` 方法的完整实现。
-- crate 装配：`pkg/executor/internal/util/lib.rs` 中的 `mod util` 与 `pub use util::*`；`pkg/executor/internal/util/Cargo.toml` 中的 crate 名、库入口、四个运行依赖、`tempfile` 开发依赖及 Go package metadata。
-- 图查询：`rustcodegraph status` 显示索引包含 11,467 个文件且覆盖本目录；`files --filter pkg/executor/internal/util` 列出 `util.rs`、`util.go`、`lib.rs` 和独立迁移测试；`query`/`explore` 确认 Rust 直接调用边包括 `GenerateRandomString -> random_string_has_requested_length_and_go_alphabet`、`GetFunctionName -> function_name_probe`，并把泄漏检查测试定位到同一测试文件。对常见符号名的全库结果存在噪声，因此生产接线结论另用限定后缀的 `rg` 复核。
-- Go 对照：`pkg/executor/internal/util/util.go`；Go 使用点由 `rg` 定位到 `pkg/executor/aggregate/agg_spill_test.go`、`pkg/executor/sortexec/*spill_test.go`、`pkg/executor/join/*spill_test.go`、`pkg/executor/aggfuncs/aggfunc_test.go` 等测试文件。
-- Rust 独立测试：`pkg/executor/internal/util/migration_aster_unit_test.rs` 中的 `random_string_has_requested_length_and_go_alphabet`、`function_name_reports_its_caller`、`leak_check_walks_recursively_and_matches_only_prefixes`、Unix 条件测试 `leak_check_matches_go_for_prefixed_symbolic_links`。
-- 按计划本任务是纯文档分析，没有运行 Cargo 或代码测试；验收采用固定章节结构检查，并人工复核“文件为何存在、如何运行、如何安全扩展”均有源码、图查询、Cargo、Go 对照或独立测试证据。

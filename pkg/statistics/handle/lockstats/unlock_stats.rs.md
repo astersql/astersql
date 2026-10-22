@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-lockstats` crate 的统计信息解锁实现。crate 根 `pkg/statistics/handle/lockstats/lib.rs` 以私有模块 `mod unlock_stats` 装配它，并重新导出 `RemoveLockedTables`、`RemoveLockedPartitions` 以及三个 SQL 常量。它位于 `UNLOCK STATS` 执行链的持久化操作端：上层 `pkg/executor/lockstats/unlock_stats_executor.rs::UnlockExec::Next` 解析表和分区，统计句柄的 `pkg/statistics/handle/lockstats/lock_stats.rs::statsLockImpl` 再在事务会话中调用本文件入口。
-
-`pkg/statistics/handle/lockstats/Cargo.toml` 指定 `lib.rs` 为库入口，并用 `package.metadata.porting.go-package` 标明 Go 对照包 `pkg/statistics/handle/lockstats`。清单中的历史会话、统计工具和类型依赖目前均置于 `target.'cfg(any())'` 下，恒为禁用；因此本文件当前直接依赖的是本 crate 定义的抽象，而不是这些路径 crate。
+负责解除表或分区的统计锁，并在删除 `mysql.stats_table_locked` 锁行之前，把锁定期间累计的 `count`、`modify_count` 增量回灌到 `mysql.stats_meta`。
 
 ## 核心职责
 
@@ -65,8 +63,6 @@ RustCodeGraph 的精确被调用边确认：`RemoveLockedTables` 指向查询锁
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/statistics/handle/lockstats/unlock_stats.go`。两个版本都先查询锁集合，都禁止在父表被锁时单独解锁分区，都将分区增量同时写回分区与父表，并都在成功回灌后删除锁行。Go 测试 `unlock_stats_test.go` 进一步固定了无增量行视为 `(0, 0)`、StartTS 参与 `stats_meta.version` 更新、部分对象跳过时的消息以及父表锁阻止子分区解锁。
-
 实现结构存在一处刻意抽象差异：Go 的 `updateDelta` 直接取得 StartTS 并执行 `updateDeltaSQL`，`getStatsDeltaFromTableLocked` 与删除逻辑也直接调用受限 SQL；Rust 把这些细节分别下沉到 `RestrictedSQLExecutor::ApplyStatsDelta`、`LockedStatsDelta` 和 `DeleteStatsLock`。因此 Rust 文件中的三个 SQL 常量主要承担移植契约和测试对照，不能仅凭本文件断言具体执行器已经采用该 SQL；具体版本更新、count 下限和事务实现需要在执行器实现处继续验证。
 
 Go 将“回灌 + 删除”组合在 `updateStatsAndUnlockTable` / `updateStatsAndUnlockPartition` 中；Rust 分拆为 `updateStatsFor*` 后由外层入口调用 `deleteLock`，但顺序相同。Go 还记录解锁日志并有 `mockStatsVersion` failpoint，Rust 本文件没有对应日志和 failpoint；Rust 独立测试改用可记录、可注错的 trait mock 验证调用语义。
@@ -78,13 +74,3 @@ Go 将“回灌 + 删除”组合在 `updateStatsAndUnlockTable` / `updateStatsA
 若改变批处理或错误恢复策略，必须保持“增量不能因先删锁而丢失”的不变量，并检查 `StatsSession::WithSession(true, …)` 的事务原子性。并行化时还需明确同一父表的多个分区会并发累加同一 `stats_meta` 行，确认底层 SQL 的原子累加和锁冲突策略，不能只依赖当前串行循环。
 
 若改变跳过规则或提示文本，应同时更新 `generateStableSkipped*Message` 的调用约定、执行器 warning 行为以及 Rust/Go 对照测试。若新增公开入口或常量，还要在 `lib.rs` 调整再导出；若引入实际跨 crate 依赖，应先处理 `Cargo.toml` 中当前恒禁用的 `cfg(any())` 配置，而不能假设这些依赖已经参与编译。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/statistics/handle/lockstats` 确认同包生产文件和独立测试；`node --file .../unlock_stats.rs` 核对全部 130 行及八个主要符号。
-- RustCodeGraph 调用查询：`callees RemoveLockedTables`、`callees RemoveLockedPartitions`、`callees updateStatsForTable`、`callees updateStatsForPartition`、`callees updateDelta`，用于核对查询、回灌和删除调用边，并识别 Go/Rust 同名符号歧义。
-- Rust 源与装配：`pkg/statistics/handle/lockstats/lib.rs`、`lock_stats.rs`、`query_lock.rs`，以及上游 `pkg/executor/lockstats/unlock_stats_executor.rs`。
-- crate 边界：`pkg/statistics/handle/lockstats/Cargo.toml`；确认库入口、Go 包映射、历史移植任务和当前 `cfg(any())` 依赖配置。
-- Rust 独立测试：`pkg/statistics/handle/lockstats/unlock_stats_test.rs`，覆盖精确删除 SQL、表/分区回灌、稳定跳过消息、父表锁约束及错误传播。
-- Go 对照：`pkg/statistics/handle/lockstats/unlock_stats.go` 与 `unlock_stats_test.go`，核对 SQL、StartTS、增量读取、回灌顺序和边界行为。
-- 人工复核限制：RustCodeGraph 对跨 trait 动态分发未生成可靠 callers 边，因此上游接线由 `statsLockImpl` 与 `UnlockExec::Next` 的显式源码关系补证；本任务按计划不运行 Cargo，不对具体 `RestrictedSQLExecutor` 后端作运行时断言。

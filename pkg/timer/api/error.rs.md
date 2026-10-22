@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-timer-api` crate 的统一错误边界。crate 根模块 `pkg/timer/api/lib.rs` 通过 `pub mod error` 声明该模块，并用 `pub use error::*` 将错误类型、结果别名和兼容常量暴露到 crate 根；因此 API trait、内存存储、表存储、运行时 worker 以及 TTL timer 调用方都可以使用同一套错误协议。
-
-crate 边界由 `pkg/timer/api/Cargo.toml` 确认：库入口为 `lib.rs`，Go 对照包为 `pkg/timer/api`，本文件直接依赖 `thiserror = "2"`。它不实现定时器业务操作，而是把业务失败分类成可比较、可显示、可传播的值。
+`TimerError::message` 把字符串或可转换为字符串的值收敛为 `Message(String)`，用于输入校验、解析、会话适配及底层错误加上下文。
 
 ## 核心职责
 
@@ -63,9 +61,7 @@ crate 边界由 `pkg/timer/api/Cargo.toml` 确认：库入口为 `lib.rs`，Go �
 
 ## 与 Go 版本的对应关系
 
-Go 原型 `pkg/timer/api/error.go` 仅定义四个 `errors.New` 包级变量，错误文本与 Rust 四个无载荷变体逐一一致。Rust 的 `Err...` 常量保留 Go 名称，便于把 `errors.ErrorEqual`/哨兵错误判断迁移为 `PartialEq` 值比较。
-
-Rust 额外引入了 `TimerError` 枚举、`TimerResult<T>` 和 `Message(String)`，把 Go 中可返回任意 `error` 的接口收窄成统一静态类型。Go 侧可能用 `errors.Trace` 保留包装关系；当前 Rust 类型没有等价的 source/backtrace 包装，因此只保证分类值和最终文本语义，不保证 Go 错误链结构。`pkg/timer/api/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/timer/api"` 明确记录了这一移植对应关系。
+Rust 额外引入了 `TimerError` 枚举、`TimerResult<T>` 和 `Message(String)`，把 Go 中可返回任意 `error` 的接口收窄成统一静态类型。Go 侧可能用 `errors.Trace` 保留包装关系；当前 Rust 类型没有等价的 source/backtrace 包装，因此只保证分类值和最终文本语义，不保证 Go 错误链结构。
 
 ## 扩展指南
 
@@ -74,12 +70,3 @@ Rust 额外引入了 `TimerError` 枚举、`TimerResult<T>` 和 `Message(String)
 - 若需要保留底层错误链，应显式设计带 `#[source]` 的变体并评估 `Clone/Eq/PartialEq` 契约是否仍可维持，不能只把任意动态错误塞入现有枚举。
 - 最可能同步的测试包括 `pkg/timer/api/store_test.rs`、`client_test.rs`、`client_1_aster_unit_test.rs`、`pkg/timer/store_intergartion_test.rs` 与 `pkg/timer/runtime/worker_test.rs`；测试逻辑继续放在独立测试文件，不内嵌到 `error.rs`。
 - 兼容性风险主要是错误文本、公开名称和值比较行为；性能风险很低，但高频路径构造 `Message(format!(...))` 会分配字符串，新增上下文时应避免无意义的重复格式化。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/timer/api` 确认目标、Go 对照和独立测试均在索引内。
-- RustCodeGraph `node --file pkg/timer/api/error.rs` 与 `node TimerError`：核实 61 行源码、枚举变体、派生 trait、构造器、结果别名和四个常量；`node --file pkg/timer/api/error.go` 核实四个 Go 哨兵错误及文本。
-- RustCodeGraph `query TimerError/getOneRecord/ManualTriggerEvent` 以及对 `store.rs`、`mem_store.rs`、`runtime/worker.rs`、`store_test.rs`、`client_test.rs`、`client_1_aster_unit_test.rs`、`store_intergartion_test.rs` 的文件节点读取：核实生产调用边、重试/刷新分支及错误后不修改记录的测试证据。
-- 精确引用搜索覆盖 `pkg/timer` 与 `pkg/session/runtime/ttl_timer.rs`，用于补齐 RustCodeGraph 对同名 `message`、`Error` 的调用图歧义；未发现同名独立 `error_test.rs`。
-- 配置与模块证据来自 `pkg/timer/api/Cargo.toml` 和 `pkg/timer/api/lib.rs`；Go 行为对照还参考 `pkg/timer/api/store.go`、`mem_store.go`、`client.go` 及对应 Go 测试引用。
-- 本任务只新增文档，按计划不运行 Cargo；交付验证以固定章节结构、链接/路径真实性、直接证据复核和差异自检为准。

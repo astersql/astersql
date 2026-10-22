@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源文件：[prefix_scanner.rs](prefix_scanner.rs) 属于 `astersql-br-pkg-streamhelper` library crate。该 crate 的 [Cargo.toml](Cargo.toml) 以 `lib.rs` 为库入口；[lib.rs](lib.rs) 通过 `pub mod prefix_scanner` 装载本模块，并以 `pub use prefix_scanner::*` 把公开符号提升为 crate 级 API。文件没有 feature gate 或条件编译分支，独立测试由 `lib.rs` 在 `cfg(test)` 下挂载 [prefix_scanner_test.rs](prefix_scanner_test.rs) 和 [parity_test.rs](parity_test.rs)。
-
-本文件负责一个窄而完整的能力：把有序键值源抽象成按前缀限定的分页扫描器。它自行计算前缀的半开区间上界、保存跨页游标、判断扫描结束，并在聚合扫描失败时保留此前成功页。当前 Rust 版本不包含 Go 同文件里的 etcd 适配器，仓库中 `Source` 的实现仅见于独立测试，因此它是已公开并经过契约测试的通用扫描组件，但尚不能据此认定 Rust 生产路径已经接入真实 etcd。
+`PrefixNextKey` 把任意字节前缀转换成可用于范围扫描的排他上界，从而把“键以 prefix 开头”表达为 `[prefix, PrefixNextKey(prefix))`。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ Rust API 没有 Go 版本的 `context.Context`，因此本层没有取消、dead
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Source`、`PrefixScanner`、`scanPrefix`、`Page`、`AllPages` 和 `Done` 逐项对应 [prefix_scanner.go](prefix_scanner.go) 中的 `source`、`prefixScanner` 及其同名逻辑。两边都使用 `PrefixNextKey(prefix)` 构造排他上界；`more` 为真时都以最后键追加 `0x00` 推进；`more` 为假时都把 `done` 置真；聚合出错时都返回此前已完成页。
-
 Rust 自行实现 `PrefixNextKey`，并由 `prefix_scanner_test.rs::prefix_next_key_matches_tikv_overflow_contract` 固定空输入、全 `0xff` 和进位截断行为；Go 直接调用 `github.com/tikv/client-go/v2/kv.PrefixNextKey`。Rust 的 `ScanAllPagesError` 是为表达 Go 的 `([]kv.Entry, error)` 双返回而引入的结构体，错误页之前的结果不会丢失。
 
-当前差异包括：Go `Scan` 接受 `context.Context` 且返回三个独立值，Rust 无 context 并用 `Result<(entries, more), String>`；Go 文件包含可用的 `etcdSource` 与 `scanEtcdPrefix`，Rust 没有；Go etcd 错误会附加脱敏后的范围上下文，Rust 原样返回字符串；Go 页大小为平台宽度 `int`，Rust 固定为 `i32`。两边都隐含“`more` 为真则页面非空”的前提，也都没有在扫描器层验证正页大小。
+当前差异包括：Go `Scan` 接受 `context.Context` 且返回三个独立值，Rust 无 context 并用 `Result<(entries, more), String>`；Go 文件包含可用的 `etcdSource` 与 `scanEtcdPrefix`，Rust 没有；Go etcd 错误会附加脱敏后的范围上下文，Rust 原样返回字符串；Go 页大小为平台宽度 `int`，Rust 固定为 `i32`。
 
 ## 扩展指南
 
@@ -81,13 +77,3 @@ Rust 自行实现 `PrefixNextKey`，并由 `prefix_scanner_test.rs::prefix_next_
 加强输入健壮性时，修改入口应是 `Page`/`AllPages` 的页大小校验和 `Page` 对矛盾 `(empty, more=true)` 的显式错误，而不是依靠索引 panic。任何错误类型调整都要保持 `AllPages` 可携带部分结果的能力，并评估现有 `String` 调用方兼容性。游标算法若改变，必须证明对二进制键的“不重复、不遗漏、单调前进”不变量，尤其要覆盖某键本身是另一键前缀的情况。
 
 测试逻辑继续放在独立 [prefix_scanner_test.rs](prefix_scanner_test.rs)，不要内嵌到生产文件。建议补充：普通多页的精确游标参数、空最后页、矛盾 `more`、非正 size、全 `0xff`/空前缀的来源适配、来源错误后重试以及完成后调用行为；跨语言稳定契约同步扩展 [parity_test.rs](parity_test.rs)。若新增 etcd 适配器，还应增加独立集成测试验证 revision、取消、范围错误脱敏和数据在翻页期间变化的行为，并与 Go [prefix_scanner.go](prefix_scanner.go) 及 [client.go](client.go) 的调用语义对照。
-
-## 验证依据
-
-- 目标源码：RustCodeGraph `node --file br/pkg/streamhelper/prefix_scanner.rs --offset 1 --limit 260`，覆盖文件全部 105 行；确认一个函数、一个 trait、两个 struct、三个 impl/方法组，无条件编译项。
-- crate 与模块边界：[Cargo.toml](Cargo.toml) 和 [lib.rs](lib.rs)；确认 crate 名、library 入口、公开模块、包级再导出及独立测试挂载。
-- 数据模型：[stubs.rs](stubs.rs) 的 `Entry`；确认键和值都是拥有所有权的二进制向量。
-- 调用图：RustCodeGraph `explore "br/pkg/streamhelper/prefix_scanner.rs PrefixScanner prefix scan next reset"`、`files --filter br/pkg/streamhelper` 及精确源码检索；确认 Rust 构造/聚合调用位于 `prefix_scanner_test.rs` 和 `parity_test.rs`，没有生产 `impl Source`。宽泛图查询会混入同名 Go/Rust 符号，因此最终调用结论以文件限定结果和源码引用交叉核对。
-- Go 对照：[prefix_scanner.go](prefix_scanner.go) 全文件及 [client.go](client.go) 的 `scanEtcdPrefix`/`AllPages` 调用点；确认 etcd 适配、Context、错误注解、生产调用位置和分页语义。
-- 独立 Rust 测试：[prefix_scanner_test.rs](prefix_scanner_test.rs) 覆盖上界溢出和第二页错误时保留成功结果；[parity_test.rs](parity_test.rs) 的 `MemSource` 与 `go_rust_public_contract_matches` 覆盖排序、范围过滤、页大小为 1 的多页聚合及前缀外键排除；[integration_test.rs](integration_test.rs) 仅验证符号可链接。
-- 同路径不存在 `prefix_scanner_test.go`；Go 行为依据来自生产实现及 Rust 的 Go/Rust 契约测试。任务为纯文档分析，按计划未运行 Cargo；交付采用结构检查和人工事实复核。

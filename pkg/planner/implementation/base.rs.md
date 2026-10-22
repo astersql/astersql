@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-implementation` crate 的公共基础层，源码由 [`lib.rs`](lib.rs) 的私有 `base` 模块加载并整体再导出。它位于 Cascades/Memo 物理优化链的中间：上游 [`pkg/planner/cascades/old/implementation_rules.rs`](../cascades/old/implementation_rules.rs) 把具体 `PhysicalPlan` 包装成这里定义的访问与代价 trait，下游 [`datasource.rs`](datasource.rs)、[`join.rs`](join.rs)、[`simple_plans.rs`](simple_plans.rs) 和 [`sort.rs`](sort.rs) 用这些 trait 构造实现候选，并通过 `impl_implementation!` 接入 Memo 的 `Implementation` 接口。
-
-该文件不是独立的优化器入口，也不决定候选规则集合；候选规则及物理算子适配位于 `implementation_rules.rs`。它负责统一“缓存代价、读取计划、挂接子计划、折算子节点代价上限”这组基础协议。crate 边界由 [`Cargo.toml`](Cargo.toml) 声明，包名为 `astersql-planner-implementation`，移植元数据指向 Go 包 `pkg/planner/implementation`。
+位于 Cascades/Memo 物理优化链的中间：上游 [`pkg/planner/cascades/old/implementation_rules.rs`](../cascades/old/implementation_rules.rs) 把具体 `PhysicalPlan` 包装成这里定义的访问与代价 trait，下游 [`datasource.rs`](datasource.rs)、[`join.rs`](join.rs)、[`simple_plans.rs`](simple_plans.rs) 和 [`sort.rs`](sort.rs) 用这些 trait 构造实现候选，并通过 `impl_implementation!` 接入 Memo 的 `Implementation` 接口。
 
 ## 核心职责
 
@@ -79,15 +77,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`base.go`](base.go)，测试对照是 [`base_test.go`](base_test.go)。语义对应如下：
-
 - Go `baseImpl.cost` 对应 Rust `BaseImpl.cost`；空 children 的 `CalcCost` 返回并缓存 `0.0`，非空时累加所有子代价；`SetCost`、`GetCost`、`ScaleCostLimit` 和“总上限减孩子代价”的 `GetCostLimit` 保持一致。
 - Go `baseImpl` 同时持有 `plan PhysicalPlan`，Rust 将计划字段下沉到每个具体 `*Impl`，并用 `PlanAccess`/`*CostPlan` trait 解耦具体节点；因此 Rust `BaseImpl` 只负责代价状态。
 - Go `AttachChildren` 直接收集孩子的 `GetPlan()` 并挂接；Rust 为满足 trait object 所有权要求，通过 `clone_physical` 克隆后再挂接。最终保持孩子顺序和整组替换语义，但 Rust 多了“必须可克隆”的 panic 边界。
 - Go 主要依靠具体物理计划方法直接取代价参数；Rust 用多个 `*CostPlan` trait 显式列出依赖，并由 `PlanAdapter<T>` 调回物理计划、统计模块和会话变量。
 - Go 通过嵌入 `baseImpl` 复用 Memo 接口；Rust 通过 `impl_implementation!` 为每个具体类型生成 `Implementation` 实现。
-
-Rust 独立测试 `base_test.rs` 保留 Go `TestBaseImplementation` 的计划访问、空子代价求和和代价读写意图，并补充非空 children、上限、克隆/挂接、零代价算子不覆盖缓存、Reader 行宽来源与零 worker 浮点行为、Sort NaN 传播等移植边界。测试逻辑位于独立文件，未内嵌到生产源码。
 
 ## 扩展指南
 
@@ -96,13 +90,3 @@ Rust 独立测试 `base_test.rs` 保留 Go `TestBaseImplementation` 的计划访
 - 新 arity 或可选孩子结构若调用 `ChildCost`/`ChildRows`，必须在规则匹配处保证索引存在与顺序稳定；如无法保证，应先在具体实现中显式处理空/缺失孩子。
 - 需要特殊树改写的算子不应直接使用通用 `AttachChildren`。可仿照 `SortImpl` 克隆子树并保存改写结果，但必须验证 `clone_physical` 的支持情况和上下文复制语义。
 - 修改公共协议时同步更新独立测试 [`base_test.rs`](base_test.rs)，并核对 Go 的 `base.go`/`base_test.go`；算子专属公式还应更新其同目录独立测试。兼容风险主要是宏要求的字段/方法名、trait object API 变化和 children 顺序；性能风险主要来自不必要的整树克隆、重复统计访问，以及错误的并发因子或代价上限折算。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；本次查询时索引可用。
-- RustCodeGraph `node --file pkg/planner/implementation/base.rs`：核对 256 行完整源码、全部公开符号、宏和 5 个直接使用文件。
-- RustCodeGraph `query`：核对 `BaseImpl`、`ClonePlan`、`CloneChildren`、`AttachChildren`、`ChildCost`、`ChildRows`、`PlanAccess`、`ReaderCostPlan`、`SortCostPlan` 的定义与候选使用点。
-- RustCodeGraph `callees CloneChildren`：确认其调用 `ClonePlan`、`Implementation::GetPlan` 及共享引用借用；索引未返回若干 helper 的 caller 列表，因此再以目标文件的直接使用文件和精确符号搜索补齐证据。
-- RustCodeGraph 文件读取：核对 `datasource.rs`、`join.rs`、`simple_plans.rs`、`sort.rs`、`pkg/planner/cascades/old/implementation_rules.rs` 与 `pkg/planner/memo/implementation.rs` 中的实际调用、trait 实现和 Memo 接口。
-- 直接读取未由图覆盖的 [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`base.go`](base.go)、[`base_test.go`](base_test.go) 和 [`base_test.rs`](base_test.rs)，核对 crate 依赖、模块再导出、Go 对照及测试边界。`pkg/planner/implementation` 目录不存在 `doc.go`，因此没有更近的包级 Go 契约可读取。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构验证要求目标文件存在且恰有上述十一个固定二级章节。

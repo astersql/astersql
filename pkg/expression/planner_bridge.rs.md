@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/expression/planner_bridge.rs` 是 `astersql-expression` crate 面向规划器的表达式桥接层。模块由 `pkg/expression/lib.rs:353-354` 以 `planner_bridge_kernel` 私有模块装入，并由 `pkg/expression/lib.rs:731-737` 选择性公开导出；它不是独立 crate，也不是 SQL 入口，而是把规划器重写阶段需要的表达式构造、类型推导和特殊 builtin 状态接入表达式运行时。
-
-上游主链集中在 `pkg/planner/core/expression_rewriter.rs`：该文件调用本模块安装 GROUPING 元数据、构造或降级 FTS 表达式、创建 JSON_SUM_CRC32、精化比较常量、推导 BETWEEN/控制函数类型以及解析时间默认值。`pkg/planner/cardinality/selectivity.rs:241` 另以 `BuildFTSToILikeExpressionFromBuiltin` 将单列全文匹配临时替换为 ILIKE 树，以复用 TopN/直方图选择率路径。crate 边界由 `pkg/expression/Cargo.toml` 确认：包名为 `astersql-expression`，本文件直接使用的外部依赖包括 `chrono`、`chrono-tz`、`crc32fast`、`protobuf`、`tipb` 和 `types-dependency`。
+用 `PlannerBuiltinBase` 统一保存参数、返回类型、 protobuf 签名码、排序器、collation 信息和跨会话共享状态，并为本文件的三个特殊 builtin 提供通用 trait 行为。
 
 ## 核心职责
 
@@ -85,16 +83,11 @@ GROUPING 通过 `RwLock` 允许元数据安装和读取并发协调，但正确�
 
 ## 与 Go 版本的对应关系
 
-主要语义对照分散在多个 Go 文件，而不是同名 `planner_bridge.go`：
-
-- GROUPING 对应 `pkg/expression/builtin_grouping.go` 的 `BuiltinGroupingImplSig`、`SetMetadata` 和三种 grouping 算法。Rust 把 mode/marks/initialized 聚合到带锁 kernel，并提供 protobuf bytes 序列化；核心 mode 与 marks 校验意图一致。
 - FTS 签名对应 `pkg/expression/builtin_fts.go`，ILIKE 回退对应 `pkg/expression/fts_to_like.go`。自然语言/布尔 mode、query expansion 拒绝、必含/排除/可选组合以及单列选择率限制均对齐。Rust validator 直接按 token 字节验证其严格子集，扩展语法仍不在回退范围。
 - JSON_SUM_CRC32 对应 `pkg/expression/builtin_json.go`。两者都要求 JSON array 并按目标元素类型转换后 CRC 累加；Go 构造路径还先调用 `TryPushCastIntoControlFunctionForHybridType`，Rust 当前实现未出现这一预处理，扩展混合类型时必须专门复核此差异。
-- 比较和 BETWEEN 对应 `pkg/expression/builtin_compare.go` 的 `getBaseCmpType`、`GetAccurateCmpType`、`ResolveType4Between`、`RefineComparedConstant`；Rust 保留 vector/JSON/temporal/decimal precision、ceil/floor 与 exceptional 契约。
 - 控制函数对应 `pkg/expression/builtin_control.go::InferType4ControlFuncs`。Rust 额外以二参数包装器加 variadic 实现承接 Go 的可变参数行为，并对空参数返回错误而非 panic。
-- 时间解析对应 `pkg/expression/helper.go::GetTimeValue`。显式时区用于普通输入解析；当前时间来自会话语句时间，`pkg/expression/planner_bridge_test.rs::current_timestamp_uses_session_timezone_like_go` 固定验证显式解析时区不会移动 statement timestamp。
 
-相关 Go 测试包括 `pkg/expression/builtin_grouping_test.go`、`builtin_json_test.go`、`fts_to_like_test.go`、`helper_test.go`、`builtin_compare_test.go` 和 `builtin_control_test.go`（后两者通过对应生产符号与测试集合继续追踪）。Go 是语义基线，但本文只描述当前 Rust 事实，不把 Go 中尚未出现在 Rust 调用链的能力写成已支持。
+Go 是语义基线，但本文只描述当前 Rust 事实，不把 Go 中尚未出现在 Rust 调用链的能力写成已支持。
 
 ## 扩展指南
 
@@ -107,11 +100,3 @@ GROUPING 通过 `RwLock` 允许元数据安装和读取并发协调，但正确�
 扩展 JSON 数组元素类型时，修改 `BuildJSONSumCrc32FunctionWithCheck` 的允许列表与 `converted_item` 必须成对进行，并与 Go 的格式化结果逐值核对，否则 CRC 会产生兼容性变化。混合类型控制函数还应评估 Rust 缺少 Go `TryPushCastIntoControlFunctionForHybridType` 预处理的影响。
 
 修改类型推导时，应优先保持 `builtin_compare.go`/`builtin_control.go` 的分支顺序，因为先后次序决定 temporal、JSON、decimal 和 collation 的优先级；同步 `builtin.rs` 与 `expression_rewriter.rs` 的调用假设和独立回归测试。修改 `GetTimeValue` 时需分别覆盖 current timestamp/date、显式时区、零时间、数字输入、NULL 和非法 Datum，并警惕 statement timestamp 与解析时区的语义混淆。
-
-## 验证依据
-
-事实读取范围：`pkg/expression/planner_bridge.rs` 全部 1519 行、`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs` 的模块声明/导出、`pkg/expression/planner_bridge_test.rs`，以及直接调用文件 `pkg/expression/builtin.rs`、`pkg/expression/aggregation/base_func.rs`、`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/fulltext_to_like.rs`、`pkg/planner/cardinality/selectivity.rs`。
-
-Go 对照读取范围：`pkg/expression/builtin_grouping.go`、`builtin_fts.go`、`fts_to_like.go`、`builtin_json.go`、`builtin_compare.go`、`builtin_control.go`、`helper.go`，以及相关 `*_test.go` 的测试入口。Rust 独立测试直接覆盖 `grouping_metadata_is_installed_atomically`、`fts_like_fallback_accepts_only_the_supported_token_subset`、`fts_like_fallback_uses_go_modifier_bit_layout`、`current_timestamp_uses_session_timezone_like_go`；其他入口的行为证据同时来自上述调用点和 Go 对照测试。
-
-RustCodeGraph 验证包括：`status`（11467 files、307296 nodes、1848419 edges）、目标文件 `node --file` 全文分段读取、主要符号 `query`，以及 `callers/callees` 尝试。图能确认符号和文件级“used by 9 files”，但当前逐符号边查询为空，故再用精确 Rust 全库搜索验证行级调用关系。依任务约束未运行 Cargo；最终结构校验应确认本文存在且恰含规定的 11 个二级标题。

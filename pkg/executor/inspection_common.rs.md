@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文对应源码 [`inspection_common.rs`](inspection_common.rs)。本文件属于 `astersql-executor` crate；crate 根由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/lib.rs` 以 `pub mod inspection_common;` 将其公开。它承载巡检规则目录的 Rust 侧行物化逻辑，目标语义对应 Go 的 `pkg/executor/inspection_common.go`，即为 `INFORMATION_SCHEMA.INSPECTION_RULES` 生成 `(name, type, remark)` 三列。
-
-当前接线状态需要特别区分：`inspectionRuleRetriever`、两个类型常量和 `retrieve` 虽然是公开 API，但仓库内除本文件外没有 Rust 构造点或调用点。Go 主链已经由 `pkg/executor/builder.go` 的 `TableInspectionRules` 分支接到 `MemTableReaderExec`；Rust `pkg/executor/builder.rs` 尚无对应接线。因此本文件目前是可复用的已移植组件，不应描述为已经承接 Rust SQL 查询主链。
+通过 `retrieved` 和 `skip_request` 实现一次性读取及规划期判空后的快速返回。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ Rust 侧规则来源也仍是分离的：`pkg/executor/inspection_result.rs::ins
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/inspection_common.go` 是直接语义来源。两版均有同名两类常量、只取一次/跳过逻辑、空过滤表示全选、inspection 先于 summary、summary 排序、三字符串列及空 remark。
-
 主要差异是数据获取和接口形状：
 
 - Go 结构持有 `*plannercore.InspectionRuleTableExtractor`，运行时直接遍历包级 `inspectionRules` 与 `inspectionSummaryRules`；Rust 结构把 `skip_request`、类型集合和两个名称快照拆成自有字段。
@@ -82,7 +78,7 @@ Rust 侧规则来源也仍是分离的：`pkg/executor/inspection_result.rs::ins
 - Go 接受 `context.Context` 与 `sessionctx.Context` 并返回 error；Rust 接受未使用的泛型上下文并返回裸向量。
 - Go 已在 `builder.go` 接入 `TableInspectionRules`，Rust 没有对应 builder 引用。
 
-Go 集成用例 `tests/integrationtest/t/executor/inspection_common.test` 及结果文件验证当前 Go 注册表共 15 行，其中 inspection 5 行、summary 10 行、互斥的双重等值条件为 0。它们可证明对照语义和当前 Go 目录数量，但不能证明 Rust 检索器已接线或 Rust 快照数量必然相同。
+它们可证明对照语义和当前 Go 目录数量，但不能证明 Rust 检索器已接线或 Rust 快照数量必然相同。
 
 ## 扩展指南
 
@@ -93,13 +89,3 @@ Go 集成用例 `tests/integrationtest/t/executor/inspection_common.test` 及结
 - Rust 回归测试应放在独立文件（建议 `pkg/executor/inspection_common_test.rs`），并在 `pkg/executor/lib.rs` 的 `#[cfg(test)]` 模块区接入。至少覆盖空过滤、单类型、双类型、未知类型、`skip_request`、重复调用、summary 排序、inspection 保序、重复/空名称和三列 remark。builder 接线完成后还需增加 SQL 层集成覆盖；不要把测试内嵌到本生产源文件。
 
 兼容风险集中在可见行数、名称与排序；性能风险主要是两个名称列表的克隆和 summary 的 `O(n log n)` 排序。当前规则规模很小，但若目录显著增长，可考虑让构造方生成已排序快照，同时仍需保持 Go 可观察顺序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件已索引；`files --filter pkg/executor/inspection_common.rs` 报告该文件含 4 个符号。
-- RustCodeGraph `node --file pkg/executor/inspection_common.rs --offset 1 --limit 260`：核对完整 87 行源码、字段、分支、行形状与排序逻辑。
-- RustCodeGraph `query inspectionRuleRetriever`、`query type_enabled`、`query retrieve`：核对同名 Go/Rust 定义与内部方法；`explore` 确认 `type_enabled` 被 `retrieve` 调用。精确限定同名 `retrieve` 的 callers/callees 查询未在时限内返回，因此再用仓库文本引用核验调用面。
-- RustCodeGraph `node InspectionRuleTableExtractor` 与 `node TestInspectionRuleTableExtractor`：核对 Rust/Go 提取器字段以及 Rust 谓词边界测试。
-- 已读源码与配置：`pkg/executor/inspection_common.rs`、`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`、`pkg/executor/inspection_common.go`、`pkg/executor/builder.go`、`pkg/planner/core/memtable_predicate_extractor.rs`、`pkg/planner/core/memtable_predicate_extractor.go`、`pkg/executor/inspection_result.rs`、`pkg/executor/inspection_summary.rs`。`pkg/executor` 下未发现 `doc.go`。
-- 已读测试证据：`pkg/planner/core/operator/logicalop/logicalop_test/logical_mem_table_predicate_extractor_test.rs`、同路径 Go 测试、`tests/integrationtest/t/executor/inspection_common.test` 与 `tests/integrationtest/r/executor/inspection_common.result`。仓库搜索未发现直接构造 `inspectionRuleRetriever` 的 Rust 测试。
-- `rg` 核验：Rust 中目标符号仅在本文件出现；`pkg/executor/lib.rs` 仅完成模块导出，`pkg/executor/builder.rs` 尚无规则表接线。这是本文将当前迁移状态标为“实现存在、主链未接”的依据。

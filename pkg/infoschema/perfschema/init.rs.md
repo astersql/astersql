@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema-perfschema` crate（入口为 `pkg/infoschema/perfschema/lib.rs`），负责把 `const.rs` 中的静态 `CREATE TABLE` 文本转换为 `tables.rs` 定义的轻量元数据，并提供一次性注册 `PERFORMANCE_SCHEMA` 虚拟库的接口。它处在“表定义清单”与“会话可查询的系统表目录”之间，不负责生成虚拟表数据行；行包装和数据源在 `tables.rs`。
-
-当前存在两条使用方式。`init()`/`Init()` 在依赖就绪后把数据库放入本文件私有的进程内注册表；`pkg/session/runtime/system_query.rs` 则直接调用 `build_performance_schema()`，把返回的表元数据接入会话系统目录。后者是已检索到的生产调用点，因此不能把 `VIRTUAL_DATABASES` 说成所有查询路径的唯一注册中心。
+不执行 SQL、不保存表数据，也不实现 `PerfSchemaTable` 的行读取。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 的 `pkg/infoschema/perfschema/init.go::Init` 同样先检查 `expression.EvalSimpleAst != nil`，再用 `sync.Once` 执行一次初始化；Rust 用显式原子布尔值替代函数指针是否为空，并保留 `Init()` 别名。两者都按静态 DDL 顺序分配映射中的表 ID、把列 ID 设为从 1 开始、设置固定库 ID/public 状态，并注册名为 `PERFORMANCE_SCHEMA` 的 utf8mb4 数据库。
+Go 的 `pkg/infoschema/perfschema/init.go::Init` 同样先检查 `expression.EvalSimpleAst != nil`，再用 `sync.Once` 执行一次初始化；Rust 用显式原子布尔值替代函数指针是否为空，并保留 `Init()` 别名。
 
 关键差异是 Go 使用完整 `parser.ParseOneStmt` 与 `ddl.BuildTableInfoFromAST`，再调用 `infoschema.RegisterVirtualTable(dbInfo, tableFromMeta)`；Rust 使用本文件的受限字符串解析器和轻量 `TableMeta`，`init()` 只写入私有 `VIRTUAL_DATABASES`。当前会话目录通过 `system_query.rs` 直接消费 `build_performance_schema()`，而不是消费该注册表或 `table_from_meta` 回调。因此 Rust 已覆盖元数据构建和可查询目录接线，但注册抽象与 Go 并非一一等价。
 
-Go 的 `tables_test.go::TestPerfSchemaTables` 通过 SQL 验证若干表可查询且返回空行；Rust 的 `tables_test.rs::test_perf_schema_tables` 验证数据库包含对应表且每张表可由 `table_from_meta` 包装，`test_init_registers_when_eval_ready` 验证就绪后的 Once 注册。`init_test.rs::unnamed_unique_index_uses_first_column_name_like_go` 专门固定匿名唯一索引命名语义。
+Go 的 `tables_test.go::TestPerfSchemaTables` 通过 SQL 验证若干表可查询且返回空行；Rust 的 `tables_test.rs::test_perf_schema_tables` 验证数据库包含对应表且每张表可由 `table_from_meta` 包装，`test_init_registers_when_eval_ready` 验证就绪后的 Once 注册。
 
 ## 扩展指南
 
@@ -79,13 +77,3 @@ Go 的 `tables_test.go::TestPerfSchemaTables` 通过 SQL 验证若干表可查�
 若要把一次性注册表接入更多生产入口，应先决定是否统一 `system_query.rs` 的直接构建路径，避免出现两份状态来源。修改 `init()` 时需保留“未就绪调用不消耗 Once”的性质，并评估 panic、Once 中毒和并发调用。若开放注册失败恢复，应同时调整错误 API，而不是仅使用当前未消费的 `DuplicateDatabase` 变体。
 
 兼容风险主要是库/表/列 ID 与列顺序变化、名称大小写规则和默认字符集/排序规则偏离 Go；性能风险主要来自启动时解析全部静态 DDL以及每次读取注册表时的全量克隆。新增复杂索引还需验证索引列必须在其定义前已经解析这一约束。
-
-## 验证依据
-
-- 源码：`pkg/infoschema/perfschema/init.rs`（全部 259 行）、`const.rs`、`tables.rs`、`lib.rs`。
-- crate 边界：`pkg/infoschema/perfschema/Cargo.toml`；确认当前活动依赖与 `cfg(any())` 下的非活动移植依赖。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、7,032 个 Rust 文件；`files --filter pkg/infoschema/perfschema` 找到目标及对照文件；`node --file .../init.rs` 列出 23 个符号并报告三个直接使用文件；`query` 精确定位 `build_performance_schema`、本文件的 `parse_create_table`、`split_definitions`、`set_eval_simple_ast_ready` 和 `registered_databases`。精确 `callers/callees` 批量查询超时，调用边因此又以直接源码引用核验，不据此推断额外调用者。
-- 上游接线：`pkg/session/runtime/system_query.rs`；兼容行为测试：`pkg/session/mysql_metadata_compat_test.rs`。
-- Rust 测试：`pkg/infoschema/perfschema/init_test.rs`、`tables_test.rs`，覆盖匿名唯一索引、元数据构建、表包装和就绪后注册。
-- Go 对照：`pkg/infoschema/perfschema/init.go`、`const.go`、`tables.go`、`tables_test.go`、`main_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定 11 章节结构命令和人工事实复核验收。

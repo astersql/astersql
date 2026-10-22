@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 UniStore 内嵌 mock TiKV 的等待图死锁检测核心，源码为 [`detector.rs`](detector.rs)。它只负责维护“事务正在等待哪个事务”的有向图、判断新增等待关系是否闭环，以及清理等待边；请求分发、Leader/Follower 角色和死锁后的 waiter 唤醒位于相邻的 [`deadlock.rs`](deadlock.rs)。模块由 [`lib.rs`](lib.rs) 以 `pub mod detector` 暴露，所属 crate 是 [`Cargo.toml`](Cargo.toml) 中的 `astersql-store-mockstore-unistore-tikv`。
-
-该实现服务于进程内 mock 存储，并不直接实现网络协议或真实 TiKV 的分布式死锁检测。当前直接生产接线是 `DetectorServer::detect`：它把 `Detect`、`CleanUpWaitFor`、`CleanUp` 三类请求分别转发到本文件的对应方法。
+保存每条边的锁键哈希、原始锁键及资源组标签，使死锁结果中的 `wait_chain` 可用于诊断。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`detector.go`](detector.go)，行为测试是 [`detector_test.go`](detector_test.go)。Rust 的 `Detector`、`DetectorState::wait_for`、`Edge`、`DiagnosticContext` 分别对应 Go 的 `Detector` 状态字段、`waitForMap`、`txnKeyHashPair`、`diagnosticContext`；`detect`/`do_detect`/两种清理/`active_expire` 与 Go 同名方法保持相同主流程。
-
 两版共同保证：成环触发边不登记；等待链按“当前项等待下一项”排序；相同目标但不同 key hash 可并存；完全相同的目标与 key hash 去重；过期边不参与成环；主动过期要求时间与容量条件同时满足。Rust 测试 `deadlock_cycle_returns_ordered_diagnostic_wait_chain`、`broken_cycle_and_duplicate_registration_match_go`、`expired_edges_are_removed_without_reporting_a_deadlock` 分别固定这些语义，并与 Go 的 `TestDeadlock` 相互印证。
 
 实现差异包括：Go 用 `container/list`，Rust 用 `Vec<Edge>`；Go 把错误表示为 `kverrors.ErrDeadlock`/protobuf 条目，Rust 在本文件定义本地 `DeadlockError`/`WaitForEntry`，由 `deadlock.rs` 再转换为服务响应；Go 主动清理会写日志，Rust 当前不记录日志；Rust DFS 增加了 `HashSet` 访问剪枝，可安全终止不包含当前源事务的既有环；Rust 将原 Go 的独立 `register` 逻辑内联到 `detect`。这些是表示和健壮性差异，不应在扩展时误当作可删除的简化。
@@ -87,11 +83,3 @@
 - 公开类型或服务接线变化还需检查 [`deadlock.rs`](deadlock.rs) 和 [`deadlock_test.rs`](deadlock_test.rs)。crate 归属或 feature 变化则同步核验 [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)。
 
 兼容性风险主要是等待链字段/顺序影响上层死锁响应，正确性风险主要是漏检、误报、计数下溢或清理错边，性能风险主要是持锁 DFS 与全图扫描造成请求串行等待及深链递归。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引覆盖 11,467 个文件；`files --filter pkg/store/mockstore/unistore/tikv/detector.rs` 定位到目标文件；文件节点显示 257 行、14 个符号及 `deadlock.rs`、`deadlock_test.rs`、`detector_test.rs` 等引用者；`query` 确认 `Detector`、`do_detect`、`active_expire`、`clean_up_wait_for`、`edge_count` 的定义位置。图的宽泛同名查询会混入 Lightning 和 planner 的其他 detector，因此最终调用边以目标文件节点和相邻源码精确核验为准。
-- Rust 源码：[`detector.rs`](detector.rs) 核验所有类型、方法、锁范围、DFS、TTL、清理与计数逻辑；[`deadlock.rs`](deadlock.rs) 核验真实上游分发、错误转换和 waiter 回调；[`lib.rs`](lib.rs) 核验模块公开与独立测试装配。
-- crate 配置：[`Cargo.toml`](Cargo.toml) 核验 crate 名称、库入口、Go 包迁移元数据、target 依赖和本文件无额外依赖的事实。
-- 独立测试：[`detector_test.rs`](detector_test.rs) 核验三事务闭环、链顺序、闭环边不登记、精确清理、重复边去重、不同 key hash 共存和 TTL 惰性清理。
-- Go 对照：[`detector.go`](detector.go) 与 [`detector_test.go`](detector_test.go) 核验移植结构、阈值条件、等待链语义和差异。本文是纯文档分析，按任务约束未运行 Cargo 或代码测试；交付验证使用任务规定的 11 章节结构检查并人工复核链接与证据。

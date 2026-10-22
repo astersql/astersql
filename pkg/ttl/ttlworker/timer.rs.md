@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ttl-ttlworker` crate 的 TTL 定时触发适配层，由 [`lib.rs`](lib.rs) 通过 `pub mod timer` 暴露。它把“某张逻辑表/物理表的定时事件”转换为 `TtlJobAdapter` 上的可提交性检查、作业提交与状态查询，并用 `TimerResponse` 把结果表达为重试、运行中或关闭事件。当前 Rust 生产代码中，`JobManager` 实现了这里的适配接口，但仓库搜索未发现生产路径实例化 `TtlTimerHook` 或 `TtlTimerRuntime`；二者目前主要由 [`timer_test.rs`](timer_test.rs) 直接验证。因此它是可用的领域适配基线，而不是 Go 版 timer runtime 的完整接线。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：包名为 `astersql-ttl-ttlworker`，入口为 `lib.rs`。本文件只直接导入同 crate 的 `job_manager::TtlSummary`，没有直接使用 Cargo 中的外部依赖。
+这些职责由 `timer.rs:44-165` 的 trait、钩子和运行时实现直接给出；作业层的实际约束由 [`job_manager.rs`](job_manager.rs) 中 `impl TtlJobAdapter for JobManager` 提供。
 
 ## 核心职责
 
@@ -82,16 +80,9 @@ RustCodeGraph 对 `timer.rs` 的索引给出 21 个符号；精确查询能定�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`timer.go`](timer.go)，相关 Go 测试是 [`timer_test.go`](timer_test.go)。类型层面，`TtlTimerSummary`、`TtlJobTrace`、`TtlJobAdapter` 分别对应 Go 的 `ttlTimerSummary`、`TTLJobTrace`、`TTLJobAdapter`；Rust 保留了表/物理表、请求 ID、完成标志和摘要这些核心数据。
-
-已经对齐的关键语义包括：
-
-- 作业请求 ID 使用 timer event ID，而不是旧请求字段。
-- 提交水位使用 event start/`created_at`。
 - 提交前检查调度窗口和 `CanSubmitJob`；闭区间及跨午夜行为由 Rust 测试固定。
-- 作业完成时把 event ID 和可选作业摘要写入 timer 摘要。
 
-尚未等价移植的部分也很重要：Go 将预调度与正式调度分成 `OnPreSchedEvent`/`OnSchedEvent`，通过 timer client 关闭事件并写入 watermark/JSON summary；后台 goroutine 周期轮询并处理 timer 删除、事件变化、取消及瞬时错误；runtime 注册 hook factory 并真实启动 timer group。Rust 将其压缩为同步 `on_event` 与由外部驱动的单次 `poll`，`TimerResponse::Closed` 也只是返回值，不会自行持久化关闭事件。因此扩展时应以 Go 行为作为兼容目标，不能把当前轻量实现当成完整替代品。
+尚未等价移植的部分也很重要：Go 将预调度与正式调度分成 `OnPreSchedEvent`/`OnSchedEvent`，通过 timer client 关闭事件并写入 watermark/JSON summary；后台 goroutine 周期轮询并处理 timer 删除、事件变化、取消及瞬时错误；runtime 注册 hook factory 并真实启动 timer group。Rust 将其压缩为同步 `on_event` 与由外部驱动的单次 `poll`，`TimerResponse::Closed` 也只是返回值，不会自行持久化关闭事件。
 
 ## 扩展指南
 
@@ -101,12 +92,3 @@ RustCodeGraph 对 `timer.rs` 的索引给出 21 个符号；精确查询能定�
 - 若保留分钟配置，应增加合法范围校验并定义 `start == end` 的产品语义；任何语义变化都需要普通窗口、端点、跨午夜及相等端点测试。
 - 若增强错误类型，需同时修改 trait、`JobManager` 实现及测试适配器；当前公开 API 使用 `String`，变更会影响 crate 使用者。
 - 性能风险主要在未来轮询频率和并发任务数；当前同步方法自身没有循环。兼容风险主要来自时区、窗口边界、event ID/watermark 和关闭摘要格式。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ttl/ttlworker` 确认目标及相邻文件被索引；`node --file pkg/ttl/ttlworker/timer.rs --offset 1 --limit 500` 读取完整 165 行；`query TtlTimerHook`、`query TtlTimerRuntime`、`query can_submit_job`、`query on_event --kind function`、`query within_window --kind function` 核对主要符号。对精确方法执行的 `callers`/`callees` 查询无可用输出，已通过引用搜索补证而未臆造调用边。
-- 源码与装配：[`timer.rs`](timer.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- 直接生产实现：[`job_manager.rs`](job_manager.rs) 中 `impl TtlJobAdapter for JobManager`。
-- Rust 独立测试：[`timer_test.rs`](timer_test.rs) 覆盖幂等启停、闭区间边界、跨午夜、event ID、水位和关闭摘要；[`job_manager_integration_test.rs`](job_manager_integration_test.rs) 覆盖 leader/TTL/表身份门禁和作业唯一性。
-- Go 对照：[`timer.go`](timer.go) 与 [`timer_test.go`](timer_test.go)，用于确认完整 hook/runtime 生命周期及未移植分支。
-- 人工复核结论：本文件存在于 timer 事件与 TTL 作业管理之间；当前运行方式是外部调用同步提交并显式轮询；安全扩展必须同步 trait 实现和独立测试，并特别保护分区身份、调度窗口、event ID 与 watermark 协议。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`crr_sim.rs` 属于 `astersql-br-pkg-utiltest-crr` library crate。crate 由 [`br/pkg/utiltest/crr/Cargo.toml`](./Cargo.toml) 定义，`lib.rs` 通过 `pub mod crr_sim` 纳入模块并用 `pub use crr_sim::*` 再导出公开符号。它不是 BR 生产环境的跨区域复制实现，而是本地测试夹具：用对象存储抽象和有界事件通道模拟“上游对象产生新版本，复制工人把当前内容搬到下游”的最小链路。
-
-完整测试链中的装配入口是 `harness.rs::NewLocalTestHarnessWithTestContext`：它创建容量为 1024 的事件通道，把发送端交给 `CRRUpstreamStorage`，把接收端交给 `CRRWorker`，再由 `TestHarness::PullMessages` 和 `TestHarness::Replicate` 驱动复制。这里没有自动启动后台线程；“worker”只是需要调用者显式推进的确定性模拟器。
+只模拟对象事件与复制顺序，不实现真实 CRR 协议、持久事件队列、去重、版本号、重试策略或独立调度循环。
 
 ## 核心职责
 
@@ -88,7 +86,7 @@ RustCodeGraph 的静态边确认 `ReplicateBuffered → replicateOne`、`Replica
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 `crr_sim.go`：事件、worker 的四个公开方法、`replicateOne`、上游存储装饰器、事件发送函数和 writer 装饰器的顺序与主要分支一致。以下是实现语言带来的显式差异：
+以下是实现语言带来的显式差异：
 
 - Go 用 nil channel/函数；Rust 用 `Option<Receiver<_>>`、`Option<SyncSender<_>>` 和 `Option<&mut dyn FnMut>` 表达相同公共边界。`parity_test.rs` 验证 nil receiver 返回 0、nil 随机函数报错、nil sender 在底层写入后报错。
 - Go channel 由 harness 以 `make(chan ..., 1024)` 创建；Rust 将容量封装在 `new_event_channel`。Go `select` 发送与取消，Rust 使用带 1 ms 休眠的非阻塞重试。
@@ -106,13 +104,3 @@ Rust 的 `parity_test.rs` 覆盖主流程和多数公开边界；Go 的 CRR chec
 - 若要改为后台 worker，应在 `harness.rs` 中定义启动、取消、join 和关闭顺序，避免 sender/receiver 或存储的生命周期悬挂；当前确定性手动推进是大量测试可控制时序的基础。
 - 若改变 1024 容量或满通道策略，应补充可取消背压测试并评估忙等/休眠延迟、内存峰值和 Go 行为一致性。不要把这个测试替身直接扩张成生产队列。
 - 回归测试应优先放在独立的 `parity_test.rs` 或同目录新增 `*_test.rs` 文件；遵守仓库要求，不把测试内嵌到 `crr_sim.rs`。跨模块语义还应参考 Go 的 `br/pkg/stream/crr/internal/checkpoint/integration_test.go` 与 `randomized_integration_test.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/utiltest/crr` 确认目标与相邻模块已索引；`node --file br/pkg/utiltest/crr/crr_sim.rs` 读取目标 345 行并报告直接使用文件 `harness.rs`、`parity_test.rs`。
-- RustCodeGraph 调用查询：`callees ReplicateBuffered` 得到 `replicateOne`；`callees ReplicateBufferedRandom` 得到 `ReplicateBuffered`；`callees replicateOne` 显示存在性检查、读取和写入调用；`callees emitNewVersionEvent` 显示事件构造边。
-- crate 与模块证据：`br/pkg/utiltest/crr/Cargo.toml`、`br/pkg/utiltest/crr/lib.rs`。
-- Rust 直接调用与测试证据：`br/pkg/utiltest/crr/harness.rs`、`br/pkg/utiltest/crr/parity_test.rs`、`br/pkg/utiltest/crr/harness_test.rs`；其中 `parity_test.rs` 直接验证写入通知、最新优先、随机复制、空路径及 nil 边界。
-- Go 对照与场景证据：`br/pkg/utiltest/crr/crr_sim.go`、`br/pkg/utiltest/crr/harness.go`、`br/pkg/stream/crr/internal/checkpoint/checkpoint_calculator_test.go`、`integration_test.go`、`randomized_integration_test.go`、`br/pkg/stream/crr/service/service_test.go`。
-- 接口与并发约束证据：`br/pkg/utiltest/crr/stubs.rs` 中 `Context`、`Writer: Send` 和 `Storage: Send + Sync` 的定义。
-- 本任务只新增说明文档；未运行 Cargo 或代码测试。最终结构以任务指定命令校验，并通过差异审阅确认没有修改 Rust、Go、Cargo 或只读 `plan.md`。

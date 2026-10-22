@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`migration.rs` 属于 `astersql-br-pkg-restore-log-client` library crate。`br/pkg/restore/log_client/Cargo.toml` 通过 `[lib] path = "lib.rs"` 指定 crate 根；`lib.rs` 以 `#[path = "migration.rs"] pub mod migration` 挂载本文件，并通过 `pub use migration::*` 将公开类型和函数扁平再导出。Cargo 清单没有控制本模块的 feature，因此它随该 crate 正常编译；直接依赖包括本地迭代器 crate `astersql-br-pkg-utils-iter`，以及用于解析压缩注释的 `serde`/`serde_json`。
-
-在 PITR 日志恢复链路中，本文件位于“读取 migration 元数据”与“枚举实际恢复文件”之间：它把 `Migration` 中的元数据删除、compaction 产物目录和 ingested SST 元数据路径汇总成 `WithMigrations`，再把过滤规则套到 `LogFileManager` 的 meta → physical group → logical file 迭代链上。它不负责发现 migration 文件、不直接导入 SST，也不解析普通日志 backup meta；这些职责分别由上层客户端、`log_file_manager.rs` 及 stream/storage 辅助层承担。
-
-目标包目录没有 `doc.go`。最近的模块契约来自 `lib.rs`，生产接线可在 `client.rs` 与 `log_file_manager.rs` 中核对，独立 Rust 测试由 `lib.rs` 的 `#[cfg(test)] #[path = "migration_test.rs"]` 挂载。
+用 `MetaSkipMap` 表达 meta 路径、物理文件路径和逻辑 `RangeOffset` 三层删除，并用 `skipMeta`、`skipPhysical`、`skipLogical` 保持“父层整删后不再记录子层细删”的不变量。
 
 ## 核心职责
 
@@ -105,8 +101,6 @@ RustCodeGraph 的文件级索引把 `client.rs`、`log_file_manager.rs`、`migra
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 `migration.go`：三级 skip map、`WithMigrationsBuilder`、粗过滤、retain-latest-MVCC 注释模型与覆盖算法、三层迭代包装、compaction 目录串接和 ingested SST 分组过滤都保留了相同的数据流。`migration_test.rs` 也按 `migration_test.go` 的 `TestMigrations`、`TestFilterOut`、`TestRetainLatestMVCCCompactionCoverage` 及 ingested SST 用例组织。
-
 主要语言适配包括：Go 的 map/pointer/nil 由 Rust `HashMap`、拥有值与 `Option` 表达；Go 的多返回值 `(interval, bool, error)` 变为 `Result<(interval, bool)>`；Go 迭代器接口映射为 `Box<dyn TryNextor<T>>`；JSON 指针字段映射为 `Option<T>`。Rust `MetaWithMigrations` 额外保存 `name`，因为过滤键需要保留外部 meta 路径；Go 类型只保存内部 `meta` 与 skip map。
 
 有三点差异必须显式保留：
@@ -126,13 +120,3 @@ Rust 测试还增加了 `compactions_loads_storage_artifacts_and_filters_by_inpu
 - 修改三层过滤键时，要联动 `MetaName.name`、`DataFileGroup.Path` 和 `DataFileInfo.RangeOffset` 的生产者；路径规范化或 offset 语义变化会导致静默漏过滤，应通过 `FilterDataFiles` 的端到端迭代断言验证。
 - 为 `Compactions`/`IngestedSSTs` 引入并行或缓存时，保持惰性错误可观察、storage 生命周期不被迭代器越界借用，并评估路径/map 克隆与输出顺序的兼容性。
 - 新增测试继续由 `lib.rs` 以独立 `*_test.rs` 文件挂载，不要把测试模块嵌入 `migration.rs`。任何有意偏离 Go 的行为都应像 `NeedSkip` 一样记录原因和直接测试证据。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件，其中 Rust 7,032 个；索引可读取目标文件。
-- RustCodeGraph `files --filter br/pkg/restore/log_client`：确认目录内 Rust/Go 对照、独立测试与相邻生产模块集合。
-- RustCodeGraph `node --file br/pkg/restore/log_client/migration.rs --offset 1 --limit 500` 及 `--offset 490 --limit 180`：完整核对目标文件 635 行源码、44 个符号和文件级使用方。
-- RustCodeGraph `query WithMigrationsBuilder --kind struct --json`、`query ValidateRetainLatestMVCCCompactionCoverage --kind function --json`、`query Metas --kind function --json`：核对 Rust/Go 同名符号及其文件位置。`explore`/`callers` 在本地索引上超时且未返回调用边，故未将其当作完成证据。
-- 直接读取 `br/pkg/restore/log_client/Cargo.toml`、`lib.rs`、`migration.go`、`migration_test.rs`、`migration_test.go`、`export_test.rs`、`parity_test.rs`、`stubs.rs`，并读取 `client.rs`、`log_file_manager.rs` 的直接调用段；包目录不存在 `doc.go`。
-- 精确符号检索核对 `BuildMigrations`、`ValidateRetainLatestMVCCCompactionCoverage`、`Metas`、`Physicals`、`Logicals`、`Compactions`、`IngestedSSTs` 和 `NeedSkip` 的生产/测试引用，确认本文件不是未接线门面。
-- 未运行 Cargo 或代码测试：本任务只新增分析文档，任务计划明确禁止 Cargo。交付采用 Ready 文档范围，仅执行固定 11 章节结构验证、Markdown/差异检查和人工事实复核。

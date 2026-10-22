@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`restorer.rs`](restorer.rs) 位于 `astersql-br-pkg-restore` library crate 中；crate 由 [`Cargo.toml`](Cargo.toml) 声明，并由 [`lib.rs`](lib.rs) 以 `pub mod restorer` 挂载后扁平再导出。它是 Go [`restorer.go`](restorer.go) 的 Rust 语义镜像，处在“上层恢复生命周期/快照或日志客户端”和“底层文件导入器、Region 分裂器、checkpoint”之间，负责把备份文件组调度为异步导入任务。
-
-当前代码不是未接线的占位：`br/pkg/task/restore_lifecycle.rs::RestoreFiles` 会为 Snapshot 恢复构造 `NewMultiTablesRestorer`，为其他恢复构造 `NewSimpleSstRestorer`，然后执行 `GoRestore` 和 `WaitUntilFinish`；`br/pkg/restore/log_client/client.rs::InitSSTFileRestorer` 也会为 compacted SST 恢复构造 `NewSimpleSstRestorer`。不过该 crate 仍处于迁移期，`Context`、`ErrorGroup`、`WorkerPool`、checkpoint 和 split client 等边界来自本 crate 的 `stubs.rs`，不能据此推断已经验证真实 TiKV 的吞吐或网络行为。
+用 `BackupFileSet` / `BatchBackupFileSet` 表达表、SST 文件、重写规则之间的绑定，并提供 Raw/Txn 场景的文件组构造函数。
 
 ## 核心职责
 
@@ -102,7 +100,7 @@ RustCodeGraph 对 `restorer.rs::GoRestore` 的被调用关系确认了 `GroupOve
 
 ## 与 Go 版本的对应关系
 
-结构和主流程与 [`restorer.go`](restorer.go) 对齐：三种 Restorer、两层 importer trait、导入后 checkpoint、成功后进度、MultiTables 背压与 range-key 去重、以及 pipeline split 的顺序均保持一致。Rust 独立测试文件 [`restorer_test.rs`](restorer_test.rs) 映射 Go [`restorer_test.go`](restorer_test.go) 的 Simple 成功/失败、MultiTables 成功/失败/取消、WithSplit 不触发/触发 reset 等用例；Rust 还增加了“取消上下文原样传给 `ExecuteRegions`”的检查。
+Rust 独立测试文件 [`restorer_test.rs`](restorer_test.rs) 映射 Go [`restorer_test.go`](restorer_test.go) 的 Simple 成功/失败、MultiTables 成功/失败/取消、WithSplit 不触发/触发 reset 等用例；Rust 还增加了“取消上下文原样传给 `ExecuteRegions`”的检查。
 
 需要注意的迁移差异：
 
@@ -110,7 +108,6 @@ RustCodeGraph 对 `restorer.rs::GoRestore` 的被调用关系确认了 `GroupOve
 - Go 构造函数返回 `SstRestorer` interface；Rust 返回具体结构，调用方可再装箱为 `Box<dyn SstRestorer>` 或放入 `Arc`。
 - Go `MultiTablesRestorer` 的计数和时间字段为普通字段并通过可变接收者串行使用；Rust 因 trait 方法接收 `&self` 而用 `Mutex` 提供内部可变性。
 - Go 使用真实的 `context.Context`、`errgroup.Group`、TiDB worker/checkpoint/split 类型；本 crate 当前使用本地 stubs 和瘦身依赖。控制流有测试证据，但真实 TiKV 性能、RPC 与故障恢复不由这些单元测试证明。
-- Rust `FileImporter` 多出 `ConfigureDownloadRetry` 能力探测入口，以支撑 `log_client` 的 compacted-SST 接线；默认实现刻意报错。
 
 ## 扩展指南
 
@@ -121,16 +118,3 @@ RustCodeGraph 对 `restorer.rs::GoRestore` 的被调用关系确认了 `GroupOve
 - 扩展 pipeline 策略时，保持 `ShouldSkip → Accumulate → ShouldSplit → GetAccumulations → ExecuteRegions → ResetAccumulations` 的顺序；增加失败测试，证明 split 失败时错误可见且不会错误清空状态。
 - 若用真实依赖替换 `stubs.rs`，需要核对 `Context` 取消传播、`ErrorGroup` 首错语义、worker 饱和行为、checkpoint 并发安全和 `Close` 幂等性，不能只以编译通过作为等价证明。
 - 测试必须继续放在独立文件；首选扩展 `br/pkg/restore/restorer_test.rs`，公开 Go/Rust 契约和 Batch/checkpoint 边界可同步扩展 `br/pkg/restore/parity_test.rs`，不要把测试内嵌进 `restorer.rs`。
-
-## 验证依据
-
-本说明使用了以下直接证据：
-
-- RustCodeGraph 索引状态：共 7032 个 Rust 文件；读取了 `br/pkg/restore/restorer.rs` 全部 568 行，并查询了 `SimpleRestorer`、`BatchRestorer`、`MultiTablesRestorer`、`PipelineRestorerWrapper`、`GoRestore`、`WithSplit` 等符号及调用边。
-- 源码与 crate 边界：`br/pkg/restore/restorer.rs`、`br/pkg/restore/Cargo.toml`、`br/pkg/restore/lib.rs`、`br/pkg/restore/misc.rs`。
-- 直接 Rust 上游：`br/pkg/task/restore_lifecycle.rs::RestoreFiles`、`br/pkg/restore/log_client/client.rs::InitSSTFileRestorer`、`br/pkg/restore/snap_client/tikv_sender.rs::RestoreSSTFiles`。
-- Go 对照：`br/pkg/restore/restorer.go` 全部 458 行和 `br/pkg/restore/restorer_test.go` 全部 290 行。
-- Rust 测试：`br/pkg/restore/restorer_test.rs` 全部 572 行；`br/pkg/restore/parity_test.rs` 中 Simple/Batch/Multi、checkpoint、pipeline 与非法文件名边界段落。
-- 人工复核结论：该文件存在是为了统一不同备份格式的 SST 异步调度与收束；运行时由上层选择策略、投递、等待并关闭；安全扩展必须维护错误、checkpoint、进度、取消、背压和资源关闭的先后关系。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的私有 `runtime::bootstrap_wait` 模块。模块由 [`pkg/session/runtime.rs`](../runtime.rs) 的 `mod bootstrap_wait` 装配，不对 crate 外公开；文件中的函数和类型也都限制为 `pub(super)`。它位于会话运行时创建 Domain 之前的 keyspace 启动门禁，以及规范化 bootstrap 流程结束时的版本发布点之间。
-
-生产入口是 [`SessionFactory::from_tikv_store_with_server_info_options`](session.rs) 调用 `check_user_keyspace_bootstrap`：只有 `kv::IsUserKS(store)` 为真时才读取已注册的 SYSTEM storage 并进入本文的等待和版本检查。完成端是 [`BootstrapCanonicalDomain`](session.rs)，它在 mysql/sys 元数据和全局变量处理完毕后调用 `finish_store_bootstrap_version`，将当前 bootstrap 版本写入同一个元数据键。
+只提供同步所需的元数据读写、等待策略与版本不变量。
 
 ## 核心职责
 
@@ -87,16 +85,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`pkg/session/session.go`](../session.go) 中的 `waitSystemBootVersion`、`mustGetStoreBootstrapVersion`、`bootstrapSessionImpl` 和 `finishBootstrap`：
-
-- 两版都把 `0` 视为 `notBootstrapped`，最多尝试 360 次，退避为 1、2、4、5……秒，每 5 次输出累计等待日志，总等待接近 30 分钟。
-- 两版都在带 `InternalTxnBootstrap` 来源的可重试新事务中读取版本，并把最终读取错误作为 fatal。
-- 两版都在用户 keyspace 启动时先等 SYSTEM keyspace，再保证用户目标版本不高于 SYSTEM 版本。
 - 两版的等待都不响应 kill/cancel；Go 源码明确记录了该限制，Rust 以同步 `thread::sleep` 保持相同行为。
 - Go 通过 `meta.Reader/Mutator` 访问 bootstrap 版本；Rust 直接使用相同语义的 `BootstrapKey` 编码。Rust 的完成函数接受显式 `version`，Go `finishBootstrap` 固定写 `currentBootstrapVersion`。
 - Go `finishBootstrap` 同时设置 store 的 `StoreBootstrappedKey` 内存选项；Rust 此文件只发布持久化键。Rust 的调用者显式传当前版本，等待读取也不走缓存，因此本文覆盖的 SYSTEM 等待契约仍闭合；不能据此声称 Rust 已复刻 Go 的全部 bootstrap 缓存行为。
-
-Go 测试 [`pkg/session/session_test.go`](../session_test.go) 验证等待能观察并发提交、耗尽确实超过 29 分钟，以及用户目标版本领先 SYSTEM 时在创建 session 前 fatal。Rust 独立测试以可替换时钟保留相同分支，同时避免真实等待。
 
 ## 扩展指南
 
@@ -106,14 +97,3 @@ Go 测试 [`pkg/session/session_test.go`](../session_test.go) 验证等待能观
 - 新增错误返回而非 panic 时，应从 `must_get_store_bootstrap_version`、`check_system_bootstrap_version` 一路接到 `check_user_keyspace_bootstrap` 和 SessionFactory 构造结果，保留事务错误与“未完成”状态的区分。
 - 新增测试应继续放在独立的 [`bootstrap_wait_test.rs`](bootstrap_wait_test.rs)，不要内嵌到生产文件。并发可见性应使用真实 mock storage；纯时间策略可继续通过测试时钟验证。
 - 性能风险主要是缩短间隔造成存储轮询放大，或延长间隔造成节点启动延迟；兼容风险主要是允许用户 keyspace 领先 SYSTEM、过早发布版本，或让读写双方采用不同键/编码。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标仓库索引可用。
-- RustCodeGraph `node --file pkg/session/runtime/bootstrap_wait.rs`：核对文件全部 130 行、所有符号、事务读写、退避和 fatal 分支；图报告该文件由 `runtime/session.rs` 等文件使用。
-- RustCodeGraph `query`：确认 `BootstrapWaitClock`、`must_get_store_bootstrap_version`、`wait_system_boot_version_with_clock`、`check_system_bootstrap_version`、`finish_store_bootstrap_version` 的精确符号与签名。
-- RustCodeGraph/源码引用：[`runtime/session.rs`](session.rs) 第 848、1978–1991、2484–2646 行确认启动门禁、SYSTEM storage 获取和 bootstrap 完成发布；[`runtime.rs`](../runtime.rs) 第 83–85 行确认生产模块与独立测试模块装配。
-- [`pkg/session/Cargo.toml`](../Cargo.toml)：确认 crate 名、`nextgen` feature，以及 `astersql-kv`、`astersql-meta`、`astersql-util-logutil` 和测试 `fail` 依赖。
-- [`bootstrap_wait_test.rs`](bootstrap_wait_test.rs)：确认可重试提交、并发发布可见性、`1792` 秒/72 次日志预算、立即就绪、版本领先、无效元数据和不可重试提交错误等边界。
-- [`pkg/session/session.go`](../session.go) 与 [`pkg/session/session_test.go`](../session_test.go)：确认 Go 的 360 次指数封顶退避、不可取消说明、SYSTEM/user 版本门禁、并发提交与长时间耗尽语义。
-- 本任务为纯文档分析，按计划未运行 Cargo；交付前使用任务指定命令验证目标文档存在且固定二级章节恰好为 11 个，并人工复核未把 Go 缓存行为或未接线能力写成 Rust 现状。

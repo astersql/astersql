@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-ast` crate。`pkg/parser/ast/Cargo.toml` 将该 crate 的入口设为 `lib.rs`，而 `pkg/parser/ast/lib.rs:35` 以 `pub mod materialized;` 公开本模块。AST 数据结构本身集中定义在 `lib.rs:1939-2120`；本文件不负责词法解析、语法归约或执行物化视图任务，而是为这些既有类型补充两类行为：将 AST 恢复成 SQL 文本，以及把刷新语法组合归一化为具体的 `RefreshMaterializedViewMode`。
-
-因此它处在“解析后的 AST 表示”与“可读、可重放的 SQL 文本/执行模式选择”之间。当前可直接验证的使用面是同 crate 的独立测试 `pkg/parser/ast/materialized_test.rs`；RustCodeGraph 能确认目标文件被索引并由其他文件引用，但未为这些同名 inherent `restore` 方法解析出可归属的应用运行时调用边，不能据此宣称它已经接入某条具体执行主链。
+为 `RefreshMaterializedViewType`、`RefreshMaterializedViewCompleteType` 和 `RefreshMaterializedViewMode` 实现稳定的大写文本表示；未知枚举值在展示时统一写为 `UNKNOWN`（`materialized.rs:17-47`）。
 
 ## 核心职责
 
@@ -67,8 +65,6 @@
 
 ## 与 Go 版本的对应关系
 
-`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/parser/ast`。主要 Go 对照分布在 `pkg/parser/ast/ddl.go:1780-2330` 与 `pkg/parser/ast/misc.go:660-929`：前者包含 CREATE/ALTER/DROP 物化视图及日志，后者包含 PURGE、CANCEL、REFRESH、IMPLEMENT、刷新枚举和 `Mode`。
-
 Rust 基本保持 Go 的子句顺序、逗号连接、`PURGE IMMEDIATE` 短路、可选 TSO 仅在大于零时输出、COMPLETE 模式校验以及嵌套错误上下文。`RefreshMaterializedViewStmt::mode` 不需要处理 Go 的 nil receiver，因为 Rust 方法只能作用于现存值；缺失的可选内部节点仍通过 `Option` 显式报错。
 
 实现机制存在必要差异：Go 写入 `format.RestoreCtx` 并通过 `Node.Restore` 动态分派；Rust 返回拥有所有权的 `String`，名称/字符串转义由本文件辅助函数完成，表达式和查询则交给 `sql_restore`。Go 的未知枚举通常由整数默认分支产生，Rust 用 `Unknown(i32/u8)` 显式携带值。Rust 的 `TableOption::restore` 仅覆盖本文件当前需要的五类 option，不能视为 Go `TableOption.Restore` 的完整移植。
@@ -80,12 +76,3 @@ Rust 基本保持 Go 的子句顺序、逗号连接、`PURGE IMMEDIATE` 短路�
 - 扩展 `TableOption::restore` 前先核对共享类型的所有使用者和 Go `TableOption.Restore`，因为这是对全 crate 类型增加的公共方法；需要明确区分“物化视图允许的 option”与“通用 TableOption 能恢复的 option”。
 - 保持 Rust 源码与测试分文件：生产修改放在 `materialized.rs`/`lib.rs`，回归测试放在同目录 `materialized_test.rs`。重点补充缺失名称、空 action、无 Purge 节点、引号/反斜杠转义、schema 限定名和下游恢复错误。
 - 兼容风险主要是输出空格、关键字、引号及错误文本改变；性能风险主要来自大型列/action 列表与深层查询的字符串分配。若优化为直接写 formatter，应先用现有精确字符串测试锁定行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`node --file pkg/parser/ast/materialized.rs --offset 1 --limit 400` 与 `--offset 401 --limit 80` 覆盖目标文件 428 行；`query RefreshMaterializedViewStmt --kind struct`、`query CreateMaterializedViewStmt --kind struct` 将 Rust 类型定位到 `lib.rs`，并定位 Go 对照方法。对 inherent 方法的 callers/callees 查询未形成可用静态调用边，文中已将生产调用者标为未验证。
-- Rust 源码：`pkg/parser/ast/materialized.rs`（全部行为）、`pkg/parser/ast/lib.rs:35,1939-2120,5109`（模块公开、数据类型、独立测试模块）、`pkg/parser/ast/sql_restore.rs`（本文件直接委托的通用恢复边界）。
-- crate 配置：`pkg/parser/ast/Cargo.toml`（crate 名、`lib.rs` 入口、依赖与 Go package 元数据）。
-- Go 对照：`pkg/parser/ast/ddl.go:1780-2330`、`pkg/parser/ast/misc.go:660-929`。
-- 测试证据：`pkg/parser/ast/materialized_test.rs` 覆盖 CREATE、日志及 ALTER/DROP、缺失 SELECT、结构化 SELECT/表达式、CTE/UNION、子查询和通用恢复错误。按任务约束本次不运行 Cargo，测试文件仅作为现有行为证据读取。
-- 交付结构以任务指定命令验证，且人工复核本文只描述现有源码可证实的职责、流程、边界和扩展点。

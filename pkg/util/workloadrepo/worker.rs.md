@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`worker.rs` 是 `astersql-util-workloadrepo` crate 的状态与生命周期中心。crate 由同目录 `Cargo.toml` 定义，当前直接外部依赖只有 `chrono`；`lib.rs` 将本文件的后端抽象、数据类型、全局启停入口和查询封装再导出，根 `Cargo.toml` 再以 `facade_util_workloadrepo` 引入该 crate，`pkg/lib.rs::util::workloadrepo` 对外形成兼容门面。
-
-本文件本身不实现建表、采样、快照分配和分区维护的全部细节，而是定义这些模块共享的 `worker`、`repositoryTable`、`RepositoryBackend` 与运行状态，并在 `worker::startRepository` 中接线到 `table.rs` 的 `createAllTables`/`checkTablesExists`，在全局 `takeSnapshot` 中接线到 `snapshot.rs` 的 `worker::takeSnapshot`。当前 Rust 服务入口 `cmd/tidb-server/main.rs` 调用的是 `cmd/tidb-server/stubs.rs` 中的 `repository::SetupRepository`/`StopRepository`，代码搜索没有发现它直接调用本 crate 的同名函数；所以本文件应视为可独立测试和被门面导出的移植实现，而不是已经接通 Rust 服务器生命周期的完整后台服务。
+用 `worker` 聚合后端、表清单和 `WorkerState`，负责初始化、启动前置检查、停止及配置目标切换。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ RustCodeGraph `files --filter pkg/util/workloadrepo` 确认 worker 及上述相�
 
 ## 与 Go 版本的对应关系
 
-Rust 默认表类别、表清单、`HIST_SNAPSHOTS` 列、五次查询重试、目标表名补全和主要命名均直接对照 `pkg/util/workloadrepo/worker.go`。`worker_test.rs::default_snapshot_metadata_ddl_matches_go_columns` 固定元数据列契约，`exec_retry_joins_all_five_errors_like_go` 固定五次错误合并语义。
-
 重要差异如下：
 
 - Go `init` 注册 `executor.TakeSnapshot` 和四个全局系统变量 hook；Rust `init()` 无操作，配置接线尚未发生。
@@ -104,13 +100,3 @@ Rust 默认表类别、表清单、`HIST_SNAPSHOTS` 列、五次查询重试、�
 - 接入真正后台调度：不能把定时循环内嵌到本文件测试中；生产逻辑应与 `sampling.rs`、`snapshot.rs`、`housekeeper.rs` 协同，测试继续放在独立 `worker_test.rs` 或对应模块测试文件。需定义取消与 join 顺序、owner 迁移、panic/锁中毒策略，并对照 Go 的资源释放行为。
 - 修改查询重试：`execRetry` 是建表和分区 DDL 的共同依赖。增加退避或错误筛选会影响启动延迟与可观测错误，必须补充成功前瞬时失败、五次耗尽和错误聚合顺序测试。
 - 接入服务器主链：需要替换或绕过 `cmd/tidb-server/stubs.rs` 中的仓库占位，并提供真实 `RepositoryBackend`；这是当前文件之外的架构接线，不能仅以根门面存在作为完成证据。
-
-## 验证依据
-
-- 目标源码：`pkg/util/workloadrepo/worker.rs`，RustCodeGraph `node --file pkg/util/workloadrepo/worker.rs --offset 1 --limit 500` 完整读取 325 行；符号搜索确认常量、数据类型、trait、全局函数及 `impl worker`。
-- crate/门面：`pkg/util/workloadrepo/Cargo.toml`、`pkg/util/workloadrepo/lib.rs`、根 `Cargo.toml` 的 `facade_util_workloadrepo` 依赖，以及 `pkg/lib.rs::util::workloadrepo` 再导出。
-- 直接实现证据：`pkg/util/workloadrepo/table.rs` 的 `createAllTables`/`checkTablesExists`，`snapshot.rs` 的 `worker::takeSnapshot`，`sampling.rs` 的 scoped-thread 采样，`housekeeper.rs` 的 owner 分区维护，`const.rs` 的默认值和错误文案。
-- Go 对照：完整阅读 `pkg/util/workloadrepo/worker.go`，核对默认表、Domain/session/owner 资源、系统变量注册、异步启动、停止和查询重试。
-- 测试证据：`pkg/util/workloadrepo/worker_test.rs` 的 `TestRaceToCreateTablesWorker`、`TestGlobalWorker`、`TestAdminWorkloadRepo`、`TestStoppingAndRestartingWorker`、`TestSettingSQLVariables`、`default_snapshot_metadata_ddl_matches_go_columns`、`exec_retry_joins_all_five_errors_like_go`；另以 `sampling_test.rs`、`snapshot_test.rs`、`utils_test.rs` 的 `initializeWorker` 使用确认跨模块构造入口。Go 回归面参考 `pkg/util/workloadrepo/worker_test.go`。
-- 应用接线：仓库搜索确认 `cmd/tidb-server/main.rs` 的 Setup/Stop 调用解析到 `cmd/tidb-server/stubs.rs`，未发现 Rust 主链直接调用本 crate 的同名入口。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终只运行任务指定的 11 章节结构检查，并人工复核上述限制没有被描述成已支持能力。

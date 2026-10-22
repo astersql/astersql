@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`distribute.rs`](./distribute.rs) 属于 `astersql-executor` crate，并由 [`lib.rs`](./lib.rs) 的 `pub mod distribute` 公开。它是 `DISTRIBUTE TABLE` 与 `CANCEL DISTRIBUTION JOB` 在 Rust 侧的执行逻辑模型：把表或分区转换成物理键范围，向 PD 的 `balance-range-scheduler` 提交配置，再尝试取得调度作业 ID；取消路径则按 ID 撤销作业。它不处理 `SHOW DISTRIBUTION JOBS` 或 `SHOW TABLE ... DISTRIBUTIONS`。
-
-[`Cargo.toml`](./Cargo.toml) 将 crate 根设为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/executor"` 指向 Go 对照包。本文件唯一直接使用的 workspace crate 是清单中声明的 `astersql-util-chunk`；PD client、表编码、上下文和错误类型均由 `DistributionBackend` 的实现注入。
-
-当前接线必须分层描述：Rust 模块已经公开，算法也由 [`distribute_table_test.rs`](./distribute_table_test.rs) 独立测试；但仓库内 Rust 精确搜索没有发现测试之外的 `DistributeTableExec`、`CancelDistributionJobExec` 或 `DistributionBackend` 构造/实现。完整 SQL 生产入口仍可在 Go [`builder.go`](./builder.go) 中看到。因此本文件是已实现的可注入执行逻辑，现有证据不能证明它已经接入 Rust SQL 构建主链。
+`DISTRIBUTE TABLE` 与 `CANCEL DISTRIBUTION JOB` 在 Rust 侧的执行逻辑模型：把表或分区转换成物理键范围，向 PD 的 `balance-range-scheduler` 提交配置，再尝试取得调度作业 ID；取消路径则按 ID 撤销作业。
 
 ## 核心职责
 
@@ -85,11 +81,9 @@ RustCodeGraph 能可靠解析文件内部调用边，但对两个同名 `Next` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`distribute.go`](./distribute.go)。两版保持了相同的调度器名称、两种执行器、`Open`/`Next` 一次性流程、分区 ID 排序与连续范围合并、稳定 alias、配置字段、三次查询、两次 500ms 等待、活动作业筛选、最大 job ID 以及取消语义。
+Rust 用 `DistributionBackend` 替代 Go 对 `infosync`、`tablecodec`、`codec`、`tables`、InfoSchema 和 `context.Context` 的直接调用。Rust 的 `key_range` 必须在 adapter 中重建 Go 的 table prefix 编码、`codec.EncodeBytes` 与 URL/UTF-8 转义协议，当前测试 backend 的 `table-N` 只是确定性替身。
 
-Rust 用 `DistributionBackend` 替代 Go 对 `infosync`、`tablecodec`、`codec`、`tables`、InfoSchema 和 `context.Context` 的直接调用。`DistributionTable` 提前物化数据库名和分区映射；Go 则在执行时从 `TableInfo`/InfoSchema 查数据库名，并用 `tables.FindPartitionByName` 解析分区。Rust 的 `key_range` 必须在 adapter 中重建 Go 的 table prefix 编码、`codec.EncodeBytes` 与 URL/UTF-8 转义协议，当前测试 backend 的 `table-N` 只是确定性替身。
-
-Rust `scheduler_jobs` 直接返回类型化 `SchedulerJob`；Go `getSchedulerJob` 自行把 `any` 解码成列表和 map，并记录空配置、类型错误及请求错误。Rust 因而把反序列化与日志边界移到 backend。两版都把查询失败当作暂时不可见并重试，也都在三次未找到后无 job ID 地成功返回。
+Rust `scheduler_jobs` 直接返回类型化 `SchedulerJob`；Go `getSchedulerJob` 自行把 `any` 解码成列表和 map，并记录空配置、类型错误及请求错误。Rust 因而把反序列化与日志边界移到 backend。
 
 Rust `partition_names.sort_by_key(|name| name.to_lowercase())` 与 Go 按 `ast.CIStr.L` 排序意图相同，但 Unicode 规范化细节没有跨版本证明。Rust 取消 `Next` 不接收 chunk；Go 为满足统一 `exec.Executor` 接口保留未使用的 chunk 参数。Rust 类型当前也未实现与 Go `BaseExecutor` 等价的统一 executor trait。
 
@@ -104,12 +98,3 @@ Rust 独立测试覆盖物理 ID 合并、缺失分区、大小写不敏感选�
 - 修改重试策略时保持“配置创建只一次、查询可重试、等待可取消”的分层；增加零等待、首轮/末轮成功、查询连续错误和等待取消测试。更长或更密集轮询会增加 PD/微服务压力和 SQL 延迟。
 - 若要支持错误后重试或执行器复用，需要显式重新设计 `done` 状态机和幂等协议。仅把 `done = true` 移到成功之后可能让未知结果的网络请求重复提交或重复取消。
 - 若保留 `f64` job ID，应在 backend 解码边界验证有限、非负、整数且不超过 `u64`；若改成整数类型，要同步确认 PD JSON 协议与 Go 兼容性。
-
-## 验证依据
-
-- RustCodeGraph 索引：`status` 报告 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/distribute.rs` 确认目标文件已索引并含 20 个符号；`node --file ... --offset 1 --limit 500` 读取了全部 275 行。
-- RustCodeGraph 符号与调用：查询/读取了 `DistributeTableExec`、`CancelDistributionJobExec`、`Next`、`getKeyRanges`、`getSchedulerJob`、`distributeTable`；确认 `getKeyRanges <- Open`、`getSchedulerJob <- Next`、`distributeTable <- Next` 及各 backend 下游边。精确类型的上游只出现独立 Rust 测试；同名 `Next` 的名称级伪边未作为证据。
-- Rust 源与装配：完整读取 [`distribute.rs`](./distribute.rs)；读取 [`lib.rs`](./lib.rs) 的生产模块公开与 `#[cfg(test)]` 测试装配；读取 [`Cargo.toml`](./Cargo.toml) 的 package、lib、feature、porting metadata 和 `astersql-util-chunk` 依赖声明。目标包不存在 `doc.go`，因此没有可读的包级 Go 契约文件。
-- Rust 独立测试：完整读取 [`distribute_table_test.rs`](./distribute_table_test.rs)，核对元数据、范围合并、分区错误、alias、配置、查询重试/过滤、最大 ID、一次性提交及取消传播。
-- Go 对照与测试：完整读取 [`distribute.go`](./distribute.go)；用精确搜索核对 [`builder.go`](./builder.go) 的两个构造点；读取 [`distribute_table_test.go`](./distribute_table_test.go) 中 `TestDistributeTable` 和 `TestCancelDistributionJob`，并区分同文件其他 SHOW 类测试与本 Rust 文件职责。
-- 人工复核：本文明确标出 Rust 已实现、独立测试覆盖和未验证生产接线三种状态，并回答文件存在原因、两条执行路径、状态/错误/资源边界及安全扩展位置。本任务按计划不运行 Cargo。

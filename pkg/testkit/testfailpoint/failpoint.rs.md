@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 workspace crate `astersql-testkit-testfailpoint` 的核心实现，源码为 [`failpoint.rs`](./failpoint.rs)，crate 根 [`lib.rs`](./lib.rs) 通过 `pub mod failpoint` 声明模块并以 `pub use failpoint::*` 将全部公开 API 提升到 crate 根。因而调用方通常写成 `astersql_testkit_testfailpoint::enable(...)`，而不是直接引用内部模块路径。
-
-它位于测试基础设施层，但不是只在 `cfg(test)` 下编译的测试文件：生产实现中的故障注入边界也会调用 `inject`、`inject_value`、`eval_bool`、`eval_string` 或 `is_active`，测试再通过同一 crate 注册对应行为。例如 [`pkg/session/runtime/ddl.rs`](../../session/runtime/ddl.rs) 调用 `inject_value`/`inject`，[`pkg/session/runtime/control.rs`](../../session/runtime/control.rs) 调用 `eval_string`/`is_active`。因此它不参与正常 SQL 业务决策；未注册 failpoint 时，它应让这些边界保持无注入效果。
-
-[`Cargo.toml`](./Cargo.toml) 指定库入口为 `lib.rs`，唯一直接依赖是启用 `failpoints` feature 的 `fail = 0.5.1`，并用 `package.metadata.porting.go-package = "pkg/testkit/testfailpoint"` 记录 Go 对照包。根 [`Cargo.toml`](../../../Cargo.toml) 将本 crate 纳入 workspace，多个会话、DDL、执行器和 RealTiKV 测试 crate 以路径依赖复用它。
+`eval_bool`、`eval_string`、`inject`、`is_active` 为运行时代码提供布尔/字符串求值、纯副作用触发和只读注册状态检查。
 
 ## 核心职责
 
@@ -103,11 +99,9 @@ RustCodeGraph 的文件索引确认本目录包含 `failpoint.rs`（31 个符号
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`failpoint.go`](./failpoint.go)，仅公开 `Enable(t, name, expr)`、`EnableCall(t, name, fn)` 和 `Disable(t, name)`。三者用 `require.NoError` 把配置/禁用错误变为测试失败，并由 `t.Cleanup` 在测试结束时自动禁用。
-
 Rust `enable`/`enable_call` 保留“注册失败立即失败”的语义，但把 `testing.TB` 生命周期改为返回值的 RAII 生命周期：调用者必须保存守卫，提前 `drop` 就会提前禁用。Rust `disable` 接受未知名称且不返回错误；其目标是与 Go 辅助函数的正常无错使用方式兼容，但没有 `testing.TB` 可记录断言。
 
-Rust 文件额外提供 `inject`、布尔/字符串求值、活跃检查、并发回调、值回调和暂停栅栏。这些不是当前 Go `testfailpoint` 辅助文件的逐函数翻译，而是为了连接 Rust 生产注入点和迁移测试补充的适配层。其中值回调明确模拟 Go `failpoint.InjectCall` 传递参数的可观察边界；暂停辅助则把测试常见的“命中后等待测试放行”模式封装为 RAII 注册加条件变量。
+Rust 文件额外提供 `inject`、布尔/字符串求值、活跃检查、并发回调、值回调和暂停栅栏。这些不是当前 Go `testfailpoint` 辅助文件的逐函数翻译，而是为了连接 Rust 生产注入点和迁移测试补充的适配层。
 
 对应语义的最近独立 Rust 测试位于 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)，由 `lib.rs` 的 `#[cfg(test)]` 模块声明加载，没有把测试逻辑内嵌进生产文件。仓库同目录没有 Go `failpoint_test.go`；Go 语义依据来自 `failpoint.go` 本身及全仓 Go 调用方，而 Rust 扩展能力还需参考上述 Rust 单元/集成测试。
 
@@ -122,13 +116,3 @@ Rust 文件额外提供 `inject`、布尔/字符串求值、活跃检查、并�
 扩展暂停能力时，最可能修改 `PauseState`、`PauseGuard` 方法和 `enable_pause`。增加取消、自动恢复或多轮屏障前必须定义守卫析构时的行为、多个命中线程的放行方式以及超时后的清理策略，避免把一次性门闩悄然变成语义不完整的循环屏障。
 
 测试应继续放在独立文件，而不是写入 `failpoint.rs`。基础契约同步到 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；涉及并发重叠可参考 `tests/realtikvtest/addindextest3/ingest_test.rs`，涉及暂停生命周期可参考 `tests/realtikvtest/txntest/txn_state_test.rs` 和 `pkg/ddl/tests/partition/error_injection_test.rs`，涉及值回调可参考 `tests/realtikvtest/ddltest/ddl_test.rs`。应覆盖同名覆盖与乱序析构、回调重入、并行命中、超时后恢复、锁中毒 panic 信息以及未注册名称；性能风险主要是每次注入的全局互斥锁与字符串查找。
-
-## 验证依据
-
-- 源码与模块边界：[`failpoint.rs`](./failpoint.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、根 [`Cargo.toml`](../../../Cargo.toml)。
-- Go 对照：[`failpoint.go`](./failpoint.go) 的 `Enable`、`EnableCall`、`Disable` 及 `t.Cleanup` 行为。
-- 最近的独立 Rust 测试：[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 的 `enable_and_guard_cleanup_match_go_test_cleanup`、`enable_call_registers_callback_and_cleans_it_up`、`disable_removes_an_enabled_failpoint`、`value_call_forwards_runtime_value_and_guard_cleans_up`、`pause_wait_timeout_never_strands_the_test`。
-- 代表性调用证据：`pkg/session/runtime/{ddl,control,planning}.rs`，`pkg/store/driver/read_request.rs`，`tests/realtikvtest/{addindextest3/ingest_test,txntest/txn_state_test,ddltest/ddl_test}.rs`，`pkg/ddl/tests/partition/error_injection_test.rs`。
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件，`files --filter pkg/testkit/testfailpoint` 确认目标、入口、Go 对照和迁移测试；精确 `query` 确认主要公开函数与方法的位置和签名。`explore`、按文件 `node`、精确 `callers/callees` 本次没有返回可用边，因此调用关系另由 `rg` 核验。
-- 静态边界复核：文件共 283 行，无条件编译；测试由 `lib.rs` 的 `#[cfg(test)] #[path = "migration_aster_unit_test.rs"]` 独立挂接；文档未把未运行的 Cargo 测试描述为已验证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工复核所有重要行为均能回指上述符号或调用文件。

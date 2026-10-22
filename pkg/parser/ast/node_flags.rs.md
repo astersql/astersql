@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-parser-ast` crate 内，是“真实解析器 AST”的表达式特征标记计算层。它接收任意 `&dyn Node`，沿 `Node::accept`/`Visitor` 遍历完整语句树，把参数、引用、函数、聚合、窗口函数、子查询等性质写入每个 `ExprNode::Flag`。模块在 `pkg/parser/ast/lib.rs` 中以私有 `mod node_flags` 装配，但公开再导出 `HasAggFlag`、`HasWindowFlag` 和 `SetFlag`。
-
-实际入口位于 `pkg/parser/yy_parser.rs` 的 `Parser::ParseSQL`：语法归约完成且 `check_ast_depth_limit` 成功后，对每条结果语句调用 `parser_ast::SetFlag(statement.as_ref())`，然后才向调用方返回 AST。因此，本文件处在“SQL 已解析为 AST”与“绑定、规划等下游读取表达式性质”之间。
-
-不要把本文件与 `pkg/parser/ast/flag.rs` 中针对精简模型 `FlagExpr` 的同名 API 混为一谈。前者操作 `lib.rs` 定义的真实 `ExprNode`，也是 `lib.rs` 对外再导出的实现；后者是公开 `flag` 模块中的独立移植模型。
+只负责描述 AST 的结构性质，不做名称解析、类型推断、常量折叠或 SQL 合法性检查。
 
 ## 核心职责
 
@@ -75,13 +71,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/parser/ast/flag.go`。两边均以访问者后序遍历实现：Go 的 `flagSetter.Leave` 对具体表达式类型进行 type switch，Rust 的 `Setter::leave` 将真实节点转为 `ExprNode` 后对 `ExprKind` match；聚合、窗口、between、binary、case、列引用、比较子查询、default、exists、普通函数、cast、is-null/is-truth、in、like/regexp、row、subquery、unary、values 和 variable 的合并意图相同。
+两边均以访问者后序遍历实现：Go 的 `flagSetter.Leave` 对具体表达式类型进行 type switch，Rust 的 `Setter::leave` 将真实节点转为 `ExprNode` 后对 `ExprKind` match；聚合、窗口、between、binary、case、列引用、比较子查询、default、exists、普通函数、cast、is-null/is-truth、in、like/regexp、row、subquery、unary、values 和 variable 的合并意图相同。
 
 Rust 真实 AST 将多个 Go 具体结构统一到 `ExprKind`，并额外显式处理 `Collate`、`InSubquery`、连续 `Parentheses` 和共享 `NodeRef` 遍历。Go 的 `Enter` 始终返回 false，而当前 Rust 括号分支会跳过默认孩子遍历后自行下钻。
 
 需特别注意两套常量的位编号：Go `ast.go` 的 `FlagHasParamMarker` 从 `1 << 0` 开始；本文件实际导入的 Rust `flag.rs::FLAG_HAS_PARAM_MARKER` 从 `1 << 1` 开始。另一个 Rust 文件 `ast.rs` 存在与 Go 位号一致的 `FlagHas*` 常量，但不是本文件的依赖。文档只记录当前代码事实，跨语言序列化或与 Go 数值直接比较时不能假定数值一致。
 
-Go 的 `flag_test.go` 通过解析 SQL 覆盖大量表达式组合；真实 Rust 实现的直接测试 `node_flags_test.rs` 当前聚焦函数加参数、聚合/窗口查询、克隆隔离、预求值保留，以及共享子查询和语句孩子遍历。`flag_test.rs` 的广泛案例针对独立 `FlagExpr` 模型，不能替代真实 `ExprNode` 的全部回归证据。
+Go 的 `flag_test.go` 通过解析 SQL 覆盖大量表达式组合；真实 Rust 实现的直接测试 `node_flags_test.rs` 当前聚焦函数加参数、聚合/窗口查询、克隆隔离、预求值保留，以及共享子查询和语句孩子遍历。
 
 ## 扩展指南
 
@@ -90,13 +86,3 @@ Go 的 `flag_test.go` 通过解析 SQL 覆盖大量表达式组合；真实 Rust
 修改标志常量时必须同步检查 `flag.rs`、本文件、解析器与消费方，尤其评估上述 Rust/Go 位号差异；不要只改 `ast.rs` 中另一套同名语义常量。新增查询接口可仿照 `HasAggFlag`，但应先确认实际消费方需要的是节点自身缓存还是重新计算后的子树性质。
 
 测试应放在独立的 `pkg/parser/ast/node_flags_test.rs`，不要内嵌到生产源文件。建议至少补充目标变体的真实 `ExprNode` 构造和包含该表达式的语句级遍历；若规则来自 Go，亦应对照或扩展 `pkg/parser/ast/flag_test.go` 的同类 SQL。涉及括号、可选孩子、共享 `NodeRef` 或预置 flag 时，应分别验证传播和保留不变量。兼容风险主要是下游对位值的判断，性能风险主要是重复遍历大树或对子树进行额外递归。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；查询时索引可用。
-- RustCodeGraph `explore "pkg/parser/ast/node_flags.rs NodeFlag NodeFlags HasNodeFlag"`：读取目标文件全貌及 `HasAggFlag`、`HasWindowFlag`、`SetFlag`、`expression_flag` 的实现。
-- RustCodeGraph `query`：确认同名符号同时存在于 Go `flag.go`、精简 Rust `flag.rs` 和真实 AST `node_flags.rs`，从而限定本文对象。
-- RustCodeGraph `node --file`：核对 `lib.rs` 的 `Visitor`、`Node`、`ExprKind`、`ExprNode`、`NodeRef`、`GetFlag`/`SetFlag` 与 `accept` 协议；核对 `walk.rs` 的孩子访问；核对 `yy_parser.rs` 中解析成功后的直接调用边。
-- 已读路径：`pkg/parser/ast/node_flags.rs`、`pkg/parser/ast/lib.rs`、`pkg/parser/ast/walk.rs`、`pkg/parser/ast/flag.rs`、`pkg/parser/ast/Cargo.toml`、`pkg/parser/yy_parser.rs`、`pkg/parser/ast/node_flags_test.rs`、`pkg/parser/ast/flag_test.rs`、`pkg/parser/ast/flag.go`、`pkg/parser/ast/flag_test.go`、`pkg/parser/ast/ast.go`、`pkg/parser/ast/ast.rs`。
-- 仓库 Rust 搜索确认生产代码直接接线为 `Parser::ParseSQL -> parser_ast::SetFlag`，未发现真实 AST 版 `HasAggFlag`/`HasWindowFlag` 的生产调用。
-- 本任务只产出说明文档；按任务约束不运行 Cargo。结构验证命令及人工事实复核结果在任务交付时记录。

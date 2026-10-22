@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；`pkg/ddl/Cargo.toml` 的 `[lib]` 将 crate 根设为 `pkg/ddl/lib.rs`，后者以 `pub mod index_auto_presplit;` 对外公开本模块，并仅在 `cfg(test)` 下装配独立测试 `pkg/ddl/index_auto_presplit_test.rs`。它实现新增索引时 `PRE_SPLIT_REGIONS AUTO` 的确定性规划核心：接收调用方已经整理好的表/索引适用性事实与首列统计分布，计算分位边界并构造索引 Region split key，同时表达手工预切分与 AUTO 预切分不同的失败策略（源码模块注释及 `plan_auto_pre_split`、`run_pre_split`）。
-
-它不是完整 DDL job 状态机，也不直接修改 schema、持久化 job、执行 backfill 或推进 schema version。按 Go 主链，预切分发生在 add-index reorg 前的辅助优化阶段；RustCodeGraph 当前只找到 `pkg/ddl/index_auto_presplit_test.rs` 调用本文件三个公开函数，没有找到 Rust 生产调用者。因此当前 Rust 模块应视为已公开、已单测的规划组件，而不能据此宣称已接入 Rust DDL 执行主链。
+实现新增索引时 `PRE_SPLIT_REGIONS AUTO` 的确定性规划核心：接收调用方已经整理好的表/索引适用性事实与首列统计分布，计算分位边界并构造索引 Region split key，同时表达手工预切分与 AUTO 预切分不同的失败策略（源码模块注释及 `plan_auto_pre_split`、`run_pre_split`）。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ Go 版本在外层拥有更复杂的生命周期：统计加载使用带超时 c
 
 ## 与 Go 版本的对应关系
 
-Rust `AutoPreSplitConfig` 对应 Go `autoPreSplitConfig` 的行数、健康度和分位步长；`AutoPreSplitPlanState` / `AutoPreSplitPlan` 对应 `autoPreSplitPlanState` / `autoPreSplitPlanResult`；`WeightedValue`、合并循环和 `sample_boundaries` 分别对应 `autoPreSplitValue`、`mergeAutoPreSplitValues`、`sampleAutoPreSplitValues`。门禁原因、TopN 与 histogram 合并、热点值只发一个边界、终点排除、key 排序去重，以及手工严格/AUTO 尽力而为的意图均与 Go 测试一致。
-
 Rust 把 Go 多层流程压平成调用方提供的 `AutoPreSplitEligibility` 与 `DistributionStats`，因此没有移植以下职责：`autoPreSplitStatsProvider`、统计缺失/淘汰后的存储加载、30 秒加载超时、按 leading-column 缓存边界、字段类型转换与 collation key 处理、真实 `TableInfo/IndexInfo` 构键、临时索引 key 转换、共享 AUTO deadline、Region split/scatter、日志及 pause/cancel cause 优先传播。Go 还验证最多 49 个默认内部边界、共享首列缓存、unsupported storage、真实 collation 字符串与 reorg keyspace；Rust 独立测试目前只覆盖确定性子集。
 
 此外，Go 的 `sampleAutoPreSplitValues` 私有函数允许测试传入步长 `1` 并返回零边界；Rust 的公开 `plan_auto_pre_split` 在采样前要求步长严格小于 `1`。这是当前接口防御性校验差异，应在未来追求逐语义完全对齐时显式决策并补测试，而不是默默假设等价。
@@ -98,15 +94,3 @@ Rust 把 Go 多层流程压平成调用方提供的 `AutoPreSplitEligibility` �
 - `run_pre_split` 的手工构键目前传入零表/索引 ID，说明它更像策略测试适配器；生产接线前应让真实 ID/已构造 keys 进入接口，并增加独立测试，不能依赖零 ID 产生真实存储 key。
 - Rust 单元测试继续放在同目录独立文件 `pkg/ddl/index_auto_presplit_test.rs`，不要嵌回生产源文件。涉及完整存储与 DDL 生命周期的测试应放在相应独立集成测试面。
 - 性能风险主要在复制/排序全部 TopN 与 histogram 值、key 构造及边界数量；兼容风险主要在编码顺序、collation、统计版本与 skip/error 分类；正确性风险主要在累计计数、溢出和取消错误被误吞。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ddl/index_auto_presplit.rs` 显示目标文件有 27 个符号。
-- RustCodeGraph `node --file pkg/ddl/index_auto_presplit.rs --offset 1 --limit 500`：核对全部 334 行源码、公开类型/函数、内部算法和模块注释。
-- RustCodeGraph `query` / `explore`：精确定位 `plan_auto_pre_split`（第 115 行）、`select_pre_split_mode`（第 302 行）、`run_pre_split`（第 313 行）；调用者只落在 `pkg/ddl/index_auto_presplit_test.rs`，未发现 Rust 生产调用边。
-- `pkg/ddl/index_auto_presplit_test.rs`：核对 TopN+histogram+NULL 合并、热点值跨阈值、各跳过原因、负 NULL 错误、空分布跳过、手工优先和 AUTO best-effort。
-- `pkg/ddl/index_auto_presplit.go`、`pkg/ddl/index_presplit.go`、`pkg/ddl/index_auto_presplit_test.go`：核对 Go 生产链、统计加载/缓存/超时、真实构键、split/scatter、取消传播、默认参数、collation 与共享 deadline 测试。
-- `pkg/ddl/lib.rs`：核对生产模块公开和独立测试仅在 `cfg(test)` 下装配。
-- `pkg/ddl/Cargo.toml`：核对 crate 名 `astersql-ddl`、crate 根 `lib.rs` 及 Go package 映射 `pkg/ddl`；本文件直接使用的三个模块均为 crate 内部模块。
-- `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`：核对 DDL 包的 Online DDL/job 背景；本文件不承担 schema 状态推进、版本同步或 job 持久化。
-- 按任务约束未运行 Cargo；交付验证仅执行文档的 11 章节结构检查，并人工复核源码链接、当前接线限制与 Go/Rust 差异。

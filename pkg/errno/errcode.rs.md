@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`errcode.rs`](./errcode.rs) 是 `astersql-errno` crate 的错误编号目录。crate 入口 [`lib.rs`](./lib.rs) 以 `pub mod errcode` 暴露它；[`Cargo.toml`](./Cargo.toml) 指定该 crate 的库入口为 `lib.rs`。本文件本身不创建错误对象，也不保存错误消息，只把 MySQL、MariaDB、TiDB 以及 TiKV/PD/TiFlash 使用的协议级 errno 声明为 `pub const ...: u16`。
-
-它位于错误处理链的最底层标识层：业务模块选择常量，`pkg/errno/errname.rs` 将编号映射为消息模板，`pkg/util/dbterror` 等模块再把编号、错误类别和消息包装成可传播的数据库错误。例如 `pkg/kv/error.rs` 的 `ErrKeyExists` 用 `ErrDupEntry` 创建 KV 错误，`pkg/store/driver/error/error.rs` 用 `ErrPDServerTimeout` 创建 TiKV 类错误。
+为兼容 MySQL 客户端和 Go 实现提供稳定的 `u16` 错误编号。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@ RustCodeGraph 的文件级索引显示 `errcode.rs` 被 47 个 Rust 文件使用
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`errcode.go`](./errcode.go)。Rust 版本保留了 Go 常量名、数值、主要分段和历史拼写（例如 `ErrOnlyOneDefaultPartionAllowed`），把 Go 的无显式类型整数常量写成 `pub const ...: u16`。Go 的 `_ = 8181` 对应 Rust 的 `const _: u16 = 8181`。
+Rust 版本保留了 Go 常量名、数值、主要分段和历史拼写（例如 `ErrOnlyOneDefaultPartionAllowed`），把 Go 的无显式类型整数常量写成 `pub const ...: u16`。
 
-本次用正则静态抽取两文件的具名 `Err* = 十进制值` 后比较，结果是：Go 1159 项、Rust 1159 项，双方没有独有名称，也没有数值不一致。这证明当前声明集合逐项对齐，但不替代消息表、SQLSTATE 或实际错误包装行为的测试。
+本次用正则静态抽取两文件的具名 `Err* = 十进制值` 后比较，结果是：Go 1159 项、Rust 1159 项，双方没有独有名称，也没有数值不一致。
 
-Go 测试 [`errname_test.go`](./errname_test.go) 会嵌入并解析 `errcode.go`，验证消息覆盖和下游预留区间；Rust 的 `errname_test.rs` 有意继续解析同一 Go 文件，以 Go 清单作为兼容基准。Rust 另设 `errcode_1_aster_unit_test.rs` 对 Rust 常量进行锚点断言，符合“源文件与测试逻辑分离”的仓库要求。
+Go 测试 [`errname_test.go`](./errname_test.go) 会嵌入并解析 `errcode.go`，验证消息覆盖和下游预留区间；Rust 的 `errname_test.rs` 有意继续解析同一 Go 文件，以 Go 清单作为兼容基准。
 
 ## 扩展指南
 
@@ -95,12 +93,3 @@ Go 测试 [`errname_test.go`](./errname_test.go) 会嵌入并解析 `errcode.go`
 3. 在 `errname.go` 与 `errname.rs` 同步消息模板和脱敏参数位置。涉及 SQLSTATE、错误类别、重试集合或 Error/Warn/Ignore 分组时，还要修改对应消费者，而不是把策略塞进本常量文件。
 4. 在独立 Rust 测试文件中增加有代表性的锚点或行为断言；不要把 `#[cfg(test)]` 测试内嵌进 `errcode.rs`。至少同步 `errcode_1_aster_unit_test.rs`，消息/保留区间影响还应覆盖 `errname_test.rs` 或 `errname_2_aster_unit_test.rs`，具体业务包装则在所属 crate 的测试中验证。
 5. 检查兼容风险：既有编号变更会影响客户端、告警、日志解析和持久化诊断数据；错误模板参数变化会影响格式化与脱敏；增加大量运行时映射会改变当前零初始化成本，但单纯增加编译期常量没有并发成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 `pkg/errno/errcode.rs`；`files --filter pkg/errno` 确认同目录 Go/Rust 源与独立测试；`node --file pkg/errno/errcode.rs` 显示全文件 1227 行并报告 47 个 Rust 文件使用；对 `ErrDupEntry`、`ErrErrorFirst`、`ErrPDServerTimeout` 的 `query` 找到 Go/Rust 同名定义，`callers` 因定义歧义未返回精确边。
-- 源与 crate 边界：阅读 `pkg/errno/errcode.rs`、`pkg/errno/lib.rs`、`pkg/errno/Cargo.toml`、`pkg/errno/errname.rs`。
-- Go 对照：阅读 `pkg/errno/errcode.go`、`pkg/errno/errname_test.go`；静态抽取比较确认 1159 个具名常量的名称和值全部一致。
-- Rust 测试：阅读 `pkg/errno/errcode_1_aster_unit_test.rs`、`pkg/errno/errname_test.rs`、`pkg/errno/errname_2_aster_unit_test.rs`，以及下游行为证据 `pkg/util/dbterror/migration_aster_unit_test.rs`。
-- 调用关系抽样：阅读 `pkg/kv/error.rs`、`pkg/util/dbterror/lib.rs`，并用 `rg` 核对 `pkg/domain/domain.rs`、`pkg/store/driver/error/error.rs`、`pkg/session/runtime/control.rs`、`pkg/errctx/context.rs` 的直接引用。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终仅执行任务指定的 11 章节结构检查。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-base` crate，是规划器核心抽象层的“杂项契约”文件。`pkg/planner/core/base/lib.rs` 通过私有模块 `misc_base` 装入它，再以 `pub use misc_base::*` 对外再导出其中的八个公开 trait。与 `plan_base.rs` 定义计划本体和规划上下文不同，本文件只描述访问对象、SHOW/内存表谓词提取、数据访问计划和分区表所需的最小接口，不包含具体算子、谓词算法或表访问实现。
-
-crate 边界由 `pkg/planner/core/base/Cargo.toml` 确定：包名为 `astersql-planner-core-base`；本文件直接使用 `expression`、`tables`、`tipb`，并通过本 crate 的 `types` 再导出和 `PlanContext`、`PhysicalPlan` 契约连接其他基础类型。该分层符合 `pkg/planner/core/base/doc.go` 的约束：base 接口应保持抽象，不能反向依赖具体实现包，以免形成导入环。
-
-当前 Rust 迁移状态需要特别区分：本文件确实被编译并公开导出，但仓库搜索未发现八个 base trait 的生产 `impl`。`pkg/planner/core/operator/logicalop/logical_show.rs` 和 `logical_mem_table.rs` 各自定义了同名但签名不同的局部 trait，不能视为本文件 trait 的实现。因此，本文件目前主要是 Go 接口的类型级移植边界，而不是已经贯通全部 Rust 规划主链的运行实现。
+与 `plan_base.rs` 定义计划本体和规划上下文不同，本文件只描述访问对象、SHOW/内存表谓词提取、数据访问计划和分区表所需的最小接口，不包含具体算子、谓词算法或表访问实现。
 
 ## 核心职责
 
@@ -92,11 +88,6 @@ Go 上游则已形成真实主链：`common_plans.go` 使用 `DataAccesser`/`Par
 类型映射上的显式差异为：
 
 - Go 接口值映射为 `dyn Trait`；Go 的 `AccessObject` 返回值在 Rust 中是绑定到实现者的共享引用，避免无说明的克隆或所有权转移。
-- Go `[]expression.Expression` 映射为输入 `&[ExprBox]` 和输出 `Vec<ExprBox>`；测试实现通过 `to_vec()` 保留所有输入谓词。
-- Go `[]*types.FieldName` 映射为 `NameSlice`，其中 `Option` 保留元素可空性。
-- Go `collate.WildcardPattern` 接口值映射为拥有的 `Box<dyn WildcardPattern>`。
-- Go `*tables.PartitionExpr` 映射为 `Option<&PartitionExpr>`，显式表达空指针分支。
-- Go `SetIntoPB(*tipb.ExplainOperator)` 映射为可变借用，保留原地写入副作用但排除空指针。
 
 迁移尚未完全接线：Rust `logical_show.rs` 的局部 `ShowPredicateExtractor` 额外要求 `CloneBox`，方法使用 Go 风格大写名称，且 `FieldPatternLike` 返回 `Option<String>`；`logical_mem_table.rs` 的局部 extractor 也额外要求克隆并把 hint 方法做成默认方法，同时省略 base trait 的 `PlanContext` 和 `explain_info`。这些局部 trait 与本文件 trait 不是同一个类型，后续统一时不能仅靠同名判断兼容。
 
@@ -112,12 +103,3 @@ Go 上游则已形成真实主链：`common_plans.go` 使用 `DataAccesser`/`Par
 6. 分区接口扩展需同时验证静态/动态裁剪、点查和 EXPLAIN access object；性能风险主要来自重复构造字符串/Box、克隆表达式以及在动态分区路径重复计算访问对象。
 
 兼容风险集中在公开 trait 的破坏性变更：增加必需方法会迫使所有实现者更新；改变借用为拥有值会改变分配和生命周期；收紧 `Send`/`Sync` 会排除现有实现；把 `Option` 改为必有值会丢失 Go 空指针语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件和 4,415 个 Go 文件；`files --filter pkg/planner/core/base` 列出 `misc_base.rs`、`misc_base.go`、`misc_base_test.rs`、`lib.rs` 等 14 个文件；`node --file pkg/planner/core/base/misc_base.rs --offset 1 --limit 500` 读取了目标文件全部 113 行；对八个 trait 的 `query --kind trait` 精确确认了符号位置和同名 Go/局部 Rust 定义。
-- 源码与 crate：`pkg/planner/core/base/misc_base.rs`、`pkg/planner/core/base/lib.rs`、`pkg/planner/core/base/Cargo.toml`、`pkg/planner/core/base/doc.go`。
-- Go 对照与生产调用：`pkg/planner/core/base/misc_base.go`、`pkg/planner/core/common_plans.go`、`pkg/planner/core/point_get_plan.go`、`pkg/planner/core/rule/rule_partition_processor.go`、`pkg/planner/core/access/access_obj.go`、`pkg/planner/core/operator/physicalop/*.go`。
-- Rust 迁移边界：全仓 `.rs` 文件的 trait `impl`/引用检索只发现 `pkg/planner/core/base/misc_base_test.rs` 对 base `MemTablePredicateExtractor` 的实现；`pkg/planner/core/operator/logicalop/logical_show.rs`、`logical_mem_table.rs` 及 `logical_mem_table_test.rs` 证明生产逻辑算子当前使用另一组同名局部 trait。
-- 测试证据：`pkg/planner/core/base/misc_base_test.rs` 验证可空 `NameSlice` 契约；`pkg/planner/core/operator/logicalop/logicalop_test/logical_mem_table_predicate_extractor_test.go` 验证 Go 内存表抽取后状态与剩余谓词；`pkg/planner/core/casetest/binaryplan/binary_plan_test.go` 检查扫描/点查算子的 protobuf access objects；`pkg/planner/core/casetest/partition/integration_partition_test.go` 覆盖分区点查的 access object。
-- 验证范围：本任务为纯文档分析，按计划不运行 Cargo。结构检查用于确认目标文档存在且恰有规定的十一个二级标题；代码运行行为只由上述现有源码和测试提供证据，未在本任务中重新执行。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`column.rs`](column.rs) 是 `astersql-ddl` crate 中公开的列元数据与纯内存操作模块；`pkg/ddl/lib.rs` 通过 `pub mod column` 暴露它，crate 边界由 `pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 确定。它不直接提交 DDL job、写系统表、推进 owner/worker，也不进行行数据回填；它提供一套简化的 `TableInfo`/`ColumnInfo`/`IndexInfo` 模型和列操作原语，供更高层的 `add_column.rs`、`modify_column.rs` 以及测试调用。
-
-从完整 DDL 链路看，本文件位于“DDL 动作已被解析后、持久化或执行前后的元数据计算”位置。真实的状态推进由上层模块组织：例如 `start_add_column` 调用本文件完成列数检查和初始挂载，`advance_add_column` 在列变为 `Public` 时调用本文件计算目标位置；`apply_modified_column` 调用本文件同步索引引用并移动列。`pkg/ddl/doc.go` 描述的全局 schema 版本同步、job 持久化和集群 owner 机制不在本文件内实现。
+提供 AUTO_RANDOM 位宽检查、外键查找、表达式索引隐藏列名还原等无 I/O 辅助函数。
 
 ## 核心职责
 
@@ -93,7 +91,6 @@ RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点�
 
 - Rust `init_and_add_column_to_table` 对应 Go `InitAndAddColumnToTable`：都分配列 ID、强制 `StateNone`、以表尾 offset 追加；Rust 返回 ID，Go 返回列指针。
 - Rust `check_after_position_exists`、`locate_offset_to_move` 分别对应 Go `CheckAfterPositionExists`、`LocateOffsetToMove`。FIRST/AFTER 和当前列位于目标前后的 offset 算法一致；Rust 不包含 Go 对未知位置枚举的 default 分支，因为 Rust enum 已封闭取值。
-- Rust `update_index_column` 对应 Go `UpdateIndexCol`，保留了可前缀类型及 `flen <= length` 时清除前缀的核心语义。`column_test.rs::test_modify_column_with_index` 特别验证 Blob 的合法前缀仍被保留。
 - Rust `list_indices_with_column` 与 `ensure_column_droppable` 分别对应 Go `listIndicesWithColumn` 和 `isColumnCanDropWithIndex` 的核心筛选；Rust 将“表至少一列”也纳入后者，并使用本地错误枚举。
 - Rust `build_elements` 对应 Go `BuildElements` 的“列元素在前、相关索引在后”，但 Rust 用字符串类型标记，不是 Go `meta.Element`/`TypeKey`。
 - Rust `get_column_foreign_key_info`、`allocate_column_id` 和列数检查分别对应 Go `GetColumnForeignKeyInfo`、`AllocateColumnID`、`checkAddColumnTooManyColumns`；Rust 的列数限制由参数传入，Go 从全局配置原子读取。
@@ -109,14 +106,3 @@ RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点�
 若要接入当前未被生产代码调用的辅助函数，应同时建立真实上层调用边，并核对 Go 版本上下文而不只复制函数体。例如接入 AUTO_RANDOM 检查前必须解决 allocator 新鲜性和并发保护；接入 `build_elements` 前必须确认 Rust job 元素类型和持久化编码，而不能长期依赖 `&'static str` 占位表示。
 
 建议同步测试位置：本文件的直接单元测试放在独立的 `pkg/ddl/column_test.rs`；ADD 状态流修改同步 `add_column_test.rs`，MODIFY/索引修改同步 `modify_column_test.rs`，更高层用户可见行为再选择现有 DDL 集成测试。兼容风险主要是 Go 错误语义、大小写规范化和状态集合差异；性能风险主要来自移动/删除后对全部列的 O(n) offset 重写，以及索引/外键线性扫描。
-
-## 验证依据
-
-- 源码与符号：RustCodeGraph `node --file pkg/ddl/column.rs --offset 1 --limit 260`、`--offset 261 --limit 260` 和 `--offset 521 --limit 260`，覆盖全部 522 行；`query <symbol> --kind function --json` 核实主要函数签名。
-- 索引与关系：`rustcodegraph status`、`files --filter pkg/ddl/column.rs`、`explore "pkg/ddl/column.rs symbols callers callees column DDL"`；再用生产 Rust 文件的精确引用搜索确认 `add_column.rs` 与 `modify_column.rs` 的调用边。
-- crate/模块边界：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`；目标源码只直接导入 `std::collections::HashSet`。
-- DDL 契约：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`，并以实际 Rust/Go 源码验证其与本文件相关的部分。
-- Rust 生产入口：`pkg/ddl/add_column.rs`、`pkg/ddl/modify_column.rs`。
-- Rust 独立测试：`pkg/ddl/column_test.rs`；补充搜索到 `db_change_test.rs` 对 `ensure_column_droppable`、`db_integration_test.rs` 对 `move_column_info` 的使用。
-- Go 对照：`pkg/ddl/column.go` 中 `InitAndAddColumnToTable`、`CheckAfterPositionExists`、`UpdateIndexCol`、`LocateOffsetToMove`、`BuildElements`、`checkNewAutoRandomBits`、`listIndicesWithColumn`、`GetColumnForeignKeyInfo`、`AllocateColumnID` 和 `checkAddColumnTooManyColumns`；`pkg/ddl/modify_column_test.go` 验证 Go `BuildElements` 的使用场景。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令和人工事实复核验收。

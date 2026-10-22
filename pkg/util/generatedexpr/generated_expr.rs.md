@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-generatedexpr` crate 的业务实现，crate 入口 `pkg/util/generatedexpr/lib.rs` 通过 `pub mod generated_expr` 和 `pub use generated_expr::*` 导出这里的 API。它位于“持久化的 SQL 表达式字符串”与 parser AST 之间：将元数据中的生成列、表达式默认值或分区表达式文本还原为 `ast::ExprNode`，并可按 `model::TableInfo` 校验 AST 中的列引用。
-
-`pkg/util/generatedexpr/Cargo.toml` 表明该 crate 直接依赖 `astersql-parser`、`astersql-meta-model` 和 `astersql-util-parser`；本文件分别通过 crate 根的 `ast`/`charset`/`parser`、`model` 和 `parserutil` 桥接这些依赖。当前 Rust 生产使用方包括 `pkg/table/tables/tables.rs`、`pkg/table/tables/canonical_partition_expr.rs` 和 `pkg/planner/core/planbuilder_runtime.rs`。
+`syntax_error`：将普通 parser 诊断转换成 TiDB/MySQL 1064 风格的 `ErrParse`，同时保留已经具有 parser `TerrorError` 根因的错误。
 
 ## 核心职责
 
@@ -86,14 +84,11 @@ crate 边界由 `lib.rs` 再导出公开函数，因此调用方使用 `generate
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/generatedexpr/generated_expr.go`：
-
 - Rust 的三个公开函数与 Go 的 `ParseExpression`、`ParseExpressionWithSQLMode`、`SimpleResolveName` 一一对应；两端都用 `select <expr>` 包装、默认 charset/collation、可选 SQL mode，并提取首个 SELECT 字段表达式。
 - Go 用 `defer DestroyParser(parse)`；Rust 在 `ParseSQL` 后、传播 `Result` 前显式调用 `DestroyParser`。普通成功/错误路径语义相同，但 Rust 路径不具备 defer 对 panic 的清理保证。
 - Go 的 `nameResolver` 实现 `ast.InPlaceVisitor`，由 `ast.Walk` 统一遍历；Rust 因当前 AST 接口而在 `resolve_expr`/`resolve_node` 中显式递归。Rust 必须随新增 AST 复合变体维护遍历覆盖，这是两端最重要的维护差异。
 - Go resolver 在结构体中保存首个错误并让 walk 返回 false；Rust 直接用 `Result` 和 `?` 短路。两端均按 `CIStr.L` 验名，错误文案相同，成功时返回原节点。
 - Go 调用 `util.SyntaxError(err)`；Rust 的本地 `syntax_error` 复现其核心规则：保留 parser terror，否则生成 `ErrParse`。迁移回归测试验证了错误前缀和错误码。
-- `gen_expr_test.go` 与 `gen_expr_test.rs` 均覆盖 `json_extract` 以及 SQL mode 对 `||` 和反斜杠的影响；Rust 另有 `migration_aster_unit_test.rs` 覆盖验名和语法错误分类。
 
 ## 扩展指南
 
@@ -103,13 +98,3 @@ crate 边界由 `lib.rs` 再导出公开函数，因此调用方使用 `generate
 - 修改列匹配策略时需同步 Go 语义，重点保持 `CIStr.L` 大小写规则、错误文案和“只校验、不改写 AST”的契约。若改用哈希索引，应评估构建开销与宽表/多列引用场景的收益。
 - 修改错误包装时需验证错误字符串、`TerrorError` 根因和 MySQL 1064/`ErrParse` 分类，避免调用方只得到无分类字符串。
 - 修改 parser 获取/释放顺序时应优先采用能覆盖提前返回和 panic 的资源守卫，但不得在没有核对 `parserutil` 池化契约与 Go 行为前改变生命周期。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标目录的 Rust/Go 实现与测试均已索引。
-- RustCodeGraph `node --file pkg/util/generatedexpr/generated_expr.rs`：读取完整 272 行，并得到直接使用文件 `pkg/planner/core/planbuilder_runtime.rs`、`pkg/table/tables/canonical_partition_expr.rs`、`pkg/table/tables/tables.rs`、`pkg/util/generatedexpr/gen_expr_test.rs`。
-- RustCodeGraph `query`：确认 Rust/Go 两侧 `ParseExpression`、`ParseExpressionWithSQLMode` 和 `SimpleResolveName` 的定义与签名。`callers`/`callees` 即使加 `--file` 仍在 30 秒内无输出，因此没有据此推断调用边，而是读取上述直接使用文件并用精确引用搜索逐项确认。
-- 已读取实现与边界：`pkg/util/generatedexpr/generated_expr.rs`、`pkg/util/generatedexpr/lib.rs`、`pkg/util/generatedexpr/Cargo.toml`、`pkg/util/generatedexpr/generated_expr.go`。
-- 已读取生产调用证据：`pkg/table/tables/tables.rs` 的 `table_from_meta_for_validation`，`pkg/table/tables/canonical_partition_expr.rs` 的 HASH 分区路径，`pkg/planner/core/planbuilder_runtime.rs` 的 INSERT 生成列构建路径。
-- 已读取测试：`pkg/util/generatedexpr/gen_expr_test.rs`、`migration_aster_unit_test.rs`、`main_test.rs`，以及 Go 对照 `gen_expr_test.go`；目录中不存在 `doc.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构验证，并人工检查唯一生产物、事实范围和 `plan.md` 未修改。

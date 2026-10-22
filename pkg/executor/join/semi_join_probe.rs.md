@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-executor-join`（`pkg/executor/join/Cargo.toml` 的 `[lib]` 指向 `lib.rs`），并由 `pkg/executor/join/lib.rs` 以 `pub mod semi_join_probe` 暴露。它实现 Hash Join 的 Semi Join（半连接）探测器：只保留左侧中“在另一侧至少存在一个满足连接键及附加条件的匹配”的行，不输出左右行的拼接结果。
-
-文件有两个必须区分的部分：第 24～331 行是整段注释掉的 Go v2 探测路径对照草稿，不参与 Rust 编译；真正生效的 Rust 实现从 `use crate::base_join_probe::{Probe, WorkerResult}` 开始（第 333 行）。因此，注释草稿中的 `SQLKiller`、向量化 `Chunk`、tagged pointer、原子 used flag 和四条专用分支不是当前 Rust 运行时能力。
-
-当前 Rust 入口由 `base_join_probe.rs::new_join_probe` 的 `JoinType::Semi` 分支创建 `SemiJoinProbe`，再通过 `Box<dyn Probe>` 使用。仓库搜索只找到测试代码调用 Rust `new_join_probe`，没有找到非测试 Rust 生产调用点；Cargo workspace 和 `pkg/executor/Cargo.toml` 已声明该 crate，但不能据此断言这条 Rust probe 已接入完整 SQL 执行主链。
+实现 Hash Join 的 Semi Join（半连接）探测器：只保留左侧中“在另一侧至少存在一个满足连接键及附加条件的匹配”的行，不输出左右行的拼接结果。
 
 ## 核心职责
 
@@ -93,8 +89,6 @@ Go 原版的 used flag 使用 row-table 元数据和原子检查，且长循环�
 
 ## 与 Go 版本的对应关系
 
-结构对应关系是 `SemiJoinProbe` ↔ `semiJoinProbe`，`BaseSemiJoin` ↔ `baseSemiJoin`，Rust 工厂 `new_join_probe` 的 Semi 分支 ↔ Go `newSemiJoinProbe`。普通/恢复 chunk 设置、左 build 需要 row-table 扫描、右 build 输出左侧 probe 行，以及右 build 禁止扫描的 panic 约束均保持同一总体语义。
-
 但当前 Rust 是行向量级的简化实现，并非 Go 文件的逐函数完整移植：
 
 - Go `Probe` 按“左/右 build × 有/无 other condition”分成四条专用路径；Rust 合并为两条 build-side 分支，把条件计算交给 `Joiner`。
@@ -115,15 +109,3 @@ Go 原版的 used flag 使用 row-table 元数据和原子检查，且长循环�
 - 若接入并行 worker，需要先决定 `build_row_used` 的共享所有权及同步策略；简单克隆 `SemiJoinProbe` 会得到独立标记，无法汇总左 build 命中。
 - 若追齐 Go v2，需把 SQL killer、chunk 容量、向量化过滤、原子 used flag、碰撞统计和 row-table 扫描作为明确的独立迁移项，不能把文件上半部注释直接视为实现。
 - 性能风险集中在左 build 每行克隆所有候选 build rows、右 build `candidate_rows` 克隆候选，以及 `Vec<bool>` 扫描。优化时必须保留“重复 build 候选不重复输出 probe 行”和附加条件三值逻辑。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `query SemiJoinProbe` / `node SemiJoinProbe`：定位生产结构体到 `semi_join_probe.rs:338`，并给出 `new_join_probe` 的实例化调用边。
-- RustCodeGraph `node new_join_probe`：确认 `JoinType::Semi` 构造 `SemiJoinProbe { semi: BaseSemiJoin::new(base, !right_as_build_side) }`。
-- RustCodeGraph `query match_probe_row` / `node match_probe_row`：确认其调用 `Joiner::try_to_match_inners`，并更新 `matched`、`has_null` 与未完成队列。图索引没有识别本文件 trait 实现内到该方法的调用边，因此该直接调用另由 `semi_join_probe.rs:395-404` 核对。
-- 已读生产文件：`semi_join_probe.rs`、`base_join_probe.rs`、`base_semi_join.rs`、`lib.rs`；已读 crate 配置：`pkg/executor/join/Cargo.toml`，并搜索 workspace/上层 Cargo 引用。
-- 已读 Go 对照：`semi_join_probe.go`、`base_join_probe.go` 的工厂调用点、`hash_join_v2.go` 的扫描调度调用点。
-- 已读独立测试：`semi_join_probe_test.rs`；其覆盖右 build 命中、重复 build key 去重、附加条件 false/NULL、左 build 延迟扫描、NULL key、重复左 build 行和三项非法扫描 panic。已读 `semi_join_probe_test.go`，其覆盖左右 build、有无附加条件、重复键、spill 及 probe 基础场景。
-- 全仓 Rust 调用搜索：`new_join_probe(` 的非定义命中均位于 `*_test.rs`，所以文档把当前生产接线状态标记为“未发现”，而不是声称完整 SQL 主链已使用。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅运行任务指定的 11 章节结构检查，并人工复核没有把注释代码描述成已支持能力。

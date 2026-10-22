@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的包名），由 `pkg/ddl/lib.rs` 以 `pub mod storage_class` 暴露。它负责把 SQL 表选项或 `ENGINE_ATTRIBUTE` 中的 `storage_class` JSON 转换成规范化的 `StorageClassSettings`，再把选中的 tier 和 transition 写入 `model::TableInfo`、`model::PartitionDefinition` 等规范元数据。它处于 DDL 前端建模与持久化动作之间：`pkg/ddl/create_table.rs` 在建表信息生成时调用本模块，`pkg/ddl/persistent_actions.rs` 在 ALTER 的持久化动作中重新解析并重建表、分区属性，`pkg/ddl/schematracker/dm_tracker.rs` 复用同一套规则维护 schema tracker。
-
-它不是 DDL job 调度器，也不直接写 `mysql.tidb_ddl_job`、推进 schema state 或执行存储层数据迁移。对 DDL 执行框架而言，本文件提供确定性的元数据校验和派生结果；真正的 job 持久化、owner 调度和 transition 观测由其他模块承担（参见 `pkg/ddl/persistent_actions.rs`、`pkg/ddl/storage_class_transition.rs`）。
+负责把 SQL 表选项或 `ENGINE_ATTRIBUTE` 中的 `storage_class` JSON 转换成规范化的 `StorageClassSettings`，再把选中的 tier 和 transition 写入 `model::TableInfo`、`model::PartitionDefinition` 等规范元数据。
 
 ## 核心职责
 
@@ -82,9 +80,7 @@ storage-class transition 的持续状态、重试、取消、拓扑观测和历�
 
 ## 与 Go 版本的对应关系
 
-主对照文件是 `pkg/ddl/storage_class.go`。Rust 的 `BuildStorageClassSettingsFromJSON` 对应 Go 同名函数及 `decodeStorageClassDef`、`normalizeStorageClassDefs`、`checkStorageClassDef`；`StrictDef`/`StrictRule` 是 Rust 为复刻 Go `encoding/json` 行为而增加的局部机制。Rust 测试专门验证大小写字段、重复字段、`null` 零值、未知字段、负数和 transition 边界。
-
-Rust 的 table-option、SHOW CREATE、表级/分区级派生函数与 Go 同名函数保持同样的主要语义。`compare_range` 汇合了 Go 的 `compareRangePartitionValues`、RANGE COLUMNS 比较、数值比较和“小于等于”helper；`values_equal` 对应 Go `partitionValueEquals`。
+Rust 的 `BuildStorageClassSettingsFromJSON` 对应 Go 同名函数及 `decodeStorageClassDef`、`normalizeStorageClassDefs`、`checkStorageClassDef`；`StrictDef`/`StrictRule` 是 Rust 为复刻 Go `encoding/json` 行为而增加的局部机制。Rust 测试专门验证大小写字段、重复字段、`null` 零值、未知字段、负数和 transition 边界。
 
 Rust 还包含 Go 同路径文件中没有的局部接线 helper：`CheckStorageClassAdmission` 的 Go 对照入口位于 `pkg/ddl/engine_attribute.go`；`handle_create`、`rebuild_partitions`、`normalize_partition_definitions`、`CheckAndUpdateAddedPartitionDefinitions`、`check_final_definitions` 把 Go 分散在建表/分区流程中的必要接线集中为可复用函数。这些不是简化版替代：它们明确承担最终分区视图规范化和回填，相关 Rust 测试与 Go 的 `storage_class_partition_test.go`、`storage_class_admission_test.go` 对齐。
 
@@ -99,12 +95,3 @@ Rust 还包含 Go 同路径文件中没有的局部接线 helper：`CheckStorage
 新增分区作用域时，最合适的接入点是 `normalize` 的互斥校验、`BuildStorageClassForPartitions` 的适用性验证与匹配分支，以及新增/重组分区的最终视图路径。同步测试应放在独立的 `pkg/ddl/storage_class_test.rs`；涉及完整 DDL SQL 接线时还应扩展相邻的 Rust 建表/分区测试，并对照 Go 的 `storage_class_partition_test.go`。应覆盖大小写、引号、`NULL`/`MAXVALUE`、有符号/无符号边界、RANGE COLUMNS collation、多定义优先级和失败不部分写入。
 
 兼容性风险主要是既有 JSON 接受集合或错误文案变化；正确性风险集中于作用域优先级、常量表达式规范化和 RANGE 比较；性能风险集中于对每个分区逐定义扫描以及反复解析表达式。当前复杂度近似为“分区数 × 有作用域定义数”，修改时不要在内层额外引入存储访问或不必要的全表克隆。
-
-## 验证依据
-
-- RustCodeGraph：`rustcodegraph status` 确认索引含 11,467 个文件；`explore 'pkg/ddl/storage_class.rs ...'` 和 `node --file pkg/ddl/storage_class.rs` 读取目标全貌；`query StorageClass --kind function/struct` 核对符号；`callers`/`callees` 查询用于检查调用边，其中 `BuildStorageClassSettingsFromJSON` 的 Rust callees 明确包含 `invalid`、`normalize`、`defs` 和模型构造。
-- 生产源码：`pkg/ddl/storage_class.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/create_table.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/schematracker/dm_tracker.rs`、`pkg/meta/model/engine_attribute.rs`。
-- crate 边界：`pkg/ddl/Cargo.toml`，核对了 `astersql-ddl` 包名以及 config、expression、meta-model、parser-ast、chunk、dbterror、logutil、serde/serde_json 依赖。
-- Go 对照：`pkg/ddl/storage_class.go`、`pkg/ddl/engine_attribute.go`；相关回归测试为 `pkg/ddl/storage_class_test.go`、`pkg/ddl/storage_class_admission_test.go`、`pkg/ddl/storage_class_partition_test.go`。
-- Rust 独立测试：`pkg/ddl/storage_class_test.rs` 覆盖准入、严格 JSON/Go 零值语义、选项冲突、SHOW CREATE 简化、表/分区默认与作用域、规范化 ADD/REORGANIZE、RANGE COLUMNS、unsigned、MAXVALUE 和非法边界；`pkg/ddl/create_table_aster_unit_test.rs`、`pkg/ddl/schematracker/dm_tracker_test.rs` 覆盖直接接线。
-- DDL 框架边界：已阅读 `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`，并用代码验证本文件属于元数据校验/派生 helper，不自行承担 job 持久化、schema-state 迁移、reorg checkpoint、取消回滚、schema sync 或后台资源生命周期。

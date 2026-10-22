@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-aggfuncs` crate，crate 入口 `pkg/executor/aggfuncs/lib.rs` 以 `pub mod func_first_row` 暴露它。它定义 FIRST_ROW 部分结果的泛型状态机，而不是完整的 SQL 表达式求值器：文件中没有 `AggFunc` 实现、行表达式求值、输出 `Chunk` 或错误类型。聚合描述符由 `builder.rs::build_first_row` 选择为 `AggImplementation::FirstRow(ValueKind)`；当前能直接确认的生产接线集中在 `aggfuncs.rs::BuiltAggFunc::spill_function` 和 `aggfuncs.rs::merge_spilled_partial_result`，用于 spill 状态分配、恢复及恢复结果合并。
-
-`pkg/executor/aggfuncs/Cargo.toml` 将该 crate 的 Go 对照包声明为 `pkg/executor/aggfuncs`。本文件的具体值类型来自同 crate 的 `func_max_min` 与 `func_sum`，没有条件编译项、模块级常量或独立外部依赖声明。
+聚合描述符由 `builder.rs::build_first_row` 选择为 `AggImplementation::FirstRow(ValueKind)`；当前能直接确认的生产接线集中在 `aggfuncs.rs::BuiltAggFunc::spill_function` 和 `aggfuncs.rs::merge_spilled_partial_result`，用于 spill 状态分配、恢复及恢复结果合并。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ spill 时 `StateSerializer` 克隆模板/状态并把编码字节交给 chunk；
 
 Go 文件 `pkg/executor/aggfuncs/func_first_row.go` 使用 `basePartialResult4FirstRow { isNull, gotFirstRow }` 加每种具体类型的 `val`；Rust 以 `Option<Option<T>>` 等价表达两个标志和一个值。Go 的 `UpdatePartialResult` 在未锁定且批次非空时只求值 `rowsInGroup[0]`，Rust `update` 同样只取迭代器第一项。Go 的 `MergePartialResult` 仅在目标 `gotFirstRow == false` 时复制来源，Rust `merge` 保持相同左偏规则。Go 输出时把“未见行”和“首行 NULL”都追加为 SQL NULL；Rust 本文件只通过 `into_result` 暴露状态，实际 chunk 输出不在此处。
 
-Go 为 int、float32、float64、decimal、string、time、duration、JSON、vector、enum、set 分别实现分配、求值、合并、输出及 spill，并对可变长类型报告内存变化。Rust 本文件用别名覆盖相同类型集合，但仅提供通用状态操作；表达式求值、最终输出和完整内存记账没有在本文件复刻。特别是当前 `spill_function` 的类型分支少于别名集合，因此文档只把完整集合称为“类型模型/公开别名对齐”，不声称所有 Go 执行路径均由本文件接通。
+Rust 本文件用别名覆盖相同类型集合，但仅提供通用状态操作；表达式求值、最终输出和完整内存记账没有在本文件复刻。特别是当前 `spill_function` 的类型分支少于别名集合，因此文档只把完整集合称为“类型模型/公开别名对齐”，不声称所有 Go 执行路径均由本文件接通。
 
 ## 扩展指南
 
@@ -79,11 +77,3 @@ Go 为 int、float32、float64、decimal、string、time、duration、JSON、vec
 - 改动 `merge` 时要明确 FIRST_ROW 的顺序语义。把它改成任意非空优先或可交换合并会改变 NULL 首行及并行聚合结果。
 - 测试必须放在独立文件。状态机行为同步更新 `pkg/executor/aggfuncs/func_first_row_test.rs`；spill 三态与向量空值同步更新 `spill_helper_test.rs`；执行器级恢复行为可更新 `pkg/executor/aggregate/agg_spill_test.rs`。Go 对齐判断参考 `func_first_row_test.go` 的类型矩阵、合并期望和内存增量测试。
 - 当前最明显的扩展审查点是 spill 工厂未绑定 `Float32`、`Json`、`Enum`、`Set`。若未来补齐，应同时验证 codec、恢复合并、内存记账和类型构建，而不是假设已有别名即可工作。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/executor/aggfuncs/func_first_row.rs` 核对了完整 102 行、全部方法和 11 个别名；`query/node build_first_row` 确认调用边 `builder.rs::build -> build_first_row -> value_kind`；`query/node FirstRowState` 用于区分旧式公共 partial 结构与本文件泛型状态。
-- RustCodeGraph 读取：`pkg/executor/aggfuncs/lib.rs`、`builder.rs`、`aggfuncs.rs`、`spill_serialize_helper.rs`、`spill_deserialize_helper.rs`、`func_first_row_test.rs`、`spill_helper_test.rs`、`physical_plan_runtime.rs`。关键生产边为 `BuiltAggFunc::spill_function -> StateSerializer<FirstRow<T>>`、`SpillState for FirstRow<T>` 以及 `merge_spilled_partial_result -> FirstRow::merge`。
-- 直接读取的未索引/对照材料：`pkg/executor/aggfuncs/Cargo.toml`、`pkg/executor/aggfuncs/func_first_row.go`、`pkg/executor/aggfuncs/func_first_row_test.go`；另以 `rg` 复核 `FirstRow` 的 Rust 引用集合和当前工厂绑定类型。
-- Rust 独立测试证据：`func_first_row_test.rs` 覆盖无行与 NULL 首行区分、NULL 锁定、reset 后采纳来源、只保留首值、空批次及全部公开别名；`spill_helper_test.rs::spill_first_vector_preserves_unseen_null_empty_and_nonempty_flags` 覆盖向量的未见、NULL、空向量、非空向量四态往返。
-- 本任务是纯文档分析，按计划未运行 Cargo；交付校验仅执行任务指定的 11 章节结构命令，并人工复核本文没有把未接线类型描述为已支持。

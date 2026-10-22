@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-utils` crate 中 Unix 平台的动态 pprof/status 启动器，crate 边界由 [`br/pkg/utils/Cargo.toml`](Cargo.toml) 定义，模块由 [`br/pkg/utils/lib.rs`](lib.rs) 以 `dyn_pprof_unix` 名称公开。整个实现及其再导出都受 `cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", unix))` 约束；非 Unix 目标由 [`dyn_pprof_other.rs`](dyn_pprof_other.rs) 提供空实现。
-
-它不实现 HTTP 路由或性能采样，而是在进程收到 `SIGUSR1` 后调用 [`pprof.rs`](pprof.rs) 的 `StartStatusListener`，让后者绑定临时端口并启动 status/pprof 服务。当前迁移状态需要特别区分：本 crate 内已有真实实现和独立测试，但仓库中的 Rust BR CLI [`br/cmd/br/cmd.rs`](../../cmd/br/cmd.rs) 通过 `crate::stubs::*` 使用的是 [`br/cmd/br/stubs.rs`](../../cmd/br/stubs.rs) 内同名空实现，因此本文件尚未接入该 CLI 主链。
+整个实现及其再导出都受 `cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd", unix))` 约束；非 Unix 目标由 [`dyn_pprof_other.rs`](dyn_pprof_other.rs) 提供空实现。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ TLS 只在创建监听器时通过 `as_deref()` 临时借用为 `Option<&TLS>`�
 
 ## 与 Go 版本的对应关系
 
-[`dyn_pprof_unix.go`](dyn_pprof_unix.go) 是直接语义基准：Go 用容量为 1 的 `chan os.Signal`、`signal.Notify` 和 goroutine；Rust 用 `Signals` 与 `thread::spawn`。两者都订阅 `SIGUSR1`，收到信号后记录日志，并以 `0.0.0.0:0` 和传入 TLS 启动 status/pprof；启动失败都记录警告并退出后台循环。
+[`dyn_pprof_unix.go`](dyn_pprof_unix.go) 是直接语义基准：Go 用容量为 1 的 `chan os.Signal`、`signal.Notify` 和 goroutine；Rust 用 `Signals` 与 `thread::spawn`。
 
 差异包括：
 
@@ -96,13 +94,3 @@ TLS 只在创建监听器时通过 `as_deref()` 临时借用为 `Option<&TLS>`�
 - 将功能接入 Rust BR CLI 时，应替换 `br/cmd/br/stubs.rs` 的空实现边界并在 `br/cmd/br/Cargo.toml` 建立正确依赖，而不是复制本文件逻辑；同时补充 `startStatusServer` 路径测试，证明空 `status-addr` 才注册动态监听、非空地址仍直接启动固定监听。
 - 更改公开签名或 cfg 条件时，要同步检查 [`dyn_pprof_other.rs`](dyn_pprof_other.rs)、`lib.rs` 的模块声明以及所有目标平台上的类型一致性。
 - 性能方面，信号路径本身成本很低；扩展时应避免在信号消费线程执行长时间阻塞工作。兼容性方面应保持 Go 的 `SIGUSR1`、失败不终止主流程和动态端口语义，除非有明确迁移决策。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`node --file br/pkg/utils/dyn_pprof_unix.rs` 读取目标文件全部 71 行；精确 `explore` 验证 `StartDynamicPProfListener -> listen_for_start_signal` 及测试调用边，并显示该符号与 Go/非 Unix 同名实现。
-- 源码与模块：[`dyn_pprof_unix.rs`](dyn_pprof_unix.rs)、[`lib.rs`](lib.rs)、[`pprof.rs`](pprof.rs)、[`dyn_pprof_other.rs`](dyn_pprof_other.rs)。
-- crate 声明：[`Cargo.toml`](Cargo.toml)，确认 crate 名、`signal-hook = "0.3"`、日志与 util 路径依赖。
-- Go 对照：[`dyn_pprof_unix.go`](dyn_pprof_unix.go) 与 [`dyn_pprof_other.go`](dyn_pprof_other.go)。
-- 独立 Rust 测试：[`dyn_pprof_unix_test.rs`](dyn_pprof_unix_test.rs)，覆盖真实 `SIGUSR1` 到启动回调的分派，并用故意失败的回调结束监听线程。
-- 应用接线核验：[`br/cmd/br/cmd.rs`](../../cmd/br/cmd.rs) 与 [`br/cmd/br/stubs.rs`](../../cmd/br/stubs.rs)，确认当前 CLI 调用的是本地空实现；仓库范围 `rg` 未发现本文件公开入口的其他 Rust 生产调用。
-- 本任务为纯文档分析，按总计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构校验和文档差异检查。

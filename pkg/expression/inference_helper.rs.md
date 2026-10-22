@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。crate 入口 `pkg/expression/lib.rs` 以 `pub mod inference_helper` 装载该模块，并通过 `pub use inference_helper::*` 将其四个公开能力重新导出：`EmbedTextInfo`、`IsEmbedTextFuncCall`、`ContainsEmbedTextFunc` 和 `ExtractEmbedTextInfo`。它位于 SQL 解析器 AST 与 DDL 生成列校验之间：输入是 `astersql_parser_ast` 对应的 `ast::ExprNode`，输出是对 `EMBED_TEXT()` 形态的判断、遍历结果或供 DDL 保存/比较的常量元数据。
-
-文件不执行模型推理，也不计算向量；运行期推理参数求值在相邻的 `pkg/expression/builtin_inference.rs` 中。这里处理的是建表、改表和 DML 元数据路径需要的静态 AST 信息。RustCodeGraph 显示该文件由 `pkg/ddl/create_table.rs`、`pkg/ddl/generated_column.rs`、`pkg/session/runtime/ddl.rs`、`pkg/session/runtime/dml.rs` 和独立测试 `pkg/expression/inference_helper_test.rs` 使用。
+这些职责共同支持 DDL 对 EMBED_TEXT 生成列的准入检查。
 
 ## 核心职责
 
@@ -86,11 +84,11 @@ RustCodeGraph 的关键调用边包括：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/inference_helper.go`，独立测试是 `pkg/expression/inference_helper_test.go`。Rust 与 Go 的职责和错误顺序保持一致：都区分“任意层级包含”和“根节点直接调用”，都要求 2 或 3 个参数，都只提取第一和第三参数，都要求二者是字符串常量，也都把非空 options 限制为 JSON 对象。
+Rust 与 Go 的职责和错误顺序保持一致：都区分“任意层级包含”和“根节点直接调用”，都要求 2 或 3 个参数，都只提取第一和第三参数，都要求二者是字符串常量，也都把非空 options 限制为 JSON 对象。
 
 具体映射如下：Go 的 `embedTextFnVisitor` 对应 Rust 局部 `Finder`；Go 的 `ast.Walk` 对应 Rust `ExprNode::Accept`；Go 的 `*EmbedTextInfo` 可空比较对应 Rust `EmbedTextInfo::Equal(Option<&Self>, Option<&Self>)`；Go 用 `json.Unmarshal` 到 `map[string]any` 排除数组、标量和 `null`，Rust用 `serde_json::Value::is_object` 表达相同约束。
 
-Rust 的返回类型是拥有型 `EmbedTextInfo` 而非 Go 指针。Rust 测试额外明确证明不同空白的 JSON 原文不相等；这与 Go 注释声明“保留用户原始 JSON、不做规范化”的语义一致。两边都不在本 helper 中校验第二参数或调用模型服务。
+Rust 的返回类型是拥有型 `EmbedTextInfo` 而非 Go 指针。Rust 测试额外明确证明不同空白的 JSON 原文不相等；这与 Go 注释声明“保留用户原始 JSON、不做规范化”的语义一致。
 
 ## 扩展指南
 
@@ -99,12 +97,3 @@ Rust 的返回类型是拥有型 `EmbedTextInfo` 而非 Go 指针。Rust 测试�
 测试应继续放在独立文件 `pkg/expression/inference_helper_test.rs`，不要内嵌到生产源文件。至少同步覆盖：直接与嵌套识别、`None`、参数数量边界、非字符串常量、空 options、非法 JSON、合法但非对象 JSON、原始文本相等性，以及新增字段的 `None`/非 `None` 比较。涉及 DDL 错误包装或生成列依赖时，还应扩展 `pkg/ddl` 对应的独立测试。
 
 兼容性风险主要是错误优先级、错误文本、原始 JSON 比较语义和大小写规范；性能风险主要是对大 AST 的克隆遍历及对大 options 的完整 JSON 解析。不要在这里把 JSON 规范化，否则相同语义但不同原文的元数据会从“不相等”变为“相等”，可能改变 schema 比较行为。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标文件已索引，报告由 5 个文件使用。
-- RustCodeGraph 源码/符号查询：`node --file pkg/expression/inference_helper.rs`；`query EmbedTextInfo`、`query IsEmbedTextFuncCall`、`query ContainsEmbedTextFunc`、`query ExtractEmbedTextInfo`；`node check_embed_text_generated_column`、`node check_embedding_function_usage`、`node check_table_info_valid_with_stmt`、`node IsEmbedTextFuncCall`、`node ExtractEmbedTextInfo`。
-- RustCodeGraph 调用查询：对 `ExtractEmbedTextInfo`、`ContainsEmbedTextFunc`、`IsEmbedTextFuncCall` 执行了 `callers`/`callees`；精确调用边由后续 `explore` 与 `node` 的 Trail 交叉确认。
-- 已读 Rust 路径：`pkg/expression/inference_helper.rs`、`pkg/expression/inference_helper_test.rs`、`pkg/expression/lib.rs`，以及直接上游 `pkg/ddl/generated_column.rs`、`pkg/ddl/create_table.rs`、`pkg/session/runtime/ddl.rs`、`pkg/session/runtime/dml.rs` 的相关符号/片段。
-- 已读配置与 Go 对照：`pkg/expression/Cargo.toml`、`pkg/expression/inference_helper.go`、`pkg/expression/inference_helper_test.go`。
-- 独立 Rust 测试验证了直接/嵌套/空输入识别、2/3 参数、原始 JSON 保留、可空比较及全部主要错误分支；Go 测试覆盖同一组核心契约。本任务为纯文档分析，按计划未运行 Cargo 或代码测试。

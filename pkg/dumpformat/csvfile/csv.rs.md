@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-源文件 [`csv.rs`](./csv.rs) 是 `astersql-dumpformat-csvfile` crate 内部的“单字段编码”实现。模块在 `pkg/dumpformat/csvfile/lib.rs` 中以私有 `mod csv` 引入，因此外部调用者不能直接调用本文件；同 crate 的 `pkg/dumpformat/csvfile/writer.rs` 通过 `csv::append_field` 将每个字段编码进一行缓冲区，再负责字段分隔、行终止和向 `std::io::Write` 输出。
-
-它位于 Dumpling CSV 导出链的底层：`dumpling/export/writer_util.rs::writeCSVFile` 把导出配置映射成 `csvfile::Config`，创建 `csvfile::Writer`，随后由 `Writer::write_borrowed` 逐字段调用本文件的 `append_field`。本文件不负责查询、行迭代、文件轮转、对象存储写入或 I/O 错误处理。
-
-crate 边界由 `pkg/dumpformat/csvfile/Cargo.toml` 定义：库入口是 `lib.rs`，唯一声明的依赖是同工作区的 `astersql-dumpformat`。本文件使用的 `FieldKind` 由该依赖定义并经 `csvfile.rs` 再导出；Base64 和十六进制编码均在本文件内实现，没有额外编码库依赖。
+使用的 `FieldKind` 由该依赖定义并经 `csvfile.rs` 再导出；Base64 和十六进制编码均在本文件内实现，没有额外编码库依赖。
 
 ## 核心职责
 
@@ -84,15 +80,11 @@ RustCodeGraph 的文件关系显示 `csv.rs` 被 `writer.rs` 使用；函数级 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dumpformat/csvfile/csv.go`：
-
 - Rust `append_field` 对应 Go `appendField`。Go 用 `isNull bool` 区分空值，Rust 将其收敛为 `Option<&[u8]>`；分支顺序和输出语义一致。
-- Rust `append_escaped` 合并了 Go `appendEscaped` 与 `appendEscapedBackslash` 的逻辑。两边都优先选择反斜杠式转义，否则选择完整包围符加倍，再否则原样复制。
 - Go HEX 使用 `fmt.Appendf(..., "%x", val)`，Rust 用小写查表直接追加；Go Base64 使用 `base64.StdEncoding.AppendEncode`，Rust 使用本地 `base64_encode`。目标字节格式相同，但 Rust 的 Base64 当前会产生临时 `String`。
 - Go 用 `bytes.Index` 分段查找完整包围符；Rust 在当前位置用 `starts_with` 逐字节扫描。两者输出一致，长输入上的常数开销和搜索策略不同。
-- 两边反斜杠式转义都只使用转义符首字节，并选择包围符首字节、否则字段分隔符首字节作为特殊字符。
 
-`pkg/dumpformat/csvfile/csv_test.go` 与 `csv_test.rs` 对主要格式行为给出成对用例，包括反斜杠转义、引号加倍、空值、三类字段、HEX/Base64、无包围符模式、表头、行宽和大小统计。Rust 测试还显式覆盖自定义转义符、多字节包围符和短写计数。当前证据表明本文件是 Go 行为的直接移植，而不是功能简化版。
+当前证据表明本文件是 Go 行为的直接移植，而不是功能简化版。
 
 ## 扩展指南
 
@@ -104,12 +96,3 @@ RustCodeGraph 的文件关系显示 `csv.rs` 被 `writer.rs` 使用；函数级 
 - 性能修改应关注超长字段：当前包围符加倍逐字节检查，Base64 有临时分配，`Vec` 扩容取决于调用者容量。兼容风险主要是字节级输出变化，尤其是空值是否包围、数值是否转义、HEX 大小写和 Base64 padding。
 
 测试逻辑应继续放在独立的 `pkg/dumpformat/csvfile/csv_test.rs`，不要内嵌回生产源文件；Go 语义变化则同步 `csv_test.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/dumpformat/csvfile` 找到本目录 9 个 Go/Rust 文件；`node --file pkg/dumpformat/csvfile/csv.rs` 读取 115 行源码并报告文件被 `writer.rs` 使用；对 `append_field`、`append_escaped`、`base64_encode` 的 `query` 确认符号位置。三个符号的函数级 `callers/callees` 为空，故未把缺失图边当作不存在调用。
-- 目标与模块源码：`pkg/dumpformat/csvfile/csv.rs`、`writer.rs`、`csvfile.rs`、`lib.rs`；共享字段类型：`pkg/dumpformat/kind.rs`。
-- crate 与应用接线：`pkg/dumpformat/csvfile/Cargo.toml`、`pkg/dumpformat/Cargo.toml`、`dumpling/export/Cargo.toml`、`dumpling/export/writer_util.rs::columnKinds` 与 `writeCSVFile`。
-- Go 对照：`pkg/dumpformat/csvfile/csv.go`、`writer.go`。
-- 独立测试：`pkg/dumpformat/csvfile/csv_test.rs`、`csv_test.go`。这些测试是行为证据，本任务没有运行 Cargo，符合总计划对纯文档任务的限制。
-- 人工事实复核重点：空值与空字节串的区分、数值提前返回、Bytes 的三种格式、两套转义策略、多字节配置在不同策略下的含义、Base64 padding、Dumpling 配置映射与文件轮转边界。

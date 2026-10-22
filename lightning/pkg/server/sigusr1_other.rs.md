@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`sigusr1_other.rs`](sigusr1_other.rs) 是 `astersql-lightning-pkg-server` crate 的非 Unix 平台适配文件。crate 入口 [`lib.rs`](lib.rs) 在 `cfg(not(unix))` 下把它装配为 `sigusr1` 模块，并通过 `pub use sigusr1::*` 向 crate 内外提供与 Unix 实现同名的 API；Unix 平台则选择 [`sigusr1_unix.rs`](sigusr1_unix.rs)。因此本文件不是信号处理器的简化实现，而是“目标平台不存在 SIGUSR1 控制通道”时的显式空实现。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确定。该 manifest 没有为此文件定义 feature；平台选择完全来自 `lib.rs` 的 `cfg(unix)` / `cfg(not(unix))`。生产代码不会在同一次构建中同时编译两种实现。
+明确丢弃调用方提供的回调，不注册信号、不启动线程，也不触发任何副作用。
 
 ## 核心职责
 
@@ -66,9 +64,7 @@ RustCodeGraph 能识别本文件中的函数、`lib.rs` 平台装配以及两个
 
 ## 与 Go 版本的对应关系
 
-直接对照 [`sigusr1_other.go`](sigusr1_other.go)：Go 的 `handleSigUsr1(handler func())` 同样为空，注释也明确说明非 Unix 平台不存在 SIGUSR1。因此 Rust 版本保持了关键行为：统一名称、接受回调、无调用、无返回错误、无副作用。
-
-Rust 移植中的显式差异是泛型闭包类型 `F: Fn()`，而 Go 使用 `func()`。这个差异不改变运行行为，却让 Rust 非 Unix 入口无需承担 Unix 线程所需的 `Send + 'static` 限制。[`sigusr1_other_test.rs`](sigusr1_other_test.rs) 通过捕获借用的 `Rc<Cell<i32>>` 证明该差异是有意且可用的；调用后值仍为 `0`，同时证明回调没有执行。Go 目录下没有针对该空实现的独立测试文件，当前 Go 语义证据来自实现本身及 [`lightning.go`](lightning.go) 的统一调用点。
+Rust 移植中的显式差异是泛型闭包类型 `F: Fn()`，而 Go 使用 `func()`。这个差异不改变运行行为，却让 Rust 非 Unix 入口无需承担 Unix 线程所需的 `Send + 'static` 限制。[`sigusr1_other_test.rs`](sigusr1_other_test.rs) 通过捕获借用的 `Rc<Cell<i32>>` 证明该差异是有意且可用的；调用后值仍为 `0`，同时证明回调没有执行。
 
 ## 扩展指南
 
@@ -79,13 +75,3 @@ Rust 移植中的显式差异是泛型闭包类型 `F: Fn()`，而 Go 使用 `fu
 - 此路径是平台兼容边界而非可选运行开关。新增功能需要同时评估：无信号平台应继续静默禁用、返回显式能力信息，还是提供另一种触发机制；该产品语义不能仅凭本文件推断。
 
 兼容风险主要是目标平台选择和闭包 trait 约束；正确性风险是意外执行回调或让上层误判监听已启用；当前空实现没有性能热点。
-
-## 验证依据
-
-- RustCodeGraph `status`：本地索引包含 11,467 个文件，目标目录及目标文件已索引。
-- RustCodeGraph `files --filter lightning/pkg/server`：确认 `sigusr1_other.rs`、`lib.rs`、Unix 对应实现及独立测试均位于同一 crate。
-- RustCodeGraph `node --file lightning/pkg/server/sigusr1_other.rs`：核对完整 27 行源码，确认唯一函数、签名与空函数体。
-- RustCodeGraph `query handleSigUsr1 --kind function --json`：确认 Go/Rust、Unix/非 Unix 四个同名平台实现；`node` 查询进一步核对 `lib.rs`、`lightning.rs`、`sigusr1_unix.rs` 和相关测试。
-- 源码与配置复核：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`lightning.rs`](lightning.rs)、[`sigusr1_other.go`](sigusr1_other.go)、[`sigusr1_unix.go`](sigusr1_unix.go)、[`sigusr1_unix.rs`](sigusr1_unix.rs)。目录中没有 `doc.go`，故以 crate 入口 `lib.rs` 的模块文档作为最近的包级契约。
-- 测试复核：[`sigusr1_other_test.rs`](sigusr1_other_test.rs) 验证非 `Send` 借用回调被接受且不执行；[`sigusr1_unix_test.rs`](sigusr1_unix_test.rs) 仅作为平台差异证据，验证 Unix 实现会在 SIGUSR1 到来时通知所有已注册处理器。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；完成判定依赖源码事实审阅及固定章节结构验证。

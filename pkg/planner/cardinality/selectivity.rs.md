@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-cardinality` crate 的谓词选择率估算实现。crate 根 [`lib.rs`](lib.rs) 以私有模块 `mod selectivity` 装入它，再通过 `pub use selectivity::*` 向规划器公开符号；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `pkg/planner/cardinality`。选择率定义为过滤后行数与过滤前行数之比，主要入口 `Selectivity` 接收 CNF 条件、`statistics::HistColl` 和已填充的访问路径，供规划器将基础表统计缩放为过滤后的行数。
-
-RustCodeGraph 将本文件识别为 33 个符号，并显示它被 8 个文件使用。当前可核实的生产上游包括：`pkg/planner/core/operator/logicalop/logical_datasource.rs::DeriveStats`（派生数据源统计）、`pkg/planner/core/operator/physicalop/tiflash_predicate_push_down.rs`（按选择率组织 late materialization 条件）、`pkg/planner/core/operator/physicalop/index_join_probe.rs`（反推 index join probe 各阶段行数），以及同 crate 的 `row_count_index.rs`（复用等值、越界与最后桶启发式）。本文件不是独立执行单元，不拥有 SQL、存储或统计收集入口。
+`GetSelectivityByFilter` 在单列 stats v2 上用 TopN、直方图边界/桶重复数及 NULL 样本执行实际过滤表达式，提供 LIKE、ILIKE、REGEXP 等字符串匹配的辅助估算。
 
 ## 核心职责
 
@@ -99,7 +97,7 @@ RustCodeGraph 将本文件识别为 33 个符号，并显示它被 8 个文件�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`selectivity.go`](selectivity.go)。Rust 保留了 Go 的主入口顺序、63 位 mask 限制、列/索引节点模型、六级贪心规则、DNF 独立性容斥、字符串 TopN 辅助估算、范围外启发式和 MV Index 回调形状。`Cargo.toml` 的 porting metadata 也明确指向同一 Go 包。
+Rust 保留了 Go 的主入口顺序、63 位 mask 限制、列/索引节点模型、六级贪心规则、DNF 独立性容斥、字符串 TopN 辅助估算、范围外启发式和 MV Index 回调形状。
 
 已核实的语言适配差异包括：
 
@@ -110,7 +108,7 @@ RustCodeGraph 将本文件识别为 33 个符号，并显示它被 8 个文件�
 - Rust `BuildPartialPaths4MVIndexResult` 用结构体模拟 Go 多返回值，并引入 `'static` partial-path 引用；这是迁移边界，不是已验证的生产生命周期设计。
 - Go 的 `IsLastBucketEndValueUnderrepresented` 用上下文参与 bucket 定位；Rust `Histogram::LocateBucket` 接口不需要该参数，函数仍保留 `_sctx` 形状以对齐调用层。
 
-Go 回归面主要在 [`selectivity_test.go`](selectivity_test.go)，涵盖总体选择率、DNF、贪心、TopN 辅助估算、跨列验证、范围外值、最后桶启发式以及追加/前缀 common handle 等场景。Rust 独立测试 [`selectivity_test.rs`](selectivity_test.rs) 当前重点覆盖辅助算法、MV Index 组合公式、范围构建、表达式列索引归一化以及 common handle 路径，并非 Go 全量测试的逐项移植。
+Rust 独立测试 [`selectivity_test.rs`](selectivity_test.rs) 当前重点覆盖辅助算法、MV Index 组合公式、范围构建、表达式列索引归一化以及 common handle 路径，并非 Go 全量测试的逐项移植。
 
 ## 扩展指南
 
@@ -121,15 +119,3 @@ Go 回归面主要在 [`selectivity_test.go`](selectivity_test.go)，涵盖总�
 - 修改范围外或最后桶启发式时，必须同步 `row_count_index.rs` 的调用语义以及 Rust/Go 测试中的新增、删除、零修改、零 NDV、低 Repeat 和边界值用例；不要把返回“行数”的 `outOfRangeFullNDV` 误当作选择率。
 - 新增上游调用者时，应传入 CNF 条件和与同一 `HistColl` 对应的 `filledPaths`；错误策略由调用场景决定。数据源统计派生当前传播错误，TiFlash/index join 的局部调用可选择回退。
 - 任何语义改动都应继续对照 `selectivity.go`，并将 Rust 回归放在同目录独立测试文件 `selectivity_test.rs`，不把测试嵌入生产源文件。
-
-## 验证依据
-
-本说明基于以下直接证据编写：
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/cardinality` 确认 Rust/Go 对照文件；`query Selectivity --kind function`、`node --file pkg/planner/cardinality/selectivity.rs`、`node selectivity.rs::Selectivity` 和 `callees selectivity.rs::GetSelectivityByFilter` 用于核对符号、源代码及下游边。精确 `callers` 查询没有返回结果，因此上游边另由 `rg` 直接核验。
-- Rust 源与 crate 边界：`pkg/planner/cardinality/selectivity.rs`、`lib.rs`、`Cargo.toml`；相邻下游实现 `pseudo.rs`、`row_count_column.rs`、`row_count_index.rs`、`trace.rs`。
-- Rust 上游：`pkg/planner/core/operator/logicalop/logical_datasource.rs`、`pkg/planner/core/operator/physicalop/tiflash_predicate_push_down.rs`、`pkg/planner/core/operator/physicalop/index_join_probe.rs`。
-- Go 对照：`pkg/planner/cardinality/selectivity.go`；MV Index 注入点 `pkg/planner/core/core_init.go:167-168`。Rust 全仓搜索没有发现两个同名回调的赋值。
-- 独立测试：`pkg/planner/cardinality/selectivity_test.rs` 与 Go 回归 `pkg/planner/cardinality/selectivity_test.go`。Rust 测试明确覆盖类型排序、索引前缀、贪心优先级、常量列识别、范围外估算、MV Index 组合/夹紧、最后桶启发式、表达式列索引归一化、追加及前缀 common handle 范围。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务文件指定命令，要求目标文件存在且恰好包含上述 11 个固定二级标题；人工复核还需确认唯一新增生产物为本文件、没有把未接线 MV Index 描述成已支持，并且所有扩展测试均指向独立测试文件。

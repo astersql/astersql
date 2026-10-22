@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ingestor-globalsort` crate（见 `pkg/ingestor/globalsort/Cargo.toml` 与 `lib.rs::pub mod reader`），位于全局排序结果从对象存储重新进入内存、归并和冲突处理的边界。它读取 globalsort/simplesst 约定的有序 KV data 文件及 stat 属性文件，提供两类入口：按半开键区间 `[start_key, end_key)` 批量装载，以及按文件顺序异步流出所有 KV。
-
-直接生产调用链有三组：`engine.rs::Engine::load_range_batch_data` 为导入批次装载 KV，`merge_v2.rs::mergeOverlappingFilesV2` 为外部归并的每个范围窗口装载 KV；`dxf/importinto/collect_conflicts.rs::CollectConflictGroup` 和 `conflict_resolution.rs::ResolveConflictGroup` 使用 `ReadKVFilesAsync` 消费冲突文件。除此之外，`merge.rs::merge_overlapping_files_internal` 复用底层 `read_stream_pair`，`split.rs::PropertyMerge` 复用 `StreamStatsReader`。
+`read_all_data` 校验 data/stat/offset 切片形状，逐个 data 文件从给定偏移开始读取，只保留 `[start_key, end_key)` 内 KV，并保证失败时清空输出。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ stat 文件每条记录是大端 `u32` 长度加属性体；体内依次为两�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ingestor/globalsort/reader.go`，偏移查找语义对照 `pkg/ingestor/simplesst/util.go::GetReadRangeFromProps`。Rust 保留了：期望并发度公式及阈值、偏移指向目标键之前所以仍需过滤、严格 `[start,end)`、错误时清空输出、按文件顺序异步流出、上下文/令牌取消、stat 文件最多 64 路扫描，以及目标键超过后续属性时沿用最后偏移。
-
 已知差异必须视为当前实现事实：Go `readAllData` 最多启动 1000 个文件读取 worker，并在大文件上启用 `simplesst.KVReader` 并发模式；Rust 串行读文件且忽略 `_concurrency`。Go 使用 `membuf.Pool` 管理小/大块并在 GCS 成功后 reset；Rust 使用拥有所有权的 `Vec`，没有 GCS 特例、读取指标或日志任务。Go `ReadKVFilesAsync` 将错误交给外部 error group、返回纯 KV channel；Rust 把错误放进 `Iterator<Item=Result<KvPair>>` 并由 reader 自身 join 线程。
 
-Rust 还显式支持两种记录格式；Go 生产路径使用 simplesst 的 Go 格式。Rust `get_read_ranges_from_props` 位于本文件并直接解析 stat 流，而 Go 通过 simplesst 包实现。Rust 的 `reader_test.rs` 对照 Go 的 `reader_test.go`，覆盖多文件、单文件、大范围窗口与异步顺序，但 Rust fixture 直接 `encode_kvs`，不复现 Go writer 的自动分文件和 membuf 行为。偏移算法更完整的边界用例位于 `pkg/ingestor/simplesst/util_test.rs`/`.go`，不是本文件的直接单元测试。
+Rust 还显式支持两种记录格式；Go 生产路径使用 simplesst 的 Go 格式。Rust `get_read_ranges_from_props` 位于本文件并直接解析 stat 流，而 Go 通过 simplesst 包实现。Rust 的 `reader_test.rs` 对照 Go 的 `reader_test.go`，覆盖多文件、单文件、大范围窗口与异步顺序，但 Rust fixture 直接 `encode_kvs`，不复现 Go writer 的自动分文件和 membuf 行为。
 
 ## 扩展指南
 
@@ -89,12 +85,3 @@ Rust 还显式支持两种记录格式；Go 生产路径使用 simplesst 的 Go 
 若改变异步接口，应保持“消费者提前退出不会死锁”这一 Drop 顺序，并检查 `CollectConflictGroup`、`ResolveConflictGroup` 的错误传播与取消联动。若需要在 drop 时主动取消，可在 `AsyncKvReader` 保存 token，但需区分用户取消与接收端正常结束，避免把成功读取误报为取消。
 
 兼容风险主要是 Go/Rust 文件格式和空 `end_key` 语义；正确性风险集中在 offset 选择、截断输入及并发内存核算；性能风险集中在当前串行 data 读取、每条 KV 独立分配，以及容量 1 通道造成的高频线程同步。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go；`node --file pkg/ingestor/globalsort/reader.rs --offset 1 --limit 500` 返回完整 491 行源码及该文件被 21 个文件使用的信息；`query` 精确定位 `reader.rs::read_all_data`、`read_one_file`、`ReadKVFilesAsync`、`get_read_ranges_from_props`、`read_stream_pair`。这些符号的 `callers/callees` 未返回边，因此直接调用关系另用 `rg` 核验，未把空图结果推断为“无调用者”。
-- 源码与 crate 边界：`pkg/ingestor/globalsort/reader.rs`、`lib.rs`、`Cargo.toml`；包级职责参考 `pkg/ingestor/doc.go`。
-- 直接 Rust 调用证据：`pkg/ingestor/globalsort/engine.rs`、`merge_v2.rs`、`merge.rs`、`split.rs`、`pkg/dxf/importinto/collect_conflicts.rs`、`conflict_resolution.rs`。
-- Go 对照：`pkg/ingestor/globalsort/reader.go`、`engine.go`、`merge_v2.go`，以及 `pkg/ingestor/simplesst/util.go::GetReadRangeFromProps`。
-- 独立测试：`pkg/ingestor/globalsort/reader_test.rs` 与 `reader_test.go`；stat seek 的对照边界证据来自 `pkg/ingestor/simplesst/util_test.rs` 与 `util_test.go`。按任务约束未运行 Cargo。
-- 人工复核结论：该文件存在于“外部排序文件 → 内存导入/归并/冲突处理”边界；主要执行、资源释放、错误回滚及当前并发缺口均能反向定位到上述符号和调用点。交付前另运行任务指定的 11 章节结构命令。

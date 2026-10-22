@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根在 [`pkg/executor/lib.rs`](lib.rs) 中以 `pub mod reload_expr_pushdown_blacklist` 公开该模块，而 [`pkg/executor/Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确认了这一归属。它承载 `ADMIN RELOAD EXPR_PUSHDOWN_BLACKLIST` 对应的 Rust 侧核心语义：读取 `mysql.expr_pushdown_blacklist`，把函数名和存储类型转换为进程内黑名单表示，并仅在内容变化时替换状态。
-
-本文件同时定义了一个可注入的运行时边界和一个泛型执行器，但不拥有 SQL 解析、计划生成或实际全局状态实现。相邻的 [`pkg/executor/builder.rs`](builder.rs) 能识别 `Plan::ReloadExprPushdownBlacklist`，再以 `ExecutorKind::ReloadExprPushdownBlacklist` 委托 `ExecutorBuilderDependencies::build_executor`；当前直接证据没有显示该 builder 会构造本文件的 `ReloadExprPushdownBlacklistExec`。因此，本文件应视为已实现并有独立单元测试的加载逻辑，而不能仅凭模块存在断言其已接入完整 Rust SQL 执行主链。
+同时定义了一个可注入的运行时边界和一个泛型执行器，但不拥有 SQL 解析、计划生成或实际全局状态实现。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@ RustCodeGraph 对 `reload_expr_pushdown_blacklist.rs::LoadExprPushdownBlacklist`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/executor/reload_expr_pushdown_blacklist.go`](reload_expr_pushdown_blacklist.go)。两者保持以下主干语义：执行器 `Next` 触发一次加载；以相同的 `HIGH_PRIORITY` SQL 读取两列；名称和 store 转小写；别名归一化；逗号分隔 store 并以位或聚合；新旧 map 完全相同时跳过；变化时记录纳秒时间并替换黑名单。
-
 实现边界存在明确差异：Go 执行器嵌入 `exec.BaseExecutor`，从会话取得 restricted SQL executor，并直接操作 `expression.DefaultExprPushDownBlacklist` 与 `ExprPushDownBlackListReloadTimeStamp`；Rust 将这些能力抽成 `ExprPushdownBlacklistRuntime`。Go builder 直接返回 `&ReloadExprPushdownBlacklistExec{base}`，Rust builder 当前只按 `ExecutorKind` 委托通用依赖，未显示与本文件泛型类型的绑定。
 
-Go 的 `funcName2Alias` 直接存放 AST 常量的实际字符串；Rust 的 `FUNC_NAME_2_ALIAS_SYMBOLS` 第二列存放常量符号名用于审计，`func_name_to_alias` 另行编码实际特殊拼写，对多数普通函数返回输入。维护时必须同时核对 Go map 与 Rust 两处表示，尤其是运算符、同义写法和新增 AST 常量。
+Go 的 `funcName2Alias` 直接存放 AST 常量的实际字符串；Rust 的 `FUNC_NAME_2_ALIAS_SYMBOLS` 第二列存放常量符号名用于审计，`func_name_to_alias` 另行编码实际特殊拼写，对多数普通函数返回输入。
 
 Go 侧计划缓存场景 [`pkg/executor/test/plancache/plan_cache_test.go`](test/plancache/plan_cache_test.go) 证明 `ADMIN reload expr_pushdown_blacklist` 会使相关已缓存计划失效；它验证完整 Go SQL 链路，不等同于 Rust 运行时接线测试。Rust 独立测试只验证本文件算法和委托行为。
 
@@ -87,12 +83,3 @@ Go 侧计划缓存场景 [`pkg/executor/test/plancache/plan_cache_test.go`](test
 - 若要求 map 与时间戳具备整体原子性，应把语义封装在 `replace_blacklist` 的运行时实现中，或升级 trait 契约；不能依赖当前两个参数自然提供原子保证。
 - 修改查询列、错误策略、空白处理或大小写规则时，应同时检查 Go 对照、系统表数据约束及计划缓存失效行为。主要兼容风险是规范键变化导致已有黑名单失效，性能风险是大表读取和重复 map 克隆，正确性风险是位号冲突或非原子发布。
 - 测试继续放在独立的 `pkg/executor/reload_expr_pushdown_blacklist_test.rs`，遵守源文件与 Rust 单元测试分离要求；完整 SQL 行为则应在相应集成测试表面补充，而不是在本文件内添加 `#[cfg(test)]` 模块。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引可用；`query` 找到 `LoadExprPushdownBlacklist`、`ReloadExprPushdownBlacklistExec`、`isSameExprPushDownBlackList`、`func_name_to_alias`；对精确限定名执行 `node` 得到 `Next → LoadExprPushdownBlacklist`、加载函数到五个运行时方法/比较函数/别名函数的调用边，以及执行器仅被独立测试构造的上游证据。独立 `callers` 子命令未输出结果，故调用者结论采用同一节点的 `Called by` trail 并以代码搜索交叉核对。
-- Rust 源码：[`pkg/executor/reload_expr_pushdown_blacklist.rs`](reload_expr_pushdown_blacklist.rs) 的运行时 trait、执行器、加载算法、比较函数、别名表和别名转换；[`pkg/executor/lib.rs`](lib.rs) 的生产模块与独立测试模块声明。
-- crate 与接线：[`pkg/executor/Cargo.toml`](Cargo.toml) 的 crate 根和 feature/依赖声明；[`pkg/executor/builder.rs`](builder.rs) 的 `Plan`、`ExecutorKind`、`buildReloadExprPushdownBlacklist`、`build_leaf` 委托链。
-- Rust 测试：[`pkg/executor/reload_expr_pushdown_blacklist_test.rs`](reload_expr_pushdown_blacklist_test.rs) 覆盖 Unicode 小写、特殊别名、跨行 store 聚合、未知 store、相同状态跳过、查询错误不替换、`Next` 委托和 map 精确相等。
-- Go 对照：[`pkg/executor/reload_expr_pushdown_blacklist.go`](reload_expr_pushdown_blacklist.go) 核对 restricted SQL、内部事务来源、store 位、原子全局状态及别名表；[`pkg/executor/builder.go`](builder.go) 核对 Go 的直接构造；[`pkg/executor/test/plancache/plan_cache_test.go`](test/plancache/plan_cache_test.go) 核对完整 Go 链路对计划缓存的可见效果。
-- 本任务为纯文档分析，按总计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核仅新增本说明文件、无运行时代码或 `plan.md` 改动。

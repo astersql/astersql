@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-sortexec` crate，由同目录 `lib.rs` 的 `pub mod topn_spill` 纳入模块树。它位于 `TopNExec` 的 worker 有界堆与最终多路归并之间：当 `topn.rs::TopNExec::fetchTopN` 发现共享内存 tracker 超限时，惰性创建 `topNSpillHelper`，把各 worker 堆导出为有序 run；输入结束后，`TopNExec` 取走这些 run，并与仍在内存中的 worker 行一起交给 `newMultiWayMerger`。
-
-`pkg/executor/sortexec/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/executor/sortexec`，没有声明 feature，清单中的 workspace 依赖目前都位于 `cfg(windows)` 下。本文件自身只使用标准库同步原语和同 crate 的 `sort_util`、`topn_worker`。它不负责读取子执行器、维护 TopN 有界堆或应用 `LIMIT offset,count`；这些分别由 `TopNExec`、`topNWorker`/`topNChunkHeap` 和 `TopNExec::applyLimitAndRank` 完成。
+`topNSpillHelper` 保存 worker、比较器、spill 状态和内存/磁盘 tracker，把每个 worker 堆的有序行按 `spillChunkSize` 分块写入 `DiskRun`，并把生成的 run 交给后续归并。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ worker 各自通过 `Arc<Mutex<topNWorker>>` 保护。Rust 的 `spill` 不并发
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/executor/sortexec/topn_spill.go`。两版都保存 worker、已 spill run、内存/磁盘 tracker，并采用 `notSpilled`、`needSpill`、`inSpilling` 三阶段；action 都在整体 tracker 超限且 TopN 自身数据达到约十分之一限额时请求 spill，实际 TopN 结果最终都要与各 run 归并。
-
 当前 Rust 是聚焦的简化移植，尚不具备 Go 实现的完整语义：
 
 - Go 用 `sync.Cond` 保护状态，action 会等待正在进行的 spill，完成后 `Broadcast`；Rust 用原子 CAS，没有等待/唤醒协议。
@@ -90,7 +86,7 @@ Go 对照为 `pkg/executor/sortexec/topn_spill.go`。两版都保存 worker、�
 - Go 在 action 数据不足时调用 fallback OOM action，并提供 `DefSpillPriority`；Rust `topNSpillAction` 没有优先级或 fallback，只返回 `Ok(())`。
 - Go helper保存字段类型、临时文件前缀和观测用 consumed/limit；Rust只保存比较器和简化 tracker。
 
-Go 测试 `topn_spill_test.go` 覆盖构堆阶段与更新阶段 spill、先内存后 spill、并发关闭、kill、真实磁盘分块、failpoint 错误与无泄漏检查。Rust 独立测试覆盖“不超限不请求”“action 只标记、由执行器 spill”“空 spill 不算触发”“错误后状态恢复”以及小内存下 `Offset/Count` 结果正确，但不能替代上述 Go 并发、取消和真实 I/O 意图。
+Rust 独立测试覆盖“不超限不请求”“action 只标记、由执行器 spill”“空 spill 不算触发”“错误后状态恢复”以及小内存下 `Offset/Count` 结果正确，但不能替代上述 Go 并发、取消和真实 I/O 意图。
 
 ## 扩展指南
 
@@ -101,15 +97,3 @@ Go 测试 `topn_spill_test.go` 覆盖构堆阶段与更新阶段 spill、先内�
 若引入 worker 并行与条件等待，必须保持：同一时刻只有一个有效 spill 请求；等待者在成功和所有错误路径都能被唤醒；每个 worker 堆只被消费一次；部分失败不会静默丢行；锁顺序不会让 action、worker 与执行器互相等待。Go 的 cond、WaitGroup、channel 和 `finishCh` 是直接语义依据，但 Rust 可以选择不同原语。
 
 性能敏感点包括 `drainSorted` 的全量物化、每个 `part.to_vec()` 对行的克隆、所有 run 最终 `collect()` 为完整向量，以及串行 worker 写出。优化这些点时必须维持 run 内有序、全局比较器一致、TopN 最终窗口准确和 tracker 对称；应补充多 worker、多轮 spill、空 worker、升降序/NULL 以及错误发生在中间 worker 的回归测试。
-
-## 验证依据
-
-本次事实核对读取了：
-
-- 目标源码：`pkg/executor/sortexec/topn_spill.rs`。
-- crate 与模块边界：`pkg/executor/sortexec/Cargo.toml`、`pkg/executor/sortexec/lib.rs`；`pkg/executor` 下无 `doc.go` 可读。
-- Rust 直接主链和数据结构：`topn.rs`、`topn_worker.rs`、`sort_util.rs`。
-- Rust 独立测试：`topn_spill_test.rs`，覆盖 action 阈值、状态转换、空 spill、失败恢复和 `Offset/Count` 端到端行为。
-- Go 对照与测试：`topn_spill.go`、`topn_spill_test.go`，用于核对并发、条件等待、kill、真实磁盘、fallback、故障注入和清理语义。
-
-RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/sortexec` 将目标列为含 17 个符号的 Rust 文件。执行了目标文件 `node`、`topNSpillHelper`/`topNSpillAction`/`DiskRun`/`MemoryTracker` 查询、关键入口的 `callers/callees` 尝试，并通过相邻已索引源码的直接调用点补证。交付结构以任务指定命令验证文档存在且恰有 11 个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo 或代码测试。

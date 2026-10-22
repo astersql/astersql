@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-dumpformat-parquetfile`，由同目录 `lib.rs` 以公开模块 `spark_rebase` 装配。它位于 Parquet 读取链的格式兼容层：`file_parser.rs` 读取文件 footer，判断文件是否由旧版 Spark 的 Julian/Gregorian 混合历法写出；`type_converter.rs` 再借助本文件把 DATE、TIMESTAMP_MILLIS、TIMESTAMP_MICROS 和 INT96 的旧历法值重映射到 proleptic Gregorian（前推公历）时间轴。它不负责 Parquet I/O、SQL Datum 的最终构造或普通时区换算。
-
-该 crate 的边界由 `pkg/dumpformat/parquetfile/Cargo.toml` 给出，库入口是 `lib.rs`；本文件自身只直接使用标准库集合、`OnceLock` 和 crate 根的 `Error`/`Result`。Parquet crate 提供的真实 footer 元数据先在 `file_parser.rs` 被压缩成这里定义的 `SparkFileMeta`，因此本模块没有直接依赖 Arrow/Parquet 元数据类型。
+对 DATE 的 epoch-day 值按固定 switch/diff 表修正；对早于表覆盖范围的日期执行完整 Julian 日期标签到 Gregorian 日期轴的转换（`rebase_julian_to_gregorian_days`）。
 
 ## 核心职责
 
@@ -77,9 +75,9 @@ DATE 数据由两个长度均为 14 的编译期数组表示。索引位置是�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dumpformat/parquetfile/spark_rebase.go`，生成数据来源是 `spark_rebase_micros_generated.go`。Rust 保留了 Go 的核心策略：专用版本 key 优先于 CreatedBy；legacy marker 或低于 Spark 3.0/3.1 cutoff 才启用；时区只接受生成表中存在的 ID；无有效时区时落到 UTC；DATE 与 TIMESTAMP 都按 switch/diff 查表；表前值执行完整 Julian→Gregorian 转换；1900 之后的 timestamp 无条件快速返回；负数拆分使用 floor 语义。
+Rust 保留了 Go 的核心策略：专用版本 key 优先于 CreatedBy；legacy marker 或低于 Spark 3.0/3.1 cutoff 才启用；时区只接受生成表中存在的 ID；无有效时区时落到 UTC；DATE 与 TIMESTAMP 都按 switch/diff 查表；表前值执行完整 Julian→Gregorian 转换；1900 之后的 timestamp 无条件快速返回；负数拆分使用 floor 语义。
 
-实现形态存在几处明确差异：Rust 用自有 `SparkFileMeta`/`AppVersion` 代替 Arrow Go `metadata.FileMetaData`/`AppVersion`，由 `file_parser.rs` 负责适配；Rust 用 `OnceLock` 在运行时解析嵌入的 Go 生成文件，Go 直接引用生成的数组和索引函数；Rust lookup 构造额外校验 switches/diffs 等长，区间加法使用 `checked_add`，Go 对应加法直接执行；Rust 的时间换算使用整数 `days_from_civil`，Go 使用 `time.Date(...).Unix()`。此外，文件顶部大段注释是 Go 结构的旧草稿，不是另一个可运行实现。
+实现形态存在几处明确差异：Rust 用自有 `SparkFileMeta`/`AppVersion` 代替 Arrow Go `metadata.FileMetaData`/`AppVersion`，由 `file_parser.rs` 负责适配；Rust 用 `OnceLock` 在运行时解析嵌入的 Go 生成文件，Go 直接引用生成的数组和索引函数；Rust lookup 构造额外校验 switches/diffs 等长，区间加法使用 `checked_add`，Go 对应加法直接执行；Rust 的时间换算使用整数 `days_from_civil`，Go 使用 `time.Date(...).Unix()`。
 
 Go 的 `parser_test.go` 对多组 DATE、时区和极早 timestamp 值有更广的表驱动覆盖；Rust 的直接独立测试较精简，但 `parser_test.rs` 已验证列转换接线和主要策略边界。扩展时应以 Go 生产代码及其测试意图为基线，不能因 Rust 测试样例较少而删减分支。
 
@@ -90,13 +88,3 @@ Go 的 `parser_test.go` 对多组 DATE、时区和极早 timestamp 值有更广�
 - 修改历法算法或 cutoff 时，要与 `spark_rebase.go` 及 Spark 上游语义逐项对齐，覆盖 switch 前、恰等于 switch、区间边界、1900 cutoff 两侧、Common Era 附近、负数日内余数以及 `i64` 溢出风险。
 - 新增时间单位时，不要只在本文件加入口；还须在 `file_parser.rs` 决定该类型是否可 rebase，并在 `type_converter.rs` 保持“rebase 的单位”和转换前后缩放一致。当前 NANOS 明确不参与该路径。
 - 测试逻辑应继续放在同目录独立测试文件，不要内嵌到 `spark_rebase.rs`。首选扩展 `spark_rebase_test.rs`；涉及完整列解码接线时同步扩展 `parser_test.rs`，并参考 `parser_test.go` 的表驱动预期。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，项目含 11,467 个文件、307,296 个节点、1,848,419 条边；本次通过 `explore` 和 `node --file` 检查了 `spark_rebase.rs`、`spark_rebase_test.rs`、`file_parser.rs`、`type_converter.rs`、`parser_test.rs` 的源码与使用关系。
-- 生产源码：`pkg/dumpformat/parquetfile/spark_rebase.rs`，重点符号为 `parse_generated_rebase`、`generated`、`spark_rebase_time_zone_id`、`rebase_julian_to_gregorian_days`、`SparkRebaseMicrosLookup::{new,rebase}`、`rebase_before_switch`。
-- crate 与模块证据：`pkg/dumpformat/parquetfile/Cargo.toml`、`pkg/dumpformat/parquetfile/lib.rs`。
-- 直接上游证据：`pkg/dumpformat/parquetfile/file_parser.rs::open_next_row_group`；直接消费证据：`pkg/dumpformat/parquetfile/type_converter.rs::{convert_int32,convert_int64,int96_micros_with_rebase,convert_int96}`。
-- Go 对照与生成数据：`pkg/dumpformat/parquetfile/spark_rebase.go`、`pkg/dumpformat/parquetfile/spark_rebase_micros_generated.go`；关联 Go 测试在 `pkg/dumpformat/parquetfile/parser_test.go`。
-- Rust 独立测试：`pkg/dumpformat/parquetfile/spark_rebase_test.rs`；集成到列转换的测试：`pkg/dumpformat/parquetfile/parser_test.rs` 中 `date_conversion_only_rebases_with_spark_legacy_lookup`、`spark_metadata_version_timezone_and_rebase_policy_match_go`、`parser_calendar_math_uses_floor_division_for_negative_values` 等。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行任务指定的 11 章节结构检查，并人工核对文件定位、调用链、错误边界和扩展入口均有上述源码依据。

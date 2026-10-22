@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-simplesst` crate；crate 入口 `pkg/ingestor/simplesst/lib.rs` 以 `pub mod file` 暴露该模块，并把它放在简化 SST 的编码、写入、读取与归并管线中。这里负责最底层的单条 KV 线格式和一份文件内容的内存累计，不负责对象存储提交、文件命名调度或读取。上层 `writer.rs` 与 `onefile_writer.rs` 在完成排序和重复键处理后调用本模块，再把生成的数据缓冲和统计信息写入存储。
-
-`pkg/ingestor/simplesst/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/ingestor/simplesst`；其 Rust 依赖目前全部声明在 `cfg(windows)` 目标下。本文件自身只依赖 crate 内的 `Error`、`Result` 和 `writer::RangePropertiesCollector`，没有条件编译项。
+该类型名包含 “Store”，但当前 Rust 实现只是拥有 `Vec<u8>` 的内存构建器。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/ingestor/simplesst/file.go`。常量、记录布局、偏移含义、严格递增前置条件、范围属性阈值逻辑以及 `Finish` 只调用 `onFileEnd` 的核心语义保持一致。Rust 还提供 Go 风格别名 `NewKeyValueStore`、`AddRawKV`、`Offset`、`Finish`，便于逐步迁移调用点。
+Rust 还提供 Go 风格别名 `NewKeyValueStore`、`AddRawKV`、`Offset`、`Finish`，便于逐步迁移调用点。
 
 关键差异如下：
 
@@ -107,12 +105,3 @@ Rust 测试 `file_test.rs` 对照 Go `file_test.go` 的范围属性与读写往�
 - 若要保证错误原子性，应先完成 offset 与 collector 的可失败计算，再统一提交状态，或提供回滚；新增测试应直接覆盖畸形长度、collector 溢出/失败和错误后状态。
 - 调整后缀会影响 `writer.rs`、`onefile_writer.rs`、对象路径消费者与测试，属于持久化命名兼容变更，不能只改本文件常量。
 - Rust 单元测试应继续放在独立的 `file_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/ingestor/simplesst` 确认本模块、Go 对照和独立测试均在索引中。
-- RustCodeGraph `node --file pkg/ingestor/simplesst/file.rs --offset 1 --limit 260`：核对本文件全部 170 行、3 个常量、2 个编码函数、`KeyValueStore` 及其方法和 Go 风格包装。
-- RustCodeGraph 调用边：确认 `encode_kv -> encode_to_buf`、`add_raw_kv -> encode_kv/add_encoded_data`、`add_encoded_data -> writer.rs::on_next_encoded_data`、`finish -> writer.rs::on_file_end`、`into_parts -> finish`。由于同仓库存在大量同名 `file`/`finish` 符号，泛化 callers 输出不能可靠消歧，上游引用另以精确源码搜索核验。
-- 已阅读源码与边界文件：`file.rs`、`Cargo.toml`、`lib.rs`、`writer.rs` 的 collector 与 flush 路径、`onefile_writer.rs::close`、Go `file.go` 和 Go `writer.go` 的 collector 实现。
-- 已阅读独立测试：Rust `file_test.rs`、Go `file_test.go`；并通过精确引用搜索确认 `iter_test.rs`、`onefile_writer_test.rs` 的相关使用。
-- 人工复核结论：本文区分了编码构建与对象持久化，记录了严格递增前置条件而未声称本层会校验，并明确描述了错误后的非事务性状态、finish 非关闭语义及 Rust/Go 生命周期差异。

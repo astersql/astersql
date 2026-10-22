@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessionctx-variable` crate。crate 入口 `pkg/sessionctx/variable/lib.rs` 以公开模块 `pub mod noop` 暴露它；`pkg/sessionctx/variable/Cargo.toml` 的 `[lib] path = "lib.rs"` 说明它不是独立 crate，而是会话变量子系统的一部分。
-
-它保存 MySQL 客户端可能探测或设置、但 AsterSQL/TiDB 暂不实现实际功能的兼容系统变量元数据。运行时接线位于 `pkg/sessionctx/variable/sysvar_builtins.rs`：`register_builtin_sysvars` 在其他完整变量注册完成后调用 `register_noop_compatibility_vars`，后者把本文件的静态表转换为通用 `SysVar` 并仅补注册尚不存在的名字。因此，本文件位于“兼容元数据源”而非具体 SQL 执行逻辑层。
+用 `Scope`、`SysVarType` 和 `NoopSysVar` 提供比运行时 `SysVar` 更适合静态表声明的轻量模型，再由 `sysvar_builtins.rs::noop_sys_var` 转换为 `vardef::ScopeFlag`、`vardef::Type*` 和拥有所有权的字符串集合。
 
 ## 核心职责
 
@@ -87,11 +85,9 @@ RustCodeGraph 将本文件识别为 9 个符号，并报告被多个文件使用
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/sessionctx/variable/noop.go`。两边都以大表表达“为 MySQL 兼容而存在、设置后无实际功能”的变量，并保留作用域、默认值、类型、范围、枚举值、别名及标记。Rust 表实测含 423 个 `NoopSysVar` 条目；首尾变量及特殊常量映射与 Go 表相对应。
+Rust 的 `NoopSysVar::validate` 对齐了只读/离线、`sql_auto_is_null` 和 `secure_auth` 的部分语义，但当前转换函数没有把它接入通用 `Validation`，而字符集等 Go 条目中的专用闭包也不由本文件表示。
 
-Go 使用完整 `SysVar` 结构和闭包：`tx_read_only` 等变量的 `Validation` 调用 `checkReadOnly`，`secure_auth`、字符集等条目也可各自附带校验。Rust 则把大部分元数据压缩进 `NoopSysVar`，再在 `sysvar_builtins.rs` 转成通用 `SysVar`。Rust 的 `NoopSysVar::validate` 对齐了只读/离线、`sql_auto_is_null` 和 `secure_auth` 的部分语义，但当前转换函数没有把它接入通用 `Validation`，而字符集等 Go 条目中的专用闭包也不由本文件表示。
-
-这不等同于相关运行时行为全部缺失：注册顺序会优先保留 `sysvar_builtins.rs` 中已实现的同名完整变量。Go `sysvar_test.go::TestReadOnlyNoop`、`TestSQLAutoIsNull` 的意图在 Rust `sysvar_test.rs` 中有对应测试；Rust 静态表自身及独立校验辅助逻辑则由 `error_1_aster_unit_test.rs::noop_removed_and_hint_metadata_match_go_behavior` 覆盖。新增或修改条目时必须同时判断它是单纯兼容元数据，还是需要在完整注册层实现 Go 的 hook/校验。
+Go `sysvar_test.go::TestReadOnlyNoop`、`TestSQLAutoIsNull` 的意图在 Rust `sysvar_test.rs` 中有对应测试；Rust 静态表自身及独立校验辅助逻辑则由 `error_1_aster_unit_test.rs::noop_removed_and_hint_metadata_match_go_behavior` 覆盖。
 
 ## 扩展指南
 
@@ -100,13 +96,3 @@ Go 使用完整 `SysVar` 结构和闭包：`tx_read_only` 等变量的 `Validati
 若变量需要会话状态、全局持久化、警告、专用错误、setter/getter 或实际功能，不能只增加静态条目。应在 `sysvar_builtins.rs` 的完整注册阶段创建 `SysVar` 并安装对应 hook，使其在 noop 补注册之前存在；必要时再扩展 `NoopSysVar::validate`，但必须明确把结果适配为运行时 `VariableError`/警告机制，不能假定现有方法会自动生效。
 
 测试逻辑必须继续放在独立文件。元数据与注册覆盖宜扩展 `pkg/sessionctx/variable/sysvar_test.rs::TestNoopCompatibilitySysVarsAreRegistered`；本地表和 `NoopMode` 分支宜扩展 `pkg/sessionctx/variable/error_1_aster_unit_test.rs::noop_removed_and_hint_metadata_match_go_behavior` 或新建同目录独立 `*_test.rs`；Go 对齐行为应参考 `pkg/sessionctx/variable/sysvar_test.go`。重点风险是错误地宣称功能已实现、覆盖已有完整定义、破坏别名/作用域兼容，以及使字符串上下界在进程首次注册时 panic。静态表规模还会增加启动期一次性转换和注册成本，但查找成本由通用哈希表承担。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/sessionctx/variable` 确认目标及测试；`node --file pkg/sessionctx/variable/noop.rs --offset 1 --limit 240` 与尾段查询确认文件符号、校验分支、静态表和注册函数；精确 `callers/callees` 查询无返回，已记录为图覆盖限制。
-- 源文件：`pkg/sessionctx/variable/noop.rs`，重点为 `Scope`、`NoopMode`、`SysVarType`、`ValidationResult`、`ValidationError`、`NoopSysVar::validate`、`SECONDS_PER_YEAR`、`NOOP_SYS_VARS` 和 `register_noop_sysvars`。
-- crate 与接线：`pkg/sessionctx/variable/Cargo.toml`、`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/sysvar_builtins.rs::{noop_sys_var,register_noop_compatibility_vars,register_builtin_sysvars}`、`pkg/sessionctx/variable/variable.rs::{SessionVars::new,RegisterSysVar,SYS_VARS}`。
-- Go 对照：`pkg/sessionctx/variable/noop.go::noopSysVars`，以及 `pkg/sessionctx/variable/sysvar_test.go::{TestReadOnlyNoop,TestSQLAutoIsNull}`。
-- Rust 独立测试：`pkg/sessionctx/variable/error_1_aster_unit_test.rs::noop_removed_and_hint_metadata_match_go_behavior`、`pkg/sessionctx/variable/sysvar_test.rs::{TestReadOnlyNoop,TestSecureAuth,TestSQLAutoIsNull,TestNoopCompatibilitySysVarsAreRegistered}`。
-- 文本检索确认 Rust 表中有 423 个 `NoopSysVar` 条目；确认 `NoopSysVar::validate` 的直接调用只出现在独立测试，生产注册直接遍历 `NOOP_SYS_VARS`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前另运行任务指定的 11 章节结构校验，并人工复核只有 `pkg/sessionctx/variable/noop.rs.md` 为文档产物。

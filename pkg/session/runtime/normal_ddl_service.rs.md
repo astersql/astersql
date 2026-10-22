@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate（见 `pkg/session/Cargo.toml`），由 `pkg/session/runtime.rs` 以公开模块 `normal_ddl_service` 装配。它不是 SQL DDL 语义的具体实现，而是普通（serving、非 cross-keyspace）`Domain` 的 DDL 生命周期适配层：把 owner 选举、持久化任务调度、schema/MDL 同步、系统会话池和存储层级迁移轮询组合成 `astersql_domain::domain::DdlService`。真实装配入口是 `pkg/session/runtime/session_factory.rs::install_serving_ddl_runtime`；cross-keyspace 工厂不创建本服务，符合文件头注释所述边界。
+`NormalDdlService` 实现 `DdlService`：启动/停止普通 DDL、暴露 owner 身份、提交持久化任务与表模式变更，并查询存储层级迁移状态。
 
 ## 核心职责
 
@@ -69,13 +69,9 @@ owner 任期由 `owner_epoch` 标识。executor 只在有效任期内懒创建�
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/ddl.go::{newDDL,ddl.Start,ddl.Stop}` 是服务生命周期的主要 Go 对照：两边都组装 owner、schema/state syncer、系统会话、min-job refresher和任务执行器；Upgrade 都要求启用 DDL并强制成为 owner。Rust 将原先散布在 `ddl` 与 `Domain.Start` 的 schema 循环集中到 `NormalSchemaRuntime`，并用 RAII/幂等 `close` 表达资源所有权。
+Rust 额外显式记录 owner epoch，并在任期变化时重建 executor/scheduler。
 
-`pkg/ddl/job_scheduler.go::{schedule,checkAndUpdateClusterState}` 对应 scheduler 线程的 takeover reload、状态 watch、owner op 发布和持久化队列调度。Rust 额外显式记录 owner epoch，并在任期变化时重建 executor/scheduler。
-
-`pkg/domain/domain.go::Domain.Start` 对应普通 Domain 在 DDL 启动后运行 `SyncLoop` 与 `MDLCheckLoop`；Rust 的四循环还包含 `SyncJobSchemaVerLoop` 和 min-job refresher。`pkg/ddl/storage_class_transition.go::{run,poll,pruneStorageClassTransitionHistory,completeStorageClassTransition}` 对应 10 秒轮询和 60 秒裁剪，但如上一节所述，Go 的拓扑与 schema 发布防护更完整。
-
-Rust 独立测试位于 `pkg/session/runtime/normal_ddl_test.rs`，而非源文件内：`crossks_align_normal_ddl_service_consumes_mixed_queue_and_stops_owner` 验证混合队列、启动/停止幂等与关闭后拒绝重启；`crossks_align_normal_ddl_service_public_owner_handoff_consumes_same_queue` 验证交接；`normal_ddl_plan_schema_runtime_*` 验证四循环、构造失败清理和取消；`normal_ddl_plan_upgrade_owner_*` 验证升级状态同步和重试。迁移 SQL/状态另由 `normal_ddl_create_table_test.rs` 覆盖。
+`pkg/ddl/storage_class_transition.go::{run,poll,pruneStorageClassTransitionHistory,completeStorageClassTransition}` 对应 10 秒轮询和 60 秒裁剪，但如上一节所述，Go 的拓扑与 schema 发布防护更完整。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ Rust 独立测试位于 `pkg/session/runtime/normal_ddl_test.rs`，而非源文�
 修改 owner 流程必须保持三项不变量：读取外部状态后再次核对 epoch、交接时丢弃任期绑定 executor、reload 完成前不加载队列。修改关闭路径必须维持“先取消阻塞点、再 join、最后关闭 pool”。增加线程时要把 handle 纳入 `SchemaLifecycle::loops` 并在 `normal_ddl_plan_schema_runtime_service_owns_domain_loops` 一类独立测试中更新期望。
 
 扩展迁移轮询时应以 Go `storage_class_transition.go` 为语义基线，特别同步 schema-version gate、孤儿记录 supersede、分区拓扑 reconcile、affected-row 竞争语义和请求超时；测试应放在同目录独立 `*_test.rs`，不可嵌入本源文件。兼容风险主要是 Go/Rust 状态机偏差；性能风险主要是 300 ms scheduler 轮询内增加阻塞 I/O、逐 operation×store 请求放大以及持 lifecycle 锁执行慢启动。
-
-## 验证依据
-
-- 源码：`pkg/session/runtime/normal_ddl_service.rs`（全文 857 行），重点核对 `NormalDdlService`、`UpgradeState::sync`、`DdlService` impl、`NormalSchemaCoordinator`、`NormalSchemaRuntime` 和三个迁移辅助函数。
-- 装配与 crate：`pkg/session/runtime.rs`、`pkg/session/runtime/session_factory.rs::{prepare_normal_schema_runtime,install_serving_ddl_runtime}`、`pkg/session/Cargo.toml`。
-- Rust 独立测试：`pkg/session/runtime/normal_ddl_test.rs` 的 service、owner handoff、schema runtime/barrier、upgrade owner 测试；`pkg/session/runtime/normal_ddl_create_table_test.rs` 的存储层级迁移记录与状态测试。
-- Go 对照：`pkg/ddl/ddl.go`、`pkg/ddl/job_scheduler.go`、`pkg/ddl/storage_class_transition.go`、`pkg/domain/domain.go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点；`query NormalDdlService --json`、`query NormalSchemaRuntime --json`、`query poll_storage_class_transitions --json` 和 `query install_serving_ddl_runtime --json` 精确定位了上述符号。针对本文件的 `explore/files/node --file` 无输出，按技能回退到源码读取；对 struct/function ID 的 callers/callees 查询在 30 秒内无结果，因此调用边由模块入口、构造点和直接引用的 `rg` 结果交叉核验。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构检查要求目标存在且固定二级标题恰为 11 个。

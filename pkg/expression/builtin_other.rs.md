@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-expression`（`pkg/expression/Cargo.toml`），由 `pkg/expression/lib.rs:249-250` 以私有模块 `builtin_other_kernel` 编译，并仅在测试配置下通过 `expression_other` 重导出（`pkg/expression/lib.rs:808-811`）。它是 Go `pkg/expression/builtin_other.go` 中一组“其他”标量函数的可独立运行 Rust 语义内核，覆盖 `IN`、用户变量、`VALUES()`、`BIT_COUNT()`、`ROW()` 和 `GET_PARAM()`。
-
-当前接线边界必须特别注意：仓库搜索到这些公开 Rust 符号的直接使用者是 `builtin_other_test.rs` 与 `builtin_other_22_aster_unit_test.rs`；生产表达式框架另有 `pkg/expression/builtin.rs` 以及向量化文件。因此，本文件已经进入 crate 编译边界，但不能据此声称它已替代 Go 完整函数注册、protobuf 下推或 session context 接线。
+以 `Value`、`FieldType`、`EvalType` 提供足以表达本组内置函数的本地类型模型，并用 `OtherError` 统一返回参数、转换、偏移和参数索引错误。
 
 ## 核心职责
 
@@ -71,12 +69,9 @@
 
 ## 与 Go 版本的对应关系
 
-- `InPredicate::build/eval` 对应 `inFunctionClass.verifyArgs`、各 `builtinInXXXSig.buildHashMapForConstArgs/evalInt`：保留 BIT 负常量剪枝、`ConstStrict` 去重、`ConstOnlyInContext` 验证、NULL 三值逻辑、整数符号规则和 collation key。JSON/Vector 与 Go 一样不使用常量哈希。
 - `Session::{set_user_var,get_user_var}` 与 `GetVarExpr` 汇总对应多种 `builtinSet*VarSig`、`BuildGetVarFunction`、`convertReadonlyVarToConst` 和 `builtinGet*VarSig`。Rust 用一个 `Value` 枚举合并 Go 的多签名及 session property reader；未建模 collation、statement context、可选求值属性和完整时间错误处理。
 - `ValuesFunction` 对应 `valuesFunctionClass` 及各 `builtinValues*Sig`，保留空行 NULL、偏移错误、二进制整数长度、FLOAT 精度和 hybrid 字符串分支；Rust 以单个枚举分派替代 Go 的类型化签名。
 - `bit_count` 对应 `builtinBitCountSig.evalInt`：保留 NULL、补码计位和转换溢出返回 64。Rust 自行模拟文本/数值转换，而不是复用 Go 的 `EvalInt` 和 statement flags。
-- `RowFunction` 对应 `rowFunctionClass/builtinRowSig`，保留“可构建但不应执行”的 panic 契约。
-- `get_param` 对应 `getParamFunctionClass/builtinGetParamStringSig`，保留计划缓存参数按索引读取和字符串返回；Go 通过 EvalContext 取参数，Rust 从本地 `Session` 向量读取。
 
 Go 文件还包含 SLEEP、命名锁等本 Rust 文件未覆盖的函数；反之，本 Rust 文件的简化类型/会话模型不能被当成完整 Go 框架的等价替换。
 
@@ -87,12 +82,3 @@ Go 文件还包含 SLEEP、命名锁等本 Rust 文件未覆盖的函数；反�
 - 扩展用户变量或 VALUES 时，不要把测试逻辑内嵌到生产文件；应更新同目录独立测试 `builtin_other_test.rs`，复杂 Go 对齐边界可同时补充 `builtin_other_22_aster_unit_test.rs`。涉及真实表达式框架接线时，还需检查 `lib.rs`、`builtin.rs` 和 session/expression trait，而不能只改本地 `Session`。
 - 修改转换规则要与 `builtin_other.go` 和 `builtin_other_test.go` 对照，特别检查 statement warning、溢出、二进制字面量、时间类型及 JSON 数字语义。当前轻量模型无法表达的行为应显式标注，而不是静默简化。
 - 若让 `RowFunction::eval` 可执行，将违反 Go 的重写阶段契约；应先定位 ROW 展平链路并新增独立回归测试，而不是直接移除 panic。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/expression/builtin_other.rs`（1043 行），核对所有模块级类型、函数、impl 与错误分支；文件没有条件编译项。
-- RustCodeGraph：`status` 显示索引含 11467 文件、307296 节点和 1848419 条边；`query InPredicate/ValuesFunction/bit_count/get_param/RowFunction` 定位到本文件及相关测试；`node InPredicate` 确认其字段；针对限定符号的 `callers/callees` 没有返回跨文件调用边。
-- crate 与入口：`pkg/expression/Cargo.toml`；`pkg/expression/lib.rs:249-254,558-571,808-816`。
-- Rust 测试：`pkg/expression/builtin_other_test.rs`；补充边界证据 `pkg/expression/builtin_other_22_aster_unit_test.rs`。覆盖 BIT_COUNT、IN 缓存/NULL/signedness/collation/各类型、用户变量所有权和只读折叠、VALUES 类型分支、GET_PARAM 越界以及 ROW panic。
-- Go 对照：`pkg/expression/builtin_other.go`；`pkg/expression/builtin_other_test.go`。重点核对 `inFunctionClass`、各 `builtinIn*Sig`、SET/GET_VAR、`valuesFunctionClass`、`builtinBitCountSig`、`getParamFunctionClass` 和 `rowFunctionClass`。
-- 结构验证使用任务指定命令，要求本文件存在且恰有十一个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。

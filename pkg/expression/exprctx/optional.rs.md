@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-expression-exprctx`，由同目录 `lib.rs` 以 `mod optional; pub use optional::*;` 装配并公开。它位于表达式上下文的基础层：定义“某个表达式求值需要哪些会话能力”的键、描述、提供者接口和紧凑集合，但不保存具体会话对象，也不执行 SQL。具体 Provider 的注册和读取分别由 `pkg/expression/sessionexpr/sessionctx.rs`、`pkg/expression/exprstatic/evalctx.rs` 与 `pkg/expression/expropt/optional.rs` 完成。
-
-`pkg/expression/exprctx/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/expression/exprctx`；本文件的直接 Go 对照是 `pkg/expression/exprctx/optional.go`。
+位于表达式上下文的基础层：定义“某个表达式求值需要哪些会话能力”的键、描述、提供者接口和紧凑集合，但不保存具体会话对象，也不执行 SQL。
 
 ## 核心职责
 
@@ -82,7 +80,7 @@ trait 返回静态描述，但 Provider 对象自身不必是 `'static`。`optio
 
 ## 与 Go 版本的对应关系
 
-Rust 的十个键及其顺序、`OptPropsCnt`、低位掩码、描述表内容、值式集合运算都逐项对应 `pkg/expression/exprctx/optional.go`。Rust 测试 `optional_test.rs` 复刻 Go 测试 `optional_test.go` 的三组核心意图：单键/多键增删，未使用高位不参与空满判断，以及键、单键集合与描述表下标一一对应。
+Rust 测试 `optional_test.rs` 复刻 Go 测试 `optional_test.go` 的三组核心意图：单键/多键增删，未使用高位不参与空满判断，以及键、单键集合与描述表下标一一对应。
 
 实现差异如下：
 
@@ -101,14 +99,3 @@ Rust 的十个键及其顺序、`OptPropsCnt`、低位掩码、描述表内容�
 安全修改时需重点回归：键/描述/槽位的三方顺序一致性、`OPT_PROPS_CNT <= 64`、高位掩码语义、重复注册和缺失 Provider 行为，以及 Go/Rust 描述文本兼容性。键数量接近 64 时，`1_u64 << OPT_PROPS_CNT` 的掩码表达式也需要重新设计；当前实现仅适用于计数严格小于 64，虽然校验函数写的是“小于等于 64”。性能上应继续保持位运算和静态描述的零分配路径。
 
 Rust 单元测试必须继续放在同目录独立文件 `optional_test.rs`，不要内嵌进生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 7,032 个 Rust 文件；目标目录查询列出 `optional.rs`、`optional_test.rs`、`context.rs`、`lib.rs` 及对应 Go 文件。
-- RustCodeGraph `node --file pkg/expression/exprctx/optional.rs`：核对了目标文件全部 216 行及 42 个索引符号。
-- RustCodeGraph `query`：核对 `OptionalEvalPropKey`、`OptionalEvalPropKeySet`、`OptionalEvalPropProvider`、`validateOptionalProperties`、`GetOptionalPropProvider`、`set_optional_prop`、`get_optional_prop_provider` 与 `RequiredOptionalEvalProps` 的定义位置和使用面。
-- RustCodeGraph 源码节点：读取了 `pkg/expression/exprctx/context.rs`、`pkg/expression/expropt/optional.rs`、`pkg/expression/sessionexpr/sessionctx.rs`、`pkg/expression/exprstatic/evalctx.rs`、`pkg/expression/builtin_inference.rs` 的直接接线片段。
-- crate 边界：读取 `pkg/expression/exprctx/Cargo.toml` 与 `lib.rs`，确认包名、Go 包映射、模块装配和公开重导出。
-- Go 对照：读取 `pkg/expression/exprctx/optional.go` 全文，核对键顺序、描述表、初始化校验和位集算法。
-- 独立测试：读取 `pkg/expression/exprctx/optional_test.rs` 与 `optional_test.go` 全文，核对值语义、高位掩码、描述指针一致性及 Rust 借用型 Provider 边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅执行任务指定的 11 章节结构验证，并人工复核没有把上层错误处理或 Provider 实现误写为本文件职责。

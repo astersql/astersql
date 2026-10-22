@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-globalsort` crate（见同目录 `Cargo.toml`），由 `lib.rs` 以公开模块 `pub mod merge_v2` 暴露。它提供 V2 重叠文件归并入口 `MergeOverlappingFilesV2`：从若干可能有重叠键范围的 data/stat 文件中，按连续键窗口读出 KV、在内存中排序，再写成一个新的有序 data 文件和对应 stat 文件。
-
-RustCodeGraph 将本文件识别为 8 个符号的 Rust 源文件，并确认 `merge_v2.rs::MergeOverlappingFilesV2` 与 Go 的 `merge_v2.go::MergeOverlappingFilesV2` 同名。对非测试 Rust 源码的调用搜索没有找到调用点；当前可见直接调用均在 `merge_v2_test.rs`、`sort_test.rs` 和 `merge_test.rs`。因此它是已公开且经过测试的归并能力，但不能仅凭本文件断言它已经接入 Rust 生产调度主链。
+该实现不会合并或消除相同 key；它只依据 key 排序并原样写出各输入 KV。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ V2 只持有一个输出 writer，所有窗口依次写入，保证跨窗口输�
 
 ## 与 Go 版本的对应关系
 
-共同主干与 `merge_v2.go::MergeOverlappingFilesV2` 一致：4 GiB ranges group、`NewRangeSplitter`、连续范围的 stat seek、`readAllData`、窗口内按 key 排序、单 writer 写出，以及结束时上报 summary。Rust 测试还验证了 Go 大端 simplesst wire format 和较晚键窗口从正确属性偏移开始读取。
-
 当前可见差异必须保留为迁移事实：
 
 - Go 用 `sorty.MaxGor = concurrency` 控制并行排序；Rust 只校验非零，随后调用单线程 `sort_by`。
@@ -96,12 +92,3 @@ V2 只持有一个输出 writer，所有窗口依次写入，保证跨窗口输�
 - 若增强取消，应在排序和写循环加入低开销检查，并测试取消后错误身份、回调不触发、部分对象处理策略。
 - 若改变 Go wire format/stat seek，必须同步 `merge_test.rs::merge_v2_seeks_go_stat_offsets_for_later_key_window`，并复核 `reader.rs::get_read_ranges_from_props` 与 `merge.rs::StreamSummary::write_stats` 两端编码。
 - 测试逻辑应继续放在同目录独立 `*_test.rs` 文件，通过 `lib.rs` 的 `#[path]` 模块接入，不应嵌入本生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ingestor/globalsort/merge_v2.rs` 确认目标文件含 8 个符号；`query MergeOverlappingFilesV2 --kind function` 同时定位 Go/Rust 同名函数；`node --file` 读取并核对目标、`split.rs`、`reader.rs`、`merge.rs` 的真实实现。精确 `callers/callees` 查询在本地索引上挂起且无输出，已停止，未把缺失输出当作调用证据。
-- 源与 crate 边界：`pkg/ingestor/globalsort/merge_v2.rs`、`Cargo.toml`、`lib.rs`。
-- 下游实现：`split.rs::{NewRangeSplitter,RangeSplitter::SplitOneRangesGroup,RangeSplitter::Close}`，`reader.rs::{get_read_ranges_from_props,read_all_data,MemKvsAndBuffers}`，`merge.rs::StreamSummary`。
-- Go 对照：`pkg/ingestor/globalsort/merge_v2.go`；Go 使用场景参考 `sort_test.go`。
-- Rust 回归证据：`merge_v2_test.rs` 验证零 write batch 与空输入；`sort_test.rs::test_global_sort_local_with_merge_v2` 验证成组归并后完整读回；`merge_test.rs` 验证流式排序结果及 Go stat offset seek。
-- 仓库搜索：`rg` 确认 Rust 非测试源码中没有该函数调用点，并核对所有直接测试调用及模块声明。本文是纯文档分析，按计划未运行 Cargo。

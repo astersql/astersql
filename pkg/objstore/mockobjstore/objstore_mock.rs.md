@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-objstore-mockobjstore` crate 的核心测试替身：一个严格的 `storeapi::Storage` Mock。crate 入口 `pkg/objstore/mockobjstore/lib.rs` 以 `#[path = "objstore_mock.rs"]` 声明 `mockobjstore` 模块并公开重导出其符号；workspace 根 `Cargo.toml` 再把该 crate 绑定为 `facade_objstore_mockobjstore`，由 `pkg/lib.rs` 暴露在 `objstore::mockobjstore` 门面下。
-
-它不连接本地文件系统或云对象存储，也不保存真实对象数据。测试先通过 `MockStorage::EXPECT` 登记每个 `Storage` 方法将返回的结果，受测代码再把它当作 `dyn Storage` 调用；Mock 记录可观察参数并按方法各自的 FIFO 队列消费结果。RustCodeGraph 将本文件识别为 58 个符号，并显示文件被 41 个文件纳入依赖图；仓库内可确认的直接构造与行为验证集中在独立测试 `pkg/objstore/mockobjstore/migration_aster_unit_test.rs`。
+该实现只负责确定性的测试编排，不模拟权限、网络、持久化、重试、取消或对象存储一致性。
 
 ## 核心职责
 
@@ -80,11 +78,7 @@ Mock 本身没有后台任务、通道、事务或网络连接。`Arc` 最后一
 
 ## 与 Go 版本的对应关系
 
-同目录 `pkg/objstore/mockobjstore/objstore_mock.go` 是由 MockGen 针对 Go `storeapi.Storage` 生成的 Mock。Rust 保留了相同的核心入口和方法名：`MockStorage`、`MockStorageMockRecorder`、`NewMockStorage`、`EXPECT`、`ISGOMOCK`，以及整组 `Storage` 方法；`Duration`、路径、字节和 option 的可观察内容也被保留。
-
-两者实现机制不同。Go 版本把控制权交给 `gomock.Controller`，录制器方法接收预期参数并返回 `*gomock.Call`，因而可使用 matcher、次数、调用顺序和动态行为。Rust 版本没有 controller：录制器仅登记返回值，按方法 FIFO 消费，并用 `calls()` 做事后参数与跨方法顺序检查；构造函数也不接收 controller。Rust 的 `WalkDir` 还会主动遍历预置条目并调用回调，而 Go 生成代码只是把回调本身交给 controller，具体回调行为需由 Go 测试期望配置。
-
-因此本文件是对 GoMock 测试用途的手写语义迁移，不是生成代码的逐行翻译，也不具备 GoMock 的全部匹配能力。独立 Rust 测试验证了当前迁移目标：各方法消费单次期望、调用顺序记录、option 区分、错误转发、遍历回调、`Duration` 保存以及 `Send + Sync`。
+两者实现机制不同。Rust 版本没有 controller：录制器仅登记返回值，按方法 FIFO 消费，并用 `calls()` 做事后参数与跨方法顺序检查；构造函数也不接收 controller。Rust 的 `WalkDir` 还会主动遍历预置条目并调用回调，而 Go 生成代码只是把回调本身交给 controller，具体回调行为需由 Go 测试期望配置。
 
 ## 扩展指南
 
@@ -94,12 +88,3 @@ Mock 本身没有后台任务、通道、事务或网络连接。`Arc` 最后一
 - 若增加回调型方法，应仿照 `WalkDir` 在锁内取出期望、在锁外运行用户代码，避免重入死锁；还需明确“回调错误”和“预置最终错误”的优先级。
 - 若需要自动检查残留期望，不能简单在每个 clone 的 `Drop` 中调用 `verify()`；应避免中间 clone 析构误报，并处理测试线程正在 panic 时的双重 panic 风险。
 - 大 payload 场景若出现测试内存压力，可考虑可配置的摘要记录方式，但这会改变 `Call::WriteFile` 的精确断言能力，属于兼容性与诊断性权衡。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/objstore/mockobjstore` 列出 `lib.rs`、本文件、Go 对照和迁移测试；`node --file pkg/objstore/mockobjstore/objstore_mock.rs` 读取完整 360 行并报告 58 个符号、41 个文件级使用关系；`query MockStorage --kind struct` 与 `query NewMockStorage --kind function` 消除了仓库内同名类型歧义。
-- 源码事实：`pkg/objstore/mockobjstore/objstore_mock.rs` 的 `Call`、`State`、`MockStorage`、`MockStorageMockRecorder`、辅助函数及 `impl Storage`；`pkg/objstore/storeapi/storage.rs` 的 options 与 `Storage: Send + Sync` 契约。
-- crate 与门面：`pkg/objstore/mockobjstore/Cargo.toml`、`pkg/objstore/mockobjstore/lib.rs`、根 `Cargo.toml` 的 `facade_objstore_mockobjstore`、`pkg/lib.rs` 的 `objstore::mockobjstore` 重导出。
-- Go 对照：`pkg/objstore/mockobjstore/objstore_mock.go` 的 MockGen 生成类型、controller 调用和录制器签名。
-- 独立测试：`pkg/objstore/mockobjstore/migration_aster_unit_test.rs` 中 `forwards_expected_storage_calls_and_results_in_order`、`walk_and_presign_preserve_go_callback_and_duration_behavior`、`create_open_and_delete_methods_consume_one_expectation_each`、`create_and_open_calls_preserve_distinct_options`、`mock_storage_is_send_and_sync`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以固定标题结构命令和人工事实复核验证文档。

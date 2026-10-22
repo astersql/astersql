@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`row_table_builder.rs` 属于 Cargo crate `astersql-executor-join`。crate 入口 `pkg/executor/join/lib.rs` 以 `pub mod row_table_builder` 导出它，并在 `#[cfg(test)]` 下装配独立测试 `row_table_builder_test.rs`。`pkg/executor/join/Cargo.toml` 将库入口设为同目录 `lib.rs`，没有为本模块声明专用 feature；现行实现只直接使用标准库以及同 crate 的 `join_row_table`、`join_table_meta`。
-
-它位于 Hash Join v2 的 build 侧：`HashTableContext::build`（`hash_join_v2.rs`）逐个处理已经分区的 `Vec<Row>`，经私有函数 `build_row_table` 创建 `RowTableBuilder`，再由 `process_chunk` 生成 `RowTable`，交给 `HashTableV2` 建索引和后续 probe。当前生产调用把构建器的 `partition_number` 固定为 1，因此文件虽提供多分区计算，主调用点是在上游已分区之后为每个分区各建一张单分区行表。
-
-文件必须分成两部分理解：第 1–609 行是被块注释包住的 Go 风格移植草稿，不参与编译；第 610 行之后才是现行 Rust 实现。草稿列出了更完整的目标形态，但不能作为当前已支持行为的证据。
+提供恢复/分区、最大长度估算、冲突链 next 指针和对齐长度等辅助 API。
 
 ## 核心职责
 
@@ -103,8 +99,6 @@ RustCodeGraph 索引能定位 `RowTableBuilder` 和上述函数，但本次对 `
 
 ## 与 Go 版本的对应关系
 
-同路径 `row_table_builder.go` 是权威对照。Rust 的 `RowTableBuilder::new/reset_buffer/process_chunk` 大致对应 Go 的 `createRowTableBuilder/ResetBuffer/processOneChunk`；`process_restored_chunk`、`regenerate_hash_and_partition`、`calculate_row_data_length`、`calculate_fake_length` 也有同名意图。无效行采用假 hash 轮询分区、保留/丢弃过滤行、8 字节对齐等核心意图由 Rust 测试和 Go 测试共同佐证。
-
 但当前语义差异显著：
 
 - Go 接收列式 `chunk.Chunk`、选择向量、真实 `FieldType` 与 `codec.SerializeKeys`；Rust 使用简化 `Vec<Vec<Value>>` 和本地编码，未实现 collation、符号兼容等完整 SQL key 规范。
@@ -127,13 +121,3 @@ RustCodeGraph 索引能定位 `RowTableBuilder` 和上述函数，但本次对 `
 若实现 Go 等价 spill/respill，不能在现有 `process_restored_chunk` 上只做局部补丁：需要定义恢复 chunk 格式、真正 rehash、内存记账、取消检查和“失败不发布 segment”的提交边界，并在生产 spill 主链接线。若引入共享并发构建，要保留 builder 临时状态的 worker 私有性，并验证 `EncodedRow.used` 的原子顺序及 segment 地址稳定性。
 
 应同步扩展独立的 `row_table_builder_test.rs`，优先覆盖非法下标和过滤长度、各 `KeyMode` 字节契约、多分区高位 mask、超大长度保护、恢复 rehash、错误后状态以及 `raw_data`/结构化行一致性。与 Go 对齐时还要对照 `row_table_builder_test.go` 的 `TestKey`、`TestColumnsBasic`、`TestColumnsAllDataTypes`、`TestBalanceOfFilteredRows` 和对齐检查；不能用现有简化 Rust 测试代替完整 SQL 类型与选择向量验证。
-
-## 验证依据
-
-- 目标实现：`pkg/executor/join/row_table_builder.rs`；RustCodeGraph 定位了 `RowTableBuilder`（第 631 行）、`process_chunk`（第 692 行）、恢复/长度/指针辅助函数及其签名，并按文件读取了完整 909 行。
-- crate/模块边界：`pkg/executor/join/Cargo.toml`、`pkg/executor/join/lib.rs`。
-- 生产调用链：`pkg/executor/join/hash_join_v2.rs` 中 `HashTableContext::build` 与 `build_row_table`；精确搜索确认 `process_chunk` 的生产调用只在该处，恢复和 rehash API 无生产调用者。
-- 直接数据依赖：`pkg/executor/join/join_row_table.rs` 的 `RowTableSegment`/`RowTable`，以及 `pkg/executor/join/join_table_meta.rs` 的 `JoinTableMeta`/`EncodedRow`/`KeyMode`/`new_table_meta`。
-- Rust 独立测试：`pkg/executor/join/row_table_builder_test.rs`，覆盖 key/分区/对齐、过滤行保留与丢弃、无效行均衡、紧凑 null map、恢复分区形状、最大长度、非法分区数和短行错误。
-- Go 对照：`pkg/executor/join/row_table_builder.go`、`pkg/executor/join/row_table_builder_test.go`；用于核对完整 build/spill 语义、内存/取消机制、布局和测试意图。
-- RustCodeGraph `callers/callees` 查询在本地索引的 30 秒执行窗口内未返回；相关边均以精确 `rg` 和源码读取补证。按任务约束未运行 Cargo，本文只做静态事实与结构验证。

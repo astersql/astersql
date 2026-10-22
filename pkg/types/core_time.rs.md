@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/core_time.rs` 是 MySQL 日历值的底层 Rust 实现，负责 `CoreTime` 的 64 位压缩字段访问、日期/周序计算、日期与时长混合、Go 风格时间转换以及内部 `TIMESTAMPDIFF` 计算。它不直接声明为 `pkg/types` 根 crate 的模块，而是由 `pkg/types/internal/core_time/lib.rs` 的 `types::core_time` 模块通过 `include!("../../core_time.rs")` 纳入 `astersql-types-core-time`，再由 `pkg/types/lib.rs` 以 `pub use types_core_time as core_time` 暴露。
-
-`pkg/types/Cargo.toml` 通过路径依赖 `types-core-time = { package = "astersql-types-core-time", path = "internal/core_time" }` 建立这层边界。实际子 crate 依赖见 `pkg/types/internal/core_time/Cargo.toml`；其中 `chrono`、`chrono-tz` 和 `jiff` 由相邻的 `gotime` 兼容层使用，目标文件本身只显式导入 `crate::errors`，其余名称来自 include 位置的 `use super::*` 与 `use crate::gotime`。
-
-该文件保存的是压缩时间和 MySQL 日历算法。面向 SQL 类型的完整 `Time`、解析、类型/FSP 和公开 `TimestampDiff` 另在 `pkg/types/time.rs`；二者不能互相替代。RustCodeGraph 将目标文件识别为被多个类型、表达式和会话侧文件使用的底层时间定义，同时精确查询也表明部分内部函数目前主要由本文件和独立测试覆盖。
+`pkg/types/core_time.rs` 是 MySQL 日历值的底层 Rust 实现，负责 `CoreTime` 的 64 位压缩字段访问、日期/周序计算、日期与时长混合、Go 风格时间转换以及内部 `TIMESTAMPDIFF` 计算。
 
 ## 核心职责
 
@@ -84,8 +80,6 @@ RustCodeGraph `explore` 明确给出 Rust 边 `AdjustedGoTime -> GoTime`，以�
 
 ## 与 Go 版本的对应关系
 
-主对照文件是 `pkg/types/core_time.go`，Rust 基本按同一顺序移植了 `CoreTime` 字段访问、Week/YearWeek、GoTime/DST 修正、AddDate、时间差、daynr、week、duration 混合和 timestampDiff。`pkg/types/core_time_test.go` 的表格也被 `pkg/types/core_time_test.rs` 对应覆盖，包括周 mode、月 0 时间差、比较反对称性、daynr 反解、跨日 duration、世纪闰年、月末修正、溢出和 DST。
-
 明确差异如下：
 
 - Go 的 `CoreTime` 是 `uint64` 新类型并通过指针/unsafe 风格更新底层值；Rust 是 tuple struct，以安全 mask 操作修改 `self.0`。
@@ -93,7 +87,6 @@ RustCodeGraph `explore` 明确给出 Rust 边 `AdjustedGoTime -> GoTime`，以�
 - Go 的 `*time.Location`/`time.Time` 由标准库提供；Rust 的 `gotime` 是 `internal/core_time/lib.rs` 基于 `chrono`、`chrono-tz`、`jiff` 的兼容层，DST 语义由独立 migration 测试锁定。
 - Go 的平台 `int/uint` 中间值在 Rust 中被固定为 `i32/u32/i64`；`core_time_2_timestamp_diff_keeps_go_int_width` 特别验证完整 datetime 范围的 DAY/SECOND/MICROSECOND 不被窄化。
 - Rust 许多原 Go 私有辅助被声明为 `pub` 以跨 include/crate 测试和接线，但这不表示语义被扩展。
-- `pkg/types/time.rs` 还存在正式高层 `Time` 的独立实现及 `TimestampDiff`，说明迁移期存在相邻算法副本；对齐 Go 行为时需要同步核验，而不能假设本文件自动支配全部 SQL 时间行为。
 
 ## 扩展指南
 
@@ -104,11 +97,3 @@ RustCodeGraph `explore` 明确给出 Rust 边 `AdjustedGoTime -> GoTime`，以�
 - 修改差值或 `timestampDiff` 时，同步 `pkg/types/core_time_2_aster_unit_test.rs` 的全范围 `i64` 用例，并核对 `pkg/types/time.rs::TimestampDiff` 是否也需一致改动。新增单位时不能只增加字符串常量，还需定义截断规则、未知单位策略和上层解析约束。
 - 修改 `mixDateAndDuration` 时，应先明确是否扩大到“负时长超过日期”的范围；现有实现和 Go 注释都未保证该域，若扩大必须增加独立回归测试而不是依赖整数转换偶然行为。
 - 性能优化应保留逐字段回读验证、微秒精度和符号截断语义；不要用直接比较 packed `u64` 替换现有比较，除非证明保留位、字段范围和微秒顺序完全等价。
-
-## 验证依据
-
-- 源码与装配：`pkg/types/core_time.rs`（701 行）、`pkg/types/internal/core_time/lib.rs`（`gotime`、位域常量、`Duration`、`splitDuration`、`FromDate`、`include!`）、`pkg/types/internal/core_time/Cargo.toml`、`pkg/types/Cargo.toml`、`pkg/types/lib.rs`。
-- Go 对照：`pkg/types/core_time.go`（639 行）和 `pkg/types/core_time_test.go`（348 行）。
-- Rust 独立测试：`pkg/types/core_time_test.rs`（457 行）、`pkg/types/core_time_2_aster_unit_test.rs`（其中 CoreTime 相关测试为第 23-190 行）、`pkg/types/internal/core_time/migration_aster_unit_test.rs`（155 行）。后者补充完整 IANA 边界与固定时区证据；`core_time_2_aster_unit_test.rs` 第 192 行后的 `ComputePlus` 测试与本文件职责无关，未据此扩张结论。
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。`node --file pkg/types/core_time.rs` 核对了完整 701 行；`query` 找到 `pkg/types/core_time.rs::CoreTime`、Rust `timestampDiff`、宿主 `FromDate` 与 `splitDuration`；`explore` 核对了 `AdjustedGoTime -> GoTime` 以及 daynr/week/timestampDiff 调用链和字段 getter 的跨模块调用者。单独的精确 `callers` 命令在本地索引上超时，故对未清晰分离同名 Go/Rust 符号的调用点又用限定 `rg` 核验，并在“依赖与调用关系”中按已验证范围描述。
-- 行为边界由测试事实支持：零日期/daynr、WEEK mode、月末 AddDate、溢出、微秒宽度、全 datetime 范围、DST 空洞和非法日历日均有独立用例；本任务是纯文档分析，按计划未运行 Cargo。

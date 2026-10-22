@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-driver-txn` crate 的事务错误边界与键格式化模块。crate 入口 `pkg/store/driver/txn/lib.rs` 以私有 `mod error` 装配它，再通过 `pub use error::*` 将公开项重导出给事务驱动及上层存储适配器。`pkg/store/driver/txn/Cargo.toml` 表明它直接依赖 canonical `astersql-kv` 错误定义、`astersql-tablecodec` 编解码能力、`astersql-errors` 错误模板，以及带固定 tag 的 `tikv-client`。
-
-它位于 TiKV/client-rust 后端错误与 SQL/KV 层可见错误之间：一方面定义本 crate 内部统一使用的 `DriverError`，另一方面把重复键、写冲突、共享锁丢失、锁升级冲突和 `TxnLockNotFound` 中的原始键转换为稳定、可读且尽量与 Go `pkg/store/driver/txn/error.go` 一致的形式。真正发起事务操作、提取表元数据和接收 client-rust 错误的主流程在相邻的 `txn_driver.rs`，本文件不执行网络请求或事务提交。
+用 `decode_table_key_head` 为 `txn_driver.rs` 的重复键分派提供 `(table_id, index_id, is_record)`，决定调用 handle 还是 index 解码路径。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@ RustCodeGraph 对目标文件报告 38 个符号，并显示文件级使用者�
 
 ## 与 Go 版本的对应关系
 
-Rust 的同名主要入口逐一对应 `pkg/store/driver/txn/error.go`：两个 `ExtractKeyExistsErr*`、`extractKeyErr`、`newWriteConflictError`、`prettyWriteKey` 和 `prettyLockNotFoundKey` 保留相同职责及大体相同分支。整数/无符号主键、复合主键、二进制值、索引值连接、index/record/meta key 展示、原始十六进制键、共享锁丢失、第二升级者不可重试死锁和 `TxnLockNotFound` 文本解析均有明确 Rust 对照。`pkg/store/driver/txn/driver_test.rs` 还移植了 Go `driver_test.go` 的锁键与写冲突格式断言。
-
 当前可见差异需要在兼容修改时谨慎处理：Go 的重复键 datum 解码使用 `time.Local`，Rust 使用 `tablecodec::time::UTC`；Go 降级会记录原始解码错误，Rust 静默生成保守错误；Go 的 `extractKeyErr` 最终经 `derr.ToTiDBErr` 转换一般后端错误，Rust 对未匹配的 `DriverError` 原样传播；Rust 用 UTF-8 字符边界保护前缀截断，而 Go 直接按字节切字符串。Rust 的 `prettyLockNotFoundKey` 手工解析 `u8`，Go 用 JSON 反序列化，但对当前 `[n, ...]` 输入契约结果一致。
 
-Rust 还显式拥有 `DriverError` 与 `WriteConflict` 适配类型，因为 client-rust/canonical Rust crate 的错误表示不同于 Go interface/error chain；这不是 Go 源文件中的一一类型翻译。`Cargo.toml` 的 porting metadata 指向同一个 Go package，说明该文件应持续以 Go 行为为兼容基准，但当前源码和测试才是已实现事实。
+Rust 还显式拥有 `DriverError` 与 `WriteConflict` 适配类型，因为 client-rust/canonical Rust crate 的错误表示不同于 Go interface/error chain；这不是 Go 源文件中的一一类型翻译。
 
 ## 扩展指南
 
@@ -83,12 +79,3 @@ Rust 还显式拥有 `DriverError` 与 `WriteConflict` 适配类型，因为 cli
 扩展重复键解码时，优先修改 `ExtractKeyExistsErrFromHandle`、`ExtractKeyExistsErrFromIndex` 或 `rowcodec_columns`，同时核对 `txn_driver.rs::extract_key_exists_error` 的 table/index 分派和值来源。要覆盖新的字段类型、prefix 或 handle 形态，应把 Rust 测试放在独立的 `pkg/store/driver/txn/driver_test.rs` 或 `error_test.rs`，并与 Go `error.go`/`driver_test.go` 的预期比较；不要把测试内嵌进生产源文件。
 
 扩展键展示格式时需保持 `prettyWriteKey` 的二元返回契约以及 `kv::ErrWriteConflict.FastGenByArgs` 的参数顺序，否则上层对 `tableID` 的解析、错误码、重试标记或脱敏边界可能改变。任何包含原始 key 的新增输出都必须覆盖关闭、全脱敏和标记脱敏模式。性能方面应避免在热错误路径重复解码或复制大型 row/key；正确性方面应保留所有失败降级，兼容性方面应重点验证稳定错误字符串和 canonical `Equal` 分类。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/store/driver/txn` 确认目标、模块入口、Go 对照及独立测试；`explore "pkg/store/driver/txn/error.rs ..."` 和 `node --file pkg/store/driver/txn/error.rs` 核对 38 个符号、完整 474 行源码及文件级使用者。对关键符号执行了带 `--file pkg/store/driver/txn/error.rs` 的 callers/callees 查询；该 CLI 未返回细粒度边，因此调用关系进一步由索引中的 `txn_driver.rs` 精确源码节点验证，而未据同名全仓结果推断。
-- 源码与装配：`pkg/store/driver/txn/error.rs`、`pkg/store/driver/txn/lib.rs`、`pkg/store/driver/txn/txn_driver.rs`；确认重导出、公共 trait 错误类型、client-rust 映射、重复键分派和写冲突生成调用点。
-- crate 边界：`pkg/store/driver/txn/Cargo.toml`；确认 crate 名、`lib.rs` 入口、三项本地 canonical 依赖及固定 tag 的 `tikv-client`。
-- Rust 独立测试：`pkg/store/driver/txn/error_test.rs` 覆盖 retryable 分隔空格、共享锁丢失和第二升级者死锁；`pkg/store/driver/txn/driver_test.rs` 覆盖锁键格式、index/meta 写冲突与脱敏、无符号主键、canonical index datum 和 client-rust 写冲突错误码/原因。
-- Go 对照：`pkg/store/driver/txn/error.go` 与 `pkg/store/driver/txn/driver_test.go`；确认同名流程、fallback、锁错误分类、错误模板和格式断言，并据源码记录 UTC/Local、日志及通用错误转换差异。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 shell 命令验证目标文件存在且恰有 11 个固定二级标题，并人工复查没有修改 Rust、Go、Cargo 或只读 `plan.md`。

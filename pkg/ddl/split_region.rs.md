@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；模块由 `pkg/ddl/lib.rs` 以 `pub mod split_region` 公开。它负责把已经存在于 `astersql_meta_model::TableInfo` 中的预切分配置转换为 TiKV Region split key，通过 `astersql_kv::SplittableStore` 请求切分，并按会话保存下来的 scatter scope 等待新 Region 打散。
-
-生产入口是 `pkg/session/runtime/ddl.rs::pre_split_and_scatter`：CREATE TABLE 元数据持久化后，以及 ADD/REORGANIZE PARTITION 的相应路径上，该入口在排除临时表、检查启动模式与 `EnableSplitTableRegion`/显式配置后，取得 storage 的 `region_splitter()`，再调用本文件的 `split_table_regions`。因此它是 DDL 完成元数据动作后的物理存储优化路径，不负责创建或推进 DDL job，不改变 schema state，不执行 reorg/backfill，也不更新 schema version。
-
-`pkg/ddl/Cargo.toml` 将本目录定义为 `astersql-ddl`（`[lib] path = "lib.rs"`），并直接依赖本文件使用的 `astersql-kv`、`astersql-meta-model`、`astersql-meta-autoid`、`astersql-expression`、`astersql-tablecodec`、`astersql-types`、`astersql-util-regionsplit`、`astersql-util-chunk` 和 `astersql-store-driver-error` 等 workspace crate。本文件没有 feature gate 或条件编译项；独立测试由 `pkg/ddl/lib.rs` 中的 `#[cfg(test)] mod split_region_test` 挂载。
+负责把已经存在于 `astersql_meta_model::TableInfo` 中的预切分配置转换为 TiKV Region split key，通过 `astersql_kv::SplittableStore` 请求切分，并按会话保存下来的 scatter scope 等待新 Region 打散。
 
 ## 核心职责
 
@@ -93,10 +89,6 @@ RustCodeGraph 对 `split_table_regions` 识别出的直接下游包括 `get_scat
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/ddl/split_region.go`，相关测试是 `pkg/ddl/split_region_test.go`。Rust `split_table_regions` 合并对应了 Go 的 `splitTableRegion`、`splitPartitionTableRegion`、`preSplitPhysicalTableByShardRowID`、`SplitRecordRegion`、`splitIndexRegion`、`applySplitPoliciesForTable` 和 `WaitScatterRegionFinish` 的核心路径；`get_scatter_config` 对应 `getScatterConfig`，`policy_bounds` 覆盖 `prepareSplitPolicy`/`parseValuesToDatums` 的部分职责。
-
-已对齐的关键语义包括：policy 优先于 shard 配置；auto-random 位优先于 shard-row-id 位；分区表的 global/local index 键空间分离；普通索引用 `ID + 1`、global index 用原 ID；scatter table/global group 分别为逻辑表 ID/`-1`；单批存储失败后继续；等待 PD 错误后继续而非 PD 错误后停止；边界向目标列类型转换；表 policy 禁止 NULL 而索引 policy 允许 NULL。
-
 当前差异或验证限制包括：
 
 - Go 在入口内创建带 `GetSplitRegionTimeout()` 的 context；Rust 依赖上游提供 context，当前 session 调用片段未设置等价 deadline。
@@ -113,14 +105,3 @@ Go 对照文件是 `pkg/ddl/split_region.go`，相关测试是 `pkg/ddl/split_re
 - 修改 shard 位运算前应确认上游对 `PreSplitRegions <= shard_bits` 的校验仍然成立，并覆盖 signed/unsigned 主键、auto-random range bits、无分区及多分区。
 - 回归测试放在独立文件 `pkg/ddl/split_region_test.rs`，不要内嵌到生产源文件。生产接线变化还应同步检查 `pkg/session/runtime/ddl.rs` 的相关独立测试；Go 语义依据在 `pkg/ddl/split_region_test.go`。若涉及真实 TiKV scatter/timeout，再选择相应 integration/RealTiKV 测试，而不是用编译成功代替行为证据。
 - 性能风险主要来自 key 数量随 `2^PreSplitRegions` 增长、分区数乘以索引数的同步请求，以及逐 Region 串行等待；扩展时避免无界复制、重复求值和无必要的空 split 请求。
-
-## 验证依据
-
-- 目标实现：`pkg/ddl/split_region.rs`，完整读取 481 行；符号包括 1 个常量、4 个公开类型、10 个公开函数/辅助入口、1 个私有函数及 2 个 trait impl，无条件编译项。
-- crate/模块边界：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`；确认 crate 名、`lib.rs` 入口、直接 workspace 依赖、公开模块和独立测试挂载。
-- 生产上游：`pkg/session/runtime/ddl.rs::pre_split_and_scatter` 及其 CREATE TABLE、ADD PARTITION、REORGANIZE PARTITION 调用点；全仓 `rg` 确认生产直接调用位于该 session runtime 文件。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；对 `split_table_regions`、`policy_bounds`、`normalize_split_policy`、`pre_split_record_keys`、`policy_split_keys`、`get_scatter_config`、`wait_scatter_finished` 执行 `query/node/callers/callees`。图确认了目标定义与核心下游边；跨 crate 上游漏报由源码/全仓搜索补齐，未把图缺失当作“无生产调用”。
-- Rust 独立测试：`pkg/ddl/split_region_test.rs`，重点核对 policy 的最小 Region 数和非词法边界、shard key/物理 ID 顺序、scatter 失败停止、分区键与 group 分离、policy 物理键归属、存储失败后继续、PD/non-PD 等待差异、持久化边界类型转换与无效 policy 跳过。
-- Go 对照：`pkg/ddl/split_region.go`、`pkg/ddl/split_region_test.go`，并通过 `pkg/ddl/executor.go`、`pkg/ddl/partition.go` 的调用位置确认 Go 主链。Go 测试还揭示时区、unsigned、common-handle prefix 等 Rust 独立测试尚未覆盖的语义范围。
-- DDL 契约：读取 `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`，据源码确认本文件是元数据动作后的 best-effort 存储优化，而非 job 状态机、schema transition 或 reorg/checkpoint 实现。
-- 本任务只生成文档，按计划不运行 Cargo。交付前另执行任务指定的 11 章结构检查，并人工复核本文件为何存在、如何运行、失败边界及安全扩展位置。

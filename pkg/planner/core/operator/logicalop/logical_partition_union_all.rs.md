@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件定义逻辑计划节点 `LogicalPartitionUnionAll`。它表示静态分区裁剪把一张分区表展开为多个分区分支后，对这些分支执行不去重合并的专用 `UNION ALL`。节点复用 `LogicalUnionAll` 的 schema、子节点、统计信息和通用逻辑计划状态，但通过 `Init` 把计划类型设为 `"PartitionUnion"`，使后续物理规划能够保留“分区合并”身份。
-
-模块入口 [`lib.rs`](lib.rs) 以私有模块 `logical_partition_union_all` 装配本文件，并通过 `pub use logical_partition_union_all::*` 对 crate 外导出类型。最近的 [`Cargo.toml`](Cargo.toml) 将它归入 `astersql-planner-core-operator-logicalop` crate；该 crate 直接依赖 `astersql-planner-core-base`、`astersql-expression`、`astersql-planner-property`、`astersql-planner-planctx` 和 `astersql-util-plancodec` 等规划基础 crate，且 `package.metadata.porting.go-package` 指向 Go 包 `pkg/planner/core/operator/logicalop`。
-
-当前 Rust 接线并不完整：[`rule_partition_processor.rs`](../../rule/rule_partition_processor.rs) 中创建 `LogicalPartitionUnionAll` 的静态分区裁剪代码仍是注释式迁移文本。因此，在已检索的 Rust 生产代码中，本类型已有物理计划分派和实现，但尚未由 Rust 分区裁剪规则实际构造；当前可执行构造证据主要来自独立单元测试。不能据此宣称 Rust SQL 主链已经能产生该节点。
+`LogicalPlan` 实现把通用状态访问和统计推导委托给内层 UnionAll，同时保留本类型的动态类型，使物理计划分派能够识别分区 Union。
 
 ## 核心职责
 
@@ -75,9 +71,9 @@ RustCodeGraph 给出的 Go 文件使用者包括 `pkg/planner/core/rule/rule_par
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`logical_partition_union_all.go`](logical_partition_union_all.go)。类型结构相同：Go 匿名嵌入 `LogicalUnionAll`，Rust 使用命名字段组合。两端 `Init` 都设置 `TypePartitionUnion`/`"PartitionUnion"`，并保留 query-block offset。
+类型结构相同：Go 匿名嵌入 `LogicalUnionAll`，Rust 使用命名字段组合。
 
-TopN 语义基本逐项对应：都在每个 child 上下推 `Count + Offset`，复制 `PreferLimitToCop` 和排序项，最后保留原 TopN 在 Union 之上；无 TopN 时都返回 Union 本身。Rust 使用 `Option<LogicalPlanRef>` 表达 Go 的 nil，并用 `wrapping_add` 明确复现 Go `uint64` 溢出行为。一个实现细节差异是 Go 用 partition union 的 `SCtx()` 初始化分支 TopN，而 Rust 从传入的上层 TopN 读取 context；在正常同一计划树中两者应一致，但若未来允许不同 context，必须决定并测试兼容语义。
+Rust 使用 `Option<LogicalPlanRef>` 表达 Go 的 nil，并用 `wrapping_add` 明确复现 Go `uint64` 溢出行为。一个实现细节差异是 Go 用 partition union 的 `SCtx()` 初始化分支 TopN，而 Rust 从传入的上层 TopN 读取 context；在正常同一计划树中两者应一致，但若未来允许不同 context，必须决定并测试兼容语义。
 
 列裁剪的 API 形态不同。Go 的 `PruneColumns` 返回一个可能被替换的 `base.LogicalPlan`，并在结果仍为 `*LogicalUnionAll` 时把它写回 wrapper；Rust 的 `LogicalUnionAll::PruneColumns` 是原地 `Result<()>`，因此 wrapper 只需委托。Rust 没有 Go 那个“裁剪后变成其他节点”的返回分支，这是底层 Rust API 的差异，不应误写成遗漏了错误传播。
 
@@ -91,15 +87,3 @@ Go 的静态分区裁剪生产入口与 UnionScan 重写均已实现；Rust `rul
 - 若改变 schema、统计或相等性，需同时核对 `logical_union_all.rs`、`hash64_equals_generated.rs` 及 `logicalop_test/hash64_equals_test.rs`，避免 wrapper 与内层状态失配。
 - 若增加物理实现选择，修改 `physicalop/physical_union_all.rs` 的 `ExhaustPhysicalPlans4LogicalPartitionUnionAll` 或其共享 `build_union_plans`，并保留 `TypePartitionUnion` 编码身份；同时评估 explain 输出、memo 比较和候选计划数量。
 - 性能风险主要随分区数和排序项数增长：每个分区都会新增 TopN 节点并克隆 `ByItems`。兼容风险主要来自 Go/Rust context 来源、溢出语义、计划类型字符串以及原 TopN 是否保留。
-
-## 验证依据
-
-- 目标实现：[`logical_partition_union_all.rs`](logical_partition_union_all.rs)，核对了 `LogicalPartitionUnionAll`、`Init`、`PruneColumns`、`PushDownTopN` 和完整 `LogicalPlan` 实现。
-- 复用实现：[`logical_union_all.rs`](logical_union_all.rs) 的列裁剪、TopN 下推和 `DeriveStats`；[`base_logical_plan.rs`](base_logical_plan.rs) 的 `LogicalPlan` 协议、基类字段与 `NewBaseLogicalPlan`。
-- crate 与装配：[`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)。
-- Go 对照与真实生产入口：[`logical_partition_union_all.go`](logical_partition_union_all.go) 和 [`rule_partition_processor.go`](../../rule/rule_partition_processor.go)。
-- Rust 迁移状态：[`rule_partition_processor.rs`](../../rule/rule_partition_processor.rs) 中相应构造与 UnionScan 重写仍为注释文本。
-- 物理化：[`base_physical_plan.rs`](../physicalop/base_physical_plan.rs) 的类型分派，以及 [`physical_union_all.rs`](../physicalop/physical_union_all.rs) 的 `ExhaustPhysicalPlans4LogicalPartitionUnionAll -> build_union_plans`。
-- 测试：[`logical_partition_union_all_test.rs`](logical_partition_union_all_test.rs) 验证每分区克隆 TopN、`offset + count`、排序方向、cop 偏好和无 TopN 返回；[`logicalop_test/hash64_equals_test.rs`](logicalop_test/hash64_equals_test.rs) 及 Go 同名测试验证 schema 参与 Hash/Equals。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query LogicalPartitionUnionAll` 定位 Rust/Go 类型及 Rust/Go 物理枚举函数；`node` 核对 Rust 类型、Go 文件、Go 分区裁剪入口和 Rust 物理枚举函数；精确 Rust 类型 callers 返回空数组，物理枚举函数的 `node` trail 指向 `build_union_plans`。模糊 `explore` 结果仅用于发现候选，重要关系均回到精确节点或源码核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构验证要求文档存在且恰好包含上述 11 个固定二级标题。

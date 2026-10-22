@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpformat-parquetfile` crate（`pkg/dumpformat/parquetfile/Cargo.toml` 的 `[lib] path = "lib.rs"`），位于 Parquet 物理列解码和导入行表示之间。crate 根模块 `pkg/dumpformat/parquetfile/lib.rs` 以 `pub mod type_converter` 暴露它；真实文件读取链由 `pkg/dumpformat/parquetfile/file_parser.rs` 的 `Column::next` 按物理类型调用 `convert_logical_int32`、`convert_logical_int64`、`int96_micros_with_rebase` 或 `convert_logical_bytes`，再把本文件的 `Datum` 交给 `FileParser`/`ImportParser`。
-
-文件包含两组接口。`ConvertedInfo` 与 `convert_int32`、`convert_int64`、`convert_int96`、`convert_bytes` 是较早的 `parser::ConvertedType` 兼容层，现有调用证据主要来自 `parser_test.rs` 和 `type_converter_test.rs`；`ParquetColumnType` 与三个 `convert_logical_*` 函数保留 Arrow Parquet 的原生 `LogicalType`，是 `file_parser.rs` 当前生产读取路径。第 15–220 行整段均为行注释中的历史移植草稿，不参与编译；当前实现从第 221 行开始，不能把草稿中的 TiDB `types::Datum` setter 当成 Rust 运行时行为。
+在 DECIMAL 路径中解析大端二补码字节或给整数插入小数点，统一产出 `Datum::Decimal(String)`；`decimal_bytes_to_string` 不依赖固定宽度整数，因此可处理长字节序列。
 
 ## 核心职责
 
@@ -78,13 +76,9 @@ RustCodeGraph 对 `convert_logical_*` 的 callers/callees 精确查询在本次�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/dumpformat/parquetfile/type_converter.go`。两端都按 Parquet 物理类型选择 setter/转换器，并覆盖 DECIMAL、DATE、TIME、TIMESTAMP、INT96、整数、浮点与字节；Rust 的 `file_parser.rs` 当前原生 logical 主链对应 Go 的 `getInt32Setter`、`getInt64Setter`、`getInt96Setter`、`getByteArraySetter` 和 `getFixedLenByteArraySetter`。
+表示层并非逐字复刻：Go 直接复用/写入 `types.Datum` 和 `types.MyDecimal`，超长 DECIMAL 才回退到字符串；Rust 当前统一产生轻量 `Datum::Decimal(String)`，因此 `MAXIMUM_DECIMAL_BYTES` 在可编译逻辑中未使用。Go setter 在工厂阶段返回闭包并可复用 DECIMAL 缓冲，Rust 由普通函数逐值返回拥有型 `Datum`。
 
-关键一致性包括：unsigned INT32 先按 `uint32` 重解释；TIME 限定在一天内且纳秒最近舍入可保留 `24:00:00`；TIMESTAMP 仅在 adjusted-to-UTC 时转换到 parser location；DATE/TIMESTAMP/INT96 按 Spark metadata 选择 rebase；INT96 无 rebase 时保留纳秒直到 TiDB 的微秒舍入语义；BYTE_ARRAY DECIMAL 不原地破坏 dictionary buffer。
-
-表示层并非逐字复刻：Go 直接复用/写入 `types.Datum` 和 `types.MyDecimal`，超长 DECIMAL 才回退到字符串；Rust 当前统一产生轻量 `Datum::Decimal(String)`，因此 `MAXIMUM_DECIMAL_BYTES` 在可编译逻辑中未使用。Go setter 在工厂阶段返回闭包并可复用 DECIMAL 缓冲，Rust 由普通函数逐值返回拥有型 `Datum`。Rust 的 `ParquetColumnType` 保留 Arrow 原生 logical annotation，避免旧 `ConvertedType` 桥接丢失 signedness、NANOS、UUID 等信息。
-
-验证语义的 Go 测试集中在 `parser_test.go`：`timestamp_and_decimal`、`int96_rounds_sub_microsecond_precision`、Spark legacy rebase、`decimal_with_nulls`、`dictionary_encoded_decimal`、`TestBinaryToDecimalStr` 等。Rust 对应证据在独立 `type_converter_test.rs` 的 INT96 舍入用例及 `parser_test.rs` 的 DECIMAL、DATE rebase、负 epoch INT96、TIME/UTC/DST、logical signedness/UUID/Null 等回归。两端数据表示不同，比较时应以导入后的 SQL/文本语义和错误边界为准，不能仅比较内部 enum 形状。
+两端数据表示不同，比较时应以导入后的 SQL/文本语义和错误边界为准，不能仅比较内部 enum 形状。
 
 ## 扩展指南
 
@@ -93,12 +87,3 @@ Go 对照文件为 `pkg/dumpformat/parquetfile/type_converter.go`。两端都按
 - 修改 TIME/TIMESTAMP 时必须区分 wall-clock TIME、instant TIMESTAMP 和 INT96 历史 UTC 语义，并覆盖 epoch 前负值、半微秒边界、午夜进位、非整点 offset、DST 跳变及 `i64` 溢出。NANOS timestamp 当前故意跳过 Spark microsecond rebase；改变该规则需要同时验证 Go 的 `rebaseTimestampValue`。
 - 新增 `Datum` 变体需要同步 `file_parser.rs` 到 `astersql_lightning_mydump::Datum` 的适配和所有消费方。性能改动应保留输入 buffer 不被修改的契约，并用现有 `benchmark_decimal_test.rs`/Go benchmark 对照分配与吞吐。
 - 对错误文本的改动要同步依赖 substring 的回归测试，特别是 `unsupported parquet logical type Null`、`outside the valid range`、`timestamp overflow` 和 `timestamp out of range`。如果需要支持当前被拒绝的 annotation，应先确认 Arrow physical encoding 和 Go setter 的既有行为，不能把兜底错误静默改成原始字节。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 7,032 个 Rust 文件且覆盖 `pkg/dumpformat/parquetfile`；`files --filter pkg/dumpformat/parquetfile` 列出目标、Go 对照和测试；`node --file pkg/dumpformat/parquetfile/type_converter.rs` 读取完整 620 行并报告使用文件。精确 `query` 找到 `type_converter.rs::convert_int32` 与 `time_as_duration`；`TypeConverter`/`create_type_converter`/`convert_parquet_value` 无符号，说明本文件不是以转换器对象工厂命名。`callers`/`callees` 查询超时无输出，未作为正向调用边证据。
-- 源码：完整读取 `pkg/dumpformat/parquetfile/type_converter.rs`；读取 `pkg/dumpformat/parquetfile/file_parser.rs` 的 `Column::next`、`FileParser` 列信息构建和 Spark rebase 接线；读取 `pkg/dumpformat/parquetfile/lib.rs` 的模块声明、错误类型和独立测试装配。目标目录不存在 `doc.go`。
-- crate 边界：读取 `pkg/dumpformat/parquetfile/Cargo.toml`，确认 crate 名、lib 入口、chrono/chrono-tz/Parquet fork 依赖及 Go package porting metadata。
-- Go 对照：完整读取 `pkg/dumpformat/parquetfile/type_converter.go`，并抽查 `pkg/dumpformat/parquetfile/parser_test.go` 中 timestamp/decimal、INT96 舍入、dictionary decimal 和 binary-to-decimal 用例。
-- Rust 测试：读取 `pkg/dumpformat/parquetfile/type_converter_test.rs`；读取 `pkg/dumpformat/parquetfile/parser_test.rs` 中旧兼容转换、logical TIME/TIMESTAMP/INT96、signedness、UUID、Null、schema validation 和 DST 舍入用例。由于任务是纯文档分析，按计划未运行 Cargo。
-- 结构校验使用任务指定命令，要求目标文档存在且恰有本页所示 11 个固定二级标题；交付前另以 `git diff --check` 和限定路径状态检查文档质量及唯一产物。

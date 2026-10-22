@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ttl-ttlworker` crate；该 crate 由 `pkg/ttl/ttlworker/Cargo.toml` 定义，入口 `lib.rs` 通过 `pub mod job_manager` 对外公开本模块。它提供 TTL（Time To Live）表级作业的内存协调模型，并实现 `timer.rs::TtlJobAdapter`，把定时器的“能否提交、提交、查询”协议接到作业状态上。
-
-它不是当前 Rust 运行时中 Go `JobManager` 的完整替代。`pkg/session/runtime/ttl_runtime.rs` 的生产路径直接使用 `persistent.rs::PersistentJobStore` 完成系统表事务，只复用本模块的 `TtlSummary`；本文件的 `JobManager` 当前主要由 `job_manager_test.rs`、`job_manager_integration_test.rs` 和 `timer_test.rs` 驱动。系统表 SQL 的真实原子锁定和完成顺序应以 `persistent.rs` 为准，不能把本文件中的 `BTreeMap` 更新理解为跨节点持久化。
+`TtlJobAdapter` 实现负责定时器侧提交/查询，包含 TTL 启用、表身份和 index scan 版本一致性门禁。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ crate 边界由 `Cargo.toml` 确认：常规依赖只有相邻 `astersql-ttl-cac
 
 ## 与 Go 版本的对应关系
 
-Rust `JobManager` 对应 `pkg/ttl/ttlworker/job_manager.go::JobManager` 的核心状态机语义：leader 才能建立/GC job，同一 physical table 只能有一个 current job，锁定时计算过期水位并建立历史，本地 owner 发送心跳，失联 job 可被接管，所有扫描任务完成后汇总并收尾。Rust 独立测试明确映射了 Go 的 `TestParallelLockNewJob`、`TestFinishJob`、`TestSubmitJob`、`TestRescheduleJobs`、`TestGCTableStatus` 和 `TestGCTTLHistory`。
+Rust `JobManager` 对应 `pkg/ttl/ttlworker/job_manager.go::JobManager` 的核心状态机语义：leader 才能建立/GC job，同一 physical table 只能有一个 current job，锁定时计算过期水位并建立历史，本地 owner 发送心跳，失联 job 可被接管，所有扫描任务完成后汇总并收尾。
 
 两者并非等量实现。Go `jobLoopWithSession` 在单 goroutine 中维护多组 ticker、timer 同步、命令/通知 watcher、task worker resize、任务检查和 metrics；Rust 本文件没有 loop。Go `lockNewJob` 在 pessimistic transaction 中 `FOR UPDATE NOWAIT` 锁状态行、计算 scan ranges、写 history 和每个 task，然后通知其他扫描管理器；Rust `lock_new_job` 只写内存，事务对应功能在 `persistent.rs::start_job_with_ranges`。Go `checkFinishedJob` 还会回收 external workload；Rust 没有该依赖。
 
@@ -93,12 +91,3 @@ Go 摘要 `TTLSummary` 额外包含 total/scheduled/finished scan task 和序列
 - 增加 GC 时，应为 request/job/index 映射定义明确保留期；删除映射前要保证 `TtlTimerHook::poll` 对已完成请求仍能得到稳定结果。
 - 任何 index scan 改动都应保留版本检查的三态语义：允许、兼容回退、明确阻塞。对应测试 `index_scan_submission_obeys_version_gate_and_persists_choice` 还验证了不一致结果的一分钟缓存以及选定索引按 job 固化。
 - 性能上，`finish_completed_jobs` 当前对每个 active job 扫描整个 finished 列表，复杂度近似 `O(active_jobs * finished_tasks)`；规模扩展时可按 job ID 建索引，但必须保持汇总和完成判定不变。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ttl/ttlworker/job_manager.rs` 确认目标文件有 26 个符号。
-- RustCodeGraph 源码/关系查询：读取 `job_manager.rs` 全部 369 行；文件关系显示其被 `pkg/session/runtime/ttl_runtime.rs`、`pkg/session/runtime/ttl_worker_session_test.rs`、`pkg/ttl/ttlworker/job_manager_integration_test.rs`、`pkg/ttl/ttlworker/persistent.rs` 引用。另核对 `timer.rs::TtlJobAdapter/TtlTimerHook`、`job.rs::JobStore/TtlJob::finish`、`task_manager.rs`、`persistent.rs::{start_job_with_ranges, finish_job}` 和 session runtime。
-- crate/模块证据：`pkg/ttl/ttlworker/Cargo.toml`、`pkg/ttl/ttlworker/lib.rs`。
-- Rust 测试证据：`pkg/ttl/ttlworker/job_manager_test.rs`；`pkg/ttl/ttlworker/job_manager_integration_test.rs` 的唯一锁定、完成汇总、提交门禁、index scan 版本门禁、心跳/接管和 leader GC 用例；`task_manager_test.rs`、`task_manager_integration_test.rs` 对 `initial_managed_task` 的复用。
-- Go 对照证据：`pkg/ttl/ttlworker/job_manager.go` 的 `JobManager`、`jobLoopWithSession`、`handleSubmitJobRequest`、`checkFinishedJob`、`rescheduleJobs`、`lockNewJob`、`updateHeartBeatForJob`、`summarizeTaskResultWithError`、`DoGC`；以及 `job_manager_test.go`、`job_manager_integration_test.go` 中对应回归用例。
-- 人工复核结论：本文件存在是为了集中表达可测试的 TTL job 内存状态机和 timer adapter；安全扩展必须同时区分本地模型与 `persistent.rs`/session runtime 的生产事务路径。本文没有把 Go 独有的事件循环、外部 workload、metrics 或持久化 GC 描述成 Rust 已支持能力。

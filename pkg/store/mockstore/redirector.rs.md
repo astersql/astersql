@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore` crate。crate 入口 `pkg/store/mockstore/lib.rs` 通过 `pub mod redirector` 声明该模块，并通过 `pub use redirector::*` 再导出其公开类型和函数；`pkg/store/mockstore/Cargo.toml` 则表明该 crate 直接依赖提供嵌入式 RPC 类型的 `astersql-store-mockstore-unistore`。
-
-它提供一个 RPC 客户端路由门面：带 `StoreTarget::TiDb` 的请求交给惰性创建的第二客户端，`TiKv` 和 `TiFlash` 请求继续交给 mock 客户端。需要注意的是，RustCodeGraph 对本文件给出的文件级结果为 `used by 0 files`，仓库内对公开符号的检索也只找到本文件及 `lib.rs` 的模块导出；因此这些 API 当前是“已公开、尚未在 Rust mockstore 构造链中接线”的迁移实现，不能据此声称完整应用已经使用它。
+通过 `KvClient` 抹平具体客户端类型，使 mock 与第二客户端都能替换为测试替身或其他实现。
 
 ## 核心职责
 
@@ -77,14 +75,10 @@ Go 对照实现已有真实接线：`pkg/store/mockstore/tikv.go::newMockTikvSto
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/redirector.go`：Go 的 `clientRedirector` 保存 `mockClient`、`sync.Once` 和可选 `rpcClient`；`SendRequest`/`SendRequestAsync` 在 `req.StoreTp == tikvrpc.TiDB` 时用全局集群安全配置惰性创建 client-go 网络客户端，其余请求走 mock。两版都保持了“一次初始化、TiDB 特判、mock 优先关闭、监听器只安装到 mock”的核心语义。
-
 Rust 版存在以下已验证差异：
 
-- Rust 通过调用者注入的 `rpc_factory` 创建第二客户端，不读取 `config.GetGlobalConfig().Security.ClusterSecurity()`，也不在本文件内保证产物一定是真实网络客户端。
 - Rust 将目标从请求体拆成 `RoutedRequest::target`；Go 直接读取 `tikvrpc.Request.StoreTp`。
 - Rust `send_request_async` 自建线程、接收显式 `timeout` 并最终调用同步方法；Go 直接调用底层客户端原生的 `SendRequestAsync`，其签名没有该超时参数。
-- Rust API 使用自定义 `KvClient` 和嵌入式 UniStore RPC 类型，不是 client-go `tikv.Client` 的逐类型翻译。
 - Go 版已被 `tikv.go` 与 `unistore.go` 使用；Rust 版目前只有模块导出，没有对应构造链调用者。
 
 相关 Rust 测试目录中没有引用本文件公开符号的独立测试；Go 测试同样没有直接点名 redirector，现有覆盖至多来自通过 mockstore 构造路径的间接行为，不能视为针对路由分支、一次初始化或关闭次序的专门回归测试。
@@ -96,15 +90,3 @@ Rust 版存在以下已验证差异：
 若要把该实现接入 Rust mockstore 主链，必须先在 Rust 的 store 构造位置确认与 Go `tikv.go`/`unistore.go` 等价的客户端接口和安全配置来源，再调用 `newClientRedirector`；不能仅因 `lib.rs` 已再导出就认为迁移完成。若第二客户端需要事件监听，需明确改变 `set_event_listener` 的兼容语义并同步 Go 差异说明。
 
 若异步调用量可能较大，应将每请求一线程替换为受控执行器或底层原生异步接口，并保留超时、回调恰好一次及关闭竞态的测试。改变 `close` 的“mock 失败即短路”策略可能影响兼容性和资源回收，必须先决定是否与 Go 保持一致。所有新增测试仍应放在独立 Rust 测试文件中。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；本次查询时索引可用。
-- RustCodeGraph `explore "pkg/store/mockstore/redirector.rs redirector Redirector"`：返回 Rust/Go 两版完整源码、内部调用摘要，并报告相关符号没有覆盖测试。
-- RustCodeGraph `node --file pkg/store/mockstore/redirector.rs --offset 1 --limit 220`：读取目标文件 177 行全貌，并报告文件 `used by 0 files`。
-- `pkg/store/mockstore/redirector.rs`：核对全部枚举、结构体、trait、适配实现、构造函数、同步/异步路由、关闭和监听器逻辑。
-- `pkg/store/mockstore/lib.rs` 与 `pkg/store/mockstore/Cargo.toml`：核对模块公开方式、crate 边界及 UniStore 依赖。
-- `pkg/store/mockstore/unistore/rpc.rs` 与 `pkg/store/mockstore/unistore/Cargo.toml`：核对 `Request`、`Response`、`RpcError`、`RPCClient` 的实际定义，以及发送、异步发送和关闭行为。
-- `pkg/store/mockstore/redirector.go`、`pkg/store/mockstore/tikv.go`、`pkg/store/mockstore/unistore.go`：核对 Go 对照语义及真实构造链调用点。
-- 对 `pkg/store/mockstore` 执行公开符号和测试引用检索：除 `redirector.rs`、`redirector.go`、`lib.rs` 的导出及 Go 构造点外，未发现 Rust 调用者或直接 Rust/Go 测试。
-- 本任务只创建说明文档；按计划不运行 Cargo。交付前另执行固定十一章节的结构验证。

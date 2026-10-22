@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-privilege-privileges-ldap`，由同目录 `Cargo.toml` 的 `[lib] path = "lib.rs"` 纳入，模块入口 `lib.rs` 通过 `pub mod simple` 将其公开。根 workspace 将该 crate 列为成员，并在 `pkg/lib.rs` 的 `privilege::privileges::ldap` 门面中再导出；`pkg/server/Cargo.toml` 也声明了该依赖。
-
-它对应 Go 文件 `pkg/privilege/privileges/ldap/simple.go`，职责是把 MySQL `authentication_ldap_simple` 插件收到的 NUL 结尾认证数据转换为 LDAP Simple Bind 请求。需要注意当前接线状态：仓库搜索与 RustCodeGraph 只找到 Rust 测试对本模块的直接调用，没有找到 Rust 生产代码调用 `LdapSimpleAuthImpl::AuthLDAPSimple`；当前完整应用认证入口仍可在 Go `pkg/privilege/privileges/privileges.go` 中看到。因此本文件是已实现且已导出的 Rust 认证组件，但不能仅凭本文件断言 Rust 服务主链已经使用它。
+`LDAPSimpleAuthImpl` 提供进程级惰性默认实例，与 Go 包级变量的使用形式对应。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ RustCodeGraph 将 `simple.rs` 标为被 `simple_test.rs`、`migration_aster_unit
 
 ## 与 Go 版本的对应关系
 
-核心流程与 `simple.go::ldapSimplAuthImpl.AuthLDAPSimple` 一致：验证末尾 NUL、按空 DN 搜索或规范化非空 DN、从池取连接、执行用户 bind，并在函数范围内保持配置读锁。Rust 将 Go 的嵌入指针 `*ldapAuthImpl` 表达为 `Arc<LdapAuthImpl>`，将包级指针变量表达为 `LazyLock<LdapSimpleAuthImpl>`。
-
 有两点实现层差异需要明确：
 
 - Go 用 `string(password[:len-1])`，该转换保留任意字节；Rust 真实认证路径因此使用 `password_bytes` 与 ldap3 的 `simple_bind_bytes`，而不是要求 UTF-8 的 `password_string`。`simple_test.rs` 的非 UTF-8 用例专门固定这一语义。
@@ -93,12 +89,3 @@ Go `privileges.go` 已把该入口接入登录认证并转换为 access-denied�
 - 若将 Rust 实现接入生产登录主链，应在实际权限认证分支调用 `AuthLDAPSimple`，同时补独立的上层回归测试，覆盖插件选择、错误到 access-denied 的映射以及明文密码协议；仅添加 Cargo 依赖或门面再导出不构成接线证据。
 - 变更全局默认实例前评估共享配置和连接池的进程级影响；需要隔离时使用 `new(Arc<LdapAuthImpl>)` 注入，而不是增加另一套隐式全局状态。
 - 安全审查需关注密码/绑定凭据不得进入日志、LDAP 搜索过滤器当前保持 Go 的字面拼接行为，以及持读锁执行网络 I/O 对配置更新延迟的影响。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/privilege/privileges/ldap` 列出本模块 13 个 Go/Rust 文件；`node --file pkg/privilege/privileges/ldap/simple.rs --offset 1 --limit 260` 读取完整 81 行源码，并报告三个“used by”文件；`query AuthLDAPSimple`、`query password_bytes`、`query auth_simple` 分别定位本文件入口/辅助函数和 `ldap_common.rs` 下游实现。`callers`/`callees` 未返回可用静态调用边，因此调用现状又以精确仓库搜索核验。
-- 源码与装配：`pkg/privilege/privileges/ldap/simple.rs`、`ldap_common.rs`、`lib.rs`、同目录 `Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/server/Cargo.toml`。
-- Go 对照与应用入口：`pkg/privilege/privileges/ldap/simple.go`、`ldap_common.go`、`pkg/privilege/privileges/privileges.go`；`pkg/server/conn_test.go::TestLDAPAuthSwitch` 只验证 clear-password 插件切换，不等同于 LDAP bind 成功测试。
-- 独立 Rust 测试：`simple_test.rs::simple_password_preserves_non_utf8_bytes_like_go`；`migration_aster_unit_test.rs::simple_password_validation_matches_go_nul_termination`；DN 和连接公共行为另由 `ldap_common_test.rs::TestCanonicalizeDN` 等测试覆盖。
-- 精确 `rg` 结果未找到独立 Go `simple_test.go`，也未找到 Rust 生产代码直接调用 `AuthLDAPSimple`；这些缺口在正文中按“未验证接线”处理，没有用预期架构代替代码事实。
-- 本任务是只读代码分析加文档新增，按计划不运行 Cargo；交付前使用任务给定命令验证恰有十一个固定二级标题，并人工复核所有关键结论均可回溯到上述符号或文件。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-serverinfo` crate 的节点发现与存活信息同步实现。crate 入口 `pkg/domain/serverinfo/lib.rs` 将本模块和 `info.rs`、`real_etcd.rs`、`status_endpoint_claim.rs` 一并重新导出；`pkg/domain/serverinfo/Cargo.toml` 则声明其 Go 对照包为 `pkg/domain/serverinfo`，直接依赖配置、日志、etcd client 与 Tokio。
-
-在运行链上，服务型 Domain 通过 `pkg/domain/domain.rs::Domain::install_server_info_syncer` 构造 `Syncer`，先登记 `/tidb/server/info/<id>`，再登记 `/topology/tidb/<addr>/{info,ttl}`。跨 keyspace 运行时由 `pkg/domain/crossks/cross_ks.rs::RegisteredRuntimeFactory::create` 构造 `NewCrossKSSyncer`，并由 `RegisteredServerInfo::start` 在线程中运行 `ServerInfoSyncLoop`。本文件因此位于 Domain 生命周期和 etcd 集群发现数据之间，而不是 SQL 请求执行主链上。
-
-配套数据模型和时间常量定义在 `pkg/domain/serverinfo/info.rs`：server-info 前缀为 `/tidb/server/info`，topology 前缀为 `/topology/tidb`，默认读取重试 5 次、单次超时 1 秒，topology lease 为 45 秒，topology 刷新和 min-start-TS 上报间隔均为 30 秒。
+`EtcdClient` 隔离存储实现；`MemoryEtcdClient` 为独立 Rust 测试提供确定性的键值、lease、revision 和故障注入语义，生产适配器位于相邻 `real_etcd.rs`。
 
 ## 核心职责
 
@@ -104,8 +100,6 @@
 
 ## 与 Go 版本的对应关系
 
-主要结构和顺序直接对应 `pkg/domain/serverinfo/syncer.go`：`Syncer` 字段、三类构造器、登记前陈旧清理、标签“远端成功后本地提交”、两个 lease、topology info/ttl 键布局、session 重启、min-start-TS 上报、读取重试以及 `getServerInfo` 的字段来源均保持一致。`pkg/domain/serverinfo/syncer_test.rs` 还明确将 `test_topology`、`test_cleanup_stale_server_and_owner_info`、`test_assumed_server_info_syncer` 对应到 Go 的同名测试。
-
 当前 Rust 版本不是逐行等价实现，扩展时需保留以下已证实差异：
 
 - Go 使用 `context.Context`、etcd concurrency session、channel/ticker 和异步 lease keepalive；Rust 使用同步 `Context`、抽象 `EtcdClient`、本地 `Session` 状态以及标准库阻塞通道。真实 lease 行为由 `real_etcd.rs` 适配器承担。
@@ -126,11 +120,3 @@
 - 修改陈旧节点判定时只触及同 IP+SQL Port、不同 ID 的目标，并维持 owner 前缀及 value 后缀解析约定；`test_cleanup_stale_server_and_owner_info` 已验证第二个匹配 owner 和无关 DDL 键不会被误删。
 - 对齐 Go 新提交时应比较 `pkg/domain/serverinfo/syncer.go` 和 `syncer_test.go` 的增量，避免顺带补建无关子系统。任何行为变化还需检查 `Domain::install_server_info_syncer`、`Domain::close` 与 cross-keyspace `RegisteredServerInfo` 的调用契约。
 - 本文件已有 AsterSQL 2026 与 PingCAP Apache License 头；修改 Rust 生产代码时必须保留两者，并按仓库要求先运行 `cargo fmt --all`。本次仅新增说明文档，不触发该格式化要求。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/serverinfo/syncer.rs` 差异及目标 blob `e4d95150f842b7dea441ec3a9ada2a834fe1d3ac` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/serverinfo/syncer.rs` 和 `git show 2c944fb:pkg/domain/serverinfo/syncer.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/serverinfo/syncer_test.rs`，Go 对照为 `pkg/domain/serverinfo/syncer.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

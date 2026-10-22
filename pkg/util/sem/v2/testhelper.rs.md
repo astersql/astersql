@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sem-v2` crate 的测试辅助层，源码入口为 [`testhelper.rs`](testhelper.rs)。[`lib.rs`](lib.rs) 通过 `mod testhelper` 加载它，并用 `pub use testhelper::*` 将三个函数作为 crate 公共 API 导出。它不实现新的 SEM 策略，而是围绕 [`sem.rs`](sem.rs) 中的正式启停流程和进程级 `globalSem` 提供测试装配、清理及临时权限调整能力。
-
-虽然文件名为 `testhelper.rs`，该模块并没有 `#[cfg(test)]` 限制，三个 API 会进入普通库构建。这样 [`../compat/testhelper.rs`](../compat/testhelper.rs) 等兼容测试基础设施可以通过 `astersql_util_sem_v2` 调用它。当前直接 Rust 使用点是兼容层的 `SwitchToSEMForTest`，以及 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 中的迁移回归测试。
+不实现新的 SEM 策略，而是围绕 [`sem.rs`](sem.rs) 中的正式启停流程和进程级 `globalSem` 提供测试装配、清理及临时权限调整能力。
 
 ## 核心职责
 
@@ -74,14 +72,13 @@ SEM 及系统变量注册表都是进程级共享资源。`globalSem.Load()` 克
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`testhelper.go`](testhelper.go)。Rust 保留了 Go 的三个函数名、配置路径启用步骤、只快照非空强制值、跳过快照阶段不存在的变量、清理时先关闭 SEM 再恢复变量、权限大写化，以及未启用时静默返回的行为。
+Rust 保留了 Go 的三个函数名、配置路径启用步骤、只快照非空强制值、跳过快照阶段不存在的变量、清理时先关闭 SEM 再恢复变量、权限大写化，以及未启用时静默返回的行为。
 
 实现层差异主要来自语言和并发模型：
 
 - Go 返回 `(func(), error)`；Rust 返回 `Result<Box<dyn Fn()>, String>`，用所有权把快照移动到闭包。
 - Go 的权限集合直接写 map，并用注释禁止与多 goroutine SEM 操作并发；Rust 将集合放在 `RwLock<HashSet<String>>` 中，读写集合受锁保护，但仍保留不得与其他 SEM 变更竞态的契约。
 - Go 在增删函数中先判断一次、再第二次 `globalSem.Load()` 取实例；Rust 用 `let Some(sem) = globalSem.Load()` 固定同一个 `Arc`，避免两次加载之间切换实例。
-- 两边都忽略清理时设置系统变量的返回值。Rust 的 `SetSysVar` 明确返回 `Result`，本文件用 `let _ =` 丢弃它。
 
 ## 扩展指南
 
@@ -90,12 +87,3 @@ SEM 及系统变量注册表都是进程级共享资源。`globalSem.Load()` 克
 - 若扩展临时策略修改 API，应复用 `globalSem.Load()` 得到的单个 `Arc`，遵循目标字段的锁和大小写规范，并明确 SEM 未启用时是无操作还是错误。不要绕过 `SemImpl` 的同步原语。
 - 测试应放在独立的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 或其他独立 `*_test.rs` 文件，不要嵌入本生产源文件。至少覆盖成功变更、清理恢复、未启用分支、规范化规则和错误路径。
 - 修改移植行为时同步核对 [`testhelper.go`](testhelper.go)；若有意产生差异，应在测试和本文中记录原因。兼容风险集中在全局状态残留、清理顺序、重复清理以及并发启停；性能不是主要风险，集合操作与变量快照规模均受测试配置大小限制。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 `pkg/util/sem/v2/testhelper.rs`；`files --filter pkg/util/sem/v2` 确认 Rust/Go 对照文件及独立测试；`node --file pkg/util/sem/v2/testhelper.rs --offset 1 --limit 240` 读取到完整 77 行，并报告该文件被 `pkg/util/sem/compat/testhelper.rs` 与 `pkg/util/sem/v2/migration_aster_unit_test.rs` 使用。符号查询确认 Rust 与 Go 各有一个 `EnableFromPathForTest`。精确 `callers/callees` 命令在本地索引上未在 30 秒内返回，因此调用边又通过直接引用搜索与源码阅读核验。
-- 源码：[`testhelper.rs`](testhelper.rs)、[`sem.rs`](sem.rs)、[`config.rs`](config.rs)、[`lib.rs`](lib.rs) 和 `pkg/sessionctx/variable/variable.rs`，分别用于核对辅助流程、全局状态与锁、配置解析/校验、公开导出和系统变量注册表语义。
-- crate 配置：[`Cargo.toml`](Cargo.toml)，用于核对 crate 名、库入口以及 `variable`、`serial_test`、`tempfile` 等普通/测试依赖边界。
-- Go 对照：[`testhelper.go`](testhelper.go) 与 `pkg/util/sem/compat/testhelper.go`；Go 权限场景参考 `pkg/privilege/privileges/privileges_test.go`。
-- Rust 测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 中的权限增删断言和 `migration_enable_from_path_restores_variables_on_cleanup`；兼容调用参考 [`../compat/testhelper.rs`](../compat/testhelper.rs)。同目录不存在专门的 `testhelper_test.rs`，相关回归集中在迁移测试文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时使用任务规定的 11 个固定二级标题结构检查，并人工复核本文只陈述上述源码与测试能够支持的行为。

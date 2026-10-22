@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-expression`。`pkg/expression/lib.rs` 通过 `#[path = "column.rs"] mod expression_column` 挂载该模块，并以 `pub use expression_column::*` 把其中的公开类型和函数暴露为表达式 crate 的公共 API。文件本身实现两种最基础的叶子表达式：从当前输入行取值的 `Column`，以及从外层查询运行期槽位取值的 `CorrelatedColumn`。
-
-这些固有方法并不是孤立接口。`pkg/expression/core_impl.rs` 为二者实现 `Expression`、`VecExpr`、`CollationInfo`、`SafeToShareAcrossSession` 等 trait，并把 trait 调用转发回本文件，因此规划器、执行器和表层代码通常通过 `dyn Expression` 使用它们。直接可见的应用接线包括：`pkg/table/column.rs::FillVirtualColumnValue` 调用 `Column::EvalVirtualColumn` 生成虚拟列，`pkg/util/ranger/detacher.rs::IsValidShardIndex` 调用 `GcColumnExprIsTidbShard` 校验分片索引，planner 的 property/handle-column 代码调用 `ResolveIndices` 和 `HashCode`，session 的 EXPLAIN 查询构造调用 `Column2Exprs`。
+`pkg/expression/core_impl.rs` 为二者实现 `Expression`、`VecExpr`、`CollationInfo`、`SafeToShareAcrossSession` 等 trait，并把 trait 调用转发回本文件，因此规划器、执行器和表层代码通常通过 `dyn Expression` 使用它们。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ trait 接线集中在 `pkg/expression/core_impl.rs`：`forward_vec_expr!(Column/
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/column.go`，独立测试是 `pkg/expression/column_test.go` 与 Rust 的 `pkg/expression/column_test.rs`。两端总体保持相同职责和分支：关联列按常量向量化、普通列的 Hybrid/FLOAT 特殊路径、schema 解析、虚拟表达式精确 ID 优先、哈希/相等字段集合、排序规则推导、列辅助函数和内存估算均能逐项对应。
-
 语言表示差异包括：Go 以嵌入的 `Column` 和 `*types.Datum` 表示关联列，Rust 使用命名字段及 `Arc<RwLock<Datum>>`；Go 的 `[]*Column`/`Expression` 接口在 Rust 中分别变为拥有型 `Vec<Column>` 和 `Box<dyn Expression>`；Go 的 nil 分支在 Rust 多由 `Option` 表达，但若 `RetType`、`VirtualExpr` 或关联数据属于已建立的不变量，Rust 当前使用 `unwrap`/`expect`。
 
 已确认的语义差异或迁移注意点：
@@ -108,12 +104,3 @@ trait 接线集中在 `pkg/expression/core_impl.rs`：`forward_vec_expr!(Column/
 修改关联列生命周期时，必须保持 `SafeToShareAcrossSession = false`，除非同时证明执行期 Datum 不再携带会话状态；还应明确共享/深拷贝语义、锁中毒策略和写入方契约。测试继续放在独立的 `pkg/expression/column_test.rs`，不要内嵌到生产源文件；若追求 Go 完整对齐，应把现有注释型 Go 用例逐步变成真实 Rust 断言，而不是删减分支。
 
 修复 EXPLAIN 自动去编号时，最可能修改 `shouldRemoveColumnNumbers` 及上下文适配层，并同时覆盖：非 EXPLAIN、非 plan-tree、大小写/空白格式、显式 `OrigName`、隐藏虚拟列。此处当前与 Go 不一致，扩展文档或调用方不得假设已经自动生效。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/expression/column.rs`（907 行），核对 `CorrelatedColumn`、`Column`、全部行式/向量式求值、解析/映射、哈希/相等、排序规则和辅助函数。
-- crate 与模块接线：`pkg/expression/Cargo.toml`；`pkg/expression/lib.rs` 中 `expression_column` 的路径挂载、公开再导出和独立 `column_test` 测试模块；`pkg/expression/core_impl.rs` 中 `Column`/`CorrelatedColumn` 的 trait 实现。
-- Go 对照与测试：`pkg/expression/column.go`、`pkg/expression/column_test.go`；Rust 独立测试：`pkg/expression/column_test.rs`。重点核对 Hybrid 求值、虚拟表达式解析优先级、未绑定关联列、辅助函数、HashCode、Hash64/Equals 与虚拟表达式字段。
-- 调用证据：`pkg/table/column.rs::FillVirtualColumnValue`、`pkg/util/ranger/detacher.rs::IsValidShardIndex`、`pkg/planner/property/physical_property.rs`、`pkg/planner/util/handle_cols.rs`、`pkg/session/runtime/explain_query.rs`、`pkg/expression/scalar_function.rs`。
-- RustCodeGraph：`status` 成功，索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；但 `files --filter pkg/expression/column` 未命中，精确 `query Column` 也未返回目标文件，`resolve_indices_from_schema`/`eval_virtual_expr` 查询为空。因此目标文件及调用关系使用上述源码、模块接线和 `rg` 直接引用补证，未把缺失的图结果伪装成已验证调用边。
-- 结构验证使用任务指定命令，要求目标存在且固定二级标题恰好为 11 个；本任务为纯文档分析，按计划不运行 Cargo。

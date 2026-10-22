@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 的规划链路集成测试模块，不是生产请求路径。`pkg/session/lib.rs` 仅在 `#[cfg(test)]` 下装入 `runtime_test.rs`，后者再通过 `#[path = "runtime_test/planning.rs"] mod planning` 接入本文件。因此这里的八个 `#[test]` 只在测试构建中运行；生产实现主要位于 `pkg/session/runtime/planning.rs`、`pkg/session/runtime/relational_scan.rs` 和会话分发代码。
-
-文件以 `use super::*` 继承 `runtime_test.rs` 的 `ConcreteTestRuntime`、`ConcreteSession`、`kv`、`infoschema`、`Arc` 等测试上下文。它没有类型、trait、常量、`impl` 或条件编译项；共有九个私有测试函数、两个私有 InfoSchema 夹具函数，以及一个供兄弟测试模块使用的 `pub(crate)` KV 行编码辅助函数。
+`statement_boundary_clears_scalar_subquery_registry` 与 `statement_boundary_copies_tikv_short_circuit_expression_switch` 检查每条语句开始时重置 `StmtCtx` 的状态隔离。
 
 ## 核心职责
 
@@ -82,9 +80,8 @@ KV 资源生命周期是“Begin → 多次 Set → Commit → GetSnapshot → �
 - 标量子查询隔离与 Go `pkg/session/session.go` 的 retry rebuild 路径一致：Go 在逐条重建历史语句前把 `MapScalarSubQ` 置空，`pkg/session/tidb_test.go::TestScalarSubqueryRegistryTxnReplay` 断言连续重放时注册表大小从 1 变为 0。Rust 测试采用更小的普通语句边界夹具验证同一“不继承上一语句子查询”的不变量，并未复刻完整事务重试场景。
 - `strict_t_multi_runs_*` 对齐 `pkg/planner/core/hint_test.go` 的 `TestSetVarPartialOrderedIndexForTopN` 子测试：Go 同样检查 `SET_VAR(tidb_opt_partial_ordered_index_for_topn=...)` 只在语句内生效并恢复，还使用相同 `t_multi` 数据及 `ORDER BY a,b LIMIT 3 OFFSET 2` 结果。Rust 增加了 KV 编码、扫描行数、成本和物理算子断言。
 - `constant_projection_is_covered_by_the_selected_index_range` 对齐 `pkg/planner/core/integration_test.go::TestIssue54870` 中 `select 1 from t where id=1 and is_deleted=true` 必须出现 `IndexRangeScan` 的回归意图；Rust 使用简化的非生成列夹具，只覆盖索引覆盖/路径选择，不声称复刻 Go 测试的事务和生成列全部语义。
-- 根 `Limit`、索引名碰撞和过滤 COUNT 的 SQL 在检索到的 Go 测试中没有完全同形的一一对应用例；它们验证 Go 规划语义类别（根 Limit 保留、USE INDEX 解析、TableScan/Selection/StreamAgg 下推），但文档不把相似用例冒充精确移植来源。
 
-因此本文件是 Go 语义对齐的 Rust 回归集合，而不是逐行翻译。若 Go 行为变化，应按每个测试的具体不变量判断是否同步，而不是仅比较函数名或完整 EXPLAIN 文本。
+因此本文件是 Go 语义对齐的 Rust 回归集合，而不是逐行翻译。
 
 ## 扩展指南
 
@@ -94,11 +91,3 @@ KV 资源生命周期是“Begin → 多次 Set → Commit → GetSnapshot → �
 - 改动 COUNT 下推时，应同时校验结果与 DAG 结构，特别是列裁剪、MySQL unsigned flag、executor 顺序、聚合 mode、TiKV store 类型以及显式事务的 root/union-scan 语义。
 - 改动索引 hint 或排序/Limit 规则时，保留按索引名碰撞、分区表、常量投影与覆盖索引等回归维度。性能风险主要是意外引入全表扫描、额外排序或取消提前停止；兼容风险主要是 hint 恢复、MySQL 类型 flag 和 EXPLAIN 根结构变化。
 - Rust 单元/集成测试继续放在本测试文件或同目录独立 `*_test.rs`/`runtime_test/*.rs` 中，不要嵌入 `pkg/session/runtime/planning.rs` 等生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/session/runtime_test/planning.rs` 确认目标文件及 15 个符号；`node --file ... --offset/--limit` 核对全部 528 行；精确 `query` 确认主要测试函数；`callees` 确认严格 KV 测试指向 `strict_t_multi_info_schema`、`strict_t_multi_row`、`Storage::Begin/GetSnapshot`。常见名解析出现跨文件误配且未建出 `#[path]` 文件边，故调用关系同时以模块入口和生产源码核验。
-- Rust 源码：`pkg/session/runtime_test/planning.rs`；接线与共享夹具 `pkg/session/lib.rs`、`pkg/session/runtime_test.rs`；被测实现 `pkg/session/runtime/planning.rs`、`pkg/session/runtime/relational_scan.rs`；辅助函数的兄弟调用者 `pkg/session/runtime_test/typed_adapter_bridge.rs`。
-- crate 边界：`pkg/session/Cargo.toml` 的 `[package]`、`[lib]`、`[features]`、`[dependencies]` 与 `[dev-dependencies]`。
-- Go 对照：`pkg/session/session.go`、`pkg/session/tidb_test.go::TestScalarSubqueryRegistryTxnReplay`、`pkg/planner/core/hint_test.go` 的 `TestSetVarPartialOrderedIndexForTopN` 子测试、`pkg/planner/core/integration_test.go::TestIssue54870`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核文件角色、符号、状态生命周期、Go 对照和扩展入口均有上述源码证据。

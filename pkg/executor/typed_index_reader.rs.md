@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`typed_index_reader.rs`](./typed_index_reader.rs) 属于 `astersql-executor` crate（见 [`Cargo.toml`](./Cargo.toml)），实现 Rust typed physical-plan 执行链中的覆盖索引读取器 `TypedIndexReader`。模块由 [`lib.rs`](./lib.rs) 公开为 `pub mod typed_index_reader`，构建入口是 [`builder.rs`](./builder.rs) 的 `BuildTypedPhysicalPlanWithBindings`：当计划节点可下转为 `PhysicalIndexReader` 时，构建器从其 `IndexPlan` 找到 `PhysicalIndexScan`，核对表、索引、输出列和扫描绑定，然后创建本读取器。
-
-它不是 Go `IndexReaderExecutor` 的逐字段翻译。Go 实现在 `pkg/executor/distsql.go` 中构造 DAG/KV 请求并消费 `distsql.SelectResult`；本文件面向已经注入的 `kv::Retriever` 与编码好的 `KeyRange`，在本地直接遍历索引 KV。其职责集中在覆盖索引的叶子扫描、解码和锁键导出，上层 `Selection`、`Limit` 等由构建器包装。
+实现 `ExecExecutor` 的生命周期、schema/chunk 配置、扫描计数和 `Detach`，从而可嵌入 typed 执行器树。
 
 ## 核心职责
 
@@ -65,11 +63,11 @@ RustCodeGraph 能定位 `TypedIndexReader`、`append_index_row`、`next_inner` �
 
 ## 与 Go 版本的对应关系
 
-最接近的 Go 生产实现是 `pkg/executor/distsql.go` 的 `IndexReaderExecutor`：两者都实现执行器生命周期、按方向读取索引结果、向上游分批返回 chunk，并支持 detach。`pkg/executor/detach.go` 中 Go `IndexReaderExecutor.Detach` 采用浅拷贝加静态化执行上下文；Rust `Detach` 复制自有扫描状态、共享 `Arc<Retriever>`，且不持有 session 表达式上下文，满足“原执行器和返回执行器都仍可使用”的同一目标。
+`pkg/executor/detach.go` 中 Go `IndexReaderExecutor.Detach` 采用浅拷贝加静态化执行上下文；Rust `Detach` 复制自有扫描状态、共享 `Arc<Retriever>`，且不持有 session 表达式上下文，满足“原执行器和返回执行器都仍可使用”的同一目标。
 
 两者运行边界不同。Go `Open` 负责重建 ranger 范围、按分区生成 KV ranges、构建 DAG 请求、建立 DistSQL result 和内存跟踪器，`Next` 主要委托 `SelectResult.Next`；Rust 构建器已收到编码范围与 retriever，`TypedIndexReader` 自己迭代原始 KV 并解码覆盖列。Go 还具有 grouped ranges、分区表列表、分页、stale read、replica scope、runtime stats、index usage report 和 dummy reader 等字段，本文件均未实现，不能据 Go 能力推断 Rust 已支持。
 
-Rust 特有的直接证据位于 `pkg/executor/typed_index_reader_test.rs`：三项测试分别验证降序分页与 detach、全局索引分区记录锁键、以及 `PhysicalIndexReader → Limit → PhysicalIndexScan` 构建后不会在 Limit EOF 后额外扫描。Go `pkg/executor/distsql.go`、`pkg/executor/detach.go` 只能作为执行意图对照，不是本文件逐行等价测试。
+Rust 特有的直接证据位于 `pkg/executor/typed_index_reader_test.rs`：三项测试分别验证降序分页与 detach、全局索引分区记录锁键、以及 `PhysicalIndexReader → Limit → PhysicalIndexScan` 构建后不会在 Limit EOF 后额外扫描。
 
 ## 扩展指南
 
@@ -79,12 +77,3 @@ Rust 特有的直接证据位于 `pkg/executor/typed_index_reader_test.rs`：三
 - 改变锁键交付时序时，联动 `ExecExecutor::TakeLockKeys` 的上层消费者，保留“一页行与一页键一一对应、下一页前取走”的约定。不要把测试逻辑内嵌进生产文件，继续使用同目录独立的 `typed_index_reader_test.rs`。
 - 引入并行预取、后台任务或可失败的关闭操作时，需要明确任务取消、iterator/retriever 所有权和错误优先级；当前同步 `&mut self` 模型没有后台资源。若要靠近 Go DistSQL reader 的能力，应在计划/构建/请求层另行接线，而不是在此叶子读取器中默默模拟完整子系统。
 - 性能敏感点是每行创建 datum `HashMap`、复制 key/value/handle、升序游标追加字节以及每个范围重建迭代器；优化时必须先用等价输出、锁键和错误清理测试守住行为。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/executor/typed_index_reader.rs`、`pkg/executor/lib.rs`、`pkg/executor/adapter.rs`、`pkg/executor/Cargo.toml`。
-- 上游构建与包装：`pkg/executor/builder.rs` 中 `BuildTypedPhysicalPlan`、`BuildTypedPhysicalPlanWithBindings`、`find_typed_index_scan` 和 `TypedIndexReader::new` 调用点。
-- Rust 独立测试：`pkg/executor/typed_index_reader_test.rs` 的 `typed_index_reader_detaches_its_cursor_and_preserves_descending_record_keys`、`typed_index_reader_uses_global_index_partition_record_lock_key`、`typed_index_reader_builder_executes_nested_limit_without_extra_scan`。
-- Go 对照：`pkg/executor/distsql.go` 的 `IndexReaderExecutor.Open/Next/Close` 与 KV 请求流程，`pkg/executor/detach.go` 的 `IndexReaderExecutor.Detach`。
-- RustCodeGraph：`status` 显示项目索引包含 Rust/Go 文件；`query TypedIndexReader --kind struct`、`query append_index_row --kind function`、`query next_inner --kind function` 和 `node TypedIndexReader` 定位了目标符号。`files --filter pkg/executor/typed_index_reader` 及宽泛 `explore` 未提供有效目标调用图，精确 callers/callees 也未产出可用边，因此相关调用关系改由上述源码路径核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定的 `rg` 结构命令验证恰有十一个固定二级标题，并人工复核文档区分了已验证行为、Go 对照差异和未由调用图覆盖的部分。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`stmtctx.rs` 是 `astersql-sessionctx-stmtctx` crate 的核心实现文件，定义单条 SQL 语句从解析/规划、下推执行到结果汇总期间共享的 `StatementContext`。crate 入口 `pkg/sessionctx/stmtctx/lib.rs` 通过 `mod stmtctx; pub use stmtctx::*;` 对外导出本文件 API；`pkg/sessionctx/stmtctx/Cargo.toml` 的 `package.metadata.porting.go-package` 明确指向 Go 包 `pkg/sessionctx/stmtctx`。
-
-它不是 SQL 执行入口，而是跨层状态载体：会话变量在 `pkg/sessionctx/variable/session.rs` 中持有 `StatementContext` 并用 `NewStmtCtx` 初始化；规划运行时在 `pkg/session/runtime/planning.rs` 读取其类型上下文；`pkg/util/stmtsummary/v2/record.rs` 也构造上下文以处理 statement summary 数据。RustCodeGraph 对本文件的文件级引用还列出了 `pkg/sessionctx/variable/sysvar_builtins.rs` 等消费者。
+** `Reset` 用于进入下一条语句，`ResetForRetry` 用于同一语句的新一次执行尝试；两者清理范围不同。
 
 ## 核心职责
 
@@ -119,10 +117,6 @@
 
 ## 与 Go 版本的对应关系
 
-主要对应文件是 `pkg/sessionctx/stmtctx/stmtctx.go`，测试基线是 `pkg/sessionctx/stmtctx/stmtctx_test.go`。
-
-- Rust 保留了 Go 的 `StatementContext`、`LogicalPlanBuildState`、`ReferenceCount`、`ReservedRowIDAlloc`、`UsedStatsInfo*`、`StatsLoadResult` 和绝大多数 Go 风格方法名，便于逐项迁移核对。
-- 构造、完整 Reset、规划快照、类型/错误上下文、语句缓存、digest、行计数/warning、重试复位、下推 flags、stale TSO、tracker 和统计输出均可在 Go 同名方法中找到对应逻辑。
 - Rust 用 `Arc<dyn Any + Send + Sync>` 代替 Go `any`，用 `Mutex`/`RwLock`/原子量表达 Go mutex/atomic；`chrono_tz::Tz` 对应 `*time.Location`。
 - Go `GetResourceGroupTagger` 返回 `kv.ResourceGroupTagBuilder`，Rust 当前返回本地 `ResourceGroupTagger` 数据结构；Go 统计加载结果使用 channel，Rust `StatsLoadState::ResultCh` 当前为向量占位。这些是可见的迁移边界，不应声称完全等型。
 - Go 测试包含更广的包集成和 failpoint 场景；Rust 独立测试集中在本 crate 可执行的真实 API。`stmtctx_test.rs` 覆盖 flags、快照、构造/时区、Reset、RowID 和统计输出；`stmtctx_1_aster_unit_test.rs` 进一步覆盖并发 TaskID/CAS、重试、缓存、stale TSO、digest 和完整 Reset；`planner_state_aster_unit_test.rs` 覆盖 hint 与规划共享状态。
@@ -135,12 +129,3 @@
 4. **更新独立测试文件。** 不把测试嵌入 `stmtctx.rs`。通用 API 对照放入 `stmtctx_test.rs`，Go 边界/并发/生命周期对照放入 `stmtctx_1_aster_unit_test.rs`，规划器专属状态放入 `planner_state_aster_unit_test.rs`。
 5. **扩展错误或下推 flags 时成对修改。** 同步更新 `newErrCtx`、`PushDownFlagsWithTypeFlagsAndErrLevels`、`PushDownFlags`、`InitFromPBFlagAndTz` 及 round-trip 测试，确认发送端与接收端对同一位的含义一致。
 6. **关注兼容与性能。** 新 warning 会影响客户端协议与慢日志；新锁可能进入每行热路径；新增 `CacheValue` 必须满足 `Send + Sync` 且下转型双方类型一致；tracker 或 Arc 缓存必须有明确释放/失效时机。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/sessionctx/stmtctx` 确认目标源、crate 入口及三份 Rust 独立测试均在图中。
-- 源码证据：`pkg/sessionctx/stmtctx/stmtctx.rs` 的 252 个索引符号；重点检查了 `StatementContext`、`build`、`Reset`、`Save/RestoreLogicalPlanBuildState`、缓存/digest、计数/warning、`ResetForRetry`、flags、stale TSO、统计格式和标签相关实现。
-- 图查询证据：执行了 `query` 与 `callers`/`callees` 查询，覆盖 `NewStmtCtx`、`ResetForRetry`、`PushDownFlags`、`SQLDigest`、`SaveLogicalPlanBuildState`、`GetStaleTSO`；常见符号名造成的跨 Go/Rust同名噪声已通过文件路径和文件级引用结果消歧。
-- crate 证据：`pkg/sessionctx/stmtctx/Cargo.toml`、`pkg/sessionctx/stmtctx/lib.rs`。
-- Go 对照：`pkg/sessionctx/stmtctx/stmtctx.go`、`pkg/sessionctx/stmtctx/stmtctx_test.go`。
-- Rust 测试证据：`pkg/sessionctx/stmtctx/stmtctx_test.rs`、`pkg/sessionctx/stmtctx/stmtctx_1_aster_unit_test.rs`、`pkg/sessionctx/stmtctx/planner_state_aster_unit_test.rs`。本任务为纯文档分析，按计划未运行 Cargo；测试文件用于确认边界与不变量，不作为本次运行通过的声明。

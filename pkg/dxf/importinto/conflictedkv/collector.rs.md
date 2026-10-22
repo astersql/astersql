@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto-conflictedkv` crate（见同目录 `Cargo.toml`），实现 IMPORT INTO 冲突解决流程中 **collect-conflicts** 阶段的单 worker 收集器。它位于冲突 KV 的读取/分发与后续元数据汇总之间：直接上游 `pkg/dxf/importinto/collect_conflicts.rs::CollectConflictGroup` 为每个 worker 创建一个 `ConflictCollector`，调用 `Run` 消费该 worker 的冲突 KV 通道，再调用 `Close`、`MergeRowKeysInto` 和 `GetCollectResult`；多个 worker 的结果随后合并为子任务级 `CollectResult`。
-
-crate 入口 `lib.rs` 通过 `mod collector; pub use collector::*;` 导出本文件的公开符号。该 crate 的职责由 `doc.rs` 界定：data KV 和唯一索引 KV 的冲突行会在 collect-conflicts 阶段被还原、重编码、计算 checksum，并以可供用户检查的文本文件写入对象存储。本文件不负责读取 SST、调度 worker、删除冲突 KV 或最终 checksum 比对。
+Handler 负责把冲突 KV 还原为逻辑行并重编码；本收集器作为 `EncodedRowHandler` 接收处理完成的行。
 
 ## 核心职责
 
@@ -93,9 +91,7 @@ writer 生命周期是“首次成功行时惰性创建—达到阈值时轮转�
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现是同目录 `collector.go`，测试是 `collector_test.go`。Rust 保留了以下核心语义：按 data/index 组选择 Handler；Datum 文本每行追加换行；单文件达到阈值后在下一行前轮转；writer 选项为并发 20、part 5 MiB；跨 collector 共享总大小；先原子加再比较总上限；截断后仍统计行数与 checksum；`CollectResult.Merge` 累加所有字段；文件名等价于 `path.Join(prefix, data-NNNN.txt)`。
-
-Rust 的依赖以 trait/`Arc` 注入代替 Go 的具体 storage、table、encoder 和 logger，并使用 `String` 错误而非 Go error wrapping。Rust 还显式保存本地 `handle_set` 并提供 `MergeRowKeysInto`，以适配 `CollectConflictGroup` 的 scoped worker 返回值；Go 版本由外层持有传入的 `localSet`，无需该移交方法。Rust 的 `Run` 暂时取出 Handler 是所有权实现细节，行为上仍对应 Go 的 `PreRun` 后 `Run`。
+Rust 的依赖以 trait/`Arc` 注入代替 Go 的具体 storage、table、encoder 和 logger，并使用 `String` 错误而非 Go error wrapping。Rust 还显式保存本地 `handle_set` 并提供 `MergeRowKeysInto`，以适配 `CollectConflictGroup` 的 scoped worker 返回值；Go 版本由外层持有传入的 `localSet`，无需该移交方法。
 
 Rust 测试额外固定了几项容易漂移的兼容语义：`test_get_row_file_name_cleans_prefix_like_go_path_join` 验证 POSIX 清理；两个 close-failure 测试验证 writer 即使关闭失败也会被清空；`test_collector_direct_callback_leaves_index_filter_to_handler` 验证过滤登记属于 Index Handler 而非 collector 回调。Go 与 Rust 的共享上限测试都证明后写 collector 会被截断，而逻辑行数仍完整。
 
@@ -108,12 +104,3 @@ Rust 测试额外固定了几项容易漂移的兼容语义：`test_get_row_file
 - 若改变索引去重，应优先修改 `handler.rs::IndexKVHandler`/`KeyFilter`，而不是在 `HandleEncodedRow` 中登记 row key。必须验证“回调失败不登记”“多唯一索引组不重复 checksum”“BoundedKeySet 超限”的行为。
 - 若增加异步或更高并发，不可直接共享同一个 `ConflictCollector`；应继续保持每 worker 独占 collector，仅共享经过同步封装的计数器/集合，并验证 writer 关闭、取消和错误汇总顺序。
 - Rust 单元测试继续放在独立的 `collector_test.rs`，不要内嵌到生产源文件；Go 对照行为变化时同步检查 `collector_test.go`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件、307,296 个节点；`files --filter pkg/dxf/importinto/conflictedkv` 确认本 crate 的 Rust/Go 源文件和独立测试均已索引。
-- RustCodeGraph `node --file pkg/dxf/importinto/conflictedkv/collector.rs`：核对本文件 313 行的全部常量、类型、函数、trait impl 与条件编译项；图同时报告本文件由 `pkg/dxf/importinto/collect_conflicts.rs` 使用。
-- RustCodeGraph `query`：核对 `ConflictCollector`、本文件的 `NewCollector`、`HandleEncodedRow`、`MergeRowKeysInto` 和 `getRowFileName` 的符号位置。泛化的 `explore/callers/callees` 查询存在同名噪声，因此调用边最终以精确文件节点和直接源码为准，没有据此推断额外调用者。
-- RustCodeGraph 文件节点：读取 `pkg/dxf/importinto/collect_conflicts.rs::CollectConflictGroup`，确认构造、`Run -> Close -> MergeRowKeysInto -> GetCollectResult`、worker join 与结果合并；读取 `handler.rs`，确认 data/index 解码、快照回查、成功后登记行键和 Close 冲刷行为。
-- crate/模块证据：`pkg/dxf/importinto/conflictedkv/Cargo.toml`、`lib.rs`、`doc.rs`；Go 对照：`collector.go`；独立测试：`collector_test.rs`、`collector_test.go`。
-- Rust 回归证据覆盖结果合并、Go 路径清理、data/index 文件切分、直接回调不登记过滤集合、总大小截断、两类关闭失败和跨 collector 共享上限。按任务约束这是纯文档分析，未运行 Cargo；交付结构检查要求目标文件存在且恰含上述 11 个固定二级标题。

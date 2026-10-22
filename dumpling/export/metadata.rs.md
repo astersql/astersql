@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`metadata.rs` 属于 `astersql-dumpling-export` library crate。crate 根 `dumpling/export/lib.rs` 先引入公共依赖和 `stubs.rs`，再以 `include!("metadata.rs")` 将本文件拼入与 Go `dumpling/export` 包相近的单包命名空间；因此文件本身没有 `use` 或 `mod` 声明，`SystemTime`、`UNIX_EPOCH`、`tcontext`、`Conn`、`ServerInfo`、`Storage` 等名字来自 crate 根和此前包含的实现。
-
-它位于逻辑导出主链的收尾侧：`Dumper::Dump`（`dumpling/export/dump.rs`）创建 `globalMetadata`，在导出前记录开始时间和数据库复制位点，在 writer 消费完任务后记录结束时间并把固定名 `metadata` 写入导出存储。它不生成库表 DDL 或表数据，而是为恢复、审计和故障定位保留一次导出的时间边界、主库 binlog/GTID 信息及可见的上游复制位点。
-
-`dumpling/export/Cargo.toml` 将该目录声明为 `astersql-dumpling-export`，`[lib] path = "lib.rs"`，porting 元数据指向 Go 包 `dumpling/export`。本文件直接使用的数据库、存储、版本和日志抽象目前由同 crate 的共享命名空间（尤其 `stubs.rs`、`conn.rs`、`sql.rs`）提供，而不是由 `metadata.rs` 自己声明额外依赖或 feature。
+`ShowMasterStatus` 如何根据 MySQL 版本选择 `SHOW MASTER STATUS` 或 `SHOW BINARY LOG STATUS`、`Conn` 如何执行/模拟查询、`Storage` 如何持久化，分别是相邻 SQL/连接/存储抽象的职责。
 
 ## 核心职责
 
@@ -106,8 +102,6 @@ Cargo 边界方面，本文件处于 library crate，不是命令入口。它使
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `globalMetadata`、`newGlobalMetadata`、`recordStartTime`、`recordFinishTime`、两层 `recordGlobalMetaData`、`writeGlobalMetaData` 和 `getValidStr` 与 `dumpling/export/metadata.go` 基本一一对应。数据库分支、字段索引、TiDB snapshot 覆盖、MariaDB GTID 降级、multi-source 探测、MySQL 8.4 replica 术语兼容、动态 follower 列匹配和文本格式均保留了 Go 测试意图。
-
 已确认的当前差异包括：
 
 - Go 使用 `bytes.Buffer` 和 `time.Time.Format(time.DateTime)`；Rust 使用 `Vec<u8>` 和自行实现的 epoch/公历换算，因而没有 Go `time.Location` 语义。
@@ -117,7 +111,7 @@ Rust 的 `globalMetadata`、`newGlobalMetadata`、`recordStartTime`、`recordFin
 - Rust 的 `Display` 对非法 UTF-8返回空字符串；Go `bytes.Buffer.String()` 保留任意字节到 string 的直接视图。
 - Go `Dump` 也创建并最终写 metadata；Rust 当前主链同样执行初始采样，但 RustCodeGraph 未显示生产路径调用 `after_conn=true`。不能仅凭双缓冲实现断言连接池建立后的采样已经在 Rust 生产流程启用。
 
-测试对应关系由 `dumpling/export/metadata_test.go` 与独立的 `metadata_test.rs` 提供。Rust 测试覆盖 MySQL 8.0/8.4、旧 MySQL 无 GTID、TiDB snapshot、MariaDB 及 multi-source follower、after-connection 合并、时间/存储、权限错误和未知类型；Go 用例还用 sqlmock 更完整地断言多 follower 行和查询期望。扩展时应同时核对两套测试，不能把 Rust 当前较轻的 fixture 当作删减 Go 行为的依据。
+Rust 测试覆盖 MySQL 8.0/8.4、旧 MySQL 无 GTID、TiDB snapshot、MariaDB 及 multi-source follower、after-connection 合并、时间/存储、权限错误和未知类型；Go 用例还用 sqlmock 更完整地断言多 follower 行和查询期望。
 
 ## 扩展指南
 
@@ -129,16 +123,3 @@ Rust 的 `globalMetadata`、`newGlobalMetadata`、`recordStartTime`、`recordFin
 - 调整时间语义时，应先明确需要 UTC、系统本地时区还是显式 offset，再修改 `format_time`/`civil_from_days`；加入 epoch 前、闰日、世纪边界和非 UTC 需求的独立测试。
 - 若要并发采样或后台刷新，不应直接共享可变 `globalMetadata`；需要在上游明确同步、取消和连接/rows 所有权，并证明最终写入相对 writer 完成的顺序。
 - Rust 单元测试必须继续放在独立的 `dumpling/export/metadata_test.rs`，由 `lib.rs` 的 `#[cfg(test)]` 模块挂载，不要内嵌回生产文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；目标文件已索引。
-- RustCodeGraph `files --filter dumpling/export`：确认 `metadata.rs`、`metadata_test.rs`、Go 对照文件和 crate 入口均在索引中。
-- RustCodeGraph `node --file dumpling/export/metadata.rs`：核对 247 行实现的全部结构、分支、资源关闭与文本写入。
-- RustCodeGraph `explore 'dumpling/export/dump.rs newGlobalMetadata recordStartTime recordGlobalMetaData recordFinishTime writeGlobalMetaData'`：确认结构体方法到自由函数的调用边、`Dumper::Dump` 生产调用者，以及测试调用者集合；结果显示生产主链没有 `after_conn=true` 的第二次调用。
-- RustCodeGraph `node --file dumpling/export/dump.rs --offset 128 --limit 100`：核对 metadata 相对 consistency setup、任务生成/消费、连接关闭和最终落盘的顺序。
-- RustCodeGraph `node --file dumpling/export/lib.rs`：核对 `include!("metadata.rs")`、crate 共享导入和独立 `metadata_test.rs` 挂载。
-- `dumpling/export/Cargo.toml`：核对 crate 名称、library 边界、Go package 映射及 context/log/store API 等依赖来源。
-- RustCodeGraph `node` 阅读 `dumpling/export/metadata.go` 与 `metadata_test.go`：核对 Go 的查询选择、输出格式、writer/teardown 写入路径及 MySQL/MariaDB/TiDB 测试意图。
-- RustCodeGraph `node --file dumpling/export/metadata_test.rs`：核对 Rust 的 MySQL 8.0/8.4、after-connection、follower、MariaDB、TiDB snapshot、时间/存储和错误路径覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证本文恰有 11 个固定二级标题，并人工复核唯一生产物、源码链接、已验证事实与明确的未接线边界。

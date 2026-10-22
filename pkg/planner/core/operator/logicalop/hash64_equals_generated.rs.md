@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-logicalop` crate。crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 以私有模块 `mod hash64_equals_generated;` 编入它，并把各逻辑算子类型公开导出；本文件本身不声明新类型，而是为这些类型追加固有的 `Hash64` / `Equals` 方法。
-
-文件名沿用 Go 侧生成物 `pkg/planner/core/operator/logicalop/hash64_equals_generated.go`，但当前 Rust 文件不是逐字生成的 Go 代码：它使用 Rust `std::hash::Hasher`、表达式规范哈希和若干精简字段表示来实现结构指纹与相等判断。其用途是为逻辑计划节点提供可复用的“相等对象必须得到相同哈希输入”契约；是否把这些方法接入某个优化器容器，应由调用方代码另行确认。
-
-`Cargo.toml` 的 `[package.metadata.porting]` 将本 crate 对应到 Go 包 `pkg/planner/core/operator/logicalop`。本文件通过 `use crate::*` 使用 crate 入口重导出的表达式、列、排序项、Handle 列及各逻辑算子类型，没有单独 feature 或条件编译项。
+六组私有辅助函数把常见值稳定地写入调用者提供的 `dyn Hasher`，或按相同投影比较：`hash_bytes` / `hash_exprs` / `hash_columns` / `hash_column_groups` / `hash_sort_items` / `hash_by_items` 及对应的 `equal_*` 函数。
 
 ## 核心职责
 
@@ -77,8 +73,6 @@ Rust 引用消除了 Go 接收者的 nil/type assertion 分支；Rust `Vec` 也�
 
 ## 与 Go 版本的对应关系
 
-Go 对照是同目录 `hash64_equals_generated.go`，测试对照是 `logicalop_test/hash64_equals_test.go`。两侧总体结构一致：按节点类型选择语义字段，递归哈希并逐项判等；TopN、TableDual、Sort、Show、Selection、Projection、MemTable、Limit、Expand、Apply、Join、Aggregation、UnionAll 等均有相应测试意图。
-
 但当前 Rust 不是完全等价生成物，已核实的差异包括：
 
 - Go 每个节点先写 `plancodec.Type*` 类型标签，Rust 多数实现没有节点类型标签；跨类型复用同一哈希域时更易碰撞。
@@ -86,7 +80,6 @@ Go 对照是同目录 `hash64_equals_generated.go`，测试对照是 `logicalop_
 - Go 对 `TableInfo`、`CIStr`、列、HandleCols、锁信息等调用完整 `Hash64/Equals`；Rust 常只比较 ID、lowercase 名或键集合。
 - Go `LogicalWindow` 比较 schema、完整窗口函数描述、分区/排序和 frame；Rust 本文件的 `Equals` 先依赖另一文件的 `Hash64()`，再仅复核窗口函数名和参数。
 - Go `LogicalMaxOneRow`、`LogicalSequence`、`LogicalLock` 使用 `BaseLogicalPlan`/完整锁对象；Rust 分别投影 schema、schema、锁类型加表 ID 键集合。
-- Rust 独立回归测试新增并锁定 `PossibleProperties`、投影标志、`PreferLimitToCop` 参与身份，以及 Show payload 与 DDL job 数量不参与身份。
 
 因此“与 Go 对齐”应理解为迁移相同能力与测试意图，不能声称当前字段级编码完全一致。任何要求跨语言哈希值相同的功能都需要额外协议设计和测试，当前证据只支持各语言内部的一致性。
 
@@ -97,12 +90,3 @@ Go 对照是同目录 `hash64_equals_generated.go`，测试对照是 `logicalop_
 给已有算子增加语义字段时，先对照 Go 同名结构与生成文件确认字段是否属于身份，再同步更新哈希和相等投影。列表需同时编码长度、顺序和元素；无序映射应像 `LogicalLock` 一样先建立稳定顺序；可选值应编码存在标志，避免 `None` 与合法零值无谓碰撞。若改变共享辅助函数，要审计所有使用者。
 
 最直接的 Rust 测试入口是同目录 `hash64_equals_generated_test.rs`；覆盖面更广的迁移测试在 `logicalop_test/hash64_equals_test.rs`，该文件属于独立测试 crate；`logical_generated_aster_unit_test.rs` 还覆盖 DataSource 与 Projection。Go 意图由 `logicalop_test/hash64_equals_test.go` 提供。性能敏感扩展需关注表达式重复生成 `CanonicalHashCode()`、深层列表遍历以及锁键排序的成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter .../hash64_equals_generated.rs` 命中目标；`node --file ... --offset 1 --limit 500` 读取目标 439 行及 56 个符号，并报告 3 个文件级使用者；`explore` 与 `query LogicalJoin`/`query Hash64` 用于核对符号范围。精确 `callers/callees` 查询因同名方法歧义未形成可靠边，本文没有据此虚构生产调用关系。
-- 源与模块：`pkg/planner/core/operator/logicalop/hash64_equals_generated.rs`、`lib.rs`、`base_logical_plan.rs`、`logical_window.rs`。
-- crate/移植元数据：`pkg/planner/core/operator/logicalop/Cargo.toml`。
-- Go 对照：`pkg/planner/core/operator/logicalop/hash64_equals_generated.go`。
-- Rust 测试：`pkg/planner/core/operator/logicalop/hash64_equals_generated_test.rs`、`logical_generated_aster_unit_test.rs`、`logicalop_test/hash64_equals_test.rs`；Go 测试：`logicalop_test/hash64_equals_test.go`。
-- 调用边补充检查：仓库范围检索 `.Hash64(` / `.Equals(`，并阅读 `pkg/planner/cascades/memo/group_expr.rs` 的独立 memo 路线。未运行 Cargo，符合该纯文档任务要求。

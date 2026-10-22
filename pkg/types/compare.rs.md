@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现 AsterSQL Rust 类型系统中最基础的整数与字符串三路比较。它的直接归属不是根 `astersql-types` crate：`pkg/types/internal/scalar/lib.rs` 以 `#[path = "../../compare.rs"] mod compare` 挂载本文件，并用 `pub use compare::*` 导出；根 `pkg/types/lib.rs` 再把这个子 crate 以 `scalar` 模块别名重导出。因此直接依赖 `astersql-types-scalar` 的调用方可在 crate 根使用这些函数，经根 `astersql-types` 则应走 `scalar::...` 路径；根 crate 只显式平铺重导出了部分 Context/Flags 符号，没有平铺本文件函数。
-
-本文件对应 Go 的 `pkg/types/compare.go`，只负责四种整数向量组合、带校对规则的字符串比较和带 signed/unsigned 标志的标量整数比较。Datum 跨类型比较、NULL/哨兵值排序等更高层逻辑位于其他模块；虽然 `pkg/types/compare_test.rs` 同时测试这些行为，但不能据此把它们归为本文件职责。
+在混合有符号/无符号比较时先处理负数和超出 `i64::MAX` 的无符号值，避免先强制转换导致环绕后得到错误次序。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@ Rust 源码中的生产调用形状包括 `pkg/util/chunk/compare.rs` 中字符�
 
 ## 与 Go 版本的对应关系
 
-`pkg/types/compare.go` 与本文件具有相同的六个公开函数和相同参数角色。Go 使用显式 `<`/`==` 分支或标准库 `cmp.Compare`，Rust 用整数的 `Ord::cmp` 加 `ordering`，结果语义等价。混合符号版本在两种语言中都先检查负数和 `math.MaxInt64`/`i64::MAX`，再做安全转换；`CompareInt` 也都把标记为 unsigned 的负 `int64`/`i64` 位模式解释为大 `uint64`/`u64`。
+Go 使用显式 `<`/`==` 分支或标准库 `cmp.Compare`，Rust 用整数的 `Ord::cmp` 加 `ordering`，结果语义等价。
 
-字符串路径均为 `collate.GetCollator(collation).Compare(x, y)`。Go 注释提到“specified collation and length”，但函数签名没有独立长度参数，Rust 也没有增加该概念。
+Go 注释提到“specified collation and length”，但函数签名没有独立长度参数，Rust 也没有增加该概念。
 
-`pkg/types/compare_test.go::TestVecCompareIntAndUint` 与 Rust 的 `pkg/types/compare_test.rs::test_vec_compare_int_and_uint` 使用相同类别的 UU/II/IU/UI 表格，包括 `MaxInt64 + 1` 边界。Rust 测试文件中的大部分 `test_compare`/`test_compare_datum` 对应 Go 的 Datum 比较测试，属于相邻类型系统的移植证据而非本文件实现覆盖；本文件自己的直接核心覆盖集中在向量测试，另由 `binary_literal_1_aster_unit_test.rs` 覆盖 `CompareInt` 和 `CompareString`。
+Rust 测试文件中的大部分 `test_compare`/`test_compare_datum` 对应 Go 的 Datum 比较测试，属于相邻类型系统的移植证据而非本文件实现覆盖；本文件自己的直接核心覆盖集中在向量测试，另由 `binary_literal_1_aster_unit_test.rs` 覆盖 `CompareInt` 和 `CompareString`。
 
 ## 扩展指南
 
@@ -79,12 +77,3 @@ Rust 源码中的生产调用形状包括 `pkg/util/chunk/compare.rs` 中字符�
 - 若改变字符串比较入口，应同步检查 `pkg/util/chunk/compare.rs` 的两个直接调用点，以及表达式生成器中生成的 `types.CompareString` 调用形状；collation 兼容性测试应覆盖大小写、重音、尾随空格和 binary collation，而不是在本文件复制排序表。
 - 与 Go 对齐的修改应同步核对 `pkg/types/compare.go` 和 `pkg/types/compare_test.go`。不得仅为 Rust 测试通过而删减 Go 已有分支；性能修改还应保持逐元素无分配，并评估 chunk/表达式比较热路径。
 - 若移动本文件或拆分模块，必须更新 `pkg/types/internal/scalar/lib.rs` 的 `#[path]` 接线以及相应 Cargo 依赖；根 `pkg/types/lib.rs` 当前依赖的是 scalar crate 的再导出，不应误加第二份重复实现。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/types/compare.rs` 识别 8 个节点；`node --file pkg/types/compare.rs` 核对了 93 行完整实现和文件级使用关系；对 `ordering`、六个公开函数执行了 `query`、`node`、`callers`、`callees`，其中整数入口到 `ordering` 的调用边可见，逐符号 caller 边为空/受同名定义影响。
-- 源码与接线：`pkg/types/compare.rs`、`pkg/types/internal/scalar/lib.rs`、`pkg/types/lib.rs`、`pkg/types/internal/scalar/Cargo.toml`、`pkg/types/Cargo.toml`。
-- Rust 上游、接线核对与生成器：`pkg/util/chunk/compare.rs`、`pkg/util/chunk/Cargo.toml`、`pkg/types/internal/datum/lib.rs`、`pkg/expression/generator/compare_vec.rs`、`pkg/expression/generator/other_vec.rs`。
-- Rust 测试：`pkg/types/compare_test.rs`、`pkg/types/binary_literal_1_aster_unit_test.rs`；测试与生产源文件分离。
-- Go 对照：`pkg/types/compare.go`、`pkg/types/compare_test.go`，并由 RustCodeGraph 文件节点核对源码。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证以固定章节结构、路径/符号链接和人工事实复核为准。

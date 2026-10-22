@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust crate `astersql-dxf-framework-dxfutil` 的 keyspace Runtime 工具实现。crate 入口 [`lib.rs`](lib.rs) 通过 `#[path = "util.rs"] mod dxfutil_impl` 装入本文件并用 `pub use dxfutil_impl::*` 再导出公开项；[`Cargo.toml`](Cargo.toml) 将该 crate 对应到 Go 包 `pkg/dxf/framework/dxfutil`。在 DXF 的分布式任务框架中，它负责在“当前节点 keyspace”与“任务所属 keyspace”之间选择 Runtime，并在使用前校验 Runtime 内部的 store/session keyspace 一致性。
-
-当前 Rust 仓库中，`AcquireTaskRuntime`、`CheckTaskRuntime` 和 `GenHolderID` 的直接调用点只出现在同 crate 的独立测试 `util_test.rs` 与 `migration_aster_unit_test.rs`；未发现 Rust 生产调用点。相应 Go 实现已经接入 scheduler manager、task-executor manager、scheduler 和 task executor。因此，本文件是已公开、已测试的移植实现，但不能据此断言 Rust DXF 生产主链已经使用它。
+私有辅助函数 `releaseTaskRuntime` 和 `taskRuntimeError` 分别封装条件释放与普通消息到 `SqlSvrError` 的转换。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 `util.go`：`sessionProvider`、`AcquireTaskRuntime`、`releaseTaskRuntime`、`CheckTaskRuntime` 与 `GenHolderID` 的核心分支、错误文本和 holder 格式均保持一致。`util_test.rs` 的四类获取分支和三类校验分支也与 `util_test.go` 对齐。
-
 需要注意的语言实现差异：
 
 - Go 返回 `sqlsvrapi.Runtime, func(), error`；Rust 用 `Result<(Arc<dyn Runtime>, Box<dyn FnOnce() + Send + 'static>), SqlSvrError>` 表达成功/失败互斥，并用 `FnOnce` 表达单次释放。
@@ -105,14 +101,3 @@ Rust 文件逐项对应同目录 `util.go`：`sessionProvider`、`AcquireTaskRun
 - 修改 holder ID 格式时，需要同步 Go 的 `GenHolderID`、scheduler/task-executor 调用预期以及 `migration_aster_unit_test.rs`；格式变化可能影响 SQL Server 的 holder 跟踪和诊断兼容性。
 - Rust 测试逻辑必须继续放在独立文件。常规分支扩展到 `util_test.rs`；Go 移植一致性、资源计数或额外错误边界可补到 `migration_aster_unit_test.rs`。不应把测试模块内嵌回 `util.rs`。
 - 若完成 Rust 生产接线，重点核对 Go 的四处入口：两个 manager 获取/释放 Runtime，以及 scheduler/executor 开始工作前的校验；同时确认所有退出路径都会调用释放闭包。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/dxf/framework/dxfutil` 确认本 crate 的实现、入口和两份独立测试均在图中。
-- RustCodeGraph `node --file pkg/dxf/framework/dxfutil/util.rs`：核对全部 130 行源码、公开/私有符号与实现分支。
-- RustCodeGraph `query AcquireTaskRuntime`、`query CheckTaskRuntime`、`query GenHolderID`、`query sessionProvider`：核对 Rust/Go 对应定义和测试符号；`callers/callees` 未产生可用边，因此调用点另以仓库文本检索交叉核对。
-- RustCodeGraph `node --file` 已读路径：`pkg/dxf/framework/dxfutil/lib.rs`、`util.go`、`util_test.rs`、`util_test.go`、`migration_aster_unit_test.rs` 及 `pkg/dxf/framework/doc.go`。
-- 直接读取 `pkg/dxf/framework/dxfutil/Cargo.toml`，核对 crate 名、`lib.rs` 入口、直接依赖、mock 开发依赖和 `go-package` 元数据。
-- `rg` 调用点核对：Go 生产调用位于 `scheduler/scheduler_manager.go`、`scheduler/scheduler.go`、`taskexecutor/manager.go` 和 `taskexecutor/task_executor.go`；Rust 未发现本文件三项公开函数的生产调用，`taskexecutor/manager.rs` 的同名方法属于 `taskTable` 接口。
-- 独立测试证据：`util_test.rs` 覆盖本地/跨 keyspace、Acquire/session 错误、store/session 不一致；`migration_aster_unit_test.rs` 还覆盖释放次数、关闭会话池错误和正负 task ID 格式。按本任务约束未运行 Cargo。
-

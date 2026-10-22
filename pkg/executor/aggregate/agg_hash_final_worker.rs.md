@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggregate` crate；crate 入口 `pkg/executor/aggregate/lib.rs` 以 `pub mod agg_hash_final_worker` 暴露该模块，`pkg/executor/aggregate/Cargo.toml` 则把该 crate 映射到 Go 包 `pkg/executor/aggregate`。它位于并行 Hash Aggregation 的 Final 阶段：`HashAggPartialWorker` 先生成按 final worker 分桶的 `AggMap`，`HashAggExec::execute` 再创建 `HashAggFinalWorker`，合并内存中的 partial 状态或恢复 spill 分区，最后把聚合状态物化为输出 chunk。
-
-RustCodeGraph 将该文件识别为 11 个符号，并给出唯一的文件级使用者 `pkg/executor/aggregate/agg_hash_executor.rs`。实际可执行实现位于第 321 行以后；第 13—320 行是保留的 Go 移植说明注释，不会参与编译，不能视为 Rust 已具备 channel、failpoint 或 worker `run` 生命周期。
+相同 key 按聚合列逐项调用 `AggState::merge`；新 key 会先建立与 `aggregations` 等宽的空状态，再执行同样的合并。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ spill 资源的生命周期由 `ParallelHashAggSpillHelper` 持有的 `PartialRe
 
 ## 与 Go 版本的对应关系
 
-同路径 `agg_hash_final_worker.go` 的总体目的相同：合并 partial 结果、恢复 spill、生成最终 chunk。大致对应关系是 Rust `merge_input` 对 Go `mergeInputIntoResultMap`，Rust `restore_from_disk` 对 Go 的 `getInputFromDisk`/`restoreDataFromDisk` 循环组合，Rust `generate_result` 对 Go `generateResultAndSend`，Rust `FinalResult` 对 Go `AfFinalResult`。
-
 但当前 Rust 不是 Go 实现的逐字段翻译：
 
 - Go final worker 通过 `inputCh`、`outputCh`、`finalResultHolderCh` 和 `finishCh` 异步收发并复用 chunk，Rust 由 `HashAggExec` 同步调用并把 `Vec<FinalResult>` 放入本地队列。
@@ -100,11 +96,3 @@ spill 资源的生命周期由 `ParallelHashAggSpillHelper` 持有的 `PartialRe
 - 若让 `AggState::merge/result` 返回错误，`generate_result` 很可能也应改为 `Result<Vec<FinalResult>, String>`；调用方 `HashAggExec::execute/next` 与相关测试必须同步更新。
 
 主要兼容风险是无 `ORDER BY` 情况下误承诺组顺序、空输入默认 group 退化以及 Go/Rust 错误处理差异；性能风险集中在把所有 spill 分区聚合到一个 worker造成的峰值内存、串行恢复和最终一次性 `Vec<FinalResult>` 分配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/executor/aggregate/agg_hash_final_worker.rs` 报告 11 个符号；`node --file ... --offset 321 --limit 120` 读取全部可执行实现并报告唯一文件级使用者 `agg_hash_executor.rs`；`query --limit 200` 精确确认 `FinalResult`、`HashAggFinalWorker`、`merge_input`、`restore_from_disk`、`hash_state_rows`、`generate_result`。精确 `callers/callees` 查询在 30 秒窗口内未返回，因此调用边再用以下局部源码搜索核验。
-- 生产源码：`pkg/executor/aggregate/agg_hash_final_worker.rs`；直接上游 `agg_hash_executor.rs`；直接下游 `agg_util.rs`、`agg_spill.rs`、`agg_hash_partial_worker.rs`；模块入口 `lib.rs`；crate 清单 `Cargo.toml`。
-- Go 对照：`pkg/executor/aggregate/agg_hash_final_worker.go`，并参照 `agg_hash_executor.go` 中 worker 的构造和输出 channel 接线。
-- 独立 Rust 测试：`agg_hash_executor_test.rs::spill_merges_tail_rows_with_their_existing_group` 验证 spill 后重叠 group 合并和 hash-state 行数；`agg_spill_test.rs::aggregate_spill_partitions_and_restores_real_states` 验证分区恢复；`spill_uses_go_partition_order_and_worker_hash` 验证分区顺序；`hash_aggregate_matches_grouped_results_and_chunking` 验证多 partial/final worker 的聚合值与 chunk 切分；`hash_aggregate_empty_input_returns_default_group` 验证无分组空输入；`distinct_growth_in_one_group_spills_and_merges_overlapping_workers` 验证 DISTINCT 状态跨 worker spill 合并。
-- 本任务只增加说明文档，按计划不运行 Cargo。交付前使用任务指定命令检查目标文件存在且恰有 11 个固定二级标题，并人工复核文档没有把注释中的 Go 并发模型描述成当前 Rust 行为。

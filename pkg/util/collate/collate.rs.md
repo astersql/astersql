@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-collate` crate 的公共控制面，源码入口由 [`lib.rs`](./lib.rs) 以 `pub mod collate; pub use collate::*;` 装配并重导出。它不实现所有排序算法，而是定义统一的 `Collator` / `WildcardPattern` 接口、选择具体实现的工厂、全局新排序规则开关、名称与 ID 转换，以及多种实现共享的比较辅助逻辑。具体算法分别位于 `bin.rs`、`general_ci.rs`、`unicode_*_ci_*.rs`、`gbk_*.rs`、`gb18030_*.rs` 和 `pinyin_tidb_as_cs.rs`。
-
-`Cargo.toml` 将该目录声明为独立库 crate；默认 feature 为 `full_collate`。crate 直接依赖 `astersql-util-dbterror`（SQL 错误契约）、`astersql-parser-charset`（字符集/排序规则元数据）和 `encoding_rs`（被具体编码实现使用）。因此本文件处在“SQL 类型或表达式携带的 collation 元数据”与“可执行的比较、排序 key、LIKE 匹配实现”之间。
+不实现所有排序算法，而是定义统一的 `Collator` / `WildcardPattern` 接口、选择具体实现的工厂、全局新排序规则开关、名称与 ID 转换，以及多种实现共享的比较辅助逻辑。
 
 ## 核心职责
 
@@ -93,10 +91,3 @@ Rust 文件直接对照 `pkg/util/collate/collate.go`，主要名称和控制流
 若新增规则的 sort key 等于原始数据，必须分别评估 `IsBinCollation` 与 `CanUseRawMemAsKey`：前者影响 `tablecodec`、ranger 和选择率 fast path，错误放宽可能破坏索引编码；后者依赖具体类型向下转型，不能仅凭名称后缀加入。若规则是 CI 或有 bin 对应项，还要同步 `IsCICollation`、`ConvertAndGetBinCollation`、`IsPadSpaceCollation` 和 `CompatibleCollate`，否则表达式比较与范围构造可能采用不一致语义。
 
 修改全局开关或协议 ID 时，需要保持混合集群的负 ID 约定并覆盖 `0`、负输入和 `i32::MIN`。修改错误模板时必须保留 `dbterror` 类别、errno、RFC code 以及静态初始化时机。修改字节接口时要特别验证非法 UTF-8、合法 U+FFFD、GBK/GB18030 替换字节和尾部空格。性能风险主要来自每次工厂分配、Unicode 权重 key 的扩张，以及误判 raw-memory fast path；兼容性风险集中在排序结果、唯一索引相等性、协议 ID 和默认回退。
-
-## 验证依据
-
-- 生产源码：`pkg/util/collate/collate.rs`（全部 449 行）；crate 装配：`pkg/util/collate/lib.rs`；依赖/feature：`pkg/util/collate/Cargo.toml`。
-- Go 对照：`pkg/util/collate/collate.go`；Go 测试：`pkg/util/collate/collate_test.go`；独立 Rust 测试：`pkg/util/collate/collate_test.rs`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/collate` 确认目标文件含 67 个符号；`node --file pkg/util/collate/collate.rs --offset 1 --limit 500` 返回完整源码并报告 95 个使用文件；`query` 核对了 `GetCollator`、`GetCollatorByID`、`GetCollationByName`、`RewriteNewCollationIDIfNeeded`、`compareCommonBytes`、`CanUseRawMemAsKey` 的 Rust 定义；内部 callees 结果与源码一致。外部调用边因图查询重名解析限制，使用精确 `rg` 补证。
-- 人工复核：逐项检查工厂分派、feature 分支、原子状态、协议转换、错误回退、非法 UTF-8、测试隔离，以及 Go/Rust 差异；未把未运行的代码测试描述成通过。本任务按计划只做文档分析，不运行 Cargo。

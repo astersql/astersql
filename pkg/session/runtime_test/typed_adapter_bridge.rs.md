@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 的测试模块，不是生产运行时实现。`pkg/session/lib.rs` 仅在 `#[cfg(test)]` 下装入 `runtime_test.rs`，后者再通过 `#[path = "runtime_test/typed_adapter_bridge.rs"] mod typed_adapter_bridge;` 引入本文件。文件中的 14 个入口均带 `#[test]`；唯一的辅助类型 `PreparedBridgeSchemaLoader` 也只用于构造测试域。因此，它虽然位于本计划的逐文件清单中，实际职责是跨模块回归验证，而不是向应用暴露 API。
-
-被验证的生产边界主要位于 `pkg/session/runtime/typed_adapter_bridge.rs` 和 `pkg/session/runtime/scan_adapter_runtime.rs`：前者实现 `SessionBoundAdapterOwner`、`OwnedKVSnapshotSource` 等会话到执行器的适配状态，后者负责把物理计划、扫描范围和 `ExecStmt` 接到执行器。`pkg/session/runtime.rs` 只公开其中的 `OwnedKVSnapshotSource`、`SessionBoundAdapterOwner` 和 `TypedScanSpec`。
+被验证的生产边界主要位于 `pkg/session/runtime/typed_adapter_bridge.rs` 和 `pkg/session/runtime/scan_adapter_runtime.rs`：前者实现 `SessionBoundAdapterOwner`、`OwnedKVSnapshotSource` 等会话到执行器的适配状态，后者负责把物理计划、扫描范围和 `ExecStmt` 接到执行器。
 
 ## 核心职责
 
@@ -98,12 +96,7 @@ deadline 场景包含后台计时行为：设置 process info 后即开始计时
 
 ## 与 Go 版本的对应关系
 
-没有与本测试同路径、同名的 Go 文件；对应关系是行为级而非逐行移植。主要 Go 锚点为：
-
-- `pkg/executor/adapter.go` 的 `ExecStmt`、`RebuildPlan` 与 `Exec`：对应 Rust prepared plan 重建、执行器构建、流式 result set 和错误清理。
-- 同文件 `recordSet.TryDetach`：Go 通过 `Detach(executor)` 创建不依赖当前 session context 的静态 record set，对应 Rust detached snapshot/result-set 生命周期测试。
 - 同文件 `handlePessimisticSelectForUpdate`：Go 在 `OnPessimisticStmtStart/End` 包围的重试循环内执行、加锁并处理冲突，对应 Rust 的先锁后返回与失败语句锁回滚测试。
-- 同文件 `logAudit` 与 `FinishExecuteStmt`：分别对应插件 completed event，以及 slow query、summary、Top SQL、runtime stats 等收尾副作用。
 - `pkg/session/session.go` 的 `execStmtResult.TryDetach`：Go 还要求只读、自动提交并在 detach 后完成原 statement/session 清理；本文件验证 Rust 所暴露的低层独立所有权，但没有声称覆盖 Go 外层所有准入条件。
 
 Rust 额外以 typed physical plan、`RuntimeExecute`、`OwnedKVSnapshotSource` 和 `SessionBoundAdapterOwner` 表达这些边界。测试要求最终可见行为尽量保持 Go 语义，同时明确检查 Rust 特有的类型化物理树和线程安全所有权。
@@ -119,13 +112,3 @@ Rust 额外以 typed physical plan、`RuntimeExecute`、`OwnedKVSnapshotSource` 
 - timeout/审计/收尾指标：使用可确定的短 timeout、RAII 清理全局插件，并核对真实 canonical session view；注意 wall-clock 测试可能有调度抖动，断言应聚焦状态而非精确耗时。
 
 兼容风险集中在 Go 生命周期顺序、prepared cache 参数污染、锁释放过多/过少和 detach 后资源悬空；性能风险集中在错误地把 lazy scan 变成 eager materialization、OFFSET 下推读取不足或过多，以及为 detach 不必要地复制完整结果。
-
-## 验证依据
-
-- 目标源码：`pkg/session/runtime_test/typed_adapter_bridge.rs`，共 1111 行；RustCodeGraph `node --file` 分三段读取，确认 14 个 `#[test]`、`PreparedBridgeSchemaLoader` 及全部断言路径。
-- 图查询：`rustcodegraph status` 显示索引包含 7032 个 Rust 文件；对目标路径执行 `explore`，并对 prepared、普通 typed scan、pessimistic select 三个关键测试执行 `callees`。图中同名符号歧义已通过限定源码复核。
-- 模块与 crate：`pkg/session/lib.rs`、`pkg/session/runtime_test.rs`、`pkg/session/runtime.rs`、`pkg/session/Cargo.toml`。
-- Rust 生产实现入口：`pkg/session/runtime/typed_adapter_bridge.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`；测试数据辅助来自同级 `runtime_test/planning.rs`。
-- Go 行为对照：`pkg/executor/adapter.go` 的 `recordSet.TryDetach`、`ExecStmt`、`RebuildPlan`、`Exec`、`handlePessimisticSelectForUpdate`、`logAudit`、`FinishExecuteStmt`，以及 `pkg/session/session.go` 的 `execStmtResult.TryDetach`。
-- 相关独立测试搜索：父模块中没有另一份同名测试文件；相邻 `pkg/session/runtime/scan_adapter_runtime_test.rs` 覆盖 adapter 的 RU、外键、悲观重试等其他切面，本文件聚焦 typed plan/scan 与 canonical session 的桥接。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付前应以任务给定命令确认目标文档存在且恰有 11 个固定二级标题，并用 `git diff --check` 检查 Markdown 差异。

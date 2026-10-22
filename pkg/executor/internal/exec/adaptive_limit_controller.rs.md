@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现“有序扫描位于 `LIMIT` 下方”时的语句级自适应准入控制器，目标是在仍能向前推进的前提下，限制 Index Join 外表行和 double-read 回表 handle 的推测性并发工作量。它属于 `astersql-executor-internal-exec` crate；`pkg/executor/internal/exec/lib.rs` 以公开模块 `adaptive_limit_controller` 导出，`Cargo.toml` 通过 `[lib] path = "lib.rs"` 确认 crate 边界。实现只依赖标准库的 `Mutex`、`Condvar`、`Duration` 和 `Instant`，没有本文件专属的 Cargo feature 或外部 crate 依赖。
-
-Rust 当前接线是不完全对称的：`pkg/executor/distsql.rs` 已使用 lookup 侧的 `ReserveLookup`、`CompleteLookup`、`AbortLookup`、`SuggestedBatchSize`、`Stop` 和 `Snapshot`，`pkg/executor/select.rs` 的 `LimitExec` 已管理 `Reset`/`Stop` 生命周期；`pkg/executor/join/index_lookup_join.rs` 会保存控制器和快照。代码搜索未发现生产 Rust 代码构造 `AdaptiveLimitController`，也未发现生产端调用 `ReserveOuter`、`CommitOuter` 或 `ObserveJoinProgress`；这些 outer 路径目前由独立 Rust 测试覆盖，不能描述为已完整接入 Rust Index Join 主链。
+实现“有序扫描位于 `LIMIT` 下方”时的语句级自适应准入控制器，目标是在仍能向前推进的前提下，限制 Index Join 外表行和 double-read 回表 handle 的推测性并发工作量。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ Rust 当前接线是不完全对称的：`pkg/executor/distsql.rs` 已使用 loo
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/internal/exec/adaptive_limit_controller.go` 是直接语义对照：两版都有两种模式、两个准入阶段、4 槽 yield 窗口、双预算、无输出翻倍、productive yield 调窗、batch 物理窗口、阻塞时间并集、停止快照及相同公开方法族。`pkg/executor/internal/exec/adaptive_limit_controller_test.rs` 的 9 个测试对应 Go 测试中的核心场景：当前/最近产出率、每个进度 epoch 只增长一次、延迟配对 output、零输出恢复、Stop/Reset、lookup 上限与 batch 取整、direct lookup、并发阻塞合并。
+`pkg/executor/internal/exec/adaptive_limit_controller_test.rs` 的 9 个测试对应 Go 测试中的核心场景：当前/最近产出率、每个进度 epoch 只增长一次、延迟配对 output、零输出恢复、Stop/Reset、lookup 上限与 batch 取整、direct lookup、并发阻塞合并。
 
 已确认的差异如下：
 
@@ -93,13 +91,3 @@ Rust 当前接线是不完全对称的：`pkg/executor/distsql.rs` 已使用 loo
 - 若要对齐 Go 的取消语义，现有同步签名需要显式设计取消机制及错误类型，不能把 `Stop` 当成某一个调用者的 context 取消；还需增加“有容量前已取消”和“阻塞中取消”两类独立 Rust 测试。
 - 测试必须继续放在独立文件 `pkg/executor/internal/exec/adaptive_limit_controller_test.rs`，并同步参考 `adaptive_limit_controller_test.go`；不要把 `#[cfg(test)]` 测试内嵌进生产文件。
 - 性能风险集中在热路径每次反馈的全局互斥、`notify_all` 惊群和过大的推测窗口；正确性风险集中在单位混用、reservation 泄漏、重复完成、Reset 与旧 worker 竞态以及整数边界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的文件清单包含本文件、Go 对照及两份独立测试。
-- RustCodeGraph `node --file`：完整读取 `pkg/executor/internal/exec/adaptive_limit_controller.rs` 1–724 行、`pkg/executor/internal/exec/lib.rs` 1–29 行、`pkg/executor/internal/exec/adaptive_limit_controller_test.rs` 1–268 行、Go 对照实现 1–882 行及 Go 测试 1–613 行。
-- RustCodeGraph `query --json`：确认 Rust/Go 的 `AdaptiveLimitController`、`ReserveOuter`、`ObserveJoinProgress`、`CompleteLookup`、`SuggestedBatchSize` 精确节点，以及 9 个 Go `TestAdaptiveLimitController*` 测试入口。对 Rust 节点执行 `callers/callees` 未返回可见调用记录，随后以精确引用搜索补证。
-- 配置与模块：读取 `pkg/executor/internal/exec/Cargo.toml` 和 `lib.rs`，确认 crate 名、库入口、模块导出与独立测试装配；目标目录不存在 `doc.go`。
-- 直接调用证据：核对 `pkg/executor/distsql.rs`、`pkg/executor/select.rs`、`pkg/executor/join/index_lookup_join.rs` 中的控制器字段和方法调用，并在 Rust 生产文件范围搜索所有公开 API 引用；未发现生产 Rust 构造和 outer 三段调用，故文档明确标为未完整接线。
-- 测试证据：Rust 测试覆盖 productive/zero-output yield、增长 epoch、pending output、Stop/Reset、batch 取整、direct lookup 和重叠等待区间；Go 测试额外证明 context 取消及更多边界，但这些不能外推为 Rust 已支持。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构检查，并人工复核本文只陈述上述源码、调用引用、Cargo 和测试能够支持的事实。

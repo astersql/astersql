@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore-s3store` crate；crate 入口 [`lib.rs`](lib.rs) 以 `mod retry` 装入它并用 `pub use retry::*` 重新导出其公开项。它位于 S3/兼容 S3 客户端的策略层，负责把 TiDB/AsterSQL 的重试约定同时适配到两套接口：供兼容层使用的 `s3like::StandardRetryer`，以及供 AWS Rust SDK 客户端配置使用的 `storeapi::Retryer`。
-
-在完整调用链中，[`store.rs`](store.rs) 创建 AWS 配置和 S3 client 时读取 `S3StandardRetryer::retry_config` 与 `retry_classifier`；[`interface.rs`](interface.rs) 的 `AwsS3Api::bucket_region` 在 `HeadBucket` 失败后使用 `newBucketRegionDetectionRetryer` 判断并记录错误，同时从 `x-amz-bucket-region` 响应头取回实际区域。因此，本文件不执行对象 I/O，也不拥有 HTTP client，而是为凭证加载、区域探测和普通 S3 操作提供重试参数、分类规则与兼容日志行为。
+位于 S3/兼容 S3 客户端的策略层，负责把 TiDB/AsterSQL 的重试约定同时适配到两套接口：供兼容层使用的 `s3like::StandardRetryer`，以及供 AWS Rust SDK 客户端配置使用的 `storeapi::Retryer`。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`retry.go`](retry.go)，行为测试对照是 [`retry_test.go`](retry_test.go)。两端都规定 20 次最大尝试、32 秒退避上限、禁用会耗尽的共享令牌桶、识别 IMDS 地址，并仅对“301 + 指定 S3 code”的区域重定向抑制告警。
-
 Go 的 `retryer` 嵌入 AWS Go SDK `retry.NewStandard`，由 SDK 提供标准错误分类和 full-jitter 退避；Rust 为兼容 `s3like` 接口显式实现关键字分类与抖动，同时通过 `storeapi::Retryer` 为 AWS Rust SDK 提供原生配置。Go 通过 `errors.As` 同时取 `smithy.APIError` 与 `ResponseError`；Rust 使用具体的 `SdkError<HeadBucketError, HttpResponse>`。Rust 额外兼容无 modeled code、空响应体的 301，因为 AWS Rust SDK 不像 Go SDK 那样为该响应合成 `MovedPermanently`。
 
 Rust 的 `InstanceMetadataRetryClassifier` 是适配 AWS Rust SDK 原生重试流水线所需的局部接线；Go 侧对应约束由 `s3like::Retryer` 对嵌入 retryer 的 `IsInstanceMetadataError` 调用完成。两种实现路径不同，但共同目标是避免凭证元数据失败被当作普通 S3 瞬时错误反复等待。
@@ -85,12 +81,3 @@ Rust 的 `InstanceMetadataRetryClassifier` 是适配 AWS Rust SDK 原生重试�
 - 修改 IMDS 策略要同时审查固有方法、`s3like::StandardRetryer::IsInstanceMetadataError` 转发和 `InstanceMetadataRetryClassifier::classify_retry/priority`，并明确两条路径是否应维持不同范围。
 - 若新增状态、共享限流器或异步资源，需重新证明 `Send + Sync`、跨请求公平性、错误时 token 归还以及关闭 client 后的释放顺序。目前无状态实现不应被无意改成全局锁竞争点。
 - Rust 单元测试继续放在独立的 `retry_test.rs`；涉及 store 选项接线的断言放在现有 `client_1_aster_unit_test.rs`，端到端 S3 行为则扩展 `s3_test.rs`，不要把测试内嵌回生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标在已索引的 7,032 个 Rust 文件内；`files --filter pkg/objstore/s3store` 显示 `retry.rs` 有 30 个符号；`node --file pkg/objstore/s3store/retry.rs` 读取了完整 203 行源码。
-- RustCodeGraph 符号查询：核对了 `newRetryer`、`newBucketRegionDetectionRetryer`、`isBucketRegionRedirectError`、`S3StandardRetryer`、`IsErrorRetryable`、`RetryDelay`、`retry_config`、`classify_retry`；精确 callers/callees 查询确认内部构造、抖动函数和 `s3_test.rs::test_retry_error` 测试边。图对 trait 动态分派和若干同名符号有漏边/误配，未将其错误候选作为结论。
-- 生产源码：完整读取目标文件；读取 [`lib.rs`](lib.rs) 的模块导出、[`store.rs`](store.rs) 第 197–320 行的 SDK 配置接线、[`interface.rs`](interface.rs) 第 982–1001 行的桶区域探测、`s3like/retry.rs` 第 29–162 行的外层错误规则，以及 `storeapi/storage.rs` 第 61–73 行的 SDK retry trait。
-- crate/对照证据：读取 [`Cargo.toml`](Cargo.toml) 和完整 [`retry.go`](retry.go)，确认 crate 入口、依赖边界和 Go 移植语义。
-- 测试证据：读取完整 [`retry_test.rs`](retry_test.rs) 与 [`retry_test.go`](retry_test.go)，并核对 `s3_test.rs::test_retry_error`、`client_1_aster_unit_test.rs` 的默认/自定义 retry config 测试。现有断言覆盖结构化 301 分类、日志抑制、10,000 次 token 申请、7–9 分钟总退避、抖动边界、IMDS 排除、连接重置和 SDK 默认参数。
-- 本任务为只增说明文档的分析任务，未运行 Cargo；最终以固定 11 个二级章节的结构命令验证，并人工复查文件定位、运行流程、安全扩展点均能由上述路径和符号追溯。

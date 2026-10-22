@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`job.rs` 属于 `astersql-executor-importer` crate；crate 根 `pkg/executor/importer/lib.rs` 以 `mod job; pub use job::*;` 将本文件的公开项暴露给导入执行器和 DXF 导入调度器。它是 `mysql.tidb_import_jobs` 系统表的 Rust 持久化边界：将导入任务的创建、查询、状态迁移、权限过滤和 JSON 字段编解码转换为参数化 SQL，而不负责文件扫描、KV 编码或子任务执行。
-
-crate 的 `[lib]` 入口是 `lib.rs`，`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 Go 包 `pkg/executor/importer`。本文件直接使用同 crate 的 `ImportParameters`、`Summary` 和 `astersql-types` 的 `Time`；实际 SQL 会话及 JSON codec 由上层注入，因此核心逻辑不绑定某一种 session 实现。
+为 `ImportParameters` 实现确定性的 JSON 文本输出，处理 JSON 转义、`omitempty` 字段和排序后的 options 键。
 
 ## 核心职责
 
@@ -89,7 +87,7 @@ crate 的 `[lib]` 入口是 `lib.rs`，`Cargo.toml` 的 `package.metadata.portin
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/importer/job.go`，回归测试是 `pkg/executor/importer/job_test.go`；Rust 独立测试位于 `pkg/executor/importer/job_test.rs`，没有把测试内嵌进生产文件。两版的状态/步骤字面量、16 列查询、生命周期 SQL 谓词、准备信息 no-op、owner/SUPER 过滤、取消固定错误、空摘要 `{}` 以及空 group key 表示非空分组等核心语义一致。
+直接对照文件是 `pkg/executor/importer/job.go`，回归测试是 `pkg/executor/importer/job_test.go`；Rust 独立测试位于 `pkg/executor/importer/job_test.rs`，没有把测试内嵌进生产文件。
 
 主要实现差异如下：
 
@@ -108,12 +106,3 @@ crate 的 `[lib]` 入口是 `lib.rs`，`Cargo.toml` 的 `package.metadata.portin
 - 新增查询入口要明确 owner/SUPER 过滤策略，避免绕过 `GetJob`/列表函数已有权限边界。新增写入口若必须知道是否成功，应扩展 executor 返回 affected rows，而不是把“SQL 执行成功”误当成“状态已迁移”。
 - 所有回归测试继续放在独立文件 `pkg/executor/importer/job_test.rs`；涉及真实 DXF 生命周期时同步 `pkg/dxf/importinto/scheduler_test.rs` 或 `scheduler_testkit_test.rs`，涉及取消 fallback 时同步 `pkg/executor/import_into_test.rs`。
 - 兼容风险集中在持久化字面量、错误文本、JSON 模式和列顺序；性能风险主要是列表查询无分页以及每行独立 JSON 解码。扩展列表 API 时应考虑排序、分页和过滤索引，但不能在没有实际需求与基准证据时擅自改变语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/executor/importer/job.rs` 确认目标文件已索引；`node --file pkg/executor/importer/job.rs --offset 1/501` 读取完整 617 行；`query` 核对 `GetJob`、`GetActiveJobCnt`、`CreateJob`、`StartJob`、`Job2Step`、`UpdateJobPreparedInfo`、`FinishJob`、`FailJob`、两种列表查询、两种取消入口及 `convert2JobInfo`。
-- 调用边：RustCodeGraph `explore` 定位 `Job2Step` 到 `pkg/dxf/importinto/scheduler.rs` 与 `job_test.rs`；精确 `callers/callees` 对目标 Rust symbol 无输出/超时后，按技能回退用精确 `rg` 引用检查，确认 scheduler 的生产调用和 `import_into_storage.rs` 的 pending 取消调用，并确认两个列表 API 暂无 Rust 生产调用者。
-- 已读 Rust 路径：`pkg/executor/importer/job.rs`、`lib.rs`、`job_test.rs`，以及直接生产证据 `pkg/dxf/importinto/scheduler.rs`、`pkg/executor/import_into_storage.rs`。
-- 已读边界与对照：`pkg/executor/importer/Cargo.toml`、`pkg/executor/importer/job.go`、`pkg/executor/importer/job_test.go`。
-- `job_test.rs` 覆盖状态判断、创建参数顺序和 ID、生命周期守卫、NULL/权限/未找到处理、准备信息 no-op、列表过滤、executor 错误、JSON 格式与 pending-only 取消；Go 测试补充真实系统表的时间、affected rows、幂等终态和活跃计数证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查本文档存在且恰含规定的 11 个二级标题，并人工复核没有把未接线或接口差异描述为已支持事实。

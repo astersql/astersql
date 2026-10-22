@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-types-parser_driver` crate，是 SQL 解析器 AST 与具体 `types::Datum` 实现之间的适配层。crate 入口 `pkg/types/parser_driver/lib.rs` 将本模块声明为私有模块并用 `pub use value_expr::*` 重新导出其公开符号；`pkg/types/parser_driver/Cargo.toml` 表明它直接依赖 parser AST/format、Datum、字段类型、标量字面量和 Decimal crate。
-
-它移植自同目录的 Go `value_expr.go`。Go 版本借助包级 `init()` 把构造函数注册到 `ast`，而 Rust 没有同类初始化机制，所以本文件的 `init() -> DriverHooks` 只返回显式钩子表。仓库搜索目前只发现该函数和 `DriverHooks` 的定义，没有发现消费该钩子表的 Rust 接线；同时 `pkg/parser/ast/lib.rs::NewValueExpr` 已有独立的原生 `ExprNode::typed_value` 路径。因此，本文件应理解为可复用的 parser-driver 移植实现，而不能据此断言当前所有 Rust SQL 字面量都经过它。
+`ParamMarkerExpr` 在 `ValueExpr` 上附加预处理参数的源码偏移、顺序、执行期状态，以及 GROUP BY 改写语义保护标志，并以 `?` 还原。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@
 
 关键差异有三类。第一，Go `init` 直接写入 `ast.NewValueExpr` 等包变量；Rust `init` 只返回未发现消费者的 `DriverHooks`。第二，Go writer/context API 多数不返回错误，Rust API 虽使用 `io::Result`，却为兼容而主动忽略具体写错误。第三，Go `strconv.FormatFloat(..., 'e', -1, bits)` 由 Rust 私有 `format_float` 复刻，包括特殊值和指数格式；该实现应继续通过与 Go 输出表对照来维护。
 
-`pkg/types/parser_driver/value_expr_test.rs` 的 Restore/Format 13 项表与 `value_expr_test.go` 对应，覆盖 NULL、正负整数、无符号数、32/64 位浮点、字符串/bytes 转义、bit literal、Decimal、Duration、Time 和反斜杠；Format 额外覆盖连续单引号及制表/换行组合。Rust 测试还对齐 Go 的 `ast.Walk` enter/leave 顺序和零分配性质。
+`pkg/types/parser_driver/value_expr_test.rs` 的 Restore/Format 13 项表与 `value_expr_test.go` 对应，覆盖 NULL、正负整数、无符号数、32/64 位浮点、字符串/bytes 转义、bit literal、Decimal、Duration、Time 和反斜杠；Format 额外覆盖连续单引号及制表/换行组合。
 
 ## 扩展指南
 
@@ -82,12 +80,3 @@
 改变构造语义时优先修改 `newValueExpr`，并保持“先 `DefaultTypeForValue`、再用同一 Type 写 Datum”的 collation 不变量；参数解析元数据则在 `newParamMarkerExpr`、`SetOrder` 和两个 parser AST trait impl 处接入。若要让 parser-driver 真正承担全局构造入口，需要在明确的集成层消费 `DriverHooks`，并先厘清与 `parser_ast::NewValueExpr` 原生路径的归一策略，不能仅调用当前 `init` 名称便假定注册发生。
 
 新增 visitor 行为时要同步检查借用式 `parser_ast::Node` 实现和拥有型 `Visitor`/`Accept`，保留 enter、skip、类型替换、leave 的顺序，并继续把测试放在独立测试文件，不能内嵌到生产源文件。改变 `ParamMarkerExpr` 字段时还需核对 `parser_ast::expressions::{ValueExpr, ParamMarkerExpr}` trait 契约以及 GROUP BY marker 的兼容语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/types/parser_driver` 确认目标 Rust/Go 源与测试均已索引。
-- RustCodeGraph `node --file pkg/types/parser_driver/value_expr.rs`：读取完整 530 行源文件，并得到“被 10 个文件使用”的文件级反向关系；`query` 确认 `newValueExpr`、`ValueExpr`、`newParamMarkerExpr` 的 Rust/Go 同名符号位置。
-- RustCodeGraph `node` 已读取 `pkg/types/parser_driver/value_expr.go`、`value_expr_test.rs`、`value_expr_test.go`、`lib.rs`、`pkg/parser/ast/expressions.rs` 和 `pkg/parser/ast/lib.rs` 的相关定义；精确 `callers/callees` 查询在本次会话时限内未返回，因此没有把缺失的函数级调用边写成已验证事实。
-- 直接读取未索引配置 `pkg/types/parser_driver/Cargo.toml`，确认 crate 名称、库入口、直接依赖、dev dependency 和 Go package 迁移元数据。
-- 使用 `rg` 核对 `DriverHooks`/`parser_driver::init` 的消费情况及 `parser_ast::NewValueExpr` 的运行时调用点；结论限定为当前仓库静态搜索结果。
-- 人工对照 Rust/Go 源与独立测试，确认文档覆盖文件存在理由、构造/输出/遍历流程、未实现和 panic 边界、资源生命周期、迁移接线现状及安全扩展位置；本任务为纯文档分析，按计划未运行 Cargo。

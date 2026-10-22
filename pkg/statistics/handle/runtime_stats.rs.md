@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle` crate，由 `pkg/statistics/handle/lib.rs` 以 `pub mod runtime_stats` 声明并通过 `pub use runtime_stats::*` 对外再导出。它位于 Rust ANALYZE 执行链和统计缓存数据模型之间：`pkg/session/runtime/statistics.rs` 将已解码的行、`TableInfo`、ANALYZE 选项和时区交给这里，本文件调用 `astersql_statistics::RuntimeStatsBuilder` 构造直方图、TopN 与 FM Sketch，最后组装成 handle crate 已有的 `TableStats`、`ColumnStats`、`IndexStats`。
-
-该文件还定义三种跨模块传递的轻量运行时视图：`RuntimeHistoricalSnapshot`、`RuntimeColumnUsage` 和 `RuntimeAnalyzeJob`。它们本身不访问存储；`pkg/statistics/handle/handle.rs` 负责保存、查询和发布这些值，`pkg/domain/domain.rs` 与 `pkg/session/runtime/statistics.rs` 负责进一步暴露或填充它们。
+们本身不访问存储；`pkg/statistics/handle/handle.rs` 负责保存、查询和发布这些值，`pkg/domain/domain.rs` 与 `pkg/session/runtime/statistics.rs` 负责进一步暴露或填充它们。
 
 ## 核心职责
 
@@ -84,15 +82,11 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 并非逐函数复制一个同路径 `runtime_stats.go`；仓库中不存在该文件。其语义分散对应 Go 统计构建、全局分区合并和 handle 状态模型：
+Rust 并非逐函数复制一个同路径 `runtime_stats.go`；仓库中不存在该文件。
 
-- `BuildRuntimeTableStatsSelectionWithBuilder` 对应 `pkg/executor/analyze_col_sampling.go` 中 `AnalyzeColumnsExec` 的采样统计构建。Go 在调用 `statistics.BuildHistAndTopN` 前，同样对单列非前缀唯一索引覆盖的列及唯一单列索引把 TopN 数量设为 0。
-- `MergeRuntimePartitionStats` 对应 `pkg/statistics/handle/globalstats/global_stats.go` 收集各分区 histogram/TopN 后调用 `statistics.MergePartTopNAndHistToGlobal` 的路径。两边都从同一分区集合成对收集 histogram 与 TopN，使用 ANALYZE 的 TopN/桶选项和 SQL killer，并让合并函数从 histogram 重复值中生成 global TopN。
-- `RuntimeColumnUsage` 对应 Go `pkg/statistics/handle/types/interfaces.go` 的 `ColStatsTimeInfo` 加表/列键；Go 时间是 `*types.Time`，Rust runtime 边界暂以 `Option<String>` 表示系统表文本。
-- `RuntimeHistoricalSnapshot` 对应 Go `pkg/statistics/handle/storage/json.go::TableHistoricalStatsToJSON` 查询 `stats_meta_history` 所得的 table ID、版本、modify count 与 count 摘要；Rust 另加 `is_historical` 以表达回退当前缓存的情况。
 - `RuntimeAnalyzeJob` 承接 Go `pkg/statistics/analyze_jobs.go::AnalyzeJob` 及 `mysql.analyze_jobs` 可见字段，但 Rust 结构还显式记录并发度、active worker、实例、进程 ID和剩余时间。因此它是 runtime 展示/发布 DTO，不应被误认为 Go `AnalyzeProgress` 原子计数器的逐字段翻译。
 
-当前 Rust 实现固定产出 stats version 2 的 cache 形态，但 `analyzed_indexes` 保留 Go statistics version 1 的 `ANALYZE TABLE ... INDEX` 选择语义。文档中的“对齐”仅指上述已由源码与测试验证的行为，不代表 Go 统计子系统的所有持久化和后台任务都在本文件实现。
+当前 Rust 实现固定产出 stats version 2 的 cache 形态，但 `analyzed_indexes` 保留 Go statistics version 1 的 `ANALYZE TABLE ... INDEX` 选择语义。
 
 ## 扩展指南
 
@@ -103,12 +97,3 @@ Rust 并非逐函数复制一个同路径 `runtime_stats.go`；仓库中不存�
 - 改变 global merge 时，应使用显式 `MergeRuntimePartitionStats` 而非依赖旧 global profile 推导预算的包装入口；保持 histogram 与 TopN 来自同一 partition item，并保留 `SQLKiller`。相关质量守恒与 prior-global 隔离测试位于 `pkg/statistics/handle/runtime_stats_test.rs`。
 - 扩展三个 `Runtime*` DTO 时，需要同步检查 `pkg/statistics/handle/handle.rs`、`pkg/domain/domain.rs`、`pkg/session/runtime/statistics.rs` 和 `pkg/executor/analyze.rs` 的构造/克隆/展示路径，以及 `handle_test.rs` 中的状态生命周期测试。
 - 性能风险主要是按每列和每索引复制全部输入、重新编码 FM Sketch，以及分区合并时重建所有桶。新增昂贵处理前应评估行数乘以列/索引数的复杂度和 builder 内存跟踪，不应在本文件私自引入共享可变缓存。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/statistics/handle/runtime_stats.rs` 读取了完整 579 行，并报告该文件被 `runtime_stats_test.rs` 等模块引用；`query` 确认三个 DTO、三个构建入口、两个 merge 入口及三个内部转换函数的位置。
-- RustCodeGraph 调用边：`BuildRuntimeTableStats -> BuildRuntimeTableStatsWithBuilder -> BuildRuntimeTableStatsSelectionWithBuilder`；`MergeRuntimePartitionHistograms -> MergeRuntimePartitionStats -> {canonical_histogram, canonical_top_n, convert_buckets}`。图对跨 crate PascalCase caller 未返回完整边，随后以直接符号引用搜索核对生产调用点。
-- 读取的 Rust/Cargo 路径：`pkg/statistics/handle/runtime_stats.rs`、`pkg/statistics/handle/Cargo.toml`、`pkg/statistics/handle/lib.rs`、`pkg/session/runtime/statistics.rs`、`pkg/statistics/handle/handle.rs`、`pkg/domain/domain.rs`、`pkg/executor/analyze.rs`。
-- 读取的独立 Rust 测试：`pkg/statistics/handle/runtime_stats_test.rs` 覆盖 global TopN 与 histogram 质量守恒、缺失分区列、旧 global TopN 隔离、BIT/ENUM/SET/时间类型边界重建；`pkg/statistics/handle/analyze_runtime_aster_unit_test.rs` 覆盖多列索引编码、非法偏移和 builder 内存释放；`pkg/statistics/handle/handle_test.rs` 覆盖 DTO 在 handle 中的记录行为。
-- 读取的 Go 对照：`pkg/executor/analyze_col_sampling.go`、`pkg/statistics/handle/globalstats/global_stats.go`、`pkg/statistics/analyze_jobs.go`、`pkg/statistics/handle/types/interfaces.go`、`pkg/statistics/handle/storage/json.go`。仓库搜索确认不存在同路径 `pkg/statistics/handle/runtime_stats.go`，因此采用上述真实语义来源而未臆造一一对应文件。
-- 本任务为纯文档分析，按计划不运行 Cargo；验收使用固定十一个二级标题的结构检查，并人工复核符号、调用关系、边界和安全扩展入口。

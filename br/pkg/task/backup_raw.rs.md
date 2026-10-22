@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`backup_raw.rs` 属于 Cargo crate `astersql-br-pkg-task`，由 [`br/pkg/task/lib.rs`](./lib.rs) 以 `pub mod backup_raw` 挂载并通配再导出。它是 `br backup raw` 的任务层实现：命令层 [`br/cmd/br/backup.rs`](../../cmd/br/backup.rs) 负责构造命令、解析公共运行环境和 tracing，随后由 `runBackupRawCommand` 调用本文件的 `RunBackupRawWithDefaults`。
-
-本文件对照 [`br/pkg/task/backup_raw.go`](./backup_raw.go)，面向 RawKV（非事务 KV）备份，而不是 SQL 逻辑备份或 TxnKV 备份。其直接职责止于配置解析、单个键范围的备份编排和 RawKV 元数据落盘；连接管理、备份 RPC、元数据存储等能力通过 `common`、`backup` 与 `stubs` 中的抽象获得。
+`br backup raw` 的任务层实现：命令层 [`br/cmd/br/backup.rs`](../../cmd/br/backup.rs) 负责构造命令、解析公共运行环境和 tracing，随后由 `runBackupRawCommand` 调用本文件的 `RunBackupRawWithDefaults`。
 
 ## 核心职责
 
@@ -90,8 +88,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的常量、`RawKvConfig` 字段、flag 默认值、字节序范围检查、请求的 RawKV/版本/CF/压缩/加密字段，以及写入 `RawRanges` 的元数据语义均直接对应 [`backup_raw.go`](./backup_raw.go)。`needDomain = false`、`NormalVersionChecker`、S3 Object Lock 检查和可选摘除调度器也保留了 Go 主流程决策。
-
 Rust 用 RAII 的 `SchedulerRestoreGuard` 替代 Go `defer restore(ctx)`，并由测试覆盖错误路径。Go 在 context 已取消时改用 `context.Background()` 恢复，并会记录恢复失败警告；Rust 的无 context 闭包无法表达这一分支，且静默忽略恢复错误。
 
 尚未等价的部分包括：Go 创建/取消 context 和 tracing span、解析真实存储 URI、构造并关闭真实 manager/client、通过 callback 按非 `UnitRange` 响应递增进度，以及使用真实外部存储的 `MetaWriter`。Rust 的 `UnitRange`、`GetKeepalive`/`NewMgr` 注释及内存实现体现了迁移中的接口占位，不能当作完整生产接线。
@@ -106,13 +102,3 @@ Go 文件在 `RemoveSchedulers` 的错误分支写成 `return errors.Trace(err)`
 - 调整备份协议字段时，应同时核对 Go `BackupRequest`、`backuppb` 兼容性和 `BackupMeta` 恢复消费方；特别注意 `IsRawKv`、版本 0、CF 与 cipher 不得丢失。
 - 修改调度器生命周期时，继续保证“成功、任意中途错误、取消”都恢复，并增加恢复闭包自身失败的可观测性测试；不要让清理错误遮蔽主要备份错误。
 - 性能风险主要在 region 估算、请求并发/限速、范围拆分和元数据写入；当前仅发出一个逻辑范围，扩展多范围时需定义进度总量、顺序和部分失败后的元数据原子性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，其中 Rust 7,032 个；目标文件在索引中且列出 19 个符号。
-- RustCodeGraph `node --file br/pkg/task/backup_raw.rs --offset 1 --limit 260`：读取目标文件完整 234 行，核对常量、配置解析、RAII 守卫、请求构造、元数据和默认入口。
-- RustCodeGraph `explore "br/pkg/task/backup_raw.rs backup_raw RunBackupRaw ..."` 及针对 `RunBackupRaw`/flags 的查询：确认 `runBackupRawCommand → RunBackupRawWithDefaults → RunBackupRaw`，并确认测试与 parity 引用。
-- 读取 [`br/pkg/task/Cargo.toml`](./Cargo.toml) 与 [`br/pkg/task/lib.rs`](./lib.rs)：确认 crate 边界、Go package 映射、模块挂载和公开再导出；该目录不存在 `doc.go`。
-- RustCodeGraph 读取 [`br/pkg/task/backup_raw.go`](./backup_raw.go)：核对 Go 的 flag、配置字段、context/tracing、manager/client、请求、进度回调、元数据和清理流程。
-- RustCodeGraph 读取 [`br/pkg/task/backup_raw_test.rs`](./backup_raw_test.rs)、[`br/pkg/task/parity_test.rs`](./parity_test.rs) 与 [`br/pkg/task/common_test.rs`](./common_test.rs)：确认独立测试位置、错误后调度器恢复证据及公开配置契约覆盖范围。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另以任务指定命令验证恰有 11 个固定二级标题，并人工复核没有把 stubs/占位接线描述成真实生产 I/O。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-server-handler`，由同目录的 `lib.rs` 以 `pub mod tikv_handler` 导出。它以 Rust 形式保留 Go 文件 `pkg/server/handler/tikv_handler.go` 中 `TikvHandlerTool` 的辅助能力：把 HTTP 路径或查询参数转换为行句柄、索引键、表/分区和 Region/MVCC 查询结果。
-
-当前实现应被视为机械迁移基线，而不是已经接通 TiKV 的生产实现。文件前半段保留了主要控制流，后半段则在同一文件内定义 `Storage`、`RegionCache`、`PdClient`、`Table`、`InfoSchema` 等占位类型；多个关键方法固定返回“external ... dependency”一类错误。仓库中的实际 Rust HTTP 状态路由使用 `pkg/server/handler/tikvhandler/tikv_handler.rs` 中另一套同名 `TikvHandlerTool`，该类型通过 `TikvRuntime` 注入运行时能力；两套类型不是同一个 Rust 类型，不能互换。
-
-`pkg/server/handler/Cargo.toml` 声明了 `astersql-kv`、`astersql-store-helper`、`astersql-table`、`astersql-tablecodec`、`astersql-types` 等真实子 crate 依赖，但本文件目前没有导入或调用这些 crate 的类型。仓库内对本文件 API 的直接 Rust 引用仅见同 crate 的独立测试 `tikv_handler_test.rs` 和 `handler_aster_unit_test.rs`，未发现生产调用者。
+提供少量已经可独立工作的兼容算法：`parse_go_base_zero_int` 模拟 Go `strconv.ParseInt(..., 0, 64)` 的进制前缀规则，`index_key_to_temp_index_key` 改写编码索引 ID，`hex_upper`/`hex_decode` 完成十六进制转换。
 
 ## 核心职责
 
@@ -112,8 +108,6 @@ Go 对照实现为 Region cache 定位创建带 500 ms 预算的 backoffer，并
 
 ## 与 Go 版本的对应关系
 
-Rust 的公开函数和 Go 风格方法基本逐项对应 `pkg/server/handler/tikv_handler.go`：构造工具、定位 Region、解析 handle、按索引查 MVCC、query-to-Datum、表/分区解析、读取 schema、按 hex 查 MVCC和批量读取 Region meta。错误文案和 UTC 选择也保留了迁移痕迹。
-
 关键差异如下：
 
 - Go 嵌入真实 `helper.Helper`，调用 TiKV client、PD client、Domain、InfoSchema、tablecodec、codec 和真实类型转换；Rust 在本文件内重定义同名占位类型，真实 Cargo 依赖尚未接线。
@@ -123,8 +117,6 @@ Rust 的公开函数和 Go 风格方法基本逐项对应 `pkg/server/handler/ti
 - Go 的分区错误包含更具体的表名/用法，且分区表缺少分区时返回一个物理表值和错误；Rust 只返回错误，文案也更短。调用者不应依赖两边完全一致的错误字符串。
 - Go 的 `RegionMeta`/`mvccKV` 带 JSON tag，Rust 结构没有 serde 属性；Go 的 failpoint `errGetRegionByIDEmpty` 可把 `region.Meta` 置空，Rust 没有对应 failpoint，但保留了 `meta == None` 的错误分支。
 - Go 返回指针和接口对象，Rust 返回拥有值；Rust 多数占位类型是零大小类型，不能据此推断真实资源成本。
-
-Go 回归 `pkg/server/handler/tests/http_handler_serial_test.go::TestRegionsFromMeta` 验证 `/regions/meta` 返回非零 ID，并启用 `errGetRegionByIDEmpty` 确认空 meta 不触发 panic。该测试是 Go 行为证据，不代表本 Rust 文件的 PD 路径已可运行。
 
 ## 扩展指南
 
@@ -137,14 +129,3 @@ Go 回归 `pkg/server/handler/tests/http_handler_serial_test.go::TestRegionsFrom
 5. 保持测试逻辑在独立文件中。直接扩展 `pkg/server/handler/tikv_handler_test.rs` 覆盖输入分类与失败边界；编码兼容回归可扩展 `handler_aster_unit_test.rs`。涉及 HTTP 路由的行为应在实际使用 `tikvhandler` crate 的测试面增加，而不是把测试内嵌进本源文件。
 
 兼容风险主要是 Go 风格公开方法名、错误分类/文案、base-0 数字规则、索引 key 字节布局、common handle 列顺序和分区名解析。性能风险主要来自逐 Region 串行 PD RPC、普通与临时索引串行双查以及无界复制 key/peer 列表。正确性验证必须覆盖部分成功后的早退、i64 边界、短/畸形索引键、缺失/重复 query 值、类型转换失败、分区表与非分区表的交叉输入，以及 PD 返回空 meta。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/server/handler` 确认本文件、同路径 Go 文件、两个 Rust 测试及相邻 `tikvhandler` 实现均已索引。
-- RustCodeGraph `node --file pkg/server/handler/tikv_handler.rs`：分三段读取并核对全部 678 行，确认公开 API、内部委托、所有占位类型与固定失败边界。
-- RustCodeGraph `query`：核对 `TikvHandlerTool`、`get_handle`、`get_mvcc_by_idx_value`、`get_regions_meta`、`handle_mvcc_get_by_hex`，并识别同名 Go 符号及相邻 crate 的同名 Rust 类型。`callers/callees` 精确查询等待超过 60 秒仍未返回，已中止；随后以直接引用搜索补充调用证据。
-- crate 与模块证据：`pkg/server/handler/Cargo.toml`、`pkg/server/handler/lib.rs`。
-- Go 对照：`pkg/server/handler/tikv_handler.go`；相关回归：`pkg/server/handler/tests/http_handler_serial_test.go::TestRegionsFromMeta`。
-- Rust 独立测试：`pkg/server/handler/tikv_handler_test.rs`、`pkg/server/handler/handler_aster_unit_test.rs`。
-- 实际 Rust HTTP 接线对照：`pkg/server/http_status.rs`、`pkg/server/handler/tikvhandler/tikv_handler.rs`，用于确认生产路由使用另一套 `TikvHandlerTool`/`TikvRuntime` 边界。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证目标文档存在且恰好包含 11 个固定二级章节，并人工复核未把占位路径描述为已支持。

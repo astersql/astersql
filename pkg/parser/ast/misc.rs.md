@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`misc.rs`](./misc.rs) 是 `astersql-parser-ast` crate 中公开的 `misc` 子模块，由 [`lib.rs`](./lib.rs) 的 `pub mod misc` 暴露。它把 Go [`misc.go`](./misc.go) 中一批相对独立的杂项 AST 行为移植成 Rust 值类型：保存语句字段、把节点还原为 SQL、生成不泄露凭据的安全文本，并提供一个轻量访问者协议。
-
-这个模块不是完整解析器的唯一 AST 类型面。`lib.rs` 仍定义主 `Node`/`Visitor` 体系以及若干同名规范节点；语法动作主要构造那一套类型。当前可确认的生产侧直接使用以辅助能力为主：`pkg/sessionctx/variable/sysvar_builtins.rs`、`pkg/server/handler/tikvhandler/global_variables.rs`、`pkg/ddl/backfilling_clean_s3.rs`、`pkg/objstore/parse.rs` 和 `pkg/dxf/importinto/scheduler.rs` 调用 `misc::redact_url`，`pkg/ddl/bdr/lib.rs` 再导出 `BDRRole`/`BdrRole`。因此扩展前必须先判断目标属于 `misc.rs` 的轻量兼容面，还是 `lib.rs` 的主 AST 面，必要时两处同步。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义：包名为 `astersql-parser-ast`，入口是 `lib.rs`，本文件直接使用标准库 `BTreeMap` 和外部 `url` crate；crate 还依赖 parser-auth、parser-charset、parser-mysql、parser-types、serde 与 serde_json，但本文件没有直接调用这些依赖。
+把 Go [`misc.go`](./misc.go) 中一批相对独立的杂项 AST 行为移植成 Rust 值类型：保存语句字段、把节点还原为 SQL、生成不泄露凭据的安全文本，并提供一个轻量访问者协议。
 
 ## 核心职责
 
@@ -82,11 +78,9 @@ crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义：包名为 `astersql-parser
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`misc.go`](./misc.go)，行为测试对照为 [`misc_test.go`](./misc_test.go)。Rust 保留了许多 Go 名称和分支顺序，并通过 `BRIEKind`、`BDRRole`、`AuthTokenOrTLSOption` 等别名兼容 Go 缩写风格。`misc_test.rs` 复核提示、BRIE、PLAN REPLAYER、URL、QUERY WATCH、Traffic 和 SET PASSWORD 的代表性输出；`misc_6_aster_unit_test.rs` 进一步覆盖账户/权限、事务、ADMIN、visitor 与错误敏感契约；`go_merge_16_test.rs` 覆盖 embedding key 和 Azure endpoint 的后续合并语义。
+Go `misc.go` 还包含 materialized view 等节点，主 Rust `lib.rs` 也存在若干同名、实现完整 `Node` 的类型；本文件则用字符串字段替代许多 Go 的 `ExprNode`、`TableName`、`StmtNode` 和 `RestoreCtx`，并以 `MiscVisitor` 把列出的节点当作叶节点。Go visitor 能递归进入子表达式并替换节点，当前轻量 visitor 不能。
 
-Rust 版本不是 Go 文件的逐类型完整镜像。Go `misc.go` 还包含 materialized view 等节点，主 Rust `lib.rs` 也存在若干同名、实现完整 `Node` 的类型；本文件则用字符串字段替代许多 Go 的 `ExprNode`、`TableName`、`StmtNode` 和 `RestoreCtx`，并以 `MiscVisitor` 把列出的节点当作叶节点。Go visitor 能递归进入子表达式并替换节点，当前轻量 visitor 不能。
-
-还原细节也可能因抽象层不同而不同：Go 的 `RestoreCtx` 控制关键字、名称、字符串和 charset 前缀；Rust 本文件用本地字符串函数。现有测试证明的是列出的代表性兼容行为，而不是所有 Go AST 行为已经迁移。尤其应避免把 `misc.rs` 的同名 `AdminStmt`、`DoStmt`、`ExplainStmt` 等与 `lib.rs` 主 AST 类型混用。
+还原细节也可能因抽象层不同而不同：Go 的 `RestoreCtx` 控制关键字、名称、字符串和 charset 前缀；Rust 本文件用本地字符串函数。
 
 ## 扩展指南
 
@@ -99,11 +93,3 @@ Rust 版本不是 Go 文件的逐类型完整镜像。Go `misc.go` 还包含 mat
 测试逻辑保持在独立文件中：主要同步 [`misc_test.rs`](./misc_test.rs)，Go 语义变化对照 [`misc_test.go`](./misc_test.go)；迁移差异/补充分支可放 `misc_6_aster_unit_test.rs` 或相关 merge 测试。重点覆盖成功输出、所有错误分支、敏感信息不泄露、visitor enter/leave 次数以及 Go/Rust 差异。修改 Rust 源码时还应按仓库规则更新顶部 `// Copyright 2026 AsterSQL.` 并运行 `cargo fmt --all`；本次纯文档任务未修改源码。
 
 兼容风险集中在外部可观察 SQL 文本、参数排序和错误文本；安全风险集中在漏打码；性能风险集中在长列表分配、递归列表和 clone。任何新分支都应确认这些三类风险，并检查已确认的 `redact_url` 生产调用者。
-
-## 验证依据
-
-- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/ast/misc.rs`，并用 `git show 2c944fb:pkg/parser/ast/misc.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
-- Go `misc.go::RecommendIndexStmt::Restore` 对 RUN/RETURN 使用相同 FOR 空值规则，但选项值由表达式 RestoreCtx 还原；Rust 轻量模型只拼接字符串。`misc_test.rs::recommend_index_return_result_restore_matches_go` 覆盖带选项和空 SQL 两种 RETURN 输出。`parser_test.rs::recommend_index_return_result_ast_is_read_only` 另行证明主 AST 的解析与只读分类，不能与本文件类型混同。
-- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
-- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
-- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

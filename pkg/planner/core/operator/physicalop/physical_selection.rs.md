@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现物理计划层的一元过滤算子 `PhysicalSelection`，对应 SQL 中经逻辑优化后仍需执行的 `WHERE`、`HAVING` 等谓词。它属于 Cargo 包 `astersql-planner-core-operator-physicalop`；该包以 `lib.rs` 为库入口，`lib.rs` 声明 `mod physical_selection`、公开再导出其符号，并以 `direct_operator_core!(PhysicalSelection, PhysicalSchemaProducer)` 把它接入统一的 `base::PhysicalPlan` 接口。
-
-在优化主链中，`pkg/planner/core/operator/physicalop/base_physical_plan.rs` 的物理计划枚举路由把 `logicalop::LogicalSelection` 交给本文件的 `ExhaustPhysicalPlans4LogicalSelection`。枚举出的节点随后可由任务附着、索引解析、代价计算和 PB 编码流程消费；本地执行侧则由 `pkg/executor/builder.rs` 构造 `TypedSelection`，或由 `pkg/executor/physical_plan_runtime.rs` 递归/流式过滤行。
+实现物理计划层的一元过滤算子 `PhysicalSelection`，对应 SQL 中经逻辑优化后仍需执行的 `WHERE`、`HAVING` 等谓词。
 
 ## 核心职责
 
@@ -95,8 +93,6 @@ PB 转换只构造协议对象。测试用 `PushDownClient::Send` 会 panic，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/operator/physicalop/physical_selection.go`。Rust 已覆盖 Go 的核心字段和方法：候选枚举、初始化、克隆、相关列提取、内存估算、两种 EXPLAIN、索引解析、任务附着、两版代价接口和 PB 序列化。`TypeSel`、TiFlash child/executor ID、stream count 以及 ignore-IN-list 摘要开关的语义一致。
-
 已确认的实现差异：
 
 - Go 枚举 MPP 候选时计算 `canPushDownToTiFlash`，包含 `expression.CanExprsPushDown(..., kv.TiFlash)`；当前 Rust 枚举没有调用同名通用可推检查，而是显式拒绝虚拟列和运行时标量子查询，并检查 TiFlash 路径。不能据此宣称两者对所有表达式的 MPP 候选集合完全相同。
@@ -104,8 +100,6 @@ PB 转换只构造协议对象。测试用 `PushDownClient::Send` 会 panic，�
 - Rust `Clone` 显式保留 `FromDataSource`，且 `unary_aster_unit_test.rs` 验证这一点；所示 Go `Clone` 未显式复制该字段。该差异应在代价兼容行为变更时重点核对。
 - Rust `ToPB` 对空条件不要求 client，并显式检查 TiFlash 孩子；Go 先无条件取得 client，并直接索引 `Children()[0]`。Rust 的错误边界更显式，但协议结果保持对应。
 - Go `ResolveIndices` 委托 `utilfuncp.ResolveIndices4PhysicalSelection`；Rust 本类型直接实现表达式解析，并带有按列字符串唯一匹配的 CTE 回退。仓库另有 `pkg/planner/core/resolve_indices.rs` 的简化 `SelectionPlan` 路径，但它不是本方法的直接实现。
-
-Go 独立测试 `pkg/planner/core/operator/physicalop/physical_utils_test.go` 还验证 Selection 在扁平化下推计划和单扫描 Index Join 检测中作为透明一元包装节点的角色；Rust 对应周边行为由 `task_test.rs`、`canonical_router_aster_unit_test.rs` 和执行器测试覆盖。
 
 ## 扩展指南
 
@@ -115,11 +109,3 @@ Go 独立测试 `pkg/planner/core/operator/physicalop/physical_utils_test.go` �
 - 修改 PB 形状时，应同步 `physical_selection_test.rs` 的 TiKV/TiFlash 分支，并核对 `pkg/executor/builder.rs` 和存储协议消费者；TiFlash 的孩子嵌入与 executor ID 属于兼容性要求。
 - 修改运行时过滤语义通常不应只改本文件；还需同步 `pkg/executor/typed_selection.rs`、`physical_plan_runtime.rs` 及其独立测试。该节点的 `Conditions` 是合取列表，改变空列表或 NULL/错误处理会直接影响 SQL 兼容性。
 - 修改 `FromDataSource` 时应先核对 v1/v2 代价实现及 Go issue 注释所述兼容目的；字段看似简单，但可能改变计划选择。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标 Rust 文件；`query PhysicalSelection` 定位 Rust/Go 结构体，`query ExhaustPhysicalPlans4LogicalSelection` 定位 Rust/Go 枚举入口；`node --file pkg/planner/core/operator/physicalop/physical_selection.rs --offset 1 --limit 500` 读取目标文件全部 390 行。对枚举入口和 `resolve_cte_column_ids` 执行了 `callers`/`callees`，命令未返回边，因此调用关系用下列源码搜索补证，没有把缺失图边写成已验证结果。
-- 已读生产与配置：`pkg/planner/core/operator/physicalop/physical_selection.rs`、`physical_selection.go`、`Cargo.toml`、`lib.rs`、`base_physical_plan.rs`、`task.rs`，以及执行侧 `pkg/executor/builder.rs`、`pkg/executor/physical_plan_runtime.rs`。
-- 已读直接测试：`pkg/planner/core/operator/physicalop/physical_selection_test.rs`，覆盖 ignore-IN-list 归一化、TiFlash executor ID/孩子 PB、空 TiKV 条件无 client；`unary_aster_unit_test.rs` 覆盖 trait 接线和 `FromDataSource` 克隆；`task_test.rs` 覆盖 Root 条件物化；`cache_snapshot_test.rs` 覆盖条件和标志快照；Go 的 `physical_utils_test.go` 提供一元包装行为对照。
-- 关键边通过 `rg` 定位：`base_physical_plan.rs` 调用枚举入口，`lib.rs` 接入统一接口，`builder.rs`/`physical_plan_runtime.rs` 消费节点，表达式/PB/属性依赖与 `Cargo.toml` 声明一致。
-- 本任务仅新增文档，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工检查没有把未验证的 Go/Rust等价性或理想架构表述为当前事实。

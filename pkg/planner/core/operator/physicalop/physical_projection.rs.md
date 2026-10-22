@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件定义 SQL 物理计划中的投影节点 `PhysicalProjection`：它保存 SELECT 列表一类输出表达式，并负责把逻辑投影枚举成 Root、TiKV cop 或 TiFlash MPP 所需的物理候选。它属于 `astersql-planner-core-operator-physicalop` crate；同目录 `Cargo.toml` 以 `lib.rs` 为 crate 根，并声明了本文件直接使用的 `base`、`costusage`、`expression`、`kv`、`logicalop`、`property`、`planner_util`、`plancodec`、`tipb` 和 `vardef` 等依赖。
-
-`physicalop/lib.rs` 以 `mod physical_projection` 装配本模块，并通过 `pub use physical_projection::*` 再导出公开项。该文件还为 `PhysicalProjection` 手写 `ConcretePhysicalOperator`，把本文的 Explain、索引解析、相关列提取、任务挂接、成本和 protobuf 转换接入统一 `Plan` / `PhysicalPlan` 动态分发；这一步很重要，因为 `Attach2Task` 与 `ToPB` 不是基础节点的默认实现。
-
-本文件是规划期数据结构与转换逻辑，不执行行级表达式。执行器如何逐行求值、如何调度投影并发不在这里；本文能确认的运行边界止于物理树、任务树和下推 protobuf 的构造。
+定义 SQL 物理计划中的投影节点 `PhysicalProjection`：它保存 SELECT 列表一类输出表达式，并负责把逻辑投影枚举成 Root、TiKV cop 或 TiFlash MPP 所需的物理候选。
 
 ## 核心职责
 
@@ -109,7 +105,7 @@ RustCodeGraph 的文件查询确认目标包含 30 个符号，并报告被 8 �
 
 ## 与 Go 版本的对应关系
 
-直接对照为同目录 `physical_projection.go`，其字段和 `Clone`、`ExtractCorrelatedCols`、`MemoryUsage`、Explain、`Init`、`ResolveIndices`、成本、`ToPB`、`Attach2Task` 均有 Rust 对应。两边都保持 `TypeProj`、表达式深克隆、相关列汇总、TiKV/TiFlash PB 限制、executor ID 和 IN 列表归一化开关等核心语义。
+两边都保持 `TypeProj`、表达式深克隆、相关列汇总、TiKV/TiFlash PB 限制、executor ID 和 IN 列表归一化开关等核心语义。
 
 需要明确的当前差异：
 
@@ -120,8 +116,6 @@ RustCodeGraph 的文件查询确认目标包含 30 个符号，并报告被 8 �
 - Go v1 成本是孩子成本加按投影并发折算的 CPU/并发开销；v2 还按表达式数估算过滤式成本。Rust 经 `lib.rs` 全局路由进入 planner core 的对应 Rust 成本实现；只有路由未安装时才回退 `BasePhysicalPlan`，因此审查成本一致性必须同时看路由安装与 core 实现。
 - Go `MemoryUsage` 支持 nil 接收者且按 Go 对象布局估算；Rust 不存在 nil `&self`，其数值不能与 Go 逐字节比较。
 - Rust `ToPB` 对缺 client、缺孩子给出显式错误；Go 直接取 client 并索引 `Children()[0]`，前置不变量更强。
-
-独立 Rust 测试位于 `physical_projection_test.rs`，覆盖 PB executor ID、IndexReader 内嵌与 Root 边界、普通 cast 不下推、IN 列表 digest 开关以及 Explain 格式。未发现同目录独立 `physical_projection_test.go`；Go 语义依据生产文件及 `task.go`、`resolve_indices.go`、两版成本文件核对。
 
 ## 扩展指南
 
@@ -134,15 +128,3 @@ RustCodeGraph 的文件查询确认目标包含 30 个符号，并报告被 8 �
 - 修改 Explain 时，应保持脱敏、`StmtCtx` 格式、细粒度 shuffle stream count 和 digest 归一化稳定性，并同步现有独立测试。
 
 主要兼容风险是错误下推造成存储端无法执行或结果类型/排序规则变化；正确性风险集中在属性列映射、schema 同步和索引解析；性能风险集中在误判“下推有收益”、错误枚举全 MPP 路径以及投影成本低估。任何扩展都应先用上述入口把这三类风险分别覆盖。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/planner/core/operator/physicalop/physical_projection.rs` 确认目标文件和 30 个符号；`node --file ... --offset 1 --limit 760` 完整读取 729 行源码，并得到 8 个使用文件的索引摘要。
-- 主要符号查询：`query PhysicalProjection`、`query ExhaustPhysicalPlans4LogicalProjection --kind function`、`query CanProjectionPushToTiFlash --kind function` 确认 Rust/Go 对应定义及嵌套辅助函数。精确 `callers` / `callees` 对这些 Rust 符号未返回边，故调用关系改由索引源码视图与精确引用搜索核验，未将空结果当成无调用证据。
-- Rust 生产源码：`physical_projection.rs`；模块装配与 trait 路由：`physicalop/lib.rs`；传统物理路由直接证据：`physicalop/base_physical_plan.rs`；旧 Cascades 构造与成本：`pkg/planner/cascades/old/implementation_rules.rs`。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`，其中 `package.metadata.porting.go-package` 指向同路径 Go 包，且测试由 `lib.rs` 的 `#[cfg(test)] mod physical_projection_test` 独立装配。
-- Go 对照：`physical_projection.go`、`pkg/planner/core/task.go::attach2Task4PhysicalProjection`、`pkg/planner/core/resolve_indices.go::resolveIndices4PhysicalProjection`、`pkg/planner/core/plan_cost_ver1.go::getPlanCostVer14PhysicalProjection`、`pkg/planner/core/plan_cost_ver2.go::getPlanCostVer24PhysicalProjection`。
-- Rust 测试：`physical_projection_test.rs` 的 `projection_protobuf_carries_explain_id_like_go`、`cop_projection_attaches_inside_index_reader_but_root_projection_stays_outside`、`ordinary_cast_projection_stays_above_tikv_reader_like_go`、`normalized_explain_honors_ignore_inlist_plan_digest_like_go`、`projection_explain_reads_shared_statement_format`。
-- 人工复核：本文分别回答了文件存在原因、逻辑候选如何形成、任务如何附着、状态和错误边界、Go 差异以及安全扩展位置；没有把运行时执行器、并发 worker 或缺失的 RustCodeGraph 调用边写成已验证事实。
-
-本任务只新增说明文档，未修改 Rust、Go、Cargo 或 `plan.md`，并按计划不运行 Cargo。交付结构以计划规定的十一节标题命令验证。

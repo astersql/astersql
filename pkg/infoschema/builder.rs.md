@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`builder.rs` 位于 `astersql-infoschema` crate，是把全量元数据或按版本排列的 DDL `SchemaDiff` 转换成不可变 `InfoSchema` 快照的核心构建层。crate 根模块在 `pkg/infoschema/lib.rs` 中公开 `Builder`、`SchemaDiff`、`MetadataReader`、`NewBuilder` 和 `getKeptAllocators`；生产侧的直接增量入口是 `pkg/infoschema/issyncer/loader.rs` 中的 `Loader::tryLoadSchemaDiffs`，它以旧快照初始化 Builder，依次应用 `(usedVersion, newVersion]` 的 diff，最后调用 `Build`。
-
-该文件同时服务两种后端：v1 将库表收集到 `DatabaseState`，在 `Build` 时组装 `infoSchema`；v2 在变更发生时同步写入共享 `Arc<Data>`，在 `Build` 时创建带版本和时间戳的 `infoschemaV2`。`pkg/infoschema/Cargo.toml` 将其归入 `astersql-infoschema`，直接依赖配置、meta auto-id/model、parser、table、错误与 tracing 等 workspace crate；没有本文件专属 feature 条件。
+提供若干与 Go Builder 对齐的公共辅助函数：受影响 ID 展开、allocator 筛选、虚拟表注册、表 ID 校验与兼容转换入口。
 
 ## 核心职责
 
@@ -76,10 +74,6 @@ Builder 本身通过 `&mut self` 顺序变更，不包含内部并行执行；�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/builder.go`。Rust 保留了 Go 的主 API 形状和核心流程：`ApplyDiff` 分派、`InitWithDBInfos`、`InitWithOldInfoSchema`、`Build`、虚拟表注册、受影响表/分区 ID 收集及 `getKeptAllocators`。`pkg/infoschema/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/infoschema"` 也明确记录了迁移来源。
-
-已验证的一致语义包括：allocator 在 RebaseAutoID/ModifyTableAutoIDCache 时丢弃 RowID 和 AutoIncrement，在 RebaseAutoRandomBase 时丢弃 AutoRandom，MultiSchemaChange 检查子动作；全量加载按原始大小写从 `TableName2ID` 移除已加载表并保留未加载项；PITR refresh 按 metadata 是否存在决定创建/刷新/删除；物化视图 cutover 处理旧 ID、shadow 名和关联表；cross-keyspace 不注入 `INFORMATION_SCHEMA`。
-
 Rust 并非 Go 的完整等价实现。Go 的 `ApplyDiff` 将更多 action 分派给细粒度 helper，并维护 allocator、外键反向引用、排序桶、临时表等完整状态；Rust 用较紧凑的 `HashMap` 替代。Go 的 masking invalidation 还包含 DropColumn/ModifyColumn，而 Rust `ActionType` 当前没有对应显式项。Go 会扫描引用 placement policy 的表，Rust 当前返回空。Go 的 charset/collation 与旧 UTF8 兼容函数会根据版本和全局配置改写真实字符集字段，Rust 对应功能尚未移植。Go `NewBuilder` 还接收 autoid requirement、resource factory 与 store，Rust 接口已简化。
 
 ## 扩展指南
@@ -89,11 +83,3 @@ Rust 并非 Go 的完整等价实现。Go 的 `ApplyDiff` 将更多 action 分�
 扩展 v1/v2 行为必须同时维护两条路径：本地 `databases` 是 v1 构建依据，`Data::addDB/add/remove_by_id/deleteDB/resetBeforeFullLoad` 是 v2 可见性的依据。新增初始化状态还应在 `InitWithDBInfos` 的全量清理、`InitWithOldInfoSchema` 的继承和 `Build` 的终态注入三处检查生命周期闭环。
 
 测试应放在独立文件而非 `builder.rs` 内。核心回归优先扩展 `pkg/infoschema/builder_test.rs`；涉及 Go 新提交移植、物化视图、storage class 或 v1/v2 双路径时扩展 `pkg/infoschema/go_merge_45_test.rs`；生产 loader 集成边界可在 `pkg/infoschema/issyncer` 的独立测试中验证。兼容风险主要是旧版本元数据转换和 Go/Rust action 覆盖差异；正确性风险是旧表残留、版本不同步、漏报分区 ID和缓存未失效；性能风险集中在全库 bundle 扫描、克隆大块 DB/Table metadata 和不必要的 v2 全量 reset。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 文件、307,296 节点；`files --filter pkg/infoschema/builder.rs` 确认目标文件含 108 个符号；`node --file ... --offset/--limit` 完整读取 980 行并给出直接使用文件。`query` 确认 Rust `Builder`、Go `Builder` 与 `NewBuilder` 候选；方法级 Rust caller 查询未能解析完成，故用直接调用搜索补证。
-- 源码与模块边界：`pkg/infoschema/builder.rs`、`pkg/infoschema/lib.rs`、`pkg/infoschema/Cargo.toml`、`pkg/infoschema/builder_misc.rs`、`pkg/infoschema/issyncer/loader.rs`、`pkg/infoschema/issyncer/lib.rs`。
-- Go 对照：`pkg/infoschema/builder.go`，重点核对 `ApplyDiff`、`needRefreshMaskingPoliciesForTableDiff`、`getKeptAllocators`、`Build`、`InitWithOldInfoSchema`、`InitWithDBInfos`、字符集兼容函数、虚拟表注册与 `NewBuilder`。
-- 独立测试：`pkg/infoschema/builder_test.rs` 与 `pkg/infoschema/builder_test.go` 验证 allocator 和 `TableName2ID` 语义；Rust 测试另覆盖 RefreshMeta、CreateTables、cross-keyspace 更新与 drop 中间状态。`pkg/infoschema/go_merge_45_test.rs` 验证物化视图、bundle、masking cache、storage-class 和 v1/v2 行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务文件规定的 11 章节结构命令、路径检查及人工事实复核作为验证。

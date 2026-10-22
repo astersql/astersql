@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`classic.rs`](classic.rs) 是 `astersql-config-kerneltype` crate 的 Classic 内核编译分支。crate 根文件 [`lib.rs`](lib.rs) 在未启用 Cargo feature `nextgen` 时声明 `classic` 模块并通过 `pub use classic::*` 重导出本文件的公共接口；启用该 feature 时，本文件整体不参与有效接口组装，改由 [`nextgen.rs`](nextgen.rs) 提供同名接口。
-
-[`Cargo.toml`](Cargo.toml) 将该 crate 定义为无默认 feature、仅含可选 `nextgen` feature 的库，库入口为 `lib.rs`。因此默认构建选择 Classic 分支，这一选择属于二进制的编译配置，而不是运行时可修改的配置。包级架构背景见 [`doc.go`](doc.go)：Classic 与 NextGen 二进制不应混合部署。
+`IsClassic()` 定义为 `!IsNextGen()`，因此恒为 `true`，并显式维持两个判定互补的不变量。
 
 ## 核心职责
 
@@ -62,9 +60,7 @@ RustCodeGraph 将该文件标记为被 61 个文件使用；精确符号检索�
 
 ## 与 Go 版本的对应关系
 
-[`classic.go`](classic.go) 使用 `//go:build !nextgen`，其中 `IsNextGen()` 返回 `false`、`IsClassic()` 返回 `!IsNextGen()`；本文件逐项保留了函数名、签名语义和派生关系，仅将 Go build tag 映射为 Rust 的 `#[cfg(not(feature = "nextgen"))]`。相对的 [`nextgen.go`](nextgen.go) 与 `nextgen.rs` 都把基础判定改为 `true`，保持两套构建互斥。
-
-Go 测试 [`type_test.go`](type_test.go) 断言两个标志互补，并验证 Classic 下空字符串和 `"Classic"` 能通过 `IsMatch`。Rust 独立测试 [`type_test.rs`](type_test.rs) 保留这些断言；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步验证所选 feature 与 `Name()` 一致、匹配区分大小写、Classic 接受旧 PD 空值且拒绝 NextGen 名称。测试没有内嵌在生产源文件中，符合仓库的 Rust 测试分离约束。
+[`classic.go`](classic.go) 使用 `//go:build !nextgen`，其中 `IsNextGen()` 返回 `false`、`IsClassic()` 返回 `!IsNextGen()`；本文件逐项保留了函数名、签名语义和派生关系，仅将 Go build tag 映射为 Rust 的 `#[cfg(not(feature = "nextgen"))]`。
 
 ## 扩展指南
 
@@ -73,13 +69,3 @@ Go 测试 [`type_test.go`](type_test.go) 断言两个标志互补，并验证 Cl
 - 若增加第三种内核形态，布尔互补模型将不再足够；应先设计枚举或等价的单一类型来源，再同步 `type.rs::Name`、`type.rs::IsMatch`、PD 名称协议和所有布尔调用点，不能仅在 `IsClassic()` 中追加分支。
 - 若修改 feature 名或默认值，应同步 `pkg/config/kerneltype/Cargo.toml` 以及 `pkg/session`、`pkg/dxf/importinto`、`pkg/dxf/framework/storage` 等转发 `nextgen` 的 manifest，防止不同 crate 得到不一致的能力判断。
 - 测试应继续放在独立文件，至少同步 `type_test.rs` 和 `migration_aster_unit_test.rs`；若改动 Go 对齐语义，也应同步 `type_test.go`。兼容性风险主要是旧 PD 空值、名称字符串和上层 feature 传播；性能风险目前仅为可内联的常量判定，扩展时应避免引入每次调用的 I/O 或锁。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录可见 `classic.rs`、`nextgen.rs`、`type.rs` 及对应 Go/测试文件。
-- RustCodeGraph `node --file pkg/config/kerneltype/classic.rs --offset 1 --limit 240`：确认文件共 48 行，仅有 `IsNextGen` 与 `IsClassic` 两个函数，及其条件编译和函数体。
-- RustCodeGraph `query IsNextGen --kind function`、`query IsClassic --kind function`：确认 Classic/NextGen 两套 Rust 与 Go 同名实现；精确 `callers`/`callees` 查询未为目标函数返回独立边，故上游范围另以索引的文件使用关系和仓库引用搜索交叉核对。
-- 已核对源与装配：`pkg/config/kerneltype/classic.rs`、`lib.rs`、`type.rs`、`nextgen.rs`、`Cargo.toml`、`doc.go`。
-- 已核对 Go 对照：`pkg/config/kerneltype/classic.go`、`nextgen.go`、`type_test.go`。
-- 已核对独立 Rust 测试：`pkg/config/kerneltype/type_test.rs`、`migration_aster_unit_test.rs`；任务是纯文档分析，按计划不运行 Cargo。
-- 已用 `rg` 核对直接引用和 Cargo 路径依赖，抽查 `br/pkg/utils/common.rs`、`pkg/store/store.rs`、`pkg/session/runtime/session.rs` 等调用点。本文所有行为结论均限定为当前源码与构建装配可证明的事实。

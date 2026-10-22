@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/session/tidb.rs` 属于 `astersql-session` crate，并由 [`pkg/session/lib.rs`](lib.rs) 的 `pub mod tidb` 暴露。它不是完整的会话实现，而是把 Go 版本 [`pkg/session/tidb.go`](tidb.go) 中几组可独立描述的规则抽成 Rust 边界：Domain 缓存与初始化、SQL 解析警告转发、语句结束时的事务处理、事务语句数限制，以及测试用结果集读取。
-
-该文件直接依赖 crate 根的 `SessionError`/`SessionResult`，并通过 `astersql-domain-serverinfo::SyncerOption` 表达 Domain server-info 注册选项；后者在 [`pkg/session/Cargo.toml`](Cargo.toml) 中声明为 `astersql-domain-serverinfo` 路径依赖。其余数据库对象没有在这里绑定具体实现，而由五组 runtime trait 注入。因此本文所述的是当前 Rust 文件已有规则，不能等同于 Go `session` 包全部主链均已接入。
+`finishStmt` 协调连接存活检查、重试历史、statement 级提交/回滚、事务级自动提交/回滚、pending 事务清理和语句数上限。
 
 ## 核心职责
 
@@ -70,15 +68,13 @@ Domain 映射通过单个 `Mutex` 防止重复创建。成功 Domain 的关闭�
 
 ## 与 Go 版本的对应关系
 
-Domain 的基本形状与 [`pkg/session/tidb.go`](tidb.go) 一致：按 store UUID 缓存、nil store 复用已有 Domain、初始化失败关闭后重试、成功后用 OnClose 删除。Rust 通过 `DomainFactory` 隐藏了 Go 中 lease、session factory、cross-keyspace factory、DDL injector 和 external workload manager 等构造细节；重试次数可注入，但未在本文件表达 Go 的重试间隔。全局变量临时 Domain 保留 `systemDBFilter` 和 `WithoutStatusEndpointClaim` 的关键语义。
+Rust 通过 `DomainFactory` 隐藏了 Go 中 lease、session factory、cross-keyspace factory、DDL injector 和 external workload manager 等构造细节；重试次数可注入，但未在本文件表达 Go 的重试间隔。
 
-`Parse` 对齐 Go 的“warnings 追加到 statement context、错误继续返回”。Rust 额外用 `TakeWarningsAfterError` 解决 `Result` 不能同时携带 warnings 和 error 的接口差异；默认实现为空。
+Rust 额外用 `TakeWarningsAfterError` 解决 `Result` 不能同时携带 warnings 和 error 的接口差异；默认实现为空。
 
-`finishStmt`、`autoCommitAfterStmt` 与 `checkStmtLimit` 保留 Go 的主要分支：慢自动提交 DML 提交前检查连接、LOCAL LOAD DATA 禁重试、statement commit/rollback、pending 状态清理、自动提交、shared-lock-lost/悲观死锁回滚、COMMIT 错误附带前一语句，以及 batch commit 超限换事务。Rust 当前没有 Go 文件中的 failpoint、SQL killer 信号归一化、日志和按真实事务创建时间记录 duration；指标由 `ObserveAbortTxn` 抽象为事件，连接检查也依赖 `StatementKind`，没有 Go 的 prepared-statement 解析。
+Rust 当前没有 Go 文件中的 failpoint、SQL killer 信号归一化、日志和按真实事务创建时间记录 duration；指标由 `ObserveAbortTxn` 抽象为事件，连接检查也依赖 `StatementKind`，没有 Go 的 prepared-statement 解析。
 
-结果集辅助保留 chunk 复用、空 chunk 终止、`<nil>` 输出和成功后的关闭。Rust 行为模型比 Go 的 `chunk.Row`/field type 简化。Go `StmtHistory` 的完整回放上下文不在本文件；Rust 这里只保存 `StatementRuntime` 对象和计数。因此后续对齐不能仅凭签名相似认定完整等价。
-
-测试证据中，[`pkg/session/test/tidb_test.go`](test/tidb_test.go) 的 `TestParseErrorWarn` 与 `TestSharedLockLostRollsBackTransaction` 分别对应解析警告/错误和 shared-lock-lost 回滚；Rust 的可执行对应项位于 [`pkg/session/test/tidb_test.rs`](test/tidb_test.rs) 与 [`pkg/session/tidb_test.rs`](tidb_test.rs)。后者还验证全局变量初始化 Domain 不抢占 serving status endpoint。
+Rust 行为模型比 Go 的 `chunk.Row`/field type 简化。Go `StmtHistory` 的完整回放上下文不在本文件；Rust 这里只保存 `StatementRuntime` 对象和计数。
 
 ## 扩展指南
 
@@ -88,12 +84,3 @@ Domain 的基本形状与 [`pkg/session/tidb.go`](tidb.go) 一致：按 store UU
 - 改动语句上限时同时验证 `is_finish` 两阶段行为、batch commit、新事务失败后 `InTxn` 状态，以及错误消息兼容性。
 - 增强结果集模型时，修改 `CellValue`/`Row`/`RecordSetRuntime` 和两个辅助函数，并同步 [`pkg/session/main_test.rs`](main_test.rs) 与 [`pkg/session/test/tidb_test.rs`](test/tidb_test.rs)。若要求错误路径也关闭资源，应显式设计 RAII/guard，而不是只在调用点补一次 `Close`。
 - 新增生产接线前应重新运行限定到该文件的 RustCodeGraph callers/callees，并核对 runtime 是否真正实现 trait；当前测试可证明规则本身，不足以证明所有规则都已进入 SQL 服务主链。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/session/tidb.rs --offset 1 --limit 500` 与后续尾段读取覆盖目标文件全部 503 行，并给出文件使用方；对 `finishStmt`、`autoCommitAfterStmt`、`checkStmtLimit`、`Parse`、`ResultSetToStringSlice`、`GetRows4Test`、`InstallDomainMap` 做了精确符号查询。限定文件的 callers/callees 查询在本地未及时返回结果，因此调用关系又以索引文件使用方和精确源码引用交叉核对，未据此臆造具体调用边。
-- 生产源码与装配：[`pkg/session/tidb.rs`](tidb.rs)、[`pkg/session/lib.rs`](lib.rs)、[`pkg/session/Cargo.toml`](Cargo.toml)。包下不存在 `doc.go`。
-- Go 对照：[`pkg/session/tidb.go`](tidb.go)，重点核对 `domainMap`、`Parse`、`finishStmt`、`autoCommitAfterStmt`、`checkStmtLimit`、`GetHistory`、`GetRows4Test`、`ResultSetToStringSlice` 和 `ErrForUpdateCantRetry`。
-- Rust 独立测试：[`pkg/session/tidb_test.rs`](tidb_test.rs) 的 shared-lock-lost、解析 warning/error 与 Domain server-info 选项；[`pkg/session/test/tidb_test.rs`](test/tidb_test.rs) 的解析及 chunk 排空；[`pkg/session/main_test.rs`](main_test.rs) 的 NULL 转换与成功关闭。
-- Go 测试：[`pkg/session/test/tidb_test.go`](test/tidb_test.go) 的 `TestParseErrorWarn`、`TestSharedLockLostRollsBackTransaction`，以及 [`pkg/session/tidb_test.go`](tidb_test.go) 的 `TestDomapHandleNil` 等同路径会话测试。
-- 本任务是纯文档分析，按任务要求不运行 Cargo。交付前用任务指定的 `rg` 命令验证固定二级标题恰好为 11，并人工复核文档能回答文件存在原因、主要流程、边界和安全扩展位置。

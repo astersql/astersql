@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；crate 入口 `pkg/ddl/lib.rs` 以 `pub mod masking_policy` 对外公开该模块，测试则由同一入口中的 `mod masking_policy_test` 装配。`pkg/ddl/Cargo.toml` 指明 crate 根为 `pkg/ddl/lib.rs`，并用 `package.metadata.porting.go-package = "pkg/ddl"` 标记其 Go 对照包。
-
-它提供列脱敏策略的 Rust 领域模型、目标与表达式校验、字符串编解码、列改名表达式重写，以及一个进程内 `MaskingPolicyStore`。需要区分：该 store 本身不是当前完整应用的持久化 DDL worker；当前 Rust 系统表接线位于 `pkg/ddl/persistent_masking_actions.rs`、`pkg/ddl/persistent_modify_column.rs` 和 `pkg/ddl/persistent_drop_column.rs`，操作 `mysql.tidb_masking_policy`。因此本文件既是可复用的策略语义实现，也是独立内存执行/测试表面，但不能单独证明生产 SQL DDL 已经过 `MaskingPolicyStore`。
+用 `MaskingPolicyStore` 实现创建、替换、修改、删除、查询，以及 DROP/RENAME/TRUNCATE/MODIFY COLUMN 所需的级联维护。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ RustCodeGraph 对 `build_masking_policy_info` 给出的下游边为 `check_maski
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/ddl/masking_policy.go`，回归测试为 `pkg/ddl/masking_policy_test.go`。字段模型、目标限制、同表同名冲突、默认启用、内置类型推断、限制位文本格式、rename/truncate/drop/modify-column 联动及系统表 `mysql.tidb_masking_policy` 均有直接对应。
+字段模型、目标限制、同表同名冲突、默认启用、内置类型推断、限制位文本格式、rename/truncate/drop/modify-column 联动及系统表 `mysql.tidb_masking_policy` 均有直接对应。
 
 主要差异如下：
 
@@ -88,7 +86,7 @@ Go 对照为 `pkg/ddl/masking_policy.go`，回归测试为 `pkg/ddl/masking_poli
 - Go 的列名重写解析 `SELECT <expr>` 并用 AST visitor 只改 `ColumnNameExpr`，再标准化输出；Rust 使用轻量词法扫描，保留更多原始格式但 SQL 语法覆盖更窄。
 - Go 从系统表读取时把 `State` 设为 `Public` 并解析时间；Rust 本文件没有系统表行到 `MaskingPolicyInfo` 的完整转换，`InvalidRow` 也未在本文件使用。
 
-Go 测试覆盖基本 create/alter/drop、CASE、IF NOT EXISTS、表和跨库 rename、列 rename、不支持类型、跨列表达式、truncate 保留及 drop database 清理。Rust 独立测试当前只直接覆盖同名跨表、字符串字面量改名和一个 Executor 层 rename/不兼容类型场景，覆盖面明显小于 Go。
+Rust 独立测试当前只直接覆盖同名跨表、字符串字面量改名和一个 Executor 层 rename/不兼容类型场景，覆盖面明显小于 Go。
 
 ## 扩展指南
 
@@ -101,13 +99,3 @@ Go 测试覆盖基本 create/alter/drop、CASE、IF NOT EXISTS、表和跨库 re
 若将 `MaskingPolicyStore` 接入并发或生产持久化路径，需要先定义版本推进不变量、事务/重试、崩溃恢复和 owner failover；并明确所有级联方法是否递增 `schema_version`。若只扩展当前生产 SQL 路径，应优先修改 `persistent_masking_actions.rs`、`persistent_modify_column.rs` 或 `persistent_drop_column.rs`，同时维持本文件领域语义与 Go 行为一致。
 
 性能风险集中在全表扫描：策略量增大时可增加 `(table_id, lower(name))`、`table_id`、`(table_id, column_id)` 等辅助索引，但必须保证替换、rename、truncate 和 drop 同步更新，避免多索引漂移。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标源文件共 668 行。查询了 `build_masking_policy_info` 的定义/下游、目标文件全貌、独立测试文件和 Go 对照文件，并核对表达式重写的调用边。
-- 生产源：`pkg/ddl/masking_policy.rs`；crate 边界：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`；同包契约：`pkg/ddl/doc.go`。
-- Rust 独立测试：`pkg/ddl/masking_policy_test.rs`，覆盖同名策略按表隔离、列改名不改字符串字面量，以及跨库 rename 后不兼容类型变更被拒绝。
-- Rust 生产接线证据：`pkg/ddl/persistent_masking_actions.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/persistent_modify_column.rs`、`pkg/ddl/persistent_drop_column.rs`、`pkg/ddl/job_worker.rs`。
-- Go 对照与测试：`pkg/ddl/masking_policy.go`、`pkg/ddl/masking_policy_test.go`。Go 源码直接证明 job worker、InfoCache、表达式 AST、系统表 SQL、级联维护和文本解析语义。
-- DDL 模块背景只以 `pkg/ddl/doc.go` 和 `docs/agents/ddl/README.md` 作为导航；本文关于当前实现的结论均以上述源码/测试为准。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核唯一新增生产物、无源码修改、无无依据的“已支持”结论。

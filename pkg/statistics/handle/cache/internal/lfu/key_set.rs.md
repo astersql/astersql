@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 LFU 统计缓存内部的单分片二级键集合 `keySet`。它属于 Cargo crate `astersql-statistics-handle-cache-internal-lfu`（见同目录 `Cargo.toml`），由 `lib.rs` 以私有模块 `mod key_set` 装配，不是 crate 的公共 API。直接上游是 `key_set_shard.rs` 的 `keySetShard`：后者建立 256 个 `keySet`，再供 `lfu_cache.rs` 的 `LFUState::resultKeySet` 使用。
-
-这里保存的不是 TinyLFU/Moka 主缓存本身，而是物理表 ID 到 `Arc<statistics::Table>` 的并发映射。`LFU::Put` 在主缓存准入前先向它发布表；主缓存拒绝或淘汰完整统计数据后，它仍可保存精简后的“壳表”。因此 `LFU::Get` 可以在主缓存未命中时回落到该集合，`LFU::Values` 和 `LFU::Len` 也以该集合为准。
+删除时返回被删表的 `MemoryUsage().TotalTrackingMemUsage()`，让需要成本结算的上层可以使用；当前 `keySetShard::Remove` 与 `LFU::Del` 会忽略该返回值，实际成本调整由 LFU 的准入/淘汰路径负责。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ RustCodeGraph 的精确节点查询确认了本文件六个方法的定义，并
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为同目录 `key_set.go`，结构和六个方法一一对应：Go 的 `map[int64]*statistics.Table + sync.RWMutex` 对应 Rust 的 `HashMap<i64, Arc<Table>> + RwLock`；`Remove`、`Keys`、`Len`、`AddKeyValue`、`Get`、`Clear` 保留相同的锁粒度与基本语义。
-
 主要语言差异如下：
 
 - Go `Get` 返回 `(*Table, bool)`；Rust 合并为 `Option<Arc<Table>>`。
@@ -81,9 +77,6 @@ RustCodeGraph 的精确节点查询确认了本文件六个方法的定义，并
 - Go 通过显式 `Lock/Unlock` 管理锁；Rust 守卫在作用域结束时自动释放。若锁中毒，Rust 的 `unwrap()` 会 panic，Go 的 `RWMutex` 没有对应的中毒状态。
 - Go `Clear` 创建新 map，Rust 同样整体替换为 `HashMap::new()`；Rust `Default` 还能保证初始映射已分配为可写空映射。
 - Go 返回原始表指针，Rust 返回克隆的 `Arc`，明确延长共享值生命周期。
-- 两边的 `Keys` 都复制 map 键且不承诺顺序；两边的分片层都逐分片汇总，因此都不是全局一致快照。
-
-相关 Go 回归位于 `lfu_cache_test.go`。它通过 `TestLFUPutGetDel`、`TestCacheLen`、两个并发 Put/Get 测试和小容量淘汰测试验证二级集合的删除、长度、枚举与壳表保留语义。Rust 的 `lfu_cache_test.rs` 保留了相应意图。
 
 ## 扩展指南
 
@@ -95,13 +88,3 @@ RustCodeGraph 的精确节点查询确认了本文件六个方法的定义，并
 - 测试必须放在独立文件。单分片行为可新增同目录 `key_set_test.rs` 并由 `lib.rs` 的 `#[cfg(test)] #[path = ...]` 接入；涉及分片路由的测试应扩展 `key_set_shard_test.rs`，涉及对外缓存语义和并发的测试应扩展 `lfu_cache_test.rs`，并参考 `lfu_cache_test.go` 的同名场景。
 
 性能风险集中在锁持有时间、`Keys` 的 O(n) 分配、`Clear` 的批量析构和热点键所在分片的竞争；兼容风险集中在 Go/Rust 空值差异、无序枚举和弱一致快照语义。
-
-## 验证依据
-
-- 目标源码：`pkg/statistics/handle/cache/internal/lfu/key_set.rs`，共 74 行；核对了 `keySet` 字段和六个方法的完整实现。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/cache/internal/lfu` 找到本文件及相邻 Go/Rust 实现和测试；精确 `node` 查询覆盖 `keySet`、`Remove`、`Keys`、`Len`、`AddKeyValue`、`Get`、`Clear`，并查询了 `key_set_shard.rs::Get/AddKeyValue` 与 `lfu_cache.rs::Put/Values`。
-- crate 与模块：`pkg/statistics/handle/cache/internal/lfu/Cargo.toml`、`lib.rs`。
-- 直接调用链：`key_set_shard.rs`、`lfu_cache.rs`；通过精确符号查询和 `rg` 直接引用交叉验证。
-- Go 对照：`key_set.go`、`key_set_shard.go`、`lfu_cache.go`。
-- 独立测试：`key_set_shard_test.rs`、`lfu_cache_test.rs`、`lfu_cache_test.go`。当前没有同名 `key_set_test.rs`，所以单分片逻辑由分片层和 LFU 对外测试间接覆盖。
-- 人工复核结论：本文件存在的原因、写入/回落/淘汰/枚举/清理流程、锁与 `Arc` 生命周期、Go 差异及安全扩展位置均可由上述符号和文件反查；没有把未接线能力描述为已支持。

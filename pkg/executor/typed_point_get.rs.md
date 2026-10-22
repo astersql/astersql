@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 入口 `pkg/executor/lib.rs` 将其公开为 `pub mod typed_point_get`，依赖边界由 `pkg/executor/Cargo.toml` 声明。它把物理计划 `PointGetPlan` 落成一个实现 `ExecExecutor` 的单行读取器，位于“planner 产出点查计划 → `builder::BuildTypedPointGet` 构建 → session runtime 绑定快照/事务 → executor 输出 `Chunk`”这条链上。
-
-直接生产入口是 `pkg/executor/builder.rs::BuildTypedPointGet`。实际 session 接线位于 `pkg/session/runtime/scan_adapter_runtime.rs`：普通路径返回 `TypedPointGet`，满足 MaxTS、非锁读、无事务、无显式分区且非 table-dual 等条件的 prepared point get 则缓存 `Arc<Mutex<TypedPointGet>>`，并通过 `SharedTypedPointGet` 暴露同一 actor。
+把物理计划 `PointGetPlan` 落成一个实现 `ExecExecutor` 的单行读取器，位于“planner 产出点查计划 → `builder::BuildTypedPointGet` 构建 → session runtime 绑定快照/事务 → executor 输出 `Chunk`”这条链上。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/executor/point_get.go::PointGetExecutor`。两版共同保留了核心语义：一次 `Next` 至多一行；唯一索引先找 handle 再取 record；global index 可携带 partition ID；RC 锁只锁存在键，RR 在读取前锁键；事务本地值优先；唯一索引命中但 record 缺失时强一致性报 8133、弱一致性返回空。
+`RecreatedFromPlan` 对应 Go 的 `Init/Recreated` 复用意图，但 Rust 只接受严格相同且非锁、非显式分区的形状（调用侧还限制 MaxTS、无事务等条件）。
 
-Rust 将 Go 中紧耦合于 `sessionctx.Context`、transaction 与 snapshot 的部分拆到 `PointLockRuntime` 和 `OwnedKVSnapshotSource`，并新增明确的 `opened/closed` 状态及 `SharedTypedPointGet` 缓存 actor。`RecreatedFromPlan` 对应 Go 的 `Init/Recreated` 复用意图，但 Rust 只接受严格相同且非锁、非显式分区的形状（调用侧还限制 MaxTS、无事务等条件）。
-
-当前 Rust 文件不是 Go 文件全部能力的等量搬运。Go 实现还直接处理临时/缓存表、txn/read-replica scope、runtime stats/index usage、common-handle 特例、分区名过滤与 DDL ignore、row checksum 和虚拟列填充等；这些逻辑在本 Rust 文件中没有对应分支，不能从 Go 行为推断为已支持。Rust 的实际行解码能力以 `TypedKVScan` 及当前 builder/session 接线为准。
+Go 实现还直接处理临时/缓存表、txn/read-replica scope、runtime stats/index usage、common-handle 特例、分区名过滤与 DDL ignore、row checksum 和虚拟列填充等；这些逻辑在本 Rust 文件中没有对应分支，不能从 Go 行为推断为已支持。
 
 ## 扩展指南
 
@@ -96,12 +92,3 @@ Rust 将 Go 中紧耦合于 `sessionctx.Context`、transaction 与 snapshot 的�
 - 增加统计或 page-key 语义时，应明确 index key 与 record key 是否计入、何时清零、`TakeLockKeys` 是否消费，并同步 `SharedTypedPointGet` 的转发接口。
 - 对齐 Go 的 checksum、虚拟列、common handle、临时表或运行统计时，应以 `pkg/executor/point_get.go` 的相应分支为语义基线，但只接入当前 Rust 架构所需的 decoder、builder 和 session 边界，不用桩或编译通过代替行为验证。
 - 性能敏感点是点查 RPC 次数、索引 key 编码、mutex 临界区和不必要的数据克隆；功能扩展应保持句柄直查单次 KV、索引查最多两段 KV 的基本路径，并用精确测试验证空结果不会额外扫描。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`explore "pkg/executor/typed_point_get.rs TypedPointGetExecutor"` 与 `node --file pkg/executor/typed_point_get.rs` 核对了完整 574 行实现；对 builder、session runtime、Rust 测试和 Go 对照文件执行了按行 `node` 查询。图显示本文件被 `pkg/session/runtime/scan_adapter_runtime.rs` 使用。
-- 源码与接线：`pkg/executor/typed_point_get.rs`、`pkg/executor/builder.rs::BuildTypedPointGet`、`pkg/session/runtime/scan_adapter_runtime.rs::{SessionPointLockRuntime, BuildPhysicalExecutor 相关分支}`、`pkg/executor/lib.rs`。
-- crate 边界：`pkg/executor/Cargo.toml` 的 package、lib、feature、porting metadata 与相关本地依赖声明。
-- 独立 Rust 测试：`pkg/executor/typed_point_get_test.rs` 覆盖句柄点查/无范围迭代器、分区索引、table-dual、缺失索引、8133、规范索引编码、结构化 reporter、弱一致性和快照重绑定。该文件当前没有锁运行时专用单元测试，因此锁语义还以实现与 session runtime 代码为直接证据。
-- Go 对照：`pkg/executor/point_get.go::{buildPointGet, PointGetExecutor.Init, Open, Close, Next, getAndLock, lockKeyBase, get}`；用于确认共同语义及明确 Rust 尚未覆盖的能力。
-- 本任务是纯文档分析，依计划不运行 Cargo。交付前另运行任务指定的 11 章节结构命令，并人工复核所有“已支持”陈述都能回链到上述实现或测试。

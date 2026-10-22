@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`timer.rs` 是 `astersql-timer-api` crate 的定时器领域模型与调度计算核心。crate 根模块 `pkg/timer/api/lib.rs` 以 `pub mod timer` 声明本模块，并通过 `pub use timer::*` 再导出其公共 API；`pkg/timer/api/Cargo.toml` 则将 crate 根设为 `lib.rs`，声明 `chrono`、`chrono-tz`、`cron`、`fail` 等直接依赖，并以 `package.metadata.porting.go-package = "pkg/timer/api"` 记录 Go 对照包。
-
-该文件位于存储抽象与 runtime 之间：它定义存储和运行时共同交换的 `TimerSpec`、`TimerRecord`、手动请求、事件状态、时区位置以及调度策略。它不负责持久化、轮询或执行 Hook；这些职责分别位于 `pkg/timer/api/store.rs`、`pkg/timer/api/mem_store.rs`、`pkg/timer/runtime/*` 和 `pkg/timer/api/hook.rs`。
+用 `SchedEventPolicy` 统一 INTERVAL 与 CRON 两种“根据 watermark 求下一触发时间”的策略，并由 `CreateSchedEventPolicy` 按字符串类型构造具体实现。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph（索引状态：11,467 文件、307,296 节点）确认的重要�
 
 ## 与 Go 版本的对应关系
 
-主要一一对应关系来自 `pkg/timer/api/timer.go`：Rust 的策略常量、`SchedEventPolicy`、两种策略、`ManualRequest`、`EventExtra`、`TimerSpec`、状态常量、`TimerRecord`、`NextEventTime`、`Clone` 和 `ValidateTimeZone` 均复刻同名 Go 概念。`pkg/timer/api/timer_test.go` 与 `schedule_policy_test.go` 的校验顺序、错误片段、固定间隔、时区换算、Cron 宏/标准表达式和无未来日期案例，在 Rust 的 `timer_test.rs` 与 `schedule_policy_test.rs` 中有对应覆盖。
-
 语言映射差异包括：Go `time.Time` 零值在 Rust 中主要映射为 `Option<Timestamp>::None`；Go 指针返回值映射为拥有所有权的值或 `Box<dyn SchedEventPolicy>`；Go 匿名嵌入通过 Rust `TimerSpec` 字段加 `Deref/DerefMut` 模拟；Go `*time.Location` 映射为显式 `TimerLocation` 枚举。
 
 Rust 还包含必要兼容接线：Go `robfig/cron.ParseStandard` 接受五段表达式并以 0 表示星期日，而 Rust `cron` crate 使用秒字段并采用不同星期编号，所以 Rust 增加标准化函数；`schedule_policy_test.rs::cron_day_of_week_step_matches_robfig_standard_parser` 和 `cron_rejects_day_seven_like_robfig` 专门锁定该语义。Rust 的 `TimerRecord::NextEventTime` 对命名时区增加 DST 安全路径，这是为了保持 Go `time.Location` 的运行效果，而不是新的业务策略。
@@ -87,11 +83,3 @@ Rust 还包含必要兼容接线：Go `robfig/cron.ParseStandard` 接受五段�
 - 扩充时区格式时，修改 `parse_location`/`parse_numeric_offset` 和 `ValidateTimeZone`，并同步 `timer_test.rs::time_zone_parser_matches_tidb_system_colon_and_bounds`；需确认 `pkg/timer/api/store.rs`、`mem_store.rs` 和 `pkg/timer/tablestore/store.rs` 对 `Location` 的构造/持久化仍一致。
 - 添加 `TimerSpec` 或 `TimerRecord` 字段时，除了本文件，还要检查 `store.rs` 的更新条件、`mem_store.rs` 的规范化、`tablestore` SQL 编解码、client options、runtime cache/worker 和 TTL 同步。字段若参与 CAS 或事件状态机，不能只依赖 `Clone`/derive 默认行为。
 - 保持测试逻辑独立在 `timer_test.rs`、`schedule_policy_test.rs` 等测试文件中；不要把测试内嵌回生产源文件。性能上，策略当前按调用构造并解析表达式，若引入缓存，需要明确失效条件、线程共享方式以及时区数据库更新语义。
-
-## 验证依据
-
-直接读取并核对的生产/配置文件：`pkg/timer/api/timer.rs`、`pkg/timer/api/lib.rs`、`pkg/timer/api/Cargo.toml`、Go 对照 `pkg/timer/api/timer.go`。该目录不存在 `doc.go`。
-
-直接读取并核对的测试：`pkg/timer/api/timer_test.rs`、`pkg/timer/api/schedule_policy_test.rs`、`pkg/timer/api/timer_test.go`、`pkg/timer/api/schedule_policy_test.go`。其中覆盖必填字段和错误顺序、合法/非法时区、启停行为、INTERVAL 解析与计算、Cron 宏/五段表达式、星期步长、拒绝星期 7、闰日与无未来日期。
-
-RustCodeGraph 执行过 `status`、`files --filter pkg/timer/api`、针对 `timer.rs TimerRecord TimerSpec NextEventTime CreateSchedEventPolicy` 的 `explore`、`query TimerRecord`、`query NextEventTime`，以及索引文件的 `node --file` 查询。图证据确认本文件 34 个符号、由 20 个文件使用，并确认策略构造/校验/调度计算的内部调用边和 store、runtime、tablestore、TTL 相关上游使用点。最终结构以任务指定命令验证固定 11 个二级章节；本任务为纯文档分析，未运行 Cargo。

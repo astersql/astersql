@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应源码](runaway_adapter.rs) 是 `astersql-store-driver` crate 内部的 Coprocessor runaway/resource-control 类型桥。`pkg/store/driver/lib.rs` 以私有 `mod runaway_adapter` 装配它；唯一生产调用点位于 `pkg/store/driver/kv_adapter.rs::cop_request`，该调用点把 canonical `astersql_kv::Request` 中的共享检查器和 RU 拦截器转换为 `astersql_store_copr::CopRequest` 所需的 trait object。
-
-文件不实现 runaway 判定、RU 计费算法、RPC、重试或任务调度。它只在 `astersql-kv` 的 Go 风格资源组接口与 `astersql-store-copr` 的执行接口之间转换请求/响应数据、动作枚举和错误。`pkg/store/driver/Cargo.toml` 对两者均使用工作区路径依赖，说明该边界属于 driver crate 内部接线，而不是对外公开 API。
+只在 `astersql-kv` 的 Go 风格资源组接口与 `astersql-store-copr` 的执行接口之间转换请求/响应数据、动作枚举和错误。
 
 ## 核心职责
 
@@ -94,11 +92,9 @@ runaway processed-keys 的清理由 Coprocessor iterator 管理：并发路径�
 
 ## 与 Go 版本的对应关系
 
-仓库没有同名 `pkg/store/driver/runaway_adapter.go`。Go 的 `pkg/kv/kv.go::Request` 直接持有 `resourcegroup.RunawayChecker`，`pkg/store/copr/coprocessor.go` 在发送前调用 `BeforeCopRequest`，在发送错误和成功响应统计后调用 `CheckThresholds`；`CoolDown` 同样影响 Coprocessor 并发。这是 `KVRunawayChecker` 所保持的主流程语义。
+Rust 需要额外适配器，是因为 canonical `astersql-kv` 与独立 `astersql-store-copr` crate 使用不同的请求、响应、RU、动作和错误类型。Go 的 resource-control interceptor 由 `pkg/domain/runaway.go` 通过 `tikv.SetResourceControlInterceptor(control)` 安装到 client-go；Rust 则允许 `kv::Request.ResourceControlInterceptor` 随请求传入，并在本文件转换后由本仓库 Coprocessor worker执行预扣和结算。
 
-Rust 需要额外适配器，是因为 canonical `astersql-kv` 与独立 `astersql-store-copr` crate 使用不同的请求、响应、RU、动作和错误类型。Go 主链可把同一 interface 直接向下传递，不需要这层显式类型转换。Go 的 resource-control interceptor 由 `pkg/domain/runaway.go` 通过 `tikv.SetResourceControlInterceptor(control)` 安装到 client-go；Rust 则允许 `kv::Request.ResourceControlInterceptor` 随请求传入，并在本文件转换后由本仓库 Coprocessor worker执行预扣和结算。
-
-对应关系不是逐行机械翻译：Rust 的 interceptor 汇总 store-batch 子响应、传递可取消等待标志，以及在 adapter 中按字符串区分取消错误，均应以当前 Rust 源码和独立测试为准。Go 对照提供调用时机与 runaway 行为基线，但不能证明 Rust 特有桥接字段已经自动同步。
+Go 对照提供调用时机与 runaway 行为基线，但不能证明 Rust 特有桥接字段已经自动同步。
 
 ## 扩展指南
 
@@ -109,14 +105,3 @@ Rust 需要额外适配器，是因为 canonical `astersql-kv` 与独立 `asters
 - 修改共享状态或 reset 时机时，需要同时审查 `RunawayWorkerCompletion`、lite iterator 完成路径、并发/重试行为与 `pkg/resourcegroup/runaway/checker_test.rs` 的累计阈值测试。
 
 测试必须继续放在独立文件中。最直接的回归面是 `pkg/store/driver/coprocessor_adapter_test.rs`；底层 checker 逻辑属于 `pkg/resourcegroup/runaway/checker_test.rs`，底层分页 interceptor 逻辑属于 `pkg/kv/paging_resource_control_test.rs`。兼容风险集中在错误类型/文本、动作枚举和字段单位；性能风险集中在每次 RPC 重试的克隆、batch 汇总遍历及底层共享锁等待。
-
-## 验证依据
-
-- 目标源码：`pkg/store/driver/runaway_adapter.rs`，核实两个包装器、两个构造器、固定 `Debug`、四个 runaway 转发入口、请求快照及响应汇总。
-- crate 装配：`pkg/store/driver/Cargo.toml`、`pkg/store/driver/lib.rs`，核实 crate 名、`astersql-kv`/`astersql-store-copr` 路径依赖和私有模块可见性。
-- 生产调用链：`pkg/store/driver/kv_adapter.rs::cop_request` 与 `impl kv::Client for TikvStore::Send`；`pkg/store/copr/coprocessor.rs` 的 worker 请求流程、`RunawayWorkerCompletion` 和 `Store::send` 并发降级逻辑。
-- canonical 契约：`pkg/kv/lib.rs::resourcegroup`，核实请求/响应信息、RU、动作、共享 trait 及 cancellable 默认实现。
-- 独立 Rust 测试：`pkg/store/driver/coprocessor_adapter_test.rs` 中 `kv_request_runaway_checker_reaches_cop_wire_and_response_thresholds`、`production_cop_resource_control_ru_reaches_runaway_across_retry`、`kv_adapter_preserves_predicted_read_bytes`、`precharge_waits_before_real_kv_send`、`precharge_close_cancels_before_network_send`、`kv_adapter_preserves_mvcc_settlement_data`；底层语义另由 `pkg/resourcegroup/runaway/checker_test.rs` 与 `pkg/kv/paging_resource_control_test.rs` 覆盖。
-- Go 对照：`pkg/kv/kv.go`、`pkg/store/copr/coprocessor.go`、`pkg/resourcegroup/checker.go`、`pkg/resourcegroup/runaway/checker.go`、`pkg/domain/runaway.go` 及相邻 Go 测试。未发现同路径 Go adapter，因此文档区分了直接接口传递与 Rust 类型桥接。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标文件 16 个符号；`node --file` 核实目标源码和相关 Rust 调用实现；`query` 定位两个结构体及关键 trait 方法；文件级关系给出 `kv_adapter.rs` 和 `coprocessor_adapter_test.rs`。函数级动态 trait 调用未产生额外 callers/callees 输出，故以精确源码引用补证。
-- 本任务只新增文档，按总计划不运行 Cargo；完成验证使用固定 11 章节的结构检查，并人工复核上述调用链、边界和扩展点均有本地源码或独立测试依据。

@@ -2,15 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-extworkload` crate 的后台工作负载管理契约层，源码由
-[`pkg/extworkload/lib.rs`](lib.rs) 以 `mod external_workload` 装入并通过
-`pub use external_workload::*` 从 crate 根重新导出。它不负责建连或发送 RPC，而是用
-`Manager` trait 统一上层对 GCV2、TTL 和 Auto Analyze 控制器操作的依赖；具体实现位于
-[`pkg/extworkload/manager.rs`](manager.rs) 的 `impl Manager for manager`。
-
-[`pkg/extworkload/Cargo.toml`](Cargo.toml) 将该目录定义为 `astersql-extworkload` 库，入口为
-`lib.rs`，直接依赖客户端子 crate、Tokio 与 Tonic。Cargo 的
-`package.metadata.porting.go-package = "pkg/extworkload"` 也明确了其 Go 对照包。
+用 `ManagerError` 抹平具体实现的错误类型，使上层只依赖一个可跨线程传递的错误边界。
 
 ## 核心职责
 
@@ -155,14 +147,7 @@ RPC 返回后取消。本文件不创建线程、异步任务或通道。控制�
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照为 [`pkg/extworkload/external_workload.go`](external_workload.go)。两版都定义
-`Manager`，方法组按 Close/身份、GCV2、TTL、Auto Analyze 排列，参数的 ID 宽度和时长
-语义保持一致。主要语言映射为：
-
-- Go `error` → Rust `Result<(), ManagerError>`。
 - Go `context.Context` 值 → Rust `&context::Context` 借用。
-- Go `*keyspacepb.KeyspaceMeta` → Rust `Option<&KeyspaceMeta>`。
-- Go 可空接口 → Rust 构造及存储边界上的 `Option<Box<dyn Manager>>`。
 - Go 接口隐式可由实现满足 → Rust 显式 `impl Manager for manager`。
 
 当前存在一项有意的 Rust 兼容层差异：Go 只公开 `RegisterTTLTableInfo`，Rust trait 同时要求
@@ -193,23 +178,3 @@ trait 的默认行为。
 桥接导致 TTL 注册行为分叉。正确性风险包括 safe point/任务 ID 语义误用、忽略 `Meta=None`
 和丢失 context。性能风险集中在共享 `Mutex` 持锁期间执行网络调用；接口本身不提供并发队列
 或批处理能力。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；
-  `files --filter pkg/extworkload` 确认目标及同目录实现/测试集合。
-- RustCodeGraph 源码与结构：
-  `node --file pkg/extworkload/external_workload.rs --offset 1 --limit 500`；目标文件共 145 行、
-  19 个符号，并报告直接被 `manager_test.rs`、`session/runtime/session.rs` 使用。
-- RustCodeGraph 对照读取：`manager.rs`、`util.rs`、`lib.rs`、
-  `session/runtime/session.rs`、`external_workload.go`、`manager.go`。
-- crate 边界：`pkg/extworkload/Cargo.toml`；模块再导出：`pkg/extworkload/lib.rs:434-436`。
-- Rust 独立测试：`pkg/extworkload/manager_test.rs` 验证生命周期、Ping 失败、全部转发方法的
-  deadline/指标、默认 TTL 桥接、错误传播和时长截断；
-  `pkg/extworkload/migration_aster_unit_test.rs` 验证 Go 参数及角色语义；其他 trait 替身测试
-  路径列于“扩展指南”。
-- Go 对照与测试：`pkg/extworkload/external_workload.go`、`manager.go`、`manager_test.go`。
-- 上层接线补充检索：在 `pkg/domain`、`pkg/session`、`pkg/store`、`pkg/ddl`、
-  `pkg/statistics` 中按全部 trait 方法名执行 `rg`，确认 GCV2 与 TTL 的生产调用点；本次未发现
-  Auto Analyze 两个方法的生产 Rust 调用点，故保留为“未验证完整接线”。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前另以固定标题命令验证恰有 11 个二级章节。

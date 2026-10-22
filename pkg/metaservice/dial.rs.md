@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`dial.rs` 是 `astersql-metaservice` crate 中把同步的 BR、Lightning、IMPORT INTO 等调用方接到异步 PD/etcd 客户端的连接层。crate 根模块在 `pkg/metaservice/lib.rs` 中声明并重新导出 `dial`；依赖边界由 `pkg/metaservice/Cargo.toml` 确认，网络实现分别使用带 TLS feature 的 `etcd-client 0.19`、固定 tag `v0.4.2-aster.10` 的 `tikv-client` 以及 Tokio。文件自身不管理更高层元数据业务，而是完成三件事：取得完整 keyspace 元数据、根据 meta-service group 规则选择 etcd endpoints、返回自动附加 keyspace 前缀的同步客户端。
-
-真实上游分为两类。`DialEtcdClient` 供 `br/pkg/task/common.rs::dialEtcdWithCfgAndFactory`、`br/pkg/task/operator/crr_checkpoint.rs::dialEtcdWithCfgAndFactory` 和 `lightning/pkg/importer/precheck_impl.rs::dialEtcdWithCfg` 使用；`NewEtcdClientFromStore` 则供 `lightning/pkg/importer/import.rs::newEtcdClientForLocalBackend` 与 `pkg/executor/importer/table_import.rs::newEtcdClientForAllocatorRebase` 借用现有 store 的 PD 状态。`pkg/store/driver/tikv_driver.rs` 中 `TikvStore` 对 `EtcdMetadataStore` 的实现是后一条链的生产实现。
+`ConnectMetadataPD` 创建只用于成员发现和一次 keyspace 查询的 `tikv_client::MetadataClient`，再由 `NetworkPd` 收窄为本文件需要的 `MetadataPdClient` 接口。
 
 ## 核心职责
 
@@ -86,16 +84,12 @@ RustCodeGraph 的文件级索引显示 `dial.rs` 被 BR、Lightning、executor/s
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metaservice/etcd.go`，测试是 `pkg/metaservice/etcd_test.go`。主要语义保持一致：
-
 - Rust `ResolveEtcdDialInfo` 对应 Go `resolveEtcdDialInfo`：都仅过滤空字符串、优先保留 caller endpoints、专属 group 跳过 PD member discovery，并从 keyspace ID 建 `/keyspaces/tidb/<id>` namespace。
 - Rust `DialEtcdClient` 对应同名 Go 函数：都使用 V1 discovery PD client、对非空 keyspace 名称显式执行一次 metadata lookup、缺失时把名称放入错误，并在返回前关闭临时 PD client。Rust 将 caller component 与 PD options 封装进上游/`tikv-client` 固定连接接口，因此签名比 Go 少这些参数。
 - Rust `NewEtcdClientFromPDClient` 对应 Go 导出函数和内部 `newEtcdClientFromPDClient`。Go 通过 `clientv3.Config.Context/Endpoints` 与 `etcd.SetEtcdCliByNamespace` 改写客户端；Rust 用 `ConnectOptions` 建连接，并在每个 KV 方法中显式拼接/剥离 namespace。
 - Go 直接返回异步生态中的 `*clientv3.Client`；Rust 为同步移植代码提供 `NamespacedEtcdClient` 和专属 `RpcWorker`。Rust 目前只暴露本文件列出的 KV/lease 子集，不能据此推断已经覆盖 Go etcd client 的全部 API。
 - Go 用 `tikv.NewCodecV2` 与 `keyspace.MakeKeyspaceEtcdNamespace` 生成命名空间；Rust 直接检查 24 位 ID 上限并格式化相同路径。新增 codec 模式或 namespace 规则时必须同时核对这两处，而不能只改字符串。
 - Rust 独有 `EtcdMetadataStore`/`NewEtcdClientFromStore`，用于在 Rust store 边界借用已经解析好的 PD 与 metadata，避免另建 PD client；其所有权意图与 Go 内部直接复用已有 store client 的调用方式相同，但不是 Go 文件中的同名 API。
-
-`pkg/metaservice/dial_test.rs` 与 Go 测试共同证明 proxy endpoint 保留、专属 group 不做成员发现、缺失 metadata 的错误文本与单次加载。Rust 的 ignored real-etcd 测试还覆盖 namespace 读写、lease、取消、关闭和 PD 所有权；默认单元测试不会启动真实 etcd。
 
 ## 扩展指南
 
@@ -106,14 +100,3 @@ RustCodeGraph 的文件级索引显示 `dial.rs` 被 BR、Lightning、executor/s
 - 改动 PD 生命周期时需明确两条所有权路径：`DialEtcdClient` 必须在所有退出路径关闭临时 PD；`NewEtcdClientFromStore` 必须继续借用而不能关闭 store-owned PD。现有 `factory_*` 测试应同步扩充成功与失败计数断言。
 - 若要提高单 session 并发度，不能仅把 worker 改成多线程 runtime；当前队列顺序、`Client` clone、close 排队以及同步返回共同形成可观察行为。应先设计 close 与在途请求的顺序保证，并添加独立并发回归测试。
 - 真实网络行为依赖 ignored 测试的 `ASTER_ETCD_TEST_ENDPOINT`。新增 lease/事务/watch 等行为时，应同时提供无需外部服务的确定性单元测试和显式 opt-in 的真实服务测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`pkg/metaservice/dial.rs` 被识别为 604 行、63 个符号，`pkg/metaservice/dial_test.rs` 为 11 个符号。
-- RustCodeGraph 源码与符号查询：读取 `pkg/metaservice/dial.rs` 全部 1–604 行；精确查询确认 `DialEtcdClient`（554）、`NewEtcdClientFromPDClient`（510）、`ResolveEtcdDialInfo`（281）和 `NewEtcdClientFromStore`（589）。`node dial.rs::DialEtcdClient` 给出到 `ConnectMetadataPD`、`NewEtcdClientFromPDClient` 与 `close` 的直接 trail；文件级调用边确认 `ResolveEtcdDialInfo -> get_pd_addrs/get_info`、`NewEtcdClientFromPDClient -> ResolveEtcdDialInfo`、`NewEtcdClientFromStore -> pd_client/keyspace_meta/NewEtcdClientFromPDClient`。
-- crate 与模块边界：读取 `pkg/metaservice/Cargo.toml`、`pkg/metaservice/lib.rs`；目标包没有 `doc.go`。Cargo 声明确认 `etcd-client` TLS、Tokio 与带已发布 tag 的 `tikv-client` 依赖。
-- 直接实现依赖：读取 `pkg/metaservice/etcd.rs` 的 `Context`、`PdClient`、`get_pd_addrs`，以及 `pkg/metaservice/metamanager.rs` 的 `MetaServiceError`、group 常量和 `get_info/get_group`。
-- Go 对照：读取 `pkg/metaservice/etcd.go` 全文及 `pkg/metaservice/etcd_test.go` 的相关测试，核对 V1 PD、单次 metadata lookup、endpoint 优先级、namespace 与错误文本。
-- Rust 测试：读取 `pkg/metaservice/dial_test.rs` 全文；覆盖空 endpoint 过滤、专属 group、PD 加载/关闭计数、无效 group，以及 opt-in real-etcd 的 namespace、lease、取消、关闭和所有权。
-- 上游证据：局部读取 `br/pkg/task/common.rs`、`br/pkg/task/operator/crr_checkpoint.rs`、`lightning/pkg/importer/precheck_impl.rs`、`lightning/pkg/importer/import.rs`、`pkg/executor/importer/table_import.rs`、`pkg/store/driver/tikv_driver.rs` 与 `pkg/session/runtime/session.rs` 的直接调用/trait 实现位置。
-- 本任务只新增说明文档，不修改运行时代码，按计划不运行 Cargo。交付前使用任务指定命令确认目标文件存在且恰好包含上述 11 个固定二级标题，并人工复核所有“已支持”结论均能回指到上述源码、调用边或测试。

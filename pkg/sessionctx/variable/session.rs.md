@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-sessionctx-variable` crate 中面向运行时的会话状态实现，由 [`lib.rs`](./lib.rs) 以 `pub mod session` 暴露。它把一次客户端会话中会反复被协议层、SQL 会话运行时、规划器和执行器读取或更新的状态聚合到 `SessionVars`，同时提供事务重试、事务上下文、用户变量、计划缓存参数、语句文本脱敏、运行时过滤器等小型状态机。它不执行 SQL、存储 IO 或事务提交；这些对象仍由 `pkg/session`、`pkg/planner`、`pkg/executor` 和存储模块持有。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，包名为 `astersql-sessionctx-variable`。本文件直接使用 `chrono`、`kv`、`parser-auth`、`parser-ast`、`stmtctx-dependency` 和 `vardef`；系统变量的规范定义、校验与 hook 实现在同 crate 的 [`sysvar.rs`](./sysvar.rs)、[`sysvar_builtins.rs`](./sysvar_builtins.rs) 和 [`variable.rs`](./variable.rs)，而不是本文件自行复制一套注册表。
+`SessionVars` 保存会话身份、连接状态、当前数据库、事务及语句上下文、系统变量快照、优化器开关、计划/列 ID、耗时与慢日志相关状态，并提供这些状态的窄接口。
 
 ## 核心职责
 
@@ -114,7 +112,6 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并点名 `p
 
 ## 与 Go 版本的对应关系
 
-- [`session.go`](./session.go) 的 `RetryInfo` / `retryInfoAutoIDs` 与 Rust 的同名结构具有相同的“记录、游标读取、重置、清空”流程。Rust 为共享 `ResetOffset` 加 mutex，并在 `Clone` 时复制锁内状态。
 - Go `TransactionContext` 通过嵌入 `TxnCtxNeedToRestore` / `TxnCtxNoNeedToRestore` 区分 savepoint 边界；Rust 用两个具名字段表达相同分类。Rust 当前只移植部分缓存/savepoint 操作，不能把 Go 的完整方法集视为已存在。
 - Go `UserVars` 用单个 `sync.RWMutex` 保护 Datum map 和类型 map；Rust 同样以一个 `RwLock<UserVarsState>` 保证两个 map 的一致快照，但值降为 `String`，`CloneVars` 返回具体 `UserVars`。
 - Go `PlanCacheParamList::String` 隐藏 non-prepared 参数；Rust保持该隐私行为。Go 使用 `types.Datum` 的智能格式化，Rust当前直接拼接字符串。
@@ -132,15 +129,3 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并点名 `p
 - 扩展 `SET_VAR`：维持“首次旧值”“尽力恢复全部项”“binding 标记推进”的不变量，并在 [`session_hint_bridge_aster_unit_test.rs`](./session_hint_bridge_aster_unit_test.rs) 增加独立回归测试。
 - 扩展计划 ID、标量子查询、耗时或选择率：分别同步 [`session_planner_ids_aster_unit_test.rs`](./session_planner_ids_aster_unit_test.rs)、[`scalar_subquery_registry_aster_unit_test.rs`](./scalar_subquery_registry_aster_unit_test.rs)、[`slow_log_test.rs`](./slow_log_test.rs)；普通本文件状态行为放在 [`session_test.rs`](./session_test.rs)。测试逻辑保持在独立 `*_test.rs`，不要嵌入生产文件。
 - 修改 Go 对齐行为时，应逐项记录 Go `session.go` 的对应增量；不要顺手补齐 Go 文件中与该增量无关的完整子系统。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/session.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/session.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：`pkg/sessionctx/variable/sysvar_builtins_test.rs::range_count_threshold_sysvar_matches_go_contract` 检查 1000、2048、0、-1 钳制与恰一条 warning；Go `session.go::RangeMaxCount` 和 `sysvar.go` 的同名 SetSession 为行为对照。
-- 图索引：`rustcodegraph status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；文件节点给出 8 个使用文件。`query SessionVars --kind struct` 命中本文件 631 行，同时显示运行时/规划器相邻类型；对 `SetSystemVar`、`FinishHintStatement`、`RegisterScalarSubQ` 的 Rust method 查询未产生本文件节点，因此使用直接引用搜索补齐调用证据。
-- crate 与入口：已读 [`Cargo.toml`](./Cargo.toml) 和 [`lib.rs`](./lib.rs)，确认 crate 名、直接依赖、`pub mod session` 及测试模块装配。
-- Go 对照：已读 [`session.go`](./session.go) 中 RetryInfo、TransactionContext、UserVars、SessionVars、计划参数、惰性文本、系统变量、规划 ID、MPP、标量子查询和选择率相关定义；差异均按当前 Rust 实现表述。
-- 测试证据：已读 [`session_test.rs`](./session_test.rs)、[`session_hint_bridge_aster_unit_test.rs`](./session_hint_bridge_aster_unit_test.rs)、[`session_planner_ids_aster_unit_test.rs`](./session_planner_ids_aster_unit_test.rs) 与 [`scalar_subquery_registry_aster_unit_test.rs`](./scalar_subquery_registry_aster_unit_test.rs)，并检查更宽测试入口 [`tests/session_test.rs`](./tests/session_test.rs) 的直接引用。
-- 上游直接引用：已检查 `pkg/session/runtime/{session,planning,control,dispatch,explain_query}.rs`、`pkg/planner/{optimize,core/expression_rewriter}.rs` 和 `pkg/executor/adapter_slow_log.rs` 中对本模块符号的引用。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

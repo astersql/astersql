@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-charset` crate 的 GBK 编码实现。crate 边界由 `pkg/parser/charset/Cargo.toml` 定义，入口 `pkg/parser/charset/lib.rs` 声明 `pub mod encoding_gbk` 并通过 `pub use encoding_gbk::*` 导出本文件的公开项。通用查找入口 `pkg/parser/charset/encoding.rs::FindEncoding` 在字符集名为 `CharsetGBK` 时返回静态实例 `ENCODING_GBK_IMPL`。
-
-它位于 SQL 文本和字符数据处理的底层字符集层，不负责词法或语法分析本身。常规消费者经 `FindEncoding("gbk")` 获得 `&'static dyn Encoding`；另一路公开入口 `NewCustomGBKEncoder` 被 `pkg/util/collate/gbk_bin.rs::encode_char` 用来生成 GBK binary 排序键。
+用 `EncodingGbk` 实现通用 `Encoding` trait，包括名称、类型、字符边界探测、合法性检查、遍历、编解码和大小写转换。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@
 
 直接对照文件是 `pkg/parser/charset/encoding_gbk.go`：Go 的 `encodingGBK` 加 `encodingBase` 对应 Rust 的 `EncodingGbk` 加通用 `Encoding`/`Op` 框架；Go 的 `EncodingGBKImpl` 对应 `ENCODING_GBK_IMPL`；`GBKCase` 对应 `GBK_UNCHANGED_CASE_RANGES`；Go 的 `customGBKEncoder` 对应 `CustomGbkEncoder`。
 
-两端都保留 TiDB 的关键兼容行为：GBK 字符宽度探测、欧元符编码失败、`0x80` 解码异常、非法字符替换以及 MySQL 特殊大小写区间。Rust 还显式过滤 CP936 用户自定义区，因为 `encoding_rs` 按 WHATWG GBK 索引可能把它们映射为 Unicode 私用码点，而 Go `golang.org/x/text/encoding/simplifiedchinese.GBK` 相应表项未映射。
+Rust 还显式过滤 CP936 用户自定义区，因为 `encoding_rs` 按 WHATWG GBK 索引可能把它们映射为 Unicode 私用码点，而 Go `golang.org/x/text/encoding/simplifiedchinese.GBK` 相应表项未映射。
 
 实现形态并非逐类型复制：Go 通过 `encoding.Encoder` / `Decoder` 的流式 `Transform(dst, src, atEOF)` 返回消费计数，Rust 的公开自定义编码器一次接收完整切片并返回 `Result<Vec<u8>, EncodingError>`；Rust 的 `reset` 因无状态而为空。Rust 的 `go_simple_upper` / `go_simple_lower` 还专门处理标准库完整大小写映射可能多码点展开的问题，以复现 Go 单 rune 映射；`encoding_gbk_test.rs` 验证了 `ß`、`U+1F80` 和 `U+0130`。
 
@@ -89,13 +87,3 @@
 - 增删 MySQL GBK 大小写例外时同步维护 `GBK_UNCHANGED_CASE_RANGES` 与 Go `GBKCase`，扩充独立测试 `encoding_gbk_test.rs`，并确认不会引入多码点映射。
 - 若给 `CustomGbkEncoder` 增加缓存或流式状态，`reset` 必须真正恢复初始状态，并重新评估 `Sync`/`Send`、跨调用复用和错误后的状态；测试逻辑仍应放在独立 `*_test.rs` 文件，不应内嵌进本源文件。
 - 任何底层库升级都要重新核对 `0x80`、欧元符、CP936 私用区和不可表示字符，因为这些正是 `encoding_rs` 与 Go 行为可能分叉的边界。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/charset` 确认目标源、模块入口、Go 对照及独立测试均已索引。
-- RustCodeGraph 源码与内部流：`node --file pkg/parser/charset/encoding_gbk.rs` 核对了全部 256 行；`explore` 给出 `foreach_gbk -> peek_gbk/decode_gbk/encode_gbk`，以及 `Transform -> transform_gbk`、`ToUpper/ToLower -> gbk_case` 等边。
-- RustCodeGraph 上游证据：目标文件显示被 `pkg/util/collate/gbk_bin.rs` 使用；调用查询和该文件节点共同确认 `encode_char -> NewCustomGBKEncoder`。`encoding.rs` 节点确认 `FindEncoding(CharsetGBK) -> ENCODING_GBK_IMPL`。
-- crate 与装配：读取了 `pkg/parser/charset/Cargo.toml`、`pkg/parser/charset/lib.rs`、`pkg/parser/charset/encoding.rs`；确认 crate 名、`encoding_rs` 版本、公开再导出、测试挂载及通用错误/操作位语义。
-- Go 对照：读取了 `pkg/parser/charset/encoding_gbk.go` 和 `pkg/parser/charset/encoding_test.go`，核对 `EncodingGBKImpl`、`Peek`、`MbLen`、`GBKCase`、自定义编解码器及替换用例。
-- Rust 测试：读取了 `pkg/parser/charset/encoding_gbk_test.rs`、`encoding_test.rs`、`encoding_gb18030_2_aster_unit_test.rs`，并检查 `pkg/util/collate/gbk_bin_test.rs` 的直接消费者边界；覆盖往返、替换、合法性、欧元符、`0x80`、字符分块和简单大小写映射。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付前另以任务指定命令验证本文恰好具有 11 个固定二级章节，并人工复核未把推测写成已实现事实。

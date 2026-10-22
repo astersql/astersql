@@ -8,9 +8,7 @@ Go 对照：[`checkpoint.go`](./checkpoint.go)
 
 ## 文件定位
 
-`checkpoint.rs` 是 `astersql-br-pkg-checkpoint` crate 的通用 checkpoint 核心。crate 入口 [`lib.rs`](./lib.rs) 在 `stubs` 和 `ticker` 之后声明并重新导出本模块，再由 [`backup.rs`](./backup.rs)、[`restore.rs`](./restore.rs)、[`log_restore.rs`](./log_restore.rs) 和 [`manager.rs`](./manager.rs) 注入具体路径、值编码和存储后端。它不决定“备份还是恢复”，而是提供两类可复用能力：一类是 `CheckpointRunner<K, V>` 的异步聚合、周期刷盘、锁续期和失败重试；另一类是 checkpoint 数据、checksum、metadata 的序列化、读取、校验和清理。
-
-[`Cargo.toml`](./Cargo.toml) 将该目录定义为独立 library crate `astersql-br-pkg-checkpoint`，并以 `package.metadata.porting.go-package = "br/pkg/checkpoint"` 明确对应 Go 包。这里直接使用 `crossbeam-channel`、`serde`/`serde_json` 和 `sha2`；AES/CTR、随机数、UUID 等依赖主要由同 crate 的存储与桩边界消费，而不是本文件直接调用。
+这些边界分别由 `external_storage.rs`、`storage.rs`、各场景适配层及 `stubs.rs` 提供。
 
 ## 核心职责
 
@@ -96,8 +94,6 @@ append/checksum 使用无界通道，所以调用通常不会因主循环处理�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 [`checkpoint.go`](./checkpoint.go) 的类型和函数布局移植：同名常量、`RangeGroup*`/`CheckpointData`/`Checksum*` JSON 字段、`CheckpointRunner` 两级循环、`flusher` 失败队列、读写辅助函数和 16 个删除失败阈值均有直接对应。SHA-256 针对加密前明文，`DureTime` 使用纳秒表示，写后 failpoint、默认周期、4 工作者删除策略也与 Go 保持一致。
-
 需要注意的实现差异如下：
 
 - Go 用 goroutine、原生 channel、`select`、`sync.WaitGroup`；Rust 用 `std::thread`、crossbeam 通道、`Select`、`JoinHandle` 和锁。Rust 的 append/checksum 通道是无界的，而 Go 是无缓冲的；Rust 因此增加 done 前 drain。
@@ -107,7 +103,7 @@ Rust 文件按 [`checkpoint.go`](./checkpoint.go) 的类型和函数布局移植
 - Rust 清理使用 `thread::scope` 和共享迭代器模拟 Go `util.NewWorkerPool(4)` + `errgroup`。两者都在第 16 次失败时返回错误，但并发任务的具体停止时点可能不同。
 - Go 的 `checkpoint-more-quickly-flush` failpoint 可在主循环启动时重写 tick；本文件的 `startCheckpointMainLoop` 没有对应分支，测试改由 `Start*ForTest` 显式注入短周期。这是当前可见差异，修改相关测试/运维行为时应重新评估。
 
-[`checkpoint_test.rs`](./checkpoint_test.rs) 与 [`checkpoint_test.go`](./checkpoint_test.go) 保持场景对应：metadata、备份、storage/table 恢复、重试/不重试、日志恢复和锁测试均有同名或同意图覆盖。Rust 还增加了 checksum 写后 failpoint、4 工作者并发与零值 group-key JSON 的聚焦回归测试。
+Rust 还增加了 checksum 写后 failpoint、4 工作者并发与零值 group-key JSON 的聚焦回归测试。
 
 ## 扩展指南
 
@@ -118,11 +114,3 @@ Rust 文件按 [`checkpoint.go`](./checkpoint.go) 的类型和函数布局移植
 - 修改重试策略时需决定是否继续允许重复分片；当前写后失败会重写同一批次，所以上层读取与合并不能假设 exactly-once。若加入上限或退避，还要处理当前无界失败队列的内存风险。
 - 修改清理逻辑时只扩大明确授权的后缀集合，保留“先遍历再删除”以避免存储遍历期间变更，并用 `remove_checkpoint_data_uses_go_worker_pool_concurrency` 或新独立测试验证并发度、错误阈值和非目标文件保留。
 - 任何修改都应同时核对 `checkpoint.go`。如果有意偏离 Go，应在测试和文档中说明兼容性、持久化格式、性能及回滚影响，而不是只让 Rust 测试通过。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件，目标 `br/pkg/checkpoint/checkpoint.rs` 已索引，共识别 109 个符号；使用 `files --filter br/pkg/checkpoint`、`explore "checkpoint.rs in br/pkg/checkpoint: public types traits constants and control flow"`、对 `newCheckpointRunner`/`parseCheckpointData`/`removeCheckpointData` 的 `query`，以及按文件分段的 `node --file` 阅读确认符号与调用面。
-- 直接阅读：[`checkpoint.rs`](./checkpoint.rs) 全部 1,166 行；[`Cargo.toml`](./Cargo.toml)；[`lib.rs`](./lib.rs)；Go 对照 [`checkpoint.go`](./checkpoint.go)；Rust 独立测试 [`checkpoint_test.rs`](./checkpoint_test.rs)；Go 测试 [`checkpoint_test.go`](./checkpoint_test.go)。
-- RustCodeGraph 调用证据：`StartCheckpointRunnerForBackup`、`StartCheckpointRunnerForRestore`、`StartCheckpointRunnerForLogRestore` 和 manager 层连接场景入口；`checkpoint_test.rs` 调用测试构造器并覆盖 backup/restore/log restore/lock；更上层恢复接线可追到 `br/pkg/restore/snap_client/client.rs::InitCheckpoint`。
-- 关键测试证据：`checksum_flush_reports_go_post_write_failpoint` 验证先写后报错；`remove_checkpoint_data_uses_go_worker_pool_concurrency` 验证 4 路并发；`range_group_omits_zero_group_key_like_go_json` 验证 JSON 零值省略；`test_checkpoint_backup_runner` 验证追加、加密读取、checksum 与 metadata；`test_checkpoint_runner_retry*`/`test_checkpoint_runner_no_retry*` 验证允许重试重复和正常路径恰一次；`test_checkpoint_runner_lock` 验证锁冲突生命周期。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付结构检查要求文档存在且恰含十一个固定二级标题；具体命令和退出状态记录在最终交付说明中。

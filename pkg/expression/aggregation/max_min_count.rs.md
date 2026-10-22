@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现表达式聚合 crate `astersql-expression-aggregation` 中的 `MAX_COUNT` / `MIN_COUNT` 运行时聚合器：它不返回极值本身，而是返回当前最大值或最小值出现的次数。crate 边界由 [`Cargo.toml`](Cargo.toml) 声明，模块由 [`lib.rs`](lib.rs) 的 `mod max_min_count` 纳入并通过 `pub use max_min_count::*` 导出。
-
-它位于描述符和逐行执行之间。上游可由 [`descriptor.rs`](descriptor.rs) 的 `AggFuncDesc::GetAggFunc` 根据 AST 名称构造，也可由 [`aggregation.rs`](aggregation.rs) 的 `NewDistAggFunc` 从 TiPB `MaxCount` / `MinCount` 构造；下游则使用表达式求值、`Datum` 比较和排序规则完成状态更新。它不是 executor 中滑动窗口 `max/min count` 实现的替代品；本文件只实现 `expression::aggregation::Aggregation` 这一行式聚合接口。
+`maxMinCountFunction` 同时承载两种行为：`isMax == true` 统计最大非 NULL 值出现次数，`isMax == false` 统计最小非 NULL 值出现次数。
 
 ## 核心职责
 
@@ -87,11 +85,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`max_min_count.go`](max_min_count.go)。Rust 版本保留了 Go 的结构字段、五个聚合接口方法、单/双参数分支、NULL 与零计数过滤、首次值初始化、极值替换、平局累加及部分结果顺序。
-
 可见的语言层差异不改变算法：Go 使用嵌入的 `aggFunction`，Rust 使用具名字段；Go 用 `value.Copy(&evalCtx.Value)`，Rust 把拥有所有权的 `Datum` 赋给 `eval_ctx.Value`；Go 将求值和比较错误显式判断后返回，Rust 使用 `?`；Go 比较替换条件写成 `cmp == -1` / `cmp == 1`，Rust 接受任意负值 / 正值，语义更贴合一般三路比较结果。
 
-Go 的 [`aggregation_test.go`](aggregation_test.go) 中 `TestMaxMinCount` 验证原始值 `[2,3,3,1,1,NULL]` 得到最大/最小次数均为 2，并验证 Final 模式把部分结果合并为最大值次数 3、最小值次数 5。Rust 的 [`go_merge_44_test.rs`](go_merge_44_test.rs) 迁移了这些核心断言，并额外明确覆盖计数 0、计数 NULL、值 NULL 的忽略行为以及 Reset。Rust [`aggregation_test.rs`](aggregation_test.rs) 当前没有同名 `TestMaxMinCount` 转发，实际 Rust 回归入口是 `lib.rs` 注册的 `go_merge_44_test` 独立测试模块。
+Rust 的 [`go_merge_44_test.rs`](go_merge_44_test.rs) 迁移了这些核心断言，并额外明确覆盖计数 0、计数 NULL、值 NULL 的忽略行为以及 Reset。Rust [`aggregation_test.rs`](aggregation_test.rs) 当前没有同名 `TestMaxMinCount` 转发，实际 Rust 回归入口是 `lib.rs` 注册的 `go_merge_44_test` 独立测试模块。
 
 ## 扩展指南
 
@@ -101,14 +97,3 @@ Go 的 [`aggregation_test.go`](aggregation_test.go) 中 `TestMaxMinCount` 验证
 - 改变下推能力时，还需同步 `aggregation.rs::CheckAggPushDown`、`agg_to_pb.rs` 及其独立测试，而不能只修改本运行时聚合器。
 - 性能修改应保留单行至多一次值比较、双参数路径必要的行克隆和 `Datum` 所有权边界；对大分组而言，比较与 collator 调用是主要逐行成本。
 - 兼容性审查应覆盖 Complete、Partial1、Partial2、Final 四种相关模式、空输入、全部 NULL、并列极值、多个部分结果和重置复用。Dedup 当前被下推检查拒绝，不应在没有描述符与执行链证据时宣称支持。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；查询时目标 Rust 文件在索引中。
-- RustCodeGraph `node --file pkg/expression/aggregation/max_min_count.rs`：确认文件共 90 行、结构字段和五个 trait 方法，并显示该文件被 `descriptor.rs` 使用。
-- RustCodeGraph `node maxMinCountFunction`：确认 Rust 定义由 `descriptor.rs::GetAggFunc` 实例化；`node GetAggFunc` 显示 AST 名称到 `isMax`、collator 和具体结构的构造边。
-- RustCodeGraph `node aggregation.rs::NewDistAggFunc`：确认 TiPB `MaxCount` / `MinCount` 的分布式构造入口、模式映射和比较列选择，并显示 Rust 测试调用边。
-- 已核对源码/配置：[`max_min_count.rs`](max_min_count.rs)、[`aggregation.rs`](aggregation.rs)、[`descriptor.rs`](descriptor.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- 已核对 Go 对照与测试：[`max_min_count.go`](max_min_count.go)、[`aggregation_test.go`](aggregation_test.go) 的 `TestMaxMinCount`。
-- 已核对独立 Rust 测试：[`go_merge_44_test.rs`](go_merge_44_test.rs) 的 `go_merge_44_descriptor_and_pushdown`、`go_merge_44_complete_and_final_count_extrema`、`go_merge_44_outer_join_count_defaults_and_not_null_flag`；由 `lib.rs` 的 `#[path = "go_merge_44_test.rs"]` 注册。
-- 本任务按计划只做文档分析，未运行 Cargo。交付前另以固定正则验证本文恰好包含规定的 11 个二级章节，并人工检查未修改 Rust、Go、Cargo 或只读总计划。

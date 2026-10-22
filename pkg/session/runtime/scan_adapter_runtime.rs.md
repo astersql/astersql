@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-session` crate 的会话运行时层，由 `pkg/session/runtime.rs` 以私有模块 `scan_adapter_runtime` 装配。它为 `pkg/session/runtime/typed_adapter_bridge.rs` 中公开的 `SessionBoundAdapterOwner` 实现 `pkg/executor/adapter.rs` 定义的 `AdapterRuntime` trait，把 executor 的通用语句执行协议接到一个具体的 `ConcreteSession` 上。上游的 `pkg/session/runtime/planning.rs`、`explain_analyze.rs` 和 `typed_adapter_bridge.rs` 会创建 `SessionBoundAdapterOwner` 并交给 `ExecStmt`；真正的计划执行、悲观锁、会话状态和可观测性回调则经本文件落到 session、domain、KV 和各统计子系统。
-
-`pkg/session/Cargo.toml` 声明 crate 名为 `astersql-session`，并直接依赖本文件使用的 `astersql-executor`、`astersql-kv`、`astersql-domain`、planner core/operator、resource group、store driver、statement summary、TopSQL、metrics、plugin 和 chunk 等 crate。该文件不是独立公共 API：除 `statement_ru_install_state_from_session_vars` 为 `pub(super)` 外，类型和辅助函数均限制在 runtime 模块内部；对外可见的是 `runtime.rs` 再导出的 `SessionBoundAdapterOwner`。
+** 实现最大执行时间、SQL killer、prepared plan 收尾、found rows、CTE 清理、外键保存点、runaway checker、资源组、RU v2、慢查询、语句摘要、TopSQL、运行时统计、fair locking 和最终状态清理。
 
 ## 核心职责
 
@@ -82,14 +80,7 @@ TopSQL、runaway checker、prepared pending cache、FK savepoint、statement sta
 
 ## 与 Go 版本的对应关系
 
-仓库不存在 `pkg/session/runtime/scan_adapter_runtime.go` 或同名 Go 类型，因此不能建立逐行或单文件一一映射。`pkg/session/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/session"` 说明 crate 的总体移植来源是 Go `pkg/session`；本文件的行为证据分散在以下 Go 实现中：
-
-- `pkg/executor/adapter.go`：`ExecStmt` 的 build/open/next、悲观锁重试、finish、fair-locking 指标和 `SummaryStmt` 主流程，是 Rust `AdapterRuntime` 回调顺序的主要语义基准。
-- `pkg/session/session.go`：会话 process info、SQL killer、慢日志、语句变量和执行期资源控制状态；其中 `session.SetProcessInfo` 对应本文件的 `SetProcessInfo` 边界。
-- `pkg/session/txnmanager.go`：`OnPessimisticStmtStart`、`OnPessimisticStmtEnd`、`OnStmtCommit` 等事务管理回调，对应 Rust 中同名 adapter 方法和 canonical transaction stage。
-- `pkg/session/txn.go`：`LazyTxn.LockKeys` 及 fair-locking start/retry/cancel/done，提供锁与事务生命周期的 Go 基准。
-
-Rust 版本的结构差异是显式 trait 化：Go 可直接调用 session/txn manager，而 Rust executor 通过 `AdapterRuntime` 反向调用 session owner；同时 Rust 使用 `Rc<RefCell<_>>`、`Arc<Mutex<_>>` 和 `Option::take` 表达线程归属与一次性清理。`scan_adapter_runtime_test.rs` 中带 `go_merge_*` 名称的测试明确记录了 RU version、runtime evidence 和 install eligibility 等 Go 合并语义，但这不意味着整个文件来自单一 Go commit。
+Rust 版本的结构差异是显式 trait 化：Go 可直接调用 session/txn manager，而 Rust executor 通过 `AdapterRuntime` 反向调用 session owner；同时 Rust 使用 `Rc<RefCell<_>>`、`Arc<Mutex<_>>` 和 `Option::take` 表达线程归属与一次性清理。
 
 ## 扩展指南
 
@@ -100,17 +91,3 @@ Rust 版本的结构差异是显式 trait 化：Go 可直接调用 session/txn m
 修改 PointGet 锁读时，必须分别覆盖 RR/RC、存在/缺失/删除、事务本地新增/更新/删除、等待超时、唯一索引双 key 和失败无残留锁。缓存优化必须重新绑定 snapshot/read-stats/diagnostic state，且不得把带事务或锁读 actor 放入无事务 prepared cache。
 
 新增资源或观测字段时，应明确其开始、一次性 finish 和最终 cleanup：通常分别接入 `SetProcessInfo`/`TopSQLStart`、`OnFinishStatement`/`TopSQLFinish`、`CleanupAfterFinish`。同步检查 `StatementContext`、正式 session state 和 `effects` 测试镜像三者；性能风险集中在每语句解析、额外 snapshot/RPC、全局 mutex 和高频指标写入，兼容风险集中在 Go 回调顺序、错误分类与 retry 可见状态。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件已索引为 2,010 行、134 个符号。
-- RustCodeGraph `files --filter pkg/session/runtime`：确认生产文件、独立测试 `pkg/session/runtime/scan_adapter_runtime_test.rs` 及相邻 runtime 文件均在索引中。
-- RustCodeGraph `node --file pkg/session/runtime/scan_adapter_runtime.rs`：分段阅读完整源文件，核对三个内部类型、两个 stage 辅助方法、`AdapterRuntime` 全部实现及 RU helper。
-- RustCodeGraph `node AdapterRuntime`：核对 trait 位于 `pkg/executor/adapter.rs:434`，其构建、事务、重试、统计和 cleanup 契约与实现逐项对应。
-- RustCodeGraph `node SessionBoundAdapterOwner` 与 `node --file pkg/session/runtime/typed_adapter_bridge.rs`：核对 owner 的字段、`Drop`、`ExecutionDeadline`、snapshot source 和状态所有权。
-- RustCodeGraph `node --file pkg/session/runtime.rs --offset 80 --limit 90`：确认生产模块与 `#[cfg(test)]` 独立测试模块的装配，以及 owner 的公开再导出。
-- RustCodeGraph `query/callers/callees`：确认 RU helper 由本实现调用，下游构造 `StatementRUInstallState`；索引还显示目标文件由 runtime/system-session 链引用。对于 trait 动态调用，图不能穷举所有运行时 caller，因此同时以 `planning.rs`、`explain_analyze.rs` 和 `typed_adapter_bridge.rs` 中 owner 构造点作为入口证据。
-- `pkg/session/Cargo.toml`：核对 crate 名、Go package 元数据、`nextgen` feature 以及 executor/KV/domain/planner/resource/metrics 等直接依赖；目标实现不受 `nextgen` 条件编译控制。
-- `pkg/session/runtime/scan_adapter_runtime_test.rs`：独立测试覆盖悲观 DML 和重试、PointGet RR/RC 锁语义、等待超时与删除冲突、FK 保存点和 shared lock、runaway、RU/TopSQL/summary、慢日志、finish stats、fair locking、cleanup、read-pool 及 prepared cache 诊断重置。
-- Go 对照：阅读/搜索 `pkg/executor/adapter.go`、`pkg/session/session.go`、`pkg/session/txnmanager.go`、`pkg/session/txn.go` 的对应执行、会话和事务边界；未发现同路径同名 Go 文件，文档已明确该限制。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前使用任务给定命令校验恰好 11 个固定二级标题，并人工核对没有把测试写入生产文件或声称不存在的同名 Go 映射。

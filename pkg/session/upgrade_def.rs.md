@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-`upgrade_def.rs` 是 `astersql-session` crate 的 bootstrap 升级定义层，由 `pkg/session/lib.rs` 以公开模块 `upgrade_def` 装配。它集中保存历史 bootstrap 版本号、版本到升级函数的映射、少量与历史升级相关的数据结构，以及一组按函数名转发的升级桩。
-
-这个文件不是 Rust 版本的升级 DDL/DML 实现主体。每个 `upgradeToVerN` 只把自己的名字交给 `upgrade_action`；真正动作必须由 `installUpgradeAction` 预先安装的函数指针完成。仓库搜索显示安装入口当前只在 `pkg/session/upgrade_test.rs` 中使用，生产 Rust 路径尚未安装该执行器，也没有消费 `upgradeToVerFunctions`。与此同时，`currentBootstrapVersion` 和若干 `versionN` 常量已经由 `pkg/session/runtime/session.rs`、`pkg/session/upgrade_run.rs` 等生产代码读取，因此本文件同时包含“已接线的版本契约”和“尚未接线的逐版本分发门面”。
-
-crate 边界由 `pkg/session/Cargo.toml` 的包名 `astersql-session` 与 `[lib] path = "lib.rs"` 确认；本文件本身只直接依赖标准库的 `LazyLock`、`OnceLock`，没有条件编译项。
+通过 `installUpgradeAction`、`UPGRADE_ACTION` 和 `upgrade_action` 提供一次性、按名称的执行器边界，使大量升级桩不直接依赖完整 Session/SQL 实现。
 
 ## 核心职责
 
@@ -80,11 +76,9 @@ crate 边界由 `pkg/session/Cargo.toml` 的包名 `astersql-session` 与 `[lib]
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `VersionedUpgradeFunction`、`currentBootstrapVersion` 和有序表分别对应 `pkg/session/upgrade_def.go` 的 `versionedUpgradeFunction`、同名变量和 `upgradeToVerFunctions`。两边冻结源码当前目标均为 v320；Rust 表含 179 项；测试仍残留最终版本 319 的过时断言（见验证依据），另验证 257–276 后首项为 277、286–315 后首项为 316。
+重要差异是实现深度：Go 的表项直接指向真实迁移函数，而 Rust 表项指向按名转发桩。Rust 对这些版本只有名称分发；其中 v283、v284 和 v317 的变量部分已另由 `upgrade_run::upgrade_bootstrap_variables` 实现，不能据此推断全部 Go DDL/DML 已移植。
 
-重要差异是实现深度：Go 的表项直接指向真实迁移函数，而 Rust 表项指向按名转发桩。Go v283 回填两个 analyze 默认值，v284 在 NextGen 中以悲观事务将旧反向开关迁移到新开关，v285 幂等增加 TTL `scan_index_id`，v316 创建物化视图维护表，v317 增加 `OPERATE VIEW` 权限并固化 adaptive-limit-scan 旧行为。Rust 对这些版本只有名称分发；其中 v283、v284 和 v317 的变量部分已另由 `upgrade_run::upgrade_bootstrap_variables` 实现，不能据此推断全部 Go DDL/DML 已移植。
-
-数据结构也不是完全等价：Go `bindInfo.createTime` 是 `types.Time`，Rust 使用 `String`；Go 的 binding 结构参与 v67/v282 的 SQL 处理，Rust 本文件中的同名结构尚无调用者。Rust 的实际 v282 纯算法使用 `upgrade_run.rs` 内另外定义的 `BindingDigestRefreshRow` 与 `BindingDigestRefreshAction`。
+数据结构也不是完全等价：Go `bindInfo.createTime` 是 `types.Time`，Rust 使用 `String`；Go 的 binding 结构参与 v67/v282 的 SQL 处理，Rust 本文件中的同名结构尚无调用者。
 
 ## 扩展指南
 
@@ -94,11 +88,3 @@ Rust 的 `VersionedUpgradeFunction`、`currentBootstrapVersion` 和有序表分�
 - 修改版本表时同步 `pkg/session/upgrade_def_test.rs` 和 `pkg/session/upgrade_test.rs`：前者检查数量、升序和最终版本，后者还实际调用每个桩并验证分发名与保留区间。
 - 修改版本对应行为时同步相邻的独立测试，而不要把测试嵌入源文件。变量迁移与 digest 行为应覆盖 `pkg/session/upgrade_backfill_test.rs`；端到端 bootstrap 行为应覆盖 `pkg/session/test/bootstraptest/boot_test.rs` 及对应 Go 测试。
 - 兼容风险主要是遗漏旧集群升级、版本号重用/乱序、保留区间被占用和 Go/Rust 行为漂移；性能风险主要来自未来 handler 若一次性扫描或更新大型系统表，应保留 Go v282 这类顺序与分批写入约束。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/upgrade_def.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
-- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
-- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
-- 冻结表含 179 项、末项 320；`upgrade_def_test.rs::upgrade_functions_match_go_order_and_current_version` 虽验证长度 179 和末项等于 current，仍硬编码 `previous == 319`，属于现有测试漂移，本文不声称测试通过，也不在纯文档任务修代码。`upgrade_test.rs` 的同类版本断言亦应回归复核。

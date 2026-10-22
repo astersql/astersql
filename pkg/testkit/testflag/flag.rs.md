@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`flag.rs` 是 `astersql-testkit-testflag` crate 的实现文件，为 Rust 测试工具提供与 Go `pkg/testkit/testflag` 同名的 `-long` 开关查询能力。crate 边界由 `pkg/testkit/testflag/Cargo.toml` 定义：库入口是同目录 `lib.rs`，没有声明第三方依赖，并通过 `package.metadata.porting.go-package` 标记其 Go 来源为 `pkg/testkit/testflag`。
-
-`pkg/testkit/testflag/lib.rs` 以 `pub mod flag` 装入本文件，并用 `pub use flag::*` 将公开函数提升到 crate 根；根工作区的 `pkg/lib.rs::testkit::testflag` 又通过 `facade_testkit_testflag` 暴露该 crate。该文件不是数据库 SQL 请求主链的一部分，而是测试执行策略的基础辅助模块。
+只负责一件事：从命令行参数中判断 `long` 布尔标志是否启用。
 
 ## 核心职责
 
@@ -73,9 +71,9 @@ API 不返回 `Result`，也不 panic 来报告参数错误。无法识别的显
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/testkit/testflag/flag.go` 在包初始化时执行 `flag.Bool("long", false, "run long tests")`，保存返回的 `*bool`，`Long()` 仅解引用该指针。Rust 保留了 `Long() -> bool` 的名称、默认值和用户可见目的，但把“注册并由 Go 测试框架解析全局 FlagSet”改成了“每次从 `args_os` 解析”。
+Rust 保留了 `Long() -> bool` 的名称、默认值和用户可见目的，但把“注册并由 Go 测试框架解析全局 FlagSet”改成了“每次从 `args_os` 解析”。
 
-Rust 额外公开 `long_from_args`，这是为了在不修改进程全局参数的情况下覆盖解析行为，不是 Go 公共 API 的直接对应物。其布尔拼写、单双短横线、重复标志覆盖顺序和停止规则由源码注释及独立测试明确约束。
+Rust 额外公开 `long_from_args`，这是为了在不修改进程全局参数的情况下覆盖解析行为，不是 Go 公共 API 的直接对应物。
 
 Go 侧当前没有同目录 `flag_test.go`；Rust 的迁移测试承担对照证据。Go 仓库中的 `pkg/util/skip/skip.go::NotUnderLong` 调用 `testflag.Long()`，对应 Rust 的 `pkg/util/skip/skip.rs::NotUnderLong` 调用链。其他 Go 测试（例如 `pkg/ttl/ttlworker/*_integration_test.go` 与 `pkg/ttl/cache/split_test.go`）也使用 Go `testflag.Long()`，但不能据此推断存在等量的 Rust 调用点。
 
@@ -88,12 +86,3 @@ Go 侧当前没有同目录 `flag_test.go`；Rust 的迁移测试承担对照证
 - 公共 API 变化需同步检查 `pkg/testkit/testflag/lib.rs`、根工作区 `pkg/lib.rs::testkit::testflag` 再导出，以及 `pkg/util/skip/skip.rs::NotUnderLong` 的兼容性。
 
 主要正确性风险是偏离 Go `flag` 的停止和非法值行为；兼容性风险是更改 `Long` 名称、返回类型或 crate 根再导出；性能风险很低，但 `Long` 每次都会遍历进程参数并进行有损字符串转换，若未来进入高频路径应先测量再缓存。测试逻辑应继续放在独立的 `flag_test.rs` 或 `migration_aster_unit_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-- 目标实现：`pkg/testkit/testflag/flag.rs`；RustCodeGraph 文件节点列出 86 行源码及三个函数，精确节点确认调用边 `Long → long_from_args → parse_go_bool`。
-- crate 与导出边界：`pkg/testkit/testflag/Cargo.toml`、`pkg/testkit/testflag/lib.rs`、根 `Cargo.toml` 的 workspace member/`facade_testkit_testflag` 声明，以及 `pkg/lib.rs::testkit::testflag`。
-- Go 对照：`pkg/testkit/testflag/flag.go`；直接上游语义对照为 `pkg/util/skip/skip.go::NotUnderLong`。
-- Rust 上游：`pkg/util/skip/skip.rs::NotUnderLong` 与 `not_under_long_with`；其 Cargo manifest 以路径依赖引用 `astersql-testkit-testflag`。
-- 独立测试：`pkg/testkit/testflag/migration_aster_unit_test.rs` 验证默认值、裸标志、单双短横线、真/假字面量和后者覆盖前者；`pkg/testkit/testflag/flag_test.rs` 验证位置参数、`--`、未知标志和非法值停止行为。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；验收使用任务文件规定的十一章节结构命令，并人工复核所有行为结论均能回指上述符号或文件。

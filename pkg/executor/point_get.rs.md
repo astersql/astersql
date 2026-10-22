@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor` crate；crate 根在 `pkg/executor/lib.rs`，通过 `pub mod point_get` 公开本模块，Cargo 包声明和 Go 包映射分别见 `pkg/executor/Cargo.toml` 的 `[package]`、`[lib]` 与 `[package.metadata.porting]`。它移植并抽象了 Go `pkg/executor/point_get.go` 的单行精确读取语义：由主键或唯一索引定位一条记录，处理分区、事务可见性、悲观锁、行解码和执行统计。
-
-需要区分“已实现语义”和“当前主运行时接线”。本文件提供完整的 `buildPointGet`、`PointGetExecutor::{Open,Next,Close}` 和依赖边界，但仓库内 Rust 调用搜索显示 `buildPointGet` 没有生产调用者；当前会话路径 `pkg/session/runtime/scan_adapter_runtime.rs::BuildPointGetExecutor` 构建的是 `pkg/executor/builder.rs::BuildTypedPointGet` 和 `pkg/executor/typed_point_get.rs::TypedPointGet`。本文件当前直接服务于模块级测试、共享的快照统计类型及 Go 语义对照，不能把它描述为现役 SQL 请求主链的唯一执行器。
+移植并抽象了 Go `pkg/executor/point_get.go` 的单行精确读取语义：由主键或唯一索引定位一条记录，处理分区、事务可见性、悲观锁、行解码和执行统计。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `buildPointGet` 对应 Go `executorBuilder.buildPointGet`；`PointGetExecutor` 字段及 `Recreated`、`Init`、`Open`、`Close`、`Next`、锁/读取辅助函数、事务作用域校验和行解码辅助函数均在 `pkg/executor/point_get.go` 有同名或直接对应实现。核心顺序保持一致：表/分区校验，快照初始化，索引到 handle，failpoint，全局索引分区过滤，行 Get，解码、校验和、虚拟列，最终统计汇总。
+Rust 的 `buildPointGet` 对应 Go `executorBuilder.buildPointGet`；`PointGetExecutor` 字段及 `Recreated`、`Init`、`Open`、`Close`、`Next`、锁/读取辅助函数、事务作用域校验和行解码辅助函数均在 `pkg/executor/point_get.go` 有同名或直接对应实现。
 
 Rust 用局部数据结构和 `PointGetDependencies`/`PointGetBuilder` trait 代替 Go 的 `sessionctx.Context`、`kv.Transaction`、`kv.Snapshot`、planner/model 和表编解码包，错误也压缩为四类 `PointGetErrorKind`。这使语义可单测，但不等价于已经连接全部真实基础设施。Go 的执行器直接实现现役 `exec.Executor`；Rust 当前生产会话路径改走 typed point-get，这是最重要的接线差异。
 
-测试意图也不完全等量。`pkg/executor/point_get_test.rs` 目前覆盖物理分区 ID/分区名匹配，以及 read-pool/scan 统计的克隆合并；`pkg/executor/point_get_test.go` 还覆盖 GC 可见性、悲观锁缓存返回值、表缓存与分区缓存、RC/非 RC 下已存在和不存在键的锁行为、历史快照等端到端行为。因此不能用现有 Rust 小型测试声称 Go 的全部 point-get 行为已回归。
+测试意图也不完全等量。
 
 ## 扩展指南
 
@@ -92,12 +90,3 @@ Rust 用局部数据结构和 `PointGetDependencies`/`PointGetBuilder` trait 代
 - 扩展统计时，保持 `SnapshotRuntimeStats::{clone,merge}`、`runtimeStatsWithSnapshot` 的 trait 实现和 `Close` 汇总一致；scan detail 不应被当作 cop-task 次数重复计算。
 - 新增回归测试应放在独立测试文件，而不是内嵌进 `point_get.rs`。局部纯逻辑优先扩展 `pkg/executor/point_get_test.rs`；真实 SQL、事务与并发行为应同步参考 `pkg/executor/point_get_test.go`，并在现役 typed 路径的独立测试中补证据。
 - 若要把 `buildPointGet` 接回生产主链，需要先实现真实的 `PointGetBuilder`/`PointGetDependencies` 适配并证明与 `BuildTypedPointGet` 的职责边界；在此之前不要删除 typed 路径或把本文件的接口存在当作接线完成。
-
-## 验证依据
-
-- 源码事实：`pkg/executor/point_get.rs`，重点符号为 `buildPointGet`、`PointGetExecutor::{Init,Open,Next,Close,getAndLock,lockKeyBase,get,verifyTxnScope}`、`fillRowChecksum`、`DecodeRowValToChunk` 和 `decodeOldRowValToChunk`。
-- 模块与依赖：`pkg/executor/lib.rs` 的 `pub mod point_get`/独立 `point_get_test` 声明；`pkg/executor/Cargo.toml` 的 `astersql-executor` crate、Go 包映射、`astersql-kv`、`astersql-util-execdetails` 与 `fail` 依赖。
-- Go 对照：`pkg/executor/point_get.go` 的构建、生命周期、索引/锁/读取、解码与统计实现；`pkg/executor/point_get_test.go` 的可见性、锁缓存、表缓存、分区、隔离级别和历史快照场景。
-- Rust 测试：`pkg/executor/point_get_test.rs` 的分区 ID 回退、分区名大小写不敏感匹配、read-pool 统计与 scan detail 合并；额外直接引用见 `pkg/executor/temporary_table_test.rs` 和 `pkg/executor/executor_failpoint_test.rs`。
-- RustCodeGraph：索引状态为 11,467 文件、307,296 节点、1,848,419 边；文件节点列出 `point_get_test.rs` 与会话统计消费者。`query PointGetExecutor/buildPointGet/DecodeRowValToChunk/fillRowChecksum/verifyTxnScope` 消除了 Go/Rust 同名歧义；`callees` 验证 `buildPointGet -> build_point_get_inner` 及 builder 方法边，和 `DecodeRowValToChunk -> {RowDecoder::decode_to_chunk, decodeOldRowValToChunk}` 边。调用搜索同时确认生产会话当前由 `scan_adapter_runtime.rs::BuildPointGetExecutor -> builder::BuildTypedPointGet` 接线。
-- 验证边界：按任务要求未运行 Cargo；本文对本文件的结构和静态调用关系负责，不宣称现役 typed point-get 已由这里的 Rust 单测覆盖，也不宣称 Go 端到端测试在本次任务中执行过。

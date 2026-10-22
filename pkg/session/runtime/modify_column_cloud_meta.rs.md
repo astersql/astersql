@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的 `runtime` 私有模块中，由 `pkg/session/runtime.rs` 以 `mod modify_column_cloud_meta;` 装配；所有导出项均为 `pub(super)`，只服务于 session runtime 内部的分布式 `MODIFY COLUMN`/索引回填云存储路径，不构成 crate 的公共 API。`pkg/session/Cargo.toml` 表明它直接依赖 `base64`、`serde`、`serde_json`、`astersql-ingestor-globalsort` 与 `astersql-ingestor-simplesst`。
-
-它是运行时对象与 Go JSON 协议之间的“线格式适配层”：将原始二进制键编码为 Go `encoding/json` 对 `[]byte` 使用的标准 Base64 字符串，将较大的全局排序字段放入对象存储，并让持久化的子任务行只保留内部字段和 `ExternalPath` 指针。上游直接使用者包括 `modify_column_dist_backfill.rs`、`modify_column_pipeline.rs`、`modify_column_cloud_planner.rs` 和 `modify_column_cloud_executor.rs`；模块本身不调度任务、不执行扫描或导入。
+`encode`/`decode` 固化 Go `[]byte` JSON 的标准 Base64 表示，避免调用方直接比较编码文本。
 
 ## 核心职责
 
@@ -86,11 +84,6 @@
 
 ## 与 Go 版本的对应关系
 
-主要对照位于 `pkg/ddl/backfilling_dist_executor.go` 与 `pkg/ingestor/globalsort/util.go`：
-
-- `ExternalFields` 镜像 `BackfillSubTaskMeta` 中带 `external:"true"` 的字段；内部字段 `PhysicalTableID`、`RowStart`、`RowEnd`、`TS` 和 `BaseExternalMeta.ExternalPath` 留在 SQL 行。Serde 的 kebab-case 特例与 Go JSON tag 保持一致。
-- `read`/`write` 对应 `BaseExternalMeta.ReadJSONFromExternalStorage`、`WriteJSONToExternalStorage`、`Marshal` 和反射实现的 `marshalInternalFields`/`marshalExternalFields`。Rust 不用反射剥离字段，而是显式建模外部字段，并由调用方提供内部 JSON。
-- `SortedMeta`、`from_simple` 与 `merge` 对应 Go `SortedKVMeta`、`NewSortedKVMeta`、`Merge`/`MergeSummary`：空摘要处理、排他上界、字节序 min/max、文件追加、冲突追加和 `uint64` 回绕均保持一致。
 - Go JSON 将 `[]byte` 编为 Base64；Rust 用 `Option<String>` 和字符串列表保存同一线格式。`null_vec` 特别兼容 Go nil slice 的 `null`，同时接受缺失字段。
 - Go `decodeBackfillSubTaskMeta` 还会在 `RowStart` 为空时回退到 legacy 范围，并在 `MetaGroups` 为空时构造单组；Rust 当前在 planner/import executor 对 `legacy` 做单组回退，但本文件不实现 `RowStart` 回退，不能把 Go 解码函数的全部职责归于此处。
 - `from_merge` 面向 Rust globalsort 的 summary 结构：其文件统计只携带文件对，所以用 summary 总范围填充每组 min/max，并将 overlapping 设为 `1`。这不是从 Go `simplesst.MultipleFilesStat` 完整反序列化，扩展时需维持 splitter 所需语义。
@@ -106,13 +99,3 @@ Go 证据测试包括 `pkg/ingestor/globalsort/util_test.go::TestSortedKVMeta`�
 如果 globalsort 开始依赖 per-file properties 或真实重叠数，应扩展 `FilesStat` 和 `from_merge`/`sort_files` 的双向映射，并在独立测试中证明序列化前后信息不丢失。对象发布语义若需原子性，应在上层引入临时路径、提交标记或清理协议；仅修改 `write` 的顺序不足以提供跨对象存储与 SQL 的事务。
 
 测试必须保持独立文件，不得嵌入生产 `.rs`。至少同步：`modify_column_cloud_meta_test.rs`（线格式、空/null、非法 Base64、覆盖与失败路径），涉及 merge/import 发布行为时再同步 `modify_column_cloud_executor_test.rs`；Go 协议变化还应对照 `pkg/ingestor/globalsort/util_test.go` 和相关 DDL 回填测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/session/runtime/modify_column_cloud_meta.rs` 确认目标文件已索引；`node --file ... --offset 1 --limit 260` 与 `--offset 260 --limit 80` 读取了完整 278 行、17 个符号，并报告该文件被 15 个文件使用；`query SortedMeta --kind struct`、`query ExternalFields --kind struct` 定位到本文件。精确 `callers/callees` 查询无输出，故调用边另由直接引用核验。
-- Rust 源与装配：`pkg/session/runtime/modify_column_cloud_meta.rs`、`pkg/session/runtime.rs`、`pkg/session/Cargo.toml`。
-- Rust 直接调用方：`pkg/session/runtime/modify_column_pipeline.rs`、`modify_column_dist_backfill.rs`、`modify_column_cloud_planner.rs`、`modify_column_cloud_executor.rs`。
-- Rust 测试：`pkg/session/runtime/modify_column_cloud_meta_test.rs` 验证 Go 指针/外部 JSON round-trip、内部字段保留、文件对恢复、二进制键比较与 `u64` 回绕；`modify_column_cloud_executor_test.rs` 验证成功发布及失败/取消不发布。
-- Go 对照：`pkg/ddl/backfilling_dist_executor.go` 的 `BackfillSubTaskMeta`、解码与外部写入；`pkg/ingestor/globalsort/util.go` 的 external field marshal、`BaseExternalMeta`、`SortedKVMeta`；`pkg/ingestor/engineapi/engine.go` 的 `ConflictInfo`。
-- Go 测试：`pkg/ingestor/globalsort/util_test.go` 的 `TestSortedKVMeta`、internal/external marshal 用例与 `TestReadWriteJSON`。
-- 人工复核结论：本文描述的是当前已接线实现；没有把 RustCodeGraph 未返回的调用边、未在本文件实现的 Go row-bound fallback，或对象存储/SQL 跨系统原子性写成已支持能力。

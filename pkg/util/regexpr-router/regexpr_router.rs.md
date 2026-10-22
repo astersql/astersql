@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-regexpr-router` crate 的核心实现，提供一张由正则、glob 或字面量库表规则组成的路由表。crate 入口 [`lib.rs`](lib.rs) 通过 `include!("regexpr_router.rs")` 装入本文件并公开再导出其 API；workspace 根 [`Cargo.toml`](../../../Cargo.toml) 以 `facade_util_regexpr_router` 引入该 crate，[`pkg/lib.rs`](../../lib.rs) 又将它暴露为 `pkg::util::regexpr_router` 门面。
-
-它对应 Go 文件 [`regexpr_router.go`](regexpr_router.go)，位于数据导入配置到实际文件元数据之间：规则把输入 schema/table 映射到目标 schema/table，并可从 table、schema、source 三类字符串提取扩展列。当前检索到的 Rust 生产接线是 `lightning/pkg/importer/import.rs::addExtendDataForCheckpoint`：仅当至少一条路由规则配置提取器时构造本路由器，从数据文件名取得 schema/table，调用 `FetchExtendColumn`，再把列名和值写入 checkpoint。Go 侧除 importer 外还在 `pkg/lightning/mydump/loader.go` 使用路由；当前 Rust 同路径 loader 未检索到等价直接调用，因此不能把 Go 的全部接线视为 Rust 现状。
+`NewRegExprRouter` 与 `RouteTable::AddRule` 校验并编译 `router::TableRule`，按加入顺序保存规则。
 
 ## 核心职责
 
@@ -87,7 +85,6 @@ Rust [`regexpr_router.rs`](regexpr_router.rs) 与 Go [`regexpr_router.go`](regex
 
 语言与当前实现差异如下：
 
-- Go 构造器接收 `[]*TableRule` 并保存指针；大小写不敏感时会原地修改调用者规则。Rust 接收拥有所有权的 `Vec<TableRule>`，内部用 `Box` 保存，通常不会修改调用者保留的克隆。
 - Go 返回 `*RouteTable` 和 `error`；Rust 返回按值的 `RouteTable` 与 `String` 错误。Go 用 `errors.Trace/Annotatef` 保留错误包装，Rust 保留文本语义但没有等价错误链类型。
 - Go 的 `filter`/`rawRule` 指针按成功构造不变量直接解引用；Rust 用 `Option<Box<_>>` 表达构造中状态，查询时若异常为 `None` 会按“不匹配/跳过”处理，而不是 panic。由于字段私有且只经 `AddRule` 构造，正常公共 API 不应产生该状态。
 - Go `extractVal(any)` 运行时 type switch；Rust `ExtractorRef` 在编译期限制为三类提取器。两者都在本函数内重新编译正则，忽略编译错误并拼接捕获组 1..N。
@@ -100,12 +97,3 @@ Rust [`regexpr_router.rs`](regexpr_router.rs) 与 Go [`regexpr_router.go`](regex
 测试不得内嵌在生产文件。Go 对齐用例应更新独立的 [`regexpr_router_test.rs`](regexpr_router_test.rs)，迁移特有不变量可更新 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，并以 [`regexpr_router_test.go`](regexpr_router_test.go) 复核原始意图。至少覆盖：库级与表级同时命中、同级重复命中、空 table、未命中回退、大小写模式、正则/glob 混用、多个捕获组和可选空捕获、`AllRules` 顺序，以及非法规则在追加前失败。
 
 若优化性能，可考虑复用 `TableRule::Valid` 已编译的提取器正则或改变匹配索引，但要先解决其字段可见性和与 Go “提取时编译”语义的兼容问题。不要仅依据 facade 公开或测试使用就删除 API；应重新查询生产调用。主要兼容风险是优先级、错误文本、规则归一化和捕获拼接发生漂移；主要性能风险是每次查询扫描全部规则、匹配缓存无界增长、每次提取重复编译正则和 `AllRules` 深克隆。
-
-## 验证依据
-
-- RustCodeGraph `status` 确认索引有效：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/regexpr-router` 列出本目录 6 个已索引 Go/Rust 文件，目标文件含 18 个符号。
-- RustCodeGraph `node --file` 完整读取了 [`regexpr_router.rs`](regexpr_router.rs)（363 行）、Go [`regexpr_router.go`](regexpr_router.go)（235 行）、Rust [`regexpr_router_test.rs`](regexpr_router_test.rs)（268 行）、Rust [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)（213 行）和 Go [`regexpr_router_test.go`](regexpr_router_test.go)（379 行）。
-- RustCodeGraph `query` 核对了 `NewRegExprRouter`、`AddRule`、`Route`、`AllRules`、`FetchExtendColumn`、`extractVal`、`TableRule::{Valid, ToLower}` 和 `Filter::Match`。图的泛名 callers/callees 查询未返回稳定结果，因此又用限定 Rust 文件的精确文本检索核对直接调用，未把缺失图边推断成不存在调用。
-- 生产调用证据来自 RustCodeGraph 对 `lightning/pkg/importer/import.rs::addExtendDataForCheckpoint` 的源码节点：`NewRegExprRouter -> FetchExtendColumn -> ChunkCheckpoint.FileMeta.ExtendData`；Go 侧使用点由 `lightning/pkg/importer/import.go` 与 `pkg/lightning/mydump/loader.go` 复核。
-- crate 边界由 [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、workspace 根 `Cargo.toml` 和 [`pkg/lib.rs`](../../lib.rs) 核对；下游校验、归一化及匹配事实由 `pkg/util/table-router/router.rs::TableRule::{Valid, ToLower}` 和 `pkg/util/filter/filter.rs::{New, Filter::Match}` 核对。
-- 本任务只新增文档，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本文能够回答文件为何存在、如何运行、如何安全扩展；仓库说明提及的 `.agents/skills/tidb-verify-profile` 在当前检出中不存在，无法加载额外 Ready playbook。

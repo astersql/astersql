@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-cascades-pattern`。crate 入口
-[`lib.rs`](lib.rs) 将私有模块 `engine` 的公开项全部再导出，因此规划器其他 crate
-以 `cascades_pattern::EngineType`、`EngineAll` 等名称使用这里的类型和常量。
-[`Cargo.toml`](Cargo.toml) 表明该 crate 本身只有一个 `logicalop` 路径依赖；本文件只依赖
-标准库 `std::fmt`，并不直接依赖逻辑算子实现。
-
-它位于 Cascades 模式匹配的基础数据层：[`pattern.rs`](pattern.rs) 用这里的
-`EngineTypeSet` 为每个 `Pattern` 节点记录允许的执行引擎；旧 Memo 路径的
-[`pkg/planner/memo/expr_iterator.rs`](../../memo/expr_iterator.rs) 再把该约束与
-`Group.EngineType` 比对。这里不选择物理计划、不移动算子，也不执行规则。
+用 `EngineTypeSet(pub u32)` 表示允许引擎的集合，提供 Only、Or、All 五个预置集合。
 
 ## 核心职责
 
@@ -131,12 +122,7 @@ Rust 文件逐项对齐 [`engine.go`](engine.go)：Go 的 `type EngineType uint`
 
 已知语言层差异是 Go 使用平台宽度的 `uint`，Rust 固定为 32 位；当前只占三位，因此
 不影响既有值。Rust 使用 newtype 区分单值与集合，并额外派生比较、哈希和调试 trait，
-但公开元组字段仍允许构造任意值。命名保留 Go 风格大写形式，crate 根的
-`#![allow(non_snake_case, non_upper_case_globals)]` 为此关闭对应警告。
-
-[`engine_test.go`](engine_test.go) 与 [`engine_test.rs`](engine_test.rs) 的断言集合一一
-对应：均验证 All、三个 Only 以及 TiKV-or-TiFlash 对三个预定义引擎的真假矩阵。Rust
-测试独立放在 `engine_test.rs`，符合生产源码与测试分文件的仓库约束。
+但公开元组字段仍允许构造任意值。
 
 ## 扩展指南
 
@@ -154,23 +140,3 @@ Rust 文件逐项对齐 [`engine.go`](engine.go)：Go 的 `type EngineType uint`
 [`binder.rs`](../rule/binder.rs) 的 `r#match`/`dfsMatch` 及其可获得的 Group 引擎信息；
 应为 Binder 增加独立回归测试，不能通过修改位运算掩盖上层缺少调用的问题。性能方面，
 本文件的位运算已是常量时间；扩展时应继续避免把热路径成员判断改成分配型集合。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；
-  `files --filter pkg/planner/cascades/pattern` 返回本 crate 的 Rust/Go 源与测试文件。
-- RustCodeGraph `node --file pkg/planner/cascades/pattern/engine.rs`：核对完整 66 行源码、
-  两个 newtype、八个常量、`Contains` 和 `Display`。
-- RustCodeGraph `query EngineType --kind struct` 与 `query EngineTypeSet --kind struct`：
-  定位到本文件第 25、36 行的公开类型；`query EngineTypeSet::Contains` 未产生方法节点，
-  因而使用精确 `rg` 引用检索补足调用证据。
-- RustCodeGraph `node` 读取
-  [`pattern.rs`](pattern.rs)、[`lib.rs`](lib.rs)、[`engine_test.rs`](engine_test.rs)、
-  [`group.rs`](../../memo/group.rs)、[`expr_iterator.rs`](../../memo/expr_iterator.rs)、
-  [`binder.rs`](../rule/binder.rs) 和 [`join_to_apply.rs`](../rule/join/join_to_apply.rs)，
-  核实 crate 再导出、Pattern 调用、Group 状态、旧 Memo 过滤和 Binder 边界。
-- 直接读取未由调用图完整表达的 [`Cargo.toml`](Cargo.toml)、[`engine.go`](engine.go) 与
-  [`engine_test.go`](engine_test.go)，核对 crate 边界、Go 语义和测试矩阵；精确 `rg`
-  检索核对 Rust/Go 的常量及 `Contains` 使用点。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前另运行任务指定的 11 章节结构
-  命令，并人工复核唯一生产物、链接、事实边界和扩展建议。

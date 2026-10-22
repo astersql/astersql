@@ -2,23 +2,7 @@
 
 ## 文件定位
 
-`schema.rs` 属于 Cargo 包 `astersql-br-pkg-backup`。该包以
-`br/pkg/backup/lib.rs` 为 crate 根；`lib.rs` 通过 `pub mod schema` 装载本文件，
-并用 `pub use schema::*` 把公开入口平铺到 crate API。`br/pkg/backup/Cargo.toml`
-把该 crate 标为 Go 包 `br/pkg/backup` 的 library 移植，并且当前直接依赖只有
-`serde` 与 `serde_json`；TiDB、KV、checkpoint、统计、label rule 和 meta writer
-能力均由同 crate 的 `stubs.rs` 抽象提供。
-
-本文件对应 Go 实现 `br/pkg/backup/schema.go`，负责把已经筛选、补齐过的库表元信息
-转换成 `backuppb::Schema`：可选计算或复用 checksum、校验外部 checksum、导出统计、
-读取 `merge_option` label rule，最后追加到 backup meta。上游 Rust 构造链是
-`client.rs::BuildBackupRangeAndInitSchema` → `NewBackupSchemas`；checkpoint 续跑数据由
-`client.rs::Client::BuildBackupRangeAndSchema` 调用 `SetCheckpointChecksum` 注入。
-
-精确搜索当前 Rust 生产文件只找到上述“构造/注入”接线，`BackupSchemas` 的 Rust 调用
-均位于独立测试文件；完整产品执行入口仍可在 Go 的 `br/pkg/task/backup.go` 中看到。
-因此本文件是已实现并经过 Rust 测试组合验证的 schema 备份组件，但不能据现有调用边
-宣称 Rust BR 命令主链已经调用它。
+对应 Go 实现 `br/pkg/backup/schema.go`，负责把已经筛选、补齐过的库表元信息。
 
 ## 核心职责
 
@@ -184,11 +168,6 @@ context 被逐 worker 克隆，但本地 `Context`/worker 抽象并不证明真�
 
 ## 与 Go 版本的对应关系
 
-逐项对应关系可由 `br/pkg/backup/schema.go` 核对：常量、`schemaInfo` 字段、`iterFuncTp`、
-`Schemas`、构造/设置/长度方法，以及五个私有处理步骤均保留。系统库临时改名、checkpoint
-优先、checksum 聚合、stats index、label rule 批处理与原始分区名作为 map key等关键行为
-也保持一致。
-
 已确认的实现差异：
 
 - Go 在 `iterFunc` 回调中直接向 errgroup 调度任务；Rust 先收集并克隆全部单元，再调度。
@@ -231,32 +210,3 @@ context 被逐 worker 克隆，但本地 `Context`/worker 抽象并不证明真�
 
 兼容风险集中在 protobuf 字段、JSON 形状、系统库命名、分区 map 键大小写和错误降级；
 性能风险集中在映射克隆、全量预收集、线程创建以及 join 后串行 stats/meta I/O。
-
-## 验证依据
-
-本说明读取并交叉核对了以下直接证据：
-
-- 目标实现：`br/pkg/backup/schema.rs`（532 行），包括全部公开/私有符号和主流程。
-- crate 边界：`br/pkg/backup/Cargo.toml`、`br/pkg/backup/lib.rs`。
-- Rust 上游：`br/pkg/backup/client.rs` 中的 `Client::BuildBackupRangeAndSchema`、
-  `BuildBackupRangeAndInitSchema`、`BuildBackupSchemas`。
-- 本地依赖语义：`br/pkg/backup/stubs.rs` 中的 `Storage`、`MetaWriter`、
-  `CheckpointRunner`、`Progress`、`statistics::Handle`、`WorkerPool` 与 `wait_jobs`。
-- Go 对照：`br/pkg/backup/schema.go`、`br/pkg/backup/client.go`，以及产品调用位置
-  `br/pkg/task/backup.go`。
-- Rust 独立测试：`br/pkg/backup/schema_test.rs` 覆盖空库/缺库、单表和多表、checksum、
-  stats writer 工厂、系统库临时改名；`schema_merge_option_test.rs` 覆盖 rule ID、分区和
-  全流程默认拒绝；`parity_test.rs` 覆盖编码、单表/分区 checksum、mismatch、显式 allow、
-  `Len`、默认并发、进度和 writer finish；`client_test.rs` 提供构造链组合证据。
-- Go 测试：`br/pkg/backup/schema_test.go` 与
-  `br/pkg/backup/schema_merge_option_test.go`，用于核对原测试意图和移植语义。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；
-  `node --file br/pkg/backup/schema.rs` 成功读取完整目标并报告引用文件；
-  `node NewBackupSchemas` 同时定位 Go/Rust 定义，并给出 Rust 测试调用 trail。
-  对 impl 方法的 `callers/callees` 查询本次未在 30 秒内返回，故未把它当作已验证图边。
-- 精确文本搜索：确认 Rust 侧构造、checkpoint 注入和所有 `.BackupSchemas` 调用位置，
-  并确认当前非测试 Rust 文件没有执行该方法的调用点。
-
-本任务是纯文档分析，按计划未运行 Cargo。结构检查应要求本文档存在，且固定的十一个
-二级标题各出现一次；人工复核还需确认没有把 stub 能力、测试调用或 Go 产品接线误写成
-Rust 当前生产主链事实。

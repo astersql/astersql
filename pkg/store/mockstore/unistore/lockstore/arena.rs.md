@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore-lockstore` crate 的分块内存分配层。crate 入口 `pkg/store/mockstore/unistore/lockstore/lib.rs` 将 `arena` 声明为公开模块并重导出其符号；`Cargo.toml` 把该 crate 对应到 Go 包 `pkg/store/mockstore/unistore/lockstore`，运行时依赖只有 `rand`，arena 本身只使用标准库。
-
-直接上层是 `pkg/store/mockstore/unistore/lockstore/lockstore.rs` 的 `MemStore`：跳表节点的头、各层 next 地址、key 和 value 都被连续写入 arena 字节块。`MemStore::NewMemStore` 创建定位器，`MemStore::newNode` 分配并写入节点，节点读取路径通过 `arena::get` 取回字节，替换和删除路径通过 `arena::free` 归还块级引用。
+用 `arenaBlock` 提供固定容量、8 字节对齐的顺序分配。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/store/mockstore/unistore/lockstore/arena.go` 是逐项对照来源。Rust 保留了 Go 的地址位布局、8 字节对齐、`nullBlockOffset`/`nullArenaAddr` 哨兵、可写队列、100ms pending 窗口、失败后保留越界 `length`、块级引用计数，以及 `grow` 共享旧块并只让新块可写的行为。
-
-主要语言适配如下：
+Rust 保留了 Go 的地址位布局、8 字节对齐、`nullBlockOffset`/`nullArenaAddr` 哨兵、可写队列、100ms pending 窗口、失败后保留越界 `length`、块级引用计数，以及 `grow` 共享旧块并只让新块可写的行为。
 
 - Go `arenaAddr` 是 `uint64` 别名；Rust 用可比较、可复制的元组结构 `arenaAddr(pub u64)`。
 - Go `[]*arenaBlock` 天然共享指针；Rust 用 `Vec<Arc<arenaBlock>>` 明确共享所有权。迁移测试验证增长前后的定位器观察同一旧块。
@@ -99,13 +95,3 @@
 - 修改可变访问或并发模型时，必须重新证明 `UnsafeCell` 返回切片不会别名冲突，并审查 `unsafe impl Send/Sync`。测试应放在独立的 `migration_aster_unit_test.rs` 或 `lockstore_test.rs`，不要嵌入生产源文件。
 - 为超大条目增加可恢复错误时，接入点是 `arenaBlock::alloc`、`arena::alloc` 与 `MemStore::newNode`；需要同时定义 Go 兼容行为，避免第二次分配失败后再解码空地址。
 - `growInPlace` 当前没有生产调用者。若计划启用，应先证明它与 `AtomicPtr` 定位器发布、并发读者持有旧定位器的模型兼容，并添加独立测试；不要仅因实现存在就假定其已接线。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust/Go 文件均在索引中。
-- 目标实现：`pkg/store/mockstore/unistore/lockstore/arena.rs`，核对了全部 258 行及其中 20 个索引符号。
-- crate 边界：`pkg/store/mockstore/unistore/lockstore/Cargo.toml`、`pkg/store/mockstore/unistore/lockstore/lib.rs`。
-- 生产调用链：`pkg/store/mockstore/unistore/lockstore/lockstore.rs` 的 `NewMemStore`、节点读取方法、`replace`、`newNode`、`getArena`/`getArenaMut`、`setArena`、`DeleteWithHint`；以及 `iterator.rs` 对 `getArena` 的读取引用。
-- Go 对照：`pkg/store/mockstore/unistore/lockstore/arena.go` 全文；`lockstore_test.go::TestMemStore` 验证删除、等待 100ms 后重新插入时块数基本稳定，并含单写多读工作负载。
-- Rust 独立测试：`migration_aster_unit_test.rs::{migration_arena_matches_go_alignment_growth_and_delayed_reuse, migration_arena_growth_shares_existing_blocks_like_go}`；`lockstore_test.rs::test_mem_store` 验证大批量删除及延迟复用，`test_replace` 和 `test_mem_store_concurrent` 覆盖释放入口所在的替换/并发场景。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付检查仅执行任务指定的 11 个固定章节结构验证，并人工复核本文没有把未接线的 `growInPlace` 或固定延迟窗口描述成更强保证。

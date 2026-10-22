@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-br-pkg-rtree` 的区间算法主体，真实源码见 [`rtree.rs`](./rtree.rs)。包入口 `br/pkg/rtree/lib.rs` 以 `pub mod rtree` 挂载它，并通过 `pub use rtree::*` 扁平导出公开类型和函数；`br/pkg/rtree/Cargo.toml` 声明这是对应 Go 包 `br/pkg/rtree` 的 library crate。源码直接对照 `br/pkg/rtree/rtree.go`，使用 `BTreeMap<Vec<u8>, _>` 承担 Go `google/btree` 的有序索引、同起点替换和升序遍历职责。
-
-当前生产接线中，`br/pkg/restore/utils/merge.rs::MergeAndRewriteFileRanges` 直接依赖本 crate，并调用 `NewRangeStatsTree`、`RangeStatsTree::InsertRange` 和 `RangeStatsTree::MergedRanges` 合并恢复文件区间。`br/pkg/backup/client.rs` 虽有同名 `ProgressRangeTree` 调用链，但其 `rtree` 来自备份 crate 自己的 `stubs`，不能据此认定该备份主链已经接到本文件；本文件的进度树公开面目前主要由本 crate 的独立测试验证。
+因此它既提供恢复侧的文件区间合并，也保存了备份侧进度算法的 Go 对齐实现；两部分共享相同的字节序区间语义，但当前 Rust 生产调用范围并不相同。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ Rust 的 `NewRangeTreeWithFreeListG` 接受但忽略 `FreeListG`；与 Go 通过
 
 ## 与 Go 版本的对应关系
 
-类型和主算法逐项对应 `br/pkg/rtree/rtree.go`：`KeyRange`、`Range`、`RangeStatsTree`、`NeedsMerge`、`RangeTree`、`ProgressRangeTree` 及方法命名均保留 Go 风格，`lib.rs` 也允许非 snake case。`BTreeMap` 取代泛型 `btree.BTreeG`；floor 查询由 `range(..=key).next_back()` 实现，升序遍历由 map value 顺序实现。
-
 主要语义保持一致：半开区间和无限上界、强制覆盖整项、空洞裁剪、相同表记录/相同表索引的合并限制、完成后 meta 写出与 checksum 聚合，以及 Go `uint64` wrapping 行为。`rtree_test.rs` 明确对照 Go `rtree_test.go`，覆盖空树和全空间、覆盖与邻接、交集、普通/V2 表键合并、进度回调、writer/checksum；`parity_test.rs::go_rust_public_contract_matches` 额外串联公开 API。
 
 当前差异包括：Rust `Range.Files` 持有值而非 Go 指针；`FreeListG` 被忽略；Go 解码失败会写 warning，Rust 只返回 `false`；Go `DeletedRange` 保存进度项指针，Rust 保存起点键并在第二阶段重新 remove；Go 使用具体 `metautil.MetaWriter`，Rust 使用本地 `MetaWriter` trait；Rust 通过 wrapping 运算显式复现 release/debug 均一致的 Go 溢出行为。另一个重要迁移状态差异是备份 Rust crate 尚使用自己的同名桩实现，而恢复合并已直接消费本 crate。
@@ -92,12 +88,3 @@ Rust 的 `NewRangeTreeWithFreeListG` 接受但忽略 `FreeListG`；与 Go 通过
 扩展进度完成副作用时，应保持 `GetIncompleteRanges` 的两阶段删除，清楚定义 writer 失败后的重试/幂等规则，并在 `rtree_test.rs` 使用独立 `MetaWriter` 替身覆盖成功和失败。若把 `br/pkg/backup/client.rs` 从本地桩切换到此 crate，需要额外设计共享可变访问（当前备份接口多处从共享引用修改）、`Arc<dyn MetaWriter>` 与 `Box<dyn MetaWriter>` 的所有权适配，以及 backuppb 文件类型转换。
 
 性能扩展应重点评估 `BTreeMap` key/value 克隆、`getOverlaps` 的整段克隆、`MergedRanges` 的文件向量复制，以及忽略 free list 的影响；任何优化都需保留字节排序、回调提前停止和同起点替换语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 7,032 个 Rust 文件；以 `node --file` 完整读取 `br/pkg/rtree/rtree.rs`（731 行）、`br/pkg/rtree/lib.rs`、`br/pkg/rtree/rtree_test.rs` 和 `br/pkg/rtree/parity_test.rs`，并以 `explore` 核对主要符号及调用关系。
-- crate 边界：`br/pkg/rtree/Cargo.toml` 的 package 名、library 入口和 Go package metadata；根 `Cargo.toml` workspace 成员 `br/pkg/rtree`；`br/pkg/rtree/lib.rs` 的模块挂载、公开再导出和独立测试挂载。
-- Go 对照：`br/pkg/rtree/rtree.go` 中对应的全部类型和算法；测试意图由同路径 `br/pkg/rtree/rtree_test.go` 的 Rust 对照文件注释及断言交叉确认。
-- Rust 测试：`br/pkg/rtree/rtree_test.rs::{test_range_tree, test_range_tree_put_force, test_range_intersect, test_range_tree_merge, test_progress_range_tree, test_progress_range_tree_call_back, test_progress_range_tree_call_back2, test_uint64_accumulators_match_go_wrapping_semantics}`；`br/pkg/rtree/parity_test.rs::go_rust_public_contract_matches`。
-- 生产上游：`br/pkg/restore/utils/merge.rs::MergeAndRewriteFileRanges` 及 `br/pkg/restore/utils/Cargo.toml`；以仓库搜索确认备份 crate 的同名调用来自 `br/pkg/backup/stubs.rs`，未将其误列为本文件直接调用边。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前仅执行任务指定的 11 章节结构验证，并人工复核文档未把未接线进度树写成已接线生产主链。

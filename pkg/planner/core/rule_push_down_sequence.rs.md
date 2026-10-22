@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 由 [`pkg/planner/core/Cargo.toml`](Cargo.toml) 声明，库根 [`pkg/planner/core/lib.rs`](lib.rs) 通过 `pub mod rule_push_down_sequence` 将其作为公开模块编译和暴露。文件在 [`task.rs`](task.rs) 的轻量 `PlanNode`/`PlanKind` 计划树上实现 Sequence 下推规则，目标是把承载 CTE 与主查询执行顺序的 `Sequence` 节点沿主查询的一元算子链下移。
-
-需要区分“本文件提供的公开轻量规则”与“完整 SQL 优化主链中的生产实现”。RustCodeGraph 显示，本文件的 `PushDownSequenceSolver` 当前只由独立测试 [`rule_push_down_sequence_test.rs`](rule_push_down_sequence_test.rs) 导入；完整逻辑计划的规则枚举、调度和下推实现位于 [`optimizer_runtime.rs`](optimizer_runtime.rs) 的 `LogicalRule::PushDownSequence`、`push_down_sequence` 与 `push_down_sequence_owned`。因此，本文件不是当前真实 `logicalop::LogicalPlanRef` 优化链的直接入口，而是同一 Go 规则在简化计划模型上的独立移植。
+文件在 [`task.rs`](task.rs) 的轻量 `PlanNode`/`PlanKind` 计划树上实现 Sequence 下推规则，目标是把承载 CTE 与主查询执行顺序的 `Sequence` 节点沿主查询的一元算子链下移。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 的文件关系显示 [`rule_push_down_sequence_test.rs`](rule_pus
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`rule_push_down_sequence.go`](rule_push_down_sequence.go)。两侧都使用相同规则名，`Optimize` 都从无待下推 Sequence 开始，并固定报告 `planChanged = false`；都把 Sequence 最后一个孩子视为主查询、把此前孩子视为 CTE，都按外层到内层顺序合并嵌套 CTE，并允许穿过恰有一个孩子的普通逻辑算子。
-
 Rust 轻量版本与 Go 完整实现存在这些明确差异：
 
 - Go 使用 `base.LogicalPlan` 与 `logicalop.LogicalSequence`，重建嵌套 Sequence 时保留当前逻辑计划的 session context 和 query block offset；Rust 使用通用 `PlanNode`，只能保留节点结构和其中已有字段。
@@ -84,8 +80,6 @@ Rust 轻量版本与 Go 完整实现存在这些明确差异：
 - Go 重建嵌套 Sequence 使用新的 `LogicalSequence{}.Init(...)`；Rust 复用当前内层 `p` 的非孩子字段。
 - Go 通过接口方法 `SetChildren`/`SetChild` 操作多态计划；Rust 直接移动 `Vec<PlanNode>`。Rust 为占位显式克隆主查询，而 Go 保存逻辑计划接口引用。
 
-Go 生产规则注册在 [`optimizer.go`](optimizer.go) 的 `optRuleList`，标志位是 `rule.FlagPushDownSequence`。Go 回归 [`issuetest/panicrisk_tier2_test.go`](issuetest/panicrisk_tier2_test.go) 的 `TestPushDownSequenceWithTableDual` 验证共享 CTE 与常量假条件产生无孩子 `LogicalTableDual` 时不会错误索引孩子。Rust 完整主链的 SQL 级对应测试位于 [`optimizer_logical_entry_aster_unit_test.rs`](optimizer_logical_entry_aster_unit_test.rs) 的 `push_down_sequence_moves_sequence_below_unary_main_query`，但它验证的是 `optimizer_runtime.rs` 的真实 `LogicalPlanRef` 实现，而非本文件轻量 Solver。
-
 ## 扩展指南
 
 若修改本轻量规则，规则名与入口契约应改在 `Name`/`Optimize`，Sequence 识别、嵌套合并和停止条件应改在 `recursiveOptimize`。Rust 测试不要写回生产源文件；应同步扩展同目录 [`rule_push_down_sequence_test.rs`](rule_push_down_sequence_test.rs)，至少覆盖空 Sequence、零孩子叶节点、多孩子 Join、嵌套顺序和新增的一元阻断算子。
@@ -93,12 +87,3 @@ Go 生产规则注册在 [`optimizer.go`](optimizer.go) 的 `optRuleList`，标�
 任何面向完整 SQL 计划的功能扩展还必须同步审视 [`optimizer_runtime.rs`](optimizer_runtime.rs) 的 `push_down_sequence_owned`/`attach_pushed_sequence` 及其独立测试，因为生产调度不调用本 Solver。若未来要消除双实现，应让公开轻量 API 明确委托生产规则或删除不再需要的入口，而不是让两份递归逻辑继续漂移。
 
 兼容性风险主要是错误穿透具有执行顺序或副作用语义的一元算子，以及改变 CTE 合并顺序；正确性风险还包括丢失真实逻辑节点的 context、query block、输出名称或 schema。性能风险主要来自主查询深克隆和深树递归。新增节点种类时，应同时回答它是否允许穿透、停止后 Sequence 应挂在何处、是否需要独立优化其孩子，并对照 Go 行为补充测试。
-
-## 验证依据
-
-- 目标源码与数据模型：[`rule_push_down_sequence.rs`](rule_push_down_sequence.rs)、[`task.rs`](task.rs)；模块装配与 crate 边界：[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- RustCodeGraph：`status` 确认本地索引包含 11,467 个文件；`node --file pkg/planner/core/rule_push_down_sequence.rs --offset 1 --limit 400` 读取完整 68 行源码；`query PushDownSequenceSolver`、`query recursiveOptimize` 定位 Rust/Go 同名定义；`node PushDownSequenceSolver` 显示 Rust 类型仅由测试模块导入；`callers`/`callees` 查询用于核对递归关系并识别标准容器方法解析噪声。
-- Rust 轻量规则测试：[`rule_push_down_sequence_test.rs`](rule_push_down_sequence_test.rs)，覆盖普通树递归、一元穿透不重复主查询、嵌套 CTE 顺序。
-- Rust 生产接线与 SQL 级测试：[`optimizer_runtime.rs`](optimizer_runtime.rs) 中 `LogicalRule::PushDownSequence`、`LOGICAL_RULES`、规则分派、`push_down_sequence_owned`、`attach_pushed_sequence`；[`optimizer_logical_entry_aster_unit_test.rs`](optimizer_logical_entry_aster_unit_test.rs) 中 `push_down_sequence_moves_sequence_below_unary_main_query`。
-- Go 对照与回归：[`rule_push_down_sequence.go`](rule_push_down_sequence.go)、[`optimizer.go`](optimizer.go)、[`issuetest/panicrisk_tier2_test.go`](issuetest/panicrisk_tier2_test.go)。
-- 本任务只新增说明文档，按计划未运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工确认文档回答了文件为何存在、算法如何运行、生产接线在哪里、Go 差异与安全扩展位置。

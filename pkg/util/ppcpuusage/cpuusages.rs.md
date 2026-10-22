@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`cpuusages.rs`](./cpuusages.rs) 是 `astersql-util-ppcpuusage` crate 的唯一业务实现文件，负责保存“当前 SQL”在 TiDB 与 TiKV 两侧消耗的 CPU 时间。crate 入口 [`lib.rs`](./lib.rs) 将 `cpuusages` 声明为公开模块，并通过 `pub use cpuusages::*` 再导出本文件的公开类型；[`Cargo.toml`](./Cargo.toml) 则把该 crate 映射到 Go 包 `pkg/util/ppcpuusage`，且本 crate 自身没有第三方依赖或 feature。
-
-在已接线的 Rust 路径中，`pkg/distsql/context/context.rs::DistSQLContext::Detach` 用本文件的读写 API 为分离上下文创建 CPU 快照，`pkg/session/sessmgr/processinfo.rs::ProcessInfo::ToRow` 读取快照并生成 `INFORMATION_SCHEMA.PROCESSLIST` 的 TiDB/TiKV CPU 列。Go 对照版本还把同一容器接入 server profiler、executor、DistSQL result 与慢日志/语句摘要；这些 Go 调用点是迁移目标证据，不代表对应 Rust 入口都已接线。
+记录当前 SQL 在 TiDB 与 TiKV 两侧消耗的 CPU 时间。
 
 ## 核心职责
 
@@ -92,12 +90,3 @@ Rust `Duration` 不能表示负值，而 Go `time.Duration` 是有符号纳秒�
 - 接通 Rust profiler/executor 链路时，TiDB 样本必须携带由 `AllocNewSQLID` 返回的 ID，TiKV 路径则应只累计当前 executor 的 process time；应参照 Go 的 `pkg/server/server.go`、`pkg/distsql/select_result.go` 与 point-get 调用点，而不是绕过容器直接改快照。
 - 改变溢出、负值或 poisoned-lock 策略会造成 Go/Rust 兼容差异，需明确决定是保持现状、返回错误还是饱和，并增加边界测试。
 - 测试应继续放在独立的 `migration_aster_unit_test.rs`（或同目录新的独立 `*_test.rs`）中；至少同步覆盖零值、ID 匹配/不匹配、回绕边界、set/reset、并发累计，以及 detach 快照独立性。不要把 `#[cfg(test)]` 测试模块塞回 `cpuusages.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/ppcpuusage` 找到 Rust 实现、Go 对照、crate 入口和独立测试；`explore "pkg/util/ppcpuusage/cpuusages.rs CpuUsages ..."` 返回目标完整源码与 Go 对照；`query` 确认各公开方法在 Rust/Go 中的定义。单独的 `callers MergeTidbCPUTime --file ...` 在 60 秒内无输出后中止，因此实际调用边又用精确 `rg` 核验，未据缺失图结果作推断。
-- 实现与装配：`pkg/util/ppcpuusage/cpuusages.rs`、`pkg/util/ppcpuusage/lib.rs`、`pkg/util/ppcpuusage/Cargo.toml`、workspace `Cargo.toml`，以及直接依赖该 crate 的各 Cargo manifest。
-- Go 对照与生产链：`pkg/util/ppcpuusage/cpuusages.go`；调用搜索覆盖 `pkg/server/conn.go`、`pkg/server/server.go`、`pkg/executor/adapter.go`、`pkg/executor/adapter_slow_log.go`、`pkg/executor/{point_get,batch_point_get}.go`、`pkg/distsql/{context,select_result}.go` 和 `pkg/session/sessmgr/processinfo.go`。
-- Rust 直接调用与消费：`pkg/distsql/context/context.rs`、`pkg/session/sessmgr/processinfo.rs`、`pkg/util/stmtsummary/statement_summary.rs`、`pkg/util/stmtsummary/v2/record.rs`。
-- 测试证据：`pkg/util/ppcpuusage/migration_aster_unit_test.rs` 覆盖 reset、ID 过滤、set/get、ID 起点及多线程合并；`pkg/distsql/context/context_test.rs` 与 `migration_aster_unit_test.rs` 覆盖 detach 快照独立性；`pkg/session/sessmgr/migration_aster_unit_test.rs` 覆盖 processlist CPU 输出。
-- 本任务是只新增说明文档的分析任务，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构命令，并人工复核以上“已接线/Go 目标链路”的边界表述。

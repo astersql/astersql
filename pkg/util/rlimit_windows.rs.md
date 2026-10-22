@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util` crate 的 Windows 专用资源限制适配层。crate 根模块 `pkg/util/lib.rs` 以 `pub mod rlimit_windows;` 暴露它，而文件级 `#![cfg(windows)]` 保证其中的实现只在 Windows 目标上参与编译。它与非 Windows 实现 `pkg/util/rlimit_other.rs` 共同维持 `GenRLimit(&str) -> u64` 这一跨平台调用形状。
-
-`pkg/util/Cargo.toml` 将 crate 入口指定为 `pkg/util/lib.rs`，并声明了 Windows 目标依赖 `windows-sys`；不过本文件本身不调用该依赖或任何 Win32 API。其职责只是实现 Go 版 `pkg/util/rlimit_windows.go` 的兼容占位行为。
+Windows 分支不探测操作系统资源限制；该数值也与非 Windows 实现读取 `RLIMIT_NOFILE` 失败时的回退值一致。
 
 ## 核心职责
 
@@ -72,9 +70,9 @@ Go 版上游调用证据：
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/rlimit_windows.go` 受 `//go:build windows` 约束，定义 `func GenRLimit(source string) uint64` 并直接 `return 1024`。Rust 文件用 `#![cfg(windows)]` 表达相同的平台条件，用 `&str` 避免取得字符串所有权，并以 `let _ = source;` 显式保留未使用参数。两者在可观察行为上相同：不使用来源、不访问系统、不记录日志、固定返回 `1024`。
+Rust 文件用 `#![cfg(windows)]` 表达相同的平台条件，用 `&str` 避免取得字符串所有权，并以 `let _ = source;` 显式保留未使用参数。
 
-非 Windows 对照 `pkg/util/rlimit_other.go` 与 `pkg/util/rlimit_other.rs` 会读取 `RLIMIT_NOFILE` 的软限制，并在读取失败时记录警告、回退到 `1024`。因此 Windows 版复用的是失败回退语义，而不是 POSIX 的动态探测语义。
+非 Windows 对照 `pkg/util/rlimit_other.go` 与 `pkg/util/rlimit_other.rs` 会读取 `RLIMIT_NOFILE` 的软限制，并在读取失败时记录警告、回退到 `1024`。
 
 测试方面，`pkg/util/rlimit_other_test.rs` 验证了非 Windows Rust 辅助函数的成功值与失败回退，`pkg/util/cpu_posix_1_aster_unit_test.rs::printer_and_rlimit_are_operational` 只调用 `rlimit_other::GenRLimit`。仓库中没有针对 `rlimit_windows.rs` 的独立 Rust 测试，也未发现直接验证 Go Windows 函数的测试；现有非 Windows 测试不能证明 Windows 条件编译与固定返回契约。
 
@@ -85,13 +83,3 @@ Go 版上游调用证据：
 建议新增独立测试文件 `pkg/util/rlimit_windows_test.rs`，并在 `pkg/util/lib.rs` 中以 `#[cfg(all(test, windows))]` 和 `#[path = "rlimit_windows_test.rs"]` 挂载，至少断言空字符串与典型来源均返回 `1024`。测试逻辑不应写入生产源文件。跨平台 API 若进一步统一，可考虑由一个条件编译门面选择 `rlimit_windows` 或 `rlimit_other`，但在新增 Rust 生产调用者前应先核对 Go 的两个真实消费点及配额转换逻辑。
 
 兼容风险主要是改变固定值会改变导入/DDL 后端的文件句柄预算；过高可能放大系统资源压力，过低会限制并发或吞吐。当前函数本身为常数时间、零分配，任何真实系统探测都会引入新的平台依赖、失败模式和潜在启动成本，需要同步测试和文档。
-
-## 验证依据
-
-- 目标源码：`pkg/util/rlimit_windows.rs`，确认仅有 `#![cfg(windows)]` 与 `pub fn GenRLimit(source: &str) -> u64`，函数固定返回 `1024`。
-- crate 边界：`pkg/util/lib.rs` 的 `pub mod rlimit_windows;`；`pkg/util/Cargo.toml` 的 `[lib] path = "lib.rs"`、`autotests = false` 和 Windows 目标依赖声明。
-- Go 对照：`pkg/util/rlimit_windows.go` 的 Windows 构建标签与固定返回；`pkg/util/rlimit_other.go` 的 `RLIMIT_NOFILE` 查询和失败回退。
-- Rust 对照与测试：`pkg/util/rlimit_other.rs`、`pkg/util/rlimit_other_test.rs`、`pkg/util/cpu_posix_1_aster_unit_test.rs::printer_and_rlimit_are_operational`。
-- 业务消费证据：`pkg/ddl/ingest/env.go`、`pkg/ddl/ingest/config.go`、`pkg/executor/importer/import.go`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`query GenRLimit --kind function` 定位到 Rust/Go 的 Windows 与非 Windows 四个同名实现。对 Windows Rust 符号执行 callers/callees 未得到可用静态边，故使用 `rg` 补查；结果仅发现模块声明和函数自身，没有 Rust 生产调用或 Windows 专属测试。
-- 结构检查按任务命令执行，确保文档存在且恰有十一个规定的二级标题；本任务是纯文档分析，按计划不运行 Cargo。

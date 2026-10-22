@@ -5,9 +5,7 @@ Go 对照：[`reporter.go`](./reporter.go)
 
 ## 文件定位
 
-本文件是 `astersql-util-logutil-consistency` crate 的主体实现。crate 入口 [`lib.rs`](./lib.rs) 将私有 `reporter` 模块的公开项全部再导出；[`Cargo.toml`](./Cargo.toml) 声明它依赖 `model`（表、列和索引元数据）、`tablecodec`（键、行、Datum 与 handle 编解码）、`serde`/`serde_json`（诊断 JSON）、`hex` 和 `log`。根 workspace 以 `facade_util_logutil_consistency` 引入该 crate，`pkg/executor/Cargo.toml` 也直接依赖它。
-
-它位于 SQL 执行发现“索引视图与表记录不一致”之后：调用方提供表/索引元数据、键编码器、可选存储适配器和日志下沉；本文件补采 MVCC（多版本并发控制）诊断信息、执行脱敏、记录错误日志，并返回具有 TiDB 兼容错误码的 `ConsistencyError`。当前已接线的 Rust 生产入口是 `pkg/executor/typed_point_get.rs`：唯一索引已经取到 handle、但对应记录不存在且不是弱一致性读取时，构造 `Reporter` 并调用 `ReportLookupInconsistent`。Go 版本还由 `pkg/executor/distsql.go`、`pkg/executor/check_table_index.go`、`pkg/util/admin/admin.go` 等路径调用三个报告入口；不能据此宣称这些 Go 调用点均已在 Rust 接线。
+只负责诊断和错误构造，不判断数据是否一致，也不重试、修复或提交存储数据。
 
 ## 核心职责
 
@@ -94,16 +92,12 @@ Go 的直接调用证据包括 `pkg/executor/distsql.go` 的 lookup/列级报告
 
 ## 与 Go 版本的对应关系
 
-[`reporter.go`](./reporter.go) 是逐项语义基准：公开命名、三个错误类别与错误码、50 个 full handle 上限、5000 字节 MVCC 截断、Region 失败回退、write/value 解码顺序、`ON` 时跳过完整 MVCC、admin check 仍保留去载荷元数据，均由 Rust 保留。
-
 Rust 为适应 crate 边界做了显式抽象：Go 的 `helper.Storage` 与 Region cache 被压缩为 `Storage` 两方法；上下文日志器替换为可注入 `LogSink`；protobuf 响应替换为本地 serde DTO；Go 的 `error` 替换为含 kind/code/args/redact mode 的 `ConsistencyError`。`goBytes` 和 `toGoJSON` 补足 serde 与 Go JSON 的差异。
 
 已确认的细节差异或迁移状态：
 
-- Rust 截断时回退到 UTF-8 字符边界，避免 Go 按字节切片可能产生的非法 UTF-8；ASCII 输入时行为一致。
 - Rust 的 `MvccInfo::Lock` 是不透明 JSON，只保存、不解释。
 - Rust 当前生产接线证据仅见 typed point get 的 lookup mismatch；Go 中 admin/distsql/session 的广泛入口不能当作 Rust 已完成移植的证据。
-- 独立迁移测试以假存储和假日志器覆盖兼容行为，不依赖真实 TiKV。
 
 ## 扩展指南
 
@@ -113,11 +107,3 @@ Rust 为适应 crate 边界做了显式抽象：Go 的 `helper.Storage` 与 Regi
 - 新增报告类型时，应同步 `ConsistencyErrorKind`、`Display` 模板、Go 风格别名、日志字段与错误码测试；敏感字段必须经过 `redactString`/`redactErrorArg`，并明确 `ON` 下是否允许非载荷元数据。
 - 优化诊断 I/O 时重点审查 `ReportLookupInconsistent` 的逐项同步查询及 `ReportAdminCheckInconsistent` 的重复查询；缓存或批量化不能改变失败降级、脱敏和日志字段形状。
 - 生产逻辑与 Rust 测试应保持分文件。优先扩展 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；若改动 typed point get 接线，则同步 `pkg/executor/typed_point_get_test.rs`。不要把测试内嵌到 `reporter.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标仓库索引有效（包含 Rust/Go）；`files --filter pkg/util/logutil/consistency` 确认 crate 的 `lib.rs`、`reporter.rs`、Go 对照和独立测试；`explore "pkg/util/logutil/consistency/reporter.rs Reporter report consistency"` 识别目标文件 51 个符号及 `GetMvccByKey`、两个解码器、三个报告入口的内部调用关系；`node --file ... --offset ...` 完整核对 1021 行源码。精确 `callers/callees` 命令未产生可用文本，因此上游关系另以仓库搜索和调用点源码确认。
-- 源码与边界：[`reporter.rs`](./reporter.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、根 `Cargo.toml`、`pkg/executor/Cargo.toml`。
-- Go 语义：[`reporter.go`](./reporter.go)；调用点 `pkg/executor/distsql.go`、`pkg/executor/check_table_index.go`、`pkg/util/admin/admin.go`、`pkg/session/session.go`。
-- Rust 调用与测试：`pkg/executor/typed_point_get.rs`、`pkg/executor/typed_point_get_test.rs`、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)。后者的五个测试覆盖空键/失败降级/截断、Go JSON 兼容、行与索引解码、lookup 报告、admin 两类报告及脱敏边界。
-- 本任务是只新增说明文档的静态分析，按计划不运行 Cargo；结论来自索引、源码、Cargo、Go 对照与独立测试阅读，不代表本轮执行了运行时测试或真实 TiKV 验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-br-pkg-streamhelper` crate 的 TiKV log-backup flush 事件订阅管理器。模块由 [`lib.rs`](./lib.rs) 以 `flush_subscriber` 子模块装入并整包再导出；crate 边界和 `spans` 路径依赖见 [`Cargo.toml`](./Cargo.toml)。生产侧直接持有者是 [`CheckpointAdvancer`](./advancer.rs) 的 `subscriber: Mutex<Option<FlushSubscriber>>`：成为 owner 时由 `SpawnSubscriptionHandler` 创建，周期性 `subscribeTick` 调用拓扑更新、错误处理和错误汇总，停止时由 `stopSubscriber` 清理。
-
-它位于“TiKV 各 Store 的 flush 流”与“CheckpointAdvancer 的区间检查点状态”之间：每个 Store 对应一条后台接收线程，RPC 返回的 flush 区间被转换为 `spans::Valued` 后汇入一个共享的 MPSC 通道。这里负责订阅和转发，不负责合并区间或计算全局最小检查点；后续合并语义属于 `spans` 与 advancer。
+`Clear`、`Drop` 和 `Subscription::close` 负责停止线程、等待退出以及在终止整个订阅器时关闭事件发送端。
 
 ## 核心职责
 
@@ -91,9 +89,6 @@ RustCodeGraph 的文件节点显示本文件被 `advancer.rs` 及测试等多处
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`flush_subscriber.go`](./flush_subscriber.go)，主要语义对应如下：
-
-- 两端都以 Store ID 建表，以 `BootAt` 检测重启，聚合单 Store 错误，跳过对 `Unimplemented` 的自动重试，并用一个共享输出通道汇总事件。
 - Rust 将 Go 的 `LogBackupService + TiKVClusterMeta` 两个构造参数合并成 `Arc<dyn Env>`；`WithMasterContext` 在 Rust 中是 `()` 参数的空操作，没有取消传播或父上下文语义。
 - Go 的输出通道容量为 1024；Rust 使用无界 MPSC，因此不会因消费者慢而阻塞生产者，但可能在消费滞后时无界增长内存。
 - Go 在发送前通过 `codec.DecodeBytes` 解码 TiKV 编码的起止 key，坏 key 会记录并跳过；Rust `EventFromFlush` 直接复制 `StartKey`/`EndKey`。因此两端 key 表示是否等价取决于 Rust `SubscribeFlushEvents` 边界是否已解码，本文件本身没有验证或转换。
@@ -101,8 +96,6 @@ RustCodeGraph 的文件节点显示本文件被 `advancer.rs` 及测试等多处
 - Go `Clear` 通过 60 秒 context 限制等待，Rust 的同名常量未接入；Go 的取消能打断阻塞发送/RPC，Rust 通过每 50ms 轮询 stop 通道协作退出。
 - Go 的拓扑新增后才连接且订阅创建时不清缓存；Rust `addSubscription` 连接后无条件调用一次 `ClearCache`。Go 在订阅 RPC 建立失败时立即清缓存，Rust 则把错误留给后续 `HandleErrors` 清理并重试。
 - Go 的不可重试判断检查 gRPC code，Rust 使用错误字符串。Go 使用 `multierr` 保留结构化 error，Rust返回拼接后的 `String`。
-
-Go 测试 `subscription_test.go` 与 Rust 的 `subscription_test.rs` 共同验证基本事件覆盖、瞬时连接错误恢复、unsupported Store、Store 移除、部分 Store 回退到 collector、后台错误和空闲超时。Rust 专用 `flush_subscriber_test.rs` 另以更小用例验证连接重试、通道关闭、实时转发和空闲错误。
 
 ## 扩展指南
 
@@ -113,12 +106,3 @@ Go 测试 `subscription_test.go` 与 Rust 的 `subscription_test.rs` 共同验�
 - 若改变通道容量或消费模型，需要评估背压与内存：无界通道适合不阻塞 Store worker，但消费者停滞会积压；有界通道则必须确保停止信号能打断阻塞发送。
 - 为类型实现标准 `Drop` trait 或引入 RAII guard 时，要避免与现有普通方法 `Drop()` 混淆，并验证显式清理、隐式析构、重连和接收端提前关闭都不会泄漏或死锁。
 - 对任何生产事件接线修改，至少同步 `flush_subscriber_test.rs` 与 `subscription_test.rs`；涉及 advancer 生命周期时还应同步同目录 `advancer_test.rs`。Rust 单元测试应继续保存在独立测试文件中。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`node --file br/pkg/streamhelper/flush_subscriber.rs --offset 1 --limit 260` 与后续 261–293 行读取了完整实现；`query` 确认 `FlushSubscriber`、`NewSubscriber` 及 Go 同名符号。方法级 `callers` 未返回可靠边，因此调用边再以直接符号搜索验证。
-- 生产源码：`br/pkg/streamhelper/flush_subscriber.rs`（完整 293 行）、`br/pkg/streamhelper/lib.rs`（模块声明与再导出）、`br/pkg/streamhelper/advancer_env.rs`（`Env` 组合契约）、`br/pkg/streamhelper/advancer.rs`（持有、创建、周期维护与停止调用边）。目标包没有 `doc.go`。
-- crate 配置：`br/pkg/streamhelper/Cargo.toml`，确认 crate 名、library 入口、porting 元数据及 `spans` 路径依赖；本模块没有 feature 条件编译项。
-- Go 对照：`br/pkg/streamhelper/flush_subscriber.go`（拓扑、gRPC、错误分类、key 解码、空闲 watcher、清理与通道语义）和 `br/pkg/streamhelper/subscription_test.go`（对应行为边界）。
-- Rust 测试：`br/pkg/streamhelper/flush_subscriber_test.rs`（四个聚焦用例）、`br/pkg/streamhelper/subscription_test.rs`（完整订阅契约），并通过直接引用确认 `advancer_test.rs`、`parity_test.rs` 的上游使用。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令校验本文恰含 11 个固定二级章节，并人工检查所有行为结论均对应上述源码、调用边或对照测试。

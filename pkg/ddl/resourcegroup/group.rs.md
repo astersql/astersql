@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-resourcegroup` crate，是资源组 DDL 模型到 Resource Manager protobuf 的纯转换与校验层。crate 入口 `pkg/ddl/resourcegroup/lib.rs` 将 `group` 模块公开再导出，并将 `astersql-meta-model` 的 `group_3` 模型与 AST 枚举公开为 `model`、`ast`；`build.rs` 生成本文件使用的 `rmpb` protobuf 类型。`pkg/ddl/resourcegroup/Cargo.toml` 表明其直接运行时依赖仅有固定版本 `protobuf = 2.8.0`、`astersql-meta-model` 和 `thiserror`。
-
-当前 Rust 接线应与 Go 主链区分：RustCodeGraph 和全仓 `rg` 找到的 Rust 调用者均在 `pkg/ddl/resourcegroup/migration_aster_unit_test.rs` 与 `pkg/resourcegroup/tests/resource_group_test.rs`，没有发现 Rust 生产调用点。因此它是已经移植且有测试覆盖的转换库，但不能据此宣称 Rust DDL 创建/修改资源组主链已经调用它。Go 对照实现则由 `pkg/ddl/resource_group.go` 的 `onCreateResourceGroup`、`onAlterResourceGroup` 和 `checkResourceGroupValidation` 调用，处于 DDL job 的参数校验和提交 Resource Manager 之前。
+只做内存转换和同步校验，不写 DDL 元数据、不调用 PD/Resource Manager、不推进 schema state，也不检查 SwitchGroup 指向的资源组是否真实存在；后一点与 Go 文件中的 TODO 一致。
 
 ## 核心职责
 
@@ -67,11 +65,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/resourcegroup/group.go::NewGroupFromOptions`。Rust 版本保持了 Go 的检查顺序、32 字节名称上限、优先级窄化、Runaway/Background 字段填充、RU token bucket 形状、RU/Raw 冲突以及仅支持 RU 模式的结论。`pkg/resourcegroup/tests/resource_group_test.go::TestNewResourceGroupFromOptions` 是主要 Go 表驱动证据。
+Rust 版本保持了 Go 的检查顺序、32 字节名称上限、优先级窄化、Runaway/Background 字段填充、RU token bucket 形状、RU/Raw 冲突以及仅支持 RU 模式的结论。
 
 实现差异主要来自语言和生成 API：Go 使用指针与结构体字面量，Rust 使用 `Option<&...>`、拥有值和逐层 `set_*`；Go 通过枚举数值转换 Runaway/Watch，Rust 用两个显式映射函数；Go 的 `[]string` 在 Rust 输出中通过 `RepeatedField::from_vec` 构造。Rust 的 `Option<Arc<_>>` 输入模型用于对齐 Go 指针子配置的共享语义，但转换结果会克隆字段。
 
-Go 的生产调用点已存在于 DDL job 处理器；Rust 目前只有测试调用证据。外部 Rust 测试中同时存在 TestKit 的资源组 SQL 生命周期用例，但这些 SQL 用例并不直接调用 `NewGroupFromOptions`，不能单独证明 SQL 路径已接入本 crate。
+Go 的生产调用点已存在于 DDL job 处理器；Rust 目前只有测试调用证据。
 
 ## 扩展指南
 
@@ -80,11 +78,3 @@ Go 的生产调用点已存在于 DDL job 处理器；Rust 目前只有测试调
 - 增加 SwitchGroup 存在性、Background job type、优先级或数值范围校验时，应先确认这些规则属于本纯转换层还是上游 SQL/DDL 校验层；保持与 Go 的错误类型、错误顺序和生产调用时点一致。
 - 若把本 crate 接入 Rust DDL 生产链，需要在真实调用点补充针对 create/alter/validation 的独立集成测试，验证转换错误会取消或拒绝作业、protobuf 会被提交到对应资源管理接口，而不是用现有直接单元测试替代接线证据。
 - Rust 测试不得内嵌回 `group.rs`；沿用同目录 `migration_aster_unit_test.rs` 或独立测试 crate。改动生产 Rust 后按仓库协议执行 `cargo fmt --all`，但本次纯文档任务未修改 Rust 且按计划不运行 Cargo。
-
-## 验证依据
-
-- 源码与边界：`pkg/ddl/resourcegroup/group.rs`、`lib.rs`、`errors.rs`、`Cargo.toml`，以及模型定义 `pkg/meta/model/resource_group.rs`。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ddl/resourcegroup` 定位 7 个相关文件；`explore`/`node NewGroupFromOptions` 确认公开函数、两个私有映射调用边及测试调用者。全仓 `rg` 进一步确认未发现 Rust 生产调用点。
-- Go 对照：`pkg/ddl/resourcegroup/group.go`、`pkg/ddl/resource_group.go` 和 `pkg/resourcegroup/tests/resource_group_test.go::TestNewResourceGroupFromOptions`。
-- Rust 测试：`pkg/ddl/resourcegroup/migration_aster_unit_test.rs`（转换形状、错误顺序、错误文本）与 `pkg/resourcegroup/tests/resource_group_test.rs`（RU/burst、Runaway 和非法配置）；本任务按计划只读取测试，不运行 Cargo。
-- 结构验收使用任务文件给定命令，要求本文存在且恰有 11 个固定二级标题；最终交付前另检查变更范围只包含本文，并人工复核无 Rust/Go/Cargo/`plan.md` 修改。

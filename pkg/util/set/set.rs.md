@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-set` crate 中的通用泛型集合实现，源码由 [`pkg/util/set/lib.rs`](./lib.rs) 以 `pub mod set` 挂载并通过 `pub use set::*` 重导出。它与 `int_set.rs`、`float64_set.rs`、`string_set.rs` 等面向具体标量类型的集合并列，负责需要由调用者自定义成员身份的场景：元素实现 `Key`，集合以 `Key::Key()` 返回的字符串作为唯一标识。
-
-crate 边界由 [`pkg/util/set/Cargo.toml`](./Cargo.toml) 定义，包名为 `astersql-util-set`，迁移元数据指向 Go 包 `pkg/util/set`。本文件自身只使用标准库 `std::collections::HashMap`，不直接使用该 manifest 中的 `hack-crate`、`memory-crate` 或 `types-crate`；这些依赖服务于同 crate 的其他集合实现。
-
-RustCodeGraph 能定位本文件 26 个符号，并确认 `CombSet` 到 `combSetIterate` 的内部调用边。仓库文本检索显示，当前泛型 API 的实际 Rust 调用集中在同 crate 的 `set_test.rs` 与 `migration_aster_unit_test.rs`；若干生产 crate 声明了对 `astersql-util-set` 的依赖，但可见调用主要使用该 crate 的其他专用集合类型。因此不能仅凭 Cargo 依赖断言本文件已经进入某条 SQL 执行主链。
+与 `int_set.rs`、`float64_set.rs`、`string_set.rs` 等面向具体标量类型的集合并列，负责需要由调用者自定义成员身份的场景：元素实现 `Key`，集合以 `Key::Key()` 返回的字符串作为唯一标识。
 
 ## 核心职责
 
@@ -84,18 +80,13 @@ RustCodeGraph 能定位本文件 26 个符号，并确认 `CombSet` 到 `combSet
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/set/set.go`](./set.go)，Rust 基本保持其控制流与边界：`Key`/`Set` 接口、`setImpl` 懒初始化、同键覆盖、有序 `ToList`/`String`、空与单输入的并交集分支、差集过滤，以及组合递归的 Add/Remove 回溯均一一对应。
-
 语言映射上的差异是：
 
-- Go `map[string]T` 的 nil 状态映射为 `Option<HashMap<String, T>>`；Go 接口返回值映射为 `Box<dyn Set<T>>`。
-- Go 变参 `...T`/`...Set[T]` 映射为切片，调用点需要显式借用或构造单元素切片。
-- Go `int` 大小映射为 `usize`（集合大小与递归深度）及 `isize`（允许组合目标为负数）。
 - Go 的 nil slice 无结果映射为空 `Vec`；外部观察到的迭代结果相同，但 nil 与空的表示差异不再存在。
 - Rust 需要 `T: Clone + 'static`；Go 版本没有等价的显式克隆约束，而是按值存入 map。
 - Go 可以对 nil `*setImpl` 调用 `ToList`/`Size`，Rust trait object 不存在 nil receiver；正常构造的空集合行为保持一致。
 
-[`pkg/util/set/set_test.go`](./set_test.go) 与 [`pkg/util/set/set_test.rs`](./set_test.rs) 使用相同的 q1–q4 案例验证 CRUD、克隆独立性、并交差和组合顺序。`migration_aster_unit_test.rs` 额外验证同键 payload 覆盖以及 `CombSet` 的 0、负数和超界边界。
+`migration_aster_unit_test.rs` 额外验证同键 payload 覆盖以及 `CombSet` 的 0、负数和超界边界。
 
 ## 扩展指南
 
@@ -106,13 +97,3 @@ RustCodeGraph 能定位本文件 26 个符号，并确认 `CombSet` 到 `combSet
 若优化集合代数性能，可以避免不必要的 `ToList` 排序或选择较小集合驱动交集，但必须保留稳定输出、同键值来源和 Go 对照行为。若优化 `CombSet`，必须保持选择/不选择的输出顺序、命中时的独立快照以及 k=0/负数/超界边界。组合规模天然可能爆炸，新增面向不可信大小的调用时应在上层设置限制，而不是悄悄截断这里的结果。
 
 测试逻辑必须继续放在独立文件中：常规对照用 `pkg/util/set/set_test.rs`，更全面的迁移边界可放在 `pkg/util/set/migration_aster_unit_test.rs`，并同步参考 Go 的 `pkg/util/set/set_test.go`。不要把 `#[cfg(test)]` 测试内嵌回本生产源文件。
-
-## 验证依据
-
-- 源码事实：`pkg/util/set/set.rs` 的 `Key`、`Set`、`setImpl`、`NewSet`、`ListToSet`、`UnionSet`、`AndSet`、`DiffSet`、`CombSet` 与 `combSetIterate`。
-- crate 与模块边界：`pkg/util/set/Cargo.toml`、`pkg/util/set/lib.rs`；另以各消费方 `Cargo.toml` 核对 crate 依赖声明。
-- Go 对照：`pkg/util/set/set.go`；对应测试为 `pkg/util/set/set_test.go`。
-- Rust 测试：`pkg/util/set/set_test.rs` 验证基础行为和 k=1..5 的组合；`pkg/util/set/migration_aster_unit_test.rs` 验证键覆盖、稳定顺序、克隆独立性及 k=0、负数、超界。
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/util/set` 确认模块文件集合；`node --file` 读取目标、Go 对照和测试；`query` 精确定位公开函数；`callees CombSet --file pkg/util/set/set.rs` 确认 `ToList` 与 `combSetIterate` 调用边；`callees combSetIterate --file ...` 确认 `Add`、`Remove`、`Size`、`Clone` 调用边。
-- 上游核验：对 Rust 源码检索本文件公开符号，目前只发现同 crate 的两个测试文件有有效调用；因此文档没有声称已接入未被代码证实的生产主链。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行固定 11 章节结构验证并人工复核链接、符号和边界描述。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件对应真实源文件 [`collect_column_stats_usage.rs`](collect_column_stats_usage.rs)，位于 `astersql-planner-core-rule` crate 的逻辑优化规则层，由同目录 `lib.rs` 通过 `pub mod collect_column_stats_usage` 暴露。它读取 `rule_init.rs` 定义的精简逻辑计划 IR（`Plan`、`PlanKind`、`Expr`、`AggKind`），在优化阶段统计哪些表和列可能需要统计信息，并把结果返回给上层规则；它本身不加载统计、不估算基数，也不改写计划。
-
-生产侧直接入口在 `rule_collect_plan_stats.rs` 的 `CollectPredicateColumnsPoint::optimize`：该规则调用 `collect_column_stats_usage`，再根据 `visited_tables` 和 `predicate_columns` 为每张表构造 `UsedStats` 并写回 `plan.used_stats`。因此本文件处于“逻辑计划已经形成 → 统计加载/使用决策”之间。`Cargo.toml` 将该目录声明为 `astersql-planner-core-rule`，本文件所用计划类型是 crate 内部模块；清单中的路径依赖服务于规则 crate 的其他模块，并没有为本文件设置独立 feature。
+该实现是 Go 收集器在精简 Rust IR 上的可运行子集，不等同于 Go 完整逻辑算子实现。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@ RustCodeGraph 的文件节点把目标文件识别为 7 个索引符号，并能
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是同目录 `collect_column_stats_usage.go`。两版共同保留的主语义包括：遍历逻辑计划、DataSource 下推条件需要 full 统计、Join/Selection/排序/GROUP BY 通常只需 meta、记录逻辑表与静态分区、计算算子数，以及可选收集 WHERE/JOIN/ORDER/GROUP/MIN/MAX 的索引候选列。Rust 的 full 标志 OR 合并对应 Go `addPredicateColumn` 中“已是 full 则不降级”的规则。
+Rust 的 full 标志 OR 合并对应 Go `addPredicateColumn` 中“已是 full 则不降级”的规则。
 
-Go 使用 `columnStatsUsageCollector`、`model.TableItemID` 和 `colMap` 维护输出列到基表列的血缘，并以后序遍历支持 Projection、Aggregation、Window、UnionAll/PartitionUnion、Apply、CTE/CTETable、IndexScan/TableScan 等完整算子；它还跳过系统表和非正 ID 伪列，把 interesting columns 写回具体 DataSource，并可为 plan replayer 记录运行时表统计。Rust 当前 `PlanKind` 不表达其中多种算子，Projection 分支也不读取其 `expressions` 建立血缘，因此这些能力不能从 Go 实现推断为 Rust 已支持。
+Rust 当前 `PlanKind` 不表达其中多种算子，Projection 分支也不读取其 `expressions` 建立血缘，因此这些能力不能从 Go 实现推断为 Rust 已支持。
 
-Go 测试 `TestSkipSystemTables`、`TestCollectPredicateColumns`、`TestCollectHistNeededColumns` 覆盖系统表、投影血缘、窗口、Apply、CTE、TopN、静态/动态分区以及 full/meta 差异。Rust 独立测试聚焦现有 IR：`collect_column_stats_usage_test.rs` 验证两表 Join、分区映射、算子计数、普通聚合参数不误收集和索引开关；`rule_aster_unit_test.rs::join_predicate_columns_only_need_meta_stats` 验证纯 Join 的 meta 需求；`casetest/stats_test.rs` 验证 DISTINCT GroupNDV 与 Join 两侧。两组覆盖范围差异反映迁移状态，不应通过删减 Go 语义来消除。
+Go 测试 `TestSkipSystemTables`、`TestCollectPredicateColumns`、`TestCollectHistNeededColumns` 覆盖系统表、投影血缘、窗口、Apply、CTE、TopN、静态/动态分区以及 full/meta 差异。两组覆盖范围差异反映迁移状态，不应通过删减 Go 语义来消除。
 
 ## 扩展指南
 
@@ -79,11 +77,3 @@ Go 测试 `TestSkipSystemTables`、`TestCollectPredicateColumns`、`TestCollectH
 若要继续对齐 Go，不能只在此文件添加 match 分支；需要先在 `rule_init.rs` 为缺失算子和表列身份建立足够的 IR，再实现 Projection/Aggregation/Union/Window/CTE 的列血缘传播、系统表与伪列过滤，并同步调整 `rule_collect_plan_stats.rs::columns_for_table`。这是跨文件能力扩展，不属于本文件当前已支持行为。
 
 测试必须放在独立文件，不要内嵌到生产源。直接单元回归应追加到 `collect_column_stats_usage_test.rs`；规则接线和按表归属可追加到 `rule_aster_unit_test.rs` 或 `rule_collect_plan_stats_test.rs`；Go 对齐的较完整场景还需检查 `collect_column_stats_usage_test.go` 与 `pkg/planner/core/casetest/stats_test.rs`。重点兼容风险是 full/meta 降级、跨表列 ID 混淆、子树上下文泄漏、重复递归导致算子数翻倍以及静态分区下标误映射；性能风险是表达式重复展开与有序集合增长。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含目标目录；`files --filter pkg/planner/core/rule` 确认 Rust、Go 与测试文件均已索引；`node --file pkg/planner/core/rule/collect_column_stats_usage.rs --offset 1 --limit 240` 读取 195 行完整实现；`query ColumnStatsUsage` 与 `query collect_column_stats_usage --kind function --limit 30 --json` 核对结构体及三个函数节点。对精确节点运行 `callers`/`callees` 时无输出并超时，故没有用该结果作“无调用边”的结论。
-- Rust 源与模块：`pkg/planner/core/rule/collect_column_stats_usage.rs`；`pkg/planner/core/rule/rule_init.rs` 中 `Expr::columns`、`PlanKind`、`Plan`；`pkg/planner/core/rule/lib.rs` 的公开模块声明；`pkg/planner/core/rule/rule_collect_plan_stats.rs` 中 `CollectPredicateColumnsPoint::optimize` 和 `columns_for_table`。
-- crate 边界：`pkg/planner/core/rule/Cargo.toml` 的 package、lib path、porting metadata 与依赖区；本文件没有条件编译依赖或独立 feature。
-- Go 对照：`pkg/planner/core/rule/collect_column_stats_usage.go` 的 `columnStatsUsageCollector`、`collectFromPlan`、`CollectColumnStatsUsage`；`pkg/planner/core/rule/collect_column_stats_usage_test.go` 的三个顶层测试。
-- Rust 测试：`pkg/planner/core/rule/collect_column_stats_usage_test.rs`、`pkg/planner/core/rule/rule_aster_unit_test.rs`、`pkg/planner/core/casetest/stats_test.rs`。本任务是纯文档分析，按任务约束未运行 Cargo。

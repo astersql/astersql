@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tracing.rs` 是独立 crate `astersql-br-pkg-trace` 的实际实现文件，由同目录 [`lib.rs`](./lib.rs) 以 `#[path = "tracing.rs"] pub mod tracing` 装配并整体再导出。该 crate 的 [`Cargo.toml`](./Cargo.toml) 将它标记为对齐 Go 包 `br/pkg/trace` 的 library；manifest 没有声明第三方依赖，当前实现只使用 Rust 标准库。
-
-它位于 BR 命令执行链的可选追踪边界。直接 Rust 上游 [`br/cmd/br/cmd.rs`](../../cmd/br/cmd.rs) 的 `with_tracing` 在开关启用时调用 `TracerStartSpan` 和 `TracerFinishSpan`。本文件不是通用或生产级分布式 tracing 后端：文件注释明确说明 `MemoryStore`、`Tracer`、`Span` 只是复刻 Go appdash/opentracing 中 BR 用到的最小子集，并把已结束的 span 格式化为本地文本文件。
+`dfsTree` 对子节点按开始时间排序，生成树形前缀、当地墙钟时间和 Go 风格耗时；`Tabby` 负责三列对齐输出。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`tracing.go`](./tracing.go)。公开流程保持一致：默认临时文件命名、创建根 span、从 context 取 span、先查询后结束根 span、空结果返回、只打印第一棵树、子节点按开始时间排序，以及三列树形文本。`tracing_serial_test.go::TestSpan` 与 Rust `tracing_serial_test.rs::test_span` 都构造 `jobA → jobB`，断言约 200ms/100ms 的两行输出。
-
-Rust 的主要替换是把 appdash/opentracing/tabby 依赖内置为本地类型，并用 stderr 代替 PingCAP 结构化日志。Rust `MemoryStore` 只保存已结束 span，`TracesOpts` 为空，不能视为完整 appdash 实现。Go 的 `getTraceFileName` 是进程级可变函数，Rust 测试覆盖是 thread-local；Go `tabwriter` 的 rune 宽度由 Rust `chars().count()` 模拟。
+Rust `MemoryStore` 只保存已结束 span，`TracesOpts` 为空，不能视为完整 appdash 实现。Go 的 `getTraceFileName` 是进程级可变函数，Rust 测试覆盖是 thread-local；Go `tabwriter` 的 rune 宽度由 Rust `chars().count()` 模拟。
 
 格式兼容由额外 Rust 回归测试加强：`parity_test.rs` 检查本地数字时区、公开 start/finish 契约、空森林和不可写路径；`tracing_test.rs` 检查小时/分钟零分量、Unicode 树形列宽、原地排序、当地墙钟偏移与无 active span panic。Go `main_test.go` 还用 goleak 审计包测试进程；Rust 本地实现没有 goroutine 对应物。
 
@@ -93,13 +89,3 @@ Rust 的主要替换是把 appdash/opentracing/tabby 依赖内置为本地类型
 - 若要传播写入错误，应为 `Tabby::Print` 和 `TracerFinishSpan` 设计 `Result`，并评估现有“记录错误后返回”的 Go 兼容性，而不是只在内部开始 panic。
 - 若需减少锁持有时间，可在 `build_traces` 中先复制必要记录再解锁，但要验证并发 `Finish` 相对于查询快照的边界。若允许极深 span 树，还应评估 `build_tree`/`dfsTree` 递归导致的栈风险。
 - 新增平台支持时应为非 Unix 的本地 UTC offset 提供可靠实现，并加入固定 offset 测试；不要依赖运行测试机器的真实时区。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/trace` 确认本 crate 的实现、Go 对照和三份 Rust 测试均已索引。
-- RustCodeGraph `node --file br/pkg/trace/tracing.rs`：核对了本文件 699 行源码及全部类型、函数、条件编译分支；`query TracerStartSpan` 区分了 Go/Rust 两个同名定义。
-- RustCodeGraph `callees TracerStartSpan`：确认 Rust 入口调用 `NewMemoryStore`、`NewTracer`、`StartSpan`、`ContextWithSpan`；`callees TracerFinishSpan` 确认查询、结束、文件名、渲染与打印链；`callees dfsTree` 确认时间读取、格式化和行输出链。图的无路径限定 `callers` 查询未返回结果，因此直接上游另由 `br/cmd/br/cmd.rs::with_tracing` 与其 parity 测试源码核验。
-- crate/装配证据：`br/pkg/trace/Cargo.toml`、`br/pkg/trace/lib.rs`、`br/pkg/trace/BUILD.bazel`。
-- Go 语义证据：`br/pkg/trace/tracing.go`、`br/pkg/trace/tracing_serial_test.go`、`br/pkg/trace/main_test.go`。
-- Rust 回归证据：`br/pkg/trace/tracing_test.rs`、`br/pkg/trace/parity_test.rs`、`br/pkg/trace/tracing_serial_test.rs`，以及命令层调用/清理证据 `br/cmd/br/cmd.rs`、`br/cmd/br/parity_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的结构命令验证文档存在且恰好包含 11 个固定二级章节，并人工复核链接、符号名、当前限制和扩展测试位置。

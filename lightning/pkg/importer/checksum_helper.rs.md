@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-lightning-pkg-importer`；crate 在 `lightning/pkg/importer/Cargo.toml` 中以 `lib.rs` 为入口，而 `lib.rs` 通过 `#[path = "checksum_helper.rs"] mod checksum_helper` 装入本模块并 `pub use checksum_helper::*`，因此这里的公开符号会进入 importer crate 的导出面。
-
-它位于 Lightning 导入流程的收尾校验边界：`NewChecksumManager` 决定是否校验以及使用 TiKV 还是 TiDB SQL 路径，`WithChecksumManager` 把选好的执行器放进 importer 自有的 `Context`，`DoChecksum` 再按表执行远端校验并记录耗时。文件本身不计算 CRC，也不比较本地与远端结果；具体执行协议由 `ingestctrl::ChecksumManager` 提供，结果比较属于表恢复等上层逻辑。
-
-当前 Rust importer 是 slim port。目标文件的策略外形与 Go 同路径文件一致，但它直接使用 `lightning/pkg/importer/stubs.rs` 中的 `Context`、PD、KV、SQL、指标和 checksum 执行器外观；这些依赖并非完整生产实现。RustCodeGraph 显示本文件被 `lightning/pkg/importer/parity_test.rs` 使用，仓库文本检索未发现 Rust 生产模块直接调用这三个公开函数。
+`WithChecksumManager` 与 `CHECKSUM_MANAGER_KEY` 定义模块内部的 context 传递协议，使策略构造与按表执行解耦。
 
 ## 核心职责
 
@@ -90,8 +86,6 @@ manager 以 `Arc<dyn ChecksumManager + Send + Sync>` 的约束形式跨 context 
 
 ## 与 Go 版本的对应关系
 
-`lightning/pkg/importer/checksum_helper.go` 是逐函数对照来源：两边都有 `NewChecksumManager` 和 `DoChecksum`，共享相同的跳过条件、PD 4.0 分界、`ChecksumViaSQL` 强制 SQL 分支、backoff 默认回退、表名日志以及失败也计时的行为。
-
 主要差异如下：
 
 - Go 用 `nil` 表示跳过；Rust 用 `Result<Option<Arc<dyn ChecksumManager>>>` 明确区分跳过、成功对象和错误。
@@ -109,12 +103,3 @@ manager 以 `Arc<dyn ChecksumManager + Send + Sync>` 的约束形式跨 context 
 - 修改 `DoChecksum` 时，应增加一个可注入的 fake `ChecksumManager`，验证成功值、错误传播、错误场景也记录耗时、键存在但类型错误、context 派生和并发共享；并对照 Go `table_import_test.go` 与 `meta_manager_test.go` 的上层行为。
 - 若改变 key 或 holder，必须同时更新所有写入和读取点；字符串键有碰撞风险，迁移到类型化 context 时应一次性调整协议并保留兼容测试。
 - 性能风险主要来自远端 checksum、并发度、backoff 和额外 Arc/context map 克隆；兼容风险主要来自选择不同执行器、改变可选错误处理的上层约定、默认权重漂移和遗漏资源清理。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件且目标文件已索引；`files --filter lightning/pkg/importer/checksum_helper.rs` 报告目标文件 5 个符号；`node --file ... --offset 1 --limit 260` 读取 146 行完整文件并报告由 `parity_test.rs` 使用；对 `NewChecksumManager`、`DoChecksum`、`WithChecksumManager` 运行了 `query`、`node`、`callers`、`callees`，其中调用边解析不足已由直接搜索补证。
-- 生产源码：`lightning/pkg/importer/checksum_helper.rs`；模块入口 `lightning/pkg/importer/lib.rs`；crate 声明 `lightning/pkg/importer/Cargo.toml`；直接依赖外观 `lightning/pkg/importer/stubs.rs`。
-- Rust 测试：`lightning/pkg/importer/parity_test.rs` 的 `contract_parity` 和 `contract_error`，分别覆盖 TiDB backend 跳过与 context 缺少 manager 的错误。
-- Go 对照：`lightning/pkg/importer/checksum_helper.go`；调用链 `import.go`、`table_import.go`、`meta_manager.go`；测试 `table_import_test.go`、`meta_manager_test.go`；底层行为测试 `pkg/ingestor/ingestctrl/checksum_test.go`。
-- 人工事实复核：确认源码没有条件编译；确认 Rust 生产调用未通过仓库检索发现；确认当前 PD、KV client 和 checksum 行为来自 stub，未将 Go 已支持能力误写为 Rust 已完整支持。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查目标文件存在且恰有 11 个固定二级章节。

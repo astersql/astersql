@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/expression/builtin_other_vec.rs` 是 `astersql-expression` crate 中 `builtin_other` 组的手写向量化内核。crate 根 `pkg/expression/lib.rs` 通过 `#[path = "builtin_other_vec.rs"] mod builtin_other_vec_kernel;` 私有装配它，并紧邻装配 `builtin_other_vec_generated.rs`；生成版 IN 实现直接从本模块引用 `EvalContext`、`EvalError`、`EvalResult`、`VectorExpression` 和 `write_int_options`。因此，本文件既实现 VALUES、ROW、BIT_COUNT、GET_PARAM、SET/GET 用户变量，也为生成版 IN 提供轻量求值协议和公共支撑，但它不是 crate 对外公开模块。
-
-`pkg/expression/lib.rs` 只在 `#[cfg(test)]` 的 `expression_other_vec` 测试门面中通配再导出本模块内容。仓库中直接构造本文件签名的可见调用点集中在 `builtin_other_vec_test.rs`、`builtin_other_vec_generated_test.rs` 和 `builtin_other_vec_generated_21_aster_unit_test.rs`；生产侧的确定依赖是生成版 IN 内核对上述基础类型/辅助函数的引用。不要把本文件的 `EvalContext`/`VectorExpression` 与 crate 其他运行时同名接口（例如 `exprctx::EvalContext`）混为一谈。
+以 `ColumnExpression` 和 `LiteralExpression` 提供列投影与常量广播，使手写签名和生成版 IN 能以统一接口取得不同物理类型的列。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ SET 方法必须获得独占的 `&mut EvalContext`，同一上下文中的 `Hash
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/builtin_other_vec.go`。七类 VALUES 的 `vectorized=false` 与未实现错误、ROW 的 `vectorized=true` 与 panic 文本、BIT_COUNT 位运算、仅在 overflow 时逐行回退、GET_PARAM 的 NULL/越界/字符串化、四类用户变量 SET/GET 均逐项对应。`pkg/expression/builtin_other_vec_test.go` 还验证 Go 的向量函数注册、GET_PARAM 参数转换及越界；IN 的 Go 测试范围更广，而 Rust 的生成版 IN 位于相邻文件。
+七类 VALUES 的 `vectorized=false` 与未实现错误、ROW 的 `vectorized=true` 与 panic 文本、BIT_COUNT 位运算、仅在 overflow 时逐行回退、GET_PARAM 的 NULL/越界/字符串化、四类用户变量 SET/GET 均逐项对应。`pkg/expression/builtin_other_vec_test.go` 还验证 Go 的向量函数注册、GET_PARAM 参数转换及越界；IN 的 Go 测试范围更广，而 Rust 的生成版 IN 位于相邻文件。
 
 需要注意的实现差异：Go 签名依附完整 `builtin*Sig`/`Expression`/session `EvalContext`，通过 buffer allocator 复用临时列，并把用户变量放在 session vars/user-vars reader 中；Rust 本文件定义独立的 `VectorExpression` 与自有 `EvalContext`，临时列每次局部创建，变量只活在该上下文的 `HashMap` 中。Go 的 SET String 显式复制字符串并读取 session charset/collation；Rust 的 `String` 已拥有数据，collation 来自本地字段。Go 的 GET Real/Decimal 注释指出 get/set variable vectorized eval 曾被禁用，但方法仍存在；Rust 签名当前返回 `vectorized=true`。这些差异意味着“算法语义已移植”不等于“已完全接入 Go 的生产 session/runtime 架构”。
-
-Rust 独立测试 `builtin_other_vec_test.rs` 覆盖 BIT_COUNT、GET_PARAM、VALUES/ROW 基础契约；`builtin_other_vec_generated_21_aster_unit_test.rs` 进一步覆盖 overflow 回退、所有 SET/GET 类型、大小写、NULL、缺失变量与 ROW panic；`builtin_other_vec_generated_test.rs` 验证依赖本内核的生成版 IN。测试与源文件保持独立，符合仓库约束。
 
 ## 扩展指南
 
@@ -94,11 +90,3 @@ Rust 独立测试 `builtin_other_vec_test.rs` 覆盖 BIT_COUNT、GET_PARAM、VAL
 修改用户变量时应同步四种类型 SET/GET 测试，并评估大小写归一化、string collation、转换上下文、NULL 不写入、同名多行最后写入、跨表达式求值次序。若要接入真实 session，最可能修改 `EvalContext`、SET/GET 签名构造及上层调度，不应把 session 状态复制成新的全局缓存。兼容风险主要是与 Go session 生命周期/错误类型的差距；正确性风险是 NULL 和顺序；性能风险是每次创建临时列、逐行追加和 overflow 回退。
 
 改变 VALUES 或 ROW 前必须先检查标量调度方：`vectorized=false` 与不可达 panic 是既有契约。对列/字面量扩展还需确保输出恰为 `input.NumRows()`，否则生成版 `evaluate_in` 的行数检查会返回 `Message`。若新增直接依赖，需在 `pkg/expression/Cargo.toml` 统一声明；当前没有相关 feature 开关。
-
-## 验证依据
-
-本说明逐行阅读并交叉核对了：目标源 `pkg/expression/builtin_other_vec.rs`；crate 声明 `pkg/expression/Cargo.toml`；模块装配/测试再导出 `pkg/expression/lib.rs`；直接依赖方 `pkg/expression/builtin_other_vec_generated.rs`；Rust 测试 `pkg/expression/builtin_other_vec_test.rs`、`pkg/expression/builtin_other_vec_generated_test.rs`、`pkg/expression/builtin_other_vec_generated_21_aster_unit_test.rs`；Go 对照 `pkg/expression/builtin_other_vec.go` 与 `pkg/expression/builtin_other_vec_test.go`；顺序相关旁证 `pkg/expression/chunk_executor.rs`。
-
-RustCodeGraph 状态显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边。执行过的查询包括 `status`、目标路径 `files`、针对目标文件的 `explore`，以及 `query BuiltinBitCountSig`、`query bit_count`、`query BuiltinGetParamStringSig`、`query VectorExpression`、`node BuiltinBitCountSig` 和相应 callers/callees 尝试。索引精确定位了目标符号，例如 `BuiltinBitCountSig` 在第 624 行、`bit_count` 在第 613 行、`BuiltinGetParamStringSig` 在第 667 行；路径过滤未返回文件，部分 callers 查询无输出或超时，因此这些缺口用源码 import、模块声明和测试引用直接核验，未据不完整图结果推断额外调用关系。
-
-本任务是纯文档分析，按任务约束不运行 Cargo。交付结构检查要求本文恰含“文件定位”至“验证依据”的 11 个固定二级标题；人工复核重点是：文件存在的原因、正常及异常流程、状态生命周期、Go 差异和安全扩展位置均有真实符号或文件路径支撑。

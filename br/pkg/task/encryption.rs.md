@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-task`（[`br/pkg/task/Cargo.toml`](Cargo.toml)），由 crate 根 [`lib.rs`](lib.rs) 通过 `pub mod encryption` 挂载，并通过 `pub use encryption::*` 平铺导出。它位于 BR 公共任务配置层：把一条 `--master-key` URL 解析成任务层使用的 `encryptionpb::MasterKey` 配置对象，但不读取本地密钥文件、不连接云 KMS，也不执行加解密。
-
-生产调用入口是 [`Config::parseAndValidateMasterKeyInfo`](common.rs)：该函数先处理明文数据密钥互斥与加密算法校验，再按逗号拆分多个 master-key 字符串，逐条去除首尾空白并调用 `validateAndParseMasterKeyString`，最后把结果加入 `MasterKeyConfig.MasterKeys`。因此，本文件只负责“一条 URL 到一个后端配置”的语法与必填字段校验；多密钥聚合、加密算法选择和配置级互斥均由 `common.rs` 负责。
+位于 BR 公共任务配置层：把一条 `--master-key` URL 解析成任务层使用的 `encryptionpb::MasterKey` 配置对象，但不读取本地密钥文件、不连接云 KMS，也不执行加解密。
 
 ## 核心职责
 
@@ -104,12 +102,9 @@ RustCodeGraph 索引状态为 11,467 个文件、307,296 个节点、1,848,419 �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`encryption.go`](encryption.go)，测试对照是 [`encryption_test.go`](encryption_test.go)。Rust 保留了 Go 的四个 scheme、厂商与 query 常量、三条正则、分发顺序、成功字段形状和主要错误文案：
+Rust 保留了 Go 的四个 scheme、厂商与 query 常量、三条正则、分发顺序、成功字段形状和主要错误文案：
 
-- Go `validateAndParseMasterKeyString` 对应 Rust 同名函数；`net/url.Parse`、switch 和 `errors.Trace/Errorf` 分别对应 `Url::parse`、`match` 和本地 `Error` 构造。
-- Go 的 protobuf oneof 指针包装对应 Rust `Option<MasterKeyBackend>` 枚举；厂商专属消息指针对应 `Option<AwsKms/AzureKms/GcpKms>`。
 - Go AWS 允许凭据全部省略以交给环境/默认链，Rust 用 `AwsKms: None` 保留该语义。
-- Azure key ID 保留 `/` 后的完整多段 path；GCP 则从捕获段重建规范资源名，两种语言一致。
 - Rust `encryption_test.rs` 逐项复刻 Go 的四组表驱动用例：local 成功/带 host 失败，AWS 完整凭据/缺 key ID/凭据不成对，Azure 四参数齐全/缺 secret，GCP 标准资源/错误 path/缺 credential。
 
 已知差异与未覆盖点：Rust 函数及常量因 crate 导出策略为 `pub`，而 Go 小写函数仅包内可见；Rust URL 解析库与 Go `net/url` 对畸形 URL 的接受范围未被穷举验证；重复 query 键的首值/末值语义不同。独立 Rust 测试不直接覆盖总入口的 URL 解析和所有 scheme 分发，只有 `parity_test.rs` 覆盖 AWS 总入口及 unknown scheme；local/Azure/GCP 的总入口分发仍缺直接断言。
@@ -126,16 +121,3 @@ RustCodeGraph 索引状态为 11,467 个文件、307,296 个节点、1,848,419 �
 - 性能：静态格式校验宜继续使用一次编译的 `LazyLock<Regex>`；不要在每次解析中重复编译正则，也不要在此层引入网络探测。
 
 最可能的修改点是 `validateAndParseMasterKeyString`、对应 `parse*Config`、常量/正则定义及 `stubs.rs` 数据结构。若变更多 key 聚合、明文 key 互斥或包装算法，应改 `Config::parseAndValidateMasterKeyInfo` 及其独立测试，而不是把这些职责塞入本文件。
-
-## 验证依据
-
-本文依据以下直接证据编写：
-
-- 生产实现：[`br/pkg/task/encryption.rs`](encryption.rs)，核对了全部常量、三个静态正则和五个公开函数。
-- crate 边界：[`br/pkg/task/Cargo.toml`](Cargo.toml) 与 [`br/pkg/task/lib.rs`](lib.rs)，确认 crate 名、`regex`/`url` 依赖、模块挂载、平铺导出和独立测试模块。
-- 生产上游：[`br/pkg/task/common.rs`](common.rs) 的 `Config::parseAndValidateMasterKeyInfo`，确认多 key 拆分、trim、错误包装与 `MasterKeyConfig` 聚合。
-- 数据模型：[`br/pkg/task/stubs.rs`](stubs.rs) 的 `encryptionpb`，确认这些类型是本地最小 serde 镜像且不执行真实 KMS 操作。
-- Go 对照：[`br/pkg/task/encryption.go`](encryption.go) 与 [`br/pkg/task/common.go`](common.go)，核对函数逐分支语义和生产调用位置。
-- 测试：[`br/pkg/task/encryption_test.rs`](encryption_test.rs)、[`br/pkg/task/encryption_test.go`](encryption_test.go) 和 [`br/pkg/task/parity_test.rs`](parity_test.rs)，核对现有成功/失败样例与总入口覆盖范围。
-- RustCodeGraph：运行 `status` 后用 `explore` 查询 `br/pkg/task/encryption.rs` 及五个入口，确认 Rust 生产调用边 `Config::parseAndValidateMasterKeyInfo -> validateAndParseMasterKeyString -> parse*Config`，并识别 parity 测试调用边。精确 `files --filter br/pkg/task/encryption` 未返回结果，但 `explore` 能定位并展示该 Rust 文件；调用关系另以源码 `rg` 交叉核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令校验目标文件存在且恰有 11 个固定二级标题，并人工复核没有把配置解析描述成真实密钥访问。

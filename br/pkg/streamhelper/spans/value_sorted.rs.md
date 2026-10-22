@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-streamhelper-spans`；该包在 [`Cargo.toml`](./Cargo.toml) 中声明为以 `lib.rs` 为入口的 library，并用 `package.metadata.porting.go-package = "br/pkg/streamhelper/spans"` 标明其 Go 对照包。模块入口 [`lib.rs`](./lib.rs) 通过 `pub mod value_sorted` 加载本文件，再用 `pub use value_sorted::*` 扁平导出其公开符号。
-
-在流备份 checkpoint 推进链中，本文件位于“区间进度存储”一层：[`sorted.rs`](./sorted.rs) 的 `ValuedFull` 负责按 `StartKey` 保存完整、互不重叠的区间图，本文件的 `ValueSortedFull` 再建立按 checkpoint 值排序的二级索引。上层 [`../advancer.rs`](../advancer.rs) 用它合并各 Region 的 flush TS，并取全局最小值作为安全推进水位。
+在流备份 checkpoint 推进链中，本文件位于“区间进度存储”一层：[`sorted.rs`](./sorted.rs) 的 `ValuedFull` 负责按 `StartKey` 保存完整、互不重叠的区间图，本文件的 `ValueSortedFull` 再建立按 checkpoint 值排序的二级索引。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ RustCodeGraph 显示目标文件被 [`../advancer.rs`](../advancer.rs)、`advanc
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`value_sorted.go`](./value_sorted.go)。结构与主要方法一一对应：Go 的嵌入式 `*ValuedFull` 对应 Rust 私有字段 `full`；Go 的 `*btree.BTree` 对应 Rust `BTreeMap<(Value, StartKey), Valued>`；`Sorted`、`Merge`、`MergeAll`、`TraverseValuesLessThan`、`Min` 和 `MinValue` 保留相同职责与排序规则。
+结构与主要方法一一对应：Go 的嵌入式 `*ValuedFull` 对应 Rust 私有字段 `full`；Go 的 `*btree.BTree` 对应 Rust `BTreeMap<(Value, StartKey), Valued>`；`Sorted`、`Merge`、`MergeAll`、`TraverseValuesLessThan`、`Min` 和 `MinValue` 保留相同职责与排序规则。
 
 Rust 的主要可见差异是：
 
@@ -92,8 +90,6 @@ Rust 的主要可见差异是：
 - Go `MergeAll` 复用循环外的 `overlapped`/`inserted` 缓冲；Rust 每项新建两个 `Vec`，语义一致但存在额外分配的性能差异。
 - Go 在主树 merge 后删除旧索引，Rust 在调用 `mergeWithOverlap` 前删除；整个 Rust 方法需要独占 `&mut self`，正常返回后的最终状态相同。本文件没有可失败分支或回调穿插在这两个阶段。
 - Rust 额外提供 `NewSortedFull`，将 Go 侧常见的 `Sorted(NewFullWith(Full(), init))` 组合封装为构造函数。
-
-[`value_sorted_test.rs`](./value_sorted_test.rs) 与 [`value_sorted_test.go`](./value_sorted_test.go) 使用相同四组输入和期望结果，验证多次覆盖后值序索引与键序主树一致。Rust 的 `parity_test.rs` 进一步验证空集合 `Option` 行为和公开契约。
 
 ## 扩展指南
 
@@ -108,15 +104,3 @@ Rust 的主要可见差异是：
 - 上层 [`../advancer.rs`](../advancer.rs) 对最小值、锁粒度和 checkpoint 单调性的依赖。
 
 性能敏感的扩展应避免全量重建索引，优先收集实际删除/插入段；若尝试复用缓冲区或减少 `Vec<u8>` 克隆，应先证明复合键生命周期和双索引一致性不受影响。兼容性上，任何从严格 `< n` 改为 `<= n`、改变同值排序或允许 checkpoint 回退的修改都会改变推进器选择落后区间的行为。
-
-## 验证依据
-
-本说明依据以下本地事实完成：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/streamhelper/spans` 确认目标、模块入口、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file br/pkg/streamhelper/spans/value_sorted.rs`：核对 `ValueSortedFull`、两个构造函数、六个方法及全部实现；`query ValueSortedFull`、`query NewSortedFull` 用于消除 Go/Rust 同名符号。
-- RustCodeGraph 对 `sorted.rs`、`lib.rs`、`advancer.rs` 的文件节点：核对底层合并不变量、公开再导出，以及 `SetTask`、成功钩子、`importantTick` 的生产调用链。
-- RustCodeGraph 对 `value_sorted.go`、`value_sorted_test.rs`、`value_sorted_test.go`、`parity_test.rs` 的文件节点：核对 Go/Rust API 差异、四组对齐用例、严格阈值、提前停止、最小值和空集合语义。
-- [`Cargo.toml`](./Cargo.toml)：核对 crate 名称、library 入口、Go 包映射和无额外 feature/依赖声明。
-
-本任务是纯文档分析，按计划未运行 Cargo。交付结构检查要求本文恰有“文件定位”至“验证依据”共 11 个固定二级标题；代码行为结论来自上述源码、调用边和测试，未以编译成功或零测试替代证据。

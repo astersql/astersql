@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-testutil` crate，由同目录 `lib.rs` 以 `pub mod testutil` 暴露，并经根门面 `pkg/lib.rs` 的 `ddl::testutil` 再导出 crate。它不是 DDL owner、job scheduler 或 schema 状态机的生产实现，而是面向 DDL 测试的轻量适配层：用本地数据摘要和两个 trait 隔离会话执行、元数据读取、表模式变更及 `RefreshMeta` 操作。
-
-`pkg/ddl/testutil/Cargo.toml` 将 Go 包 `pkg/ddl/testutil` 记录为移植来源，并声明 DDL、domain、session、meta、table 等依赖。不过当前文件本身除 `std::sync::mpsc::Sender` 外没有直接引用这些 crate；仓库搜索也未发现这些 Rust API 的外部调用。这说明 crate 边界和接口已建立，但本文件的具体 AsterSQL runtime 适配及 Rust 回归接线尚未落地，不能把 Go 测试覆盖视为 Rust 测试覆盖。
+`SchemaState`、`TableMode`、`IndexInfo`、`TableInfo`、`DBInfo`、`SubJob`、`Job` 与 `RefreshMetaArgs` 提供独立于生产模型的最小数据表示。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/testutil/testutil.go`。Rust 保留了九个同名辅助函数及 `SubStates` 概念，但用 trait 和值摘要替代 Go 的具体 `kv.Storage`、`sessionapi.Session`、`domain.Domain`、`ddl.Executor`、`meta.Mutator` 与 `model.*` 类型。
+Rust 保留了九个同名辅助函数及 `SubStates` 概念，但用 trait 和值摘要替代 Go 的具体 `kv.Storage`、`sessionapi.Session`、`domain.Domain`、`ddl.Executor`、`meta.Mutator` 与 `model.*` 类型。
 
 - Go 的 `ExecMultiSQLInGoroutine` 会创建并关闭测试 session、执行 `USE <db>`，再逐条执行 SQL；Rust 只把 database 参数交给 runtime，session 生命周期和选库语义未在本文件实现。
 - Go 的 `ExtractAllTableHandles` 通过 infoschema 找表、开启事务并用 `tables.IterRecords` 扫描记录；Rust 是一次 trait 委托，是否覆盖分区及句柄类型完全取决于实现者。
@@ -83,7 +81,7 @@
 - Go 的 `SetTableMode` 调用真实 `ddl.AlterTableMode`，并支持生产模型中的 `Normal/Import/Restore`；Rust 仅建模 `Normal/Import`，成功后以 `bool` 返回后置检查结果。
 - Go 的 `RefreshMeta` 调用真实 DDL executor；Rust 只构造参数并委托 runtime。
 
-Go 侧直接测试证据包括：`pkg/ddl/cancel_test.go` 的取消 hook、`pkg/ddl/column_modify_test.go` 和 `pkg/ddl/index_modify_test.go` 的并发 DDL、`pkg/ddl/table_mode_test.go` 的模式转换/并发/RefreshMeta 场景、`pkg/ddl/table_test.go::TestRefreshMetaBasic`，以及 indexmerge/fk/partition 测试中的辅助调用。当前没有对应的独立 Rust 测试文件；`operator_test.rs` 只测试相邻 `operator.rs`。
+当前没有对应的独立 Rust 测试文件；`operator_test.rs` 只测试相邻 `operator.rs`。
 
 ## 扩展指南
 
@@ -93,11 +91,3 @@ Go 侧直接测试证据包括：`pkg/ddl/cancel_test.go` 的取消 hook、`pkg/
 - 修改并发 SQL helper 时，应保留“一条语句一个结果、首个错误终止、结果集视为错误”的协议；如增加取消、超时或 join，应明确 sender 阻塞和线程清理策略。
 - 修改 `SetTableMode` 时应覆盖变更失败不执行后置检查、`Public`/mode 任一不匹配返回 `false`、读取错误传播，以及并发模式转换。修改 `RefreshMeta` 时应覆盖 ID/名称原样映射，并参照 Go 的 infoschema 与 meta KV 不一致场景。
 - 相关 Rust 测试应放在同目录新的独立 `*_test.rs` 文件，并由 `lib.rs` 的 `#[cfg(test)] mod ...` 接线；Go 回归意图需继续参考上述 DDL 测试文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖仓库；`files --filter pkg/ddl/testutil` 列出本 crate 六个源码文件；`node --file pkg/ddl/testutil/testutil.rs --offset 1 --limit 400` 返回目标文件全部 257 行和 29 个符号；`query` 确认 `SessionExecInGoroutine`、`ExecMultiSQLInGoroutine`、`MatchCancelState`、`SetTableMode` 均存在 Rust/Go 同名定义。`callers/callees` 查询未在限定时间内返回，故调用关系另以精确仓库搜索核验。
-- 直接读取：`pkg/ddl/testutil/testutil.rs`、`pkg/ddl/testutil/lib.rs`、`pkg/ddl/testutil/Cargo.toml`、`pkg/ddl/testutil/testutil.go`、根 `Cargo.toml` 与 `pkg/lib.rs`。
-- 测试与调用证据：`pkg/ddl/cancel_test.go`、`pkg/ddl/column_modify_test.go`、`pkg/ddl/index_modify_test.go`、`pkg/ddl/table_mode_test.go`、`pkg/ddl/table_test.go`，以及 `pkg/ddl/tests/{adminpause,fk,indexmerge,partition}` 中的 Go 调用。`rg` 未发现目标 Rust API 在其他 `.rs` 文件中的使用，也未发现其独立 Rust 测试。
-- DDL 边界依据：`pkg/ddl/doc.go` 说明生产 DDL 的在线 schema version 不变量；`docs/agents/ddl/README.md` 说明 job/owner/state transition 主链。本文件只提供测试抽象，未实现该主链。
-- 结构检查使用任务指定命令，要求本文档存在且固定二级标题恰为 11 个；本任务为纯文档分析，按计划不运行 Cargo。

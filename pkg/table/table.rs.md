@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`pkg/table/table.rs`](table.rs) 是 `astersql-table` crate 的表层契约文件，对应 Go 的 [`pkg/table/table.go`](table.go)。crate 入口 [`pkg/table/lib.rs`](lib.rs) 以 `#[path = "table.rs"] mod table_impl` 挂载它，并将其公共项重新导出，因此外部 crate 通常通过 `astersql_table::Table`、`astersql_table::BuildTableFromMeta` 等名称使用这里的 API。
-
-它位于 SQL 元数据与实际行存取实现之间：向规划器、导入器和表包装器提供对象安全的表/分区/缓存接口、DML 选项和通用帮助函数，但自身不保存普通表的行数据，也不实现记录键或索引键的具体编码。`pkg/table/Cargo.toml` 表明它直接依赖 `astersql-meta-autoid`、`astersql-kv`、`astersql-expression`、`astersql-meta-model`、`astersql-table-tblctx`、`astersql-types` 等边界 crate。
-
-RustCodeGraph 将该文件识别为 896 行、126 个符号，并显示它被 53 个文件使用。当前树中可确认的生产实现之一是 `pkg/table/mview_log.rs` 的 `MLogTable`：它实现本文件的 `Table`，在委托基础表 DML 的同时写物化视图日志。普通表的完整 KV 行为不在本文件内。
+定义 `AddRecordOpt`、`UpdateRecordOpt`、`RemoveRecordOpt` 及其 option trait，把 KV 上下文、重复键检查、记录 ID 生成、自增 ID 预留和删除索引布局传入实际表实现。
 
 ## 核心职责
 
@@ -97,8 +93,6 @@ RustCodeGraph 将该文件识别为 896 行、126 个符号，并显示它被 53
 
 ## 与 Go 版本的对应关系
 
-总体结构与 `pkg/table/table.go` 一一对应：表类型值、错误 errno、option 累积、列/Table/分区/缓存接口、自增步长与 offset 回退、工厂槽位、CHECK 的“0 且非 NULL 失败”规则均保留。`pkg/table/table_test.go` 的错误码与 option 场景在 Rust 的 `pkg/table/table_test.rs` 中有直接对照；更广的迁移契约由 `pkg/table/table_migration_aster_unit_test.rs` 覆盖。
-
 Rust 为对象安全和错误所有权做了必要表达差异：Go interface 变为 `dyn Trait` 与 `Arc`/`Box`；Go 的类型别名 `MutateContext = tblctx.MutateContext` 在 Rust 中是适配 trait 加 blanket impl；Go 可空 map/interface 变为 `Option`；错误统一为 `SharedError`；全局可变函数变量用 `RwLock<Option<fn>>` 包装。
 
 存在三项可见差异需要扩展时保留意识：
@@ -117,12 +111,3 @@ Rust 为对象安全和错误所有权做了必要表达差异：Go interface �
 - 修改 `CachedTable` 时应把退出信号、结果发送、租约更新、后台任务终止和 buffer 所有权写成可测试的不变量，防止锁泄漏或保活任务悬挂。
 
 兼容性风险主要是 trait 变更导致所有实现失配、errno/Go 行为漂移和未安装工厂导致运行期失败；性能风险主要是 option/布局克隆、CHECK 每行每约束重复解析，以及不安全使用 `SkipWriteUntouchedIndices` 后的同事务读一致性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/table/table.rs` 确认目标被索引；`node --file pkg/table/table.rs --offset 1/521` 完整读取 896 行与符号；`query` 核对 `NewAddRecordOpt`、`NewUpdateRecordOpt`、`NewRemoveRecordOpt`、`AllocAutoIncrementValue`、`AllocBatchAutoIncrementValue`、`BuildTableFromMeta`、`CheckRowConstraint*`；`explore` 用于检查目标符号的调用范围。宽泛名称导致部分图结果混入同名 Go/其他模块符号，相关精确调用边又用限定路径搜索和对应源码节点复核。
-- Rust 源与 crate 边界：`pkg/table/table.rs`、`pkg/table/lib.rs`、`pkg/table/Cargo.toml`。
-- 直接调用/实现证据：`pkg/table/mview_log.rs`、`pkg/planner/core/operator/physicalop/physical_insert.rs`、`pkg/dxf/importinto/task_executor.rs`，以及限定 `*.rs` 搜索得到的其他 `BuildTableFromMeta` 调用点。
-- Go 对照：`pkg/table/table.go`、`pkg/table/table_test.go`。
-- Rust 独立测试：`pkg/table/table_test.rs` 验证错误码与 option 默认/累积；`pkg/table/table_migration_aster_unit_test.rs` 验证枚举值、对象安全形状、删除布局、工厂安装恢复、自增规则、缺失 allocator 和错误码。
-- 人工复核结论：本文件存在的目的，是把表元信息、会话变更上下文和 KV/表达式能力收敛为稳定的动态契约与共用流程；真正的行/索引持久化由实现者完成。安全扩展必须同步 Go 语义、所有相关 trait 实现和上述独立测试，并对当前未完成的生产工厂接线保持显式失败/回退。

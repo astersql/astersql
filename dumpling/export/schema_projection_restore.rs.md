@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpling-export` library crate；crate 清单位于 [`Cargo.toml`](Cargo.toml)，其中 `schema-parser`、`schema-format`、`schema-mysql` 和 `regex` 是本链路的直接依赖。模块入口 [`schema_projection.rs`](schema_projection.rs) 通过 `#[path = "schema_projection_restore.rs"] mod restore;` 把它声明为私有子模块，并仅由 `restore_projected_schema(&ast::CreateTableStmt)` 包装其 `pub(super) fn restore`。因此它不是通用 SQL formatter，也不是 crate 的公开 API。
-
-它位于 Dumpling 列投影的后半段：[`dump.rs`](dump.rs) 的 `prepareColumnProjection` 先取得 `SHOW CREATE TABLE`，由 [`schema_projection.rs`](schema_projection.rs) 解析并基于选中列修改 `CreateTableStmt`，只有表确实被过滤时才调用 `restore_projected_schema`。本文件把这棵已经裁剪和校验过的 AST 恢复成新的 `CREATE TABLE` 文本，随后文本缓存到 `columnProjection.schemaSQL`，供 `dumpTableMeta` 等元数据输出路径消费。未过滤表直接保留服务器返回的原始 SQL，不经过本文件。
-
-文件顶部注释明确了边界：列选择、依赖判定和保留/删除决策由 AST 处理；恢复阶段不会通过删除原始 SQL 片段实现投影，也不会在失败时退回未修改的建表语句。这一约束避免被删列因 formatter 不支持而重新泄漏到输出 schema。
+文件顶部注释明确了边界：列选择、依赖判定和保留/删除决策由 AST 处理；恢复阶段不会通过删除原始 SQL 片段实现投影，也不会在失败时退回未修改的建表语句。
 
 ## 核心职责
 
@@ -90,13 +86,9 @@ RustCodeGraph 已完整索引目标文件并报告它含 46 个符号；文件�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 [`schema_projection.go`](schema_projection.go) 的 `restoreProjectedSchema`：Go 创建 `format.RestoreCtx`，使用 `DefaultRestoreFlags | RestoreTiDBSpecialComment`，然后调用 `createTable.Restore`。Rust 的父层函数保留相同的“输入投影后 CreateTable AST、输出 SQL、失败加上下文”契约；本文件则是在 Rust parser 尚不能完全以单一 `CreateTableStmt.Restore` 覆盖所需行为时，对 Go restore 语义的专用展开。
+Rust 的父层函数保留相同的“输入投影后 CreateTable AST、输出 SQL、失败加上下文”契约；本文件则是在 Rust parser 尚不能完全以单一 `CreateTableStmt.Restore` 覆盖所需行为时，对 Go restore 语义的专用展开。
 
-两者职责一致但实现形态不同。Go 委托 AST 节点各自的 `Restore`；Rust 对 create table 层级显式分派，对列类型继续委托 `schema-format`，对 expression/SELECT 继续委托 `ast::sql_restore`。Rust 额外加入 typed literal token 适配器，因为通用 `ValueExpr` renderer 会按文本重新分类字符串；这保证诸如字符串 `"123"`、`"NULL"` 不会被误写为数字或 NULL。Rust 也显式启用 `RestoreStringEscapeBackslash` 恢复字段类型中的 ENUM/SET 元素。
-
-TiDB 特殊语法的目标与 Go `RestoreTiDBSpecialComment` 一致：TTL、AUTO_RANDOM、AUTO_ID_CACHE、clustered index、placement 等用 `/*T![feature] ... */` 或 `/*T! ... */` 保存。Rust 独立测试 [`schema_projection_test.rs`](schema_projection_test.rs) 的 `projected_schema_restores_original_go_positive_outputs` 核对 partition、TTL、function default、外键 action 和 inline reference；`projected_schema_restoration_preserves_typed_literals_and_special_comments`、`projected_schema_enum_and_set_elements_preserve_backslashes`、`projected_schema_placement_policy_preserves_identifier` 补充 Rust renderer 的保真回归。
-
-Go 测试 [`schema_projection_test.go`](schema_projection_test.go) 通过 `generateProjectedSchemaForTest` 调用 Go `restoreProjectedSchema` 并重新 parse 输出，覆盖列/约束投影及外键路径。Rust `project()` helper 同样执行 parse -> project -> restore -> reparse，并比较恢复前后保留列名；[`dump_test.rs`](dump_test.rs) 进一步验证集成路径会缓存过滤后的 schema、排除 secret 列、保留 generated/index 依赖且不会再次查询 SHOW CREATE TABLE。
+两者职责一致但实现形态不同。Go 委托 AST 节点各自的 `Restore`；Rust 对 create table 层级显式分派，对列类型继续委托 `schema-format`，对 expression/SELECT 继续委托 `ast::sql_restore`。Rust 额外加入 typed literal token 适配器，因为通用 `ValueExpr` renderer 会按文本重新分类字符串；这保证诸如字符串 `"123"`、`"NULL"` 不会被误写为数字或 NULL。
 
 ## 扩展指南
 
@@ -107,12 +99,3 @@ Go 测试 [`schema_projection_test.go`](schema_projection_test.go) 通过 `gener
 - 调整 definitions、options、partition 或 split 的顺序/空格时，要用 parser 重新解析输出，并检查 Go 正向样例而非只比字符串。性能上避免为每个小节点重复编译正则或对整条 SQL 做多轮全局替换。
 - 错误必须继续沿 `Result` 传播并保留 `restore_projected_schema` 与 `dump.rs` 的两层上下文；不要在恢复失败时返回原始 schema，因为它含有被过滤列。
 - Rust 测试必须继续放在独立 [`schema_projection_test.rs`](schema_projection_test.rs)，集成接线放在 [`dump_test.rs`](dump_test.rs)，不能内嵌到本生产文件。Go 对照变化同步检查 [`schema_projection.go`](schema_projection.go) 与 [`schema_projection_test.go`](schema_projection_test.go)。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，其中 Rust 7,032 个；`files --filter dumpling/export/schema_projection_restore.rs` 确认目标已索引；`explore`/`node --file ... --offset 1 --limit 1200` 返回完整 987 行和 46 个符号。对 `restore` 的精确 `callers/callees` 查询未产出边，故调用关系改由源码精确引用补证并明确该限制。
-- 目标与 crate 接线：[`schema_projection_restore.rs`](schema_projection_restore.rs)、[`schema_projection.rs`](schema_projection.rs) 的 `mod restore` / `restore_projected_schema`、[`lib.rs`](lib.rs) 的模块声明、[`Cargo.toml`](Cargo.toml) 的 parser/format/regex 依赖。
-- 应用链路：[`dump.rs`](dump.rs) 的 `prepareColumnProjection`，尤其是 `SHOW CREATE TABLE -> build/parse schema -> restore_projected_schema -> projection.schemaSQL` 及恢复后外键验证顺序。
-- Rust 独立测试：[`schema_projection_test.rs`](schema_projection_test.rs) 的 `project()` 重解析检查、`projected_schema_restores_original_go_positive_outputs`、`projected_schema_restoration_preserves_typed_literals_and_special_comments`、`projected_schema_sql_mode_is_formatted_and_applied`、`projected_schema_enum_and_set_elements_preserve_backslashes`、`projected_schema_placement_policy_preserves_identifier`；[`dump_test.rs`](dump_test.rs) 的 column projection schema/cache/generated-index 集成测试。
-- Go 对照：[`schema_projection.go`](schema_projection.go) 的 `restoreProjectedSchema`、[`schema_projection_test.go`](schema_projection_test.go) 的 `generateProjectedSchemaForTest` 与相关投影用例、[`dump.go`](dump.go) 的 `prepareColumnProjection`。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付验证使用任务指定的结构命令确认文档存在且恰有 11 个固定二级标题，并人工检查唯一生产物、相对链接、真实符号、错误边界、无源码整段复制及独立测试落点。

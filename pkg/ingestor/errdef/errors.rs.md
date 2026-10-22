@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`errors.rs` 是独立 crate `astersql-ingestor-errdef` 的实现文件，由 `pkg/ingestor/errdef/lib.rs` 声明为 `errors` 模块并整体再导出。该 crate 的 `Cargo.toml` 没有运行时依赖或 feature，`package.metadata.porting.go-package` 指向 Go 对照包 `pkg/ingestor/errdef`。它位于 ingest 基础设施的错误契约边界：将 TiKV Region/ingest 错误、next-generation write/ingest HTTP 状态错误，以及 global-sort 归并文件数上限错误表示为可跨包装层识别的稳定类别。
-
-包级说明 `pkg/ingestor/doc.go` 将 ingestor 定位为直接向存储层导入 SST，并负责 KV 排序、Region split/scatter 和 TiKV import mode 准备；本文件不执行这些操作，只为这些路径提供错误身份和文本格式。直接依赖该 crate 的 manifest 包括 `pkg/ingestor/ingestcli/Cargo.toml`、`pkg/ingestor/globalsort/Cargo.toml`、`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ddl/Cargo.toml` 与 `pkg/dxf/framework/scheduler/Cargo.toml`。
+包级说明 `pkg/ingestor/doc.go` 将 ingestor 定位为直接向存储层导入 SST，并负责 KV 排序、Region split/scatter 和 TiKV import mode 准备；本文件不执行这些操作，只为这些路径提供错误身份和文本格式。
 
 ## 核心职责
 
@@ -97,9 +95,9 @@ RustCodeGraph 的文件节点还将 `errors.rs` 标记为被 `br/pkg/restore/sna
 
 ## 与 Go 版本的对应关系
 
-`pkg/ingestor/errdef/errors.go` 是直接语义对照：九个 ingest/TiKV 错误和 `ErrTooManyDataFiles` 的消息及 RFC code 一致，`HTTPStatusError.Error()` 的文本格式一致。Rust 用 `NormalizedError` 显式承载 Go `errors.Normalize` 在当前消费者中需要的 `Code`、`RFCCode`、`ID`、消息生成、类别相等和标准错误接口。
+Rust 用 `NormalizedError` 显式承载 Go `errors.Normalize` 在当前消费者中需要的 `Code`、`RFCCode`、`ID`、消息生成、类别相等和标准错误接口。
 
-两端的包装检测机制不同。Go `IsKVDiskFullError` 依次使用标准库 `errors.Is`、`errors.As` 和 PingCAP `errors.Cause`；Rust 没有这些包装类型，改为遍历标准 `source()` 链并 downcast `NormalizedError`。这要求 Rust 包装类型正确实现 `source()`，例如 `globalsort::Error::TooManyDataFiles` 已这样做。
+两端的包装检测机制不同。Go `IsKVDiskFullError` 依次使用标准库 `errors.Is`、`errors.As` 和 PingCAP `errors.Cause`；Rust 没有这些包装类型，改为遍历标准 `source()` 链并 downcast `NormalizedError`。
 
 Go 的 `GenWithStackByArgs` 是可变参数，能直接展开 `ErrTooManyDataFiles` 的三个 `%d`；Rust `GenWithStackByArgs` 仅接受一个 `Display` 参数，因此增加了专用 `TooManyDataFiles(file_count, concurrency, limit)`。Go 侧 `pkg/ingestor/globalsort/util.go::DivideMergeSortDataFiles` 直接调用三参数 `GenWithStackByArgs`，Rust 对应函数调用该专用构造器。
 
@@ -117,14 +115,3 @@ Go 当前没有独立的 `IsTooManyDataFilesError`；`pkg/ddl/backfilling_dist_s
 新增多参数模板时，不应继续复用当前单参数 `GenWithStackByArgs`；可新增语义明确的专用构造器，或在不破坏现有调用者的前提下设计类型安全的参数格式化 API。任何修改 `Display`、`Error()` 或 RFC code 的变更都可能影响日志、DXF 持久化文本和重试分类，属于兼容性风险。新增字段会增加每个错误实例的内存占用；当前路径错误量通常远小于数据量，但仍不应在静态原型或生成器中携带大响应体。
 
 修改 global-sort 上限错误时，还需同步 `pkg/ingestor/globalsort/util_test.rs` 和 `pkg/ddl/backfilling_dist_scheduler_test.rs`，前者验证生成条件与身份，后者验证包装后及持久化文本的不可重试语义。修改 HTTP 状态错误时，应同步 ingestcli 客户端测试和上层 HTTP 重试策略测试，而不是把策略塞入这个数据类型。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/ingestor/errdef` 确认本模块五个已索引源/测试文件。
-- RustCodeGraph `node --file pkg/ingestor/errdef/errors.rs`：读取完整 263 行并确认 32 个符号、公开 API、字段和控制流；精确 `query` 定位了 `errors.rs::NormalizedError`、`IsKVDiskFullError`、`TooManyDataFiles` 和 `IsTooManyDataFilesError`。
-- RustCodeGraph 的 `callers/callees` 精确查询在本次会话中长时间无输出后被终止，未把空输出解释为“无调用边”；调用关系改由文件节点的 `used by` 提示与限定 Rust 源码搜索交叉验证。
-- crate/模块证据：`pkg/ingestor/errdef/Cargo.toml`、`pkg/ingestor/errdef/lib.rs`、根 `Cargo.toml` 及直接消费者的 Cargo manifests。
-- Rust 调用证据：`pkg/ingestor/ingestcli/ingest_err.rs`、`pkg/ingestor/ingestcli/client.rs`、`pkg/ingestor/globalsort/util.rs`、`pkg/ingestor/globalsort/lib.rs`、`pkg/ddl/backfilling_dist_scheduler.rs`。
-- Go 对照证据：`pkg/ingestor/errdef/errors.go`、`pkg/ingestor/globalsort/util.go`、`pkg/ddl/backfilling_dist_scheduler.go`、`pkg/ingestor/ingestcli/ingest_err.go`、`pkg/ingestor/ingestcli/client.go`；包级边界来自 `pkg/ingestor/doc.go`。
-- 测试证据：`pkg/ingestor/errdef/errors_test.rs` 验证完整错误契约及 TooManyDataFiles 包装链；`pkg/ingestor/errdef/migration_aster_unit_test.rs` 验证 Go 消息/RFC 对齐、磁盘满链和 HTTP 文本；`pkg/ingestor/globalsort/util_test.rs`、`pkg/ddl/backfilling_dist_scheduler_test.rs` 与 `pkg/ingestor/ingestcli/ingest_err_test.rs` 验证直接消费者行为。Go 侧相关测试为 `pkg/ingestor/globalsort/util_test.go`、`pkg/ddl/backfilling_test.go`、`pkg/ingestor/ingestcli/ingest_err_test.go` 以及 HTTP 重试分类的 `pkg/lightning/common/retry_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行固定章节结构验证，并人工复核没有把字符串同名、BR 独立错误 crate 或预期架构误写成本文件的真实调用关系。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`del.rs` 是 `astersql-ttl-ttlworker` crate 的 TTL 删除侧核心实现，由 [`lib.rs`](lib.rs) 以 `pub mod del` 对外暴露。它位于“扫描出过期行的键”与“把删除结果记入 TTL job 统计”之间：上游 [`scan.rs`](scan.rs) 定义扫描任务和 `TtlStatistics`，本文件负责组装并执行批量 `DELETE`，同时保存可重试行。
-
-当前完整应用接线在 [`pkg/session/runtime/ttl_runtime.rs`](../../session/runtime/ttl_runtime.rs) 的 `run_ttl_tick_inner`：它在扫描回调中构造 `DeleteTask`，调用 `do_delete`，将剩余行记入 `DeleteRetryBuffer`，并在扫描后轮询重试。RustCodeGraph 还确认本文件被 [`del_test.rs`](del_test.rs)、[`scan.rs`](scan.rs) 和 [`scan_test.rs`](scan_test.rs) 使用。
-
-[`Cargo.toml`](Cargo.toml) 指定 crate 名为 `astersql-ttl-ttlworker`、库入口为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/ttl/ttlworker"` 记录 Go 对照包。`del.rs` 本身只使用标准库以及本 crate 的 `scan`/`session` 类型，没有直接调用 Cargo 中声明的外部 crate。
+位于“扫描出过期行的键”与“把删除结果记入 TTL job 统计”之间：上游 [`scan.rs`](scan.rs) 定义扫描任务和 `TtlStatistics`，本文件负责组装并执行批量 `DELETE`，同时保存可重试行。
 
 ## 核心职责
 
@@ -82,12 +78,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`del.go`](del.go)，相关测试是 [`del_test.go`](del_test.go)。主要映射为：
-
-- `ttlDeleteTask` ↔ `DeleteTask`，`doDelete` ↔ `do_delete`；`ttlDelRetryItem` ↔ `RetryItem`，`ttlDelRetryBuffer` ↔ `DeleteRetryBuffer`。
-- `newTTLDelRetryBuffer` ↔ `Default::default`，`RecordTaskResult` ↔ `record_task_result`，`recordRetryItem` ↔ `record`，`DoRetry` ↔ `retry_all`，`Drain` ↔ `drain`。
-- 默认的 3 次重试、128 项缓冲和 5 秒间隔一致；两版都使用有界 FIFO，都在单次重试调用开始时固定循环次数，保证零间隔下同一项不会在一次调用中无限重试。
-- 两版都在缓冲满时淘汰最旧项，在超过重试上限或 drain 时把剩余行记为错误，并通过复制任务保持原任务的 `rows` 不变。
 - Go 的 SQL 由 `sqlbuilder.BuildDeleteSQL` 将 Datum 写入 SQL 文本；Rust 在本文件构造 `%?` 占位符和 `Vec<Datum>`，再由 `WorkerSession` 执行。Rust 另显式支持分区子句和复合键占位符形状。
 - Go 每批读取动态的 `TTLDeleteBatchSize`；Rust 当前使用固定 `DELETE_BATCH_SIZE = 100`。
 - Go `delRateLimiter::WaitDelToken(ctx)` 每批等待一个令牌，并从 context 感知取消；Rust trait 接受批行数，实际运行时 `ConfiguredDeleteRateLimiter` 按行数计算等待，以轮询闭包感知取消。
@@ -104,13 +94,3 @@ Go 对照文件是 [`del.go`](del.go)，相关测试是 [`del_test.go`](del_test
 - 改变缓冲容量、重试次数、轮询顺序或停机记账时，修改 `DeleteRetryBuffer::{default, record, retry_all, drain}`，并扩展 `retry_buffer_matches_go_fifo_timing_retry_and_accounting` 与 `retry_defaults_and_zero_interval_match_go_contract`。必须保留“单次调用每个旧项最多重试一次”和“最终放弃恰好记账一次”的不变量。
 - 若要与 Go 的动态 batch size、phase metric 或日志完全对齐，不应只在本文件加常量或打印；还需同步运行时配置来源、会话上下文和指标接线，并以 [`del.go`](del.go) 及 [`del_test.go`](del_test.go) 的当前行为为对照。
 - 性能上，该路径会 clone 失败批的 Datum，入队时又 clone 一次 `rows`；放大 batch/缓冲容量前应评估内存峰值和失败时的重试放大。改变错误分类或 checkpoint 顺序时，还要评估重复删除、遗留过期行和统计偏差的兼容风险。
-
-## 验证依据
-
-- RustCodeGraph `status` 显示当前索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ttl/ttlworker/del.rs` 命中目标文件，`node --file ...` 列出完整 276 行与 28 个符号。
-- RustCodeGraph 文件节点报告 `del.rs` 被 `del_test.rs`、`scan.rs`、`scan_test.rs` 使用；`query` 定位了 `DeleteTask`、`DeleteRetryBuffer`、`DeleteRateLimiter`、`delete_sql`、`do_delete`、`record_task_result`、`retry_all` 和 `drain`。精确 `callers` 查询在 60 秒内未返回，因此对运行时调用边另用局部 `rg` 与源码读取核对，未将超时当作不存在调用者的证据。
-- 已读 Rust 源与边界：[`del.rs`](del.rs)、[`lib.rs`](lib.rs)、[`scan.rs`](scan.rs)、[`session.rs`](session.rs)、[`pkg/session/runtime/ttl_runtime.rs`](../../session/runtime/ttl_runtime.rs)。它们分别证明删除/重试实现、模块导出、原子统计、会话错误契约和完整应用接线。
-- 已读 crate 边界 [`Cargo.toml`](Cargo.toml)，确认 crate 名、库入口、Go 移植元数据和依赖范围。
-- 已读 Rust 独立测试 [`del_test.rs`](del_test.rs)：它覆盖物理分区 SQL、job ID 归属、可重试与限流错误后继续、参数顺序、FIFO 淘汰/时序/上限/drain 记账以及零间隔单次重试约束。运行时会话交界另由 [`pkg/session/runtime/ttl_worker_session_test.rs`](../../session/runtime/ttl_worker_session_test.rs) 调用 `do_delete` 验证。
-- 已读 Go 对照 [`del.go`](del.go) 和 [`del_test.go`](del_test.go)，核对删除 worker 调度、批处理、可重试分流、FIFO 缓冲、停机最后尝试与 drain 语义，并明确列出 Rust 现有差异。
-- 本任务为纯文档分析，按总计划与任务约束不运行 Cargo。交付时使用任务指定的结构命令确认本文件存在且恰好包含全部 11 个固定二级标题，并人工复核不将预期设计写成当前事实。

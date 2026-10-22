@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 的 canonical session 运行时组件，模块由 `pkg/session/runtime.rs` 中的私有声明 `mod select_into;` 接入。它不是通用 executor 层的 `SelectIntoExec`，而是 `ConcreteSession` 已经把 `SELECT` 物化为 `ConcreteRecordSet` 后的终端处理器：普通查询原样返回结果集；带 `INTO OUTFILE` 的查询把结果同步写入服务端本地文件，并返回空结果集。入口是 `ConcreteSession::finish_select_into`（`select_into.rs:237`），直接上游是 `ConcreteSession::execute_statement` 的 SELECT 分派（`runtime/dispatch.rs:3186-3256`）。
-
-crate 边界由 `pkg/session/Cargo.toml` 确认：库入口是 `lib.rs`，本模块通过父模块共享 `astersql_parser_ast`、`astersql_parser_mysql`、session 状态和结果集类型；没有本文件专属 feature gate。安全增强模式（SEM）对 `SELECT INTO` 的拒绝发生在进入本文件之前，见 `runtime/dispatch.rs:3202-3207` 和依赖 `astersql-util-sem-compat`。
+`ConcreteSession::finish_select_into`（`select_into.rs:237`）负责类型校验、独占创建文件、逐行序列化、落盘同步、更新受影响行数报告，并吞掉原结果集以避免再向客户端发送行。
 
 ## 核心职责
 
@@ -86,10 +84,6 @@ RustCodeGraph 将本文件识别为 13 个符号；精确查询定位到 `Outfil
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照位于 `pkg/executor/select_into.go`：`SelectIntoExec.Open` 同样只接受 OUTFILE，以 `O_RDWR|O_CREATE|O_EXCL` 和 `0640` 创建文件；`escapeField` 对 NUL、escape、enclosure、字段/行终止首字节采用相同转义规则；`dumpToOutfile` 使用 `\\N`/`NULL`、字段与行分隔符以及 optional enclosure；`Close` 负责 flush 和 close。`pkg/executor/select_into_test.go` 覆盖已有文件、point get、类型格式、affected rows、分隔/包围/转义、NULL 和常量等 Go 语义。
-
-本文件保持的核心语义包括：不覆盖已有文件、默认 `\t`/`\n`/`\`、禁用 escape 后 NULL 为 `NULL`、NUL 写为 `<escape>0`、可选包围面向字符串/时间/JSON 类、成功后 affected rows 等于写出行数。`pkg/session/load_data_runtime_test.rs:257-288` 是 canonical Rust 路径的直接回归测试：它验证默认写出为 `1\tone\n2\ttwo\n\\N\t\\N\n`，并能被 `LOAD DATA LOCAL INFILE` 重新读入。
-
 差异必须保留为当前事实：Go executor 从 child executor 分 chunk 拉取并按原始 typed datum 格式化，canonical 文件接收已字符串化、全量物化的 `ConcreteRecordSet`；Go 的 `Close` 尝试 flush、关闭目标和关闭 child，而本文件在函数内部 `flush + sync_all` 后由 RAII 关闭文件；Go executor 的 `LinesStartingBy` 也未在其写出片段中使用，本文件同样忽略 AST 的 `LinesInfo.Starting`。完整 Rust executor 的浮点格式测试在 `pkg/executor/select_into_test.rs`，不直接覆盖本文件，因为 canonical 路径没有调用 `DumpRealOutfile`。
 
 ## 扩展指南
@@ -100,12 +94,3 @@ RustCodeGraph 将本文件识别为 13 个符号；精确查询定位到 `Outfil
 - 改成流式或异步写出时，要同时调整结果生产接口、affected rows 累计、取消/错误清理和资源关闭顺序；不得仅把 `BufWriter` 移到后台，因为当前 `ConcreteSession` 状态基于 `RefCell` 且输入已全量物化。
 - 改动 `record_explain_for_plan` 时，应保持其“观测失败不影响查询成功”的不变量，并在独立 session runtime 测试中覆盖无表、多表、非等值谓词、唯一/非唯一索引和借用冲突。
 - 文件 I/O 行为变更应新增已有文件不覆盖、中途错误后的残留策略、Unix 权限和成功后协议 affected rows 测试。现有最接近的 Rust 测试是 `pkg/session/load_data_runtime_test.rs::select_into_outfile_uses_load_data_compatible_defaults`；Go 兼容矩阵位于 `pkg/executor/select_into_test.go`，完整 Rust executor 的单测位于 `pkg/executor/select_into_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime/select_into.rs` 确认目标已索引且含 13 个符号。
-- RustCodeGraph 精确查询：`query OutfileFormat`、`query finish_select_into`、`query record_explain_for_plan`、`query optionally_enclose`；`callees finish_select_into` 确认四条本文件内部调用边。method callers 未由图输出，故以 `rg` 和 `runtime/dispatch.rs:3209-3256` 补证八个直接调用点。
-- 已阅读生产源码：`pkg/session/runtime/select_into.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/session.rs`、`pkg/session/dml_runtime.rs`、`pkg/parser/ast/lib.rs`、`pkg/session/Cargo.toml`。
-- 已阅读对照实现：`pkg/executor/select_into.go` 与 `pkg/executor/select_into.rs`。前者是 Go 行为基线；后者证明仓库还存在独立的 typed/chunk executor 路径，不能与 canonical session 收尾器混同。
-- 已阅读测试：直接 canonical 回归 `pkg/session/load_data_runtime_test.rs:257-288`；Go 兼容覆盖 `pkg/executor/select_into_test.go`；独立 Rust executor 的浮点测试 `pkg/executor/select_into_test.rs`。未发现 `select_into.rs` 同目录同名测试文件。
-- 人工复核结论：该文件存在的原因是让 canonical session 的所有 SELECT 结果共享一个 OUTFILE 收尾点；其安全扩展边界集中在 AST 选项归一化、字节转义、结果类型/NULL 表示、文件生命周期以及两个 session 观测状态。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`builder.rs` 是 `astersql-executor` crate 的执行器树装配中心，由 `pkg/executor/lib.rs` 以 `pub mod builder` 暴露。它位于 planner 产出的计划与 adapter 可驱动的运行时执行器之间：输入计划节点、会话级构建状态和外部能力，输出实现 `crate::adapter::ExecExecutor` 的 `ExecutorBox`。`pkg/executor/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/executor`；文件的直接 Go 对照是 `pkg/executor/builder.go`。
-
-文件同时保留两套有明确边界的入口。`BuildTypedPhysicalPlan*` 直接识别 canonical `PhysicalPlan` 并组装已经实现的 typed lazy executor；`executorBuilder::build` 则通过本文件定义的 `Plan`、细粒度 plan-data trait 和 `ExecutorBuilderDependencies`，保持 Go `executorBuilder.build` 的递归分发形状。后者负责策略、校验和状态传播，具体执行器实例及对存储、DDL、快照等系统的访问由依赖对象提供。
+这里没有具体表写入实现，也没有新增显式的 `updateForUpdateTS` 调用；事务准备由具体适配负责。
 
 ## 核心职责
 
@@ -89,11 +87,11 @@ CTE storage 由 `Arc` 共享，三个可选资源各受 `Mutex` 保护，初始�
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/builder.go` 是语义基准。两边都有 `executorBuilder`、`newExecutorBuilder`、`withStmtCtxLock`、测试 wrapper、递归 `build` 分发、读写/锁状态、固定 data-reader TS、UnionScan 标志和 Index Join 并发锁。Rust 的 `Plan` enum 代替 Go type switch；`*PlanData` traits 代替具体 planner struct 的直接字段访问；`ExecutorBuilderDependencies` 代替 Go 中对 session、domain、DDL、KV 和具体 executor 构造函数的直接调用。
+Rust 的 `Plan` enum 代替 Go type switch；`*PlanData` traits 代替具体 planner struct 的直接字段访问；`ExecutorBuilderDependencies` 代替 Go 中对 session、domain、DDL、KV 和具体 executor 构造函数的直接调用。
 
-Rust 保留 Go 的关键顺序约束，例如先递归构建 child 再构建父 executor、Index Join 固定 read TS、Show DDL 查询后释放系统会话、DML 在构建前更新 for-update TS、reader 先建 draft 再 finalize、CTE producer 单次初始化以及失败清理。辅助函数 `buildIdxColsConcatHandleCols`、handle 推导、assignment flag、snapshot option、Analyze sampling、Index Join ranges 与 partition pruning 也对应 Go 同名或同职责逻辑。
+Rust 保留 Go 的关键顺序约束，例如先递归构建 child 再构建父 executor、Index Join 固定 read TS、Show DDL 查询后释放系统会话、DML 在构建前更新 for-update TS、reader 先建 draft 再 finalize、CTE producer 单次初始化以及失败清理。
 
-差异必须显式看待：Rust 通过依赖 trait 把许多 Go 具体结构的字段装配移出本文件；`BuildTypedPhysicalPlan*` 是 Rust 当前可运行 typed 路径，在 Go `builder.go` 中没有同形 API；Go 文件仍包含 Rust `Plan` 未列出的分支或更多细节（例如具体 executor 字段、额外计划种类与优化配置）。因此本文只能证明本文件的编排与已测试 typed 子集，不能据此宣称整个 Go executor builder 已完全移植。
+差异必须显式看待：Rust 通过依赖 trait 把许多 Go 具体结构的字段装配移出本文件；`BuildTypedPhysicalPlan*` 是 Rust 当前可运行 typed 路径，在 Go `builder.go` 中没有同形 API；Go 文件仍包含 Rust `Plan` 未列出的分支或更多细节（例如具体 executor 字段、额外计划种类与优化配置）。
 
 ## 扩展指南
 
@@ -104,11 +102,3 @@ Rust 保留 Go 的关键顺序约束，例如先递归构建 child 再构建父 
 修改 reader/Index Join 时必须保持 fixed snapshot TS、`Tracker` 传递、动态分区排序/缓存和并发共享状态；修改 CTE 时必须保持双检存储、单次初始化与失败清理；修改 DML/SelectLock 时必须审计递归期间的状态标志恢复、for-update TS 和外键阶段顺序。新增外部能力优先扩展依赖 trait，不要在 builder 内重新引入全局服务定位。
 
 兼容性风险主要是 Go 分支遗漏、错误文本/顺序差异和锁/临时表语义；性能风险主要是重复取 snapshot、重复 partition pruning、提前打开 KV iterator、丢失列裁剪或错误复制大范围数据。任何变更都应与 `pkg/executor/builder.go` 的对应函数逐段核对，并同步最接近的独立 Rust 测试及必要的 Go 测试意图。
-
-## 验证依据
-
-- 冻结依据：逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/executor/builder.rs`，并读取 `git show 2c944fb:pkg/executor/builder.rs`；本文增量仅反映 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或后续提交行为。
-- 装配依据：冻结提交的 `pkg/executor/lib.rs` 与 `pkg/executor/Cargo.toml`；该包无 `doc.go`。RustCodeGraph `status` 与 `query UpdateRowTracker --limit 3` 确认当前索引含 Rust，但当前索引不能证明冻结历史，故历史行为与引用以 `git show` / `git grep 2c944fb` 为准。
-- 增量审计包括物化视图两个 plan-data trait、`Plan` 分支与依赖工厂，`UpdatePlanData::is_multi_table`，以及 Analyze NDV 配置与采样选择。对照冻结 `builder.go`、`builder_contract_test.rs` 和 `builder_index_join_cleanup_test.rs`；后两者支持原有 executor 生命周期与失败清理，不构成新增物化视图工厂的执行验证。
-- `git grep 2c944fb` 核对 delta apply 的实际使用仅在独立测试，不能从 builder 的抽象分支推定到生产执行器的桥接。
-- 交付使用 Ready 文档等价检查：五篇说明各有 11 个二级章节，检查文档差异和行尾空白，并人工复核生产接线、事务及资源边界。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`；按任务限定未运行 Cargo、Go 或 SQL 集成测试，所列测试仅作为静态证据。

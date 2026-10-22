@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate（见 `pkg/executor/aggfuncs/Cargo.toml`），实现 TiDB 扩展聚合函数 `MAX_COUNT` / `MIN_COUNT` 的 Rust 执行器：它不返回极值本身，而返回当前分组或窗口中“最大值/最小值出现了多少次”。模块由 `pkg/executor/aggfuncs/lib.rs` 公开为 `func_max_min_count`，公共聚合生命周期来自 `aggfuncs.rs` 的 `AggFunc`、`Serializer`、`SlidingWindowAggFunc` 和 `MaxMinSlidingWindowAggFunc`。
-
-在应用执行链上，`pkg/executor/physical_plan_runtime.rs` 的标量聚合状态和 `pkg/executor/typed_hash_agg.rs` 的分组聚合状态都会调用 `build_count_extrema_function`，随后持有 `Box<dyn CountExtremaAgg>` 与其 `PartialResult`。窗口函数元数据也会通过 `builder.rs::build_window_function` 选择滑动版本。因此，本文件位于“聚合描述符/物理计划已经确定”与“逐行更新、并行合并、窗口滑动及 spill”之间。
+`CountValue` 把整数、浮点、十进制、时间、时长、字符串、JSON、向量、Enum、Set 的求值、比较、复制、内存计量和 spill 编解码统一起来；`count_value!` 为多数类型生成实现，特殊类型有显式实现。
 
 ## 核心职责
 
@@ -90,13 +88,11 @@ RustCodeGraph 将目标文件识别为 59 个符号，并显示 `build_count_ext
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_max_min_count.go`。Rust 用泛型消除了 Go 中按类型重复的 `maxMinCount4Int/Uint/Float32/...` 与对应 partial-result 结构，但保留了同一语义：`baseMaxMinCountAggFunc.shouldReplace/shouldAccumulate` 对应 `CountExtrema::absorb`；各类型 `UpdatePartialResult/MergePartialResult` 对应 `CountValue::eval/compare` 加统一的 `AggFunc` 实现；各类型 spill 方法汇总到统一 `Serializer`。
+Rust 用泛型消除了 Go 中按类型重复的 `maxMinCount4Int/Uint/Float32/...` 与对应 partial-result 结构，但保留了同一语义：`baseMaxMinCountAggFunc.shouldReplace/shouldAccumulate` 对应 `CountExtrema::absorb`；各类型 `UpdatePartialResult/MergePartialResult` 对应 `CountValue::eval/compare` 加统一的 `AggFunc` 实现；各类型 spill 方法汇总到统一 `Serializer`。
 
-Go 的 `minMaxCountDeque`、`partialResult4MaxMinCountSliding`、`refreshCount4MaxMinCountSliding` 分别对应 Rust 的 `CountDeque<T>`、`SlidingPartial<T>`、`SlidingPartial::refresh`。两端都按索引保存相等极值并在滑动时逐个过期。Go 为 int/uint/float/decimal/string/time/duration 提供滑动实现；Rust 的构建条件同样排除 Enum、Set、JSON、VectorFloat32。
+Go 为 int/uint/float/decimal/string/time/duration 提供滑动实现；Rust 的构建条件同样排除 Enum、Set、JSON、VectorFloat32。
 
-Go 的 `unsupportedRowBasedFinalMaxMinCount` 对应 Rust `reject_rows` 分支；二者都拒绝 Final/Partial2 的逐行输入，却允许 partial state merge。Go 测试 `TestMaxMinCountAllMaxMinTypes`、`TestMaxMinCountSpecialTypes`、`TestMaxMinCountDuplicateSemantics`、`TestMergePartialResult4MaxMinCount`、`TestRowBasedFinalMaxMinCountUnsupported`、`TestMemMaxMinCount`、`TestMaxMinCountSQL`、`TestMaxMinCountSlidingWindow` 提供 SQL 与移植语义基线。
-
-已确认的实现表达差异包括：Rust 把多套结构折叠为 `CountValue + CountExtrema<T>`；Rust 计数用 `wrapping_add` 明确回绕；Rust 的动态类型不匹配会 panic；Rust 滑动状态的动态队列内存没有逐次报告。文档不据此推断行为缺陷，但这些是后续对齐时需要重点复核的兼容与资源风险。
+已确认的实现表达差异包括：Rust 把多套结构折叠为 `CountValue + CountExtrema<T>`；Rust 计数用 `wrapping_add` 明确回绕；Rust 的动态类型不匹配会 panic；Rust 滑动状态的动态队列内存没有逐次报告。
 
 ## 扩展指南
 
@@ -106,11 +102,3 @@ Go 的 `unsupportedRowBasedFinalMaxMinCount` 对应 Rust `reject_rows` 分支；
 - 修改 spill 格式时须同步 `spill_serialize_helper.rs`、`spill_deserialize_helper.rs` 和兼容策略；不可对滑动状态直接复用普通 downcast serializer，除非先实现并接线独立格式。
 - 修改内存计量时须保持 `alloc_partial_result` 固定大小与 `absorb` 动态 delta 的口径一致，并单独考虑滑动队列容量、peer、索引和动态值。
 - 测试必须放在独立文件 `pkg/executor/aggfuncs/func_max_min_count_test.rs`，并同步核对 Go 对照测试；至少覆盖普通更新、NULL/空输入、重复极值、无符号、NaN/排序规则、merge 替换与累计、final 拒绝行、spill 往返、滑动边界和内存增量。不要把测试内嵌到生产 `.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/executor/aggfuncs/func_max_min_count.rs` 确认目标文件已索引；`node --file ... --offset 1/520` 读取完整 654 行；`query CountExtrema` 找到核心 struct、trait、构建入口和测试辅助符号；`node build_count_extrema_function` 确认它构造 `MaxMinCount`、`SlidingMaxMinCount`、`BuiltAggFunc`。callers/callees 对该泛型/trait 路径未返回完整边，因此使用精确文本搜索补证。
-- 生产源码：`pkg/executor/aggfuncs/func_max_min_count.rs`；公共接口 `pkg/executor/aggfuncs/aggfuncs.rs`；构建规则 `pkg/executor/aggfuncs/builder.rs`；crate 边界 `pkg/executor/aggfuncs/Cargo.toml` 与 `lib.rs`；生产调用者 `pkg/executor/physical_plan_runtime.rs`、`pkg/executor/typed_hash_agg.rs`；spill helper 两文件。
-- Go 对照：`pkg/executor/aggfuncs/func_max_min_count.go`；Go 测试 `pkg/executor/aggfuncs/func_max_min_count_test.go`。
-- Rust 独立测试：`pkg/executor/aggfuncs/func_max_min_count_test.rs`。它覆盖 12 种值路径、空状态与 NULL、动态内存、普通 merge/reset/spill、滑动窗口、重复索引逐个过期、Final/Partial2 拒绝行、unsigned、collation、并行 partial merge、较优/较差/空源合并。
-- 本任务为纯文档分析，按计划不运行 Cargo；验收仅执行任务指定的 11 章节结构命令，并人工复核所有重要结论均可回溯到上述符号与文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`worker.rs` 是 `astersql-timer-runtime` crate 的 Hook Worker 实现。crate 入口在 [`lib.rs`](lib.rs) 中以 `pub mod worker` 暴露本模块；crate 边界和直接依赖由 [`Cargo.toml`](Cargo.toml) 定义，其中本文件实际使用 `timer-api` 提供的定时器模型/存储/Hook 接口、`crossbeam-channel` 提供的有界通道，以及 `chrono` 的时间运算。
-
-它位于分组运行时与业务 Hook 之间：[`runtime.rs`](runtime.rs) 的 `TimerGroupRuntime::tryTriggerTimerEvents` 扫描到期缓存项、构造 `TriggerEventRequest` 并投递到按 `HookClass` 划分的 Worker；Worker 执行 `Hook::OnPreSchedEvent`、以带版本检查的更新把事件置为 Trigger、再执行 `Hook::OnSchedEvent`；最终 `TimerGroupRuntime::handleWorkerResponse` 根据 `TriggerEventResponse` 更新缓存记录、处理状态和下一次重试时间。
+`triggerEventWithCounters` 实现单次触发的状态机：处理过期手动请求、执行 PreSched、通过乐观版本检查持久化 Trigger 状态、重新读取权威记录、校验 EventID，然后执行 Sched 回调。
 
 ## 核心职责
 
@@ -93,8 +91,6 @@ Hook 生命周期以会话为单位：工厂创建 → `Start` → 零到多个�
 
 ## 与 Go 版本的对应关系
 
-Rust 实现以 [`worker.go`](worker.go) 为直接对照，保留了通道容量、默认退避、请求/响应字段语义、Idle→PreSched→持久化 Trigger→重读→Sched 的顺序、手动请求信息写入 `EventExtra`、版本冲突/删除分类，以及 Hook Start/Stop 和 panic 恢复意图。[`worker_test.rs`](worker_test.rs) 对应复刻 [`worker_test.go`](worker_test.go) 的成功、延迟、错误、手动请求和恢复场景。
-
 已确认的实现差异如下：
 
 - Go Worker 保存 `groupID`/`hookClass`、结构化 logger 和 Prometheus counter；Rust 构造函数接受前两者但不保存，使用本地原子计数器，也没有等价日志输出。
@@ -115,13 +111,3 @@ Rust 实现以 [`worker.go`](worker.go) 为直接对照，保留了通道容量�
 - 若接通 `groupID`/`hookClass` 日志或生产指标，应避免只依赖 `WorkerCounters` 的测试用途原子值；还需考虑 Worker 重启后标签/计数器是否延续。
 - 若启用当前未使用的 `retryRequestWait`，应先定义它与请求级 panic 立即失败响应的关系，并更新 `TestHookWorkerLoopHandleRequestPanicRecover`；不要仅加入 sleep 而改变 Go 首次恢复的可见时序。
 - 生命周期变更需保持先取消后 join，并覆盖工厂、Start、Stop 持续 panic时的快速停止，以及响应通道阻塞时的取消路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/timer/runtime` 找到 16 个 Rust/Go 实现与测试文件；`node --file pkg/timer/runtime/worker.rs` 核对了目标文件 526 行和 48 个符号；另用 `node` 核对 `runtime.rs`、`worker.go`、`worker_test.rs`、`worker_test.go`。对 `newHookWorker`、`triggerEvent`、`buildEventUpdate` 执行的精确 `callers/callees` 查询未返回直接边，故没有把图中不存在的边作为证据。
-- crate 与装配：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)。当前目录没有 `doc.go`。
-- Rust 生产主链：[`runtime.rs`](runtime.rs) 中 `tryTriggerTimerEvents`、`ensureWorker`、`handleWorkerResponse`；[`worker.rs`](worker.rs) 中请求/响应类型、Worker 循环、`triggerEventWithCounters`、`responseChan`、`buildEventUpdate`。
-- Go 对照：[`worker.go`](worker.go) 中 `newHookWorker`、`handleRequestLoop`、`triggerEvent`、`responseChan`、`buildEventUpdate`。
-- Rust 独立测试：[`worker_test.rs`](worker_test.rs) 的 `TestWorkerStartStop`、两条成功路径、`TestWorkerProcessDelayOrErr`、`TestWorkerProcessManualRequest`、两个 panic 恢复测试和 `TestWorkerBlockedResponseStopsOnCancel`。
-- Go 独立测试：[`worker_test.go`](worker_test.go) 的对应 Start/Stop、成功、错误/竞态、手动请求和 panic 恢复测试。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；验证以源码/调用点/对照测试的静态事实复核和任务规定的 11 章节结构检查为准。

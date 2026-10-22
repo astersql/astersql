@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/meta/harness.rs` 是 `astersql-meta` crate 的依赖兼容层和内存测试支架，不是 TiDB 元数据的生产存储实现。crate 根 `pkg/meta/lib.rs` 以 `mod harness; pub use harness::*;` 挂载并再导出本文件，因此 `pkg/meta/meta.rs`、`pkg/meta/reader.rs`、`pkg/meta/meta_autoid.rs` 可以用 `crate::kv`、`crate::structure`、`crate::model` 等路径复用这些类型。真正的元数据键布局、CRUD 和遍历流程位于上述三个业务文件；本文件负责让这些流程在没有真实 TiKV、完整 Go 包依赖和真实指标系统时仍可编译、运行聚焦测试。
-
-crate 边界由 `pkg/meta/Cargo.toml` 定义，库入口是 `lib.rs`。本文件直接使用 `anyhow`、`futures`、`serde` 和 `serde_json`；清单同时声明了 `astersql-kv`、`astersql-util-codec`、`astersql-meta-model`、`chrono`，但当前 harness 为保持 Go 接口形状而自带精简的 `kv`、`codec`、`model`、`time` 模块，并未把这些接口委托给对应 workspace crate。
+用 `Arc<Mutex<State>>` 实现共享内存 string/hash 存储，使 `Mutator`、`Reader` 与 AutoID accessor 能验证键布局和读写语义，而不连接 TiKV。
 
 ## 核心职责
 
@@ -83,10 +81,6 @@ DDL 历史读取先由 `hget_all` 得到按 field 升序的 `BTreeMap` 内容，
 
 ## 与 Go 版本的对应关系
 
-Go 侧不存在单一 `pkg/meta/harness.go`；本文件把 `pkg/meta/meta.go` 导入的多个生产包压缩为 crate 内模块。主要映射是：`errors` 对应 `github.com/pingcap/errors`，`ast` 对应 `pkg/parser/ast`，`model` 对应 `pkg/meta/model`，`kv` 对应 `pkg/kv`，`structure` 对应 `pkg/structure`，`codec` 对应 `pkg/util/codec`，`partialjson` 对应 `pkg/util/partialjson`，`helper` 对应 `pkg/store/helper`，其余常量/类型对应 `pkg/meta/metadef`、`pkg/resourcegroup`、`pkg/parser/mysql`、`pkg/config/kerneltype`、`pkg/dxf/framework/schstatus`、kvproto resource-manager 类型以及 Go 标准库 context/json/time/bytes。
-
-已验证的兼容点包括：`codec::encode_bytes` 与 structure 数据 key 布局、`STRING_DATA = b's'`、prefix 隔离、空 needle 返回位置 0、整数自增溢出回绕、空 start 的逆序遍历、系统/用户 ID 常量、`CiString` 字符串反序列化，以及 `DbInfo`/`AutoIdGroup` 的 JSON 字段名，证据均在 `pkg/meta/harness_test.rs`。
-
 差异必须保留为显式限制：Go `kv.Transaction`/`Snapshot` 与 `structure.TxStructure` 具备真实事务和 MVCC 语义，而 harness 只有共享内存；Go goroutine/context/metrics/time/helper/kerneltype 是真实设施，本文件对应模块为精简或固定行为；Go model 类型字段远多于此处子集；Go partialjson 面向局部提取优化，本实现解析完整 JSON。因而该文件的目标是支撑当前 Rust meta 移植范围，而不是替代这些 Go 包的完整实现。
 
 ## 扩展指南
@@ -98,11 +92,3 @@ Go 侧不存在单一 `pkg/meta/harness.go`；本文件把 `pkg/meta/meta.go` �
 - 改动并发状态时保留跨 clone 原子性，评估 mutex poisoning、回调重入和锁粒度；若引入异步任务，需重新定义 `runtime::spawn` 的取消与资源回收语义。
 - 扩展 partial JSON 或反向迭代时，分别覆盖字段缺失/类型错误、起止边界、空 hash、非法 `value()` 调用策略，以及首个回调错误的传播。
 - 当前生产 Rust 文件已有 `// Copyright 2026 AsterSQL.`；后续不得删除对应版权信息。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/meta/harness.rs` 确认目标已索引；分段 `node --file` 读取了 1–959 行；`query` 精确确认 `new_structure`、`new_snapshot_structure`、`extract_id_and_original_name` 及 `Mutator` 等符号。宽泛 `explore` 出现大量全仓库同名项，未将其作为直接调用证据；精确 `callers new_structure` 超过 60 秒无输出后中止，并以限定引用搜索补证。
-- Rust 源与 crate：`pkg/meta/harness.rs`、`pkg/meta/lib.rs`、`pkg/meta/meta.rs`、`pkg/meta/reader.rs`、`pkg/meta/meta_autoid.rs`、`pkg/meta/Cargo.toml`。
-- 独立 Rust 测试：`pkg/meta/harness_test.rs` 的 `codec_and_structure_keys_match_go_layout`、`prefixes_are_isolated_and_snapshot_is_read_only`、`integer_and_byte_edges_match_go`、`reverse_iterator_empty_start_and_meta_constants_match_go`、`ci_string_and_model_json_match_go_compatibility`、`increments_are_atomic_across_clones`。
-- Go 对照：`pkg/meta/meta.go`、`pkg/meta/reader.go`、`pkg/meta/meta_autoid.go`，以及其直接依赖目录 `pkg/structure`、`pkg/util/codec`、`pkg/util/partialjson`、`pkg/meta/model`、`pkg/meta/metadef`、`pkg/store/helper`、`pkg/config/kerneltype`、`pkg/dxf/framework/schstatus`、`pkg/resourcegroup`。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付结构检查要求目标文件存在且固定二级标题恰好为 11 个；完成前另行执行该命令并人工复核内容没有把桩能力描述成生产能力。

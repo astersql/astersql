@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-infoschema` crate 内，定义一个不依赖 session、planner 或异步运行时的只读请求上下文抽象。模块本身在 `pkg/infoschema/lib.rs` 中以私有 `mod interface` 装配，但六个公开项 `RequestContext`、`ContextError`、`Background`、`BackgroundArc`、`TODO`、`TODOArc` 均由 crate 根重新导出，因此外部 crate 不需要访问私有模块名。
-
-当前直接接线点是规划器兼容层：`pkg/planner/core/lib.rs::context` 通过 `infoschema_dependency` 再导出这些项，并把 `RequestContext` 改名为 `Context`；`pkg/planner/core/Cargo.toml` 则声明了对 `astersql-infoschema` 的路径依赖。需要注意，本文件不是 `pkg/infoschema/infoschema.rs` 中 `InfoSchema` trait 的定义位置，也不负责实际 schema 缓存或元数据加载。
+只提供接口与空实现，不包含取消触发器、deadline 计时器、父子上下文传播或键值存储容器。
 
 ## 核心职责
 
@@ -68,8 +66,6 @@ trait 依赖实现者维护一致性不变量：`is_done() == false` 时 `error(
 
 ## 与 Go 版本的对应关系
 
-Go `pkg/infoschema/interface.go` 不重新定义上下文，而是在 `InfoSchema` 的 `TableByName(ctx context.Context, ...)` 和 `TableByID(ctx context.Context, ...)` 中直接使用标准库 `context.Context`。Go `pkg/infoschema/infoschema_v2.go::SchemaTableInfos` 将该上下文传入元数据读取，并在 flashback 重试等待时监听 `ctx.Done()`、返回 `ctx.Err()`；这证明取消会影响真实的惰性元数据加载流程。
-
 Rust 文件把 Go 标准接口的只读部分显式映射为 `RequestContext`：`Deadline` 对应 `deadline`，`Done` 的可观察完成状态对应 `is_done`，`Err` 对应 `error`，`Value` 对应 `value`；`ContextError` 映射两个标准终态。与 Go 不同，Rust 没有暴露完成 channel，而是同步布尔查询；值查询使用 `Any` 而非 Go 的任意 `interface{}`。
 
 迁移尚未完全对齐：当前 `pkg/infoschema/infoschema.rs::InfoSchema` 的 `TableByName`、`TableByID`、`SchemaTableInfos` 等签名均不接收 `RequestContext`，`pkg/infoschema/infoschema_v2.rs` 的对应实现也未通过本接口传播取消。因此本文件目前兼具 planner 上下文兼容层和未来 InfoSchema 上下文边界的角色，但不能替代 Go V2 已有的取消传播行为。
@@ -81,13 +77,3 @@ Rust 文件把 Go 标准接口的只读部分显式映射为 `RequestContext`：
 - 扩展 `ContextError` 会影响穷举匹配和 Go 兼容语义；应先确认 Go 标准 context 是否存在对应稳定终态。
 - 修改根上下文时必须保持永不到期、永不完成、无错误、无值的不变量，并同步 `pkg/infoschema/interface_aster_unit_test.rs::root_contexts_never_finish_or_carry_values`。
 - 如调用 API 仅需要借用，使用静态入口可避免 `Arc` 分配；需要存储、克隆或跨所有权边界时再使用 `BackgroundArc` / `TODOArc`。不要依赖 Background 与 TODO 的对象地址相同：源码刻意使用两个静态项表达不同语义。
-
-## 验证依据
-
-- 目标源码：`pkg/infoschema/interface.rs`，核对了枚举、trait、私有空实现、两个静态项及四个构造函数的完整定义。
-- crate 装配：`pkg/infoschema/lib.rs` 的 `mod interface` 与公开再导出；`pkg/infoschema/Cargo.toml` 的 crate 边界和依赖。
-- 直接上游：`pkg/planner/core/lib.rs::context`、`pkg/planner/core/Cargo.toml`，以及规划器/会话/执行器中对重导出构造器的限定引用。
-- Rust 测试：`pkg/infoschema/interface_aster_unit_test.rs::root_contexts_never_finish_or_carry_values` 验证两个静态根上下文的四项空语义；该文件也表明测试逻辑与生产源文件分离。当前没有覆盖两个 `Arc` 构造器或自定义 `RequestContext` 实现的同模块测试。
-- Go 对照：`pkg/infoschema/interface.go::InfoSchema` 的上下文参数；`pkg/infoschema/infoschema_v2.go::SchemaTableInfos` 的 `ctx.Done()` / `ctx.Err()` 取消分支，以及 `TableByName`、`TableByID` 的上下文签名。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/infoschema/interface.rs` 确认目标含 16 个符号；`query` 精确定位 `RequestContext`（第 45 行）、`ContextError`（第 29 行）、`BackgroundArc`（第 90 行）、`TODOArc`（第 101 行）；对精确节点执行 callers/callees 未得到跨文件边，因此再导出与调用点使用源码/Cargo/限定搜索补证。
-- 本任务只生成说明文档，未运行 Cargo；最终以固定十一章节结构检查和人工事实复核作为验证。

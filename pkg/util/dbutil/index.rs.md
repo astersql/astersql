@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-dbutil` crate 的索引元数据辅助模块，由 [`pkg/util/dbutil/lib.rs`](lib.rs) 以 `pub mod index` 暴露。crate 在 [`pkg/util/dbutil/Cargo.toml`](Cargo.toml) 中声明，并通过 `astersql-infoschema` 取得 `ColumnInfo`；查询抽象、返回值和错误类型来自同 crate 的 [`interface.rs`](interface.rs)。
-
-它是 Go 文件 [`pkg/util/dbutil/index.go`](index.go) 的 Rust 对照实现，负责把 `SHOW INDEX` 结果转换为轻量索引信息，并基于表的列/索引元数据选择适合扫描、排序或遍历的列。仓库搜索未发现这些公开函数在非测试 Rust 代码中的调用点；当前能够确认的直接入口是独立测试 [`index_test.rs`](index_test.rs)，所以它目前是“已实现、已测试、尚未接入 Rust 生产主链”的公共模块，而不是 SQL 执行主链本身。
+Go 文件 [`pkg/util/dbutil/index.go`](index.go) 的 Rust 对照实现，负责把 `SHOW INDEX` 结果转换为轻量索引信息，并基于表的列/索引元数据选择适合扫描、排序或遍历的列。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的五个公开函数与 [`index.go`](index.go) 中同名函数逐项对应，选择优先级、稳定排序、最高基数只取复合索引首列、同基数保留先出现项，以及“无主键时最后一个唯一索引覆盖之前候选”的语义均被保留。`FindAllColumnWithIndex` 也遵循 Go 的意图，按列名而非索引位置去重。
+Rust 的五个公开函数与 [`index.go`](index.go) 中同名函数逐项对应，选择优先级、稳定排序、最高基数只取复合索引首列、同基数保留先出现项，以及“无主键时最后一个唯一索引覆盖之前候选”的语义均被保留。
 
 主要表示差异如下：
 
@@ -91,13 +89,3 @@ Rust 的五个公开函数与 [`index.go`](index.go) 中同名函数逐项对应
 修改 `SHOW INDEX` 解析时，应集中调整 `required_text`/`text` 或 `ShowIndex`，同步在 [`index_test.rs`](index_test.rs) 增加缺列、`NULL`、类型与数值格式用例。修改选择优先级时，应同时覆盖：多个主键/唯一标记的声明顺序、复合索引非首列、基数相等、基数为零/负数、列名大小写，以及无效列位置。修改唯一排序键逻辑时，应为 `SelectUniqueOrderKey` 新增独立测试；当前测试没有直接覆盖该函数。
 
 兼容风险主要来自改变 Go 对齐的稳定顺序或最后唯一索引语义；正确性风险来自静默过滤无效位置、列名大小写/重复名，以及把非 `"1"` 的 `Non_unique` 值解释为唯一；性能风险主要是 `ShowIndex` 全量物化结果和每行线性查找列名，不过通常索引行数很小。Rust 单元测试必须继续放在独立的 [`index_test.rs`](index_test.rs)，不要内嵌进生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，共 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为 15 个符号。
-- RustCodeGraph `node --file pkg/util/dbutil/index.rs`：读取了 226 行完整实现，核对所有结构、辅助函数、公开函数及文件内调用关系。
-- RustCodeGraph 文件级读取：[`lib.rs`](lib.rs)、[`interface.rs`](interface.rs)、[`common.rs`](common.rs)、[`index.go`](index.go)、[`index_test.rs`](index_test.rs) 和 [`index_test.go`](index_test.go)。
-- Cargo 证据：[`Cargo.toml`](Cargo.toml) 中的 package 名、库入口、Go 包迁移元数据和 `astersql-infoschema` 依赖。
-- 调用点检查：RustCodeGraph 的文件使用关系与仓库 `rg` 精确搜索共同确认，公开函数当前无测试外 Rust 调用；Go 文件的使用者仅作为 Go 侧架构背景记录。
-- 测试证据：`indices_and_columns_follow_primary_unique_normal_order` 验证类别排序和列顺序；`show_index_and_cardinality_selection_preserve_go_order_and_errors` 验证查询映射、最高基数和缺列错误；`cardinality_selection_errors_when_the_best_index_column_is_missing` 验证未知列错误；`show_index_accepts_go_int_domain_and_columns_deduplicate_by_name` 验证负整数与按名称去重。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证本文恰有 11 个固定二级章节，并人工复核源码链接、当前接线状态和未覆盖边界均有明确依据。

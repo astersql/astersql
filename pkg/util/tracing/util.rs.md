@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-tracing` crate 的通用追踪实现，crate 入口 `pkg/util/tracing/lib.rs` 通过 `pub mod util` 加载它并以 `pub use util::*` 重导出。仓库根门面 `pkg/lib.rs` 又在 `util::tracing` 下重导出 `facade_util_tracing`，因此这里定义的是 Rust 侧与 Go `pkg/util/tracing/util.go` 对齐的公共追踪基础类型，而不是某个单一 SQL 算子的私有辅助代码。
-
-它同时承载四组能力：可回调录制的 span 树、不可变派生的追踪 `Context`、进程级事件类别位图，以及把 runtime span、回调 span 和 flight-recorder begin/end 事件组合起来的 `Region`。`Region` 在这里表示一段待计时的代码区间，不是 TiKV 的数据 Region。
-
-`pkg/util/tracing/Cargo.toml` 将该 crate 的库入口指定为 `lib.rs`，运行时依赖只有 `tracing = "0.1"`（本文件用它建立 runtime span）和 crate 其他模块使用的 `serde`；测试另依赖 `serde_json`。manifest 的 `package.metadata.porting.go-package` 明确指向 `pkg/util/tracing`。
+`TraceCategory` 和 `Enable`、`Disable`、`SetCategories`、`IsEnabled` 管理进程内原子类别掩码；`ParseTraceCategory` 提供稳定名称到单一类别位的反向解析。
 
 ## 核心职责
 
@@ -116,13 +112,3 @@
 - 若要增加事件字段，需明确 Rust 字符串字段与 Go `zap.Field` 的类型差异；对发布给 sink 的 `Event.Fields` 继续采用拥有所有权的值或深克隆，避免共享可变底层存储。
 - 变更全局 recorder 或类别状态时要评估测试并行污染和生产热路径开销；锁内不得执行用户回调，类别检查应保持原子快速路径。
 - 对齐 Go 行为时优先更新同路径 `util_test.rs`，并参照 `util_test.go`；类别和 Region 事件的迁移回归位于 `migration_aster_unit_test.rs`。源文件与测试必须继续分文件存放。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，共 11,467 个文件、307,296 个节点、1,848,419 条边，其中 Rust 文件 7,032 个。
-- RustCodeGraph `files --filter pkg/util/tracing`：确认 crate 内 `lib.rs`、`util.rs`、`util_test.rs`、`migration_aster_unit_test.rs` 以及 Go 对照文件集合。
-- RustCodeGraph `node --file pkg/util/tracing/util.rs`：逐行核对 619 行实现；`explore "pkg/util/tracing/util.rs symbols callers callees tracing utility"` 及 `query NewRecordedTrace`、`query StartRegion`、`query TraceCategory` 用于核对主要符号与 Rust/Go 双版本。精确 `callers/callees` 查询本次没有产生输出，未将其当作调用边证据。
-- 已读生产/装配/配置：`pkg/util/tracing/util.rs`、`pkg/util/tracing/lib.rs`、`pkg/util/tracing/Cargo.toml`、`pkg/lib.rs`。另核对 `pkg/dxf/framework/storage/lib.rs`，确认 DXF 同名 `StartRegion` 来自其本地占位模块，未误记为本文件调用边。
-- 已读 Go 对照：`pkg/util/tracing/util.go`；已读独立测试：`pkg/util/tracing/util_test.rs`、`pkg/util/tracing/migration_aster_unit_test.rs`、`pkg/util/tracing/util_test.go`。
-- 测试事实：Rust 用例验证缺失 span 得 noop、父子 ID 链、完成回调、`TraceInfo` 挂载、新根 Region 不创建子 span、noop Region 形态、类别原子开关，以及 `General` begin/end 事件携带同一 trace ID。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核无运行时行为修改。

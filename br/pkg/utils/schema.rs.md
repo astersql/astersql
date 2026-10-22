@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`schema.rs`](schema.rs) 是 `astersql-br-pkg-utils` crate 的 schema/name 辅助模块，由 [`lib.rs`](lib.rs) 以 `#[path = "schema.rs"] pub mod schema` 挂载，并把本文件的常量之外全部公开函数再导出到 crate 根。其 Rust 语义基准是同目录的 [`schema.go`](schema.go)：一组函数负责判断表是否需要备份 AutoID，另一组负责 SQL 标识符引用，以及 BR 备份/恢复期间系统库临时名称的生成、识别和还原。
-
-这个模块不是 schema 元数据的所有者，也不执行 DDL。它只对调用方已有的 `TableInfo`、`CIStr` 或字符串做同步、确定性的判定/转换。当前仓库中可确认的本 crate 生产调用是 [`filter.rs`](filter.rs) 调用 `StripTempDBPrefixIfNeeded` 与 `IsSysDB`；crate 根还把所有函数公开给依赖 `astersql-br-pkg-utils` 的下游。多个 BR 子 crate 同时保留了自己的 `stubs.rs` 同名实现，因此那些局部 stub 的调用不能算作本文件的实际调用边。
+其 Rust 语义基准是同目录的 [`schema.go`](schema.go)：一组函数负责判断表是否需要备份 AutoID，另一组负责 SQL 标识符引用，以及 BR 备份/恢复期间系统库临时名称的生成、识别和还原。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ RustCodeGraph 能定位本文件全部同名函数及 Go 对照，但对目标�
 
 ## 与 Go 版本的对应关系
 
-[`schema.go`](schema.go) 是逐函数语义基准，Rust 保留了相同的临时前缀、AutoID 布尔公式、反引号转义/还原、系统库集合、前缀剥离返回值以及 `CIStr` 双字段裁剪。[`schema_test.go`](schema_test.go) 的八组 `IsSysOrTempSysDB` 表驱动用例已移植到 [`schema_test.rs`](schema_test.rs)：三个真实系统库、三个临时系统库返回 `true`，普通库与带前缀的普通库返回 `false`。
+[`schema.go`](schema.go) 是逐函数语义基准，Rust 保留了相同的临时前缀、AutoID 布尔公式、反引号转义/还原、系统库集合、前缀剥离返回值以及 `CIStr` 双字段裁剪。
 
 语言适配差异主要是所有权和类型安全：
 
@@ -96,12 +94,3 @@ RustCodeGraph 能定位本文件全部同名函数及 Go 对照，但对目标�
 - 调整引用规则时，对 `EncloseName`/`UnquoteName` 增加空名、多个反引号、成对/不成对外壳和往返测试；限定名规则应继续让库名和表名分别转义。
 - 若要让新调用方使用这些函数，优先依赖 canonical crate API，而不是再复制到 `stubs.rs`。若移除已有 stub 或改接 canonical 实现，应作为单独的接线任务验证依赖层次和行为，不属于本说明任务。
 - 性能修改应关注 `GetAutoIncrementColInfo` 的列扫描和字符串重复分配，但不能用大小写折叠或宽松前缀匹配改变当前兼容语义。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、7,032 个 Rust 文件。`query` 分别定位了 `br/pkg/utils/schema.rs` 中的 `NeedAutoID`、`EncloseName`、`IsSysOrTempSysDB`、`GetSysDBCIStrName` 及其 Go 同名符号；对目标符号执行 `callers`/`callees`，未得到可用跨文件边，因此使用精确源码检索补充图覆盖缺口。
-- Rust 实现与类型证据：[`schema.rs`](schema.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`filter.rs`](filter.rs)、`pkg/meta/model/table.rs`、`pkg/parser/ast/lib.rs`。
-- Go 对照证据：[`schema.go`](schema.go)、[`schema_test.go`](schema_test.go)。
-- Rust 测试证据：[`schema_test.rs`](schema_test.rs)、[`parity_test.rs`](parity_test.rs)。前者覆盖系统库/临时系统库组合判定；后者覆盖名称引用与反引用、临时前缀剥离和基础系统库判定。
-- 接线核对：检索了 `astersql-br-pkg-utils` 的 Cargo 依赖、`astersql_br_pkg_utils` 使用点和全部主要符号，确认了 [`filter.rs`](filter.rs) 的直接生产边，并区分了其它 BR crate 的局部 stub/重复实现。
-- 本任务只新增文档，按计划未运行 Cargo。交付验证使用任务规定的 11 个固定二级标题结构检查，并人工复核文档能够说明文件存在原因、运行流程、边界与安全扩展位置。

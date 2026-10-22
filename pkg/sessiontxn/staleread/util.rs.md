@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`util.rs` 位于 `astersql-sessiontxn-staleread` crate，是 Rust 过期读实现的公共数据模型与时间戳工具层。crate 入口 `pkg/sessiontxn/staleread/lib.rs` 将本模块公开并重新导出其符号；同 crate 的 `processor.rs` 使用这里的时间戳计算、语句状态和快照 InfoSchema 工具，`provider.rs` 使用这里的会话、事务、快照模型与 InfoSchema 工具，`failpoint.rs` 查询语句是否为过期读。
-
-该文件目前不是对真实 TiDB `sessionctx`、PD、TiKV 类型的直接绑定，而是以 `SessionBackend` trait 和一组轻量 Rust 类型隔离外部系统。`pkg/sessiontxn/staleread/Cargo.toml` 中完整 TiDB 子 crate 依赖均位于永不成立的 `target.'cfg(any())'.dependencies` 下；当前可编译边界只依赖标准库以及 crate 内的 `Error`、`ErrorKind`。因此文中“后端”“会话”“事务”“快照”均指当前 Rust 抽象，不能据此宣称已接入完整 SQL 引擎。
+提供 TSO 编解码及快照 InfoSchema 装饰工具，使 `processor.rs` 和 `provider.rs` 不重复实现边界规则。
 
 ## 核心职责
 
@@ -100,16 +98,12 @@ RustCodeGraph 的文件级输出还把 `pkg/executor/set.rs` 列为使用文件�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 `pkg/sessiontxn/staleread/util.go`，另有 `processor.go::GetSessionSnapshotInfoSchema`：
-
 - Rust `calculate_as_of_ts_expr` 对应 Go `CalculateAsOfTsExpr`：二者都先建立 stale timestamp provider/缓存语义、求值表达式、拒绝 NULL、优先按日期时间解析、再回退原始 TSO，并用 2013 下界及快照读校验保护原始 TSO。
 - Rust `tso_from_datum` 对应 Go `tsoFromDatum`，接受字符串、字节、正 `int64` 和正 `uint64`。Rust 特意保留字符串零可解析，从而与 Go `strconv.ParseUint("0")` 的错误分类一致。
-- Rust `calculate_ts_with_read_staleness` 对应 Go `CalculateTsWithReadStaleness`：`statement_timestamp_millis`、`statement_min_safe_millis` 和手写选择分支分别抽象 Go 的 `GetStmtTimestamp`、`GetStmtMinSafeTime`、`CalAppropriateTime`。
-- Rust `is_stmt_staleness` 对应 Go `IsStmtStaleness`；Rust 从 mutex 包装的字段读取，Go 直接读 `StmtCtx.IsStaleness`。
 - Rust `get_external_timestamp` 对应 Go `GetExternalTimestamp`：均确保同一语句确定性并将错误包装成 AS OF。Rust 缓存在 `Session`，Go 缓存在 `StatementContext`；Rust `begin_statement` 是保证语句边界的关键补偿机制。
 - Rust `get_session_snapshot_info_schema` 对应 Go `processor.go::GetSessionSnapshotInfoSchema`：Go 从 domain 获取真实历史 InfoSchema 并用 `temptable.AttachLocalTemporaryTableInfoSchema` 包装；Rust 调后端并以布尔字段记录已挂接。
 
-差异与迁移状态：Rust 用自定义 Datum/Expression/InfoSchema/Transaction 桩和毫秒整数代替真实 Go 类型；时区、MySQL 类型转换、failpoint 和 oracle 精度由测试后端模拟。Cargo 中真实子系统依赖目前被 `cfg(any())` 禁用，所以这是行为对齐的隔离实现，不是完整生产集成。
+差异与迁移状态：Rust 用自定义 Datum/Expression/InfoSchema/Transaction 桩和毫秒整数代替真实 Go 类型；时区、MySQL 类型转换、failpoint 和 oracle 精度由测试后端模拟。
 
 ## 扩展指南
 
@@ -121,12 +115,3 @@ RustCodeGraph 的文件级输出还把 `pkg/executor/set.rs` 列为使用文件�
 - 若改变快照 InfoSchema 装饰逻辑，应同步 `get_session_snapshot_info_schema`、processor/provider 调用点和临时表断言，并与 Go `GetSessionSnapshotInfoSchema` 的包装顺序对齐。
 
 兼容风险集中在 SQL 字面量解析优先级、TSO 逻辑位保留、错误种类/消息和语句级缓存确定性；性能风险集中在 mutex 临界区内的后端调用与对值型 InfoSchema/Transaction 的克隆。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标目录包含 `util.rs`、`processor.rs`、`provider.rs`、相关 Go 文件和独立测试。
-- RustCodeGraph 源码读取：`node --file pkg/sessiontxn/staleread/util.rs --offset 1 --limit 400`，确认目标文件 346 行、全部公开符号和函数体。
-- RustCodeGraph 符号/调用查询：对 `calculate_as_of_ts_expr`、`calculate_ts_with_read_staleness`、`get_external_timestamp`、`get_session_snapshot_info_schema`、`is_stmt_staleness`、`millis_to_tso`、`tso_from_datum`、`Session::begin_statement` 执行 `query`、`callers`、`callees`。图确认内部边，例如 `calculate_as_of_ts_expr -> evaluate_expression/parse_datetime_millis/validate_snapshot_read_ts/stale_timestamp/tso_from_datum/millis_to_tso/extract_physical`；跨模块 caller 缺失处用精确源码搜索补齐。
-- 读取的生产与配置文件：`pkg/sessiontxn/staleread/util.rs`、`lib.rs`、`Cargo.toml`、`processor.rs`、`provider.rs`、`failpoint.rs`，以及 Go 对照 `util.go`、`processor.go`、`provider.go`；另核对根 `Cargo.toml` 的 workspace 成员和 `facade_sessiontxn_staleread` 路径别名。
-- 读取/检索的独立测试：`util_test.rs`、`main_test.rs`、`processor_test.rs`、`externalts_test.rs`、`provider_test.rs`，以及 Go `processor_test.go`、`provider_test.go`、`externalts_test.go`。这些测试证实 NULL/坏格式/旧 TSO/未来 ts、逻辑位保留、read-staleness 优先级、外部 ts 成功缓存与失败不缓存、语句重置、临时表标记和 provider 事务状态。
-- 未运行 Cargo：本任务是纯文档分析，计划明确禁止 Cargo。结构验证命令及最终退出状态在任务交付时记录。

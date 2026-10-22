@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`backup_txn.rs` 是 `astersql-br-pkg-task` crate 中的 TxnKV 备份编排模块。crate 根 `br/pkg/task/lib.rs` 通过 `#[path = "backup_txn.rs"] pub mod backup_txn` 挂载它，并用 `pub use backup_txn::*` 向命令层平铺导出公开 API；`br/pkg/task/Cargo.toml` 则把该目录定义为 library crate，并说明当前 arm64 Darwin 迁移路径使用本地 trait/stub 与精简 BR crate，而不是完整的 Go 运行时依赖。
-
-命令侧入口是 `br/cmd/br/backup.rs::runBackupTxnCommand`：它构造 `TxnKvConfig`、调用 `ParseBackupConfigFromFlags`，再经 `RunBackupTxnWithDefaults` 进入本文件的主流程。该文件对应 Go 实现 `br/pkg/task/backup_txn.go`，但当前 Rust 默认入口使用 `MemBackupClient`，因此应把它理解为迁移期可测试的瘦编排，而不能等同于已经接入真实 PD/TiKV RPC 和对象存储的完整生产实现。
+`RunBackupTxnWithDefaults` 为 CLI 提供便捷装配：创建无需 domain 的 manager，并构造固定 `cluster_id=1`、`current_ts=42` 的 `MemBackupClient` 后调用核心函数。
 
 ## 核心职责
 
@@ -93,8 +91,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的配置形状、flag 名称、键界校验、默认并发、全范围空键、`StartVersion=0`/`EndVersion=current_ts`、压缩/加密字段、Txn meta 标记和调度器退出恢复意图均对应 `br/pkg/task/backup_txn.go`。
-
 当前差异需要明确保留在评审视野中：
 
 - Go `RunBackupTxn` 自己解析对象存储 backend、创建/关闭真实 manager 和 backup client；Rust 将 manager/client 注入核心函数，而默认入口使用 `MemBackupClient`。
@@ -103,8 +99,6 @@ Rust 的配置形状、flag 名称、键界校验、默认并发、全范围空�
 - Go 的进度回调会忽略 `UnitRange`、对其他单位递增；Rust 只创建进度对象，并未向 client 传递回调，`let _ = UnitRange` 也不产生行为。
 - Go defer 调度器恢复时处理 context 取消并记录恢复失败；Rust guard 无 context 且静默忽略恢复错误。
 - Go defer 执行 `summary.Summary`，Rust在流程开始时直接调用 `Summary`；其时序并非严格等价。
-
-因此本文档只确认当前 Rust 源码具备可测试的编排契约，不将 Go 完整 I/O、进度、上下文和元数据流水线能力误报为已迁移。
 
 ## 扩展指南
 
@@ -116,14 +110,3 @@ Rust 的配置形状、flag 名称、键界校验、默认并发、全范围空�
 - 新增测试应继续放在独立的 `br/pkg/task/backup_txn_test.rs`（公共契约可补到 `parity_test.rs`），不要把测试嵌入生产源文件。
 
 兼容风险主要在 backupmeta 字段和恢复侧判型；正确性风险集中于版本窗口、空范围语义、调度器恢复和部分失败后的资源清理；性能风险则集中于默认/用户并发、region 估算和未来范围拆分策略。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- Rust 源码：`br/pkg/task/backup_txn.rs`（17 个索引符号）、`br/pkg/task/lib.rs`、`br/cmd/br/backup.rs::runBackupTxnCommand`。
-- crate 边界：`br/pkg/task/Cargo.toml` 的 `[package]`、`[lib]`、`package.metadata.porting` 和 path dependencies。
-- Go 对照：`br/pkg/task/backup_txn.go::{TxnKvConfig, DefineTxnBackupFlags, ParseFromFlags, ParseBackupConfigFromFlags, Adjust, RunBackupTxn}`。
-- Rust 测试：`br/pkg/task/backup_txn_test.rs::test_run_backup_txn_restores_schedulers_on_error`；`br/pkg/task/parity_test.rs::go_rust_public_contract_matches` 中的非法范围与默认入口断言。仓库内没有同名 `backup_txn_test.go`，因此 Go 行为依据来自生产对照文件及上述 Rust 对齐测试。
-- RustCodeGraph：`status` 显示索引包含目标文件；`node --file br/pkg/task/backup_txn.rs` 列出源码和三个使用文件；`explore` 给出 `runBackupTxnCommand → RunBackupTxnWithDefaults → RunBackupTxn` 调用链；`node RunBackupTxn`、`node RunBackupTxnWithDefaults`、`node TxnKvConfig`、`node SchedulerRestoreGuard`、`node BackupClient`、`node MetaWriter`、`node Mgr` 核对了上下游符号与 trait 边界。
-- 结构验证要求：目标文件必须存在，且上述十一个固定二级标题各出现一次。该任务为纯文档分析，按计划不运行 Cargo 或代码测试。

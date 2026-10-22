@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-promutil` crate，是 AsterSQL 对 Prometheus 原生指标构造过程的最小抽象层。crate 入口 `pkg/util/promutil/lib.rs` 通过 `pub mod factory` 和 `pub use factory::*` 公开这里的 API；`pkg/util/promutil/Cargo.toml` 声明其唯一直接依赖为 `prometheus = "0.14"`，并把对应 Go 包记录为 `pkg/util/promutil`。
-
-它不负责注册、注销或导出指标：这些职责由相邻的 `registry.rs` 及上层指标模块承担。本文件只把 Counter、Gauge、Histogram 及三种 Vec 形态的创建方式收束到可替换的 `Factory` trait 中，让上层代码可以通过 `&dyn Factory` 或 `Box<dyn Factory>` 构造指标。
+私有零字段类型 `defaultFactory` 提供默认实现，将六种操作直接委托给 `prometheus` 的 `with_opts` 或 `new` 构造器。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ RustCodeGraph 的文件节点把 `factory.rs` 标为被 `pkg/lightning/metric/me
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/promutil/factory.go`。两端都有 `Factory`、私有 `defaultFactory`、六个同名方法和 `NewDefaultFactory`，覆盖的指标形态一致。Go 的 `prometheus.CounterOpts` 与 `GaugeOpts` 在 Rust 侧统一映射为 `prometheus::Opts`，Histogram 仍使用专门的 `HistogramOpts`。
+Go 的 `prometheus.CounterOpts` 与 `GaugeOpts` 在 Rust 侧统一映射为 `prometheus::Opts`，Histogram 仍使用专门的 `HistogramOpts`。
 
 Go 默认构造器直接返回 `prometheus.New*` 的接口或指针；Rust `prometheus` API 的构造器返回 `Result`，本实现以 `expect` 还原 Go 构造函数在无效配置下 panic 的外部行为。Go 的标签参数是 `[]string`，Rust 为取得明确所有权使用 `Vec<String>`，再适配成 `&[&str]`。Go `NewDefaultFactory` 返回接口值，Rust 返回 `Box<dyn Factory>`；两者都对上层隐藏具体 `defaultFactory`。
 
-Go 文件含 `var _ Factory = defaultFactory{}` 作为显式编译期接口断言；Rust 的 `impl Factory for defaultFactory` 本身即由编译器验证完整实现，无需额外断言。Rust 文件已经带有 `// Copyright 2026 AsterSQL.`，同时保留原 PingCAP Apache License 注释。
+Go 文件含 `var _ Factory = defaultFactory{}` 作为显式编译期接口断言；Rust 的 `impl Factory for defaultFactory` 本身即由编译器验证完整实现，无需额外断言。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Go 文件含 `var _ Factory = defaultFactory{}` 作为显式编译期接口断�
 - 若增加有状态或跨线程工厂，需明确状态共享、`Send`/`Sync` 约束和对象生命周期；当前 trait 没有这些边界保证。
 - 测试逻辑应继续放在独立文件 `pkg/util/promutil/migration_aster_unit_test.rs`，不要嵌入 `factory.rs`。至少同步覆盖：新指标可读写、Vec 标签行为、无效配置错误路径，以及 Go/Rust 形态对应。上层接线变化还应更新 `pkg/lightning/metric/metric_test.rs` 或 `migration_aster_unit_test.rs` 中最接近的聚合指标测试。
 - 性能上，本层每次 Vec 构造会临时分配一个 `Vec<&str>`；指标通常在初始化阶段创建。若要优化，须先测量初始化热点，并保持 Prometheus API 所需的标签顺序和校验行为。
-
-## 验证依据
-
-- 目标源码：`pkg/util/promutil/factory.rs`，核对 1 个 trait、6 个 trait 方法、私有 `defaultFactory`、对应 `impl`、公开 `NewDefaultFactory` 及条件允许属性；文件没有条件编译项。
-- crate 边界：`pkg/util/promutil/Cargo.toml` 与 `pkg/util/promutil/lib.rs`，核对 crate 名、`prometheus 0.14` 依赖、Go 包映射以及公开再导出。
-- Go 对照：`pkg/util/promutil/factory.go`，核对方法集合、参数形态、默认实现与 panic 语义。
-- 直接测试：`pkg/util/promutil/migration_aster_unit_test.rs::default_factory_creates_all_go_metric_shapes` 覆盖六种指标的创建及样本读写；`histogram_factory_panics_for_non_increasing_buckets_like_go` 覆盖非法桶 panic。
-- 上层行为证据：`pkg/lightning/metric/metric.rs::new_common`、`new_metrics` 展示 trait 注入和六种构造方法的实际使用；`pkg/lightning/metric/migration_aster_unit_test.rs::registration_and_unregistration_cover_all_go_metrics` 验证由该工厂创建的聚合指标可整批注册/注销。
-- RustCodeGraph：`status` 显示索引包含目标 Rust/Go 文件；`files --filter pkg/util/promutil` 列出 `factory.rs`、`factory.go`、crate 入口和独立测试；`node --file pkg/util/promutil/factory.rs --offset 1 --limit 260` 返回完整 109 行与文件使用者；`query NewDefaultFactory --json --limit 10` 定位本文件符号。精确 `callers`/`callees` 命令在 30 秒窗口内未返回，故用上述源码与 `rg` 结果补齐调用边，不把缺失图结果推断为无调用者。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构检查要求目标文档存在且恰有 11 个规定的二级标题。

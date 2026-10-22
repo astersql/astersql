@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于独立 Cargo 包 `astersql-util-topsql-reporter-mock`。同目录 `lib.rs` 以公开模块 `pub mod pubsub` 暴露它，并通过 `tipb` 模块包含构建期生成的 tonic protobuf/gRPC 类型。它不是 TopSQL 生产服务端实现，而是供测试创建回环 TCP 监听器、可选注册 `TopSqlPubSub` 服务、启动异步 gRPC 服务并控制停止的生命周期替身。
-
-当前 Rust 仓库中的直接使用都位于测试：`pubsub_test.rs` 验证真实 gRPC 订阅与重复注册，`migration_aster_unit_test.rs::pubsub_binds_loopback_and_stops_cleanly` 验证动态回环地址和重复停止。`pkg/util/topsql/Cargo.toml` 也只在 `dev-dependencies` 中以 `topsql_mock` 引入该 crate；因此不能把该文件描述为线上 SQL 请求或 reporter 上报主链的一环。`pkg/util/topsql/reporter/Cargo.toml` 以 `topsql_protocol` 依赖同一 crate，主要是复用生成的协议类型，不能据此推断 mock server 在生产路径启动。
+`NewMockPubSubServer` 在 `127.0.0.1:0` 绑定由操作系统分配的端口，并保存稳定、可供客户端连接的地址。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 的符号 Trail 显示，`NewMockPubSubServer` 的调用者是 `pu
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/util/topsql/reporter/mock/pubsub.go`。两版都在 `127.0.0.1:0` 绑定动态端口，保存实际地址，向调用者暴露 server 句柄，以异步方式启动服务，并把启动后的 serve 错误降级为日志；`Stop` 都设计为可安全调用。Go 的真实使用见 `pkg/util/topsql/topsql_test.go::TestTopSQLPubSub` 和 `TestPubSubWhenReporterIsStopped`：先 `tipb.RegisterTopSQLPubSubServer(server.Server(), service)`，再 `go server.Serve()`，最后 `defer server.Stop()`。Rust 的延迟工厂正是为了保持这一装配顺序。
-
 已验证的实现差异如下：
 
 - Go 构造时直接创建 `*grpc.Server`，生成代码可直接向其注册任意 gRPC 服务；Rust 句柄不是通用 tonic builder，只提供 `register_top_sql_pub_sub<T: TopSqlPubSub>`，当前仅支持一个 TopSQL PubSub 服务。
@@ -92,7 +88,7 @@ RustCodeGraph 的符号 Trail 显示，`NewMockPubSubServer` 的调用者是 `pu
 - Rust 在未注册服务时实现 TCP accept 循环，用以模拟空 Go gRPC server 的监听生命周期；它不会提供 gRPC 协议响应。
 - Rust 增加 `Drop` 自动停止和 `is_stopped` 观测接口；Go 依赖调用方显式 `Stop`。
 
-Rust 独立测试没有逐行复刻 Go 的两个 TopSQL 端到端测试，而是以 `EchoPubSub` 验证真实 tonic 客户端能收到流式响应，并单独验证注册冲突与生命周期。生产 reporter 行为仍应由 reporter/topsql 层测试负责。
+Rust 独立测试没有逐行复刻 Go 的两个 TopSQL 端到端测试，而是以 `EchoPubSub` 验证真实 tonic 客户端能收到流式响应，并单独验证注册冲突与生命周期。
 
 ## 扩展指南
 
@@ -102,11 +98,3 @@ Rust 独立测试没有逐行复刻 Go 的两个 TopSQL 端到端测试，而是
 - 修改 `Serve` 的错误策略时，需要分别覆盖同步启动错误、tonic 后台错误和未注册 accept 错误。若错误要回传，API 很可能需要 async 化或增加错误通道，并评估对 Go 风格调用顺序的兼容影响。
 - 调整地址或网络行为时，保持默认只绑定 loopback 和动态端口，避免测试暴露到外部接口或发生端口争用；同步更新 `migration_aster_unit_test.rs::pubsub_binds_loopback_and_stops_cleanly`。
 - 修改 protobuf 服务签名时，同步检查 `proto/topsql.proto`、生成的 trait 使用、`EchoPubSub`、reporter 的 `TopSQLPubSubService` 以及 Go 的 `tipb.RegisterTopSQLPubSubServer` 对照。性能关注点主要是每个 server 一个后台任务、每个连接的 tonic 开销以及 mutex 注册临界区；当前 mock 不面向生产吞吐。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/topsql/reporter/mock` 确认目标、Go 对照、模块入口与测试已索引；`node --file pkg/util/topsql/reporter/mock/pubsub.rs` 读取全部 193 行并显示该文件有 22 个符号。
-- 符号与调用边：`query`/`node` 核对 `MockGrpcServerHandle`、`mockPubSubServer`、`NewMockPubSubServer`、`register_top_sql_pub_sub`；Trail 给出构造函数到两个结构体的实例化边，以及三个 Rust 测试调用者和两个注册调用者。独立 `callers` 命令在 30 秒内未返回，因此用 Trail 与局部精确 `rg` 交叉验证，未据此推断更多生产调用。
-- 已读生产与配置：`pkg/util/topsql/reporter/mock/pubsub.rs`、`pubsub.go`、`lib.rs`、`Cargo.toml`、`proto/topsql.proto`，以及 `pkg/util/topsql/reporter/Cargo.toml`、`pkg/util/topsql/Cargo.toml`。目标包及其父目录没有 `doc.go`。
-- 已读测试：`pkg/util/topsql/reporter/mock/pubsub_test.rs`、`migration_aster_unit_test.rs`，并读取 Go `pkg/util/topsql/topsql_test.go` 中 `TestTopSQLPubSub`、`TestPubSubWhenReporterIsStopped` 的装配流程。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付检查只执行任务指定的 11 章节结构命令，并人工复核“存在原因、运行流程、安全扩展点”均有上述源码、配置、调用边或测试证据。

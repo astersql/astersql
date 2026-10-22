@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-generic` crate（`pkg/util/generic/Cargo.toml`），实现一个以 `std::sync::RwLock` 保护 `std::collections::HashMap` 的泛型并发映射。crate 入口 `pkg/util/generic/lib.rs` 通过 `pub mod sync_map` 声明模块，并用 `pub use sync_map::*` 将 `SyncMap` 与 `NewSyncMap` 提升到 crate 根路径。
-
-它是 `pkg/util/generic/sync_map.go` 的 Rust 移植。当前仓库的 Rust 文本引用只出现在模块入口和独立测试 `pkg/util/generic/sync_map_test.rs`、`pkg/util/generic/migration_aster_unit_test.rs` 中，尚未发现生产 Rust 调用者。因此，它目前是一个已公开、已测试但尚未接入 Rust 应用主链的基础容器，不能把 Go 侧的生产使用场景直接描述成 Rust 侧已经接线。
+`Store` 提供插入与覆盖，`Load` 提供克隆值的只读查询，`Delete` 原子地移除并返回旧值，`Keys` 返回调用时刻锁内收集到的键快照。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@ Go 对照实现有明确生产调用者：`pkg/ddl/ddl.go` 用它登记 DDL job 
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/generic/sync_map.go` 使用 `map[K]V` 加 `sync.RWMutex`，Rust 用一个 `RwLock<HashMap<K, V>>` 表达相同的受保护状态。`Store` 对应 `Lock` 后赋值，`Load` 和 `Keys` 对应 `RLock` 下读取，`Delete` 对应写锁下先取旧值再删除。
-
 关键语言差异如下：
 
 - Go 的键约束是 `comparable`，Rust 明确要求 `Eq + Hash`。
@@ -82,8 +78,6 @@ Go 对照实现有明确生产调用者：`pkg/ddl/ddl.go` 用它登记 DDL job 
 - 两版 `Keys` 都返回无序键快照。Rust 在获得读锁后读取长度并收集；Go 当前源码在加读锁前以 `len(m.item)` 预分配容量，因此 Rust 的整个读取过程具有更完整的锁保护。
 - 两版构造器都把容量当预分配提示；负容量分别由 Go `make(map, capacity)` 与 Rust 的显式检查触发 panic。
 
-`pkg/util/generic/sync_map_test.rs::TestSyncMap` 按 Go 测试顺序覆盖基本增删查、覆盖和无序键集合；迁移补充测试还验证了 `Delete` 返回旧值、并发访问和负容量 panic。
-
 ## 扩展指南
 
 新增操作应优先放在 `impl<K, V> SyncMap<K, V>` 中，并选择满足语义的最窄锁：只观察状态用读锁，修改状态或要求“检查并修改”不可分割时用单个写锁。不要通过连续调用现有公开方法实现需要原子性的复合操作，因为每个方法返回时锁已经释放；例如 `LoadOrStore` 应在同一个写锁 guard 下检查并插入。
@@ -91,11 +85,3 @@ Go 对照实现有明确生产调用者：`pkg/ddl/ddl.go` 用它登记 DDL job 
 设计新 API 时需要明确所有权与成本：返回拥有值可能要求 `Clone`，返回引用则需要把 guard 生命周期暴露给调用者，批量回调若在锁内执行还会引入重入、长临界区和用户 panic 风险。若增加迭代、清空、长度或条件更新，应写清快照/线性化语义以及锁中毒策略，并保持 Go 对照行为，除非有证据记录刻意差异。
 
 测试必须继续放在独立文件，优先扩展 `pkg/util/generic/sync_map_test.rs` 的 Go 对齐用例；Rust 特有的并发、panic 或所有权边界可扩展 `pkg/util/generic/migration_aster_unit_test.rs`。若 Go API 同步变化，还应核对 `pkg/util/generic/sync_map.go` 与 `sync_map_test.go`。性能敏感改动应特别验证高竞争读写、昂贵 `Clone`、大量键快照及哈希冲突场景，兼容性上则注意现有 PascalCase 再导出路径和 `(Option<V>, bool)` 返回契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引可用（目标目录 10 个已索引文件）；`files --filter pkg/util/generic` 确认目标、模块入口及 Rust/Go 测试均入图；`node --file pkg/util/generic/sync_map.rs --offset 1 --limit 240` 读取了 108 行完整实现，并确认文件含 7 个符号；`query SyncMap`、`query NewSyncMap --kind function` 定位了类型与构造器。精确 `callers/callees` 查询未产出可用边，因此调用关系另以仓库文本搜索核验，未把缺失图边解释为生产调用。
-- 实现与 crate 边界：`pkg/util/generic/sync_map.rs`、`pkg/util/generic/lib.rs`、`pkg/util/generic/Cargo.toml`。
-- Go 对照及生产场景：`pkg/util/generic/sync_map.go`、`pkg/ddl/ddl.go`、`pkg/ddl/ingest/engine.go`、`pkg/resourcegroup/runaway/manager.go`、`pkg/util/extsort/disk_sorter.go`。
-- 独立测试：`pkg/util/generic/sync_map_test.rs`、`pkg/util/generic/migration_aster_unit_test.rs`、`pkg/util/generic/sync_map_test.go`。覆盖基本增删查、覆盖、键集合、旧值返回、并发访问和负容量 panic；没有直接覆盖锁中毒、公平性、昂贵克隆或高竞争性能。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构命令，并人工复核唯一新增生产物、源码引用和事实/限制边界。

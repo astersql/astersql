@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-auth` crate；crate 根 `pkg/parser/auth/lib.rs` 以 `pub mod tidb_sm3` 导出它，并在兼容迁移路径 `parser::auth` 下再次聚合导出。它实现 SM3（256 位摘要、512 位分组），既是 `tidb_sm3_password` 认证派生流程使用的底层哈希函数，也是表达式层 SM3 SQL 函数的摘要后端。
-
-直接上游有三类：`pkg/parser/auth/caching_sha2.rs` 的 `CheckHashingPassword` 和 `NewHashPassword` 把 `Sm3Hash` 作为函数参数传给 `hashCrypt`；`pkg/expression/builtin_encryption.rs::sm3_hash` 计算标量结果；`pkg/expression/builtin_encryption_vec.rs::sm3_vec` 逐行计算向量结果。该文件自身只负责原始摘要，不解析认证字符串、不生成盐，也不把摘要编码成十六进制。
+自身只负责原始摘要，不解析认证字符串、不生成盐，也不把摘要编码成十六进制。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@ RustCodeGraph 的精确 `callees Sm3Hash` 也识别到 Rust 实现调用 `Write`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/auth/tidb_sm3.go`。Rust 保留了同名 `sm3` 状态字段、六个辅助函数、`pad`/`update`、五个类 `hash.Hash` 方法、`NewSM3` 和 `Sm3Hash`；初始向量、消息扩展公式、轮常数、寄存器轮转、分组链接和大端输出均逐项对应。Rust 用 `wrapping_add` 明确表达 Go `uint32` 的自然回绕，避免调试构建的整数溢出检查改变算法。
+Rust 用 `wrapping_add` 明确表达 Go `uint32` 的自然回绕，避免调试构建的整数溢出检查改变算法。
 
 API 层存在两处明确差异。Go `NewSM3() hash.Hash` 返回接口对象，Rust `NewSM3() -> sm3` 返回具体类型，源码注释也标明尚未以等价 trait object 抽象。Go `Write` 的错误值恒为 `nil`，Rust 用 `Infallible` 表达不可能失败。Go 的 `Sum(in)` 通过切片容量操作最终只返回摘要区域；Rust 直接新建容量为 32 的向量，保持可观察返回值一致。
 
-`pkg/parser/auth/tidb_sm3_test.go::TestSM3` 与 Rust `tidb_sm3_test.rs::test_sm3` 使用相同的 `abc` 和 64 字节长文本向量。Rust 额外的 `sum_with_input_returns_only_digest_and_updates_state` 固化 Go 实现的非常规 `Sum` 行为；`migration_aster_unit_test.rs::sm3_vectors_and_streaming_match_go` 额外验证分块写入。密码正确、错误及格式异常测试虽然位于同名测试文件中，但相关错误来自 `caching_sha2.rs` 的认证格式层，不应归因于本摘要核心。
+Rust 额外的 `sum_with_input_returns_only_digest_and_updates_state` 固化 Go 实现的非常规 `Sum` 行为；`migration_aster_unit_test.rs::sm3_vectors_and_streaming_match_go` 额外验证分块写入。
 
 ## 扩展指南
 
@@ -95,13 +93,3 @@ API 层存在两处明确差异。Go `NewSM3() hash.Hash` 返回接口对象，R
 若优化分配，可让 `Write` 先填满现有尾段、直接压缩输入中的完整块、只复制最终余数；验证必须证明 `length` 仍按全部输入累计、`digest` 只提交完整块、`unhandleMsg.len() < 64`。若改变 SQL 可见编码或 NULL 行为，应在 `pkg/expression/builtin_encryption.rs`、`builtin_encryption_vec.rs` 及其独立测试中处理，而不是把十六进制或 SQL 语义塞进本文件。
 
 安全与兼容风险集中在字节序、模 2^32 加法、填充长度和 API 状态语义；性能风险集中在短块多次写入时的复制。任何行为变化都应同时与 `tidb_sm3.go` 逐项比较，并确认认证派生和标量/向量表达式两个上游表面。
-
-## 验证依据
-
-- Rust 实现：`pkg/parser/auth/tidb_sm3.rs` 的 `sm3`、辅助函数、`sm3::{pad, update, BlockSize, Size, Reset, Write, Sum}`、`NewSM3`、`Sm3Hash`。
-- crate 边界：`pkg/parser/auth/Cargo.toml` 的 `[lib] path = "lib.rs"` 和依赖声明；`pkg/parser/auth/lib.rs` 的 `pub mod tidb_sm3`、兼容再导出及独立测试模块装配。
-- Go 对照：`pkg/parser/auth/tidb_sm3.go` 的同名状态、压缩流程和公开入口；`pkg/parser/auth/tidb_sm3_test.go` 的固定向量与认证组合用例。
-- Rust 测试：`pkg/parser/auth/tidb_sm3_test.rs::test_sm3`、`sum_with_input_returns_only_digest_and_updates_state`；`pkg/parser/auth/migration_aster_unit_test.rs::sm3_vectors_and_streaming_match_go` 与 `hashing_password_vectors_and_errors_match_go`。
-- 上游源码：`pkg/parser/auth/caching_sha2.rs::{CheckHashingPassword, NewHashPassword}`，`pkg/expression/builtin_encryption.rs::sm3_hash`，`pkg/expression/builtin_encryption_vec.rs::sm3_vec`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/parser/auth` 列出 16 个 Go/Rust 文件；文件节点读取确认目标 18 个符号；`query Sm3Hash`/`query NewSM3` 区分 Go 与 Rust 定义；`callees Sm3Hash` 确认 Rust 边 `Sm3Hash -> Write/Sum/NewSM3`。调用者命令对同名定义未稳定产出，因此跨文件调用者另由限定引用搜索与源码节点交叉验证。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以任务规定命令验证文档存在且恰有十一个固定二级标题。

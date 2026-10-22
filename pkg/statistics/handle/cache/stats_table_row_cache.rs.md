@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义了一个“查询所需的表行数与列长度快照”及其表/索引长度估算算法。它属于 Cargo crate `astersql-statistics-handle-cache`（`pkg/statistics/handle/cache/Cargo.toml`），由 `pkg/statistics/handle/cache/lib.rs` 以 `mod stats_table_row_cache` 纳入，并通过 `pub use stats_table_row_cache::*` 对 crate 外再导出公开类型和函数。同一 `lib.rs` 用 `#[path = "stats_table_row_cache_test.rs"]` 挂载独立 Rust 测试，测试逻辑没有内嵌在生产文件中。
-
-它与 Go 的直接行为对照不在 Cargo 元数据声明的 `pkg/statistics/handle/cache` Go package，而是 `pkg/statistics/handle/storage/table_size_stats.go` 中的 `TableSizeStats`、`GetTableSizeStats`、`EstimateDataLength`和 `GetDataAndIndexLength`。Go 生产链路由 `pkg/executor/infoschema_reader.go` 的 `buildTableSizeStats` 驱动，用于填充 `information_schema.tables` 和 `information_schema.partitions` 的 `TABLE_ROWS`、`AVG_ROW_LENGTH`、`DATA_LENGTH`、`INDEX_LENGTH`。全仓 Rust 搜索只找到本文件内部调用与 `stats_table_row_cache_test.rs` / `statscache_test.rs` 测试调用；因此当前可证实的状态是“算法和测试已移植，尚未发现 Rust 生产 SQL/provider 接线”。
+通过 `buildInTableIDsString` 保留 Go 版的 `table_id in (...)` 谓词格式，但本文件自身不执行 SQL。
 
 ## 核心职责
 
@@ -85,16 +83,10 @@
 
 | Rust | Go | 对应与差异 |
 | --- | --- | --- |
-| `tableHistID` | `storage.tableHistID` | 字段和键语义一致。 |
-| `StatsTableRowCacheState` + `StatsTableRowCache` | `TableSizeStats` | 映射语义一致；Rust 拆成锁容器和内部状态，Go 对象按查询创建且无锁。 |
-| `RowStatsProvider` + `UpdateByID` | `GetTableSizeStats` + `getRowCountTables` + `getColLengthTables` | Rust 把 SQL 读取抽象为 provider；目标文件没有 Go 中的 `sessionctx.Context`、`util.ExecWithOpts`、负 `tot_col_size` 截零或 failpoint。 |
-| `ColumnMeta` / `IndexMeta` / `TableMeta` | `model.ColumnInfo` / `model.IndexInfo` / `model.TableInfo` | Rust 只保留估算所需字段，由布尔值表示 public/sequence，用 `Option<u64>` 表示固定长度或前缀长度。 |
-| `GetTableRows` / `GetColLength` | 同名 Go 方法 | 缺失键均返零。Go 还允许 nil receiver 并返零；Rust `&self` 不存在 nil receiver 对应语义。 |
-| `EstimateDataLength` | 同名 Go 方法 | 普通/分区/sequence 顺序与全局索引保留规则一致。 |
-| `GetDataAndIndexLength` | 同名 Go 方法 | public 过滤、定长/变长列、索引前缀、分区全局/本地索引规则一致；Rust 显式 wrapping 以保证 Go `uint64` 溢出行为。 |
-| `buildInTableIDsString` | 同名 Go 函数 | 产生相同的完整 `table_id in (...)` 谓词，包括空列表的 `table_id in ()`。 |
-
-Go 回归证据主要在 `pkg/executor/test/infoschema/infoschema_test.go`：`TestTableRowsOnlySkipsColumnLengthRead` 用 failpoint 确认只请求 `TABLE_ROWS` 时不读列长度，并验证普通表、分区表及全局索引的结果。Rust `stats_table_row_cache_test.rs::table_rows_only_update_skips_column_length_provider` 验证抽象后的跳过行为和旧列长度清空；`statscache_test.rs::estimate_data_length_matches_go_public_partition_and_sequence_rules` 验证估算规则。
+| `tableHistID` | `storage.tableHistID` | 字段和键语义一致。|
+| `RowStatsProvider` + `UpdateByID` | `GetTableSizeStats` + `getRowCountTables` + `getColLengthTables` | Rust 把 SQL 读取抽象为 provider；目标文件没有 Go 中的 `sessionctx.Context`、`util.ExecWithOpts`、负 `tot_col_size` 截零或 failpoint。|
+| `ColumnMeta` / `IndexMeta` / `TableMeta` | `model.ColumnInfo` / `model.IndexInfo` / `model.TableInfo` | Rust 只保留估算所需字段，由布尔值表示 public/sequence，用 `Option<u64>` 表示固定长度或前缀长度。|
+| `GetDataAndIndexLength` | 同名 Go 方法 | public 过滤、定长/变长列、索引前缀、分区全局/本地索引规则一致；Rust 显式 wrapping 以保证 Go `uint64` 溢出行为。
 
 ## 扩展指南
 
@@ -105,13 +97,3 @@ Go 回归证据主要在 `pkg/executor/test/infoschema/infoschema_test.go`：`Te
 - 更改数学运算必须保留 Go `uint64` wrapping 语义，除非上层兼容契约明确变更。不要用编译模式下可能 panic 的默认 `+` / `*` 替代现有 wrapping 调用。
 - 新增行为应放在独立测试文件 `pkg/statistics/handle/cache/stats_table_row_cache_test.rs`；如果是 crate 对外组合行为，同步扩展 `pkg/statistics/handle/cache/statscache_test.rs`。用户可见的信息模式语义还应对照 Go `pkg/executor/test/infoschema/infoschema_test.go`，直到 Rust 有对应集成测试面。
 - 性能风险集中在列长度数据源、大快照 `HashMap` 替换和锁竞争；正确性风险集中在分区全局/本地索引双计或漏计、offset 越界、缺失值被视为零及并发混合快照。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 `11467` 个文件，其中 Rust `7032` 个；`files --filter pkg/statistics/handle/cache` 列出目标生产文件、`stats_table_row_cache_test.rs`、`statscache_test.rs` 及模块入口。
-- RustCodeGraph 符号证据：`query StatsTableRowCache`、`query UpdateByID`、`query EstimateDataLength`、`query GetDataAndIndexLength`、`query buildInTableIDsString`、`query RowStatsProvider`；`explore "pkg/statistics/handle/cache/stats_table_row_cache.rs StatsTableRowCache StatsTableRow"` 返回目标源码与相关 Rust 测试上下文。
-- 图查询限制：精确 `callers`/`callees` 命令在共享 RustCodeGraph 负载下多次 30 秒无输出，已中止；本文档的调用边另由目标文件的已索引源码上下文和全仓精确符号搜索交叉核对。
-- Rust 源码/装配证据：`pkg/statistics/handle/cache/stats_table_row_cache.rs`、`pkg/statistics/handle/cache/lib.rs`、`pkg/statistics/handle/cache/Cargo.toml`、根 `Cargo.toml` workspace 成员记录。
-- Rust 测试证据：`pkg/statistics/handle/cache/stats_table_row_cache_test.rs` 的 `table_rows_only_update_skips_column_length_provider`、`data_and_index_lengths_match_go_uint64_overflow`、`accumulated_lengths_match_go_uint64_overflow`；`pkg/statistics/handle/cache/statscache_test.rs` 的 `build_in_table_ids_string_matches_go_predicate` 和 `estimate_data_length_matches_go_public_partition_and_sequence_rules`。
-- Go 对照/主链证据：`pkg/statistics/handle/storage/table_size_stats.go`、`pkg/executor/infoschema_reader.go::buildTableSizeStats`、`pkg/executor/test/infoschema/infoschema_test.go::TestTableRowsOnlySkipsColumnLengthRead`，以及同文件的普通表/分区表长度断言。
-- 人工复核结论：文档已分开 Rust 已有算法、Rust 测试接线和 Go 生产接线；未把 Go SQL 实现、nil receiver 或每查询无锁生命周期误写成 Rust 现状，也未把测试覆盖解释为生产可达性。

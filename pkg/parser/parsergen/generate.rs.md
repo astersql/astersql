@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parsergen` crate 的产物编排层：它从 `pkg/parser/grammar/main.astergram` 与 `hint.astergram` 读取维护中的 Rust 文法，经 `Grammar::parse` 和 `GeneratedParser::build` 得到解析器数据，再渲染、写入或校验 `pkg/parser/generated/` 下的三份已提交 Rust 源码。crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：库入口是 [`lib.rs`](lib.rs)，命令入口是 [`main.rs`](main.rs)，且本 crate 没有外部 Cargo 依赖。
-
-生成器不在数据库启动或普通 parser 编译时运行。`pkg/parser/lib.rs` 直接 `include!` 已提交的 `generated/main_tables.rs`、`generated/hint_tables.rs` 和 `generated/lexer_tokens.rs`；`pkg/parser/generate.rs::GENERATED_RUST_TABLES` 也将这三项声明为兼容生成入口。CLI 的 `generate` 子命令调用 `write_generated_outputs`，`check` 子命令调用 `check_generated_outputs`。
+不生成或执行 SQL 语义动作。
 
 ## 核心职责
 
@@ -80,11 +78,7 @@ RustCodeGraph 对本文件给出的关键边为 `generate_outputs → generate_p
 
 ## 与 Go 版本的对应关系
 
-Go 的直接对照不是同名生成器函数，而是已有 goyacc 生成物：`pkg/parser/parser.go` 中的 `yyXLAT`、`yySymNames`、`yyReductions`、`yyParseTab`，以及 `pkg/parser/hintparser.go` 中的 `yyhintXLAT`、`yyhintSymNames`、`yyhintReductions`、`yyhintParseTab`。本文件输出的 `GENERATED_MAIN_*` 与 `GENERATED_HINT_*` 静态项保留这些表在 Rust runtime 中所需的映射、符号、规约和 shift/reduce/goto 语义。
-
-Rust 版本的结构性差异是：使用稀疏 `(列, i32)` 行、以 `i32::MIN` 明示接受动作，并额外输出 `RULE_IDS_BY_REDUCTION` 与 `GENERATED_*_ACTION_REQUIRED`，使语义动作可按稳定规则标识在独立 Rust 模块中实现；同时保留 `GENERATED_*_LEGACY_RULES` 将生成规约索引映射回 Go 的一基规则号。主表 token 类型选择 `isize` 以适配主 lexer 的既有常量形状，Hint 表及独立 lexer token 模块使用 `i32`。
-
-`pkg/parser/parsergen_baseline_aster_unit_test.rs` 用独立基线解释器比较主表和 Hint 表的接受、错误、shift 与 reduce 轨迹；`pkg/parser/parser_manifest_aster_unit_test.rs` 检查规约、legacy 规则和动作标记的对齐。这些测试说明这里追求的是运行语义兼容，而不是逐字复制 Go 源文件布局。
+Rust 版本的结构性差异是：使用稀疏 `(列, i32)` 行、以 `i32::MIN` 明示接受动作，并额外输出 `RULE_IDS_BY_REDUCTION` 与 `GENERATED_*_ACTION_REQUIRED`，使语义动作可按稳定规则标识在独立 Rust 模块中实现；同时保留 `GENERATED_*_LEGACY_RULES` 将生成规约索引映射回 Go 的一基规则号。
 
 ## 扩展指南
 
@@ -93,12 +87,3 @@ Rust 版本的结构性差异是：使用稀疏 `(列, i32)` 行、以 `i32::MIN
 - 新 token 若碰到 Rust 关键字，应更新 `rust_identifier` 并在独立测试文件增加覆盖；不要把测试嵌入 `generate.rs`。现有最接近的测试位置是 `generate_aster_unit_test.rs`，标识符渲染也可参考 `render_test.rs::token_names_with_grammar_punctuation_render_as_distinct_rust_identifiers`。
 - 若要提高写入原子性，应围绕 `write_generated_outputs` 设计同目录临时文件、刷新与 rename，并考虑三文件跨文件一致性；这会改变失败后的磁盘状态语义，需要专门的故障注入/文件系统回归测试。
 - 文法变化后的维护顺序是更新 `.astergram` 与语义动作，运行 `astersql-parsergen generate` 更新已提交文件，再运行 `astersql-parsergen check` 和相关 parser 测试。不要直接编辑带 `@generated` 头的产物。
-
-## 验证依据
-
-- 源码与边界：`pkg/parser/parsergen/generate.rs`、`Cargo.toml`、`lib.rs`、`main.rs`、`render.rs::GeneratedParser`、`table.rs::ENCODED_ACCEPT`。
-- RustCodeGraph：`status` 显示仓库索引可用；`explore` 确认 `generate_outputs → generate_parser_output → render_compatibility_tables` 与 `generate_outputs → render_token_module`；`query/node` 定位 `GeneratedParser`、`generate_parser_output`、`rust_identifier`，并确认 `rust_identifier` 的调用者为 `render_token_module`。
-- 消费侧：`pkg/parser/lib.rs` 的三个静态 `include!`、`pkg/parser/parser_runtime.rs` 的主表读取、`pkg/parser/hintparser.rs::yyhint_tables` 的 Hint 表读取、`pkg/parser/generate.rs::GENERATED_RUST_TABLES`。
-- Go 对照：`pkg/parser/parser.go` 与 `pkg/parser/hintparser.go` 的 XLAT、符号名、规约和解析表定义；`pkg/parser/parser.y` 与 `hintparser.y` 是对应 Go 文法来源。
-- 独立测试：`pkg/parser/parsergen/generate_aster_unit_test.rs`（确定性、名称、缺失/陈旧、只读检查、已提交产物同步），`pkg/parser/parsergen_baseline_aster_unit_test.rs`（主/Hint 表轨迹基线），`pkg/parser/parser_generated_sources_aster_unit_test.rs`（静态消费契约），`pkg/parser/parser_manifest_aster_unit_test.rs`（规约元数据对齐）。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付仅以固定章节结构检查与人工事实复核验证。

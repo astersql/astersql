@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`check.rs` 是 `astersql-tools-patch-go` crate 中的补丁版 Go 运行时探针核心。crate 由根工作区 `Cargo.toml` 纳入成员，包边界和二进制目标定义在 `tools/patch-go/Cargo.toml`：库入口为 `lib.rs`，二进制入口为 `main.rs`。实际调用链为 `main.rs::main` → `lib.rs::entry` → `check::main` → `run_main` → `grunningnanos` → `stubs::runtime_grunningnanos`。
-
-它对应同目录 Go 程序 `tools/patch-go/check.go`。Go 程序通过 `//go:linkname` 引用 `runtime.grunningnanos`，而 `tools/patch-go/patch-go.sh` 以 `go build check.go` 是否成功判断当前 Go 工具链是否已经应用补丁。Rust 文件不参与真正 Go 工具链的链接检查；它在 Rust crate 内用可控 stub 保存同一条“入口必须触发目标符号”的行为契约。
+文件没有实现 goroutine 计时算法、没有解释返回值，也没有把失败转换成成功。
 
 ## 核心职责
 
@@ -56,11 +54,11 @@ Go 生产脚本的链路不同：`patch-go.sh` 直接尝试编译 `check.go`；�
 
 ## 与 Go 版本的对应关系
 
-Go `check.go` 的 `grunningnanos` 只有声明，没有函数体，并借助空白导入 `unsafe` 启用 `//go:linkname grunningnanos runtime.grunningnanos`；Go `main()` 仅调用一次该函数。Rust 对应关系是：Go 声明映射为 `unsafe fn grunningnanos() -> i64`，Go `main` 的单次调用映射为 `run_main`，模块 `main` 再保持入口名称对应。
+Rust 对应关系是：Go 声明映射为 `unsafe fn grunningnanos() -> i64`，Go `main` 的单次调用映射为 `run_main`，模块 `main` 再保持入口名称对应。
 
 两者关键差异是链接真实性。Go 文件会直接证明所用 Go 工具链是否提供运行时符号，且 `patch-go.sh` 依赖这个构建结果；Rust 文件总是链接 crate 内 `stubs.rs`，只能通过 `set_available(false)` 模拟不可用。Go 侧也没有 Rust 的 `run_main` 分层、调用计数或可注入返回值；这些是为了独立测试而增加的局部接线，并未改变“调用一次、忽略结果”的原测试意图。
 
-`build.sh` 当前下载 Go 1.20.5 源码并应用补丁；目录同时保留 1.20.1、1.20.2、1.20.5 三份补丁。所有补丁都加入同名运行时函数，但版本升级时仍必须同步确认 patch 内容、`build.sh` 版本变量和 `check.go` 的 linkname，而不能只修改 Rust stub。
+所有补丁都加入同名运行时函数，但版本升级时仍必须同步确认 patch 内容、`build.sh` 版本变量和 `check.go` 的 linkname，而不能只修改 Rust stub。
 
 ## 扩展指南
 
@@ -69,12 +67,3 @@ Go `check.go` 的 `grunningnanos` 只有声明，没有函数体，并借助空�
 - 若仅增加 Rust 可测试性，保持 `main.rs → entry → check::main` 的薄转发和无输出成功语义，避免 Rust 路径比 Go 探针增加参数解析、阈值判断或静默降级。
 - 若并行化测试或引入多探针，先解决 `stubs.rs` 全局原子状态的场景隔离；性能上当前路径只有固定次数的顺序一致原子操作，但它不是高频生产计时实现。
 - 兼容性风险主要来自 `i64`/Go `int64` 形状、linkname 名称和失败阶段的差异；任何修改都应同时核对 Go 声明、运行时 patch 与 Rust parity 测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `tools/patch-go` 的 6 个 Go/Rust 文件；`files --filter tools/patch-go` 列出 `check.go`、`check.rs`、`lib.rs`、`main.rs`、`parity_test.rs`、`stubs.rs`；`query` 定位 `check.rs::grunningnanos`（第 34 行）、`check.rs::run_main`（第 41 行）和 `stubs.rs::runtime_grunningnanos`（第 49 行）。精确 callers/callees 查询未返回调用边，故没有据此虚构图关系。
-- 核心源码：`tools/patch-go/check.rs`（三个公开函数及唯一直接下游）、`tools/patch-go/lib.rs`（模块装配与 `entry`）、`tools/patch-go/main.rs`（二进制入口）、`tools/patch-go/stubs.rs`（原子状态、panic 与调用计数）。
-- Go 与构建证据：`tools/patch-go/check.go`（linkname 和单次调用）、`tools/patch-go/patch-go.sh`（以 `go build check.go` 判断补丁状态）、`tools/patch-go/build.sh`（Go 1.20.5 构建流程）、`tools/patch-go/go1.20.1.patch`、`go1.20.2.patch`、`go1.20.5.patch`（真实运行时状态与计算公式）。
-- 测试证据：`tools/patch-go/parity_test.rs` 独立覆盖正常调用次数、返回值透传、`i64` 边界、不可用时失败和 reset 后状态清理；同目录不存在内嵌于 `check.rs` 的测试。
-- crate 证据：`tools/patch-go/Cargo.toml` 声明库/二进制入口、Go 包元数据且无外部依赖；根 `Cargo.toml` 将 `tools/patch-go` 纳入 workspace。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务文件指定命令验证本文档存在且恰有 11 个固定二级章节，并人工复核唯一生产物和调用链描述。

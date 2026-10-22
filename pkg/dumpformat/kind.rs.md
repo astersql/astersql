@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-源文件 [`kind.rs`](./kind.rs) 定义 `astersql-dumpformat` crate 的共享字段分类 `FieldKind`。该 crate 由 [`Cargo.toml`](./Cargo.toml) 声明，库入口是 [`lib.rs`](./lib.rs)；入口以私有 `mod kind` 装载本文件，再用 `pub use kind::FieldKind` 将类型暴露为 `astersql_dumpformat::FieldKind`。因此调用方依赖 crate 的公共根路径，而不是直接访问 `kind` 模块。
-
-这个类型位于 Dumpling 格式化链的“上游 SQL 类型判断”和“下游具体格式编码”之间。`dumpling/export/writer_util.rs::columnKinds` 将列类型名归并为三类；`pkg/dumpformat/csvfile` 与 `pkg/dumpformat/sqlfile` 的 writer 保存逐列 `FieldKind`，在写每一行时把它交给各自的字段编码器。本文件只表达分类，不拥有 SQL 类型表、CSV/SQL 语法、行缓冲或输出资源。
-
-`astersql-dumpformat` 自身没有声明依赖项或 feature。直接消费它的两个相邻 crate 在 `pkg/dumpformat/csvfile/Cargo.toml` 和 `pkg/dumpformat/sqlfile/Cargo.toml` 中通过 `astersql-dumpformat = { path = ".." }` 建立依赖；Parquet 子系统不消费这个共享分类。
+为 CSV 和 SQL writer 提供同一份、可按值复制的列分类，使同一张表的列类型判断可以复用于逐行编码。
 
 ## 核心职责
 
@@ -79,15 +75,13 @@ Rust 类型没有 `Default`。这与 Go 对照的零值行为不同：Go 的 `Fi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`kind.go`](./kind.go)。两边都表达相同的三种语义，顺序对应为 Rust `Number` / `String` / `Bytes` 与 Go `KindNumber` / `KindString` / `KindBytes`。`dumpling/export/writer_util.rs::columnKinds` 和 `writer_util.go::columnKinds` 也采用相同优先级：二进制优先、数值其次、其余归字符串；CSV/SQL 的 Rust 与 Go 编码器据此选择同类输出。
-
 表示层存在有意差异：
 
 - Go 定义为 `type FieldKind uint8` 并用 `iota` 赋值，因此常量当前为 0、1、2，零值自然是 `KindNumber`，且理论上可构造未声明的其他 `uint8` 值。
 - Rust 定义为强类型枚举，没有 `#[repr(u8)]`、显式判别值或 `Default`，安全代码必须从三个合法变体中显式选择一个，布局也没有跨语言稳定性承诺。
 - Go 的 CSV/SQL `switch` 用 `default` 承担字符串行为，所以未知数值也会按字符串处理；Rust SQL 使用穷尽 `match`，CSV 用“Number 提前返回、Bytes 特例、其余通用转义”的结构。对当前三个合法变体输出语义一致，但未知值行为不可类比。
 
-因此 Go/Rust 的兼容契约是分类含义和最终导出字节，而不是 `FieldKind` 的二进制表示。若未来要求 FFI 或持久化，应另行设计显式、可验证的编码，而不是依赖当前声明顺序。
+因此 Go/Rust 的兼容契约是分类含义和最终导出字节，而不是 `FieldKind` 的二进制表示。
 
 ## 扩展指南
 
@@ -97,12 +91,3 @@ Rust 类型没有 `Default`。这与 Go 对照的零值行为不同：Go 的 `Fi
 - 修改 `Number` 行为时要覆盖非法/特殊数值文本以及 SQL 与 CSV 输出；修改 `String` 时覆盖引号、换行、NUL 与反斜杠；修改 `Bytes` 时覆盖空值、空字节串、非 UTF-8 字节和 HEX/Base64。Rust 测试应继续放在 `csv_test.rs`、`writer_test.rs` 或新的独立测试文件中，不要写进 `kind.rs`。
 - 若需要跨语言数值稳定性，应显式增加 `#[repr(u8)]`、固定判别值和受控转换 API，并为非法值写测试；这会形成新的兼容承诺，需评估已有序列化/FFI 消费者，而不能仅模仿 Go 的 `uint8`。
 - 性能风险主要不在枚举本身，而在错误扩展导致每字段重复分类或额外分配。保持 `columnKinds` 每列一次分类、writer 内保存紧凑向量的现有结构，可避免在每行热路径解析类型名。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/dumpformat` 定位目标、模块与测试；`node --file pkg/dumpformat/kind.rs` 确认文件共 22 行、唯一业务符号为 `FieldKind`；`query FieldKind --json` 确认目标枚举及三个变体，并暴露仓库内多个同名类型。对消歧后的目标枚举执行 `callers`、`callees`、`impact` 未返回可用边，因此调用关系改由真实导入和匹配点核验。
-- 目标与 crate 边界：`pkg/dumpformat/kind.rs`、`pkg/dumpformat/lib.rs`、`pkg/dumpformat/Cargo.toml`；消费者依赖：`pkg/dumpformat/csvfile/Cargo.toml`、`pkg/dumpformat/sqlfile/Cargo.toml`。
-- Rust 调用与行为：`dumpling/export/writer_util.rs::columnKinds`、`pkg/dumpformat/csvfile/csvfile.rs`、`csvfile/writer.rs`、`csvfile/csv.rs`、`sqlfile/writer.rs`、`sqlfile/sql.rs`。
-- Go 对照：`pkg/dumpformat/kind.go`、`pkg/dumpformat/csvfile/csv.go`、`pkg/dumpformat/sqlfile/sql.go`、`dumpling/export/writer_util.go::columnKinds`。
-- 独立测试：`pkg/dumpformat/csvfile/csv_test.rs` 和 `pkg/dumpformat/sqlfile/writer_test.rs`；Go 对照测试为同目录的 `csv_test.go` 与 `writer_test.go`。这些测试提供既有行为证据，本次按纯文档计划未运行 Cargo。
-- 人工复核重点：公共再导出路径、分类产生位置、三变体在 CSV/SQL 的实际分支、空值优先级、Rust/Go 表示差异、独立测试位置，以及本文件没有错误、并发或资源管理逻辑这一边界。

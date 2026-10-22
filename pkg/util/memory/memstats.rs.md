@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`memstats.rs`](memstats.rs) 是 `astersql-util-memory` crate 的进程堆内存采样与快照缓存层，由 [`lib.rs`](lib.rs) 以公开模块 `pub mod memstats` 暴露。它不读取主机或 cgroup 的总内存：那是相邻 [`meminfo.rs`](meminfo.rs) 的职责；本文件只把当前进程分配器可观测的“已分配字节”和“分配器持有字节”归一为 `MemStats`。
-
-该文件位于运行时内存观测链的底部。上层的 `meminfo::InstanceMemUsed`、服务端内存限制、内存告警、heap profile 回退以及 GOGC/memory-limit 调谐器消费这里的快照。其结果是近似 Go `runtime.MemStats` 中 `HeapAlloc`/`HeapInuse` 的跨平台替代值，而不是 Rust 对 Go runtime 统计结构的完整复刻。
+不读取主机或 cgroup 的总内存：那是相邻 [`meminfo.rs`](meminfo.rs) 的职责；本文件只把当前进程分配器可观测的“已分配字节”和“分配器持有字节”归一为 `MemStats`。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@ FFI 结构体布局以 `#[repr(C)]` 固定，且只在匹配平台编译。其�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 [`memstats.go`](memstats.go)。两边都有 300ms 的 `ReadMemInterval`、惰性首次采样、显式强刷、采样时间戳和全局快照缓存。Go 使用 `atomic.Pointer<globalMstats>` 无锁发布不可变快照，Rust 使用 `RwLock<Option<GlobalMemStats>>` 并按值返回；两者都避免把可变缓存直接交给调用者。
+Go 使用 `atomic.Pointer<globalMstats>` 无锁发布不可变快照，Rust 使用 `RwLock<Option<GlobalMemStats>>` 并按值返回；两者都避免把可变缓存直接交给调用者。
 
 Go 的数据源是 `runtime.ReadMemStats`，字段为完整的 `runtime.MemStats`；Rust 只能用平台 allocator 或 resident memory 近似映射两个必要字段。Go `ReadMemStats` 支持 failpoint 增加 `HeapInuse`，Rust 没有该注入语义。Go 的时间戳字段 `globalMstats.ts` 是包内状态；Rust 额外提供公开 `LastReadTime`，但当前没有仓内调用者。
 
-Go 的 `pkg/domain/domain.go` 创建 `ReadMemInterval` ticker，并周期调用 `ForceReadMemStats`，所以普通读取能获得定期更新的缓存。当前 Rust 源码搜索只找到 `ReadMemInterval` 的定义，没有找到对应生产调度器；因此 Rust 的普通读取会一直返回最近一次显式强刷结果。该差异应在接入域生命周期时处理，不能通过让每次 `ReadMemStats` 都采样来悄然改变缓存契约和调用成本。
+当前 Rust 源码搜索只找到 `ReadMemInterval` 的定义，没有找到对应生产调度器；因此 Rust 的普通读取会一直返回最近一次显式强刷结果。该差异应在接入域生命周期时处理，不能通过让每次 `ReadMemStats` 都采样来悄然改变缓存契约和调用成本。
 
 ## 扩展指南
 
@@ -96,11 +94,3 @@ Go 的 `pkg/domain/domain.go` 创建 `ReadMemInterval` ticker，并周期调用 
 - 若需要测试注入，优先设计显式、可恢复且仅测试启用的采样器边界，同时覆盖并发恢复；不要让生产缓存永久保留伪造值。
 - 修改 FFI 结构或统计公式时，需要按目标平台核对系统头文件/文档，并运行对应平台测试。尤其要保留 macOS “所有 malloc zones”语义以及 Linux mmap 分配计入 `heap_inuse` 的语义。
 - 性能方面应避免在 `ReadMemStats` 的缓存命中路径加入系统刷新；正确性方面需评估零值回退、时钟回拨及并发强刷；兼容性方面需保持 `MemStats` 字段名、单位和 Go 近似语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/memory` 确认目标、Go 对照与独立测试均已索引；`node --file pkg/util/memory/memstats.rs --offset 1 --limit 240` 读取完整 162 行及三处索引使用关系；`query MemStats`、`query ReadMemStats`、`query MemTotal`、`query MemUsed` 用于区分本文件快照 API 与系统/cgroup 内存 API。
-- 直接读取：[`memstats.rs`](memstats.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`memstats.go`](memstats.go) 和 [`memstats_test.rs`](memstats_test.rs)。目标目录不存在 `doc.go`。
-- 调用点核验：[`meminfo.rs`](meminfo.rs)、`pkg/util/servermemorylimit/servermemorylimit.rs`、`pkg/util/memoryusagealarm/memoryusagealarm.rs`、`pkg/util/gctuner/mem.rs`；Go 定时刷新证据来自 `pkg/domain/domain.go` 对 `ReadMemInterval` 和 `ForceReadMemStats` 的使用。
-- 独立测试证据：[`memstats_test.rs`](memstats_test.rs) 验证 100MiB 活跃分配被统计、macOS 非默认 malloc zone 被统计，以及构造器不交换字段；`global_arbitrator_3_aster_unit_test.rs::memstats_cache_can_be_forced_and_read` 验证强刷结果随后可由缓存原样读出；`pkg/util/gctuner/mem_test.rs` 验证调谐器读取值与缓存的 `heap_inuse` 一致。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付前运行任务指定的 11 章节结构命令，并人工检查所有行为结论均指向上述源码、调用点或测试证据。

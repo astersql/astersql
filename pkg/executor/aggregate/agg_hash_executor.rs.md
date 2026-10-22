@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggregate` crate，是 Rust 聚合子模块中负责组织 Hash Aggregation 的执行器实现。模块入口 `pkg/executor/aggregate/lib.rs` 将它公开为 `agg_hash_executor`；输入、分组键、聚合状态等轻量数据模型来自同 crate 的 `agg_util.rs`，Partial/Final 两阶段计算分别委托给 `agg_hash_partial_worker.rs` 和 `agg_hash_final_worker.rs`，可选落盘由 `agg_spill.rs` 提供。
-
-当前 Rust 实现是一个可直接驱动的进程内执行器：调用方预先把所有 `Chunk` 放入 `HashAggInput`，再依次调用 `open`、反复调用 `next`、最后调用 `close`。RustCodeGraph 显示该文件直接被 `agg_hash_executor_test.rs`、`pkg/executor/benchmark_test.rs` 和 `pkg/executor/internal/exec/adaptive_limit_controller_test.rs` 使用；路径搜索还确认 `pkg/executor/test/aggregate/aggregate_test.rs` 与 `agg_spill_test.rs` 构造它。没有发现生产计划构建器把它接入 Rust `Executor` trait 或按需拉取子执行器，因此它不能被描述为 Go SQL 执行主链的完整替代品。
-
-文件前半部第 21—232 行保留了 Go `HashAggInput`、`HashAggExec.Close` 及并发拓扑的注释化迁移材料；真正参与 Rust 编译的实现从第 233 行的 `use` 开始。
+`HashAggExec` 管理执行生命周期与一次性计算：`open` 复位状态，首次 `next` 触发完整聚合，后续 `next` 从内存结果队列逐批返回，`close` 清理队列并提交可选 hash-state 统计。
 
 ## 核心职责
 
@@ -89,7 +85,7 @@ spill helper 内部以 `Mutex<PartialResultSpill>` 保护磁盘存储，以原�
 
 ## 与 Go 版本的对应关系
 
-语义主线与 `pkg/executor/aggregate/agg_hash_executor.go` 一致：都是 Partial 更新、按 key 路由、Final 合并、内存压力下 spill/restore，并保留“无 GROUP BY 的空输入仍输出默认聚合行”和 hash-state 行数统计。Rust 中“发生任意 spill 后把所有 Partial 剩余 map 也落盘”的注释与 Go `fetchChildData` 收尾调用 `spill()` 的意图对应；分区游标的逆序单次恢复也对应 Go spill helper 的消费模型。
+Rust 中“发生任意 spill 后把所有 Partial 剩余 map 也落盘”的注释与 Go `fetchChildData` 收尾调用 `spill()` 的意图对应；分区游标的逆序单次恢复也对应 Go spill helper 的消费模型。
 
 但两者并非逐字段或逐调度机制等价：
 
@@ -111,12 +107,3 @@ spill helper 内部以 `Mutex<PartialResultSpill>` 保护磁盘存储，以原�
 - 若要接入生产 Rust Executor 主链，需要补齐按需 child 拉取、取消/关闭、执行上下文、内存与磁盘 tracker、session 配置、错误类型和计划构建器接线，并对照 Go `Open/OpenSelf/Next/parallelExec/unparallelExec/Close`。这属于比本文件当前轻量接口更大的迁移范围。
 - 调整结果顺序前先明确是否要建立新的稳定顺序契约；现有测试通常排序后比较，依赖 `BTreeMap` 的局部顺序并不足以保证跨 Final worker的全局顺序。
 - 性能修改要同时检查输入全量克隆、结果全量物化、Final 串行合并和 spill `Mutex` 争用；正确性修改还需覆盖空输入、有/无分组、非法列、重复 `close`、多 chunk 同 group、DISTINCT 与极低 spill 限额。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件且目标文件已索引；`files --filter pkg/executor/aggregate` 确认聚合模块的 Rust/Go 对照文件；`node --file ... --symbols-only` 列出 `HashAggInput`、`HashAggExec`、`new`、`with_runtime_stats`、`open`、`close`、`next`、`execute`、`is_spill_triggered`；整文件 node 输出确认目标文件由 3 个文件直接使用。精确 `callers next --file ...` 在大型索引中持续超过 90 秒未返回，已终止，并以索引给出的 used-by 关系和精确路径搜索补齐调用证据。
-- 主源码：`pkg/executor/aggregate/agg_hash_executor.rs` 第 241—455 行；直接依赖实现：`agg_hash_partial_worker.rs` 的 `HashAggPartialWorker`，`agg_hash_final_worker.rs` 的 `HashAggFinalWorker/FinalResult`，`agg_spill.rs` 的 `ParallelHashAggSpillHelper/SpillStatus`，`agg_util.rs` 的 `Chunk/AggMap/AggState/Aggregation/HashAggRuntimeStats`。
-- crate 边界：`pkg/executor/aggregate/Cargo.toml` 与 `pkg/executor/aggregate/lib.rs`。目标包及其上级 `pkg/executor` 未发现 `doc.go`，因此无额外包契约可读。
-- Rust 测试：`pkg/executor/aggregate/agg_hash_executor_test.rs` 验证 spill 后尾部重复 group 合并及 close 时统计注册；`agg_spill_test.rs` 验证普通/空输入、磁盘写入、DISTINCT 增长触发 spill 等边界；`pkg/executor/test/aggregate/aggregate_test.rs` 验证 DISTINCT、空输入、spill 阈值、错误传播、并行分组和重复关闭；`pkg/executor/benchmark_test.rs` 提供基准调用入口。
-- Go 对照：`pkg/executor/aggregate/agg_hash_executor.go` 的 `HashAggInput`、`HashAggExec`、`Open/OpenSelf`、`initForParallelExec`、`Next`、`fetchChildData`、`spillIfNeed/spill`、`prepare4ParallelExec`、`parallelExec/unparallelExec`、`execute`、`getNextChunk`、`initRuntimeStats`；Go spill 回归位于 `pkg/executor/aggregate/agg_spill_test.go`，执行器生命周期/故障注入回归位于 `pkg/executor/test/aggregate/aggregate_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构命令，并人工复查文档只陈述上述源码、调用边、Cargo 和测试能够支持的事实。

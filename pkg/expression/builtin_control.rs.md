@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate（见 `pkg/expression/Cargo.toml`），由 `pkg/expression/lib.rs` 通过 `#[path = "builtin_control.rs"] mod builtin_control_kernel;` 以私有模块装配。它是一个自包含的 Rust 控制流内核：一部分用 `SqlValue` 执行标量及按行的 `CASE WHEN`、`IF`、`IFNULL`，另一部分用简化的 `FieldType` 模型推导这些控制函数的结果类型。
-
-当前接线范围需要明确：该模块没有导出为 crate 公共 API；仓库内可见的直接引用主要来自同 crate 的 `builtin_control_test.rs` 与 `builtin_control_9_aster_unit_test.rs`。生产表达式框架中另有 `planner_bridge.rs` 的类型推导实现，生成式向量控制函数也位于 `builtin_control_vec_generated.rs`。因此，本文件提供的是可测试的移植内核，不应被描述成已经替代 Go `builtin_control.go` 的完整函数类、表达式构造与下推接线。
+用 `SqlValue` 统一承载 SQL NULL、常见标量类型、向量值和显式错误占位，并用 `is_true` 实现控制条件的真值转换。
 
 ## 核心职责
 
@@ -90,9 +88,7 @@ Go 实现的 signature 注释强调跨 session 共享时新增字段必须线程
 
 ## 与 Go 版本的对应关系
 
-运行语义对应关系：`eval_case_when` 对应 Go 各 `builtinCaseWhen*Sig.eval*` 的成对扫描、NULL/0 条件跳过、首个命中返回和无 ELSE 返回 NULL；`eval_if` 对应各 `builtinIf*Sig.eval*` 的条件求值后只执行一个结果分支；`eval_if_null` 对应各 `builtinIfNull*Sig.eval*` 的首参数非 NULL/错误即返回、只有 NULL 才执行第二参数。Rust `SqlValue` 把 Go 按 EvalType 分开的签名合并成一个枚举入口。
-
-类型语义对应关系：`max_len`、`set_flen_from_args`、`set_decimal_from_args` 分别对应 Go `maxlen`、`setFlenFromArgs`、`setDecimalFromArgs`；`infer_type_for_control` 对应 `InferType4ControlFuncs` 的 NULL 分组、聚合、标志修正、ENUM/SET 提升和 datetime flen 修正。`FieldKind`/`FieldType` 是 `mysql.Type*`/`types.FieldType` 的简化映射。
+`FieldKind`/`FieldType` 是 `mysql.Type*`/`types.FieldType` 的简化映射。
 
 已确认的差异与迁移限制：
 
@@ -111,12 +107,3 @@ Go 实现的 signature 注释强调跨 session 共享时新增字段必须线程
 改变求值规则时，优先修改 `is_true` 或三个标量入口，让按行入口自然复用；同时覆盖条件错误、选中结果错误、未选错误、NULL 条件、缺失 ELSE 和批量首错终止。若目标是接入生产表达式主链，还需要在本文件之外设计 `Expression`/上下文/类型转换/PB 签名桥接；那不是对当前内核增加一个调用点即可完成的局部改动。
 
 兼容性风险集中在 MySQL 真值转换、字符串数值前缀、collation 合并、NOT NULL/UNSIGNED/BINARY 标志和 flen/decimal 上限。性能风险集中在大 String/Binary/Vector 的克隆和批量输入的串行处理；在改变所有权或引入并行前，应先保留短路顺序和首错语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含目标文件；`node --file pkg/expression/builtin_control.rs --offset 1 --limit 500` 与后续 `--offset 499 --limit 220` 覆盖全部 638 行、符号和内部调用；索引报告该文件被 11 个文件使用。泛化 `explore` 结果噪声较大，精确 `callers/callees` 在本次时限内未返回，因此外部直接引用另用局部文本搜索核验，未据此虚构生产调用链。
-- Rust 源与装配：`pkg/expression/builtin_control.rs`；`pkg/expression/lib.rs` 第 183–184 行的 `builtin_control_kernel` 私有模块声明。
-- crate 边界：`pkg/expression/Cargo.toml` 的 package 名为 `astersql-expression`、lib 入口为 `lib.rs`、`autotests = false`；本文件实际只使用 `std::fmt`。
-- Rust 独立测试：`pkg/expression/builtin_control_test.rs` 覆盖 CASE 首匹配/NULL ELSE/错误、IF/IFNULL 真值与短路、类型宽度/标志/ENUM 提升、空推导参数；`pkg/expression/builtin_control_9_aster_unit_test.rs` 扩展覆盖 Go 真值表、按行 CASE、binary flag 及更多值类型。
-- Go 对照：`pkg/expression/builtin_control.go` 的 `maxlen`、`setFlenFromArgs`、`setDecimalFromArgs`、`addCollateAndCharsetAndFlagFromArgs`、`InferType4ControlFuncs`、三个 function class 和各 typed `eval*`；`pkg/expression/builtin_control_test.go` 的 `TestCaseWhen`、`TestIf`、`TestIfNull`。
-- 人工复核结论：该文件为何存在（隔离可测试的 Rust 控制流与类型推导内核）、如何运行（私有模块、标量入口、按行包装、推导阶段）、如何安全扩展（同步穷尽匹配、独立测试、保持短路及 Go 对照）均可由上述符号和文件反查；未将缺失的真实表达式框架接线描述为已支持。

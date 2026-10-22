@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-planner-core-base` crate 的抽象边界层，只定义逻辑优化规则的公共契约 `LogicalOptRule`，不包含任何具体改写算法。crate 入口 `pkg/planner/core/base/lib.rs` 以私有模块 `mod rule_base` 纳入本文件，再通过 `pub use rule_base::*` 向依赖该 crate 的规划器组件公开 trait。
-
-`pkg/planner/core/base/Cargo.toml` 声明 crate 名为 `astersql-planner-core-base`，并以同目录 `lib.rs` 为库入口；本接口直接使用该 crate 的 `LogicalPlan` 和 `Error`，以及 `tokio-util` 的 `CancellationToken`。同目录 `doc.go` / `doc.rs` 给出的 base 层约束同样适用于此 trait：公共接口应保持抽象和精简，不应依赖具体规则类型或反向引入 core 实现，以免形成依赖环。
-
-需要特别区分契约与现状：RustCodeGraph 能定位本文件及 `LogicalOptRule`，但没有返回 Rust 调用者或被调用者；仓库搜索也未发现 `impl LogicalOptRule`、`dyn LogicalOptRule` 或 Rust 侧直接导入该 trait。当前 Rust 生产优化流水线实际由 `pkg/planner/core/optimizer_runtime.rs::logical_optimize_in_place` 按 `LogicalRule` 枚举分派。因此本文件是已公开但尚未接入当前 Rust 优化主链的 Go 对齐接口，而不是现行规则调度器。
+同目录 `doc.go` / `doc.rs` 给出的 base 层约束同样适用于此 trait：公共接口应保持抽象和精简，不应依赖具体规则类型或反向引入 core 实现，以免形成依赖环。
 
 ## 核心职责
 
@@ -86,8 +82,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `LogicalOptRule` 直接对应 `pkg/planner/core/base/rule_base.go::LogicalOptRule`：
-
 | Go | Rust | 语义 |
 | --- | --- | --- |
 | `Optimize(context.Context, LogicalPlan) (LogicalPlan, bool, error)` | `optimize(&CancellationToken, Box<dyn LogicalPlan>) -> Result<(Box<dyn LogicalPlan>, bool), Error>` | 计划与变化标志进入成功值，Go `error` 映射为 Rust `Result::Err` |
@@ -109,16 +103,3 @@ Rust `LogicalOptRule` 直接对应 `pkg/planner/core/base/rule_base.go::LogicalO
 5. 测试必须放在独立 Rust 测试文件，不能内嵌到 `rule_base.rs`。当前同目录没有 `rule_base_test.rs`；若为接口新增契约测试，建议新建同目录 `rule_base_test.rs` 并由 `lib.rs` 的 `#[cfg(test)] #[path = "rule_base_test.rs"] mod rule_base_test;` 接入。具体规则行为继续放在 `pkg/planner/core/rule/*_test.rs`，优化顺序与生产接线则在 `pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs` 等编排测试中覆盖。
 
 兼容风险主要是 trait 方法变化导致所有实现编译失败、对象安全被破坏、错误类型或计划所有权语义改变；行为风险主要是 `changed` 误报使交互规则漏跑或重复执行、规则名称漂移使禁用配置失效；性能风险主要来自计划克隆、重复遍历和过密取消检查。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引可用，包含 11,467 个文件；`files --filter pkg/planner/core/base/rule_base.rs` 识别目标文件及 4 个图节点。
-- RustCodeGraph `node --file pkg/planner/core/base/rule_base.rs --offset 1 --limit 240`：核对文件全貌、`LogicalOptRule`、`optimize` 与 `name` 的实际签名。
-- RustCodeGraph `query LogicalOptRule --json`：定位 Go interface 与 Rust trait 两个定义；对 Rust qualified name 的 callers/callees 查询未返回调用边。
-- RustCodeGraph `node --file pkg/planner/core/base/plan_base.rs --offset 210 --limit 150`：核对 `LogicalPlan` 的继承关系、计划改写能力和错误边界。
-- 源码与配置：`pkg/planner/core/base/{rule_base.rs,lib.rs,doc.rs,doc.go,Cargo.toml,rule_base.go}`，用于核对公开路径、crate 边界、设计约束、依赖和 Go 签名。
-- 当前 Rust 编排证据：`pkg/planner/core/optimizer_runtime.rs::{LogicalRule, LOGICAL_RULES, LOGICAL_RULE_FLAGS, logical_optimize_in_place}`；替代规则抽象证据：`pkg/planner/core/rule/rule_init.rs::LogicalRule`。
-- Go 调用链证据：`pkg/planner/core/optimizer.go::{optRuleList, normalizeOptimize, logicalOptimize, isLogicalRuleDisabled}`；相关 Go 回归入口包括 `pkg/planner/core/logical_plans_test.go` 与 `pkg/planner/core/optimizer_test.go`。
-- Rust 独立规则测试证据：`pkg/planner/core/rule/rule_column_pruning_test.rs`、`rule_partition_processor_test.rs` 及同目录其他 `*_test.rs`；同目录 base 测试未引用 `LogicalOptRule`，仓库内也未发现专门的 `rule_base_test.rs`。
-- 仓库搜索：`rg` 未发现 Rust 的 `impl LogicalOptRule`、`dyn LogicalOptRule` 或直接导入；该负面证据限定为本次检出的工作树状态。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 章节结构检查和人工事实复核为验证手段。

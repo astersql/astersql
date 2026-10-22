@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现 `astersql-util-bitmap` crate 的定长并发位图。crate 入口 `pkg/util/bitmap/lib.rs` 通过 `pub mod concurrent` 声明模块并用 `pub use concurrent::*` 重导出全部公开项；根门面 `pkg/lib.rs` 又在 `util::bitmap` 下重导出该 crate。`pkg/util/bitmap/Cargo.toml` 将库入口指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/util/bitmap"` 标记其 Go 对照包。
-
-它是一个底层工具实现，不直接处理 SQL、事务或存储。workspace 和 `pkg/executor/join/Cargo.toml` 已声明该 crate，但当前 Rust 生产源码中能检索到的 Join 使用仍是 `pkg/executor/join/hash_table_v1.rs`、`hash_join_v1.rs` 内的注释化迁移草稿；因此现有直接可验证的运行使用主要来自独立 Rust 测试，不能据此声称它已经进入完整 SQL 执行主链。
+一个底层工具实现，不直接处理 SQL、事务或存储。
 
 ## 核心职责
 
@@ -74,11 +72,11 @@ API 不返回 `Result`。位下标为负数或不小于 `bitLen` 时，`Set` 返
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/bitmap/concurrent.go` 是直接语义基准。常量、MSB-first 位序、32-bit 分段、向上取整、越界忽略、CAS 重试、重置复用和容量计费均一一对应。Rust 用 `AtomicU32` 代替 Go 的 `[]uint32` 加 `sync/atomic` 函数；Go 的指针返回变成按值返回，所有权随后由调用方或 `Arc` 管理。
+Rust 用 `AtomicU32` 代替 Go 的 `[]uint32` 加 `sync/atomic` 函数；Go 的指针返回变成按值返回，所有权随后由调用方或 `Arc` 管理。
 
 Go `Set` 使用 `atomic.LoadUint32`/`CompareAndSwapUint32`，Rust 使用 `SeqCst` load/`compare_exchange` 保留强顺序与唯一 setter 语义。Go `UnsafeSet`/`UnsafeIsSet` 是普通非原子内存访问；Rust 的 `UnsafeSet` 借助 `&mut self` 和 `get_mut`，`UnsafeIsSet` 则因为存储类型固定为 `AtomicU32` 而采用 `Relaxed` 原子 load，因此它并非字面上的非原子读取。
 
-Go `Clone` 在并发写入期间直接读取普通 `uint32`，Rust 对每段执行 `SeqCst` load；两者都不承诺全位图一致快照。Rust 额外实现标准 `Clone` trait。Rust 独立测试 `concurrent_test.rs` 对齐 Go `concurrent_test.go` 的并发置位、唯一 setter 和重置场景；`migration_aster_unit_test.rs` 进一步覆盖 Go 测试未显式覆盖的跨段、越界、克隆独立性和内存估算。
+Rust 额外实现标准 `Clone` trait。Rust 独立测试 `concurrent_test.rs` 对齐 Go `concurrent_test.go` 的并发置位、唯一 setter 和重置场景；`migration_aster_unit_test.rs` 进一步覆盖 Go 测试未显式覆盖的跨段、越界、克隆独立性和内存估算。
 
 ## 扩展指南
 
@@ -88,13 +86,3 @@ Go `Clone` 在并发写入期间直接读取普通 `uint32`，Rust 对每段执�
 - 若封装公开字段，应先检索 `segments` 与 `bitLen` 的直接测试/调用；现有测试会直接检查字段并用 CAS 清位，需要同时迁移测试辅助接口。
 - 将该位图真正接入 Join 时，最可能的入口是 `HashContext` 的 NULL 标记和 outer build matched status 草稿；应先把相应注释化模块变成真实实现并建立可编译调用边，不能仅凭 Cargo 依赖判断功能已启用。
 - Rust 测试逻辑应继续放在独立的 `concurrent_test.rs` 或迁移测试文件中，不要内嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含目标项目；`files --filter pkg/util/bitmap` 确认 7 个相邻实现/测试文件；`node --file pkg/util/bitmap/concurrent.rs` 读取 171 行目标文件及 10 个符号；`query NewConcurrentBitmap --kind function --json` 区分 Go/Rust 定义；`callers NewConcurrentBitmap --file pkg/util/bitmap/concurrent.rs --json` 确认生产文件内 `Clone -> NewConcurrentBitmap`。对常见方法名的宽泛 callers 查询存在歧义，因此未将其结果当作调用事实。
-- 源码与模块：`pkg/util/bitmap/concurrent.rs`、`pkg/util/bitmap/lib.rs`、`pkg/lib.rs`。
-- crate 与接线：`pkg/util/bitmap/Cargo.toml`、根 `Cargo.toml`、`pkg/executor/join/Cargo.toml`。
-- Go 对照：`pkg/util/bitmap/concurrent.go`、`pkg/util/bitmap/concurrent_test.go`、`pkg/util/bitmap/main_test.go`。
-- Rust 独立测试：`pkg/util/bitmap/concurrent_test.rs`、`pkg/util/bitmap/migration_aster_unit_test.rs`。
-- 生产调用检索：Rust 源码精确检索只发现根门面重导出以及 `pkg/executor/join/hash_table_v1.rs`、`hash_join_v1.rs` 中的注释化迁移草稿，未验证到活动的 SQL 主链调用。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构检查，并人工复核上述符号、边界和未接线声明。

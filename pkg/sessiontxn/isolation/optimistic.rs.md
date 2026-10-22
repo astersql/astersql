@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-sessiontxn-isolation` crate 的乐观事务差异层。crate 入口 `pkg/sessiontxn/isolation/lib.rs` 通过 `mod optimistic` 纳入本模块并公开重导出其符号；`NewRegisteredTxnContextProvider` 在 `ProviderKind::Optimistic` 分支构造 `OptimisticTxnContextProvider`，而 `RegisteredTxnContextProvider` 的 `TxnContextProvider` 实现再把初始化、时间戳、快照、激活和计划优化请求分派到这里。
-
-它不是完整事务引擎。Oracle 时间戳准备、KV 事务激活、InfoSchema、语句生命周期和提交选项等通用工作位于 `BaseTxnContextProvider`（`pkg/sessiontxn/isolation/base.rs`）；本文件只定义乐观模式特有的可重试判定，以及自动提交点查使用 `MAX_TIMESTAMP` 的快速路径。crate 边界和 Go 来源由 `pkg/sessiontxn/isolation/Cargo.toml` 的 `[lib] path = "lib.rs"` 与 `[package.metadata.porting] go-package = "pkg/sessiontxn/isolation"` 明确记录。
+Oracle 时间戳准备、KV 事务激活、InfoSchema、语句生命周期和提交选项等通用工作位于 `BaseTxnContextProvider`（`pkg/sessiontxn/isolation/base.rs`）；本文件只定义乐观模式特有的可重试判定，以及自动提交点查使用 `MAX_TIMESTAMP` 的快速路径。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ provider 的可变 API 以 `&mut self` 暴露，状态转换在单一可变所�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/sessiontxn/isolation/optimistic.go`，回归语义由 `optimistic_test.go` 与 Rust 的 `optimistic_test.rs` 共同说明。
-
 - Rust 的构造函数加 `OnInitialize` 对应 Go 的 `ResetForNewTxn` 加基类初始化；Rust 使用拥有运行时的 `BaseTxnContextProvider`，而 Go provider 保存 `sessionctx.Context` 并安装函数指针。
 - Rust 的 `RefreshRetryable`/`IsOptimisticTxnRetryable` 对应 Go 的 `onTxnActive`/`isOptimisticTxnRetryable`。禁用与允许条件一致，但 Go 还提供 `injectOptimisticTxnRetryable` failpoint，Rust 当前没有对应注入点。
 - 两版都让普通 read TS 与 for-update TS 落到事务 start TS，并在 MaxTS 优化时直接返回最大值。Rust 将两个快照方法显式放在此类型中；Go 主要复用嵌入基类的快照行为。
@@ -101,16 +97,3 @@ provider 的可变 API 以 `&mut self` 暴露，状态转换在单一可变所�
 - 若补齐 Go 的日志、优先级或 failpoint 行为，应通过运行时抽象新增最小能力，避免在此文件直接耦合具体 session/planner 实现；并评估日志开销、优先级兼容性和测试可控性。
 - 若接入真实 planner 类型，应保留 `PlanInspection` 边界或提供明确适配器，并用集成测试证明 Go helper 与 Rust 形状判断一致。错误地放宽候选会让非安全查询使用“最新版本”语义，属于正确性风险；错误地收紧只会损失点查性能。
 - 任意生产改动都应保留文件顶部 PingCAP Apache License 与 AsterSQL 处理标记，并先运行 `cargo fmt --all`；本说明任务本身不修改 Rust，也按计划不运行 Cargo。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录与 `optimistic.rs` 均已索引。
-- RustCodeGraph `files --filter pkg/sessiontxn/isolation`：确认模块的 Rust/Go 源、独立测试和 `lib.rs` 边界。
-- RustCodeGraph `explore "pkg/sessiontxn/isolation/optimistic.rs ..."`：确认构造入口、`RefreshRetryable`、读 TS、快照和点查判定的内部调用，以及 `NewOptimisticTxnContextProvider` 的注册表与测试调用者。
-- RustCodeGraph `node --file`：完整读取 `optimistic.rs` 1-171 行、`lib.rs` 的注册与 trait 分派、`base.rs` 的状态类型、初始化、TS future、激活、读 TS、错误策略和快照构造。
-- RustCodeGraph `query`：核对同名 Go/Rust provider、`OnInitialize`、`ActivateTxn`、`GetStmtReadTS`、`ForcePrepareConstStartTS` 与快照函数的定义位置；图中部分 Rust inherent method 未被精确名称查询单列，因此以完整文件节点和 `lib.rs` 分派源码为准。
-- 直接读取 `pkg/sessiontxn/isolation/Cargo.toml`、`optimistic.go`、`optimistic_test.go` 和 `optimistic_test.rs`，分别核对 crate/移植边界、Go 语义、Go 集成测试和 Rust 独立回归测试。
-
-人工事实复核结论：该文件存在是为了在共享事务基类之上实现乐观事务的重试资格与 MaxTS 点查优化；运行主线、状态不变量、失败传播、安全退化条件和扩展测试位置均可由上述符号与测试反查。本文不声称已执行 Cargo 测试；任务明确是纯文档分析，验证范围为源码/调用图事实与文档结构。

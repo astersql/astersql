@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-stream-crr-service` library crate。crate 入口 `br/pkg/stream/crr/service/lib.rs` 以公开模块 `http` 挂载它，并由同一 crate 的 `service.rs` 提供 `Service`、`status.rs` 提供 `StatusSnapshot` 与 JSON 编码器。`br/pkg/stream/crr/service/Cargo.toml` 只声明内部 checkpoint crate 和 `prometheus` 依赖；这里没有绑定 Hyper、Axum 等具体 HTTP 运行时。
-
-它对应 Go 文件 `br/pkg/stream/crr/service/http.go`，负责定义 CRR checkpoint 服务的三条运维端点。当前 Rust 实现是框架无关的注册/响应抽象；全仓搜索到的 `HttpMux` 实现和 `Service::Register` 调用只位于 `service_test.rs`、`parity_test.rs`，没有发现生产 HTTP server 适配与启动接线，因此不能把该文件描述成已经监听端口的服务器。
+对应 Go 文件 `br/pkg/stream/crr/service/http.go`，负责定义 CRR checkpoint 服务的三条运维端点。
 
 ## 核心职责
 
@@ -80,13 +78,11 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `Service::Register` 对应 Go `(*Service).Register(*http.ServeMux)`，三条路径、顺序和处理语义一致。Go 可直接接收 nil 指针并在方法内部 panic；Rust 将正常注册和 nil 兼容边界拆成 `Register(&mut M)` 与 `RegisterOrPanic(Option<&mut M>)`。
+Go 可直接接收 nil 指针并在方法内部 panic；Rust 将正常注册和 nil 兼容边界拆成 `Register(&mut M)` 与 `RegisterOrPanic(Option<&mut M>)`。
 
 Go handler 直接使用 `net/http.ResponseWriter`、`*http.Request` 和 `http.ServeMux`；Rust 用三个本地抽象隔离具体 HTTP 库，因此仍需生产适配器才能真正提供网络端点。Go `json.NewEncoder(w).Encode(s.Status())` 自带尾换行，Rust 的 `handle_status` 在 `encode_status_snapshot` 结果后显式追加换行。
 
-Go 编码失败时调用 `http.Error`，该函数通常还会处理文本响应头和换行；Rust 当前只保留核心的 500 状态与错误文本写入，且此前设置的 `Content-Type` 仍为 `application/json`。这是实现层面的可观察差异。成功路径的字段序列化细节由 `status.rs` 独立复刻，而不是由通用 serde 编码器完成。
-
-对应测试为 Go `service_test.go::TestServiceStatusEndpoints`、`TestServiceRegisterPanicsOnNilMux`，以及 Rust `service_test.rs::test_service_status_endpoints`、`test_service_register_panics_on_nil_mux` 和 `parity_test.rs` 的 normal/boundary 契约场景。
+Go 编码失败时调用 `http.Error`，该函数通常还会处理文本响应头和换行；Rust 当前只保留核心的 500 状态与错误文本写入，且此前设置的 `Content-Type` 仍为 `application/json`。这是实现层面的可观察差异。
 
 ## 扩展指南
 
@@ -96,13 +92,3 @@ Go 编码失败时调用 `http.Error`，该函数通常还会处理文本响应�
 - 若改变 `/status` schema 或编码错误行为，应修改 `status.rs::encode_status_snapshot` 及其独立 `status_test.rs`，同时保持本文件只负责 HTTP 包装；关注 Go 字段名、omitempty、map 键顺序、时间范围和尾换行兼容。
 - 若要限制 HTTP method，可在生产适配层统一实现，或扩展本文件契约并为非 GET 请求增加明确测试；当前静默忽略 `Method`，直接改变会构成行为兼容风险。
 - 若让 writer 方法返回错误，需要贯穿 trait、所有适配器和独立测试重新设计传播策略；当前签名无法观测 socket 写失败。
-
-## 验证依据
-
-- RustCodeGraph：`status`/`files --filter br/pkg/stream/crr/service`；`node --file br/pkg/stream/crr/service/http.rs --offset 1 --limit 500` 确认目标文件 124 行、符号与直接测试使用；对 `lib.rs`、`service.rs`、`status.rs`、`service_test.rs`、`parity_test.rs` 使用 `node --file` 核对模块挂载、`Service::Status`、快照复制、JSON 编码和测试夹具。
-- 源码：`br/pkg/stream/crr/service/http.rs`；直接 Rust 依赖证据为 `service.rs::Service::Status` 与 `status.rs::StatusStore::snapshot_copy`、`encode_status_snapshot`。
-- crate/模块：`br/pkg/stream/crr/service/Cargo.toml`、`br/pkg/stream/crr/service/lib.rs`。
-- Go 对照：`br/pkg/stream/crr/service/http.go`；Go 测试：`br/pkg/stream/crr/service/service_test.go` 的 `TestServiceStatusEndpoints`、`TestServiceRegisterPanicsOnNilMux`。
-- Rust 独立测试：`br/pkg/stream/crr/service/service_test.rs` 的 `test_service_status_endpoints`、`test_service_register_panics_on_nil_mux`，以及 `br/pkg/stream/crr/service/parity_test.rs` 的 `contract_normal_status_and_http`、`contract_boundary_defaults_and_register_guard`。
-- 全仓 `rg` 交叉核验：生产依赖只发现 CRR config crate 使用 service crate 的配置符号；`HttpMux`、`HttpResponseWriter`、`RegisterOrPanic` 和 `Service::Register` 的 CRR 调用/实现只出现在上述独立测试，故本文将生产 HTTP 接线标为未发现，而非已支持。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定命令验证目标文件存在且固定二级标题恰好 11 个，并人工复核没有把测试替身描述成生产服务器。

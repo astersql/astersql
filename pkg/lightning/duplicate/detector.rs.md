@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-lightning-duplicate` crate 的重复键检测编排层。它位于键写入与真正的有序区间扫描之间：`KeyAdder` 把 `(用户键, key_id)` 编码后交给外部排序器，`Detector::detect` 完成排序、确定扫描边界并启动多个 `Worker`，具体的相邻键比较和重复组回调由同 crate 的 `worker.rs` 执行。
-
-crate 入口 `pkg/lightning/duplicate/lib.rs` 将本文件的公开项全部再导出；根 `Cargo.toml` 以 `facade_lightning_duplicate` 引入该 crate，`pkg/lib.rs::lightning::duplicate` 再次对外导出。当前 Rust Lightning importer 尚未直接接线到这里：`lightning/pkg/importer/dup_detect.rs` 使用的是 `lightning/pkg/importer/stubs.rs::duplicate` 中的 Go 风格桩。对应的 Go 主链 `lightning/pkg/importer/dup_detect.go` 则调用 `pkg/lightning/duplicate/detector.go::NewDetector`。因此，本文件是已实现、可独立测试的真实 detector，但不能据现有调用证据宣称 Rust importer 已使用它。
+`Handler` 定义每个 worker 的有状态回调协议；本文件只定义协议与默认实现，重复组识别发生在 `worker.rs::Worker::scan_iterator`。
 
 ## 核心职责
 
@@ -89,13 +87,13 @@ crate 入口 `pkg/lightning/duplicate/lib.rs` 将本文件的公开项全部再�
 
 ## 与 Go 版本的对应关系
 
-本文件逐项对应 `pkg/lightning/duplicate/detector.go`：`Detector/NewDetector`、`KeyAdder`、`Detect/DetectOptions`、`Handler/HandlerConstructor` 和 `nopHandler` 均保持同一职责。Rust 命名采用 snake_case，取消上下文改为 `CancellationToken`，动态接口改为 `Arc<dyn ...>`/`Box<dyn ...>`。
+Rust 命名采用 snake_case，取消上下文改为 `CancellationToken`，动态接口改为 `Arc<dyn ...>`/`Box<dyn ...>`。
 
 Go 使用 `errgroup.WithContext`、容量为 1 的 `taskCh` 和 `WaitGroup`；Rust 用派生 token、`TaskQueue` 与 scoped threads 重建同样的取消和待办记账。Rust 额外显式保存“首个”错误，确保其他线程随后观察取消而返回的错误不会替换根因；`test_detector_keeps_root_error_when_other_constructor_observes_cancellation` 固化了该契约。
 
-Go 的 `Detect` 在排序或取范围失败时返回 `0, err`；Rust 外层计数器设计使失败时也返回已完成扫描的部分计数。扫描前失败仍为零，扫描中失败的部分计数由 Rust 测试明确约束。两端都将末尾用户键追加零字节形成排他上界，并将默认并发度设为 `GOMAXPROCS(0)`。
+Go 的 `Detect` 在排序或取范围失败时返回 `0, err`；Rust 外层计数器设计使失败时也返回已完成扫描的部分计数。
 
-Go 接口注释说明 `Append` 的 key_id 按字典序到达，且传入切片调用后可能变化。Rust 的借用切片同样不能由 handler 长期借用；需要保留时必须复制，`detector_test.rs::Collector::append` 正是这样做。当前 Rust importer 尚未替换其本地桩，所以 Go importer 的完整运行时接线只能作为目标语义证据，不能作为本 Rust 文件已经被生产主链调用的证据。
+当前 Rust importer 尚未替换其本地桩，所以 Go importer 的完整运行时接线只能作为目标语义证据，不能作为本 Rust 文件已经被生产主链调用的证据。
 
 ## 扩展指南
 
@@ -105,12 +103,3 @@ Go 接口注释说明 `Append` 的 key_id 按字典序到达，且传入切片�
 - 自定义 handler 必须按状态机实现并复制需要跨回调保留的字节；同时容忍当前 worker 的实际 close 生命周期。新增持久化 handler 时应针对 begin/append/end/close 每个失败点补独立测试。
 - 若把 Rust importer 从 `stubs.rs::duplicate` 切换到本 crate，需要显式适配 Go 风格 API（`Context`、PascalCase 方法、单一 `Result<i64>`）与本文件 API（`CancellationToken`、snake_case、`(i64, Result)`），并以 importer 集成测试证明真实接线；不能仅删除桩或依靠 facade 再导出。
 - 大数据路径上的性能敏感点包括 `key_buf` 复用、sorter 磁盘 I/O、worker 数量和每 1000 键一次的拆分/取消检查。修改时应避免每键分配或把 handler 变为全局锁热点。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/lightning/duplicate` 找到本 crate 的 Rust/Go 实现与测试；`node --file pkg/lightning/duplicate/detector.rs --offset 1 --limit 260` 和后续区间读取确认本文件 279 行的全部定义；同样读取 `worker.rs` 与 `internal.rs` 核对直接下游实现。
-- RustCodeGraph 精确符号查询：`query new_detector --kind function` 定位 `detector.rs:46`，`query Detector --kind struct` 同时区分 Rust、Go 与其他同名 detector。对常见 impl 方法的 `query/callers` 未能稳定区分同名符号且一次查询长时间无输出，因此按技能规则用路径限定的仓库搜索补足调用证据，没有把模糊图结果当作结论。
-- 读取的生产与装配文件：`pkg/lightning/duplicate/detector.rs`、`internal.rs`、`worker.rs`、`lib.rs`、`Cargo.toml`，根 `Cargo.toml`、`pkg/lib.rs`，以及 `lightning/pkg/importer/dup_detect.rs`、`stubs.rs`。
-- Go 对照：`pkg/lightning/duplicate/detector.go`；真实 Go 上游为 `lightning/pkg/importer/dup_detect.go`。
-- 独立测试：`pkg/lightning/duplicate/detector_test.rs`、`migration_aster_unit_test.rs` 与 Go `detector_test.go`。它们覆盖并发多 writer、重复组和 key_id 顺序、默认值、空输入与末键边界、派生取消、首错身份、writer/sorter/iterator/handler 失败和资源关闭。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前以指定命令检查目标存在且恰有 11 个固定二级标题，并人工复核没有将 importer 桩误写成真实接线。

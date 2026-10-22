@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-rule` crate。其 crate 根 `pkg/planner/cascades/rule/lib.rs` 以私有模块 `mod binder` 装入本文件，再通过 `pub use binder::*` 导出 `BoundPlan`、`Binder` 和 `NewBinder` 等公开接口；`Cargo.toml` 同时表明该 crate 直接依赖 `cascades-memo`、`cascades-pattern`、`logicalop`，并以 Go 包 `pkg/planner/cascades/rule` 为移植来源。
-
-在完整 Cascades 优化链中，本文件位于“规则声明”和“规则执行”之间：规则通过 `Rule::Pattern` 给出模式树，`ApplyRuleTask::Execute`（`pkg/planner/cascades/task/task_apply_rule.rs`）用 `NewBinder` 将该模式绑定到一个指定的 Memo `GroupExpression`，随后对每个 `BoundPlan` 调用 `PreCheck` 和 `XForm`，再把改写结果写回 Memo。绑定器只负责枚举结构匹配，不决定规则语义，也不负责从其他根节点开始全树搜索。
+对 `OperandAny` 实施特殊剪枝：每个 Group 只取第一条逻辑表达式，避免枚举等价实现造成无意义的组合膨胀。
 
 ## 核心职责
 
@@ -114,7 +112,7 @@ Rust 文件对齐 `pkg/planner/cascades/rule/binder.go` 的外部意图：给定
 - Go 的 `match` 和 Rust 的 `r#match` 都只做 operand 匹配，均未使用 Pattern 的引擎集合。
 - Rust 的预计算实现更简单且结果顺序由嵌套循环稳定决定，但峰值内存为全部绑定之和；Go 惰性实现只维护回溯状态，更适合巨大组合空间。
 
-Rust 独立测试 `pkg/planner/cascades/rule/binder_test.rs` 对照 Go 的 `binder_test.go` 覆盖成功/失败、顶层节点、孤立节点、子树结构、2×2 多结果、单 Any 和双 Any。Rust 测试还显式断言失败后初始 holder 不清空，并验证固定根不会递归寻找替代根。
+Rust 测试还显式断言失败后初始 holder 不清空，并验证固定根不会递归寻找替代根。
 
 ## 扩展指南
 
@@ -125,16 +123,3 @@ Rust 独立测试 `pkg/planner/cascades/rule/binder_test.rs` 对照 Go 的 `bind
 - 新规则通常不应修改 Binder：在规则的 `Pattern` 声明结构，在 `PreCheck`/`XForm` 中通过 `Expression`、`Children`、`WithWrappedLogicalPlan` 读取绑定，再由任务层用 `ChildGroups` 接回 Memo。
 - 测试逻辑必须继续放在独立的 `pkg/planner/cascades/rule/binder_test.rs`，不要内嵌到生产源文件；若行为旨在对齐 Go，同步核对 `binder.go` 和 `binder_test.go`。
 - 性能扩展的主要风险是预计算笛卡尔积。若真实规则出现大候选空间，应以等价的惰性迭代器/显式回溯状态替换，而不是静默截断非 Any 候选；还需验证 Memo 在枚举期间的修改策略和结果稳定性。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标实现：`pkg/planner/cascades/rule/binder.rs`（完整 184 行），主要符号为 `BoundPlan`、`Binder`、`NewBinder`、`r#match`、`dfsMatch`、`anyHasBeenMatched`、`pickGroupExpression`、`Next`、`GetHolder`。
-- crate 装配：`pkg/planner/cascades/rule/Cargo.toml` 与 `pkg/planner/cascades/rule/lib.rs`；确认 crate 名、路径依赖、Go 来源包、模块私有装入和公开再导出。
-- 生产调用链：`pkg/planner/cascades/task/task_apply_rule.rs::ApplyRuleTask::Execute`；确认 `NewBinder → Next → Rule::PreCheck/XForm → ChildGroups → CopyInWithChildren`。
-- 直接数据结构：`pkg/planner/cascades/memo/group_expr.rs`、`pkg/planner/cascades/memo/group.rs`、`pkg/planner/cascades/pattern/pattern.rs`、`pkg/planner/cascades/rule/rule.rs`；确认 `Rc<RefCell>`/`Weak` 所有权、Group 表达式顺序、Pattern 字段和规则消费契约。
-- Rust 测试：`pkg/planner/cascades/rule/binder_test.rs`；确认成功/失败、固定根、叶模式、子树、笛卡尔积顺序以及 Any 首项语义。
-- Go 对照：`pkg/planner/cascades/rule/binder.go` 与 `pkg/planner/cascades/rule/binder_test.go`；确认目标行为，并识别惰性栈回溯与 Rust 预计算快照的实现差异。
-- RustCodeGraph：`status` 显示索引包含目标仓库；`node --file` 读取目标、测试、Go 对照和主调用者；精确 `query` 找到 Rust/Go 同名符号；`callees` 确认内部调用边。`callers` 查询本次超时无输出，因此上游关系以直接引用搜索复核，未把缺失图结果写成事实。
-- 结构验证要求：目标文件存在，并且恰好包含本页所示的 11 个固定二级标题。任务为纯文档分析，按计划不运行 Cargo 或代码测试。

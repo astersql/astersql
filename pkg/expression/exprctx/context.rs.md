@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression-exprctx` crate 的核心上下文契约，源码由 [`lib.rs`](./lib.rs) 的 `mod context; pub use context::*;` 对外重导出。它不执行某一种具体表达式，而是规定表达式求值、表达式构建和聚合/窗口构建所能读取或修改的会话快照，并提供若干只改变单一策略的包装器。Cargo 清单 [`Cargo.toml`](./Cargo.toml) 表明该 crate 位于 `pkg/expression/exprctx`，直接依赖类型/错误上下文、parser AST、排序规则、会话变量和 MySQL 随机数实现。
-
-在应用链路中，上游的静态上下文与会话上下文实现这些 trait（例如 `pkg/expression/exprstatic/{evalctx.rs,exprctx.rs}` 和 `pkg/expression/sessionexpr/sessionctx.rs`），下游表达式、DDL 与 planner 代码通过 `dyn EvalContext`、`dyn BuildContext` 或 `dyn ExprContext` 消费稳定接口。RustCodeGraph 将本文件关联到 49 个 Rust 文件；这表示接口及重导出被广泛使用，不等同于每个包装函数都有 49 个直接调用者。
+不执行某一种具体表达式，而是规定表达式求值、表达式构建和聚合/窗口构建所能读取或修改的会话快照，并提供若干只改变单一策略的包装器。
 
 ## 核心职责
 
@@ -66,13 +64,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`context.go`](./context.go)，主要接口、分配器、两个优化包装器、截断覆盖和静态转换接口逐项对应。Rust 的 `AtomicI64::fetch_add(...).wrapping_add(1)` 对齐 Go `atomic.Int64.Add(1)` 返回新值以及溢出回绕；独立 Rust 边界测试补充了 Go 源文件中未显式写出的该行为。
+Rust 的 `AtomicI64::fetch_add(...).wrapping_add(1)` 对齐 Go `atomic.Int64.Add(1)` 返回新值以及溢出回绕；独立 Rust 边界测试补充了 Go 源文件中未显式写出的该行为。
 
 Go 依靠匿名嵌入自动转发接口方法，Rust 必须为 `NullRejectCheckExprContext`、`ConstantPropagateCheckContext` 和 override 类型显式实现并逐项委托。Go 的截断函数可以统一返回接口值，并在无变化时返回同一指针；Rust 用 `CtxWithTruncateResult` 表达借用原对象或拥有包装器，`WasOverridden` 与指针比较测试保留“不重复包装”语义。
 
 Rust 相比当前 Go 文件新增/显式化了 `ParseSQL` 默认覆盖点、`GetOptionalPropProviderUnwrapped`、`UserVarsReader` trait 和可选 `Arc` 获取方法，这些是 Rust 对象安全、所有权与当前移植接线所需的接口扩展，不应反推为 Go 同名接口已有完全相同签名。Go 的时区断言直接接收 `*variable.SessionVars`；Rust 用最小 `SessionVarsLocation` trait 解耦具体会话类型。
-
-Go 截断回归位于 [`context_override_test.go`](./context_override_test.go)；Rust 对应测试位于 [`context_override_test.rs`](./context_override_test.rs)，并由 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 补充分配器并发、包装器委托、时区断言等移植契约。
 
 ## 扩展指南
 
@@ -81,12 +77,3 @@ Go 截断回归位于 [`context_override_test.go`](./context_override_test.go)�
 修改截断策略应集中在 `CtxWithHandleTruncateErrLevel`，同时核对 `types::Flags` 与 `errctx::ErrGroupTruncate`，并扩展 `context_override_test.rs` 和 `migration_aster_unit_test.rs` 的 Error/Warn/Ignore、原对象不变、重复调用复用测试。修改列 ID 规则要同步 `context_test.rs` 的溢出边界、迁移测试的并发唯一性，以及 `exprstatic/exprctx_test.rs` 的静态化/自定义分配器场景。
 
 `AssertLocationWithSessionVars` 仍应保持测试辅助性质。新测试应继续放在独立 `*_test.rs` 文件，并在 `lib.rs` 以 `#[cfg(test)]` 模块接入，不要内嵌到生产源文件。性能上应避免无变化时创建 override，避免为每次 getter 做深拷贝，并优先通过已有 `Arc` 接口共享明确线程安全的资源。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/expression/exprctx` 确认目标 Rust、Go 对照及独立测试均被索引。
-- RustCodeGraph `node --file`：完整读取 `pkg/expression/exprctx/context.rs`（625 行）、`context.go`（266 行）、`context_test.rs`、`context_override_test.rs`、`migration_aster_unit_test.rs`；符号查询确认 Go/Rust 同名函数，并识别 `CtxWithHandleTruncateErrLevel` 的 Rust 符号 `context.rs::CtxWithHandleTruncateErrLevel`。
-- RustCodeGraph `explore` / 调用图证据：确认 `AllocPlanColumnID` 的 Rust 调用包含 `exprstatic/exprctx.rs` 与 MPP 聚合转换，`GetGroupConcatMaxLen` 下游包含聚合 descriptor/PB 转换；同时显示 Go 同名截断函数的 DDL 调用面，文中已与 Rust 直接接线分开陈述。
-- 配置与模块证据：读取 `pkg/expression/exprctx/Cargo.toml` 和 `lib.rs`，核对 crate 名、直接依赖、Go package 元数据、重导出以及测试模块装配。
-- Go 与测试证据：`context.go`、`context_override_test.go`；Rust 独立测试 `context_test.rs`、`context_override_test.rs`、`migration_aster_unit_test.rs`，以及直接使用检索涉及的 `exprstatic/exprctx.rs`、`expression.rs`、`planner/util/null_misc.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构检查，并人工复核只新增本说明、未修改 Rust/Go/Cargo/只读总计划。

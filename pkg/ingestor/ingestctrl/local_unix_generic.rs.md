@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-ingestor-ingestctrl` crate 内；crate 入口 `pkg/ingestor/ingestctrl/lib.rs` 以 `pub mod local_unix_generic` 公开该模块。它是从 Go 文件 `pkg/ingestor/ingestctrl/local_unix_generic.go` 移植而来的 rlimit 平台适配片段，为非 FreeBSD 的 Unix 语义提供资源限制数值类型，并保留结构化日志字段的兼容接口。
-
-需要注意当前 Rust 接线与 Go build tag 并不等价：Go 文件由 `//go:build !freebsd && !windows` 限定平台，而 Rust 模块声明和本文件均没有 `#[cfg(...)]`。因此当前事实是该 Rust 模块会随 crate 一起声明；FreeBSD 和 Windows 的对应实现则分别存在于独立模块 `local_freebsd.rs`、`local_windows.rs`，不是编译期同名替换。
+从 Go 文件 `pkg/ingestor/ingestctrl/local_unix_generic.go` 移植而来的 rlimit 平台适配片段，为非 FreeBSD 的 Unix 语义提供资源限制数值类型，并保留结构化日志字段的兼容接口。
 
 ## 核心职责
 
@@ -54,8 +52,6 @@ crate 边界由 `pkg/ingestor/ingestctrl/Cargo.toml` 确认：包名为 `astersq
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/ingestor/ingestctrl/local_unix_generic.go` 在 `!freebsd && !windows` 下把 `RlimT` 定义为 `uint64`，Rust 的 `u64` 在位宽和无符号语义上与之对齐。FreeBSD 对照文件使用有符号 `int64`，Rust 的 `local_freebsd.rs` 也使用 `i64`。
-
 `zapRlimT` 的语义尚未完全对齐：Go 版本调用 `zap.Uint64(key, val)`，返回日志库可直接消费的 `zap.Field`；Go `local_unix.go::VerifyRLimit` 在设置成功后用它记录 `old` 和 `new`。Rust 版本返回仓库自定义的 `RLimitLogField`，`local_unix.rs::VerifyRLimit` 未调用该函数，也没有对应日志发射，因此它目前只是兼容数据门面。Rust 的 rlimit 行为测试集中在 `local_unix_test.rs`，验证的是 `verify_rlimit_with` 的截断、读写次数、硬限制和错误传播，不直接覆盖本文件的字段构造。
 
 ## 扩展指南
@@ -66,13 +62,3 @@ Go 对照文件 `pkg/ingestor/ingestctrl/local_unix_generic.go` 在 `!freebsd &&
 - 为 `zapRlimT` 增加行为时，至少补充空键、普通值和边界值测试，并确认是否允许额外分配。对日志接线的修改还要验证成功设置才记录、失败路径不误报。
 
 兼容性风险主要是公共类型/返回类型变化影响未来调用方；性能风险仅在日志热路径频繁复制键名时出现；正确性风险集中在平台 cfg 与 FFI 类型不一致。任何扩展都应继续保持 Rust 逻辑和独立测试与 Go 版本的真实意图对齐。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；查询目标目录确认 `local_unix_generic.rs` 已索引。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/local_unix_generic.rs`：核对本文件 39 行源码及三个核心符号；`query RlimT`、`query RLimitLogField`、`query zapRlimT` 核对平台同名实现。
-- RustCodeGraph `node`：读取 `local_unix.rs`、`lib.rs`、`local.rs`、`local_unix_test.rs`、`local_freebsd.rs`、`local_unix_generic.go` 和 `local_unix.go`，核对模块声明、主链、平台差异、Go 日志行为和测试覆盖。
-- RustCodeGraph `callers zapRlimT` 没有返回 Rust 调用边；`callees zapRlimT` 对目标 Rust 定义报告无被调函数。仓库 `rg` 复核仅在本文件定义 Rust `zapRlimT`/`RLimitLogField`，仅 `local_unix.rs` 导入 Rust `RlimT`。
-- `pkg/ingestor/ingestctrl/Cargo.toml` 与根 `Cargo.toml`：核对 crate 名称、库入口、workspace 成员和依赖边界；目标包没有 `doc.go`。
-- 相关独立测试：`pkg/ingestor/ingestctrl/local_unix_test.rs`。它覆盖 rlimit 校验主流程，但没有直接覆盖本文件的日志字段构造；Go 同目录也不存在名为 `local_unix_test.go` 的文件，Go rlimit failpoint 测试需从其他测试文件按符号检索。
-

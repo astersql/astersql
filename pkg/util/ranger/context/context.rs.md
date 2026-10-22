@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件定义 range 构造阶段的上下文对象 `RangerContext<'a>`，位于独立 crate `astersql-util-ranger-context` 中。crate 根 `pkg/util/ranger/context/lib.rs` 通过 `pub use context::*` 导出它；`pkg/planner/core/base/plan_base.rs` 又将其别名为规划器侧的 `RangerContext<'a>`。因此它是规划器、统计估算和 `pkg/util/ranger` 之间传递类型转换规则、表达式上下文、计划缓存状态和 range 回退通知的边界对象，而不是 range 算法本身。
-
-`pkg/util/ranger/context/Cargo.toml` 声明该 crate 对应 Go 包 `pkg/util/ranger/context`，直接依赖 `astersql-util-context`、`astersql-errctx`、`astersql-expression-exprctx`、`astersql-expression-exprstatic` 和 `astersql-types`。本文件没有条件编译项；测试由 `lib.rs` 在 `#[cfg(test)]` 下从独立文件装配。
+`RecordRangeFallback` 将 range 大小超限事件转交给可选的 `RangeFallbackHandler`；后者负责禁用计划缓存并在自己的生命周期内最多报告一次容量告警。
 
 ## 核心职责
 
@@ -85,9 +83,9 @@ RustCodeGraph 将目标文件列为 6 个符号，并显示其被 planner、exec
 
 ## 与 Go 版本的对应关系
 
-Rust `RangerContext` 逐字段对应 `pkg/util/ranger/context/context.go::RangerContext`。Go 的匿名嵌入 `*RangeFallbackHandler`、`*PlanCacheTracker` 在 Rust 中改成命名的 `Option<&...>`，所以 Rust 通过显式包装方法保持 Go 调用风格；nil 对应 `None`。Go 的 `exprctx.BuildContext` 接口对应 Rust 的 `Arc<dyn exprctx::BuildContext>`，Go `map[uint64]string` 对应 `HashMap<u64, String>`。
+Go 的匿名嵌入 `*RangeFallbackHandler`、`*PlanCacheTracker` 在 Rust 中改成命名的 `Option<&...>`，所以 Rust 通过显式包装方法保持 Go 调用风格；nil 对应 `None`。
 
-Go `Detach` 先做结构体浅拷贝，再替换 `ExprCtx`，并用 `maps.Clone` 深拷贝 fix-control map。Rust 先执行自定义 `Clone`，再替换 `ExprCtx` 并显式克隆 map，结果保持相同语义：标量/策略字段相同，map 存储独立，handler 身份保持。Rust 返回 `Box<RangerContext>`，对应 Go 返回新的指针。
+Rust 返回 `Box<RangerContext>`，对应 Go 返回新的指针。
 
 `pkg/util/ranger/context/context_test.go::TestContextDetach` 验证 Go 的深拷贝及保留字段；Rust 的 `context_test.rs::test_context_detach` 和 `migration_aster_unit_test.rs::detach_replaces_expr_context_and_preserves_go_copy_semantics` 进一步验证 map 隔离、表达式上下文替换以及两个 handler 的指针身份。Rust 额外提供 `SetSkipPlanCache`、`RecordRangeFallback` 包装方法，是对 Go 匿名嵌入方法提升机制的显式表达，不是额外业务规则。
 
@@ -99,15 +97,3 @@ Go `Detach` 先做结构体浅拷贝，再替换 `ExprCtx`，并用 `maps.Clone`
 - 新增回退条件应在确认返回的较粗 range 仍由 remained conditions 补足过滤语义后调用 `RecordRangeFallback`，避免只告警却丢失 SQL 过滤条件。
 - 若希望跨线程移动或共享整个上下文，需要先核实并显式约束 `exprctx::BuildContext` 的线程安全性质，同时遵守 `StatementContext` 不可共享的约束；仅看到 `Arc` 不足以证明安全。
 - 兼容风险主要是 Go/Rust 字段默认值、map 拷贝深度、handler 身份和告警次数发生偏差；性能风险主要来自不必要地复制大型 fix-control map，或过度调用缓存失效路径导致计划无法复用。
-
-## 验证依据
-
-- 目标实现：`pkg/util/ranger/context/context.rs`，核对 `BuildContextRef`、`RangerContext`、`Clone`、`SetSkipPlanCache`、`RecordRangeFallback`、`Detach` 全部符号。
-- crate 边界：`pkg/util/ranger/context/Cargo.toml` 与 `lib.rs`，核对包名、依赖、Go 包映射、公开导出和独立测试装配。
-- Go 对照：`pkg/util/ranger/context/context.go`、`context_test.go`，核对字段、匿名 handler、`maps.Clone` 和 detach 测试意图。
-- Rust 测试：`pkg/util/ranger/context/context_test.rs`、`migration_aster_unit_test.rs`，核对表达式上下文替换、map 隔离、标志/类型上下文复制和 handler 身份保持。
-- 调用与行为：`pkg/util/ranger/ranger.rs` 的 `convertPointInPlace`、`buildColumnRange`，`pkg/util/ranger/detacher.rs` 的参数覆盖分支，以及 `pkg/util/ranger/types.rs::Range::IsPoint`。
-- handler 语义：`pkg/util/context/plancache.rs::PlanCacheTracker::SetSkipPlanCache` 与 `RangeFallbackHandler::RecordRangeFallback`，核对锁、强制缓存分支、告警和 `Once`。
-- 应用接线：`pkg/planner/core/base/plan_base.rs` 的类型别名和 `pkg/session/runtime/planning.rs` 的实际构造点。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标目录 6 个文件均已索引；`files --filter pkg/util/ranger/context`、目标文件 `node`、`query RangerContext`、`query SetSkipPlanCache`、`query RecordRangeFallback`、`query Detach` 用于确认符号和使用面。精确 callers/callees 无输出的限制已在“依赖与调用关系”中披露，并由直接源码搜索补证。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；最终结构检查要求本文恰好包含上述十一个固定二级标题。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-dxf-importinto` crate 的 IMPORT INTO **节点任务执行与步骤分派中心**。`lib.rs` 以 `pub mod task_executor` 声明并重新导出本模块；生产接线位于 `write_ingest_backend.rs::RegisterConcreteWriteIngestExecutor`，它最终调用本文件的 `RegisterImportExecutor`，把 `ImportInto` 任务类型注册到分布式任务节点框架。
-
-本文件不负责规划子任务，也不实现具体的编码算子或物理 SST backend。它负责把节点框架的 `Task`/`Subtask` 转换为旧 `execute::StepExecutor` 接口，按步骤选择执行器，安排资源与取消信号，调用 `encode_and_sort_operator`、global sort 和 `WriteIngestBackend`，并把更新后的元数据交还框架。
+负责把节点框架的 `Task`/`Subtask` 转换为旧 `execute::StepExecutor` 接口，按步骤选择执行器，安排资源与取消信号，调用 `encode_and_sort_operator`、global sort 和 `WriteIngestBackend`，并把更新后的元数据交还框架。
 
 ## 核心职责
 
@@ -109,12 +107,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `task_executor.go`，核心行为保持一致：
-
 - Go `importExecutor.GetStepExecutor` 解码 meta 后按七个步骤分派，并使用 `TaskRuntime.Store()`；Rust `GetImportStepExecutor` 用 `ImportStepHost::TaskStore` 明确保持“任务已绑定 store，不额外按 keyspace 查询”。Go/Rust 测试都覆盖未知步骤和非法 meta。
 - Go 的 `importStepExecutor` 同时承担 import/encode-sort；Rust 的生产 node 路径拆成 `EncodeSortStepExecutor` 并把其他阶段交给 host。拆分没有改变 writer 预算、Parquet 最大文件估算、local engine 清理或 summary 语义。
 - Go `mergeSortStepExecutor` 和 `writeAndIngestStepExecutor` 对应 Rust 同名语义类型；Rust 额外显式抽象 `MergeStoreAdapter` 与 `WriteIngestBackend`，以隔离对象存储和物理 SST 导入。
-- `getOnDupFor*` 与 Go 的映射一致：data/unique index 在 capture 下 Record，error 模式一律 Error，non-unique capture 为 Remove；未知索引和非法 group 报错。
 - `normalizeSubtaskErr` 与 Go 一样只转换 duplicate-key；Rust 需额外遍历不同 Rust 错误包装形式。
 - Go `ingestCollector.Processed` 只让 data group 计行，并上报写入字节；Rust保持相同行为，但负数字节上报时钳为 0。
 - Go `NewImportExecutor` 创建/注销 metrics；Rust由 `RegisterImportExecutor` 注册闭包创建，`ImportNodeTaskExecutor::{Close,Drop}` 注销。
@@ -130,12 +125,3 @@ Go 对照文件是 `task_executor.go`，核心行为保持一致：
 - 修改并发/内存时同时检查 `getWriterMemorySizeLimit`、块对齐阈值、reader 30% 预算及动态 resource 行为。性能风险包括过小块导致 I/O 放大、过大并发导致 Parquet 峰值超限。
 - 修改 node adapter 时维持单线程所有权、cleanup/Drop 均可终止 worker、更新后的 subtask meta 必须回传；建议扩展 `task_executor_test.rs` 和 `task_executor_testkit_test.rs` 的取消、summary JSON、资源与重试场景。
 - 具体 backend 的扩展应实现 `WriteIngestBackend` 并在 `write_ingest_backend.rs` 接线；保持 close → import → conflict → cleanup 的次序，并明确 cleanup 是继续 best-effort 还是改为强错误（行为变更需与 Go 对齐）。
-
-## 验证依据
-
-- 目标源码：`pkg/dxf/importinto/task_executor.rs`（2242 行）；RustCodeGraph `node --file` 核对完整分段源码，`query GetImportStepExecutor` 定位入口，`callees GetImportStepExecutor` 确认三个本地构造函数及 `ImportStepHost` 边界。图索引状态为 11467 个文件、7032 个 Rust 文件；`callers GetImportStepExecutor` 未解析到动态/同文件调用，因此以 `EncodeSortNodeStepExecutor::new_import` 的直接源码调用补证。
-- crate 与接线：`pkg/dxf/importinto/Cargo.toml`、`pkg/dxf/importinto/lib.rs`、`pkg/dxf/importinto/write_ingest_backend.rs`、`pkg/dxf/importinto/encode_and_sort_operator.rs`。
-- Go 对照：`pkg/dxf/importinto/task_executor.go`；重点核对 `importStepExecutor`、`mergeSortStepExecutor`、`writeAndIngestStepExecutor`、`importExecutor.GetStepExecutor`、`getOnDupFor*`、`normalizeSubtaskErr`、`ingestCollector`。
-- Rust 独立测试：`pkg/dxf/importinto/task_executor_test.rs` 覆盖零预算块大小、错误规范化、绑定 store 分派、merge 外置 meta、write-ingest 顺序/冲突改写、encode 外置 meta、duplicate policy、Parquet 并发及 planner external meta；`pkg/dxf/importinto/task_executor_testkit_test.rs` 覆盖真实 local engine 失败后清理和重试。
-- Go 测试：`pkg/dxf/importinto/task_executor_test.go` 覆盖七步分派、任务 store、duplicate policy 与错误规范化；`task_executor_testkit_test.go` 提供 post-process 和 local-engine 重试语义对照。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求本文恰含上述 11 个固定二级标题；文件链接、符号名及测试路径已逐项人工核对。

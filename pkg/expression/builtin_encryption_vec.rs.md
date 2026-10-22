@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（见 `pkg/expression/Cargo.toml`），实现一组以列为输入、按行求值的加密、摘要、压缩和密码强度 Rust 内核。`pkg/expression/lib.rs` 通过 `#[path = "builtin_encryption_vec.rs"] mod builtin_encryption_vec_kernel;` 编译该模块，但只在 `#[cfg(test)] mod expression_encryption_vec` 中重导出其公开项。仓库内对这些公开函数的直接引用也只出现在 `builtin_encryption_vec_test.rs` 和 `builtin_encryption_vec_10_aster_unit_test.rs`，因此当前事实是：它们是经过独立测试的移植内核，尚未接入 Rust 生产表达式的 `builtinFunc`/chunk 调度链。
-
-对应的 Go 生产实现位于 `pkg/expression/builtin_encryption_vec.go`，其 `builtin*Sig.vecEvalString`/`vecEvalInt` 方法直接承接表达式参数列并写入 `chunk.Column`。Rust 文件不负责函数注册、表达式参数求值、返回类型推导或 protobuf 签名绑定；这些职责在 Go 侧由 `pkg/expression/builtin_encryption.go` 及表达式框架承担。
+实现 AES-128/192/256 的 ECB、CBC、OFB、CFB 加解密，包括 MySQL 异或折叠密钥派生、PKCS#7 填充、IV 规则以及行级密码失败转 NULL。
 
 ## 核心职责
 
@@ -74,9 +72,7 @@ RustCodeGraph 将 `aes_encrypt_vec` 定位在第 354 行，并确认其下游调
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/builtin_encryption_vec.go` 是逐函数语义对照：AES、ENCODE/DECODE、随机字节、摘要、PASSWORD、压缩/解压和密码强度都有相应 `builtin*Sig.vecEval*`。Rust 测试固定了典型 Go/MySQL 向量，例如 AES-128-ECB 的密文、SQL crypt 的历史反向命名、摘要十六进制、COMPRESS 完整字节布局和各档密码评分。
-
-已对齐的重要行为包括 NULL 传播、AES 的 MySQL 密钥派生、IV 截断和短 IV 错误、坏密文行转 NULL、SHA2 长度选择、PASSWORD 弃用警告、COMPRESS 小端长度头及尾随点、zlib 数据/缓冲警告。用户名反向检查刻意逆序 UTF-8 字节而不是 Unicode 标量；`builtin_encryption_vec_test.rs` 用多字节用户名验证了这一点。
+Rust 测试固定了典型 Go/MySQL 向量，例如 AES-128-ECB 的密文、SQL crypt 的历史反向命名、摘要十六进制、COMPRESS 完整字节布局和各档密码评分。
 
 仍有必须如实保留的结构差异：Go 入口直接操作 `chunk.Chunk`/`chunk.Column`，复用表达式缓冲区，并可识别常量密钥；Rust 每行重新派生密钥并返回自有 `Vec`。Go 从会话与全局变量取得密码校验开关、用户和策略，Rust 要求调用者显式传入 `enabled` 与 `PasswordPolicy`。Go 解压接入查询内存 tracker，Rust 只有声明长度硬上限。Go `RANDOM_BYTES` 使用 `crypto/rand.Reader`，Rust 使用 `thread_rng`。这些差异意味着 Rust 文件虽有行为测试，不能据此宣称已完成生产替换。
 
@@ -88,12 +84,3 @@ RustCodeGraph 将 `aes_encrypt_vec` 定位在第 354 行，并确认其下游调
 - 修改压缩实现必须维持 Go 兼容的逐字节输出和四字节小端头，并保留解压上限；同时评估 memory tracker、总输出配额和批内多行累计内存，而不仅是单行声明长度。
 - 修改密码策略应同步核对 `builtinValidatePasswordStrengthSig.validateStr` 和密码校验系统变量，特别注意字节长度、Unicode 字符数、大小写转换和用户名字节逆序的区别。
 - 测试必须继续放在独立的 `pkg/expression/builtin_encryption_vec_test.rs` 或 `builtin_encryption_vec_10_aster_unit_test.rs`，不要内嵌到生产源文件。生产接线完成后还应增加从表达式构建到向量执行的集成测试，证明真实上下文警告、系统变量和资源记账已连接。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/expression/builtin_encryption_vec.rs`，包括公开类型/入口、私有密码与压缩辅助函数以及所有分支。
-- crate 与模块边界：`pkg/expression/Cargo.toml`；`pkg/expression/lib.rs` 中 `builtin_encryption_vec_kernel` 的模块声明及仅测试可见的 `expression_encryption_vec` 重导出。
-- RustCodeGraph：`status` 显示目标仓库索引包含该文件；`files --filter pkg/expression/builtin_encryption_vec.rs` 确认文件已索引；`node --file ... --offset 1/501` 读取 914 行源码和文件使用关系；`query aes_encrypt_vec`、`query compress_vec`、`query validate_password_strength_vec` 定位入口；`callees aes_encrypt_vec` 核对其长度、密钥、IV、模式和警告下游边。自然语言 `explore` 与部分 `callers` 查询未返回可用文本，因此又以 `rg` 直接引用补证，未据此推断不存在未索引调用。
-- Go 对照：`pkg/expression/builtin_encryption_vec.go` 的全部向量签名及关键实现，`pkg/expression/builtin_encryption.go` 的函数类、标量行为、压缩内存跟踪和密码策略入口，`pkg/expression/builtin_encryption_vec_test.go` 的向量框架覆盖。
-- Rust 独立测试：`pkg/expression/builtin_encryption_vec_test.rs` 与 `pkg/expression/builtin_encryption_vec_10_aster_unit_test.rs`，覆盖 AES 四模式、NULL/警告/错误、摘要、随机长度、SQL crypt、压缩格式与防膨胀、PASSWORD 和密码评分。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有十一个固定二级章节，并人工复核没有把测试门面描述为生产接线。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-unistore-cophandler` crate；crate 入口 `pkg/store/mockstore/unistore/cophandler/lib.rs` 以 `pub mod topn` 导出它，`Cargo.toml` 的 `package.metadata.porting.go-package` 指向同目录 Go 包。它为 mock UniStore coprocessor 的下推 `TopN` 算子提供排序键行、有界堆和最终排序，不负责扫描、计划解析或响应编码。
-
-应用内有两条直接接线：`closure_exec.rs::TopNProcessor` 逐行调用 `TopNHeap::add_data_row`，在 `finish` 中消费堆；`mpp_exec.rs::execute_executor` 的 `Executor::TopN` 分支先执行子算子，再将其全部输出送入堆并调用 `into_sorted_rows`。因此本文件位于“子执行器产出行 → 计算 ORDER BY 键 → 有界筛选 → 有序行结果”的中段。
+`SortRow` 把原始 `Row` 与预先求值的 ORDER BY 键分开保存，避免堆比较时重复执行表达式。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@
 
 当前 Rust 是面向 mock 执行器的简化移植，并非 Go 比较栈的完全等价实现：Go `topNSorter.Less` 调用 `types.Datum.Compare`，带 `StatementContext` 的类型上下文及由 protobuf collation 选择的 collator，并可记录比较错误；Go heap 对 enum 根据字段类型调用 `GetUint64`。Rust 用 `ByItem::enum_unsigned` 显式标志和 `Datum::Ord`，没有 statement context、collation 或可失败比较，`error` 因而目前是闲置状态。扩展字符串排序、SQL coercion 或 enum 类型推导时必须重新核对这些差异。
 
-独立 Rust 测试 `topn_test.rs` 验证 enum 的 unsigned 行为、升降序、重复键及零 limit；`cop_handler_test.rs::TestMppExecutor` 验证 TopN 通过 MPP 执行器的降序集成和堆的升序结果。同目录没有专门针对 `topNHeap` 的 Go 单测；Go 行为依据生产实现本身核对，不能把 Rust 测试误称为 Go 测试移植的一一对应。
-
 ## 扩展指南
 
 - 新增 ORDER BY 类型或排序规则时，优先修改 `compare_with` 及 `cop_handler.rs::Datum`/`ByItem` 的语义，并同步独立 `topn_test.rs`；字符串 collation、NULL 顺序、NaN、signed/unsigned 边界应各有用例。若目标是 Go 等价，需引入明确的类型/排序上下文，而不是继续扩大 `enum_unsigned_value` 的兜底映射。
@@ -95,12 +91,3 @@
 - 改变公开字段或消费接口时，同时核对 `closure_exec.rs::TopNProcessor` 的 replacement 流程和 `mpp_exec.rs::Executor::TopN` 分支；两条路径都必须保持错误传播与最终有序输出。
 - 性能优化应保留“每行键只求值一次”和 `O(N)` 有界内存。若减少宽行克隆，需确认所有权不会让扫描缓冲失效；若改用不稳定排序或并行化，需要明确相等键确定性和比较上下文是否可安全共享。
 - `TopNSorter::error` 若继续无写入者可在独立行为变更任务中评估删除；本分析任务不改变接口。若未来比较可失败，应确保堆调整期间的部分状态和最终错误优先级有测试定义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/store/mockstore/unistore/cophandler` 找到目标、Go 对照和独立测试；`node --file .../topn.rs` 读取 1–226 行；`query` 确认 `SortRow`、`TopNSorter`、`TopNHeap` 以及 `try_to_add_row`、`add_data_row`、`into_sorted_rows` 的符号位置与签名。精确 callers/callees 命令未返回边，故再以局部源码搜索核验调用关系。
-- 生产源码：`topn.rs`；直接类型定义 `cop_handler.rs::{Datum, Expr, ByItem, CopError, Row}`；直接调用者 `closure_exec.rs::TopNProcessor`、`mpp_exec.rs::execute_executor`；模块入口 `lib.rs`。
-- 边界与 crate：`pkg/store/mockstore/unistore/cophandler/Cargo.toml` 的包名、lib 路径和 Go porting metadata。
-- Go 对照：`pkg/store/mockstore/unistore/cophandler/topn.go`，核对 sorter、反向 heap Less、严格替换条件、enum 无符号分支及比较错误保存。
-- 测试证据：`pkg/store/mockstore/unistore/cophandler/topn_test.rs`；`pkg/store/mockstore/unistore/cophandler/cop_handler_test.rs::TestMppExecutor`。未运行 Cargo，符合本纯文档任务约束。
-- 交付验证应执行任务指定命令，确认文件存在且恰有上述 11 个固定二级标题；人工复核重点为真实调用边、简化比较差异、零 limit、tie、错误传播和资源所有权。

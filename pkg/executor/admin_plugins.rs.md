@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/executor/admin_plugins.rs`](admin_plugins.rs) 属于 `astersql-executor` crate，并由 [`pkg/executor/lib.rs`](lib.rs) 以公开模块 `admin_plugins` 导出。它描述 `ADMIN PLUGINS ENABLE/DISABLE` 的 Rust 执行器核心：把规划阶段给出的动作和插件名列表转换为逐插件的“修改禁用标志并刷盘”调用。
-
-当前文件是可复用的执行逻辑边界，而不是已经完整接入 SQL 主链的生产执行器。RustCodeGraph 显示该文件当前只被 `pkg/executor/admin_plugins_test.rs` 和一个与本功能无生产接线关系的测试编译单元引用；仓库搜索也未发现 Rust builder 构造 `AdminPluginsExec`，或任何生产类型实现 `PluginFlagFlusher`。因此，“Rust 已具备动作分派和遍历语义”是已验证事实，“Rust SQL 请求会执行到这里”则尚未成立。Go 生产链路由 `pkg/executor/builder.go::buildAdminPlugins` 构造同名 Go 执行器。
+`AdminPluginsExec` 保存基类状态、动作、目标插件列表和刷盘实现。
 
 ## 核心职责
 
@@ -90,16 +88,9 @@ Go 的完整生产调用链为规划器生成 `pkg/planner/core/common_plans.go:
 
 ## 与 Go 版本的对应关系
 
-Rust 基本保留了 `pkg/executor/admin_plugins.go` 的控制流：
-
-- Go `core.Enable`/`core.Disable` 分别对应 Rust `Enable = 1`/`Disable = 2`。
-- 两侧都把启用映射为 `disabled=false`、禁用映射为 `disabled=true`。
-- 两侧都按输入顺序逐项执行、首错返回、空列表成功、未知动作成功 no-op。
 - Go 的 `AdminPluginsExec` 嵌入 `exec.BaseExecutor` 并保存 `Action`、`Plugins`；Rust 以泛型字段显式保存相同概念，并新增 `Flusher` 字段。
 
-关键差异是生产接线。Go 的私有辅助函数通过 `domain.GetDomain(e.Ctx())` 取得 domain，再直接调用 `plugin.ChangeDisableFlagAndFlush(dom, ...)`，且 builder 已构造该执行器。Rust 用 trait 注入副作用，`Next` 的上下文不参与取 domain；虽然 `pkg/plugin/plugin.rs` 有对应真实函数，当前没有 trait 适配器和 builder 调用。因此 Rust 版本目前是经过独立测试的执行器核心，不等价于已连通的 SQL 端到端实现。
-
-Go 仓库未找到针对 `AdminPluginsExec` 或 `ChangeDisableFlagAndFlush` 的直接单元测试；`pkg/parser/parser_test.go` 只覆盖相关 SQL 的解析/恢复，`pkg/plugin/integration_test.go` 中相关 ADMIN PLUGINS 用例仍被注释。Rust 独立测试提供了本文件控制流的直接证据，但不验证真实 domain、etcd 或多节点传播。
+关键差异是生产接线。Rust 用 trait 注入副作用，`Next` 的上下文不参与取 domain；虽然 `pkg/plugin/plugin.rs` 有对应真实函数，当前没有 trait 适配器和 builder 调用。因此 Rust 版本目前是经过独立测试的执行器核心，不等价于已连通的 SQL 端到端实现。
 
 ## 扩展指南
 
@@ -110,14 +101,3 @@ Go 仓库未找到针对 `AdminPluginsExec` 或 `ChangeDisableFlagAndFlush` 的�
 - 若要防止重复 `Next` 产生重复副作用，需要增加执行状态并同步迭代器生命周期测试，不能假设外部永远只调用一次。
 - 测试继续放在独立的 `pkg/executor/admin_plugins_test.rs`，不要内嵌到生产源文件。至少同步覆盖空列表、重复名字、首项/中间项失败、未知动作以及生产适配器错误透传；真实插件状态和 etcd 行为应在插件层独立测试。
 - 新接线可能带来兼容风险（未知动作、错误文本）、正确性风险（内存已变更而 etcd 失败）和性能风险（大量插件严格串行写 etcd），评审时需逐项确认。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `explore "pkg/executor/admin_plugins.rs AdminPluginsExec OpenPluginsExec ClosePluginsExec ReloadPluginsExec"`：返回目标 Rust/Go 文件及独立 Rust 测试的完整上下文，并给出 Go 辅助函数由 `Next` 调用的关系。
-- RustCodeGraph `node --file pkg/executor/admin_plugins.rs --offset 1 --limit 400`：核对本文件 96 行全部源码，并显示其被两个测试编译单元使用。
-- RustCodeGraph `query AdminPluginsExec --kind struct`、`query change_disable_flag_and_flush`：核对执行器、trait 方法、测试实现和 `pkg/plugin/plugin.rs` 中的候选真实函数。
-- RustCodeGraph `node --file pkg/plugin/plugin.rs --offset 590 --limit 90` 与 `node disable_flag`：核对插件存在/Ready/watcher 校验、原子标志更新和 etcd 写入顺序。
-- 已读源码与配置：`pkg/executor/admin_plugins.rs`、`pkg/executor/admin_plugins_test.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`、`pkg/executor/admin_plugins.go`、`pkg/executor/builder.go`、`pkg/planner/core/common_plans.go`、`pkg/plugin/plugin.go`、`pkg/plugin/plugin.rs`、`pkg/parser/parser_test.go`、`pkg/plugin/integration_test.go`。
-- 仓库搜索 `admin_plugins|AdminPluginsExec|AdminPluginsAction|PluginFlagFlusher|ChangeDisableFlagAndFlush`：确认 Rust 模块声明和测试引用，未发现 Rust 生产构造器或 `PluginFlagFlusher` 生产实现；确认 Go builder 和插件调用链。
-- 结构校验按任务文件指定命令执行；本任务为纯文档分析，按计划不运行 Cargo。

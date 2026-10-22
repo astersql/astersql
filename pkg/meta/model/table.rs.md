@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`table.rs` 是 `pkg/meta/model` 的表级持久化元数据模型实现，定义表、视图、物化视图、序列、分区、外键、表锁、TTL、统计收集选项和亲和性等对象的数据形状及纯内存辅助逻辑。它不执行 DDL、SQL 或存储操作，而是向这些上层流程提供共享协议对象。实际类型所有权位于 `pkg/meta/model/internal/group1/lib.rs` 所代表的 `astersql-meta-model-group1` crate；该 crate 将本文件与 `column.rs`、`index.rs` 放在同一类型边界内，顶层 `astersql-meta-model` 再从 group1 统一导出，group4 只做兼容再导出。
-
-本文件直接迁移并对照 `pkg/meta/model/table.go`。大量 `serde` 字段名属于与 Go 元数据 JSON 的持久化兼容协议，不是普通内部字段命名；例如 `TableInfo::Columns` 使用 `cols`，`Indices` 使用 `index_info`，`DBID` 明确跳过序列化。RustCodeGraph 的文件节点显示该文件被 57 个文件使用，代表性消费者包括 `pkg/ddl/create_table.rs`、`pkg/ddl/job_worker.rs` 和物化视图 DDL 文件。
+`PartitionInfo` 同时保存正式、添加中、删除中的定义以及 action/state；它负责状态清理、重叠分区读回退和不同 DDL 阶段应忽略的物理 ID，但不提交 DDL。
 
 ## 核心职责
 
@@ -68,9 +66,9 @@ JSON 是重要的数据边界。`StatsOptions` 将可选 `StatsWindowSettings` �
 
 ## 与 Go 版本的对应关系
 
-`pkg/meta/model/table.go` 是直接语义基准。Rust 保留了 Go 的公开符号命名、TableInfo V0-V5、字段 JSON 名、零值枚举、主键选择、列移动、分区 DDL、外键格式化、统计窗口和 TTL 升级兼容逻辑。Go 的指针/`nil` 多映射为 Rust 的引用/`Option`，Go 的手写深拷贝循环多由派生 `Clone` 承担，Go 的 `map` 对应 `HashMap`，因此 `GetNonTempColumns` 同样不承诺顺序。
+Go 的指针/`nil` 多映射为 Rust 的引用/`Option`，Go 的手写深拷贝循环多由派生 `Clone` 承担，Go 的 `map` 对应 `HashMap`，因此 `GetNonTempColumns` 同样不承诺顺序。
 
-已知实现形态差异包括：Rust `TableInfo::Equals` 接受 `Any` 并仅比较同类型 ID，无法表达 Go nil 接收者；Rust `Cols` 用 `Vec<Option<&ColumnInfo>>` 明确表示 Offset 空洞；Rust `StatsOptions` 通过辅助引用/拥有结构实现 Go 的扁平 JSON；Rust 的时区缓存是 `RwLock<Option<Arc<_>>>`。Go `TTLInfo::GetJobInterval` 可由 failpoint 覆盖，Rust 当前不接该 failpoint，只保留默认值与解析错误路径。任何字段、默认值或序列化键变更都必须先与 `table.go` 和兼容数据核对。
+已知实现形态差异包括：Rust `TableInfo::Equals` 接受 `Any` 并仅比较同类型 ID，无法表达 Go nil 接收者；Rust `Cols` 用 `Vec<Option<&ColumnInfo>>` 明确表示 Offset 空洞；Rust `StatsOptions` 通过辅助引用/拥有结构实现 Go 的扁平 JSON；Rust 的时区缓存是 `RwLock<Option<Arc<_>>>`。Go `TTLInfo::GetJobInterval` 可由 failpoint 覆盖，Rust 当前不接该 failpoint，只保留默认值与解析错误路径。
 
 独立测试对应关系明确：Go `pkg/meta/model/table_test.go` 覆盖 `MoveColumnInfo`、基本模型、TTL clone/间隔、storage class、物化视图 clone 和重组清理；Rust `pkg/meta/model/table_test.rs` 覆盖基础克隆、JSON 字段/嵌入、TTL 与重组清理，`pkg/meta/model/table_4_aster_unit_test.rs` 进一步覆盖 Offset 全引用更新、隐式主键、分区重叠/忽略 ID、外键文本、TTL 错误和亲和性规范化。
 
@@ -82,12 +80,3 @@ JSON 是重要的数据边界。`StatsOptions` 将可选 `StatsWindowSettings` �
 - 新增时间或调度配置时，明确“缺失、空、零、非法”的兼容语义；TTL 的空值 `1h` 是升级契约，不能简单替换成当前默认 `24h`。涉及并发缓存时避免在锁内调用未知外部代码，并补充锁中毒/缓存共享策略说明。
 - 性能上，`Cols`、`MoveColumnInfo`、`GetPrimaryKey` 和多种查找均线性扫描并可能分配临时集合；表宽或索引多时应避免在热循环重复调用。若引入缓存，需要同时解决元数据 clone/修改后的失效问题。
 - 测试必须继续放在独立文件，优先扩展 `pkg/meta/model/table_test.rs` 或 `table_4_aster_unit_test.rs`，并用 `pkg/meta/model/table_test.go` 校验 Go 意图；不要把测试内嵌到 `table.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 文件、目标文件已索引；`node --file pkg/meta/model/table.rs --offset 1/560/1150` 阅读全部 1,705 行；`query TableInfo --kind struct`、`query PartitionInfo --kind struct` 区分 Go/Rust 同名定义。文件节点报告 57 个使用文件。重名符号的 `callers` 未产生边，因此仅对直接入口用精确 `rg` 补证。
-- 源码与边界：`pkg/meta/model/table.rs`、`pkg/meta/model/internal/group1/lib.rs`、`pkg/meta/model/internal/group1/Cargo.toml`、`pkg/meta/model/lib.rs`、`pkg/meta/model/Cargo.toml`。
-- Go 对照：`pkg/meta/model/table.go`；方法签名逐项核对了 `TableInfo`、`PartitionInfo`、`PartitionDefinition`、`FKInfo`、`StatsOptions`、`TTLInfo` 和亲和性构造函数。
-- 测试证据：`pkg/meta/model/table_test.rs`、`pkg/meta/model/table_4_aster_unit_test.rs`、`pkg/meta/model/table_test.go`。关键断言覆盖 public Offset 空洞、列移动引用一致性、显式/隐式主键、分区回退与忽略 ID、外键格式、JSON 字段、TTL 默认/错误和非法亲和性。
-- 调用点证据：`pkg/ddl/create_table.rs`、`pkg/ddl/persistent_drop_column.rs`、`pkg/ddl/persistent_modify_column.rs`、`pkg/session/runtime/mview_ddl.rs`、`pkg/session/runtime/mlog_purge.rs`。
-- 本任务是只读行为分析和文档新增，按计划不运行 Cargo；最终以任务给出的 11 章节结构命令验证，并人工检查每项结论均指向上述符号或文件。

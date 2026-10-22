@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-utils` crate；crate 入口 `br/pkg/utils/lib.rs` 通过 `#[path = "store_manager.rs"] pub mod store_manager` 公开该模块。它对应 Go 文件 `br/pkg/utils/store_manager.go`，负责抽象并管理 BR 到 TiKV store 的 gRPC 连接，而不执行具体备份 RPC。
-
-当前 Rust 迁移将网络边界拆成 `GrpcConn`、`GrpcConnFactory` 和 `PdClient` 三个 trait，避免本 crate 直接绑定具体 gRPC/PD 客户端。`br/pkg/utils/Cargo.toml` 的说明也明确该 crate 为适配 darwin arm64 而使用本地 stub 边界；因此本文件提供的是可注入的连接生命周期实现，不等同于 Go 版本已经完整接入生产 gRPC 栈。
-
-RustCodeGraph 对当前索引的调用关系显示，具体 `StoreManager` 的构造和连接回调主要由 `br/pkg/utils/store_manager_test.rs` 直接覆盖；BR 的 Rust 连接层 `br/pkg/conn/conn.rs` 使用独立的 `StoreManagerHandle` 边界。扩展或接线时应先确认这两套抽象是否需要适配，不能仅凭 Go 调用链推断 Rust 已经走到本实现。
+对应 Go 文件 `br/pkg/utils/store_manager.go`，负责抽象并管理 BR 到 TiKV store 的 gRPC 连接，而不执行具体备份 RPC。
 
 ## 核心职责
 
@@ -96,9 +92,7 @@ Go 对照链则是 `br/pkg/conn/conn.go` 的 `Mgr` 嵌入 `*utils.StoreManager`�
 
 ## 与 Go 版本的对应关系
 
-保持一致的部分包括：30 秒默认拨号超时、三次 reset、3/4/5 秒同步等待、peer address 优先及 address 回退、按 store ID 缓存、持锁执行连接回调、关闭失败仅记录、`Pool` 的惰性扩容与满池轮询，以及 `StoreManager::Close` 关闭但不删除缓存项。
-
-Rust 为可移植和可测试性做了显式抽象：Go 直接持有 `pd.Client`、`*grpc.ClientConn`、`*tls.Config` 并调用 `grpc.DialContext`；Rust 持有 trait object 与 `TLS`，由 `GrpcConnFactory` 实现拨号。Rust 构造函数因此多一个工厂参数。
+Rust 为可移植和可测试性做了显式抽象：Go 直接持有 `pd.Client`、`*grpc.ClientConn`、`*tls.Config` 并调用 `grpc.DialContext`；Rust 持有 trait object 与 `TLS`，由 `GrpcConnFactory` 实现拨号。
 
 尚未等价或刻意简化的部分如下：
 
@@ -121,13 +115,3 @@ Go 同目录未搜索到针对这些符号的 `*_test.go` 用例；Rust 的两�
 - 为 reset 增加可取消等待时，应替换裸 `thread::sleep` 并在每轮检查 context，同时验证仍保持最多三次及退避时序。
 - 补齐 Go 的 failpoint 或 caller-component 行为时，应确认相关依赖不会破坏 `br/pkg/utils/Cargo.toml` 声明的精简平台边界。
 - 相关测试应继续放在 `br/pkg/utils/store_manager_test.rs`，符合仓库“Rust 源文件与单元测试分离”的约束。
-
-## 验证依据
-
-- Rust 实现：`br/pkg/utils/store_manager.rs`，已核对全部 347 行；关键证据为 `Pool::{Get, Close, take_conns}`、`NewConnPool`、三个边界 trait、`StoreManager::{NewStoreManager, get_grpc_conn_locked, RemoveConn, TryWithConn, WithConn, ResetBackupClient, Close}`。
-- crate 边界：`br/pkg/utils/Cargo.toml` 与 `br/pkg/utils/lib.rs`；前者声明 `astersql-br-pkg-utils` 及精简依赖策略，后者公开 `store_manager` 模块并把测试作为独立 `cfg(test)` 模块挂载。
-- Go 对照：`br/pkg/utils/store_manager.go`；核对了 Pool、拨号选项、缓存、重置、关闭、TLS 和 PD caller component 行为。上层角色参考 `br/pkg/conn/conn.go` 的嵌入与客户端构造调用链。
-- Rust 独立测试：`br/pkg/utils/store_manager_test.rs`；`try_with_conn_serializes_callbacks_like_go` 验证回调在全局锁内串行，`close_retains_cached_connections_like_go` 验证关闭不清缓存且不会再次拨号。
-- Rust 上层边界：`br/pkg/conn/conn.rs` 的 `StoreManagerHandle`、`br/pkg/backup/client.rs` 的 `ClientMgr`，用于确认当前 concrete 实现尚未直接形成完整生产调用链。
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/utils/store_manager.rs` 确认目标文件含 42 个符号；`node --file ... --offset 1 --limit 500` 核对完整源码；`explore`/调用搜索确认 concrete manager 的 Rust 直接使用点集中于独立测试，并辨别 Go 与 Rust 调用链。
-- 未运行 Cargo：本任务只新增说明文档，且任务计划明确禁止运行 Cargo。交付验证仅执行任务指定的十一章节结构检查，并人工复核上述事实来源。

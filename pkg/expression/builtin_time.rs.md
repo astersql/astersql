@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`builtin_time.rs` 属于 `astersql-expression` crate，由 [`pkg/expression/lib.rs`](lib.rs) 以 `#[path = "builtin_time.rs"] mod builtin_time_kernel;` 私有挂载。它不是 SQL 函数注册表，也不直接持有 `EvalContext`、行数据或返回 `Datum`；它把 MySQL/TiDB 时间函数中可独立表达的确定性规则整理成 Rust 辅助函数，供标量/向量签名及测试复用。当前生产接线的直接证据是 [`pkg/expression/builtin.rs`](builtin.rs) 调用 `time_to_sec` 和 `week_day`；测试配置下，`lib.rs` 另以 `builtin_time` 测试门面重导出全部符号。
-
-crate 边界由 [`pkg/expression/Cargo.toml`](Cargo.toml) 确认：包名为 `astersql-expression`，库根为 `lib.rs`，本文件直接使用的外部依赖是 `chrono`、`chrono-tz` 和 `regex`。文件本身没有 feature 或条件编译分支。
+集中实现十类纯时间语义：日期时间解析/格式化，MySQL `TIME`（duration）解析与加减，`PERIOD_ADD/DIFF` 换算，`GET_FORMAT`/`TIME_FORMAT`，日期部件与月末计算，`TIMESTAMPADD/DIFF`，固定偏移和 IANA 时区转换，TSO 物理/逻辑部分解析，有界陈旧读时间夹取，以及 Unix 时间、`EXTRACT`、`DATE_FORMAT`、`CURRENT_DATE/TIME` 辅助。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ crate 边界由 [`pkg/expression/Cargo.toml`](Cargo.toml) 确认：包名为 `as
 
 ## 与 Go 版本的对应关系
 
-[`pkg/expression/builtin_time.go`](builtin_time.go) 是语义来源，但粒度不同。Rust 名称直接对应的 Go 辅助包括 `isDuration -> is_duration`、`getFsp4TimeAddSub -> get_fsp_for_time_add_sub`、`validPeriod -> valid_period`、`period2Month/month2Period -> period_to_month/month_to_period`，以及 Go 内建签名中 ADDTIME/SUBTIME、TIMESTAMPADD/DIFF、CONVERT_TZ、MAKEDATE/MAKETIME、TIME_FORMAT、TIME_TO_SEC、SEC_TO_TIME、TSO 和 bounded-staleness 的确定性部分。
+[`pkg/expression/builtin_time.go`](builtin_time.go) 是语义来源，但粒度不同。
 
-Go 文件同时拥有 `functionClass`/`builtin*Sig` 构建和求值、`types.Time/Duration/Datum`、上下文 warning、SQL mode、statement timestamp、NULL 传播及错误码包装；Rust 本文件没有复刻这些外层职责。因此“辅助算法已存在”不等于对应 SQL 函数已经完整迁移接线。反过来，Rust 的 `chrono`/`chrono-tz` 表示也与 Go 的 `types.Time`/`time.Location` 不同，尤其需关注零日期、DST 歧义、最大年份、精度舍入和错误到 NULL/warning 的映射。
-
-[`pkg/expression/builtin_time_test.rs`](builtin_time_test.rs) 保留大量 Go 测试形状和注释，但许多入口主要调用同一 `run_time_parity_suite`，其余 Go 操作只是迁移记录，并不逐条执行。真正直接断言本文件辅助函数的集中测试位于 [`pkg/expression/builtin_time_30_aster_unit_test.rs`](builtin_time_30_aster_unit_test.rs)，覆盖 duration/FSP、加减、period、格式掩码、构造与日期部件、月末、时间戳差、时区、TSO、有界陈旧读和 MySQL 日数。
+Go 文件同时拥有 `functionClass`/`builtin*Sig` 构建和求值、`types.Time/Duration/Datum`、上下文 warning、SQL mode、statement timestamp、NULL 传播及错误码包装；Rust 本文件没有复刻这些外层职责。反过来，Rust 的 `chrono`/`chrono-tz` 表示也与 Go 的 `types.Time`/`time.Location` 不同，尤其需关注零日期、DST 歧义、最大年份、精度舍入和错误到 NULL/warning 的映射。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Go 文件同时拥有 `functionClass`/`builtin*Sig` 构建和求值、`types.Tim
 修改解析、舍入或范围规则时，优先扩展独立的 [`pkg/expression/builtin_time_30_aster_unit_test.rs`](builtin_time_30_aster_unit_test.rs)，并按仓库要求保持测试与生产文件分离；涉及 Go 对齐时同步核对 `builtin_time_test.go` 的对应表格。若改变 SQL 层可见行为，还需在接线测试中覆盖 NULL、warning、SQL mode、时区和类型元数据，而不能只验证纯函数返回值。
 
 风险集中在：小数秒截断/四舍五入差异、负 duration 与 `838:59:59.999999` 边界、月末和闰年、完整月份定义、DST 重叠/空洞、零日期、Unix/TSO 单位、未知格式码行为，以及 `chrono` 表示域与 TiDB 类型域不一致。格式化热路径新增 `format!` 或 DST 搜索扩大范围还可能带来性能回退。
-
-## 验证依据
-
-- 已完整读取目标源码 [`pkg/expression/builtin_time.rs`](builtin_time.rs)，核对常量、`TimeError`/`TimeResult`、全部公开函数、私有解析/格式化/时区/月历辅助及无条件编译事实。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/expression/builtin_time.rs` 返回 1,067 行源码及 20 个使用文件；`query` 定位 `parse_datetime`、`timestamp_add`、`convert_tz`、`current_time`；`callees timestamp_add` 和 `callees current_time` 验证关键内部调用。`files --filter` 未命中该路径，故按技能规则以精确 `node/query` 加源码检索补证。
-- 已读取 [`pkg/expression/Cargo.toml`](Cargo.toml) 和 [`pkg/expression/lib.rs`](lib.rs)，确认 crate 名称、库根、`chrono`/`chrono-tz`/`regex` 依赖、模块挂载和测试门面。
-- 已读取 Go 对照 [`pkg/expression/builtin_time.go`](builtin_time.go) 的相关符号，并以 [`pkg/expression/builtin_time_test.go`](builtin_time_test.go) 的测试名称/覆盖面核对原始语义范围。
-- 已读取 Rust 独立测试 [`pkg/expression/builtin_time_test.rs`](builtin_time_test.rs) 的结构与关键用例，并完整读取直接 parity 测试 [`pkg/expression/builtin_time_30_aster_unit_test.rs`](builtin_time_30_aster_unit_test.rs)。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务规定的命令验证恰有 11 个固定二级标题，并人工复核仅新增本文档、没有把测试建议写入生产 Rust 文件。

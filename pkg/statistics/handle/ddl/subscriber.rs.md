@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`subscriber.rs` 属于独立 crate `astersql-statistics-handle-ddl`；`pkg/statistics/handle/ddl/Cargo.toml` 将 `lib.rs` 设为 crate 入口，`lib.rs` 通过 `pub mod subscriber` 和 `pub use subscriber::*` 导出本文件的公开类型与函数。根 `Cargo.toml` 又以 `facade_statistics_handle_ddl` 引入该 crate，`pkg/lib.rs` 将其纳入统一 facade。
-
-本文件位于 DDL 事件与统计存储之间：它把已经转换为 `SchemaChangeEvent` 的表、列和分区变更分发为统计元数据写入、版本推进、全局行数增量或统计 ID 迁移。相邻的 `ddl.rs::DdlHandler` 持有 `Subscriber<B>`，从有界队列取到事件后调用 `Subscriber::handle`；该层若失败只调用 `StatsBackend::warn_ignored_event_error` 并返回成功，保留 Go 统计 DDL 更新的 best-effort 语义。
-
-当前生产接线与算法能力需要分开理解：仓库搜索只发现 `pkg/statistics/handle/ddl/ddl_test.rs::RecordingBackend` 实现 `StatsBackend`，所有 `DdlHandler::new` 调用也都在该测试文件。也就是说，本文件当前是已导出且有独立单元测试覆盖的抽象移植，但尚无真实 Rust 统计存储后端把它接入应用 DDL notifier 主链。
+提供 `update_stats_with_count_delta_and_modify_count_delta` 和 `exchange_partition_log_fields` 两个公开辅助函数，分别封装锁表/非锁表增量写法和交换分区日志字段。
 
 ## 核心职责
 
@@ -91,8 +87,6 @@ crate 虽经根 facade 导出，但仓库中没有生产 `StatsBackend` 实现�
 
 ## 与 Go 版本的对应关系
 
-Rust `Subscriber::handle` 对应 `subscriber.go::subscriber.handle`；`handle_truncate_like_event`、`insert_stats_for_physical_id`、`record_historical_stats_meta`、`delayed_delete_stats_for_physical_id`、`insert_stats_for_columns`、`physical_ids` 分别对应 Go 的 `handleTruncateLikeEvent`、`insertStats4PhysicalID`、`recordHistoricalStatsMeta`、`delayedDeleteStats4PhysicalID`、`insertStats4Col`、`getPhysicalIDs`。三个全局更新 helper 对应 Go 的 `updateGlobalTableStats4DropPartition`、`updateGlobalTableStats4TruncatePartition` 和 `updateGlobalTableStats4ExchangePartition`。
-
 已保持的关键语义包括：动态裁剪追加全局表 ID；改列已分析时跳过初始化；截断类事件先建新统计再延迟删除旧统计；重组分区不改全局行数；删/截断分区按被删 count 给全局表施加负 delta；截断不单独扣 modify_count；交换分区的两条 delta 公式；锁表走允许负值的增量 upsert、非锁表结果钳零；普通表/分区表互转迁移统计 ID；历史记录的 start_ts、开关和缓存初始化三重门控；DropSchema 尽量清理所有对象；物化视图纯元数据事件为空操作。
 
 当前 Rust 是结构化摘要模型，而非 Go 生产实现的一比一依赖移植：
@@ -115,14 +109,3 @@ Rust `Subscriber::handle` 对应 `subscriber.go::subscriber.handle`；`handle_tr
 历史统计扩展应集中在 `record_historical_stats_meta`，避免三个调用点产生不同门控。若需要补齐日志，应让更新路径实际使用 `exchange_partition_log_fields`，并增加截断分区字段 helper；需测试 schema 缺失时 `"Not Found"`、成功/失败字段一致性以及敏感信息边界。
 
 建议补充的独立 Rust 回归包括：静态分区裁剪不含全局 ID、`ModifyColumn { analyzed: true }` 无写入、历史开关关闭/缓存未初始化/start_ts 为零、`RemovePartitioning`、`ReorganizePartition`、空交换分区、非锁表负增量钳零、零 delta 无写入、DropSchema 单项失败后继续，以及 `Unknown` 经 `DdlHandler` 告警但入口返回成功。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/ddl` 确认目标目录 11 个源文件均已索引，`subscriber.rs` 含 72 个符号。
-- RustCodeGraph `node --file pkg/statistics/handle/ddl/subscriber.rs --offset 1 --limit 800`：读取目标文件 569 行全貌；`query` 定位 `Subscriber`、`update_stats_with_count_delta_and_modify_count_delta` 和 `exchange_partition_log_fields`。
-- RustCodeGraph 调用边：`Subscriber::handle` 的 callees 包含 `physical_ids`、插入/延迟删除 helper、三个全局统计 helper、`change_global_stats_id` 和 `update_all_stats_versions`；增量辅助函数的 callees 包含 `locked_tables`、`start_ts`、`stats_meta`、`update_locked_delta`、`write_stats_meta`。常见名称 `handle` 的 callers/callees 查询出现跨语言歧义，因此上游边由 `ddl.rs` 和仓库引用搜索补证，未把空 callers 输出当作无调用者证据。
-- crate 与入口：`pkg/statistics/handle/ddl/Cargo.toml`、`pkg/statistics/handle/ddl/lib.rs`、`pkg/statistics/handle/ddl/ddl.rs`、根 `Cargo.toml`、`pkg/lib.rs`；这些文件证明 crate 边界、facade 导出、队列入口和 best-effort 错误处理。
-- Go 对照：`pkg/statistics/handle/ddl/subscriber.go` 与 `pkg/statistics/handle/ddl/ddl.go`；核对事件分支、物理 ID、历史记录、三类分区全局更新、锁表写入和日志字段。
-- 独立测试：`pkg/statistics/handle/ddl/ddl_test.rs` 的 `RecordingBackend` 及建表、动态裁剪、截断、物化视图、删/截断/交换分区、DropSchema、加列、分区化、Flashback、锁表增量、队列容量和系统表调用方契约测试；Go `pkg/statistics/handle/ddl/ddl_test.go` 提供生产 SQL/notifier 行为对照。
-- 接线搜索：全仓 `StatsBackend for` 只命中 `ddl_test.rs::RecordingBackend`，`DdlHandler::new` 也只在该测试文件使用；因此本文将生产接线标为尚未实现，而非推断已运行。
-- 本任务是纯文档分析，按要求未运行 Cargo。交付前运行任务指定的结构命令，验证目标文档存在且恰好包含 11 个固定二级章节，并人工复核没有把 trait 预期能力误写为当前生产接线。

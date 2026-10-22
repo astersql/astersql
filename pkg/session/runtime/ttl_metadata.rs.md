@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 的 TTL 元数据适配层，由 `pkg/session/runtime.rs` 以 `pub mod ttl_metadata` 装配。它把 `InfoSchema`/`TableInfo` 中的标准表模型转换为 `astersql-ttl-ttlworker` 可调度的 `PhysicalTable` 和 `TtlSchedule`，并在新 TTL 任务落盘前把逻辑表键空间分成扫描范围。上游主链为 `pkg/session/runtime/ttl_timer.rs` 中的定时器同步/事件校验，以及 `pkg/session/runtime/ttl_runtime.rs` 中的手动触发、周期调度和 `run_ttl_tick_inner`。
-
-`pkg/session/Cargo.toml` 声明 crate 名为 `astersql-session`，本文件直接使用的 workspace crate 包括 `astersql-domain`、`astersql-domain-infosync`、`astersql-infoschema`、`astersql-meta-model`、`astersql-parser-{ast,duration,mysql}`、`astersql-sessionctx-vardef`、`astersql-ttl-cache` 和 `astersql-ttl-ttlworker`；没有为此文件设置条件编译分支。
+`physical_ttl_tables` 将单个 `TableInfo` 转换为一个或多个 worker `PhysicalTable`，包括物理 ID、键列、TTL 列、定义版本与过期偏移。
 
 ## 核心职责
 
@@ -81,7 +79,6 @@ RustCodeGraph 将本文件索引为 453 行，并解析出 `split_ttl_scan_range
 ## 与 Go 版本的对应关系
 
 - Go `pkg/ttl/cache/infoschema.go::InfoSchemaCache.Update` 同样只纳入 TTL 已启用且 `StatePublic` 的表，并按分区 ID 展开物理表。Rust 没有在本文件内保存长期 cache，而是每次从传入的 `InfoSchema` 快照生成值对象。
-- Go `pkg/ttl/cache/table.go::{NewPhysicalTable, EvalExpireTime, FindTTLIndex, SplitScanRanges, SplitIndexScanRanges}` 是 Rust 转换和分割逻辑的主要语义对照。具体算法已下沉到 `astersql-ttl-cache`，本文件负责把 canonical model 转成该 crate 的输入。
 - Go `pkg/ttl/ttlworker/job_manager.go::lockNewJob` 在新任务事务中计算 expire time、选索引/主键范围并插入 task；Rust 把“元数据+切分”与 `PersistentJobStore::start_job_with_ranges` 分层，但新任务的实际行为链对应。
 - Go `pkg/ttl/ttlworker/job_version_checker.go` 定义相同的三态结果和 10/60 秒缓存。Rust 这一层把 infosync `ServerInfo` 转成 worker 模型；Rust API 只返回已注册的具体 TiDB server，因此明确设置 `assumed: false`。
 - 差异点：Go 的 expire time 结果保留 `time.Time` 及 session/global timezone 语义；此 Rust 路径传入 epoch 秒并保存非负 `expire_after_seconds`。Go 在索引范围切分失败时记日志并回退 PK；此 Rust 函数直接返回错误。这些都是当前代码事实，不应在扩展时无意更改。
@@ -94,14 +91,3 @@ RustCodeGraph 将本文件索引为 453 行，并解析出 `split_ttl_scan_range
 - 改变范围切分或索引回退策略时，应扩展独立 Rust 测试（优先 `ttl_metadata_test.rs`，端到端持久化行为在 `ttl_runtime_test.rs`），并对照 Go `pkg/ttl/cache/{split_test,table_test}.go` 和 `pkg/ttl/ttlworker/job_manager_test.go`。不要把测试内嵌到生产 `.rs` 文件。
 - 改变版本门禁时，保持“未知则回退、已知混合版本则阻断”的升级安全语义，并同步 `pkg/ttl/ttlworker/job_version_checker_test.rs` 与 Go 测试。
 - 若要改动 `split_ttl_scan_ranges` 的入参不变式，应首先决定是否在入口显式拒绝空 `key_columns`，而不是依赖索引越界；这会改变错误边界，需要新增回归测试。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/ttl_metadata.rs` 与 `git show 2c944fb:pkg/session/runtime/ttl_metadata.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：`pkg/session/runtime/ttl_metadata_test.rs::ttl_server_info_preserves_rpc_serving_state` 检查 DisableRPC、version、hash 与 assumed；`pkg/ttl/ttlworker/job_version_checker.rs` 核对跳过 RPC-disabled 实例及无可验证实例时回退。
-- crate/模块边界：`pkg/session/Cargo.toml` 和 `pkg/session/runtime.rs`。
-- Rust 上游与端到端证据：`pkg/session/runtime/ttl_timer.rs`、`pkg/session/runtime/ttl_runtime.rs`、`pkg/session/runtime/ttl_metadata_test.rs`、`pkg/session/runtime/ttl_runtime_test.rs` 和 `pkg/session/runtime/normal_ddl_create_table_test.rs`。`ttl_metadata_test.rs` 直接验证 canonical table 转换、1 天过期偏移、24 小时作业周期、禁用 TTL 过滤以及每分区 physical ID 展开；`ttl_runtime_test.rs` 验证 schedule 进入 timer/worker 及持久化范围被扫描/接管。
-- Go 对照：`pkg/ttl/cache/infoschema.go`、`pkg/ttl/cache/table.go`、`pkg/ttl/ttlworker/job_manager.go`、`pkg/ttl/ttlworker/job_version_checker.go`，以及相关 `split_test.go`、`table_test.go`、`job_manager_test.go`。
-- 版本门禁的 Rust 实现与测试：`pkg/ttl/ttlworker/job_version_checker.rs` 和 `pkg/ttl/ttlworker/job_version_checker_test.rs`。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

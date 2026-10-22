@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`progressing.rs` 属于 Cargo 包 `astersql-br-pkg-glue`。同目录 [`Cargo.toml`](./Cargo.toml) 将该包声明为对应 Go 包 `br/pkg/glue` 的 library，库入口 [`lib.rs`](./lib.rs) 通过 `#[path = "progressing.rs"] pub mod progressing` 装配本文件，并在 crate 根重导出 `OnlyOneTask`、`ProgressWaiter`、`ProgressBar`、`MultiProgress`、`NopMultiProgress`、`LogBar`、`TerminalBar` 与 `TerminalMultiProgress`。内部的 `BarState`、`ProgressGroup`、`PbProgress`、`DummyProgress` 等实现细节保持私有。
-
-本文件位于 BR 控制台门面与进度展示之间：它扩展 [`console_glue.rs`](./console_glue.rs) 的 `ConsoleOperations`，根据输出是否为 TTY 选择终端完成行或日志式计数；同时实现 [`glue.rs`](./glue.rs) 的 `Progress` trait。当前 Cargo 直接依赖只有 `astersql-errors`，进度状态、线程、通道、锁与输出均由 `std` 实现，并没有 Rust `mpb` 依赖。源码注释也明确称 `BarState`/`ProgressGroup` 是 Go `mpb` 行为的轻量替身，因此不能把它描述成完整动画进度条实现。
-
-RustCodeGraph 已索引本文件（641 行、86 个符号），文件摘要显示它被 13 个 Rust 文件引用；但同名 Go/Rust 符号使精确 `callers/callees` 查询无法可靠消歧。定向源码搜索能确认当前 Rust 生产代码中的直接接线是 [`console_glue.rs`](./console_glue.rs) 的 `ConsoleOperations::ShowTask` 调用 `StartProgressBar`；`StartMultiProgress` 和显式 `ProgressWaiter::Wait` 的可执行证据来自同目录独立测试 [`parity_test.rs`](./parity_test.rs)。Go 生产树则在 `br/pkg/stream/stream_metas.go`、`br/pkg/task/stream.go` 和 `br/pkg/restore/log_client/client.go` 使用对应 API。目标目录没有 `doc.go`，也没有同名 `progressing_test.rs`/`progressing_test.go`。
+通过 `MultiProgress`/`ProgressBar` 提供多条进度接口：TTY 使用共享 `ProgressGroup` 的 `TerminalMultiProgress`，非 TTY 使用倒计数 `LogBar`。
 
 ## 核心职责
 
@@ -89,8 +85,6 @@ RustCodeGraph 已索引本文件（641 行、86 个符号），文件摘要显�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对照 [`progressing.go`](./progressing.go)：Go `pbProgress`/`ProgressWaiter`/`noOPWaiter` 分别对应 Rust `PbProgress`/`ProgressWaiter`/`NoOpWaiter`；`adjustTotal`、`buildProgressBar`、`buildOneTaskBar` 保持同名构造层次；`NopMultiProgress`/`LogBar`/`TerminalBar`/`TerminalMultiProgress` 及其接口也逐项对应。
-
 已验证的一致语义包括：`OnlyOneTask = -1`；零总量 TTY 条立即完成；普通累计达到总量后完成；未完成时 `Close`/`Done` 走 abort；`Wait` 可因上下文取消返回；非 TTY 多进度按剩余计数小于等于零记录完成；多条 TTY 进度由容器统一等待；完成回调延迟求值额外字段。
 
 当前实现与 Go 的重要差异或移植边界如下：
@@ -113,11 +107,3 @@ Rust 文件直接对照 [`progressing.go`](./progressing.go)：Go `pbProgress`/`
 - 扩展多进度时保持 `ProgressBar`/`MultiProgress` 的对象安全和 `Send + Sync` 契约。新增 remove/finish API 应统一 `LogBar` 与 `TerminalBar` 的主动完成语义；当前 `LogBar::Done` 为空且零后继续递增会重复日志，改变前应先确认 Go 兼容需求。
 - 优化大量 bar 的轮询性能时可考虑条件变量或通知机制，但必须保留原子并发推进、全体完成条件和单次最终渲染。性能测试应独立覆盖高并发 `Increment` 和大量 bar，不应通过降低语义要求简化实现。
 - 将 Rust API 接入 Go 已有 stream/restore 对应主链时，应以实际 Rust import 和 Cargo 依赖为准；目前不能仅凭 Go 调用点宣称 Rust 已接线。接线后需为 `stream_metas`、stream task 和 restore log-client 的生命周期分别增加集成级验证。
-
-## 验证依据
-
-- RustCodeGraph：运行 `status`，确认索引含 7032 个 Rust 文件；运行 `files --filter br/pkg/glue`，确认目标、Go 对照、crate 入口与独立测试均被索引；运行 `explore 'br/pkg/glue/progressing.rs Progress Inc StartProgress UpdateProgress IncByOne Close'`，取得 `StartProgressBar`、`StartMultiProgress`、`ProgressWaiter`、测试及文件引用摘要；运行 `node --file br/pkg/glue/progressing.rs --offset 1 --limit 260`、`--offset 231 --limit 260`、`--offset 491 --limit 180` 阅读完整 641 行。精确 `callers/callees` 因同名跨语言节点无法消歧，故只把 explore 中明确文件化的边作为图证据。
-- Rust 生产源码与装配：完整核对 [`progressing.rs`](./progressing.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)；核对 [`glue.rs`](./glue.rs) 的 `Context`/`Progress` 和 [`console_glue.rs`](./console_glue.rs) 的 `printFinalMessage`/`ShowTask`。目标目录没有 `doc.go`。
-- Go 对照：完整核对 [`progressing.go`](./progressing.go) 的单条、多条、TTY 分流、`mpb` 装饰和等待逻辑；定向搜索核对 `br/pkg/stream/stream_metas.go`、`br/pkg/task/stream.go`、`br/pkg/restore/log_client/client.go` 的生产调用点。未发现同名 Go 独立测试。
-- Rust 独立测试：完整核对 [`parity_test.rs`](./parity_test.rs)，重点是 `go_rust_public_contract_matches`、`progress_waiter_blocks_until_the_bar_finishes`、`terminal_bar_done_is_rendered_only_once` 和 `crate_root_exports_go_public_progress_types`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核文档明确区分“当前 Rust 事实”“Go 生产调用点”和“尚未验证的 Rust 接线”，不把轻量状态机写成真实 `mpb` 动画实现。

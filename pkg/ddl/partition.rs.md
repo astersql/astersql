@@ -2,12 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；crate 根 `pkg/ddl/lib.rs` 以 `pub mod partition` 暴露它，`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认其编译边界。它位于 DDL 层，但当前 Rust 实现并不是 Go `pkg/ddl/partition.go` 中完整 owner/worker 分区状态机的逐项复刻，而是两部分能力的组合：
-
-1. `PartitionInfo`、`PartitionDefinition`、`PartitionValue` 等轻量模型，以及建表校验、定义变更、exchange 条件生成和 `SHOW CREATE` 格式化辅助逻辑（`partition.rs:28-1200`）。
-2. 已接到真实 DDL 重组类型上的 `backfill_non_touched_partition_indexes`（`partition.rs:1213-1288`），负责 Go `reorgPartitionDataAndIndex` 最后“为未触碰分区补全新全局索引”的一个可恢复批次。
-
-包级契约见 `pkg/ddl/doc.go`：DDL 必须在全局 schema 版本 N/N+1 并存期间等待所有节点同步。本文件的轻量变更函数本身不提交持久化 job；真正涉及持久化恢复语义的是末尾回填函数，它更新 `mysql.tidb_ddl_reorg` 游标。
+提供内存态分区变更：`add_table_partitions`、`drop_table_partitions`、`truncate_table_partitions`、`reorganize_partitions` 和 `exchange_table_partition` 操作 `PartitionedTableInfo`，同时维护物理 ID、adding/dropping 定义及 TiFlash 可用 ID。
 
 ## 核心职责
 
@@ -76,12 +71,9 @@ RustCodeGraph 将本文件识别为被 15 个文件使用，但对所查公开�
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/ddl"` 给出 crate 级迁移来源；具体对照是 Go `pkg/ddl/partition.go`。
-
 - Rust `build_table_partition_info` 对应 Go `buildTablePartitionInfo` 的一部分，但 Go 使用 AST restore、表达式上下文、类型系统和错误码；Rust 使用独立轻量结构与字符串表达式，因此是行为子集。
 - Rust RANGE/LIST、分区键、TiFlash、interval 和 exchange 辅助函数分别对应 Go `checkRangePartitionValue`、`checkListPartitionValue`、`checkPartitionKeysConstraint`、`checkPartitionReplica`、`generatePartitionDefinitionsFromInterval` 及 exchange validation 逻辑；Go 版本还包含 PD region 扫描、常量折叠、collation/type 语义和 failpoint，Rust 不应被描述为完整替代。
 - Go ADD/DROP/TRUNCATE/REORGANIZE/EXCHANGE 由 job handler 推进 `SchemaState`，处理 schema diff、global index、placement、通知和 delete-range；Rust 同名轻量函数主要变更内存模型，没有完整状态机。
-- `backfill_non_touched_partition_indexes` 精确对应 Go `reorgPartitionDataAndIndex` 的末段：新增分区的数据和索引完成后，为未新增、未删除的分区补建处于 write-reorganization 状态的 global index。Rust 将这一末段拆成可恢复的单批函数，并通过真实 `mysql.tidb_ddl_reorg` checkpoint 测试接线。
 
 ## 扩展指南
 
@@ -90,11 +82,3 @@ RustCodeGraph 将本文件识别为被 15 个文件使用，但对所查公开�
 增强 SQL 表达式语义时，应优先接入 parser/AST/type context，而不是继续扩大字符串 token 启发式；需要核对 unsigned、collation、日期时间、生成列、常量折叠及 MySQL 错误兼容。增强 ADD/DROP/TRUNCATE/REORGANIZE 时，先判断需求属于轻量模型还是 owner job 主链；若是后者，必须同时考虑 `job.SchemaState`、schema diff、global index 清理/回填、delete-range、placement/TiFlash 和跨节点同步，不能仅修改本文件的内存向量。
 
 修改回填阶段时必须保持三个不变量：当前最后一个分区也要执行；只允许 global index element；索引写和 checkpoint 均成功后才能发布新游标。新增 element 类型、batch 字段或 checkpoint 列时要同步真实集成测试，并评估重试幂等性、事务大小、每批延迟和 SQL mode/resource group 透传。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ddl/partition.rs` 确认目标有 93 个符号；`node --file ...` 分段读取全部 1,289 行；`query backfill_non_touched_partition_indexes` 定位到 1216 行；`callees` 识别 `IndexBackfillBatch`/`ReorgBackfillTask`，而精确 `callers` 对所查入口为空，已按索引限制处理。
-- 源码与边界：`pkg/ddl/partition.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`、`pkg/ddl/doc.go`。
-- Go 对照：`pkg/ddl/partition.go`，重点核对 `buildTablePartitionInfo`、`checkAddPartitionValue`、`checkPartitionReplica`、`checkRangePartitionValue`、`checkListPartitionValue`、`checkPartitionKeysConstraint` 与 `reorgPartitionDataAndIndex`。
-- Rust 测试：`pkg/ddl/partition_test.rs`（exchange 条件与 add/drop/exchange）；`pkg/ddl/ddl_test.rs`（最后分区、回填错误和 checkpoint 错误不发布游标）；`pkg/ddl/tests/partition/reorg_partition_test.rs`（真实 global index 重组与 reorg 表归零）。Go 边界参考 `pkg/ddl/partition_test.go`。
-- 人工复核结论：该文件存在于分区元数据/校验辅助层，并承载一个已接线的重组回填尾段；安全扩展必须先辨明这两层边界。按任务约束未运行 Cargo；交付只做文档结构验证。

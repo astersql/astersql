@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现一套与 Go `pkg/types/json_path_expr.go` 对齐的 JSON Path 解析器、规范化输出器和进程级解析缓存。它不是由 `pkg/types/lib.rs` 直接声明为普通模块，而是被 `pkg/types/internal/json_path/lib.rs` 通过 `include!("../../json_path_expr.rs")` 编译进独立 crate `astersql-types-json-path`；根 `astersql-types` crate 再以 `pub use types_json_path as json_path` 暴露它。`pkg/types/Cargo.toml` 中的 `types-json-path` 路径依赖和 `pkg/types/internal/json_path/Cargo.toml` 中的 `serde_json` 依赖共同界定了这一编译边界。
-
-生产调用的一条直接证据位于 `pkg/expression/builtin.rs`：`formal_registry` 从 `types_dependency::json_path` 导入 `JSONPathExpression` 与 `ParseJSONPathExpr`，在 `CoreBuiltinKind::JsonExtract` 求值时解析 SQL 参数中的路径。仓库还存在 `pkg/types/internal/json_functions/lib.rs` 自己定义的另一套 `JSONPathExpression`/`ParseJSONPathExpr`，并被 `pkg/expression/builtin_json.rs` 等路径使用；两者类型与缓存互不共享，阅读调用链时不可混为一谈。
+将结构化路径规范化为字符串，供显示、往返检查和派生路径构造使用（`JSONPathExpression::String`、`jsonPathArrayIndex::String`、`quoteJSONString`）。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 leg 类型码、三个 flag、负数形式的 `last-n` 编码、范围验证、`**` 末尾限制、1,000 容量缓存以及错误文案，均直接对应 `pkg/types/json_path_expr.go`。`pkg/types/json_path_expr_test.go` 的五组核心表（星号检测、合法性、String 往返、追加数组 leg、追加键 leg）在 `pkg/types/json_path_expr_test.rs` 与 `pkg/types/json_path_expr_8_aster_unit_test.rs` 中有对应覆盖。
+Rust 的 leg 类型码、三个 flag、负数形式的 `last-n` 编码、范围验证、`**` 末尾限制、1,000 容量缓存以及错误文案，均直接对应 `pkg/types/json_path_expr.go`。
 
 实现形态上的差异包括：Go 用接口承载三种数组选择，Rust 用 enum；Go 缓存基于 `kvcache.SimpleLRUCache` 和显式 `sync.Mutex`，Rust在本文件中用 `HashMap + VecDeque + Mutex + OnceLock`；Go 的 `ErrInvalidJSONPath` 属于包级错误体系，Rust用独立 `JSONPathError`。Rust `String` 始终是合法 UTF-8，因此 Go `quoteJSONString` 针对非法 UTF-8/RuneError 的修复分支没有对应需求。
 
@@ -96,11 +94,3 @@ Rust 额外测试明确锁定了移植细节：Unicode 转义后的未引号键�
 - Rust 单元测试必须继续放在独立文件中，不要内嵌进本源文件。优先扩展 `pkg/types/json_path_expr_test.rs`；Go 对照表变化时同步检查 `pkg/types/json_path_expr_test.go`，移植契约补充可放入 `pkg/types/json_path_expr_8_aster_unit_test.rs`。
 - 因该文件由 `include!` 编译进 `pkg/types/internal/json_path`，新增外部 crate 依赖应写入该子 crate 的 `Cargo.toml`，不能只写根 `pkg/types/Cargo.toml`。若要让新 API 进入 SQL 表达式主链，还需确认 `pkg/types/lib.rs` 再导出和 `pkg/expression/builtin.rs` 的使用点。
 - 仓库存在同名的 `pkg/types/internal/json_functions` 路径实现。任何语义扩展都应先确认目标调用链；若两套实现都需要保持一致，应分别修改并分别测试，不能假设改动本文件会自动影响 `builtin_json.rs`/`builtin_json_vec.rs`。
-
-## 验证依据
-
-- 冻结源码、装配与依赖：`json_path_expr.rs`、`internal/json_path/lib.rs`、`internal/json_path/Cargo.toml`、`pkg/types/lib.rs` 与 `pkg/expression/builtin.rs`；同名 `internal/json_functions` 不等同于本实现。
-- 冻结独立测试 `json_path_expr_test.rs`：`TestValidatePathExpr` 覆盖 ASCII 空白、last/to 游标和 Unicode key；`TestQuoteStringAndPathKeyRoundTrip` 覆盖组合符及引号往返；`test_path_boundaries_and_state` 覆盖 u32 上下界和非 ASCII 空白。Go 对照为 `json_path_expr.go` 与 `json_path_expr_test.go`。
-- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/types/json_path_expr.rs` 审计增量，并以 `git show 2c944fb:pkg/types/json_path_expr.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
-- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
-- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-collate` crate 中的 `gbk_chinese_ci` 排序规则。crate 入口 `pkg/util/collate/lib.rs` 通过 `gbk_chinese_ci` 模块加载并公开重导出本文件的符号；`pkg/util/collate/Cargo.toml` 将该 crate 定义为默认启用 `full_collate` 的库，但本实现本身没有条件编译项，也不依赖 `full_collate`。
-
-应用侧不会通常直接构造这里的类型，而是经 `pkg/util/collate/collate.rs::GetCollator` 或 `GetCollatorByID` 进入 `new_collator`；名称为 `"gbk_chinese_ci"` 时，工厂返回 `gbkChineseCICollator`。因此，该文件位于 SQL 字符串比较、排序键/索引键生成和 `LIKE` 通配匹配所共用的 collation 层，而非字符集编码转换层。
+`gbkChineseCICollator` 实现 `Collator` trait，为字符串比较、原始字节比较、排序 key、最大 key 长度、通配 pattern 和 trait 对象克隆提供一组一致的 GBK 中文 CI 语义。
 
 ## 核心职责
 
@@ -68,13 +66,9 @@ pattern 对象由 `Pattern` 每次独立分配。`Compile` 需要 `&mut self`，
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/collate/gbk_chinese_ci.go`。Rust 保留了 Go 的三个核心算法：`compareCommon` 权重比较、裁尾空格后按权重生成变长 key、以及 pattern 中按权重判断字符等价。`gbkChineseCISortKey` 的 BMP 查表与非 BMP 返回 `0x3F` 也逐分支一致。
+语言层差异主要在字符串表示。Go 的 `KeyWithoutTrimRightSpace` 显式循环 `utf8.DecodeRuneInString` 并在非法序列处返回前缀；Rust 的同名 `&str` 方法可直接遍历合法 `char`，而兼容非法字节的逻辑被放入 Rust trait 新增的 `KeyBytes`/`CompareBytes` 路径。
 
-语言层差异主要在字符串表示。Go 的 `KeyWithoutTrimRightSpace` 显式循环 `utf8.DecodeRuneInString` 并在非法序列处返回前缀；Rust 的同名 `&str` 方法可直接遍历合法 `char`，而兼容非法字节的逻辑被放入 Rust trait 新增的 `KeyBytes`/`CompareBytes` 路径。Rust `ImmutableKey` 委托 `Key`，Go 版本委托 `KeyWithoutTrimRightSpace(truncateTailingSpace(str))`，两者结果相同。
-
-Rust 的 `gbkChineseCICollator` 是零大小 struct，Go 是空 struct；Rust `Box<dyn Collator>` 对应 Go interface 返回值。Rust 还实现 `as_any` 以支持 trait 对象向下转型，这是 Rust trait 工厂所需的局部接线，不改变 Go 排序语义。
-
-相关验证位于独立文件而非生产源码内：`pkg/util/collate/bin_1_aster_unit_test.rs::chinese_ci_weights_and_keys_match_go_tables` 验证关键权重和 key；`pkg/util/collate/collate_test.rs::{test_utf8_collator_compare,test_utf8_collator_key,test_campare_invalid_utf8_rune}` 对齐 `pkg/util/collate/collate_test.go` 的表驱动比较、key、PAD SPACE、非 BMP 和非法 UTF-8 场景。
+Rust 的 `gbkChineseCICollator` 是零大小 struct，Go 是空 struct；Rust `Box<dyn Collator>` 对应 Go interface 返回值。
 
 ## 扩展指南
 
@@ -84,12 +78,3 @@ Rust 的 `gbkChineseCICollator` 是零大小 struct，Go 是空 struct；Rust `B
 - 扩展 pattern 行为时，应保留 `CompilePatternInner` 生成的 `patChars`/`patTypes` 对齐不变量，并仅通过 `DoMatchCustomized` 的等价谓词注入 collation 语义。
 - 测试必须继续放在独立测试文件。至少同步 `bin_1_aster_unit_test.rs::chinese_ci_weights_and_keys_match_go_tables` 和 `collate_test.rs` 中对应表项，并与 `collate_test.go` 的预期比较；新增非法字节用例应走 `CompareBytes`/`KeyBytes`，而不是尝试构造非法 `&str`。
 - 性能风险集中在每次调用的分配、逐字符查表和 pattern 匹配回调。引入缓存或共享缓冲区会改变当前无状态并发模型，需要单独证明线程安全和生命周期正确性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前仓库索引包含本文件；`files --filter pkg/util/collate` 确认模块集合；`node --file pkg/util/collate/gbk_chinese_ci.rs` 展示全部 118 行并报告直接使用者为 `pkg/util/collate/collate.rs` 与 `pkg/util/collate/bin_1_aster_unit_test.rs`；`query` 确认 Rust/Go 两侧的 `gbkChineseCICollator`、`gbkChineseCIPattern`、`gbkChineseCISortKey` 和内部 `key_bytes_without_trim` 符号。
-- 生产源码：`pkg/util/collate/gbk_chinese_ci.rs`；trait、工厂及共享比较/解码逻辑见 `pkg/util/collate/collate.rs`；模块公开边界见 `pkg/util/collate/lib.rs`；权重表见 `pkg/util/collate/gbk_chinese_ci_data.rs`。
-- crate 配置：`pkg/util/collate/Cargo.toml`，确认库名、入口、默认 feature 和依赖边界。
-- Go 对照：`pkg/util/collate/gbk_chinese_ci.go`、`pkg/util/collate/collate.go`、`pkg/util/collate/collate_test.go`。
-- Rust 独立测试：`pkg/util/collate/bin_1_aster_unit_test.rs` 与 `pkg/util/collate/collate_test.rs`。本任务是纯文档分析，按计划不运行 Cargo；上述测试仅作为现有行为证据读取。
-- 交付结构检查要求：文档存在，且固定的十一个二级标题各出现一次；检查命令记录在本任务最终交付信息中。

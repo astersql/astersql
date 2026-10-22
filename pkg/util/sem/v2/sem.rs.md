@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sem-v2` crate 的运行时策略核心，源码见 [`sem.rs`](sem.rs)。crate 入口 [`lib.rs`](lib.rs) 将它声明为私有 `sem` 模块并把公共项重新导出；crate 边界、依赖和 Go 包映射由 [`Cargo.toml`](Cargo.toml) 定义。它位于“配置解析”与“业务调用方”之间：[`config.rs`](config.rs) 产生并校验 `Config`，本文件把配置编译成进程级 `SemImpl`，服务启动、权限检查、会话派发和兼容层再通过公开查询函数读取策略。
-
-服务入口 `cmd/tidb-server/main.rs::setupSEM` 在 `Security.EnableSEM` 为真且 `Security.SEMConfig` 非空时调用 `semv2::Enable`；没有自定义配置时走 SEM v1，而不是本文件。因此这里实现的是配置驱动的 SEM v2，不是默认 SEM 规则集。
+管理全局启用状态：`globalSem: LazyLock<AtomicSemPointer>` 保存 `Option<Arc<SemImpl>>`，`Enable`/`EnableBy` 安装实例，`Disable` 清空实例，`IsEnabled` 查询状态。
 
 ## 核心职责
 
@@ -100,7 +98,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`sem.go`](sem.go)，独立测试对照为 [`sem_test.go`](sem_test.go) 与 [`sem_test.rs`](sem_test.rs)。Rust 保留了 Go 的公开函数、内部类型/方法、启用顺序和主要规则：未启用返回 false；schema 隐藏覆盖表级设置；`RESTRICTED_` 前缀天然受限；权限/SQL 命令/hint 分别转大写、大写和小写；配置变量先覆盖，增强安全标志最后设为 `CONFIG`。
+Rust 保留了 Go 的公开函数、内部类型/方法、启用顺序和主要规则：未启用返回 false；schema 隐藏覆盖表级设置；`RESTRICTED_` 前缀天然受限；权限/SQL 命令/hint 分别转大写、大写和小写；配置变量先覆盖，增强安全标志最后设为 `CONFIG`。
 
 实现层面的主要差异是：
 
@@ -120,16 +118,3 @@ Rust 测试覆盖了 Go 测试的权限大小写归一化、schema/表隐藏、�
 - 修改启用/关闭副作用时，要保持“校验失败不发布实例”，并明确系统变量写入失败的处理和回滚顺序；若要求真正原子切换，需要同时设计变量恢复和并发观察语义，而不只是更换指针容器。
 - 修改全局状态或权限集合时，要同步 [`sem_test.rs`](sem_test.rs) 的串行夹具和 [`testhelper.rs`](testhelper.rs) 的清理/锁逻辑。Rust 单元测试必须继续放在独立测试文件，不应嵌入 `sem.rs`。
 - 改动公开兼容行为时，还应同步检查 `pkg/util/sem/compat/sem.rs`、服务启动、会话派发、权限缓存/校验和表达式重写调用点；性能风险主要来自给高频权限/规划路径增加锁竞争、分配或线性扫描。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录 20 个 Go/Rust 文件均已索引。
-- RustCodeGraph `node --file pkg/util/sem/v2/sem.rs`：核对本文件 346 行完整实现及 29 个符号；`callees EnableBy` 确认其到 `Load`、`Store`、`overrideRestrictedVariable`、`buildSEMFromConfig` 的边；`callees buildSEMFromConfig` 确认其到 `buildSEMSqlValidateFunction` 的边。
-- RustCodeGraph `node`：读取 `pkg/util/sem/v2/lib.rs`、`config.rs`、`sem.go`、`sem_test.rs`、`sem_test.go`、`restricted_hint.rs`、`testhelper.rs`、`pkg/util/sem/compat/sem.rs` 以及上述服务、会话、权限和规划器调用片段。
-- RustCodeGraph `callers` 对 Go/Rust 同名及跨 crate 调用未返回有效边，因此用 `rg` 补核实际 Rust 调用点；这部分证据仅用于弥补索引调用边缺口。
-- [`Cargo.toml`](Cargo.toml)：核对 crate 名、`lib.rs` 入口、直接依赖、开发依赖、无 feature 声明，以及 `go-package = "pkg/util/sem/v2"` 的移植映射。
-- [`sem_test.rs`](sem_test.rs)：核对权限、schema/表、变量覆盖、文件启用、串行执行及资源清理的现有回归范围；未运行 Cargo，符合本纯文档任务约束。
-
-交付结构以任务指定命令校验：目标文件存在，且恰好包含“文件定位”至“验证依据”的 11 个固定二级标题。人工复核范围包括：没有把未覆盖路径写成已验证行为，没有复制整段源码，也没有建议把测试嵌入生产源文件。

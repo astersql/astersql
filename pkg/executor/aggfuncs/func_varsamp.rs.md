@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-aggfuncs` crate；`pkg/executor/aggfuncs/Cargo.toml` 将该 crate 的入口设为 `lib.rs`，而 `lib.rs` 以 `pub mod func_varsamp` 暴露本模块。它是 SQL 聚合函数 `VAR_SAMP` 的 Rust 命名门面，不自行实现聚合算法，而是把 `func_varpop.rs` 中两个可复用状态类型以 Go 实现所使用的阶段化名称重新导出。
-
-在完整执行链中，`builder.rs::build` 识别 `FunctionName::VarSamp`，再由 `build_variance` 按 `DISTINCT` 和聚合阶段选择 `AggImplementation::VarSamp`、`VarSampOriginalDistinct` 或 `VarSampPartialDistinct`。运行时状态分配当前直接在 `aggfuncs.rs` 中绑定到 `func_varpop::VarianceState` 或 `func_varpop::DistinctVariance`；因此本文件的别名主要承担公开类型命名、Go/Rust 语义对应以及独立测试入口，而不是运行时工厂的唯一接线点。
+SQL 聚合函数 `VAR_SAMP` 的 Rust 命名门面，不自行实现聚合算法，而是把 `func_varpop.rs` 中两个可复用状态类型以 Go 实现所使用的阶段化名称重新导出。
 
 ## 核心职责
 
@@ -65,8 +63,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 的 `func_varsamp.go` 定义三个具体结构体：`varSamp4Float64` 嵌入 `varPop4Float64`，两个 `DISTINCT` 结构体分别嵌入对应的 var-pop 阶段类型；各自覆盖 `AppendFinalResult2Chunk`，在计数不超过 1 时追加 `NULL`，否则追加 `variance / (count-1)`。Rust 将这部分压缩为对 `VarianceState`/`DistinctVariance` 的公开别名，并把最终公式放在共享的 `sample_variance` 方法中。
-
 Go `builder.go::buildVarSamp` 与 Rust `builder.rs::build_variance` 的阶段选择一致：Complete/Partial1 使用 original distinct，Final/Partial2 使用 partial distinct，DedupMode 不构建实现，非 distinct 的其他模式使用普通样本方差。区别在于 Go 返回实现了 `AggFunc` 的不同对象，Rust builder 返回枚举变体，而运行时再绑定共享状态。
 
 Go `func_varsamp_test.go` 的核心样例是输入 `0..5` 得到 `2.5`，并验证 partial merge；Rust `func_varsamp_test.rs` 保留这两项，还补充空输入、单个非空值夹杂 `NULL`、original/partial distinct 合并和重复值去重后除以 `n-1`。Rust 当前没有在本文件内复刻 Go 的 chunk 追加方法，因此“返回 `None` 等同追加 SQL NULL”仍依赖上层输出适配，不能仅凭别名文件声称完整 chunk 写出行为由此实现。
@@ -78,12 +74,3 @@ Go `func_varsamp_test.go` 的核心样例是输入 `0..5` 得到 `2.5`，并验�
 - 若改变公开别名名称，先搜索 crate 外使用者并考虑保留 `VarSampDistinctFloat64` 兼容导出。类型别名不是新类型，不能用于编译期阻止阶段混用；需要阶段安全时应采用 newtype 并补齐 trait/序列化接线。
 - 新测试必须继续放在独立的 `pkg/executor/aggfuncs/func_varsamp_test.rs`，不要内嵌到生产源文件。至少覆盖普通、merge、空/单值、`NULL`、`DISTINCT`、正负零、NaN 以及大数值精度风险；若触及 builder，再同步 `builder_test.rs` 的阶段选择断言。
 - 兼容风险主要是 SQL `NULL` 边界、Go 浮点 map 的 `±0`/NaN 语义和阶段化 partial state；性能风险主要是 `DISTINCT` 集合增长与重新遍历构造 `VarianceState`，普通路径应继续保持单遍在线累计和常数状态大小。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含目标文件；`files --filter pkg/executor/aggfuncs/func_varsamp.rs` 确认文件及符号计数；`node --file ...func_varsamp.rs` 读取全部 18 行；精确查询 `VarSamp4Float64`、`DistinctVariance`、`VarianceState`、`sample_variance`；`explore 'VarSamp4Float64 VarSampDistinctFloat64 builder.rs func_varpop.rs func_varsamp_test.rs'` 核对更新、merge、最终求值与测试关系。宽泛查询会混入仓库其他同名 `update/merge/result`，本文未采用那些跨模块结果作为证据。
-- Rust 源与入口：`pkg/executor/aggfuncs/func_varsamp.rs`、`func_varpop.rs`、`builder.rs`、`aggfuncs.rs`、`lib.rs`；目标包没有 `pkg/executor/doc.go`。
-- crate 声明：`pkg/executor/aggfuncs/Cargo.toml`，确认包名、`lib.rs` 入口、workspace 内依赖与 porting 元数据。
-- 独立 Rust 测试：`pkg/executor/aggfuncs/func_varsamp_test.rs`；相关 spill 状态证据还由 RustCodeGraph 定位到 `spill_helper_test.rs`。
-- Go 对照：`pkg/executor/aggfuncs/func_varsamp.go`、`func_varsamp_test.go`、`builder.go::buildVarSamp`、`aggfuncs.go` 的 `AggFunc` 编译期实现清单。
-- 本任务是纯文档分析，没有运行 Cargo 或代码测试；结构验收使用任务文件指定命令，要求本文恰好包含上述 11 个固定二级标题。

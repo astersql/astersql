@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-logicalop` crate；crate 边界与依赖由 `pkg/planner/core/operator/logicalop/Cargo.toml` 定义，模块在同目录 `lib.rs` 中以 `mod logical_union_scan` 装配并通过 `pub use logical_union_scan::*` 对外导出。它位于 SQL 规划链的逻辑算子层：`pkg/planner/core/logical_plan_builder_runtime.rs` 在需要把事务本地写集合或内存快照与底层数据源合并时构造 `LogicalUnionScan`，随后优化器处理其谓词、列和属性，`pkg/planner/core/operator/physicalop/physical_union_scan.rs::ExhaustPhysicalPlans4LogicalUnionScan` 再把它物理化为根节点执行的 `PhysicalUnionScan`。
-
-该文件只描述和变换逻辑计划，不执行行合并。真正消费 `Conditions` 与 `HandleCols` 的执行形态在物理 UnionScan 及执行器链路中；因此不能把这里的 `LogicalUnionScan` 理解为事务缓冲区或快照读取器本身。
+`ExplainInfo`、生成文件中的 `Hash64`/`Equals` 以及 `LogicalPlan` trait 实现分别让该节点可解释、可在 Cascades Memo 中稳定判等、可参与通用逻辑优化流程。
 
 ## 核心职责
 
@@ -83,15 +81,13 @@ TiFlash/MPP 是明确边界：逻辑属性强制 `HasTiFlash = false`，基座 `
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_union_scan.go`。两端都包含 `BaseLogicalPlan`、`Conditions` 和 `HandleCols`，都将算子初始化为 UnionScan，并以排序后的条件和句柄生成 EXPLAIN 信息。
+Go 通过返回新的 `base.LogicalPlan` 和 `SetChild` 表示子树替换；Rust 的 `PredicatePushDownPlan(&mut child, ...)` 在盒装 trait 对象位置原地完成同一接线。Rust 返回值只包含残差谓词，因为节点自身通过可变借用保留。
 
-谓词下推语义基本逐分支对应：拆分虚拟列谓词、把普通谓词交给唯一子节点、对子节点 `LogicalTableDual` 提前返回、保存普通谓词到 `Conditions`、把虚拟列谓词追加回残差。Go 通过返回新的 `base.LogicalPlan` 和 `SetChild` 表示子树替换；Rust 的 `PredicatePushDownPlan(&mut child, ...)` 在盒装 trait 对象位置原地完成同一接线。Rust 返回值只包含残差谓词，因为节点自身通过可变借用保留。
+列裁剪也保持 Go 的列集合：父使用列、全部句柄列、`ExtraPhysTblID` 列和条件列，然后递归裁剪子节点。Go 返回自身计划，Rust 原地修改并返回 `Result<()>`。
 
-列裁剪也保持 Go 的列集合：父使用列、全部句柄列、`ExtraPhysTblID` 列和条件列，然后递归裁剪子节点。Go 返回自身计划，Rust 原地修改并返回 `Result<()>`。Rust 独立测试验证子节点 schema 可以变化，而 UnionScan 输出 schema/名称保持原值。
+Rust 额外用 `UnionScanProperties` 表达返回载体，并显式清理 `BaseLogicalPlan` 的缓存布尔值。
 
-属性传播与 Go 一致：无子属性时返回空排序，有子属性时继承第一项 `Orders`，两种情况都清空 TiFlash。Rust 额外用 `UnionScanProperties` 表达返回载体，并显式清理 `BaseLogicalPlan` 的缓存布尔值。
-
-Go 的 `TestDAGPlanBuilderUnionScan` 在事务中插入未提交行后对每条 SQL 运行真实优化并比对黄金计划；Rust `casetest/dag/dag_test.rs` 对应路径建立同类事务 fixture，并在生产 TestKit 路径执行 UnionScan 套件。针对本文件细节的 Rust 测试集中在 `logical_union_scan_test.rs`；同目录没有独立的 `logical_union_scan_test.go`，因此不能声称每个 Rust 单测都有一一对应的 Go 单测。
+针对本文件细节的 Rust 测试集中在 `logical_union_scan_test.rs`；同目录没有独立的 `logical_union_scan_test.go`，因此不能声称每个 Rust 单测都有一一对应的 Go 单测。
 
 ## 扩展指南
 
@@ -106,15 +102,3 @@ Go 的 `TestDAGPlanBuilderUnionScan` 在事务中插入未提交行后对每条 
 - 改变结构字段时还需检查 `logical_plan_builder_runtime.rs` 构造接线、`group_expr.rs` 的类型分派，以及 Go 对照文件和 `casetest/dag` 事务黄金场景。
 
 兼容风险主要是读己之写错误、虚拟列求值位置变化和计划缓存/Memo 等价性错误；性能风险主要是漏裁剪导致扫描额外列、重复克隆表达式以及错误丢失排序属性导致额外 Sort。任何行为修改都应在 `logical_union_scan_test.rs` 增加聚焦回归，并按仓库测试流程补充真实事务规划用例。
-
-## 验证依据
-
-- RustCodeGraph 状态：仓库索引包含 Rust/Go 文件；对 `LogicalUnionScan` 的查询定位到 Rust 结构体、Go 对照类型和 Rust/Go 物理枚举函数。
-- RustCodeGraph 目标文件节点：完整读取 `pkg/planner/core/operator/logicalop/logical_union_scan.rs`，并得到文件级使用者 `pkg/planner/cascades/memo/group_expr.rs`、`pkg/planner/core/operator/logicalop/logical_union_scan_test.rs`、`pkg/planner/core/operator/physicalop/physical_union_scan.rs`。结构体 `callers/callees` 及方法级查询未返回稳定边，故没有据此推断缺少调用者。
-- crate 与模块证据：读取 `pkg/planner/core/operator/logicalop/Cargo.toml` 和 `pkg/planner/core/operator/logicalop/lib.rs`，核对 crate 名、直接依赖、模块装配、公开 re-export 与独立测试模块。
-- 逻辑基座证据：读取 `base_logical_plan.rs` 的 `LogicalPlan`、`PredicatePushDownPlan`、`BaseLogicalPlan`、属性缓存和 Coprocessor 下推规则。
-- 构造与物理化证据：读取 `logical_plan_builder_runtime.rs` 的条件接线和缓存表 UnionScan 构造路径，以及 `physical_union_scan.rs::ExhaustPhysicalPlans4LogicalUnionScan`。
-- Memo 证据：读取 `group_expr.rs` 的 trait 转发、逻辑属性派生、`hash_logical_plan` 和 `equal_logical_plans`；读取 `hash64_equals_generated.rs` 的 UnionScan 哈希/相等实现。
-- Go 对照：完整读取 `logical_union_scan.go`；读取 `casetest/dag/dag_test.go::TestDAGPlanBuilderUnionScan` 的未提交事务优化场景。
-- Rust 测试：完整读取 `logical_union_scan_test.rs`；读取 `issuetest/planner_issue_test.rs` 的 TableDual/NULL 回归，以及 `casetest/dag/dag_test.rs` 的事务 fixture 与真实优化套件入口。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰好包含 11 个固定二级章节，并人工复核所有“当前支持”结论均能回溯到上述符号或路径。

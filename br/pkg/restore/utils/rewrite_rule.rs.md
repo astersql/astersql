@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo crate `astersql-br-pkg-restore-utils`；crate 入口 `br/pkg/restore/utils/lib.rs` 以 `pub mod rewrite_rule` 挂载本模块，并通过 `pub use rewrite_rule::*` 把公开符号扁平导出。它位于 BR 恢复链路的公共工具层：把备份侧表、分区和索引键前缀映射为目标集群前缀，同时为 SST 导入、PiTR 日志恢复、区间合并和切分提供统一的规则生成、校验与应用逻辑。
-
-`br/pkg/restore/utils/Cargo.toml` 将该目录定义为独立 library crate，直接依赖 `astersql-br-pkg-errors`、`astersql-br-pkg-rtree` 和 `astersql-errors`。protobuf、表编码、日志和模型等迁移期依赖则由同 crate 的 `stubs.rs` 门面提供；ID 映射与 CF 名称来自 `misc.rs`。
+由新旧 `model::TableInfo` 生成表级或 record/index 细粒度规则：`GetRewriteRules` 返回聚合集合，`GetRewriteRulesMap` 按旧物理表 ID 分桶，`GetRewriteRuleOfTable` 构造单表集合。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@ crate 内 `lib.rs` 公开再导出这些入口，因此调用方通常通过 cra
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/restore/utils/rewrite_rule.go`，Rust 文件公开结构、方法和自由函数基本逐项同名移植。独立测试 `rewrite_rule_test.rs` 也对应 `rewrite_rule_test.go` 的测试族：文件规则校验、raw/encoded 键、Range、表 ID、三种规则构造、匹配、跨表拒绝、时间过滤及并发读取。
+Rust 用 `Option` 表示 Go 的 nil 规则/键，用 `SharedError` 表示带分类和注释的 Go error。
 
-需要特别保留的 Go 语义包括：`Clone` 只复制 Go 结构体字面量列出的字段并把 TS 留为零；`Append` 只追加规则数据；前缀查找采用第一条匹配；`RewriteAndEncodeRawKey` 模拟 `bytes.Replace(..., 1)`，包括空旧前缀在偏移零插入；`GetRewriteRuleOfTable` 不写 `NewTimestamp`；`RewriteRange` 缺规则只告警。Rust 用 `Option` 表示 Go 的 nil 规则/键，用 `SharedError` 表示带分类和注释的 Go error。
-
-可观察到的实现形态差异是 Rust `RewriteRange` 返回 `Range` 克隆，同时也修改传入的 `&mut Range`；Go 返回原指针。两者对调用方都暴露已改写区间。Rust `RewriteAndEncodeRawKey(None)` 显式编码原键，以复现 Go 对 nil protobuf getter 返回空前缀的效果，而不是解引用空指针。
+可观察到的实现形态差异是 Rust `RewriteRange` 返回 `Range` 克隆，同时也修改传入的 `&mut Range`；Go 返回原指针。Rust `RewriteAndEncodeRawKey(None)` 显式编码原键，以复现 Go 对 nil protobuf getter 返回空前缀的效果，而不是解引用空指针。
 
 ## 扩展指南
 
@@ -93,13 +89,3 @@ crate 内 `lib.rs` 公开再导出这些入口，因此调用方通常通过 cra
 增加 CF 或时间窗口规则时，在 `SetTimeRangeFilter` 中显式定义下界/上界，并补充零 TS、未知 CF、default/write 差异和并发只读测试。修改 `Clone`、`Equal`、`Append` 或展示字段时，要分别判断业务克隆、相等契约、聚合语义和脱敏要求，不能凭字段新增自动扩展。
 
 性能优化可考虑预排序或索引化前缀匹配，但必须维持“首条规则胜出”的兼容语义，并用重叠前缀回归测试证明结果不变。任何日志增强都必须继续使用 `redact::Key` 或 `logutil::RewriteRule`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认仓库索引可用；`explore "br/pkg/restore/utils/rewrite_rule.rs ..."` 确认 28 个 Rust 符号及跨模块调用；`node --file br/pkg/restore/utils/rewrite_rule.rs --offset 1/500` 完整读取 721 行实现；callers 结果确认 `GetRewriteRawKeys`、`GetRewriteEncodedKeys`、`FindMatchedRewriteRule`、`GetRewriteTableID` 的直接上游。
-- 源与模块：`br/pkg/restore/utils/rewrite_rule.rs`、`br/pkg/restore/utils/lib.rs`。
-- crate 边界：`br/pkg/restore/utils/Cargo.toml`。
-- Go 对照：`br/pkg/restore/utils/rewrite_rule.go`。
-- 独立 Rust 测试：`br/pkg/restore/utils/rewrite_rule_test.rs`，覆盖 `test_clone_matches_go_field_selection`、`test_rewrite_and_encode_raw_key_*`、`test_validate_file_rewrite_rule`、`test_rewrite_file_keys`、`test_rewrite_range`、规则生成/匹配/跨表及 `test_set_time_range_filter_race`。
-- Go 测试：`br/pkg/restore/utils/rewrite_rule_test.go`；公共跨模块契约补充见 `br/pkg/restore/utils/parity_test.rs::go_rust_public_contract_matches`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查文档存在且固定章节恰为 11 个，并人工复核本文未把宽松 Range 行为误写为严格文件导入行为。

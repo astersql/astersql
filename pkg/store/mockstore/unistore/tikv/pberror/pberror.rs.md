@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-store-mockstore-unistore-tikv-pberror`，crate 入口是同目录的 `lib.rs`。它位于内嵌 mock TiKV（Unistore）的错误适配层：把 `kvproto::errorpb::Error` 包装成 Rust 错误类型，并生成与 Go protobuf compact text 风格一致的字符串。`lib.rs` 公开再导出 `kvproto::errorpb` 和本文件的全部公开项；根 `pkg/lib.rs` 又在 `store::mockstore::unistore::tikv::pberror` 路径下再导出该 crate。
-
-`Cargo.toml` 只依赖固定 tag `v0.0.2-aster.20260929` 的 `kvproto`（启用 `protobuf-codec`）和精确版本 `protobuf = 2.8.0`。父 crate `pkg/store/mockstore/unistore/tikv/Cargo.toml` 仅在 Windows 目标依赖此 crate；仓库级 facade 则无条件声明它。仓库搜索未发现测试之外直接构造或调用 `PBError` 的 Rust 生产代码，因此当前事实是“公共适配类型和 facade 已存在，行为由独立测试覆盖”，不能据此断言它已进入 mock TiKV 的生产请求错误主链。
+`PBError` 保存一个可空的 `errorpb::Error`，提供 Go 风格的 `Error()`，并实现 Rust 的 `Display` 与 `std::error::Error`。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@
 
 ## 与 Go 版本的对应关系
 
-同目录 `pberror.go` 定义 `type PBError struct { RequestErr *errorpb.Error }`，其 `Error()` 直接返回 `re.RequestErr.String()`。Rust 版本保留类型名、字段名和方法名，并以 `Option<errorpb::Error>` 表达 Go 指针的可空性；同时额外实现 `Display` 和 `std::error::Error`，便于进入 Rust 错误生态。
+Rust 版本保留类型名、字段名和方法名，并以 `Option<errorpb::Error>` 表达 Go 指针的可空性；同时额外实现 `Display` 和 `std::error::Error`，便于进入 Rust 错误生态。
 
-关键差异是 Go 依赖生成 protobuf 类型自身的 `String()`，Rust 则在 `compact_text_string` 中手工复刻 compact text。这个差异解释了大量私有写入器，也意味着升级 `kvproto` 时必须人工检查字段覆盖与字段名大小写。当前测试特别确认 Go 字段名中的例外：`RecoveryInProgress`、`FlashbackInProgress`、`FlashbackNotPrepared` 保持大写开头，而其他字段如 `server_is_busy` 使用 snake case。
+关键差异是 Go 依赖生成 protobuf 类型自身的 `String()`，Rust 则在 `compact_text_string` 中手工复刻 compact text。这个差异解释了大量私有写入器，也意味着升级 `kvproto` 时必须人工检查字段覆盖与字段名大小写。
 
-Go 中对 nil `RequestErr` 调用生成消息的 `String()` 会得到 `"<nil>"`；Rust 通过显式 `None` 分支复现。`migration_aster_unit_test.rs` 同时固定普通 message、嵌套 `ServerIsBusy`、空消息、nil 和标准 Error trait；`pberror_test.rs` 固定三个 flashback 相关字段名。
+Go 中对 nil `RequestErr` 调用生成消息的 `String()` 会得到 `"<nil>"`；Rust 通过显式 `None` 分支复现。
 
 ## 扩展指南
 
@@ -92,14 +90,3 @@ Go 中对 nil `RequestErr` 调用生成消息的 `String()` 会得到 `"<nil>"`�
 测试逻辑必须保持在独立文件中，不应嵌回 `pberror.rs`。一般语义对齐扩展 `migration_aster_unit_test.rs`；字段名或特定 Region 错误回归可扩展 `pberror_test.rs`。至少覆盖：默认值与非默认值、字符串/字节转义、`None` 与空消息、repeated 顺序及零值、嵌套 Region/Peer，以及 Go 实际输出的精确字符串。
 
 兼容风险主要是错误文本被日志、断言或上层分类逻辑依赖；不要随意改变字段顺序、空格、尖括号、大小写或默认值省略规则。性能上避免为单字段引入多次中间字符串；当前实现向同一缓冲区线性追加。若要把 `PBError` 接入新的生产路径，应先确认 crate 的目标条件与 facade 导入方式，并新增独立调用路径测试，而不能把“可再导出”视为“已经接线”。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标目录的 `pberror.rs`、`lib.rs`、两份 Rust 测试和 Go 对照均在索引中。
-- RustCodeGraph 精确节点：`pberror.rs::PBError`、`pberror.rs::Error`、`pberror.rs::compact_text_string`、`pberror.rs::peer_fields`、`pberror.rs::region_fields`。关键边为 `Error -> compact_text_string`、`compact_text_string ->` 字段写入器/嵌套序列化器、`Display::fmt -> Error`。
-- 源码：`pkg/store/mockstore/unistore/tikv/pberror/pberror.rs`（完整 355 行）与 crate 入口 `pkg/store/mockstore/unistore/tikv/pberror/lib.rs`。
-- crate/装配：`pkg/store/mockstore/unistore/tikv/pberror/Cargo.toml`、`pkg/store/mockstore/unistore/tikv/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照：`pkg/store/mockstore/unistore/tikv/pberror/pberror.go`。
-- 独立 Rust 测试：`pkg/store/mockstore/unistore/tikv/pberror/migration_aster_unit_test.rs`、`pkg/store/mockstore/unistore/tikv/pberror/pberror_test.rs`；同目录不存在 `pberror_test.go`。
-- 全仓精确搜索确认 `PBError` 的非测试生产定义与 facade 再导出，但未发现其他生产 Rust 构造点；因此本文未宣称存在尚未验证的运行时调用链。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅检查文件存在及固定十一个二级标题，并人工复核上述源码事实。

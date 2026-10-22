@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-memo` crate，是 Cascades Memo 为等价组分配身份编号的最小状态组件。crate 入口 `pkg/planner/cascades/memo/lib.rs` 以私有模块 `group_id_generator` 装入它，再通过 `pub use group_id_generator::*` 导出 `GroupID` 和 `GroupIDGenerator`。`pkg/planner/cascades/memo/Cargo.toml` 将该 crate 的库入口指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/planner/cascades/memo"` 明确记录对应 Go 包。
-
-它位于 Memo 建图主链的编号环节：`Memo::NewMemo` 创建一个默认生成器，`Memo::NewGroup` 每创建一个新 `Group` 就调用 `GroupIDGenerator::NextGroupID`，把结果写入 `Group::groupID`，同时登记到 `Memo::groupID2Group`。因此，此文件不负责判断表达式是否等价或创建 Group 的其他字段，只负责在一个 Memo 生命周期内提供编号。
+编号的唯一性范围是单个生成器在未发生 `u64` 回绕、且未被 `reset` 的生命周期内；该类型不宣称跨 Memo、跨进程或跨线程提供全局唯一 ID。
 
 ## 核心职责
 
@@ -89,12 +87,8 @@ RustCodeGraph 对目标文件识别到 5 个符号，但其 `callers` / `callees
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/memo/group_id_generator.go`，相关测试是 `group_id_generator_test.go`。
-
 - Go `type GroupID uint64` 是独立定义类型；Rust `type GroupID = u64` 是别名。这是类型系统强度上的差异，但当前数值表示与运算语义相同。
-- 两端 `GroupIDGenerator` 都只保存一个无符号 64 位 `id`，零值/默认值均从 `0` 开始。
 - Go `NextGroupID` 执行 `gi.id++` 后转换成 `GroupID` 返回；Rust `NextGroupID` 用 `wrapping_add(1)` 后返回。默认序列、手动设为 `100` 后的序列和最大值回绕序列一致。
-- Go 测试因位于同包可直接改写私有字段 `g.id`；Rust 字段保持私有，以 `#[cfg(test)] pub(crate) set` 提供等价测试能力，避免生产 API 暴露任意改号入口。
 - Rust 额外提供 `reset`，供 Rust `Memo::Destroy` 复用同一 Memo 实例时恢复编号；Go 的同名生成器文件没有该方法。该差异是 Rust Memo 生命周期接线，不改变 `NextGroupID` 的移植语义。
 - Go 生产调用点是 `memo.go` 的 `Memo.newGroup`（源码中表现为给 `group.groupID` 调用生成器赋值）；Rust 对应点是 `memo.rs` 的 `Memo::NewGroup`。
 
@@ -109,18 +103,3 @@ Rust 独立测试还显式断言回绕到 `0` 后再次调用得到 `1`，覆盖
 测试应继续放在独立文件 `pkg/planner/cascades/memo/group_id_generator_test.rs`，不要内嵌到生产源文件。至少同步覆盖默认首值、连续递增、非零起点、最大值边界与重置后的首值；若改动影响 Memo 接线，还应扩展独立的 `memo_test.rs`，验证 Group 映射和 Destroy 后复用。需要保持 Go 对齐时，同时核对 `group_id_generator.go` 与 `group_id_generator_test.go`，明确记录有意差异。
 
 性能上该入口位于每个新 Group 的创建路径，当前为常数时间、无分配；加入锁、随机数、持久化或全局协调都会改变热路径成本及确定性。并行化还会使编号顺序变得不可预测，应先确认测试和调试输出是否依赖创建顺序。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/cascades/memo` 确认目标 Rust/Go 源与独立测试均已索引。
-- RustCodeGraph `explore "pkg/planner/cascades/memo/group_id_generator.rs GroupIdGenerator next_group_id"`：读取目标文件全貌、对应 Go 文件和 Rust 测试，并确认主要定义及测试覆盖。
-- RustCodeGraph `query GroupIDGenerator`、`query NextGroupID`：确认 Rust/Go 定义及独立测试符号；对目标 `NextGroupID` 执行 `callers` / `callees` 未得到边，因此又用精确引用检索补证。
-- `pkg/planner/cascades/memo/group_id_generator.rs`：`GroupID`、`GroupIDGenerator`、`NextGroupID`、`reset`、条件编译的 `set` 及回绕实现。
-- `pkg/planner/cascades/memo/lib.rs` 与 `Cargo.toml`：模块装配、公开再导出、crate 名称/入口、依赖边界和 Go 包映射。
-- `pkg/planner/cascades/memo/memo.rs`：生成器构造、`Memo::NewGroup` 分配调用、`Memo::Destroy` 重置调用、Group 列表和 ID 映射登记。
-- `pkg/planner/cascades/memo/group.rs`：ID 字段及 `GetGroupID`、`Hash64`、`Equals` 消费语义。
-- `pkg/planner/cascades/memo/group_id_generator_test.rs`：默认序列、`set(100)` 和 `u64::MAX` 回绕的 Rust 证据。
-- `pkg/planner/cascades/memo/group_id_generator.go`、`group_id_generator_test.go`、`memo.go`：Go 定义、溢出测试与生产调用点的移植对照。
-- 全仓精确引用检索：确认 `reset` 仅由 `Memo::Destroy` 使用，`set` 仅由独立 Rust 测试使用，`NextGroupID` 的 Rust 生产调用点为 `Memo::NewGroup`。
-
-本任务是纯文档分析，按计划未运行 Cargo。结构验证要求本文恰有“文件定位”至“验证依据”共 11 个固定二级标题；事实复核重点是“为何存在、如何运行、如何安全扩展”均能追溯至上述真实符号和文件。

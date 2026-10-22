@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-pdutil` library crate；crate 边界由 [`br/pkg/pdutil/Cargo.toml`](./Cargo.toml) 声明，模块入口 [`br/pkg/pdutil/lib.rs`](./lib.rs) 以 `pub mod utils` 装载它，并通过 `pub use utils::*` 将其公开符号平铺到 crate 根。它对应同目录 Go 文件 [`br/pkg/pdutil/utils.go`](./utils.go)，位于 BR 与 PD 控制面交互的辅助层，而不是 SQL 执行或存储数据面。
-
-文件同时承载两组能力：一组是 PD placement rule 的响应模型、拉取和按表匹配；另一组是调度器暂停操作使用的可撤销闭包契约。后者已由 [`br/pkg/pdutil/pd.rs`](./pd.rs) 的调度器恢复流程直接使用；仓库搜索未发现 `GetPlacementRules`、`SearchPlacementRule` 的 Rust 生产调用者，它们当前是已导出的迁移 API，并由独立测试验证。该目录没有 `doc.go`；包级 Rust 定位以 `lib.rs` 的模块说明为准。
+用 `UndoFunc` 表达可跨调用边界持有、线程安全且可能失败的恢复操作，并以 `Nop`/`nop_undo` 提供无副作用实现。
 
 ## 核心职责
 
@@ -84,9 +82,6 @@ memcomparable 编码每 8 个数据字节追加一个 marker。最后一组不�
 
 ## 与 Go 版本的对应关系
 
-[`utils.go`](./utils.go) 提供 `UndoFunc`、包级 `Nop`、`GetPlacementRules` 和 `SearchPlacementRule`。Rust 对应关系如下：
-
-- Go `UndoFunc func(context.Context) error` 对应线程安全、共享所有权的 Rust `Arc<dyn Fn(Context) -> Result<...>>`；Go 变量 `Nop` 对应 Rust 函数 `Nop` 加构造器 `nop_undo`。
 - Go 在 `GetPlacementRules` 内创建 `httputil` 客户端并负责 request/response body；Rust 把网络边界抽成 `PlacementHttpClient`，以 `use_tls: bool` 替代 `*tls.Config` 是否为空。URL scheme、路径、412、非 200 和 JSON 分支保持一致。
 - Go 直接使用 `pdtypes.Rule`、`pdtypes.PeerRoleType`；Rust 在本文件中定义兼容模型。Rust 的未知枚举分支显式保留新字符串，并完整覆盖测试所需的 Rule 响应字段。
 - Go 调用公共 `codec.DecodeBytes` 与 `tablecodec.DecodeTableID`；Rust 在本文件内实现所需子集，并额外暴露 `encode_bytes`、`decode_table_id`、`table_start_key_hex` 作为迁移和测试辅助。
@@ -102,13 +97,3 @@ Go 同目录没有专门的 `utils_test.go`；本仓库的 Rust 行为证据来�
 - 修改键编解码前应与 TiDB `pkg/util/codec`、`pkg/tablecodec` 的 Go 行为逐字节核对，重点测试空输入、8 字节整倍数、非法 marker/padding、负 table ID 和 keyspace 前缀。相关测试必须继续放在独立 `utils_test.rs` 或 `parity_test.rs`，不要内嵌到源文件。
 - 调整 `UndoFunc` 签名会影响 `pd.rs` 的所有恢复闭包和调用者；需检查捕获对象是否仍满足 `Send + Sync`，以及失败时是否仍能提供安全的 no-op 回滚。
 - 当前 placement API 未发现 Rust 生产调用者；接线新调用点时应从 crate 根导入公开 API，并用真实客户端实现 trait，而不是绕过状态码与错误映射逻辑。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用；`node --file br/pkg/pdutil/utils.rs --offset 1 --limit 400` 返回完整 373 行、全部类型/函数及文件级使用者。
-- RustCodeGraph `query GetPlacementRules --kind function` 与 `query SearchPlacementRule --kind function`：均确认 Go/Rust 两个同名定义；`query table_start_key_hex` 确认唯一 Rust 定义。通用 `callers/callees` 因 Go/Rust 同名解析未在合理时间内返回，故调用关系改由图的文件使用者结果和精确仓库引用核验。
-- 已读生产与声明文件：`br/pkg/pdutil/utils.rs`、`br/pkg/pdutil/Cargo.toml`、`br/pkg/pdutil/lib.rs`、`br/pkg/pdutil/pd.rs`。
-- 已读 Go 对照：`br/pkg/pdutil/utils.go`、`br/pkg/pdutil/pd.go`。
-- 已读独立 Rust 测试：`br/pkg/pdutil/utils_test.rs`、`br/pkg/pdutil/parity_test.rs`。前者覆盖未知 role/完整 Rule 字段和 API V2 前缀；后者覆盖坏键跳过、角色过滤、memcomparable 常量、HTTP/HTTPS URL、412、非 200 错误分类和 200 JSON 成功路径。
-- 全仓精确引用搜索确认：`UndoFunc`/`nop_undo` 的生产使用在 `pd.rs`；`GetPlacementRules`/`SearchPlacementRule` 的 Rust 直接调用位于上述两个测试文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另执行任务指定的 11 章节结构验证、Markdown diff 检查和仅目标文件的 Git 暂存检查。

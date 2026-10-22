@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate（见同目录 `Cargo.toml`），由 `lib.rs` 以公开模块 `import_pipeline` 暴露。它是 ingest 控制面的 Region Job 流水线实现：把 `engineapi::Engine::LoadIngestData` 产生的批次转换为 `RegionJob`，交给可调并发的 worker pool，分发成功或可重试结果，并在返回前完成 worker、任务引用与底层 ingest data 的清理。
-
-真实入口有三类：`local.rs` 的本地 `Engine` 导入使用 `LocalEngineSource`/`ClientWorker`，同文件的外部引擎导入使用 `ExternalEngineSource`/`ExternalClientWorker`；`pkg/dxf/importinto/write_ingest_backend.rs::ImportEngine` 则直接组装 `JobGenerator` 与分阶段 `RegionJobWorker` 后调用 `do_import`。因此它不是独立服务入口，而是 Local Backend 和分布式 Import Into 写入后端之间的通用执行内核。
+`do_import` 统一管理加载、生成、平衡、执行、结果分发、延迟重试、取消传播和最终汇总，成功时返回 `(导入字节数, 导入 KV 数)`。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照主体是 `pkg/ingestor/ingestctrl/local.go::Backend.doImport`，dispatcher/retryer/balancer 位于 `region_job.go`。两版均保持 `prepare/generate -> optional storeBalancer -> workerpool -> dispatcher -> retryer` 拓扑、job ref/done 守恒、错误取消传播，以及“worker pool 完成清理后才确认成功”的退出协议。
-
-Rust 将 Go 的 `WaitGroup` 具体化为 `Group.pending + Condvar`，将通道竞争中的所有权显式化为 `OwnedJob::Drop`，并用 scoped threads/join 表达 goroutine error group 的生命周期。Go 的 failpoint 边界在 Rust 中由 `ImportOptions` hook 注入。Go dispatcher 对不可达 `needRescan` 执行 panic；Rust 返回 `InvalidData`，避免在调度线程中扩大 panic。当前 Rust 常量 `MAX_RETRIES` 为 30，而所读 Go `local.go` 的一般 `maxRetryTimes` 为 20、dispatcher 使用 `MaxWriteAndIngestRetryTimes`；因此不要假设两处数值常量完全相同，应以各自源码和回归测试为准。
+Rust 将 Go 的 `WaitGroup` 具体化为 `Group.pending + Condvar`，将通道竞争中的所有权显式化为 `OwnedJob::Drop`，并用 scoped threads/join 表达 goroutine error group 的生命周期。Go dispatcher 对不可达 `needRescan` 执行 panic；Rust 返回 `InvalidData`，避免在调度线程中扩大 panic。当前 Rust 常量 `MAX_RETRIES` 为 30，而所读 Go `local.go` 的一般 `maxRetryTimes` 为 20、dispatcher 使用 `MaxWriteAndIngestRetryTimes`；因此不要假设两处数值常量完全相同，应以各自源码和回归测试为准。
 
 本文件还包含 Rust 本地适配层（`LocalEngineSource`、`LocalData`、`DataIter`），Go 本地 `Engine` 自身已直接实现 `LoadIngestData`，所以并非逐类型一一对应，但对外 `engineapi` 语义相同。
 
@@ -94,12 +90,3 @@ Rust 将 Go 的 `WaitGroup` 具体化为 `Group.pending + Condvar`，将通道�
 - 新增可重试错误信息时要填充 `last_retryable_cause`，以便重试耗尽后保留具体错误类型；同时更新 `local_test.rs` 的重试上限与清理断言。
 - 修改 `LocalData` 范围语义或迭代器时，应保持 `[lower, upper)`、取消感知及 `First/Valid/Next` 协议，并补充独立测试覆盖空范围、边界键和取消。
 - 性能风险主要在 1ms 轮询、快照 KV 克隆、外部 generator 串行化、balancer 无背压和高并发 worker；兼容性风险集中于 `engineapi`/workerpool trait 契约和 Go 退出顺序。
-
-## 验证依据
-
-- RustCodeGraph：`files --filter pkg/ingestor/ingestctrl/import_pipeline.rs` 确认文件已索引且含 89 个符号；`node --file ... --offset 1/495` 读取全部 824 行；`query do_import --kind function` 定位主入口；`callees import_pipeline.rs::do_import` 核对 `Group::fail`、`OwnedJob`、`Worker`、`RunningPool`、`dispatch_results` 等内部边。精确 callers 查询未返回可用结果，故调用方改用源码引用核对。
-- 生产源码：`pkg/ingestor/ingestctrl/import_pipeline.rs`、`lib.rs`、`local.rs`、`job_worker.rs`、`region_job.rs`，以及 `pkg/dxf/importinto/write_ingest_backend.rs`。
-- crate 边界：`pkg/ingestor/ingestctrl/Cargo.toml` 的 `[lib] path = "lib.rs"`、直接依赖与 `package.metadata.porting.go-package`。
-- Go 对照：`pkg/ingestor/ingestctrl/local.go::Backend.doImport` 与 `pkg/ingestor/ingestctrl/region_job.go::{dispatcher, regionJobRetryer, storeBalancer}`。
-- 独立 Rust 测试：`pkg/ingestor/ingestctrl/local_test.rs` 的 `context_cancellation_waits_for_running_workers`、`dispatcher_handles_error_shutdown_when_result_channel_closes`、`dispatcher_propagates_context_cancellation`、`import_pipeline_marks_success_after_worker_cleanup`、`import_pipeline_retains_error_set_during_worker_release`、`import_pipeline_recovers_worker_panic_and_releases_data`、`import_pipeline_generation_error_cancels_loader`、`import_pipeline_retry_limit_preserves_error_and_releases_data`、`dispatcher_cancellation_interrupts_open_result_channel`、`external_import_pipeline_tunes_and_closes_actual_region_workers`；Go 语义测试位于 `local_test.go` 和 `region_job_test.go`。
-- 本任务只做文档分析，按计划不运行 Cargo；交付前仅执行任务规定的文件存在与 11 个固定二级标题结构校验，并人工复核未把未验证的图查询结果写成事实。

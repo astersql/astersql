@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate，并由 `pkg/domain/lib.rs` 以公开模块 `ruv2_reporter` 导出。它位于资源组消费上报实现与 `Domain` 生命周期之间：`Domain` 只保存一个对象安全的 RU v2 上报接口，而不直接依赖某个具体资源组控制器类型。crate 边界和依赖分别由 `pkg/domain/Cargo.toml` 的 `[lib] path = "lib.rs"` 与 `astersql-resourcegroup = { path = "../resourcegroup" }` 证明。
-
-文件仅定义边界接口和适配器，不计算 RU、不选择资源组，也不拥有发布时机。实际发布判断位于 `pkg/executor/statement_ru_result.rs::StatementRUContextSink::consumption`，session 侧转发位于 `pkg/session/runtime/scan_adapter_runtime.rs::ReportRUV2Consumption`；DDL job 的 RU 另由 `pkg/session/runtime/system_session.rs::report_ddl_job_ru` 走同一 `Domain` 槽位。
+当前仓库事实是：`ResourceGroupReporterBridge` 只有定义和 trait 实现，`rg` 未找到生产或测试构造点。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@ Domain 槽位为 `None` 时，上游使用 `if let Some(...)` 跳过上报。Dom
 
 ## 与 Go 版本的对应关系
 
-Go 的直接语义来源是 `pkg/resourcegroup/checker.go::ConsumptionReporter`。其 `ReportRUV2Consumption(resourceGroupName string, tikvRUV2, tidbRUV2, tiflashRUV2 float64)` 与 Rust 的资源组名加三个 `f64` 参数一一对应；`pkg/resourcegroup/checker.rs::ConsumptionReporter` 已移植这两个 Go 方法形状。
+Rust 因 `Domain` 与资源组具体类型之间需要对象安全边界，增加了本文件 trait、Domain 可选槽位和桥接器；这是 Rust 特有接线，不是 Go 同路径文件的逐字结构。
 
-Go 的常规 SQL 路径在 `pkg/session/session.go::GetDistSQLCtx` 中从 Domain 的资源组控制器取得 `resourcegroup.ConsumptionReporter`，放入 `DistSQLContext.RUConsumptionReporter`；`pkg/executor/statement_ru_result.go` 检查 context、reporter 和非空资源组名后直接调用它。Rust 因 `Domain` 与资源组具体类型之间需要对象安全边界，增加了本文件 trait、Domain 可选槽位和桥接器；这是 Rust 特有接线，不是 Go 同路径文件的逐字结构。
-
-Rust 当前只在显式调用 `bind_ruv2_consumption_reporter` 后具备该能力，且仓库内没有 `ResourceGroupReporterBridge` 的构造点。相较 Go 从 controller 自动取得 reporter 的路径，这一自动绑定仍是未验证/未接线状态。`pkg/executor/statement_ru_plan_walk_test.rs::go_merge_20_187_195_197_production_ru_unbridged_sql_has_no_estimated_publication` 还刻意保留并验证部分 canonical dispatch 分支不发布伪造 RU 的现状。
+Rust 当前只在显式调用 `bind_ruv2_consumption_reporter` 后具备该能力，且仓库内没有 `ResourceGroupReporterBridge` 的构造点。
 
 ## 扩展指南
 
@@ -84,11 +80,3 @@ Rust 当前只在显式调用 `bind_ruv2_consumption_reporter` 后具备该能�
 - 若只改变 RU 计算、资源组选择或发布时机，应修改 executor/session 对应符号，而不是在本适配层加入计算逻辑。保持桥接器为无状态、原样委托可减少重复策略。
 - 测试应继续放在独立文件。适配器本身新增行为时，宜新增同目录独立 `pkg/domain/ruv2_reporter_test.rs` 并在模块入口按现有测试组织方式接入；跨层行为则同步扩展 `pkg/session/runtime/scan_adapter_runtime_test.rs` 和 `pkg/executor/statement_ru_plan_walk_test.rs`。至少覆盖四参数原样转发、`None` 分支、重新绑定/解绑，以及所需的并发语义。
 - 性能上，每次 Domain 获取都会克隆一次 `Arc`，实际 reporter 调用可能位于 statement 完成热路径。新增锁、分配或同步 I/O 前应评估尾延迟；兼容性上必须保留 Go 的 TiKV/TiDB/TiFlash 参数顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/domain/ruv2_reporter.rs` 显示目标文件含 6 个符号；`node --file ... --offset 1 --limit 400` 读取完整 21 行并列出 session runtime 使用点；`query`/`node` 核对 `RUV2ConsumptionReporter`、`ResourceGroupReporterBridge` 和 `report_ruv2_consumption`；`callees report_ruv2_consumption` 核对委托边。
-- 源码与配置：`pkg/domain/ruv2_reporter.rs`、`pkg/domain/lib.rs`、`pkg/domain/Cargo.toml`、`pkg/domain/domain.rs`、`pkg/resourcegroup/checker.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/session/runtime/system_session.rs`、`pkg/executor/statement_ru_result.rs`。
-- Go 对照：`pkg/resourcegroup/checker.go`、`pkg/session/session.go`、`pkg/executor/statement_ru_result.go`。
-- 独立测试：`pkg/session/runtime/scan_adapter_runtime_test.rs::canonical_adapter_ruv2_reports_through_domain_consumption_service` 验证可用性和四参数转发；`pkg/executor/statement_ru_plan_walk_test.rs::go_merge_20_187_195_197_production_ru_canonical_sql` 验证已接线路径单次发布，`go_merge_20_187_195_197_production_ru_unbridged_sql_has_no_estimated_publication` 验证未接线路径不伪造上报；`pkg/resourcegroup/migration_aster_unit_test.rs::consumption_reporter_forwards_both_go_report_shapes` 验证下游 trait 的 Go 对齐形状。另参考 `pkg/executor/statement_ru_reporting_test.go` 的 Go reporter 测试。
-- 本任务仅新增文档，按计划不运行 Cargo。最终使用任务指定的结构命令验证恰有 11 个固定二级标题，并人工复核“文件为何存在、如何运行、如何安全扩展”均有直接证据支撑。

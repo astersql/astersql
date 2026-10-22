@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`restore.rs` 是 `astersql-br-pkg-task` crate 的恢复任务总控模块。crate 根 `br/pkg/task/lib.rs` 以 `#[path = "restore.rs"] pub mod restore` 挂载它，并通过 `pub use restore::*` 将公开符号平铺给 `br/cmd` 等调用方；`br/pkg/task/Cargo.toml` 将该 crate 标为对应 Go 包 `br/pkg/task` 的 library port，并依赖 `astersql-br-pkg-stream`、`astersql-br-pkg-restore`、`astersql-br-pkg-checkpoint`、`astersql-br-pkg-conn` 等瘦 BR crate。
-
-文件对应 Go 实现 `br/pkg/task/restore.go`，但不是完整等价替换：配置、flag、校验、DDL 过滤、PiTR 表追踪和一个可执行的快照恢复最小主链已经存在；Go 版本中的 etcd/PD 任务注册、冲突检测、Domain、真实 TiKV/TiFlash 查询、完整 checkpoint/PiTR 编排及 abort 清理仍未全部移植。源码模块注释也明确说明“实际拉数/导入在其它模块”，因此本文件应理解为恢复配置与公共策略的归属点，加上当前瘦运行环境中的任务编排入口，而不是整个 BR 恢复子系统的唯一实现。
-
-直接上游是 `br/cmd/br/restore.rs::runRestoreCommand`：解析 `RestoreConfig`，point restore 再解析 stream flags，最后调用 `RunRestore`；中止入口是 `br/cmd/br/abort.rs::runAbortRestoreCommand`，最终调用 `RunRestoreAbort`。独立 Rust 测试由 `br/pkg/task/lib.rs` 在 `cfg(test)` 下挂载 `restore_test.rs`、`restore_nokit_test.rs`、`config_test.rs` 和 `restore_lifecycle_test.rs`。
+用 `RestoreCommonConfig` 与 `RestoreConfig` 承载公共恢复配置、快照/PiTR 参数、EBS 参数、checkpoint 管理器、恢复存储和表追踪状态；通过 `ParseFromFlags`、`ParseStreamRestoreFlags`、`Adjust` 形成可执行配置。
 
 ## 核心职责
 
@@ -100,8 +96,6 @@ RustCodeGraph 对该文件给出的文件级 used-by 是 `br/pkg/task/restore_te
 
 ## 与 Go 版本的对应关系
 
-对应文件为 `br/pkg/task/restore.go`。以下部分基本保持同名和主要控制流：恢复命令名及大部分默认 flag、`RestoreCommonConfig.adjust`、配置解析与默认回填、不可变配置哈希、库表存在性检查、空间估算、DDL job 血缘过滤与 blocklist、collation 检查、TiFlash/聚簇索引预检、PiTR rename/partition exchange 追踪。
-
 重要差异必须在维护时显式考虑：
 
 - Go `RestoreConfig` 嵌入真实 TiDB、PD、checkpoint、registry、table mapping 等对象；Rust 使用本地 stubs、简化模型和部分可选字段，字段集合并非一一等价。
@@ -123,10 +117,3 @@ RustCodeGraph 对该文件给出的文件级 used-by 是 `br/pkg/task/restore_te
 - 完善 `RunRestore` 时优先在已有 `restore_lifecycle`、`common` 和专用 restore crate 上接线。资源获取后立即明确关闭顺序，并为每个错误分支验证 manager、progress、checkpoint manager 的回收。
 - 补齐 abort 时不能复用当前成功桩作为完成标准；至少要对照 Go 的 operation context、storage/log info、registry 查询和暂停任务删除，并新增独立测试证明远端状态发生预期变化。
 - 所有 Rust 行为变更应保持文件顶部 AsterSQL/PingCAP 版权注释；完成后运行 `cargo fmt --all`。本说明任务本身不修改 Rust，也按计划不运行 Cargo。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/task/restore_test.rs`、`restore_lifecycle_test.rs`、`restore_name_route_test.rs` 和 `common_test.rs`；后者直接调用 FilterRestoreFiles。路由解析/限制定义在 restore_name_route.rs，模块由 task/lib.rs 装配。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

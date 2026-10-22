@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/importsdk/error.rs` 属于 Cargo 包 `astersql-importsdk`；包入口 `pkg/importsdk/lib.rs` 以 `mod error` 装入该模块，并通过 `pub use error::*` 把其中的公开静态量提升为 crate 公共 API。这个文件不执行导入，也不定义控制流入口，而是为文件扫描、schema 创建、通配符生成、导入作业管理和 `IMPORT INTO` SQL 生成提供统一的错误分类标识。
-
-`pkg/importsdk/Cargo.toml` 直接依赖 `astersql-errors`，本文件只使用该依赖和标准库 `std::sync::LazyLock`。文件中没有 feature gate、条件编译项、函数、trait、结构体或枚举；全部业务内容是 13 个 `pub static` 哨兵错误。
+这个文件不执行导入，也不定义控制流入口，而是为文件扫描、schema 创建、通配符生成、导入作业管理和 `IMPORT INTO` SQL 生成提供统一的错误分类标识。
 
 ## 核心职责
 
@@ -84,9 +82,9 @@ RustCodeGraph 的 `files --filter pkg/importsdk` 确认 `error.rs` 位于该模�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/importsdk/error.go`。Go 与 Rust 均定义同名的 13 个包级错误，固定消息逐项一致；Rust 用 `LazyLock<SharedError>` 表达 Go 包初始化时由 `errors.New` 创建的变量。
+Go 与 Rust 均定义同名的 13 个包级错误，固定消息逐项一致；Rust 用 `LazyLock<SharedError>` 表达 Go 包初始化时由 `errors.New` 创建的变量。
 
-主要语义对应如下：Go 的 `errors.Annotate/Annotatef` 对应 Rust `astersql_errors::Annotate`（部分调用点用局部 helper 统一 unwrap）；Go 的 `errors.Is`/测试中的 `require.ErrorIs` 意图，在 Rust 测试中由 `errors::ErrorEqual` 或稳定消息断言表达。`file_scanner.go`、`job_manager.go`、`pattern.go`、`sql_generator.go` 与同名 Rust 文件保持相同错误分支；例如 Go 和 Rust 都把空 job 单行查询映射为相应哨兵，同时把 group job 列表的空结果保留为合法空列表。
+主要语义对应如下：Go 的 `errors.Annotate/Annotatef` 对应 Rust `astersql_errors::Annotate`（部分调用点用局部 helper 统一 unwrap）；Go 的 `errors.Is`/测试中的 `require.ErrorIs` 意图，在 Rust 测试中由 `errors::ErrorEqual` 或稳定消息断言表达。
 
 差异主要是语言所有权：Go 错误接口可直接返回包级变量；Rust 必须克隆 `SharedError` 才能返回拥有值。该克隆是 `Arc` 克隆，不是语义简化。另一个细微差异是 Rust 的 `ErrWildcardNotSpecific` 注解消息不带 Go 版本末尾的句点，但根哨兵消息本身一致，分类语义不受影响。
 
@@ -101,14 +99,3 @@ RustCodeGraph 的 `files --filter pkg/importsdk` 确认 `error.rs` 位于该模�
 5. 若新增错误来自新的外部能力，应在 `Cargo.toml` 明确依赖；当前文件仅需已有的 `astersql-errors`，不应为错误目录引入与业务实现耦合的依赖。
 
 性能风险很低，主要是首次初始化和 `Arc` clone；正确性风险集中在错误分类错用、cause 丢失和敏感上下文泄漏；兼容风险集中在符号名与固定消息变化。
-
-## 验证依据
-
-- 目标源码：`pkg/importsdk/error.rs`，确认 13 个公开 `LazyLock<SharedError>`、固定消息、无条件编译和无其他逻辑。
-- crate 边界：`pkg/importsdk/Cargo.toml`、`pkg/importsdk/lib.rs`，确认包名、`astersql-errors` 依赖、模块装配与公开再导出。
-- Rust 调用点：`pkg/importsdk/file_scanner.rs`、`job_manager.rs`、`pattern.rs`、`sql_generator.rs`。
-- Rust 独立测试：`pkg/importsdk/file_scanner_test.rs`（table/schema 分支与 `ErrorEqual`）、`job_manager_test.rs`（无 job ID、job/group 未找到、空 group key）、`pattern_test.rs`（空文件列表）、`sql_generator_test.rs`（多个 `FIELDS_DEFINED_NULL_BY`）。未发现同名 `error_test.rs`，测试按消费模块分布。
-- Go 对照：`pkg/importsdk/error.go` 及同目录 `file_scanner.go`、`job_manager.go`、`pattern.go`、`sql_generator.go`；相关测试为 `file_scanner_test.go`、`job_manager_test.go`、`pattern_test.go`、`sql_generator_test.go`。
-- 错误机制：`pkg/errors/core.rs` 的 `SharedError`/`New`，`pkg/errors/adaptor.rs` 的 `Annotate`，`pkg/errors/normalize.rs` 的 `ErrorEqual`。
-- RustCodeGraph：运行 `status`（索引包含 11,467 个文件，目标目录已索引）、`files --filter pkg/importsdk`、`node --file pkg/importsdk/error.rs`，并对目标错误名执行 `explore`；精确 `pub static` 节点未被当前索引单独暴露，调用边以 `rg` 的精确标识符结果补证。
-- 本任务仅新增说明文档，不改变运行时代码；按计划不运行 Cargo。交付前使用任务给定命令验证 11 个固定二级标题，并人工复核所有结论均能回指上述源码、调用点或测试。

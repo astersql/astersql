@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util-coreusage` crate，是 planner 在物理聚合计划上统一处理聚合参数类型的轻量入口。crate 根 `pkg/planner/util/coreusage/lib.rs` 以私有模块 `cast_misc` 装载它，再通过 `pub use cast_misc::*` 导出 `WrapCastForAggFuncs`。生产侧 `pkg/planner/core/Cargo.toml` 将该 crate 命名为 `coreusage-dependency`，`pkg/planner/core/optimizer_runtime.rs` 在聚合下推 projection 的处理流程中调用此入口。
-
-它不负责推导聚合返回类型，也不直接选择或构造具体 CAST 表达式；这些职责位于 `aggregation::AggFuncDesc::WrapCastForAggArgs`（`pkg/expression/aggregation/base_func.rs`）。本文件只在一组聚合描述符上执行阶段模式门控与批量委托。
+职责边界有两层：本文件只判断 `AggFuncDesc.Mode`；具体函数是否完全不需要 CAST、空参数如何处理、返回类型到 CAST 种类的映射、特殊窗口函数第二参数以及 NULL 参数的跳过逻辑，都由 `AggFuncDesc::WrapCastForAggArgs` 处理。
 
 ## 核心职责
 
@@ -65,8 +63,6 @@ RustCodeGraph 对精确函数图命令未返回显式边，但文件使用关系
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/planner/util/coreusage/cast_misc.go::WrapCastForAggFuncs`。两版都按输入顺序遍历全部描述符，只对既非 `FinalMode` 又非 `Partial2Mode` 的项调用 `WrapCastForAggArgs`，且都原地修改调用方持有的描述符。
-
 表示层差异是：Go 参数为 `expression.BuildContext` 与 `[]*aggregation.AggFuncDesc`，Rust 参数为 trait object 引用与 `&mut [AggFuncDesc]`；Rust 的借用和非空值切片表达了更强的所有权/空值约束。Rust 使用 `lib.rs` 再导出公开符号，Go 则直接通过 package 导出。
 
 测试与 Go 意图相符但需分开理解：`pkg/planner/core/casetest/rule/rule_inject_extra_projection_test.rs` 复刻 Go 的 `DISTINCT × SUM × mode × 参数类型` 矩阵；Go 原测试及 Rust 复刻测试的 mode 数组都把第四项写成了重复的 `Partial1Mode`，所以该矩阵本身没有实际执行 `Partial2Mode`。`pkg/planner/util/coreusage/coreusage_aster_unit_test.rs::aggregate_cast_skips_only_final_and_partial2_modes` 另行以四个不同模式直接补足了 `Partial2Mode` 门控证据。
@@ -78,13 +74,3 @@ Go 对照为 `pkg/planner/util/coreusage/cast_misc.go::WrapCastForAggFuncs`。�
 若新增聚合函数、返回求值类型或特殊参数位置，通常应修改 `pkg/expression/aggregation/base_func.rs` 的 `noNeedCastAggFuncs`、`AggCastKind`、`castAggArg` 或 `WrapCastForAggArgs`，而不是把具体 CAST 逻辑塞进本文件。相应测试应放在独立的 `*_test.rs` 文件；本仓库约定不把 Rust 测试嵌入生产源文件。
 
 修改时重点检查三类风险：阶段判断错误会对 partial 结果二次转换，造成兼容性或精度问题；目标类型映射错误会改变 SQL 类型语义；无条件新增 CAST 会增加 projection 节点和表达式求值成本。应同时核对 Go 同路径实现、planner 的 projection 注入调用顺序，以及 Complete/Partial1/Final/Partial2 的类型保持断言。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录中的 `cast_misc.rs` 被识别为含 2 个索引节点的 Rust 文件；索引时间戳为本次分析时可用状态。
-- RustCodeGraph `files --filter pkg/planner/util/coreusage`、`node --file .../cast_misc.rs` 与 `node ...WrapCastForAggArgs`：确认唯一公开函数、crate 再导出、下游方法源码及其边界。
-- RustCodeGraph 精确 `callers`/`callees` 查询未输出边；随后用目标符号源码检索确认 Rust 生产调用 `pkg/planner/core/optimizer_runtime.rs:11578`、同 crate 单测调用 `pkg/planner/util/coreusage/coreusage_aster_unit_test.rs:181`、planner case 测试调用 `pkg/planner/core/casetest/rule/rule_inject_extra_projection_test.rs:68`。
-- 读取 `pkg/planner/util/coreusage/Cargo.toml`、`pkg/planner/core/Cargo.toml` 和 `pkg/planner/util/coreusage/lib.rs`：确认 crate 名、路径依赖、直接依赖及公开再导出；目标包目录不存在 `doc.go`。
-- Go 对照证据：`pkg/planner/util/coreusage/cast_misc.go` 与生产调用 `pkg/planner/core/rule_inject_extra_projection.go:122`。
-- 测试证据：`pkg/planner/util/coreusage/coreusage_aster_unit_test.rs::aggregate_cast_skips_only_final_and_partial2_modes`；`pkg/planner/core/casetest/rule/rule_inject_extra_projection_test.rs::test_wrap_cast_for_agg_funcs`；Go 对照 `pkg/planner/core/casetest/rule/rule_inject_extra_projection_test.go::TestWrapCastForAggFuncs`。
-- 本任务为只读行为分析与文档新增，未运行 Cargo；最终以任务指定的 11 章节结构命令验证文件形态，并人工复核所有行为陈述均能回指上述源码、配置或测试。

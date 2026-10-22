@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor` crate，crate 根 `pkg/executor/lib.rs` 通过 `pub mod workloadrepo` 公开该模块。它把“创建负载仓库时触发一次手工快照”抽象成一个很薄的执行器边界：文件只定义运行时协议和条件调用逻辑，不实现负载仓库的采样、落表、快照编号或后台 worker。
-
-`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/executor"` 说明它属于执行器主 crate，并以同目录 Go 包为移植对照。当前文件没有直接使用 crate 的任何外部依赖，也没有条件编译项、模块级常量或自由函数。
+把“创建负载仓库时触发一次手工快照”抽象成一个很薄的执行器边界：文件只定义运行时协议和条件调用逻辑，不实现负载仓库的采样、落表、快照编号或后台 worker。
 
 ## 核心职责
 
@@ -65,14 +63,9 @@ trait 没有要求 `Send`、`Sync` 或 `'static`，所以不能据此认定执�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/workloadrepo.go`：
-
 - Go 的全局变量 `TakeSnapshot func(context.Context) error` 对应 Rust trait 中“是否安装”与“执行快照”两项能力；Rust 用注入的 `runtime` 取代可空全局函数。
 - Go `WorkloadRepoCreateExec` 嵌入 `exec.BaseExecutor`；Rust struct 只保存运行时，没有 base executor 字段。
-- 两侧 `Next` 都忽略输出请求/chunk，在 hook 存在时同步调用并原样传播错误，不存在时成功返回。
 - Go hook 由 `pkg/util/workloadrepo/worker.go::init` 自动注册；Rust 仓库当前未发现 `WorkloadRepoRuntime` 实现或等价注册接线。因此文件内分支语义与 Go 对齐，但完整应用集成仍未验证，不能宣称 Rust 已具备 Go 的端到端手工快照能力。
-
-相关 Go 测试 `pkg/util/workloadrepo/worker_test.go` 覆盖 worker 的建表、采样和直接快照行为，但仓库搜索未发现专门调用 `WorkloadRepoCreateExec.Next` 或 SQL `CREATE WORKLOAD REPOSITORY` 的同名独立测试。Rust 的 `pkg/util/workloadrepo/worker_test.rs` 测试自身 worker 快照状态，也不构成本文件 trait/执行器的直接覆盖。
 
 ## 扩展指南
 
@@ -81,13 +74,3 @@ Go 对照文件是 `pkg/executor/workloadrepo.go`：
 测试逻辑不要内嵌到 `workloadrepo.rs`。应在同目录独立 `workloadrepo_test.rs`（并由 `lib.rs` 在 `#[cfg(test)]` 下声明）覆盖至少四类情况：未安装时不调用快照、安装时恰好调用一次、错误传播、重复 `Next` 的调用次数语义；端到端接线还应增加 builder 测试，必要时补充 SQL 集成测试。
 
 扩展并发或异步能力前，应先决定 hook 探测与调用是否需要原子化，以及取消、超时、重入和锁持有边界。性能风险主要来自真实快照 I/O 同步阻塞 `Next`；兼容风险主要来自改变“未安装即成功”或错误透传语义。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/workloadrepo.rs`，核对 trait、关联类型、泛型 struct、`Next` 分支和文件级命名许可。
-- crate/模块：`pkg/executor/Cargo.toml` 与 `pkg/executor/lib.rs`，核对 crate 归属、Go 包映射和公开模块声明。
-- Rust 上游接线：`pkg/executor/builder.rs` 中 `Plan::WorkloadRepoCreate`、`ExecutorKind::WorkloadRepoCreate`、`buildWorkloadRepoCreate` 与 `build_leaf` 调用。
-- Go 对照：`pkg/executor/workloadrepo.go` 和 `pkg/executor/builder.go::buildWorkloadRepoCreate`。
-- hook 实现及测试边界：`pkg/util/workloadrepo/worker.go::takeSnapshot`、其 `init` 注册，以及 `pkg/util/workloadrepo/worker_test.go`、`pkg/util/workloadrepo/worker_test.rs`。
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/executor/workloadrepo.rs` 显示该文件有 6 个符号；文件节点和调用流确认 `Next` 对两个 trait 方法的直接调用。由于 `Next` 是高频同名符号，仓库上游结论采用文件限定节点并以精确 `rg` 搜索交叉核验。
-- 测试覆盖检索：精确搜索未找到 `WorkloadRepoRuntime` 实现、`WorkloadRepoCreateExec` 构造/直接测试或 `CREATE WORKLOAD REPOSITORY` 测试；因此这些项目明确记录为当前未接线或未验证，而非推断为已支持。

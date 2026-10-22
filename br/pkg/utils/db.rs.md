@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`db.rs` 是 `astersql-br-pkg-utils` crate 中的 TiDB/TiKV 配置辅助模块，由 [`br/pkg/utils/lib.rs`](./lib.rs) 通过 `pub mod db` 暴露。它位于 BR 工具层与 `RestrictedSQLExecutor` 边界之间：调用方无需自行拼装 `SHOW CONFIG`/`SET CONFIG`，即可读取 Region 切分参数、临时调整 GC 与 RocksDB 后台任务数，并查询本进程是否存在日志备份任务。当前 Rust 生产调用证据集中在 [`br/pkg/task/stream.rs`](../task/stream.rs) 的流式恢复配置控制；其他公开函数仍为 Go API 对齐和后续接线保留。
-
-该文件不建立数据库连接，也不拥有 session。所有 SQL 都通过调用方传入的 `&mut dyn RestrictedSQLExecutor` 执行；该 trait 及返回行、字段元数据是 [`br/pkg/utils/stubs.rs`](./stubs.rs) 提供的本地 SQL 边界。`Cargo.toml` 将本目录声明为 `astersql-br-pkg-utils` library，并直接依赖日志、错误、parser types 与 `bytesize`，没有 feature 条件控制本文件。
+所有 SQL 都通过调用方传入的 `&mut dyn RestrictedSQLExecutor` 执行；该 trait 及返回行、字段元数据是 [`br/pkg/utils/stubs.rs`](./stubs.rs) 提供的本地 SQL 边界。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ Go 生产调用补充了迁移目标证据：`br/pkg/task/stream.go` 使用 Regi
 
 ## 与 Go 版本的对应关系
 
-Rust 函数、常量和 SQL 字符串整体逐项对应 [`br/pkg/utils/db.go`](./db.go)。默认 split size、默认 split keys、GC 常量、RocksDB 恢复值、只取 `SHOW CONFIG` 第四列/首行以及日志任务计数语义均保持一致。Rust 用 `Option<String>` 区分 GC 配置空结果，等价表达 Go 的空字符串加 nil error；RocksDB getter则直接保留 Go 的空字符串契约。
+Rust 用 `Option<String>` 区分 GC 配置空结果，等价表达 Go 的空字符串加 nil error；RocksDB getter则直接保留 Go 的空字符串契约。
 
 实现边界存在几处值得注意的差异。Go 为受限 SQL 显式传入 `kv.InternalTxnBR`，Rust 当前向本地 stub 传 `Default::default()` context；这反映 Cargo 注释所述的精简 SQL/KV 边界，而不是完整事务来源接线。Go 的 `units.FromHumanSize` 在 Rust 中由 `bytesize::ByteSize` 替代，现有对照测试验证了 `10MB` 的关键语义。Go 的 atomic 类型来自 `go.uber.org/atomic`，Rust 使用标准库 `AtomicI32` 和 Relaxed ordering。Rust setter SQL 使用 `?` 绑定占位符，而 Go 文本写作 `%?`；两边测试均通过 mock 参数写回验证值传递契约。
 
-测试对应关系以 [`br/pkg/utils/db_test.rs`](./db_test.rs) 和 [`br/pkg/utils/db_test.go`](./db_test.go) 为准。Rust 测试除 Go 主路径外，还覆盖 SQL 错误、非法值默认降级、空结果、缺少字段元数据 panic、公开常量，以及 RocksDB getter/setter 错误注解。
+Rust 测试除 Go 主路径外，还覆盖 SQL 错误、非法值默认降级、空结果、缺少字段元数据 panic、公开常量，以及 RocksDB getter/setter 错误注解。
 
 ## 扩展指南
 
@@ -83,11 +81,3 @@ Rust 函数、常量和 SQL 字符串整体逐项对应 [`br/pkg/utils/db.go`](.
 若把尚未接线的 Go 行为迁移到 Rust，应在相应生产模块接入而不是把主流程塞入本工具文件：Region 参数对应流式恢复切分，排序规则对应 backup/restore session，任务计数对应 stream helper 的任务开始/结束，遥测只读取状态。计数生命周期最好由独立 guard 在直接调用侧保证，但改变公开行为前需与 Go 的显式 Inc/Dec 语义和独立测试同步。
 
 变更容量解析器、默认值、首行选择或 Relaxed ordering 都有兼容或并发风险。特别是解析器必须继续覆盖十进制 `MB`；配置写入必须保留失败传播，否则可能静默留下禁用 GC 或受限 RocksDB 并发。测试逻辑应继续留在同目录独立的 `db_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/utils/db.rs` 确认目标文件已索引；`node --file br/pkg/utils/db.rs --offset 1 --limit 500` 列出完整 302 行及 26 个符号，并报告直接使用文件为 `br/pkg/task/stream.rs`、`br/pkg/utils/db_test.rs`；`callees GetSplitSize`/`callees GetGcRatio` 验证 `field_type_at`、`ExecRestrictedSQL`、`ShortError` 等下游边。
-- 源码：[`br/pkg/utils/db.rs`](./db.rs)；crate 入口与测试挂载：[`br/pkg/utils/lib.rs`](./lib.rs)；crate 边界与依赖：[`br/pkg/utils/Cargo.toml`](./Cargo.toml)。
-- Rust 生产调用：[`br/pkg/task/stream.rs`](../task/stream.rs) 的 `DisableGC` 与 `KeepRocksDBMaxBackgroundJobsLow`；独立 Rust 测试：[`br/pkg/utils/db_test.rs`](./db_test.rs)。
-- Go 对照：[`br/pkg/utils/db.go`](./db.go)、[`br/pkg/utils/db_test.go`](./db_test.go)，以及仓库搜索得到的 `br/pkg/task/stream.go`、`backup.go`、`restore.go`、`br/pkg/streamhelper/advancer.go`、`pkg/telemetry/data_feature_usage.go` 调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定的固定章节命令进行结构验证，并人工核对仅新增本说明文档、未修改 Rust/Go/Cargo/`plan.md`。

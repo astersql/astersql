@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-metricsutil` crate。crate 入口 `pkg/util/metricsutil/lib.rs` 以私有模块 `db_labels` 装载本文件，再公开重导出 `GetDBNames`；`pkg/session/lib.rs` 还会继续重导出该函数，供服务器会话路径使用。它位于 SQL 会话状态与 Prometheus 指标记录之间：读取 `SessionVars` 中本条语句涉及的数据库，生成指标的 database 标签值，但不创建、注册或写入指标。
-
-`pkg/util/metricsutil/Cargo.toml` 将 Go 对照包声明为 `pkg/util/metricsutil`，并为本文件直接使用的配置和会话状态分别声明 `astersql-config` 与 `astersql-sessionctx-variable` 依赖；`SessionVars` 内部的 `StatementContext` 类型来自同一清单中的 `astersql-sessionctx-stmtctx`。
+函数不解析 SQL，也不决定指标类型；表引用由规划/语句上下文预先写入，调用方负责把返回的每个标签传给具体指标记录函数。
 
 ## 核心职责
 
@@ -77,15 +75,10 @@ RustCodeGraph 对本文件给出 4 个符号，并报告文件被 `pkg/server/ru
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/util/metricsutil/db_labels.go`，核心语义一致：空会话或关闭 `RecordDBLabel` 时返回空标签；否则从语句上下文表集合收集数据库，集合为空时以小写当前库回退。
-
 可观察差异与 Rust 数据模型适配包括：
 
 - Go 使用 `map[string]struct{}`，遍历顺序未指定；Rust 使用 `BTreeSet`，输出稳定升序。Go 测试 `TestGetDBNamesLabels` 用 `ElementsMatch` 回避顺序约束，而 Rust 测试直接断言 `vec!["db_a", "db_b"]`。
 - Go 的 `SessionVars` 和 `StmtCtx` 都可能为 `nil`；Rust 用 `Option<&SessionVars>` 表达前者，但 `SessionVars.StmtCtx` 是实体字段。因此 Go 的空语句上下文与 Rust 的空逻辑计划表在结果上都回退到当前库，类型层面的空值处理不同。
-- 两版都只对当前库回退值做小写转换，不规范化逻辑计划表携带的数据库名。
-
-Go 测试 `pkg/util/metricsutil/db_labels_test.go` 还覆盖多类 SQL 后当前库标签保持正确、空会话、关闭开关、空表集合、空当前库和跨库去重。Rust 的直接独立测试 `pkg/util/metricsutil/go_merge_30_test.rs` 覆盖门控、空会话、回退、去重和确定顺序；`pkg/session/main_test.rs` 的 `get_db_names_matches_go_fallback_deduplication_and_label_gate` 从会话 crate 重导出层重复验证同一契约。
 
 ## 扩展指南
 
@@ -94,14 +87,3 @@ Go 测试 `pkg/util/metricsutil/db_labels_test.go` 还覆盖多类 SQL 后当前
 安全扩展时应保持以下兼容契约：关闭开关仍返回恰好一个空标签；无表信息仍有当前库回退；重复库名不导致重复记录；公开名及 `lib.rs` 重导出保持兼容。若引入大小写统一、过滤空库名或排序策略变化，需要明确这是可观察行为变更，并与 Go 版本同步。
 
 测试应放在独立文件而非源文件内：直接逻辑优先扩充 `pkg/util/metricsutil/go_merge_30_test.rs`；跨 crate 重导出与会话接线可扩充 `pkg/session/main_test.rs`；Go 语义改变时同步 `pkg/util/metricsutil/db_labels_test.go`。建议覆盖混合大小写表来源、空字符串与非空数据库混合、多库高重复率，以及配置切换前后的行为。由于测试会修改进程级全局配置，必须沿用 `restore_func()`/恢复原配置的清理模式，避免污染并行或后续测试。
-
-## 验证依据
-
-- 目标源码：`pkg/util/metricsutil/db_labels.rs`，确认唯一公开函数、短路分支、`BTreeSet` 去重排序与当前库回退。
-- crate 边界：`pkg/util/metricsutil/Cargo.toml`、`pkg/util/metricsutil/lib.rs`、`pkg/session/lib.rs`，确认包映射、直接依赖和两层重导出。
-- 状态 API：`pkg/sessionctx/stmtctx/stmtctx.rs` 的 `TableEntry`、`SetLogicalPlanTables`、`LogicalPlanTables`；`pkg/sessionctx/variable/session.rs` 的 `SessionVars`、`CurrentDB`；`pkg/config/config.rs` 的 `get_global_config`。
-- 生产调用：`pkg/server/runtime.rs` 的 `SessionRequest::RecordCommandDuration`；`pkg/session/runtime/scan_adapter_runtime.rs` 的 `ObserveStatementDuration`。
-- Go 对照与测试：`pkg/util/metricsutil/db_labels.go`、`pkg/util/metricsutil/db_labels_test.go`。
-- Rust 独立测试：`pkg/util/metricsutil/go_merge_30_test.rs`、`pkg/session/main_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/metricsutil/db_labels.rs` 与按文件 `node` 确认目标有 4 个符号及 3 个使用文件；`query GetDBNames --kind function --json` 确认 Rust 函数签名及 Go 对照签名。精确函数 ID 的 `callers`/`callees` 无输出，故调用边由图报告的使用文件与文本引用交叉验证，不把缺失图边推断为“无调用”。
-- 本任务只新增文档，不修改运行时代码，按计划不运行 Cargo；交付前使用任务指定命令验证恰有 11 个固定二级章节，并人工复核所有行为结论均可回溯到以上源码、调用点或测试。

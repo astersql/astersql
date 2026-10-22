@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`builtin_grouping.rs` 是 `astersql-expression` crate 中 `GROUPING(...)` 的元数据与求值内核。crate 根 `pkg/expression/lib.rs` 通过 `#[path = "builtin_grouping.rs"] mod builtin_grouping_kernel;` 私有挂载它；规划器侧的公开签名 `pkg/expression/planner_bridge.rs::BuiltinGroupingImplSig` 将一个 `GroupingSig` 放在 `RwLock` 中，并把该签名从 crate 根再导出。因此，这个文件不是 SQL 函数注册、参数改写或 protobuf 编码的完整实现，而是被这些接线层复用的、与表达式参数无关的计算核心。
-
-该文件属于 `pkg/expression/Cargo.toml` 声明的 `astersql-expression` 库。它的直接外部依赖只有标准库 `HashSet` 和 Cargo 中的 `thiserror = "2"`；SQL 表达式类型、chunk、tipb 模式转换和锁均位于调用它的 `planner_bridge.rs`，没有耦合进本内核。
+为调用层提供标量求值 `eval`、批量求值 `eval_many` 和排序后的可序列化快照 `metadata`。
 
 ## 核心职责
 
@@ -88,16 +86,10 @@ RustCodeGraph 的全局索引能定位 Go `BuiltinGroupingImplSig`、Rust `plann
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/expression/builtin_grouping.go`，核心字段和算法分别对应：
-
-- Rust `GroupingSig` 对应 Go `BuiltinGroupingImplSig` 中的 `mode`、`groupingMarks`、`isMetaInited` 状态子集；Go 结构还嵌入 `baseBuiltinFunc`，Rust 把它留在 `planner_bridge.rs::BuiltinGroupingImplSig`。
-- `set_metadata` 对应 Go `SetMetadata`：先写状态、标记已初始化、再校验，失败时把初始化标志清零。
-- `check_metadata` 与三种 `groupingImpl*` 算法保持同一判定；多参数均通过“左移后追加当前位”组成结果。
 - Rust `metadata` 对应 Go `metadata` 的数据语义，但错误接口不同：Go 校验失败时记录日志并返回空 protobuf，Rust 返回结构化 `GroupingError`；日志/错误类型转换由桥接层处理。
-- Rust `eval` 对应 Go `evalInt` 中元数据检查后的计算部分。Go 同时负责表达式参数求值和 NULL/错误传播，Rust 的这些职责在 `planner_bridge.rs::evalInt`。
 - Rust `eval_many` 只接受 GID 切片并返回新 `Vec`；Go `vecEvalInt` 从 chunk 获取临时列缓冲并复用结果列。两者共享算法，但资源管理和 chunk 接口并非一比一移植。
 
-`pkg/expression/builtin_grouping_test.rs::test_grouping` 逐项复刻 Go `builtin_grouping_test.go::TestGrouping` 的 19 组 BitAnd、NumericCmp、NumericSet fixture。额外的 `pkg/expression/planner_bridge_test.rs::grouping_metadata_is_installed_atomically` 验证桥接状态从未初始化到可回读/可编码；`builtin_encryption_11_aster_unit_test.rs` 还覆盖克隆、排序快照、批量求值及非法单元素约束。
+额外的 `pkg/expression/planner_bridge_test.rs::grouping_metadata_is_installed_atomically` 验证桥接状态从未初始化到可回读/可编码；`builtin_encryption_11_aster_unit_test.rs` 还覆盖克隆、排序快照、批量求值及非法单元素约束。
 
 ## 扩展指南
 
@@ -108,16 +100,3 @@ Go 对照文件是 `pkg/expression/builtin_grouping.go`，核心字段和算法�
 优化性能时，先区分热路径：`eval` 的目标是零额外分配；`metadata` 的克隆排序属于低频编码路径；`eval_many` 当前不是生产 chunk 接线的已验证调用点。若要将它接入向量执行，应同时验证 SQL NULL 传播、输入列类型、结果缓冲复用和锁持有范围，而不能只比较数值 fixture。
 
 边界增强最值得补充的是：多参数位序、空外层 marks、NumericSet 空集合、失败安装覆盖旧状态、64/超过 64 个参数，以及负 `i64` GID 经桥接转换后的预期。若正式要求最多 64 个参数，应在元数据安装或更上游参数校验处返回明确错误，并与 Go 行为共同更新，不能依赖位移自然截断。
-
-## 验证依据
-
-本说明读取并交叉核对了以下直接证据：
-
-- 目标实现：`pkg/expression/builtin_grouping.rs`，包括全部枚举、结构、错误类型、状态安装、校验、三种算法和两个公开求值入口。
-- crate 与模块边界：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`；前者确认 `astersql-expression`、`thiserror` 和手工测试配置，后者确认生产挂载、测试挂载及桥接再导出。
-- 生产接线：`pkg/expression/planner_bridge.rs::BuiltinGroupingImplSig`、`pkg/planner/core/expression_rewriter.rs` 的 GROUPING 重写分支、`pkg/expression/expr_to_pb.rs` 的 metadata 编码调用。
-- Go 对照：`pkg/expression/builtin_grouping.go` 与 `pkg/expression/builtin_grouping_test.go`。
-- Rust 测试：`pkg/expression/builtin_grouping_test.rs`、`pkg/expression/planner_bridge_test.rs::grouping_metadata_is_installed_atomically`、`pkg/expression/builtin_encryption_11_aster_unit_test.rs` 中的 GROUPING 覆盖。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query BuiltinGroupingImplSig` 和 `query SetMetadata` 定位到 Go/Rust 桥接符号与测试，但目标 `.rs` 未被 `files --filter`/精确符号查询覆盖，故文件内事实使用源码及 `rg` 直接验证。
-
-本任务是纯文档分析，未修改 Rust/Go/Cargo 行为，也未运行 Cargo。结构验收以文档存在且固定二级标题恰好 11 个为准；内容复核重点是能从上述符号回查“文件为何存在、运行时如何进入、状态如何验证、如何安全扩展”。

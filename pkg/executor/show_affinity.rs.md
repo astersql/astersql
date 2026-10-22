@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；`pkg/executor/Cargo.toml` 将 crate 根指定为 `lib.rs`，而 `pkg/executor/lib.rs` 以 `pub mod show_affinity` 导出本模块。它承载 `SHOW AFFINITY` 的 Rust 侧核心数据模型与行生成算法：从运行时取得带亲和属性的表，按表级或分区级展开亲和组，批量读取组状态，再生成八列展示行。
-
-当前接线状态必须与算法本身区分。仓库全局 Rust 搜索显示，生产代码尚未实现 `ShowAffinityRuntime`，也没有调用 `fetchShowAffinity`；直接调用者仅见 `pkg/executor/show_affinity_test.rs`。Rust 的统一 SHOW 执行器 `pkg/executor/show.rs` 虽定义 `ShowStmtType::Affinity`，但在 `fetchAll` 中把它交给通用的 `fetchOperation(ShowOperation::Affinity)`，没有转入本文件。因此，本文件是可测试的移植核心和适配边界，并非当前 Rust 生产 SHOW 主链中已经接通的实现。
+`fetchShowAffinity` 实现与 Go `(*ShowExec).fetchShowAffinity` 对齐的纯编排：应用精确表名及 LIKE 过滤、按亲和级别生成组 ID、一次取得过滤后组的状态、编码展示行。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/show_affinity.go`。Rust 保留了相同的两段式结构：先从带亲和属性的表构造 `tablePartitionInfo`，再按所需组 ID 批量查询状态并生成八列。表级/分区级组 ID、双重过滤、零 leader、空 voters、三种已知 phase、未知 phase 透传以及组缺失时五列原生 NULL 均保持一致。
-
 实现形式存在两类差异。第一，Go 方法直接依赖 `ShowExec`、Domain/InfoSchema、DDL 和 affinity 包；Rust 把这些依赖拆为 `ShowAffinityRuntime`，使用自有数据投影和单元格枚举。第二，Go 已由 `pkg/executor/show.go` 的 SHOW 分发调用，且 `pkg/executor/show_affinity_test.go` 通过 SQL/TestKit 验证端到端行为；Rust 当前只有算法级测试，尚无生产 runtime 适配和从 `ShowExec` 到本入口的调用边。
 
-Go 测试还覆盖 SQL 侧 WHERE/LIKE 后过滤、真实列数和 PD mock。Rust 本文件只负责它能观察到的表名精确过滤与 LIKE 谓词调用；更广的 WHERE 条件应由统一 SHOW 层处理，不能据此声称本函数单独实现了完整 SQL 过滤。
+Rust 本文件只负责它能观察到的表名精确过滤与 LIKE 谓词调用；更广的 WHERE 条件应由统一 SHOW 层处理，不能据此声称本函数单独实现了完整 SQL 过滤。
 
 ## 扩展指南
 
@@ -81,11 +77,3 @@ Go 测试还覆盖 SQL 侧 WHERE/LIKE 后过滤、真实列数和 PD mock。Rust
 - 改变过滤行为时，应同时核对 `exact_filter_does_not_bypass_like_pattern` 和 Go 的 Extractor/排序规则语义，特别注意调用者负责的小写规范化。
 - runtime 已接收过滤后的组 ID；接通 PD 批量查询时，需评估重复 ID、返回缺项、请求大小及错误原子性，并保持“取状态失败不输出任何行”的不变量。
 - 性能关注点主要是克隆表/库名称、分区展开规模、所需组状态 `HashMap` 的内存和 voter 字符串分配。优化时不得改变输入顺序和 voter 顺序。
-
-## 验证依据
-
-- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/executor/show_affinity.rs`，不把工作区后续变化作为行为依据。
-- `pkg/executor/show_affinity_test.rs` 的 `exact_filter_does_not_bypass_like_pattern` 验证空结果无查询，`partition_affinity_and_missing_state_match_go_rows` 验证仅传入两个分区组，错误及完整行测试验证 table-11 请求；Go 对照 `pkg/executor/show_affinity.go`。
-- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
-- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
-- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

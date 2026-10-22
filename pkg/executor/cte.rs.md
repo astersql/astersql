@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate：`pkg/executor/Cargo.toml` 将 `lib.rs` 声明为库入口，而 `pkg/executor/lib.rs:88` 以 `pub mod cte;` 公开本模块。它把 CTE（Common Table Expression）物化执行的核心状态机写成泛型 Rust 逻辑，覆盖非递归 CTE、递归 CTE、`UNION DISTINCT` 去重、结果端 `LIMIT`、相关列失效、内存/磁盘统计及 spill 测试钩子。
-
-模块采用 `CTEBackend` 反转所有 TiDB 具体类型与副作用。因此，`cte.rs` 本身只直接依赖 Rust 标准库的 `Any`、`HashMap`、`Arc` 和 `Mutex`，具体 executor、chunk、storage、tracker、错误和日志能力全部由后端提供（`pkg/executor/cte.rs:23-25,52-196`）。仓库搜索未找到本文件之外的 `CTEBackend` 实现或 `CTEExec<B>` 构造点；当前可确认的状态是“公开且可编译的通用移植核心”，不能据此声称它已接入真实 Rust SQL 执行主链。
+`CTEExec<B>` 提供消费者生命周期：`Open` 初始化游标并协调共享 producer，`Next` 惰性生成完整 CTE 结果后按 chunk 返回，`Close` 关闭生产侧和基类子树（`cte.rs:205-296`）。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/cte.go`。Rust 的 `CTEExec`、`cteProducer`、`Open/Next/Close`、seed/recursive 双阶段物化、三表轮换、全列 DISTINCT、LIMIT、相关列缓存失效、递归深度、panic 恢复、tracker/spill 与首错保留，均沿用 Go 文件的结构和分支顺序。Rust `CTEBackend` 将 Go 中对 `exec.Executor`、`chunk.Chunk`、`cteutil.Storage`、session variables、codec、tracker、日志和 failpoint 的直接调用抽象为关联类型和方法。
+Rust 的 `CTEExec`、`cteProducer`、`Open/Next/Close`、seed/recursive 双阶段物化、三表轮换、全列 DISTINCT、LIMIT、相关列缓存失效、递归深度、panic 恢复、tracker/spill 与首错保留，均沿用 Go 文件的结构和分支顺序。Rust `CTEBackend` 将 Go 中对 `exec.Executor`、`chunk.Chunk`、`cteutil.Storage`、session variables、codec、tracker、日志和 failpoint 的直接调用抽象为关联类型和方法。
 
 需要注意的当前差异：
 
@@ -88,7 +86,7 @@
 - Go tracker 标签、session fallback action、临时存储开关和具体 failpoint 名称由具体包直接实现；Rust 把这些细节留给 `configure_storage_trackers`、`spill_test_enabled` 等后端方法。没有后端实现时无法验证这些具体副作用。
 - Go `Close` 中还有 `mock_cte_exec_panic_avoid_deadlock` failpoint；Rust trait 仅暴露 seed/recursive panic 与 spill 钩子，本文件没有对应的 Close panic 注入点。
 
-相关测试为 `pkg/executor/test/cte/cte_test.go` 和独立 Rust 回归 `pkg/executor/test/cte/cte_test.rs`。Rust 回归保持 Go 测试意图，覆盖 insert-select 无死锁、递归 DISTINCT 与 spill、执行错误、seed/recursive panic 恢复、深度错误后复用、OOM 后清理、相关列共享、迭代 tracker 及计划输出；其中首个 `canonical_recursive_cte_uses_union_distinct_across_iterations` 只是集合模型。由于测试未导入 `astersql_executor::cte`、仓库也没有 `CTEBackend` 实现，它们不能作为本泛型模块直接执行的证据。
+Rust 回归保持 Go 测试意图，覆盖 insert-select 无死锁、递归 DISTINCT 与 spill、执行错误、seed/recursive panic 恢复、深度错误后复用、OOM 后清理、相关列共享、迭代 tracker 及计划输出；其中首个 `canonical_recursive_cte_uses_union_distinct_across_iterations` 只是集合模型。
 
 ## 扩展指南
 
@@ -98,12 +96,3 @@
 - 修改 LIMIT 时同步验证 seed 提前停止、recursive 提前停止、跨 chunk offset、`limitBeg == limitEnd`、尾 chunk 截断和多个消费者独立游标；对应符号是 `limitDone` 与 `nextChunkLimit`。
 - 修改生命周期或错误处理时验证首次 open 失败被共享、未物化 Close 后可重开、完成结果可在 producer 关闭后继续读、多个关闭错误只返回首错、锁中毒和 panic 恢复边界。Go 的 `TestCTEIssue49096`、`TestCTEPanic`、`TestCTEDelSpillFile` 是兼容意图来源。
 - 性能风险集中在同步全量物化、producer 大锁、DISTINCT 的行级比较、`chunks` 临时积累和 DISTINCT 轮次的 `chunk_copy_all`；改动前应保留 spill 安全与结果不可被上游修改的拷贝边界。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/cte.rs` 全部 963 行；关键符号为 `CTEBackend`、`CTEExec`、`cteProducer`、`genCTEResult`、`computeSeedPart`、`computeRecursivePart`、`setupTblsForNewIteration`、`deduplicate`、`checkHasDup`、`setupCTEStorageTracker`。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`query CTEExec/cteProducer` 同时定位 Go/Rust 定义；`callees genCTEResult` 确认 Rust 边到 storage 状态、seed/recursive 和 tracker；`callees computeRecursivePart` 确认递归边到 executor 生命周期、storage、深度、轮换与日志。部分泛型同名方法的 `callers` 无输出，因此外部接线另用仓库搜索核验。
-- crate/模块：`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs:88`。仓库搜索 `CTEBackend|CTEExec<|cteProducer<` 未发现本文件外实现/构造；这是“当前未确认接线”结论的依据。
-- Go 对照：`pkg/executor/cte.go` 全部 775 行，重点为 `CTEExec`、`cteProducer`、三表说明、生命周期、递归轮换、去重、tracker 与相关列逻辑。
-- 测试：`pkg/executor/test/cte/cte_test.go`、`pkg/executor/test/cte/cte_test.rs`、`pkg/executor/test/cte/main_test.go`、`pkg/executor/test/cte/main_test.rs` 及该独立测试 crate 的 `Cargo.toml`。它们提供兼容边界证据，但不是 `cte.rs` 泛型 API 的直接单元测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在且恰有十一个规定的二级标题；最终以任务指定命令的退出码为准。

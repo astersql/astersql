@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-globalstats` crate，负责把同一列或索引在多个分区上的局部 `TopN` 候选合并成一个全局 `TopN`，并返回未入选的高频项供上层写回全局直方图。crate 入口 `pkg/statistics/handle/globalstats/lib.rs` 以 `pub mod topn` 声明本模块，并通过 `pub use topn::*` 再导出两个公开入口。
-
-应用内的直接生产调用点位于 `pkg/statistics/handle/globalstats/global_stats.rs::merge_partition_stats_to_global`：它收集每个统计项的分区 `Histogram`/`TopN` 后，根据 `MergeOptions.version` 和 `MergeOptions.concurrency` 选择本文件的串行或分批入口，随后把返回的 overflow 计数累加到合并直方图的 `exact_counts`。因此本文件位于“分区统计已加载”与“全局 Histogram/TopN 已定型”之间，不负责存储读取、CMS/FMS 合并或最终持久化。
-
-`pkg/statistics/handle/globalstats/Cargo.toml` 指定 `lib.rs` 为 crate 根，并用 `package.metadata.porting.go-package = "pkg/statistics/handle/globalstats"` 标明 Go 来源目录。清单中大量仓库依赖位于 `target.'cfg(any())'`（恒假条件）下；本文件当前实际只直接使用标准库 `HashMap`、`AtomicBool` 和同 crate 类型。
+`merge_partition_top_n` 对全部分区执行一个 `[0, len)` 合并任务，适用于统计版本 1 或配置并发度小于 2 的上层分支。
 
 ## 核心职责
 
@@ -90,9 +86,9 @@ RustCodeGraph 的文件节点确认 `topn.rs` 有 141 行并识别出 `topn_test
 
 ## 与 Go 版本的对应关系
 
-Cargo 元数据把整个 crate 对应到 Go 包 `pkg/statistics/handle/globalstats`，但当前 Go 主线已没有与这两个 Rust 入口同名的一对一实现。`global_stats.go` 和 `global_stats_async.go::dealHistogramAndTopN` 都调用 `pkg/statistics/histogram.go::MergePartTopNAndHistToGlobal`，由该函数联合处理分区 TopN 和真实直方图桶；Go 基准 `topn_bench_test.go` 也直接覆盖该联合实现。Rust 当前仍采用 `merge_worker.rs` 的简化 `exact_counts` 模型和串行/分批入口，因此只能视为相同业务目标下的迁移实现，不能声称已与最新 Go 算法、桶语义或并行行为完全同构。
+Cargo 元数据把整个 crate 对应到 Go 包 `pkg/statistics/handle/globalstats`，但当前 Go 主线已没有与这两个 Rust 入口同名的一对一实现。Rust 当前仍采用 `merge_worker.rs` 的简化 `exact_counts` 模型和串行/分批入口，因此只能视为相同业务目标下的迁移实现，不能声称已与最新 Go 算法、桶语义或并行行为完全同构。
 
-选择器语义可与 `pkg/statistics/cmsketch.go` 对照：Go 的 `GetMergedTopNFromSortedSlice` 先用 `SortTopnMeta` 按计数降序、同频编码升序排列，截取前 `n`，再用 `TopN.Sort()` 把保留项按编码排序。Rust `select_top_n` 保持该顺序约束，并与 Go 一样允许 `n == 0` 时对非空候选构造一个空 TopN 对象而不是返回 `nil`。
+Rust `select_top_n` 保持该顺序约束，并与 Go 一样允许 `n == 0` 时对非空候选构造一个空 TopN 对象而不是返回 `nil`。
 
 Rust `topn_bench_test.rs` 保留了旧式串行/“并发”包装和 256 批次上限，用于验证本 crate 当前接口；Go 的同名基准文件已经改测重叠键与互斥键两种输入下的 `MergePartTopNAndHistToGlobal`。扩展时应以当前 Go 联合算法为兼容基线，而不是从 Rust 函数名推断 Go 仍有对应工作池实现。
 
@@ -105,13 +101,3 @@ Rust `topn_bench_test.rs` 保留了旧式串行/“并发”包装和 256 批次
 - 新增 Rust 测试应继续放在独立的 `topn_test.rs` 或 `topn_bench_test.rs`，不要内嵌到生产文件。至少覆盖空输入、全空 TopN、长度不匹配、不同 `version`、批宽上下界、取消、同频排序、`n == 0`、`n` 大于候选数和失败时调用方直方图不变。
 
 性能风险集中于全量克隆、每个首次候选扫描所有分区和全排序；兼容风险集中于 Go 主线已演进到联合桶算法以及串行/分批路径的全空输入差异。任何优化都应先固定这些可观察语义，再用重叠键和互斥键输入分别评估。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/statistics/handle/globalstats` 确认目标、模块、测试和 Go 对照文件；`node --file .../topn.rs` 读取完整 141 行并显示测试使用关系；`query merge_partition_top_n` 与 `query merge_global_top_n_by_concurrency` 均唯一定位到本文件。`callers`/`callees` 命令没有输出边文本，故调用边由下列源码检索补证。
-- 生产源码：`pkg/statistics/handle/globalstats/topn.rs`；直接上游 `global_stats.rs::merge_partition_stats_to_global`；直接下游 `merge_worker.rs::{TopNStatsMergeWorker::run_task, Histogram::remove_value}`；模块装配与再导出 `globalstats/lib.rs`。
-- crate 边界：`pkg/statistics/handle/globalstats/Cargo.toml` 的包名、`lib.rs` 路径、Go 包迁移元数据及恒假依赖分组。
-- Rust 测试：`topn_test.rs` 覆盖重复键累加、无/有直方图、长度不匹配、取消、最终编码排序和零上限；`topn_bench_test.rs` 覆盖串行与分批包装、批宽计算及工作池参数校验辅助逻辑。
-- Go 对照：`pkg/statistics/handle/globalstats/global_stats.go`、`global_stats_async.go`、`topn_bench_test.go`；选择器语义来自 `pkg/statistics/cmsketch.go::{SortTopnMeta, GetMergedTopNFromSortedSlice}`；当前生产联合算法位于 `pkg/statistics/histogram.go::MergePartTopNAndHistToGlobal`。
-- 使用 `rg` 复核两个 Rust 入口只在 `global_stats.rs`、Rust 单元测试和 Rust 基准辅助代码中出现，并确认 Go 全局统计调用已转向 `MergePartTopNAndHistToGlobal`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另行执行任务指定的 11 章节结构命令，并人工复核唯一新增生产物、无 Rust/Go/Cargo/`plan.md` 修改。

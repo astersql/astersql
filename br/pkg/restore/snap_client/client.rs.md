@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
-
-本文件属于 `astersql-br-pkg-restore-snap-client` library crate；crate 根由 `br/pkg/restore/snap_client/Cargo.toml` 指向 `lib.rs`，`lib.rs` 以 `pub mod client` 加载本文件并通过 `pub use client::*` 扁平导出 API。它是快照恢复客户端的控制面：把备份元数据、PD/store 视图、DDL session、SST importer/restorer、checkpoint 和恢复模式集中到 `SnapClient`，并为相邻的 `import.rs`、`tikv_sender.rs`、`pipeline_items.rs`、`systable_restore.rs` 提供共享状态。
-
-Cargo 元数据把该 crate 标记为 Go 包 `br/pkg/restore/snap_client` 的 Rust 移植，且注释明确当前 arm64 Darwin 构建不直接依赖真实 `kv/domain/kvproto/grpcio`，而是通过 `stubs.rs` 的本地 trait 和数据模型隔离外部系统。因此，本文件当前既是可执行的控制逻辑，也是迁移期适配层；不能把 `Mem*` 测试实现理解为生产 PD/TiKV 客户端。
+`AllocTableIDs`、`CreateDatabases`、`CreateTables`、`ExecDDLs` 管理 schema 恢复；其中建表后会重新读取下游表信息并生成旧 ID 到新 ID 的 rewrite rule。
 
 ## 核心职责
 
@@ -83,7 +79,7 @@ Go 生产上游由 `br/pkg/task/restore.go::runSnapshotRestore` 创建并配置 
 
 ## 与 Go 版本的对应关系
 
-Rust 文件与 `client.go` 的主要常量、`SnapClient` 字段组和方法名保持高度对应，核心语义包括：恢复模式选择、schema 是否加载、预分配 ID、checkpoint 身份校验、RawKV range 过滤、batch DDL 回退、全量/增量判定、限速回调和 checksum 校验。`client_test.rs` 前半覆盖 Go `client_test.go` 的建表、fresh cluster、重复建库、全量恢复、限速、排序和 ID 分配用例，后半增加 Rust 适配层的默认值、初始化、checkpoint、PiTR 和 RawKV 边界验证。
+`client_test.rs` 前半覆盖 Go `client_test.go` 的建表、fresh cluster、重复建库、全量恢复、限速、排序和 ID 分配用例，后半增加 Rust 适配层的默认值、初始化、checkpoint、PiTR 和 RawKV 边界验证。
 
 仍需注意实现载体差异：Go 使用真实 TiDB Domain、PD/TiKV/grpc 客户端、errgroup/worker pool 和 failpoint；Rust Cargo 注释明确当前通过本地 trait/stub 解耦这些依赖。Go 的生产入口 `runSnapshotRestore` 已由图查询确认调用广泛的 `SnapClient` API，而 Rust 完整入口接线未获得同等证据。Rust 使用 `HashMap` 代替部分 Go `sync.Map`，使用 scoped OS threads 代替 Go worker pool/errgroup，并把错误码/消息封装在本地 `Error`；扩展时应比较可观察语义，而非机械照搬并发原语。
 
@@ -98,7 +94,3 @@ Rust 文件与 `client.go` 的主要常量、`SnapClient` 字段组和方法名�
 - 修改 RawKV 区间逻辑时明确半开区间和空 end 语义，并扩展 `test_get_files_in_raw_range_matches_go_coverage_and_boundaries`。
 - 修改并发或限速时评估 store 数、`concurrencyPerStore`、`workerPoolSize`、TTL 刷新线程与 close 重试的独立作用，避免泄漏线程或使关闭永久阻塞。
 - 当前 crate 依赖本地 stubs；若接入真实外部 Rust 客户端，必须遵守仓库的独立上游移植/tag 依赖规则，不能在本 crate 内复制或本地 patch 依赖。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 本次审计 WithPlan 增量、buildCreatedTables、两种 worker 路径及类型来源，静态阅读独立 client_test 的源目标保留与批量回退用例。调用关系由冻结 git grep 核对；当前完整 blob 为 1729 行。未运行 Cargo。

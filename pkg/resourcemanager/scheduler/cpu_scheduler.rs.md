@@ -2,15 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-resourcemanager-scheduler` crate 的 CPU 决策器。crate 入口
-[`lib.rs`](lib.rs) 将它声明为 `cpu_scheduler` 模块并公开再导出其符号；
-[`Cargo.toml`](Cargo.toml) 则把该 crate 对应到 Go 包
-`pkg/resourcemanager/scheduler`，并以路径依赖 `astersql-util-cpu` 取得 CPU 采样值。
-
-它处在“观测”与“执行”之间：上游资源管理器在
-[`rm.rs`](../rm.rs) 构造默认调度器并周期调用它；本文件只把最近 CPU 快照映射为
-`Command`，实际调整池容量的是 [`schedule.rs`](../schedule.rs) 中的
-`ResourceManager::Exec`。因此这里不是采样线程、池管理器或调容执行器。
+`CPUScheduler::Tune` 先用池的最近调容时间执行 200ms 防抖，再读取。
 
 ## 核心职责
 
@@ -127,9 +119,7 @@ CPU observer 及其采样线程由 `ResourceManager::Start/Stop` 拥有；资源
 
 ## 与 Go 版本的对应关系
 
-直接对照 [`cpu_scheduler.go`](cpu_scheduler.go)：Rust 保留 `CPUScheduler`、
-`NewCPUScheduler` 和 `Tune` 名称，防抖顺序、unsupported 优先级以及 `0.5/0.7` 严格
-阈值与 Go 一致。`Component` 在两边都未使用。Go 构造函数返回 `*CPUScheduler`，Rust
+Go 构造函数返回 `*CPUScheduler`，Rust
 返回零大小值并由资源管理器装箱，这是所有权表达差异，不改变策略语义。
 
 Rust 为可测试性额外抽出了 `command_for_cpu_usage`，并提供自由函数 `Tune` 作为迁移兼容
@@ -157,25 +147,3 @@ Rust 为可测试性额外抽出了 `command_for_cpu_usage`，并提供自由函
 性能风险主要是把 CPU 读取或策略改成阻塞操作，因为它运行在遍历所有池的单次调度链中；
 兼容风险集中在阈值、命令方向和 Go 风格公开符号；正确性风险集中在时间边界、异常采样值
 以及与执行器二次门禁不一致。
-
-## 验证依据
-
-- 目标源码：[`cpu_scheduler.rs`](cpu_scheduler.rs)；符号清单为 `CPUScheduler`、
-  `NewCPUScheduler`、`command_for_cpu_usage`、两个 `Tune` 入口及 `Scheduler` 实现。
-- crate 与模块：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、
-  [`scheduler.rs`](scheduler.rs)、[`util.rs`](../util/util.rs)。
-- 生产调用链：[`rm.rs`](../rm.rs) 的默认装配和 observer 生命周期，
-  [`schedule.rs`](../schedule.rs) 的池遍历、trait 调用、安全过滤和命令执行。
-- Go 对照：[`cpu_scheduler.go`](cpu_scheduler.go) 与 [`scheduler.go`](scheduler.go)。
-- 独立测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 覆盖阈值、防抖与
-  trait 分派；[`tests/cpu_failpoint_integration.rs`](tests/cpu_failpoint_integration.rs)
-  覆盖 cgroup 探测失败到 `Hold` 的跨 crate 传播。
-- CPU 数据来源：[`pkg/util/cpu/cpu.rs`](../../util/cpu/cpu.rs)，用于确认全局快照、
-  unsupported 标记和 observer 生命周期。
-- RustCodeGraph：`status` 显示索引含本文件；`files --filter
-  pkg/resourcemanager/scheduler`、目标文件 `node`、关键符号 `query` 以及对应
-  `callers`/`callees` 均已执行。图没有为关键函数返回调用边，跨文件结论改由上述源码
-  位置核实。
-
-本任务是纯文档分析，没有运行 Cargo 或代码测试；验收以固定章节结构、链接存在性和上述
-源码/图查询事实复核为准。

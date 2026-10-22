@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`checker.rs` 位于 `astersql-resourcegroup-runaway` crate 内，是 runaway（失控查询）机制的“单查询检查器”。`pkg/resourcegroup/runaway/lib.rs` 公开 `checker` 模块，并定义本文件直接使用的 `RunawaySettings`、`RunawayAction`、`RunawayWatchType`、`CopRequest`、`RUDetails`、`Error` 和微秒时间戳。`pkg/resourcegroup/runaway/Cargo.toml` 以 `lib.rs` 为 crate 入口，并用 `package.metadata.porting.go-package = "pkg/resourcegroup/runaway"` 指向 Go 对照目录；清单中的本地依赖当前均放在 `cfg(windows)` 条件下，而本文件只直接依赖标准库原子类型和同 crate 的 `Manager`/公共类型。
-
-它处在 SQL 编译与分布式执行之间：`pkg/session/runtime/scan_adapter_runtime.rs::RunawayBeforeExecutor` 在资源控制启用且 Domain 已绑定 `Manager` 时调用 `Manager::DeriveChecker`，随后立即调用 `Checker::BeforeExecutor` 检查 quarantine watch。检查器再由 `pkg/session/runtime/typed_runaway_checker.rs::SessionRunawayChecker` 包装成 KV 层 trait 对象，经 `pkg/store/driver/runaway_adapter.rs::KVRunawayChecker` 进入 Coprocessor 请求发送、响应阈值检查和迭代结束重置链路。
-
-本文件不负责资源组配置加载、watch 同步或记录刷盘。资源组目录、内存 watch 列表和记录队列由 `manager.rs` 管理；本文件只持有构造时的设置快照、查询标识和运行中计数，判定何时以及以什么动作标记当前查询。
+`Checker::NewChecker` 把毫秒执行时限转换为微秒绝对 `deadline`，并快照 RU、processed keys 阈值及动作/watch 配置。
 
 ## 核心职责
 
@@ -106,10 +102,7 @@ RustCodeGraph 将 `checker.rs` 列为被 `pkg/session/runtime/scan_adapter_runti
 
 ## 与 Go 版本的对应关系
 
-直接基线是 `pkg/resourcegroup/runaway/checker.go`，回归基线是同目录 `checker_test.go`：
-
 - Rust 保留了 Go 的字段划分、三个 convict 的检查顺序、watch 动作回退、watch 优先于规则、阈值顺序、processed keys 累计、CAS 单次记录、设置一致后再 quarantine，以及 Exact/Similar/Plan 标识选择。
-- Rust 用 `Timestamp = i64` 微秒值代替 `time.Time`，用本地 `CopRequest`/`RUDetails`/`Error` 代替 TiKV client 与 protobuf 类型；Session/Store 两层适配器负责转换。耗时原因字符串因此记录微秒整数，而 Go 使用 RFC3339 时间文本；RU 原因也使用数值和，而非 Go `RUDetails.String()`。
 - Go 的 nil `*Checker` 方法是安全 no-op；Rust 以 `Option<Checker>`/trait object 表达“没有检查器”，具体 `Checker` 方法不接受空对象。这是类型层面的差异，不是缺少 nil 分支。
 - Go `DeriveChecker` 会增加 `RunawayCheckerCounter` 并记录资源组查询警告；Rust 当前只做派生条件判断，没有对应指标与日志。Go `markRunaway` 也增加按 group/match/action 标记的指标，Rust只向 Manager 入队。
 - Go `CheckThresholds` 含 `checkThresholds` failpoint；Rust没有该故障注入，但 Rust 独立测试通过显式时间/keys/错误输入覆盖相同行为分支。
@@ -118,8 +111,6 @@ RustCodeGraph 将 `checker.rs` 列为被 `pkg/session/runtime/scan_adapter_runti
 - Go `CheckRuleKillAction` 的入口还保留 watch-only 条件判断；Rust没有 settings 时直接返回空/false。对当前规则 Kill 输出等价，但 Rust函数不承担 watch-only 动作查询，watch 动作应通过 `CheckAction` 读取。
 
 Rust `checker_test.rs` 明确覆盖：阈值优先级和两次 5 keys 累加至 10、watch Kill/CoolDown/SwitchGroup、无效目标组、原错误保留与 Kill 覆盖、quarantine 内容、convict 类型、派生提前返回、轮询 Kill 只首次标记，以及并发 reset/check。Go 测试额外直接固定 nil receiver 安全和 50 个 goroutine 下 CAS 仅入队一次；Rust 的 CAS 语义由实现和单条记录断言覆盖，但目前没有等量的多线程 CAS 压测。
-
-诊断模式提前跳过 runaway 派生与 Go 保持同一意图；其余阈值、watch 动作和一次标记状态继续使用既有实现。独立 `manager_test.rs::diagnostic_mode_suppresses_runaway_manager_work` 还验证普通模式构造的 manager 在开关切到诊断后也不再派生。
 
 ## 扩展指南
 
@@ -131,10 +122,3 @@ Rust `checker_test.rs` 明确覆盖：阈值优先级和两次 5 keys 累加至 
 - 修改 deadline 错误识别时，应避免依赖易变的人类可读字符串，优先在 Session/KV/Store 适配层传递结构化错误；同步覆盖原错误保持、deadline Kill 和非 Kill 动作。
 - 补齐 Go 指标/日志时应在 `DeriveChecker` 和单次 CAS 成功路径计数，避免每个 Cop 响应重复上报；同时确认 crate 依赖和非 Windows 构建边界，而不是只在现有 `cfg(windows)` 清单下增加代码。
 - 调整 quarantine 行为时必须保留目录设置一致性检查和 watch 优先不重复隔离的不变量，并同步 `manager.rs`/`manager_test.rs` 中队列容量、即时本地生效和持久化生命周期验证。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/resourcegroup/runaway/checker.rs` 定位增量、`git show 2c944fb:pkg/resourcegroup/runaway/checker.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`manager.rs` 和 Go `checker.go`；独立 `manager_test.rs::diagnostic_mode_suppresses_runaway_manager_work` 验证实时诊断模式派生门控，`checker_test.rs` 保留阈值/watch/并发回归入口。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

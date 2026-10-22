@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust `astersql-lightning-config` crate 的任务级配置核心，源文件为 [`config.rs`](./config.rs)。它定义一棵完整的 Lightning 导入配置树、默认值、文本枚举、规范化和交叉字段校验。crate 入口 [`lib.rs`](./lib.rs) 以 `pub use config::*` 再导出这些 API；[`Cargo.toml`](./Cargo.toml) 的 `package.metadata.porting.go-package = "pkg/lightning/config"` 明确其 Go 对照目录。
-
-它位于“读取配置”和“启动导入逻辑”之间：`new_config` 先构造默认配置，`Config::load_from_toml` 或 `Config::load_from_global` 覆盖用户输入，`Config::adjust` / `adjust_with_settings` 再按依赖顺序补默认值并拒绝非法组合。TOML 字段映射的主体不在本文件，而在 [`toml_codec.rs`](./toml_codec.rs) 的 `load_config_from_toml`；本文件负责字段含义及调整后的运行时不变量。
-
-RustCodeGraph 的文件节点将本文件识别为 1766 行、134 个符号，并报告被 11 个 Rust 文件使用，示例包括 `pkg/importsdk/file_scanner.rs`、`br/pkg/stream/crr/internal/checkpoint/storage.rs` 和若干测试。当前仓库还在根 `Cargo.toml` 通过 `facade_lightning_config` 引入本 crate，并由 `pkg/lib.rs` 再导出；多个导入、DDL、ingestor crate 的 Cargo manifest 也声明了该依赖。这里描述的是配置 crate 的真实边界，不等同于断言所有声明依赖都已形成运行时调用。
+TOML 字段映射的主体不在本文件，而在 [`toml_codec.rs`](./toml_codec.rs) 的 `load_config_from_toml`；本文件负责字段含义及调整后的运行时不变量。
 
 ## 核心职责
 
@@ -116,8 +112,6 @@ Config::adjust_with_settings
 
 本次改动与 Go 的 `objstore.RedactURL` 使用方式对齐，避免本地简化 scheme/敏感参数表与共享策略漂移。共享 Rust helper 还处理 userinfo、无效 URL 占位与未知 scheme 查询删除；配置仍保留原始连接值，路径解析与校验条件没有因展示脱敏而放宽。
 
-主要依据是同目录 [`config.go`](./config.go) 和 [`config_test.go`](./config_test.go)。Rust 保留了 Go 的配置段、backend 常量、默认值和 `Adjust` 次序，尤其是 importer → app → mydumper → post-restore → TiDB → checkpoint → routes → conflict；Rust 测试也逐项复刻了 PD 发现、TLS、CSV、冲突、时长、checkpoint 和后端默认值场景。
-
 已确认的实现差异与迁移边界：
 
 - Go `Config.String` 用完整 JSON marshal；Rust `Config::string` 只产生关键字段摘要，不能作为完整 round-trip 格式。
@@ -141,10 +135,3 @@ Config::adjust_with_settings
 - 改动路径或 URL 逻辑时同时测试本地相对/绝对路径、对象存储 scheme、Windows volume path、父目录逃逸和凭据脱敏；不要在日志摘要中暴露 DSN、password、access key 或 token。
 - 改动并发额度时区分“配置默认值”和“运行时原子扣减”。如果需要跨字段一致性，现有 `Relaxed` 原子不足，应在实际消费者中设计明确同步协议。
 - 对照 Go 移植时不能删减看似多余的兼容分支；如果 Rust 选择不同实现，应在独立测试中固定可观察行为，并在本文的 Go 差异中更新说明。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`Config::redact`、MydumperRuntime 的路由/路径错误、移除本地 helper；`config_test.rs::test_adjust_file_router_redacts_source_dir`、`test_adjust_file_path_redacts_source_dir`、`test_redact_config`；Go `config.go` 对应 Redact/Adjust 错误输出。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

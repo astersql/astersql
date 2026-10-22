@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-handle` crate，是 DXF（Distributed eXecution Framework）面向调用方的只读状态聚合层。crate 入口 [`lib.rs`](lib.rs) 将 `status` 保持为私有模块，但通过 `pub use status::*` 重导出本文件的公开函数；[`Cargo.toml`](Cargo.toml) 则表明状态模型、任务模型和历史页分别来自 `astersql-dxf-framework-schstatus`、`astersql-dxf-framework-proto`、`astersql-dxf-framework-storage`。
-
-它不直接访问 SQL、元数据表、owner 服务或节点发现组件，而是从 [`handle.rs`](handle.rs) 中进程级安装的 `Runtime` 取得这些能力。因此它处在“HTTP/运维或调度调用方”与“任务存储、节点信息、owner、调度配置”之间，负责把底层查询结果整理成稳定的状态结构。
-
-当前 Rust 接线需要谨慎区分：RustCodeGraph 和 Rust 源码搜索只发现本文件内部调用及独立测试对这些公开函数的直接调用，未发现 Rust 生产代码直接调用 `GetScheduleStatus`、`GetActiveTaskSummary`、`ListManagedNodes` 或本文件的 `ListHistoryTasks`。Rust HTTP 实现 [`../../../server/handler/tikvhandler/dxf.rs`](../../../server/handler/tikvhandler/dxf.rs) 通过自己的 `DxfRuntime` trait 获取相同类别的数据；[`../../../server/runtime.rs`](../../../server/runtime.rs) 的历史任务路径目前直接调用任务管理器。相比之下，Go HTTP 入口 [`../../../server/handler/tikvhandler/dxf.go`](../../../server/handler/tikvhandler/dxf.go) 会直接调用同路径 Go `handle` API。这意味着本文件已经提供可复用的 Rust API 和测试行为，但不能仅凭 Go 接线断言 Rust HTTP 主链已经直接接入它。
+因此它处在“HTTP/运维或调度调用方”与“任务存储、节点信息、owner、调度配置”之间，负责把底层查询结果整理成稳定的状态结构。
 
 ## 核心职责
 
@@ -93,7 +89,7 @@ RustCodeGraph 当前对 Rust 版本只解析出自调用/测试调用；Rust 生
 
 ## 与 Go 版本的对应关系
 
-同路径 [`status.go`](status.go) 是直接语义基线。Rust 保留了 Go 的函数分组、Running/Modifying 任务筛选、节点 CPU 回退、owner 合并、顺序装箱、ImportInto 三个单节点步骤、至少保留一个节点以及过期 flag 隐藏等核心行为。Rust 独立测试 [`status_test.rs`](status_test.rs) 的装箱用例和 `getNeededNodes` 用例与 [`status_test.go`](status_test.go) 对齐；Rust [`status_testkit_test.rs`](status_testkit_test.rs) 也覆盖了 Go [`status_testkit_test.go`](status_testkit_test.go) 中的空队列状态、CPU 回退、owner/忙碌节点合并和 flag TTL 行为。
+Rust 独立测试 [`status_test.rs`](status_test.rs) 的装箱用例和 `getNeededNodes` 用例与 [`status_test.go`](status_test.go) 对齐；Rust [`status_testkit_test.rs`](status_testkit_test.rs) 也覆盖了 Go [`status_testkit_test.go`](status_testkit_test.go) 中的空队列状态、CPU 回退、owner/忙碌节点合并和 flag TTL 行为。
 
 实现边界存在以下差异：
 
@@ -103,7 +99,7 @@ RustCodeGraph 当前对 Rust 版本只解析出自调用/测试调用；Rust 生
 - Go 的 HTTP handler 已直接调用这些函数；当前 Rust HTTP 层通过另一个 `DxfRuntime` trait 抽象，尚不能从现有调用图证明生产请求会到达本文件。
 - Go 无节点 CPU 回退还会写 warning；Rust 本文件只静默调用 `local_cpu_count`，是否记录日志取决于运行时实现。
 
-这些差异主要是依赖反转和接线状态差异，不应被解释为可以删减 Go 行为。若把 Rust API 接入生产 HTTP 层，需要逐项保留 Go 的上下文标记、参数验证、错误到 HTTP 的映射和可观测性。
+这些差异主要是依赖反转和接线状态差异，不应被解释为可以删减 Go 行为。
 
 ## 扩展指南
 
@@ -113,13 +109,3 @@ RustCodeGraph 当前对 Rust 版本只解析出自调用/测试调用；Rust 生
 - 若支持异构 CPU 节点，不能只改 `CalculateRequiredNodes`：`GetNodesInfo` 当前只返回第一节点 CPU，状态模型和 runtime 接口也需要共同调整，并评估调度估算的兼容性与性能。
 - 将这些 API 接入 Rust HTTP 生产路径时，应在 [`../../../server/handler/tikvhandler/dxf.rs`](../../../server/handler/tikvhandler/dxf.rs) 的 `DxfRuntime` 实现处做局部接线，并补独立 handler 测试；不能仅依据 crate 已导出函数就宣称端到端接入完成。
 - 性能上，装箱复杂度约为“各任务所需节点份数乘当前逻辑节点数”，且可能为每个新节点分配一个 `Vec` 元素。扩大任务规模或改变 `MaxNodeCount` 上限前，应评估最坏复杂度；优化时必须保持输入顺序和现有测试结果。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/dxf/framework/handle` 确认同目录 Rust/Go 源码及测试均在图中。
-- RustCodeGraph `node --file pkg/dxf/framework/handle/status.rs`：读取完整 158 行源码，确认 9 个函数、公开性、调用次序及无条件编译项。
-- RustCodeGraph `query GetScheduleStatus --kind function --json` 与 `query getNeededNodes --kind function --json`：消除 Go/Rust 同名歧义，分别定位 `status.rs::GetScheduleStatus` 和 `status.rs::getNeededNodes`。
-- RustCodeGraph `explore`：确认本文件内部调用边，并显示 Rust 版本主要为自身/测试调用；因图的 callers/callees 子命令对精确 ID 未输出边，另用限定 `*.rs` 的源码搜索核对生产调用现状。
-- 已读 Rust 路径：[`status.rs`](status.rs)、[`lib.rs`](lib.rs)、[`handle.rs`](handle.rs) 的 `Runtime` 与全局槽、[`status_test.rs`](status_test.rs)、[`status_testkit_test.rs`](status_testkit_test.rs)、[`../../../server/handler/tikvhandler/dxf.rs`](../../../server/handler/tikvhandler/dxf.rs)、[`../../../server/runtime.rs`](../../../server/runtime.rs)。
-- 已读配置与 Go 对照：[`Cargo.toml`](Cargo.toml)、[`status.go`](status.go)、[`status_test.go`](status_test.go)、[`status_testkit_test.go`](status_testkit_test.go)、[`../../../server/handler/tikvhandler/dxf.go`](../../../server/handler/tikvhandler/dxf.go)。
-- 人工复核结论：本文能够回答文件为何存在（DXF 状态聚合/查询门面）、如何运行（Runtime 查询与顺序装箱）、当前如何接线（crate 重导出但 Rust HTTP 尚经独立 runtime 边界）以及如何安全扩展（同步 Runtime、独立测试和 Go 语义）。本任务为纯文档分析，按计划未运行 Cargo。

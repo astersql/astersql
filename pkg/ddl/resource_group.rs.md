@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-ddl` crate 中，并由 `pkg/ddl/lib.rs` 以 `pub mod resource_group` 公开。它用一组独立的 Rust 数据类型表达资源组 DDL 的核心语义：资源组配置建模、选项解析与校验，以及创建、修改、删除时“元数据目录 + 外部 Resource Manager”之间的更新顺序。crate 边界由 `pkg/ddl/Cargo.toml` 的 `[package] name = "astersql-ddl"` 和 `[lib] path = "lib.rs"` 确认。
-
-当前文件不是 Rust SQL 请求主链上的实际资源组执行器。全仓 Rust 搜索只发现 `pkg/ddl/resource_group_test.rs` 直接使用本文件的 `ResourceGroupCatalog` 与选项辅助函数；`pkg/session/runtime/dispatch.rs` 分发资源组 SQL 后，实际调用的是 `pkg/session/runtime/control.rs` 中维护 `RUNTIME_RESOURCE_GROUPS` 的 `execute_create_resource_group`、`execute_alter_resource_group`、`execute_drop_resource_group`。因此，本文件目前应理解为对 Go 资源组 DDL 局部语义的可测试模型，而不是已接入持久化 DDL job 的完整实现。
-
-按 DDL 执行框架分类，Go 对照是 owner worker 执行的 job-based 元数据变更；但本 Rust 文件自身没有 job 持久化、owner/failover、schema sync 或 reorg/backfill。资源组不改变表数据，也没有多阶段表 schema state；这里只把组状态简化为 `None -> Public` 和 `Public -> 删除`。
+`ResourceGroupCatalog` 模拟 meta 目录、schema version 推进以及向 `ResourceGroupManager` 同步的顺序，用于验证失败时是否保留 Go 版本的部分副作用。
 
 ## 核心职责
 
@@ -93,11 +89,6 @@ Go 版本创建时用 `context.WithTimeout(..., 5s)` 调用 infosync，而 alter
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ddl/resource_group.go`：
-
-- Rust 常量、option/settings 类型和 `build_resource_group` 对应 Go 的 `unlimitedRURate`、parser/model 选项以及 `buildResourceGroup`；Rust 为避免跨 crate 依赖，重新定义了精简领域类型。
-- `set_direct_resource_group_settings` 对应 `SetDirectResourceGroupSettings`，包括 RU unlimited、priority、CPU/IO、burst `0/-1/-2`、Runaway 和仅 default 可改 Background 的规则。
-- `set_direct_runaway_option` 对应 `SetDirectResourceGroupRunawayOption`；`parse_duration_ms` 补足 Go `time.ParseDuration` 在测试覆盖范围内的复合/小数格式。
 - `set_direct_background_option` 与 `parse_background_job_types` 对应 Go 同名逻辑。Rust 白名单是源码内常量；Go 使用 client-go 的 `kvutil.ExplicitTypeList`，未来上游白名单变化不会自动同步。
 - `check_resource_group_validation` 名称对应 Go 函数，但 Rust 只实现局部检查；Go 委托 `resourcegroup.NewGroupFromOptions` 做 proto 转换和完整验证。
 - `ResourceGroupCatalog::{create,alter,drop_group}` 概括 Go `onCreateResourceGroup`、`onAlterResourceGroup`、`onDropResourceGroup` 的关键更新顺序和版本推进，却省略 job 参数解码、job 状态、日志、真实 meta、infosync context、`updateSchemaVersion` 与 `FinishDBJob`。
@@ -113,13 +104,3 @@ Go 版本创建时用 `context.WithTimeout(..., 5s)` 调用 infosync，而 alter
 若要把本文件接入生产 DDL，不能只调用 `ResourceGroupCatalog`：必须决定是替换当前 `pkg/session/runtime/control.rs` 的简化路径，还是接入 `pkg/ddl/executor.rs`/job worker，并补齐持久化 job、owner failover、真实 meta、infosync 超时与重试、schema version/sync、默认组保护、权限依赖检查及 `IF EXISTS` 告警。该接线属于独立实现任务，不能由本文档推断为已存在。
 
 兼容性风险集中在：错误类型/错误码、默认组特例、配置白名单、失败后的部分副作用和 schema version 推进时点。性能风险较小，但 `create` 的名称唯一性是 O(n) 遍历；若目录规模增长，可新增名称索引，同时必须保证 ID/名称两套索引的原子一致性。并发接入时不要仅依赖 `&mut self`，应定义锁范围以及 Manager 调用是否在锁内。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/ddl/resource_group.rs`，确认常量、7 个主要领域类型/枚举、错误类型、Manager trait、Catalog 与全部辅助函数；无条件编译分支。
-- crate 与模块接线：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`；后者公开 `resource_group`，并仅在 `#[cfg(test)]` 下装入独立测试模块 `resource_group_test`。
-- RustCodeGraph：`status` 显示索引有效；符号查询定位 `ResourceGroupCatalog`、`build_resource_group`、`set_direct_resource_group_settings`、`check_resource_group_validation` 等；callees 查询确认 `build -> set_direct`、settings setter -> 两个子 setter、Runaway setter -> duration parser、Background setter -> task parser。路径过滤未返回目标文件且 callers 输出为空，因此又以 `rg` 核对上游。
-- Rust 上游与接线核验：全仓 Rust 搜索仅发现 `pkg/ddl/resource_group_test.rs` 使用本文件 API；`pkg/session/runtime/dispatch.rs` 与 `pkg/session/runtime/control.rs` 证明当前 SQL 路径使用另一套运行时实现。
-- Rust 独立测试：`pkg/ddl/resource_group_test.rs` 的 5 个测试分别覆盖 Manager 同步失败顺序、state/validation 边界、Background 白名单和 Go duration 语法。本任务按计划只读测试，不运行 Cargo。
-- Go 对照：`pkg/ddl/resource_group.go`；入口和真实 job 链路补充证据为 `pkg/ddl/executor.go` 的 `AddResourceGroup`/`AlterResourceGroup`/`DropResourceGroup` 与 `pkg/ddl/job_worker.go` 的三个 action 分发。
-- 人工复核结论：本文件存在的价值是保存和测试资源组 DDL 的局部移植语义；它当前通过纯内存 Catalog 和 Manager trait 运行，尚未成为生产 Rust DDL job 主链。安全扩展必须同步独立 Rust 测试和 Go 对照，并明确上述接线缺口。

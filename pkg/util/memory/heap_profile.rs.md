@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-memory` crate，由同目录 [`lib.rs`](./lib.rs) 以 `pub mod heap_profile` 暴露。它不是独立运行的 profiler 服务，而是全局内存仲裁运行时的一项诊断能力：[`global_arbitrator.rs`](./global_arbitrator.rs) 在首次创建 `MemArbitrator` 时构造 `HeapProfileCollector::new_default(<state-dir>/heap_profiles)`，随后 `HandleGlobalMemArbitratorRuntime` 在每次内存采样后通过 `HeapProfileRuntime::should_check` 和 `try_capture` 驱动它。
-
-文件把 `MemArbitrator` 的内存使用快照转换为阈值触发的 pprof 文件和配套 JSON 元数据。生产写入器由 `rpprof` 提供，时间和写入器也可注入以支持同目录独立测试 [`heap_profile_test.rs`](./heap_profile_test.rs)。直接 Go 对照是 [`heap_profile.go`](./heap_profile.go)，文件名、阈值、冷却、保留和元数据协议均以该实现为迁移基准。
+实现 `HeapProfileRuntime`，把 collector 接到全局仲裁器的串行运行时 tick，并用一个互斥状态保护检查节流和触发状态。
 
 ## 核心职责
 
@@ -88,7 +86,7 @@ Unix 权限是安全协议的一部分：目录 `0750`，profile 和 metadata `0
 
 ## 与 Go 版本的对应关系
 
-[`heap_profile.go`](./heap_profile.go) 是逐项对照文件。两版共同使用 70/80/85% 普通阈值、65% 重置线、90% 安全截止、95% 紧急阈值、60 秒普通冷却、30 秒紧急周期、1 秒检查间隔和 10 组保留上限；触发位图、限制变化重置、最高未尝试档选择、writer 开始后即视为一次尝试、原子临时文件、metadata schema、文件命名验证和 orphan 清理语义均一致。
+两版共同使用 70/80/85% 普通阈值、65% 重置线、90% 安全截止、95% 紧急阈值、60 秒普通冷却、30 秒紧急周期、1 秒检查间隔和 10 组保留上限；触发位图、限制变化重置、最高未尝试档选择、writer 开始后即视为一次尝试、原子临时文件、metadata schema、文件命名验证和 orphan 清理语义均一致。
 
 实现层的主要差异是 profile 来源：Go 用 `runtime/pprof.Lookup("heap").WriteTo(w, 0)`，Rust 用 `rpprof` allocator sampler 生成 protobuf pprof，并显式暂停/恢复 sampler 以避免锁重入。Go collector 的可变字段由运行时 handler 的串行锁保护；Rust 把 `lastCheckAt` 和 trigger 收进自身 `Mutex`，使 trait 对象本身满足线程安全。Go 用可空函数字段并在 `currentTime` 回退到全局 `now()`；Rust 构造后始终持有非空 `Arc<Fn>`。
 
@@ -103,11 +101,3 @@ Rust 独立测试名称带 `go_merge_28`，覆盖 Go 测试的关键意图：逐
 - 修改并发模型时要注意 `capture_locked` 当前在持有状态锁时执行全部 I/O。若缩小锁范围，必须为 concurrent reset、同 basename 冲突、attempted 提交时机和 writer 并发增加测试，不能只为降低阻塞而破坏单写者不变量。
 - 修改文件清理时只应删除能由 `parse_heap_profile_file_name` 或 `is_heap_profile_temp` 明确认领的文件，避免误删管理员放入同目录的诊断文件；测试需覆盖未知后缀、未知阈值、孤立两侧、同时间排序和删除失败。
 - 测试继续放在同目录独立 `heap_profile_test.rs`，不要把测试模块嵌入生产文件。性能风险集中在持锁生成/同步 profile，正确性风险集中在状态机和失败返回语义，兼容风险集中在文件名、JSON 字段和 pprof 编码。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/memory` 确认目标 Rust、Go、测试与模块入口均已索引。`explore "pkg/util/memory/heap_profile.rs HeapProfileCollector ..."` 和 `node --file ... --offset ...` 用于核对目标文件全部 414 行及 52 个符号。
-- RustCodeGraph 调用证据：针对 `global_arbitrator.rs HeapProfileRuntime should_check try_capture reset_trigger_state HeapProfileCollector new_default` 的 `explore` 显示 `HandleGlobalMemArbitratorRuntime` 调用三项 trait 方法；源码节点进一步确认 collector 在 `SetGlobalMemArbitratorWorkMode` 初始化，并在运行时统计更新后执行 `should_check` → `try_capture`。精确 `callers`/`callees` 命令未产生可用输出，本文未用其空结果扩张结论。
-- 已读生产/配置路径：`pkg/util/memory/heap_profile.rs`、`global_arbitrator.rs` 的初始化与 handler 调用段、`lib.rs`、`Cargo.toml`、Go 对照 `heap_profile.go`。Cargo 证据确认 crate 名、`lib.rs` 入口及 `chrono`、`serde_json`、`tempfile`、带 tag 的 `rpprof` 依赖。
-- 已读独立测试：Rust `pkg/util/memory/heap_profile_test.rs` 全部 431 行；Go `pkg/util/memory/heap_profile_test.go` 全部 440 行。它们共同证明阈值状态机、冷却/截止/重置、失败语义、紧急路径、metadata、权限、保留和全局安装；Rust 测试另证明默认 writer 生成可解码且非空的 pprof。
-- 本任务仅新增本文，不改变 Rust、Go、Cargo 或总计划，也按任务要求未运行 Cargo。交付前执行任务指定的结构命令确认文件存在且恰有 11 个固定二级标题，并人工检查所有行为描述均能回溯到上述符号、调用点或测试。

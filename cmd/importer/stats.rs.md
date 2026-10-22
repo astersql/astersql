@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cmd/importer/stats.rs` 是 `astersql-cmd-importer` crate 内的统计信息适配与抽样层。crate 根在 `cmd/importer/lib.rs` 通过 `pub mod stats` 暴露本模块；`cmd/importer/Cargo.toml` 将该 crate 定义为 `kind = "binary"` 的 Go `cmd/importer` 移植，并只直接依赖 `toml`、`serde_json`，较重的 TiDB 统计类型由 `cmd/importer/stubs.rs` 中的轻量结构替代。
-
-本文件位于两条链路的交界处：入口 `cmd/importer/main.rs::run_with_args` 调用 `loadStats` 并把加载出的索引/列直方图包装成 `histogram`，数据生成侧再由 `cmd/importer/db.rs` 和 `cmd/importer/rand.rs` 按列类型消费这些直方图。它不是完整的统计子系统，也不负责解析表结构、调度 worker 或执行 SQL。
+统计 JSON 的实际解析、TiDB JSON 与简化 JSON 的分派，以及 `Bounds`/时间值的具体表示均在 `cmd/importer/stubs.rs` 中实现。
 
 ## 核心职责
 
@@ -92,15 +90,7 @@ RustCodeGraph 对 `stats.rs::loadStats` 给出的直接测试调用者是 `parit
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `cmd/importer/stats.go`。符号基本一一对应：Go `loadStats`、`histogram`、`getRandomBoundIdx`、`randInt`、`getValidPrefix`、`getAvgLen`、`randString`、`randDate` 在 Rust 中均保留原命名与控制流。
-
-主要保持点：
-
-- 桶累计计数、`Repeat` 分支、偶数/奇数边界索引协议一致。
-- 整数随机范围、字符串平均字节长度及最小值 `1`、公共前缀后补随机字符的顺序一致。
-- `getValidPrefix` 只访问 Go `range lower` 会产生的 UTF-8 字符起始字节偏移，并保留 `uint8` 包裹运算。
 - 日期路径先按传入 unit 计算差值，再按天增加随机偏移，连同这一不完全通用的行为一起保留。
-- 空 Bounds 的平均长度计算继续 panic，独立 Rust 测试明确把它作为 Go 行为契约。
 
 主要实现差异：Go `loadStats` 直接使用 TiDB 的 JSON/统计存储包，Rust 则委托本 crate 的 `stubs::load_stats_file`，并额外支持由 `"bounds"` 识别的简化 JSON；Go 的 `avgLen` 是普通整数，Rust 因 `Arc` 跨 worker 共享而改为 `Mutex<i32>`；Rust 的 `getValidPrefix` 必须把字节结果转换为合法 `String`，因此使用有损 UTF-8 转换。当前 Rust `ensure_avg_len` 是为共享缓存新增的辅助方法，Go 版通常由调用点直接初始化 `avgLen`。
 
@@ -113,15 +103,3 @@ RustCodeGraph 对 `stats.rs::loadStats` 给出的直接测试调用者是 `parit
 - 修改日期采样时，应先确认是否有意偏离 Go 当前的“按 unit 求差、按天加偏移”语义，并分别覆盖 DATE、TIME、TIMESTAMP、YEAR 的格式和边界；这可能带来兼容性与分布变化。
 - 若要处理空桶、空 Bounds、反向边界或锁中毒，必须把它作为显式兼容性变更，而不是局部防御式修复，因为现有测试已固定部分 panic 行为。
 - 性能上，桶选择是线性扫描，平均字符串长度是首次使用时线性扫描全部边界。若改为二分或预计算，需要证明累计计数、并发初始化和随机分布不变。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 生产源码：`cmd/importer/stats.rs`（全部 195 行）、`cmd/importer/main.rs::run_with_args`、`cmd/importer/db.rs::{randStringValue, randInt64Value, genColumnData}`、`cmd/importer/rand.rs::{randDate, randTime, randTimestamp, randYear}`、`cmd/importer/lib.rs`。
-- crate/实现边界：`cmd/importer/Cargo.toml`；`cmd/importer/stubs.rs::{HistogramCore, StatsTable, load_stats_file, table_stats_from_simplified_json, table_stats_from_tidb_json}`。
-- Go 对照：`cmd/importer/stats.go` 的同名类型和函数。
-- 独立测试：`cmd/importer/stats_test.rs::{empty_bounds_preserve_go_divide_by_zero_failure, valid_prefix_visits_go_range_byte_offsets_only, bundled_tidb_stats_json_restores_named_histograms}`；`cmd/importer/parity_test.rs::{stats_loader_rejects_malformed_json, contract_normal_path}` 中的统计契约片段。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter cmd/importer` 确认目标、Go 对照与测试均已索引；`node --file cmd/importer/stats.rs` 给出完整源码及文件引用；`node loadStats` 给出 Rust 测试调用边；`node load_stats_file`、`node table_stats_from_tidb_json`、`node table_stats_from_simplified_json` 给出解析下游调用边；方法级同名查询再以直接源码位置消歧。
-
-本任务是纯文档分析，未运行 Cargo。交付前使用任务指定命令检查目标文件存在且恰有 11 个固定二级章节，并人工复核未建议把 Rust 测试嵌入生产文件。

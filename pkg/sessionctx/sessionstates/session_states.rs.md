@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-sessionctx-sessionstates` crate 中的会话迁移状态数据层：它定义跨节点携带的 `SessionStates` 快照、预处理语句与最近查询/DDL 信息，并实现与 Go `encoding/json` 兼容的序列化。crate 入口 `pkg/sessionctx/sessionstates/lib.rs` 将本模块公开导出；`pkg/sessionctx/sessionstates/Cargo.toml` 声明其依赖 `Datum`、`FieldType`、`SQLWarn`、`IndexInfo` 所在的已移植 crate。
-
-Go 版的完整业务位置是 `SHOW SESSION_STATES` 导出与 `SET SESSION_STATES` 恢复之间的交换格式（`pkg/sessionctx/sessionstates/session_states.go:66-90`）。当前 Rust 索引显示本文件主要被本 crate 测试实例化，`SessionStateError` 则被同 crate 的 `session_token.rs` 复用；Rust server 的 `pkg/server/driver_tidb.rs` 仍定义了另一个仅包含 prepared statements 的简化 `SessionStates`，因此不应把本文件误述为 Rust SQL 主链已统一接线的快照类型。
+不绕过业务类型的自定义 JSON：`Datum` 和 `SQLWarn` 分别调用自身 `MarshalJSON`/`UnmarshalJSON`，避免普通 serde 改变 Go 线上形状。
 
 ## 核心职责
 
@@ -66,11 +64,7 @@ JSON 边界上，顶层非 object、`user-var-values`/字段类型错误、`warn
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `SessionStateType`、两个常量、`PreparedStmtInfo`、`QueryInfo`、`LastDDLInfo` 和 `SessionStates` 逐项对应 `pkg/sessionctx/sessionstates/session_states.go:26-90`。公开字段名保留 Go 风格，JSON tag 也对齐 `user-var-values`、`prepared-stmt-id`、`query-info`、`rs-group` 等原名称。Go `[]byte` 默认 base64 行为由 `go_bytes` 显式复刻；Go `map[string]map[string]struct{}` 由嵌套 `HashMap<String, HashMap<String, ()>>` 与空 object 转换复刻。
-
-与 Go derive 无需手写代码不同，Rust 必须手写 `SessionStates` 的 serde 实现，以复用 `Datum`/`SQLWarn` 的 Go 兼容 JSON 并精确处理 omitempty。`PreparedStmtInfo`、`QueryInfo` 和 `LastDDLInfo` 则用 serde derive 配合 `null_default`。当前 Rust 数据模型已含 Go 的 `RUV2Consumption` 字段，而 Rust SQL 主链的组装/恢复仍未完全对齐；两者需要分开评估。
-
-Go 回归 `pkg/sessionctx/sessionstates/session_states_test.go` 还覆盖用户/系统变量、权限、prepared statement、binding、事务、临时表、游标、资源组、假设索引等端到端场景。Rust `session_states_test.rs` 前部大量内容是保存的 Go 参考文本，可运行的 Rust 断言位于文件末部，不应把参考文本误当成已接线的 Rust 集成测试。
+与 Go derive 无需手写代码不同，Rust 必须手写 `SessionStates` 的 serde 实现，以复用 `Datum`/`SQLWarn` 的 Go 兼容 JSON 并精确处理 omitempty。当前 Rust 数据模型已含 Go 的 `RUV2Consumption` 字段，而 Rust SQL 主链的组装/恢复仍未完全对齐；两者需要分开评估。
 
 ## 扩展指南
 
@@ -79,13 +73,3 @@ Go 回归 `pkg/sessionctx/sessionstates/session_states_test.go` 还覆盖用户/
 - 新增迁移拒绝条件时，不应把 session 运行态检查塞入这个纯数据文件；应在对应 handler 检查，并用 `SessionStateError::cannot_migrate`/`ErrCannotMigrateSession` 统一错误码。
 - 将完整快照接入 Rust SQL 主链时，需先消除 `pkg/server/driver_tidb.rs` 中同名简化类型的边界分裂，让 server、session variables、prepared statements 和 bindings 共用本 crate 类型；这是跨文件接线工作，不属于本文档任务。
 - 测试保持在独立文件 `pkg/sessionctx/sessionstates/session_states_test.rs` 和 `session_states_1_aster_unit_test.rs`，不内嵌到生产源文件。至少覆盖：字段 tag、base64、缺失/`null`、零值省略、自定义 Datum/SQLWarn、TiFlash `{}`、非法形状与新旧 JSON 往返。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/sessionctx/sessionstates` 确认本 crate 的 Rust/Go 源文件与独立测试均已索引。
-- RustCodeGraph `node --file pkg/sessionctx/sessionstates/session_states.rs` 核对了 502 行源文件的完整定义；`node session_states.rs::SessionStates` 确认类型位于 198 行，可见实例化调用者为 `session_states_json_round_trip_matches_go_tags_and_omitempty`。
-- 源码与 crate：`pkg/sessionctx/sessionstates/session_states.rs`、`lib.rs`、`Cargo.toml`；直接错误消费者 `session_token.rs`。
-- Go 对照与主链：`pkg/sessionctx/sessionstates/session_states.go`、`pkg/sessionctx/variable/session.go` 的 `EncodeSessionStates`/`DecodeSessionStates`、`pkg/executor/simple.go` 的 `executeSetSessionStates`、`pkg/sessionctx/sessionstates/session_states_test.go` 的 `showSessionStatesAndSet`。
-- Rust 边界证据：`pkg/sessionctx/context.rs` 的 `SessionStatesHandler` trait、`pkg/server/driver_tidb.rs` 的同名简化快照与 `EncodeSessionStates`/`DecodeSessionStates`、`pkg/bindinfo/session_handle.rs` 的 binding 快照逻辑。
-- 独立 Rust 测试：`session_states_test.rs` 的 `prepared_statement_state_uses_go_json_shape_and_base64_types`、`empty_optional_prepared_fields_match_go_omitempty`、`null_fields_decode_to_go_zero_values`、`session_states_json_round_trip_matches_go_tags_and_omitempty`；`session_states_1_aster_unit_test.rs` 还核对常量和 prepared statement JSON。
-- 本任务仅新增说明文档，按计划不运行 Cargo；结构验证使用任务文件指定的 11 章节检查。

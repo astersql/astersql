@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate；`pkg/ingestor/ingestctrl/Cargo.toml` 将 `lib.rs` 设为库入口，`pkg/ingestor/ingestctrl/lib.rs` 以 `pub mod job_worker` 暴露本模块。它位于 Region 任务生成与导入流水线之间：接收已经携带 Region、半开键范围 `[start, end)` 和待写 KV 的 `RegionJob`，驱动“已扫描 → 已写入 → 已导入”状态机，并把需要重扫的任务拆成新的 Region 子任务。
-
-生产接线可见 `pkg/dxf/importinto/write_ingest_backend.rs`：其 Worker factory 用 `NewRegionJobBaseWorker` 注入实际的 Write、Ingest、取消检查和 Region 重扫回调，再交给 `pkg/ingestor/ingestctrl/import_pipeline.rs` 的资源池 Worker 调用 `RegionJobWorker::HandleTask`。本文件还定义块存储导入前的 Store 空间检查和对象存储分批写入边界；当前仓库搜索只发现这两种具体包装在独立测试中直接构造，未发现生产构造点，因此不能把它们描述为已经接入当前 Rust 主链。
-
-文件没有条件编译项。Cargo 中直接支撑本文件的依赖包括 `astersql-metrics`（panic 计数）和 `astersql-resourcemanager-pool-workerpool`（`TaskMayPanic`）；crate 的大量额外依赖受 `cfg(windows)` 约束，但不是本文件源码自身的条件分支。
+提供 `BlockStoreRegionJobWorker::preRunJob` 的磁盘空间门禁，以及 `ObjectStoreRegionJobWorker::{write, ingest}` 的对象存储客户端适配。
 
 ## 核心职责
 
@@ -91,8 +87,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ingestor/ingestctrl/job_worker.go`，测试对照是同目录 `job_worker_test.go`。Rust 保留了 Go 的四阶段模型、无 leader 重扫、`RequestTooNew` 原阶段重试、空任务直达 `Ingested`、部分写入循环、15 分钟阈值、EOF 可重试、低于 10% 磁盘门禁以及对象写入/ingest 两段式结构。
-
 当前 Rust 并非 Go 的完全等价实现：
 
 - Go `writeWithTimeout` 创建可取消的 deadline context，并只在 deadline 原因匹配时转换为 `ErrWriteTooSlow`；Rust 是同步调用后的耗时比较，不能提前取消慢 Write。
@@ -115,15 +109,3 @@ Rust 测试 `test_region_job_base_worker`、`test_is_retryable_ti_kv_write_error
 - 对象分批策略变化需要验证范围端点、零阈值、单 KV 大于阈值、尾批、计数/字节统计、客户端 Write 与 Ingest 失败；测试继续放在 `job_worker_test.rs`，不要内嵌到生产文件。
 
 主要正确性风险是阶段选择、重扫资源计数和完成去重；兼容风险是 Rust 错误文本分类与 Go 结构化错误语义不同；性能风险来自 `RegionJob` 克隆、对象路径先复制范围数据再构建批次，以及同步慢 Write 长时间占用 Worker。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `explore "pkg/ingestor/ingestctrl/job_worker.rs RegionJobBaseWorker ObjectStoreRegionJobWorker BlockStoreRegionJobWorker"`：核对目标文件、Go 对照、测试符号和调用影响。
-- RustCodeGraph `query`：核对 `RegionJobBaseWorker`、`ObjectStoreRegionJobWorker`、`BlockStoreRegionJobWorker`、`isRetryableImportTiKVError`；`node --file ... --offset 175 --limit 340` 核对目标文件后半部完整实现。
-- RustCodeGraph `callees runJob` 与 `node getNextStageOnIngestError`：确认 Rust 状态机的直接下游和 ingest 错误阶段映射。图对动态 trait callers 和若干结构体使用没有返回精确边，未把缺失边当成“不存在调用”。
-- crate/模块边界：`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ingestor/ingestctrl/lib.rs`；目标包没有 `doc.go`。
-- 生产调用证据：`pkg/dxf/importinto/write_ingest_backend.rs`、`pkg/ingestor/ingestctrl/import_pipeline.rs`。
-- Go 对照：`pkg/ingestor/ingestctrl/job_worker.go`、`pkg/ingestor/ingestctrl/region_job.go`。
-- 测试证据：`pkg/ingestor/ingestctrl/job_worker_test.rs`、`pkg/ingestor/ingestctrl/job_worker_test.go`，以及相关 `region_job_test.rs`。
-- 人工复核结论：本文件存在是为了把 Region 状态机与具体 Write/Ingest/重扫实现解耦；运行时由导入流水线交付任务并接管返回任务的资源生命周期；安全扩展必须同步阶段、错误分类、引用/资源不变量和独立 parity 测试。

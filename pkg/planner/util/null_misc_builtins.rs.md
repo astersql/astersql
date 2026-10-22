@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-util`（见 `pkg/planner/util/Cargo.toml`），由 crate 根模块 `pkg/planner/util/lib.rs` 以私有模块 `mod null_misc_builtins;` 装配。它不直接对下游 crate 再导出 API，而是为同 crate 的 `pkg/planner/util/null_misc.rs` 提供 NULL 拒绝（null-reject）证明所需的 builtin 属性元数据。
-
-在规划链路中，公开入口是 `null_misc.rs::IsNullRejected`，本文件位于其证明引擎的下游。该入口目前由 `pkg/planner/util/funcdep_misc.rs::ExtractNotNullFromConds`、`pkg/planner/core/operator/logicalop/logical_projection.rs::ExtractFD` 和 `pkg/planner/core/operator/logicalop/logical_join.rs::PredicatePushDown` 调用，因此这里的登记结果会间接影响函数依赖推导，以及投影和连接谓词的 NULL 拒绝判断。
+用 `is_null_reject_null_preserving` 和 `null_reject_test_mode` 向证明引擎提供只读查表接口。
 
 ## 核心职责
 
@@ -76,13 +74,7 @@ RustCodeGraph 给出的直接调用边为：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/util/null_misc_builtins.go`。Rust 基本逐项保留 Go 的两个概念：
-
-- Go 的 `nullRejectTestMode uint8` 与两个常量，对应 Rust 的 `NullRejectTestMode::{ReturnsFalse, KeepsNull}`。
-- Go 的 `map[string]struct{}` 白名单，对应 Rust 的 `&[&str]`；Go 以 map 查找，Rust 通过 `is_null_reject_null_preserving` 线性查找。
-- Go 的 `map[string]nullRejectTestMode`，对应 Rust 的元组切片及 `null_reject_test_mode`。
-
-语义上的三项模式映射一致，NULL 传递清单也按 Go AST 名称迁移。当前 Rust AST 缺少九个日期时间名称常量，所以 Rust 用同值字符串占位；这是表示形式差异，不是有意删减 Go 行为。Go 证明代码直接索引 map，Rust `null_misc.rs` 使用两个查询函数封装相同决策。
+当前 Rust AST 缺少九个日期时间名称常量，所以 Rust 用同值字符串占位；这是表示形式差异，不是有意删减 Go 行为。Go 证明代码直接索引 map，Rust `null_misc.rs` 使用两个查询函数封装相同决策。
 
 测试覆盖尚不完全对称：Rust 的 `pkg/planner/util/null_misc_test.rs` 固定断言白名单长度为 174、测试表长度为 3、白名单无重复，并抽查 `GT`、`Cast` 和两个 truth 模式；同文件还通过 `test_is_null_rejected_proof_modes` 覆盖比较、IS NULL、NOT、AND/OR、IN 等消费行为。Go 的 `pkg/planner/util/null_misc_test.go::TestIsNullRejectedProofModes` 覆盖更广的 builtin/边界组合，并校验登记名称与 builtin 清单，因此扩展 Rust 清单时应同步检查两端，而不能只修改长度快照。
 
@@ -95,12 +87,3 @@ RustCodeGraph 给出的直接调用边为：
 3. 若新增的是 IS TRUE / IS FALSE 风格测试，加入 `NULL_REJECT_REJECT_NULL_TESTS` 并明确选择 `ReturnsFalse` 或 `KeepsNull`；该选择会改变 `must_null` 的传播，不能只根据 `non_true` 结果决定。
 4. 更新独立测试 `pkg/planner/util/null_misc_test.rs`，调整长度快照并增加命中、未命中和实际 `IsNullRejected` 行为用例。测试逻辑不要内嵌到生产文件。还应对照 `pkg/planner/util/null_misc_test.go` 的同类用例，保持 Go/Rust 证明意图一致。
 5. 兼容性风险主要是错误优化：误加函数可能把外连接等价性判断变得不可靠；漏加函数通常只损失优化机会。性能风险来自扩大线性表后的查找成本。任何数据结构替换都应保持未知项的保守返回值和静态只读特性。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/util/null_misc_builtins.rs`，RustCodeGraph 显示 234 行、4 个顶层业务符号类别，并显示它被 `null_misc.rs` 和 `null_misc_test.rs` 使用。
-- crate 边界：`pkg/planner/util/Cargo.toml` 的包名、`parser-ast` 路径依赖与 `[package.metadata.porting] go-package = "pkg/planner/util"`；`pkg/planner/util/lib.rs` 的私有模块声明、`null_misc` 公开再导出及独立测试接线。
-- 调用证据：RustCodeGraph `node is_null_reject_null_preserving`、`node null_reject_test_mode`、`node proveNullRejectedScalarFunc`、`node tryFoldNullifiedScalarFunc`、`node IsNullRejected`，以及对目标符号的 `query`/`explore`；另以 `rg` 核对三个生产调用点和所有直接表引用。
-- Go 对照：`pkg/planner/util/null_misc_builtins.go`、`pkg/planner/util/null_misc.go`、`pkg/planner/util/null_misc_test.go`。
-- Rust 测试：`pkg/planner/util/null_misc_test.rs::test_null_reject_builtin_registry_snapshot` 与 `test_is_null_rejected_proof_modes`。前者验证 174/3 项、去重和代表性查询；后者验证登记表进入完整 NULL 拒绝证明后的行为。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付验证使用任务指定的 11 章节结构命令，并人工复核本文未把未知函数的保守未命中描述成运行时错误，也未把尚缺 Rust AST 常量的占位字符串描述成已完成枚举接线。

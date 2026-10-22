@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-placement` crate，是 Placement Policy 中“成组标签约束”的转换与规范化层。crate 入口 `pkg/ddl/placement/lib.rs` 将本模块的公开函数再导出；输入最终落为 `pd::LabelConstraint`，供 `rule.rs` 生成 PD placement rule、供 `bundle.rs` 组合和整理 rule bundle。它处理的是 DDL 放置策略的纯内存表示，不负责创建 DDL Job、推进 schema state、持久化元数据或直接访问 PD。
-
-`pkg/ddl/placement/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/ddl/placement`，并声明 `serde_yaml`、`sha2`、`base64` 以及提供 PD 类型的 `astersql-store-pdtypes` 等依赖。DDL 层通过 `pkg/ddl/Cargo.toml` 依赖该 crate；此外 session、domain、infoschema、executor、distsql 和部分 store crate 也依赖 placement 门面，但本文件已确认的直接生产调用集中在同 crate 的 `rule.rs` 与 `bundle.rs`。
+`NewConstraintsDirect` 是明确绕过解析和集合校验的轻量包装器，只应用于调用者已经构造好 `pd::LabelConstraint` 的场景。
 
 ## 核心职责
 
@@ -78,13 +76,11 @@ RustCodeGraph 的文件节点显示 `constraints.rs` 被 placement 相关测试�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/placement/constraints.go`，主要算法和错误分类保持一致：批量解析逐项调用 `NewConstraint`/`AddConstraint`，重复跳过但继续扫描冲突，恢复格式相同，指纹均为规范字符串排序后的 SHA-256 标准 Base64。
-
-需要注意的表示差异：Go 的空输入常返回 `nil` slice，而 Rust 统一返回空 `Vec`；Go `NewConstraintsDirect` 是 variadic，Rust 接收一个 `Vec`；Go 错误返回可携带构造到一半的 slice，Rust `Result<Vec<_>, Error>` 的错误分支不携带部分集合。调用者只依赖成功值或错误种类时语义一致，但新增调用者不得依赖 Go 的部分结果行为。
+需要注意的表示差异：Go 的空输入常返回 `nil` slice，而 Rust 统一返回空 `Vec`；Go `NewConstraintsDirect` 是 variadic，Rust 接收一个 `Vec`；Go 错误返回可携带构造到一半的 slice，Rust `Result<Vec<_>, Error>` 的错误分支不携带部分集合。
 
 YAML 实现也有库差异：Go 使用 `yaml.UnmarshalStrict` 解码到空 slice，Rust 使用 `serde_yaml` 解码为 `Option<Vec<String>>`，并显式把全空白输入和 `null` 视为空集合。`rule.rs` 对 serde_yaml 与 Go yaml.v2 在错误分类上的差异另有预判和回退逻辑，因此不应只修改本文件来改变字典格式兼容性。
 
-独立测试对应关系：Go 的 `pkg/ddl/placement/constraints_test.go` 覆盖构造、追加和恢复；Rust 的 `constraints_test.rs` 恢复这些表驱动语义，并增加空白 YAML、字典属性及指纹顺序无关性验证。`constraint_test.rs` 另验证 `[]` 成功和畸形 YAML 失败。
+独立测试对应关系：Go 的 `pkg/ddl/placement/constraints_test.go` 覆盖构造、追加和恢复；Rust 的 `constraints_test.rs` 恢复这些表驱动语义，并增加空白 YAML、字典属性及指纹顺序无关性验证。
 
 ## 扩展指南
 
@@ -94,16 +90,3 @@ YAML 实现也有库差异：Go 使用 `yaml.UnmarshalStrict` 解码到空 slice
 - 改动指纹格式前，应确认 `Bundle::Tidy` 分组行为和 Go 兼容性。应测试约束顺序、values 顺序、未知操作、空集合及潜在分隔歧义；这类改动可能改变规则合并结果，具有兼容性和性能风险。
 - 解析外部 Placement Settings 时不要调用 `NewConstraintsDirect`。该函数只适合类型安全、调用点可审计的内部构造；新增生产调用应同时提供独立测试，而不是把测试写入源文件。
 - 本文件属于纯转换层。若扩展涉及 DDL Job 持久化、schema version 或 PD 下发生命周期，应沿 DDL/placement 的真实上层调用链实现，不能在此引入全局状态或后台任务。
-
-## 验证依据
-
-已读取并核对：
-
-- 目标源码：`pkg/ddl/placement/constraints.rs`（全部 151 行）。
-- crate 边界：`pkg/ddl/placement/Cargo.toml`、`pkg/ddl/placement/lib.rs`、`pkg/ddl/Cargo.toml` 的 placement 依赖。
-- 直接生产调用：`pkg/ddl/placement/rule.rs` 的 `newRules`/`newRulesWithDictConstraints`，`pkg/ddl/placement/bundle.rs` 的 `NewBundleFromConstraintsOptions`/`Bundle::Tidy`。
-- Go 对照：`pkg/ddl/placement/constraints.go`。
-- 独立测试：`pkg/ddl/placement/constraints_test.rs`、`pkg/ddl/placement/constraint_test.rs`、`pkg/ddl/placement/constraints_test.go`；另通过搜索确认 `bundle_1_aster_unit_test.rs` 对去重和冲突有集成式覆盖。
-- DDL 包契约：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`；本文件不承担其中描述的 Job/owner/schema-sync 生命周期。
-
-RustCodeGraph 证据包括：`status` 确认索引含 7032 个 Rust 文件且目标目录已索引；`files --filter pkg/ddl/placement` 列出 Rust/Go 源与独立测试；`node --file` 读取目标、Go 对照、模块入口、调用点和测试；`query` 确认本文件的公开符号。随后用 `rg` 对精确符号补充调用边消歧。任务为纯文档分析，按计划未运行 Cargo。

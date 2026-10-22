@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-task` crate；crate 入口 `pkg/planner/cascades/task/lib.rs` 通过 `mod task_scheduler` 纳入模块，并以 `pub use task_scheduler::*` 导出本文件的公开项。`pkg/planner/cascades/task/Cargo.toml` 将该 crate 定位为 Go 包 `pkg/planner/cascades/task` 的 Rust 移植，并通过 `cascades-base` 取得 `Scheduler`、`Task` 等基础契约。
-
-它提供串行 LIFO（后进先出）调度器 `SimpleTaskScheduler`。需要区分“实现存在”和“主链已接线”：仓库内 Rust 生产代码当前没有调用 `NewSimpleTaskScheduler`，直接调用者只有独立测试 `task_scheduler_test.rs`；Rust 优化器主链 `pkg/planner/cascades/cascades.rs` 当前使用另一份私有实现 `SharedTaskScheduler`。Go 主链则在 `pkg/planner/cascades/cascades.go:NewContext` 中装配 `task.NewSimpleTaskScheduler()`。
+这些职责对应 `cascades-base` 中的 `Scheduler` trait；任务本身的业务逻辑仍由各 `Task` 实现承担，本文件只规定串行执行次序、错误短路和栈资源回收。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ LIFO 是可观察语义而非实现偶然。例如 `task_opt_group_expression.rs
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项保留了 `pkg/planner/cascades/task/task_scheduler.go` 的行为形状：相同的 `SimpleTaskScheduler`/`NewSimpleTaskScheduler` 名称，相同的 LIFO 循环、首错短路、显式 `Destroy` 和栈池复用。Rust 用 `Option<Stack>` 表达 Go 在销毁时把 `s.stack` 设为 `nil`，并让重复销毁变为安全空操作；用 `Box<dyn Task>`/`Box<dyn Scheduler>` 对应 Go 接口值。
+Rust 用 `Option<Stack>` 表达 Go 在销毁时把 `s.stack` 设为 `nil`，并让重复销毁变为安全空操作；用 `Box<dyn Task>`/`Box<dyn Scheduler>` 对应 Go 接口值。
 
-独立测试也对齐 `task_scheduler_test.go`：按 1、2、3 压栈，任务 2 返回 `mock error at task id = 2`。Rust 测试额外记录执行序列并断言为 `[3, 2]`，同时证明 LIFO 顺序和错误后任务 1 未执行。
+Rust 测试额外记录执行序列并断言为 `[3, 2]`，同时证明 LIFO 顺序和错误后任务 1 未执行。
 
-主要迁移差异在装配层：Go `cascades.go:NewContext` 使用本调度器；Rust `cascades.rs:Context::NewContext` 使用私有 `SharedTaskScheduler`。后者通过 `Rc<RefCell<...>>` 让任务持有的上下文可以在执行期间继续入队。故当前不能仅把构造调用机械替换为本文件的工厂函数；应先统一上下文所有权/重入模型并用主链测试证明语义一致。
+主要迁移差异在装配层：Go `cascades.go:NewContext` 使用本调度器；Rust `cascades.rs:Context::NewContext` 使用私有 `SharedTaskScheduler`。故当前不能仅把构造调用机械替换为本文件的工厂函数；应先统一上下文所有权/重入模型并用主链测试证明语义一致。
 
 ## 扩展指南
 
@@ -91,13 +89,3 @@ Rust 文件逐项保留了 `pkg/planner/cascades/task/task_scheduler.go` 的行�
 - 改变销毁协议时，应同时修改 `stack: Option<Stack>` 的状态约束和 `task.rs:Stack::Destroy`，覆盖重复销毁、错误后销毁、销毁后误用及池复用。
 - 若要把本实现接入 Rust `Optimizer`，应从 `cascades.rs:{Context, TaskContext, SharedTaskScheduler}` 入手，先设计可克隆任务上下文如何安全回到同一个调度器，不能只替换字段类型。兼容风险是派生任务顺序和错误短路；性能风险是 `Rc<RefCell>` 借用、对象池复用及动态分发开销变化。
 - 测试逻辑应继续放在独立文件 `pkg/planner/cascades/task/task_scheduler_test.rs`，不要内嵌进生产源文件。至少保留现有 LIFO/错误短路用例，并建议补充空栈成功、成功耗尽、错误后 `Destroy`、重复 `Destroy`、销毁后误用以及栈池清空复用。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/planner/cascades/task` 找到本模块 17 个 Go/Rust 文件。
-- RustCodeGraph 源码/关系查询：读取 `task_scheduler.rs` 全部 69 行，并报告其由 `task_scheduler_test.rs` 使用；查询 `SimpleTaskScheduler`/`NewSimpleTaskScheduler` 候选；读取 `task.rs`、`base/task_stack_base.rs`、`base/task_scheduler_base.rs`、`task/base.rs`、`task_opt_group_expression.rs` 和 `cascades.rs` 的相关符号与调用上下文。
-- crate 与模块证据：`pkg/planner/cascades/task/Cargo.toml`、`pkg/planner/cascades/task/lib.rs`。
-- Go 对照证据：`pkg/planner/cascades/task/task_scheduler.go`、`pkg/planner/cascades/task/task_scheduler_test.go`、`pkg/planner/cascades/cascades.go`。
-- Rust 测试证据：`pkg/planner/cascades/task/task_scheduler_test.rs`；该测试直接覆盖构造、三次入栈、LIFO 顺序及错误短路。
-- Rust 主链证据：`pkg/planner/cascades/cascades.rs` 中 `Context::NewContext`、`TaskContext::PushTask`、`Optimizer::{NewOptimizer, Execute, Destroy}`，证明当前生产优化路径使用 `SharedTaskScheduler`。
-- 本任务是只读代码分析与文档新增，按计划不运行 Cargo；交付前仅执行固定 11 章节结构检查并人工复核上述事实。

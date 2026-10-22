@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-resourcemanager-poolmanager` crate 的调度门面。crate 入口 `pkg/resourcemanager/poolmanager/lib.rs` 依次用 `include!` 合并 `task_manager.rs`、`task_manager_iterator.rs` 和本文件，因此这里的 `impl TaskManager` 可以直接使用前两者定义的 `TaskManager`、`Meta`、`getBoostTask` 与 `pauseTask`，而无需单独的 `use` 声明。
-
-`pkg/resourcemanager/poolmanager/Cargo.toml` 将 `lib.rs` 指定为库入口，端口元数据指向 Go 包 `pkg/resourcemanager/poolmanager`，唯一直接外部依赖是 `crossbeam-channel = "0.5"`。本文件没有常量、结构体、trait、条件编译项或独立状态，只为已有 `TaskManager` 增加四个公开方法。
-
-实际应用接线位于 `pkg/resourcemanager/pool/spool/lib.rs`：该 crate 通过 `#[path = "../../poolmanager/lib.rs"]` 将 poolmanager 作为模块引入。`Pool::tune`（`pkg/resourcemanager/pool/spool/spool.rs`）是当前检索到的生产调用入口。
+`Overclock` 查询一个适合增加 worker 的任务，保留任务 ID 与 `Meta` 两部分结果，供 Go 兼容调用者使用。
 
 ## 核心职责
 
@@ -94,15 +90,10 @@ RustCodeGraph 将本文件识别为 5 个符号（文件节点加四个方法）
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/resourcemanager/poolmanager/task_manager_scheduler.go`：
-
 - Go `(*TaskManager).Overclock() (uint64, *Meta)` 直接返回 `getBoostTask()`；Rust `Overclock() -> (u64, Option<Meta>)` 用 `Option` 表达 Go 的 `nil`。
 - Go `(*TaskManager).Downclock()` 直接调用 `pauseTask()`；Rust 大写方法保持相同委托结构。
-- Rust 新增 `overclock`/`downclock` 两个小写别名，属于语言习惯适配，不改变 Go 兼容入口的语义。
 
-下层 `task_manager_iterator.go` 与 Rust 版本保持相同策略：未达初始并发的任务优先 boost、已超过初始并发的任务优先 pause、其余情况按创建时间择新/择旧，并以非阻塞发送避免缩容路径等待。Go 用可空 `exitCh` 和 `select { case ...: default: }`；Rust 的 `Meta` 始终持有 `SignalChannel`，以 `is_closed` 检查加 `try_send` 表达尽力发送。两者都不向 `Downclock` 调用者返回发送错误。
-
-Go 集成测试 `pkg/resourcemanager/pool/spool/spool_test.go::TestWithTaskManager` 验证池从 1 扩到 2、3，再缩到 2、1 的最终运行数。Rust 在 `pkg/resourcemanager/pool/spool/spool_test.rs::TestWithTaskManager` 保留了对应场景，并另有 poolmanager 独立迁移测试覆盖精确候选与非阻塞信号行为。
+下层 `task_manager_iterator.go` 与 Rust 版本保持相同策略：未达初始并发的任务优先 boost、已超过初始并发的任务优先 pause、其余情况按创建时间择新/择旧，并以非阻塞发送避免缩容路径等待。Go 用可空 `exitCh` 和 `select { case ...: default: }`；Rust 的 `Meta` 始终持有 `SignalChannel`，以 `is_closed` 检查加 `try_send` 表达尽力发送。
 
 ## 扩展指南
 
@@ -112,14 +103,3 @@ Go 集成测试 `pkg/resourcemanager/pool/spool/spool_test.go::TestWithTaskManag
 - 若需要让降速失败可观察，必须设计 `Downclock`/`pauseTask` 的返回契约，并处理通道满、断开以及异步退出尚未完成的兼容影响；这会偏离当前 Go 的尽力而为语义。
 - 新增或改变本文件行为时，测试逻辑应继续放在独立文件：候选和信号边界更新 `pkg/resourcemanager/poolmanager/migration_aster_unit_test.rs`，完整扩缩容生命周期更新 `pkg/resourcemanager/pool/spool/spool_test.rs`，并对照 `spool_test.go::TestWithTaskManager`。不要把测试内嵌进生产 `.rs` 文件。
 - 性能方面应保留短持锁和非阻塞通知；若引入稳定排序或全局锁，需要评估跨 8 个分片扫描的锁竞争和调容热路径成本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点与 1,848,419 条边；目标目录中的 `task_manager_scheduler.rs` 已索引为 5 个符号。
-- RustCodeGraph `node --file pkg/resourcemanager/poolmanager/task_manager_scheduler.rs`：确认四个公开方法的完整实现及文件仅 41 行。
-- RustCodeGraph `query/node/callers/callees`：确认 `Overclock`、`overclock`、`Downclock`、`downclock` 定义；确认两个小写别名到大写方法的调用边。跨 `include!` 边未被图解析，已用精确源码定义补证，未把缺失图边当成不存在调用。
-- RustCodeGraph `node`：读取 `task_manager.rs::TaskManager`、`task_manager_iterator.rs::getBoostTask`、`pauseTask` 及 iterator 全貌，核对分片、锁、原子计数、候选策略和非阻塞退出信号。
-- RustCodeGraph `node`：读取 `pool/spool/spool.rs::Pool::tune`，确认生产上游和扩缩容后的 worker 行为；读取 `pool/spool/spool_test.rs::TestWithTaskManager` 与 `poolmanager/migration_aster_unit_test.rs`，确认 Rust 独立测试覆盖。
-- 文件读取：`pkg/resourcemanager/poolmanager/Cargo.toml`、`lib.rs`、`task_manager_scheduler.go`、`task_manager_iterator.go`、`pkg/resourcemanager/pool/spool/lib.rs` 及 Go `spool_test.go::TestWithTaskManager`，核对 crate 边界、模块装配和 Go 迁移语义。
-- `rg` 检索 `Overclock`/`Downclock`：确认当前 Rust 生产调用位于 `pkg/resourcemanager/pool/spool/spool.rs`；未发现同名 `task_manager_scheduler_test.rs`，最近的独立 Rust 测试为上述 poolmanager 迁移测试和 spool 集成测试。
-- 本文档仅描述已核对的当前实现；没有运行 Cargo，符合本任务和总计划对纯文档分析的限制。

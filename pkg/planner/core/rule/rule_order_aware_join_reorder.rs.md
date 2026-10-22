@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-rule` crate；crate 根在 `pkg/planner/core/rule/lib.rs`，其中以公开模块 `rule_order_aware_join_reorder` 导出本文件。`pkg/planner/core/rule/Cargo.toml` 把该 crate 映射到 Go 包 `pkg/planner/core/rule`，而本文件的可执行 Rust 实现只直接使用同 crate 的 `rule_init::{Expr, JoinType, LogicalRule, Plan, PlanKind}`。
-
-文件包含两层内容，阅读时必须区分：第 16—258 行是注释化的 Go 来源与移植说明，不参与编译；第 259 行之后才是当前可执行 Rust。当前 Rust 面向 `rule_init.rs` 定义的精简逻辑计划 IR，而不是 `operator/logicalop` 的完整优化器计划对象。因此，本文件自身的 `OrderAwareJoinReorder` 主要用于规则 crate 的独立变换与单元测试；完整 SQL 优化器中同名阶段由 `pkg/planner/core/optimizer_runtime.rs::order_aware_join_reorder_descendants` 另行实现。
+这些约束分别由 `reorder`、`extract_ordering_columns`、`rewrite_ordering_for_projection` 和 `satisfies_ordering` 实现。
 
 ## 核心职责
 
@@ -58,11 +56,7 @@
 
 ## 与 Go 版本的对应关系
 
-名称、顶层接口目的和“从 Sort/TopN 向下传播顺序、跨 Projection 改写、在数据源验证索引前缀”的总体意图来自同路径 Go 文件 `rule_order_aware_join_reorder.go`。两个版本也都在无有效排序需求时保守退出。
-
-但当前文件不是 Go 逻辑的等价移植。Go 版本遍历真实 `base.LogicalPlan`，同时处理 TopN 和 Sort，识别升降序，只在高级 CDC join reorder 配置与阈值满足时调用 `joinorder.FindOrderedLeadingChoice`，沿选定 carrier vertex 传播需求，累计可帮助索引前缀的 Selection filters，并以 `TryAnnotateOrderedLeading` 设置 Join group 的内部 leading preference。它还显式停止于 CTE、尊重 `TiDBOptJoinReorderThroughSel`，并返回错误。
-
-本 Rust 文件则直接对精简 `Plan.children` 排序：没有 TopN 节点类型、CTE、session variable、carrier vertex、filter accumulation、hint 冲突检测或注解动作；非确定 Selection 无条件阻断，而确定 Selection 无配置门控。`pkg/planner/core/optimizer_runtime.rs` 的完整计划实现更接近 Go 的“设置 `InternalPreferJoinOrder`”效果，SQL 级测试 `optimizer_logical_entry_aster_unit_test.rs::order_aware_join_reorder_marks_index_order_carrier` 与 `casetest/rule/rule_cdc_join_reorder_test.rs::order_aware_join_reorder_pushes_selection_and_keeps_order` 覆盖的是该运行时路径，不应误作本文件直接调用证据。
+本 Rust 文件则直接对精简 `Plan.children` 排序：没有 TopN 节点类型、CTE、session variable、carrier vertex、filter accumulation、hint 冲突检测或注解动作；非确定 Selection 无条件阻断，而确定 Selection 无配置门控。
 
 ## 扩展指南
 
@@ -71,12 +65,3 @@
 - 修改 Projection 映射时必须保持“输出 schema 位置对应输入 expression”的不变量，并覆盖缺列、计算表达式、多列顺序和空需求。
 - 修改 Join 比较器时需同时验证无排序需求不动、非 Inner Join 不动、有序 carrier 最左、其余按基数稳定排序，以及 NaN 统计值的确定性。大计划上的深克隆是明确性能风险，可用“记录原子节点标识/顺序”替代，但必须保持准确的 `changed` 语义。
 - 若目标是对齐 Go 完整行为，不应仅继续膨胀本文件的精简模型；需先确认 `optimizer_runtime.rs` 的真实计划路径与本 crate 的职责边界，再同步 session variable、hint、Selection filter、carrier 注解和独立 SQL 级测试，避免出现两套实现漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`node --file pkg/planner/core/rule/rule_order_aware_join_reorder.rs` 读取全文件并识别两个直接测试使用者；`query` 定位 `OrderAwareJoinReorder`、`satisfies_ordering`、`rewrite_ordering_for_projection`、`extract_ordering_columns`，自然语言 `explore` 与部分 callers/callees 查询超时，故调用边由已索引源码节点与精确搜索补充核验。
-- 生产源码：`pkg/planner/core/rule/rule_order_aware_join_reorder.rs`；共享 IR 与 trait：`pkg/planner/core/rule/rule_init.rs`；模块入口：`pkg/planner/core/rule/lib.rs`；crate 边界：`pkg/planner/core/rule/Cargo.toml`。
-- 直接 Rust 测试：`pkg/planner/core/rule/rule_order_aware_join_reorder_test.rs::projection_rewrites_order_column_before_choosing_leading_join_input`；`pkg/planner/core/rule/rule_aster_unit_test.rs::join_reorder_is_noop_without_an_order_requirement`。
-- Go 对照：`pkg/planner/core/rule/rule_order_aware_join_reorder.go`；Go 主链：`pkg/planner/core/optimizer.go`；Go SQL 测试：`pkg/planner/core/casetest/rule/rule_cdc_join_reorder_test.go` 中的 `TestOrderAwareJoinReorderPushSelection` 与 `TestOrderAwareJoinReorderAlternativeRound`。
-- 完整 Rust 规划器对照：`pkg/planner/core/optimizer_runtime.rs::{LOGICAL_RULES, order_aware_join_reorder_descendants}`、`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs::order_aware_join_reorder_marks_index_order_carrier`、`pkg/planner/core/casetest/rule/rule_cdc_join_reorder_test.rs::order_aware_join_reorder_pushes_selection_and_keeps_order`。
-- 本任务是只新增文档的静态分析；按任务要求未运行 Cargo。结构检查应确认文件存在且恰有十一个固定二级标题；人工复核重点是当前精简实现与 Go/完整运行时路径的边界没有被混写。

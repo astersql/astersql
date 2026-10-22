@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现规划器中的物理 `Limit` 算子。它位于 `astersql-planner-core-operator-physicalop` crate；该 crate 由同目录 `Cargo.toml` 定义，以 `lib.rs` 为库入口，并通过 `mod physical_limit` 和 `pub use physical_limit::*` 导出这里的符号。`lib.rs` 中的 `direct_operator_core!(PhysicalLimit, PhysicalSchemaProducer)` 再把本文件的方法接到统一的 `ConcretePhysicalOperator`/`PhysicalPlan` 接口上。
-
-在优化主链中，`base_physical_plan.rs` 的规范路由把 `logicalop::LogicalLimit` 分派给 `ExhaustPhysicalPlans4LogicalLimit`。本文件负责把逻辑层的行数约束变成候选物理计划、维护 Limit 自身的元数据，并在需要下推时编码为 `tipb::Executor`；真正逐行跳过 `OFFSET`、停止于 `COUNT` 的执行发生在后续执行器或存储端，不在本文件中。
+负责把逻辑层的行数约束变成候选物理计划、维护 Limit 自身的元数据，并在需要下推时编码为 `tipb::Executor`；真正逐行跳过 `OFFSET`、停止于 `COUNT` 的执行发生在后续执行器或存储端，不在本文件中。
 
 ## 核心职责
 
@@ -85,13 +83,6 @@ RustCodeGraph 的文件节点显示本文件被执行器计划运行、MPP、RU 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `physical_limit.go`。两版都定义 `PhysicalLimit`，保留 `PhysicalSchemaProducer`、`PartitionBy`、`Offset`、`Count`、`PrefixCol`、`PrefixLen`，并覆盖候选枚举、初始化、分区键访问、克隆、内存、Explain、PB、索引解析和任务挂接。
-
-关键对齐点：
-
-- 两版在有排序需求时拒绝裸 Limit，并为孩子要求 `offset + count` 行；都枚举 Cop 单读、Cop 多读、Root，且仅在 TiFlash 条件和会话 MPP 开关允许时加入 MPP。
-- 两版 PB 都只把 `Count` 写入 `tipb::Limit`，序列化分区键及可选 truncate-key 表达式，并在 TiFlash 下内嵌孩子、设置 explain ID。
-- Explain 的三种脱敏形态、克隆分区/前缀列、以及内存中两个 `uint64`、前缀指针、前缀长度和可选列内容的口径保持一致。
 - Go 的 `ResolveIndices` 和 `Attach2Task` 分别委托 `utilfuncp.ResolveIndices4PhysicalLimit`、`Attach2Task4PhysicalLimit`；Rust 将索引解析写在本文件中，把挂接委托给 `base::PhysicalPlan::attach_to_task`。实现位置不同，但目标语义一致。
 
 当前 Rust 还显式保存 `OffsetParam`、`CountParam`、`CountIncludesOffset`，用于参数化计划缓存和 cop 下推形态；这些字段不在当前同路径 Go 结构体中。Rust 的 PB 转换也把缺 client、分区表达式不可下推、TiFlash 缺孩子变成明确错误，而 Go 代码更依赖调用前置条件。Rust `ExhaustPhysicalPlans4LogicalLimit` 在 required task 明确为不可用 MPP 时直接拒绝，并经过 `AdmitIndexJoinTypes`；这些是 Rust 周边路由接线的显式约束，不能仅凭 Go 文件省略。
@@ -105,11 +96,3 @@ RustCodeGraph 的文件节点显示本文件被执行器计划运行、MPP、RU 
 - 改动参数化 LIMIT 或下推计数时，同步检查 `CountIncludesOffset`、缓存重新绑定和三种加法策略（wrapping、saturating、上限裁剪），避免重复加 offset 或溢出。
 - 改动用户可见 Explain 字段时同步普通、marker、enable 和 normalized 输出，并评估日志兼容性及敏感值暴露风险。
 - 性能风险主要在候选数量增加、表达式深克隆、列解析扫描及 PB 表达式转换；兼容风险主要在 tipb 字段、Explain 文本、prepared plan cache 和 Go/Rust 计划形态差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、目标文件可由 `node --file ... --offset 1 --limit 500` 完整读取；`query PhysicalLimit --kind struct` 和 `query ExhaustPhysicalPlans4LogicalLimit --kind function` 同时定位到 Rust/Go 定义。`callers`/`callees` 对目标 Rust 符号未输出调用边，未把该空结果当作“无调用者”，而以模块接线与精确搜索补证。
-- 生产源码：`physical_limit.rs`；直接接线和状态消费者：`lib.rs`、`base_physical_plan.rs`、`physical_topn.rs`、`cache_snapshot.rs`；crate 边界：同目录 `Cargo.toml`。
-- Go 对照：同目录 `physical_limit.go`。其结构、候选枚举、Explain、PB、克隆、内存及委托入口用于核对移植语义。
-- 独立 Rust 测试：`physical_limit_test.rs` 覆盖 TiFlash executor ID、无表达式 TiKV 不需要 client、重复输出列索引和内存口径；`unary_aster_unit_test.rs` 覆盖 trait 与克隆状态；`canonical_router_aster_unit_test.rs` 覆盖逻辑路由、挂接和成本；`cache_snapshot_test.rs` 覆盖 Limit 状态随整棵计划缓存往返。
-- 人工边界复核：目标文件没有条件编译项、模块级常量、独立 trait 或自有并发原语；公开生产符号为 `PhysicalLimit`、其固有方法和 `ExhaustPhysicalPlans4LogicalLimit`。文档区分了规划/序列化职责与实际执行职责，并明确记录 Rust 相对 Go 的附加缓存字段及错误边界。

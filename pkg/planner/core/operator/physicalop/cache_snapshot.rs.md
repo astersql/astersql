@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate；crate 根 `lib.rs` 以私有模块 `mod cache_snapshot` 装配它，再用 `pub use cache_snapshot::*` 暴露其公开类型。它位于物理计划与实例级计划缓存之间：`pkg/session/runtime/planning.rs` 在一次新的 SELECT 物理计划通过可缓存性与范围配额检查后调用 `CachedPlan::try_capture`，把结果交给 `pkg/planner/core/plan_cache_utils.rs::NewPlanCacheValue`；缓存命中时则从 `PlanCacheValue::Plan` 取得快照并用当前会话的 `ContextRef` 调用 `CachedPlan::restore`。
-
-因此，这不是缓存容器、淘汰策略或可缓存性检查器，而是“把绑定旧会话的物理计划转为拥有型快照，并在新上下文中重建计划”的转换层。文件中的 DML 入口 `try_capture_plan`/`restore_plan` 也有独立单元测试，但当前搜索到的生产主链只直接使用物理计划入口 `try_capture`/`restore`。
+`CachedContext`、`CachedPlanBase`、`CachedSchemaProducer` 和 `CachedPhysicalProperty` 保存所有算子共享的计划元数据、schema、统计、代价、子节点、required property，并在恢复时绑定调用者提供的新上下文。
 
 ## 核心职责
 
@@ -96,9 +94,9 @@ DML 使用平行流程：顶层调用 `try_capture_plan`，其 select child 仍�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 基线是同目录 `plan_clone_generated.go` 的 25 个 `CloneForPlanCache(newCtx)` 实现。Rust `lib.rs` 中 `CACHE_SNAPSHOT_PLAN_CONTRACT` 逐项记录 Go 类型、Rust 类型和非浅拷贝字段，`cache_snapshot_contract_test.rs::go_cacheable_plan_inventory_is_complete` 直接读取生成的 Go 文件，验证数量、顺序和类型映射没有漂移。
+Rust `lib.rs` 中 `CACHE_SNAPSHOT_PLAN_CONTRACT` 逐项记录 Go 类型、Rust 类型和非浅拷贝字段，`cache_snapshot_contract_test.rs::go_cacheable_plan_inventory_is_complete` 直接读取生成的 Go 文件，验证数量、顺序和类型映射没有漂移。
 
-语义上两边都以“换新上下文、深拷贝会话敏感字段、遇到不安全形态则拒绝”为核心。Rust 没有复用 Go 的对象内 `CloneForPlanCache` 方法，而是拆成不可变 `Cached*` 数据与 `restore` 两阶段，以便 `PlanCacheValue` 跨线程持有。常见对应包括：Go 的递归 `CloneForPlanCache(newCtx)` 对应 Rust 的递归 `CachedPlan::try_capture` + `restore(context)`；Go 的 `CloneExpressions/ColumnsForPlanCache` 对应 `CachedExpression/CachedColumn`；Go 返回 `(nil, false)` 的拒绝分支对应带原因的 `CacheSnapshotError`。
+Rust 没有复用 Go 的对象内 `CloneForPlanCache` 方法，而是拆成不可变 `Cached*` 数据与 `restore` 两阶段，以便 `PlanCacheValue` 跨线程持有。常见对应包括：Go 的递归 `CloneForPlanCache(newCtx)` 对应 Rust 的递归 `CachedPlan::try_capture` + `restore(context)`；Go 的 `CloneExpressions/ColumnsForPlanCache` 对应 `CachedExpression/CachedColumn`；Go 返回 `(nil, false)` 的拒绝分支对应带原因的 `CacheSnapshotError`。
 
 两端并非字段布局逐字相同。Go reader 恢复派生的 flatten 列表、自引用等对象内状态；Rust 只保存规范化的 raw 子计划，并由 Rust 类型当前字段布局重建。Rust 还支持 `LegacyPhysicalLock` 的 `SelectLock` 快照，而它不在这份 25 项 Go 生成清单中；反过来 Go 清单中的 local index lookup 在 Rust 当前仅有独立 `CachedLocalIndexLookup`，未进入 `CachedPlan` 枚举。新增或删除可缓存节点时必须同时审查这些差异，不能只让清单测试通过。
 
@@ -113,14 +111,3 @@ DML 使用平行流程：顶层调用 `try_capture_plan`，其 select child 仍�
 5. 检查 `pkg/session/runtime/planning.rs` 的入口是否确实能到达新类型，以及 `PlanCacheValue` 的内存估计/可缓存性检查是否需要配套调整。
 
 主要风险是漏复制会影响执行或 explain 的字段、错误共享 session-bound 数据、遗漏递归 child、恢复派生字段不完整，以及 Rust 支持矩阵与 Go 生成清单漂移。范围/range、表达式、统计和 reader flatten 状态还可能带来内存与性能变化，应优先复用现有 cached 表示而不是引入整棵原计划克隆。
-
-## 验证依据
-
-本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/operator/physicalop/cache_snapshot.rs` 并读取 `git show 2c944fb:pkg/planner/core/operator/physicalop/cache_snapshot.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`query CacheSnapshot` 定位 `CacheSnapshotError`、`CachedPlan` 相关 capture；`node --file pkg/planner/core/operator/physicalop/cache_snapshot.rs` 分段核对了 1–2516 行的类型、分派和双向转换。方法 ID 的 `callers/callees` 查询出现名称误匹配且 callers 为空，因此按技能规则用文本搜索补足调用边，未采用错误图结果。
-- 主链证据：`pkg/session/runtime/planning.rs` 的缓存未命中分支调用 `CachedPlan::try_capture`，命中分支调用 `CachedPlan::restore`；`pkg/planner/core/plan_cache_utils.rs::PlanCacheValue` 持有快照，`NewPlanCacheValue` 接收快照。
-- crate 证据：`pkg/planner/core/operator/physicalop/Cargo.toml` 与 `lib.rs`；后者负责模块装配、公开再导出、25 项 Go/Rust 契约和独立测试模块接线。
-- Go 对照：`pkg/planner/core/operator/physicalop/plan_clone_generated.go` 的 25 个 `CloneForPlanCache` 实现；契约测试 `cache_snapshot_contract_test.rs::go_cacheable_plan_inventory_is_complete` 校验该清单。
-- Rust 测试：`cache_snapshot_test.rs` 覆盖 DML/外键拒绝、四类 Reader、leaf scan/point get、base/schema/context、join、selection、agg/union、参数/字段 round-trip 及 `Send + Sync`；`physical_table_scan_test.rs` 另验证 columnar indexes 被拒绝。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付结构检查要求本文恰有“文件定位”至“验证依据”11 个固定二级标题。

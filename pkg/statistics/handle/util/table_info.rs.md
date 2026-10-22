@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`table_info.rs`](table_info.rs) 属于 `astersql-statistics-handle-util` crate；该 crate 的入口 [`lib.rs`](lib.rs) 以 `pub mod table_info` 声明模块，并通过 `pub use table_info::*` 导出其公开类型、trait 和构造函数。它位于 statistics handle 与 InfoSchema 之间，负责把“物理 ID（普通表 ID 或分区 ID）”解析为统计模块需要的父表元数据或轻量表条目。
-
-[`Cargo.toml`](Cargo.toml) 的 `[package.metadata.porting]` 将本 crate 对应到 Go 包 `pkg/statistics/handle/util`，并记录旧迁移任务 `task-877`、`task-1490`。本文件自身只使用标准库的 `HashMap`、`Arc` 和 `Mutex`；清单中真实 InfoSchema、meta、table 等依赖位于永假条件 `target.'cfg(any())'` 下，说明当前 Rust 实现通过本文件定义的轻量抽象隔离了完整 TiDB 类型，而不是直接调用这些真实 crate。
+位于 statistics handle 与 InfoSchema 之间，负责把“物理 ID（普通表 ID 或分区 ID）”解析为统计模块需要的父表元数据或轻量表条目。
 
 ## 核心职责
 
@@ -101,20 +99,12 @@ RustCodeGraph 的全局索引状态可用，但 `files --filter table_info.rs` �
 
 ## 与 Go 版本的对应关系
 
-[`table_info.go`](table_info.go) 是直接语义基准，主要对应关系如下：
-
-| Go | Rust | 说明 |
-| --- | --- | --- |
-| `TableInfoGetter` | `TableInfoGetter` | 四个查找入口一一对应；Go 的 `(value, bool)` 在 Rust 中合并为 `Option<value>`。 |
-| `tableInfoGetterImpl` | `CachedTableInfoGetter` | 都只持有 V1 init-stats 分区缓存。 |
-| `pid2tid` / `schemaVersion` | `partition_to_table` / `schema_version` | 缓存数据和按版本失效规则一致。 |
-| `partitionID2TableIDForInitStats` | `partition_id_to_table_id_for_init_stats` | 都在锁内检查版本、必要时全量重建并查值。 |
-| `buildPartitionID2TableID` | `build_partition_id_to_table_id` | 都将所有分区映射到父表。 |
-| `NewTableInfoGetter` | `new_table_info_getter` | 都以接口对象隐藏实现；Rust 额外用 `Arc` 提供共享所有权。 |
+|
+| `NewTableInfoGetter` | `new_table_info_getter` | 都以接口对象隐藏实现；Rust 额外用 `Arc` 提供共享所有权。
 
 两者的数据模型不同。Go 直接接收真实 `infoschema.InfoSchema`，返回 `table.Table`/`infoschema.TableItem`，并通过 `ListTablesWithSpecialAttribute(PartitionAttribute)` 建图；Rust 定义本地 `InfoSchema`、`TableMeta`、`TableItem`，由 `partitioned_tables` 直接提供候选表。Go 建图使用 `intest.AssertNotNil` 断言候选表确有分区信息；Rust 的 `TableMeta.partitions` 总是一个向量，因此没有同等的空值断言。
 
-Go 的 V2 判定由 `infoschema.IsV2` 完成，Rust 把它收敛为 `InfoSchema::is_v2`。算法分支相同。Go 实现已嵌入生产 `Handle` 并由 `bootstrap.go` 使用；Rust 当前只有接口组合与测试调用，尚不能据此宣称生产初始化统计已走这条缓存路径。
+Go 实现已嵌入生产 `Handle` 并由 `bootstrap.go` 使用；Rust 当前只有接口组合与测试调用，尚不能据此宣称生产初始化统计已走这条缓存路径。
 
 ## 扩展指南
 
@@ -126,14 +116,3 @@ Go 的 V2 判定由 `infoschema.IsV2` 完成，Rust 把它收敛为 `InfoSchema:
 - 性能风险集中在 schema 版本变化时的锁内全量建图，以及误用通用 V1 分区查找造成的重复扫描；兼容风险集中在物理 ID 唯一性、schema 版本作用域和公开 trait 签名。
 
 现有独立 Rust 测试 [`util_test.rs`](util_test.rs) 的 `test_table_item_by_id_for_init_stats_avoids_v1_partition_scan` 覆盖普通表命中、分区经缓存解析、未知 ID 返回 `None`，并令 `table_item_by_partition_id` 直接 panic，从而证明 V1 专用路径没有调用昂贵回退。对应 Go 测试位于 [`util_test.go`](util_test.go) 的 `TestTableItemByIDForInitStatsAvoidsV1PartitionScan`。当前未见针对完整元数据入口、V2 分支、schema 版本失效、重复 ID 或并发重建的专门 Rust 测试，扩展这些区域时应优先补齐。
-
-## 验证依据
-
-- 目标源码：[`table_info.rs`](table_info.rs)。核对了全部 3 个 DTO、2 个 trait、2 个缓存结构、1 个私有缓存查找方法、4 个 trait 方法实现、建图函数和构造函数；文件无条件编译项。
-- crate 边界：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)。核对 crate 名、Go 包映射、依赖条件、模块声明与公开重导出。
-- Go 对照与生产接线：[`table_info.go`](table_info.go)、[`../handle.go`](../handle.go)、[`../bootstrap.go`](../bootstrap.go)、[`../types/interfaces.go`](../types/interfaces.go)。核对接口、缓存算法、构造注入与 init-stats 调用点。
-- Rust 上游契约：[`../types/interfaces.rs`](../types/interfaces.rs) 的 `StatsHandle: ... + TableInfoGetter + ...`，以及 [`../types/interfaces_test.rs`](../types/interfaces_test.rs) 的 supertrait 编译契约测试。
-- 独立测试：[`util_test.rs`](util_test.rs) 的 `PartitionItemLookupForbiddenInfoSchema` 与 `test_table_item_by_id_for_init_stats_avoids_v1_partition_scan`；Go 对应测试为 [`util_test.go`](util_test.go) 的 `TestTableItemByIDForInitStatsAvoidsV1PartitionScan`。
-- 调用搜索：对 Rust/Go 的 `new_table_info_getter`/`NewTableInfoGetter`、`TableInfoGetter`、四个查找方法和两个建图函数执行了仓库范围 `rg`；结果支持“Rust 仅测试构造、Go 已生产接线”的结论。
-- RustCodeGraph：`status` 显示索引可用（11,467 个文件），但 `files --filter table_info.rs` 返回无匹配，目标路径的 `explore`/`node` 未提供源码或调用边；因此没有用图输出替代缺失证据，相关关系由上述源码和搜索结果交叉核验。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付时另运行任务规定的 11 章节结构检查，并人工复核未把未接线能力写成已启用能力。

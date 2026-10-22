@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/conn.rs` 是 `astersql-server` crate 的 MySQL 单连接协议状态机。crate 根模块在 `pkg/server/lib.rs` 中以 `pub mod conn` 暴露它；真实监听入口位于 `pkg/server/server.rs::Server::serve_mysql_connection`，该入口接受 TCP/Unix socket 后调用 `newClientConn`，并在专用连接线程中依次执行 `ClientConn::handshake` 和 `ClientConn::Run`。
-
-这个文件处在“网络包 IO”与“SQL 会话执行”之间：向上由 `ConnectionServer`、`SessionDriver` 和 `ConnectionDomain` 接入服务端注册表、会话驱动与连接 ID；向下通过 `PacketIo` 操作 MySQL 包，通过 `TiDBContext` 完成鉴权、切库、普通查询和预处理语句执行。它不实现 SQL 规划器或存储引擎，也不实现真实 TCP；生产适配分别在会话实现和 `pkg/server/runtime.rs`/`pkg/server/server.rs` 中。
-
-`pkg/server/Cargo.toml` 将本目录声明为 `astersql-server`（`[lib] path = "lib.rs"`），并直接依赖解析器、AST、会话管理、变量、信息模式、指标、日志以及 `pkg/server` 的内部解析/错误子 crate。该文件当前没有 feature 条件；只有若干故障注入/观测辅助函数受 `#[cfg(test)]` 控制。
+协调取消、连接存活探针、优雅停机、游标、长参数内存、响应写耗时以及预处理语句资源回收。
 
 ## 核心职责
 
@@ -85,11 +81,11 @@ RustCodeGraph 索引显示该文件直接被 `pkg/server/runtime.rs`、`pkg/serv
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/server/conn.go`。Rust 保留了 Go 的主要命名和顺序：`newClientConn`/`clientConn`、`handshake`、`Run`、`dispatch`、`handleQuery`、`handleStmt`、`handleChangeUser`、`writeResultSet`、`writeError`、`Close`/`closeConn`，并保留 dispatching ↔ reading 的 CAS、非事务停机退出、认证插件切换、压缩优先 zlib、重入关闭以及换用户失败回滚旧会话等关键语义。
+Rust 保留了 Go 的主要命名和顺序：`newClientConn`/`clientConn`、`handshake`、`Run`、`dispatch`、`handleQuery`、`handleStmt`、`handleChangeUser`、`writeResultSet`、`writeError`、`Close`/`closeConn`，并保留 dispatching ↔ reading 的 CAS、非事务停机退出、认证插件切换、压缩优先 zlib、重入关闭以及换用户失败回滚旧会话等关键语义。
 
 实现形态存在有意的 Rust 化：Go 的具体 `Server`、`TiDBContext`、`PacketIO` 被三个服务 trait、会话 trait 和 `PacketIo` 注入；Go 的 `sync.Once` 对应 `AtomicBool::swap`；Go context cancel 对应 `CancellationToken`；Go 的结果集接口被 `ProtocolResultSet` 和拥有型 `Value` 桥接；锁中毒成为显式错误。
 
-Rust 当前并非 Go `conn.go` 的完全等价实现。Go `Run`/`dispatch` 还包含 panic recovery、审计/扩展插件、trace/pprof/TopSQL、服务端并发 token、更多指标与日志脱敏、分配器复用和更细的错误分类；Go `handleQuery` 内部完成解析、多语句策略、点查预取、事务错误动作与 TiFlash 回退，而 Rust 把大部分执行策略委托给 `TiDBContext::execute_query_streaming`。新增功能必须先判断应落在协议状态机还是会话适配器，不应仅因 Go 逻辑位于 `conn.go` 就复制进本文件。
+Rust 当前并非 Go `conn.go` 的完全等价实现。Go `Run`/`dispatch` 还包含 panic recovery、审计/扩展插件、trace/pprof/TopSQL、服务端并发 token、更多指标与日志脱敏、分配器复用和更细的错误分类；Go `handleQuery` 内部完成解析、多语句策略、点查预取、事务错误动作与 TiFlash 回退，而 Rust 把大部分执行策略委托给 `TiDBContext::execute_query_streaming`。
 
 ## 扩展指南
 
@@ -99,11 +95,3 @@ Rust 当前并非 Go `conn.go` 的完全等价实现。Go `Run`/`dispatch` 还�
 - 修改流式结果或游标：保持 `next_chunk`/`current_row` 不计入协议写耗时，确保 `finish`、`on_fetch_returned`、`close` 和 `ResponseLifecycle::finish` 的顺序与错误路径完整；同步检查 `pkg/server/conn_stmt.rs`。
 - 修改关闭或换用户：维护“先从注册表消失，再关闭可能阻塞的资源”和“新认证成功前旧会话仍可用”两个不变量；测试幂等关闭、并发取消、认证失败恢复、预处理/长参数释放和资源组计数。
 - 新增错误：更新 `ConnError::Display` 与 `mysql_error_code_and_state`，用独立测试断言 ERR header、数值错误码、`#`、5 字节 SQLSTATE 和消息；避免只做字符串包含匹配而没有协议断言。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/server` 确认 `conn.rs` 有 323 个符号；`node --file pkg/server/conn.rs` 分段读取了全部 1–2835 行，并报告其 5 个直接使用文件。
-- 生产源码：`pkg/server/conn.rs`；模块与入口：`pkg/server/lib.rs`、`pkg/server/server.rs`（`serve_mysql_connection`、`ManagedConnection for ClientConn`、`ConnectionServer for Server`）；crate 边界：`pkg/server/Cargo.toml`。
-- Go 对照：`pkg/server/conn.go` 中的 `newClientConn`、`clientConn`、`handshake`、`Run`、`dispatch`、`handleQuery`、`handleChangeUser` 和 `Close`/`closeConn`。
-- Rust 独立测试：`pkg/server/conn_test.rs` 覆盖命令字节、文本值编码、取消单调性、存活探针分类与断连检测、认证插件、握手属性截断/1 MiB 上限、换用户成功和三类失败回滚、长参数包上限及 MySQL 1153/08S01、IMPORT INTO 8173/HY000。
-- 人工复核限制：RustCodeGraph 的精确 `callers/callees` 命令本次在 30 秒内未返回；调用关系改由其文件使用关系和已索引生产入口源码交叉确认。本任务是纯文档分析，按计划未运行 Cargo。

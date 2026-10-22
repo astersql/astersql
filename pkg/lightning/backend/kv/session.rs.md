@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-lightning-backend-kv` crate 内；`pkg/lightning/backend/kv/Cargo.toml` 将该 crate 的入口指定为 `lib.rs`，后者通过 `mod session` 和 `pub use session::*` 把这里的类型与函数导出。它不是通用 TiDB Session 或真实 TiKV 事务实现，而是 Lightning SQL→KV 编码路径使用的轻量会话：把编码过程中产生的记录键、记录值和索引键暂存在内存，并向编码逻辑提供表达式上下文与表变更上下文。
-
-上游入口主要有两个：`base.rs::NewBaseKVEncoder` 为写入路径创建 `Session`，`kv2sql.rs::NewTableKVDecoder` 为解码器创建相同的求值上下文。写入主链是 `BaseKVEncoder::AddRecord` → `Session::Txn` → `transaction::Set` → `MemBuf::Set`；一行完成后，`BaseKVEncoder::Record2KV` 调用 `Session::TakeKvPairs` 取走结果。`sql2kv.rs` 的 `Encoder::Close` 实现最终调用 `Session::Close`。
+`NewSession` 从 `encode::SessionOptions` 建立 `litExprContext` 和 `litTableMutateContext`，为生成列求值、SQL mode、时区和行编码选项提供会话级状态。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@ RustCodeGraph 对目标文件报告 58 个符号，并显示其被 `base.rs`、`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/backend/kv/session.go`，独立 Go 测试是 `session_internal_test.go`。Rust 保留了 Go 的主要结构和命名：`invalidIterator`、`BytesBuf`、`MemBuf`、`kvUnionStore`、`transaction`、`Session`，以及 1 MiB 起步、两倍 2 次幂容量、20 项池上限、只追加事务和按行 `TakeKvPairs` 的总体流程。
+Rust 保留了 Go 的主要结构和命名：`invalidIterator`、`BytesBuf`、`MemBuf`、`kvUnionStore`、`transaction`、`Session`，以及 1 MiB 起步、两倍 2 次幂容量、20 项池上限、只追加事务和按行 `TakeKvPairs` 的总体流程。
 
 需要注意以下当前差异：
 
@@ -108,13 +106,3 @@ Rust 的 `session_internal_test.rs` 基本对应 Go `session_internal_test.go` �
 - 关闭流程的扩展应经 `sql2kv.rs::Encoder::Close` 接线，并验证错误路径或重复关闭；当前没有 `Drop` 自动清理协议。
 
 相关 Rust 测试必须继续独立保存在 `session_internal_test.rs`、`session_test.rs` 等测试文件中，不应内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/lightning/backend/kv` 确认目标 crate 的 Rust/Go 对照文件均已索引。
-- RustCodeGraph 源码与结构查询：`node --file pkg/lightning/backend/kv/session.rs --offset 1 --limit 500`（完整 349 行、58 个符号、8 个使用文件）；另读取 `base.rs` 155–274、`kv2sql.rs` 320–362、`sql2kv.rs` 100–159、`context.rs` 1–230 的索引片段以核对上下游调用和上下文语义。
-- RustCodeGraph 调用结果明确列出：`NewSession` 的 Rust 调用者包括 `NewBaseKVEncoder`、`NewTableKVDecoder` 和内部测试；`AllocateBuf` 的调用者包括 `MemBuf::Set` 及两项分配测试；`TakeKvPairs` 的调用者包括自身实现与 `TestSessionInternalState`。由于常见符号名会混入其他模块，本说明仅采纳带目标路径的边。
-- crate/模块证据：`pkg/lightning/backend/kv/Cargo.toml`、`pkg/lightning/backend/kv/lib.rs`。
-- Go 对照证据：`pkg/lightning/backend/kv/session.go`、`pkg/lightning/backend/kv/session_internal_test.go`。
-- Rust 测试证据：`pkg/lightning/backend/kv/session_internal_test.rs`、`pkg/lightning/backend/kv/session_test.rs`。
-- 人工核对结论：该文件存在是为了以最小 Session/事务表面支撑 Lightning 编解码；运行时只把编码结果累计在内存并显式移交；安全扩展的关键是保持缓冲所有权、裁剪接口边界和上下文的 Go 兼容性。

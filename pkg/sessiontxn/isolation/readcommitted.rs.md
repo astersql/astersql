@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-sessiontxn-isolation` crate，crate 入口是同目录 `lib.rs`（`Cargo.toml` 的 `[lib] path = "lib.rs"`）。`lib.rs` 将本模块声明为私有模块 `mod readcommitted`，再通过 `pub use readcommitted::*` 导出其公开符号；因此外部使用的是 crate 公共 API，而不是直接引用模块路径。
-
-它实现悲观事务在 Read Committed（RC，读已提交）隔离级别下的事务上下文 Provider。`lib.rs::NewRegisteredTxnContextProvider` 在 `ProviderKind::PessimisticReadCommitted` 分支构造 `NewPessimisticRCTxnContextProvider`，`RegisteredTxnContextProvider` 的 `TxnContextProvider` 实现随后把初始化、语句开始/重试、时间戳、快照、错误决策与计划优化调用分派到这里。再上层的会话事务管理器通过 Provider 工厂选择悲观 RC Provider；本文件不解析 SQL，也不直接执行查询或锁请求。
+管理 RC-check ts：`NeedSetRCCheckTSFlag` 决定只读语句能否开启检查，快照构造方法把检查标志写入 `Snapshot::rc_check_ts`；写路径还可在安全计划上复用已知时间戳，避免向 PD 取 TSO（`PlanSkipGetTSOFromPD`、`AdviseOptimizeWithPlan`）。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@ Provider 的方法通过 `&mut self` 串行修改状态，本文件不创建线�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/sessiontxn/isolation/readcommitted.go`。Rust 保留了 Go 的 `stmtState`、Provider 字段、构造/激活钩子、语句开始与重试、三路时间戳来源、RC-check 判定、锁错误重试、预热、计划跳过 TSO 以及两类快照语义。
-
 表示层存在差异：Go 用 `oracle.Future`/`funcFuture` 统一表示 start-ts、常量和 Oracle；Rust 用 `StmtTimestampSource` 显式区分三种来源。Go 的 session、AST 和具体物理计划类型被 Rust 的 `IsolationRuntime`、`StatementInspection`、`PlanInspection` 抽象替代。Go 通过回调 `onTxnActiveFunc` 写缓存，Rust 由 `OnInitialize`/`ActivateTxn` 显式同步。Go 的错误返回是 `(action, error)`，Rust 将携带错误的情况表示为 `StmtErrorAction::Error(TxnError)`。
 
 当前 Rust 不是 Go 文件所有观测副作用的逐项复刻：Go 路径还记录 TSO 等待时长、递增 metrics/failpoint 计数并输出冲突日志；这些副作用在本 Rust 文件中没有对应调用。Go 的计划辅助直接匹配具体 planner 类型，Rust `PlanKind` 还显式支持 `Execute` 解包，同时对若干不可优化种类保守拒绝。行为边界由 `readcommitted_test.rs` 覆盖 Provider 状态机；Go `readcommitted_test.go` 中依赖真实 SQL 执行、failpoint、双会话并发和 testfork scope 注入的集成情形没有在该 Rust 单元文件中复刻，测试文件顶部已明确列为其 harness 范围外。
@@ -94,13 +90,3 @@ Provider 的方法通过 `&mut self` 串行修改状态，本文件不创建线�
 - 修改重试策略时同时审查 `HandleAfterQueryError`、`HandleAfterPessimisticLockError`、`OnStmtRetry` 与基类公平锁生命周期。尤其不能在重试后重新启用旧 `latest_oracle_ts`。
 - 增加 Provider 公共能力时，还需在 `lib.rs::TxnContextProvider` 和 `RegisteredTxnContextProvider` 的 RC 分派中接线，并检查上层 Provider 工厂/事务管理器是否需要暴露。
 - 与 Go 对齐时，应同步审查 `readcommitted.go` 和 `readcommitted_test.go`；如果补齐日志、metrics、等待时长或 failpoint 等当前差异，应通过相应 runtime 抽象接入，避免把具体 Go 依赖硬编码进本文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/sessiontxn/isolation` 显示目标 Rust/Go 源、测试与模块入口均在图中。
-- RustCodeGraph 源与关系：`node --file pkg/sessiontxn/isolation/readcommitted.rs` 读取完整 388 行并报告直接使用方 `pkg/sessiontxn/isolation/lib.rs`、`pkg/sessiontxn/isolation/isolation_aster_unit_test.rs`；符号查询确认构造器、Provider 与 Go 同名实现；`lib.rs` 的构造和各生命周期分派构成上游调用证据。
-- 已核对生产与装配源码：`pkg/sessiontxn/isolation/readcommitted.rs`、`pkg/sessiontxn/isolation/lib.rs`。
-- 已核对 crate 边界：`pkg/sessiontxn/isolation/Cargo.toml` 的 crate 名、`[lib]`、Go package 映射、dependencies/dev-dependencies。
-- 已核对 Go 对照：`pkg/sessiontxn/isolation/readcommitted.go`，包括时间戳选源、错误重试、计划优化、快照标志及 Go 独有观测副作用。
-- 已核对独立测试：`pkg/sessiontxn/isolation/readcommitted_test.rs` 覆盖 RC-check 复用/失效、锁错误、for-update 新 ts、初始化、`tidb_snapshot` 与锁等待超时；`pkg/sessiontxn/isolation/readcommitted_test.go` 提供原始 Provider 和 SQL 集成语义；`pkg/sessiontxn/isolation/isolation_aster_unit_test.rs` 提供注册表/计划谓词等综合证据。
-- 本任务为纯文档分析，未运行 Cargo 或代码测试；交付验证使用任务指定的 11 章节结构命令，并人工复核本文能回答文件存在原因、运行路径、状态不变量、失败边界及安全扩展点。

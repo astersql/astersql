@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；crate 根模块 `pkg/ddl/lib.rs` 通过 `pub mod affinity` 将其公开。它把 DDL 对 PD（Placement Driver）亲和组的需求收敛为三层纯 Rust 能力：亲和元数据的最小视图、物理表/分区 key 范围与组 ID 的确定性构造、以及创建/删除后端的 trait 边界。对应的独立单元测试位于 `pkg/ddl/affinity_test.rs`，由 `lib.rs` 的 `#[cfg(test)] mod affinity_test` 挂载。
-
-冻结提交中，`pkg/session/runtime/create_table_resources.rs` 的创建与删除亲和资源路径复用 `table_affinity_group_id_for_keyspace` 和 `partition_affinity_group_id_for_keyspace`。本文件的 manager/codec 抽象入口仍未被生产路径直接调用；不能把 helper 的生产复用等同于这套抽象全部接线。实际完整生产接线仍可在 Go 对照 `pkg/ddl/affinity.go` 以及其调用方 `pkg/ddl/create_table.go`、`pkg/ddl/table.go`、`pkg/ddl/schema.go` 中看到。它不是一个独立 DDL 作业状态机，不直接持久化 job、推进 schema state、回填数据或更新 schema version。
+`create_table_affinity_groups`、`delete_table_affinity_groups` 和 `batch_delete_table_affinity_groups` 负责空操作短路、批量整理和后端错误映射；真正的 PD I/O 留给 `AffinityGroupManager` 实现。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ codec 在组名及范围构造期间以共享借用存在；构造出的 key 拥
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/affinity.go` 是直接语义基准：Rust 的两个 ID 函数、key range 构造、定义构造、ID 收集以及创建/单表删除/批量删除入口分别对应 Go 的同名 CamelCase 或非导出函数。表级和分区级命名、codec 可选编码、显式分区优先、空配置短路、批量去重等核心行为保持一致。
-
 有几处需要明确的表示或接线差异：
 
 - Go 直接使用 `model.TableInfo`、`model.PartitionDefinition`、`tikv.Codec` 和 `pdhttp.AffinityGroupKeyRange`；Rust 使用本地简化结构与 trait，尚无这些生产类型的转换层。
@@ -96,12 +92,3 @@ Go 测试 `pkg/ddl/affinity_test.go` 同时包含算法测试和经 mock store/d
 修改组名或 key 编码时，应同时更新 `get_*_group_id`、`encode_table_prefix`/`build_affinity_group_key_range` 及独立测试，并验证已存在 PD 组的向后兼容与清理可达性。修改分区选择规则时，应保持 `None` 回退与显式空 slice 报缺少分区的区别，并覆盖部分分区、重复 ID、TRUNCATE 替换 ID。引入异步或并发 manager 前应定义幂等键、重试可见性、超时/取消和同一组并发创建删除的顺序语义。
 
 测试仍应放在独立的 `pkg/ddl/affinity_test.rs`，不要内嵌回生产源文件。生产适配器落地后还需要新增独立集成测试，覆盖后端错误、重试、owner/job 重放、CREATE 失败回滚以及删除失败继续策略；现有 `MemoryGroups` 测试不足以验证这些行为。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/ddl/affinity.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- Rust 独立测试：`pkg/ddl/affinity_test.rs`，覆盖 ID/range、codec、分区选择、`i64::MAX` 回绕、缺少分区、幂等创建、部分删除、TRUNCATE 新组和 DROP DATABASE 批量删除。
-- Go 对照与生产调用：`pkg/ddl/affinity.go`、`pkg/ddl/create_table.go`、`pkg/ddl/table.go`、`pkg/ddl/schema.go`；Go 测试为 `pkg/ddl/affinity_test.go`。
-- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/affinity.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
-- 仓库搜索：排除 `pkg/ddl/affinity.rs` 与 `pkg/ddl/affinity_test.rs` 后，对六个公开操作函数名的 `*.rs` 搜索无匹配，据此限定“manager 入口未生产接线”的结论；两个新增 `*_for_keyspace` helper 的生产调用则已单独核对。
-- DDL 协议背景仅用作定位，来自 `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`；具体行为结论均回查上述源码和测试，而非依赖文档推断。

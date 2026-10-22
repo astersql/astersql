@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto` crate；crate 入口 `pkg/dxf/importinto/lib.rs` 以 `pub mod metrics` 装配并重新导出本模块。它位于 IMPORT INTO 分布式任务的调度器和节点执行器，与底层 Lightning 通用指标组之间：上游生命周期代码按分布式 `task_id` 取得或释放指标，下游 `pkg/metrics/import.rs` 负责把 `astersql_lightning_metric::Common` 注册到、或从进程级默认 Prometheus registry 注销。
-
-该文件不是指标定义本身，也不负责采集业务值。它存在的原因是同一个 IMPORT INTO 任务的 scheduler 与 task executor 可能同时存在；如果二者各自直接注册带相同常量标签的 collectors，会发生重复注册，而任一方过早注销又会使另一方失去可抓取的指标。`TaskMetricManager` 用“每任务一组指标 + 本地持有者引用计数”协调这两个生命周期。
+位于 IMPORT INTO 分布式任务的调度器和节点执行器，与底层 Lightning 通用指标组之间：上游生命周期代码按分布式 `task_id` 取得或释放指标，下游 `pkg/metrics/import.rs` 负责把 `astersql_lightning_metric::Common` 注册到、或从进程级默认 Prometheus registry 注销。
 
 ## 核心职责
 
@@ -76,9 +74,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/dxf/importinto/metrics.go` 中的 `taskMetrics`、`taskMetricManager`、全局 `metricsManager`、`getOrCreateMetrics` 和 `unregister` 分别对应 Rust 的同名/蛇形命名符号。两边都按 task ID 加锁查找，首次创建带 `proto.TaskIDLabelName` 标签的 Lightning `Common`，重复获取增加计数，归零时注销并删除 map 项。
-
-Go scheduler 与 executor 也各获取、各释放一次，说明引用计数的设计意图在迁移中得到保留。Rust 额外使用 `Arc` 表达共享所有权、`LazyLock` 初始化全局值，并用 `metricsManager` 再导出维持 Go 名称接线；执行器还以 `AtomicBool` 协调显式关闭与析构释放。
+Rust 额外使用 `Arc` 表达共享所有权、`LazyLock` 初始化全局值，并用 `metricsManager` 再导出维持 Go 名称接线；执行器还以 `AtomicBool` 协调显式关闭与析构释放。
 
 可观察的差异包括：Go 管理器嵌入 `sync.RWMutex`，但两个修改方法实际都取写锁；Rust 直接使用 `Mutex`。Go 对计数直接减一，Rust 使用饱和减法。Go 测试替换全局默认 registry，并断言每任务八个 metric family；Rust 测试没有直接断言 family 数量，而是以成功注销后同 ID 可重新创建来验证 registry 清理，并额外断言返回 `Arc` 的指针同一性。`registered_task_count` 是 Rust 为这种隔离测试增加的观察入口。
 
@@ -89,13 +85,3 @@ Go scheduler 与 executor 也各获取、各释放一次，说明引用计数的
 如果新增标签，必须同步检查 `dxfproto::TaskIDLabelName` 约定、`pkg/metrics/import.rs` 的常量标签合并行为及 Go `metrics.go`，并评估 Prometheus label cardinality 和重复注册兼容性。如果改变计数或锁策略，应保持“同任务只注册一次”“最后释放才注销”“归零后可重新注册”三项不变量，并关注底层 registry 调用位于临界区时的性能。
 
 测试应继续放在独立文件 `pkg/dxf/importinto/metrics_test.rs`，不要内嵌到生产源文件。至少同步覆盖同 ID 复用、不同 ID 隔离、部分释放不注销、最终释放后可重建、未知 ID 释放；涉及 scheduler/executor 接线时，还应在各自的独立测试文件验证获取与关闭路径配对。与 Go 行为对齐的断言同时参考 `pkg/dxf/importinto/metrics_test.go`。
-
-## 验证依据
-
-- 目标实现：`pkg/dxf/importinto/metrics.rs`；确认了两个结构体、`Default`、全局单例、三个方法和兼容别名，且不存在 trait、宏、异步函数或条件编译项。
-- crate 边界：`pkg/dxf/importinto/lib.rs` 与 `pkg/dxf/importinto/Cargo.toml`；确认模块公开装配、独立测试装配、四项直接依赖及本文件不受 `nextgen` feature 分支影响。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query TaskMetricManager` 和 `node TaskMetricManager` 定位到本文件第 38 行；`explore`/调用查询识别 `get_or_create_metrics`、`registered_task_count` 的 Rust 测试调用。通用名 `unregister` 的图结果存在歧义，因此生产调用边又用精确源码引用核验。
-- 生产上游：`pkg/dxf/importinto/scheduler.rs` 的 `withoutMeta`/`Close`，以及 `pkg/dxf/importinto/task_executor.rs` 的 `RegisterImportExecutor`、`ImportNodeTaskExecutor::Close`/`Drop`。
-- 下游实现：`pkg/metrics/import.rs::{GetRegisteredImportMetrics, UnregisterImportMetrics}` 与 `pkg/lightning/metric/metric.rs::Common`，确认默认 registry 副作用和 `Common: Clone`。
-- 对照实现与测试：`pkg/dxf/importinto/metrics.go`、`pkg/dxf/importinto/metrics_test.go`、`pkg/dxf/importinto/metrics_test.rs`；Rust 测试确认同任务共享、跨任务隔离、引用计数、最终注销和同 ID 重建。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付只执行固定章节结构检查，并人工复核上述符号、调用边、边界差异和扩展不变量均能由所列路径追溯。

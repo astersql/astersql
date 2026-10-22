@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-driver` crate；crate 边界由 [`pkg/store/driver/Cargo.toml`](Cargo.toml) 声明，模块由 [`pkg/store/driver/lib.rs`](lib.rs) 中的私有 `mod read_request` 装入。它不是通用读请求实现，而是 TiKV client-rust 读 RPC 的进程级测试故障注入适配层：把 Go 测试沿用的 failpoint 名 `tikvclient/mockBatchClientSendDelay` 转换成 client-rust `RpcInterceptor::delay` 返回的延迟。
-
-模块本身不导出到 crate 外；唯一的 crate 内入口 `install_read_queue_delay` 是 `pub(crate)`。仓内直接调用者是 [`ClientSnapshot::new`](kv_adapter.rs)；因此正常路径是在第一次构造 client-rust 快照时安装拦截器，随后该进程中的相应 TiKV RPC 都可观察同一 failpoint。
+文件只负责 client-rust KV 读请求。
 
 ## 核心职责
 
@@ -69,11 +67,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/store/driver` 下没有与 `read_request.rs` 同路径的 Go 生产文件。Rust 文件移植的是 Go/client-go 测试环境中已存在的 failpoint 契约，而不是逐函数翻译本目录某个 `.go` 文件。
+Rust 文件移植的是 Go/client-go 测试环境中已存在的 failpoint 契约，而不是逐函数翻译本目录某个 `.go` 文件。
 
-可核对的 Go 语义位于 [`tests/realtikvtest/sessiontest/session_fail_test.go`](../../../tests/realtikvtest/sessiontest/session_fail_test.go) 的 `TestTiKVClientReadTimeout`：测试以 `return(100)` 启用 `tikvclient/mockBatchClientSendDelay`，把读 timeout 设为 1ms，并期望 point get、batch point get 和 coprocessor 读取因三副本尝试加回退而出现相应 RPC 次数。Rust 的 [`session_fail_test.rs`](../../../tests/realtikvtest/sessiontest/session_fail_test.rs) 保留相同 failpoint 名、三副本前提、读类型与断言意图。
-
-Rust 与 Go 的实现位置不同：Go 的延迟注入由 Go TiKV client 的 failpoint 提供；Rust 侧必须显式借助 AsterSQL fork 的 client-rust `RpcInterceptor` 注册机制。Rust 又把 client-rust KV 请求与 coprocessor transport 分开接线，所以 `read_request.rs` 只覆盖前三种 kvrpcpb 读请求，而 `network_backend.rs` 覆盖 coprocessor unary 请求。文档没有证据表明其他 Go client failpoint 行为也已由本文件移植。
+Rust 与 Go 的实现位置不同：Go 的延迟注入由 Go TiKV client 的 failpoint 提供；Rust 侧必须显式借助 AsterSQL fork 的 client-rust `RpcInterceptor` 注册机制。Rust 又把 client-rust KV 请求与 coprocessor transport 分开接线，所以 `read_request.rs` 只覆盖前三种 kvrpcpb 读请求，而 `network_backend.rs` 覆盖 coprocessor unary 请求。
 
 ## 扩展指南
 
@@ -83,12 +79,3 @@ Rust 与 Go 的实现位置不同：Go 的延迟注入由 Go TiKV client 的 fai
 - 若扩展到 coprocessor 或写请求，应在对应 transport 边界单独实现和测试，避免同一 failpoint 被两层同时应用而产生双倍延迟。
 - 本文件目前没有同目录独立测试。按仓库规则，若修改运行时代码，应在独立 `*_test.rs` 文件中补充：三种命中类型、至少一种非命中类型、未设置/非法/零/正数 failpoint，以及并发重复安装只注册一次；不要把测试内嵌回 `read_request.rs`。
 - 兼容风险集中在固定的 client-rust interceptor API 与请求具体类型；性能风险是全局拦截器对每个 RPC 的动态类型检查及 failpoint 查询，当前开销固定且不持锁等待于本文件，但扩大白名单或增加复杂解析前应测量热点影响。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 `pkg/store/driver/read_request.rs` 已索引；`files --filter` 报告该文件含 9 个图符号。
-- RustCodeGraph `node --file pkg/store/driver/read_request.rs --offset 1 --limit 260`：读取了 29 行完整源码；`query ReadQueueDelay --kind struct` 和 `query install_read_queue_delay --kind function` 均唯一命中本文件。精确 `callers` 查询在 30 秒内无输出，已终止，调用边随后以仓库 `rg` 核验。
-- 读过的仓库文件：`pkg/store/driver/read_request.rs`、`lib.rs`、`Cargo.toml`、`kv_adapter.rs`，`pkg/session/runtime_pessimistic_test.rs`，`pkg/store/copr/network_backend.rs`，`tests/realtikvtest/sessiontest/session_fail_test.rs` 及其 Go 对照 `session_fail_test.go`。
-- 直接引用搜索只找到生产调用 `kv_adapter.rs::ClientSnapshot::new -> install_read_queue_delay`；同名 failpoint 的其他生产读取点位于 coprocessor backend 和 session 的内存 explain 模拟路径，文中均未混作本文件调用者。
-- 依赖源码核验使用 `Cargo.lock` 锁定的 client-rust `710d218…`：`src/rpc_interceptor.rs` 的 trait、注册表和 guard drop 语义，以及 `src/store/client.rs::KvRpcClient::dispatch_with_timeout` 的 hook、delay、sleep 和 timeout 顺序。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前另以任务指定命令验证目标文档存在且固定二级标题恰好为 11 个，并人工复核唯一产物、链接和范围陈述。

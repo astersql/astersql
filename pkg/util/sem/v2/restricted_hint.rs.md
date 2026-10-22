@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`restricted_hint.rs`](restricted_hint.rs) 属于 `astersql-util-sem-v2` crate；[`lib.rs`](lib.rs) 以私有模块 `restricted_hint` 装配它，并通过 `pub use restricted_hint::*` 导出其公共 API。它位于 SEM（Security Enhanced Mode）配置与优化器 Hint 解析器之间：自身只回答“给定的小写 Hint 名是否应受限”，实际移除 Hint、生成语句 warning 的工作由 `pkg/util/hint/hint.rs` 完成。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认。该文件直接使用标准库集合/惰性初始化、同 crate 的 `SemImpl`/`globalSem`，以及 `vardef` 依赖提供的系统变量规范名；不直接依赖 parser、session 或 planner，避免把上层解析与会话实现反向带入 SEM crate。
+`SemImpl::isRestrictedHint` 实现策略：不在 `restrictedHints` 集合中的名称直接放行；在集合中且没有守卫变量的 Hint 无条件受限；有守卫变量时，只有变量“既不隐藏、也不只读”才例外放行，否则返回限制错误。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@ RustCodeGraph 的通用 `callers` 查询受同名 Go/Rust 符号影响，没有�
 
 ## 与 Go 版本的对应关系
 
-[`restricted_hint.go`](restricted_hint.go) 是直接对照实现，Rust 保留了 `hintGuardVars`、`IsRestrictedHint`、`isRestrictedHint` 的命名、三个映射项、判断顺序和错误文案：Go 的 `nil globalSem` 对应 Rust 的 `None`，Go map membership 对应 `HashSet::contains`/`HashMap::get`，Go `error` 对应 `Result<(), String>`。
-
 配置侧也保持一致：Go `buildSEMFromConfig` 使用 `strings.ToLower`，Rust 同名函数使用 `to_lowercase`；Go 测试 [`restricted_test.go`](restricted_test.go) 与 Rust [`restricted_test.rs`](restricted_test.rs) 使用相同配置和四个断言，分别覆盖无守卫受限、隐藏变量受限、仍可调变量放行、未配置 Hint 放行。
 
 实现层面的差异主要是并发原语和错误类型：Go 读取原子指针并返回格式化 `error`；Rust 从 `RwLock` 包装的全局指针克隆 `Arc`，返回字符串错误，再由 session 适配为 hint 错误。该差异不改变正式调用链上的过滤语义。
@@ -84,13 +80,3 @@ RustCodeGraph 的通用 `callers` 查询受同名 Go/Rust 符号影响，没有�
 - 修改公开返回类型或错误文本时，还需同步 `pkg/session/hint_runtime.rs::restricted_hint_checker`、`pkg/session/hint_runtime_test.rs` 和 Go 对照文件/测试，确认“过滤而非拒绝 SQL”以及 warning 归属仍成立。
 - 若允许非小写调用，必须在入口统一规范化，并评估每次调用的分配成本；当前正式链路已提供小写 `HintName.L`，贸然在热路径重复转换没有必要。
 - 新增映射的兼容风险在于错误放行：若把不等价的 Hint 与变量关联，变量未配置时会因“可见且可写”而放行。性能风险较低，判定只有固定映射和集合查询；主要正确性风险是配置归一化、变量规范名和安全策略三者不一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件被完整索引为 66 行、3 个符号，并标记直接使用者 `pkg/session/hint_runtime.rs`、`pkg/util/sem/v2/migration_aster_unit_test.rs`。
-- RustCodeGraph `node/query/callees`：确认 `hintGuardVars`、`IsRestrictedHint`、`SemImpl::isRestrictedHint` 的源码与 `IsRestrictedHint -> isRestrictedHint` 调用边；同名 Go/Rust 符号令通用 callers 结果不完整，已用精确引用搜索补证。
-- crate/模块证据：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`sem.rs`](sem.rs)、[`config.rs`](config.rs)。它们确认 crate 名、`vardef` 依赖、模块再导出、全局快照结构、受限集合的小写归一化和变量属性读取。
-- Go 对照证据：[`restricted_hint.go`](restricted_hint.go)、[`restricted_test.go`](restricted_test.go)、`sem.go`、`config.go`。
-- Rust 测试与集成证据：[`restricted_test.rs`](restricted_test.rs)、`migration_aster_unit_test.rs`、`pkg/session/hint_runtime_test.rs`；测试由 [`lib.rs`](lib.rs) 的独立 `restricted_test` 模块挂载，未与生产文件混放。
-- 应用链证据：`pkg/session/hint_runtime.rs` 的一次性 checker 注册，以及 `pkg/util/hint/hint.rs` 中 `ParseStmtHints/ParsePlanHints -> filterRestrictedHints` 的过滤与 warning 分流。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查、文档链接/范围人工复核与 `git diff --check`。

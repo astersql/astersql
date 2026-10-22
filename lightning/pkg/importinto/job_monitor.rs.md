@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-lightning-pkg-importinto`，crate 入口是同目录的 `lib.rs`，并由该入口以 `mod job_monitor` 加载、再公开重导出。它位于 IMPORT INTO 的“提交后等待”阶段：`job_orchestrator.rs` 的 `NewJobOrchestrator` 在调用方未注入自定义监控器时构造 `NewJobMonitor`，`DefaultJobOrchestrator::SubmitAndWait` 在所有作业提交成功后调用 `JobMonitor::WaitForJobs`。因此本文件不负责创建或取消作业；它负责观察同一组已提交作业、汇总进度、把终态写入 checkpoint，并把成功或首个错误交还编排器。编排器随后决定是否取消剩余作业。
-
-`Cargo.toml` 将该 crate 标为映射 Go 包 `lightning/pkg/importinto` 的 library；监控逻辑直接使用的 `importsdk`、日志、context、errors 等类型由本 crate 的 `stubs.rs` 暴露，而不是在本文件单独声明外部 Cargo 依赖。目标文件没有条件编译项。
+通过公开 trait `JobMonitor` 隔离作业编排器与具体轮询实现，便于测试或调用方注入替身。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ Rust 实现没有创建需显式释放的 ticker：两个 `Instant` 控制轮询
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐段对应同目录 `job_monitor.go`：trait/interface、默认实现字段、`groupStats`、构造器、轮询主循环、状态处理、完成日志和 checkpoint 写入顺序基本一致。`job_monitor_test.rs` 也复现了 Go 测试的空输入、成功、失败、快速失败、忽略旧作业、查询错误后恢复和跨状态进度不回退场景。
-
 需要明确的实现差异有：
 
 - Go 用两个 `time.Ticker` 和 `select` 同时等待 context、日志 tick、轮询 tick；Rust 用 `Instant` 加 5 ms sleep 模拟，并专门保证首次查询发生在完整轮询间隔之后。可观察结果相近，但事件同时到达时的选择机制和计时精度不同。
@@ -101,11 +97,3 @@ Rust 文件逐段对应同目录 `job_monitor.go`：trait/interface、默认实�
 - 若支持混合 group 输入，应在进入循环前校验或按 group 分组，不能继续复用 `jobs[0].GroupKey`。还应为重复 JobID 和响应缺项确定清晰契约，防止完成条件不可达。
 - 若将同步轮询改为 async/ticker，须保留“首次 tick 前可取消”、查询错误后继续、周期日志、无重复 checkpoint 更新和编排器快速取消链，并评估高频轮询、日志量与取消延迟。
 - 测试逻辑必须继续放在独立的 `job_monitor_test.rs`，不得嵌入生产源文件。Rust 行为变更还应核对 `job_orchestrator_test.rs` 中 monitor 错误触发取消的契约，以及同路径 Go 文件/测试的语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引可用（11,467 files、307,296 nodes）；`node --file lightning/pkg/importinto/job_monitor.rs` 读取了 401 行目标源码并列出五个使用文件；`query` 同时定位 Rust/Go 的 `NewJobMonitor`、`WaitForJobs`，以及 Go 的私有辅助方法；`callees SubmitAndWait` 给出 Rust `job_orchestrator.rs:210` 到 `job_monitor.rs:91` 的调用边。针对 `NewJobMonitor`/`WaitForJobs` 的直接 callers/callees 查询未单独输出边，因此未把缺失的图边当作事实。
-- 生产源码：`lightning/pkg/importinto/job_monitor.rs`（全部符号和分支）、`job_orchestrator.rs`（默认构造、等待与失败后取消）、`job_progress.rs`（总量补全、阶段估算、单调性与上界）、`lib.rs`（模块装配和公开重导出）。目标包没有 `doc.go`。
-- crate 边界：`lightning/pkg/importinto/Cargo.toml` 的 package、lib、porting metadata 和 dependencies。
-- Go 对照：`lightning/pkg/importinto/job_monitor.go`，核对了接口、字段、轮询顺序、错误策略、状态映射和 checkpoint 更新。
-- 独立测试：`lightning/pkg/importinto/job_monitor_test.rs` 与 `job_monitor_test.go`，覆盖空作业、首次轮询前取消（Rust）、成功、失败、快速失败、旧作业过滤、SDK 暂时错误及进度不回退。本任务是纯文档分析，按计划未运行 Cargo 或代码测试；交付验证仅检查文档结构与人工事实对应。

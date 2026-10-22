@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；模块由 `pkg/planner/core/lib.rs` 声明并整体再导出。它位于 PREPARE/EXECUTE 与优化器缓存实现之间，集中承载计划缓存的共享数据模型和纯算法：PREPARE 元数据生成、缓存键构造、缓存值统计、参数类型匹配、Point Get 安全判定和参数类型解析。实际会话接线位于 `pkg/session/runtime/planning.rs`：该文件调用 `NewPlanCacheKey` 与 `NewPlanCacheValue`，而会话级/实例级容器分别由 `plan_cache_lru.rs`、`plan_cache_instance.rs` 使用这里的 `PlanCacheValue` 和 `PlanCacheValue::MatchesParamTypes`。
-
-`pkg/planner/core/Cargo.toml` 将此目录定义为 `astersql-planner-core`，并直接依赖 `astersql-bindinfo`、`sha2`、planner base/physical operator、expression、types、hint、resolve 等 crate；`default` feature 为空，`nextgen` 只向配置依赖透传，本文件没有条件编译的生产分支，`NewPlanCacheValueForTest` 现为 `#[doc(hidden)] pub fn`，用于跨 crate 测试构造，不受 `#[cfg(test)]` 限制。
+位于 PREPARE/EXECUTE 与优化器缓存实现之间，集中承载计划缓存的共享数据模型和纯算法：PREPARE 元数据生成、缓存键构造、缓存值统计、参数类型匹配、Point Get 安全判定和参数类型解析。
 
 ## 核心职责
 
@@ -70,13 +68,11 @@ FTS 检查目前只递归覆盖 WHERE、投影字段和 ORDER BY 中的 function
 
 ## 与 Go 版本的对应关系
 
-冻结 Go 同样提取 COALESCE markers 并在排序后保存 exactDecimalParamOffsets，值方法叠加精确 DECIMAL 判断。Rust 用显式输入偏移向量替代 Go visitor 内部收集，且越界 index 返回 false；Go 直接索引切片。冻结 `plan_cache_suite_test.rs::coalesce_plan_cache_update` 覆盖两类容器中的精确匹配与未标记宽松匹配，但搜索未发现生产 Rust 调用 COALESCE marker 采集 helper，不能据数据结构断言端到端 UPDATE 已接通。
-
-直接对照 `pkg/planner/core/plan_cache_utils.go`：Rust 保留 `MaxCacheableLimitCount`、`PreparedPlanCacheMaxMemory`、`GeneratePlanCacheStmtWithAST`、`NewPlanCacheKey`、`PlanCacheValue`、`GetPreparedStmt`、类型兼容规则、安全 Point Get 四场景和 `parseParamTypes` 的核心顺序与判定。缓存键同样纳入 schema/table 版本、会话优化环境、binding、统计版本、dirty tables 与事务状态；计划值同样以键和参数类型计算 SHA-256 环境摘要并缓存内存估算。
+Rust 用显式输入偏移向量替代 Go visitor 内部收集，且越界 index 返回 false；Go 直接索引切片。
 
 Rust 的边界适配并非行为简化：Go 从 session/domain 动态读取状态，Rust 通过 `PlanCacheKeyContext` 显式传入不可变快照；Go 的 `any` Point Get 槽位改为三个泛型参数；Go 的 session/infoschema/build 操作改由 `PlanCachePrepareRuntime` trait 注入；Go 的 `base.Plan` 改为拥有型 `CachedPlan`，使实例缓存跨线程共享更明确。Go 通过 AST visitor 收集 LIMIT/表信息，Rust 当前由调用者填充 `PlanCachePrepareInput`，因此调用方必须保持同等收集完整性。
 
-值得关注的差异是内存统计口径：Go 依据具体物理计划动态 `MemoryUsage`，Rust 由 `PlanCacheValueBuildInfo.plan_memory_usage` 传入，未知时同样采用 50 KiB；Rust 字符串使用 capacity 计量，Go 多使用 len。Go 的 fix 44830 从 session fix-control map 读取，Rust入口接收已解析的布尔值。测试和调用接线必须保证这些适配层持续提供与 Go 相同的事实。
+值得关注的差异是内存统计口径：Go 依据具体物理计划动态 `MemoryUsage`，Rust 由 `PlanCacheValueBuildInfo.plan_memory_usage` 传入，未知时同样采用 50 KiB；Rust 字符串使用 capacity 计量，Go 多使用 len。
 
 ## 扩展指南
 
@@ -85,14 +81,3 @@ Rust 的边界适配并非行为简化：Go 从 session/domain 动态读取状�
 新增 PREPARE 语句类别或元数据时，应修改 `PlanCachePrepareInput`、`GeneratePlanCacheStmtWithAST` 和 `PlanCacheStmt`，保持“校验→预处理→排序→构建→资格覆盖→元数据→权限”的顺序；binding 必须继续在 build 改写 AST 前捕获。新增 Point Get 安全形态应以新的独立判定函数接入总入口，默认保守拒绝，并验证重复 IN 值、range 去重、复合键宽度和修复开关。
 
 新增 `PlanCacheValue` 元数据时要同步 `NewPlanCacheValue` 和 `MemoryUsage`，保持构造后只读；新增可变统计应采用原子字段并定义一致的快照语义。测试逻辑不得放回生产文件：优先扩展同目录的 `plan_cache_utils_test.rs` 或 `plan_cache_utils_aster_unit_test.rs`；跨路径行为可扩展 `tests/prepare/prepare_test.rs`、`casetest/plancache/*`，容器行为则扩展 `plan_cache_lru_test.rs` / `plan_cache_instance_test.rs`。
-
-## 验证依据
-
-本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/plan_cache_utils.rs` 并读取 `git show 2c944fb:pkg/planner/core/plan_cache_utils.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
-
-- RustCodeGraph：索引状态为 11,467 files / 307,296 nodes / 1,848,419 edges；目标文件已索引为 1,302 行、112 个符号，并显示被 11 个文件使用。执行过 `files`、`explore`、`query`、`node`、`callers`、`callees`，重点核对 `NewPlanCacheKey*`、`PlanCacheValue`、`NewPlanCacheValue`、`CheckTypesCompatibility4PC` 及目标文件全段源码。
-- 源与装配：`pkg/planner/core/plan_cache_utils.rs`；`pkg/planner/core/lib.rs` 的 `mod plan_cache_utils`、`pub use plan_cache_utils::*` 以及两个独立测试模块声明；`pkg/planner/core/Cargo.toml` 的 crate、feature 与依赖声明。
-- Go 对照：`pkg/planner/core/plan_cache_utils.go` 中 `GeneratePlanCacheStmtWithAST`、`newPlanCacheKeyWithMatchedBinding`、`PlanCacheValue`、`PointGetExecutorCache`、`PlanCacheStmt`、`GetPreparedStmt`、`checkTypesCompatibility4PC`、四个 Point Get 场景及 `parseParamTypes`。
-- Rust 测试：`pkg/planner/core/plan_cache_utils_test.rs` 验证 non-prepared 参数值在排序后保留，以及 binding 在 build 前捕获且不依赖缓存开关；`pkg/planner/core/plan_cache_utils_aster_unit_test.rs` 验证槽位生命周期、statement 元数据/快照、键确定性与 LIMIT 上限、原子统计/内存、类型规则和四个安全场景。`pkg/planner/core/tests/prepare/prepare_test.rs` 直接验证公开类型兼容 API；`casetest/plancache/plan_cache_suite_test.rs`、`plan_cache_partition_test.rs`、`plan_cache_partition_table_test.rs` 验证开关、裁剪模式与新鲜统计对键的影响。
-- 调用证据：`pkg/session/runtime/planning.rs` 的键/value 构造；`pkg/session/fts_runtime.rs` 的 FTS 可缓存性检查；`pkg/planner/core/plan_cache_lru.rs`、`plan_cache_instance.rs` 的类型匹配与值存储。
-- 本任务是纯文档分析，按总计划不运行 Cargo；结构检查要求本文恰含规定的 11 个二级标题。

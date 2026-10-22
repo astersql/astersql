@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor` crate 中 REVOKE 权限回收算法的 Rust 移植，源码由 [`lib.rs`](lib.rs) 的 `pub mod revoke` 公开，crate 边界由 [`Cargo.toml`](Cargo.toml) 定义。它把 Go [`revoke.go`](revoke.go) 中直接依赖 session、InfoSchema、权限管理器和内部 SQL 执行器的逻辑，拆成泛型 `RevokeExec<B>` 与 `RevokeBackend` 适配边界。
-
-当前仓库事实需要区分两层：`RevokeExec::Next` 及辅助函数已有完整算法和独立测试；但在目标文件和测试之外搜索 Rust `RevokeExec`、`composeTablePrivUpdateForRevoke` 等符号，只找到 [`lib.rs`](lib.rs) 的模块声明，没有找到生产 builder 构造、具体 `RevokeBackend` 实现或执行器主链接线。因此它目前是“已导出的可适配实现”，不能仅凭模块公开就认定 Rust SQL 请求已经会执行它。Go 生产入口仍是 [`revoke.go`](revoke.go) 的 `RevokeExec.Next`。
+把 Go [`revoke.go`](revoke.go) 中直接依赖 session、InfoSchema、权限管理器和内部 SQL 执行器的逻辑，拆成泛型 `RevokeExec<B>` 与 `RevokeBackend` 适配边界。
 
 ## 核心职责
 
@@ -78,9 +76,7 @@ RustCodeGraph 的文件节点能够展示源码及符号，但针对泛型 impl 
 
 Rust `RevokeExec::Next` 对应 Go [`revoke.go`](revoke.go) 的 `RevokeExec.Next`：二者均一次执行、创建内部权限事务、替换 `CURRENT_USER`、逐用户校验和撤销、提交后通知，并在未提交时回滚。Rust 用 `RevokeBackend` 和 `RevokeSql` 表达 Go 中的 `sessiontxn`、系统 session、InfoSchema、`sqlescape.MustFormatSQL`、权限管理器和 domain 通知。
 
-辅助函数也逐一对应：`checkDynamicPrivilegeUsage`、`revokeOneUser`、`revokePriv`、四个作用域撤销函数、`privUpdateForRevoke`、两个 SET 更新组合函数均保留 Go 分支。关键兼容细节包括动态权限大写和未注册警告、表不存在时仍可撤销遗留授权、库/表/列权限清空后删行，以及表级 `REVOKE ALL` 不撤销 Grant option。
-
-Rust 独立测试 [`revoke_test.rs`](revoke_test.rs) 验证事务/清理顺序、重复 `Next` 无操作、非法动态权限回滚、未注册动态权限告警、表列 SET 语义、解析后的列名和未知权限错误。Go [`revoke_test.go`](revoke_test.go) 进一步用 SQL 集成路径覆盖全局、库、表、列撤销、最后权限删行、大小写不敏感名称及已删除表的遗留授权清理。Rust 测试尚未覆盖 Go 集成测试的所有大小写与不存在对象组合，也不证明生产主链接线。
+Rust 独立测试 [`revoke_test.rs`](revoke_test.rs) 验证事务/清理顺序、重复 `Next` 无操作、非法动态权限回滚、未注册动态权限告警、表列 SET 语义、解析后的列名和未知权限错误。Rust 测试尚未覆盖 Go 集成测试的所有大小写与不存在对象组合，也不证明生产主链接线。
 
 ## 扩展指南
 
@@ -91,12 +87,3 @@ Rust 独立测试 [`revoke_test.rs`](revoke_test.rs) 验证事务/清理顺序�
 - 若要接入 Rust 生产主链，需要实现具体 `RevokeBackend`、把 parser/planner 结果转换为本文件的数据类型、在 executor builder 构造 `RevokeExec`，并为 `RevokeSql` 提供安全执行适配；这些接线当前未在仓库 Rust 源码中检出。
 - 测试逻辑应继续放在独立的 [`revoke_test.rs`](revoke_test.rs)，并由 [`lib.rs`](lib.rs) 的 `#[cfg(test)]` 模块加载；涉及最终 SQL 行为时还应与 [`revoke_test.go`](revoke_test.go) 的案例对齐，不把测试嵌回生产文件。
 - 兼容风险集中在错误文本、主机/对象名大小写、Grant option 保留规则、空授权行删除时机和通知时序；性能上当前逐用户、逐权限、逐列串行且列级存在逐列读写，批处理优化必须先证明事务语义和错误停止位置不变。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；通过 `node --file pkg/executor/revoke.rs` 阅读目标文件 1–869 行，并用 `query` 精确确认 Rust/Go 的 `RevokeExec`、`revokePriv`、`revokeTablePriv`、`checkDynamicPrivilegeUsage`、`composeTablePrivUpdateForRevoke` 对应符号。
-- RustCodeGraph `node --file pkg/executor/revoke_test.rs`：阅读独立 Rust 测试 1–454 行，确认 mock 后端和七个测试所覆盖的状态、副作用与错误边界。
-- RustCodeGraph `node --file pkg/executor/revoke.go` 与 `node --file pkg/executor/revoke_test.go`：分别阅读 Go 实现 1–420 行和 Go 测试 1–245 行，核对生产事务流程、系统表更新、兼容分支和集成用例。
-- [`Cargo.toml`](Cargo.toml)：确认 crate 名为 `astersql-executor`、库入口为 `lib.rs`，且目标文件没有条件 feature；[`lib.rs`](lib.rs) 确认生产模块导出和独立测试模块装配。
-- 精确 `rg` 检查：除目标源、目标测试和 `lib.rs` 模块声明外，未发现 Rust `RevokeExec` 或两个 `compose*ForRevoke` 辅助函数的生产引用；这支持“尚未检出生产适配接线”的限定结论。
-- 文档交付只做结构检查，不运行 Cargo；代码行为证据来自现有源码与测试，现有测试在本任务中未执行。

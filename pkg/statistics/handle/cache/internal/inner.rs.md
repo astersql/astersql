@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于统计信息缓存的内部边界 crate `astersql-statistics-handle-cache-internal` 中。`pkg/statistics/handle/cache/internal/lib.rs` 将私有模块 `inner` 的内容公开再导出，因此上层以 `cache_internal::StatsCacheInner` 使用这里唯一的生产符号 `StatsCacheInner`。
-
-`pkg/statistics/handle/cache/internal/Cargo.toml` 表明该 crate 只直接依赖 `astersql-statistics`，本文件因而只约束缓存容器如何持有 `statistics::Table`，不负责缓存算法、指标、配置或上层统计版本管理。具体实现位于相邻的 `internal/lfu/lfu_cache.rs` 与 `internal/mapcache/map_cache.rs`，统一使用者位于 `pkg/statistics/handle/cache/statscacheinner.rs`。
+命中指标和最大表统计版本由外层 `StatsCache` 维护；具体内存计量、淘汰和后台维护语义由实现承担。
 
 ## 核心职责
 
@@ -67,8 +65,6 @@ LFU 内部还使用读写锁、互斥锁和原子量，并有异步维护任务�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/cache/internal/inner.go`。Rust trait 保留 Go `StatsCacheInner` 的 11 个方法及总体职责：`Get`、`Put`、`Del`、`Cost`、`Values`、`Len`、`Copy`、`SetCapacity`、`Close`、`TriggerEvict`、`WaitForAsyncUpdates`。
-
 类型映射为：Go `*statistics.Table` 对应 Rust `Arc<Table>`；Go `Get(...)(*Table, bool)` 对应 Rust `Option<Arc<Table>>`；Go `int` 长度对应 Rust `usize`；Go 接口返回值对应 `Box<dyn StatsCacheInner>`。Rust 通过 `&self`/`&mut self` 显式区分只读与可变操作，并增加 `Send` 上界。
 
 现有实现语义也有直接对应：Go MapCache 的 `Copy` 新建 map，Rust MapCache 新建 `HashMap`；Go LFU 的 `Copy` 直接返回 `s`，Rust LFU 通过 `clone` 共享其 `Arc` 状态；两边 MapCache 的容量、关闭、淘汰和等待钩子都是空操作。Go 接口注释保留了将缓存泛型化、不再直接感知 `statistics.Table` 的 TODO，Rust 当前尚未实现该泛化，扩展时不能把 TODO 当成现状。
@@ -80,12 +76,3 @@ LFU 内部还使用读写锁、互斥锁和原子量，并有异步维护任务�
 修改接口签名时必须同步：`statscacheinner.rs` 的动态对象与转发、LFU/MapCache 两个实现、`internal/inner_test.rs::TestCache`，以及实现各自的独立测试。涉及异步准入或淘汰时，应在 `internal/lfu/lfu_cache_test.rs` 覆盖写后等待、容量收缩、淘汰和关闭；涉及同步映射与成本记账时，应在 `internal/mapcache/map_cache_test.rs` 覆盖替换/删除/复制；接口对象安全与共享句柄继续放在独立的 `internal/inner_test.rs`，不要嵌入生产源文件。
 
 兼容性风险集中在动态对象安全、Go/Rust 行为偏离和 `Copy` 语义；性能风险集中在外层互斥锁内的阻塞、`Values` 全量分配、表级 `Arc` 克隆以及异步维护等待。若要将值泛型化，应作为跨 crate 的接口迁移处理，而不是只修改本文件。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`inner.rs` 被索引为 49 行、15 个符号，其中 `StatsCacheInner` 及其 11 个方法均可精确查询。
-- RustCodeGraph 已读源码：`internal/inner.rs`、`internal/mapcache/map_cache.rs`、`internal/lfu/lfu_cache.rs`、`statscacheinner.rs`、`statscache.rs`。trait 方法的 `callers` 查询为空，动态分派关系改由 `Box<dyn StatsCacheInner>` 字段、两个 `impl` 和门面调用点交叉核验。
-- crate/模块证据：`pkg/statistics/handle/cache/internal/Cargo.toml`、`internal/lib.rs`、`internal/lfu/Cargo.toml`、`internal/mapcache/Cargo.toml`、`pkg/statistics/handle/cache/Cargo.toml`。
-- Go 对照：`internal/inner.go`、`internal/lfu/lfu_cache.go`、`internal/mapcache/map_cache.go`、`statscacheinner.go`。
-- 独立 Rust 测试：`internal/inner_test.rs::cache_contract_is_object_safe_and_keeps_shared_tables` 验证 trait 对象、Put/Get 的同一 `Arc` 与 Copy 后长度；`internal/lfu/lfu_cache_test.rs` 覆盖异步等待、容量与复制；`internal/mapcache/map_cache_test.rs` 覆盖映射实现；`statscache_test.rs::quota_eviction_retains_table_metadata_like_go_lfu` 覆盖门面层触发淘汰并等待后的可见行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅运行任务指定的 11 章节结构检查，并人工复核本文没有把实现差异提升为 trait 保证。

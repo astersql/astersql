@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate，由 [`pkg/ddl/lib.rs`](lib.rs) 以 `pub mod backfilling_dist_scheduler` 公开。它移植了分布式 DDL 回填调度器中可独立表达的状态机、Region 分批、全局排序计划、临时索引合并计划和重试判定逻辑；任务与子任务的共享元数据来自 [`backfilling_dist_executor.rs`](backfilling_dist_executor.rs)，排序结果摘要来自 [`backfilling_read_index.rs`](backfilling_read_index.rs)。
-
-它位于 DDL job 的 reorg/backfill 路径：概念上接收任务元数据及上一步子任务输出，生成下一阶段的 `BackfillSubTaskMeta`。冻结版本中，计划器实例与 RU helper 只见独立测试使用；生产 `pkg/session/runtime/modify_column_dist_backfill.rs` 已复用静态 `is_retryable_scheduler_message` 判定，不能把这一调用扩大为整个调度器已接线；完整的 DXF `scheduler.Extension` 接线、存储访问、对象存储 I/O 和子任务元数据序列化仍由同路径 [`backfilling_dist_scheduler.go`](backfilling_dist_scheduler.go) 承担。因此本文件目前是“已实现并有单测的纯计划层”，不是可独立运行的完整调度器。
+`modify_meta` 与错误可重试判定为 DXF 动态调参和调度失败处理提供纯逻辑实现。
 
 ## 核心职责
 
@@ -103,19 +101,14 @@ Go 版本还直接依赖 DXF scheduler/storage、PD/TiKV RegionCache 与 TSO、�
 
 ## 与 Go 版本的对应关系
 
-同路径 `backfilling_dist_scheduler.go` 是直接对照实现。主要对应关系如下：
-
-- Rust `new` + `get_next_step` 对应 Go `Init` 中的模式推导和 `GetNextStep`，三条状态路径一致。
 - Rust `calculate_region_batch` 与 Go `CalculateRegionBatch` 保留本地盘最多三个节点、最小 100 Region，以及云存储最大 4000 Region 的算法；Rust 额外把零节点变为显式错误。
 - Rust `try_generate_plan_for_physical_table` 与 Go `generatePlanForPhysicalTable` 的纯计划部分一致：排序、连续性校验、整轮重扫、逐批新 TSO、首尾收敛。Go 负责从 PD RegionCache 加载 Region、从表和 reorg context 取得 key 范围、序列化元数据；Rust 通过闭包和参数注入这些外部操作。
-- Rust `retry_region_plan` 对齐 Go `handle.RunWithRetry(..., 8, exponential backoff)`，包括 200ms 起步、2s 封顶和拓扑变化时重新加载 Region。Rust 将 TSO 错误表示为 `TimestampAllocation`，将 scan 错误区分为不重试的 `RegionScan`。
-- Rust `skip_merge_sort` / `generate_merge_sort_plan` 对齐 Go `skipMergeSort` / `generateMergeSortPlan` 的阈值与 `DivideMergeSortDataFiles`；Go 还读取外部元数据、写计划到对象存储并记 metrics。
 - Rust `merge_meta_groups`、`plan_global_sort_ingest`、`split_subtask_meta_for_one_kv_group` 对齐 Go `generateGlobalSortIngestPlan` 与 `splitSubtaskMetaForOneKVMetaGroup` 的汇总、range splitter 输出消费和成功后摘要更新；对象存储与 splitter 的创建/关闭仍只在 Go。
 - Rust `generate_temporary_index_plan` 对齐 Go `generateMergeTempIndexPlan` 的范围切分，并刻意不设置 `EleIDs`；`_index_id` 仅保留接口语义，目标索引由临时 key 范围编码。
 - Rust `modify_meta` 对齐 Go `ModifyMeta` 的 batch size / max write speed 修改；Rust 的 `Unknown` 静默忽略，而 Go 会记录 warning 并重新序列化任务元数据。
 - Rust `is_retryable_error` 对齐 Go `IsRetryableErr`，并增加文本消息检查以适配 DXF 错误持久化后的场景。
 
-Go `OnDone` 的 NextGen/非 reverting 守卫与事务字节汇总对应 Rust `record_merge_temp_index_summary`；Rust 不包含 Go 查询前序子任务摘要、JSON 重编码及框架成功状态持久化。`backfilling_dist_scheduler_test.rs` 的重试存储例子验证失败尝试不计字节、成功 15 字节加 7 得到 22，以及事务权重 2 换算 44 RU，reverting 不改摘要。
+Go `OnDone` 的 NextGen/非 reverting 守卫与事务字节汇总对应 Rust `record_merge_temp_index_summary`；Rust 不包含 Go 查询前序子任务摘要、JSON 重编码及框架成功状态持久化。
 
 尚未移植到本文件的 Go 职责包括 `scheduler.Extension`/`BaseScheduler` 集成、`OnNextSubtasksBatch`、节点实例发现、NextGen 节点计数、表元数据读取、PD/TSO、RegionCache、对象存储、外部 meta 编解码、日志、指标、failpoint 以及 `OnPrepare`/`OnDone` 等生命周期钩子的完整接线。扩展 Rust 时应维持这一差异清单，不能用本文件的纯函数测试替代端到端接线证据。
 
@@ -128,13 +121,3 @@ Go `OnDone` 的 NextGen/非 reverting 守卫与事务字节汇总对应 Rust `re
 - 若加强输入校验，应特别考虑当前未校验的临时索引整体范围、`RangeSplit` 内部 key 排序和 `element_ids`/分组长度关系；收紧行为前必须与 Go 版本和存量元数据兼容性对齐。
 - 测试必须继续放在同目录独立文件 `pkg/ddl/backfilling_dist_scheduler_test.rs`，不要内嵌到生产源文件。Go 语义变化还应核对 `pkg/ddl/backfilling_dist_scheduler_test.go`。
 - 真正接入 Rust 生产链时，需在独立工作中补齐 scheduler trait、存储/PD/对象存储抽象、序列化与资源关闭，并用集成测试证明任务持久化、owner 切换、暂停/取消与重试；这超出当前文件已实现范围。
-
-## 验证依据
-
-- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/backfilling_dist_scheduler.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
-- Rust 源码：`pkg/ddl/backfilling_dist_scheduler.rs`；协议与直接类型：`pkg/ddl/backfilling_dist_executor.rs`、`pkg/ddl/backfilling_read_index.rs`、`pkg/ddl/backfilling.rs`；模块入口：`pkg/ddl/lib.rs`。
-- crate 边界：`pkg/ddl/Cargo.toml` 确认包名 `astersql-ddl`、`lib.rs` 入口以及 `astersql-ingestor-errdef`、`astersql-ingestor-globalsort` 普通依赖。
-- Rust 独立测试：`pkg/ddl/backfilling_dist_scheduler_test.rs` 覆盖三种状态机、Region 批量、空表、摘要原子更新、临时索引不设置 element ID、零 batch size、TSO/Region 重试与退避、永久/临时错误、merge 文件数边界。
-- Go 对照：`pkg/ddl/backfilling_dist_scheduler.go`、`pkg/ddl/backfilling_dist_scheduler_test.go`；生产注册入口 `pkg/ddl/ddl.go:810`。这些文件验证了运行时位置，也证明 Rust 当前只覆盖纯逻辑子集。
-- DDL 背景契约：`pkg/ddl/doc.go` 说明 DDL schema version 不变量；`docs/agents/ddl/README.md` 与 `docs/agents/ddl/03-reorg-backfill.md` 仅作为导航，并已用上述代码和测试复核本文件相关结论。
-- 本任务是纯文档分析，按总计划不运行 Cargo；交付前使用任务指定命令检查目标文档存在且恰有十一个固定二级标题，并人工复核所有“当前已支持”陈述均有上述直接证据。

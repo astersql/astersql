@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`util.rs`](./util.rs) 属于 `astersql-planner-core` crate（[`Cargo.toml`](./Cargo.toml) 的 `[lib]` 指向 `lib.rs`）。[`lib.rs`](./lib.rs) 以私有 `mod util;` 装配本文件，再通过 `pub use util::*;` 把其公开项重导出到 crate 根。它提供一套规划器侧的简化 AST 与辅助函数，覆盖只读判定、聚合/窗口节点抽取、稳定字符串格式化、事务脏表判断和数据库名规范化。
-
-当前 Rust 文件不是解析器真实 AST 的通用工具入口：它定义自己的 `AstNode`，而会话运行时与优化入口可见的真实只读判定使用 `astersql_parser_ast::util::IsReadOnly`（例如 `pkg/session/runtime/scan_adapter_runtime.rs:1760`、`pkg/planner/optimize.rs:1792`）。因此本文件应理解为 core crate 内仍在迁移中的简化兼容层；其中 `AstNode` 已被 [`plan_cacheable_checker.rs`](./plan_cacheable_checker.rs) 的缓存资格检查复用，但本文件其余函数在 Rust 生产源码中未检索到直接调用。
+这些职责均为纯内存计算，不执行 SQL、不访问存储，也不创建计划节点。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ Go 侧的对应调用更广：`logical_plan_builder.go` 使用聚合/窗口抽�
 
 ## 与 Go 版本的对应关系
 
-对应文件是 [`util.go`](./util.go)。四个格式化函数和 `tableHasDirtyContent` 的主要输出规则基本一致：字符串集合带引号并稳定排序，切片排序后连接，数值/布尔按格式化后的文本排序，分区表检查物理分区 ID。Rust 使用 `BTreeSet` 直接获得键顺序，Go 使用 map/set 收集后显式排序。
+Rust 使用 `BTreeSet` 直接获得键顺序，Go 使用 map/set 收集后显式排序。
 
 重要差异如下：
 
@@ -89,12 +87,3 @@ Go 侧的对应调用更广：`logical_plan_builder.go` 使用聚合/窗口抽�
 若要缩小与 Go 的差距，应按具体需求分别接入真实 parser AST、prepared statement 查找、相关聚合跳过表、`PlanContext` 脏内容接口或当前数据库回退；这些是跨类型/调用链迁移，不应通过继续膨胀简化枚举来假装完成。任何新接线都应先用调用搜索确认真正入口，并同步独立 Rust 测试与相应 Go 测试意图。
 
 性能方面，当前递归深度与 AST 深度一致；抽取会克隆完整匹配子树，格式化会分配中间 `Vec<String>`。新增大节点或高频调用时应评估栈深、克隆量和排序复杂度。兼容性方面，不能随意改动字典序、双引号格式、切片原地排序、子查询边界或分区 ID 优先规则，因为测试和诊断文本可能依赖这些细节。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点，目标文件已索引；`files --filter pkg/planner/core/util.rs` 报告该文件含 35 个符号；`node --file ... --offset 1 --limit 500` 核对了 210 行完整实现，并报告该文件被 18 个文件使用。精确 `callers/callees` 因同名符号发生全库歧义，调用事实改用限定路径的 `rg` 复核。
-- 源码：[`util.rs`](./util.rs)、[`lib.rs`](./lib.rs)、[`common_plans.rs`](./common_plans.rs)、[`schema_table_key.rs`](./schema_table_key.rs)、[`plan_cacheable_checker.rs`](./plan_cacheable_checker.rs)。
-- crate 边界：[`Cargo.toml`](./Cargo.toml) 确认 crate 名、库入口、feature、直接依赖和 Go 包迁移元数据。
-- Go 对照：[`util.go`](./util.go)；并以 `logical_plan_builder.go`、`plan_cache.go`、`plan_cache_utils.go`、`memtable_predicate_extractor.go`、`memtable_infoschema_extractor.go` 的符号引用核对 Go 调用意图。
-- 测试：[`util_test.rs`](./util_test.rs) 覆盖 DML/全局 SET/EXPLAIN，只收集外层聚合与窗口函数，四类格式化，逻辑表/分区脏内容与非空 `CIString` 小写值；[`util_test.go`](./util_test.go) 在本文件相关范围内提供两个抽取器满足 Go visitor 接口的编译期断言。当前 Rust 测试未覆盖空 schema 的 Go `CurrentDB` 回退，因为 Rust 类型没有 `CurrentDB` 字段。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构检查用于确认目标文档存在且恰有规定的十一个二级标题。

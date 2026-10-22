@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-param` crate。crate 入口 [`pkg/param/lib.rs`](lib.rs) 将 `binary_params` 声明为私有模块，再用 `pub use binary_params::*` 对外导出本文件的三个公开名字：`BinaryParam`、`ErrUnknownFieldType` 和别名 `ERR_UNKNOWN_FIELD_TYPE`。因此调用者依赖的是 `astersql_param`/Cargo 别名 `param` 的公共 API，而不是直接访问该私有模块。
-
-它位于 MySQL 预处理语句二进制参数链路的“解码结果载体”层：上游应先解析 COM_STMT_EXECUTE 的 null bitmap、类型标志和值字节，下游再把 `BinaryParam` 转成表达式。文件本身不读取网络、不解析字节，也不持有会话状态。当前 Rust 迁移尚未完全统一这条链路：[`pkg/expression/util.rs`](../expression/util.rs) 的 `ExecBinaryParam` 已直接消费本 crate 的类型，但 [`pkg/server/conn_stmt_params.rs`](../server/conn_stmt_params.rs) 和 [`pkg/server/conn_stmt.rs`](../server/conn_stmt.rs) 仍各自定义同名结构，不能把 Go 侧的端到端接线视为 Rust 侧现状。
+`ErrUnknownFieldType` 延迟构造 server 错误类中的标准 8051 错误；`ERR_UNKNOWN_FIELD_TYPE` 为同一静态量提供 Rust 风格别名，兼顾 Go 标识符对齐和 Rust 调用习惯。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ Go 的完整主链是 `pkg/server/conn_stmt_params.go::parseBinaryParams` 产生
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/param/binary_params.go`](binary_params.go)。字段映射为 `byte -> u8`、`bool -> bool`、`[]byte -> Vec<u8>`，字段名沿用 Go 的导出名称以保持迁移可识别性。Go 的结构体天然具有零值，Rust 通过 `Default` 明确得到同样的零值形状；独立测试覆盖了这一点。
+Go 的结构体天然具有零值，Rust 通过 `Default` 明确得到同样的零值形状；独立测试覆盖了这一点。
 
 Go 的 `ErrUnknownFieldType` 在包加载时构造；Rust 使用 `LazyLock` 推迟到首次访问，但错误类、错误码和最终标准文案保持一致。Rust 额外提供全大写别名以适应静态量命名习惯，同时保留 Go 名称供迁移代码使用。
 
@@ -86,12 +84,3 @@ Go 的 `ErrUnknownFieldType` 在包加载时构造；Rust 使用 `LazyLock` 推�
 - 如要统一 Rust server 的重复结构，应进行显式迁移和转换审查，避免同时改变协议错误、字段命名、所有权或长数据优先级；这属于本说明任务范围外的后续工作。
 - 回归测试应保持测试逻辑与生产文件分离。直接结构与错误契约测试位于 [`pkg/param/migration_aster_unit_test.rs`](migration_aster_unit_test.rs)；协议生产端边界测试位于 [`pkg/server/conn_stmt_params_test.rs`](../server/conn_stmt_params_test.rs)；表达式转换若扩展类型，应在 expression 的独立测试文件中增加覆盖，而不要把测试内嵌进 `binary_params.rs`。
 - 兼容风险集中在 Go/Rust 字段与 NULL 语义漂移、错误码或消息变化；正确性风险集中在 `Tp` 与 `Val` 长度不匹配；性能风险主要是无必要克隆 `Val` 或在层间重复转换。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/param` 列出本源文件、Go 对照、crate 入口和独立测试。
-- RustCodeGraph `query BinaryParam --kind struct --json`：确认本文件结构节点位于第 31 行，并同时揭示 server 侧两个 Rust 同名结构；`query ExecBinaryParam --kind function --json` 确认 Go/Rust 消费函数；`explore` 确认 `binary_param_preserves_decoded_protocol_fields` 测试关联及参数链附近节点。对常见名直接运行 `callers/callees` 未获得可消歧的稳定结果，因此调用关系又以精确类型引用和 Cargo 声明核验。
-- 已读取源码与配置：`pkg/param/binary_params.rs`、`pkg/param/lib.rs`、`pkg/param/Cargo.toml`、`pkg/expression/util.rs`、`pkg/expression/Cargo.toml`、`pkg/server/conn_stmt_params.rs`、`pkg/server/Cargo.toml`。
-- 已读取 Go 对照：`pkg/param/binary_params.go`、`pkg/expression/util.go`、`pkg/server/conn_stmt_params.go`；并通过引用搜索定位 `pkg/session/session.go` 的 Go 消费入口。
-- 已读取测试：`pkg/param/migration_aster_unit_test.rs` 验证字段保真、默认零值、错误码 8051、文案、RFC 标识及两个错误名字的一致性；`pkg/server/conn_stmt_params_test.rs` 提供 server 内部解码边界证据，但使用的是 server 自有结构。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求目标文档存在，且恰好具有本文的十一个固定二级标题。

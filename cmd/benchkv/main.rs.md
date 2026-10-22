@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源码 [`cmd/benchkv/main.rs`](./main.rs) 是 `astersql-cmd-benchkv` crate 的共享业务入口，由 `cmd/benchkv/lib.rs` 以 `#[path = "main.rs"] pub mod entry` 纳入。可执行文件 `cmd/benchkv/bin_main.rs::main` 只调用 `astersql_cmd_benchkv::main()`，crate 根的 `cmd/benchkv/lib.rs::main` 再转发到本文件的 `entry::main()`；因此命令行运行和独立 parity 测试使用的是同一套流程。
-
-该文件是编排层，不自行实现 TiKV driver、事务、Prometheus 注册表或 HTTP 协议。上述能力来自 `cmd/benchkv/stubs.rs` 中的适配类型；其生产后端最终连接 `astersql-store-driver`、`astersql-kv`、`prometheus`、`reqwest` 和 `tiny_http`。`cmd/benchkv/Cargo.toml` 将 crate 声明为 `kind = "binary"` 的 Go 移植目标，Go 包对应 `cmd/benchkv`，实际二进制名为 `astersql-cmd-benchkv`。
+`default_flags` 暴露与 Go 包级 flag 一致的默认配置。
 
 ## 核心职责
 
@@ -94,13 +92,11 @@ RustCodeGraph 对目标文件的节点读取报告 `cmd/benchkv/parity_test.rs` 
 
 ## 与 Go 版本的对应关系
 
-Rust `default_flags` 与 Go `var` 中四个 flag 默认值一致；Rust `init` 对应 Go `Init`；Rust `batch_rw` 对应 Go `batchRW`；Rust `main` 加 `run_with_flags` 合起来对应 Go `main`。主要结构差异是 Rust 把 Go 包级 `store`、指标和默认 HTTP 全局状态收拢进 `RuntimeDeps`，从而让测试可以注入 stub，但 `RuntimeDeps::default` 仍明确选择真实 TiKV、Prometheus 和 HTTP 后端。
-
-下列看似可改进的行为是刻意保留的 Go 语义：整除余数丢弃；零 worker、负 worker、负 value size 触发 panic；Begin 致命；Set 错误只记录后继续 Commit；Commit 失败才计入 `failed_total` 并回滚；摘要打印配置目标数而非实际写入数；监听、读取和关闭错误只记录。
+主要结构差异是 Rust 把 Go 包级 `store`、指标和默认 HTTP 全局状态收拢进 `RuntimeDeps`，从而让测试可以注入 stub，但 `RuntimeDeps::default` 仍明确选择真实 TiKV、Prometheus 和 HTTP 后端。
 
 Rust 的事务 Commit 不接收调用处创建的 context，而是由适配层用 `astersql_kv::Context::default()` 转发，外部流程仍对应 Go 的 `Commit(context.Background())`。Go 用 goroutine，Rust 用 OS 线程；Go 用 defer 关闭 HTTP body，Rust 在正常输出后显式关闭。若在读取或打印期间 panic，Rust 不具备该 defer 的异常路径清理保证，这是实现层差异。
 
-`cmd/benchkv/parity_test.rs` 是 Rust 独立测试文件；Go 同目录没有 `main_test.go`。该 parity 测试以 Go `main.go` 为契约来源，覆盖默认值、URL、指标 bucket、key 分片、参数解析、错误分支、响应关闭以及等待 worker 等行为。
+`cmd/benchkv/parity_test.rs` 是 Rust 独立测试文件；Go 同目录没有 `main_test.go`。
 
 ## 扩展指南
 
@@ -111,19 +107,3 @@ Rust 的事务 Commit 不接收调用处创建的 context，而是由适配层�
 - 改善余数分配、输入校验、取消机制或 worker 池会改变已由 parity 测试固定的 Go 契约，不能作为无风险重构处理。
 - 性能风险主要来自每次运行创建 `worker_cnt` 个 OS 线程、每线程复制完整 value、每事务格式化 key，以及每笔写入的指标同步。优化前应分别衡量内存、线程调度和指标开销，并保持失败路径可观察性。
 - 若增加可控 shutdown 或存储关闭，需要明确 HTTP 线程、所有 worker、响应体和底层 store 的关闭顺序，并新增独立生命周期测试。
-
-## 验证依据
-
-分析直接读取或查询了以下证据：
-
-- `cmd/benchkv/main.rs`：五个函数的完整实现和行内不变量。
-- `cmd/benchkv/bin_main.rs`、`cmd/benchkv/lib.rs`：二进制到共享入口的两级转发及测试模块接线。
-- `cmd/benchkv/Cargo.toml`：crate 类型、二进制入口、Go 包映射和五项直接依赖。
-- `cmd/benchkv/main.go`：`Init`、`batchRW`、`main`、flag、指标、错误分支和资源关闭的原始对应语义。
-- `cmd/benchkv/parity_test.rs`：正常、边界、错误、生产后端和资源清理的独立回归证据。
-- `cmd/benchkv/stubs.rs`：`Flags`、`RuntimeDeps`、`TiKVDriver`、`Storage`、`Transaction`、`Metrics`、`HttpServer` 的生产/测试后端和同步方式。
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标及同目录六个源文件均已索引。
-- RustCodeGraph `node --file cmd/benchkv/main.rs`：确认文件共 155 行并由 `cmd/benchkv/parity_test.rs` 使用。
-- RustCodeGraph `query`：确认 `default_flags`、`main`、`run_with_flags`、`init`、`batch_rw` 的定义位置；`callees` 结果确认本文件内部主链以及对 `stubs.rs` 的关键调用。精确 `callers` 查询未在 60 秒内返回，因此上游关系同时由已索引文件使用关系、`bin_main.rs`、`lib.rs` 和测试导入直接核验。
-
-本任务是纯文档分析，未运行 Cargo。结构验收应确认本文存在，且恰好含有任务规定的十一个二级标题。

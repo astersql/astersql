@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`writer.rs` 是 `astersql-dumpling-export` library crate 的导出落盘协调层。crate 入口 [`dumpling/export/lib.rs`](lib.rs) 在 `ir_impl.rs`、`status.rs` 之后、`dump.rs` 之前通过 `include!("writer.rs")` 将它并入同一个包级命名空间，因此本文件可直接使用 `Config`、`TaskEnum`、`TableDataIR`、`FileFormat`、`Storage` 等相邻文件定义的符号，而不是一个独立的 Rust module。
-
-应用内的直接入口位于 [`dumpling/export/dump.rs`](dump.rs) 的 `Dumper::Dump`：生产端先把库、表及数据分块转为 `TaskEnum` 并写入 channel，消费端构造一个 `Writer`，安装进度回调，逐个接收任务并调用 `Writer::handleTask`。因此本文件位于“任务生成”与“格式编码/外部存储”之间，负责按任务种类选择写入路径、生成文件名并收束资源生命周期。
-
-crate 边界由 [`dumpling/export/Cargo.toml`](Cargo.toml) 确认：包名是 `astersql-dumpling-export`，`lib.rs` 是库入口；writer 间接使用本 crate 的 SQL/CSV 编码依赖、Parquet writer 及 `astersql-objstore-storeapi::WriterOption`。当前 Cargo 注释同时说明该移植面使用本地 SQL/MySQL/storage 等轻量替身，不能把这里的 `Storage`/`Conn` 自动等同于 Go 生产实现的全部能力。
+只协调写出，不实现行值编码、SQL/CSV/Parquet 序列化、模板解析或外部存储本身；这些分别位于 `writer_util.rs`、`prepare.rs` 和 `stubs.rs`/对象存储接口中。
 
 ## 核心职责
 
@@ -118,14 +114,6 @@ crate 边界由 [`dumpling/export/Cargo.toml`](Cargo.toml) 确认：包名是 `a
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`dumpling/export/writer.go`](writer.go)，独立回归是 `writer_test.go`、`writer_serial_test.go` 与对应 Rust 测试。已对齐的主要语义包括：
-
-- `NewWriter` 的格式解析与默认回调；六类任务的分派；最后一个 chunk 才触发表完成回调。
-- schema/table/view/sequence/policy 模板选择及 `.sql` 后缀；view 输出两份 DDL。
-- output namer 的三种零填充索引规则，以及每次 `NextName` 后增加 file index。
-- SQL/CSV/Parquet 格式分派、Parquet 压缩后缀、SQL/CSV 的 4 路和 5 MiB 上传选项。
-- custom SQL 根据结果集推导 metadata；切分输出复用 iterator 继续消费剩余行。
-
 当前 Rust 与 Go 的重要差异/迁移缺口：
 
 - Go `Writer.run` 监听 context 和 task channel，支持多个 writer；Rust 的接收循环在 `Dumper::Dump`，目前是单 writer 串行执行，且没有 context-cancel 分支。
@@ -148,12 +136,3 @@ crate 边界由 [`dumpling/export/Cargo.toml`](Cargo.toml) 确认：包名是 `a
 - 性能关注点：文件大小切分循环、每文件重新创建对象、multipart 参数和 iterator 复用直接影响内存、对象数量与吞吐。不要让 `Rows()` 在同一数据流上被无意重复创建。
 
 Rust 测试逻辑应继续放在独立的 [`writer_test.rs`](writer_test.rs) 或 [`writer_serial_test.rs`](writer_serial_test.rs)，不要嵌回生产文件；并应尽量与 Go 的 `writer_test.go` / `writer_serial_test.go` 测试意图一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter dumpling/export/writer.rs` 确认目标文件有 25 个符号。
-- RustCodeGraph 源码读取：`node --file dumpling/export/writer.rs --offset 1 --limit 800` 覆盖目标文件 1–379 行。
-- RustCodeGraph 精确查询：`query` 确认 `NewWriter`、`handleTask`、`WriteTableData`、`writeSplitSql`、`writeMetaToFile`、`countTotalTask`、`newOutputFileNamer`、`IndexStr`、`NextName` 的定义位置；`callees --file dumpling/export/writer.rs` 验证 `handleTask` 的六条分派边、`WriteTableData` 的 IR/namer 边、`writeMetaToFile` 的 metadata 边和 `NextName → IndexStr`。file-scoped callers 对部分符号无输出，故上游调用由 `dump.rs` 的直接调用点补证。
-- 已读生产代码：`dumpling/export/writer.rs`、`lib.rs`、`dump.rs`、`task.rs`、`ir.rs`、`writer_util.rs`、`stubs.rs`、`Cargo.toml`；Go 对照为 `dumpling/export/writer.go`，并通过 `dump.go` 核对 writer 的上游位置。
-- 已读测试：`dumpling/export/writer_test.rs` 覆盖 metadata 内容、SQL 数据写入、file/statement split、namer、最后 chunk callback、CSV 分片完整性和 multipart option；`writer_serial_test.rs` 覆盖 metadata/SQL/CSV 编码及错误与指标。对应 Go 证据来自 `writer_test.go`、`writer_serial_test.go`。
-- 人工复核结论：本文件存在于任务消费与格式 writer 之间；运行时由 `Dumper::Dump` 驱动；安全扩展必须同时维护任务分派、命名、资源关闭、独立 Rust 测试与 Go 语义对照。

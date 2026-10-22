@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-intest` crate 的“启用断言”实现，源码入口为 [`assert.rs`](assert.rs)。它不是独立业务子系统，而是供数据库内部代码表达不可违背前置条件和状态不变量的轻量门面。crate 根 [`lib.rs`](lib.rs) 在 `cfg(test)`、feature `intest` 或 feature `enableassert` 任一成立时编译并再导出本模块；默认生产构建则选择 [`no_assert.rs`](no_assert.rs)。[`Cargo.toml`](Cargo.toml) 声明了这两个空 feature，且未声明外部依赖。
-
-该文件位于 SQL 主链之外，但其公开 API 被多个子系统横向使用。例如 [`pkg/expression/scalar_function.rs`](../../expression/scalar_function.rs) 用 `AssertNotNil` 保护求值上下文，[`pkg/util/rowcodec/decoder.rs`](../rowcodec/decoder.rs) 用 `Assert` 检查解码不变量，[`pkg/table/tblctx/buffers.rs`](../../table/tblctx/buffers.rs) 用 `AssertNotNil` 检查语句缓冲区。因此它的作用是尽早暴露内部编程错误，而不是把用户输入错误转换成可恢复的 SQL 错误。
+每次调用都读取 `EnableAssert` 与公共开关 `EnableInternalCheck`；只要任一为真，就把检查委托给 [`assert_common.rs`](assert_common.rs) 中对应的 `doAssert*` 实现。
 
 ## 核心职责
 
@@ -77,17 +75,14 @@ RustCodeGraph 对目标文件的索引显示其由 `lib.rs`、`assert_test.rs`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`assert.go`](assert.go)。Go 的 `//go:build intest || enableassert` 对应 Rust `lib.rs` 中的 `cfg(any(test, feature = "intest", feature = "enableassert"))`；Rust 额外把单元测试构建纳入启用变体。两端都定义默认为真的 `EnableAssert`，都以 `EnableAssert || EnableInternalCheck` 门控四个 API，并把实际工作委托给公共实现。
+Go 的 `//go:build intest || enableassert` 对应 Rust `lib.rs` 中的 `cfg(any(test, feature = "intest", feature = "enableassert"))`；Rust 额外把单元测试构建纳入启用变体。
 
 API 形状因语言类型系统而不同：
 
 - Go 的变参 `...any` 在 Rust 中变为 `&[AssertArg]`，因此 Rust 当前只覆盖 `AssertArg` 枚举支持的基础消息类型。
-- Go 的 `error` 在 Rust 中变为 `Option<&dyn Display>`。
 - Go 的 `any` 加反射可识别 nil interface 和 typed nil 指针；Rust 用 `Option<T>` 在类型层显式表达空值。调用方必须把可能为空的值建模为 `Option`，不存在对任意 `T` 的反射判空。
 - Go 的 `func() bool` 可为 nil；Rust 对应 `Option<fn() -> bool>`，但 Rust 函数指针不能捕获环境。
 - Go 公共实现可通过 failpoint 在初始化时同时打开两个开关；当前 Rust `assert_common.rs` 没有对应的运行时 failpoint 注入，只按 cfg 初始化 `EnableInternalCheck`。这是当前实现差异，不应在本文档中描述为已支持。
-
-Go 测试 [`assert_test.go`](assert_test.go) 与 Rust [`assert_test.rs`](assert_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 共同锚定真假条件、nil、错误文本、函数 panic 透传和消息格式。Go 还显式覆盖 typed nil 指针；Rust 的等价边界由 `None::<Box<Foo>>` 表达。
 
 ## 扩展指南
 
@@ -96,14 +91,3 @@ Go 测试 [`assert_test.go`](assert_test.go) 与 Rust [`assert_test.rs`](assert_
 修改开关语义时应特别检查：启用版与禁用版是否仍有一致公开 API；两个开关的逻辑或是否保持；关闭时回调和消息格式化是否完全不执行；并发切换是否需要强于 `Relaxed` 的顺序。修改消息参数时，应同步评估 `AssertArg` 的转换、`Display`、格式动词兼容性和失败路径分配成本。
 
 安全扩展不应把可恢复错误改成 panic，也不应让调用方依赖断言副作用。若要支持捕获闭包、任意错误类型或更广的 Go `fmt` 语义，应先明确破坏性 API 影响，再用独立回归测试覆盖启用、禁用、双开关和被调函数 panic 四类边界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/util/intest`：确认本 crate 的 Rust/Go 源文件、独立测试和模块入口均已索引。
-- RustCodeGraph `node --file pkg/util/intest/assert.rs`：核对 `EnableAssert`、四个公开函数、双原子开关和全部直接下游调用。
-- RustCodeGraph `explore "pkg/util/intest/assert.rs symbols callers callees"`：核对 `Assert`、`AssertNoError`、`AssertNotNil`、`AssertFunc` 的调用者集合；精确 `callers/callees` 子命令在本次 30 秒执行窗口内未返回结果，因此调用边又用已索引文件摘要及仓库定点搜索交叉验证。
-- 已读 Rust 证据：[`assert.rs`](assert.rs)、[`assert_common.rs`](assert_common.rs)、[`lib.rs`](lib.rs)、[`assert_test.rs`](assert_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。
-- 已读边界与 Go 对照：[`Cargo.toml`](Cargo.toml)、[`assert.go`](assert.go)、[`assert_common.go`](assert_common.go)、[`assert_test.go`](assert_test.go)。
-- 人工复核的核心不变量：启用模块默认打开 `EnableAssert`；任一开关开启即执行公共检查；双开关关闭即跳过；失败统一 panic；本文件没有异步、I/O、锁或事务生命周期。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验证使用任务指定命令，结果见交付报告。

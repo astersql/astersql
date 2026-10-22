@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-task-operator` library crate；crate 根 `br/pkg/task/operator/lib.rs` 以 `pub mod migrate_to` 挂载它，并通过 `pub use migrate_to::*` 导出其公开入口。上游命令注册位于 `br/cmd/br/operator.rs::newMigrateToCommand`：隐藏的危险命令 `unsafe-migrate-to` 解析 `MigrateToConfig` 后调用 `RunMigrateTo`。
-
-它是 Go 文件 `br/pkg/task/operator/migrate_to.go` 的 Rust 对照实现，负责把日志备份 migration 栈合并到最近层、BASE 或显式序号。需要特别区分目标语义和当前实现能力：`br/pkg/task/operator/Cargo.toml` 注明该 crate 在 arm64 Darwin 使用“Local traits/stubs only”，而本文件实际依赖同 crate 的 `stubs.rs`；因此当前 Rust 路径是可测试的迁移期实现，不等同于 Go 版已经接入真实 `objstore`、BR stream migration 和进度设施。
+Go 文件 `br/pkg/task/operator/migrate_to.go` 的 Rust 对照实现，负责把日志备份 migration 栈合并到最近层、BASE 或显式序号。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ Cargo 清单没有直接引入 Go 版所用的 kvproto、真实 BR stream 或云
 
 ## 与 Go 版本的对应关系
 
-Rust 的目标选择、参数校验后的编排顺序、Recent 空层成功跳过、表格确认、dry-run 展示、warning 非致命处理与 `br/pkg/task/operator/migrate_to.go` 基本同形。Go 的 `RunMigrateTo(ctx, cfg)` 显式接收 `context.Context`；Rust 入口不接收上下文，只创建本地 `OperationContext`。Go 把 `cx.askForContinue(ctx, m)` 直接放入 `MMOptInteractiveCheck`，Rust 因接口形态改用等价内联闭包。
+Go 的 `RunMigrateTo(ctx, cfg)` 显式接收 `context.Context`；Rust 入口不接收上下文，只创建本地 `OperationContext`。Go 把 `cx.askForContinue(ctx, m)` 直接放入 `MMOptInteractiveCheck`，Rust 因接口形态改用等价内联闭包。
 
 能力层面尚未等价。Go 使用 `objstore.ParseBackend/Create`、`stream.MigrationExtension`、`stream.NewProgressBarHooks` 和真实 `MergeAndMigrateTo`；Rust 使用 `stubs.rs`，其中 `CreateStorage` 返回 `MemStorage`，`NewProgressBarHooks` 为空实现，`OperationContext` 只有 UUID，`MergeAndMigrateTo` 只记录 effect/返回模拟结果而不持久化。Go 的调用上下文也参与 `Load`、表格生成和合并，Rust 桩接口没有这些 context 参数。扩展或宣称生产可用前，必须逐项消除这些差异，而不能只比较本文件控制流。
 
@@ -80,11 +78,3 @@ Rust 的目标选择、参数校验后的编排顺序、Recent 空层成功跳�
 - 改 dry-run 时，保证不写真实外部存储、回调错误优先于展示结果、effects 文件写入失败可见，并覆盖 warnings 与临时文件内容。测试仍应放在独立 `*_test.rs`，不要嵌入生产源文件。
 - 接入真实生产实现时，修改点主要在 `stubs` 抽象及 Cargo 依赖，而不是删除本文件中的校验/交互/警告分支。需要验证存储写入原子性、取消传播、layer 排序与目标不存在行为，并与 Go 的真实 stream tests 对齐。
 - 性能上本文件只做一次元数据加载（当前桩合并内部会再次加载）和线性目标层查找；layer 数量很大或远端元数据昂贵时，应在下游实现评估缓存/索引，不能牺牲一致性校验。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7032 个 Rust 文件；`files --filter br/pkg/task/operator/migrate_to.rs` 确认目标文件含 7 个符号；`node --file ... --offset 1 --limit 400` 读取了完整 176 行；`query` 分别定位 Rust/Go 的 `getTargetVersion`、`RunMigrateTo` 和 `dryRun`。`explore` 识别到 Rust `RunMigrateTo`/`getTargetVersion`/`dryRun` 与 `parity_test.rs` 的关系。精确 `callers RunMigrateTo` 在本地索引持续无输出后被终止，调用者改由限定范围 `rg` 复核。
-- 源码与接线：`br/pkg/task/operator/migrate_to.rs`、`config.rs`、`stubs.rs`、`lib.rs`、`Cargo.toml`，以及 CLI 入口 `br/cmd/br/operator.rs`。
-- Go 对照：`br/pkg/task/operator/migrate_to.go`、`config.go` 与 `br/cmd/br/operator.go`。
-- 独立 Rust 测试：`br/pkg/task/operator/parity_test.rs::contract_normal_config_and_helpers` 覆盖 Recent/BASE 目标；`contract_boundary_migrate_and_crr` 覆盖 Recent 空层跳过和 BASE dry-run。测试注释也明确当前 fresh `MemStorage` 限制，因此没有证明真实持久化迁移。该目录没有同名 `migrate_to_test.rs` 或 Go `migrate_to_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前只执行任务指定的 11 章节结构检查，并人工复核上述符号、调用边、桩边界与 Go 差异。

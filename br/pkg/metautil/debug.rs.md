@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`debug.rs` 属于 Cargo 包 `astersql-br-pkg-metautil`，由同目录 `lib.rs` 以 `pub mod debug` 挂载并通过 `pub use debug::*` 再导出。它不是备份元数据的生产写入路径，而是调试解码辅助：从 `Storage` 读取备份中由索引引用的加密 `MetaFile`/`StatsFile`，验证明文摘要后，将适合人工检查的 JSON 写回同一存储的 `jsons/<对象名>.json`。对应的 Go 实现是 `br/pkg/metautil/debug.go`。
-
-当前 Rust 应用接线存在重要限制：仓库搜索只发现独立测试直接调用本文件的入口；`br/cmd/br/debug.rs` 中的 `debug decode` 使用的是该命令 crate 自己 `br/cmd/br/stubs.rs` 里的同名空操作 `DecodeMetaFile`/`DecodeStatsFile`，而 `br/cmd/br/Cargo.toml` 也没有依赖 `astersql-br-pkg-metautil`。因此，本文件提供了可测试的真实解码实现，但尚不能据此声称 Rust BR 命令已经调用它。Go 的 `br/cmd/br/debug.go` 则直接调用 Go 版实现来展开 file、raw-range、schema 索引及根级 schemas。
+`DecodeMetaFile` 处理根 `MetaFile.meta_files` 指向的一层子元数据：读取对象、解密、校验 SHA-256、解析 protobuf、拒绝超出一层的嵌套、生成 JSON，并继续解码子元数据中 schemas 引用的统计文件。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-主体流程与 `br/pkg/metautil/debug.go` 对齐：同样容忍空 meta 索引，读取和解密对象，对明文校验 SHA-256，解析 protobuf，限制 meta 最大深度，写 `jsons/<name>.json`，并从子 meta 的 schemas 继续展开 stats。Rust 独立测试 `debug_test.rs` 对照 Go 的 `debug_test.go::TestDecodeMetaFile`，覆盖 data 叶子的 SST 字段、schema 与完整 `StatsFileIndex` 字段，以及两个 stats blocks。
+主体流程与 `br/pkg/metautil/debug.go` 对齐：同样容忍空 meta 索引，读取和解密对象，对明文校验 SHA-256，解析 protobuf，限制 meta 最大深度，写 `jsons/<name>.json`，并从子 meta 的 schemas 继续展开 stats。
 
 已验证的差异包括：
 
@@ -96,12 +94,3 @@
 - 要让 Rust BR CLI 真正使用此实现，需要在命令 crate 与 metautil crate 之间完成类型和依赖接线，并移除或绕过 `br/cmd/br/stubs.rs` 的同名占位；这超出本文件说明任务，且不能仅靠修改这里完成。
 - 若恢复 Go 的 8 worker 并发，应增加多节点、错误取消和部分写入的独立测试，并评估大型 meta/stats 同时驻留造成的内存峰值以及存储后端的并发限制。
 - 若强化安全边界，可在入口处验证对象名/输出键，但必须先确认所有 `Storage` 后端对键名的契约和现有备份兼容性，避免改变合法对象的寻址语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter br/pkg/metautil` 确认 `debug.rs`、crate 入口和对照测试均被索引；`explore "br/pkg/metautil/debug.rs ..."` 与 `node --file br/pkg/metautil/debug.rs --offset 180 --limit 240` 核对了本文件 26 个符号、两个公开入口及其内部调用。
-- 生产源码：`br/pkg/metautil/debug.rs`（完整实现）、`br/pkg/metautil/lib.rs`（模块挂载和再导出）、`br/pkg/metautil/Cargo.toml`（crate 边界与依赖）。该目录不存在 `doc.go`。
-- Go 对照：`br/pkg/metautil/debug.go`、`br/pkg/utils/json.go`，以及实际命令调用点 `br/cmd/br/debug.go`。
-- Rust 接线核对：仓库范围搜索 `DecodeMetaFile|DecodeStatsFile|JSONFileFormat`，并读取 `br/cmd/br/debug.rs`、`br/cmd/br/stubs.rs`、`br/cmd/br/Cargo.toml`，确认命令 crate 当前使用本地占位而非本 crate。
-- 测试证据：`br/pkg/metautil/debug_test.rs::test_decode_meta_file` 与 Go `br/pkg/metautil/debug_test.go::TestDecodeMetaFile`；二者都验证 data、schema 和 stats 输出，Rust 测试额外直接检查 JSON 的 hex/Base64/数值形态。本任务按计划不运行 Cargo，未执行这些测试。
-- 交付结构通过任务指定的 11 标题检查；人工复核重点是实际接线限制、顺序/并发差异、错误与部分写入边界均未被描述成未验证的“已支持”能力。

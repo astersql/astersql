@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-stream`（`br/pkg/stream/Cargo.toml`），由 `br/pkg/stream/lib.rs` 以 `pub mod stream_status` 装入，并通过 `pub use stream_status::*` 扁平导出。它承载日志备份任务的状态快照、checkpoint 选择、状态文本、打印器抽象，以及从 TiKV metrics 文本提取计数并估算 QPS 的纯函数。
-
-当前 Rust 实现是一个已由独立单元测试覆盖、但尚未接入 Rust BR `stream status` 命令主链的库级移植。仓库文本搜索只发现 `br/pkg/stream/stream_status_test.rs` 与 `stream_misc_test.rs` 使用这些状态 API；`br/cmd/br/stream.rs` 没有导入本 crate 的 `TaskStatus`、打印器或状态控制器。Go 的同名文件则包含完整的视图和 `StatusController` 编排。因此，本文不能把 Rust 文件描述成已经能够自行查询 etcd/PD/TiKV 并输出完整命令结果。
-
-目录中不存在 `doc.go`；包级 Rust contract 来自 `br/pkg/stream/lib.rs`。源文件没有条件编译项，测试由 `lib.rs` 在 `#[cfg(test)]` 下从独立文件挂载。
+用 `CheckpointType` 与 `Checkpoint` 表示 store 级或 global checkpoint，并提供不会构造非法组合的两个构造器。
 
 ## 核心职责
 
@@ -86,8 +82,6 @@ Go `MaybeQPS` 会并发遍历存活 store、对每个 store 两次 HTTP 拉取�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `TaskStatus`、`TaskPrinter`、tee、`onError`、`StatusString`、`GetMinStoreCheckpoint`、metrics 正则和 QPS 差分，分别对应 `br/pkg/stream/stream_status.go` 的同名结构/函数或 `MaybeQPS` 内部逻辑。`stream_status_test.rs` 覆盖 tee 转发、两个指标前缀、三态优先级、global 优先及无符号回绕；`stream_misc_test.rs` 对照 Go `stream_misc_test.go::TestGetCheckpointOfTask` 覆盖多 store 最小 TS 的动态变化。
-
 已验证的迁移差异包括：
 
 - Go 文件还实现彩色表格、JSON 输出、Pause V2 展示、PD store 枚举、HTTP metrics 抓取、并发 QPS 汇总、`StatusController` 查询/关闭和 CLI 视图分发；Rust 均未移植，`CollectTaskPrinter` 只是测试友好的简化文本实现。
@@ -105,11 +99,3 @@ Rust 的 `TaskStatus`、`TaskPrinter`、tee、`onError`、`StatusString`、`GetM
 - 添加打印格式时可实现新的 `TaskPrinter`，并在独立 `stream_status_test.rs` 验证空列表、重复打印、任务顺序、浮点格式和错误字段；不要把测试嵌入生产源文件。
 - 若 tee 的内部打印可能失败，应把 trait 升级为返回错误，并明确先转发还是先记录、部分状态是否保留。目前的先 clone 后转发顺序是可观察 contract。
 - 修改本文件行为应同步 `br/pkg/stream/stream_status_test.rs`；checkpoint 最小值还需同步 `stream_misc_test.rs`。对 Go 语义的变更需核验 `stream_status.go`、`stream_misc_test.go` 与 `br/pkg/streamhelper/client.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 检查了现有索引；`files --filter br/pkg/stream` 确认文件被索引；`node --file br/pkg/stream/stream_status.rs --offset 1 --limit 500` 读取完整 267 行；`query TaskStatus/GetMinStoreCheckpoint/StatusString/EstimateQPSFromCounts/ParseLogBackupHandleKvBatchSum` 定位 Rust、Go 与测试符号；`callees` 验证 `GetMinStoreCheckpoint -> Checkpoint::Type/clone`、`StatusString -> onError`。批量 `callers` 查询未产生可用输出，故调用接线另以仓库文本核验。
-- Rust 生产与 crate 边界：`br/pkg/stream/stream_status.rs`、`lib.rs`、`Cargo.toml`、`stubs.rs`；仓库级搜索确认其他生产 crate 使用该 stream crate 的 metadata/table history 能力，但未使用本状态模块 API。
-- Rust 独立测试：`br/pkg/stream/stream_status_test.rs`、`stream_misc_test.rs`；覆盖 tee、指标解析、三态判定、store/global checkpoint、回绕差分及多 store 最小进度。
-- Go 对照：`br/pkg/stream/stream_status.go`、`stream_misc_test.go`、`br/pkg/streamhelper/client.go`；前者提供完整状态命令主链，后两者固定 checkpoint 与 Pause V2 语义。
-- 包目录没有 `br/pkg/stream/doc.go`。本任务仅新增说明文档，按计划不运行 Cargo；交付前以固定十一标题命令做结构验证，并人工复核当前接线与迁移缺口没有被描述成“已支持”。

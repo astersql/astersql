@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate，是普通 DDL worker 的持久化 action 处理器之一。`pkg/ddl/lib.rs` 将其公开为模块；`pkg/ddl/persistent_actions.rs::step` 在 job 类型为 `ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE` 时调用本文件唯一的公开入口 `step`。它对应 Go 的 `pkg/ddl/mview_worker.go::onAlterMaterializedViewLogPurge`，处理的不是 purge 数据任务本身，而是修改 materialized view log（MLog）的 purge 配置元数据。
-
-从 DDL 生命周期看，这是 owner worker 执行持久化 job 的一个元数据步骤。它不创建 reorg/backfill 任务，不扫描用户数据，也不改变表的 schema state；成功时表保持 `SchemaState::Public`。提交 SQL 后另外更新 `mysql.tidb_mlog_purge_info.NEXT_PURGE_UNIX_SECONDS` 的逻辑位于 Go 前端 `pkg/ddl/materialized_view.go::alterMaterializedViewLogPurge`，不属于本文件职责。
+文件刻意保留 Go 处理器的阶段划分。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对应 `pkg/ddl/mview_worker.go::onAlterMaterializedViewLogPurge`：两者都按相同顺序解码参数、读取并验证目标表、拒绝非 MLog 对象、处理 multi-schema 不可回滚边界、clone 旧表、更新四个字段、持久化版本与表、发布新旧表事件并 `FinishTableJob(Done, Public, ...)`。
-
-Rust 把 Go 的 `jobContext/metaMut/session` 抽象为 `JobExecutionContext` 和显式 transaction，把 Go error 转成 `String`，并用 `Option`/`Arc` 表达事件与完成信息。Go 的 `updateVersionAndTableInfo(jobCtx, job, tblInfo, true)` 中 `shouldUpdateVer=true` 的可观察语义由 Rust `update_version_and_table` 保留，包括 multi-schema `skip_version`。Go 前端在 DDL job 完成后 best-effort 更新运行时 schedule info；该后续动作未迁入此 Rust 文件，因此不能把本处理器描述为已经独立完成 `NEXT_PURGE_UNIX_SECONDS` 更新。
+Rust 把 Go 的 `jobContext/metaMut/session` 抽象为 `JobExecutionContext` 和显式 transaction，把 Go error 转成 `String`，并用 `Option`/`Arc` 表达事件与完成信息。Go 前端在 DDL job 完成后 best-effort 更新运行时 schedule info；该后续动作未迁入此 Rust 文件，因此不能把本处理器描述为已经独立完成 `NEXT_PURGE_UNIX_SECONDS` 更新。
 
 ## 扩展指南
 
@@ -81,12 +77,3 @@ Rust 把 Go 的 `jobContext/metaMut/session` 抽象为 `JobExecutionContext` 和
 测试应继续放在独立文件中：用户可见语义优先扩展 `pkg/ddl/tests/materializedviewlog/materialized_view_basic_test.go` 或 `materialized_view_alter_test.go`；事件新旧快照扩展 `pkg/ddl/notifier/events_test.rs`（以及 Go 对照测试）；若要覆盖 Rust handler 的取消、multi-schema 两阶段或事务失败路径，应新增/扩展同目录独立的 `*_test.rs` 模块并在 `pkg/ddl/lib.rs` 中以 `#[cfg(test)] mod ...` 接入，不能把测试内嵌进本生产文件。
 
 兼容性风险包括：无条件覆盖 `PurgeScheduleSQLMode` 会改变旧 schedule 的解释环境；调整 `mark_non_revertible` 时机会破坏 multi-schema 回滚协议；遗漏旧表快照会影响 notifier/CDC 消费者；绕开 `update_version_and_table` 会破坏 schema diff 和集群同步。此路径只做少量 metadata clone/write，通常无数据规模相关性能成本，但增加完整表 clone 或同步外部调用会放大 DDL transaction 延迟。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`node persistent_alter_materialized_view_log_purge.rs::step` 定位入口；`callers` 确认直接调用者为 `persistent_actions.rs::step`。其通用 callee 解析出现同名误配，因此下游关系以精确源码和 `rg` 复核。
-- Rust 源码：`pkg/ddl/persistent_alter_materialized_view_log_purge.rs`；分发和辅助函数 `pkg/ddl/persistent_actions.rs`；外层持久化执行与 schema sync 接线 `pkg/ddl/table_mode.rs`；trait 契约 `pkg/ddl/job_worker.rs`；模块声明 `pkg/ddl/lib.rs`；事件构造测试 `pkg/ddl/notifier/events_test.rs`。
-- crate 边界：`pkg/ddl/Cargo.toml` 的 package、lib path、直接 dependencies 与 dev-dependencies。
-- Go 对照：`pkg/ddl/mview_worker.go::onAlterMaterializedViewLogPurge`；job 创建和 job 后 schedule 更新 `pkg/ddl/materialized_view.go::alterMaterializedViewLogPurge`；worker action 分发 `pkg/ddl/job_worker.go`；事件测试 `pkg/ddl/notifier/events_test.go`。
-- 行为测试：`pkg/ddl/tests/materializedviewlog/materialized_view_basic_test.go::TestAlterMaterializedViewLogPurgeScheduleUTC` 覆盖 SQL mode 的条件更新与时间语义；`pkg/ddl/tests/materializedviewlog/materialized_view_alter_test.go::TestAlterMaterializedViewLogPurgeUpdatesNextUnixSecondsWithMLogAlterPrivilege` 覆盖权限、purge 表达式持久化及 job 后 schedule 行更新。未发现直接调用本 Rust `step` 的独立同名测试。
-- 人工复核结论：本文区分了 metadata job step 与 job 后 runtime schedule 更新，说明了 job 状态、schema version/diff、通知、事务、不可回滚边界以及安全扩展位置；未把 Go 集成测试等同于 Rust handler 的直接单元覆盖。

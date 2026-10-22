@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-jobsubmit` crate 的表模式提交侧实现，由 [`lib.rs`](lib.rs) 公开 `table_mode` 模块并再导出其符号。它把已经解析并补全元数据的表模式变更请求校验、转换成 `JobType::AlterTableMode`（系统表 type 码 75）的版本 2 DDL Job，并生成与 Go `model.AlterTableModeArgs` 兼容的参数载荷。
-
-这里不是表模式的持久化执行器：它不读取 InfoSchema、不写 `mysql.tidb_ddl_job`、不通知 DDL Owner，也不修改表元数据。跨 Keyspace 主链在 `pkg/domain/crossks/ddl_submit.rs::DdlClient::alter_table_mode` 中完成“解析目标 → 调用本文件构建 → 提交 → 通知 → 等待历史 Job”；Owner 侧实际改变模式及 schema version 的逻辑位于 `pkg/ddl/table_mode.rs`。
+`TableMode::can_transition_to` 定义提交前的迁移矩阵：同模式、`Normal ↔ Import`、`Normal ↔ Restore` 合法，只有 `Import ↔ Restore` 两个方向非法。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ Go 对应上游是 `pkg/domain/crossks/ddl_submit.go::ddlClient.alterTableMode`�
 
 ## 与 Go 版本的对应关系
 
-主要对照是 `pkg/ddl/jobsubmit/table_mode.go::BuildAlterTableModeJob`：两者先校验迁移、再处理同模式 no-op，随后构造同一组 Args 和 Job 字段。Rust 的 `TableMode` 及迁移矩阵也与 `pkg/meta/model/table_mode.go::{TableMode, CanTransitionTo}` 一致；Args JSON 字段与 `pkg/meta/model/job_args.go::AlterTableModeArgs` 的标签一致。
-
 差异与迁移状态如下：
 
 - Go 从 `sessionctx.Context` 直接读取 CDC/SQL mode；Rust 构建器接收精简 `SessionVariables`。跨 Keyspace Rust 适配器先用默认值构建，再从后端读取并覆盖，最终持久化字段仍与 Go 对齐。
@@ -90,12 +86,3 @@ Go 对应上游是 `pkg/domain/crossks/ddl_submit.go::ddlClient.alterTableMode`�
 - 错误契约变化时，应同步 `pkg/ddl/jobsubmit/table_mode_test.rs` 与 Go `table_mode_test.go`，并审查跨 Keyspace 调用层的错误映射。
 - 测试继续放在独立文件：构建与边界测试在 `pkg/ddl/jobsubmit/table_mode_test.rs`；真实编码/队列接线可扩展 `pkg/session/runtime/durable_scheduler_test.rs` 或 `normal_ddl_fixture.rs` 的使用场景；执行侧元数据状态机测试属于 `pkg/ddl/table_mode_test.rs`，不要内嵌进生产源文件。
 - 性能风险很低（固定大小对象与一次名称小写/JSON 编码）；兼容风险主要来自模式判别值、Job version、JSON 键名、错误语义及 involved-schema 名称归一化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/ddl/jobsubmit` 确认模块文件集合；`node --file pkg/ddl/jobsubmit/table_mode.rs` 枚举 12 个符号；精确 callees 查询确认 `build_alter_table_mode_job → can_transition_to` 及 `AlterTableModeArgs` 实例化。宽泛 callers 查询因同名 `table_mode.rs` 符号歧义未给出可靠调用边，因此又以索引的 “used by” 关系和精确文本调用位置交叉核验。
-- 源码与 crate 边界：`pkg/ddl/jobsubmit/table_mode.rs`、`pkg/ddl/jobsubmit/lib.rs`、`pkg/ddl/jobsubmit/types.rs`、`pkg/ddl/jobsubmit/Cargo.toml`。
-- Rust 上下游：`pkg/domain/crossks/ddl_submit.rs`、`pkg/session/runtime/normal_ddl_fixture.rs`、`pkg/session/runtime/durable_scheduler_test.rs`、`pkg/ddl/table_mode.rs`。
-- Go 对照：`pkg/ddl/jobsubmit/table_mode.go`、`pkg/domain/crossks/ddl_submit.go`、`pkg/meta/model/table_mode.go`、`pkg/meta/model/job_args.go`。
-- 独立测试：`pkg/ddl/jobsubmit/table_mode_test.rs` 覆盖合法构建、字段传递、名称小写、no-op、`Normal → Restore` 和非法特殊模式互转；`pkg/ddl/jobsubmit/table_mode_test.go` 验证 Go 契约；`pkg/domain/crossks/ddl_submit_test.rs` 覆盖上游 session 字段与名称；持久化 fixtures 验证 `table_mode_args` 可进入 Go-compatible Job 编解码链。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；交付验证仅执行固定 11 章节结构检查并人工复核上述符号、调用边与边界陈述。

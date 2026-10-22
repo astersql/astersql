@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-mockstorage` crate 的内存 KV 核心与 Go `mockstorage` 门面的 Rust 实现。crate 入口 `pkg/store/mockstore/mockstorage/lib.rs` 将本文件与 `canonical_storage.rs`、`embedded_rpc.rs` 组装并重新导出；`Cargo.toml` 声明它直接依赖 `astersql-kv` 与嵌入式 UniStore crate。它位于测试用 SQL/会话层和底层 KV 行为之间：本文件维护 MVCC 数据、事务写缓冲、快照、时间戳、PD/keyspace 替身和生命周期，`canonical_storage.rs` 再把这些具体类型适配为标准 `astersql_kv::Storage`、`Transaction`、`Snapshot` 等 trait。
-
-RustCodeGraph 对该文件的文件级反向引用包括 `pkg/store/mockstore/mockstorage/canonical_storage.rs`、`pkg/store/driver/tikv_driver.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/scan_adapter_runtime_test.rs` 和 `pkg/session/tests/paging_rpc.rs` 等。应用侧的具体入口之一是 `CreateAnalyzeSession`：它以 `KVStore::NewMemoryWithWallClockTSO` 和 `NewMockStorage` 构造真实事务语义的测试 Domain（`pkg/session/runtime/session.rs`）。本目录没有 `doc.go`；包语义以 crate 入口注释、同路径 Go 文件和上述适配层为准。
+`MemoryPdClient`、`CodecPDClient`、`pdCliWithCodec`、`CoprStore` 及多种占位客户端提供可控的 PD/keyspace、协处理器和错误注入行为，避免测试依赖真实集群。
 
 ## 核心职责
 
@@ -84,11 +82,9 @@ RustCodeGraph 对该文件的文件级反向引用包括 `pkg/store/mockstore/mo
 
 ## 与 Go 版本的对应关系
 
-同路径 `storage.go` 的核心结构是包装 `*tikv.KVStore` 与 `*copr.Store`，再补充 option、memCache、锁等待和 keyspace 元数据。Rust 的 `mockStorage` 保留了相同门面方法和命名：`NewMockStorage`、`Begin`、`GetSnapshot`、`CurrentVersion`、`Close`、`GetCodec`、`SetMockLockWaits`、`GetClusterID`、`GetKeyspace` 等；ApiV2 codec 在 mock PD 返回空元数据时使用包装客户端的回退逻辑也逐分支对应。
+Go 版本把这些行为委托给 `tikv/client-go` 和 driver 包。因此，Rust 中 `KVTxn` 的细节不是对 `storage.go` 某个同名类型的逐行翻译，而是为替代外部客户端所需的局部实现。
 
-Rust 文件比 Go 门面承担更多职责：它在本 crate 内实现了可运行的内存 `KVStore`/MVCC、事务、快照、墙钟 TSO、写冲突、异步提交、schema checker 所需原语、SST 导入和可选嵌入式 RPC。Go 版本把这些行为委托给 `tikv/client-go` 和 driver 包。因此，Rust 中 `KVTxn` 的细节不是对 `storage.go` 某个同名类型的逐行翻译，而是为替代外部客户端所需的局部实现。
-
-仍属简化或占位的差异包括：Rust 的地址返回空 `Vec`（Go 返回 nil slice，接口语义同为空）、TLS/GC/SafeTS/客户端占位；Rust `WaitForEntry` 只保留三个字段；Rust 的公开 `GetCodec` 返回本地 `Codec`，而规范 `kv::Storage::GetCodec` 当前在 `canonical_storage.rs` 返回规范占位 codec。评估兼容性时应同时检查两个层次，不能只看门面同名方法。
+仍属简化或占位的差异包括：Rust 的地址返回空 `Vec`（Go 返回 nil slice，接口语义同为空）、TLS/GC/SafeTS/客户端占位；Rust `WaitForEntry` 只保留三个字段；Rust 的公开 `GetCodec` 返回本地 `Codec`，而规范 `kv::Storage::GetCodec` 当前在 `canonical_storage.rs` 返回规范占位 codec。
 
 ## 扩展指南
 
@@ -99,11 +95,3 @@ Rust 文件比 Go 门面承担更多职责：它在本 crate 内实现了可运�
 - 扩展 keyspace/PD 行为时，需同步 `MemoryPdClient`、`pdCliWithCodec`、`mockStorage::GetCodec` 和同路径 Go 分支，并分别测试 PD 错误、未找到和成功三种结果。若把当前 panic 改为可恢复错误，会改变 Go 对齐语义，应显式评审。
 - 增加并发共享状态时应使用独立同步原语并明确锁顺序，避免把外部回调或 RPC 放在数据写锁内。新增 Rust 单元测试应继续放在独立的 `canonical_storage_test.rs` 或相邻独立测试文件，不嵌入生产源文件。
 - 若实现当前占位方法，应先核对标准 `astersql_kv::Storage` trait 与 Go `helper.Storage` 契约，并同时调整 `canonical_storage.rs`；不要仅让本文件同名方法返回真实值而留下规范接口仍返回占位值。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/store/mockstore/mockstorage` 确认本 crate 的 `storage.rs`、`canonical_storage.rs`、`embedded_rpc.rs`、`lib.rs` 和独立测试；`node --file .../storage.rs` 分段读取了全部 1,261 行，并给出 6 个文件级使用方。对 `NewMockStorage`、`Begin`、`Commit`、`GetCodec` 执行了限定文件的 `callers/callees` 查询，但当前索引未返回符号级边，因此调用关系又由已定位的直接源文件核验。
-- 源与边界：`pkg/store/mockstore/mockstorage/storage.rs`、`lib.rs`、`Cargo.toml`、`canonical_storage.rs`、`embedded_rpc.rs`；目标目录不存在 `doc.go`。
-- Go 对照：`pkg/store/mockstore/mockstorage/storage.go`，核对构造、门面方法、关闭次序、codec 回退及锁等待注入。
-- 独立 Rust 测试：`pkg/store/mockstore/mockstorage/canonical_storage_test.rs` 验证标准 trait、提交/回滚/关闭、显式 start_ts、总大小限制、写冲突、异步提交、schema checker、嵌入式 RPC、SST 历史顺序；`pkg/store/store_test.rs` 验证通过公共 Storage 接口的读写、删除和迭代语义。上层使用证据还包括 `pkg/session/runtime/session.rs` 和 `pkg/session/tests/paging_rpc.rs`。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验收使用任务指定命令，要求目标文档存在且恰有 11 个固定二级标题；最终退出码记录在交付结果中。

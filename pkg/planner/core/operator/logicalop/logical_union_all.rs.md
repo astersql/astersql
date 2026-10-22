@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑计划节点 `LogicalUnionAll`，表示 SQL `UNION ALL` 的多输入纵向拼接：各输入按列位置映射到同一输出 schema，所有行均被保留，不在这个节点做去重。它属于 Cargo 包 `astersql-planner-core-operator-logicalop`；包入口 `pkg/planner/core/operator/logicalop/lib.rs` 以 `mod logical_union_all` 纳入实现，并用 `pub use logical_union_all::*` 对规划器其他模块公开类型。
-
-节点通常由 `pkg/planner/core/logical_plan_builder_runtime.rs` 的集合操作构建路径创建。构建器先检查输入非空且列数一致，计算每一列的联合类型，为输出列分配新的 `UniqueID`，再在每个分支上插入 `LogicalProjection`，完成类型转换并把所有分支的 schema 统一为 union schema，最后初始化 `LogicalUnionAll`、设置输出名和子节点。逻辑优化完成后，`pkg/planner/core/operator/physicalop/physical_union_all.rs::ExhaustPhysicalPlans4LogicalUnionAll` 根据所需物理属性枚举 Root/MPP `PhysicalUnionAll` 候选。
+实现逻辑计划节点 `LogicalUnionAll`，表示 SQL `UNION ALL` 的多输入纵向拼接：各输入按列位置映射到同一输出 schema，所有行均被保留，不在这个节点做去重。
 
 ## 核心职责
 
@@ -93,7 +91,7 @@ planner context 使用可克隆的 `ContextRef`，分支 TopN 和补偿投影各
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_union_all.go`。Rust 基本逐方法保留 Go 行为：初始化为 Union；每个分支获得独立谓词切片/表达式集合；无父列引用时保留全部列；child 比 union schema 更宽时补投影；TopN 分支 count 为 offset 加 count 且保留外层 TopN；统计对行数和列 NDV求和；TiFlash 要求所有分支可用；FD 取 NOT NULL 与等价类公共部分。
+Rust 基本逐方法保留 Go 行为：初始化为 Union；每个分支获得独立谓词切片/表达式集合；无父列引用时保留全部列；child 比 union schema 更宽时补投影；TopN 分支 count 为 offset 加 count 且保留外层 TopN；统计对行数和列 NDV求和；TiFlash 要求所有分支可用；FD 取 NOT NULL 与等价类公共部分。
 
 接口形态存在以下移植差异：
 
@@ -104,8 +102,6 @@ planner context 使用可克隆的 `ContextRef`，分支 TopN 和补偿投影各
 - Go 使用普通无符号加法表达 `Count + Offset`；Rust 本方法明确使用 `wrapping_add`。同时仓库 Rust 专项优化路径存在 `saturating_add`，这是当前实现中需谨慎维护的差异。
 - Go `ExtractFD` 把结果写入 `p.fdSet` 并返回指针；Rust 克隆写入基座后按值返回。
 
-Go 的 `logicalop_test/hash64_equals_test.go::TestLogicalUnionAllHash64Equals` 还验证 schema 参与生成的 Hash/Equals；对应 Rust 测试位于 `logicalop_test/hash64_equals_test.rs`。Hash/Equals 实现在生成文件而非本文件中，但它说明 schema 是节点身份的一部分。
-
 ## 扩展指南
 
 新增或修改 union 行为时，优先判断职责归属：输入列数检查、字段类型合并和 cast 应修改 `logical_plan_builder_runtime.rs`；逻辑重写应修改本文件或 `optimizer_runtime.rs` 的相应规则；Root/MPP 属性支持应修改 `physical_union_all.rs`；不要把执行器行为塞入逻辑节点。
@@ -115,12 +111,3 @@ Go 的 `logicalop_test/hash64_equals_test.go::TestLogicalUnionAllHash64Equals` �
 测试必须放在独立文件 `pkg/planner/core/operator/logicalop/logical_union_all_test.rs`，不要内嵌到生产源文件。现有用例分别覆盖：零引用列保留全部 schema、残余谓词附加到每个分支、额外 child 列由投影隐藏、TopN 克隆并保留外层节点、NDV 使用输出 ID 且不截断、空 union 的 NOT NULL/FD 缓存。新增错误分支可补充“未初始化 context 且需要补投影”；修改 TopN 计数时应增加接近整数上限的用例，并同步核对 `optimizer_runtime.rs` 的专项路径。若调整 Hash/Equals 或 schema 身份，需同步 `logicalop_test/hash64_equals_test.rs` 及 Go 对照测试意图。
 
 兼容性风险主要是计划形状、列 ID/输出名稳定性和 Go 语义偏移；性能风险主要是每分支表达式克隆、额外 Projection，以及对大量分支逐一推导统计/FD。任何优化都不应以共享可变表达式、删除全局 TopN 或丢弃补偿投影为代价。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引包含目标仓库的 Rust/Go 文件；`node --file pkg/planner/core/operator/logicalop/logical_union_all.rs --offset 1 --limit 500` 读取了完整 232 行并确认 `LogicalUnionAll` 结构、七个固有方法和 `LogicalPlan` impl；`query LogicalUnionAll --limit 20` 定位到 Rust/Go 类型、物理枚举函数、构建器和测试符号。对方法名执行的 callers/callees 查询因 Go/Rust 同名方法较多而产生歧义，因此调用关系又以模块入口、构建器、优化器和物理枚举源码交叉核对，没有把歧义边当作唯一证据。
-- 生产源码：`pkg/planner/core/operator/logicalop/logical_union_all.rs`；公共基座与 trait：`base_logical_plan.rs`；模块注册：`lib.rs`；构建接线：`pkg/planner/core/logical_plan_builder_runtime.rs`；优化器专项路径和 TiFlash 属性遍历：`pkg/planner/core/optimizer_runtime.rs`；物理候选：`pkg/planner/core/operator/physicalop/physical_union_all.rs`。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml`，包括包名、`lib.rs` 入口、本地依赖以及 Go 包映射。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_union_all.go`，逐项核对 Init、谓词、裁剪、TopN、统计、可能属性与 FD；Hash/Equals 的 Go 测试为 `pkg/planner/core/operator/logicalop/logicalop_test/hash64_equals_test.go`。
-- Rust 独立测试：`pkg/planner/core/operator/logicalop/logical_union_all_test.rs`；生成 Hash/Equals 对应测试：`pkg/planner/core/operator/logicalop/logicalop_test/hash64_equals_test.rs`。本任务是纯文档分析，按任务约束未运行 Cargo，测试文件仅作为现有行为证据读取。
-- 交付结构以任务指定命令检查：文档存在，且固定的十一个二级标题各出现一次；同时人工复核文档覆盖“为何存在、如何运行、如何安全扩展”，未把未验证设计写成当前事实。

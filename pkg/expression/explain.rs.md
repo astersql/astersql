@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`explain.rs` 是 `astersql-expression` crate 的表达式展示内核。`pkg/expression/lib.rs` 以私有模块 `explain_kernel` 挂载本文件，并通过 `pub use explain_kernel::*` 导出其中的公开自由函数；同一 crate 的 `core_impl.rs` 则把 `Expression` trait 的 `ExplainInfo`、`ExplainNormalizedInfo` 和 `ExplainNormalizedInfo4InList` 分派到本文件为 `Column`、`Constant`、`ScalarFunction` 提供的固有方法。因此它既负责单个表达式节点的递归文本化，也负责计划算子需要的表达式列表稳定化。
-
-该文件不执行 SQL、生成物理计划或组装完整 EXPLAIN 行。它把已经构造好的表达式树变成普通文本或归一化文本；上游的投影、选择、聚合、连接和会话 EXPLAIN 逻辑再把这些片段放入计划信息。例如 `pkg/planner/core/operator/physicalop/physical_projection.rs::ExplainInfo` 使用 `ExplainExpressionListWithColumnNumbers`，`physical_selection.rs::ExplainInfo` 与 `pkg/session/runtime/explain_query.rs::GetArgs` 使用 `SortedExplainExpressionList`。
-
-crate 边界由 `pkg/expression/Cargo.toml` 确定：crate 名为 `astersql-expression`，库入口为 `lib.rs`，并关闭自动测试发现。与本文件直接相关的类型和常量经 crate 根适配模块提供，包括 `chunk`、`errors`、`model`、`mysql`、`types`；对应的实际依赖包括 `astersql-util-chunk`、`astersql-meta-model`、`astersql-types` 和解析器 AST/MySQL crate。本源文件没有条件编译项；独立测试 `explain_test.rs` 由 `lib.rs` 在 `#[cfg(test)]` 下显式挂载。
+表达式的求值实现、列字符串底层规则、Schema 构造、计划节点树形布局、计划摘要的全局策略开关均在其他文件中。
 
 ## 核心职责
 
@@ -101,7 +97,7 @@ RustCodeGraph 对 `ExplainExpressionListWithColumnNumbers` 的查询定位到本
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/explain.go`。Rust 保留了 Go 的主要符号和控制流：三类核心节点的说明方法、CAST 返回类型、`_tidb_tid/-1` 到 `dual`、列原名归一化、常量脱敏及字符串类加引号、投影箭头、排序稳定化、IN 列表折叠和列列表拼接均有逐项对应。
+Rust 保留了 Go 的主要符号和控制流：三类核心节点的说明方法、CAST 返回类型、`_tidb_tid/-1` 到 `dual`、列原名归一化、常量脱敏及字符串类加引号、投影箭头、排序稳定化、IN 列表折叠和列列表拼接均有逐项对应。
 
 已确认的实现差异如下：
 
@@ -111,7 +107,7 @@ RustCodeGraph 对 `ExplainExpressionListWithColumnNumbers` 的查询定位到本
 - Go 用 `bytes.Buffer` 和 `[]byte`，Rust 用 `String` 和 `Vec<u8>`；可观察分隔符和排序结果保持一致。
 - Go 的 `SortedExplainNormalizedScalarFuncList` 把指针切片装入接口切片；Rust 将标量函数克隆为表达式集合后走同一排序内核，以满足所有权模型。
 
-Rust 独立测试 `pkg/expression/explain_test.rs::projected_generated_columns_keep_go_alias_arrow` 专门锁定不同自动生成列 ID 时必须输出 `Column#1->Column#2`，防止错误地只比较来源元数据而省略箭头。规划器测试 `physical_selection_test.rs` 和 `physical_projection_test.rs` 验证忽略 IN 列表模式确实区别于普通归一化模式。Go 仓库没有同路径 `explain_test.go`；相关 Go 行为证据分散在计划器测试，例如 `pkg/planner/core/logical_plans_test.go` 对 `ExplainExpressionList` 的常量/列映射输出断言。
+Rust 独立测试 `pkg/expression/explain_test.rs::projected_generated_columns_keep_go_alias_arrow` 专门锁定不同自动生成列 ID 时必须输出 `Column#1->Column#2`，防止错误地只比较来源元数据而省略箭头。
 
 ## 扩展指南
 
@@ -124,17 +120,3 @@ Rust 独立测试 `pkg/expression/explain_test.rs::projected_generated_columns_k
 修改投影箭头时，应保留表达式和 Schema 等长的调用约束，并同步扩展 `pkg/expression/explain_test.rs`。若更改列号隐藏策略，还需检查 `physical_projection.rs` 的显式 statement-context 接线及相关计划树测试。修改排序或 IN 列表折叠会改变 EXPLAIN/plan digest 的稳定文本，应同步检查选择、投影以及所有使用 `SortedExplain*` 的物理算子测试，兼容性风险高于普通展示文案变更。
 
 性能上，避免在每个递归层重复计算昂贵的上下文策略，避免为单个节点引入全列表复制；当前投影入口只计算一次列号策略，排序入口只建立一次顶层文本数组。任何新增敏感数据字段都必须明确普通、归一化与脱敏模式下是否可见。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/expression/explain.rs` 全部 328 行，重点核对 `ScalarFunction`、`Column`、`Constant` 的 impl，以及 `ExplainExpressionListWithColumnNumbers`、`sortedExplainExpressionList`、`ExplainColumnList`。
-- crate 与装配：`pkg/expression/Cargo.toml`；`pkg/expression/lib.rs` 中 `explain_kernel`、`pub use explain_kernel::*` 和 `#[cfg(test)] explain_test`。
-- trait 接线：`pkg/expression/expression.rs::Expression` 与 `pkg/expression/core_impl.rs` 中四类表达式的说明方法分派。
-- Rust 直接调用者：`pkg/planner/core/operator/physicalop/physical_projection.rs`、`physical_selection.rs`、聚合/连接/扫描算子，以及 `pkg/session/runtime/explain_query.rs`。
-- Rust 独立测试：`pkg/expression/explain_test.rs`；相关规划器测试 `physical_selection_test.rs`、`physical_projection_test.rs`。
-- Go 对照：`pkg/expression/explain.go`；相关预期见 `pkg/planner/core/logical_plans_test.go`。仓库中不存在同路径 `pkg/expression/explain_test.go`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file pkg/expression/explain.rs` 返回完整源码并报告 14 个 Rust 使用文件；`query/callees` 核对了 `ExplainExpressionListWithColumnNumbers`、`SortedExplainExpressionList` 和 `sortedExplainExpressionList`。callers 查询因同名符号图遍历超过 90 秒后中止，故上游调用点使用 `rg` 与源码读取补齐并消歧。
-
-本任务为纯文档分析，没有运行 Cargo 或代码测试。结构验证单独检查目标文档存在且恰好包含约定的十一个二级章节；人工复核覆盖了文件存在理由、执行路径、数据/错误/资源边界、Go 对应关系与安全扩展位置。

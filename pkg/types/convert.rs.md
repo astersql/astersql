@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现 MySQL 兼容的标量类型转换规则，重点覆盖整数、浮点、字符串、科学计数法和二进制字面量的互转；启用 `types-integration` feature 时，还补充时间、Duration、DECIMAL 与 Binary JSON 的转换入口。源码位置是 [`pkg/types/convert.rs`](convert.rs)，但它并不是由 `pkg/types/lib.rs` 直接声明：`pkg/types/internal/scalar/lib.rs` 通过 `#[path = "../../convert.rs"] mod convert;` 编译本文件并以 `pub use convert::*` 导出，因此默认归属 `astersql-types-scalar` crate；根 `astersql-types` crate 再以 `pub use types_group_1 as scalar` 和若干显式再导出向上暴露标量能力。
-
-`pkg/types/Cargo.toml` 将 `astersql-types-scalar` 作为 `types-group-1` 依赖，并同时组合 datum、time、decimal、JSON、metadata 等子 crate。真正声明 `types-integration` feature 的是 `pkg/types/internal/scalar/Cargo.toml`：该 feature 打开 decimal、file-group、json-binary 和 metadata 的可选依赖；时间 crate 是非可选依赖。由此，文件 28、602、643、921 行附近的条件编译代码属于 scalar crate 的集成形态，而不是根 crate 自己声明的 feature。
-
-在应用主链中，本文件处于 SQL 表达式/Datum 与底层 Rust 数值表示之间。例如 RustCodeGraph 将 `pkg/expression/builtin_cast_vec.rs::cast_string`、`json_to_int` 和 `pkg/types/datum.rs::toSignedInteger` 标为 `StrToInt`、`ConvertFloatToInt` 等入口的上游；这些入口负责把 MySQL 的截断、警告、溢出裁剪语义落实为具体值和错误。
+**提供 MySQL 整数边界。
 
 ## 核心职责
 
@@ -105,22 +101,11 @@ RustCodeGraph 的全库结果包含 Go 同名函数和部分通用同名符号�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/types/convert.go`，函数布局和主流程基本逐项对应：三组整数边界、六个基础数值转换、科学计数法、DECIMAL 字符串转无符号、`StrTo*`、Duration、JSON 和 `ToString` 均有同名或同职责实现。`pkg/types/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/types"` 也记录了移植归属。
-
-已核对的关键一致性包括：
-
-- `ConvertFloatToInt` 都先调用 ties-to-even 的 `RoundFloat` 并在上界浮点表示相等时允许返回上界；各整数类型边界及 ENUM=65535 一致。
-- `StrToUint` 都只接受负零；`getValidFloatPrefix` 都接受 `1e+1`、把末尾 `e` 回退为指数前文本，并对非法后缀调用 Context 截断处理。
-- `floatStrToIntStr` 都用十进制字符移动避免 `u64::MAX` 精度损失，并在严重溢出时返回 `minIntStr`/`maxUintStr`。
-- `StrToDuration` 都以 12 位为 DATETIME 优先阈值；`NumberToDuration` 都按 `HHMMSS` 拆分并验证小时、分、秒。
-- JSON 的对象/数组/时间类、literal、数值和字符串分支与 Go switch 对应。
-
 需要保留并继续验证的 Rust 差异包括：
 
 - Rust 的 `truncateStr` 会回退到 UTF-8 字符边界；Go 版本直接按字节切片，可能产生非 UTF-8 字节串。Rust `String` 类型无法表达后者，因此这里是有意的安全适配，不应误称为逐字节完全等价。
 - Rust `ConvertFloatToUint` 用有限性检查、`2^64` 阈值和 `as u64`，Go 用 `big.Float.Uint64` 的精度状态；现有边界行为意图相同，但修改时必须对 `u64::MAX` 附近和非有限值做对照测试。
 - Rust `ToString(Vec<u8>)` 使用 lossy UTF-8，Go `string([]byte)` 保留任意字节；同时 Rust 只列出 `i32` 而 Go 接受平台 `int`。这是可见兼容边界。
-- 复杂类型代码被 `types-integration` 隔离；默认根 crate 的 JSON 转换实际还由 `pkg/types/internal/datum/lib.rs` 提供。不能只修改本文件 feature 分支就假定根 crate 的所有 JSON 行为已同步。
 
 Go 测试 `pkg/types/convert_test.go` 是语义基线，Rust 独立测试 `pkg/types/convert_test.rs` 覆盖默认 scalar 路径；feature 集成分支另由 `pkg/types/internal/scalar/migration_aster_unit_test.rs` 提供直接测试。
 
@@ -133,15 +118,3 @@ Go 测试 `pkg/types/convert_test.go` 是语义基线，Rust 独立测试 `pkg/t
 - 扩展 JSON 类型时，在 int、float、decimal 三个 switch 中检查是否都需要新分支，并同步根 datum 子 crate 的同名实现，避免 feature 集成路径与默认根 crate 分叉。
 - 修改 Duration/Datetime 选择规则时，同步 `StrToDuration`、`NumberToDuration`、`pkg/types/internal/scalar/migration_aster_unit_test.rs` 和 Go 基线测试，尤其保留 `(Duration, Time, isDuration)` 三者的一致性。
 - 测试逻辑应继续放在独立 `pkg/types/convert_test.rs` 或 scalar 的独立集成测试文件，不要嵌入 `convert.rs`。性能上重点关注科学计数法大指数补零、反复字符串分配及动态 `Any` 下转型；兼容性上重点关注舍入方式、unsigned 补码、warning 顺序和 UTF-8/原始字节差异。
-
-## 验证依据
-
-本说明依据以下本地事实完成，没有运行 Cargo：
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph 文件读取：`node --file pkg/types/convert.rs --offset 1 --limit 500` 与 `--offset 501 --limit 500`，覆盖源码 1–922 行并报告文件被 12 个文件使用。
-- RustCodeGraph 精确查询：对 `StrToInt`、`getValidFloatPrefix`、`ToString`、`ConvertJSONToInt`、`StrToDuration`、`ConvertFloatToInt`、`floatStrToIntStr` 执行 `query --kind function --json`；再以 `callers/callees <symbol> --file pkg/types/convert.rs --json` 限定 Rust 定义。确认了表达式 CAST、Datum、测试上游，以及上述内部调用边；全库同名 Go/通用符号未作为 Rust 直接调用证据。
-- 完整阅读：`pkg/types/convert.rs`；crate/模块边界 `pkg/types/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/internal/scalar/Cargo.toml`、`pkg/types/internal/scalar/lib.rs`。
-- Go 对照：`pkg/types/convert.go` 全部 799 行；Go 测试符号与相关区段来自 `pkg/types/convert_test.go`。
-- Rust 独立测试：`pkg/types/convert_test.rs`，重点核对 `test_convert_type`、`test_convert_to_string`、`test_str_to_num`、`test_round_int_str`、`test_get_valid_int`、`test_get_valid_float`、`test_convert_json_to_*`、`test_number_to_duration`、`test_str_to_duration`、`test_convert_scientific_notation`、`test_convert_decimal_str_to_uint`；集成 feature 的直接覆盖另见 `pkg/types/internal/scalar/migration_aster_unit_test.rs`。
-- 结构验收使用任务指定命令，要求本文件存在且恰好命中 11 个固定二级标题。人工复核重点为：真实 `#[path]` 装配、feature 边界、值随错误返回、调用边、Go 差异及独立测试位置。

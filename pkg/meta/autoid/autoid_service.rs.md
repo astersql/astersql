@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-meta-autoid` crate；crate 入口 `pkg/meta/autoid/lib.rs` 公开 `autoid_service` 模块并 re-export 其公开 API，Cargo 清单 `pkg/meta/autoid/Cargo.toml` 将其 Go 对照包标为 `pkg/meta/autoid`。它实现的是远程单点 AutoID 客户端侧机制，而不是 AutoID 服务端：当 `pkg/meta/autoid/autoid.rs::new_allocator` 发现表使用自定义步长 `1`、表版本至少为 `5`、且请求的是 `AllocatorType::AutoIncrement` 时，才通过 `Requirement::single_point_allocator` 选择这里的 `SinglePointAllocator`；否则仍使用本地批量缓存的 `DefaultAllocator`。
-
-真实运行时接线位于 `pkg/session/runtime/create_table_resources.rs::Requirement::single_point_allocator`：它以库 ID、表 ID、符号属性、keyspace 和共享的 `ClientDiscover` 构造该分配器。非 mock 存储的发现与连接适配器由 `pkg/autoid_service/client.rs::client_discover` 创建，负责 etcd 与 gRPC 细节；因此本文件刻意只依赖 `LeaderDiscovery`、`AutoIdClientConnector`、`AutoIdClient` 和 `ClientConnection` 四个抽象边界。
+非 mock 存储的发现与连接适配器由 `pkg/autoid_service/client.rs::client_discover` 创建，负责 etcd 与 gRPC 细节；因此本文件刻意只依赖 `LeaderDiscovery`、`AutoIdClientConnector`、`AutoIdClient` 和 `ClientConnection` 四个抽象边界。
 
 ## 核心职责
 
@@ -86,9 +84,9 @@ RustCodeGraph 的文件使用关系还列出 `pkg/meta/reader.rs`、`pkg/server/
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/meta/autoid/autoid_service.go`。Rust 的 `SinglePointAllocator`、`ClientDiscover`、`Backoffer`、请求/响应和重试状态分别对应 Go 的 `singlePointAlloc`、`ClientDiscover`、`backoffer`、kvproto 消息和 `rpcRetryState/rpcRetryLogState`。两边保持的关键语义包括：Leader 路径规则、双检客户端缓存、连接版本 CAS、延迟 200ms 关闭、10ms 首次/100ms 上限退避、`(min,max]` 区间、RPC-only 重试、10 次且 15 秒的双阈值、单调水位、无符号比较、transfer 先刷新源水位并在失败时恢复身份，以及写操作 30 秒限制。
+两边保持的关键语义包括：Leader 路径规则、双检客户端缓存、连接版本 CAS、延迟 200ms 关闭、10ms 首次/100ms 上限退避、`(min,max]` 区间、RPC-only 重试、10 次且 15 秒的双阈值、单调水位、无符号比较、transfer 先刷新源水位并在失败时恢复身份，以及写操作 30 秒限制。
 
-实现边界存在几项明确差异：Go 文件直接依赖 etcd、配置、TLS、gRPC、metrics、tracing 和 zap；Rust 将网络细节注入到 trait，具体适配器在 `pkg/autoid_service/client.rs`，日志目前用 `eprintln!`，本文件也没有 Go 对应的 metrics/tracing 埋点。Go 以错误字符串含 `rpc error` 判断重试，Rust 以强类型 `AutoIdError::Rpc` 判断。Go 的水位是 `atomic.Int64` CAS，Rust 用 mutex 内的比较更新实现同一乱序不回退语义。Go context 带原生 deadline，Rust 的 `Context` 是取消标志/条件变量，deadline 由 `with_write_timeout` 的计时线程协作模拟。
+实现边界存在几项明确差异：Go 文件直接依赖 etcd、配置、TLS、gRPC、metrics、tracing 和 zap；Rust 将网络细节注入到 trait，具体适配器在 `pkg/autoid_service/client.rs`，日志目前用 `eprintln!`，本文件也没有 Go 对应的 metrics/tracing 埋点。Go 的水位是 `atomic.Int64` CAS，Rust 用 mutex 内的比较更新实现同一乱序不回退语义。
 
 独立 Rust 测试 `pkg/meta/autoid/autoid_service_test.rs` 与 Go 测试 `pkg/meta/autoid/autoid_service_test.go` 共同验证上述移植意图；Rust 测试名称中的 `go_merge_5_*`、`go_merge_12_*` 还显式记录了相应语义合入批次。
 
@@ -101,15 +99,3 @@ RustCodeGraph 的文件使用关系还列出 `pkg/meta/reader.rs`、`pkg/server/
 - 扩展 transfer 时保持“源端零数量读取与目标 rebase 共用一个超时上下文”，并保留目标失败后的身份回滚；若增加更多中间状态，需要测试每个失败点的所有权和水位结果。
 - 若要支持 sequence，不应简单让当前两个 `NotImplemented` 返回成功；必须先与 Go `Allocator` 的缓存、循环轮次和 rebase 语义完整对齐，并在独立测试中覆盖边界。
 - 改动 keyspace 路径规则时，同时核验服务端注册键、etcd namespace 和 `get_auto_id_service_leader_etcd_path`；当前具体非 Nullspace ID 不进入字符串，这是已验证现状，不应凭直觉改写。
-
-## 验证依据
-
-- RustCodeGraph 状态：本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/meta/autoid` 确认目标源、Rust/Go 对照与测试均已索引。
-- 目标源码：`pkg/meta/autoid/autoid_service.rs` 全部 672 行；符号与流程依据包括 `get_auto_id_service_leader_etcd_path`、`ClientDiscover::{get_client,reset_conn_if_version,reset_conn}`、`Backoffer::backoff`、`RpcRetryState::observe`、`SinglePointAllocator::{alloc_inner,rebase_inner,retry_rpc,with_write_timeout}` 及其 `Allocator` 实现。
-- 图查询：`explore "SinglePointAllocator alloc_inner rebase_inner ClientDiscover get_client callers callees"` 给出 `alloc_inner → get_client`、`rebase_inner → get_client`，以及 `alloc/transfer → alloc_inner`、`rebase/force_rebase/transfer → rebase_inner`；文件节点列出该文件被 5 个 Rust 文件使用。
-- crate 与装配：`pkg/meta/autoid/Cargo.toml`、`pkg/meta/autoid/lib.rs`、`pkg/meta/autoid/autoid.rs::{Allocator,Requirement,new_allocator,new_allocators_from_table_info}`。
-- 真实入口与下游：`pkg/session/runtime/create_table_resources.rs::{Requirement::single_point_allocator,requirement}`、`pkg/autoid_service/client.rs::client_discover` 及该文件的 alloc/rebase wire 适配。
-- 错误模型：`pkg/meta/autoid/errors.rs::AutoIdError` 与 `is_rpc_retry_limit_error`。
-- Go 对照：`pkg/meta/autoid/autoid_service.go` 全文件，重点为 `GetClient`、`Alloc/alloc`、`updateLastAllocated`、`Backoff`、`resetConn/ResetConn`、`Transfer/transfer`、`Rebase/rebaseRPC` 和 `ForceRebase`。
-- 独立测试：`pkg/meta/autoid/autoid_service_test.rs` 全部 662 行，覆盖单调/无符号水位、乱序响应、transfer/回滚、取消、退避、重试恢复/终止及日志；`pkg/meta/autoid/autoid_service_test.go` 的 `TestAllocCanceledRPCReturnsQuickly`、`TestRebaseCanceledRPCReturnsQuickly`、`TestBackoffCtxAware`、`TestAutoIDRPCRetryPolicy` 和 `TestSinglePointAllocTransfer` 提供 Go 语义证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另执行任务规定的 11 章节结构检查，并人工复核没有把未实现能力写成已支持。

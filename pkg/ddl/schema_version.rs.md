@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/schema_version.rs` 属于 `astersql-ddl` crate（由 `pkg/ddl/Cargo.toml` 定义），并由 `pkg/ddl/lib.rs` 以 `pub mod schema_version` 对外公开。它位于 DDL job 推进与集群 InfoSchema 可见性之间：一边提供简化的 schema 差分和版本锁模型，另一边实现普通 DDL owner 的 schema 发布/恢复屏障。
-
-需要特别区分两条路径：`SchemaVersionManager` 被 `pkg/ddl/job_worker.rs` 中较轻量的 `JobWorker::transit_one_job_step` 使用；`NormalDdlSchemaBarrier` 则服务于持久化 job 路径，由 `pkg/session/runtime/normal_ddl_service.rs::schema_barrier` 构造，通过 `pkg/ddl/table_mode.rs::NormalDdlExecutor` 接入 `pkg/ddl/job_scheduler.rs` 的调度循环。该文件不负责解析 SQL、持久化 DDL job 本身，也不实现 InfoSchema 加载器。
+位于 DDL job 推进与集群 InfoSchema 可见性之间：一边提供简化的 schema 差分和版本锁模型，另一边实现普通 DDL owner 的 schema 发布/恢复屏障。
 
 ## 核心职责
 
@@ -95,8 +93,6 @@
 - Go 对照文件是 `pkg/ddl/schema_version.go`。其 `updateSchemaVersion` 根据完整 `model.ActionType` 分派到多个 `SetSchemaDiffFor*`，处理截断、视图替换、多表重命名、分区、物化视图、恢复等专用字段，最后持久化差分。Rust `set_schema_diff` 只实现其公共骨架与 schema-map 标志，不应被视为已完整覆盖 Go 的所有专用分支。
 - Go `waitVersionSynced` 使用 schema-version syncer、job ID、假定服务端标记，并包含 metrics、日志和 failpoint。Rust 纯函数 `wait_version_synced` 仅比较版本；真正对应集群协议的是 `NormalDdlSchemaBarrier::wait`。
 - Go `waitVersionSyncedWithoutMDL` 会在 worker 重启后从 snapshot 读取最新非空差分并重新同步；Rust `recover` 的非 MDL 分支保留了这一语义。
-- Go `shouldCheckAssumedServer` 在 Classic 内核总是 false，其他内核使用 `metadef.IsReservedID(job.TableID)`。Rust 测试 `pkg/ddl/schema_version_test.rs::test_should_check_assumed_server_matches_go_kernel_and_id_boundaries` 比 Go `pkg/ddl/schema_version_test.go::TestShouldCheckAssumedServer` 更细地覆盖了下界、下界加一、上界和上界加一。
-- Rust 持久化屏障还承载 Go 普通 owner/MDL 路径的局部移植：owner 丢失栅栏、MDL 版本恢复、非 MDL 发布错误分类以及容错清理。`pkg/session/runtime/normal_ddl_test.rs` 的 owner-loss 与 follower-wait 测试是这条 Rust 路径的直接回归证据。
 
 ## 扩展指南
 
@@ -106,16 +102,3 @@
 - 修改 `NormalDdlSchemaBarrier` 时，应同时追踪 `NormalDdlService::schema_barrier`、`NormalDdlExecutor`、`jobScheduler::schedule_persisted` 和 `JobWorker::transit_persisted_job_step`。任何新的阻塞操作都必须在前后检查 owner/取消状态，并评估“metadata 已提交、schema 尚未同步”的重试语义。
 - MDL SQL 变更要保留 owner 隔离和系统 schema 例外，并在 `pkg/session/runtime/normal_ddl_test.rs` 中扩展真实持久化路径测试；纯谓词或内存差分则放在 `pkg/ddl/schema_version_test.rs`。
 - 性能风险主要在同步等待、snapshot/session 获取和 etcd 前缀枚举；兼容性风险主要在 Go/Rust 差分字段和 job state 过滤；正确性风险主要在 owner 任期切换与 MDL 记录清理。
-
-## 验证依据
-
-本文档的事实依据如下：
-
-- 目标源码：`pkg/ddl/schema_version.rs`，已通过 RustCodeGraph `node --file` 读取全部 366 行，并核对了枚举、结构、常量、条件编译函数、屏障实现及错误分支。
-- RustCodeGraph 精确查询：`query SchemaVersion`、`query schema_version`、`query NormalDdlSchemaBarrier`、`query wait_version_synced`、`query set_schema_diff`、`query should_check_assumed_server`；`node set_schema_diff` 确认 `update -> set_schema_diff -> SchemaDiff` 边，`node schema_barrier` 确认 `normal_ddl_service.rs::schema_barrier -> NormalDdlSchemaBarrier` 实例化边。`explore` 未返回候选，方法符号的 `callers/callees` 亦未产生可用输出，因此按技能规则用精确符号查询和文本搜索补齐了方法调用边。
-- crate 与模块边界：`pkg/ddl/Cargo.toml` 和 `pkg/ddl/lib.rs`；前者确认 `astersql-ddl`、`astersql-ddl-schemaver`、`astersql-meta`、`astersql-kv`、`astersql-meta-model` 等依赖，后者确认公开模块与独立测试模块。
-- 上下游 Rust 源码：`pkg/ddl/job_worker.rs`、`pkg/ddl/table_mode.rs`、`pkg/ddl/job_scheduler.rs`、`pkg/session/runtime/normal_ddl_service.rs`，用于核对内存 worker 和持久化 owner 两条路径。
-- Go 对照：`pkg/ddl/schema_version.go`，已核对 `updateSchemaVersion`、`waitVersionSynced`、`shouldCheckAssumedServer` 和 `waitVersionSyncedWithoutMDL`。
-- 测试：`pkg/ddl/schema_version_test.rs` 与 `pkg/ddl/schema_version_test.go` 验证 kernel/ID 边界；`pkg/session/runtime/normal_ddl_test.rs::crossks_align_normal_ddl_owner_loss_rolls_back_table_diff_job_and_history`、`crossks_align_normal_ddl_public_schema_barrier_waits_for_follower` 和 `crossks_align_normal_ddl_registers_mdl_in_metadata_commit` 提供 owner 丢失、follower 等待和 MDL 注册的直接证据。
-- 包级契约：`pkg/ddl/doc.go` 声明集群在推进下一步前必须使所有 TiDB 同步到 N+1；`docs/agents/ddl/README.md` 只作导航，本文的行为结论均回到代码和测试核对。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前的结构检查要求本文件存在且恰好含有上述 11 个固定二级标题。

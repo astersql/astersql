@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lock-context` crate，是会话表锁上下文的接口边界，只定义两个公开 trait，不保存锁、不执行 DDL，也不访问存储。crate 入口 `pkg/lock/context/lib.rs` 将它们重新导出，并通过 `ast`、`model` 两个模块转出签名所需的 `TableLockType` 与 `TableLockTpInfo`。`pkg/lock/context/Cargo.toml` 表明该 crate 仅直接依赖 `astersql-parser-ast` 和 `astersql-meta-model`，其 Go 包映射是 `pkg/lock/context`。
-
-读接口的直接 Rust 消费者是 `pkg/lock/lock.rs::Checker`：`NewChecker` 接收 `&dyn TableLockReadContext`，随后在表锁权限检查中查询当前会话的锁状态。`pkg/planner/planctx/context.rs::PlanContext` 也把 `TableLockReadContext` 列为父 trait，使规划上下文在类型层面必须提供相同的只读能力。仓库搜索目前只找到测试结构 `pkg/lock/context/migration_aster_unit_test.rs::SessionTableLocks` 实现这两个 trait；`pkg/session/session.rs::session` 虽有同名、同语义的固有方法，但没有实现这里的 trait，因此不能把它描述为已经完成的生产接线。
+`TableLockReadContext` 隔离“读取当前会话持有哪些表锁”的能力，让检查器和规划代码无需知道实际容器或会话类型。
 
 ## 核心职责
 
@@ -85,14 +83,9 @@ RustCodeGraph 对同名跨语言方法会产生误配边，例如把 trait 声�
 
 ## 与 Go 版本的对应关系
 
-`pkg/lock/context/lockcontext.rs` 是 `pkg/lock/context/lockcontext.go` 的直接接口迁移：
-
 - Go 的 `TableLockReadContext` 三个方法与 Rust 同名，参数和返回语义对应。
 - Go 的 `TableLockContext` 嵌入读接口；Rust 用 `TableLockContext: TableLockReadContext` 表达同一约束。
-- Go slice 输入映射为借用切片 `&[...]`，避免接口调用时转移集合所有权；Go 返回 slice 映射为拥有所有权的 `Vec`。
 - Go 接口由 `pkg/session/session.go::session` 在生产路径隐式满足。Rust trait 需要显式 `impl`，当前仓库尚未给生产 `session` 添加该实现；`pkg/session/session.rs` 只有同形固有方法，且使用其自身导入的锁信息类型。故 Rust 迁移已覆盖契约和读侧消费者，但生产写侧接线仍未由本文件及其直接证据证明。
-
-语义测试 `migration_aster_unit_test.rs` 补充验证了 Go 接口声明本身未写明、但 Go session 实现实际采用的细节：忽略 `ReadOnly`、按 table ID 覆盖/释放、未命中返回 `TableLockNone`、清空后读契约一致。
 
 ## 扩展指南
 
@@ -101,13 +94,3 @@ RustCodeGraph 对同名跨语言方法会产生误配边，例如把 trait 声�
 新增写操作时，应修改 `TableLockContext`，在独立测试文件 `pkg/lock/context/migration_aster_unit_test.rs` 添加状态转换测试；不要把测试内嵌进 `lockcontext.rs`。若目标是完成生产接线，应在会话所属 crate 中显式实现本 trait，并先解决 `pkg/session/session.rs` 使用的锁类型与本 crate 再导出类型之间的一致性，而不是只增加另一个同名固有方法。
 
 任何改变都应同步核对 Go 的 `pkg/lock/context/lockcontext.go`、`pkg/session/session.go` 以及 DDL 回归 `pkg/ddl/executor_test.go::TestHandleLockTable`。兼容风险主要是扩大 trait 导致现有实现编译失败、改变 `ReadOnly` 过滤或 table-ID 身份规则导致会话状态偏离 Go；性能风险主要在把 `HasLockedTables` 实现成构造完整列表，或让 `GetAllTableLocks` 进行不必要排序/深层复制。若引入共享并发访问，需要明确选择内部同步或外部锁，并评估是否为 trait 增加 `Send`/`Sync` 约束。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`pkg/lock/context/lockcontext.rs` 被识别为 10 个符号，并显示由 `migration_aster_unit_test.rs` 使用。
-- RustCodeGraph 源码读取：`lockcontext.rs`、`lockcontext.go`、`migration_aster_unit_test.rs`、`pkg/lock/lock.rs`、`pkg/session/session.rs`、`pkg/planner/planctx/context.rs`、`pkg/session/session.go`、`pkg/ddl/executor.go`、`pkg/ddl/executor_test.go`。
-- RustCodeGraph 符号查询：`TableLockReadContext`、`TableLockContext` 及七个方法；带目标文件限定的 callers/callees 查询用于识别测试调用，并暴露了跨语言同名误配，误配结果未作为结论。
-- Cargo/模块证据：`pkg/lock/context/Cargo.toml`、`pkg/lock/context/lib.rs`、`pkg/lock/Cargo.toml`、`pkg/planner/planctx/Cargo.toml` 和 workspace 根 `Cargo.toml`。
-- 精确搜索证据：生产 Rust 中 `pkg/lock/lock.rs` 使用读 trait，`pkg/planner/planctx/context.rs` 继承读 trait；除独立测试外未发现这两个 trait 的 `impl`。Go 方法定义位于 `pkg/session/session.go`，主要 DDL 调用位于 `pkg/ddl/executor.go`。
-- 测试证据：`pkg/lock/context/migration_aster_unit_test.rs` 验证完整读写契约、`ReadOnly` 过滤、按 table ID 释放和清空；`pkg/ddl/executor_test.go::TestHandleLockTable` 验证 Go truncate 成功/失败时旧、新 table ID 的会话锁迁移。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终仅运行任务指定的 11 章节结构检查并人工复核上述事实。

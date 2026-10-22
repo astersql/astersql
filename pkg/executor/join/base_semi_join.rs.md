@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-executor-join`，由同目录的 `lib.rs` 以公开模块 `base_semi_join` 装配。它位于 Hash Join 的 probe（探测）阶段：`base_join_probe.rs::new_join_probe` 根据 `JoinType` 创建 `SemiJoinProbe`、`AntiSemiJoinProbe` 或 `LeftOuterSemiJoinProbe` 时，把 `BaseJoinProbe` 包进本文件的 `BaseSemiJoin`。因此，本文件不是完整执行器，也不负责建哈希表；它是 Semi、Anti Semi、Left Outer Semi 和 Anti Left Outer Semi 四类探测器共享的状态与小型操作层。
-
-文件第 22—257 行是注释化的 Go 形状/早期移植草稿，不参与编译。当前有效 Rust 实现从 `use crate::base_join_probe::{BaseJoinProbe, WorkerResult}` 开始（第 258 行），公开 API 是 `MAX_MATCHED_ROW_NUM`、`BaseSemiJoin` 及其五个方法。理解和扩展时必须以第 258—347 行的有效代码为准，不能把注释中的 `matchMultiBuildRows`、`concatenateProbeAndBuildRows` 或 Chunk 指针接口视为已实现功能。
+不直接负责候选键查找：`BaseJoinProbe::set_chunk_for_probe` 已经生成 `matched_rows`，`BaseJoinProbe::candidate_rows` 再为 `match_probe_row` 提供候选行。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ Go 版以 worker 私有 `baseSemiJoin` 配合共享哈希表、原子 used 标�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/join/base_semi_join.go`。概念映射为：`baseSemiJoin` → `BaseSemiJoin`，`newBaseSemiJoin` → `new`，`resetProbeState` → `reset_probe_state`，Go 的 `isMatchedRows` / `isNulls` → Rust 的 `matched` / `has_null`，Go 的 build row 扫描语义 → Rust 的 `scan_build_rows`。两版都服务于 Semi/Anti Semi 家族，并都区分左右 build side、other condition、匹配与 NULL 状态。
-
 但当前 Rust 不是 Go 文件的逐函数等价实现：
 
 - Go 的 `maxMatchedRowNum`、`matchMultiBuildRows`、`concatenateProbeAndBuildRows` 用中间 joined Chunk 和可复用队列限制 other-condition 膨胀，并在批尾检查 SQL killer；Rust 有常量和队列字段，但有效代码直接调用行式 `Joiner::try_to_match_inners`，没有 SQL killer 检查或 Chunk 拼接路径。
@@ -105,13 +101,3 @@ Go 回归测试提供更宽的行为基线：`semi_join_probe_test.go` 覆盖左
 修改 `matched` / `has_null` 语义时，应同步 `base_semi_join_test.rs`，并在 `semi_join_probe_test.rs`、`anti_semi_join_probe_test.rs` 或 `left_outer_semi_join_probe_test.rs` 中按受影响类型增加独立测试；Rust 测试逻辑不得内嵌回本生产文件。还应对照四个 Go probe 测试中的左右 build、重复 key、NULL、other condition、空投影和 spill 场景，避免用较小的 Rust 行模型删减 SQL 语义。
 
 性能上重点关注 `match_probe_row` 对 outer/候选行的 clone，以及 `scan_build_rows` 在稀疏命中时的全表扫描。兼容性上重点关注 NAAJ 的 NULL marker、Anti Semi 的未匹配输出，以及 Left Outer Semi 只允许右侧 build 的工厂约束。若引入共享并发上下文，必须另行明确 `build_row_used` 的同步协议，不能依赖当前 clone 值语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，覆盖 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph 文件/符号读取：`base_semi_join.rs`（完整 347 行）、`base_join_probe.rs::{HashJoinContext, BaseJoinProbe, new_join_probe}`、`joiner.rs::{MatchResult, try_to_match_inners, on_miss_match}`、`semi_join_probe.rs`、`anti_semi_join_probe.rs`、`left_outer_semi_join_probe.rs`。
-- RustCodeGraph 调用证据：`new_join_probe` 构造三类 `BaseSemiJoin`；`reset_probe_state` 与 `match_probe_row` 有具体 probe/测试调用；`scan_build_rows` 由 Semi/Anti 的 row-table 扫描入口调用；图中未发现 `produce_probe_mismatches` 的生产调用者。对图中方法自调用噪声又以限定目录的源码引用搜索复核。
-- crate 与模块证据：`pkg/executor/join/Cargo.toml`、`pkg/executor/join/lib.rs`。该目录没有 `doc.go`，因此最近的模块契约取自 Rust `lib.rs`。
-- Rust 测试证据：`pkg/executor/join/base_semi_join_test.rs::matching_probe_row_does_not_mark_every_candidate_build_row_used`。
-- Go 对照证据：`pkg/executor/join/base_semi_join.go`、`semi_join_probe_test.go`、`anti_semi_join_probe_test.go`、`left_outer_semi_join_probe_test.go`、`left_outer_anti_semi_join_probe_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证要求目标文件存在且恰有上述 11 个固定二级标题。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-simplesst` crate（`pkg/ingestor/simplesst/Cargo.toml`，crate 根为同目录 `lib.rs`），提供简单 SST 读取链路最底层的“按精确字节数读取”能力。`lib.rs` 通过 `pub mod byte_reader` 装配模块，并把 `ByteReader` 再导出到 crate 根。
-
-在上层链路中，`kv_reader.rs::KVReader` 用它依次读取大端 `u64` 的 key/value 长度和记录正文；`stat_reader.rs::StatsReader` 用它读取大端 `u32` 的属性长度和属性正文。`iter.rs::MergeKVIter` 再通过 `KVReader` 消费多个 SST 数据对象，并在热点重平衡时配置和切换本文件的并发模式。因此该文件处于“内存对象存储 -> 精确字节流 -> KV/属性解码 -> 多路归并”的边界。
-
-当前 Rust 实现是内存后端实现：`ByteReader::from_storage` 会先用 `MemoryStorage::read` 克隆整个对象，再由 `ByteReader` 在 `Arc<Vec<u8>>` 上维护逻辑偏移。它不是 Go 版本所使用的流式 `objectio.Reader`，也不直接向真实外部存储发起范围请求。
+需要注意当前实现边界：`small_buffer_size` 只保存构造参数，`read_n_bytes` 直接从完整对象切片复制，不按该大小分批读取；并发模式会构造或重建 `ConcurrentFileReader` 来同步续读偏移，但本文件没有调用 `ConcurrentFileReader::read`。
 
 ## 核心职责
 
@@ -111,13 +107,6 @@ RustCodeGraph 的 `explore` 结果确认了 `read_n_bytes -> stat_reader.rs::nex
 
 ## 与 Go 版本的对应关系
 
-共同语义包括：
-
-- 默认每并发分片 8 MiB、总并发预算 256、单次读取最大 1 GiB。
-- `readNBytes` 拒绝非正长度，要求精确长度，并区分文件边界 EOF 与半条记录的 UnexpectedEOF。
-- 并发模式请求切入是惰性的，切出要求保持连续偏移；Go `TestSwitchMode` 与 Rust `test_switch_mode` 都验证频繁切换不跳字节、不重复字节。
-- 空内容构造返回正常 EOF；跨小缓冲读取内容保持连续。
-
 重要实现差异必须保留在维护认知中：
 
 - Go `byteReader` 持有 `objectio.Reader`、小缓冲与多片大缓冲，通过 `reload`、`next`、`readFromStorageReader` 真正分批读取外部存储；Rust 先把 `MemoryStorage` 对象整体克隆到内存，`small_buffer_size` 不控制 IO 或切片批次。
@@ -126,8 +115,6 @@ RustCodeGraph 的 `explore` 结果确认了 `read_n_bytes -> stat_reader.rs::nex
 - Go 在切回顺序 reader 时根据已加载大缓冲、reload 次数和消费偏移对底层流执行相对 seek；Rust 的完整对象模型只需保存逻辑 `position`。
 - Go 返回切片可能在下次调用后改变；Rust 每次返回拥有所有权的新 `Vec<u8>`，内容不会因后续读取而改变。
 - Go 可从 `initFileOffset == fileSize` 打开底层 reader 后在读取时观察 EOF；Rust `ByteReader::new` 在该偏移直接返回 `Eof`。
-
-因此，本文件是 Go API 和关键错误/切换语义的内存化移植，不应被描述为真实对象存储 IO、内存池、指标和重试机制的完整等价实现。
 
 ## 扩展指南
 
@@ -138,14 +125,3 @@ RustCodeGraph 的 `explore` 结果确认了 `read_n_bytes -> stat_reader.rs::nex
 - 修改返回缓冲策略时，要注意 Rust 当前承诺独立 `Vec<u8>`；若改为借用或复用缓冲，会影响 `KVReader` 的所有权接口，并引入与 Go “下次读取可覆盖”相似的生命周期约束。
 - 新增公开 Rust API 时优先使用 snake_case；只有确需保持 Go 移植调用面时才增加转发别名，避免两套入口出现行为漂移。
 - 性能风险主要来自当前每次读取复制、完整对象驻留内存，以及若未来接通并发读取后 `concurrency * buffer_size_per_concurrency` 的峰值内存；正确性风险主要是切换时偏移同步、截断分类和长度运算溢出。
-
-## 验证依据
-
-- 生产源码：`pkg/ingestor/simplesst/byte_reader.rs`（全部常量、字段、构造、读取、模式切换和兼容入口）。
-- crate 边界：`pkg/ingestor/simplesst/Cargo.toml`（package 名、`lib.rs` crate 根、Go 包映射）；`pkg/ingestor/simplesst/lib.rs`（模块装配、再导出、`Error`、`Result`、`MemoryStorage`）。Cargo 依赖只在 Windows target 下声明；本文件自身只依赖标准库和本 crate 符号。
-- 直接下游：`pkg/ingestor/simplesst/concurrent_reader.rs`（`new`、`offset`、`read` 的参数、偏移和线程行为）。
-- 直接上游：`pkg/ingestor/simplesst/kv_reader.rs`、`stat_reader.rs`、`iter.rs`（精确读取、EOF 转换、热点模式切换、原子配置读取及关闭链路）。
-- Rust 独立测试：`pkg/ingestor/simplesst/byte_reader_test.rs` 验证偏移、顺序读取、截断、空内容、关闭和频繁模式切换；`iter_test.rs::test_read_after_close_conn_reader` 验证退出并发态后文件尾仍为正常 EOF，`merge_kv_iter_tracks_unread_input_and_bounds_reader_concurrency` 验证 256 上限和内存预算换算。
-- Go 对照：`pkg/ingestor/simplesst/byte_reader.go` 及 `byte_reader_test.go`；并结合 `kv_reader.go`、`stat_reader.go`、`iter.go` 核对真实外部存储读取、reload、内存池、热点切换和调用入口。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ingestor/simplesst` 找到 37 个 Go/Rust 文件；`explore`/`query` 定位 `ByteReader`、`read_n_bytes`、`switch_concurrent_mode`、`from_storage`、`enable_concurrent_read`、`openStoreReaderAndSeek`、`newByteReader`，并确认 `stat_reader::next_prop` 和 `kv_reader` 委托等调用关系。单独的 `callers/callees` 命令未输出明细，缺失部分用上述已索引源码上下文和精确 `rg` 引用核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终以固定十一个二级标题的结构命令验证，并人工复核本文没有把 Go 的真实并发外部 IO 误写成 Rust 当前事实。

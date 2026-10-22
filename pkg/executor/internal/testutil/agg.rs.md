@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-internal-testutil` crate，由同目录的 `lib.rs` 通过 `pub mod agg` 声明并用 `pub use agg::*` 再导出。它是执行器内部测试工具的一部分，负责描述聚合算子测试/基准所需的参数和固定输入列布局，不是 SQL 聚合的生产执行实现。
-
-`pkg/executor/internal/testutil/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/executor/internal/testutil`；crate 的直接依赖是 `astersql-executor-internal-exec`，而本文件自身只使用同 crate `testutil.rs` 中的轻量测试类型。当前 Rust 侧直接验证入口是 `pkg/executor/internal/testutil/testutil_test.rs::operator_cases_match_go_defaults`；完整聚合基准消费流程仍可从 Go 对照 `pkg/executor/benchmark_test.go` 观察。
+不解析 SQL、不构造聚合描述符、不生成输入数据，也不选择或运行 hash/stream 聚合器；这些行为由消费该参数对象的执行器测试或基准负责。
 
 ## 核心职责
 
@@ -87,15 +85,12 @@ RustCodeGraph 对目标文件识别出 5 个符号（文件、`AggTestCase`、`C
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/executor/internal/testutil/agg.go`：结构体字段集合与含义一致；`Columns` 保持 Double 聚合列和 LongLong 分组列；`Display` 对应 Go 的 `String()`，输出字段顺序及 `%v` 风格布尔/整数文本一致；`DefaultAggTestCase` 对应 Go 同名构造器，默认 `sum`、NDV 1000、非 DISTINCT、1000 万行、并发 4、已排序。
-
 实现层面的差异包括：
 
 - Go 保存 `sessionctx.Context` 接口并返回 `*AggTestCase`；Rust 保存具体 `SessionContext`，按值返回 `AggTestCase`。
 - Go 的规模字段是 `int`；Rust 使用 `usize`。
 - Go 使用 `ast.AggFuncSum` 常量；Rust 直接保存字符串字面量 `"sum"`。
 - Go `Columns` 返回真实的 `*expression.Column` 与 `FieldType`；Rust 返回测试工具自己的 `ColumnDef`，是更轻量的 schema 描述。
-- Go 直接设置会话变量；Rust 将相同动作集中在 `resetChunkSizes`。
 
 这些差异说明 Rust 当前实现对“测试用例参数契约”完成了对齐，但不能据此声称 Go 聚合基准和执行器构建链已经在 Rust 侧完整接线。
 
@@ -106,15 +101,3 @@ Rust 文件逐项对应 `pkg/executor/internal/testutil/agg.go`：结构体字�
 - 改变默认值时同步更新 `pkg/executor/internal/testutil/testutil_test.rs::operator_cases_match_go_defaults`，并核对 Go `agg.go::DefaultAggTestCase` 与 `pkg/executor/benchmark_test.go` 的参数扫描，避免默认标签、数据规模和执行行为漂移。
 - 若新增 `ExecType` 或聚合函数，必须在实际消费方增加构建与错误处理分支；仅允许字符串进入 `AggTestCase` 不等于功能可用。
 - 性能风险主要来自默认 `Rows`、`GroupByNDV` 和 `Concurrency` 的变化，它们会显著改变基准成本和内存压力；兼容风险主要来自 `Display` 文本、字段公开 API 和固定列位置的变化。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中的 `agg.rs` 已被索引为含 5 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/executor/internal/testutil/agg.rs`：核对 `AggTestCase`、`Columns`、`Display::fmt`、`DefaultAggTestCase` 的完整实现。
-- RustCodeGraph `query DefaultAggTestCase`、`query AggTestCase`、`query resetChunkSizes`：核对 Rust/Go 同名符号和下游重置函数；`explore` 识别到 Rust 测试 `operator_cases_match_go_defaults` 对默认构造器的调用。
-- 已读取 `pkg/executor/internal/testutil/Cargo.toml` 与 `lib.rs`，核对 crate 名称、Go 包映射、依赖边界、模块声明和公开再导出。
-- 已读取 `pkg/executor/internal/testutil/agg.go`，逐字段核对 Go 数据结构、schema、字符串格式和默认值。
-- 已读取 `pkg/executor/internal/testutil/testutil.rs` 中 `FieldKind`、`ColumnDef`、`SessionContext`、默认 Chunk 常量和 `resetChunkSizes` 定义。
-- 已读取独立 Rust 测试 `pkg/executor/internal/testutil/testutil_test.rs`，确认默认构造器及格式化输出的现有回归覆盖；同目录没有独立同名 `agg_test.rs`。
-- 已读取 Go 消费方 `pkg/executor/benchmark_test.go` 的 `buildAggExecutor`、`benchmarkAggExecWithCase` 及聚合基准参数扫描，确认字段的实际消费语义。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构检查用于确认目标文件存在且恰有 11 个固定二级标题。

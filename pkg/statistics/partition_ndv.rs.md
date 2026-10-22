@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `pkg/statistics/Cargo.toml` 定义的 `astersql-statistics` crate，由 `lib.rs` 的 `mod partition_ndv` 和 `pub use partition_ndv::*` 装配、导出。它负责从各分区的 FM Sketch 估算全局 NDV，保留各分区不同采样率的 GEE 放大系数。
-
-冻结提交中存在生产调用：`pkg/statistics/handle/globalstats/global_stats.rs` 在各分区都有 detailed sketch 时构造并喂入 `PartitionNDVMerger`，使用其 NDV 并限制到全局行数；局部唯一键则走单独的 schema 推导分支。这里不是直方图或 TopN 合并器。
+负责从各分区的 FM Sketch 估算全局 NDV，保留各分区不同采样率的 GEE 放大系数。
 
 ## 核心职责
 
@@ -59,7 +57,7 @@
 
 ## 与 Go 版本的对应关系
 
-对应 `pkg/statistics/partition_ndv.go`：延迟转换、分区 singleton scale、重复哈希归一、mask 对齐、容量压缩和最终 round 公式一致。Go `Merge(nil)` 是 no-op，Rust 通过值类型排除 nil；Go 的私有 `insertHash` 逻辑在 Rust 的 Merge 循环内实现。Go nil 接收者相关语义由 Rust 空 `Option` 状态分支表达。
+Go `Merge(nil)` 是 no-op，Rust 通过值类型排除 nil；Go 的私有 `insertHash` 逻辑在 Rust 的 Merge 循环内实现。
 
 Go 将旧 hashset 设 nil，Rust clear 可能保留分配；Rust 额外公开 `mask()` 供诊断。Go 异步全局合并也使用本算法，但不能据此宣称冻结 Rust 拥有相同完整异步生产链。
 
@@ -68,11 +66,3 @@ Go 将旧 hashset 设 nil，Rust clear 可能保留分配；Rust 额外公开 `m
 修改算法应同时检查普通直合并与 sampled 转换两条路径，保持跨分区重复归一和每分区 scale，避免用汇总 rows/samples 代替各自比例。扩展独立 `fmsketch_test.rs` 的混合普通/sampled、不同 mask、容量压缩、六种顺序、单分区 NULL 上限场景，并核对 Go 原测试。
 
 接线变更检查 globalstats 的 detailed 完整性、局部唯一键优先级和上游行数上限。任何零样本/非法计数强化必须单独验证 Go 兼容边界；本次只记录事实，不修改算法。
-
-## 验证依据
-
-冻结新增文件完整 110 行及对应 Go 文件直接证明上述状态机。`fmsketch_test.rs::global_stats_sampled_ndv` 覆盖三分区六种顺序 NDV=7、全量草图合并 NDV=2、容量压缩 mask=1/NDV=10、再对齐 mask=3/NDV=20，以及单分区 rows=10/nulls=9 的 NDV=1。`handle/globalstats/global_stats.rs` 的 complete-sketch 分支与 `global_stats_test.rs::global_stats_sampled_ndv` 提供生产接线及静态测试依据。
-
-本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/partition_ndv.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
-
-纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

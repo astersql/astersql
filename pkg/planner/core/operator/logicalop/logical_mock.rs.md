@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`logical_mock.rs` 位于 `astersql-planner-core-operator-logicalop` crate 内，是逻辑算子测试使用的最小数据源节点实现。模块由 `pkg/planner/core/operator/logicalop/lib.rs` 以 `mod logical_mock` 纳入 crate，并通过 `pub use logical_mock::*` 对外导出 `MockDataSource`；它不是 SQL 构建或真实表扫描主链中的生产数据源，真实数据源语义位于同 crate 的 `logical_datasource.rs` 等文件。
-
-该文件虽然处于生产源码目录，却明确承担测试支撑职责：源码注释称其为“测试用 Mock 数据源”，当前 Rust 直接引用只出现在 `logical_union_all_test.rs` 和 `logical_partition_union_all_test.rs`。它让逻辑规则测试可以构造一个满足 `LogicalPlan` 契约、但不引入表元数据、访问路径或执行器依赖的叶节点。
+用 `MockDataSource` 嵌入一份 `BaseLogicalPlan`，承载逻辑节点共有的上下文、节点 ID、类型名、子节点、Schema、统计信息等状态。
 
 ## 核心职责
 
@@ -73,15 +71,13 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/operator/logicalop/logical_mock.go`。两侧都定义仅供测试使用的 `MockDataSource`，都只嵌入/保存 `BaseLogicalPlan`，初始化时都传入规划上下文、使用类型名 `mockDS` 和查询块偏移 `0`。
-
 主要语言差异如下：
 
 - Go 的嵌入字段自动提供基类方法；Rust 显式实现 `LogicalPlan` 的 `base`/`base_mut` 与 `Any` 转型入口，从而复用 trait 默认方法。
 - Go 的 `Init` 返回 `*MockDataSource`，并把 `&ds` 作为 self 参数交给 Go 版 `NewBaseLogicalPlan`；Rust 的 `Init` 返回拥有所有权的 `Self`，Rust 版基类通过 trait 访问具体节点，不保存该 self 指针。
 - Go 文件只声明测试用途，没有同目录 Go 测试直接引用该类型；当前 Rust 已有两个独立测试模块直接使用它。这说明 Rust 侧的实际验证面来自 UnionAll 和 PartitionUnionAll 规则测试，而不是同名 mock 专项测试。
 
-这些差异是对象模型和所有权表达的差异；当前可观察的初始化语义保持一致。不能据此声称 Rust mock 已覆盖 Go `DataSource` 的生产行为，因为两侧这个文件本身都不是生产数据源实现。
+这些差异是对象模型和所有权表达的差异；当前可观察的初始化语义保持一致。
 
 ## 扩展指南
 
@@ -90,16 +86,3 @@ Go 对照文件是 `pkg/planner/core/operator/logicalop/logical_mock.go`。两�
 修改该文件时最可能涉及的接入点是 `MockDataSource::Init` 和 `impl LogicalPlan for MockDataSource`。新增状态应先判断它是否属于所有逻辑算子；若属于，应修改 `BaseLogicalPlan` 而非只加到 mock。若属于真实数据源扫描或访问路径语义，应修改 `logical_datasource.rs` 及对应测试，而非扩展本占位节点。
 
 测试应继续放在独立 `*_test.rs` 文件中。影响 UnionAll 通用规则时同步检查 `logical_union_all_test.rs`；影响分区 UnionAll 的 TopN 下推时同步检查 `logical_partition_union_all_test.rs`。兼容风险主要是更改 `mockDS` 类型名、初始化 ID/上下文语义或默认 trait 行为导致测试树行为漂移；性能风险很低，但给 mock 引入真实元数据或重型依赖会提高规则单测的构造成本并削弱隔离性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件已索引。
-- RustCodeGraph `files --filter pkg/planner/core/operator/logicalop/logical_mock.rs`：确认目标文件含 7 个符号。
-- RustCodeGraph `node --file .../logical_mock.rs --offset 1 --limit 260`：核对完整目标源码，并报告直接使用文件为 `logical_partition_union_all_test.rs` 与 `logical_union_all_test.rs`。
-- RustCodeGraph 对 `MockDataSource`、`Init` 的查询及调用边尝试：确认 Go/Rust 同名符号；因全仓库存在大量同名 `Init`，调用方/被调用方未能精确消歧，随后以直接引用搜索补证。
-- `pkg/planner/core/operator/logicalop/base_logical_plan.rs`：核对 `LogicalPlan` 必需方法、默认行为、`BaseLogicalPlan` 状态和 `NewBaseLogicalPlan → alloc_plan_id` 初始化链。
-- `pkg/planner/core/operator/logicalop/lib.rs`：核对模块装配、公开再导出和独立测试模块声明。
-- `pkg/planner/core/operator/logicalop/Cargo.toml`：核对 crate 名、`base` 路径依赖和 Go 包映射。
-- `pkg/planner/core/operator/logicalop/logical_mock.go`：核对 Go 版本的结构与初始化语义。
-- `pkg/planner/core/operator/logicalop/logical_union_all_test.rs`、`logical_partition_union_all_test.rs`：核对真实使用方式、初始化边界和被测规则；未发现同名专项 Rust 测试或直接引用该类型的同目录 Go 测试。
-- 本任务只新增说明文档；按任务约束不运行 Cargo。交付前以任务指定命令验证恰好包含 11 个固定二级章节，并人工复核文件定位、运行方式和安全扩展入口均有上述源码证据。

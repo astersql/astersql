@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-copr` crate 的 Region 路由门面，真实源码为 [`region_cache.rs`](./region_cache.rs)。它位于 SQL coprocessor 请求与具体 TiKV/PD 路由实现之间：用 `RegionCacheBackend` 抽象批量定位、单键定位、缓存失效、bucket 更新、TiKV/TiFlash RPC 上下文和拓扑查询，再由 `RegionCache` 实现按 Region、bucket 拆分键范围以及 batch cop/MPP 所需的任务源接口。它不直接保存完整的 Region 映射，也不直接访问 PD；生产后端由 `pkg/store/copr/network_backend.rs` 提供并在 `store.rs` 接线。
-
-`pkg/store/copr/Cargo.toml` 将该 crate 声明为 `astersql-store-copr`，`package.metadata.porting.go-package` 指向 `pkg/store/copr`，并以固定 tag `v0.4.2-aster.10` 依赖 `tikv-client`。`pkg/store/copr/lib.rs` 声明 `region_cache` 模块并通过 `pub use region_cache::*` 对外重导出符号；该目录没有 `doc.go`，最近的模块契约是 `lib.rs` 顶部说明。
+为普通 Cop 构建可合批任务，并实现 `BatchTaskSource` 供 batch cop/MPP 生成 TiFlash `RegionInfo`、查询拓扑与 store。
 
 ## 核心职责
 
@@ -100,10 +98,6 @@ RustCodeGraph 报告目标文件被 34 个文件使用，并确认 `locate_key` 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/copr/region_cache.go`，Go 测试是 `region_cache_test.go`，Rust 独立测试是 `region_cache_test.rs`。主要映射为：`RegionCache`、`LocationKeyRanges`、`SplitRegionRanges`、`SplitKeyRangesByLocations`、`SplitKeyRangesByBuckets`、`BuildBatchTask` 和 `OnSendFailForBatchRegions`。Rust 还把 client-go 的具体 `tikv.RegionCache` 能力抽成 `RegionCacheBackend`，便于接入 `network_backend.rs` 与纯 Rust 测试替身。
-
-共同语义包括：按 Region/bucket 拆半开区间；空 end 表示无穷；location 预取不足时补定位并设置 64 次预算；bucket 是可回退优化；只有 Leader read 可构建合批任务；store busy 比较使用请求级 `StoreBusyThreshold`；TiFlash 发送失败逐 Region 通知；重叠/包含 ranges 必须保持所有片段。
-
 当前实现差异必须明确：
 
 - Go `RegionCache` 嵌入 `*tikv.RegionCache`，Rust 只持有 trait object，真实缓存位于后端。
@@ -113,7 +107,7 @@ RustCodeGraph 报告目标文件被 34 个文件使用，并确认 `locate_key` 
 - Go 从 client-go store 读取 `EstimatedWaitTime()`；Rust 从 store 标签 `estimated_wait_ms` 解析毫秒。缺失或非法标签被视为零。
 - Go `OnSendFailForBatchRegions` 通过 `store.IsTiFlash()`；Rust 依赖精确的 `engine=tiflash` 标签。
 
-Rust 可运行测试覆盖有序 bucket 拆分、gap/连续覆盖、stale/乱序 bucket 回退、空边界与多余 location、重叠 range 重启搜索、请求 busy threshold、特殊负 limit 和 TiFlash 标签过滤。Rust 测试顶部的 `GO_REFERENCE` 大段内容只是注释参考，不是已执行测试；文档不能将其中 panic/failpoint 场景算作 Rust 验证结果。
+Rust 测试顶部的 `GO_REFERENCE` 大段内容只是注释参考，不是已执行测试；文档不能将其中 panic/failpoint 场景算作 Rust 验证结果。
 
 ## 扩展指南
 
@@ -125,18 +119,3 @@ Rust 可运行测试覆盖有序 bucket 拆分、gap/连续覆盖、stale/乱序
 - 扩展 TiFlash 失败处理时同步检查 `batch_request_sender.rs` 的 cancelled/shutdown/disaggregated 分支，明确 store 标签缺失与 `Meta=None` 的策略，避免把 TiKV 错误误送到 TiFlash 回调。
 - 若补齐 Go 的诊断能力，优先把日志/PD 查询放在明确的后端或诊断接口中，避免让纯拆分算法直接持有网络资源；同时为 panic 与非 panic fallback 分开测试。
 - 性能优化应重点测量 location/bucket 克隆、每个 range 重启搜索的复杂度以及大批键边界复制；任何索引优化都必须保持重叠/包含 ranges 的 Go 语义。
-
-## 验证依据
-
-本文档使用以下直接证据完成事实核对：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/store/copr` 确认目标、Go 对照、独立测试、生产后端与上游调用文件均被索引。
-- RustCodeGraph `node --file pkg/store/copr/region_cache.rs` 分段读取全部 746 行，确认常量、数据结构、覆盖校验、backend trait、门面方法、两个 trait impl 和 Go 风格兼容符号。
-- RustCodeGraph `explore` 与 `query`：确认 `RegionCache`/`RegionCacheBackend` 定义，并得到 `locate_key`、`invalidate_region`、coverage 与 bucket 拆分的调用关系；定向 callers/callees 查询对部分 impl 方法没有完整解析，因而又用调用点搜索和源码片段核验。
-- `pkg/store/copr/Cargo.toml` 与 `pkg/store/copr/lib.rs`：确认 crate 名、Go 包映射、`tikv-client` tag、模块声明、公开重导出及独立测试装配。
-- `pkg/store/copr/store.rs`、`coprocessor.rs`、`batch_coprocessor.rs`、`batch_request_sender.rs`：确认普通 Cop、TiFlash/ANN、batch cop/MPP 和发送失败的直接生产调用链。
-- `pkg/store/copr/region_cache.go` 全部相关实现区段：核对 Region/bucket 拆分、补定位、fallback、panic 诊断、TiFlash 失败回调和 batch task 语义。
-- `pkg/store/copr/region_cache_test.go`：读取 coverage 表驱动用例及 panic、越界/stale bucket、重叠 range 回归测试。
-- `pkg/store/copr/region_cache_test.rs` 全部 620 行：区分注释态 `GO_REFERENCE` 与实际可运行用例，核对当前 Rust 已验证的边界和差异。
-
-人工复核结论：该文件存在于把逻辑键范围可靠映射到 Region/bucket，并把路由结果交给普通 Cop、batch cop 与 MPP；安全性依赖半开区间、空 end 无穷、补定位预算和 bucket 异常整批回退；扩展时应优先修改门面/后端边界并同步独立 Rust 测试与 Go 语义。任务为纯文档分析，按计划未运行 Cargo。

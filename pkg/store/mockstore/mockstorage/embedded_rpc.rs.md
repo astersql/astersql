@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-mockstorage` crate，是 canonical mock storage 与内嵌 UniStore RPC/MVCC 服务之间的适配层。crate 入口 `pkg/store/mockstore/mockstorage/lib.rs` 将模块声明为私有 `embedded_rpc`，但公开重导出 `EmbeddedRpcStore`；`pkg/store/mockstore/mockstorage/Cargo.toml` 则表明它直接依赖 `astersql-kv` 和相邻的 `astersql-store-mockstore-unistore`。
-
-上游通过 `KVStore::NewEmbeddedRpc`（`storage.rs:311`）选择这条后端路径。普通 `KVStore` 仍使用本地 `BTreeMap` 版本链；只有 `KVStoreInner::embedded_rpc` 为 `Some` 时，`canonical_storage.rs` 的事务、快照读取和提交逻辑才调用本文件。因此它不是网络 TiKV 客户端，也不是完整 `kv::Storage` 实现，而是供 mock storage 复用 canonical 事务外壳的进程内 MVCC 后端。
+`get` 与 `scan` 把快照读转换为内嵌 RPC；`scan` 额外负责把全局范围拆成逐 Region 请求并合并结果。
 
 ## 核心职责
 
@@ -99,11 +97,9 @@ RustCodeGraph 索引将本文件识别为 21 个符号，并确认 `EmbeddedRpcS
 
 ## 与 Go 版本的对应关系
 
-同目录 Go 文件 `pkg/store/mockstore/mockstorage/storage.go` 的 `mockStorage` 是对 `tikv.KVStore` 与 `copr.Store` 的包装；Go 事务由 client-go `KVStore.Begin` 创建，快照由 driver adapter 包装，关闭时依次关闭 coprocessor store 与 KVStore。Go 目录中没有 `embedded_rpc.go`，也没有与 `EmbeddedRpcStore` 一一对应的类型。
-
 因此本文件属于 Rust canonical mock storage 为复用已移植 UniStore RPC/MVCC 服务而增加的局部接线，不应宣称是 Go 文件的逐函数翻译。语义目标仍与 Go 路径一致：通过 TiKV 风格的事务 RPC 提供快照读、两阶段提交、写冲突和幂等关闭；但 Rust 在此显式完成 Region 分组、响应分类及 primary-first 提交，而 Go 版本把这些细节交给 client-go。
 
-迁移元数据 `Cargo.toml [package.metadata.porting]` 将整个 crate 对应到 Go 包 `pkg/store/mockstore/mockstorage`（legacy task `task-819`）。现有 Rust 回归测试验证 canonical 行为，而不是逐行比对 Go 测试；未发现同名 Go 单测或同名 Rust `embedded_rpc_test.rs`。
+现有 Rust 回归测试验证 canonical 行为，而不是逐行比对 Go 测试；未发现同名 Go 单测或同名 Rust `embedded_rpc_test.rs`。
 
 ## 扩展指南
 
@@ -114,14 +110,3 @@ RustCodeGraph 索引将本文件识别为 21 个符号，并确认 `EmbeddedRpcS
 - 修改请求上下文时应同步 `context`、`canonical_storage.rs::SetOption` 及上层 marker/priority 测试，确保后台元数据事务不会错误继承前台 marker。
 - 生产逻辑仍应留在本文件，测试逻辑放在独立 `canonical_storage_test.rs` 或新增独立 `*_test.rs`。最直接的回归入口是 `embedded_rpc_transactions_preserve_snapshot_buffer_and_conflict_errors`；新增多 Region、Region 错误、secondary commit 错误或 close 生命周期行为时应扩充独立测试文件。
 - 兼容风险主要是错误分类和 Go/client-go 可观察事务语义；性能风险主要是 `usize::MAX` 无界扫描、顺序 Region RPC 和完整结果缓冲。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标在有效索引中；`files --filter pkg/store/mockstore/mockstorage` 列出 `embedded_rpc.rs`；`query Embedded`/`query embedded_rpc` 定位 `EmbeddedRpcStore`、全部方法、`storage.rs::EmbeddedRpc` 和回归测试；`node EmbeddedRpcStore` 验证字段及 `lib.rs` 导入边。方法级 `callers/callees` 无输出，未据此臆造调用边。
-- 目标实现：`pkg/store/mockstore/mockstorage/embedded_rpc.rs`，核对了类型、辅助函数、读/扫、Region 分组、rollback 和两阶段 commit 的完整实现。
-- crate 边界：`pkg/store/mockstore/mockstorage/Cargo.toml` 与 `lib.rs`，核对 crate 名、直接依赖、Go 包映射、私有模块和公开重导出。
-- Rust 直接入口：`pkg/store/mockstore/mockstorage/storage.rs` 与 `canonical_storage.rs`，核对构造、持有、关闭、点读、扫描、本地写缓冲合并、提交、回滚、priority 与 marker 传播。
-- 下游实现：`pkg/store/mockstore/unistore/mock.rs`、`rpc.rs`、`tikv/server.rs`，核对临时服务构造、请求分派、错误响应、拦截器、原子关闭和临时目录清理。
-- 独立 Rust 测试：`pkg/store/mockstore/mockstorage/canonical_storage_test.rs::embedded_rpc_transactions_preserve_snapshot_buffer_and_conflict_errors`，覆盖本地写缓冲扫描、快照隔离、可重试写冲突、RPC 拦截错误不被误判为 key not found，以及显式关闭；`pkg/executor/test/loaddatatest/main_test.rs::with_shared_load_data_store` 提供 priority 拦截器的上层接线证据。
-- Go 对照：`pkg/store/mockstore/mockstorage/storage.go`，核对 Go wrapper 的 Begin、GetSnapshot 与 Close；目录搜索确认没有同名 Go 实现/测试，故文档明确记录为包级语义对应而非逐函数复刻。
-- 按任务约束未运行 Cargo。交付结构以固定 11 个二级标题检查，并人工复核无整段源码复制、无测试内嵌建议、无未经证实的支持声明。

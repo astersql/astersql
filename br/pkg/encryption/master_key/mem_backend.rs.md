@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-encryption-master-key`，crate 根是 [`lib.rs`](lib.rs)，并由其中的 `pub mod mem_backend` 与 `pub use mem_backend::*` 对外公开。它不是 [`master_key.rs`](master_key.rs) 中 `AnyBackend` 的独立后端变体，而是把已经取得的明文 32 字节主密钥封装成 AES-256-GCM 内容加解密器的底层组件。
-
-生产路径有两类直接使用者。[`file_backend.rs`](file_backend.rs) 从本地十六进制密钥文件取得明文 key 后长期持有一个 `MemAesGcmBackend`，用它完成加密和解密；[`kms_backend.rs`](kms_backend.rs) 从云 KMS 解封数据密钥后构造并缓存一个 `MemAesGcmBackend`，用它解密备份内容。RustCodeGraph 对目标文件的文件级关系也列出了这两个使用者。
+通过 `NewMemAesGcmBackend` 把调用方提供的字节复制进 `PlainKey`，并以 `CryptographyTypeAesGcm256` 强制校验密钥恰好为 32 字节。
 
 ## 核心职责
 
@@ -79,11 +77,7 @@ RustCodeGraph 的目标文件节点给出 `file_backend.rs` 与 `kms_backend.rs`
 
 ## 与 Go 版本的对应关系
 
-Rust 实现逐项对应 [`mem_backend.go`](mem_backend.go)：同样用 `kms.NewPlainKey`/`NewPlainKey` 强制 32 字节 key，同样写入 method、IV 和独立 tag 元数据，同样把 tag 重新附加后执行 GCM 认证解密，主要错误文本也保持一致。Go 的 `cipher.AEAD.Seal` 与 Rust `Aead::encrypt` 都产生“密文 + tag”，两端均将最后一个 GCM overhead（当前 16 字节）拆开保存。
-
 实现形式存在几项差异：Go 构造器返回指针，Rust 按值返回并由所有权管理；Go 方法保留但忽略 `context.Context` 参数，Rust 方法完全省略 context，因此本地 CPU 加解密都不支持中途取消；Go 使用生成的 `encryptionpb.EncryptedContent`，Rust 使用 [`pb.rs`](pb.rs) 的轻量镜像；Go 从 `aesgcm.Overhead()` 动态取得 tag 长度，Rust 固定写死 16。对 AES-GCM 而言结果一致，但若更换 AEAD 实现，Rust 的固定值必须重新审查。
-
-独立测试 [`mem_backend_test.rs`](mem_backend_test.rs) 与 Go 的 [`mem_backend_test.go`](mem_backend_test.go) 场景对齐：32/16 字节 key、正常往返、错误 key、密文篡改、缺 method 和 1 MB 数据。相邻 [`file_backend_test.rs`](file_backend_test.rs) / [`file_backend_test.go`](file_backend_test.go) 还固定了标准 AES-256-GCM 向量、tag 篡改错误包含 `wrong master key`、缺 tag 错误包含 `aes gcm tag not found`。[`parity_test.rs`](parity_test.rs) 再从公开 crate 接口验证 key 长度、method 元数据和往返契约。
 
 ## 扩展指南
 
@@ -93,11 +87,3 @@ Rust 实现逐项对应 [`mem_backend.go`](mem_backend.go)：同样用 `kms.NewP
 - 优化大对象时，注意当前 API 和 `EncryptedContent` 都以完整 `Vec<u8>` 表示内容，解密还额外克隆一次密文。要改成流式或原地模式会改变调用契约和认证失败时的数据可见性，需同时审查文件/KMS 后端与 Go 兼容性。
 - 加强密钥生命周期时，可评估为 `PlainKey` 引入可靠的内存清零；这应在其所属 `astersql-br-pkg-kms` crate 中实现并配套测试，而不是仅在本文件复制另一套 key 类型。
 - 修改 tag 长度处理时，优先从 AEAD 类型能力取得长度或将固定 16 明确绑定到 AES-GCM；必须保留标准向量与篡改检测测试，避免只验证“能往返”而破坏跨语言格式。
-
-## 验证依据
-
-- RustCodeGraph：运行 `status` 确认索引包含 7032 个 Rust 文件；运行 `files --filter br/pkg/encryption/master_key` 确认目标及相关文件已索引；用 `node --file ...` 完整读取目标 99 行，并读取 `file_backend.rs`、`kms_backend.rs`、`master_key.rs`、`lib.rs`、`common.rs`、`pb.rs` 和 `br/pkg/kms/common.rs` 的直接相关节点。目标节点明确报告由 `file_backend.rs`、`kms_backend.rs` 使用。
-- 调用边补证：`explore 'br/pkg/encryption/master_key/mem_backend.rs MemBackend NewMemBackend Encrypt Decrypt Close'` 识别 `NewMemAesGcmBackend` 的文件/KMS 使用路径；精确 `callers NewMemAesGcmBackend` 因超过 90 秒无输出被中止，随后以两个上游文件的索引节点及 `rg` 符号引用核验具体调用点。
-- crate 与源码：读取 [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、目标 [`mem_backend.rs`](mem_backend.rs)、[`common.rs`](common.rs)、[`pb.rs`](pb.rs)、[`file_backend.rs`](file_backend.rs)、[`kms_backend.rs`](kms_backend.rs)、[`master_key.rs`](master_key.rs) 和 [`br/pkg/kms/common.rs`](../../kms/common.rs)。
-- Go 对照与测试：读取 [`mem_backend.go`](mem_backend.go)、[`mem_backend_test.go`](mem_backend_test.go)、[`mem_backend_test.rs`](mem_backend_test.rs)、[`file_backend_test.go`](file_backend_test.go)、[`file_backend_test.rs`](file_backend_test.rs) 与 [`parity_test.rs`](parity_test.rs)。这些证据覆盖构造、标准向量、往返、认证失败、元数据缺失和大对象路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证本文存在且恰好包含 11 个固定二级章节，并人工复核本文未把内存后端误写成独立配置后端、未声称具备取消/密钥清零/流式处理等当前不存在的能力。

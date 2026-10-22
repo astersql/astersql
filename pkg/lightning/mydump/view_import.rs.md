@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-mydump` 子 crate。`pkg/lightning/mydump/Cargo.toml` 将 `lib.rs` 作为库入口，`lib.rs` 以私有模块 `view_import` 装载本文件，再通过 `pub use view_import::*` 导出其中的公开类型和函数。该 crate 的 Go 对照包由 `[package.metadata.porting].go-package = "pkg/lightning/mydump"` 指定。
-
-它位于 Lightning schema 导入链的“视图规划”阶段，而不是执行 SQL 的阶段。真实上游是 `pkg/lightning/mydump/schema_import.rs` 中的 `SchemaImporter::Run`：先调用 `NewSchemaImportPlan`，再创建数据库和表，最后由 `SchemaImporter::importViews` 校验并按计划创建视图。目标文件负责读取视图 schema、提取依赖、构图和排序；数据库查询、SQL 改写与执行仍在 `schema_import.rs`。
+目标文件负责读取视图 schema、提取依赖、构图和排序；数据库查询、SQL 改写与执行仍在 `schema_import.rs`。
 
 ## 核心职责
 
@@ -90,8 +88,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/lightning/mydump/view_import.go`，测试对照为 `view_import_test.go`；完整接线对照在 `schema_import.go`/`schema_import_test.go`。
-
 共同语义包括：对象名大小写归一；保留创建视图所需语句并移除占位 DROP；收集视图引用；把依赖分成 dump 表、dump 视图和外部对象；稳定拓扑排序；拒绝重复定义和环；创建前校验外部依赖。
 
 重要差异如下：
@@ -110,12 +106,3 @@
 - 新增外部依赖策略时，规划分类修改 `buildViewImportPlan`，下游存在性与对象类型检查修改 `validateViewImportPlan`/`SchemaImporter::loadExistingViewDependencies`，端到端行为放入 `schema_import_test.rs`。
 - 优化性能可缓存正则，并把 ready 集合改为有序集合或最小堆；必须维持 `TableName` 字典序。若改变 `ViewNode.indegree` 的消费方式，还要确认执行阶段没有依赖其返回值。
 - 对齐 Go 时不能仅复刻类型名；需要特别验证 context 取消、SQL mode、AST Restore、CTE 可见性和错误类别。这些是当前 Rust 实现与 Go 实现之间明确存在的能力边界。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/lightning/mydump` 显示 45 个 Go/Rust 文件，`view_import.rs` 含 35 个符号。
-- RustCodeGraph `node --file pkg/lightning/mydump/view_import.rs --offset 1 --limit 520`：读取目标文件完整 474 行，并确认主要类型、函数和内部流程。
-- RustCodeGraph `query`/`callees`：核对 `parseViewSchemaSQL` 调用 `mask_view_query_literals_and_comments`、`split_view_statements`、`parse_name`、`normalizeTableName`；`NewSchemaImportPlan` 调用解析与建图入口；`buildViewImportPlan` 构造 `ViewNode`/`ViewImportPlan`。由于 Go/Rust 同名符号使 `callers` 未返回可用结果，上游边由精确 `rg` 复核。
-- 已读生产路径：`pkg/lightning/mydump/view_import.rs`、`view_import.go`、`schema_import.rs`、`schema_import.go`、`loader.rs`、`reader.rs`、`common.rs`、`lib.rs`、`Cargo.toml`。
-- 已读测试路径：`pkg/lightning/mydump/view_import_test.rs`、`view_import_test.go`、`schema_import_test.rs`、`schema_import_test.go`。Rust 测试直接证明依赖去重、当前 schema 补全、跨库引用、字面量/注释屏蔽、CTE 排除、额外语句保留、缺失/多条 CREATE 错误、确定性拓扑、大小写归一、重复定义和环检测；schema 测试证明计划接入与导入顺序、已有视图跳过和同名非视图冲突。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定命令确认目标文档存在且恰有 11 个固定二级标题，并人工复核唯一生产物及未修改 `plan.md`。

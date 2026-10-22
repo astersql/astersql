@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`worker.rs` 属于 `astersql-br-pkg-utils` library crate。crate 根 `br/pkg/utils/lib.rs` 通过 `#[path = "worker.rs"] pub mod worker` 编入该文件，并把这里的全部公开能力再次导出到 crate 根：`PanicToErr`、`CatchAndLogPanic`、`AsyncStreamBy`、`WorkerResult`、`WorkerTokenChannel`、`BuildWorkerTokenChannel` 及两个容量常量。独立测试由同一 crate 根在 `cfg(test)` 下挂载 `br/pkg/utils/worker_test.rs`，测试逻辑没有内嵌在生产文件中。
-
-本文件移植自同路径 `br/pkg/utils/worker.go`，集中提供三类互相独立的基础能力：把 panic 转为错误或日志、把阻塞式生成器包装为带背压的异步流、构造预填充的并发令牌通道。RustCodeGraph 与全仓精确搜索确认：当前 Rust 生产代码尚未直接调用这些导出符号，已验证的直接上游只有 `br/pkg/utils/lib.rs` 的公开再导出和 `worker_test.rs`；`br/pkg/backup/prepare_snap/stream.rs::AsyncStreamBy`、`br/pkg/restore/snap_client/stubs.rs::BuildWorkerTokenChannel` 是各自模块的同名局部实现，并非本文件的调用者。Go 版本则已接入 stream helper、snapshot restore 和 prepare-snapshot 主链。因此本文描述的是已编译、已测试的公共移植实现，而不声称 Rust BR 生产流程已经完成同等接线。
+`WorkerTokenChannel` 用共享互斥状态和条件变量实现可克隆、固定容量的令牌池；`BuildWorkerTokenChannel` 负责输入容量的默认化、上限钳制和预填充（`worker.rs:145-229`）。
 
 ## 核心职责
 
@@ -102,11 +100,11 @@ panic helper 在调用线程同步执行，不创建资源管理线程。它们�
 
 ## 与 Go 版本的对应关系
 
-Rust 的两个容量常量及 `BuildWorkerTokenChannel` 的 0 默认化、30M 上限钳制、Warn 文案与 Go `worker.go` 对齐。Go 返回预填充的 `chan struct{}`，调用者以接收取得令牌、发送归还令牌；Rust 将同样语义显式化为 `WorkerTokenChannel::{acquire, try_acquire, release}`，并额外提供只读快照。Go 对满 channel 的归还也会阻塞，因此 Rust 的误配风险与其一致，但 Rust 当前没有 `select`/context 取消等待的等价入口。
+Go 返回预填充的 `chan struct{}`，调用者以接收取得令牌、发送归还令牌；Rust 将同样语义显式化为 `WorkerTokenChannel::{acquire, try_acquire, release}`，并额外提供只读快照。Go 对满 channel 的归还也会阻塞，因此 Rust 的误配风险与其一致，但 Rust 当前没有 `select`/context 取消等待的等价入口。
 
 Go `PanicToErr` 与 `CatchAndLogPanic` 设计为 `defer` recovery 函数；Rust 没有等价 defer，因此改为接收并立即执行闭包。前者在 Go 中覆写命名返回错误，在 Rust 中返回 `Result<T, SharedError>`；后者在 Go 中没有返回值，在 Rust 中用 `Option<T>` 区分成功和已吞掉的 panic。两边都记录 Warn，但 Go 额外附带 `zap.StackSkip` 的堆栈位置，Rust 当前只记录短错误或 panic 文本。
 
-两边的 `AsyncStreamBy` 都采用无缓冲/零容量通道、循环调用生成器、成功发送 Item、首次错误发送错误帧后关闭。Rust 为构造错误帧增加 `T: Default` 约束；Go 泛型零值不需要显式 trait。Go goroutine defer `close(out)`，Rust 依靠线程退出 drop sender 达到 receiver 结束。Go `Result<T>` 的零值 `Err == nil`，Rust 对应 `Option::None`。
+Rust 为构造错误帧增加 `T: Default` 约束；Go 泛型零值不需要显式 trait。
 
 独立 Rust 测试覆盖了 Go 核心意图，并额外验证零容量背压、非阻塞尝试取得、阻塞等待归还以及容量观察。当前同目录没有 `worker_test.go`；Go 对照依据来自生产源码与上述真实调用点，不能声称存在专属 Go 单元测试。
 
@@ -119,15 +117,3 @@ Go `PanicToErr` 与 `CatchAndLogPanic` 设计为 `defer` recovery 函数；Rust 
 - 若要求 context-aware acquire 或公平调度，`Condvar + notify_all` 需要重构；同时增加取消竞态、多等待者顺序、误归还和 poison 的独立测试，并评估高并发惊群的性能成本。
 - 修改 panic 转换时需保持 `ErrUnknown` 分类和 Go 文案兼容；若补充 backtrace，应控制日志体积并避免在敏感 payload 上泄露信息。
 - 任何 Rust 源码修复都应同步更新 `worker_test.rs`，而不是把 `#[cfg(test)]` 测试放入 `worker.rs`；本次任务仅写文档，未修改运行时代码。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、其中 7,032 个 Rust 文件。
-- RustCodeGraph `node --file br/pkg/utils/worker.rs --offset 1 --limit 260`：完整读取目标文件 229 行，核对常量、私有 helper、公开函数、`Result<T>`、令牌状态和全部方法分支。
-- RustCodeGraph `query`、`callers`、`callees`：查询 `PanicToErr`、`CatchAndLogPanic`、`AsyncStreamBy`、`BuildWorkerTokenChannel`、`WorkerTokenChannel`；确认主要内部边，包括 `PanicToErr -> panic_into_shared_error/ShortError`、`CatchAndLogPanic -> panic_message`、`AsyncStreamBy -> Result<T>`、构造器对两个容量常量和两个令牌类型的引用。调用者查询未返回本文件公开函数的 Rust 生产调用。
-- 全仓 Rust 精确搜索：确认 `br/pkg/utils/lib.rs` 的模块挂载/再导出与 `br/pkg/utils/worker_test.rs` 的测试调用；确认其他生产文件中的 `AsyncStreamBy`、`BuildWorkerTokenChannel` 是局部同名定义。
-- `br/pkg/utils/Cargo.toml`：核对 crate 边界、Go package 元数据以及 errors/logutil 路径依赖。
-- `br/pkg/utils/worker.go`：核对 Go panic recovery、无缓冲异步流及预填充令牌 channel 的原始语义。
-- `br/pkg/utils/worker_test.rs`：核对成功/panic、错误末帧、零容量背压、令牌取得归还、容量钳制和阻塞唤醒边界。
-- Go 调用搜索：核对 `br/pkg/streamhelper/{advancer.go,collector.go,advancer_daemon.go}`、`br/pkg/restore/snap_client/import.go`、`br/pkg/backup/prepare_snap/stream.go` 的生产接线；同时确认不存在同目录 `worker_test.go`。
-- 按任务约束未运行 Cargo。交付验证仅执行固定十一章节结构检查和文档自审；仓库声明的 `.agents/skills/tidb-verify-profile` 在当前工作区不存在，因而无法调用其 Ready 封装，改为直接执行本任务指定的文档验证。

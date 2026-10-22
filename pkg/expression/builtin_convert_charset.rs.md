@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate。crate 根在 `pkg/expression/lib.rs`，通过 `#[path = "builtin_convert_charset.rs"] mod builtin_convert_charset_kernel;` 将它作为私有内核模块挂入；对应独立单元测试由同一文件中的 `#[cfg(test)]` 模块加载 `pkg/expression/builtin_convert_charset_test.rs`。`pkg/expression/Cargo.toml` 声明的直接下游依赖是 `parser-charset-dependency`（实际包 `astersql-parser-charset`），转换最终委托给该包的 `FindEncoding` 与 `Encoding::Transform`。
-
-截至本次分析，仓库内对本文件公开符号的精确引用只出现在 `pkg/expression/builtin_convert_charset_test.rs` 和 `pkg/expression/builtin_control_9_aster_unit_test.rs`；模块本身也没有从 `lib.rs` 公开再导出。因此它当前是已挂载、可被 crate 内测试验证的字符集转换与包装决策内核，并非已经接入 Rust `ScalarFunction` 构建/执行链的完整生产实现。完整的运行时接线仍可在 Go 对照 `pkg/expression/builtin_convert_charset.go` 中看到。
+`encode_to_binary` / `decode_binary` 实现单值 UTF-8 到目标字符集字节、以及 binary 字节到目标字符集文本（UTF-8 字节）的转换。
 
 ## 核心职责
 
@@ -77,9 +75,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的函数名常量、6 字节错误摘要、编码/解码方向、legacy charset 集合、三类函数属性和 `HandleBinaryLiteral` 分支直接对应 `pkg/expression/builtin_convert_charset.go`。`PROPERTY_*` 的名字集合复刻 Go `convertActionMap`；未知名称在 Go map 查询和 Rust 查询中都归为 `funcPropNone`/`FunctionProperty::None`。Go 和 Rust 的 `FindEncoding` 也都只把 utf8/utf8mb4、GBK、Latin1、ASCII、GB18030 映射到真实实现，其他名称回退 binary。
-
-关键行为对应为：Go `builtinInternalToBinarySig.evalString/vecEvalString` 对应 Rust 单值/行编码；Go `builtinInternalFromBinarySig.evalString/vecEvalString` 对应 Rust 单值/行解码；Go `isLegacyCharset` 对应 Rust `is_legacy_charset`；Go `HandleBinaryLiteral` 的条件判断对应 Rust `handle_binary_literal`。
+`PROPERTY_*` 的名字集合复刻 Go `convertActionMap`；未知名称在 Go map 查询和 Rust 查询中都归为 `funcPropNone`/`FunctionProperty::None`。Go 和 Rust 的 `FindEncoding` 也都只把 utf8/utf8mb4、GBK、Latin1、ASCII、GB18030 映射到真实实现，其他名称回退 binary。
 
 迁移并不完整。Go 文件还实现了 `functionClass` 参数验证、`baseBuiltinFunc`、返回 `FieldType`、`ScalarFunction` 构造、`tipb` code、`FoldConstant`、真实 `BuildContext`/SQL mode/warning context，以及 expression clone/share 约束；Rust 文件只保留可独立测试的转换和决策模型。Go `constant_test.go::TestConstantFoldingCharsetConvert` 验证了真实表达式构造与常量折叠，而当前 Rust 测试只验证内核函数，不能替代该主链证据。
 
@@ -90,11 +86,3 @@ Rust 的函数名常量、6 字节错误摘要、编码/解码方向、legacy ch
 - 新增或调整函数分类时修改恰好一个 `PROPERTY_*` 表，并覆盖大小写、未知名称、legacy/non-legacy charset、binary/non-binary 结果和 NULL 表达式。重复或跨表名称会由当前优先级（`BinaryAware` 先于 `Auto`）决定，宜避免这种隐含冲突。
 - 把内核接入生产表达式链时，应在其他生产文件中实现或复用表达式节点构造、返回类型/collation、常量折叠、会话 warning 与 strict mode、protobuf pushdown 等能力，不应把这些上下文强塞进本文件的纯值模型。还需补与 Go `TestConstantFoldingCharsetConvert` 同意图的独立 Rust 回归测试。
 - 性能扩展应关注批量路径的逐行分配和属性表线性扫描；任何缓存/复用都必须保持返回缓冲区所有权、错误前缀和 warning 顺序不变。测试必须继续放在独立 `*_test.rs` 文件，不能内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标仓库；`node --file pkg/expression/builtin_convert_charset.rs --offset 1 --limit 400` 完整读取 383 行源文件；`query` 精确定位 `conversion_property`、`handle_binary_literal`、`decode_binary`、`encode_to_binary`；`node encoding.rs::FindEncoding` 验证支持表、binary 回退及目标文件调用边。对目标自由函数执行 `callers/callees` 未返回结果，因此上游接线改用精确仓库搜索核验，未把缺失图边当成“无人调用”的唯一证据。
-- crate 与模块：`pkg/expression/Cargo.toml`（crate 名、`lib.rs`、`parser-charset-dependency`、`autotests = false`）和 `pkg/expression/lib.rs`（私有模块与 `#[cfg(test)]` 独立测试挂载）。目标包没有 `doc.go`，因此无额外包契约可读。
-- Rust 测试：`pkg/expression/builtin_convert_charset_test.rs` 验证未知编码 binary 回退、函数名大小写敏感、单值非严格失败返回合法前缀；`pkg/expression/builtin_control_9_aster_unit_test.rs` 验证 GBK/GB18030 往返、NULL 行、错误/warning/strict 分支、包装动作和向量失败保留原始单元。
-- Go 对照：`pkg/expression/builtin_convert_charset.go` 验证完整 function class、标量/向量执行、warning/strict 分支、属性表及 `HandleBinaryLiteral`；`pkg/expression/constant_test.go::TestConstantFoldingCharsetConvert` 验证 Go 生产表达式的字符集转换与常量折叠；`pkg/parser/charset/encoding.go` 与 Rust `pkg/parser/charset/encoding.rs` 核对编码映射和未知名回退。
-- 人工复核结论：本文件存在是为了把内部 `to_binary`/`from_binary` 的转换语义及二进制字面量包装规则移植成 Rust 可测试内核；当前执行从纯函数入口进入 parser charset 编码器，失败经 options 分流；安全扩展必须同步编码器、三条错误策略和独立测试，并把尚缺的生产表达式接线视作范围外事实，而非当前已支持能力。

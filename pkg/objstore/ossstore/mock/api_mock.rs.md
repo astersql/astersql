@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 Rust crate `astersql-objstore-ossstore-mock`。该 crate 由同目录的 `Cargo.toml` 声明，唯一直接依赖是 `mockall = "0.13"`；根 `Cargo.toml` 同时把 `pkg/objstore/ossstore/mock` 列为 workspace member，并以 `facade_objstore_ossstore_mock` 暴露路径依赖。模块入口 `pkg/objstore/ossstore/mock/lib.rs` 声明 `pub mod api_mock` 并 `pub use api_mock::*`，因此本文件的公开类型可从 crate 根访问。
-
-它提供的是测试用 OSS API 替身：用简化的请求/响应数据结构描述 Go OSS SDK 风格的接口，再由 `mockall::mock!` 生成可配置调用期望的 `MockAPI`。它不发起网络请求，也没有对象存储实现。还需区分它与 `pkg/objstore/ossstore/interface.rs` 的生产 `API` trait：两者类型、方法命名和返回模型不同，当前搜索到的 Rust 使用者仅为本 mock crate 的独立测试，因此不能把这里的 `Api` 当作生产 OSS 客户端已经接线的 mock 实现。
+不会应用 `OptionFn`、解释请求字段、维护对象内容、执行重试或负责 OSS 资源清理；这些行为必须由测试回调或真实实现承担。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ Go `pkg/objstore/ossstore/interface.go::API` 和生成的 `api_mock.go` 均包�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/objstore/ossstore/mock/api_mock.go`，它由 MockGen 根据 `pkg/objstore/ossstore/interface.go::API` 生成。Rust 版本手写协议，再交给 mockall 生成 mock；对应关系如下：
-
 - Go `MockAPI` 持有 `*gomock.Controller` 和独立 recorder；Rust `MockAPI` 内含 mockall 状态，`MockAPIMockRecorder` 只是类型别名。
 - Go `NewMockAPI(ctrl)` 依赖测试控制器；Rust `NewMockAPI()` 无参数，期望校验随 mockall 对象生命周期进行。
 - Go `EXPECT()` 返回独立 recorder 并使用同名方法登记调用；Rust `EXPECT()` 返回自身，随后使用 `expect_<方法名>`。因此只保留链式入口形状，不是逐字符相同的 API。
@@ -87,7 +83,7 @@ Go 对照文件是 `pkg/objstore/ossstore/mock/api_mock.go`，它由 MockGen 根
 - Go SDK 使用指针请求/结果并允许 `nil`；Rust使用引用输入和拥有所有权的结果，成功结果不能为 `None`。
 - 13 个非预签名方法在名称层面相互对应；Rust 的请求/结果字段是测试最小模型。Go 的第 14 个方法 `Presign` 当前没有 Rust 对应项。
 
-Go 测试 `pkg/objstore/ossstore/client_test.go` 把生成 mock 注入生产 `client.svc`，覆盖权限检查、读取和错误行为；预签名测试则另建 `presignAPI`。Rust mock 的测试没有展示把本文件类型注入 `pkg/objstore/ossstore/interface.rs::API`，且两套 trait 不兼容，说明 Rust mock 当前主要是迁移契约测试资产而非生产客户端测试替身。
+Rust mock 的测试没有展示把本文件类型注入 `pkg/objstore/ossstore/interface.rs::API`，且两套 trait 不兼容，说明 Rust mock 当前主要是迁移契约测试资产而非生产客户端测试替身。
 
 ## 扩展指南
 
@@ -98,14 +94,3 @@ Go 测试 `pkg/objstore/ossstore/client_test.go` 把生成 mock 注入生产 `cl
 扩充请求字段时优先修改明确的结构体；若所有 key-only 请求不再同构，应从 `request_with_key!` 中拆出个别类型。涉及 body 流或关闭行为时，不能继续用 `Vec<u8>` 冒充资源生命周期，应增加独立可关闭抽象及相应测试。并发使用需要新增独立测试验证期望匹配、调用次数和 drop 行为，不要把测试代码内嵌到本生产文件。
 
 兼容风险主要是公开类型/方法名、mockall 生成的 `expect_*` 名称和 Go 迁移测试调用形状；性能风险较低，因为该 crate 面向测试，但大 body 的 `Vec<u8>` 克隆与复杂 `withf` 匹配仍可能增加测试成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/objstore/ossstore/mock` 列出 8 个 Go/Rust 文件；`node --file pkg/objstore/ossstore/mock/api_mock.rs --offset 1 --limit 500` 返回完整 283 行和 33 个符号；`query MockAPI`、`query MockAPIMockRecorder` 定位 Rust 别名/构造函数以及 Go 生成符号；精确 `callers`/`callees` 查询没有返回本文件宏生成调用边。
-- Rust 源与装配：`pkg/objstore/ossstore/mock/api_mock.rs`、`pkg/objstore/ossstore/mock/lib.rs`、`pkg/objstore/ossstore/interface.rs`。
-- Cargo 边界：`pkg/objstore/ossstore/mock/Cargo.toml` 与根 `Cargo.toml` 的 workspace member、`facade_objstore_ossstore_mock` 路径依赖。
-- Rust 独立测试：`pkg/objstore/ossstore/mock/api_mock_test.rs` 和 `pkg/objstore/ossstore/mock/migration_aster_unit_test.rs`。
-- Go 对照与实际测试用法：`pkg/objstore/ossstore/interface.go`、`pkg/objstore/ossstore/mock/api_mock.go`、`pkg/objstore/ossstore/client_test.go`。
-- 仓库搜索：除上述两个 Rust 测试文件外，未发现本模块 `NewMockAPI`/`MockAPI` 在 Rust OSS 生产代码中的直接使用；生产 Rust 使用另一套 `interface.rs::API`。
-
-本任务为纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令，要求本文恰有 11 个固定二级标题。

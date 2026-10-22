@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-executor-aggregate`；crate 入口 `pkg/executor/aggregate/lib.rs` 将其公开为 `agg_hash_partial_worker` 模块。它位于并行 Hash 聚合的 Partial 阶段：`HashAggExecutor::execute` 为输入 chunk 分桶并在线程作用域中创建 `HashAggPartialWorker`，worker 先按分组键累计局部聚合状态，再把内存结果按 Final Worker 数量分片。若配置了内存限制，文件还提供局部结果落盘、分区回读和同键合并所需的 `PartialResultSpill`。
-
-这一 Rust 实现目前有两层数据模型。`HashAggPartialWorker` 使用本 crate 的简化 `AggMap`、`Aggregation`、`Chunk` 和 `Row`；`PartialResultSpill` 则通过 `astersql-executor-aggfuncs` 的类型擦除 `PartialResult`、`Serializer` 与真实 chunk 磁盘容器承载可序列化聚合状态。桥接位于 `pkg/executor/aggregate/agg_spill.rs::ParallelHashAggSpillHelper`。
+这一 Rust 实现目前有两层数据模型。
 
 ## 核心职责
 
@@ -81,9 +79,7 @@ RustCodeGraph 对 Go 文件给出的应用主链是 `run -> fetchChunkAndProcess
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/aggregate/agg_hash_partial_worker.go`。Rust 保留了以下关键语义：1 MiB 的 `SpillChunkSizeThreshold`；`twmb/murmur3.Sum32` 的 seed-0 分区结果；按 key 复用或新建 partial state；按 Final Worker 分片；临时 chunk 达实际使用字节阈值或行容量时落盘；分区切换前强制 flush；spill 后清空内存中 partial maps；错误/异常路径清理复用缓冲。
-
-Rust 当前不是 Go struct 的字段逐一运行时复刻。Go worker 直接持有 input/output/give-back channels、finish channel、wait groups、session/expression context、memory tracker、统计、failpoints 和测试注入字段，并由 `run/fetchChunkAndProcess/finalizeWorkerProcess` 驱动；Rust 的活动 `HashAggPartialWorker` 仅封装同步的 chunk 更新、分片与可选 helper，线程和结果汇合由 `HashAggExecutor::execute` 负责。文件顶部的大段注释保存了早期 Go 结构草图，不是可执行字段或 API，不能据此宣称 Rust 已具备 Go channel/failpoint 生命周期。
+Go worker 直接持有 input/output/give-back channels、finish channel、wait groups、session/expression context、memory tracker、统计、failpoints 和测试注入字段，并由 `run/fetchChunkAndProcess/finalizeWorkerProcess` 驱动；Rust 的活动 `HashAggPartialWorker` 仅封装同步的 chunk 更新、分片与可选 helper，线程和结果汇合由 `HashAggExecutor::execute` 负责。
 
 另一个结构差异是 Go 在内存阶段已按 final concurrency 维护多个 `partialResultsMap`，Rust 先维护单一 `AggMap`，收尾时再哈希分桶；两者依赖相同 hash 以维持目标 worker 一致。Go 的内存 tracker 记录更广泛的 map、key 和 partial result delta；Rust `memory_usage` 是局部估算。Rust 的 `PartialResultSpill` 将 Go worker 内的 `prepareForSpill/spillDataToDiskImpl/spillRemainingDataToDisk` 拆成独立可复用存储对象，并额外提供类型化 restore/merge API。
 
@@ -96,13 +92,3 @@ Rust 当前不是 Go struct 的字段逐一运行时复刻。Go worker 直接持
 修改 spill 阈值或 chunk 布局时，应关注“大 DISTINCT 状态、行数很少但单行很宽”的风险，继续使用实际 used bytes，确保 key 始终位于 `functions.len()` 列，并维持每个分区结束时 flush。新增文件格式字段需要同步 `new`、`spill_maps`、`restore_partition` 和相应 aggfunc serializer。
 
 修改错误恢复或并发模型时，必须维持三个不变量：临时 key/chunk 在所有退出路径清空；被 restore 的分区最多消费一次；磁盘文件在 restore 或 Drop 后关闭。若绕过外层 helper 的 `Mutex` 直接并发访问 `PartialResultSpill`，需先重新设计其可变缓冲所有权，不能只给现有方法增加共享引用。
-
-## 验证依据
-
-- 生产源码：`pkg/executor/aggregate/agg_hash_partial_worker.rs`（33 个索引符号；重点为 `murmur3_sum32`、`HashAggPartialWorker`、`check_chunk_spill`、`PartialResultSpill` 及其 `Drop`/restore 实现）。
-- crate 与入口：`pkg/executor/aggregate/Cargo.toml`、`pkg/executor/aggregate/lib.rs`。
-- Rust 调用链：`pkg/executor/aggregate/agg_hash_executor.rs::HashAggExecutor::execute`、`pkg/executor/aggregate/agg_spill.rs::ParallelHashAggSpillHelper::{spill, restore_partition}`、`pkg/executor/aggregate/agg_hash_final_worker.rs::HashAggFinalWorker::{merge_input, restore_from_disk}`。
-- Go 对照：`pkg/executor/aggregate/agg_hash_partial_worker.go`，重点核对 `run`、`fetchChunkAndProcess`、`updatePartialResult`、`shuffleIntermData`、`spillDataToDiskImpl`、`CheckChunkSpill`。
-- 独立测试：`pkg/executor/aggregate/agg_hash_partial_worker_test.rs` 验证 Go Murmur3 向量与目标 worker；`pkg/executor/aggregate/agg_spill_test.rs` 验证 threshold 的 nonempty/used-bytes/full 条件、跨分区 round-trip、IO 与 panic 清理、并发多类型 DISTINCT spill 后与无 spill 基线一致。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点；`files --filter pkg/executor/aggregate` 定位 20 个相关 Go/Rust 文件；`query` 定位目标 struct/function；`explore` 给出 Go worker 主链及 Rust `restore_merged_partition -> restore_partition`。方法级 Rust callers/callees 对部分符号无输出，已以同模块直接引用补证，未作超出源码的推断。
-- 本任务是纯文档分析；按计划不运行 Cargo。最终以任务指定命令确认目标文件存在且恰含 11 个固定二级章节，并人工检查链接路径、符号名、边界与扩展建议均能回溯到上述文件。

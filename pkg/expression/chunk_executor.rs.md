@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 的 Chunk 级表达式执行内核，源文件由 [`pkg/expression/lib.rs`](lib.rs) 以 `chunk_executor_kernel` 私有模块装配。它位于表达式对象（`Expression`）、列式容器（`chunk::Chunk`）和上层求值器之间：负责判断一组表达式能否改变为向量化求值顺序，将投影结果写入输出列，并把一组谓词转换为逐物理行的选择位图。`lib.rs` 只把 `VectorizedFilter` 重导出为 crate 公共 API；其余 `pub`/`pub(crate)` 符号主要供 crate 内的求值器和测试使用。
-
-crate 边界由 [`pkg/expression/Cargo.toml`](Cargo.toml) 定义：包名是 `astersql-expression`，库入口为 `lib.rs`，直接使用的 Chunk、类型和解析器常量分别来自工作区依赖 `astersql-util-chunk`、`astersql-types`、`astersql-parser-ast` 与 `astersql-parser-mysql`，在 `lib.rs` 中经 crate 级别别名/重导出后由本文件的 `use crate::*` 引入。
+位于表达式对象（`Expression`）、列式容器（`chunk::Chunk`）和上层求值器之间：负责判断一组表达式能否改变为向量化求值顺序，将投影结果写入输出列，并把一组谓词转换为逐物理行的选择位图。
 
 ## 核心职责
 
@@ -78,12 +76,11 @@ RustCodeGraph 的精确节点证实：`VectorizedExecute → evalOneColumn`；`V
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`pkg/expression/chunk_executor.go`](chunk_executor.go)。Rust 保留了 Go 的函数分组、类型分派、sequence 判定、变量函数递归检查、投影物理转换、过滤路径选择、NULL 语义以及 selection 求交规则。`evaluator.rs` 对应 Go 的 [`pkg/expression/evaluator.go`](evaluator.go)，说明本文件的内部入口如何进入常规 `EvaluatorSuite` 执行链。
+Rust 保留了 Go 的函数分组、类型分派、sequence 判定、变量函数递归检查、投影物理转换、过滤路径选择、NULL 语义以及 selection 求交规则。
 
 已核实差异：
 
 - Go `evalOneVec` 直接使用 `output.Column(colIdx)`，特殊类型再 `SetCol`；Rust 总是在临时默认列求值，成功后统一 `SetCol`，失败时不会把临时列装入输出。
-- Go 的逐类型 `evalOneColumn` 各自循环；Rust 抽取为统一循环并委托 `evalOneCell`，支持类型集合保持一致。
 - Go 用 `defer input.SetSel(input.Sel())` 恢复 selection；Rust 用 `SelectionGuard::Drop`，额外由 Rust 测试验证 panic 展开路径。
 - Go 非法向量 ENUM/SET 名称写 debug 日志后继续；Rust 静默追加默认值。Go 的错误返回可携带部分位图，而 Rust 过滤入口在错误时清空位图。
 - Rust 用 `Option<Vec<bool>>` 区分“不请求 NULL 位图”，对应 Go 的 `nil []bool`；Rust 为动态表达式克隆构造 `CNFExprs`，对应 Go 直接传递表达式切片。
@@ -95,12 +92,3 @@ RustCodeGraph 的精确节点证实：`VectorizedExecute → evalOneColumn`；`V
 - 新增有跨行副作用的函数时，应评估 `Vectorizable`、`HasGetSetVarFunc` 与 `checkSequenceFunction`；若向量化会改变调用顺序，必须加入保守拒绝规则，并补充“允许/拒绝”成对用例。
 - 修改过滤逻辑时必须保持三项不变量：位图按物理行索引、SQL NULL 不通过谓词、原 selection 在任何退出路径恢复。异常恢复回归位于 [`pkg/expression/chunk_executor_test.rs`](chunk_executor_test.rs)，selection/NULL 与 Go 行为对照位于 [`pkg/expression/builtin_32_aster_unit_test.rs`](builtin_32_aster_unit_test.rs) 和 Go 的 [`pkg/expression/builtin_vectorized_test.go`](builtin_vectorized_test.go)。
 - 性能风险主要来自每行动态分派、非整数过滤器反复克隆为单元素 CNF、向量特殊类型的二次分配，以及 selection 快照/全长位图。优化时不能以压缩 selection 下标替代物理下标，也不能牺牲错误路径恢复。
-
-## 验证依据
-
-- 源码全量阅读：[`pkg/expression/chunk_executor.rs`](chunk_executor.rs)，符号范围 `Vectorizable` 至 `vectorizedFilter`。
-- crate 与装配：[`pkg/expression/Cargo.toml`](Cargo.toml)、[`pkg/expression/lib.rs`](lib.rs)、[`pkg/expression/evaluator.rs`](evaluator.rs)。`pkg/expression` 下不存在 `doc.go`，因此没有额外包契约文件。
-- Go 对照：[`pkg/expression/chunk_executor.go`](chunk_executor.go)、[`pkg/expression/evaluator.go`](evaluator.go)、[`pkg/expression/builtin_vectorized_test.go`](builtin_vectorized_test.go)。
-- Rust 测试：[`pkg/expression/chunk_executor_test.rs`](chunk_executor_test.rs)、[`pkg/expression/builtin_32_aster_unit_test.rs`](builtin_32_aster_unit_test.rs)、[`pkg/expression/evaluator_test.rs`](evaluator_test.rs)。它们分别证明异常恢复、向量化/selection/物理类型边界，以及 `EvaluatorSuite` 的上游接线。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；精确 `node` 查询了 `VectorizedExecute`、`VectorizedFilterConsiderNull`、`evalOneVec`、`rowBasedFilter`、`vectorizedFilter`，其调用边已在“依赖与调用关系”列出。路径过滤未返回该文件且自然语言 `explore` 命中噪声较多，故未以这些不稳定结果支持结论。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务给定命令校验目标文件存在且恰有 11 个固定二级标题，并人工复核唯一新增产物、链接目标、符号名和 Go/Rust 差异。

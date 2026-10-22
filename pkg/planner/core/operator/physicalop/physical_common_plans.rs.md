@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`。包根 `pkg/planner/core/operator/physicalop/lib.rs` 以 `pub mod physical_common_plans` 暴露它；同一包内的属性强制、任务转换、CTE、Shuffle、Index Join、Local Index Lookup、TiFlash 谓词下推和计划缓存克隆等模块直接引用其中的公共类型。它不是 SQL 解析入口或执行器，而是物理规划层的一组可运行公共数据模型：用轻量表达式、物理属性和递归计划节点把多个尚未统一到完整 `base::PhysicalPlan` trait 体系的 Rust 规划模块连接起来，并提供简化的 Insert/Update/Delete 模型。
-
-文件必须分成两部分理解：第 16—311 行是被块注释包围的 Go 风格迁移设计稿，记录完整 TiDB 类型预计具备的字段与算法，不参与 Rust 编译；真正生效的实现从 `// --- 可运行的简化实现 ---` 后开始。以下行为说明均以可编译部分为准，注释设计稿只用于解释迁移目标，不能视为当前能力。
+`InsertGeneratedColumns`、`Assignment`、`Insert`、`Update`、`Delete` 保存 DML 规划的简化状态，处理表达式索引校验、重复键列名检查、删除表 handle 过滤，并由 `plan_clone_generated.rs` 实现计划缓存克隆策略。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ RustCodeGraph 对目标文件标记了大量文件级“used by”，但对本�
 
 Go 同路径文件的主体是 `InsertGeneratedColumns`、`Insert`、`Update`、`Delete`、`TblColPosInfoSlice` 及 DML 辅助方法；Rust 文件前半段注释设计稿较完整地逐字段记录这些语义。可运行 Rust 后半段只保留可供当前 Rust 子系统使用的简化子集，并额外集中定义了 Go 文件中并不存在的轻量 `PhysicalExpr`、`PhysicalProperty`、`PhysicalKind` 和 `PhysicalPlanNode`。
 
-已对齐的关键语义包括：生成列/赋值的基本承载；表达式相对 schema 校验；重复键目标列去重；删除表 handle 过滤；表列区间按最后一个 `Start <= ordinal` 查找；裸 `DEFAULT` 和 `DEFAULT(当前列)` 判断；计划缓存遇到外键动作时拒绝克隆。`physical_semantic_aster_unit_test.rs` 特别验证了超出末区间 end 仍返回末项，以及 `DEFAULT(second)` 在候选首列为 `first` 时为 false；`physical_common_plans_test.rs` 验证裸 DEFAULT 不依赖名称切片。
-
 尚未对齐的部分不能按注释设计稿宣称已实现：Go DML 计划嵌入 `SimpleSchemaProducer`、真实 `table.Table`/`expression.Schema`/`base.PhysicalPlan`，拥有更多标志、表位置和分区表映射；Go 内存统计遍历更多字段；Go Insert 索引解析区分 TableSchema 与 Schema4OnDuplicate；Go `ResolveOnDuplicate` 实现隐藏列/生成列/MySQL 错误码/延迟子查询错误；Go Delete 按数据库名、表名和实际 handle 列匹配，而 Rust 只按表 ID 过滤。Rust 的 `Update` 也没有 Go 的 SelectPlan、分区表、表 ID 映射和多表列区间。
 
 ## 扩展指南
@@ -99,11 +95,3 @@ Go 同路径文件的主体是 `InsertGeneratedColumns`、`Insert`、`Update`、
 修改 `find_table_index()` 时必须保留 Go 的严格 `Start > ordinal` 搜索等价语义，不能擅自用 `end` 拒绝尾部 ordinal；若需要真正的区间包含查询，应新增命名明确的 API。修改 `reset_ids()` 要确认前序顺序和调用方传入的 next 约定。扩大 `memory_usage()` 口径时应一次性梳理所有动态字段，避免不同节点间比较失真，并评估递归深度与性能。
 
 建议同步检查的测试文件包括 `physical_common_plans_test.rs`、`physical_semantic_aster_unit_test.rs`、`plan_clone_generated_test.rs`，以及具体消费者对应的 `enforce_test.rs`、`task_base_test.rs`、CTE/Shuffle/Index Lookup 测试。当前任务仅写说明文档，未改变这些代码或测试。
-
-## 验证依据
-
-本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/operator/physicalop/physical_common_plans.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
-
-`physical_common_plans_test.rs` 和 `physical_semantic_aster_unit_test.rs` 提供既有轻量模型证据；本次字段通过 `Default`/`Clone` 和 `plan_clone_generated.rs` 静态复核，未发现针对轻量 is_multi_table 的专门执行测试，trait 版测试不能替代该验证。
-
-RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`type.rs` 是 `astersql-structure` crate 的键编码层，不直接读写 KV，而是为 `TxStructure` 提供 String、Hash 和 List 的内部键空间格式。`pkg/structure/lib.rs` 在私有 `type_impl` 模块中通过 `include!("type.rs")` 编入本文件，并以 `pub use type_impl::*` 重导出其公开项。所属 crate 由 `pkg/structure/Cargo.toml` 定义，依赖 `astersql-kv`、`astersql-util-codec` 和 `astersql-util-dbterror`。
-
-`TxStructure` 本体在 `pkg/structure/structure.rs` 中定义：`prefix: Vec<u8>` 是本文件所有编码的命名空间前缀，`reader`/`readWriter` 则由上层 String、Hash、List 方法用编码后的 `kv::Key` 访问。
+定义结构类型标志 `TypeFlag = u8` 以及六个稳定字节值：`StringMeta = 'S'`、`StringData = 's'`、`HashMeta = 'H'`、`HashData = 'h'`、`ListMeta = 'L'`、`ListData = 'l'`（`type.rs:24-37`）。
 
 ## 核心职责
 
@@ -88,11 +86,9 @@ RustCodeGraph 对 `pkg/structure/type.rs` 识别出 10 个符号，文件节点�
 
 ## 与 Go 版本的对应关系
 
-`pkg/structure/type.go` 是逐符号的直接对照：六个 flag 的字节值、九个 `TxStructure` 方法、编/解码顺序、容量预留量、错误分支和历史错误文本均保持对齐。对应关系为：Go `byte` ↔ Rust `u8`，Go `[]byte` 输入 ↔ Rust `&[u8]`，Go `kv.Key` ↔ Rust `kv::Key(Vec<u8>)`，Go 多返回值错误 ↔ Rust `Result<..., errors::SharedError>`。
+对应关系为：Go `byte` ↔ Rust `u8`，Go `[]byte` 输入 ↔ Rust `&[u8]`，Go `kv.Key` ↔ Rust `kv::Key(Vec<u8>)`，Go 多返回值错误 ↔ Rust `Result<..., errors::SharedError>`。
 
 Rust 实现中 `kv::Key(...)` 显式包装 codec 返回的字节向量，并用 `map_err` 代替 Go `errors.Trace`；这是类型/错误模型差异，不改变键字节语义。Rust 内部方法使用 `pub(crate)` 来对应 Go 的 package-private 小写方法；`decodeStringDataKey` 和 `decodeHashDataKey` 在 Rust 中形式上是 `pub`，属于可见性差异，但当前 crate 外 Rust 搜索未见生产调用。
-
-Go 回归 `pkg/structure/structure_test.go::TestIterateHashWithBoundedKey` 使用 `EncodeHashMetaKey` 在范围中插入应被跳过的 meta 键，验证 Hash data flag 对有界扫描的分类作用。Rust 对应回归是 `pkg/structure/migration_aster_unit_test.rs::key_encoding_and_bounded_hash_iteration_match_go`，同时验证 String/Hash 编码后可解码往返。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@ Go 回归 `pkg/structure/structure_test.go::TestIterateHashWithBoundedKey` 使�
 - 修改解码时要保留三类边界：错误 prefix、截断/非法 codec 输入、可解码但 flag 错误。如果决定拒绝额外尾随字节，这是行为收紧，需要 Go 对齐与兼容性评估。
 - 测试应继续放在独立文件，不嵌入 `type.rs`。首选扩展 `pkg/structure/migration_aster_unit_test.rs` 的键编码回归，覆盖空 key/field、任意二进制字节、错误 prefix、错误 flag、截断键和 List 负/边界 index；并与 `pkg/structure/structure_test.go` 的 Go 意图保持对齐。
 - 性能上，编码是每次 KV 操作的热路径。调整容量估算、增加临时缓冲或重复编码都应评估分配次数；但不能为减少分配而返回借用临时内存的键，否则会破坏现有所有权边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/structure` 列出 Rust/Go 对照及独立测试；`node --file pkg/structure/type.rs --offset 1 --limit 260` 返回全部 148 行、10 个符号与被 `migration_aster_unit_test.rs` 使用的文件边。`query` 分别确认了九个 Rust 方法及其 Go 同名对照。
-- Rust 源码：`pkg/structure/type.rs`、`lib.rs`、`structure.rs`、`string.rs`、`hash.rs`、`list.rs`；Cargo 边界：`pkg/structure/Cargo.toml`。直接引用搜索确认 String/Hash/List 的所有上游调用位于这三个实现文件。
-- Rust 测试：`pkg/structure/migration_aster_unit_test.rs::hash_crud_integer_and_reverse_iteration_match_go` 覆盖公开 Hash data 键与实际 CRUD/扫描；`key_encoding_and_bounded_hash_iteration_match_go` 覆盖 String/Hash 往返解码、空 field、Hash meta 与有界迭代分类。
-- Go 对照：`pkg/structure/type.go`、`string.go`、`hash.go`、`list.go`；Go 测试：`pkg/structure/structure_test.go::TestIterateHashWithBoundedKey`。
-- 结构验证命令：`test -f pkg/structure/type.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' pkg/structure/type.rs.md)" -eq 11`。
-- 人工复核要点：文档已解释文件为何存在（统一类型化 KV 键空间）、如何运行（编码/解码顺序及上层调用链）以及如何安全扩展（flag 兼容、Go 对齐、独立回归和性能风险）。本任务是纯文档分析，按计划不运行 Cargo。

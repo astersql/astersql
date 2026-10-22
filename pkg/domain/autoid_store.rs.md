@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain` crate 内部的 AutoID 持久化适配层。模块由 `pkg/domain/lib.rs` 以私有 `mod autoid_store` 装配，不对 crate 外直接暴露；`pkg/domain/domain.rs::Domain::new_with_storage_handle` 用 Domain 唯一的 `Arc<StorageHandle>` 构造 `KvAutoIdStore`，擦除为 `Arc<dyn astersql_meta_autoid::IdStore>` 后保存到 `Domain::auto_id_store`。因此它位于 Domain 生命周期管理、规范 KV 存储与 `pkg/meta/autoid` 分配算法之间，而不是 AutoID 批量计算算法本身。
-
-`pkg/domain/Cargo.toml` 将本 crate 定义为 `astersql-domain`，并直接依赖 `astersql-kv` 与 `astersql-meta-autoid`；本文件正是这两个 crate 的边界接线。源码没有条件编译项，也没有内嵌测试模块。
+`KvAutoIdStore` 把 Domain 共享的 `StorageHandle` 实现为 `IdStore`，让 `DefaultAllocator` 等上层分配器可以在新 KV 事务中原子地读写高水位。
 
 ## 核心职责
 
@@ -104,12 +102,6 @@ RustCodeGraph `status` 显示索引包含本仓库 Rust/Go 文件；`node KvAuto
 
 ## 与 Go 版本的对应关系
 
-仓库没有同路径的 `pkg/domain/autoid_store.go`；Rust 文件是为了把移植后的 trait 型 `astersql-meta-autoid` 接到 Domain 规范 Storage 而新增的局部适配层。最接近的 Go 行为依据是 `pkg/meta/meta_autoid.go`：
-
-- Rust `get`/`put`/`inc`/`copy_to` 分别对应 Go `autoIDAccessor.Get`/`Put`/`Inc`/`CopyTo`。
-- `SEPARATE_AUTO_INCREMENT_VERSION = 5` 对应 `sepAutoIncVer = model.TableInfoVersion5`；两边都令旧表的 RowID 与 AUTO_INCREMENT 共用 `TID`，新表的 AUTO_INCREMENT 使用 `IID`。
-- 五种 kind 字符串与 `pkg/meta/meta.go` 的 `mTableIDPrefix`、`mIncIDPrefix`、`mRandomIDPrefix`、`mSequencePrefix`、`mSeqCyclePrefix` 一致。
-- `copy_to` 的“零值不复制”与 Go 实现完全相同，保护 rename 与跨版本 BR 恢复场景。
 - Go `Inc` 也明确不验证 schema/table 是否存在，以支持 rename 后沿原始完整 ID 并发使用；Rust 同样没有存在性检查。
 
 物理布局并不等同：Go accessor 使用 `dbKey` 下的 hash field（`HGetInt64`/`HSet`/`HInc`），Rust 适配器则写入以 `mAutoID:canonical:v1` 开头的独立扁平 KV 键。因此本文只能确认 accessor 选择、缺失值、十进制值与事务语义的对齐，不能声称两种实现可以直接读取彼此的底层编码。Go 接口还有 `Del`，当前 Rust `IdTransaction` 没有对应方法。
@@ -123,18 +115,3 @@ RustCodeGraph `status` 显示索引包含本仓库 Rust/Go 文件；`node KvAuto
 - 修改 `run_in_transaction` 时应保留两类错误的区别：operation 的原始 `AutoIdError` 与底层 Begin/Commit 错误；还应验证提交冲突重试会重放闭包这一约束。
 - 最适合新增独立测试的位置是同目录 `pkg/domain/autoid_store_test.rs`，并由 `pkg/domain/lib.rs` 的 `#[cfg(test)]` 模块声明接入，避免把测试写回生产源文件。建议使用可观测的 mock `Storage` 覆盖五类键、V4/V5 分界、缺失值、损坏值、零值 copy、operation 回滚、提交错误与重试；同时保留 `pkg/meta/autoid/autoid_test.rs` 和 `seq_autoid_test.rs` 对 allocator 契约的回归。
 - 性能上，`inc` 当前是一次 Get 加一次 Set，而不是底层原子增量原语；任何优化都必须仍处于同一 KV 事务并保留 allocator 对当前值的读取语义。键或值格式变化属于持久化兼容风险，不能只以单元测试通过作为升级安全证据。
-
-## 验证依据
-
-本说明基于以下直接证据完成事实复核：
-
-- 目标实现：`pkg/domain/autoid_store.rs`。
-- crate 与模块边界：`pkg/domain/Cargo.toml`、`pkg/domain/lib.rs`。
-- Domain 接线与资源生命周期：`pkg/domain/domain.rs::{Domain::new_with_storage_handle, Domain::new_stats_auto_id_allocator}`、`pkg/domain/canonical_domain.rs::StorageHandle`。
-- trait、逻辑键与真实上层调用：`pkg/meta/autoid/autoid.rs::{AutoIdKeyKind, AutoIdKey, IdTransaction, IdStore, DefaultAllocator}`；错误定义来自 `pkg/meta/autoid/errors.rs::AutoIdError`。
-- KV 事务提交、回滚与重试：`pkg/kv/txn.rs::RunInNewTxn`。
-- Go 对照：`pkg/meta/meta_autoid.go::{autoIDAccessor, autoIDAccessors}` 与 `pkg/meta/meta.go` 的五类键前缀/编码函数。
-- 相关独立测试：`pkg/meta/autoid/autoid_test.rs` 验证分配、并发和事务失败不推进本地状态；`pkg/meta/autoid/seq_autoid_test.rs` 验证 sequence cache/cycle 与并发唯一性。这些测试使用内存 `IdStore`，不直接实例化 `KvAutoIdStore`；`rg` 在 `pkg/domain/*test.rs` 也未找到该适配器的直接测试，因此真实 KV 键编码与错误转换目前是明确的直接覆盖空白。
-- RustCodeGraph：`status` 报告有效索引；`node KvAutoIdStore`、`node KvAutoIdTransaction` 确认定义位置；`explore` 确认 `pkg/meta/autoid` 多个 allocator 方法对 `run_in_transaction` 的调用。精确 trait 方法图边为空，已用上述源码引用补证。
-
-人工复核结论：该文件存在的原因是把 Domain 唯一 KV Storage 转换为 AutoID allocator 所需的窄事务接口；运行时关键不变量是稳定且隔离的键映射、缺失即零、事务成功后才推进持久水位、业务错误原样返回，以及旧版本自增与 RowID 的共享关系。安全扩展必须同步逻辑 kind、持久键兼容、Go accessor 语义和独立测试。

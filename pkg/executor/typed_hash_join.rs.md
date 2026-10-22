@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate（见 `pkg/executor/Cargo.toml` 的 `[package]` 与 `[lib] path = "lib.rs"`），由 crate 根模块 `pkg/executor/lib.rs` 通过 `pub mod typed_hash_join` 暴露。它实现 typed execution 路径中的内存 Hash Join：上游 `pkg/executor/builder.rs::build_typed_physical_plan` 在识别到 `PhysicalHashJoin` 后递归构造两个 typed 子执行器，再调用 `TypedHashJoin::new`；下游则通过 `ExecExecutor` 接口被会话侧当作普通执行器拉取。
-
-它不是 `pkg/executor/join/hash_join_v1.rs` 或 `hash_join_v2.rs` 的并发/可落盘实现，也没有同名 Go 文件。当前实现固定以右孩子为 build side、左孩子为 probe side，把右侧全部物化到内存，主要为 typed physical-plan adapter 提供一条可执行的 Hash Join 路径。
+`ExecExecutor` 实现负责打开/关闭两个孩子、取消检查、schema/chunk 配置、外键级联委托和扫描行数汇总。
 
 ## 核心职责
 
@@ -81,13 +79,9 @@
 
 ## 与 Go 版本的对应关系
 
-仓库没有 `pkg/executor/typed_hash_join.go`，因此不能声称逐函数移植。最近的 Go 生产语义证据是：
+仓库没有 `pkg/executor/typed_hash_join.go`，因此不能声称逐函数移植。
 
-- `pkg/executor/builder.go::buildHashJoinFromChildExecs` 同样从 `PhysicalHashJoin` 读取 `IsNullEQ`、左右 keys/conditions、`OtherConditions` 和 `JoinType`，并区分 build/probe side；Full Outer Join 的单侧过滤保留在 join 内部。
-- `pkg/executor/join/hash_join_v1.go::HashJoinV1Exec` 与 `hash_join_v2.go::HashJoinV2Exec` 都遵循“先构建 hash table，再 probe”的两阶段协议，且通过专门状态扫描外侧未匹配行。
 - Rust `TypedHashJoin` 保留这些 SQL 结果语义和 chunk 拉取接口，但属于更窄的 typed adapter 实现：固定右 build/左 probe，单线程同步，无 worker/channel、分区、spill、内存/磁盘 tracker、运行统计、NA join 或动态换边。Go V1/V2 的并发与资源管理细节不能套用为本文件现状。
-
-`pkg/executor/typed_hash_join_test.rs` 是 Rust 的直接语义基准：它覆盖 Inner、Left/Right/Full Outer、Semi、Anti Semi、Left/Anti Left Outer Semi，验证重复 build key、外侧补 NULL、分页续跑、取消、NULL 普通/NULL-safe equality 以及 false residual condition。Go 的 `pkg/executor/join/hash_join_v1.go`、`hash_join_v2.go` 及其测试是算法级对照，而非同文件逐行对应。
 
 ## 扩展指南
 
@@ -97,12 +91,3 @@
 - 若要传播锁键，应将两侧 `TakeLockKeys` 的结果汇入 `page_keys`，并新增分页与错误路径测试；当前“读取后丢弃”是已验证现状，不应在无测试时悄然改变。
 - 若希望构建阶段可取消，需要让 `Open` 接收/取得执行上下文或延迟 build 到 `NextWithContext`；这会改变首调用时机和错误清理路径，应对齐 adapter 生命周期契约。
 - 任何表达式或 key 编码改动都应补充复合键、不同类型/排序规则、NULL-safe equality、残余条件为 NULL 与重复 key 测试；性能上重点关注右侧全量内存、热点桶候选数和临时 joined chunk 分配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`node --file pkg/executor/typed_hash_join.rs --offset 1 --limit 460` 读取完整核心实现；`query TypedHashJoin` 定位结构体于第 21 行；`query BuildTypedPhysicalPlanWithBindings` 定位 typed 计划入口于 `pkg/executor/builder.rs:162`。对 `Open`/`Next` 等通用名的全库查询存在大量同名歧义，因此生产调用边再由精确文本检索核实。
-- Rust 源与接线：`pkg/executor/typed_hash_join.rs`、`pkg/executor/builder.rs`、`pkg/executor/lib.rs`。
-- crate 边界：`pkg/executor/Cargo.toml`。
-- Rust 独立测试：`pkg/executor/typed_hash_join_test.rs`，包含 `typed_hash_join_covers_join_types_duplicates_outer_rows_and_paging`、`typed_hash_join_honors_cancellation_and_closes_both_children`、`typed_hash_join_applies_null_equality_and_residual_conditions`。
-- Go 对照：`pkg/executor/builder.go::buildHashJoinFromChildExecs`、`pkg/executor/join/hash_join_v1.go::{HashJoinV1Exec, Open, Next, Close}`、`pkg/executor/join/hash_join_v2.go::{HashJoinCtxV2, HashJoinV2Exec, Open, Next, Close}`。已确认同目录不存在 `typed_hash_join.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前执行任务规定的 11 章节结构检查，并人工复核文档只陈述上述源码与测试可支持的事实。

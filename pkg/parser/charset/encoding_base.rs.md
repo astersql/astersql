@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-charset` crate 中 ASCII/Binary 编码实现共用的基础层，由 `pkg/parser/charset/lib.rs` 的 `encoding_base` 模块通过 `include!("encoding_base.rs")` 纳入并整体再导出。crate 边界和依赖声明位于 `pkg/parser/charset/Cargo.toml`；其中 `astersql-errors`、`astersql-parser-mysql`、`astersql-parser-terror` 提供类型化 parser 错误，`encoding`/`encoding_rs` 是字符转换相关依赖。
-
-当前接线范围必须与完整 Go 包区分：crate 根的 `Encoding` 只有 `Nop`，`EncodingRef` 只有 `Ascii` 和 `Bin`，所以本文件的 `EncodingBase` 目前实际由 `encoding_ascii.rs` 和 `encoding_bin.rs` 持有。GBK、GB18030、Latin1、UTF-8 的 Rust 文件使用另一组实现和 `encoding.rs` 中的公共 trait，并未通过本基座接线。
+`is_valid`、`transform` 和 `foreach` 组成通用处理链：具体编码决定字符切片边界，基座负责选择编码/解码方向、逐片转换、识别错误，以及按 `Op` 位标志截断、替换或收集字节。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@ RustCodeGraph 将本文件识别为 15 个符号，并报告它被包括 `encodi
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `EncodingBase`、`is_valid`、`transform`、`foreach`、替换字符检测、错误格式化和两个 hack 函数逐项对应 `encoding_base.go` 的 `encodingBase`、`IsValid`、`Transform`、`Foreach`、`beginWithReplacementChar`、`generateEncodingErr`、`HackSlice`、`HackString`。核心 Op 分支次序、只记录首错、每字符四字节缓冲及 decoder 对合法 U+FFFD 的特殊判断均保留。
-
 存在几项可见差异。Go 的 `encodingBase` 可承载 `golang.org/x/text/encoding.Encoding` 和包内任意 `Encoding`，当前 Rust crate 根基座只有 `Nop`、ASCII/Binary 两种回指，完整编码尚未统一接线。Go `Transform` 即使有错误也同时返回已生成字节；当前 Rust `Result` 的 `Err` 不携带该输出，调用方只能得到错误。Go 传入非空 `bytes.Buffer` 后可直接借用其 `Bytes()`；Rust 成功路径总是 `to_vec()` 成为 Owned。Go 的 `HackSlice` 暴露可写无复制切片，而 Rust 安全版本只暴露 `&[u8]`；Rust 的 `hack_string` 通过 `unsafe` 把 UTF-8 责任明确交给调用者。
 
 Go `encoding_test.go` 覆盖 GBK/GB18030 的编解码、替换、首错和原始 U+FFFD 边界；这些是语义参照，但当前 Rust 本基座的直接测试只覆盖 ASCII/Binary 的已接线范围，不能据此声称完整多编码路径已由该基座实现。
@@ -82,12 +78,3 @@ Go `encoding_test.go` 覆盖 GBK/GB18030 的编解码、替换、首错和原始
 修改 Op 行为时，应保持 `transform` 中“首错记录 → trim/replace → collect”的 Go 顺序，并为 SkipError、Trim、Replace、CollectFrom、CollectTo 及组合冲突增加独立测试。错误格式或类别变化要同步检查 `generate_encoding_err`、MySQL 错误码和 Go `generateEncodingErr`。
 
 测试应继续放在独立文件，不嵌入生产源。基座/ASCII 直接回归宜扩展 `pkg/parser/charset/encoding_ascii_test.rs`；跨编码行为可扩展 `encoding_test.rs` 或对应编码的 `*_test.rs`；对照语义参考 `encoding_test.go`。新增 `hack_string` 测试必须只传有效 UTF-8，并单独验证空输入和生命周期/零拷贝预期，不能用未定义行为作为负例。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、索引时间戳 `1791342965170`；`files --filter pkg/parser/charset` 找到目标及 34 个相邻文件；`node --file pkg/parser/charset/encoding_base.rs --offset 1 --limit 260` 返回完整 193 行和 15 个符号；`query` 定位 `EncodingBase`、`begin_with_replacement_char`、`generate_encoding_err`、`hack_string`。精确 callers/callees 无结果，未把缺失图边当作不存在调用。
-- Rust 源与装配：`pkg/parser/charset/encoding_base.rs`、`pkg/parser/charset/lib.rs`、`pkg/parser/charset/encoding.rs`、`pkg/parser/charset/encoding_ascii.rs`、`pkg/parser/charset/encoding_bin.rs`。
-- crate 配置：`pkg/parser/charset/Cargo.toml`，确认 crate 名、`lib.rs` 入口、字符转换和错误依赖以及 Go 包映射元数据。
-- Go 对照：`pkg/parser/charset/encoding_base.go`、`pkg/parser/charset/encoding.go`、`pkg/parser/charset/encoding_ascii.go`、`pkg/parser/charset/encoding_bin.go`。
-- 测试证据：`pkg/parser/charset/encoding_ascii_test.rs` 验证默认方法、合法输入零拷贝、非法 ASCII 替换和回调短路；`pkg/parser/charset/charset_1_aster_unit_test.rs` 验证 ASCII 替换与 Binary 零拷贝；`pkg/parser/charset/encoding_test.go` 提供多编码错误、替换及合法 U+FFFD 的 Go 语义参照。同目录未发现 `encoding_base_test.rs`，辅助函数和非 SkipError 分支缺少本文件专属 Rust 测试。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核只新增本说明、没有修改 Rust/Go/Cargo/只读总计划。

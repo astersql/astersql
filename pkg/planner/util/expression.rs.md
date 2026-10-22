@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应 Rust 源文件](./expression.rs)属于 `astersql-planner-util` crate，是规划器通用工具层的表达式回调边界。`pkg/planner/util/lib.rs` 将私有模块 `expression` 的公开项整体再导出，因此其他 crate 应通过 `astersql_planner_util` 的 crate 根访问这些 API，而不是依赖模块内部路径。
-
-该边界的设计意图是让较低层的 planner util 只依赖抽象的 `plan_base::PlanContext`、AST、表达式和值类型，而由较高层规划器提供实际求值/改写实现，从而避免 util 反向依赖 planner core。当前 Rust 仓库只完成了回调类型、全局槽位和注册函数：代码搜索没有找到槽位读取或 setter 调用；`pkg/planner/core/core_init.rs` 中的 `CALLBACKS` 只是名称注册表，不会安装函数实现。因此这两个回调目前是“可注册但尚未接线”的基础设施，不是已运行的 SQL 主链。
+不解析 AST、不执行表达式，也不实现 planner rewrite；它只定义注入接口与存储。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ setter 本身没有业务错误返回。写锁 poisoning 不会令注册 panic�
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/util/expression.go` 同样只声明两个包级函数变量，意图是绕开包依赖环，并区分完整 planner 能力与 `expression.EvalSimpleAst` / `expression.BuildSimpleExpr` 的简单表达式能力。Go 的 `pkg/planner/core/core_init.go` 会把它们分别赋为 `evalAstExprWithPlanCtx` 和 `rewriteAstExprWithPlanCtx`，所以 Go 运行链已接通。
-
 Rust 保留了相同的两个概念，但用 `RwLock<Option<Arc<dyn Fn...>>>` 显式表达并发共享、未初始化状态与动态替换。当前迁移并非语义等价完成：
 
 - Rust 仓库没有 setter 调用，也没有槽位消费者；Go 有初始化赋值和实际调用者。
@@ -84,7 +80,7 @@ Rust 保留了相同的两个概念，但用 `RwLock<Option<Arc<dyn Fn...>>>` �
 - Go 实现从 `PlanContext.GetInfoSchema()` 获取 info schema；当前 Rust core 实现要求调用方额外传入 `Arc<dyn InfoSchema>`，所以不能直接注册到两参数求值回调或五参数改写回调。
 - Go 函数变量可直接调用；Rust 槽位必须先加读锁、处理 `None` 并取得 `Arc`。
 
-Go 测试 `pkg/executor/importer/import_test.go` 多处通过 `RewriteAstExprWithPlanCtx` 覆盖导入选项表达式的真实使用场景。未找到对应 Rust 独立测试；`pkg/planner/util/lib.rs` 的测试模块列表也没有 `expression_test.rs`。
+未找到对应 Rust 独立测试；`pkg/planner/util/lib.rs` 的测试模块列表也没有 `expression_test.rs`。
 
 ## 扩展指南
 
@@ -97,13 +93,3 @@ Go 测试 `pkg/executor/importer/import_test.go` 多处通过 `RewriteAstExprWit
 5. 同步补齐 importer、stale read、query watch 等对应 Rust 调用链时，参考各 Go 文件及 `pkg/executor/importer/import_test.go`，但将不属于本边界的子系统迁移作为独立任务。
 
 兼容风险主要是改变公开回调签名或未注册行为；正确性风险是 schema/names 不匹配、丢失 info schema 或错误类型转换；性能风险主要来自在读锁持有期间执行复杂 rewrite。扩展时应保持锁外执行实际回调，并为完整 planner 能力保留必要上下文。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被索引为 62 行、3 个顶层图符号。
-- RustCodeGraph `node --file pkg/planner/util/expression.rs`：核对完整源码、两个类型别名、两个静态槽位和两个 setter。
-- RustCodeGraph `query`：定位 `SetEvalAstExprWithPlanCtx`、`SetRewriteAstExprWithPlanCtx` 及 core 中两个同目的实现；`callers` 对两个 setter 均无结果，`callees` 均无业务调用边。
-- `rg` 全仓精确搜索四个符号：确认 Rust 中只有本文件定义和 `pkg/planner/core/core_init.rs` 的字符串名称，未发现注册或读取；同时定位 Go 初始化、业务调用者和测试引用。
-- 已读 Rust/Cargo 路径：`pkg/planner/util/expression.rs`、`pkg/planner/util/lib.rs`、`pkg/planner/util/Cargo.toml`、`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/core_init.rs`、`pkg/planner/util/main_test.rs`。
-- 已读 Go/测试证据：`pkg/planner/util/expression.go`、`pkg/planner/core/expression_rewriter.go`；精确搜索确认 `pkg/executor/importer/import_test.go` 是当前直接引用该 Go 回调的测试，未发现同名 Rust 独立测试。
-- 人工复核结论：本文件存在的原因是提供跨 crate 的 planner 表达式回调注入边界；当前实际运行仅覆盖线程安全注册，业务求值/改写尚未通过该边界接线；安全扩展必须先解决签名适配、未注册行为、锁外调用和独立回归测试。

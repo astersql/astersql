@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 crate `astersql-store-mockstore-unistore-cophandler`。同目录 `Cargo.toml` 以 `[lib] path = "lib.rs"` 指定 crate 根，`lib.rs` 通过 `pub mod mpp_exec` 导出本模块，并在 `#[cfg(test)]` 下把独立的 `mpp_exec_test.rs` 挂入测试。它位于 UniStore mock coprocessor 的本地执行层：接收 `cop_handler.rs::Executor` 表示的已解析执行计划和 `KvReader`，递归执行扫描及关系算子，返回仓库内自定义的 `ExecutionOutput`。
-
-RustCodeGraph 的文件查询显示目标文件共 606 行、40 个符号，并给出 `cop_handler.rs`、`mpp.rs`、`closure_exec.rs` 和测试文件等使用方。生产入口分别是普通 DAG 的 `cop_handler.rs::handle_dag`、受限计划的 `closure_exec.rs::ClosureExecutor::execute`，以及带 MPP 上下文的 `mpp.rs::MppExecBuilder::build_and_execute`。因此，本文件既为普通 mock cop 请求提供执行内核，也为 MPP 非 Exchange 子树提供共享执行内核；真正的 MPP tunnel 收发不在这里，而在 `mpp.rs`。
+位于 UniStore mock coprocessor 的本地执行层：接收 `cop_handler.rs::Executor` 表示的已解析执行计划和 `KvReader`，递归执行扫描及关系算子，返回仓库内自定义的 `ExecutionOutput`。
 
 ## 核心职责
 
@@ -104,7 +102,7 @@ Join 哈希表不插入右侧 NULL 键；左侧 NULL 求值后通常不会命中
 
 Rust `MppExec` 对应 Go `mppExec` 的核心 `open/next/stop` 概念，`MaterializedExec` 提供最小拉取实现；`execute_executor` 各枚举分支则把 Go 中分散在 `tableScanExec`、`indexScanExec`、`limitExec`、`expandExec`、`topNExec`、`exchSenderExec`、`exchRecvExec`、`joinExec`、`aggExec`、`selExec`、`projExec` 的行为集中成递归、物化执行。
 
-当前明确保留并有 Rust 测试证据的局部 Go 语义包括：HashAgg 结果把聚合列放在分组列之前；分组按首次出现顺序输出，而非按编码键排序；LeftOuter 即使右侧实际结果为空也按右计划 schema 宽度补 NULL；父 Join 合并左右扫描详情。`cop_handler_test.rs` 还覆盖点查范围、Selection、TopN 和 `MaterializedExec` 生命周期。Go `cop_handler_test.go::TestMppExecutor` 则验证 TableScan → Selection → Limit 的 MPP 执行及 range count。
+当前明确保留并有 Rust 测试证据的局部 Go 语义包括：HashAgg 结果把聚合列放在分组列之前；分组按首次出现顺序输出，而非按编码键排序；LeftOuter 即使右侧实际结果为空也按右计划 schema 宽度补 NULL；父 Join 合并左右扫描详情。
 
 两种实现仍有显著差异：
 
@@ -117,8 +115,6 @@ Rust `MppExec` 对应 Go `mppExec` 的核心 `open/next/stop` 概念，`Material
 - Go Exchange 通过 tunnel、连接通道、取消 context、tipb chunk 和 hash codec 传输；本文件只生成内存分区或返回 Unsupported，实际 Rust tunnel 逻辑在 `mpp.rs::MppExecBuilder`。
 - Go 有 `indexLookUpExec`，本文件的 `Executor`/`execute_executor` 没有对应分支。
 
-所以本文件应被视为用于 AsterSQL Rust mock 路径的局部行为移植，不能把测试覆盖的几个对齐点外推成与 Go MPP 引擎完全等价。
-
 ## 扩展指南
 
 - 新增 `Executor` 变体时，应在 `execute_executor` 的穷尽匹配中接线，并同步检查 `executor_output_width` 是否需要推导新 schema；否则 LeftOuter 空右侧补 NULL 可能静默得到错误宽度。回归测试应放在独立的 `mpp_exec_test.rs` 或最接近入口的测试文件。
@@ -129,12 +125,3 @@ Rust `MppExec` 对应 Go `mppExec` 的核心 `open/next/stop` 概念，`Material
 - 修改 `MaterializedExec` 生命周期时，应明确重复 open 是否重置 cursor、stop 后 next 的错误、摘要起点和批大小，并扩展 `cop_handler_test.rs::MaterializedExec_and_handle_cop_request_smoke`；测试不要写回生产文件。
 - 性能优化的重点是避免不必要克隆、使 TopN/聚合/Join 可增量处理，以及为大结果提供流控或 spill；优化必须保留表达式错误出现顺序、首次分组顺序、摘要/scan detail 传播和 LeftOuter schema 不变量。
 - 若修改 Rust 生产代码，按仓库协议同步独立测试、与 Go 局部语义核对，完成后运行 `cargo fmt --all`；本次任务仅撰写说明文档，没有改动运行时代码。
-
-## 验证依据
-
-- RustCodeGraph 索引：`status` 显示 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore/unistore/cophandler` 列出目标、模块入口、Go 对照及测试；`node --file pkg/store/mockstore/unistore/cophandler/mpp_exec.rs --offset 1 --limit 500` 与 `--offset 497 --limit 180` 覆盖完整 606 行并报告 40 个符号及 6 个使用文件；`query` 唯一定位 `execute_executor`、`ExchangeBuffer` 和 trait `MppExec`。精确 `callers/callees` 查询在本地索引上 30 秒超时且无输出，因此调用边另由已索引文件使用关系和直接源码引用交叉核对，未把超时命令当成成功证据。
-- Rust 源码：`pkg/store/mockstore/unistore/cophandler/mpp_exec.rs`，核对所有公开/私有符号、递归分派、扫描、聚合、Join、生命周期与边界。
-- crate 与入口：`pkg/store/mockstore/unistore/cophandler/Cargo.toml`、`lib.rs`、`cop_handler.rs::handle_dag`、`closure_exec.rs::ClosureExecutor::execute`、`mpp.rs::MppExecBuilder::build_and_execute`。
-- Rust 测试：`mpp_exec_test.rs` 验证聚合列序、首次分组顺序、空右侧外连接宽度和双侧 scan detail；`cop_handler_test.rs` 验证点查、Selection、TopN、MaterializedExec 及普通请求入口；`mpp_test.rs` 覆盖 builder/tunnel 侧 Exchange。
-- Go 对照：`mpp_exec.go` 的 `mppExec`、各 scan/limit/expand/topN/exchange/join/agg/selection/projection 实现，`mpp.go::mppExecBuilder` 构建关系，以及 `cop_handler_test.go::TestMppExecutor`。这些证据用于说明局部语义和明确差异，没有声称未实现的协议等价。
-- 本任务为纯文档分析，按计划不运行 Cargo，也不修改 Rust、Go、Cargo 或只读的 `plan.md`。交付前运行任务指定的 11 章节结构检查，并人工确认本文回答了文件为何存在、如何运行、状态/错误/资源边界及安全扩展位置。

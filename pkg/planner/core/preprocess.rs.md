@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；`pkg/planner/core/Cargo.toml` 将 crate 根指定为 `lib.rs`，而 `pkg/planner/core/lib.rs` 通过 `pub mod preprocess` 导出本模块，并在测试配置下把独立文件 `preprocess_test.rs` 注册为测试模块。
-
-它位于 SQL AST 与计划构建之间，提供一套简化的 Rust 预处理模型：把语句、DDL 和少量表达式状态表示成 `PreprocessNode`，在构建计划前检查名称、列、索引、表选项、别名、锁表目标、CTE 引用和部分语句组合，并通过 `PreprocessorReturn` 返回过期读及 InfoSchema 版本信息。其错误统一使用 `crate::planbuilder::BuilderError`。
-
-需要特别区分“模块存在”与“生产主链已接线”：RustCodeGraph 显示该文件被 crate 根、若干测试和工具文件引用，但仓库内对本文件 `Preprocess`/`TryAddExtraLimit` 的直接 Rust 调用只有 `pkg/planner/core/preprocess_test.rs`；当前 Rust 编译主链 `pkg/executor/compiler.rs` 通过 `CompilerDependencies::Preprocess` 注入另一套预处理实现。因此，本文件目前是可测试的局部 Go 语义移植和公共辅助 API，不是 Rust SQL 编译主链的完整等价实现。
+位于 SQL AST 与计划构建之间，提供一套简化的 Rust 预处理模型：把语句、DDL 和少量表达式状态表示成 `PreprocessNode`，在构建计划前检查名称、列、索引、表选项、别名、锁表目标、CTE 引用和部分语句组合，并通过 `PreprocessorReturn` 返回过期读及 InfoSchema 版本信息。
 
 ## 核心职责
 
@@ -89,13 +85,9 @@ RustCodeGraph 的文件关系列出 `pkg/planner/core/lib.rs`、`pkg/planner/cor
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/preprocess.go`。Rust 保留了 Go 的核心命名和轮廓：`PreprocessOpt`、三个模式选项、`PreprocessorReturn`、位标志、`preprocessWith`、`preprocessor`、visitor 风格的 `Enter`/`Leave`、CTE 消费计数、列/索引检查、末尾分号处理和表别名检查。
+Rust 使用自定义 `PreprocessNode`，没有 session/权限/真实 resolve context，也不递归遍历；`PreprocessorReturn` 用数字版本代替 InfoSchema 对象；`TryAddExtraLimit` 仅覆盖 SELECT/EXPLAIN；`bindableStmtType` 未覆盖 Go 的 set operation、delete、update；错误身份也未移植。
 
-已由 `pkg/planner/core/preprocess_test.rs` 明确锁定的对齐点包括：引擎名大小写不敏感及 MySQL 兼容白名单；FLOAT/DOUBLE 可用作 AUTO_INCREMENT；AUTO_INCREMENT 后的 NULL 默认值可接受；虚拟生成列不能作主键而 STORED 生成列可以；向量索引要求 columnar 语义和单一表达式部件；末尾分号只在最后一个字节时移除；表别名及重复列名按大小写不敏感判断；用户变量读写状态适用于四种 DML 类型。
-
-Rust 仍显著小于 Go 版。Go `Preprocess` 对真实 AST 执行 `ast.Walk`，持有 `sessionctx`、resolve context、stale-read processor 和真实 `infoschema.InfoSchema`，还执行权限隐藏、临时表处理、事务上下文初始化、计划缓存副作用和大量 AST 重写。Rust 使用自定义 `PreprocessNode`，没有 session/权限/真实 resolve context，也不递归遍历；`PreprocessorReturn` 用数字版本代替 InfoSchema 对象；`TryAddExtraLimit` 仅覆盖 SELECT/EXPLAIN；`bindableStmtType` 未覆盖 Go 的 set operation、delete、update；错误身份也未移植。
-
-Go 生产调用证据包括 `pkg/planner/optimize.go` 在匹配 binding 后调用 `TryAddExtraLimit`，优化器、`pkg/executor/adapter.go` 的 retry rebuild 和 `pkg/session/session.go` 的 prepare rebuild 调用 `core.Preprocess`。当前 Rust 同名函数没有这些生产调用边，所以新增行为时不能只修改本文件并假定整条 Rust SQL 主链已经获得该行为。
+当前 Rust 同名函数没有这些生产调用边，所以新增行为时不能只修改本文件并假定整条 Rust SQL 主链已经获得该行为。
 
 ## 扩展指南
 
@@ -105,12 +97,3 @@ Go 生产调用证据包括 `pkg/planner/optimize.go` 在匹配 binding 后调�
 - 扩展 `TryAddExtraLimit` 时需补齐 Go 的 SHOW、set operation、SELECT INTO 和已有 Limit 分支，并验证克隆是否保持 AST/计划身份约束。当前参数 `restricted_sql` 与测试注释容易混淆，应以函数分支为准。
 - 引入真实 MDL、事务或过期读状态时，要把获取、释放、错误回滚和 schema 刷新作为一个生命周期设计；当前 `tryLockMDLAndUpdateSchemaIfNecessary` 只是纯数据辅助，不能直接扩写成隐式全局锁操作。
 - 兼容风险主要来自 Go 错误类型/优先级、标识符规则、临时表和权限隐藏；性能风险主要来自未来真实 AST 多次遍历、表查找和不必要克隆。任何生产接线应先建立针对调用主链的集成测试，再评估这些风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可通过 `node --file pkg/planner/core/preprocess.rs` 完整读取，共 1,436 行。
-- RustCodeGraph `explore "preprocess.rs planner core AST preprocessing"`：列出 `Preprocess`、`TryAddExtraLimit`、`Enter`、`Leave`、各 `check*` 辅助函数及测试调用；文件节点报告本文件的引用文件。精确 `callers preprocess.rs::TryAddExtraLimit` 查询在本地索引后端持续无结果而中止，故调用边又用逐符号仓库搜索核验。
-- 已读 Rust 源与边界：`pkg/planner/core/preprocess.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`、`pkg/executor/compiler.rs`、`pkg/planner/optimize.rs`；后两者用于确认 Rust 编译主链与本模块的实际接线边界。
-- 已读独立 Rust 测试：`pkg/planner/core/preprocess_test.rs`，覆盖列/索引、自增、建表、重命名、别名、分号、Limit、生成列和用户变量状态。
-- 已读 Go 对照与直接调用证据：`pkg/planner/core/preprocess.go`、`pkg/planner/core/preprocess_test.go`、`pkg/planner/optimize.go`、`pkg/executor/adapter.go`、`pkg/session/session.go`。
-- 结构验收命令：`test -f pkg/planner/core/preprocess.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' pkg/planner/core/preprocess.rs.md)" -eq 11`。本任务是纯文档分析，按计划不运行 Cargo。

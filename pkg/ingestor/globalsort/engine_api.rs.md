@@ -2,21 +2,7 @@
 
 ## 文件定位
 
-本文件是 globalsort 外部引擎与通用导入接口之间的适配层。底层的
-[`Engine`](engine.rs) 负责从外部存储加载、排序和去重 KV，并以
-`MemoryIngestData`/`MemoryDataIter` 表示内存批次；本文件把这些具体类型包装为
-`astersql_ingestor_engineapi` crate 定义的 `Engine`、`IngestData` 和
-`ForwardIter` trait，使通用的 region-job 导入流水线无需依赖 globalsort 的内部类型。
-
-模块入口位于 [`engine.rs`](engine.rs) 的 `#[path = "engine_api.rs"] mod api`，并仅向
-crate 使用者重新导出 `ExternalEngineAdapter`。当前可见的生产上游是
-[`pkg/dxf/importinto/write_ingest_backend.rs`](../../dxf/importinto/write_ingest_backend.rs)：
-`GlobalSortWriteIngestBackend::CloseExternalEngine` 构造并保存适配器，
-`ImportEngine` 再把它交给 `local::import_pipeline::do_import`。因此，本文件位于
-“外部存储的全局排序结果”到“按 Region 写入并 ingest TiKV”的类型与生命周期边界上。
-
-该文件不是独立存储引擎，也不实现排序、去重、Region 扫描或写入 RPC；这些职责分别
-留在 [`engine.rs`](engine.rs)、导入流水线和 transport 中。
+`IterAdapter` 实现 `api::ForwardIter`，把构造迭代器时发生的错误保存到迭代器状态，。
 
 ## 核心职责
 
@@ -172,17 +158,9 @@ RustCodeGraph 将本文件标记为被 8 个文件使用；精确 impl 方法的
 
 ## 与 Go 版本的对应关系
 
-Go 中 [`engine.go`](engine.go) 的 `*Engine` 直接实现
-[`pkg/ingestor/engineapi/engine.go`](../engineapi/engine.go) 的 `Engine` interface，
-`*MemoryIngestData` 和 `*memoryDataIter` 则直接实现
-[`pkg/ingestor/engineapi/ingest_data.go`](../engineapi/ingest_data.go) 的接口。Rust 因为
+Rust 因为
 globalsort 内部类型和公共 trait 分属不同 crate/所有权模型，增加了本文件这层显式包装。
 
-主要语义对应关系：
-
-- Go `Engine.LoadIngestData(ctx, chan<- DataAndRanges)` 对应适配器的同名 trait 方法；Rust
-  底层 `Engine::LoadIngestDataWith` 以 consumer 回调流式交付批次，再由适配器发送到
-  `SyncSender`。
 - Go 的 context 可直接传入加载和通道 select；Rust 公共 `Context` 只暴露取消标志，
   因而由 scoped 监控线程桥接到底层 `CancellationToken`，并在满通道时轮询。
 - Go 的 `nil` 首尾键对应 Rust `Option::None`；globalsort 内部仍使用空 vector 表达，
@@ -221,31 +199,3 @@ globalsort 内部类型和公共 trait 分属不同 crate/所有权模型，增�
   `CloseShared` 调用者。重复关闭、加载与关闭竞争、锁中毒行为都应明确测试。
 - 兼容风险主要是 Go/Rust 接口语义漂移；性能风险主要是持有 `engine` 锁的整个加载周期、
   满通道轮询和不必要的 key/range clone；正确性风险集中在取消时批次释放与引用计数配对。
-
-## 验证依据
-
-本说明基于以下直接证据核对：
-
-- 目标源码 [`engine_api.rs`](engine_api.rs)：`MonitorStop`、`ExternalEngineAdapter`、
-  `api::Engine` impl、`DataAdapter`、`IterAdapter` 及条件编译的独立测试模块。
-- 内部实现 [`engine.rs`](engine.rs)：`LoadIngestDataWith` 的流式 consumer、
-  `MemoryIngestData` 的范围/引用/释放/统计、`MemoryDataIter` 和 `EngineResource`。
-- 公共契约 [`pkg/ingestor/engineapi/engine.rs`](../engineapi/engine.rs) 与
-  [`pkg/ingestor/engineapi/ingest_data.rs`](../engineapi/ingest_data.rs)。
-- 生产上游 [`pkg/dxf/importinto/write_ingest_backend.rs`](../../dxf/importinto/write_ingest_backend.rs)：
-  适配器创建、`do_import` 调用、统计一致性检查、冲突信息和 cleanup。
-- crate 声明 [`Cargo.toml`](Cargo.toml)：crate 名称、Go package 迁移元数据和直接路径依赖。
-- Go 对照：[`engine.go`](engine.go)、
-  [`pkg/ingestor/engineapi/engine.go`](../engineapi/engine.go) 和
-  [`pkg/ingestor/engineapi/ingest_data.go`](../engineapi/ingest_data.go)。
-- 独立 Rust 测试 [`engine_api_test.rs`](engine_api_test.rs)：验证有界批次按范围消费、
-  时间戳和导入统计共享；零容量满通道取消后未发送数据释放；接收端丢弃未引用批次后
-  in-flight count/bytes 归零。底层范围、批次和重复键行为另由
-  [`engine_test.rs`](engine_test.rs) 覆盖，并与 [`engine_test.go`](engine_test.go) 对照。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；目标文件识别出 39 个符号并
-  标记为被 8 个文件使用。`query` 定位到 `engine_api.rs::ExternalEngineAdapter`、
-  `engine_api.rs::LoadIngestData`、`DataAdapter` 和 `IterAdapter`；精确
-  `callers/callees` 未返回动态 trait/impl 调用边，因此用上述源码引用补充验证。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试。结构检查应确认文档存在且固定的十一个
-二级章节各出现一次；人工复核重点是所有“已支持”结论均能回溯到上述符号、调用点或测试。

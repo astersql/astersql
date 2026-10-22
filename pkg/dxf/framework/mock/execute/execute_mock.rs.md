@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-dxf-framework-mock-execute`，crate 入口 `pkg/dxf/framework/mock/execute/lib.rs` 将 `execute_mock` 模块的公开项全部再导出。它位于 DXF（Distributed eXecution Framework）测试支撑层，不执行真实子任务，而是为 `pkg/dxf/framework/taskexecutor/execute/interface.rs` 中的 `StepExecutor` 和 `StepExecFrameworkInfo` trait 生成可编程替身。
-
-`pkg/dxf/framework/mock/execute/Cargo.toml` 表明该 crate 直接依赖 `execute`（trait 与上下文/摘要类型）、`proto`（步骤、资源、子任务模型）、`metering`（计量记录器）、`anyhow`（统一结果）和 `mockall`（期望引擎）。当前直接消费方包括同 crate 的迁移回归测试 `migration_aster_unit_test.rs`，以及把该 crate 声明为依赖或开发依赖的 `framework/integrationtests`、`framework/testutil` 和 `framework/taskexecutor`。
+同一个替身同时实现 `StepExecFrameworkInfo` 与 `StepExecutor`，因此既能模拟 `Init -> RunSubtask -> Cleanup` 等执行生命周期，也能模拟框架注入的 step、资源、计量和 checkpoint 访问面。
 
 ## 核心职责
 
@@ -81,15 +79,12 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/dxf/framework/mock/execute/execute_mock.go`，由 MockGen 针对 `execute.StepExecutor` 生成。两版均提供 `MockStepExecutor`、`NewMockStepExecutor`、`EXPECT`、`ISGOMOCK`，并覆盖 `StepExecutor` 连同其嵌入的 `StepExecFrameworkInfo` 方法。
-
 关键对应与差异：
 
 - Go 版持有 `*gomock.Controller` 和独立 recorder；Rust 版把这些职责交给 `mockall`，构造器无 controller 参数，`EXPECT()` 返回 mock 自身。
 - Go 通过接口 embedding 获得框架信息方法，并在框架中用反射注入私有 `frameworkInfo`；Rust trait 显式增加 `SetFrameworkInfo(FrameworkInfo)`，所以 mock 也必须覆盖这一 Rust 专属接线。迁移测试 `framework_info_injection_dispatches_complete_go_equivalent_state` 验证了等价状态内容。
 - Go 的指针可为空；Rust 使用 `Option<Arc<_>>` 表达资源、计量器和回调缺失。Go `[]byte` 对应 Rust `Vec<u8>`，`context.Context` 对应 `CancellationToken` 类型别名。
 - Go `RealtimeSummary` 返回可空指针，Rust 使用 `Option<&SubtaskSummary>`；本 mock 为配置固定返回值采用 `Option<&'static SubtaskSummary>`。
-- 方法名保留 Go 风格，因此文件级允许 `non_snake_case`。这属于迁移兼容选择，不代表仓库普通 Rust API 的命名惯例。
 
 ## 扩展指南
 
@@ -99,14 +94,3 @@ Go 对照文件是 `pkg/dxf/framework/mock/execute/execute_mock.go`，由 MockGe
 - 对资源或 checkpoint 扩展，优先延续 `Arc` 与 `Send + Sync + 'static` 边界，并测试 `None`、共享身份和回调错误。对 `RunSubtask` 扩展，要同时验证 `&mut Subtask` 的原地变更是否保留。
 - 修改 `RealtimeSummary` 返回策略时，要特别评估 `'static` 限制及测试内存泄漏；如果改用拥有型返回值，需先同步底层 trait 和 Go 语义，不能只修改 mock。
 - 兼容风险主要是接口漂移和 Go/Rust 使用方式差异；性能风险较低，因为该 crate 用于测试，但过多 `AnyTimes`、昂贵匹配闭包或长期泄漏摘要仍会降低测试质量。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/framework/mock/execute` 找到 Go/Rust mock、crate 入口和迁移测试。
-- RustCodeGraph `node --file pkg/dxf/framework/mock/execute/execute_mock.rs --offset 1 --limit 260`：核对目标文件全部 87 行、9 个索引符号及宏声明；`query StepExecutor --kind trait`、`query StepExecFrameworkInfo --kind trait` 定位两个真实 Rust trait。
-- RustCodeGraph `node --file pkg/dxf/framework/mock/execute/migration_aster_unit_test.rs`：核对四个独立测试对生命周期、子任务变更、框架访问器/checkpoint/摘要和框架信息注入的覆盖。
-- RustCodeGraph `node --file pkg/dxf/framework/taskexecutor/task_executor.rs --offset 330 --limit 90`：核对 `createStepExecutor` 调用 `Init`、`cleanStepExecutor` 调用并忽略 `Cleanup` 错误，以及 `runSubtask` 所在主链。
-- RustCodeGraph `node --file pkg/dxf/framework/integrationtests/framework_test.rs --offset 490 --limit 85`：核对 Init 失败导致任务回滚的上层场景。该机械迁移测试片段仍使用 Go 风格调用表面，本文只把它作为意图与调用位置证据，不声称其当前已经通过编译。
-- 直接读取 `pkg/dxf/framework/mock/execute/Cargo.toml`、`lib.rs`、`execute_mock.go`、`pkg/dxf/framework/taskexecutor/execute/interface.rs` 和 `interface.go`：核对 crate 边界、再导出、依赖、GoMock API 以及 Go/Rust trait 语义。
-- `rg` 检索 `NewMockStepExecutor`、`MockStepExecutor`、`expect_*` 和 crate 名：确认直接 Rust 测试、集成测试使用点及 Cargo 依赖声明。未发现本目录 `doc.go`；最近的权威契约是上述 trait/interface 文件。
-- 本任务只新增说明文档，不修改运行时代码，也不运行 Cargo；最终结构检查应确认本文恰有规定的 11 个二级标题。

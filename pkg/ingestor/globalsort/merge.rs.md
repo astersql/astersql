@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-globalsort` crate（见同目录 `Cargo.toml`），实现全局排序 V1 路径的“重叠有序文件归并”阶段。它接收若干已经各自按 key 排序的 data 文件，把文件分成多个独立组并并行执行多路归并；每组输出一对 `.data`/`.stat` 文件，遇到 `OnDuplicateKey::Record` 时还可能输出 `.dup` 文件。
-
-模块由 `lib.rs` 的 `pub mod merge` 公开。仓库内可见的生产调用链有两条：
-
-- `pkg/dxf/importinto/task_executor.rs` 在 IMPORT INTO 的 merge-sort 子任务中构造 `NewMergeOperator`，通过回调合并 `WriterSummary`，调用 `MergeOverlappingFiles` 后把排序元数据与冲突计数写回子任务元数据。
-- `pkg/session/runtime/modify_column_cloud_executor.rs::CloudStep::run_merge` 在云存储列变更回填中构造算子，以 `OnDuplicateKey::Error` 合并 `ExternalFields.data_files`，再把输出摘要写回 `meta_groups`。
-
-因此本文件不是通用的“对所有输入重新排序”：它依赖“每个输入文件内部已经有序”的前置条件，只负责在文件之间恢复全局顺序。V2 的按 key 区间和 stat offset 归并位于相邻的 `merge_v2.rs`，不在本文件实现。
+按 `OnDuplicateKey` 处理同 key 多值，维护可查询的 `ConflictInfo`，并让 `Collector` 统计已成功处理的输入行和原始 key/value 字节。
 
 ## 核心职责
 
@@ -98,10 +91,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ingestor/globalsort/merge.go`，测试对照为 `merge_test.go` 与 `merge_test.rs`。
-
-保持一致的语义包括：并发度至少为 1；每核 reader 预算为 `min(256 MiB, memory_per_core / 5) * concurrency`；分组算法与 250 文件上限；part size 按“输入大小 + 每文件一个 block padding”向上除以最大 part 数并至少 5 MiB；collector 统计输入 KV 的 key/value 字节；每个 group 独立归并并在 writer 关闭时上报摘要；重复键策略由 `OnDuplicateKey` 控制。
-
 实现形态存在以下差异：
 
 - Go 用 `operator.AsyncOperator`/pipeline、UUID writer id、`simplesst.NewMergeKVIter` 和 `OneFileWriter`；Rust直接管理 worker pool，以递增整数作 writer id，并在本文件实现 `BinaryHeap` 归并、wire 写出与 `StreamSummary`。
@@ -111,7 +100,7 @@
 - Go 测试用 failpoint覆盖内部错误、panic 与超时；Rust没有等价 failpoint，`merge_test.rs` 改为走真实取消、重复键错误及存储/格式边界，并显式测试真实 worker 并行。
 - Rust额外支持 `LegacyLittleEndian32` 内存 fixture 格式；生产互操作由 `GoBigEndian64` 覆盖，测试 `merge_reads_and_writes_go_simplesst_wire_format` 验证读写一致。
 
-这些差异说明接口对齐不等于全部性能机制已移植。修改时应优先保持 Go 的可观察行为，并把 hotspot、内存预算或 multipart 接线作为明确、可测试的独立工作，而不能仅移除下划线就宣称完成。
+这些差异说明接口对齐不等于全部性能机制已移植。
 
 ## 扩展指南
 
@@ -122,13 +111,3 @@
 - 调整 worker 生命周期或动态并发时，围绕 `MergeOverlappingFiles`、`MergeRun::Drop`、`MergeWorker::HandleTask` 和 `Tune` 修改，验证首错类型不丢失、取消后全部 join、调小并发会等待退役 worker、输出顺序不依赖完成顺序。
 - 增加失败清理时，应定义 data/stat/dup 哪些对象在各失败点可见，避免删除已由回调发布的成功对象，并用故障存储在独立 `merge_test.rs` 中覆盖部分 `finish` 失败。
 - 上层元数据契约变化还需同步两个生产调用点：IMPORT INTO 的 `task_executor.rs` 摘要转换，以及 `CloudStep::run_merge` 的 `SortedMeta` 聚合。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/ingestor/globalsort/merge.rs`；`files --filter pkg/ingestor/globalsort` 确认源、Go 对照与独立测试；`node --file ... --offset 1/430` 阅读完整 732 行；`query` 精确定位 `merge.rs::NewMergeOperator`、`merge.rs::MergeOverlappingFiles` 与 `merge.rs::merge_overlapping_files_internal`。限定名 `callers/callees` 未输出调用边，故未把空图结果当作“无调用者”。
-- 源码与模块证据：`pkg/ingestor/globalsort/merge.rs`、`lib.rs`、`reader.rs` 所暴露的取消/读取接口，以及 crate 根的 `Error`、`Storage`、`RecordFormat`、`WriterSummary` 定义。
-- crate 证据：`pkg/ingestor/globalsort/Cargo.toml` 的 package 名、`lib.rs` 入口、Go package 元数据，以及 workerpool/simplesst 路径依赖。
-- 上游证据：`pkg/dxf/importinto/task_executor.rs` 和 `pkg/session/runtime/modify_column_cloud_executor.rs` 中对 `NewMergeOperator` / `MergeOverlappingFiles` 的生产调用。
-- Go 对照：`pkg/ingestor/globalsort/merge.go` 的 collector、内存规划、pipeline、merge iterator、one-file writer 和 part-size 逻辑；`merge_test.go` 的分组、内存、failpoint、统计及 writer summary 断言。
-- Rust 测试：`pkg/ingestor/globalsort/merge_test.rs` 覆盖均匀分组、零并发、内存/part-size 计划、取消、重复键、collector、流式对象读取、Go wire 格式、排序往返及真实并行 worker；`sort_test.rs` 还从本地 global-sort 流程调用生产入口并检查摘要与读回。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 11 标题结构命令验证，并人工复核文档只描述当前源码可证实的行为和明确标注的未接线能力。

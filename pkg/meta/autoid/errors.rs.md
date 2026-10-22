@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件](errors.rs) `errors.rs` 是 `astersql-meta-autoid` crate 的错误边界和 `AUTO_RANDOM` 文案目录。crate 根 `pkg/meta/autoid/lib.rs` 通过 `pub mod errors` 挂载它，再用 `pub use errors::*` 将公开符号重导出；因此上游既可以写 `crate::errors::AutoIdError`，也可以通过 `astersql_meta_autoid::AutoIdError` 使用。`pkg/meta/autoid/Cargo.toml` 表明该 crate 的库入口是 `lib.rs`，本文件唯一直接外部依赖是 `thiserror = "2"`。
-
-它不执行 ID 分配，也不保存元数据。其两类输出分别服务于：Rust AutoID 实现的可分类错误传播（`AutoIdError` 和 `Result<T>`），以及与 Go DDL/Executor 保持文案兼容的 `AUTO_RANDOM_*` 常量。
+不执行 ID 分配，也不保存元数据。
 
 ## 核心职责
 
@@ -61,9 +59,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/meta/autoid/errors.go` 是最近的权威对照。Go 版通过 `dbterror.ClassAutoid.NewStd(mysql.Err...)` 绑定 MySQL/TiDB 错误码；Rust 版用 `thiserror` 枚举保留类别和文本，但没有在本文件中绑定 MySQL 数字错误码。大致映射为：`errInvalidTableID` ↔ `InvalidTableId`，`errInvalidIncrementAndOffset` ↔ `InvalidIncrementAndOffset`，`errNotImplemented` ↔ `NotImplemented`，`ErrAutoincReadFailed` ↔ `AutoIncrementReadFailed`，`ErrWrongAutoKey` ↔ `WrongAutoKey`，`ErrInvalidAllocatorType` ↔ `InvalidAllocatorType`，`ErrAutoRandReadFailed` ↔ `AutoRandomReadFailed`。Rust 另为存储、取消、RPC、服务端返回和重试终止增加了结构化 variant。
+Go 版通过 `dbterror.ClassAutoid.NewStd(mysql.Err...)` 绑定 MySQL/TiDB 错误码；Rust 版用 `thiserror` 枚举保留类别和文本，但没有在本文件中绑定 MySQL 数字错误码。Rust 另为存储、取消、RPC、服务端返回和重试终止增加了结构化 variant。
 
-20 个 Rust `AUTO_RANDOM_*` 常量的文本与 Go 的 `AutoRandom*` 常量逐项对应，包括占位符。Go `pkg/ddl/tests/serial/serial_test.go::TestAutoRandom` 使用 `fmt.Sprintf` 和 `dbterror.ErrInvalidAutoRandom` 验证多个 DDL 边界；`pkg/meta/autoid/autoid_service_test.go` 验证 RPC 重试达限时既等价于 `ErrAutoincReadFailed` 又可被 `IsRPCRetryLimitError` 识别。Rust 对应回归分布在 `autoid_service_test.rs`、`autoid_service_1_aster_unit_test.rs` 和 `pkg/session/runtime/session_test.rs`。
+20 个 Rust `AUTO_RANDOM_*` 常量的文本与 Go 的 `AutoRandom*` 常量逐项对应，包括占位符。
 
 ## 扩展指南
 
@@ -72,11 +70,3 @@
 - 修改 `AUTO_RANDOM_*` 文案时，必须同步核对 `errors.go` 和 Go DDL/Executor 测试；如果将它们接入 Rust DDL，应在对应 Rust DDL 模块的独立 `*_test.rs` 中覆盖参数替换和完整错误文本，不把测试内嵌到 `errors.rs`。
 - 若需保留底层 error source，应评估将字符串负载改为带 `#[source]` 的类型化负载。这会影响 `Clone` / `Eq` 派生、公开 API 兼容性和跨线程边界，不应仅为丰富日志而直接替换。
 - 测试放置遵循 crate 的独立文件模式：分配语义放入 `autoid_test.rs` 或 `memid_test.rs`，远程重试/取消放入 `autoid_service_test.rs`，跨层错误链放入相应包的独立测试文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，其中 7,032 个 Rust 文件；`files --filter pkg/meta/autoid` 确认本 crate 的 Rust/Go 对照与独立测试面；`node --file pkg/meta/autoid/errors.rs --offset 1 --limit 240` 读取了全部 141 行并报告 22 个使用文件；`query` 确认 `AutoIdError`、三个函数和常量符号位置。
-- 源码/Crate：`pkg/meta/autoid/errors.rs`、`pkg/meta/autoid/lib.rs`、`pkg/meta/autoid/Cargo.toml`、`pkg/meta/autoid/autoid.rs`、`pkg/meta/autoid/memid.rs`、`pkg/meta/autoid/autoid_service.rs`、`pkg/domain/domain.rs`、`pkg/domain/autoid_store.rs`、`pkg/autoid_service/autoid.rs`。
-- Rust 测试：`pkg/meta/autoid/memid_test.rs` 验证 signed/unsigned ID 耗尽；`pkg/meta/autoid/autoid_test.rs` 验证非法 table ID 和取消；`pkg/meta/autoid/autoid_service_test.rs` 验证 RPC/Service/Canceled 分类与重试；`pkg/session/runtime/session_test.rs` 验证 `RpcRetryLimit` 在 SQL 错误链中保留身份。
-- Go 对照：`pkg/meta/autoid/errors.go`、`pkg/meta/autoid/autoid.go`、`pkg/meta/autoid/autoid_service.go`；Go 测试 `pkg/meta/autoid/autoid_service_test.go` 和 `pkg/ddl/tests/serial/serial_test.go::TestAutoRandom`。
-- 人工复核：用 `rg` 逐项检查 13 个 variant、3 个函数和 20 个 `AUTO_RANDOM_*` 常量的 Rust 引用，区分已接线符号与仅保留的 Go 兼容 API。本任务是纯文档分析，未运行 Cargo 或代码测试。

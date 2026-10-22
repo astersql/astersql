@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-metrics` crate 的 Domain 专用指标绑定层：它不创建或注册 Prometheus collector，而是把 `pkg/metrics/stats.rs` 中已经创建的共享 `CounterVec`/`Gauge` 选成 Domain 业务需要的具体句柄。crate 入口 `pkg/domain/metrics/lib.rs` 通过 `domain_metrics` 模块挂载本文件，并把 `stats.rs` 中的 `HistoricalStatsCounter`、`PlanReplayerTaskCounter`、`PlanReplayerRegisterTaskGauge` 再导出到本文件使用。
-
-进程级 Rust 初始化链位于 `pkg/util/metricsutil/common.rs::initMetrics`：它先通过 `initParentMetricsCollectors` 调用 `astersql_domain_metrics::stats::InitStatsMetrics` 创建父 collector，再调用本文件的 `InitMetricsVars` 绑定 label 子句柄。`Cargo.toml` 将本目录声明为独立的 `astersql-domain-metrics` library crate，直接外部依赖仅为 `prometheus = "0.14"`；`pkg/util/metricsutil/Cargo.toml` 以路径依赖接入该 crate。
-
-当前迁移状态需要特别区分：绑定和初始化链已经存在，但 `pkg/domain/historical_stats.rs` 与 `pkg/domain/plan_replayer.rs` 中对这些 Rust 句柄的业务更新仍是注释代码；因此不能声称 Rust Domain 主业务路径已实际产生这些指标。Go 对照业务路径已接线，见 `pkg/domain/historical_stats.go`、`pkg/domain/plan_replayer.go` 和 `pkg/domain/plan_replayer_dump.go`。
+`init` 提供与 Go 包级 `init()` 对应的显式 Rust 包装入口；Rust 不会自动执行普通 `fn init`，当前进程初始化实际直接调用 `InitMetricsVars`。
 
 ## 核心职责
 
@@ -88,11 +84,11 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/domain/metrics/metrics.go` 是逐项语义基准：七个 Go 包变量、`init()` 和 `InitMetricsVars()` 均在 Rust 中保留，六组 label 字符串完全一致，Gauge 也保持共享句柄语义。Rust 为满足所有权与并发访问要求，将 Go 的直接包变量赋值改成 `LazyLock<RwLock<Option<T>>>`，并用 `replace` 完成覆盖；父 collector 仍为可空全局，因此 Rust 通过 `expect` 显式检查 Go 代码隐含的初始化前提。
+Rust 为满足所有权与并发访问要求，将 Go 的直接包变量赋值改成 `LazyLock<RwLock<Option<T>>>`，并用 `replace` 完成覆盖；父 collector 仍为可空全局，因此 Rust 通过 `expect` 显式检查 Go 代码隐含的初始化前提。
 
 两端初始化机制不同：Go 运行时自动执行包 `init()`；Rust 的同名普通函数不会自动运行，生产路径在 `metricsutil::initMetrics` 中显式直接调用 `InitMetricsVars`。Rust 测试覆盖 label 对应、共享时序和重绑定清零行为；未发现同目录 Go 独立测试直接引用这些变量，Go 行为证据主要来自实际业务调用点。
 
-迁移并未全部完成：Go 的历史统计和 Plan Replayer 业务路径会真实更新指标，而 Rust 对应调用目前在 `historical_stats.rs`、`plan_replayer.rs` 中被注释。扩展或完成移植时必须以这些 Go 调用点为行为基准，不能仅因句柄绑定测试通过就认定端到端指标已启用。
+迁移并未全部完成：Go 的历史统计和 Plan Replayer 业务路径会真实更新指标，而 Rust 对应调用目前在 `historical_stats.rs`、`plan_replayer.rs` 中被注释。
 
 ## 扩展指南
 
@@ -101,15 +97,3 @@
 测试应继续放在独立的 `pkg/domain/metrics/migration_aster_unit_test.rs`，不要内嵌进生产源文件。至少应验证：新 label 句柄能反映到父向量；重复初始化后槽位转向新 collector；Gauge/Counter clone 保持共享状态；初始化前提失败的行为若被改变，应有明确测试。涉及生产消费时，还应在对应 Domain 独立测试中覆盖业务分支实际更新指标，而不能只测绑定层。
 
 兼容性风险包括改变公开静态符号或 label 文本导致监控查询断裂；正确性风险包括父初始化遗漏、label 数量不匹配以及重初始化期间的新旧句柄混用；性能风险主要是业务热路径每次访问都需取得 `RwLock` 读锁。若未来优化访问方式，应同时保留安全重绑定能力，或明确取消进程内重初始化契约并调整测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/domain/metrics` 确认目标 Rust、crate 入口、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file pkg/domain/metrics/metrics.rs`：核对七个静态槽位、`init`、`replace`、`InitMetricsVars` 及全部固定 label。
-- RustCodeGraph `query/callers/callees InitMetricsVars`：定位目标定义，确认测试与 `init` 调用者，并确认 `InitMetricsVars -> replace` 直接调用边。由于同名函数较多，生产入口另以精确文件查询核对。
-- RustCodeGraph `node --file pkg/util/metricsutil/common.rs`：核对 `initParentMetricsCollectors` 先创建父 collector、`initMetrics` 后绑定 Domain 句柄的顺序。
-- RustCodeGraph `node --file pkg/metrics/stats.rs`：核对父 collector 类型、名称、label schema 与初始化位置。
-- 读取 `pkg/domain/metrics/Cargo.toml`、`pkg/domain/metrics/lib.rs`、`pkg/domain/metrics/metrics.go`：核对 crate 边界、模块再导出和 Go 逐项语义。
-- 读取 `pkg/domain/metrics/migration_aster_unit_test.rs`：核对两项独立测试对 label 共享、Gauge 共享、串行化和重绑定归零的验证。
-- `rg` 精确检索 `pkg/domain`：核对 Go 的真实业务消费者，以及 Rust `historical_stats.rs`、`plan_replayer.rs` 中尚处于注释状态的调用。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行固定十一章节结构校验并人工复核事实边界。

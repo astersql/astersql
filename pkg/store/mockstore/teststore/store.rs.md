@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-teststore` crate 的核心实现文件。crate 入口 `pkg/store/mockstore/teststore/lib.rs` 只声明 `mod store` 并公开再导出本文件的 API；`Cargo.toml` 通过 `package.metadata.porting.go-package` 明确把该 crate 对应到 Go 包 `pkg/store/mockstore/teststore`。
-
-它位于测试基础设施与真实 Rust mockstore 之间：不自行实现 KV 后端，而是调用 `astersql_store_mockstore::NewMockStore` 创建 `MockStorage`，再用本文件的 `MockStore` 将它适配为 `astersql_store::Storage`。文件顶部注释和 Go 对照文件都说明，这一层独立于更高层 testkit，目的是让需要“未 bootstrap 存储”的代码复用 mockstore 工厂而不形成循环依赖。
-
-Rust 侧已确认的直接使用面包括：
-
-- `pkg/infoschema/internal/testkit.rs::TestStore::new` 调用本 crate 的 `NewMockStore`，把实际 `MockStorage` 放进 infoschema 测试存储。
-- `pkg/store/mockstore/teststore/store_aster_unit_test.rs` 直接验证 `NewMockStoreWithoutBootstrap` 的经典模式、NextGen 模式、选项应用和错误传播。
+位于测试基础设施与真实 Rust mockstore 之间：不自行实现 KV 后端，而是调用 `astersql_store_mockstore::NewMockStore` 创建 `MockStorage`，再用本文件的 `MockStore` 将它适配为 `astersql_store::Storage`。
 
 ## 核心职责
 
@@ -115,16 +108,11 @@ Rust 侧已确认的直接使用面包括：
 
 ## 与 Go 版本的对应关系
 
-Go 文件 `pkg/store/mockstore/teststore/store.go` 只公开 `NewMockStoreWithoutBootstrap(opts ...MockTiKVStoreOption) (kv.Storage, error)`：调用 `mockstore.NewMockStore`，失败即返回；NextGen 下将全局 keyspace 设为 `SYSTEM`、服务作用域设为 `NextGenTargetScope`，并登记系统存储，最后返回同一个 store。
-
-Rust `NewMockStoreWithoutBootstrap` 保留了这条控制流和副作用顺序。主要语言/架构差异是：
+主要语言/架构差异是：
 
 - Go 的底层对象已经实现完整 `kv.Storage`；Rust 需要本文件的 `MockStore` 把 `MockStorage` 适配成当前 `astersql_store::Storage` 的最小接口。
-- Rust 将可变参数表达为 `Vec<MockTiKVStoreOption>`，将接口返回值具体化为 `Arc<MockStore>`；需要 trait object 时再克隆并转换为 `StorageRef`。
 - Rust 额外公开 `NewMockStore`，供无需 NextGen 全局登记的 Rust 调用者（当前直接证据为 infoschema 内部 testkit）复用同一适配过程。
 - Rust 在适配层缓存 keyspace 名称和 `BasicCodec`，并显式转接 `Close`；这些是 Rust `Storage` 契约所需的局部接线，不改变 Go 包装器“不 bootstrap”的意图。
-
-独立测试 `store_aster_unit_test.rs` 覆盖了关键对齐点：latch 选项确实落到底层；NextGen 配置值正确；登记对象与返回对象身份相同；经典模式不改配置且不登记系统存储；底层 DDL checker 构造错误未被吞掉。Go 仓库没有同目录的专用 `store_test.go`，但多个 Go 测试包直接使用该构造器，其调用面提供了入口用途证据。
 
 ## 扩展指南
 
@@ -134,19 +122,3 @@ Rust `NewMockStoreWithoutBootstrap` 保留了这条控制流和副作用顺序�
 - 修改关闭语义时，同时检查 `MockStorage::close` 与 `Storage::Close` 的错误类型转换，避免静默吞掉 RPC 关闭失败。
 - 回归测试应继续放在独立的 `pkg/store/mockstore/teststore/store_aster_unit_test.rs`，不要嵌入生产源文件。至少同步覆盖经典/NextGen 两种模式、成功与构造失败、对象身份、keyspace/codec，以及新增资源的关闭行为。
 - 兼容风险集中在 Go/Rust 构造顺序、全局状态恢复和 trait 默认能力；性能风险较低，但不要在 `GetKeyspace`/`GetCodec` 等热读取接口中引入全局锁或重复构造。全局模式与注册表的并发修改则需要专门的串行化测试设计。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引可用，包含 11,467 个文件；`files --filter pkg/store/mockstore/teststore` 显示 `lib.rs`、`store.rs`、`store.go`、`store_aster_unit_test.rs` 均已索引。
-- RustCodeGraph 文件节点：
-  - `pkg/store/mockstore/teststore/store.rs`：完整 87 行及其 14 个符号；图报告直接使用文件为 `pkg/infoschema/internal/testkit.rs` 和 `pkg/store/mockstore/teststore/store_aster_unit_test.rs`。
-  - `pkg/store/mockstore/teststore/lib.rs`：模块声明、公开再导出与独立测试挂载。
-  - `pkg/infoschema/internal/testkit.rs`：`TestStore::new` 到 `NewMockStore` 的调用边。
-  - `pkg/store/mockstore/mockstore.rs`：`MockStorage`、`close`、`is_latch_enabled`、原子 NextGen 开关以及真实 `NewMockStore` 的选项/后端/错误路径。
-  - `pkg/store/store.rs`：`Storage` trait 与 `StorageRef` 的接口、默认能力及线程安全边界。
-  - `pkg/keyspace/keyspace.rs`：`ApiVersion`、`Codec`、`BasicCodec` 与 `SYSTEM` 常量的语义。
-- Cargo/模块证据：`pkg/store/mockstore/teststore/Cargo.toml`、`pkg/store/mockstore/teststore/lib.rs`。
-- Go 对照：`pkg/store/mockstore/teststore/store.go`；调用面通过 `rg` 核对到 `pkg/testkit/mockstore.go`、`pkg/session/bootstrap_test.go`、`pkg/store/helper/helper_test.go`、DDL/server 测试及 `br/pkg/mock/mock_cluster.go`。
-- Rust 测试：`pkg/store/mockstore/teststore/store_aster_unit_test.rs`。未发现同目录 Go 专用测试文件；相关 Go 测试通过上述调用面间接使用包装器。
-- 人工复核范围：确认本文件没有条件编译、后台任务或自建后端；文档区分了已实现的最小 `Storage` 能力与 trait 默认/未支持能力，没有把 bootstrap 或真实 TiKV 能力写成本文件职责。
-- 本任务为纯文档分析，按计划未运行 Cargo 或代码测试；交付验证使用任务指定的 11 章节结构检查。

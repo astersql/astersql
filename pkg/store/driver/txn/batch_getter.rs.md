@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-store-driver-txn` crate；crate 边界由 `pkg/store/driver/txn/Cargo.toml` 定义，入口 `pkg/store/driver/txn/lib.rs` 通过 `mod batch_getter` 装配并用 `pub use batch_getter::*` 导出本文件的公开项。它位于事务读路径中，负责把事务内存写缓冲、可选的语句级中间缓存和一致性快照组合成一个 `BatchGetter`。生产侧直接入口是 `pkg/store/driver/txn/txn_driver.rs::tikvTxn::BatchGet`：该方法把事务的 `mem_buffer` 和 `snapshot` 包装成 trait object，调用 `NewBufferBatchGetter(...).BatchGet(...)`，随后按批量选项统一处理 `commit_ts`。
-
-本文件不是底层 TiKV RPC 实现，也不决定 MVCC 可见版本；实际读取由传入的 `BatchBufferGetter`、`Getter` 和 `BatchGetter` 实现完成。本文件只定义读取优先级、缺失键回落、墓碑遮蔽和错误传播规则。
+`tikvBatchGetter` 把 `Arc<dyn BatchGetter>` 包成字节键批量读取适配器，其 `BatchGet` 原样委派给底层 `batch_get`。
 
 ## 核心职责
 
@@ -87,9 +85,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/store/driver/txn/batch_getter.go`，测试对照为 `pkg/store/driver/txn/batch_getter_test.go`。
-
-- Rust 的 `tikvBatchGetter`、`tikvBatchBufferGetter`、`BufferBatchGetter`、`NewBufferBatchGetter` 和三个 `BatchGet`/`Get`/`Len` 方法逐项镜像 Go 同名结构与方法。
 - Go 版用 `unsafe` 在 `[][]byte` 与 `[]kv.Key` 间转换，并把字符串作为 map key；Rust 版统一使用拥有所有权的 `Vec<u8>`/`Key` 和 `HashMap<Key, ...>`，通过必要克隆完成边界转换，没有 `unsafe`。
 - Go 的公开 `BufferBatchGetter` 包装 client-go 的 `transaction.BufferBatchGetter`；Rust 将对应三层算法直接实现于本 crate，因此不依赖外部对象完成合并，但保持相同的优先级和墓碑语义。
 - Go 的 `context.Context` 与可变参数 options 在 Rust 中分别没有直接参数和改为切片；取消/截止时间若需要支持，必须经 trait/option 或底层实现传递，当前文件没有等价 context 通道。
@@ -104,15 +99,3 @@
 - 优化重复键或逐键中间缓存访问时，可在 `tikvBatchBufferGetter::BatchGet` 增加去重或批量接口，但应明确输入重复时的调用次数、错误出现顺序和结果优先级；`HashMap` 结果本身不提供顺序保证。
 - 所有行为变更都应更新独立测试 `pkg/store/driver/txn/batch_getter_test.rs`，不要把测试嵌入生产源文件。至少保留缓冲覆盖、墓碑遮蔽、中间缓存命中、快照回落、全层缺失和 commit_ts 来源断言；错误路径或重复键优化应增加对应回归用例，并与 Go 文件/测试语义核对。
 - 若让生产事务启用中间缓存，还需修改直接接线点 `pkg/store/driver/txn/txn_driver.rs::BatchGet`，并评估缓存生命周期、快照一致性和陈旧值风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust 文件可按文件节点读取。
-- RustCodeGraph `node --file pkg/store/driver/txn/batch_getter.rs`：核对了 187 行完整实现，以及 `tikvBatchGetter`、`tikvBatchBufferGetter`、`BufferBatchGetter`、`NewBufferBatchGetter` 和 trait impl。
-- RustCodeGraph `explore`/调用边：确认 `NewBufferBatchGetter` 的 Rust 调用者为 `pkg/store/driver/txn/txn_driver.rs::BatchGet`；文件节点进一步核对其构造参数和 commit_ts 后处理。
-- `pkg/store/driver/txn/lib.rs`：核对模块导出、`Key`/`ValueEntry`、选项转换、三个读取 trait 及独立测试模块声明。
-- `pkg/store/driver/txn/error.rs::DriverError::is_not_found`：核对两种缺失错误的分类。
-- `pkg/store/driver/txn/Cargo.toml`：核对 crate 名、`lib.rs` 入口、Go 包映射和依赖边界。
-- `pkg/store/driver/txn/batch_getter.go` 与 `batch_getter_test.go`：核对 Go 原实现、client-go 包装方式和原测试意图。
-- `pkg/store/driver/txn/batch_getter_test.rs::TestBufferBatchGetter`：核对 Rust 中的层级优先、墓碑、完全缺失和 commit_ts 行为；测试位于独立文件，没有内嵌到生产源文件。
-- 本任务是只读行为分析与文档新增；按计划不运行 Cargo。交付前以任务指定命令验证文档恰含十一个固定二级章节，并人工复核唯一产物和引用路径。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate，并由 `pkg/executor/lib.rs` 以公开模块 `statement_ru_result` 装配。它位于 statement RU v2 链路的“边界与结果”层：在执行前，把动态计划和会话状态收敛成一次语句的安装配置；在执行证据收集完成后，把标量计量单位换算成最终 RU 快照；最后通过抽象发布接口把冻结结果送往资源组、指标和校准消费者。
-
-它不负责遍历物理计划或采集运行时统计。前者由 `pkg/executor/statement_ru_plan_walk.rs` 完成，指标明细和报告结构由 `pkg/executor/statement_ru_reporting.rs` 提供；本文件只保留可复制的分类、标量状态和发布边界，避免最终计算阶段继续持有计划或运行统计指针。实际执行收口入口在 `pkg/executor/adapter.rs::ExecStmt::FinishExecuteStmt`，该入口调用 `finishStatementRU` 得到快照，再调用 `publish_statement_ru_finalized_snapshot`。
-
-`pkg/executor/Cargo.toml` 将本目录定义为 `astersql-executor`（`[lib] path = "lib.rs"`）。本文件直接依赖该 crate 已声明的 `astersql-config`、`astersql-kv`、`astersql-metrics`、`astersql-parser-ast`、planner core 系列和 `astersql-resourcegroup`；没有本文件专属 feature 或条件编译项。
+`classify_statement_ru_plan` 解析真正被执行的计划，区分写入、提交、分析、点查和普通计划，并生成指标使用的 SQL 类型。
 
 ## 核心职责
 
@@ -80,11 +76,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/statement_ru_result.go`，相关 Go 回归位于 `pkg/executor/statement_ru_result_test.go`。Rust 命名改为 snake_case/PascalCase，但主要数据形状和分支保持一一对应：`statementRUPlanKind`/`statementRUPlanInfo`、`statementRUCalculationSetup`、`statementRUCalculator`、扫描证据三态、TTL 三字段身份、当前权重读取和最终快照均有对应实现。
+Rust 命名改为 snake_case/PascalCase，但主要数据形状和分支保持一一对应：`statementRUPlanKind`/`statementRUPlanInfo`、`statementRUCalculationSetup`、`statementRUCalculator`、扫描证据三态、TTL 三字段身份、当前权重读取和最终快照均有对应实现。
 
-计划语义一致：两侧都会解开执行 wrapper，只会解开 `EXPLAIN ANALYZE` 的 target，并识别 insert/replace/update/delete/analyze/commit/point lookup。资格语义也一致：只读或 SELECT，以及 analyze/write/commit 可计量；普通 restricted SQL、cursor 和已缓存 flat plan 被排除；只有带非空 job id 的内部 TTL restricted 请求例外。
-
-终结公式保持 Go 注释中的关键不变量：总结果先含原始 TiFlash RU，只额外增加倍率减一的部分；分引擎 TiFlash 再乘完整倍率。两侧都拒绝负值、NaN 和无穷，并在 full 模式把可变报告复制后加入语句级单位。Go 的 `(snapshot, bool)` 在 Rust 中表达为 `Option<StatementRUFinalizedSnapshot>`。
+终结公式保持 Go 注释中的关键不变量：总结果先含原始 TiFlash RU，只额外增加倍率减一的部分；分引擎 TiFlash 再乘完整倍率。
 
 发布结构在 Rust 中进一步抽象为 `StatementRUPublicationSink`，便于不依赖全局指标的独立测试；生产 `StatementRUContextSink` 仍复现 Go 的资源组、TTL、总结果、full-report 和校准顺序。Rust 当前把 TTL 身份放在 sink 构造参数中，而 Go 的 finalized snapshot 自带 `ttlJob`，这是载荷位置差异，不改变生产发布结果。
 
@@ -97,13 +91,3 @@
 调整资格时，应优先修改 `StatementRUInstallState` 与 `new_statement_ru_calculation_setup` 的值边界，而不是让 calculator 读取 live session。任何新增 session 字段都应在安装时快照，并覆盖 restricted SQL、TTL、cursor、flat-plan 缓存和缺失 context 组合。full 模式“不合格用户工作计数、restricted 工作不计入”的现有行为也要维持或明确迁移。
 
 新增发布消费者时，应先扩展 `StatementRUPublicationSink`，再实现生产 sink 与测试 sink。要明确它属于资源组、指标还是校准 panic 域，以及 result-only 模式是否应调用；不要让外部回调 panic 越过 `FinishExecuteStmt`。性能上应避免在默认 result-only 模式克隆 full-report，也不要扩大全局指标锁的持有范围。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件由 `node --file pkg/executor/statement_ru_result.rs --offset 1 --limit 520` 完整读取为 504 行。
-- RustCodeGraph 符号查询：`StatementRUCalculator`、`StatementRUFinalizedSnapshot`、`StatementRUPlanInfo`、`classify_statement_ru_plan`、`classify_scan_evidence`、`install_statement_ru_owner`、`publish_statement_ru_finalized_snapshot`。
-- RustCodeGraph 调用证据：`publish_statement_ru_finalized_snapshot` 由 Rust `adapter.rs::FinishExecuteStmt` 调用，并调用 full-report 发布及 sink 方法；`classify_scan_evidence` 被 reader 与 point-lookup 证据收集调用；`classify_statement_ru_plan` 被安装资格、forest 计算和 typed-plan 分类调用；`StatementRUCalculator` 被计划遍历层消费。
-- 读取的 Rust 生产与装配文件：`pkg/executor/statement_ru_result.rs`、`pkg/executor/compiler.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`；`rg` 确认 `compiler.rs` 在 `TypedPlan` 就绪后调用安装入口；目标包不存在 `pkg/executor/doc.go`。
-- 读取的直接 Rust 测试：[`pkg/executor/statement_ru_result_test.rs`](statement_ru_result_test.rs)。覆盖当前配置权重、扫描证据全部状态、EXPLAIN 前缀、TiFlash 倍率、报告冻结、无效单位、规范化 SQL、资格/计划/TTL 分支及三个发布 panic 域。
-- 读取的 Go 对照与测试：[`pkg/executor/statement_ru_result.go`](statement_ru_result.go)、[`pkg/executor/statement_ru_result_test.go`](statement_ru_result_test.go)。Go 测试还验证并发终结仅发布一次、早关/终端错误/非法证据不发布、快照不受 live evidence 后续变化及 TTL 指标归属；这些跨文件生命周期由 Rust 的 `statement_ru_plan_walk.rs` 和 adapter 完成，本文件文档只将其作为边界证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构检查应确认目标文件存在且恰有十一个规定的二级标题。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的运行时层，由 `pkg/session/runtime.rs` 以公开模块 `ttl_worker_session` 装配。它把会话 crate 内真正可执行 SQL 的 `ConcreteSession` 适配为 `astersql_ttl_ttlworker::session::WorkerSession`，使 TTL worker 可以通过稳定的抽象执行扫描、删除、作业持久化及定时器元数据 SQL，而不直接依赖完整会话内部结构。
-
-crate 边界由 `pkg/session/Cargo.toml` 证明：`astersql-session` 直接依赖本地 crate `astersql-ttl-ttlworker`、`astersql-parser-mysql`，并依赖 `chrono` 与 `chrono-tz`。本文件没有条件编译项、模块级常量或自定义 trait；生产类型只有 `TtlWorkerSqlSession`，测试位于独立文件 `pkg/session/runtime/ttl_worker_session_test.rs`。
-
-上游运行入口主要位于 `pkg/session/runtime/ttl_runtime.rs` 和 `pkg/session/runtime/ttl_timer.rs`。例如 `run_ttl_tick_inner` 为协调、扫描、删除和检查点分别创建适配器，`JobHeartbeat::start` 在线程内创建独立适配器，`sync_ttl_timers` 与 `job_status` 则用它读写 TTL 系统表。
+`impl WorkerSession for TtlWorkerSqlSession` 将 TTL 层的 `Datum` 参数绑定为可执行 SQL，并把 `ConcreteSession` 的结果集逐行转换成 TTL 层的 `Vec<Row>`。
 
 ## 核心职责
 
@@ -107,11 +103,9 @@ Go 对照逻辑集中在 `pkg/ttl/ttlworker/session.go`，并非与本文件同�
 
 - Go `withSession` 从 `syssession.Pool` 取会话、挂接统计收集器、调用 `prepareSession` 并 defer 恢复；Rust 将可复用的准备/恢复算法放在 `pkg/ttl/ttlworker/session.rs`，本文件提供真实 SQL执行与 `avoid_reuse` 适配，具体实例由 `ttl_runtime.rs` 创建。
 - Go `prepareSession` 保存并设置 retry limit、1PC、异步提交、UTC 和读引擎，失败时清理且禁止复用；Rust 的 `prepare_session_checked`/`restore_session_checked` 保留相同语句顺序和失败清理策略，`refresh_state` 为其读取真实初始值。
-- Go `NewScanSession` 保存内部扫描标志、设置扫描并发为 1、关闭 paging，并在恢复失败时 `AvoidReuse`；Rust 对应 `prepare_scan_session_checked`/`restore_scan_session_checked`，本文件提供所需状态与 SQL落地。
-- Go `ttlTableSession.ExecuteSQLWithCheck` 在乐观事务中执行语句，并在语句之后验证 TTL 元数据；Rust 对应 `TableSession::execute_sql_with_check` 加本文件 `execute_in_transaction`。
 - Go 会话接口原生接受参数化 `ExecuteSQL(ctx, sql, args...)` 和 `time.Time` 过期值；当前 Rust 适配器使用 TTL 专用 `%?` 字面量绑定，并通过 `ExpirationPredicate` 显式区分 TIMESTAMP 绝对时刻与 DATETIME/DATE 墙上时间。这是实现形态差异，不应误写成 Go 代码逐行翻译。
 
-Go 测试 `pkg/ttl/ttlworker/session_test.go` 验证准备/恢复、部分失败不可回池、恢复继续清理、扫描设置和事务后元数据校验。Rust 独立测试 `pkg/session/runtime/ttl_worker_session_test.rs` 进一步覆盖真实 SQL 参数转义、分区隔离、系统表持久化、扫描删除、DST/固定偏移时区、TIMESTAMP 分页、全局时区变化后的严格删除边界，以及真实变量恢复。
+Rust 独立测试 `pkg/session/runtime/ttl_worker_session_test.rs` 进一步覆盖真实 SQL 参数转义、分区隔离、系统表持久化、扫描删除、DST/固定偏移时区、TIMESTAMP 分页、全局时区变化后的严格删除边界，以及真实变量恢复。
 
 ## 扩展指南
 
@@ -122,13 +116,3 @@ Go 测试 `pkg/ttl/ttlworker/session_test.go` 验证准备/恢复、部分失败
 - 修改参数绑定时，应注意 `%?` 计数、文本/二进制转义和 `FROM_UNIXTIME` 特判。更换为通用 prepared statement 之前，必须证明 UTC 会话下的 TTL 水位、观测 SQL与所有系统表语句仍等价。
 - 性能上，`execute` 会把所有结果集完整物化到 `Vec<Row>`，且字符串绑定会重新分配 SQL；TTL 扫描依赖上层 batch limit 控制规模。若引入流式返回，需要连同 `WorkerSession` trait、扫描重试和 checkpoint 边界一起设计。
 - Rust 单元测试必须继续放在独立的 `ttl_worker_session_test.rs`，不要嵌回生产文件；本文件已有 AsterSQL 与 PingCAP 版权头，不得删除。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为 275 行、18 个符号，并显示 8 个文件级使用者。
-- RustCodeGraph 读取的生产路径：`pkg/session/runtime/ttl_worker_session.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/ttl_runtime.rs`、`pkg/session/runtime/ttl_timer.rs`、`pkg/ttl/ttlworker/session.rs`、`pkg/ttl/ttlworker/scan.rs`、`pkg/ttl/ttlworker/del.rs`、`pkg/ttl/ttlworker/persistent.rs`。
-- Cargo 依据：`pkg/session/Cargo.toml` 中 crate 名为 `astersql-session`，声明本地依赖 `astersql-ttl-ttlworker`、`astersql-parser-mysql` 及时间依赖 `chrono`/`chrono-tz`。
-- Go 对照：`pkg/ttl/ttlworker/session.go` 的 `withSession`、`prepareSession`、`NewScanSession`、`ttlTableSession::ExecuteSQLWithCheck` 与 `validateTTLWork`。
-- 独立测试依据：Rust `pkg/session/runtime/ttl_worker_session_test.rs`；Go `pkg/ttl/ttlworker/session_test.go`。两者共同覆盖参数、生命周期、事务、元数据变化及会话变量恢复；Rust 文件额外提供真实 SQL和跨时区过期边界证据。
-- RustCodeGraph 的 impl 方法 caller/callee 命令未返回可用的精确边；因此调用关系以索引文件内容配合 `rg` 定位的直接调用点复核，并在本文中限定为这些已见证路径。
-- 本任务是纯文档分析，按计划未运行 Cargo、单元测试或构建。交付前仅执行任务规定的 11 章节结构检查，并人工复核本文没有把未见代码写成已支持能力。

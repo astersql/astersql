@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`core_impl.rs`](core_impl.rs) 是 `astersql-expression` crate 的核心 trait 适配层。`lib.rs` 通过 `#[path = "core_impl.rs"] mod core_impl;` 私有装入它；文件本身不导出新类型，而是为 `Column`、`CorrelatedColumn`、`Constant`、`ScalarFunction` 补齐 `VecExpr`、`CollationInfo`、`SafeToShareAcrossSession`、`StringerWithCtx`、`base::Hash64`、`base::Equals` 和 `Expression` 实现。因而调用者通常面向 `dyn Expression` 或这些父 trait，不直接引用 `core_impl` 模块。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-expression`，库入口为 `lib.rs`。本文件经 `use crate::*` 使用 crate 根重导出的 chunk、codec、types、exprctx、base 以及表达式具体类型；它没有条件编译项、模块级常量或自有状态类型。
+只承担接口桥接和少量组合逻辑；具体取值、类型转换、列定位、函数执行及多数错误构造仍位于 `column.rs`、`constant.rs`、`scalar_function.rs` 等固有实现中。
 
 ## 核心职责
 
@@ -91,9 +89,7 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-expressi
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Expression`、`VecExpr`、`SafeToShareAcrossSession` 与 `CollationInfo` 分别对应 Go `pkg/expression/expression.go` 及排序规则接口；四种具体类型对应 `column.go`、`constant.go`、`scalar_function.go`。逐行/向量求值类型集合、`ConstLevel`、解关联、下标解析、重映射、Explain、哈希和内存统计入口均保持 Go 接口意图。
-
-已核对的关键一致性包括：关联列仅在 schema 含内层列时解关联；列下标解析找不到列时返回错误；常量的 schema 操作为恒等成功；标量函数递归处理参数并传播首个错误；规范化常量 Explain 使用 `?`；跨会话共享判断委托具体表达式。
+Rust 的 `Expression`、`VecExpr`、`SafeToShareAcrossSession` 与 `CollationInfo` 分别对应 Go `pkg/expression/expression.go` 及排序规则接口；四种具体类型对应 `column.go`、`constant.go`、`scalar_function.go`。
 
 Rust 为所有返回表达式的路径使用拥有的 `ExprBox`，因此比 Go 接口指针语义更明确。特别是本文件的 `ScalarFunction::Decorrelate` 先克隆后改写，而 Go `scalar_function.go::Decorrelate` 会原地替换接收者参数；Rust 调用方不应依赖 Go 的原地副作用。Rust 还用 `as_any/as_any_mut` 和 `Any::downcast_ref` 代替 Go 类型断言。数值返回也适应 Rust 所有权：例如 decimal/JSON/vector 返回拥有值而非 Go 的可空指针形态，可空性仍由布尔值表达。
 
@@ -106,12 +102,3 @@ Rust 为所有返回表达式的路径使用拥有的 `ExprBox`，因此比 Go �
 测试必须放在独立 Rust 测试文件，不应内嵌到 `core_impl.rs`。最直接位置是 [`core_impl_test.rs`](core_impl_test.rs)；具体列、常量、标量函数行为还应分别扩展 `column_test.rs`、`constant_test.rs`、`scalar_function_test.rs`。应覆盖：四种动态分派求值、错误传播、错误具体类型相等、缺省参数 Explain、相关列解关联两分支、递归解析首错、虚拟表达式短路、缺失列映射和跨会话安全。
 
 兼容性风险集中在 trait 对象 API 与 Go 行为偏差；正确性风险集中在递归时遗漏子节点、错误地共享会话状态及哈希/相等不一致；性能风险集中在无意增加深克隆、重复类型计算或破坏向量化转发。修改宏会同时影响四种类型，必须逐类型验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query core_impl` 定位目标文件及其中的 `Vectorized`、各 `VecEval*`、`Eval*`、Collation 方法和测试文件；`node --file pkg/expression/core_impl.rs` 读取了完整 767 行，并报告该文件被 15 个文件使用。
-- RustCodeGraph 限制：对 `basic_explain` 的精确查询定位到第 290 行；对多态名称 `ResolveIndices`、`Decorrelate`、`EvalInt` 执行 callers/callees 未返回边。因此调用关系又由 `rg` 精确检查 `pkg/expression` 内的 trait 调用点，未把缺失图边写成“无调用”。
-- 读取的 Rust 边界与入口：`pkg/expression/lib.rs`、`Cargo.toml`、`expression.rs`、`collation.rs`、`column.rs`、`constant.rs`、`scalar_function.rs`。
-- 读取的 Rust 测试：`core_impl_test.rs`；并通过源码搜索核对 `column_test.rs`、`constant_test.rs`、`scalar_function_test.rs` 中与共享安全、解关联、重映射相关的用例入口。
-- 读取的 Go 对照：`expression.go` 的接口定义，`column.go` 的关联列/普通列解关联、下标解析和重映射，`constant.go` 的恒等解析，`scalar_function.go` 的递归解关联、解析和重映射。
-- 人工复核结论：文件存在的原因是集中完成核心具体类型到对象安全 trait 的适配；运行时以动态分派进入、以固有方法完成真实算法；安全扩展必须同时维护父 trait、四类适配、独立测试及 Go 语义对照。

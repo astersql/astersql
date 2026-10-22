@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`driver_tidb.rs` 是 `astersql-server` crate 中一份 TiDB 兼容驱动实现，由 [`pkg/server/lib.rs`](lib.rs) 以 `pub mod driver_tidb` 对外公开。它用三层对象承接 MySQL 连接语义：`TiDBDriver` 从存储抽象创建会话，`TiDBContext` 表示单连接会话，`TiDBStatement` 管理单个预处理语句。
-
-当前 Rust 生产连接主链并未使用这组类型：仓库搜索中 `NewTiDBDriver` 及本文件的 `TiDBContext`/`TiDBStatement` 只被 [`pkg/server/driver_tidb_test.rs`](driver_tidb_test.rs) 直接使用；现行连接主链是 [`pkg/server/conn.rs`](conn.rs) 中的同名 `TiDBContext` trait 与 [`pkg/server/runtime.rs`](runtime.rs) 中的 `ConcreteTiDBContext`。另一份 [`pkg/server/driver.rs`](driver.rs) 定义了尚未由本文件类型实现的 `IDriver`/`PreparedStatement` 契约。因此本文件应视为已有行为的兼容移植面，而不是已接线的生产入口。
+用三层对象承接 MySQL 连接语义：`TiDBDriver` 从存储抽象创建会话，`TiDBContext` 表示单连接会话，`TiDBStatement` 管理单个预处理语句。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@ trait 边界的业务错误通过 `Result<_, Error>` 原样传播；`LongDataSta
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `TiDBDriver`/`TiDBContext`/`TiDBStatement` 及大部分 Go 风格方法名直接对应 [`pkg/server/driver_tidb.go`](driver_tidb.go) 的同名符号。`Prepare` 的 BLOB 参数占位、长数据延迟报错、RESET 清空游标、CLOSE 保留游标标志、Close 忽略清理错误以及会话迁移的基本不变量均保留。
+`Prepare` 的 BLOB 参数占位、长数据延迟报错、RESET 清空游标、CLOSE 保留游标标志、Close 忽略清理错误以及会话迁移的基本不变量均保留。
 
 已确认的简化/差异有：
 
@@ -96,12 +94,3 @@ Rust 的 `TiDBDriver`/`TiDBContext`/`TiDBStatement` 及大部分 Go 风格方法
 - 修改迁移时应添加编码成功、绑定参数/活跃游标拒绝、元数据缺 ID、有名/无名恢复、中途失败以及 next ID/current DB 恢复测试；当前 Rust 测试只直接覆盖空快照 no-op。
 - 修改 Go 对齐语义时，要同时对照 `driver_tidb.go` 和 `driver_tidb_test.go`，但应注意 Go 测试目前仅直接覆盖 `column.ConvertColumnInfo`，不能当作本文件所有边界的回归保障。
 - 性能敏感点包括每次 `WarningCount` 克隆整个警告向量、Prepare 的参数占位分配、迁移时的全表锁定/克隆和 Close 的全表 drain；优化前应保留上述一致性语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/server/driver_tidb.rs` 确认目标文件被索引且有 81 个符号；`query` 区分了 Rust/Go 的 `TiDBDriver` 以及 Go 的 `OpenCtx`/`EncodeSessionStates`/`DecodeSessionStates`；`node --file ... --offset 140 --limit 340` 核对了 Rust 主体代码和索引关联文件。自然语言 `explore` 与部分 `callers/callees` 查询在 30 秒限时内未产生结果，因此调用面另用精确仓库搜索复核。
-- Rust 源与模块：[`pkg/server/driver_tidb.rs`](driver_tidb.rs)、[`pkg/server/lib.rs`](lib.rs)、[`pkg/server/driver.rs`](driver.rs)、[`pkg/server/conn.rs`](conn.rs)、[`pkg/server/runtime.rs`](runtime.rs)、[`pkg/server/conn_stmt.rs`](conn_stmt.rs)。
-- crate 声明：[`pkg/server/Cargo.toml`](Cargo.toml)，确认 `astersql-server` 边界、`lib.rs` 入口、禁用自动测试发现和 `astersql-sessionctx-vardef` 依赖。
-- Rust 测试：[`pkg/server/driver_tidb_test.rs`](driver_tidb_test.rs) 验证空迁移快照 no-op、context close 忽略清理错误、statement close 释放长数据但保留游标标志、沙箱允许集、packet/内存配额延迟错误及 RESET/CLOSE 内存退还。
-- Go 对照：[`pkg/server/driver_tidb.go`](driver_tidb.go) 的同名类型与方法，以及 [`pkg/server/driver_tidb_test.go`](driver_tidb_test.go) 唯一直接测试 `TestConvertColumnInfo`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文档存在且上述固定二级标题恰好 11 个。

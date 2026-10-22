@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-chunk` crate；crate 边界由 `pkg/util/chunk/Cargo.toml` 定义，`pkg/util/chunk/lib.rs` 通过 `#[path = "row_in_disk.rs"] pub mod row_in_disk` 挂载模块并用 `pub use row_in_disk::*` 重导出其公开符号。它是 Chunk 子系统的按行临时落盘层：上游 `pkg/util/chunk/row_container.rs` 在内存压力触发 spill 后，将内存 `List` 中的 Chunk 逐个交给 `DataInDiskByRows`，随后把读写切换到磁盘表示。
-
-该文件同时包含两组职责：`DataInDiskByRows` 及其序列化辅助类型负责真正的双临时文件落盘；`ReaderAt`、`SliceReaderAt`、`ReaderWithCache` 提供“底层随机读 + 未刷盘尾缓存”的独立抽象。当前 `DataInDiskByRows` 直接使用 `tempfile::NamedTempFile`，并未调用本文件的 `ReaderWithCache`。
+同时包含两组职责：`DataInDiskByRows` 及其序列化辅助类型负责真正的双临时文件落盘；`ReaderAt`、`SliceReaderAt`、`ReaderWithCache` 提供“底层随机读 + 未刷盘尾缓存”的独立抽象。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@ RustCodeGraph 的文件节点确认 `pkg/util/chunk/row_in_disk.rs` 已索引（
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/util/chunk/row_in_disk.go`，核心双文件布局、绝对行偏移、`-1` NULL 哨兵、格式缓冲复用、按行/按块读回及尾缓存随机读算法均保持一致。Rust 的 `DataInDiskByRows::New` 对应 Go `NewDataInDiskByRows`；Rust 用所有权值与 `Option<Chunk>` 代替 Go 指针和 nil，用 `Result` 代替具名 error 返回值。
+Rust 的 `DataInDiskByRows::New` 对应 Go `NewDataInDiskByRows`；Rust 用所有权值与 `Option<Chunk>` 代替 Go 指针和 nil，用 `Result` 代替具名 error 返回值。
 
 已验证的差异如下：
 
@@ -86,8 +84,6 @@ Rust 文件直接对应 `pkg/util/chunk/row_in_disk.go`，核心双文件布局�
 - Go `Close` 显式关闭并删除路径；Rust 依靠 `NamedTempFile` 的 RAII 删除。Rust 还实现 `Drop`，即使调用者遗漏显式关闭也会清理。
 - Go `ReadFrom` 会尝试按任意非 `-1` 长度分配；Rust 明确拒绝小于 `-1` 的损坏长度。
 
-Go 行为测试位于 `pkg/util/chunk/row_in_disk_test.go`；Rust 对应独立测试位于 `pkg/util/chunk/row_in_disk_test.rs`。后者覆盖了字符串、整数、JSON、NULL、Chunk/Row 往返、范围错误、Tracker 清零、并发读以及跨底层/缓存边界的 EOF 行为，但没有验证真实 checksum/encryption 管线或 Go 的临时目录配置。
-
 ## 扩展指南
 
 若扩展磁盘编码，优先同时修改 `convertFromRow`、`rowInDisk::{WriteTo, ReadFrom}` 和 `diskFormatRow::toRow`，并保持“每列一个小端 i64 长度、非 NULL cell 顺序紧随”的兼容性；任何格式变化都应先决定是否需要版本头，否则旧临时文件与新读取器混用会不可识别。新增字段校验或损坏输入防护时，应在 `pkg/util/chunk/row_in_disk_test.rs` 增加截断长度头、截断 cell、负长度和超大长度的独立用例。
@@ -97,13 +93,3 @@ Go 行为测试位于 `pkg/util/chunk/row_in_disk_test.go`；Rust 对应独立�
 若要支持 `Close` 后复用，必须一起重置 `numRowsOfEachChunk`、`rowNumOfEachChunkFirstRow`、`totalNumRows` 和两个文件/写游标，并新增“关闭后重新 Add/读回”测试；当前契约应把 `Close` 当终止操作。若要支持并发追加或读写并行，应在本类型内增加清晰的锁与快照边界，不能只依赖 `reopen`，还需保证数据写入、offset 写入和元数据提交对读者原子可见。
 
 常规功能扩展应同步检查 `pkg/util/chunk/row_container.rs` 的转发与 Tracker 差量统计，并扩展 `pkg/util/chunk/row_in_disk_test.rs`；若改变 Go 对齐语义，还应对照更新 `pkg/util/chunk/row_in_disk_test.go` 所表达的原测试意图。避免把测试放回生产源文件，保持当前独立测试模块结构。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引包含 `pkg/util/chunk/row_in_disk.rs`；`files --filter pkg/util/chunk/row_in_disk.rs` 与两次 `node --file ...` 完整读取了 506 行和 47 个符号；`query` 分别确认 `DataInDiskByRows`、`ReaderWithCache`、`convertFromRow` 的 Rust/Go 定义。精确 `callers/callees` 与后续 `explore` 未产出可用结果，调用边改由源码检索核实，未把空图结果解释为“无调用者”。
-- 生产源码：`pkg/util/chunk/row_in_disk.rs`（全部实现）、`pkg/util/chunk/lib.rs`（模块挂载与重导出）、`pkg/util/chunk/row_container.rs`（spill、读写转发、锁和生命周期）。目标目录没有 `doc.go`，因此无额外 package contract 可读取。
-- crate 声明：`pkg/util/chunk/Cargo.toml`（crate 名、`lib.rs` 入口、`tempfile`、磁盘/内存、checksum/encrypt 等依赖及 Go package 映射）。
-- Go 对照：`pkg/util/chunk/row_in_disk.go`（布局、I/O 抽象、checksum/encryption/缓存路径、并发警告与关闭语义）。
-- 测试证据：`pkg/util/chunk/row_in_disk_test.rs`（Rust 往返、范围、Tracker、并发读、cache/EOF 与基准入口），`pkg/util/chunk/row_in_disk_test.go`（Go 临时目录、真实 checksum/encrypt 组合及相同边界矩阵）。
-- 直接调用检索：对非测试 Rust 文件检索 `DataInDiskByRows`，实际构造和方法调用集中在 `pkg/util/chunk/row_container.rs`；`pkg/planner/cardinality/row_size.rs` 仅按这种行格式估算宽度，`pkg/executor/aggregate/agg_hash_executor.rs` 仅在注释中描述 spill。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核文档没有把未接线的 checksum/encryption 写成现状。

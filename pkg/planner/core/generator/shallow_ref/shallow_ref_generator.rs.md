@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-generator-shallow_ref` crate 的核心实现，crate 入口 `pkg/planner/core/generator/shallow_ref/lib.rs` 通过 `pub mod shallow_ref_generator` 声明模块并再导出其公开项。`pkg/planner/core/generator/shallow_ref/Cargo.toml` 将 `lib.rs` 设为库入口，没有声明运行时依赖，并用 `package.metadata.porting.go-package` 指向对应 Go 包。
-
-它不是 SQL 规划运行时的一环，而是逻辑算子 Copy-on-Write 辅助方法的源码生成器。固定目录入口 `GenShallowRef4LogicalOps` 生成 Go 文件内容，对应的已提交产物是 `pkg/planner/core/operator/logicalop/shallow_ref_generated.go`。实际 Go 生成链由 `pkg/planner/core/operator/logicalop/logical_plans_misc.go` 中的 `//go:generate go run ../../generator/shallow_ref/shallow_ref_generator.go -- shallow_ref_generated.go` 驱动；仓库搜索只发现 Rust API 被同 crate 的独立测试调用，未发现 Rust 生产代码直接调用它。
+复制算子值，并按 `FieldKind` 对导出字段生成 slice、map 或嵌套 `ShallowRef` 处理；其他种类沿用浅复制结果。
 
 ## 核心职责
 
@@ -81,11 +79,9 @@ slice 生成逻辑会让最终 Go 代码按原长度分配新容量并逐项 app
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/generator/shallow_ref/shallow_ref_generator.go`。`GenShallowRef4LogicalOps` 的四算子目录、算子级结构体复制、按 `shallow-ref:"true"` 选择字段、slice/struct 递归、跳过未导出 struct 字段、元素临时名规则、`refineFieldTypeName` 以及不支持类型的错误语义均在 Rust 中有对应实现。
+关键实现差异来自语言能力和入口角色：Go 用 `reflect.TypeOf` 和真实 struct tag 动态发现字段，并通过 `go/format.Source` 格式化；Rust 固定路径用 `logical_operator_specs` 手工镜像这些事实，并由 `line` 直接生成预期格式。
 
-关键实现差异来自语言能力和入口角色：Go 用 `reflect.TypeOf` 和真实 struct tag 动态发现字段，并通过 `go/format.Source` 格式化；Rust 固定路径用 `logical_operator_specs` 手工镜像这些事实，并由 `line` 直接生成预期格式。因此 Go 算子字段或 tag 变化不会自动更新 Rust 元数据，必须同步修改 `logical_operator_specs`。
-
-`pkg/planner/core/generator/shallow_ref/shallow_ref_generator_test.rs::generator_matches_go_output` 将 Rust 固定入口的全部字节与已提交 Go 产物比较；`generator_preserves_field_level_and_recursive_copy_semantics` 还检查字段级方法、struct 临时副本和二维 slice。`shallow_ref_test.rs::TestHash64Equals` 验证两次生成的确定性、与已提交产物逐行及逐字节一致、四算子方法存在，并覆盖公开元数据 API 的 slice 分支。Go 的 `shallow_ref_test.go::TestHash64Equals` 同样将反射生成结果与已提交文件对比。测试名称中的 `Hash64` 是历史命名，实际测试对象是 shallow-ref 生成器。
+`pkg/planner/core/generator/shallow_ref/shallow_ref_generator_test.rs::generator_matches_go_output` 将 Rust 固定入口的全部字节与已提交 Go 产物比较；`generator_preserves_field_level_and_recursive_copy_semantics` 还检查字段级方法、struct 临时副本和二维 slice。
 
 ## 扩展指南
 
@@ -94,12 +90,3 @@ slice 生成逻辑会让最终 Go 代码按原长度分配新容量并逐项 app
 若要支持新的类型种类，应修改 `TypeSpec` 与 `write_shallow_ref_element`，并核对 Go `cc.shallowRefElement` 的同类分支；不能用 `Scalar` 规避实际需要独立容器的字段。特别要验证顶层写回、slice 元素返回临时值、未导出 struct 字段跳过以及指针保持共享这些不变量。新增 map 支持时还应分别处理固定生成前缀和公开 API 前缀中的 import，并用生成结果编译或与 gofmt 后基准比对。
 
 若扩展公开元数据 API，应在 `shallow_ref_generator_test.rs` 或 `shallow_ref_test.rs` 增加无效标识符、未导出字段、nil 接收者输出和各 `FieldKind` 的独立用例。兼容风险主要是生成方法名或字节格式变化导致已提交 Go 产物漂移；正确性风险是容器复制层级不足而修改原 slice/map；性能风险是为不需要重排的嵌套容器增加额外线性分配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引可用；`files --filter pkg/planner/core/generator/shallow_ref` 找到 Rust、Go、入口及测试；`node --file ...shallow_ref_generator.rs` 读取完整 446 行和 35 个符号；`query` 精确定位 Rust `GenShallowRef4LogicalOps`、`gen_shallow_ref_for_logical_ops`、`write_shallow_ref_element`。精确 `callers`/`callees` 未返回图边，因此调用关系进一步由函数体及仓库引用核验，未把空结果解释成生产接线。
-- Rust 源与入口：`pkg/planner/core/generator/shallow_ref/shallow_ref_generator.rs`、`pkg/planner/core/generator/shallow_ref/lib.rs`。
-- crate/工作区：`pkg/planner/core/generator/shallow_ref/Cargo.toml`，以及根 `Cargo.toml` 的 workspace member 和 facade dependency 条目。
-- Go 对照与生成入口：`pkg/planner/core/generator/shallow_ref/shallow_ref_generator.go`、`pkg/planner/core/operator/logicalop/logical_plans_misc.go`、`pkg/planner/core/operator/logicalop/shallow_ref_generated.go`。
-- 独立测试：`pkg/planner/core/generator/shallow_ref/shallow_ref_generator_test.rs`、`pkg/planner/core/generator/shallow_ref/shallow_ref_test.rs`、`pkg/planner/core/generator/shallow_ref/shallow_ref_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文件存在且恰好包含十一个固定二级标题，并人工复核本说明能回答文件用途、生成流程、扩展入口和已知边界。

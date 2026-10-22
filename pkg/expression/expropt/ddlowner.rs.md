@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate，是表达式“可选求值属性”机制中 DDL Owner 状态的类型适配层。它不负责选举 DDL Owner，也不保存 Owner 状态；它只把一个查询当前节点是否为 Owner 的闭包包装成 `exprctx::OptionalEvalPropProvider`，并提供按固定属性键读取该闭包的 Reader。模块由 `pkg/expression/expropt/lib.rs` 的 `mod ddlowner; pub use ddlowner::*;` 纳入并公开再导出。
-
-crate 边界由 `pkg/expression/expropt/Cargo.toml` 定义：crate 名为 `astersql-expression-expropt`，库入口是 `lib.rs`，关闭自动测试发现和 doctest；本文件直接使用经 `lib.rs` 再导出的 `exprctx-crate`，错误类型来自 `anyhow`。Cargo 清单没有为本能力设置条件 feature，因此该模块不是条件编译项。
+`DDLOwnerInfoProvider` 把 `Fn() -> bool` 封装为可注册的可选属性 Provider，使表达式层不必依赖会话或 DDL Owner 管理器的具体类型。
 
 ## 核心职责
 
@@ -93,17 +91,14 @@ RustCodeGraph 对目标文件给出的引用文件包括 `pkg/expression/session
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/expropt/ddlowner.go`：
-
 - Go `type DDLOwnerInfoProvider func() bool` 对应 Rust 内含 `Box<dyn Fn() -> bool + Send + Sync>` 的结构体。Rust 增加 `new`/`call` 方法以及线程安全和 `'static` 约束，以适配 trait object 与所有权模型。
 - Go `Desc()` 与 Rust `OptionalEvalPropProvider::Desc` 都返回 `OptPropDDLOwnerInfo.Desc()`。
-- Go 空结构体 `DDLOwnerPropReader{}` 对应 Rust 零尺寸 `DDLOwnerPropReader`。
 - Go `RequiredOptionalEvalProps` 与 Rust `required_optional_eval_props` 都返回该键的单比特集合。
 - Go `IsDDLOwner` 先取具体 Provider 再执行函数；Rust `is_ddl_owner` 保留此顺序，并用 `Any` 安全 downcast 代替 Go 类型断言。
 
-Go 测试 `pkg/expression/expropt/optional_test.go::TestOptionalEvalPropProviders` 验证缺失时报错、闭包状态切换以及直连 Provider/Reader 结果一致；Rust 的 `pkg/expression/expropt/optional_test.rs::verify_ddl_owner` 对齐这些行为。Go `pkg/expression/sessionexpr/sessionctx.go` 注册 `sctx.IsDDLOwner`，Rust `NewEvalContext` 注册 `ddl_session.is_ddl_owner()`，二者都是延迟调用而非构造时快照。
+Go `pkg/expression/sessionexpr/sessionctx.go` 注册 `sctx.IsDDLOwner`，Rust `NewEvalContext` 注册 `ddl_session.is_ddl_owner()`，二者都是延迟调用而非构造时快照。
 
-迁移差异必须保留：Go `pkg/expression/builtin_info.go::builtinTiDBIsDDLOwnerSig` 通过嵌入/调用 Reader 声明并读取属性；现有 Rust `pkg/expression/builtin_info.rs::tidb_is_ddl_owner` 只把传入布尔值转为整数。静态证据不足以声称 Rust Reader 已经接入 SQL builtin 的生产求值路径。
+迁移差异必须保留：Go `pkg/expression/builtin_info.go::builtinTiDBIsDDLOwnerSig` 通过嵌入/调用 Reader 声明并读取属性；现有 Rust `pkg/expression/builtin_info.rs::tidb_is_ddl_owner` 只把传入布尔值转为整数。
 
 ## 扩展指南
 
@@ -115,14 +110,3 @@ Go 测试 `pkg/expression/expropt/optional_test.go::TestOptionalEvalPropProvider
 - 并发扩展不得移除 `Send + Sync`，除非同时证明所有拥有者与调用路径都不再跨线程；高频求值还应评估闭包调用成本，但不要在这里缓存可能变化的 Owner 状态。
 
 应优先扩展的独立测试文件是 `pkg/expression/expropt/optional_test.rs`（注册表、动态真假值）、`pkg/expression/expropt/migration_aster_unit_test.rs`（缺失和 Go 对齐）、`pkg/expression/sessionexpr/sessionctx_test.rs` 与 `migration_aster_unit_test.rs`（真实装配）。生产 builtin 接线变化还需覆盖 `pkg/expression/builtin_info_test.rs`、`builtin_info_vec_test.rs` 及对应集成路径。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，目标文件已索引。
-- RustCodeGraph `node --file pkg/expression/expropt/ddlowner.rs`：核对了文件全部 75 行、两个公开结构体、构造/调用方法、两个 trait impl 和 Reader 错误传播。
-- RustCodeGraph `explore "tidb_is_ddl_owner DDLOwnerPropReader is_ddl_owner pkg/expression/builtin_info.rs"`：确认 Provider 的生产装配位置、Reader 的直接 Rust 调用者主要为测试，并区分当前 Rust bool 转换内核与 Go Reader 接线。
-- 已读生产文件：`pkg/expression/expropt/lib.rs`、`pkg/expression/expropt/optional.rs`、`pkg/expression/sessionexpr/sessionctx.rs`、`pkg/expression/builtin_info.rs`、`pkg/expression/exprctx/optional.rs`。
-- 已读边界声明：`pkg/expression/expropt/Cargo.toml`。
-- 已读 Go 对照：`pkg/expression/expropt/ddlowner.go`、`pkg/expression/expropt/optional_test.go`、`pkg/expression/sessionexpr/sessionctx.go`、`pkg/expression/sessionexpr/sessionctx_test.go`、`pkg/expression/builtin_info.go`。
-- 已读独立 Rust 测试：`pkg/expression/expropt/optional_test.rs`、`pkg/expression/expropt/migration_aster_unit_test.rs`、`pkg/expression/sessionexpr/sessionctx_test.rs`、`pkg/expression/sessionexpr/migration_aster_unit_test.rs`；它们覆盖未注册错误、键声明、动态真假值、Provider/Reader 一致性和生产式上下文装配。
-- 本任务是只新增说明文档的静态分析，按计划未运行 Cargo。结构验证命令及退出码在任务交付时记录。

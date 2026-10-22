@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server` crate，由 [`pkg/server/lib.rs`](lib.rs) 以公开模块 `http_handler` 装配。它位于 `Server` 与 status HTTP 路由器之间：从运行中的 `Server` 提取少量只读信息，维护一份按职责分类的 TiKV/status 路径清单，并为尚未接入真实实现的路由提供分类依据。真正的请求解析、路由匹配、TCP 监听和多数 handler 实现在 [`pkg/server/http_status.rs`](http_status.rs)；TiKV 业务 handler 则位于 `pkg/server/handler/` 的独立 crate 中。
-
-该文件当前更接近“路由契约与构造参数快照”，不是 Go `http_handler.go` 中完整依赖对象的等价实现。特别是 `TikvHandlerTool` 只保存驱动名称与 Domain 可用性，并不持有 Go 版本所需的 TiKV `Storage`/`helper.Helper`。
+`HandlerKind` 将 status 路径归入 status、optimizer、settings、schema、DDL、DXF、ingest、region、MVCC 和 test 十类，并通过 `as_str` 提供稳定的人类可读名称。
 
 ## 核心职责
 
@@ -82,7 +80,6 @@ status 服务的相关主流程如下：
 - Go `newOptimizeTraceHandler` 从全局配置读取 `AdvertiseAddress`/status port，并从 Domain 提取可选 `InfoSyncer`。Rust 版本只保留地址、端口、Domain 是否存在，且当前地址来源是 `config.host`。
 - Go `newPlanReplayerHandler` 还传入 `InfoSchema`、statistics handle 与 `InfoSyncer`。Rust 版本没有这些对象，只记录 Domain 可用性；实际 Rust plan-replayer 下载链位于 `http_status.rs` 和全局 ext storage。
 - `routes` 主要镜像 Go `pkg/server/http_status.go::startHTTPServer` 的路径表，但 Rust 将路径与职责类别分离，供占位注册使用；Go 则直接为每条路径绑定具体 handler，并含 system keyspace、NextGen、store type 等条件分支。
-- 相关 Go 行为回归集中在 `pkg/server/handler/tests/http_handler_test.go`、`http_handler_serial_test.go` 和 `dxf_test.go`。对应 Rust 测试位于同目录的独立 `*_test.rs` 文件，符合测试与生产源文件分离要求。
 
 ## 扩展指南
 
@@ -92,12 +89,3 @@ status 服务的相关主流程如下：
 - 若启用两个优化器构造器，需要先补齐其消费者与 Go 所需的 InfoSyncer/InfoSchema/statistics 能力，或明确它们仍只是可用性快照；同时审视 `host` 与 `advertise_address` 的选择。
 - 测试应放在独立文件：本 crate 的路由/监听契约优先扩展 `pkg/server/http_status_test.rs`；具体 schema、DDL、DXF、region、MVCC 行为扩展 `pkg/server/handler/tests/http_handler_test.rs`、`http_handler_serial_test.rs` 或 `dxf_test.rs`。至少覆盖真实 handler 优先于占位、未接线路由返回分类化 503、条件路由与 Go 保持一致。
 - 兼容风险主要是路径增删、模板拼写、注册顺序和错误文案；性能风险较低，但 `routes` 每次调用都会分配新向量，若未来从启动期调用改为逐请求调用应改用静态清单。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件显示完整 203 行和 11 个符号。
-- 源码与模块边界：`pkg/server/http_handler.rs`、`pkg/server/lib.rs`、`pkg/server/server.rs`、`pkg/server/http_status.rs`、`pkg/server/Cargo.toml`。
-- Go 对照：`pkg/server/http_handler.go`（三个构造入口）与 `pkg/server/http_status.go::startHTTPServer`（真实路由及条件分支）。
-- 独立测试证据：`pkg/server/http_status_test.rs` 覆盖真实 TCP status 服务、schema 路由和 plan-replayer 下载；`pkg/server/handler/tests/http_handler_test.rs`、`http_handler_serial_test.rs`、`dxf_test.rs` 覆盖 schema/settings/DDL/DXF/region/MVCC 等 status 表面。未发现与 `http_handler.rs` 同名的独立 Rust 测试。
-- 调用边：`http_status.rs::build_status_router -> TikvHandlerTool::from_server -> Server::{driver,domain}`，以及 `build_status_router -> TikvHandlerTool::routes -> unavailable -> HandlerKind::as_str`。精确图查询未发现两个 `new_*_handler` 的调用者。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；验收使用任务指定的 11 章节结构检查，并人工核对本文没有把占位清单或未接线构造器写成已实现业务能力。

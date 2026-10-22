@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件是源码 [`pkg/util/sem/v2/sql_rule.rs`](sql_rule.rs) 的逻辑说明。源码属于 `astersql-util-sem-v2` crate 的 SQL 限制规则与命令分类层；crate 入口 `pkg/util/sem/v2/lib.rs` 将该模块声明为私有模块并通过 `pub use sql_rule::*` 重导出公共项。`pkg/util/sem/v2/Cargo.toml` 表明它直接依赖 `astersql-parser-ast` 与 `astersql-objstore`，测试阶段另依赖完整 parser。它位于配置和运行时之间：`config.rs::validateSEMConfig` 用这里的 `sqlRuleNameMap` 校验规则名，`sem.rs::buildSEMSqlValidateFunction` 将规则函数与配置的命令字符串编译成运行时判定闭包，最终由 `sem.rs::IsRestrictedSQL` 查询。
+实现配置字段 `restricted_sql.rule` 可引用的五个命名规则。
 
 ## 核心职责
 
@@ -83,11 +83,7 @@ AST 与 `CommandStatement` 都通过共享引用传入，规则执行期间不�
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/sem/v2/sql_rule.go` 是五个命名规则的直接对照：两侧具有相同规则名、相同 AST 分支和相同真假边界。Rust 的 `SQLRule` 是函数指针类型，Go 是函数类型；Rust 的 `LazyLock<HashMap>` 对应 Go 包级 map。`ImportWithExternalIDRule` 两侧均是为既有配置保留的恒 false 兼容入口，外部 ID 检查不在该规则列表中执行。
-
 主要结构差异在命令分类。Go 的 `sem.go::buildSEMSqlValidateFunction` 调用 `stmt.SEMCommand()`，各节点实现集中在 `pkg/parser/ast/sem.go`；Rust 运行时本文件的 `semCommand` 通过 `Any` 下转型集中列出 AST 类型，并引用 `pkg/parser/ast/sem.rs` 的命令常量。Rust parser AST 自身也有 `SEMCommand::sem_command` 实现，但本运行时入口没有对任意 trait 对象直接调用它。因此，Go 新 AST 节点加入自己的方法后，Rust 仍需显式更新本文件的映射，否则会得到 `UNKNOWN`。
-
-`pkg/util/sem/v2/sql_rule_test.rs::test_sql_rules` 与 Go 的 `sql_rule_test.go::TestSQLRules` 使用同一组真实 SQL：TTL 创建/修改/移除、表 ATTRIBUTES、external-id 兼容规则、SELECT INTO OUTFILE、本地路径与 `file://`、服务端/客户端 LOAD DATA。Rust 另有 `go_merge_18_show_storage_class_transitions_command` 验证新增 SHOW 子类型映射；`migration_aster_unit_test.rs::migration_restricted_sql_commands_and_rules_match_go` 覆盖命令规范化、真实 AST 命令映射与 TTL 规则联合生效。
 
 ## 扩展指南
 
@@ -98,14 +94,3 @@ AST 与 `CommandStatement` 都通过共享引用传入，规则执行期间不�
 修改本地导入判断时，应复用 `objstore` 的 URL 解析和本地性定义，不在本文件复制 scheme 列表；测试至少覆盖裸路径、`file://`、远端 scheme、无效 URL、IMPORT FROM SELECT、LOAD DATA LOCAL 与服务端 LOAD DATA。规则的失败默认是 `false`，改变这一点会有兼容和安全语义风险。
 
 性能上，`semCommand` 每次返回新 `String`，并多次执行 `Any` 类型检查；当前路径是每条受检查 SQL 一次，修改时应避免增加 I/O、锁或重复解析。若要重构为 AST trait 分派，必须证明与 Go 的动态命令分类、`CommandStatement` 适配和所有现有映射完全等价，而不能只以编译通过作为证据。
-
-## 验证依据
-
-- 源文件：`pkg/util/sem/v2/sql_rule.rs`，核对全部 480 行、25 个索引符号、公开/私有边界、五个规则和完整命令映射。
-- crate 与模块：`pkg/util/sem/v2/Cargo.toml`、`pkg/util/sem/v2/lib.rs`；确认 crate 名、`ast`/`objstore` 依赖、公共重导出和独立测试装配。该目录不存在 `doc.go`。
-- 运行时与配置：`pkg/util/sem/v2/config.rs`、`pkg/util/sem/v2/sem.rs`；确认规则名校验、闭包构建、命令规范化及 `IsRestrictedSQL` 调用链。
-- Go 对照：`pkg/util/sem/v2/sql_rule.go`、`pkg/util/sem/v2/sem.go`、`pkg/parser/ast/sem.go`；确认规则语义以及 Go 的 `stmt.SEMCommand()` 分派方式。
-- Rust AST 对照：`pkg/parser/ast/sem.rs`；确认命令常量与 AST `SEMCommand` trait 实现的位置。
-- 测试：`pkg/util/sem/v2/sql_rule_test.rs`、`pkg/util/sem/v2/sql_rule_test.go`、`pkg/util/sem/v2/migration_aster_unit_test.rs`、`pkg/util/sem/compat/sem_integration_test.rs`，以及配置未知规则用例 `pkg/util/sem/v2/config_test.rs`/`.go`。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`files --filter pkg/util/sem/v2` 覆盖目标及相邻 Go/Rust 文件；`node --file ...sql_rule.rs` 读取全文件；`query` 定位 `CommandStatement`、`sqlRuleNameMap`、`TimeToLiveSQLRule`、`ImportFromLocalRule`、`semCommand`；`callees` 验证上述关键下游边。图未识别静态表引用的完整 callers，已用直接源码引用补证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核没有把未知节点、解析失败或兼容占位描述成已受限。

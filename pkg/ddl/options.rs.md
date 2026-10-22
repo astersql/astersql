@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/options.rs` 是 `astersql-ddl` crate 的构造参数门面：它不执行 DDL job，也不参与 owner 调度、schema 状态迁移、reorg/backfill 或元数据持久化，而是把创建 DDL 实例所需的依赖和参数收集为 `Options`。crate 根模块在 `pkg/ddl/lib.rs` 中以 `pub mod options` 暴露该模块；`pkg/ddl/Cargo.toml` 声明 crate 名为 `astersql-ddl`、库入口为 `lib.rs`，并通过 `ddl-systable = { package = "astersql-ddl-systable", path = "systable" }` 提供本文件使用的 `SchemaLoader` trait。
-
-生产侧直接消费点是 `pkg/ddl/ddl.rs::Ddl::new`：构造函数接收 `IntoIterator<Item = OptionFn>`，调用 `apply_options` 后把结果保存到 `Ddl::options`。随后 `Ddl::start` 会检查 `options.store` 是否存在；本文件本身不启动任务、不打开连接，也不验证各字符串标识是否对应真实资源。
+用 `Options` 集中保存 DDL 构造期的七项配置：etcd 客户端标识、底层存储标识、auto-ID 客户端标识、info cache 标识、schema lease、schema loader 和事件发布存储标识（`pkg/ddl/options.rs::Options`）。
 
 ## 核心职责
 
@@ -88,12 +86,7 @@ RustCodeGraph 对 `pkg/ddl/options.rs` 识别出 10 个符号，并显示该文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/options.go`，测试对照是 `pkg/ddl/options_test.go::TestOptions`。
-
-共同点：
-
 - Go 的 `Option func(*Options)` 与 Rust 的 `OptionFn = Box<dyn FnOnce(&mut Options) + Send>` 都用闭包修改配置对象。
-- `WithEtcdClient`、`WithStore`、`WithInfoCache`、`WithAutoIDClient`、`WithLease`、`WithSchemaLoader`、`WithEventPublishStore` 在 Rust 中都有命名和字段语义对应项。
 - Go `TestOptions` 逐项应用选项并验证 etcd、lease、store、info cache；Rust `test_options` 保留这些意图，并额外覆盖 auto-ID、schema loader 与 event publish store。
 
 当前差异：
@@ -117,14 +110,3 @@ RustCodeGraph 对 `pkg/ddl/options.rs` 识别出 10 个符号，并显示该文�
 5. 与 `pkg/ddl/options.go` 对照；若移植 `WithExternalWorkloadManager`，还需确认 Rust 中真实 manager 接口、所有权与关闭责任，不能仅复制字段名。
 
 兼容风险主要是公开 `Options` 字段类型变化和默认值变化；正确性风险是“选项已存入但未被消费者使用”；性能风险主要来自把重型依赖深拷贝或在选项应用期执行 I/O。当前实现仅移动字符串/`Duration`/`Arc`，应用开销与选项数量线性相关，且不执行 I/O。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`files --filter pkg/ddl/options.rs` 确认目标文件已索引并含 10 个符号。
-- RustCodeGraph：`node --file pkg/ddl/options.rs --offset 1 --limit 400` 核对了 `Options`、`OptionFn`、七个 `with_*` 和 `apply_options` 的完整实现。
-- RustCodeGraph：对 `apply_options` 及各 `with_*` 执行 `query`、`callers`、`callees`，并用 `explore`/`node` 消除同名符号歧义；确认 `apply_options` 的生产调用点为 `pkg/ddl/ddl.rs::Ddl::new`，各内建选项构造器无下游函数调用，测试调用点包括 `options_test.rs` 与 schema loader 契约测试。
-- RustCodeGraph：读取 `pkg/ddl/ddl.rs` 的 `Ddl::new`/`Ddl::start`，确认配置保存和 `store` 启动校验；读取 `pkg/ddl/lib.rs`，确认 `pub mod options` 与独立测试模块 `mod options_test`。
-- 源码/配置：读取 `pkg/ddl/Cargo.toml`，确认 crate 名、`lib.rs` 入口和 `ddl-systable` 路径依赖。
-- Go 对照：读取 `pkg/ddl/options.go` 和 `pkg/ddl/options_test.go`，核对字段、functional-option 语义、真实依赖类型以及 Rust 尚缺的 external workload manager。
-- Rust 测试：读取 `pkg/ddl/options_test.rs` 和 `pkg/ddl/schema_loader_contract_aster_unit_test.rs`，核对组合赋值、后写覆盖、`Arc::ptr_eq` 与 trait 调用契约。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付验证仅检查固定章节、文件范围和事实可追溯性。

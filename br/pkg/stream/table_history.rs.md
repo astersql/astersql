@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-stream` library crate；`br/pkg/stream/Cargo.toml` 将 `lib.rs` 设为 crate 入口，`lib.rs` 再以 `#[path = "table_history.rs"] pub mod table_history` 挂载并通过 `pub use table_history::*` 扁平导出其公开项。它位于 BR 日志备份/PITR 的元数据辅助层：用内存映射记录数据库名称，以及表或分区从首次观察位置到最新观察位置的变化，供恢复过滤、重命名处理和分区交换检查读取。
-
-该文件不是持久化层，也不解析原始 meta KV；解析职责在同 crate 的 `table_mapping.rs`。Go 主链会把历史管理器作为 `MetaInfoCollector` 交给解析器，而当前 Rust 文件尚未实现 `table_mapping::MetaInfoCollector`。此外，`br/pkg/restore/log_client/batch_meta_processor.rs` 使用的是其本地 `stubs::stream::LogBackupTableHistoryManager`，不是本文件的类型。因此，本文件目前是可独立使用并有测试覆盖的数据结构，同时被 `br/pkg/task/restore.rs` 的恢复选择逻辑消费，但尚未直接接入 Rust 的 meta KV 批处理主链。
+位于 BR 日志备份/PITR 的元数据辅助层：用内存映射记录数据库名称，以及表或分区从首次观察位置到最新观察位置的变化，供恢复过滤、重命名处理和分区交换检查读取。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ RustCodeGraph 对该文件给出的直接使用文件为 `br/pkg/stream/parity_t
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/stream/table_history.go` 是逐项对照文件。Rust 保留了 Go 的类型名、字段名和方法名，以便迁移核对；`TableLocationInfo` 五个字段、管理器三个映射、首次/最新双槽规则、数据库时间戳门禁、相同时间戳覆盖以及分区循环均与 Go 一致。`br/pkg/stream/table_mapping_test.go::TestTableHistoryManagerOutOfOrderTS` 覆盖数据库、普通表和分区的乱序事件；Rust 的 `br/pkg/stream/table_mapping_test.rs::test_table_history_manager_out_of_order_ts` 覆盖数据库和普通表乱序，`br/pkg/stream/parity_test.rs::go_rust_public_contract_matches` 还检查较新表名和库名覆盖。
+Rust 保留了 Go 的类型名、字段名和方法名，以便迁移核对；`TableLocationInfo` 五个字段、管理器三个映射、首次/最新双槽规则、数据库时间戳门禁、相同时间戳覆盖以及分区循环均与 Go 一致。
 
 语言层差异包括：Go 构造函数返回 `*LogBackupTableHistoryManager`，Rust 返回拥有值；Go 查询 map 直接返回引用类型语义，Rust 显式返回共享借用；Go `GetDBNameByID` 返回 `(string, bool)`，Rust 返回 `Option<&str>`；Rust 输入以 `&str` 接收并在写入时复制。
 
@@ -87,12 +85,3 @@ RustCodeGraph 对该文件给出的直接使用文件为 `br/pkg/stream/parity_t
 若要完成 Rust 主链接线，最小入口是在 `table_mapping.rs` 所定义 trait 上为本类型实现 `MetaInfoCollector`，解决 `String` 到 `&str` 的适配，并让真实 `MetaKVInfoProcessor` 使用本 crate 类型而非 `restore/log_client/stubs.rs` 的同名桩；同时需要独立集成测试证明 meta KV 解析确实填充历史。此变更跨越本纯文档任务范围，且应评估 crate 依赖方向，避免形成循环依赖。
 
 若新增并发写入，不应直接在本文件内部零散加锁；应先确定管理器是单任务独占还是跨任务共享，再选择外层同步或封装锁，并保持 `dbIdToName`/`dbTimestamps` 原子一致。性能上应维持每个 ID 常数条记录的设计，除非消费侧确实需要完整历史链。
-
-## 验证依据
-
-- 源码与模块边界：`br/pkg/stream/table_history.rs`、`br/pkg/stream/lib.rs`、`br/pkg/stream/Cargo.toml`、`br/pkg/stream/stubs.rs::TableSimpleInfo`。
-- Go 对照：`br/pkg/stream/table_history.go`；完整生产收集链参考 `br/pkg/restore/log_client/batch_meta_processor.go::MetaKVInfoProcessor`。
-- Rust 调用与迁移边界：`br/pkg/stream/table_mapping.rs::MetaInfoCollector`、`parseDBValueAndUpdateIdMapping`、`parseTableValueAndUpdateIdMapping`；`br/pkg/restore/log_client/batch_meta_processor.rs::MetaKVInfoProcessor` 与 `br/pkg/restore/log_client/stubs.rs` 中的同名桩；`br/pkg/task/restore.rs::AdjustTablesToRestoreAndCreateTableTracker`、`get_db_name_from_backup`、`build_start_table_location_info`、`should_restore_table`。
-- 独立测试：`br/pkg/stream/table_mapping_test.rs::test_table_history_manager_out_of_order_ts`、`br/pkg/stream/parity_test.rs::go_rust_public_contract_matches`、`br/pkg/task/restore_test.rs::test_adjust_tables_to_restore_and_create_table_tracker`；Go 侧为 `br/pkg/stream/table_mapping_test.go::TestTableHistoryManagerOutOfOrderTS`。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`node --file br/pkg/stream/table_history.rs` 列出完整 150 行源码及四个直接使用文件；`explore` 核对了 `OnDatabaseInfo -> RecordDBIdToName`、`OnTableInfo -> AddTableHistory/AddPartitionHistory`、`Add*History -> addHistory` 调用边和测试/恢复消费者。单独的 `callers`/`callees` 查询在本地未于 30 秒内返回，因此调用关系又以 `explore` 结果和直接源码引用交叉核验。
-- 本任务是纯文档分析，未运行 Cargo。交付前按任务命令验证目标文件存在且恰有十一个固定二级章节，并人工检查链接、事实边界和仅目标文档进入提交。

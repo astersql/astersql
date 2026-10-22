@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-ingest-testutil` crate 的核心实现，crate 入口 `pkg/ddl/ingest/testutil/lib.rs` 通过 `pub mod testutil` 加载它，并用 `pub use testutil::*` 重新导出全部公开接口。它不参与 DDL 作业调度或索引回填本身，而是为 ingest 测试提供两个进程级辅助能力：临时注入 mock backend 环境，以及在测试进程退出前检查 ingest 资源是否泄漏。
-
-`pkg/ddl/ingest/testutil/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/ddl/ingest/testutil`，并声明 ingest、KV、元数据模型、指标与 testkit 等相邻依赖。不过当前 `testutil.rs` 没有直接引用这些 crate；真实系统状态由调用者实现的 `IngestTestRuntime` trait 间接接入。这意味着当前 Rust 文件是可测试的抽象边界，而不是已经连接到真实 ingest 全局变量、failpoint 或进程退出设施的适配器。
+没有创建 DDL job、执行 backfill、管理 checkpoint，也没有直接持有真实 backend context。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@ Go 上游则已广泛接线：`pkg/ddl/ingest/integration_test.go` 的多项测�
 
 ## 与 Go 版本的对应关系
 
-Go 文件 `pkg/ddl/ingest/testutil/testutil.go` 是直接语义来源。两版都保存旧磁盘/内存 roots、开启 mock backend、标记 ingest 已初始化、把磁盘根切到临时目录、把内存上限设为最大有符号 64 位整数，并提供退出前泄漏检查。两版泄漏检查都只在原退出码为零时运行，检查顺序均为 tracker、backend、registered jobs，泄漏时退出 1，否则保留原退出码。
-
 实现形态存在重要差异：
 
 - Go 版接收 `testing.T` 与 `kv.Storage`，直接创建 `testkit.TestKit`，通过 failpoint 回调把真实 `BackendCtx` 替换成 `ingest.NewMockBackendCtx`；Rust 版只把 `store_id` 传给抽象 runtime，并不直接构造 session、checkpoint operator 或 backend context。
@@ -100,12 +96,3 @@ Go 文件 `pkg/ddl/ingest/testutil/testutil.go` 是直接语义来源。两版�
 若改变错误策略，应重点决定三件事：失败回滚是否聚合清理错误、部分恢复后是否允许重试、`Drop` 错误如何可观测。相关回归测试应加入 `pkg/ddl/ingest/testutil/testutil_aster_unit_test.rs`，至少覆盖 `enable_mock_backend`、`set_initialized`、`replace_roots` 和恢复各阶段失败，以及只依赖 `Drop` 的清理路径。
 
 若改变泄漏检查顺序、消息格式或退出码，必须同步核对 Go 文件和测试 harness 对字符串/退出行为的依赖，并扩展现有泄漏测试。性能风险很低，主要风险是进程级共享状态导致的测试串扰、清理失败被隐藏，以及真实 `exit` 提前终止其他清理。
-
-## 验证依据
-
-- 源码事实：`pkg/ddl/ingest/testutil/testutil.rs`，包含 `IngestTestError`、`BackendRoots`、`IngestTestRuntime`、`MockBackendGuard`、`InjectMockBackendCtx`、`CheckIngestLeakageForTest` 的完整定义。
-- crate 边界：`pkg/ddl/ingest/testutil/lib.rs` 的模块加载、公开重导出与独立测试声明；`pkg/ddl/ingest/testutil/Cargo.toml` 的 crate 名、Go 包映射和依赖声明。
-- Rust 测试：`pkg/ddl/ingest/testutil/testutil_aster_unit_test.rs` 验证成功注入、显式恢复、重复恢复、泄漏优先级、报告文本、零/非零退出码；未覆盖注入失败回滚、恢复失败和仅靠 `Drop` 清理。
-- Go 对照：`pkg/ddl/ingest/testutil/testutil.go`；Go 调用证据见 `pkg/ddl/ingest/integration_test.go`、`pkg/ddl/backfilling_dist_scheduler_test.go`、`pkg/ddl/tests/metadatalock/mdl_test.go`。
-- RustCodeGraph：索引状态显示目标文件已收录；`files --filter pkg/ddl/ingest/testutil` 列出 Rust/Go 实现与独立测试；`query` 定位两版同名函数；`callees InjectMockBackendCtx` 和 `callees CheckIngestLeakageForTest` 核对了上述 runtime 调用边。图查询未找到 Rust 上游调用者，随后以全仓库直接引用搜索确认除同 crate 单测外没有本实现调用点。
-- 人工边界复核：本文件没有条件编译项、静态状态或内部测试模块；所有生产符号均为公开接口或公开 trait 方法，内部状态仅为 `MockBackendGuard` 的两个私有字段。

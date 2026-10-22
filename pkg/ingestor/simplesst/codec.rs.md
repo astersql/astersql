@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ingestor-simplesst` crate 的范围统计元数据编解码层。crate 由 [`lib.rs`](lib.rs) 声明 `codec` 模块，并把 `RangeProperty` 重导出为 crate 级类型；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `pkg/ingestor/simplesst`。它不编码 SST 数据文件中的 KV 正文，而是编码伴随数据文件写出的 range property（范围属性）记录。
-
-写侧主链为 [`file.rs`](file.rs) 的 `KeyValueStore::add_encoded_data` 更新文件偏移并调用 `RangePropertiesCollector::on_next_encoded_data`，随后 [`writer.rs`](writer.rs) 的 `RangePropertiesCollector::encode` 调用本文件的 `encode_multi_props` 生成统计字节流。读侧由 [`stat_reader.rs`](stat_reader.rs) 的 `StatsReader::next_prop` 读取四字节长度头和对应正文，再调用 `decode_prop`。因此，本文件定义了写侧和读侧共享的统计文件线格式。
+用 `<u32 正文长度><属性正文>` 重复序列表示多条属性，使统计文件可以逐条读取。
 
 ## 核心职责
 
@@ -67,9 +65,9 @@ RustCodeGraph 的文件查询将 `codec.rs` 识别为含 13 个符号的已索�
 
 ## 与 Go 版本的对应关系
 
-[`codec.go`](codec.go) 是直接对照实现。Rust 的 `RangeProperty` 字段、32 字节固定开销、大端序、正文顺序以及外层四字节长度前缀均与 Go 的 `RangeProperty`、`propertyLengthExceptKeys`、`encodeProp`/`decodeProp`、`encodeMultiProps`/`decodeMultiProps` 对齐。两端的单条解码都只读取已定义字段，因此允许正文后存在尾随字节。
+Rust 的 `RangeProperty` 字段、32 字节固定开销、大端序、正文顺序以及外层四字节长度前缀均与 Go 的 `RangeProperty`、`propertyLengthExceptKeys`、`encodeProp`/`decodeProp`、`encodeMultiProps`/`decodeMultiProps` 对齐。
 
-差异主要在安全接口而非线格式：Go 返回指针切片且键直接引用输入切片，Rust 返回拥有键副本的值；Go 的解码对截断输入会因切片越界而 panic，Rust 返回 `Result`/`InvalidData`；Go 将长度直接转为 `uint32`，Rust 在编码前拒绝超出 `u32` 的键或正文；Rust 的 `decode_multi_props` 是可用于生产代码的公开安全函数，而 Go 源码注明 `decodeMultiProps` 仅供测试。camelCase Rust 入口保留了调用形态上的迁移便利，但错误返回仍遵循 Rust crate 约定。
+差异主要在安全接口而非线格式：Go 返回指针切片且键直接引用输入切片，Rust 返回拥有键副本的值；Go 的解码对截断输入会因切片越界而 panic，Rust 返回 `Result`/`InvalidData`；Go 将长度直接转为 `uint32`，Rust 在编码前拒绝超出 `u32` 的键或正文；Rust 的 `decode_multi_props` 是可用于生产代码的公开安全函数，而 Go 源码注明 `decodeMultiProps` 仅供测试。
 
 [`codec_test.go`](codec_test.go) 验证单条和三条属性往返以及零值固定长度；[`codec_test.rs`](codec_test.rs) 覆盖相同意图，并额外验证截断多条输入返回错误和单条尾随字节兼容性。
 
@@ -80,13 +78,3 @@ RustCodeGraph 的文件查询将 `codec.rs` 识别为含 13 个符号的已索�
 若只新增校验，先判断它属于字节安全还是业务不变量。长度溢出、截断适合留在本文件；键排序、范围连续性、偏移和数据文件一致性更适合在收集器、writer 或 reader 上层验证。改变 `decode_prop` 的尾随字节策略会偏离 Go，需新增明确的兼容测试与迁移说明。
 
 新增 Rust 回归测试应继续放在独立的 [`codec_test.rs`](codec_test.rs)，由 `lib.rs` 的 `#[cfg(test)] mod codec_test` 接入，不要把测试嵌入生产源文件。建议覆盖空属性、多属性边界、长度头截断、正文内部各字段截断、伪造的超大声明长度和已知 Go 字节 fixture。性能改动应保留顺序追加和线性扫描特性；若要预分配容量，需要用受检算术，避免重新引入溢出。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引可用（11,467 个文件、307,296 个节点）；`files --filter pkg/ingestor/simplesst` 确认目标、Go 对照及独立测试均在索引中；`node --file pkg/ingestor/simplesst/codec.rs` 读取完整 139 行源文件；`query` 唯一定位 `decode_multi_props`、`encode_multi_props`、`encode_prop`，并定位目标 `decode_prop` 与同名测试。
-- 目标实现：[`codec.rs`](codec.rs) 的 `RangeProperty`、`take`、四个 snake_case 编解码函数和四个 Go 风格适配函数。
-- crate 与错误边界：[`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs) 的模块声明、重导出、`Error::InvalidData` 与 `Result`。
-- 生产调用链：[`writer.rs`](writer.rs) 的 `RangePropertiesCollector::{on_next_encoded_data,encode}`、[`file.rs`](file.rs) 的 `KeyValueStore::{add_encoded_data,finish}`、[`stat_reader.rs`](stat_reader.rs) 的 `StatsReader::next_prop`。
-- Go 对照：[`codec.go`](codec.go)、[`writer.go`](writer.go) 的 `RangePropertiesCollector`、[`stat_reader.go`](stat_reader.go) 的 `StatsReader::NextProp`。
-- 测试证据：[`codec_test.rs`](codec_test.rs) 和 [`codec_test.go`](codec_test.go)；其他调用样例可见 `iter_test.rs`、`util_test.rs`，但它们不是本文件语义的主要断言来源。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节结构、文件范围和事实链接。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema` crate，是集群内存表的轻量路由与行整形模块。crate 根 `pkg/infoschema/lib.rs` 以 `pub mod cluster` 声明模块，并重新导出本文件的全部公开常量、类型与函数；`pkg/infoschema/Cargo.toml` 则把 crate 根设为 `lib.rs`。它不负责执行跨节点 RPC，也不创建 information schema 表，而是提供下列更靠近边界的决策：哪些表属于集群表、请求应面向全部 TiDB 还是 DDL Owner，以及如何把当前实例标识加到结果行前面。
-
-截至当前代码，Rust 生产文件中没有这些函数的调用者；精确搜索只发现 crate 根导出和 Rust 测试使用。完整应用主链仍可从 Go 对照实现看到：`pkg/planner/core/operator/physicalop/physical_table_scan.go` 用 `IsClusterTableByName` 标记集群表，`pkg/executor/table_reader.go` 用 `GetClusterTableCopDestination` 选择请求目标，多个 `pkg/executor/*` reader 用 `AppendHostInfoToRows` 补实例列。因此，本文件是已实现且有测试的移植边界，但尚不能据此声称 Rust SQL 主链已经完成接线。
+用 13 个 `ClusterTable*` 字符串常量统一表示由所有 TiDB 节点提供的 `CLUSTER_*` 表名；依据是 `ClusterTableSlowLog` 至 `ClusterTableTiDBPlanCache`。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ RustCodeGraph 给出的直接下游边为：`AppendHostInfoToRows -> GetInstance
 
 ## 与 Go 版本的对应关系
 
-`pkg/infoschema/cluster.go` 是直接语义来源。13 个 `CLUSTER_*` 常量、全 TiDB 映射、DDL Owner 映射、路由枚举、名称识别、地址获取和行前置逻辑均有对应物。`pkg/infoschema/cluster_test.rs` 验证了 Go 的小写输入契约和 DDL Owner 不区分大小写路由；`pkg/infoschema/go_merge_45_test.rs` 还覆盖 storage class transitions 的 DDL Owner 路由。
-
-存在四项重要差异。第一，Go `init` 会建立小写映射并注册带 `INSTANCE` 列的集群表 schema，Rust 本文件没有该初始化逻辑。第二，Go 从全局 infosync 和会话权限管理器读取信息，Rust 通过 `ClusterSessionContext` 注入，并把权限管理器缺失等细节折叠成布尔值。第三，Go 使用完整 `types.Datum` 并原地替换外层 rows，Rust 使用本地简化 `Datum` 并消费后重建结果。第四，Go 的 `IsClusterTableByName` 使用预建的小写 map 并在测试模式断言调用者已规范化；Rust 每次把候选转小写，以测试断言体现相同调用契约。
+存在四项重要差异。第一，Go `init` 会建立小写映射并注册带 `INSTANCE` 列的集群表 schema，Rust 本文件没有该初始化逻辑。第三，Go 使用完整 `types.Datum` 并原地替换外层 rows，Rust 使用本地简化 `Datum` 并消费后重建结果。第四，Go 的 `IsClusterTableByName` 使用预建的小写 map 并在测试模式断言调用者已规范化；Rust 每次把候选转小写，以测试断言体现相同调用契约。
 
 Go 测试 `pkg/infoschema/test/clustertablestest/cluster_tables_test.go` 经 SQL 验证实例列；Rust 独立测试 `pkg/infoschema/test/clustertablestest/cluster_tables_test.rs` 直接覆盖 IPv4、IPv6、SEM 脱敏和行前置。Rust 测试注释也明确说明完整 mockstore、gRPC、PD HTTP 与 SQL testkit 栈尚未移植，因此直接 helper 测试不能等同于端到端集群表验证。
 
@@ -83,11 +79,3 @@ Go 测试 `pkg/infoschema/test/clustertablestest/cluster_tables_test.go` 经 SQL
 改变名称规范化策略前，要同步检查 planner 是否仍传入小写 `.L` 名称，并更新 `pkg/infoschema/cluster_test.rs`、`pkg/infoschema/test/clustertablestest/tables_test.rs` 和独立 `cluster_tables_test.rs`。改变实例展示或权限规则时，应优先修改 `GetInstanceAddr` 和 trait，而不是在 `AppendHostInfoToRows` 中分叉；至少覆盖 server-info 错误、SEM 有/无权限、权限管理器等价边界、IPv4、已带括号/未带括号 IPv6、空 rows 和多 rows。
 
 生产接线时需要实现真实 `ClusterSessionContext` 适配器，并在 planner/executor 的 Rust 等价位置复用这些 API。兼容风险主要是大小写契约、未知表默认路由和 SEM 地址泄露；性能风险主要是每次名称判定的小写分配及每行地址克隆。测试逻辑应继续放在独立 `cluster_test.rs` 或 `test/clustertablestest/*.rs`，不要嵌入生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/infoschema/cluster.rs`；`node --file pkg/infoschema/cluster.rs` 读取了完整 179 行和 35 个符号；对 `GetClusterTableCopDestination`、`IsClusterTableByName`、`GetInstanceAddr`、`AppendHostInfoToRows` 执行了 `query`、`callers`、`callees`。图确认了私有映射引用、trait 方法调用及 `AppendHostInfoToRows -> GetInstanceAddr`；callers 无 Rust 生产边，随后用 `rg` 补证。
-- Rust 源与装配：`pkg/infoschema/cluster.rs`、`pkg/infoschema/lib.rs`、`pkg/infoschema/Cargo.toml`。其中 Cargo 的常规依赖没有被本文件直接使用，较完整但被 `cfg(any())` 禁用的旧移植依赖也不能视为本模块已接入生产主链的证据。
-- Rust 测试：`pkg/infoschema/cluster_test.rs`、`pkg/infoschema/go_merge_45_test.rs`、`pkg/infoschema/test/clustertablestest/cluster_tables_test.rs`、`pkg/infoschema/test/clustertablestest/tables_test.rs`。直接验证包括小写契约、DDL Owner 路由、storage class transitions、SEM、IPv6 和实例列前置。
-- Go 对照与调用点：`pkg/infoschema/cluster.go`、`pkg/infoschema/tables_test.go`、`pkg/infoschema/test/clustertablestest/cluster_tables_test.go`，以及 `pkg/planner/core/operator/physicalop/physical_table_scan.go`、`pkg/executor/table_reader.go`、`pkg/executor/infoschema_reader.go`、`pkg/executor/stmtsummary.go`。
-- 本任务是纯文档分析，按计划没有运行 Cargo 或代码测试。最终结构检查要求本文恰好包含任务指定的 11 个二级标题；人工复核同时确认没有把 Go 主链接线误称为 Rust 已支持能力。

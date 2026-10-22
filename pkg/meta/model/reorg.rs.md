@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`reorg.rs` 定义 DDL 重组（reorganization）和 backfill 持久化元数据，是 Go `pkg/meta/model/reorg.go` 的 Rust 对照实现。它不是独立 crate 入口：`pkg/meta/model/internal/group3/lib.rs` 在私有 `reorg` 模块中用 `include!("../../reorg.rs")` 编入源码，再以 `pub use reorg::*` 导出；`pkg/meta/model/lib.rs` 又通过 `group_3` 暴露该模型。顶层包还主要再导出 group1，因此使用方应留意实际导入路径，例如 DDL 代码通常使用 `astersql_meta_model::group_3::{DDLReorgMeta, ReorgType}`。
-
-该文件位于在线 DDL 的“描述与持久化”边界，而不是执行引擎本身：它保存任务采用的回填方式、阶段、SQL 环境、范围进度和可动态调整的资源参数；真正扫描、写入、合并和调度发生在 `pkg/ddl/**`。源码没有条件编译项，也不创建线程、事务或存储连接。
+`DDLReorgMeta` 汇总一次 DDL 重组的 SQL 环境、告警、执行策略、版本和资源参数，并提供与 Go JSON 兼容的手写序列化。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ Base64 解码明确检查长度和字符，但实现没有完整验证填充位�
 
 ## 与 Go 版本的对应关系
 
-Rust 的字段、JSON 名、状态值和核心方法逐项对应 `pkg/meta/model/reorg.go`：两个版本都以零值兼容旧任务，`UseNewCollate` 都保留三态语义，`ReorgTypeIngest`/`TxnMerge` 都要求 merge，`BackfillMeta` 都使用 JSON。`pkg/meta/model/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/meta/model"` 也明确记录此移植来源。
-
 已核对的差异包括：
 
 - Go `atomic.Int64` 在结构体浅拷贝中按值复制；Rust 因 `AtomicI64` 不实现 `Clone`，`ShallowCopy` 显式 load 后创建新原子量，并同时深克隆拥有所有权的容器。
@@ -88,8 +84,6 @@ Rust 的字段、JSON 名、状态值和核心方法逐项对应 `pkg/meta/model
 - Go `[]byte` 由标准库 JSON 自动编码为 Base64；Rust 用私有 `go_bytes` 手写同格式。Go nil slice/map 与 Rust 空集合的内存语义不同，但当前 Rust 解码将 `null` 归一为空值。
 - Go `BackfillState.String` 对未知整数返回 `backfill state unknown`；Rust `serde_repr` 的封闭枚举不能构造未知合法实例，因此只有四个已知分支。
 - Go `errors.Trace` 可保留 PingCAP 错误语义；当前 group3 的 Rust `errors::Trace` 把可显示错误转换成字符串，文档不能把它描述成等价的 Go 堆栈实现。
-
-Go 侧相关测试不在 `reorg_test.go`（该文件不存在），而在 `pkg/meta/model/job_test.go`：`TestDDLReorgMetaUseNewCollate` 和 `TestBackfillMetaCodec`。Rust 对照覆盖位于独立的 `reorg_test.rs`、`job_test.rs` 和 `job_3_aster_unit_test.rs`，符合测试不内嵌生产文件的仓库规则。
 
 ## 扩展指南
 
@@ -100,13 +94,3 @@ Go 侧相关测试不在 `reorg_test.go`（该文件不存在），而在 `pkg/m
 改变在线参数时，应继续通过 getter/setter 访问原子量，明确零值含义、数值范围和多字段一致性需求。若要求多个参数形成一致快照，当前三个独立 `AtomicI64` 不足，需要在调用层或模型层设计共同同步机制；不能只调整内存顺序就获得多字段事务性。
 
 测试应放在独立文件，优先扩展 `pkg/meta/model/reorg_test.rs`；涉及 Job JSON 和父子任务复制时同步 `job_test.rs`，涉及 DDL 状态机时扩展对应 `pkg/ddl/*_test.rs`。至少覆盖旧 JSON 缺字段/`null`、Go/Rust 往返、非法枚举和 Base64、零值回退、`i64` 边界、失败解码不修改原对象。性能上需留意序列化和 `ShallowCopy` 会克隆告警 map、字符串和时区，超大告警集合可能增加内存与延迟。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、`reorg.rs` 含 52 个符号；`files --filter pkg/meta/model` 确认源、Go 对照和独立测试均已索引；`node --file pkg/meta/model/reorg.rs --offset 1 --limit 500` 读取完整 499 行并报告 11 个使用文件。
-- RustCodeGraph 精确查询：`query ReorgType`、`query DDLReorgMeta`、`query BackfillMeta` 确认 Rust/Go 对照符号及 `pkg/ddl/index.rs::pick_backfill_type` 等相关入口。方法级 `callers` 对同名符号优先解析到 Go 实现，故 Rust 方法调用边由精确源码搜索补足，没有把 Go 调用边误记成 Rust 调用边。
-- 源与装配：`pkg/meta/model/reorg.rs`、`pkg/meta/model/internal/group3/lib.rs`、`pkg/meta/model/lib.rs`、`pkg/meta/model/Cargo.toml`、`pkg/meta/model/internal/group3/Cargo.toml`。
-- Go 对照：`pkg/meta/model/reorg.go`；Go 测试：`pkg/meta/model/job_test.go`。
-- Rust 测试：`pkg/meta/model/reorg_test.rs`、`pkg/meta/model/job_test.rs`、`pkg/meta/model/job_3_aster_unit_test.rs`。
-- Rust 调用证据：`pkg/meta/model/job.rs`、`pkg/ddl/backfilling_txn_executor.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/index.rs`、`pkg/ddl/persistent_modify_column.rs`。
-- 人工复核结论：该文件存在是为了给 DDL 重组与单个 backfill job 提供可恢复、可跨 Go/Rust JSON 交换且部分参数可在线调整的模型；运行路径由 Serde 编解码、原子 getter/setter 和 DDL 层状态消费组成；安全扩展必须同时维护 wire、复制、版本、Go 协议与独立测试。

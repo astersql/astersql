@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于独立 crate `astersql-expression-generator`，由 [`pkg/expression/generator/lib.rs`](lib.rs) 以公开模块 `builtin_threadsafe` 接入。crate 的 [`Cargo.toml`](Cargo.toml) 将其定位到 Go 包 `pkg/expression/generator` 的移植实现，并通过 `tree-sitter`、`tree-sitter-go` 解析 Go 源码；它是离线代码生成工具，不参与 SQL 表达式的运行时求值。
-
-文件的直接 Go 对照是 [`builtin_threadsafe.go`](builtin_threadsafe.go)。Go 主工程当前的真实生成入口仍是 [`pkg/expression/builtin.go`](../builtin.go) 中的 `//go:generate go run generator/builtin_threadsafe.go`，并非调用本 Rust 模块。因此 Rust 文件提供了可独立调用和测试的对等生成能力，但不能据此断言主工程的 `go generate` 已切换到 Rust。
-
-生成目标位于 `pkg/expression`：`builtin_threadsafe_generated.go` 为判定安全的签名生成递归检查与原子缓存方法，`builtin_threadunsafe_generated.go` 为其余签名生成恒为 `false` 的方法。两者均实现各签名的 `SafeToShareAcrossSession` 方法。
+提供“只返回生成物”和“顺序写入两个生成文件”两层 API，最后保留一个以当前目录为目标的私有 `main`。
 
 ## 核心职责
 
@@ -105,15 +101,10 @@ Rust 生成过程是同步、单线程、逐文件和顺序写盘的，没有锁
 
 ## 与 Go 版本的对应关系
 
-Rust 版本逐段对应 [`builtin_threadsafe.go`](builtin_threadsafe.go)：
-
-- `SPECIAL_SAFE_FUNCS` 对应 `specialSafeFuncs`，当前 12 个名称一致。
 - `collect_thread_safe_builtin_funcs` 对应 `collectThreadSafeBuiltinFuncs`。Go 用标准库 `go/parser`/`go/ast`，Rust 用 tree-sitter，但都检查 `TypeSpec`、`builtin*Sig` 命名、结构体形状、白名单和单一基类字段。
-- `gen_builtin_thread_safe_code` 对应 `genBuiltinThreadSafeCode`，文件筛选、输入排序、安全集合排序及双份输出一致。两者都没有对不安全集合单独全局排序。
 - `generate_code` 对应 `generateCode`；Go 直接调用 `format.Source`，Rust 通过外部 `gofmt` 达到格式化和语法拒绝效果，因此 Rust 多了系统工具可用性这一运行条件。
 - `generated_outputs` 是 Rust 为分离生成与 IO 增加的安全接口，Go 版本没有同名层。
 - `write_generated_outputs` 与私有 `main` 合起来对应 Go `main` 的两次顺序写盘。Go 失败后 `log.Fatalln` 退出；Rust 写盘函数返回错误，私有 `main` 再 panic。
-- 两套模板和文件头的行为一致：安全方法递归检查参数并使用原子三态缓存，不安全方法恒为 `false`。
 
 独立 Rust 测试补充验证了 Go AST 的细节对齐：结构体别名、命名字段、带 tag 的匿名字段、额外状态、白名单、非结构体别名、扫描过滤、字典序、符号链接以及格式化失败。仓库中未找到针对 Go 生成器函数本身的同目录 `*_test.go`；本任务因此以 Go 源实现和 Rust 对抗/迁移测试作为对照证据。
 
@@ -126,12 +117,3 @@ Rust 版本逐段对应 [`builtin_threadsafe.go`](builtin_threadsafe.go)：
 - 改变输出路径或写盘策略时，优先在 `generated_outputs`/`write_generated_outputs` 层处理，保留纯生成函数便于测试。若需要可靠发布，应考虑同目录临时文件、完整生成成功后再原子重命名，并明确双文件一致性策略。
 - 若要让 Rust 生成器取代当前 Go `go:generate` 入口，需要另行接线 Cargo 可执行目标和 `pkg/expression/builtin.go`；本文件当前的私有 `main` 不会自动成为 binary。该迁移还应验证 CI/开发环境中 `gofmt` 和 Rust 工具的可用性，不能只改注释。
 - 测试逻辑必须继续保留在独立测试文件中，不要嵌入本生产文件。性能风险主要来自重复解析大量 Go 文件和每次生成启动两个 `gofmt` 进程；兼容风险集中在 tree-sitter Go AST 形状与 Go 标准 AST 的差异，以及白名单误分类。
-
-## 验证依据
-
-- 目标源码：[`pkg/expression/generator/builtin_threadsafe.rs`](builtin_threadsafe.rs)，完整核对了 344 行源码中的常量、类型、函数、模板和文件头。
-- crate 与模块入口：[`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)，确认这是 edition 2024、`publish = false` 的独立 library crate，依赖 `tree-sitter`/`tree-sitter-go`，且两个测试文件通过 `#[path]` 独立接入。
-- Go 对照与主工程接线：[`builtin_threadsafe.go`](builtin_threadsafe.go)、[`pkg/expression/builtin.go`](../builtin.go) 和 `pkg/expression/BUILD.bazel`，确认 Go 算法、当前 `go:generate` 入口及生成文件构建关系。
-- 独立测试：[`builtin_threadsafe_1_aster_unit_test.rs`](builtin_threadsafe_1_aster_unit_test.rs) 验证基本分类、白名单、扫描过滤和安全名称排序；[`builtin_threadsafe_test.rs`](builtin_threadsafe_test.rs) 验证结构体别名/命名字段/tag、Unix 符号链接、双文件写盘、`gofmt` 格式化和非法源码拒绝。
-- RustCodeGraph：索引覆盖 11,467 个文件，目标文件识别出 12 个符号；`query` 定位主要函数，`node --file` 读取目标、Go 对照、模块入口与测试；`callers`/`callees` 验证了正文列出的生产调用链及测试调用者。对同名 `write_generated_outputs` 产生的跨模块假边已通过源码限定排除。
-- 文档交付只进行结构与事实验证，不运行 Cargo，符合总计划对纯文档任务的限制。

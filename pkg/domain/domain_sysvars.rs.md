@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate。crate 入口 `pkg/domain/lib.rs` 以 `pub mod domain_sysvars` 暴露该模块，并在测试配置下从独立文件 `pkg/domain/domain_sysvars_test.rs` 装入单元测试。`pkg/domain/Cargo.toml` 指定 crate 根为 `lib.rs`；本文件自身只直接使用标准库的 `BTreeMap`、`OnceLock`、`RwLock`，以及同 crate 的 `crate::domain::Domain`。
-
-它当前承担两种性质不同的内容：
-
-1. 第 21–165 行是被逐行注释掉的 Go 迁移草稿，描述理想的 Domain 回调注册、PD client、oracle、统计缓存和资源控制接线；这些内容不参与 Rust 编译和运行。
-2. 第 167–309 行是可编译实现：一个进程级 `DomainSysVars` 状态容器、五个系统变量名常量、类型化动态选项，以及返回全局容器的 `Domain::init_domain_sys_vars`。
-
-因此，本文件当前是 Domain 系统变量副作用的“进程内状态模型”，不是 Go 版本真实外部副作用的完整移植。仓库搜索仅找到 `pkg/domain/domain_sysvars_test.rs` 对这些 API 的直接使用；未找到生产代码调用 `Domain::init_domain_sys_vars`，也未找到本文件向 `pkg/sessionctx/variable/tidb_vars.rs` 中 hook 槽注册回调的接线。
+当前实现不会调用 PD client、store oracle、stats handle、resource-control hook 或 TiKV circuit-breaker 配置。
 
 ## 核心职责
 
@@ -97,8 +90,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照文件是 `pkg/domain/domain_sysvars.go`。对应关系与缺口如下：
-
 - Go `initDomainSysVars` 把多个 Domain 方法注册到 `variable` 全局回调；Rust `init_domain_sys_vars` 只返回全局 `DomainSysVars`，没有注册行为。
 - Go `setStatsCacheCapacity` 调用真实 `StatsHandle`，且 handle 为空时 no-op；Rust 只把容量写入内存字段。
 - Go `setPDClientDynamicOption` 更新真实 PD client，并在部分分支同步 `vardef` 原子状态；Rust 只保存 `DynamicOption`。两者对毫秒转换、布尔判断、RPC 模式并发度和未知变量 no-op 的解析语义基本一致。
@@ -122,19 +113,3 @@ Go 权威对照文件是 `pkg/domain/domain_sysvars.go`。对应关系与缺口�
 - 并发：hook 注册与替换、Domain 生命周期、全局单例和并行测试之间不能形成悬垂引用或状态串扰。
 - 性能：高频读取应避免无必要的 String 分配；若选项集合增大，应评估单一 map 锁竞争。
 - 测试：继续放在独立的 `pkg/domain/domain_sysvars_test.rs`；真实接线还需要覆盖 hook 调用、外部错误传播、非 PD store/nil client no-op，以及 Domain 初始化确实注册回调。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- `pkg/domain/domain_sysvars.rs`：RustCodeGraph 文件节点返回完整 1–309 行；核对了常量、枚举、结构体、所有方法、私有解析函数和注释迁移草稿。
-- `pkg/domain/domain_sysvars_test.rs`：三项独立测试验证毫秒/纳秒换算、负 duration、三类布尔 false、RPC 模式大小写及并发度、标量不裁剪。
-- `pkg/domain/domain_sysvars.go`：核对 Go 初始化注册、stats、PD option、resource control、external workload、oracle、PD client no-op 和 circuit breaker 行为。
-- `pkg/domain/domain.go:628`：Go Domain 初始化调用 `do.initDomainSysVars()`。
-- `pkg/domain/lib.rs`：核对模块公开性和独立测试模块声明。
-- `pkg/domain/Cargo.toml`：核对 crate 名、`lib.rs` 入口、Go package 元数据和依赖边界；当前实现本身未使用列出的外部 crate。
-- `pkg/sessionctx/variable/tidb_vars.rs`：核对 Rust hook 槽已存在，但目标文件尚未注册这些槽。
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`query DomainSysVar` 返回 `DomainSysVars`、`init_domain_sys_vars` 和 `global` 等候选。`callers init_domain_sys_vars` 查询超时无结果，故没有把该空输出当作无调用证据，改用 `rg -n "init_domain_sys_vars\\(" --glob '*.rs' .` 精确复核，仅命中定义本身。
-- 结构验证使用任务指定命令，要求文件存在且恰好含有上述 11 个固定二级标题。
-
-人工复核结论：本文区分了可编译实现与注释草稿，能够回答文件为何存在、当前如何运行、哪些 Go 行为尚未接线，以及新增状态模型或真实副作用时应修改和测试的位置。

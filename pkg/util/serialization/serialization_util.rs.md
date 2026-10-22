@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-serialization` crate 的写入侧实现。crate 根 `pkg/util/serialization/lib.rs` 通过 `mod serialization_util` 引入它，并用 `pub use serialization_util::*` 将所有公开编码函数暴露给聚合执行代码；同 crate 的 `deserialization_util.rs` 是逐字段对称的读取侧。`pkg/util/serialization/Cargo.toml` 表明该 crate 直接依赖 chunk、datum 和 binary JSON 三个内部 crate，没有 feature 分支；本文件本身也没有条件编译项。
-
-它位于聚合中间状态落盘（spill）的基础编码层，而不是通用、跨机器的持久化协议层。RustCodeGraph 的文件关系显示直接使用者包括 `pkg/executor/aggfuncs/spill_serialize_helper.rs`、`pkg/executor/aggfuncs/func_max_min_count.rs` 和 `pkg/executor/aggregate/agg_spill.rs`，另有向量回归测试 `pkg/util/serialization/go_merge_34_test.rs`。
+通过 `SerializeInterface` 模拟 Go 的类型 switch：先写 `common_util.rs` 定义的单字节类型码，再写具体载荷；用于 JSON 聚合等异构 spill 值。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ API 不返回 `Result`，因为对合法内存值的普通编码没有可恢复�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/serialization/serialization_util.go`。Rust 保留了 Go 的公开函数命名、字段顺序、类型码顺序、native-endian/native-word-size 格式和不支持接口类型时的 panic 文案。Go 用 `unsafe.Pointer` 把值的内存表示追加到 `[]byte`；Rust 对标量改用安全的 `to_ne_bytes`，对 `MyDecimal` 显式逐字段编码，从而避免整体结构体转存时把 Rust 布局填充当成协议，但仍产生 Go 期望的 40 字节顺序。
+Rust 保留了 Go 的公开函数命名、字段顺序、类型码顺序、native-endian/native-word-size 格式和不支持接口类型时的 panic 文案。Go 用 `unsafe.Pointer` 把值的内存表示追加到 `[]byte`；Rust 对标量改用安全的 `to_ne_bytes`，对 `MyDecimal` 显式逐字段编码，从而避免整体结构体转存时把 Rust 布局填充当成协议，但仍产生 Go 期望的 40 字节顺序。
 
 存在几项实现层差异但语义保持一致：Go `int` 对应 Rust `isize`；Go `time.Duration` 对应 `i64`；Go `string` 的 type switch 对应 Rust 拥有所有权的 `String`，不是 `&str`；Go `bytes.Buffer.Bytes()` 返回未读区间，Rust 用 Cursor position 手动切片；Go 使用全局 `types.ZeroVectorFloat32`，Rust在空值分支解析 `[]` 得到等价零向量。Go `SerializeBinaryJSON` 调 `SerializeByte` 写类型码，Rust 调专用的 `SerializeJSONTypeCode`，二者当前均写一个字节。
-
-`migration_aster_unit_test.rs` 对标量、本机宽度、长度前缀、Cursor 剩余区间、结构化字段顺序、九种接口类型及 panic 文案进行 Rust 回归；`go_merge_34_test.rs` 单独验证空/非空 VectorFloat32 的往返。这些测试位于独立文件，符合生产源码不内嵌测试的仓库约束。
 
 ## 扩展指南
 
@@ -91,12 +87,3 @@ API 不返回 `Result`，因为对合法内存值的普通编码没有可恢复�
 - 修改 `MyDecimal`、`Time`、`Duration`、JSON、SET/ENUM 或向量字段顺序前，必须核对 Go 对照与读取侧；这类变更会破坏已有 spill 字节兼容性。
 - 性能改动优先保持调用者的缓冲复用模式；若改变函数接收/返回 `Vec<u8>` 的所有权方式，应同步检查 `SerializeHelper` 中所有 `std::mem::take` 调用和聚合 spill 适配器。
 - 测试应继续放在独立文件。基础与结构化格式扩展 `pkg/util/serialization/migration_aster_unit_test.rs`；VectorFloat32 语义扩展 `go_merge_34_test.rs`；涉及具体聚合状态时同步最近的 `pkg/executor/aggfuncs/*_test.rs` 或 `pkg/executor/aggregate/*_test.rs`，并至少覆盖往返、空值/零值、截断或非法标签边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/util/serialization` 确认模块文件集合；`node --file pkg/util/serialization/serialization_util.rs --offset 1 --limit 500` 读取全部 245 行及 4 个使用文件；`query` 核对 `SerializeInterface`、`SerializeMyDecimal`、`SerializeVectorFloat32`、`SerializeBytesBuffer` 和 `serializeBuffer` 的 Go/Rust 对照；`callees SerializeInterface` 核对九个具体编码委派。精确 `callers` 未返回边，因此用文本引用补足上游证据。
-- 生产源码与边界：`pkg/util/serialization/serialization_util.rs`、`common_util.rs`、`deserialization_util.rs`、`lib.rs`、`Cargo.toml`。
-- Go 对照：`pkg/util/serialization/serialization_util.go`。
-- 直接调用者：`pkg/executor/aggfuncs/spill_serialize_helper.rs`、`pkg/executor/aggfuncs/func_max_min_count.rs`、`pkg/executor/aggregate/agg_spill.rs`。
-- 独立测试：`pkg/util/serialization/migration_aster_unit_test.rs`、`pkg/util/serialization/go_merge_34_test.rs`。当前目录没有 `doc.go`，所以没有额外包契约文件可读。
-- 本任务是纯文档分析，没有修改或运行 Rust/Go 代码，也按计划未运行 Cargo；结构验证单独执行并记录退出状态。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-ranger` crate 中把 SQL 谓词端点落实为可供表扫描、索引扫描和代价估算使用的 `Range`/`Ranges` 的核心实现。crate 根 `pkg/util/ranger/lib.rs` 以 `ranger_impl` 装入本文件并公开再导出其导出项；`pkg/util/ranger/Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/util/ranger`，说明其直接移植目标是同目录 Go 包，具体行为基线为 `pkg/util/ranger/ranger.go`。
-
-它位于“表达式条件拆分”与“规划器访问路径”之间：`points.rs` 的 `builder` 先把表达式变为成对端点，本文件完成类型转换、有效性过滤、单列/多列组合、内存配额回退和区间合并；规划器随后把结果写入逻辑或物理扫描。直接生产调用可见于 `pkg/planner/core/operator/logicalop/logical_table_scan.rs`、`logical_datasource.rs`、`pkg/planner/core/operator/physicalop/physical_table_scan.rs`、`physical_index_join.rs`、`index_join_probe.rs`，估算侧调用见 `pkg/planner/cardinality/selectivity.rs`、`cross_estimation.rs` 和 `row_count_index.rs`。
+**端点标准化与区间有效性**：`convertPointInPlace` 按目标 `FieldType` 转换 `Datum` 并修正开闭边界，`convertPointsInPlace` 成对处理端点、过滤空区间，`validInterval` 以 KV 编码后的字节序判断区间是否仍非空。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按函数结构直接对应 `pkg/util/ranger/ranger.go`：从 `validInterval`、端点转换、三类内存估算与 fanout，到 `BuildTableRange`/`BuildColumnRange`、`rangeDetacher` 方法、`UnionRanges`、前缀裁剪以及 SQL 字符串化，名称和分支顺序基本一致。`Cargo.toml` 的 porting 元数据也明确指向该 Go 包。
+Rust 文件按函数结构直接对应 `pkg/util/ranger/ranger.go`：从 `validInterval`、端点转换、三类内存估算与 fanout，到 `BuildTableRange`/`BuildColumnRange`、`rangeDetacher` 方法、`UnionRanges`、前缀裁剪以及 SQL 字符串化，名称和分支顺序基本一致。
 
 需要注意的语言表达差异：
 
@@ -104,11 +102,3 @@ Rust 文件按函数结构直接对应 `pkg/util/ranger/ranger.go`：从 `validI
 - 修改前缀裁剪时同时覆盖 binary、ASCII、多字节字符、正好达到前缀长度和起点开区间，并核对 Go `CutDatumByPrefixLen`/`ReachPrefixLen` 的字节与 rune 规则。
 - 修改字符串化函数时必须保持 SQL literal 的 `Restore` 路径，避免手工拼接转义值；还要补充列宽/特殊 Datum/非点前缀的错误测试。
 - 性能风险集中在长 IN 与多列笛卡尔积；兼容风险集中在 Datum 转换、collation/编码顺序、NULL/无穷边界和前缀索引。任何行为调整都应先与 `ranger.go` 的对应增量核对，不能为通过 Rust 测试删减 Go 分支。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含目标文件；`files --filter pkg/util/ranger` 确认 Rust/Go 源与独立测试；`node --file pkg/util/ranger/ranger.rs` 阅读完整 1332 行实现；`query` 核对 `BuildTableRange`、`BuildColumnRange`、`AppendRanges2PointRanges`、`UnionRanges`、`CutDatumByPrefixLen`、`RangesToString` 等 Rust/Go 对应符号。图查询还报告本文件被 10 个规划器文件使用；`callers/callees` 未返回文本，因此调用点以精确符号搜索补齐。
-- 已读生产与装配文件：`pkg/util/ranger/ranger.rs`、`pkg/util/ranger/Cargo.toml`、`pkg/util/ranger/lib.rs`、`pkg/util/ranger/ranger.go`；目标包无 `doc.go`。
-- 已读测试：`pkg/util/ranger/ranger_test.rs`；并核对 `pkg/util/ranger/ranger_test.go` 中 `TestRangeFallbackForBuildTableRange`、`TestRangeFallbackForBuildColumnRange` 及相关配额/前缀行为。Rust 测试还直接覆盖表/列范围、多列范围、前缀索引、并集、空条件、分区不合并、Clone 隔离和 binary 字节裁剪。
-- 精确调用证据：规划器文件对 `BuildTableRange`、`BuildColumnRange`、`AppendRanges2PointRanges`、`UnionRanges` 的调用，以及同 crate `detacher.rs` 对追加和并集函数的调用，均通过限定符号搜索核对。
-- 本任务只生成文档，按计划不运行 Cargo。交付结构检查要求文档存在且恰有 11 个固定二级标题；其命令与退出状态在任务交付时记录。

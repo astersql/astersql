@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件定义 Cascades 优化任务调度器的公共 Rust 契约 `Scheduler`，位于 crate `astersql-planner-cascades-base` 的 `base` 模块中。crate 入口 `pkg/planner/cascades/base/lib.rs` 通过 `include!("task_scheduler_base.rs")` 将它与 `Task`、`Stack` 等基础抽象放在同一模块，再以 `pub use base::*` 从 crate 根导出。因此下游可以写 `cascades_base::Scheduler`；文件中的 `Task` 也直接解析为同一模块里 `task_stack_base.rs` 定义的 trait，而不需要额外 `use`。
-
-`pkg/planner/cascades/base/Cargo.toml` 只声明库入口和 Go 包迁移元数据，没有运行时依赖或 feature。真正的串行栈实现位于下游 crate 的 `pkg/planner/cascades/task/task_scheduler.rs`，完整优化器中另有 `pkg/planner/cascades/cascades.rs::SharedTaskScheduler`。本文件本身不是调度算法实现，也不拥有队列、线程或 Memo。
+`ExecuteTasks` 驱动实现内部的待执行任务集合，并把执行失败返回给调用方。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ RustCodeGraph 能定位 trait、三个方法、上述两个生产实现及测试
 
 ## 与 Go 版本的对应关系
 
-直接对照文件 `pkg/planner/cascades/base/task_scheduler_base.go` 同样只定义 `Scheduler` 接口，方法顺序和职责一一对应：`ExecuteTasks() error`、`Destroy()`、`PushTask(task Task)`。Rust 保留了 Go 方法名和顺序，并用 `Result<(), Box<dyn Error>>` 映射 `error`，用 `Box<dyn Task>` 映射动态接口值及任务所有权转移。
+Rust 保留了 Go 方法名和顺序，并用 `Result<(), Box<dyn Error>>` 映射 `error`，用 `Box<dyn Task>` 映射动态接口值及任务所有权转移。
 
-主要语言差异是：Go 通过方法集隐式满足接口，Rust 必须显式 `impl Scheduler for T`；Go 接口值没有在签名中表达独占借用，Rust 三个方法均要求 `&mut self`；Rust 的任务所有权在 `Box` 中显式，而 Go 由接口值和垃圾回收管理。两边的基础接口都只宣称可由串行或并发实现，并未规定具体队列顺序。
+主要语言差异是：Go 通过方法集隐式满足接口，Rust 必须显式 `impl Scheduler for T`；Go 接口值没有在签名中表达独占借用，Rust 三个方法均要求 `&mut self`；Rust 的任务所有权在 `Box` 中显式，而 Go 由接口值和垃圾回收管理。
 
-生产对照 `pkg/planner/cascades/task/task_scheduler.go::SimpleTaskScheduler` 与 Rust 同名实现均使用栈、遇到首错即返回、显式销毁栈。Rust 将栈放入 `Option` 以表示已销毁状态；Go 将字段置为 `nil`。Go 测试 `task_scheduler_test.go::TestSimpleTaskScheduler` 验证固定错误，Rust 对应测试额外记录执行序列，明确验证 LIFO 与短路后的 `[3, 2]`。
+Rust 将栈放入 `Option` 以表示已销毁状态；Go 将字段置为 `nil`。Go 测试 `task_scheduler_test.go::TestSimpleTaskScheduler` 验证固定错误，Rust 对应测试额外记录执行序列，明确验证 LIFO 与短路后的 `[3, 2]`。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ RustCodeGraph 能定位 trait、三个方法、上述两个生产实现及测试
 若只改变排队策略、优先级或并发模型，应优先在具体实现和构造函数中扩展，避免把实现细节塞入基础接口。必须继续保证任务执行期间可安全 `PushTask`；使用锁或 `RefCell` 时，不应在持有队列可变借用/锁的情况下调用外部任务代码，否则会造成重入失败或死锁。多线程实现还需要决定 `Task`、错误和调度器是否增加 `Send + Sync`，并明确 `Destroy` 是取消、排空还是等待完成。
 
 测试逻辑必须放在独立文件中，不要内嵌进本生产文件。接口契约可扩展 `pkg/planner/cascades/base/migration_aster_unit_test.rs`；串行生产实现行为应扩展 `pkg/planner/cascades/task/task_scheduler_test.rs` 并同步 Go 测试意图；上下文转发和任务内再入队应扩展 `pkg/planner/cascades/base/cascadesctx/cascades_ctx_aster_unit_test.rs`。重点覆盖空队列、LIFO/优先级、首错后的剩余任务、重复/销毁后调用、任务内派生任务以及资源释放。
-
-## 验证依据
-
-- 目标与相邻契约：`pkg/planner/cascades/base/task_scheduler_base.rs::Scheduler`、`pkg/planner/cascades/base/task_stack_base.rs::{Task, Stack}`。
-- crate 边界：`pkg/planner/cascades/base/lib.rs` 和 `pkg/planner/cascades/base/Cargo.toml`；下游依赖由 `pkg/planner/cascades/{Cargo.toml,task/Cargo.toml,base/cascadesctx/Cargo.toml}` 核验。
-- 生产实现与调用链：`pkg/planner/cascades/task/task_scheduler.rs::{SimpleTaskScheduler, NewSimpleTaskScheduler}`、`pkg/planner/cascades/cascades.rs::{SharedTaskScheduler, Context, Optimizer}`、`pkg/planner/cascades/base/cascadesctx/cascades_ctx.rs::Context`。
-- Go 对照：`pkg/planner/cascades/base/task_scheduler_base.go`、`pkg/planner/cascades/task/task_scheduler.go`、`pkg/planner/cascades/task/task_scheduler_test.go`。
-- Rust 独立测试：`pkg/planner/cascades/task/task_scheduler_test.rs`、`pkg/planner/cascades/base/migration_aster_unit_test.rs`、`pkg/planner/cascades/base/cascadesctx/cascades_ctx_aster_unit_test.rs`。
-- RustCodeGraph：索引状态为 11,467 个文件；目标文件识别出 5 个节点；`node` 核验 trait、相邻 `Task`、两个生产实现和测试实现；`query` 找到 `ExecuteTasks`/`PushTask` 的生产及测试候选。由于精确 `callers` 未产出绑定结果，调用点用 `rg` 在 `pkg/planner/cascades/**/*.rs` 中复核。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前以任务规定的命令检查目标文件存在且恰有 11 个固定二级章节，并人工复核没有把实现特性提升为接口保证。

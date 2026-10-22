@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-util-sqlexec-mock`，其清单是 `pkg/util/sqlexec/mock/Cargo.toml`。crate 只直接依赖父目录的 `astersql-util-sqlexec`，并由 `pkg/util/sqlexec/mock/lib.rs` 将本模块的公开项再导出。目标文件实现的是 `pkg/util/sqlexec/restricted_sql_executor.rs` 中 `sqlexec::RestrictedSQLExecutor` trait 的测试替身，不执行真实 SQL，也不参与生产 SQL 请求主链。
-
-文件头标明它源自 Go MockGen 为 `pkg/util/sqlexec.RestrictedSQLExecutor` 生成的 mock；当前 Rust 文件是该生成逻辑的机械迁移，并已包含 AsterSQL 处理标记。相关 Rust 测试不内嵌在生产文件中，而是由 `lib.rs` 的 `#[cfg(test)]` 项加载 `pkg/util/sqlexec/mock/migration_aster_unit_test.rs`。
+`MockRestrictedSQLExecutor` 为受限 SQL 执行边界提供可编排、可观测的严格 mock。
 
 ## 核心职责
 
@@ -75,9 +73,9 @@ handler 被注册后由队列拥有，实际调用时移出并消费；未消费
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/sqlexec/mock/restricted_sql_executor_mock.go`。两边都提供 `MockRestrictedSQLExecutor`、recorder、`NewMockRestrictedSQLExecutor`、`EXPECT`、`ISGOMOCK`，并覆盖 `ExecRestrictedSQL`、`ExecRestrictedStmt`、`ParseWithParams` 三个接口方法。Rust 的 handler 参数顺序与父 trait 对齐，返回的行、字段、AST 和错误语义对应 Go 接口。
+Rust 的 handler 参数顺序与父 trait 对齐，返回的行、字段、AST 和错误语义对应 Go 接口。
 
-Go 版本把调用交给 `gomock.Controller`，由 controller 完成 matcher、反射方法类型、期望次数和生命周期验证；Rust 版本没有引入 GoMock 等价框架，而是用每方法 FIFO `FnOnce` 队列实现聚焦替身。Rust 构造函数因此不接收 controller，recorder 方法接收具体闭包而不是 matcher 参数，验证也必须显式调用 `verify()`。
+Go 版本把调用交给 `gomock.Controller`，由 controller 完成 matcher、反射方法类型、期望次数和生命周期验证；Rust 版本没有引入 GoMock 等价框架，而是用每方法 FIFO `FnOnce` 队列实现聚焦替身。
 
 Go 的 `ExecRestrictedSQL`/`ParseWithParams` 使用可变参数，Rust trait 用 `Vec<Box<dyn Any>>` 表达；Go 的 `ExecRestrictedStmt` 选项也是可变参数，Rust 使用 `Vec<OptionFuncAlias>`。Go 返回 `[]*resolve.ResultField`，Rust 返回拥有所有权的 `Vec<resolve::ResultField>`。这些是语言和父 trait 的既有边界差异，不应在本 mock 内自行转换成其他模型。
 
@@ -88,16 +86,3 @@ Go 的 `ExecRestrictedSQL`/`ParseWithParams` 使用可变参数，Rust trait 用
 若要增强匹配或顺序能力，应先确认是否要兼容 GoMock 的 controller 语义。直接给现有 handler 增加 `Send + Sync`、改变 `AnyValue` 边界或保存完整参数，可能破坏现有单线程闭包、所有权和动态类型用法；引入全局跨方法顺序也会改变当前“三个独立 FIFO”的契约。性能上当前每次注册、调用记录、取 handler、读日志和验证都需要同一把 mutex；测试用途通常足够，但高并发压测不应依赖此 mock 模拟真实执行吞吐。
 
 修改生成来源接口时还应复核 Go 文件的 MockGen 输出和父 trait `pkg/util/sqlexec/restricted_sql_executor.rs`，确保 Rust 方法集合、参数顺序和结果类型仍保持对齐。`RestrictedSQLExecutorKey` 的上下文键语义属于相邻 `mock.rs`，只有扩展涉及 context 注入时才应同步调整。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，覆盖本仓库 Rust/Go 文件。
-- RustCodeGraph `files --filter pkg/util/sqlexec/mock`：确认同目录 Rust/Go 实现、crate 根与独立测试文件。
-- RustCodeGraph `node --file pkg/util/sqlexec/mock/restricted_sql_executor_mock.rs`：核对全部 225 行、公开/私有符号、FIFO 队列、日志顺序、锁和 trait 实现。
-- RustCodeGraph `query MockRestrictedSQLExecutor` 与 `query RestrictedSQLExecutor --kind trait`：核对 Rust/Go 对应类型、构造函数和父 trait 定义位置。
-- RustCodeGraph `node --file pkg/util/sqlexec/restricted_sql_executor.rs`：核对三个 trait 方法以及 `GoError`、`OptionFuncAlias` 的真实签名。
-- RustCodeGraph `node --file pkg/util/sqlexec/mock/restricted_sql_executor_mock.go`：核对 MockGen 原型及 GoMock controller/recorder 行为。
-- RustCodeGraph `node` 读取 `pkg/util/sqlexec/mock/lib.rs`、`mock.rs`、`migration_aster_unit_test.rs`：核对模块再导出、context 键边界，以及参数透传、返回值、错误、FIFO、调用日志和 `verify` 的测试事实。
-- `pkg/util/sqlexec/mock/Cargo.toml` 与 `pkg/util/sqlexec/Cargo.toml`：核对 crate 名称、父 crate 路径依赖、无独立 feature，以及测试由显式模块加载而非 Cargo autotest 自动发现。
-- `rg` 精确检索 `MockRestrictedSQLExecutor|NewMockRestrictedSQLExecutor|restricted_sql_executor_mock`：区分本实现的直接 Rust 测试与其他目录自建的同名 mock，避免把常见 `calls`/`verify` 名称误判为调用关系。
-- 未运行 Cargo：本任务仅新增分析文档，计划明确禁止 Cargo；结构检查按任务文件给定命令执行。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于独立 library crate `astersql-expression-generator`，由同目录 [`lib.rs`](lib.rs) 以公开模块 `compare_vec` 接入。[`Cargo.toml`](Cargo.toml) 声明该 crate 使用 Rust 2024 edition、`publish = false`，并以 `package.metadata.porting.go-package = "pkg/expression/generator"` 标明 Go 移植来源。它是离线的 Go 源码生成逻辑，不参与 SQL 表达式在 TiDB/AsterSQL 服务进程中的运行时求值。
-
-文件的直接 Go 对照是 [`compare_vec.go`](compare_vec.go)。当前主工程真实的生成入口仍是 [`pkg/expression/builtin.go`](../builtin.go) 中的 `//go:generate go run generator/compare_vec.go`；该入口生成 `builtin_compare_vec_generated.go` 与 `builtin_compare_vec_generated_test.go`，二者由 `pkg/expression/BUILD.bazel` 纳入 Go 构建/测试。Rust 模块目前提供可测试的对等生成能力及返回内存生成物的 API，但没有替换这条 Go `go generate` 主链，也没有自行写盘的可执行入口。
+通过外部 `gofmt` 做 Go 语法格式化，最终以 `(PathBuf, Vec<u8>)` 数组返回实现文件与测试文件，保持生成逻辑和写盘 IO 分离。
 
 ## 核心职责
 
@@ -101,17 +99,12 @@ Rust 生成过程同步且无共享可变状态，没有线程、锁、异步任
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐段移植 [`compare_vec.go`](compare_vec.go)：
-
-- `TypeContext` 七个常量对应 Go helper 包的 `TypeInt` 至 `TypeJSON`；`CompareContext`、`COMPARES_MAP`、`TYPES_MAP` 对应 Go 的同名概念与相同顺序。
 - 三个 Rust 模板对应 Go 的 `builtinCompareVecTpl`、`builtinNullEQCompareVecTpl` 与 `builtinCoalesceCompareVecTpl`。Rust 将 Go `text/template` 的分支提前落实到 `compare_expression`、`render` 和 `render_coalesce`，生成语义保持为类型专用比较、NULL-safe equality 与 Coalesce 回退。
-- `generate_dot_go` 对应 Go `generateDotGo`，两者都跳过普通比较/NullEQ 的 Int，并让 Coalesce 覆盖七种类型。
-- `generate_test_dot_go` 对应 Go `generateTestDotGo`，保留每个比较函数分组、非 Coalesce 跳过 Int，以及 Coalesce 三参数/0.2 NULL 比例的数据生成器。
 - `format_go_source` 对应 Go `format.Source` 加失败回退。差异是 Rust 依赖 PATH 中的外部 `gofmt`；无法启动/通信会返回错误，而 Go 版本调用进程内标准库。两者遇到 Go 语法格式化失败都会保留原文。
 - Go `generateOneFile` 立即依次写入 `.go` 与 `_test.go`；Rust `generate_one_file` 只返回两份路径/内容，不执行 IO。Rust `default_outputs` 是便于测试/接线新增的默认前缀封装。
 - Go 文件有可由 `go run` 执行的 `main`；Rust crate 只有 library target，本文件无 `main`，所以当前不能直接承担 `go:generate` 命令。
 
-独立 Rust 测试 [`compare_vec_test.rs`](compare_vec_test.rs) 验证 Coalesce 固定长/变长/FSP/warning 回退文本及测试数据生成器；[`builtin_threadsafe_1_aster_unit_test.rs`](builtin_threadsafe_1_aster_unit_test.rs) 验证完整分派矩阵、49 个签名、路径配对与 `gofmt` 可解析性。Go 的生成测试文件 [`pkg/expression/builtin_compare_vec_generated_test.go`](../builtin_compare_vec_generated_test.go) 则是生成结果的运行时测试面；手写 [`pkg/expression/builtin_compare_vec_test.go`](../builtin_compare_vec_test.go) 和 [`pkg/expression/builtin_compare_test.go`](../builtin_compare_test.go) 补充普通比较、NullEQ 与 Coalesce 行为覆盖。
+独立 Rust 测试 [`compare_vec_test.rs`](compare_vec_test.rs) 验证 Coalesce 固定长/变长/FSP/warning 回退文本及测试数据生成器；[`builtin_threadsafe_1_aster_unit_test.rs`](builtin_threadsafe_1_aster_unit_test.rs) 验证完整分派矩阵、49 个签名、路径配对与 `gofmt` 可解析性。
 
 ## 扩展指南
 
@@ -122,13 +115,3 @@ Rust 文件逐段移植 [`compare_vec.go`](compare_vec.go)：
 - 调整输出命名或写盘接线应在 `generate_one_file`/`default_outputs` 的边界完成；若增加 Rust 写盘函数，应测试双文件顺序、失败时部分更新和原子发布，不要把测试逻辑放进生产源文件。
 - 若计划让 Rust 生成器替换 `go:generate`，需要另行提供 Cargo binary/稳定启动命令，并修改 `pkg/expression/builtin.go`。还应比较 Rust 与 Go 生成物，而不能仅验证包含若干字符串；外部 `gofmt` 的可用性也必须成为工具链前置条件。
 - 性能风险主要在大模板字符串的反复 `replace`、变长 Coalesce 对全部参数列的保留及每次生成启动子进程；兼容风险集中在 Go 模板格式、类型矩阵、NULL/warning/FSP 语义和生成签名名保持一致。
-
-## 验证依据
-
-- 目标源码：[`compare_vec.rs`](compare_vec.rs)，完整核对 510 行中的 4 个公开生成函数、2 个上下文结构体、静态矩阵、模板、渲染辅助函数和 `gofmt` 边界。
-- crate 与模块入口：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)，确认独立 library crate、公开模块、依赖清单及两个独立 Rust 测试模块的接线；同目录没有 `doc.go`。
-- Go 对照：[`compare_vec.go`](compare_vec.go) 与 [`helper/helper.go`](helper/helper.go)，确认模板矩阵、类型字段、跳过 Int、Coalesce 回退、生成顺序、格式化失败策略和 Go 写盘入口。
-- 主工程入口与生成物：[`pkg/expression/builtin.go`](../builtin.go)、`pkg/expression/BUILD.bazel`、[`pkg/expression/builtin_compare_vec_generated.go`](../builtin_compare_vec_generated.go) 和 [`pkg/expression/builtin_compare_vec_generated_test.go`](../builtin_compare_vec_generated_test.go)，确认当前实际 `go:generate` 与构建/测试位置。
-- 测试证据：[`compare_vec_test.rs`](compare_vec_test.rs) 验证 Coalesce 与生成测试用例；[`builtin_threadsafe_1_aster_unit_test.rs`](builtin_threadsafe_1_aster_unit_test.rs) 验证分派矩阵、49 个生成签名、默认输出路径及 Go 语法；Go 的手写/生成 compare 测试提供运行时语义参照。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/generator` 确认目标及直接关联文件被索引；`query`/`node --file` 定位 `CompareContext`、`generate_dot_go`、`generate_test_dot_go`、`generate_one_file`、`default_outputs` 并读取全文件；`callees` 验证正文列出的文件内调用链。常见符号名导致的跨文件聚合噪声已用精确源码和 `rg` 调用点排除。
-- 本任务是纯文档分析，按总计划不运行 Cargo；交付仅执行任务规定的 11 章节结构检查与人工事实复核。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`writer.rs` 是 `astersql-ingestor-simplesst` crate 的多文件排序写入端。crate 由同目录 `Cargo.toml` 定义，`lib.rs` 通过 `pub mod writer` 暴露本模块，并将统一错误类型 `Error`、结果别名 `Result` 和内存对象存储 `MemoryStorage` 放在 crate 根。该文件接收未排序的键值对，在内存阈值处或关闭时排序，再生成一组数据对象、范围统计对象以及可选的重复键冲突对象，供后续 simplesst 读取、merge-sort 和 ingest 流程消费。
-
-该模块既支持测试及内存管线使用的 `MemoryStorage`，也通过 `WriterSink` 接入生产对象存储适配器。图索引显示 `Writer::write_row` 的直接使用者包括本模块的 `EngineWriter::append_rows`、本目录 `writer_test.rs`，以及全局排序、DDL ingest 和 import-into 相关 Rust 测试；真正的存储后端桥接点是调用方实现的 `WriterSink`，而不是本文件拥有对象存储客户端生命周期。
+`rand_partitioned_prefix`、`IsValidPartition`、调整阈值函数及 `get_speed` 提供 Go 版本同类辅助语义。
 
 ## 核心职责
 
@@ -95,17 +93,12 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `writer.go`，独立测试是 `writer_test.go`；Rust 回归集中在 `writer_test.rs`。主要对应关系为：
-
-- Go `WriterBuilder`、`Writer`、`WriterSummary`、`RangePropertiesCollector`、`MultipleFilesStat`、`EngineWriter` 在 Rust 中均有同名或同语义类型；默认内存/属性阈值、三次 flush 尝试、随机分区路径和 500 文件统计分组保持一致。
 - Go `WriteRow` 使用 `membuf.Buffer` 和 slice location，Rust 直接拥有 `Vec`；Go 的“单 KV 不能超过 blockSize”在 Rust 中表现为“不能超过 memory_size_limit”。Rust builder 的 `block_size` 只影响 `OneFileWriter`，不是多文件 writer 的分配块限制。
 - Go `tikv.Codec::EncodeKey` 在 Rust 中简化为 `set_key_prefix`，只表达 API V2 前缀拼接，不是任意 codec 接口。`writer_encodes_keyspace_before_sorting_and_summarizing` 验证前缀参与排序和 summary 边界。
 - 重复键语义一致：Record 保留每组前两条、其余写冲突文件；Remove 删除整组；Error 返回重复键；Ignore 全保留。由于去重只看单个 flush 批次，两批之间的相同 key 不会在本 writer 内被识别，这也对应 Go 注释中“没有全局视图”的限制。
 - Go 在一次 `flushSortedKVs` 调用内整体重试并感知 `ctx.Err()`；Rust 对每个对象独立做三次无条件尝试，没有上下文、日志或指标。Go 使用流式 writer、上传并发 20 和 `MinUploadPartSize`，Rust 虽保留相关公开常量，但 `WriterSink` 不接收上传选项。
 - Go `Close` 返回错误并通过回调交付 summary；Rust `close` 直接返回 `WriterSummary`，仍在成功后调用回调。两者都在最终 flush 前标记 closed，Rust 测试 `close_failure_still_closes_writer` 固化了这一点。
 - Go `LockForWrite` 是无操作方法；Rust `Writer` 没有这个兼容入口。Go 的日志、吞吐 metrics 和 buffer destroy 也未在本文件移植。
-
-Go 测试 `TestWriterFlushMultiFileNames`、`TestWriterDuplicateDetect`、`TestWriterMultiFileStat`、`TestFlushKVsRetry`、`TestWriterOnDup`、阈值及分区前缀测试均有 Rust 对应测试。Rust 另有外部 sink、keyspace 前缀和关闭失败消费 writer 的聚焦覆盖。
 
 ## 扩展指南
 
@@ -116,13 +109,3 @@ Go 测试 `TestWriterFlushMultiFileNames`、`TestWriterDuplicateDetect`、`TestW
 - 改变多文件统计分组或重叠算法时，维护 `Filenames` 与 start/end key 的同索引不变量，并同步 `test_multi_file_stat`、`test_multi_file_stat_overlap` 和 `test_writer_multi_file_stat`。尤其要保留 inclusive endpoint 语义。
 - 接入新的生产存储时实现 `WriterSink`，保证同路径重试可安全覆盖、整对象成功返回后可见，并在适配层管理连接/关闭/取消。若需要 multipart、退避或取消，宜扩展 sink 合约或引入独立适配层，而不是假设现有 `write_file` 已提供这些能力。
 - 扩展 builder 时检查 `configuration()` 的元组顺序和 `onefile_writer.rs` 的消费方；最好将配置改为具名内部结构后再增加大量字段，以降低位置错配风险。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/ingestor/simplesst` 确认 `writer.rs`、`writer_test.rs`、Go 对照和相邻模块均已索引。
-- 源码事实：`pkg/ingestor/simplesst/writer.rs` 的 `RangePropertiesCollector`、`WriterBuilder`、`Writer::{write_row, flush, close}`、`write_object_with_retry`、`EngineWriter`、路径/阈值辅助函数。
-- crate 与模块边界：`pkg/ingestor/simplesst/Cargo.toml` 的 package/lib/porting 元数据；`pkg/ingestor/simplesst/lib.rs` 的 `pub mod writer`、统一 `Error`/`Result` 和 `MemoryStorage` 整对象语义。
-- 调用边证据：RustCodeGraph `explore` 显示 `write_row` 被 `WriteRow`、`EngineWriter::append_rows`、本目录 writer 测试以及 globalsort、DDL ingest、import-into 相关 Rust 测试调用；本文件的下游调用由精确文件节点核对为 `KeyValueStore`、`encode_multi_props`、`get_max_overlapping` 和存储写接口。
-- Go 对照：`pkg/ingestor/simplesst/writer.go` 的 `WriterBuilder`、`flushKVs`、`flushSortedKVs`、`writeDupKVs`、`EngineWriter`、统计与路径辅助函数。
-- 测试证据：`pkg/ingestor/simplesst/writer_test.rs` 覆盖排序、四类重复键行为中的关键分支、keyspace 前缀、外部 sink、文件命名、关闭失败、重试、统计分组/重叠、block 调整和分区格式；`pkg/ingestor/simplesst/writer_test.go` 提供原始 Go 意图对照。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；交付结构检查要求本文恰含十一个固定二级标题，并另以 `git diff --check` 检查 Markdown 变更格式。

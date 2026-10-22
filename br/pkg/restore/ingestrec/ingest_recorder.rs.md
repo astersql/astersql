@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-restore-ingestrec`（`br/pkg/restore/ingestrec/Cargo.toml`），由同目录 `lib.rs` 以 `pub mod ingest_recorder` 挂载，并通过 `pub use ingest_recorder::*` 对 crate 使用者扁平再导出。它移植自 `br/pkg/restore/ingestrec/ingest_recorder.go`，负责保存“日志恢复后必须重建”的 ingest 模式索引元数据；原因是日志备份不包含 ingest 路径写出的索引 KV。
-
-当前接线状态必须区分语言：RustCodeGraph 显示该 Rust 文件包含 13 个符号，仅被 Rust `parity_test.rs` 文件引用，未发现 Rust 生产调用边；Cargo 也只依赖本地 `astersql-errors`，而 TiDB 元数据、InfoSchema 和 DDL job 由 `model_stub.rs` 提供本 crate 内的移植接口。因此它是可独立测试的 Rust 库实现，但仓库中可验证的完整 BR 运行主链仍在 Go：`stream.SchemasReplace.tryRecordIngestIndex` 录制 job，`task.rangeFilterFromIngestRecorder` 重写表 ID，`LogClient.generateRepairIngestIndexSQLs` 更新并遍历记录，最终由 `RepairIngestIndex` 消费。
+还负责三类约束：只接收 ingest 重组且会生成新索引 KV 的完成 job；通过 `RewriteTableID` 将备份侧表 ID 映射到恢复侧 ID；在重建索引前收集可能依赖这些索引的外键。
 
 ## 核心职责
 
@@ -69,11 +67,11 @@ RustCodeGraph 对 `TryAddJob` 的 callee 边明确指向三个过滤器；对目
 
 ## 与 Go 版本的对应关系
 
-字段布局、三重过滤、AddIndex/AddPrimaryKey/ModifyColumn 参数来源、子 job `Done` 特例、表 ID 重写、最新 schema 补全、隐藏列表达式、前缀长度和 `Updated` 门闩均与 `ingest_recorder.go` 对齐。`ingest_recorder_test.rs` 对应 Go `ingest_recorder_test.go`，覆盖 Txn/DropIndex/RollbackDone 跳过、主索引和子 job 录制、列表示、表 ID 重写及 FK 组合；`parity_test.rs::go_rust_public_contract_matches` 额外把公开路径串成端到端契约。
+`ingest_recorder_test.rs` 对应 Go `ingest_recorder_test.go`，覆盖 Txn/DropIndex/RollbackDone 跳过、主索引和子 job 录制、列表示、表 ID 重写及 FK 组合；`parity_test.rs::go_rust_public_contract_matches` 额外把公开路径串成端到端契约。
 
 可见差异有三点。第一，Go `New()` 返回指针，Rust 返回拥有所有权的值。第二，Go 直接使用 TiDB 的 `model`、`infoschema`、`context.Context` 和丰富的 `IndexInfo`；Rust 通过 `model_stub.rs` 的本地类型与 trait 隔离这些依赖，所以不能仅凭 API 同名推断已经和 Go 生产对象互通。第三，Go `UpdateIndexInfo` 写开始/结束日志并记录耗时，Rust 只保留未使用的 `Instant`；Go `IterateForeignKeys` 假定 manager 已初始化并会在 nil 时 panic，Rust 生产方法把未初始化视为空集合。
 
-此外，Rust 枚举对 action 的覆盖只显式包含当前 stub 中的 `Other`/`DropIndex` 等变体；Go 的真实 `ActionType` 范围更大，但均由前置过滤表达式排除。扩展模型枚举时必须继续保持“只有三类 action 能到参数解析分支”的不变量。
+此外，Rust 枚举对 action 的覆盖只显式包含当前 stub 中的 `Other`/`DropIndex` 等变体；Go 的真实 `ActionType` 范围更大，但均由前置过滤表达式排除。
 
 ## 扩展指南
 
@@ -84,14 +82,3 @@ RustCodeGraph 对 `TryAddJob` 的 callee 边明确指向三个过滤器；对目
 外键逻辑应在 `foreign_key.rs` 扩展，本文件只负责按“未录制索引排除候选、已录制索引保留候选”的协议调用它。消费 API 的顺序或错误语义变化需要同步 `parity_test.rs`，并检查 Go `generateRepairIngestIndexSQLs` 的先外键后索引约束。若要接入 Rust 生产恢复主链，还需新增真实上游 caller 和真实 InfoSchema/model 适配；当前 Cargo 边界与 RustCodeGraph 不足以证明该接线存在。
 
 性能方面应关注全表索引扫描、map 克隆和 `IndexInfo` 克隆；兼容性方面应关注 Go/Rust finished args、job 状态和隐藏列 SQL 转义的一致性。测试必须继续放在独立 `*_test.rs`/`parity_test.rs`，不要内嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/restore/ingestrec` 找到该目录 14 个 Go/Rust 文件。
-- RustCodeGraph `node --file br/pkg/restore/ingestrec/ingest_recorder.rs`：核对完整 272 行源码、13 个符号、数据结构与所有分支；文件级关系仅显示被 `parity_test.rs` 使用。
-- RustCodeGraph `query IngestRecorder`、`query ... --kind function` 与 `node TryAddJob`：核对 Rust/Go 同名定义，并确认 `TryAddJob` 到 `notIngestJob`、`notReorgTypeJob`、`notSynced` 的调用边；针对目标 Rust 方法的 caller 查询未返回生产边。
-- RustCodeGraph `node NewForeignKeyRecordManagerForTables`、`node RemoveForeignKeys`、`node Merge`：核对外键候选的构造、按正常索引排除以及最终合并语义。
-- 读取 `br/pkg/restore/ingestrec/Cargo.toml` 与 `lib.rs`：核对 crate 名、唯一外部 crate 依赖、模块挂载、再导出和独立测试模块。
-- RustCodeGraph 读取 `ingest_recorder.go`，并读取 Go 直接入口 `br/pkg/stream/rewrite_meta_rawkv.go`、`br/pkg/task/stream.go`、`br/pkg/restore/log_client/client.go`：核对 Go 生产主链与实际 SQL 消费边界。
-- RustCodeGraph 读取 `ingest_recorder_test.rs` 和 `parity_test.rs`，并以 `rg` 定位 `ingest_recorder_test.go` 对应调用：核对过滤、成功录制、列表示、重写、回调/缺参错误、外键、子 job 与缺库边界。测试未在本纯文档任务中执行。
-- 交付结构检查使用任务规定命令，要求文件存在且固定二级标题恰好为 11 个；人工复核重点为“Rust 尚无生产 caller”的限定、Go/Rust 差异、不稳定 HashMap 顺序及所有错误边界均未被描述为无依据的已支持能力。

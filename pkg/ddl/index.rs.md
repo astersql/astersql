@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/index.rs` 属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/ddl/lib.rs` 以 `pub mod index` 公开。它位于 DDL 的索引元数据与回填初始化层：一端接受会话层传来的 FULLTEXT 约束或 owner worker 已持有的 DDL Job，另一端修改 `astersql_meta_model` 中的表、索引和 reorg 元数据。
-
-该文件不是完整的 ADD/DROP INDEX job 状态机。持久化 job 的动作分派位于 `pkg/ddl/persistent_actions.rs`，分区 reorg 推进也由 `pkg/ddl/partition.rs` 驱动；Go 版本中大量 worker、回填扫描、事务写入和分布式任务执行逻辑仍在 `pkg/ddl/index.go`。本文件还保留一套小写字段的简化 `TableInfo`/`IndexInfo`，用于移植索引校验、元数据变换和独立 Rust 测试；它与真实的 `astersql_meta_model::{TableInfo, IndexInfo}` 是两套不同类型，不能混用。
-
-按 DDL 框架分类：`BuildCanonicalFullTextIndex` 是当前 session runtime 使用的元数据快速路径，直接把新索引置为 `StatePublic`；`init_for_reorg_indexes` 则是 job-based ADD INDEX/ADD PRIMARY KEY/MODIFY COLUMN 的 owner 本地初始化步骤，会选择并持久化回填类型，但不执行回填、不推进 schema state，也不发布索引。
+在简化元数据上实现索引定义校验和变换：列数/重复列/前缀长度/键长、生成列主键、特殊列存索引、重命名、可见性、删除及隐藏列清理。
 
 ## 核心职责
 
@@ -100,7 +96,7 @@ reorg 生命周期边界由 `ReorgIndexEnvironment` 显式分离：URI 加载和
 
 真实 reorg 路径直接对齐 Go `initForReorgIndexes`、`pickBackfillType` 和 `loadCloudStorageURI`：空列表提前返回、先加载 cloud、已启动类型不可改变、非 fast 选 txn、可用 ingest 环境选 ingest、否则 txn-merge、partial index 限制、telemetry 与 BackfillState 的顺序均由 Rust 测试覆盖。`TaskKeyBuilder` 对齐标签顺序，但 Go NextGen 模式还会在最前面添加 keyspace 名；简化 Rust builder 没有该分支，不能当作所有部署形态的完整替代。
 
-分区辅助对应 Go `findNextPartitionID` / `findNextNonTouchedPartitionID` / recreated-index 分支；索引比较和修改列辅助对应 `indexColumnSliceEqual`、`FindRelatedIndexesToChange`、`RenameExpressionIndexColumns`。Rust 的 `index_column_slice_equal` 与 Go repair-table 语义一样只比较规范化名称，不比较 offset 和 prefix length。
+Rust 的 `index_column_slice_equal` 与 Go repair-table 语义一样只比较规范化名称，不比较 offset 和 prefix length。
 
 差异必须保留可见：Go `index.go` 还包含完整 worker schema-state 迁移、回填扫描与写入、唯一键冲突处理、分布式任务提交/暂停/调参、ANALYZE 执行和复杂 partial-index AST 校验；这些不在当前 Rust 文件中。简化 Rust `JobErrorKind` 用枚举和固定阈值近似 Go 的错误码/消息集合与可配置 `DDLErrorCountLimit`，`build_index_condition_checker` 也只是测试用最小行判断。`BuildCanonicalFullTextIndex` 则是 Rust session runtime 的规范快速路径，并非 Go `onCreateIndex` job 状态机的完整复刻。
 
@@ -115,10 +111,3 @@ reorg 生命周期边界由 `ReorgIndexEnvironment` 显式分离：URI 加载和
 若扩展简化构造规则，修改最接近的 `build_index_columns`、`get_index_column_length`、`validate_special_index` 或 `build_index_info_for_deploy_mode`，测试应放在独立的 `pkg/ddl/index_test.rs`、`db_change_test.rs` 或 `db_integration_test.rs`，不要内嵌到生产文件。partial index 若要支持一般 SQL 条件，不能继续扩张当前字符串 checker；应接入 AST、类型/列可见性校验和真正的表达式执行上下文，并评估与 Go `checkIndexCondition` 的语义一致性。
 
 性能风险集中在回填后端、并发度、键长和分区游标；兼容风险集中在任务键、`ReorgTp` 持久值、GlobalIndexVersion 和错误分类。任何更改都应先搜索 Go 对应函数与现有 Rust production caller，避免把测试模型误接到真实 job 主链。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/index.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
-- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
-- 冻结 `pkg/ddl/tests/partition/global_index_version_test.rs::global_index_handle_equality_includes_the_backfill_partition` 覆盖不同分区、同分区、已有分区 handle 和非 global 分支；精确 `git grep` 仅发现该 helper 的定义和测试使用。Go 对照 `pkg/ddl/index.go::checkHandleExists`、`initForReorgIndexes`。NextGen 四条件门禁以两端源码人工复核，未声称执行运行时回归。
-- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。

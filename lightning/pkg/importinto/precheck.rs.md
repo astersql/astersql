@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-lightning-pkg-importinto` library crate，是 IMPORT INTO 后端在真正提交导入任务前执行检查的实现。crate 入口 `lightning/pkg/importinto/lib.rs` 通过 `mod precheck` 加载并 `pub use precheck::*` 导出这里的公开类型和构造函数；`lightning/pkg/importinto/Cargo.toml` 则声明它直接依赖相邻的 `astersql-lightning-pkg-precheck` crate，以复用 `Checker`、`CheckResult` 和检查项 ID。
-
-生产调用链位于 `lightning/pkg/importinto/importer.rs`：`Importer::runOnce` 在创建表并取得表元数据后，仅当 `cfg.App.CheckRequirements` 为真时调用 `Importer::runPrechecks`；后者创建 `PrecheckRunner`、注册 `CheckpointCheckItem` 并运行检查。检查通过后才进入 `JobOrchestrator::SubmitAndWait`，因此本文件是导入任务提交前的阻断/告警边界，而不是 checkpoint 的持久化实现。
+`PrecheckRunner` 提供通用的顺序检查器容器，负责注册检查器、传递取消状态、记录每项检查日志，并在第一个执行错误或不通过结果处短路。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ runner 在当前线程串行执行检查器，没有创建线程、异步任务�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `lightning/pkg/importinto/precheck.go`，测试对照为 `precheck_test.go` 与 `precheck_test.rs`。Rust 保留了 Go 的公开命名、检查器注册顺序、首错短路、错误文本、日志分支、checkpoint 判定顺序、失败/告警消息和 `CHECK_CHECKPOINTS` ID。
-
 主要表达差异如下：
 
 - Go 使用 `[]precheck.Checker` 与接口值；Rust 使用 `Vec<Box<dyn Checker>>`。
@@ -95,8 +91,6 @@ runner 在当前线程串行执行检查器，没有创建线程、异步任务�
 - Go 将同一个 `context.Context` 直接交给检查器和 manager；Rust 的两个 crate 使用不同 context stand-in，因此复制进入函数时的取消布尔值。Rust 独立测试额外验证了“调用前已取消”能够传到 checker。
 - Go 返回 `*CheckResult`；Rust 用 `Option<CheckResult>` 编码 nil/跳过，并在 runner 中安全忽略 `None`。这比当前 Go runner 的直接解引用更明确。
 - Go 的构造函数返回 `*PrecheckRunner` / `*CheckpointCheckItem`；Rust 分别按值返回 runner、以 boxed trait object 返回 checkpoint checker。
-
-测试场景逐项对齐：checkpoint 关闭、查询报错、空 checkpoint、存在失败项、仅有运行中/已完成项，以及 runner 的全通过、checker 错误和结果不通过。Rust 测试另覆盖取消快照传递。
 
 ## 扩展指南
 
@@ -106,12 +100,3 @@ runner 在当前线程串行执行检查器，没有创建线程、异步任务�
 - 引入真正的动态取消：需要同时审视两个 context stand-in 的契约，不能只修改当前布尔复制，否则 runner 与 checkpoint manager 的取消语义会分裂。
 - 并行执行检查器前：必须定义错误选择顺序、日志顺序、checker 的 `Send` 约束和取消策略；当前可观察契约是注册顺序与首错短路。
 - 性能方面，本检查会读取完整 checkpoint 列表并线性扫描，时间复杂度为 O(n)，且失败项越靠后读取越多；若数据量成为问题，应先在 `CheckpointManager` 抽象上设计可移植的查询能力，并保持文件/MySQL/Go 实现一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标 `precheck.rs` 共 205 行、11 个符号。
-- RustCodeGraph 读取与查询：`node --file lightning/pkg/importinto/precheck.rs`、`query NewPrecheckRunner`、`callers/callees` 同名符号检查、`node` 查看 `importer.rs`、`checkpoint.rs`、`precheck/precheck.rs`。同名 `Run` 查询确认目标 runner 调用 `GetCheckItemID`、`Check` 和错误转换；`importer.rs` 确认生产接线与运行顺序。
-- crate/模块证据：`lightning/pkg/importinto/Cargo.toml`、`lightning/pkg/importinto/lib.rs`。
-- Go 对照：`lightning/pkg/importinto/precheck.go`、`lightning/pkg/importinto/precheck_test.go`、`lightning/pkg/importinto/importer.go`。
-- Rust 行为测试：`lightning/pkg/importinto/precheck_test.rs`；相关生产入口测试位于 `lightning/pkg/importinto/importer_test.rs`。本任务按计划是纯文档分析，未运行 Cargo 或代码测试。
-- 人工复核重点：本文明确回答了文件为何存在、在提交导入任务前如何运行、状态/错误/取消的边界，以及安全扩展时需修改的符号和独立测试位置；未把支撑用 stubs 当成真实外部基础设施。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-privilege-privileges` crate。crate 入口 `pkg/privilege/privileges/lib.rs` 将本模块的公开项全部再导出；`Cargo.toml` 则把 crate 的 Go 对照包声明为 `pkg/privilege/privileges`。它位于权限缓存实现 `cache.rs` 之上：`Handle` 管理可替换的 `MySQLPrivilege` 快照，本文件的 `UserPrivileges` 为单个登录身份保存 `user`、`host` 与 `Handle`，并提供连接鉴权、静态/动态权限检查、角色查询、SSL 约束和若干账户属性辅助函数。
-
-Rust 会话运行时已经依赖该 crate，并通过 `pkg/session/runtime.rs::runtime_privilege_handle` 为每个 `Domain` 保存一个 `Handle`；当前生产路径中可见的很多语句权限判断直接调用 `Handle::Get()` 得到的缓存（例如 `pkg/session/runtime/dispatch.rs`、`query.rs`、`control.rs`），而完整 `UserPrivileges::ConnectionVerification` 的跨 crate 调用在现有 Rust 代码中由 `pkg/session/test/privileges/privileges_test.rs::session_auth` 明确验证。因而，本文件既是已使用权限缓存 API 的上层门面，也是仍在持续对齐 Go 会话接线的迁移边界，不能假定 Go `Manager` 的所有入口都已经通过该 Rust 类型接入生产登录主链。
+位于权限缓存实现 `cache.rs` 之上：`Handle` 管理可替换的 `MySQLPrivilege` 快照，本文件的 `UserPrivileges` 为单个登录身份保存 `user`、`host` 与 `Handle`，并提供连接鉴权、静态/动态权限检查、角色查询、SSL 约束和若干账户属性辅助函数。
 
 ## 核心职责
 
@@ -77,11 +75,7 @@ URI 解析拒绝 ASCII 控制字符、坏的 `%xx` 编码和非法 scheme；含�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/privilege/privileges/privileges.go`，主要名称和控制流保持同构：静态/动态权限检查、系统 schema/SEM 硬规则、连接记录选择、密码过期、SSL/SAN、角色查询、动态权限注册以及 Password Locking JSON 均能找到对应符号。Rust 测试 `privileges_test.rs` 也按 Go 测试名覆盖数据库/表/视图权限、角色、系统 schema、SEM、动态权限、SSL/SAN、密码过期、skip-grant 和会话令牌结果。
-
-仍有重要差异。Go `UserPrivileges` 保存 extension auth plugins，并可把扩展插件的静态/动态权限回调安装到会话门面；Rust 类型只有 `user/host/Handle`。Go `ConnectionVerification` 还编排 auth socket、LDAP、TiDB Auth Token、连接回调和登录失败计数持久化，Rust 当前主流程只做本地缓存、TLS、哈希/密码和过期检查。Go `MatchUserResourceGroupName` 通过受限 SQL 读取 `mysql.user`，Rust 在内存缓存中遍历。Go 的 `AuthSuccess` 会配合失败计数逻辑，Rust 当前只写会话身份。Go Password Locking 使用格式化时间及更详细的剩余锁定时间，Rust 使用 Unix 秒字符串并简化了自动解锁返回信息。
-
-此外，`pkg/privilege/privilege.rs` 定义了另一套通用 `Manager` trait 和 `VerificationInfo`；代码搜索没有发现本文件的 `UserPrivileges` 对该 trait 的实现。扩展生产接线时应先确认是继续直接使用该 crate API，还是提供明确适配层，避免把相似类型误认为同一接口。
+仍有重要差异。Go `UserPrivileges` 保存 extension auth plugins，并可把扩展插件的静态/动态权限回调安装到会话门面；Rust 类型只有 `user/host/Handle`。Go `ConnectionVerification` 还编排 auth socket、LDAP、TiDB Auth Token、连接回调和登录失败计数持久化，Rust 当前主流程只做本地缓存、TLS、哈希/密码和过期检查。Go 的 `AuthSuccess` 会配合失败计数逻辑，Rust 当前只写会话身份。Go Password Locking 使用格式化时间及更详细的剩余锁定时间，Rust 使用 Unix 秒字符串并简化了自动解锁返回信息。
 
 ## 扩展指南
 
@@ -92,13 +86,3 @@ URI 解析拒绝 ASCII 控制字符、坏的 `%xx` 编码和非法 scheme；含�
 扩展证书约束应修改 `checkSSL`/`checkCertSAN`，URI 行为则集中在 `uri_parts` 与 `match_uri_with_wildcard`。同步更新 `privileges_test.rs::TestCheckCertBasedAuth` 和 `uri_san_wildcards_match_only_whole_non_empty_path_segments`，并与 Go `TestCheckCertBasedAuthWithURIWildcard` 核对整段通配、空段、authority、query、fragment、坏转义以及 DNS/IP 精确匹配。
 
 新增动态权限默认项修改 `initial_dynamic_privileges`；运行时注册规则修改 `RegisterDynamicPrivilege`。测试必须清理注册项并串行运行。账户属性字段变化应同步 `BuildPasswordLockingJSON`、`ParseJSON` 和三个 `extract*` 函数，以及 `cache.rs` 中调用 `ParseJSON` 的加载路径。Rust 单元测试继续放在同目录独立 `privileges_test.rs`，不要嵌入生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/privilege/privileges` 确认目标、Go 对照和独立测试均在索引内；`node --file pkg/privilege/privileges/privileges.rs --offset 1 --limit 500` 与 `--offset 500 --limit 700` 读取了 1,187 行完整源码，并报告该文件被 8 个文件使用。
-- RustCodeGraph 调用查询：对 `checkPasswordForPlugin`、`checkAuthTokenClaims`、`RegisterDynamicPrivilege`、`UserPrivileges` 执行 `callers`/`callees`；确认前述自由函数的下游边，同时确认方法调用者存在名称消歧缺口，随后用限定 `.rs` 且排除目标/测试文件的 `rg` 补查。
-- 源与边界：完整阅读 `pkg/privilege/privileges/privileges.rs`；读取 `pkg/privilege/privileges/Cargo.toml` 和 `lib.rs` 核对 crate 名、再导出、`sem`/`serde_json`/`sha1`/`hex` 依赖及 Go 包元数据；读取 `pkg/privilege/privilege.rs` 核对通用 trait 边界。
-- Go 对照：读取 `pkg/privilege/privileges/privileges.go` 的对应符号，并通过函数索引核对 `RequestVerification`、认证、TLS/SAN、角色、动态权限和 Password Locking 实现；差异项以现有代码为准，未把 Go 独有插件路径写成 Rust 已支持。
-- 测试证据：读取 `pkg/privilege/privileges/privileges_test.rs` 的权限层级、TLS/SAN、系统 schema、SEM、动态权限、skip-grant、角色撤销、密码过期和 session token 用例；对照 `privileges_test.go` 的对应测试名；读取 `pkg/session/test/privileges/privileges_test.rs::session_auth` 核对跨 crate 登录门面测试。
-- 运行时接线：文本检索并抽读 `pkg/session/runtime.rs::runtime_privilege_handle`、会话 bootstrap 及 `pkg/session/runtime/*.rs` 的权限调用，确认 `Handle` 的生产使用与 `UserPrivileges` 完整登录门面的当前接线范围。
-- 本任务只新增说明文档，不修改 Rust/Go/Cargo，不运行 Cargo。最终结构验证必须确认文件存在且恰有十一个规定二级标题；文档中的路径和符号还需通过 `rg` 做存在性复核。

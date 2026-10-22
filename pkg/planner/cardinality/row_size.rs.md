@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cardinality` crate，是优化器的平均行宽估算实现。`pkg/planner/cardinality/lib.rs` 以私有模块 `mod row_size` 装入它，再通过 `pub use row_size::*` 将其中七个公开函数暴露给规划器其他 crate。它不估算行数或选择率，而是把 `statistics::HistColl`、列类型、存储格式和会话变量转换成“每行/每列预计占用多少字节”，供扫描、网络、内存和磁盘代价计算使用。
-
-`pkg/planner/cardinality/Cargo.toml` 将该目录定义为独立库 crate（`lib.rs` 为 crate 根、`autotests = false`），并声明了这里直接使用的 expression、kv、mysql、planctx、statistics、tablecodec、chunk 等工作区依赖。测试不是内嵌在本文件中，而由 `lib.rs` 的 `#[path = "row_size_test.rs"] mod row_size_test` 接入。
+`AvgColSize`、`AvgColSizeChunkFormat`、`AvgColSizeDataInDiskByRows` 分别实现普通 key/value 编码、chunk RPC 和磁盘行格式下的单列公式。
 
 ## 核心职责
 
@@ -83,16 +81,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cardinality/row_size.go`，Rust 保留了相同的常量和七个导出函数，并对应以下语义：
-
-- 索引 19 字节前缀、非唯一索引 1 字节分隔符、TiKV 记录键补偿及 TiFlash 隐式 row ID 均一致。
-- 伪统计/旧统计回退、chunk RPC 分支、普通格式每列 1 字节 flag、chunk null bitmap 每列 1/8 字节一致。
-- handle、数值/时间类型、整数 key 的固定 8 字节近似，以及 `TotColSize / count` 的两位小数舍入一致。
-- chunk 和 `DataInDiskByRows` 对定长类型、变长 offsets、`log2(avgSize)` 修正和全 NULL 列的处理一致。
-
 Rust 用 `chunk::VarElemLen` 的不等判断对应 Go 的 `fixedLen >= 0`，并用 `f64::round`/`max` 表达 Go 的 `math.Round`/`max`。Rust 的 `planctx::PlanContext` 实际是 crate 根定义并重导出的 object-safe `CardinalityContext` 子集，只暴露此类估算所需的上下文能力，而不是复制 Go 完整接口。
 
-`pkg/planner/cardinality/row_size_test.rs::test_avg_col_len` 是 Go `pkg/planner/cardinality/row_size_test.go::TestAvgColLen` 的独立 Rust 对照测试：Rust 直接构造直方图，Go 通过建表、插入和 analyze 获得统计；二者验证相同的单行/双行整数、varchar、float、datetime 和全 NULL varchar 期望值。当前 Rust 测试主要直接覆盖三个单列公式；表/索引固定开销和伪统计行级分支应在扩展时补充独立测试。
+当前 Rust 测试主要直接覆盖三个单列公式；表/索引固定开销和伪统计行级分支应在扩展时补充独立测试。
 
 ## 扩展指南
 
@@ -102,13 +93,3 @@ Rust 用 `chunk::VarElemLen` 的不等判断对应 Go 的 `fixedLen >= 0`，并�
 - 修改统计兼容规则时，应同时审查 `GetAvgRowSize` 与 `GetAvgRowSizeDataInDiskByRows` 中完全对应的缺列/旧 `TotColSize` 判断，避免两类成本模型产生不一致回退。
 - 测试应继续放在独立的 `pkg/planner/cardinality/row_size_test.rs`，不要内嵌到生产文件。建议扩充零计数、伪统计、缺列统计、handle、key/value、chunk 开关、空列，以及 TiKV/TiFlash 和唯一/非唯一索引矩阵；同步核对 `row_size_test.go` 的 Go 意图。
 - 任何公式变更都要复查四个直接使用方，因为误差不仅改变扫描排序成本，还可能改变 spill、late materialization 和超长行保护分支，存在计划选择、内存与性能兼容风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标文件可完整读取。
-- RustCodeGraph `files --filter pkg/planner/cardinality`：确认 `row_size.rs`、独立 `row_size_test.rs`、Go 对照与 crate 内相邻模块。
-- RustCodeGraph `node --file pkg/planner/cardinality/row_size.rs`：核对 223 行源码、一个常量、七个公开函数及文件使用关系。
-- RustCodeGraph 文件使用关系及精确调用点：`pkg/planner/cascades/old/implementation_rules.rs`、`pkg/planner/core/operator/physicalop/physical_sort.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/plan_cost_ver2.rs`。
-- crate 边界：`pkg/planner/cardinality/Cargo.toml` 与 `pkg/planner/cardinality/lib.rs`，确认依赖、模块重导出和独立测试接线。
-- 移植与边界测试：`pkg/planner/cardinality/row_size.go`、`pkg/planner/cardinality/row_size_test.go`、`pkg/planner/cardinality/row_size_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的 11 章节结构命令验证，并人工确认没有把未覆盖路径写成已测试事实。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-driver` crate，由 `pkg/store/driver/lib.rs` 以公开模块 `pub mod sst_import` 挂载。它位于 `pkg/kv::Storage` 的抽象接口与 TiKV/PD gRPC 协议之间：`pkg/store/driver/kv_adapter.rs` 中 TiKV store 的 `ImportSSTWithOptions` 实现取得 PD 地址、TLS 配置和 keyspace ID 后，调用本文件的 `write_and_ingest_with_options`，再把内部 `ImportStats` 转成 `pkg/kv/kv.rs` 的 `SSTImportStats`。
-
-这是物理 SST 导入传输层，不负责解析 SQL、生成索引 KV、检测业务层重复键或管理本地导入引擎。上游示例位于 `pkg/session/runtime/import_sst.rs`：`StoreBridge::WriteAndIngestData` / `WriteAndIngest` 先整理有序 KV、检查冲突，再调用 storage 接口。本文件只把已经准备好的 KV 按 Region 写到各 TiKV peer，并要求 leader 执行 `MultiIngest`。
+位于 `pkg/kv::Storage` 的抽象接口与 TiKV/PD gRPC 协议之间：`pkg/store/driver/kv_adapter.rs` 中 TiKV store 的 `ImportSSTWithOptions` 实现取得 PD 地址、TLS 配置和 keyspace ID 后，调用本文件的 `write_and_ingest_with_options`，再把内部 `ImportStats` 转成 `pkg/kv/kv.rs` 的 `SSTImportStats`。
 
 ## 核心职责
 
@@ -102,11 +100,6 @@ RustCodeGraph 对目标文件识别出 33 个符号，并确认内部直接边 `
 
 `pkg/store/driver` 中不存在 `sst_import.go`，`pkg/store/driver/tikv_driver.go` 也没有与 `write_and_ingest_with_options` 一一对应的 Go 实现。因此本文件不是“同路径 Go 文件”的机械逐函数翻译，而是 Rust storage 适配链为物理导入补出的专用 transport；这一差异必须保留，不能虚构 Go 对应符号。
 
-协议层可由两处 Go 代码交叉核对：
-
-- `pkg/lightning/tikv/local_sst_writer_test.go` 的手工 TiKV 写入流程同样创建 `ImportSSTClient`，依次发送 `SSTMeta` 与携带固定 `CommitTs` 的 `WriteBatch`，检查 response error 并取得 metas。
-- `br/pkg/restore/snap_client/import.go::ingestSSTs` 同样以 Region、epoch、leader 构造 `kvrpcpb.Context`，将 metas 放入 `MultiIngestRequest` 并发给 leader store。
-
 Rust 实现把这些协议步骤组合成可由 `Storage` 同步调用的完整路径，并额外实现 PD endpoint/leader 发现、逐 Region 切分、向全部 peers 写入、V2 keyspace、每 store 每 batch 限流、取消和有限重试。Go BR 对 Region 错误有更细分类处理；本文件目前把 TiKV Write/Ingest response 中的任何错误统一标为可重试，最多按固定次数重定位。
 
 ## 扩展指南
@@ -117,12 +110,3 @@ Rust 实现把这些协议步骤组合成可由 `Storage` 同步调用的完整�
 - 扩充重试策略：应在 `ImportError` 分类和外层 cursor 循环处实现，并针对 NotLeader、EpochNotMatch、ServerIsBusy、PD leader 切换和 ambiguous ingest 分别验证。要特别评估重新生成 UUID、相同 commit TSO 和远端已 ingest 状态的幂等语义。
 - 改动 TLS/寻址：集中在 `channel`、`Connection::connect`、`Connection::store`，测试应覆盖 scheme、CA-only、mTLS、多个 PD endpoint 与 store 地址。同步 I/O 读取证书和每次重连重建 channel 的成本需要显式评估。
 - 引入 Region 并行：当前 `cursor` 顺序语义简单；并行化需要重新设计统计合并、取消、每 store limiter 公平性、错误后未完成范围归属和内存上限，不能只把外层循环替换成并发集合。
-
-## 验证依据
-
-- 生产源码：`pkg/store/driver/sst_import.rs`，已通过 RustCodeGraph `node --file` 读取全部 453 行，并用 `query/callers/callees` 核对关键符号和内部调用边。
-- crate 与模块边界：`pkg/store/driver/Cargo.toml`、`pkg/store/driver/lib.rs`。
-- Rust 上游契约与调用者：`pkg/kv/kv.rs`、`pkg/store/driver/kv_adapter.rs`、`pkg/session/runtime/import_sst.rs`、`pkg/session/runtime/system_session.rs`。
-- 独立 Rust 测试：`pkg/store/driver/sst_import_test.rs`。覆盖非法 TSO、乱序/重复键、空输入、memcomparable 边界、真实三副本 TiKV（ignored）、tonic wire 协议、V2 keyspace、逐 peer 限流、取消中止 ingest、以及每 batch 读取共享 limiter。
-- Go 协议参照：`pkg/lightning/tikv/local_sst_writer_test.go`、`br/pkg/restore/snap_client/import.go`；仓库精确搜索确认 `pkg/store/driver` 无同路径 Go 实现。
-- 未运行 Cargo 或代码测试：本任务仅新增说明文档，且总计划明确禁止运行 Cargo。验证范围是静态事实、调用结构与文档结构，不等同于重新证明远端 TiKV 行为。

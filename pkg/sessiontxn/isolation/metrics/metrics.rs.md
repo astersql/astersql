@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-sessiontxn-isolation-metrics` crate 中的具体绑定实现，由同目录 `lib.rs` 通过 `#[path = "../../../../pkg/sessiontxn/isolation/metrics/metrics.rs"]` 挂载为公开模块 `isolation_metrics`。它不定义 Prometheus collector 的描述符，而是从 `lib.rs::metrics::RCCheckTSWriteConfilictCounter` 这个带 `type` 标签的父 `CounterVec` 中取出读、写两个预绑定 `Counter` 句柄。
-
-crate 边界由同目录 `Cargo.toml` 确定：库入口是 `lib.rs`，唯一直接外部依赖是 `prometheus = "0.14"`，`package.metadata.porting.go-package` 指向 Go 包 `pkg/sessiontxn/isolation/metrics`。上层 `pkg/sessiontxn/isolation/Cargo.toml` 虽已声明该 crate 依赖，但当前 Rust 隔离级别实现尚未引用本文件的两个计数句柄；生产初始化接线位于 `pkg/util/metricsutil/common.rs::initMetrics`。
+保存 RC（Read Committed）读时间戳检查路径的写冲突子计数器：`RC_READ_CHECK_TS_WRITE_CONFLICT_COUNTER`。
 
 ## 核心职责
 
@@ -64,13 +62,7 @@ RustCodeGraph 将目标文件识别为 3 个符号，并报告它被 `migration_
 
 ## 与 Go 版本的对应关系
 
-`pkg/sessiontxn/isolation/metrics/metrics.go` 是直接对照：
-
-- Go `RcReadCheckTSWriteConfilictCounter prometheus.Counter` 对应 Rust `RC_READ_CHECK_TS_WRITE_CONFLICT_COUNTER: Option<prometheus::Counter>`。
-- Go `RcWriteCheckTSWriteConfilictCounter prometheus.Counter` 对应 Rust `RC_WRITE_CHECK_TS_WRITE_CONFLICT_COUNTER: Option<prometheus::Counter>`。
 - Go `init()` 自动调用 `InitMetricsVars()`；Rust `init()` 只是普通公开函数，实际装配层选择直接调用 `init_metrics_vars()`。
-- 两版都从同一语义的 `RCCheckTSWriteConfilictCounter` 用 `LblRCReadCheckTS` / `LblRCWriteCheckTS` 绑定子序列，并保留上游符号中 `Confilict` 的历史拼写。
-- Go 父指标定义在 `pkg/metrics/server.go`，指标全名为 `tidb_server_rc_check_ts_conflict_total`，标签键为 `type`；标签值在 `pkg/metrics/session.go` 中定义。Rust 迁移期父 collector 由 `pkg/util/metricsutil/common.rs::initParentMetricsCollectors` 在本地 crate 边界内创建。
 - Go 句柄已由 `pkg/sessiontxn/isolation/readcommitted.go` 的两条冲突处理分支消费；Rust `readcommitted.rs` 保留 RCCheckTS 状态逻辑，但代码搜索未发现它消费本文件的句柄。因此指标定义和绑定语义已对齐，Rust 端运行时递增仍是明确的迁移缺口。
 
 ## 扩展指南
@@ -79,11 +71,3 @@ RustCodeGraph 将目标文件识别为 3 个符号，并报告它被 `migration_
 - 若改动父 collector 的名称、help、标签键或标签数量，必须同步核对 `pkg/util/metricsutil/common.rs::initParentMetricsCollectors`、`pkg/metrics/server.go`、`pkg/metrics/session.go`和本 crate 测试中的 `fresh_source_counter`，否则可出现面板兼容性破坏或标签数不匹配 panic。
 - 若要完成 Rust 端可观测接线，修改点应在 `pkg/sessiontxn/isolation/readcommitted.rs` 中与 Go `handleAfterQueryError` / `handleAfterPessimisticLockError` 相同的精确分支，不能在所有重试或所有锁错误上泛化递增。测试应放在独立 `*_test.rs` 文件，并同时验证正向递增与非写冲突/未启用 RCCheckTS 时不递增。
 - 若要消除 `static mut` 风险，需同时调整 `lib.rs` 中父 collector、装配层和所有消费者，优先采用 `OnceLock`/`LazyLock` 或安全 getter；不应只在本文件局部包装而留下另一个无同步全局源。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/sessiontxn/isolation/metrics` 列出 `lib.rs`、`metrics.rs`、`metrics.go` 和 `migration_aster_unit_test.rs`；`node --file pkg/sessiontxn/isolation/metrics/metrics.rs --offset 1 --limit 240` 读取了完整 46 行源文件并报告 3 个符号。`query init_metrics_vars --kind function --json` 确认目标函数在第 35 行；同名图查询有歧义，因此调用边又用文件限定搜索复核。
-- Rust 源码与装配：`pkg/sessiontxn/isolation/metrics/metrics.rs`、同目录 `lib.rs`、`Cargo.toml`，以及 `pkg/util/metricsutil/common.rs` 的 `initParentMetricsCollectors` / `initMetrics`。
-- Go 对照：`pkg/sessiontxn/isolation/metrics/metrics.go`、`pkg/sessiontxn/isolation/readcommitted.go`、`pkg/metrics/server.go`和 `pkg/metrics/session.go`。
-- 独立 Rust 测试：`pkg/sessiontxn/isolation/metrics/migration_aster_unit_test.rs::init_metrics_vars_binds_the_two_go_label_values` 验证读/写标签分离及计数；`init_metrics_vars_rebinds_handles_after_the_source_changes` 验证替换父向量后句柄重绑定。同目录没有 Go 专用 metrics 测试，RC 行为测试位于 `pkg/sessiontxn/isolation/readcommitted_test.go`。
-- 目标包与上级 `pkg/sessiontxn` 下未找到 `doc.go`，因此无额外包契约可读。本任务按要求未运行 Cargo；验收以源码、调用边、对照实现、独立测试和文档结构检查为证据。

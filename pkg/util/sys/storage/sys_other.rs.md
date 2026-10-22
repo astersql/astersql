@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sys-storage` crate 的非 Linux、非 Windows、非 macOS 平台兜底实现。它只在 `cfg(all(not(target_os = "linux"), not(target_os = "windows"), not(target_os = "macos")))` 成立时参与编译；同一条件也出现在 [`lib.rs`](./lib.rs) 中，后者声明 `sys_other` 模块并把其公开项再导出为 crate API。
-
-该文件不是磁盘容量探测的通用实现：Linux/macOS 和 Windows 分别由 `sys_posix.rs`、`sys_windows.rs` 提供真实系统调用实现。当前服务器主链也尚未直接接入这个 crate：`cmd/tidb-server/main.rs` 中的 `storage_sys` 名称来自 `cmd/tidb-server/stubs.rs` 的本地桩模块，而不是 `astersql-util-sys-storage` 依赖。
+这样可让上层的容量与配额比较继续工作，同时避免未知平台因缺少 `statfs` 或 Windows API 实现而无法编译。
 
 ## 核心职责
 
@@ -54,9 +52,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接来源是 [`sys_other.go`](./sys_other.go)：Go 构建约束 `!linux && !windows && !darwin` 对应 Rust 对 Linux、Windows、macOS 的三重排除，其中 Go 的 Darwin 在 Rust 目标条件中按 macOS 表达。
-
-Go 签名 `func GetTargetDirectoryCapacity(path string) (uint64, error)` 与 Rust 签名在语义上对应：二者都接受路径、返回无符号容量和错误通道；Rust 用 `AsRef<Path>` 扩大了可接受的路径类型，并用 `Result<u64, io::Error>` 表达双返回值。两边都忽略路径并返回 `math.MaxInt64`/`i64::MAX as u64`，且错误为空/`Ok`。
+Go 签名 `func GetTargetDirectoryCapacity(path string) (uint64, error)` 与 Rust 签名在语义上对应：二者都接受路径、返回无符号容量和错误通道；Rust 用 `AsRef<Path>` 扩大了可接受的路径类型，并用 `Result<u64, io::Error>` 表达双返回值。
 
 Go 的 [`sys_test.go`](./sys_test.go) 只断言当前目录查询无错误且结果至少为 1；Rust 的 `sys_test.rs` 保留同一冒烟意图。Rust 新增的 `migration_aster_unit_test.rs` 进一步覆盖其他平台的真实错误和非 UTF-8 路径，但这些条件测试没有把真实查询语义错误地施加到本兜底分支。
 
@@ -66,11 +62,3 @@ Go 的 [`sys_test.go`](./sys_test.go) 只断言当前目录查询无错误且结
 - 行为变化应同步独立测试文件，优先扩展 `migration_aster_unit_test.rs` 或 `sys_test.rs`，不要把测试嵌入生产源文件。若新平台开始返回真实 OS 错误，还应调整测试的目标条件，覆盖存在路径、缺失路径和平台特有路径边界。
 - 若要把 crate 接入服务器，需先替换 `cmd/tidb-server/stubs.rs` 中的同名桩并在相应 Cargo 清单中建立依赖；应单独验证 `checkTempStorageQuota` 的启动错误传播，不能仅凭同名函数推断接线完成。
 - 保持 Go 兼容时需重点审查：构建目标集合、`i64::MAX` 哨兵值、公开函数名、路径接受能力和 `Result` 错误形状。真实查询可能引入系统调用成本和权限/挂载点兼容风险，需按平台测试，而非改变本兜底的常数时间行为。
-
-## 验证依据
-
-- 源码与装配：`pkg/util/sys/storage/sys_other.rs`、`pkg/util/sys/storage/lib.rs`、`pkg/util/sys/storage/Cargo.toml`。
-- Go 对照：`pkg/util/sys/storage/sys_other.go`、`pkg/util/sys/storage/sys_test.go`，以及业务调用语义所在的 `cmd/tidb-server/main.go::checkTempStorageQuota`。
-- Rust 测试与应用证据：`pkg/util/sys/storage/sys_test.rs`、`pkg/util/sys/storage/migration_aster_unit_test.rs`、`pkg/util/sys/storage/main_test.rs`、`cmd/tidb-server/main.rs::checkTempStorageQuota`、`cmd/tidb-server/stubs.rs::storage_sys`。
-- RustCodeGraph：`status` 显示索引包含本目录 12 个文件；`query GetTargetDirectoryCapacity --kind function` 定位本函数及各平台/Go 对照；`node pkg/util/sys/storage/sys_other.rs::GetTargetDirectoryCapacity` 核实第 37—44 行函数体。`explore` 给出同名容量 API 到 `checkTempStorageQuota` 的候选关系；结合 Rust 导入和桩定义复核后，确认该候选不能证明本 crate 已接线。精确 `callers` 查询约 90 秒未返回并已中止，因此调用关系以模块再导出、文本引用和实际导入解析交叉验证；函数体没有业务 callee。
-- 未运行 Cargo：本任务只新增文档，按任务约束以事实核对和固定章节结构检查代替构建测试。

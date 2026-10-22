@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod brie` 导出它，并在测试配置下用独立文件 `pkg/executor/brie_test.rs` 挂载单元测试。它是 Go `pkg/executor/brie.go` 的 Rust 侧 BRIE（Backup/Restore）SQL 执行模型：覆盖语句配置构建、进程内任务排队、查询/取消/元数据展示、错误映射，以及 BR 库访问 TiDB 会话能力所需的 glue 抽象。
-
-当前接线边界必须特别说明：仓库搜索未发现测试以外的 `brieRuntime` 实现，也未发现 `pkg/executor/builder.rs` 调用本文件的 `executorBuilder::buildBRIE`。因此该模块已经包含可独立测试的业务逻辑并由 crate 导出，但不能据此声称 Rust SQL 主执行树已经实际调用 BRIE；Go 生产入口仍是 `pkg/executor/brie.go` 中的 `executorBuilder.buildBRIE` 与 `BRIEExec.Next`。
+`BRIEExec::Next` 负责完整生命周期：登记、等待执行权、监视 SQL KILL、调用运行时 backup/restore、记录终态并生成 SQL 结果行。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@ KILL 监视线程每任务创建一个 OS thread，每三秒轮询；任务结�
 
 ## 与 Go 版本的对应关系
 
-Rust 的类型与方法大体一一对应 `pkg/executor/brie.go`：队列和进度对应 `brieQueue`/`brieTaskProgress`，构建对应 `executorBuilder.buildBRIE`，执行对应 `BRIEExec.Next`，展示对应 `ShowExec.fetchShowBRIE`，glue 对应 `tidbGlue`/`tidbGlueSession`。`pkg/executor/brie_test.rs` 也复刻了 Go 测试对配置、取消终态、清理和错误身份的核心断言。
-
 重要差异如下：Go 直接使用真实 `task.BackupConfig`/`task.RestoreConfig`、`task.RunBackup`/`task.RunRestore`、sessionctx、chunk 和 DDL/domain；Rust 用本地数据类型与 `brieRuntime` trait 隔离这些能力，当前无生产实现。Go 的 builder 已进入生产执行器构建流程，Rust 同名 builder 是本文件独立类型，未接到 `pkg/executor/builder.rs`。Go 含 `block-on-brie`、`beforeRunBRIETask` failpoint，Rust 没有对应注入点。Go 的 one-shot session 使用 defer，Rust 只在回调正常返回 `Result` 时显式关闭。
 
-Rust 的 FIFO 队列也不是 Go `workerCh` 的机械复制；它强化了等待顺序，并在取消等待任务时从 `waitingTaskIDs` 移除。错误表示同样从 Go terror 错误码抽象为本地 `BrieErrorKind`；语义测试覆盖身份，但不能证明客户端错误码完全等价。
+Rust 的 FIFO 队列也不是 Go `workerCh` 的机械复制；它强化了等待顺序，并在取消等待任务时从 `waitingTaskIDs` 移除。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ Rust 的 FIFO 队列也不是 Go `workerCh` 的机械复制；它强化了等待
 - 修改错误映射时，分别覆盖普通底层错误、KILL QUERY 与 CANCEL JOB；参考 `map_brie_error_preserves_kill_and_cancel_causes`，并对照 Go `TestMapBRIEErrPreservesCancelCause`。
 - 修改 glue 的 session/query-string 生命周期时，建议引入 RAII guard 处理 panic/提前退出，并补充独立测试验证关闭和原值恢复。并发或监视策略改变时，应评估每任务 OS thread 的成本、取消延迟和锁顺序。
 - SHOW/结果列变更必须同步 planner schema/上层消费方和 Go 结果顺序；进度 total 要禁止为 0，避免无穷或 NaN 百分比。
-
-## 验证依据
-
-- 源码与模块：`pkg/executor/brie.rs`（1563 行）、`pkg/executor/lib.rs`（`pub mod brie` 和 `#[path = "brie_test.rs"] mod brie_test`）、`pkg/executor/Cargo.toml`。
-- RustCodeGraph：`status` 显示本仓库索引含 11467 files/307296 nodes/1848419 edges；读取了 `brie.rs` 全部行，并查询 `buildBRIE`、`BRIEExec::Next`、`fetchShowBRIE`、`UseOneShotSession` 的 callers/callees。图对同名 `Next` 存在歧义，因此用精确仓库搜索补核上游接线。
-- Rust 测试：`pkg/executor/brie_test.rs` 覆盖 SQL 表面类型/行缓冲、KILL 与取消错误身份、排队取消终态、未完成任务保留、Go 对齐的 backup/restore 配置和非法加密/压缩值。
-- Go 对照：`pkg/executor/brie.go` 与 `pkg/executor/brie_test.go`；重点核对 builder、queue、kill monitor、主 Next、SHOW、glue、query string 恢复和配置断言。
-- 仓库搜索：除测试外未找到 `brieRuntime` 实现，也未找到 `pkg/executor/builder.rs` 调用本文件的 `buildBRIE`/`BRIEExec`；因此生产接线状态在本文标为未完成，而不是根据 Go 实现推断 Rust 已接线。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构检查要求本文恰含上述十一个固定二级标题。

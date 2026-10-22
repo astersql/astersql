@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/helper.rs` 是 MySQL 数值类型辅助逻辑的共享实现，覆盖浮点舍入/截断、按字段元数据限幅、字符串到有符号整数的 best-effort 解析，以及 DECIMAL 显示长度与 precision 的换算。它自身不是 `astersql-types` 根 crate 的普通 `mod`：`pkg/types/internal/field/lib.rs` 的 `helper` 模块通过 `include!("../../helper.rs")` 编译本文件，再以 `pub use helper::*` 从 `astersql-types-field` 导出；根 crate 的 `pkg/types/lib.rs` 则将这个内部 crate 暴露为 `field`。因此生产代码通常从 `types_dependency::field::*` 或内部 field crate 路径访问这些 API。
-
-所属依赖边界可由 `pkg/types/Cargo.toml` 与 `pkg/types/internal/field/Cargo.toml` 复核：根 crate 依赖名为 `types-field-group` 的 `astersql-types-field`，本文件使用的 `ErrTruncated`、`ErrOverflow`、`ErrBadNumber` 与 `errors` 均由该内部 crate 的 `lib.rs` 提供。本文件不声明 feature 或条件编译项。
+这些函数没有 SQL 执行上下文，也不决定 warning/error 的最终处理策略；它们只产生数值与 `SharedError`，上层再决定传播、降级或记录。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ RustCodeGraph `node --file pkg/types/helper.rs` 报告本文件被 10 个文件�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/helper.go`。Rust 保留了 Go 的函数名、参数含义、主要分支和返回形状：`math.RoundToEven` 对应 `f64::round_ties_even`，`math.Pow10` 对应 `10_f64.powi`，`math.Trunc` 对应 `f64::trunc`；Go 的 `(float64, error)`/`(int64, error)` 以数值加 `Option<errors::SharedError>` 表示。`GetMaxFloat`、正负限幅、NaN 溢出、整数边界和长度换算的分支逐项对应。
+Rust 保留了 Go 的函数名、参数含义、主要分支和返回形状：`math.RoundToEven` 对应 `f64::round_ties_even`，`math.Pow10` 对应 `10_f64.powi`，`math.Trunc` 对应 `f64::trunc`；Go 的 `(float64, error)`/`(int64, error)` 以数值加 `Option<errors::SharedError>` 表示。
 
 已确认的实现差异是：Go `TruncateFloatToString` 明确使用 `strconv.FormatFloat(f, 'f', -1, 64)`，Rust 使用 `format!("{}", f)`；现有 Go/Rust 测试覆盖的普通数值输出一致，但未对所有指数表示、负零、Inf/NaN 形式做穷举，扩展格式契约时应补跨语言用例。Rust 另增 `StrToIntForTest` 公开薄封装，Go 测试可直接访问同包私有函数而不需要它。
-
-`pkg/types/helper_test.go` 与 `pkg/types/helper_test.rs` 都覆盖 i64 上下界、极端 `dec` 截断和截断后格式化。更广的 Rust 覆盖位于 `pkg/types/etc_test.rs`（`GetMaxFloat`、`RoundFloat`、`Round`、`TruncateFloat`）、`pkg/types/convert_test.rs`（字段转换中的限幅）以及 `pkg/types/field_type_5_aster_unit_test.rs` / `pkg/types/internal/field/migration_aster_unit_test.rs`（迁移契约与长度换算）。
 
 ## 扩展指南
 
@@ -94,13 +90,3 @@ RustCodeGraph `node --file pkg/types/helper.rs` 报告本文件被 10 个文件�
 - 本文件由 `include!` 编译到 field crate；新增依赖或符号时必须确认名称在 `pkg/types/internal/field/lib.rs` 的 include 作用域可见，并更新 `pkg/types/internal/field/Cargo.toml` 而不是误改根 manifest。对外暴露路径变化还要复核根 `pkg/types/lib.rs` 的 `field` re-export。
 
 兼容风险主要是 SQL ROUND/TRUNCATE 结果、字段转换错误类别及展示字符串变化；性能风险主要是整数解析热路径上的额外分配。浮点边界修改还可能影响 planner/executor 之外的 Datum 编解码，因此不能只靠单个 helper 测试判定安全。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`node --file pkg/types/helper.rs --offset 1 --limit 260` 返回完整 218 行源码，并报告 10 个使用文件；对 `RoundFloat`、`strToInt`、`TruncateFloat`、`DecimalLength2Precision` 的 `query --kind function --json` 分辨了 Rust、Go 与测试同名符号。精确 `callers/callees` 未产生边，已用精确文本检索补证，未将泛化 `explore` 的同名噪声当作结论。
-- 源码与装配：`pkg/types/helper.rs`；`pkg/types/internal/field/lib.rs`（`include!("../../helper.rs")` 和 `pub use helper::*`）；`pkg/types/lib.rs`（field crate re-export）。
-- Cargo 边界：`pkg/types/Cargo.toml`；`pkg/types/internal/field/Cargo.toml`。
-- Go 对照：`pkg/types/helper.go`；Go 独立测试 `pkg/types/helper_test.go`。
-- Rust 测试：`pkg/types/helper_test.rs`、`pkg/types/etc_test.rs`、`pkg/types/convert_test.rs`、`pkg/types/field_type_5_aster_unit_test.rs`、`pkg/types/internal/field/migration_aster_unit_test.rs`。
-- 生产调用证据：`pkg/expression/builtin_math.rs`、`pkg/types/datum.rs`、`pkg/types/internal/datum/lib.rs`。
-- 按任务约束未运行 Cargo；本文档通过任务规定的 11 章节结构命令验证，并人工复核了文件存在理由、执行路径和安全扩展位置。

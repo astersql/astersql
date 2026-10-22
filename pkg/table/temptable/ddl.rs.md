@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-table-temptable` crate 的会话级本地临时表 DDL 实现，源码入口由 `pkg/table/temptable/lib.rs` 的 `pub mod ddl` 暴露，并经 `pub use ddl::*` 再导出。它负责在单个会话内部创建、删除和截断本地临时表，维护两类会话状态：`infoschema.rs` 中的 `SessionTables` 元数据目录，以及 `interceptor.rs` 中的 `MemBuffer` 表数据。
-
-该实现当前是自包含的 Rust 移植边界：`pkg/table/temptable/Cargo.toml` 的实际 `[dependencies]` 为空，原 TiDB 跨 crate 依赖仅列在永假条件 `target.'cfg(any())'.dependencies` 下。RustCodeGraph 显示本文件直接被 `ddl_test.rs`、`infoschema_test.rs` 使用；`pkg/executor/ddl.rs` 虽定义了同名的 `DdlRuntime` 临时表方法及 SQL 分发流程，但没有发现它直接构造或调用本文件的 `SessionTemporaryTableDdl`。因此，本文件的会话内行为已有实现和独立测试，完整服务器运行时接线不能仅凭当前证据宣称已经完成。
+负责在单个会话内部创建、删除和截断本地临时表，维护两类会话状态：`infoschema.rs` 中的 `SessionTables` 元数据目录，以及 `interceptor.rs` 中的 `MemBuffer` 表数据。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ RustCodeGraph 的精确调用边包括：trait 的三个公开方法分别落到
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `TemporaryTableDdl`、`SessionTemporaryTableDdl` 和三个操作逐项对应 Go 的 `TemporaryTableDDL`、`temporaryTableDDL`、`CreateLocalTemporaryTable`、`DropLocalTemporaryTable`、`TruncateLocalTemporaryTable`。存在性检查、会话数据惰性初始化、真实全局 ID、Public 状态、半开前缀区间、先收集键再删除，以及截断的“分配新 ID—删除旧表—添加新表—清旧数据”顺序均保持一致。`ddl_test.rs` 也逐项移植了 `ddl_test.go` 的创建、删除、截断场景。
-
 实现层面存在有意抽象差异。Go 的 `ensureSessionData` 从真实事务的 MemBuffer 构造 `TemporaryTableData`，Rust 的 `Store::begin(0)` 直接返回本地 `MemBuffer`；Go 的全局 ID 通过内部事务、`meta.Mutator.GenGlobalID` 获取，Rust 将其折叠为 `Store::generate_global_id`；Go 用 `tables.TableFromMeta` 并构造临时表 AutoID allocator，Rust 的 `Table::from_metadata` 仅保留 `has_auto_id` 布尔状态。Go 的错误带 PingCAP error stack 与标准 infoschema 错误身份，Rust 使用本地枚举值。
 
 另外，Rust 截断在 `schema_by_id` 失败时显式返回 `SchemaNotExists`，而 Go 忽略 `SchemaByID` 的布尔结果并继续把库值传给 `AddTable`；这是 Rust 的防御性边界差异。Rust 清理还显式 `iterator.close()`，Go 源码没有显式关闭该迭代器。当前 Cargo 的跨 crate 依赖被 `cfg(any())` 禁用，也说明这份 Rust 文件是可执行的局部模型，而不是对 Go 生产依赖图的一比一链接。
@@ -91,17 +87,3 @@ Rust 的 `TemporaryTableDdl`、`SessionTemporaryTableDdl` 和三个操作逐项�
 修改删除或截断时，应特别审查元数据变更与数据清理的先后顺序及失败语义。若引入回滚，必须同时覆盖 `add_table`、迭代推进和 `delete_table_key` 失败点；当前 API 不提供事务性目录更新，不能只调整单个调用就宣称原子化。扫描算法必须继续限制在单一 table ID 前缀，并先结束迭代器生命周期再修改缓冲。
 
 若接入真实 AsterSQL 组件，应优先实现 `Store`/`SessionContext` 到现有事务、会话变量和全局 ID 服务的适配，而不是在本文件复制外部子系统。还应恢复为真实 `TableInfo`/`Table`/错误类型并验证 AutoID allocator 语义；同时检查 `Cargo.toml` 中 `cfg(any())` 依赖的启用策略。性能方面，大表删除当前需要收集全部键，峰值内存为目标表键总大小，若优化为批处理必须保持迭代安全和删除占位语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；本次查询可定位 `ddl.rs` 的 21 个符号。
-- RustCodeGraph `node --file pkg/table/temptable/ddl.rs --offset 1 --limit 260`：完整核对本文件 201 行源码、公开 trait、实现与辅助函数。
-- RustCodeGraph `explore "pkg/table/temptable/ddl.rs TemporaryTableDdl create_local_temporary_table drop_local_temporary_table truncate_local_temporary_table"`：确认三个 trait 到实现的调用路径、测试工厂调用工厂函数，以及 `ensure_session_data`、全局 ID、清理函数的内部边。
-- RustCodeGraph `callees create_local_temporary_table`、`callees drop_local_temporary_table`、`callees truncate_local_temporary_table`、`callees clear_temporary_table_records`：核对创建、删除、截断及清理的直接被调用符号。
-- `pkg/table/temptable/Cargo.toml` 与 `pkg/table/temptable/lib.rs`：核对 crate 归属、Go 包映射、模块声明、再导出、独立测试装配及当前禁用的跨 crate 依赖。
-- `pkg/table/temptable/infoschema.rs`：核对 `TempTableError`、`SessionTables` 的多索引行为、`SessionVariables` 锁与目录惰性初始化。
-- `pkg/table/temptable/interceptor.rs`：核对 `Retriever`、`MemBuffer`、表键归属校验和空值删除占位语义。
-- `pkg/executor/ddl.rs`：核对 SQL DDL 泛型运行时对创建、删除、截断本地临时表的调度接口；未发现到本文件具体类型的直接适配调用。
-- `pkg/table/temptable/ddl.go` 与 `pkg/table/temptable/ddl_test.go`：核对 Go 原实现、错误顺序、全局 ID 消耗及独立测试意图。
-- `pkg/table/temptable/ddl_test.rs`：核对 Rust 已验证的边界，包括惰性初始化、重名/跨库同名、重复 ID 拒绝、失败无副作用、截断换 ID、旧键清除及其他表数据隔离。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅运行任务指定的 11 章节结构验证，并人工复核所有“已实现/未接线”表述均有上述源码或调用图依据。

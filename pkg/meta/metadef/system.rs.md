@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-meta-metadef`（入口为 [`lib.rs`](lib.rs)，清单为 [`Cargo.toml`](Cargo.toml)），由根模块以 `pub mod system` 声明并用 `pub use system::*` 重新导出。它不创建或持久化元数据，而是集中定义物理 schema 对象的全局 ID 边界、`mysql`/`sys` 数据库和 `mysql` 系统表的稳定 ID，以及判定一个 ID 是否位于系统保留区间的 `IsReservedID`。
-
-这些定义处在元数据协议层：bootstrap 用固定 ID 把系统表名、建表 SQL 与物理对象绑定，DDL、Domain 和 InfoSchema 同步代码则用相同边界区分用户对象与系统对象。因而 ID 数值是跨启动、升级以及 Go/Rust 实现共享的兼容约定，而非可随意重排的内部枚举。
+通过 `IsReservedID(id)` 实现唯一的运行时逻辑，严格表达保留区间 `(ReservedGlobalIDLowerBound, ReservedGlobalIDUpperBound]`。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ crate 根的 `pub use system::*` 使调用方可写 `astersql_meta_metadef::Syst
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`system.go`](system.go)。Rust 保留了 Go 的 `int64`/`i64` 上界、下界、`MaxUserGlobalID`、偏移 0 至 68 的所有固定 ID，以及 `IsReservedID` 的 `lower < id && id <= upper` 表达式。独立测试 [`system_test.rs`](system_test.rs) 对齐 [`system_test.go`](system_test.go) 的四个边界断言。
+Rust 保留了 Go 的 `int64`/`i64` 上界、下界、`MaxUserGlobalID`、偏移 0 至 68 的所有固定 ID，以及 `IsReservedID` 的 `lower < id && id <= upper` 表达式。
 
 当前 Rust 还包含针对偏移 63 至 68 的 `go_merge_12_system_ids_and_sql` 回归测试，并与相邻 SQL 常量联合核对新系统表；这比 Go 的 `TestIsReservedID` 覆盖面更广，但没有改变生产语义。Rust 源码为多数常量补充了中文用途说明；最后六个物化视图/日志相关常量在 Rust 中尚无逐项 doc comment，不过数值与 Go 完全对应，真实表名可由 bootstrap 和 `system_tables_def.rs` 核验。
 
@@ -93,11 +91,3 @@ crate 根的 `pub use system::*` 使调用方可写 `astersql_meta_metadef::Syst
 4. 搜索所有依赖系统表清单、跨 keyspace 过滤或升级路径的消费者，确认新表的生命周期和兼容策略。
 
 若只新增普通用户对象，不应修改本文件。若要改变保留区间大小或上下界，必须先评估持久化元数据、ID 分配器、旧集群升级、备份恢复和 Go/Rust 双实现兼容；这不是局部常量调整。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/meta/metadef/system.rs`；`files --filter pkg/meta/metadef` 确认 Rust/Go 源及独立测试均被索引；`node --file pkg/meta/metadef/system.rs --offset 1 --limit 260` 读取完整 241 行源码；`query` 分别定位 Rust/Go 的 `IsReservedID`、`ReservedGlobalIDUpperBound` 和 `SystemDatabaseID`；`callees system.rs::IsReservedID` 确认函数引用两个边界常量。精确 Rust `callers` 未返回完整结果，因此上游关系再由直接引用检索和下列消费者源码核验。
-- 源与 crate 边界：`pkg/meta/metadef/system.rs`、`pkg/meta/metadef/lib.rs`、`pkg/meta/metadef/Cargo.toml`。
-- Go 对照与测试：`pkg/meta/metadef/system.go`、`pkg/meta/metadef/system_test.go`、`pkg/meta/metadef/system_test.rs`。
-- 直接调用证据：`pkg/session/bootstrap.rs`、`pkg/domain/canonical_domain.rs`、`pkg/infoschema/issyncer/loader.rs`、`pkg/infoschema/issyncer/syncer.rs`、`pkg/session/runtime/ddl.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构检查要求本文恰好包含上述 11 个固定二级标题。

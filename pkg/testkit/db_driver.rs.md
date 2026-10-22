@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明对应源码 [`db_driver.rs`](./db_driver.rs)。本文件属于 `astersql-testkit` crate（见 [`Cargo.toml`](./Cargo.toml) 的 `[package]` 与 `[lib] path = "lib.rs"`），位于测试工具箱的数据库适配边界。[`lib.rs`](./lib.rs) 以 `pub mod db_driver` 装配模块，并公开再导出这里的值、结果、驱动、行游标和 `Database` trait。它不是生产 SQL 协议驱动，而是让 Rust 测试以一套接近 Go `database/sql` 的接口连接 `TestKit` 会话或 mock store。
-
-上游主要有两类：`pkg/testkit/testkit.rs`、`dbtestkit.rs`、`asynctestkit.rs`、`stepped.rs` 使用 `Database`/`DbValue`/`PreparedStatement` 组成测试 API；`pkg/testkit/db_driver_test.rs` 直接通过 `CreateMockDB` 验证 Go 风格的 `Exec`、`Query`、`Prepare`、`Next` 和 `Scan`。下游由具体 `Database` 实现决定；规范实现之一在 `pkg/testkit/mockstore.rs`，将参数转为会话协议参数并把记录集排空为 `QueryRows`。
+只有 `execute` 与 `query` 是必需实现；其余多数方法提供委托、空值或明确的“不支持”错误。
 
 ## 核心职责
 
@@ -66,8 +64,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/testkit/db_driver.go`，回归测试为 `pkg/testkit/db_driver_test.go`；Rust 对应测试是独立文件 `pkg/testkit/db_driver_test.rs`。两边都覆盖同一 store 上建表、写入、按序扫描、影响行数、TestKit 交叉可见性、预编译参数查询和关闭。
-
 Rust 保留了 Go 的外观语义，但不是逐类型复刻：Go 通过全局注册的 `database/sql` driver、`tkMap` 和原子 ID 由 `sql.Open` 建连接；Rust 直接保存 `Arc<dyn Database>`，用每个 `MockDB` 的 mutex 惰性创建会话，不存在全局注册表。Go 的 `testKitRows` 从 `RecordSet`/chunk 流式拉取并由 `Close` 关闭结果集；Rust 的 `QueryRows` 已在后端排空，`MockRows` 是内存游标。Go 使用 `driver.Value` 和 `database/sql.Scan` 转换；Rust 以封闭的 `DbValue` 与 `AssignFromDbValue` 明确列出支持类型。
 
 Go `testKitStmt::NumInput` 返回 `-1`，Rust 对应做法是不在 `PreparedStatement` 内统计占位符。Rust 测试额外固定了首行/空结果、NULL 拒绝扫描，以及字符串字面量中的 `?` 不计为参数；这些是 Go 接口语义在 Rust 后端上的直接防回归证据。
@@ -79,12 +75,3 @@ Go `testKitStmt::NumInput` 返回 `-1`，Rust 对应做法是不在 `PreparedSta
 - 若让 `PreparedStatement` 使用 `prepare_statement` 返回的真实 ID，需要定义创建失败、执行失败、显式关闭和 Drop 的所有权，并保证 `drop_prepared_statement` 恰当调用；现有 SQL 转发语义不可无意改变。
 - 若改变 `MockRows` 为流式读取，需要重新设计错误累计和记录集关闭，保持 `Next`/`Scan`/`Err` 顺序、不同行数目标错误和提前关闭行为，并评估锁持有时间与内存占用。
 - `CreateMockDB`/`MockDB::ensure_session` 的会话缓存变更会影响隔离性与关闭语义；至少同步 `db_driver_test.rs`，并检查 `mockstore.rs` 的活跃会话计数与 shutdown 路径。兼容风险主要是 Go `database/sql` 行为差异，性能风险主要是当前全结果集物化及同一 `MockDB` 串行初始化。
-
-## 验证依据
-
-- 源码：`pkg/testkit/db_driver.rs`（全部 771 行）、`pkg/testkit/lib.rs`、`pkg/testkit/dbtestkit.rs`、`pkg/testkit/testkit.rs`、`pkg/testkit/mockstore.rs`。
-- crate 配置：`pkg/testkit/Cargo.toml`，确认 crate 名、根模块和 `astersql-domain`/`astersql-session` 等依赖；没有 feature 条件控制本文件。
-- Go 对照：`pkg/testkit/db_driver.go` 与 `pkg/testkit/db_driver_test.go`。
-- Rust 独立测试：`pkg/testkit/db_driver_test.rs`，覆盖 `TestMockDB`、`mock_stmt_query_row_is_first_row_and_reports_empty_result`、`mock_rows_reject_scanning_null_into_non_nullable_destinations`、`mock_stmt_does_not_count_question_marks_inside_sql_literals_as_parameters`。
-- RustCodeGraph：`status` 显示目标已索引；`files --filter pkg/testkit/db_driver.rs` 报告该文件 109 个符号；`query` 定位 `DbValue`、`Database`、`PreparedStatement`、`DbDriver`、`MockDB`、`MockRows`、`MockStmt`、`MockRow`；`node CreateMockDB` 确认 Rust 构造边、四个测试调用边和 `lib.rs` 导入边，`node MockStmt` 确认由 `MockDB::Prepare` 实例化。
-- 人工复核：文档区分了 trait 默认能力与具体实现、Rust 内存行集与 Go 流式结果集、显式扫描错误与 `MockRows::Err` 预留状态，没有将未实现能力描述为已支持。

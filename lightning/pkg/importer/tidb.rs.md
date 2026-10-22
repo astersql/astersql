@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`tidb.rs`](tidb.rs) 是 `astersql-lightning-pkg-importer` crate 面向目标 TiDB 的 SQL 适配层。crate 根 [`lib.rs`](lib.rs) 通过 `mod tidb` 加载它并 `pub use tidb::*`，因此本文件的公开函数同时构成 importer crate 的公开导出面。它不负责整条导入流水线，而是集中承载四类边界操作：按 Lightning 配置创建目标库连接、包装连接和 SQL parser、把 dump 元数据与目标 schema 对齐、查询导入所需系统状态及执行少量收尾 DDL。
-
-该 crate 在 [`Cargo.toml`](Cargo.toml) 中声明为 library，`package.metadata.porting.go-package` 指向 `lightning/pkg/importer`，且注释明确这是一个依赖本地 stubs 覆盖 SQL/PD/TiKV 等边界的 slim port。因此本文所说的 `DB`、`Parser`、日志、指标和重试器，均是 crate 内经 [`stubs.rs`](stubs.rs) 重导出的迁移边界类型，不应直接等同于完整 Go 运行时的 `database/sql`、真实 parser 或完整重试实现。
+`DBFromConfig` 把 `config::DBStore` 转换为 `common::MySQLConnectParam`，先探测哪些 session variables 可被目标 TiDB 接受，再用仅含成功变量的参数重连，向后续 importer 提供带稳定会话环境的 `DB`。
 
 ## 核心职责
 
@@ -104,8 +102,6 @@ Cargo 直接依赖没有为本文件单列第三方库；这些符号主要来�
 
 ## 与 Go 版本的对应关系
 
-整体算法逐项对应 [`tidb.go`](tidb.go)：两阶段连接及失败变量剔除、manager/parser 组装、大小写不敏感 schema 匹配且保留 dump 名、变量默认值回填、新 collation 的旧版本兼容、auto-increment 有符号封顶与 `FORCE`、auto-random 最大值封顶/no-op 均保持相同分支。
-
 已确认的差异和迁移限制：
 
 - Go 使用真实 `*sql.DB`、parser、指标和 `common.SQLWithRetry`；Rust crate 注释声明 SQL 等边界由本地 stubs 覆盖。Rust 单测使用内存 `DB`/脚本化错误，因此证明的是可观察契约，不是完整网络与重试行为。
@@ -127,12 +123,3 @@ Cargo 直接依赖没有为本文件单列第三方库；这些符号主要来�
 - 所有 Rust 逻辑变更都应按仓库规则同步同目录独立测试 [`tidb_test.rs`](tidb_test.rs)，并尽量保持 [`tidb.go`](tidb.go) 与 [`tidb_test.go`](tidb_test.go) 的分支、错误和资源语义；测试逻辑不要内嵌回生产源文件。
 
 兼容性风险集中在 session variables 和 DDL 的旧版本支持；正确性风险集中在大小写映射、默认值静默回退和 allocator 溢出；性能风险较低，但 `DBFromConfig` 的逐变量串行探测和两次连接是有意成本，改成批量或并发前必须证明失败隔离仍然成立。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter lightning/pkg/importer/tidb.rs` 确认目标文件含 31 个符号；`node --file ... --offset 1 --limit 500` 读取了完整 410 行实现。
-- RustCodeGraph 精确符号查询覆盖：`DBFromConfig`、`NewTiDBManager`、`NewTiDBManagerWithDB`、`LoadSchemaInfo`、`ObtainImportantVariables`、`ObtainNewCollationEnabled`、`AlterAutoIncrement`、`adjustIDBase`、`AlterAutoRandom`、`DropTable`。
-- RustCodeGraph 调用证据：查询结果确认 `precheck.rs::NewPrecheckItemBuilderFromConfig -> DBFromConfig`、`import.rs::setGlobalVariables -> ObtainImportantVariables`、`server/checkpoint_control.rs::DestroyError -> NewTiDBManager/DropTable`；同时仅在测试/契约测试中发现若干尚未接线 helper 的 Rust 调用。宽泛 `callers DBFromConfig` 命令曾无输出超时，故调用边以收窄后的 `explore`、精确 `query` 和调用方 `node` 片段交叉确认。
-- 已读实现与边界：[`tidb.rs`](tidb.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`precheck.rs`](precheck.rs)、[`get_pre_info.rs`](get_pre_info.rs)、[`import.rs`](import.rs)、[`table_import.rs`](table_import.rs)、[`server/checkpoint_control.rs`](../server/checkpoint_control.rs)。目标包没有 `doc.go`。
-- 已读 Go 对照与独立测试：[`tidb.go`](tidb.go)、[`tidb_test.go`](tidb_test.go)、[`tidb_test.rs`](tidb_test.rs)。Rust 测试覆盖删表、schema 大小写匹配/回调错误、auto-increment 普通与溢出、auto-random 封顶/no-op/`u64::MAX` 回绕、变量结果和默认回填、new-collation 权限错误/缺行/布尔值。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的结构命令验证本文恰有 11 个固定二级章节，并人工复核所有“已接线”结论均有调用边证据，未把 Go 主链或 slim stub 的预期能力写成 Rust 当前事实。

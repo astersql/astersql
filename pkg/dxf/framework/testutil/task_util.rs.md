@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-testutil` crate（见 `pkg/dxf/framework/testutil/Cargo.toml`），是 DXF 测试代码向任务表写入子任务时使用的轻量适配层。模块由 `pkg/dxf/framework/testutil/lib.rs` 以 `pub mod task_util` 声明，并通过 `pub use task_util::*` 再导出，因此其他 Rust 测试 crate 可以直接从 `astersql_dxf_framework_testutil` 取得这里的公开符号。
-
-它不实现生产调度器或真实 SQL 存储，而是把测试所需字段组装成 `NewSubtask`，再交给 `TaskTable::insert_subtask`。同一文件还提供任务提交测试使用的 keyspace 选择函数 `getTaskKS`。当前文件没有条件编译项；测试本身位于独立文件，而非内嵌在源文件中。
+`InsertSubtask` 允许测试显式指定任意 `SubtaskState`，构造无 summary、无开始时间的 `NewSubtask`，并调用存储抽象。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/dxf/framework/testutil/task_util.go`。两版都保留 `CreateSubTask -> InsertSubtask`、`CreateSubTaskWithSummary -> InsertSubtaskWithSummary` 的两层 API，并保持普通创建默认 Pending、摘要插入同时写 summary 与开始时间、next-gen 选择系统 keyspace 的核心意图。
-
 实现边界存在刻意差异：Go 版直接通过 `storage.TaskManager.WithNewSession` 执行 `mysql.tidb_background_subtask` 的 SQL，并查询 `@@last_insert_id`；Rust 版只组装 `NewSubtask` 后委托 `TaskTable`。Go 版在辅助函数内用 `json.Marshal` 序列化 `*execute.SubtaskSummary`，Rust 版要求调用方先提供 `summary_json: Vec<u8>`。Go 用 `require.NoError` 把错误转成测试失败，Rust 用 `Result` 交给调用方决定断言方式。Go 的 `getTaskKS` 读取 `kerneltype.IsNextGen()` 全局配置，Rust 显式接收 `bool`，从而使分支可直接测试。
 
-因此 Rust 版已对齐“字段语义和测试用途”，但不是 Go SQL/session 实现的逐语句复刻；是否写入数据库取决于注入的 `TaskTable` 实现。`Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/dxf/framework/testutil"` 进一步确认了该 Go 包对应关系。
+因此 Rust 版已对齐“字段语义和测试用途”，但不是 Go SQL/session 实现的逐语句复刻；是否写入数据库取决于注入的 `TaskTable` 实现。
 
 ## 扩展指南
 
@@ -89,14 +85,3 @@ Go 对照文件是 `pkg/dxf/framework/testutil/task_util.go`。两版都保留 `
 - 修改 Pending、summary 或开始时间语义时，必须同步独立测试 `pkg/dxf/framework/testutil/migration_aster_unit_test.rs::table_and_task_helpers_preserve_insert_fields_and_cleanup`；错误透传可在同目录独立测试文件中用返回 `Err(DxfError)` 的 `TaskTable` 桩补充，禁止把单元测试内嵌回本源文件。
 - 修改 keyspace 策略时，应同步 `disttest_util.rs::SubmitAndWaitTask` 的调用契约以及 `pkg/dxf/framework/integrationtests/framework_test.rs::framework_keyspace_and_task_terminal_states_match_kernel_modes`。
 - 兼容风险主要是 Go/Rust 字段默认值或摘要序列化责任漂移；正确性风险是新增字段只接入一条插入路径；性能风险目前限于 `exec_id`、`task_type` 和字节载荷的分配/移动，若引入大摘要复制需单独评估。
-
-## 验证依据
-
-- 目标源码：`pkg/dxf/framework/testutil/task_util.rs`，核对 1 个结构体、5 个公开函数、所有字段赋值、属性和分支；该目录不存在 `doc.go`。
-- crate 边界：`pkg/dxf/framework/testutil/Cargo.toml` 与 `pkg/dxf/framework/testutil/lib.rs`，核对 crate 名、Go 包移植元数据、模块声明及公开再导出；Cargo 未声明 feature。
-- 存储与领域边界：`pkg/dxf/framework/testutil/table_util.rs::TaskTable::insert_subtask`、`pkg/dxf/framework/testutil/context.rs::{DxfError, Step, SubtaskState}`。
-- Go 对照：`pkg/dxf/framework/testutil/task_util.go`，核对默认状态、SQL 字段意图、summary 序列化、开始时间和 keyspace 行为。
-- 独立 Rust 测试：`pkg/dxf/framework/testutil/migration_aster_unit_test.rs::table_and_task_helpers_preserve_insert_fields_and_cleanup`，验证两次插入返回 ID、所有普通/摘要字段及两个 keyspace 分支；`pkg/dxf/framework/integrationtests/framework_test.rs::framework_keyspace_and_task_terminal_states_match_kernel_modes` 再次验证 keyspace。
-- 直接调用者：`pkg/dxf/framework/testutil/disttest_util.rs::SubmitAndWaitTask`，验证 keyspace 结果进入任务提交参数。
-- RustCodeGraph：`status` 显示目标仓库已索引（目标目录包含 `task_util.rs` 的 7 个节点）；`explore`/`query` 确认目标符号、两条内部调用链及上述 Rust 调用者。对精确符号执行 `callers/callees` 时命令在 30 秒内未返回输出，因此调用关系又以源码和独立测试检索交叉确认，未据超时结果作推断。
-- 按任务约束未运行 Cargo；最终仅执行任务指定的 11 章节结构验证，并人工检查未把测试建议写入源文件、未宣称不存在的真实 SQL 实现。

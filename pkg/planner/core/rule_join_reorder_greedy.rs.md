@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate 的经典 Join Reorder 路径。crate 由 `pkg/planner/core/Cargo.toml` 定义，库入口是 `pkg/planner/core/lib.rs`；后者以 `pub mod rule_join_reorder_greedy` 暴露本模块，并仅在 `cfg(test)` 下装配独立测试 `rule_join_reorder_greedy_test.rs`。
-
-生产入口位于 `pkg/planner/core/rule_join_reorder.rs` 的 `JoinReOrderSolver::optimizeRecursive`：它先抽取连续 Inner Join 组，在组内节点数大于 `dpThreshold.max(2)` 时构造 `joinReorderGreedySolver` 并调用 `solve`；较小的组走 `joinReorderDPSolver`。因此，本文件负责大连接组的近似顺序搜索，不负责 Join 组抽取、DP 枚举或最终 schema 恢复。
+`calcJoinCumCost` 在 `rule_join_reorder.rs` 中定义为左右累计代价加本次 Join 的估计行数（且至少按 1 计），所以它是基于基数的启发式指标。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ RustCodeGraph 对 `solve` 的被调用函数给出了上述边，对 `constructC
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/rule_join_reorder_greedy.go`。Rust 保留了 `joinReorderGreedySolver`、`solve`、`constructConnectedJoinTree`、`checkConnectionAndMakeJoin` 以及“累计代价最小候选 + 最终 bushy 笛卡尔合并”的主干算法，但当前只实现了 Go 行为的一个简化子集。
+Rust 保留了 `joinReorderGreedySolver`、`solve`、`constructConnectedJoinTree`、`checkConnectionAndMakeJoin` 以及“累计代价最小候选 + 最终 bushy 笛卡尔合并”的主干算法，但当前只实现了 Go 行为的一个简化子集。
 
 主要差异如下：
 
@@ -97,13 +95,3 @@ RustCodeGraph 对 `solve` 的被调用函数给出了上述边，对 `constructC
 - 若增强其它条件的连接性判断，应同步修改 `baseSingleGroupJoinOrderSolver::hasOtherJoinCondition`/`makeJoin`，并覆盖条件引用单侧、跨侧、无法下推以及候选落选后状态不被消费的场景。
 - 性能修改要关注每轮对 `base` 和 `JoinPlan` 的 clone，以及从 `Vec` 中间删除的移动成本；任何缓存都必须维持“落选候选无副作用”和并列选择确定性。
 - `constructConnectedJoinTree`、`checkConnectionAndMakeJoin` 虽公开但当前无生产调用者；改变签名之前仍须检查 crate 外部使用面，改变语义则至少增加直接单元测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件的 `node --file` 读取覆盖 117 行全文件。
-- RustCodeGraph 符号/调用查询：`query joinReorderGreedySolver`、`query solve`、`query constructConnectedJoinTree`、`query checkConnectionAndMakeJoin`；`callees` 核对到 `generateJoinOrderNode`、`construct_connected_join_tree`、`makeBushyJoin`、`checkConnection`、`hasOtherJoinCondition` 和 `makeJoin`。图的 callers 结果为空，因此使用精确仓库搜索补证生产入口。
-- 已读 Rust 生产代码：`pkg/planner/core/rule_join_reorder_greedy.rs`、`pkg/planner/core/rule_join_reorder.rs`、`pkg/planner/core/lib.rs`。目标目录根部没有 `doc.go`；最近检出的 `pkg/planner/core/base/doc.go` 属于 `base` 子包，不是当前 crate 根模块契约。
-- 已读 crate 声明：`pkg/planner/core/Cargo.toml`，确认包名、`lib.rs` 入口、feature 和依赖边界。
-- 已读独立 Rust 测试：`pkg/planner/core/rule_join_reorder_greedy_test.rs`。`disconnected_components_are_combined_as_a_bushy_cartesian_tree` 验证四个不连通节点最终形成两侧均为 Join 的 bushy 根；`connected_component_starts_with_lowest_cumulative_cost` 验证低累计代价节点先与其连通邻居组成子树。
-- 已读 Go 对照与回归：`pkg/planner/core/rule_join_reorder_greedy.go`、`pkg/planner/core/rule_join_reorder.go`、`pkg/planner/core/casetest/rule/rule_join_reorder_test.go`，以及 `pkg/planner/core/casetest/integration_test.go` 中 issue 63290 的笛卡尔阈值计划断言。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核所有“当前支持”陈述均能回指上述符号或测试。

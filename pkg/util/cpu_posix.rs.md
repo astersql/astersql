@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`cpu_posix.rs`](cpu_posix.rs) 是 `astersql-util` crate 的 POSIX 进程 CPU 采样实现。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod cpu_posix` 暴露该模块；[`Cargo.toml`](Cargo.toml) 将 crate 根指定为 `lib.rs`，并通过 `libc = "0.2"` 提供 `getrusage`、`rusage`、`timeval` 和 `RUSAGE_SELF` 的平台绑定。
-
-文件中的两个静态量和公开采样函数都带有 `cfg(any(unix, target_os = "linux", target_os = "macos", target_os = "freebsd"))`。其中 `unix` 已覆盖通常的 Linux、macOS 和 FreeBSD 目标，后面的三个目标条件是显式重复说明；非 Unix 构建不会得到这些静态量或 `GetCPUPercentage`。同 crate 另有 [`cpu_windows.rs`](cpu_windows.rs) 承担 Windows 实现，但当前 `lib.rs` 没有用条件编译互斥两个模块，因此调用方必须选择与目标平台相符的模块。
-
-仓库全文引用检查显示，目前生产 Rust 代码没有调用 `cpu_posix::GetCPUPercentage`；直接使用者只有独立测试 [`cpu_posix_1_aster_unit_test.rs`](cpu_posix_1_aster_unit_test.rs)。因此它当前是已公开、已测试但尚未接入应用主链的底层工具能力，不能据此声称服务运行时已经消费该指标。
+通过 `libc::getrusage(libc::RUSAGE_SELF, ...)` 读取本进程累计用户态时间 `ru_utime` 和系统态时间 `ru_stime`。
 
 ## 核心职责
 
@@ -84,16 +80,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`cpu_posix.go`](cpu_posix.go)。两版都：
-
-- 只面向 Linux、Darwin、FreeBSD 或一般 Unix；
-- 保存 `lastInspectUnixNano` 和 `lastCPUUsageTime` 两个进程级基线；
-- 查询 `RUSAGE_SELF`，相加用户态与系统态 CPU 时间；
-- 忽略资源查询错误；
-- 使用同一差分公式并在返回前更新基线。
-
-Rust 的 `LAST_INSPECT_UNIX_NANO`、`LAST_CPU_USAGE_TIME` 分别对应 Go 的两个包级 `int64`。`libc::timeval` 的秒/微秒换算对应 Go `syscall.Timeval.Nano()`；`now_unix_nano` 对应 `time.Now().UnixNano()`。
-
 可见差异包括：Rust 用 `AtomicI64` 避免对单个状态字段的未定义数据竞争，而 Go 原文件是普通包级变量；Rust 抽出 `cpu_percentage_from_samples` 以便独立测试；Rust 在系统时间早于 epoch 时返回零，而 Go 的 `UnixNano()` 可返回负值；Rust 具有 `u128` 到 `i64` 的直接转换边界。上述差异没有改变正常单调用路径的核心公式，但原子化也没有让两个字段成为不可分割的样本对。
 
 ## 扩展指南
@@ -104,12 +90,3 @@ Rust 的 `LAST_INSPECT_UNIX_NANO`、`LAST_CPU_USAGE_TIME` 分别对应 Go 的两
 - 若要支持并发采样，必须保证墙钟与 CPU 基线的成对更新，并新增多线程独立测试；单独调整原子内存序不足以修复区间交错。
 - 若要接入应用监控，应在真实消费模块显式调用并定义采样频率、单一采样者和首样本丢弃策略。目前没有生产调用边，不能仅凭 `pub mod` 认为已经接线。
 - 修改平台范围时，需要同时检查本文件的 `cfg`、`lib.rs` 的模块装配、`Cargo.toml` 的目标依赖和 Windows 对应实现，避免同一目标同时暴露语义不一致的入口。
-
-## 验证依据
-
-- Rust 源码：[`pkg/util/cpu_posix.rs`](cpu_posix.rs)，核对两个条件编译静态量、`GetCPUPercentage`、`cpu_percentage_from_samples`、`timeval_nano` 和 `now_unix_nano`。
-- crate 边界：[`pkg/util/Cargo.toml`](Cargo.toml) 与 [`pkg/util/lib.rs`](lib.rs)，核对 `astersql-util`、`lib.rs` crate 根、`libc` 依赖、公开模块和测试模块装配。
-- Go 对照：[`pkg/util/cpu_posix.go`](cpu_posix.go)，核对构建约束、状态字段、系统调用、差分公式、错误忽略与更新顺序。
-- 独立测试：[`pkg/util/cpu_posix_1_aster_unit_test.rs`](cpu_posix_1_aster_unit_test.rs) 中的 `cpu_percentage_uses_process_time_delta_over_wall_time_delta`、`cpu_percentage_preserves_go_floating_point_zero_interval_behavior` 和 `cpu_percentage_reads_real_process_usage`。仓库未发现直接覆盖该函数的 Go 测试。
-- RustCodeGraph：`status` 显示索引可用；`files --filter pkg/util/cpu_posix.rs` 报告目标文件含 5 个符号；`query` 分别定位四个函数；`node --file pkg/util/cpu_posix.rs --offset 1 --limit 140` 返回完整目标源码并报告唯一使用文件为 `pkg/util/cpu_posix_1_aster_unit_test.rs`。`callers`/`callees` 使用路径限定与稳定 ID 的查询未产生可用输出，因此调用关系另以索引的 used-by 结果和仓库 `rg` 直接复核，未虚构图边。
-- 人工边界复核：确认首样本语义、多核可超过 `100%`、零分母浮点行为、忽略系统调用错误、非单调墙钟以及两个原子字段不能组成事务性快照。

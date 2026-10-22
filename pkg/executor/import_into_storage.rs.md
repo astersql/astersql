@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；模块由 `pkg/executor/lib.rs` 以 `pub mod import_into_storage` 无条件导出，crate 依赖在 `pkg/executor/Cargo.toml` 中声明。它位于 `IMPORT INTO` 执行器与 DXF（Distributed eXecution Framework）存储层之间，专门处理“取消导入作业”时 DXF 任务和用户 keyspace 中导入作业记录之间的衔接。
-
-当前 Rust 代码没有发现生产调用者：RustCodeGraph 和仓库引用搜索得到的直接调用均位于独立测试 `pkg/executor/import_into_test.rs`。因此它已经实现并公开了存储侧取消语义，但在当前 Rust 主执行链中的生产接线未由本文件或现有引用证明。Go 版本的生产入口位于 `pkg/executor/import_into.go`，由 `cancelAndWaitImportJob` 承接 `CANCEL IMPORT JOB` 和终止后台导入的路径。
+因此它已经实现并公开了存储侧取消语义，但在当前 Rust 主执行链中的生产接线未由本文件或现有引用证明。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ Rust 主分支逐项对应 `pkg/executor/import_into.go`：Go 的 `cancelAndWait
 
 Rust 的 `before_fallback` 是 Go 两个 failpoint 所覆盖竞态窗口的可测试替代缝，而非业务 hook。Rust `cancelDanglingImportJob` 与 Go 同名函数一样：用 job-side manager 新建 session、调用 `CancelPendingJob`、要求 affected rows 非零，并使用相同错误文案。
 
-Go 测试 `pkg/executor/import_into_test.go` 验证无 DXF task 时 pending job 被取消、running job 保持运行且报状态变化；`tests/realtikvtest/importintotest3/cross_ks_test.go` 验证跨 keyspace 与真实竞态。Rust 的 `pkg/executor/import_into_test.rs` 重现了核心语义，但当前 Rust 测试入口是 crate 内独立文件，并且 nextgen 案例受 feature gate 控制。
-
 ## 扩展指南
 
 - 接入 Rust 生产执行链时，优先调用 `cancelAndWaitImportJobInStorage`，并分别传入 SYSTEM task manager 与用户 keyspace job manager；不要用单一 manager 隐含替代跨 keyspace 边界。接线前应补充与 Go `ImportIntoActionExec` 和后台终止路径对应的独立测试。
@@ -87,11 +83,3 @@ Go 测试 `pkg/executor/import_into_test.go` 验证无 DXF task 时 pending job 
 - 若增加日志、内部 source type、重试或可观测性，应明确放在调用层还是存储辅助层，并与 Go 行为对齐；不要让重试重新探测后改变“probe miss 后不等待迟到 task”的既有语义。
 - 回归测试应继续放在独立文件。直接分支和竞态测试扩展 `pkg/executor/import_into_test.rs`；底层条件 SQL扩展 `pkg/executor/importer/job_test.rs`；跨 keyspace/真实 TiKV 行为与 Go 对照则参考现有 Go 单元测试和 `tests/realtikvtest/importintotest3/cross_ks_test.go`，不应把测试嵌入生产源文件。
 - 性能风险主要来自 task 等待与存储往返；正确性风险集中在跨 keyspace 管理器混用、错误分类、历史任务可见性和 affected rows 语义；兼容性风险是错误文案、取消状态及 `cancelled by user` 对外表现变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引覆盖 Rust/Go；`query import_into_storage` 定位文件与三个函数；`node --file pkg/executor/import_into_storage.rs` 读取完整实现；`callers`/`callees` 核对公开门面、内部 hook、fallback 和测试调用边。图查询对部分跨语言常见符号产生噪声，因此具体 manager 方法边同时以目标源码复核。
-- Rust 源与装配：`pkg/executor/import_into_storage.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`。
-- Rust 独立测试：`pkg/executor/import_into_test.rs` 的 `dangling_import_job_cancellation_preserves_state_guards_on_real_sql`、`user_keyspace_job_cancelled_before_task_commit_stops_admission`、`task_started_after_probe_miss_cannot_cancel_a_running_job`、`failed_task_probe_does_not_cancel_import_job`、`archived_reverted_task_does_not_cancel_pending_user_job`、`task_committed_after_lookup_miss_does_not_delay_pending_job_cancel`；底层 SQL 由 `pkg/executor/importer/job_test.rs::pending_cancellation_uses_only_pending_predicate_and_propagates_sql_errors` 验证。
-- Go 对照与设计证据：`pkg/executor/import_into.go`、`pkg/executor/import_into_test.go`、`pkg/executor/importer/job.go`、`pkg/executor/importer/job_test.go`、`pkg/dxf/importinto/job_doc.go`、`pkg/dxf/importinto/job_testkit_test.go`、`tests/realtikvtest/importintotest3/cross_ks_test.go`。
-- 本任务只新增说明文档，未运行 Cargo 或代码测试；最终以任务规定的 11 标题结构命令检查文件存在性和章节数，并人工复核当前接线状态、竞态分支、错误传播及扩展约束没有超出上述证据。

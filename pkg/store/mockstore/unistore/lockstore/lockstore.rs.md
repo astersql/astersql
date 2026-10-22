@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore-lockstore` crate 的核心数据结构实现，定义 arena-backed 跳表 `MemStore`。它面向 UniStore/mock TiKV 的事务锁键值保存场景，提供按字节序有序的查找、插入、替换和删除；有序迭代与持久化分别由同 crate 的 `iterator.rs` 和 `load_dump.rs` 以 `impl MemStore` 扩展（`lib.rs` 统一声明并再导出这些模块）。
-
-crate 边界由 `pkg/store/mockstore/unistore/lockstore/Cargo.toml` 确认：库入口是 `lib.rs`，运行时外部依赖只有 `rand = 0.8`，`package.metadata.porting.go-package` 指向同目录 Go 包。生产接线中，`pkg/store/mockstore/unistore/server/server.rs` 在创建 UniStore server 时以 `MemStore::NewMemStore(LOCK_STORE_ARENA_SIZE)` 构造并用 `Arc<MemStore>` 保存；`pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs` 的 `DBBundle`/`DBSnapshot` 也把它定义为共享锁存储视图。当前 Rust 搜索证据只显示生产侧的构造与共享，没有显示这些生产模块直接调用 `Put`/`Get`/`Delete`；这些 CRUD 行为目前由本 crate 的独立测试直接覆盖，不能据此宣称完整 MVCC 写链已经接通。
+生产接线中，`pkg/store/mockstore/unistore/server/server.rs` 在创建 UniStore server 时以 `MemStore::NewMemStore(LOCK_STORE_ARENA_SIZE)` 构造并用 `Arc<MemStore>` 保存；`pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs` 的 `DBBundle`/`DBSnapshot` 也把它定义为共享锁存储视图。
 
 ## 核心职责
 
@@ -85,11 +83,11 @@ CRUD API 不返回 `Result`：未命中的 `Get` 是 `None`，不存在 key 的 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/lockstore/lockstore.go`。Rust 保留了 Go 的 `MemStore`/`nodeHeader`/`node`/`entry`/`Hint` 结构、16 层上限、节点字节布局、按 1/4 概率晋升的层高、hint 重算算法、插入自底向上与删除自顶向下的发布顺序，以及 `Put*`/`Delete*` 的布尔返回语义。查找中的 Rust slice `cmp` 对应 Go `bytes.Compare`。
+Rust 保留了 Go 的 `MemStore`/`nodeHeader`/`node`/`entry`/`Hint` 结构、16 层上限、节点字节布局、按 1/4 概率晋升的层高、hint 重算算法、插入自底向上与删除自顶向下的发布顺序，以及 `Put*`/`Delete*` 的布尔返回语义。
 
 主要语言映射差异如下：Go 的 `nil []byte` 在 Rust `Get` 中是 `None`，而空 `entry.getValue` 是空 `Vec`；Go 复用传入 `buf[:0]` 并返回该 slice，Rust 先复用 `&mut Vec` 的容量，再返回 `buf.clone()`，因此返回值拥有独立分配语义。Go 的嵌入 `*node` 被 Rust 显式 `entry.node` 和转发方法替代。Go `unsafe.Pointer`/atomic API 被 Rust 裸指针与 `Atomic*` 替代；Rust 另外保留 `retiredArenas` 并实现 `Drop`，以弥补 Go GC 会自然延长旧 locator 生命周期而 Rust 必须显式回收的差异。
 
-Go `newNode(arena, ...)` 接收 locator 参数；Rust `newNode` 通过 `&mut self` 访问并在增长时更新当前 locator。Go 的 arena locator 由 GC 管理，Rust locator 放入 `Box` 后转成裸指针。除这些所有权适配外，主要控制流逐段对应。`lockstore_test.rs` 保留大批量 CRUD、覆盖、并发和 benchmark 工作负载；`migration_aster_unit_test.rs` 进一步以小型断言核对 Go 对齐语义。
+Go `newNode(arena, ...)` 接收 locator 参数；Rust `newNode` 通过 `&mut self` 访问并在增长时更新当前 locator。
 
 ## 扩展指南
 
@@ -99,11 +97,3 @@ Go `newNode(arena, ...)` 接收 locator 参数；Rust `newNode` 通过 `&mut sel
 - 增加尺寸检查或错误返回时，最可能入口是 `NewMemStore`、`newNode` 和 `MaxEntrySize`。这会改变现有 API，需要核对 `load_dump.rs` 恢复流程、server 构造和 Go 兼容性；尤其要覆盖超大 key/value、过小 block 和 grow 后仍无法分配。
 - 改变 arena 生命周期或并发保证时，必须同时审查 `arena.rs` 的 `UnsafeCell`、引用计数、grow 和延迟复用，以及本文件的 `unsafe impl Send/Sync`、`setArena` 和 `Drop`。这是正确性和内存安全高风险区域。
 - 测试逻辑应继续放在独立文件：核心 CRUD/并发回归加入 `lockstore_test.rs`，明确的 Go 迁移一致性断言加入 `migration_aster_unit_test.rs`；迭代器和持久化分别放在对应独立测试文件，不应内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/store/mockstore/unistore/lockstore` 确认目标及相邻 Go/Rust 文件；`node --file .../lockstore.rs` 分段读取 729 行和 42 个符号；`query` 核对 `MemStore`、`NewMemStore`、`PutWithHint`、`DeleteWithHint`、`findGreater`、`findLess`；`callees` 核对本文件内部调用链。图对同名 Go/Rust callers 消歧不足，因此上游接线另用精确路径搜索补证。
-- 生产源码：`pkg/store/mockstore/unistore/lockstore/lockstore.rs`；直接内存依赖 `arena.rs`；扩展调用者 `iterator.rs`、`load_dump.rs`；crate 入口 `lib.rs`；生产持有者 `pkg/store/mockstore/unistore/server/server.rs` 与 `pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs`。
-- 配置与 Go 对照：`pkg/store/mockstore/unistore/lockstore/Cargo.toml`、根 `Cargo.toml` 的 facade 注册、`pkg/store/mockstore/unistore/lockstore/lockstore.go`。
-- 独立测试：`lockstore_test.rs` 覆盖大批量增查删、延迟复用、替换、iterator 和单写多读；`migration_aster_unit_test.rs` 覆盖 CRUD/Hint/Len/MaxEntrySize、并发只读及与 arena/load-dump 的组合语义；`load_dump_test.rs` 覆盖持久化调用面。按任务约束未运行 Cargo。
-- 人工复核结论：本文能够从构造、查询、hint 写入、节点布局、arena 增长/回收、原子发布顺序解释文件为何存在与如何运行；扩展章节列出了尺寸、unsafe、并发、Go 兼容和独立测试风险。结构验证命令及退出码在任务交付前单独记录。

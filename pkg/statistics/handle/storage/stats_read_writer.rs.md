@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-statistics-handle-storage` crate 的共享数据模型、系统表访问抽象和统计读写门面。crate 由 `pkg/statistics/handle/storage/Cargo.toml` 定义，`lib.rs` 通过 `pub mod stats_read_writer` 装载并以 `pub use stats_read_writer::*` 再导出本文件符号；同一 crate 的 `read.rs`、`save.rs`、`update.rs`、`gc.rs` 都依赖这里的类型或 trait。
-
-它位于统计对象与 `mysql.stats_*` 系统表之间：`SqlStore` 把实际 SQL 执行器抽象成 `start_ts`/`execute`，`StatsHandler` 提供 store、lease 和历史 meta 记录回调，`StatsReadWriter` 再把保存 ANALYZE、刷新版本、读取 meta 和装载表统计组合成较稳定的上层接口。当前 `Cargo.toml` 的路径依赖全部位于恒假条件 `[target.'cfg(any())'.dependencies]` 下，因此当前实现实际只直接依赖标准库和本 crate；不能据此声称它已直接接入这些外部 crate。
+以 `SqlStore` 统一统计 SQL 执行，并提供 `gc.rs` 所需的默认 GC 查询、删除、历史清理和水位读写实现。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ GC SQL 通过 `format!` 拼接数字和内部表名；`gc_timestamp`/`set_gc_tim
 
 Rust `StatsReadWriter` 对应 `stats_read_writer.go::statsReadWriter`，`StatsHandler` 对应 Go 的 `statstypes.StatsHandle` 中本文件实际需要的子集，`SqlStore` 则把 Go 中 `util.CallWithSCtx` 获得的 session/context 和直接系统表 SQL进一步抽象为可测试接口。
 
-已对齐的核心意图包括：全局统计 ID 改写；schema change 后更新 meta 版本并记录历史；保存 ANALYZE 后记录历史；保存超过 lease 窗口时再次推进版本；读取 count/modify_count；以既有缓存为装载基线。慢保存二次更新失败的公共错误文本也由 Rust 测试和 Go `TestFailedToHandleSlowStatsSaving` 对齐。
-
 需要明确的差异如下：
 
 - Go 通过 `util.CallWithSCtx(..., FlagWrapTxn)` 显式借 session 并包事务；Rust trait 本身不声明事务边界。
@@ -93,8 +89,6 @@ Rust `StatsReadWriter` 对应 `stats_read_writer.go::statsReadWriter`，`StatsHa
 - Rust 的统计数据结构和 `Value`/`Row` 是简化模型；Go 使用完整 `statistics.Table`、`types.Datum`、session context 与 schema 元数据。
 - Go `StatsReadWriter` interface 还有大量本文件 Rust 结构体未实现的方法；仓库另有 `pkg/statistics/handle/types/interfaces.rs::StatsReadWriter`，其 PascalCase trait 与这里的结构体没有已确认的 impl 接线。
 - Rust `SqlStore` 集成了 Go `gc.go`/存储会话层的一部分职责，这是为了让同 crate 的 `gc.rs` 复用，并非 Go `statsReadWriter` 结构体自身的逐方法映射。
-
-Go 测试覆盖真实 SQL/域集成和 failpoint；相邻 Rust 测试主要是 mock SQL 语句与错误行为单测，不能据此宣称两侧集成覆盖等价。
 
 ## 扩展指南
 
@@ -107,12 +101,3 @@ Go 测试覆盖真实 SQL/域集成和 failpoint；相邻 Rust 测试主要是 m
 新增统计载荷或系统表时，要同时检查 `SqlStore::{gc_histogram_identities,gc_delete_table_stats,gc_delete_histogram}`、`update.rs::CHANGE_GLOBAL_STATS_TABLES`、保存和读取路径，防止 ID 迁移或 GC 遗漏。多语句一致性若有要求，应在具体 store 提供明确事务封装，而不是假设 trait 默认方法天然原子。
 
 继续对齐 Go 时必须逐项保留真实语义，优先补齐类型/handler trait 的正式接线和事务上下文，再移植额外方法；同步参考 `stats_read_writer.go`、`types/interfaces.go` 和对应 Go 测试，不能用简化桩替代。性能重点是大载荷克隆、逐条/分批 SQL 数量、缓存锁竞争和慢写版本刷新频率。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/storage` 确认目标、相邻模块、Go 对照和独立测试；`node --file` 完整读取 `stats_read_writer.rs` 415 行、`stats_read_writer_test.rs` 229 行和 `lib.rs` 50 行。
-- 符号/调用证据：查询 `StatsReadWriter`、`new_stats_read_writer`、`save_analyze_result`、`table_stats_from_storage` 及 callers/callees；callee 图确认保存门面调用 handler 的 `store`/`lease`/`record_historical_stats_meta`，读取门面调用 store。重名导致 callers 不完整，已用精确 Rust 引用搜索核对生产/测试接线。
-- crate 与下游实现：`pkg/statistics/handle/storage/Cargo.toml`、`lib.rs`、`read.rs::{stats_meta_count_and_modify_count,table_stats_from_storage}`、`save.rs::save_analyze_result_to_storage`、`update.rs::{change_global_stats_id,update_stats_meta_version_and_last_histogram_version}`、`gc.rs` 对 `SqlStore` 默认方法的调用。
-- Go 对照：`pkg/statistics/handle/storage/stats_read_writer.go`、`stats_read_writer_test.go` 和 `pkg/statistics/handle/types/interfaces.go`；Rust 接口现状另核对 `pkg/statistics/handle/types/interfaces.rs`。
-- Rust 测试：`stats_read_writer_test.rs::{analyze_save_updates_histogram_auxiliary_rows,table_stats_load_drops_histograms_missing_from_storage,slow_analyze_version_refresh_uses_canonical_error}`，以及该文件中的 JSON 兼容用例。测试证明持久化附属行、完整加载清除已删 histogram 和慢写公共错误；它没有覆盖所有 `SqlStore` GC 默认方法或 `StatsReadWriter` 的全部门面。
-- 未运行 Cargo 或代码测试：任务与总计划明确这是纯文档分析且禁止 Cargo；完成判断使用源码/调用边人工复核和任务规定的 11 章节结构验证。

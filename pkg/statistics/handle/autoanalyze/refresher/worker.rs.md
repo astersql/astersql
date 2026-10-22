@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-autoanalyze-refresher` crate 的并发执行层。crate 入口 `pkg/statistics/handle/autoanalyze/refresher/lib.rs` 声明并重新导出 `worker` 模块；同 crate 的 `Refresher` 负责生成、排序和重试作业，`Worker` 只负责并发准入、异步调用执行器、维护运行中表 ID，以及等待或停止。
-
-直接生产调用链是 `Refresher::analyze_highest_priority_tables` → `Worker::submit_job` → `AnalysisExecutor::analyze`。当前 Rust crate 的 `Cargo.toml` 将 Go 包映射记录为 `pkg/statistics/handle/autoanalyze/refresher`，但所有迁移期依赖都位于 `target.'cfg(any())'` 下；本文件实际只使用标准库，因此它当前没有接入 Go 版本使用的统计句柄、系统进程跟踪器和日志组件。
+`Worker::submit_job` 以原子计数器实现无阻塞并发准入：已停止或活跃数达到上限时返回 `false`，成功占槽后为作业创建独立 OS 线程。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@
 
 ## 与 Go 版本的对应关系
 
-`worker.go` 的 `worker`、`NewWorker`、`UpdateConcurrency`、`SubmitJob`、`GetRunningJobs`、`GetMaxConcurrency`、`Stop` 和测试等待函数，分别对应 Rust 的 `Worker`、`new`、`update_concurrency`、`submit_job`、`running_jobs`、`max_concurrency`、`stop` 和 `wait_finished`。两边都允许并发度为 `0`，按表 ID维护运行集合，在容量满时拒绝提交，并在错误或 panic 后清理运行状态。
-
 实现机制不同：Go 用一个 mutex 同时保护运行集合和并发配置，以 `util.WaitGroupWrapper.RunWithRecover` 启动 goroutine，并由 `processJob` 调用 `priorityqueue.AnalysisJob.Analyze(statsHandle, sysProcTracker)`；Rust 用原子槽位、互斥集合、条件变量、独立线程和 `AnalysisExecutor` trait。Go 还记录并发变更、提交、执行错误与 panic 日志；Rust 当前不记录，也把执行错误丢弃。
 
 Rust 的 `AnalysisJob` 是仅含三个字段的值类型，并非 Go `priorityqueue.AnalysisJob` 的完整行为接口；实际 Analyze 行为被移到 `AnalysisExecutor`。Rust `stop` 会永久设置拒绝标志，而 Go `Stop` 只等待 WaitGroup；Rust `wait_finished` 是生产可见方法，Go 的轮询等待方法明确仅供测试。上述差异说明当前 Rust 文件是保持核心并发语义的迁移实现，不能视为 Go worker 所有集成能力已移植。
@@ -89,12 +85,3 @@ Rust 的 `AnalysisJob` 是仅含三个字段的值类型，并非 Go `priorityqu
 - 若要强化关闭语义，应使停止检查、占槽和登记与关闭建立线性化顺序，或明确要求并验证上游先停止生产；添加“提交与 stop 竞态”测试。不要在 `stop` 后悄悄允许重新启动，除非 API 和 Go 对齐目标同时更新。
 - 若要传播执行失败，需定义结果接收、重试或 hook 的所有权和背压策略；当前 `submit_job: bool` 只表达准入结果，修改其含义会影响 `Refresher::analyze_highest_priority_tables` 的 must-retry 分支。
 - 测试逻辑应继续放在独立的 `pkg/statistics/handle/autoanalyze/refresher/worker_test.rs`，不要内嵌回 `worker.rs`；涉及调度协作时再同步 `refresher_test.rs`，并参考 `worker_test.go` 保持 Go 语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点与 1,848,419 条边；目标目录列出 `worker.rs`、`refresher.rs`、两份 Rust 测试及对应 Go 文件。
-- RustCodeGraph `node --file pkg/statistics/handle/autoanalyze/refresher/worker.rs`：核对了文件全部 151 行、`AnalysisJob`、`AnalysisExecutor`、`Worker` 字段及七个公开方法的实际实现。
-- RustCodeGraph `callees submit_job`：目标 `worker.rs:74` 的 `submit_job` 调用边指向 `worker.rs:39` 的 `analyze`；同名符号存在歧义，因此上游边另由精确源码与仓库搜索交叉核验。
-- RustCodeGraph 文件节点：读取 `refresher.rs` 全部 248 行，确认第 147 行提交调用及并发、等待、关闭转发；读取 `worker_test.rs` 全部 188 行，确认并发上限、运行快照、动态/零并发、panic 和错误释放槽位；读取 `worker.go` 全部 152 行与 `worker_test.go` 全部 180 行，核对 Go 对照语义；读取 `lib.rs` 全部 20 行，核对模块声明、再导出和独立测试挂接。
-- 配置与接线：直接读取 `pkg/statistics/handle/autoanalyze/refresher/Cargo.toml` 和 `BUILD.bazel`；用 `rg` 核对 Rust 中 `Worker::new`、`AnalysisExecutor` 与 `submit_job` 的实际引用范围。目标路径及其上层统计目录未发现更近的 `doc.go` 或嵌套 `AGENTS.md`。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试。交付前另运行任务指定的 11 章节结构验证，并人工复查唯一新增产物、无源码/Cargo/Go/总计划修改。

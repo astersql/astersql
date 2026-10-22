@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑优化规则 `BuildKeySolver`，在 `astersql-planner-core-rule` crate 内为精简逻辑计划 IR 推导候选键信息。模块由 [`lib.rs`](lib.rs) 公开为 `rule_build_key_info`；规则操作的数据模型和统一接口来自 [`rule_init.rs`](rule_init.rs) 的 `Plan`、`PlanKind`、`JoinType`、`Expr` 与 `LogicalRule`。
-
-这里的“key”存放在每个 `Plan.keys: Vec<Vec<i64>>` 中：外层向量表示多个候选键，内层列 ID 向量表示一个候选键的组成列。该信息是优化期元数据，不改变计划树结构或运行期行数据。本文件只负责精简 Rust IR；Go 主优化流水线中同名规则的完整实现仍通过各逻辑算子的 `BuildKeyInfo` 完成，二者覆盖面不能等同。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-planner-core-rule`，库入口为 `lib.rs`。本文件自身只直接使用 crate 内的 `rule_init`，没有直接调用 Cargo 清单中的 operator、rule-util 或其他外部 crate。
+`BuildKeySolver::name` 提供稳定规则名 `"build_keys"`，与 Go `BuildKeySolver.Name` 一致。
 
 ## 核心职责
 
@@ -92,15 +88,11 @@ Go 应用主链的对应接线位于 [`optimizer.go`](../optimizer.go)：`optRul
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 [`rule_build_key_info.go`](rule_build_key_info.go)：两端都有无状态 `BuildKeySolver`，规则名均为 `"build_keys"`，优化都返回未改写计划、`changed = false` 且正常路径无错误；两端也都采用子节点先于父节点的后序推导。
-
 主要差异如下：
 
 - Go 接口接收 `context.Context` 和 `base.LogicalPlan`；context 在实现中未使用。Rust 接收 owned 精简 `Plan`，没有 context。
-- Go 规则调用 `ruleutil.BuildKeyInfoPortal(p)`；portal 收集所有子 schema 后调用各具体逻辑算子的 `BuildKeyInfo`，因此算子覆盖与唯一键语义由 operator 层负责。
 - Rust 本文件内联一个仅面向 `rule_init::PlanKind` 的子集实现。DataSource 直接把所有非空 index 列表当 key，Projection 只依据引用列集合映射，Semi/AntiSemi 只继承左侧，其他多数算子清空。因此它不能作为 Go 完整 key 推导的等价替代证据。
 - Go key 位于 `expression.Schema` 的 `PKOrUK`/`NullableUK` 等结构，能够区分更多 key 属性；Rust `Vec<Vec<i64>>` 不表达 nullable、主键/唯一键类别或列对象语义。
-- Go 的 [`logical_plans_test.go`](../logical_plans_test.go) 中 `TestUniqueKeyInfo` 通过真实 SQL、完整逻辑优化和 golden 数据递归核对各节点唯一键。Rust 当前测试使用手工精简 IR，覆盖范围显著更窄。
 
 因此，移植扩展应以 Go `BuildKeyInfoPortal`、各 `Logical*.BuildKeyInfo` 和 `TestUniqueKeyInfo` 为语义来源，但必须针对 Rust `Plan` 能表达的信息明确降级策略，不能假定当前结构已经承载 Go 的全部语义。
 
@@ -117,17 +109,3 @@ Go 应用主链的对应接线位于 [`optimizer.go`](../optimizer.go)：`optRul
 - 若改变计划结构，`changed` 契约也要同步调整；仅更新派生 key 元数据时应继续保持 Go 的 `false`。
 
 测试应放在独立的 [`rule_build_key_info_test.rs`](rule_build_key_info_test.rs)，不要内嵌进生产文件。建议至少覆盖每个受支持分支、复合键、多个候选键、重复投影、单列非恒等表达式、缺失子节点和所有新加入的拒绝路径；涉及跨规则安全性的场景可补充到 [`rule_aster_unit_test.rs`](rule_aster_unit_test.rs)。与 Go 对齐的完整语义应参考 `logical_plans_test.go::TestUniqueKeyInfo` 及其 testdata。
-
-## 验证依据
-
-本说明依据以下本地事实形成：
-
-- 目标实现：[`rule_build_key_info.rs`](rule_build_key_info.rs) 的 `BuildKeySolver`、`LogicalRule` 实现和 `build_keys` 全部分支。
-- 数据模型与接口：[`rule_init.rs`](rule_init.rs) 的 `Expr::columns`、`JoinType`、`PlanKind`、`Plan`、`LogicalRule` 和 `default_rule_names`。
-- crate 装配与边界：[`lib.rs`](lib.rs) 和 [`Cargo.toml`](Cargo.toml)。当前目录没有 `doc.go`，因此无额外包级 Go 契约可读。
-- Rust 测试：[`rule_build_key_info_test.rs`](rule_build_key_info_test.rs) 验证规则名；[`rule_aster_unit_test.rs`](rule_aster_unit_test.rs) 验证裁剪后 Projection 安全清空且不报告结构变化。
-- Go 对照：[`rule_build_key_info.go`](rule_build_key_info.go)、[`util/misc.go`](util/misc.go) 的 `BuildKeyInfoPortal`、[`optimizer.go`](../optimizer.go) 的规则注册/顺序，以及 [`logical_plans_test.go`](../logical_plans_test.go) 的 `TestUniqueKeyInfo`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`query BuildKeySolver` 定位 Rust/Go 同名类型和 Rust 测试引用，`node build_keys` 确认源码及 `optimize -> build_keys` 调用边，`callers`/`explore` 也确认私有函数由本文件 `optimize` 调用。图对常见方法名 `optimize` 的全局查询存在大量同名噪声，因此应用主链接线另以精确文件和 `rg` 结果核验。
-- 人工复核重点：后序遍历、每个 `PlanKind` 的保留/清空规则、Projection 的实际列集合判定、固定 `changed = false`、Go/Rust 覆盖差异，以及独立测试位置。
-
-任务要求的结构检查应确认本文恰含上述十一个固定二级标题；本任务是纯文档分析，不运行 Cargo。

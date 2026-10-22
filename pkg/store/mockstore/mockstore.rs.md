@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore` crate 的公开工厂与配置门面。crate 入口 [`lib.rs`](lib.rs) 将它声明为 `mockstore` 模块并用 `pub use mockstore::*` 公开再导出；因此测试基础设施通常从 crate 根直接使用 `NewMockStore`、`With*` 选项、两个 driver 和 bootstrap 辅助函数，而不需要感知内部模块路径。
-
-它位于测试侧 SQL/元数据逻辑与进程内 KV 协议服务之间：上游 [`teststore/store.rs`](teststore/store.rs) 将 `MockStorage` 包装为 `Arc<MockStore>`，[`../../infoschema/internal/testkit.rs`](../../infoschema/internal/testkit.rs) 也直接用 `NewMockStore` 创建测试存储；下游则由 [`tikv.rs`](tikv.rs) 和 [`unistore.rs`](unistore.rs) 建立实际后端。这里负责收集选项、选择后端、绑定 keyspace、注入测试钩子和提供集群拓扑辅助，不实现 MVCC、RPC 或 Region 管理本身。
-
-[`Cargo.toml`](Cargo.toml) 确认 crate 名为 `astersql-store-mockstore`，Go 对照包为 `pkg/store/mockstore`。生产依赖只有 `astersql-config` 与嵌入式 UniStore crate `astersql-store-mockstore-unistore`；表编解码和测试初始化仅是开发依赖。本文件没有条件编译项，独立测试由 `lib.rs` 通过 `#[path = "mockstore_test.rs"]` 和 `#[path = "tikv_test.rs"]` 接入。
+这里负责收集选项、选择后端、绑定 keyspace、注入测试钩子和提供集群拓扑辅助，不实现 MVCC、RPC 或 Region 管理本身。
 
 ## 核心职责
 
@@ -95,7 +91,7 @@ crate 级直接依赖中，`astersql-config` 提供 driver 的全局 latch 配�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`mockstore.go`](mockstore.go)。两版保留相同的两个后端、默认 EmbedUnistore、函数式选项族、NextGen SYSTEM keyspace、keyspace 级 GC 缺省、两个 URI driver、TiFlash 拓扑注入、镜像探测和三类 bootstrap API。Rust 名称刻意沿用 Go 的首字母大写形式，并在 crate 根放宽 `non_snake_case` lint。
+Rust 名称刻意沿用 Go 的首字母大写形式，并在 crate 根放宽 `non_snake_case` lint。
 
 关键实现差异如下：
 
@@ -116,14 +112,3 @@ Go 对照文件是 [`mockstore.go`](mockstore.go)。两版保留相同的两个�
 - 修改 driver URI 或 latch 逻辑时，同步 [`tikv_test.rs`](tikv_test.rs)，并为 EmbedUnistore driver 添加对称覆盖；兼容风险集中在 path 解释、scheme 大小写和全局配置泄漏。
 - 修改拓扑辅助函数时，同步 [`mockstore_test.rs`](mockstore_test.rs) 和需要真实拓扑的 TiFlash/Region 测试。需要先定义 `count == 0`、空 split keys、无 leader、重复/无序 split keys 的行为，避免以 panic 偶然充当契约。
 - 性能风险主要来自每次工厂调用启动完整嵌入式服务、keyspace/地址向量克隆和劫持器额外包装；正确性风险主要来自进程级全局开关、选项应用顺序及 current ID 与 keyspace 列表不一致。测试逻辑继续放在独立 `*_test.rs`，不要嵌入生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore/mockstore.rs` 确认目标已索引；`node --file ... --offset 1 --limit 500` 读取目标全部 498 行并报告被 17 个文件使用。
-- 精确符号查询：带文件限定的 `node` 核对了 `NewMockStore`、`WithMockTiFlash`、`BootstrapWithMultiStores`、`BootstrapWithMultiRegions`、`MockTiKVDriver` 和 `EmbedUnistoreDriver`。图中明确给出 `NewMockStore -> WithCurrentKeyspaceMeta/new_mock_tikv_store/new_unistore`、两个 driver `open -> NewMockStore`，以及 `mockstore_test.rs::multi_region_bootstrap_uses_go_peer_allocation_sequence -> BootstrapWithMultiRegions`。
-- 目标与 crate 边界：[`mockstore.rs`](mockstore.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)，核对公开符号、依赖、Go 包元数据、再导出和独立测试接线。
-- 下游实现：[`tikv.rs`](tikv.rs) 与 [`unistore.rs`](unistore.rs)，核对两个后端最终的构建路径，以及 inspector、hijacker、keyspace、latch 和 `MockStorage` 的组装顺序。
-- 上游调用：[`teststore/store.rs`](teststore/store.rs)、[`../../infoschema/internal/testkit.rs`](../../infoschema/internal/testkit.rs)、[`../../executor/test/tiflashtest/tiflash_test.rs`](../../executor/test/tiflashtest/tiflash_test.rs)，分别证明 NextGen 包装、TestStore 持有和 TiFlash 选项的实际入口。
-- Rust 测试：[`mockstore_test.rs`](mockstore_test.rs) 验证 keyspace 哨兵、显式 GC 保留、缺省 GC 和多 Region peer 分配序列；[`tikv_test.rs`](tikv_test.rs) 验证全局 latch、URI 错误和资源关闭。
-- Go 对照：[`mockstore.go`](mockstore.go) 全部 372 行，核对 driver、选项、keyspace、后端分派、DDL 注入、镜像探测和 bootstrap API。目录内 Go 测试仅在 `tikv_test.go` 覆盖 latch 配置，未发现同路径 Go 测试直接覆盖 keyspace 或 bootstrap 辅助函数；相关 Rust 行为因此以独立 Rust 测试和 Go 生产实现共同为证。
-- 本任务只生成文档，按计划不运行 Cargo。交付前使用任务指定命令检查文件存在且固定二级标题恰好 11 个，并人工复核每项关键结论可回指上述符号或文件。

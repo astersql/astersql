@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`errors.rs` 是 `astersql-ddl-placement` crate 的统一错误词汇表和轻量错误载体。crate 边界由 `pkg/ddl/placement/Cargo.toml` 定义，入口 `pkg/ddl/placement/lib.rs` 以私有 `mod errors` 装入本文件，再通过 `pub use errors::*` 将 `Error`、`wrap` 和所有错误消息常量公开到 crate 根。因而 crate 内部的约束、规则和 Bundle 构造代码可从 `crate::errors` 使用它们，外部依赖者也可从 `astersql_ddl_placement` 根路径取得这些公开项。
-
-该文件位于 DDL placement 子系统，但自身不执行 DDL job、schema state 转换、元数据持久化或 PD 请求。它服务于把 Placement Settings、标签约束和 Bundle ID 转换为 PD placement rule 的纯解析/构造路径；上层是否把错误返回给 SQL/DDL 调用链由 crate 使用者决定。`pkg/ddl/placement/Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/ddl/placement`，直接 Go 对照文件是 `pkg/ddl/placement/errors.go`。
+用 `Error(String)` 保存 placement 解析或构造失败的可读文本，并实现 Rust 标准错误接口。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@ Rust 实现没有 Go `%w` 的错误身份链语义。Go 的 `fmt.Errorf("%w: ...
 
 `pkg/ddl/placement/errors.go` 定义相同名称和相同文本的 15 个包级哨兵错误，Rust 常量逐项保留了错误词汇；Rust 文件还增加 `Error` 和 `wrap`，用于补足 Go `error` 接口与 `fmt.Errorf` 的承载能力。Rust `Display` 对应 Go `error.Error()` 的用户可见文本。
 
-关键差异是身份语义：Go 常量是各自唯一的 `error` 值，生产代码用 `%w` 包装，测试可用 `require.ErrorIs`；Rust 常量只是 `&str`，包装结果是新的 `Error(String)`，只能按完整文本或约定前缀识别。`Clone + Eq` 也只代表消息值相等，不代表同一个哨兵实例。
+关键差异是身份语义：Go 常量是各自唯一的 `error` 值，生产代码用 `%w` 包装，测试可用 `require.ErrorIs`；Rust 常量只是 `&str`，包装结果是新的 `Error(String)`，只能按完整文本或约定前缀识别。
 
 生产接线并非逐项完全相同。Rust 已在 constraint/constraints/rule/bundle 的主要解析路径使用 12 个类别；`ErrLeaderReplicasMustOne`、`ErrMissingRoleField`、`ErrNoRulesToDrop` 在当前 Rust placement 生产文件中无定义外引用，而 Go 对照仍声明它们。文档只记录这一检索事实，不推断相关业务分支是否由其他错误或不同设计取代。
 
-测试意图总体保持一致：Go 的 `constraint_test.go`、`constraints_test.go`、`rule_test.go`、`bundle_test.go` 提供原始边界表；Rust 同目录对应 `*_test.rs` 文件用相同类别文本和大量对照用例验证迁移结果。Rust 测试与源文件通过 `lib.rs` 的 `#[cfg(test)] mod ...` 分离，符合仓库“测试逻辑不内嵌生产源文件”的约束。
+测试意图总体保持一致：Go 的 `constraint_test.go`、`constraints_test.go`、`rule_test.go`、`bundle_test.go` 提供原始边界表；Rust 同目录对应 `*_test.rs` 文件用相同类别文本和大量对照用例验证迁移结果。
 
 ## 扩展指南
 
@@ -100,13 +98,3 @@ Rust 实现没有 Go `%w` 的错误身份链语义。Go 的 `fmt.Errorf("%w: ...
 6. `ErrLeaderReplicasMustOne`、`ErrMissingRoleField`、`ErrNoRulesToDrop` 若未来接线，应先定位真实 Rust 行为入口和 Go 测试，不要仅因常量存在就添加无依据分支。
 
 性能上，错误路径增加细节会增加格式化/分配成本，但通常不影响成功热路径；正确性风险主要是错误分类顺序、丢失底层诊断或破坏类别前缀；兼容风险主要是公开常量名称与精确消息变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认项目索引包含 11,467 个文件，`files --filter pkg/ddl/placement` 确认 Go/Rust 源与独立测试；`node --file pkg/ddl/placement/errors.rs --offset 1 --limit 240` 完整读取 81 行目标文件，并报告该文件在模块图中的使用关系。对 `ErrInvalidConstraintFormat`、`ErrInvalidBundleID` 的精确 constant 查询无结果，因此没有把图缺失误写成“无调用者”。
-- 目标与边界：完整读取 `pkg/ddl/placement/errors.rs`、`pkg/ddl/placement/Cargo.toml`、`pkg/ddl/placement/lib.rs`；读取最近包契约 `pkg/ddl/doc.go` 和 DDL 入口说明 `docs/agents/ddl/README.md`，确认本文件不参与 job/状态机执行。
-- 直接生产证据：核对 `pkg/ddl/placement/constraint.rs`、`constraints.rs`、`rule.rs`、`bundle.rs` 中全部 `Err*` 和 `wrap`/`Error::new` 引用；用定义外搜索确认三个当前未接线常量。
-- Go 对照：读取 `pkg/ddl/placement/errors.go`，并核对 `constraint.go`、`constraints.go`、`rule.go`、`bundle.go` 的 `%w` 包装位置。
-- 测试证据：读取 Rust `constraint_test.rs`、`constraints_test.rs`、`rule_test.rs`、`bundle_test.rs`、`bundle_1_aster_unit_test.rs` 的错误断言，并对照 Go `constraint_test.go`、`constraints_test.go`、`rule_test.go`、`bundle_test.go`；测试证明当前 Rust 类别判定采用消息前缀，Go 采用哨兵身份。
-- Cargo 使用面：搜索各 `Cargo.toml` 对 `astersql-ddl-placement` 的依赖，确认该 crate 被 DDL、session、executor、domain、infoschema、distsql、store 等组件引用；这只证明 crate 边界，不夸大为每个错误项的直接调用边。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构验证，并人工复查只有本说明文档与任务文件删除属于本会话范围。

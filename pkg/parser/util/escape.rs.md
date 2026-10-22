@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`escape.rs` 是 parser 工具层的 MySQL 字符串反斜杠转义映射器。它不负责识别完整字符串字面量，而只接收已经由上游识别出的“反斜杠后一个字节”，返回应写入结果缓冲区的字节序列。源码通过三条装配路径使用：`pkg/parser/util/lib.rs` 将其作为 `astersql-parser-util` crate 的 `escape` 模块公开并再导出；`pkg/parser/lib.rs` 以 `#[path = "util/escape.rs"] pub mod util` 将同一实现纳入 parser crate；`pkg/parser/ast/util.rs` 也以路径模块纳入并再导出给 AST crate。根 crate 还在 `pkg/lib.rs` 的 `parser::util` 门面中再导出独立工具 crate。
-
-该文件位于 SQL 文本进入语法分析之前的字节处理边界。`pkg/parser/lexer.rs::Scanner::scanString` 在扫描引号字符串时识别反斜杠并由 `handleEscape` 调用它；`pkg/parser/ast/base.rs::convertBinaryStringLiterals` 在把不可打印字符串字面量改写为十六进制形式时也调用它，以保证改写前后的字节语义一致。
+实现 `pkg/parser/util/escape.go::UnescapeChar` 的逐字节 Rust 对照逻辑，保持 MySQL 字符串字面量规则一致。
 
 ## 核心职责
 
@@ -67,7 +65,7 @@ RustCodeGraph 的文件节点报告 `escape.rs` 被 `pkg/parser/lexer.rs`、`pkg
 
 ## 与 Go 版本的对应关系
 
-Rust `UnescapeChar` 与 `pkg/parser/util/escape.go::UnescapeChar` 分支逐项对应：Go 的 `byte` 对应 Rust 的 `u8`，Go 的 `[]byte` 对应 Rust 的 `Vec<u8>`，`switch` 对应 `match`。六种控制字符、两个 LIKE 通配符以及默认分支的结果完全相同，没有 Rust 特有的额外转义或错误路径。
+六种控制字符、两个 LIKE 通配符以及默认分支的结果完全相同，没有 Rust 特有的额外转义或错误路径。
 
 `pkg/parser/util/escape_test.go::TestUnescapeChar` 与 Rust 的 `pkg/parser/util/escape_test.rs::test_unescape_char` 使用相同代表性用例，覆盖控制字符、LIKE 通配符、自转义字符和未知字符。Rust 额外由 `migration_aster_unit_test.rs::unescape_char_matches_go_for_every_byte` 在测试内复刻 Go 分支并穷举全部 256 个输入，防止默认分支或稀有字节在迁移中偏离。当前证据表明这是已接线实现，而不是桩或仅供占位的门面。
 
@@ -78,13 +76,3 @@ Rust `UnescapeChar` 与 `pkg/parser/util/escape.go::UnescapeChar` 分支逐项�
 - 改动返回类型、命名或可见性前，应检查三种源码装配路径以及 `lexer.rs`、`ast/base.rs`、根 facade 的调用，避免只让独立 `astersql-parser-util` crate 通过而破坏 parser/AST 的路径包含。
 - 若规则依赖 SQL mode、上下文或多字节序列，应优先把判断留在拥有扫描状态的调用者，而不是在这个单字节纯映射函数中引入隐式状态。
 - 兼容性风险主要是 SQL 字面量值或 LIKE 模式语义变化；性能风险主要是每个转义产生临时小向量。任何优化都应保持输出顺序、长度和全字节等价性。
-
-## 验证依据
-
-- 源实现：`pkg/parser/util/escape.rs`，确认唯一生产符号及完整 `match` 分支。
-- crate 与模块装配：`pkg/parser/util/Cargo.toml`、`pkg/parser/util/lib.rs`、`pkg/parser/lib.rs`、`pkg/parser/ast/util.rs`、根 `Cargo.toml` 与 `pkg/lib.rs`。
-- 直接调用：`pkg/parser/lexer.rs::Scanner::scanString` / `handleEscape`、`pkg/parser/ast/base.rs::convertBinaryStringLiterals`、`pkg/lib_test.rs::independent_parser_config_modules_are_wired`。
-- Go 对照：`pkg/parser/util/escape.go::UnescapeChar` 与 `pkg/parser/util/escape_test.go::TestUnescapeChar`。
-- Rust 独立测试：`pkg/parser/util/escape_test.rs::test_unescape_char`；全字节迁移验证：`pkg/parser/util/migration_aster_unit_test.rs::unescape_char_matches_go_for_every_byte`。
-- RustCodeGraph：`status` 显示本地索引包含 11,467 个文件；`files --filter pkg/parser/util` 找到目标与对照文件；`query UnescapeChar` 和 `node --file pkg/parser/util/escape.rs` 核对定义；文件节点给出三个使用文件；带 `--file pkg/parser/util/escape.rs` 的 `callers` 与 `callees` 均为空，函数级调用边改由精确源码搜索补证。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终使用任务文件给定命令检查目标存在且固定二级标题恰好为 11 个，并人工复核本文未把 SQL mode、编码或扫描职责误归于本函数。

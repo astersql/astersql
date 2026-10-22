@@ -2,18 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression-generator` crate 中的时间类 Go 源码生成器，模块由
-`pkg/expression/generator/lib.rs` 的 `pub mod time_vec` 暴露。它不是 SQL 执行期的时间函数实现；它在 Rust
-进程中组织模板和签名元数据，输出供 Go `pkg/expression` 使用的
-`builtin_time_vec_generated.go` 与 `builtin_time_vec_generated_test.go`。
-
-crate 边界由 `pkg/expression/generator/Cargo.toml` 定义：这是一个 `publish = false`、以 `lib.rs`
-为入口的独立 workspace，运行时仅直接使用 `gtmpl`；`tree-sitter` 与 `tree-sitter-go` 虽在 crate
-依赖中声明，但本文件没有使用。临时目录只出现在 `tempfile` 驱动的独立 Rust 测试中。
-
-文件内虽保留私有 `main`，但 Cargo 只声明了 `[lib]`，没有二进制 target；因此它目前不会像 Go
-原文件那样由 `go run` 自动成为生成入口。实际可调用入口是 crate 内可见的
-`generate_one_file(&Path)`，当前生产模块之外只由独立 Rust 测试直接调用。
+SUBDATE 的签名矩阵用于测试用例展开，而不进入 `generate_dot_go` 的生产实现模板。
 
 ## 核心职责
 
@@ -142,12 +131,6 @@ RustCodeGraph 已索引本文件并识别 28 个符号，但对限定的 `genera
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/generator/time_vec.go`。对应关系如下：
-
-- Go 的 `addOrSubTime`、`timeDiff`、`testFile` 对应三个 Rust 模板常量；主体保留 Go 模板分支。
-- Go 的五个 `*SigsTmpl` 对应五个 Rust `*_SIGS` 切片；独立测试核对 11/11/8/32/32 的数量、
-  两组 3 个恒 NULL 项，以及五个函数的顺序。
-- Go 的 `sig`、`function`、匿名 `tmplVal` 对应 Rust 的 `Sig`、`Function`、`TmplVal`/`TMPL_VAL`。
 - Go 从 helper 包取得 `TypeContext` 和区间函数；Rust 为避免依赖未迁移的 helper 所有权，使用字符串
   保存类型，并在 `type_context_value` 中恢复模板上下文，区间函数则在本文件直接实现并注册到 FuncMap。
 - Go `format.Source` 是进程内格式化；Rust 通过外部 `gofmt` 子进程实现。两者都在格式化器拒绝源码时
@@ -176,18 +159,3 @@ RustCodeGraph 已索引本文件并识别 28 个符号，但对限定的 `genera
 
 主要风险是：签名矩阵重复名称依赖输出类型或 field type 区分，按名称去重会破坏 ADDDATE/SUBDATE
 覆盖；模板是大段 Go 源码，Rust 编译无法验证其中标识符；调用外部 `gofmt` 又使生成结果依赖工具环境。
-
-## 验证依据
-
-- Rust 源码：`pkg/expression/generator/time_vec.rs`。RustCodeGraph 状态显示仓库索引包含该文件，
-  `files --filter` 报告 28 个符号；通过分段 `node --file` 检查了模板、签名矩阵、值转换、渲染、
-  格式化和写盘入口。
-- 模块与 crate：`pkg/expression/generator/lib.rs` 第 39–40、57–60 行；
-  `pkg/expression/generator/Cargo.toml` 的 `[lib]`、依赖、开发依赖和 porting metadata。
-- Go 对照：`pkg/expression/generator/time_vec.go`，重点核对模板主体及第 788–979 行的签名、模板值、
-  `generateDotGo`、`generateTestDotGo`、`generateOneFile`、`main`。
-- 独立 Rust 测试：`pkg/expression/generator/time_vec_2_aster_unit_test.rs`，覆盖区间分组和顺序、签名
-  数量和恒 NULL 数、关键实现分支渲染、测试模板辅助函数以及 `.go`/`_test.go` 双文件写出。
-- 仓库引用搜索：除本文件私有 `main` 外，实际调用入口只在上述独立测试中出现；目标目录不存在
-  `doc.go`，因此无额外包契约可读取。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；结构验证用于确认文件存在且恰有规定的 11 个二级标题。

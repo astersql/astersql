@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/truncate.rs` 实现 MySQL 语义下的“截断类错误”分类和处置策略。它的物理路径位于 `pkg/types` 顶层，但当前不是由 `pkg/types/lib.rs` 直接声明的模块；真实编译边界是 `astersql-types-vector` crate，其 `pkg/types/internal/vector/lib.rs` 通过 `#[path = "../../truncate.rs"] mod truncate;` 将本文件挂载为私有子模块。
-
-`pkg/types/internal/vector/Cargo.toml` 定义该 crate，并使用 `tidb-util-context` 提供的错误抽象、`tidb-errno` 提供的 MySQL errno。根 `pkg/types/Cargo.toml` 又以 `types-vector = { package = "astersql-types-vector", path = "internal/vector" }` 依赖并在 `pkg/types/lib.rs` 中再导出该子 crate。因此，本文件的实现属于 vector 子系统的转换上下文，不应与 `pkg/types/context.rs::Context::HandleTruncate<T>` 的带值泛型接口混淆。
+`is_truncate_error` 检查根因是否为 `errors::Error`，且其 MySQL 错误码是否属于固定的 10 个截断/越界错误码。
 
 ## 核心职责
 
@@ -77,13 +75,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/truncate.go`。Rust `Context::HandleTruncate` 保留了 Go 实现的核心顺序：空错误成功、`errors.Cause` 取根因、限定同样的 10 个 errno、ignore 先于 warning，最后在严格模式返回根因。`pkg/types/context.go` 也明确声明 `FlagIgnoreTruncateErr` 开启时忽略 `FlagTruncateAsWarning`。
+Rust `Context::HandleTruncate` 保留了 Go 实现的核心顺序：空错误成功、`errors.Cause` 取根因、限定同样的 10 个 errno、ignore 先于 warning，最后在严格模式返回根因。
 
 语言层差异为：
 
 - Go 使用 `error`/`nil`，Rust 使用 `Option<SharedError>` 表达可选错误，使用 `Result<(), SharedError>` 表达处置结果。
-- Go 通过 `*errors.Error` 类型断言取错误码，Rust 通过 `SharedError::downcast_ref::<errors::Error>()`。
-- Go `Context` 的 warning 处理通过抽象 handler 转发；本文件所属的 vector `Context` 直接在 `Vec<SharedError>` 中累积 warning。
 - Go 注释中保留了未来将 warning 统一转成 `WarnDataTruncated` 的 TODO；当前 Go 与 Rust 都记录实际根因，Rust 文件中没有实现该 TODO。
 
 Go 目录下未找到直接调用 `HandleTruncate` 的专用 Go 单元测试；语义边界的直接回归证据是 Rust 独立测试 `pkg/types/truncate_12_aster_unit_test.rs`。
@@ -95,15 +91,3 @@ Go 目录下未找到直接调用 `HandleTruncate` 的专用 Go 单元测试；�
 - 若需在 vector 生产转换流中使用该 API，接入点应位于产生 `SharedError` 的转换边界，而不是在底层错误构造器中预先吞错。新增生产调用时需增加对应的独立 `*_test.rs` 回归，不应把测试内嵌到本生产文件。
 - 若要与根 `astersql-types` 的 `pkg/types/context.rs::HandleTruncate<T>` 统一，必须先解决 API 差异：本方法先分类 errno 且返回 `Result<()>`，后者信任调用者传入截断错误并返回带值的 `ValueResult<T>`。不能仅因同名就机械替换。
 - 性能上，当前固定 10 项线性查找的上界很小；除非 errno 集合显著扩大且性能证据表明这里是热点，否则不应引入额外分配或全局可变缓存。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 生产源文件：`pkg/types/truncate.rs`、`pkg/types/internal/vector/lib.rs`、`pkg/types/internal/vector/Cargo.toml`、`pkg/types/Cargo.toml`、`pkg/types/lib.rs`。
-- 错误实现：`pkg/errors/core.rs::SharedError`、`pkg/errors/wrap.rs::Cause`、`pkg/errors/normalize.rs::{Error, Error::Code}`。
-- Go 对照：`pkg/types/truncate.go::Context.HandleTruncate` 和 `pkg/types/context.go::{Flags, IgnoreTruncateErr, TruncateAsWarning}`。
-- Rust 直接测试：`pkg/types/truncate_12_aster_unit_test.rs::handle_truncate_matches_go_error_classification_and_flag_priority`；其测试目标声明于 `pkg/types/internal/vector/Cargo.toml`。
-- RustCodeGraph：`status` 显示本仓索引包含 `pkg/types/truncate.rs` 及 3 个符号；`query` 定位 `is_truncate_error` 与本文件的 `HandleTruncate`；`node --file pkg/types/truncate.rs` 核对了两个符号的实现，并给出 `HandleTruncate -> is_truncate_error` 的图边。`callers/callees` 命令在当前索引上 30 秒内未返回，因此上游调用者和其余下游边由全仓 `rg` 引用搜索与模块/Cargo 挂载关系交叉核验。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试。结构验证应确认本文档存在且恰好包含任务规定的 11 个二级章节。

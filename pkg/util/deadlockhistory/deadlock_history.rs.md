@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-deadlockhistory` crate 的业务实现；对应源码为 [`deadlock_history.rs`](./deadlock_history.rs)，crate 入口 [`lib.rs`](./lib.rs) 通过 `pub mod deadlock_history` 声明模块并以 `pub use deadlock_history::*` 公开全部 API。它承担两类职责：把 TiKV 死锁错误转换成可诊断的 `DeadlockRecord`，以及用有界环形缓冲保存最近的记录并投影为 `INFORMATION_SCHEMA.DEADLOCKS` / `CLUSTER_DEADLOCKS` 所需的 `Datum` 列值（`ErrDeadlockToDeadlockRecord`、`DeadlockHistory`、`DeadlockRecord::ToDatum`）。
-
-`pkg/util/deadlockhistory/Cargo.toml` 将其声明为独立库 crate；直接运行依赖包括 `chrono`/`chrono-tz`、`hex`、`log`、`protobuf`，以及本仓库的 `mysql`、`resourcegrouptag` 和 `types` crate。根 `pkg/lib.rs` 又通过 `facade_util_deadlockhistory` 将该 crate 纳入总 facade。当前 Rust 生产源码尚未找到使用本文件 `GlobalDeadlockHistory`、`ErrDeadlockToDeadlockRecord` 或其他公开 API 的真实调用点：`cmd/tidb-server/main.rs` 中同名的 `deadlockhistory` 实际指向 `cmd/tidb-server/stubs.rs` 的容量控制桩，不是本 crate。相对地，Go 版本已经从悲观锁错误采集、启动/HTTP 调容到 information schema 查询形成完整主链；因此本文件目前是已实现且有独立测试覆盖、但生产接线仍不完整的迁移模块。
+`ErrDeadlockToDeadlockRecord` 遍历 protobuf `Deadlock.wait_chain`，保留事务关系与原始键，尝试从 resource group tag 解出 SQL digest，并记录转换时刻及 `IsRetryable`。
 
 ## 核心职责
 
@@ -76,13 +74,12 @@ Go 对照主链提供“预期接线位置”的直接证据：`pkg/executor/sel
 
 ## 与 Go 版本的对应关系
 
-Rust 数据模型、列常量、环形算法、ID 规则、清空/调容语义和错误转换总体逐项复刻 `pkg/util/deadlockhistory/deadlock_history.go`。`deadlock_history_test.rs` 对齐 Go 的 `TestDeadlockHistoryCollection`、`TestGetDatum`、`TestErrDeadlockToDeadlockRecord`、`TestResize`；两边都验证覆盖顺序、系统表列、当前时间与 tag digest。Go 的 `columnValueGetterMap` 在 Rust 中改为 `ToDatum` 的 `match`，未知列仍返回 `NULL`。
+Go 的 `columnValueGetterMap` 在 Rust 中改为 `ToDatum` 的 `match`，未知列仍返回 `NULL`。
 
 值得注意的语言与迁移差异：
 
 - Go 构造器返回指针，内部保存可变的 `*DeadlockRecord`；Rust 构造器返回值，`Push` 接受 `Box` 后存为 `Arc`，避免 Push 后经公共 API 修改记录。
 - Go 用嵌入式 `sync.RWMutex`；Rust 把全部可变字段封装进 `RwLock<DeadlockHistoryState>`，并显式选择在锁 poisoned 后继续。
-- Go `capacity uint` 对应 Rust `usize`，保持目标平台指针宽度；补充测试 `history_capacity_uses_platform_uint_width` 防止错误收窄。
 - Go 解码错误时告警后仍对返回字节做十六进制编码；Rust 明确把 `Err` 与 `Ok(None)` 归为空 digest。补充测试验证非法 tag 不丢等待项。
 - Go 全局对象已接入 executor、information schema、启动配置和 HTTP 配置；Rust crate 的实现与测试已经存在，但这些真实生产调用尚未迁移，启动入口目前只调用同名 stub。
 
@@ -95,12 +92,3 @@ Rust 数据模型、列常量、环形算法、ID 规则、清空/调容语义�
 若补齐生产接线，应按 Go 证据分别处理四个边界：悲观锁回调负责过滤可重试配置并转换/写入，information schema 负责取得快照并逐等待边投影，启动配置负责初始 `Resize`，HTTP 配置负责运行时 `Resize`。接线时必须引用本 crate 而不是 `cmd/tidb-server/stubs.rs` 的同名桩，并为采集到查询的端到端行为增加各所属目录的独立测试；Cargo manifest 已有依赖不等于代码已经接线。
 
 兼容性方面，列名、`NULL` 规则、key 大写十六进制、digest 小写十六进制、ID 延续和缩容保最新均是可观察行为。性能方面，增大容量会增加 O(capacity) 常驻槽位，`GetAll` 每次克隆 O(size) 个 `Arc`，`Resize` 会在写锁下分配并搬移引用；新增富文本解码不应放大每次系统表查询或锁内临界区。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含目标文件；`node --file pkg/util/deadlockhistory/deadlock_history.rs` 读取 342 行完整实现并列出使用文件；`query DeadlockRecord` / `query DeadlockHistory` 核对 Go/Rust 同名类型与方法；`node` 读取 `lib.rs`、`deadlock_history_test.rs`、`migration_aster_unit_test.rs`，核对模块导出、Go 对齐用例与补充边界用例。精确 `callers ErrDeadlockToDeadlockRecord` 在本地索引上持续无输出，已中止，未据此推断不存在调用者。
-- Rust 源与 crate：`pkg/util/deadlockhistory/deadlock_history.rs`、`pkg/util/deadlockhistory/lib.rs`、`pkg/util/deadlockhistory/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`；目标包下不存在 `doc.go`。
-- Rust 测试：`pkg/util/deadlockhistory/deadlock_history_test.rs`；补充测试 `pkg/util/deadlockhistory/migration_aster_unit_test.rs`。本任务按计划是纯文档分析，未运行 Cargo。
-- Go 对照：`pkg/util/deadlockhistory/deadlock_history.go`、`pkg/util/deadlockhistory/deadlock_history_test.go`；生产主链证据来自 `pkg/executor/select.go`、`pkg/executor/infoschema_reader.go`、`cmd/tidb-server/main.go`、`pkg/server/handler/tikvhandler/tikv_handler.go`。
-- Rust 接线核验：Cargo 依赖声明见 `pkg/executor/Cargo.toml`、`pkg/infoschema/Cargo.toml`、`pkg/server/handler/tikvhandler/Cargo.toml` 等；源码符号搜索仅发现 facade 再导出、测试引用，以及 `cmd/tidb-server/main.rs` 对 `cmd/tidb-server/stubs.rs` 同名桩的调用，故文档将 Rust 生产接线标为未完成而非“已支持”。
-- 交付检查以任务文件指定的结构命令确认文档存在且恰有十一个固定二级标题；另人工复核章节顺序、源码链接、Go/Rust 事实边界、扩展点，以及改动范围只包含本说明文档与完成后删除的编号任务文件。

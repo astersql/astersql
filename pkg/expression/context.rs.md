@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`context.rs` 是 `astersql-expression` crate 的求值上下文适配层。crate 根在 [`pkg/expression/lib.rs`](lib.rs) 中用 `#[path = "context.rs"] mod expression_context` 挂载它，随后通过 `pub use expression_context::*` 把本文件 API 再导出。它不创建会话上下文，而是把 `astersql-expression-exprctx` 的 trait 重导出到表达式 crate，并为标量/向量 builtin 求值提供轻量访问器和测试断言装饰器。
-
-crate 边界由 [`pkg/expression/Cargo.toml`](Cargo.toml) 确认：包名为 `astersql-expression`，库入口是 `lib.rs`，上下文 trait 来自路径依赖 `exprctx-dependency = astersql-expression-exprctx`；本文件直接使用的时区类型来自 `chrono-tz`，其余 `mysql`、`types`、`errctx`、`contextutil` 由 crate 根再导出。
+用 `checkEvalCtx` 检查 `EvalContext::Location()` 与 `EvalContext::TypeCtx().Location()` 一致，防止时间类型转换和日期函数观察到不同时区。
 
 ## 核心职责
 
@@ -68,8 +66,6 @@ crate 边界由 [`pkg/expression/Cargo.toml`](Cargo.toml) 确认：包名为 `as
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 [`pkg/expression/context.go`](context.go)。类型别名/重导出、六个轻量访问器、`assertionEvalContext`、时区不变式、required/allowed 可选属性检查和 `StringerWithCtx` 的总体意图一致。Rust 的 trait object `&dyn EvalContext` 对应 Go 接口值，`Option<&dyn ParamValues>` 对应 Go 中允许 nil 的 `ParamValues`。
-
 已核对的差异如下：
 
 - Go `wrapEvalAssert` 会解包已有 `*assertionEvalContext`，并在 builtin 相同时复用原包装器；Rust `wrapEvalAssert` 当前总是包装传入的 context，没有身份比较或重用分支。Rust 通过 `GetOptionalPropProviderUnwrapped` 使子 builtin 的 provider 访问跳过父包装器的审计，`context_test.rs::nested_assertion_context_checks_only_the_current_builtin_like_go` 验证了这一可观察语义，但并不证明包装器对象被复用。
@@ -87,14 +83,3 @@ Rust 文件直接对应 [`pkg/expression/context.go`](context.go)。类型别名
 - `StringerWithCtx` 的新实现必须覆盖 `None` 参数上下文、redact 模式和带参数标记的情况；优先复用 `exprctx::EmptyParamValues`，不要在实现中对 `None` 做 `unwrap()`。
 - 测试必须保持在独立文件 [`pkg/expression/context_test.rs`](context_test.rs)，不内嵌到生产源文件。可选属性的新分支至少覆盖 required、allowed、未声明 panic 和嵌套装饰器；时区逻辑应补充一致与不一致两条路径。
 - 兼容性风险主要是改变 `EvalContext` 公开 trait 会强制所有实现者更新，以及 required/allowed 错分可能导致计划构建缺少必需 provider。性能风险主要是断言模式下每次标量/向量求值的包装与检查；普通路径不会创建该装饰器。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`node --file pkg/expression/context.rs --offset 1 --limit 400` 返回了全部 210 行源码及 4 个直接使用文件。
-- RustCodeGraph 符号查询：`query assertionEvalContext --limit 20` 命中 Rust/Go 结构和关键方法；`query wrapEvalAssert --limit 20` 命中 Rust/Go 对应定义。精确 `callers/callees --file pkg/expression/context.rs` 在超过 60 秒后仍未产生结果，已中止；调用边改用索引的源片段与 `rg` 直接引用双重核对，没有把该超时当作“无调用者”证据。
-- RustCodeGraph 源片段：`node --file pkg/expression/exprctx/context.rs --offset 1 --limit 130` 核对 `EvalContext`/`BuildContext` 契约；`node --file pkg/expression/scalar_function.rs` 分别核对向量和标量断言调用链；`node --file pkg/expression/core_impl.rs --offset 210 --limit 95` 核对 `StringerWithCtx` 的四个核心实现和 `None` 处理。
-- 已读源与装配文件：`pkg/expression/context.rs`、`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`、`pkg/expression/exprctx/context.rs`、`pkg/expression/scalar_function.rs`、`pkg/expression/core_impl.rs`。`pkg/expression` 下没有 `doc.go`，因此无包级 `doc.go` 契约可读。
-- 已读 Go 对照：`pkg/expression/context.go`。该路径没有 `context_test.go`；Go 行为依据来自生产实现本身，没有臆造不存在的 Go 测试。
-- 已读独立 Rust 测试：`pkg/expression/context_test.rs`。其覆盖嵌套装饰器只审计当前 builtin、allowed key 可读但不计入 required、未声明 key panic，以及 `UNCOMPRESS` 的 allowed session-vars 注册。
-- 直接引用核对：`rg` 确认 `scalar_function.rs` 的 16 个 `wrapEvalAssert` 调用、`typeCtx`/`errCtx` 的 Rust 生产调用，以及 `StringerWithCtx` 的 trait 边界和实现。
-- 本任务是纯文档分析，按计划未运行 Cargo。最终结构验证应确认本文件存在且恰好包含本计划规定的 11 个二级标题。

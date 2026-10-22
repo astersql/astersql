@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`common.rs`](./common.rs) 属于 `astersql-br-pkg-encryption-master-key` library crate；crate 的清单是 [`Cargo.toml`](./Cargo.toml)，入口 [`lib.rs`](./lib.rs) 以 `pub mod common` 声明本模块并通过 `pub use common::*` 重导出其公开项。它不是加密算法实现，而是文件主密钥、内存 AES-GCM 后端和 KMS 后端共同使用的元数据字段名与初始化向量（IV）值对象层。
-
-`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `br/pkg/encryption/master_key`，因此该文件应按同路径 [`common.go`](./common.go) 的可观察语义维护。RustCodeGraph 将本文件识别为 18 个符号，并记录其被 `common_test.rs`、`file_backend.rs`、`file_backend_test.rs`、`kms_backend.rs`、`kms_backend_test.rs` 使用。
+提供安全构造入口：`NewIVGcm` 从操作系统密码学随机源产生 12 字节 GCM IV，`NewIVFromSlice` 对外部字节做长度分类并复制，避免构造后继续借用调用方缓冲区。
 
 ## 核心职责
 
@@ -77,11 +75,7 @@ RustCodeGraph 的精确 callee 查询确认 `NewIVGcm` 调用 `new_iv_gcm_with_r
 
 ## 与 Go 版本的对应关系
 
-[`common.go`](./common.go) 是直接对照实现。两端的六个元数据常量、12/16 字节长度、`IvType` 枚举顺序、`IV` 的 `Type/Data` 布局语义、随机 GCM 构造、按长度分类与复制、以及错误消息形状一致。
-
 实现手段存在可解释差异：Go 用 `crypto/rand.Read`，Rust 用 `rand::rngs::OsRng` 加 `try_fill_bytes`；Go 用 `slices.Clone`，Rust 用 `to_vec`；Go 的 `AsSlice` 返回可变 `[]byte` 值，Rust 返回受借用规则保护的 `&[u8]`。Rust 还增加 `new_iv_gcm_with_rng` 这一 `pub(crate)` 测试缝，以确定性验证随机源失败，而公开 `NewIVGcm` 的行为没有因此简化。
-
-Go 目录没有独立 `common_test.go`。Go 的 `file_backend_test.go::TestFileBackendAes256Gcm` 通过固定 12 字节 IV 验证加密结果，Rust 的直接契约由 `common_test.rs` 覆盖，并由 `parity_test.rs::go_rust_public_contract_matches` 和相邻后端测试补充端到端证据。
 
 ## 扩展指南
 
@@ -90,11 +84,3 @@ Go 目录没有独立 `common_test.go`。Go 的 `file_backend_test.go::TestFileB
 - 调整随机生成逻辑时，保留 `RngCore + CryptoRng` 约束和可失败接口，继续用独立测试文件注入失败随机源。禁止把测试写回 `common.rs`。
 - 若要强化不变量，可评估将 `IV` 字段收窄可见性并提供构造器，但这会影响当前 crate 外公开 API，需先盘点 `lib.rs` 重导出消费者并安排兼容迁移。
 - 性能上，`AsSlice` 应继续零拷贝；`NewIVFromSlice` 的复制是所有权隔离的一部分，不应为了微小分配收益改为借用而改变生命周期契约。
-
-## 验证依据
-
-事实核验读取了以下文件：`br/pkg/encryption/master_key/common.rs`、`common.go`、`common_test.rs`、`file_backend.rs`、`file_backend_test.go`、`kms_backend.rs`、`mem_backend.rs`、`lib.rs`、`parity_test.rs` 和本 crate 的 `Cargo.toml`。
-
-RustCodeGraph 证据包括：`status`（索引含 7032 个 Rust 文件）、`files --filter br/pkg/encryption/master_key`、目标文件 `node --file`、上述相邻文件的 `node --file`，以及对 `NewIVGcm`、`NewIVFromSlice`、`new_iv_gcm_with_rng`、`AsSlice` 的 `query/callers/callees` 查询。图确认目标文件级使用者与 `NewIVGcm -> new_iv_gcm_with_rng` 调用边；未返回的通用名称调用边由源码引用搜索补充，未被描述为完整闭包。
-
-独立 Rust 测试的可复核契约是：GCM 结果类型与长度、随机源错误传播、12/16 字节分类、输入复制隔离、其他长度的精确错误消息。按任务约束这是纯文档分析，未运行 Cargo 或代码测试；交付验证使用任务指定的 11 个固定章节结构检查，并人工复查链接、符号名、职责边界与“如何安全扩展”的说明。

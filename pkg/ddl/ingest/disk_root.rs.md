@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate；[`lib.rs`](lib.rs) 以 `pub mod disk_root` 暴露它，[`Cargo.toml`](Cargo.toml) 指定库入口并声明其直接依赖 `fs2`、`fail` 和 `astersql-util-dbterror`。它处于 DDL add-index/reorg 的本地 ingest 资源控制层：一部分 API 维护本地 ingest 后端的磁盘占用快照并决定是否应提前导入，另一部分 API 在分布式 read-index 执行器启动本地排序前检查文件系统余量。
-
-它不是 DDL job、schema state 或 checkpoint 的持久化实现。当前可见的生产调用链有两条：[`BackendContext::check_flush`](backend.rs) 读取 `DiskRoot::should_import` 的缓存决策；[`ReadIndexStepExecutor::init`](../backfilling_read_index.rs) 在非云存储模式且已设置执行节点 ID 时调用 `check_local_sort_disk_space_at_path`，空间不足会变成 `ReadIndexError::LocalSortDisk` 并阻止执行器完成初始化。
-
-按照 DDL 执行框架，它服务于需要 reorg/backfill 扫描与本地排序的 add-index 路径，而不直接推进 schema version、DDL job 状态或 rollback。磁盘检查是节点本地、启动前或运行期的保护措施，不是可恢复的 DDL checkpoint。
+通过 `pre_check_usage` 和 `startup_check` 提供根目录级检查；前者真实创建/探测目录，后者只检查构造或最近刷新时缓存的容量数据。
 
 ## 核心职责
 
@@ -112,8 +108,6 @@ RustCodeGraph 将目标文件识别为 31 个符号，并报告它被 `pkg/ddl/b
 
 ## 与 Go 版本的对应关系
 
-Rust `ResourceTracker`/`DiskRoot`/`DiskState` 分别对应 Go `ResourceTracker`、`DiskRoot` 接口及 `diskRootImpl` 的 map 和容量字段。`CAPACITY_THRESHOLD`、2 GiB/slot、100 GiB 默认配额、90% 边界、quota headroom 上限、严格 `available > threshold` 以及用户错误文本均按 [`disk_root.go`](disk_root.go) 保留。Rust 独立测试与 Go `disk_root_test.go` 覆盖相同的浮点舍入、等于阈值拒绝、slot 预留和 quota cap 场景。
-
 重要差异和未接线部分：
 
 - Go `NewDiskRootImpl(path)` 从零快照开始，`UpdateUsage()` 自行调用 `GetStorageSize` 并在探测失败时记日志；Rust 构造器和 `update_usage(capacity, available)` 由调用方注入文件系统数据，刷新本身不可能返回探测错误。
@@ -137,12 +131,3 @@ Rust `ResourceTracker`/`DiskRoot`/`DiskState` 分别对应 Go `ResourceTracker`�
 - 若补 Go 的本地排序 failpoint 和日志，应保持错误分类：探测失败可重试且不是 `ErrIngestCheckEnvFailed`，确认低空间是致命 ingest 环境错误，macOS 仅忽略后者。
 - 若把 `current_task_runtime_slots` 改为无符号或增加校验，要同步 [`ReadIndexStepExecutor::set_runtime_context`](../backfilling_read_index.rs) 的接口与测试；负值当前被 quota cap 掩盖，不能无意改变已有转换语义。
 - 若接入更多 DDL 路径，先区分是根目录健康检查、运行期 import 决策还是单任务本地排序准入；三者的输入新鲜度、错误分类和生命周期不同，不应复用成一个含糊入口。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标 [`disk_root.rs`](disk_root.rs) 已索引并识别 31 个符号；`node --file` 完整读取 1–271 行，文件级关系报告直接使用者为 [`backfilling_read_index.rs`](../backfilling_read_index.rs)。另用索引读取该文件的 `ReadIndexStepExecutor::init`（255–261 行）、[`backend.rs`](backend.rs) 的 `check_flush`（175–182 行）、[`env.rs`](env.rs) 的 `initialized_disk_root`（102–105 行）和 crate [`lib.rs`](lib.rs)。精确 `callers/callees` 因 CLI 把符号 ID 当名称产生宽泛歧义结果，未将其误用为调用证据。
-- Rust 直接证据：[`disk_root.rs`](disk_root.rs)、[`disk_root_test.rs`](disk_root_test.rs)、[`backend.rs`](backend.rs)、[`env.rs`](env.rs)、[`backfilling_read_index.rs`](../backfilling_read_index.rs) 与 [`lib.rs`](lib.rs)。仓库引用搜索还确认 `risk_of_disk_full` 被 [`mem_root_test.rs`](mem_root_test.rs) 复用，而其他 `DiskRoot::new` 引用位于独立测试构造中。
-- crate 证据：[`Cargo.toml`](Cargo.toml) 声明包名 `astersql-ddl-ingest`、库入口 `lib.rs`、Go 包映射 `pkg/ddl/ingest`，以及目标直接使用的 `fs2`、`fail`、`astersql-util-dbterror`。大量额外依赖只在 Windows 条件表中声明，目标文件本身未引用它们。
-- Go 对照证据：[`disk_root.go`](disk_root.go) 的接口、构造、刷新、阈值、预检查、启动检查与本地排序准入；[`disk_root_test.go`](disk_root_test.go) 的浮点边界、quota cap、错误文本和错误分类；[`backfilling_read_index.go`](../backfilling_read_index.go) 的 `CheckLocalSortDiskSpace` 生产调用；[`backend.go`](backend.go) 和 [`env.go`](env.go) 的全局 disk root 使用关系。
-- 测试事实：Rust [`disk_root_test.rs`](disk_root_test.rs) 验证后端用量只在刷新后更新、quota/90% import 决策、Go 浮点边界、slot headroom 与错误文本，以及真实目录创建失败的 dbterror 文本；Go 测试额外验证本地排序探测失败与确认低空间的分类。测试证据说明预期，不代表未接线的 Rust 全局路径已运行。
-- 本任务只新增说明文档，按计划不运行 Cargo。结构验证使用任务指定命令检查文件存在且恰有 11 个固定二级标题；人工复核聚焦“为何存在、如何运行、状态与并发边界、Go 差异和安全扩展点”。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-mockcopr` crate，是 mockstore 中模拟 TiKV Coprocessor DAG 请求的组装与响应层。crate 入口 `pkg/store/mockstore/mockcopr/lib.rs` 将本模块声明为私有模块后再公开重导出其符号；`pkg/store/mockstore/mockcopr/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/store/mockstore/mockcopr`。
-
-单请求的真实入口链为 `rpc_copr.rs::coprRPCHandler::HandleCmdCop` → `copr_handler.rs::coprHandler::handle_request` → 本文件的 `coprHandler::handleCopDAGRequest`。本文件不负责 RPC 超时线程、KV 数据的具体扫描或各算子的逐行算法；这些分别位于 `rpc_copr.rs`、`executor.rs`、`aggregate.rs` 和 `topn.rs`。批量请求由 `copr_handler.rs::handleBatchCopRequest` 直接复用 `buildDAGExecutor`，但使用 `drainRowsFromExecutor` 形成单个 `Chunk`，不经过 `handleCopDAGRequest` 的响应组装流程。
+校验 `Request`，把 `DagRequest`、键范围和 `start_ts` 固化到 `dagContext`，并构造执行器链（`buildDAGExecutor`、`buildDAG`、`buildExec`）。
 
 ## 核心职责
 
@@ -92,7 +90,7 @@ Cargo 清单虽声明了 expression、kv、sessionctx、types、rowcodec 等大�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/store/mockstore/mockcopr/cop_handler_dag.go`。Rust 保留了大多数同名入口、执行器种类、64 行分块常量、响应组装辅助和 mock 客户端外形，但存在以下已验证差异：
+Rust 保留了大多数同名入口、执行器种类、64 行分块常量、响应组装辅助和 mock 客户端外形，但存在以下已验证差异：
 
 - Go 从 protobuf 解码 `tipb.DAGRequest`，构造真实时区/statement context、除法精度和警告；Rust 直接接收强类型简化 `DagRequest`，`EvalSessionContext` 只有 flags/时区偏移，主流程也未使用它。
 - Go 在 `Executors` 为空时递归处理 `RootExecutor` 的 TiFlash 树；Rust 明确拒绝空列表，`buildDAGForTiFlash` 只是线性 `buildDAG` 的别名。
@@ -114,13 +112,3 @@ Cargo 清单虽声明了 expression、kv、sessionctx、types、rowcodec 等大�
 - 改进错误模型：统一单请求和批请求的 output offset 行为，并决定 Select 内错误与顶层 Region/Locked 错误的映射；需同步 `cop_handler_dag_test.rs`、`copr_handler_test.rs` 和 `rpc_copr_test.rs`。
 - 性能：当前“全部收集后编码”对大结果集有双份行/字节内存。若改为流式分块，应保留 `Counts`、执行摘要只在排空后完整可用的约束，并验证中途错误时已产生块如何处理。
 - Go 对齐修改必须保持本仓库规则：Rust 生产逻辑与测试分文件，修改本文件时同步同目录独立测试；不要删除 PingCAP license，真正可用的 Rust 文件保留顶部 `// Copyright 2026 AsterSQL.`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/store/mockstore/mockcopr` 确认目标模块、Go 对照和独立测试均在图中。
-- RustCodeGraph `node --file pkg/store/mockstore/mockcopr/cop_handler_dag.rs`：完整读取 517 行，核对 52 个索引符号及主流程、辅助函数和 mock 类型。
-- RustCodeGraph `explore "handleCopDAGRequest coprHandler pkg/store/mockstore/mockcopr"`：确认 Rust 调用边 `copr_handler.rs::handle_request` → `cop_handler_dag.rs::handleCopDAGRequest`，并确认 Go 侧的 DAG 构建、编码和辅助调用关系。对常见名称执行单独 `callers/callees` 未返回可消歧输出，因此没有用其空结果推导结论。
-- 已读 Rust 直接证据：`pkg/store/mockstore/mockcopr/lib.rs`、`copr_handler.rs`、`rpc_copr.rs`、`cop_handler_dag_test.rs`、`copr_handler_test.rs`、`main_test.rs`。
-- 已读边界与依赖：`pkg/store/mockstore/mockcopr/Cargo.toml`；该清单确认 crate 名、`lib.rs` 入口、Go 包映射及 optional 端口依赖。
-- 已读 Go 对照：`pkg/store/mockstore/mockcopr/cop_handler_dag.go` 全部 803 行，逐项核对 DAG 构建、扫描配置、求值上下文、编码、错误和范围辅助语义。该目录没有独立的 `cop_handler_dag_test.go`；Rust 独立测试及同 crate 的 Go 测试面是可用的最近证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行固定章节结构命令，并人工检查本文只陈述上述源码和调用图可支持的事实。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/datum_eval.rs` 是 `Datum` 加法求值的类型分派实现，当前只定义一个公开入口 `ComputePlus` 和两个私有辅助函数 `trace_overflow`、`add_integer`。它本身不是 `pkg/types/Cargo.toml` 中声明的独立模块：`pkg/types/internal/core_time/lib.rs:647-652` 在 `types::datum_eval` 子模块中通过 `include!("../../datum_eval.rs")` 纳入源码，再以 `pub use datum_eval::*` 导出；顶层 `pkg/types/lib.rs:11` 又把 `types-core-time` 依赖再导出为 `core_time`。
-
-因此，本文件当前处于 `astersql-types-core-time` 内部 crate 的 `types` 命名空间，使用包含点作用域里的 `Datum`、Kind 常量、`MyDecimal`、`DecimalAdd`，并直接依赖父 crate 的 `errors` 模块。`pkg/types/Cargo.toml` 通过路径依赖 `types-core-time = { package = "astersql-types-core-time", path = "internal/core_time" }` 把它接入 `astersql-types`。
+所有未列出的 Kind 组合统一返回非法二元操作错误，不执行隐式类型转换。
 
 ## 核心职责
 
@@ -85,12 +83,3 @@ Rust `ComputePlus` 的分派矩阵、整数混合参数归一方式、浮点同�
 - 错误兼容要求提高时，应使不匹配分支对齐 Go `InvOp2` 的错误类别，并考虑保留 `OverflowError` 的来源链，而非只复制显示文本。
 - 测试逻辑必须保持在独立文件。同步更新 `pkg/types/core_time_2_aster_unit_test.rs` 或 `pkg/types/datum_test.rs`；若改变 Go 对齐预期，同时核对 `pkg/types/datum_test.go::TestComputePlusAndMinus`。本仓库规则禁止把单元测试内嵌到 `datum_eval.rs`。
 - 性能上，该函数位于求值原语层；新增分配、字符串格式化或通用动态分派前应评估热路径成本。当前成功整数/浮点路径不构造错误字符串，十进制路径的成本主要来自 `BigDecimal` 加法。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/types/datum_eval.rs` 确认目标文件已索引并识别 4 个节点。
-- RustCodeGraph 源码与调用查询：`node --file pkg/types/datum_eval.rs --offset 1 --limit 240`；`query ComputePlus --limit 20`；`node ComputePlus`；`callers ComputePlus --limit 50`；`callees ComputePlus --limit 50`；`query/callers/callees add_integer`。查询确认目标实现及直接测试调用边；同名 `pkg/expression/aggregation/lib.rs::ComputePlus` 已排除出本文件调用链。
-- RustCodeGraph 下游查询：`node DecimalAdd`、`node AddInt64`、`node AddUint64`，并读取索引中的 `pkg/types/internal/core_time/lib.rs:560-667`，确认实际包含环境、再导出和依赖符号。
-- 已读 Rust/Cargo 路径：`pkg/types/datum_eval.rs`、`pkg/types/overflow.rs`、`pkg/types/internal/core_time/lib.rs`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`、`pkg/types/core_time_2_aster_unit_test.rs`、`pkg/types/datum_test.rs`。目标目录不存在 `doc.go`，因此没有额外包契约文件可读。
-- 已读 Go 对照与测试：`pkg/types/datum_eval.go`、`pkg/types/datum_test.go::TestComputePlusAndMinus`；RustCodeGraph 同时核对 `pkg/types/overflow.go::{AddInt64,AddUint64}` 与 `pkg/types/mydecimal.go::DecimalAdd`。
-- 本任务为纯文档分析，按计划未运行 Cargo。结构校验要求目标文档存在且恰有 11 个固定二级章节；交付前另行执行任务文件指定命令并人工复核链接、事实边界与扩展说明。

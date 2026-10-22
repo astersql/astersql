@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-store-driver-txn` crate（`pkg/store/driver/txn/Cargo.toml`），由 `lib.rs` 的 `mod unionstore_driver` 装配并整体再导出。它位于事务适配层的本地写集一侧：`txn_driver.rs::tikvTxn` 持有 `Arc<memBuffer>`，事务点写、提交、语句回滚、范围扫描和流水线 DML flush 都经由这里；已提交数据则由 `snapshot.rs` 负责，二者的扫描结果最终交给 `union_iter.rs::NewUnionIter` 合并。
-
-与同路径 Go 文件不同，Go 的 `memBuffer` 主要包装 `tikv.MemBuffer` 并转换 TiDB/TiKV 类型和错误；当前 Rust 文件直接用 `BTreeMap`、`RwLock` 实现了一套进程内缓冲语义。因此它既是适配边界，也是当前 Rust 事务本地数据结构的实际实现，而非单纯门面。
+位于事务适配层的本地写集一侧：`txn_driver.rs::tikvTxn` 持有 `Arc<memBuffer>`，事务点写、提交、语句回滚、范围扫描和流水线 DML flush 都经由这里；已提交数据则由 `snapshot.rs` 负责，二者的扫描结果最终交给 `union_iter.rs::NewUnionIter` 合并。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@
 
 ## 与 Go 版本的对应关系
 
-对应文件为 `pkg/store/driver/txn/unionstore_driver.go`。公开方法集合和关键分支基本逐项对应：nil 构造、普通/带 flag 写删、点查/批量查、正反向迭代、staging、snapshot 视图、getter/iterator 包装与 flag 映射。`unionstore_driver_test.rs` 还专门验证 `AssertNone` 清位、句柄按深度复用以及非栈顶 cleanup/release panic，以对齐 client-go 行为。
-
 实现层存在重要差异：Go 将调用委托给 `tikv.MemBuffer`，并用 `derr.ToTiDBErr` 统一转换错误；Rust 直接操作 `BTreeMap`，没有 context 参数，也没有外部错误转换。Go 的 snapshot/flush 语义来自 client-go MemDB/KVTxn；Rust 的 snapshot 是即时复制，`Flush` 不落盘、不清空缓冲且只返回长度。Rust 额外暴露 `empty`、`from_entries`、checkpoint、错误注入和提交导出，供本地 `tikvTxn` 实现使用。
 
-当前 Rust `Get`/`BatchGet` 忽略 options；Go 会原样下传。Go `InspectStage` 由 TiKV MemBuffer 决定精确变化集合，Rust 通过完整映射比较计算。文档和扩展设计应把这些视为当前实现边界，不应声称 Rust 已具备 client-go MemDB 的所有内部性能或持久化行为。
+当前 Rust `Get`/`BatchGet` 忽略 options；Go 会原样下传。文档和扩展设计应把这些视为当前实现边界，不应声称 Rust 已具备 client-go MemDB 的所有内部性能或持久化行为。
 
 ## 扩展指南
 
@@ -94,12 +90,3 @@
 - 若实现真实 pipelined flush，接入点是 `memBuffer::Flush` 与 `txn_driver.rs::MayFlush`，还需明确成功后条目生命周期、重复 flush、部分失败和后台资源关闭；不能仅改变返回计数。
 - 若支持 get options/commit timestamp，应修改 `Getter`/`BatchBufferGetter` 实现并与 `lib.rs` 中 `apply_commit_ts_option*` 的规则一致。
 - 最小同步测试面包括 `unionstore_driver_test.rs`（本文件局部语义）、`txn_driver_test.rs`（提交、检查点、flush 和事务接线）及 `union_iter_test.rs`（墓碑覆盖和扫描顺序）。兼容风险主要在 Go/client-go 行为差异，性能风险主要来自整表复制和长时间持有 `InspectStage` 读锁。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点，目标文件共 732 行；`explore "pkg/store/driver/txn/unionstore_driver.rs memBuffer MemDBCheckpoint newMemBuffer"` 给出符号、调用范围及主要上游；`query memBuffer`、`query newMemBuffer` 消除 Go/Rust 同名歧义；三段 `node --file ...` 核对目标文件全部源码。
-- 源码：`pkg/store/driver/txn/unionstore_driver.rs`；模块与接口边界：`pkg/store/driver/txn/lib.rs`；直接事务接线：`pkg/store/driver/txn/txn_driver.rs`；扫描合并：`pkg/store/driver/txn/union_iter.rs`。
-- crate 证据：`pkg/store/driver/txn/Cargo.toml` 的 package、lib path、porting metadata 与依赖声明。
-- Go 对照：`pkg/store/driver/txn/unionstore_driver.go`、`pkg/store/driver/txn/txn_driver.go`。
-- 独立测试：`pkg/store/driver/txn/unionstore_driver_test.rs` 验证断言清除与 staging 栈约束；关联行为测试入口由 `lib.rs` 分别装配 `txn_driver_test.rs` 和 `union_iter_test.rs`。同目录没有独立的 `unionstore_driver_test.go`，因此 Go 语义主要由实现和 client-go 委托关系核对。
-- 本任务只新增文档，按计划不运行 Cargo；交付前以固定 11 章节命令做结构验证，并人工检查所有行为陈述均可回溯到上述符号或文件。

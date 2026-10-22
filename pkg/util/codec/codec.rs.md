@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-codec` crate 的 Datum/Chunk 通用编解码、等值哈希与 Join key 序列化核心。crate 入口 `pkg/util/codec/lib.rs` 将本模块及 `bytes.rs`、`decimal.rs`、`float.rs`、`number.rs` 的公开项重新导出；`pkg/util/codec/Cargo.toml` 的 `[lib] path = "lib.rs"` 说明它不是独立二进制。其上游包括 `pkg/tablecodec/tablecodec.rs` 的表记录/索引值编解码、`pkg/statistics/runtime_stats_builder.rs` 的统计边界编码与还原、`pkg/planner/util/handle_cols.rs` 的 handle key 生成，以及 `pkg/session/runtime/*` 的行和索引处理。
-
-编码流以首字节 flag 区分 Datum 类型，随后委托同 crate 的数值、字节、浮点、Decimal 编解码器处理载荷。`EncodeKey` 产生保持原值排序关系的 memcomparable 表示，`EncodeValue` 产生更紧凑的存储表示；此外，本文件还直接面向 Chunk 提供 Join、聚合及哈希表所需的等值编码。依据：`codec.rs::{EncodeKey, EncodeValue, DecodeOne, SerializeKeys, HashGroupKey}`、`lib.rs`、上述直接调用文件。
+`EncodeKey` 产生保持原值排序关系的 memcomparable 表示，`EncodeValue` 产生更紧凑的存储表示；此外，本文件还直接面向 Chunk 提供 Join、聚合及哈希表所需的等值编码。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ RustCodeGraph 的精确 `callers/callees` 命令对本文件函数 ID 未输出�
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/util/codec/codec.go`，Cargo metadata 也声明 `go-package = "pkg/util/codec"`。Rust 保留相同 flag 数值、主要公开名称、Kind/FieldType 分派、timestamp UTC 往返、collation key、Join 序列化模式、NULL 传播、范围尾标记及 Chunk 追加语义。`pkg/util/codec/codec_test.rs` 与 `codec_test.go` 覆盖同名的 key/value 往返、排序、数字/浮点/bytes/时间/Duration/Decimal/JSON、Cut/RawValues、Chunk 解码、Group/Row/Column hash、范围解码和 Datum Hash64；`collation_test.rs` 与 `collation_test.go` 覆盖 Encoder、GroupKey、行/列哈希的字符序等价性。
+语言适配包括：Go `[]byte`/variadic Datum 变成拥有所有权的 `Vec<u8>`/`Vec<Datum>`；Go 指针与 slice 共享 backing array 在 Rust 中多处改为复制或独立 Vec；固定宽度尺寸常量由 `unsafe.Sizeof` 改为字面量；Go `hash.Hash64`/`io.Writer` 对应 Rust trait object；错误经 `shared_error` 转为 `SharedError`。特别是 `SerializeKeys` 的共享大 buffer 不能直接承载每行 Vec，Rust 返回同长度 buffer，同时为每行独立预分配容量；`TestSerializeKeysUsesPreallocatedCapacityWithoutZeroPrefix` 固定了“容量不等于初始长度”的 Rust 回归语义。
 
-语言适配包括：Go `[]byte`/variadic Datum 变成拥有所有权的 `Vec<u8>`/`Vec<Datum>`；Go 指针与 slice 共享 backing array 在 Rust 中多处改为复制或独立 Vec；固定宽度尺寸常量由 `unsafe.Sizeof` 改为字面量；Go `hash.Hash64`/`io.Writer` 对应 Rust trait object；错误经 `shared_error` 转为 `SharedError`。特别是 `SerializeKeys` 的共享大 buffer 不能直接承载每行 Vec，Rust 返回同长度 buffer，同时为每行独立预分配容量；`TestSerializeKeysUsesPreallocatedCapacityWithoutZeroPrefix` 固定了“容量不等于初始长度”的 Rust 回归语义。Rust 还包含 `go_merge_11_type_null_marks_join_key_as_null`，确保 TypeNull 行进入 `nullVector`。
-
-未发现条件编译项。当前文件不是桩或门面：编码、解码、哈希与序列化逻辑均在此实现；底层原语才位于兄弟模块。
+当前文件不是桩或门面：编码、解码、哈希与序列化逻辑均在此实现；底层原语才位于兄弟模块。
 
 ## 扩展指南
 
@@ -90,11 +86,3 @@ RustCodeGraph 的精确 `callers/callees` 命令对本文件函数 ID 未输出�
 修改字符串、Enum、Set 或 JSON 规则时，应同时验证 Join、聚合和 hash row/columns 三条路径；修改 timestamp 时同时验证 encode UTC、DecodeRange 和 Chunk decoder 的反向时区转换；修改浮点哈希时保留 `-0 == +0`。性能变更需关注大 Chunk 下的二阶段预分配、克隆/复制和 `to_ne_bytes` 的平台本地字节序兼容，不能只以编译成功作为行为证据。
 
 任何裸指针 API 的重构都应优先收窄为借用；若为保持 Go 形状必须保留指针，新增入口需明确并测试长度、索引、生命周期不变量。`init` 修改还需核对 crate 初始化路径，避免 `Hash64ForDatum` 未注册或并发写入。
-
-## 验证依据
-
-- 已完整读取：`pkg/util/codec/codec.rs`（RustCodeGraph 报告 1928 行、89 个符号）、`pkg/util/codec/Cargo.toml`、`pkg/util/codec/lib.rs`、`pkg/util/codec/codec.go`。
-- 已读取独立测试：`pkg/util/codec/codec_test.rs`、`pkg/util/codec/collation_test.rs`，并与 `codec_test.go`、`collation_test.go` 的同名用例核对。关键证据包括 `TestCodecKey`、`TestCodecKeyCompare`、`TestDecodeOneToChunk`、`TestHashGroup`、`TestSerializeKeysUsesPreallocatedCapacityWithoutZeroPrefix`、`TestDecodeRange`、`TestHashChunkRow`、`TestHashChunkColumns`、`TestDatumHashEquals` 及四个 collation 测试。
-- RustCodeGraph：`status` 显示本仓库索引包含 11467 文件、307296 节点、1848419 边；`files --filter pkg/util/codec` 覆盖 Rust/Go 源与测试；`query` 精确定位 Rust `SerializeKeys`（1105）、`DecodeOne`（1328/1612）、`Decoder`（1594）、`HashGroupKey`（1782）。精确函数 ID 的 `callers/callees` 未返回内容，调用边改由仓库直接搜索核验并在“依赖与调用关系”中限定说明。
-- 直接调用点证据：`pkg/tablecodec/tablecodec.rs`、`pkg/statistics/runtime_stats_builder.rs`、`pkg/statistics/{builder,fmsketch,cmsketch_util}.rs`、`pkg/planner/util/handle_cols.rs`、`pkg/session/runtime/{dml,row_codec,relational_scan,typed_adapter_bridge}.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务给定的 11 章节结构验证，并人工检查文档只描述可由上述符号、调用点、Cargo 或 Go/测试文件支持的事实。

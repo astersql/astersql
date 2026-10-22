@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文对应源码为 [`plan_mock.rs`](./plan_mock.rs)。该文件属于 `astersql-dxf-framework-mock` crate。crate 根 `pkg/dxf/framework/mock/lib.rs` 以私有模块 `mod plan_mock` 装载它，再通过 `pub use plan_mock::*` 向测试调用方公开其中的 mock 类型和构造函数。`pkg/dxf/framework/mock/Cargo.toml` 表明该 crate 直接依赖 planner、proto、storage、taskexecutor/execute 和 sessionctx；本文件实际只使用 planner、proto 以及 crate 根定义的 `Handler`。
-
-它是 `pkg/dxf/framework/planner/plan.rs` 中 `LogicalPlan` 与 `PipelineSpec` 两个 trait 的测试替身边界，不参与生产规划算法本身。RustCodeGraph 的文件查询显示，目标文件的直接 Rust 使用者是同 crate 的 `pkg/dxf/framework/mock/migration_aster_unit_test.rs`；仓库搜索还表明 planner 的 Rust 测试目前主要使用手写 trait 实现，而 Go 测试直接使用同路径生成的 GoMock。
+这样测试可以在不构造真实计划实现的前提下观察 planner 与计划接口的交互。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 对目标文件的索引列出 `EXPECT`、`ISGOMOCK`、四个逻�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是生成代码 `pkg/dxf/framework/mock/plan_mock.go`。类型与方法集合保持对应：Go 的四方法 `LogicalPlan`、单方法 `PipelineSpec`、两个 `NewMock*`、`EXPECT`、`ISGOMOCK` 均在 Rust 中有同名外观，Rust trait 实现另提供 idiomatic snake_case 入口。
-
 关键差异如下：
 
 - Go mock 持有 `*gomock.Controller` 和独立 recorder，方法通过 `ctrl.Call` 取返回槽；Rust recorder 只是 mock 自身的类型别名，controller 参数不保存，返回值由类型化闭包产生。
@@ -91,7 +87,7 @@ RustCodeGraph 对目标文件的索引列出 `EXPECT`、`ISGOMOCK`、四个逻�
 - Go `ToPhysicalPlan` 返回 `*PhysicalPlan`，可为 nil；Rust 返回拥有所有权的 `PhysicalPlan`，成功结果没有 nil 状态。
 - Go `ISGOMOCK` 返回空结构体，Rust 返回单元值 `()`；二者都不承载业务数据。
 
-Go 测试证明原始使用意图：`planner_test.go` 配置 `ToTaskMeta` 和 `GetTaskExtraParams` 后运行 Planner；`plan_test.go` 配置 `ToSubtaskMeta` 后由 `PhysicalPlan` 调用。Rust 独立测试当前只直接覆盖 PipelineSpec 的上下文转发和 Handler 的重入/计数基础设施，未直接覆盖 `MockLogicalPlan` 四方法的全部转发及错误路径。
+Rust 独立测试当前只直接覆盖 PipelineSpec 的上下文转发和 Handler 的重入/计数基础设施，未直接覆盖 `MockLogicalPlan` 四方法的全部转发及错误路径。
 
 ## 扩展指南
 
@@ -100,13 +96,3 @@ Go 测试证明原始使用意图：`planner_test.go` 配置 `ToTaskMeta` 和 `G
 若需要更接近 GoMock 的 matcher、调用顺序或自动完成校验，应扩展 crate 根 `Handler` 或引入独立 recorder 抽象，而不是让 `EXPECT()` 暗示不存在的能力。改变 Handler 并发策略时必须同步评估所有 mock 文件，因为它是 crate 级共享基础设施。
 
 测试应继续放在独立文件中：本 mock 的直接回归放入 `pkg/dxf/framework/mock/migration_aster_unit_test.rs`（或新增独立 `*_test.rs` 并由模块入口挂载），planner 主链行为放入 `pkg/dxf/framework/planner/planner_test.rs` 和 `plan_test.rs`。至少覆盖新增方法的参数原样转发、成功与错误返回、调用计数、未设置期望边界；涉及 `PlanCtx` 时覆盖新增字段不会在 mock 边界丢失。兼容风险主要是 GoMock 外观与实际能力差异，性能风险主要是 `from_task_meta` 的字节复制和 Handler 的串行 mutex 临界区。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/dxf/framework/mock/plan_mock.rs --offset 1 --limit 500` 读取目标文件全部 146 行，并报告文件被 `pkg/dxf/framework/mock/migration_aster_unit_test.rs` 使用；`query` 确认 Rust/Go 两侧 `MockLogicalPlan`、`MockPipelineSpec`、`NewMockLogicalPlan` 与 `NewMockPipelineSpec` 节点。
-- 目标实现：`pkg/dxf/framework/mock/plan_mock.rs`，核对全部类型别名、结构体、固有方法、trait impl 与构造器。
-- crate 边界：`pkg/dxf/framework/mock/Cargo.toml` 与 `pkg/dxf/framework/mock/lib.rs`，核对依赖、模块装载、公开重导出和 Handler 语义。
-- 真实 trait 与调用链：`pkg/dxf/framework/planner/plan.rs`、`pkg/dxf/framework/planner/planner.rs`，核对 `PlanCtx`、`LogicalPlan`、`PhysicalPlan::to_subtask_metas`、`PipelineSpec` 和 Planner 创建任务流程。
-- Go 对照：`pkg/dxf/framework/mock/plan_mock.go`，核对生成来源、方法集合、controller/recorder 调度与返回槽语义。
-- 独立测试：`pkg/dxf/framework/mock/migration_aster_unit_test.rs`，核对 `PlanCtx.task_key` 转发、调用计数和 Handler 回调期间不持锁；`pkg/dxf/framework/planner/planner_test.rs` 与 `plan_test.rs` 核对真实 Rust planner/physical-plan 契约；`pkg/dxf/framework/planner/planner_test.go` 与 `plan_test.go` 核对 GoMock 原始使用意图。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的 `test -f` 加 11 个固定标题计数命令做结构验证，并人工检查文档未把 GoMock 的未迁移能力描述为已支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-executor-join-joinversion` crate 的核心实现，负责表达 Hash Join v1/v2 的版本名、非 GA join 的 v2 总开关，以及目标平台是否能安全采用 v2 指针表示的能力判断。crate 根 `pkg/executor/join/joinversion/lib.rs` 通过 `pub mod join_version` 声明模块，并用 `pub use join_version::*` 对外重导出本文件的公开项；`pkg/executor/join/joinversion/Cargo.toml` 指定 `lib.rs` 为库入口，且不声明第三方依赖。
-
-根 `Cargo.toml` 将该 crate 纳入 workspace，并以 `facade_executor_join_joinversion` 登记；`pkg/executor/Cargo.toml`、`pkg/executor/join/Cargo.toml` 和 `pkg/distsql/Cargo.toml` 都声明了路径依赖。不过，RustCodeGraph 与全仓 Rust 符号检索显示，目前本文件函数的实际 Rust 调用者仅在同 crate 的独立测试中，尚未发现 executor、planner 或 distsql 的 Rust 生产调用点。因而它是已实现、已测试、已进入依赖图的迁移模块，但不能据此声称 Rust SQL 执行主链已经使用它。
+用 `USE_HASH_JOIN_V2_FOR_NON_GA_JOIN` 保存进程级开关，并通过 `use_hash_join_v2_for_non_ga_join` / `set_use_hash_join_v2_for_non_ga_join` 提供顺序一致的并发读写。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ Go 侧应用链可作为移植语义的直接对照：`pkg/sessionctx/variable/s
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/join/joinversion/join_version.go`。三项常量值完全对应；Rust 原子变量的初值 `true` 对应 Go `UseHashJoinV2ForNonGAJoin` 经过 `init()` 后的最终值，而不是 Go 声明处短暂的 false。Rust getter/setter 是为安全可变性新增的惯用接口，Go 则直接读写包变量。
+三项常量值完全对应；Rust 原子变量的初值 `true` 对应 Go `UseHashJoinV2ForNonGAJoin` 经过 `init()` 后的最终值，而不是 Go 声明处短暂的 false。Rust getter/setter 是为安全可变性新增的惯用接口，Go 则直接读写包变量。
 
-Go `IsOptimizedVersion` 使用 `strings.ToLower(hashJoinVersion) == "optimized"`。Rust 没有构造完整 lowercase 字符串，而是逐 scalar 比较，并为 `U+0130` 补足 Go 的单 rune lower 映射；`join_version_test.rs` 专门验证 `"optİmized"` 为真、`"optI\u{0307}mized"` 为假。该实现精确服务当前 ASCII 目标词，不应外推为任意 Unicode 字符串的等价转换。
+Rust 没有构造完整 lowercase 字符串，而是逐 scalar 比较，并为 `U+0130` 补足 Go 的单 rune lower 映射；`join_version_test.rs` 专门验证 `"optİmized"` 为真、`"optI\u{0307}mized"` 为假。
 
-Go 通过 `//go:linkname` 调用运行时 `heapObjectsCanMove`，Rust 则以语言/运行时模型为依据固定返回 false；双方都比较整数指针容器与裸指针宽度。Rust 另保留 Go 风格导出供迁移代码兼容，但当前生产 Rust 调用尚未在索引或文本检索中发现。Go 的实际主链调用仍是理解预期集成位置的权威证据。
+Go 通过 `//go:linkname` 调用运行时 `heapObjectsCanMove`，Rust 则以语言/运行时模型为依据固定返回 false；双方都比较整数指针容器与裸指针宽度。Rust 另保留 Go 风格导出供迁移代码兼容，但当前生产 Rust 调用尚未在索引或文本检索中发现。
 
 ## 扩展指南
 
@@ -84,11 +82,3 @@ Go 通过 `//go:linkname` 调用运行时 `heapObjectsCanMove`，Rust 则以语�
 - 若把模块接入 Rust 生产主链，优先调用 snake_case API，并分别在会话变量转换、planner 候选生成、executor 构建与 TiFlash metadata 边界增加独立测试。Cargo 清单已有依赖不等于已接线，新增调用后应重新查询 callers/callees。
 - 若生产代码需要修改非 GA 开关，应考虑把裸 setter 提升为明确的配置初始化或带恢复 guard 的接口，避免跨查询、跨测试污染；对应测试仍应放在独立的 `migration_aster_unit_test.rs` 或 `join_version_test.rs`，不要内嵌进生产源文件。
 - 性能风险主要在高频版本判断和原子读：当前字符串比较无分配，但执行两次 `chars()` 遍历；优化时必须保留前缀拒绝和 Go Unicode 特例。兼容风险主要是默认值、接受输入集合和 Go 风格导出变化。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/executor/join/joinversion/join_version.rs`、`lib.rs`、`Cargo.toml`；workspace/消费者声明见根 `Cargo.toml`、`pkg/executor/Cargo.toml`、`pkg/executor/join/Cargo.toml`、`pkg/distsql/Cargo.toml`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/executor/join/joinversion` 覆盖本 crate 的 Go/Rust 源和测试；`explore` 核对本文件 8 个索引符号、内部调用和测试 blast radius；`query` 唯一定位 `is_optimized_version` 与 `is_hash_join_v2_supported`；`callees is_optimized_version` 确认其调用私有匹配函数，平台判断无图中 callee。若干独立 `callers` 命令在本地查询时超时，调用者结论由同次 `explore` 的 blast radius 与全仓精确符号检索交叉确认。
-- Rust 独立测试：`pkg/executor/join/joinversion/migration_aster_unit_test.rs` 覆盖常量、ASCII 大小写、无效输入、平台支持和全局开关可变性；`pkg/executor/join/joinversion/join_version_test.rs` 覆盖 Go/Rust Unicode 小写差异。
-- Go 对照与主链：`pkg/executor/join/joinversion/join_version.go`、`pkg/sessionctx/variable/session.go`、`pkg/sessionctx/variable/sysvar.go`、`pkg/planner/core/exhaust_physical_plans.go`、`pkg/planner/core/operator/physicalop/physical_hash_join.go`、`pkg/executor/builder.go`、`pkg/distsql/distsql.go`。
-- 人工复核结论：文件存在是为了集中版本常量、非 GA 灰度开关与 v2 平台前提；其运行路径由字符串判断、原子状态访问和 ABI/运行时能力判断组成；安全扩展必须同步独立测试、维持 Go 语义，并明确 Rust 生产接线目前尚未得到调用证据。

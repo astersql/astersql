@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-internal-mpp` crate；crate 入口 `pkg/executor/internal/mpp/lib.rs` 将它声明为私有模块 `recovery_handler`，没有直接向 crate 外重导出其中的类型。它位于 MPP 响应消费链的恢复层：`executor_with_retry.rs` 持有一个 `RecoveryHandler`，在把 TiFlash MPP 结果交给上层之前先进行有限缓冲；若预拉期间出现可恢复错误，则触发拓扑恢复、重建 coordinator，并丢弃旧执行轮次尚未对外可见的结果。
-
-`pkg/executor/internal/mpp/Cargo.toml` 将该目录定义为独立库 crate，`[lib]` 指向 `lib.rs`，并通过 `package.metadata.porting.go-package = "pkg/executor/internal/mpp"` 标明 Go 对照包。本文件直接使用的 crate 依赖是 `astersql-errors`、`astersql-kv`、`astersql-util-memory` 和 `astersql-util-tiflashcompute`。
+提供默认的 `MemLimitHandlerImpl`：仅当启用 AutoScaler 且错误文本包含 `"Memory limit"` 时，调用全局 TiFlash compute topology fetcher 的 `RecoveryAndGetTopo`。
 
 ## 核心职责
 
@@ -95,7 +93,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/executor/internal/mpp/recovery_handler.go`：字段、默认最大次数 3、先递增计数再选策略、`Memory limit` 文本匹配、FIFO holder、按 `MemSize` 记账、弹出后 `cannotHold`、reset 时清空并 detach 等语义均保持一致。Rust 用 `Option<&RecoveryInfo>`/`Option<SharedError>` 表达 Go 的 nil 参数与 nil error，用 `VecDeque` 替代 Go slice 头部切片，用 `Box<dyn ResultSubset>` 替代 `*mppResponse`，并用 `Result` 显式传播错误。
+Rust 用 `Option<&RecoveryInfo>`/`Option<SharedError>` 表达 Go 的 nil 参数与 nil error，用 `VecDeque` 替代 Go slice 头部切片，用 `Box<dyn ResultSubset>` 替代 `*mppResponse`，并用 `Result` 显式传播错误。
 
 有两点实现层差异需要维护者知晓：Go 的 `GetGlobalTopoFetcher()` 直接返回接口并立即调用，Rust 返回 `Option`，因此额外提供“全局 fetcher 未初始化”的确定性错误；Rust 还增加 `Drop for MppResultHolder` 作为资源兜底。另有 Go 注释称 `ResetHolder` 会重置“recovery cnt”，但 Go 与 Rust 的实际代码都只调用 holder 的 `reset`，均不清零 `curRecoveryCnt`；应以实现及 Rust 测试固定的行为为准。
 
@@ -106,13 +104,3 @@ Rust 文件逐项对应 `pkg/executor/internal/mpp/recovery_handler.go`：字段
 修改缓冲策略时需要同时检查 `CanHoldResult`、`MppResultHolder::insert`、`PopFrontResp`、`reset` 与 `ExecutorWithRetry::nextWithRecovery`，保持“不对外可见才可丢弃重试”的不变量。若把阈值从响应条数改为行数或字节数，需要确认 `ResultSubset` 能提供可靠指标，并评估内存峰值与预拉延迟。
 
 新增或修改行为应放在独立测试文件，不要把测试嵌入生产文件。直接测试位置是 `recovery_handler_aster_unit_test.rs`；真实 `mppResponse` 的内存契约在 `mpp_response_aster_unit_test.rs`；重建 gather、丢弃旧缓冲和 FIFO 端到端行为在 `executor_with_retry_aster_unit_test.rs`。涉及 topology fetcher 时还应同步其独立测试，覆盖未初始化、恢复类型、节点数、HTTP 失败和缓存更新。兼容风险主要是 Go/Rust 错误文案及恢复计数时机漂移；性能风险主要是过大的 holder 容量、昂贵的 `MemSize` 计算和恢复 HTTP 请求。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录列出 16 个已索引 Go/Rust 文件。`explore` 确认 `NewExecutorWithRetry -> NewRecoveryHandler -> newMPPResultHolder`，并确认 `Recovery -> chooseHandlerImpl/doRecovery` 等局部调用。
-- 生产源码：`pkg/executor/internal/mpp/recovery_handler.rs`（全部 25 个索引符号）、`executor_with_retry.rs`（构造、预拉恢复、Next、Close）、`lib.rs`（私有模块边界）。
-- crate 配置：`pkg/executor/internal/mpp/Cargo.toml`（crate 名称、lib 入口、Go porting 元数据及直接依赖）。
-- Go 对照：`pkg/executor/internal/mpp/recovery_handler.go` 和 `executor_with_retry.go`，核对字段、错误文案、计数顺序、holder 生命周期与调用位置。
-- 下游实现：`pkg/util/tiflashcompute/topo_fetcher.rs`，核对全局 fetcher、AWS 恢复参数、缓存并发保护及 Mock/Test 未实现行为。
-- 独立 Rust 测试：`recovery_handler_aster_unit_test.rs` 覆盖 FIFO、父 tracker 记账、禁用/空/零容量、策略顺序、失败尝试计数和真实全局测试 fetcher；`mpp_response_aster_unit_test.rs` 覆盖真实响应 `MemSize`；`executor_with_retry_aster_unit_test.rs` 覆盖 FIFO 消费、幂等关闭、重建 gather 与丢弃旧缓冲。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构通过固定 11 章节命令验证，并人工复核只新增本说明文档、未修改 Rust/Go/Cargo/`plan.md`。

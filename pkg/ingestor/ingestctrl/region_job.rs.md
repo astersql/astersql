@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-源码：[region_job.rs](./region_job.rs)；独立 Rust 测试：[region_job_test.rs](./region_job_test.rs)；Go 对照：[region_job.go](./region_job.go) 与 [region_job_test.go](./region_job_test.go)。
-
-本文件属于 `astersql-ingestor-ingestctrl` crate；crate 入口 `pkg/ingestor/ingestctrl/lib.rs` 以公开模块 `region_job` 导出它，`pkg/ingestor/ingestctrl/Cargo.toml` 则把该 crate 映射到 Go 包 `pkg/ingestor/ingestctrl`。上层包说明 `pkg/ingestor/doc.go` 将 ingestor 定义为直接向底层存储导入 SST、准备 Region 拆分与 TiKV import mode 环境的组件。本文件位于这条导入链的 Region 作业控制层：它不执行 TiKV RPC，而是生成按 Region 划分的 `RegionJob`，决定 ingest 失败后的阶段，保存延时重试作业，并为本地引擎按 Store 负载挑选作业。
-
-Rust 当前实际入口之一是 `pkg/dxf/importinto/write_ingest_backend.rs::GlobalSortWriteIngestBackend::ImportEngine`：transport 扫描给定键范围后调用 `newRegionJobs`，再把作业交给 `pkg/ingestor/ingestctrl/import_pipeline.rs::do_import`。后者仅在 `ImportOptions::local_engine` 为真时启用 `storeBalancer`，并始终创建 `regionJobRetryer`。本文件没有条件编译项，也没有网络、磁盘或 Cargo feature 分支。
+`regionJobRetryer` 用按到期时间排序的并发安全堆保存延时重试作业，并提供取消、关闭和未处理作业回收接口。
 
 ## 核心职责
 
@@ -101,8 +97,6 @@ Region 作业生成流程如下：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ingestor/ingestctrl/region_job.go`，相关 Go 测试是 `region_job_test.go`。核心语义对应如下：
-
 - 两版 `newRegionJobs` 都以已排序、连续、可覆盖的 Region 与作业范围为前提，并按边界交集生成作业。Go 版从 TiKV 编码键解码 Region 边界；Rust 的 `LocatedRegion` 已要求上游提供 ingestctrl 的原始 `KeyRange`，本函数不负责编解码。
 - Go 的 `newWriteRequest` 直接构造 protobuf `sst.WriteRequest` 并设置 resource control context；Rust 用普通 `WriteRequest` 值对象表示相同字段，其中 `txn_source = 1` 对应 `LightningPhysicalImportTxnSource`，但当前生产链尚未调用它。
 - Go 的 `getNextStageOnIngestError` 能从结构化 `IngestAPIError` 取出 `NewRegion` 并在其覆盖旧 Region 时直接回到写阶段；Rust 只返回阶段并按字符串分类，不能携带新 Region。这是迁移能力差异，不应把 Go 的结构化错误恢复能力视为 Rust 已支持。
@@ -110,7 +104,7 @@ Region 作业生成流程如下：
 - Go `storeBalancer` 自带输入/输出 channel 和两个 goroutine，内部用 `sync.Map`；Rust 类型只保留队列与打分原语，调度线程和 channel 位于 `import_pipeline::do_import`。两版都按所有 peer Store 的负载之和择低，并允许挑选瞬间之后负载已变化的近似最优结果。
 - Go 明确警告 balancer 无背压、不应与 external engine 搭配以免 OOM；Rust 仅在 `options.local_engine` 为真时创建 balancer，external/global-sort 路径直接使用零容量 worker channel，自然避开该风险。
 
-Rust 独立测试大量保留 Go 同名用例和注释，但并非所有测试都直接执行生产逻辑：例如 `TestCancelBalancer` 只保存 Go 的取消/WaitGroup 期望结构。判断 Rust 已支持的行为时，应以生产实现和真正调用目标符号的用例为准。
+Rust 独立测试大量保留 Go 同名用例和注释，但并非所有测试都直接执行生产逻辑：例如 `TestCancelBalancer` 只保存 Go 的取消/WaitGroup 期望结构。
 
 ## 扩展指南
 
@@ -120,13 +114,3 @@ Rust 独立测试大量保留 Go 同名用例和注释，但并非所有测试�
 - 修改 Store 打分时，入口是 `storeBalancer::pickJob`；必须保持选中和负载增加的原子性，并同步 `releaseStoreLoad` 与 `StoreLoadGuard`。若引入 FIFO tie-break，应显式把 `nextJobIndex` 纳入比较，并更新 `TestStoreBalancerPick` 和 `TestStoreBalancerNoRace`。
 - 若接入 `newWriteRequest` 到生产 RPC，应先确认 `txn_source = 1` 与目标协议常量一致，并让 `meta` 从当前无类型字节变为可验证的协议边界；同步扩展 `TestNewWriteRequest`，避免只验证字符串拼接。
 - 新测试继续放在同目录独立文件 `region_job_test.rs`，不要内嵌进生产源文件。涉及 Go 语义变更时也要核对 `region_job.go`/`region_job_test.go`，防止 Rust 版本无意简化状态机或资源生命周期。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引覆盖本仓库 11,467 个文件，其中 `pkg/ingestor/ingestctrl/region_job.rs` 完整索引为 355 行；符号图列出常量、两个公开数据类型、四个主要函数、重试器和均衡器的全部方法。
-- RustCodeGraph 调用证据：`GlobalSortWriteIngestBackend::ImportEngine -> newRegionJobs`；`RegionJobBaseWorker::runJob -> getNextStageOnIngestError`；`dispatch_results -> regionJobRetryer::push/close`；`do_import -> popReady/cleanupUnprocessedJobs` 与 `storeBalancer::push/pickJob/releaseStoreLoad`。
-- 已读生产路径：`pkg/ingestor/ingestctrl/region_job.rs`、`lib.rs`、`job_worker.rs::runJob`、`import_pipeline.rs::{dispatch_results, do_import}`、`pkg/dxf/importinto/write_ingest_backend.rs::ImportEngine`。
-- 已读边界声明：`pkg/ingestor/ingestctrl/Cargo.toml` 与 `pkg/ingestor/doc.go`。
-- 已读 Go 对照：`pkg/ingestor/ingestctrl/region_job.go` 的 `newRegionJobs`、`newWriteRequest`、`getNextStageOnIngestError`、`regionJobRetryer`、`storeBalancer`；已读 Go 测试路径 `pkg/ingestor/ingestctrl/region_job_test.go` 并以 Rust 测试内的同名移植说明交叉核对。
-- 已读 Rust 独立测试：`pkg/ingestor/ingestctrl/region_job_test.rs`；直接覆盖错误阶段映射、重试到期/取消/关闭、Region 边界归并、Store 选择与并发释放、缺失 Store 的最佳努力清理、写请求字段。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的 `rg` 命令确认本文恰有十一个固定二级标题，并人工复核文档只陈述上述源码、调用图、Cargo、Go 和测试能够支持的事实。

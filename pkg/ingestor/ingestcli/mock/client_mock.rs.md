@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-ingestor-ingestcli-mock`。同目录 `Cargo.toml` 只直接依赖父目录的 `astersql-ingestor-ingestcli`，`lib.rs` 将 `client_mock` 设为私有模块后通过 `pub use client_mock::*` 公开其中的 mock 类型，并以独立的 `client_mock_test.rs` 承载单元测试。根 `Cargo.toml` 还以 `facade_ingestor_ingestcli_mock` 登记该 crate，`pkg/ingestor/ingestctrl/Cargo.toml` 将它列为开发依赖。
-
-它位于 ingest 测试边界：生产接口 `pkg/ingestor/ingestcli/interface.rs` 定义“写 KV 生成 SST，再把 SST 导入目标 Region”的 `Client` 与 `WriteClient`；本文件实现这两个 trait 的可编程替身，供测试在不启动真实 HTTP/TiKV 的情况下控制返回值、观察调用并验证期望。它不实现网络协议、Region 路由或 SST 写入。
+位于 ingest 测试边界：生产接口 `pkg/ingestor/ingestcli/interface.rs` 定义“写 KV 生成 SST，再把 SST 导入目标 Region”的 `Client` 与 `WriteClient`；本文件实现这两个 trait 的可编程替身，供测试在不启动真实 HTTP/TiKV 的情况下控制返回值、观察调用并验证期望。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ matcher 与 responder 都可能由测试代码 panic；本文件不捕获 panic�
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/ingestor/ingestcli/mock/client_mock.go`，它是 MockGen 生成代码。两边都公开 `MockClient`、`MockWriteClient`、`NewMock*`、`EXPECT`、`ISGOMOCK`，并覆盖 `Ingest`、`WriteClient`、`Write`、`Recv`、`Close`，但实现模型并不相同：
-
 - Go 构造函数接收 `*gomock.Controller`；Rust 构造函数无参数，状态和验证逻辑由替身自身维护。
 - Go `EXPECT()` 返回持有 mock 指针的生成 recorder，调用期望由 `RecordCallWithMethodType` 注册；Rust recorder 仅共享 `Arc<Mutex<State>>`，直接把闭包记录压入队列。
 - GoMock 支持其框架定义的 matcher、次数和调用顺序能力；Rust 当前只支持请求闭包、可选 `commit_ts`、一次性 responder、`Recv` FIFO 和 `Close` 次数累计，不能等同于完整 GoMock 功能集。
@@ -95,7 +91,7 @@ Go 对照为 `pkg/ingestor/ingestcli/mock/client_mock.go`，它是 MockGen 生�
 - Go 通过 controller 在测试结束时处理未满足期望；Rust 必须显式调用 `verify()`。
 - Rust 额外公开 `calls()`、`ClientCall`、`WriteClientCall` 与聚合 `VerificationError`，用于弥补没有外部 controller 的观察和校验能力。
 
-`client_mock_test.rs` 证明 Rust 实现刻意允许后排匹配项先执行而不消耗前排不匹配项；这是当前 Rust 事实。若要声称与 GoMock 的更细粒度选择/顺序规则完全一致，还需要额外对照测试，不能仅依据同名 API 推断。
+若要声称与 GoMock 的更细粒度选择/顺序规则完全一致，还需要额外对照测试，不能仅依据同名 API 推断。
 
 ## 扩展指南
 
@@ -106,14 +102,3 @@ Go 对照为 `pkg/ingestor/ingestcli/mock/client_mock.go`，它是 MockGen 生�
 新增共享状态访问时，应继续保持“锁内只修改状态，锁外执行 responder”的结构；尤其不要在持锁时运行可能重入 mock 的 responder。matcher 目前在锁内执行，若未来允许复杂或重入 matcher，应先把期望安全移出或设计两阶段匹配，避免死锁，同时处理并发调用间的竞态语义。
 
 兼容风险集中在公开 Go 风格名称、trait 签名、错误类型和验证消息；正确性风险集中在期望被错误消费或遗漏验证；性能通常不是测试替身的瓶颈，但 `position + remove` 对队列是线性搜索，期望数量很大时需评估。变更后至少同步 `pkg/ingestor/ingestcli/mock/client_mock_test.rs`，并根据接入场景核对 `pkg/ingestor/ingestctrl/job_worker_test.go` 的原始测试意图。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 7,032 个 Rust 文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph 目标源码：`node --file pkg/ingestor/ingestcli/mock/client_mock.rs --offset 1 --limit 500` 返回完整 431 行，并标识独立测试及 ingestctrl/simplesst 测试文件为关联文件。
-- RustCodeGraph 调用证据：`explore "client_mock.rs in pkg/ingestor/ingestcli/mock: symbols and callers/callees"` 显示 `NewMockClient`、`NewMockWriteClient`、`calls`、`verify` 及各 trait 方法与 `client_mock_test.rs` 的调用边。
-- RustCodeGraph 接口证据：读取 `pkg/ingestor/ingestcli/interface.rs` 全部 174 行，确认 `RequestContext`、`Client`、`WriteClient` 以及请求/响应所有权契约；读取 `pkg/ingestor/ingestcli/lib.rs` 确认公开导出边界。
-- 读取的仓库契约与接线：`pkg/ingestor/doc.go`、`pkg/ingestor/ingestcli/mock/lib.rs`、`pkg/ingestor/ingestcli/mock/Cargo.toml`、`pkg/ingestor/ingestcli/Cargo.toml`、`pkg/ingestor/ingestctrl/Cargo.toml` 和根 `Cargo.toml`。
-- 读取的 Go 对照与用法：`pkg/ingestor/ingestcli/mock/client_mock.go`、`pkg/ingestor/ingestctrl/job_worker_test.go`。
-- 读取的独立 Rust 测试：`pkg/ingestor/ingestcli/mock/client_mock_test.rs`；三个测试分别覆盖后排匹配、调用历史/完整消费和未匹配错误聚合。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证仅包含固定章节结构检查、内容自审和差异范围检查。

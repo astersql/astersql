@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 边界由 `pkg/planner/core/Cargo.toml` 定义，模块由 `pkg/planner/core/lib.rs:96` 以 `pub mod rule_generate_column_substitute` 暴露。它实现一套基于轻量 `task::PlanNode` / `task::Expression` 模型的生成列表达式替换规则：先从计划树中的数据源收集“生成列表达式名 → 列下标”，再把计划其他位置出现的同名表达式改成列引用。
-
-当前 Rust 接线应按代码事实理解：仓库搜索只找到模块声明和 `pkg/planner/core/rule_generate_column_substitute_test.rs` 中的直接调用，没有找到把 `GcSubstituter` 加入 Rust 生产优化器规则序列的代码。相比之下，Go 实现在 `pkg/planner/core/optimizer.go:88-90` 的 `optRuleList` 首位注册。因此，本文件目前是可公开调用且有独立测试覆盖的移植模块，但不能仅凭模块公开就断言它已进入 Rust SQL 优化主链。
+实现一套基于轻量 `task::PlanNode` / `task::Expression` 模型的生成列表达式替换规则：先从计划树中的数据源收集“生成列表达式名 → 列下标”，再把计划其他位置出现的同名表达式改成列引用。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph 将目标文件识别为 12 个符号，并显示源文件直接�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/rule_generate_column_substitute.go`，规则名和“两阶段收集后替换”、CTE 收集边界、`planChanged == false`、Selection/Projection/Sort/Aggregation 的替换意图与 Go 一致；Go 规则在 `pkg/planner/core/optimizer.go` 注册，Go 独立测试 `pkg/planner/core/rule_generate_column_substitute_test.go` 主要提供 `SubstituteExpression` 的性能基准。
-
 Rust 是明显的轻量移植，以下 Go 行为尚未在本文件中实现：
 
 - Go 只从非表路径索引的虚拟、非 stored 生成列收集候选，并跳过偏好 TiFlash 的数据源；Rust 只检查 `virtual_column` 和列下标。
@@ -91,8 +87,6 @@ Rust 是明显的轻量移植，以下 Go 行为尚未在本文件中实现：
 - Go 跳过不引用任何列的纯常量生成表达式，并按会话变量检查类型兼容；Rust 没有这些信息与门槛。
 - Go 对比较、`IN`、`LIKE`、逻辑与/或、`NOT` 有定向递归规则，替换后重算表达式哈希，并在可变常量影响索引选择时标记跳过计划缓存；Rust 不建模表达式树、哈希或计划缓存。
 - Go 针对不同逻辑算子使用相应 schema；Rust 无条件扫描每个 `PlanNode` 的五组通用表达式容器。
-
-因此，后续若要接入生产优化主链，不能仅增加注册；还需先确认轻量 `PlanNode` 的表达式等价、schema、索引和缓存安全能力是否足够。
 
 ## 扩展指南
 
@@ -105,11 +99,3 @@ Rust 是明显的轻量移植，以下 Go 行为尚未在本文件中实现：
 5. 保持测试逻辑在独立的 `rule_generate_column_substitute_test.rs`，不要把单元测试内嵌到生产文件；新增 Rust 行为也应尽量保持 Go 安全条件与测试意图，而不是为了通过测试删减门槛。
 
 兼容风险集中在同名表达式歧义、类型/作用域错误替换和变化标志契约；性能风险集中在每个表达式的小写字符串分配、两遍计划遍历以及深树递归。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/planner/core/rule_generate_column_substitute.rs` 确认目标被索引；`node --file ... --offset 1 --limit 260` 读取并核对目标文件全部 89 行；`query GcSubstituter`、`query collectGenerateColumn`、`query substituteExpression`、`query tryToSubstituteExpr` 核对主要符号；同名 `Optimize` 的全局图查询存在歧义，因此调用边又以目标文件源码和仓库精确搜索交叉验证。
-- Rust 源与模块边界：`pkg/planner/core/rule_generate_column_substitute.rs`、`pkg/planner/core/task.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/Cargo.toml`。
-- Rust 独立测试：`pkg/planner/core/rule_generate_column_substitute_test.rs`，覆盖生产树遍历、大小写、规则元数据、CTE/DataSource 边界和聚合表达式。
-- Go 对照与接线：`pkg/planner/core/rule_generate_column_substitute.go`、`pkg/planner/core/optimizer.go`、`pkg/planner/core/rule_generate_column_substitute_test.go`。
-- 人工复核结论：该文件存在是为了把重复的生成列表达式改写成列引用，以便后续规划阶段利用对应列/索引；当前 Rust 代码如何运行、哪些边界未建模、最安全的扩展入口及需同步的独立测试均已在以上章节明确说明。

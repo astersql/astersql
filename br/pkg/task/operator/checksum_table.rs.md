@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-task-operator` library crate，是 BR `operator` 子命令的表级 checksum 实现，对照 Go 文件 [`checksum_table.go`](checksum_table.go)。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod checksum_table` 声明模块，并通过 `pub use checksum_table::*` 平铺导出；上层 [`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs) 分别在 checksum、PiTR checksum 和 upstream checksum 命令处理中调用 `RunChecksumTable`、`RunPitrChecksumTable`、`RunUpstreamChecksumTable`。
-
-[`Cargo.toml`](Cargo.toml) 将该目录定义为独立 library crate，直接依赖 `serde`/`serde_json`，而连接、元数据、checksum executor、GC manager 等数据库能力由同 crate 的 [`stubs.rs`](stubs.rs) 抽象提供。该 crate 的元数据明确对应 Go package `br/pkg/task/operator`；当前实现不是生成代码或仅转发门面，但依赖的是本地 trait/stub 边界，不能据此推断已经具备真实 TiKV/Domain 的全部运行能力。
+`RunUpstreamChecksumTable` 不读取备份元数据，直接用调用方提供的 `RestoreTS` 校验当前集群表。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ GC 生命周期是“安装 keeper → 执行并 join 全部 worker → TTL=0 �
 
 ## 与 Go 版本的对应关系
 
-Rust 三个入口、上下文、请求/结果结构以及 `getTables`、两种 ID map 来源、三类 request 生成和 GC 保护流程，均能在 [`checksum_table.go`](checksum_table.go) 找到一一对应的 Go 符号。JSON tag、备份缺表跳过、PiTR 新旧系统表 schema、segment 连续性检查、表/分区 ID rewrite、request source `BR` 和 checksumTS 选择规则保持一致。
-
 实现机制并非完全相同：
 
 - Go `loadOldTableIDs` 用 goroutine、table/error channel 和 `ctx.Done()` 流式读取；Rust stub API 一次返回 `Vec<MetaTable>`，没有取消分支。
@@ -113,10 +109,3 @@ Rust 三个入口、上下文、请求/结果结构以及 `getTables`、两种 I
 测试应继续放在独立 [`parity_test.rs`](parity_test.rs) 或新建独立 `*_test.rs`，不要内嵌到生产文件。当前测试已覆盖结果 JSON tag、正常表/分区 ID map 以及缺 DB map；扩展时至少补缺 table/table ID/partition ID、segment 缺失/空数据、新旧 `restore_id` schema、备份缺表跳过、`TableConcurrency == 0`、worker 首错与 panic、safepoint 启停/删除失败、session 查询失败清理和结果顺序不应作为契约等用例。若从 stub 升级到真实依赖，还需在独立上游仓库完成依赖移植并使用已发布 tag，不能在本仓库增加本地 patch/vendor 覆盖。
 
 兼容风险主要在 JSON 字段、错误文案关键片段、CIStr 大小写选择、PiTR segment 规则和 ID rewrite；正确性风险集中在 checksumTS/GC 保护与资源清理；性能风险集中在每表 OS 线程、忙等槽位、结果 mutex 和 executor 的双层并发配置。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/task/operator/parity_test.rs` 的 checksum JSON/ID rewrite 契约；冻结树不存在 checksum_table_test.rs，本次未找到 ensureUniquePitrIDMapOwner 的独立测试调用，故不声称该新增分支已执行验证。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

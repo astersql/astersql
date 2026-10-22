@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-topsql-stmtstats` crate，是语句级 TopSQL 统计中的 KV 目标去重计数器实现。crate 入口 `pkg/util/topsql/stmtstats/lib.rs` 以私有模块 `mod kv_exec_count` 装载本文件，并通过 `pub use kv_exec_count::*` 导出其公开类型和方法；`pkg/util/topsql/stmtstats/Cargo.toml` 表明它直接依赖同仓库的 TopSQL 全局状态、执行详情和 reporter metrics crate。
-
-它位于“某次 SQL 执行已取得 SQL/Plan digest”与“把按存储目标统计的执行次数写入 `StatementStats`”之间。当前 Rust 仓库中，生产代码尚未检索到 `CreateKvExecCounter`、`record_target` 或本文件 `intercept` 的调用；现有直接使用者均为 Rust 测试。因此，本文件已经实现计数器语义，但不能据此断言它已像 Go 版本一样接入生产 RPC 主链。
+`KvExecCounter::intercept` 提供 Rust 原生的通用拦截适配：先尝试记录 target，再无条件调用后继闭包，并原样返回其 `Result`。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@ TopSQL 关闭时，target 不会进入 `marked`。若同一计数器随后重新
 
 ## 与 Go 版本的对应关系
 
-Rust `CreateKvExecCounter`、`KvExecCounter` 的三个状态字段以及“每 target 首次出现才调用 `addKvExecCount(..., 1)`”均直接对应 `pkg/util/topsql/stmtstats/kv_exec_count.go`。`Mutex<HashSet<String>>` 合并表达了 Go 的 `sync.Mutex + map[string]struct{}`；Rust 借用引用替代 Go 的 `*StatementStats`，`SQLPlanDigest` 语义保持一致。
+`Mutex<HashSet<String>>` 合并表达了 Go 的 `sync.Mutex + map[string]struct{}`；Rust 借用引用替代 Go 的 `*StatementStats`，`SQLPlanDigest` 语义保持一致。
 
-执行顺序也一致：先检查 TopSQL 开关、再去重计数、最后调用后继；后继结果不经转换。Rust 将开关检查放在 `record_target` 内，而 Go 在 `RPCInterceptor` 包装闭包中检查后再调用私有 `mark`，可观察行为相同。
+Rust 将开关检查放在 `record_target` 内，而 Go 在 `RPCInterceptor` 包装闭包中检查后再调用私有 `mark`，可观察行为相同。
 
-主要差异是接口和接线成熟度。Go 提供绑定 client-go `tikvrpc.Request/Response` 的 `RPCInterceptor() interceptor.RPCInterceptor`，且已有生产调用者。Rust 提供与 RPC 类型无关的泛型 `intercept` 以及公开 `record_target`，没有在本文件中实现 client-go 等价适配；当前仓库证据只证明测试调用，不证明生产请求会经过它。Go 测试直接检查内部 `marked` 和 `stats.data`；Rust 测试通过公开 `Take()` 检查最终统计，并额外验证 `next` 返回值透传。
+主要差异是接口和接线成熟度。Rust 提供与 RPC 类型无关的泛型 `intercept` 以及公开 `record_target`，没有在本文件中实现 client-go 等价适配；当前仓库证据只证明测试调用，不证明生产请求会经过它。Go 测试直接检查内部 `marked` 和 `stats.data`；Rust 测试通过公开 `Take()` 检查最终统计，并额外验证 `next` 返回值透传。
 
 ## 扩展指南
 
@@ -86,14 +84,3 @@ Rust `CreateKvExecCounter`、`KvExecCounter` 的三个状态字段以及“每 t
 - 若要消除锁 poison panic，应统一审视 `StatementStats` 的锁错误策略，不能只改本文件而留下下游 panic。任何锁结构调整都应增加多线程竞争测试，并继续保证调用下游统计方法前释放 `marked` 锁。
 - 若改变 TopSQL 动态开关语义，需明确关闭期间出现的 target 在重新开启后是否应计数；现状是不在关闭期间标记，因此重开后会计数。
 - 测试逻辑应继续放在独立的 `pkg/util/topsql/stmtstats/kv_exec_count_test.rs`，不要内嵌回生产源文件；跨模块接线可在相应调用方的独立测试中覆盖。
-
-## 验证依据
-
-- 目标源码：`pkg/util/topsql/stmtstats/kv_exec_count.rs`，共 84 行；RustCodeGraph `node --file` 核对了 `CreateKvExecCounter`、`KvExecCounter`、`intercept`、`record_target` 的完整实现。
-- crate 边界：`pkg/util/topsql/stmtstats/Cargo.toml` 与 `pkg/util/topsql/stmtstats/lib.rs`，核对 crate 名、三个路径依赖、模块装载及公开重导出。
-- 下游状态：RustCodeGraph `node stmtstats.rs::add_kv_exec_count`、`node stmtstats.rs::SQLPlanDigest`、`node stmtstats.rs::BinaryDigest`，核对 digest 所有权、统计锁、条目创建和 `u64` 累加。
-- 全局开关：RustCodeGraph `node pkg/util/topsql/state/state.rs::TopSQLEnabled`，核对顺序一致原子读取。
-- Rust 测试：`pkg/util/topsql/stmtstats/kv_exec_count_test.rs`、`aggregator_1_aster_unit_test.rs`、`pkg/server/tests/commontest/tidb_part2_aster_unit_test.rs`，核对单 target 去重、多 target、开关切换、摘要键与后继结果透传。
-- Go 对照：`pkg/util/topsql/stmtstats/kv_exec_count.go`、`kv_exec_count_test.go`；并以仓库检索确认 `pkg/executor/adapter.go`、`select.go`、`update.go`、`pkg/sessiontxn/isolation/base.go` 与 `pkg/distsql/distsql.go` 的生产接线。
-- 调用边限制：RustCodeGraph 对精确 Rust 符号的 callers 查询未返回生产调用者；`rg` 的 Rust 调用检索也只命中上述测试。故文档将 Rust 生产接线明确标为未发现，而未从 Go 调用关系推断 Rust 已接线。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行固定 11 章节结构检查，并人工复核源码链接、事实边界和扩展建议。

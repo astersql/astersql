@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-server` crate，但不是线上请求路径的一部分：`pkg/server/lib.rs:105-107` 只在 `#[cfg(test)]` 下把它声明为 `mysql_compat_test_support` 模块。它是多组 Rust MySQL 线协议测试共享的测试基础设施，通过真实回环 TCP 监听器启动生产 `Server`、安装生产 `ConcreteSessionDriver`，再用文件内的最小同步客户端直接编解码 MySQL 包。这样，上层测试验证的是实际监听、握手、会话与协议输出，而不是绕过网络层的桩。
-
-crate 边界由 `pkg/server/Cargo.toml` 确认：包名为 `astersql-server`、库入口是 `lib.rs`，且 `autotests = false`，因此这些测试模块由库入口显式装配。启动夹具直接依赖同 crate 的 `conn`、`runtime`、`server` 模块以及工作区依赖 `astersql-session`；文件本身没有 feature 条件，唯一条件编译边界来自 `lib.rs` 的 `#[cfg(test)]` 和文件末尾对独立测试文件的 `#[cfg(test)]` 声明。
+`PacketCursor` 和一组解析函数集中实施边界检查；`put_lenenc_int`/`put_lenenc_bytes` 为测试构造握手属性和预处理参数提供长度编码。
 
 ## 核心职责
 
@@ -128,13 +126,10 @@ RustCodeGraph 精确 `callees` 结果确认：`connect_as` 调用本文件的 `p
 
 ## 与 Go 版本的对应关系
 
-Go 目录没有 `pkg/server/mysql_compat_test_support.go`，因此本文件不是逐文件一一翻译，而是 Rust 兼容性测试为验证 Go/TiDB 既有线协议语义新增的共享客户端与夹具。可核对的语义基线如下：
+Go 目录没有 `pkg/server/mysql_compat_test_support.go`，因此本文件不是逐文件一一翻译，而是 Rust 兼容性测试为验证 Go/TiDB 既有线协议语义新增的共享客户端与夹具。
 
-- `pkg/server/server.go` 的 `defaultCapability` 包含本文件用到的 connect-with-db、4.1、secure-connection、multi-statements、multi-results、connect-attrs、plugin-auth、deprecate-EOF 等位；位值来自 `pkg/parser/mysql/const.go`。
 - `pkg/server/conn.go:1697` 的 Go `writeOkWith` 把 affected rows、last insert ID、状态、告警以及非空消息写入 OK 包。尤其消息虽与旧协议手册描述不同，实际使用长度编码字符串；Rust `parse_ok_packet` 明确按此行为解析，`ok_packet_decodes_go_length_encoded_info` 锁定该兼容点。
-- `pkg/server/conn.go` 的 `writeError` 在 `ClientProtocol41` 下写 `#` 和 SQLSTATE，`writeEOF` 在 `ClientDeprecateEOF` 下以 EOF header 的 OK 包替代旧 EOF；Rust 的 `parse_err_packet` 与 `parse_terminator` 对应这两条分支。
 - `pkg/server/internal/packetio.go` 的 `PacketIO::ReadPacket` 在负载达到 `mysql.MaxPayloadLen` 时持续拼接后续包，`WritePacket` 对大包拆帧并递增序号；`pkg/server/internal/packetio_test.go` 覆盖该 Go 行为。Rust `read_packet_from` 对齐读端重组，独立测试复现最大帧加短续帧；Rust 测试客户端写端则有意限制为单帧。
-- `pkg/server/conn_stmt.go` 在未启用 `ClientDeprecateEOF` 时为预处理参数/列元数据发送旧式 EOF，本文件 `prepare` 对相同能力分支消费结束包。
 
 语义差异必须保留在认知中：Go 文件实现服务端，Rust 文件实现测试客户端；Go `PacketIO` 支持写端多帧及生产配置，Rust 客户端只覆盖断言所需子集。后续扩展应以生产 Rust 协议实现与这些 Go 基线共同核对，不能仅在辅助客户端中“模拟通过”。
 
@@ -150,13 +145,3 @@ Go 目录没有 `pkg/server/mysql_compat_test_support.go`，因此本文件不�
 - 测试组织：本文件的白盒单元测试继续放在 `pkg/server/mysql_compat_test_support_test.rs`，协议场景放在相应独立 `mysql_*_test.rs`，不要把测试逻辑内嵌回源文件。
 
 兼容风险主要是错误接受宽松/错误包布局或把 Go 服务端特例误当标准协议；性能风险较低，因为该模块只在测试构建中使用，但无上限地收集结果行或重组远端宣称的大包仍可能放大测试内存。扩展解析器时应优先保持严格序号、长度和尾字节检查。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被索引为 1,125 行、96 个符号。
-- RustCodeGraph 源码与图查询：`node --file pkg/server/mysql_compat_test_support.rs --offset 1 --limit 500`、`node --file ... --offset 500 --limit 700`；`query MysqlCompatServer`、`query MysqlTestClient`、`query parse_handshake`、`query parse_binary_row`、`query PacketCursor`、`query put_lenenc_int`；`callees connect_as`、`callees read_response_at`、`callees parse_binary_row`。同名 `start` 的全局图结果存在歧义，未作为单独结论使用。
-- crate 与装配证据：`pkg/server/Cargo.toml`、`pkg/server/lib.rs:103-119`。目标包没有 `doc.go`；本任务未发现额外包级契约文件。
-- Rust 测试证据：`pkg/server/mysql_compat_test_support_test.rs`；直接调用方 `pkg/server/mysql_protocol_compat_test.rs`、`mysql_protocol_stress_test.rs`、`mysql_prepared_protocol_test.rs`、`mysql_metadata_protocol_test.rs`、`mysql_catalog_protocol_test.rs`、`mysql_type_protocol_test.rs`、`mysql_error_protocol_test.rs`。
-- Go 对照证据：`pkg/server/server.go`（默认能力）、`pkg/parser/mysql/const.go`（命令/能力/最大负载常量）、`pkg/server/conn.go`（包收发、OK/ERR/EOF）、`pkg/server/conn_stmt.go`（预处理元数据 EOF）、`pkg/server/internal/packetio.go` 与 `pkg/server/internal/packetio_test.go`（多帧读写）。不存在同名 Go 支撑文件，文档已明确这一点。
-- 人工复核结论：该文件存在的理由是让多组 Rust 兼容测试共享一个严格、真实 TCP、生产服务器驱动的最小客户端；运行链、协议分支、资源关闭和安全扩展位置均可由上述符号与文件反向定位。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；交付验证仅执行任务规定的 11 章节结构检查和文档差异自审。

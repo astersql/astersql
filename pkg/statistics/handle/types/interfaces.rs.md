@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-statistics-handle-types` crate 的核心接口文件，由同目录 `lib.rs` 私有声明 `mod interfaces` 后整体 `pub use interfaces::*`，因此这里的公开结构、类型别名与 trait 构成 statistics handle 各子模块之间的稳定 Rust 契约。`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 `pkg/statistics/handle/types`，直接对应同路径 Go 文件 `interfaces.go`。
-
-它处于 statistics handle 的“契约层”，不保存具体统计数据，也不执行 GC、ANALYZE、缓存刷新或 DDL 处理算法。具体实现分散在 `pkg/statistics/handle/cache/`、`storage/`、`syncload/`、`history/`、`usage/`、`autoanalyze/` 等 crate；当前 Rust 接线尚未完全收敛到本文件的全部 trait。例如 `pkg/statistics/handle/cache/statscache.rs` 已实现 `stats_types::StatsCache for StatsCacheImpl`，而 storage 与 syncload 目前仍分别保留自己的局部 `StatsHandler`/`StatsHandle` 抽象。
+处于 statistics handle 的“契约层”，不保存具体统计数据，也不执行 GC、ANALYZE、缓存刷新或 DDL 处理算法。
 
 ## 核心职责
 
@@ -95,19 +93,10 @@ crate 边界由 `pkg/statistics/handle/types/Cargo.toml` 明确：DDL 事件来�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 `interfaces.go` 的能力分组和方法名进行直接移植，并保留非 snake case 名称（由 `lib.rs` 的 `#![allow(non_snake_case)]` 放行）。主要语义映射如下：
-
-- Go `StatsReadWriter.SaveColOrIdxStatsToStorage` 的 `fms *statistics.FMSketch` 对应新增的 `Option<&FMSketch>`，两侧位置均在 TopN 和 statsVersion 之间。
 - Go 的 `*T`/可能为 nil 的返回值映射为 Rust 的 `Option<T>` 或 `Option<Arc<T>>`；共享统计表从裸指针变为 `Arc<Table>`。
-- Go 的 `context.Context` 分别映射到 util sqlexec 的 `ExecutionContext` 或 statistics handle util 的 `StatsExecutionContext` 重导出；它们不是同一类型，扩展时需依照现有签名选择。
-- Go 的 variadic 参数映射为切片，如 `tableIDs ...int64` 对应 `&[i64]`，`metaUpdates ...MetaUpdate` 对应 `&[MetaUpdate]`。
-- Go channel 映射到 `std::sync::mpsc::{Sender, Receiver}`；方向性由字段和参数类型表达，而不是 Go 的 channel direction 语法。
-- Go `map[int64]struct{}` 映射为 `HashSet<i64>`，普通 map 映射为 `HashMap`。
-- Go `PersistFunc` 的 nil JSON 能力由 `Option<&JSONTable>` 保留；`interfaces_test.rs` 有直接回归证据。
-- Go `Get(tableID) (*Table, bool)` 与 `GetNonPseudoPhysicalTableStats (*Table, bool)` 分别压缩为 `Option<Arc<Table>>`；不存在状态由 `None` 表达。
 - Rust 增加了 `Send + Sync`、生命周期和所有权约束，并用 `Result<T, Error>` 取代 Go 的多返回值 error；但当前 `Error` 比 Go error 链更弱。
 
-Go 文件的行为注释仍提供若干 Rust 声明未展开的契约，例如 GC 版本推进、安全时间窗、历史统计快照回退表列表，以及缓存异步写入屏障的用途。本文将这些作为对应关系说明，不视为当前 Rust 具体实现已经完整落地。
+Go 文件的行为注释仍提供若干 Rust 声明未展开的契约，例如 GC 版本推进、安全时间窗、历史统计快照回退表列表，以及缓存异步写入屏障的用途。
 
 ## 扩展指南
 
@@ -118,11 +107,3 @@ Go 文件的行为注释仍提供若干 Rust 声明未展开的契约，例如 G
 - 修改 JSON 导入导出签名时，必须保留 `PersistFunc` 的 `None` 边界，检查 BR/metautil 调用方，并在 storage 的独立测试中覆盖并发数、部分失败和 receiver 生命周期。
 - 接线某个尚未实现的接口前，先搜索同名局部 trait/结构，避免误把 `types::StatsReadWriter` 与 `storage::StatsReadWriter`、`types::StatsHandle` 与 `syncload::StatsHandle` 混为一体。迁移应复用现有实现，不为了满足 trait 而创建空桩。
 - 性能风险主要集中在复制大型 `Vec`/`HashMap` DTO、缓存全量 `Values()`、同步等待异步写入以及无界/高并发 JSON 导入；兼容性风险主要是 Go nil/variadic/channel 语义和 JSON 字段名漂移。
-
-## 验证依据
-
-- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
-- 冻结 `interfaces.rs`、`interfaces.go`、types crate `Cargo.toml`/`lib.rs`：核对真实 FMSketch 依赖、参数顺序、Option 借用和接口重导出。
-- 对照冻结 storage `save.rs`/`stats_read_writer.rs` 的字节模型，以及 `interfaces_test.rs` 的既有接口测试位置；本次签名增量本身不构成运行链路验证。
-- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate（`pkg/planner/core/operator/physicalop/Cargo.toml`），定义一套用值类型 `PhysicalPlanNode` 表达的物理优化任务模型：TiDB 层的 `RootTask`、TiFlash MPP 层的 `MppTask` 和存储层的 `CopTask`。`lib.rs` 以 `pub mod task_base` 暴露它，因此外部只能通过 `physicalop::task_base::*` 明确选择这套 API。
-
-必须区分本文件与同目录 `task.rs`：crate 根通过 `pub use task::*` 导出、并实现 `base::Task` trait 的主链类型来自 `task.rs`；本文件中的三个任务类型没有实现 `base::Task`，仓库内可确认的直接 Rust 使用者是 `task_base_test.rs`。所以它是可编译的、便于逐步核对 Go 语义的独立迁移模型，而不是当前规划器动态分发主链的完整替代品。文件第 31—650 行还以注释保留了 Go 来源实现，真正参与编译的 Rust 实现从 `use crate::physical_common_plans` 开始。
+`RootTask` 表示已经汇聚到 TiDB 层的计划，提供有效性、估算行数、内存估算及幂等的 Root 转换。
 
 ## 核心职责
 
@@ -67,8 +65,6 @@ RustCodeGraph 对文件给出的直接使用文件为 `base_physical_plan.rs`、
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/physicalop/task_base.go`，辅助逻辑在 `task.go`。Rust 保留的主要语义包括：三类任务分层；警告单次追加上限与跨源合并；Root 转 Root 使用副本；Cop 在 reader 构造前 FinishIndexPlan；统计从 index 同步到 table 时保留 table 的统计版本；Root 残余条件形成 Selection；Index Join 信息与警告向 Root 传播。
-
 当前 Rust 是明显的局部模型，不能等同 Go 全量实现：
 
 - Go 的任务实现 `base.Task` 并使用动态 `base.PhysicalPlan`；本文件使用 `PhysicalPlanNode` 值树且没有实现该 trait。
@@ -77,7 +73,7 @@ RustCodeGraph 对文件给出的直接使用文件为 `base_physical_plan.rs`、
 - Go 警告保存 `error` 与 SQLWarn 指针，最终返回值副本；Rust 保存字符串并对整个 `SqlWarning` 克隆。
 - Go 的 reader 类型是具体物理算子；Rust 主要以 `PhysicalKind::Other(String)` 标记 reader 名称。
 
-仓库中没有同路径 Go 单元测试文件；Go 语义依据来自 `task_base.go`、`task.go` 及其调用点，Rust 的直接回归证据来自独立的 `task_base_test.rs`。同目录 `task_test.rs` 验证的是 crate 根导出的另一套 `task.rs` 实现，可作为“FinishIndexPlan 保留版本、Root 条件生成 Selection”等共同语义的旁证，不能冒充本模块的直接测试。
+仓库中没有同路径 Go 单元测试文件；Go 语义依据来自 `task_base.go`、`task.go` 及其调用点，Rust 的直接回归证据来自独立的 `task_base_test.rs`。
 
 ## 扩展指南
 
@@ -90,13 +86,3 @@ RustCodeGraph 对文件给出的直接使用文件为 `base_physical_plan.rs`、
 - 修改 Cop 阶段机：保持 `finish_index_plan` 幂等、原 table stats version 不变、`convert_to_root_task` 不修改调用者；覆盖 index-only、table-only、双读、分区双读、非法空任务及非有限选择率。
 
 兼容风险主要是与 Go 计划形状和统计传播偏离；性能风险主要是深计划树与大警告集合的全量克隆，以及未计入 `memory_usage` 的堆对象。若将本模块接入主链，还需评估与 `task.rs` 同名类型造成的 API 混淆，并统一 crate 根导出策略。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标文件已索引。
-- RustCodeGraph `node --file pkg/planner/core/operator/physicalop/task_base.rs`：逐段读取 981 行源码，确认第 31—650 行是 Go 注释参考，第 652—981 行是可编译 Rust 实现。
-- RustCodeGraph `query SimpleWarnings/MppTask/CopTask/convert_to_root_task/finish_index_plan`：核对类型与方法定义位置；`callees convert_to_root_task`、`callees finish_index_plan` 核对内部构造与调用边。`callers` 未返回可靠的外部方法调用，故本文按“未接入主链”保守表述。
-- 已读 Rust 路径：`task_base.rs`、`task_base_test.rs`、`task.rs`、`task_test.rs`、`base/task_base.rs`、`base_physical_plan.rs`、`lib.rs`；目标目录没有 `doc.go`。
-- 已读边界/对照路径：`physicalop/Cargo.toml`、`task_base.go`、`task.go`。Cargo 的 `[package.metadata.porting]` 指向同一 Go package，且 `autotests = false`，测试由 `lib.rs` 的 `#[cfg(test)] mod task_base_test` 显式接入。
-- 直接测试覆盖：活动计划计数切换；跨两个满额警告源合并不二次限流；Cop 转 Root 先同步 index 行数、保留 table 版本且不修改原任务。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终仅执行任务指定的 11 章节结构检查，并人工复核文档没有把 Go 注释中的未移植能力写成已支持。

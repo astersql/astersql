@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/testkit/asynctestkit.rs` 属于 `astersql-testkit` crate；crate 根由 `pkg/testkit/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/testkit/lib.rs` 通过 `pub mod asynctestkit` 暴露本模块。它是测试基础设施而不是数据库服务主链的一部分：调用者把一个实现了 `Database` 的存储或会话工厂交给 `NewAsyncTestKit`，随后通过线程安全的命令发送端驱动一个只驻留在 worker 线程中的 `TestKit`。
-
-当前可见的生产式使用点是 `pkg/executor/write_concurrent_test.rs::batch_insert_with_on_duplicate`：每个外层并发线程各构造一个 `AsyncTestKit`，从而获得相互独立的测试会话。本文件自身不创建 Tokio runtime，也不暴露 Rust `async fn`；名称中的“异步”具体指“SQL 在独立 OS 线程执行，并通过通道请求/响应”。
+刻意只提供执行、查询、屏障和关闭这组小接口；Go 版本中的 context 会话管理、批量并发编排和错误消息断言目前不在此 Rust 文件中。
 
 ## 核心职责
 
@@ -101,15 +99,3 @@
 - 若补齐 prepared-statement 语义，应先检查具体 `Database` 实现和 `TestSession::{PrepareStmt, ExecutePreparedStmt, DropPreparedStmt}`，并覆盖 prepare 成功后 execute/drop 失败时的资源清理。
 - 测试逻辑继续放在独立的 `pkg/testkit/asynctestkit_test.rs`，不要内嵌进生产源文件。至少应同步覆盖：底层执行/查询错误传播、worker 提前停止、关闭失败或 panic 的可观察策略、多生产者序列化，以及任何新增命令的屏障关系；跨模块真实使用可参考 `pkg/executor/write_concurrent_test.rs`。
 - 本文件是既有 Rust 源码，已有 `// Copyright 2026 AsterSQL.` 标记；文档任务不修改其许可证或实现。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标仓库；查询时报告 7,032 个 Rust 文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/testkit/asynctestkit.rs --offset 1 --limit 400`：核对了本文件 161 行全貌、`Command`、`AsyncTestKit`、全部方法、`Drop` 和 `NewAsyncTestKit`。
-- RustCodeGraph `explore "pkg/testkit/asynctestkit.rs AsyncTestKit AsyncTestKitConfig"`：识别出 Rust `NewAsyncTestKit` 的独立测试调用者，以及 `Exec`/`Query`/`Sync` 的本文件调用关系；搜索项中不存在 `AsyncTestKitConfig`，说明本文件没有该配置类型。
-- RustCodeGraph `node`/`explore` 对 `pkg/testkit/testkit.rs`、`pkg/testkit/db_driver.rs`、`pkg/testkit/result.rs` 和 `pkg/executor/write_concurrent_test.rs` 的结果：核对了 `TestKit::new/Exec/Query/Session`、`Database::create_session/execute/query/close`、`QueryRows::string_rows`、`Result::new` 及真实并发调用点。
-- 读取 `pkg/testkit/Cargo.toml` 与 `pkg/testkit/lib.rs`：核对 crate 名、根模块路径、公开模块接线、测试文件的独立 `#[path]` 挂载，以及本模块没有 feature 条件。
-- 读取 `pkg/testkit/asynctestkit.go`：核对 Go 的 context/session/`ConcurrentRun`/prepared-result-set 行为与 Rust 当前实现差异。
-- 读取 `pkg/testkit/asynctestkit_test.rs`：核对命令执行顺序、查询物化、`Sync` 和析构时恰好关闭一次会话的断言。
-- 通过 `rg` 检查 Rust 调用点：确认直接外部使用为 `pkg/executor/write_concurrent_test.rs`，crate 内直接覆盖为 `pkg/testkit/asynctestkit_test.rs`。
-

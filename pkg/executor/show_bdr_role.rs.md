@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；[`pkg/executor/Cargo.toml`](Cargo.toml) 以 `lib.rs` 为 crate 根，[`pkg/executor/lib.rs`](lib.rs) 通过 `pub mod show_bdr_role` 公开此模块，并将独立测试文件 `show_bdr_role_test.rs` 置于 `#[cfg(test)]` 下。它表达 `ADMIN SHOW BDR ROLE` 的 Rust 侧单行执行控制流：每次先清空输出 `Chunk`，首次调用在新管理员事务中读取角色，后续调用不再产出行。
-
-本文件是“执行器状态机 + 运行时边界”，而不是完整的 KV/元数据实现。Rust builder 在 [`pkg/executor/builder.rs`](builder.rs) 中把计划转成通用 `ExecutorKind::AdminShowBdrRole` 叶节点，但当前生产代码搜索未发现 `ShowBdrRoleRuntime` 的实现，也未发现 builder 直接构造本文件的泛型 `AdminShowBDRRoleExec`。因此，已有证据只能证明核心流程已移植并受单元测试约束，不能声称它已直接接入完整 Rust SQL 主链。
+表达 `ADMIN SHOW BDR ROLE` 的 Rust 侧单行执行控制流：每次先清空输出 `Chunk`，首次调用在新管理员事务中读取角色，后续调用不再产出行。
 
 ## 核心职责
 
@@ -61,11 +59,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/executor/show_bdr_role.go`](show_bdr_role.go)。两版的主干顺序相同：重置请求块，已完成则返回，否则在新管理事务中读 BDR role，写第 0 列并设置完成位。两版都保留回调内副作用先于最终 commit 结果的时序。
-
 主要差异是具体能力所在位置：Go `AdminShowBDRRoleExec` 嵌入 `exec.BaseExecutor`，从 `e.Ctx().GetStore()` 取 store，直接调用 `kv.WithInternalSourceType`、`kv.RunInNewTxn`、`meta.NewMutator(txn).GetBDRRole` 和 `req.AppendString`；Rust 类型把这些全部放入 `ShowBdrRoleRuntime`。Go builder 直接返回 `&AdminShowBDRRoleExec{BaseExecutor: ...}`，Rust builder 目前只通过通用 `build_leaf` 路径生成执行器盒，没有将该路径与本文件的泛型类型绑定的直接证据。
-
-Go 未找到专门针对 `show_bdr_role.go` 执行器的独立测试；相关 Go 证据是 `pkg/meta/meta_test.go` 对 `GetBDRRole` 的空值、设置和清除行为。Rust 则在 [`pkg/executor/show_bdr_role_test.rs`](show_bdr_role_test.rs) 用可控运行时专门锁定 commit 失败后的副作用语义。
 
 ## 扩展指南
 
@@ -74,12 +68,3 @@ Go 未找到专门针对 `show_bdr_role.go` 执行器的独立测试；相关 Go
 - 扩展错误行为时应分别覆盖：读角色失败前不写行/不设 `done`，回调成功但 commit 失败后保留行/保留 `done`，以及成功后第二次 `Next` 重置为空且不再开事务。
 - 若增加角色列、状态或诊断信息，需同时核对 planner 的 `buildAdminShowBDRRoleFields`、Go/Rust 输出顺序和 `Chunk` 列型，避免只改运行时而破坏 schema 契约。
 - 兼容性风险是改变空值、角色文本或错误后重入语义；正确性风险是错用业务会话事务或忘记 `done`；性能风险很低，但必须保持每个执行器实例最多一次元数据事务。
-
-## 验证依据
-
-- RustCodeGraph `status` 确认当前索引可用（11,467 个文件、307,296 个节点、1,848,419 条边）；`explore "pkg/executor/show_bdr_role.rs ShowBDRRole"` 返回目标 Rust 文件和独立测试全文，`query AdminShowBDRRoleExec` / `query ShowBdrRoleRuntime` 同时定位 Rust 与 Go 对照符号。
-- RustCodeGraph `node buildAdminShowBDRRole` 确认 Go builder 直接构造 `AdminShowBDRRoleExec`，而 Rust `buildAdminShowBDRRole` 调用 `build_leaf`；对泛型 Rust `Next` 的精确 `node/callers/callees` 定位未成功，所以调用关系仅使用已返回的源码和全仓引用搜索交叉验证。
-- 已读 Rust 证据：[`pkg/executor/show_bdr_role.rs`](show_bdr_role.rs)、[`pkg/executor/show_bdr_role_test.rs`](show_bdr_role_test.rs)、[`pkg/executor/lib.rs`](lib.rs)、[`pkg/executor/builder.rs`](builder.rs) 及 [`pkg/executor/Cargo.toml`](Cargo.toml)。`pkg/executor` 下不存在 `doc.go`。
-- 已读 Go 证据：[`pkg/executor/show_bdr_role.go`](show_bdr_role.go)、[`pkg/executor/builder.go`](builder.go)、[`pkg/meta/meta.go`](../meta/meta.go) 与 [`pkg/meta/meta_test.go`](../meta/meta_test.go)。全仓搜索未发现专门调用 `AdminShowBDRRoleExec` 的 Go 测试。
-- 全仓 Rust 引用搜索只发现模块声明、目标文件、独立测试和 builder 的通用 kind 分发，未发现生产 `impl ShowBdrRoleRuntime` 或对本泛型执行器的直接构造；因此文档将生产接线标为未验证/未显示接入。
-- 本任务只生成文档，按计划不运行 Cargo。交付前使用任务指定命令验证恰好 11 个固定章节，并人工复核只有本说明文档和完成后删除的编号任务文件发生变化。

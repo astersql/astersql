@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate，提供一套围绕“把表达式列引用的 `unique_id` 解析为子节点输出中的位置 `index`”的简化值模型与辅助入口。`pkg/planner/core/lib.rs` 通过 `mod resolve_indices` 无条件编译该模块，并用 `pub use resolve_indices::*` 公开再导出其中的公有类型和函数；对应独立测试模块只在 `cfg(test)` 下启用。
-
-需要区分模块可见性与主链接线：RustCodeGraph 将本文件标记为仅被 `pkg/planner/core/resolve_indices_test.rs` 使用，仓库精确引用搜索也未发现这些驼峰公有函数的生产调用者。当前优化主链在 `optimizer_runtime.rs` 上调用动态物理计划的 `resolve_indices()`，完整物理算子在 `operator/physicalop/` 下各自实现相关逻辑。因此本文件当前是可公开复用、用于 Go 行为对齐和聚焦测试的简化 API，而不是所有生产物理计划解析工作的唯一实现。
+当前优化主链在 `optimizer_runtime.rs` 上调用动态物理计划的 `resolve_indices()`，完整物理算子在 `operator/physicalop/` 下各自实现相关逻辑。
 
 ## 核心职责
 
@@ -84,18 +82,13 @@ RustCodeGraph 的文件边显示直接使用者为 `resolve_indices_test.rs`。�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 `pkg/planner/core/resolve_indices.go`。公有 Rust 入口保留了 Go 私有函数的名称和总体顺序：Projection 的 producer/inline Schema 后接表达式解析，UnionScan 的条件后接 handle，Selection 的虚拟表达式回退，TopN/Limit 的分区、inline Schema 与前缀列，以及相邻 Projection 的并查集合并。
-
 关键差异如下：
 
 - Go 函数接收真实 `base.PhysicalPlan` 并向下转型，调用真实孩子、Schema、表达式上下文和子计划 `ResolveIndices`；Rust 本文件接收自包含的简化结构，不递归真实计划树。完整 Rust 物理算子另有 trait 实现。
-- Go Projection 从真实第一个孩子识别相邻 Projection；这里使用可选的 `child_projection` 克隆。Go inline projection 会克隆 Schema 切片和匹配列以避免共享列对象；这里的列本来就是拥有值，直接在 `Vec` 中改写。
 - Go UnionScan 与 Selection 会先解析 `BasePhysicalPlan`，IndexLookUpReader 会依次解析 table/index 子计划；简化 Rust 入口不包含这些步骤，且 `index_schema` 未消费。
-- Go 虚拟表达式回退使用求值上下文和表达式语义；这里用 `virtual_expr: String` 完全相等近似。Go 的虚拟列 helper 还负责真实 Schema 列关系，这里只检查存在性。
-- Go `HandleCols` 是组合抽象；这里是普通 `Vec<IndexedColumn>`。Go common handle 使用 `TablePlans[0].Schema()`，这里统一使用 `table_schema`。
 - Go 错误带 planner/Explain 上下文；这里简化为字符串。Rust 独立测试覆盖部分更新和递归虚拟列回退，但未找到同目录专门针对 `resolve_indices.go` 的 Go 测试；Go 语义主要由生产实现以及相关完整算子测试间接约束。
 
-Go 还从 `core_init.go` 把若干入口安装到 `utilfuncp` 函数变量，并在 `rule_inject_extra_projection.go` 直接复用 `refine4NeighbourProj`。本文件在 Rust 侧没有对应的函数变量注册或额外投影规则调用证据，不能据名称相同推断接线完全等价。
+本文件在 Rust 侧没有对应的函数变量注册或额外投影规则调用证据，不能据名称相同推断接线完全等价。
 
 ## 扩展指南
 
@@ -105,13 +98,3 @@ Go 还从 `core_init.go` 把若干入口安装到 `utilfuncp` 函数变量，并
 - 修改相邻 Projection 细化时，应增加同一输入映射多个输出、标量表达式跳过、父下标代表重定向和越界保护测试，并对照 Go `refine4NeighbourProj` 以及 `rule_inject_extra_projection.go` 的实际用途。
 - 加强虚拟列行为时，应明确字符串匹配是否需要规范化、重复候选如何处理、输出 Schema 是否要改写，并与完整 physicalop 的表达式上下文实现保持一致。
 - 若目标是把本简化 API 接入生产主链，需先证明它能承载真实计划递归、表达式类型/上下文与结构化错误；不能只增加一个调用点便宣称替代完整实现。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/core/resolve_indices.rs` 确认目标文件已索引；`node --file ... --offset 1 --limit 500` 读取到完整 332 行、29 个符号，并报告直接使用者为 `pkg/planner/core/resolve_indices_test.rs`。
-- 精确符号查询：`query` 对七个公有入口以及 `resolveIndexForInlineProjection`、`refine4NeighbourProj` 均同时定位到本 Rust 文件和 `pkg/planner/core/resolve_indices.go`；精确 `callers` 查询在本地超时，因此调用者结论另用模块入口与仓库引用搜索交叉核验，没有把不完整图结果当成肯定证据。
-- Rust 源码：`pkg/planner/core/resolve_indices.rs`；模块接线：`pkg/planner/core/lib.rs`；crate 边界与 feature：`pkg/planner/core/Cargo.toml`。
-- 独立 Rust 测试：`pkg/planner/core/resolve_indices_test.rs`，覆盖递归虚拟表达式回退，以及 Projection、UnionScan、IndexLookUpReader 在后续失败时保留先前写回。
-- Go 对照：`pkg/planner/core/resolve_indices.go`；Go 注册与额外投影调用证据：`pkg/planner/core/core_init.go`、`pkg/planner/core/rule_inject_extra_projection.go`。
-- 完整 Rust 主链接线核验：`pkg/planner/core/base/plan_base.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/operator/physicalop/` 中的算子实现与 `physical_limit_test.rs`。这些文件只用于确认本简化模块和完整生产实现的边界。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定的结构命令确认文档存在且恰好包含十一个固定二级标题，并人工复核所有“当前已接线/未接线”陈述都有上述源码或搜索证据。

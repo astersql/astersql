@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件定义 `astersql-kv` crate 的“事务内单键元数据”位编码，以及把高层标志操作合并到该编码的纯函数。源码由 [`pkg/kv/lib.rs`](lib.rs) 的 `keyflags` 模块通过 `include!("keyflags.rs")` 纳入，并由 `pub use keyflags::*` 从 crate 根重新导出；因此 `KeyFlags`、`FlagsOp` 和 `ApplyFlagsOps` 是 `astersql_kv` 的公开 API，而六个具体 bit 常量保持 `pub(crate)`。
-
-它位于 SQL 层与事务内存缓冲之间的 KV 抽象层：[`pkg/kv/kv.rs`](kv.rs) 的 `MemBuffer` 接口用 `KeyFlags`/`FlagsOp` 描述 `GetFlags`、`SetWithFlags`、`UpdateFlags`、`DeleteWithFlags` 和 `InspectStage`，具体缓冲实现负责保存每个 key 的位集。本文件本身不访问 TiKV、不发起 prewrite，也不管理事务；它只提供可被这些路径携带和判定的紧凑元数据。
-
-[`pkg/kv/Cargo.toml`](Cargo.toml) 证明归属 crate 为 `astersql-kv`、库入口为 `lib.rs`。本文件只依赖 Rust 核心运算 trait，没有 feature 条件或外部 crate 依赖；`nextgen` feature 不改变这里的布局或分支。
+位于 SQL 层与事务内存缓冲之间的 KV 抽象层：[`pkg/kv/kv.rs`](kv.rs) 的 `MemBuffer` 接口用 `KeyFlags`/`FlagsOp` 描述 `GetFlags`、`SetWithFlags`、`UpdateFlags`、`DeleteWithFlags` 和 `InspectStage`，具体缓冲实现负责保存每个 key 的位集。
 
 ## 核心职责
 
@@ -82,15 +78,10 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`pkg/kv/keyflags.go`](keyflags.go)。Rust 保持了以下 Go 语义：
-
-- `KeyFlags` 对应 Go `uint8`，六个位按相同顺序分配；两个断言位的四态解释完全相同。
-- 六个查询方法逐一对应 Go 同名方法，布尔表达式一致。
-- `FlagsOp` 对应 Go `uint16`，四个常量保持 `iota` 的 0 至 3 编号。
 - `ApplyFlagsOps` 与 Go `switch` 一样只置位；Go 没有 `default`，Rust 用 `_ => None` 保持未知操作 no-op。
 - Go 可变参数 `ops ...FlagsOp` 在 Rust 中表现为借用切片 `ops: &[FlagsOp]`；调用方式不同，但顺序与合并结果一致。
 
-Rust 特有部分是为 `KeyFlags` 实现 `BitOrAssign`、`BitAndAssign`、`Not`，并通过 newtype 和派生 trait 获得类型区分及值语义。`FlagsOp` 显式使用 `#[repr(transparent)]`；`KeyFlags` 没有该属性，因此不应据此宣称其具备稳定的 FFI ABI。Go 同路径未发现专门的 `keyflags_test.go`；当前直接回归证据来自 Rust 独立测试 [`pkg/kv/keyflags_test.rs`](keyflags_test.rs)，以及覆盖断言转换和非断言位保留的 [`pkg/kv/assertion_1_aster_unit_test.rs`](assertion_1_aster_unit_test.rs)。
+Rust 特有部分是为 `KeyFlags` 实现 `BitOrAssign`、`BitAndAssign`、`Not`，并通过 newtype 和派生 trait 获得类型区分及值语义。Go 同路径未发现专门的 `keyflags_test.go`；当前直接回归证据来自 Rust 独立测试 [`pkg/kv/keyflags_test.rs`](keyflags_test.rs)，以及覆盖断言转换和非断言位保留的 [`pkg/kv/assertion_1_aster_unit_test.rs`](assertion_1_aster_unit_test.rs)。
 
 ## 扩展指南
 
@@ -101,18 +92,3 @@ Rust 特有部分是为 `KeyFlags` 实现 `BitOrAssign`、`BitAndAssign`、`Not`
 测试必须保持独立文件，不内嵌进 `keyflags.rs`。至少同步扩展 [`pkg/kv/keyflags_test.rs`](keyflags_test.rs)：验证精确 bit 值、所有查询组合、空/重复/未知操作、保留既有与未知高位；涉及断言时同步 [`pkg/kv/assertion_1_aster_unit_test.rs`](assertion_1_aster_unit_test.rs)。若操作需要传入存储后端，还要检查 `ClientMemBuffer::UpdateFlags`、canonical mock 的 `KVTxn::UpdateFlags`，以及独立的 unionstore/TiKV 操作映射，防止 KV 抽象已支持但后端丢失语义。
 
 兼容性风险主要是改变位或操作码编号、把未知操作从 no-op 改成错误、改变零值含义；正确性风险主要是混淆 `PreviousPresumeKNE` 与当前 PNE、或破坏断言 `11` 的 unknown 语义；性能风险很低，但扩大表示或引入分配会影响每 key 的事务内存开销和热路径更新成本。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query KeyFlags` 定位到 `pkg/kv/keyflags.rs:27`，`query ApplyFlagsOps --kind function --json` 定位到 Rust `keyflags.rs::ApplyFlagsOps` 与 Go `pkg/kv/keyflags.go::ApplyFlagsOps`。
-- RustCodeGraph `node --file pkg/kv/keyflags.rs --offset 1 --limit 260`：读取目标文件全部 129 行，并报告它被 7 个文件使用。精确 `callers keyflags.rs::ApplyFlagsOps` 在本地 SQLite 后端持续无输出并超时，已用下述限定范围直接调用点补证，未把不完整图结果推断为不存在调用者。
-- 目标源码 [`pkg/kv/keyflags.rs`](keyflags.rs)：核对全部常量、类型、trait impl、查询方法与 `ApplyFlagsOps`；文件没有条件编译项。
-- crate 与模块入口：[`pkg/kv/Cargo.toml`](Cargo.toml)、[`pkg/kv/lib.rs`](lib.rs)、[`pkg/kv/kv.rs`](kv.rs)。
-- Go 对照：[`pkg/kv/keyflags.go`](keyflags.go)。
-- 直接实现与调用点：[`pkg/store/driver/kv_adapter.rs`](../store/driver/kv_adapter.rs) 的 `ClientMemBuffer`，以及 [`pkg/store/mockstore/mockstorage/canonical_storage.rs`](../store/mockstore/mockstorage/canonical_storage.rs) 的 `KVTxn`。
-- 相邻断言逻辑：[`pkg/kv/assertion.rs`](assertion.rs)。
-- 独立测试：[`pkg/kv/keyflags_test.rs`](keyflags_test.rs) 的 `key_flags_match_go_bit_semantics`、`unknown_flags_op_is_a_no_op_like_go`；[`pkg/kv/assertion_1_aster_unit_test.rs`](assertion_1_aster_unit_test.rs) 的 `assertion_and_key_flag_transitions_match_go`。
-
-本任务为纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在且恰有 11 个固定二级标题；交付前另行执行该命令并检查退出码。

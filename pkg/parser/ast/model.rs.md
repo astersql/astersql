@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`model.rs` 属于 `astersql-parser-ast` crate；crate 根由 `pkg/parser/ast/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，并在 `pkg/parser/ast/lib.rs:4994-4996` 以公开子模块 `pub mod model` 接入。它不是 SQL 解析入口，而是 Go `pkg/parser/ast/model.go` 中一组跨层共享的、具有稳定数值语义的模型枚举在 Rust AST 边界上的实现。
-
-该模块的直接上游包括 `pkg/meta/model/internal/group1/lib.rs:10-24`：后者将这里的类型、常量和 `PriorityValueToName` 再导出，供正式元数据模型及 DDL 等模块使用。典型落点有 `pkg/meta/model/table.rs:637-665` 的表锁元数据、`pkg/meta/model/resource_group.rs:37-63` 的失控查询设置，以及该文件第 120 行以后对优先级名称的格式化。`CIStr` 与 `NewCIStr` 并非在本文件重复实现，而是由 `pkg/parser/ast/lib.rs:325-375` 定义，再由本文件第 23 行公开转发。
+用 `value_type!`（`model.rs:25-33`）统一生成透明整数包装类型，使 Rust 类型系统区分表锁、分区、索引、外键动作等不同概念，同时保留与 Go 常量完全一致的底层数值。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/ast/model.go`。Rust 对齐了 Go 中从 `TableLockType` 到 `PriorityValueToName` 的数值次序和主要字符串结果：表锁（Go 25-64）、视图三类属性（66-133）、分区（135-169）、主键（171-192）、索引（194-236）、外键选项（238-266）、runaway（334-395）、列选择（397-420）和优先级（422-441）。
-
 实现形态存在以下差异：
 
 - Go 使用具名整数类型与 `String()` 方法；Rust 使用 `#[repr(transparent)]` 新类型、公开常量和 `Display`，从而通过 `to_string()` 得到同样文本。
@@ -100,8 +96,6 @@
 - Go 的视图字符串方法使用指针接收者；Rust 新类型是 `Copy`，`Display` 借用 `&self`，没有 nil 接收者这一边界。
 - Go 在本文件直接定义 `CIStr`、哈希/比较/内存估算和 JSON 兼容逻辑；Rust 将真实实现放在 crate 根 `lib.rs:325-375`，本文件仅再导出。Rust 对象 JSON 输入与 Go 一样保留已有 `L`，字符串输入计算小写。
 - Go `IndexTypeHNSW` 注释说明其只用于 AST、预处理后改写为 Vector；Rust保留相同判别值，但本文件本身不执行该改写。
-
-测试证据方面，`pkg/parser/ast/model_test.rs` 覆盖 `CIStr` 的原文/小写/展示及字符串与对象 JSON 往返；`pkg/parser/ast/model_7_aster_unit_test.rs:10-65` 覆盖表锁、索引、外键、优先级和 `CIStr` 的 Go 对齐行为。
 
 ## 扩展指南
 
@@ -114,14 +108,3 @@
 5. 若修改 `CIStr`，真正实现位于 `pkg/parser/ast/lib.rs:325-375`；同时检查所有通过 `model` 再导出的用户，并保留字符串 JSON 的升级兼容行为。
 
 主要风险是判别值兼容、未知值回退改变导致 SQL/诊断文本漂移、serde 形态变化，以及遗漏 meta model 再导出或边界转换。这里的格式化路径很短，性能风险主要来自扩大 `CIStr` 构造/克隆，而整数枚举本身无明显热点资源成本。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/ast/model.rs` 确认目标已索引，文件含 104 个符号。
-- RustCodeGraph 源码读取：`node --file pkg/parser/ast/model.rs --offset 1 --limit 260` 与 `--offset 261 --limit 180` 覆盖全部 361 行；`node --file pkg/parser/ast/lib.rs` 核对 `CIStr` 实现、公开模块接线与独立测试接线。
-- RustCodeGraph 符号查询：查询了 `PriorityValueToName`、`TableLockType`、`PartitionType`、`IndexType`、`RunawayActionType`、`ColumnChoice`、`CIStr`、`NewCIStr`，并用常量查询确认 `PartitionTypeSystemTime`、`IndexTypeHNSW`、`RunawayActionSwitchGroup`、`PredicateColumns` 的目标定义。精确 `callers/callees` 对这些宏生成新类型/常量未返回边，因此调用关系使用已索引文件的模块使用关系及仓库直接引用点交叉验证，未虚构静态调用边。
-- 已读配置与入口：`pkg/parser/ast/Cargo.toml`、`pkg/parser/ast/lib.rs`、`pkg/meta/model/internal/group1/lib.rs`。
-- 已读 Go 对照：`pkg/parser/ast/model.go` 全部 441 行。
-- 已读 Rust 测试：`pkg/parser/ast/model_test.rs`、`pkg/parser/ast/model_7_aster_unit_test.rs`；crate 根 `lib.rs:5077-5082` 证明二者以 `#[cfg(test)]` 独立接线。
-- 已读直接消费者：`pkg/meta/model/table.rs`、`pkg/meta/model/resource_group.rs`，并通过仓库引用搜索核对 `pkg/ddl/index.rs`、`dumpling/export/schema_projection.rs`、`dumpling/export/schema_projection_restore.rs` 等使用点。
-- 人工复核结论：本文区分了定义、再导出、消费者与未由本文件执行的业务行为；所有未知值回退均逐项来自 Rust/Go 源码，没有把格式化能力描述为业务校验或执行能力。

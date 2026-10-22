@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust `astersql-infoschema-perfschema` crate 的虚拟表实现层，位于静态 DDL 与注册层之下：`const.rs` 保存建表 SQL，`init.rs::build_performance_schema` 将这些 SQL 解析成 `TableMeta`，本文件再用 `table_from_meta` / `create_perf_schema_table` 把元数据包装成 `PerfSchemaTable`，并为少数有真实数据源的表提供按需取行能力。crate 根 `lib.rs` 对外再导出 `PerfSchemaTable`、`table_from_meta` 和预定义表判断函数。
-
-当前生产接线需要分两层理解。`pkg/session/runtime/system_query.rs::build_virtual_system_catalog` 调用 `build_performance_schema`，把表 ID、表名和列名装入 session 的虚拟系统目录，因此 Rust SQL 层能够看见 `performance_schema` 的元数据。仓库搜索未发现生产代码调用本文件的 `PerfSchemaTable::get_rows` 或 `iter_records`；这些数据读取入口目前只在 `tables_test.rs` 中被直接验证，不能据此断言本地/远端 profile 行已接入 Rust SQL 执行主链。
-
-`Cargo.toml` 指定 `lib.rs` 为 crate 入口，正常依赖只有 `tracing = "0.1"`；大量与 Go 完整实现对应的 AsterSQL crate 依赖被放在 `target.'cfg(any())'.dependencies` 下，恒不启用。这与本文件通过 `RowSource`、`RemoteProfileClient` trait 隔离 session、HTTP、profile 解析等基础设施的轻量实现相符。
+定义 `PERFORMANCE_SCHEMA_DB_ID`、44 个表名常量和惰性初始化的 `TABLE_ID_MAP`，为虚拟库表提供稳定 ID；前 35 个历史表的 ID 顺序与 Go 保持一致，后 9 个客户端兼容表顺序追加。
 
 ## 核心职责
 
@@ -109,16 +105,6 @@
 
 ## 与 Go 版本的对应关系
 
-`tables.go` 是直接语义基准：Rust 表名常量、历史 ID 顺序、`IsPredefinedTable`、插件优先工厂、虚拟表访问器、索引初始化、表名分派、等长投影捷径、visitor 提前停止，以及远端结果按地址排序并前置地址列，都与 Go 结构一一对应。
-
-主要保持点包括：
-
-- 六类 TiDB profile 在采集前记录表名和 session 身份；profile key 与 Go 相同。
-- TiKV CPU 使用 `/debug/pprof/profile?seconds=30`；PD 使用 `/pd/api/v1/debug/pprof/...` 路径，goroutine 使用 `debug=2`。
-- 远端请求统一传入 `allow_follower = true`，对应 Go 设置 `PD-Allow-follower-handle: true`；具体 header 由 client 实现负责。
-- 缺失 status 地址保留 Go 的历史 TiKV warning 文本；节点错误降级为语句 warning；成功行首列是 status 地址。
-- `visible_columns` 返回全部列、`hidden_columns` 为空，即使 `ColumnInfo.hidden` 为 true，也与 Go `VisibleCols` / `HiddenCols` 行为一致。
-
 需要明确的差异与移植边界：
 
 - Go `tableIDMap` 当前列出 35 表；Rust 追加了 9 个客户端需要的兼容表，并由 Rust DDL/测试保证元数据完整性。
@@ -141,15 +127,3 @@ Go 测试 `tables_test.go` 通过 TestKit 验证 SQL 查询、真实 mock HTTP p
 插件扩展应使用小写无关的 `register_plugin_table` / `unregister_plugin_table`，并避免依赖 map 锁在回调期间仍持有。测试必须放在独立的 `tables_test.rs`，不可内嵌到生产源文件；应覆盖插件优先级、替换/注销和错误传播。
 
 若目标是让 profile/session 行真正经 Rust SQL 查询返回，不能只改本文件：还需在 session/executor 虚拟表读取链中提供生产 `RowSource`、`RemoteProfileClient`，注册或调用 `table_from_meta`，并以 SQL 集成测试证明数据面接线。该工作超出本单文件文档任务当前事实范围。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 `tables.rs` 被识别为含 106 个符号。
-- RustCodeGraph `files --filter pkg/infoschema/perfschema`：确认 crate 内 `const.rs`、`init.rs`、`lib.rs`、`tables.rs` 及独立测试的边界。
-- RustCodeGraph `node --file pkg/infoschema/perfschema/tables.rs --offset 1 --limit 1000`：核对目标文件全部 562 行、主要类型、函数、分支和并发实现；图报告直接使用文件包括 `pkg/infoschema/perfschema/tables_test.rs` 与 `pkg/infoschema/go_merge_45_test.rs`。
-- RustCodeGraph `node` 读取 `pkg/infoschema/perfschema/init.rs`、`pkg/session/runtime/system_query.rs`、`pkg/infoschema/builder.rs` 和 `pkg/infoschema/perfschema/tables_test.rs`：核对元数据构建、session 目录接线、虚拟表驱动形态及测试边界。对通用方法名执行的 `callers` / `callees` 查询没有返回可用调用边，随后用精确标识符仓库搜索补证。
-- `pkg/infoschema/perfschema/Cargo.toml` 与 `lib.rs`：核对 crate 入口、正常依赖、恒禁用的移植依赖、模块声明和再导出。
-- `pkg/infoschema/perfschema/tables.go`、`init.go` 与 `tables_test.go`：核对 Go 工厂、真实 session/HTTP/profile 实现、注册路径、错误降级、排序、投影和端到端测试意图。
-- `pkg/infoschema/perfschema/tables_test.rs`：核对稳定 ID/列序、访问器、审计字段与时序、所有本地 profile 分派、PD URI、投影兼容、远端 warning/排序/行形状、不支持节点类型、插件优先级和索引错误。
-- 仓库精确搜索 `table_from_meta`、`get_rows`、`iter_records`、`data_for_remote_profile` 及 crate 名：确认元数据生产接线位于 `system_query.rs`，而本文件数据面入口未发现测试外生产调用。该结论是静态仓库证据，不等同于运行时覆盖证明。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构验证，并人工检查没有把未接线能力描述为已接线。

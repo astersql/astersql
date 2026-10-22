@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `testutil.rs`](./testutil.rs) 是 `astersql-executor-internal-testutil` crate 的通用测试数据层，位于执行器内部测试工具中。`lib.rs` 将它声明为 `pub mod testutil` 并重导出全部公开符号；根门面 `pkg/lib.rs` 又在 `executor::internal::testutil` 下重导出该 crate。它不是 SQL 请求主链上的生产数据源，而是 Agg、Limit、Sort、Window 等执行器测试用的 mock 基础设施。
-
-`Cargo.toml` 把 crate 根定为 `lib.rs`，并通过 `package.metadata.porting.go-package = "pkg/executor/internal/testutil"` 记录 Go 对照包。当前文件的直接 Rust 依赖只是同级 `../exec` crate 中的 `Chunk`、`ExecContext`、`Executor`、`FieldType`、`Result` 和 `Schema`；manifest 另为 Windows 目标声明表达式、规划器、会话、类型、chunk 和内存等 Go 迁移边界依赖，但本文件没有直接引用它们。
+使 `MockDataSource` 实现 `Executor` 火山模型接口，为上层算子测试提供可重置、逐块拉取且有 schema/返回类型元数据的叶子执行器。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ NULL 有两条路径：`BuildMockDataSource` 只根据显式 `Nulls` 位图覆�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/internal/testutil/testutil.go`。Rust 保留了主要结构与流程：`MockDataSourceParameters`、`MockDataSource`、四种 NDV 规则、可选排序和 selection、`PrepareChunks`、`BuildMockDataSource(WithIndex)`、物理计划包装、内存超限计数，以及覆盖广泛 MySQL 类型的随机 chunk 生成。`testutil_test.rs` 中的类型码、默认值、正负 Duration、Enum/Set 非固定值和超限优先级断言直接锁定这些迁移意图。
-
 已确认的差异包括：
 
 - Go 使用生产 `sessionctx.Context`、`expression.Schema`、`types.FieldType`、`chunk.Chunk` 和完整 `exec.BaseExecutor`；Rust 是自包含的简化类型系统，且 `exec::FieldType` 暂只保留 type code。
@@ -91,8 +87,6 @@ Go 对照文件是 `pkg/executor/internal/testutil/testutil.go`。Rust 保留了
 - Go 随机值同时使用 `crypto/rand` 和 `math/rand`；Rust 统一使用原子 LCG，字符串长度、浮点分布、JSON map 键数等细节与 Go 不完全相同，但测试覆盖的值类别和关键正负/空值域保留。
 - Go 的 `MockDataPhysicalPlan` 嵌入完整物理计划接口，并有 `Stats`/`QueryBlockOffset`；Rust 只保留当前测试需要的 schema、executor、ID、explain ID 和内存用量门面。
 - Go `MockActionOnExceed` 继承真实 OOM action 并接收 tracker；Rust `Action` 无参数，只维护原子计数。
-
-因此，Rust 实现是面向当前迁移测试的等价骨架，不应宣称已与 Go 生产类型、真实列传输或随机分布逐位一致。
 
 ## 扩展指南
 
@@ -104,13 +98,3 @@ Go 对照文件是 `pkg/executor/internal/testutil/testutil.go`。Rust 保留了
 - 所有回归逻辑应保持在独立的 `pkg/executor/internal/testutil/testutil_test.rs`，不内嵌到生产 `.rs` 文件。类型码/生命周期变更扩展 `mock_data_source_preserves_go_type_codes_and_chunk_lifecycle`，随机值域变更扩展两个 random chunk 测试，内存动作变更扩展 `mock_action_counts_triggers_and_keeps_go_priority`。
 
 兼容性风险集中在 MySQL type code、Go 字段值域和 `Open/Next` 契约；性能风险集中在构建时按列生成全量 datum、再按行复制到 chunk，以及 `Open` 克隆全部 `GenData`。大行数 fixture 的扩展应专门评估这两次存储/复制成本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/internal/testutil` 确认本 crate 的 Rust/Go 对照文件集。
-- RustCodeGraph `node --file pkg/executor/internal/testutil/testutil.rs` 分段读取了 1–663 行，并报告该文件被 82 个文件使用；已核对所有常量、枚举、结构、类型别名、公开函数、`impl Executor` 和私有辅助函数。
-- RustCodeGraph `query BuildMockDataSource --kind function --json` 将 Rust 符号定位到 `testutil.rs:427`，同时确认 Go 对照符号在 `testutil.go:269`。同名符号消歧后的 `callers/callees` 命令超时且无输出，因此调用点结论限定为索引的文件级使用统计与已读直接测试。
-- RustCodeGraph `node` 读取 `pkg/executor/internal/testutil/lib.rs`，确认模块声明、公开重导出和独立 `testutil_test.rs`；读取 `pkg/lib.rs:420` 附近确认顶层门面重导出。
-- RustCodeGraph `node` 读取 `pkg/executor/internal/exec/executor.rs:1–210`，核对 `Chunk`、`Schema`、`Result` 和 `Executor` 火山模型契约；读取 `pkg/executor/internal/testutil/testutil_test.rs:1–213`，核对物理计划身份稳定性、Go 默认值、类型码、chunk 耗尽、无符号/Null、Enum/Set/Duration 值域和原子计数。
-- 直接读取 `pkg/executor/internal/testutil/Cargo.toml` 核对 crate 边界、Go 包元数据和目标依赖；读取 `pkg/executor/internal/testutil/testutil.go:1–603` 核对 Go 结构、NDV/分块/selection 流程、`SwapColumns`、随机字段生成和 OOM action 语义。
-- 本任务为纯文档分析，按计划不运行 Cargo；运行时行为的本地证据限于已有独立测试源码，本次未执行这些测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-snap-client` crate，由同目录 `lib.rs` 以 `pub mod pipeline_items` 挂载，并通过 `pub use pipeline_items::*` 重导出公开符号。`Cargo.toml` 把该 crate 定位为 Go 包 `br/pkg/restore/snap_client` 的 Rust 迁移单元；当前依赖面主要是本地 `stubs.rs`、`client.rs` 与 `systable_restore.rs`，并没有直接连接真实 TiKV/Domain 的完整 Go 依赖。
-
-它同时承载四组相关但可分开理解的能力：恢复后的临时系统表替换、多阶段表级并发流水线、统计元数据批量写入，以及供 `tikv_sender.rs` 使用的 `PhysicalTable` 数据形状。RustCodeGraph 索引已覆盖该文件的 559 行和 51 个符号。
+这些是当前 Rust 实现的真实边界。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@
 
 ## 与 Go 版本的对应关系
 
-当前 Rust 保留了 Go 的核心名称、通道容量、流水线阶段模型、临时表处理顺序、统计元 3000 项批次和 8 次/500ms 重试。`pipeline_items_test.rs` 也对齐了 Go 的两个并发场景、统计元计数和四组表替换开关组合。
-
 需要明确保留的差异如下：
 
 - Go `ExhaustErrors` 非阻塞地排空一个永不关闭的 error channel；Rust 版排空 `Mutex<Vec<Error>>`，只对“调用时已收集的项”有相似语义。
@@ -112,11 +108,3 @@
 - 调整并发模型时，必须保持：有界背压、前阶段成功后才传递、错误导致全链取消、失败阶段不调用 `endFn`、正常阶段只收尾一次，以及返回前回收所有线程。优化 `try_send` 忙等待时需用有界压力测试证明吞吐和取消不退化。
 - 扩展统计元处理时，继续排除 index-key SST，保持分区按名称映射新 ID，并评估 `u64 -> i64` 溢出、零行分区、全局索引文件和并发批次写入顺序。测试应扩展 `test_update_stats_meta` 和重试失败注入场景。
 - 修改临时系统表清单或 schema 兼容逻辑时，同步检查 `systable_restore.rs` 和 `pipeline_items_test.rs` 的四组 `replaceTables` 场景，特别是 `mysql.user` resource group 清理、stats 表升/降级和权限通知时机。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/restore/snap_client` 确认源、Go 对照和独立测试文件；`node --file br/pkg/restore/snap_client/pipeline_items.rs --offset 1 --limit 1200` 读取了全部 559 行；`explore "pipeline_items.rs: identify all structs, traits, functions, callers and callees in snapshot restore pipeline"` 核对了 `replaceTables`、builder、统计元函数的内部调用边和测试调用者。精确 `callers RestorePipeline` 在本地索引上长时无输出后被终止，故上游结论又用限定路径的 `rg` 交叉检查。
-- Rust 源码：`br/pkg/restore/snap_client/pipeline_items.rs`；crate 边界与挂载：`br/pkg/restore/snap_client/Cargo.toml`、`br/pkg/restore/snap_client/lib.rs`；直接模型/trait 定义：`br/pkg/restore/snap_client/stubs.rs`；`PhysicalTable` 消费者：`br/pkg/restore/snap_client/tikv_sender.rs`。
-- Go 对照：`br/pkg/restore/snap_client/pipeline_items.go`，重点核对 `RestorePipeline`、`PipelineConcurrentHandler`、三个 register 函数、统计元批次和 `replaceTables`。
-- 独立测试：`br/pkg/restore/snap_client/pipeline_items_test.rs` 的 `test_pipeline_concurrent_handler_1/2`、`test_update_stats_meta`、`test_update_stats_meta_retries_transient_storage_errors`、`test_replace_tables*`；Go 意图对照为 `br/pkg/restore/snap_client/pipeline_items_test.go` 的 `TestPipelineConcurrentHandler1/2`、`TestUpdateStatsMeta` 和 `TestReplaceTables*`。
-- 本任务是只读分析加 Markdown 产物，按任务约定不运行 Cargo。文档结构用任务文件指定的 11 章节 shell 命令验证。

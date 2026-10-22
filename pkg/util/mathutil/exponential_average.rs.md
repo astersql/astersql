@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-mathutil` crate 中的指数移动平均（EMA）状态机。crate 根 `pkg/util/mathutil/lib.rs` 以私有模块 `mod exponential_average` 挂载它，再公开重导出 `ExponentialMovingAverage` 和 `NewExponentialMovingAverage`；因此其他 crate 从 mathutil 的公开门面使用它，而不是直接访问本模块。
-
-当前可确认的生产接线位于 `pkg/util/cpu/cpu.rs`：`ObserverState` 持有一个 EMA，`NewCPUObserver` 用 `factor=0.95`、`warmup_window=10` 创建它，采样线程约每 100 ms 将瞬时 CPU 使用率交给 `Add`，再用 `Get` 取得平滑值并发布到原子变量和 Prometheus 指标。该文件是通用数值工具，不负责采样、调度或指标上报。
+算法只保留常量大小状态，不保存历史样本序列。
 
 ## 核心职责
 
@@ -64,9 +62,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/mathutil/exponential_average.go`。Rust 保留了 Go 的公开类型名、构造函数名、`Add`/`Get` 方法名、五项状态、非法 factor panic 文本、预热更新顺序及 EMA 公式。字段类型作了语言对应：Go 的 `float64`/`int` 对应 Rust 的 `f64`/`isize`；Go 返回指针，Rust 返回 `Box`；Go 方法接收指针，Rust 用 `&mut self`/`&self` 表达可变和只读访问。
+字段类型作了语言对应：Go 的 `float64`/`int` 对应 Rust 的 `f64`/`isize`；Go 返回指针，Rust 返回 `Box`；Go 方法接收指针，Rust 用 `&mut self`/`&self` 表达可变和只读访问。
 
-Go 测试 `pkg/util/mathutil/exponential_average_test.go::TestExponential` 与 Rust 的 `exponential_average_test.rs::test_exponential` 使用相同的 100 个样本、`factor=0.8`、窗口 2，并断言截断后的结果为 3886。Rust 另外覆盖了非法 factor 和简短的预热/衰减中间值。Go 与 Rust 的 CPU observer 也都以 `0.95, 10` 创建 EMA，并在周期采样后执行 `Add`/`Get`；这证明该实现已经接入相同的实际用途，而不只是孤立工具。
+Go 测试 `pkg/util/mathutil/exponential_average_test.go::TestExponential` 与 Rust 的 `exponential_average_test.rs::test_exponential` 使用相同的 100 个样本、`factor=0.8`、窗口 2，并断言截断后的结果为 3886。Go 与 Rust 的 CPU observer 也都以 `0.95, 10` 创建 EMA，并在周期采样后执行 `Add`/`Get`；这证明该实现已经接入相同的实际用途，而不只是孤立工具。
 
 ## 扩展指南
 
@@ -77,12 +75,3 @@ Go 测试 `pkg/util/mathutil/exponential_average_test.go::TestExponential` 与 R
 - 若增加重置、批量添加或可配置窗口等 API，需要在 `pkg/util/mathutil/lib.rs` 决定是否公开重导出，并保持 `Cargo.toml` 无不必要依赖。
 
 兼容风险主要是 Go/Rust 数值结果和 panic 行为漂移；性能风险主要是把当前常量时间、无分配的更新路径改成保存样本或额外同步；正确性风险集中在预热切换点、非有限浮点数及非正窗口。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/util/mathutil/exponential_average.rs`、`pkg/util/mathutil/lib.rs`、`pkg/util/mathutil/Cargo.toml`。
-- Rust 直接调用与测试：`pkg/util/cpu/cpu.rs`、`pkg/util/cpu/Cargo.toml`、`pkg/util/mathutil/exponential_average_test.rs`、`pkg/util/mathutil/migration_aster_unit_test.rs`。
-- Go 对照：`pkg/util/mathutil/exponential_average.go`、`pkg/util/mathutil/exponential_average_test.go`、`pkg/util/cpu/cpu.go`。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件；`files --filter pkg/util/mathutil` 列出目标实现、模块入口及独立测试；目标文件节点确认 71 行源码和五个符号；精确 `NewExponentialMovingAverage` 节点确认定义及迁移测试的两条调用边。生产 CPU 调用因跨 crate 图结果不完整，另以限定路径 `rg` 和源码核验。
-- 人工复核：文档分别说明了文件存在的目的、构造/预热/衰减流程、状态不变量、CPU observer 上游接线、无内部并发资源的边界，以及安全扩展时应同步的 Go 文件和独立 Rust 测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务指定的章节计数命令验证文档存在且恰有 11 个固定二级标题。

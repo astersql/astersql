@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-collate` crate，是 `utf8mb4_zh_pinyin_tidb_as_cs` 排序规则的 Rust 占位实现。crate 入口 `pkg/util/collate/lib.rs` 通过 `#[path = "pinyin_tidb_as_cs.rs"]` 声明公开模块并重新导出其符号；`pkg/util/collate/Cargo.toml` 的 `[lib]` 指向该入口，且默认 feature 包含 `full_collate`。
-
-它位于字符串 collation 分派层，而不是 SQL 解析或执行入口。`pkg/util/collate/collate.rs` 中的 `group2_collator` 在启用 `full_collate` 时，把名称 `utf8mb4_zh_pinyin_tidb_as_cs` 映射为 `zhPinyinTiDBASCSCollator::default()`；`GetCollator`、`GetCollatorWithCollate` 和 `GetCollatorByID` 再把这一实现提供给上层表达式、编码、排序和索引逻辑。当前文件只保留接口形状，不提供拼音权重或实际排序能力。
+为该类型实现 `Collator` trait，把动态分派入口逐项转发到同名固有方法；`as_any` 是唯一能够正常返回的方法，用于运行时具体类型检查。
 
 ## 核心职责
 
@@ -58,11 +56,11 @@ RustCodeGraph 将本文件列为由 `pkg/util/collate/collate.rs`、`pkg/util/co
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/util/collate/pinyin_tidb_as_cs.go`。两端都定义无字段的 `zhPinyinTiDBASCSCollator`，并让 `Compare`、`Key`、`ImmutableKey`、`KeyWithoutTrimRightSpace`、`MaxKeyLen`、`Pattern`、`Clone` 直接 `panic("implement me")`；Rust 没有补写 Go 尚不存在的拼音算法。
+两端都定义无字段的 `zhPinyinTiDBASCSCollator`，并让 `Compare`、`Key`、`ImmutableKey`、`KeyWithoutTrimRightSpace`、`MaxKeyLen`、`Pattern`、`Clone` 直接 `panic("implement me")`；Rust 没有补写 Go 尚不存在的拼音算法。
 
 接口形状存在语言差异：Go 通过方法集隐式满足 `Collator`，Rust 额外写出显式 `impl Collator`；Go 的 `MaxKeyLen` 返回 `int`，Rust 固有方法返回 `usize`，trait 适配层再转为 `i32`；Go 的接口返回值分别是 `WildcardPattern`/`Collator`，Rust 使用 `Box<dyn WildcardPattern>`/`Box<dyn Collator>` 表达动态对象；Rust 还提供 `as_any` 支持具体类型检查。
 
-注册语义也保持迁移目标一致。Go `collate.go` 同时把名称和 ID 注册到 map，并在 `GetSupportedCollations` 中显式排除开发中的拼音规则；Rust `collate.rs::group2_collator` 在 `full_collate` 下按名称构造，按 ID 的入口先经 charset 元数据回到名称。Rust 测试对应 Go `collate_test.go::TestGetCollator`，另有独立 `should_panic` 测试补充锁定当前未实现契约。
+Go `collate.go` 同时把名称和 ID 注册到 map，并在 `GetSupportedCollations` 中显式排除开发中的拼音规则；Rust `collate.rs::group2_collator` 在 `full_collate` 下按名称构造，按 ID 的入口先经 charset 元数据回到名称。Rust 测试对应 Go `collate_test.go::TestGetCollator`，另有独立 `should_panic` 测试补充锁定当前未实现契约。
 
 ## 扩展指南
 
@@ -71,13 +69,3 @@ Go 对照文件为 `pkg/util/collate/pinyin_tidb_as_cs.go`。两端都定义无�
 需要同步扩展的最小测试面包括：`general_ci_2_aster_unit_test.rs` 中当前的 panic 契约应替换为 Compare/Key/Pattern 等行为测试；`collate_test.rs` 继续验证名称、ID、feature/开关回退和支持列表策略；Go 行为已有实现时还应与 `pinyin_tidb_as_cs.go` 及 `collate_test.go` 的用例逐项对齐。至少覆盖 ASCII 大小写、重音/声调、常用与多音汉字、非汉字、组合字符、空串、尾随空格、最大 key 长度、通配符转义和 Clone 独立性。
 
 兼容性风险在于排序权重会影响比较、ORDER BY、范围边界、哈希/排序键与索引编码；一旦已有数据按某版权重建索引，修改权重可能改变持久化顺序。性能风险包括逐字符拼音查表、key 膨胀和 pattern 匹配分配。实现时还应明确 panic 是否改为完整功能，并同步调整“开发中且不对用户展示”的支持列表契约，避免出现可选择但会崩溃的公开能力。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录与文件均已索引。
-- RustCodeGraph `node --file pkg/util/collate/pinyin_tidb_as_cs.rs`：核对完整 111 行源码、零字段结构体、七个 panic 固有方法和 `Collator` 转发实现；图报告该文件由 `collate.rs`、`collate_test.rs`、`general_ci_2_aster_unit_test.rs` 使用。
-- RustCodeGraph `query PinyinTiDBASCS`、`query pinyin_tidb_as_cs`：核对 Rust/Go 同名类型和方法集合。
-- RustCodeGraph `node`/`explore`：核对 `collate.rs::new_collator`、两种 `group2_collator`、`GetCollatorWithCollate`、`GetCollatorByID` 的构造和 feature/开关回退路径。
-- `pkg/util/collate/Cargo.toml` 与 `pkg/util/collate/lib.rs`：核对 crate 名称、默认 `full_collate` feature、依赖边界、模块公开与重新导出关系。
-- `pkg/util/collate/pinyin_tidb_as_cs.go`、`pkg/util/collate/collate.go`、`pkg/util/collate/collate_test.go`：核对 Go 占位方法、名称/ID 注册、隐藏开发中规则及工厂类型断言。
-- `pkg/util/collate/collate_test.rs` 与 `pkg/util/collate/general_ci_2_aster_unit_test.rs`：核对 Rust 名称/ID/开关/支持列表行为和 `should_panic(expected = "implement me")` 契约。本任务按计划只做文档分析，未运行 Cargo。

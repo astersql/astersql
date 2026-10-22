@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server-err` crate（见 `pkg/server/err/Cargo.toml`），是 Server 层标准错误到 `errno` 的集中绑定表。crate 根模块以 `#[path = "error.rs"] pub mod server_err` 暴露这些错误，并通过平台启动段中的 `SERVER_ERR_PACKAGE_INIT` 在程序或测试主体运行前调用 `initialize_server_errors`。它对应 Go 文件 `pkg/server/err/error.go`，不负责判断何时发生错误，而是为连接、认证、协议与服务器生命周期代码提供统一、可格式化的 `terror::Error` 模板。
+`server_error!` 宏以同名的公开静态项和 `errno` 常量为输入，延迟构造 `dbterror::ClassServer.NewStd(errno::<code>)`，从而把 Server 错误类、数字错误码、RFC code 和标准消息模板绑定在一起。
 
 ## 核心职责
 
@@ -63,9 +63,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/server/err/error.go` 以包级 `var` 顺序立即执行 15 次 `dbterror.ClassServer.NewStd(errno.<name>)`；Rust 文件保留相同名称、顺序、错误类和 errno 映射。差异仅在初始化机制：Go 由语言保证包变量在导入时完成，Rust 使用 `LazyLock` 表达静态所有权，再由 `lib.rs` 的平台初始化段显式 force，以恢复 Go 的“冻结前已经注册”语义。
+差异仅在初始化机制：Go 由语言保证包变量在导入时完成，Rust 使用 `LazyLock` 表达静态所有权，再由 `lib.rs` 的平台初始化段显式 force，以恢复 Go 的“冻结前已经注册”语义。
 
-`pkg/server/err/migration_aster_unit_test.rs` 是最直接的 Rust/Go 对照测试：`server_errors_keep_go_class_code_and_standard_message_bindings` 逐项验证全部 15 个错误；`access_denied_variants_remain_distinct_go_errors` 验证访问拒绝变体；`server_errors_are_registered_before_registry_freeze` 以子进程隔离不可逆的注册表冻结并验证初始化时序。Go 侧实际调用点还表明这些模板覆盖连接建立、认证、命令分派、包读取、用户连接限制和服务器关闭等路径；Rust 当前直接接线只是其中一部分。
+Go 侧实际调用点还表明这些模板覆盖连接建立、认证、命令分派、包读取、用户连接限制和服务器关闭等路径；Rust 当前直接接线只是其中一部分。
 
 ## 扩展指南
 
@@ -76,11 +76,3 @@
 3. 在独立测试文件 `pkg/server/err/migration_aster_unit_test.rs` 增加 `assert_standard` 断言；若存在相近变体，额外断言 code、RFC code 或模板的区分不变量。不要把测试内嵌进 `error.rs`。
 4. 在实际 Server 调用点选择合适的生成方法并提供与消息模板匹配的参数；不要为复用方便把不同 errno 合并成一个模板。
 5. 兼容风险主要是错误码、SQLSTATE/RFC code、消息文字及参数格式发生漂移；并发风险主要是未预热导致冻结后首次注册。正常读取静态模板的性能成本只有一次性初始化和共享解引用，不应在请求热路径重复构造标准模板。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter pkg/server/err` 确认 `error.rs`、`lib.rs` 和独立迁移测试均已索引；`node --file pkg/server/err/error.rs --offset 1 --limit 240` 读取了完整 86 行源码；`query initialize_server_errors --kind function` 唯一定位到本文件；`callees` 未发现可用边，精确 `callers` 也未返回边，因此调用关系以直接源码引用补证。
-- 已读实现与配置：`pkg/server/err/error.rs`、`pkg/server/err/lib.rs`、`pkg/server/err/Cargo.toml`、`pkg/util/dbterror/terror.rs`、`pkg/parser/terror/terror.rs`。
-- 已读 Go 对照与调用证据：`pkg/server/err/error.go`、`pkg/server/conn.go`、`pkg/server/user_connections.go`、`pkg/server/driver_tidb.go`、`pkg/server/internal/packetio.go`。
-- 已读 Rust 调用与测试证据：`pkg/server/conn.rs`、`pkg/server/conn_stmt.rs`、`pkg/server/internal/column/column.rs`、`pkg/server/err/migration_aster_unit_test.rs`。同目录没有 `error_test.rs`；迁移测试是该 crate 的独立测试模块。
-- 本任务只增加说明文档，未运行 Cargo。结构验证要求文档存在且恰有“文件定位”至“验证依据”11 个固定二级章节；交付前另行检查 Git 范围，确保未修改 Rust、Go、Cargo 或只读的 `plan.md`。

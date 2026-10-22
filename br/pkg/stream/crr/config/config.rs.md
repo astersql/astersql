@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-stream-crr-config` crate 的唯一实现模块，由同目录 `lib.rs` 通过 `#[path = "config.rs"]` 挂载并扁平再导出。`Cargo.toml` 将该 crate 标记为 Go 包 `br/pkg/stream/crr/config` 的 Rust 移植，它依赖 CRR checkpoint 内部 crate 与 CRR service crate，但不直接执行 checkpoint 计算、网络访问或服务循环。
-
-它的职责位于命令行和服务配置之间：定义四个 CRR checkpoint 标志，将标志值转换为 `astersql_br_pkg_stream_crr_service::Config`，并从下游 crate 导出的常量组装默认值。当前 Rust 生产 CLI 尚未依赖该 crate；`br/pkg/task/operator/config.rs` 实际通过 `stubs.rs` 中的 `CRRServiceConfig` 和 `DefineCRRFlags` 接线。因此，该文件是已实现、有独立测试的配置 crate，不能说成已经由当前 Rust `br operator crr-checkpoint` 主链调用。
+`FlagSet` 保存标志定义和用户覆盖，并接受 `--name value` 与 `--name=value` 两种形式。
 
 ## 核心职责
 
@@ -72,13 +70,13 @@ duration 边界包括：接受前置 `+`、无整数部分的 `.5s`、复合 `1m
 
 ## 与 Go 版本的对应关系
 
-Rust 的四个标志名、`DefaultConfig` 字段来源、`DefineFlags` 帮助文本和 `Config::Parse` 赋值顺序都直接对应 `br/pkg/stream/crr/config/config.go`。Go `Config` 匿名嵌入 `service.Config`；Rust 为了明确所有权使用 `inner`，并增加四个访问器来恢复常用字段的扁平读取体验。
+Go `Config` 匿名嵌入 `service.Config`；Rust 为了明确所有权使用 `inner`，并增加四个访问器来恢复常用字段的扁平读取体验。
 
-Go 直接使用 `spf13/pflag.FlagSet`，其 argv 语法和重复定义行为更完整。Rust 则在本文件定义一个最小 `FlagSet`，仅覆盖本包需要的 string/duration/int 长选项。Go `time.Duration` 是有符号 64 位纳秒，Rust `Duration` 是非负值；所以 Rust 支持 Go 的非负语法并主动施加 `i64::MAX` 上界，但不支持负 duration。
+Rust 则在本文件定义一个最小 `FlagSet`，仅覆盖本包需要的 string/duration/int 长选项。Go `time.Duration` 是有符号 64 位纳秒，Rust `Duration` 是非负值；所以 Rust 支持 Go 的非负语法并主动施加 `i64::MAX` 上界，但不支持负 duration。
 
-`config_test.go::TestDefaultConfig` 和 `TestParse` 在 `config_test.rs` 中有直接对应用例。Rust 还额外测试等号形式、复合 duration、未知标志、非法数值、`--` 终止、短选项拒绝、Go duration 正上界以及 `.5s`/`+1s`。`parity_test.rs::go_rust_public_contract_matches` 另外锁定默认任务名、纯默认解析和未定义 getter 错误。
+Rust 还额外测试等号形式、复合 duration、未知标志、非法数值、`--` 终止、短选项拒绝、Go duration 正上界以及 `.5s`/`+1s`。
 
-最重要的移植差异是接线状态：Go operator 直接导入并消费本 Go 包；Rust operator 仍使用自己的桩结构和标志定义。扩展时必须把“目标 crate 本身行为正确”与“整体 Rust CLI 已切换到此 crate”分开验证。
+最重要的移植差异是接线状态：Go operator 直接导入并消费本 Go 包；Rust operator 仍使用自己的桩结构和标志定义。
 
 ## 扩展指南
 
@@ -88,13 +86,3 @@ Go 直接使用 `spf13/pflag.FlagSet`，其 argv 语法和重复定义行为更�
 - 修改 `parse_duration` 要重点保护复合单位、Unicode 微秒、分数精度、`i64::MAX` 边界与负值拒绝。这是兼容性风险最高的纯计算部分，不应为了简化而删减 Go 已支持的语法。
 - 若要让当前 Rust operator 主链真正使用本 crate，需在 `br/pkg/task/operator/Cargo.toml` 增加依赖，用本 crate 的 `Config`/`DefineFlags` 替换 `stubs.rs::CRRServiceConfig`/`DefineCRRFlags`，并核对 `br/cmd/br/operator.rs` 到真实 service 的类型转换。这是跨 crate 的生产接线任务，不属于本文档任务，也不应仅靠删除桩就宣称完成。
 - 性能上本模块只解析少量参数，`HashMap` 分配和字符串克隆不是热点。更值得关注的风险是配置默认值漂移、Go/Rust 解析差异和 operator 接线重复。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/stream/crr/config` 确认该目录的 Rust/Go 实现与测试集合。
-- RustCodeGraph `node --file br/pkg/stream/crr/config/config.rs --offset 1 --limit 500`：读取全部 353 行，核对 31 个索引符号、字段、分支与边界。
-- RustCodeGraph `query DefaultConfig --kind function --json` 和 `query DefineFlags --kind function --json`：区分目标 Rust 符号与 Go/其他同名符号。针对精确 Rust 符号的 `callers`/`callees` 命令在 30 秒限制内未产生输出，因此用下述 Cargo 和文本接线检索补证，未据此猜测调用边。
-- RustCodeGraph 全文节点：`config_test.rs`、`parity_test.rs`、`lib.rs`、`br/pkg/stream/crr/service/service.rs`、`br/pkg/stream/crr/internal/checkpoint/calculator.rs`、`br/pkg/task/operator/config.rs`、`br/cmd/br/operator.rs` 和 `br/pkg/task/operator/stubs.rs`。它们分别支撑公开出口、测试边界、下游配置语义和当前 Rust CLI 接线状态。
-- 直接读取：`br/pkg/stream/crr/config/Cargo.toml`、`config.go`、`config_test.go`、`br/pkg/task/operator/config.go` 和 `br/cmd/br/operator.go`，用于核对 crate 边界、Go 实现、Go 测试与生产调用链。
-- `rg` 检索所有 Rust/Go/Cargo 引用：确认 Rust 测试的直接调用，确认 Go operator 使用 `crrconfig`，并确认其他 Cargo manifest 尚未声明 `astersql-br-pkg-stream-crr-config` 依赖。
-- 结构验证按任务规定检查文件存在且恰有十一个固定二级标题。本任务只生成文档，按计划不运行 Cargo。

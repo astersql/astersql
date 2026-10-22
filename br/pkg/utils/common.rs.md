@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`br/pkg/utils/common.rs` 属于 `astersql-br-pkg-utils` library crate；crate 根由 `br/pkg/utils/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`br/pkg/utils/lib.rs` 再通过 `#[path = "common.rs"] pub mod common;` 公开该模块。它是 Go `br/pkg/utils/common.go` 的 Rust 对照文件，集中承载两类 BR 公共能力：在 BR 内部事务语境中批量分配全局 ID，以及在恢复开始前判断 classic/next-gen 内核与 keyspace 参数是否兼容。
-
-该模块当前是公开子模块，但 `lib.rs` 没有把 `NewMutator`、`GenGlobalIDs` 或 `CheckNextGenCompatibility` 再导出到 crate 根，调用者需要经过 `astersql_br_pkg_utils::common` 路径。RustCodeGraph 显示该文件直接被 `br/pkg/utils/common_test.rs` 与 `br/pkg/utils/stubs.rs` 关联；全仓 Rust 精确引用搜索没有找到测试之外的生产调用点，因此本文会区分“已实现的 API”与“已接入的应用主链”，不把 Go 侧调用关系误写成 Rust 侧现状。
+`NewMutator` 把 BR 的抽象 `Transaction` 转换为 `astersql_meta::Mutator`。
 
 ## 核心职责
 
@@ -86,11 +84,11 @@
 
 ## 与 Go 版本的对应关系
 
-`GenGlobalIDs` 保留了 Go 的骨架：建立空结果、用 `InternalTxnBR` 标记上下文、以允许重试的新事务执行 `meta.NewMutator(txn).GenGlobalIDs(n)`、最后返回结果和错误。Rust 额外暴露了 `NewMutator` 包装器，因为本地 `Transaction` 必须先转换成 `astersql_meta::kv::Transaction`。Go 使用真实 `kv.Storage`/`kv.RunInNewTxn`，Rust 当前使用 `stubs.rs` 的共享内存替身，这是最关键的迁移差异。
+Rust 额外暴露了 `NewMutator` 包装器，因为本地 `Transaction` 必须先转换成 `astersql_meta::kv::Transaction`。Go 使用真实 `kv.Storage`/`kv.RunInNewTxn`，Rust 当前使用 `stubs.rs` 的共享内存替身，这是最关键的迁移差异。
 
-`CheckNextGenCompatibility` 的四种结果与 Go 对齐：classic 无 keyspace 为 `false`；classic 有 keyspace 在严格模式终止、宽松模式告警并返回 `false`；next-gen 无 keyspace 终止；next-gen 有 keyspace 返回 `true`。Rust 的 `IsClassic/IsNextGen` 同样由构建配置选择，但终止手段从 Go `log.Fatal` 变为 `panic!`，因此进程级副作用并不完全等价。
+Rust 的 `IsClassic/IsNextGen` 同样由构建配置选择，但终止手段从 Go `log.Fatal` 变为 `panic!`，因此进程级副作用并不完全等价。
 
-测试对应关系目前只有 Rust 独立测试 `br/pkg/utils/common_test.rs`，没有同名 `common_test.go`。Rust 的 `gen_global_ids_reuses_storage_state_like_go` 验证两次各分配两个 ID，长度正确且第二批紧接第一批；`compatibility_matches_go_kernel_specific_paths` 根据编译内核验证 classic 宽松路径，或验证 next-gen 空 keyspace panic 与非空 keyspace 成功。Go 的生产调用证据来自 `br/pkg/task/restore.go`、`br/pkg/restore/log_client/client.go` 与 `br/pkg/task/stream.go`，而不是该目录的 Go 单测。
+测试对应关系目前只有 Rust 独立测试 `br/pkg/utils/common_test.rs`，没有同名 `common_test.go`。
 
 ## 扩展指南
 
@@ -100,15 +98,3 @@
 - 若调用者需要可恢复错误而不是 panic，应先决定如何保持 Go `log.Fatal` 的用户可见终止契约，再统一调整返回类型与所有调用点；单独修改 Rust 会形成兼容分叉。
 - 若错误分类需要保留 meta 错误身份，应重新设计 `map_meta_error`，避免仅保留字符串，并为上限错误与事务错误分别增加断言。
 - 性能上，批量申请应继续一次推进计数器后展开连续区间，避免退化为逐 ID 加锁/事务；兼容性检查应保持纯分支加至多一次日志，不引入网络探测。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、7032 个 Rust 文件；`files --filter br/pkg/utils` 确认目标、Go 对照与独立测试均在索引中。
-- RustCodeGraph `node --file br/pkg/utils/common.rs --offset 1 --limit 260`：确认文件共 85 行、四个函数符号、导入依赖及文件关系。
-- RustCodeGraph `query`：确认 `NewMutator` 位于第 41 行、`GenGlobalIDs` 位于第 47 行、`CheckNextGenCompatibility` 位于第 60 行、`map_meta_error` 位于第 32 行。对这些符号执行 `callers/callees` 未得到边，因此又以全仓精确 `rg` 搜索补齐调用证据，未把空图结果直接解释为无调用。
-- RustCodeGraph `node new_mutator`：确认 `pkg/meta/meta.rs::new_mutator` 设置高优先级、近满盘允许写入和 meta 前缀；读取同文件 `gen_global_id`、`advance_global_ids`、`gen_global_ids` 段确认互斥、上限检查与连续区间算法。
-- RustCodeGraph 文件节点：读取 `br/pkg/utils/stubs.rs` 的 `KvContext`、`Storage`、`Transaction`、`RunInNewTxn`，以及 `pkg/config/kerneltype/{classic,nextgen}.rs` 的 feature 分支，确认当前事务替身和编译期内核选择。
-- 清单与模块证据：`br/pkg/utils/Cargo.toml`、`br/pkg/utils/lib.rs`。
-- Go 对照与生产调用证据：`br/pkg/utils/common.go`、`br/pkg/task/restore.go`、`br/pkg/restore/log_client/client.go`、`br/pkg/task/stream.go`。
-- Rust 独立测试：`br/pkg/utils/common_test.rs`；它由 `br/pkg/utils/lib.rs` 的 `#[cfg(test)] #[path = "common_test.rs"] mod common_test;` 挂载。
-- 人工复核结论：文档明确回答了文件为何存在、ID 分配和兼容性分支如何运行、当前 Rust 主链与事务桩的限制，以及安全扩展时应修改和同步验证的位置；未声称 Cargo 或运行时测试已执行。

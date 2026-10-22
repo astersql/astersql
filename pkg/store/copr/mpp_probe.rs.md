@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-copr` crate。crate 入口 `pkg/store/copr/lib.rs` 通过 `pub mod mpp_probe` 声明模块，并以 `pub use mpp_probe::*` 向 crate 使用者重新导出其公开项；`pkg/store/copr/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/store/copr`。文件实现两组进程内设施：失败 MPP/TiFlash store 的恢复探测状态机，以及按地址保存 MPP server 信息的有界 LRU 缓存。
-
-当前 Rust 仓库中的直接使用范围需要与 Go 主链区分：RustCodeGraph 对 `global_mpp_failed_store_prober`、`global_mpp_server_info_manager` 的查询没有找到模块外生产调用者，按符号名补充检索也只找到 `pkg/store/copr/mpp_probe_test.rs` 对具体类型和函数的直接使用。因此这些 Rust API 已实现并被 crate 导出，但尚不能据此声称已经接入 Rust MPP 请求主链。Go 对照文件 `pkg/store/copr/mpp_probe.go` 则由 `batch_coprocessor.go`、planner optimizer 和进程启动/停止流程实际使用。
+`MppFailedStoreProber` 管理地址到状态的映射，可手工执行一轮 `scan`，也可用唯一后台 worker 周期执行；扫描同时回收已恢复过久或失败后长期无人查询的条目。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ LRU 管理器没有后台资源，所有操作由单个 `Mutex<ServerInfoState>`
 
 ## 与 Go 版本的对应关系
 
-Rust 文件总体复刻 `pkg/store/copr/mpp_probe.go` 的两个职责、默认常量、恢复 TTL 语义、两种过期清理规则和容量 1000 的 LRU。`pkg/store/copr/mpp_probe_test.rs` 中可运行测试覆盖失败到恢复、探测周期从请求完成后计算、LRU 淘汰、后台 worker 单例和未知/已删除条目；同文件还保留不可执行的 `GO_REFERENCE` 字符串，而真正可运行测试位于字符串之后。
-
 关键差异如下：
 
 - Go 状态直接持有 `tikv.Client`，`detectMPPStore` 构造 `CmdMPPAlive`/TiFlash RPC，并处理错误及 `Available`；Rust 通过 `MppAliveClient` 返回布尔值，当前文件没有实际 RPC 适配器。
@@ -100,15 +96,3 @@ Rust 文件总体复刻 `pkg/store/copr/mpp_probe.go` 的两个职责、默认�
 - 修改 LRU 时同步验证覆盖写入、读取提升、删除、零容量和并发访问；若容量显著增大，应考虑用 O(1) 顺序结构替代当前 `VecDeque::retain`。
 - 调整 worker 生命周期时应补测客户端 panic 后能否重新启动，以及配置修改在运行中是否生效。测试逻辑继续放在 `mpp_probe_test.rs`，不要内嵌到生产源文件。
 - 兼容风险主要是“不存在即恢复”的调用约定、严格 `>` 的 TTL 门槛、Go 风格别名和全局单例 API；性能风险主要是串行同步探测与 LRU 线性顺序更新。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/store/copr`：确认目标源、Go 对照、Rust/Go 独立测试和 crate 入口均在索引中。
-- RustCodeGraph `node --file pkg/store/copr/mpp_probe.rs`：逐行核对 398 行生产实现，包括常量、trait、状态、LRU、扫描、worker、单例和别名。
-- RustCodeGraph 对 `MppFailedStoreProber`、`MppStoreState`、`MppServerInfoManager`、`global_mpp_failed_store_prober`、`global_mpp_server_info_manager`、`detect_mpp_store` 的 `query`/`explore`：确认符号身份、测试调用边，并确认全局访问器未检出模块外 Rust 生产调用。
-- `pkg/store/copr/Cargo.toml` 与 `pkg/store/copr/lib.rs`：确认 crate 名、Go 包映射、模块声明、公开再导出和独立测试模块装配；本文件本身只依赖标准库。
-- `pkg/store/copr/mpp_probe.go`、`pkg/store/copr/mpp_probe_test.go`：核对 Go 的真实 RPC、指标/日志、生产全局对象、并行扫描、TTL/清理规则和原测试意图。
-- `pkg/store/copr/mpp_probe_test.rs`：核对当前 Rust 可执行测试的失败/恢复状态流、慢探测周期、LRU、worker 单例和删除幂等边界。
-- 对精确 Rust/Go 符号的 `rg` 补查：在调用图未覆盖生产接线结论时，确认 Rust snake_case 全局访问器没有模块外使用，并定位 Go 的 batch coprocessor、optimizer 与启动/停止调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 章节结构检查和文档范围自查。

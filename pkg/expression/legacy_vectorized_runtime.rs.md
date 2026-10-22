@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`legacy_vectorized_runtime.rs` 是 `astersql-expression` crate 内部的遗留向量化兼容层。`pkg/expression/lib.rs` 以私有模块 `legacy_vectorized_runtime` 装配它，因此这里的类型不是 crate 对外公开 API；当前直接使用者集中在 `builtin_like.rs`、`builtin_like_vec.rs` 和 `builtin_math_vec.rs`，相关独立测试也通过同一私有模块访问。
-
-这个文件存在的目的，是给已经独立迁移的 LIKE 与数学内核提供一套自洽、较小的表达式运行时：行号和批次、列缓冲区、求值上下文、错误、表达式 trait、字面量表达式，以及数学签名共享状态。它不是 Go `pkg/expression.Expression`、`pkg/util/chunk.Column` 或主 Rust 表达式运行时的完整替代品。`pkg/expression/Cargo.toml` 将本目录声明为 `astersql-expression`，并直接提供本文件使用的 `mathutil` 与 `types-dependency`。
+用 `LiteralExpression` 提供严格常量或逐行测试数据，并实现单元素广播、NULL 传播和有限的类型检查。
 
 ## 核心职责
 
@@ -82,13 +80,9 @@ RustCodeGraph 将目标识别为 455 行、86 个符号的已索引文件；精�
 
 ## 与 Go 版本的对应关系
 
-Go `pkg/expression/expression.go` 的 `ConstLevel` 三个等级与本文件一一对应，`VecExpr`/`Expression` 也提供 `VecEvalInt`、`VecEvalReal`、`VecEvalString`、`VecEvalDecimal` 和标量接口。但 Go 接口还包含 Time、Duration、JSON、VectorFloat32、通用 Datum、克隆/相等/遍历/索引解析/跨会话安全等能力；`LegacyExpression` 只移植 LIKE 和数学内核当前需要的子集。
+本文件的 `LiteralExpression` 用单元素广播模拟常量列，也允许 Vec 直接表达逐行输入，但没有参数标记、deferred expression 或完整类型推断，因此更接近迁移测试适配器。
 
-Go `pkg/expression/constant.go` 的 `Constant::VecEval*` 通过 `genVecFromConstExpr` 生成整列常量，或委托 deferred expression。本文件的 `LiteralExpression` 用单元素广播模拟常量列，也允许 Vec 直接表达逐行输入，但没有参数标记、deferred expression 或完整类型推断，因此更接近迁移测试适配器。
-
-Go `pkg/util/chunk/column.go::Column::MergeNulls` 要求结果为定长列、所有列等长，并逐位合并 NULL bitmap。本文件保留相同的前置条件和 panic 语义，但使用 `Vec<bool>` 按行合并，而不是 Arrow 风格 bitmap 和统一 data/offsets 布局。独立 Rust 测试专门对齐了越界、长度不一致和变长列拒绝行为。
-
-`MathBase` 对应 Go 数学签名中共享的 `baseBuiltinFunc` 字段，加上 `builtinRandSig.mysqlRng` 及部分 DECIMAL 签名需要的精度信息。Go `builtinRandSig::Clone` 复用同一 RNG；Rust 的 `Arc<MysqlRng>` 保留这种共享。它不是 Go `baseBuiltinFunc` 的完整结构，未包含返回类型、protobuf code、buffer allocator 等元数据。
+Go `builtinRandSig::Clone` 复用同一 RNG；Rust 的 `Arc<MysqlRng>` 保留这种共享。
 
 ## 扩展指南
 
@@ -99,12 +93,3 @@ Go `pkg/util/chunk/column.go::Column::MergeNulls` 要求结果为定长列、所
 扩展 `Column::MergeNulls` 到 String 等变长类型前，应先核对 Go `chunk.Column` 的固定/变长约束；当前消费者会依赖对 String 结果列的拒绝。改变 `LiteralExpression::index` 时要分别测试空向量、多行向量越界、单元素广播和显式 NULL，避免把“缺少行”与严格常量广播混淆。
 
 如果新功能要服务于一般 SQL 表达式、更多求值类型或跨 crate 调用，应优先接入现有主表达式/Chunk 类型，而不是公开或无限扩张这个私有兼容模块。任何新增生产 Rust 实现都应继续保留/添加 `// Copyright 2026 AsterSQL.`，并与对应 Go 逻辑及独立测试同步。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/expression/legacy_vectorized_runtime.rs` 与两段 `node --file` 输出核对了全文件 455 行和 86 个符号；`query` 精确定位了 `LegacyExpression`、`LiteralExpression`、`MathBase`。精确 `callers/callees` 没有返回动态分发边，因此调用关系再由下列源码引用核验。
-- 目标与装配：`pkg/expression/legacy_vectorized_runtime.rs`、`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`。
-- Rust 直接消费者：`pkg/expression/builtin_like.rs`、`pkg/expression/builtin_like_vec.rs`、`pkg/expression/builtin_math_vec.rs`；上游数学接线引用还包括 `pkg/expression/builtin_math.rs`、`pkg/expression/pb_to_expr_runtime.rs`、`pkg/expression/planner_bridge.rs`。
-- Rust 独立测试：`pkg/expression/legacy_vectorized_runtime_test.rs` 验证列越界与 `MergeNulls` 前置条件；`builtin_like_test.rs`/`builtin_like_vec_test.rs` 验证标量缓存、逐行匹配和 NULL；`builtin_math_vec_test.rs` 验证警告、NULL、舍入/截断、溢出、常量填充和 RNG 范围。
-- Go 对照：`pkg/expression/expression.go`（`VecExpr`、`ConstLevel`、`Expression`）、`pkg/expression/constant.go`（常量向量求值）、`pkg/util/chunk/column.go`（`Column`、`MergeNulls`）、`pkg/expression/builtin_math.go`（RAND 状态与 clone）。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付结构通过任务文件指定的 11 章节命令检查；内容人工复核重点是模块边界、动态分发调用、NULL/越界语义、锁与 RNG 共享状态，以及 Go 对照的明确差异。

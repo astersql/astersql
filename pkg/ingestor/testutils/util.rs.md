@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ingestor-testutils` crate，由 [`pkg/ingestor/testutils/lib.rs`](./lib.rs) 以 `mod util` 纳入并通过 `pub use util::*` 重导出公开类型。crate 的 [`Cargo.toml`](./Cargo.toml) 关闭了自动测试发现（`autotests = false`），并只依赖工作区内的 `objectio`、`objstore` 和 `storeapi`。
-
-它不是 ingest 业务主链的生产存储实现，而是测试辅助层：在内存对象存储上追踪 reader 打开与关闭情况，使迭代器、重试和引擎测试能检查资源是否泄漏。包级 [`pkg/ingestor/doc.go`](../doc.go) 将 ingestor 定位为 SST 直接导入、KV 排序与导入环境准备的边界；本文件只为这些路径的测试提供可观测存储。
+`ObjectReaderAdapter` 在两套已迁移的 reader trait 之间做窄适配：将 `objstore::storage::ObjectReader` 暴露为 `objectio::Reader`，并转发 `Read`、`Seek`、关闭和文件大小查询。
 
 ## 核心职责
 
@@ -62,12 +60,8 @@
 
 ## 与 Go 版本的对应关系
 
-Go 直接对照文件是 [`pkg/ingestor/testutils/util.go`](./util.go)：
-
 - Go `TrackOpenMemStorage` 匿名嵌入 `*objstore.MemStorage`；Rust 改为显式的公开 `Arc<MemStorage>` 字段。Go `atomic.Int32` 的 `Inc`/`Dec`/`Load` 对应 Rust `AtomicI32` 操作。
 - 两版 `Open` 都先增加当前数和累计数，打开失败时只回滚当前数，成功时返回携带所属存储的 reader 包装。
-- 两版 `Close` 都以“底层先成功，然后回减计数”为不变式；关闭失败不回减。
-- Rust 需要 `ObjectReaderAdapter` 弥合当前 `objstore::storage::ObjectReader` 与 `objectio::Reader` 的 trait 边界，Go 通过接口嵌入无需对应类型。
 - Rust 额外将已取消映射为 `Interrupted`，但后续使用 background context；Go 将原 context 直接传给 `MemStorage.Open`。Rust 还没有传递 `PrefetchSize`。这两点是现有迁移边界，不应被文档化为完全等价。
 
 ## 扩展指南
@@ -78,13 +72,3 @@ Go 直接对照文件是 [`pkg/ingestor/testutils/util.go`](./util.go)：
 - 若要支持幂等关闭或 drop 自动记账，需明确选择“检测未显式关闭”还是“自动释放”的测试契约，并为重复 `Close`、仅 drop、底层关闭失败增加独立回归测试。
 - Rust 回归测试应继续放在独立的 `pkg/ingestor/testutils/migration_aster_unit_test.rs`，由 `lib.rs` 的 `#[cfg(test)]` 模块接入，不应内嵌到 `util.rs`。需要保持 Go 语义时，同步对照 `util.go`、`simplesst/iter_test.go` 和 `globalsort/engine_test.go`。
 - 性能风险主要来自每次打开/关闭的 `SeqCst` 原子操作、打开时数据快照拷贝和动态分派；此工具不应无评估进入生产热路径。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件；`files --filter pkg/ingestor/testutils` 列出 `lib.rs`、`util.rs`、`util.go` 和 `migration_aster_unit_test.rs`。
-- RustCodeGraph 源码/符号查询：`node --file pkg/ingestor/testutils/util.rs` 读取全部 154 行；`query TrackOpenMemStorage`、`query TrackOpenFileReader`、`query ObjectReaderAdapter` 确认主要类型及 Go/Rust 对照；限定路径的 `callers/callees` 未返回可用边。
-- RustCodeGraph 直接依赖源码：`pkg/objstore/objectio/interface.rs:71-90`、`pkg/objstore/storeapi/storage.rs:126-135`、`pkg/objstore/storage.rs:107-132,144-171`、`pkg/objstore/memstore.rs:136-166,268-315`。
-- crate 和模块边界：`pkg/ingestor/testutils/Cargo.toml`、`pkg/ingestor/testutils/lib.rs`、`pkg/ingestor/doc.go`。
-- Go 对照与真实用法：`pkg/ingestor/testutils/util.go`、`pkg/ingestor/simplesst/iter_test.go`、`pkg/ingestor/globalsort/engine_test.go`。
-- Rust 独立测试：`pkg/ingestor/testutils/migration_aster_unit_test.rs` 覆盖范围读取和完整大小、成功关闭计数、缺失文件回滚、取消回滚与 `Interrupted` 分类。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构验证以任务文件指定的 11 章节命令为准。

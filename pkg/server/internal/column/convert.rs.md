@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-server-internal-column`，crate 根由 [`lib.rs`](lib.rs) 以私有模块 `convert` 装配，再通过 `pub use convert::*` 对外导出。它位于规划器结果字段与 MySQL 服务端协议元数据之间：输入是 `planner-resolve` 提供的 `resolve::ResultField`，输出是同 crate 的 `Info`（对应 MySQL `ColumnDefinition41` 所需字段）。crate 边界和依赖见 [`Cargo.toml`](Cargo.toml)，其中 `planner-resolve`、`parser-charset`、`parser-mysql`、`meta-model` 与 `types-metadata` 是本转换直接或经 `lib.rs` 再导出使用的来源。
-
-当前 Rust 应用中至少有两条直接接线：[`pkg/server/internal/resultset/resultset.rs`](../resultset/resultset.rs) 的 `TidbResultSet::Columns` 把查询 `RecordSet.Fields()` 逐列转换并缓存；[`pkg/server/runtime.rs`](../../runtime.rs) 的 `protocol_column` 转换后再组装运行时 `ColumnInfo`。因此该文件只负责“推导协议列元数据”，不负责编码协议包、执行查询或维护结果集缓存。
+`ConvertColumnInfo` 将规划/解析阶段的列身份信息（库名、表别名、列别名、原始名称）复制到协议侧 `Info`。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 [`convert.go`](convert.go) 是直接语义基准。Rust 实现逐分支复刻 Go `ConvertColumnInfo`：字段来源一致；`EmptyOrgName` 和可选表处理一致；DECIMAL 加宽、字符串/ENUM/SET 字符集乘数、未知字符集乘 4、未指定长度默认值、DURATION 默认精度和 `VARCHAR -> VAR_STRING` 均一致。
+Rust 实现逐分支复刻 Go `ConvertColumnInfo`：字段来源一致；`EmptyOrgName` 和可选表处理一致；DECIMAL 加宽、字符串/ENUM/SET 字符集乘数、未知字符集乘 4、未指定长度默认值、DURATION 默认精度和 `VARCHAR -> VAR_STRING` 均一致。
 
 语言层差异主要有三点：
 
@@ -82,7 +80,7 @@
 - Go 返回 `*Info`；Rust 返回拥有值 `Info`，由调用方按需包装为 `Arc`。
 - Go 的 `uint32` 运算自然环绕；Rust 明确使用 `wrapping_add` / `wrapping_mul`，避免 debug 构建溢出 panic。
 
-Go [`pkg/server/driver_tidb_test.go`](../../driver_tidb_test.go) 的 `TestConvertColumnInfo` 验证 BIT/TINY/YEAR 等基础长度，以及一组 MySQL 类型在未指定 `flen` 时采用非零默认长度。Rust [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步逐项验证别名与原名、真实表名、默认值、utf8mb4 放大、DECIMAL 加宽、未知字符集回退、DURATION 精度及溢出环绕；[`driver_tidb_test.rs`](../../driver_tidb_test.rs) 另有公开 crate 边界的 VARCHAR 兼容回归。
+Rust [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步逐项验证别名与原名、真实表名、默认值、utf8mb4 放大、DECIMAL 加宽、未知字符集回退、DURATION 精度及溢出环绕；[`driver_tidb_test.rs`](../../driver_tidb_test.rs) 另有公开 crate 边界的 VARCHAR 兼容回归。
 
 ## 扩展指南
 
@@ -95,14 +93,3 @@ Go [`pkg/server/driver_tidb_test.go`](../../driver_tidb_test.go) 的 `TestConver
 - 新类型若是字符串族，要决定是否参加字符集 `Maxlen` 放大以及是否需要类型兼容映射；新 decimal/时间类型要明确未指定精度策略。
 - 修改长度算法要评估老客户端截断兼容、默认长度过大导致的溢出、未知字符集回退和 `u32` 环绕性能/正确性风险。
 - 若改变 `Info` 字段含义，还需审查 `column.rs` 的编码以及 `runtime.rs::protocol_column` 的二次映射，避免转换值被再次改写。
-
-## 验证依据
-
-事实核验于 2026-10-08 完成，未运行 Cargo（本任务为纯文档分析）。依据包括：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 `convert.rs`、`column.rs`、`lib.rs` 及测试均已索引。
-- RustCodeGraph `query/node`：精确定位 `pkg/server/internal/column/convert.rs::ConvertColumnInfo`，确认函数完整源码；调用 trail 指向 `TidbResultSet::Columns` 和 `canonical_convert_column_info_preserves_mysql_display_width_rules`。对 `resultset.rs`、`driver_tidb_test.rs`、`runtime.rs` 与 `column.rs` 的按文件节点查询补充了调用及输出消费证据。
-- 读取的生产与装配文件：[`convert.rs`](convert.rs)、[`column.rs`](column.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`resultset.rs`](../resultset/resultset.rs)、[`pkg/server/runtime.rs`](../../runtime.rs) 及对应 resultset Cargo/模块入口。
-- Go 对照：[`convert.go`](convert.go)、[`pkg/server/internal/resultset/resultset.go`](../resultset/resultset.go)、[`pkg/server/driver_tidb.go`](../../driver_tidb.go)。
-- 测试证据：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`pkg/server/driver_tidb_test.rs`](../../driver_tidb_test.rs) 与 [`pkg/server/driver_tidb_test.go`](../../driver_tidb_test.go)。
-- 人工复核结论：文档区分了转换、编码和缓存职责；每项长度/精度/别名规则均可回溯到上述源码或测试；没有把未运行测试描述为本次已通过。

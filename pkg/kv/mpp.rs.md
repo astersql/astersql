@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-kv` crate 的 MPP（Massively Parallel Processing）边界契约层。`pkg/kv/lib.rs` 以 `#[path = "mpp.rs"] mod mpp_impl` 装入它，再通过 `pub use mpp_impl::*` 将其公开，因此上层通常以 `astersql_kv::MPPTask`、`astersql_kv::MPPClient` 等名字使用这些 API，而不会直接引用 `mpp_impl`。
-
-它位于 SQL 执行协调层与 TiFlash/计算存储客户端之间：上层协调器用这里的数据结构描述查询、任务和派发请求，下层存储客户端实现这里的 `MPPClient` trait。文件本身主要定义协议版本、跨层数据模型和 trait，不实现网络 RPC、任务切分或结果消费；当前 Rust 的具体客户端逻辑可见 `pkg/store/copr/mpp.rs`，协调执行逻辑可见 `pkg/executor/internal/mpp/local_mpp_coordinator.rs`。
-
-crate 边界由 `pkg/kv/Cargo.toml` 确认：包名为 `astersql-kv`，库入口是 `lib.rs`；本文件直接复用 crate 根的 `Context`、`Error`、`KeyRange`、`Backoffer`、`Response` 等抽象，并从带固定 tag 的 `kvproto` 依赖公开重导出 MPP protobuf 类型。
+文件本身主要定义协议版本、跨层数据模型和 trait，不实现网络 RPC、任务切分或结果消费；当前 Rust 的具体客户端逻辑可见 `pkg/store/copr/mpp.rs`，协调执行逻辑可见 `pkg/executor/internal/mpp/local_mpp_coordinator.rs`。
 
 ## 核心职责
 
@@ -92,9 +88,7 @@ RustCodeGraph 对 `pkg/kv/mpp.rs` 给出的文件级反向使用文件为 `pkg/e
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/kv/mpp.go`。Rust 保留了 Go 的公开命名、版本范围、字段集合、任务状态顺序、缓存键拼接顺序及 `ID == -1` 根任务规则。
-
-主要语言适配如下：
+Rust 保留了 Go 的公开命名、版本范围、字段集合、任务状态顺序、缓存键拼接顺序及 `ID == -1` 根任务规则。
 
 - Go 的 `MppVersion` 命名整数映射为 Rust tuple struct 和常量；解析仍返回“值 + 是否成功”。
 - Go interface 可直接放入切片/结构；Rust 的 `MPPTaskMeta` 增加 `CloneBox`，以支持含 trait object 的 `MPPTask`、`MPPDispatchRequest` 深克隆。
@@ -104,8 +98,6 @@ RustCodeGraph 对 `pkg/kv/mpp.rs` 给出的文件级反向使用文件为 `pkg/e
 - Rust 新增 `MppStatusReporter`、`StatusReporter` 和 `ReportsExecutionSummariesDirectly`，将可共享的状态报告句柄与摘要来源显式化；这些接口在当前 Go `pkg/kv/mpp.go` 中没有同形定义，是 Rust 协调/恢复接线所需的适配。
 - Rust 的 `ReportStatusRequest.Request` 是 protobuf 值，而 Go 字段是指针；Rust 不存在 nil request 分支，调用方需提供完整默认值或实际报告。
 
-Go 测试 `pkg/kv/version_test.go` 验证 V0-V3 与 unspecified 的解析。Rust 的 `pkg/kv/version_test.rs` 覆盖合法版本；`pkg/kv/mpp_2_aster_unit_test.rs` 进一步覆盖非法 `4`、非数字、缓存键、普通/根任务 PB 转换和 trait-object 克隆。
-
 ## 扩展指南
 
 - 增加协议版本时，应同时更新版本常量、`mppVersionMax`/`newestMppVersion`、Go `pkg/kv/mpp.go` 及 Rust/Go 版本测试；还要核对 protobuf、session 变量校验和 TiFlash 能力协商，不能只放宽解析范围。
@@ -114,13 +106,3 @@ Go 测试 `pkg/kv/version_test.go` 验证 V0-V3 与 unspecified 的解析。Rust
 - 扩展 `MPPClient` 方法会影响所有实现，包括真实 copr client、driver 的 unsupported adapter、canonical mock storage 和各测试 double；应通过引用搜索逐一补齐，评估对象安全性与 `Send + Sync` 约束。
 - 扩展 `MppCoordinator` 时，应同步 `local_mpp_coordinator.rs`、retry wrapper、manager/状态报告接线及其独立测试；新增默认方法前要明确旧实现的安全默认语义。
 - 改动缓存键格式会影响任务分配缓存兼容性；必须同时更新 Go/Rust 对照测试并评估历史缓存命中、顺序敏感性和潜在碰撞。性能上应避免无必要地复制大范围列表、计划 `Data` 或 digest 字符串。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点；`node --file pkg/kv/mpp.rs --offset 1 --limit 500` 返回目标文件完整 428 行及 4 个文件级使用者。`query ToMppVersion` 同时定位 Rust `pkg/kv/mpp.rs:70` 和 Go `pkg/kv/mpp.go:63`，`query ConstructMPPTasks` 定位 trait 与 Go 实现；精确 trait 方法 callers/callees 查询没有输出，相关边由文件级结果与文本引用交叉验证。
-- 源码与装配：`pkg/kv/mpp.rs`、`pkg/kv/lib.rs`。
-- crate/依赖：`pkg/kv/Cargo.toml`。
-- Go 对照：`pkg/kv/mpp.go`、`pkg/kv/version_test.go`。
-- Rust 独立测试：`pkg/kv/mpp_2_aster_unit_test.rs`、`pkg/kv/version_test.rs`、`pkg/executor/internal/mpp/local_mpp_coordinator_test.rs`、`pkg/executor/internal/mpp/local_mpp_coordinator_aster_unit_test.rs`、`pkg/executor/internal/mpp/executor_with_retry_test.rs`、`pkg/executor/internal/mpp/executor_with_retry_aster_unit_test.rs`。
-- 真实实现与调用链：`pkg/store/copr/mpp.rs`、`pkg/executor/internal/mpp/local_mpp_coordinator.rs`、`pkg/executor/internal/mpp/executor_with_retry.rs`、`pkg/store/mockstore/mockstorage/canonical_storage.rs`、`pkg/store/driver/kv_adapter.rs`。
-- 人工复核结论：本文件存在的原因是稳定隔离 MPP 规划/协调与存储传输；运行时由上层构造并驱动这些契约、由下层实现 RPC；安全扩展的关键是同步手写转换/克隆、所有 trait 实现、Go 契约和独立测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod batch_checker` 暴露它，Cargo 边界由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 确定。它移植了 Go 文件 `pkg/executor/batch_checker.go` 中 INSERT、REPLACE 和 `ON DUPLICATE KEY UPDATE` 写入前的批量冲突键准备算法：把待写行转换为 record key 和可判重的 unique index key，同时为每个键预制重复键错误。
-
-当前 Rust 模块不是完整的生产接线层。真实表元数据、分区定位、Datum、句柄、索引编码、事务读取和表达式求值均由 `BatchCheckerRuntime` trait 注入；仓库搜索未发现该 trait 的实现，也未发现文件外对 Rust 入口的调用。相对地，Go 版本已由 `insert_common.go`、`insert.go` 和 `replace.go` 调用。因此本文件的准确定位是“已移植且可复用的泛型算法边界”，不是已经替代 Go 写路径的执行器。
+通过 `BatchCheckerRuntime` 将算法与具体的 session/table/kv/types 实现隔离；trait 明确要求实现方提供真实操作，不存在“默认成功”的桩路径。
 
 ## 核心职责
 
@@ -72,13 +70,9 @@ record key 的错误文本具有降级策略：原始主键 Datum 格式化失�
 
 ## 与 Go 版本的对应关系
 
-Rust 的四个函数与 `pkg/executor/batch_checker.go` 的同名函数一一对应，结构和分支基本保持：handle 列发现、分区错误交给 ErrCtx、common/integer handle、重复键错误降级、DDL 过渡列补齐、partial/unique/distinct 索引筛选、temporary index key、字节错误文本格式化，以及旧行默认值与虚拟生成列恢复均被保留。
-
-类型表达存在刻意差异：Go 直接依赖 `sessionctx.Context`、`table.Table`、`kv.Transaction`、`types.Datum` 等具体类型；Rust 用 `BatchCheckerRuntime` 的关联类型和方法抽象这些设施。Go 的指针/`nil` 分别映射为 Rust 的所有权值与 `Option`，Go 的 `[]*keyValueWithDupInfo` 映射为 `Vec<KeyValueWithDupInfo<...>>`。
+类型表达存在刻意差异：Go 直接依赖 `sessionctx.Context`、`table.Table`、`kv.Transaction`、`types.Datum` 等具体类型；Rust 用 `BatchCheckerRuntime` 的关联类型和方法抽象这些设施。
 
 需要特别注意两点现状差异。第一，Go 版本已经在写执行器中生产使用，Rust 版本没有 runtime 实现和外部调用；所以这里只能确认算法移植，不能确认端到端可运行。第二，Go 用 `extraColumns` 数量回切 slice，Rust记录完整 `original_length` 后截断，语义等价且对追加列数不敏感。Rust 对 integer handle 的错误文本统一调用 `dataToStrings`，而 Go 首次直接 `ToString`；在常规标量值上结果应相同，二进制主键格式的边缘兼容性应在接线测试中专门核对。
-
-相关 Go 行为测试没有直接调用 batch checker 私有函数，而是经 SQL 写路径间接覆盖。例如 `pkg/executor/test/seqtest/seq_executor_test.go` 覆盖批量 INSERT/`ON DUPLICATE KEY UPDATE`，`pkg/executor/executor_failpoint_test.go` 包含带虚拟生成列和主键的写入场景。仓库未发现同名独立 Rust 测试；现有 Rust SQL 测试中的 duplicate-key 场景也不能证明本模块被调用。
 
 ## 扩展指南
 
@@ -89,12 +83,3 @@ Rust 的四个函数与 `pkg/executor/batch_checker.go` 的同名函数一一对
 - 扩展 `getOldRow` 时，必须区分缺失列和显式 NULL，并维持 generated expression 与 public generated column 的顺序契约；stored 列不应重新求值。
 - 测试逻辑应放在同目录独立文件（例如新增 `pkg/executor/batch_checker_test.rs` 并从 `lib.rs` 以 `#[cfg(test)] mod batch_checker_test;` 装配），不得内嵌到生产源。至少需要 fake runtime 的函数级测试，以及真实 runtime 接线后的 INSERT/REPLACE/duplicate-update 集成测试。
 - 性能风险集中在重复元数据遍历、每个索引键重复格式化 `values`、`present_column_ids.contains` 的线性查找和批量流程串行化；优化前应以行为测试锁定 Go 兼容性，不能用简化索引/DDL 分支换取性能。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/batch_checker.rs`，核对了 4 个数据类型/trait 与 5 个公开函数的完整实现；关键位置为 `BatchCheckerRuntime`、`getKeysNeedCheck`、`getKeysNeedCheckOneRow`、`buildHandleFromDatumRow`、`dataToStrings`、`getOldRow`。
-- 模块与 crate：`pkg/executor/lib.rs` 的 `pub mod batch_checker`；`pkg/executor/Cargo.toml` 的 `astersql-executor` 包、`lib.rs` 入口、`nextgen` feature 和 executor 依赖声明。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/executor/batch_checker.rs` 显示 64 个符号；`explore` 确认文件内调用链，并显示 Rust 入口无外部覆盖测试。精确查询同时区分了 Go 与 Rust 的同名函数。
-- Go 对照：`pkg/executor/batch_checker.go`，逐分支核对同名算法；`pkg/executor/insert_common.go`、`pkg/executor/insert.go`、`pkg/executor/replace.go` 提供生产调用边。
-- 测试搜索：对 `pkg/executor/**/*_test.go` 与 `*_test.rs` 搜索入口符号未发现直接函数级测试；阅读搜索结果确认 `pkg/executor/test/seqtest/seq_executor_test.go` 的批量 duplicate-update 场景及 `pkg/executor/executor_failpoint_test.go` 的生成列写入场景仅作为 Go 写路径的间接行为证据。
-- 本任务是纯文档分析，依计划不运行 Cargo。结构验证要求目标文档存在，且恰好包含本页 11 个固定二级标题；此外人工复核了当前接线状态、错误边界、扩展入口和测试缺口均有源码或调用搜索依据。

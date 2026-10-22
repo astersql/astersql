@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema` crate：`pkg/infoschema/Cargo.toml` 将 `lib.rs` 设为 crate 根，`pkg/infoschema/lib.rs` 以 `pub mod bundle_builder` 挂载本模块。它位于 InfoSchema 构建末端的 placement bundle 派生阶段，不读取存储，也不把规则下发到 TiKV；它只依据调用方提供的元数据视图，在内存中计算 `physical_id -> Arc<PlacementBundle>` 映射。
-
-生产入口在 `pkg/infoschema/builder.rs`：`Builder::Build` 调用 `Builder::build_bundles`，后者用当前数据库、表和 policy 集合构造 `BuilderBundleSchema`，再驱动本文件的 `bundleInfoBuilder`。构建结果随后由 `Builder::Build` 注入 v1 `infoSchema` 或 v2 `infoschemaV2`。文件末尾还有同名包级函数 `updateInfoSchemaBundles`，它只是委托 builder 方法；当前 Rust 生产主链直接调用方法，没有经过这个薄包装。
+用 `BundleSchema` 隔离 bundle 算法与 `Builder` 的具体元数据存储，使生产适配器和独立测试都能提供 policy、单表规格和全表规格。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ RustCodeGraph 的文件节点确认 `bundle_builder.rs` 被 `pkg/infoschema/buil
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/infoschema/bundle_builder.go`。Rust 保留了 `policyGetter`、`bundleInfoBuilder`、`initBundleInfoBuilder`、`SetDeltaUpdateBundles`、两种 mark 方法、`updateInfoSchemaBundles`、`completeUpdateTables` 和 `updateTableBundles` 的总体分工，以及“增量只更新脏表、全量遍历所有表”“policy 影响扩展只看表级引用”的控制流。
+Rust 保留了 `policyGetter`、`bundleInfoBuilder`、`initBundleInfoBuilder`、`SetDeltaUpdateBundles`、两种 mark 方法、`updateInfoSchemaBundles`、`completeUpdateTables` 和 `updateTableBundles` 的总体分工，以及“增量只更新脏表、全量遍历所有表”“policy 影响扩展只看表级引用”的控制流。
 
 两版的关键差异如下：
 
@@ -90,7 +88,6 @@ Go 对照文件是 `pkg/infoschema/bundle_builder.go`。Rust 保留了 `policyGe
 - Go 在构建失败处直接记录日志并继续；Rust 把全部错误作为 `Vec<String>` 返回，由 `Builder::build_bundles` 统一记录。两者都采用部分成功语义。
 - Go 的 bundle map 位于 InfoSchema，因此 `deleteBundle` 接受 InfoSchema；Rust 删除自己的 map。Rust 额外提供 `inherit_bundles`、`bundles`、输入规格结构和 `BundleSchema` trait，以适配其快照式 Builder。
 - Rust 生产适配器会让没有显式 policy 的分区继承表级 policy；Go 文件把原始 `PartitionDefinition` 交给 `NewPartitionBundle`。是否生成相同实际规则取决于 Go placement 层语义，当前精简 Rust 表示不能证明完整等价。
-- Go 的 `infoschema_v2_test.go` 还覆盖表 placement、policy 修改和分区 placement 的端到端更新；这些是 Go 整体 InfoSchema/placement 链证据，不是当前 Rust 单元测试已经覆盖的等价保证。
 
 ## 扩展指南
 
@@ -100,11 +97,3 @@ Go 对照文件是 `pkg/infoschema/bundle_builder.go`。Rust 保留了 `policyGe
 - 若改变错误策略，需明确全量与增量是否回滚、删除旧值或保留旧值，并测试“表 bundle 失败但分区成功”“中间分区失败但后续成功”“继承旧值后 policy 消失”等情形。
 - 新测试必须继续放在独立的 `pkg/infoschema/bundle_builder_test.rs`，不要嵌入生产源文件。涉及生产接线时还应检查 `Builder::ApplyDiff` 的 `bundle_updates` / `bundle_policy_updates` 收集和 `BuilderBundleSchema` 的继承规则。
 - 性能上，全量构建和 `completeUpdateTables` 都扫描全部表；大量 policy 变更仍只触发一次全表扫描，但 `BuilderBundleSchema::table_bundle_spec` 会跨所有数据库查找表。优化时要保持去重、删除语义及错误继续处理行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引包含 Rust/Go；`node --file pkg/infoschema/bundle_builder.rs --offset 1 --limit 500` 读取了目标文件全部 192 行；`query` 核对了 `bundleInfoBuilder`、`BundleSchema`、`policyGetter`、`updateInfoSchemaBundles`、`completeUpdateTables`、`updateTableBundles`、`upsert_bundle`；`node` 读取了 `builder.rs` 的生产接线、`bundle_builder_test.rs` 全部测试、`lib.rs` 模块声明和 `infoschema.rs` 的 `PolicyInfo` / `PlacementBundle` 定义。
-- Rust 源与测试：`pkg/infoschema/bundle_builder.rs`；`pkg/infoschema/builder.rs`；`pkg/infoschema/bundle_builder_test.rs`；`pkg/infoschema/lib.rs`；`pkg/infoschema/infoschema.rs`。
-- crate 边界：`pkg/infoschema/Cargo.toml`，确认 crate 名为 `astersql-infoschema`、根为 `lib.rs`，本文件仅使用标准库和 crate 内类型。
-- Go 对照与测试：`pkg/infoschema/bundle_builder.go`；`pkg/ddl/placement/meta_bundle_test.go::{TestNewTableBundle, TestNewPartitionBundle}`；`pkg/infoschema/infoschema_test.go::TestBuildBundle`；`pkg/infoschema/infoschema_v2_test.go` 中 placement bundle 的增量更新场景。
-- 人工复核结论：本文件存在于 InfoSchema 快照发布前，把表/分区的 policy 绑定转成可查询的物理 ID bundle 缓存；安全扩展必须同时维护全量/增量、旧缓存清理、部分失败和 Go placement 语义四类契约。本文没有把当前字符串占位规则表述为完整 PD placement 支持。

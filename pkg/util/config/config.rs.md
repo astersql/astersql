@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`config.rs` 属于 `astersql-util-config` crate。crate 入口 `pkg/util/config/lib.rs` 将本模块的公开项全部再导出，并同时再导出 `logutil` 与 `variable`；`pkg/util/config/Cargo.toml` 表明它只直接依赖这两个工作区 crate 和 `toml 0.8`，没有 feature 条件。该文件承担 Plan Replayer 配置恢复中的一个窄职责：把 TOML 中记录的系统变量尝试写入一份可变的 `variable::SessionVars`。
-
-公开入口是 `LoadConfigForPlanReplayerLoad`，公开适配边界是 `PlanReplayerSessionContext`，公开错误是 `ConfigLoadError`。当前 Rust 仓库中，对该入口的可确认直接调用位于独立测试 `pkg/util/config/migration_aster_unit_test.rs`；Rust Plan Replayer 的生产流程 `pkg/executor/plan_replayer.rs::loadVariables` 当前委托给 `PlanReplayerBackend::load_variables`，没有直接调用这里的函数。因此本文件是已经实现并经过单元测试的配置加载能力，但不能据此声称它已经接入 Rust Plan Replayer 的生产后端。
+对未知变量、校验失败和设置失败采取“记录变量名、写 Warn、继续处理”的尽力恢复策略；只有读取或 TOML 解码失败会使整个调用返回 `Err`。
 
 ## 核心职责
 
@@ -60,9 +58,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 主循环逐分支对齐 `pkg/util/config/config.go::LoadConfigForPlanReplayerLoad`：同一忽略集合、同样的系统变量查找、`ScopeSession` 校验、`SetSystemVar` 调用、软失败列表和 Warn 文案。`PlanReplayerSessionContext` 对应 Go 的 `sessionctx.Context` 中本函数实际使用的 `GetSessionVars` 子集；Rust 的泛型 `Read` 对应 Go 的 `io.ReadCloser`，但 Rust 函数不要求或执行关闭。
+`PlanReplayerSessionContext` 对应 Go 的 `sessionctx.Context` 中本函数实际使用的 `GetSessionVars` 子集；Rust 的泛型 `Read` 对应 Go 的 `io.ReadCloser`，但 Rust 函数不要求或执行关闭。
 
-主要差异是错误建模和接线状态。Go 用单一 `error` 并由调用方 `errors.AddStack`，Rust 显式区分 `Io`/`Toml`；Go 的 TOML decoder 直接读取流，Rust 先读成 UTF-8 字符串再解析。Go 生产路径已在 `pkg/executor/plan_replayer.go::loadVariables` 调用此逻辑，且 `pkg/executor/test/planreplayer/plan_replayer_test.go::TestPlanReplayerLoadIgnoresLowResolutionTSO`（由相邻注释和断言可定位）验证变量被归档但加载时保持关闭，以确保后续 DDL 可执行。Rust 的同名 Plan Replayer 流程当前由 backend 抽象承担变量恢复，未验证它调用本 crate；因此两端不能视为已具有相同的生产接线。
+主要差异是错误建模和接线状态。Go 用单一 `error` 并由调用方 `errors.AddStack`，Rust 显式区分 `Io`/`Toml`；Go 的 TOML decoder 直接读取流，Rust 先读成 UTF-8 字符串再解析。Rust 的同名 Plan Replayer 流程当前由 backend 抽象承担变量恢复，未验证它调用本 crate；因此两端不能视为已具有相同的生产接线。
 
 ## 扩展指南
 
@@ -71,11 +69,3 @@ Rust 主循环逐分支对齐 `pkg/util/config/config.go::LoadConfigForPlanRepla
 - 若要接入 Rust 生产 Plan Replayer，应在真实 `PlanReplayerBackend::load_variables` 实现处建立桥接，而不是在本文件假设归档或 executor 类型。接线测试应放在 `pkg/executor/plan_replayer_test.rs` 或 `pkg/executor/test/planreplayer/plan_replayer_test.rs`；本 crate 的分支级测试继续放在独立文件 `pkg/util/config/migration_aster_unit_test.rs`，不要嵌入生产源文件。
 - 不要把遍历顺序作为 API。若用户可见警告需要稳定顺序，应在边界排序，同时评估是否会偏离 Go map 的无序语义。
 - 大输入当前会被完整读取和解析两份表示；若优化为流式解析，必须保留读取/语法失败不产生部分写入的行为，否则需要明确引入事务式暂存。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件；`files --filter pkg/util/config` 列出 `config.rs`、`config.go`、`lib.rs` 和 `migration_aster_unit_test.rs`。
-- RustCodeGraph `node --file pkg/util/config/config.rs`：核对全部 154 行及主要符号；精确 `query` 得到 `LoadConfigForPlanReplayerLoad`、`PlanReplayerSessionContext`、`ConfigLoadError`，对应的 `callers`/`callees` 未返回可用边，因此调用关系又以精确文本引用核验。
-- crate 与入口：`pkg/util/config/Cargo.toml`、`pkg/util/config/lib.rs`；生产/抽象入口：`pkg/executor/plan_replayer.go::loadVariables`、`pkg/executor/plan_replayer.rs::loadVariables`、`updateLoadInfo`、`pkg/executor/Cargo.toml`。
-- Go 对照：`pkg/util/config/config.go`。Rust 独立测试：`pkg/util/config/migration_aster_unit_test.rs` 的三个测试覆盖忽略、未知、校验、设置钩子、范围规范化、日志以及读取/TOML 硬错误。Go 端到端证据：`pkg/executor/test/planreplayer/plan_replayer_test.go` 第 544–576 行验证低精度 TSO 被归档但加载时忽略。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按计划以源码、图查询、对照测试阅读和固定章节结构检查作为验证。

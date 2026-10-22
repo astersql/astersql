@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件由 `pkg/server/lib.rs` 的 http_status 模块导出，属于 astersql-server。`Server::run` 调用 `start_status_http` 启动 status listener；本文件负责 HTTP 抽象、完整或诊断路由、可选 TLS 和请求处理。
-
-crate 边界由 [`pkg/server/Cargo.toml`](Cargo.toml) 确定：包名是 `astersql-server`，Go 对照包为 `pkg/server`。本文件直接使用同 crate 的 `extract`、`http_handler`、`server`，并依赖 `astersql-server-handler`、`astersql-server-handler-tikvhandler`、`astersql-server-handler-ttlhandler`、`astersql-planner-extstore`、`astersql-metrics`、`serde_json` 和 `rustls` 等组件。
+`Server::run` 调用 `start_status_http` 启动 status listener；本文件负责 HTTP 抽象、完整或诊断路由、可选 TLS 和请求处理。
 
 ## 核心职责
 
@@ -98,10 +96,6 @@ crate 边界由 [`pkg/server/Cargo.toml`](Cargo.toml) 确定：包名是 `asters
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`pkg/server/http_status.go`](http_status.go)。Rust 的 `DEFAULT_STATUS_PORT`、`serve_error`、`sleep_with_cancel`、`Ballast`、profiling 审计、`Status`/`DetailStatus`、路由集合和 TLS status listener 分别对应 Go 的 `defaultStatusPort`、`serveError`、`sleepWithCtx`、`Ballast`、`withProfilingRequestLog`、同名状态类型、`startHTTPServer` 与 `listenStatusHTTPServer`。
-
-已保持的关键语义包括：ballast 默认最多 2 GiB 且参考物理内存四分之一；错误正文/头；profiling 只记录三个允许的 query；plan-replayer 下载头；status/metrics 路径；多类 TiKV 管理路径和 Go 风格 JSON 字段。
-
 仍有明确差异：
 
 - Go 使用 `net/http`、gorilla mux、cmux，并在 status 监听器上复用 HTTP、gRPC/channelz；Rust 是轻量单请求 HTTP/1.1 parser，本文件没有复刻 cmux/gRPC 服务。
@@ -120,11 +114,3 @@ crate 边界由 [`pkg/server/Cargo.toml`](Cargo.toml) 确定：包名是 `asters
 - TLS 或线程模型变更要同步检查 `Server` 中 listener/worker 保存与 `close`/shutdown join 路径，尤其是未完成请求取消和资源释放。
 - 测试必须放在独立的 [`pkg/server/http_status_test.rs`](http_status_test.rs)，不要嵌入生产源文件。已有测试覆盖 global variables 脱敏、ballast、错误头、listener 关闭、schema/TiFlash、metrics、plan-replayer、DXF keyspace gate、profiling 日志以及 advertised info；新增行为应扩展最接近的测试。
 - 若目标是与 Go 对齐，应同时阅读 Go handler 的直接依赖，而不是只按路由名推测；pprof、TTL、gRPC 和集群 info 尤其不能以当前占位/等价诊断作为完整完成证据。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/server/http_status.rs` 差异及目标 blob `ca6a501251c991b4d262f5e77a144a965eca8629` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/server/http_status.rs` 和 `git show 2c944fb:pkg/server/http_status.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/server/diagnostic_http_test.rs`，Go 对照为 `pkg/server/http_status.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

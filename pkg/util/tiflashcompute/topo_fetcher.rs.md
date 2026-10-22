@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-tiflashcompute` crate。crate 入口 `pkg/util/tiflashcompute/lib.rs` 公开 `topo_fetcher` 模块并再导出其中的公开项；`pkg/util/tiflashcompute/Cargo.toml` 表明它直接依赖 `astersql-config`、`serde`/`serde_json`、`thiserror`、`ureq` 和 `url`，分别承担 AutoScaler 类型识别、AWS JSON 解码、错误类型、HTTP GET 和查询参数编码。
-
-它实现 TiFlash Compute AutoScaler 拓扑获取边界：根据配置选择 Mock、AWS 或测试 fetcher，把具体实现隐藏在 `TopoFetcher` trait 后，并为 MPP 内存超限恢复提供重新拉取拓扑的入口。当前真实 Rust 上游是 `pkg/executor/internal/mpp/recovery_handler.rs` 的 `MemLimitHandlerImpl::doRecovery`；该调用通过全局 fetcher 触发 `RecoveryTypeMemLimit` 恢复。
-
-需要特别区分实现与进程接线：`cmd/tidb-server/main.rs` 虽在 Disaggregated TiFlash 与 AutoScaler 同时启用时调用 `tiflashcompute::InitGlobalTopoFetcher`，但该名字当前来自 `cmd/tidb-server/stubs.rs`，只记录事件并返回成功，不会初始化本文件的 `globalTopoFetcher`。因此本文件具备真实实现和 executor 侧调用点，但 tidb-server 启动链尚未把两者接通。
+用 `TopoFetcher` 统一普通拉取与错误恢复后拉取两种操作，并要求实现满足 `Send + Sync`。
 
 ## 核心职责
 
@@ -84,7 +80,7 @@ HTTP 响应 reader 在 `read_to_end` 完成后随局部变量释放；本文件�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/tiflashcompute/topo_fetcher.go`。Rust 保留了 Go 的公开命名、恢复类型数值、Mock/AWS/Test 三种实现、两个 AWS 路径、查询参数名、初始时间戳 `-1`、固定池缓存策略以及时间戳双重检查。`deserializeNullAsDefault` 及结构体级 `#[serde(default)]` 专门弥合 serde 与 Go `encoding/json` 在缺失/`null` 字段上的默认值差异；对应测试位于 `migration_aster_unit_test.rs`。
+Rust 保留了 Go 的公开命名、恢复类型数值、Mock/AWS/Test 三种实现、两个 AWS 路径、查询参数名、初始时间戳 `-1`、固定池缓存策略以及时间戳双重检查。`deserializeNullAsDefault` 及结构体级 `#[serde(default)]` 专门弥合 serde 与 Go `encoding/json` 在缺失/`null` 字段上的默认值差异；对应测试位于 `migration_aster_unit_test.rs`。
 
 已验证的差异包括：
 
@@ -105,13 +101,3 @@ Go 的相关使用证据包括 `pkg/store/copr/batch_coprocessor.go` 的普通�
 若要让完整 Rust 服务真正使用该实现，接线点在 `cmd/tidb-server/main.rs` 与 `cmd/tidb-server/stubs.rs` 的模块导入边界；需要把启动调用改接本 crate，并验证与 executor 链路共享同一个静态全局实例。该工作超出本文档任务范围，不能仅删除 stub 就视为完成，还应覆盖启动配置、初始化失败和 MPP 恢复的集成行为。
 
 性能扩展时应关注两个复制点：`getTopo` 克隆整个列表，以及 `tryUpdateTopo` 克隆响应中的 `Topology`。若改用共享不可变快照，必须保持调用方无法原地修改缓存的约束。增加超时、重试或 HTTPS 时，应在共享 HTTP 层实施并为 Mock/AWS 两条路径各自验证错误映射。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/tiflashcompute` 确认目标 Rust/Go 文件与测试文件；`node --file pkg/util/tiflashcompute/topo_fetcher.rs --offset 1 --limit 500` 返回目标文件 437 行及全部 35 个符号；`query TopoFetcher` 返回 Rust trait、Go interface 与相关函数候选。`callers InitGlobalTopoFetcher` 和综合 `explore` 在限定时间内未返回，调用边改由下列源码搜索验证。
-- 目标实现：`pkg/util/tiflashcompute/topo_fetcher.rs`，重点符号为 `InitGlobalTopoFetcher`、`GetGlobalTopoFetcher`、三个 `TopoFetcher` 实现、`AWSTopoFetcher::fetchAndGetTopo` 与 `tryUpdateTopo`。
-- crate 与模块边界：`pkg/util/tiflashcompute/Cargo.toml`、`pkg/util/tiflashcompute/lib.rs`、工作区根 `Cargo.toml`、`pkg/lib.rs`。
-- Rust 上游：`pkg/executor/internal/mpp/recovery_handler.rs`、`pkg/executor/internal/mpp/recovery_handler_aster_unit_test.rs`；启动接线限制由 `cmd/tidb-server/main.rs` 和 `cmd/tidb-server/stubs.rs` 共同确认。
-- Go 对照：`pkg/util/tiflashcompute/topo_fetcher.go`；Go 普通拉取与恢复调用参考 `pkg/store/copr/batch_coprocessor.go` 和 `pkg/executor/internal/mpp/recovery_handler.go`。
-- 独立 Rust 测试：`pkg/util/tiflashcompute/migration_aster_unit_test.rs`，覆盖恢复类型、Test/Mock/AWS 实现、HTTP 路径与错误、查询编码、初始化分支、固定池缓存、JSON 默认值及时间戳解析。
-- 本任务为纯文档分析，按总计划不运行 Cargo。结构验收使用任务文件指定命令，检查目标文件存在且固定二级标题恰好为 11 个；人工复核同时确认没有把 stub 启动路径描述为真实接线，也没有把 Go 调用链描述成 Rust 已支持行为。

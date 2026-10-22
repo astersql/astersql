@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-tidbmanager` 的业务实现，提供向 TiDB Manager 控制面发送“当前 Pod 已可回收复用”通知的阻塞式 HTTP 客户端。crate 入口 `pkg/tidbmanager/lib.rs` 通过 `pub mod tidbmanager` 和 `pub use tidbmanager::*` 导出这里的 API；根门面 `pkg/lib.rs` 又经 `facade_tidbmanager` 再导出该 crate。包清单 `pkg/tidbmanager/Cargo.toml` 声明运行时依赖 `reqwest`（仅启用 `blocking`、`rustls-tls`）、`url` 和 `thiserror`。
-
-当前接线状态需要与实现能力区分：仓库内对 `ManagerClient`、`new_client` 和 `Client::free` 的直接 Rust 引用仅见本 crate 的两个独立测试文件。虽然 `pkg/standby/Cargo.toml` 声明了 `astersql-tidbmanager` 依赖，但 `pkg/standby/standby.rs` 目前定义的是另一个本地 `ManagerClient` trait，尚未为本文件的客户端提供适配实现；`cmd/tidb-server/main.rs::createMgrClientForStarter` 使用的也是 `cmd/tidb-server/stubs.rs::tidbmanager` 桩，而不是本文件。因此，本文件目前是可用且有测试覆盖的独立客户端实现，但尚未进入 Rust `tidb-server` 的实际 starter 主链。
+`new_client` 根据是否提供 `reqwest::blocking::ClientBuilder` 选择 `http://` 或 `https://`，为客户端统一设置 `DEFAULT_TIMEOUT`（10 秒），并保存 Manager 地址和 Pod 身份。
 
 ## 核心职责
 
@@ -90,16 +88,11 @@ RustCodeGraph 的 callee 结果确认 `new_client` 进入 `new_client_with_trans
 
 ## 与 Go 版本的对应关系
 
-`pkg/tidbmanager/tidbmanager.go` 是直接语义基准：
-
-- `freeReqPath`/`DefaultTimeout` 对应 `FREE_REQ_PATH`/`DEFAULT_TIMEOUT`，值分别为 `/api/tidb/free` 和 10 秒。
 - Go `Client.Free(ctx, exitReason)` 对应 Rust `Client::free(exit_reason)`；HTTP 方法、路径、四个查询字段、仅接受 200、非 200 时携带状态和 body、读取失败时携带 partial body 的行为一致。
 - Go `NewClient` 在 TLS config 非空时新建启用 HTTP/2 的 `http.Transport`；Rust 接受整个 `ClientBuilder`，使用 rustls TLS，具体 TLS/HTTP 配置由调用者在 builder 上设置。两者都以 TLS 配置是否存在选择 HTTPS。
 - Go 通过 `context.Context` 支持每次请求取消，且 `defer resp.Body.Close()` 显式关闭响应；Rust 没有 per-request context，依赖固定 timeout 和 drop。
 - Go `NewClient` 返回接口且构造不返回错误；Rust `new_client` 返回具体 `ManagerClient` 的 `Result`，因为 reqwest client 构建可能失败。
 - Go 测试通过替换 `http.Client.Transport` 注入 `errorRoundTripper`；Rust 用公开 `HttpTransport` 与 `new_client_with_transport` 达到同一测试边界。
-
-`pkg/tidbmanager/tidbmanager_test.rs` 逐项复刻 Go 测试的成功请求、503 状态/body 和读取失败场景；`migration_aster_unit_test.rs` 以原始 TCP server 再验证请求行及 error source 链。两套 Rust 测试都与生产源码分文件，符合仓库测试布局要求。
 
 ## 扩展指南
 
@@ -109,12 +102,3 @@ RustCodeGraph 的 callee 结果确认 `new_client` 进入 `new_client_with_trans
 - 添加重试时应明确哪些错误可重试、最大尝试次数和幂等性；当前 free 是 PUT，但不能仅凭 HTTP 方法假定 Manager 端任意重复调用都无副作用。
 - 若增加响应体上限、逐请求取消或异步实现，应把 Go 兼容性差异写入测试，并保留 `ManagerError` 的 source 链和 partial body 诊断价值。
 - 生产源码修改后应按仓库规则先执行 `cargo fmt --all`；测试逻辑继续放在同目录独立测试文件，不要内嵌进 `tidbmanager.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/tidbmanager/tidbmanager.rs`（15 个符号）；`files --filter pkg/tidbmanager` 列出实现、crate 入口、Go 对照及两份 Rust 测试；`node --file pkg/tidbmanager/tidbmanager.rs --offset 1 --limit 260` 覆盖源文件全部 205 行；`query TiDBManager --limit 20` 定位本文件公开/内部符号；`callees new_client --limit 30` 确认本文件构造调用边。`callers` 查询未返回可用调用边，因此按技能规则用仓库文本检索补证。
-- 实现与装配：`pkg/tidbmanager/tidbmanager.rs`、`pkg/tidbmanager/lib.rs`、`pkg/tidbmanager/Cargo.toml`、根 `Cargo.toml` 的 `facade_tidbmanager`、`pkg/lib.rs::tidbmanager`。
-- Go 对照：`pkg/tidbmanager/tidbmanager.go`、`pkg/tidbmanager/tidbmanager_test.go`。
-- Rust 测试：`pkg/tidbmanager/tidbmanager_test.rs`、`pkg/tidbmanager/migration_aster_unit_test.rs`。
-- 当前接线核验：`pkg/standby/Cargo.toml`、`pkg/standby/standby.rs::ManagerClient`、`cmd/tidb-server/main.rs::createMgrClientForStarter`、`cmd/tidb-server/stubs.rs::tidbmanager`，以及对 `ManagerClient|HttpTransport|FREE_REQ_PATH|astersql_tidbmanager` 的全仓 Rust 检索。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付验证只检查固定章节、链接/路径事实和最终差异。

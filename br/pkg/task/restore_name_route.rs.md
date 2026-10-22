@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-属于 `astersql-br-pkg-task`；`lib.rs` 公开挂载并再导出本模块。扩展 `RestoreConfig`，为 snapshot/PiTR 提供名称路由配置及名称计划构建 API。本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
+扩展 `RestoreConfig`，为 snapshot/PiTR 提供名称路由配置及名称计划构建 API。
 
 ## 核心职责
 
@@ -34,12 +34,8 @@
 
 ## 与 Go 版本的对应关系
 
-对应 `restore_name_route.go` 的配置检查与名称计划意图。Go 还有围绕恢复元数据构建具体库表计划的编排，本 Rust 文件只提供通用 ObjectName 计划；不能将 Go 的完整目标 schema 创建/复用与 PiTR 接线写成 Rust 已实现。Rust 普通 String 与 Go CIStr、ASCII 命中检查也有表示差异。
+Go 还有围绕恢复元数据构建具体库表计划的编排，本 Rust 文件只提供通用 ObjectName 计划；不能将 Go 的完整目标 schema 创建/复用与 PiTR 接线写成 Rust 已实现。Rust 普通 String 与 Go CIStr、ASCII 命中检查也有表示差异。
 
 ## 扩展指南
 
 新增 schema 禁止项应覆盖源和目标；修改规则集必须连同命令哈希、检查点及 ID map 指纹兼容审查。补生产调用时分别证明名称计划进入目标 DDL、源 ID/文件保留与日志映射，不应只增加 pub use。测试保持在独立 `restore_name_route_test.rs`。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 证据来自本文件完整 blob、`restore.rs` 的配置哈希和校验调用、`stream.rs` 的检查点调用、`lib.rs`/`Cargo.toml`，及 `restore_name_route.go`。独立 Rust 测试覆盖配置/哈希、空旧指纹、任务文件名、源目标身份、计划冲突及 raw flag 拒绝；这些是静态阅读证据，未运行 Cargo。目标包无 `doc.go`；以冻结 git grep 核对生产/测试调用，未依赖当前索引推断运行链。

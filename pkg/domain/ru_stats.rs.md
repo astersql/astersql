@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-domain` crate；crate 入口 `pkg/domain/lib.rs` 以 `pub mod ru_stats` 公开此模块。它提供 RU（Request Unit）历史统计的领域模型、后端抽象和同步写入/清理算法，目标数据语义对应系统表 `mysql.request_unit_by_group`（`RuStatsRow`、`generate_sql`）。
-
-当前 Rust 实现是一个可注入 `RuStatsBackend` 的核心算法，并未像 Go 版那样直接持有 PD client、InfoSchema、KV storage 和系统 session pool。RustCodeGraph 与仓库文本检索均未发现非测试 Rust 生产调用者；现有直接使用来自 `pkg/domain/ru_stats_test.rs`。因此它目前是公开但尚未接入 Rust `Domain` 后台生命周期的能力，不能把文件前半部注释保存的 Go 风格伪代码当作已运行实现。
-
-`pkg/domain/Cargo.toml` 将 crate 根指定为 `lib.rs`，没有为本模块设置 feature 或平台条件。实际可编译代码只依赖标准库的 `BTreeMap`、`Duration`、`SystemTime` 和 `UNIX_EPOCH`；crate 的 PD、KV、InfoSchema 等依赖并未被本文件直接使用。
+在 `RuStatsWriter::write` 中执行“校验区间—检查重复—读取/刷新快照—计算增量—写行”的主流程。
 
 ## 核心职责
 
@@ -97,10 +93,6 @@ GC 会持续占用当前调用线程，直到后端返回少于一批；每批�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/domain/ru_stats.go`，测试为 `pkg/domain/ru_stats_test.go`。
-
-保持的核心语义包括：24 小时默认间隔、92 天保留期、1000 行 GC 批量、前后累计值做差、只对同名同 ID 资源组相减、增量小于 1 时跳过，以及 SQL 中把 RU 截断为整数。Rust 独立测试覆盖首期累计写入、同 ID 差值、重复最新组、单引号转义、重复区间跳过和常见区间对齐。
-
 重要差异与迁移状态：
 
 - Go `requestUnitsWriterLoop` 在 `Domain` 启动时注册，只由 DDL owner 执行，失败最多重试并等待退出或下一周期；Rust 没有对应生产循环、owner 判断、timer、退出信号、日志或重试。
@@ -118,13 +110,3 @@ GC 会持续占用当前调用线程，直到后端返回少于一批；每批�
 修改增量规则时应集中调整 `generate_rows`，并同步 `pkg/domain/ru_stats_test.rs` 中 ID 匹配、小增量、重复组和异常浮点边界。修改 SQL 表达时调整 `generate_sql` 及其转义/截断测试；若生产后端不使用它，应明确其定位或统一接线，避免两套序列化规则漂移。修改时间对齐时必须先决定要保持 Go 的本地时区/DST 合约还是确立 UTC 合约，并增加 DST 独立测试。修改 GC 时应验证整批、尾批、零删除、后端错误和错误返回超批大小的行为。
 
 兼容风险主要是时间边界和资源组重建后的差值；正确性风险主要是并发重复写、两阶段持久化失败及非有限数据；性能风险主要是资源组全集复制、每次增量构造 `BTreeMap`，以及 GC 后端持续返回满批时的长循环。任何生产接线都应保留结构化后端边界，并用集成测试证明系统表与 meta 状态在失败重试后仍一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；使用 `node --file pkg/domain/ru_stats.rs` 阅读了完整 499 行，并对 `RuStatsWriter`、`generate_rows`、`generate_sql`、`get_last_expected_time` 及调用方/被调用方执行查询。
-- 源码：`pkg/domain/ru_stats.rs`，重点为 `RuStatsBackend`、`RuStatsWriter::{write,gc_outdated_records}`、`get_last_expected_time`、`generate_rows`、`generate_sql`。
-- crate 边界：`pkg/domain/Cargo.toml` 与 `pkg/domain/lib.rs`；后者公开 `ru_stats` 并仅在 `cfg(test)` 下装入 `ru_stats_test`。
-- Rust 独立测试：`pkg/domain/ru_stats_test.rs`，覆盖同 ID 增量与 SQL 转义、重复最新组和整数 SQL、写入/去重主流程、UTC 区间对齐。
-- Go 对照：`pkg/domain/ru_stats.go`、`pkg/domain/ru_stats_test.go`，以及 `pkg/domain/domain.go` 中 `do.wg.Run(do.requestUnitsWriterLoop, "requestUnitsWriterLoop")` 的生产启动边。
-- 仓库检索未发现 Rust 生产代码调用上述入口；此结论表示“当前未检出接线”，不表示未来或动态调用不可能存在。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前另运行固定 11 章节结构检查并人工核对：本文区分了真实 Rust 行为、注释草稿、Go 对照和未接线能力。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-cgroup` crate 在 Linux 上的 cgroup 内存探测实现。crate 入口 `pkg/util/cgroup/lib.rs` 通过 `#[cfg(target_os = "linux")] mod cgroup_memory` 选择本文件，并以 `pub use cgroup_memory::*` 暴露其接口；非 Linux 平台改用 `cgroup_memory_unsupport.rs`。`pkg/util/cgroup/Cargo.toml` 指定 crate 根为 `lib.rs`，运行时仅直接依赖 `anyhow`，并以 `package.metadata.porting.go-package = "pkg/util/cgroup"` 标明 Go 对照包。
-
-生产调用链中，`pkg/util/memory/meminfo.rs` 导入 `GetMemoryLimit`、`GetMemoryUsage`：`MemTotalCGroup` 用前者与物理内存总量取较小值，`MemUsedCGroup` 用后者与物理已用量取较小值，`InitMemoryHook` 也通过 `GetMemoryLimit` 判断是否启用 cgroup 感知探针。因此本文件负责把 Linux `/proc` 和 cgroup 文件系统数据转换成上层内存管理可消费的字节数。
+因此本文件负责把 Linux `/proc` 和 cgroup 文件系统数据转换成上层内存管理可消费的字节数。
 
 ## 核心职责
 
@@ -70,13 +68,11 @@ Cargo 边界很小：运行时只依赖 `anyhow = "1"`；`tempfile` 仅是 dev-d
 
 ## 与 Go 版本的对应关系
 
-主要语义逐项复刻 `pkg/util/cgroup/cgroup_memory.go`：相同的四个公开入口、可替换 `root` 的内部入口、controller/mount 探测顺序、v1 优先和 v2 回退、相同的文件名与统计键、零值表示无 controller，以及相同风格的错误文本。Rust 的 `Result` 取代 Go 的多返回值 `error`，`Option` 表示无 controller，RAII 取代 Go 的 `defer stat.Close()`。
+Rust 的 `Result` 取代 Go 的多返回值 `error`，`Option` 表示无 controller，RAII 取代 Go 的 `defer stat.Close()`。
 
 `detectMemStatValue` 有意模拟 Go Scanner 的 64 KiB token 上限，并像 Go 实现一样不单独返回 Scanner 终止错误；Rust 使用 `from_utf8_lossy` 继续扫描包含无效 UTF-8 的其他行，并用 ASCII 数字预检确保 `+42` 不会被 Rust 的整数解析器意外接受。独立 Rust 测试专门固定这些兼容细节。
 
 已验证的差异有两项。第一，混合 v1/v2 时，Go 的 `getCgroupMemUsage` 回退路径是 `mount[1]/path`，Rust 当前是 `mounts[0]/path`；限制和 inactive file 两条 Rust 路径均使用 `mounts[1]`。第二，Go 源码保留关于 v2 `memory.max`/`memory.current` 部署覆盖范围的 TODO，Rust 源码未复制该注释，但实际仍只是读取当前路径，没有新增层级遍历或折扣逻辑。扩展或修复时应以 Go 行为与部署约束为基准，不应把当前 Rust 差异默认为兼容要求。
-
-Go 回归面主要位于 `pkg/util/cgroup/cgroup_mock_test.go` 的 `TestCgroupsGetMemoryUsage`、`TestCgroupsGetMemoryInactiveFileUsage`、`TestCgroupsGetMemoryLimit`，覆盖缺文件、无 controller、无挂载、v1、namespace v1、特殊 controller 字段、v2 缺失/非法/正常值及 `max`。Rust 独立测试 `pkg/util/cgroup/cgroup_memory_test.rs` 当前聚焦统计扫描器边界，不等同于 Go 三组端到端矩阵的完整迁移。
 
 ## 扩展指南
 
@@ -86,12 +82,3 @@ Go 回归面主要位于 `pkg/util/cgroup/cgroup_mock_test.go` 的 `TestCgroupsG
 - 修改统计解析器必须同步 `cgroup_memory_test.rs` 的 byte/scanner 边界，并对照 Go `cgroup_memory.go` 的 `bufio.Scanner` 与 `strconv.ParseUint`。若有意改变 64 KiB、非 UTF-8、前导加号或读错误行为，应明确记录兼容性影响。
 - 若实现 v2 层级最小限制或安全折扣，需要单独设计遍历边界、无限制值和竞态读取策略，并同步评估 `meminfo.rs` 的 60 秒缓存、Go TODO 所指的 Kubernetes/OOM 兼容性及性能成本。
 - 若扩大端到端覆盖，应将 Go `cgroup_mock_test.go` 的内存矩阵移植到独立 Rust 测试文件，保持源文件与测试逻辑分离。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/cgroup` 确认目标源、入口、Linux/非 Linux 实现及测试均被索引；`node --file` 读取了 `cgroup_memory.rs` 全部 193 行、`cgroup_memory_test.rs`、`lib.rs`、`cgroup.rs` 相关路径/版本/单值读取实现，以及生产上游 `pkg/util/memory/meminfo.rs`。文件关系结果指出本文件由 Rust 测试和 `meminfo.rs` 使用。
-- crate 与模块证据：`pkg/util/cgroup/Cargo.toml`；`pkg/util/cgroup/lib.rs`；`pkg/util/cgroup/cgroup.rs`。
-- Go 对照证据：`pkg/util/cgroup/cgroup_memory.go`；非 Linux 对照 `pkg/util/cgroup/cgroup_memory_unsupport.go`；端到端用例 `pkg/util/cgroup/cgroup_mock_test.go`。
-- Rust 测试证据：`pkg/util/cgroup/cgroup_memory_test.rs`，包含 `stat_byte_and_scanner_parity` 与 `stat_read_error_matches_go_missing_key_error`。
-- 生产调用证据：`pkg/util/memory/meminfo.rs` 的 `MemTotalCGroup`、`MemUsedCGroup`、`InitMemoryHook`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核以上符号、路径、差异与扩展入口均可回溯到源码或测试。

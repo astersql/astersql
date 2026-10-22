@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-filter` crate。crate 入口 `pkg/util/filter/lib.rs` 以 `pub mod schema` 装配该模块，并通过 `pub use schema::*` 把其中的公开项提升到 crate 根，因此外部代码可以直接从 `util_filter`/`astersql-util-filter` 使用这些符号。`pkg/util/filter/Cargo.toml` 表明本文件唯一直接依赖的业务 crate 是以 `metadef` 为本地别名引入的 `astersql-meta-metadef`；`regex`、`selector` 和 `tfilter` 是同 crate 中 `filter.rs` 的依赖，不参与这里的判定。
-
-它位于复制过滤工具包的 schema 分类边界：不负责解释 Do/Ignore 过滤规则，也不维护过滤缓存，只回答一个已经规范化为小写的 schema 名是否属于 TiDB/MySQL、DM 或巡检使用的系统范围。当前 Rust 仓库中的生产代码没有直接调用 `IsSystemSchema`；该接口由 crate 根公开，并由独立测试验证，属于已移植但尚未在 Rust 生产主链发现直接接线的公共辅助 API。
+定义过滤层额外认识的两个特殊 schema 名：`DMHeartbeatSchema`（`dm_heartbeat`）和 `InspectionSchemaName`（`inspection_schema`）。
 
 ## 核心职责
 
@@ -69,11 +67,11 @@ RustCodeGraph 的文件节点确认 `schema.rs` 有两个索引符号，并识�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/filter/schema.go`。Rust 保留了 Go 的两个导出名称、相同字符串值、相同的短路顺序，以及对 `metadef.IsMemOrSysDB` 的委托。Go 的包级 `var` 在 Rust 中收紧为不可变 `const &str`；当前仓库没有修改这些变量的用法，因此分类语义一致，同时 Rust API 不允许运行时替换名称。
+Go 的包级 `var` 在 Rust 中收紧为不可变 `const &str`；当前仓库没有修改这些变量的用法，因此分类语义一致，同时 Rust API 不允许运行时替换名称。
 
-小写契约也对应：Go 用 `intest.AssertFunc` 检查 `schema == strings.ToLower(schema)`，Rust 用 `debug_assert_eq!` 表达开发期断言。两者都要求调用方先规范化名称，而不是在分类函数里静默转换。`pkg/util/filter/schema_test.go::TestIsSystemSchema` 通过 `ast.NewCIStr(tt.name).L` 取得小写形式；Rust 对应测试用 `to_ascii_lowercase()` 后再调用。当前测试样例均为 ASCII，因此两条测试路径在覆盖范围内一致；它们没有验证非 ASCII schema 的大小写规范化差异。
+小写契约也对应：Go 用 `intest.AssertFunc` 检查 `schema == strings.ToLower(schema)`，Rust 用 `debug_assert_eq!` 表达开发期断言。当前测试样例均为 ASCII，因此两条测试路径在覆盖范围内一致；它们没有验证非 ASCII schema 的大小写规范化差异。
 
-Go 和 Rust 测试都覆盖 information/performance/mysql/sys、普通库、metrics 与 inspection；Rust 的迁移测试额外直接覆盖 `dm_heartbeat`。通用集合的权威实现分别位于 `pkg/meta/metadef/db.go` 与 `pkg/meta/metadef/db.rs`。
+Go 和 Rust 测试都覆盖 information/performance/mysql/sys、普通库、metrics 与 inspection；Rust 的迁移测试额外直接覆盖 `dm_heartbeat`。
 
 ## 扩展指南
 
@@ -82,14 +80,3 @@ Go 和 Rust 测试都覆盖 information/performance/mysql/sys、普通库、metr
 若新增名称本质上属于全局内存库或系统相关库，应优先评估修改 `pkg/meta/metadef/db.rs` 的分类函数，而不是只在过滤层打补丁，因为其他子系统也可能依赖全局分类。反之，DM 心跳或巡检这类过滤域特有名称应继续留在本层，避免扩大 `metadef` 的语义。
 
 扩展时需要特别检查三类风险：调用方是否统一传入小写名称；新分类是否会意外排除用户同名库；Go/Rust 的集合和断言语义是否仍一致。若改变公开常量类型、名称或 crate 根再导出，还要检查所有外部 crate 消费者。性能方面应保持无状态、短路、常数级比较；若集合明显扩大，可再基于基准和真实调用频率评估静态集合，而不应先引入锁或运行时缓存。
-
-## 验证依据
-
-- Rust 源码与模块：`pkg/util/filter/schema.rs`、`pkg/util/filter/lib.rs`。
-- crate 边界：`pkg/util/filter/Cargo.toml`，确认包名、`lib.rs` 入口以及 `metadef` 本地依赖。
-- Go 对照：`pkg/util/filter/schema.go`、`pkg/meta/metadef/db.go`。
-- 下游实现：`pkg/meta/metadef/db.rs::{IsMemOrSysDB, IsMemDB, IsSystemRelatedDB, IsSystemDB}`。
-- 独立测试：`pkg/util/filter/schema_test.rs::TestIsSystemSchema`、`pkg/util/filter/migration_aster_unit_test.rs::migration_nil_rules_cache_and_system_schemas_match_go`、`pkg/util/filter/schema_test.go::TestIsSystemSchema`。
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件；`files --filter pkg/util/filter` 找到本 crate 的 Rust/Go 源与测试；`query IsSystemSchema --kind function --json` 精确定位 Rust、Go 及两侧测试符号；`node --file pkg/util/filter/schema.rs --offset 1 --limit 400` 读取完整 43 行并确认公开常量和函数。精确调用边命令超时无输出，已用仓库文本引用和源码短路表达式交叉核对。
-- 人工事实复核：本文件存在是为了补充过滤域特殊库名并复用元数据层系统库分类；执行路径、输入小写不变量、无状态边界和安全扩展位置均可由上述符号反向验证。
-- 本任务是纯文档分析，依照任务要求未运行 Cargo；交付结构使用任务规定的 11 个固定二级标题验证。

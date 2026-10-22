@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-format-textrow` crate，crate 根 `pkg/format/textrow/lib.rs` 通过 `mod textrow; pub use textrow::*;` 将这里的公开项导出。`pkg/format/textrow/Cargo.toml` 指明库入口为 `lib.rs`，并把 Go 包对应关系记录为 `pkg/format/textrow`。
-
-它位于 MySQL 文本结果行的“单值序列化”层：`FormatValueText` 把 `chunk::Row` 中一个非 NULL 单元格变成尚未加协议外框的字节。直接生产入口 `pkg/server/internal/column/column.rs::DumpTextRow` 先处理 NULL，再调用本函数，最后用 `dump::LengthEncodedString` 添加 MySQL 文本协议长度编码。因此本文件不负责整行遍历、NULL 标记或长度前缀，也不负责二进制行协议。
+字符串类值先用列的 collation 更新 `ResultEncoder`，再按会话结果字符集规则转换；JSON 和 `TypeTiDBVectorFloat32` 固定以 `mysql::DefaultCollationID` 更新数据编码，以保持其文本表示按 UTF-8 语义转换。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/format/textrow/textrow.go`，公开结构、类型分派、精度规则和三个浮点常量逐项对应。`pkg/format/textrow/textrow_test.go` 与 `textrow_test.rs` 使用同组预期，覆盖 signed/unsigned、表达式浮点精度、非空 Table 保留完整精度、Blob/Varchar、UTF-8 到 GBK、Datetime/Duration/Decimal、YEAR、Enum/Set/JSON、Geometry 错误及浮点表。
-
 需要注意的语言实现差异：
 
 - Go 的 `ErrInvalidType` 是 `errors.New` 的错误值；Rust 用零大小 `InvalidTypeError` 加常量实例，便于 `Eq` 比较。
@@ -92,7 +88,7 @@
 - Go 对 Decimal/Time 等使用 `hack.Slice` 避免字符串到字节的显式复制；Rust 使用 `String().into_bytes()`，语义相同但分配特征不同。
 - Go 默认错误返回 `nil, ErrInvalidType`；Rust 返回 `Err(ErrInvalidType)`。两侧均由外层协议代码决定最终错误身份与上下文。
 
-当前 Rust 还覆盖 `TypeTiDBVectorFloat32`，与同路径 Go 实现一致。没有证据表明本文件是桩或未接线模块：server Rust 入口存在直接生产调用。
+没有证据表明本文件是桩或未接线模块：server Rust 入口存在直接生产调用。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@
 修改浮点规则应集中在 `floatPrec` 或 `AppendFormatFloat`，并保留三类不变量：32/64 位阈值按对应精度判断、传入 buffer 前缀不被破坏、科学计数法规范化不误删指数。性能修改还应检查数值 scratch 回收、字符串转换缓冲和 `String().into_bytes()` 的分配行为。
 
 测试必须放在独立文件 `pkg/format/textrow/textrow_test.rs`，不要嵌入生产源文件；同步更新 Go 语义时还应对照 `pkg/format/textrow/textrow_test.go`。至少补充成功输出、错误类型、字符集或精度边界，并检查上游 `pkg/server/internal/column/column.rs::DumpTextRow` 的 length encoding/错误映射是否仍成立。兼容风险主要是客户端可见字节变化，性能风险主要是逐单元分配或编码器缓冲失去复用。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/format/textrow` 确认目标、crate 根、相邻 encoder 和独立测试均已索引。
-- RustCodeGraph `node --file pkg/format/textrow/textrow.rs`：核对全部 233 行、8 个主要符号及完整类型分派。
-- RustCodeGraph `query`：分别定位 Rust/Go 的 `FormatValueText`、`floatPrec`、`AppendFormatFloat`，以及私有 `format_with_scratch`；精确 `callers/callees` 未返回边，因此又以索引源码和仓库搜索核验直接接线。
-- RustCodeGraph 索引源码：`pkg/format/textrow/lib.rs` 证明公开再导出和独立测试装配；`pkg/format/textrow/result_encoder.rs` 证明字符集、scratch、Clean 与转换失败策略；`pkg/server/internal/column/column.rs::DumpTextRow` 证明生产调用、NULL 处理、长度外框和错误映射。
-- 配置：`pkg/format/textrow/Cargo.toml` 核对 crate 名、入口、依赖及 Go 包映射；`pkg/server/internal/column/Cargo.toml` 核对 server 到 textrow crate 的依赖。
-- 对照与测试：`pkg/format/textrow/textrow.go`、`pkg/format/textrow/textrow_test.go`、`pkg/format/textrow/textrow_test.rs`。Rust 测试覆盖类型与字符集主路径、Geometry 错误和 32/64 位浮点边界；本任务按要求仅作静态文档分析，未运行 Cargo。

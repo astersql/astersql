@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table-tables` crate；crate 由 `pkg/table/tables/Cargo.toml` 定义，入口 `pkg/table/tables/lib.rs` 通过公开模块 `pub mod state_remote` 暴露它。它位于缓存表实现的远程锁状态边界：上层协议由 `pkg/table/tables/cache.rs` 中的 `StateRemote` trait 定义，本文件用泛型 `StateRemoteHandle<S>` 实现该协议，并把实际时间戳读取、锁行加载和锁行更新下沉到可注入的 `RemoteStore`。
-
-这里的“远程”是协议角色而不是现成的网络客户端。文件内唯一具体后端 `MemoryRemoteStore` 只是进程内 `HashMap`；真正接入 `mysql.table_cache_meta` 或其他共享存储，需要仓库外或后续实现一个满足事务互斥约束的 `RemoteStore`。与之相比，Go 文件 `pkg/table/tables/state_remote.go` 直接使用内部 SQL 和事务访问系统表。
+提供 `MemoryRemoteStore` 与 `MemoryRemoteStoreError`，支持嵌入式使用和可控时钟的确定性独立测试；它不实现跨进程协调，也不兑现 `for_update` 的互斥语义。
 
 ## 核心职责
 
@@ -87,9 +85,7 @@ RustCodeGraph 对目标文件识别出 47 个符号。精确查询定位 `StateR
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/table/tables/state_remote.go`，核心锁型、状态转换、严格/非严格过期条件、租约只增不减、读续租 ABA 检查、写租约本地缓存行为以及 `waitForLeaseExpire` 的最小微秒等待均被 Rust 保留。`pkg/table/tables/state_remote_test.go::TestStateRemote` 覆盖从 `NONE` 到读锁、读续租、读转写、持写时拒绝读操作及写续租；Rust 独立测试把这些行为拆成更确定的状态机测试。
-
-关键实现差异在存储边界。Go 的 `stateRemoteHandle` 持有 `sqlExec`，`runInTxn` 显式开启乐观或悲观事务、关闭 session retry、读取 `@@tidb_current_ts`、提交/回滚；`loadRow` 查询 `mysql.table_cache_meta`，写路径使用 `FOR UPDATE`。Rust 不包含 SQL 执行、上下文、提交/回滚或真正系统表适配器，而把这些责任交给 `RemoteStore`，目前只有忽略 `for_update` 的内存实现。因此 Rust 已实现的是可复用的状态机和存储契约，不能表述为已经具备 Go 的多节点远程事务接线。
+关键实现差异在存储边界。Rust 不包含 SQL 执行、上下文、提交/回滚或真正系统表适配器，而把这些责任交给 `RemoteStore`，目前只有忽略 `for_update` 的内存实现。因此 Rust 已实现的是可复用的状态机和存储契约，不能表述为已经具备 Go 的多节点远程事务接线。
 
 Go `CachedTableLockType.String()` 对非法整数 panic；Rust 使用封闭枚举和 `as_str()`，不存在同类非法枚举输入。Go 的 `updateRow` 通常只更新 `lock_type` 与 `lease`，所以 Rust 在若干分支通过 `set_local` 与完整行写回之间的差异，配合测试显式保留远端 `old_read_lease` 和 Go 本地快照语义。
 
@@ -102,14 +98,3 @@ Go `CachedTableLockType.String()` 对非法整数 panic；Rust 使用封闭枚�
 性能上优先保留两项设计：安全窗口内复用本地写租约，以及只在新租约更大时写远端。兼容性上不得更改四个协议字符串、TSO 的 18 位逻辑布局、`old_read_lease` 的含义或 ABA 返回规则。若要加入取消/异步等待，推荐围绕 `lock_for_write_once` 组织调度，而不是改变其无 sleep、返回等待时长的契约。
 
 测试逻辑应继续放在独立的 `state_remote_test.rs`，不要嵌入生产源文件。新增后端的测试也应独立成文件，并同时验证远端权威行与 `local_state()`，因为两者有意可能不同。
-
-## 验证依据
-
-- 生产源码：`pkg/table/tables/state_remote.rs`，核对 426 行完整实现、公开/内部符号、所有状态分支、错误传播与等待逻辑。
-- 上层契约与直接依赖：`pkg/table/tables/cache.rs` 中 `lease_from_ts`、`StateRemote`、`TokenLimit`、`CachedTable`；模块入口 `pkg/table/tables/lib.rs` 中无条件 `pub mod state_remote` 及独立测试模块声明。
-- crate 边界：`pkg/table/tables/Cargo.toml`，确认 crate 名 `astersql-table-tables`、入口 `lib.rs`、默认 `expression-runtime` feature；本模块自身只使用 crate 内 API 和标准库。
-- Go 对照：`pkg/table/tables/state_remote.go`，核对 `StateRemote`、`stateRemoteHandle`、`LockForRead`、`LockForWrite`/`lockForWriteOnce`、两个续租方法、事务辅助、`loadRow`/`updateRow` 和等待计算。
-- Rust 测试：`pkg/table/tables/state_remote_test.rs`，覆盖协议字符串、缺行、过期行读锁、写类锁拒读、读转意向写再转写、写锁只延长、本地/远端快照差异、读续租 ABA、写续租兼容行为、写锁安全窗口复用和 TSO 等待边界。
-- Go 测试：`pkg/table/tables/state_remote_test.go::TestStateRemote` 与 `pkg/table/tables/cache_test.go::TestRenewLease`/`TestRenewLeaseABAFailPoint`，作为系统表接线及缓存续租语义的对照证据。
-- RustCodeGraph：`status` 显示索引含目标文件（目标文件 47 个符号）；`explore` 和精确 `query --json` 定位 `StateRemoteHandle` 及四个 inner 状态机函数，并核对 trait 公开方法、独立 Rust 测试与 `RemoteStore` 方法之间的直接调用关系。宽名称的同名噪声未作为证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构检查要求本文恰有十一个固定二级标题，并人工复核“为何存在、如何运行、如何安全扩展”均有源码或对照文件支撑。

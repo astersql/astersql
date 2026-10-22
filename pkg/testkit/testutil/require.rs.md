@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-testkit-testutil` crate，是测试辅助层中的断言、固定夹具与随机字符串工具实现，不在数据库服务的 SQL 请求生产链路上。`pkg/testkit/testutil/lib.rs` 通过私有 `require` 模块 `include!("require.rs")` 引入实现，再以 `pub use require::*` 将本文件的公开函数提升到 crate 根；因此使用者看到的是 `astersql_testkit_testutil::DatumEqual` 等 API，而不是公开的 `require` 子模块。
-
-crate 边界由 `pkg/testkit/testutil/Cargo.toml` 定义。与本文件直接相关的依赖是 `rand = "0.9"`；`Datum`、二进制排序规则和 `Handle` 则分别经 `lib.rs` 中的 `types`、`collate`、`kv` 重导出模块来自 `astersql-util-codec` 与 `astersql-kv`。Cargo 元数据把该 crate 对应到 Go 包 `pkg/testkit/testutil`。
+这些函数服务于测试数据构造和断言，不封装业务状态，也不把失败转换为可恢复的数据库错误。
 
 ## 核心职责
 
@@ -71,9 +69,7 @@ crate 层面的潜在使用者可由 Cargo 声明看到，包括 `pkg/session/te
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/testkit/testutil/require.go`，回归测试为 `pkg/testkit/testutil/require_test.go`。七个 Rust 公共函数逐一保留了 Go 函数名和主要语义：二进制 collator 的 Datum 比较、Handle 类型与字符串比较、无序多重集比较、慢日志夹具以及 ASCII 字母随机串。
-
-重要的语言适配如下：Go 断言函数接收 `testing.TB` 和可选消息，使用 `testify/require` 报告失败；Rust 版本省略测试句柄和自定义消息，使用 `assert!`、`assert_eq!`、`expect` panic。Go 的 `[]string(nil)` 与空 slice 可直接区分，Rust 以 `Option<&[String]>` 表示，`None` 对应 nil。Go `RandStringRunes(int)` 依赖包级 `math/rand`，Rust 使用 `isize` 与 `rand 0.9` 的线程 RNG，并显式拒绝负数。Go JSON getter 返回字符串值，Rust getter 为匹配拥有语义执行一次分配。
+重要的语言适配如下：Go 断言函数接收 `testing.TB` 和可选消息，使用 `testify/require` 报告失败；Rust 版本省略测试句柄和自定义消息，使用 `assert!`、`assert_eq!`、`expect` panic。Go `RandStringRunes(int)` 依赖包级 `math/rand`，Rust 使用 `isize` 与 `rand 0.9` 的线程 RNG，并显式拒绝负数。Go JSON getter 返回字符串值，Rust getter 为匹配拥有语义执行一次分配。
 
 `require_test.go::TestCompareUnorderedString` 与 `require_test.rs::test_compare_unordered_string` 覆盖相同的顺序、长度、重复计数和 nil/空切片案例；`migration_aster_unit_test.rs` 额外覆盖二进制排序规则、Handle、夹具内容、随机串字符集和长度。Rust 版本当前并未移植 Go 仓库中所有广泛调用点，不能把 Go 测试调用图等同于 Rust 调用图。
 
@@ -84,12 +80,3 @@ crate 层面的潜在使用者可由 Cargo 声明看到，包括 `pkg/session/te
 修改 `CompareUnorderedStringSlice` 时必须保留或明确变更三项兼容契约：`None != Some(&[])`、顺序无关、重复次数敏感。修改 `DatumEqual` 时要同步验证二进制排序规则和比较错误路径；修改 Handle 断言时要注意扩大到内部编码比较可能偏离 Go 契约。扩展连接属性夹具时应同时修改常量、包含检查函数、Rust 迁移测试，并核查上述执行器/infoschema Go 测试的期望文本。随机生成逻辑若改字符集，需同步验证字符数与字节数语义、分布需求及是否仍与 Go 测试用途兼容。
 
 性能风险主要在热循环中反复分配 JSON `String`、对大切片建立计数表，以及生成极长随机串；不过当前定位是测试工具。兼容风险主要来自公开函数签名、panic 行为、nil/空区分以及固定慢日志文本，修改前应搜索所有 Rust 实际调用和 Go 对照调用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、`pkg/testkit/testutil/require.rs` 包含 8 个符号；`node --file pkg/testkit/testutil/require.rs --offset 1 --limit 260` 返回了完整 134 行实现。调用边命令对精确文件运行时长时间无结果，已中止，故调用者结论改由索引覆盖确认后结合仓库精确符号搜索核验，未虚构图边。
-- 源码与接线：`pkg/testkit/testutil/require.rs`、`pkg/testkit/testutil/lib.rs`。
-- crate 边界：`pkg/testkit/testutil/Cargo.toml`，以及仓库内依赖 `astersql-testkit-testutil` 的 Cargo manifests。
-- Rust 独立测试：`pkg/testkit/testutil/require_test.rs`、`pkg/testkit/testutil/migration_aster_unit_test.rs`。
-- Go 对照：`pkg/testkit/testutil/require.go`、`pkg/testkit/testutil/require_test.go`；代表性调用证据来自 `pkg/executor/slow_query_test.go`、`pkg/executor/slow_query_sql_test.go`、`pkg/executor/cluster_table_test.go`、`pkg/infoschema/test/clustertablestest/cluster_tables_test.go`、`pkg/ddl/primary_key_handle_test.go` 和 `pkg/privilege/privileges/privileges_test.go`。
-- 人工复核结论：本文件存在是为了让 Rust 测试共享与 Go 一致的领域断言和夹具；执行均为同步、局部、失败即 panic 的测试流程；安全扩展点与必须同步的独立测试已在“扩展指南”列出。按任务约束未运行 Cargo。

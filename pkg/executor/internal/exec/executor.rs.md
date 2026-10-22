@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-executor-internal-exec` crate 的执行器公共契约与基础实现，模块由同目录 `lib.rs` 以 `pub mod executor` 导出。它把批量 Volcano 执行模型抽象为 `Executor::Open`、`Executor::Next`、`Executor::Close`，并集中提供结果块分配、执行树元数据、运行时统计、查询中断、TopSQL 登记门闩和系统会话借还等通用能力。
-
-当前 Rust 实现是自包含的迁移边界：`Cargo.toml` 把完整 TiDB 子系统依赖全部放在 `cfg(windows)` 下，而本文件本身只依赖标准库。生产接线可见于 `pkg/executor/staticrecordset/recordset.rs`（消费 `Executor`、`Chunk`、`ExecContext`、`NewFirstChunk`、`Open`、`Next`、`Close`）以及 `pkg/executor/internal/testutil/testutil.rs`（构造实现该 trait 的测试执行器）。它并不代表仓库内所有 Rust 执行器已经统一迁移到这套 trait；大量执行器仍有各自的泛型运行时接口。
+把批量 Volcano 执行模型抽象为 `Executor::Open`、`Executor::Next`、`Executor::Close`，并集中提供结果块分配、执行树元数据、运行时统计、查询中断、TopSQL 登记门闩和系统会话借还等通用能力。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Executor`、`ExecutorMeta`、`ExecutorChunkAllocator`、`ExecutorStats`、`BaseExecutorV2`、`BaseExecutor` 以及辅助自由函数，逐一对应同路径 `executor.go` 中的同名或小写辅助类型。核心顺序保持一致：递归打开子树；关闭全部子节点并返回首错；`Next` 前后检查 killer；运行时统计包围实际调用；系统会话回滚成功才归还。
-
 需要明确的迁移差异如下：
 
 - Go `chunk.Chunk`、`expression.Schema`、`types.FieldType` 是完整实现；Rust 当前类型只保存本文件测试所需的尺寸和 `type_code`。
@@ -93,12 +89,3 @@ Rust 的 `Executor`、`ExecutorMeta`、`ExecutorChunkAllocator`、`ExecutorStats
 - 扩展系统会话时，接入 `SessionContext`、`SessionPool`、`SystemSession` 和 `BaseExecutor::{GetSysSession, ReleaseSysSession}`；新路径必须证明异常会话不会回池。
 - 回归测试继续放在独立的 `pkg/executor/internal/exec/executor_test.rs`，不要内嵌到生产文件。至少覆盖成功、具体错误、panic、kill 前后置检查、统计、子节点局部打开失败、多个 close 错误、统计锁异常和系统会话回滚失败；跨 crate 接线可同步扩充 `pkg/executor/staticrecordset/integration_test.rs`。
 - 若追求 Go 等价，优先补齐真实 Chunk/schema 类型、tracing/TopSQL 行为和 `BaseExecutor` trait 转发；并单独评估 Go 声明的并发 Close 契约，因为仅增加方法体不能绕过 Rust 的 `&mut self` 独占模型。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/internal/exec/executor.rs`，完整核对 516 行；主要符号包括 `Executor`、`ExecutorMeta`、`ExecutorChunkAllocator`、`StatementContext`、`ExecutorStats`、`BaseExecutorV2`、`BaseExecutor`、`Open`、`Next`、`Close`。
-- RustCodeGraph：运行 `status`、`files --filter pkg/executor/internal/exec`、针对目标文件的 `node --file ... --offset ... --limit ...`、`explore`，以及 `query BuildNewBaseExecutorV2`、`query NewBaseExecutor`、`query NewBaseExecutorV2`、`query Executor --kind trait`；图确认 Rust/Go 对应符号并报告目标文件的 16 个使用文件。
-- crate 与模块边界：`pkg/executor/internal/exec/Cargo.toml`、`pkg/executor/internal/exec/lib.rs`。
-- Go 对照：`pkg/executor/internal/exec/executor.go`，核对接口、基类、统计、killer、Chunk 分配、系统会话和三个生命周期包装函数。
-- Rust 独立测试：`pkg/executor/internal/exec/executor_test.rs`，覆盖递归 Open/Close、Open 耗时、字段列数与 Chunk 尺寸、最大行数截断、kill 前置短路和 panic 转换。该文件当前未覆盖 `Next` 成功统计、后置 kill、TopSQL、派生构造器、系统会话及多子节点错误组合，这些不能据现有测试宣称已验证。
-- 直接调用证据：`pkg/executor/staticrecordset/recordset.rs`、`pkg/executor/staticrecordset/integration_test.rs`、`pkg/executor/internal/testutil/testutil.rs`。任务为纯文档分析，按计划未运行 Cargo 或代码测试；最终仅执行固定十一章节的结构验证并人工复核结论来源。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`grant.rs` 属于 `astersql-executor` crate；`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 与 `pkg/executor/lib.rs` 的 `pub mod grant` 共同把它公开为 `astersql_executor::grant`。文件承载 GRANT 权限写入模型、事务流程以及可复用的账户 TLS 选项序列化逻辑。
-
-当前接线并不完全相同：仓库内 `GrantExec` 的 Rust 生产调用者尚未找到，除 `pkg/executor/grant_test.rs::executor` 外没有实例化点；实际 Go 执行链仍由 `pkg/executor/builder.go` 构造 `pkg/executor/grant.go::GrantExec`。另一方面，公开函数 `account_tls_options_to_global_priv` 已由 `pkg/session/runtime/control.rs::execute_alter_user` 和 `execute_create_user` 调用。因此本文件不是纯桩，但应区分“已接线的 TLS 转换”与“尚未接入 Rust SQL 执行主链的 GRANT 主执行器”。
+`GrantExec::Next` 实现一次性执行语义：解析并规范化授权对象，切换到新事务，通过内部系统会话写权限表，提交后通知权限缓存更新。
 
 ## 核心职责
 
@@ -83,9 +81,7 @@
 
 ## 与 Go 版本的对应关系
 
-- Rust `GrantExec` 的字段和 `Next` 主阶段对应 `pkg/executor/grant.go::GrantExec` 与 `Next`：一次性执行、库表规范化、旧事务切换、内部事务、隐式建用户、权限行初始化、逐级授权、提交后通知均被保留。
 - Rust 用 `GrantDependencies`、`SystemSession`、`SystemMutation`、`SystemQuery` 隔离 TiDB 具体 session/infoschema/SQL 字符串；Go 版本直接调用 `sessionctx`、`InfoSchema` 和 `ExecuteInternal`。这是依赖倒置差异，不是授权语义删减。
-- `PrivilegeCatalog` 对应 Go 的 `mysql.AllGlobalPrivs`、`AllDBPrivs`、`AllTablePrivs`、`AllColumnPrivs`；`StaticPrivilege` 的级别标记与列名/SET 名对应 Go `mysql.PrivilegeType` 的集合成员及 `ColumnString`/`SetString`。
 - `account_tls_options_to_global_priv` 复用与 Go `tlsOption2GlobalPriv` 相同的空输入、重复项、cipher/X509/SAN 校验及 JSON 省略语义。Rust 测试明确验证 `{}`、SSL/X509 数值、token issuer-only 的 `None` 和 Go 错误文案。
 - 已确认的迁移差异是生产接线：Go `GrantExec` 由 `builder.go` 构造并实现执行器接口；Rust `GrantExec` 尚无生产构造点。Rust 仅 TLS helper 已被 session runtime 的 CREATE/ALTER USER 路径使用，所以不能宣称整个 GRANT 执行器已经替代 Go。
 - Go 回归测试 `pkg/executor/grant_test.go` 覆盖 global、DB、table、column scope、大小写与错误；Rust 独立测试 `pkg/executor/grant_test.rs` 聚焦 mutation、事务一次性、规范名称、ALL 展开、列权限与 TLS 行为。两者是互补证据，Rust 测试不是 Go 全部集成覆盖的等价替代。
@@ -98,13 +94,3 @@
 - 扩展 REQUIRE 类型时，要同步 parser AST 映射、`AuthTokenOrTlsOptionType`、重复项文案、校验函数、`GlobalPrivValue` 与 `serialize_global_priv`，并逐项对齐 Go `tlsOption2GlobalPriv` 和 `privileges.GlobalPrivValue` 的 JSON 兼容格式。
 - 若把 Rust `GrantExec` 接入生产执行链，需要先提供 `GrantDependencies`/`SystemSession` 的真实适配器和 builder 构造点，并验证权限缓存通知及系统会话池生命周期；当前文件本身不能证明这些接线已存在。
 - 性能上应避免在新增逻辑中为每个权限重复查询同一 SET；现实现按权限项执行读取—写回，批量优化必须保证顺序合并和去重语义不变，并评估多用户、多列授权的系统表往返次数。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；读取了 `pkg/executor/grant.rs` 全部 1576 行，并查询 `GrantExec`、`GrantExec::Next`、`account_tls_options_to_global_priv` 的节点与 callers/callees。图确认 `Next` 到 `validate_table_grant`、`run_internal_transaction`、`getTargetSchemaName`，以及后续到 `apply_grant` 和各类授权函数的调用边。
-- 源与装配：`pkg/executor/grant.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`。
-- Rust 上游生产证据：`pkg/session/runtime/control.rs::execute_alter_user`、`execute_create_user`；仓库级 Rust 引用搜索未发现 `GrantExec` 的生产实例化点。
-- Go 对照：`pkg/executor/grant.go` 的 `GrantExec::Next` 对应流程、`tlsOption2GlobalPriv`、各级 `grant*` 与 `compose*`；`pkg/executor/builder.go` 是 Go 构造入口。
-- 独立 Rust 测试：`pkg/executor/grant_test.rs` 的六个测试覆盖错误/default、动态权限与 TLS mutation、表名规范化和 ALL 展开、列名规范化和非法列权限、账户 TLS JSON、校验错误。
-- Go 回归证据：`pkg/executor/grant_test.go` 的 `TestGrantGlobal`、`TestGrantDBScope`、两个大小写测试、`TestGrantTableScope`、`TestGrantColumnScope`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行任务规定的 11 章节结构检查，并人工复核没有把未接线的 Rust `GrantExec` 描述为生产主链。

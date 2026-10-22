@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Apply 算子的结果缓存：用编码后的相关外层行作为键，保存该键对应的内层执行结果 `chunk::List`。它属于 workspace crate `astersql-executor-internal-applycache`，由同目录 `lib.rs` 作为私有模块载入并将全部公开符号重新导出；crate 的边界和依赖见 `pkg/executor/internal/applycache/Cargo.toml`。
-
-在完整 SQL 执行链中，这类缓存服务于相关子查询的 Nested Loop Apply，避免相同相关列值反复执行内层计划。Go 生产路径已经在 `pkg/executor/parallel_apply.go` 的 `ParallelNestedLoopApplyExec.Open` 和 `pkg/executor/join/hash_join_v1.go` 的 `NestedLoopApplyExec.Open` 中构造缓存，并在工作循环中调用 `Get`/`Set`。截至本次检索，Rust workspace 和 `pkg/executor`、`pkg/executor/join` 的 Cargo 清单虽已声明该 crate，但 Rust 生产源码没有直接调用 `NewApplyCache`、`ApplyCache::Get` 或 `ApplyCache::Set`；直接 Rust 使用者仅见同目录独立测试。因此，本文件是已实现且有测试的迁移组件，不能据此声称 Rust Apply 主链已接入它。
+实现 Apply 算子的结果缓存：用编码后的相关外层行作为键，保存该键对应的内层执行结果 `chunk::List`。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 结构逐项对应 `pkg/executor/internal/applycache/apply_cache.go`：Go 的 `cache`、`memTracker`、`memCapacity`、`lock` 分别对应 Rust 的加锁 `cache`、`mem_tracker`、`mem_capacity`（锁合并包裹缓存）；Go `applyCacheKey []byte` 对应 Rust newtype；`applyCacheKVMem`、构造、三个私有 LRU 包装器和三个公开方法保持相同算法顺序。
-
 有意的语言适配包括：Rust 用 `ApplyCacheContext` 代替完整 `sessionctx.Context`；返回拥有所有权的 `ApplyCache` 而不是指针；键按值传入并使用 `Arc<chunk::List>`；动态值通过 `Arc::downcast` 恢复类型；Go 的 `(nil, nil)` 未命中对应 `Ok(None)`；当前永不产生的 Go `error` 对应 `Infallible`。
 
 语义证据也保持一致：`apply_cache_test.rs` 翻译 Go 的容量淘汰和双 goroutine 交接测试；`migration_aster_unit_test.rs` 额外覆盖键哈希、超大条目拒绝、Tracker 数值和 Get 刷新 LRU。Rust 的测试没有内嵌在生产文件，符合仓库要求。
@@ -104,13 +100,3 @@ Rust 结构逐项对应 `pkg/executor/internal/applycache/apply_cache.go`：Go �
 若接入 Rust Apply 主链，应在运行时上下文实现处适配 `ApplyCacheContext`，把编码后的相关列 `Vec<u8>` 转为 `ApplyCacheKey`，把执行器的 Chunk 集合转换为本 crate 使用的 `chunk::List`，并把 `GetMemTracker` 挂到执行器父 Tracker。需要同步验证缓存开关、命中率统计、执行器 Open/Close 生命周期，以及 `parallel_apply.rs` 的抽象接口与该具体实现之间不会重复记账。
 
 若扩大动态值类型，必须重构当前 `Arc::downcast::<chunk::List>` 的强不变量；不要仅绕过 `expect`，否则会把编程错误静默变成缓存未命中。若要让构造或操作真正返回错误，再将 `Infallible` 替换为仓库统一错误类型并补齐上层传播测试。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/internal/applycache/apply_cache.rs`，核对全部 18 个索引符号、公开/私有边界、流程和 panic 点。
-- crate 边界：`pkg/executor/internal/applycache/Cargo.toml` 与 `lib.rs`；根 `Cargo.toml`、`pkg/executor/Cargo.toml`、`pkg/executor/join/Cargo.toml` 用于确认 workspace 与依赖声明。
-- 下游实现：RustCodeGraph `query SimpleLRUCache`、`query NewSimpleLRUCache` 及 `node --file pkg/util/kvcache/simple_lru.rs`，核对非线程安全、命中刷新、同键替换和最旧项淘汰。
-- 调用图：RustCodeGraph `query ApplyCache`、`query NewApplyCache`、`query applyCacheKVMem`、`query ApplyCacheKey`；精确 `callers`/`callees` 对 impl 方法未返回边，继而用限定 `rg` 搜索确认 Rust 直接使用仅存在于独立测试，并记录未接线事实。
-- Go 对照及生产入口：`pkg/executor/internal/applycache/apply_cache.go`、`pkg/executor/parallel_apply.go`、`pkg/executor/join/hash_join_v1.go`。
-- 测试证据：`pkg/executor/internal/applycache/apply_cache_test.rs`、`migration_aster_unit_test.rs` 及 Go `apply_cache_test.go`；`main_test.rs`/`main_test.go` 仅提供包测试环境，不改变缓存算法。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务给定命令验证本文恰有 11 个固定二级标题，并人工复核“存在目的、运行过程、安全扩展”三类问题均可由上述路径反查。

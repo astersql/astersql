@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessionctx-variable` crate。crate 入口 `pkg/sessionctx/variable/lib.rs` 以私有模块 `mod tidb_vars` 挂载它，再通过 `pub use tidb_vars::*` 将其公开 API 重导出。它不保存某个会话的系统变量值，也不定义系统变量元数据；其职责是在变量子系统与 Domain、DDL、统计信息、PD/TiKV 驱动等实例级组件之间提供可延迟注册的副作用钩子。
-
-`pkg/sessionctx/variable/Cargo.toml` 将该目录声明为独立 library crate（`path = "lib.rs"`，`autotests = false`），并以 `package.metadata.porting.go-package = "pkg/sessionctx/variable"` 标记 Go 移植来源。本文件只直接依赖标准库同步原语以及 crate 内重导出的 `Context`、`VariableError`；没有条件编译项。
+不保存某个会话的系统变量值，也不定义系统变量元数据；其职责是在变量子系统与 Domain、DDL、统计信息、PD/TiKV 驱动等实例级组件之间提供可延迟注册的副作用钩子。
 
 ## 核心职责
 
@@ -75,13 +73,11 @@ RustCodeGraph 的 `node --file` 能完整列出本文件及三个使用文件，
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/sessionctx/variable/tidb_vars.go`。Rust 的大多数槽位逐项对应 Go 包级函数变量：`SetMemQuotaAnalyze`/`GetMemQuotaAnalyze`、`SetStatsCacheCapacity`、`SetPDClientDynamicOption`、`SwitchMDL`、`EnableDDL`/`DisableDDL`、`SwitchFastCreateTable`、`SetExternalTimestamp`/`GetExternalTimestamp`、`SetGlobalResourceControl`、`ValidateCloudStorageURI`、`SetLowResolutionTSOUpdateInterval`、`ChangeSchemaCacheSize`、`EnableStatsOwner`/`DisableStatsOwner`、`ChangePDMetadataCircuitBreakerErrorRateThresholdRatio`，以及两个全局资源控制函数。
-
-Rust 没有照搬 Go 的可变全局函数变量，而是统一封装为锁保护的访问器；Go 只对部分入口使用 `atomic.Pointer`，其他入口是可为 `nil` 的函数变量。Rust 还通过 `Arc` 明确要求 `Send + Sync`，并通过资源控制调用函数确保执行时不持锁。
+Rust 没有照搬 Go 的可变全局函数变量，而是统一封装为锁保护的访问器；Go 只对部分入口使用 `atomic.Pointer`，其他入口是可为 `nil` 的函数变量。
 
 存在两项重要迁移差异：Go 文件包含 `UpdateExternalWorkloadTTLJobEnable func(context.Context, bool) error`，Rust 本文件没有对应类型或槽位；Rust 的 `Context` 当前是轻量占位，尚不等价于 Go `context.Context`。此外，Go 的 `varsutil.go::switchDDL`/`switchStats` 直接判空调用包变量，Rust 将相同行为收敛到四个 `call_*_hook` 包装中。
 
-Go 侧系统变量定义在 `sysvar.go` 中大量消费这些函数变量；当前 Rust 全仓搜索没有显示多数对应 getter 已被系统变量定义调用。因此“接口已移植”与“完整行为已接线”必须区分，后续移植应逐条验证注册端和消费端。
+Go 侧系统变量定义在 `sysvar.go` 中大量消费这些函数变量；当前 Rust 全仓搜索没有显示多数对应 getter 已被系统变量定义调用。
 
 ## 扩展指南
 
@@ -92,13 +88,3 @@ Go 侧系统变量定义在 `sysvar.go` 中大量消费这些函数变量；当�
 完成接线至少要同时检查三个位置：本文件的类型/槽位；实际组件的注册代码；系统变量或执行路径的消费代码。涉及 Go 对齐时还要检查 `tidb_vars.go` 及相应 `sysvar.go` 使用点。新增或修改测试应放在独立测试文件，不应内嵌到 `tidb_vars.rs`；并发/重入性质优先扩展 `tidb_vars_test.rs`，DDL/Stats 分派语义可扩展 `tidb_vars_4_aster_unit_test.rs`。由于状态是全局的，相关用例应串行化并完整恢复所修改的槽位。
 
 特别地，若要补齐 `UpdateExternalWorkloadTTLJobEnable`，不能只增加槽位：还需确定 Rust `Context` 能否表达所需请求语义、定位 TTL 调度注册端与系统变量消费端，并增加成功、失败、未注册和并发替换测试。
-
-## 验证依据
-
-- 源文件：`pkg/sessionctx/variable/tidb_vars.rs`，核对了全部类型别名、17 次 `hook_slot!` 展开调用、两个资源控制静态槽位、九个显式注册/调用/清理函数及其可见性。
-- crate 边界：`pkg/sessionctx/variable/Cargo.toml` 与 `pkg/sessionctx/variable/lib.rs`，核对 library 路径、Go 包映射、`serial_test` 开发依赖、模块私有声明及公开重导出。
-- Rust 调用路径：`pkg/sessionctx/variable/varsutil.rs::switchDDL`、`switchStats`；`pkg/sessionctx/variable/variable.rs::Context`。
-- Rust 独立测试：`pkg/sessionctx/variable/tidb_vars_test.rs::global_resource_control_hooks_can_replace_themselves`；`pkg/sessionctx/variable/tidb_vars_4_aster_unit_test.rs::optional_instance_hooks_are_safe_and_injectable`。
-- Go 对照：`pkg/sessionctx/variable/tidb_vars.go`、`pkg/sessionctx/variable/varsutil.go::switchDDL`/`switchStats`，并通过 `pkg/sessionctx/variable/sysvar.go` 的调用点核对 Go 侧实际消费者。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/sessionctx/variable/tidb_vars.rs` 与 `node --file ...` 确认目标文件有 27 个索引符号并被三个 Rust 文件使用；对 `switchDDL`、`call_enable_ddl_hook`、`enable_global_resource_control`、`clear_instance_hooks_for_test` 做了 `query/callers/callees` 查询。宏展开导致图中部分访问器和边缺失，已用全仓精确符号搜索补证。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按计划以事实复核和固定章节结构检查作为验证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate：`pkg/expression/Cargo.toml` 将 crate 根设为 `lib.rs`，而 `pkg/expression/lib.rs` 通过 `#[path = "constant_propagation.rs"] mod constant_propagation_kernel;` 装载实现。它位于逻辑优化与表达式基础设施之间，接收已构造的 `Expression` 条件列表，在不执行查询的前提下推导等价条件、代入常量并压缩恒真/恒假谓词。
-
-crate 根目前公开再导出借用型入口 `PropagateConstantRef` 和 `PropagateConstantForJoinRef`。真实上游包括 `pkg/planner/core/operator/logicalop/logical_datasource.rs` 中安装的普通谓词与 join 谓词简化回调，以及 `pkg/planner/cascades/old/transformation_rules.rs::PropagateConstant`。拥有型入口和外连接入口仍是本模块的公开函数，但未由 `lib.rs` 对 crate 外再导出。
+位于逻辑优化与表达式基础设施之间，接收已构造的 `Expression` 条件列表，在不执行查询的前提下推导等价条件、代入常量并压缩恒真/恒假谓词。
 
 ## 核心职责
 
@@ -85,11 +83,11 @@ RustCodeGraph 将目标文件标为被 `pkg/expression/constant_propagation_test
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/constant_propagation.go`。Rust 保留了 Go 的 `basePropConstSolver`、普通与 outer-join solver、两阶段传播、DNF 分支处理、join-key 保留、100 列上限、过滤回调、plan-cache 标记和 outer-join NULL 安全限制；主要函数可以按同名符号逐一映射。
+Rust 保留了 Go 的 `basePropConstSolver`、普通与 outer-join solver、两阶段传播、DNF 分支处理、join-key 保留、100 列上限、过滤回调、plan-cache 标记和 outer-join NULL 安全限制；主要函数可以按同名符号逐一映射。
 
 实现层差异包括：Go 使用 `disjointset.SimpleIntSet`，Rust 在文件内实现 `SimpleIntSet`；Go 的两个 solver 由 `sync.Pool` 复用，Rust 每次构造局部值并用 `Clear` 收尾；Go 超限时写背景 warning 日志，Rust 当前只原样返回；Rust 增加拥有型与借用型上下文适配器，以满足 trait object 生命周期并保持 `WithConstantPropagateCheck` 语义。Go 接口通过动态接口值使用，Rust 虽声明 `PropagateConstantSolver` trait，当前核心路径使用具体类型的固有方法。
 
-测试证据并非完全一一复制。Rust 独立测试 `pkg/expression/constant_propagation_test.rs` 覆盖借用/拥有 join 入口结果一致且可保留 join key、NE 不应建立等价类、outer-join 常量求值错误保留原条件。Go `pkg/expression/constant_test.go::TestConstantPropagation` 提供更广的基准语义，包括等价链、恒假、双向谓词派生、IN、嵌套表达式和 RAND 不确定性；扩展 Rust 行为时应同时以这些 Go 用例核对移植完整性。
+测试证据并非完全一一复制。Go `pkg/expression/constant_test.go::TestConstantPropagation` 提供更广的基准语义，包括等价链、恒假、双向谓词派生、IN、嵌套表达式和 RAND 不确定性；扩展 Rust 行为时应同时以这些 Go 用例核对移植完整性。
 
 ## 扩展指南
 
@@ -99,12 +97,3 @@ RustCodeGraph 将目标文件标为被 `pkg/expression/constant_propagation_test
 - 修改性能限制时注意列等价枚举为二次复杂度，且每个等价列对还会扫描原条件。若替换 `MaxPropagateColsCnt`，应消除或封装其 `static mut` 并保持“超限返回原条件”的兼容行为。
 - 若公开新的拥有型或 outer-join API，需要同步调整 `pkg/expression/lib.rs` 的再导出，并检查 planner 接线；仅把函数标记 `pub` 不代表 crate 外可达。
 - 测试应优先扩展 `pkg/expression/constant_propagation_test.rs`，并用 `pkg/expression/constant_test.go::TestConstantPropagation` 及 Go 同名实现作语义基线。高风险项是 outer-join NULL 语义、collation、hybrid ENUM、warning 截断、plan-cache 可变参数及 join key 保留。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标仓库；通过 `node --file pkg/expression/constant_propagation.rs` 分段读取 1–1306 行，并用 `query` 定位 `PropagateConstant`、`PropConstForOuterJoin`、`ValidCompareConstantPredicate`；`explore` 确认 `solve -> propagateColumnEQ -> true_constant` 等内部流及目标文件的引用者。公开入口的 `callers` 查询为空，已用精确源码搜索补证，不据此宣称“无调用者”。
-- Rust 源与装配：`pkg/expression/constant_propagation.rs`、`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`。
-- Rust 上游：`pkg/planner/core/operator/logicalop/logical_datasource.rs`、`pkg/planner/cascades/old/transformation_rules.rs`。
-- Rust 独立测试：`pkg/expression/constant_propagation_test.rs`；测试与源文件分离，覆盖三个关键回归场景。
-- Go 对照：`pkg/expression/constant_propagation.go` 全文件，以及 `pkg/expression/constant_test.go::TestConstantPropagation`。
-- 本任务只新增说明文档，没有运行 Cargo 或代码测试；验收以任务指定的 11 章节结构命令和人工事实复核为准。

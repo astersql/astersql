@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`logger.rs`](logger.rs) 属于 `astersql-util-stmtsummary-v2` crate。crate 根 [`lib.rs`](lib.rs) 以私有 `mod logger` 装载它，再用 `pub use logger::*` 导出其公开项；[`Cargo.toml`](Cargo.toml) 表明本 crate 是 `pkg/util/stmtsummary/v2` 的 Rust 移植单元，并直接依赖 `serde`、`serde_json`。本文件负责语句摘要记录的 JSON 行编码，以及一个面向任意 `std::io::Write` 的通用存储适配器。
-
-当前接线需要分开理解：`marshalStmtRecord` 与 `marshalEvictedStmtRecord` 已由 [`stmtsummary.rs`](stmtsummary.rs) 的 `fileStmtStorage::writeRecord` 生产路径调用；而本文件的 `StmtLogStorage<W>`、`StmtWindowForLog` 和 `newStmtLogStorage` 在仓库内没有生产调用者或 trait 实现，直接使用证据仅见独立测试 [`column_1_aster_unit_test.rs`](column_1_aster_unit_test.rs) 的 `logger_json_keeps_flat_record_and_markers`。因此它们是可复用且已测试的 writer 抽象，但不能描述成当前 `StmtSummary` 的实际存储后端。
+负责语句摘要记录的 JSON 行编码，以及一个面向任意 `std::io::Write` 的通用存储适配器。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ RustCodeGraph 已索引该文件并识别 21 个符号；精确 `callers/callees
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`logger.go`](logger.go)。两端都把 `StmtRecord` 扁平编码；无附加字段时保持原形，有附加字段时增加 `additional_fields`；逐条淘汰事件增加 `evicted: true`；窗口持久化会先填写 `Begin`/`End`，并跳过 `ExecCount == 0` 的聚合淘汰占位；日志条目最终以换行结尾。
+两端都把 `StmtRecord` 扁平编码；无附加字段时保持原形，有附加字段时增加 `additional_fields`；逐条淘汰事件增加 `evicted: true`；窗口持久化会先填写 `Begin`/`End`，并跳过 `ExecCount == 0` 的聚合淘汰占位；日志条目最终以换行结尾。
 
 差异同样重要：Go `newStmtLogStorage` 接收日志配置，调用 PingCAP logger 创建带滚动配置的 `zap.Logger`，并以专用 encoder 替换统一日志格式；Rust `newStmtLogStorage` 只包装调用者提供的 `Write`，不创建文件或实现滚动。Go `persist` 锁住窗口中的每条 `lockedStmtRecord` 及淘汰聚合后写入；Rust trait 要求调用者提供可变记录访问，本文件不加记录锁。Go `log`/`persist` 对 marshal 失败记录 warning 后继续其 void 接口，Rust `log`/`persist` 返回 `io::Result` 并在普通窗口首错停止。Go `logEvicted` 对坏记录告警后跳过、通过 zap 写一个多行 message，并更新 Prometheus 指标；Rust 同样跳过坏记录，但直接写字节，使用本地 `AtomicU64`，且将 writer 错误返回调用者。
 
@@ -83,12 +81,3 @@ RustCodeGraph 已索引该文件并识别 21 个符号；精确 `callers/callees
 若要把 `StmtLogStorage<W>` 接入生产路径，必须先为实际窗口实现 `StmtWindowForLog`，明确记录锁顺序、淘汰聚合是否应带 `evicted` 标记，并协调或替换 [`stmtsummary.rs`](stmtsummary.rs) 已有的 `fileStmtStorage`，避免两套落盘路径重复写入。还应增加独立 logger 测试文件，而不是把 Rust 单元测试嵌入 `logger.rs`；至少覆盖首个普通记录写失败后的短路、空/非空聚合淘汰记录、部分状态已修改但 I/O 失败、`sync` 传播和并发附加字段更新。
 
 性能相关改动应保留批量淘汰只做一次 `write_all` 的特性，并评估全局读锁覆盖完整 JSON 编码的竞争。若要求真正落盘，不能只依赖当前 `sync` 的 `Write::flush`，需要在具体文件后端定义 `sync_all` 语义；若要求与 Go 滚动日志完全等价，还需在本文件之外提供日志初始化、轮转和指标接线。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 32 个文件；`files --filter pkg/util/stmtsummary/v2` 确认源、Go 对照及测试集合；`node --file pkg/util/stmtsummary/v2/logger.rs --offset 1 --limit 260` 返回完整 209 行和 21 个符号。精确 `callers/callees` 查询超时且无输出，未据此虚构调用边。
-- 源码与模块：[`logger.rs`](logger.rs)、[`lib.rs`](lib.rs)、[`stmtsummary.rs`](stmtsummary.rs)、[`record.rs`](record.rs)。其中精确符号搜索验证生产编码调用和 `StmtLogStorage` 未接入生产路径的现状。
-- crate 配置：[`Cargo.toml`](Cargo.toml)，核对 crate 名、`lib.rs` 入口、`serde`/`serde_json` 依赖及无 logger feature gate。
-- Go 对照：[`logger.go`](logger.go) 与 [`stmtsummary.go`](stmtsummary.go)，核对初始化、窗口写入、逐条淘汰批处理、锁和指标语义。
-- Rust 测试：[`record_test.rs`](record_test.rs) 的 `ia_json_keys_match_persisted_log_contract`、`TestStmtRecord`；[`column_1_aster_unit_test.rs`](column_1_aster_unit_test.rs) 的 `logger_json_keeps_flat_record_and_markers`。Go 相关测试入口包括 [`record_test.go`](record_test.go) 对普通/淘汰 marshal 的断言，以及 [`stmtsummary_test.go`](stmtsummary_test.go) 的 logger 初始化错误场景。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构以任务规定的 11 个固定二级标题命令验证，并人工复核“为何存在、如何运行、如何安全扩展”三项问题均有源码证据支撑。

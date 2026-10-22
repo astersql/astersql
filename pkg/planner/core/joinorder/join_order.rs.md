@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-planner-core-joinorder`，由同目录 `Cargo.toml` 的 `[lib] path = "lib.rs"` 装配，并由 `lib.rs` 公开为 `join_order` 模块。它在该 crate 内位于 `conflict_detector.rs`（把逻辑连接树拆成顶点和约束边）与 `util.rs`（自包含的 `PlanNode`、连接类型及 hint 数据）之上，负责从合法候选中选择连接树。
-
-当前 Rust 接线范围需要特别区分：根 `Cargo.toml` 将该 crate 注册为 `facade_planner_core_joinorder`，`pkg/lib.rs` 再导出它，`pkg/planner/core/rule/Cargo.toml` 也声明依赖；但生产 Rust 源码中没有 `JoinOrder::optimize` 的调用点。现有直接使用者是 `join_order_test.rs` 和 `bitset_bench_test.rs`。因此它是可执行、受测试的局部移植实现，但尚不能表述为已经接入完整 SQL 优化主链。
-
-文件第 16—395 行是整个块注释中的 Go 风格迁移草案，不参与 Rust 编译。真正的 Rust 实现从第 396 行开始；分析和扩展必须以这一部分为准。
+真正的 Rust 实现从第 396 行开始；分析和扩展必须以这一部分为准。
 
 ## 核心职责
 
@@ -81,7 +77,7 @@ DP 的时间/空间随叶数指数增长：mask 空间为 `2^n`，每个子集�
 
 ## 与 Go 版本的对应关系
 
-对应文件是 `pkg/planner/core/joinorder/join_order.go`，Rust 可执行代码复用了以下核心语义：按阈值选 DP/贪心；DP 子集枚举；贪心最多比较两个起点；无等值连接代价放大；浮点容差比较；按森林顺序两两生成 bushy tree；以及最终边消费约束。`join_order_test.rs` 还以字符串保存了 Go `TestChooseBestGreedyStart` 和 `TestCloneNodesForGreedyStartIsolation`，随后用真实 Rust API 验证相应行为。
+`join_order_test.rs` 还以字符串保存了 Go `TestChooseBestGreedyStart` 和 `TestCloneNodesForGreedyStartIsolation`，随后用真实 Rust API 验证相应行为。
 
 两者并非完整一一移植：
 
@@ -101,11 +97,3 @@ DP 的时间/空间随叶数指数增长：mask 空间为 `2^n`，每个子集�
 - 对齐 Go 的 DP bushy 恢复：最可能新增 Go `buildBushyTreeFromDP` 对应 helper，而不是直接把所有叶子交给 `make_bushy_cartesian`；需要验证有限子集优先、完整消费子集内边、稳定排序和正无穷 full plan。
 - 接入完整 planner：需要在本文件之外实现/复用连接组抽取、会话配置、hint 警告、schema 恢复和 rule 调用。此任务不能通过仅在 `rule/Cargo.toml` 声明依赖完成，必须增加生产调用与跨 crate 测试。
 - 保持测试与源码分文件：现有独立测试入口由 `lib.rs` 的 `#[cfg(test)] mod join_order_test` 和 `mod bitset_bench_test` 装配，新增回归应继续放在这些测试文件或新的独立 `*_test.rs` 中。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/planner/core/joinorder` 确认目标 crate 的 Rust/Go 源与测试集合；`node --file ...join_order.rs --offset 1/499` 读取全部 691 行；`query` 精确定位 `JoinOrder`、`optimize_dp`、`optimize_greedy`、`greedy_connect`、`make_bushy_cartesian`。限定方法的 callers/callees 查询未返回边，因此没有把图缺失当作“无调用”的唯一证据。
-- 已读生产/装配文件：`pkg/planner/core/joinorder/join_order.rs`、`conflict_detector.rs` 与 `util.rs` 的直接 API 证据、同目录 `Cargo.toml`、`lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/planner/core/rule/Cargo.toml`，以及生产 Rust 全局引用搜索。
-- 已读 Go 对照：`pkg/planner/core/joinorder/join_order.go` 的入口、DP、贪心、成本与 bushy-tree 实现；`pkg/planner/core/rule_join_reorder.go` 的包接入引用。
-- 已读测试：`pkg/planner/core/joinorder/join_order_test.rs`、`join_order_test.go`，以及 `bitset_bench_test.rs` 中实际运行 `ConflictDetector::build + JoinOrder::optimize` 的规模测试。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。最终只执行固定 11 章节的结构验证，并人工复核本文明确回答文件为何存在、实际如何运行、当前接线边界和安全扩展位置。

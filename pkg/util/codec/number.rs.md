@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`number.rs` 是 `astersql-util-codec` crate 的整数编解码实现。模块入口 `pkg/util/codec/lib.rs` 以私有 `mod number` 装载它，再通过 `pub use number::*` 把公开函数暴露到 crate 根；同一入口还把这些函数导入 `bytes.rs` 和 `codec.rs` 的 `include!` 模块，因此它既可被 `astersql_util_codec::EncodeInt` 这类外部路径调用，也服务于更高层的通用 datum/字节编码。
-
-该文件位于 SQL 层与持久化字节布局之间：例如 `pkg/tablecodec/tablecodec.rs` 用 `EncodeInt`/`DecodeInt` 组成和解析表、索引、分区键，`pkg/structure/type.rs` 用定长整数编码结构化元数据键，`pkg/store/mockstore/unistore/tikv/mvcc/tikv.rs` 用 uvarint 和定长整数编码 MVCC 值。它不解释数值的 SQL 类型，也不负责 I/O；职责是把调用方已经确定的 `i64`/`u64` 与确定性字节表示互换。
+`EncodeInt`/`EncodeUint` 及其 `Desc`、解码变体使用固定 8 字节大端表示，目标是字节字典序可比较。
 
 ## 核心职责
 
@@ -87,13 +85,11 @@ comparable 无符号解码拒绝 `[0, 7]` 的负标签，载荷短于标签声�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/codec/number.go`。Rust 保留了 Go 的函数名、三组格式、标签常量、错误文本、返回后缀语义和数值排序规则。Go 的 `binary.BigEndian` 对应 Rust 的 `to_be_bytes`/`from_be_bytes`；Go `binary.PutVarint`/`Varint` 的语义由 Rust 的 ZigZag 逻辑和 `decodeUvarintPrefix` 手工实现；Go 对负 comparable 值以 `math.MaxUint64` 开始符号扩展，Rust 对应使用 `u64::MAX`。
+Rust 保留了 Go 的函数名、三组格式、标签常量、错误文本、返回后缀语义和数值排序规则。Go 的 `binary.BigEndian` 对应 Rust 的 `to_be_bytes`/`from_be_bytes`；Go `binary.PutVarint`/`Varint` 的语义由 Rust 的 ZigZag 逻辑和 `decodeUvarintPrefix` 手工实现；Go 对负 comparable 值以 `math.MaxUint64` 开始符号扩展，Rust 对应使用 `u64::MAX`。
 
 API 形态差异来自语言：Go 接受/返回 `[]byte` 并单独返回 `error`，Rust 编码取得 `Vec<u8>` 所有权，解码返回 `Result<(&[u8], T), SharedError>`。Go 错误时通常返回 `nil` 后缀和零值；Rust 错误分支只返回错误。`errDecodeInsufficient`/`errDecodeInvalid` 在 Go 是包级变量，在 Rust 是返回 `LazyLock` clone 的私有函数，以维持相同 cause 身份。
 
-尤其需要注意，Go `DecodeComparableVarint` 的单字节内联分支直接 `return b, ...`，即不消费标签；Rust 明确保留这一历史行为，而 `DecodeComparableUvarint` 会正常消费标签。这不是文档推断，而是两份源码和 Rust 独立测试共同确认的兼容约束。
-
-Go `pkg/util/codec/codec_test.go` 的 `TestNumberCodec` 覆盖极值往返及混合 comparable 流，`TestNumberOrder` 覆盖升降序和 comparable 字典序。Rust 的更细粒度对照覆盖在 `pkg/util/codec/float_2_aster_unit_test.rs`，错误 sentinel 身份及极值序关系另见 `pkg/util/codec/number_test.rs`。
+尤其需要注意，Go `DecodeComparableVarint` 的单字节内联分支直接 `return b, ...`，即不消费标签；Rust 明确保留这一历史行为，而 `DecodeComparableUvarint` 会正常消费标签。
 
 ## 扩展指南
 
@@ -104,12 +100,3 @@ Go `pkg/util/codec/codec_test.go` 的 `TestNumberCodec` 覆盖极值往返及混
 测试逻辑必须保持在独立文件。首选同步更新 `pkg/util/codec/number_test.rs` 或 `pkg/util/codec/float_2_aster_unit_test.rs`，并与 `pkg/util/codec/codec_test.go` 的向量和排序意图核对。至少覆盖：全值域边界附近的往返、前缀追加、成功后的后缀、升序/降序字典序、十字节 varint 溢出、截断载荷、非法标签/符号半区，以及 comparable 单字节分支的特殊不消费契约。
 
 对性能敏感的扩展应保持有界循环并避免中间分配；对协议敏感的扩展应先给出 Go 与 Rust 的相同字节向量。若打算“修正”单字节 comparable signed 解码的后缀推进，必须先审计所有混合流消费者并以显式版本或迁移方案处理，不能在现有函数内静默改变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/codec/number.rs` 确认目标文件含 31 个符号；`node --file pkg/util/codec/number.rs --offset 1 --limit 500` 返回完整 434 行源码并报告 41 个 used-by 文件；`query EncodeComparableVarint --kind function --json` 区分了 Go、Rust 和 Lightning 的同名实现。函数级 `callers/callees` 查询 30 秒内无结果，调用点改由精确源码检索核验。
-- 生产源码：`pkg/util/codec/number.rs`（全部常量、辅助函数和公开 API）、`pkg/util/codec/lib.rs`（模块装载、再导出和 `errors` 边界）、`pkg/tablecodec/tablecodec.rs`、`pkg/structure/type.rs`、`pkg/planner/property/physical_property.rs`、`pkg/store/mockstore/unistore/tikv/mvcc/tikv.rs` 与 `mvcc.rs`（代表性直接调用点）。
-- crate 声明：`pkg/util/codec/Cargo.toml`，确认 crate 名为 `astersql-util-codec`、库入口为 `lib.rs`、错误依赖来自 `../../errors`，且该文件没有专属 feature。
-- Go 对照：`pkg/util/codec/number.go`；Go 测试证据：`pkg/util/codec/codec_test.go` 的 `TestNumberCodec`、`TestNumberOrder`。
-- Rust 独立测试：`pkg/util/codec/number_test.rs` 的错误身份与极值排序测试；`pkg/util/codec/float_2_aster_unit_test.rs` 的固定宽度、普通 varint、comparable 边界向量、后缀、非法输入和排序测试。
-- 本任务是只读代码分析加 Markdown 新增，按任务约束未运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核唯一生产物、路径和兼容性陈述。

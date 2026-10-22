@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-autoanalyze-priorityqueue` crate 中的自动 ANALYZE 作业打分组件。crate 入口 `pkg/statistics/handle/autoanalyze/priorityqueue/lib.rs` 将 `calculator` 声明为内部模块并公开重导出其符号；`Cargo.toml` 将该 crate 映射到 Go 包 `pkg/statistics/handle/autoanalyze/priorityqueue`，且本文件本身不引入该 crate 唯一的外部工作区依赖 `astersql-statistics-handle-logutil`。
-
-它位于调度链的“作业指标已经形成、作业即将进入最大堆”这一段：`queue.rs::AnalysisPriorityQueue::push_locked` 调用 `PriorityCalculator::CalculateWeight`，再通过 `AnalysisJob::SetWeight` 把结果写回作业，最后交给 `PqHeapImpl::AddOrUpdate`。因此本文件决定不同作业的相对优先级，但不负责采集指标、维护堆、执行 ANALYZE 或启动后台任务。
+用 `AnalysisJob::GetIndicators` 提供的变化比例、表规模和距上次分析时长计算一个 `f64` 权重；权重越高，越早从 `heap.rs` 的最大堆中 `Peek`/`Pop`。
 
 ## 核心职责
 
@@ -85,12 +83,8 @@ RustCodeGraph 的文件节点还把 `calculator_test.rs`、`calculatoranalysis/c
 
 ## 与 Go 版本的对应关系
 
-Rust `calculator.rs` 与同路径 `calculator.go` 是直接移植关系：
-
-- `EVENT_NONE`/`EVENT_NEW_INDEX` 对应 Go `EventNone`/`EventNewIndex`，数值均为 `0.0`/`2.0`。
 - 三个权重系数均为 `0.6`、`0.1`、`0.3`；Go 注释仍将其标为待配置项，Rust 当前同样是固定常量，没有配置接线。
 - `PriorityCalculator` 在两边都无状态；Go 构造器返回指针，Rust 返回零尺寸值，队列再以 `Arc` 共享。
-- `CalculateWeight` 的四项公式和执行顺序一致：变化比例先乘 `100`，表规模负向，对时长秒数先开平方再取对数，最后加特殊事件。
 - Go 使用 `time.Duration.Seconds()`，Rust 使用 `AnalysisDuration::as_secs_f64()`；后者在 `job.rs` 中按整数秒与余纳秒拆分转换，以保持 Go 的表示语义。
 - Go 接口值参数对应 Rust `&dyn AnalysisJob` 借用，避免转移作业所有权；两边均不在计算器内写入作业。
 
@@ -104,12 +98,3 @@ Rust `calculator.rs` 与同路径 `calculator.go` 是直接移植关系：
 - 任何会改变排序的修改，都应同时更新独立 Rust 测试 `calculator_test.rs` 和 Go 对照测试 `calculator_test.go`；涉及整体权重分布时还应更新并审查 `calculatoranalysis/testdata/calculated_priorities.golden.csv`，而不是在生产源文件中内嵌测试。
 - 建议新增非法输入测试后再引入校验或钳制策略，尤其覆盖负时长、负表规模、NaN 与无穷值；这会改变当前“直接传播 IEEE 754 结果”的行为，必须评估 Go 兼容性和堆排序影响。
 - 性能上当前每次打分包含三个 `log10` 和一个 `sqrt`。若把计算放到更高频路径或增加更多变换，应基于队列规模评估成本；不要通过缓存忽略 `LastAnalysisDuration` 会定期变化这一事实。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 `calculator.rs`，文件节点展示其 64 行源码、5 个符号，并报告文件级使用者 `queue.rs`、`calculator_test.rs`、`calculatoranalysis/calculator_analysis_test.rs` 与 `job_test.rs`。按名查询确认 Rust/Go 两侧均存在 `PriorityCalculator`、`NewPriorityCalculator`、`CalculateWeight` 和 `GetSpecialEvent`。精确 `callers`/`callees` 子命令在本地索引上未返回调用边且达到超时，因此具体调用边由同一索引的 `queue.rs`、`job.rs`、`heap.rs` 文件节点逐行核对。
-- 生产 Rust 证据：`calculator.rs::{CalculateWeight, GetSpecialEvent}`；`job.rs::{AnalysisDuration::as_secs_f64, Indicators, AnalysisJob}`；`queue.rs::{NewAnalysisPriorityQueue, push_locked, RefreshLastAnalysisDuration}`；`heap.rs::{PqHeapImpl::less, AddOrUpdate, Update, Pop}`；`lib.rs` 的模块声明与公开重导出。
-- crate 证据：`pkg/statistics/handle/autoanalyze/priorityqueue/Cargo.toml` 的包名、`lib.rs` 入口、唯一工作区依赖和 `package.metadata.porting.go-package`。
-- Go 对照：`calculator.go::{PriorityCalculator, NewPriorityCalculator, CalculateWeight, GetSpecialEvent}` 及相同的五个常量/系数语义。
-- 测试证据：`calculator_test.rs::{TestCalculateWeight, TestGetSpecialEvent, calculator_rewards_new_index_and_increasing_change_ratio}`；Go `calculator_test.go::{TestCalculateWeight, TestGetSpecialEvent}`；批量分布证据 `calculatoranalysis/calculator_analysis_test.rs::calculate_new_priorities` 与共享 golden CSV。
-- 本任务只新增说明文档，没有修改 Rust、Go、Cargo 或运行时行为；按任务约束不运行 Cargo。结构完整性由任务指定命令验证，人工复核重点为公式、真实调用链、输入边界、Go 差异和独立测试位置。

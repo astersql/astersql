@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`dist_owner.rs`](./dist_owner.rs) 属于 `astersql-ddl` crate；[`lib.rs`](./lib.rs) 通过 `pub mod dist_owner;` 将其公开。文件当前不是 DDL owner 选举器或分布式任务执行器，而只是把 Go 版的两个 backfill（回填）轮询周期移植成 `std::time::Duration` 全局量。
-
-当前 Rust 接线状态必须与设计意图区分开：RustCodeGraph 对该文件报告 `used by 0 files`，全仓 Rust 精确搜索也只命中变量定义自身。因此它目前是可公开访问、但没有被 Rust 生产流程消费的配置模块；完整运行行为仍只能由 Go 对照代码证明，不能据此声称 Rust 已实现对应的 owner 监控循环。
+`UpdateBackfillJobRowCountInterval`：默认 3 秒，表达把分布式任务已处理行数刷新到 DDL job 进度的频率。
 
 ## 核心职责
 
@@ -57,8 +55,6 @@ Go 侧直接依赖边为 `index.go` 的等待循环 → 两个周期变量 → `
 
 ## 与 Go 版本的对应关系
 
-[`dist_owner.go`](./dist_owner.go) 同样只声明两个包变量，默认值与 Rust 完全一致：`300 * time.Millisecond` 对应 `Duration::from_millis(300)`，`3 * time.Second` 对应 `Duration::from_secs(3)`。名称和注释意图也保持一致。
-
 差异在于语言语义与接线完成度。Go 包变量可直接并发读写（尽管仍可能产生数据竞争），而 Rust `static mut` 的访问必须进入 `unsafe`。更重要的是，Go `index.go` 已用两者创建 ticker 并驱动状态检查与行数更新；Rust `index.rs` 没有引用它们，所以当前只是声明层移植。Rust `main_test.rs` 用局部不可变 `DdlTestEnvironment.backfill_finish_interval` 验证 50 毫秒的测试配置意图，没有修改本模块的全局量；`tests/serial/main_test.rs` 中的相关内容只是返回 Go 源码片段的字符串，也不构成行为测试。
 
 ## 扩展指南
@@ -68,12 +64,3 @@ Go 侧直接依赖边为 `index.go` 的等待循环 → 两个周期变量 → `
 建议不要让新代码长期依赖裸 `static mut`：可将两个周期组合为配置结构并在 worker/owner 构造时注入；若必须支持运行期全局修改，则使用有明确内存序或锁语义的同步容器。任何修改都要保持 Go 默认值和可观测节奏兼容，并评估更短周期带来的状态查询、元数据写入和调度开销。
 
 测试逻辑应放在独立测试文件，不能内嵌进 `dist_owner.rs`。可扩展现有 [`main_test.rs`](./main_test.rs) 验证默认/注入配置；真正接线时还需要在相应独立 worker/index 测试中用可控时钟或短周期验证两类 tick、完成退出、取消/暂停错误以及最终行数刷新。Go 回归意图可参考 `main_test.go`、`tests/serial/main_test.go` 和 `tests/indexmerge/merge_test.go`。
-
-## 验证依据
-
-- 源码与装配：`pkg/ddl/dist_owner.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- Go 对照与真实消费端：`pkg/ddl/dist_owner.go`、`pkg/ddl/index.go`。
-- 测试证据：`pkg/ddl/main_test.go`、`pkg/ddl/main_test.rs`、`pkg/ddl/tests/serial/main_test.go`、`pkg/ddl/tests/serial/main_test.rs`、`pkg/ddl/tests/indexmerge/merge_test.go`。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`explore` 和 `node --file pkg/ddl/dist_owner.rs` 核对了完整定义，文件节点报告 `used by 0 files`；变量 `query/callers/callees` 没有结果。
-- 文本复核：对 `CheckBackfillJobFinishInterval`、`UpdateBackfillJobRowCountInterval` 和 `dist_owner` 的限定搜索确认 Rust 无运行时引用，并定位了上述 Go 消费端与测试。
-- 按任务约束未运行 Cargo；本次只新增说明文档，结构由固定标题检查验证。

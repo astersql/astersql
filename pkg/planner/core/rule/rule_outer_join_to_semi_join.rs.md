@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core-rule` crate，模块由 [`lib.rs`](lib.rs) 公开为 `rule_outer_join_to_semi_join`。它实现一套面向 [`rule_init.rs`](rule_init.rs) 精简计划 IR 的外连接改写规则：识别 `Selection -> Left/Right Outer Join`，在严格条件下把 Join 改为 `AntiSemi`。crate 名称、库入口和直接依赖见 [`Cargo.toml`](Cargo.toml)；本文件实际编译代码只依赖同 crate 的 `rule_init::{Expr, JoinType, LogicalRule, Plan, PlanKind}`，没有直接使用 Cargo 清单中的 operator crate。
-
-文件第 16—411 行是以注释形式保存的 Go 来源说明和伪签名，不参与编译；真正 Rust 实现从 `use crate::rule_init...` 开始。它也不是完整 Rust 优化器的直接执行实现：[`optimizer_runtime.rs`](../optimizer_runtime.rs) 的 `LogicalRule::OuterJoinToSemiJoin` 分支调用另一套 `outer_join_to_semi_join_descendants`，操作真实 `logicalop::LogicalPlanRef`。因此本文把本文件称为“精简 IR 规则”，不能把它的覆盖范围等同于应用主链。
-
-同目录没有 `doc.go`，故包级契约以模块入口、规则注册、Go 对照和测试为准。
+实现一套面向 [`rule_init.rs`](rule_init.rs) 精简计划 IR 的外连接改写规则：识别 `Selection -> Left/Right Outer Join`，在严格条件下把 Join 改为 `AntiSemi`。
 
 ## 核心职责
 
@@ -87,18 +83,15 @@
 
 ## 与 Go 版本的对应关系
 
-直接语义来源是 [`rule_outer_join_to_semi_join.go`](rule_outer_join_to_semi_join.go)。共同点是：规则名一致；后序查找 Selection；要求单一 `IS NULL` 条件和有条件的 Left/Right Outer Join；排除 `NullEQ`；只把直接列间比较视作拒空条件；Right Outer 需要交换孩子和等值参数；成功后变为 AntiSemi。
-
 主要差异必须明确：
 
 - Go 操作完整 `base.LogicalPlan`，能处理 `Selection -> Projection -> Join` 的恒等列投影；本文件只认 Selection 直接连接 Join。
 - Go 的第二条安全路径会根据 inner child 的函数依赖 NotNullCols 或字段 NOT NULL flag 接受非 Join-key 列；精简 IR 没有相应元数据，本文件只支持 Join 条件拒空列。
 - Go 成功后移除 Selection；若父 schema 仍需要 inner 列，则构造 Projection，以正确类型的 NULL 替代 inner 输出列。本文件保留 Selection 和原谓词，只缩减 schema，也不生成 NULL。
-- Go Right Outer 分支还交换 LeftConditions/RightConditions；精简 `PlanKind::Join` 没有这些字段。
 - Go 明确排除 `LogicalApply`；精简 IR 没有 Apply 类型，因此无法表达该边界。
 - Go `joinCondNullRejectsInnerCol` 对 equal 条件依赖 `expression.IsColOpCol`，但未在该函数中按名称限制为普通等号；本文件同样只排除 `null_eq`。other 条件两端均限定为列且仅允许 GT/GE/LE/LT/NE。
 
-完整 Rust 应用主链的 [`optimizer_runtime.rs`](../optimizer_runtime.rs) 更接近 Go：它会移除 Selection、支持声明 NOT NULL、按需生成 Projection，并处理真实 logicalop schema/name；它还有嵌套 Left Outer 旋转逻辑。该运行时实现是重要上下文，但不是本文件的函数或下游调用。
+完整 Rust 应用主链的 [`optimizer_runtime.rs`](../optimizer_runtime.rs) 更接近 Go：它会移除 Selection、支持声明 NOT NULL、按需生成 Projection，并处理真实 logicalop schema/name；它还有嵌套 Left Outer 旋转逻辑。
 
 ## 扩展指南
 
@@ -112,17 +105,3 @@
 - 保持测试与生产代码分离。直接规则测试放在 [`rule_outer_join_to_semi_join_test.rs`](rule_outer_join_to_semi_join_test.rs)，跨规则精简 IR 场景可放 [`rule_aster_unit_test.rs`](rule_aster_unit_test.rs)，真实 SQL/应用主链场景放在 [`optimizer_logical_entry_aster_unit_test.rs`](../optimizer_logical_entry_aster_unit_test.rs)。
 
 兼容风险主要是 NULL 语义和输出 schema；错误改写会改变查询结果。性能上该规则当前每个节点访问一次，但候选 Selection 会构造集合并扫描全部 Join 条件；新增投影映射或 FD 分析时应避免无界重复遍历。规则顺序也有影响：Go/Rust 主链把它放在 Join reorder 后、Correlate 前，调整接线时应保留经验证的相互作用。
-
-## 验证依据
-
-本文依据以下本地证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file ... --offset/--limit` 完整读取目标文件，并确认它由 `rule_outer_join_to_semi_join_test.rs`、`rule_aster_unit_test.rs` 使用。
-- RustCodeGraph `query OuterJoinToSemiJoin` 定位本文件公开类型、Go 同名类型、测试导入和运行时枚举；`explore` 定位 Go 的 `recursivePlan -> dealWithSelection -> startConvertOuterJoinToSemiJoin` 关系及 Rust 测试调用。由于 `optimize`/`convert` 是高重名符号，精确 `callers`/`callees` 未返回可用边，调用链改由已索引源码和精确文件搜索交叉核验。
-- 目标实现：[`rule_outer_join_to_semi_join.rs`](rule_outer_join_to_semi_join.rs) 的实际编译区 `OuterJoinToSemiJoin`、`convert`、`column_comparison_rejects`，并人工区分前置注释中的 Go 来源。
-- crate/模块边界：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`rule_init.rs`](rule_init.rs)；目标目录不存在 `doc.go`。
-- Rust 独立与综合测试：[`rule_outer_join_to_semi_join_test.rs`](rule_outer_join_to_semi_join_test.rs)、[`rule_aster_unit_test.rs`](rule_aster_unit_test.rs)、[`optimizer_logical_entry_aster_unit_test.rs`](../optimizer_logical_entry_aster_unit_test.rs)。后者验证完整运行时的真实 SQL Left/Right Outer 改写，不等同于直接测试本文件。
-- Go 对照和主链接线：[`rule_outer_join_to_semi_join.go`](rule_outer_join_to_semi_join.go)、[`optimizer.go`](../optimizer.go)、[`logical_rules.go`](logical_rules.go)；Rust 完整主链对照为 [`optimizer_runtime.rs`](../optimizer_runtime.rs) 的规则枚举、调度分支和 `outer_join_to_semi_join_descendants`。
-- 人工复核重点：后序遍历、全部拒绝分支、Left/Right inner 方向、比较函数白名单、Right Outer 交换、schema 更新、Selection 保留事实、Go/精简 Rust/完整 Rust 三者边界及独立测试位置。
-
-本任务为纯文档分析，不运行 Cargo。结构验证应确认本文恰有任务要求的十一个固定二级标题。

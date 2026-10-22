@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现 `astersql-util-sem-compat` crate 的 SEM（Security Enhanced Mode，安全增强模式）查询门面。`pkg/util/sem/compat/lib.rs` 将其声明为私有 `sem` 模块后通过 `pub use sem::*` 重导出，因此调用方使用 crate 根上的公开函数，不直接依赖文件内部模块名。
-
-`pkg/util/sem/compat/Cargo.toml` 将 crate 映射到 Go 包 `pkg/util/sem/compat`，并依赖 SEM v1 crate `astersql-util-sem`、SEM v2 crate `astersql-util-sem-v2` 和内部断言 crate `astersql-util-intest`。这个文件不定义启停或配置 API；相关能力由两个下游 SEM 实现及同 crate 的 `testhelper.rs` 提供。
+不持有隐藏清单或配置，也不实现 SQL 权限检查。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ schema 的大小写不敏感行为是下游 v1/v2 的事实；而 table 与 syst
 
 ## 与 Go 版本的对应关系
 
-Rust `sem.rs` 的六个函数与 `pkg/util/sem/compat/sem.go` 逐一对应：相同的导出名、相同的 v1/v2 互斥断言、相同的 v1 优先 `if` / v2 `else if` 顺序，以及相同的默认 `false`。`IsRestrictedPrivilege` 用 Rust `to_uppercase()` 对应 Go `strings.ToUpper`。
+`migration_aster_unit_test.rs` 额外覆盖关闭态、v1 路由、v2 路由、清理后恢复与默认构建断言边界。
 
-`pkg/util/sem/compat/compat_test.go` 的 v2 用例已迁移到独立 `compat_test.rs`，覆盖大小写 schema、多个系统库的隐藏表、受限权限、status variable 与 system variable。`migration_aster_unit_test.rs` 额外覆盖关闭态、v1 路由、v2 路由、清理后恢复与默认构建断言边界。
-
-Go `sem_integration_test.go` 会经过 mock store、认证与 `RESTRICTED_SQL_ADMIN` 执行完整 SQL 路径；Rust 同目录 `sem_integration_test.rs` 直接验证 v2 配置中的 `IsRestrictedSQL` 和 `ImportWithExternalIDRule`，完整 session/privilege 接线由其注释指向的 `pkg/session/runtime_test.rs` 相关用例承担。这些 SQL 规则不是本 `sem.rs` 六个 API 的直接职责。
+Go `sem_integration_test.go` 会经过 mock store、认证与 `RESTRICTED_SQL_ADMIN` 执行完整 SQL 路径；Rust 同目录 `sem_integration_test.rs` 直接验证 v2 配置中的 `IsRestrictedSQL` 和 `ImportWithExternalIDRule`，完整 session/privilege 接线由其注释指向的 `pkg/session/runtime_test.rs` 相关用例承担。
 
 ## 扩展指南
 
@@ -90,11 +86,3 @@ Go `sem_integration_test.go` 会经过 mock store、认证与 `RESTRICTED_SQL_AD
 - 测试逻辑必须保持在独立文件。优先扩展 `pkg/util/sem/compat/compat_test.rs` 的具体规则样例，扩展 `migration_aster_unit_test.rs` 的版本路由/不变式样例；涉及 SQL 主链时同步独立 session 集成测试。
 - 涉及全局启停的测试要保留 `serial_test::serial` 和无论正常返回还是 panic 都能恢复状态的 RAII/清理机制，否则并行用例会相互污染。
 - 性能风险主要来自热路径上重复的开关读取、v2 `RwLock` 读取和字符串规范化。优化时不能缓存跨越 SEM 启停周期的结果，也不能破坏 Go 对齐的短路语义。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件，目标 `pkg/util/sem/compat/sem.rs` 已索引为 137 行、7 个符号；`node --file` 核对了六个公开函数的完整实现与 4 个直接使用文件。
-- 精确符号查询核对了 `sem.rs::IsEnabled`、`IsInvisibleSchema`、`IsInvisibleTable`、`IsInvisibleStatusVar`、`IsInvisibleSysVar` 和 `IsRestrictedPrivilege` 以及 v1/v2/Go 同名对应项。精确 `callers` 命令在本次环境中长时间无输出后中止，因此上游边由 Cargo 别名和 `rg` 的 Rust 生产引用交叉核对。
-- 已读取：`pkg/util/sem/compat/sem.rs`、`Cargo.toml`、`lib.rs`、`sem.go`、`compat_test.rs`、`migration_aster_unit_test.rs`、`sem_integration_test.rs`、`compat_test.go`、`sem_integration_test.go`；直接下游状态与规则还用 RustCodeGraph 核对了 `pkg/util/sem/sem.rs` 和 `pkg/util/sem/v2/sem.rs`。
-- 测试证据：`compat_test.rs` 验证 v2 的各查询族；`migration_aster_unit_test.rs` 验证关闭、v1、v2 和默认断言边界；`sem_integration_test.rs` 及其 Go 对照验证相关 SEM v2 SQL 配置的上层集成语义。
-- 本任务仅产生文档，按计划不运行 Cargo。交付前使用任务指定的 `test -f` 与固定标题计数命令验证文件存在且恰有 11 个规定二级章节。

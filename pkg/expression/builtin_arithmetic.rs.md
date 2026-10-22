@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-expression` crate 中的标量算术语义内核，对应 Go 文件 `pkg/expression/builtin_arithmetic.go`。crate 根 `pkg/expression/lib.rs:168-172` 通过 `#[path = "builtin_arithmetic.rs"] mod builtin_arithmetic_kernel;` 将它作为私有模块编译；`pkg/expression/Cargo.toml` 指定 crate 名为 `astersql-expression`、入口为 `lib.rs`，并直接提供本文件所用的 `bigdecimal`、`num-traits` 和 `thiserror` 依赖。
-
-当前 Rust 文件不是 Go 表达式框架的逐类型 `functionClass`/`builtinFunc` 实现，而是在自有的 `Expression`、`FieldType`、`EvalContext` 边界上实现常量二元算术。精确引用搜索只找到 crate 根的私有模块声明、`pkg/expression/builtin_arithmetic_test.rs` 的测试侧再导出，以及 `pkg/expression/builtin_arithmetic_2_aster_unit_test.rs` 的直接调用；没有证据表明 `ArithmeticExpr` 已接入 Rust 的通用表达式树、行求值、函数注册表或 protobuf 下推路径。因此它目前应理解为“可执行且有对等测试的迁移内核”，不能写成已经替代 Go 生产主链。
-
-文件底部 `builtin_arithmetic.rs:1149-1152` 还在 `cfg(test)` 下直接挂载独立测试文件 `builtin_arithmetic_2_aster_unit_test.rs`；crate 根另通过 `builtin_arithmetic_test.rs` 再挂载同一组 Go 对等用例。测试逻辑位于独立文件，没有内嵌进生产源文件。
+批处理实现另在 `pkg/expression/builtin_arithmetic_vec.rs`；Go 生产接线则位于 `builtin_arithmetic.go` 的各 `getFunction`、`builtinFunc` signature 及包级 `funcs` 注册链。
 
 ## 核心职责
 
@@ -110,12 +106,7 @@ Go 主链对照证据是 `builtin_arithmetic.go:30-64` 的接口断言、各运�
 
 ## 与 Go 版本的对应关系
 
-直接对应关系包括：
-
 - Rust `is_constant_binary_literal` / `numeric_context_result_type` 对应 Go 同名 camelCase 函数（Go `builtin_arithmetic.go:66-102`），保留 Temporal FSP、常量二进制字面量、BIT、hybrid 的优先规则。
-- Rust `set_flen_decimal_for_real_or_decimal` 对应 Go `setFlenDecimal4RealOrDecimal`（Go `:104-141`）；`set_type_for_div_decimal` / `set_type_for_div_real` 对应 Go divide function class 的两个类型辅助（Go `:143-164`）；`set_type_for_mod` 对应 Go `setType4ModRealOrDecimal`（Go `:983-1000`）。
-- Rust `ArithmeticExpr::build` 把 Go 六个 function class 的 `getFunction` 分派压缩为一个枚举式入口；`Signature` 对应 Go 的逐类型 signature 结构，包括四种整数 `%` 组合和三种 VectorFloat32 signature。
-- Rust 各 `eval_*` 对应 Go signature 的 `evalInt`、`evalReal`、`evalDecimal`、`evalVectorFloat32`；`subtraction_overflows` 是 Go minus signature 的 `overflowCheck` 的直接翻译。
 
 重要差异与迁移限制：
 
@@ -125,7 +116,7 @@ Go 主链对照证据是 `builtin_arithmetic.go:30-64` 的接口断言、各运�
 - Go 各 signature 可 Clone 并声明跨 session 共享约束；Rust 是整个拥有值表达式派生 `Clone`，尚未与通用表达式生命周期一致。
 - Go 向量使用 `types.VectorFloat32::{Add,Sub,Mul}`；Rust 直接遍历 `Vec<f32>`，明确自行检查维度。
 
-Rust 独立测试 `builtin_arithmetic_2_aster_unit_test.rs` 覆盖类型推导、元数据、分派、NULL、四种符号组合、溢出、除零 warning/error、DECIMAL scale、DIV 截断、取模符号和向量维度。Go `builtin_arithmetic_test.go` 还验证真实函数注册/签名、PB code、chunk 行求值、Duration/Set/字符串强制转换以及真实列名错误信息；这些用例揭示了当前 Rust 内核之外仍需接线或扩充的语义表面。
+Go `builtin_arithmetic_test.go` 还验证真实函数注册/签名、PB code、chunk 行求值、Duration/Set/字符串强制转换以及真实列名错误信息；这些用例揭示了当前 Rust 内核之外仍需接线或扩充的语义表面。
 
 ## 扩展指南
 
@@ -137,18 +128,3 @@ Rust 独立测试 `builtin_arithmetic_2_aster_unit_test.rs` 覆盖类型推导�
 - 扩展向量：除维度不等外，还应明确混合标量/向量是否在 build 阶段拒绝。若加入除法或取模，需要定义逐维除零、NaN/Infinity 和错误聚合策略，再与 Go `types.VectorFloat32` 行为核验。
 - 接入生产主链：不能只公开本模块。需要设计到 crate 通用 `Expression` trait、`BuildContext`/`EvalContext`、row/chunk、函数注册、PB signature、clone/thread-safety 以及向量化路径的适配，并把 Go `builtin_arithmetic_test.go` 中真实注册和行求值用例迁移到独立 Rust 测试。此项属于后续实现工作，不是当前文件已经具备的能力。
 - 性能风险：`BigDecimal` 转换/克隆、逐次向量分配和动态错误文本都有成本；优化时必须保留精度、舍入、错误文本和所有 signedness 边界，不能仅以 benchmark 结果简化语义。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 源文件：`pkg/expression/builtin_arithmetic.rs` 全部 1152 行，重点符号为 `numeric_context_result_type`、四个结果类型辅助、`ArithmeticExpr::{build,eval}`、全部 `eval_*`、`subtraction_overflows` 和 `decimal_precision`。
-- crate 边界：`pkg/expression/Cargo.toml`；确认 crate 名/入口、`autotests = false`、`bigdecimal`、`num-traits`、`thiserror` 依赖及 `go-package = "pkg/expression"` 迁移元数据。
-- 模块入口：`pkg/expression/lib.rs:168-172,428-432`；确认生产内核私有挂载及测试模块挂载。
-- Rust 测试入口：`pkg/expression/builtin_arithmetic_test.rs`；确认只做内核再导出与独立测试挂载。
-- Rust 对等测试：`pkg/expression/builtin_arithmetic_2_aster_unit_test.rs` 全部 478 行；确认实际覆盖的类型推导、元数据、分派、加减乘除、DIV、MOD、向量与错误边界。
-- Go 对照：`pkg/expression/builtin_arithmetic.go` 全部 1386 行和 `pkg/expression/builtin_arithmetic_test.go` 全部 816 行；确认 Go function class/signature、行求值、PB code、类型强制转换、错误和并发约束。
-- RustCodeGraph：`status` 显示本仓库索引包含 11467 个文件、307296 个节点和 1848419 条边；`files --filter pkg/expression` 确认目标及对照文件均已索引；`query` 唯一定位 `ArithmeticExpr`、`numeric_context_result_type`、`set_flen_decimal_for_real_or_decimal`、`subtraction_overflows`；文件节点和 callees 结果确认上述内部调用链。对同名方法的 callers 查询无法可靠消歧，因此外部接线结论改用 `lib.rs` 模块声明和精确 `rg` 引用交叉核验。
-- 精确引用核验：在 `pkg/expression` 中排除目标文件后搜索 `ArithmeticExpr`、`numeric_context_result_type`、`subtraction_overflows` 与模块名，只发现 `lib.rs`、测试入口和 `builtin_arithmetic_2_aster_unit_test.rs` 的引用；因此文档明确标注生产主链接线未发现，而未将测试可执行性夸大为完整应用接入。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令确认目标文件存在且恰有 11 个固定二级章节，并人工复核所有“已支持”结论均能回指以上源码、调用边、Cargo、Go 或测试证据。

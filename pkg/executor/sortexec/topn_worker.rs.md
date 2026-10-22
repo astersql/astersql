@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源文件为 [`topn_worker.rs`](./topn_worker.rs)。本文件属于 `astersql-executor-sortexec` crate；crate 根 `pkg/executor/sortexec/lib.rs` 以 `pub mod topn_worker` 装配它，但没有在 crate 根重新导出 `topNWorker`。因此它是排序执行器内部的 TopN 工作单元，而不是面向其他 crate 的稳定入口。`pkg/executor/sortexec/Cargo.toml` 的 `[package.metadata.porting]` 将整个 crate 对应到 Go 包 `pkg/executor/sortexec`；当前依赖仅在 `cfg(windows)` 下声明，说明这套 Rust 移植目前受平台条件约束。
-
-上层 `TopNExec` 在 `pkg/executor/sortexec/topn.rs` 中创建 worker、分发输入 chunk、汇总各 worker 的堆，并在需要时交给 `topNSpillHelper` 落盘。本文件只负责“单个 chunk 进入单个有界堆”这一局部步骤。
+`topNWorker::run` 在处理 chunk 前检查共享取消标志，统计输入行数，把 chunk 交给 `topNChunkHeap::processChk`，并把堆占用的净变化登记到共享 `MemoryTracker`。
 
 ## 核心职责
 
@@ -83,11 +81,3 @@ Go 对照文件是 `pkg/executor/sortexec/topn_worker.go`。两者都围绕独�
 - 若引入真正并行的 Rust worker，需同时设计输入 channel 的关闭、每个 chunk 的完成确认、错误/ panic 汇报、`TopNExec::Close` 等待，以及 spill 与 run 竞争同一 mutex 的策略；Go 文件可作语义参考，但不能直接假设其生命周期已存在于 Rust。
 - 若允许执行器在 `Kill` 后复用，应明确在哪里把 `killed` 恢复为 `false`；仅调用现有 `reset` 不足以复用。
 - 相关 Rust 回归应优先放在同目录独立测试模块：worker/spill 交互放 `topn_spill_test.rs`，执行器可见的取消、Limit 与结果行为放 `sortexec_pkg_test.rs`。涉及 Go 对齐时同步查看 `topn_spill_test.go`，但不要以 Go failpoint 测试代替 Rust 行为验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/executor/sortexec` 确认目标及相邻实现/测试；`node --file pkg/executor/sortexec/topn_worker.rs --offset 1 --limit 260` 读取全部 55 行，并报告四个 used-by 文件；`query topNWorker` 定位 Rust/Go 类型、Go 方法和 Rust 测试构造点。精确 `callers/callees` 查询未产生输出，未据此声称符号级边。
-- 源码：`pkg/executor/sortexec/topn_worker.rs`（目标类型和方法）、`topn.rs`（构造、轮询调用、spill 检查、汇总、Close/Kill）、`topn_chunk_heap.rs`（有界堆与内存变化）、`topn_spill.rs`（锁、drain、tracker 转移）、`sort_util.rs`（chunk、错误和 tracker 原子语义）、`lib.rs` 与 `Cargo.toml`（模块/crate/平台边界）。同目录未发现 `doc.go`。
-- 测试：`topn_spill_test.rs::worker_with_rows` 直接构造并运行 worker；`oom_action_only_requests_spill_until_the_executor_runs_it`、`failed_spill_resets_status_for_a_future_attempt` 和 `topn_spill_returns_only_requested_offset_window` 覆盖 spill 协调及结果边界。`sortexec_pkg_test.rs` 覆盖 TopN 的 Limit/投影与其他排序 worker 的取消错误；仓库搜索未发现直接调用 `processedRows` 的测试。
-- Go 对照：`topn_worker.go`、`topn.go` 的 worker 创建段，以及 `topn_spill_test.go::TestTopNSpillDisk`/`TestTopNSpillDiskFailpoint`，用于确认并发、channel、panic/failpoint 与 Rust 当前实现的差异。
-- 本任务仅新增说明文档，不运行 Cargo；结构验证要求本文恰好包含任务规定的 11 个二级标题。

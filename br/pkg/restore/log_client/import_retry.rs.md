@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`import_retry.rs` 属于 `astersql-br-pkg-restore-log-client` library crate。crate 根由 `br/pkg/restore/log_client/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定；`lib.rs` 通过 `#[path = "import_retry.rs"] pub mod import_retry` 挂载本文件，并用 `pub use import_retry::*` 暴露其公开符号。Cargo 清单没有为本模块设置 feature 开关，因此它随该 crate 正常编译。
-
-在日志恢复链路中，本文件位于“计算待恢复文件的全局键范围”和“向各 TiKV region 发送 Apply 请求”之间。直接生产调用者是 `import.rs` 的 `LogFileImporter::ImportKVFiles`：它构造 `RangeController`、安装 `RangeCtlMetricListener`，再把每个 region 上的文件过滤与 Apply 动作包装成 `RegionFunc` 交给 `ApplyFuncToRange`。本文件不负责组装 ImportSST 请求，也不负责读取外部存储；它只负责 region 枚举、错误分类、退避和重试游标选择。
+直接生产调用者是 `import.rs` 的 `LogFileImporter::ImportKVFiles`：它构造 `RangeController`、安装 `RangeCtlMetricListener`，再把每个 region 上的文件过滤与 Apply 动作包装成 `RegionFunc` 交给 `ApplyFuncToRange`。
 
 ## 核心职责
 
@@ -91,13 +89,11 @@ RustCodeGraph 对 `import_retry.rs` 的文件级“used by”只识别到测试�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 `import_retry.go`：`RegionFunc`、事件 listener、`RangeController`、三种 `RetryStrategy`、`RPCResult` 构造/分类，以及 NotLeader、busy、epoch 变化和 gRPC code 分支均保留。Go 的 `CreateRangeController` 同样执行 `TruncateTS + PrefixNextKey`，`ImportKVFiles` 同样使用 45 次、100 ms 到 15 s 的外层退避并挂四类指标。
-
-语言适配上的主要差异是：Rust 用 `Arc<dyn SplitClient>` 和拥有值的 `RetryState` 代替 Go interface 与指针；用 `Option<Error>`/`Option<errorpb::Error>` 表达 nil；用 `Box<dyn FnMut + Send>` 表达可变回调；用 `(bool, Option<Error>)` 表达 Go 的多返回值。Rust 还在预算耗尽且错误链为空时生成明确哨兵错误。
+语言适配上的主要差异是：Rust 用 `Arc<dyn SplitClient>` 和拥有值的 `RetryState` 代替 Go interface 与指针；用 `Option<Error>`/`Option<errorpb::Error>` 表达 nil；用 `Box<dyn FnMut + Send>` 表达可变回调；用 `(bool, Option<Error>)` 表达 Go 的多返回值。
 
 当前 Rust 没有移植 Go 的 `prepareLogCtx`，因此没有把 `startKey`/`endKey` 字段注入派生日志 context；它直接克隆原 `Context`。Rust 的 `tryFindLeader` 依赖本地 stub 的 `Result<RegionInfo>`，以 `Region.is_none()` 代表 Go 的 nil region。Rust 的 `grpc_status::FromError` 也由 stub 从错误表示中恢复 code；扩展错误包装时需确认它仍能识别根因，才能保持 Go `errors.Cause + status.FromError` 的语义。
 
-测试对应关系以 `import_retry_test.rs` 和 `import_retry_test.go` 为依据。Rust 独立测试覆盖扫描窗口、响应携带新 leader、普通 busy、四类 gRPC code、epoch 重扫、leader 查询缺 region 后的范围重扫、分页 leader，以及顶层/嵌套 memory-limit 文本差异；Go 测试还包含更完整的 region split 与 failpoint 长等待路径。该差异说明 Rust 当前测试面并非逐用例完全等量，但核心策略分支已有直接证据。
+Rust 独立测试覆盖扫描窗口、响应携带新 leader、普通 busy、四类 gRPC code、epoch 重扫、leader 查询缺 region 后的范围重扫、分页 leader，以及顶层/嵌套 memory-limit 文本差异；Go 测试还包含更完整的 region split 与 failpoint 长等待路径。该差异说明 Rust 当前测试面并非逐用例完全等量，但核心策略分支已有直接证据。
 
 ## 扩展指南
 
@@ -107,13 +103,3 @@ Rust 文件逐项对应同目录 `import_retry.go`：`RegionFunc`、事件 liste
 - 修改扫描边界时同时复核 `CreateRangeController`、`PaginateScanRegion` 和 `test_scan_success`。尤其不要移除 `TruncateTS + PrefixNextKey`，除非上游键约定及 Go 行为一起迁移并有防数据遗漏测试。
 - 若消除递归或改成异步状态机，应保持两项行为：范围重扫成功后不得继续旧 region 列表；同一累计错误链和重试预算必须跨重扫保存。性能评估应关注阻塞 sleep、全范围重复扫描和深递归风险。
 - 测试逻辑必须继续放在独立的 `import_retry_test.rs`，不要嵌入生产源文件。若生产行为与 Go 对齐发生变化，也应同步更新 Go 对照说明或明确记录有意差异。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；目标文件被成功定位。
-- RustCodeGraph `explore "br/pkg/restore/log_client/import_retry.rs RetryState ImportRetryableErrorStrategy"`：获得目标源、Go 对照、范围控制器相关调用上下文。
-- RustCodeGraph `node --file br/pkg/restore/log_client/import_retry.rs --offset 1 --limit 260` 与 `--offset 248 --limit 220`：完整核对本文件 428 行源码、54 个符号及状态机分支。
-- RustCodeGraph `query CreateRangeController`、`query ApplyFuncToRange`、`query RPCResultFromError` 与 `files --filter br/pkg/restore/log_client`：核对 Rust/Go 同名符号、模块文件集合和图索引限制。
-- RustCodeGraph `node` 读取 `lib.rs`、`import.rs`、`import_retry_test.rs`：核对模块挂载、生产入口和 Rust 独立测试。包目录不存在 `doc.go`，无额外 Go 包契约文件可读。
-- 直接读取 `br/pkg/restore/log_client/Cargo.toml`、`import_retry.go`、`import_retry_test.go`，并用精确符号检索核对生产引用：确认 crate 边界、Go 语义、测试边界和 `import.rs` 的实际接线。
-- 未运行 Cargo 或代码测试：本任务是纯文档分析，计划明确禁止 Cargo；交付验证仅执行固定章节结构检查与人工事实复核。

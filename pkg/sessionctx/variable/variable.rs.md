@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`variable.rs` 是 `astersql-sessionctx-variable` crate 的系统变量核心模型与注册表实现。crate 根 `pkg/sessionctx/variable/lib.rs` 以私有 `mod variable` 挂载它，再通过 `pub use variable::*` 暴露其公开 API；因此调用方通常使用 crate 根路径访问 `SessionVars`、`SysVar`、`GetSysVar` 等符号，而不是直接引用本模块。
-
-它位于 SQL 会话状态与具体内建变量定义之间：`pkg/sessionctx/variable/sysvar_builtins.rs`、`embedding_vars.rs` 构造并注册 `SysVar`，会话或 SQL 执行路径按名称查询、校验、读写变量。例如 `pkg/session/runtime/dispatch.rs` 的 `SHOW VARIABLES` 路径调用 `GetSysVars` 获取快照并过滤、排序、展示。该文件本身不枚举全部内建变量，也不负责持久化全局值；这些职责分别属于注册调用方和 `GlobalVarAccessor` 的实现。
-
-crate 边界见 `pkg/sessionctx/variable/Cargo.toml`：本文件直接使用 `chrono` 处理 TIME、使用 `astersql-kv` 的退避默认值、使用 `astersql-parser-auth` 表示用户/角色，并依赖相邻 `vardef` crate 提供变量名、类型、作用域和默认值常量。Cargo 元数据将该 crate 对应到 Go 包 `pkg/sessionctx/variable`。
+承载会话侧状态：`StatementContext` 保存校验警告，`SessionKVVars` 保存下发 KV 的参数，`SessionVars` 保存字符串变量表及执行器/规划器消费的会话字段。
 
 ## 核心职责
 
@@ -107,9 +103,7 @@ TIME 的短输入只按 `%H:%M` 解析，输出带当前会话固定时区偏移
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/sessionctx/variable/variable.go`。Rust 保留了 Go 的 `SysVar` 元数据布局、hook 调用次序、作用域规则、类型裁剪、别名非递归更新、注册表大小写归一化、快照复制和依赖优先排序。`pkg/sessionctx/variable/tests/variable_test.rs` 保存大段 Go 测试迁移参考，并在文件后部提供部分可执行 Rust 覆盖；真正由 crate 挂载的聚焦测试是同目录 `variable_test.rs`。
-
-已验证的关键对应关系：
+Rust 保留了 Go 的 `SysVar` 元数据布局、hook 调用次序、作用域规则、类型裁剪、别名非递归更新、注册表大小写归一化、快照复制和依赖优先排序。`pkg/sessionctx/variable/tests/variable_test.rs` 保存大段 Go 测试迁移参考，并在文件后部提供部分可执行 Rust 覆盖；真正由 crate 挂载的聚焦测试是同目录 `variable_test.rs`。
 
 - Go `Validate` 与 Rust `Validate` 都先查作用域，再做类型规范化，最后执行自定义 validation。
 - Go `ValidateWithRelaxedValidation` 与 Rust 实现都屏蔽校验错误并恢复旧警告；Rust 对 TIME 错误显式返回空串，对应 Go type validator 的空 normalized value。
@@ -117,7 +111,7 @@ TIME 的短输入只按 `%H:%M` 解析，输出带当前会话固定时区偏移
 - Go 注册表用 `sync.RWMutex + map[string]*SysVar`；Rust 用 `LazyLock<RwLock<HashMap<String, Arc<SysVar>>>>`，并通过克隆实现替换与快照。
 - Go `time.ParseDuration`/`Duration.String` 由 Rust 的 `parse_go_duration`/`format_go_duration` 本地复刻；`variable_test.rs::duration_validation_matches_go_string_precision` 覆盖 `0`、纳秒小数和秒小数格式。
 
-当前差异与迁移边界也必须保留：Rust `Context` 是占位；Rust `StatementContext` 和 `SessionVars` 仅是本文件所需模型的一部分；Rust TIME 使用 `FixedOffset` 而非 Go `time.Location`，短格式仅解析到分钟；Rust错误没有 Go terror/MySQL 错误码栈的完整结构。`pkg/sessionctx/variable/tests/variable_test.rs` 前段的 `GO_REFERENCE` 是迁移参考文本而非可执行测试，不能据此声称所有 Go 用例已经落地。
+当前差异与迁移边界也必须保留：Rust `Context` 是占位；Rust `StatementContext` 和 `SessionVars` 仅是本文件所需模型的一部分；Rust TIME 使用 `FixedOffset` 而非 Go `time.Location`，短格式仅解析到分钟；Rust错误没有 Go terror/MySQL 错误码栈的完整结构。
 
 ## 扩展指南
 
@@ -130,12 +124,3 @@ TIME 的短输入只按 `%H:%M` 解析，输出带当前会话固定时区偏移
 修改注册表并发模型时，要保持大小写不敏感、读后持有对象有效、`GetSysVars` 返回独立快照这三个外部契约，并关注 `SHOW VARIABLES` 和扩展注册路径。修改 duration/TIME 时应与 `variable.go` 逐边界对照，至少覆盖空值、非法单位、正负号、上下界、精度、时区偏移和宽松校验不污染警告。
 
 主要风险：错误/规范化差异会影响 MySQL 兼容性；默认值或作用域差异会改变新会话行为；全局锁粒度和全表深拷贝影响高频查询性能；公开字段或钩子签名变化会影响 crate 内建变量、扩展 API 和执行路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/sessionctx/variable` 定位目标、Go 对照和测试；`node --file pkg/sessionctx/variable/variable.rs --offset 1/501/801` 阅读完整 1,081 行；`query` 定位 `SessionVars`、`SysVar`、`GetSysVar`、`RegisterSysVar`、`SetSystemVar`、`parse_go_duration`、`OrderByDependency`；`callees SetSystemVar` 验证严格设置链。
-- 生产源码：[`variable.rs`](./variable.rs)；模块入口 [`lib.rs`](./lib.rs)；注册调用方 [`sysvar_builtins.rs`](./sysvar_builtins.rs)、[`embedding_vars.rs`](./embedding_vars.rs)；运行时读取方 [`pkg/session/runtime/dispatch.rs`](../../session/runtime/dispatch.rs)；扩展再导出 [`pkg/extension/lib.rs`](../../extension/lib.rs)。
-- crate 配置：[`Cargo.toml`](./Cargo.toml)，用于核对 crate 名、依赖、禁用自动测试发现和 Go 包映射。
-- Go 对照：[`variable.go`](./variable.go)，用于核对 hook、校验器、注册表和依赖排序语义。
-- Rust 测试：[`variable_test.rs`](./variable_test.rs) 覆盖 TIME 宽松失败、duration 格式精度和全局 duration hook；[`pkg/session/test/variable/variable_test.rs`](../../session/test/variable/variable_test.rs) 覆盖注册/注销及四类作用域；[`tests/variable_test.rs`](./tests/variable_test.rs) 同时包含迁移参考和后部可执行的注册、缓存跳过、宽松校验、依赖排序等覆盖，引用时已区分二者。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证目标文档存在且恰好包含 11 个固定二级标题，并人工复核未把占位上下文、参考测试或缺失调用图边描述为完整实现。

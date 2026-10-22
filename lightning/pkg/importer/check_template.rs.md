@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` library crate。crate 根在 `lightning/pkg/importer/lib.rs` 中通过 `#[path = "check_template.rs"] mod check_template` 装入模块，并以 `pub use check_template::*` 重新导出其公开符号。`lightning/pkg/importer/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `lightning/pkg/importer`；本文件的直接 Go 对照是同目录的 `check_template.go`。
-
-它位于 Lightning 导入任务的预检查结果汇聚边界：检查器产生 `CheckResult` 后，`Controller::doPreCheckOnItem`（`check_info.rs:66`）把严重级别、通过状态和消息交给模板；控制器构造函数 `NewImportControllerWithPauser`（`import.rs:319`）创建默认模板并保存在 `Controller::checkTemplate`（`import.rs:241`）中；`Controller::preCheckRequirements`（`import.rs:881`）最终据此决定是否继续导入。它不执行检查，也不管理导入任务本身。
+不执行检查，也不管理导入任务本身。
 
 ## 核心职责
 
@@ -60,11 +58,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Template`、`SimpleTemplate`、`NewSimpleTemplate` 及五个方法逐项对应 `lightning/pkg/importer/check_template.go`。计数顺序、只由 critical 决定成功、critical 失败消息单独收集、`FailedMsg` 的 `";\n"` 拼接、未知类型计数为 0，以及行内容 `序号/消息/类型/是否通过` 均保持一致。
+实现差异集中在渲染层。Go 使用 `go-pretty/v6/table.Writer`，构造时配置四列最大宽度，在 `Output` 中设置允许行长 170 和 row painter；Rust 用 `rows` 与三个私有辅助函数复刻所需子集。Rust 表头字面量为大写，以匹配 Go 默认样式渲染后的大写表头；颜色规则保持 warning 黄、critical 红。
 
-实现差异集中在渲染层。Go 使用 `go-pretty/v6/table.Writer`，构造时配置四列最大宽度，在 `Output` 中设置允许行长 170 和 row painter；Rust 用 `rows` 与三个私有辅助函数复刻所需子集。Go 每次 `Collect` 直接向 writer 追加行和分隔符，Rust 延迟到 `Output` 时从 `rows` 重建文本。Rust 表头字面量为大写，以匹配 Go 默认样式渲染后的大写表头；颜色规则保持 warning 黄、critical 红。
-
-独立 Rust 测试 `check_template_test.rs` 验证 warning/critical 失败计数、critical 消息拼接、总体失败判定、Go 风格大写表头和所有输出行可见宽度不超过 170。`table_import_test.rs` 进一步从控制器检查流程观察 warning 计数和输出消息。Go 的更广泛行为证据位于 `check_info_test.go`、`table_import_test.go` 和 `import_test.go`；它们不是本文件的 Rust 独立测试，扩展时应按触及的调用链选择对照。
+Go 的更广泛行为证据位于 `check_info_test.go`、`table_import_test.go` 和 `import_test.go`；它们不是本文件的 Rust 独立测试，扩展时应按触及的调用链选择对照。
 
 ## 扩展指南
 
@@ -73,11 +69,3 @@ Rust 的 `Template`、`SimpleTemplate`、`NewSimpleTemplate` 及五个方法逐�
 - 若要减少大消息复制，可重新设计消息所有权或直接渲染 `rows` 引用，但必须保持公开观察字段、消息分组与 Go 行顺序兼容，并评估公开字段变更对现有测试的影响。
 - 若要让 Rust 主流程展示表格，应在控制器的输出/日志边界接入 `Output`，而不是让 `Collect` 产生 I/O；同时验证错误路径不会重复渲染或丢失 ANSI/换行格式。
 - 若引入共享并发收集，需要在控制器层封装同步或修改 trait 约束和方法签名，并评估顺序稳定性；现有 `idx` 和 `rows` 默认串行收集顺序是输出协议的一部分。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file lightning/pkg/importer/check_template.rs` 读取了完整 270 行实现；`query/node` 确认 `SimpleTemplate`、`NewSimpleTemplate` 及其直接实例化关系；`explore`/调用轨迹确认控制器与测试调用者。
-- 源码：`lightning/pkg/importer/check_template.rs`（trait、状态、收集与渲染算法）、`check_info.rs:66-90`（检查结果收集）、`import.rs:223-265,319-409,881-900`（控制器持有、构造和阻断判断）、`lib.rs`（模块装配与测试分离）。
-- crate 与依赖：`lightning/pkg/importer/Cargo.toml`（library crate、Go 包映射、对 `astersql-lightning-pkg-precheck` 的本地路径依赖）；`lightning/pkg/precheck/precheck.rs:29-35`（`CheckType`、`Critical`、`Warn` 的实际定义）。
-- Go 对照：`lightning/pkg/importer/check_template.go`；主流程对照调用点为 `lightning/pkg/importer/import.go:1998-2007`，结果收集点为 `lightning/pkg/importer/check_info.go:56`。
-- 测试：`lightning/pkg/importer/check_template_test.rs`；补充调用链证据来自 `check_info_test.rs`、`table_import_test.rs`、`import_test.rs` 以及对应 Go 测试。任务为纯文档分析，按计划未运行 Cargo。

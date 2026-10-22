@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-streamhelper-daemon` crate 的契约层，定义守护任务实现、owner 选举管理器与取消上下文之间的边界；它不执行选举，也不创建 tick 循环。crate 入口 `br/pkg/streamhelper/daemon/lib.rs` 通过 `pub mod interface` 挂载本文件并用 `pub use interface::*` 扁平导出其公开符号，实际生命周期编排位于 `br/pkg/streamhelper/daemon/owner_daemon.rs`。
-
-`br/pkg/streamhelper/daemon/Cargo.toml` 将该目录声明为独立 library crate（`lib.rs` 为入口），运行时直接依赖 `tokio`、`tokio-util` 和 `tracing`。本文件只直接使用 `tokio_util::sync::CancellationToken`；日志与异步定时编排由相邻的 `owner_daemon.rs` 使用。文件内没有条件编译项、模块级常量或自由函数。
+`DaemonError` 与 `Result<T>` 为守护钩子和选举操作提供统一、轻量的错误通道。
 
 ## 核心职责
 
@@ -86,16 +84,10 @@ owner 资源生命周期以每次 `OnBecomeOwner` 收到的子 `Context` 为界�
 
 `Interface` 的四个方法逐一对应 `br/pkg/streamhelper/daemon/interface.go` 的同名方法，Rust 保留了 Go 风格方法名以便移植对照：`OnStart` 在所有节点启动，`OnBecomeOwner` 只在获得 owner 时启动一轮资源，`OnTick` 周期执行并可返回错误，`Name` 用于追踪。
 
-主要类型映射如下：
-
 - Go `context.Context` → Rust `Context`（仅取消语义）。
-- Go `context.CancelFunc` → Rust `CancelFunc::call`。
-- Go `error` → Rust `DaemonError` / `Result<T>`。
-- Go `owner.Manager` → Rust 本地 `Manager` trait。
 - Go 接口值 `Interface` → Rust `Box<dyn Interface>`（使用点在 `owner_daemon.rs`）。
-- Go `owner.Manager` 共享接口值 → Rust `Arc<dyn Manager>`，即 `SharedManager`。
 
-Rust 本地 `Manager` 并非 `interface.go` 中的声明，而是从 `owner_daemon.go` 实际调用的 `owner.Manager` 方法裁剪而来。它刻意不等价于完整上游 owner 包，只包含 `ID`、`IsOwner`、`CampaignOwner`、`ForceToBeOwner`、`RetireOwner`。Rust 的 `Context` 也不是完整 Go context：没有 deadline、值传递和取消原因。其父子取消、重复取消与失主清理语义通过 `interface_test.rs`、`owner_daemon_test.rs` 和 `parity_test.rs` 保持与当前 Go 使用方式一致。
+Rust 本地 `Manager` 并非 `interface.go` 中的声明，而是从 `owner_daemon.go` 实际调用的 `owner.Manager` 方法裁剪而来。它刻意不等价于完整上游 owner 包，只包含 `ID`、`IsOwner`、`CampaignOwner`、`ForceToBeOwner`、`RetireOwner`。Rust 的 `Context` 也不是完整 Go context：没有 deadline、值传递和取消原因。
 
 ## 扩展指南
 
@@ -104,17 +96,3 @@ Rust 本地 `Manager` 并非 `interface.go` 中的声明，而是从 `owner_daem
 - 扩展取消能力：优先在 `Context`/`CancelFunc` 中集中封装，保持父取消向子传播、子取消不影响父和重复取消幂等三个不变量；在 `interface_test.rs` 添加针对性的并发测试。若需要 deadline/value/cause，必须同时评估 Go 对照语义与所有调用点，不能把普通 token 字段误称为完整 context。
 - 扩展错误模型：修改 `DaemonError` 与 `Result<T>` 前检查 `OwnerDaemon::Begin` 的短路路径和 `ownerTick` 的“记录后继续”策略，并更新 `parity_test.rs` 的竞选失败、tick 失败断言。结构化错误可能影响日志格式与调用者匹配，属于兼容风险。
 - 修改 trait 方法签名是公开 API 破坏性变更，会同时影响 `OwnerDaemon`、所有具体实现及测试 mock。性能上应避免在高频 `OnTick`/`IsOwner` 路径引入不必要分配；当前 `Name`/`ID` 每次返回 `String` 已会分配，若优化必须与 Go 可观测日志语义一起评估。
-
-## 验证依据
-
-本说明基于以下直接证据人工交叉核对：
-
-- 目标源码：`br/pkg/streamhelper/daemon/interface.rs`（全部类型、trait、impl 与公开方法）。
-- crate 与导出边界：`br/pkg/streamhelper/daemon/Cargo.toml`、`br/pkg/streamhelper/daemon/lib.rs`。
-- Rust 直接调用者：`br/pkg/streamhelper/daemon/owner_daemon.rs`。
-- Go 对照：`br/pkg/streamhelper/daemon/interface.go`、`br/pkg/streamhelper/daemon/owner_daemon.go`。
-- Rust 独立测试：`br/pkg/streamhelper/daemon/interface_test.rs`、`owner_daemon_test.rs`、`parity_test.rs`。
-- Go 独立测试：`br/pkg/streamhelper/daemon/owner_daemon_test.go`。
-- RustCodeGraph：`status` 报告索引包含 7,032 个 Rust 文件、索引时间戳 `1791342965170`；`files --filter br/pkg/streamhelper/daemon` 列出 9 个 Go/Rust 文件；针对 `DaemonError`、`CancelFunc`、`Interface`、`Manager` 的 `query` 及调用查询确认目标符号与相邻 `owner_daemon.rs` 的使用位置。常见名字的查询存在跨模块同名噪声，最终调用关系以精确文件路径和源码行核实。
-
-本任务是纯文档分析，按计划未运行 Cargo。结构完整性由任务指定的 11 章节命令验证；行为结论来自现有源码和测试内容，并未在本任务中重新执行运行时测试。

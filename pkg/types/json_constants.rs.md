@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/json_constants.rs` 是 AsterSQL 类型系统中 MySQL/TiDB Binary JSON 协议常量与标准 JSON 错误的集中定义。它不由根 `pkg/types/lib.rs` 直接声明为普通模块，而是由 `pkg/types/internal/json_binary/lib.rs` 通过 `#[path = "../../json_constants.rs"] pub mod json_constants` 编入 `astersql-types-json-binary`，随后以 `pub use json_constants::*` 导出；根 `astersql-types` crate 再通过 `pub use types_json_binary as json_binary` 暴露该子 crate。因此常见访问路径是 `astersql_types::json_binary::*` 或其 `json_constants` 子模块。
-
-所属 crate 边界由 `pkg/types/Cargo.toml` 确认：根包名为 `astersql-types`，依赖内部包 `types-json-binary`；本文件直接使用 `thiserror::Error` 和 `dbterror`，二者都列在根 manifest 的依赖中。本文件没有 Cargo feature 分支，但 `JSON_ERRORS_INIT` 针对 Unix、Apple 和 Windows 使用不同链接段属性，承担跨平台的模块初始化接线。
+定义 Binary JSON 的单字节类型码、null/true/false 字面量编码以及对象/数组头和 entry 的固定布局尺寸，供编码、解码、随机访问、类型转换与落盘逻辑共享。
 
 ## 核心职责
 
@@ -84,11 +82,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/types/json_constants.go`。Rust 逐项保留了 `JSONTypeCode`、12 个类型码、3 个 literal、两个未知类型模板、6 个布局常量、三种修改模式、13 个标准错误和两个 contains-path 字符串。Go 的 `jsonSafeSet [utf8.RuneSelf]bool` 对应 Rust `[bool; 128]`；Go 的 `jsonHexChars` 字符串对应 Rust 16 字节数组引用。小端序 `jsonEndian` 位于 Go 常量文件，但 Rust 版本没有在本文件定义同名全局，而由具体二进制读写实现负责小端转换。
+Rust 逐项保留了 `JSONTypeCode`、12 个类型码、3 个 literal、两个未知类型模板、6 个布局常量、三种修改模式、13 个标准错误和两个 contains-path 字符串。Go 的 `jsonSafeSet [utf8.RuneSelf]bool` 对应 Rust `[bool; 128]`；Go 的 `jsonHexChars` 字符串对应 Rust 16 字节数组引用。小端序 `jsonEndian` 位于 Go 常量文件，但 Rust 版本没有在本文件定义同名全局，而由具体二进制读写实现负责小端转换。
 
 Go 的 `jsonTypePrecedences map[string]int` 在 Rust 中改为 `json_type_precedence(&str) -> Option<i32>`，键和值集合一致；Rust 用 `None` 明确表达未知键。Go 的包级错误变量直接保存 `dbterror` 标准错误；Rust 增加 `JsonErrorKind`、`JsonError` 和 `JsonErrorDefinition` 适配层，并以 `Deref` 保留标准错误 API。Rust 还增加平台链接段初始化 `JSON_ERRORS_INIT`，显式模拟 Go 包初始化时标准错误已存在的生命周期。
 
-Rust 独立测试 `pkg/types/json_constants_test.rs` 覆盖未知类型模板、全部 precedence 项和未知项、13 个错误码/错误类、标准消息生成、`JsonErrorDefinition -> JsonErrorKind` 转换以及惰性对象身份。Go 仓库没有同路径 `json_constants_test.go`；相关常量在 `pkg/types/json_binary_test.go`、`pkg/types/convert_test.go` 等行为测试中被间接覆盖。因此不能宣称每个常量都有一一对应的 Go 单元测试。
+Rust 独立测试 `pkg/types/json_constants_test.rs` 覆盖未知类型模板、全部 precedence 项和未知项、13 个错误码/错误类、标准消息生成、`JsonErrorDefinition -> JsonErrorKind` 转换以及惰性对象身份。
 
 ## 扩展指南
 
@@ -98,13 +96,3 @@ Rust 独立测试 `pkg/types/json_constants_test.rs` 覆盖未知类型模板、
 - 扩展比较类型集合时，应同步 Go `jsonTypePrecedences` 与 Rust `json_type_precedence`，覆盖大小写和未知输入，并先确认生产比较入口是否已经接线；当前只有测试调用证据，不能把扩展该函数等同于改变全部 Rust JSON 比较行为。
 - 修改字符串安全表时，应用 0..127 全域测试核对双引号、反斜杠、控制字节和 `0x7f`，同时检查 `pkg/types/json_binary.rs` 的转义逻辑。若要处理非 ASCII，应扩展调用流程而不是直接用大于 127 的字节索引当前表。
 - 修改公开常量名或导出路径会影响 `astersql-types-json-binary` 和根 crate 的使用者；应保持 `pkg/types/internal/json_binary/lib.rs` 的模块/re-export 边界，并同步直接消费者。主要风险是协议兼容、SQL 错误身份和持久化数据解释；性能风险则来自把常量查表改成运行时分配或锁定。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/types/json_constants.rs` 确认文件已索引且含 61 个符号；两次 `node --file` 读取了完整 268 行源码，并报告 8 个使用文件；`query` 确认 `json_type_precedence`、`JsonError`、`JSONTypeCode`、`JSON_ERRORS_INIT` 的定义。精确 `callers/callees json_type_precedence` 未返回可用边，已用精确符号检索补证，没有把泛化 `explore` 的同名噪声作为结论。
-- 源码与装配：`pkg/types/json_constants.rs`、`pkg/types/internal/json_binary/lib.rs`、`pkg/types/lib.rs`。
-- Cargo 边界：`pkg/types/Cargo.toml`。
-- Go 对照：`pkg/types/json_constants.go`；间接行为测试 `pkg/types/json_binary_test.go`、`pkg/types/convert_test.go`。
-- Rust 测试：`pkg/types/json_constants_test.rs`；代表性消费测试 `pkg/types/json_binary_test.rs`、`pkg/types/json_binary_functions_test.rs`。
-- 生产调用证据：`pkg/types/json_binary.rs`、`pkg/types/convert.rs`、`pkg/types/datum.rs`、`pkg/types/internal/datum/lib.rs`、`pkg/util/chunk/row_in_disk.rs`。
-- 按任务约束未运行 Cargo。交付前使用任务给定命令验证文档存在且恰有 11 个固定二级章节，并人工复核本文能回答文件存在理由、执行路径、状态边界和安全扩展位置。

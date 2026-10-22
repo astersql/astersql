@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-kv` crate（`pkg/kv/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/kv/lib.rs` 以公开模块 `paging_resource_control` 接入。它在 KV coprocessor 的 `CopRUInterceptor` 边界实现“分页读取预估值的请求前 RU 预扣 + 响应后结算”，供存储驱动把准入等待放在真正发送网络请求之前。
-
-该模块只维护某一个资源组的本地令牌桶和观测指标。文件头注释以及 `PagingRUInterceptor::reconfigure` 的接口表明，令牌设置和 grant 来自资源组所有者；它不实现 PD 资源组控制器或分配循环。
+在 KV coprocessor 的 `CopRUInterceptor` 边界实现“分页读取预估值的请求前 RU 预扣 + 响应后结算”，供存储驱动把准入等待放在真正发送网络请求之前。
 
 ## 核心职责
 
@@ -66,9 +64,7 @@
 
 ## 与 Go 版本的对应关系
 
-仓库内不存在 `pkg/kv/paging_resource_control.go`，因此本文件不是同路径 Go 文件的逐函数翻译。可直接核验的 Go 主链位于 `pkg/store/copr/coprocessor.go`：`predictedReadBytesForTask` 从 EMA 给出提示，`handleTaskOnce` 将其写入 `tikvrpc.Request.PredictedReadBytes`；`pkg/store/copr/coprocessor_test.go::TestBuildCopTasksWithPagingSizeBytes` 验证 4 MiB 字节预算即使不启用行数分页也会保留预测提示。
-
-Rust 侧由 `pkg/store/driver/runaway_adapter.rs` 把同一提示转成 KV trait 输入，并在真实发送前等待。取消退款旁的源码注释说明它对齐 Go/client-go `WaitReservations` 的“按原预约时刻取消”语义，但该外部实现不在本仓库此文件内；这里只把现有 Rust 源码、独立测试和适配测试所证明的行为视为已验证。PD 的 grant/资源组分配算法也明确在本模块范围外。
+取消退款旁的源码注释说明它对齐 Go/client-go `WaitReservations` 的“按原预约时刻取消”语义，但该外部实现不在本仓库此文件内；这里只把现有 Rust 源码、独立测试和适配测试所证明的行为视为已验证。
 
 ## 扩展指南
 
@@ -78,12 +74,3 @@ Rust 侧由 `pkg/store/driver/runaway_adapter.rs` 把同一提示转成 KV trait
 - 新增响应字段或 batch 聚合成本时，需要同时修改 `CopRPCResponseInfo`、`KVCopRUInterceptor::on_response_wait` 和适配层测试，不能只改本模块公式。
 - 修改指标名、标签或桶会影响监控兼容性；同步更新 `paging_metrics_export_exact_dashboard_series` 以及相关 dashboard/告警消费者。高基数资源组或 keyspace 标签还需评估内存开销。
 - 若接入新的资源组所有者，复用 `reconfigure` 提交 grant，并由所有者决定何时 `set_throttled`；不要把 PD 分配循环复制进本模块。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；查询目标文件得到完整 326 行源码及三个直接使用文件。
-- RustCodeGraph 关键调用边：`request -> wait/observe_request`；`OnResponseWait -> adjust/wait/observe_response`；`refill` 被 `adjust`、`available_tokens`、`reconfigure`、`wait` 调用。
-- 源码与边界：`pkg/kv/paging_resource_control.rs`、`pkg/kv/lib.rs`、`pkg/kv/Cargo.toml`、`pkg/store/driver/runaway_adapter.rs`。
-- Rust 独立测试：`pkg/kv/paging_resource_control_test.rs` 覆盖预扣结算、失败余额、取消退款、grant 唤醒、无提示阈值、无限/突发配置和指标；`pkg/store/driver/coprocessor_adapter_test.rs` 覆盖提示穿透、发送前等待、关闭取消及真实响应聚合。
-- Go 对照：`pkg/store/copr/coprocessor.go::{predictedReadBytesForTask, handleTaskOnce}` 与 `pkg/store/copr/coprocessor_test.go::TestBuildCopTasksWithPagingSizeBytes`。仓库内未找到同路径 Go 控制器，此限制已在上一节明确记录。
-- 本任务是纯文档分析，未运行 Cargo；交付结构检查要求本文恰含规定的 11 个二级标题。

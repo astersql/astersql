@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema-issyncer` crate（入口与依赖见 `pkg/infoschema/issyncer/Cargo.toml`），由 `lib.rs` 的 `mod loader` 纳入并通过 `pub use loader::*` 重新导出。它位于元数据同步链的中段：`Syncer::ReloadWithContext` 取得存储时间戳并调用 `Syncer::LoadWithTS`，后者直接委托本文件的 `Loader::LoadWithTS`；加载结果随后交给 schema validator 更新版本，并由 `Syncer::postReload` 处理特定表缓存或连接清理（`syncer.rs:405-493`）。
-
-文件同时承担三层职责：定义加载器所需的存储接口 `SchemaReader`/`SchemaStore`，实现缓存、增量与全量加载决策，以及把真实 `astersql_kv::Storage` 适配成能够读取 Go meta 编码的 `KvSchemaStore`/`KvMetaReader`。因此它不是单纯的算法工具，也不是独立持久化层；它把 InfoSchema Builder 与某个时间戳上的 KV 元数据连接起来。
+位于元数据同步链的中段：`Syncer::ReloadWithContext` 取得存储时间戳并调用 `Syncer::LoadWithTS`，后者直接委托本文件的 `Loader::LoadWithTS`；加载结果随后交给 schema validator 更新版本，并由 `Syncer::postReload` 处理特定表缓存或连接清理（`syncer.rs:405-493`）。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/issyncer/loader.go`，相关测试为同目录 `loader_test.go` 与 `loader_test.rs`。已保持的主要语义包括：10000 的 diff 版本差阈值、缓存优先、只从已有 latest 向前增量、增量失败回退全量、按版本顺序应用 diff、跳过内容仍推进版本、`RegenerateSchemaMap` 拒绝增量、Filter 优先于 cross-keyspace 判断、cross-keyspace 只加载系统库/保留表 diff，以及普通全量加载始终包含两个内存 schema。
-
 Rust 生产适配还对应 Go 的 `kv.Storage.GetSnapshot + meta.NewReader`：设置 3000 ms 读超时，读取 `SchemaVersionKey`/`Diff:<version>`、`DBs` 与 `DB:<id>` hash，并使用共享 model codec 保留完整 DB/Table metadata。Rust 测试用 `InMemoryStore` 代替 Go `mockstore/meta.Mutator`，覆盖初始全量、重复缓存命中、增量新表、cross-keyspace、BR Filter 及未知库等真实分支。
 
 当前 Rust 并非 Go 文件的完整功能等价实现，扩展时必须正视这些差异：没有 `LoadMode` 和 v1/v2 切换；没有 schema diff commit timestamp/MVCC 查询；没有策略、资源组和 masking policy 的全量拉取；没有 repair mode、字符集修正、lazy v2 表信息或并发 schema 拉取；没有加载指标、日志和 failpoint；`changeSchemaCacheSize` 是占位；没有 AutoID client 与内部 SQL executor 初始化。Go 会围绕 snapshot history、v1/v2 数据对象和延迟释放做额外处理，Rust 当前只使用统一 Builder/共享 cache，不应在文档或调用方中宣称这些功能已移植。
@@ -105,14 +101,3 @@ Rust 生产适配还对应 Go 的 `kv.Storage.GetSnapshot + meta.NewReader`：�
 - 测试应继续放在同目录独立文件 `pkg/infoschema/issyncer/loader_test.rs`，并尽量逐分支对齐 `loader_test.go`。生产 KV 编码变化还应增加针对 `KvMetaReader` 的独立测试，重点覆盖 not-found、损坏 JSON/model、缺库、iterator 关闭与同一 startTS 一致性。
 
 兼容性风险主要是 Go meta 编码和动作码漂移；正确性风险集中在并发加载覆盖 `latest`、过滤后版本推进和增量错误回退；性能风险集中在无界 `byVersion` 与串行全量表扫描。任何扩展都应分别验证这三类风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11467 个文件、307296 个节点和 1848419 条边；`files --filter pkg/infoschema/issyncer` 确认目标 Rust/Go 源与独立测试均已索引。
-- RustCodeGraph `node --file pkg/infoschema/issyncer/loader.rs --offset 1 --limit 1200`：读取目标文件完整 731 行，核对所有常量、trait、struct、impl 和函数。
-- RustCodeGraph `query LoadWithTS`、`query tryLoadSchemaDiffs`、`query fetchAllSchemasWithTables`、`query KvMetaReader --kind struct`、`query KvSchemaStore --kind struct`：确认 Rust/Go 对应符号与位置。
-- RustCodeGraph `node` 读取 `pkg/infoschema/issyncer/lib.rs` 与 `syncer.rs:340-519`：确认模块导出及 `ReloadWithContext`、validator、postReload 的直接调用链。
-- `pkg/infoschema/issyncer/Cargo.toml`：核对 crate 边界、生产依赖和独立测试依赖。
-- RustCodeGraph `node` 完整读取 `pkg/infoschema/issyncer/loader.go`：核对 Go 主流程、diff/full-load 行为及尚未移植的 v1/v2、并发、policy、指标等能力。
-- RustCodeGraph `node` 读取 `pkg/infoschema/issyncer/loader_test.rs` 与 `loader_test.go`：核对首次全量、缓存命中、增量、cross-keyspace、BR Filter 的边界和预期。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前以任务指定命令验证本文恰含 11 个固定二级章节，并人工复核只新增本文件且未修改 Rust、Go、Cargo 或总计划。

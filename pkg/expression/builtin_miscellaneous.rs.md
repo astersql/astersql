@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源码链接：[pkg/expression/builtin_miscellaneous.rs](builtin_miscellaneous.rs)。本文件属于 `astersql-expression` crate（见 `pkg/expression/Cargo.toml`），是杂项 SQL 内建函数的**标量语义内核**。`pkg/expression/lib.rs` 通过 `#[path = "builtin_miscellaneous.rs"] mod builtin_miscellaneous_kernel;` 将它装入 crate；生产求值分派 `pkg/expression/builtin.rs` 直接调用其中部分函数。它不负责 SQL 函数注册、参数类型推导、表达式对象构造或向量化批处理；这些职责分别位于 `builtin.rs`、类型推导代码和 `builtin_miscellaneous_vec.rs`。
-
-当前直接可见的生产接线包括：`CoreBuiltinKind::TiDBShard` 调用 `tidb_shard`，`CoreBuiltinKind::IsIPv4/IsIPv6` 调用对应谓词，`CoreBuiltinKind::Uuid` 调用 `uuid_v1`。`SLEEP` 的生产分派当前调用向量化内核 `vec_sleep`，而不是本文件的 `sleep_builtin`。其余公开函数在 RustCodeGraph 中主要由 `builtin_miscellaneous_test.rs` 与 `builtin_miscellaneous_18_aster_unit_test.rs` 调用；因此应把“本文件已经实现标量语义”和“该语义已经由生产分派接线”区分开，不能仅凭 `pub fn` 推断 SQL 路径已经完整迁移。
+会话咨询锁：以 `AdvisoryLockContext` 隔离会话/存储实现，统一锁名校验、小写规范化、超时钳制及后端错误映射。
 
 ## 核心职责
 
@@ -86,11 +84,11 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/builtin_miscellaneous.go` 同时包含 function class、返回/参数类型、protobuf 下推码、会话可选属性读取器和 `eval*`；Rust 本文件主要对应其中 `eval*` 的核心算法。关键对齐点是：INET 短格式与边界、严格四段 IPv4、IPv4-mapped IPv6、ANY_VALUE/NAME_CONST 透传、UUID 多格式/严格空白/版本/时间戳/交换、Vitess 哈希、锁名小写和 64 字符限制、锁超时钳制、SLEEP 的 kill 返回值，以及三个固定不可用错误。
+关键对齐点是：INET 短格式与边界、严格四段 IPv4、IPv4-mapped IPv6、ANY_VALUE/NAME_CONST 透传、UUID 多格式/严格空白/版本/时间戳/交换、Vitess 哈希、锁名小写和 64 字符限制、锁超时钳制、SLEEP 的 kill 返回值，以及三个固定不可用错误。
 
-存在明确的结构差异：Go 通过 `BuildContext`/`EvalContext` 产生 TiDB 错误与 warning，并从 session optional properties 取得锁和 kill 状态；Rust 用 `MiscError`、`LockOutcome.warning`、trait 与回调显式传递这些信息。Rust 的 `any_value`/`name_const` 不承担 Go 代码里的类型元数据复制和不同 eval type 签名选择。Rust `uuid_v1` 使用全零节点 ID并复用静态上下文，语义与当前文件注释及测试一致。
+存在明确的结构差异：Go 通过 `BuildContext`/`EvalContext` 产生 TiDB 错误与 warning，并从 session optional properties 取得锁和 kill 状态；Rust 用 `MiscError`、`LockOutcome.warning`、trait 与回调显式传递这些信息。Rust 的 `any_value`/`name_const` 不承担 Go 代码里的类型元数据复制和不同 eval type 签名选择。
 
-接线状态也不完全对等：Go 文件中的函数类是完整 SQL 路径；Rust `builtin.rs` 当前只直接调用本文件少数内核，且 `SLEEP` 改走向量化实现。扩展或判定迁移完成度时必须同时检查注册表、factory、标量分派、向量化分派与类型推导，不能只比较本文件函数数量。
+接线状态也不完全对等：Go 文件中的函数类是完整 SQL 路径；Rust `builtin.rs` 当前只直接调用本文件少数内核，且 `SLEEP` 改走向量化实现。
 
 ## 扩展指南
 
@@ -101,12 +99,3 @@
 - 锁：通过扩展 `AdvisoryLockContext` 接入会话状态，不在此处引入全局锁表；新增错误必须同时定义后端分类、`MiscError` 映射和 warning 传播。名称规则或超时规则变化会影响 MySQL 兼容性。
 - 哈希/分片：DES 密钥、大小端或桶数任一变化都会改变数据分布；必须保留 Go/Vitess 固定向量，并评估既有生成列或分片键兼容性与重分布成本。
 - 接线：实现函数后还需检查 `pkg/expression/lib.rs`、`builtin.rs` 的 kind/factory/arity/求值分支、类型推导及向量化实现。仅新增 `pub fn` 不代表 SQL 可调用。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；用 `node --file pkg/expression/builtin_miscellaneous.rs` 阅读 566 行全文件，并用 `explore`、`callers`、`callees` 核对公开入口和内部调用。图证据显示 `wrong_value` 的六个直接调用者，以及 `builtin.rs`/独立测试对 IP、UUID、分片函数的调用。
-- 生产与装配：阅读 `pkg/expression/builtin_miscellaneous.rs`、`pkg/expression/lib.rs`、`pkg/expression/builtin.rs`；确认生产分派直接使用 `tidb_shard`、`is_ipv4`、`is_ipv6`、`uuid_v1`，而 `SLEEP` 使用 `builtin_miscellaneous_vec_kernel::vec_sleep`。
-- crate 边界：阅读 `pkg/expression/Cargo.toml`；确认 crate 名、lib 入口以及 `cipher = 0.4`、`des = 0.8`、`uuid = 1`（features `v1`/`v4`/`v7`）。
-- Go 对照：阅读 `pkg/expression/builtin_miscellaneous.go`；核对 function class、`eval*`、会话锁、SLEEP、UUID、INET、Vitess/TIDB_SHARD 和不可用函数分支。
-- Rust 独立测试：阅读 `pkg/expression/builtin_miscellaneous_test.rs` 与 `pkg/expression/builtin_miscellaneous_18_aster_unit_test.rs`；后者额外验证 UUID 时间戳、固定哈希向量、锁名/告警/错误映射、kill 和固定错误。测试文件保持独立，符合仓库约束。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前仅执行任务指定的 11 章节结构验证，并人工复核本文没有把未发现生产调用的 API 描述为已完成 SQL 接线。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-resourcemanager-pool-spool` crate 的构造选项模块。模块在 [`lib.rs`](./lib.rs) 中以私有 `mod option` 装配，再通过 `pub use option::*` 将类型和函数暴露为 crate 根 API；crate 的边界、入口文件和依赖由 [`Cargo.toml`](./Cargo.toml) 声明。它只负责描述并装载线程池的行为开关，不创建线程、不注册资源管理器，也不直接执行容量判断。
-
-选项的唯一生产消费点是 [`Pool::new`](./spool.rs)：构造 `PoolInner` 时调用 `load_options(options)`，把结果保存进 `PoolInner.options`。之后 [`Pool::check_and_add_running`](./spool.rs) 在池满时读取 `options.Blocking`，决定继续等待还是拒绝提交。因此，本文件位于“调用方组装构造参数”与“spool 执行准入策略”之间。
+只负责描述并装载线程池的行为开关，不创建线程、不注册资源管理器，也不直接执行容量判断。
 
 ## 核心职责
 
@@ -80,12 +78,6 @@ RustCodeGraph 将 `option.rs` 标记为被 `spool.rs`、`migration_aster_unit_te
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`option.go`](./option.go)：
-
-- Go `type Option func(opts *Options)` 对应 Rust `OptionFn = Box<dyn Fn(&mut Options)>`，并由 `Option` 保留原名。
-- Go `loadOptions(options ...Option) *Options` 对应 Rust `load_options(&[OptionFn]) -> Options`。二者都先取默认值再顺序执行选项；Rust 用借用切片代替可变参数，并按值返回而非返回指针。
-- Go `Options.Blocking` 与 Rust `Options.Blocking` 名称和含义一致。
-- Go `DefaultOption` 默认 `Blocking: true`；Rust `default_option` 和兼容门面 `DefaultOption` 保持相同语义。
 - Go `WithBlocking` 返回修改字段的闭包；Rust 的 `with_blocking`/`WithBlocking` 同样只改该字段。
 
 消费侧也保持同一主干语义：Go [`NewPool`](./spool.go) 调用 `loadOptions` 并保存 `options`，Go `checkAndAddRunning` 在满载时读取 `p.options.Blocking`；Rust [`Pool::new`](./spool.rs) 与 `check_and_add_running` 对应这两个位置。实现机制不同之处包括 Go 使用 goroutine、指针和 `sync.RWMutex`，Rust 使用线程、值快照与 `Mutex`/原子量，但这些差异不改变本选项的默认值和准入含义。
@@ -101,17 +93,3 @@ RustCodeGraph 将 `option.rs` 标记为被 `spool.rs`、`migration_aster_unit_te
 - 若 Go 侧同时演进，先核对 [`option.go`](./option.go) 的默认值、覆盖次序和公开名称，避免 Rust 独自引入不同语义。
 
 兼容性风险主要来自改变默认 `Blocking`、调整重复选项的覆盖顺序或移除 `Option`/`DefaultOption`/`WithBlocking` 名称。性能风险主要在消费端：新增会导致循环等待、锁竞争或运行期分配的选项必须在 `spool.rs` 评估；本模块当前每个选项只有构造期一次装箱和一次动态调用。若未来需要跨线程存储选项闭包，必须重新评估并显式增加 `Send + Sync` 约束，不能假定当前类型已经线程安全。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 Rust/Go 文件；目标 `option.rs` 已被索引。
-- RustCodeGraph `files --filter pkg/resourcemanager/pool/spool`：确认目标源、模块入口、Go 对照与独立 Rust/Go 测试集合。
-- RustCodeGraph `node --file pkg/resourcemanager/pool/spool/option.rs`：核对 `Options`、`OptionFn`、`Option`、`load_options`、`default_option`、`with_blocking`、`DefaultOption`、`WithBlocking` 的源码和签名。
-- RustCodeGraph `query` 与 `explore`：核对目标符号及 `Pool::new -> load_options`、`Pool::run`/`run_with_concurrency -> check_and_add_running` 的调用关系；精确 `callers/callees` 子命令对这些符号未返回结果，故调用边以已索引源码中的显式调用复核。
-- [`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)：核对 crate 名、入口、依赖、模块私有性和公开再导出。
-- [`spool.rs`](./spool.rs)：核对配置保存位置、满载分支、轮询、停止、锁与线程资源生命周期。
-- [`option.go`](./option.go) 与 [`spool.go`](./spool.go)：核对函数式选项、默认值、按序覆盖及消费端的 Go 语义。
-- [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)：`options_apply_in_order_and_default_to_blocking` 验证默认值和后写覆盖，`go_option_api_names_remain_available` 验证兼容 API，`nonblocking_run_enforces_capacity_and_recovers_panics` 与 `release_stops_blocked_submitters_then_waits_for_running_tasks` 验证选项在过载和释放边界中的效果。
-- [`spool_test.rs`](./spool_test.rs)：`TestRunOverload`、`TestRunWithNotEnough`、`TestRunWithNotEnough2` 验证非阻塞满载拒绝，`TestPoolTuneScaleUpAndDown` 验证阻塞提交随扩容继续执行。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求文档存在且恰好包含上述 11 个固定二级标题。

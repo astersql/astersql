@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明的真实源文件为 [`pkg/statistics/constants.rs`](constants.rs)。它属于 `astersql-statistics` crate（见 `pkg/statistics/Cargo.toml`），保存统计模块与 Go `pkg/statistics/constants.go` 对齐的两个公开、编译期默认值。`pkg/statistics/lib.rs` 以私有模块 `mod constants` 装入文件，再通过 `pub use constants::*` 将常量提升为 crate 根 API，因此其他 crate 使用 `astersql_statistics::DefaultHistogramBuckets`，crate 内部也可通过 `crate::DefaultHistogramBuckets` 或根级通配导入访问。
-
-它不是统计构建算法的实现文件：没有函数、类型、trait、`impl` 或条件编译项，也不持有直方图或 TopN 数据。实际构建逻辑位于 `builder.rs`、`runtime_stats_builder.rs` 等文件。
+`DefaultTopNValue` 固定为 `100`，提供与 Go 统计包一致的 TopN 容量基线。
 
 ## 核心职责
 
@@ -64,9 +62,9 @@ RustCodeGraph 的文件节点报告本文件“used by 0 files”，且无法按
 
 ## 与 Go 版本的对应关系
 
-`pkg/statistics/constants.go` 是直接对照文件，声明同名常量：`DefaultTopNValue = 100`、`DefaultHistogramBuckets = 256`。Rust 版本保持名称和数值一致，并额外显式指定 `usize` 类型；Go 常量本身是无类型整数，使用时按上下文转换。
+Rust 版本保持名称和数值一致，并额外显式指定 `usize` 类型；Go 常量本身是无类型整数，使用时按上下文转换。
 
-Go 测试 `pkg/statistics/merge_global_cases_test.go` 使用 `statistics.DefaultTopNValue` 验证全局 TopN 合并与活动默认变化时的裁剪语义；Rust 的 `pkg/statistics/merge_global_test.rs::merge_singleton_filter_tracks_changed_active_default` 覆盖对应区分：活动默认被改成 150 时，传入固定常量 100 仍保留 100 个单例。Rust `main_test.rs` 还直接断言两个常量值。
+Go 测试 `pkg/statistics/merge_global_cases_test.go` 使用 `statistics.DefaultTopNValue` 验证全局 TopN 合并与活动默认变化时的裁剪语义；Rust 的 `pkg/statistics/merge_global_test.rs::merge_singleton_filter_tracks_changed_active_default` 覆盖对应区分：活动默认被改成 150 时，传入固定常量 100 仍保留 100 个单例。
 
 两端都另有可配置的 ANALYZE 默认值；Rust 侧证据是 `tidb_vars.rs` 的 `DefTiDBAnalyzeDefaultNumBuckets = 256`、`DefTiDBAnalyzeDefaultNumTopN = 100` 及对应原子值。因此，同名统计常量与系统变量初值应保持数值兼容，但语义上不能视为同一存储位置。
 
@@ -77,13 +75,3 @@ Go 测试 `pkg/statistics/merge_global_cases_test.go` 使用 `statistics.Default
 - 新增统计默认常量时，在本文件声明并由既有 `lib.rs` 通配重导出即可；若该值可由系统变量更改，生产调用路径应读取 `vardef` 活动值，而不是把固定常量当作动态配置。
 - 若消费者要求 `u32`/`u64`，优先在明确边界处进行经审查的转换。容量增加会提升 TopN 或直方图的内存、CPU 和持久化体积，应评估构建、合并、编码及查询估算性能。
 - 保持 Go/Rust 命名与数值契约一致，并保留源文件现有 PingCAP Apache License 与 AsterSQL 处理标记。
-
-## 验证依据
-
-- 源码与装配：`pkg/statistics/constants.rs`、`pkg/statistics/lib.rs`、`pkg/statistics/Cargo.toml`。
-- 直接生产调用：`pkg/statistics/runtime_stats_builder.rs::RuntimeStatsBuilder::build_histogram`、`pkg/statistics/handle/runtime_stats.rs::BuildRuntimeTableStatsWithBuilder`。
-- 动态默认边界：`pkg/planner/core/planbuilder.rs::AnalyzeOptionDefault` 与 `handleAnalyzeOptions`；`pkg/sessionctx/vardef/tidb_vars.rs` 的 `DefTiDBAnalyzeDefaultNum*`、`AnalyzeDefaultNum*`。
-- Rust 独立测试：`pkg/statistics/main_test.rs::package_constants_match_statistics_contract`、`pkg/statistics/builder_test.rs::benchmark_build_hist_and_top_n_with_low_ndv_scenario`、`sampled_top_n_does_not_consume_every_sampled_value`、`pkg/statistics/merge_global_test.rs::merge_singleton_filter_tracks_changed_active_default`。
-- Go 对照与测试：`pkg/statistics/constants.go`、`pkg/statistics/merge_global_cases_test.go`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件且包含 `pkg/statistics/constants.rs`；文件节点可读取完整 29 行源码，但常量名精确查询无节点、文件使用关系报告为 0，故再以全仓精确文本搜索验证实际引用。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前执行固定十一章节结构检查并人工复核符号、调用边、Go 对照、错误边界与并发生命周期描述。

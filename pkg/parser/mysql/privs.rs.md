@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-mysql` crate，由同目录 `lib.rs` 以 `pub mod privs` 暴露。它位于 SQL 解析器与权限执行/缓存之间的公共元数据边界：为 AST 构造、`GRANT`/`REVOKE`、权限系统表编解码提供统一的静态权限位、显示名称、系统表列名和作用域集合。源码注释及实现表明它只构造和查询进程内数据，不访问 `mysql.user`、不执行 SQL，也不进行网络或磁盘 I/O。
-
-`pkg/parser/mysql/Cargo.toml` 将该 crate 定义为 edition 2024、不可发布的 workspace library，入口是 `lib.rs`；crate 依赖 `astersql-errors`、`semver` 和 `unicode-general-category`，但本文件自身只使用标准库 `std::collections::HashMap`。
+位于 SQL 解析器与权限执行/缓存之间的公共元数据边界：为 AST 构造、`GRANT`/`REVOKE`、权限系统表编解码提供统一的静态权限位、显示名称、系统表列名和作用域集合。
 
 ## 核心职责
 
@@ -79,9 +77,9 @@ RustCodeGraph 对目标文件的检索显示，直接或间接使用者覆盖解
 
 直接对照文件是 `pkg/parser/mysql/privs.go`，Rust 基本逐项保留其结构：Go 的包级 map 对应 Rust 的同名构造函数；Go `PrivilegeType uint64` 对应元组结构；Go `(PrivilegeType, bool)` 查找对应 Rust `Option<PrivilegeType>`；Go slice 及 `slices.Contains` 对应 `Vec` 与 `contains`；Go 包级作用域变量对应返回新列表的函数。
 
-两版的权限文本、列名、SET 文本、bit 位序和各作用域顺序一致，包括 `OperateViewPriv` 位于 `AllPriv` 之前。Rust 独立测试 `pkg/parser/mysql/privs_test.rs` 对照 `pkg/parser/mysql/privs_test.go`，并额外以 `go_merge_31_operate_view_privilege` 锁定 `OperateViewPriv = 1 << 33`、`AllPriv = 1 << 34`、`ExtendedPriv = 1 << 35`、`AllPrivMask = (1 << 34) - 1` 及其作用域归属。
+Rust 独立测试 `pkg/parser/mysql/privs_test.rs` 对照 `pkg/parser/mysql/privs_test.go`，并额外以 `go_merge_31_operate_view_privilege` 锁定 `OperateViewPriv = 1 << 33`、`AllPriv = 1 << 34`、`ExtendedPriv = 1 << 35`、`AllPrivMask = (1 << 34) - 1` 及其作用域归属。
 
-需要注意实现形态差异：Go map/slice 是包级共享变量，Rust 为函数内重建并返回拥有所有权的容器；Rust 的 `PrivilegeType` 不是整数别名，按位运算需显式操作 `.0` 或由其他层转换。两者的可观察查找和列表内容由当前测试保持一致。
+需要注意实现形态差异：Go map/slice 是包级共享变量，Rust 为函数内重建并返回拥有所有权的容器；Rust 的 `PrivilegeType` 不是整数别名，按位运算需显式操作 `.0` 或由其他层转换。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ RustCodeGraph 对目标文件的检索显示，直接或间接使用者覆盖解
 测试必须放在独立的 `pkg/parser/mysql/privs_test.rs`，不要嵌入生产文件。至少同步：所有 bit 到 `AllPriv` 的非空显示名；全局/DB 权限的列名往返；表/列权限的 SET 往返；作用域正负归属；`AllPrivMask` 与哨兵位；未知、大小写不同和不适用名称空间的回退。Go 行为变化时还应同步 `pkg/parser/mysql/privs_test.go` 的意图。
 
 若要优化重复构造，可考虑不可变静态表或一次性初始化缓存，但应先用基准证明必要性，并避免把可变共享 map 暴露给调用者；这属于性能重构，不应顺带改变映射内容或错误回退。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/mysql` 确认目标 Rust/Go/测试/入口文件均已索引。
-- RustCodeGraph `explore "pkg/parser/mysql/privs.rs privilege constants PrivilegeType PrivilegeSet"`：确认 `NewPrivFromColumn`、`NewPrivFromSetEnum`、`Priv2Str`、`Priv2SetStr`、`Priv2UserCol`、`Has` 等内部调用，以及 parser、executor、session、privilege cache 和测试侧使用者。
-- RustCodeGraph `node --file pkg/parser/mysql/privs.rs --offset 1 --limit 500`：通读目标文件 437 行，核对全部公开常量、函数、类型、trait、impl 和作用域列表；文件无条件编译项。
-- RustCodeGraph `query`：确认 Rust `AllGlobalPrivs() -> Privileges`、`NewPrivFromColumn(&str) -> Option<PrivilegeType>`、`StaticGlobalOnlyPrivs() -> Privileges` 的精确符号与签名。
-- RustCodeGraph `node`：抽查 `pkg/parser/parser_actions/security.rs`、`pkg/session/runtime/control.rs`、`pkg/executor/grant.rs`、`pkg/privilege/privileges/cache.rs` 的直接边界与同名权限文本语义。
-- 逐文件读取：`pkg/parser/mysql/Cargo.toml`、`pkg/parser/mysql/lib.rs`、`pkg/parser/mysql/privs.go`、`pkg/parser/mysql/privs_test.rs`、`pkg/parser/mysql/privs_test.go`。目录中不存在 `doc.go`，因此没有额外包契约可读。
-- 人工复核：文档区分了元数据与授权执行，逐项说明位序、映射覆盖、失败回退、资源生命周期、Go 差异和安全扩展位置；未把未观察到的 I/O、锁或授权能力写成现状。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-store-driver-txn` crate 的快照适配层，由同目录 `lib.rs` 以 `mod snapshot` 装配并通过 `pub use snapshot::*` 导出。它向 Rust 事务驱动提供 `tikvSnapshot`、快照读取选项、读拦截器以及隔离级别/优先级转换函数；`txn_driver.rs::NewTiKVTxn` 用共享存储调用 `NewSnapshot`，事务的 `Get`、`BatchGet`、`Iter` 和 `IterReverse` 再在内存写缓冲未覆盖读取时落到该快照。
-
-当前实现与文件名所表达的 TiKV 适配目标之间存在重要边界：`tikvSnapshot` 的后端是 `Arc<RwLock<BTreeMap<Key, ValueEntry>>>`，读取操作没有调用 `tikv-client`。因此它目前是保持 TiDB API 和选项形状的内存适配实现，而不是 Go 版本 `txnsnapshot.KVSnapshot` 所代表的远端 MVCC 时间点快照。`Cargo.toml` 虽声明了带固定 tag `v0.4.2-aster.10` 的 `tikv-client` 依赖，但本文件没有直接使用该依赖。
+`Getter` 和 `BatchGetter` 实现执行实际映射读取，并借助 `apply_commit_ts_option` / `apply_commit_ts_option_batch` 控制是否向调用者暴露提交时间戳。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是同目录 `snapshot.go`。公开结构大致对应：`NewSnapshot` 包装底层快照；四类读取优先调用 `kv.SnapshotInterceptor`；`SetOption` 覆盖相同的 TiDB 选项；隔离级别与优先级有独立转换函数；正反扫描返回驱动 scanner。
-
 关键差异如下：
 
 - Go `tikvSnapshot` 嵌入 `*txnsnapshot.KVSnapshot`，`Get`/`BatchGet`/扫描调用 client-go 并通过 `extractKeyErr` 或 `derr.ToTiDBErr` 转换后端错误；Rust 使用共享 `BTreeMap`，没有 RPC、区域错误或 key-error 转换。
@@ -97,12 +93,3 @@ Go 对照文件是同目录 `snapshot.go`。公开结构大致对应：`NewSnaps
 若新增选项，应同时扩展 `SnapshotOption`、`SnapshotOptions`、`Default` 与 `SetOption`，并判断 `txn_driver.rs::TxnOption` 是否需要转发。累积型选项（如 RPC interceptor）和覆盖型选项必须明确区分；时间单位转换应继续在边界处完成。
 
 测试必须放在独立文件。局部转换与默认值可扩展 `pkg/store/driver/txn/snapshot_test.rs`；公开读范围、commit-ts 与拦截器委托应扩展 `pkg/store/driver/snap_interceptor_test.rs`；与 memBuffer 合并及 `TxnOption` 转发应扩展 `pkg/store/driver/txn_test.rs` 或同目录 `txn_driver_test.rs`。性能风险集中在范围全量物化、键克隆和大批量 `toTiKVKeys` 复制；兼容风险集中在边界开闭、未命中行为、拦截器只执行一次以及 Go 选项语义缺失。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/store/driver/txn` 确认 `snapshot.rs`、`snapshot.go`、`snapshot_test.rs`、`txn_driver.rs` 与 `lib.rs` 均已索引；`node --file pkg/store/driver/txn/snapshot.rs --offset 1 --limit 500` 读取目标文件全部 439 行；`query TiKVSnapshot`、`query SnapshotInterceptor`、`query NewSnapshot --kind function --json`、`query BatchGet --kind method --json` 和 `query SetOption --kind method --json` 用于定位本文件及事务/KV 层相关符号。限定名 `callers/callees` 查询未返回可用边，因此调用关系又由直接入口源码核验，没有据此推断缺失边。
-- 源文件：`pkg/store/driver/txn/snapshot.rs`，核对全部枚举、结构、trait、函数、impl、边界表达式、锁处理和选项分支；该文件没有条件编译项。
-- crate 与入口：`pkg/store/driver/txn/Cargo.toml`、`pkg/store/driver/txn/lib.rs`、`pkg/store/driver/txn/txn_driver.rs`，核对 crate 归属、依赖 tag、模块导出、独立测试装配、构造入口、读取回落/合并和选项转发。
-- Go 对照：`pkg/store/driver/txn/snapshot.go`，核对真实 `KVSnapshot` 后端、读取与错误转换、拦截器、选项 setter、扫描器及转换函数。
-- Rust 测试：`pkg/store/driver/txn/snapshot_test.rs` 验证优先级映射；`pkg/store/driver/snap_interceptor_test.rs` 验证无/有拦截器时的点查、批量查、commit-ts、范围边界和错误短路；`pkg/store/driver/txn_test.rs` 验证事务缓冲优先、未解析键回落快照、UnionIter 扫描和拦截错误传播。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `rg` 结构命令确认恰有十一个固定二级标题，并人工复核文档没有把未接线的配置或 MVCC/RPC 能力写成已支持。

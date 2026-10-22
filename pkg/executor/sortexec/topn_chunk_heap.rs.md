@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-executor-sortexec`；该包由 `pkg/executor/sortexec/Cargo.toml` 定义为以 `lib.rs` 为入口的库，并作为根工作区成员注册。`pkg/executor/sortexec/lib.rs` 公开声明 `topn_chunk_heap` 模块，因此外部代码技术上可通过模块路径访问公开类型；不过包根没有重新导出该类型，仓库内实际调用也都把 `topNChunkHeap` 当作排序执行器的实现部件，而不是 `sortexec` 门面的主要类型。
-
-在普通（非 Rank）TopN 主链中，它位于输入 chunk 与最终归并之间：`TopNExec::new` 为每个 `topNWorker` 创建一个堆，worker 将输入交给堆筛选，`TopNExec::fetchTopN` 再把各堆的有序候选与磁盘 run 合并。Rank 路径 `TopNExec::fetchRankTopN` 当前直接收集并排序全部行，不经过本文件。
+还负责维护候选行的估算内存总量，并提供两种有序导出方式：不破坏堆的 `sortedRows` 用于正常汇总，清空堆的 `drainSorted` 用于 spill。
 
 ## 核心职责
 
@@ -77,9 +75,7 @@ RustCodeGraph 对 `update` 给出的内部边为 `processChk → update → sift
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/sortexec/topn_chunk_heap.go`。两者共享的语义核心是：容量为 offset+count、堆顶为最差候选、只有更优新行才替换堆顶，最终按比较器顺序输出。
-
-数据布局并非机械一一对应。Go 的 `topNChunkHeap` 用 `chunk.List` 保存行值、用 `[]chunk.RowPtr` 组织堆，并实现 `container/heap.Interface` 的 `Len/Less/Swap/Push/Pop`；被淘汰行仍可能留在 `rowChunks`，所以 Go 的 `doCompaction` 会重建 chunks 和指针以释放极端输入下的内存。Rust 直接把拥有所有权的 `Row` 放进 `Vec`，替换根会立即丢弃旧行，因此 `compact` 只处理 `Vec` 预留容量，且当前未接线。
+数据布局并非机械一一对应。Rust 直接把拥有所有权的 `Row` 放进 `Vec`，替换根会立即丢弃旧行，因此 `compact` 只处理 `Vec` 预留容量，且当前未接线。
 
 Go 会先装载至少 `totalLimit` 行、初始化 row pointers，再 `heap.Init` 并弹出超额行；Rust 的 `update` 从第一行开始增量建堆。Go spill 会排序指针并分块写盘，且写盘循环每 100 行检查 SQL killer；Rust 由 `drainSorted` 排序 owned rows，分块和错误传播在 `topn_spill.rs`，目前没有等价的逐行/分块取消检查。Go 的 Rank TopN 与 heap 主链有更紧密的前缀加载逻辑，而当前 Rust `fetchRankTopN` 绕开本堆做全量排序。这些是现状差异，不应把 Go 的 compaction、kill 检查或 Rank 行为视为本文件已支持。
 
@@ -91,12 +87,3 @@ Go 会先装载至少 `totalLimit` 行、初始化 row pointers，再 `heap.Init
 - 修改有序导出时，须保持 `sortedRows` 非破坏、`drainSorted` 转移所有权的区别，并同步验证 `topn_spill_test.rs::topn_spill_returns_only_requested_offset_window`、`sortexec_pkg_test.rs::topn_spill_releases_trackers_on_close` 和 `close_after_topn_spill_is_idempotent`。
 - 若要对齐 Go 的 compaction、spill 中断或 Rank TopN，修改范围会跨越 `topn_chunk_heap.rs`、`topn_worker.rs`、`topn_spill.rs`、`topn.rs`；应以 Go 的 `doCompaction`、`spillHeap`、Rank 加载路径及 `topn_spill_test.go` 为依据，不能只扩展本类型的表面 API。
 - `isFull`、`len`、`compact` 当前无调用者；新增调用前先确认其零容量语义和 tracker 影响，若没有保留它们的迁移目的，则不要假设它们已经参与运行主链。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/executor/sortexec/topn_chunk_heap.rs` 确认目标文件已索引；`node --file ... --offset 1 --limit 500` 读取完整 126 行和 15 个符号；`query topNChunkHeap/processChk/drainSorted` 及精确 `node` 查询确认类型、`processChk → update → siftUp/siftDown` 内部边。精确 callers 查询未返回完整方法边，因此没有据此臆造调用关系。
-- Rust 源码：目标 `topn_chunk_heap.rs`；模块声明 `sortexec/lib.rs`；上游 `topn.rs`、`topn_worker.rs`、`topn_spill.rs`；基础类型与比较语义 `sort_util.rs`。`rg` 直接核对了 `new/processChk/memoryUsage/clear/sortedRows/drainSorted` 的调用点，并确认 `isFull/len/compact` 没有目标文件外的 Rust 调用。
-- Cargo：`pkg/executor/sortexec/Cargo.toml` 核对包名、`lib.rs` 入口、Go 包元数据和 Windows target 依赖；根 `Cargo.toml` 核对 workspace member 与 facade 路径登记。
-- Go 对照：`pkg/executor/sortexec/topn_chunk_heap.go`；调用与 spill 语义另核对 `topn.go`、`topn_spill.go`。相关 Go 回归位于 `topn_spill_test.go`（内存/多阶段 spill、失败注入、kill）和 `rank_topn_test.go`。
-- Rust 测试：`topn_spill_test.rs` 直接构造 `topNChunkHeap` 并覆盖 spill/offset 窗口；`sortexec_pkg_test.rs` 覆盖 offset/count、投影、空输入、count=0、spill 后 tracker 释放及重复 Close；`rank_topn_test.rs` 证明当前 Rank 路径最终仍严格应用 LIMIT。仓库中未发现专门逐方法测试 `siftUp/siftDown/update` 的同名独立测试文件，这是后续修改堆逻辑时最直接的测试缺口。
-- 本任务为只新增说明文档的分析任务，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰好包含 11 个固定二级章节，并人工复核没有把 Go 能力写成 Rust 已有行为。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/inference/openai.rs` 是 `astersql-inference` crate 中的 OpenAI-compatible embedding provider。模块由 [`pkg/inference/lib.rs`](lib.rs) 公开为 `openai`，核心类型 `OpenAIEmbedder` 实现同 crate 的 `Embedder` trait。应用侧在 [`pkg/domain/domain.rs`](../domain/domain.rs) 的 `Domain::init_inference_providers` 中以名称 `openai` 注册该实现，并把 API key 与 API base 的 getter 分别绑定到全局系统变量 `tidb_exp_embed_openai_api_key` 和 `tidb_exp_embed_openai_api_base`。
-
-本文件处于通用嵌入运行时与 OpenAI HTTP 协议之间：批处理、缓存、provider/model 分派位于 [`pkg/inference/embed_fn.rs`](embed_fn.rs)，HTTP 生命周期、取消、响应上限、日志和脱敏位于 [`pkg/inference/base.rs`](base.rs)；本文件只补齐 OpenAI 特有的配置提示、endpoint 规则、请求字段、401 映射和 indexed-base64 响应解码。其解码器还被 Jina、NVIDIA 和 TiDB Cloud provider 复用，因此它同时承担 crate 内的 OpenAI-compatible wire-format 基础能力。
+通过 `OpenAIEmbedder::new`、`with_config` 或 `with_provider_config` 构造可复用 provider，并保留每请求动态读取 key/base URL 的 getter。
 
 ## 核心职责
 
@@ -91,9 +89,7 @@ crate 边界由 [`pkg/inference/Cargo.toml`](Cargo.toml) 定义：package 为 `a
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 [`pkg/inference/embedding/openai/openai.go`](embedding/openai/openai.go)，协议类型位于 [`pkg/inference/embedding/openai/protocol.go`](embedding/openai/protocol.go)，测试位于 [`pkg/inference/embedding/openai/openai_test.go`](embedding/openai/openai_test.go)。两端保持的核心契约包括：默认 base、`/embeddings` 规范化、空输入短路、模型必填、动态 key/base 配置、固定请求字段优先、Bearer header、响应体上限、仅 200 成功、401 专用错误、错误脱敏，以及 indexed-base64 响应的数量/索引校验与乱序恢复。
-
-Go 的 `Embedder`/`base.APIKeyProviderConfig`/`base.ExecuteJSONEmbeddingCall` 分别对应 Rust 的 `OpenAIEmbedder`、`OpenAIConfig` 或 `base::APIKeyProviderConfig`、`base::execute_json_embedding_call`。Go 通过 `context.Context` 传播取消；Rust 同时保留 `AtomicBool` 兼容入口和可携带原始 cause 的 `ProviderContext`。Go 把 `Request`、`Response`、`ErrorResponse` 定义为静态 struct；Rust 用 `Options` 与 `serde_json::Value` 组合请求和读取响应。
+Go 通过 `context.Context` 传播取消；Rust 同时保留 `AtomicBool` 兼容入口和可携带原始 cause 的 `ProviderContext`。Go 把 `Request`、`Response`、`ErrorResponse` 定义为静态 struct；Rust 用 `Options` 与 `serde_json::Value` 组合请求和读取响应。
 
 解码器的位置存在结构差异：Go `openai.decodeEmbeddings` 将 `Response.Data` 交给 `embedding/base.DecodeIndexedBase64Embeddings`，因此共享实现位于 base 包；Rust 的共享 indexed-base64 解码器目前位于 `openai.rs`，由 Jina/NVIDIA/TiDB Cloud 反向依赖。Rust 还显式接受 embedding 的 JSON byte-array 形态及 null byte 元素，以复现 Go `encoding/json` 对 `[]byte` 的兼容零值行为。
 
@@ -109,13 +105,3 @@ Rust 原生 `with_config` 使用本文件的 32 MiB/30 秒默认值；`with_prov
 - 若要改变超时或 response limit，应优先统一 `OpenAIConfig` 与 `APIKeyProviderConfig` 两条构造路径，并核对 Go `base.DefaultHTTPClientTimeout`/`MaxResponseBodyBytes`。性能风险集中在大批量 JSON、base64 临时分配和完整响应体内存占用。
 - Rust 回归测试继续放在独立文件 `pkg/inference/openai_test.rs`，不得嵌入生产源文件；共享 provider 契约复用 `cohere_test::provider_contract`。Go 对照变更同步检查 `pkg/inference/embedding/openai/openai_test.go`。
 - 批处理、缓存、并发或 provider 分派扩展应落在 `embed_fn.rs`；网络生命周期或脱敏共性应落在 `base.rs`，避免在 OpenAI adapter 内复制基础设施。
-
-## 验证依据
-
-- RustCodeGraph 索引检查：`rustcodegraph status` 报告 11,467 个已索引文件、307,296 个节点、1,848,419 条边；`files --filter pkg/inference` 确认目标源、crate 入口、独立 Rust 测试和 Go 对照均被覆盖。
-- 目标源码查询：`rustcodegraph node --file pkg/inference/openai.rs --offset 1 --limit 260` 与后续尾段查询覆盖文件全部 268 行；符号查询确认 `OpenAIEmbedder`、`OpenAIConfig`、三个构造入口、`endpoint`、两个 trait 方法和 `decode_indexed_base64_embeddings`。
-- 应用与反向调用证据：`pkg/domain/domain.rs` 的 `Domain::init_inference_providers` 注册 `openai` 并读取两个系统变量；源码/图查询确认 `jina.rs`、`nvidia.rs`、`tidbcloud.rs` 复用 indexed-base64 解码器。
-- crate 与共享执行证据：`pkg/inference/Cargo.toml`、`pkg/inference/lib.rs`、`pkg/inference/base.rs`；后者验证固定字段覆盖、URL 校验、30 秒默认超时、限长读取、取消竞争、状态处理、脱敏和 little-endian `f32` 解码。
-- Rust 独立测试证据：`pkg/inference/openai_test.rs` 覆盖 POST path/header/payload、乱序重排、options 与固定字段优先级、endpoint 变体、缺 key/空模型/空输入、定制错误、401/其他状态、日志脱敏、响应大小边界、超时、非法 base64/索引/字节长度、Go JSON 零值、取消以及共享 provider contract。
-- Go 对照证据：`pkg/inference/embedding/openai/openai.go`、`protocol.go`、`openai_test.go`，覆盖相同成功路径、endpoint、options、index 校验、timeout、鉴权/远端错误和通用 contract。
-- 本任务只产出文档，按总计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工检查变更范围仅包含本说明文档及按技能要求删除的编号任务文件，未修改 Rust、Go、Cargo 或只读 `plan.md`。

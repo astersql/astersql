@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-encrypt` crate，提供与 MySQL 历史 `ENCODE`/`DECODE` 行为兼容的字节置换算法。模块由 [`pkg/util/encrypt/lib.rs`](lib.rs) 声明并再导出，直接服务于 [`pkg/expression/builtin_encryption.rs`](../../expression/builtin_encryption.rs) 中的 SQL 标量函数运行时，而不是 AES、哈希或现代认证加密实现。
-
-这里的命名沿用 MySQL/TiDB 历史接口：`SQLDecode` 对测试中的明文执行变换并产生不可读的二进制结果，`SQLEncode` 用相同密码将该结果还原。源文件注释明确指出该算法不具备现代密码学强度；它存在的目的仅是兼容既有 SQL 语义，不能作为新协议或静态数据的安全加密方案。
+`sqlCrypt::new` 用该序列洗牌 0 到 255 的字节表，再构造其逆置换表。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ RustCodeGraph 对目标文件的索引显示，`SQLDecode` 的直接调用者包
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/encrypt/crypt.go`](crypt.go)。Rust 的 `randStruct::randomInit`/`myRand`、`sqlCrypt` 的表构造、`encode`/`decode` 以及公开 `SQLDecode`/`SQLEncode` 均逐步保留 Go 的常量、循环次数、`uint32` 回绕、浮点缩放、查表和 shift 反馈顺序。
-
 两边的表示差异主要是：Go 公开 API 在 `string` 与 `[]byte` 间转换并返回 `(string, error)`；Rust 接受字节切片并返回 `Result<Vec<u8>, Infallible>`，避免要求二进制密文是 UTF-8。Go `sqlCrypt` 还保存初始化后的 `orgRand`，但该字段在对照实现中赋值后没有被读取；Rust 没有携带这个无行为作用的快照。Go 的 `init(password, length)`、`encode(data, length)`、`decode(data, length)` 接受显式长度，Rust 直接遍历完整切片，公开调用传入完整数据，因而当前语义一致。
 
-[`pkg/util/encrypt/crypt_test.go`](crypt_test.go) 与 `crypt_test.rs` 使用相同的十组向量，包括空输入、空密码、ASCII、中文和日文；Rust 测试还按 Go 的流程先调用 `SQLDecode` 生成密文，再调用 `SQLEncode` 验证还原。`migration_aster_unit_test.rs::migration_sql_crypt_matches_go_binary_vectors_and_round_trips_utf8` 另复核代表性的 Go 二进制向量和 UTF-8 往返。
+[`pkg/util/encrypt/crypt_test.go`](crypt_test.go) 与 `crypt_test.rs` 使用相同的十组向量，包括空输入、空密码、ASCII、中文和日文；Rust 测试还按 Go 的流程先调用 `SQLDecode` 生成密文，再调用 `SQLEncode` 验证还原。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@ RustCodeGraph 对目标文件的索引显示，`SQLDecode` 的直接调用者包
 - 若公开返回类型从 `Infallible` 改为可失败错误，必须同时审查 `pkg/expression/builtin_encryption.rs::sql_decode`/`sql_encode` 的 `unwrap`、SQL 层错误/NULL 语义以及所有调用测试。
 - 若尝试流式或分块接口，必须显式保存同一个 `randStruct` 和 `shift` 跨块生命周期；逐块重新调用现有公开函数会重置状态并产生不同结果。还应评估上下文复用、并发所有权及敏感状态清理。
 - 性能改动应保持 `O(n)` 数据路径和固定表规模，并用固定向量证明没有改变随机值消费次序、转换截断或置换方向。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 11,467 个文件，目标目录的 `crypt.rs`、`crypt_test.rs` 及 Go 对照均在索引中。
-- RustCodeGraph `files --filter pkg/util/encrypt`：确认模块入口、Rust/Go 实现和独立测试文件；`node --file pkg/util/encrypt/crypt.rs --offset 1 --limit 260` 完整核对目标文件 124 行源码与 10 个索引符号。
-- RustCodeGraph `explore "pkg/util/encrypt/crypt.rs crypt encrypt decrypt"`：确认公开入口的应用调用者为 `pkg/expression/builtin_encryption.rs`，并确认内部 `randomInit -> new`、`myRand -> new/encode/decode` 及测试调用边。由于 `encode`/`decode` 是常见名称，本文未采用搜索结果中其他模块的同名边作为本文件证据。
-- 已读取 [`pkg/util/encrypt/Cargo.toml`](Cargo.toml)、[`pkg/util/encrypt/lib.rs`](lib.rs)、[`pkg/expression/Cargo.toml`](../../expression/Cargo.toml) 和 [`pkg/expression/builtin_encryption.rs`](../../expression/builtin_encryption.rs)，核对 crate 归属、模块导出、依赖别名与 SQL 运行时接线。
-- 已逐段对照 [`pkg/util/encrypt/crypt.go`](crypt.go)、[`pkg/util/encrypt/crypt_test.rs`](crypt_test.rs)、[`pkg/util/encrypt/crypt_test.go`](crypt_test.go) 和 [`pkg/util/encrypt/migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，核对算法步骤、固定向量、空值/多语言边界和 Rust/Go 表示差异。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级章节，并人工复查所有行为陈述均能回溯到上述符号、调用边或对照文件。

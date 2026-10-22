@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessiontxn-isolation` crate；其 crate 根为 [`lib.rs`](lib.rs)，并由 `lib.rs` 的 `mod serializable` / `pub use serializable::*` 纳入模块并公开符号。crate 的 Go 对照包由 [`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package = "pkg/sessiontxn/isolation"` 明确为 `pkg/sessiontxn/isolation`。
-
-它是悲观事务在 `Serializable` 隔离级别下的专用事务上下文 Provider。上游选择链有两层直接证据：`pkg/session/txnmanager.rs::newProviderWithRequest` 在事务模式为 `Pessimistic`、新事务隔离级别为 `Serializable` 时调用 `NewPessimisticSerializableProvider`；随后本 crate 的 `NewRegisteredTxnContextProvider` 将 `ProviderKind::PessimisticSerializable` 映射为 `NewPessimisticSerializableTxnContextProvider`。统一枚举 `RegisteredTxnContextProvider::PessimisticSerializable` 再把初始化、时间戳、快照及错误处理调用分派到本文件的实现。
+不自行实现 Oracle、KV 事务、InfoSchema、提交选项或锁生命周期；这些能力都由 `BaseTxnContextProvider` 和注入的 `IsolationRuntime` 提供。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 [`serializable.go`](serializable.go)：两者都有同名 `PessimisticSerializableTxnContextProvider`、构造函数和 `OnStmtErrorForNextAction`，核心语义一致：悲观事务、Serializable 隔离、读 TS 与 FOR UPDATE TS 都取事务起始 TS、锁后错误直接返回。
-
 实现形态存在可追溯差异：
 
 - Go 构造函数通过 `onInitializeTxnCtx` 回调设置 `TxnCtx.IsPessimistic` / `TxnCtx.Isolation`，并通过 `onTxnActiveFunc` 设置 `kv.Pessimistic`；Rust 将这些参数传给 `BaseTxnContextProvider::new`，由基类初始化状态并组装 `TxnActivationOptions`。
@@ -107,14 +103,3 @@ Rust 文件直接对应 [`serializable.go`](serializable.go)：两者都有同�
 - 若新增 `TxnContextProvider` trait 方法，必须同时更新 `isolation/lib.rs` 的枚举分发，以及所有其他 Provider；只在本文件新增同名方法不会自动进入统一调用链。
 - 若改变构造参数、Provider 种类或会话选择条件，同时检查 `NewRegisteredTxnContextProvider`、`pkg/session/txnmanager.rs` 的工厂选择和 Go 对照。兼容风险集中在事务模式/隔离级别选择及错误重试行为；性能风险集中在是否额外请求 Oracle TS、是否重复激活或创建快照。
 - 修改后至少同步 Provider 单元测试；涉及真实 SQL、作用域、KV 客户端或 DML 激活语义时，还应增加对应 session/executor 集成测试，不能用 MockRuntime 测试替代。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/sessiontxn/isolation`：确认目标源、crate 根、Go 对照及 Rust/Go 独立测试均在索引中。
-- RustCodeGraph `node --file pkg/sessiontxn/isolation/serializable.rs`：核对本文件全部 94 行、9 个符号及唯一模块使用方 `isolation/lib.rs`。
-- RustCodeGraph `query`：核对 `PessimisticSerializableTxnContextProvider`、`NewPessimisticSerializableTxnContextProvider`、`GetSnapshotWithStmtReadTS`、`OnStmtErrorForNextAction` 的 Rust/Go 候选与位置。
-- RustCodeGraph `callers` / `callees`：对目标关键符号执行精确查询但未返回边；随后用索引的 `isolation/lib.rs` 和 `base.rs` 源码节点验证实际构造、分发和下游调用。
-- 已读生产证据：[`serializable.rs`](serializable.rs)、[`lib.rs`](lib.rs)、[`base.rs`](base.rs)、`pkg/session/txnmanager.rs`、[`Cargo.toml`](Cargo.toml) 和 [`serializable.go`](serializable.go)。
-- 已读测试证据：[`serializable_test.rs`](serializable_test.rs) 与 [`serializable_test.go`](serializable_test.go)；前者由 `lib.rs` 的 `#[cfg(test)] mod serializable_test` 注册为独立测试模块。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务文件规定的命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核唯一生产物与源码事实一致。

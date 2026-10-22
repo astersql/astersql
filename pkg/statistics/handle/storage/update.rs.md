@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-storage` crate 的增量更新模块。crate 入口 `pkg/statistics/handle/storage/lib.rs` 以 `pub mod update` 声明模块，并通过 `pub use update::*` 将本文件的公开项提升到 crate 根，因此调用方通常写成 `astersql_statistics_handle_storage::update_stats_meta`，而不是经过 `update` 模块名。
-
-它位于统计信息持久化链路的写端，直接生成并执行针对 `mysql.stats_meta`、`mysql.stats_table_locked` 及其他 `mysql.stats_*` 系统表的 SQL。它不负责收集行数变化、开启事务或刷新内存统计缓存；这些职责分别属于上游统计收集/DDL/导入流程和 `SqlStore` 的具体实现。`pkg/statistics/handle/storage/Cargo.toml` 将该目录定义为独立的 `astersql-statistics-handle-storage` 包，Go 来源包记录为 `pkg/statistics/handle/storage`。
+只做 SQL 语句编排和错误短路传播，不读取查询结果，也不拥有统计对象缓存。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph 将 `update.rs` 标记为被 `pkg/dxf/importinto/scheduler.rs` 和
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/storage/update.go`。Rust 保留了 Go 的五组核心行为：全局版本推进、`DeltaUpdate` 构造、locked/unlocked 与正负 delta 分流、六张表的全局统计 ID 迁移、单表双版本推进。三种 UPSERT 的算术表达式与执行顺序也保持一致，尤其是锁定负增量保留符号、非锁定负增量钳制到零。
-
 可见差异如下：
 
 - Go 使用 `context.Context`、`sessionctx.Context` 和带占位符的 `ExecWithCtx`；Rust 抽象为 `SqlStore`，并把受控数字格式化进 SQL。
@@ -102,12 +98,3 @@ RustCodeGraph 将 `update.rs` 标记为被 `pkg/dxf/importinto/scheduler.rs` 和
 - 改动版本推进逻辑时，应同步检查 `StatsReadWriter::update_stats_meta_version_for_gc`、慢 ANALYZE 的租约分支、DDL Flashback 后端实现及历史元数据记录，避免只改 SQL 而破坏缓存可见性。
 - 当前 SQL 按整批拼接，超大批次可能产生长 SQL 和大临时向量；若增加分批，应维持锁定范围、类别顺序、单事务原子性，并评估每批版本一致性。
 - 兼容性风险集中在系统表列语义、Go/Rust 行为漂移和未完整接线；性能风险集中在大 `IN`/VALUES 列表及逐表执行六条 ID 迁移 SQL。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/statistics/handle/storage` 确认目标、Go 对照及独立 Rust 测试均在索引中；`node --file pkg/statistics/handle/storage/update.rs --offset 1 --limit 260` 完整读取 166 行源码，并报告直接使用文件；`query` 核对四个公开入口；`callees update_stats_meta` 核对其到 `exec_delta` 的内部调用。`callers update_stats_meta` 在工具超时窗口内未返回结果，因此上游关系另用精确源码检索核验，未将缺失图边推断为“无调用者”。
-- Rust 源码与模块边界：`pkg/statistics/handle/storage/update.rs`、`lib.rs`、`stats_read_writer.rs`、`pkg/dxf/importinto/scheduler.rs`、`pkg/statistics/handle/ddl/subscriber.rs`。
-- crate 配置：`pkg/statistics/handle/storage/Cargo.toml`；其中依赖位于 `target.'cfg(any())'` 端口记录区，当前文件实际只使用 crate 内 `Error`/`SqlStore` 与标准库能力。
-- Go 对照与上游：`pkg/statistics/handle/storage/update.go`、`pkg/statistics/handle/usage/session_stats_collect.go`、`pkg/statistics/handle/ddl/subscriber.go`。
-- 测试证据：`pkg/statistics/handle/storage/update_test.rs::locked_negative_delta_keeps_its_sign_like_go`；Go 侧参考 `pkg/statistics/handle/storage/stats_read_writer_test.go` 与 `pkg/statistics/handle/ddl/ddl_test.go`。Rust 直接测试目前只覆盖锁定负增量 SQL，其他边界在本文中明确列为应补覆盖项。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；验收以源码/调用证据、人工事实复核和固定 11 节结构检查为准。

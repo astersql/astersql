@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`error.rs` 是 `astersql-kv` crate 的公共错误目录。`pkg/kv/lib.rs:507-512` 在 `error` 模块中通过 `include!("error.rs")` 纳入本文件，随后以 `pub use error::*` 将全部公开项提升到 crate 根，因此其他模块通常以 `kv::ErrNotExist`、`kv::IsTxnRetryableError` 等名字使用它们。
-
-本文件不负责访问存储、执行事务或实现重试循环；它统一定义 KV/事务边界上的标准错误原型、错误分类函数和重复键错误生成器。真正消费这些语义的代码位于调用方，例如 `pkg/kv/txn.rs:154-203` 的内部事务重试循环，以及 `pkg/kv/utils.rs:23-53` 的缺失键处理。
-
-crate 边界由 `pkg/kv/Cargo.toml` 确认：包名为 `astersql-kv`，库入口为 `lib.rs`；错误模板直接依赖同 crate 导入的 `dbterror_dependency`、`parser-mysql` 和 errno 定义。`nextgen` feature 不对本文件做条件编译，本文件行为在默认与 nextgen 配置下相同。
+不负责访问存储、执行事务或实现重试循环；它统一定义 KV/事务边界上的标准错误原型、错误分类函数和重复键错误生成器。
 
 ## 核心职责
 
@@ -74,14 +70,6 @@ crate 边界由 `pkg/kv/Cargo.toml` 确认：包名为 `astersql-kv`，库入口
 
 本文件不创建锁守护、Tokio task 或通道。名称中的 `ErrSharedLockLost`、`ErrLockExpire` 描述业务错误，而非本文件自身持有同步锁。错误实例的共享/释放遵循 `errors::SharedError` 的所有权实现；重试期间保存 `last_error`、事务回滚和退避均由 `pkg/kv/txn.rs:150-207` 管理。
 
-## 与 Go 版本的对应关系
-
-Rust 文件逐项对应 `pkg/kv/error.go`：常量名、13 个错误原型、三个公开函数及 errno/class 选择一致。Rust 用 `LazyLock<Box<errors::Error>>` 模拟 Go 包级变量的延迟且线程安全初始化；Go 变量在包初始化时直接构造。Rust 的 `Option<&SharedError>`/`Into<Option<_>>` 对应 Go `error` 可为 `nil` 的输入语义。
-
-三个可重试消息的空格规则与 Go 保持一致：`ErrTxnRetryable` 将原模板与标记直接拼接，而两个写冲突模板在标记前插入一个空格（`error.rs:35-43,68-85`；`error.go:36-79`）。`GenKeyExistsErr` 的 Rust `slice.join("-")` 对应 Go `strings.Join(keyCols, "-")`，随后都以连接值和 `keyName` 填充 duplicate-entry 模板。
-
-现有 Rust 测试比同路径 Go 测试覆盖更多迁移契约：`pkg/kv/error_test.go` 只验证一组原型能转换为非 Unknown 且 code 一致；`pkg/kv/error_test.rs` 还验证 nil/None、分类集合、连接边界和 `ErrSharedLockLost` 的 9015 错误码。两侧共同确认协议错误码一致性，不代表所有生产调用路径都由该单元测试覆盖。
-
 ## 扩展指南
 
 新增标准 KV/TiKV 错误时，应先确认 errno code 和 `MySQLErrName` 模板已存在，再按语义选择 `ClassKV` 或 `ClassTiKV`，在本文件增加 `LazyLock` 原型。若需要自定义消息，必须保留原模板的 `RedactArgPos`，避免日志/协议层脱敏退化。
@@ -91,12 +79,3 @@ Rust 文件逐项对应 `pkg/kv/error.go`：常量名、13 个错误原型、三
 调整重复键格式时，应修改 `GenKeyExistsErr` 并同步 `pkg/kv/error_test.rs::test_key_exists_join_matches_go`，同时核对 Go `pkg/kv/error.go::GenKeyExistsErr` 与上层 `pkg/ddl/util/util.rs::GenKeyExistsErr`。连接规则或模板参数顺序的改变会影响用户可见错误文本和兼容性。
 
 测试必须继续放在独立的 `pkg/kv/error_test.rs`，不要内嵌进生产文件。至少覆盖：新原型到 SQL error code 的映射、正反分类、`None` 边界、消息模板参数及 Go 对照行为。性能风险主要来自在热路径额外格式化字符串；静态原型应继续惰性复用，不应在每次分类时重建模板。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件且目标仓库已索引；`node --file pkg/kv/error.rs --offset 1 --limit 400` 读取目标文件 117 行完整符号，并报告 33 个直接使用文件；`query` 分别定位 Rust/Go 的 `IsTxnRetryableError`、`IsErrNotFound`、`GenKeyExistsErr`。同名跨语言符号使精确 `callers/callees` 未返回可用边，因此按技能规则用定向引用搜索补足调用证据。
-- 源码与模块：`pkg/kv/error.rs`、`pkg/kv/lib.rs:85-111,507-512`、`pkg/kv/Cargo.toml`。
-- 直接调用证据：`pkg/kv/txn.rs:150-207`、`pkg/kv/utils.rs:18-53`、`pkg/store/driver/error/error.rs:202-215`、`pkg/store/driver/kv_adapter.rs:362,408,859,1167`。
-- Go 对照：`pkg/kv/error.go`；错误码/模板定义交叉核对 `pkg/errno/errcode.rs` 与 `pkg/errno/errname.rs`。
-- 独立测试：`pkg/kv/error_test.rs`、`pkg/kv/error_test.go`；相关调用行为另见 `pkg/kv/txn_test.rs`、`pkg/kv/fault_injection_test.rs` 和 `pkg/store/mockstore/mockstorage/canonical_storage_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证本文档恰有 11 个固定二级章节，并人工复核只新增本文档、未修改 Rust/Go/Cargo/总计划。

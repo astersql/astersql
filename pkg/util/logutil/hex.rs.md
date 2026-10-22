@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-目标源码为 [`pkg/util/logutil/hex.rs`](hex.rs)。本文件属于 `astersql-util-logutil` crate；crate 根 `pkg/util/logutil/lib.rs` 以公开模块 `pub mod hex` 暴露它。它提供一套只用于展示的 protobuf 风格值模型，以及把二进制字段写成小写十六进制的日志格式化入口。`pkg/util/logutil/Cargo.toml` 将库入口设为 `lib.rs`，但本文件自身只依赖标准库 `std::fmt`，不使用该 crate 的 `chrono` 等外部依赖。
-
-当前 Rust 仓库中，`Hex`、`ProtoField` 和 `ProtoValue` 的直接引用只见于同 crate 的 `pkg/util/logutil/hex_test.rs` 与 `pkg/util/logutil/migration_aster_unit_test.rs`；`prettyPrint` 还经 `pkg/util/logutil/main_test.rs` 重导出为测试所需的 `PrettyPrint`。因此它已经是公开 API，但没有证据表明 Rust 生产请求链正在调用它，不能把 Go 侧大量 `logutil.Hex` 使用点视为已经迁移到此实现。
+`ProtoValue` 的 `Display` 实现统一定义空值、标量、字符串、字节、列表与嵌套消息的文本形式。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ RustCodeGraph 将 `ProtoValue`、`pretty_print` 与 `write_hex` 定位到本文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/logutil/hex.go`，测试对照是 `pkg/util/logutil/hex_test.go`。共同语义包括：字节切片使用连续小写 hex；结构体/消息使用 `{Field:value ...}`；列表沿用方括号与空格形式；nil 指针对应 `<nil>`；`XXX*` 字段被跳过；字段按声明/传入顺序展示；跳过字段后仍按原始索引决定前导空格。
-
 两版 API 和覆盖范围并不等价。Go `Hex(msg proto.Message)` 保存真实 protobuf 消息，随后用 `reflect` 自动遍历 slice、struct、pointer 和其他值；Rust `Hex(&ProtoValue)` 只接受调用者显式构造的封闭值树，不读取 protobuf 元数据，也不会自动适配生成消息。Go `prettyPrint(io.Writer, reflect.Value)` 写入任意 writer，Rust `pretty_print` 固定返回 `String`，而 `Display` 才是可写入 formatter 的底层接口。
 
-Go 测试通过 `main_test.go` 的 `PrettyPrint = prettyPrint` 暴露私有函数；Rust 测试以 `main_test.rs` 重导出 `prettyPrint` 模拟这一入口。`hex_test.rs` 的 Region 风格样例、UTF-8 字节样例、`[]uint8` 等价样例及空 EndKey 均复刻 Go 断言，另加的首个 `XXX` 字段测试明确锁定 Go 反射循环的空格细节。
+Go 测试通过 `main_test.go` 的 `PrettyPrint = prettyPrint` 暴露私有函数；Rust 测试以 `main_test.rs` 重导出 `prettyPrint` 模拟这一入口。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Go 测试通过 `main_test.go` 的 `PrettyPrint = prettyPrint` 暴露私有函�
 若要改变字节大小写、字段过滤、分隔空格、字符串转义或 nil 表示，必须把日志兼容性视为外部行为：同步 `hex_test.rs`、`migration_aster_unit_test.rs` 和 Go 对照断言，并评估下游日志解析器。性能优化应优先保留 `Display` 的流式写入；避免让 `Hex` 提前创建中间 `String`。对大字节字段增加截断时，必须显式定义阈值和标记，防止不同 key 产生不可区分的日志。
 
 测试仍应放在相邻独立文件 `pkg/util/logutil/hex_test.rs` 或迁移回归文件中，不应内嵌到 `hex.rs`。新增 `*_test.rs` 会由 `pkg/util/logutil/build.rs` 的注册流程处理，需遵守其只支持普通、无 `Result` 返回值测试函数的约束。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/util/logutil/hex.rs`、`pkg/util/logutil/lib.rs`、`pkg/util/logutil/Cargo.toml`、`pkg/util/logutil/build.rs`。
-- Rust 行为测试：`pkg/util/logutil/hex_test.rs::{TestHex, TestPrettyPrint, test_skipped_leading_xxx_field_preserves_go_spacing}`，以及 `pkg/util/logutil/migration_aster_unit_test.rs::test_hex_matches_go_field_and_byte_formatting`。
-- Go 实现与测试：`pkg/util/logutil/hex.go::{Hex, hexStringer.String, prettyPrint}`、`pkg/util/logutil/hex_test.go::{TestHex, TestPrettyPrint}`、`pkg/util/logutil/main_test.go`。
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；精确查询确认 `hex.rs::ProtoValue`、`hex.rs::pretty_print` 和 `hex.rs::write_hex`，文件节点展示了本文件完整 175 行源码。宽泛 `Hex` 查询存在大量同名符号，精确 callers 查询未在限定时间内完成，因此直接调用范围另由 Rust 源码引用搜索核验。
-- 人工事实复核：确认公开/私有边界、八个 `ProtoValue` 变体、六个 `From` 实现、递归格式化分支、Go 反射差异、测试注册方式以及仓库中不存在目标 API 的 Rust 生产调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务指定命令检查目标文件存在且恰有十一个固定二级标题。

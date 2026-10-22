@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate（[`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"`），由 [`lib.rs`](lib.rs) 以公开模块 `pub mod distsql` 暴露。它是 DistSQL/Coprocessor 指标的**定义与初始化层**：创建七个 Prometheus collector，并把它们保存到包级静态槽位；它不执行分布式查询，也不负责采样时机。
-
-包级主链是 [`metrics::InitMetrics`](metrics.rs) 调用 `distsql::InitDistSQLMetrics`，随后 [`metrics::RegisterMetrics`](metrics.rs) 将七个 collector 注册到默认 Prometheus registry。当前 Rust 仓库搜索只发现初始化、注册和初始化冒烟测试对这些符号的引用，未发现 DistSQL Rust 业务路径对这些 collector 执行 `observe`/`inc`；因此当前事实是“collector 已定义并可注册”，不能据此声称七项运行时数据都已在 Rust 主链采集。
+查询处理耗时：`tidb_distsql_handle_query_duration_seconds`，由 `type`、`sql_type`、`copr_type` 三个标签分维度。
 
 ## 核心职责
 
@@ -87,16 +85,11 @@ collector 由静态槽位持有到进程结束；注册表持有注册 clone。�
 
 ## 与 Go 版本的对应关系
 
-Rust 的七个变量、构造顺序、Namespace/Subsystem/Name/Help、标签名和两组显式指数桶均逐项对应 [`distsql.go`](distsql.go) 的 `InitDistSQLMetrics`。主要语言映射为：
-
-- Go 的 nil 包级指针/接口值 → Rust 的 `Option<collector>`。
 - Go 的包初始化顺序 → Rust `metrics::InitMetrics` 的显式调用顺序与 `Once`。
-- Go 的 `[]string` 标签名 → Rust `Vec<&'static str>`，再由兼容层转为 `Vec<String>`。
-- Go 的直接包级赋值 → Rust 先构造局部变量，再在锁内 `unsafe` 写 `static mut`。
 
 差异与迁移状态：Go 侧存在完整的业务采样调用，Rust 主 `astersql-metrics` crate 当前搜索不到这七个静态量的业务写入；现有 Rust 冒烟测试只证明构造参数可接受，包级注册测试只证明整体注册路径可工作，并未逐项验证 DistSQL 指标名、标签、桶或观测值。另一个 Rust copr metrics crate 复制了缓存 collector，这与 Go 共享 `pkg/metrics` 父 collector 的结构不同。
 
-Go 对照还暴露一个既有语义风险：`DistSQLCoprRespBodySize` 的 Help 声称 bytes，但 Go 采样值除以 1024。本文只记录差异，不把它改写为任何一方已经修复。
+本文只记录差异，不把它改写为任何一方已经修复。
 
 ## 扩展指南
 
@@ -110,12 +103,3 @@ Go 对照还暴露一个既有语义风险：`DistSQLCoprRespBodySize` 的 Help 
 6. 同步检查 [`distsql.go`](distsql.go) 及其消费点，明确是保持 Go 兼容还是有意改变。响应大小单位尤其需要成对验证。
 
 兼容风险主要是 dashboard/告警依赖的指标名和标签变化；正确性风险主要是初始化顺序、重复初始化造成注册实例与写入实例分裂，以及 `static mut` 的并发访问；性能风险主要是高基数标签和过于频繁的 histogram 观测。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、目标文件含 2 个索引符号；`files --filter pkg/metrics/distsql.rs` 确认目标已索引；`explore "pkg/metrics/distsql.rs InitDistSQLMetrics DistSQLQueryHistogram"` 返回 Rust/Go 源码及 Rust 调用者 `metrics.rs::InitMetrics`、`bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata`；`query InitDistSQLMetrics --json` 区分 Rust 与 Go 两个同名函数。精确 `callers/callees` 未返回更多边，故用源码搜索补齐静态量引用。
-- 已读实现与配置：[`distsql.rs`](distsql.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`metrics.rs`](metrics.rs)、[`bindinfo.rs`](bindinfo.rs)、[`session.rs`](session.rs)。同目录不存在 `doc.go`。
-- 已读 Rust 测试：[`bindinfo_1_aster_unit_test.rs`](bindinfo_1_aster_unit_test.rs)、[`metrics_test.rs`](metrics_test.rs)、[`metrics_internal_test.rs`](metrics_internal_test.rs)；前者只直接冒烟调用本初始化器，后两者覆盖包级初始化/注册但没有 DistSQL 专项断言。
-- 已读 Go 对照与消费点：[`distsql.go`](distsql.go)、[`metrics.go`](metrics.go)、`pkg/distsql/select_result.go`、`pkg/store/copr/coprocessor.go`、`pkg/store/copr/metrics/metrics.go`，以及 closest-read 回归测试 `pkg/executor/distsql_test.go`。
-- 已读 Rust 拆分边界：[`pkg/store/copr/metrics/lib.rs`](../store/copr/metrics/lib.rs)、[`pkg/store/copr/metrics/metrics.rs`](../store/copr/metrics/metrics.rs) 及其独立测试 [`migration_aster_unit_test.rs`](../store/copr/metrics/migration_aster_unit_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构检查，并检查 Git diff 只包含本文档与任务文件删除。

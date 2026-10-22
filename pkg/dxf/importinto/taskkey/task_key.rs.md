@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto-taskkey` 子 crate，是 IMPORT INTO 在 DXF（分布式执行框架）中构造任务键的实现。`lib.rs` 通过 `#[path = "task_key.rs"] pub mod taskkey` 暴露本模块；`Cargo.toml` 将 crate 入口设为 `lib.rs`，只直接依赖 `astersql-config-kerneltype`，并把本 crate 的 `nextgen` feature 转发给该依赖。
-
-任务键最终用于把一个 IMPORT INTO job ID 映射到 DXF 任务表中的 `task_key` 字符串。Classic 构建使用 `ImportInto/{jobID}`；NextGen 构建使用 `{keyspace}/ImportInto/{jobID}`，从而在共享的系统侧任务表中保留用户 keyspace 维度。这里仅负责字符串构造，不负责创建任务、访问存储或检查任务是否存在。
+文件级 `#![allow(dead_code, non_snake_case)]` 用于保留 Go 风格公开 API 名称。
 
 ## 核心职责
 
@@ -81,14 +79,7 @@ keyspace 不经过转义或分段校验。测试明确证明含 `/` 的 `"tenant
 
 ## 与 Go 版本的对应关系
 
-Rust 的三个函数逐一对应 Go `task_key.go` 中的 `ForJob`、`ForJobInKeyspace` 和 `forJobInKeyspace`，分支顺序与格式均一致：
-
-- Go `fmt.Sprintf("%s/%d", proto.ImportInto, jobID)` 对应 Classic 分支的 `format!("{}/{}", proto::ImportInto, jobID)`。
-- Go `fmt.Sprintf("%s/%s/%d", keyspaceName, proto.ImportInto, jobID)` 对应私有辅助函数的三段 `format!`。
-- 两种实现都只在 NextGen 中使用 keyspace；Classic 的显式 keyspace 参数被忽略。
-- Go 的 `int64` 与 Rust 的 `i64` 范围相同，负数和最小值的十进制文本保持一致。
-
-Rust 与 Go 的表面差异是 Rust 显式取得或接收拥有所有权的 `String`，并通过 Cargo feature 选择 `kerneltype` 实现；Go 通过对应构建标签选择内核实现。Rust 文件中的 `allow(non_snake_case)` 是为了保留 Go API 拼写，不代表引入另一套命名或行为。当前代码不是桩：它已由 `job.rs` 和 `jobhistory/history.rs` 的真实逻辑调用。
+Rust 与 Go 的表面差异是 Rust 显式取得或接收拥有所有权的 `String`，并通过 Cargo feature 选择 `kerneltype` 实现；Go 通过对应构建标签选择内核实现。当前代码不是桩：它已由 `job.rs` 和 `jobhistory/history.rs` 的真实逻辑调用。
 
 ## 扩展指南
 
@@ -97,12 +88,3 @@ Rust 与 Go 的表面差异是 Rust 显式取得或接收拥有所有权的 `Str
 若增加 keyspace 校验或转义，需要先确认上游 keyspace 命名契约以及是否允许历史上含 `/` 的键；当前独立测试把原样保留视为对齐行为，直接规范化会改变兼容性。若只新增测试，应放在独立的 `migration_aster_unit_test.rs` 或相邻消费者的独立 `*_test.rs`，不要把测试嵌入 `task_key.rs`。至少同步覆盖 Classic 与 NextGen、`ForJob` 的配置读取、显式 keyspace、负 job ID、`i64::MIN`、空值和分隔符边界。
 
 性能上每次调用至少分配一个输出 `String`，`ForJob` 的 NextGen 路径还会克隆全局 keyspace。除非调用频率或剖析数据证明必要，不应通过全局缓存引入失效与并发一致性问题。若更改函数签名，应同时检查 `job.rs::TaskKey`、`jobhistory/history.rs::GetFromHistory`、`jobhistory/lib.rs` 的再导出和所有独立测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中的 `task_key.rs`、`lib.rs`、迁移测试及 Go 对照均已索引。
-- RustCodeGraph `node --file pkg/dxf/importinto/taskkey/task_key.rs`：确认文件共 59 行、3 个函数及 5 个使用文件。
-- RustCodeGraph `query` / `explore`：确认 `ForJob` 的调用者包括 `job.rs::TaskKey` 和迁移测试，`ForJobInKeyspace` 的调用者包括 `jobhistory/history.rs::GetFromHistory`、历史相关测试与 job testkit；图的精确 `callers/callees` 子命令未对带路径符号输出明细，因此又用索引源码节点和 `rg` 复核调用点。
-- 已读生产与装配文件：`pkg/dxf/importinto/taskkey/task_key.rs`、`lib.rs`、`Cargo.toml`、父级 `pkg/dxf/importinto/Cargo.toml`、`pkg/dxf/importinto/job.rs`、`pkg/dxf/importinto/jobhistory/history.rs`、`pkg/dxf/importinto/jobhistory/lib.rs`、`pkg/config/kerneltype/classic.rs`、`nextgen.rs` 及其 `Cargo.toml`。
-- 已读 Go 对照与测试：`pkg/dxf/importinto/taskkey/task_key.go`、`migration_aster_unit_test.rs`、`pkg/dxf/importinto/jobhistory/history_test.rs`、`jobhistory/migration_aster_unit_test.rs`、`pkg/dxf/importinto/job_testkit_test.rs`，并用 `rg` 搜索 Rust/Go 的三个函数名以复核直接引用。
-- 独立迁移测试覆盖两种内核格式、配置 keyspace 与显式 keyspace、Classic 忽略 keyspace、负 job ID、含 `/` 的 keyspace 和 `i64::MIN`；本任务按计划不运行 Cargo，验证限于索引、源码事实和文档结构。

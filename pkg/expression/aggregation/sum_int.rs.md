@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`sum_int.rs` 位于 `astersql-expression-aggregation` crate，提供行式 `SUM_INT` 的运行时聚合器。模块入口 `pkg/expression/aggregation/lib.rs` 以 `mod sum_int` 装配该文件，并通过 `pub use sum_int::*` 将实现暴露给同 crate 的工厂。它不是 SQL 名称解析或类型推断入口：`base_func.rs::typeInfer4SumInt` 先约束参数必须恰好为一个整数并将返回类型设为 `LONG LONG`，本文件只消费已经构造好的 `AggFuncDesc`，逐行计算整数和。
-
-该实现有两条直接构造路径。`aggregation.rs::NewDistAggFunc` 将下推的 `tipb::ExprType::SumInt` 转成 `ast::AggFuncSumInt` 并装箱 `sumIntFunction`，用于 PB/分布式行式聚合；`descriptor.rs::AggFuncDesc::GetAggFunc` 则从规划描述符按名称实例化同一实现。RustCodeGraph 对 `sumIntFunction` 的实例化边也指向这两个符号。
+`aggregation.rs::NewDistAggFunc` 将下推的 `tipb::ExprType::SumInt` 转成 `ast::AggFuncSumInt` 并装箱 `sumIntFunction`，用于 PB/分布式行式聚合；`descriptor.rs::AggFuncDesc::GetAggFunc` 则从规划描述符按名称实例化同一实现。
 
 ## 核心职责
 
@@ -68,9 +66,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/sum_int.go`。Rust 的 `sumIntFunction`、`Update`、`GetResult`、`GetPartialResult` 与 Go 同名实现保持相同分支：先 `EvalInt` 并跳过 NULL，依据字段无符号标志选择整数域，DISTINCT 时用匹配 signedness 的 Datum 去重，使用 `types.AddUint64`/`AddInt64` 检查累加，最后只为接纳值增加 `Count`。
+Rust 的 `sumIntFunction`、`Update`、`GetResult`、`GetPartialResult` 与 Go 同名实现保持相同分支：先 `EvalInt` 并跳过 NULL，依据字段无符号标志选择整数域，DISTINCT 时用匹配 signedness 的 Datum 去重，使用 `types.AddUint64`/`AddInt64` 检查累加，最后只为接纳值增加 `Count`。
 
-Rust 将 Go 的嵌入字段 `aggFunction` 改成显式公有字段，并因 Rust trait 要求在本文件补充 `CreateContext`/`ResetContext` 转发；Go 通过嵌入类型继承这些方法。Go 以 `sf.HasDistinct` 决定是否检查去重器，Rust 以 `ctx.DistinctChecker` 是否存在为准；正常上下文由公共创建/重置逻辑按同一 `HasDistinct` 构造，故正规入口语义一致。Rust 还显式把整数加法错误转成 expression error 文本，而 Go 直接返回 types 层错误；两者都在写回状态和增加计数前失败。
+Rust 将 Go 的嵌入字段 `aggFunction` 改成显式公有字段，并因 Rust trait 要求在本文件补充 `CreateContext`/`ResetContext` 转发；Go 通过嵌入类型继承这些方法。Rust 还显式把整数加法错误转成 expression error 文本，而 Go 直接返回 types 层错误；两者都在写回状态和增加计数前失败。
 
 Go 测试 `pkg/expression/aggregation/aggregation_test.go::TestCheckAggPushDownSumInt` 与 Rust `aggregation_test.rs::TestCheckAggPushDownSumInt`/共享用例共同核对 TiKV、TiFlash 下推分类；两侧 `agg_to_pb_test` 都核对 DISTINCT 标志和 `tipb::SumInt` 编码。Go SQL 测试进一步覆盖 signed/unsigned DISTINCT、全 NULL 与 mock cop 下推，但当前 Rust 同名 SQL 测试使用简化聚合模型，不能替代对本文件所有内部分支的直接测试。
 
@@ -81,11 +79,3 @@ Go 测试 `pkg/expression/aggregation/aggregation_test.go::TestCheckAggPushDownS
 - 若改变构造或分布式阶段行为，应同时检查 `descriptor.rs::GetAggFunc`、`aggregation.rs::NewDistAggFunc`、`agg_to_pb.rs` 及其独立测试，保证本地构造、PB 编解码和 TiKV/TiFlash 下推仍一致。
 - 若改变部分结果形状，必须同时调整 `GetPartialResult`、描述符拆分/Final 模式消费方和跨阶段协议。当前单元素 `[sum]` 是调用契约，不应只改一端。
 - 性能敏感点是每行的类型标志读取、DISTINCT Datum/Vec 分配和溢出检查。优化时需要证明不会缓存失效的字段类型、不会混淆有符号键，并用直接基准或测试守住错误语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`node --file pkg/expression/aggregation/sum_int.rs` 展示完整 89 行源码，并报告该文件被 `aggregation.rs`、`descriptor.rs` 使用。`query/node sumIntFunction` 显示 Rust 实例化者为 `NewDistAggFunc` 与 `GetAggFunc`。
-- 已读生产代码：`pkg/expression/aggregation/sum_int.rs`、`aggregation.rs`（`Aggregation`、`AggEvaluateContext`、`aggFunction`、`NewDistAggFunc`）、`descriptor.rs`（`AggFuncDesc::GetAggFunc`）、`base_func.rs` 的 SUM_INT 类型推断引用、`lib.rs` 与 `Cargo.toml`。
-- Go 对照：`pkg/expression/aggregation/sum_int.go`，以及构造/类型/下推相关的 `aggregation.go`、`descriptor.go`、`base_func.go`、`agg_to_pb.go` 搜索证据。
-- 已读测试：`pkg/expression/aggregation/aggregation_test.rs`、`aggregation_aster_unit_test.rs`、`agg_to_pb_test.rs` 及其 Go 对照；另读 `pkg/executor/test/aggregate/aggregate_test.go` 和 Rust 同名文件中的 SUM_INT 用例，以区分真实 SQL/mock cop 证据与简化 Rust 聚合模型。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的 `test -f` 与固定标题计数命令验证文档存在且恰有 11 个二级章节，并人工复核所有行为结论均可回指上述符号或文件。

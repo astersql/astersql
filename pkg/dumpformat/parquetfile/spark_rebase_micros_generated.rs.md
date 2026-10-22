@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-这是 `astersql-dumpformat-parquetfile` crate 中保存 Apache Spark legacy Julian/Gregorian 重定基准数据的生成文件；crate 根模块在 [`lib.rs`](lib.rs) 以 `pub mod spark_rebase_micros_generated` 暴露它，crate 边界由 [`Cargo.toml`](Cargo.toml) 定义。文件头注明时间戳数据来自 Spark 3.5.7 的 `julian-gregorian-rebase-micros.json`，日期数据来自 `RebaseDateTime.scala`；时间戳 switch/diff 已从 Spark 的秒转换为微秒，DATE 表仍以天为单位（源码第 16--28 行）。
-
-它是数据与低层查表辅助模块，不负责解析 Parquet footer、判断文件是否采用 legacy 历法，也不执行具体时间戳重定基准。当前 Rust 运行主链位于 [`spark_rebase.rs`](spark_rebase.rs)：该文件通过 `include_str!("spark_rebase_micros_generated.go")` 解析 Go 生成表并建立 `OnceLock<GeneratedRebase>`，没有调用本文件的两个公开函数；因此本文件目前是已编入 crate、可由外部路径访问，但未接入现行 Rust rebase 主链的并行生成表示。
+用 602 条 `sparkRebaseMicrosRecord` 将 IANA/兼容时区 ID 映射到全局数组中的 `(offset, length)`，并提供索引查询和零复制切片函数。
 
 ## 核心职责
 
@@ -64,11 +62,9 @@ Rust 表在程序映像中静态存在，初始化后只读，借用生命周期
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`spark_rebase_micros_generated.go`](spark_rebase_micros_generated.go)。两者拥有相同的索引字段、两张 DATE 表、两张 TIMESTAMP 平行表、时区记录表，以及“索引后切片”的语义；数据源说明均指向 Spark 3.5.7，并明确时间戳单位为微秒。
+主要实现差异是索引查找：Go 的 `sparkJulianGregorianRebaseMicrosIndex` 用 `sync.Once` 将 records 转成 map，并返回 `(index, bool)`；Rust 用静态记录线性扫描并返回 `Option<index>`。Go 的类型和辅助函数均为包内小写符号，Rust 则公开 `sparkRebaseIndex`、两个字段、两个辅助函数和四张数据表。
 
-主要实现差异是索引查找：Go 的 `sparkJulianGregorianRebaseMicrosIndex` 用 `sync.Once` 将 records 转成 map，并返回 `(index, bool)`；Rust 用静态记录线性扫描并返回 `Option<index>`。Go 的类型和辅助函数均为包内小写符号，Rust 则公开 `sparkRebaseIndex`、两个字段、两个辅助函数和四张数据表。两边的切片函数都信任索引，不做边界错误转换。
-
-Go 行为测试 [`parser_test.go`](parser_test.go) 直接断言默认 `UTC` 存在、取得 switch 切片，并覆盖未知 footer 时区回退 UTC、缺失 footer 时区采用 parser location、早于表范围的 fallback 等行为。Rust 独立测试 [`spark_rebase_test.rs`](spark_rebase_test.rs) 只通过现行 `spark_rebase.rs` 路径验证现代时间快速返回、legacy 未知时区报错、版本与 floor 运算；它没有直接引用本生成 Rust 模块。因此不能把 Go 测试覆盖等同于本模块已被 Rust 测试直接覆盖。
+Rust 独立测试 [`spark_rebase_test.rs`](spark_rebase_test.rs) 只通过现行 `spark_rebase.rs` 路径验证现代时间快速返回、legacy 未知时区报错、版本与 floor 运算；它没有直接引用本生成 Rust 模块。
 
 ## 扩展指南
 
@@ -77,12 +73,3 @@ Go 行为测试 [`parser_test.go`](parser_test.go) 直接断言默认 `UTC` 存�
 - 若保留公开 `sparkJulianGregorianRebaseMicrosSlices`，可考虑将索引字段私有化，或改为返回 `Option`/`Result` 并使用 `get`，避免外部构造索引导致 panic；这是 API 行为变更，需要独立评估兼容性。
 - 测试逻辑应放在同目录独立测试文件而不是源文件中。直接测试本模块时，优先扩展 [`spark_rebase_test.rs`](spark_rebase_test.rs)，覆盖空/未知/已知时区、UTC 片段长度、首尾 record、非法索引策略和两表结构不变量；行为级回归继续与 Go 的 [`parser_test.go`](parser_test.go) 对照。
 - 性能取舍需显式记录：602 条线性扫描无初始化成本，但大量重复查找可能适合静态二分表或一次性 map；改变查找结构不能改变完全匹配和未知时区语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件，`files --filter pkg/dumpformat/parquetfile` 收录目标文件并识别 16 个符号；`query` 定位本文件两个函数、四张公开表和 records；对目标 Rust 函数的精确 `callers`/`callees` 结果为空；对现行 `rebase_index` 的 callers 为 `spark_rebase_time_zone_id`、`SparkRebaseMicrosLookup::new`，`rebase_slices` 的 caller 为后者。
-- 已读源码与边界：[`spark_rebase_micros_generated.rs`](spark_rebase_micros_generated.rs)、[`lib.rs`](lib.rs)、[`spark_rebase.rs`](spark_rebase.rs)；仓库没有该目录的 `doc.go`。
-- 已读 crate/对照/测试：[`Cargo.toml`](Cargo.toml)、[`spark_rebase_micros_generated.go`](spark_rebase_micros_generated.go)、[`spark_rebase.go`](spark_rebase.go)、[`spark_rebase_test.rs`](spark_rebase_test.rs)、[`parser_test.go`](parser_test.go)。
-- 静态结构统计：用 `awk` 按三个数组/records 区段计数，结果为 `switches=9103 diffs=9103 records=602`；末条 record 的范围终点为 9,103。
-- 仓库范围 `rg`：排除定义文件后，Rust 中同名生成表 API 只出现在 `spark_rebase.rs` 的注释草稿和该文件的重复 DATE 常量/Go 文本解析标记，未发现现行 Rust 直接调用。
-- 本任务为纯文档分析，依计划不运行 Cargo；交付前只执行任务指定的 11 章节结构验证并人工复核链接、事实边界和未接线说明。

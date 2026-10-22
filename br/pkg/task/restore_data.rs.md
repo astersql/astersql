@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`restore_data.rs` 属于 `astersql-br-pkg-task` crate（见 `br/pkg/task/Cargo.toml`），由 crate 根 `br/pkg/task/lib.rs` 以 `pub mod restore_data` 挂载并通过 `pub use restore_data::*` 平铺导出。它对应 Go 文件 `br/pkg/task/restore_data.go`，承接 `br restore` 的 AWS EBS 快照恢复中“解析并恢复 KV 数据”这一任务入口。
-
-Rust CLI 的直接入口是 `br/cmd/br/restore.rs::runRestoreCommand`：当 `RestoreConfig.FullBackupType` 为 `aws-ebs` 且 `Prepare == false` 时调用 `RunResolveKvData`。不过该 CLI 当前传入新建的空 `MemStorage`，并未像 Go 版本那样根据 `cfg.Config.Storage` 打开外部存储；因此真实命令会先在读取 `backupmeta.json` 时失败。当前文件应视为迁移期的任务编排桩，而不是完整可用的 EBS 数据恢复实现。
+`ReadBackupMetaData` 从抽象 `Storage` 读取并反序列化 `backupmeta.json`，只接受显式标记为 `aws-ebs` 的备份，并返回恢复所需的 `resolved_ts` 与 TiKV 副本数。
 
 ## 核心职责
 
@@ -96,12 +94,6 @@ Cargo 边界方面，`Cargo.toml` 声明该目录为库 crate，并直接依赖 
 
 ## 与 Go 版本的对应关系
 
-已对齐的部分：
-
-- 两端都拒绝非 EBS 元数据，并返回 resolve TS 与 TiKV 副本数。
-- 两端入口都先 `Adjust` 配置、记录 `resolve-ts`、创建 manager，并保证 manager 最终关闭。
-- 进度总量的意图均为 `store 数 * 3 + 2`，成功结束时都会关闭进度并设置成功状态。
-
 Rust 特有的兼容行为是直接解析 `backupmeta.json` 的简化 JSON，并兼容旧 operator 将 `full_backup_type`、`resolved_ts` 放在根级的格式；Go 通过 `config.NewMetaFromStorage` 获取完整元数据对象。
 
 尚未对齐且影响真实功能的部分包括：Rust CLI 没有打开配置指定的外部存储；没有 context、取消和 tracing span；没有全局 TiDB 配置调整；没有获取 restore TS 或 GC safe point keeper；没有移除并恢复 PD scheduler；没有枚举实际 TiKV stores 和检测 store 数变化；没有 `data.RecoverData`、总 region 指标、`UnmarkRecovering`、TiFlash replica 重置及恢复耗时指标；没有进度文件 writer。Rust 还使用元数据副本数代替 Go 的实际 store 数，并立即完成整个进度条。这些差异意味着当前实现只验证局部契约，不能声称已经完成 EBS KV 数据恢复。
@@ -120,17 +112,3 @@ Go 同路径未发现专用的 `restore_data_test.go`；当前局部语义主要
 6. 在 `br/pkg/task/restore_data_test.rs` 同步增加回归测试，至少覆盖存储读取/JSON 错误、嵌套与根级格式、非 EBS、缺失字段、负/极端副本数、空 PD、manager 关闭、恢复中途失败后的清理、进度关闭与成功标志时序。测试逻辑继续放在独立文件，不内嵌进生产源文件。
 
 兼容风险集中在 backupmeta 格式优先级、Go/Rust 错误文本和资源清理顺序；正确性风险是误把副本数当 store 数或过早设置成功；性能风险主要来自未来 store 枚举、并发恢复和进度写盘，需以配置的恢复并发度及可取消任务控制。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`br/pkg/task/restore_data.rs`（RustCodeGraph `node --file` 显示完整 116 行）。
-- crate 声明与模块入口：`br/pkg/task/Cargo.toml`、`br/pkg/task/lib.rs`。
-- Rust 上游入口：`br/cmd/br/restore.rs::runRestoreCommand`。
-- 直接依赖：`br/pkg/task/restore.rs::RestoreConfig::Adjust`、`br/pkg/task/common.rs::NewMgr`，以及 `br/pkg/task/stubs.rs` 中的 `Glue`、`Progress`、`Storage`、`Mgr`、`MemStorage`、summary 实现。
-- Go 对照：`br/pkg/task/restore_data.go::ReadBackupMetaData`、`RunResolveKvData`、`resetTiFlashReplicas`。
-- 独立 Rust 测试：`br/pkg/task/restore_data_test.rs` 验证嵌套 EBS 元数据、缺失备份类型错误和 `3 * 3 + 2 == 11` 的进度公式；`br/pkg/task/parity_test.rs::go_rust_public_contract_matches` 验证根级旧格式、非 EBS 错误与入口可完成。
-- RustCodeGraph 查询：`query ReadBackupMetaData`、`query RunResolveKvData`、`callers/callees` 和 `node RunResolveKvData`。图确认 Rust 入口调用 `ReadBackupMetaData` 并实例化 `MgrCloseGuard`，测试调用者来自上述两个独立测试；图对 trait 方法调用的覆盖不完整，因此下游 trait 关系同时以源码核验。
-
-本任务是纯文档分析，未运行 Cargo 或运行时恢复。结构验证应确认该文档存在且恰好包含任务要求的 11 个固定二级标题；人工复核重点是所有“当前支持”结论均限定在源码已有的桩边界内。

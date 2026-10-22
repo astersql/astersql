@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`types.rs`](./types.rs) 是 `astersql-br-pkg-utiltest-crr` 测试夹具 crate 的共享数据契约层。crate 由 [`Cargo.toml`](./Cargo.toml) 定义为 library，入口 [`lib.rs`](./lib.rs) 以 `pub mod types` 装入本文件，并通过 `pub use types::*` 将其公开符号扁平再导出。它本身不执行 CRR（跨区域复制）仿真，而是为 [`builder.rs`](./builder.rs)、[`pd_sim.rs`](./pd_sim.rs)、[`flush_sim.rs`](./flush_sim.rs) 和 [`harness.rs`](./harness.rs) 提供常量、确定性随机源、测试上下文以及 Region/flush 快照类型。
-
-对应的 Go 实现是 [`types.go`](./types.go)，两者都属于 `br/pkg/utiltest/crr` 夹具，而不是生产 TiKV/PD 数据模型。Cargo 的 `package.metadata.porting` 也将 Go 包路径记为 `br/pkg/utiltest/crr`、crate 类型记为 `library`。
+用 `RegionBoundary`、`RegionState`、`FlushRecord` 定义构建输入、运行时只读快照和 flush 产物快照；`clone_record` 显式深拷贝其中的可变容器。
 
 ## 核心职责
 
@@ -93,14 +91,13 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的常量值、FNV-1a 派生步骤、`lower >= upper` 回退、三个数据结构的字段形状和 flush 深拷贝意图与 [`types.go`](./types.go) 对应。Rust 保留 Go 风格函数/字段名，并额外提供大写公开常量及小写 crate 内别名，以同时支持 crate 外测试和机械对照。
+Rust 保留 Go 风格函数/字段名，并额外提供大写公开常量及小写 crate 内别名，以同时支持 crate 外测试和机械对照。
 
 存在以下明确差异：
 
 - Go `TestContext` 持有 `testing.TB`，构造时调用 `Helper()` / `Log()`；Rust 不保存测试框架句柄，而是把 seed 文本写到公开 `Vec<String>`。因此 Rust 记录不会自动出现在测试 runner 日志中。
 - Go 构造函数返回指针，Rust 返回拥有所有权的值，调用方按需以共享引用传递。
 - Go 使用 `math/rand.Rand`，Rust 使用 `rand::rngs::StdRng`。两边的 FNV-1a 派生 seed 规则对齐，但这不足以证明后续随机数序列跨语言逐项一致。现有 `parity_test.rs` 只断言相同输入的派生结果稳定且为正，没有 Go golden 序列；因此“随机序列跨语言一致”属于未验证结论，不能作为当前兼容保证。
-- Go `FlushRecord.clone` 先做浅拷贝再复制两个 slice；Rust `clone_record` 逐字段构造并克隆 `Vec` / `String`，达到相同的独立所有权效果。
 - Rust 数据结构额外派生 `Default` 和相等比较，便于模拟器的缺失快照返回与测试断言；Go 依赖结构体零值和字段比较。
 
 ## 扩展指南
@@ -111,17 +108,3 @@ Rust 的常量值、FNV-1a 派生步骤、`lower >= upper` 回退、三个数据
 - 修改 `Uint64InRange` 时应增加单点、逆序、普通闭区间以及接近 `u64::MAX` 的独立测试，并明确是保持 Go 的转换/溢出语义还是提供受检错误。不要把测试内嵌回 `types.rs`；本仓库要求 Rust 测试保存在独立测试文件。
 - 修改 `RegionBoundary` 要同步 `builder.rs`、`pd_sim.rs::validateBoundaries` / `toRegionState` 和 `builder_test.rs`；修改 `RegionState` 要同步 fakecluster 转换与 `flush_sim.rs`；修改 `FlushRecord` 要同步 `FlushStore`、`Records`、`RecordsUpTo` 和 `parity_test.rs` 的产物断言。
 - `DEFAULT_TASK_NAME`、物理时间基线和 `REGION_ID_TAG` 进入任务校验、TSO 和持久化文件名。变更它们可能破坏 Go 兼容、测试可复现性或备份元数据命名解析，应同时审查对应 Go 文件及 stream backup meta 的标签约定。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utiltest/crr` 找到目标及相邻 21 个 Go/Rust 文件。
-- RustCodeGraph `node --file br/pkg/utiltest/crr/types.rs`：读取完整 183 行源码，并报告目标被 `builder.rs`、`flush_sim.rs`、`harness.rs` 及测试等 10 个文件使用。
-- RustCodeGraph 精确查询：`NewTestContextWithSeed`、`TestContext`、`DeterministicRNG`；图结果确认 `deriveDeterministicSeed -> fnv1a64`、`Uint64InRange -> Int63n`、`NewTestContext -> NewTestContextWithSeed` 等内部边，并列出 `parity_test.rs`、`harness_test.rs`、`pd_sim_test.rs`、`pd_sim_service_test.rs` 的调用。
-- RustCodeGraph 按行读取：`pd_sim.rs` 的构造、快照和 scatter；`flush_sim.rs` 的随机范围、记录写入与克隆；`harness.rs` 的组件接线；`builder.rs` 的边界构造和验证。
-- 配置与入口：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)；该目录不存在 `doc.go`。
-- Go 对照：[`types.go`](./types.go)，以及使用这些类型的 `builder.go`、`pd_sim.go`、`flush_sim.go`、`harness.go` 引用。
-- 独立 Rust 测试：[`parity_test.rs`](./parity_test.rs)、[`builder_test.rs`](./builder_test.rs)、[`harness_test.rs`](./harness_test.rs)、[`pd_sim_test.rs`](./pd_sim_test.rs)、[`pd_sim_service_test.rs`](./pd_sim_service_test.rs)。未发现 `types_test.rs` 或与 `types.rs` 同名的独立测试；最直接的 seed 与记录断言位于 `parity_test.rs`。
-
-本任务为纯文档分析，按计划不运行 Cargo。结构验证要求文档存在且恰好包含本文的 11 个固定二级章节；行为事实通过上述源码、调用图、Cargo、Go 对照与独立测试交叉核对。

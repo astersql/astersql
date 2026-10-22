@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` crate。crate 入口 `lightning/pkg/importer/lib.rs` 以 `mod check_info` 装载它并通过 `pub use check_info::*` 再导出其公开常量和 `Controller` 方法；Cargo 边界见 `lightning/pkg/importer/Cargo.toml`，其中本地依赖 `astersql-lightning-pkg-precheck` 提供统一的检查 ID、`Checker` trait 和 `CheckResult`。
-
-它位于 Lightning 正式导入前的预检查编排层：上游 `Controller::preCheckRequirements` 和 `Controller::DataCheck`（`lightning/pkg/importer/import.rs`）按阶段调用这里的包装方法；本文件再把语义化方法映射为 `precheck::CheckItemID`，交给 `PrecheckItemBuilder::BuildPrecheckItem`（`lightning/pkg/importer/precheck.rs`）构造具体 checker。真正的容量、Region、文件、checkpoint、schema 等规则主要位于 `lightning/pkg/importer/precheck_impl.rs`，因此本文件是“调度与跳过策略”而不是规则实现本体。
+不决定某个失败是 `critical` 还是 `performance`，也不计算具体检查结果；这些由 `precheck_impl.rs` 中实现 `precheck::Checker` 的具体类型返回，随后由 `checkTemplate.Collect` 汇总。
 
 ## 核心职责
 
@@ -106,8 +104,6 @@ RustCodeGraph 显示目标文件被 `lightning/pkg/importer/precheck_impl.rs` �
 
 ## 与 Go 版本的对应关系
 
-Rust API 基本逐项对应 `lightning/pkg/importer/check_info.go`：常量值、方法名称、检查 ID 映射、local source 分支、TiDB/parallel/checkpoint 短路，以及“checker 返回 nil/None 时不收集结果”的外部语义一致。`check_info_test.rs`、`table_import_test.rs` 和 `parity_test.rs` 明确以 Go 测试/常量为对照。
-
 已确认的差异或迁移边界：
 
 - Rust `doPreCheckOnItem` 会先检查 builder 是否为 `Some`，并在每次调用前同步 `keyspaceName`；Go 方法直接使用已存在的 builder。
@@ -128,14 +124,3 @@ Rust API 基本逐项对应 `lightning/pkg/importer/check_info.go`：常量值�
 5. 对照 Go 的 `check_info.go`、`precheck_impl.go` 与相关测试，逐项说明有意差异，尤其避免把现有 slim checker 的行为无意扩展或收缩。
 
 修改现有路径时的重点风险：改变检查顺序可能影响昂贵检查和首个错误；改变 `Ok(None)` 与 `Some(Passed=true)` 会影响模板输出；扩大 Region 排他区间可能引入借用/死锁风险，缩小则可能出现状态竞态；阈值变化影响性能告警与导入阻断。常量若迁移到其他模块，必须同步 `precheck_impl.rs` 引用和 `parity_test.rs` 的 Go 数值对齐断言。
-
-## 验证依据
-
-- 目标源码：`lightning/pkg/importer/check_info.rs`，RustCodeGraph `node --file` 确认共 214 行、31 个索引符号，并显示 `precheck_impl.rs` 使用该文件。
-- 调用入口：`lightning/pkg/importer/import.rs` 的 `Controller::preCheckRequirements`、`Controller::DataCheck`；模块装配：`lightning/pkg/importer/lib.rs`。
-- 分发与规则：`lightning/pkg/importer/precheck.rs::PrecheckItemBuilder::BuildPrecheckItem`、`lightning/pkg/importer/precheck_impl.rs`、`lightning/pkg/precheck/precheck.rs::{Checker, CheckResult, CheckItemID}`。
-- crate 边界：`lightning/pkg/importer/Cargo.toml` 的 `[lib] path = "lib.rs"`、porting metadata 和 `astersql-lightning-pkg-precheck` path 依赖。
-- Go 对照：`lightning/pkg/importer/check_info.go`；补充搜索确认采样常量在 `get_pre_info.go` 使用，Region/CSV 阈值在 `precheck_impl.go` 使用。
-- Rust 独立测试：`lightning/pkg/importer/check_info_test.rs`（CSV header、目标表空、本地资源、上下文转换）、`lightning/pkg/importer/table_import_test.rs`（集群资源、Region、大 CSV）、`lightning/pkg/importer/parity_test.rs`（常量与跳过契约）；规则细节另由 `precheck_impl_test.rs` 覆盖。
-- RustCodeGraph 精确 `query` 找到 Rust/Go 同名符号；对 `doPreCheckOnItem`、`checkClusterRegion`、`localResource` 的 Rust 节点执行 `callers`/`callees` 均返回空数组。调用边随后由 `rg` 精确匹配补证，此索引限制已在“依赖与调用关系”中保留。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以固定 11 章节命令做结构验证，并人工复核没有把未接线或 slim 行为写成完整支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-对应源码：[config.rs](./config.rs)。`config.rs` 是 `astersql-importsdk` crate 的配置边界。crate 入口 `pkg/importsdk/lib.rs` 以私有模块 `mod config` 装配它，再通过 `pub use config::*` 将配置类型和 `WithXxx` 构造函数公开。实际入口 `NewImportSDK`（`pkg/importsdk/sdk.rs`）先调用 `defaultSDKConfig`，按调用方给定顺序执行全部 `SDKOption`，最后把完整 `SDKConfig` 按值交给 `NewFileScanner`。因此本文件不执行扫描、DDL 或导入作业，而是集中定义这些流程所需的默认策略和覆盖方式。
-
-该文件属于 `pkg/importsdk/Cargo.toml` 定义的 `astersql-importsdk` library crate。就本文件直接使用的类型而言，配置边界依赖 `astersql-lightning-log`、`astersql-lightning-mydump` 和 `astersql-parser-mysql`；crate 的扫描实现还通过同一 Cargo manifest 依赖对象存储、Lightning、DDL、parser 和 importer 等组件。
+因此本文件不执行扫描、DDL 或导入作业，而是集中定义这些流程所需的默认策略和覆盖方式。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 的文件关系报告 `config.rs` 被 7 个文件使用，并明�
 
 ## 与 Go 版本的对应关系
 
-主要结构和 option 语义逐项对应 `pkg/importsdk/config.go`：Go 的 `func(*SDKConfig)` 对应 Rust 的装箱 `FnOnce(&mut SDKConfig) + Send`；Go `*int` 扫描上限对应 `Option<i32>`；Go slice 对应 `Vec`；Go logger 对应 Rust logger 句柄。正数/非空保护、默认并发、过滤、字符集和真实大小估算均与 Go 测试意图一致。
-
 Rust 没有直接复用 Go `config.NewConfig()` 返回的 CSV 默认对象，而是在 `defaultSDKConfig` 中显式构造目前所需默认值；`pkg/importsdk/config_test.rs` 比 Go 测试更细地断言 CSV 与数据字符集默认值，以及空值和非正上限不覆盖现值。Rust `FileRouteRule` 是值向量，而 Go 使用指针切片；所有权不同，但配置层都原样保存规则。
 
 已确认的差异是 Go `file_scanner.go` 的 loader 配置包含 `Routes: cfg.routes`，Rust 对应构造未使用 `routes`。此外，Go 的 CSV 类型来自 Lightning config，Rust 使用本文件自有 `CSVConfig`，字段是否完整传递必须逐个以 `file_scanner.rs` 消费点为准。
@@ -87,12 +83,3 @@ Rust 没有直接复用 Go `config.NewConfig()` 返回的 CSV 默认对象，而
 若补齐表路由，应优先检查 `mydump::LoaderConfig` 的 Rust API，令 `SDKConfig.routes` 真正进入 loader，并增加端到端扫描断言，而不是删除 `WithRoutes` 或只加强 setter 测试。若扩展 CSV 语义，应核对 Go `config.CSVConfig`、`buildEstimateSampleConfig` 和 parser 能力，特别注意 NULL、转义、表头以及非 UTF-8 数据对兼容性和采样准确度的影响。
 
 修改并发或扫描上限会影响初始化延迟、内存/IO 压力和完整性判定；修改过滤、文件路由或表路由会改变可见数据集；修改 `estimate_real_size` 或 CSV 参数会影响容量估算而非只影响展示。新增闭包捕获类型还应保持 `SDKOption: Send`，避免破坏调用方在线程间组装选项的能力。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/importsdk` 确认模块文件集合；`node --file pkg/importsdk/config.rs` 读取 20 个符号及使用文件关系；并读取了已索引的 `sdk.rs`、`file_scanner.rs`、`config_test.rs`、`lib.rs`。对同名 `defaultSDKConfig`、`WithConcurrency`、`WithSkipInvalidFiles` 执行了查询；精确 `callers/callees` 无可区分输出，因此未把它当作调用边证据。
-- Rust 源：`pkg/importsdk/config.rs`（类型、默认值、全部 option）；`pkg/importsdk/sdk.rs`（默认配置和顺序应用入口）；`pkg/importsdk/file_scanner.rs`（loader 接线、并发、跳过策略、采样与 parser 消费点）；`pkg/importsdk/lib.rs`（模块可见性与再导出）。
-- crate 边界：`pkg/importsdk/Cargo.toml` 的 package、library path、porting metadata、直接依赖与 dev-dependencies。
-- Go 对照：`pkg/importsdk/config.go`、`pkg/importsdk/file_scanner.go`；前者核对默认值和 options，后者核对配置实际消费以及 Rust 尚缺的 `Routes` 接线。
-- 独立测试：`pkg/importsdk/config_test.rs` 与 `pkg/importsdk/config_test.go`；另以 `pkg/importsdk/file_scanner_test.rs` 的配置构造调用点确认配置会进入扫描器测试面。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另执行任务规定的 11 标题结构命令，并人工检查本文能够回答文件存在原因、构造与消费流程、错误/生命周期边界和安全扩展位置。

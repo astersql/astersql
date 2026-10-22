@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-pdtypes` crate，是 PD（Placement Driver）复制配置的 Rust 数据传输模型。crate 入口 `pkg/store/pdtypes/lib.rs` 通过 `pub mod config` 公开本模块；工作区根 `Cargo.toml` 将该 crate 注册为 `facade_store_pdtypes`，`pkg/lib.rs` 又在 `store::pdtypes` 下整体再导出。因此 `ReplicationConfig` 是公开类型，但本文件本身不读取配置、不请求 PD，也不执行副本调度。
-
-仓库级 Rust 搜索只找到 `pkg/store/pdtypes/config_test.rs` 和 `pkg/store/pdtypes/migration_aster_unit_test.rs` 使用 `ReplicationConfig`，没有找到生产 Rust 调用者。它当前更准确的定位是“已经公开并经过兼容性测试的 PD JSON 契约”，而不是已经接入某条运行时配置加载主链的组件。
+用私有模块 `bool_string` 实现 PD JSON 所需的字符串布尔值协议：序列化为 `"true"`/`"false"`，反序列化时接受这两个字符串，并把 JSON `null` 和字符串 `"null"` 映射为 `false`。
 
 ## 核心职责
 
@@ -102,15 +100,10 @@ RustCodeGraph 的文件节点报告 `config.rs` 被 `config_test.rs` 和 `migrat
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/pdtypes/config.go`。Rust 保留了 Go 的 `ReplicationConfig` 名称、六个字段名、字段类型意图和连字符形式的 JSON key。`StringSlice` 的 Rust 实现在 `pkg/store/pdtypes/typeutil.rs`，对应 Go 的 `pkg/store/pdtypes/typeutil.go`，两边都把标签切片编码为逗号分隔的单个 JSON 字符串。
-
-三个布尔字段对齐 Go 的 `json:"...,string"`：Rust 正常序列化输出 `"true"`/`"false"`；测试也专门保留 Go `encoding/json` 对 `null` 和带引号 `"null"` 的零值行为。`#[serde(default)]` 对齐 Go 解码缺失字段时保留零值的效果。
-
 需要明确的差异和未验证点：
 
 - Go 同时声明 TOML tag，Rust 只声明通用 Serde rename；仓库证据只验证 JSON，未验证 TOML 兼容。
 - Go 字段注释描述了 placement rule 和 isolation 的语义约束，Rust 仅保留字段，不实现校验。
-- 本目录没有对应的 Go 测试文件覆盖该结构；Rust 兼容性证据来自 `config_test.rs` 和 `migration_aster_unit_test.rs`，以及 Go 生产定义本身。
 
 ## 扩展指南
 
@@ -119,19 +112,3 @@ RustCodeGraph 的文件节点报告 `config.rs` 被 `config_test.rs` 和 `migrat
 修改现有布尔协议时必须同时评估 Go `encoding/json` 的 `,string` 行为和 PD HTTP 响应兼容性，避免将 JSON 字符串改成布尔字面量。修改 `LocationLabels` 时要同步检查 `typeutil.rs`，否则结构字段和实际 wire 格式会脱节。
 
 如果要增加业务校验，宜提供显式验证函数或经验证的构造入口，而不是改变 `Deserialize` 的零值兼容行为；这能区分“忠实接收 PD/Go 数据”与“允许应用该配置”。性能风险总体较低，但标签编解码会分配/连接字符串；新增大集合字段时应评估 JSON 分配成本。兼容风险主要来自 wire key、默认值、未知字段策略和跨格式 Serde 行为。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- `pkg/store/pdtypes/config.rs`：`ReplicationConfig`、`bool_string::serialize`、`bool_string::deserialize` 及全部 Serde 属性。
-- `pkg/store/pdtypes/typeutil.rs`：`StringSlice` 的拥有数据结构和逗号分隔 Serde 行为。
-- `pkg/store/pdtypes/lib.rs`：`config` 模块公开方式与两个独立测试模块的装配。
-- `pkg/store/pdtypes/Cargo.toml`：crate 边界、`serde`/`serde_json` 依赖和 Go package 迁移元数据。
-- 根 `Cargo.toml` 与 `pkg/lib.rs`：`facade_store_pdtypes` 注册及 `store::pdtypes` 再导出路径。
-- `pkg/store/pdtypes/config.go` 与 `pkg/store/pdtypes/typeutil.go`：Go 字段、JSON/TOML tag、语义注释及 `StringSlice` 对照实现。
-- `pkg/store/pdtypes/config_test.rs`：JSON `null` 和字符串 `"null"` 的布尔零值行为。
-- `pkg/store/pdtypes/migration_aster_unit_test.rs`：缺失字段默认值和完整 PD JSON shape。
-- RustCodeGraph `status`/`files --filter pkg/store/pdtypes`/目标文件节点：索引覆盖目标 Rust、Go 与测试文件，文件节点给出两个测试使用者。精确结构体 ID 的 `node/callers/callees` 查询发生名称解析歧义，因此没有把其错误输出当作调用证据，并以文件节点和仓库精确搜索交叉核验。
-
-人工复核结论：该文件存在是为了提供与 Go/PD JSON 兼容的复制配置 DTO；执行行为完全由 Serde 驱动；安全扩展必须保持字段 wire 名称、字符串布尔协议、零值语义，并同步更新独立测试。按任务约束未运行 Cargo。

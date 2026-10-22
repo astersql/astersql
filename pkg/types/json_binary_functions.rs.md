@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现 AsterSQL Rust 侧的 MySQL/TiDB 二进制 JSON 运算核心。它不是独立模块：`pkg/types/internal/json_functions/lib.rs` 先定义 `BinaryJSON`、JSON 类型码、修改模式和 `JSONPathExpression`，再用 `include!` 把本文件纳入 `astersql-types-json-functions` 子 crate；顶层 `pkg/types/lib.rs` 又将该 crate 再导出为 `json_functions`。因此表达式层可以经 `astersql_types::json_functions` 或直接依赖 `types-json-functions` 使用这些 API。
-
-该层位于“SQL JSON 内建函数适配”和“二进制 JSON 存储表示”之间：例如 `pkg/expression/builtin_json.rs`、`pkg/expression/builtin_json_vec.rs` 将 JSON_EXTRACT、JSON_SET/INSERT/REPLACE、JSON_REMOVE、JSON_MERGE、JSON_CONTAINS、JSON_OVERLAPS、JSON_SEARCH 等 SQL 语义委托给本文件；`pkg/util/codec/codec.rs` 使用 `PeekBytesAsJSON` 划分编码流中的单个 JSON 值；会话运行时 `pkg/session/runtime/relational_value.rs` 使用转换、比较和 Merge Patch 能力。
+在 `serde_json::Value` 与 `BinaryJSON` 之间转换，并提供 `Serialize`、`Type`、`Unquote` 和文本格式化（`CreateBinaryJSON`、`BinaryJSONToSerde`、`format_binary_json`）。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/json_binary_functions.go`，独立测试是 `pkg/types/json_binary_functions_test.go`。公开功能基本一一对应：Go 的 `BinaryJSON.Type/Unquote/Extract/Modify/ArrayInsert/Remove/GetElemDepth/Search/Walk` 及 `CompareBinaryJSON`、`MergePatchBinaryJSON`、`MergeBinaryJSON`、`PeekBytesAsJSON`、`ContainsBinaryJSON`、`OverlapsBinaryJSON` 均在 Rust 文件中有同名或等价入口；`floatEpsilon`、Unicode 代理对、对象 key 排序、路径自动包装、RFC 7396 null 删除、LIKE Unicode 字符匹配等规则保持一致。
+公开功能基本一一对应：Go 的 `BinaryJSON.Type/Unquote/Extract/Modify/ArrayInsert/Remove/GetElemDepth/Search/Walk` 及 `CompareBinaryJSON`、`MergePatchBinaryJSON`、`MergeBinaryJSON`、`PeekBytesAsJSON`、`ContainsBinaryJSON`、`OverlapsBinaryJSON` 均在 Rust 文件中有同名或等价入口；`floatEpsilon`、Unicode 代理对、对象 key 排序、路径自动包装、RFC 7396 null 删除、LIKE Unicode 字符匹配等规则保持一致。
 
 实现策略存在可观察或维护层面的差异：Go 修改器通过 `binaryModifier` 记录目标指针并只重建相关二进制结构，Rust 的 `modify_recursive` / `remove_recursive` 展开并重编码沿途容器；Go 使用包级结构化错误，Rust 目前用消息字符串；Go 的 `CreateBinaryJSON(any)` 支持时间、duration、opaque 等包内类型，而本文件的 `CreateBinaryJSON` 只接收 `serde_json::Value`，额外类型由其他 Rust 模块构造；Rust 特有的 `BinaryJSONToSerde` 是适配表达式/会话层的有损桥接。Go Merge 对空输入的内部前置条件较强，Rust `MergeBinaryJSON(&[])` 明确定义为空数组，但 `MergePatchBinaryJSON(&[])` 返回错误以避免 Go 版本可能的越界前置条件。
 
-测试对应关系也分两层：`pkg/types/json_binary_functions_test.rs` 逐表移植 Go 文件中的 Unicode、Unquote、Merge 基准桩和 Compare 用例，并新增 JSON_SEARCH 的 Unicode `_` 回归；`pkg/types/json_binary_functions_6_aster_unit_test.rs` 额外覆盖 Extract→Modify→Remove→ArrayInsert、跨数值比较、Merge/Contains/Overlaps/Depth/Peek、Merge Patch、Walk 和 Search 的组合行为。测试逻辑保持在独立文件，未嵌入生产源文件。
+测试对应关系也分两层：`pkg/types/json_binary_functions_test.rs` 逐表移植 Go 文件中的 Unicode、Unquote、Merge 基准桩和 Compare 用例，并新增 JSON_SEARCH 的 Unicode `_` 回归；`pkg/types/json_binary_functions_6_aster_unit_test.rs` 额外覆盖 Extract→Modify→Remove→ArrayInsert、跨数值比较、Merge/Contains/Overlaps/Depth/Peek、Merge Patch、Walk 和 Search 的组合行为。
 
 ## 扩展指南
 
@@ -83,12 +81,3 @@
 - 新增 SQL JSON 操作通常先在本文件提供纯 `BinaryJSON` 语义，再接入 `pkg/expression/builtin_json.rs` 和必要的 `builtin_json_vec.rs`。不要在本文件处理 SQL NULL、类型推断或错误码映射，那些属于表达式适配层。
 - 比较/包含/重叠改动要同时检查数值混比、对象排序、数组递归和 opaque/时间类型；性能改动须警惕当前完整 materialize 与 clone 行为，并保持错误边界和对象有序不变量。
 - 测试应继续放在独立文件：基础 Go 对照用例更新 `pkg/types/json_binary_functions_test.rs`，Rust 组合/回归场景更新 `pkg/types/json_binary_functions_6_aster_unit_test.rs`，SQL 可见行为还应同步相应 `pkg/expression/*_test.rs`。不要把 `#[cfg(test)]` 测试追加进本生产文件。
-
-## 验证依据
-
-- 源码与装配：完整读取 `pkg/types/json_binary_functions.rs`；读取 `pkg/types/internal/json_functions/lib.rs` 的类型、路径解析与 `include!`；读取 `pkg/types/internal/json_functions/Cargo.toml`、`pkg/types/Cargo.toml`、`pkg/types/lib.rs`。`pkg/types` 下不存在 `doc.go`。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点和 1,848,419 条边；按文件 `node` 读取了目标文件 1–1627 行。精确查询确认 `MergePatchBinaryJSON` 的调用者含会话运行时和独立测试，并确认 `MergePatchBinaryJSON -> merge_patch`、`ContainsBinaryJSON -> array_elements/object_entries/object_search_key/CompareBinaryJSON`、`Search -> Walk/CreateBinaryJSON/like_match` 等调用边。部分跨 crate callers 查询为空，另以 `rg` 核验实际调用点。
-- Go 对照：读取 `pkg/types/json_binary_functions.go` 的 Extract/构造/修改器、比较、Merge、Peek、Contains/Overlaps、Depth、Search/Walk 实现，以及 `pkg/types/json_binary_functions_test.go` 的全部用例。
-- Rust 测试：读取 `pkg/types/json_binary_functions_test.rs` 和 `pkg/types/json_binary_functions_6_aster_unit_test.rs`；它们分别覆盖直接 Go 对照边界和主要公开操作组合。
-- 上下游证据：源码检索核验 `pkg/expression/builtin_json.rs`、`pkg/expression/builtin_json_vec.rs`、`pkg/session/runtime/relational_value.rs`、`pkg/util/codec/codec.rs`、`pkg/executor/aggfuncs/func_max_min.rs` 等直接调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令校验目标文档存在且恰有 11 个固定二级标题，并人工复核本文能回答文件存在原因、主要运行路径和安全扩展位置。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate；其 crate 根 `pkg/ingestor/ingestctrl/lib.rs` 通过 `pub mod disk_quota` 暴露该模块。它位于本地 ingest Engine 控制面与上层导入流程之间：下游通过 `DiskUsage` 获取所有 Engine 的瞬时占用快照，上游据 `CheckDiskQuota` 的结果决定哪些非导入中 Engine 是缓解配额压力的候选。当前生产接线见 `pkg/session/runtime/import_sst.rs::RuntimeBackend::disk_quota_pressure`，该方法把本地 `Backend` 和 quota 直接传入 `CheckDiskQuota`。
-
-`pkg/ingestor/ingestctrl/Cargo.toml` 将 crate 的库入口指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/ingestor/ingestctrl"` 标记 Go 对照包。本文件自身只依赖 crate 根定义的 `EngineFileSize` 和 `EngineId`，没有条件编译项、外部 I/O 或独立 Cargo feature。
+调用方必须把结果转换成后续资源治理动作。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ RustCodeGraph 还确认本文件被 `pkg/ingestor/ingestctrl/disk_quota_test.rs`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ingestor/ingestctrl/disk_quota.go`。Rust 的 `DiskUsage::EngineFileSizes` 对应 Go 接口同名方法；`DiskQuotaResult` 把 Go 的四个具名返回值聚合为结构体；`CheckDiskQuota` 的排序、累计、严格 `>` 判断以及 importing/非 importing 分流与 Go 第 42–63 行一致。
+Rust 的 `DiskUsage::EngineFileSizes` 对应 Go 接口同名方法；`DiskQuotaResult` 把 Go 的四个具名返回值聚合为结构体；`CheckDiskQuota` 的排序、累计、严格 `>` 判断以及 importing/非 importing 分流与 Go 第 42–63 行一致。
 
 Go 注释允许远端存储场景返回 `nil`，Rust 以空 `Vec` 表达同一结果。Go `int64` 运算按二进制补码回绕；Rust 为避免 debug 构建溢出 panic，在三处显式采用 `wrapping_add`，属于语义对齐而非算法差异。Go 使用 `uuid.UUID`，Rust 使用 crate 内 `EngineId(u128)`。
-
-测试对照为 `pkg/ingestor/ingestctrl/disk_quota_test.go::TestCheckDiskQuota` 与 `pkg/ingestor/ingestctrl/disk_quota_test.rs::TestCheckDiskQuota`：两者使用同样五个 Engine 和 30000、20000、12000、5000 四档 quota，断言相同候选、in-progress 数量及总量。Rust 另有溢出回绕回归测试。
 
 ## 扩展指南
 
@@ -83,13 +79,3 @@ Go 注释允许远端存储场景返回 `nil`，Rust 以空 `Vec` 表达同一�
 - 保持测试逻辑与源文件分离；新增用例放在同目录 `disk_quota_test.rs`，不要内嵌到生产文件。
 
 兼容风险主要是候选顺序与 Go 行为漂移；正确性风险是 importing 状态或快照失败被误解释；性能风险集中在每次复制并排序全部 Engine，复杂度约为 `O(n log n)`、额外空间为 provider 返回的 `O(n)` 快照。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件，目标目录与文件已索引。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/disk_quota.rs`：核对完整 69 行源码、6 个符号及三个直接使用文件。
-- RustCodeGraph `query/node/explore`：核对 `CheckDiskQuota`、`DiskUsage::EngineFileSizes`、`DiskQuotaResult`、`EngineFileSize`、`engineManager::engineFileSizes`、`Engine::getEngineFileSize`、`RuntimeBackend::disk_quota_pressure` 的定义和调用上下文。精确 `callers/callees` 对 trait 动态分派无输出，文档未把缺失图边写成已验证静态边。
-- crate 与模块边界：`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ingestor/ingestctrl/lib.rs`、`pkg/ingestor/ingestctrl/local.rs`。
-- Go 对照：`pkg/ingestor/ingestctrl/disk_quota.go`。
-- 测试证据：`pkg/ingestor/ingestctrl/disk_quota_test.rs`、`pkg/ingestor/ingestctrl/disk_quota_test.go`。
-- 人工复核结论：本文件存在是为了把 Engine 占用采集与配额候选算法解耦；运行时对单次快照排序、累计并分类；安全扩展必须同步数据来源、算法、调用方和独立 parity 测试。

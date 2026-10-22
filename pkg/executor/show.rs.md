@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`show.rs` 是 `astersql-executor` crate 中 SHOW 语句族的 Rust 执行模型，由 `pkg/executor/lib.rs` 以 `pub mod show` 导出。它把解析/计划层选定的 `ShowStmtType` 及参数封装为 `ShowExec`，负责分发、可见性过滤、排序、聚合与 `chunk::Chunk` 编码；元数据、权限、Region、IMPORT 作业等环境依赖统一从 `ShowRuntimeContext` 注入（`pkg/executor/show.rs:60-226, 413-467, 513-691`）。
-
-`pkg/executor/Cargo.toml` 声明包名 `astersql-executor`、库入口 `lib.rs` 和 `nextgen` feature；本文件直接使用 `astersql-errors`、`astersql-session-sessmgr` 与 `astersql-util-chunk`。当前迁移状态必须特别注意：仓库搜索只发现 Rust 测试构造本文件的 `ShowExec`，生产会话 SHOW 路径仍在 `pkg/session/runtime/dispatch.rs` 中按 `ast::ShowStmtType` 直接分支处理。因此本文件是已公开导出但尚未证实接入生产主链的执行器边界，不能把 Go `ShowExec` 的完整接线视为 Rust 现状。
+通过 `ShowRuntimeContext` 隔离会话、权限、InfoSchema、PD/TiKV、分布式任务和系统会话等外部能力；执行器自身不保存这些系统对象（`show.rs:413-467`）。
 
 ## 核心职责
 
@@ -66,9 +64,7 @@ Region 路径通过 `HashSet` 按 region id 去重并保留首次出现顺序（
 
 ## 与 Go 版本的对应关系
 
-Rust `ShowExec::Next`/`fetchAll` 对应 `pkg/executor/show.go:132-371`，保留“首次全量取数、后续 Chunk 分页”和语句类型分发。Rust 不直接持有 Go `BaseExecutor`/session context，而是用 `ShowRuntimeContext` 转译环境能力。Rust 用 RAII 恢复 SelectLimit；Go `fetchAll` 使用 defer。
-
-已有较明确语义对齐的部分包括：
+Rust 不直接持有 Go `BaseExecutor`/session context，而是用 `ShowRuntimeContext` 转译环境能力。Rust 用 RAII 恢复 SelectLimit；Go `fetchAll` 使用 defer。
 
 - Databases/Tables 的排序、`information_schema` 前置、可见性、LIKE 和 FULL TableType（Rust `show.rs:720-858`；Go `show.go:473-700`）。
 - PROCESSLIST 的 PROCESS 权限与当前用户过滤（Rust `show.rs:469-499`；Go `show.go:515-540`）。
@@ -87,12 +83,3 @@ Rust `ShowExec::Next`/`fetchAll` 对应 `pkg/executor/show.go:132-371`，保留�
 5. Rust 测试逻辑保持在独立文件：普通辅助函数和 Go 格式对齐扩展 `pkg/executor/show_test.rs`；Import group/job 执行器行为扩展 `pkg/executor/show/import_groups_test.rs`；不要把新测试内嵌到 `show.rs`。Go 回归对照主要在 `pkg/executor/show_test.go` 和 `pkg/executor/test/showtest/show_test.go`。
 
 主要风险：兼容性风险来自 MySQL/TiDB 的精确排序、列型、错误码/文本和权限语义；正确性风险来自将 runtime adapter 的快照、事务或可见性实现得过于简化；性能风险来自 `fetchAll` 全量物化和大量 LIKE 匹配的 `O(pattern_len * value_len)` 动态规划内存/时间开销（`show.rs:593-610, 1588-1628`）。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本工作区索引包含 11,467 文件和 307,296 节点；`files --filter pkg/executor/show.rs` 定位目标；`node --file pkg/executor/show.rs --offset ...` 分段读取 1-1690 行；`query ShowExec`、`query ShowSchema`、`query FetchShowProcessListRows --json` 核对主要符号。对 Rust impl method 执行 `callers/callees` 时未获得可用边，因此调用现状另用全库 `rg` 直接引用搜索核对，未根据“无图边”推断不可达。
-- Rust 源码/装配：`pkg/executor/show.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`；该包不存在 `pkg/executor/doc.go`。
-- Rust 主链核验：`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/statistics.rs`；全库搜索未发现生产 Rust 构造本文件 `ShowExec`。
-- Rust 测试：`pkg/executor/show_test.rs` 覆盖 CREATE DATABASE 转义/非默认 collation、默认 utf8mb4 collation、`information_schema` 前置、finished import 更新时间和 KiB 格式；`pkg/executor/show/import_groups_test.rs` 覆盖空/命名 group 查询、空 group key 排除和 Import 进度 21 列顺序。
-- Go 对照：`pkg/executor/show.go`、`pkg/executor/show_test.go`、`pkg/executor/test/showtest/show_test.go`；Go 测试另验证 SHOW TABLES/LIKE/FULL、临时表隐藏、索引/global index、Session States、权限、Warnings、Regions 和 Config 等完整 SQL 行为。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的 `test -f ... && test "$(rg -c ...)" -eq 11` 检查文件存在且固定二级章节恰为 11，并人工复核本文所有“已支持”结论均能回指上述符号或文件。

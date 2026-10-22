@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-s3store` crate 中的金山云 KS3 适配层。模块入口 `pkg/objstore/s3store/lib.rs` 以 `#[path = "ks3.rs"] mod ks3` 挂载它，再通过 `pub use ks3::*` 暴露其 API；crate 边界和依赖由 `pkg/objstore/s3store/Cargo.toml` 定义。KS3 兼容 S3 协议，因此这里不重复实现完整对象 I/O，而以 `KS3Storage` 包装 `s3like::Storage`，只保留 KS3 特有的构造限制、权限探测、复制冲突处理、URI 和 Presign 能力差异。
-
-上层以 `storeapi::Storage` 使用该类型，底层实际 I/O 进入通用 S3 实现。源码中的 `MAX_SKIP_OFFSET_BY_READ` 与 `MAX_ERROR_RETRIES` 是从 Go 文件保留的公开兼容常量，但本文件当前没有读取它们；Rust 的范围读取、重试、分片上传等行为来自 `inner`，不能据这两个常量推断本文件自行实现了这些流程。
+KS3 兼容 S3 协议，因此这里不重复实现完整对象 I/O，而以 `KS3Storage` 包装 `s3like::Storage`，只保留 KS3 特有的构造限制、权限探测、复制冲突处理、URI 和 Presign 能力差异。
 
 ## 核心职责
 
@@ -75,13 +73,9 @@ RustCodeGraph 的精确 `callers/callees` 命令对本文件符号未输出静�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/s3store/ks3.go`。Rust 保留了 `KS3Storage`、生产/测试构造、四类权限探测、Put 请求字段、两种对象已存在错误码、`ks3://` URI、Presign 禁用和覆盖复制策略。
-
 实现结构并非逐行复刻。Go 的 `KS3Storage` 直接持有 KS3 SDK client，并在同一文件实现读写、范围 reader、seek/retry、遍历、分片上传和异步 writer；Rust 把这些通用 S3 能力收敛到 `s3like::Storage`，本文件主要负责厂商差异。Go 构造器直接配置 KS3 SDK、凭证和访问记录 handler，并通过 `permissionCheckFnKS3` 调用四个 KS3 探测函数；Rust 通过将 provider 设为 `KS3SDKProvider` 后调用 `NewS3Storage` 复用统一 SDK 构造与通用权限检查链，四个同名 Rust helper 当前没有从生产构造器接线。
 
 已验证的细节差异包括：Go `CopyFrom` 接收任意 `storeapi.Storage` 并运行时检查是否为 KS3，Rust 方法签名直接要求 `&KS3Storage`；Go 的已存在分支递归重试，Rust 用循环；Go 对其他结构化 Copy 错误最终返回 `nil`，Rust同样返回成功；Go Put/Delete 权限探测会对部分清理错误告警后忽略，而 Rust 当前在 Put 成功时返回 Delete 错误。Go 的 `maxSkipOffsetByRead`、`maxErrorRetries` 驱动本文件内 reader，Rust 同名常量在这里未接线，真正 reader 行为由通用内层负责。
-
-Rust 测试 `pkg/objstore/s3store/ks3_test.rs` 对应验证 URI、删除后重试、ListObjects v1 参数、Get 错误分类、Put/Delete 结果、请求字段和双拼写错误码；`pkg/objstore/s3store/s3_test.rs::test_ks3_create_honors_part_size` 验证经 `inner.Create` 的 KS3 分片仍尊重 `WriterOption.PartSize`。Go 的 `pkg/objstore/s3store/s3_test.go::TestKS3CreateHonorsPartSize` 是后者的语义对照。
 
 ## 扩展指南
 
@@ -90,12 +84,3 @@ Rust 测试 `pkg/objstore/s3store/ks3_test.rs` 对应验证 URI、删除后重�
 新增对象操作前先判断是否真是 KS3 差异：通用行为应进入 `s3like::Storage` 或 S3 client，而不是在此重新实现。若扩展 `CopyFrom`，必须显式决定重试上限、幂等性和删除后失败的恢复策略，并保持两种历史错误码兼容；若改变非“已存在”结构化错误的吞掉行为，应同时评估 Go 兼容性。若增加 Presign 支持，需要替换当前明确错误，并增加有效期、凭证泄漏和 endpoint/path-style 组合测试。
 
 测试逻辑应继续放在独立文件：本层专属行为放 `pkg/objstore/s3store/ks3_test.rs`，经通用 S3 内层实现的综合行为放 `pkg/objstore/s3store/s3_test.rs`；不要把测试内嵌进 `ks3.rs`。修改 Go 对齐语义时同步核对 `ks3.go` 和相关 Go 测试，但不要为让测试通过而删减 Rust 逻辑。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/objstore/s3store`：确认目标、模块入口、独立 Rust 测试及 Go 对照文件均被索引。
-- RustCodeGraph `node --file pkg/objstore/s3store/ks3.rs --offset 1 --limit 500`：读取目标文件全部 299 行；结果报告 35 个符号，并将 `s3_test.rs` 标为使用者。
-- RustCodeGraph `query KS3Storage`、`query NewKS3Storage`、`query NewS3Storage`、`query TestKS3CreateHonorsPartSize`、`query test_ks3_create_honors_part_size`：核对主要类型、构造入口、通用构造下游及 Go/Rust 测试位置。精确 `callers/callees` 查询未返回输出，此限制已在调用关系章节披露。
-- 已读取路径：`pkg/objstore/s3store/lib.rs`、`store.rs`、`ks3_test.rs`、`s3_test.rs`、`pkg/objstore/storeapi/storage.rs`、Go 对照 `pkg/objstore/s3store/ks3.go` 与 `s3_test.go`，以及未被代码图覆盖的 `pkg/objstore/s3store/Cargo.toml`。该目录不存在 `doc.go`。
-- 本任务只新增说明文档，没有运行 Cargo；最终结构检查验证文档存在且恰好包含任务要求的 11 个固定二级标题。

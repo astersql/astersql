@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义逻辑算子 `TiKVSingleGather`，位于 `astersql-planner-core-operator-logicalop` crate。模块由 `pkg/planner/core/operator/logicalop/lib.rs` 声明并公开再导出；crate 的 `Cargo.toml` 通过 `[package.metadata.porting].go-package` 将其对应到 Go 包 `pkg/planner/core/operator/logicalop`。
-
-它处在访问路径选择与物理读算子之间：`DataSource::Convert2Gathers` 在 `logical_datasource.rs:1671` 把表路径或索引路径包装成一个扫描子节点和一个 `TiKVSingleGather`；随后物理计划代码按 gather 中保存的路径元数据选择 reader、过滤不符合存储属性的候选或为 Index Join 寻找探测路径。这里的“Gather”是逻辑计划边界描述，不负责网络收包或线程调度。
+实现 `LogicalPlan` 的类型擦除和基座访问接口，使下游可通过 `as_any().downcast_ref::<TiKVSingleGather>()` 识别并消费该节点。
 
 ## 核心职责
 
@@ -72,9 +70,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_tikv_single_gather.go`。两版都内嵌 schema producer、保存来源/索引标志/索引，并实现初始化、Explain、键继承和可能属性透传。
-
-语义对齐点：Go `BuildKeyInfo` 把唯一子 schema 的 `PKOrUK` 交给自身 schema；Rust 通过 `LogicalSchemaProducer::BuildKeyInfo` 递归构建后，按输出列映射重建这些键，独立测试验证键列映射。Go `PreparePossibleProperties` 在无/空子属性时清除 `hasTiFlash`，否则透传首个孩子的 orders 和 TiFlash；Rust 对空切片和首元素执行同样的状态变化与属性复制。Go 从基类继承 `DeriveStats`；Rust 显式委托 `BaseLogicalPlan::DeriveStats`，保持单子统计继承行为。
+Go `PreparePossibleProperties` 在无/空子属性时清除 `hasTiFlash`，否则透传首个孩子的 orders 和 TiFlash；Rust 对空切片和首元素执行同样的状态变化与属性复制。Go 从基类继承 `DeriveStats`；Rust 显式委托 `BaseLogicalPlan::DeriveStats`，保持单子统计继承行为。
 
 已确认的结构差异：Go 结构体当前只有 `Source`、`IsIndexGather`、`Index` 三个专有字段；Rust 还保存 `StoreType`、`IsDoubleRead` 和 `TableFilters`，供当前 Rust 物理路径使用。Go `ExplainInfo` 假定 `Source`/`Index` 已设置并直接解引用，Rust 使用 `Option` 并提供不完整对象的回退文本。Go `Init` 返回指针，Rust 消费并返回 `Self`；二者都替换公共基座并写入相同算子类型和查询块偏移。
 
@@ -87,13 +83,3 @@
 - 与 Go 逐提交对齐时，应分别记录 Go 增量和 Rust 为现有物理路径保留的必要字段，不能为了表面结构相同删掉 Rust 下游正在读取的字段。
 
 兼容风险集中在 EXPLAIN 文本、候选 reader 类型和唯一键/排序属性；性能风险集中在错误的 `StoreType`、双读判定或过滤条件复制导致不当候选和额外回表。相关行为修改后应在现有独立单测之外选择覆盖表路径、覆盖索引、非覆盖索引和 TiFlash 属性的规划测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`explore "TiKVSingleGather logical_tikv_single_gather"`、`query TiKVSingleGather --kind struct`、`node TiKVSingleGather` 核对 Rust/Go 定义及构造边；`node buildTableGather` 与文件节点查询核对 `Convert2Gathers`、表/索引构造链和字段复制。
-- 目标与基类源码：`logical_tikv_single_gather.rs`、`logical_datasource.rs:1572-1683`、`logical_schema_producer.rs:117`、`base_logical_plan.rs:374-433`、`lib.rs`。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml`。
-- Go 对照：`logical_tikv_single_gather.go`、`logical_datasource.go:523-566`。
-- Rust 独立测试：`logical_tikv_single_gather_test.rs` 的四个测试分别验证排序/TiFlash 属性、单子统计继承、索引 Explain 文本和键映射继承。
-- 下游证据：`pkg/planner/core/operator/physicalop/base_physical_plan.rs`、`pkg/planner/cascades/old/implementation_rules.rs:615-650`、`pkg/planner/core/operator/physicalop/index_join_probe.rs:145-166`。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付前以指定命令验证目标文档恰含十一个固定二级标题，并人工复核所有行为结论均可回溯到上述符号和文件。

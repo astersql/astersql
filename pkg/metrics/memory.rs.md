@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate（见 `pkg/metrics/Cargo.toml`），由 crate 根 `pkg/metrics/lib.rs` 以 `pub mod memory` 暴露。它不是内存仲裁算法本身，而是全局内存仲裁器的 Prometheus 指标定义与更新辅助层：负责创建 collector、保存包级句柄、缓存动态 `type` 标签对应的子指标，并把这些能力交给执行/会话等上层使用。
-
-应用级入口位于 `pkg/metrics/metrics.rs`：`InitMetrics` 调用 `memory::InitMemoryMetrics`，`RegisterMetrics` 随后注册本文件的八个顶层 collector。当前 Rust 生产代码还会在 `pkg/session/runtime/control.rs` 直接递增预绑定的 `GlobalMemArbitratorSubTasks.ForceKillPlan`；代码搜索未发现三个动态更新辅助函数在其他 Rust 生产文件中的调用。Go 版本则由 `pkg/util/memory/global_arbitrator.go` 调用这些辅助函数，说明 Rust 的动态指标接线尚未完全达到 Go 的使用范围。
+预绑定高频事件标签和任务标签，避免调用方重复执行 `WithLabelValues`（`GlobalMemArbitratorSubEvents`、`GlobalMemArbitratorSubTasks`）。
 
 ## 核心职责
 
@@ -75,15 +73,7 @@ RustCodeGraph 将 `memory.rs::InitMemoryMetrics`、`AddGlobalMemArbitratorCounte
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/memory.rs` 按 `pkg/metrics/memory.go` 保留了相同的八个 collector、指标 namespace/subsystem/name/help、`type` 标签、17 个耗时桶、七个固定标签值，以及动态缓存的读锁查询—写锁发布—锁外更新流程。Rust 用：
-
-- `Option<T>` 表达 Go collector 包变量初始化前的零值；
-- 两个具名结构体代替 Go 的匿名结构体；
-- `LazyLock<RwLock<HashMap<...>>>` 代替带 `sync.RWMutex` 的惰性 map；
-- 借用参数代替 Go 的 vector 值传递，并把 `i64` 显式转换为 `f64`；
-- `expect` 明确暴露锁中毒与初始化顺序失败。
-
-行为差距主要在调用接线而不在本文件算法：Go 的 `pkg/util/memory/global_arbitrator.go` 已调用三个更新/重置辅助函数；Rust 仓库搜索只确认初始化、注册和 `ForceKillPlan` 预绑定 counter 的直接消费。后续移植不能仅凭本文件 API 已存在就断言运行时会持续填充全部内存仲裁指标。
+行为差距主要在调用接线而不在本文件算法：Go 的 `pkg/util/memory/global_arbitrator.go` 已调用三个更新/重置辅助函数；Rust 仓库搜索只确认初始化、注册和 `ForceKillPlan` 预绑定 counter 的直接消费。
 
 ## 扩展指南
 
@@ -93,14 +83,3 @@ RustCodeGraph 将 `memory.rs::InitMemoryMetrics`、`AddGlobalMemArbitratorCounte
 - 改并发模型时：应优先消除或封装 `static mut`，并保持完整初始化、子句柄发布、注册之间的可见性；不能只依赖 crate 级 lint allow。
 - 测试应放在独立文件，不嵌入 `memory.rs`。当前没有同名 `memory_test.rs`；可扩展 `pkg/metrics/metrics_test.rs` 验证注册后的 metric family/标签/桶，或新建独立 `pkg/metrics/memory_test.rs` 并在 `lib.rs` 的 `#[cfg(test)]` 区域接入。并发缓存测试应覆盖首次未命中竞争、重复标签复用、reset 与并发 set 的边界。
 - 若继续对齐 Go 运行时，应在 `pkg/util/memory/global_arbitrator.rs` 等真实仲裁路径补齐调用，并同步其独立 Rust 测试；这属于后续实现工作，不是本文档任务的现状修改。
-
-## 验证依据
-
-- 源码全貌：`pkg/metrics/memory.rs`（全部 277 行）；主要节点为 `InitMemoryMetrics`、`AddGlobalMemArbitratorCounter`、`SetGlobalMemArbitratorGauge`、`ResetGlobalMemArbitratorGauge`。
-- crate/模块边界：`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`；确认 crate 名、`prometheus 0.14` 依赖、`pub mod memory` 和兼容层再导出。
-- 初始化与注册：`pkg/metrics/metrics.rs`；确认 `InitMetrics` 的调用次序、`PACKAGE_INIT_LOCK` 及八个 collector 的注册列表。
-- Go 对照：`pkg/metrics/memory.go`；调用侧对照为 `pkg/util/memory/global_arbitrator.go`。
-- Rust 直接消费证据：`pkg/session/runtime/control.rs` 的 `GlobalMemArbitratorSubTasks.ForceKillPlan`；仓库级精确 `rg` 未发现 Rust 生产代码调用三个动态更新辅助函数。
-- 测试证据：`pkg/metrics/bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata` 冒烟调用 `InitMemoryMetrics`；`pkg/metrics/metrics_test.rs::test_register_metrics` 覆盖全包初始化/注册，但未对本文件各 metric family、动态缓存或 reset 做专项断言。`pkg/executor/test/memtest/mem_test.rs` 验证仲裁器行为，但不是本指标文件的直接单元测试。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/metrics` 确认目标与对照/测试文件；`query --json` 消除 Go/Rust 同名符号歧义；`node --file pkg/metrics/memory.rs` 核对完整定义。结构检查按任务指定命令执行。
-

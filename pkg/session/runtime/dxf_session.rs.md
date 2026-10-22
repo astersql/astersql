@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的具体会话运行时中，由 [`pkg/session/runtime.rs`](../runtime.rs) 通过私有模块 `mod dxf_session` 接入。它把 `ConcreteSession` 适配为 `astersql_dxf_framework_storage`（下文简称 `dxf`）所需的 `SQLBackend`，并通过 `ConcreteSession::ImportTaskManager` 创建可访问 DXF 任务、子任务和导入作业系统表的 `dxf::TaskManager`。
-
-其位置处于两层之间：上层是 `pkg/dxf/framework/storage`、`pkg/dxf/importinto` 以及 session 内的导入/分布式 DDL 流程；下层是 `ConcreteSession::execute`、`Domain` 的 InfoSchema/DDL 能力和规范 KV 事务。文件注释明确规定每个池租约拥有一个工作线程和一个规范会话，因此同一租约中的 `BEGIN`、业务 SQL、`COMMIT`/`ROLLBACK` 会落到同一个事务上下文。
-
-[`pkg/session/Cargo.toml`](../Cargo.toml) 将本模块归入 `astersql-session`，并直接声明了本文件使用的 `astersql-dxf-framework-storage`、`astersql-meta-metadef`、`astersql-meta-model` 与 `chrono`；本文件没有条件编译项，也没有单独 feature 门控。
+`ConcreteSession::ImportTaskManager` 幂等创建六张 DXF/IMPORT INTO 元数据表，并向 `dxf::TaskManager` 提供按租约新建真实 session 的工厂。
 
 ## 核心职责
 
@@ -97,12 +93,7 @@ pool factory 并不复用一个全局 session：每次 lease 都创建新的 `Ba
 
 ## 与 Go 版本的对应关系
 
-仓库中没有与 `pkg/session/runtime/dxf_session.rs` 同路径的一对一 Go 文件；对应语义分散在以下 Go 实现中：
-
-- [`pkg/domain/domain.go`](../../domain/domain.go) 的 `Domain.InitDistTaskLoop` 用 `storage.NewTaskManager(do.dxfSessionPool)` 建立全局 manager，对应 Rust 将 session pool 接到 TaskManager 的总体位置。
-- [`pkg/dxf/framework/storage/task_table.go`](../../dxf/framework/storage/task_table.go) 的 `NewTaskManager`、`WithNewSession`、`WithNewTxn` 和 `ExecuteSQLWithNewSession` 定义 session 借用与事务契约：同一个借用 session 上 BEGIN，回调成功则提交，失败则回滚。Rust 本文件用专属 worker/session 保住这一语义，而事务编排仍由 Rust DXF storage crate 完成。
 - [`pkg/dxf/importinto/scheduler.go`](../../dxf/importinto/scheduler.go) 的 `getTaskMgrForAccessingImportJob` 在 user keyspace 场景使用 `SysSessionPool` 创建 manager，说明 import job 可能需要与任务执行 keyspace 不同的 session pool；Rust 各调用点当前通过相应 `ConcreteSession` 的 Domain 建 manager。
-- [`pkg/dxf/framework/dxfutil/util.go`](../../dxf/framework/dxfutil/util.go) 的 `CheckTaskRuntime` 体现 Go 版本对 store/session keyspace 一致性的显式检查；本文件不自行执行同等 keyspace 校验，边界由传入 `Domain` 与上游 runtime 选择负责。
 - Go session pool 直接返回实现 `sessionctx.Context` 的内部 session；Rust 的 `ConcreteSession` 不是 DXF crate 的同一类型，因此新增了 `SQLBackend`、值绑定/行转换、专用事务时间戳与表模式方法作为移植桥梁。
 - Go 系统表通常在 bootstrap/upgrade 以及 Domain 初始化阶段准备；Rust `ImportTaskManager` 为当前可执行 runtime 额外做六张表的幂等初始化。这是 Rust 当前实现的显式自包含行为，不应误写成 Go 同函数的逐行翻译。
 
@@ -116,12 +107,3 @@ pool factory 并不复用一个全局 session：每次 lease 都创建新的 `Ba
 - 新增系统表时修改 `ImportTaskManager` 的常量列表，并确认常量是否已经含 `IF NOT EXISTS` 或是否符合当前小写前缀改写规则；还应核对 Go bootstrap/upgrade 定义，避免表结构漂移。
 - 最接近的现有独立回归位置是 [`pkg/session/runtime_test/ddl.rs`](../runtime_test/ddl.rs)。DXF 存储契约变化还应同步 `pkg/dxf/framework/storage/*_test.rs`，导入调度语义则同步 `pkg/dxf/importinto/*_test.rs`。按照仓库约定，Rust 测试继续放在独立测试文件中。
 - 兼容风险集中在 SQL 字面量格式、系统表 schema、Go/Rust transaction 语义与 keyspace 选择；性能风险集中在每 lease 一个线程和逐请求同步通道。任何优化都必须先证明不会让同一事务跨 session。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/session/runtime/dxf_session.rs --offset 1 --limit 500` 返回目标文件完整 301 行；`query ImportTaskManager` 定位公开入口；`callees ImportTaskManager` 识别 `execute` 下游。图未完整恢复跨 crate 动态分派，调用点以精确文本引用补充。
-- Rust 源与模块边界：[`pkg/session/runtime/dxf_session.rs`](./dxf_session.rs)、[`pkg/session/runtime.rs`](../runtime.rs)、[`pkg/dxf/framework/storage/lib.rs`](../../dxf/framework/storage/lib.rs)、[`pkg/session/Cargo.toml`](../Cargo.toml)。
-- 上游 Rust 调用：[`pkg/session/runtime/import_file.rs`](./import_file.rs)、[`pkg/session/runtime/modify_column_dist_backfill.rs`](./modify_column_dist_backfill.rs)，以及 `pkg/dxf/importinto` 和 `pkg/dxf/framework/handle` 中对 `ImportTaskManager` 的精确引用。
-- Rust 独立测试：[`pkg/session/runtime_test/ddl.rs`](../runtime_test/ddl.rs) 的 `dxf_backend_alters_classic_table_mode_with_canonical_session`、`dxf_backend_exposes_current_transaction_start_ts_for_import_stats`、`import_scheduler_classic_table_empty_check_runs_on_canonical_session`、`import_scheduler_stats_delta_runs_on_canonical_transaction` 与后续 durable scheduler 用例；[`pkg/dxf/importinto/scheduler_test.rs`](../../dxf/importinto/scheduler_test.rs) 的 mock `txn_start_ts` 测试；[`pkg/dxf/importinto/scheduler_testkit_test.rs`](../../dxf/importinto/scheduler_testkit_test.rs) 的真实 manager 场景。
-- Go 对照：[`pkg/domain/domain.go`](../../domain/domain.go) 的 `InitDistTaskLoop`；[`pkg/dxf/framework/storage/task_table.go`](../../dxf/framework/storage/task_table.go) 的 `TaskManager` session/transaction 方法；[`pkg/dxf/importinto/scheduler.go`](../../dxf/importinto/scheduler.go) 的 import job manager 选择；[`pkg/dxf/framework/dxfutil/util.go`](../../dxf/framework/dxfutil/util.go) 的 runtime/session keyspace 检查。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定的 11 章节结构命令，并额外检查文档内相对链接目标存在；人工复核重点为文件存在原因、命令/事务流程、错误边界、资源关闭顺序和安全扩展入口。

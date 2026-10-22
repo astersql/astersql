@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义逻辑计划中的 `LogicalSort`，表示 SQL `ORDER BY` 在逻辑优化阶段的排序节点。它位于 `astersql-planner-core-operator-logicalop` crate；`lib.rs` 以 `mod logical_sort` 纳入模块并用 `pub use logical_sort::*` 对外导出。该 crate 的 `Cargo.toml` 通过 `[package.metadata.porting].go-package` 明确对应 Go 包 `pkg/planner/core/operator/logicalop`，并直接依赖 `base`、`expression`、`planner_util` 与 `rule_util` 等本地 crate。
-
-上游的 Rust `PlanBuilder::buildSortWithCheck`（`pkg/planner/core/logical_plan_builder.rs`）会建立 `PlanKind::Sort`、保存排序项并挂接一个输入节点；当前文件则提供面向完整逻辑算子接口的 `LogicalSort` 实现。下游物理化入口 `ExhaustPhysicalPlans4LogicalSort`（`pkg/planner/core/operator/physicalop/physical_sort.rs`）读取这里的 `ByItems`、Schema、统计信息和查询块偏移，枚举真正执行排序的 `PhysicalSort`，以及可利用输入有序性的 `NominalSort`。
+上游的 Rust `PlanBuilder::buildSortWithCheck`（`pkg/planner/core/logical_plan_builder.rs`）会建立 `PlanKind::Sort`、保存排序项并挂接一个输入节点；当前文件则提供面向完整逻辑算子接口的 `LogicalSort` 实现。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ RustCodeGraph 对若干精确方法的独立 `callers`/`callees` 命令未返回
 
 ## 与 Go 版本的对应关系
 
-Rust `logical_sort.rs` 基本逐项对应 `logical_sort.go`：`LogicalSort` 字段、`Init`、`ExplainInfo`、`ReplaceExprColumns`、`PruneColumns`、`PushDownTopN`、`PreparePossibleProperties`、`ExtractCorrelatedCols`、`GetUsedCols` 和 `getPossiblePropertyFromByItems` 都有同名或直接等价实现。
-
 已核实的语义一致点包括：降序 Explain 项带 `:desc`；列替换深入相关列表达式；纯 Limit 吸收 Sort 的排序键；已有 TopN 下推时当前 Sort 可消去；可能属性只采用连续纯列前缀；列裁剪按表达式哈希去重，并保留无列依赖但非运行时常量的表达式。Rust 独立测试 `logical_sort_test.rs` 直接覆盖前三类中的 Explain、相关列替换和 NULL 列裁剪；物理层测试 `physical_sort_test.rs::root_sort_enumerates_physical_and_nominal_candidates_like_go` 覆盖 Root 物理候选枚举。
 
 需要明确的实现差异：
@@ -109,12 +105,3 @@ Rust `logical_sort.rs` 基本逐项对应 `logical_sort.go`：`LogicalSort` 字�
 - 修改 TopN 下推协议时，需同时核对 `LogicalTopN::IsLimit`、`BaseLogicalPlan::PushDownTopN`、投影/Limit/Join 等相邻算子以及计划树返回值约定，尤其覆盖缺少子节点与 `None` 输入。
 - 修改可能属性推导时，必须维持“只声明连续可证明前缀”的不变量，并同步检查 `physical_sort.rs::MatchItems`、`ExhaustPhysicalPlans4LogicalSort` 与 `nominal_sort.rs::FromLogical`，防止错误跳过真实排序或误选 MPP 路径。
 - 修改展示格式或列替换逻辑时，扩展 `logical_sort_test.rs`；修改物理候选行为时，扩展独立的 `physical_sort_test.rs`。Go 侧对应语义应继续以 `logical_sort.go`、`logical_plans_misc.go` 和 `logicalop_test/hash64_equals_test.go` 为对照。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件的 `node --file` 完整读取到 230 行，并报告被 25 个文件使用。
-- RustCodeGraph 精确符号查询：确认 `LogicalSort`、`pruneSortByItems`、`ExplainInfo`、`PruneColumns`、`PushDownTopN`、`PreparePossibleProperties`、Go `PlanBuilder::buildSort`、Rust `logical_plan_builder.rs::buildSort`、`ExhaustPhysicalPlans4LogicalSort` 与 `NominalSort::FromLogical` 的定义位置。精确 `callers/callees` 未产生方法级输出，该限制已在依赖章节披露。
-- 已读生产源码：`pkg/planner/core/operator/logicalop/logical_sort.rs`、`lib.rs`、`Cargo.toml`、`base_logical_plan.rs`、`logical_plans_misc.rs`、`hash64_equals_generated.rs`、`shallow_ref_generated.rs`，以及 `pkg/planner/core/logical_plan_builder.rs`、`pkg/planner/core/operator/physicalop/physical_sort.rs`、`nominal_sort.rs`。目标包不存在 `doc.go`，因此无额外包契约可读。
-- 已读 Go 对照：`pkg/planner/core/operator/logicalop/logical_sort.go`、`logical_plans_misc.go`、`hash64_equals_generated.go` 和 `pkg/planner/core/logical_plan_builder.go`。
-- 已读独立测试：`pkg/planner/core/operator/logicalop/logical_sort_test.rs`、`pkg/planner/core/operator/physicalop/physical_sort_test.rs` 与 Go `pkg/planner/core/operator/logicalop/logicalop_test/hash64_equals_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本文没有把轻量构建器、缺失图边或 Go 行为差异描述成已验证的一致实现。

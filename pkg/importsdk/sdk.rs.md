@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-importsdk` crate 的统一门面实现。crate 入口 `pkg/importsdk/lib.rs` 通过私有 `mod sdk` 装入本模块，再以 `pub use sdk::*` 导出这里的 `SDK`、`ImportSDK` 和 `NewImportSDK`。它不自行实现文件发现、作业 SQL 或 `IMPORT INTO` SQL 拼接，而是把 `FileScanner`、`JobManager`、`SQLGenerator` 三个子系统组合成一个对象。
-
-`pkg/importsdk/Cargo.toml` 指定 `lib.rs` 为库入口，并以 `package.metadata.porting.go-package = "pkg/importsdk"` 标明 Go 对照包。该 manifest 没有定义 feature；本文件也没有条件编译项。RustCodeGraph 的文件关系显示 `sdk.rs` 被 `pkg/importsdk/mock/sdk_mock.rs`、`pkg/importsdk/mock/sdk_mock_test.rs`、`pkg/importsdk/sdk_test.rs` 和 `pkg/importsdk/sql_generator_test.rs` 使用；索引没有给出生产调用点，因此本文不把尚未核实的应用接线描述成现状。
+由 `ImportSDK` 分别保存扫描器、默认作业管理器和 SQL 生成器，使三个职责仍由各自实现承担。
 
 ## 核心职责
 
@@ -89,7 +87,7 @@ Cargo 层面，本文件直接体现的是 `astersql-errors` 与标准库；其�
 - Go 通过接口嵌入自动转发方法；Rust 必须显式实现并逐项委托，因此新增父 trait 方法时必须同步更新 `ImportSDK` 的 impl。
 - Go 的 `importSDK` 为包内类型，Rust 的 `ImportSDK` 是公开结构体但字段私有。
 
-测试意图大体对齐。Go 的 `sdk_test.go` 使用 fake GCS server 与 `go-sqlmock`；Rust 的独立 `sdk_test.rs` 因当前 crate 未接入 fake GCS/`gs://` 测试后端，改用临时目录 `file://` 和内存 `JobDatabase`，覆盖 Dumpling SQL、CSV、只有数据文件、扫描上限、跳过无效文件、按名建表以及非法源脱敏。这个测试环境差异不应被表述为 GCS 行为已由 Rust 测试验证。
+Go 的 `sdk_test.go` 使用 fake GCS server 与 `go-sqlmock`；Rust 的独立 `sdk_test.rs` 因当前 crate 未接入 fake GCS/`gs://` 测试后端，改用临时目录 `file://` 和内存 `JobDatabase`，覆盖 Dumpling SQL、CSV、只有数据文件、扫描上限、跳过无效文件、按名建表以及非法源脱敏。这个测试环境差异不应被表述为 GCS 行为已由 Rust 测试验证。
 
 ## 扩展指南
 
@@ -99,12 +97,3 @@ Cargo 层面，本文件直接体现的是 `astersql-errors` 与标准库；其�
 - 修改任一父 trait 时，要同时检查 `sdk.rs` 的委托、`mock/sdk_mock.rs`、独立 `*_test.rs` 以及 Go 对照接口，避免 Rust 门面与 mock 漏方法。
 - 构造与组合行为的回归测试放在 `pkg/importsdk/sdk_test.rs`，具体扫描、作业或 SQL 规则分别放在同目录对应的独立测试文件，不要把测试内嵌进生产源码。若补 GCS 行为，应先接入可用且可复现的 Rust 测试后端，再声明与 Go fake-GCS 覆盖等价。
 - 兼容性风险主要是公开 trait/构造签名变化；正确性风险主要是遗漏委托或关闭路径；性能风险通常来自下游扫描并发与 `Arc` 后端，而本门面每次调用只增加一次动态分派。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`pkg/importsdk/sdk.rs` 被识别为 241 行、30 个符号。
-- RustCodeGraph 源码与符号：读取 `sdk.rs` 全文件；查询 `NewImportSDK`、`ImportSDK`、`FileScanner`、`JobManager`、`SQLGenerator` 和 `SDKOption`；对 Rust `NewImportSDK` 执行 callers/callees 查询但未得到可用调用边，因此生产接线明确记为未验证。
-- RustCodeGraph 下游源码：核对 `file_scanner.rs::FileScanner`、`NewFileScanner`、`fileScanner::Close`，`job_manager.rs::{JobDatabase, JobManager, JobManagerImpl, NewJobManager}`，`sql_generator.rs::{SQLGenerator, NewSQLGenerator}`，以及 `config.rs::{SDKOption, SDKConfig, defaultSDKConfig}`。
-- 文件证据：读取 `pkg/importsdk/Cargo.toml`、`pkg/importsdk/lib.rs`、Go 对照 `pkg/importsdk/sdk.go`、Rust 独立测试 `pkg/importsdk/sdk_test.rs` 和 Go 测试 `pkg/importsdk/sdk_test.go`。
-- 测试边界证据：Rust 测试包含非法源脱敏、SQL/CSV 源、文件路由、扫描限制和单表创建；Go 测试使用 fake GCS 与 sqlmock。本文未运行 Cargo，符合本纯文档任务约束。
-- 结构校验使用任务指定命令，要求本文存在且恰有 11 个固定二级标题；最终退出码记录在任务交付报告中。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-meta-autoid` crate；crate 入口 `pkg/meta/autoid/lib.rs` 以 `pub mod memid` 声明该模块，并通过 `pub use memid::*` 重新导出公开 API。`pkg/meta/autoid/Cargo.toml` 将 `lib.rs` 设为库入口，运行时依赖只有 `thiserror`；本文件自身只使用标准库同步原语，以及同 crate 的 `autoid`、`errors` 模块。
-
-它实现不访问 `IdStore`、不预留持久化区间的纯内存 AutoID 分配器。Go 版本在临时表创建路径 `pkg/table/temptable/ddl.go:newTemporaryTableFromTableInfo` 和临时表构造路径 `pkg/table/tables/tables.go` 中调用 `NewAllocatorFromTempTblInfo`。截至本次检索，Rust 的 `new_allocator_from_temp_table_info` 仅被 Rust 测试直接引用，尚未发现 Rust 生产调用者；因此“服务临时表”是与 Go 对齐的职责和预期接入点，而 Rust 当前已经实现并导出分配器能力、但生产接线尚未由调用边证实。
+`InMemoryAllocator` 实现 `Allocator` trait，在进程内维护一个水位 `base`，按 `(min, max]` 契约返回新分配区间。
 
 ## 核心职责
 
@@ -90,7 +88,7 @@ Rust 文件逐项移植 `pkg/meta/autoid/memid.go`：工厂的建分配器条件
 - Go 耗尽错误复用 `ErrAutoincReadFailed`；Rust使用同一错误类别 `AutoIdError::AutoIncrementReadFailed`，并附加 signed/unsigned 说明文本。
 - Rust 当前缺少已证实的生产调用边；Go 的两个表层调用点仍是判断未来 Rust 临时表接线位置的直接依据。
 
-`pkg/meta/autoid/memid_test.rs:test_in_memory_alloc` 对齐 Go 的 `pkg/meta/autoid/memid_test.go:TestInMemoryAlloc`，覆盖连续分配、批量、increment、offset、rebase、不回退、有符号/无符号耗尽和元数据种子。Rust 额外测试取消上下文被忽略，以锁定 Go 形参不使用的控制流语义。
+Rust 额外测试取消上下文被忽略，以锁定 Go 形参不使用的控制流语义。
 
 ## 扩展指南
 
@@ -100,11 +98,3 @@ Rust 文件逐项移植 `pkg/meta/autoid/memid.go`：工厂的建分配器条件
 - 若改变并发模型，必须保留每次分配和 rebase 的原子性，评估 `Mutex` 中毒处理及高并发锁竞争；Go 的“通常无并发”假设不能替代 Rust `Send + Sync` trait 契约。
 - 若改变错误或工厂失败传播，需同步 `pkg/meta/autoid/errors.rs` 以及调用方 API；尤其应考虑把初始化 rebase 的错误从 `Option` 中可观察地传出。
 - 性能上本实现每个查询/修改方法都获取同一互斥锁，但无 I/O；优化时优先以临时表会话实际访问模式和竞争测量为依据，不要用无锁读破坏水位一致性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/meta/autoid` 确认目标、模块、Go 对照和独立测试均已索引；`node --file pkg/meta/autoid/memid.rs` 核对了 194 行完整实现；针对 `new_allocator_from_temp_table_info`、`alloc`、`alloc_signed`、`alloc_unsigned`、`rebase` 等符号的 `explore/query/callers/callees` 结果用于核对内部调用和直接引用。图结果显示工厂进入 `InMemoryAllocator::new` 与 `rebase`，`alloc` 分派到 signed/unsigned 核心，并只发现 Rust 测试直接调用工厂。
-- Rust 源与 crate 契约：`pkg/meta/autoid/autoid.rs` 的 `Context`、`AllocatorType`、`Allocator`、`TableInfo`、`valid_increment_and_offset`、`calc_needed_batch_size`；`pkg/meta/autoid/errors.rs` 的 `AutoIdError` 与错误构造器；`pkg/meta/autoid/lib.rs` 的模块声明/再导出；`pkg/meta/autoid/Cargo.toml` 的 crate 边界和依赖。
-- Go 对照与真实入口：`pkg/meta/autoid/memid.go`、`pkg/table/temptable/ddl.go`、`pkg/table/tables/tables.go`。
-- 独立测试：`pkg/meta/autoid/memid_test.rs`、`pkg/meta/autoid/memid_test.go`；另以 `pkg/meta/autoid/autoid_service_1_aster_unit_test.rs` 中的内存分配器断言核对序列不支持边界。未运行 Cargo，符合本纯文档任务要求。
-- 人工复核结论：该文件存在是为了在无需持久化 AutoID 水位的临时表场景提供 trait 兼容分配器；运行时通过单锁水位、共享批大小算法和显式 signed/unsigned 边界完成分配；安全扩展需要同步独立 Rust/Go 测试并保留 trait、溢出、单调 rebase 与不支持序列的契约。

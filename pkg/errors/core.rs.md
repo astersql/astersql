@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`core.rs` 是 `astersql-errors` crate 的基础值层：它定义所有公开错误 API 共用的拥有型错误句柄 `SharedError`、Go 可变参数的 Rust 表示 `ErrorArg`，以及创建根错误的 `New`/`Errorf`。crate 根文件 `pkg/errors/mod.rs` 将 `DynError`、`SharedError`、`ErrorArg`、`New` 和 `Errorf` 重新导出，因此调用方通常通过 `astersql_errors::*` 使用它们，而不直接访问私有 `core` 模块。
-
-该文件不是完整的错误链实现。堆栈捕获由 `pkg/errors/stack.rs` 提供，单因链包装和遍历由 `pkg/errors/wrap.rs` 提供，多原因组由 `pkg/errors/group.rs`、`pkg/errors/join.rs` 提供，规范化错误由 `pkg/errors/normalize.rs` 提供，Juju 风格适配 API 位于 `pkg/errors/adaptor.rs`。`pkg/errors/Cargo.toml` 声明 crate 名为 `astersql-errors`、库入口为 `mod.rs`；直接依赖只有 `backtrace` 与带 `derive` 的 `serde`，其中本文件本身只使用标准库并经 `stack.rs` 间接依赖 `backtrace`。
+实现当前 Rust 迁移所需的 Go 风格格式子集，并为类型不匹配、缺参和不支持的动词产生稳定输出。
 
 ## 核心职责
 
@@ -104,13 +102,9 @@ RustCodeGraph 状态显示索引含 11,467 个文件、307,296 个节点，`pkg/
 
 ## 与 Go 版本的对应关系
 
-仓库 `go.mod` 锁定 `github.com/pingcap/errors v0.11.5-0.20260508054701-306e305bcf41`。对应模块缓存的 `errors.go` 中，Go `New`/`Errorf` 都构造私有 `fundamental{msg, stack: callers()}`；`fundamental.Error` 返回消息，`Format` 在 `%+v` 时追加栈。这与 Rust 的 `Fundamental`、`NewStack(1)`、`Display` 和交替 `Debug` 是直接映射。
-
 所有权与动态类型的主要差异是：Go 直接返回接口值 `error`，Rust 返回 `SharedError`；Go 运行时接口断言映射为 Rust 的 trait object、`downcast_ref` 和显式 `StackTraceCarrier`；Go 可变参数 `...interface{}` 映射为 `&[ErrorArg]`。Go `fmt.Sprintf` 支持完整格式语言，Rust `format_message` 仅实现当前迁移需要的子集。Rust 额外提供 `Arc` 指针身份 `ptr_eq`、强制 `Send + Sync`、拥有型参数冻结，以及用 `Redacted` 表达脱敏边界。
 
-Go `fundamental` 内嵌 `*stack`，Rust `Fundamental` 按值持有 `Stack`。Go 的 `New`/`Errorf` 返回对象没有 cause；Rust 同样如此，但外层 `SharedError::source` 暴露被句柄包裹的 `Fundamental`，这是与 Rust 标准错误生态互操作的适配层。Go 的 `%q` 由 `fmt.Formatter` 直接处理；Rust 测试通过对 `Display` 结果做 Rust `Debug` 引号化表达同一测试意图。
-
-`pkg/errors/tests/core_test.rs` 对应 Go `errors_test.go::TestNew`/`TestErrorf`，覆盖字面消息、基础格式化、克隆身份、downcast、标准 `source`、精度和类型错误诊断。`pkg/errors/tests/format_test.rs` 对应 Go `format_test.go::TestFormatNew`/`TestFormatErrorf`，验证纯消息与扩展栈输出。`pkg/errors/tests/api_parity_test.rs` 记录源提交 `306e305bcf41` 的公开 API 盘点，并明确可变参数、nil、所有权与格式 trait 的映射方式。
+Go 的 `New`/`Errorf` 返回对象没有 cause；Rust 同样如此，但外层 `SharedError::source` 暴露被句柄包裹的 `Fundamental`，这是与 Rust 标准错误生态互操作的适配层。Go 的 `%q` 由 `fmt.Formatter` 直接处理；Rust 测试通过对 `Display` 结果做 Rust `Debug` 引号化表达同一测试意图。
 
 ## 扩展指南
 
@@ -121,11 +115,3 @@ Go `fundamental` 内嵌 `*stack`，Rust `Fundamental` 按值持有 `Stack`。Go 
 修改 `SharedError` 所有权或组支持时，应同时核对 `group.rs::Errors`/`WalkDeep`、`join.rs::Join`、标准库 `source` 互操作以及 `ptr_eq` 的身份语义。不能为方便扩展而去掉 `Send + Sync + 'static`，因为这会改变 crate 的线程安全契约。
 
 测试应继续放在独立文件中，不内嵌进 `core.rs`。直接回归位置是 `pkg/errors/tests/core_test.rs`；格式输出和栈帧数放在 `pkg/errors/tests/format_test.rs`；公开表面变化同步更新 `pkg/errors/tests/api_parity_test.rs`；若涉及脱敏/冻结参数，再更新 `pkg/errors/tests/normalize_generation_test.rs`。新增 Go 格式语义时，应以仓库锁定的 `github.com/pingcap/errors` 版本及其 `errors_test.go`/`format_test.go` 为基线，并明确记录 Rust 无法或无需复制的差异。性能风险主要来自扩大格式解析复杂度、增加临时字符串分配，或改变每次构造都会捕获 backtrace 的策略。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用；`files --filter pkg/errors` 确认 `core.rs` 与独立测试集合；`node --file pkg/errors/core.rs --offset 1 --limit 260` 和 `--offset 261 --limit 140` 阅读完整 358 行源码；对 `SharedError ErrorArg Fundamental New Errorf format_message` 的 `explore` 确认文件级使用范围和代表性调用者；精确节点 `callers/callees` 返回空结果，故未把缺失的细粒度图边当作无调用者结论。
-- 直接 Rust 源：`pkg/errors/core.rs`；模块与 crate 边界：`pkg/errors/mod.rs`、`pkg/errors/Cargo.toml`；直接实现依赖及消费者：`pkg/errors/stack.rs`、`pkg/errors/wrap.rs`、`pkg/errors/adaptor.rs`、`pkg/errors/normalize.rs`、`pkg/errors/group.rs`、`pkg/errors/join.rs`。
-- Rust 独立测试：`pkg/errors/tests/core_test.rs`、`pkg/errors/tests/format_test.rs`、`pkg/errors/tests/api_parity_test.rs`，并通过引用检索确认 `normalize_generation_test.rs`、`std_interop_test.rs`、`group_join_test.rs` 等覆盖相邻契约。
-- Go 对照：仓库 `go.mod`/`go.sum` 锁定 `github.com/pingcap/errors` 提交 `306e305bcf41`；读取本机模块缓存该版本的 `errors.go`、`errors_test.go`、`format_test.go`。仓库 `pkg/errors` 下没有同路径 `.go` 文件，因此未虚构本地 Go 对照文件。
-- 人工复核结论：本文件存在是为了给整个 Rust 错误子系统提供线程安全的统一错误值、根错误与受控的 Go 格式映射；运行时由构造、格式化、栈捕获和 `Arc` 共享组成；安全扩展必须同时维护格式参数、根栈桥接、包装消费者与独立测试的契约。

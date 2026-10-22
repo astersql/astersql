@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo crate `astersql-util-ranger`（见 [`Cargo.toml`](./Cargo.toml)），由 [`lib.rs`](./lib.rs) 以 `detacher_impl` 私有模块装入并整体再导出。它位于优化器表达式与底层 Range 构造之间：接收已经解析、类型化的 `expression::ExprBox` 谓词和索引列定义，把谓词划分为可参与键区间构造的 `AccessConds` 与仍需精确求值的 `RemainedConds`，并调用 `points.rs`、`ranger.rs` 将端点组合成 `Ranges`。
-
-主入口 `DetachCondAndBuildRangeForIndex` 已接入逻辑数据源访问路径生成（`pkg/planner/core/operator/logicalop/logical_datasource.rs`）、物理计划和索引 Join（`base_physical_plan.rs`、`physical_index_scan.rs`、`index_join_probe.rs`），也被 `pkg/planner/cardinality/selectivity.rs` 用于选择率估算。`DetachCondAndBuildRangeForPartition` 的实现存在且有独立 Rust 单测，但 `pkg/planner/core/rule/rule_partition_processor.rs` 中当前找到的调用仍是注释，因此不能据此声称 Rust 分区规划主链已完整接线。
+范围爆炸时记录 fallback，并把未安全用于 range 的条件送回残留条件，保证正确性不依赖优化是否成功。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按同路径 [`detacher.go`](./detacher.go) 的顺序移植：CNF/DNF 单列拆分、EQ/IN 合并、CNF 候选比较、`rangeDetacher` 两条主路径、`DetachRangeResult` 字段，以及 shard-index 辅助函数均能找到同名 Go 符号。主要语言映射是 Go 的指针/nil 转为 `Option`，多返回值转为 tuple，`error` 转为 `Result`，slice 转为 `Vec`/借用切片；公开命名保留 Go 风格以便逐符号核对。
+Rust 的 `valueInfo` 虽为 `pub struct`，字段保持私有，对应 Go 未导出类型的封装意图。
 
-行为策略也保持一致：索引入口转换 sort key 并合并连续范围，分区入口两者都关闭；Fix44389/Fix54337 的选择分支、range-size fallback、前缀索引 residual、DNF 全分支安全性和 shard-index EQ/IN 重写均保留。Rust 的 `valueInfo` 虽为 `pub struct`，字段保持私有，对应 Go 未导出类型的封装意图。
-
-测试覆盖程度并不等价。Go 的 `ranger_test.go` 包含大量 SQL 级前缀索引、shard index、fallback、DNF 最小 access 数和 collation 场景；Rust 的 `ranger_test.rs` 与 `migration_aster_unit_test.rs` 已覆盖核心 EQ/DNF、前缀截断与 residual、有限配额回退、分区不合并、简化入口、binary collation，以及单列拆分，但当前 shard-index Rust 测试只证明普通非分片 EQ/IN 不被改写，没有覆盖合法 `tidb_shard` EQ/IN 的正向展开。Go 仍是这部分完整边界矩阵的直接对照证据。
+测试覆盖程度并不等价。Go 的 `ranger_test.go` 包含大量 SQL 级前缀索引、shard index、fallback、DNF 最小 access 数和 collation 场景；Rust 的 `ranger_test.rs` 与 `migration_aster_unit_test.rs` 已覆盖核心 EQ/DNF、前缀截断与 residual、有限配额回退、分区不合并、简化入口、binary collation，以及单列拆分，但当前 shard-index Rust 测试只证明普通非分片 EQ/IN 不被改写，没有覆盖合法 `tidb_shard` EQ/IN 的正向展开。
 
 ## 扩展指南
 
@@ -97,11 +93,3 @@ Rust 文件按同路径 [`detacher.go`](./detacher.go) 的顺序移植：CNF/DNF
 - 扩展 shard index 形态时，从 `IsValidShardIndex` 和 `NeedAddGcColumn4ShardIndex` 接入，不要直接放宽 `AddGcColumn*` 的 `unwrap` 前提。至少增加合法 EQ、合法 IN、多列全等值、重复同列条件、错误虚拟表达式、求值错误与空值的 Rust 独立测试，并与 `ranger_test.go::TestShardIndexFuncSuites` 对照。
 - 若接通分区规划器主链，应同步检查 `rule_partition_processor.rs` 的真实调用、分区 collation 语义，以及 `test_partition_path_does_not_merge_distinct_points` 之外的规划级测试；当前仅有函数级证据不足以证明端到端接线。
 - 性能改动应保留 `bench_test.rs::test_bench_daily` 的长 DNF 压力面，并观察表达式克隆、递归 CNF item 构建和 `Ranges::MemUsage`。不能用合并连续范围换取更小输出而破坏后缀列追加能力。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件共 2,047 行，并被索引报告为 8 个文件使用。
-- RustCodeGraph `node`：`DetachCondAndBuildRangeForIndex` 调用 `detachCondAndBuildRange`，并由 `base_physical_plan.rs` 及 `ranger_test.rs`/`bench_test.rs` 调用；分区入口和简化入口分别由对应 Rust 回归测试调用；`AddExpr4EqAndInCondition` 调用列定位、值提取、条件移除和 GC 条件生成链；`ranger.rs::buildRangeOnColsByCNFCond` 调用 `points2Ranges`/`appendPoints2Ranges`，并在 fallback 时划分已消费与残留条件。
-- 直接读取的生产证据：`pkg/util/ranger/detacher.rs`、`detacher.go`、`Cargo.toml`、`lib.rs`、`ranger.rs`，以及规划调用点 `logical_datasource.rs`、`base_physical_plan.rs`、`physical_index_scan.rs`、`index_join_probe.rs`、`selectivity.rs`、`cross_estimation.rs`、`transformation_rules.rs`、`rule_partition_processor.rs`。
-- 独立测试证据：`pkg/util/ranger/ranger_test.rs`、`migration_aster_unit_test.rs`、`bench_test.rs`；Go 对照测试为 `ranger_test.go` 和 `bench_test.go`。Rust 测试证明了 EQ/DNF 点范围、单列拆分、前缀索引 residual、配额回退、分区离散点及简化 CNF；Go 测试补充完整 shard-index 与更广泛 SQL 边界事实。
-- 本任务是只读行为分析与文档新增，按计划不运行 Cargo；完成判定使用任务指定的 11 个固定章节结构检查，并人工核对所有“已接线/已覆盖”陈述均有上述源码、调用边或测试依据。

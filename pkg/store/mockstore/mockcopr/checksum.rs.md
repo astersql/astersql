@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-mockcopr` crate；crate 的入口是同目录 `lib.rs`，其中以 `mod checksum;` 装配本模块。它实现 mock Coprocessor 的 Checksum 单请求处理分支，供 mockstore 的请求/响应链路测试使用，而不是生产存储层的真实数据校验器。crate 归属和 Go 来源分别由 `Cargo.toml` 的包名及 `[package.metadata.porting].go-package = "pkg/store/mockstore/mockcopr"` 佐证。
-
-上游入口位于 `copr_handler.rs`：`coprHandler::handle_request` 将 `RequestPayload::Checksum` 分派给本文件的 `handleCopChecksumRequest`，再把单个 `Response` 包装进 `BatchResponse`。更外层的命令式 RPC 入口 `rpc_copr.rs::coprRPCHandler::HandleCmdCop` 会先检查请求上下文，然后构造 `coprHandler` 并调用 `handle_request`。
+该方法刻意忽略传入的 `Request`，不扫描 `ranges`，不使用 `start_ts`，也不访问 `coprHandler.reader`；因此它验证的是 Checksum 响应的路由和承载格式，不证明 KV 数据校验算法正确。
 
 ## 核心职责
 
@@ -60,9 +58,7 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `checksum.go::handleCopChecksumRequest` 同样忽略请求内容，构造 `tipb.ChecksumResponse{Checksum: 1, TotalKvs: 1, TotalBytes: 1}`，再将 marshal 结果置入 `coprocessor.Response.Data`。Rust 的六字节常量正是这三个小 varint 字段的规范 wire representation，`checksum_test.rs` 对此逐字节断言，并确认 `other_error == None`。
-
-差异在于 Go 通过生成的 protobuf 类型 marshal，并保留理论上的 marshal 错误响应；Rust 当前 crate 没有在本文件使用对应 protobuf 类型，而是直接构造 wire bytes，因此没有 marshal 错误路径。两端都不是实际存储校验：固定非零值的目的仅是模拟成功响应。当前目录未找到专门的 Go `checksum_test.go`；Go 语义证据来自 `checksum.go` 与 `rpc_copr.go`，Rust 回归证据来自独立的 `checksum_test.rs`。
+差异在于 Go 通过生成的 protobuf 类型 marshal，并保留理论上的 marshal 错误响应；Rust 当前 crate 没有在本文件使用对应 protobuf 类型，而是直接构造 wire bytes，因此没有 marshal 错误路径。当前目录未找到专门的 Go `checksum_test.go`；Go 语义证据来自 `checksum.go` 与 `rpc_copr.go`，Rust 回归证据来自独立的 `checksum_test.rs`。
 
 ## 扩展指南
 
@@ -71,16 +67,3 @@
 若目标改为真实数据相关校验，最可能的接入点仍是本方法，但必须显式决定是否复用 `KvReader::checksum(&request.ranges, request.start_ts)`、如何把三个 `u64` 编码为 tipb wire format，以及 reader/范围错误映射到 `Response` 哪个错误字段。此变化会偏离现有 Go mock 的固定值语义，需同步独立测试覆盖空范围、MVCC 可见性、字节统计、错误传播与确定性，并评估扫描的时间/内存成本；不能仅删除固定值便宣称与生产 Checksum 等价。
 
 若引入 protobuf 库或新的 crate 依赖，还需同步 `Cargo.toml` 并检查工作区依赖策略；当前实现无需任何外部依赖。
-
-## 验证依据
-
-- `pkg/store/mockstore/mockcopr/checksum.rs`：唯一生产符号、固定 wire bytes、默认响应字段和无失败路径。
-- `pkg/store/mockstore/mockcopr/copr_handler.rs`：`RequestPayload::Checksum` 分派、`Request`/`Response`/`coprHandler` 定义，以及未被当前 handler 使用的 `KvReader::checksum`。
-- `pkg/store/mockstore/mockcopr/rpc_copr.rs`：`HandleCmdCop` 的上下文检查和上游调用链。
-- `pkg/store/mockstore/mockcopr/lib.rs`：模块装配和独立测试文件声明。
-- `pkg/store/mockstore/mockcopr/Cargo.toml`：crate 名称、lib 入口、Go 包迁移元数据和依赖边界。
-- `pkg/store/mockstore/mockcopr/checksum.go`、`rpc_copr.go`：固定三字段 Go 实现及 `kv.ReqTypeChecksum` 路由。
-- `pkg/store/mockstore/mockcopr/checksum_test.rs`：六字节 protobuf 成功响应的回归断言；没有运行 Cargo，符合本任务约束。
-- RustCodeGraph：`status` 显示索引包含目标 Rust 文件；`files --filter` 报告该文件有 3 个符号；`query handleCopChecksumRequest` 定位 Rust、同路径 Go 和 unistore Go 的同名实现；文件节点报告两处使用者。精确 callers/callees 查询超时，调用边由上述源码位置补证。
-
-人工复核结论：本文区分了固定 mock 响应与真实 `KvReader::checksum`，能够说明文件存在原因、运行路径、状态与错误边界，以及保持 Go 兼容或扩展为真实校验时应修改和测试的位置。

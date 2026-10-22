@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo crate `astersql-br-pkg-conn-util` 的主体实现，crate 根 `br/pkg/conn/util/lib.rs` 通过 `#[path = "util.rs"] pub mod util` 将其公开，并通过同一 crate 的 `stubs::kvproto` 获得精简的 `metapb::Store` 类型。它对应 Go 包文件 `br/pkg/conn/util/util.go`，位于 BR 与 PD/TiKV 连接边界：把 PD 返回的 store 元数据筛成调用方需要的节点集合，组合 PD 时间戳，并逐个访问 TiKV status 服务的 `/config`。
-
-这不是进程入口，也不拥有 PD、HTTP 客户端或 store 缓存；它以 `StoreMeta`、`PdClient`、`HttpClient`、`CancelContext` 四个 trait 接收外部能力。RustCodeGraph 将该文件记录为被 65 个文件引用，并确认直接业务调用覆盖 `br/pkg/restore/import_mode_switcher.rs`、`br/pkg/restore/snap_client/client.rs`、`br/pkg/restore/snap_client/stubs.rs` 和 `br/pkg/utils/storewatch/watching.rs` 等恢复、限速和 store 监听路径。迁移期的 `br/pkg/conn/conn.rs` 另有一套相近实现；因此不能假定所有 BR Rust 路径都已经统一委托到本文件。
+`with_retry`、`StatusUrl`、TiFlash label 适配器等私有逻辑，为上述公开函数保存 Go 版本的取消、错误汇聚、URL 和标签判断语义。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ store 和 URL 都按值拥有，不留下悬垂借用。PD 返回的 store 只�
 
 ## 与 Go 版本的对应关系
 
-Rust 的公开枚举、trait 和函数名直接镜像 `br/pkg/conn/util/util.go` 的 `StoreBehavior`、`StoreMeta`、`GetAllTiKVStores*`、`GetCurrentTsFromPD*`、`GetConfig*` 与 `HandleTiKVAddress`。store 三种策略、排除 tombstone、TSO 18 位组合、只访问 Up 节点、逐节点失败即停止、非 200 错误文本以及 hostname 修正原则均保持一致。
-
 主要表示差异是：Go 直接依赖 `context.Context`、`pd.Client`、`*http.Client`、`*http.Response` 和 `*url.URL`，Rust 为 darwin/精简依赖边界定义本地 trait 与结构；Go 的 body 通过 `io.ReadAll` 流式读取，Rust `HttpResponse.body` 已是 `Vec<u8>`；Go 用 `defer resp.Body.Close()`，Rust 显式调用 `CloseResponse`；Go 原地压缩 store slice，Rust 构造新向量。Go `url.URL.JoinPath`/`net.JoinHostPort` 由标准库实现，Rust 是局部等价实现，已由 `util_test.rs::join_path_cleans_dot_segments_like_go_url_join_path` 和 parity 测试覆盖关键路径，但并非完整 URL 兼容层。
 
-重试行为由两端各自的 `NewAggressivePDBackoffStrategy` 驱动。Rust 的私有 `with_retry` 会将历次错误 `Join`，并在退避期间主动轮询取消；`parity_test.rs::cancellation_during_backoff_stops_before_another_pd_call` 固定了取消后不再调用 PD。`br/pkg/conn/conn.rs` 同时保留另一份 store/地址/配置逻辑，说明移植尚有重复边界；修改本文件时必须检查该平行实现是否也需要同步，而不能默认 crate re-export 已覆盖所有调用者。
+Rust 的私有 `with_retry` 会将历次错误 `Join`，并在退避期间主动轮询取消；`parity_test.rs::cancellation_during_backoff_stops_before_another_pd_call` 固定了取消后不再调用 PD。
 
 ## 扩展指南
 
@@ -87,11 +83,3 @@ Rust 的公开枚举、trait 和函数名直接镜像 `br/pkg/conn/util/util.go`
 - 改动重试应从 `with_retry` 与 `BackoffStrategy` 的契约入手，并覆盖首次成功、耗尽、取消前/退避中取消、错误聚合以及 callback 多次执行。避免在 callback 非幂等的前提下静默扩大重试范围。
 - 接入真实 HTTP 客户端时必须覆盖 `CloseResponse`，并验证成功、HTTP 状态失败、collector 失败和重试各路径的释放次数。若未来改为流式 body，需重新定义读取错误和关闭错误的优先级。
 - 性能敏感点主要是串行网络访问、1ms 取消轮询、每个 store label 的临时分配以及响应体整体驻留内存；优化时必须保留逐节点错误短路、原顺序和 Go 可观察行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/conn/util` 确认 crate 的 `lib.rs`、`util.rs`、`util_test.rs`、`parity_test.rs`、`stubs.rs` 和 Go 对照；`node --file br/pkg/conn/util/util.rs` 读取全部 688 行并列出 58 个符号；`explore` 核对了公开入口的调用链与恢复、连接、storewatch 调用者。精确 `callers` 命令在当前环境未返回可用输出，因此调用关系采用 `explore` 结果并以局部 `rg` 复核。
-- 源与边界：`br/pkg/conn/util/util.rs`、`br/pkg/conn/util/lib.rs`、`br/pkg/conn/util/Cargo.toml`；上游/平行实现证据为 `br/pkg/conn/conn.rs`、`br/pkg/restore/import_mode_switcher.rs`、`br/pkg/restore/snap_client/client.rs` 与 `br/pkg/utils/storewatch/watching.rs`。
-- Go 对照：`br/pkg/conn/util/util.go`，逐项核对 store 策略、PD TSO、HTTP `/config`、response close 与 status hostname 修正。
-- 独立 Rust 测试：`br/pkg/conn/util/util_test.rs` 验证路径清理与 TSO 加法；`br/pkg/conn/util/parity_test.rs` 验证 TiFlash 三策略、错误根因、HTTP 状态文本、配置 body、callback 失败后关闭、退避取消以及 path/query 在 host 改写后保留。该目录没有 `util_test.go`，Go 语义以实现文件和 Rust parity 测试交叉核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工检查本文没有把测试桩、平行实现或未覆盖 URL 边界写成已完整支持。

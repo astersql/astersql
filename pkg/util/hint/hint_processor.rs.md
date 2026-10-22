@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-[`hint_processor.rs`](./hint_processor.rs) 属于 `astersql-util-hint` crate。该 crate 由 [`Cargo.toml`](./Cargo.toml) 声明，以 [`lib.rs`](./lib.rs) 为入口；`lib.rs` 公开 `hint_processor` 模块并再导出其 API。因此，本文件位于 SQL parser 产出的 AST 与 planner、session、SQL binding 消费的 hint 表示之间，负责把优化器 hint 从 AST 中抽取为稳定的中间集合、把集合按原遍历顺序写回 AST、恢复为 SQL 文本，并规范化 binding SQL 中的查询块名。
-
-生产接线可在以下位置直接复核：
-
-- [`pkg/session/hint_runtime.rs`](../../session/hint_runtime.rs) 的 `StartStatementHints` 从当前语句抽取 table hint，解析成语句运行期配置；同文件的 binding 匹配路径用 `ParseHintsSet` 解析绑定 SQL。
-- [`pkg/planner/optimize.rs`](../../planner/optimize.rs) 的 `optimizeNoCacheInner` 抽取 hint 后安装到规划上下文；`containUsePlanCacheHintInSQLOrBinding` 用递归查找入口判断计划缓存 hint。
-- [`pkg/bindinfo/binding.rs`](../../bindinfo/binding.rs) 的 `prepare_hints_inner` 调用 `ParseHintsSet`，再通过 `HintsSet::Restore` 生成 binding ID 并保存规范化 hint。
-- [`pkg/session/runtime/explain_select.rs`](../../session/runtime/explain_select.rs) 与 [`pkg/session/runtime/explain_query.rs`](../../session/runtime/explain_query.rs) 解析匹配到的 binding SQL，使 EXPLAIN 使用其 hint 或规范化查询块 offset。
-
-本文件不是 parser：语法解析由 `astersql-parser` 提供；查询块名称的建立和映射由相邻的 [`hint_query_block.rs`](./hint_query_block.rs) 负责。
+因此，本文件位于 SQL parser 产出的 AST 与 planner、session、SQL binding 消费的 hint 表示之间，负责把优化器 hint 从 AST 中抽取为稳定的中间集合、把集合按原遍历顺序写回 AST、恢复为 SQL 文本，并规范化 binding SQL 中的查询块名。
 
 ## 核心职责
 
@@ -105,15 +96,13 @@ crate 依赖由 [`Cargo.toml`](./Cargo.toml) 明确：`parser` 提供 AST、visi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`hint_processor.go`](./hint_processor.go)。公开概念和主要语义一一对应：`HintsSet`、语句级筛选、INSERT 冲突检测、恢复接口、visitor 状态、收集/绑定、binding SQL 解析、`NodeType` 与历史 binding 完整性检查均来自该 Go 实现。
-
 Rust 没有直接调用 Go 的 `ast.Walk`，而是在 `collectNode`/`bindNode` 中显式枚举 AST 字段，并用独立表达式 visitor 补足子查询。这使迁移语义可见，但也带来同步风险：parser AST 新增可含子查询或表名的字段时，Go 的通用 visitor 可能自动进入，而 Rust 必须显式更新收集和绑定两条路径。独立测试 `expression_subqueries_are_collected_bound_and_numbered_in_go_order`、`derived_tables_do_not_shift_index_hint_binding_with_a_dummy_table` 和 `set_operation_ctes_follow_go_accept_order` 专门锁定这些顺序差异。
 
-恢复实现也不同：Go 委托 AST `Restore` 并在失败时写日志；Rust 在本文件按 hint 名和 `HintData` 手写格式，最终小写化。增加 parser 支持的 hint 时，必须同步扩充 `RestoreTableOptimizerHint`，否则结构可被解析但可能恢复成缺参数文本。
+恢复实现也不同：Go 委托 AST `Restore` 并在失败时写日志；Rust 在本文件按 hint 名和 `HintData` 手写格式，最终小写化。
 
 Rust `ParseHintsSet` 与 Go 一样：只接受一条语句、先收集再处理查询块、丢弃无 tables 的 `qb_name`、保留视图 hint、补默认库名、只留一个相关 warning。Rust 错误类型收敛为 crate 的 `errors::Error`，而 Go 使用多个返回值中的 `error`。Rust 的 AST 采用拥有值和 trait object，因此 `BindHint` 返回新的根 `Box<dyn ast::Node>`；Go 原地 walk 后返回同一 `StmtNode`。
 
-Go 同目录没有专门的 `hint_processor_test.go`。可见的 Go 回归使用面主要在 planner 测试中调用 `ExtractTableHintsFromStmtNode` / `RestoreOptimizerHints`；Rust 的对应细粒度回归集中在独立文件 [`hint_processor_1_aster_unit_test.rs`](./hint_processor_1_aster_unit_test.rs)，符合测试与源文件分离要求。
+可见的 Go 回归使用面主要在 planner 测试中调用 `ExtractTableHintsFromStmtNode` / `RestoreOptimizerHints`；Rust 的对应细粒度回归集中在独立文件 [`hint_processor_1_aster_unit_test.rs`](./hint_processor_1_aster_unit_test.rs)，符合测试与源文件分离要求。
 
 ## 扩展指南
 
@@ -125,15 +114,3 @@ Go 同目录没有专门的 `hint_processor_test.go`。可见的 Go 回归使用
 - 扩大 warning 筛选时应添加精确 error identity/code 测试，避免退化为字符串匹配。
 - 修改历史 binding 完整性规则时，应同步 Go 实现或明确记录迁移差异，尤其要澄清三表阈值、schema/name 去重方式、大小写以及表达式子查询变体；还要评估是否影响自动 binding 的计划稳定性。
 - 性能上应避免在深层遍历中增加重复全树扫描；恢复新参数时可按现有模式一次分配输出，并保持线性处理。兼容性上，恢复文本会参与 binding ID，哪怕等价 SQL 的大小写、空格、引号或顺序变化也可能影响匹配与持久化数据。
-
-## 验证依据
-
-本说明基于以下直接证据完成：
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件被索引为 1,351 行、70 个符号，并显示被 `pkg/bindinfo/binding.rs`、`pkg/planner/optimize.rs` 等文件使用。
-- RustCodeGraph 源码与调用查询：完整读取 [`hint_processor.rs`](./hint_processor.rs)；对 `CollectHint`、`BindHint`、`ParseHintsSet`、`RestoreOptimizerHints`、`CheckBindingFromHistoryComplete`、`ExtractTableHintsFromStmtNode` 执行 `query`、`callers`、`callees`。图查询确认了核心下游边；因 callers 输出为空，使用 `rg` 搜索公开符号补齐生产上游。
-- crate 与模块证据：读取 [`Cargo.toml`](./Cargo.toml) 和 [`lib.rs`](./lib.rs)，确认 crate 名、parser/dbterror/errno/plannererrors 依赖、模块声明、公开再导出及独立测试装配。
-- Go 对照：完整读取 [`hint_processor.go`](./hint_processor.go)，逐项核对提取、恢复、visitor 顺序、解析规范化和完整性检查。
-- Rust 测试：完整读取 [`hint_processor_1_aster_unit_test.rs`](./hint_processor_1_aster_unit_test.rs)。其覆盖 `HintsSet` 筛选和大小写、恢复去重及 index scope、收集/绑定顺序、表达式子查询、派生表、集合运算与 CTE、精确 warning 筛选、真实 parser、三表和 TiFlash 边界。
-- 上游源码：读取 `pkg/bindinfo/binding.rs::prepare_hints_inner`、`pkg/session/hint_runtime.rs::{StartStatementHints,binding_sql_for_warning,StartStatementWithBindings}`、`pkg/planner/optimize.rs::{containUsePlanCacheHintInSQLOrBinding,optimizeNoCacheInner}` 以及两个 EXPLAIN 接线路径。
-- 按任务约束未运行 Cargo 或代码测试。本任务的机械验收是目标文档存在且恰好具有本页这 11 个固定二级章节；结构命令的结果记录在任务交付报告中。

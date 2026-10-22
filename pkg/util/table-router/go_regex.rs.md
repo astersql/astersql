@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`go_regex.rs` 是 `astersql-util-table-router` crate 内部的 Go 正则兼容层。它不是独立公开模块：`pkg/util/table-router/router.rs` 通过 `#[path = "go_regex.rs"] mod go_regex;` 私有挂载，唯一对外接线是 `compile_extractor` 调用本文件的 `pub(super) fn compile`。因此，应用侧仍然经由 `TableRule::Valid`、`NewTableRouter`、`AddRule` 或 `UpdateRule` 提交提取器正则，不直接调用本文件。
-
-该文件存在的原因是 Go 实现 `pkg/util/table-router/router.go` 用标准库 `regexp.Compile`（RE2 语法与语义），而 Rust 路由器最终使用 `regex::Regex`。两套引擎都以线性时间匹配为目标，但可接受语法、字符类、标志、重复次数、Unicode 属性名和若干匹配细节并不完全相同；若直接把 Go 配置交给 Rust `regex`，同一条迁移/同步路由规则可能被错误接受、错误拒绝或匹配出不同内容。本文件先把 Go 方言翻译为受控的 Rust 方言，再编译为 `Regex`。
-
-crate 边界由 `pkg/util/table-router/Cargo.toml` 定义：库入口为 `lib.rs`，本文件直接依赖 `regex` 与 `regex-syntax = "0.8"`；`Cargo.lock` 当前解析为 `regex 1.13.1`、`regex-syntax 0.8.11`。本文件没有 feature gate 或条件编译项，也没有独立公开 API。
+`compile(pattern)` 驱动完整流水线：用 `Parser::translate` 将 Go 正则改写成 Rust `regex` 能安全表达的等价形式，用 `regex_syntax` 再解析译文，用 `check_repeats` 补上 Go 的嵌套重复约束，最后构造可供路由提取器保存和匹配的 `Regex`。
 
 ## 核心职责
 
@@ -98,18 +94,14 @@ RustCodeGraph 对 `go_regex.rs::compile` 的节点追踪确认直接调用者是
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/util/table-router/router.go`：`TableRule.Valid` 对三类 extractor 直接调用 `regexp.Compile`，`extractVal` 使用 `FindStringSubmatch` 并拼接下标 1 以后的捕获组。Rust 的 `router.rs` 保持相同的调用顺序、保存位置和捕获拼接规则；本文件专门补偿 Rust `regex` 与 Go `regexp` 的方言差异。
+Rust 的 `router.rs` 保持相同的调用顺序、保存位置和捕获拼接规则；本文件专门补偿 Rust `regex` 与 Go `regexp` 的方言差异。
 
 已由 `pkg/util/table-router/router_test.rs` 对照 Go 1.25 行为验证的差异包括：
 
-- `\d/\w/\s` 及其否定形式只匹配 ASCII 集合，`\b/\B` 也使用 ASCII 词边界；
-- `\141`、`\12`、`\Q...\E`、畸形计数的字面处理、字符类中的连字符/方括号、重复命名捕获可用；
-- `x/u/R` 标志、未知 POSIX 类、集合范围端点、连续量词和超限嵌套重复被拒绝；
-- `U` 标志与显式 `?` 共同决定贪婪性；标志可在组内或后续表达式上开启/关闭；
 - Go Unicode 属性别名可用，代理项类别不匹配 Rust 字符串中的标量；
 - Rust `regex` 的捕获优先级与 Go RE2 仍可能有引擎级差异，测试以 `((a|ab)*)` 等案例固定了当前需要的捕获结果。
 
-Go 文件没有单独的 `go_regex.go`，因为兼容目标就是 Go 标准库本身。Go 的 `router_test.go::TestFetchExtendColumn` 提供基本多捕获组拼接基线；Rust 的 `migration_aster_unit_test.rs::fetch_extend_columns_matches_go_capture_concatenation` 复刻该业务场景，额外的 `test_go_regexp_*` 与 `test_go_extractor_syntax_and_capture_oracle` 则覆盖跨引擎兼容层特有边界。
+Go 的 `router_test.go::TestFetchExtendColumn` 提供基本多捕获组拼接基线；Rust 的 `migration_aster_unit_test.rs::fetch_extend_columns_matches_go_capture_concatenation` 复刻该业务场景，额外的 `test_go_regexp_*` 与 `test_go_extractor_syntax_and_capture_oracle` 则覆盖跨引擎兼容层特有边界。
 
 ## 扩展指南
 
@@ -121,15 +113,3 @@ Go 文件没有单独的 `go_regex.go`，因为兼容目标就是 Go 标准库�
 - 性能改动应重点评估长 pattern 的重复字符串分配、逐原子 flag 包装、Unicode 表线性扫描和 128 MiB 编译上限。若引入缓存，需明确 key、淘汰策略与跨线程生命周期，不能改变 extractor 持有独立已编译 `Regex` 的当前语义。
 - 测试必须继续放在独立文件中，不要内嵌到 `go_regex.rs`。方言/捕获回归应扩展 `pkg/util/table-router/router_test.rs`；与原 Go 业务用例逐项对齐的场景可扩展 `migration_aster_unit_test.rs`，并同步用本机目标 Go 版本的 `regexp.Compile`/`FindStringSubmatch` 取得 oracle。若 Go 版本本身发生变化，还应同步检查 `router_test.go` 与映射表注释。
 - 由于 `go_regex` 是私有模块，上层新增入口仍应复用 `compile_extractor`/`TableRule::Valid`，避免创建第二条绕过兼容校验的编译路径。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/table-router` 确认本 crate 的生产文件、独立 Rust 测试和 Go 对照文件均已索引。
-- RustCodeGraph 文件读取：`node --file pkg/util/table-router/go_regex.rs --offset 1 --limit 400` 与 `--offset 400 --limit 320` 覆盖本文件全部 685 行，确认模块级符号、分支和 `GO_UNICODE_CLASSES`。
-- RustCodeGraph 符号证据：`node go_regex.rs::compile` 显示直接调用 `Parser::translate`、`check_repeats`、`invalid`，且被 `router.rs::compile_extractor` 调用；`node router.rs::compile_extractor` 显示它只转发到 `go_regex::compile`，调用者为 `TableRule::Valid`。单独的 `callers go_regex.rs::compile` 命令在本地 30 秒窗口内未返回文本，因此调用边以同一索引的 `node` Trail 和相邻源码共同确认。
-- crate/入口证据：`pkg/util/table-router/Cargo.toml`、`pkg/util/table-router/lib.rs`、根 `Cargo.toml` 与 `Cargo.lock`；确认 crate 名、库入口、workspace 成员、依赖及当前锁定版本。
-- Rust 调用与状态证据：`pkg/util/table-router/router.rs`，重点是 `TableRule::Valid`、`Table::insert_rule`、`TableRule::extractVal`、`FetchExtendColumn`、私有模块声明和 `compile_extractor`。
-- Go 对照证据：`pkg/util/table-router/router.go` 的 `TableRule.Valid`、`extractVal`、`FetchExtendColumn`；`pkg/util/table-router/router_test.go::TestFetchExtendColumn`。
-- 独立 Rust 测试证据：`pkg/util/table-router/router_test.rs::test_go_regexp_ascii_character_classes`、`test_go_regexp_dialect_validation`、`test_go_extractor_syntax_and_capture_oracle`、`test_go_valid_partial_state_and_update_atomicity`、`test_go_unvalidated_extractor_panics`，以及 `pkg/util/table-router/migration_aster_unit_test.rs::fetch_extend_columns_matches_go_capture_concatenation`。
-- 人工复核结论：本文能从上游规则校验追踪到翻译、AST 校验、最终编译和捕获消费，并明确列出 Go 兼容原因、当前限制、错误/资源边界及安全扩展与独立测试位置；没有把未接线能力描述为已支持。
-

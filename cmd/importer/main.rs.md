@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`cmd/importer/main.rs`](./main.rs) 是 workspace 包 `astersql-cmd-importer` 的可测试主流程装配层，不是操作系统直接调用的二进制入口。完整入口链为 `cmd/importer/bin_main.rs::main` → `astersql_cmd_importer::main`（`cmd/importer/lib.rs`）→ `entry::main`（本文件）。`cmd/importer/Cargo.toml` 通过 `[lib] path = "lib.rs"`、`[[bin]] path = "bin_main.rs"` 固定了这层结构，并以 `package.metadata.porting.go-package = "cmd/importer"` 标明 Go 对照目录。
-
-本文件位于配置、DDL 解析、统计加载、数据库操作与并发作业模块之上，只决定它们的调用顺序和失败策略，不实现具体的 SQL 解析、造数或 worker 算法。当前 crate 只声明 `toml` 和 `serde_json` 两个外部依赖；数据库、TiDB 元数据、直方图等接口均由同目录 Rust 模块及 `stubs.rs` 提供。因此当前 Rust importer 保存并验证了 Go 控制流，但其 DB 是记录型本地桩，不能描述为已接通真实 TiDB/MySQL 驱动。
+主流程依次完成配置解析、表/索引元数据解析、连接取得、可选统计装配、DDL 执行、数据导入和连接关闭。
 
 ## 核心职责
 
@@ -61,11 +59,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `run_with_args` 基本逐段对应 `cmd/importer/main.go::main`：相同的配置解析退出码、表后索引解析顺序、按 worker 建连接、可选 stats、索引统计优先、先 DDL 后 `doProcess`。`main` 则保留了 Go 对 `os.Args[1:]` 和 `os.Exit` 的进程边界。
+为可测试性，Rust 额外拆出 `run_with_args` 并加入 `dbs_override`；Go 始终调用 `createDBs`。Rust 对空索引列和越界 offset 有额外保护，Go 当前直接索引。Go 在连接创建后立即 `defer closeDBs(dbs)`，Rust 在成功流程末尾显式关闭；因为 Go 的 fatal 使用进程退出，错误路径实际上也不会执行该 defer。
 
-为可测试性，Rust 额外拆出 `run_with_args` 并加入 `dbs_override`；Go 始终调用 `createDBs`。Rust 把 `table` 转为 `Arc` 适配线程共享，并以 `histogram::from_core` 把 stats 核心数据转成本地包装。Rust 对空索引列和越界 offset 有额外保护，Go 当前直接索引。Go 在连接创建后立即 `defer closeDBs(dbs)`，Rust 在成功流程末尾显式关闭；因为 Go 的 fatal 使用进程退出，错误路径实际上也不会执行该 defer。
-
-迁移真实性上存在明确差异：Go 版使用 `database/sql`、真实 MySQL driver、TiDB parser/model/statistics；Rust crate 只依赖 `toml`、`serde_json`，DB 和多个 TiDB 类型来自 `stubs.rs`。因此 parity 测试证明的是控制流、SQL 记录、batch/commit 和错误契约，不是对真实集群的端到端兼容性。
+迁移真实性上存在明确差异：Go 版使用 `database/sql`、真实 MySQL driver、TiDB parser/model/statistics；Rust crate 只依赖 `toml`、`serde_json`，DB 和多个 TiDB 类型来自 `stubs.rs`。
 
 ## 扩展指南
 
@@ -74,12 +70,3 @@ Rust 的 `run_with_args` 基本逐段对应 `cmd/importer/main.go::main`：相�
 - 扩展统计装配时应维护“索引直方图优先、非空 bucket 才安装”的不变量，并为无列索引、错误 offset、列/运行时数组不一致和缺失/损坏 stats 文件增加测试。若要消除与 Go 的保护差异，应先决定两端共同契约，而不是单边猜测。
 - 引入真实数据库实现前，应保留连接注入边界，并补充连接数与 worker/batch/job 参数校验、创建部分成功时的回滚、DDL/worker 失败时的可靠清理及真实数据库集成测试。外部 Rust 依赖必须按仓库规则在独立上游移植、提交和打 tag，再由 Cargo 统一引用。
 - 性能敏感点不在本文件的顺序代码，而在下游 stats 文件加载、直方图共享、worker 数、batch 大小和连接数。优化时要验证 DDL 先行、增量列单 worker、连接与 worker 一一对应以及最终 join/close，不可只以编译成功替代行为证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引包含 7032 个 Rust 文件；`files --filter cmd/importer` 列出目标、装配、Go 对照和测试文件；`node --file cmd/importer/main.rs --offset 1 --limit 240` 读取完整 139 行；`query run_with_args --kind function` 和 `node run_with_args` 定位该符号并给出 `main`、`contract_normal_path` 两个调用者。另执行了 `callers/callees`，当前索引未给出可用输出，故下游关系由源码调用点核验。
-- 生产与装配文件：`cmd/importer/main.rs`、`cmd/importer/lib.rs`、`cmd/importer/bin_main.rs`、`cmd/importer/config.rs`、`cmd/importer/db.rs`、`cmd/importer/job.rs`、`cmd/importer/stats.rs`、`cmd/importer/stubs.rs`。
-- crate 边界：`cmd/importer/Cargo.toml`，确认 package 是 binary 移植、库/二进制入口路径以及仅有 `toml`、`serde_json` 依赖。
-- Go 对照：`cmd/importer/main.go`，并通过同目录 `parser.go`、`stats.go`、`db.go`、`job.go` 的符号搜索核对主流程下游。Go 独立测试仅发现 `cmd/importer/db_test.go`，其 `TestIntToDecimalString` 不直接覆盖本入口。
-- Rust 独立测试：`cmd/importer/parity_test.rs::go_rust_public_contract_matches` 及其四组 helper；其中 `contract_normal_path` 直接以两个注入 DB 运行 `run_with_args` 并验证 DDL、INSERT、commit 和关闭，`contract_boundary` 覆盖 help/空连接创建，`contract_error_paths` 覆盖 SQL 执行 fatal，`contract_resource_cleanup` 覆盖连接关闭、批次提交和 stats 文件缺失。`cmd/importer/stats_test.rs` 另验证 `loadStats` 的真实 fixture 解析，但不直接调用本入口。
-- 本任务只生成说明文档，按总计划不运行 Cargo。交付前执行任务指定的标题计数命令，并人工复核本文能回答文件存在原因、执行顺序、stub 限制、错误/资源边界和安全扩展入口。

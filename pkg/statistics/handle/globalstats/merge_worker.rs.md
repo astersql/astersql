@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-[`merge_worker.rs`](./merge_worker.rs) 位于 `astersql-statistics-handle-globalstats` crate，crate 入口 [`lib.rs`](./lib.rs) 通过 `pub mod merge_worker` 声明模块并以 `pub use merge_worker::*` 再导出其公共类型。该文件提供一套轻量的分区 TopN 合并数据模型，以及按分区下标区间累计候选值频次的工作器；直接上游是同 crate 的 [`topn.rs`](./topn.rs)，再上一层是 [`global_stats.rs`](./global_stats.rs) 中的全局统计合并流程。
-
-当前仓库存在两条需要区分的实现链：
-
-- 本 crate 的 `merge_partition_stats_to_global` 使用本文件的 `TopNStatsMergeWorker`，属于简化的 Rust 全局统计模型。
-- 实际 Go 同路径的同步和异步入口已经调用 `pkg/statistics` 中的 `MergePartTopNAndHistToGlobal`；其 Rust 对应实现在 `pkg/statistics/merge_global.rs`，不是本文件。当前 Go 主线同目录已不存在 `merge_worker.go`。
-
-因此，本文件不是当前 Go 生产主链的逐行镜像；它保留了旧版 Go TopN 工作器的核心“跨分区 TopN 累加并从直方图补数”语义，供本 crate 的 Rust API 和独立测试使用。
+定义任务/响应协议：`TopNMergeTask { start, end }` 表示半开区间，`TopNMergeResponse { error }` 以可选字符串传递失败。
 
 ## 核心职责
 
@@ -136,14 +129,6 @@ TopNStatsMergeWorker::run_task
 
 ## 与 Go 版本的对应关系
 
-最接近的逐符号对照来自提交 `a17d9ca122` 的父版本 `pkg/statistics/handle/globalstats/merge_worker.go`：
-
-- Go `StatsWrapper.AllHg/AllTopN` 对应 Rust `StatsWrapper.histograms/top_ns`。
-- Go `TopnStatsMergeTask.start/end` 对应 Rust `TopNMergeTask.start/end`。
-- Go `TopnStatsMergeResponse.Err` 对应 Rust `TopNMergeResponse.error`。
-- Go `topnStatsMergeWorker.Run` 的核心循环对应 Rust `run_task`：累加 TopN，同值首次出现时扫描其他分区，跳过已含该值的 TopN，并从直方图移除后补计数。
-- Go `Result` 对应 Rust `result`。
-
 但 Rust 版本是有意简化的数据模型，不能视为完全等价移植：
 
 - Go 通过 `DatumMapCache`、列类型、时区和 `isIndex` 解码值，再用 `EqualRowCount` 与 `BinarySearchRemoveVal` 操作真实直方图；Rust 直接查询 `exact_counts`。
@@ -152,7 +137,7 @@ TopNStatsMergeWorker::run_task
 - Go 通过 `SQLKiller.HandleSignal` 返回具体错误；Rust 只读取布尔值并生成固定字符串。
 - Go 的工作器类型和字段多为包内私有；Rust 类型及字段全部公开。
 
-当前 Go 主线在 `a17d9ca122`（`statistics: replace separate TopN merge with combined TopN+histogram merge`）之后删除了同目录 `topn.go`/`merge_worker.go`，改由 `pkg/statistics/histogram.go::MergePartTopNAndHistToGlobal` 在两阶段算法中同时合并 TopN 与直方图。当前 Rust 的对应生产实现是 `pkg/statistics/merge_global.rs::MergePartTopNAndHistToGlobal`。所以本文件反映的是历史 Go 算法和本 crate 现有简化 API，而非当前 Go 算法的完整状态。
+所以本文件反映的是历史 Go 算法和本 crate 现有简化 API，而非当前 Go 算法的完整状态。
 
 ## 扩展指南
 
@@ -167,11 +152,3 @@ TopNStatsMergeWorker::run_task
 测试必须放在独立文件，不要内嵌到 `merge_worker.rs`。直接回归面是同目录 [`topn_test.rs`](./topn_test.rs)；至少覆盖非法区间、空区间、取消发生在各层循环、重复键只补一次、v1/v2 分支、直方图缺键、向量长度不匹配的入口防护，以及批次间 counter 延续。若改动要声称与当前生产统计等价，还必须同步检查 `pkg/statistics/merge_global_test.rs` 及对应 Go 的 `pkg/statistics/merge_global*_test.go`。
 
 兼容性风险主要是计数重复/漏计、直方图与 TopN 同时保留同一质量、编码排序不变量被破坏，以及错误后暴露部分状态；性能风险主要来自克隆 `TopN.values`、线性 `contains` 和“不同候选数 × 分区数 × 分区 TopN 长度”的扫描复杂度。
-
-## 验证依据
-
-- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
-- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
-- 冻结 `merge_worker.rs`、`global_stats.rs`、`topn.rs`、crate `Cargo.toml`/`lib.rs`：核对完整草图构造、max-only 兼容合并、独占借用、取消、逐批传递 counter 和正常 statistics 依赖。
-- 冻结 `global_stats_test.rs::global_stats_sampled_ndv` 使用 `from_detailed`，`topn.rs` 显式调用 `run_task`；Go `global_stats.go` 使用组合 TopN/直方图算法，不能把该历史模型当作当前 Go 全量实现。
-- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。

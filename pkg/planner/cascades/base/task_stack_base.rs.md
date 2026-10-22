@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-cascades-base` crate，是 Cascades 优化器任务系统的契约层。crate 入口 `pkg/planner/cascades/base/lib.rs` 在 `base` 模块中通过 `include!("task_stack_base.rs")` 纳入本文件，并用 `pub use base::*` 对外重新导出其符号。因此，下游 crate 以 `cascades_base::{Stack, Task}` 使用这里的两个公开 trait，而不是直接把本文件编译成独立模块。
-
-`pkg/planner/cascades/base/Cargo.toml` 将 `lib.rs` 指定为库入口，并把对应 Go 包记录为 `pkg/planner/cascades/base`。本文件自身只定义接口，不保存任务、不实现调度循环；生产栈、调度器和具体优化任务位于相邻的 `pkg/planner/cascades/task/` crate。
+当前迁移状态需要特别区分：`Task` 已有生产实现；`Stack` trait 在本仓库 Rust 代码中只找到测试实现。
 
 ## 核心职责
 
@@ -87,17 +85,14 @@ RustCodeGraph 能定位 `Stack`、`Task` 及上述源码，但对两个 trait �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/cascades/base/task_stack_base.go`。Rust 保留了 Go 两个接口的名称、方法顺序和核心职责：
-
 - Go `Stack.Push(one Task)` 对应 Rust `Push(Box<dyn Task>)`；Rust 显式转移堆对象所有权。
 - Go `Stack.Pop() Task` 以 `nil` 表示空栈，Rust 用 `Option<Box<dyn Task>>` 把空值分支写入类型。
-- `Empty` 与 `Destroy` 在两侧形状一致，但具体清理策略仍由实现决定。
 - Go `Task.Execute() error` 对应 Rust `Result<(), Box<dyn Error>>`；两者都把失败交给调用方。
 - Go `Task.Desc(w util.StrBufferWriter)` 对应 Rust 对 `dyn util::StrBufferWriter` 的可变借用。
 
-Go 生产 `pkg/planner/cascades/task/task.go::Stack` 通过方法集隐式满足 `base.Stack`。Rust 没有结构化隐式接口：生产 `task.rs::Stack` 虽有相同方法，却未显式实现 `cascades_base::Stack`。另一方面，Rust 的 `Task` 已由生产任务显式实现。Go 的 `sync.Pool` 是跨线程可访问的并发池；Rust 当前具体实现使用 `thread_local!` 与 `RefCell`，复用范围限于线程内。这些都是迁移语义差异，而不是本基础 trait 自身的行为。
+Rust 没有结构化隐式接口：生产 `task.rs::Stack` 虽有相同方法，却未显式实现 `cascades_base::Stack`。Go 的 `sync.Pool` 是跨线程可访问的并发池；Rust 当前具体实现使用 `thread_local!` 与 `RefCell`，复用范围限于线程内。这些都是迁移语义差异，而不是本基础 trait 自身的行为。
 
-Go 测试 `pkg/planner/cascades/task/task_test.go` 验证接口值布局、LIFO、空栈返回 `nil`、未清理复用及 `Destroy` 清空。Rust 对照测试 `pkg/planner/cascades/task/task_test.rs` 保留这些意图，并以 `Box<dyn Task>`、`Option` 和线程本地池适配 Rust 所有权模型；本文件同目录的较小测试只验证基础 trait 可实现及空栈 `None`。
+Rust 对照测试 `pkg/planner/cascades/task/task_test.rs` 保留这些意图，并以 `Box<dyn Task>`、`Option` 和线程本地池适配 Rust 所有权模型；本文件同目录的较小测试只验证基础 trait 可实现及空栈 `None`。
 
 ## 扩展指南
 
@@ -107,16 +102,3 @@ Go 测试 `pkg/planner/cascades/task/task_test.go` 验证接口值布局、LIFO�
 - 若要让生产 `task::Stack` 真正通过此 trait 使用，应显式增加 `impl cascades_base::Stack for task::Stack`，再让调度器字段或测试以 trait 边界验证；不能仅因固有方法同名就认为已实现。此类改动应同步 `pkg/planner/cascades/base/task_stack_base_test.rs`、`migration_aster_unit_test.rs`、`pkg/planner/cascades/task/task_test.rs` 与调度器测试。
 - 若引入并行调度，必须先决定是否给 `Task`/`Stack` 增加 `Send`/`Sync` 上界，并重新设计 `Empty` 加 `Pop` 的非原子组合、错误取消、剩余任务清理和对象池归属。直接给当前 trait object 跨线程使用并不安全可证。
 - 性能敏感点主要在动态分发、每任务装箱和栈复用。任何消除装箱或更换容器的方案都应保留 LIFO 顺序、空栈语义和 `Destroy` 资源后置条件，并用独立 benchmark/测试与 Go 意图对照。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/planner/cascades/base/task_stack_base.rs`，RustCodeGraph 文件节点显示完整 47 行及 `Stack`、`Task` 两个 trait。
-- crate 装配与边界：`pkg/planner/cascades/base/lib.rs`、`pkg/planner/cascades/base/Cargo.toml`，确认 `include!`、公开再导出、库入口和 Go 包映射。
-- Rust 生产调用链：`pkg/planner/cascades/base/task_scheduler_base.rs`、`pkg/planner/cascades/task/task.rs`、`task_scheduler.rs`、`task_apply_rule.rs`、`task_opt_group.rs`、`task_opt_group_expression.rs`。
-- Rust 独立测试：`pkg/planner/cascades/base/task_stack_base_test.rs` 验证空栈 `None`；`migration_aster_unit_test.rs::migration_task_stack_and_scheduler_contracts_are_usable` 验证描述、压栈、执行和销毁契约；`pkg/planner/cascades/task/task_test.rs` 验证生产具体栈的布局、LIFO、对象池和清理行为。
-- Go 对照：`pkg/planner/cascades/base/task_stack_base.go`、`pkg/planner/cascades/task/task.go`、`task_scheduler.go`、`task_test.go`。
-- RustCodeGraph 查询：`status` 确认索引包含 11,467 个文件；`query Stack --kind trait` 与 `query Task --kind trait` 定位目标符号；`node --file ...` 读取目标及上下游；对目标 trait 的 `callers`/`callees` 查询无返回，随后用限定目录的精确引用检索补足图未覆盖的实现和调用证据。
-
-未运行 Cargo 或测试二进制：本任务是纯文档分析，任务计划明确禁止运行 Cargo。结构完整性由任务指定的 11 章节校验命令验证；运行结果记录在最终交付说明中。

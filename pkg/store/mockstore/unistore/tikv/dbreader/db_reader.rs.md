@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件实现 UniStore 模拟 TiKV 存储中的 MVCC 只读适配层。它把具体存储引擎需要提供的点查、批量查和迭代能力抽象成 `ReadTxn`、`DBIterator`、`DBItem` 三个 trait，再由 `DBReader` 统一实现按时间戳读取、正反向范围扫描、MVCC 版本检查和资源关闭。对应 crate 是 `astersql-store-mockstore-unistore-tikv-dbreader`，入口 `lib.rs` 公开再导出本模块；根 workspace 还通过 `pkg/lib.rs` 的 `store::mockstore::unistore::tikv::dbreader` facade 再导出该 crate。
-
-当前 Rust 接线需要与 Go 运行时区分：仓库搜索只发现 `migration_aster_unit_test.rs` 直接构造和调用 Rust `DBReader`；`cophandler/Cargo.toml` 虽声明了可选依赖，但其 Rust 源码没有消费本文件符号。完整请求主链的直接证据目前来自同路径 Go 代码：`tikv/server.go::requestCtx.getDBReader` 构造 reader，`tikv/mvcc.go` 和 `cophandler/*.go` 消费它。因此，本文件是已实现并有独立测试的迁移组件，而不是已验证接入 Rust UniStore 请求主链的组件。
+把具体存储引擎需要提供的点查、批量查和迭代能力抽象成 `ReadTxn`、`DBIterator`、`DBItem` 三个 trait，再由 `DBReader` 统一实现按时间戳读取、正反向范围扫描、MVCC 版本检查和资源关闭。
 
 ## 核心职责
 
@@ -112,13 +110,3 @@ Rust 文件逐项保留了 Go `db_reader.go` 的公开概念和主要控制流�
 - 接入 Rust UniStore 请求主链时，应在 Rust server/request context 中实现 `ReadTxn` 和 `ExtraDbReaderProvider`，并让 cophandler 消费 `DBReader`；在有实际调用边前，文档和代码注释都应保持“接口已实现、运行时未验证接线”的表述。
 - 涉及键空间变换时验证空边界、首字节 `0xff` 回绕和 Region 边界；涉及冲突错误时验证所有时间戳字段与 `RcCheckTs` reason。
 - 测试应继续放在同目录独立文件 `migration_aster_unit_test.rs`，遵守生产 Rust 与测试逻辑分离要求。建议补充：迭代器创建/Seek/Value 失败传播、`MultiGet` 长度违约、全版本状态复用、`Close` 调用顺序、额外键空间边界及 provider 接线测试。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/store/mockstore/unistore/tikv/dbreader` 列出 `db_reader.rs`、`db_reader.go`、`lib.rs`、`migration_aster_unit_test.rs`。
-- RustCodeGraph 源码节点：`node --file .../db_reader.rs --offset 1 --limit 500` 与 `--offset 500 --limit 180` 覆盖目标文件 604 行；符号查询确认 Rust `DBReader` 在第 214 行、`NewDBReader` 在第 183 行。对精确限定符执行 callers/callees 未返回方法级调用边，因此又用仓库搜索核对直接使用点，并在本文明确标记该限制。
-- 源文件：`pkg/store/mockstore/unistore/tikv/dbreader/db_reader.rs`，核对了全部 trait、结构、函数、impl 和错误分支；文件没有条件编译项。
-- crate/装配：`pkg/store/mockstore/unistore/tikv/dbreader/Cargo.toml`、同目录 `lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/store/mockstore/unistore/tikv/Cargo.toml`、`pkg/store/mockstore/unistore/cophandler/Cargo.toml`。
-- Go 对照与主链：同目录 `db_reader.go`，以及搜索得到的 `pkg/store/mockstore/unistore/tikv/server.go`、`mvcc.go`、`pkg/store/mockstore/unistore/cophandler/closure_exec.go`、`mpp_exec.go`、`cop_handler.go`。
-- 独立 Rust 测试：`migration_aster_unit_test.rs` 使用真实临时 fjall 数据库覆盖普通时间戳可见性、`RcCheckTS` 冲突、BatchGet 顺序/缺失项/错误沿用、正反向半开区间、`SkipValue`、`ScanBreak`、limit、全版本 MVCC 信息和按 `start_ts` 查键。
-- Go 测试/调用证据：`tikv/mvcc_test.go` 包含不同 read timestamp 下的 `Get` 场景；Rust 测试已针对本文件抽象提供更聚焦的行为断言。本文未运行 Cargo，符合该纯文档任务的明确限制。

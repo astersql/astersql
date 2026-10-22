@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-ast` crate。该 crate 由 [`Cargo.toml`](./Cargo.toml) 声明、以 [`lib.rs`](./lib.rs) 为 crate 根，并在 `lib.rs` 的 `pub mod util;` 处公开本模块。它位于解析器产出的 AST 与后续执行/规划代码之间，提供不依赖执行上下文的语句只读性分类，以及 AST 文本处理所需的转义工具再导出。
-
-这里的“只读”是 AST 形态上的保守分类：`is_read_only` 根据具体节点类型、SELECT 锁、系统变量赋值和包装语句判断是否存在数据库或变量状态写入意图。它不是事务层的只读快照检查，也不检查运行时权限、存储层副作用或用户函数的实际行为。
+位于解析器产出的 AST 与后续执行/规划代码之间，提供不依赖执行上下文的语句只读性分类，以及 AST 文本处理所需的转义工具再导出。
 
 ## 核心职责
 
@@ -73,13 +71,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`util.go`](./util.go)。Rust 的 `UNSPECIFIED_SIZE`/`UnspecifiedSize` 对应 Go `UnspecifiedSize = math.MaxUint64`；Rust `is_read_only` 和兼容包装 `IsReadOnly` 对应 Go `IsReadOnly`；Rust `ReadOnlyChecker` 对应 Go 私有的 `readOnlyChecker`。
-
-主要分支与 Go 保持一致：SELECT 锁名单、`checkGlobalVars` 快速路径、系统变量赋值识别、EXPLAIN ANALYZE 递归、DO/SHOW、集合所有分支、ADMIN 白名单和 TRACE 递归。实现机制有所不同：Go 用 type switch 与 `Walk(node, &checker)`，Rust 用 `Any` 降型、`Node::accept` 和 trait 对象；Go 的 checker 字段私有，而 Rust 当前结构体及字段均公开。
+实现机制有所不同：Go 用 type switch 与 `Walk(node, &checker)`，Rust 用 `Any` 降型、`Node::accept` 和 trait 对象；Go 的 checker 字段私有，而 Rust 当前结构体及字段均公开。
 
 Rust 额外提供蛇形命名主入口和大写常量，同时保留 Go 风格别名以兼容机械迁移代码。Rust 的 `ExplainStmt.stmt` 是 `Option<Box<dyn Node>>`，因此显式定义了 Go 正常构造路径较少出现的“ANALYZE 但无内部节点”边界。转义函数的 Go 原始对应位于 `pkg/parser/util/escape.go`，本文件仅因 crate 模块路径需要将 Rust 实现再导出。
 
-行为证据来自 [`util_test.go`](./util_test.go)、[`util_test.rs`](./util_test.rs) 和 [`util_8_aster_unit_test.rs`](./util_8_aster_unit_test.rs)。Rust 测试额外固定了所有五种写意图锁、空集合列表、变量三种组合、ADMIN 白名单和两个常量名。
+Rust 测试额外固定了所有五种写意图锁、空集合列表、变量三种组合、ADMIN 白名单和两个常量名。
 
 ## 扩展指南
 
@@ -89,11 +85,3 @@ Rust 额外提供蛇形命名主入口和大写常量，同时保留 Go 风格�
 - 修改变量赋值 AST 形态时，应同步修改 `ReadOnlyChecker::enter`，并确认新字段已进入 `walk::Children`。测试应放在独立的 [`util_test.rs`](./util_test.rs) 或 [`util_8_aster_unit_test.rs`](./util_8_aster_unit_test.rs)，不要把测试写回生产文件。
 - 调整 `UnescapeChar` 应修改真实实现 [`../util/escape.rs`](../util/escape.rs)，并检查 [`base.rs`](./base.rs) 的调用语境；本文件只负责模块装配与公开路径。
 - 兼容性风险集中在误把写语句判为只读；性能风险集中在对大型 SELECT AST 的全树扫描和集合递归。扩展时应覆盖“应只读”和“必须非只读”两侧用例，并保持短路行为。
-
-## 验证依据
-
-- 同步范围固定为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4..2c944fb -- pkg/parser/ast/util.rs`，并用 `git show 2c944fb:pkg/parser/ast/util.rs` 读取冻结源码。工作区源码和当前尖端不作为增量事实来源。
-- Go `util.go::IsReadOnly` 对推荐语句采用同样的两个 action 白名单。Rust `parser_test.rs::recommend_index_return_result_ast_is_read_only` 经公开 ParseOneStmt 获得主 AST，检查 Action/SQL/Options 并断言 `IsReadOnly(..., true)`；既有 `util_test.rs` 等继续作为其他分支基线，未将未执行的测试声称为通过。
-- 复核冻结版本的所属 `Cargo.toml`、`lib.rs` 模块/include 入口及同路径 Go 文件。目标包无 `doc.go`；crate 入口作为模块边界依据。既有章节保留原说明的基线，以上冻结增量覆盖本次变化。
-- 本次 RustCodeGraph `status` 显示含 Rust 的工作区索引（11,527 文件）；图不能替代冻结提交 blob，故增量语义使用 `git show` 和 `git grep` 直接复核，不沿用旧索引统计或把图调用边作为新增生产接线证据。
-- Ready 文档验证：按任务命令检查 11 个二级章节及 `git diff --check`，另核对本地 Markdown 链接。`.agents/skills/tidb-verify-profile` 缺失，使用计划指定的文档检查作为等价证据；纯文档范围不运行 Cargo、parser 生成或代码测试，不宣称运行时验证通过。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-chunk` crate 中的可变单行容器 `MutRow`。crate 入口 [`lib.rs`](lib.rs) 以 `#[path = "mutrow.rs"] pub mod mutrow` 挂载该模块；[`Cargo.toml`](Cargo.toml) 将 crate 命名为 `astersql-util-chunk`，并通过工作区内的 `astersql-parser-mysql` 与 `astersql-types-*` 依赖取得 MySQL 类型常量、`Datum`、`FieldType` 及标量类型。
-
-`MutRow` 位于值计算和列式批处理之间：调用者可以逐列改写一行，再用 `ToRow` 把它作为只读 `Row` 交给表达式、表索引或执行器代码。RustCodeGraph 的调用结果显示，`MutRowFromDatums` 的真实调用者包括 `pkg/executor/physical_plan_runtime.rs` 的表达式求值/聚合更新路径、`pkg/table/tables/index.rs` 的部分索引条件匹配，以及多个聚合测试辅助函数；因此该文件是已接线的运行时基础设施，不是桩或仅用于测试的兼容门面。
+提供三种构造入口：异构值 `MutRowFromValues`、统一值容器 `MutRowFromDatums`、按字段类型生成零值的 `MutRowFromTypes`。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@ crate 内模块关系由 `lib.rs` 提供：`Row` 来自 `row.rs`，`Chunk`/`Colu
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 [`mutrow.go`](mutrow.go)，公开概念和分支结构基本逐项对应：`MutRow`、三种构造器、读视图/长度/克隆、整行与单列更新、零值选择，以及定长/变长/JSON/ENUM/SET 编码辅助函数均保留。
-
 Rust 用 `GoAny` 取代 Go type switch 的开放 `any`；`Vec<T>` 取代可变参数或切片，`Box<Chunk>` 取代 `*Chunk`。Go 借助 `unsafe` 把 DECIMAL、Time 等结构直接写入字节缓冲，Rust 则由 `decimal_bytes`、`time_bytes` 和 `write_sized` 显式序列化。Go 的 fixed-column 构造让 `data` 与 `elemBuf` 共享同一底层切片，Rust 使用两个独立 `Vec<u8>`，但仍以相同宽度标识定长布局。
 
-两版最重要的可见差异是 `ShallowCopyPartialRow`：Go 测试 `TestMutRowShallowCopyPartialRow` 证明源行后续改变时目标可观察到共享缓冲的更新；Rust 方法注释和实现明确改为拥有字节副本，避免源行释放后的悬垂别名。因此不能把 Go 的“浅拷贝后联动”直接写成 Rust 保证。Rust 独立测试当前只验证克隆隔离和 BIT/interface datum；Go `TestMutRow`、`TestIssue29947` 与 partial-row 测试为更广的移植语义提供参考证据，但不等价于 Rust 已覆盖这些回归。
+两版最重要的可见差异是 `ShallowCopyPartialRow`：Go 测试 `TestMutRowShallowCopyPartialRow` 证明源行后续改变时目标可观察到共享缓冲的更新；Rust 方法注释和实现明确改为拥有字节副本，避免源行释放后的悬垂别名。Rust 独立测试当前只验证克隆隔离和 BIT/interface datum；Go `TestMutRow`、`TestIssue29947` 与 partial-row 测试为更广的移植语义提供参考证据，但不等价于 Rust 已覆盖这些回归。
 
 ## 扩展指南
 
@@ -92,11 +88,3 @@ Rust 用 `GoAny` 取代 Go type switch 的开放 `any`；`Vec<T>` 取代可变�
 - 改动 `ToRow` 或 partial-row 复制时，要明确所有权和存活期。若希望继续靠原始指针实现零拷贝，需要给出不会悬垂、不会并发读写冲突的可验证方案。
 - Rust 回归测试应继续放在独立的 `pkg/util/chunk/mutrow_test.rs`，不要内嵌到生产文件。类型矩阵与兼容语义还应对照 `pkg/util/chunk/mutrow_test.go`；至少覆盖新类型的构造、`SetValue`、`SetDatum`、NULL、克隆隔离和定长/变长读取。
 - 性能敏感改动要关注每次写入的 Vec 重新分配与复制。当前 Rust 的 `setMutRowBytes` 会重建 `data`，而 Go 会尽量复用容量；优化时不能牺牲 bitmap/offset 正确性或重新引入悬垂别名。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引含 `pkg/util/chunk/mutrow.rs`（560 行、50 个符号）；使用 `files --filter pkg/util/chunk`、`explore`、`query`、`node --file`、`callers` 与 `callees` 检查文件、符号及调用边。精确查询确认 Rust `MutRow`、`MutRowFromDatums`、`MutRowFromTypes`、`SetDatum`、`ShallowCopyPartialRow` 的定义位置；callers 查询在大范围图上超时，调用者证据由同次 `explore` 的 blast radius 与索引的文件使用关系补齐。
-- 完整阅读的实现与边界文件：`pkg/util/chunk/mutrow.rs`、`pkg/util/chunk/lib.rs`、`pkg/util/chunk/row.rs` 的 `Row`/`Row::view`、`pkg/util/chunk/column.rs` 的 `Column`/引用 ID，以及 `pkg/util/chunk/Cargo.toml`。
-- Go 对照：完整阅读 `pkg/util/chunk/mutrow.go`，逐项核对构造、写入、NULL、序列化与 partial-row 所有权差异。
-- 测试证据：完整阅读 `pkg/util/chunk/mutrow_test.rs` 与 `pkg/util/chunk/mutrow_test.go`。Rust 测试证明深克隆隔离、BIT 字节载荷及 interface datum；Go 测试补充全类型零值、NULL 缓冲保留、行覆盖和浅拷贝别名预期。
-- 本任务是纯文档分析，未修改 Rust/Go/Cargo 行为，也未运行 Cargo。交付结构按任务要求检查本文恰好包含十一个固定二级标题，并人工复核重要结论均可回溯到上述符号、调用图或对照测试。

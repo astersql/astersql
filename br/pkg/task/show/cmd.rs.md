@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cmd.rs` 是 workspace 成员 crate `astersql-br-pkg-task-show` 的核心实现文件。该 crate 由 `br/pkg/task/show/Cargo.toml` 定义为 library，`lib.rs` 通过 `pub mod cmd` 装入本文件，并用 `pub use cmd::*` 对外再导出其公开 API。文件对应 Go 包 `br/pkg/task/show` 的 `cmd.go`，目标是把备份元数据转换成适合 CLI 或 SQL 层展示的结构。
-
-当前 Rust crate 没有外部依赖声明，存储、protobuf、上下文和 MetaReader 均来自同 crate 的 `stubs.rs`。仓库搜索未发现测试以外的 Rust 代码调用 `CreateExec` 或 `CmdExecutor::Read`；因此它目前是可测试的移植库，还没有接入 Rust 版 SQL executor。Go 的实际生产上游是 `pkg/executor/brie.go` 中 `showMetaExec::Next`，它调用 `show.CreateExec` 和 `Read` 后把 `Tables` 写入结果 chunk。
+`collectResult` 负责通道聚合；`convertBasic`、`convertTable`、`convertRawRange` 负责无副作用的数据投影。
 
 ## 核心职责
 
@@ -92,7 +90,7 @@ RawKV 分支不启动线程。所有结果数据均拥有所有权，`CmdExecuto
 
 结构和主分支基本逐项对应 `br/pkg/task/show/cmd.go`：配置裁剪、TSO wrapper、展示结构、`CreateExec`、版本窗口检查、非 Raw schema 聚合、Raw V2 拒绝以及三个转换函数均保留相同语义。Rust 将 Go 的指针/切片改为拥有型值和 `Vec`，将 `uint` 计数固定为 `u64`，并以 `Option` 表达 nil table info 与 raw range index。
 
-并发实现不是逐语法翻译：Go `collectResult` 直接 `select` context、数据和错误通道；Rust 标准库 mpsc 无等价 select，因此采用 `try_recv + recv_timeout(1 ms)`。Rust 额外记录 `err_done`，并约定生产者先发送完成结果再关闭数据通道。两版都保持输入顺序、错误立即传播和取消语义。
+并发实现不是逐语法翻译：Go `collectResult` 直接 `select` context、数据和错误通道；Rust 标准库 mpsc 无等价 select，因此采用 `try_recv + recv_timeout(1 ms)`。Rust 额外记录 `err_done`，并约定生产者先发送完成结果再关闭数据通道。
 
 当前移植存在明确能力差异。Go 通过真实 `task.ReadBackupMeta`、`metautil.MetaReader` 和对象存储运行，并由 `pkg/executor/brie.go` 接入 `SHOW BACKUP METADATA`；Rust Cargo 无外部依赖，`stubs.rs` 明示真实存储/protobuf/V2 schema walk 为 mock 边界，仓库也没有 Rust SQL executor 调用。因此 Rust 测试中的 V1/V2/加密 fixture 只验证文件字节、cipher 形状以及 hook 注入后的 show 主流程，不能证明真实对象存储读取或解密已经移植。
 
@@ -104,13 +102,3 @@ RawKV 分支不启动线程。所有结果数据均拥有所有权，`CmdExecuto
 - 改变并发协议时，保持“错误结果先于数据 sender 关闭”的不变量，覆盖数据通道先关闭、错误到达、取消、生产者失败和超过 16 项背压场景。若改用 async 或可 select 的通道，应验证顺序和取消语义，并评估每次 `Read` 启动 OS 线程的性能差异。
 - 修改时间格式时区语义时，同时检查 `TimeStamp::fmt`、`stubs::oracle::format_show_ts`、`cmd_test.rs` 的本地时区断言，以及 Go `showMetaExec::Next` 的 session 时区处理，避免混淆诊断字符串与 SQL 展示时间。
 - Rust 单元测试继续放在独立的 `cmd_test.rs`/`parity_test.rs`，不要嵌入生产源文件；保持与 `cmd_test.go` 的全量、V2 小表、加密和 SQL 时区意图对齐。
-
-## 验证依据
-
-- Rust 源码：`br/pkg/task/show/cmd.rs`（全部 337 行），核对全部公开结构、impl、函数、分支、通道和错误路径。
-- crate 边界：`br/pkg/task/show/Cargo.toml`、`br/pkg/task/show/lib.rs` 以及根 `Cargo.toml` workspace 成员清单；确认 library 路径、无依赖声明、模块装配与公开再导出。
-- 直接依赖：`br/pkg/task/show/stubs.rs` 中 `Context`、`oracle::format_show_ts`、`MetaReader`、`ReadSchemasFiles`、`NewMetaReader`、`ReadBackupMeta`，确认取消模型、桩边界和生产者发送行为。
-- Go 对照：`br/pkg/task/show/cmd.go`；生产入口 `pkg/executor/brie.go` 的 `showMetaExec::Next`；测试 `br/pkg/task/show/cmd_test.go`。
-- Rust 独立测试：`br/pkg/task/show/cmd_test.rs` 覆盖真实 fixture 字节、全量/V2/加密结果与时区；`br/pkg/task/show/parity_test.rs` 覆盖投影、RawKV、版本边界、schema/CreateExec 错误、取消、通道聚合和资源释放。
-- RustCodeGraph：`status` 报告索引含 7032 个 Rust 文件；`files --filter br/pkg/task/show` 确认同目录 7 个 Go/Rust 文件；`node --file br/pkg/task/show/cmd.rs --offset 1 --limit 500` 返回完整文件、16 个符号及 19 个引用文件。`query CreateExec` 与 `query collectResult` 定位到 Rust/Go 对应定义；`callers CreateExec` 在 30 秒内未返回结果，故调用者结论另以仓库搜索复核。
-- 结构验收使用任务指定命令，要求文件存在且恰有 11 个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

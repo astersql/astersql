@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-simplesst` crate（见 `pkg/ingestor/simplesst/Cargo.toml`），实现“一个数据对象加一个统计对象”的简化 SST 写入器 `OneFileWriter`。模块由 `pkg/ingestor/simplesst/lib.rs` 的 `pub mod onefile_writer` 暴露，构造入口是 `WriterBuilder::build_one_file`（`writer.rs`）。
-
-当前 Rust 版本是基于 `MemoryStorage` 的整对象实现：行先保存在 writer 内部，`close` 时才编码并提交对象。它可供同 crate 测试和内存管线使用，但尚未像 Go `onefile_writer.go` 那样接收通用 `storeapi.Storage`、流式 `objectio.Writer` 或生产对象存储 sink。仓库中的生产 Rust 文件目前只直接引用本文件的常量：`pkg/dxf/importinto/task_executor.rs` 使用 `DefaultOneWriterBlockSize`，`pkg/ingestor/globalsort/merge.rs` 使用 `MaxUploadPartCount`；直接构造 `OneFileWriter` 的已检索 Rust 调用均在 `onefile_writer_test.rs`。
+当前 Rust 版本是基于 `MemoryStorage` 的整对象实现：行先保存在 writer 内部，`close` 时才编码并提交对象。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-对应实现是 `pkg/ingestor/simplesst/onefile_writer.go`，对应测试是 `onefile_writer_test.go`。重复策略、主文件前两条/冲突文件其余项、长度头开销、延迟产生空文件、汇总字段和“成功后才 closed”的核心语义由 Rust 保留；Rust 测试名称也明确对照 Go 的 Basic、Stat、PropOffset、DupError 和 OnDupRemove 场景。
+重复策略、主文件前两条/冲突文件其余项、长度头开销、延迟产生空文件、汇总字段和“成功后才 closed”的核心语义由 Rust 保留；Rust 测试名称也明确对照 Go 的 Basic、Stat、PropOffset、DupError 和 OnDupRemove 场景。
 
 当前差异必须视为移植限制而非等价实现：
 
@@ -98,11 +96,3 @@
 - 修改路径算法时要同步 `rand_partitioned_prefix` 调用次数与顺序，并检查 `MultipleFilesStats` 和 `ConflictInfo.Files`。失败重试是否复用路径或清理旧对象需要先定义兼容契约。
 - 若要支持乱序输入，不能只修改 `Min`/`Max`；还必须选择排序、全局去重或显式拒绝乱序，并评估内存、稳定顺序和 Go 兼容性。
 - Rust 测试逻辑必须继续放在独立的 `pkg/ingestor/simplesst/onefile_writer_test.rs`，不要内嵌进生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认仓库索引可用；`files --filter pkg/ingestor/simplesst` 定位模块；`node --file pkg/ingestor/simplesst/onefile_writer.rs --offset 1 --limit 400` 与后续 `--offset 338 --limit 300` 阅读完整源文件。文件关系报告列出 `writer.rs`、`globalsort/merge.rs`、`pkg/dxf/importinto/task_executor.rs` 和独立测试等使用者；方法级通用名称查询未提供可靠消歧结果，因此调用边再由入口源码核验。
-- Rust 源码：`onefile_writer.rs` 的 `OneFileWriter::{new, init_part_size, emit, finish_pivot, write_row, close}`；`writer.rs` 的 `WriterBuilder::{build_one_file, configuration}`、`WriterSummary`；`file.rs` 的 `KeyValueStore` 与后缀常量；`lib.rs` 的模块、错误和 `MemoryStorage` 定义。
-- crate/上游证据：`pkg/ingestor/simplesst/Cargo.toml`、`pkg/dxf/importinto/task_executor.rs`、`pkg/ingestor/globalsort/merge.rs`。用精确 `rg` 检索确认生产 Rust 路径仅引用本文件常量。
-- 对照与测试：完整阅读 `pkg/ingestor/simplesst/onefile_writer.go`、`onefile_writer_test.go` 和独立 Rust 测试 `onefile_writer_test.rs`。Rust 测试覆盖 Record、Basic、属性统计/offset、Error、Remove 与关闭失败重试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文档存在且恰好包含 11 个固定二级标题，并人工复核唯一生产物、源码链接、差异声明和扩展测试位置。

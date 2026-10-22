@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-profile` crate 的剖析数据入口，负责把 CPU/runtime profile 转成上层可消费的 `DatumRows`。crate 根 `pkg/util/profile/lib.rs` 通过 `pub use profile::*` 公开本文件 API，而树构建和六列火焰图行的具体展开委托给同 crate 的 `flamegraph.rs`。`pkg/util/profile/Cargo.toml` 将 Go 对照包标为 `pkg/util/profile`，并声明 `cpuprofile`、`pprof`、`flate2`、`texttree`、`types` 与 `thiserror` 依赖。
-
-在完整系统的设计位置上，它对应 performance schema 本地 TiDB profile 表的数据采集器：`pkg/infoschema/perfschema/tables.rs` 会把六张 `tidb_profile_*` 表分别路由为 `cpu`、`heap`、`mutex`、`allocs`、`block`、`goroutine`，但路由停在 `RowSource::local_profile` 抽象。当前 Rust 生产代码中未检索到该抽象直接调用 `Collector::ProfileGraph` 的接线；`pkg/util/profile/profile_test.rs::test_profiles` 直接模拟这层分发。因此，本文件的采集能力已经实现并由测试覆盖，但不能仅凭现有证据宣称 Rust SQL 主链已经把它投入生产使用。
+`CPUProfileInterval` 以及读写函数提供进程级 CPU 采样窗口；runtime provider 槽位与 guard 提供可替换、可恢复的运行时 profile 边界。
 
 ## 核心职责
 
@@ -82,9 +80,7 @@ reader 数据、provider 输出和 CPU 输出全部驻留内存；`write_profile
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照是 `pkg/util/profile/profile.go`。主要一一对应关系为：Go `CPUProfileInterval` ↔ Rust 原子毫秒值及 getter/setter；Go `Collector` 三个公开方法 ↔ Rust 同名方法；Go `cpuProfileGraph` ↔ Rust `cpu_profile_graph`；Go `pprof.Lookup + WriteTo` ↔ Rust `RuntimeProfileProvider::write_profile`；Go `profile.Parse` / `CheckValid` ↔ Rust gzip/protobuf 解码与本地 `validate_profile`；Go `profileToFlamegraphNode/profileToDatums` ↔ Rust 私有转换阶段和 `flamegraph.rs`。
-
-已保持的行为包括：CPU 名规范化、默认 30 秒采样、goroutine 使用 debug 2、未知名称错误、火焰图 sample 累加、goroutine 四列输出和树标记。Rust 额外引入 provider 抽象，因为 Rust 运行时没有 Go `runtime/pprof.Lookup` 的同构全局 API；也用 guard 恢复槽位、用原子值替代 Go 可直接赋值的全局 `Duration`。
+Rust 额外引入 provider 抽象，因为 Rust 运行时没有 Go `runtime/pprof.Lookup` 的同构全局 API；也用 guard 恢复槽位、用原子值替代 Go 可直接赋值的全局 `Duration`。
 
 Rust `parse_profile_data` 显式检查 gzip 魔数并用 prost 解码，Go 则由 `github.com/google/pprof/profile.Parse` 统一处理。Rust `validate_profile` 是针对本模块访问模式的移植实现，不应在没有新增对照测试时被描述为 Go 库 `CheckValid` 的完整逐行复刻。Go `TestProfiles` 通过真实 session/domain 和 performance schema SQL 查询六张表；Rust `profile_test.rs::test_profiles` 说明 SQL 栈尚未在此 util crate 内完整接线，改为直接验证等价的 `ProfileGraph` 名称分发。
 
@@ -97,14 +93,3 @@ Rust `parse_profile_data` 显式检查 gzip 魔数并用 prost 解码，Go 则�
 要完成生产 SQL 接线，应在实现 `pkg/infoschema/perfschema/tables.rs::RowSource::local_profile` 的宿主层调用 `Collector::ProfileGraph`，并在独立集成测试中从 `performance_schema.tidb_profile_*` 验证实际行，而不是只新增 Cargo 依赖。还必须提供生产 `RuntimeProfileProvider`，明确其安装时机、进程级生命周期和并发替换策略。
 
 性能上应重点评估全量缓冲和索引/树的峰值内存、CPU 采样对调用线程的同步阻塞，以及恶意或超大 profile 的输入限制。兼容性上应保留六列火焰图/四列 goroutine datum 形状、Go 可观察错误和稳定排序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；本次查询时可用。
-- RustCodeGraph `files --filter pkg/util/profile`：确认 `profile.rs`、`flamegraph.rs`、crate 入口、Go 对照及三个 Rust 测试文件均在索引中。
-- RustCodeGraph `node --file pkg/util/profile/profile.rs`：读取完整 398 行，确认所有常量、类型、trait、函数、impl、`cfg(test)` 分支及直接下游调用。
-- RustCodeGraph `query`：定位 Rust/Go `ProfileGraph`、`ProfileReaderToDatums`、`ParseGoroutines`，以及私有 `validate_profile`、`install_runtime_profile_provider`；宽泛 `explore/callers/callees` 结果存在同名噪声或未返回精确边，因此调用关系又用目标源码与精确 `rg` 交叉核验，未把噪声当作证据。
-- 已读实现/边界：`pkg/util/profile/lib.rs`、`flamegraph.rs`、`Cargo.toml`、根 `Cargo.toml` facade 声明、`pkg/lib.rs::util::profile` 再导出，以及 `pkg/infoschema/perfschema/tables.rs`/`Cargo.toml` 的路由与依赖。
-- 已读 Go 对照：`pkg/util/profile/profile.go`、`profile_test.go`。Go 测试验证经 session/domain 查询六张 performance schema 表。
-- 已读 Rust 测试：`pkg/util/profile/profile_test.rs`、`migration_aster_unit_test.rs`、`flamegraph_test.rs`。它们分别覆盖名称分发/provider 参数与恢复、raw/gzip/profile 校验和 goroutine 错误、fixture 行序与百分比格式。
-- 结构验证要求：文档必须存在，且固定十一个二级标题各出现一次；本任务不改变运行时代码，按计划不运行 Cargo。

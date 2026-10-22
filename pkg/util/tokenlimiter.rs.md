@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util` crate；crate 由 [`pkg/util/Cargo.toml`](Cargo.toml) 定义，并通过 [`pkg/util/lib.rs`](lib.rs) 中的 `pub mod tokenlimiter;` 公开模块。它是 Go [`pkg/util/tokenlimiter.go`](tokenlimiter.go) 的 Rust 移植，提供一个用预填充有界通道实现的并发许可池。
-
-当前 Rust 侧的直接使用者只有注册到 `security_2_aster_unit_test` 测试目标的 `token_limiter_blocks_until_a_token_is_returned`（[`pkg/util/security_2_aster_unit_test.rs`](security_2_aster_unit_test.rs)）。仓库搜索未发现 Rust 生产模块调用 `NewTokenLimiter`；因此它目前是“已导出、已测试、尚未接入 Rust 生产主链”的通用组件。完整应用中的对应生产位置仍在 Go 服务端：[`pkg/server/server.go`](../server/server.go) 的 `Server.concurrentLimiter` 限制并发连接处理，`getToken` 获取许可，`releaseToken` 归还许可。
+Go [`pkg/util/tokenlimiter.go`](tokenlimiter.go) 的 Rust 移植，提供一个用预填充有界通道实现的并发许可池。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@ API 不返回 `Result`。`Get` 和 `Put` 分别对 `recv`/`send` 使用 `expect`
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Token`、`TokenLimiter`、`Put`、`Get` 和 `NewTokenLimiter` 逐项对应 [`pkg/util/tokenlimiter.go`](tokenlimiter.go) 的同名符号。两版都使用容量固定的有界通道并预填 `count` 个空令牌；`Get` 在耗尽时阻塞，`Put` 在池已满时阻塞，因此核心并发语义一致。
+Go 通道发送/接收由运行时管理；Rust 通过 `crossbeam-channel` 实现同类同步，并在断开结果上显式 panic。
 
-类型映射为 Go `uint` 到 Rust `usize`、Go `chan *Token` 到 Rust 的 `Sender<Box<Token>>`/`Receiver<Box<Token>>` 分离端点、Go `*TokenLimiter` 到 Rust `Arc<TokenLimiter>`。Go 通道发送/接收由运行时管理；Rust 通过 `crossbeam-channel` 实现同类同步，并在断开结果上显式 panic。
-
-Rust 额外提供 `Count`，Go 的 `count` 字段未导出且没有同名方法。当前 Rust 测试用它验证配置容量，但生产逻辑不依赖它。Rust 的 `Token: Default` 也比 Go 空结构体更显式地暴露外造令牌能力；两种语言实际上都允许包内/公开类型使用者构造空令牌，因此都依赖调用约定维持容量守恒。
+Rust 额外提供 `Count`，Go 的 `count` 字段未导出且没有同名方法。Rust 的 `Token: Default` 也比 Go 空结构体更显式地暴露外造令牌能力；两种语言实际上都允许包内/公开类型使用者构造空令牌，因此都依赖调用约定维持容量守恒。
 
 Go 版已由 [`pkg/server/server.go`](../server/server.go) 接入 MySQL 服务并围绕获取过程记录 `TokenGauge` 和等待时长；Rust 版尚无对应服务接线或指标逻辑，不能把 Go 生产用法表述成 Rust 已支持的主链。
 
@@ -89,13 +85,3 @@ Go 版已由 [`pkg/server/server.go`](../server/server.go) 接入 MySQL 服务�
 - 若要禁止外造令牌破坏不变量，应收紧 `Token` 的构造能力或让归还句柄携带池身份。此变更会影响公开 API，与 Go 的公开空结构体也可能产生兼容差异。
 - 若接入 Rust 服务端生产链，应仿照 Go 的 `NewServer/getToken/releaseToken` 接线，明确指标计数、等待耗时、连接异常退出时归还许可，并添加独立的服务层集成测试。
 - 若改变容量类型、阻塞策略或公平性，需要同步审查 `NewTokenLimiter`、`Get`、`Put`、`Count`，并扩展现有阻塞测试以覆盖零容量、多个等待者、持有者异常和错误归还；性能评估应关注大容量初始化分配及高竞争通道开销。
-
-## 验证依据
-
-- 源码事实：[`pkg/util/tokenlimiter.rs`](tokenlimiter.rs)；核对了 `Token`、`TokenLimiter`、`Put`、`Get`、`Count`、`NewTokenLimiter` 的完整实现及无条件编译状态。
-- crate 与模块事实：[`pkg/util/Cargo.toml`](Cargo.toml) 的 `astersql-util`、`crossbeam-channel = "0.5"`、独立测试目标，以及 [`pkg/util/lib.rs`](lib.rs) 的 `pub mod tokenlimiter;`。
-- Go 对照及生产链：[`pkg/util/tokenlimiter.go`](tokenlimiter.go) 与 [`pkg/server/server.go`](../server/server.go) 的 `concurrentLimiter`、`NewServer`、`getToken`、`releaseToken`。
-- Rust 测试：[`pkg/util/security_2_aster_unit_test.rs`](security_2_aster_unit_test.rs) 的 `token_limiter_blocks_until_a_token_is_returned`；[`pkg/util/security_formal_aster_unit_test.rs`](security_formal_aster_unit_test.rs) 证明该文件通过 `include!` 进入 Cargo 声明的测试目标。
-- RustCodeGraph：`status` 显示索引可用；`query NewTokenLimiter`、`query TokenLimiter` 定位 Go/Rust 对照符号；`node NewTokenLimiter` 给出 Rust 源码及测试到构造函数的调用边；测试节点和 `callees` 查询用于复核测试流程，并识别常见方法名的消歧限制。
-- 仓库引用搜索：`rg` 仅找到 Rust crate 导出和上述独立测试调用；Rust 生产接线未找到，因此本文明确标为未接入，而非推断其已用于完整应用。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前使用任务规定的命令验证目标文档存在且恰好包含 11 个固定二级章节，并人工复核所有路径、符号、调用关系与未验证边界的措辞。

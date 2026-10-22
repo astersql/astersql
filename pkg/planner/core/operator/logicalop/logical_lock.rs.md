@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现逻辑计划树中的行锁边界 `LogicalLock`，面向 `SELECT ... FOR UPDATE` 与 `SELECT ... FOR SHARE`。它属于 `astersql-planner-core-operator-logicalop` crate；模块入口在 [`lib.rs`](lib.rs) 中以 `mod logical_lock` 声明并通过 `pub use logical_lock::*` 对外导出。该 crate 的 [`Cargo.toml`](Cargo.toml) 用 `package.metadata.porting.go-package` 指向 Go 包 `pkg/planner/core/operator/logicalop`，因此本文件的直接语义基线是同目录 [`logical_lock.go`](logical_lock.go)。
-
-运行链上的上游入口是 `pkg/planner/core/logical_plan_builder_runtime.rs`：解析后的 `SelectLockInfo` 不是 `None` 时，构建器把 `LogicalLock` 插在 FROM/WHERE 子树之上，并复制子树的 schema、输出名和唯一子节点。下游物理化入口是 `pkg/planner/core/operator/physicalop/physical_lock.rs::ExhaustPhysicalPlans4LogicalLock`，它读取锁类型与等待时间生成物理锁候选；MPP/Flash 属性在该下游入口被拒绝。
+用 `LogicalLock` 保存锁元数据，以及理论上供锁执行所需的“表 ID → 行句柄列”和“表 ID → 物理分区 ID 列”映射。
 
 ## 核心职责
 
@@ -101,7 +99,6 @@ TopN 下推阶段，`None` 立即返回；存在 TopN 但没有 child 也立即�
 - Go `PushDownTopN` 最终返回 `p.Self()`，Rust 的固有方法返回 `()`，trait 方法返回 `None` 表示保留当前锁节点；可观察的树形目标相同，但返回协议不同。
 - Go `PlanBuilder.buildSelectLock` 会收集 `handleHelper.tailMap()`，并在分区表路径递归添加/记录物理表 ID 列。当前 Rust 构建器没有对应填充，两个映射保持默认空值；这不是已完成的等价移植。
 - Go 物理锁会继续携带句柄与物理表 ID 映射；当前 Rust 活跃的 `ExhaustPhysicalPlans4LogicalLock` 创建 `LegacyPhysicalLock`，仅消费锁类型、等待时间、schema 和统计。注释中的完整 `PhysicalLock` 草案不构成运行时代码。
-- Go 将 `ForUpdateSkipLocked`/`ForShareSkipLocked` 同样排除在支持集合之外，Rust 的分类测试明确锁定了这一点。
 
 ## 扩展指南
 
@@ -114,13 +111,3 @@ TopN 下推阶段，`None` 立即返回；存在 TopN 但没有 child 也立即�
 调整 TopN 协议时，要同时检查固有方法与 `LogicalPlan` trait 适配层，确保锁节点不会因返回值约定被移除；至少保留“`None` 不访问 child”和“child 返回替换计划时更新 child”的测试。调整字段参与等价性的规则时，还要同步审查 `hash64_equals_generated.rs` 与生成器 `pkg/planner/core/generator/hash64_equals/hash64_equals_generator.rs`，避免手改生成文件后被覆盖。
 
 兼容性风险集中在 Skip Locked 支持集合、`LockType`/`lock_type` 双字段、Go/Rust 返回协议和 MPP 禁止路径；性能风险主要来自重复追加列导致更宽的中间行，以及遗漏裁剪导致隐藏列贯穿过多算子。任何主链补齐都应另行做针对性单元/集成验证，本分析任务本身不修改运行时代码。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可由 `node --file pkg/planner/core/operator/logicalop/logical_lock.rs` 完整读取。
-- RustCodeGraph 文件节点：目标文件被 `pkg/planner/cascades/memo/group_expr.rs`、`logical_d_aster_unit_test.rs`、`logical_lock_test.rs`、`base_physical_agg.rs`、`physical_lock.rs` 使用。`query LogicalLock` 同时定位 Rust/Go 结构、Go 构建入口和 Rust 物理化入口；`callees IsSupportedSelectLockType` 确认它组合两个分类函数。因 Go/Rust 同名，方法级 callers/callees 查询命中了 Go 定义，本文用精确路径检索核对 Rust 引用，没有把空查询当作无调用证据。
-- 已读 Rust 生产文件：本文件、`logical_plan_builder_runtime.rs`、`base_logical_plan.rs`、`hash64_equals_generated.rs`、`physicalop/physical_lock.rs`、`parser/ast/lib.rs`、`planner/util/handle_cols.rs` 以及 crate `lib.rs`。
-- 已读 crate 配置：`pkg/planner/core/operator/logicalop/Cargo.toml`，确认 crate 名、路径依赖和 Go 包映射；该文件没有 feature 声明，本目标文件也没有条件编译项。
-- 已读 Go 对照：`logical_lock.go` 与 `pkg/planner/core/planbuilder.go::buildSelectLock`/`setExtraPhysTblIDColsOnDataSource`。
-- 已读独立 Rust 测试：`logical_lock_test.rs::absent_top_n_does_not_visit_lock_child`；`logical_d_aster_unit_test.rs::lock_type_classification_matches_go_supported_modes`。另以文本检索确认 Go planner 测试中存在 FOR UPDATE 的 point-get、prepare、plan-cache 与 integration 覆盖，但这些是系统级旁证，并非本文件每个 Rust 分支的直接单元测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查目标文档存在且恰有 11 个固定二级章节，并人工复核以上结论均对应实际符号或直接对照文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`command.rs` 属于 `astersql-ttl-client` crate，由 [`lib.rs`](./lib.rs) 的 `pub mod command` 装配并整体再导出。它定义 TTL 节点间命令的 JSON 协议、发送/订阅/认领/应答抽象，以及两套进程内实现：基于 `EtcdStore` 的 `EtcdClient` 和直接使用通道的 `MockClient`。协议键空间固定为 `/tidb/ttl/cmd/req/` 与 `/tidb/ttl/cmd/resp/`，请求和响应的默认租约均为 180 秒（`TTL_CMD_KEY_LEASE_SECONDS`、`TTL_CMD_KEY_REQUEST_PREFIX`、`TTL_CMD_KEY_RESPONSE_PREFIX`）。
-
-需要特别区分命名与当前接线：Rust 的 `EtcdStore` 是 `Mutex<HashMap<...>>` 支撑的进程内模拟存储，并不连接真实 etcd；当前 [`Cargo.toml`](./Cargo.toml) 的有效依赖为空，历史依赖只位于永不成立的 `cfg(any())` 下。仓库当前可检索到的生产消费者主要是 `pkg/server/handler/ttlhandler/ttl.rs` 对 `TriggerNewTtlJobResponse` 的类型复用；`pkg/session/runtime/ttl_runtime.rs` 则另行实现真实 `etcd_client` watch/take/response 传输，没有调用本文件的 `EtcdClient`。因此本文件目前同时承担协议模型、单元测试传输和可复用 API，而不能被描述为已经接入生产集群的真实 etcd 客户端。
+定义 TTL 节点间命令的 JSON 协议、发送/订阅/认领/应答抽象，以及两套进程内实现：基于 `EtcdStore` 的 `EtcdClient` 和直接使用通道的 `MockClient`。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ Go 直接对应实现是 [`command.go`](./command.go)，回归测试分别是 Ru
 
 ## 与 Go 版本的对应关系
 
-[`command.go`](./command.go) 是结构和语义基线。常量、请求/响应字段、`CommandClient` 四个操作、`TriggerNewTTLJob` 便捷函数、watch 后周期性 get 的防漏读策略、删除请求实现认领、带 180 秒租约的响应，以及 mock 的回放/单次响应行为都在 Rust 中有对应实现。[`command_test.go`](./command_test.go) 的成功往返、重复认领返回 false 和远端错误传播，在 [`command_test.rs`](./command_test.rs) 的 `run_command_client_round_trip` 中对两种 Rust client 重放。
-
 实现差异包括：Go `etcdClient` 包装真实 `clientv3.Client` 并显式 `Grant` 租约，Rust `EtcdClient` 包装进程内 `EtcdStore`；Go 使用 `encoding/json` 和 `json.RawMessage`，Rust以手写 `JsonValue` 保留通用载荷；Go 使用 `google/uuid`，Rust 使用时间/计数/进程 ID 组合；Go watch 关闭后把通道替换为永久阻塞通道并继续轮询，Rust watch 断开时短暂休眠并继续用 `get` 查找；Go malformed watch payload 会记录日志后发送零值请求，Rust发送零值请求但没有日志依赖。
 
-Rust 有额外的 Go 兼容测试：`etcd_response_accepts_missing_request_id_like_go_json_unmarshal`、`trigger_ttl_job_request_accepts_missing_fields_like_go_json_unmarshal`、`mock_take_and_response_ignore_cancelled_context_like_go` 和 `json_string_unicode_surrogates_match_go_encoding_json`。这些测试明确约束零值字段、mock 忽略取消上下文以及 UTF-16 代理项处理，扩展解析器时不可随意收紧。
+Rust 有额外的 Go 兼容测试：`etcd_response_accepts_missing_request_id_like_go_json_unmarshal`、`trigger_ttl_job_request_accepts_missing_fields_like_go_json_unmarshal`、`mock_take_and_response_ignore_cancelled_context_like_go` 和 `json_string_unicode_surrogates_match_go_encoding_json`。
 
 ## 扩展指南
 
@@ -89,12 +85,3 @@ Rust 有额外的 Go 兼容测试：`etcd_response_accepts_missing_request_id_li
 修改键格式、租约或认领语义时，必须同步检查 `pkg/session/runtime/ttl_runtime.rs` 的真实 etcd 实现，因为当前两者没有共享常量或 trait，容易发生协议漂移。若要让本 `EtcdClient` 成为生产真实 etcd 客户端，需要显式引入并接线外部后端，而不是继续扩展 `EtcdStore`；这会改变 crate 依赖、异步/线程模型和错误映射，不能当作本文件现状。
 
 扩展 JSON 时优先修改 `JsonParser`/`JsonValue::write_json` 并保留 Go 兼容测试。尤其要评估大载荷的递归深度、无界 watch 队列和多次字符串分配带来的性能风险。若新增错误分支，应明确它来自协议、后端还是业务响应，并补齐 `Display` 和两个 client 实现的一致行为；若修改 watcher 生命周期，应提供可确定终止或 join 的方案，避免积累后台轮询线程。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点；`node --file pkg/ttl/client/command.rs` 阅读了 1–1324 行，并得到“被 15 个文件使用”的文件级关系；`query trigger_new_ttl_job`、`query new_command_client`、`query watch_command/response_command/take_command`、`query decode_response/new_request_id` 核对了关键符号及签名。精确 callers/callees 查询未返回边，因此没有据此虚构上游，改由精确文本检索确认实际引用。
-- 源与边界：完整阅读 [`command.rs`](./command.rs)、[`Cargo.toml`](./Cargo.toml) 和 [`lib.rs`](./lib.rs)，核对公开/私有符号、有效依赖、模块再导出、线程/锁/通道及租约生命周期。
-- Go 对照：完整阅读 [`command.go`](./command.go) 与 [`command_test.go`](./command_test.go)，核对真实 etcd、JSON 零值、watch/get、take/response 和 mock 行为。
-- Rust 测试：完整阅读 [`command_test.rs`](./command_test.rs)；其覆盖两种 client 的成功与错误往返、取消、缺失 request ID、未知响应 ID、重复/缺失认领、JSON 往返、Go 零值规则与 Unicode 代理项。
-- 生产接线复核：精确检索 `astersql_ttl_client`、`CommandClient`、`trigger_new_ttl_job`、`watch_command`、`take_command` 和 `response_command`；读取 `pkg/server/handler/ttlhandler/ttl.rs` 的响应类型使用，以及 `pkg/session/runtime/ttl_runtime.rs` 的真实 etcd watch/事务认领/响应写入路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付检查使用任务规定的 11 章节结构命令，并额外检查仅新增本说明文档、总计划未修改、Markdown 相对链接目标存在和 diff 无无依据的“已支持”结论。

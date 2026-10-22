@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`job_args.rs` 是 DDL `Job` 参数的持久化兼容层：它把各类 schema、table、partition、column、index、placement、TiFlash、flashback 与物化视图操作的参数定义为类型化 DTO，并维护旧版位置数组与新版 JSON 对象之间的双向转换。文件本身不执行 DDL，也不访问存储；它负责让提交端、DDL worker、回滚路径和任务完成后的清理/GC 消费者对同一份 `Job.raw_args` 有一致解释。
-
-该文件实际编译在 `astersql-meta-model-group2` 中：`pkg/meta/model/internal/group2/lib.rs` 先提供依赖类型、`JobArgsCompat` 和解码适配，再以 `include!("../../job_args.rs")` 纳入本文件。根 crate `astersql-meta-model` 由 `pkg/meta/model/Cargo.toml` 聚合 group1–group4，并在 `pkg/meta/model/lib.rs` 以 `group_2` 模块再导出本层 API。因此外部 Rust 调用通常写成 `astersql_meta_model::group_2::Get*Args`。
-
-源码已有 `// Copyright 2026 AsterSQL.` 标记，说明它已进入 AsterSQL Rust 移植范围；其直接 Go 对照是 `pkg/meta/model/job_args.go`，独立 Rust 回归测试位于 `pkg/meta/model/job_args_test.rs`，另有 `job_args_2_aster_unit_test.rs` 和 `go_merge_15_test.rs` 补充兼容边界。
+`job_args.rs` 是 DDL `Job` 参数的持久化兼容层：它把各类 schema、table、partition、column、index、placement、TiFlash、flashback 与物化视图操作的参数定义为类型化 DTO，并维护旧版位置数组与新版 JSON 对象之间的双向转换。
 
 ## 核心职责
 
@@ -93,13 +89,13 @@ RustCodeGraph 将该文件标记为被 25 个文件使用，列出的直接使�
 
 ## 与 Go 版本的对应关系
 
-`pkg/meta/model/job_args.go` 是权威语义对照。顶层声明对比显示 Go 与 Rust 的业务类型和 63 个顶层函数名称对齐；Rust 额外引入 `DynArg`、`JobArgResult`、`arg`、`is_default` 以适配 serde 和 `Result`。Rust 保留了 Go 风格公开名称（如 `Get*Args`、字段首字母大写），以降低逐文件移植与调用对照成本。
+顶层声明对比显示 Go 与 Rust 的业务类型和 63 个顶层函数名称对齐；Rust 额外引入 `DynArg`、`JobArgResult`、`arg`、`is_default` 以适配 serde 和 `Result`。Rust 保留了 Go 风格公开名称（如 `Get*Args`、字段首字母大写），以降低逐文件移植与调用对照成本。
 
-核心对应关系为：Go `[]any` ↔ Rust `Vec<Value>`，Go 泛型 `getOrDecodeArgs*` ↔ Rust 同名泛型函数，Go 私有 `JobArgs`/`FinishedJobArgs` 接口 ↔ Rust trait，Go `json.Unmarshal` ↔ serde 反序列化。Go V2 缓存持有类型化 `any`，Rust 当前缓存持有 JSON `Value`，所以 Rust 每次缓存命中仍会反序列化为目标类型；对外值语义一致，但类型错误表现为 serde 错误而非 Go 类型断言 panic。
+Go V2 缓存持有类型化 `any`，Rust 当前缓存持有 JSON `Value`，所以 Rust 每次缓存命中仍会反序列化为目标类型；对外值语义一致，但类型错误表现为 serde 错误而非 Go 类型断言 panic。
 
-独立 Rust 测试大体按 `job_args_test.go` 的测试名和场景移植，覆盖 schema/table/partition/index/column/constraint/placement/flashback 等 V1/V2 往返。Rust 还增加 `v2_args_decode_go_json_field_names` 验证 Go JSON 键、`job_version_and_action_survive_clone` 验证正式 Job 身份，并在 `job_args_2_aster_unit_test.rs` 验证 V2 缓存与旧 columnar-index fallback。`go_merge_15_test.rs` 进一步覆盖物化视图新增字段、旧两字段属性布局、V2-only TiFlash/index split 字段。
+Rust 还增加 `v2_args_decode_go_json_field_names` 验证 Go JSON 键、`job_version_and_action_survive_clone` 验证正式 Job 身份，并在 `job_args_2_aster_unit_test.rs` 验证 V2 缓存与旧 columnar-index fallback。
 
-已知实现边界应如实保留：本文件所在 group2 仍为兼容适配 crate，周边若干 AST/PD/模型类型是满足参数协议的 Rust 表示；错误类型也是 `String`。文档不把这些边界描述成完整 Go 运行时等价物。
+已知实现边界应如实保留：本文件所在 group2 仍为兼容适配 crate，周边若干 AST/PD/模型类型是满足参数协议的 Rust 表示；错误类型也是 `String`。
 
 ## 扩展指南
 
@@ -113,12 +109,3 @@ RustCodeGraph 将该文件标记为被 25 个文件使用，列出的直接使�
 6. 在独立测试文件 `pkg/meta/model/job_args_test.rs` 扩充普通态与完成态 V1/V2 往返；不要把测试写进生产源文件。涉及 group2 适配特性时同步 `job_args_2_aster_unit_test.rs`，涉及后续 Go merge 兼容时检查 `go_merge_15_test.rs`。
 
 重点风险是持久化兼容而非算法复杂度：改变 V1 槽位顺序/数量、V2 JSON 键、默认值或 `serde(skip)` 会影响滚动升级和历史 Job；改变 finished 布局会破坏 delete-range/GC；放宽集合长度不变量可能引入 panic。性能上避免为大列表增加不必要的深拷贝或重复 JSON 往返。
-
-## 验证依据
-
-- 源码与符号：`pkg/meta/model/job_args.rs` 全部 2182 行；RustCodeGraph `files --filter pkg/meta/model/job_args.rs` 报告 210 个索引符号，`node --file ...` 给出源码与“used by 25 files”。`query getOrDecodeArgs --kind function --json` 定位 Rust 的 V1/V2/分流三个入口及同名 Go 对照。
-- crate 边界：`pkg/meta/model/Cargo.toml`（`astersql-meta-model` 聚合 group1–group4）、`pkg/meta/model/lib.rs`（公开 `group_2` 再导出）、`pkg/meta/model/internal/group2/lib.rs`（复用 group3 Job 身份、定义 `JobArgsCompat`、`include!` 本文件）。
-- Go 对照：`pkg/meta/model/job_args.go`；顶层类型/函数名称集合对比只显示 Rust 的四个适配辅助 `DynArg`、`JobArgResult`、`arg`、`is_default` 为额外项。
-- 独立测试：`pkg/meta/model/job_args_test.rs`、`pkg/meta/model/job_args_2_aster_unit_test.rs`、`pkg/meta/model/go_merge_15_test.rs`，以及 Go 基准测试 `pkg/meta/model/job_args_test.go`。测试证明 V1/V2 普通态和完成态往返、分区回滚、索引历史单双布局、改列五/九槽位、旧物化视图布局、Go JSON 字段名和 V2 缓存行为。
-- 直接调用证据：`pkg/ddl/persistent_create_table.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/persistent_masking_actions.rs`、`pkg/ddl/delete_range.rs`、`pkg/ddl/job_worker.rs` 及 session normal-DDL 测试中的 `group_2::Get*Args` 调用。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工核对只新增本说明、未修改 Rust/Go/Cargo/`plan.md`。

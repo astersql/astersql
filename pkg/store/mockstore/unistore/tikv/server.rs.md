@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore-tikv` crate 的进程内 mock TiKV 服务聚合层。crate 由同目录 `Cargo.toml` 的 `[lib] path = "lib.rs"` 声明，`lib.rs` 以 `pub mod server` 暴露本模块；它不是网络监听器，也没有直接实现 protobuf/gRPC trait，而是向上游提供普通 Rust 方法。`pkg/store/mockstore/unistore/server/server.rs` 的 `setup_stand_alone_inner_server` 创建 `MvccStore` 和 `StandAloneInnerServer` 后构造 `Arc<Server>`，`pkg/store/mockstore/unistore/rpc.rs::RPCClient` 再把进程内请求分派到这些方法。
-
-该层位于“请求适配”与“具体存储/Region 实现”之间：同步入口是 `RPCClient::dispatch`，批量入口是 `tikv/server_batch.rs::handle_batch_request`；本文件负责 Region 上下文校验、写操作 latch 包装、响应错误归一化，以及 Raw KV、MPP 和死锁检测等 mock 状态。真正的 MVCC 算法在 `mvcc.rs`，Region 路由与 latch 在 `region.rs`/`mock_region.rs`，Raft/Snapshot 生命周期占位在 `inner_server.rs`。
+该层位于“请求适配”与“具体存储/Region 实现”之间：同步入口是 `RPCClient::dispatch`，批量入口是 `tikv/server_batch.rs::handle_batch_request`；本文件负责 Region 上下文校验、写操作 latch 包装、响应错误归一化，以及 Raw KV、MPP 和死锁检测等 mock 状态。
 
 ## 核心职责
 
@@ -92,10 +90,6 @@ Raw 的单次读写在 `RwLock` 临界区完成；`raw_scan` 持有读锁完成�
 
 ## 与 Go 版本的对应关系
 
-同路径 `server.go` 是语义对照源。共同点包括：`Server` 聚合 MVCC、Region manager 和 inner server；事务 RPC 先建立/校验请求上下文；悲观锁支持 `pessimisticLockReturnDeadlock`，使用首 mutation 并令 lock TS 为 start version 加一；错误转换区分 locked、retryable/conflict、already-exists、deadlock、commit-expired 等；服务关闭依次覆盖 MVCC、Region manager 和 inner server；MPP 任务以 store/task 标识管理。
-
-Rust 版本不是 Go gRPC 实现的逐方法等价复制：
-
 - Go `Server` 嵌入 `tikvpb.UnimplementedTikvServer` 并实现 protobuf RPC；Rust 暴露进程内类型，协议适配位于 `rpc.rs`。
 - Go `Stop` 设置 stopped 后等待 `refCount == 0`，并记录各关闭错误；Rust 使用 `AtomicBool` 幂等，不等待在途引用，只向上传播 `InnerServer::stop` 错误。
 - Go 悲观锁路径还包含 write-conflict failpoint、lock waiter、等待图清理和唤醒重试；这些逻辑没有出现在本文件的 `kv_pessimistic_lock` 中，Rust 仅注入 deadlock 后委托 `MvccStore`。
@@ -115,13 +109,3 @@ Rust 版本不是 Go gRPC 实现的逐方法等价复制：
 - 修改关闭流程：保持幂等，并针对“部分关闭失败后能否重试”作显式设计；同步 `main_test.rs` 的资源计数断言。
 
 建议同步或扩充的独立测试位置是 `server_test.rs`（failpoint、TTL 边界）和 `main_test.rs`（生命周期、MPP、Raw、Region）；批分派行为放在 `server_batch_test.rs`。兼容风险主要是 Go/Rust 错误字段及请求顺序差异，性能风险主要是多键 latch 范围、Raw 长时间读锁和 MPP 全局 mutex/整包克隆。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 7,032 个 Rust 文件；`files --filter pkg/store/mockstore/unistore/tikv` 确认目标及 Go/测试邻接文件已索引；`query Server --kind struct`、`query kv_get --kind function --json`、`query with_latches --kind function --json`、`query convert_to_key_error --kind function`、`query injected_pessimistic_deadlock --kind function` 定位本文件主要符号；`node --file pkg/store/mockstore/unistore/tikv/server.rs --offset 120 --limit 120` 核对 `Server`、关闭、Region 校验、latch 和 `kv_get` 源码，并报告该文件被 15 个文件使用。当前索引的 `callers`/`callees` 命令在限定时间内未返回结果，故调用边又以以下直接源码引用复核。
-- 目标源码：`pkg/store/mockstore/unistore/tikv/server.rs`，完整读取 780 行，核对所有类型、trait、函数、impl 与 failpoint；文件无条件编译属性，条件依赖布局来自 Cargo manifest。
-- crate/入口：`pkg/store/mockstore/unistore/tikv/Cargo.toml`、`pkg/store/mockstore/unistore/tikv/lib.rs`、`pkg/store/mockstore/unistore/server/server.rs`。
-- 上游调用：`pkg/store/mockstore/unistore/rpc.rs`、`pkg/store/mockstore/unistore/tikv/server_batch.rs`。
-- Rust 测试：`pkg/store/mockstore/unistore/tikv/server_test.rs` 验证 TTL 到期边界和死锁注入先于 Region 校验；`pkg/store/mockstore/unistore/tikv/main_test.rs` 验证 stop 幂等、MPP 生命周期、Raw 无界扫描/TTL 和 Region 上下文校验。
-- Go 对照：`pkg/store/mockstore/unistore/tikv/server.go` 的 `Server`/`NewServer`/`Stop`、`KvPessimisticLock`、Raw、MPP 与 `convertToKeyError`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务给定命令验证文档存在且恰有 11 个固定二级标题，并人工检查未把 Go 完整协议能力或未接线能力写成 Rust 当前事实。

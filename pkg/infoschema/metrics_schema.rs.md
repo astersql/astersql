@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema` crate（`pkg/infoschema/Cargo.toml` 的 `[lib]` 指向 `lib.rs`），由 `pkg/infoschema/lib.rs` 以 `pub mod metrics_schema` 纳入模块树，并在 crate 根重导出 `GetMetricTableDef`、`IsMetricTable` 和 `MetricTableDef`。它是 `METRICS_SCHEMA` 的静态元数据与 PromQL 模板工具层：定义每张指标表的描述结构，将 `MetricTableMap` 投影为 InfoSchema 所需的 `DBInfo`/`TableInfo`，并提供表名查询、列生成和 PromQL 占位符展开。
-
-它不负责向 Prometheus 发起网络请求。Rust 执行侧的拉取、超时、权限和结果转行在 `pkg/executor/metrics_reader.rs` 的 `MetricsReaderBackend`/`MetricRetriever` 边界内；当前该执行文件使用自己的运行时 `MetricTableDef`，不是本文件的静态定义类型。
+`METRICS_SCHEMA` 的静态元数据与 PromQL 模板工具层：定义每张指标表的描述结构，将 `MetricTableMap` 投影为 InfoSchema 所需的 `DBInfo`/`TableInfo`，并提供表名查询、列生成和 PromQL 占位符展开。
 
 ## 核心职责
 
@@ -75,9 +73,6 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/infoschema/metrics_schema.go` 是最近的语义对照：
-
-- 常量、`MetricTableDef`、`IsMetricTable`、`GetMetricTableDef`、`genColumnInfos`、`GenPromQL`、`genLabelCondition`、`GenLabelConditionValues`、`metricSchemaTable` 和 `tableFromMetaForMetricsTable` 都有同名或直接对应实现。Rust 保留了列顺序、单值 `=`/多值 `=~`、label 定义顺序、值排序、token 替换顺序和缺失表错误文案。
 - Go `init` 调用 `buildTableMeta`，写入 `Comment`、`DBID`、`MaxColumnID`/`MaxIndexID`，配置 charset/collation，然后通过 `RegisterVirtualTable` 注册 driver。Rust 把建库逻辑改为显式 `metric_schema_db` 调用，当前仅构造简化 `DBInfo`/`TableInfo`，没有全局 `init` 注册和等价的 charset/collation/comment/完整列类型元数据。
 - Go `tableFromMetaForMetricsTable` 把每个 model column 转为 `table.Column`，并标记 `table.VirtualTable`；Rust 当前只用空行集包装简化 meta，是较窄的元数据门面。
 - Go 用 `strconv.FormatFloat(..., 'f', -1, 64)`，Rust 用 `f64::to_string()`。对现有常规 quantile 测试值（如 `0.99`、`0.95`）输出一致；若新增极端浮点值，应额外验证两语言的格式差异。
@@ -91,11 +86,3 @@
 - 改变 ID 规则时修改 `metric_schema_db`，必须保留跨实例稳定性，并扩展 `metric_schema_metadata_has_stable_sorted_ids`；表名排序是当前稳定 ID 的核心不变量。
 - 若要完整对齐 Go 虚拟表 driver，接入点是 `metric_schema_db`、`tableFromMetaForMetricsTable` 和 session/executor 之间的注册桥接。不应让本文件直接负责 Prometheus I/O；超时、权限和异步资源生命周期仍应保留在 executor backend 边界。
 - Rust 测试必须继续放在独立 `pkg/infoschema/metrics_schema_test.rs`，不把测试内嵌进生产文件。如果修复缺陷，应先用该独立测试复现，再修生产逻辑。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/infoschema/metrics_schema.rs` 确认目标文件被索引且有 26 个符号。`node --file ... --offset 1 --limit 500` 读取全文，并报告文件使用方 `pkg/infoschema/go_merge_45_test.rs` 和 `pkg/session/runtime/system_query.rs`。
-- RustCodeGraph 符号查询：对 `MetricTableDef`、`GenPromQL`、`IsMetricTable`、`GetMetricTableDef`、`GenLabelConditionValues`、`metric_schema_db`、`tableFromMetaForMetricsTable`、`metricTables` 执行 `query`，确认 Rust 定义与 Go 同名对照。`callers`/`callees` 精确查询在本地数据库上多次 30 秒内未返回，因此本文档没有据此臆测函数级边，而是用索引的文件反向关系和直接调用点补证。
-- 已读源码/边界：`pkg/infoschema/metrics_schema.rs`、`pkg/infoschema/lib.rs`、`pkg/infoschema/Cargo.toml`、`pkg/infoschema/metric_table_def.rs`（由符号与定义 map 引用核对）、`pkg/infoschema/tables.rs`、`pkg/infoschema/infoschema.rs`、`pkg/session/runtime/system_query.rs`、`pkg/executor/metrics_reader.rs`。目标 package 下无 `doc.go`，故以 `lib.rs` 的 crate 文档为最近模块契约。
-- 已读语义对照/测试：`pkg/infoschema/metrics_schema.go`、`pkg/infoschema/metrics_schema_test.go`、`pkg/infoschema/metrics_schema_test.rs`、`pkg/infoschema/go_merge_45_test.rs::go_merge_45_metrics_and_storage_class_metadata`。Rust 测试覆盖定义不变量、Rust 进程指标替代 Go-only 指标、列/PromQL helper、缺失表错误和稳定 ID；Go 测试额外用真实 PromQL parser 验证语法。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前仅运行任务指定的十一章结构检查，并人工复核文档中的当前实现限制没有被表述为“已完整支持”。

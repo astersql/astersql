@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-errors` crate。crate 根由 [`pkg/errors/Cargo.toml`](Cargo.toml) 的 `[lib] path = "mod.rs"` 指向 [`mod.rs`](mod.rs)，后者声明私有 `join` 模块并以 `pub use join::Join` 对外暴露唯一公开入口。它位于错误值基础设施的“多原因聚合”层：[`core.rs`](core.rs) 提供线程安全、可克隆的 `SharedError` 载体，[`group.rs`](group.rs) 定义 `ErrorGroup`、组成员提取和深度遍历，而本文件负责构造一个具体的组错误。
-
-该能力不参与 SQL 解析或执行本身，而是供上层在一次操作产生多个错误时保存全部原因。例如 [`pkg/executor/adapter.rs`](../executor/adapter.rs) 的 `joinRecordSetErrors` 聚合记录集生命周期中的错误；[`br/pkg/conn/conn.rs`](../../br/pkg/conn/conn.rs)、[`br/pkg/conn/util/util.rs`](../../br/pkg/conn/util/util.rs) 和 [`br/pkg/utils/retry.rs`](../../br/pkg/utils/retry.rs) 聚合多次重试失败。它因此是跨子系统的错误组合原语，而不是重试策略或日志策略的实现者。
+位于错误值基础设施的“多原因聚合”层：[`core.rs`](core.rs) 提供线程安全、可克隆的 `SharedError` 载体，[`group.rs`](group.rs) 定义 `ErrorGroup`、组成员提取和深度遍历，而本文件负责构造一个具体的组错误。
 
 ## 核心职责
 
@@ -69,11 +67,11 @@ RustCodeGraph 将 `pkg/errors/join.rs` 识别为含 5 个符号的文件，并�
 
 ## 与 Go 版本的对应关系
 
-仓库 `go.mod` 锁定 `github.com/pingcap/errors v0.11.5-0.20260508054701-306e305bcf41`；该模块缓存中的 `join.go` 是直接 Go 对照。两边都丢弃 nil/`None`、全空返回 nil/`None`、保持输入顺序、用单个换行连接文本，并在单个非空输入时仍创建组合对象。Go 的 `joinError.Unwrap() []error` 对应 Rust 的 `JoinError: ErrorGroup` 加 `group::Errors`/`WalkDeep`，而不是 Rust 标准库的 `Error::source()`。
+Go 的 `joinError.Unwrap() []error` 对应 Rust 的 `JoinError: ErrorGroup` 加 `group::Errors`/`WalkDeep`，而不是 Rust 标准库的 `Error::source()`。
 
 表示层存在三点差异：Go API 是可变参数 `Join(errs ...error)`，Rust API 因所有权而接收 `&[Option<SharedError>]`；Go `Unwrap` 返回内部切片，Rust `Errors` 返回克隆的 `Vec<SharedError>`；Go 测试还检查返回切片 `len == cap`，Rust 的公开契约没有暴露内部向量容量，因此不应把该内存布局断言移植成行为要求。
 
-本地 Rust 对照测试 [`tests/group_join_test.rs`](tests/group_join_test.rs)覆盖 Go `join_test.go` 的全空、过滤、顺序、展示与成员身份语义，并增加了本 crate 的嵌套组遍历和短路检查。[`tests/wrap_test.rs`](tests/wrap_test.rs) 验证包装后的 `Find` 能进入组成员；[`tests/api_parity_test.rs`](tests/api_parity_test.rs) 验证 `Join` 位于公开 API 面。
+本地 Rust 对照测试 [`tests/group_join_test.rs`](tests/group_join_test.rs)覆盖 Go `join_test.go` 的全空、过滤、顺序、展示与成员身份语义，并增加了本 crate 的嵌套组遍历和短路检查。
 
 ## 扩展指南
 
@@ -82,11 +80,3 @@ RustCodeGraph 将 `pkg/errors/join.rs` 识别为含 5 个符号的文件，并�
 - 新增公开 API 必须在 [`mod.rs`](mod.rs) 再导出，并在 [`tests/api_parity_test.rs`](tests/api_parity_test.rs) 增加编译期使用证据；若新增外部 crate 依赖，还需同步 `pkg/errors/Cargo.toml`。
 - 不应为性能方便改变输入顺序或提前扁平化嵌套组，因为展示、重试诊断优先级和 `WalkDeep` 访问序列均可观察。大量成员场景要关注两次线性工作：构造时克隆/收集，调用 `Errors()` 时再次克隆句柄向量。
 - 若要加强与 Rust 标准错误生态的互操作，应先明确多原因如何映射到只能返回单一引用的 `source()`；不能用第一个成员冒充完整原因集合而隐藏其余错误。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标区域已索引；`files --filter pkg/errors` 列出 `join.rs` 及独立测试；`node --file pkg/errors/join.rs --offset 1 --limit 240` 核对 48 行源码和 5 个符号；`query Join --kind function` 定位 `fmt`、`Errors`、`Join` 及 `group_join_test`。精确 `callers/callees` 对目标符号未返回结果，因此没有把空图结果当作“无调用者”。
-- 生产源码：[`join.rs`](join.rs)、[`core.rs`](core.rs)、[`group.rs`](group.rs)、[`mod.rs`](mod.rs)、[`pkg/executor/adapter.rs`](../executor/adapter.rs)、[`br/pkg/conn/conn.rs`](../../br/pkg/conn/conn.rs)、[`br/pkg/conn/util/util.rs`](../../br/pkg/conn/util/util.rs)、[`br/pkg/utils/retry.rs`](../../br/pkg/utils/retry.rs)、[`br/pkg/utils/misc.rs`](../../br/pkg/utils/misc.rs)。
-- crate/依赖：[`pkg/errors/Cargo.toml`](Cargo.toml) 与仓库根 `Cargo.toml`/`go.mod`；前者确认 crate 边界和直接依赖，后者确认工作区引用及 Go 对照版本。
-- Go 对照：本地 Go module cache 中 `github.com/pingcap/errors@v0.11.5-0.20260508054701-306e305bcf41/join.go`、`join_test.go`，以及仓库 [`pkg/executor/adapter.go`](../executor/adapter.go) 的实际使用。
-- 独立 Rust 测试：[`tests/group_join_test.rs`](tests/group_join_test.rs)、[`tests/wrap_test.rs`](tests/wrap_test.rs)、[`tests/api_parity_test.rs`](tests/api_parity_test.rs)。本任务是纯文档分析，按计划未运行 Cargo；验证限于静态源码、调用搜索、Go 对照和文档结构检查。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-table-tables-testutil` crate，是表模块测试辅助包中的索引 KV 数量检查适配层。crate 入口 `pkg/table/tables/testutil/lib.rs` 通过 `pub mod indexcheck` 声明模块，并以 `pub use indexcheck::*` 将本文件的公共项提升到 crate 根；根工作区又通过 `facade_table_tables_testutil` 暴露该 crate（`Cargo.toml`）。
-
-当前 Rust 实现没有直接连接 `Domain`、会话事务或 KV 快照，而是把这些能力抽象为 `IndexCheckRuntime` 和 `SnapshotIterator`，由调用者注入。因此它当前可确认的使用面是 `pkg/table/tables/testutil/indexcheck_test.rs` 中的内存单元测试；全库限定路径搜索未发现其他 Rust 调用者。它用于保留 Go 测试工具 `pkg/table/tables/testutil/indexcheck.go::CheckIndexKVCount` 的扫描与清理语义，但尚不是对真实 TiDB/AsterSQL 运行时的完整适配。
+当前 Rust 实现没有直接连接 `Domain`、会话事务或 KV 快照，而是把这些能力抽象为 `IndexCheckRuntime` 和 `SnapshotIterator`，由调用者注入。
 
 ## 核心职责
 
@@ -76,14 +74,10 @@ RustCodeGraph 对 `pkg/table/tables/testutil/indexcheck.rs::CheckIndexKVCount` �
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/table/tables/testutil/indexcheck.go`，同名函数的核心语义一致：固定查找 `test` 库、生成目标索引最小键、开启事务、从快照起始键顺序扫描、仅统计相同索引 ID、遇到非目标索引停止、关闭迭代器、提交并核对数量。
-
 主要差异如下：
 
 - Go 版本直接通过 `domain.Domain` 查表和索引、`tablecodec.GenIndexKey` 生成起始键、`sessiontxn` 取 statement read timestamp 对应的 snapshot；Rust 将所有这些动作合并进 `IndexCheckRuntime`，当前没有真实运行时实现。
-- Go 版本在循环中先用 `tablecodec.IsIndexKey` 拒绝非索引键，再用 `DecodeIndexKey` 读取索引 ID。Rust 的 `decode_index_id -> Result<Option<i64>, _>` 把“是否为索引键”和“解码 ID”合为一个契约，其中 `None` 表示正常边界。
 - Go 版本通过 `require` 立即终止测试；Rust 返回 `Result<(), IndexCheckError>`，让调用者决定如何断言。
-- Go 的 `defer` 以逆序执行：迭代器关闭发生在提交之前。Rust 显式保持 `close -> commit` 顺序，并同样忽略关闭返回值。
 - Go 在索引名未匹配时仍会继续解引用 `idx`，依赖测试前置条件；Rust 把“索引存在且最小键可生成”纳入 `index_meta` 的 `Result` 契约。
 - Go 使用 `int` 期望值，Rust 使用 `usize`；Rust 因而不接受负数。
 
@@ -96,16 +90,3 @@ Go 对照文件是 `pkg/table/tables/testutil/indexcheck.go`，同名函数的�
 修改扫描边界时应集中检查 `CheckIndexKVCount` 的 `decode_index_id` 分支；修改事务清理或错误优先级时应检查外层 `scan_result.and(commit_result)`；修改资源清理时应保持迭代器只关闭一次且先于提交。若决定传播关闭错误或失败时回滚，这会偏离 Go 行为，需要明确兼容性理由和新的优先级测试。
 
 测试必须继续放在独立文件 `pkg/table/tables/testutil/indexcheck_test.rs`，不要内嵌到源文件。建议补充元数据、begin、snapshot、decode、next 失败，以及扫描错误与提交错误并发出现的表格化用例；真实适配完成后还需增加能经过真实 tablecodec 与 snapshot 的集成测试。性能方面应保持流式计数和遇边界立即停止，避免收集所有键或扫描越过索引前缀。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标 Rust、Go 和测试文件；`files --filter pkg/table/tables/testutil` 列出 `indexcheck.rs`、`indexcheck_test.rs`、`indexcheck.go` 与 `lib.rs`。
-- RustCodeGraph `node --file pkg/table/tables/testutil/indexcheck.rs`：核对 103 行完整源码、公共符号、控制流及文件使用关系。
-- RustCodeGraph `query/node CheckIndexKVCount`：区分 Go/Rust 两个同名定义，并确认 Rust 入口到两个 trait 的九条直接调用边。
-- RustCodeGraph `node --file pkg/table/tables/testutil/indexcheck_test.rs`：核对四个独立测试覆盖的调用顺序、相邻索引边界、关闭错误、数量错误与提交错误。
-- RustCodeGraph `node --file pkg/table/tables/testutil/lib.rs`：核对模块声明、公共再导出和独立测试文件挂载。
-- RustCodeGraph `node --file pkg/table/tables/testutil/indexcheck.go`：核对 Domain/InfoSchema、索引最小键、事务 snapshot、键类型与索引 ID 边界以及 defer 清理语义。
-- `pkg/table/tables/testutil/Cargo.toml`、根 `Cargo.toml` 和 `pkg/lib.rs`：核对 crate 名、Go 包映射、依赖声明、工作区成员和 facade 再导出。
-- `rg` 限定 Rust 源码搜索：确认本文件公共 trait/类型及 `CheckIndexKVCount` 当前仅由同目录独立测试使用；RustCodeGraph 的全库调用方命令曾超时，因此该结论同时以限定文本搜索交叉验证。
-
-本任务是纯文档分析，没有运行 Cargo 或代码测试。结构验证应确认本文恰有计划规定的十一个二级标题。

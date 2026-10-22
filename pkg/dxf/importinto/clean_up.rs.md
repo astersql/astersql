@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto` crate（边界见 `pkg/dxf/importinto/Cargo.toml`），由 `lib.rs` 的 `clean_up` 模块公开导出。它位于 IMPORT INTO 分布式任务的收尾阶段：框架调度器从任务表取得终态任务后，按任务类型查找 `Cleaner`，优先通过 `BatchCleaner` 成批清理，成功的任务才会被迁入历史表（`pkg/dxf/framework/scheduler/scheduler_manager.rs::clean_task_batch`）。本模块同时实现普通/批量任务清理以及 owner 侧过期冲突文件清理能力。
-
-Rust 侧通过 `RegisterImportCleanerFactory` 提供 `ImportInto` 类型的清理器注册入口；当前仓库搜索只发现 `clean_up_test.rs` 直接调用它，未发现生产 Rust 入口调用，因此不能据此断言生产进程已自动完成注册。Go 对照版则在 `clean_up.go::init` 中自动注册。
+本模块同时实现普通/批量任务清理以及 owner 侧过期冲突文件清理能力。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ Rust 侧通过 `RegisterImportCleanerFactory` 提供 `ImportInto` 类型的清�
 
 ## 与 Go 版本的对应关系
 
-Rust 主顺序与 `clean_up.go::BatchClean` 一致：逐任务解析和脱敏、classic 表模式恢复、按 URI 批量清理、next-gen 成功任务计量。两边都把并发数设为 4、只将成功的 global-sort 任务计量、忽略表不存在、在计量前完成全部文件清理，并按数据 checksum 与其他 checksum 分别计算体积。
-
-主要适配差异如下：Go 从全局 `kerneltype`、task manager、domain、importer 和 handle 直接取得副作用，Rust 将它们收敛到 `ImportCleanUpRuntime`，便于主机接线和独立测试；Go `init` 自动注册，Rust使用显式 `RegisterImportCleanerFactory` 且生产调用点未验证；Go error group/channel 实现并发，Rust用作用域线程、共享迭代器和原子取消；Go 的 `uint64` 溢出自然回绕，Rust显式使用 `wrapping_add`；Go 期望 `TableInfo` 存在并直接取 ID，Rust缺失时传 `0`。Go 还保留日志、failpoint `mockCleanupError` 和按任务日志字段，Rust本文件没有对应日志或 failpoint。Rust新增了框架任务模型转换与 meta 回写适配，以及对 panic payload 的错误化处理。
+主要适配差异如下：Go 从全局 `kerneltype`、task manager、domain、importer 和 handle 直接取得副作用，Rust 将它们收敛到 `ImportCleanUpRuntime`，便于主机接线和独立测试；Go `init` 自动注册，Rust使用显式 `RegisterImportCleanerFactory` 且生产调用点未验证；Go error group/channel 实现并发，Rust用作用域线程、共享迭代器和原子取消；Go 的 `uint64` 溢出自然回绕，Rust显式使用 `wrapping_add`；Go 期望 `TableInfo` 存在并直接取 ID，Rust缺失时传 `0`。Go 还保留日志、failpoint `mockCleanupError` 和按任务日志字段，Rust本文件没有对应日志或 failpoint。
 
 ## 扩展指南
 
@@ -82,12 +78,3 @@ Rust 主顺序与 `clean_up.go::BatchClean` 一致：逐任务解析和脱敏、
 - 调整计量字段时同步修改 `meterDataFromPostProcess`、`sendMeterOnClean` 和独立测试 `pkg/dxf/importinto/clean_up_test.rs`；保持 Go `uint64` 回绕及整数转换语义，评估大于 `i64::MAX` 时的计量兼容性。
 - 改动框架接线时同步核对 `Cleaner`/`BatchCleaner`/`ExpiredFileCleaner` 三个能力和生产启动路径；在声称功能可用前，为 `RegisterImportCleanerFactory` 增加并验证真实生产调用者。
 - 测试仍应放在独立的 `clean_up_test.rs`，覆盖部分失败后的 meta 回写、store 关闭、每 URI 单扫描、失败任务不计量、首错取消并 join、父取消/deadline、panic 恢复和过期文件适配；不要把测试内嵌回生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点；`files --filter pkg/dxf/importinto` 定位目标、Go 对照与独立测试；`node --file pkg/dxf/importinto/clean_up.rs --offset 1 --limit 400` 及 `--offset 390 --limit 80` 核对完整 419 行源码。对 `RegisterImportCleanerFactory`、`sendMeterOnCleanInParallel`、`meterDataFromPostProcess` 执行 callers/callees 未返回额外边，随后用仓库精确搜索补证。
-- 生产源码：`pkg/dxf/importinto/clean_up.rs`；模块入口 `pkg/dxf/importinto/lib.rs`；crate/feature/依赖边界 `pkg/dxf/importinto/Cargo.toml`；转换和脱敏 `pkg/dxf/importinto/scheduler.rs::{frameworkTaskToImportTask, redactSensitiveInfo}`；框架能力及主链 `pkg/dxf/framework/scheduler/{interface.rs,scheduler_manager.rs}`；文件删除 `pkg/ingestor/globalsort/util.rs::CleanUpFilesInDirectories`；冲突文件删除 `pkg/dxf/importinto/conflictrows.rs::CleanConflictRowFiles`。
-- Go 对照：`pkg/dxf/importinto/clean_up.go`；Go 测试 `pkg/dxf/importinto/clean_up_test.go` 验证原始凭据用于存储、按 bucket 单次扫描、邻接对象保留、计量成功/取消/panic。
-- Rust 独立测试：`pkg/dxf/importinto/clean_up_test.rs` 验证 checksum 回绕、脱敏时序、URI 分组、store 关闭、阶段错误短路、表不存在、空/畸形输入、计量阶段顺序、注册能力、4 worker 并发、首错取消与 join、父取消/deadline 和 panic。
-- 仓库搜索 `rg -n "RegisterImportCleanerFactory|..."` 只定位到定义和测试调用，因此生产注册状态按“未验证接线”记录，不以设计预期替代当前证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务给定命令验证目标文档存在且恰好包含 11 个固定二级章节，并人工复核唯一输出、源码路径和无整段源码复制。

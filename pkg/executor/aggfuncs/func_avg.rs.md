@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-aggfuncs` crate 内，由 `pkg/executor/aggfuncs/lib.rs` 的 `pub mod func_avg` 声明纳入编译，提供 AVG 聚合所需的四类可复用状态：普通 Float64、普通 Decimal、DISTINCT Float64 和 DISTINCT Decimal。crate 边界由 `pkg/executor/aggfuncs/Cargo.toml` 定义；本文件直接依赖同 crate 的 `AggError`、`func_sum::Decimal`、`DistinctFloatSum` 与 `DistinctDecimalSum`，没有直接依赖表达式求值、`Row` 或 `Chunk`。
-
-它处在“已经求值的输入/部分结果”与“最终平均值”之间：调用者把 `Option<T>` 形式的值或 `(count, sum)` 交给状态对象，状态对象负责跳过 NULL、累计、合并、滑窗撤销及求最终值。`builder.rs::build_avg` 能选择 AVG 对应的 `AggImplementation` 枚举；但截至当前代码，普通 `FloatAvg`/`DecimalAvg` 并未直接实现 `aggfuncs.rs::AggFunc`，因此本文件本身不是从表达式求值到输出 `Chunk` 的完整执行器。明确可见的生产接线是 DISTINCT 状态的 spill：`BuiltAggFunc::spill_function` 创建 `DistinctFloatAvg`/`DistinctDecimalAvg`，`merge_spilled_partial_result` 合并恢复状态，`spill_serialize_helper.rs` 为二者实现 `SpillState`。
+后者用于分区/两阶段聚合，字段顺序固定为“计数在前、和在后”，见 `update_partial` 与 `partial_result`。
 
 ## 核心职责
 
@@ -77,15 +75,10 @@ Decimal 是 `func_sum.rs` 中的定点值 `(i128 coefficient, u32 scale)`。加�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_avg.go`：
-
-- Rust `FloatAvg` 对应 Go `partialResult4AvgFloat64` 加 `avgOriginal4Float64HighPrecision`、`avgOriginal4Float64`、`avgPartial4Float64` 的核心 sum/count 算术；Rust `DecimalAvg` 对应 `partialResult4AvgDecimal`、`avgOriginal4Decimal`、`avgPartial4Decimal` 的核心算术。
-- Rust `slide` 与 Go 一致地先加入 `[lastEnd, lastEnd+shiftEnd)`，再移出 `[lastStart, lastStart+shiftStart)`；NULL 均跳过。
 - Go partial 更新逐行先取 sum、再取 count；Rust 已将表达式求值后的数据压缩为 `Option<(count, sum)>`，因此表达式错误与两个参数分别为 NULL 的分支不在本文件内。
 - Go 普通 Decimal merge 在源 `count == 0` 时直接返回，不加入源 sum；Rust `DecimalAvg::merge` 无此过滤，且测试刻意保留“零 count 非零 sum”状态。Float Go merge 不过滤零 count，与 Rust一致。这是需要上层/兼容测试关注的语义差异。
 - Go DISTINCT 使用内存感知 set/map；Rust通过 DISTINCT SUM 的向量与规范化键复用相同目标语义，并返回动态内存增量，但数据结构和复杂度不同：Rust Float 去重/Decimal 常规更新是线性查找。
 - Go 基类负责分配、重置、表达式求值、最终写 Chunk、spill 及 Decimal 最终舍入；Rust 本文件只承载独立状态算法。当前 DISTINCT spill 已有接线，普通 AVG 的统一 `AggFunc`/spill 适配不能从本文件或搜索结果确认，故记为未接线而非已支持。
-- Go 的 high-precision Float 类型与普通路径当前也执行顺序 `sum += input`；Rust 的 HighPrecision 类型别名保持了这一现状。
 
 ## 扩展指南
 
@@ -95,13 +88,3 @@ Go 对照文件是 `pkg/executor/aggfuncs/func_avg.go`：
 - 若改变 DISTINCT 表示或哈希规则，应同步 `func_sum.rs`、`spill_serialize_helper.rs`、`aggfuncs.rs::spill_function`、`merge_spilled_partial_result` 以及 spill/并行 DISTINCT 测试。特别要覆盖 Decimal 尾随零、Float `+0/-0`、NaN、跨分区重复值和内存增量。
 - 若改变 partial 协议，必须保持 `(count, sum)` 的顺序并核对 Go `avgPartial4*::UpdatePartialResult`、分区 merge 和序列化格式；异常/零/负 count 的处理需先形成显式兼容决策。
 - 性能上，普通路径是 O(n) 且 O(1) 状态；当前 DISTINCT 的查重可能达到 O(n²)。优化为哈希结构时要保持 Go 的 Float/Decimal 相等语义及可复现的 spill 格式。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/aggfuncs/func_avg.rs`（236 行），核对了两项常量、四个状态类型、全部方法、九个阶段别名及无条件编译项的事实。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/executor/aggfuncs` 确认目标、模块入口、Go 对照和测试均已索引；`node --file` 读取目标、`lib.rs`、`aggfuncs.rs`、`builder.rs`、spill helper 与测试；对 `FloatAvg`、`DecimalAvg`、`DistinctFloatAvg`、`DistinctDecimalAvg` 执行了 `query`、`callers`、`callees`，类型级调用边为空，因此又以文件使用关系和精确符号文本搜索核验接线。
-- crate 与装配：`pkg/executor/aggfuncs/Cargo.toml`、`pkg/executor/aggfuncs/lib.rs`、`pkg/executor/aggfuncs/builder.rs`、`pkg/executor/aggfuncs/aggfuncs.rs`、`pkg/executor/aggfuncs/spill_serialize_helper.rs`。
-- 直接依赖：`pkg/executor/aggfuncs/func_sum.rs`，核对 Decimal checked 运算、Float/Decimal DISTINCT 相等语义、动态内存增量与求和行为。
-- Go 对照：`pkg/executor/aggfuncs/func_avg.go`、`pkg/executor/aggfuncs/func_avg_test.go`，核对原始/partial/merge/slide、NULL、最终结果、内存与 benchmark 关注点。
-- Rust 独立测试：`pkg/executor/aggfuncs/func_avg_test.rs` 验证 partial 合并、NULL、顺序浮点、零 count 非零 sum；`go_scenario_coverage_test.rs` 验证普通合并与 Decimal AVG；`func_distinct_agg_test.rs` 验证跨分区 DISTINCT、空集与 Decimal；spill 的接线还由 `spill_helper_test.rs` 和 `pkg/executor/aggregate/agg_spill_test.rs` 引用。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令验证文档存在且固定二级标题恰好为 11 个，并人工复核没有把类型别名、构建器枚举或源码注释误写成完整运行时接线。

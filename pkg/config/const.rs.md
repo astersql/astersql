@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/config/const.rs` 属于 Cargo 包 `astersql-config`（见 `pkg/config/Cargo.toml`），集中保存配置域中与统计信息采样相关的公共常量。由于 `const` 是 Rust 关键字，crate 根模块 `pkg/config/lib.rs` 使用 `#[path = "const.rs"] mod config_const;` 装载该文件，再通过 `pub use config_const::*;` 把其中的公开项重导出到 `astersql_config` 顶层。因此调用者的稳定入口是 `astersql_config::DefRowsForSampleRate`，而不是公开的 `config_const` 模块路径。
-
-当前文件不是配置文件解析器，也不保存可在运行时修改的配置；它只定义一个编译期数值。其 Go 对应文件是 `pkg/config/const.go`。在 Go 的完整 ANALYZE 链路中，该值由 `pkg/executor/builder.go::getAdjustedSampleRate` 用于自动计算统计信息采样率，并由 `pkg/executor/analyze_utils.go` 写入内存配额错误提示。
+用 `DefRowsForSampleRate` 为统计信息自动采样提供统一的目标行数基准，当前值为 `110_000`。
 
 ## 核心职责
 
@@ -92,13 +90,12 @@ RustCodeGraph 能定位 Go `builder.go` 使用点和 Rust 单测使用点，但�
 
 ## 与 Go 版本的对应关系
 
-`pkg/config/const.go` 同样只声明 `DefRowsForSampleRate = 110000`，Rust 保留了名称和值。主要差异如下：
+主要差异如下：
 
 - Go 常量没有固定整数类型，可直接在 `config.DefRowsForSampleRate / float64(statsTbl.RealtimeCount)` 中按上下文转换；Rust 固定为 `i64`，浮点运算必须显式转换。
 - Go 生产执行器直接引用配置包常量，且 OOM 错误提示也引用同一常量；Rust 生产执行器当前复制为局部 `f64` 常量，Rust 侧尚无对应的 OOM 引用边。
-- Go `analyze_test.go` 对大表 `220000` 验证采样率 `0.5`，对小表 `3` 验证采样率封顶为 `1`，并精确核对原因字符串。Rust 的 `analyze_columns_with_test.rs` 核对 `110000/10000` 得到 `1` 的提示，`analyze_test.rs` 还验证会产生采样率说明；常量本身则由独立文件 `const_3_aster_unit_test.rs` 校验。
 
-所以“数值移植”已经完成，“Rust 生产代码统一通过配置常量取值”尚未完成。文档不把后者描述为已支持。
+所以“数值移植”已经完成，“Rust 生产代码统一通过配置常量取值”尚未完成。
 
 ## 扩展指南
 
@@ -112,17 +109,3 @@ RustCodeGraph 能定位 Go `builder.go` 使用点和 Rust 单测使用点，但�
 4. 更新 Rust `pkg/executor/test/analyzetest/columns/analyze_columns_with_test.rs` 中的精确原因文本，并补充/保持大表降采样、小表封顶、零行和 PD 近似计数异常分支测试。
 5. 若 Go 值也变更，同步更新 `pkg/config/const.go`、`pkg/executor/test/analyzetest/analyze_test.go` 及其他包含精确 `110000/...` 输出的 Go 测试。
 6. 评估统计质量、ANALYZE 时间、内存峰值和用户可见 warning 文本的兼容性；常量名属于公开 Rust API，也应避免无迁移方案的重命名或类型变更。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 源文件：`pkg/config/const.rs`，确认唯一符号为 `pub const DefRowsForSampleRate: i64 = 110000`。
-- crate 边界：`pkg/config/Cargo.toml` 与 `pkg/config/lib.rs`，确认包名、库入口、私有模块装载及顶层重导出。
-- Rust 独立测试：`pkg/config/const_3_aster_unit_test.rs::constants_and_tiflash_mapping_match_go`，确认公开导入路径和值断言。
-- Rust 相关实现：`pkg/executor/builder.rs::ExecutorBuilder::getAdjustedSampleRate`，确认当前使用局部 `DESIRED_ROWS`；`pkg/executor/test/analyzetest/columns/analyze_columns_with_test.rs` 与 `pkg/executor/test/analyzetest/analyze_test.rs`，确认采样率提示行为。
-- Go 对照：`pkg/config/const.go`、`pkg/executor/builder.go::executorBuilder.getAdjustedSampleRate`、`pkg/executor/analyze_utils.go::errAnalyzeOOM`，确认数值、正常分支公式和错误提示用途。
-- Go 测试：`pkg/executor/test/analyzetest/analyze_test.go` 及 `columns/analyze_columns_with_test.go`，确认大表反比采样、小表封顶和用户可见原因文本。
-- RustCodeGraph 查询：运行了 `status`、`explore`、`files --filter pkg/config`、`node --file pkg/config/const.rs`、`query/node/callers/callees DefRowsForSampleRate`。索引能找到 Go 使用点与 Rust 单测使用点，但未正确识别 Rust 常量定义，故用 `rg -n '\bDefRowsForSampleRate\b'` 补足并交叉核验引用。
-
-本任务是纯文档分析，没有运行 Cargo，也没有声称执行器测试已在本次会话中执行。结构验证应保证文档存在且恰含任务要求的十一个固定二级标题；人工复核重点是公开 API、当前未接线事实和 Go/Rust 边界均有明确源码依据。

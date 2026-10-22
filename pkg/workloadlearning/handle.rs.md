@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`handle.rs` 属于 `astersql-workloadlearning` crate；`pkg/workloadlearning/Cargo.toml` 将 `lib.rs` 设为库入口，而 `lib.rs` 通过 `mod handle` 加载本文件并用 `pub use handle::*` 重导出其公开项。该 crate 当前只直接依赖 `serde` 和 `serde_json`。
-
-本文件是 Rust 工作负载学习原型中的分析与持久化边界：它从最近七天的语句统计抽象 `StatementRecord`，解析执行计划，按表 ID 汇总 `TableReadCostMetrics`，计算归一化读代价，再通过 `WorkloadStore` 保存新版本。仓库内 Rust 引用搜索只找到 `handle_test.rs` 和 `cache_test.rs` 对这些入口的调用，尚未找到服务器启动链或调度器对 `NewWorkloadLearningHandle` / `HandleTableReadCost` 的生产接线；因此它目前是 crate 可导出的能力，而不是已验证会由完整应用自动运行的后台任务。
-
-与 Go 实现不同，Rust 文件没有直接依赖 TiDB 系统会话池、受限 SQL 执行器、事务和 protobuf 解码器，而是把这些环境能力压缩到 `WorkloadStore` trait，并使用 JSON 形式的 `ExplainOperator`。这一差异决定了文档所述运行链以当前 Rust 代码为准，不能将 Go 的完整数据库接线视为 Rust 已支持能力。
+与 Go 实现不同，Rust 文件没有直接依赖 TiDB 系统会话池、受限 SQL 执行器、事务和 protobuf 解码器，而是把这些环境能力压缩到 `WorkloadStore` trait，并使用 JSON 形式的 `ExplainOperator`。
 
 ## 核心职责
 
@@ -85,8 +81,6 @@ RustCodeGraph 给出的关键边包括：
 
 ## 与 Go 版本的对应关系
 
-核心算法基本对应 `pkg/workloadlearning/handle.go`：七天窗口、快照区间语句、算子类型分派、频率放大、按表 ID 聚合、扫描占比加内存占比、1000 行批写，以及 `DBNameExtractor` 的 visitor 控制值均保留。`handle_test.rs` 也复刻了 Go 的保存与累加用例，并新增可执行的计划树归一化、Go 复合 duration、执行信息回退和 AST 去重测试。
-
 Rust 当前不是 Go 环境接线的等价替换，主要差异如下：
 
 - Go `Handle` 持有 `DestroyableSessionPool`，直接查询 `HIST_SNAPSHOTS` / `HIST_TIDB_STATEMENTS_STATS` 并在事务中插入 `mysql.tidb_workload_values`；Rust 持有抽象 `WorkloadStore`，没有 SQL、内部来源标记、会话回收/销毁、事务提交或 plan cache 设置。
@@ -107,13 +101,3 @@ Rust 当前不是 Go 环境接线的等价替换，主要差异如下：
 - 新增输入校验最适合放在 `analyzeBasedOnStatementStats` 或 `AccumulateMetricsGroupByTableID` 边界。尤其应明确拒绝负频率，而不是延续当前扫描归零但内存为负的混合结果。
 - 性能扩展应先处理全量 `Vec` 和深递归问题：可将 `load_statements` 改为流式接口、边解析边聚合，并为计划深度/节点数设置限制。并行解析前必须确认存储调用、错误语义和确定性版本写入不被破坏。
 - `DBNameExtractor` 若需进入真实 SQL 主链，应替换或适配为解析器真实 AST visitor，并在独立测试中覆盖未限定表名、跨库引用、大小写和重复 schema。
-
-## 验证依据
-
-- 生产源码：`pkg/workloadlearning/handle.rs`，核对全部 4 个常量、`StatementRecord`、`WorkloadStore`、`InfoSchema`、`Handle`、计划数据结构、分析/聚合/解析辅助函数、`Node` 与 `DBNameExtractor`。
-- crate 边界：`pkg/workloadlearning/Cargo.toml` 与 `pkg/workloadlearning/lib.rs`，确认库入口、依赖、模块加载和公开重导出；`pkg/workloadlearning/metrics.rs`、`cache.rs` 用于核对指标 JSON 格式及保存后的缓存消费者。
-- Rust 测试：`pkg/workloadlearning/handle_test.rs` 验证新版本保存、频率累加、单表代价 2.0、复合 Go duration、执行信息回退和 schema 去重；`pkg/workloadlearning/cache_test.rs` 提供额外保存到缓存读取链的调用证据。
-- Go 对照：`pkg/workloadlearning/handle.go` 与 `handle_test.go`，核对系统会话/SQL/事务接线、真实 binary plan 解码、算子算法、批写和原始回归意图。
-- RustCodeGraph：`status` 显示索引包含目标模块；`files --filter pkg/workloadlearning` 定位 12 个 Go/Rust 文件；`query` 区分 Go/Rust 同名符号；`callers/callees` 确认计划解析、算子辅助函数、聚合与 `InfoSchema::TableID` 的关键边。由于本次 `explore` 与 `node --file` 未返回正文，源码内容按技能规则由直接文件读取补足。
-- 仓库引用搜索：公开入口在 Rust 侧仅被 `handle_test.rs` 和 `cache_test.rs` 使用，未发现生产服务器接线。该结论只覆盖当前检出中的静态引用，不证明动态加载或仓库外调用不存在。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证使用任务指定命令，要求本文件存在且恰有 11 个固定二级标题；同时人工复核结论均区分 Rust 当前事实与 Go 目标语义。

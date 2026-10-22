@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate，是表达式可选求值属性机制中“受限 SQL 执行器”能力的适配层。模块入口 `pkg/expression/expropt/lib.rs` 以 `#[path = "sqlexec.rs"] mod sqlexec_provider` 装入本文件，并通过 `pub use sqlexec_provider::*` 对外再导出。它处在表达式层与会话/SQL 执行层之间：只定义表达式允许依赖的最小执行接口，并把具体执行器作为 `exprctx::OptPropSQLExecutor` 注册和读取，避免本叶子 crate 直接依赖完整 SQL、KV、行与结果字段实现。
-
-本文件不是 SQL 引擎，不解析、规划或执行 SQL，也不管理事务。当前 Rust 生产接线 `pkg/expression/sessionexpr/sessionctx.rs::NewEvalContext` 会注册 `SQLExecutorPropProvider<C::SqlExecutor>`；`pkg/expression/util.rs::runFetchDigestQuery` 已直接以本文件的 `SQLExecutor` trait 约束执行 statements summary 查询。全仓 Rust 引用核验没有发现生产代码调用 `SQLExecutorPropReader::get_sql_executor`，该 Reader 的显式读取目前由独立测试覆盖。因此“执行接口已有生产消费者”和“可选属性 Reader 已在生产链读取”必须分开描述。
+`OptionalEvalPropProvider` 实现把 Provider 固定绑定到 `exprctx::OptPropSQLExecutor`，同时通过 `Any` 暴露具体类型以支持安全向下转换。
 
 ## 核心职责
 
@@ -89,12 +87,9 @@ Provider 的具体执行器 `T` 以及工厂闭包都要求 `Send + Sync + 'stat
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/expropt/sqlexec.go`：
-
 - Go `SQLExecutor` 同样刻意只暴露 `ExecRestrictedSQL`，并用编译期断言确认完整的 `sqlexec.RestrictedSQLExecutor` 满足该窄接口。Rust 用 trait 与关联类型表达同一边界，但本文件没有针对某个完整执行器类型的等价编译期断言。
 - Go 方法参数是 `context.Context`、`[]sqlexec.OptionFuncAlias`、`string`、`...any`，返回 `[]chunk.Row`、`[]*resolve.ResultField` 和 `error`。Rust 以四个关联类型、借用切片、`Box<dyn Any>` 和 `anyhow::Result` 保留角色对应关系，但不会自动提供 Go 可变参数或接口切片的完全相同表示。
 - Go `type SQLExecutorPropProvider func() (SQLExecutor, error)` 对应 Rust 的泛型结构体加装箱闭包；Rust 额外以 `Arc<T>` 明确共享所有权，以 `Send + Sync + 'static` 明确 Provider 可共享边界。
-- 两端 `Desc` 都绑定 `OptPropSQLExecutor`，Reader 都声明单一属性位，读取流程都是先经公共 helper 取 Provider，再调用 Provider。
 - Go `optional_test.go` 对 SQLExecutor 的用例验证缺失错误、同一 mock 对象和 Provider/Reader 错误透传；Rust `optional_test.rs::verify_sql_executor` 保留相同测试意图，并以 `Arc::ptr_eq` 验证对象身份。
 
 迁移差异是 Rust 把具体 SQL 相关类型推迟到关联类型和上层实例化，减少本 crate 依赖；代价是完整兼容性要由每个实现/调用点的类型约束证明。Go 与 Rust 的 digest 检索工具都直接接收窄接口执行器参数，而不是自行通过 Reader 取值；当前 Rust 生产代码另有会话 Provider 注册证据，但没有生产 Reader 读取点，因此不能把“已注册”写成“已有表达式通过 Reader 消费”。
@@ -107,15 +102,3 @@ Provider 的具体执行器 `T` 以及工厂闭包都要求 `Send + Sync + 'stat
 - 若 Provider 需要缓存、重试或异步构造，应明确并发初始化、错误缓存、取消和资源释放语义；不能在 `call` 中静默吞错或无界重试。
 - 测试逻辑必须继续放在独立文件。适配层变更至少同步 `pkg/expression/expropt/optional_test.rs` 与 `migration_aster_unit_test.rs`；会话注册变化同步 `pkg/expression/sessionexpr/migration_aster_unit_test.rs`；Go 对齐变化核对 `pkg/expression/expropt/optional_test.go`。
 - 兼容风险集中在属性键、泛型具体类型与关联类型不一致；正确性风险包括参数类型/占位符契约和错误传播被改变；性能风险包括工厂重复调用、`Arc` 原子计数和动态 downcast。SQL 执行本身的 I/O 性能必须在具体实现与消费测试中评估。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/expropt/sqlexec.rs`，完整核对 `SQLExecutor`、四个关联类型、`exec_restricted_sql`、`SQLExecutorPropProvider::{new, call}`、`OptionalEvalPropProvider` 实现、`SQLExecutorPropReader`、`required_optional_eval_props` 和 `get_sql_executor`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/expression/expropt` 确认目标、Go 对照及独立测试已索引；`explore "pkg/expression/expropt/sqlexec.rs SQLExecutor ExecOption GetSQLExecutor"`、`query SQLExecutor --kind trait`、Provider/Reader 查询和文件 `node` 用于核对定义、动态边界及调用上下文。
-- 模块和公共契约：`pkg/expression/expropt/lib.rs`、`pkg/expression/expropt/optional.rs::get_prop_provider`、`pkg/expression/exprctx/optional.rs` 中索引 5 的 `OptPropSQLExecutor` 与描述表。
-- crate 清单：`pkg/expression/expropt/Cargo.toml`，核对 crate 名、入口、测试设置、`anyhow` 与 `exprctx-crate` 依赖及 Go 包移植元数据。
-- Rust 生产接线与消费：`pkg/expression/sessionexpr/sessionctx.rs::SessionContext`、`NewEvalContext`；`pkg/expression/util.rs::runFetchDigestQuery`、`RetrieveLocal` 及其相邻全局检索逻辑。
-- Rust 独立测试：`pkg/expression/expropt/optional_test.rs::verify_sql_executor`、`pkg/expression/expropt/migration_aster_unit_test.rs::registry_and_missing_reader_paths_match_go`、`sql_executor_reader_preserves_success_and_provider_errors`，以及 `pkg/expression/sessionexpr/migration_aster_unit_test.rs` 对标准会话注册后对象身份的验证。
-- Go 对照与测试：`pkg/expression/expropt/sqlexec.go`、`pkg/expression/expropt/optional_test.go` 的 `OptPropSQLExecutor` 分支；两者用于核对窄接口、Reader、对象身份和错误透传意图。
-- 全仓引用核验：`rg -n "SQLExecutorPropReader|SQLExecutorPropProvider|get_sql_executor|OptPropSQLExecutor|exec_restricted_sql" --glob '*.rs' pkg/expression pkg/statistics pkg/ttl`，用于补足 RustCodeGraph 对泛型与动态分派调用边的覆盖限制。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的结构命令，确认本文恰有十一个固定二级章节，并人工复核未把会话注册、trait 直接消费或 Go Reader 调用误写成 Rust Reader 已有生产调用。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics` crate；`pkg/statistics/Cargo.toml` 将 `lib.rs` 设为库入口，`pkg/statistics/lib.rs` 通过 `mod analyze_jobs;` 装配本模块，再以 `pub use analyze_jobs::*;` 将其公开项重导出。它定义 ANALYZE 作业的共享元数据、状态/类型常量和进度节流器，本身不执行 SQL，也不直接读写 `mysql.analyze_jobs`。
-
-在当前 Rust 接线中，`pkg/statistics/handle/types/interfaces.rs::StatsAnalyze` 以本 crate 的 `AnalyzeJob` 和 `JobType` 声明插入、启动、更新进度和结束作业的接口。需要注意，`pkg/statistics/handle/autoanalyze/autoanalyze.rs` 另有一套蛇形命名的 `AnalyzeJob`、`AnalyzeProgress` 和 `JobType` 及 SQL 生命周期函数；它们不是本文件类型的实现块，不能据此断言本文件的方法已经直接驱动该模块的 SQL。
+定义 ANALYZE 作业的共享元数据、状态/类型常量和进度节流器，本身不执行 SQL，也不直接读写 `mysql.analyze_jobs`。
 
 ## 核心职责
 
@@ -72,13 +70,9 @@ RustCodeGraph 将目标文件索引为 9 个符号，并报告文件级使用方
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/statistics/analyze_jobs.go`。状态字符串、两个作业类型数值、10,000,000 行阈值、5 秒间隔、`AnalyzeJob` 字段集合和四个进度方法与 Go 版本逐项对应。
+主要语言映射如下：Go 的 `time.Time` 对应 `SystemTime`，零值在 Rust 默认实现中显式选为 Unix 纪元；Go 的 `*uint64` 对应 `Option<u64>`；Go 命名整数类型在 Rust 中是 `i32` 别名；Go `atomic.Int64` 对应 `AtomicI64`；Go `sync.RWMutex` 对应普通 `Mutex<SystemTime>`，所以 Rust 的时间读取也独占锁而非共享读锁。
 
-主要语言映射如下：Go 的 `time.Time` 对应 `SystemTime`，零值在 Rust 默认实现中显式选为 Unix 纪元；Go 的 `*uint64` 对应 `Option<u64>`；Go 命名整数类型在 Rust 中是 `i32` 别名；Go `atomic.Int64` 对应 `AtomicI64`；Go `sync.RWMutex` 对应普通 `Mutex<SystemTime>`，所以 Rust 的时间读取也独占锁而非共享读锁。Go 字段 `lastDumpTime` 的自然零时间早于 Unix 纪元，但二者在正常当前时间下都让首次大增量通过时间条件。
-
-`Update` 的关键判定与重置顺序保持一致，包括严格大于、先原子累加、时间锁内清零和更新时间。Rust 对时钟回拨显式用零时长处理；Go 的 `t.Sub(lastDumpTime)` 为负数，同样不会满足 `> 5s`。
-
-Go 生命周期实现位于 `pkg/statistics/handle/autoanalyze/autoanalyze.go`，并由 `pkg/executor/test/analyzetest/analyze_test.go` 覆盖完整数据库行为。Rust `pkg/statistics/handle/autoanalyze/autoanalyze.rs` 当前另有独立模型和小写方法，虽复刻相同节流参数和 SQL 语义，但不是本文件类型的直接调用证据；后续整合时应避免两套模型漂移。
+Rust 对时钟回拨显式用零时长处理；Go 的 `t.Sub(lastDumpTime)` 为负数，同样不会满足 `> 5s`。
 
 ## 扩展指南
 
@@ -87,13 +81,3 @@ Go 生命周期实现位于 `pkg/statistics/handle/autoanalyze/autoanalyze.go`�
 - 修改阈值算法时，最直接接入点是 `AnalyzeProgress::Update`。测试应放在独立的 `pkg/statistics/statistics_test.rs`（或新建独立 `*_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 区域装配），不要把测试嵌入生产源文件。
 - 至少补齐边界用例：累计量等于/刚超过阈值、间隔等于/刚超过 5 秒、时钟回拨、首次刷新、刷新后继续累计、负输入策略和多线程竞争。涉及数据库生命周期时还应与 Go 的 `pkg/executor/test/analyzetest/analyze_test.go` 场景对齐。
 - 若把当前公共模型接入 `autoanalyze.rs`，应先决定如何消除或适配后者的重复类型，验证 SQL 失败后的计数语义，并关注互斥竞争与每行调用成本；不要以删除 Go 已有逻辑或简化生命周期换取接线通过。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含目标仓库，目标文件被识别为 136 行、9 个符号；`files --filter pkg/statistics/analyze_jobs.rs` 确认文件入图；`node --file ...` 核对完整源码；`query AnalyzeJob`、`query AnalyzeProgress`、`query GetDeltaCount`、`query SetLastDumpTime`、`query GetLastDumpTime` 核对符号位置；对 `Update` 和访问器执行 `callers`/`callees` 未得到解析边，因此没有据此虚构生产调用。
-- Rust 源与装配：`pkg/statistics/analyze_jobs.rs`、`pkg/statistics/lib.rs`、`pkg/statistics/analyze.rs`、`pkg/statistics/handle/types/interfaces.rs`、`pkg/statistics/handle/autoanalyze/autoanalyze.rs`。
-- crate 边界：`pkg/statistics/Cargo.toml`，确认 crate 名、入口和目标文件仅使用标准库。
-- Go 对照与生命周期：`pkg/statistics/analyze_jobs.go`、`pkg/statistics/handle/autoanalyze/autoanalyze.go`。
-- 测试证据：`pkg/statistics/statistics_test.rs::analyze_progress_tracks_delta_and_persist_threshold`；完整 Go 行为参考 `pkg/executor/test/analyzetest/analyze_test.go` 的 ANALYZE 状态/进度场景。
-- 文本补证：用 `rg` 精确检索模块声明、公开重导出、类型引用、四个进度方法和状态/类型常量，确认 Rust 直接行为测试及当前未发现生产方法调用点。
-- 本任务是纯文档分析，按计划未运行 Cargo；结构验证单独执行并要求目标文档恰含上述 11 个固定二级标题。

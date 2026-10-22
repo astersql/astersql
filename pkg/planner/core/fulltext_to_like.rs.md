@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate（`pkg/planner/core/Cargo.toml`），是 planner 到 expression 共享全文检索回退构造器之间的薄适配层。`pkg/planner/core/lib.rs` 以私有模块 `mod fulltext_to_like` 装入文件，再通过 `pub use fulltext_to_like::*` 把其唯一函数提升到 crate 根 API。目标包没有 `doc.go`，因此 crate 清单、模块入口和相邻实现是本文件边界的直接依据。
-
-文件意图是对应 Go `expressionRewriter.convertMatchAgainstToLike`：接收规划上下文中已经准备好的列表达式、搜索文本和 modifier，转交 `expression_dependency::BuildFTSToILikeExpression` 构造 ILIKE 谓词树。它不负责决定何时使用回退，也不自行解析搜索文本。
-
-当前 Rust 接线需要特别区分“公开能力”和“生产调用”。RustCodeGraph 显示本文件只被 `pkg/planner/core/fulltext_to_like_test.rs` 使用，仓库搜索也未找到其它直接调用；实际生产重写链 `expression_rewriter.rs::matchAgainstToLike` 调用的是该文件内另一个同名私有 `convertMatchAgainstToLike`。因此可以确认本文件已被 crate 导出且有独立测试，但不能声称它当前已进入生产重写主链。
+搜索语法校验、modifier 分支、ILIKE pattern 转义、跨列/跨词的 DNF 或 CNF 组合、空搜索串处理、NULL 列值归零以及具体错误生成都由 `pkg/expression/planner_bridge.rs::BuildFTSToILikeExpression` 负责。
 
 ## 核心职责
 
@@ -73,13 +69,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 `pkg/planner/core/fulltext_to_like.go::(*expressionRewriter).convertMatchAgainstToLike`。两者都只有一次委托，均调用 expression 包的 `BuildFTSToILikeExpression`，并保持上下文、列、搜索文本、modifier、成功表达式和错误的语义。
-
 类型表达略有差异：Go 通过 receiver 的 `er.sctx` 取得上下文，列类型为 `[]expression.Expression`，modifier 是 `ast.FulltextSearchModifier`；Rust 将上下文显式作为 `&dyn BuildContext` 参数，列为 `Vec<ExprBox>`，modifier 暂以 `u8` 表示。Rust 的所有权移动替代 Go slice/string 的运行时引用语义，但没有业务转换。
 
-Go 文件的大段注释明确该函数只服务直接布尔谓词回退，并记录相关度、停用词、词长、词边界和性能差异。Rust 源文件以更短注释强调共享构造器负责 token、modifier、NULL 和谓词组合；完整的上游防线仍可在 Rust `expression_rewriter.rs` 找到。
+Go 文件的大段注释明确该函数只服务直接布尔谓词回退，并记录相关度、停用词、词长、词边界和性能差异。
 
-迁移接线目前不完全对齐：Go 的 `expression_rewriter.go::matchAgainstToLike` 通过 receiver 方法调用同路径 Go 文件；Rust 的对应生产函数调用 `expression_rewriter.rs` 内重复的私有薄封装。目标 Rust 文件虽公开再导出，但目前只有独立测试使用。后续若消除重复，应让生产重写器调用本文件公开函数，并保持 Go 流程与错误传播不变。
+迁移接线目前不完全对齐：Go 的 `expression_rewriter.go::matchAgainstToLike` 通过 receiver 方法调用同路径 Go 文件；Rust 的对应生产函数调用 `expression_rewriter.rs` 内重复的私有薄封装。目标 Rust 文件虽公开再导出，但目前只有独立测试使用。
 
 ## 扩展指南
 
@@ -91,15 +85,3 @@ Go 文件的大段注释明确该函数只服务直接布尔谓词回退，并�
 - 性能变更应评估表达式树规模约为列数乘 token 数、ILIKE substring 扫描无法利用全文索引，以及重复转换器导致行为漂移的风险。
 
 正确性风险集中在 modifier 位解释、布尔/评分语境混用、NULL 三值逻辑和 token 近似；兼容性风险集中在公开 crate 再导出及 Go 风格函数名；性能风险来自生成的大型谓词树和非索引 ILIKE 扫描。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，其中 Rust 文件 7,032 个。
-- RustCodeGraph `node --file pkg/planner/core/fulltext_to_like.rs --offset 1 --limit 240`：读取完整 30 行，确认唯一函数、签名、委托调用和“used by 1 file: pkg/planner/core/fulltext_to_like_test.rs”。
-- RustCodeGraph `query convertMatchAgainstToLike --kind function --json --limit 10`：区分目标函数、`expression_rewriter.rs` 的调用位置/私有函数和 Go 对照函数，并取得目标精确符号 ID。对该精确 ID 的 `callers/callees` 查询在限定时间内未返回结果，因此调用关系另用模块入口和精确仓库搜索交叉核验。
-- Rust 源与装配：`pkg/planner/core/fulltext_to_like.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/expression_rewriter.rs`。
-- crate 与下游实现：`pkg/planner/core/Cargo.toml`、`pkg/expression/planner_bridge.rs`、`pkg/expression/lib.rs`。
-- Go 对照：`pkg/planner/core/fulltext_to_like.go`、`pkg/planner/core/expression_rewriter.go`；Go 独立测试 `pkg/planner/core/fulltext_to_like_test.go` 当前覆盖 modifier 与索引可行性辅助逻辑，没有直接调用薄封装。
-- Rust 独立测试：`pkg/planner/core/fulltext_to_like_test.rs` 直接验证错误透传、modifier 位和空搜索成功；其中索引探测测试属于相邻重写逻辑，不是本文件职责。
-- 人工复核：本文区分了目标薄封装、共享下游实现、上游前置检查及当前未接入生产链的事实，能够回答文件为何存在、如何执行、边界在哪里以及如何安全接线。
-- 未运行 Cargo 或代码测试：任务明确为纯文档分析；验证采用源码/调用证据和固定章节结构检查。

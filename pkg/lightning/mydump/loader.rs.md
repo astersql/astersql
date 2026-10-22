@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`loader.rs` 是 `astersql-lightning-mydump` 子 crate 的目录清单装载层。`pkg/lightning/mydump/lib.rs` 以 `mod loader; pub use loader::*;` 将本文件 API 暴露给嵌入方；`pkg/lightning/mydump/Cargo.toml` 则把该目录定义为独立 crate，并声明它从 Go 包 `pkg/lightning/mydump` 移植。它位于“外部存储中的文件清单”与后续 schema/region/import 处理之间：把路径经 `FileRouter` 解释为库、表、视图和数据分片，形成 `MDLoader` 元数据树。
-
-直接生产入口可见于 `pkg/importsdk/file_scanner.rs:389`：SDK 组装 `LoaderConfig`、`Storage` 和扫描选项后调用 `NewLoaderWithStore`；同文件随后读取 `GetDatabases`、`GetStore`，并在需要时再次调用 `EstimateRealSizeForFile`。`pkg/lightning/mydump/schema_import.rs` 消费这些库表元数据来导入 schema。本文件不是数据行解析器，也不执行建库建表或数据写入。
+`should_skip_rules`/`glob_match`（第 544、573 行）实现大小写不敏感的简化 glob 包含/排除规则。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/lightning/mydump/loader.go`。Rust 保留了 Go 的主要名词和入口：`MDLoader`、配置 option、`NewLoaderWithStore`、`ParallelProcess`、文件路由、占位视图清理、表/分片稳定排序以及压缩大小估算。`pkg/lightning/mydump/Cargo.toml` 的 `package.metadata.porting.go-package` 明确记录了这一来源。
+Rust 保留了 Go 的主要名词和入口：`MDLoader`、配置 option、`NewLoaderWithStore`、`ParallelProcess`、文件路由、占位视图清理、表/分片稳定排序以及压缩大小估算。
 
 当前并非逐能力等价：
 
@@ -96,12 +94,3 @@ Go 对照为 `pkg/lightning/mydump/loader.go`。Rust 保留了 Go 的主要名�
 - 修改 Aurora 目录识别时必须保留“过滤前验证完整清单”的安全属性，并更新 `aurora_auto_mapping_*` 测试覆盖根目录、特殊字符、混合源和扫描上限。
 - 修改压缩估算时同步验证无压缩、读取失败、零大小和不同压缩格式；性能风险主要是构造 loader 时对每个压缩文件执行一次 `open`。
 - 修改 schema 获取时分别保留数据库宽松兜底与表严格报错的契约，关注标识符转义、字符集转换和 lossy UTF-8 行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/lightning/mydump/loader.rs`（62 个符号）；`node --file ... --offset 1 --limit 1000` 阅读了完整 777 行；对 `NewLoaderWithStore`、`ParallelProcess`、`SampleFileCompressRatio`、`newAuroraFileRouter`、`pruneViewPlaceholders` 执行了 `query` 与 `callers/callees`。图确认 `NewLoaderWithStore` 调用 `NewFileRouter`、`insert_meta`、`newAuroraFileRouter`、`should_skip_rules`、`EstimateRealSizeForFile` 和 `pruneViewPlaceholders`；同名 Go/Rust 符号使 callers 结果不完整，因此用定点文本搜索补充上游证据。
-- 源与边界：完整阅读 `pkg/lightning/mydump/loader.rs`；读取 `pkg/lightning/mydump/lib.rs` 和 `pkg/lightning/mydump/Cargo.toml`；定点阅读 `pkg/importsdk/file_scanner.rs` 的调用与估算路径。
-- Go 对照：阅读 `pkg/lightning/mydump/loader.go` 的配置、构造、`ParallelProcess`、`setup`、文件信息构造、过滤、视图清理及压缩估算段落。
-- 独立 Rust 测试：完整阅读 `pkg/lightning/mydump/loader_test.rs`。测试覆盖基本装载、空库、重复库/表、缺 schema、大小与分片排序、过滤和自定义路由、特殊字符、选项与迭代器、压缩估算、Aurora 正反例、扫描截断，以及并行结果顺序和错误。
-- Go 测试定位：`pkg/lightning/mydump/loader_test.go` 覆盖同源装载、选项、压缩采样和并行处理；Rust 文档只将其作为移植语义对照，不把未移植分支写成当前能力。
-- 本任务是纯文档分析，按任务约束不运行 Cargo；最终以固定 11 个二级标题的结构命令验证。

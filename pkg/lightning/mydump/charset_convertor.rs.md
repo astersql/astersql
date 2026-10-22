@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-mydump` crate，crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，模块由 [`lib.rs`](./lib.rs) 中的 `mod charset_convertor; pub use charset_convertor::*;` 接入并公开。它位于 Lightning/mydump 的 CSV 输入链路中：[`region.rs`](./region.rs) 的 `openCSVParser` 根据 `DataDivideConfig.charset` 和 `invalid_char_replacement` 创建 `CharsetConvertor`，随后把它传给 [`csv_parser.rs`](./csv_parser.rs) 的 `NewCSVParser`。
-
-该文件不是通用的连接字符集实现，也不负责自动探测编码；它只把已配置的 dump 源字符集与 Rust UTF-8 `String` 互相转换。当前直接支持 `binary`、`utf8`/`utf8mb4`、`ascii`、`gb18030`、`gbk`、`latin1` 六类名称，其中 `latin1` 有意按 Windows-1252 处理。
+`CharsetConvertor::Encode` 把 UTF-8 文本编码回源字符集，供 CSV 解析器把分隔符、包围符、行终止符转换为输入文件中的实际字节，也供测试构造源编码数据。
 
 ## 核心职责
 
@@ -96,8 +94,6 @@ RustCodeGraph 对 `NewCharsetConvertor` 的调用关系显示，生产入口是 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`charset_convertor.go`](./charset_convertor.go)，测试对照是 [`charset_convertor_test.go`](./charset_convertor_test.go)。Rust 保留了 Go 的公开类型/方法名、构造顺序、六类字符集、Windows-1252 形式的 Latin1，以及“非法解码内容替换成配置串”的主要意图。
-
 关键实现差异如下：
 
 - Go 使用 `config.Charset` 并在实例中保存 `*encoding.Decoder`/`*encoding.Encoder`；Rust 使用本地闭集 `Charset`，按调用取静态 `encoding_rs` 引用，`initDecoder`/`initEncoder` 仅为兼容结构而保留。
@@ -114,14 +110,3 @@ RustCodeGraph 对 `NewCharsetConvertor` 的调用关系显示，生产入口是 
 修改解码替换逻辑时，应在独立的 [`charset_convertor_test.rs`](./charset_convertor_test.rs) 中覆盖：正常往返、非法序列、合法替换字符、空输入、多字符/空替换串和直通字符集的无效 UTF-8。不得把测试内嵌到生产源文件。涉及 CSV 行为时还应同步 [`csv_parser_test.rs`](./csv_parser_test.rs)；涉及用户可见 LOAD DATA 行为时应扩展 `pkg/executor/test/loadremotetest/one_csv_test.rs` 的对应场景。
 
 需要特别评估三类风险：兼容性上，Go 对 binary/ASCII 的字节语义与 Rust UTF-8 `String` 约束不同；正确性上，不能用全局 U+FFFD 替换破坏合法字符；性能上，当前 GB18030 特殊路径执行窗口扫描、分段解码和字符串替换，大输入上的改动应避免额外的重复遍历与分配。若改变公开大写方法，应保留或有计划地迁移 `region.rs`、`csv_parser.rs` 及外部 crate 调用者。
-
-## 验证依据
-
-- 源码：[`charset_convertor.rs`](./charset_convertor.rs) 全部 170 行；主要证据符号为 `Charset`、`Charset::parse`、`Charset::encoding`、`NewCharsetConvertor`、`CharsetConvertor::{initDecoder,initEncoder,validate,precheck,Decode,Encode}`。
-- crate/模块：[`Cargo.toml`](./Cargo.toml) 确认 crate 名、`lib.rs` 入口和 `encoding_rs = "0.8"`；[`lib.rs`](./lib.rs) 确认模块接入、公开再导出及独立测试文件挂载。
-- 直接调用链：[`region.rs`](./region.rs) 的 `openCSVParser`；[`csv_parser.rs`](./csv_parser.rs) 的 `encodeSpecialSymbols`、`NewCSVParser`、`CsvParser::ReadColumns`、`ReadRow` 和私有 `decode`。
-- 错误定义：[`common.rs`](./common.rs) 的 `MydumpError::{Configuration,Encoding}`。
-- Rust 单元测试：[`charset_convertor_test.rs`](./charset_convertor_test.rs) 覆盖 GB18030/UTF-8 往返、非法字节替换、未知字符集和合法 U+FFFD；[`csv_parser_test.rs`](./csv_parser_test.rs) 的 `TestCharsetConversion` 覆盖转换器进入 CSV 字段解析。
-- Rust 跨 crate 测试：`pkg/executor/test/loadremotetest/one_csv_test.rs::load_csv_decodes_gbk_and_latin1_input` 覆盖 GB18030 与 Windows-1252 输入进入 `Datum::Bytes`。
-- Go 对照：[`charset_convertor.go`](./charset_convertor.go) 与 [`charset_convertor_test.go`](./charset_convertor_test.go)；用于核对原始构造、编解码和非法字符替换语义。
-- RustCodeGraph：已运行 `status`（索引包含 11,467 文件、307,296 节点、1,848,419 边）、`files --filter pkg/lightning/mydump`、目标文件 `node --file`、`query CharsetConvertor`/`query new_charset_convertor`、`explore` 及构造器/编解码入口的 callers/callees 查询；图结果确认上述直接生产入口和测试调用者。精确 callers/callees 命令未额外打印边，故调用细节以 `explore` 结果及对应源码节点交叉核对。

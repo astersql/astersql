@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util` crate，是规划器通用工具中的 EXPLAIN 文本格式化辅助。`pkg/planner/util/lib.rs` 以私有模块 `mod explain_misc` 装配它，并用 `pub use explain_misc::*` 将唯一公开函数 `ExplainByItems` 从 crate 根重新导出；调用方因此使用 `planner_util::ExplainByItems`，而不是直接访问模块。
-
-它位于“计划节点持有的排序/分组项”与“展示给用户的 EXPLAIN 文本”之间：输入 `ByItems` 列表和表达式求值上下文，将每项表达式的说明文本、降序标记和项目分隔符追加到调用方提供的 `String`。它不负责构造计划、排序数据、决定 TopN 的 offset/count，也不负责完整 EXPLAIN 行的其他字段。
-
-`pkg/planner/util/Cargo.toml` 将该目录定义为包名 `astersql-planner-util` 的库 crate（入口为 `lib.rs`，`autotests = false`、`doctest = false`）。本文件直接使用同 crate 的 `ByItems`，并通过 Cargo 中的 `expression = { package = "astersql-expression", path = "../../expression" }` 依赖调用表达式 API；没有条件编译项或文件级 feature 分支。
+位于“计划节点持有的排序/分组项”与“展示给用户的 EXPLAIN 文本”之间：输入 `ByItems` 列表和表达式求值上下文，将每项表达式的说明文本、降序标记和项目分隔符追加到调用方提供的 `String`。
 
 ## 核心职责
 
@@ -75,13 +71,9 @@ RustCodeGraph 的文件查询显示本文件有两个 Rust 使用者：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/util/explain_misc.go:24-38`。两版都按原顺序遍历所有项目，都调用表达式的 `ExplainInfo(ctx)`，都只为降序项追加 `:desc`，都用 `, ` 分隔相邻项，并返回原输出缓冲区以支持继续拼接。
-
 实现载体有以下差异：Go 使用 `*bytes.Buffer`、`[]*ByItems` 和 `fmt.Fprintf`；Rust 使用 `&mut String`、`&[ByItems]`、`push_str`/`write!`，并用生命周期保证返回引用来自输入 buffer。Rust 的 `write!` 以 `expect` 固化“写 String 不失败”的不变量，而 Go 忽略 `fmt.Fprintf` 返回值。
 
-调用覆盖尚不完全对称。Go 当前由逻辑 Sort、逻辑 TopN、物理 Sort、物理 TopN 四处直接调用（`logical_sort.go:42-46`、`logical_top_n.go:52-59`、`physical_sort.go:94-101`、`physical_topn.go:137-174`）；RustCodeGraph 加文本搜索只确认物理 Sort 和物理 TopN 两处直接调用。文档因此不声称 Rust 逻辑算子已经通过本文件接线。
-
-测试方面，同目录没有 `explain_misc_test.rs`。`pkg/planner/core/operator/logicalop/logical_sort_test.rs:40-51` 和 `logical_top_n_test.rs:40-53` 间接固定了降序说明包含/结尾为 `:desc` 的兼容语义，但它们并不直接调用本函数；现有 `physical_sort_test.rs`、`physical_topn_test.rs` 也没有针对该格式化函数的直接断言。
+调用覆盖尚不完全对称。Go 当前由逻辑 Sort、逻辑 TopN、物理 Sort、物理 TopN 四处直接调用（`logical_sort.go:42-46`、`logical_top_n.go:52-59`、`physical_sort.go:94-101`、`physical_topn.go:137-174`）；RustCodeGraph 加文本搜索只确认物理 Sort 和物理 TopN 两处直接调用。
 
 ## 扩展指南
 
@@ -90,14 +82,3 @@ RustCodeGraph 的文件查询显示本文件有两个 Rust 使用者：
 若新增纯格式化分支，建议在同目录新增独立 `pkg/planner/util/explain_misc_test.rs`，并按当前 `autotests = false` 约束在 `pkg/planner/util/lib.rs` 中以 `#[cfg(test)]` 和 `#[path = "explain_misc_test.rs"]` 显式挂载；不要把测试内嵌进生产源文件。最小用例应覆盖空列表、单个升序、单个降序、多个混合方向、已有 buffer 前缀，以及受 `EvalContext` 脱敏行为影响的表达式。
 
 若只是让新的计划节点展示 `ByItems`，优先复用 crate 根再导出的 `planner_util::ExplainByItems`，由新调用方负责前后字段布局。兼容风险主要是 EXPLAIN 黄金结果和下游解析器对精确文本的依赖；性能风险主要来自每项先生成临时 `String`，在大列表或昂贵表达式说明下可能放大分配与复制。不要在此函数中加入计划改写、求值或排序副作用。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为 48 行、2 个索引符号。
-- RustCodeGraph `files --filter pkg/planner/util/explain_misc.rs` 与 `node --file ... --offset 1 --limit 400`：确认文件全貌，并报告使用文件为 `physical_sort.rs`、`physical_topn.rs`。
-- RustCodeGraph `query ExplainByItems --kind function --json` 与 `node ExplainByItems`：确认 Rust/Go 两个同名定义及其签名和源码；精确 `callers`/`callees` 无输出，已用局部源码搜索补证。
-- 源码与装配：`pkg/planner/util/explain_misc.rs`、`byitem.rs:26-34`、`lib.rs:15-44`、`Cargo.toml`、`pkg/expression/expression.rs:268-329`。
-- Rust 调用方：`pkg/planner/core/operator/physicalop/physical_sort.rs:121-141`、`physical_topn.rs:150-181`。
-- Go 对照与调用方：`pkg/planner/util/explain_misc.go:24-38`，以及逻辑/物理 Sort、TopN 的四个上述 Go 文件。
-- 测试证据：`pkg/planner/core/operator/logicalop/logical_sort_test.rs:40-51`、`logical_top_n_test.rs:40-53`；同时人工检查 `physical_sort_test.rs` 与 `physical_topn_test.rs`，确认没有本函数的直接格式断言。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰好具有 11 个固定二级标题，并人工复核唯一生产物、链接路径和“已接线/未验证”边界。

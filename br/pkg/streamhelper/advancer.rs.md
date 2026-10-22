@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现日志备份 Checkpoint V3 的核心推进状态机，crate 入口 [`lib.rs`](lib.rs) 以 `#[path = "advancer.rs"]` 注册模块并重新导出主要构造器、推进器类型和 resolve-lock 辅助函数。所属 crate 是 `astersql-br-pkg-streamhelper`；[`Cargo.toml`](Cargo.toml) 声明它是 `br/pkg/streamhelper` Go 包的 library 移植，直接依赖 `config` 与 `spans` 两个相邻 crate。
-
-运行入口不在本文件内部自建循环，而在 [`advancer_daemon.rs`](advancer_daemon.rs) 的 `CheckpointAdvancer::OnTick`：每个 Owner daemon tick 先调用 `refreshLogBackupFlushInterval`，再进入本文件的 `tick`。`OnStart` 会调用 `StartTaskListener` 装载任务快照，`OnBecomeOwner` 安装 flush subscriber，`OnStop` 则关闭存储边界并清理订阅。因此，本文件是任务元数据、Region flush TS、PD 全局检查点与 GC safe point 之间的协调核心，不负责 Owner 选举本身。
+管理 flush subscriber 的安装、拓扑维护、错误收集和清理，并用互斥锁保证停止动作等待正在执行的 `subscribeTick`。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ Go 索引显示完整 Go 构造器还由 `br/pkg/task/stream.go::RunStreamAdvanc
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`advancer.go`](advancer.go)，相关测试为 [`advancer_test.go`](advancer_test.go) 与 Rust 的 [`advancer_test.rs`](advancer_test.rs)。Rust 保留了 Checkpoint/Advancer 的核心字段、两类构造器、任务事件语义、区间树最小值上传、暂停判断、GC safe point、flush interval 的 `4/3` 派生规则，以及 ScanLock locked 时二分降低 `maxVersion`、最多重试两次的算法。
-
 已确认的差异如下：
 
 - Go `tryAdvance` 使用 worker pool 并发扫描，将候选范围与 `taskRange` 再求交；Rust 顺序扫描调用者传入的折叠范围，未二次求交。
@@ -112,13 +108,3 @@ Go 索引显示完整 Go 构造器还由 `br/pkg/task/stream.go::RunStreamAdvanc
 - 接入外部存储时，应围绕 `lastExternalStorageCheckpoint` 实现只增写入、8 字节小端格式、`v1/global_checkpoint/global.ts` 路径、tick timeout、best-effort 失败以及任务删除/切换关闭；参考 Go 的 storage 测试，但为 Rust 使用独立测试文件。
 - 修改锁或原子布局时，特别审查 subscriber 锁覆盖范围和 task/range/checkpoints 的一致快照。若引入多个锁的嵌套，必须固定锁顺序并新增并发停止/任务切换测试。
 - 修改 TSO 算术或错误识别时，同步核对 Go `oracle` 行为以及 `test_resolve_lock_targets_use_upper_bound`、`test_resolve_lock_retry_*`、`test_resolve_lock_max_version`；性能风险主要来自全范围串行 Region 扫描和锁内 hook，兼容风险主要来自检查点单调性、暂停策略与 GC safe point 顺序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/streamhelper` 确认本文件、Go 对照、模块入口及独立测试均被索引。
-- RustCodeGraph `node --file br/pkg/streamhelper/advancer.rs`：分段读取全部 719 行，核对 5 个模块级公开常量、TSO 私有常量/函数、`Checkpoint`、`Cfg`、`CheckpointAdvancer`、构造器、推进方法和 resolve-lock 函数；文件没有生产条件编译，唯一条件编译项是 `#[cfg(test)] subscribeTickHook` 及其 setter。
-- RustCodeGraph `query`：确认 Rust/Go 两份 `CheckpointAdvancer`、`NewTiDBCheckpointAdvancer`、`NewCommandCheckpointAdvancer`、`importantTick`、`optionalTick` 和 `resolveLocksForRangeWithMaxVersionRetry` 的对应符号；索引汇总确认 `advancer.rs` 由 `advancer_test.rs` 直接使用，`OnTick` 位于 `advancer_daemon.rs`。
-- RustCodeGraph `explore`：确认 `NewCheckpointAdvancer` 的 Rust 测试调用者、`importantTick → newCheckpointWithSpan/newCheckpointWithTS`、`tick → importantTick`，以及任务/订阅/暂停/解锁相关测试调用关系。精确 `callers/callees` 子命令曾长时间无输出并被中止，因此本文没有用该次卡住查询推导额外边。
-- 已读 Rust 路径：[`advancer.rs`](advancer.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`advancer_daemon.rs`](advancer_daemon.rs)、[`advancer_env.rs`](advancer_env.rs)、[`advancer_test.rs`](advancer_test.rs)。目录无 `doc.go`，故以 crate 级 `lib.rs` 作为最近模块契约。
-- 已读 Go 路径：[`advancer.go`](advancer.go)；并以任务指定的 [`advancer_test.go`](advancer_test.go) 作为场景命名与完整 Go 行为的对照。Rust 测试实际覆盖基础推进、失败恢复、任务范围与 Region split、暂停/恢复、lag pause、GC、subscriber 停止互斥、flush interval 和 resolve-lock 重试；测试注释也明确外部存储属于 slim-port 空操作。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构检查，并人工复核本文没有把 Go 的未移植链路描述为 Rust 已支持。

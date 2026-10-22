@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pg_protocol.rs` 属于 `astersql-server` crate。crate 根在 `pkg/server/lib.rs`，其中以公开模块 `pub mod pg_protocol` 挂载本文件；同一根模块在测试配置下通过 `#[path = "pg_protocol_test.rs"]` 挂载独立测试文件。`pkg/server/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `package.metadata.porting.go-package = "pkg/server"` 共同确认了这一归属。
-
-本文件位于独立 PostgreSQL 监听器收到连接后的最前端，只解释 PostgreSQL 3.0/3.2 StartupMessage 的长度、版本和 NUL 分隔参数。它不创建会话、不认证、不处理 SQL，也不复用 MySQL PacketIO。生产侧 `pkg/server/pg_conn.rs` 的 `PgService::negotiate` 先用 `read_initial` 收取初始帧并分流 SSL、GSS 和取消请求，只有普通启动帧才调用这里的 `parse_startup`。
+定义受支持的协议版本：`PROTOCOL_VERSION_30` 表示 3.0，`PROTOCOL_VERSION` 表示 3.2。
 
 ## 核心职责
 
@@ -91,9 +89,7 @@ TCP 连接、10 秒读写超时、每连接 worker、连接关闭和认证上下
 
 ## 与 Go 版本的对应关系
 
-`pkg/server/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/server`，但仓库中不存在同路径 `pkg/server/pg_protocol.go`，在 `pkg/server/**/*.go` 中也没有 PostgreSQL StartupMessage、3.0/3.2 版本常量或等价解析入口。现有 Go `pkg/server/conn.go` 和 `pkg/server/internal/parse/parse.go` 中的 SSLRequest/握手逻辑属于 MySQL 协议，不是本文件的 Go 对照实现。
-
-因此，本文件不是对某个同名 Go 文件的逐函数复刻，而是 AsterSQL Rust 服务端新增的独立 PostgreSQL 边界。可对齐的依据是 Rust 自身的生产连接层 `pg_conn.rs` 和独立测试 `pg_protocol_test.rs`。未来若 Go 侧加入对应协议，需逐项比较长度范围、受支持版本、UTF-8 规则、重复键策略、终止 NUL 规则及特殊请求分层，不能以现有 MySQL 握手逻辑替代。
+因此，本文件不是对某个同名 Go 文件的逐函数复刻，而是 AsterSQL Rust 服务端新增的独立 PostgreSQL 边界。
 
 ## 扩展指南
 
@@ -105,14 +101,3 @@ TCP 连接、10 秒读写超时、每连接 worker、连接关闭和认证上下
 - 若计划让生产链直接使用 `read_startup`，必须先解决特殊请求最短长度差异、错误到 PostgreSQL 响应的映射，以及 socket 超时/失败后关闭责任；当前它只是通用读取辅助接口和测试覆盖面的一部分。
 
 兼容性风险集中在客户端可接受版本和参数 framing；性能风险集中在未认证阶段的分配上限与阻塞读取；正确性风险集中在终止 NUL、精确长度、重复键和生产层/结构层职责混淆。
-
-## 验证依据
-
-- `pkg/server/pg_protocol.rs`：完整读取并核对常量、`StartupMessage`、`StartupError`、`checked_length`、`parse_startup`、`take_string`、`read_startup`。
-- `pkg/server/pg_protocol_test.rs`：`startup_packet_bounds` 覆盖版本、长度、截断、终止符、UTF-8、重复键和最大帧；`startup_raw_tcp_client_v1_requests_32` 覆盖真实 TCP 上的 3.2/3.0；`startup_reader_bounds` 覆盖分配前拒绝和连续两帧的精确消费。
-- `pkg/server/pg_conn.rs`：核对生产调用链 `PgService::negotiate -> read_initial -> parse_startup`，以及 SSL/GSS/CancelRequest 分流、参数策略、认证边界和 `PROTOCOL_VERSION_30` 对取消密钥宽度的影响。
-- `pkg/server/lib.rs`：核对公开模块挂载及独立测试文件挂载。
-- `pkg/server/Cargo.toml`：核对 crate 名、根文件、Go 包映射、依赖和无专属 feature 的事实。
-- Go 对照检索：仓库精确搜索确认没有 `pkg/server/pg_protocol.go` 或 Go 版 PostgreSQL StartupMessage 解析；读到的 `conn.go`/`internal/parse/parse.go` SSLRequest 是 MySQL 握手路径。
-- RustCodeGraph：`status` 显示项目索引可用；精确 `query` 定位到 `StartupMessage`（第 17 行）、`parse_startup`（第 67 行）和 `read_startup`（第 112 行）；`callees pg_protocol.rs::parse_startup` 确认 `checked_length`、`take_string`、版本常量与结果构造关系。`callers` 查询在本地未能在 90 秒内返回，因此生产调用点另以 `rg` 和 `pg_conn.rs` 源码核实。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证恰好存在 11 个固定二级章节，并人工复核文档能够回答文件为何存在、如何运行及如何安全扩展。

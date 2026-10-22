@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`br/cmd/br/stream.rs`](stream.rs) 是 Rust 版 BR 命令行中 `br log` 命令族的装配层。crate 入口 `br/cmd/br/lib.rs` 以 `pub mod stream` 导出本模块，进程入口 `br/cmd/br/main.rs::main` 在根命令中调用 `NewStreamCommand()`，因此用户执行 `br log ...` 时会进入这里。该文件属于 Cargo 包 `astersql-br-cmd-br`；`br/cmd/br/Cargo.toml` 同时把 `lib.rs` 声明为库入口、把 `bin_main.rs` 声明为二进制入口，并通过路径依赖连接 `astersql-br-pkg-task`、`astersql-br-pkg-streamhelper-config` 和 `astersql-br-pkg-trace`。
-
-本文件只负责命令树、标志解析、公共初始化后的分流和 tracing 包装，不实现日志备份状态机。真正的任务分派位于 `br/pkg/task/stream.rs::RunStreamCommand`，更深的 start/stop/pause/resume/status/truncate/metadata/advancer 行为也在该 task crate。当前 Rust task 实现明确包含若干 slim stub，因此“命令已接入”不等于 Go 版集群侧行为已经完整移植。
+只负责命令树、标志解析、公共初始化后的分流和 tracing 包装，不实现日志备份状态机。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ tracing 生命周期由 `with_tracing` 封装：关闭时直接执行闭包；�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/cmd/br/stream.go`。命令名、简介、八个子命令及其顺序、无位置参数约束、隐藏 advancer、flag 定义函数、公共初始化顺序、help 隐藏逻辑和 `streamCommand` 的解析分支都按 Go 版保留。
-
 关键差异如下：
 
 - Go 版直接使用 `task.StreamStart` 等长命令名，并由 `task.StreamCommandMap` 按长名分派；Rust CLI 在 `map_stream_cmd` 中转换为短名，因为当前 `br/pkg/task/stream.rs::RunStreamCommand` 按 `"start"` 等短名匹配。
@@ -99,7 +95,7 @@ tracing 生命周期由 `with_tracing` 封装：关闭时直接执行闭包；�
 - Go `advancer` 直接让 `cfg.AdvancerCfg.GetFromFlags(command.Flags())` 填充配置；Rust 版先解析独立配置对象，再逐字段复制到 task crate 的 `AdvancerCommandConfig`。
 - Go task 层包含完整的 etcd、PD、TiKV、对象存储和 streamhelper 生命周期；当前 `br/pkg/task/stream.rs` 明确将 `buildObserveRanges`、锁操作、ownership cycle 等部分实现标为 stub。因此本 CLI 文件的对齐重点是命令契约和接线，不是底层行为等价证明。
 
-Go 同目录没有独立的 `stream_test.go`。Rust 的直接测试位于 `br/cmd/br/stream_test.rs`，另有 `br/cmd/br/parity_test.rs` 覆盖命令树、flag 默认值及若干错误入口；task 层更细的边界测试位于 `br/pkg/task/stream_test.rs`，其 Go 对照是 `br/pkg/task/stream_test.go`。
+Rust 的直接测试位于 `br/cmd/br/stream_test.rs`，另有 `br/cmd/br/parity_test.rs` 覆盖命令树、flag 默认值及若干错误入口；task 层更细的边界测试位于 `br/pkg/task/stream_test.rs`，其 Go 对照是 `br/pkg/task/stream_test.go`。
 
 ## 扩展指南
 
@@ -110,13 +106,3 @@ Go 同目录没有独立的 `stream_test.go`。Rust 的直接测试位于 `br/cm
 修改错误路径时应保持“失败展示 usage、成功保持静默”的契约，并扩展独立的 `br/cmd/br/stream_test.rs`；不要把测试放回生产源文件。命令树、可见性和默认 flag 契约适合扩展 `br/cmd/br/parity_test.rs`，task 配置或底层行为则应扩展 `br/pkg/task/stream_test.rs` 及相应 Go 测试。
 
 修改 tracing、全局 glue 或初始化流程时要评估锁持有范围、panic 时清理、上下文取消传播和一次性初始化的兼容风险。性能上，本文件本身开销主要是 flags 复制和全局 mutex；真正的网络、存储与长任务成本位于 task 层，不应通过在 CLI 层缓存可变 `StreamConfig` 来规避。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter br/cmd/br/stream.rs` 确认目标文件已索引且有 26 个符号；`node --file br/cmd/br/stream.rs --offset 1 --limit 500` 返回完整 299 行源码，并标出 `br/cmd/br/parity_test.rs`、`br/cmd/br/stream_test.rs` 两个使用者；`query NewStreamCommand` 与 `query streamCommand` 同时定位 Rust/Go 对照定义及 task 分派入口。精确 `callers` 查询长时间无输出后被终止，因此调用边又由以下源文件逐点核验，而未把超时当作成功证据。
-- 目标与入口：`br/cmd/br/stream.rs`、`br/cmd/br/lib.rs`、`br/cmd/br/main.rs`。
-- crate 与依赖：`br/cmd/br/Cargo.toml`。
-- Rust 下游：`br/cmd/br/cmd.rs::with_tracing`、`br/cmd/br/stubs.rs::Command`、`br/cmd/br/stubs.rs::effective_task_flags`、`br/pkg/task/stream.rs::{StreamConfig, RunStreamCommand}`。
-- Go 对照：`br/cmd/br/stream.go`、`br/pkg/task/stream.go::RunStreamCommand`。
-- 测试证据：`br/cmd/br/stream_test.rs` 验证错误恢复 usage 与 help 委托；`br/cmd/br/parity_test.rs` 验证命令树、隐藏 advancer、常量和 flag 默认值；`br/pkg/task/stream_test.rs` 与 `br/pkg/task/stream_test.go` 提供 task 配置和边界语义证据。
-- 本任务只新增文档，按计划不运行 Cargo；交付验证只检查文档存在、固定章节数量和人工事实一致性。

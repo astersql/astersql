@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`statement_ru_plan_walk.rs` 属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/executor/lib.rs` 以公开模块 `statement_ru_plan_walk` 导出。它位于一条语句 RU v2 终结链路的中间：上游 `statement_ru_result.rs::install_statement_ru_owner_at_boundary` 创建语句级 owner，`adapter.rs::ExecStmt::finishStatementRU` 在语句终结时冻结证据并调用 `calculate_statement_ru_forest`，本文件再把 typed flat physical-plan forest 和运行时快照折算成 `StatementRUFinalizedSnapshot`。结果的对外发布在 `statement_ru_result.rs`，不在本文件内。
-
-这不是通用物理计划执行器，而是语句执行完成后的“证据遍历与 RU 计费”层。它依赖 `astersql-planner-core` 的 `TypedFlatPhysicalPlan`/`TypedFlatOperator`、`astersql-util-execdetails` 的值快照、`astersql-resourcegroup` 的 `StmtUnits` 模型，以及同 crate 的 `statement_ru_result` 和 `statement_ru_reporting`。
+维护一条语句的终结所有权：`StatementRUOwner` 分别记录“第一个 session 结果”和 root EOF，并保证 calculation setup 只被一个终结调用者取走。
 
 ## 核心职责
 
@@ -69,14 +67,6 @@ owner 状态被特意拆成三部分：`final_outcome` 用 Acquire/AcqRel CAS �
 
 计算本身是单个 `&mut StatementRUCalculator` 的同步深度优先遍历，不创建线程、task 或 channel。递归 `depth` 上限与 tree length 相同，配合 canonical-tree 验证防止环和无界递归。快照设计确保 cleanup 可在终结后释放 runtime collector、RPC response 和 commit details，calculator/finalized snapshot 不延长它们的生命周期。CTE definition 在 flatten 阶段按 storage ID 去重，forest 只遍历共享生产者一次，消费者 occurrence 仍在各自所属树中保留行数。
 
-## 与 Go 版本的对应关系
-
-Go 对照文件是 `pkg/executor/statement_ru_plan_walk.go`。Rust 符号基本按 snake_case 一对一移植：`statementRUOwner` ↔ `StatementRUOwner`，`calculateStatementRUInternal`/forest 遍历 ↔ `calculate_statement_ru_forest_with_operators`，`calculateStatementRUPlanChildFirst` ↔ `calculate_statement_ru_plan_child_first`，`collectStatementRUJoinUnits`/`collectStatementRUAggregationUnits`/reader/point/shuffle helpers ↔ 同名 Rust helpers，`mergeStatementRUOperatorState` 和 `mergeStatementRUUnitDelta` 也保留了同样的优先级与整体提交语义。
-
-Rust 与 Go 的可观察合同保持一致：first-record-wins，语句成功和 root EOF 分离，Main/CTE/ScalarSubQuery 各遍历一次，只对 Main root 附加 statement-wide units，子节点优先，读/写/join/agg/sort/TopN/MPP 的公式和支持 site 一致，无效或不支持证据都不发布部分结果。Go 用 `sync.Once` 和内嵌 setup；Rust 用 `Mutex<Option<Setup>>` 表达同一 one-shot 所有权。Go 直接从 `RuntimeStatsColl` 读取数据；Rust 将 live-source 读取提前到 `StatementRURuntimeEvidence` 快照边界，以值语义执行后续遍历。
-
-`pkg/executor/statement_ru_plan_walk_test.rs` 的测试名中保留 `go_merge_187/195/197` 等迁移线索，并与 Go 的 `statement_ru_plan_walk_test.go`、`statement_ru_plan_walk_integration_test.go` 和 benchmark 文件对应。Rust 测试与生产源文件分离，由 `pkg/executor/lib.rs` 的 `#[cfg(test)] mod statement_ru_plan_walk_test;` 接入。
-
 ## 扩展指南
 
 - 新增可计费物理算子时，首先在 `calculate_statement_ru_plan_child_first` 增加明确的 downcast 分支，规定支持 site、child 数量/标签、输出行证据和 units 公式；同时在 `statement_ru_reporting.rs::StatementRUOperator` 中确认分类，并在 Go 同路径保持逻辑对齐。
@@ -84,11 +74,3 @@ Rust 与 Go 的可观察合同保持一致：first-record-wins，语句成功和
 - 修改 tree/forest 布局时，同步修改 `validate_statement_ru_typed_flat_tree`、root-owned units 归属和 `StatementRUExplainResult` 索引规则；不能仅让某个测试树通过而破坏 canonical preorder 不变量。
 - 修改 join/aggregation/reader/point/MPP/shuffle 公式时，优先修改对应 `collect_*` helper，使 delta 先局部校验再合并，避免主遍历分支中出现半提交。性能风险主要来自每 occurrence 对 `evidence.plans` 的线性查找、递归深度和 EXPLAIN 路径的重复 RU 折算；引入索引或缓存时必须保持 occurrence 身份和 forest 顺序。
 - 测试应继续放在独立的 `pkg/executor/statement_ru_plan_walk_test.rs`，并对齐 Go 的 `statement_ru_plan_walk_test.go`。至少覆盖：成功公式、不支持 site/形状、负数与溢出、缺失证据、多 occurrence 不重计、full-report/EXPLAIN 归属，以及并发 terminal 的 one-shot 性。若改变真实 SQL 边界，再同步 Go integration tests 所验证的生产接线。
-
-## 验证依据
-
-- 源码全文：`pkg/executor/statement_ru_plan_walk.rs`（1521 行）；直接生产入口：`pkg/executor/adapter.rs::ExecStmt::finishStatementRU`、`RecordStatementRUFinalOutcome`、`recordStatementRURootEOF`；owner 安装：`pkg/executor/statement_ru_result.rs::install_statement_ru_owner_at_boundary` 和 `install_statement_ru_owner`。
-- crate 与模块边界：`pkg/executor/Cargo.toml` 声明 `astersql-executor` 以 `lib.rs` 为入口，并声明 planner-core/base/physicalop、resourcegroup、kv、util-execdetails 等 path dependencies；`pkg/executor/lib.rs` 公开本模块并仅在 test cfg 下接入独立 Rust 测试文件。该目录没有 `doc.go`，因此包级事实以 Cargo/lib 和生产调用点为准。
-- RustCodeGraph：`status` 报告 11,467 个已索引文件、307,296 个节点和 1,848,419 条边；`query calculate_statement_ru_plan --kind function` 命中 plan 入口、with-operators 入口和 child-first 递归；`query StatementRUOwner` 命中 Rust owner 及 `statement_ru_result.rs::install_statement_ru_owner_at_boundary`；`node calculate_statement_ru_forest_with_operators` 核对了直接上下游。`files --filter pkg/executor/statement_ru_plan_walk` 未返回路径，因此文件全貌、Cargo/Go/测试与跨文件调用点按技能规则用 `rg` 和直接读取补齐。
-- Go 对照：`pkg/executor/statement_ru_plan_walk.go`；Go 边界和回归：`pkg/executor/statement_ru_plan_walk_test.go`、`statement_ru_plan_walk_integration_test.go`、`statement_ru_plan_walk_bench_test.go`。
-- Rust 独立测试：`pkg/executor/statement_ru_plan_walk_test.rs` 覆盖 typed plan bridge/forest、write snapshot、terminal calculator、owner first-outcome/one-shot、flat-tree validation、sort/delta/state merge、runtime evidence、reader/point/child-first、row/write/TopN、join/aggregation、MPP/CTE/shuffle/exchange、生产 terminal 发布与并发竞争。本任务为纯文档分析，按计划不运行 Cargo；通过固定章节结构命令验证文档形状，并人工核对本文的职责、流程和扩展点均能回链到上述符号与文件。

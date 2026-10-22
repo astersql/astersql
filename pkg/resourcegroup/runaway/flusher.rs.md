@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-resourcegroup-runaway` crate；crate 根由 `pkg/resourcegroup/runaway/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/resourcegroup/runaway/lib.rs` 通过 `pub mod flusher` 公开本模块。它实现一个与业务记录类型解耦的泛型内存批量器 `BatchFlusher<K, V>`，负责合并条目并在数量阈值、显式请求或时间条件满足时调用写出回调。
-
-当前接线状态必须与 Go 版本区分：仓库内 Rust 生产代码尚未实例化 `BatchFlusher`，可确认的 Rust 直接使用者只有独立测试 `pkg/resourcegroup/runaway/flusher_test.rs`。完整的生产接线目前仍见于 `pkg/resourcegroup/runaway/manager.go::RunawayRecordFlushLoop`，它创建三种 Go `batchFlusher`，分别处理 runaway 记录、quarantine 记录和过期 quarantine 记录。Rust `pkg/resourcegroup/runaway/manager.rs` 当前使用三个 `Mutex<Vec<_>>` 队列，并未调用本文件。
+实现一个与业务记录类型解耦的泛型内存批量器 `BatchFlusher<K, V>`，负责合并条目并在数量阈值、显式请求或时间条件满足时调用写出回调。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph 为 `add` 和 `flush` 找到的明确外部调用者均在 `pkg/re
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/resourcegroup/runaway/flusher.go`，测试为 `flusher_test.go`。两版共同语义包括：泛型键值缓冲、调用方定义合并策略、按唯一键数触发、空批次不执行回调、每次写出尝试后丢弃批次，以及写出失败不向添加方传播。Rust 测试 `threshold_flush_and_explicit_empty_flush_match_go`、`merge_and_interval_flush_preserve_one_batch`、`flush_error_is_counted_and_swallowed_before_next_batch` 分别验证阈值/空刷、同键聚合/时间入口、失败计数与失败批次隔离。
-
 已确认的差异如下：
 
 - Go `newBatchFlusher` 接收 SQL 生成函数和 session pool，在内部组成数据库写入回调；Rust 构造函数直接接收 `flush_fn`，更通用但尚未接入持久化层。
@@ -101,13 +97,3 @@ Go 对照文件为 `pkg/resourcegroup/runaway/flusher.go`，测试为 `flusher_t
 - 若增加指标，`name` 可作为标签，计数更新点在 `add` 与 `flush`；还需考虑普通 `u64` 与并发采集的可见性。性能上应关注每批重新分配 `HashMap::with_capacity(threshold)` 以及 `threshold` 过大带来的常驻/峰值内存。
 - 若改变合并规则，优先由构造方替换 `merge_fn`，保持本类型通用；阈值仍按唯一键数计算，测试必须覆盖重复键不会错误提前刷出。
 - Rust 测试必须继续放在独立的 `pkg/resourcegroup/runaway/flusher_test.rs`，不要嵌入 `flusher.rs`。至少同步覆盖零阈值、停止后添加、时间未到/到期/空缓冲、回调失败、panic 或时钟前移策略中实际承诺的部分；Go 对齐变化还应核对 `flusher_test.go` 与 `manager.go::RunawayRecordFlushLoop`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 `11467` 个文件、`307296` 个节点、`1848419` 条边；`files --filter pkg/resourcegroup/runaway` 确认目标 Rust/Go 源与独立测试均在索引中。
-- RustCodeGraph `node --file pkg/resourcegroup/runaway/flusher.rs --offset 1 --limit 500`：核对完整 151 行源码及 14 个文件符号。
-- RustCodeGraph `node flusher.rs::{new,add,flushIfDue,flush,stop,len,is_empty,buffer}`：核对函数签名、源码和路径明确的 `add/flushIfDue/stop -> flush` 调用边；图中通用名称产生的跨包候选未作为结论依据。
-- 读取 `pkg/resourcegroup/runaway/Cargo.toml` 与 `lib.rs`：核对 crate 名称、crate 根、模块导出、公共 `Error`/`Result` 以及测试作为独立模块的装配方式。
-- 读取 `pkg/resourcegroup/runaway/flusher.go`、`flusher_test.go` 和 `manager.go::RunawayRecordFlushLoop`：核对 Go 的 ticker、指标、SQL/session pool 写出、失败吞掉、三类生产 flusher 和停机写出流程。
-- 读取 `pkg/resourcegroup/runaway/flusher_test.rs` 与 `manager.rs`，并用 `rg` 搜索 Rust `BatchFlusher` / `flushIfDue` 使用点：核对 Rust 测试边界以及当前没有生产实例化点。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构检查要求本文恰有十一个规定的二级标题。

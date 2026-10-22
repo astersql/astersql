@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`logging_helper.rs` 属于 `astersql-br-pkg-stream` library crate（`br/pkg/stream/Cargo.toml`），由 `br/pkg/stream/lib.rs` 通过 `#[path = "logging_helper.rs"] pub mod logging_helper` 挂载，并经 `pub use logging_helper::*` 扁平导出。它位于 BR 日志备份/恢复的库表 ID 替换映射路径中，负责把 `DBReplace` 树形结构转成便于人工核对的文本摘要，不负责创建、合并或应用映射。
-
-当前 Rust 仓库中，该函数只被 `br/pkg/stream/parity_test.rs` 直接调用；RustCodeGraph 也只报告该测试文件使用本文件。因此它虽已是 crate 公开 API，但尚未有 Rust 生产主链调用证据；Go 版生产调用点位于 `br/pkg/restore/log_client/client.go` 和 `br/pkg/task/stream.go`。
+遍历上游库 ID 到 `DBReplace` 的映射。
 
 ## 核心职责
 
@@ -74,16 +72,11 @@ HashMap 的库、表和分区遍历顺序均不稳定，因此调用者不应依
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `br/pkg/stream/logging_helper.go`，同样定义 `LogDBReplaceMap`，并具有相同的库→表→分区遍历层次和库/表 `FilteredOut` 过滤语义。两端都输出名称、上游 ID、下游 ID 和分区 ID 对，且都不输出 `IndexMap` 或 `Reused`。
-
 已验证的差异是：
 
 - Go 版接收 `map[UpstreamID]*DBReplace`，Rust 版接收 `&HashMap<UpstreamID, DBReplace>`；Rust 数据不存在 nil `*DBReplace` 分支。
 - Go 版用 `pingcap/log.Info` 和 `zapcore.Field` 直接生成结构化 info 日志，每库一次日志调用；Rust 版拼接单个非结构化 `String`，且只在 `out=Some` 时可观测。
-- Go 版的 `title` 是日志消息，字段保持类型化；Rust 版把标题和所有字段压平到一行，不能保留 zap 字段边界。
 - Go 版已有三个生产调用点；Rust 搜索只发现 `parity_test.rs` 的测试调用。因此当前 Rust 实现是可测的迁移辅助，不应宣称已达到 Go 的生产日志效果。
-
-Go 没有为该函数单独建立同名测试；相关结构的过滤与分区映射行为主要在 `br/pkg/stream/table_mapping_test.go` 中覆盖，但这些测试并不直接断言日志文本。
 
 ## 扩展指南
 
@@ -92,14 +85,3 @@ Go 没有为该函数单独建立同名测试；相关结构的过滤与分区�
 - 若要恢复 Go/zap 的结构化语义，应调整本函数的输出抽象，而非继续扩充不可逆的平面字符串；需同时核对 `Cargo.toml` 依赖和 crate 公开 API 兼容性。
 - 若增加 `Reused`、`IndexMap` 或其他字段，应同步检查 Go `logging_helper.go` 是否也应输出，避免两端诊断信息漂移。
 - 测试不应内嵌在生产源文件。小幅契约更改可同步 `br/pkg/stream/parity_test.rs::go_rust_public_contract_matches`；若增加空映射、库/表过滤、分区输出、`None` 或顺序策略的细粒度回归，应新建独立 `br/pkg/stream/logging_helper_test.rs` 并仅在 `lib.rs` 的 `cfg(test)` 下挂载。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 7,032 个 Rust 文件；`files --filter br/pkg/stream` 确认目标文件、Go 对照、crate 入口和相关测试均在索引中。
-- RustCodeGraph `node --file br/pkg/stream/logging_helper.rs --offset 1 --limit 220`：读取了完整 60 行实现，并报告文件被 `br/pkg/stream/parity_test.rs` 使用。
-- RustCodeGraph `query LogDBReplaceMap --kind function --limit 20`：找到 Go 与 Rust 各一个同名函数。精确 `callers` / `callees` 查询在 30 秒限制内未返回结果，因此调用边改由下述文本搜索补证，未将超时解读为“无调用”。
-- 源码：`br/pkg/stream/logging_helper.rs` 验证唯一符号、三层遍历、过滤分支、文本格式和可选收集器；`br/pkg/stream/stubs.rs` 验证 `UpstreamID`、`DBReplace` 和 `TableReplace` 字段。
-- crate 声明：`br/pkg/stream/Cargo.toml` 验证 crate 名、library 入口和直接依赖；`br/pkg/stream/lib.rs` 验证模块挂载、扁平导出和 `parity_test.rs` 的 `cfg(test)` 接线。
-- Go 对照：`br/pkg/stream/logging_helper.go` 验证 zap 字段构造与过滤语义；全仓 `rg` 确认生产调用位于 `br/pkg/restore/log_client/client.go:1200`、`br/pkg/task/stream.go:1487` 和 `br/pkg/task/stream.go:1783`。
-- 测试：`br/pkg/stream/parity_test.rs:239-248` 直接覆盖 Rust 文本收集及下游 ID；`br/pkg/stream/table_mapping_test.go` 与 `br/pkg/stream/table_mapping_test.rs` 提供 `FilteredOut` 和 `PartitionMap` 数据结构语义证据，但不直接测试日志格式。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `rg` 命令验证文档恰有十一个固定二级章节。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-stream` library crate；`br/pkg/stream/Cargo.toml` 将该 crate 标为 Go 包 `br/pkg/stream` 的迁移实现，`br/pkg/stream/lib.rs` 通过 `#[path = "stream_mgr.rs"]` 装配模块并以 `pub use stream_mgr::*` 扁平导出 API。它对应 Go 的 `br/pkg/stream/stream_mgr.go`，位于 BR 日志备份/PiTR 的公共支撑层：一端面向外部存储中的 `v1/backupmeta` 文件，另一端为流备份启动、日志恢复、元数据截断和测试工具提供观察范围、元数据读取与版本兼容能力。
-
-RustCodeGraph 将该文件识别为 550 行、52 个符号，并显示它被 26 个文件引用。当前 Rust 生产调用证据包括 `br/pkg/stream/stream_metas.rs`、`br/pkg/restore/log_client/log_file_manager.rs`、`br/pkg/task/stream.rs` 和 `br/pkg/utiltest/crr/*`；`StreamManager` 自身只是本文件末尾的轻量门面，并非 Go `br/pkg/task/stream.go` 中负责命令生命周期的 `StreamMgr`。
+对应 Go 的 `br/pkg/stream/stream_mgr.go`，位于 BR 日志备份/PiTR 的公共支撑层：一端面向外部存储中的 `v1/backupmeta` 文件，另一端为流备份启动、日志恢复、元数据截断和测试工具提供观察范围、元数据读取与版本兼容能力。
 
 ## 核心职责
 
@@ -85,9 +83,9 @@ options 扫描用 `std::thread::scope`，worker 借用 storage、paths 和 callb
 
 结构上 Rust 对齐了 Go 的路径常量、表/分区范围算法、meta 前缀范围、引用计数缓存、checksum-before-decrypt、V1 软/硬转换、时间窗过滤和并发元数据读取意图。Rust 独立 trait `ObserveDataSource`/`ObserveTableFilter` 替代 Go snapshot reader 与 filter 接口；Rust options 扫描使用 scoped threads 和原子索引，对应 Go worker pool + `errgroup` 的有界并发及首错取消。
 
-当前差异必须视为迁移限制：Go `Metadata` 使用 protobuf `Unmarshal/Marshal`，Rust 当前 stubs 使用 `serde_json`，不能直接声称兼容线上 protobuf 字节；源码模块注释也明确称其为桩实现。Go `ReadFile` 把可选 encryption info 合并在单一 API 中，Rust拆为 `ReadFile` 与 `ReadFileWithEncryption`。Go `FastUnmarshalMetaData` 本身含 worker 数和 skip condition，Rust保留一个简化串行入口并新增 `FastUnmarshalMetaDataWithOptions` 承载完整语义。Go 接收 context、支持 WalkDir/errgroup 取消并包装扫描错误；Rust同步 `Storage` 无 context，取消只能阻止领取后续路径。
+当前差异必须视为迁移限制：Go `Metadata` 使用 protobuf `Unmarshal/Marshal`，Rust 当前 stubs 使用 `serde_json`，不能直接声称兼容线上 protobuf 字节；源码模块注释也明确称其为桩实现。Go `FastUnmarshalMetaData` 本身含 worker 数和 skip condition，Rust保留一个简化串行入口并新增 `FastUnmarshalMetaDataWithOptions` 承载完整语义。Go 接收 context、支持 WalkDir/errgroup 取消并包装扫描错误；Rust同步 `Storage` 无 context，取消只能阻止领取后续路径。
 
-Go 的 `MetadataHelper` 持有可复用 ZSTD decoder；Rust每次调用标准 decoder。Go `Close` 关闭 decoder 和 encryption manager但 cache map 由对象释放，Rust显式清空 cache并关闭 manager。Rust还对缓存切片加入受控越界错误，较 Go 直接 slice 更安全。Rust `BuildObserveDataRanges` 仅硬编码三个内存库名，语义目标对应 Go `metadef.IsMemDB`，后者若扩充集合需同步审计。
+Go 的 `MetadataHelper` 持有可复用 ZSTD decoder；Rust每次调用标准 decoder。Go `Close` 关闭 decoder 和 encryption manager但 cache map 由对象释放，Rust显式清空 cache并关闭 manager。Rust `BuildObserveDataRanges` 仅硬编码三个内存库名，语义目标对应 Go `metadef.IsMemDB`，后者若扩充集合需同步审计。
 
 ## 扩展指南
 
@@ -98,12 +96,3 @@ Go 的 `MetadataHelper` 持有可复用 ZSTD decoder；Rust每次调用标准 de
 修改缓存策略必须维持“同路径只下载一次、不同路径不互相阻塞、引用耗尽释放大块数据”的不变量，并关注 `ref_count` 不准确造成的重复 IO 或驻留内存风险。修改并行扫描应保持 `.meta` 筛选、时间窗过滤、skip 条件、首错返回和 worker 上限；性能评估重点是对象数量、callback 耗时与峰值元数据内存。
 
 变更路径格式时必须同时审查 `astersql-br-pkg-stream-backupmetas::ParseName` 和 `FilterPathByTs` 的保守放行策略。加密流程扩展必须保留密文 checksum 在解密前校验的顺序，并同步 `br/pkg/encryption` 的 manager 生命周期测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 7,032 个 Rust 文件；`files --filter br/pkg/stream/stream_mgr.rs` 找到目标；`explore "br/pkg/stream/stream_mgr.rs StreamMgr"` 返回目标完整源码、52 个符号上下文及相关 Go/Rust `StreamMgr`；`node --file ... --offset/--limit` 分段核对全部 550 行。对 `callers` 的拆分查询超时，随后用精确符号搜索补足调用证据。
-- Rust 源与 crate：`br/pkg/stream/stream_mgr.rs`、`br/pkg/stream/Cargo.toml`、`br/pkg/stream/lib.rs`。
-- Rust 直接调用：`br/pkg/stream/stream_metas.rs`、`br/pkg/restore/log_client/log_file_manager.rs`、`br/pkg/task/stream.rs`、`br/pkg/utiltest/crr/flush_sim.rs`、`br/pkg/utiltest/crr/harness.rs`。
-- Go 对照：`br/pkg/stream/stream_mgr.go`；相关 Go 测试位于 `br/pkg/stream/stream_misc_test.go`，覆盖 helper 读取与并行性、V1 group 保留、路径过滤和 skip condition；`br/pkg/stream/stream_metas_test.go` 覆盖 helper 在元数据集合加载/截断中的集成使用。
-- Rust 独立测试：`br/pkg/stream/stream_mgr_test.rs` 覆盖任意合法 ZSTD 帧、V1 hard/Marshal 字段、加密校验顺序、meta 前缀、缓存单次下载、同路径并发、非 meta 跳过、并行 skip 及普通/分区观察范围。`br/pkg/stream/lib.rs` 仅在 `cfg(test)` 下挂载该测试文件，符合源文件与测试分离要求。
-- 本任务是只读代码分析和文档新增，按计划不运行 Cargo；交付前以任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核未把 JSON 桩描述为线上 protobuf 支持。

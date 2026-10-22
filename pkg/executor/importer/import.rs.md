@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件（[源文件](./import.rs)）是 `astersql-executor-importer` crate 的导入计划与数据源控制层。crate 根 `pkg/executor/importer/lib.rs` 以私有模块 `mod import` 装配本文件，再通过 `pub use import::*` 暴露公共项；同 crate 的 `kv_encode.rs`、`precheck.rs`、`production_regions.rs`、`table_import.rs` 等在其上继续完成编码、前置检查、分区和单表导入。`pkg/executor/importer/Cargo.toml` 的 `[package.metadata.porting]` 将整个 crate 对应到 Go 包 `pkg/executor/importer`，本文件的直接 Go 对照是 `pkg/executor/importer/import.go`。
-
-它不直接执行完整的 IMPORT INTO 分布式任务，而是负责把 SQL/AST、会话状态和可注入服务固化为 `Plan` 与 `LoadDataController`，再完成数据源打开、文件发现、格式/大小估算、解析器创建和资源参数计算。生产主链可见于 `pkg/dxf/importinto/scheduler.rs`：从任务元数据恢复 `ASTArgs`，构造控制器，依次调用 `InitDataFiles`、数据量检查、`CalResourceParams`，最后把准备结果写回 job；`task_executor.rs` 和 `encode_and_sort_operator.rs` 则在执行阶段重新构造控制器并初始化存储。
+表达导入配置：`Plan` 聚合目标表、数据源、CSV 规则、会话 SQL mode、并发/配额、冲突处理、全局排序、前置检查和持久化诊断参数；`Summary`/`StepSummary` 表达各执行阶段统计。
 
 ## 核心职责
 
@@ -94,11 +92,3 @@ Rust 符号总体沿用 `pkg/executor/importer/import.go` 的职责与 Go 风格
 - 改动对象存储路径时，同时检查 `parse_data_source_path`、`check_data_source_glob`、`InitDataStore`、`CheckDataSourceAccess`、`InitDataFiles` 与 `storage_path`；特别保护带凭证 URI 的 storage root、对象 key、服务器本地 basename 和关闭语义。
 - 改动并发/资源估算时，从 `Plan::initDefaultOptions`、`adjustOptions`、`CalResourceParams`、`getLocalBackendCfg` 接入；评估 query/file、global/local sort、零 CPU、无索引、采样失败和 nextgen 情况，并同步 scheduler 对结果的使用。
 - 改动 reader 生命周期时要评估 `SharedStorage` 锁粒度和整文件缓冲的内存/吞吐风险；Parquet 改动还需保持取消检查、范围边界、文件大小探测与 reader close。公共行为的回归测试继续放在同目录 `import_test.rs` 或相关独立测试文件中。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 文件、307,296 节点和 1,848,419 条边；`files --filter pkg/executor/importer` 确认目标 Rust/Go/测试/模块文件均在索引；`node --file pkg/executor/importer/import.rs --offset ...` 分四段核对了 2,346 行源码和文件被 37 个文件使用的信息；`query NewImportPlan`、`query NewLoadDataController` 区分了 Go/Rust 同名符号。精确 `callers/callees` 对这些 Rust 符号没有返回边，故没有据此虚构调用关系。
-- Rust 源与装配：`pkg/executor/importer/import.rs`、`pkg/executor/importer/lib.rs`、`pkg/executor/importer/Cargo.toml`。
-- 直接生产调用：`pkg/dxf/importinto/task_executor.rs`、`encode_and_sort_operator.rs`、`scheduler.rs`、`planner.rs`、`conflict_resolution.rs`；同 crate 消费者 `pkg/executor/importer/precheck.rs`、`kv_encode.rs`、`production_regions.rs`、`table_import.rs`、`engine_process.rs`。
-- Go 对照与测试：`pkg/executor/importer/import.go`、`pkg/executor/importer/import_test.go`；Rust 独立测试 `pkg/executor/importer/import_test.rs`，并参考 `precheck_test.rs`、`importer_testkit_test.rs` 中的控制器调用。目标目录不存在 `doc.go`，因此没有额外的包级 Go contract 可读。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰好包含上述 11 个固定二级标题，并人工复核所有现状陈述均可回指到这里列出的符号或文件。

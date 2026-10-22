@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-serverinfo` crate；`pkg/domain/serverinfo/lib.rs` 将模块设为私有后通过 `pub use status_endpoint_claim::*` 重新导出其公开符号。它位于 server-info 注册流程与 etcd 原子操作之间：`pkg/domain/serverinfo/syncer.rs` 在构造 `Syncer` 时生成声明键，在建立 server-info lease 后尝试占有该键，并在注销或注册失败时用相同的服务器 ID 与 lease 条件清理。文件自身不创建 lease，也不管理后台循环。
-
-该声明是“尽力而为”的冲突探测：相同的 advertised status endpoint 只能有一个活跃声明，但冲突或检查失败只形成诊断结果和警告，不阻止各实例继续写入各自的 server-info。直接依据是模块注释、`StatusEndpointClaim::acquire` 以及 `Syncer::NewSessionAndStoreServerInfo` 对返回值不作失败传播。
+只编排 `EtcdClient::TryCreateClaim` 与 `EtcdClient::ReattachClaim`；真实 etcd 事务在 `pkg/domain/serverinfo/real_etcd.rs`，内存实现及 trait 默认错误路径在 `pkg/domain/serverinfo/syncer.rs`。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ lease 生命周期由 `Syncer` 管理。启动时声明绑定当前 server-info 
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/domain/serverinfo/status_endpoint_claim.go`。Rust 的四态枚举、结果/观察结构、构键、首次创建、同 ID 重挂接、竞态后二次创建、冲突/失败告警以及 cleanup 字段，与 Go 的 `endpointClaimState`、`statusEndpointClaimResult`、`observedStatusEndpointClaim`、`buildStatusEndpointClaim`、`acquire`、`applyCreateResult`、`reportResult` 和 `cleanupFields` 一一对应。
-
 实现分层有所不同：Go 文件直接持有 `*clientv3.Client` 并在本文件实现 `tryCreate`、`reattach`、`remove`；Rust 把这些原子操作抽象到 `EtcdClient`，真实 etcd 实现在 `real_etcd.rs`，删除由 `Syncer` 调用 `CompareAndDelete`。Go claim 对象保存 `keyspace` 和 `report` 回调；Rust 将 keyspace 作为 `diagnostic/report_result/warning` 参数，并把报告闭包传入 `try_acquire_and_report`。这些是接线差异，不改变状态机意图。
 
 Rust 额外显式处理带 zone 的 IPv6 文本，并通过 `from_key` 解码 endpoint 供清理日志使用。Go 使用 `net.JoinHostPort`，Rust 以“host 含冒号则加方括号”实现同类 endpoint 格式。对应 Go 测试集中在 `pkg/domain/serverinfo/syncer_test.go::TestBuildStatusEndpointClaim` 与 `TestStatusEndpointClaim`；Rust 没有把测试内嵌在本文件，而是在 `pkg/domain/serverinfo/syncer_test.rs` 中保持独立。
@@ -87,12 +83,3 @@ Rust 额外显式处理带 zone 的 IPv6 文本，并通过 `from_key` 解码 en
 清理逻辑位于 `Syncer::cleanupFailedRegistration`、`RemoveServerInfo` 和 `RevokeSession`。若改变 claim 所属 lease 或值格式，必须一起审查这些路径及 `CompareAndDelete` 的比较条件。Rust 测试应继续放在独立的 `syncer_test.rs`，不要写回生产源文件。
 
 性能上每次首次声明通常是一笔事务；同 ID 重启可能是创建观察加重挂接两笔事务，竞态时最多再进行一次创建事务。扩展时不应在同步注册主链引入无界重试或无超时网络调用。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标 `status_endpoint_claim.rs` 被解析为 22 个符号，文件查询列出 5 个使用文件。精确 callers/callees 查询在 30 秒时限内未返回，调用边随后用源码引用搜索核验。
-- 生产源码：`pkg/domain/serverinfo/status_endpoint_claim.rs`（全部 260 行）、`pkg/domain/serverinfo/syncer.rs`（trait 原子接口、构造、声明、清理和 session 生命周期）、`pkg/domain/serverinfo/real_etcd.rs`（真实事务实现）、`pkg/domain/serverinfo/lib.rs`（模块导出）。目标包没有 `doc.go`。
-- crate 边界：`pkg/domain/serverinfo/Cargo.toml`，包名为 `astersql-domain-serverinfo`，依赖 `astersql-util-logutil`、`base64`、`astersql-config`、`etcd-client` 和 `tokio`，porting 元数据指向 Go 包 `pkg/domain/serverinfo`。
-- Go 对照：`pkg/domain/serverinfo/status_endpoint_claim.go`；Go 测试引用位于 `pkg/domain/serverinfo/syncer_test.go`。
-- Rust 独立测试：`pkg/domain/serverinfo/syncer_test.rs`，重点包括 `status_endpoint_normalization_matches_go_cases`、`status_endpoint_atomic_competition_restart_and_deletion`、`status_endpoint_revision_races_retry_without_overwrite`、`status_endpoint_failures_and_parent_cancellation_report_correctly`、`status_endpoint_registration_disabled_assumed_default_and_shutdown`、忽略的真实 etcd 测试及并发注册测试。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构校验要求文档存在且恰有 11 个固定二级标题。

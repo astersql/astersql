@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文档对应源文件 [`info.rs`](info.rs)。该文件属于 `astersql-planner-util-domainmisc` crate，由同目录的 `lib.rs` 以公开子模块 `info` 导出。它把规划器在使用一份可能已经过期的表元数据时所需的“读取最新 Schema 版本并按表取得索引”能力，收敛为一个不依赖具体 Domain 实现的 Rust 接口。crate 的移植元数据在 `pkg/planner/util/domainmisc/Cargo.toml` 中指向 Go 包 `pkg/planner/util/domainmisc`。
-
-当前 Rust 文件是一个自包含的语义移植核心：RustCodeGraph 对 `get_latest_index_info` 的调用方查询只找到 `pkg/planner/util/domainmisc/info_test.rs` 中的四个测试，仓库文本搜索也未发现生产 Rust 调用点。因此它还没有像 Go 版本那样接入规划器生产主链。Go 侧的实际调用者包括 `pkg/planner/core/planbuilder.go`、`pkg/planner/core/operator/logicalop/logical_datasource.go` 和 `pkg/planner/core/point_get_plan.go`，这些调用用于在读已提交或锁定读等场景中排除已不再公开或已消失的索引。
+把规划器在使用一份可能已经过期的表元数据时所需的“读取最新 Schema 版本并按表取得索引”能力，收敛为一个不依赖具体 Domain 实现的 Rust 接口。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ trait 只要求 `&self`，但没有 `Send`、`Sync` 或快照一致性约束。�
 
 ## 与 Go 版本的对应关系
 
-Rust `get_latest_index_info` 对应 `pkg/planner/util/domainmisc/info.go::GetLatestIndexInfo`。已对齐的语义包括：Domain/Schema 缺失时的错误文本；版本相同时返回“无映射、未变化”；版本变化时按索引 ID 建图；表不存在时返回空映射但标记已变化；重复 ID 由后出现值覆盖。
-
 两者仍有重要结构差异：
 
 - Go 接收 `base.PlanContext` 并自行通过 `domain.GetDomain` 获取 Domain；Rust 直接接收可选 `LatestSchema` trait 对象。
@@ -85,8 +81,6 @@ Rust `get_latest_index_info` 对应 `pkg/planner/util/domainmisc/info.go::GetLat
 - Go 用 `context.Background()` 调用 `TableByID`；Rust trait 不接收上下文，不支持取消、截止时间或查询错误。
 - Go 映射无序且保存指针；Rust 使用有序映射和拥有值。
 - Go 已有多个生产规划器调用点；当前 Rust 仅由单元测试调用。因此应描述为逻辑语义已经移植并受测试覆盖，生产集成尚未验证。
-
-未发现同目录 Go 单元测试文件；本次 Go 语义证据来自 `info.go` 本身及上述规划器生产调用点。Rust 边界由独立文件 `info_test.rs` 验证。
 
 ## 扩展指南
 
@@ -98,13 +92,3 @@ Rust `get_latest_index_info` 对应 `pkg/planner/util/domainmisc/info.go::GetLat
 - 测试继续放在同目录独立文件 `pkg/planner/util/domainmisc/info_test.rs`，不要内嵌回生产源文件。至少保留现有四类分支；新增生产实现后再增加本地临时表、底层错误、并发快照一致性和真实调用接线测试。
 
 主要兼容风险是简化 `IndexInfo` 与 Go 模型不等价以及错误通道变更；正确性风险是临时表视图或并发 Schema 快照缺失；性能风险主要来自每次版本变化时克隆/搬移完整索引列表并构造 `BTreeMap`，而 `BTreeMap` 的插入成本高于哈希映射但提供稳定顺序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录中识别到 `info.rs` 的 7 个符号、`info_test.rs` 的 11 个符号；查询时索引可用。
-- RustCodeGraph `explore "pkg/planner/util/domainmisc/info.rs ..."`：读取目标文件完整源码，并核对 Go `info.go` 的对应实现。
-- RustCodeGraph `query get_latest_index_info`、`callers get_latest_index_info --json`：定位入口 `info.rs:42`，确认四条调用边全部来自 `info_test.rs`；符号查询和入口源码核对 `schema_version`、`table_indexes` 两个下游 trait 方法。仓库 `rg` 复核未发现生产 Rust 调用者。
-- 已读 Rust 源与模块边界：`pkg/planner/util/domainmisc/info.rs`、`pkg/planner/util/domainmisc/lib.rs`、`pkg/planner/util/domainmisc/Cargo.toml`、根 `Cargo.toml`。
-- 已读独立 Rust 测试：`pkg/planner/util/domainmisc/info_test.rs`，覆盖缺少 Schema、版本未变短路、版本变化/重复 ID 和表不存在四类行为。
-- 已读 Go 对照与直接调用证据：`pkg/planner/util/domainmisc/info.go`、`pkg/planner/core/planbuilder.go`、`pkg/planner/core/operator/logicalop/logical_datasource.go`、`pkg/planner/core/point_get_plan.go`；仓库搜索未找到直接命名 `GetLatestIndexInfo` 的 Go 测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文档存在且恰好包含 11 个固定二级章节，并人工复核没有把 Go 生产接线误写成 Rust 当前能力。

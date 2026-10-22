@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`grammar.rs` 是 `astersql-parsergen` crate 的文法输入层：它把维护在 `pkg/parser/grammar/main.astergram` 与 `pkg/parser/grammar/hint.astergram` 中的文本解析为强类型 `Grammar`，并在交给自动机和分析表构造之前完成静态合法性检查。crate 边界由 `pkg/parser/parsergen/Cargo.toml` 定义；`pkg/parser/parsergen/lib.rs` 以 `pub mod grammar` 声明模块并公开重导出其 API。
-
-运行时 SQL 解析并不逐次调用本文件。生成流程中的 `generate_parser_output`（`pkg/parser/parsergen/generate.rs`）读取 `.astergram`，调用 `Grammar::parse`，再把结果传给 `GeneratedParser::build` 并渲染为 `pkg/parser/generated/*.rs`。因此本文件位于“受维护的文法清单 → LALR(1) 自动机/表 → 签入的 Rust 解析表”链路起点，而不是 SQL 请求热路径。
+定义生成器各后续阶段共享的文法模型：`SourceSpan`、`Token`、`Associativity`、`PrecedenceSymbol`、`Precedence`、`ProductionItem`、`RuleId`、`Production` 和 `Grammar`。
 
 ## 核心职责
 
@@ -70,11 +68,7 @@
 
 ## 与 Go 版本的对应关系
 
-仓库不存在 `pkg/parser/parsergen/grammar.go` 或与本文件逐函数对应的 Go 实现。Go 历史链路以 `pkg/parser/parser.y`、`pkg/parser/hintparser.y` 表达 yacc 文法，由 `pkg/parser/goyacc/main.go` 驱动生成 `parser.go`/`hintparser.go`；这些 `.y` 文件还内嵌 Go 类型声明和语义动作。相比之下，Rust 链路把可生成的文法元数据抽到 `pkg/parser/grammar/*.astergram`，并用本文件解析，语义动作按稳定 `RuleId` 放在独立 Rust 模块中。
-
-两边保留的核心 yacc 语义包括起始符、终结符及固定编号、字面量、优先级/结合性、产生式备选、空产生式和 `%prec`。差异在于 `.astergram` 用分号结束声明和产生式，用 `@action` 只标记动作存在/位置，不携带 Go 代码；本文件还增加了明确的重复/引用校验、源码 span 和稳定规则 ID。`pkg/parser/generate.go` 只保留 Go 的 `go:generate ./genkeyword`，不能视为此 Rust grammar parser 的实现。
-
-因此对齐时应比较“文法与生成结果的行为契约”，不能要求 Rust 数据结构机械复刻 goyacc 内部 AST。当前真实输入 `main.astergram` 和 `hint.astergram` 的 token 编号及规则，应与旧 yacc 产物和生成的 Rust 表保持兼容；对应证据由 parsergen baseline、manifest 及语义动作清单测试承担。
+差异在于 `.astergram` 用分号结束声明和产生式，用 `@action` 只标记动作存在/位置，不携带 Go 代码；本文件还增加了明确的重复/引用校验、源码 span 和稳定规则 ID。`pkg/parser/generate.go` 只保留 Go 的 `go:generate ./genkeyword`，不能视为此 Rust grammar parser 的实现。
 
 ## 扩展指南
 
@@ -84,12 +78,3 @@
 - 扩充引用规则时从 `validate_references` 接入，并保持前向非终结符引用可用。新增优先级能力还要检查 `table.rs` 的冲突处理，而不仅是本文件能否解析。
 - 测试逻辑继续放在独立文件：基础解析/诊断加入 `pkg/parser/parsergen/grammar_aster_unit_test.rs`，关键回归可加入 `grammar_test.rs`；跨模块行为分别在 automaton/table/render/generate 的独立测试及 `pkg/parser/*_aster_unit_test.rs` 验证。不要把测试内嵌回 `grammar.rs`。
 - 安全扩展后应至少覆盖成功模型、错误类别和 span、规范签名/`RuleId` 稳定性，以及真实 `main.astergram`/`hint.astergram` 到生成表的基线；本分析任务本身按要求不运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件且 `pkg/parser/parsergen/grammar.rs` 已索引为 89 个符号；`files --filter pkg/parser/parsergen` 确认 crate 内 14 个 Rust 文件；`node --file ...` 分段核对全部 1,031 行；`node Grammar` 确认结构定义及 `Parser::parse` 构造边。对常见名 `parse` 的全局查询存在大量歧义，因此直接调用边再以限定目录源码搜索核实。
-- 源码：`pkg/parser/parsergen/grammar.rs`（公开模型、词法/语法流程、校验、签名与 ID）；`lib.rs`（模块和重导出）；`generate.rs::generate_parser_output`（生产入口）；`automaton.rs`、`table.rs`、`render.rs`（下游消费者）。
-- 配置与真实输入：`pkg/parser/parsergen/Cargo.toml`（独立 crate、无外部依赖）；`pkg/parser/Cargo.toml`（开发依赖）；`pkg/parser/grammar/main.astergram` 与 `hint.astergram`（实际格式和生成输入）。
-- Rust 测试：`pkg/parser/parsergen/grammar_aster_unit_test.rs` 验证完整最小文法、重复 token、重排稳定 ID、空分支/转义、重复编号/产生式及未知符号位置；`grammar_test.rs` 固定 EOF 编号 `0` 保留规则。`parsergen_baseline_aster_unit_test.rs`、`parser_manifest_aster_unit_test.rs` 与 `parser_actions/*_aster_unit_test.rs` 提供跨模块 RuleId/清单证据。
-- Go 对照：`pkg/parser/parser.y`、`hintparser.y`、`goyacc/main.go`、生成的 `parser.go`/`hintparser.go` 以及 `generate.go`，用于确认旧 yacc 链路与 Rust 专用描述层的职责差异；未发现同路径或逐函数 Go 实现。
-- 本文档只记录静态分析证据；按任务约束未运行 Cargo。交付验证使用任务指定的 11 章结构命令，并人工复核本文能够回答文件存在原因、执行方式和安全扩展位置。

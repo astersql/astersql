@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`watcher.rs` 是 `astersql-util-watcher` crate 的轮询式文件系统监视器实现。crate 根 `pkg/util/watcher/lib.rs` 公开 `event` 与 `watcher` 模块并再导出其公开项；工作区根 `Cargo.toml` 以 `facade_util_watcher` 引入该 crate，`pkg/lib.rs` 又通过 facade 对外再导出。因此，本文件提供的是可从 AsterSQL Rust facade 使用的文件监视 API，而事件类型与操作位定义位于相邻的 `event.rs`。
-
-RustCodeGraph 对 `NewWatcher` 的调用者查询只找到 `pkg/util/watcher/watcher_test.rs` 中的两处测试调用；仓库文本检索还找到 `migration_aster_unit_test.rs` 中的迁移测试调用，没有找到 Rust 生产代码直接构造这个 Watcher。因而当前可证实状态是“已公开、由测试覆盖的 Go 移植实现”，尚不能据此声称它已经接入某条生产应用主链。Go 生产实现位于同目录 `watcher.go`。
+因此，本文件提供的是可从 AsterSQL Rust facade 使用的文件监视 API，而事件类型与操作位定义位于相邻的 `event.rs`。
 
 ## 核心职责
 
@@ -89,11 +87,9 @@ crate 边界由 `pkg/util/watcher/Cargo.toml` 定义：运行时唯一外部依�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 `pkg/util/watcher/watcher.go` 逐项移植：`WatcherError` 常量对应 Go 的包级错误；`State`/`Inner` 拆分后承载 Go `Watcher` 中的 `names`、`files`、`running`、互斥量、通道和等待组职责；Rust 后台线程加 `JoinHandle` 对应 goroutine 加 `sync.WaitGroup`；`crossbeam_channel::select!` 对应 Go `select`。
+`watcher_test.rs::test_watcher` 对照 Go `watcher_test.go::TestWatcher` 覆盖 Create → Modify → Chmod → Rename → Remove → Create → Move；`migration_aster_unit_test.rs` 额外覆盖非递归列举、Remove 停止跟踪及 Start/Close 状态机。
 
-事件判定顺序、非递归列举、rename/move 使用旧路径、`Add` 先完成完整列举才写状态、`Remove` 静默移除以及 `Close` 断开事件/错误通道，均与 Go 主体语义对齐。`watcher_test.rs::test_watcher` 对照 Go `watcher_test.go::TestWatcher` 覆盖 Create → Modify → Chmod → Rename → Remove → Create → Move；`migration_aster_unit_test.rs` 额外覆盖非递归列举、Remove 停止跟踪及 Start/Close 状态机。
-
-已确认的差异包括：Rust 使用 `PathBuf` 而非字符串路径；错误使用枚举而非 `pingcap/errors` 包装链；非 Unix 无法可靠实现 Go `os.SameFile` 等价物；缺失路径识别使用错误消息子串而非结构化 `IsNotExist`；Rust rename/move 配对找到一个目标后会退出当前内层循环。Rust 测试还比现有 Go 测试多验证了关闭后接收端断开。
+已确认的差异包括：Rust 使用 `PathBuf` 而非字符串路径；错误使用枚举而非 `pingcap/errors` 包装链；非 Unix 无法可靠实现 Go `os.SameFile` 等价物；缺失路径识别使用错误消息子串而非结构化 `IsNotExist`；Rust rename/move 配对找到一个目标后会退出当前内层循环。
 
 ## 扩展指南
 
@@ -105,14 +101,3 @@ Rust 文件按 `pkg/util/watcher/watcher.go` 逐项移植：`WatcherError` 常�
 - 新的 Rust 测试应继续放在同目录独立测试文件中，不嵌入 `watcher.rs`。生命周期边界适合扩展 `migration_aster_unit_test.rs`，端到端文件事件适合扩展 `watcher_test.rs`。
 
 兼容风险主要是公开字段/错误值和事件顺序；性能风险主要是每次 tick 全量 `metadata/read_dir`、快照克隆以及 rename/move 候选的二次方配对；正确性风险集中在平台元信息差异、轮询丢失瞬时变化和无消费者造成的阻塞。
-
-## 验证依据
-
-- 目标实现：`pkg/util/watcher/watcher.rs`，核对了全部 343 行及其中 `WatcherError`、`State`、`Inner`、`Watcher`、`NewWatcher`、公开方法和所有内部函数。
-- 事件模型：`pkg/util/watcher/event.rs`，核对操作位、`FileInfo` 的平台差异和 `Event` 查询方法。
-- crate 与导出：`pkg/util/watcher/Cargo.toml`、`pkg/util/watcher/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照：`pkg/util/watcher/watcher.go`、`pkg/util/watcher/watcher_test.go`；Cargo 元数据明确记录 `go-package = "pkg/util/watcher"`。
-- Rust 独立测试：`pkg/util/watcher/watcher_test.rs`、`pkg/util/watcher/migration_aster_unit_test.rs`。覆盖事件序列、非递归列举、Remove、重复 Start、关闭后操作及通道断开。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 条边；`files --filter pkg/util/watcher` 列出 8 个 Go/Rust 文件；`node --file` 读取目标、事件、入口及测试；`query` 定位 `NewWatcher`、`do_watch`、`poll_events`、`listForName`；`callers/callees` 确认 `Start → do_watch`、`poll_events → send_event/event`，并确认 `NewWatcher` 的已索引 Rust 调用者仅在 `watcher_test.rs`。
-- 仓库文本检索：确认工作区成员和 facade 依赖/再导出，并确认 `NewWatcher` 的其他 Rust 调用仅存在于 `migration_aster_unit_test.rs`，未发现生产调用点。
-- 本任务为纯文档分析，按计划不运行 Cargo。最终仅执行固定 11 章节结构检查，并人工复核本文没有把未验证的生产接线或平台能力表述为已支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-systable` crate 的 DDL 系统表只读访问层。模块入口 [`lib.rs`](./lib.rs) 公开重导出这里的类型和函数；crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，运行时依赖只有 `astersql-meta-model`。它把上层的“按作业查询”请求转换为对 `mysql.tidb_ddl_job` 和 `mysql.tidb_mdl_info` 的内部 SQL，并把具体会话实现隔离在 `Session`/`SessionPool` trait 后面。
-
-从 DDL 生命周期看，这不是创建作业、状态迁移或回填执行器，而是持久化作业元数据的查询门面。当前 Rust 生产接线中，`pkg/session/runtime/crossks_runtime.rs` 和 `pkg/session/runtime/normal_ddl_submit.rs` 构造 manager，主要用于最小 job ID 刷新和提交前的 FLASHBACK CLUSTER 冲突检查；Go 版本还在调度器、worker 和 reorg 路径使用同类接口。该文件本身不更新 schema version，不执行 job，也不管理 DDL owner。
+`with_new_session` 统一负责池化会话的借出、调用和归还，确保业务闭包成功或返回 `Error` 时都会执行 `put`。
 
 ## 核心职责
 
@@ -76,9 +74,7 @@ SQL 中只插入强类型 `i64` 和编译期常量，不接收自由文本，因
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`manager.go`](./manager.go)，Rust 的 `Manager`、`manager`/`SystemTableManager`、`NewManager`/`new_manager`、`withNewSession`/`with_new_session` 和五个查询方法逐项对应，SQL 文本和 label（`get-job-by-id`、`check-mdl-info`、`get-min-job-id`、`has-flashback-cluster-job`）保持一致。
-
-语义一致点包括：缺失 job/MDL 返回 not found；job 解码后保留原字节；最小 ID 和 flashback 查询使用包含下界；无聚合结果返回零值；借出的会话在普通成功/错误路径归还。Rust 用 trait 注入替代 Go 的具体 `session.Pool`，用 `Arc<dyn Manager>` 替代接口值，并把 Go `errors.Trace` 的错误链简化为本地 `Error` 枚举。
+Rust 用 trait 注入替代 Go 的具体 `session.Pool`，用 `Arc<dyn Manager>` 替代接口值，并把 Go `errors.Trace` 的错误链简化为本地 `Error` 枚举。
 
 需要注意的差异是 Go `withNewSession` 会用 `defer` 归还资源，panic 时仍执行，而 Rust 当前是显式 `put`；此外 Rust 的 `Context` 只是轻量 `request_id`，没有完整等价于 Go `context.Context` 的取消、截止期和值传播。Go 生产代码在 `ddl.go`、`job_scheduler.go`、`job_worker.go`、`reorg.go`、`index.go` 有更广泛调用；当前 Rust 搜索证据只支持前述最小 ID/flashback 主链以及若干会话运行时构造，不能把 Go 全部调用点视为已经移植。
 
@@ -91,11 +87,3 @@ SQL 中只插入强类型 `i64` 和编译期常量，不接收自由文本，因
 若要补齐 Go 调度器/worker 接线，应在各自 crate 增加适配与调用，而不是把调度、重试、事务或 owner 逻辑塞进 manager。性能方面应保留 `job_id >= previous_min_job_id` 下界，避免退回全表扫描；新增高频查询需检查系统表索引和会话池压力。若改变借还机制，必须验证成功、SQL 错误、解码错误和（如要求）panic 四种路径的资源释放。
 
 最直接的同步测试是 [`manager_test.rs`](./manager_test.rs)；跨模块行为还应覆盖 `min_job_id_test.rs`、`pkg/session/runtime/*ddl*test.rs` 或 jobsubmit 测试。Go 语义变化则应同步核对 [`manager_test.go`](./manager_test.go)。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/ddl/systable` 找到本 crate 的 Rust/Go 源与测试；`node --file pkg/ddl/systable/manager.rs` 读取完整 196 行；`query`/`node` 确认 `SystemTableManager` 和 `new_manager` 定义。trait impl 方法调用边未由图返回，已明确使用源码搜索补证。
-- 生产源与边界：`pkg/ddl/systable/manager.rs`、`lib.rs`、`Cargo.toml`、`min_job_id.rs`，以及 `pkg/ddl/jobsubmit/submit.rs`、`types.rs`、`pkg/session/runtime/system_session.rs`、`crossks_session_pool.rs`、`crossks_runtime.rs`、`normal_ddl_submit.rs`。
-- Go 对照：`pkg/ddl/systable/manager.go`；调用面以 `pkg/ddl/ddl.go`、`job_scheduler.go`、`job_worker.go`、`reorg.go` 和 `index.go` 的搜索结果交叉核验。
-- 测试证据：`pkg/ddl/systable/manager_test.rs` 覆盖缺失/存在 job、完整 job 字段和原字节、缺失/存在 MDL version、最小 ID 的包含下界与空表、flashback 类型和下界、协议常量以及非法 JSON；`manager_test.go` 提供真实 Go 行为基线。
-- 人工复核结论：该文件存在是为了把 DDL 系统表读取与具体会话实现解耦；运行时以“一次借会话—执行单条查询—归还”的方式工作；安全扩展的关键是保持持久化协议、包含下界、错误分类和池资源生命周期，并在独立测试文件同步覆盖。

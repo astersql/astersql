@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-br-pkg-utils` library crate 的非 Unix 平台适配单元，crate 边界由 [`br/pkg/utils/Cargo.toml`](Cargo.toml) 定义，模块由 [`br/pkg/utils/lib.rs`](lib.rs) 以 `#[path = "dyn_pprof_other.rs"] pub mod dyn_pprof_other;` 挂载。它只在不满足 Linux、macOS、FreeBSD 且不具有 Rust `unix` cfg 的目标上提供函数实体，与 [`dyn_pprof_unix.rs`](dyn_pprof_unix.rs) 形成平台互斥的实现对。
-
-该文件当前是兼容桩，而不是 pprof 服务器的实现。RustCodeGraph 对 `br/pkg/utils/dyn_pprof_other.rs::StartDynamicPProfListener` 未找到调用边；`lib.rs` 也没有在 crate 根重导出该函数，因此当前只能通过平台上存在的 `astersql_br_pkg_utils::dyn_pprof_other::StartDynamicPProfListener` 路径访问。
+只在不满足 Linux、macOS、FreeBSD 且不具有 Rust `unix` cfg 的目标上提供函数实体，与 [`dyn_pprof_unix.rs`](dyn_pprof_unix.rs) 形成平台互斥的实现对。
 
 ## 核心职责
 
@@ -61,14 +59,8 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `br/pkg/utils/dyn_pprof_other.go`：
-
-- Go build tag 是 `!linux && !darwin && !freebsd && !unix`；Rust cfg 是对同一组条件的 `not(any(...))`，平台选择语义一致。
 - Go 签名接收 `*tidbutils.TLS`，Rust 用 `Option<&TLS>` 表达可空且不取所有权的对应参数。
-- 两者的函数体均无操作，都不返回错误。
 - Go 包按 build tag 为相同的包级名称二选一提供 `StartDynamicPProfListener`；Rust 当前则暴露 `dyn_pprof_other` 和 `dyn_pprof_unix` 两个模块，且没有条件重导出统一函数。因此“实现语义已对齐”不等于“Rust 主调用链已接入”。
-
-测试方面，同目录未发现 `dyn_pprof_other_test.rs`。[`dyn_pprof_unix_test.rs`](dyn_pprof_unix_test.rs) 只验证 Unix 辅助函数在收到 `SIGUSR1` 时调用启动回调，不覆盖本非 Unix 空实现。Go [`br/cmd/br/main_test.go`](../../cmd/br/main_test.go) 中对 Unix goroutine 名称的 goleak 忽略同样不是本文件的回归测试。
 
 ## 扩展指南
 
@@ -77,12 +69,3 @@ Rust 文件直接对应 `br/pkg/utils/dyn_pprof_other.go`：
 - 如果非 Unix 版未来需要真正启动服务，必须先定义该平台上的可观测启动机制、端口暴露和 TLS 生命周期，并重新评估不返回 `Result` 的 Go 兼容契约。
 - 测试仍应放在独立文件，不要内嵌到生产 `.rs` 中。对空实现的最小回归应使用可编译非 Unix 目标验证 `None` 和 `Some(&TLS)` 都能调用且无副作用；统一导出接线则应增加编译期 API 回归。
 - 保留源文件现有 PingCAP Apache License 头和 `// Copyright 2026 AsterSQL.`，不要为了文档化而调整生产代码。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件，其中 7032 个 Rust 文件；目标文件可通过 `node --file br/pkg/utils/dyn_pprof_other.rs` 读取。
-- 符号查询：`query StartDynamicPProfListener --kind function` 同时命中 Go 非 Unix/Unix 实现、Rust 非 Unix/Unix 实现和 BR 命令桩；精确目标的 `callers` 与 `callees` 查询均无输出。
-- 已读生产路径：`br/pkg/utils/dyn_pprof_other.rs`、`br/pkg/utils/dyn_pprof_unix.rs`、`br/pkg/utils/lib.rs`、`br/pkg/utils/Cargo.toml`、`br/cmd/br/cmd.rs`、`br/cmd/br/stubs.rs`。
-- 已读 Go 对照：`br/pkg/utils/dyn_pprof_other.go`、`br/pkg/utils/dyn_pprof_unix.go`、`br/cmd/br/cmd.go`。
-- 已读测试证据：`br/pkg/utils/dyn_pprof_unix_test.rs`；通过全库引用搜索确认没有同名非 Unix Rust 独立测试。`br/cmd/br/main_test.go` 只有 Unix 监听 goroutine 的 goleak 忽略证据。
-- 人工复核结论：文档区分了空实现的真实行为、Unix 对应实现、Go 主链与 Rust 当前桩调用链；未将未接线功能表述为已支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate（见 `pkg/session/Cargo.toml`），由 `pkg/session/runtime.rs` 以私有模块 `mod import_file` 装配，并只公开重导出 `ImportFileTask` 与 `ImportFileSubtask`。它服务于 `ConcreteSession` 这条“规范解析器 + Domain/KV”的同步运行时，而不是完整 planner/executor 会话 ABI；SQL 分派入口位于 `pkg/session/runtime/dispatch.rs`，识别 `ast::ImportIntoStmt`、完成物化视图日志与 TTL 检查后，在无 `SELECT` 数据源时调用 `ConcreteSession::execute_import_file`。
-
-文件处理的是文件型 `IMPORT INTO`。没有 `split_file` 选项时，`execute_import_file` 立即转交 `execute_import_compression`（`pkg/session/runtime/import_compression.rs`）；有该选项时，本文件才负责 CSV 文件切块、DXF 任务/作业记录、Lightning 编码与 SST 导入，以及最终历史状态落盘。
+创建 `mysql.tidb_import_jobs` 记录和 DXF `TaskMeta`、task、subtask，将每个 engine 同步执行为“处理 chunk -> 关闭 engine -> Import -> Cleanup”。
 
 ## 核心职责
 
@@ -77,9 +75,9 @@ data/index engine 的正常生命周期为 `OpenEngine -> ProcessChunk* -> Close
 
 ## 与 Go 版本的对应关系
 
-Go 没有 `pkg/session/runtime/import_file.go` 一一对应文件；等价职责分散在 `pkg/executor/importer/import.go`、`table_import.go`、`pkg/dxf/importinto/*` 和 `tests/realtikvtest/importintotest4/split_file_test.go`。Rust 复用了相同概念：Go `LoadDataController.PopulateChunks` 同样把目标列数、`SplitFile`、region/engine 大小和 CSV 配置交给 `mydump.MakeTableRegions`；Go 测试同样要求 500 行文件切成 3 个 subtask、`skip_rows = 1` 正确、CRLF 切分后索引一致。
+Rust 复用了相同概念：Go `LoadDataController.PopulateChunks` 同样把目标列数、`SplitFile`、region/engine 大小和 CSV 配置交给 `mydump.MakeTableRegions`；Go 测试同样要求 500 行文件切成 3 个 subtask、`skip_rows = 1` 正确、CRLF 切分后索引一致。
 
-这不是 Go 完整分布式 IMPORT INTO 的逐语句复刻，而是 ConcreteSession 的同步适配层。已确认差异包括：Rust 只支持精确单文件 CSV，固定单线程并在当前调用内执行全部 subtask；Go 的计划和 scheduler 支持更多数据源、选项、节点与清理阶段。Go `import.go` 明确限制 split-file 时 `skip_rows <= 1`，而本文件当前接受任意可解析 `u64`，Rust 回归测试还覆盖了 `skip_rows = 2`；因此不能把两边该边界描述为完全一致。Rust 的 `__max_engine_size` 直接解析为 `f64`，Go 则按 `ByteSize.UnmarshalText` 解析。后续追求完整兼容时，这些差异必须通过独立行为任务与回归测试处理，本说明不修改现状。
+已确认差异包括：Rust 只支持精确单文件 CSV，固定单线程并在当前调用内执行全部 subtask；Go 的计划和 scheduler 支持更多数据源、选项、节点与清理阶段。Go `import.go` 明确限制 split-file 时 `skip_rows <= 1`，而本文件当前接受任意可解析 `u64`，Rust 回归测试还覆盖了 `skip_rows = 2`；因此不能把两边该边界描述为完全一致。Rust 的 `__max_engine_size` 直接解析为 `f64`，Go 则按 `ByteSize.UnmarshalText` 解析。后续追求完整兼容时，这些差异必须通过独立行为任务与回归测试处理，本说明不修改现状。
 
 ## 扩展指南
 
@@ -89,14 +87,3 @@ Go 没有 `pkg/session/runtime/import_file.go` 一一对应文件；等价职责
 - 改变 engine 生命周期时，优先补齐失败路径的 cleanup/回滚设计，并验证 data 与 index engine 都被处理；这是资源泄漏与磁盘占用的主要风险点。
 - 测试应继续放在独立文件，不嵌入生产源码。直接回归面是 `tests/realtikvtest/importintotest4/split_file_test.rs`；非 split-file 压缩分支由 `pkg/session/runtime/import_compression_test.rs` 覆盖。需要 Go 对齐时同步参考同目录 `split_file_test.go`。
 - 兼容性风险集中在选项解析、URI 匹配、row ID/auto ID 推进和 task 历史格式；性能风险集中在顺序执行、每 engine 重开共享 index engine、storage 全量 `list()` 后线性查找以及 SST 清理失败。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/import_file.rs` 与 `git show 2c944fb:pkg/session/runtime/import_file.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：冻结源码成功收尾两次 GetTaskByID、SucceedTask(Task)、TransferTasks2History 的顺序；这是 DXF API 接线审计，未执行导入或验证真实 SST 资源清理。
-- 源码与装配：`pkg/session/runtime/import_file.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/import_sst.rs`、`pkg/session/runtime/dxf_session.rs`、`pkg/session/runtime/import_compression.rs`。
-- crate 边界：`pkg/session/Cargo.toml`；目标包范围内未找到 `doc.go`，因此以 `runtime.rs` 顶层模块说明作为最近的运行时契约。
-- Go 对照：`pkg/executor/importer/import.go`、`pkg/executor/importer/table_import.go`、`pkg/dxf/importinto/scheduler.go`、`tests/realtikvtest/importintotest4/split_file_test.go`。
-- Rust 测试：`tests/realtikvtest/importintotest4/split_file_test.rs` 覆盖 canonical KV/RealTiKV、三段切分、任务历史、skip rows、CRLF、非聚簇主键、缺失文件与失败状态；`pkg/session/runtime/import_compression_test.rs` 覆盖无 `split_file` 的委托分支。按任务约束未运行 Cargo 或测试二进制，只做静态事实与文档结构验证。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

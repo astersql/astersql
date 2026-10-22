@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[目标源文件](import_mock.rs) 是 `astersql-dxf-importinto-mock` crate 的主要实现，为 IMPORT INTO 最小任务执行器提供手写的 GoMock 风格 Rust mock。crate 根 `pkg/dxf/importinto/mock/lib.rs` 公开 `import_mock` 模块并再导出本文件的符号；`pkg/dxf/importinto/mock/Cargo.toml` 将它标记为 Go 包 `pkg/dxf/importinto/mock` 的移植对应物。上层 `pkg/dxf/importinto/Cargo.toml` 只在 `[dev-dependencies]` 中引入该 crate，所以它当前是测试边界，不是 IMPORT INTO 生产执行路径中的真实执行器。
-
-直接 Go 对照是由 MockGen 生成的 `pkg/dxf/importinto/mock/import_mock.go`，其源接口是 `pkg/dxf/importinto/subtask_executor.go` 中的 `MiniTaskExecutor`。Rust 文件不是自动生成代码：它用显式 trait 和同步器仿真 GoMock 所需的最小公开契约。
+再导出 `Collector`、`BackendError`、`ChunkFlushStatus`、`EngineWriter`、`Context` 和 `Rows`，使 controller 及独立测试可以直接实现完整参数契约。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go `import_mock.go` 是从 `MiniTaskExecutor` 接口生成的 GoMock：`NewMockMiniTaskExecutor` 绑定 `*gomock.Controller`，`EXPECT` 返回 recorder，实际 `Run` 执行 `Helper` 后调用 `ctrl.Call`，recorder `Run` 执行 `Helper` 后用 `RecordCallWithMethodType` 登记。Rust 逐项保留了这些公开名称、四参数顺序、helper-再-调用的顺序以及错误返回语义。
-
 主要差异是：
 
 - Go 直接使用 `gomock.Controller` 和 `*gomock.Call`；Rust 以本地 `Controller` trait 和 `Arc<RecordedCall>` 代替，不包含完整 GoMock matcher/次数/收尾能力。
@@ -88,13 +84,3 @@ Go `import_mock.go` 是从 `MiniTaskExecutor` 接口生成的 GoMock：`NewMockM
 - 如果需要更接近 GoMock 的 matcher、次数、顺序或 `Finish` 校验，应扩展 `Controller` 契约或建立专门 controller 实现，而不应把匹配策略硬编码到 `MockMiniTaskExecutor::Run`。这类改动需评估持锁回调的重入风险。
 - 所有行为扩展都应同步修改独立测试 `pkg/dxf/importinto/mock/import_mock_test.rs`，不要把测试嵌入本生产文件。至少应覆盖参数顺序、方法名/类型标识、helper 顺序、副作用和错误传递；修改并发策略时还应增加多线程与重入测试。
 - 需要接入 Rust 上层 IMPORT INTO 测试时，应在对应的独立测试文件中使用已有 dev-dependency，并参照 Go `encode_and_sort_operator_test.go` 的工厂替换与恢复边界；不应因测试注入而把本 mock 加入生产依赖。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 `import_mock.rs` 被识别为包含 24 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/dxf/importinto/mock/import_mock.rs`：核对了全文 241 行的常量、类型、trait、函数、impl 和所有分支；文件中没有条件编译项。
-- RustCodeGraph `query MockMiniTaskExecutor`、`query MockMiniTaskExecutorMockRecorder` 和 `query new_mock_mini_task_executor`：核对 Rust/Go 同名符号及 Rust 命名别名。
-- RustCodeGraph `explore "pkg/dxf/importinto/mock/import_mock.rs symbols callers callees role"`：核对内部调用边和 `generated_gomock_public_contract_and_dispatch_order_match_go` 对关键公开符号的覆盖。精确 `callers` 子命令在当前索引上持续无输出，已终止；调用者范围另以仓库 `rg` 搜索交叉核对。
-- RustCodeGraph `node` 读取的直接证据：`pkg/dxf/importinto/mock/lib.rs`、`pkg/dxf/importinto/mock/import_mock_test.rs`、`pkg/dxf/importinto/mock/import_mock.go`、`pkg/dxf/importinto/subtask_executor.go` 和 `pkg/dxf/importinto/encode_and_sort_operator_test.go`。
-- 未索引配置证据：`pkg/dxf/importinto/mock/Cargo.toml` 确认 crate 边界、三个路径依赖和 Go 包对应；`pkg/dxf/importinto/Cargo.toml` 确认它只是上层 crate 的 dev-dependency；根 `Cargo.toml` 确认该 crate 是 workspace 成员。
-- 独立 Rust 测试的现有断言覆盖：公开 GoMock 形状、方法标识、参数顺序和状态、collector 副作用、controller 错误传递、事件顺序以及 `RecordedCall` 的 `Arc` 同一性。本任务是纯文档分析，按计划未运行 Cargo；验收依据为上述静态事实和文档结构检查。

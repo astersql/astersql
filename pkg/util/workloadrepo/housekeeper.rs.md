@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-workloadrepo` crate 的分区维护层。crate 根 `pkg/util/workloadrepo/lib.rs` 以私有模块 `housekeeper` 装配本文件，再通过 `pub use housekeeper::*` 导出其中的公开函数和 `worker` 方法；`pkg/util/workloadrepo/Cargo.toml` 表明该 crate 仅直接依赖 `chrono = "0.4"`，并声明对应 Go 包为 `pkg/util/workloadrepo`。
-
-在当前 Rust 应用链中，`pkg/util/workloadrepo/table.rs::worker::createAllTables` 创建缺失目标表后调用 `createAllPartitions`，确保已有表也补足未来分区。另一方面，`startHouseKeeper` 尚未被 Rust 生产代码调用，只在 `pkg/util/workloadrepo/worker_test.rs::TestHouseKeeperThread` 中直接取得并执行一次闭包。因此，本文件目前既承载已接线的“建表时补分区”能力，也承载尚未接入持续后台调度的 housekeeper API。
+这些职责以 `RepositoryBackend` 抽象数据库与 owner 状态，不直接依赖 TiDB session/infoschema 类型；后端契约定义在 `pkg/util/workloadrepo/worker.rs::RepositoryBackend`。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-对应实现是 `pkg/util/workloadrepo/housekeeper.go`，Rust 保留了以下核心语义：下一个 02:00 的计算、缺失分区生成、owner-only 门控、先创建后清理、保留期为 0 时禁用、单表创建失败立即返回，以及清理阶段跨表收集错误。`pkg/util/workloadrepo/housekeeper_test.rs::drop_partition_quotes_partition_identifier_like_go` 还专门验证 Rust 的 DROP SQL 与 Go 一样引用分区标识符。
+`pkg/util/workloadrepo/housekeeper_test.rs::drop_partition_quotes_partition_identifier_like_go` 还专门验证 Rust 的 DROP SQL 与 Go 一样引用分区标识符。
 
 主要差异与迁移状态如下：
 
@@ -96,7 +94,7 @@
 - Go 的 `dropOldPartition` 显式检查表元数据和分区信息非空，并对错误添加表/分区上下文；Rust 后端直接返回分区名列表，无法在本层区分“无分区表”和“空分区列表”。
 - Go 的 housekeeper 在某些失败分支 `continue` 前没有重置 timer，按当前源码会等待不到下一次 timer 事件；本文只陈述源码事实，不把该行为作为 Rust 应复制的目标。
 
-Go 测试 `pkg/util/workloadrepo/worker_test.go::TestCreatePartition` 覆盖从旧分区、当天、明天、后天和存在日期缺口等输入生成分区；`TestDropOldPartitions` 覆盖保留边界与“不能删除最后分区”的数据库错误；`TestHouseKeeperThread` 覆盖后台运行和保留期变化；`TestCalcNextTick` 覆盖 02:00 前后纳秒边界。Rust 测试覆盖了主要结果，但定时循环和大部分边界仍主要由 Go 测试提供对照证据。
+Rust 测试覆盖了主要结果，但定时循环和大部分边界仍主要由 Go 测试提供对照证据。
 
 ## 扩展指南
 
@@ -107,11 +105,3 @@ Go 测试 `pkg/util/workloadrepo/worker_test.go::TestCreatePartition` 覆盖从�
 - 若表清单可运行时变更，可考虑在持锁期间 clone `Vec<repositoryTable>` 后释放锁再执行 DDL；代价是本轮使用清单快照。应增加并发修改清单与长时间重试的测试。
 - 若接受外部可控标识符，应将 ADD/DROP DDL 都接入统一转义函数，覆盖表名和分区名中反引号的回归测试。
 - 与 Go 对齐时应保留实际行为，但不应机械复制 Go timer 失败分支；先明确失败后是否必须重新调度，再以独立测试固定契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 7,032 个 Rust 文件；`files --filter pkg/util/workloadrepo` 找到 22 个该模块文件；`node --file pkg/util/workloadrepo/housekeeper.rs --offset 1 --limit 240` 读取了本文件 118 行全貌；`query HouseKeeper`/`query housekeeper` 确认本文件的 7 个函数/方法节点及 Go 对照符号。精确 `callers housekeeper.rs::startHouseKeeper` 在两次 30 秒有界等待内无输出，随后中止，故未把缺失的图结果当作“无调用者”的唯一证据。
-- 已读生产文件：`pkg/util/workloadrepo/housekeeper.rs`、`lib.rs`、`Cargo.toml`、`worker.rs`、`table.rs`、`utils.rs`，以及 Go 对照 `housekeeper.go`。
-- 已读测试：`pkg/util/workloadrepo/housekeeper_test.rs`、`worker_test.rs` 的相关测试段，以及 `worker_test.go` 中 `TestCreatePartition`、`TestDropOldPartitions`、`TestHouseKeeperThread`、`TestCalcNextTick`。
-- 直接引用检索：`rg` 确认 Rust 生产侧 `table.rs:119` 调用 `createAllPartitions`；其余 housekeeper 入口的 Rust 直接引用位于上述独立测试。Go 侧 `worker.go` 启动 `startHouseKeeper`，形成与 Rust 当前接线程度的对照。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试。交付前按任务验证命令检查目标文件存在且恰好具有 11 个固定二级章节，并人工复核本文件为何存在、当前如何运行及安全扩展入口。

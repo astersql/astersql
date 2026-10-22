@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cardinality` crate，是把 `ranger::Range` 转换成列访问路径基数（`statistics::RowEstimate`）的实现层。crate 根 `pkg/planner/cardinality/lib.rs` 以私有模块 `mod row_count_column` 装载它，再通过 `pub use row_count_column::*` 向 crate 使用方导出公开函数；`pkg/planner/cardinality/Cargo.toml` 的 `[package.metadata.porting]` 明确对应 Go 包 `pkg/planner/cardinality`。
-
-它处在“谓词生成范围 -> 统计信息估算 -> 优化器比较路径”的中间：上游包括 `selectivity.rs` 的列谓词选择率、`row_count_index.rs` 的索引缺失回退、`cross_estimation.rs` 的交叉校验，以及 `core/operator/logicalop/logical_datasource.rs` 的表路径估算；下游消费 `statistics::Column` 中的 Histogram、TopN、CM Sketch、NDV、NULL 数和统计版本，并调用 `pseudo.rs`、`selectivity.rs` 等同 crate 估算辅助函数。
+`equalRowCountOnColumn` 估算单值：统计版本 1 优先 CM Sketch/Histogram，版本 2 依次使用 TopN、桶末值 Repeat 和均匀分布兜底。
 
 ## 核心职责
 
@@ -91,7 +89,7 @@
 
 ## 与 Go 版本的对应关系
 
-主要函数与 `pkg/planner/cardinality/row_count_column.go` 一一对应，分支次序、StatsVer 语义、边界修正、增长因子、TopN 补算和部分统计计算均保持一致。Rust 特有适配包括：
+Rust 特有适配包括：
 
 - Go `init` 给 `statistics.GetRowCountByColumnRanges/GetRowCountByIndexRanges` 赋函数变量；Rust `init` 故意为空并依赖显式 API，避免 crate 依赖环。
 - Go 的 `coll.UniqueID2colInfoID[colUniqueID]` 缺失时得到零；Rust 用 `get(...).copied().unwrap_or_default()` 显式复现。
@@ -99,9 +97,6 @@
 - Rust 的 `ColumnStatsIsInvalid` 接口只传列和 `coll.Pseudo`，而当前 Go 版本还接收 `sctx/coll/colUniqueID`；本文档仅确认本文件实际调用契约，不推断两端未展示的异步加载副作用完全相同。
 - Go 编码错误会经过 statement context 的 `HandleError`；Rust 直接用 `?` 传播 `codec::EncodeKey` 错误。两端都停止估算，但警告降级或错误处理策略是否完全等价需由 codec/eval context 的独立文档验证。
 - Rust `Histogram::OutOfRangeRowCount` 额外显式传入布尔参数与 `RiskRangeSkewRatio`；这是当前 Rust API 的接线，不应从旧 Go 调用签名推断为算法差异，需结合 statistics 实现单独核验。
-- `partialStatsRangeCollator` 将 Go 的 `Collators[0]` 选择抽成可独立测试的辅助函数；它并不按列索引 `i` 选择 collator。
-
-Go 的 `pkg/statistics/statistics_test.go` 验证伪/真实列统计、NULL、开闭区间、PK handle、有符号/无符号范围和实时行数增长；`pkg/planner/cardinality/selectivity_test.go` 进一步覆盖 collation、未知值、out-of-range、TopN、桶末值和风险比例。Rust 的对应独立测试目前分布在 `row_count_column_test.rs` 与 `row_count_index_test.rs`，覆盖面较 Go 少，不能据此宣称所有 Go 回归场景已在 Rust 独立复现。
 
 ## 扩展指南
 
@@ -112,12 +107,3 @@ Go 的 `pkg/statistics/statistics_test.go` 验证伪/真实列统计、NULL、�
 - 修改公开入口签名或错误类型时检查 `selectivity.rs`、`row_count_index.rs`、`cross_estimation.rs` 和 `logical_datasource.rs` 四类调用方；特别留意逻辑数据源把三个估算字段分别写入路径成本输入。
 - 性能风险集中在每范围两次编码、Datum/collator 克隆、StatsVer 1 小范围枚举和多列部分统计的嵌套循环。优化时应保持编码与 collation 语义，并用真实调用规模证明收益。
 - 兼容风险包括 Go 零值 map 行为、空 TopN 行为、至少一行启发式、PK 点范围至多一行、错误处理以及 used-stats 记账；这些都应作为回归断言，而不是仅验证函数可编译。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/planner/cardinality` 确认目标、Go 对照及独立测试均已索引；`node --file pkg/planner/cardinality/row_count_column.rs --offset 1 --limit 500` 完整读取 384 行并报告直接使用文件。精确 `query` 还确认 Go/Rust 同名的 `GetRowCountByColumnRanges`、`equalRowCountOnColumn`、`getColumnRowCount`。
-- 生产源码：`pkg/planner/cardinality/row_count_column.rs`；crate 装配与可空 TopN 适配：`pkg/planner/cardinality/lib.rs`；依赖和 Go 包映射：`pkg/planner/cardinality/Cargo.toml`。
-- Rust 调用证据：`pkg/planner/cardinality/selectivity.rs`、`row_count_index.rs`、`cross_estimation.rs`、`pkg/planner/core/operator/logicalop/logical_datasource.rs`。
-- Rust 测试证据：`pkg/planner/cardinality/row_count_column_test.rs` 验证首 collator 复用；`row_count_index_test.rs` 验证零 Repeat 均匀回退、正 Repeat 精确值、TopN/Histogram 区间合并及列范围边界调用。
-- Go 对照与测试：`pkg/planner/cardinality/row_count_column.go`、`pkg/planner/cardinality/selectivity_test.go`、`pkg/statistics/statistics_test.go`、`pkg/statistics/merge_global_test.go`、`pkg/statistics/handle/handletest/handle_test.go`。
-- 本任务只新增说明文档，未运行 Cargo 或代码测试；按计划以源码/调用图/对照测试事实复核和固定章节结构检查作为验收。

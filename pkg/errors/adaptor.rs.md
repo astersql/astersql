@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/errors/adaptor.rs` 是 `astersql-errors` crate 的 Juju / `github.com/pingcap/errors` 兼容层。它不定义新的错误容器，而是把 `Trace`、`Annotate`、`SuspendStack`、`ErrorStack` 以及若干分类错误构造函数，组合到本 crate 已有的 `SharedError`、消息包装和堆栈实现之上。`pkg/errors/mod.rs` 将本文件的全部公开函数从 crate 根重新导出，因此调用方通常写 `astersql_errors::Trace` 或通过别名写 `errors::Trace`，不会直接引用私有 `adaptor` 模块。
-
-crate 边界由 `pkg/errors/Cargo.toml` 确定：包名是 `astersql-errors`，库入口是 `mod.rs`，使用 Rust 2024 edition；运行时依赖只有 `backtrace` 与带 `derive` 的 `serde`。本文件自身没有 feature 或条件编译项。仓库中不存在 `pkg/errors/doc.go`；Go 语义来源是 `go.mod` 锁定的 `github.com/pingcap/errors` 版本及其 `juju_adaptor.go`。
+提供“现在不捕栈、由更高层决定是否捕栈”的构造与变换：`NewNoStackError`、`NewNoStackErrorf` 和 `SuspendStack`。
 
 ## 核心职责
 
@@ -79,9 +77,7 @@ RustCodeGraph 确认 `NotFoundf`、`BadRequestf`、`NotSupportedf`、`NotValidf`
 
 ## 与 Go 版本的对应关系
 
-Go 基准是 `go.mod` 中的 `github.com/pingcap/errors v0.11.5-0.20260508054701-306e305bcf41`，对应模块缓存中的 `juju_adaptor.go`。公开函数集合与核心策略逐项对应：`Trace` 委托 `AddStack`；`Annotate`/`Annotatef` 先判断已有栈、再包消息、必要时捕栈；无栈构造器放入空栈；`SuspendStack` 清理已知栈或补空栈层；`ErrorStack` 使用扩展诊断格式；分类函数拼固定英文后缀，判定函数做字符串包含检查。
-
-Rust 映射的主要语言差异是：Go `error`/`nil` 映射为 `SharedError`/`Option`，`...interface{}` 映射为 `&[ErrorArg]`，共享所有权由 `Arc` 表达；Go 的 `fmt.Sprintf("%+v", err)` 映射为 Rust 的 alternate `Debug`（`{:#?}`）。Go `clearStack` 可原地改写特定节点，Rust `suspend_stack` 因共享所有权而重建可识别节点。Rust 捕栈调用使用显式 `skip = 2` 达到跳过 adaptor 帧的目的。
+Rust 映射的主要语言差异是：Go `error`/`nil` 映射为 `SharedError`/`Option`，`...interface{}` 映射为 `&[ErrorArg]`，共享所有权由 `Arc` 表达；Go 的 `fmt.Sprintf("%+v", err)` 映射为 Rust 的 alternate `Debug`（`{:#?}`）。Go `clearStack` 可原地改写特定节点，Rust `suspend_stack` 因共享所有权而重建可识别节点。
 
 Go 注释仍称 `SuspendStack` 为 deprecated，但当前 Rust 公共函数没有 `#[deprecated]` 属性；这是可见 API 元数据差异，不应在未评估仓库调用方前擅自添加。Go 源中 `NewNoStackErrorf` 的英文注释称“with error stack”，但代码实际写入 `emptyStack`；Rust 实现与 Go 代码及其测试行为对齐，而不是照搬该注释的矛盾措辞。
 
@@ -93,12 +89,3 @@ Go 注释仍称 `SuspendStack` 为 deprecated，但当前 Rust 公共函数没�
 - 修改 `SuspendStack` 时必须联动 `pkg/errors/wrap.rs::{suspend_stack, clear_stack}`，重点覆盖外部错误、`Fundamental`、多层 `WithStackError`、嵌套 `WithMessageError` 和后续 `Trace`；测试逻辑继续放在独立的 `pkg/errors/tests/adaptor_test.rs`，不要嵌入生产源文件。
 - 扩充格式参数能力应落在 `core.rs::format_message`/`ErrorArg`，本文件只负责转发；需同步检查 Go 格式兼容和 `pkg/errors/tests/api_parity_test.rs` 的公开 API 清单。
 - 性能评审应重点关注错误热路径上的回溯捕获与节点分配；保持 `Trace`/`Annotate` 的栈去重比微调后缀拼接更重要。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/errors/adaptor.rs` 给出 1--124 行完整符号；`callers/callees --file` 核对 `suffixed_error` 的五个调用者和 `NewNoStackErrorf → NewNoStackError`；`query`/`node` 核对 `wrap.rs::{HasStack, with_stack, suspend_stack, WithMessage}` 与 `core.rs::new_no_stack`。
-- Rust 源与 crate 声明：`pkg/errors/adaptor.rs`、`pkg/errors/core.rs`、`pkg/errors/wrap.rs`、`pkg/errors/mod.rs`、`pkg/errors/Cargo.toml`。`pkg/errors` 下未发现 `doc.go`。
-- Rust 独立测试：`pkg/errors/tests/adaptor_test.rs` 验证 `None` 透传、栈去重与来源、消息格式、无栈构造、挂起/恢复、嵌套缓存语义以及分类后缀；`pkg/errors/tests/api_parity_test.rs` 验证公开 API 盘点与 Go/Rust 参数映射。
-- Go 对照：仓库 `go.mod` 锁定 `github.com/pingcap/errors` 提交 `306e305bcf41`；模块缓存中的 `juju_adaptor.go` 是直接实现对照，`errors_test.go`、`format_test.go`、`stack_test.go` 提供 nil、格式化、堆栈位置、无栈构造与 `SuspendStack` 行为证据。
-- 上游使用证据：RustCodeGraph 与 `rg` 命中 `pkg/types/helper.rs`、`pkg/types/datum.rs`、`pkg/dxf/framework/storage/task_table.rs`、`lightning/pkg/progress/progress.rs`、`lightning/pkg/checkpoints/checkpoints.rs` 等真实调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前用任务规定的命令确认目标文件存在且恰好包含 11 个固定二级标题，并人工检查没有建议把 Rust 测试写入生产文件。

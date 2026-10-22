@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文说明的真实源文件是 [`encoding_table.rs`](./encoding_table.rs)。它位于 `astersql-parser-charset` crate，crate 根由 `pkg/parser/charset/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定。`pkg/parser/charset/lib.rs` 通过 `pub mod encoding_table` 装入本模块，并用 `pub use encoding_table::*` 将其公开符号提升到 crate 根，因此调用方既可以使用模块路径，也可以从 `parser_charset` 根命名空间取得查找 API。
-
-它是 HTML/WHATWG 编码标签与具体编解码器之间的适配表：输入用户或协议侧的编码标签，输出 `encoding` 0.2.33 crate 的静态编解码器引用和规范名称。它只负责“标签解析”，不实现 `pkg/parser/charset/encoding.rs` 中的字符集转换策略，也不包含 GBK、GB18030 等编码算法本身。
-
-仓库检索目前只发现独立 Rust 测试直接调用此 API，未发现非测试 Rust 生产文件的直接调用点。因此它是 crate 的公开能力和编码实现的测试基准，但不能仅凭公开再导出断言其已进入 SQL 请求主链。
+只负责“标签解析”，不实现 `pkg/parser/charset/encoding.rs` 中的字符集转换策略，也不包含 GBK、GB18030 等编码算法本身。
 
 ## 核心职责
 
@@ -73,9 +69,9 @@ API 不返回错误对象。合法标签返回 `Some(LookupResult)`，未知标�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/charset/encoding_table.go`。Go `Lookup` 同样先执行 `strings.Trim(label, "\t\n\r\f ")` 与 `strings.ToLower`，再查询私有表。Go 用 `map[string]struct{ e encoding.Encoding; name string }` 保存 218 个标签；Rust 用 `match` 合并同值分支。脚本核对结果为 `go_labels=218` 且 `missing_in_rust=[]`。
+Go 用 `map[string]struct{ e encoding.Encoding; name string }` 保存 218 个标签；Rust 用 `match` 合并同值分支。
 
-返回模型不同：Go 返回 `(encoding.Encoding, string)`，未命中时依赖 map 零值形成 `(nil, "")`；Rust 用 `Option<LookupResult>` 把未命中显式化，并把规范名限制为静态字符串。Go 的 `encoding.Nop` 在 UTF-8 和 binary 标签中由 Rust 的 `encoding::all::UTF_8` 表示；其他 Go `x/text/encoding` 实现由 rust-encoding 中对应常量承接。这种库替换要求扩展时不仅比较规范名，还要用实际字节往返测试确认 codec 行为。
+返回模型不同：Go 返回 `(encoding.Encoding, string)`，未命中时依赖 map 零值形成 `(nil, "")`；Rust 用 `Option<LookupResult>` 把未命中显式化，并把规范名限制为静态字符串。
 
 命名层面，Rust 同时提供惯用的 `lookup` 与兼容 Go 拼写的 `Lookup`。当前测试证明了关键标签、未知值和 Unicode Kelvin 符号路径，但不是对 218 个条目逐项做 codec 身份和行为的自动差分，因此“标签无缺失”不能替代所有编解码语义均已穷举验证。
 
@@ -91,13 +87,3 @@ API 不返回错误对象。合法标签返回 `Some(LookupResult)`，未知标�
 - 保持 `Lookup` 和 `lookup` 共用同一规范化路径，避免兼容入口与 Rust 入口产生差异。
 
 兼容性风险主要是既有别名突然失效、规范名变化影响上层比较、或替换 codec 后同一字节序列行为改变。性能风险集中在每次查找都会分配小写化 `String` 以及大 `match` 的匹配成本；若要优化，必须保留 Unicode 小写和精确空白边界，并用基准或调用频率证据证明需要，不能直接改成仅 ASCII 的无分配逻辑。
-
-## 验证依据
-
-- 源码与符号：RustCodeGraph `node --file pkg/parser/charset/encoding_table.rs --offset 1 --limit 240` 读取完整 166 行文件；`query` 确认 `LookupResult`、`lookup`、`Lookup`、`entry`、`lookup_normalized` 的位置和签名。
-- 图关系：RustCodeGraph `files --filter pkg/parser/charset` 确认模块文件集合；目标文件报告被 5 个测试文件使用。对精确符号执行 `callers/callees` 未得到边，故没有据此推断不存在调用者。
-- crate 边界：读取 `pkg/parser/charset/Cargo.toml` 与 `pkg/parser/charset/lib.rs`，确认 crate 名、`encoding = "0.2.33"` 依赖、模块声明、公开再导出及独立测试装配。
-- Go 对照：读取 `pkg/parser/charset/encoding_table.go`；提取其 218 个 map 标签并与 Rust 文件字符串匹配项比较，结果无缺失。
-- 测试证据：读取 `pkg/parser/charset/encoding_table_test.rs`、`encoding_gb18030_2_aster_unit_test.rs` 和 `encoding_test.rs` 的相关用例；Go 侧 `encoding_test.go` 使用 `Lookup("gbk")`、`Lookup("gb18030")` 作为字节行为基准。
-- 调用检索：用 `rg` 搜索 `encoding_table`、`Lookup(`、`encoding_table::lookup` 和 crate 路径；只确认到上述 Rust 测试调用与 `lib.rs` 装配，没有发现非测试 Rust 生产调用。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；交付前使用任务指定命令验证固定的 11 个二级章节，并人工复核所有本地路径和关键结论均有上述证据支撑。

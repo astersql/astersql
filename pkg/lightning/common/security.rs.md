@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-common` crate 的 TLS/安全适配层。crate 入口 `pkg/lightning/common/lib.rs` 以 `mod security` 编译本模块，再通过 `pub use security::*` 将公开符号暴露给调用方；`pkg/lightning/common/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/lightning/common`，本文件本身没有直接声明第三方依赖或 feature/条件编译项。
-
-从设计角色看，它应位于 Lightning 配置与连接端点之间；从当前仓库事实看，精确检索没有确认 `NewTLS`、`WrapListener` 等函数被 Rust 生产代码调用。`lightning/pkg/server` 和 `lightning/cmd/tidb-lightning-ctl` 虽有同名调用，却引用 `lightning/pkg/server/stubs.rs` 中的本地 `crate::common` stub，并非本文件。当前 Rust 类型主要保存材料和接口形状：`TLSConfig` 不是 `rustls`/OpenSSL 配置，`DialOption` 只是布尔标志，`TLSListener` 只把 listener 与配置装在一起，`GetJSON` 只支持显式注入的回调。因此它既不能被描述为已接入 Lightning 生产主链，也不能被描述为已经实现 Go 版本的真实 TLS 握手与 HTTP/gRPC transport。
-
-RustCodeGraph 已索引 `security.rs` 的 25 个符号，并能精确定位 `NewTLS`、`WithHost`、`GetJSON` 等入口；其 `explore`、文件 `node` 和精确 ID 的 callers/callees 本轮未返回内容，所以调用边又以源码范围精确检索和直接读取调用点核验，未把同名候选当作真实边。
+为地址替换和 HTTP GET 提供 `WithHost`、`GetJSON`，并为独立测试提供 `MockTLSServer`、`NewTLSFromMockServer` 和 `GetMockTLSUrl`。
 
 ## 核心职责
 
@@ -85,7 +81,7 @@ PEM 检查仅将字节按损失式 UTF-8 转换并查找 `-----BEGIN `。它能�
 
 ## 与 Go 版本的对应关系
 
-直接基准是 `pkg/lightning/common/security.go`，相关 Go 测试位于 `pkg/lightning/common/security_test.go`。两边都保留 `TLS` 的路径/字节输入，以是否存在配置决定 HTTP/HTTPS，`WithHost` 都剥离输入 scheme 后按内部配置重建 URL，PD/TiKV 转换的字段形状也一致。Rust 测试复刻了 Go 的明文/安全 mock GET、host 替换和非法证书场景，并额外固定 CA 路径优先级与不完整 key pair 行为。
+Rust 测试复刻了 Go 的明文/安全 mock GET、host 替换和非法证书场景，并额外固定 CA 路径优先级与不完整 key pair 行为。
 
 当前 Rust 与 Go 的关键差异是：
 
@@ -97,7 +93,7 @@ PEM 检查仅将字节按损失式 UTF-8 转换并查找 `-----BEGIN `。它能�
 - Go 的底层 TLS 配置支持真实证书校验行为与客户端证书轮换闭包；本文件没有协议版本、主机名/CN 校验、根池或轮换。
 - Go `ToTiKVSecurityConfig` 同样只传路径并把 CN 留空，源码已有“不支持传内容”和 CN FIXME；Rust忠实保留这个限制。
 
-因此 Rust 当前主要对齐配置选择和调用接口，不是 Go 网络安全能力的等价实现。扩展时不能仅凭测试中的 `Secure=true` 或 PEM 标记断言端到端 TLS 已生效。
+因此 Rust 当前主要对齐配置选择和调用接口，不是 Go 网络安全能力的等价实现。
 
 ## 扩展指南
 
@@ -108,13 +104,3 @@ PEM 检查仅将字节按损失式 UTF-8 转换并查找 `-----BEGIN `。它能�
 若只扩展投影类型，应同步维护 `ToPDSecurityOption`、`ToTiKVSecurityConfig` 及其消费者，尤其注意路径与内存材料并非等价：TiKV 当前会丢失内存证书，PD 则两者都保留。新增 CN、server name 或 verify 模式时，必须定义默认值并与 Go 文件及 Go 测试对齐。
 
 任何行为修复都应先在 `security_test.rs` 添加会失败的回归测试，再修改 `security.rs`；Rust 源与测试继续分文件。若引入外部 Rust 依赖，按仓库规则在独立上游仓库移植、提交、打 tag，并让所有 Cargo manifest 使用同一已发布 tag，不能加入本地 `[patch]` 或 vendor 副本。
-
-## 验证依据
-
-- 计划与范围：只读检查 `.plans/2026-10-07-rust-全架构逐文件解析/plan.md` 和任务 1454；任务无前置依赖，限定输出即本文档。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/lightning/common` 确认源、Go 对照与两套独立测试均被索引；`query` 精确定位 `security.rs::NewTLS`、`NewTLSFromMockServer`、`WithHost`、`GetJSON`、两种 `ToGRPCDialOption` 及转换方法。`explore`、文件 `node` 与精确 ID callers/callees 未返回正文，故调用关系使用精确源码检索复核，并明确记录该图查询限制。
-- Rust 源与 crate 边界：`pkg/lightning/common/security.rs`、`pkg/lightning/common/lib.rs`、`pkg/lightning/common/Cargo.toml`、`pkg/lightning/common/errors.rs`、`pkg/lightning/common/pause.rs`、`pkg/lightning/common/util.rs`。
-- 调用排歧：读取 `lightning/pkg/server/lightning.rs`、`lightning/pkg/server/stubs.rs`、`lightning/cmd/tidb-lightning-ctl/stubs.rs` 与 `main.rs`，确认其中同名 `common::NewTLS`/`WrapListener` 来自 server 本地 stub，不属于目标文件；目标 API 当前只确认被 `pkg/lightning/common/security_test.rs` 直接调用。
-- Go 对照：`pkg/lightning/common/security.go` 和其下游 `pkg/util/security.go::NewTLSConfig`；它们证明 Go 侧真实 TLS config、HTTP client、gRPC credentials 与 listener 包装行为。
-- 独立测试：`pkg/lightning/common/security_test.rs` 覆盖 HTTP/HTTPS mock GET、scheme 重建、非法 PEM、CA 路径优先和不完整 key pair；`pkg/lightning/common/security_test.go` 覆盖对应的 Go 基线场景。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付检查使用任务指定的 11 章节结构命令、文档链接/事实复核与 diff 自审；仓库指令所称 `.agents/skills/tidb-verify-profile` 在当前工作树不存在，因此无法加载其 Ready 命令集合。

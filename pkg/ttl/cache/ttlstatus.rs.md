@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ttl-cache` crate（见 `pkg/ttl/cache/Cargo.toml`），由 `pkg/ttl/cache/lib.rs` 以 `pub mod ttlstatus` 导出。它对应 Go 文件 `pkg/ttl/cache/ttlstatus.go`，负责描述并读取系统表 `mysql.tidb_ttl_table_status` 中每个物理表的 TTL 作业状态。
-
-从完整应用的设计位置看，这份状态位于 TTL 调度器与系统表之间：调度器需要知道某个物理表上一次作业以及当前作业的所有者、心跳、过期时间和状态，才能决定是否创建、接管或清理作业。Go 生产链已经在 `pkg/ttl/ttlworker/job_manager.go` 和 `pkg/ttl/ttlworker/timer_sync.go` 使用这些 API；仓库搜索未发现 Rust 生产文件调用本文件的公开函数或实现 `StatusSession`，目前 Rust 侧的直接消费者只有 `pkg/ttl/cache/ttlstatus_test.rs`。因此本文件是已实现并有单元测试的移植模块，但尚不能据此声称 Rust TTL 调度主链已经接通。
+对应 Go 文件 `pkg/ttl/cache/ttlstatus.go`，负责描述并读取系统表 `mysql.tidb_ttl_table_status` 中每个物理表的 TTL 作业状态。
 
 ## 核心职责
 
@@ -86,13 +84,10 @@ Go 对照链提供应用位置证据：`NewJobManager` 创建 `tableStatusCache`
 
 ## 与 Go 版本的对应关系
 
-Rust 基本保持了 Go 的 SQL 列序、六个状态常量、`TableStatus` 字段、按表 ID 查询、全量 map 替换、空结果清空以及状态空串回退 `waiting` 的行为。`pkg/ttl/cache/ttlstatus_test.rs` 对应 Go `TestTTLStatusCache`，验证 17 列映射、刷新后的新增/删除同步和状态字符串兼容语义。
-
 仍存在明确的移植差异：
 
 - Go `TableStatusCache` 嵌入 `baseCache` 并保存 `map[int64]*TableStatus`；Rust 组合私有 `baseCache`，保存拥有值的 `HashMap<i64, TableStatus>`。
 - Go `Update(context.Context, session.Session)` 支持取消/截止时间并由真实 session 提供时区；Rust `Update(&dyn StatusSession)` 没有 context、参数绑定或时区入口。
-- Go 时间列通过 `chunk.Row.GetTime(...).GoTime(location)` 转换为 `time.Time`，转换可失败；Rust 直接保存 `i64`，不存在等价时区解析错误。
 - Go 对每列先判断 `IsNull`；Rust 辅助函数对 NULL、缺失和错误类型统一给零值，但先用总列数校验避免缺列被完全吞掉。
 - Go 缓存已接入 `ttlworker.JobManager`，Rust 缓存在本仓库中尚无生产接线与 `StatusSession` 生产实现。
 - Go 的缓存更新时间使用 `time.Now()`；Rust 通过 `baseCache::MarkUpdated()` 保存 `Instant::now()`，都只在成功刷新后更新，但具体时间类型不同。
@@ -110,14 +105,3 @@ Rust 基本保持了 Go 的 SQL 列序、六个状态常量、`TableStatus` 字�
 若要强化解码错误，应优先在 `RowToTableStatus` 或类型化的 `Datum` 提取器处实现，并增加独立回归测试。兼容风险是原先静默零值的数据可能开始使整次刷新失败；性能风险主要来自全表读取和每次全量分配，优化为增量更新前必须保留“失败不暴露半更新”和“删除行能从缓存消失”两项不变量。
 
 测试逻辑必须继续放在独立的 `ttlstatus_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-- Rust 源与模块：`pkg/ttl/cache/ttlstatus.rs`、`pkg/ttl/cache/lib.rs`、`pkg/ttl/cache/base.rs`、`pkg/ttl/cache/task.rs`。
-- crate 边界：`pkg/ttl/cache/Cargo.toml`，确认 crate 名、`lib.rs` 入口、Go 对照元数据和目标条件依赖。
-- Rust 独立测试：`pkg/ttl/cache/ttlstatus_test.rs`，覆盖逐列映射，NULL/空串/未知 job 状态，短行错误，以及刷新新增和删除同步。
-- Go 对照与测试：`pkg/ttl/cache/ttlstatus.go`、`pkg/ttl/cache/base.go`、`pkg/ttl/cache/ttlstatus_test.go`。
-- Go 生产接线：`pkg/ttl/ttlworker/job_manager.go` 中的缓存创建、周期刷新、所有者检查、超时接管候选与 `FOR UPDATE NOWAIT` 单表读取；`pkg/ttl/ttlworker/timer_sync.go` 中的单表状态读取。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/ttl/cache/ttlstatus.rs` 返回完整 143 行与文件使用关系；`query` 定位 `TableStatusCache`、`NewTableStatusCache`、`RowToTableStatus`、`SelectFromTTLTableStatusWithID`；`callees NewTableStatusCache` 确认 `newBaseCache` 与结构实例化；`callees RowToTableStatus` 确认 `JobStatusWaiting` 引用与 `TableStatus` 实例化；相应 `callers` 无输出。由于 `Update` 名称高度重载，其全仓 callees 结果被视为歧义证据而未用于行为结论。
-- 补充文本搜索：在 `pkg/**/*.rs` 中搜索公开符号，只发现目标文件及 `pkg/ttl/cache/ttlstatus_test.rs` 的直接 Rust 使用；在 Go 侧搜索定位到上述 ttlworker 生产链与测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求目标文档恰有本文所列 11 个固定二级标题。

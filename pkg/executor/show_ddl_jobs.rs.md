@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor` crate，crate 根由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/lib.rs` 通过 `pub mod show_ddl_jobs;` 公开模块，并仅在测试构建中用 `#[path = "show_ddl_jobs_test.rs"]` 挂载独立测试。它承载 Go 文件 `pkg/executor/show_ddl_jobs.go` 中 `ADMIN SHOW DDL JOBS` 执行器的数据模型、分页检索和结果行/Comments 编码的 Rust 迁移。
-
-当前生产接线状态必须与算法实现分开理解：仓库内 Rust 搜索只在本文件发现 `ShowDDLJobsBackend`、`DDLJobRetriever` 和 `ShowDDLJobsExec`，没有任何生产后端实现或执行器构造调用；Rust 独立测试也只直接覆盖 `showCommentsFromJob` 与 `showCommentsFromSubjob`。相对地，Go 版本在 `pkg/executor/builder.go` 构造 `ShowDDLJobsExec`。因此本文件目前提供公开、可实例化的抽象实现，但不能据现有证据声称已经进入 Rust SQL 执行主链。
+当前生产接线状态必须与算法实现分开理解：仓库内 Rust 搜索只在本文件发现 `ShowDDLJobsBackend`、`DDLJobRetriever` 和 `ShowDDLJobsExec`，没有任何生产后端实现或执行器构造调用；Rust 独立测试也只直接覆盖 `showCommentsFromJob` 与 `showCommentsFromSubjob`。
 
 ## 核心职责
 
@@ -93,9 +91,7 @@ RustCodeGraph 对精确 Rust 定义给出的关键下游边包括：
 
 主要一一对应关系为：Go `ShowDDLJobsExec` ↔ Rust `ShowDDLJobsExec<B>`，Go `DDLJobRetriever` ↔ Rust 泛型 retriever，Go `model.Job`/`DDLReorgMeta`/`SubJob` ↔ Rust 本地展示模型，Go `chunk.Chunk` ↔ `ShowDDLChunk`，Go session/Meta/InfoSchema 调用 ↔ `ShowDDLJobsBackend`。
 
-已经由独立 Rust 测试对齐的语义包括：RU 的 next-gen + RU v2 + synced + 正值门槛和两位小数；analyze 标签；txn/txn-merge/ingest、DXF、cloud 标签；非默认线程数、batch size、写速率、service scope、最大节点数；next-gen 下 add-index 父作业只保留 analyze/RU、子作业 Comments 为空。对应证据是 `pkg/executor/show_ddl_jobs_test.rs` 与 Go 的 `pkg/executor/show_ddl_jobs_test.go`，Go 集成覆盖还见 `pkg/executor/test/admintest/show_ddl_jobs_test.go`。
-
-仍未完全对齐或未验证的点：
+已经由独立 Rust 测试对齐的语义包括：RU 的 next-gen + RU v2 + synced + 正值门槛和两位小数；analyze 标签；txn/txn-merge/ingest、DXF、cloud 标签；非默认线程数、batch size、写速率、service scope、最大节点数；next-gen 下 add-index 父作业只保留 analyze/RU、子作业 Comments 为空。
 
 - Go 已在 `builder.go` 生产接线并实现 `exec.Executor`，Rust 未发现 backend 实现、builder 构造或统一 Executor trait 实现。
 - Go `ddlJobRUEnabled` 从 Domain/内核模式取得开关；Rust 要求 backend 直接提供完整 `DDLRuntimeConfig`。
@@ -114,13 +110,3 @@ RustCodeGraph 对精确 Rust 定义给出的关键下游边包括：
 - 修改资源生命周期时，应测试 `open_base`、获取 session、建事务、取 transaction、初始化各阶段失败后的关闭/释放次数，以及重复 `Close`。若加入自动清理，需避免与显式 `Close` 双重释放。
 - 若实现 `timestamp_to_time` 或权限适配器，必须分别复刻 Go 的 FSP/时区规则和 `AllPrivMask` 语义，并通过端到端结果测试，而不能只以 trait 可编译作为完成证据。
 - 性能方面，保留运行中列表批量写出、历史迭代器按需拉取和 `cacheJobs` 容量复用；不要为每个历史作业重新开启事务或全量加载历史表。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/show_ddl_jobs.rs`（604 行），核对了全部结构体、枚举、trait、impl、函数和实际分支；文件无 `cfg` 条件编译项。
-- crate/模块：`pkg/executor/Cargo.toml` 的 package、lib、`nextgen` feature 与 porting 元数据；`pkg/executor/lib.rs` 的公开模块声明和独立测试挂载。
-- Rust 测试：`pkg/executor/show_ddl_jobs_test.rs` 的 4 个测试，覆盖 RU、父作业标签矩阵、analyze/next-gen 和子作业 DXF/cloud。
-- Go 对照：`pkg/executor/show_ddl_jobs.go` 的 `Open`/`Next`/`Close`、`initial`、`appendJobToChunk` 及 Comments/时间/名称辅助；`pkg/executor/builder.go` 的两个构造位置；`pkg/executor/show_ddl_jobs_test.go` 的 3 个测试；`pkg/executor/test/admintest/show_ddl_jobs_test.go` 的 next-gen RU 集成测试。
-- RustCodeGraph：索引状态为 11,467 files / 307,296 nodes / 1,848,419 edges；使用 `node --file pkg/executor/show_ddl_jobs.rs` 读取 1..604 行，并查询了 `ShowDDLJobsExec`、`DDLJobRetriever`、`showCommentsFromJob`、`showCommentsFromSubjob`、`appendJobToChunk`、`initial`、`appendCommonJobColumns` 的节点和 callers/callees。通用 `Open`/`Next`/`Close` 因全仓同名符号过多无法可靠消歧，所以生命周期调用关系以精确文件节点为依据，并明确没有把噪声图边当成事实。
-- 接线搜索：全仓 `*.rs` 对 `ShowDDLJobsExec|ShowDDLJobsBackend|DDLJobRetriever|showCommentsFromJob|showCommentsFromSubjob` 的扫描仅命中本源文件和独立测试；Go 搜索命中 `pkg/executor/builder.go` 与本 Go 对照文件。
-- 结构验收使用任务指定命令，要求目标存在且恰有本页 11 个固定二级标题；本任务按计划不运行 Cargo。

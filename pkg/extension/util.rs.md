@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/extension/util.rs` 是 `astersql-extension` crate 的通用边界层。`pkg/extension/lib.rs` 以 `pub mod util` 声明它，再通过 `pub use util::*` 将其符号从 crate 根导出。文件本身只直接使用标准库 `std::fmt`；`pkg/extension/Cargo.toml` 没有为它引入专用外部依赖，但其公开类型被同 crate 的认证、函数、Manifest、注册表和会话接口共享。
-
-该文件不负责扩展的发现或调用，而是提供三项跨模块协议：统一字符串错误 `ExtensionError`、可查询取消状态的 `ExtensionContext`、可组合的一次性清理回调 `ClearFunc`。`clearFuncBuilder` 则是 Manifest 资源注册和全局 registry 组装两层共用的回滚/关闭顺序器。
+`ExtensionContext` 定义扩展执行环境的最小取消查询协议；默认实现返回 `false`，容许不关心取消的上下文仅声明实现 trait。
 
 ## 核心职责
 
@@ -69,11 +67,9 @@ RustCodeGraph 已索引目标文件的 9 个符号，并把其标记为被 8 个
 
 ## 与 Go 版本的对应关系
 
-`pkg/extension/util.go` 的 `clearFuncBuilder` 是 Rust 构建器的直接语义基准。Go `DoWithCollectClear` 也是先调用函数，错误则直接返回，非 `nil` 清理函数才 append；Go `Build` 也是从切片首到尾执行。Rust 用 `Result<Option<ClearFunc>, ExtensionError>` 表达 Go 的 `(func(), error)`，用 `Option` 取代 `nil`，并用 `FnOnce` 和所有权强化单次执行。
+Rust 用 `Result<Option<ClearFunc>, ExtensionError>` 表达 Go 的 `(func(), error)`，用 `Option` 取代 `nil`，并用 `FnOnce` 和所有权强化单次执行。
 
-Go `pkg/extension/manifest.go::newManifestWithSetup` 和 `registry.go::doSetup` 也在错误分支执行 `clearBuilder.Build()()`，在成功分支保存组合回调。`pkg/extension/registry_test.go::TestRegisterExtensionWithClose` 验证 Reset 调用 close 一次以及后续工厂错误会自动清理早先扩展；Rust `registry_test.rs` 保留了同样的回归意图。
-
-`ExtensionError`、`ExtensionContext` 和显式的 `ClearFunc` 别名不存在于 Go `util.go` 中，是 Rust 为静态 trait/trait-object 边界增加的表示。它们不应被描述成 Go 同文件中有完全同型实现；可对照的是其使用处的普通 `error`、`context.Context` 和 `func()` 契约。
+`ExtensionError`、`ExtensionContext` 和显式的 `ClearFunc` 别名不存在于 Go `util.go` 中，是 Rust 为静态 trait/trait-object 边界增加的表示。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ Go `pkg/extension/manifest.go::newManifestWithSetup` 和 `registry.go::doSetup` 
 修改 `ExtensionError` 时应保持现有 `Display` 文案，并检查 `auth.rs`、`function.rs`、`manifest.rs`、`registry.rs`、`session.rs` 以及 `pkg/expression/extension.rs` 的所有 `Result` 边界。修改 `ExtensionContext` 时要同步其子 trait 和两个已知具体实现，并明确默认取消语义是否仍安全。
 
 回归测试应继续放在独立文件，不嵌入 `util.rs`：直接收集顺序可扩展 `pkg/extension/auth_1_aster_unit_test.rs::clear_builder_runs_in_go_collection_order`；Manifest 内部资源顺序与局部回滚应扩展 `manifest_test.rs`；多扩展失败与 Reset 应扩展 `registry_test.rs`。若语义源自 Go，还应对照 `util.go`、`manifest.go`、`registry.go` 及 `registry_test.go`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/extension` 确认 `util.rs`、Go 对照和独立测试均在索引中。
-- RustCodeGraph 源码证据：`node --file pkg/extension/util.rs` 读取完整 81 行和 9 个符号；另读取 `manifest.rs::newManifestWithSetup`、`registry.rs::registry::doSetup` 及 `auth_1_aster_unit_test.rs::clear_builder_runs_in_go_collection_order`。`query` 确认 Rust/Go 两个 `DoWithCollectClear` 定义以及 `ExtensionError` 在 extension/expression 边界的使用者。
-- RustCodeGraph 对常见方法名的 `callers/callees` 未返回可用结果；按技能的回退规则，用 `rg` 限定搜索 `pkg/extension/**/*.rs`、`pkg/expression/extension.rs` 和 Go 对照，核实了构建器、错误和上下文的直接定义/调用边。
-- crate 与 Go 对照：`pkg/extension/Cargo.toml`、`pkg/extension/lib.rs`、`pkg/extension/util.go`、`pkg/extension/manifest.go`、`pkg/extension/registry.go`。
-- Rust 测试证据：`pkg/extension/auth_1_aster_unit_test.rs::clear_builder_runs_in_go_collection_order`；`manifest_test.rs::manifest_options_register_resources_and_clear_in_go_order`、`setup_error_rolls_back_only_resources_registered_before_the_error`、`invalid_system_variables_match_go_errors_and_rollback_prior_setup`；`registry_test.rs::registry_reset_runs_close_once` 和 `registry_setup_failure_rolls_back_initialized_extensions`。Go 回归基准是 `pkg/extension/registry_test.go::TestRegisterExtensionWithClose`。
-- 人工复核结论：文档已说明该文件的存在原因、FIFO 收集/组合流程、错误与 panic 边界、两级资源生命周期以及安全扩展所需同步的独立测试。本任务为纯文档分析，按计划不运行 Cargo；最终验收使用固定十一章结构检查。

@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的私有 `runtime::modify_column_dist_backfill` 模块；装配点是 `pkg/session/runtime.rs` 的 `mod modify_column_dist_backfill;`，crate 边界与依赖由 `pkg/session/Cargo.toml` 定义。它是会话运行时与 DXF（distributed execution framework）之间的持久化适配层：DDL owner 侧把 `MODIFY COLUMN` 所需的索引重建或临时索引合并提交为全局 task，executor 节点把持久化 subtask 转回本仓库的扫描、pipeline、云排序/导入和 merge 原语。
-
-应用主链的直接入口在 `pkg/session/runtime/system_session.rs`：`ingest_modified_indexes` 在 `Job.reorg_meta.IsDistReorg` 时以 `merging = false` 调用 `run`，`merge_modified_indexes` 以 `merging = true` 调用同一入口；非分布式路径不经过本文件。后台节点由 `NodeService::start` 创建，跨 keyspace runtime 则由 `session_factory.rs` 调用 `register_target_runtime` 注册。该文件不创建 DDL job，也不推进 column schema state；它只执行既有 DDL job 的分布式 backfill 阶段。
-
-文件通过 `#[path]` 私有装入 `modify_column_cloud_executor.rs` 为 `cloud`、装入 `modify_column_cloud_planner.rs` 为 `cloud_planner`。除测试辅助项外，对父模块可见的 API 是 `run`、`register_target_runtime`、`TaskRuntimeBinding`、`NodeService`、`ReadIndex`、`ImportControl`；`ConcreteSession::ImportNodeTaskTable` 是 crate 公共 session 方法。文件没有 feature 条件分支，只有 `#[cfg(test)]` 的观测辅助函数。
+`TaskTable` 将 DXF executor 的 task/subtask 表接口转发到 SQL-backed `storage::TaskManager`，并负责 task/subtask 状态类型转换、checkpoint/summary 持久化和 runtime 获取。
 
 ## 核心职责
 
@@ -111,18 +107,10 @@ RustCodeGraph `query` 精确定位了 `ReadIndex`、`NodeService`、`TaskRuntime
 
 ## 与 Go 版本的对应关系
 
-主要 Go 对照是 `pkg/ddl/backfilling_dist_executor.go`、`backfilling_dist_scheduler.go`、`backfilling_read_index.go`、`backfilling_merge_temp.go` 和 `index.go`：
-
-- Rust `TaskMeta`/`SubtaskMeta` 对应 Go `BackfillTaskMeta`/`BackfillSubTaskMeta`，`Extension::GetStepExecutor` 对应 `backfillDistExecutor.GetStepExecutor/newBackfillStepExecutor`，四个 step 的分派相同。
-- `Planner::ranges/on_next_subtasks_batch/next_step/modify_meta` 对应 Go `LitBackfillScheduler` 的读索引/临时索引计划、`OnNextSubtasksBatch`、`GetNextStep`、`ModifyMeta`。本地一步、云三步、merge 一步的状态推进保持一致。
-- `ReadIndex::TaskMetaModified` 对应 Go `readIndexStepExecutor.TaskMetaModified`：batch size 总是可改，最大写速率只在 local sort 更新；`ResourceModified` 都要求活跃 pipeline 并调整读写 worker。
-- `run` 的 task key、任务复用、并发调整、`PauseOnKVDiskFull`、云 URI要求和最终 `GetSubtaskRowCount(BackfillStepReadIndex)` 对应 Go `index.go` 的 task 提交/等待与 `updateDistTaskRowCount` 意图。
 - merge 路径对应 Go `mergeTempIndexExecutor.RunSubtask`，但 Rust 将每批事务和 durable checkpoint 放在本文件，实际临时索引回放复用 `modify_column_backfill::merge`；不能据此推断 Go executor 的 metrics、collector、表/index 初始化细节都已移植。
 - Node/runtime 绑定是 Rust session 架构的局部接线；Go 使用 DDL 对象、session pool、task runtime Store 和全局 `InitDistTaskLoop`，没有与 Rust `Weak<Domain>` registry 完全同形的类型。
 
-当前可见差异必须保留为差异而非已支持能力：Go executor 会重新解析 user table/index info、附加 profiling/diagnosis、拥有更丰富的 metrics 与通用 retry 分类；Rust `Extension` 主要依赖 Job、Domain 和 index ID，并以文本做有限重试判断。Go scheduler 的 retryable 判断排除特定“数据文件过多”错误，Rust委托 `LitBackfillScheduler::is_retryable_scheduler_message`；两者只有该辅助函数覆盖的消息语义可视为对齐。Go cloud/local pipeline 还有 backend context、分布式锁和更完整的 cleanup/summary 接口，Rust 的对应实现分散在 pipeline、cloud executor 与 import control 中。
-
-相关 Go 测试包括 `pkg/ddl/backfilling_dist_scheduler_test.go` 的 local/global plan、region scan error、next step 和 task meta version，以及 `pkg/ddl/index_nokit_test.go` 的动态 task 参数。它们是迁移语义证据，不等于 Rust 测试已经覆盖同一组合。
+当前可见差异必须保留为差异而非已支持能力：Go executor 会重新解析 user table/index info、附加 profiling/diagnosis、拥有更丰富的 metrics 与通用 retry 分类；Rust `Extension` 主要依赖 Job、Domain 和 index ID，并以文本做有限重试判断。Go scheduler 的 retryable 判断排除特定“数据文件过多”错误，Rust委托 `LitBackfillScheduler::is_retryable_scheduler_message`；两者只有该辅助函数覆盖的消息语义可视为对齐。
 
 ## 扩展指南
 
@@ -133,13 +121,3 @@ RustCodeGraph `query` 精确定位了 `ReadIndex`、`NodeService`、`TaskRuntime
 - 修改 NextGen keyspace 路由时，保持 SYSTEM task manager、目标 Store/Domain、runtime handle 三者一致；同步扩展 `masking_policy_dxf_foreign_runtime_checks_store_and_releases_holders` 与 NextGen SYSTEM 执行测试，覆盖错误 keyspace、release 幂等和 manager close。
 - 修改 scheduler 生命周期时建议为 slot reservation 引入显式 RAII guard，并验证所有 init/schedule/balance/error 返回路径释放 reservation；同时保持 NodeService stop 能中断同步 loop。
 - 修改云路径时同步阅读 `modify_column_cloud_{planner,executor,meta,store}.rs` 和各自独立测试，验证外部 meta 仅在成功后发布、取消能传播、索引组长度与内存除数有效。正确性风险集中在错误 checkpoint/范围与跨 keyspace 路由；兼容风险集中在 Go JSON/历史 task；性能风险集中在 region 数、SQL checkpoint 频率、worker 数和对象存储中间数据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用（11,467 files、307,296 nodes、1,848,419 edges）；`query ReadIndex --kind struct`、`query NodeService --kind struct`、`query TaskRuntimeBinding --kind struct`、`query register_target_runtime --kind function` 精确定位主要符号；`node --file pkg/session/runtime/modify_column_dist_backfill.rs --offset 958 --limit 225` 核对 `run` 的 task/scheduler/row-count 主链。精确 `callers/callees` 查询未返回输出，调用边因此由源码引用搜索补证。
-- 目标源与装配：`pkg/session/runtime/modify_column_dist_backfill.rs`、`pkg/session/runtime.rs`、`pkg/session/Cargo.toml`；`pkg/session` 下没有 `doc.go`。
-- Rust 直接接线：`pkg/session/runtime/system_session.rs`、`pkg/session/runtime/session_factory.rs`、`modify_column_pipeline.rs`、`modify_column_backfill.rs`、`modify_column_cloud_planner.rs`、`modify_column_cloud_executor.rs`、`modify_column_cloud_meta.rs`、`modify_column_cloud_store.rs`。
-- 独立 Rust 测试：`pkg/session/runtime/import_sst_test.rs::read_index_task_meta_updates_live_physical_import_limiter` 验证在途 import 观察限速更新，`read_index_cancel_stops_existing_physical_write_limiter` 验证取消唤醒真实 limiter；`pkg/session/runtime/normal_ddl_masking_policy_test.rs` 覆盖真实 pipeline 资源缩容、`TaskRuntimeBinding` 的 Store/keyspace/holder/release/close，以及 NextGen SYSTEM executor 运行用户 keyspace MODIFY。
-- Go 对照：`pkg/ddl/backfilling_dist_executor.go`、`backfilling_dist_scheduler.go`、`backfilling_read_index.go`、`backfilling_merge_temp.go`、`index.go`；Go 测试为 `backfilling_dist_scheduler_test.go` 和 `index_nokit_test.go` 中的计划、步骤、版本和动态参数用例。
-- 人工事实复核：本文区分了 owner 调度、executor 执行、云后续步骤、临时索引 merge 和跨 keyspace runtime；未把 RustCodeGraph 的空调用边、Go 独有 metrics/cleanup 或未在本文件消费的 `SubtaskMeta.ts` 描述为已验证支持。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付验证只执行固定 11 章节结构检查、Markdown 源文件链接检查和目标 diff 范围检查。

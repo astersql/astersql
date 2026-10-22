@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`fts_runtime.rs` 属于 `astersql-session` crate，由 `pkg/session/lib.rs` 以公开模块 `pub mod fts_runtime` 挂载。它是一个面向全文检索（FTS）的轻量、内存态会话切片：用真实 parser AST、DDL 元数据构建、planner FTS 规划/解析器和 KV 事务 mem-buffer 把 Go 主链上的关键 FTS 语义连在一起。它不是 `pkg/session/session.rs` 中完整 SQL Session 的替代品：只支持文件内 `execute` 明确分派的少量 DDL、事务、INSERT 和 FTS SELECT，直接使用者主要是独立测试 `pkg/session/fts_runtime_test.rs`。
-
-crate 边界由 `pkg/session/Cargo.toml` 确认：直接依赖 `astersql-parser`/`astersql-parser-ast`、`astersql-ddl`、`astersql-expression`、`astersql-planner-core`、`astersql-kv`、`astersql-meta-model`/`metabuild`、`astersql-tablecodec` 和 `astersql-config-deploymode`；`nextgen` feature 会传递给 deploy mode 与 kernel type crate。
+提供最小 PREPARE/EXECUTE/DEALLOCATE 生命周期，保存 SQL 但每次重建计划（`prepare`、`execute_prepared`、`deallocate`）。
 
 ## 核心职责
 
@@ -86,14 +84,7 @@ crate 边界由 `pkg/session/Cargo.toml` 确认：直接依赖 `astersql-parser`
 
 ## 与 Go 版本的对应关系
 
-仓库中没有 `pkg/session/fts_runtime.go`的逐文件对应物。Rust 文件是为可执行验证组合了多个 Go 子系统的聚焦适配层：
-
-- `pkg/expression/builtin_fts.go` 的 `ftsMatchWordFunctionClass.getFunction` 对应 `validate_fts_expression` 下调的 builtin 门禁：Starter only、against 必须是字符串常量、match 参数必须是列；Go 还会在 statement context 记录 FTS 使用，该轻量 runtime 无完整 session statement context。
-- `pkg/ddl/index.go` 的 `checkFullTextSupportedInStarter` 与 FULLTEXT 元数据构建语义由 Rust `BuildTableInfoWithStmt`/`BuildCanonicalFullTextIndex` 复用，而不在 session 文件内复制全部 DDL 逻辑。
-- `pkg/planner/core/fts_resolve_index.go` 中 Where/TopN/Projection/RejectRemaining 解析阶段对应 Rust `ResolveFullTextPlan`。
 - `pkg/planner/core/fts_resolve_index_test.go` 是直接的 Go 行为基准：`TestFTSRequiresStarterMode`、`TestTiFlashFTSMatchWordPushDown`、`TestTiFlashFTSMatchWordPreparedPlanCache` 和 `TestTiFlashFTSMatchWordDirtyTxn` 与 Rust 独立测试的四类场景对齐。Go 测试通过真实 TestKit/Domain/mock TiFlash 驱动完整主链；Rust 测试通过此 runtime 构造局部元数据和 KV 状态。
-
-因此，这里的“对齐”是关键行为与错误意图对齐，不是 Go Session 架构的逐类型完整移植。
 
 ## 扩展指南
 
@@ -103,11 +94,3 @@ crate 边界由 `pkg/session/Cargo.toml` 确认：直接依赖 `astersql-parser`
 - 修改 dirty 语义时，同时复核 `insert`的行键编码、`transaction_has_table_content` 和 `runtime/relational_scan.rs::transaction_has_table_prefix`，特别注意 pipelined transaction 当前返回 false 的边界。
 - 修改 prepared 行为时，保持 `FullTextPreparedCacheability` 与 `execute_prepared` 一致；“重建计划”与“`from_plan_cache` 报告值”是两个需要分别验证的合同。
 - 测试应继续放在独立的 `pkg/session/fts_runtime_test.rs`，不要内嵌到生产文件。涉及 Go 主链行为时还应同步检查 `pkg/planner/core/fts_resolve_index_test.go`。性能风险主要来自每次 prepared EXECUTE 的重新解析/规划以及每次 FTS 规划的 mem-buffer 前缀扫描；兼容风险集中在 Go/Rust 错误文本、resolver 顺序和部署模式门禁的偏移。
-
-## 验证依据
-
-- 生产源码：`pkg/session/fts_runtime.rs`（完整 465 行）；直接边界：`pkg/session/lib.rs`、`pkg/session/Cargo.toml`、`pkg/session/runtime/relational_scan.rs::transaction_has_table_prefix`。`pkg/session` 下无 `doc.go`，因此没有额外包级 Go 契约可读。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件；`files --filter pkg/session/fts_runtime.rs` 识别该文件的 22 个符号；`node --file ...` 读取文件全貌；`node FtsSessionRuntime` 定位结构与测试导入；`query/node BuildFullTextPlan`、`ResolveFullTextPlan`、`FullTextPreparedCacheability`、`transaction_has_table_prefix` 核对了调用边、resolver 顺序、FTS 不可缓存结论与 dirty 扫描。
-- Rust 独立测试：`pkg/session/fts_runtime_test.rs`，覆盖 Premium 门禁、Starter+TiFlash 下推与非法形状、prepared 不命中缓存、非常量参数、未提交写拒绝以及回滚后恢复。
-- Go 对照：`pkg/expression/builtin_fts.go`、`pkg/ddl/index.go`、`pkg/planner/core/fts_resolve_index.go`、`pkg/planner/core/fts_resolve_index_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文档存在且固定的 11 个二级标题各出现一次。

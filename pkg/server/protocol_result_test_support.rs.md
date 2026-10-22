@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server` crate 内部的测试辅助模块，不是生产请求路径的一部分。其父模块 `pkg/server/protocol_result.rs` 仅在 `cfg(test)` 下通过 `#[path = "protocol_result_test_support.rs"] mod test_support` 装入它，并将 `BoundaryProbe` 注入 `CanonicalResultSet` 与 `WorkerResults`。crate 根由 `pkg/server/Cargo.toml` 的 `[lib] path = "lib.rs"` 定义，`pkg/server/lib.rs` 再以私有 `mod protocol_result` 挂载父模块。
-
-它位于会话 worker 持有的 canonical result set 与 MySQL 协议写出逻辑之间的测试观测点：不替代真实行、列元数据、游标或关闭逻辑，只在真实 `ResultSet` 边界记录事件、延时或返回测试错误。文件自身的 `BoundaryProbe` 和其方法均受 `#[cfg(test)]` 保护，因此普通构建中不存在这些类型、字段和锁。
+`WorkerResults::set_fault` 提供一次新的故障场景配置，同时清空上一场景的匹配计数和事件；`WorkerResults::events` 返回事件快照，避免测试直接接触内部共享状态。
 
 ## 核心职责
 
@@ -69,11 +67,9 @@ RustCodeGraph 将目标文件识别为 5 个符号，并确认 `BoundaryProbe` �
 
 ## 与 Go 版本的对应关系
 
-Go 版本没有 `protocol_result_test_support.rs` 的逐文件对应物；这是 Rust 移植为验证真实 canonical result-set 边界而增加的测试设施。生产语义应对照 `pkg/server/conn.go`：`writeChunks` 循环调用 `rs.Next`，读完后调用 `rs.Finish`；`writeChunksWithFetchSize` 驱动游标迭代，并在响应耗时区间之外调用可选 `FetchNotifier.OnFetchReturned`。
+Go 版本没有 `protocol_result_test_support.rs` 的逐文件对应物；这是 Rust 移植为验证真实 canonical result-set 边界而增加的测试设施。
 
-`Next` 故障注入的 Go 先例是 `pkg/server/conn.go` 中的 `fetchNextErr` failpoint。`pkg/server/conn_test.go` 验证 first/second `Next` 对重试与已写出数据的影响；Rust 的 `BoundaryProbe` 用可配置的 `at` 提供同类覆盖，并在 `pkg/server/conn_stmt_test.rs::multichunk_next_failure_preserves_written_rows` 验证第二次失败仍保留首个真实 chunk。
-
-耗时语义对照 `pkg/server/conn_stmt_test.go::TestResultSetWriteSQLRespDurationIncludesFailedRowWrite` 以及 Go 写出函数中 `beginWriteSQLRespDuration` / `finishWriteSQLRespDuration` 的边界。Rust 回归 `next_and_finish_are_excluded_and_errors_preserved` 和 `cursor_iteration_is_timed_and_notification_excluded` 进一步用探针区分 `Next`/`Finish`/`FetchReturned` 时间是否计入协议写出耗时。这些是测试机制差异，不表示 Rust 生产协议新增了 Go 没有的故障功能。
+Rust 回归 `next_and_finish_are_excluded_and_errors_preserved` 和 `cursor_iteration_is_timed_and_notification_excluded` 进一步用探针区分 `Next`/`Finish`/`FetchReturned` 时间是否计入协议写出耗时。这些是测试机制差异，不表示 Rust 生产协议新增了 Go 没有的故障功能。
 
 ## 扩展指南
 
@@ -83,14 +79,3 @@ Go 版本没有 `protocol_result_test_support.rs` 的逐文件对应物；这是
 - 若引入异步执行，不应继续在互斥锁内使用 `thread::sleep`；需要选择与执行模型匹配的可控时钟或同步原语，并验证事件顺序与锁生命周期。
 - 相关 Rust 测试应继续放在独立的 `pkg/server/conn_stmt_test.rs`，符合源码与单元测试分离要求。至少覆盖：命中次数、错误传播、已有数据保留、`Finish`/`Close` 顺序、游标 `FetchReturned` 时间边界，以及配置复位清空事件。
 - 兼容风险主要是测试边界与 Go 协议写出时序漂移；性能风险只存在于测试构建和注入路径，普通构建因 `cfg(test)` 不包含探针。
-
-## 验证依据
-
-- 目标源码：`pkg/server/protocol_result_test_support.rs`，核对 `BoundaryProbe`、`before`、`WorkerResults::set_fault`、`WorkerResults::events` 的完整 51 行实现。
-- 父模块与真实调用边：`pkg/server/protocol_result.rs` 的测试模块装入、`CanonicalResultSet::{Next, Close, Finish, OnFetchReturned}`、`WorkerResults::{register, operate}`。
-- crate 与模块边界：`pkg/server/Cargo.toml` 的 package/lib/dependencies，`pkg/server/lib.rs` 的私有 `mod protocol_result`；`pkg/server` 下未发现 `doc.go`。
-- 测试请求桥接：`pkg/server/conn.rs` 的 `SessionContext` 测试方法，以及 `pkg/server/runtime.rs` 的 `SetResultFault`、`ResultEvents` 请求处理和具体方法实现。
-- Rust 独立回归：`pkg/server/conn_stmt_test.rs` 中 `next_and_finish_are_excluded_and_errors_preserved`、`cursor_iteration_is_timed_and_notification_excluded`、`cursor_iterator_error_is_accounted`、`multichunk_next_failure_preserves_written_rows`、`empty_results_and_successful_flush_are_accounted`。
-- Go 对照：`pkg/server/conn.go` 的 `writeResultSet`、`writeChunks`、`writeChunksWithFetchSize` 与 `fetchNextErr`；`pkg/server/conn_test.go` 的 first/second Next failpoint 回归；`pkg/server/conn_stmt_test.go::TestResultSetWriteSQLRespDurationIncludesFailedRowWrite`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；目标文件被识别为 1 个文件、5 个符号，`BoundaryProbe` 位于第 9 行并由 `protocol_result.rs` 导入。常见方法名图查询存在同名歧义，故测试 API 调用以 `rg` 的文件限定结果交叉验证。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务规定的 11 章节命令做结构验证，并人工复核上述事实均可回溯到列出的源码、测试或 Cargo 声明。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 内 `runtime` 模块的事务共享状态层，由 `pkg/session/runtime.rs` 以私有子模块 `mod transaction` 装配，并通过父模块的 `use super::*` 让同一运行时下的控制、DML、查询、DDL 和诊断代码共享其类型与注册表。它不负责解析 SQL、直接提交 KV 事务或实现完整的 Go `LazyTxn`；它集中定义这些流程共同依赖的进程内事务数据结构、全局注册表和小型状态操作函数。
-
-`pkg/session/Cargo.toml` 将该代码归入 `astersql-session`，并声明它直接使用到的 crate 边界，包括 `astersql-domain`、`astersql-kv`、`astersql-meta-model` 和 `astersql-config`。文件中的绝大多数接口为 `pub(super)`，可见范围刻意限制在 `runtime` 父模块，而不是 crate 的公共 API。
+保存按域覆盖的单条事务写入大小上限，并提供与 Go 默认值一致的 `DEFAULT_TXN_ENTRY_SIZE_LIMIT = 6 MiB`。
 
 ## 核心职责
 
@@ -96,8 +94,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件是对 Go 多处事务能力的集中式运行时实现，不存在同路径 `pkg/session/runtime/transaction.go`。最接近的 Go 证据分散如下：
-
 - `pkg/session/txn.go` 的 `LazyTxn` 维护底层 `kv.Transaction`、语句 staging、`TxnInfo` 和 `lastCommitTS`；Rust 的 `RuntimeSavepoint`、`RuntimeTxnInfo` 及提交状态承担其中一部分运行时语义，但 Rust 保存点以可见 KV 完整快照实现，并不是 Go `MemDBCheckpoint` 的直接类型移植。
 - `pkg/session/txninfo/txn_info.go` 定义 `TxnInfo` 以及 `TIDB_TRX` 列转换。Rust `RuntimeTxnInfo` 保留起始 TS、当前/全部 digest、运行状态、等待开始时间、缓冲区规模、会话与数据库等核心展示数据；Go 还包含状态变更时间、用户、相关表等更丰富信息，字段并非完全等价。
 - `pkg/config/config.go` 的 `DefTxnEntrySizeLimit` 是 `6 * 1024 * 1024`，与 Rust `DEFAULT_TXN_ENTRY_SIZE_LIMIT` 的 `6_291_456` 一致；`DefaultPessimisticTxn().DeadlockHistoryCapacity` 为 10，与 Rust 默认死锁事件容量一致。Rust 当前使用编译期常量 10，而不是直接读取该 Go 风格配置项。
@@ -118,12 +114,3 @@ Rust 文件是对 Go 多处事务能力的集中式运行时实现，不存在�
 - 更改事务条目默认限制或作用域推导时，同步核对 Go `pkg/config/config.go`、Rust 的全局/会话覆盖路径及 `kv::TxnScope` 设置，避免配置展示值和执行值分离。
 
 建议直接测试目标是 `pkg/session/runtime/transaction_test.rs`；跨流程回归应扩展相应的独立 `control`/正常 DDL/系统查询测试文件。当前直接测试只覆盖死锁历史容量及完整事件保留，其他关键不变量需要在相关运行时测试中补充时保持聚焦。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime/transaction.rs` 找到该文件及 30 个符号；`node --file ... --offset 1 --limit 400` 读取完整 271 行源码并报告 7 个使用文件；对 `runtime_lock_cycle`、`record_runtime_deadlock`、`remove_runtime_waiter`、`release_runtime_row_locks`、`runtime_txn_scope` 执行了 `query`，并用图结果确认目标符号和 `control.rs` 中的锁循环调用关系。图的 `callers` 对同名/限定名没有返回稳定的逐符号调用者，因此调用点再以精确源码搜索核验，未把空图结果解释成“无调用者”。
-- 生产源码：`pkg/session/runtime/transaction.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/control.rs`、`dml.rs`、`ddl.rs`、`dispatch.rs`、`session.rs`、`query.rs`、`scan_adapter_runtime.rs`、`typed_adapter_bridge.rs`、`system_query.rs`。
-- crate 边界：`pkg/session/Cargo.toml`，确认包名、库入口、`nextgen` feature 以及 Domain/KV/meta-model/config 等直接依赖；本文件没有条件编译生产项，只有 `#[cfg(test)]` 引入独立测试模块。
-- Rust 测试：`pkg/session/runtime/transaction_test.rs` 验证 11 次二边死锁写入后只保留 10 个完整事件、共 20 条边记录；相关适配器测试搜索到外键保存点与客户端死锁流程，但它们不是本文件每个辅助函数的直接单元覆盖。
-- Go 对照：`pkg/session/txn.go`、`pkg/session/txninfo/txn_info.go`、`pkg/config/config.go`，以及 `pkg/session/test/meta/session_test.go` 的保存点/TTL 行为证据。仓库不存在同路径 Go 文件，故文档明确采用职责级对照而非声称一一移植。
-- 人工复核：已核对公开范围、锁状态不变量、死锁事件裁剪、保存点恢复、RAII 清理、逻辑纪元与真实提交 TS 的区别，并避免把未见于源码的能力写成已支持。

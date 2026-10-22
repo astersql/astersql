@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现统计信息缓存的内存配额版本：以物理表 ID（`i64`）为键、`Arc<Table>` 为值，在主缓存中使用 Moka 的加权 TinyLFU 策略，并在 `keySetShard` 中维护包含已淘汰条目的二级集合。crate 入口 `pkg/statistics/handle/cache/internal/lfu/lib.rs` 将本模块整体重新导出；上层 `pkg/statistics/handle/cache/statscacheinner.rs::NewStatsCacheWithCapacity` 在 `quota == true` 时调用 `cache_lfu::NewLFU(capacity)`，再把实例装箱为 `StatsCacheInner`。
-
-crate 边界由同目录 `Cargo.toml` 给出：包名为 `astersql-statistics-handle-cache-internal-lfu`，直接依赖内部缓存 trait crate、缓存指标 crate、`statistics`、启用 `sync` feature 的 `moka 0.12` 以及读取系统内存的 `sysinfo 0.33`。本文件不是独立进程入口，而是统计信息缓存实现层。
+`SetCapacity`、`WaitForAsyncUpdates`、`Clear`、`Close` 管理容量变化、Moka 延迟维护队列和资源生命周期。
 
 ## 核心职责
 
@@ -101,11 +99,9 @@ Moka 的维护日志不是每次写入都同步执行：`WaitForAsyncUpdates` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为同目录 `lfu_cache.go`，Go 测试为 `lfu_cache_test.go`。两版都实现两级模型：主缓存负责有容量约束的完整表，`resultKeySet` 保存全部键；`Put` 先发布二级集合，`Get` 先查主缓存再回落；淘汰时复制表、丢弃不必要统计数据并以“壳表成本减完整表成本”更新账本；`Len`/`Values` 基于二级集合；容量 0 默认取系统内存 20%；并提供 `Copy`、`SetCapacity`、等待维护、清理和关闭语义。
-
 实现载体不同：Go 使用 Ristretto 及 `OnReject`、`OnEvict`、`OnExit` 回调，Rust 使用 Moka TinyLFU 的 removal listener。为弥合差异，Rust 对超容量单项显式执行拒绝路径，对频率平局增加“较大权重优先淘汰”的 victim 选择，并在驻留键替换时排空维护日志。Go 的 `triggerEvict` 会写入负随机键促使 Ristretto 工作；Rust 的 `triggerEvict` 只在超限时运行 Moka pending tasks。Rust `SetCapacity` 通过重建主缓存实现，Go 调用 `UpdateMaxCost`。
 
-另有可见差异：Go 在测试环境下把容量 0 固定为 5 MB，而 Rust `adjustMemCost` 没有测试环境分支；Go 的 `adjustMemCost` 对非零负值没有本文件的显式拒绝；Rust 自建 `LFUMetrics` 供测试读取。Rust 源码关于 `Copy` 的注释称“浅拷贝”，实际也确实通过 `Arc` 共享状态；这与接口文件把 trait `Copy` 泛称为“深拷贝”的注释不一致，扩展时应以当前实现和共享状态测试为准。
+另有可见差异：Go 在测试环境下把容量 0 固定为 5 MB，而 Rust `adjustMemCost` 没有测试环境分支；Go 的 `adjustMemCost` 对非零负值没有本文件的显式拒绝；Rust 自建 `LFUMetrics` 供测试读取。
 
 Rust 测试移植了 Go 的基本写读删、更新成本、超大项、长度、并发、拒绝、容量缩减与重复更新场景，并额外用 `shared_copy_and_close_are_idempotent` 固化共享复制和关闭行为。Go 测试中的等待/Eventually 反映 Ristretto 异步特性；Rust 相应断言主要依靠 `WaitForAsyncUpdates`。
 
@@ -120,13 +116,3 @@ Rust 测试移植了 Go 的基本写读删、更新成本、超大项、长度�
 - 指标扩展应同时更新实例级 `LFUMetrics` 与 `cache_metrics` 桥接，并留意可变静态指标句柄的初始化边界和 `unsafe` 范围。
 
 性能风险主要集中在 `Put` 超限时遍历并排序整个 Moka 缓存、频率表持续增长、`SetCapacity` 重建全部驻留项，以及频繁 `run_pending_tasks`；兼容性风险集中在与 Go/Ristretto 的准入、回调顺序和主缓存优先读取语义偏差。
-
-## 验证依据
-
-- 生产源码：`pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs`，核对了全部类型、函数、trait 实现、锁/原子状态、Moka 配置、成本交接和指标函数。
-- crate 与模块入口：`pkg/statistics/handle/cache/internal/lfu/Cargo.toml`、`pkg/statistics/handle/cache/internal/lfu/lib.rs`，核对包名、依赖、`sync` feature、公开重导出及独立测试接线。
-- 直接上游与接口：`pkg/statistics/handle/cache/statscacheinner.rs`、`pkg/statistics/handle/cache/internal/inner.rs`，核对 `NewStatsCacheWithCapacity` 的构造条件和 `StatsCacheInner` 调用边界。
-- Rust 独立测试：`pkg/statistics/handle/cache/internal/lfu/lfu_cache_test.rs`，核对基本操作、成本不变量、超容量保留、并发、壳表内容、容量调整、共享复制与关闭行为。
-- Go 对照：`pkg/statistics/handle/cache/internal/lfu/lfu_cache.go`、`pkg/statistics/handle/cache/internal/lfu/lfu_cache_test.go`，核对 Ristretto 回调、二级集合、成本账本、容量和测试意图。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件和 4415 个 Go 文件；`files --filter pkg/statistics/handle/cache/internal/lfu` 显示目标 Rust/Go 源与测试均已索引；`query LFU --kind struct`、`query NewLFU --kind function` 定位本文件核心类型和构造入口。跨 crate callers/callees 未返回足以单独证明接线的边，故相应结论使用上述入口源码直接验证。
-- 结构验证按任务文件的精确命令执行，要求目标文件存在且固定二级标题恰好为 11 个；本任务为纯文档分析，按要求未运行 Cargo。

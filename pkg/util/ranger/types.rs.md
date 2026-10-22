@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`types.rs` 是 `astersql-util-ranger` crate 的范围值模型和基础区间算法实现。crate 根 `pkg/util/ranger/lib.rs` 通过 `#[path = "types.rs"] mod types_impl` 加载本文件，再用 `pub use types_impl::*` 对外导出；因此调用方通常看到的是 `astersql_util_ranger::Range`、`Ranges` 和 `MutableRanges`，而不是私有模块名 `types_impl`。
-
-该文件处在 SQL 谓词到物理扫描边界之间：`points.rs`、`detacher.rs`、`ranger.rs` 负责产生和组合范围，本文件定义范围如何表示、比较、求交、识别点查/全扫描、格式化及编码成 KV 左闭右开边界。实际调用证据包括：`pkg/util/ranger/detacher.rs::getCNFItemRangeResult` 用 `Range::IsPoint` 评估 CNF 候选，`mergeTwoCNFRanges` 用 `Ranges::Subset`/`IntersectRanges` 合并候选；`pkg/planner/util/path.rs::OnlyPointRange` 判断访问路径能否按点查处理；`pkg/planner/core/operator/physicalop/physical_index_scan.rs::{IsFullScan,PlanCacheTP,IsPointGetByUniqueKey}` 判断扫描类型；`pkg/planner/cardinality/pseudo.rs::getPseudoRowCountByIndexRanges` 用 `PrefixEqualLen` 估算组合索引选择率。
-
-crate 边界由 `pkg/util/ranger/Cargo.toml` 确认：包名为 `astersql-util-ranger`，Go 对照包元数据为 `pkg/util/ranger`；本文件直接用到经 crate 根转出的 `expression` 能力（`codec`、`collate`、`errctx`、`errors`、`types`），以及 `astersql-kv`、`astersql-planner-planctx` 和子 crate `astersql-util-ranger-context`。本文件没有条件编译项；测试由 `lib.rs` 在 `cfg(test)` 下把独立的 `types_test.rs` 接入。
+处在 SQL 谓词到物理扫描边界之间：`points.rs`、`detacher.rs`、`ranger.rs` 负责产生和组合范围，本文件定义范围如何表示、比较、求交、识别点查/全扫描、格式化及编码成 KV 左闭右开边界。
 
 ## 核心职责
 
@@ -89,18 +85,15 @@ RustCodeGraph `status` 显示索引包含本文件并识别 56 个符号，文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/ranger/types.go`，Rust 的结构、方法命名、分支顺序和注释基本逐段对应：`MutableRanges`、`Ranges`、`Range`、点/全范围判断、格式化、编码、内存估算、边界补齐、字典序比较、子集和交集均有同名 Go 实现。`pkg/util/ranger/Cargo.toml` 的 `package.metadata.porting.go-package` 也明确指向该 Go 包。
-
 需要注意的语言映射差异：
 
 - Go `Ranges` 是 `[]*Range`，Rust 是 `Vec<Range>`；nil slice/nil pointer 分别用 `Option` 在少数 API 边界表达，集合内部不容纳 nil 元素。
 - Go 方法错误通常是 `error` 或 `(*Range,error)`；Rust 为贴近调用形态使用 `Option<GoError>` 及元组，而不是统一的 `Result`。
 - Go collator 接口值可直接比较；Rust `checkCollators` 比较动态对象的 `TypeId`，`Range::Clone` 通过 `Collator::Clone` 克隆 trait object。
-- Go `time.Location` 对应 `chrono_tz::Tz`，Go `kv.Key.PrefixNext` 对应 Rust `kv::Key(...).PrefixNext()`。
 - Go `unsafe.Sizeof(Range{})` 对应 Rust `size_of::<Range>()`；两者的数值均与各自 ABI 有关，测试只验证本实现内部公式，不要求跨语言字节数相等。
 - Rust `formatDatum` 为避免打印 Rust 枚举调试包装，显式提取浮点、bytes、string、ENUM、SET、JSON、binary literal/bit 的用户可见值；`types_test.rs::test_range_string_formats_mysql_named_values` 是 Rust 额外的格式兼容回归。
 
-测试对照为独立文件 `pkg/util/ranger/types_test.rs` 与 `pkg/util/ranger/types_test.go`。Rust 测试复现 Go 的点范围、全范围、内存公式和大量交集案例，并额外检查多列交集保留粒度/Collator 数量。当前 Rust 独立测试未直接覆盖 `Encode`、`Subset`、`PrefixEqualLen`、`Redact`、`Equal`、`MutableRanges` 的全部分支；这些不能仅凭已有测试声称完全验证。
+Rust 测试复现 Go 的点范围、全范围、内存公式和大量交集案例，并额外检查多列交集保留粒度/Collator 数量。当前 Rust 独立测试未直接覆盖 `Encode`、`Subset`、`PrefixEqualLen`、`Redact`、`Equal`、`MutableRanges` 的全部分支；这些不能仅凭已有测试声称完全验证。
 
 ## 扩展指南
 
@@ -111,12 +104,3 @@ RustCodeGraph `status` 显示索引包含本文件并识别 56 个符号，文�
 - 扩展 `MutableRanges` 时应保留对象安全，并评估是否需要为 trait 本身增加 `Send + Sync`；普通 `Ranges` 的空操作重建不能被误认为所有动态范围都无需上下文。若计划缓存要求可空语义，需要明确设计 `Option`，不能用空 `Vec` 偷换 nil。
 - 调整内存估算时同步审查 `EmptyRangeSize`、trait-object 槽位假设、Datum 容量和是否纳入 collator 本体；这会影响 ranger 配额及物理计划内存统计，存在性能和兼容性风险。
 - 任何字段新增都要检查所有直接结构字面量调用者、`Clone`、`Default`、`Equal`、`MemUsage` 和计划缓存快照代码。公开字段被 planner 广泛构造，变更影响面不止本 crate。
-
-## 验证依据
-
-- RustCodeGraph：运行 `rustcodegraph status`，索引包含 7,032 个 Rust 文件；`rustcodegraph files --filter pkg/util/ranger` 列出 `types.rs`、模块同伴及独立测试；`rustcodegraph node --file pkg/util/ranger/types.rs --offset 1 --limit 500` 与 `--offset 492 --limit 500` 阅读完整 885 行和 56 个符号，文件节点报告 28 个使用文件。
-- RustCodeGraph 符号查询：查询 `IntersectRange`、`HasFullRange`、`MutableRanges`、`IsPoint`，核对 Rust/Go 同名定义与签名；对精确符号执行 `callers/callees` 返回空结果，故未把它作为无调用者证据，而按技能的图未覆盖规则用精确源码调用检索补齐。
-- 直接读取的边界/对照文件：`pkg/util/ranger/Cargo.toml`、`pkg/util/ranger/lib.rs`、`pkg/util/ranger/types.go`、`pkg/util/ranger/types_test.rs`、`pkg/util/ranger/types_test.go`。`pkg/util/ranger` 及其上层 `pkg/util` 未发现适用的 `doc.go`。
-- 直接调用证据：RustCodeGraph 文件节点读取了 `pkg/util/ranger/detacher.rs`、`pkg/planner/util/path.rs`、`pkg/planner/core/operator/physicalop/physical_index_scan.rs`、`pkg/planner/cardinality/row_count_index.rs`、`pkg/planner/cardinality/pseudo.rs` 的相关区段；精确 `rg` 还核对了 ranger/planner 内的 `IsPoint`、`IsFullRange`、`Subset`、`IntersectRanges`、`PrefixEqualLen`、`MemUsage` 调用及 `Range`/`Ranges` 字段使用。
-- 行为测试证据（仅阅读，按任务要求未运行 Cargo）：`types_test.rs` 覆盖字符串/点范围、MySQL ENUM/SET 格式、普通及 unsigned full range、单个及列表内存估算、范围列表求交、空交集、子集、重叠和多列粒度；Go 测试提供相同主干语义对照。
-- 文档结构验证使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题。该任务只新增文档，不修改 Rust、Go、Cargo 或只读的总计划，也不执行 Cargo。

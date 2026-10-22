@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-sqlsvrapi-mock` crate，是 [`KSRuntimeHandle`](../server.rs) 的 Rust 测试替身。crate 入口 [`lib.rs`](lib.rs) 将本模块挂到 `domain::sqlsvrapi::mock` 兼容路径，并把依赖 crate 的 `kv`、`meta`、`util` 与 sqlsvrapi trait 再导出，因此宏中的路径与生产接口保持一致。
-
-它不是 keyspace runtime 的真实实现，也不负责获取、缓存或销毁 runtime；它只让测试为 `Runtime` 的三个调用和 `KSRuntimeHandle::Release` 配置返回值、参数匹配、调用次数及回调。真实接口契约定义在 [`server.rs`](../server.rs)，实际跨 keyspace 使用链可见 `pkg/dxf/framework/dxfutil/util.rs::AcquireTaskRuntime`。
+通过 `mockall::mock!` 生成公开类型 `MockKSRuntimeHandle`，并让同一个对象同时实现 `RuntimeTrait` 与 `KSRuntimeHandleTrait`。
 
 ## 核心职责
 
@@ -75,14 +73,13 @@ RustCodeGraph 能索引出 `NewMockKSRuntimeHandle`，但宏生成的 `MockKSRun
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`ksruntime_mock.go`](ksruntime_mock.go)，其来源注释表明它由 MockGen 针对 `KSRuntimeHandle` 生成。两版均覆盖 `Store`、`SysSessionPool`、`AlterTableMode` 和 `Release`，并保留 `NewMockKSRuntimeHandle`、`EXPECT`、`ISGOMOCK` 命名；Go commit `b38149d321` 增加 `Runtime::AlterTableMode` 时也同步再生成了该 Go mock，Rust 文件已包含同一方法。
+两版均覆盖 `Store`、`SysSessionPool`、`AlterTableMode` 和 `Release`，并保留 `NewMockKSRuntimeHandle`、`EXPECT`、`ISGOMOCK` 命名；Go commit `b38149d321` 增加 `Runtime::AlterTableMode` 时也同步再生成了该 Go mock，Rust 文件已包含同一方法。
 
 主要实现差异如下：
 
 - Go 使用 `gomock.Controller`、独立 `MockKSRuntimeHandleMockRecorder` 和反射调用；Rust 使用 mockall 宏内建的期望状态，没有独立 recorder 类型。
 - Go 构造器保存 controller；Rust 泛型 `_ctrl` 被忽略，真正构造由 `MockKSRuntimeHandle::new()` 完成。
 - Go `EXPECT()` 返回 recorder；Rust `EXPECT()` 返回 `&mut Self`，随后使用 `expect_*`，这是调用形态兼容而非 API 的逐字复刻。
-- Go `context.Context` 对应 Rust `CancellationToken` 别名；Go 接口值对应 Rust `Arc<dyn ...>`；Go `error` 对应 `Result<(), SqlSvrError>`。
 - GoMock 通常由 controller/测试结束检查期望；Rust 可用 `checkpoint()` 显式提前核对，相关迁移测试已经这样使用。
 
 ## 扩展指南
@@ -94,14 +91,3 @@ RustCodeGraph 能索引出 `NewMockKSRuntimeHandle`，但宏生成的 `MockKSRun
 测试必须放在独立文件，优先扩展 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 以覆盖方法的参数匹配、成功/错误返回和期望次数；若变化影响业务链，再同步 `pkg/dxf/framework/dxfutil/util_test.rs` 等调用方测试。至少覆盖：该方法能通过 `Arc<dyn KSRuntimeHandle>` 调用、继承的 `Runtime` 视图仍可用、`Release` 次数没有回归，以及错误原样传播。不要把单元测试嵌入本生产源文件。
 
 兼容风险主要是 trait object 不再可构造、Go/Rust mock 方法集合漂移和释放契约失真；性能风险很低，因为本文件仅供测试，但高频测试中的复杂谓词或加锁回调可能增加测试耗时或产生竞态，应保持确定性。
-
-## 验证依据
-
-- 目标源码：[`ksruntime_mock.rs`](ksruntime_mock.rs)，核对宏声明、两个 trait impl、四个方法签名及三个兼容入口。
-- 接口与类型契约：[`server.rs`](../server.rs)，核对 `Runtime: Send + Sync`、`KSRuntimeHandle: Runtime`、`Context`、`SqlSvrError` 及“Release 后不再使用”约束。
-- crate 装配：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)，核对直接依赖、模块注册、再导出路径和独立测试文件。
-- Rust 测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `keyspace_runtime_records_release_and_runtime_methods`、`server_records_arguments_and_returns_runtime_handle_owner_and_error`；`pkg/dxf/framework/dxfutil/util_test.rs::test_acquire_task_runtime` 的跨 keyspace 分支。
-- Go 对照：[`ksruntime_mock.go`](ksruntime_mock.go)、`server.go`，以及 `pkg/dxf/framework/dxfutil/util_test.go`、`pkg/dxf/framework/taskexecutor/manager_test.go`、`pkg/dxf/framework/scheduler/scheduler_manager_nokit_test.go` 的构造与释放期望。
-- RustCodeGraph：`status` 显示目标位于已索引的 11,467 个文件中；`files --filter pkg/domain/sqlsvrapi/mock` 返回目标 Rust/Go 文件与迁移测试；`query MockKSRuntimeHandle` 返回 Go mock 及调用方，`query NewMockKSRuntimeHandle --kind function` 同时定位 Go/Rust 构造器。`explore`、`node --file`、`callers/callees` 未返回宏展开关系，故使用上述源码和 `rg` 引用补证。
-- 历史差异：`git show b38149d321 -- pkg/domain/sqlsvrapi/server.go pkg/domain/sqlsvrapi/mock/ksruntime_mock.go` 证明 Go 接口增加 `AlterTableMode` 时同步扩充 mock。
-- 本任务是纯文档分析，未运行 Cargo；结构验收要求本文恰有规定的十一个二级章节。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-restore-snap-client`（见同目录 `Cargo.toml`），由 `lib.rs` 以 `pub mod pitr_collector` 装配并整体重导出。它位于快照恢复的 ingest 前后：`client.rs::SnapClient::InstallPiTRSupport` 创建收集器，在 importer 上注册 `pitrCollector::onBatchOwned` 作为 ingest 前回调，并注册 `pitrCollector::close` 作为关闭回调。其目的不是执行 SST ingest，而是把即将 ingest 的 SST 复制到日志备份存储，并生成以后 PiTR 可以识别的额外备份元数据。
-
-当前 Rust crate 的 `Cargo.toml` 明确说明使用本地 traits/stubs；本文件是 Go `pitr_collector.go` 的可运行语义移植，但尚不是 Go 生产接线的完整替代：`newPiTRColl` 直接转调测试友好的构造器，没有查询 etcd 日志备份任务，也没有创建真实对象存储；`prepareMig` 只把元数据路径写入进程内 `migration_paths`；元数据通过 `serde_json` 而非 Go 的 protobuf `Marshal` 写出。阅读和扩展时必须保留这条能力边界。
+`onBatchOwned` 为 `client.rs` 的实际回调入口：立即为 SST 和表 ID 映射启动线程，返回的闭包负责等待全部工作、传播首个错误并持久化批次元数据。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ Rust 版没有 Go 的后台 persister channel，也没有显式线程关闭句�
 
 ## 与 Go 版本的对应关系
 
-Rust 与 `pitr_collector.go` 保留的核心语义包括：默认并发 1024、路径布局、复制成功后登记文件、冲突改写拒绝、受限改写规则的前置校验、首次 migration 准备、失败恢复写半完成元数据、成功恢复写 `Finished` 和 TSO，以及按 TiKV store 数计算总并发度。Rust 测试对应 Go 的 `TestCollAFile`、`TestCollManyFileAndRewriteRules`、`TestReopen`、`TestConflict` 和 `TestConcurrency`。
-
 不能忽略的实现差异如下：
 
 - Go `newPiTRColl` 通过 etcd 查询日志备份任务，拒绝多任务，零任务时禁用，并创建真实 task/restore storage；Rust 入口仅使用调用者注入的本地 trait 对象。
@@ -95,13 +91,3 @@ Rust 与 `pitr_collector.go` 保留的核心语义包括：默认并发 1024、�
 扩展兼容规则应优先放在 `verifyCompatibilityFor`，保证 `prepareMig` 之后、SST 复制之前失败；若要求绝对零外部副作用，则还应重新评估当前“先准备 migration、后逐 fileset 验证”的顺序。改变目录名、UUID、`Finished` 或 `AsOfTs` 时属于持久格式兼容变更，必须检查 PiTR 消费端而不只是本 crate 测试。
 
 若补齐生产能力，最可能修改 `newPiTRColl`、`prepareMig`、`persistExtraBackupMeta` 和 `close`，并同步 `PiTRCollDep`。应分别覆盖零/单/多日志任务、真实 migration 登记、protobuf 互操作、30 秒关闭边界、持久化请求合并以及失败后可观察状态；外部客户端依赖应按仓库规则在其独立上游仓库移植和打 tag，不得在本仓库建立本地覆盖。
-
-## 验证依据
-
-- 生产源码：`br/pkg/restore/snap_client/pitr_collector.rs`，核对了常量、内部并发类型、状态结构、全部 `pitrCollector`/`PiTRCollDep` 方法及两个构造器。
-- crate 边界：`br/pkg/restore/snap_client/Cargo.toml` 与 `lib.rs`，确认包名、依赖、本地 stubs 说明、模块装配和公开重导出。
-- Rust 上游：`br/pkg/restore/snap_client/client.rs::SnapClient::InstallPiTRSupport`，确认 `onBatchOwned` 与 `close` 是 importer 的实际回调。
-- Rust 独立测试：`br/pkg/restore/snap_client/pitr_collector_test.rs`，确认单/多文件、改写冲突、重开、并发上限、提前启动 worker 和不支持时间戳改写等边界；`parity_test.rs` 还覆盖禁用路径及基础契约。
-- Go 对照：`br/pkg/restore/snap_client/pitr_collector.go`、`client.go::SnapClient.InstallPiTRSupport` 与 `pitr_collector_test.go`，用于核对真实日志任务发现、migration、后台 persister、关闭超时和 protobuf 语义。
-- RustCodeGraph：`status` 显示索引包含目标目录；`files --filter br/pkg/restore/snap_client` 确认源、Go 对照和测试均被索引；符号查询定位 `pitrCollector`、`newPiTRColl`，源码/调用搜索确认 `client.rs` 的 `onBatchOwned` 和关闭回调边。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前仅执行固定十一章节结构检查和文档差异自审。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate（入口为 `pkg/ddl/ingest/lib.rs`，清单为 `pkg/ddl/ingest/Cargo.toml`），定义 DDL ingest 子系统的引擎/写入器接口及一个进程内实现。它服务于加索引回填时“按索引暂存编码后的键值对”这一局部职责，不负责 DDL job 持久化、schema 状态迁移、真正的 SST 生成或向 TiKV 导入。
-
-直接装配点是 `BackendContext::register`（`pkg/ddl/ingest/backend.rs`）：每个 index ID 创建一个 `Arc<EngineInfo>`，保存在 `BackendContext.engines`。`BackendContext::flush_engines`、`ingest`、`finish_and_unregister` 和 `close` 再通过 `Engine` trait 驱动其生命周期；`pkg/ddl/ingest/engine_mgr.rs` 提供批量注册/注销门面。crate 的 `lib.rs` 将 `engine` 声明为公开模块，并把独立测试 `engine_test.rs` 仅在 `cfg(test)` 下接入。
+`EngineInfo` 保存索引元数据、共享状态、内存记账对象和单 writer 固定预留额，是当前 Rust 侧的内存实现。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/ingest/engine.go`。接口外形大致对应：Rust `Engine::{flush, close, create_writer}` 对应 Go `Engine::{Flush, Close, CreateWriter}`，Rust `Writer::{write_row, written_bytes}` 对应 Go `Writer::{WriteRow, WrittenBytes}`，`EngineInfo`/`WriterContext` 对应 Go 的 `engineInfo`/`writerContext`。
-
 关键差异如下：
 
 - Go `engineInfo` 持有 context、job ID、UUID、Lightning `OpenedEngine`、backend、按 worker ID 缓存的 `EngineWriter` 和 flush `RWMutex`；Rust 只持有进程内 map、index 元数据与配额对象。
@@ -103,16 +99,3 @@
 - 若改变重复键保存策略，不能直接用 `BTreeMap::insert` 覆盖；还需同步 `BackendContext::collect_remote_duplicate_rows`，并依据 Go 的 key/value/handle 协议设计数据形状。
 - 单元测试必须继续放在独立文件。优先扩展 `pkg/ddl/ingest/engine_test.rs` 覆盖配额失败、cleanup true/false、同 key 覆盖、字节饱和/计数、writer drop 记账和并发 close/create；跨注册/注销行为放在 `engine_mgr_test.rs`，后端聚合行为放在 `backend_test.rs`。若追求 Go 语义对齐，还应核对同目录 Go 测试以及上层 backfilling 集成测试。
 - 性能风险集中在单 mutex、锁内复制、`rows()` 全量克隆与 `disk_usage()` 全量扫描；兼容风险集中在错误字符串、trait 方法签名和现有 close(false) 保留数据的契约。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；随后用 `files --filter pkg/ddl/ingest` 确认目标、Go 对照与独立测试均已索引。
-- RustCodeGraph `node --file pkg/ddl/ingest/engine.rs`：完整读取 214 行目标文件，核对 `Writer`、`Engine`、`EngineState`、`EngineInfo`、`WriterContext` 及全部 impl。
-- RustCodeGraph `node EngineInfo` 与针对 `create_writer`、`write_row`、`written_bytes` 的 explore/call 跟踪：确认定义、导入者及测试调用；查询结果显示 `execute_add_index_pipeline` 汇总 `written_bytes`。
-- RustCodeGraph 读取 `pkg/ddl/ingest/backend.rs`、`engine_mgr.rs`、`lib.rs`：确认构造、注册、flush、重复检查、关闭/注销与模块装配关系。
-- RustCodeGraph 读取 `pkg/ddl/ingest/engine.go`：逐项核对 Go 接口、真实 Lightning engine/writer、缓存、锁、handle 和 cleanup 行为。
-- RustCodeGraph 读取 `pkg/ddl/ingest/engine_test.rs` 与 `engine_mgr_test.rs`：确认关闭后拒绝操作、保留/清理数据、index/unique 顺序、字节初值和重复错误后的关闭状态。当前同目录没有单独的 Go `engine_test.go`；Go 行为证据来自 `engine.go` 及同包上层测试/调用关系。
-- 读取 `pkg/ddl/ingest/Cargo.toml`：确认 crate 名、`lib.rs` 入口、Go package 元数据与依赖边界；读取 `mem_root.rs`、`disk_root.rs` 验证标签记账和 `ResourceTracker` 协议。
-- 文档只描述当前代码可证实的行为；本任务按计划不运行 Cargo。交付前另以任务指定命令验证目标文件存在且恰有 11 个固定二级标题。

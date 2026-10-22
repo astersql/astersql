@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate；crate 根在 `pkg/domain/lib.rs`，通过 `pub mod historical_stats` 公开该模块。它位于一次统计分析完成后的历史快照写入链上：`Domain` 持有一个 `HistoricalStatsWorker`，由 `Domain::new_with_storage_handle` 创建，再由 `Domain::analyze_stats_table` 使用（`pkg/domain/domain.rs:901, 1462-1467, 5210-5243`）。
-
-文件名和顶部迁移注释沿用 Go 的“异步 dump worker”概念，但当前可执行 Rust 实现是一个小型有界任务队列和存储后端抽象；真正的 Domain 后端适配、统计句柄以及调用编排都在 `pkg/domain/domain.rs`。文件第 23—112 行的大段注释是 Go 实现的迁移对照稿，不是会参与编译的 Rust API。
+文件名和顶部迁移注释沿用 Go 的“异步 dump worker”概念，但当前可执行 Rust 实现是一个小型有界任务队列和存储后端抽象；真正的 Domain 后端适配、统计句柄以及调用编排都在 `pkg/domain/domain.rs`。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ RustCodeGraph 将本文件标为 9 个符号，并给出两个使用文件：`pk
 
 ## 与 Go 版本的对应关系
 
-`pkg/domain/historical_stats.go` 是直接语义参照：两端都以有界 channel 接收 table ID，发送和测试取出都不阻塞，并在 dump 前确认目标对象可用。
-
 已确认的差异如下：
 
 - Go worker 保存 `sessionctx.Context`，在 `DumpHistoricalStats` 中经 Domain/InfoSchema 解析普通表或分区、数据库名和表元数据；Rust worker改为 `HistoricalStatsStore`，当前生产实现只按统计 meta 的 `physical_id` 判断存在，再由统计 handle dump。
@@ -86,8 +82,6 @@ RustCodeGraph 将本文件标为 9 个符号，并给出两个使用文件：`pk
 - Go 由 `StartHistoricalStatsWorker` 启动受 Domain wait group/exit channel 管理的 goroutine；Rust 当前没有等价后台循环，而是在 `analyze_stats_table` 中同步消费。
 - Go 队列容量为 16；Rust Domain 构造容量为 32。
 
-因此顶部第 21—112 行注释描述的是更完整的 Go 迁移目标，不能当成当前 Rust 已实现行为。
-
 ## 扩展指南
 
 - 若要恢复真正异步 worker，应在 Domain 生命周期层增加明确的启动、退出、drain/join 逻辑；不要把线程生命周期藏进本文件的单次方法。同步更新 `Domain::analyze_stats_table`，避免生产者再立即消费同一队列。
@@ -95,10 +89,3 @@ RustCodeGraph 将本文件标为 9 个符号，并给出两个使用文件：`pk
 - 若补齐 Go 的表/分区语义，应在 `HistoricalStatsStore` 或 Domain 适配层表达所需元数据，而不是让通用 worker反向依赖 InfoSchema。需要同步验证普通表、物理分区、已删除表和无统计表。
 - 若增加错误上下文或指标，最合适的边界分别是 worker 的两个 store 调用和 `DomainHistoricalStatsStore::dump_historical_stats`；应保留“表不存在是可跳过结果”与“后端查询失败”的区别。
 - 测试必须放在独立 Rust 测试文件，不能内嵌到 `historical_stats.rs`。可新增同目录 `historical_stats_test.rs` 并从测试装配入口引用，覆盖最小容量、满队列、FIFO、空队列、表不存在、检查失败、dump 失败和锁中毒策略；端到端语义继续同步 `pkg/executor/historical_stats_test.rs`。Go 对照测试为 `pkg/executor/historical_stats_test.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/domain/historical_stats.rs` 显示目标文件有 9 个符号；`node --file ... --offset 1 --limit 400` 返回完整 169 行源码并报告两个文件级使用者；`query` 精确确认 `HistoricalStatsStore`、`HistoricalStatsWorker` 及三个公开方法。图的 `callers/callees` 查询未在限定时间内产生结果，所以调用边又以源码引用核实，没有把未返回的图边当成证据。
-- 读过的生产文件：`pkg/domain/historical_stats.rs`、`pkg/domain/domain.rs` 的 store 实现/构造/分析调用链、`pkg/domain/lib.rs` 的模块公开声明、`pkg/domain/Cargo.toml` 的 crate 边界，以及 Go 对照 `pkg/domain/historical_stats.go`、`pkg/domain/domain.go`。
-- 读过的独立测试：`pkg/executor/historical_stats_test.rs` 与 `pkg/executor/historical_stats_test.go`。Rust 测试验证开关关闭不记录、开启后 analyze 产生可解码 dump、分区静态/动态模式、历史回退、表删除/过期 GC 等端到端语义；它没有直接隔离测试本文件的队列满、断连或 store 错误分支。
-- 本任务是纯文档分析，按计划不运行 Cargo；完成判据是上述事实交叉核对与任务指定的 11 章节结构检查。

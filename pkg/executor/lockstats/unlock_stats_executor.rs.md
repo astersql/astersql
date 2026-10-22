@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-lockstats` crate，是 `UNLOCK STATS` 的 Rust 执行器实现。crate 根 `pkg/executor/lockstats/lib.rs` 通过 `pub mod unlock_stats_executor` 导出本模块；`pkg/executor/lockstats/Cargo.toml` 又用 `package.metadata.porting.go-package = "pkg/executor/lockstats"` 明确其 Go 对照包。
-
-当前 Rust 仓库中的定位需要分成两层理解：本文件已经提供可调用的 `UnlockExec` 及完整分支逻辑，但 RustCodeGraph 对该文件报告 `used by 0 files`，全仓 `rg` 也只找到模块自身的 Rust 定义，没有找到 Rust 执行器构造器或 `Next` 调用点。因此它目前是已导出的移植实现，而不是已经证实接入 Rust SQL 执行主链的算子。完整应用中的实际接线证据仍来自 Go 的 `pkg/executor/builder.go::buildUnlockStats`，它把 planner 的 `UnlockStats.Tables` 交给 Go `lockstats.UnlockExec`。
+当前 Rust 仓库中的定位需要分成两层理解：本文件已经提供可调用的 `UnlockExec` 及完整分支逻辑，但 RustCodeGraph 对该文件报告 `used by 0 files`，全仓 `rg` 也只找到模块自身的 Rust 定义，没有找到 Rust 执行器构造器或 `Next` 调用点。
 
 ## 核心职责
 
@@ -88,13 +86,11 @@ Cargo 边界方面，crate 的生产依赖只在 `cfg(windows)` 下声明 domain
 
 ## 与 Go 版本的对应关系
 
-Rust `UnlockExec` 基本逐分支对应 `pkg/executor/lockstats/unlock_stats_executor.go`：两者都先取 StatsHandle、拒绝空表、用相同谓词识别“单表加显式分区”、复用同名解析辅助、调用相同语义的两个 Remove 方法，并把非空返回消息记为 statement warning。`Open` 和 `Close` 在两端也都是空操作。
-
 保留的细节包括错误文本和仅分区解锁时的原始表名：Go 用 `fmt.Sprintf("%s.%s", table.Schema.O, table.Name.O)`，Rust 用 `format!("{}.{}", table.Schema.O, table.Name.O)`。这与 LOCK STATS 的 Rust 分区路径使用 `Schema.L`/`Name.L` 不同，是源码明确记录的刻意差异。
 
-主要结构差异是 Rust 没有嵌入 Go 的 `exec.BaseExecutor`，而改用精简的 `Arc<dyn Runtime>`；Rust 的 `Next` 也没有 `context.Context` 和输出 `chunk.Chunk` 参数。Go 有 `var _ exec.Executor = &UnlockExec{}` 编译期接口断言，并已由 `executorBuilder` 构造；Rust 没有对应公共 Executor trait 实现或 builder 接线。故当前能确认的是核心分支语义移植，不是执行框架集成等价。
+主要结构差异是 Rust 没有嵌入 Go 的 `exec.BaseExecutor`，而改用精简的 `Arc<dyn Runtime>`；Rust 的 `Next` 也没有 `context.Context` 和输出 `chunk.Chunk` 参数。Go 有 `var _ exec.Executor = &UnlockExec{}` 编译期接口断言，并已由 `executorBuilder` 构造；Rust 没有对应公共 Executor trait 实现或 builder 接线。
 
-测试对照也不完全对称：同目录 Rust 测试 `lock_stats_executor_test.rs` 只覆盖两个共享元数据解析辅助，没有直接构造 `UnlockExec`；同目录 Go 测试同样主要覆盖辅助函数。底层解锁的 Rust 行为由 `pkg/statistics/handle/lockstats/unlock_stats_test.rs` 独立覆盖。
+测试对照也不完全对称：同目录 Rust 测试 `lock_stats_executor_test.rs` 只覆盖两个共享元数据解析辅助，没有直接构造 `UnlockExec`；同目录 Go 测试同样主要覆盖辅助函数。
 
 ## 扩展指南
 
@@ -105,15 +101,3 @@ Rust `UnlockExec` 基本逐分支对应 `pkg/executor/lockstats/unlock_stats_exe
 若要接入 Rust 主链，需要新增可追溯的 Runtime/StatsHandle 生产适配和 executor builder/trait 接线，并验证 `Open`/`Next`/`Close` 生命周期；这超出本文件当前已实现事实。接线时还应决定如何传递取消上下文和 statement warning，并核对 `Cargo.toml` 当前仅在 Windows 声明相关 workspace 依赖的设计。
 
 兼容风险集中在错误与 warning 文本、大小写展示和分支判定；正确性风险集中在把未锁目标当错误、在父表锁定时单独解分区，以及遗漏分区增量向父表的回灌；性能方面本执行器仅做元数据展开，但整表路径会枚举每张表的所有分区，下游数据库操作数量随实际锁定物理 ID 增长。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的 7 个 Rust/Go 文件均被索引。
-- RustCodeGraph `files --filter pkg/executor/lockstats` 与 `node --file pkg/executor/lockstats/unlock_stats_executor.rs`：确认目标文件 77 行、6 个符号、`used by 0 files`，并核对完整实现。
-- RustCodeGraph `node --file pkg/executor/lockstats/lock_stats_executor.rs`：核对 `Runtime`、`StatsHandle`、`InfoSchema`、共享解析辅助及其错误边界。
-- RustCodeGraph 的 `callees 'UnlockExec::Next'` 查询存在同名消歧限制，但结果明确列出 Go `Next -> onlyUnlockPartitions`；Rust 的精确调用边通过目标源码逐句复核。全仓 `rg` 进一步确认没有 Rust 侧 `UnlockExec` 构造/调用点。
-- crate 与模块：`pkg/executor/lockstats/Cargo.toml`、`pkg/executor/lockstats/lib.rs`。
-- Go 主链接线与语义：`pkg/executor/builder.go::buildUnlockStats`、`pkg/executor/lockstats/unlock_stats_executor.go`。
-- 共享辅助测试：`pkg/executor/lockstats/lock_stats_executor_test.rs`、`pkg/executor/lockstats/lock_stats_executor_test.go`。
-- 统计层接口、实现与独立测试：`pkg/statistics/handle/types/interfaces.rs::StatsLock`、`pkg/statistics/handle/lockstats/unlock_stats.rs`、`pkg/statistics/handle/lockstats/unlock_stats_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终使用任务指定命令验证目标文件存在且恰含 11 个固定二级标题，并人工检查没有把未接线能力写成已接入事实。

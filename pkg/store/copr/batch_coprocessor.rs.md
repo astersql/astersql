@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-copr` crate；`pkg/store/copr/Cargo.toml` 将该 crate 的入口设为 `lib.rs`，而 `lib.rs` 声明并公开再导出 `batch_coprocessor`。它位于 SQL 层生成的 key range 与 TiFlash Batch Cop RPC 之间：把 range 按 Region 切分，选择可用 TiFlash/Compute 节点，生成按地址聚合的任务，并把并行执行结果包装成上层可迭代消费的响应。
-
-直接上游之一是 `pkg/store/copr/mpp.rs`：其任务构建流程调用 `build_batch_cop_tasks_for_partitioned_table` 或 `build_batch_cop_tasks_for_non_partitioned_table`。`pkg/store/copr/store.rs` 则把 RegionCache 作为 `BatchTaskSource` 交给 MPP 客户端。RPC、Region、range、backoff 等线类型来自相邻的 `batch_request_sender.rs`；本文件不直接实现网络传输。
+位于 SQL 层生成的 key range 与 TiFlash Batch Cop RPC 之间：把 range 按 Region 切分，选择可用 TiFlash/Compute 节点，生成按地址聚合的任务，并把并行执行结果包装成上层可迭代消费的响应。
 
 ## 核心职责
 
@@ -81,13 +79,11 @@ RustCodeGraph 的路径过滤没有匹配该文件，但精确符号查询成功
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/copr/batch_coprocessor.go`。Rust 保留了 Go 的核心名字和阶段：`batchCopTask`/`batchCopResponse`、连续性与贪心均衡、存算分离的一致性哈希/轮询、存活与 zone 策略、分区 Region 转换，以及 `batchCopIterator` 生命周期；文件尾的驼峰函数/常量进一步为移植代码保留 Go 风格入口。
-
-Rust 的 `BatchTaskSource` 和 `BatchTaskRunner` 把 Go 中直接依赖 `kvStore`、`RegionCache`、RPC client 和上下文的部分抽象为 trait，便于独立测试。所有权也替代了 Go 的指针/切片别名：例如 `deep_copy_store_task_map` 明确克隆 Region，Rust 独立测试验证副本不会反向修改原任务。
+所有权也替代了 Go 的指针/切片别名：例如 `deep_copy_store_task_map` 明确克隆 Region，Rust 独立测试验证副本不会反向修改原任务。
 
 两者并非逐行等价。Go 文件包含 context 取消、failpoint、日志/metrics、详细 RPC 重试、锁/Region 错误处理和 execution info 收集；Rust 本文件只提供构建算法、响应转换与通用 runner 迭代框架，实际发送和部分统计位于其他模块或 trait 实现中。Rust 的流错误映射和 worker 数量也应以当前 Rust 源码为准，不能从 Go 实现推断未接线能力。
 
-独立 Rust 测试 `batch_coprocessor_test.rs` 前半保存 Go 对照材料，实际 `#[test]` 位于后半，验证了大规模连续性均衡及小集合退化、空任务、贪心回退、深拷贝、一致性哈希与输入顺序无关、轮询均衡、退避耗尽、store ID 过滤及副本存活判定。它没有直接覆盖任务构建两个主入口、分区转换、迭代器关闭/中断和流式错误映射；这些不能声称已由该测试证明。
+它没有直接覆盖任务构建两个主入口、分区转换、迭代器关闭/中断和流式错误映射；这些不能声称已由该测试证明。
 
 ## 扩展指南
 
@@ -98,13 +94,3 @@ Rust 的 `BatchTaskSource` 和 `BatchTaskRunner` 把 Go 中直接依赖 `kvStore
 - 修改分区表示时同步维护 `convert_region_infos_to_partition_table_regions` 与 `merge_task_ranges_for_retry`，测试负索引、越界、空分区及 range 顺序；Rust 测试必须继续放在独立的 `batch_coprocessor_test.rs`。
 - 修改迭代器时应补并发测试：有界通道满、runner 阻塞、动态重试、错误传播、killed、重复 `run`/`close` 和 Drop。若引入真正取消，必须定义 runner 的取消契约，避免 `close` 永久等待。
 - 对 Go 新变更做逐提交对齐时，只移植该提交增量和不可缺少的局部接线；日志、metrics、failpoint 或锁处理等现有差距应单列范围，不以简化桩冒充行为一致。
-
-## 验证依据
-
-- 目标源码：`pkg/store/copr/batch_coprocessor.rs`，人工枚举并检查其常量、类型、trait、公开入口、内部构建器、均衡算法和迭代器生命周期。
-- crate 边界：`pkg/store/copr/Cargo.toml` 与 `pkg/store/copr/lib.rs`，确认 crate 名、入口、依赖、模块声明、公开再导出及独立测试装配。
-- 上下游源码：`pkg/store/copr/mpp.rs`、`pkg/store/copr/store.rs`、`pkg/store/copr/coprocessor.rs`、`pkg/store/copr/batch_request_sender.rs` 和 `pkg/store/copr/network_backend.rs`，确认 MPP 调用入口、`BatchTaskSource` 实例来源、迭代器扩展点与传输边界。
-- Go 对照：`pkg/store/copr/batch_coprocessor.go`，核对同名数据结构、均衡/路由/副本策略、任务构建和迭代执行阶段；差异按当前 Rust 实现保守描述。
-- 独立测试：`pkg/store/copr/batch_coprocessor_test.rs`，人工检查实际 Rust `#[test]` 的覆盖范围，并明确记录尚未覆盖的主入口和并发生命周期。
-- RustCodeGraph：`status` 显示本仓库索引包含 7032 个 Rust 文件；`query build_batch_cop_tasks_for_non_partitioned_table --kind function` 定位到目标文件第 1196 行；`node` 展示其源码及到 `build_disaggregated_tasks`、`build_integrated_tasks` 的调用边；`query balance_batch_cop_task` 同时定位两个生产函数和对应 Rust 测试；`query batchCopIterator` 同时定位 Rust 与 Go 实现。路径 `files --filter` 未命中，因此未把路径检索当作证据。
-- 本任务按计划只做文档事实与结构验证，不运行 Cargo；结构命令要求目标文件存在且恰有十一个固定二级标题。

@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-utils`（见 `br/pkg/utils/Cargo.toml`），由 `br/pkg/utils/lib.rs` 以 `pub mod pprof` 暴露。它不是业务备份或恢复算法，而是 BR 进程的运维可观测性边界：绑定 status 地址、可选地套用 TLS、注册 metrics/pprof HTTP 路由，并在后台线程接受连接。固定地址启动链为 `br/cmd/br/cmd.rs::startStatusServer` → `StartStatusListenerWithHandler`；Unix 动态启动链为 `br/pkg/utils/dyn_pprof_unix.rs::StartDynamicPProfListener` → `StartStatusListener`。
+`RegisterDefaultStatusHandlers` 构造默认 `StatusHandler`，提供 Prometheus `/metrics`、命令行、CPU profile、symbol 和 trace 兼容端点。
 
 ## 核心职责
 
@@ -60,7 +60,7 @@ CPU profile 在连接线程中同步 `sleep(seconds)`，不会阻塞 accept，�
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/utils/pprof.go` 是直接语义对照。两版都用互斥保护全局地址、拒绝重复启动、在绑定成功后记录实际地址、支持 TLS 包装、后台 serve，并提供 metrics 与标准 pprof 路径。Rust 的 `StartStatusListenerWithHandler` 接受闭包型 `StatusHandler`，Go 接受 `http.Handler`；Rust 自行实现最小 HTTP 循环，Go 使用 `http.Serve`/`http.ServeMux`。
+Rust 的 `StartStatusListenerWithHandler` 接受闭包型 `StatusHandler`，Go 接受 `http.Handler`；Rust 自行实现最小 HTTP 循环，Go 使用 `http.Serve`/`http.ServeMux`。
 
 重要差异是：Go 的 `determined-pprof-port` failpoint 可覆盖地址，Rust 钩子当前为空；Go 使用运行时原生 `net/http/pprof`，Rust 的 profile 由 `pprof-rs` 生成、trace 返回 501、symbol 是兼容占位；Go HTTP 栈支持完整协议与服务生命周期，Rust 仅单次 64 KiB 读取并关闭连接。Rust serve 失败时清空状态与 Go 一致，但连接级错误被静默丢弃。以上差异是当前代码事实，不能描述为完整等价移植。
 
@@ -72,10 +72,3 @@ CPU profile 在连接线程中同步 `sleep(seconds)`，不会阻塞 accept，�
 - 若增加停服/重启能力，需要同时设计监听器关闭信号、线程句柄、`STARTED_PPROF` 清理顺序以及请求中的 profile 生命周期，避免地址状态与真实监听器失配。
 - 调整 TLS 或 listener 行为时，应同步核验 `astersql_util::security::{TLS, Listener, Connection}`；调整命令接线时核验 `br/cmd/br/cmd.rs::startStatusServer` 与 `dyn_pprof_unix.rs`。
 - profile 时长、频率或线程模型会改变 CPU 开销和拒绝服务风险，应保留明确上限并补充边界与并发回归测试。
-
-## 验证依据
-
-- 已完整阅读：`br/pkg/utils/pprof.rs`、`br/pkg/utils/Cargo.toml`、`br/pkg/utils/lib.rs`、`br/pkg/utils/pprof.go`、`br/pkg/utils/pprof_test.rs`；调用入口另核对 `br/cmd/br/cmd.rs`、`br/cmd/br/cmd.go` 与 `br/pkg/utils/dyn_pprof_unix.rs`。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`query StartStatusListenerWithHandler --kind function --json`、`query RegisterDefaultStatusHandlers --kind function --json`、`query serve_listener --kind function --json`、`query handle_connection --kind function --json` 精确定位本文件符号和签名。`explore/node` 及按 ID 请求 callers/callees 未给出可靠调用边，因此没有据此推断；上、下游关系由仓库内已索引文本搜索和源码交叉核验。
-- `br/pkg/utils/pprof_test.rs` 的独立测试覆盖：默认 registry 指标输出、真实进程命令行、未知路由保持未匹配、1 秒 profile 可解码且含 sample type、cmdline 错误方法返回 405、trace 返回 501。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行固定 11 章节结构检查，并人工复核文档只描述当前实现、明确差异和未实现边界。

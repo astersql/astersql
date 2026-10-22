@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件定义规划器中的物理哈希连接节点 `PhysicalHashJoin`。它描述优化器已经选择哈希连接之后需要保留的连接键、过滤条件、build/probe 侧、执行存储、MPP shuffle 和 Runtime Filter 元数据；它本身不建立哈希表，也不逐行执行连接。实际执行前，节点通过 `ToPB` 编码为 `tipb::Executor(TypeJoin)`，交给 TiKV/TiFlash 一侧的执行器。
-
-该文件属于 Cargo crate `astersql-planner-core-operator-physicalop`（`pkg/planner/core/operator/physicalop/Cargo.toml`），由 `lib.rs` 的 `mod physical_hash_join` 纳入并经 `pub use physical_hash_join::*` 导出。`lib.rs` 为它单独实现 `ConcretePhysicalOperator`，将 EXPLAIN、下标解析、内存统计、相关列提取、代价查询和 protobuf 编码接入通用 `PhysicalPlan` 接口；`PhysicalApply` 也复用其中的哈希连接骨架。
-
-Rust 候选生成的直接入口位于 `base_physical_plan.rs`：逻辑 Join/Apply 被转换为 `BasePhysicalJoin` 后调用 `NewPhysicalHashJoin`，再填入等值条件、NA 条件、存储类型、MPP/hint 信息并调用 `Init`。计划附着阶段由 `Attach2Task` 转到通用 `PhysicalPlan::attach_to_task`，下游的 `pkg/planner/core/task.rs` 按 `PlanKind::HashJoin` 选择 root 或 MPP 附着流程。
+`PhysicalHashJoin` 保存连接公共基座及本算子专属状态，并通过 `Init`、`Clone`、`Attach2Task` 参与物理候选生命周期。
 
 ## 核心职责
 
@@ -93,7 +89,7 @@ RustCodeGraph 将该源文件标为被 29 个文件使用，并在 `base_physica
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/physicalop/physical_hash_join.go`。Rust 保留了 Go 的主要语义：V2/GA 门槛、TiFlash optimized + spill 限制、同名核心字段、EXPLAIN 分类、相关列提取、build 侧公式、左右/NA 键解析、Outer Semi 匹配列例外、`IN` 条件拆分、JoinType/NULL-EQ/Runtime Filter/孩子的 TiPB 编码。
+Rust 保留了 Go 的主要语义：V2/GA 门槛、TiFlash optimized + spill 限制、同名核心字段、EXPLAIN 分类、相关列提取、build 侧公式、左右/NA 键解析、Outer Semi 匹配列例外、`IN` 条件拆分、JoinType/NULL-EQ/Runtime Filter/孩子的 TiPB 编码。
 
 已核实的实现差异：
 
@@ -116,14 +112,3 @@ RustCodeGraph 将该源文件标为被 29 个文件使用，并在 `base_physica
 - 调整 build 侧选择时同时审查 `RightIsBuildSide`、`base_physical_plan.rs` 的候选枚举、`task.rs` 的 MPP 分区/exchange、代价模型和 Runtime Filter 源/目标列方向。
 - Rust 测试必须继续放在独立的 `physical_hash_join_test.rs` 或上层独立测试文件，不能嵌回本源文件；若是 Go 对齐修改，应保留 Go 的真实行为而不是用简化桩通过测试。
 - 性能风险集中在条件/Schema 克隆、按列线性查找与 PB 编码；兼容风险集中在 JoinType、NULL/NA 语义、左右键方向和 protobuf 字段。任何变更都应先用定向单元测试证明边界，再走仓库要求的 Ready 验证流程。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点和 1,848,419 条边；`files --filter pkg/planner/core/operator/physicalop` 确认目标源、Go 对照与独立测试均已索引。
-- RustCodeGraph 源码读取：`node --file pkg/planner/core/operator/physicalop/physical_hash_join.rs --offset 1 --limit 500` 与 `--offset 501 --limit 500`，覆盖全部 867 行；`query PhysicalHashJoin`/`query NewPhysicalHashJoin` 确认 Rust/Go 同名符号和构造入口。
-- RustCodeGraph 测试读取：`node --file pkg/planner/core/operator/physicalop/physical_hash_join_test.rs --offset 1 --limit 500`，确认四类边界：FullOuter + `IsNullEQ` 克隆/PB 保真、重复输出列去重、非 GA feature gate、TiFlash 版本/spill/连接形态矩阵。
-- 直接读取 `pkg/planner/core/operator/physicalop/Cargo.toml` 与 `lib.rs`，确认 crate 名称、path 依赖、`tipb` revision、Go package 元数据、模块再导出和 `ConcretePhysicalOperator` 接线。
-- 直接读取 Go 对照 `physical_hash_join.go`，逐项核对能力门槛、字段、构造、EXPLAIN、解析、build 侧和 TiPB 编码；读取 Go `optimizer_test.go` 的 TiFlash V2 矩阵作为移植语义证据。
-- 直接读取 Rust `base_physical_plan.rs`、`task.rs`、`plan_cost_ver1.rs`、`optimizer_runtime.rs` 和 `physical_plan_misc.rs` 的直接引用，确认候选生成、任务附着、代价使用、Runtime Filter 与下游编码位置。
-- 直接读取 Rust `optimizer_test.rs` 与 `integration_test.rs`，确认 V2 判定、MPP NULL-EQ HashJoin 选择和 FullOuter shuffle/左右条件保留的应用级证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的结构验证，要求目标文件存在且恰好包含上述 11 个固定二级标题；另人工检查本文未把执行器行为、模糊调用图或 Runtime Filter 占位接线写成已验证事实。

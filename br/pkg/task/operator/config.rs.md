@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`config.rs` 是 `astersql-br-pkg-task-operator` crate 的命令配置层，源码由 [`lib.rs`](./lib.rs) 以 `pub mod config` 纳入并通过 `pub use config::*` 平铺导出。它对应 Go 文件 [`config.go`](./config.go)，位于 BR 的 operator 运维子命令与具体业务执行器之间：上游 [`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs) 注册命令及 flag、构造配置并调用 `ParseFromFlags`，下游的 `prepare_snap.rs`、`base64ify.rs`、`list_migration.rs`、`migrate_to.rs`、`force_flush.rs`、`crr_checkpoint.rs` 和 `checksum_table.rs` 消费解析结果。
-
-crate 边界由 [`Cargo.toml`](./Cargo.toml) 声明：包名为 `astersql-br-pkg-task-operator`、库入口是 `lib.rs`，porting 元数据指向 Go 包 `br/pkg/task/operator`。该 crate 直接依赖 `regex`，并通过本 crate 的 `stubs` 门面取得公共配置、flag、错误及 CRR 配置类型；配置文件本身不执行网络、存储或 checksum 操作。
+提供对应的 `DefineFlagsFor*` 和 `ParseFromFlags`，并在配置层执行仅依赖参数的校验：`MigrateToConfig::Verify` 检查模式互斥，`ForceFlushConfig::ParseFromFlags` 编译正则，`CRRCheckpointConfig::ParseFromFlags` 检查三个必填参数。
 
 ## 核心职责
 
@@ -97,12 +95,9 @@ CRR 配置只携带资源创建参数；服务及 cleanup 的所有权由 CLI �
 
 ## 与 Go 版本的对应关系
 
-[`config.go`](./config.go) 是逐项对照基准：19 个 flag 常量、9 个 flag 注册函数、9 个配置结构体、解析顺序、默认值、互斥规则和错误文案均保持同一意图。`LoadCerd` 的历史拼写也刻意保留，避免迁移时改变公开字段契约。
-
 主要语言映射差异如下。
 
 - Go 通过匿名嵌入 `task.Config`、`task.RestoreConfig`、`objstore.BackendOptions` 暴露字段；Rust 使用命名组合字段，因此访问路径更显式。checksum 解析中的 table concurrency 双写是维持 Go 提升字段语义所需的 Rust 接线。
-- Go 的 `func()` 回调映射为带 `Send + Sync` 约束的 boxed trait object；Go 的 `*regexp.Regexp` 映射为值拥有的 `Regex`，默认配置始终持有有效模式。
 - Go `int` 的 migration 序号映射为 Rust `i32`。当前 flag/stub 与迁移结构都采用 `i32`；若未来放宽序号范围，必须同时核对 Go CLI、迁移元数据和 Rust stub，而不能只改本字段。
 - Go 的错误由 `pingcap/errors` 注解；Rust 通过本地 `Error::Annotatef`/`Error::Trace` 保留错误分类或上下文。错误文本关键片段由 parity 测试约束。
 - Go 测试 `br/pkg/task/operator/crr_checkpoint_test.go` 与 Rust `crr_checkpoint_test.rs` 对齐 CRR 缺参及非日志备份目录行为；Go RealTiKV 测试覆盖 `PauseGcConfig` 的真实生命周期，Rust parity 测试使用内存替身覆盖相同回调顺序。Go `pitr_test.go` 还展示 `ForceFlushConfig` 在日志备份推进场景中的实际消费方式。
@@ -119,12 +114,3 @@ CRR 配置只携带资源创建参数；服务及 cleanup 的所有权由 CLI �
 4. 保持三类 checksum flag 注册函数独立，避免 PiTR 专用参数泄漏到普通/upstream 命令。改动 flag 名、默认值、短选项或错误文本前要评估 CLI 脚本兼容性。
 5. 同步更新独立 Rust 测试：通用 flag、迁移与 force-flush 契约放在 [`parity_test.rs`](./parity_test.rs)，CRR 参数放在 [`crr_checkpoint_test.rs`](./crr_checkpoint_test.rs)，base64 行为放在 [`base64ify_test.rs`](./base64ify_test.rs)；不要把测试写回 `config.rs`。涉及真实 safepoint/scheduler 生命周期时，还需核对 Go RealTiKV 测试的意图。
 6. 与 Go 对齐的改动应同步检查 [`config.go`](./config.go)；若有刻意差异，需在实现和测试中写明原因。性能风险主要来自新增正则编译或昂贵解析进入热路径，但当前配置只在命令启动时解析一次；兼容风险主要来自 flag 契约、默认值和错误顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/task/operator/config.rs` 确认目标文件已索引且含 31 个符号；`explore "br/pkg/task/operator/config.rs symbols responsibilities callers callees"` 报告目标被 22 个文件使用并定位配置、CLI 与测试引用；对九个注册函数执行 `callers`、对九个配置类型执行 `impact --depth 2` 未产生可用静态边，此限制已用下列源码证据补足。
-- 目标与模块证据：[`config.rs`](./config.rs) 全部 450 行、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、[`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs) 及命令 crate 的 [`Cargo.toml`](../../../cmd/br/Cargo.toml)。目录内没有 `doc.go`，因此最近的包级职责说明来自 Rust `lib.rs` 和 Go package/file 实现。
-- 下游证据：`migrate_to.rs::RunMigrateTo` 在资源创建前调用 `Verify`；`checksum_table.rs` 消费三类 checksum 配置；其余直接引用由 `base64ify.rs`、`list_migration.rs`、`force_flush.rs`、`crr_checkpoint.rs`、`prepare_snap.rs` 核对。
-- Go 对照：[`config.go`](./config.go)、[`crr_checkpoint_test.go`](./crr_checkpoint_test.go)、`tests/realtikvtest/brietest/operator_test.go` 和 `tests/realtikvtest/brietest/pitr_test.go`。
-- Rust 测试：[`parity_test.rs`](./parity_test.rs)、[`crr_checkpoint_test.rs`](./crr_checkpoint_test.rs)、[`base64ify_test.rs`](./base64ify_test.rs)。本任务按计划为纯文档分析，未运行 Cargo 或代码测试。
-- 结构校验使用任务指定命令，要求目标文件存在且固定二级标题恰好为 11 个；交付前另以 `git diff --check` 检查文档补丁格式，并人工复核没有把配置层未执行的 IO 或校验写成现状。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate，由 `pkg/planner/core/lib.rs` 以公开模块 `point_get_plan_runtime` 导出，并依赖同一 crate 的逻辑计划类型、`astersql-planner-core-base` 的计划 trait、`astersql-expression` 的表达式/元数据以及 `astersql-planner-core-operator-physicalop` 的 `PointGetPlan`；这些边界由 `pkg/planner/core/Cargo.toml` 的 `base-dependency`、`expression-dependency`、`logicalop-dependency` 和 `physicalop-dependency` 声明确认。
-
-它不是完整的 Rust 点查规则集：`pkg/planner/core/point_get_plan.rs` 另有面向简化 `FastQuery` 的 `TryFastPlan`。本文件的唯一公开入口 `TryFastIntegerPointGet` 则从已解析、已构建的逻辑 `SELECT` 树直接产生可执行的 `physicalop_dependency::PointGetPlan`。当前生产调用点只有 `pkg/session/runtime/planning.rs` 的 `ConcreteSession::OptimizeRootPlanIDForTest`，用于观测真实根计划 ID，所以它是测试/观测链路中的快路径桥接，不是普通 SQL 执行入口。
+用严格的计划形状和元数据条件判定是否可以跳过通用物理优化；只接受 `LogicalProjection -> LogicalSelection -> DataSource` 且每层恰有一个子节点的树。
 
 ## 核心职责
 
@@ -80,12 +78,10 @@ RustCodeGraph 精确 `query` 能定位该符号，但 `callers/callees` 查询�
 
 ## 与 Go 版本的对应关系
 
-Go 对照入口是 `pkg/planner/core/point_get_plan.go::TryFastPlan` 和其 `tryPointGetPlan`。共同语义包括：在通用优化前尝试点查；只对单表精确等值访问生成计划；要求列非生成且为 public；构造 `PointGetPlan` 时保留 schema、输出名、表元数据、handle 符号属性和访问条件；快路径不适用时无错回退。Go `TryFastPlan` 也在尝试前将 `PlanID`/`PlanColumnID` 归零，对应 Rust 函数的 `context.reset_plan_id()` 以及调用者管理的列 ID 上下文。
+Go `TryFastPlan` 也在尝试前将 `PlanID`/`PlanColumnID` 归零，对应 Rust 函数的 `context.reset_plan_id()` 以及调用者管理的列 ID 上下文。
 
 当前 Rust 函数是刻意缩小的整型 PK-handle 子集，与 Go 版本存在明确差异：
 
-- 不处理唯一索引、聚簇/公共 handle、`IN`/`OR` 批量点查、`UPDATE`/`DELETE`、`TableDual`、显式分区和全局索引。
-- 不在内部处理 `LIMIT`、`ORDER BY`、hint、权限、表锁、行锁、连接隔离级别或最新索引可见性。
 - 不接受参数标记或 deferred constant，也不记录 Go `HandleConstant`、`HandleFieldType`、`HandleColOffset`、`PartitionNames` 等额外字段。
 - Go 的 `buildSchemaFromFields` 能处理更广的字段形态；Rust 函数要求每个 projection expression 都是直接列，因而 `select b + 1 ...` 必须回退。
 - Go 新建计划设置估算行数 1、锁等待时间和 statement table 记录；本 Rust 函数仅将 `CostValue` 设为 1.0，未复制这些副作用。
@@ -102,15 +98,3 @@ Go 对照入口是 `pkg/planner/core/point_get_plan.go::TryFastPlan` 和其 `try
 - 修改 `PointGetPlan` 字段时还要检查 `pkg/planner/core/operator/physicalop/physical_batch_point_get.rs` 的构造、克隆、代价和执行适配语义，并与 Go `physical_batch_point_get.go` 的字段保持对齐。
 
 兼容性风险集中在错误放宽资格后吞掉谓词、绕过权限/锁/hint 检查或改变 signed/unsigned handle 语义；性能风险则包括在快路径中引入通用 range builder、重复克隆大型元数据或因过度保守而频繁回退通用优化器。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/point_get_plan_runtime.rs`，逐分支核对唯一公开符号、所有资格检查和输出字段。
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`query TryFastIntegerPointGet --kind function --limit 20 --json` 命中 `point_get_plan_runtime.rs::TryFastIntegerPointGet`、起始行 28 和签名。`files --filter` 未命中而精确 query 命中，`callers/callees` 长时间无输出后中止，因此调用边另用精确文本搜索核对。
-- crate/模块边界：`pkg/planner/core/Cargo.toml` 和 `pkg/planner/core/lib.rs`。
-- 真实返回类型：`pkg/planner/core/operator/physicalop/physical_batch_point_get.rs::PointGetPlan` 及其 `New`；Go 字段对照为同目录 `physical_batch_point_get.go::PointGetPlan`。
-- 生产调用与 plan-ID 状态：`pkg/session/runtime/planning.rs::ConcreteSession::OptimizeRootPlanIDForTest`、`SessionPlanContext::{alloc_plan_id, reset_plan_id}`。
-- Go 对照：`pkg/planner/core/point_get_plan.go::{TryFastPlan, tryPointGetPlan, newPointGetPlan}`；同时阅读 `pkg/planner/core/point_get_plan.rs::TryFastPlan` 以区分另一套 Rust 简化快路径模型。
-- 独立 Rust 单元测试：`pkg/planner/core/point_get_plan_runtime_test.rs`。`integer_point_get_keeps_handle_projection_and_resets_id` 验证左/右两种等值顺序、handle 7、投影列与输出名以及重复构建时 ID 恒为 1；`integer_point_get_preserves_general_optimizer_fallbacks` 验证表达式投影、多条件、范围/非主键/`NULL` 谓词、order/limit、分区表与 unsigned 负数的回退。
-- 会话级 Rust 测试：`pkg/planner/core/tests/pointget/point_get_plan_test.rs::TestPointGetId`，经 `pkg/testkit/testkit.rs` 与 `pkg/testkit/mockstore.rs` 请求桥接验证两种等值顺序反复规划时根 ID 为 1，以及 fix-control 52592 禁用快路径后转入通用优化。
-- 结构验证按任务给定命令执行，要求文档存在且恰含十一个固定二级标题。本任务为纯文档分析，按总计划不运行 Cargo。

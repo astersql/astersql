@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-task` crate 中 TxnKV 备份恢复任务的 Rust 编排层，对应 Go 文件 `br/pkg/task/restore_txn.go`。`br/pkg/task/lib.rs` 以 `pub mod restore_txn` 挂载模块并通过 `pub use restore_txn::*` 导出公开入口；`br/cmd/br/restore.rs::runRestoreTxnCommand` 解析公共恢复参数后，以 `TikvGlue` 调用 `RunRestoreTxn`，因此它位于 `br restore txn` CLI 与恢复运行时之间。
-
-该文件只负责配置归一化、备份元数据读取与模式校验、范围/进度计算，以及把选中的文件交给 `restore_lifecycle.rs`。PD 调度器管理、导入模式切换和 SST 导入并不在本文件中实现。当前 Rust 生产入口仍有明显迁移边界：`RunRestoreTxn` 会创建 `MemStorage` 并写入一份固定的 TxnKV 元数据，而不是像 Go 版本那样从 `cfg.Storage` 打开真实外部存储；真正的 PD/import 运行时还必须由 `Glue::GetRestoreLifecycle` 注入。
+`RunRestoreTxnWithStorage` 完成 TxnKV 恢复编排：调整配置、创建连接管理器、读取 `backupmeta`、拒绝 RawKV 元数据、记录归档大小、建立进度、取得并校验恢复生命周期、执行文件恢复和设置成功状态。
 
 ## 核心职责
 
@@ -71,11 +69,7 @@ keepalive 的 `PermitWithoutStream` 在创建 manager 前置为真，以允许�
 
 ## 与 Go 版本的对应关系
 
-对齐部分包括：配置调整与默认并发、连接 manager 创建、非 RawKV 模式检查、归档大小和文件数统计、范围数加文件数的进度模型、离线 import-mode 恢复、逐文件进度回调、成功摘要，以及错误后的资源清理意图。`merge_file_ranges` 对应无 rewrite rules 时的 `restoreutils.MergeAndRewriteFileRanges` 核心区间合并语义。
-
-尚未等价的部分必须视为当前迁移状态：Go 入口从真实存储读取 backupmeta，并创建/配置 `snapclient.RestoreClient`（速率、加密、单 store 并发、连接、schema 初始化）；Rust `RunRestoreTxn` 使用固定 `MemStorage`。Go 调用真实 `SplitPoints`，Rust 只按 `getEndKeys` 数量推进进度。Go 在本函数中完成 `RestorePreWork`、`GoRestore` 与 `WaitUntilFinish`，Rust 把这些行为委托给外部注入的 `RestoreLifecycle`。Go 的 summary 与 context cancel 使用 defer，Rust 没有等价 cancellation context，且 `Summary` 在开头调用。当前 Rust 代码也没有使用 `cfg.RateLimit`、`CipherInfo`、`ExplicitFilter` 或 schema reader 完成 Go 中的初始化。
-
-因此不能仅凭 CLI 已接线断言真实备份介质上的 TxnKV 恢复已经完整可用；现有证据证明的是编排契约和可注入生命周期能够执行真实 restorer 路径。
+尚未等价的部分必须视为当前迁移状态：Go 入口从真实存储读取 backupmeta，并创建/配置 `snapclient.RestoreClient`（速率、加密、单 store 并发、连接、schema 初始化）；Rust `RunRestoreTxn` 使用固定 `MemStorage`。Go 调用真实 `SplitPoints`，Rust 只按 `getEndKeys` 数量推进进度。Go 的 summary 与 context cancel 使用 defer，Rust 没有等价 cancellation context，且 `Summary` 在开头调用。当前 Rust 代码也没有使用 `cfg.RateLimit`、`CipherInfo`、`ExplicitFilter` 或 schema reader 完成 Go 中的初始化。
 
 ## 扩展指南
 
@@ -86,14 +80,3 @@ keepalive 的 `PermitWithoutStream` 在创建 manager 前置为真，以允许�
 - 若改变 lifecycle factory 或 prepared file sets，保留 `ValidateFiles` 的“不丢文件”不变量；字段扩展应同步 `restore_lifecycle_test.rs::prepared_files_cannot_omit_selected_data`。
 - 若改错误路径，建议用作用域守卫确保进度在 `GetRestoreLifecycle`、`ValidateFiles` 和恢复错误时均关闭，并验证摘要成功位只在完整完成后设置。
 - 性能风险集中在 `files.to_vec()` 与排序的 `O(n log n)` 成本、全部文件元数据常驻内存、进度回调同步开销和导入并发；兼容风险集中在范围边界、Raw/Txn 判别、file-set 完整性与 import-mode 清理。
-
-## 验证依据
-
-- 目标实现：`br/pkg/task/restore_txn.rs`，重点符号为 `merge_file_ranges`、`RunRestoreTxn`、`RunRestoreTxnWithStorage`。
-- 模块与 crate：`br/pkg/task/lib.rs` 的模块挂载/重导出，`br/pkg/task/Cargo.toml` 的 library 边界和依赖。
-- 上游入口：`br/cmd/br/restore.rs::runRestoreTxnCommand`。
-- 下游实现：`br/pkg/task/common.rs::{Config::adjust, NewMgr, ReadBackupMeta}`、`br/pkg/task/restore_raw.rs::getEndKeys`、`br/pkg/task/stubs.rs::Glue`、`br/pkg/task/restore_lifecycle.rs::{RestoreGlue, ValidateFiles, RestoreFiles}`。
-- Go 对照：`br/pkg/task/restore_txn.go::RunRestoreTxn`。
-- 独立 Rust 测试：`br/pkg/task/restore_txn_test.rs::{txn_restore_reads_meta_merges_ranges_and_tracks_go_progress, txn_restore_rejects_raw_meta_before_starting_progress}`、`br/pkg/task/restore_lifecycle_test.rs::{txn_restore_consumes_real_restorer_and_offline_mode_lifecycle, prepared_files_cannot_omit_selected_data}`，以及 `br/pkg/task/parity_test.rs` 的公开入口烟雾调用。
-- RustCodeGraph：`status` 确认索引含 7032 个 Rust 文件；`files --filter br/pkg/task/restore_txn.rs` 确认目标已索引；`node --file` 读取目标、CLI、Go 对照、测试和生命周期实现；`query RunRestoreTxn`、`query getEndKeys`、`query NewMgr`、`query ReadBackupMeta` 定位定义与接线；函数级 `callers`/`callees` 无输出，已由上述源码证据补足。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求文档存在且恰好包含这里的十一个固定二级标题。

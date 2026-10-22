@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust crate `astersql-ttl-sqlbuilder` 的实际实现文件；crate 根 `pkg/ttl/sqlbuilder/lib.rs` 通过 `pub mod sql` 和 `pub use sql::*` 将这里的公开项整体导出。根 workspace 又以 `facade_ttl_sqlbuilder` 引入该 crate，并在 `pkg/lib.rs` 的 facade 模块中再导出。`pkg/ttl/ttlworker/Cargo.toml` 与 `pkg/resourcegroup/runaway/Cargo.toml` 声明了依赖，但对生产 `.rs` 的符号搜索没有找到对本文件 API 的实际调用，因此当前可确认的是“可被 workspace 使用且已有独立单元测试”，不能据此声称它已接入 Rust TTL worker 的运行主链。
-
-文件前 511 行是被逐行注释掉的早期 Go 机械翻译草稿，不参与编译；可执行实现从 `SqlError` 开始。当前实现自带 `Datum`、`FieldType`、`Column`、`PhysicalTable` 和 `IndexInfo` 等轻量数据模型，并不直接使用 Go 版本对应的 `types.Datum`、`model.ColumnInfo` 或 `cache.PhysicalTable`。`pkg/ttl/sqlbuilder/Cargo.toml` 在普通目标上唯一直接依赖是 `chrono`；多项 AsterSQL crate 依赖仅置于 `cfg(windows)` 条件下，当前可执行代码本身没有引用它们。
+这些职责只构造 SQL 文本和保存生成器内存状态，不执行 SQL、访问存储或管理事务。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ttl/sqlbuilder/sql.go`，回归测试为 `pkg/ttl/sqlbuilder/sql_test.go`。Rust 保留了 Go 的主要结构：Datum 恢复、builder 状态机、DELETE 过期条件防护、`[start,end)` 扫描、首批 `>=`/续页 `>`、复合键前缀退栈、NULL 排序边界、索引投影与表键提取、批量删除 IN 条件。Rust 独立测试 `sql_test.rs` 覆盖了状态与删除安全、字符串转义、复合键分页、空 continuation 与 nil continuation 的区别、时间类型/时区偏移、索引物理顺序和表键投影。
-
 当前差异包括：
 
 - Go 使用完整 TiDB `types.Datum`、`model.ColumnInfo`、`cache.PhysicalTable` 和 `TTLIndexScanPlan`；Rust 使用本地简化模型，索引合法性只在本文件内检查首列、范围长度和部分不支持类型。
@@ -92,8 +88,6 @@
 - Go 的通用 AST restore 负责非字符串类型；Rust 逐个匹配本地 Datum，Decimal/JSON/日期时间等值主要依赖调用方传入合法文本。
 - Rust 用 `ExpireTime` 显式携带固定 UTC offset，以复现 worker 捕获的墙上时间；Go 直接接收已带 Location 的 `time.Time`。
 - Rust API 同时保留 snake_case 与 Go 风格别名，但并非所有私有 Go helper 都有同名兼容方法。
-
-因此，“移植语义接近”不能替代集成等价性结论；尤其查询 hint、真实 TiDB 类型转换和 cache 索引计划仍需由未来接线及集成测试证明。
 
 ## 扩展指南
 
@@ -104,15 +98,3 @@
 调整扫描分页时，应同时覆盖：空起点、显式空 continuation、满页、短页、复合键逐层回退、NULL frontier、唯一/非唯一索引、表键已在/未在索引投影、范围上界和耗尽后调用。对应 Rust 测试仍放在 `sql_test.rs`，并用 `sql_test.go` 的 `TestScanQueryGenerator`、`TestIndexScanQueryGenerator` 作为语义基准。
 
 若要接入现有 Rust TTL worker，最关键的不是复制 SQL 文本，而是先设计 `crate::session::Datum/PhysicalTable` 与本 crate 本地模型的单一权威边界，统一参数化 SQL 与字面量 SQL 的安全策略，并补生产调用边和 worker 集成测试。还应决定是否补齐 Go 的 `USE INDEX ()`、空投影校验及 cache 统一索引计划；这些兼容性/性能选择不应由本文件静默推断。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/ttl/sqlbuilder`：确认 crate 下 `lib.rs`、`sql.rs`、独立 `sql_test.rs` 及 Go 对照文件。
-- RustCodeGraph `node --file pkg/ttl/sqlbuilder/sql.rs --offset 1 --limit 500` 与 `--offset 492 --limit 858`：核对完整 1,350 行源文件、注释草稿边界、全部可执行类型/函数和文件级引用摘要。
-- RustCodeGraph `query NewIndexScanQueryGenerator`、`query BuildDeleteSQL`、`query ScanQueryGenerator`：区分 Go/Rust 同名符号；对 Rust 函数执行 `callers`/`callees` 未返回静态调用边，因此又以生产 `.rs` 精确名称搜索核验接线现状。
-- RustCodeGraph `node --file pkg/ttl/sqlbuilder/sql.go --offset 1 --limit 700`：核对 Go builder、扫描生成器、索引路径、NULL 边界和删除逻辑。
-- 已读路径：`pkg/ttl/sqlbuilder/Cargo.toml`、`pkg/ttl/sqlbuilder/lib.rs`、`pkg/ttl/sqlbuilder/sql_test.rs`、`pkg/ttl/sqlbuilder/sql_test.go`，并搜索了 `pkg/ttl/ttlworker/scan.rs`、`pkg/ttl/ttlworker/del.rs`、`pkg/ttl/session/session.rs` 的调用关系；目标目录没有 `doc.go`。
-- 独立 Rust 测试的直接证据：`sql_builder_matches_go_state_and_delete_safety_contracts`、`composite_scan_generator_matches_go_prefix_stack_pagination`、`build_delete_sql_matches_go_composite_key_contract`、`expiration_predicate_distinguishes_timestamp_from_wall_clock_types`、`captured_offset_is_shared_by_select_and_delete_expiration`、`index_scan_generator_uses_physical_order_and_projects_table_key`。
-- Go 测试基准：`TestFormatSQLDatum`、`TestSQLBuilder`、`TestExpireConditionPreservesTemporalSemanticsInUTCSession`、`TestScanQueryGenerator`、`TestBuildDeleteSQL`、`TestIndexScanQueryGenerator`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构验证要求文档存在且恰有十一个固定二级标题。

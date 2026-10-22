@@ -2,15 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-parser-ast` crate（边界由 `pkg/parser/ast/Cargo.toml` 的 `[lib] path = "lib.rs"` 确定），负责统计类 SQL AST 的文本还原，以及 `REFRESH STATS` / `FLUSH STATS_DELTA` 目标对象的作用域去重。`pkg/parser/ast/lib.rs:5003-5005` 以公开模块 `stats` 装入本文件。
-
-当前实现同时存在两层表示，扩展时必须先分清：
-
-- `pkg/parser/ast/lib.rs` 定义了解析器使用的规范 AST，如 crate 根的 `AnalyzeTableStmt`、`RefreshStatsStmt`、`FlushStmt`；`pkg/parser/parser_actions/admin.rs:5641-5642` 会构造其中的规范 `RefreshStatsStmt`。
-- 本文件另定义 snake_case 字段的轻量结构，如 `stats::AnalyzeTableStmt`、`stats::RefreshStatsStmt`、`stats::StatsObject`。代码搜索未发现这些轻量统计结构被非测试生产代码直接构造；它们当前主要由 `pkg/parser/ast/stats_test.rs` 验证。
-- 本文件对 crate 根的规范 `crate::AnalyzeTableStmt` 实现了 `restore`，并由 `pkg/parser/ast/sql_restore.rs:678-679` 的 `restore_node` 分派调用。这是本文件目前明确接入规范 AST 主链的部分。
-
-因此，本文件是“统计 SQL 文本/去重语义的移植实现与局部接线”，不是完整的统计执行器；它不读取或更新真实统计数据。
+将 ANALYZE 选项和直方图操作编码映射为固定 SQL 关键字：`analyze_option_string`、`histogram_operation_string`。
 
 ## 核心职责
 
@@ -95,9 +87,7 @@ RustCodeGraph 的文件节点显示 `stats.rs` 被 `sql_restore.rs` 和若干测
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照是 `pkg/parser/ast/stats.go`，回归用例是 `pkg/parser/ast/stats_test.go`。Rust 在以下方面直接保持 Go 语义：ANALYZE 子句顺序、`DEFAULT` 的 nil/None 表示、选项关键字、直方图 UPDATE/DROP、REFRESH 的 LITE/FULL/CLUSTER 输出、StatsObject 三种作用域，以及全局/数据库/表的去重优先级与大小写不敏感键。
-
-`pkg/parser/ast/stats_test.rs` 复刻了 Go 测试的核心矩阵，包括：全局覆盖全部、数据库删除之前的同库表、数据库覆盖之后的同库表、大小写重复、无数据库限定表重复，以及带点的引用标识符仍按 `(db, table)` 分量区分。
+Rust 在以下方面直接保持 Go 语义：ANALYZE 子句顺序、`DEFAULT` 的 nil/None 表示、选项关键字、直方图 UPDATE/DROP、REFRESH 的 LITE/FULL/CLUSTER 输出、StatsObject 三种作用域，以及全局/数据库/表的去重优先级与大小写不敏感键。
 
 仍有明确的结构差异：
 
@@ -105,8 +95,6 @@ Go 权威对照是 `pkg/parser/ast/stats.go`，回归用例是 `pkg/parser/ast/s
 - Rust crate 根另有一套规范 AST。当前本文件仅对规范 `AnalyzeTableStmt` 增加还原；轻量 REFRESH/FLUSH/StatsObject 的逻辑尚未证明被规范节点或解析器主链调用。
 - Go 的表名是 `*TableName`，会走统一 formatter 并带上下文错误；若干 Rust 轻量类型只用 `String`，信息量和错误上下文更少。
 - Go `AnalyzeOpt.Value` 是 `ValueExpr`；规范 Rust 对应 `Option<ExprNode>` 并使用 `restore_expr`，而轻量 Rust 对应 `Option<String>`，只按原字符串输出。
-
-因此新增功能时应以 Go 行为和 crate 根规范 AST 为目标，不能只修改轻量模型或只让 `stats_test.rs` 通过就视为解析主链已完成。
 
 ## 扩展指南
 
@@ -117,12 +105,3 @@ Go 权威对照是 `pkg/parser/ast/stats.go`，回归用例是 `pkg/parser/ast/s
 若要把 REFRESH/FLUSH 逻辑接入规范 AST，优先为 `lib.rs` 中现有规范类型补充实现或建立无歧义的共享辅助函数，不要继续复制第三套结构。接线后应从 parser action 构造的节点开始验证解析、去重、统一 `restore_node` 和 Visitor/语义分类；测试仍放在独立 `*_test.rs` 文件，不能嵌入生产源文件。
 
 任何优化 `dedup_stats_objects` 的改动都要保留：全局早返回、首次数据库对象的位置、删除早先同库表、保留其他对象相对顺序、空数据库名不被库级对象吸收，以及 `CIStr.L` 大小写折叠。对还原文本的修改还要覆盖反引号/单引号转义和非法枚举值，避免生成静默残缺 SQL。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前仓库索引包含 11,467 个文件；`node --file pkg/parser/ast/stats.rs --offset 1 --limit 500` 与 `--offset 498 --limit 120` 核对了本文件全部 558 行、主要符号和文件引用；`query dedup_stats_objects --kind function` 唯一定位到本文件第 450 行。`callers/callees` 查询在限定时间内未返回结果，故调用关系以索引文件引用和精确代码搜索补证。
-- Rust 源与 crate 边界：`pkg/parser/ast/stats.rs`、`pkg/parser/ast/lib.rs`、`pkg/parser/ast/Cargo.toml`、`pkg/parser/ast/sql_restore.rs`、`pkg/parser/parser_actions/admin.rs`、`pkg/parser/ast/walk.rs`、`pkg/parser/ast/sem.rs`。
-- 独立 Rust 测试：`pkg/parser/ast/stats_test.rs`，覆盖 REFRESH 输出、FLUSH 对象输出及两者共享的作用域去重边界。
-- Go 对照：`pkg/parser/ast/stats.go` 与 `pkg/parser/ast/stats_test.go`，核对结构、还原顺序、错误分支、去重算法和测试矩阵。
-- 生产调用搜索：对非测试 `*.rs` 精确搜索 `dedup_stats_objects`、`dedup_flush_objects`、`StatsObject::{table,database,global}`、`RefreshStatsStmt` 及 `restore_node`，确认规范 ANALYZE 的还原接线，并记录轻量 REFRESH/FLUSH 当前未检出生产调用这一限制。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证文档存在且恰有十一个固定二级标题，并人工复核本文件存在原因、执行路径与安全扩展点均有源码依据。

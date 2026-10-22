@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-rule` crate（见同目录 `Cargo.toml`），模块由 `lib.rs` 以 `pub mod rule_partition_processor` 公开。它包含两层内容：前半部约 2200 行是用注释保存的 Go `rule_partition_processor.go` 对照文本；从 `use crate::rule_init::{...}` 开始才是可编译的 Rust 实现。后者针对 `rule_init.rs` 定义的紧凑 `Plan`/`Expr` IR，实现一个静态分区裁剪规则及分区区间集合工具。
-
-当前生产规划器还有一条独立运行时接线：`pkg/planner/core/optimizer_runtime.rs` 的 `LogicalRule::PartitionProcessor` 位于 Go 对齐的规则序列中，并分派到 `rewrite_static_partitions`。仓库搜索和 RustCodeGraph 均未发现该运行时直接构造或调用本文件的 `PartitionProcessor`；本文件的规则结构体目前直接调用者是独立 Rust 测试。因此，应把这里视为紧凑 IR 规则实现与迁移对照，而不能把它误认为完整规划器的唯一分区裁剪入口。
+提供公开的 `PartitionRange`、`PartitionRangeOr`，用于半开区间 `[start, end)` 与区间并、交、离散集合压实。
 
 ## 核心职责
 
@@ -79,11 +77,7 @@ RustCodeGraph 的关键边为：`rule_partition_processor.rs::optimize -> prune_
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/core/rule/rule_partition_processor.go` 是语义来源。名称层面，Rust 保留了 `PartitionProcessor`、`PartitionRange` 以及区间 OR 概念；Rust 的 `PartitionRangeOr::{intersect, union}` 对应 Go 的 `PartitionRangeOR.Intersection/Union`，相邻或重叠区间都会压实。`rule_partition_pruning_test.rs` 复用了 Go `TestPartitionRangeOperation` 的典型并交案例。
-
-核心目标也一致：在谓词下安全缩小分区范围，不能确认时保留全集，完全不命中时产生零行计划。独立测试 `rule_partition_processor_test.rs::incomparable_range_constant_aborts_pruning_like_go` 专门验证 Range 常量类型不可比时保留全部分区；`rule_partition_pruning_test.rs::range_partition_predicate_selects_canonical_partition` 验证 `col = 15` 在上界 10/20/30 中选择第二分区。
-
-但当前 Rust 不是 Go 文件的等量移植。Go 实现操作真实 `base.LogicalPlan`、`logicalop.DataSource`、表元数据与 TiDB expression/ranger，覆盖 UnionScan/CTE、显式分区名、分区重组、range columns、单调函数、collation、删除中分区、plan-cache 标记等大量分支；Rust 末段只处理紧凑 IR 的少数表达式形状。文件顶部的大段注释仅是移植参考，不能作为“Rust 已接线”的证据。完整 Rust 规划器的实际静态分区改写位于 `optimizer_runtime.rs::rewrite_static_partitions`，后续对齐必须同时判断该运行时实现与本紧凑实现各自的职责，避免形成第三套分叉逻辑。
+但当前 Rust 不是 Go 文件的等量移植。Go 实现操作真实 `base.LogicalPlan`、`logicalop.DataSource`、表元数据与 TiDB expression/ranger，覆盖 UnionScan/CTE、显式分区名、分区重组、range columns、单调函数、collation、删除中分区、plan-cache 标记等大量分支；Rust 末段只处理紧凑 IR 的少数表达式形状。
 
 ## 扩展指南
 
@@ -93,12 +87,3 @@ RustCodeGraph 的关键边为：`rule_partition_processor.rs::optimize -> prune_
 - 改区间运算应同步 `rule_partition_pruning_test.rs`；若从集合展开算法换成双指针区间算法，要保持半开区间、稳定升序、相邻区间合并和空区间排除不变量。
 - 改规则行为应同步 `rule_partition_processor_test.rs` 或 `rule_partition_pruning_test.rs`，不要把测试嵌回生产源文件。完整 Go 语义对齐还应参照 `rule_partition_processor.go` 与 `rule_partition_pruning_test.go`，特别关注类型转换、collation、Null、显式分区名和错误降级。
 - 性能风险集中在 `PartitionRangeOr` 展开大区间、每个 DataSource 克隆元数据，以及复杂谓词反复构造集合；兼容风险集中在哈希算法、开闭界、类型比较和多列分区语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标目录和目标 Rust/Go/测试文件均已索引。
-- RustCodeGraph 查询：`query PartitionProcessor`、`query prune_plan`、`query partitions_for_expr`、`query PartitionRangeOr`，以及对 `prune_plan`、`partitions_for_expr` 的 `callers`/`callees`；确认了 `optimize -> prune_plan -> validate_partition_info/partitions_for_expr/full_set` 等直接边，并发现本文件结构体无生产调用者证据。
-- 已读生产与装配文件：`pkg/planner/core/rule/rule_partition_processor.rs`、`rule_init.rs`、`lib.rs`、`Cargo.toml`，以及运行时入口 `pkg/planner/core/optimizer_runtime.rs` 和 flag 设置位置 `logical_plan_builder_runtime.rs`。
-- 已读 Go 对照：`pkg/planner/core/rule/rule_partition_processor.go`；已检索并核对 `pkg/planner/core/rule/rule_partition_pruning_test.go` 的表达式裁剪和 `TestPartitionRangeOperation` 案例。
-- 已读独立 Rust 测试：`pkg/planner/core/rule/rule_partition_processor_test.rs`、`pkg/planner/core/rule/rule_partition_pruning_test.rs`。它们分别覆盖类型不可比时的保守回退、Range 等值定位与区间并交压实。
-- 本任务是只新增说明文档的分析任务，按计划不运行 Cargo；文档结构以任务指定的 11 个固定二级标题检查。

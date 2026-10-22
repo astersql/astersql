@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-expression-generator-helper`，crate 根为同目录的 `lib.rs`，并由根 `Cargo.toml` 将 `pkg/expression/generator/helper` 列为 workspace member。`lib.rs` 以 `pub mod helper` 装入本文件，再用 `pub use helper::*` 对外重导出全部公开项。
-
-它对应 Go 包文件 `pkg/expression/generator/helper/helper.go`，描述向量化表达式**源码生成阶段**使用的类型模板上下文；它不是 SQL 运行时的表达式求值器，也不保存会话或查询状态。Go 侧 `compare_vec.go`、`control_vec.go`、`other_vec.go`、`string_vec.go` 和 `time_vec.go` 通过点导入该 helper 包实际消费这些定义。当前 Rust 侧的各生成器仍在自己的文件中定义同类 `TypeContext`/常量，根 Cargo 清单也未显示其他 crate 对本 crate 的路径依赖，因此本文件目前是已迁移但尚未统一接入各 Rust 生成器的共享模型。
+这些值本身不执行生成、不解析模板，也不访问 `chunk.Column`；它们是供生成器插值和选择模板分支的不可变元数据。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@ RustCodeGraph 的文件级“used by”提示曾把同名 `TypeContext` 关联�
 
 ## 与 Go 版本的对应关系
 
-Rust `TypeContext` 与 Go `TypeContext` 逐字段对应：`et_name`/`ETName`、`type_name`/`TypeName`、`type_name_in_column`/`TypeNameInColumn`、`type_name_go`/`TypeNameGo`、`fixed`/`Fixed`。七个 Rust 常量也逐字对齐 Go 的 `TypeInt`、`TypeReal`、`TypeDecimal`、`TypeString`、`TypeDatetime`、`TypeDuration`、`TypeJSON`。
-
 语言层差异是：Go 使用可变包级 `var` 和拥有型 `string`，Rust 使用不可变 `const` 与 `&'static str`；Rust 额外派生复制、比较、调试和默认能力。Go 的导出字段可被调用方修改副本或包变量，Rust 常量本身不能被修改，但公开字段允许调用方构造任意组合。
 
-Go 侧已形成共享 helper 包并被五个生成器点导入；Rust 侧当前把 helper 做成单独 crate，却尚未替换相邻生成器里的重复模型。这是接线状态差异，不是字段语义差异。`migration_aster_unit_test.rs` 的三项测试分别锁定七组字面值、固定长/变长集合和 Go 零值语义。
+Go 侧已形成共享 helper 包并被五个生成器点导入；Rust 侧当前把 helper 做成单独 crate，却尚未替换相邻生成器里的重复模型。这是接线状态差异，不是字段语义差异。
 
 ## 扩展指南
 
@@ -80,12 +76,3 @@ Go 侧已形成共享 helper 包并被五个生成器点导入；Rust 侧当前�
 - 若要让 Rust 生成器真正复用本 crate，应在其 Cargo 清单增加显式依赖，并逐个删除/替换重复定义；这是跨文件接线任务，不属于本文件当前实现事实。还需运行各生成器的独立渲染测试，比较生成文本而非只验证 helper 常量。
 - 若要防止非法组合，可考虑私有字段、枚举或受校验构造器，但这会改变公开 API，并可能失去 `const`/`Copy` 的简单性；需先盘点所有调用方。
 - 兼容风险主要是生成出的 Go 标识符变化；正确性风险是错误选择固定长分支；性能风险来自把固定长类型误走逐值 Append/Get 路径。新增字段还会影响所有结构体字面量和派生比较。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引覆盖 Rust/Go；`node --file pkg/expression/generator/helper/helper.rs --offset 1 --limit 400` 读取了完整 101 行源文件；`query TypeContext --kind struct`、`query TYPE_INT --kind constant`、`callers/callees TypeContext`、`callers/callees TYPE_INT` 和 `files --filter pkg/expression/generator` 用于核对符号、无函数调用边以及相邻生成器重复定义。
-- Rust 源与入口：`pkg/expression/generator/helper/helper.rs`、`pkg/expression/generator/helper/lib.rs`、`pkg/expression/generator/lib.rs`，以及相邻 `compare_vec.rs`、`control_vec.rs`、`other_vec.rs`、`string_vec.rs` 的搜索命中。
-- 清单与构建边界：根 `Cargo.toml`、`pkg/expression/generator/helper/Cargo.toml`、`pkg/expression/generator/Cargo.toml`、`pkg/expression/generator/helper/BUILD.bazel`。
-- Go 对照与真实模板消费：`pkg/expression/generator/helper/helper.go`，以及 `compare_vec.go`、`control_vec.go`、`other_vec.go`、`string_vec.go`、`time_vec.go` 的 helper 点导入和模板字段使用。
-- 独立测试：`pkg/expression/generator/helper/migration_aster_unit_test.rs`；同目录没有 Go `_test.go`，该 Rust 测试是目标 helper 的直接回归证据。相邻生成器测试验证的是各自的 Rust 重复定义，不能替代本 crate 测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令和人工事实复核作为交付验证。

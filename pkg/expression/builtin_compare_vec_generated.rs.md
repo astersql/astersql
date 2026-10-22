@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate（见 `pkg/expression/Cargo.toml`），是从 TiDB Go 生成文件 `pkg/expression/builtin_compare_vec_generated.go` 迁移出的“向量比较 + `COALESCE`”语义内核。`pkg/expression/lib.rs` 通过 `#[path = "builtin_compare_vec_generated.rs"] mod builtin_compare_vec_generated_kernel;` 无条件编译它，但模块本身是私有的；仅在 `cfg(test)` 下由 `expression_compare_vec_generated` 门面重新导出其公开项。
-
-因此，当前文件不是 SQL 表达式注册、签名选择或 `chunk::Column` 调度入口。仓库级符号搜索未发现两份专用 Rust 测试之外的调用者，说明它目前承担可独立验证的迁移内核角色，尚未接到 Rust 生产表达式执行主链。Go 文件中的 `builtin*Sig.vecEval*` 才是当前 Go 侧按具体签名接入运行时的生成代码。
+这两组实现共享 `Option<T>` 表示 SQL NULL，返回值以 `Vec<Option<_>>` 保存逐行结果。
 
 ## 核心职责
 
@@ -95,14 +93,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 生成文件把 7 个比较算子乘以 6 种类型展开为 42 个 `vecEvalInt` 方法，并为 7 种 `COALESCE` 返回类型分别生成向量方法与标量回退。Rust 用 `CompareOp + vec_compare_by` 和泛型 `vec_coalesce` 去重，保持的核心语义包括：
-
-- 普通比较合并两侧 NULL；`NullEQ` 双 NULL 为真、单侧 NULL 为假。
-- Real 使用 Go `cmp.Compare` 的 NaN 顺序；Decimal、字符串、Time、Duration、JSON 使用对应领域比较规则。
-- 每个生成签名报告可向量化。
-- `COALESCE` 向量求值可能观察到标量短路不会观察到的错误/警告，因此出现任一情况时撤销新警告并整式按行回退。
-- 时间结果采用返回类型的 FSP。
-
 结构上的差异也很重要：Go 方法直接持有 `b.args`、`b.tp`、`chunk.Chunk`、输出 `chunk.Column` 和缓冲区分配器，是已接线的表达式签名实现；Rust 文件只接受切片或 `VectorExpression` trait 对象，不含 builtin signature 类型、chunk 适配和注册。Go 的字符串/JSON `COALESCE` 会先保留每个参数列再逐行选择，其他类型复用单个临时列；Rust 对所有类型使用统一“逐参数填空”的拥有型向量算法，结果语义由现有测试验证，但内存布局并非逐句翻译。
 
 Go 测试 `builtin_compare_vec_generated_test.go` 声明了全部算子、类型及三参数 `COALESCE` 的通用向量测试/基准矩阵；Rust 的 `builtin_compare_vec_generated_test.rs` 覆盖全部比较组合，`builtin_compare_vec_generated_5_aster_unit_test.rs` 进一步覆盖 NULL、NaN、collation、列长错误、警告回滚、短路错误和时间 FSP。Rust 目前没有对等的基准，也没有证明其已替代 Go 运行时路径。
@@ -115,20 +105,3 @@ Go 测试 `builtin_compare_vec_generated_test.go` 声明了全部算子、类型
 - 接入生产执行链：需要在现有 builtin signature/chunk 接口与这些拥有型向量 API 之间建立适配，并解决错误上下文、警告类型、输出缓冲复用及表达式注册；不能仅把私有模块改为公开就视为完成接线。
 - 性能修改：重点衡量 `Vec<Option<T>>` 分配、`T: Clone`、所有参数整列求值和字符串/JSON 克隆。优化必须保留遇错/遇警告时的全式标量重算和警告回滚不变量。
 - 兼容性修改：优先与 Go 生成文件和生成器模板对齐，尤其不可改用 Rust `f64::partial_cmp` 的默认 NaN 行为，也不可让普通比较把 NULL 编码为 0。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；随后使用 `explore`、`node --file`、`query`、`callers`/`callees` 核对本文件符号及调用关系。
-- `pkg/expression/builtin_compare_vec_generated.rs`：完整 404 行实现，重点为 `CompareOp`、`EvalError`、`EvalContext`、`vec_compare_by`、六个比较入口、`VectorExpression`、`fallback_coalesce`、`vec_coalesce` 与七个类型包装。
-- `pkg/expression/lib.rs`：生产期私有模块装配、测试期 `expression_compare_vec_generated` 重导出，以及两份测试模块声明。
-- `pkg/expression/Cargo.toml`：crate 名称、`lib.rs` 入口及 `types-decimal`、`types-json-functions`、`types-time` 等依赖边界。
-- `pkg/expression/builtin_compare_vec_generated.go`：42 个展开比较方法、7 组 `COALESCE` 向量/回退方法、警告回滚、buffer 生命周期和 Time FSP 逻辑。
-- `pkg/expression/generator/compare_vec.rs`：默认生成目标及 Go 主文件/测试文件生成入口。
-- `pkg/expression/builtin_compare_vec_generated_test.go`：Go 全算子/类型测试与基准用例矩阵。
-- `pkg/expression/builtin_compare_vec_generated_test.rs`：Rust 全部 7 算子 × 6 类型的基本结果与 NULL 组合覆盖。
-- `pkg/expression/builtin_compare_vec_generated_5_aster_unit_test.rs`：Rust 细化边界与 `COALESCE` 回退行为覆盖。
-- 全仓精确符号搜索：排除目标源文件及两份专用 Rust 测试后，`vec_compare_*` 和 `vec_coalesce_*` 均无使用点，支持“尚无生产调用者”的判断。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试。完成检查以任务指定的 11 章节结构命令为准，并人工复核上述源码、装配、Go 对照与测试证据；生产链实际执行覆盖仍未由运行时测试证明。

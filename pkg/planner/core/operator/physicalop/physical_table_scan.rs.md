@@ -2,18 +2,7 @@
 
 ## 文件定位
 
-本文件定义 Rust 物理计划层的表扫描叶子算子 `PhysicalTableScan`，所属 crate 是
-`astersql-planner-core-operator-physicalop`。同目录 `Cargo.toml` 指定 `lib.rs` 为 crate
-入口；`lib.rs` 以 `mod physical_table_scan` 装配本模块、通过
-`pub use physical_table_scan::*` 导出符号，并用
-`direct_operator_core!(PhysicalTableScan, PhysicalSchemaProducer)` 把它接入统一的
-`PhysicalPlan`/具体物理算子接口。
-
-该节点承接逻辑表扫描和访问路径选择产生的表、列、范围、条件、统计及顺序属性，随后被
-`PhysicalTableReader`、`PhysicalIndexLookUpReader`、MPP fragment 或 typed 执行路径消费。
-它描述“扫描哪个物理表、读取哪些列、按什么范围和顺序读取”，本文件本身不打开 KV
-迭代器；实际 KV I/O 可见 `pkg/executor/physical_plan_runtime.rs` 和
-`pkg/session/runtime/typed_adapter_bridge.rs`。
+首次执行时序列化的旧 `Ranges`。
 
 ## 核心职责
 
@@ -159,11 +148,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `physical_table_scan.go`。Rust 已覆盖表扫描核心字段、基础构造与
-克隆、访问对象、范围/全扫判定、Explain 主干、分区 ID、附加 handle、下标解析、延迟
-物化过滤 PB、成本入口和内存估算，并由独立 Rust 测试覆盖空范围 Explain、别名/分区
-归一化、有符号 handle 的 full-range 判定、列存索引克隆/缓存拒绝等行为。
-
 仍有重要差异：
 
 - Go 的两个同名构造函数从 `LogicalTableScan`/`DataSource`/`AccessPath` 完整复制元数据，
@@ -207,24 +191,3 @@
   `pkg/planner/core/physical_plan_test.go::TestPhysicalTableScanExtractCorrelatedCols`。
 - 正确性风险集中在范围漏谓词、分区 ID、Schema/列顺序和相关列；兼容风险集中在 Explain
   文本与 PB 字段；性能风险集中在表达式/范围克隆、范围爆炸和过粗行宽估算。
-
-## 验证依据
-
-- RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；
-  `query PhysicalTableScan` 定位 Rust/Go 主类型及两个构造函数，`node --file` 完整读取本
-  文件 553 行并报告 35 个使用文件。`callers/callees` 因 Rust/Go 同名及常用方法名产生
-  歧义，故按技能规则用精确 `rg` 引用搜索补足调用边。
-- 源码与模块证据：完整读取 `physical_table_scan.rs`、`physicalop/Cargo.toml`、`lib.rs`
-  的模块导出、`direct_operator_core!` 接线与 cache contract。
-- 上下游证据：`implementation_rules.rs::ImplTableScan::OnImplement`、
-  `base_physical_plan.rs` 的逻辑扫描物理化、`physical_table_reader.rs`、`fragment.rs`、
-  `typed_adapter_bridge.rs::encode_table_record_ranges`、`physical_plan_runtime.rs` 和
-  `cache_snapshot.rs::CachedTableScan`。
-- Go 对照：读取同目录 `physical_table_scan.go` 的结构体、构造、Clone、Explain、范围、
-  selection、下标、PB 与代价相关实现；其文件共 1,026 行。
-- 测试证据：完整读取 `physical_table_scan_test.rs` 151 行和
-  `physical_table_scan_aster_unit_test.rs` 64 行；读取 Go
-  `physical_plan_test.go::TestPhysicalTableScanExtractCorrelatedCols`，确认 Go 的延迟物化
-  相关列与 PB 下推边界。
-- 本任务仅新增说明文档，按计划不运行 Cargo；交付前使用任务指定命令验证文件存在且恰有
-  11 个固定二级章节，并人工确认未把 Go 独有或 Rust 简化逻辑写成已支持能力。

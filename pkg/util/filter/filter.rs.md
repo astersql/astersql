@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-filter` crate 的核心实现，提供与 MySQL replication rule 风格一致的库表过滤器。crate 入口 `pkg/util/filter/lib.rs` 将本模块公开并重导出其符号；`pkg/util/filter/Cargo.toml` 表明它直接依赖 `astersql-util-table-filter`（规则与 `Table`）、`astersql-util-table-rule-selector`（通配选择器）和 `regex`（`~` 前缀正则）。
-
-生产代码中的直接使用点是 `pkg/util/regexpr-router/regexpr_router.rs`：`RouteTable::AddRule` 用 `New` 把 schema/table 路由模式编译成 `Filter`，`RouteTable::Route` 和扩展列查询路径再调用 `Filter::Match` 选择命中的路由规则。因此本文件位于“路由规则配置 -> 规则编译 -> 单表匹配”的工具链中，不负责 SQL 解析、数据扫描或路由冲突裁决。
+规则优先级遵循 Go 实现：schema 层有 `DoDBs` 时只看是否命中白名单，否则才使用 `IgnoreDBs`；table 层命中 `DoTables` 立即放行，命中 `IgnoreTables` 拒绝，有 `DoTables` 但未命中时拒绝。
 
 ## 核心职责
 
@@ -92,7 +90,6 @@
 
 - Go 的指针和 nil 用 Rust 的 `Box`、借用与 `Option<Box<Rules>>` 表达；Rust 方法不存在 nil receiver，只有 `rules == None` 的不过滤路径。
 - Go 的 `sync.RWMutex + map` 对应 Rust 的 `RwLock<HashMap<...>>`；Go 锁操作无返回值，Rust 在 poisoned lock 上选择 panic。
-- Go selector 的 `any` 负载类型断言对应 Rust `Arc<dyn Any + Send + Sync>` 的 downcast。
 - Go 返回 `error` 并用 `errors.Trace` 包装正则错误；Rust 将错误收敛为 `String`，不保留结构化错误链。
 - Rust 的 `ApplyOn` 总返回 `Vec`，无法保留 Go nil slice 与空 slice 的类型区别；`filter_test.rs` 用 `ExpectedTables::Nil` 只断言结果为空。
 - Rust 为普通非通配字面量增加直接字符串相等路径，目的是在 selector 的字节 trie 行为之外保持 Go 对 Unicode schema/table 字面量的精确语义；相关测试为 `TestCaseInsensitiveUnicodeLiteral` 和 `migration_case_insensitive_matching_lowercases_unicode`。
@@ -107,13 +104,3 @@ Go 测试 `pkg/util/filter/filter_test.go` 与 Rust 的 `pkg/util/filter/filter_
 - 新增可变规则 API 前，必须设计 selector、`patternMap` 与结果缓存的同步失效；当前缓存正确性依赖规则构造后不可变。
 - 若改变缓存策略，应评估高基数表名导致的内存增长、锁竞争和重复未命中计算；若引入容量限制，要保持逐次 `Match` 的确定性。
 - 若改变错误类型或正则引擎，需要同步 `RouteTable::AddRule` 的错误上下文，并证明与 Go regexp 的可接受语法仍兼容。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、目标目录 10 个文件；`files --filter pkg/util/filter` 确认目标、Go 对照和独立测试均在索引中；`node --file pkg/util/filter/filter.rs --offset 1/261` 完整读取 504 行源码并显示 34 个符号。针对 `New`、`Match` 等通用名称的全库 `explore/query/callers/callees` 结果存在同名歧义，故按技能规则用精确源码搜索补齐直接调用边，未把歧义结果当作本文件事实。
-- 源与 crate 边界：`pkg/util/filter/filter.rs`、`pkg/util/filter/lib.rs`、`pkg/util/filter/Cargo.toml`。
-- 直接生产调用：`pkg/util/regexpr-router/regexpr_router.rs`（`RouteTable::AddRule`、`RouteTable::Route` 及扩展列匹配路径）与 `pkg/util/regexpr-router/Cargo.toml`。
-- 下游类型/匹配接口：`pkg/util/table-filter/table_filter.rs` 与 `pkg/util/table-rule-selector/trie_selector.rs`。
-- Go 对照：`pkg/util/filter/filter.go`、`pkg/util/filter/filter_test.go`。
-- Rust 独立测试：`pkg/util/filter/filter_test.rs`、`pkg/util/filter/migration_aster_unit_test.rs`；它们覆盖四类 Do/Ignore 组合、通配与正则、大小写、Unicode、空规则、缓存命中、无表名、非法规则及 `Apply`/`ApplyOn` 差异。
-- 本任务是纯文档分析，依计划不运行 Cargo。交付前另执行任务指定的 11 章节结构检查，并人工检查唯一新增生产物、`plan.md` 未修改、文档未建议把测试写入源文件。

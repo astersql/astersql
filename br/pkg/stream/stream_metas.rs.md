@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-stream` library crate；`br/pkg/stream/Cargo.toml` 把 `lib.rs` 设为入口，`lib.rs` 以 `#[path = "stream_metas.rs"] pub mod stream_metas` 挂载本模块，并通过 `pub use stream_metas::*` 扁平导出公共项。它对应 Go 的 `br/pkg/stream/stream_metas.go`，位于 BR 流备份元数据读取、日志截断和 migration 持久化这一控制面，而不是 SQL 执行主链。
-
-当前 Rust 文件把 Go 大文件中的四类能力集中在一起：`StreamMetadataSet` 管理 metadata 摘要和删除写回，`UpdateShiftTS*` 计算恢复窗口的前移时间戳，`GetTSFromFile`/`SetTSToFile` 持久化历史截断安全点，`MigrationExt`/`Migrations` 管理 `v1/migrations` 下的 BASE 与追加层。跨 crate 的直接生产调用证据包括 `br/pkg/restore/log_client/log_file_manager.rs` 对 `TryParseTaggedBackupMetaFileNameWrapper` 和 `UpdateShiftTS` 的调用；crate 内测试入口 `br/pkg/stream/export_test.rs::StreamMetadataSet::LoadFrom` 则以 `u64::MAX` 包装全量加载。
+`hashMigration`、`hashMetaEdit`、`nameOf` 生成与 Go 对齐的 CRC64-ISO 内容指纹及 `{sn:08}_{hash:016X}.mgrt` 文件名；`isInsane` 为潜在前缀删除提供安全判定，但当前文件的 Rust 路径并未把它接入真实删除流程。
 
 ## 核心职责
 
@@ -72,9 +70,7 @@ RustCodeGraph 报告目标文件被 29 个文件引用，但对所查方法 `Loa
 
 ## 与 Go 版本的对应关系
 
-Rust 的数据形状、主要命名、shift TS 分支、safepoint 文本格式、metadata 顶层统计、migration CRC64-ISO 命名以及 BASE 临时写入顺序均直接对照 `br/pkg/stream/stream_metas.go`。独立 Rust 测试 `br/pkg/stream/stream_metas_test.rs` 对照 `stream_metas_test.go`，覆盖 V1/V2 截断、严格时间边界、safepoint 往返、shift TS、migration hash/merge/append/retry、用户取消和 phantom migration；`br/pkg/stream/parity_test.rs` 另覆盖部分纯函数奇偶性。
-
-当前 Rust 版不是 Go 文件的完整等价移植。Go 的 metadata 加载使用配置的 helper/批大小并保护并发回调；Rust 当前忽略这两个字段。Rust 的删除候选仅来自 `FileGroups`，不等价于 Go 的 V1/V2 处理；虽然 Rust 测试 `truncate_log_common(false)` 宣称覆盖 V1，本任务未运行 Cargo，且该断言与当前候选生成源码存在张力，应视为待回归的实现缺口。Go 的删除经 `MigrationExtension`、hook、dry-run effects 和 `doTruncateLogs` 汇合；Rust 直接删除/回写。Go 的 `MergeAndMigrateTo` 获取远程写锁，保留更丰富的 Base/Source/MigratedTo 结果，执行 `migrateTo`、truncate、compaction、前缀和外部全备处理并收集删除警告；Rust 当前只合并、写 BASE、删 migration 文件，`always_run_truncate` 不产生行为。Go 会校验 migration 版本，Rust `Load` 当前直接反序列化。扩展时必须以 Go 的相应函数为语义基线，不能因现有 Rust 测试通过而删除这些差距。
+Go 的 metadata 加载使用配置的 helper/批大小并保护并发回调；Rust 当前忽略这两个字段。Rust 的删除候选仅来自 `FileGroups`，不等价于 Go 的 V1/V2 处理；虽然 Rust 测试 `truncate_log_common(false)` 宣称覆盖 V1，本任务未运行 Cargo，且该断言与当前候选生成源码存在张力，应视为待回归的实现缺口。Go 的删除经 `MigrationExtension`、hook、dry-run effects 和 `doTruncateLogs` 汇合；Rust 直接删除/回写。Go 的 `MergeAndMigrateTo` 获取远程写锁，保留更丰富的 Base/Source/MigratedTo 结果，执行 `migrateTo`、truncate、compaction、前缀和外部全备处理并收集删除警告；Rust 当前只合并、写 BASE、删 migration 文件，`always_run_truncate` 不产生行为。扩展时必须以 Go 的相应函数为语义基线，不能因现有 Rust 测试通过而删除这些差距。
 
 ## 扩展指南
 
@@ -83,11 +79,3 @@ Rust 的数据形状、主要命名、shift TS 分支、safepoint 文本格式�
 若补齐 migration，应围绕 `MigrationExt::{Load,AppendMigration,MergeAndMigrateTo}` 接入真实读写锁、版本校验和 Go 的 migrate/truncate 各处理阶段，同时保证 `BASE_TMP` rename 顺序及幂等重试。`AppendMigration` 的“读取最大序号再写入”必须纳入锁域。删除前缀时应让 `isInsane` 成为不可绕过的守卫，并为绝对路径、`..`、`.`、`v1` 等输入增加独立回归测试。
 
 任何字段或协议调整都需同时检查 `br/pkg/stream/stream_metas.go`、`br/pkg/stream/stream_metas_test.go`、Rust 测试和 `br/pkg/restore/log_client/log_file_manager.rs`。性能风险主要来自全量列举/读取、线性路径匹配和顺序删除；兼容风险集中于历史 safepoint、migration 文件名/CRC、M1/M2 版本及 V1/V2 metadata；正确性风险集中于无锁并发、部分删除和错误被吞掉。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引可用；`files --filter br/pkg/stream` 确认目标与测试被索引；`node --file br/pkg/stream/stream_metas.rs --offset 1/261/521` 读取完整 818 行并确认符号、分支和文件级引用；`node --file br/pkg/stream/stream_metas_test.rs --offset 1/501` 读取完整 772 行测试。
-- RustCodeGraph 调用查询：对 `LoadUntilAndCalculateShiftTS`、`RemoveDataFilesAndUpdateMetadataInBatch`、`UpdateShiftTS`、`MergeAndMigrateTo` 执行 `callers`/`callees`，本索引未返回方法级边；因此又核对了模块入口和直接引用，且在本文明确记录该限制。
-- crate/入口：读取 `br/pkg/stream/Cargo.toml` 与 `br/pkg/stream/lib.rs`，确认 package 边界、模块挂载、公开再导出和测试文件独立挂载。
-- Go 对照：读取 `br/pkg/stream/stream_metas.go` 的 metadata、shift TS、migration merge/migrate 与 `processTruncatedTo` 区段；用 `br/pkg/stream/stream_metas_test.go` 的测试列表核对覆盖主题和尚未移植的复杂场景。
-- 直接调用与测试：核对 `br/pkg/restore/log_client/log_file_manager.rs`、`br/pkg/stream/export_test.rs`、`br/pkg/stream/parity_test.rs` 和 `br/pkg/stream/stream_metas_test.rs`。未运行 Cargo，符合本任务纯文档约束。

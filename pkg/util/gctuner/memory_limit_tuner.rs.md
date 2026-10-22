@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-gctuner` crate，由 `pkg/util/gctuner/lib.rs` 公开为 `memory_limit_tuner` 子模块。它移植 Go `pkg/util/gctuner/memory_limit_tuner.go` 的 memory-limit 调谐算法：以 `task_memory::tracker::ServerMemoryLimit` 为基数计算阈值，在预计下一次 GC 会触达阈值时短暂提高阈值，降低内存用量在阈值附近波动造成的频繁回收。
-
-当前 Rust 实现必须与“生产接线”区分看待。`setMemoryLimit` 只读写本文件的 `RUNTIME_MEMORY_LIMIT: AtomicI64`，没有调用 Rust 分配器、操作系统或 Go `runtime/debug.SetMemoryLimit` 的等价接口；因此它目前记录并驱动移植后的状态机，但不能独自约束进程实际内存。RustCodeGraph 将本文件的直接使用者列为 `pkg/util/gctuner/memory_limit_tuner_test.rs`；工作区 Rust 搜索也未发现生产代码调用本文件的 `GlobalMemoryLimitTuner` 或 `init()`。`br/cmd/br` 中同名对象来自 `br/cmd/br/stubs.rs`，不是这里的类型。
+`Start`/`Stop` 管理周期 finalizer，`DisableAdjustMemoryLimit`/`EnableAdjustMemoryLimit` 为需要临时关闭调谐的调用者提供可嵌套计数。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@
 
 ## 与 Go 版本的对应关系
 
-结构与算法基本逐项对应 `memory_limit_tuner.go`：同名状态字段、110% fallback、两次命中判定、服务器上限/比例快照、禁用计数、issue 48741 的窗口内更新规则，以及 `MemoryLimitGCLast`/`MemoryLimitGCTotal`/`TriggerMemoryLimitGC` 指标均保留。
-
 重要差异包括：
 
 - Go 用 `debug.SetMemoryLimit` 查询和设置真实 Go runtime 限制；Rust `setMemoryLimit` 只操作本地原子镜像。
@@ -100,12 +96,3 @@ Go 测试 `memory_limit_tuner_test.go` 用真实分配与 `runtime.GC` 验证 ru
 - 修改窗口行为应集中在 `startResetWorker` 与 `UpdateMemoryLimit`，保留 issue 48741 的“不变配置保留 fallback、变化配置立即应用”不变量。
 - 为 Disable/Enable 增加防错时，应定义嵌套调用和计数下溢语义，并扩充 `test_set_memory_limit`；为 percentage 增加校验时，应覆盖零、负数、NaN、无穷及全局仲裁模式。
 - 测试逻辑必须继续放在独立的 `pkg/util/gctuner/memory_limit_tuner_test.rs`（迁移级契约可放在既有 `migration_aster_unit_test.rs`），不要内嵌回生产源文件。并发测试使用 `serial_test`，恢复 `ServerMemoryLimit`、触发标志与仲裁器状态，并等待 worker 退出。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含本仓库 7,032 个 Rust 文件；`files --filter pkg/util/gctuner` 列出目标、Go 对照和独立测试；`node --file pkg/util/gctuner/memory_limit_tuner.rs --offset 1 --limit 360` 返回完整 322 行和 45 个符号，并标记直接使用者 `memory_limit_tuner_test.rs`。
-- RustCodeGraph 精确符号查询：`query MemoryLimitTuner`、`query UpdateMemoryLimit --json` 定位 Rust `MemoryLimitTuner` 与 `memory_limit_tuner.rs::UpdateMemoryLimit`；对该 Rust 节点执行 callers/callees 未返回生产调用边。
-- 已读生产证据：`pkg/util/gctuner/memory_limit_tuner.rs`、`pkg/util/gctuner/finalizer.rs`、`pkg/util/gctuner/mem.rs`、`pkg/util/gctuner/lib.rs`、`pkg/util/gctuner/Cargo.toml`。
-- 已读对照与测试：`pkg/util/gctuner/memory_limit_tuner.go`、`pkg/util/gctuner/memory_limit_tuner_test.go`、`pkg/util/gctuner/memory_limit_tuner_test.rs`，以及 `migration_aster_unit_test.rs` 中 memory-limit 回归段落。
-- 局部 `rg` 核验了 `GlobalMemoryLimitTuner`、`MemoryLimitTuner`、`UpdateMemoryLimit` 与 crate 依赖；结果仅显示本 crate 测试/迁移测试使用此 Rust 实现，生产侧同名 BR 调用解析到独立 stub。
-- 独立 Rust 测试覆盖：首次命中发布触发位、两阶段 fallback 与复位、issue 48741、禁用/启用、全局仲裁比例上限、自动 finalizer 驱动以及 GC 时间指标等待。按任务约束，本次纯文档分析未运行 Cargo。

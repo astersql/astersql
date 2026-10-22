@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema` crate；crate 根 `pkg/infoschema/lib.rs` 以 `pub mod builder_misc` 公开该模块。它不是 Placement Policy、Resource Group 或临时表状态的实际存储实现，而是一个兼容 Go 命名的薄适配层：把杂项 DDL 操作转换成 `pkg/infoschema/builder.rs` 中统一的 `Builder::ApplyDiff` 调用，或直接转发到 `Builder::addTemporaryTable`、`Builder::initMisc`。
-
-`pkg/infoschema/Cargo.toml` 将 crate 根设为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/infoschema"` 标明 Go 对照包。目标文件只直接使用同 crate 的 `builder` 与 `infoschema` 模块，不引入新的外部依赖或 feature 条件。
+不自行读取元数据、不持有缓存、不构建最终 `InfoSchema`；真正的状态变更和错误产生于 `builder.rs`。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/builder_misc.go`。公开意图一一对应：创建/修改/删除策略、创建或修改/删除资源组、登记临时表、初始化杂项集合。
-
 实现结构存在重要差异：Go 函数直接调用 `meta.Reader` 并操作 `b.infoSchema`，使用 `diff.SchemaID`；Rust 包装层将 `schema_id` 搬到 `table_id` 后复用 `Builder::ApplyDiff`。Go 的 create/alter resource group 由单一函数处理而不接收布尔参数；动作由 `builder.go` 的分派决定，Rust 包装函数则用 `alter` 显式选择动作。
 
 Go 在重复创建策略时会标记引用该策略的 bundle 更新，修改策略也会标记；Rust 底层目前只覆盖 policy map，并且 `tables_referencing_policy` 是返回空向量的迁移占位。Go 的策略/资源组缺失错误使用结构化 `ErrPlacementPolicyNotExists`、`ErrResourceGroupNotExists`，Rust 当前使用字符串错误。Go `initMisc` 还接收但忽略 masking policies 参数，Rust 签名只保留 policies 与 resource groups。上述差异是当前代码事实，不应描述为完整语义等价。
@@ -84,12 +80,3 @@ Go 在重复创建策略时会标记引用该策略的 bundle 更新，修改策
 - 补齐 Go 语义时，优先实现 `Builder::tables_referencing_policy` 和 bundle 更新规则，并在独立测试文件中验证修改/删除策略返回的表 ID；不要把测试写入本生产文件。
 - 应在 `pkg/infoschema/builder_test.rs` 或相邻独立 `*_test.rs` 中增加对本文件公开包装函数的直接回归，至少覆盖 create/alter/drop、`alter` 两分支、缺失元数据、错误透传、原始 diff 未修改，以及 `schema_id -> table_id` 映射。
 - 性能风险主要来自 `SchemaDiff::clone` 中的 `affected_options`/`sub_action_types` 复制，以及未来真实实现关联表扫描后的复杂度；兼容风险集中于 Go 结构化错误与 Rust 字符串错误、bundle 更新缺口和受影响 ID 返回值。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/infoschema/builder_misc.rs` 确认目标文件 108 行、11 个符号并报告 `used by 0 files`；`node --file ... --offset 1 --limit 500` 用于读取完整目标源码；`query` 确认 Rust/Go 同名符号；关键 `callers`/`callees` 查询无返回边，因此调用关系又以模块和源码搜索交叉核对。
-- 生产源码：`pkg/infoschema/builder_misc.rs`（全部符号）、`pkg/infoschema/builder.rs`（`ActionType`、`SchemaDiff`、`MetadataReader`、`Builder::ApplyDiff`、三个委托目标及 `Build`/全量初始化接线）、`pkg/infoschema/lib.rs`（模块公开）、`pkg/infoschema/infoschema_v2.rs`（临时表 Data 状态）。
-- crate 配置：`pkg/infoschema/Cargo.toml`（crate 根、同仓依赖和 Go 包移植元数据）。`pkg/infoschema` 下未发现 `doc.go`，因此没有额外包契约可读。
-- Go 对照：`pkg/infoschema/builder_misc.go`（直接实现与语义差异）、`pkg/infoschema/builder.go`（Go 动作分派及全量初始化调用点）。
-- 测试证据：`pkg/infoschema/infoschema_v2_test.go::TestMisc` 直接覆盖 Go 同名函数；`pkg/infoschema/infoschema_v2_test.rs::test_misc_resource_groups`、`test_bundles_via_apply_diff_policy`、`test_special_attribute_and_policies` 覆盖 Rust 委托目标；`pkg/infoschema/infoschema_test.rs::test_build_schema_with_global_temporary_table` 覆盖临时表登记。现有 Rust 测试未直接调用本文件包装函数，这是明确的覆盖限制。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；最终仅执行固定 11 章节结构检查并人工复核上述事实。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics` crate。`pkg/statistics/Cargo.toml` 将 crate 根设为 `lib.rs`；`pkg/statistics/lib.rs` 以 `mod cmsketch` 装配本模块，并用 `pub use cmsketch::*` 将其公开类型和函数重导出。它实现统计信息中的点频率估计结构：用 `CMSketch` 保存普通值的近似频数，用 `TopN` 保存高频值的精确频数，并负责二者的样本构建、查询、合并和 tipb protobuf 编解码。
-
-在应用链路中，`pkg/statistics/index.rs::Index::QueryBytes` 按“TopN → CMSketch → Histogram”查询编码键；`pkg/planner/cardinality/row_count_column.rs` 在旧版列统计的等值估计中调用 `QueryValue`；`pkg/statistics/sample.rs` 使用 `CMSketchToProto`、`CMSketchAndTopNFromProto` 在采样收集器与 tipb 之间传输草图。因此本文件不是独立算法工具，而是 ANALYZE 产物进入优化器基数估计链路的基础数据结构。
+实现统计信息中的点频率估计结构：用 `CMSketch` 保存普通值的近似频数，用 `TopN` 保存高频值的精确频数，并负责二者的样本构建、查询、合并和 tipb protobuf 编解码。
 
 ## 核心职责
 
@@ -70,8 +68,6 @@ Go 版 `TopN` 用 `sync.Once` 缓存最小值和总数；Rust 版没有共享可
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/cmsketch.go`，行为测试是 `pkg/statistics/cmsketch_test.go`，Rust 独立测试是 `pkg/statistics/cmsketch_test.rs`。Rust 保留了主要算法与公开命名：TopN 候选的三分之二阈值、10% 启用门槛、NDV/default value 构建、双哈希矩阵、噪声校正查询、spill 回灌、排序规则和 tipb 格式均可逐项对应。
-
 已确认的实现差异如下：
 
 - Go `newTopNHelper` 的确定性同频排序受 `StabilizeV1AnalyzeTopN` failpoint 控制；Rust 始终以编码字节作为同频次次级键，结果固定，但没有该 failpoint 分支。
@@ -90,11 +86,3 @@ Go 测试还覆盖大规模 Zipf 数据的平均绝对误差和编码字节长�
 - 修改 TopN 存储或排序时，必须维持“持久形态按 Encoded 升序、选择阶段按 Count 降序/Encoded 升序”的双重约定；同步验证 `FindTopN`、`LowerBound`、`BetweenCount`、`MergeTopN` 与 spill 回灌。
 - 修改 protobuf 格式时，应成对审查 `CMSketchToProto`/`CMSketchAndTopNFromProto`、`EncodeCMSketchWithoutTopN`/`DecodeCMSketch` 以及 `sample.rs` 的收集器转换，并保留空输入、仅 TopN、短行和解析失败测试。tipb 是 Git revision 依赖，字段变化还需检查上游 schema 兼容性。
 - 测试必须继续放在独立的 `pkg/statistics/cmsketch_test.rs`，不要内嵌到生产源文件。若要补齐 Go 行为，优先移植现有 `pkg/statistics/cmsketch_test.go` 的真实断言，而不是降低规模或简化算法。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用（11,467 文件、307,296 节点）；`query CMSketch`、`query TopN` 定位 Rust/Go 对照符号；`node --file pkg/statistics/cmsketch.rs` 读取完整 677 行；`callees NewCMSketchAndTopN` 与 `callees QueryValue` 核对关键被调边。`callers` 对这些符号未返回结果，因此没有将缺失结果当成“无调用者”。
-- 源码与装配：完整阅读 `pkg/statistics/cmsketch.rs`；读取 `pkg/statistics/lib.rs` 确认模块装配、公开重导出和独立测试文件；读取 `pkg/statistics/Cargo.toml` 确认 crate 边界及 errors、codec、chunk、protobuf、stmtctx、tipb、types 等依赖。
-- 直接调用证据：读取 `pkg/statistics/sample.rs`、`pkg/statistics/index.rs`、`pkg/statistics/histogram.rs`、`pkg/planner/cardinality/row_count_column.rs` 的相关调用上下文，并用 `rg` 检索所有 Rust 引用。
-- 语义与测试：完整阅读 `pkg/statistics/cmsketch_test.rs`；读取 `pkg/statistics/cmsketch.go` 和 `pkg/statistics/cmsketch_test.go` 的构建、查询、合并、编解码、TopN 与精度用例。Rust 测试明确覆盖 `(1,1)` 构造、样本构建、TopN 合并 spill、插入/扣减、维度错误、两类 protobuf 往返、短行兼容、阈值、排序与区间统计。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构检查，并人工检查所有行为结论均能回指上述符号或文件，未把 Go 独有 failpoint、trace 或大规模精度测试写成 Rust 已支持能力。

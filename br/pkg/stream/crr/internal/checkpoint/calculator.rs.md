@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 CRR（持续恢复/复制恢复）下游安全检查点计算器的公共契约与主循环实现。crate 由同目录 [`Cargo.toml`](Cargo.toml) 定义为 `astersql-br-pkg-stream-crr-internal-checkpoint`，入口 [`lib.rs`](lib.rs) 以 `pub mod calculator` 挂载本文件并扁平再导出其公共符号。它不是独立进程入口：生产侧 [`../../service/service.rs`](../../service/service.rs) 的 `Service::New` 构造 `Calculator`，`Service::run_once` 持锁调用 `ComputeNextCheckpoint`，并在首次运行前通过 `RestorePersistentState` 恢复进度、在成功推进后通过 `StateSnapshot` 保存进度。
-
-文件自身定义配置、依赖 trait、事件/统计模型、轻量上下文、持久化状态与 `ComputeNextCheckpoint` 的阶段编排；扫描 meta、等待对象同步和推进各 store 水位的具体算法位于 [`progress.rs`](progress.rs)，存储 URI 与 meta 解析规则位于 [`storage.rs`](storage.rs)。包级安全不变量由 [`doc.go`](doc.go) 说明：只有本轮发现的必要对象均可在下游安全消费，才可返回新的上游检查点。
+`PDMetaReader`、`UpstreamStorageReader`、`ObjectSyncChecker` 把 PD、源对象存储与下游同步判定隔离成可替换依赖；`ExistenceSyncChecker` 提供“存在即已同步”的最小适配器。
 
 ## 核心职责
 
@@ -99,8 +97,6 @@ observer 由 `Box<dyn Observer>` 独占在 `Calculator` 内，但调用是同步
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`calculator.go`](calculator.go)，公共常量、事件字符串、配置字段、依赖接口、状态字段、构造默认值、计算阶段顺序、快照/恢复规则与错误消息均保持对应。独立 Go 测试位于 [`checkpoint_calculator_test.go`](checkpoint_calculator_test.go)、[`integration_test.go`](integration_test.go) 和 [`randomized_integration_test.go`](randomized_integration_test.go)；Rust 对应测试分别位于同名 `*_test.rs` 文件，并由 `lib.rs` 的 `cfg(test)` 模块挂载。
-
 已确认的语言/移植差异如下：
 
 - Go `EventType` 是字符串别名；Rust 是 enum，并通过 `as_str` 显式稳定映射。
@@ -112,7 +108,7 @@ observer 由 `Box<dyn Observer>` 独占在 `Calculator` 内，但调用是同步
 - Go 恢复状态时写结构化日志；Rust `RestorePersistentState` 不记录日志。
 - Go 与 Rust 都同步调用 observer；Rust 的 `Send + Sync` 约束更明确，但不会自动把回调调度到后台。
 
-这些差异不应被误写为 Rust 已完整提供 Go 标准库/故障注入能力。行为一致性的现有证据来自 parity、单元、集成和随机化测试，而不是仅凭字段同名。
+这些差异不应被误写为 Rust 已完整提供 Go 标准库/故障注入能力。
 
 ## 扩展指南
 
@@ -125,12 +121,3 @@ observer 由 `Box<dyn Observer>` 独占在 `Calculator` 内，但调用是同步
 - 测试必须放在独立文件。核心构造、错误和 store 边界应扩展 [`checkpoint_calculator_test.rs`](checkpoint_calculator_test.rs)；跨轮、并发、恢复和事件时序应扩展 [`integration_test.rs`](integration_test.rs)；Go/Rust 公共契约差异应扩展 [`parity_test.rs`](parity_test.rs)；长序列状态机应扩展 [`randomized_integration_test.rs`](randomized_integration_test.rs)。
 
 主要风险是错误推进造成恢复读取未同步对象（正确性）、事件/状态字段变化破坏持久化与监控消费者（兼容性），以及轮询间隔、observer 阻塞、meta 并发度或 map 深拷贝引起的延迟与内存开销（性能）。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件、11,467 个总文件；目标目录的 `calculator.rs` 被识别为 51 个符号。`explore` 确认 `NewExistenceSyncChecker` 被 Rust 单元/集成测试调用，目标默认值和主 API 被多组 checkpoint 测试覆盖。
-- RustCodeGraph `node --file` 完整读取了 [`calculator.rs`](calculator.rs) 1–503 行，并读取了 [`doc.go`](doc.go)、[`lib.rs`](lib.rs)、[`progress.rs`](progress.rs)、[`calculator.go`](calculator.go) 和生产调用者 [`../../service/service.rs`](../../service/service.rs) 的相关实现。
-- RustCodeGraph 对精确 Rust symbol id 执行了 `callers/callees`；当前 CLI 对同名 Go/Rust 符号产生歧义并混入整文件符号。为避免据此臆测，另用 `rg` 精确核对 `NewCalculator`、`ComputeNextCheckpoint`、`RestorePersistentState`、`StateSnapshot` 和 `NewExistenceSyncChecker` 的 Rust 引用，得到“service 构造/运行/恢复/保存”生产链及独立测试调用面。
-- Cargo 边界来自 [`Cargo.toml`](Cargo.toml)；Go 语义来自 [`calculator.go`](calculator.go) 与包契约 [`doc.go`](doc.go)。测试清单核对了 Rust 的 [`checkpoint_calculator_test.rs`](checkpoint_calculator_test.rs)、[`integration_test.rs`](integration_test.rs)、[`parity_test.rs`](parity_test.rs)、[`randomized_integration_test.rs`](randomized_integration_test.rs)，以及对应 Go 测试文件。
-- 关键边界由测试名称与实现直接佐证：无同步 checker/同步错误、缺失新存活 store、离线 store 裁剪、已同步 meta 跳过、empty meta、恢复状态、上游未变化、并发读取上限、未来 flush meta、成功/失败事件生命周期和随机化时序。
-- 本任务只新增文档，按计划不运行 Cargo。交付验证为固定 11 章节结构检查、路径/链接存在性检查、仅目标文档的 diff 自审和 `git diff --cached --check`。仓库说明引用的 `.agents/skills/tidb-verify-profile` 在当前检出中不存在，因此无法加载其额外 Ready 命令；任务文件明确给出的结构验证仍可完整执行。

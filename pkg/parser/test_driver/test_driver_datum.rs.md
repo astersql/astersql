@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-test_driver` crate。crate 入口 [`lib.rs`](./lib.rs) 以私有模块 `test_driver_datum` 装载它，再用 `pub use test_driver_datum::*` 对外重导出全部公开符号；[`Cargo.toml`](./Cargo.toml) 表明该 crate 直接依赖 parser 的 charset、format、mysql、types 四个子 crate，以及用于十六进制编解码的 `hex`。它不是完整运行时的 `pkg/types::Datum`，而是解析器测试驱动使用的轻量值容器和字面量支持层。
-
-在解析主链中，[`yy_parser.rs`](../yy_parser.rs) 的 `toHex`/`toBit` 把词法文本交给本文件的 `NewHexLiteral`/`NewBitLiteral`，成功后将带类别的值放入语义值；[`parser_semantic_support.rs`](../parser_semantic_support.rs) 再识别 `HexLiteral`、`BitLiteral` 和 `MyDecimal` 并构造 AST 表达式。另一条测试驱动链位于 [`test_driver.rs`](./test_driver.rs)：`ValueExpr::new` 先调用 `DefaultTypeForValue` 推断字段类型，再调用 `Datum::SetValue` 保存字面值，之后 `Restore`/`Format` 按 `Datum::Kind` 输出 SQL 文本。
+用 `Datum { k, i, b, x }` 和 `Kind*` 判别常量统一保存 NULL、整数、浮点、字符串、字节、十进制、二进制字面量和动态载荷，并提供 Go 风格的访问器、setter 与构造函数。
 
 ## 核心职责
 
@@ -94,13 +92,10 @@ RustCodeGraph 对本文件识别出 45 个符号，并确认 `NewBitLiteral -> P
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`test_driver_datum.go`](./test_driver_datum.go)。Rust 保留了 Go 的 kind 编号、`i/b/x` 紧凑布局思想、type switch 分派、BIT/HEX 规则、`FieldType` 推断顺序和公开函数命名，便于逐项核对迁移行为。
-
-主要语言适配如下：
+Rust 保留了 Go 的 kind 编号、`i/b/x` 紧凑布局思想、type switch 分派、BIT/HEX 规则、`FieldType` 推断顺序和公开函数命名，便于逐项核对迁移行为。
 
 - Go 的 `any`/type switch 对应 Rust `Box<dyn Any>` 加 `is`/`downcast`；Go `nil` 对应传入的单元值 `()`，而不是 Rust 的空指针概念。
 - Go `GetValue() any` 可直接返回 nil 或任意值；Rust 用 `DatumValue<'_>` 保留返回形状和借用关系。Rust 对 `KindNull` 显式返回 `DatumValue::Null`，并让未知 kind 的动态载荷保持可 downcast，相关迁移测试固定了这一行为。
-- Go `[]byte`/别名切片对应三个 `Vec<u8>` 新类型；Rust getter 对二进制 literal 会克隆，因为不能像 Go 切片那样无条件按值共享底层数组。
 - Go 的 `errors.Trace` 错误链简化为 `Result<_, String>`，保留失败而不保留结构化错误类型或堆栈包装。
 - Go `int` 分支在 Rust 主要由 `i32` 表示；`DefaultTypeForValue` 和 `SetValue` 的支持类型集合必须同步维护，否则同一输入可能获得一种 `FieldType` 却被 `Datum` 存成 interface。
 - Go `*MyDecimal` 对应拥有所有权的 `MyDecimal`；Rust `GetMysqlDecimal` 返回借用。`DefaultTypeForValue` 读取 `digitsFrac` 和 `String()`，保持长度与小数位语义。
@@ -115,12 +110,3 @@ RustCodeGraph 对本文件识别出 45 个符号，并确认 `NewBitLiteral -> P
 测试应继续放在独立文件，不能内嵌到本源文件。直接回归面是 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)：应增加有效/无效输入、kind 与载荷往返、默认 `FieldType`、特殊浮点和动态 interface 测试。若变更影响 `ValueExpr` 输出，还应同步 [`test_driver_test.rs`](./test_driver_test.rs) 或现有迁移测试；若影响 parser 入口，应在 `pkg/parser` 独立测试中覆盖 token 到 AST 的整条链。Go 对照行为变化时，同时核对 [`test_driver_datum.go`](./test_driver_datum.go)，不得用 `pkg/types` 的同名完整实现替代 test driver 的局部契约。
 
 兼容性风险主要是 kind 编号变化、BIT/HEX 规范化变化、`FieldType` flag 残留或清理差异、动态类型集合不对称；性能风险主要是字符串/二进制 getter 的克隆与格式化分配。任何扩展都应先保持 Go 分支顺序和既有错误边界，再针对 Rust 所有权增加必要适配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/parser/test_driver` 找到本 crate 的 13 个 Go/Rust 文件；`node --file pkg/parser/test_driver/test_driver_datum.rs` 读取目标文件 547 行及 45 个符号。
-- RustCodeGraph 调用边：`callees NewBitLiteral` 确认 Rust `NewBitLiteral -> ParseBitStr`；`callees NewHexLiteral` 确认 `NewHexLiteral -> ParseHexStr`；`callees NewDatum` 确认 `NewDatum -> SetValue/MakeDatums`；`callees DefaultTypeForValue` 确认其调用 `SetBinChsClnFlag` 和 `format_float_fixed`。同名 `callers` 结果为空，故没有据此声称完整反向调用图。
-- 已读生产源码：[`test_driver_datum.rs`](./test_driver_datum.rs)、[`lib.rs`](./lib.rs)、[`test_driver.rs`](./test_driver.rs)、[`yy_parser.rs`](../yy_parser.rs)、[`parser_semantic_support.rs`](../parser_semantic_support.rs)。
-- 已读配置与 Go 对照：[`Cargo.toml`](./Cargo.toml)、[`test_driver_datum.go`](./test_driver_datum.go)。Cargo 证实 crate 名、入口、五项直接依赖和 Go 包映射；Go 文件用于逐分支核对 kind、存取、字面量解析和默认类型推断。
-- 已读独立 Rust 测试：[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)、[`test_driver_test.rs`](./test_driver_test.rs)、[`go_merge_35_test.rs`](./go_merge_35_test.rs)。其中前者直接覆盖本文件的 BIT/HEX、Datum、NULL/interface、默认类型和特殊浮点；后两者覆盖消费本文件结果的 `ValueExpr` 格式化和 visitor 边界。同目录没有直接覆盖这些符号的 Go `*_test.go`，Go 语义以同路径实现为对照。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终使用任务指定命令验证本文档存在且恰含 11 个固定二级标题，并人工复核只新增本文档、未修改 Rust/Go/Cargo/`plan.md`。

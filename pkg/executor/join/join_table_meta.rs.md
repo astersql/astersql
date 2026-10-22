@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate，由同目录 `lib.rs` 以 `pub mod join_table_meta` 暴露，是 Hash Join v2 的“构建侧行布局契约”。它不执行完整连接算法，而是把字段类型、连接键、附加条件列、输出列和 used 标志需求归约成 `JoinTableMeta`，并定义行表实际保存的 `EncodedRow`。生产主链由 `hash_join_v2.rs::HashJoinV2::fetch_and_build_hash_table` 和 `restore_and_probe` 创建元数据，再由 `HashTableContext::build` 交给 `row_table_builder.rs` 编码成 `RowTable`。
-
-`pkg/executor/join/Cargo.toml` 声明 crate 名为 `astersql-executor-join`、入口为 `lib.rs`。当前文件本身只使用标准库的 `BTreeSet` 与原子类型；Cargo 中的大量 join 依赖属于整个 crate，而不是此文件的直接依赖。仓库中未找到 `pkg/executor` 或 `pkg/executor/join` 下的 `doc.go`，因此包边界以 `lib.rs`、Cargo 清单和实际调用点为准。
+不执行完整连接算法，而是把字段类型、连接键、附加条件列、输出列和 used 标志需求归约成 `JoinTableMeta`，并定义行表实际保存的 `EncodedRow`。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/join/join_table_meta.go`，测试对照是 `join_table_meta_test.go`。概念映射为 `joinTableMeta`→`JoinTableMeta`、`keyProp/getKeyProp`→`KeyProperty/key_property`、`newTableMeta`→`new_table_meta`，三种 `keyMode` 也一一对应。两版都保留以下核心规则：单一兼容整数键走 OneInt64；符号混合增加 sign flag 并禁用内联；全定长键走 fixed serialized；变长键走 variable serialized；重复键不内联；保存列按“内联键、other condition、输出列”排序去重；used 模式的 null map 按 4 字节对齐。
-
-Rust 当前不是 Go 结构的逐字段完整复刻。Go 还维护 `isFixedLength/rowLength`、`isJoinKeysFixedLength/isJoinKeysInlined`、`serializeModes`、`columnCountNeededForOtherCondition`、`totalColumnNumber`、`colOffsetInNullMap`、动态 `rowDataOffset` 和 `fakeKeyByte`；Rust 只保留其当前拥有型编码流程实际消费的子集。Go 把 used flag 放进 null map 首 32 位并用 `atomic.Load/StoreUint32`，Rust 使用独立 `AtomicBool`。Go 根据 MySQL 类型与 collation 细分更多类型，Rust 使用较粗的 `FieldKind`，且 `requires_serialization` 没有作为字段保存在 `JoinTableMeta` 中。
+Go 还维护 `isFixedLength/rowLength`、`isJoinKeysFixedLength/isJoinKeysInlined`、`serializeModes`、`columnCountNeededForOtherCondition`、`totalColumnNumber`、`colOffsetInNullMap`、动态 `rowDataOffset` 和 `fakeKeyByte`；Rust 只保留其当前拥有型编码流程实际消费的子集。Go 把 used flag 放进 null map 首 32 位并用 `atomic.Load/StoreUint32`，Rust 使用独立 `AtomicBool`。Go 根据 MySQL 类型与 collation 细分更多类型，Rust 使用较粗的 `FieldKind`，且 `requires_serialization` 没有作为字段保存在 `JoinTableMeta` 中。
 
 还有两个需要避免误读的差异：Go 的 `outputColumns == nil` 表示保存所有列，而 Rust 的生产调用者显式传入完整下标数组；Go 遇到整数 build/probe 类型不匹配会 panic，Rust 返回 `Err`。因此扩展时应以实际 Rust 调用链为准，同时用 Go 测试矩阵检查是否遗漏类型、序列化模式或布局语义，不能把文件顶部的注释草稿当成已经实现的等价层。
 
@@ -94,12 +90,3 @@ Rust 当前不是 Go 结构的逐字段完整复刻。Go 还维护 `isFixedLengt
 - 若改变 used 标志内存序，需说明它是否只表示原子布尔状态，还是承担其他行数据的发布/可见性。需要共享 clone 状态时，应重新设计所有权（例如共享原子），并补并发测试。
 - 若要表达 Go 的 `nil outputColumns`，Rust API 应使用 `Option<&[usize]>` 或等价显式状态，避免把空切片同时解释为“全部列”和“无输出列”。这属于兼容性接口变化，应同步所有生产调用点与测试。
 - 性能风险集中在额外序列化、变长长度前缀、保存列膨胀、BTreeSet 构造开销和更强原子序；正确性风险集中在 build/probe 类型对应、紧凑 null 位下标、公开偏移字段和 Go nil 语义差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、目标文件已索引；`files --filter pkg/executor/join` 列出目标、Go 对照及测试；`query JoinTableMeta`、`query new_table_meta --kind function --json`、`query key_property --kind function --json` 和 `node --file pkg/executor/join/join_table_meta.rs` 确认符号、签名、源码范围及“被 24 个文件使用”的文件级关系。精确 `callers/callees` 未返回函数边，故未据此声称函数级图关系。
-- Rust 源码：`pkg/executor/join/join_table_meta.rs`；直接生产调用与生命周期：`hash_join_v2.rs`；编码消费方：`row_table_builder.rs`；模块入口：`lib.rs`；crate 边界：`Cargo.toml`。
-- 独立 Rust 测试：`join_table_meta_test.rs` 验证 key mode、列顺序、越界、null map 对齐、符号混合、非请求列与 used 标志；`row_table_builder_test.rs` 验证分区编码、8 字节对齐、紧凑 null 位、恢复边界与短行错误。
-- Go 对照：`join_table_meta.go` 的 `joinTableMeta`、`getKeyProp`、`newTableMeta`、`setupJoinKeys`、`setupColumnOrder`；`join_table_meta_test.go` 的键模式、内联/定长、序列化模式、列顺序、null map 与线程安全测试矩阵。
-- 精确源码检索确认生产调用：`hash_join_v2.rs` 两处 `new_table_meta`、一处 `set_used_flag`、一处 `is_current_row_used_atomic`；其余访问器仅在独立 Rust 测试中直接调用。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核只新增本说明文档、未修改 Rust/Go/Cargo/`plan.md`。

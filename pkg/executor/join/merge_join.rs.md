@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate。该 crate 由 `pkg/executor/join/Cargo.toml` 定义，入口 `pkg/executor/join/lib.rs` 以 `pub mod merge_join` 公开本模块，并在 `#[cfg(test)]` 下把独立单元测试 `merge_join_test.rs` 接入 crate。
-
-当前有效 Rust 代码提供两个内存行集上的排序归并连接执行器：串行的 `MergeJoinExec`，以及先分 lane、再并行运行多个 `MergeJoinExec` 的 `ShuffleMergeJoinExec`。输入、输出行都是 `joiner::Row = Vec<row_table_builder::Value>`，结果如何拼接则委托给 `joiner::Joiner`。
-
-它目前不是 Go `exec.Executor` 的逐接口替代品：RustCodeGraph 和精确引用检索只发现 `pkg/executor/benchmark_test.rs`、`pkg/executor/join/merge_join_test.rs` 与 `pkg/executor/join/test/mergejoin/merge_join_test.rs` 直接构造这些类型。`pkg/executor/builder.rs::buildMergeJoin` 会调用依赖注入接口 `build_merge_join_executor`，但没有直接引用本文件的具体类型。因此，本文件是可直接调用并由测试覆盖的 crate 级实现；它是否进入完整 SQL 执行主链，现有直接证据不能确认。
-
-文件第 19—387 行保留了一段注释化的 Go 结构/流程草图。它是移植对照资料，不是会被编译的 Rust 实现；判断现状应以第 388 行之后的类型和方法为准。
+当前有效 Rust 代码提供两个内存行集上的排序归并连接执行器：串行的 `MergeJoinExec`，以及先分 lane、再并行运行多个 `MergeJoinExec` 的 `ShuffleMergeJoinExec`。
 
 ## 核心职责
 
@@ -92,17 +86,13 @@ Shuffle 执行器以 lane 为所有权隔离单元。`std::thread::scope` 保证
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现是 `pkg/executor/join/merge_join.go`。两版共同保留的核心语义是：输入按 key 有序、连续等 key 行组成 group、inner NULL-key group 跳过、比较后推进落后一侧、等 key 时 outer 对 inner group 做交叉匹配，以及无匹配 outer 委托 Joiner 产出。
-
-Rust 当前实现是内存化简版，而非结构等价移植：
-
 - Go `MergeJoinTable` 从 child executor 逐 chunk 拉取，借助 `VecGroupChecker` 处理分组，并用 `RowContainer` 合并跨 chunk 的 inner group；Rust 在构造前已拥有全部 `Vec<Row>`，直接用切片划组。
 - Go `Next` 按目标 chunk 容量流式推进，并能在输出 chunk 满时保存 inner iterator 位置；Rust `execute` 一次性物化全部结果，`next` 只分页复制。
 - Go 支持 `Desc`、outer 侧 vectorized filters、`requiredRows` 下推、statement memory/disk tracker、OOM spill failpoint 与 child executor 生命周期；有效 Rust 代码均未实现这些机制。
 - Go key 比较使用每列的 `expression.CompareFunc` 和求值上下文；Rust 使用 `Value`/`compare_row`，没有 collation、类型求值上下文或每列比较函数入口。
 - Rust 额外定义 `ShuffleMergeJoinExec` 并直接管理线程/lane；Go 的 shuffle 在更高层执行计划中表现为 `Shuffle` + lane 内 `MergeJoin`，`merge_join.go` 本身只定义串行 executor。
 
-Go 测试 `pkg/executor/join/test/mergejoin/merge_join_test.go` 覆盖：spill 后 tracker 归零、left outer 结果、chunk-size 边界矩阵、SMJ 与 Hash Join 结果对照，以及 `tidb_merge_join_concurrency=4` 的 shuffle 计划。Rust 对照测试复用了相同数据矩阵并直接调用本文件类型，但明确没有伪造当前会话层不支持的 JOIN 计划和 spill/tracker 验证。
+Rust 对照测试复用了相同数据矩阵并直接调用本文件类型，但明确没有伪造当前会话层不支持的 JOIN 计划和 spill/tracker 验证。
 
 ## 扩展指南
 
@@ -114,15 +104,3 @@ Go 测试 `pkg/executor/join/test/mergejoin/merge_join_test.go` 覆盖：spill �
 - 生产测试逻辑应继续放在独立文件：小范围分组回归放入 `pkg/executor/join/merge_join_test.rs`；端到端数据矩阵放入 `pkg/executor/join/test/mergejoin/merge_join_test.rs`；性能变化更新 `pkg/executor/benchmark_test.rs`。不要把 `#[cfg(test)]` 测试内嵌进本源文件。
 
 兼容风险主要是排序/NULL/连接类型语义；性能风险主要是全量克隆、全量物化和 lane 偏斜；资源风险主要是当前缺少 Go 版 tracker 与 spill。任何扩展都应同时检查相应 Go 路径，不能以简化实现替代 Go 已有行为。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 `pkg/executor/join/merge_join.rs` 已索引并识别 29 个符号。
-- RustCodeGraph `node --file pkg/executor/join/merge_join.rs`：核对了全部 769 行有效实现和顶部注释化 Go 草图，主要定义位于 `MergeJoinTable`（394）、`MergeJoinExec`（491）、`ShuffleMergeJoinExec`（629）。
-- RustCodeGraph 精确 `query/node/callers/callees`：消歧了 Go/Rust 同名 `MergeJoinExec`；类型级 callers/callees 未给出可用直接边，因此用精确引用检索补证，直接构造者仅见测试与基准路径。
-- crate/模块证据：`pkg/executor/join/Cargo.toml`、`pkg/executor/join/lib.rs`。
-- 下游语义证据：`pkg/executor/join/joiner.rs` 的 `Row`、`JoinType`、`Joiner::try_to_match_inners`、`Joiner::on_miss_match`；`pkg/executor/join/index_lookup_join.rs` 的 `extract_key`/`compare_row` 引用关系。
-- 主链边界证据：`pkg/executor/builder.rs::buildMergeJoin` 与 `ExecutorBuilderDependencies::build_merge_join_executor`；未发现它们直接引用本文件的具体类型。
-- Go 对照：`pkg/executor/join/merge_join.go`；Go 测试：`pkg/executor/join/test/mergejoin/merge_join_test.go`。
-- Rust 测试：`pkg/executor/join/merge_join_test.rs` 验证 inner NULL group 跳过；`pkg/executor/join/test/mergejoin/merge_join_test.rs` 验证 outer/shuffle 结果和 Go chunk-size 矩阵；`pkg/executor/benchmark_test.rs` 验证串行、shuffle 与投影组合的直接调用形状。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。结构验证应确认本文存在且恰含上述 11 个固定二级标题。

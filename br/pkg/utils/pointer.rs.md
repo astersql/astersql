@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-`pointer.rs` 是 `astersql-br-pkg-utils` 库中的无状态指针/可选值辅助模块。crate 根文件 `br/pkg/utils/lib.rs` 通过 `#[path = "pointer.rs"] pub mod pointer` 挂载它，并以 `pub use pointer::GetOrZero` 将唯一 API 提升到 crate 根。该 crate 的边界和 Go 包映射由 `br/pkg/utils/Cargo.toml` 声明：库入口为 `lib.rs`，`package.metadata.porting.go-package` 为 `br/pkg/utils`。本文件不是业务流程入口，而是把 Go 的可空指针取值惯用法映射为 Rust 的 `Option<&T>`。
+唯一职责是实现 `GetOrZero<T>`：调用方提供一个可选借用；存在值时得到其所有权副本，不存在值时得到类型的默认值。
 
 ## 核心职责
 
@@ -53,7 +53,7 @@ Go 的 EBS 测试包含“snapshot failed”以及 `StateMessage: nil` 的失败
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `br/pkg/utils/pointer.go`。Go 签名 `GetOrZero[T any](p *T) T` 在 `p == nil` 时返回 `var zero T`，否则返回 `*p`；Rust 版本用 `Option<&T>` 表达 `*T` 的可空性，用模式匹配表达 nil 检查。两个版本对标量和常见值类型都实现“缺失返回零/默认值，存在返回值副本”。
+Go 签名 `GetOrZero[T any](p *T) T` 在 `p == nil` 时返回 `var zero T`，否则返回 `*p`；Rust 版本用 `Option<&T>` 表达 `*T` 的可空性，用模式匹配表达 nil 检查。
 
 差异必须保留在迁移判断中：Go 接受任意 `T`，语言自动提供零值且按值复制；Rust 要求 `T: Default + Clone`，而 `Default` 是类型作者定义的约定，未必等同于业务意义上的零值，`Clone` 也可能是深复制并带来额外成本。Go 的当前生产调用位于 `br/pkg/aws/ebs.go:281`；当前 Rust 版本只有公开导出和契约测试证据，尚不能声称已替换该 Go 调用。
 
@@ -64,12 +64,3 @@ Go 对照文件是 `br/pkg/utils/pointer.go`。Go 签名 `GetOrZero[T any](p *T)
 - 若要为特定类型定义“零值”，先确认其 `Default` 与 Go 零值一致。不能为了通过迁移测试而对所有类型假定二者相同。
 - 修改函数名、可见性、trait bound 或返回类型时，需要同步 `br/pkg/utils/lib.rs:152` 和 `br/pkg/utils/parity_test.rs:26-42`，并检查所有下游 crate 对根级再导出的依赖。
 - 对大对象或昂贵 `Clone` 的新调用点，应评估复制开销；对可能 panic 的自定义 `Default`/`Clone`，应由调用方决定是否隔离 panic，而不是在这里静默吞掉。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件；`files --filter br/pkg/utils` 确认 `pointer.rs`、`pointer.go`、`lib.rs` 和 `parity_test.rs` 均被索引。
-- RustCodeGraph `node --file br/pkg/utils/pointer.rs` 与 `node GetOrZero`：确认文件共 29 行、唯一函数位于第 21 行，函数体只有两个匹配分支。
-- RustCodeGraph `query GetOrZero`：确认函数定义、`lib.rs` 模块导入和 `parity_test.rs` 测试导入；调用轨迹还指出 Go 的 `WaitSnapshotsCreated`，已按跨语言证据解释。
-- 已读源码/配置：`br/pkg/utils/pointer.rs`、`br/pkg/utils/lib.rs`、`br/pkg/utils/Cargo.toml`、`br/pkg/utils/pointer.go`、`br/pkg/aws/ebs.go`。
-- 已读测试：`br/pkg/utils/parity_test.rs` 与 `br/pkg/aws/ebs_test.go`。前者直接验证 Rust 的 `Some`/`None` 两分支；后者验证 Go 生产场景中的快照失败和缺失状态消息边界，但其测试辅助函数不直接调用 `GetOrZero`。
-- 文档完成后以任务规定的 `rg -c` 命令校验固定的十一个二级章节；本任务是纯文档分析，按计划不运行 Cargo。

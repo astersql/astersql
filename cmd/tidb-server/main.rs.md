@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`main.rs` 是 `astersql-cmd-tidb-server` crate 的可测试进程编排层。真正的二进制入口在 `cmd/tidb-server/bin_main.rs::main`：它先启动 `rpprof` 分配采样，再调用 `cmd/tidb-server/lib.rs::main`；后者执行 FIPS 钩子并转发到本文件的 `entry::main`。因此，本文件不是操作系统直接调用的最外层壳，而是复用在二进制和 crate 内测试之间的共享启动实现。
-
-crate 边界由 `cmd/tidb-server/Cargo.toml` 明确：包同时导出 `lib.rs` 和 `bin_main.rs`，`nextgen` feature 向 `astersql-session`、`astersql-store` 透传。直接依赖包括 canonical 的 `astersql-config`、`astersql-domain`、`astersql-server`、`astersql-session`、`astersql-store`、`astersql-store-driver`、`astersql-metaservice`、`tikv-client`，同时仍通过 `crate::stubs` 提供配置、旧 Domain 外壳、信号、指标及多个迁移期适配面（`main.rs:32-55`）。这意味着它是 Go `cmd/tidb-server/main.go` 的 Rust 对齐入口，也是新旧运行时的接线边界，不能把所有 `stubs::*` 调用理解为已落地的独立生产子系统。
+`run_main_inner` 按固定顺序完成配置/部署模式校验、存储驱动注册、运行时全局变量投影、观测组件初始化、storage/Domain/server 创建、信号处理和优雅停机（`main.rs:619-847`）。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ crate 边界由 `cmd/tidb-server/Cargo.toml` 明确：包同时导出 `lib.rs` �
 
 ## 与 Go 版本的对应关系
 
-Rust 主流程、flag 名称、初始化顺序、清理顺序以及多数 helper 都逐名对应 `cmd/tidb-server/main.go`：`main`、`overrideConfig`、`setGlobalVars`、`createStoreDDLOwnerMgrAndDomain`、`createServer`、`cleanup`、Starter 参数与 observability 逻辑均可直接对照。
-
 已验证的差异与迁移状态：
 
 - Go 使用包级 flag 指针和直接 `os.Exit`；Rust 用 `FlagValues` + `Mutex`，提供 `run_main` 返回退出码以支持同进程测试。
@@ -102,11 +98,3 @@ Rust 主流程、flag 名称、初始化顺序、清理顺序以及多数 helper
 - 新常驻后台组件必须明确启动点、失败策略和 `cleanup`/提前返回路径的关闭点，并在 `parity_test.rs::contract_resource_cleanup` 验证顺序，尤其覆盖 server 创建失败与 keyspace activate。
 - 新 Starter 控制面字段应扩展 `starterParams` 和严格解析器，拒绝未知/重复/空值，并同步 Go `main.go`/`main_test.go` 的语义；观测字段合并应继续保持显式配置覆盖默认 `keyspace_name`。
 - 将 stubs 能力迁移到 canonical crate 时，优先在真实 crate 实现并仅在本文件替换接线；保留 Go 行为与错误边界，不因文档或测试方便而简化生产逻辑。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `cmd/tidb-server/main.rs` 差异及目标 blob `2f0fccb7d1b9b90603fbc4aa967bee9463fc242e` 为准，通过 `git diff ad0a6f4..2c944fb -- cmd/tidb-server/main.rs` 和 `git show 2c944fb:cmd/tidb-server/main.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `cmd/tidb-server/main_test.rs`，Go 对照为 `cmd/tidb-server/main.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

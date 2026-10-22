@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-stream` library crate；`br/pkg/stream/Cargo.toml` 将 crate 根固定为 `lib.rs`，后者通过 `#[path = "rewrite_meta_rawkv.rs"] pub mod rewrite_meta_rawkv` 装入模块，并用 `pub use rewrite_meta_rawkv::*` 扁平导出公共符号。它负责日志恢复阶段的 **meta RawKV** 重写：把上游数据库、表和分区 ID 映射成下游 ID，同时处理 TiKV Default CF / Write CF 中的元数据值。数据面的普通 table record/index key 不属于本文件职责。
-
-Go 对应实现是 `br/pkg/stream/rewrite_meta_rawkv.go`。Go 生产链在 `br/pkg/task/stream.go` 构造 `SchemasReplace`，再由 `br/pkg/restore/log_client/client.go` 的批处理路径调用 `RewriteMetaKvEntry`。RustCodeGraph 对当前 Rust 树的查询以及补充的全仓符号搜索只找到 `br/pkg/stream/rewrite_meta_rawkv_test.rs` 对 Rust `RewriteMetaKvEntry` 的调用，因此当前 Rust 实现是 crate 对外导出的迁移 API 和已测试逻辑，但其生产调用接线尚未在 Rust 侧出现。
+负责日志恢复阶段的 **meta RawKV** 重写：把上游数据库、表和分区 ID 映射成下游 ID，同时处理 TiKV Default CF / Write CF 中的元数据值。
 
 ## 核心职责
 
@@ -102,7 +100,7 @@ Rust 保留了 Go 的主要 key/value 规则：DB ID 位于 DB-list Field，表�
 - Go delete-range ID 缺失通过 `(id, exists)` 报给 DDL 层；Rust fallback 为原 ID。Go 还由 DDL 层生成实际 SQL；Rust固定为单行占位模板。
 - Rust 独有 `rewriteTableInfoInner` 宽松变体，但当前未接线；现行 `rewriteEntryForTable` 实际调用完整 `rewriteTableInfo`，应以代码调用为准，而不是其附近“轻量”注释。
 
-因此这里的“对应”表示核心迁移语义有测试覆盖，不表示 Go 生产能力已全部接线。新增功能必须同时核对 Go 源文件和 Rust 独立测试，避免把简化 helper 当作完整 DDL 恢复实现。
+新增功能必须同时核对 Go 源文件和 Rust 独立测试，避免把简化 helper 当作完整 DDL 恢复实现。
 
 ## 扩展指南
 
@@ -113,10 +111,3 @@ Rust 保留了 Go 的主要 key/value 规则：DB ID 位于 DB-list Field，表�
 - 完整移植 Go DDL job：需要在 Rust 生产调用链补 DDL job history 解码、ingest recorder、multi-schema 展开和 delete-range executor 语义；这不是只修改当前 helper 即可完成的小改动。接线后应在 Rust log-client 批处理测试中证明 `None` 表示跳过 entry、但副作用已被记录。
 - 修改构造后的映射：要么禁止直接改变公开 `DbReplaceMap`，要么同步重建 `global_table_id_map`；否则 delete-range 使用过期快照。
 - 性能敏感修改：JSON 往返和 key/value `Vec` 分配位于逐 entry 路径。优化必须保持 Default/Write CF 配对、`RewriteTS` 和 hook/deletedTables 的可观察顺序。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/stream/rewrite_meta_rawkv_test.rs` 与 `parity_test.rs`；新增路由谓词的定义核对 `br/pkg/stream/stubs.rs`。Go 另有 protectedTargetDBIDs，不能据本次 Rust key/name 改写推断已经支持该保护集合。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

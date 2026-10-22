@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-expression-aggregation` crate，是行式聚合的公共运行时层：它不实现某一种 SQL 聚合算法，而是定义所有具体实现共同遵守的 `Aggregation` trait、每个分组使用的 `AggEvaluateContext`、分布式阶段枚举 `AggFunctionMode`，并提供从 tipb 表达式构造具体聚合器的 `NewDistAggFunc`。crate 入口 `pkg/expression/aggregation/lib.rs` 将本模块及 `sum.rs`、`avg.rs`、`count.rs`、`max_min.rs` 等具体实现统一再导出。
-
-在完整链路中，规划阶段使用 `CheckAggPushDown` 判断 `AggFuncDesc` 是否可下推；存储或 mock coprocessor 收到 tipb 聚合表达式后用 `NewDistAggFunc` 恢复行式聚合器；执行方为每个分组创建上下文，逐行调用 `Update`，最后读取部分结果或最终结果。Rust 规划器直接入口见 `pkg/planner/core/operator/physicalop/base_physical_agg.rs:913`；Go mock TiKV/UniStore 的对应运行入口见 `pkg/store/mockstore/mockcopr/cop_handler_dag.go:336`、`pkg/store/mockstore/unistore/cophandler/cop_handler.go:450` 和 `pkg/store/mockstore/unistore/cophandler/mpp.go:599`。
+`Aggregation` 统一“创建/重置分组状态、按行更新、输出部分/最终结果”的调用协议，使 `sumFunction`、`avgFunction`、`countFunction`、`concatFunction`、极值和位运算实现可被同一执行器驱动。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ NULL 不增加 SUM/AVG 的 `Count`，DISTINCT 重复值也不增加；只有 `ca
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/aggregation.go`，Rust 基本保持其公共 API、mode 数值顺序、支持的 PB 聚合类型、SUM/AVG 更新顺序以及下推白名单。Rust 用 `Box<dyn Aggregation>`/`Result`/`Arc` 表达 Go 的 interface、多返回值 error 和引用式 context；`PBToExprs` 代替 Go 中逐 child 调用 `PBToExpr` 的循环；描述符由值克隆返回，而 Go 返回指针。
+Rust 用 `Box<dyn Aggregation>`/`Result`/`Arc` 表达 Go 的 interface、多返回值 error 和引用式 context；`PBToExprs` 代替 Go 中逐 child 调用 `PBToExpr` 的循环；描述符由值克隆返回，而 Go 返回指针。
 
 状态布局有一项显式 Rust 化：Go 的 `Buffer *bytes.Buffer` 以 nil 区分未初始化，Rust 使用 `Vec<u8>` 加 `BufferInitialized`。Rust 公共 `ResetContext` 还明确清零 `Count`、缓冲和 `GotFirstRow`，而 Go 基类只替换 context/checker 并将 `Value` 设 NULL，Go 的具体聚合实现承担额外重置；因此不能仅比较基类函数行数判断语义缺失。
 
@@ -91,11 +89,3 @@ NULL 不增加 SUM/AVG 的 `Count`，DISTINCT 重复值也不增加；只有 `ca
 5. 在同目录独立 `*_test.rs` 中增加 PB 构造、空集、NULL、DISTINCT、Reset、所有相关 mode 和拒绝下推条件的回归；同步对照 `aggregation_test.go`，必要时增加与 Go 合并提交对应的独立用例。
 
 兼容风险主要是 mode 整数重排、部分结果列顺序变化和下推能力高估；正确性风险集中在 NULL/DISTINCT 计数及 Reset 跨组污染；性能风险集中在每组重建 DISTINCT checker、表达式克隆以及无界去重/拼接状态。修改后应优先运行聚焦的 aggregation crate 测试，但本任务是纯文档分析，按计划不运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/aggregation/aggregation.rs` 确认目标文件在索引内；`node --file ... --offset 1 --limit 420` 完整读取 387 行并报告 35 个符号及 12 个使用文件；`explore "pkg/expression/aggregation/aggregation.rs aggregation.rs AggFunc UpdateContext PartialResult"` 给出 `NewDistAggFunc -> newAggFunc`、`CheckAggPushDown -> checkVectorAggPushDown/CheckAggPushFlash` 及相关调用面。
-- 已读生产与边界文件：`pkg/expression/aggregation/aggregation.rs`、`aggregation.go`、`Cargo.toml`、`lib.rs`，以及直接实现/调用搜索命中的 `sum.rs`、`avg.rs`、`pkg/planner/core/operator/physicalop/base_physical_agg.rs` 和 Go mockstore 入口。
-- 已读独立测试：`pkg/expression/aggregation/aggregation_test.rs`、`aggregation_aster_unit_test.rs`、`go_merge_44_test.rs` 与 Go 基准 `aggregation_test.go`。关键覆盖包括 mode/PB 往返、SUM/AVG NULL 与 DISTINCT、COUNT FinalMode、Reset、下推分类以及 MAX_COUNT/MIN_COUNT 的完整/最终阶段。
-- 人工复核：文档中的函数名、字段名、mode、支持列表和拒绝条件均可回链到上述源码；未把 RustCodeGraph 的同名 Go 符号误当作 Rust 运行调用者，也未宣称 Cargo 测试已运行。
-- 结构验证使用任务文件指定命令，要求目标文档存在且恰有 11 个固定二级标题；验证结果在交付前记录。

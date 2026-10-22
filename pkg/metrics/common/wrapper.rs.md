@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-metrics-common` crate 的核心实现，由同目录的 [`lib.rs`](lib.rs) 以 `pub mod wrapper` 声明并通过 `pub use wrapper::*` 重新导出。crate 在 [`Cargo.toml`](Cargo.toml) 中只直接依赖 `prometheus = "0.14"`，并用 `package.metadata.porting.go-package = "pkg/metrics/common"` 标明其 Go 对照包。
-
-它位于业务模块与 Rust Prometheus 客户端之间：上游先通过 `SetConstLabels` 配置进程级标签，随后各模块用 `NewCounter*`、`NewGauge*`、`NewHistogram*` 等工厂创建采集器。典型上游包括 `pkg/util/metricsutil/common.rs` 的注册流程、`pkg/metrics/*` 的指标初始化，以及 `pkg/dxf/framework/dxfmetric/collector.rs` 的自定义描述符构造。文件不负责注册 collector、暴露 HTTP scrape 端点或更新指标值。
+典型上游包括 `pkg/util/metricsutil/common.rs` 的注册流程、`pkg/metrics/*` 的指标初始化，以及 `pkg/dxf/framework/dxfmetric/collector.rs` 的自定义描述符构造。
 
 ## 核心职责
 
@@ -99,8 +97,6 @@ ID 读写锁中毒时通过 `into_inner()` 恢复；一次采集先读取一个 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`wrapper.go`](wrapper.go)，独立 Go 回归是 [`wrapper_test.go`](wrapper_test.go)。Rust 保留了 Go 的公开函数名、偶数键值对约束、键转小写、全局标签覆盖输入标签、普通工厂替换 ConstLabels 以及 `NewDesc` 合并标签的总体行为。
-
 关键差异如下：
 
 - Go 的 `constLabels` 是未加锁的包变量，`GetConstLabels` 可直接返回底层 map；Rust 用 `OnceLock<RwLock<_>>` 并返回 clone，提供线程安全和所有权隔离。
@@ -108,8 +104,6 @@ ID 读写锁中毒时通过 `into_inner()` 恢复；一次采集先读取一个 
 - Go Prometheus 客户端原生提供 `SummaryVec`；Rust `prometheus 0.14` 没有 Summary collector，因此 `NewSummaryVec` 接受 `HistogramOpts` 并返回 `HistogramVec`。观测、count、sum、标签和注册能力保留，客户端流式 quantile 不保留。
 - Go 构造器返回接口或指针且由客户端库按自身约定处理定义错误；Rust 普通工厂将 `Result` 收敛为 panic，而 `NewDesc` 显式保留 `Result`。
 - Rust 为共享全局状态额外提供测试专用 `CONST_LABELS_TEST_LOCK`；Go 测试默认串行并用 `t.Cleanup` 恢复状态。
-
-[`wrapper_test.rs`](wrapper_test.rs) 逐项复刻 Go 的 `TestGetMergedConstLabels`。[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步覆盖 Go 对齐所需的小写化、panic 文本、各 collector 的标签注入、Histogram/Summary 观测和描述符合并。
 
 构造期包装继续对照 `wrapper.go`；新增采集期入口承担 Starter gather-time 标签补齐，不能从 Go 的构造器或全局常量标签机制推断 Rust 已有第三方 collector 的标签会被重建。
 
@@ -124,10 +118,3 @@ ID 读写锁中毒时通过 `into_inner()` 恢复；一次采集先读取一个 
 - 普通工厂目前用 `expect` 表达“指标定义是静态且必须有效”的不变量；若新增运行时定义入口，应考虑返回 `Result`，并让调用方提供可诊断上下文。
 
 调整采集期标签时同时核对 `GatherText` 和 metricsutil 包装，保留已有标签优先与空 ID 语义；独立 `pkg/util/metricsutil/common_test.rs` 已提供提前注册、后注册、排序、旧标签及并发采集用例。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/metrics/common/wrapper.rs` 定位增量、`git show 2c944fb:pkg/metrics/common/wrapper.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml` 和 Go `wrapper.go`；`pkg/util/metricsutil/common.rs` 转发 enable/set/gather，独立 `common_test.rs` 覆盖缺 ID、保留原标签、新增样本、标签排序和并发采集；`pkg/metrics/metrics.rs::GatherText` 为导出接线。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

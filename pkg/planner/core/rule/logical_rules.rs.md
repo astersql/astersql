@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-rule` crate 的逻辑优化规则“选择协议”：它为每条逻辑改写分配一个稳定的 `u64` 位，并提供一个开启谓词下推位的辅助函数。crate 入口 [`lib.rs`](lib.rs) 通过私有 `mod logical_rules` 加载本文件，再用 `pub use logical_rules::*` 将全部常量和函数提升为 crate 公共 API；因此规划器通常以 `rule::FLAG_*` 使用它们，而不会直接引用模块路径。
-
-它不实现任何计划树改写。真正的规则枚举、执行顺序、位到规则的映射和派发循环位于 [`../optimizer_runtime.rs`](../optimizer_runtime.rs) 的 `LogicalRule`、`LOGICAL_RULES`、`LOGICAL_RULE_FLAGS` 和 `logical_optimize_in_place`。计划构建器在 [`../logical_plan_builder_runtime.rs`](../logical_plan_builder_runtime.rs) 中逐步累加所需位，`DoOptimize` 再把最终掩码交给逻辑优化阶段。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 声明：包名为 `astersql-planner-core-rule`、库入口为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/planner/core/rule"` 标明 Go 对照包。本文件本身只使用 Rust 原生整数和按位运算，不直接依赖 Cargo 中列出的其他 crate；那些依赖供同一 crate 的具体规则模块和初始化桥接使用。
+通过 `set_predicate_push_down_flag` 为规则工具层提供一个保留原掩码、只开启谓词下推的回调实现；[`rule_init.rs`](rule_init.rs) 的 `init` 将它注册给 `astersql_planner_core_rule_util`。
 
 ## 核心职责
 
@@ -107,13 +103,13 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 声明：包名为 `astersql-planner-
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`logical_rules.go`](logical_rules.go)。Go 用 `const` 与 `iota` 顺序产生 `FlagGcSubstitute` 至 `FlagFullTextIndexResolveReject`；Rust 把每个数值显式写成 `1 << n`，名称改为大写蛇形，但 34 个名字、位号和语义逐项对应。Go 的 `setPredicatePushDownFlag` 原地执行 `u |= FlagPredicatePushDown` 后返回，Rust 的 `set_predicate_push_down_flag` 直接返回按位或结果，行为等价。
+Go 用 `const` 与 `iota` 顺序产生 `FlagGcSubstitute` 至 `FlagFullTextIndexResolveReject`；Rust 把每个数值显式写成 `1 << n`，名称改为大写蛇形，但 34 个名字、位号和语义逐项对应。Go 的 `setPredicatePushDownFlag` 原地执行 `u |= FlagPredicatePushDown` 后返回，Rust 的 `set_predicate_push_down_flag` 直接返回按位或结果，行为等价。
 
-Go 的 [`../optimizer.go`](../optimizer.go) 将 `optRuleList` 与 `optRuleFlags` 分成两个等长数组；Rust 的 `LOGICAL_RULES`/`LOGICAL_RULE_FLAGS` 保留相同设计和相同执行顺序。尤其需要区分“声明位号顺序”和“执行顺序”：四个全文索引标志在 Go 常量块末尾追加以稳定旧数值，但其规则被插入优化流水线中的语义位置；Rust 完整复刻了这种映射。
+尤其需要区分“声明位号顺序”和“执行顺序”：四个全文索引标志在 Go 常量块末尾追加以稳定旧数值，但其规则被插入优化流水线中的语义位置；Rust 完整复刻了这种映射。
 
 初始化方式存在语言层差异：Go 的 [`rule_init.go`](rule_init.go) 通过包级 `init()` 自动设置三个工具层函数变量；Rust 没有包初始化器，改由优化入口显式、幂等地调用 `rule_init::init()`，并使用 `OnceLock` 注册。本文件只提供其中的谓词下推标志回调；另两个谓词简化回调由 operator 层安装。
 
-迁移状态不是桩：这些位已经被 Rust 计划构建器和优化派发器消费，相关 Rust 测试也覆盖位隔离与实际计划变化。不过，某一具体规则是否完整对齐 Go 属于各规则实现文件的职责，不能仅凭本位掩码文件推断。
+迁移状态不是桩：这些位已经被 Rust 计划构建器和优化派发器消费，相关 Rust 测试也覆盖位隔离与实际计划变化。
 
 ## 扩展指南
 
@@ -126,14 +122,3 @@ Go 的 [`../optimizer.go`](../optimizer.go) 将 `optRuleList` 与 `optRuleFlags`
 5. Rust 测试应放在独立测试文件，不要内嵌到本生产文件。至少扩展 [`../optimizer_logical_entry_aster_unit_test.rs`](../optimizer_logical_entry_aster_unit_test.rs) 的位唯一性/派发顺序测试和规则行为用例；若修改初始化钩子，则同步 [`rule_init_test.rs`](rule_init_test.rs)。Go 侧同步 [`../optimizer_test.go`](../optimizer_test.go) 的对齐检查及最接近的行为测试。
 
 主要兼容风险是重编号导致调用方选择错误规则，正确性风险是映射错位或漏映射，性能风险是默认/构建路径误开高成本规则或改变规则先后。若未来超过 64 个规则，不能直接继续移位；应先设计新的掩码表示并审计所有位运算边界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件已索引。
-- RustCodeGraph `node --file pkg/planner/core/rule/logical_rules.rs`：确认文件共 97 行，仅有 34 个公开常量和 `set_predicate_push_down_flag` 一个函数，无条件编译项。
-- RustCodeGraph `query set_predicate_push_down_flag`、`callers`、`callees`：定位本函数及 util 层静态槽；无直接静态调用边，唯一被调用符号为 `FLAG_PREDICATE_PUSH_DOWN`，与函数指针动态分派一致。
-- RustCodeGraph 对 [`../optimizer_runtime.rs`](../optimizer_runtime.rs) 的文件节点查询：确认 `LogicalRule`、`LOGICAL_RULES`、`LOGICAL_RULE_FLAGS`、`logical_optimize_in_place` 和 `DoOptimize` 的选择与派发链。
-- 读取 [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`rule_init.rs`](rule_init.rs) 和 [`util/misc.rs`](util/misc.rs)：确认 crate 边界、再导出方式及 `OnceLock` 注册生命周期。
-- 读取 Go [`logical_rules.go`](logical_rules.go)、[`rule_init.go`](rule_init.go)、[`../optimizer.go`](../optimizer.go) 与 [`../optimizer_test.go`](../optimizer_test.go)：确认位号、回调语义、规则列表映射和 `TestOptRuleListFlagAlignment` 不变量。
-- 读取 Rust [`rule_init_test.rs`](rule_init_test.rs)、[`../optimizer_logical_entry_aster_unit_test.rs`](../optimizer_logical_entry_aster_unit_test.rs)、[`../logical_plans_test.rs`](../logical_plans_test.rs) 及 [`../lateral_join_test.rs`](../lateral_join_test.rs)：确认钩子幂等性、未知高位保留、位隔离、Go 顺序派发，以及实际规划行为按组合掩码选择。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证使用任务文件规定的 11 章节结构命令，并人工检查所有本地链接与结论的源码落点。

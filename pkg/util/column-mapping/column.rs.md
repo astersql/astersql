@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-column-mapping` crate 的核心实现，负责把按 schema/table pattern 配置的列映射规则应用到一行值上。crate 入口 `pkg/util/column-mapping/lib.rs` 通过 `pub mod column` 和 `pub use column::*` 再导出这里的公开 API；`pkg/util/column-mapping/Cargo.toml` 声明它只直接依赖同仓库的 `astersql-util-table-rule-selector`，根 `Cargo.toml` 将该 crate 列为 workspace member 并登记为 `facade_util_column_mapping`。
-
-当前 Rust 仓库中，`NewMapping`、`Mapping::HandleRowValue`、`Mapping::HandleDDL` 和 `SetPartitionRule` 的实际调用只见于本 crate 的独立测试；未发现其他 Rust 生产文件依赖 `facade_util_column_mapping`。因此它是已经移植并具备单元测试的独立能力，但尚不能据此认定已接入 Rust 应用主链。Go 对照实现 `pkg/util/column-mapping/column.go` 则是现有 Go 列映射能力的实现。
+实现 `addPrefix`、`addSuffix`、`partitionID` 三种值变换；其中 partition ID 把 instance/schema/table 标识编码进有符号 64 位整数的高位。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ RustCodeGraph 将 `column.rs` 标为被许多文件“使用”，但精确符�
 
 ## 与 Go 版本的对应关系
 
-Rust 主要逐段对应 `pkg/util/column-mapping/column.go`：规则验证和调整、schema/table 大小写处理、table 级优先级、缓存 key、列位置、三种表达式以及 partition 位布局均保持一致。`pkg/util/column-mapping/column_test.rs` 对应 Go 的 `column_test.go`，覆盖 `Valid`、行处理与缓存、DDL 未实现、匹配/忽略、位宽、ID 解析、值类型和大小写；`migration_aster_unit_test.rs` 额外覆盖 selector pattern、table 优先级、更多整数形态以及 Update/Remove。
+`pkg/util/column-mapping/column_test.rs` 对应 Go 的 `column_test.go`，覆盖 `Valid`、行处理与缓存、DDL 未实现、匹配/忽略、位宽、ID 解析、值类型和大小写；`migration_aster_unit_test.rs` 额外覆盖 selector pattern、table 优先级、更多整数形态以及 Update/Remove。
 
 可见差异包括：Go 的 `Expr` 是字符串别名及全局 `Exprs` map，Rust 使用 enum 和 `expr_handler`；Go 接受 `[]any`，Rust 使用封闭的 `Value` enum；Go 返回 `*Mapping` 并允许 nil receiver 静默透传，Rust 返回拥有值且方法不能在空 receiver 上调用；Go 用 `errors` 包保留 NotFound/NotValid/NotSupported 分类，Rust 目前只有字符串；Go 的规则带 YAML/JSON/TOML tag，Rust `Rule` 未派生序列化能力，这些 tag 只在注释语义中出现。Rust 使用原子变量避免 Go 包级普通变量的数据竞争，但没有让多字段更新成为事务。
 
@@ -94,12 +92,3 @@ Rust 主要逐段对应 `pkg/util/column-mapping/column.go`：规则验证和调
 若实现 DDL 映射，入口是 `Mapping::HandleDDL`，需要决定如何使用 `CreateTableQuery`、返回哪些列位置，并补充匹配与不匹配的独立测试。若改变 selector 优先级或允许同表多表达式，修改点集中在 `queryColumnInfo`，同时要重新设计缓存值和冲突规则。
 
 性能或正确性调整应优先处理两个现存契约：缓存 key 不含列布局，以及全局 partition 位宽与实例缓存不联动。改变任何一项都会偏离 Go 行为，必须先添加 Go/Rust 对照用例并评估调用者兼容性。把 crate 接入 Rust 生产链时，还需在消费方 `Cargo.toml` 引用 workspace dependency，并用真实行 schema 验证列位置和 `Value` 转换；当前没有生产接线可作为回归保障。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳 `1791342965170`；`files --filter pkg/util/column-mapping` 确认本模块的 Rust/Go 实现与测试集合。
-- RustCodeGraph 源码与符号查询：读取 `column.rs` 全部 685 行；查询 `Mapping`、`NewMapping`、`SetPartitionRule`，并核对 `NewMapping -> AddRule/resetCache` 等内部调用边。宽泛 `explore` 结果存在大量同名 `column` 噪声，因此生产接线结论另以精确仓库检索复核。
-- 读取的实现/边界文件：`pkg/util/column-mapping/column.rs`、`lib.rs`、`Cargo.toml`、根 `Cargo.toml`。
-- 读取的对照与测试：`pkg/util/column-mapping/column.go`、`column_test.go`、`column_test.rs`、`migration_aster_unit_test.rs`。
-- 精确检索：除本实现、本模块测试及 `lib.rs` 注释外，Rust 文件中未找到 `NewMapping`、`HandleRowValue`、`HandleDDL`、`SetPartitionRule` 的生产调用；除根 workspace 登记外，其他 Cargo manifest 未引用 `facade_util_column_mapping`。
-- 按任务约束未运行 Cargo；最终仅执行固定十一章节的结构验证，并人工核对本说明没有把未接线或未实现能力描述为已支持的应用行为。

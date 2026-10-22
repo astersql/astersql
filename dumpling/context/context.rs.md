@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 crate `astersql-dumpling-context` 的核心包装类型。crate 入口 `dumpling/context/lib.rs` 通过 `mod context` 加载本文件并以 `pub use context::*` 导出全部公开项；`dumpling/context/Cargo.toml` 声明它是对应 Go 包 `dumpling/context` 的 library crate，直接依赖只有相邻的 `astersql-dumpling-log`。工作区中 `dumpling/export/Cargo.toml` 是该 crate 的直接业务消费者，`dumpling/export/lib.rs` 将其别名为 `tcontext`，供导出主流程共享取消状态和 logger。
-
-本文件不是通用异步运行时，也不直接执行导出任务。它把 `dumpling/context/stubs.rs` 提供的最小 Go 风格 context 与 dumpling logger 组合成一个轻量值对象，作为 `dumpling/export` 各阶段传递运行期上下文的统一接口。RustCodeGraph 对该文件的文件节点报告 10 个符号，并显示它被 32 个文件引用；实际业务入口可见于 `dumpling/export/dump.rs::NewDumper`。
+这里的职责边界很窄：真正的取消传播由 `dumpling/context/stubs.rs::Context` 完成，日志行为由 `astersql-dumpling-log::Logger` 完成；本文件只负责组合、派生和转发。
 
 ## 核心职责
 
@@ -87,7 +85,7 @@ RustCodeGraph 的精确文件节点确认了符号与引用覆盖；其 `callers
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `dumpling/context/context.go`。字段和 helper 基本逐项对应：Go 的匿名嵌入 `gcontext.Context` 对应 Rust 的公开 `Context: gcontext::Context`；私有 `logger` 保持相同可见性；`Background`、`NewContext`、`WithContext`、`WithCancel`、`WithLogger`、`L` 保持同名与同样的字段保留规则。
+字段和 helper 基本逐项对应：Go 的匿名嵌入 `gcontext.Context` 对应 Rust 的公开 `Context: gcontext::Context`；私有 `logger` 保持相同可见性；`Background`、`NewContext`、`WithContext`、`WithCancel`、`WithLogger`、`L` 保持同名与同样的字段保留规则。
 
 主要语言差异如下：
 
@@ -97,7 +95,7 @@ RustCodeGraph 的精确文件节点确认了符号与引用覆盖；其 `callers
 - Go 标准库 context 支持更完整的 deadline/value 能力；Rust 本地 stub 明确只覆盖 dumpling 当前使用的最小取消子集。
 - Go `cancel()` 对应 Rust `CancelFunc::call()`，两者都要求显式调用；Rust handle 的 drop 不自动 cancel。
 
-`dumpling/context/parity_test.rs` 是本 crate 的独立 Rust 测试文件；它以四个场景对照 Go 契约：正常构造与 logger、链式字段替换、取消错误及父子传播、资源释放与显式取消。Go 上层使用证据还可见于 `dumpling/export/dump_test.go`、`status_test.go`、`consistency_test.go` 等，它们展示 `WithContext`、`WithLogger`、`WithCancel` 在实际导出测试中的组合方式。
+`dumpling/context/parity_test.rs` 是本 crate 的独立 Rust 测试文件；它以四个场景对照 Go 契约：正常构造与 logger、链式字段替换、取消错误及父子传播、资源释放与显式取消。
 
 ## 扩展指南
 
@@ -106,13 +104,3 @@ RustCodeGraph 的精确文件节点确认了符号与引用覆盖；其 `callers
 - 修改 logger 返回或共享方式时，应保持 `WithContext`/`WithCancel` 不丢 logger、`WithLogger` 不切断取消链，并评估跨线程 clone 的兼容性和性能。
 - 新增或修改契约测试应放在独立的 `dumpling/context/parity_test.rs`，不要把测试内嵌进 `context.rs`。至少覆盖旧值不变、父子取消方向、重复取消、句柄 drop 和取消后 logger 可用性。
 - 若改变公开签名，还需同步检查直接消费者 `dumpling/export`，尤其是 `dump.rs::NewDumper`/`Close`、`status.rs::startLogProgress`、`conn.rs` 与 `consistency.rs`。将布尔 `Done` 改为可等待对象会影响现有轮询与重试接口；改变父链或原子顺序则有并发正确性和性能风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter dumpling/context` 找到 `context.rs`、`lib.rs`、`stubs.rs`、`parity_test.rs` 和 Go 对照；`node --file dumpling/context/context.rs` 读取完整 95 行并识别 10 个符号，文件节点报告被 32 个文件引用。
-- 目标与 crate 边界：`dumpling/context/context.rs`、`dumpling/context/lib.rs`、`dumpling/context/stubs.rs`、`dumpling/context/Cargo.toml`。
-- Go 对照：`dumpling/context/context.go`。
-- 独立 Rust 契约测试：`dumpling/context/parity_test.rs`，覆盖 `contract_normal_paths`、`contract_boundary_chaining`、`contract_error_cancel`、`contract_resource_cleanup`。
-- 上层调用证据：`dumpling/export/Cargo.toml`、`dumpling/export/lib.rs`、`dumpling/export/dump.rs::NewDumper/initLogger/Dumper::Close/runGCProtectionUpdater`、`dumpling/export/status.rs::startLogProgress/LogProgressGuard`、`dumpling/export/conn.rs::queryRows/ExecSQL`、`dumpling/export/consistency.rs::consistency_lock_setup`。
-- 调用点补充搜索：`rg` 确认 `astersql-dumpling-context` 的 workspace 反向依赖与 `Background`、`WithCancel`、`WithLogger`、`Done`、`L` 的生产调用位置；未把测试文件作为生产调用依据。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构验证要求本文恰好包含上述 11 个固定二级标题。

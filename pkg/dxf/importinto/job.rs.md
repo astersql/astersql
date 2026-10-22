@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`job.rs` 是 `astersql-dxf-importinto` crate 的 IMPORT INTO 作业边界层。模块由 `pkg/dxf/importinto/lib.rs` 的 `pub mod job; pub use job::*;` 对外暴露，处在 SQL 导入执行器与 DXF（Distributed eXecution Framework）存储之间：上游决定提交普通分布式任务还是仅在指定实例运行的任务，本文件创建用户可见的 `mysql.tidb_import_jobs` 记录、持久化 DXF 全局任务，并把 DXF 的任务/子任务状态聚合为 SHOW IMPORT JOB 使用的运行时信息。
-
-本文件同时承担两组相互关联但生命周期不同的职责：`SubmitTask`/`SubmitStandaloneTask` 到 `StorageTaskSubmissionService::CreateJobAndTask` 是提交路径；`StorageRuntimeInfoProvider` 到 `GetRuntimeInfoForJob`/`GetJobLastUpdateTime` 是只读展示路径。crate 的 `nextgen` feature 由 `pkg/dxf/importinto/Cargo.toml` 转发给 `astersql-config-kerneltype/nextgen`；实际分流还依赖运行时 kernel、deploy mode 和当前 keyspace，而不是只看编译 feature。
+`StorageTaskSubmissionService::CreateJobAndTask` 负责真实持久化顺序：创建 import job，Classic 模式下切换表模式，再按 keyspace 决定同事务创建 DXF task，或在用户 keyspace job 提交后到 SYSTEM/DXF 服务 keyspace 开第二个事务。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@ NextGen 用户 keyspace 是有意的非原子边界：job 事务已经提交后�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/importinto/job.go`。Rust 保留了 Go 的两类提交入口、async prepare 判定、Classic 同事务与 NextGen 用户/SYSTEM keyspace 双事务路由、任务变更通知、按 step 聚合进度、冲突计数展示、时间格式和 job task key 生成语义。
+Rust 保留了 Go 的两类提交入口、async prepare 判定、Classic 同事务与 NextGen 用户/SYSTEM keyspace 双事务路由、任务变更通知、按 step 聚合进度、冲突计数展示、时间格式和 job task key 生成语义。
 
-实现结构上的主要差异是依赖注入：Go 直接取得 task manager、domain DDL executor 和全局 failpoint；Rust 用 `TaskSubmissionService`、`ClassicTableModeChanger`、`RuntimeInfoProvider` 隔离可替换边界，并由调用者提供已判定的 `running_on_user_keyspace`。Go 通过 planner `Run` 创建 task；Rust 的 `submit_dxf_task` 直接把 `LogicalPlan` 转成 meta 后调用 `CreateTaskWithSession`。Rust 还显式验证缺失/非法 table ID 和 `usize` 到 `i32` 的转换。
+实现结构上的主要差异是依赖注入：Go 直接取得 task manager、domain DDL executor 和全局 failpoint；Rust 用 `TaskSubmissionService`、`ClassicTableModeChanger`、`RuntimeInfoProvider` 隔离可替换边界，并由调用者提供已判定的 `running_on_user_keyspace`。Go 通过 planner `Run` 创建 task；Rust 的 `submit_dxf_task` 直接把 `LogicalPlan` 转成 meta 后调用 `CreateTaskWithSession`。
 
-兼容细节不可随意“修正”：`FormatSecondAsTime` 模拟 Go 有符号 `time.Duration` 的乘法溢出与负数分量；`format_bytes` 模拟 `docker/go-units` 的四位有效数字和负数不缩放行为；聚合使用 wrapping addition 来对应 Go `int64`；async prepare 先复制 logical plan 再修改调用者 plan，因此提交 meta 中保留复制前的计划字段，而实际并发参数为 1。Go 的 `mockDisableAsyncPrepare` 和 `mockSpeedDuration` failpoint 没有成为 Rust 生产 API，Rust 测试改用配置锁、注入 service/provider 与确定性 summary。
+Go 的 `mockDisableAsyncPrepare` 和 `mockSpeedDuration` failpoint 没有成为 Rust 生产 API，Rust 测试改用配置锁、注入 service/provider 与确定性 summary。
 
 ## 扩展指南
 
@@ -87,11 +85,3 @@ NextGen 用户 keyspace 是有意的非原子边界：job 事务已经提交后�
 - 修改 task key 格式应从独立 crate `pkg/dxf/importinto/taskkey/task_key.rs` 入手，并检查提交、查询、取消、调度和 realtikv 测试的兼容性；本文件 `TaskKey` 应继续只是统一门面。
 - 修改时间、速度或字节格式前应以 Go 行为为规范，扩展 `job_test.rs` 和 `job_testkit_test.rs` 的边界用例，尤其覆盖负值、零值、跨天、时区、小数秒、超大 task ID、活跃/历史表隔离。
 - 测试逻辑保持在独立的 `pkg/dxf/importinto/job_test.rs` 与 `pkg/dxf/importinto/job_testkit_test.rs`，不要内嵌到生产文件；本任务是文档分析，不建议借机调整生产实现。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标仓库；`files --filter pkg/dxf/importinto/job.rs` 确认目标文件、60 个符号和 12 个使用文件；两次 `node --file ...` 覆盖源码 1–844 行；`query` 定位 Rust/Go 的 `SubmitTask`、`GetRuntimeInfoForJob`、`CreateJobAndTask`、`TaskKey`。精确 `callers/callees` 无返回，故没有把缺失的图边当成已验证事实。
-- 生产源码：`pkg/dxf/importinto/job.rs`；模块与 crate 边界：`pkg/dxf/importinto/lib.rs`、`pkg/dxf/importinto/Cargo.toml`；上游调用与取消 key 复用：`pkg/executor/import_into.rs`、`pkg/executor/import_into_storage.rs`、`pkg/session/runtime/import_file.rs`。
-- Go 对照：`pkg/dxf/importinto/job.go`；跨 keyspace 事务与取消竞态说明：`pkg/dxf/importinto/job_doc.go`。
-- Rust 独立测试：`pkg/dxf/importinto/job_test.rs` 覆盖格式、事务顺序/回滚、双 keyspace、meta 错误优先级、async prepare、时区和错误短路；`pkg/dxf/importinto/job_testkit_test.rs` 覆盖 step 矩阵、NextGen 路由、时间边界和大 task ID 隔离。Go 对照测试入口为 `pkg/dxf/importinto/job_testkit_test.go`。
-- 本说明仅做静态代码、调用引用和测试意图核验；按任务约束未运行 Cargo，也未声称执行测试。交付结构通过任务指定命令检查，固定二级章节应恰好为 11 个。

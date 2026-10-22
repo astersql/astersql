@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`admin.rs`](admin.rs) 是 `astersql-session` crate 内 `runtime` 模块的私有实现分片，由 [`runtime.rs`](../runtime.rs) 的 `mod admin;` 纳入编译，并通过 `impl ConcreteSession` 为具体会话运行时补充管理类 SQL 能力。它不定义独立的 executor 类型，也不导出 crate 公共 API；所有入口最多为 `pub(super)`，由相邻的 [`dispatch.rs`](dispatch.rs) 在 AST 分派阶段调用。
-
-该文件服务的是 [`runtime.rs`](../runtime.rs) 所描述的“基于规范 parser、Domain 与 KV 接口的窄可执行会话运行时”，不是 Go TiDB 完整 planner/executor ABI 的一比一重建。其职责横跨 ADMIN 命令、DDL 运行时视图、区域展示与拆分、统计锁、表达式下推黑名单，以及 `mysql.tidb` 小型系统表维护。crate 归属和 Go 包映射由 [`pkg/session/Cargo.toml`](../Cargo.toml) 的 `name = "astersql-session"`、`[lib] path = "lib.rs"` 和 `package.metadata.porting.go-package = "pkg/session"` 确认。
+校验管理对象：`execute_admin_check_table` 解析当前数据库、表和索引元数据，拒绝不存在的对象，并对带条件的 MV/列式索引实施当前运行时的快速检查限制。
 
 ## 核心职责
 
@@ -91,15 +89,10 @@
 
 ## 与 Go 版本的对应关系
 
-本文件把多个 Go 子系统压缩到一个 `ConcreteSession` 实现分片中，不存在同路径 `pkg/session/runtime/admin.go`。crate 元数据只给出较宽的 Go 对照包 `pkg/session`；具体语义必须按功能映射：
-
 - [`pkg/executor/admin.go`](../../executor/admin.go) 的 `RecoverIndexExec`/`CleanupIndexExec` 是索引维护的主要对照。Go 版本使用 executor、分批事务和 DistSQL 扫描；Rust 紧凑运行时复用本地关系 KV 编码并一次收集 mutation，结果列意图一致但执行规模与容错机制并不等价。
 - [`pkg/executor/operate_ddl_jobs.go`](../../executor/operate_ddl_jobs.go) 的 DDL job cancel/alter executor，以及 planner 构造出的 show jobs executor，是 `execute_admin_ddl` 的对照。Rust 只操作当前进程的 `RUNTIME_DDL_JOBS` 模型和有限配置字段。
 - [`pkg/executor/split.go`](../../executor/split.go) 的 split executor、`getPhysicalTableRegions`，以及 [`pkg/executor/show.go`](../../executor/show.go) 的 SHOW 区域入口是 region 功能对照。Go 查询真实 split store/PD/TiKV；Rust 构造确定性拓扑，并保留 Go MockStore 的物理 region 去重语义。
-- [`pkg/executor/lockstats/lock_stats_executor.go`](../../executor/lockstats/lock_stats_executor.go) 与 [`unlock_stats_executor.go`](../../executor/lockstats/unlock_stats_executor.go) 是统计锁对照；两边都区分“仅分区”和整表映射，并把跳过信息追加为 warning。
 - Go 中黑名单和 `mysql.tidb` 通过常规系统表/executor/受限 SQL 基础设施运行；Rust 在 session runtime 入口显式抢先路由，以避免通用关系行存储对这些特殊后端产生“表面成功但状态未变”的结果。
-
-因此本文件追求测试可观察语义与关键错误边界对齐，而非宣称已覆盖 Go 完整 ADMIN executor。尤其 `execute_admin_check_table`、运行时 DDL 系统表解析和区域指标均是有意收窄的当前实现。
 
 ## 扩展指南
 
@@ -110,12 +103,3 @@
 - 扩展统计锁时，核对 Go executor 对多表+分区组合的约束；保持 warning code/`StmtCtx` 可见性，并同步 statistics handle 的独立测试。
 - 扩展特殊系统表路由时，必须让 `bool` 的“已消费”语义保持明确，并测试事务内、事务外、回滚、重复键、谓词错误及非目标表回退。
 - Rust 测试应继续放在独立文件，不嵌入 `admin.rs`。最直接的同步位置是 [`admin_test.rs`](admin_test.rs)；跨会话事务与区域拓扑可沿用 [`runtime_pessimistic_test.rs`](../runtime_pessimistic_test.rs)，索引/DDL 组合行为可在现有同目录独立测试中扩展。Go 对照变化时同步检查上述 executor 文件及其测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`node --file pkg/session/runtime/admin.rs` 完整读取 1,022 行，并报告该文件被 `pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/statistics.rs` 使用。
-- RustCodeGraph `query execute_admin`：定位本文件三组 ADMIN 入口及 [`dispatch.rs`](dispatch.rs) 的对应分派；对主要入口运行 `callers`/`callees`，确认 `relational_index_value_rows`、`encode_relational_index_value_row`、`runtime_domain_id`、`stats_lock_table`、`set_warning`、`execute_mysql_tidb_sql` 等关键下游。由于方法调用的 callers 解析为空，又以 `rg` 精确核对了 [`dispatch.rs`](dispatch.rs) 的全部显式调用点。
-- 已读 Rust/Cargo 路径：[`admin.rs`](admin.rs)、[`admin_test.rs`](admin_test.rs)、[`runtime.rs`](../runtime.rs)、[`dispatch.rs`](dispatch.rs)、[`statistics.rs`](statistics.rs)、[`lib.rs`](../lib.rs)、[`pkg/session/Cargo.toml`](../Cargo.toml)。目标包没有 `doc.go`，因此无可读取的包契约文件。
-- 已读 Go 对照路径：[`pkg/executor/admin.go`](../../executor/admin.go)、[`pkg/executor/operate_ddl_jobs.go`](../../executor/operate_ddl_jobs.go)、[`pkg/executor/split.go`](../../executor/split.go)、[`pkg/executor/show.go`](../../executor/show.go)、[`pkg/executor/lockstats/lock_stats_executor.go`](../../executor/lockstats/lock_stats_executor.go)、[`pkg/executor/lockstats/unlock_stats_executor.go`](../../executor/lockstats/unlock_stats_executor.go)。
-- 独立 Rust 测试证据：[`admin_test.rs`](admin_test.rs) 验证黑名单 DELETE 谓词、未拆分索引 region 去重和 `mysql.tidb` 的事务/重复键语义；[`runtime_pessimistic_test.rs`](../runtime_pessimistic_test.rs) 覆盖分区拆分、表/索引 region 拆分与后续 ADMIN CHECK；[`runtime_test/ddl.rs`](../runtime_test/ddl.rs) 覆盖缺表、持久化索引与缺索引检查；其他 `normal_ddl_*_test.rs` 和 `test/clusteredindextest/clustered_index_test.rs` 以 ADMIN CHECK 作为 DDL/DML 后置一致性断言。
-- 本任务是只写说明的分析任务，未运行 Cargo 或代码测试。结构验收以任务文件指定命令确认目标文档存在且恰有 11 个固定二级标题；内容另经人工复核，明确标出当前实现的窄边界，未把 Go 完整 executor 或模拟 region 指标写成已支持事实。

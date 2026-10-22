@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`metric_table_def.rs`](metric_table_def.rs) 属于 `astersql-infoschema` crate；crate 根在 [`lib.rs`](lib.rs) 中以 `pub mod metric_table_def` 注册该模块，并重新导出 `MetricTableMap`。[`Cargo.toml`](Cargo.toml) 将该 crate 的库入口指定为 `lib.rs`，没有为本文件设置条件 feature。
-
-这个文件是 METRICS_SCHEMA 的静态指标目录，不是指标采集器：它只声明“SQL 指标表名 → PromQL 模板及元数据”的映射，不连接 Prometheus、不展开模板，也不读取物理表。定义的解释、虚拟表元数据生成和模板展开位于 [`metrics_schema.rs`](metrics_schema.rs)。
+用公开静态量 `MetricTableMap` 集中保存 638 张指标表的定义。
 
 ## 核心职责
 
@@ -71,9 +69,9 @@ RustCodeGraph 对 `MetricTableMap` 的节点记录显示直接使用文件为 `m
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`metric_table_def.go`](metric_table_def.go)。Go 用包级 `map[string]MetricTableDef`，Rust 用 `LazyLock<HashMap<&'static str, MetricTableDef>>` 延迟完成等价初始化；Go 结构体字面量省略字段时自然得到零值，Rust 用 `..MetricTableDef::EMPTY` 显式复现。
+Go 用包级 `map[string]MetricTableDef`，Rust 用 `LazyLock<HashMap<&'static str, MetricTableDef>>` 延迟完成等价初始化；Go 结构体字面量省略字段时自然得到零值，Rust 用 `..MetricTableDef::EMPTY` 显式复现。
 
-当前 Go 目录有 642 个键，Rust 有 638 个键。键集合差异已通过排序比较确认：Rust 移除了 `go_gc_count`、`go_gc_cpu_usage`、`go_gc_duration`、`go_heap_mem_usage`、`go_threads`、`goroutines_count` 六个 Go runtime 专用表，增加 `rust_process_mem_usage` 和 `rust_process_threads` 两个 Rust 进程表；`runtime_metric_catalog_uses_rust_process_metrics` 对这项有意差异提供回归覆盖。
+键集合差异已通过排序比较确认：Rust 移除了 `go_gc_count`、`go_gc_cpu_usage`、`go_gc_duration`、`go_heap_mem_usage`、`go_threads`、`goroutines_count` 六个 Go runtime 专用表，增加 `rust_process_mem_usage` 和 `rust_process_threads` 两个 Rust 进程表；`runtime_metric_catalog_uses_rust_process_metrics` 对这项有意差异提供回归覆盖。
 
 相邻 [`metrics_schema.go`](metrics_schema.go) 在包 `init` 中立即注册虚拟库，并把 `Comment` 写入表元数据；当前 Rust `metric_schema_db` 是显式调用，并且构造 `TableInfo` 时没有使用定义中的 `Comment`。因此文档不能声称 Rust 已逐字段完整复刻 Go 注册行为。Go 的 [`metrics_schema_test.go`](metrics_schema_test.go) 使用正式 PromQL parser，Rust 对应测试只做分隔符平衡，这是另一个已知验证强度差异。
 
@@ -88,12 +86,3 @@ RustCodeGraph 对 `MetricTableMap` 的节点记录显示直接使用文件为 `m
 5. 扩展独立测试文件 [`metrics_schema_test.rs`](metrics_schema_test.rs)，不要把测试写进本生产文件。涉及特定上游合并语义时也应更新 [`go_merge_45_test.rs`](go_merge_45_test.rs)。
 
 兼容风险主要是重命名/删除键会使 SQL 表消失，调整 labels 会改变表列和过滤语义，修改默认分位数会改变列默认值及默认查询结果，错误 PromQL 会把失败推迟到查询期。性能上，增加条目会线性增加首次目录构造和虚拟元数据生成成本，但常规单表查找仍为哈希查找。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含目标文件；`files --filter pkg/infoschema/metric_table_def.rs` 确认该文件被索引；`query MetricTableMap` 与 `node MetricTableMap` 确认唯一 Rust 定义及 `lib.rs`、`metrics_schema.rs`、`go_merge_45_test.rs` 使用边；按文件 `node` 读取了定义开头与结尾。`callers MetricTableMap` 在 30 秒内未返回，因此调用结论还用仓库定点搜索复核。
-- 生产源码：`pkg/infoschema/metric_table_def.rs`、`pkg/infoschema/metrics_schema.rs`、`pkg/infoschema/lib.rs`、`pkg/session/runtime/system_query.rs`、`pkg/executor/metrics_reader.rs`。
-- crate 与 Go 对照：`pkg/infoschema/Cargo.toml`、`pkg/infoschema/metric_table_def.go`、`pkg/infoschema/metrics_schema.go`。
-- 独立测试：`pkg/infoschema/metrics_schema_test.rs`、`pkg/infoschema/go_merge_45_test.rs`、`pkg/infoschema/metrics_schema_test.go`；另读 `pkg/executor/metrics_reader_test.rs` 以确认执行器通过 backend 抽象测试，而非直接读取本映射。
-- 静态核验：精确统计 Rust 638 个键，并对 Go/Rust 键集合排序比较得到六个 Go-only 与两个 Rust-only 条目；搜索确认仓库中没有 `MetricsReaderBackend::metric_table_def` 到 `GetMetricTableDef` 的生产接线实现。
-- 本任务只新增说明文档，按计划不运行 Cargo；最终结构验证要求文档存在且恰有十一个固定二级标题。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`db.rs` 是 Cargo 包 `astersql-br-pkg-restore-internal-prealloc-db` 的主体实现。包入口 `br/pkg/restore/internal/prealloc_db/lib.rs` 通过 `#[path = "db.rs"] pub mod db` 挂载本文件，并用 `pub use db::*` 扁平导出其公开符号。对应的 `Cargo.toml` 将该包声明为 workspace 内的 library，Go 包映射为 `br/pkg/restore/internal/prealloc_db`，唯一直接 Cargo 依赖是相邻的 `astersql-br-pkg-restore-internal-prealloc-table-id`。
-
-它对应 Go 文件 `br/pkg/restore/internal/prealloc_db/db.go`：位于 BR 快照恢复过程中“已有备份元数据”与“目标 TiDB session”之间，负责创建数据库、placement policy 和表，使用预分配 ID 改写表/分区 ID，并在建表后恢复 sequence、AUTO_INCREMENT 或 AUTO_RANDOM 元数据。
-
-当前 Rust 接线必须与 Go 生产路径区分：根 `Cargo.toml` 把该 crate 纳入 workspace，但仓库内其他 Cargo manifest 尚未依赖它；`br/pkg/restore/snap_client/client.rs` 当前通过其本地 `stubs::PreallocDB` trait 调用 `RegisterPreallocatedIDs`、`CreateDatabase`、`CreateTables`、`CreateTable` 和 `ExecDDL`。因此，本文件是可独立验证的 Go 对齐移植，而不是已经由 Rust `snap_client` 直接实例化的生产实现。
+`DB::CreateDatabase`、`CreatePlacementPolicy`、`CreateTable` 和 `CreateTables` 将恢复元数据转换为 session 操作，并处理 placement policy、TTL 与已分配 ID 选项。
 
 ## 核心职责
 
@@ -127,15 +123,6 @@ policy map 的锁只覆盖 `remove`，锁释放后才执行远端/会话创建�
 
 ## 与 Go 版本的对应关系
 
-主要流程与 `db.go` 基本逐段对应：
-
-- Go `NewDB` 的 nil session、清空 SQL mode、placement mode 探测及未知变量兼容分支，在 Rust 中分别对应 `Option<Box<dyn Session>>`、两次 `Execute` 和错误 code 比较。
-- Go `*prealloctableid.PreallocIDs` 对应 Rust `Option<PreallocIDs>`；`ddl.WithIDAllocated(true)` 对应 `CreateTableOption`。
-- Go `sync.Map.LoadAndDelete` 对应 Rust `Mutex<HashMap>::remove`。
-- Go 的 batch session 类型断言对应 `Session::as_batch_create_table_session`。
-- sequence cycle 的三步操作保持一致：按 increment 符号先 `setval(MinValue/MaxValue)`，再 `nextval` 触发 cycle round，最后 `setval(AutoIncID)`。
-- 增量恢复仅校正 `toBeCorrectedTables` 中的对象；`NeedAutoID` 优先于 `ContainsAutoRandomBits`，普通主键表不执行 ALTER。
-
 Rust 版本的结构性差异也必须保留在认知中：
 
 - 为避开当前平台上的 `kv/domain` 依赖，Rust 文件内定义了 model、glue、session、context 和 error 子集；Go 使用仓库真实类型。
@@ -156,17 +143,3 @@ Rust 版本的结构性差异也必须保留在认知中：
 - 若将本 crate 接入 Rust `snap_client`，需要显式解决两套 `PreallocDB`/model/session trait 的类型边界，并在相应 Cargo manifest 增加依赖；不能仅凭同名方法认为类型兼容。
 - 性能方面，batch 路径会克隆完整表信息并按库暂存；大规模恢复若调整该结构，应评估峰值内存。正确性方面，批量创建成功而后处理部分失败会留下已创建对象，重试必须继续保持幂等。
 - 所有新增测试继续放在 `db_test.rs` 或 `parity_test.rs`，保持生产源文件与 Rust 单元测试分离。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- `br/pkg/restore/internal/prealloc_db/Cargo.toml` 与 `lib.rs`：核对 crate 名、library 入口、唯一依赖、Go 包映射和公开再导出。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的结构命令验证本文恰有十一个固定二级章节，并人工复核没有把 Rust stub 接线描述为已完成的生产集成。
-
-本轮增量依据为 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- br/pkg/restore/internal/prealloc_db/db.rs`，全貌以 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:br/pkg/restore/internal/prealloc_db/db.rs` 为准；未使用工作区 Rust 修改。已核对目标提交的同目录 `Cargo.toml`、`lib.rs`、独立测试及同名 Go 文件（目标目录无 `doc.go`）。RustCodeGraph 本轮仅运行 `status`：索引含 7,018 个 Rust 文件，但不作为冻结提交的事实证据；本文此前的图关系描述仅作导航参考。
-
-`db_test.rs::test_policy_mode`、`test_create_tables_in_db` 和 `parity_test.rs::go_rust_public_contract_matches` 是既有建表证据，未见本次源元数据不变性的专用回归。Go `db.go` 同样克隆数据库和表信息后修改 placement/TTL。
-
-Ready 文档验证检查八篇文件存在、固定 11 个二级章节与 `git diff --check`；未运行 Cargo 或运行时测试。仓库缺少 `.agents/skills/tidb-verify-profile`，按任务规定采用上述文档检查。

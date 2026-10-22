@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 unistore 内嵌 mock TiKV crate 的 Region 运行时与管理接口实现，源码见 [`region.rs`](./region.rs)。crate 入口 [`lib.rs`](./lib.rs) 以 `pub mod region` 暴露它；[`Cargo.toml`](./Cargo.toml) 将该 crate 定义为 `astersql-store-mockstore-unistore-tikv`，并记录其 Go 对照包为 `pkg/store/mockstore/unistore/tikv`。当前 crate 只直接声明 `fail` 依赖，Region、Peer、Store、Epoch 和 Region 错误类型来自同 crate 的 [`mock_region.rs`](./mock_region.rs)，并非直接使用 kvproto 类型。
-
-它位于 mock TiKV RPC 服务的 Region 边界上：[`server.rs`](./server.rs) 把 `Arc<dyn RegionManager>` 注入 `Server`，每次请求先通过 `get_region_from_context` 校验 Store、Region ID 与 Epoch，写路径再借助返回的 `RegionContext` 获取键 latch。它不负责 MVCC 数据读写，也不是多节点 Raft/PD 的真实实现。
+通过 `StandAloneRegionManager` 提供单 Store、纯内存的实现：维护 Region 表、分配本地 ID、按键定位 Region、按采样大小触发分裂。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ Latch 的生命周期以一次 `acquire(hashes)` 创建的共享 ticket 为单�
 
 ## 与 Go 版本的对应关系
 
-同路径 [`region.go`](./region.go) 是语义对照来源。Rust 保留了以下核心合同：内部键前缀格式；256 槽 latch 与完整哈希排队；空结束键避开内部元数据空间；Store/Region/Epoch 校验；Peer 变更增加 `conf_ver`；分裂后右侧保留旧 Region ID 且 version 加一、左侧使用新 ID 和 `(1,1)` Epoch并继承 peers。Rust 测试 `split_keeps_old_id_on_right_and_preserves_peers_like_go` 直接固定了最后一项。
+Rust 保留了以下核心合同：内部键前缀格式；256 槽 latch 与完整哈希排队；空结束键避开内部元数据空间；Store/Region/Epoch 校验；Peer 变更增加 `conf_ver`；分裂后右侧保留旧 Region ID 且 version 加一、左侧使用新 ID 和 `(1,1)` Epoch并继承 peers。Rust 测试 `split_keeps_old_id_on_right_and_preserves_peers_like_go` 直接固定了最后一项。
 
 两者并非功能等价实现。Go `regionCtx` 会对 Region 边界做 codec 解码，持久化/反序列化近似大小与元数据；Rust 当前直接复制 `Region.start_key/end_key`，因此上游模型必须已经使用它期望的原始键表示。Go `StandAloneRegionManager` 从 Badger 加载 Store/Region，向 PD bootstrap/注册/汇报心跳，由 PD 分配 ID，运行 Store heartbeat 与定时 split worker，并把分裂结果写回 Badger；Rust 只维护内存 HashMap、本地原子 ID 和布尔关闭标志。
 
@@ -98,12 +96,3 @@ Go 的采样器最多保留 64 个逐步稀疏的样本，并在约三分之二�
 - 支持多 Store/PD 时，需要重新定义 Store 映射、ID 分配、leader 选择、心跳和关闭生命周期；`RegionOptions::store_address/pd_address` 当前只是占位字段，不能作为已接线依据。
 - 若 Region 数量增大，应把 `region_for_key` 的 HashMap 全扫描替换为有序范围索引，并用测试固定半开区间、空上界、相邻边界和不重叠不变量。
 - 修改分裂必须保留排序去重、区间过滤、右侧复用旧 ID/Epoch 递增及 peers 继承合同；相关兼容风险集中在路由刷新和旧上下文并存，性能风险集中在持有 Region 表写锁的替换阶段。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件，目标目录被索引；`node --file pkg/store/mockstore/unistore/tikv/region.rs --offset 1 --limit 500` 读取了 425 行全文件；`query` 精确定位了 `StandAloneRegionManager`、`RegionManager::split_region`、`router_region`。自然语言 `explore` 因 `Region` 同名符号较多产生噪声，精确 callers/callees 对 impl 无输出，故调用边另以仓库搜索核验。
-- 生产源码：[`region.rs`](./region.rs)（全部常量、类型、trait、impl 与函数）；[`server.rs`](./server.rs)（`Server::new`、`stop`、`request_region`、`with_latches`）；[`util.rs`](./util.rs)（`sort_and_dedup_hash_values`、`keys_to_hash_values`）；[`mock_region.rs`](./mock_region.rs)（共享数据模型与错误）；[`lib.rs`](./lib.rs)（模块装配）。目标包没有 `doc.go`。
-- crate/config：[`Cargo.toml`](./Cargo.toml) 的 package 名、`lib.rs` 入口、Go 包迁移元数据、平台依赖与 `fail` 依赖。
-- Go 对照：[`region.go`](./region.go) 的 `RegionCtx`/`regionCtx`、`latches`、`regionManager`、`StandAloneRegionManager`、`runSplitWorker`、`splitCheckRegion`、`splitRegion`、`Close`。
-- 独立测试：[`region_test.rs`](./region_test.rs) 覆盖精确 Epoch 校验以及分裂 ID/Epoch/Peer 合同；[`main_test.rs`](./main_test.rs) 覆盖 Server 注入、关闭幂等、Store 与 Epoch 校验；[`server_test.rs`](./server_test.rs) 证明管理器被实际 Server 夹具使用。同路径不存在 `region_test.go`，Go 行为证据来自生产实现和目录内其他 Go 测试对该管理器的使用搜索。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构以任务指定命令验证：目标文件存在，且固定的十一个二级标题各出现一次。

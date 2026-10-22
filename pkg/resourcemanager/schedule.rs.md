@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`schedule.rs` 是 `astersql-resourcemanager` crate 的调度执行层。crate 入口 `pkg/resourcemanager/lib.rs` 将它声明为私有 `schedule` 模块，而其中三个方法都实现于公开类型 `rm::ResourceManager`：`schedule` 负责一次全池扫描，`schedulePool` 负责为单池选出命令，`Exec` 负责把命令落实为池容量变化。它不定义调度策略本身；策略由 `astersql-resourcemanager-scheduler` 依赖提供的 `Scheduler::Tune` 和 `Command` 表达。
-
-运行时入口位于 `pkg/resourcemanager/rm.rs::ResourceManager::Start`：后台线程以 100 ms 的接收超时为节拍，超时后调用 `manager.schedule()`。因此本文件处在“池注册与生命周期管理”和“具体 CPU 等调度策略”之间，是把周期触发、策略决策和 `GoroutinePool::Tune` 串起来的桥接层。
+不定义调度策略本身；策略由 `astersql-resourcemanager-scheduler` 依赖提供的 `Scheduler::Tune` 和 `Command` 表达。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 实现逐分支对应 `pkg/resourcemanager/schedule.go`：同样遍历 `poolMap`、跳过 `DistTask`、空闲时 `Hold`、按调度器顺序忽略 `Hold`、拒绝不安全的 `Downclock`，并在 `Exec` 中应用最小间隔和最大超频增量。`pkg/resourcemanager/Cargo.toml` 的 `package.metadata.porting.go-package` 也将该 crate 映射到 `pkg/resourcemanager`。
-
 已核对的实现差异主要是语言适配：
 
 - Go 使用 `time.Since(last) > interval`；Rust 使用 `SystemTime::elapsed().unwrap_or_default()` 后保持相同的严格大于语义，并额外安全处理未来时间戳。
@@ -102,12 +98,3 @@ Rust 实现逐分支对应 `pkg/resourcemanager/schedule.go`：同样遍历 `poo
 修改调容间隔或上限时，应优先检查 `util::MinSchedulerInterval`、`util::MaxOverclockCount` 及池实现的时间戳更新契约。性能风险集中在 100 ms 全池扫描、每池多调度器调用和 `Tune` 的实现成本；正确性风险集中在公开 `Exec` 可绕过 `schedulePool`、整数极值回绕，以及 `Cap`/`Running` 在并发变化下只是瞬时快照。
 
 建议同步的独立测试位置是 `pkg/resourcemanager/schedule_test.rs`（Go 原测试一一对应）和 `pkg/resourcemanager/migration_aster_unit_test.rs`（更完整的 Rust 边界与生命周期回归）；若改变 Go 对齐语义，还应同步核对 `pkg/resourcemanager/schedule_test.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前仓库索引含 11,467 个文件；`node --file pkg/resourcemanager/schedule.rs` 读取完整 117 行，并报告该文件被 11 个文件使用；精确 `node 'schedule.rs::schedule'` 确认 `schedule → schedulePool` 和 `schedule → Exec` 两条文件内调用边。按路径执行 `files` 和自然语言 `explore` 未返回摘要，`callers/callees` 对重名符号解析有歧义，因此上游入口再由 `rm.rs` 源码核实，不把歧义输出当作调用事实。
-- 生产源码：`pkg/resourcemanager/schedule.rs`（三个目标方法）；`pkg/resourcemanager/rm.rs`（`Start`/`Stop`、内部共享状态和注册入口）；`pkg/resourcemanager/lib.rs`（私有模块装配与测试模块）；`pkg/resourcemanager/scheduler/scheduler.rs`（`Command` 与 `Scheduler`）；`pkg/resourcemanager/util/util.rs`（池 trait、容器、组件与限制常量）。
-- crate 边界：`pkg/resourcemanager/Cargo.toml`，确认库入口、本地 scheduler 依赖、日志依赖和 Go 包迁移映射。
-- Go 对照：`pkg/resourcemanager/schedule.go` 与 `pkg/resourcemanager/schedule_test.go`。
-- Rust 独立测试：`pkg/resourcemanager/schedule_test.rs` 与 `pkg/resourcemanager/migration_aster_unit_test.rs`；后者直接验证空闲/过载/最小容量守卫、调度器顺序、冷却期、超频上限、整数回绕、`DistTask` 跳过以及启停生命周期。
-- 人工复核结论：本文件存在是为了把周期性全池遍历、策略选择和池调容分层连接起来；安全扩展必须同时维护命令选择守卫、执行守卫和上述独立测试。任务为纯文档分析，按计划不运行 Cargo。

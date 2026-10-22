@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-[`mview.rs`](mview.rs) 是 `astersql-planner` 的 `mview` 公共模块，由 [`../lib.rs`](../lib.rs) 的 path 属性装配，不是独立 mview crate；依赖来自 [`../Cargo.toml`](../Cargo.toml)。本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
+本身仅导出，无规划算法。
 
 ## 核心职责
 
@@ -39,11 +39,3 @@
 ## 扩展指南
 
 新增导出先确认实现所属 crate，保持依赖单向；需要公开用户刷新/内部实现入口时明确增补 API，而非假设通配导出已包含。行为测试放在实现所属 core 的独立测试文件。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
-
-已审计新增源码全体、core `lib.rs`、core 与 planner 的 `Cargo.toml`、planner `lib.rs`，以及独立 `core/casetest/mview/mv_refresh_test.rs`。RustCodeGraph 当前索引包含 Rust；冻结事实采用 `git show`/`git diff`，不将当前图关系当成冻结调用关系。目标 core/mview 包均无 `doc.go`。Ready 技能目录缺失，使用任务指定结构、diff、空白和相对链接检查；纯文档任务不运行 Cargo/Go 测试，不把测试源码当作已执行结果。
-
-核对全部 pub use 项及两个别名；对应实现测试为 `core/casetest/mview/mv_refresh_test.rs`，没有本文件独立运行时行为测试。虽然总体计划通常排除薄转发，本文件是任务明确要求的新增说明，按指定范围记录其实际导出边界。

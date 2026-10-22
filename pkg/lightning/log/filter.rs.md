@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-log` crate。crate 入口 [lib.rs](lib.rs) 将它声明为公开的 `filter` 模块，并通过 `pub use filter::*` 再导出其公共 API；[Cargo.toml](Cargo.toml) 指定 `lib.rs` 为库入口，运行时只有 `serde_json`（启用 `preserve_order`）这一项直接依赖。
-
-它位于 Lightning 日志写入链的中间和基础层：一方面定义 `Level`、`Field`、`Entry`、`Core` 等本 crate 的日志数据与抽象，另一方面用 `FilterCore` 包装任意下游 `Core`，只把调用方标识命中白名单的条目继续写出。[log.rs](log.rs) 的 `InitLogger` 是生产接线点：关闭诊断日志时，它把实际输出的 `OutputCore` 包装为 `FilterCore`；开启诊断日志时则直接使用 `OutputCore`（`log.rs:265-315`）。
+`Level` 负责级别解析、排序和 JSON 所需的大写名称（`filter.rs:27-64`）。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [filter.go](filter.go)，测试是 [filter_test.go](filter_test.go)。两版的核心结构一致：`FilterCore` 嵌入/持有下游 core 和过滤字符串，`With` 在保留过滤规则的情况下派生下游，`Write` 对调用方标识逐项执行子串包含判断，命中即转发，未命中返回成功。Rust 的 `NewFilterCore` 保留 Go 风格名称以降低迁移接线差异。
+Rust 的 `NewFilterCore` 保留 Go 风格名称以降低迁移接线差异。
 
 主要差异如下：
 
@@ -91,8 +89,6 @@ Go 对照文件是 [filter.go](filter.go)，测试是 [filter_test.go](filter_te
 - Go benchmark 实测比较 `strings.Contains` 和正则；Rust 测试文件只保留两种循环形状的普通辅助函数，稳定测试框架下没有实际 benchmark，也没有引入 `regex` crate。
 - Rust 的 `named` 是自定义 trait 的额外能力，并显式保留过滤器；Go 依靠 zap core/logger 的既有命名能力。
 
-[filter_test.rs](filter_test.rs) 与 Go 测试对齐了无过滤基础输出、不命中丢弃、命中放行、`with` 字段保留、字段文本不能冒充调用方及尾斜杠边界；迁移测试又独立覆盖了调用方过滤和 `Contains` 语义。
-
 ## 扩展指南
 
 - 新增日志级别时，应同步修改 `Level` 枚举、`parse`、`capital`、排序预期及独立测试；还需检查 [log.rs](log.rs) 的级别门控和配置解析。不能只增加枚举成员，否则解析或 JSON 名称会不完整。
@@ -101,12 +97,3 @@ Go 对照文件是 [filter.go](filter.go)，测试是 [filter_test.go](filter_te
 - 修改调用方采集方式时，应在 [log.rs](log.rs) 的 `Logger::log` 接线，而不是让 `FilterCore` 自行回溯栈；同时验证生产白名单既能命中 Rust 路径，也不会意外放行相似子串。
 - 若需要运行时更新过滤规则，不能直接给现有 `Vec<String>` 增加可变入口；需要先设计共享状态、锁开销和派生 core 的一致性。目前的不可变克隆模型是并发安全边界。
 - 若增加新的下游 core，实现必须满足 `Send + Sync`，并明确 `with`、`named`、错误传播与资源生命周期。过滤器只负责决定是否调用下游，不提供缓冲、重试或容错。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/lightning/log` 识别目标 `filter.rs` 的 30 个符号及同目录 Rust/Go 实现与测试。
-- RustCodeGraph `node --file pkg/lightning/log/filter.rs`：核对了文件全部 294 行，包括所有类型、函数、trait 和 impl；`query FilterCore`、`query NewFilterCore`、`query encode_json` 核对了生产入口、测试引用和 Go 同名符号。
-- RustCodeGraph 文件节点：读取并核对了 [log.rs](log.rs)、[lib.rs](lib.rs)、[filter_test.rs](filter_test.rs)、[migration_aster_unit_test.rs](migration_aster_unit_test.rs)、[filter.go](filter.go) 和 [filter_test.go](filter_test.go)。
-- Cargo 边界：读取 [Cargo.toml](Cargo.toml)，确认 crate 名、库入口、`serde_json` 依赖和 Go 包迁移元数据。
-- 人工事实复核：确认文档区分过滤器与下游输出职责，覆盖实际生产接线、字段/状态、错误与并发边界、Go 差异和安全扩展位置；没有把测试辅助 benchmark 描述为已接线性能基准。
-- 结构验证按任务规定的命令执行，要求目标文件存在且恰有十一个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。

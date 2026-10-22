@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应 Rust 源文件](row_count_index.rs)属于 `astersql-planner-cardinality` crate，是按索引范围估算命中行数的实现。crate 由 `pkg/planner/cardinality/Cargo.toml` 定义，`lib.rs` 以私有模块 `mod row_count_index` 装载本文件，再通过 `pub use row_count_index::*` 向 crate 使用者公开其中的 `pub` 符号。它处在规划器“访问路径已经形成范围、需要给路径计算基数”的阶段，不负责构造索引范围，也不读取存储数据。
-
-应用主链中的直接入口位于 `pkg/planner/core/operator/logicalop/logical_datasource.rs`：逻辑数据源为索引路径截取已声明索引列的范围后调用 `GetRowCountByIndexRanges`，把返回的 `Est/MinEst/MaxEst` 写入访问路径；当非唯一索引范围还追加了整型主键 handle 时，再调用 `AdjustRowCountForAppendedHandleColumns`。此外，`pkg/planner/cardinality/selectivity.rs` 用入口结果计算索引谓词选择率，`cross_estimation.rs` 用它估算相关性修正后的扫描量，`row_count_column.rs` 复用本文件的均匀分布估算器。
+`estimateRowCountWithUniformDistribution` 和 `StatsProvider` 为列、索引共用的“TopN/桶未覆盖值”提供统一估算，并纳入 `RiskEqSkewRatio`。
 
 ## 核心职责
 
@@ -89,11 +87,9 @@ RustCodeGraph 的文件查询显示本文件被 5 个文件使用，并确认主
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cardinality/row_count_index.go`。Rust 保留了 Go 的同名入口、V1/V2 分派、NULL/唯一点逻辑、TopN/CM Sketch/直方图优先级、exp-backoff、out-of-range、完整范围跳过估算和追加 handle 修正。`Cargo.toml` 的 `package.metadata.porting.go-package` 也明确指向 `pkg/planner/cardinality`。
-
 Rust 的类型化适配包括：Go 的可空 `*HistColl` 在 V2 内部表示为 `Option<&HistColl>`；可空 TopN 通过 crate 的 `OptionalTopNExt` 提供 nil-safe 的 `Num/MinCount`；Go 接口 `StatsProvider` 对应 Rust trait 及两个显式 impl；Go 包级 `nullKeyBytes` 对应无可变全局状态的 `nullKeyBytes()`；切片指针改为借用切片。Rust 对缺失 `Idx2ColUniqueIDs`、越界列映射和空候选使用显式检查，保持 Go nil slice/失败回退语义而避免 panic。
 
-两侧当前都包含 `AdjustRowCountForAppendedHandleColumns`：其前置条件是调用者先把范围截断到已声明索引列做前缀估算，不能把追加 handle 的完整编码键直接送入索引直方图。两侧也都要求 fast path 排除 partial/MV 索引，并要求低界为包含 NULL 而非 `MinNotNull`。Rust 测试 `go_merge_46_zero_repeat_index_upper_uses_uniform_estimate` 明确验证桶末 `Repeat=0` 不表示零行，而要回退均匀分布；正 `Repeat` 仍采用精确值。
+两侧当前都包含 `AdjustRowCountForAppendedHandleColumns`：其前置条件是调用者先把范围截断到已声明索引列做前缀估算，不能把追加 handle 的完整编码键直接送入索引直方图。
 
 ## 扩展指南
 
@@ -104,16 +100,3 @@ Rust 的类型化适配包括：Go 的可空 `*HistColl` 在 V2 内部表示为 
 - 改动范围端点语义时同时检查 `PrefixNext`、NULL 计数、`LowExclude/HighExclude` 只作用于最后维度的规则、`UnionRanges` 与 `isFullRangeIncludingNulls`。
 - Rust 测试必须继续放在独立的 `pkg/planner/cardinality/row_count_index_test.rs`，不要内嵌进生产文件。优先扩展现有测试：`exp_backoff_treats_missing_index_column_mapping_as_empty`、`go_merge_46_zero_repeat_index_upper_uses_uniform_estimate`、`appended_handle_selectivity_merges_bounds_damps_and_caps_points`、`virtual_column_recursive_index_estimates_propagate_and_retry`、`appended_handle_missing_stats_keeps_prefix_and_point_cap` 和组合统计回归。用户可见的选择率/fast-path 行为还应同步核对 `selectivity_test.rs` 及 Go 同路径测试。
 - 兼容风险集中在 Go/Rust 数值顺序、空映射与错误降级语义；性能风险集中在范围逐项编码、末列枚举、递归索引候选和 handle 范围合并。修改后应避免扩大递归深度或对全范围失去快速路径。
-
-## 验证依据
-
-本说明读取并核对了以下直接证据：
-
-- 目标源码：`pkg/planner/cardinality/row_count_index.rs`（841 行；RustCodeGraph `node --file` 分段读取）。
-- crate 边界：`pkg/planner/cardinality/Cargo.toml`、`pkg/planner/cardinality/lib.rs`。
-- Go 对照：`pkg/planner/cardinality/row_count_index.go`。
-- 独立 Rust 测试：`pkg/planner/cardinality/row_count_index_test.rs`；相邻选择率测试调用点：`pkg/planner/cardinality/selectivity_test.rs`。
-- 应用调用点：`pkg/planner/core/operator/logicalop/logical_datasource.rs`、`pkg/planner/cardinality/selectivity.rs`、`pkg/planner/cardinality/cross_estimation.rs`、`pkg/planner/cardinality/row_count_column.rs`。
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/cardinality` 确认目标、Go 对照与独立测试均已索引；文件节点列出 5 个使用文件；`query` 精确确认 `GetRowCountByIndexRanges`、`getIndexRowCountForStatsV2`、`expBackoffEstimation`、`AdjustRowCountForAppendedHandleColumns` 的 Go/Rust 对应定义。
-
-人工复核结论：该文件存在的原因是把索引范围及多种统计结构转换为规划器可比较的行数区间；运行时由索引路径、选择率与相关性估算调用；安全扩展必须维持版本分派、范围边界、错误降级、递归终止、Go 对齐及独立测试约束。此任务为纯文档分析，按计划未运行 Cargo 或代码测试；验收采用固定十一章节的结构命令与源码证据复核。

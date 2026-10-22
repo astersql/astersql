@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`checker.rs` 是 `astersql-resourcegroup` crate 的资源组边界定义文件。crate 入口 `pkg/resourcegroup/lib.rs` 通过 `pub mod checker` 和 `pub use checker::*` 将本文件的常量及两个 trait 暴露给依赖方；`pkg/resourcegroup/Cargo.toml` 又把该 crate 对应到 Go 包 `pkg/resourcegroup`。本文件只定义协议，不保存资源组配置，也不实现 runaway 判定算法；Go 侧的具体判定实现位于 `pkg/resourcegroup/runaway/checker.go`，Rust 侧更完整的迁移实现位于独立 crate `pkg/resourcegroup/runaway/`。
-
-当前接线并不完全统一。`DEFAULT_RESOURCE_GROUP_NAME` 已被 session 运行时多个路径直接使用，`ConsumptionReporter` 被 `pkg/domain/ruv2_reporter.rs` 的桥接器使用；本文件的 `RunawayChecker` 则主要作为通用类型边界被 `pkg/session/sessmgr/processinfo.rs` 擦除，并由 `pkg/resourcegroup/migration_aster_unit_test.rs` 验证。实际 KV/coprocessor 请求链当前使用 `kv::resourcegroup::RunawayChecker`、`pkg/store/driver/runaway_adapter.rs` 和 `pkg/store/copr/coprocessor.rs` 中的相邻接口，不能把这些同名接口误认为本 trait 的直接实现。
+`RunawayChecker` 描述一条查询从执行前检查、发送 coprocessor 请求、响应阈值检查、累计量重置，到读取处置动作和 kill 决策的完整能力集合。
 
 ## 核心职责
 
@@ -72,13 +70,9 @@ trait 不拥有线程、异步任务、通道、文件或网络连接，也没�
 
 ## 与 Go 版本的对应关系
 
-`pkg/resourcegroup/checker.go` 是一一对应的接口来源：常量值相同，两个接口的方法集合也相同。Rust 用 snake_case、关联类型和 `Result`/`Option` 表达 Go 的方法、具体协议类型和可空 `error`：
+Rust 用 snake_case、关联类型和 `Result`/`Option` 表达 Go 的方法、具体协议类型和可空 `error`：
 
 - Go 固定使用 `rmpb.RunawayAction`、`tikvrpc.Request`、`util.RUDetails`、`rmpb.Consumption`；Rust 通过 `Action`、`Request`、`RuDetails`、`Consumption` 保持集成可替换性。
-- Go `CheckThresholds(..., err error) error` 对应 Rust `check_thresholds(..., err: Option<Error>) -> Option<Error>`。
-- Go `BeforeExecutor() (string, error)` 对应 Rust `Result<String, Error>`；其余方法保持相同顺序和意图。
-- Go 具体 `pkg/resourcegroup/runaway/checker.go::Checker` 实现 nil receiver 防护、watch list、deadline/RU/processed-key 阈值、动作选择和原子计数；这些逻辑不在本文件中。不能因 trait 形状已迁移，就宣称该文件已经复刻具体算法。
-- `pkg/resourcegroup/migration_aster_unit_test.rs` 验证接口形状、默认组名、请求可变写入、错误传播、累计重置、动作读取和两类上报，但它没有覆盖 Go 具体 `Checker` 的全部业务分支；具体迁移行为应看 `pkg/resourcegroup/runaway/checker.rs` 及其独立 `checker_test.rs`。
 
 ## 扩展指南
 
@@ -88,12 +82,3 @@ trait 不拥有线程、异步任务、通道、文件或网络连接，也没�
 - 为 `ConsumptionReporter` 增加可失败上报会改变现有无返回值契约，需要设计重试、丢弃和背压策略，并同步 `pkg/domain/ruv2_reporter.rs::ResourceGroupReporterBridge`。
 - 新增资源组回退规则时，应复查所有 `DEFAULT_RESOURCE_GROUP_NAME` 使用点以及 DDL 自有的同名常量，关注大小写、空名和跨模块一致性。
 - 性能风险主要在实现层：高频阈值检查与消费上报不应引入全局锁争用；本 trait 的 `&self` 设计允许共享，但不自动保证低开销。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`files --filter pkg/resourcegroup` 定位本模块；`node --file pkg/resourcegroup/checker.rs` 读取完整 88 行并报告使用关联；`query`/`node` 核对 `RunawayChecker`、`ConsumptionReporter`、`before_cop_request`、`report_ruv2_consumption` 和默认组常量；对两个 trait 执行 callers/callees 查询未得到方法级边。
-- Rust 源与 crate：`pkg/resourcegroup/checker.rs`、`pkg/resourcegroup/lib.rs`、`pkg/resourcegroup/Cargo.toml`。
-- Rust 调用与桥接：`pkg/domain/ruv2_reporter.rs`、`pkg/session/sessmgr/lib.rs`、`pkg/session/sessmgr/processinfo.rs`、`pkg/store/driver/runaway_adapter.rs`、`pkg/store/driver/kv_adapter.rs`、`pkg/store/copr/coprocessor.rs`。
-- Rust 独立测试：`pkg/resourcegroup/migration_aster_unit_test.rs`；相关生产链测试可参考 `pkg/store/driver/coprocessor_adapter_test.rs`，但后者验证的是 KV/coprocessor 相邻接口，而非直接实现本 trait。
-- Go 对照：`pkg/resourcegroup/checker.go`；具体行为与测试位于 `pkg/resourcegroup/runaway/checker.go`、`pkg/resourcegroup/runaway/checker_test.go`，coprocessor 调用顺序见 `pkg/store/copr/coprocessor.go`。
-- 结构检查使用任务指定命令，要求目标存在且恰有 11 个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

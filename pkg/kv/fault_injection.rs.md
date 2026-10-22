@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`pkg/kv/fault_injection.rs`](fault_injection.rs) 属于 `astersql-kv` crate。`pkg/kv/Cargo.toml` 以 `lib.rs` 为库入口；`pkg/kv/lib.rs` 在公开模块 `fault_injection` 中通过 `include!("fault_injection.rs")` 装入本文件，再用 `pub use fault_injection::*` 将公开项提升到 crate 根。因此调用方通常使用 `kv::InjectionConfig`、`kv::NewInjectedStore`，不必写完整模块路径。
-
-本文件位于 KV 抽象层而不是某个具体 TiKV 客户端实现中：它接收任意 `Box<dyn Storage>`，返回仍满足 `Storage` 的装饰器，并在 `Begin`、`GetSnapshot` 产生的事务和快照外继续包一层。它的用途是让测试或混沌场景在不改变真实存储实现的前提下，稳定模拟单键读、批量读和提交失败。
-
-文件没有 feature gate 或其他条件编译项，属于 crate 的常规公开 API。独立测试由 `pkg/kv/lib.rs` 的 `#[cfg(test)] #[path = "fault_injection_test.rs"]` 装入；生产源码没有内嵌测试。
+未配置错误时，包装器不自行合成结果，而是回落到底层实现，所以真实返回值、错误和副作用仍由被包装对象决定。
 
 ## 核心职责
 
@@ -74,13 +70,13 @@ setter 完成写锁更新后，后续成功取得读锁的调用会看到新值�
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/kv/fault_injection.go`。两版都有 `InjectionConfig`、两个 setter、`InjectedStore`、`InjectedTransaction`、`InjectedSnapshot` 和 `NewInjectedStore`；都让读错误同时覆盖事务/快照的 `Get`、`BatchGet`，让提交错误只覆盖事务 `Commit`，并在锁保护下持有读锁直到底层调用结束。其余方法依靠 Go 接口嵌入或 Rust 显式逐项转发实现透明包装。
+两版都有 `InjectionConfig`、两个 setter、`InjectedStore`、`InjectedTransaction`、`InjectedSnapshot` 和 `NewInjectedStore`；都让读错误同时覆盖事务/快照的 `Get`、`BatchGet`，让提交错误只覆盖事务 `Commit`，并在锁保护下持有读锁直到底层调用结束。其余方法依靠 Go 接口嵌入或 Rust 显式逐项转发实现透明包装。
 
 所有权表达不同但职责对应：Go 以嵌入字段 `Storage`/`Transaction`/`Snapshot` 自动提升未重写方法，Rust 必须分别实现完整 trait 并显式转发；Go 共享 `*InjectionConfig`，Rust 用 `Arc<InjectionConfig>`；Go 的 `error` 可为 `nil`，Rust 用 `Option<Error>`；Go `sync.RWMutex` 没有锁中毒返回，Rust 对中毒分别采用“受控操作返回错误、setter 静默不更新”的策略。
 
 `Begin` 的错误表达有语言层差异：Go 构造 `InjectedTransaction` 并与底层 `err` 一起返回，即便 `err != nil`；Rust `Result` 用 `?` 在错误时只返回 `Err`，成功时才有包装事务。对遵循“错误时不使用事务”的调用方语义等价，但不能声称两版在错误返回值形状上完全相同。
 
-`pkg/kv/fault_injection_test.go::TestFaultInjectionBasic` 与 Rust `pkg/kv/fault_injection_test.rs::test_fault_injection_basic` 覆盖相同主线：启用两个错误后，事务/快照单读、批量读和提交均失败；清除后回到底层 mock 的空读、未找到快照和可重试提交错误。Rust 测试另验证两个默认 `TxnOption` 能穿过 `Begin`。`pkg/kv/txn_test.rs` 还证明包装 store 可进入 `RunInNewTxn` 的重试/失败路径。
+`pkg/kv/fault_injection_test.go::TestFaultInjectionBasic` 与 Rust `pkg/kv/fault_injection_test.rs::test_fault_injection_basic` 覆盖相同主线：启用两个错误后，事务/快照单读、批量读和提交均失败；清除后回到底层 mock 的空读、未找到快照和可重试提交错误。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ setter 完成写锁更新后，后续成功取得读锁的调用会看到新值�
 - 行为测试应继续放在独立 `pkg/kv/fault_injection_test.rs`，并同步核对 Go 的 `pkg/kv/fault_injection_test.go`。与事务重试的集成影响放在现有 `pkg/kv/txn_test.rs`，不要把测试写回生产 `.rs`。
 - 对锁处理的任何重构都要覆盖中毒策略、setter 与慢底层调用的竞争、清除配置后既有事务/快照立即观察新值，以及多个 wrapper 共用配置。缩短读锁持有范围可能改善配置切换延迟，但会偏离当前 Go 的锁范围，需要明确兼容依据。
 - 性能风险主要来自每次受控操作的一次 `RwLock` 获取与注入错误克隆；未受控的众多转发方法没有额外锁。新增通用拦截层时应避免让所有 KV 操作无条件承担更重的同步或分配成本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11467 个文件、307296 个节点、1848419 条边；`node --file pkg/kv/fault_injection.rs` 完整读取 397 行目标源码并报告 8 个引用文件。
-- RustCodeGraph 精确查询：`query NewInjectedStore --kind function`、`query InjectionConfig --kind struct`、`query InjectedStore --kind struct`、`query InjectedTransaction --kind struct`、`query InjectedSnapshot --kind struct` 均同时定位 Rust 与同路径 Go 符号。`callers NewInjectedStore`、`callers SetGetError`、`callers SetCommitError` 未返回可用边，因此调用点按技能规则用全仓 Rust 精确搜索补证。
-- 已读生产与装配文件：`pkg/kv/fault_injection.rs`、`pkg/kv/lib.rs`、`pkg/kv/Cargo.toml`；目标包不存在 `pkg/kv/doc.go`，故无额外包契约文件可读。
-- 已读 Go 对照：`pkg/kv/fault_injection.go`；已读 Go 测试：`pkg/kv/fault_injection_test.go`。
-- 已读独立 Rust 测试：`pkg/kv/fault_injection_test.rs`、`pkg/kv/txn_test.rs`；测试依赖的 mock 行为由 `pkg/kv/lib.rs` 中 `MockStorage`、`MockTxn`、`MockSnapshot`、`MockMap` 的实现核对。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付检查使用任务指定的结构命令验证文档存在且恰有 11 个固定二级标题，并人工复核文件定位、实际接线、Go 差异和扩展建议均由上述直接证据支持。

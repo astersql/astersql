@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-lightning-mydump`。包清单 `pkg/lightning/mydump/Cargo.toml` 以 `lib.rs` 为库入口，并通过 `package.metadata.porting.go-package = "pkg/lightning/mydump"` 标明对应 Go 包。`pkg/lightning/mydump/lib.rs` 用 `mod bytes; pub use bytes::*;` 编译并公开再导出本文件的 API，因此外部使用者可从 crate 根访问 `ByteSet`、`make_byte_set`、`makeByteSet`、`index_any_byte` 和 `IndexAnyByte`。
-
-它是一个无 I/O 的字节扫描基础件，对照 `pkg/lightning/mydump/bytes.go` 中从 Go 标准库思路复制的 `byteSet`、`makeByteSet`、`contains` 与 `IndexAnyByte`。设计用途是先把一组特殊字节压成 256-bit 集合，再在线性扫描输入时快速判断每个字节是否命中。当前仓库的精确 Rust 引用搜索只找到本文件定义和 `lib.rs` 的模块再导出；Rust CSV 解析器 `pkg/lightning/mydump/csv_parser.rs` 当前直接比较分隔符字节序列，没有接入这些 API。因此本文件目前是已公开、可调用但尚未进入 Rust mydump 生产解析主链的移植基础件，不能把 Go 侧的实际接线误写成 Rust 现状。
+`makeByteSet` 和 `IndexAnyByte` 是 Go 风格兼容名，仅转发给 snake_case 实现，不维护第二套逻辑。
 
 ## 核心职责
 
@@ -67,7 +65,7 @@ Go 侧的真实主链不同：`pkg/lightning/mydump/csv_parser.go::NewCSVParser`
 
 `pkg/lightning/mydump/bytes.go` 是逐项权威对照：Go `type byteSet [8]uint32` 对应 Rust `ByteSet([u32; 8])`；`makeByteSet`、`(*byteSet).contains`、`IndexAnyByte` 的桶选择、bit 选择、首命中返回和 `-1` 语义均保持一致。Rust 用 `&self` 替代 Go 指针接收者，因为查询不修改状态；用 `&[u8]`/`&ByteSet` 明确只读借用；用私有元组字段封装原始桶；同时额外提供 snake_case 入口以符合 Rust 命名习惯。
 
-两侧的关键差异是接线状态，而不是位图算法：Go `csv_parser.go` 持有三个 `byteSet` 并在 `readUntil` 中调用 `IndexAnyByte`；Rust `CsvParser` 没有这些字段，且采用完整 token 比较/子切片搜索。另一个接口差异是 Go `IndexAnyByte` 返回平台宽度 `int`，Rust 返回 `isize`；两者都能表示 `-1`。Rust crate 根允许 `non_snake_case`，使兼容别名可以存在而不触发命名 lint。
+两侧的关键差异是接线状态，而不是位图算法：Go `csv_parser.go` 持有三个 `byteSet` 并在 `readUntil` 中调用 `IndexAnyByte`；Rust `CsvParser` 没有这些字段，且采用完整 token 比较/子切片搜索。另一个接口差异是 Go `IndexAnyByte` 返回平台宽度 `int`，Rust 返回 `isize`；两者都能表示 `-1`。
 
 ## 扩展指南
 
@@ -76,13 +74,3 @@ Go 侧的真实主链不同：`pkg/lightning/mydump/csv_parser.go::NewCSVParser`
 若计划把该模块接入 Rust CSV 主链，最可能修改的位置是 `pkg/lightning/mydump/csv_parser.rs` 的 `CsvParser` 派生状态、`NewCSVParser` 初始化和 `read_field`/`readUntil` 扫描路径。必须继续在命中候选首字节后验证完整的多字节 separator/delimiter/terminator，不能把 byte-set 命中等同于完整 token 命中。兼容风险包括引号/转义优先级、跨 token 的多字节匹配、EOF、空行与行长度限制；性能风险包括每字节调用成本和短输入上优化开销。
 
 测试必须放在独立文件，不能内嵌进 `bytes.rs`。建议新增同目录 `bytes_test.rs`，并在 `pkg/lightning/mydump/lib.rs` 以 `#[cfg(test)] #[path = "bytes_test.rs"] mod bytes_test;` 挂载；直接覆盖空集合、重复字节、0/31/32/255 桶边界、首命中、无命中和兼容别名等价性。若接入 CSV 主链，还应同步扩展 `pkg/lightning/mydump/csv_parser_test.rs`，并以 `pkg/lightning/mydump/csv_parser_test.go` 的正则元字符转义、多字节分隔符、quoted separator、EOF 等场景核对移植语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件已索引；`files --filter pkg/lightning/mydump/bytes.rs` 报告该文件 7 个符号；`node --file ... --offset 1 --limit 260` 返回完整 64 行源码。
-- RustCodeGraph `query --json`：确认 `ByteSet` 位于第 27 行、`make_byte_set` 位于第 30 行、`index_any_byte` 位于第 52 行，并区分同名 Go/Rust 符号。对限定符运行 `callers/callees` 未得到可用边，因此调用结论由下述精确搜索补证。
-- 源码：`pkg/lightning/mydump/bytes.rs`，完整读取并核对所有类型、函数、方法、派生项与注释。
-- crate 边界：`pkg/lightning/mydump/Cargo.toml`、`pkg/lightning/mydump/lib.rs`、根 `Cargo.toml`；确认包名、Go 包映射、workspace 成员、模块声明和公开再导出。
-- Rust 引用：仓库级 `rg` 搜索 `ByteSet|make_byte_set|makeByteSet|index_any_byte|IndexAnyByte` 只命中 `bytes.rs` 定义；模块搜索只命中 `lib.rs` 的 `mod bytes`/`pub use bytes::*`。因此“当前无 Rust 调用者”是当前工作树事实，不是对未来接线的推断。
-- Go 对照与调用链：`pkg/lightning/mydump/bytes.go`、`pkg/lightning/mydump/csv_parser.go`；确认等价位运算，以及 `NewCSVParser -> makeByteSet`、`readUntil -> IndexAnyByte -> contains` 的实际使用。
-- 测试证据：同目录没有同名 Rust 独立测试；读取 `pkg/lightning/mydump/csv_parser_test.rs` 与 `pkg/lightning/mydump/csv_parser_test.go`。前者只验证当前 Rust CSV 行为，不直接调用本模块；后者通过 Go CSV 主链间接覆盖特殊字节扫描。任务为纯文档分析，按计划不运行 Cargo 或代码测试。

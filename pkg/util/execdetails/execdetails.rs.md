@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 SQL 执行明细的聚合与展示实现，对应源码为 [`execdetails.rs`](./execdetails.rs)。源码由 `pkg/util/execdetails/internal/group1/lib.rs` 中的 `execdetails_impl` 通过 `include!("../../execdetails.rs")` 纳入 `astersql-util-execdetails-group1`，再由根 crate `pkg/util/execdetails/lib.rs` 的 `execdetails` 模块统一再导出。根 `Cargo.toml` 将该 group1 子 crate、RU v2 子 crate和 util 子 crate组合为 `astersql-util-execdetails`；本文件本身没有条件编译项，测试装配位于上述两个 `lib.rs`。
-
-它处在“分布式请求返回明细 -> 语句级聚合 -> 慢日志、语句摘要和结构化日志”的中间层。已接线的 Rust 路径包括：`pkg/distsql/select_result.rs::record_cop_evidence` 调用 `MergeCopExecDetails`/`MergeReadPoolTaskDetails`；`pkg/sessionctx/stmtctx/stmtctx.rs::GetExecDetails` 读取快照；`pkg/sessionctx/variable/slow_log.rs` 消费 `CopTasksDetails` 和 IA 远读统计；`pkg/util/util.rs` 把 `ExecDetails::ToZapFields` 转成日志字段。
+SQL 执行明细的聚合与展示实现，对应源码为 [`execdetails.rs`](./execdetails.rs)。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/execdetails/execdetails.go`，总体结构、字段、合并顺序、零值过滤、P90 取法和日志键均按 Go 移植。主要语言映射是：Go 指针对应 `Option`，匿名嵌入的 `CopExecDetails` 对应 Rust 具名字段，Go mutex 的 `defer Unlock` 对应 guard 生命周期，Go 原子 load 对应兼容层 Relaxed load，返回 nil 摘要对应 `None`。
+主要语言映射是：Go 指针对应 `Option`，匿名嵌入的 `CopExecDetails` 对应 Rust 具名字段，Go mutex 的 `defer Unlock` 对应 guard 生命周期，Go 原子 load 对应兼容层 Relaxed load，返回 nil 摘要对应 `None`。
 
 已验证的有意差异包括：Rust `GetExecDetails` 做深层 `Clone`，比 Go 的浅结构体副本更隔离；Rust 无 nil receiver，所以 `StmtExecDetails` 的 nil receiver 防御由调用侧承担；Rust `P90Summary::Merge` 不用“map 是否为 nil”判断初始化，避免默认空 `HashMap` 导致误清除已预置的 process/wait 样本，该行为由 `test_p90_merge_preserves_samples_with_initialized_empty_backoff_map` 固定。
 
@@ -91,12 +89,3 @@
 - 测试应继续放在独立文件。核心同步补 `pkg/util/execdetails/execdetails_1_aster_unit_test.rs`，集成/Go 对照补 `pkg/util/execdetails/execdetails_test.rs`，并核对 `pkg/util/execdetails/execdetails_test.go`；不要把测试嵌入本生产文件。
 
 兼容风险集中在日志键/顺序、浮点秒格式、Go 的 nil/浅拷贝语义和 P90 选择；性能风险集中在锁内排序、clone 大型明细以及当前无界样本向量。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引覆盖 11,467 个文件；`files --filter pkg/util/execdetails` 确认目标 Rust、Go 和测试文件均在索引中。
-- RustCodeGraph 精确查询：`MergeCopExecDetails` 定位到本文件第 714 行，`CopTasksDetails` 定位到第 822 行，两个 `ToZapFields` 定位到第 513/1016 行，`GetIARemoteReadSegmentStats` 同时定位 Rust 第 242 行和 Go 第 224 行，`P90Summary` 同时定位 Rust/Go 定义。图的 `callers`/`callees` 对这些 Rust 方法返回空边，因此调用点按技能降级规则用 `rg` 核对，未把空图边解释为“无人调用”。
-- 读取的生产与装配证据：`pkg/util/execdetails/execdetails.rs`、`pkg/util/execdetails/internal/group1/lib.rs`、`pkg/util/execdetails/lib.rs`、`pkg/util/execdetails/Cargo.toml`、`pkg/distsql/select_result.rs`、`pkg/sessionctx/stmtctx/stmtctx.rs`、`pkg/sessionctx/variable/slow_log.rs`、`pkg/util/util.rs`、`pkg/util/stmtsummary/statement_summary.rs`。
-- Go 对照：`pkg/util/execdetails/execdetails.go` 和百分位实现 `pkg/util/execdetails/util.go`。它们证实字段/流程映射以及 1000 样本后转 t-digest 的 Go 行为。
-- 独立测试：`pkg/util/execdetails/execdetails_test.rs` 覆盖 String/zap、read-pool/scan 独立合并、IA 空值和 P90 保样本；`pkg/util/execdetails/execdetails_1_aster_unit_test.rs` 覆盖 Go 顺序、零值过滤、cop 平均/P90/最大地址及退避统计；`pkg/util/execdetails/execdetails_test.go` 提供原始 Go 输出和 IA 行为基线。
-- 本任务是只读行为分析加单一 Markdown 产物，按计划不运行 Cargo；最终结构检查要求本文恰有十一个规定的二级标题。

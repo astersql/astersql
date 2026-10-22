@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-cmd-importer` crate 的并发导入调度层，对照 Go 文件 `cmd/importer/job.go`。crate 根 `cmd/importer/lib.rs` 通过 `pub mod job` 暴露本模块；二进制从 `cmd/importer/bin_main.rs` 进入 `cmd/importer/lib.rs::main`，再到 `cmd/importer/main.rs::run_with_args`。后者完成配置、表结构解析、连接创建和 DDL 执行后，在 `main.rs:128-134` 调用 `doProcess`，因此本文件位于“表和连接已就绪”之后、“关闭连接”之前。
-
-`cmd/importer/Cargo.toml` 将该目录定义为 `astersql-cmd-importer` 的库与二进制，且只声明 `toml`、`serde_json` 两个外部依赖；本文件自身仅使用 Rust 标准库线程、同步通道、时间 API，以及 crate 内的 `db`、`parser`、`stubs` 模块。它不是门面或未接线桩：生产主流程和 `parity_test.rs` 都直接调用其 API。不过，数据库句柄 `stubs::DB` 是当前 crate 的记录型兼容实现，而非真实 `database/sql` 驱动，这一点限制了对真实数据库事务行为的推断。
+上游 `run_with_args` 提供 `Arc<table>` 和 `&[DB]`；下游 `db.rs::genRowDatas` 负责生成 SQL，`stubs::DB::Begin`、`Tx::Exec`、`Tx::Commit` 提供事务接口。
 
 ## 核心职责
 
@@ -79,15 +77,13 @@ TPS 使用 `jobCount / (now_unix - start_unix)` 的整数除法；不足一秒�
 
 ## 与 Go 版本的对应关系
 
-`cmd/importer/job.go` 提供逐函数对应：`addJobs` 发送后 `close(jobChan)`；`doInsert` 生成 SQL、`Begin`、逐条 `Exec`、`Commit`；`doJob` 完整批与尾批提交；`doWait` 等待 worker 并计算秒级 TPS；`doProcess` 建通道、遇到 incremental 列降为一个 worker、启动任务与 worker 并等待。
-
 Rust 保留了上述业务顺序与 fatal 风格，但存在三项实现差异：
 
 1. Go worker 竞争一个共享 channel；Rust 使用 dispatcher 加 worker 私有 channel，并按轮询分配。因此任务归属更确定，但各 worker 实际完成顺序仍由调度和数据库耗时决定。
 2. Go `doWait` 在收齐信号后显式关闭 `doneChan`；Rust 依靠 sender/receiver drop。Rust 还保存 worker handles，并在等待后 join、重新传播第一个 panic，这是防止线程失败被静默吞掉的本地接线。
 3. Go 使用 `time.Time` 打印格式化开始/结束时间；Rust 传递和打印 Unix 秒整数。TPS 的秒级整数算法及小于一秒时为 `-1` 的约定保持一致，但日志文本中的时间表示并不完全相同。
 
-此外，Go 版接收真实 `*sql.DB`；本 crate 当前接收 `stubs::DB`。所以 parity 测试能验证调用顺序、提交计数、失败传播和资源所有权，不能替代真实驱动上的隔离性、回滚或吞吐验证。
+此外，Go 版接收真实 `*sql.DB`；本 crate 当前接收 `stubs::DB`。
 
 ## 扩展指南
 
@@ -98,14 +94,3 @@ Rust 保留了上述业务顺序与 fatal 风格，但存在三项实现差异�
 若要返回可恢复错误而非 fatal，需要同时重新设计 worker 返回通道、`doWait` 与 join 的错误聚合，不能只把 `fatal` 改成 `Result`，否则可能出现其他 worker/dispatcher仍阻塞或错误丢失。若接入真实 Rust 数据库客户端，应在上游独立仓库按仓库依赖政策移植并发布 tag，且要补充真实事务 rollback、连接线程安全和取消语义验证，不能把外部依赖复制进本仓库。
 
 配置侧也应增加并验证 `workerCount > 0`、`batch > 0`、`jobCount >= 0` 及 `dbs.len()` 下界，避免让本模块当前的隐式前置条件演化成静默少导数据。任何修改完成后应保持 Rust 源码与独立测试分离，并先运行 `cargo fmt --all`；本次纯文档任务不修改或运行 Rust。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 7032 个 Rust 文件；`files --filter cmd/importer` 确认目标、Go 对照、入口及 parity 测试均在索引中。
-- RustCodeGraph `node --file cmd/importer/job.rs`：核对文件全部 208 行、五个公开函数、一个私有函数、无条件编译项，并报告该文件被 `cmd/importer/parity_test.rs` 使用。
-- RustCodeGraph `query`：分别定位 Rust/Go 的 `addJobs`、`doInsert`、`doJob`、`doWait`、`doProcess`，避免同名节点混淆。
-- RustCodeGraph 精确 callee 查询：确认 `doProcess → addJobs/doJob/doWait/unix_now` 与 `doJob → doInsert`；`doWait → unix_now` 由目标源码核对。精确 caller 查询在当前共享索引负载下超时，故上游调用者改由 `main.rs`、`lib.rs` 和 `rg` 的直接引用结果交叉验证，不据此猜测其他调用者。
-- 已读生产文件：`cmd/importer/job.rs`、`cmd/importer/main.rs`、`cmd/importer/lib.rs`、`cmd/importer/bin_main.rs`、`cmd/importer/db.rs`、`cmd/importer/parser.rs`、`cmd/importer/stubs.rs`，以及 `cmd/importer/Cargo.toml`。
-- 已读 Go 对照：`cmd/importer/job.go` 全文及 `cmd/importer/main.go` 调用点。逐函数流程一致；dispatcher、join/panic 传播与 Unix 秒日志是已明确记录的 Rust 差异。
-- 已读测试：`cmd/importer/parity_test.rs`。直接证据包括 `addJobs(3)` 后 drain 得到 3 个任务、3 jobs/batch 2 得到 2 次 commit、`doProcess` 不关闭 DB，以及 Begin 失败不会死锁并向外传播 panic。同目录未发现独立 `job_test.rs`/`job_test.go`。
-- 本任务只生成说明文档，按计划不运行 Cargo。交付前使用任务指定命令验证恰有 11 个固定二级标题，并人工复核文档回答文件存在原因、运行链路、安全扩展位置与验证边界。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/executor/detach.rs`](./detach.rs) 定义执行器树与执行上下文的“拆离”抽象：从仍绑定 session 可变状态的对象构造可独立使用的副本。其典型目标是允许游标继续拉取旧语句结果时，原 session 去执行新语句（见 `detach.rs:16-19` 与 Go `detach.go:23-31`）。
-
-该文件属于 `astersql-executor` crate；`pkg/executor/Cargo.toml` 声明 crate 名和 `lib.rs` 入口，`lib.rs:95-96` 将它作为公开 `detach` 模块导出。当前 Rust 生产执行主链中，`adapter.rs:327` 的 `ExecExecutor::Detach` 及 typed executor 各自的实现是已接线路径；仓库搜索未找到生产代码实现本文件的 `DetachableExecutor` 或调用其顶层 `Detach`，直接使用证据集中在 `detach_test.rs` 和 `detach_integration_test.rs`。因此，这里是 Go 语义的逐项泛型移植边界，不应误述为已统一替代 Rust 运行时的拆离路径。
+[`pkg/executor/detach.rs`](./detach.rs) 定义执行器树与执行上下文的“拆离”抽象：从仍绑定 session 可变状态的对象构造可独立使用的副本。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@ RustCodeGraph 对 `pkg/executor/detach.rs` 的文件节点报告 8 个使用文�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对照 `pkg/executor/detach.go`，`Cargo.toml` 的 `[package.metadata.porting] go-package = "pkg/executor"` 也确认了包级移植归属。
-
 - Go `Detach(exec.Executor)` 对应 Rust `Detach<E: DetachableExecutor>`：都先调用单节点 detach，再按子节点递归，任一失败则整体失败，最后才 `SetAllChildren`/`set_all_children`。Rust 用 `Option + bool` 表达 Go 的 `nil + bool`。
 - Go 对 table reader 和 index reader context 各写一份同构逻辑（`detach.go:51-80`）；Rust 用 `IndexReaderExecutorContext` 类型别名复用同一实现。Go 以类型断言识别 `*sessionexpr.ExprContext`，Rust 用 `into_static() -> Option<Self>` 抽象该分支。
 - Go `indexLookUpExecutorContext.Detach` 构造了 `newCtx` 并拆离其 table-reader context，但最后返回原 `iluCtx`（`detach.go:83-88`）。Rust `IndexLookUpExecutorContext::Detach` 刻意 `self.clone()`，`detach_test.rs::index_lookup_context_preserves_go_return_value` 固定了这一现状。如要更正为返回拆离的内层 context，必须先明确 Go 端兼容决策，不能单边“修复” Rust。
@@ -78,7 +74,7 @@ Rust 文件直接对照 `pkg/executor/detach.go`，`Cargo.toml` 的 `[package.me
 - Go 的 Table/Index/IndexLookUp reader 通过浅复制执行器后替换 context 且总是成功（`detach.go:108-139`）；Rust 用一个 `TableReaderExecutor` 和两个别名、再由 `DetachWith` 注入具体 context 转换。
 - Go projection/selection 分别拒绝非空 `RequiredOptionalEvalProps` 和任一 filter 的非空 optional props（`detach.go:142-174`）；Rust 用 `OptionalEvalProperties` 和 `DetachableFilter` 保留同样的全或无门禁。
 
-Go `detach_test.go::TestDetachExecutor` 验证不可拆离节点、单 reader、失败子节点与成功嵌套 reader。Rust `detach_test.rs` 扩展了相同树级意图，并增加 context 四元组、Go index-lookup 返回值、optional-property 门禁的独立验证。
+Rust `detach_test.rs` 扩展了相同树级意图，并增加 context 四元组、Go index-lookup 返回值、optional-property 门禁的独立验证。
 
 ## 扩展指南
 
@@ -88,11 +84,3 @@ Go `detach_test.go::TestDetachExecutor` 验证不可拆离节点、单 reader、
 - 若要让本文件真正接入 Rust 结果集主链，需要明确调和 `DetachableExecutor` 与 `adapter.rs::ExecExecutor::Detach` 的所有权签名（前者是 `&self -> Self`，后者是 `&mut self -> Box<dyn ExecExecutor>`），并按 typed executor 的状态/清理规则逐类迁移。这是架构接线工作，不是在本文件增加一个调用就能安全完成。
 - 修改 `IndexLookUpExecutorContext::Detach` 前必须先核实并同步 Go 的实际返回值，再更新 `index_lookup_context_preserves_go_return_value`，避免 Rust 与 Go 行为分叉。
 - 性能上，`all_children() -> Vec<Self>` 会先 clone/移出整个子列表，随后再为拆离子列表分配同等容量；若要优化大扇出树，需在不破坏原树可用性和子顺序的前提下设计新 trait 访问方式，并用大树测试/基准证明收益。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/executor/detach.rs` 全文；`pkg/executor/lib.rs:95-96,402-408`；`pkg/executor/Cargo.toml` 的 `[package]`、`[lib]`、`[features]` 与 `[package.metadata.porting]`。该文件无条件编译项、无模块常量和外部 `use`。
-- RustCodeGraph：`status` 显示本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/executor/detach.rs --offset 1 --limit 260` 返回全部 232 行及 8 个使用文件；`explore "pkg/executor/detach.rs Detach DetachableExecutor TableReaderExecutorContext ProjectionExec SelectionExec"` 验证了 trait hook 到 `Detach`/`DetachWith` 的调用边和测试调用者。单独 `callers detach_shallow` 在 40 秒内未返回并已中止，因此不将该次命令作为额外证据。
-- Rust 测试：`pkg/executor/detach_test.rs` 的 `detach_recursively_resets_executor_state_without_mutating_original`、`detach_is_atomic_when_a_child_cannot_detach`、`reader_context_detaches_every_session_bound_component`、`reader_context_preserves_non_session_context_without_detaching_dependencies`、`index_lookup_context_preserves_go_return_value`、`projection_and_selection_contexts_staticize_only_session_evaluation_contexts`、`executor_shells_detach_context_and_reject_required_optional_properties`；`pkg/executor/detach_integration_test.rs::detached_reader_context_survives_its_real_sql_session`。
-- Go 对照：`pkg/executor/detach.go` 全文与 `pkg/executor/detach_test.go::TestDetachExecutor`。Rust 运行时边界还核对了 `pkg/executor/adapter.rs:327-348,768-835`、`pkg/executor/internal/exec/executor.rs:143` 以及 `rg` 定位的 typed/session runtime `Detach` 实现。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认本文件存在且上述 11 个固定二级标题各出现一次；内容人工复核点是能区分拆离树、context 静态化、optional-property 门禁，以及本泛型框架尚未接入 Rust 生产主链的事实。

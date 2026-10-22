@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-statistics-handle-autoanalyze-priorityqueue` crate。crate 入口 [`lib.rs`](lib.rs) 将本模块声明为“静态分区模式（逐分区分析）分析作业”并重新导出其公开项；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 表明它移植自 Go 包 `pkg/statistics/handle/autoanalyze/priorityqueue`。
-
-在自动分析链路中，[`analysis_job_factory.rs`](analysis_job_factory.rs) 的 `AnalysisJobFactory::CreateStaticPartitionAnalysisJob` 为一个符合条件的物理分区构造 `StaticPartitionedTableAnalysisJob`。作业随后以 `Box<dyn AnalysisJob>` 进入 [`queue.rs`](queue.rs) 的优先队列，由队列计算权重、安装完成钩子、弹出并记录运行状态。真正取得会话/统计执行能力的是 `AnalysisRuntime` 实现；本文件只维护作业状态并生成、派发 ANALYZE 请求。
+真正取得会话/统计执行能力的是 `AnalysisRuntime` 实现；本文件只维护作业状态并生成、派发 ANALYZE 请求。
 
 ## 核心职责
 
@@ -68,8 +66,6 @@ RustCodeGraph 将目标文件识别为包含 27 个符号的已索引 Rust 文�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 [`static_partitioned_table_analysis_job.go`](static_partitioned_table_analysis_job.go)：结构体、构造参数、两种分析类型、物理分区键、准备流程、首索引优化、SQL 模板、权重/指标访问器、hook 和展示字符串均保留了 Go 命名与主要分支。独立 Rust 测试中的 `analyze_indexes_matches_go_by_executing_only_the_first_index` 明确锁定了 Analyze V2 的首索引语义。
-
 主要边界差异如下：
 
 - Go 从 `sessionctx`/InfoSchema 分别解析表和 schema，并直接调用真实统计执行链；Rust 把元数据和执行抽象到 `AnalysisRuntime`，所以当前文件是可接线的作业状态机而不是完整会话集成。
@@ -85,12 +81,3 @@ Rust 文件逐项对应同目录 [`static_partitioned_table_analysis_job.go`](st
 - 改队列身份粒度时，必须联查 `queue.rs` 的 `running_jobs`/`must_retry_jobs` 和 `heap.rs` 的键操作。把键改为全局表 ID 会使同表分区互相阻塞，是行为和并发度变化。
 - 若要补齐 Go 端到端能力，应在独立 Rust 测试文件中增加运行时集成测试，覆盖真实分区统计更新、Analyze V2 多索引刷新和同表分区间失败隔离；不要把测试内嵌到本生产文件。
 - 性能上应保留“一次索引 ANALYZE 刷新全部列和索引”的去重原则；兼容性上需关注统计版本与 `NeedVersionRewriteWarn` 的透传，正确性上需维持准备成功后名称与 ID 指向同一份最新元数据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter ...static_partitioned_table_analysis_job.rs` 确认目标已索引；`node --file ... --offset 1 --limit 500` 展示完整 284 行源码、27 个符号及测试文件级使用关系；`query NewStaticPartitionTableAnalysisJob` 同时定位 Rust 与 Go 构造器。`callers`/`callees` 对相关 trait 方法无输出，调用关系因此使用源码引用补证。
-- Rust 生产代码：[`static_partitioned_table_analysis_job.rs`](static_partitioned_table_analysis_job.rs)、[`job.rs`](job.rs)、[`analysis_job_factory.rs`](analysis_job_factory.rs)、[`queue.rs`](queue.rs)、[`heap.rs`](heap.rs) 与 [`lib.rs`](lib.rs)。
-- crate 边界：[`Cargo.toml`](Cargo.toml)，确认库入口、直接依赖及 Go 包移植元数据。
-- Rust 独立测试：[`static_partitioned_table_analysis_job_test.rs`](static_partitioned_table_analysis_job_test.rs) 的四个可执行测试；另参考 [`job_test.rs`](job_test.rs) 对展示、JSON 和 hook 公共行为的覆盖。
-- Go 对照：[`static_partitioned_table_analysis_job.go`](static_partitioned_table_analysis_job.go) 与 [`static_partitioned_table_analysis_job_test.go`](static_partitioned_table_analysis_job_test.go)，核对真实会话执行、统计结果、多索引刷新和分区级冷却语义。
-- 本任务仅新增说明文档，不修改运行时代码；按任务约束不运行 Cargo。交付前使用任务给定命令验证恰好存在十一个固定二级章节，并人工检查所有关键结论均可追溯到上述符号或文件。

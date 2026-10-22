@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`row_sampler.rs` 属于 `astersql-statistics` crate，模块由 [`pkg/statistics/lib.rs`](lib.rs) 以 `mod row_sampler` 纳入，并通过 `pub use row_sampler::*` 将公开类型和函数重导出。crate 的 Go 包映射在 [`pkg/statistics/Cargo.toml`](Cargo.toml) 中声明为 `pkg/statistics`。
-
-该文件承载 ANALYZE 所需的行级统计采样数据结构：固定容量的加权水库采样、按采样率保留行的伯努利采样、逐列及列组 FM Sketch/NULL 数/字节数累计，以及 `tipb::RowSampleCollector` 的序列化边界。冻结源码可确认文件内部的构造与调用链，但冻结版本符号搜索没有找到这些 API 在其他 Rust **生产文件**中的直接调用；现阶段可确认的外部 Rust 使用者是独立测试。对应 Go 文件 [`pkg/statistics/row_sampler.go`](row_sampler.go) 则被 `pkg/executor/analyze_col_sampling.go` 和 `pkg/store/mockstore/unistore/cophandler/analyze.go` 使用。因此，Go 版本位于实际 ANALYZE 主链，Rust 版本虽已由 crate 导出，其生产接线不能仅凭 Go 调用关系推断为已经完成。
+`baseCollector::{ToProto, FromProto}` 与 `RowSamplesToProto` 在内存结构和 tipb protobuf 之间转换；`FromProto` 按 `ndv_sample_count` 字段存在性选择 sampled 草图。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@ protobuf 不携带 Rust 的 `MemSize` 和样本 `Handle`；恢复时句柄固定
 
 ## 与 Go 版本的对应关系
 
-Rust 文件以 [`pkg/statistics/row_sampler.go`](row_sampler.go) 为直接语义对照，保留了同名 collector、A-Res 最高权重保留规则、列/列组 FM Sketch、单列组复用、tipb 序列化和合并公式。Go 的 `pkg/statistics/sample_test.go::{TestWeightedSampling, TestDistributedWeightedSampling}` 对应 Rust `pkg/statistics/sample_test.rs::{weighted_sampling_keeps_highest_priority_rows, distributed_weighted_sampling_merge_matches_global_top_weights}` 的核心意图。
-
 当前实现并非逐项等价，重要差异包括：
 
 - Go builder 从 `sqlexec.RecordSet` 分 chunk 拉取、复制 Datum，并按字段类型/collator 把字符串转换为 collation key；Rust builder 接收已物化的 `Vec<Vec<Datum>>`，没有 RecordSet、字段类型、collator、时区或 `tablecodec` 转换。
@@ -114,11 +110,3 @@ Rust 文件以 [`pkg/statistics/row_sampler.go`](row_sampler.go) 为直接语义
 - 调整伯努利采样时，需要明确是否追求 Go 的随机流语义；若保留确定性方案，应补充采样率边界、重复运行稳定性和分片合并测试，并修正或明确 `MemSize` 的维护合同。
 - 测试必须继续放在独立文件，不内嵌进生产源。最近的目标测试是 [`pkg/statistics/row_sampler_test.rs`](row_sampler_test.rs)，算法分布/合并覆盖在 [`pkg/statistics/sample_test.rs`](sample_test.rs)；Go 对照测试在 [`pkg/statistics/sample_test.go`](sample_test.go)。至少覆盖零容量、零/越界采样率、空输入、行宽/列组下标契约、NULL、多列组、相等权重、合并、protobuf 往返和销毁后的可观察状态。
 - 任何声称 Rust 已进入 executor/mockstore 生产主链的修改，都应新增可检索的 Rust 调用边及端到端验证；仅有 `lib.rs` 重导出不构成生产接线证据。
-
-## 验证依据
-
-本次增量为 `mergeBase` 去重接线、两类合并器复用，以及 `FromProto` 的 sampled counts 分支。完整读取冻结 `row_sampler.rs`，核对 `fmsketch.rs`、`sampled_ndv.rs`、`lib.rs`、`Cargo.toml` 和 Go `row_sampler.go`。`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 明确检查 sample count 字段缺失与存在且值为零的区别；既有行采样测试在 `row_sampler_test.rs` 和 `sample_test.rs`。
-
-本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/row_sampler.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
-
-纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

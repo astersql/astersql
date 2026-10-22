@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-globalsort` crate。crate 由 `pkg/ingestor/globalsort/Cargo.toml` 定义、以同目录 `lib.rs` 为入口；`lib.rs` 声明 `pub mod util` 并通过 `pub use util::*` 将这里的公共项提升到 crate 根。上层 `pkg/ingestor/doc.go` 将 globalsort 定位为：借助外部存储保存中间有序文件并执行归并排序，随后为 SST 导入准备键范围和文件信息。
-
-它不是排序算法本体，而是全局排序链路的公共支撑层，集中承担四类工作：清理任务文件，构造测试用外部引擎文件，汇总/搬运已排序 KV 元数据，以及把待归并 data 文件规划成受节点数、并发度和目标文件上限约束的子任务。计划与子任务元数据路径也在这里统一生成。
+`ExternalMetaCodec` 与 `BaseExternalMeta` 定义“内联元数据 + 外部元数据”的协议；具体 JSON 格式由使用者实现 codec，本文件只按 `ExternalPath` 决定读写哪一种形态。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ RustCodeGraph 对本文件给出的上游包括 `pkg/ddl/backfilling_dist_schedu
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ingestor/globalsort/util.go`，Rust 独立测试对照 `util_test.rs` 与 `util_test.go`。
-
 - 清理语义一致：都支持多个非分区目录并只遍历对象存储一次，也都会把匹配文件名整体收集后删除。Go 版本额外接受 `context.Context` 和 `skipCleanUpFiles` failpoint；Rust 接口没有取消上下文或该 failpoint。
 - Go `MockExternalEngine` 使用真实 simplesst writer、内存/块大小和 property 距离配置来制造多文件；Rust 为确定性测试直接每四条写一个自定义 data/stat 对。它保留“产生多文件供 split 测试”的意图，但 stat 二进制并非完整 Go writer 产物，不应当作生产格式替代。
 - `SortedKVMeta` 字段、半开范围、合并规则和文件展开顺序对应 Go。Rust 显式 `wrapping_add`，保证 debug/release 都符合 Go `uint64` 回绕；Rust 返回拥有所有权的 `Vec<String>`，Go 返回新 slice。
@@ -104,12 +100,3 @@ RustCodeGraph 对本文件给出的上游包括 `pkg/ddl/backfilling_dist_schedu
 修改 `DivideMergeSortDataFiles` 时必须维持四个性质：所有输入恰好出现一次且顺序不变；每组不超过调整后的步长；完整轮次能均匀占用节点；所有组经 `splitDataFiles` 后的目标文件总数不超过阈值。应同步 `util_test.rs` 的典型尺寸、阈值前后、非单调估算、超大节点数、零节点和空输入用例，并对照 Go `util_test.go`，不要用仅能通过小样例的简化分组替代现有算法。
 
 测试必须继续放在独立的 `pkg/ingestor/globalsort/util_test.rs`（crate 入口通过 `#[path = "util_test.rs"] mod util_test` 接入），不要嵌入本源文件。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`node --file pkg/ingestor/globalsort/util.rs` 读取了完整 357 行并报告六个使用文件；`query SortedKVMeta` 与精确 `explore` 识别了 DDL/DXF 调用者；`callees DivideMergeSortDataFiles` 识别内部步长函数和 `TooManyDataFiles` 错误边。
-- 生产源码：`pkg/ingestor/globalsort/util.rs`；crate 装配和公共基础类型：`pkg/ingestor/globalsort/lib.rs`；crate 边界和依赖：`pkg/ingestor/globalsort/Cargo.toml`；模块定位：`pkg/ingestor/doc.go`。
-- 上游调用：`pkg/dxf/importinto/clean_up.rs`、`pkg/dxf/importinto/planner.rs`、`pkg/dxf/importinto/scheduler.rs`、`pkg/dxf/importinto/task_executor.rs`，以及 RustCodeGraph 列出的 `pkg/ddl/backfilling_dist_scheduler.rs`。
-- Go 对照：`pkg/ingestor/globalsort/util.go`；Go 测试：`pkg/ingestor/globalsort/util_test.go`。
-- Rust 独立测试：`pkg/ingestor/globalsort/util_test.rs`；测试夹具使用者：`pkg/ingestor/globalsort/split_test.rs`。已人工核对的边界包括随机分区清理、扫描/删除错误、计数回绕、外部字段拆分、分组阈值与超大节点容量。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查文档固定结构、路径及事实引用。

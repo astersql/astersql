@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Rust crate `astersql-lightning-pkg-importer-opts`；crate 边界由 [`Cargo.toml`](Cargo.toml) 声明，入口 [`lib.rs`](lib.rs) 通过 `mod precheck_opts` 加载并公开再导出本文件的符号。它对应 Go 包同路径文件 [`precheck_opts.go`](precheck_opts.go)，位于 Lightning 导入流程的“预检构建器可选参数”边界：调用方先构造 option 闭包，真正组装预检构建器时再把闭包归并为一份配置。
-
-该文件不是预检规则实现，也不直接访问数据库、PD 或源数据。实际消费入口是 [`lightning/pkg/importer/precheck.rs`](../precheck.rs) 的 `NewPrecheckItemBuilderFromConfig`：该函数接收 `Vec<ropts::PrecheckItemBuilderOption>`，依次执行后再创建 mydump loader、预检信息获取器和最终的 `PrecheckItemBuilder`。
+文件提供一个两层的函数式选项模型：`PrecheckItemBuilderConfig` 保存已归并的两组选项，`PrecheckItemBuilderOption` 则表示“如何修改这份配置”的可发送、可共享闭包。
 
 ## 核心职责
 
@@ -57,22 +55,12 @@ RustCodeGraph 将 `WithPreInfoGetterOptions` 的直接调用者定位到 `parity
 
 ## 与 Go 版本的对应关系
 
-Go 的 `PrecheckItemBuilderConfig`、`PrecheckItemBuilderOption`、`WithPreInfoGetterOptions` 和 `WithMDLoaderSetupOptions` 均在同路径 `precheck_opts.go` 中有一一对应项。Go 工厂在 option 执行时调用 `slices.Clone(opts)`；Rust 为满足无借用返回值与可重复调用，先在工厂创建时 `to_vec()`，应用时再 `clone()`。从已覆盖的可观察契约看，两者都让写入配置的切片/向量独立于调用方容器，并让每次应用得到独立容器。
+Go 工厂在 option 执行时调用 `slices.Clone(opts)`；Rust 为满足无借用返回值与可重复调用，先在工厂创建时 `to_vec()`，应用时再 `clone()`。
 
-签名差异是 Go 使用可变参数，而 Rust 接收切片；Go 函数值天然可复制，Rust 的依赖 option 使用 `Arc` 才能克隆；Go option 类型没有显式并发约束，Rust trait object 显式要求 `Send + Sync`。另一个迁移限制来自 `Cargo.toml` 和 `stubs.rs`：此 crate 尚未直接依赖真实 mydump option 类型，而是用可克隆替身覆盖当前测试观察到的字段。因此文档不能据此声称所有真实 mydump option 已经完整接线；生产消费者目前只把本地配置中的 scan-file concurrency 翻译到真实 loader 边界。
+签名差异是 Go 使用可变参数，而 Rust 接收切片；Go 函数值天然可复制，Rust 的依赖 option 使用 `Arc` 才能克隆；Go option 类型没有显式并发约束，Rust trait object 显式要求 `Send + Sync`。另一个迁移限制来自 `Cargo.toml` 和 `stubs.rs`：此 crate 尚未直接依赖真实 mydump option 类型，而是用可克隆替身覆盖当前测试观察到的字段。
 
 ## 扩展指南
 
 新增一类 builder 子选项时，应在 `PrecheckItemBuilderConfig` 增加独立字段，在本文件增加只修改该字段的工厂，并在 `precheck.rs::NewPrecheckItemBuilderFromConfig` 明确消费最终值；不要把下游 I/O 或错误处理塞入本文件。若新增项可克隆，应维持“创建时脱离调用方容器、每次应用生成独立容器”的语义；若真实依赖是 `FnOnce` 或持有不可克隆资源，则需先重新设计所有权契约，不能仅删除克隆来勉强编译。
 
 测试应继续放在独立文件 [`parity_test.rs`](parity_test.rs)，至少同步覆盖默认值、空输入、调用方输入后续变更、同字段多 option 的覆盖顺序、重复应用和实际下游消费。若把本地 mydump 替身替换为真实 crate 类型，还需同步检查 `Cargo.toml`、`stubs.rs`、`lib.rs` 与 `precheck.rs` 的翻译层，关注 API 兼容、闭包可重复性、额外分配和 `Arc` 克隆成本；测试逻辑应尽量保持与 Go 同路径行为一致。
-
-## 验证依据
-
-- 目标实现：[`precheck_opts.rs`](precheck_opts.rs)；确认 1 个结构体、1 个类型别名、2 个公开工厂函数及其两阶段克隆逻辑。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)；确认 crate 名称、空外部依赖、本地 mydump 替身说明、模块加载与公开再导出。
-- 直接依赖：[`get_pre_info_opts.rs`](get_pre_info_opts.rs) 与 [`stubs.rs`](stubs.rs)；确认 option 元素是 `Arc<dyn Fn + Send + Sync>`，以及替身能被克隆、重复调用。
-- 生产消费：[`lightning/pkg/importer/precheck.rs`](../precheck.rs) 的 `NewPrecheckItemBuilderFromConfig`；确认 builder option 的顺序应用、两字段的后续用途、loader concurrency 覆盖顺序与错误归属。
-- Go 对照：[`precheck_opts.go`](precheck_opts.go) 与 [`lightning/pkg/importer/precheck.go`](../precheck.go)；确认公开结构、工厂、`slices.Clone` 语义及完整构建流程中的对应位置。
-- 独立测试：[`parity_test.rs`](parity_test.rs) 的 `contract_normal`、`contract_boundary`、`contract_error`、`contract_resource_cleanup`；确认默认/空输入、克隆隔离、重复应用、下游生效和无外部资源清理契约。未发现同名 Go 单元测试或其他 Rust 测试直接调用这两个工厂。
-- RustCodeGraph：索引覆盖 `lightning/pkg/importer/opts`；符号查询确认目标文件 4 个主要定义，并将 `WithPreInfoGetterOptions` 的调用边指向上述三个 parity 测试分组。对生产链的类型消费与图未明确列出的边，使用相邻源码和 `rg` 引用结果交叉核验。

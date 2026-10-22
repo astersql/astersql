@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-tracing` crate。crate 入口 `pkg/util/tracing/lib.rs` 以 `pub mod opt_trace` 声明模块，并通过 `pub use opt_trace::*` 将这里的三个公开符号重导出到 crate 根：`CETraceRecord`、`DedupCETrace` 和 `OptimizeTracer`。`pkg/util/tracing/Cargo.toml` 指定 `lib.rs` 为库入口，并以 `package.metadata.porting.go-package = "pkg/util/tracing"` 标明对应的 Go 包。
-
-它是 Go 文件 `pkg/util/tracing/opt_trace.go` 的小范围迁移：定义基数估计（Cardinality Estimation，CE）追踪记录、按完整记录值去重的辅助函数，以及优化器 tracer 的空标记类型。它不负责启动 tracing、收集执行期 span、写文件或把 CE 记录挂入语句上下文；这些职责应由调用方和同 crate 的 `util.rs` 承担。
-
-当前 Rust 生产接线仍不完整。全仓 Rust 精确引用只找到独立测试 `pkg/util/tracing/migration_aster_unit_test.rs` 使用 `CETraceRecord` 和 `DedupCETrace`；`OptimizeTracer` 没有 Rust 调用点。对应的 Rust `pkg/sessionctx/stmtctx/stmtctx.rs::StatementContext` 虽保留 `EnableOptimizeTrace`、`EnableOptimizerCETrace` 等字段名，却分别用 `Option<CacheValue>` 和 `Vec<CacheValue>` 承载 tracer/CE 记录，而不是本文件的具体类型。因此本文只把本文件描述为可公开使用的数据模型和去重工具，不把 Go 侧已有生产链路推断成 Rust 已接线能力。
+通过派生的相等、哈希、克隆和 serde 能力，把比较键与 JSON 表示集中定义在同一数据类型上。
 
 ## 核心职责
 
@@ -84,12 +80,7 @@ Rust API 通过 `Box<CETraceRecord>` 排除了 Go 输入切片中的 `nil` 元�
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/tracing/opt_trace.rs` 逐项对应 `pkg/util/tracing/opt_trace.go`：
-
-- Rust `CETraceRecord` 的五个字段、整数有符号性/位宽和 JSON 键对应 Go 同名结构体；`TableID` 在两边都不进入 JSON。
 - Rust `HashSet<CETraceRecord>` 对应 Go `map[CETraceRecord]struct{}`，两边都以结构体完整值作为键，而非按指针地址去重。
-- Rust 的两次 `with_capacity(records.len())` 对应 Go 为结果切片和 map 传入 `len(records)` 容量提示。
-- 两边都按输入顺序遍历，只追加首次记录，因此都保留首个对象及稳定的首次出现顺序。
 - Rust `OptimizeTracer {}` 对应 Go 空结构体 `OptimizeTracer struct {}`，当前两边该文件内都没有方法。
 
 语言层面的主要差异是所有权与空值。Go 接收指针切片且不消费调用者切片，返回切片与输入共享记录指针；Rust 接收并消费 `Vec<Box<_>>`，把唯一 `Box` 移到结果并销毁重复项。Go 允许 `nil` 并会在函数内解引用 panic，Rust 类型排除了 `None`。Rust 为了让记录可充当 `HashSet` 键而显式派生 `Eq`/`Hash`，并因集合拥有键而克隆记录；Go map 会复制结构体键，字符串底层数据仍由运行时共享管理。
@@ -105,15 +96,3 @@ Rust API 通过 `Box<CETraceRecord>` 排除了 Go 输入切片中的 `nil` 元�
 为 `OptimizeTracer` 增加真实状态或方法前，应先追踪 Go 优化器 trace 的实际写入/读取点，并把 Rust `StatementContext` 的 `Option<CacheValue>` 有计划地替换为具体类型；同时考虑语句级创建、重置和释放边界。不能仅在空结构体中加字段而不更新上下文接线与独立测试。
 
 若把 `CETraceRecord` 接入 Rust planner/session 主链，应补充至少以下测试：生产者生成字段的准确性、语句间状态不泄漏、去重在真实收集顺序下保留首项、JSON 输出隐藏 `TableID`，以及大 trace 的内存/性能边界。Go 侧既有行为可作为语义基线，但不能替代 Rust 独立回归测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/tracing` 确认目标 Rust/Go 文件、crate 入口和独立测试均已索引。
-- RustCodeGraph `node --file pkg/util/tracing/opt_trace.rs --offset 1 --limit 240`：读取目标文件完整 81 行，核对全部公开符号、字段属性、派生项和去重分支。
-- RustCodeGraph `query DedupCETrace`、`query CETraceRecord`、`query OptimizeTracer`：定位 Rust/Go 对应定义和 Rust 测试导入。精确 `callers DedupCETrace` 在 90 秒内无输出后终止；调用关系改由文件反向边与全仓精确符号搜索补证，不把宽泛搜索结果当作调用边。
-- RustCodeGraph 文件节点：`pkg/util/tracing/opt_trace.go` 完整 41 行、`pkg/util/tracing/migration_aster_unit_test.rs` 完整 181 行、`pkg/util/tracing/lib.rs` 完整 35 行，以及 `pkg/sessionctx/stmtctx/stmtctx.{rs,go}` 的相关字段和默认初始化区段。
-- crate/装配证据：`pkg/util/tracing/Cargo.toml`、`pkg/util/tracing/lib.rs`、`pkg/util/tracing/BUILD.bazel`。目标目录及上级 `pkg/util` 未发现 `doc.go`，因此没有额外的 Go package contract 文件可读。
-- Rust 测试：`migration_aster_unit_test.rs::ce_trace_dedup_preserves_first_value_and_go_json_shape` 验证四条输入去重为三条、保留首次值、`RowCount` 与 `TableID` 都参与区分，以及 JSON 使用 snake_case 且不暴露表 ID。
-- Go 对照与测试：`pkg/util/tracing/opt_trace.go`；`main_test.go`、`util_test.go`、`noop_bench_test.go` 经精确搜索未发现该 API 的专项测试。`pkg/sessionctx/stmtctx/stmtctx.go` 证明 Go 的语句上下文持有这两个具体类型。
-- 全仓 `rg` 精确符号引用确认 Rust 生产源码没有使用本文件三个公开符号，Rust `StatementContext` 当前使用 `CacheValue` 占位。本文据此明确迁移状态，未把 Go 接线描述为 Rust 现状。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终以固定 11 章节结构命令、链接检查和人工事实复核验收。

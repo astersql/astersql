@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-precheck` crate 的核心公共契约层，对齐 Go 包 `lightning/pkg/precheck/precheck.go`。crate 入口 `lightning/pkg/precheck/lib.rs` 通过 `pub use precheck::*` 将这里的常量、类型、函数和 trait 暴露在 crate 根路径；同一入口还重导出 `stubs.rs` 提供的最小 `context` 与 `errors` 边界。
-
-它位于 Lightning 导入前检查的调用方与具体检查实现之间：`lightning/pkg/importer/precheck.rs` 按 `CheckItemID` 构造具体检查器，`lightning/pkg/importer/check_info.rs::Controller::doPreCheckOnItem` 执行检查并收集结果；`lightning/pkg/importinto/precheck.rs::PrecheckRunner` 则持有并顺序执行 `Box<dyn Checker>`。本文件本身不访问存储、数据库或网络，也不实现任何具体检查算法。
-
-`lightning/pkg/precheck/Cargo.toml` 将该 crate 声明为 workspace library，`[lib]` 指向 `lib.rs`，porting 元数据指向 Go 包 `lightning/pkg/precheck`；其 `[dependencies]` 为空，说明此契约 crate 当前刻意依赖本地桩，而非真实的 Go context/errors 对应实现。
+位于 Lightning 导入前检查的调用方与具体检查实现之间：`lightning/pkg/importer/precheck.rs` 按 `CheckItemID` 构造具体检查器，`lightning/pkg/importer/check_info.rs::Controller::doPreCheckOnItem` 执行检查并收集结果；`lightning/pkg/importinto/precheck.rs::PrecheckRunner` 则持有并顺序执行 `Box<dyn Checker>`。
 
 ## 核心职责
 
@@ -88,7 +84,7 @@ RustCodeGraph 对文件的索引显示其被 `lightning/pkg/importer/check_templ
 
 ## 与 Go 版本的对应关系
 
-`lightning/pkg/precheck/precheck.go` 是直接对照：两边拥有相同的 `Critical`/`Warn` 字面值、14 个检查 ID、展示名表、四字段结果和两方法检查器接口。Rust 的 `DisplayName(c)` 是自由函数，对应 Go 的 `(CheckItemID).DisplayName()` 方法；两者未知 ID 都返回空串。
+Rust 的 `DisplayName(c)` 是自由函数，对应 Go 的 `(CheckItemID).DisplayName()` 方法；两者未知 ID 都返回空串。
 
 Rust 用 `Result<Option<CheckResult>, errors::Error>` 对应 Go 的 `(*CheckResult, error)`：`None` 对应 nil result，`Err` 对应非 nil error。Rust 的 `Default` 显式复现 Go 结构体零值；额外的 `new`、`critical`、`warn` 构造器在 Go 文件中没有同名 API，只是 Rust 便捷层，不应改变公共字段语义。
 
@@ -103,13 +99,3 @@ Rust 用 `Result<Option<CheckResult>, errors::Error>` 对应 Go 的 `(*CheckResu
 调整返回协议时必须同时审计 `Controller::doPreCheckOnItem` 和 `PrecheckRunner::Run`：把 `None`、`Passed=false` 或 `Err` 混为一谈会改变跳过、业务拒绝和基础设施故障的控制流。改变 ID/严重级别字面值会破坏 builder 分派、日志与兼容断言；改变 `CheckType`/`CheckItemID` 生命周期会扩大 API 和所有实现的类型影响。
 
 性能方面，只有证据表明 `DisplayName` 是热点时才应替换每次构造的 `HashMap`；替换方案需保持精确字符串和值缺失行为。并发方面，在给 `Checker` 增加 `Send + Sync` 或异步接口前，必须逐个审计现有实现的内部状态与资源生命周期。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认仓库索引包含 7,032 个 Rust 文件且目标目录已索引；`files --filter lightning/pkg/precheck` 找到 `lib.rs`、`precheck.rs`、`stubs.rs`、`parity_test.rs` 和 Go 对照；`explore "lightning/pkg/precheck/precheck.rs precheck symbols callers callees"` 确认公共符号、消费方和 `DisplayName` 调用关系；`node --file` 读取目标、Go 对照、crate 入口、桩、Importer/Import Into 消费方及 Rust 测试。
-- 目标源码：`lightning/pkg/precheck/precheck.rs`，核对 2 个类型别名、2 个严重级别常量、14 个检查 ID、展示名映射、`CheckResult` 三组实现入口和 `Checker` trait。
-- crate 边界：`lightning/pkg/precheck/Cargo.toml`、`lightning/pkg/precheck/lib.rs`、`lightning/pkg/precheck/stubs.rs`；确认 library 路径、Go 包元数据、空依赖表、重导出方式和桩能力边界。
-- Go 对照：`lightning/pkg/precheck/precheck.go`；逐项核对常量、展示名、零值可观察行为、结果字段和 `Checker` 接口。
-- 直接调用证据：`lightning/pkg/importer/check_info.rs`、`lightning/pkg/importer/precheck.rs`、`lightning/pkg/importer/precheck_impl.rs`、`lightning/pkg/importinto/precheck.rs`。
-- 独立测试：`lightning/pkg/precheck/parity_test.rs` 验证常量、展示名、未知 ID、零值、跳过、错误与失败结果；`lightning/pkg/importinto/precheck_test.rs` 验证 checkpoint 分支、runner 的错误/未通过短路和取消状态传递。Go 侧相关覆盖见 `lightning/pkg/importinto/precheck_test.go` 与 `lightning/pkg/importer/precheck_impl_test.go`。
-- 结构验收使用任务指定命令，要求文档存在且恰好含 11 个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。

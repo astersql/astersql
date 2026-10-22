@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义表级运行模式元数据，以及提交 `AlterTableMode` 前用于描述目标表的参数结构。源码由 `pkg/meta/model/internal/group3/lib.rs` 的私有模块 `table_mode` 通过 `include!("../../table_mode.rs")` 纳入 `astersql-meta-model-group3`，随后经 `pub use table_mode::*`、根 crate 的 `group_3` 模块和根级再导出成为 `astersql_meta_model::TableMode` 等公共 API。根 `pkg/meta/model/Cargo.toml` 只聚合 group1–group4；本文件实际使用的 `serde_repr` 依赖声明在 `pkg/meta/model/internal/group3/Cargo.toml`。
-
-它处在 DDL 表模式切换链的模型层，而不是执行层：`TableMode` 被 `pkg/meta/model/table.rs` 的 `TableInfo.Mode` 持久化，被 `pkg/meta/model/job_args.rs` 的 `AlterTableModeArgs.TableMode` 带入 DDL job；真正解析目标、构建和执行 job 的逻辑位于 domain/DDL 等上层模块。本文件自身不读取 catalog、不提交事务，也不阻止 DML/DDL。
+定义表级运行模式元数据，以及提交 `AlterTableMode` 前用于描述目标表的参数结构。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ Rust 枚举只可构造三个合法变体，因此 `String` 没有 Go `default =
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/meta/model/table_mode.go`，Rust 保留了三个常量的数值顺序、显示字符串、迁移矩阵以及 `AlterTableModeTarget` 的六个字段和语义。Go 测试 `pkg/meta/model/table_mode_test.go::TestTableModeCanTransitionTo` 与 Rust `pkg/meta/model/table_mode_test.rs::test_table_mode_can_transition_to` 使用相同九种组合；Rust 文件还包含一个精简矩阵测试。
+Go 测试 `pkg/meta/model/table_mode_test.go::TestTableModeCanTransitionTo` 与 Rust `pkg/meta/model/table_mode_test.rs::test_table_mode_can_transition_to` 使用相同九种组合；Rust 文件还包含一个精简矩阵测试。
 
 主要语言差异有三点：Go 使用可容纳未知值的 `byte` 新类型，Rust 使用封闭的 `#[repr(u8)]` 枚举；Go `String()` 对未知值返回空串，而 Rust 不存在可安全构造的未知变体；Rust 额外派生数值 serde、默认值和复制/比较 trait。字段采用 Go 风格 PascalCase，以降低移植层的命名差异。
 
@@ -80,12 +78,3 @@ Go 对照文件为 `pkg/meta/model/table_mode.go`，Rust 保留了三个常量�
 还必须搜索并更新所有边界枚举/映射，重点包括 cross-keyspace、DDL jobsubmit、DDL 执行和 dbutil 检查模块；否则新值可能在 `match` 处导致编译失败，或在数值转换处被当成非法模式。若改变同模式规则或引入“修改来源”，应把来源作为可验证数据贯穿 target/job 参数并在独立测试中覆盖，不能只在本方法里猜测调用者身份。
 
 若调整 `AlterTableModeTarget` 的解析契约，应同步 `pkg/domain/sqlsvrapi/migration_aster_unit_test.rs` 及 resolver/job builder 的独立测试。测试逻辑应继续放在独立测试文件，不能内嵌到生产源文件。兼容风险主要是持久化判别值与 Go/Rust 跨边界一致性；性能风险很低，当前判断和字符串化均为常数时间且无分配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认项目索引可用；`node --file pkg/meta/model/table_mode.rs --offset 1 --limit 260` 读取完整 73 行源码并报告 14 个引用文件；`query TableMode` 与 `query AlterTableModeTarget` 确认模型符号及上层同名适配符号。精确 `callers/callees` 未返回可用边，因而按技能规则使用局部源码搜索补足。
-- 源码与装配：`pkg/meta/model/table_mode.rs`、`pkg/meta/model/internal/group3/lib.rs`、`pkg/meta/model/lib.rs`、`pkg/meta/model/table.rs`、`pkg/meta/model/job_args.rs`。
-- Cargo：`pkg/meta/model/Cargo.toml` 与实际编译边界 `pkg/meta/model/internal/group3/Cargo.toml`。
-- 直接调用证据：`pkg/domain/canonical_domain.rs::set_table_mode`；API 参数证据：`pkg/domain/sqlsvrapi/server.rs`。
-- Go 对照与测试：`pkg/meta/model/table_mode.go`、`pkg/meta/model/table_mode_test.go`；Rust 独立测试：`pkg/meta/model/table_mode_test.rs`，另有 `pkg/meta/model/job_3_aster_unit_test.rs` 对显示名和关键迁移做冒烟验证。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终以固定的十一章节结构命令和人工事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Lightning 的固定容量 worker 令牌池，属于独立 crate `astersql-lightning-worker`。crate 入口 `pkg/lightning/worker/lib.rs` 公开 `worker` 模块并再导出本文件全部公开符号；根 crate 又在 `pkg/lib.rs` 的 `lightning::worker` 门面中再导出该 crate。因此外部 Rust 代码可经由该子 crate 或根门面访问 `Pool`、`Worker` 和 `NewPool`。
-
-当前仓库的接线状态需要与设计目标区分：全仓 Rust 搜索只发现根门面和本 crate 的独立测试使用这里的 API，没有发现生产 Rust 调用者。`lightning/pkg/importer/stubs.rs::worker` 另有一个仅保存 `size`/`name`、立即执行闭包的迁移桩；`lightning/pkg/importer/*.rs` 当前引用的是那个桩，而不是本文件的令牌池。因此本文件已经提供可测试的真实有界池行为，但尚不能据此断言 Rust Lightning importer 主链已经使用它。
+该抽象限制的是“同时借出的令牌数”，并不创建线程、执行任务或自动归还令牌；调用方必须显式配对 `Apply` 与 `Recycle`。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ Rust 的所有权没有独占令牌本身：`Arc<Worker>` 可以被克隆，`Rec
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/worker/worker.go`，基础回归是 `worker_test.go::TestApplyRecycle`。两版共同保留：固定容量通道、从 1 开始的稳定 ID、池空时阻塞申请、显式归还、FIFO 复用、`nil`/`None` panic 文案、`HasWorker` 快照，以及同名的 idle gauge 与 apply-wait histogram 更新时机。
-
 Rust 适配差异如下：Go 的 `context.Context` 换成专用 `metric::MetricContext`；`*Pool` 返回值换成按值 `Pool`；`*Worker` 换成 `Arc<Worker>`；一个 Go channel 被表达为 crossbeam 的独立 `Sender`/`Receiver`；Go 的可空指针参数换成 `Option<Arc<Worker>>`。这些差异没有改变正常借还语义。
 
-Rust 额外提供私有字段的 `limit()` 访问器；Go 同包代码可直接访问 `pool.limit`，而 Rust 跨模块必须通过方法。`migration_aster_unit_test.rs` 还补充验证了 Go 基础测试没有直接断言的“空池申请确实等待”和指标采样行为。另一方面，Rust importer 当前仍接到 `lightning/pkg/importer/stubs.rs` 的简化池，故完整 Go Lightning 调用链的迁移接线仍未验证。
+Rust 额外提供私有字段的 `limit()` 访问器；Go 同包代码可直接访问 `pool.limit`，而 Rust 跨模块必须通过方法。另一方面，Rust importer 当前仍接到 `lightning/pkg/importer/stubs.rs` 的简化池，故完整 Go Lightning 调用链的迁移接线仍未验证。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Rust 额外提供私有字段的 `limit()` 访问器；Go 同包代码可直接�
 - 若要强化不变量，可为令牌增加池身份、禁止任意构造/跨池归还，或记录在借状态；需要评估公开 `Worker { ID }` 数据形状以及现有 `Arc` 克隆用法的兼容性。
 - 修改容量、FIFO、panic 文案、指标标签或观测时机时，至少同步 `pkg/lightning/worker/worker_test.rs`、`migration_aster_unit_test.rs` 和 Go 对照测试 `worker_test.go`。涉及生产接线时还需为 importer 增加独立集成/并发回归。
 - 性能上，`Apply`/`Recycle` 每次启用指标都会进行带标签查找并读取通道长度；新增热路径观测前应确认 Prometheus label 访问与原子操作成本，且不要把 gauge 当作严格一致的许可计数器。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：目标仓库已索引 11,467 个文件，`files --filter pkg/lightning/worker` 覆盖 `worker.rs`、crate 入口、两个 Rust 测试及 Go 对照文件；目标 `worker.rs` 识别出 8 个符号。
-- RustCodeGraph 精确节点：`pkg/lightning/worker/worker.rs::NewPool`、`::Apply`、`::Recycle`、`::HasWorker` 分别定位到第 49、78、99、114 行；`NewPool` 的图内直接下游为 `pkg/lightning/metric/metric.rs::from_context`。通用 Go 风格方法名的图调用查询无法可靠消歧，故未据其推断生产调用者。
-- 已阅读生产与装配文件：`pkg/lightning/worker/worker.rs`、`pkg/lightning/worker/lib.rs`、`pkg/lightning/worker/Cargo.toml`、根 `Cargo.toml` 的 `facade_lightning_worker` 依赖、`pkg/lib.rs::lightning::worker` 门面、`pkg/lightning/metric/metric.rs` 的指标和上下文定义，以及 `lightning/pkg/importer/stubs.rs::worker`。
-- 已阅读对照与测试：`pkg/lightning/worker/worker.go`、`worker_test.go`、`worker_test.rs`、`migration_aster_unit_test.rs`。测试证据覆盖 ID 顺序、借还 FIFO、同一对象复用、空池阻塞、`None` panic 和指标更新。
-- 全仓精确文本搜索仅发现根门面、crate 自身测试和 importer 的独立桩，没有发现本 crate 的生产行为调用；因此文档将“生产主链接入”明确标为尚未验证，而非按预期架构推断。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证目标文件存在且固定二级标题恰好为 11 个，并人工复核文档能回答文件存在原因、运行流程与安全扩展边界。

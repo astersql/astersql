@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-disttask` crate（`pkg/util/disttask/Cargo.toml`），提供分布式任务执行节点 ID 的格式化、匹配和 InfoSync 注册表解析能力。crate 根 `pkg/util/disttask/lib.rs` 通过 `mod idservice; pub use idservice::*;` 将五个公开函数重新导出，并仅在 `cfg(test)` 下装配独立测试文件 `idservice_test.rs`。
-
-执行器 ID 是节点 SQL 地址的文本形式：IPv4、主机名或空主机使用 `host:port`，含冒号的地址使用 `[host]:port`。Go 侧把该值用于把子任务与 TiDB 执行节点关联；可见调用点包括 `pkg/dxf/framework/scheduler/scheduler.go`、`pkg/dxf/framework/handle/status.go`、`pkg/dxf/importinto/scheduler.go`、`pkg/ddl/schemaver/syncer.go` 和 `pkg/executor/set.go`。当前仓库搜索未发现这些 API 的生产 Rust 调用点；因此 Rust 版本应描述为已导出且有独立单元测试的移植实现，而不能声称已经接入完整 Rust 调度主链。
+`GenerateSubtaskExecID` 从生产 InfoSync 注册表按节点 ID 取 `ServerInfo`，再生成执行器 ID；读取失败或节点不存在时返回空串。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@ mock 路径访问由 `OnceLock` 初始化的进程级单例；内部 mutex 只�
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/disttask/idservice.go` 是逐函数对照来源。五个公开函数的名称、主要分支、首个命中规则、`-1` 哨兵以及失败/缺失返回空串的行为均被保留。Rust 的 `join_host_port` 是对 Go `net.JoinHostPort(info.IP, strconv(port))` 的本地实现；`pkg/util/disttask/idservice_test.rs::TestGenServerID` 复现 Go 测试中的空地址、IPv4、类主机名、超出常规范围端口和 IPv6 方括号用例。
+Rust 的 `join_host_port` 是对 Go `net.JoinHostPort(info.IP, strconv(port))` 的本地实现；`pkg/util/disttask/idservice_test.rs::TestGenServerID` 复现 Go 测试中的空地址、IPv4、类主机名、超出常规范围端口和 IPv6 方括号用例。
 
 两端存在接口和实现层差异：Go `GenerateSubtaskExecID` 接收 `context.Context` 并把它传给 InfoSync，Rust 版本没有 context 参数且调用同步的无参 `GetAllServerInfo`；Go 节点类型来自 `domain/serverinfo`，Rust 通过 `infosync` 直接公开的 `ServerInfo` 使用同类字段；Go 使用标准库 `net.JoinHostPort`，Rust 仅以是否含冒号模拟当前需要的格式。Rust 独立测试还增加了列表顺序/未命中、mock 注册表回退，以及通过注入 etcd client 验证生产路径读取远端 IPv6 节点的覆盖，这些不在同路径 Go 单测中。
 
@@ -84,13 +82,3 @@ mock 路径访问由 `OnceLock` 初始化的进程级单例；内部 mutex 只�
 - 若需要更高效地匹配大量节点，可避免在每次比较时重复分配字符串，或预建 ID 索引；改变算法前应保留“按输入顺序返回首个命中”的对外不变量，并增加重复地址测试。
 - 若把 Rust 实现接入 DXF、DDL、executor 或 domain，接线点应使用 crate 根/工作区门面公开 API，并为对应消费者增加独立测试；仅在 Cargo 清单声明依赖不能视为接线完成。
 - 测试仍应放在 `idservice_test.rs`，由 `lib.rs` 的 `#[cfg(test)] #[path = "idservice_test.rs"]` 引入，不应把测试逻辑嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的 Rust/Go 实现及测试均已索引。
-- RustCodeGraph `files --filter pkg/util/disttask`：确认索引覆盖 `idservice.rs`、`idservice_test.rs`、`lib.rs` 及 Go 对照文件。
-- RustCodeGraph 对 `GenerateExecID`、`MatchServerInfo`、`FindServerInfo`、`GenerateSubtaskExecID`、`GenerateSubtaskExecID4Test`、`join_host_port` 执行 `query` 和带 `--file pkg/util/disttask/idservice.rs` 的 `node`：确认符号位置及文件内调用边。
-- RustCodeGraph 对 `pkg/domain/infosync/info.rs::GetAllServerInfo`、`pkg/domain/infosync/mock_info.rs::GetAllServerInfo`、`MockGlobalServerInfoManagerEntry` 和 `ServerInfo` 执行 `node`：确认生产注册表读取、mock 快照锁和单例生命周期。
-- 逐文件核对：`pkg/util/disttask/idservice.rs`、`pkg/util/disttask/lib.rs`、`pkg/util/disttask/Cargo.toml`、`pkg/util/disttask/idservice_test.rs`、`pkg/util/disttask/idservice.go`、`pkg/util/disttask/idservice_test.go`，以及直接依赖的 InfoSync 符号源码。
-- 使用 `rg` 核对工作区 Cargo 依赖、Rust 直接引用和 Go 调用点；结果支持“Rust 已导出但尚无生产调用，Go 主链已接线”的迁移状态判断。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证本文恰有十一个固定二级章节，并人工复核所有当前能力陈述均能追溯到上述源码、图查询或清单证据。

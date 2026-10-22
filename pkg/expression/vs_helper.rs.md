@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（`pkg/expression/Cargo.toml`），由 `pkg/expression/lib.rs:361-362` 以私有模块 `vs_helper_kernel` 装配。它不计算向量距离，而是把一棵通用 `Expression` 表达式树识别为“受支持的向量距离函数 + 一个 `VECTOR FLOAT32` 列 + 一个 `VECTOR FLOAT32` 常量”，并产出便于规划侧消费的 `VSInfo`。
-
-当前 Rust 接线需要特别区分“模块存在”和“生产路径使用”：RustCodeGraph 对 `InterpretVectorSearchExpr` 的 callers/callees 查询均为空，文本引用搜索也只找到 `pkg/expression/scalar_function_37_aster_unit_test.rs` 的直接调用。Rust 规划器 `pkg/planner/core/operator/physicalop/physical_topn.rs:588` 目前使用自己的 `interpret_vector_search` 实现相同识别流程，并未调用本文件。相对地，Go 生产路径在 `pkg/planner/core/operator/physicalop/physical_topn.go:348` 直接调用 `expression.InterpretVectorSearchExpr`。
+成功时把函数名、builtin 的 protobuf 标量函数码、查询向量和值所属列封装为 `VSInfo`（`vs_helper.rs:101-108`）；失败以 `None` 表示，不产生诊断错误。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/vs_helper.go`。Rust 保留了 Go 的四函数白名单、动态类型判断、字段类型检查、列/常量计数、`intest.Assert`、protobuf 码和返回字段，参数顺序无关的语义也一致。
+Rust 保留了 Go 的四函数白名单、动态类型判断、字段类型检查、列/常量计数、`intest.Assert`、protobuf 码和返回字段，参数顺序无关的语义也一致。
 
 主要语言映射如下：Go 的包级 `map[string]struct{}` 对应 Rust 的 `LazyLock<HashSet<String>>`；Go 的 `nil` 失败返回对应 `Option::None`；Go 的类型断言对应 `Any` 下转；Go 的 `*Column` 对应 `&'a Column`。Rust 还对 `RetType` 缺失和无效 protobuf 数值安全返回 `None`，而 Go 代码直接解引用 `RetType` 并直接使用强类型 `PbCode()` 返回值。
 
-迁移接线尚未完全对齐：Go `physical_topn.go` 直接使用该 helper；Rust `physical_topn.rs` 使用局部的拥有型版本。局部版本额外把列 clone、把向量包进 `Arc`，以适配 `property::VectorSearchInfo` 的拥有型字段。若未来消除重复实现，需要先决定本 helper 是继续返回借用结果，还是新增一个明确的拥有型转换边界，而不是简单替换调用。
+迁移接线尚未完全对齐：Go `physical_topn.go` 直接使用该 helper；Rust `physical_topn.rs` 使用局部的拥有型版本。局部版本额外把列 clone、把向量包进 `Arc`，以适配 `property::VectorSearchInfo` 的拥有型字段。
 
 测试对应关系也不完全对称：仓库内未发现直接调用 Go `InterpretVectorSearchExpr` 的同名单元测试；Rust 在 `scalar_function_37_aster_unit_test.rs:306-330` 有一个正向用例。Go 的端到端行为主要由 `pkg/planner/core/casetest/vectorsearch/vector_index_test.go` 覆盖，Rust 对应规划测试位于同目录的 `vector_index_test.rs`，但当前走的是规划器局部 helper。
 
@@ -81,12 +79,3 @@
 - 若要让外部 crate 调用，应同时评估 `lib.rs` 的模块可见性/再导出和 `VSInfo<'a>` 的生命周期 API；仅把函数标为 `pub` 并不足以形成公开 crate API。
 - 若要替换规划器的局部实现，应增加或复用明确的 `VSInfo` → `property::VectorSearchInfo` 转换，处理 `Column` clone、向量共享所有权与函数名 `CIStr`/`String` 差异，并运行 expression 的独立单测及 vectorsearch 规划测试。
 - 兼容风险集中在函数白名单与 Go/Rust 漂移；正确性风险集中在类型/kind 不一致和额外参数策略；性能风险较低，但不要在热路径反复构造白名单或无必要深拷贝大向量。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件，其中 Rust 文件 7,032 个；`files --filter pkg/expression/vs_helper.rs` 报告目标文件有 3 个符号。
-- RustCodeGraph 符号证据：`query VSInfo` 与 `query InterpretVectorSearchExpr` 同时定位 Rust/Go 定义；`node pkg/expression/vs_helper.rs::InterpretVectorSearchExpr` 展示完整入口；对该 Rust 定义执行 `callers --file pkg/expression/vs_helper.rs` 与 `callees --file ...` 均返回空数组。
-- 已读源码与配置：`pkg/expression/vs_helper.rs`、`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`、`pkg/expression/expression.rs`、`pkg/expression/scalar_function.rs`、`pkg/expression/constant.rs`、`pkg/expression/column.rs`。
-- 已读 Go 对照与规划接线：`pkg/expression/vs_helper.go`、`pkg/planner/core/operator/physicalop/physical_topn.go`。
-- 已读 Rust 生产对照：`pkg/planner/core/operator/physicalop/physical_topn.rs`、`pkg/planner/property/physical_property.rs`；文本引用搜索确认生产 Rust 规划器使用局部 `interpret_vector_search`。
-- 已读测试：`pkg/expression/scalar_function_37_aster_unit_test.rs` 的直接正向单测；并定位 `pkg/planner/core/casetest/vectorsearch/vector_index_test.go` 与 `vector_index_test.rs` 作为 Go/Rust 规划级覆盖面。未运行 Cargo，符合本纯文档任务约束。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ddl_workerpool.rs` 属于 `astersql-ddl` crate，crate 根由 `pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，并在 `pkg/ddl/lib.rs` 中以 `pub mod ddl_workerpool` 公开模块。文件只使用标准库 `VecDeque`、`Arc` 和 `Mutex`，不直接依赖 `Cargo.toml` 中的外部 crate。
-
-它是 Go `pkg/ddl/ddl_workerpool.go` 的 Rust 适配层：表达 General 与 Reorg 两类 DDL worker 池的非阻塞借还、容量限制和关闭语义。但截至当前代码，Rust 生产调度器 `pkg/ddl/job_scheduler.rs` 自行持有 `general_worker: JobWorker` 与 `reorg_worker: JobWorker`，且定义了另一个 `job_scheduler::JobType`；仓库内对本文件 `WorkerPool` 的直接 Rust 引用只出现在 `pkg/ddl/ddl_workerpool_test.rs`。因此它已经公开装配并有单元测试，但尚未接入 Rust DDL 生产主链。
+Go `pkg/ddl/ddl_workerpool.go` 的 Rust 适配层：表达 General 与 Reorg 两类 DDL worker 池的非阻塞借还、容量限制和关闭语义。
 
 ## 核心职责
 
@@ -70,8 +68,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `WorkerPool` 对应 Go `workerPool`，`new` 对应 `newDDLWorkerPool`，`get/put/close/job_type/available` 分别对应 Go 的 `get/put/close/tp/available`。两者的共同语义是：关闭后 `get` 报 `workerPool is closed`，耗尽时非阻塞返回空，归还恢复可用资源，重复关闭不应再次关闭底层池。
-
 实现差异必须保留：
 
 - Go 池包装 `ngaut/pools.ResourcePool`，worker 由 factory 懒创建且是能执行 DDL 的 `*worker`；Rust 在 `new` 时预建轻量 `Worker { id, job_type }`，它不是 `pkg/ddl/job_worker.rs::JobWorker`。
@@ -81,7 +77,7 @@ Rust `WorkerPool` 对应 Go `workerPool`，`new` 对应 `newDDLWorkerPool`，`ge
 - Rust 额外提供 `borrowed()` 和公开 `Worker` 字段，Go 对照对象没有同等 API。
 - 最重要的迁移差异是接线状态：Go 池已被 `jobScheduler` 生产使用，Rust 池目前只由独立单元测试直接使用，不应声称它已实现 Go 调度器的并发限制效果。
 
-`pkg/ddl/ddl_workerpool_test.go::TestDDLWorkerPool` 验证初始可用数、关闭清空和关闭后 `put(nil)` 不会重新增加可用数。Rust `test_ddl_worker_pool` 覆盖了这一意图，并额外覆盖类型/ID、借出计数、耗尽时 `None`、关闭错误和幂等关闭。
+Rust `test_ddl_worker_pool` 覆盖了这一意图，并额外覆盖类型/ID、借出计数、耗尽时 `None`、关闭错误和幂等关闭。
 
 ## 扩展指南
 
@@ -91,14 +87,3 @@ Rust `WorkerPool` 对应 Go `workerPool`，`new` 对应 `newDDLWorkerPool`，`ge
 - 若要把本池接入 Rust DDL 生产调度，不能只替换一个类型：需先解决 `ddl_workerpool::Worker` 与 `job_worker::JobWorker`、两个 `JobType`、调度器的任务所有权及关闭顺序的差异。验证面至少应包含 worker 耗尽后不过量调度、General/Reorg 隔离、任务结束/异常后必然归还，以及 owner 退出时的在途资源处理。
 - 保持 Go 对齐时，应对照 `pkg/ddl/ddl_workerpool.go`、`pkg/ddl/job_scheduler.go` 和 `pkg/ddl/ddl_workerpool_test.go`；但必须把 Go 外部 `ResourcePool` 的行为与当前 Rust 自管队列的实际行为分开记录。
 - 涉及并发或关闭的新测试应尽量使用可控同步点，避免靠 sleep 推测时序；兼容性风险主要是错误形态和非阻塞契约，性能风险主要是单一 mutex 在高频借还下的争用。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，`pkg/ddl/ddl_workerpool.rs` 被识别为含 16 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/ddl/ddl_workerpool.rs --offset 1 --limit 400`：核对了 `JobType`、`Worker`、`WorkerPool`、`PoolState` 及全部公开方法的实现。
-- RustCodeGraph `query WorkerPool --kind struct`、`query put`、`query close`、`callers/callees`：确认目标类型与部分方法符号；精确方法调用边查询未返回有效上下游，因此不以空图结果推断接线状态，改用模块引用搜索核验。
-- `rg` 对 `pkg/ddl/**/*.rs` 的 `ddl_workerpool|WorkerPool::new|JobType` 搜索：确认 `lib.rs` 的生产模块声明、测试模块声明，以及唯一直接使用者 `ddl_workerpool_test.rs`；同时确认 `job_scheduler.rs` 的 `JobType` 是独立定义。
-- 已读 Rust 路径：`pkg/ddl/ddl_workerpool.rs`、`pkg/ddl/ddl_workerpool_test.rs`、`pkg/ddl/job_scheduler.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- 已读 Go 对照与测试：`pkg/ddl/ddl_workerpool.go`、`pkg/ddl/ddl_workerpool_test.go`、`pkg/ddl/job_scheduler.go`（建池、调度、归还、关闭与耗尽判定路径）。
-- DDL 上下文：已读 `pkg/ddl/doc.go` 的 schema 两版本不变式和 `docs/agents/ddl/README.md` 的 owner/job 执行模型，但文档对本文件生产接线的结论以上述实际 Rust 引用为准。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求本文档存在，且恰好包含计划指定的 11 个二级标题。

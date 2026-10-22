@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`store.rs` 是 `astersql-ddl-notifier` crate 的持久化与事务适配层。crate 入口 `pkg/ddl/notifier/lib.rs` 将本文件公开再导出；发布侧 `PubSchemeChangeToStore` / `PubSchemaChangeInTransaction` 写入 schema change，订阅侧 `process_events` 通过本文件的 `Store`、`ListResult`、`SessionPool` 读取、确认和删除事件。它保存的是 DDL 完成后供订阅者消费的通知记录，不负责创建或调度 DDL job，也不推进 schema state。
-
-该文件同时承载两条后端路径：`Session::FromDDLSession` 包装 `ddl_session::Session`，使 `TableStore` 对真实内部 SQL session 执行 `mysql.tidb_ddl_notifier` 一类表操作；没有 SQL backend 的 `Session::default()` 则使用进程内共享 `BTreeMap`，供 Rust 测试和当前内存运行路径复现相同的事务边界。`pkg/ddl/notifier/Cargo.toml` 表明本 crate 直接依赖 `astersql-ddl-session`、事件模型、AST、`serde_json` 和 `thiserror`。
+以 `Store` trait 定义通知事件的插入、带旧值校验的处理位图更新、删除并提交、有序分页读取和计数接口。
 
 ## 核心职责
 
@@ -74,9 +72,9 @@ JSON 编解码、session 操作和 SQL record set 读取错误均向调用者返
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/notifier/store.go` 是直接语义基准：两版都定义 Store/ListResult、以 JSON 存事件、插入位图 0、按 `(ddl_job_id, sub_job_id)` 有序分页、通过 CloseFn 回滚列表事务，并在旧位图不匹配时报告 owner 冲突。Rust 的 `SqlListResult` 对应 Go `listResult.Read/unmarshalSchemaChanges`；`pkg/ddl/notifier/store_test.go::TestLeftoverWhenUnmarshal` 与 Rust `store_test.rs::test_leftover_when_unmarshal` 都保留复用槽位中非活动字段残留的契约。
+Rust 的 `SqlListResult` 对应 Go `listResult.Read/unmarshalSchemaChanges`；`pkg/ddl/notifier/store_test.go::TestLeftoverWhenUnmarshal` 与 Rust `store_test.rs::test_leftover_when_unmarshal` 都保留复用槽位中非活动字段残留的契约。
 
-实现差异必须明确：Go `tableStore` 只操作真实 session/SQL 表；Rust `TableStore` 额外内置进程级内存后端和 `Session`/`SessionPool` 测试事务模型。Go 更新通过带 `processed_by_flag = old` 的 UPDATE 及 affected rows 判冲突；Rust SQL 路径采用 `SELECT ... FOR UPDATE` 核对后再 UPDATE，要求外层悲观事务提供锁保护。Rust 还暴露 `InsertSchemaChangeSQL`，支持复用已有 worker 事务而不自行提交。
+实现差异必须明确：Go `tableStore` 只操作真实 session/SQL 表；Rust `TableStore` 额外内置进程级内存后端和 `Session`/`SessionPool` 测试事务模型。Go 更新通过带 `processed_by_flag = old` 的 UPDATE 及 affected rows 判冲突；Rust SQL 路径采用 `SELECT ... FOR UPDATE` 核对后再 UPDATE，要求外层悲观事务提供锁保护。
 
 Go 接口接收 `context.Context` 并对 List Read 建 tracing region；Rust 当前 API 没有显式 context 或 tracing。Go `Store` 无 `Count`，Rust 增加它供测试/观察内存存储。Rust `DeleteAndCommit` 的 sub-job 参数统一为 `i64`，Go 版本该方法使用 `int`。这些差异不是可以任意简化的空间；扩展时应保持外部行为、事务原子性和 JSON 契约与 Go 版本一致。
 
@@ -89,12 +87,3 @@ Go 接口接收 `context.Context` 并对 List Read 建 tracing region；Rust 当
 测试应继续放在独立文件中：局部序列化/SQL adapter 行为放 `pkg/ddl/notifier/store_test.rs`，完整发布订阅、owner 冲突和故障路径放 `pkg/ddl/notifier/testkit_test.rs`；Go 行为对照见同目录 `store_test.go` / `testkit_test.go`。若接入新的真实 session 能力，还应核对 `pkg/ddl/session` 的事务与 record set 生命周期，不在本文件复制外部 session 实现。
 
 风险检查包括：JSON 向后兼容、SQL 列类型与整数范围、库表标识符来源、悲观锁持有时间、分页批大小、内存锁竞争和全局 TABLES 测试污染。内存路径不能作为真实持久化或跨进程 owner 协调方案。
-
-## 验证依据
-
-- 源码：`pkg/ddl/notifier/store.rs` 的 `Error`、`DdlSessionBackend`、`Session`、`SessionPool`、`Store`、`TableStore`、两种 ListResult 和 `InsertSchemaChangeSQL`；`pkg/ddl/notifier/publish.rs` 的两个发布入口；`pkg/ddl/notifier/subscribe.rs` 的 `process_events` / `process_event_for_handler`；`pkg/ddl/notifier/events.rs` 的 JSON 与覆盖逻辑。
-- crate 边界：`pkg/ddl/notifier/Cargo.toml` 和 `pkg/ddl/notifier/lib.rs`。
-- Rust 独立测试：`pkg/ddl/notifier/store_test.rs` 覆盖缓冲复用、同名表共享、位图归零和真实 SQL session 事务；`pkg/ddl/notifier/testkit_test.rs` 覆盖发布订阅、顺序与清理、发布失败、双 owner、分页、Begin/handler/Commit 错误及副作用回滚。
-- Go 对照：`pkg/ddl/notifier/store.go`、`pkg/ddl/notifier/store_test.go`，并以 `publish.go`、`subscribe.go`、`testkit_test.go` 的调用点核对完整语义。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/ddl/notifier` 确认模块文件集合；`node --file pkg/ddl/notifier/store.rs --offset 1/500` 读取完整 804 行；`query` 定位 Rust/Go `OpenTableStore` 及 Rust `UpdateProcessed`、`DeleteAndCommit`、`InsertSchemaChangeSQL`。宽泛名称产生同名噪声，精确 `InsertSchemaChangeSQL` caller 未返回结果，调用边改由模块源码直接核验。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前以任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工检查所有关键行为均能追溯至上述源码或测试。

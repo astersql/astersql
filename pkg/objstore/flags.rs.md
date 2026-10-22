@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-objstore` crate；crate 由 `pkg/objstore/Cargo.toml` 定义，并在 `pkg/objstore/lib.rs` 以 `pub mod flags` 暴露本模块。它把 S3、GCS 和 Azure Blob 的命令行选项统一注册到一个轻量 `FlagSet`，再将字符串值解析为本文件定义的 `BackendOptions`。
-
-当前接线边界需要特别注意：RustCodeGraph 和 `rg` 只找到本文件包装函数、`pkg/objstore/flags_test.rs`、`pkg/objstore/azblob_1_aster_unit_test.rs` 以及 `pkg/objstore/gcs.rs` 对这些类型的直接引用，未找到 Rust 生产命令调用 `flags::DefineFlags`、`flags::HiddenFlagsForStream` 或本文件 `BackendOptions::parse_from_flags` 的证据。此外，`pkg/objstore/parse.rs` 另有一个同名但独立的 `BackendOptions`，因此不能把本文件的解析结果直接视为已经进入 URL/后端创建主链。
+`FlagSet` 提供注册、赋值、读取、隐藏状态这组最小接口，用字符串映射模拟 Go `pflag.FlagSet` 在本模块使用到的子集。
 
 ## 核心职责
 
@@ -66,7 +64,7 @@ RustCodeGraph 给出的关键边包括：`define_flags -> FlagSet::register`，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/objstore/flags.go`、`pkg/objstore/s3like/store.go`、`pkg/objstore/gcs.go` 和 `pkg/objstore/azblob.go`。Rust `define_flags` 对应 Go `DefineFlags` 依次调用 `s3like.DefineS3Flags`、`defineGCSFlags`、`defineAzblobFlags`；名称集合与空字符串默认值对齐。Rust 聚合解析也保持 Go 的 S3、GCS、Azure 顺序及各组内部赋值顺序，S3 的单个尾斜杠裁剪和 `ForcePathStyle = true` 的赋值位置有独立回归测试。
+Rust `define_flags` 对应 Go `DefineFlags` 依次调用 `s3like.DefineS3Flags`、`defineGCSFlags`、`defineAzblobFlags`；名称集合与空字符串默认值对齐。Rust 聚合解析也保持 Go 的 S3、GCS、Azure 顺序及各组内部赋值顺序，S3 的单个尾斜杠裁剪和 `ForcePathStyle = true` 的赋值位置有独立回归测试。
 
 Rust `hidden_flags_for_stream` 与 Go `HiddenFlagsForStream` 一样只隐藏 GCS/Azure，并忽略 `MarkHidden` 错误。差异是 Go 函数无返回值，而 Rust 函数及兼容包装返回一个实际恒为 `Ok(())` 的 `Result<()>`。
 
@@ -79,12 +77,3 @@ Rust `FlagSet` 只是 `pflag.FlagSet` 的局部模拟：不支持命令行 token
 测试必须放在独立文件 `pkg/objstore/flags_test.rs`（或确有跨模块契约需求时放入现有独立测试文件），不要内嵌到 `flags.rs`。至少覆盖正常值、默认值、未注册名称、重复注册、解析中途失败后的状态和流式隐藏可见性。若改变 GCS/Azure 旗标，还应检查 `pkg/objstore/azblob_1_aster_unit_test.rs::flags_and_hdfs_command_match_go`。
 
 若要把该层接入生产 Rust CLI，优先解决 `flags.rs::BackendOptions` 与 `parse.rs::BackendOptions`/其他命令自有 `FlagSet` 的类型边界，并增加真实入口到注册、命令行赋值、解析、后端创建的集成证据；不要仅添加一个同名包装便宣称完成接线。兼容风险主要是旗标名和错误/部分赋值顺序，安全风险是凭据字符串暴露，性能风险较低且主要来自不必要的字符串克隆。
-
-## 验证依据
-
-- 源码与模块：`pkg/objstore/flags.rs`、`pkg/objstore/lib.rs`、`pkg/objstore/Cargo.toml`。
-- 直接依赖实现：`pkg/objstore/gcs.rs::GCSBackendOptions::parse_from_flags`、`pkg/objstore/azblob.rs::AzblobBackendOptions`。
-- Go 对照：`pkg/objstore/flags.go`、`pkg/objstore/s3like/store.go::DefineS3Flags`/`ParseFromFlags`、`pkg/objstore/gcs.go::defineGCSFlags`/`hiddenGCSFlags`/`parseFromFlags`、`pkg/objstore/azblob.go::defineAzblobFlags`/`hiddenAzblobFlags`/`parseFromFlags`。
-- Rust 测试：`pkg/objstore/flags_test.rs` 的四个测试；`pkg/objstore/azblob_1_aster_unit_test.rs::flags_and_hdfs_command_match_go`；测试装配见 `pkg/objstore/lib.rs`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；查询了 `FlagSet`、`BackendOptions`、`define_flags`、`hidden_flags_for_stream`、`parse_from_flags`，并用节点 trail 核对上述调用者与被调用者。由于同名类型和函数较多，结论均限定到 `pkg/objstore/flags.rs` 路径。
-- 静态搜索：对 Rust 文件搜索 `objstore::flags`、`crate::flags` 和相关公开符号，未找到测试与 `gcs.rs` 之外的直接生产调用；这是“当前未证实生产接线”的依据，而不是断言未来或动态调用永不存在。

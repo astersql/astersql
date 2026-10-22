@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor` crate，模块由 `pkg/executor/lib.rs` 的 `pub mod mpp_gather` 对外导出；crate 根与特性声明见 `pkg/executor/Cargo.toml`。它把 MPP（Massively Parallel Processing）根任务的调度、响应拉取和虚拟列补值描述为一组泛型协议，并提供与 Go `pkg/executor/mpp_gather.go` 同形的 `MPPGather<R>` 生命周期实现。
-
-在 SQL 执行链上，Go 版本由 `pkg/executor/builder.go::buildTableReader` 在 `useMPPExecution` 成立时构造；Rust 构建器 `pkg/executor/builder.rs::buildTableReader` 则依据计划的 `use_mpp()` 进入 `buildMPPGather`，再委托 `ExecutorBuilderDependencies::build_mpp_gather_executor`。当前 RustCodeGraph 没有找到生产代码对本文件 `MPPGather<R>`、`useMPPExecution`、`getMPPQueryID` 或 `getMPPQueryTS` 的静态调用边，因此本文件应视为可测试的泛型移植实现与集成边界，而不能据此断言 Rust 生产构建器已经直接实例化它。
+把 MPP（Massively Parallel Processing）根任务的调度、响应拉取和虚拟列补值描述为一组泛型协议，并提供与 Go `pkg/executor/mpp_gather.go` 同形的 `MPPGather<R>` 生命周期实现。
 
 ## 核心职责
 
@@ -104,17 +102,7 @@ RustCodeGraph 对 `collectPlanIDs` 的 callee 查询确认其直接调用 `Physi
 
 ## 与 Go 版本的对应关系
 
-总体控制流逐项对应 `pkg/executor/mpp_gather.go`：MPP 选择谓词、QueryID/QueryTS 的 CAS 初始化、计划 ID 前序遍历、dummy/普通 `Open`、批次 `Next`、`Close`、`Table` 和 `setDummy` 均保留。
-
-Rust 为可独立移植而增加了 `MPPTableReader`、`MPPSessionContext`、`PhysicalPlan`、`MPPChunk` 和 `MPPGatherRuntime` 等 trait，把 Go 中具体的 sessionctx、planner、DistSQL、memory、table 与 MPP retry 类型变成关联类型。`MPPQueryInfo` 也在本文件中定义，而 Go 使用语句上下文已有字段。
-
-已确认的语义细节包括：
-
-- 两种语言都在 CAS 前求值/分配 QueryID，因此失败竞争也会消耗候选 ID。
-- 两种语言都按当前节点后子节点的顺序收集 plan ID。
-- dummy `Open` 都要求 ExchangeSender 并只获得键范围。
-- 创建带重试执行器失败时，两者都尽力关闭部分执行器并返回原错误。
-- 两者的 `Close` 都不清空响应字段；`pkg/executor/mpp_gather_test.rs` 的两个测试专门验证普通与 dummy 模式重复关闭时的 Go 兼容行为。
+Rust 为可独立移植而增加了 `MPPTableReader`、`MPPSessionContext`、`PhysicalPlan`、`MPPChunk` 和 `MPPGatherRuntime` 等 trait，把 Go 中具体的 sessionctx、planner、DistSQL、memory、table 与 MPP retry 类型变成关联类型。
 
 差异与迁移限制：Rust 时间戳使用 `SystemTime` 并显式处理 epoch 之前的时间，Go 使用 `time.Now().UnixNano()`；Rust `collectPlanIDs` 就地修改 `Vec<i32>`，Go 返回追加后的 slice；Rust `Table` 克隆关联表值，Go 返回接口值。更重要的是，Go builder 直接构造具体 `MPPGather`，而 Rust builder 当前只展示抽象依赖调用，RustCodeGraph 未证明 `MPPGather<R>` 已进入生产执行链。
 
@@ -129,18 +117,3 @@ Rust 为可独立移植而增加了 `MPPTableReader`、`MPPSessionContext`、`Ph
 - 改变查询标识分配时同时核对 CAS 的竞争语义、零值哨兵、分配器副作用和 Go `getMPPQueryID/getMPPQueryTS`；并添加多线程独立测试。
 - 要把本泛型实现接入 Rust 生产链，需要为真实计划、chunk、DistSQL/MPP retry、schema、表、内存跟踪器实现这些 trait，并让 `ExecutorBuilderDependencies::build_mpp_gather_executor` 返回包装该实现的 `ExecutorBox`。接线后应重新运行 RustCodeGraph callers/callees，确认生产边而非只依赖模块导出。
 - 兼容风险集中在 Go 错误优先级、重复关闭、dummy 不变量和虚拟列补值时机；性能风险集中在 `children()` 每层分配 `Vec`、计划克隆、键范围复制和 `SeqCst` 原子排序。任何优化都应先证明不改变上述可观察行为。
-
-## 验证依据
-
-已读取并交叉核对：
-
-- `pkg/executor/mpp_gather.rs`：目标文件全部 290 行，符号、分支和状态的主要依据。
-- `pkg/executor/Cargo.toml`：确认所属 crate 为 `astersql-executor`、crate 根为 `lib.rs`、唯一显式 feature 为 `nextgen`，以及 executor 对 DistSQL、MPP、planner、table、memory 等相邻 crate 的依赖边界。
-- `pkg/executor/lib.rs`：确认生产模块导出与独立测试模块的 `cfg(test)` 装配。
-- `pkg/executor/builder.rs`：确认 Rust MPP 构建选择、计划形状检查和 `build_mpp_gather_executor` 依赖边界。
-- `pkg/executor/mpp_gather.go`、`pkg/executor/builder.go`：确认 Go 原实现、直接生产构建接线、虚拟列/表初始化和错误语义。
-- `pkg/executor/union_scan.go`：确认 Go UnionScan 使用 `MPPGather.kvRanges`。
-- `pkg/executor/internal/mpp/executor_with_retry.go`：确认 MPP 响应、重试协调器与 RPC 的分层关系。
-- `pkg/executor/mpp_gather_test.rs`：确认测试位于独立文件，并验证普通与 dummy 模式重复 `Close` 的响应字段保留和调用次数。
-
-RustCodeGraph 证据：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file pkg/executor/mpp_gather.rs` 覆盖完整目标文件；`query` 同时定位 Rust/Go 的 `MPPGather`、`useMPPExecution`、`getMPPQueryID`、`collectPlanIDs`；`callees collectPlanIDs` 显示 Rust 直接边到 `PhysicalPlan::id/children`；主要 Rust 入口的 `callers` 查询未返回生产调用边。结构验证另以任务指定命令执行；本任务为纯文档分析，按计划不运行 Cargo。

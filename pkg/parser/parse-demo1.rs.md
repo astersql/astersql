@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/parse-demo1.rs` 是 `astersql-parser` Cargo 包内名为 `parse-demo1` 的独立二进制目标，而不是 `pkg/parser/lib.rs` 暴露的解析器库模块。目标由 `pkg/parser/Cargo.toml` 的 `[[bin]]` 条目直接指向本文件；程序入口是私有函数 `main`。它用一个自包含的小型词法器、递归下降语句解析器和 Pratt 表达式解析器演示 SQL 解析原理。
-
-本文件不在服务器 SQL 请求主链中，也不提供公开 API。源码外对 `parse-demo1` 的直接引用仅见于 Cargo 目标声明；RustCodeGraph 显示所有有意义的调用边都位于本文件内部。真正可复用的 Rust parser crate 入口在 `pkg/parser/lib.rs`，其 `parser_impl` 组合 `lexer.rs`、`yy_parser.rs`、生成表和 `parser.rs`；不要把本示例的能力等同于生产解析器能力。
+`Parser::parse_statement` 只分派 `SELECT` 表达式列表与无列定义的 `CREATE TABLE ident`。
 
 ## 核心职责
 
@@ -93,9 +91,9 @@ RustCodeGraph 对同名 `Parser::parse` 与文件级 `parse` 会返回两个定�
 
 仓库中不存在同路径 `pkg/parser/parse-demo1.go`，Git 历史显示该 Rust 文件在提交 `fac562eba94644781b9ac3725fb9c303d0885f75` 中作为新文件加入，没有可逐行移植的 Go 原件。因此它是 Rust 自有教学二进制，而非 Go 文件的一对一复刻。
 
-概念上，它与 Go parser 都经历“词法 token → 语法分析 → AST/错误”，但实现和契约不同。Go 生产入口位于 `pkg/parser/yy_parser.go` 的 `Parser.ParseSQL`、`Parser.Parse` 和 `Parser.ParseOneStmt`；它调用由 `pkg/parser/parser.y` 生成到 `pkg/parser/parser.go` 的 `yyParse`，并使用正式 `pkg/parser/ast` 类型。Rust 生产库则由 `pkg/parser/lib.rs` 组装相应 lexer、生成表与 parser 实现。相比之下，本文件自建私有 AST，仅支持两个语句外形和少量表达式，不参与 Go/Rust parser 的兼容契约。
+概念上，它与 Go parser 都经历“词法 token → 语法分析 → AST/错误”，但实现和契约不同。相比之下，本文件自建私有 AST，仅支持两个语句外形和少量表达式，不参与 Go/Rust parser 的兼容契约。
 
-相关 Go 测试 `pkg/parser/main_test.go` 负责整个 Go 测试进程的泄漏检查，并不测试本 demo；Rust 的 `pkg/parser/main_test.rs` 验证生产 parser 入口能解析 `select 1`，同样不包含本文件。仓库搜索未发现 `parse-demo1` 的独立测试。因此生产 parser 的 Go/Rust 测试不能被当成本 demo 已覆盖的证据。
+相关 Go 测试 `pkg/parser/main_test.go` 负责整个 Go 测试进程的泄漏检查，并不测试本 demo；Rust 的 `pkg/parser/main_test.rs` 验证生产 parser 入口能解析 `select 1`，同样不包含本文件。
 
 ## 扩展指南
 
@@ -104,13 +102,3 @@ RustCodeGraph 对同名 `Parser::parse` 与文件级 `parse` 会返回两个定�
 由于现状没有直接测试，安全扩展时应新建独立测试文件，而不要把 `#[cfg(test)]` 测试嵌入 `parse-demo1.rs`。可把可测试实现迁入独立模块并由二进制调用，测试至少覆盖：大小写关键字、空白和偏移；字符串未闭合与整数溢出；乘除优先级、同级左结合、一元优先级、括号；空 `SELECT`、多表达式和尾随逗号；类型字面量缺字符串；`CREATE TABLE` 缺标识符；可选分号与尾随输入。
 
 若目标是扩展生产 SQL 能力，不应继续放大本示例，而应修改 `pkg/parser/lib.rs` 组装的正式 lexer/grammar/parser 路径，并同步对应的独立 Rust 测试和 Go 语义证据。性能风险主要来自全量 token/字符串分配和递归深度；兼容风险主要来自关键字集合、绑定力、错误偏移及新旧 AST 形状变化。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/parser/parse-demo1.rs`，包括 9 个核心类型、`ParseError` 的实现、`lex`、`Parser` 的 15 个方法、`infix_binding_power`、文件级 `parse` 与 `main`；文件无条件编译项和公开符号。
-- crate 边界：`pkg/parser/Cargo.toml` 明确声明 `[[bin]] name = "parse-demo1"`、`path = "parse-demo1.rs"`，同时 `lib.rs` 是独立库入口；根 `Cargo.toml` 把 `pkg/parser` 列为 workspace member。
-- RustCodeGraph：`status` 显示索引包含 `pkg/parser/parse-demo1.rs`（该文件共 31 个索引符号）；`node --file` 核对 1–427 行；`node` 查询 `parse_expression`、`parse`、`main`、`lex` 与 `infix_binding_power`，确认本文件内部 callers/callees 和递归边。
-- Go 对照：确认不存在 `pkg/parser/parse-demo1.go`；读取 `pkg/parser/yy_parser.go` 的生产入口定位、生成的 `pkg/parser/parser.go` 及 `pkg/parser/parser.y` 的 `yyParse` 关系，并读取 `pkg/parser/lib.rs` 区分 Rust 正式 parser 与 demo。
-- 测试证据：仓库范围搜索未发现 `parse-demo1` 或其样例 SQL被独立测试引用；读取 `pkg/parser/main_test.rs` 与 `pkg/parser/main_test.go` 后确认二者属于正式 parser/包级测试，而非 demo 测试。
-- 历史证据：`git log --follow -- pkg/parser/parse-demo1.rs` 只找到初始提交 `fac562eba94644781b9ac3725fb9c303d0885f75`，其补丁为完整新建文件。
-- 本任务是纯文档分析，按任务约束未运行 Cargo，也未执行二进制；行为结论来自源码、调用图、Cargo/Go/测试和 Git 历史静态证据。交付结构以任务文件指定的 11 个固定二级标题命令验证。

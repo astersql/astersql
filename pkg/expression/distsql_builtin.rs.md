@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`distsql_builtin.rs` 位于 `astersql-expression` crate，源码由 `pkg/expression/lib.rs` 以私有模块 `distsql_builtin_kernel` 挂载。它把下推协议中的 `tipb::Expr` 重建为本文件自有的 `Expression::{Column, Constant, ScalarFunction}`，并用 `SIGNATURE_RECIPES` 保存 Go `getSignatureByPB` 的完整分派对应关系。
-
-这个文件目前是移植对等内核，而不是 crate 对外的正式表达式运行时入口：`lib.rs` 对外再导出的 `PBToExpr`、`PBToExprs`、`PbTypeToFieldType` 来自 `pb_to_expr_runtime.rs`；本文件只在 `cfg(test)` 下经 `expression_distsql_builtin` 适配模块暴露给 `distsql_builtin_34_aster_unit_test.rs` 和 `distsql_builtin_test.rs`。因此，本文件能验证协议解码和 Go 分派表，但其 `BuiltinFuncDraft` 不会执行具体 builtin 求值。
-
-crate 边界见 `pkg/expression/Cargo.toml`：直接相关依赖包括固定到 Git revision 的 `tipb`、`protobuf = 2.8.0`、`chrono`、`chrono-tz`，以及由 crate 根适配出的 `types`、`codec`、`collate` 模块。该 Cargo 文件关闭自动测试发现（`autotests = false`）；本文件的测试由 `lib.rs` 中的 `#[cfg(test)]` 模块显式挂载，而非独立 `[[test]]` 目标。
+`codec` 子模块统一把底层编解码错误收敛为 `ExpressionError`；各 `convert*` 函数负责类型专用的 wire 数据转换和错误上下文。
 
 ## 核心职责
 
@@ -103,17 +99,12 @@ RustCodeGraph 的直接调用边显示：
 
 ## 与 Go 版本的对应关系
 
-权威对照文件是 `pkg/expression/distsql_builtin.go`。Rust 保留了 Go 的主要控制流和命名：`PbTypeToFieldType`、`getSignatureByPB`、`newDistSQLFunctionBySig`、`PBToExprs`、`PBToExpr`、`convert*` 及 `decodeValueList` 均有直接对应项；`SIGNATURE_RECIPES` 把 Go 巨型 `switch sigCode` 的 case 与构造表达式压成数据表。
-
-保持一致的语义包括：完整字段元数据复制；先构造 builtin 再推导 collation；递归 children；ValueList 展平及空列表折叠 false；TIMESTAMP 的时区转换；decimal precision/fraction；JSON Kind 校验；enum 0 特例；未知函数签名报错；畸形 wire 数据停止转换。
-
 仍有明确迁移差异：
 
 - Go `getSignatureByPB` 构造可执行的具体 `builtinFunc` 并设置 PB code；本文件只返回 `BuiltinFuncDraft`，构造器是字符串。
 - Go `newDistSQLFunctionBySig` 使用完整 `deriveCollation` 和真实 `ScalarFunction`；本文件使用简化 `DerivedCollation` 与自有 `ScalarFunction`。
 - Go 表达式实现可继续 `Eval`；本文件类型没有求值接口。
 - Rust 本文件 `decodeValueList` 用 `Constant::from_datum` 推断返回类型；Go 对照只把 Datum 放入 `Constant`，其 `RetType` 为空。正式 Rust runtime 也单独推断参数类型，但使用 `types::InferParamTypeFromDatum`。
-- 本文件的列边界保留直接索引；正式 Rust runtime 已加强为显式负数/越界错误。
 
 Go 测试 `pkg/expression/distsql_builtin_test.go` 还覆盖真实表达式求值、大量函数和新排序规则开关；本文件的独立 Rust 测试只证明协议重建/分派对等，不足以证明 Go 运行时求值全集已由这个文件实现。
 
@@ -126,16 +117,3 @@ Go 测试 `pkg/expression/distsql_builtin_test.go` 还覆盖真实表达式求�
 修改字段类型转换时应覆盖所有七类元数据字段，并同时核对排序规则编号转换。修改 time、enum、JSON、vector 或 ValueList 时，要保留测试中的时区、enum 0、Kind 校验、损坏 wire 和空列表边界。
 
 若要把本文件提升为生产实现，不能只把私有模块公开：必须用 crate 正式 `ExprBox`/`BuildContext`/`ScalarFunction` 取代草稿类型，将 recipe 映射接到真实 builtin 工厂，复刻完整 collation/coercibility 逻辑，并证明所有对外调用从 `pb_to_expr_runtime.rs` 安全迁移。主要风险是签名覆盖漂移、排序规则与隐式 cast 差异、列越界 panic、ValueList 类型推断差异，以及线性查表和大列表带来的性能成本。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 源文件：`pkg/expression/distsql_builtin.rs`，重点符号为 `SIGNATURE_RECIPES`、`getSignatureByPB`、`newDistSQLFunctionBySig`、`PBToExprs`、`PBToExpr` 和全部 `convert*` 函数。
-- crate/装配：`pkg/expression/Cargo.toml`；`pkg/expression/lib.rs` 中的 `distsql_builtin_kernel`、正式 `pb_to_expr_runtime` 再导出、`cfg(test) expression_distsql_builtin` 适配和两个测试模块挂载。
-- 正式 Rust 运行时对照：`pkg/expression/pb_to_expr_runtime.rs`，用于确认 crate 对外 API、`ExprBox`/`NewFunctionBase` 接线以及更严格的列边界。
-- Rust 独立测试：`pkg/expression/distsql_builtin_34_aster_unit_test.rs` 和 `pkg/expression/distsql_builtin_test.rs`，覆盖 565 项配方、FieldType 元数据、所有已支持字面量族、列/enum/ValueList 和畸形 wire 路径。
-- Go 对照：`pkg/expression/distsql_builtin.go` 与 `pkg/expression/distsql_builtin_test.go`，用于核对函数结构、switch 分派、时区/排序规则、错误边界及真实求值覆盖。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；查询了 `PBToExpr`、`newDistSQLFunctionBySig`、`getSignatureByPB`，并检查它们的 callers/callees。图证据确认内部主链和测试调用；同名 runtime 节点由 `lib.rs` 与源码接线进一步消歧。
-
-本任务为纯文档分析，未运行 Cargo 或代码测试。结构验证要求目标文档存在，并且以下固定章节恰好各出现一次：文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据。

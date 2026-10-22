@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-stream-crr-internal-checkpoint`，包入口 `br/pkg/stream/crr/internal/checkpoint/lib.rs` 以 `progress` 模块挂载它。它不是独立的服务入口，而是为 `calculator.rs` 中的 `Calculator::ComputeNextCheckpoint` 提供一轮 CRR（跨区域复制）安全检查点计算所需的内部步骤。
-
-完整生产调用链是 `br/pkg/stream/crr/service/service.rs` 的 `Service::run_once` 持有计算器锁并调用 `Calculator::ComputeNextCheckpoint`；后者依次调用本文件的 `poll_upstream_checkpoint`、`load_alive_stores`、`plan_round`、`observe_round_planned`、`wait_object_sync`、`advance_synced_state` 和 `observe_checkpoint_advanced`。发生错误时，`ComputeNextCheckpoint` 再调用 `observe_calculation_failed`。因此本文件处于 CRR 服务循环和上游元数据/下游对象同步检查之间。
-
-`Cargo.toml` 将该目录声明为 library crate，并通过路径依赖连接 `stream-backupmetas` 与 `streamhelper`；本文件直接使用的 `Calculator`、事件、上下文和存储抽象则来自同 crate 的 `calculator.rs`、`storage.rs`。
+从 `PDMetaReader` 获取任务的全局 checkpoint，并区分“推进”与“未推进”。
 
 ## 核心职责
 
@@ -103,8 +99,6 @@ Cargo 边界显示该 crate 还依赖 `astersql-br-pkg-stream-backupmetas`、`as
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 `progress.go`：`roundPlan`、规划/等待/推进函数、统计快照、事件构造和 `pathSuffix` 的主语义一致。关键一致点包括路径去重、每 store 取最大 flushTS、alive store 缺观测时阻塞 `syncedTS`、剪枝前水位约束当前轮、下游全部同步后才推进，以及后缀 `<none>`/`<other>` 分桶。
-
 实现机制存在几处明确差异：
 
 - Go 用 `errgroup.WithContext`、`SetLimit` 和 goroutine；Rust 用 scoped OS threads、`ConcurrencyLimiter` 与共享首错槽实现等价的有界并发和首错取消。
@@ -124,18 +118,3 @@ Rust 文件逐项对应同目录 `progress.go`：`roundPlan`、规划/等待/推
 - 新增事件或统计字段时，应在 `observe_round_planned`、`observe_waiting_downstream`、`observe_checkpoint_advanced`、`observe_calculation_failed` 中选择正确生命周期，并在 `FileStatistic::snapshot` 深拷贝可变容器。
 - 修改后缀分桶时同步更新 `path_suffix`、Go `pathSuffix` 及 `parity_test.rs::go_rust_public_contract_matches`，并评估指标标签基数兼容性。
 - 回归测试应继续放在独立文件：并发/取消优先扩展 `progress_test.rs`；store 水位、剪枝、错误传播扩展 `checkpoint_calculator_test.rs`；完整复制等待和事件序列扩展 `integration_test.rs`；Go/Rust 契约差异扩展 `parity_test.rs` 及对应 Go 测试。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 生产实现：`br/pkg/stream/crr/internal/checkpoint/progress.rs` 的 `roundPlan`、`ConcurrencyLimiter`、`Calculator` 方法、事件辅助函数、`sleep_with_context` 和 `path_suffix`。
-- 主循环与状态提交：`br/pkg/stream/crr/internal/checkpoint/calculator.rs::Calculator::ComputeNextCheckpoint`。
-- 生产服务入口：`br/pkg/stream/crr/service/service.rs::Service::run_once`。
-- 包级安全不变量：`br/pkg/stream/crr/internal/checkpoint/doc.go`；模块挂载：同目录 `lib.rs`；crate 边界：同目录 `Cargo.toml`。
-- Go 对照：同目录 `progress.go`，逐项核对 `roundPlan`、`planRound`、`waitObjectSync`、`advanceSyncedState`、事件、睡眠和后缀分桶。
-- Rust 直接测试：`progress_test.rs::plan_round_cancels_sibling_meta_reads_after_first_failure`。
-- Rust 行为测试：`integration_test.rs::test_checkpoint_calculator_waits_until_round_fully_synced`、`test_checkpoint_calculator_observer_sees_success_lifecycle`；`checkpoint_calculator_test.rs::test_checkpoint_calculator_does_not_advance_synced_ts_when_new_alive_store_has_no_flush`、`test_checkpoint_calculator_fails_on_object_sync_error`、`test_checkpoint_calculator_prunes_removed_store_after_files_synced`、`test_checkpoint_calculator_skips_meta_synced_by_store_progress`；`parity_test.rs::go_rust_public_contract_matches`。
-- RustCodeGraph 证据：索引状态为 7032 个 Rust 文件；文件查询确认 `progress.rs` 由 calculator 主循环间接驱动；精确调用关系显示事件辅助函数由 `ComputeNextCheckpoint` 调用，生产侧 `Service::run_once` 调用 `ComputeNextCheckpoint`，而 `plan_round` 下钻到 meta 枚举与 `load_meta_file`。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试；只执行任务规定的章节结构检查，并人工复核上述源码、Go 对照和测试证据。

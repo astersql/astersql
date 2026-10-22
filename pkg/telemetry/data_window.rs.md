@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-telemetry` crate 的时间窗口统计实现。模块由 [`pkg/telemetry/lib.rs`](lib.rs) 以 `mod data_window` 装配并整体再导出；crate 的入口由 [`pkg/telemetry/Cargo.toml`](Cargo.toml) 指向 `lib.rs`。它负责保存语句执行、TiFlash 下推与扫描、Coprocessor 缓存命中率分桶及内置函数使用次数，并把一分钟级快照合并成小时级上报数据。
-
-在当前 Rust 调用链中，[`generateTelemetryData`](data.rs) 调用 `getWindowData`，结果写入 `telemetryData::WindowedStats`，随后由 [`ReportUsageData`](telemetry.rs) 序列化并缓存。仓库搜索没有发现 Rust 生产代码调用 `RotateSubWindow` 或递增本文件的全局原子计数器，因此窗口的“读取与上报”已经接线，而“定时轮转与生产端计数”尚未接入 Rust 运行链；不能仅依据本文件存在这些 API 就视为完整可用。
+负责保存语句执行、TiFlash 下推与扫描、Coprocessor 缓存命中率分桶及内置函数使用次数，并把一分钟级快照合并成小时级上报数据。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ RustCodeGraph 对目标文件识别出 31 个符号，并确认 `data.rs`、`tel
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`pkg/telemetry/data_window.go`](data_window.go)，测试对照为 [`pkg/telemetry/data_window_test.go`](data_window_test.go)。Rust 保留了 Go 的核心模型：相同的计数器集合、1 分钟子窗口、1 小时聚合、约 6 小时保留、函数用量 `uint32`、窗口指标 `uint64`、取出即清空的 `Dump`，以及以首项时间作为合并窗口起点。
+Rust 保留了 Go 的核心模型：相同的计数器集合、1 分钟子窗口、1 小时聚合、约 6 小时保留、函数用量 `uint32`、窗口指标 `uint64`、取出即清空的 `Dump`，以及以首项时间作为合并窗口起点。
 
 主要实现差异如下：
 
@@ -90,12 +88,3 @@ RustCodeGraph 对目标文件识别出 31 个符号，并确认 `data.rs`、`tel
 调整时间窗口时，应使 `WindowSize`、`SubWindowSize`、`IN_WINDOW`、`MAX_SUB_WINDOWS` 与 `ReportInterval` 保持可验证的一致关系，并检查非整除情况下的取整约定。若改为动态配置，需要避免 `chunks(0)`，并说明配置变更时现存缓冲如何处理。
 
 修改序列化时，要逐字段核对 Go JSON tag、`time.Time` 行为、map 键排序和字符串转义；优先增加独立测试，而不要把测试嵌入生产源文件。并发方向的优化可考虑缩短 `getWindowData` 的锁持有期（例如锁内取得快照、锁外聚合），但必须验证克隆成本、窗口一致性和轮转期间的可见性。将轮转接入生产环境时，应在与 Go `domain.go` 等价的生命周期位置启动和停止调度，避免重复调度或无人调度。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 18 个索引文件；`files --filter pkg/telemetry` 确认目标、Go 对照及测试均已索引；`node --file pkg/telemetry/data_window.rs --offset 1 --limit 400` 读取目标全部 278 行；`query WindowData`、`query RotateSubWindow`、`query getWindowData` 定位 Rust/Go 对应符号；精确 `callers/callees` 无输出，故未将其当作完整调用图。
-- Rust 源与模块证据：`pkg/telemetry/data_window.rs`、`pkg/telemetry/data.rs`、`pkg/telemetry/telemetry.rs`、`pkg/telemetry/lib.rs`。
-- crate 证据：`pkg/telemetry/Cargo.toml`。
-- Go 对照与生产接线：`pkg/telemetry/data_window.go`、`pkg/telemetry/data.go`、`pkg/telemetry/data_window_test.go`、`pkg/session/session.go`、`pkg/domain/domain.go`。
-- Rust 独立测试：`pkg/telemetry/data_window_test.rs` 覆盖 `Collect`/`Dump`、`u32` 和 `u64` 回绕、TiFlash 计数器模拟、JSON 字段与纳秒时间编码；它没有覆盖 `RotateSubWindow` 的缓冲上限、`getWindowData` 的 60 项分组、并发轮转或锁毒化。
-- 人工复核结论：文件存在是为了把离散运行计数转换为有界的分钟快照和小时上报数据；内部聚合与序列化已实现，但 Rust 生产端计数和周期轮转尚未接线，安全扩展必须同时维护采集、轮转、合并、序列化与独立测试五个层面。

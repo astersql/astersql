@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-test_driver` crate 内的轻量十进制定点数实现。crate 入口 `pkg/parser/test_driver/lib.rs` 通过 `#[path = "test_driver_mydecimal.rs"] mod test_driver_mydecimal` 装入模块，再以 `pub use test_driver_mydecimal::*` 导出其公开符号；因此它服务于 parser 测试驱动的字面值构造、类型推断和 SQL 文本还原，而不是 `pkg/types/mydecimal.rs` 中完整的运行时 DECIMAL 实现。
-
-`pkg/parser/test_driver/Cargo.toml` 将该 crate 的库入口指定为 `lib.rs`，依赖 parser 的 charset、format、mysql、types 子 crate 和 `hex`。本文件自身只调用 crate 根再导出的 `isDigit`、`isSpace`、`myMin`、`pow10`，没有直接使用这些外部依赖。
+用固定的 9 个 `i32` word 表示最多 81 位十进制数字；每个 word 保存 9 位，范围约束为 `0 <= word < 10^9`（`MyDecimal::wordBuf`、`maxWordBufLen`、`digitsPerWord`）。
 
 ## 核心职责
 
@@ -84,11 +82,9 @@ RustCodeGraph 对常见名 `FromString` 报出的 `pkg/planner/core/expression_r
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/parser/test_driver/test_driver_mydecimal.go`。Rust 保留了 Go 版的常量、字段顺序、9 位分组布局，以及 `fixWordCntError`、`countLeadingZeroes`、`digitsToWords`、`String`、`stringSize`、`removeLeadingZeros`、`ToString`、`FromString` 的控制流。符号、前导零、`.125`、小数尾零、9 位 word 边界和负零规范化语义保持一致。
-
 语言层面的主要差异是：Go 的字段和辅助函数为包内可见，Rust 版本当前均为 `pub`；Go `String` 复制结构体值，Rust 显式 `clone`；Go 字节切片与 Rust `Vec<u8>`/`&[u8]` 对应；Go 的 `error` 与 Rust 的 `Result<(), String>` 在当前实现中都没有普通错误返回，未支持分支仍 panic。
 
-两边都只实现测试驱动需要的解析/格式化子集。不要据此推断它具有 `pkg/types/mydecimal.go` 或 `pkg/types/mydecimal.rs` 的算术、舍入、溢出/截断错误体系。Go 文件的 `//go:build !codes` 构建约束在 Rust 文件中没有对应 feature；Rust crate 始终由其 Cargo 目标决定是否编译。
+Go 文件的 `//go:build !codes` 构建约束在 Rust 文件中没有对应 feature；Rust crate 始终由其 Cargo 目标决定是否编译。
 
 ## 扩展指南
 
@@ -98,12 +94,3 @@ RustCodeGraph 对常见名 `FromString` 报出的 `pkg/planner/core/expression_r
 - 调整容量或 word 宽度时，必须联动 `maxWordBufLen`、`wordBufLen`、`digitsPerWord`、`digMask`、`pow10` 的范围以及 `i32` 安全性，并验证整数首组和小数末组边界。
 - 测试逻辑应继续放在独立文件 `pkg/parser/test_driver/migration_aster_unit_test.rs`（或新增同目录独立 `*_test.rs`），不要嵌入生产源文件。至少覆盖普通往返、9/10 位跨 word、81 位容量边界、超限、无数字、指数、负零、前导/尾随字符和对象复用。
 - 修改公开字段或导出面时，同时检查 `pkg/parser/test_driver/lib.rs`、`test_driver_datum.rs` 和 `test_driver.rs` 的消费点，以及 `pkg/parser/test_driver/test_driver_mydecimal.go` 的对齐要求。
-
-## 验证依据
-
-- 目标实现：`pkg/parser/test_driver/test_driver_mydecimal.rs`，核对了全部 304 行、所有常量/函数/字段和 `impl MyDecimal` 控制流。
-- crate 边界：`pkg/parser/test_driver/Cargo.toml` 与 `pkg/parser/test_driver/lib.rs`，确认库入口、依赖和公开再导出。
-- Rust 直接调用与测试：`pkg/parser/test_driver/test_driver_datum.rs`、`pkg/parser/test_driver/test_driver.rs`、`pkg/parser/test_driver/migration_aster_unit_test.rs`；现有往返用例覆盖 `0`、`-0`、正号、无整数位小数、整数前导零/小数尾零和跨多个 word 的值。`pkg/parser/test_driver/test_driver_test.rs` 不含 MyDecimal 用例。
-- Go 对照：`pkg/parser/test_driver/test_driver_mydecimal.go`，逐段核对常量、内存布局、解析、格式化、未实现分支和负零处理；同目录未发现 MyDecimal 专用 Go 测试。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`query MyDecimal --kind struct` 精确定位本文件第 65 行类型，`query FromString`/`query ToString` 定位第 200/110 行方法，`node test_driver_mydecimal.rs::FromString` 给出内部 `digitsToWords`、`fixWordCntError` 及三个同名跨模块候选；随后读取候选源码排除了类型误连。`explore` 还确认本文件辅助调用边和 `test_driver_datum.rs` 的格式化消费点。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证恰有 11 个固定二级章节，并人工复核无整段源码复制、无无依据的“已支持”结论。

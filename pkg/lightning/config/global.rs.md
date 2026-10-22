@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-config` crate（见 `pkg/lightning/config/Cargo.toml`），实现 Lightning 启动阶段的“全局配置”中间层：把进程级命令行参数和配置文件中的少量全局字段合并成 `GlobalConfig`。模块由 `pkg/lightning/config/lib.rs` 声明并公开再导出；完整任务配置随后可由 `Config::load_from_global`（`pkg/lightning/config/config.rs`）读取 `GlobalConfig` 中保存的原始 TOML，再覆盖 CLI/全局字段。
-
-当前接线边界必须特别说明：仓库内排除测试与 `stubs.rs` 后，未发现 `load_global_config` 的 Rust 生产调用；实际 Rust 行为覆盖来自独立测试 `pkg/lightning/config/config_test.rs`。Go 生产入口 `lightning/cmd/tidb-lightning/main.go` 和 `lightning/cmd/tidb-lightning-ctl/main.go` 调用同包的 Go `LoadGlobalConfig`，而对应 Rust 命令目前使用各自 `stubs.rs` 中的配置加载器。因此本文件是可复用且已测试的 crate API，但不能据此声称 Rust Lightning 二进制已走入这条实现链。
+用 `must` 把库式错误转换为命令进程退出语义：帮助请求退出 0，其他错误打印后退出 2。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ CLI 边界包括：不带横线的位置参数报 `unexpected argument`；未知
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/lightning/config/global.go`，Rust 的结构分段、默认值、CLI 名称、TOML 段、覆盖顺序、`pprof-port` 兼容、server-mode 校验、日志调整和 `Must` 退出码均按 Go 流程移植。独立测试 `config_test.rs::test_load_config` 与 Go `config_test.go::TestLoadConfig` 覆盖非法端口、版本请求、文件不存在、server mode、主要 CLI 覆盖、默认日志路径及 `-` 日志目标；Rust 另有 `test_load_global_config_mydumper_collections` 验证 filter/ignore-columns TOML 集合。
+独立测试 `config_test.rs::test_load_config` 与 Go `config_test.go::TestLoadConfig` 覆盖非法端口、版本请求、文件不存在、server mode、主要 CLI 覆盖、默认日志路径及 `-` 日志目标；Rust 另有 `test_load_global_config_mydumper_collections` 验证 filter/ignore-columns TOML 集合。
 
 已确认的差异与限制如下：
 
@@ -99,12 +97,3 @@ CLI 边界包括：不带横线的位置参数报 `unexpected argument`；未知
 回归测试应放在独立文件 `pkg/lightning/config/config_test.rs`，不要嵌入生产源文件。建议分别覆盖默认值、TOML 类型错误、TOML/CLI 覆盖优先级、重复 flag、`--bool=false`、额外 flag、server-mode 组合与敏感字段；对应 Go 行为应在 `pkg/lightning/config/config_test.go` 核对。若未来把该入口接入 Rust 命令，还需在命令自身的独立 parity 测试中证明实际调用的是 crate 实现，而非保留的 stub。
 
 兼容风险主要来自已有 flag/TOML 键的默认值和覆盖条件；安全风险来自错误或日志意外暴露密码及原始 TOML；性能风险较低，但配置文件当前整文件读入且手工构建 TOML 值树，新增大集合时需留意内存放大。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/lightning/config` 确认目标、Go 对照及独立测试均已索引；`node --file pkg/lightning/config/global.rs` 读取 599 行源码并确认 29 个符号；`query load_global_config`、`query decode_global_toml`、`query parse_flags` 确认目标符号位置。精确 `callers`/`callees` 查询未返回可见边，故没有把宽泛同名结果当作事实。
-- 源码与模块边界：`pkg/lightning/config/global.rs`、`pkg/lightning/config/lib.rs`、`pkg/lightning/config/config.rs`、`pkg/lightning/config/toml_codec.rs`、`pkg/lightning/config/Cargo.toml`。
-- Go 对照：`pkg/lightning/config/global.go`、`pkg/lightning/config/config.go`、`lightning/cmd/tidb-lightning/main.go`、`lightning/cmd/tidb-lightning-ctl/main.go`。
-- 独立测试：`pkg/lightning/config/config_test.rs` 中 `test_load_config`、`test_load_from_invalid_config`、`test_create_several_configs_with_different_filters`、`test_load_global_config_mydumper_collections`；对应 Go 测试位于 `pkg/lightning/config/config_test.go` 的 `TestLoadConfig` 与 `TestCreateSeveralConfigsWithDifferentFilters`。
-- 接线复核：对非测试、非 stub Rust 文件精确搜索 `load_global_config(` 与 `new_global_config(`，仅命中本文件定义/内部调用；因此文档将“当前无生产调用”列为已验证限制。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构验证要求目标文档存在且恰有 11 个固定二级标题。

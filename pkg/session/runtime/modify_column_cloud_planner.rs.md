@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`modify_column_cloud_planner.rs` 属于 `astersql-session` crate（`pkg/session/Cargo.toml`），但不是 `pkg/session/runtime.rs` 的直接子模块：`pkg/session/runtime/modify_column_dist_backfill.rs` 通过 `#[path = "modify_column_cloud_planner.rs"] mod cloud_planner;` 将它纳入分布式 MODIFY COLUMN 回填调度器。文件只扩展父模块的私有 `Planner`，没有对 crate 外公开的 API，也没有条件编译项。
-
-它负责云存储/global-sort 回填的后两个计划阶段：根据 `ReadIndex` 输出生成 `MergeSort` 子任务，再根据 `MergeSort` 或被跳过时的 `ReadIndex` 输出生成 `WriteAndIngest` 子任务。普通读索引范围和临时索引合并计划仍由父文件的 `Planner::ranges` 处理。
+负责云存储/global-sort 回填的后两个计划阶段：根据 `ReadIndex` 输出生成 `MergeSort` 子任务，再根据 `MergeSort` 或被跳过时的 `ReadIndex` 输出生成 `WriteAndIngest` 子任务。
 
 ## 核心职责
 
@@ -65,10 +63,6 @@ Region 分裂配置读取是特意的最佳努力路径：存储返回错误时�
 
 ## 与 Go 版本的对应关系
 
-Go 直接对照是 `pkg/ddl/backfilling_dist_scheduler.go`：`LitBackfillScheduler.OnNextSubtasksBatch` 对应 Rust 父模块入口；`generateMergeSortPlan` 对应 `MERGE` 分支；`generateGlobalSortIngestPlan`、`splitSubtaskMetaForOneKVMetaGroup`、`getRangeSplitter` 和 `forEachBackfillSubtaskMeta` 合起来对应 `INGEST` 分支与 `groups`。`pkg/ddl/backfilling_dist_executor.go` 中 `BackfillTaskMeta`/`BackfillTaskSummary`/`BackfillSubTaskMeta` 是 JSON 契约来源。
-
-两版保留的核心语义包括：按分组位置合并 Meta；merge 可按重叠阈值跳过且可由同名 failpoint 强制；只提取 file pair 的 data-file 成员；ingest 优先消费 merge 结果、否则回退 read-index；空表分组不生成导入子任务；range job/split keys 都含首尾边界；每个非空分组分配 TS；成功后才将 `IndexKVSize` 写回 task Meta。
-
 可见差异需如实保留：Go 的对象存储和 range splitter 使用 `context.Context` 并通过 `defer` 关闭，Rust planner 当前使用恒 false 取消标记且只在正常循环后显式关闭 splitter。Go 获取活跃 exec ID 的错误直接传播，Rust 还显式拒绝零实例。Go 在 merge/ingest 路径中对空 group 有单独报错，Rust 用已初始化的默认 `SortedMeta` 表示每个槽位。Go 有计划日志和 `mockGlobalSortIngestPlanErr`/`mockWriteIngest` 测试 failpoint，本 Rust 文件没有这两个分支。
 
 ## 扩展指南
@@ -78,11 +72,3 @@ Go 直接对照是 `pkg/ddl/backfilling_dist_scheduler.go`：`LitBackfillSchedul
 修改分组规则时，要先明确“第一个 Meta 决定组数和 ID”、MergeSort 空计划回退到 ReadIndex、旧版扁平 Meta 兼容三个不变量。若改为严格检查每个子任务的组数/`ele_ids`，必须评估滚动升级中旧任务 Meta 的兼容风险。若修改 range size、node count 或 per-instance size，需同时评估子任务均衡、对象数、内存和 Region 分裂放大。
 
 测试不应写入本生产文件。直接 planner 回归建议新增同目录独立 `modify_column_cloud_planner_test.rs` 并由父模块在 `#[cfg(test)]` 下引入；至少覆盖 merge 跳过/强制、多组合并、组数不匹配、MergeSort 结果优先级、空表、零节点/无资源/零 TS、非单调范围、task Meta 失败不变与成功 summary。端到端修改还要同步 `normal_ddl_masking_policy_test.rs` 的独立测试，并核对 Go `backfilling_dist_scheduler_test.go`。
-
-## 验证依据
-
-本说明直接核对了目标源 `pkg/session/runtime/modify_column_cloud_planner.rs`、父模块与调用入口 `pkg/session/runtime/modify_column_dist_backfill.rs`、crate 边界 `pkg/session/Cargo.toml`、元数据独立测试 `pkg/session/runtime/modify_column_cloud_meta_test.rs`、执行器独立测试 `pkg/session/runtime/modify_column_cloud_executor_test.rs`、云 MODIFY 端到端回归 `pkg/session/runtime/normal_ddl_masking_policy_test.rs`，以及 Go 对照 `pkg/ddl/backfilling_dist_scheduler.go`、`pkg/ddl/backfilling_dist_executor.go` 和 `pkg/ddl/backfilling_dist_scheduler_test.go`。`pkg/session` 下没有 `doc.go`；仓库也没有对应的独立 `modify_column_cloud_planner_test.rs`。
-
-RustCodeGraph `status` 显示当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime` 确认目标文件已索引；`node --file pkg/session/runtime/modify_column_cloud_planner.rs` 读取了完整 271 行源码，并报告文件级使用关系。精确 `query/callers/callees` 未将私有 impl 方法 `cloud_plans` 建模为可查节点，因此唯一真实调用边由 `rg "cloud_plans\\("` 和父模块源码交叉确认，不将空图结果解释为“无调用者”。
-
-本任务只新增说明文档，按计划不运行 Cargo。交付检查是任务指定的结构命令，并人工复核上述定位、执行分支、错误/资源边界、Go 差异和扩展测试建议均可由列出的符号与文件回溯。

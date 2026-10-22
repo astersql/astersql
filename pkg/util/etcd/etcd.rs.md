@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/etcd/etcd.rs` 是 Cargo 包 `astersql-util-etcd` 的核心实现文件。crate 入口 `pkg/util/etcd/lib.rs` 将私有模块 `etcd` 的全部公开项重新导出；仓库总门面 `pkg/lib.rs` 又在 `pkg::util::etcd` 下重新导出该 crate。`pkg/util/etcd/Cargo.toml` 声明它依赖 `etcd-client`、`tokio`、`async-trait`、`metrics` 和 `tracing`，没有 feature 条件或条件编译分支。
-
-该文件位于原始 etcd 客户端和上层存储适配之间，提供两类能力：给 key 统一附加 keyspace/租户前缀，以及用逐次超时和固定次数重试删除 key。当前可确认的生产接线位于 `pkg/store/etcd.rs`：`NewEtcdCliWithSettings` 创建原始 `etcd_client::Client` 并包入 `NamespacedClient`，`NewEtcdCli` 根据 `EtcdNamespace` 调用 `SetEtcdCliByNamespace`，随后 `EtcdClient::Put`、`EtcdClient::Get` 委托给本文件的方法。仓库精确搜索未发现 `delete_key_from_etcd` 或 `DeleteKeyFromEtcd` 的生产调用者，因此删除辅助目前是已实现、已测试并公开，但尚未在已搜索到的生产主链接线的能力。
+位于原始 etcd 客户端和上层存储适配之间，提供两类能力：给 key 统一附加 keyspace/租户前缀，以及用逐次超时和固定次数重试删除 key。
 
 ## 核心职责
 
@@ -83,16 +81,13 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/etcd/etcd.go`，主要映射如下：
-
-- 三个默认常量数值一致。Rust 同时保留 Rust 风格名和 Go 风格别名。
 - Go `SetEtcdCliByNamespace` 原地替换 `clientv3.Client` 的 `KV`、`Watcher`、`Lease` 为 namespace wrapper；Rust `etcd-client` 不暴露这些字段，因此改为 `NamespacedClient<C>` 保存单一前缀。当前真实 Rust 实现覆盖 delete/put/get，没有 Watcher 或 Lease 的 namespaced 操作，不能把 Go 的完整三接口覆盖视为 Rust 已实现。
 - Go delete 使用 `context.WithTimeout` 为每轮创建 child context并立即 cancel；Rust用 `tokio::time::timeout` 为每轮 future 设置边界。二者都在成功时提前返回、失败时计数和告警、耗尽后返回最后错误、零重试时返回 nil/Ok。
 - Go 函数接收 `retryCnt int`，Rust 接收 `usize`，因此 Rust API 没有负数输入。
 - Go `errors.Trace(err)` 为最后错误增加 PingCAP 错误栈语义；Rust `DeleteKeyError::Client` 保留 source，但不额外捕获 backtrace。
 - Go 的 namespace 包装由 etcd 官方库负责范围转换及响应 key 处理；Rust 在本文件显式前缀化，并在 get 响应上手动剥离前缀。
 
-Go 测试 `pkg/util/etcd/etcd_test.go::TestSetEtcdCliByNamespace` 使用真实集成集群验证加前缀写入。Rust 的普通单元测试以 `SharedKv` 验证同一逻辑；`namespaced_real_kv_roundtrip_keeps_binary_keys_and_values` 提供真实 etcd 证据，但默认 `#[ignore]`，需要 `ASTER_ETCD_TEST_ENDPOINT`。Rust 迁移补充测试比 Go 同目录测试更直接地固定删除重试边界。
+Rust 迁移补充测试比 Go 同目录测试更直接地固定删除重试边界。
 
 ## 扩展指南
 
@@ -102,12 +97,3 @@ Go 测试 `pkg/util/etcd/etcd_test.go::TestSetEtcdCliByNamespace` 使用真实�
 - 如需实际使用 `KEY_OP_RETRY_INTERVAL`，应在调用方或明确的新策略层实现，避免无意改变现有 helper 的无 sleep 行为和总延迟。
 - 修改 namespace 后应检查 `pkg/store/etcd.rs::{NewEtcdCli, EtcdClient::Put, EtcdClient::Get}` 及其测试，因为这里是当前生产接线。还需注意 `inner_mut` 的绕过路径。
 - 性能风险主要是每次操作复制前缀/key、get 复制所有返回 KV，以及高频错误文本形成指标高基数；兼容风险主要是漏加/重复添加前缀和把二进制 key 错转为字符串。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/util/etcd` 确认目标、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file pkg/util/etcd/etcd.rs --offset 1 --limit 500` 读取了完整 267 行实现，并报告 35 个符号及 6 个文件级使用者；精确 `query` 定位了 `NamespacedClient`、`DeleteClient`、`set_etcd_client_namespace`、`delete_key_from_etcd`、`SetEtcdCliByNamespace` 和 `DeleteKeyFromEtcd`。
-- RustCodeGraph `node` 读取 `pkg/store/etcd.rs`，确认构造、namespace 设置和 put/get 调用边；读取 `pkg/lib.rs` 确认门面再导出。精确 `callers` 命令在本地索引上约 30 秒超时且没有输出，因此又用精确符号搜索核对生产调用者，并把未确认的文件级结果排除为直接调用证据。
-- 已读源与配置：`pkg/util/etcd/etcd.rs`、`pkg/util/etcd/lib.rs`、`pkg/util/etcd/Cargo.toml`、`pkg/store/etcd.rs`、`pkg/lib.rs`。
-- 已读对照与测试：`pkg/util/etcd/etcd.go`、`pkg/util/etcd/etcd_test.go`、`pkg/util/etcd/etcd_test.rs`、`pkg/util/etcd/migration_aster_unit_test.rs`。`pkg/util/etcd` 与 `pkg/util` 均无 `doc.go`。
-- 人工复核结论：本文区分了当前生产接线与仅公开未接线能力，明确 Go Watcher/Lease 对等缺口、二进制边界、错误传播、逐次取消语义及扩展测试位置；没有把 Cargo 依赖或文件级图关系误写成直接调用。

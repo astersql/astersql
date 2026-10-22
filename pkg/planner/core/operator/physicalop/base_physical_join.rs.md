@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate；crate 根由 `Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`lib.rs` 声明 `mod base_physical_join` 并用 `pub use base_physical_join::*` 导出这里的公开项。它位于逻辑 Join 转成具体物理 Join 与物理计划交付 executor 之间：`base_physical_plan.rs` 从 `LogicalJoin`/`LogicalApply` 建立 `BasePhysicalJoin`，`PhysicalHashJoin`、`PhysicalMergeJoin`、`PhysicalIndexJoin` 等具体节点持有这份公共状态，executor 随后读取其中的连接类型、条件和连接键。
-
-该文件不是执行 Join 算法的实现。它负责物理 Join 的公共规划期模型、克隆、相关列发现、内存估算和输出 Schema 规则；哈希表构建、索引探测、归并推进等行为在具体算子及 executor 中实现。源码没有条件编译项；独立测试通过 `lib.rs` 中的 `#[cfg(test)] mod base_physical_join_test` 接入。
+负责物理 Join 的公共规划期模型、克隆、相关列发现、内存估算和输出 Schema 规则；哈希表构建、索引探测、归并推进等行为在具体算子及 executor 中实现。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ RustCodeGraph 对目标文件识别出 17 个符号，并报告其被 `cache_sna
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `base_physical_join.go`。结构字段、访问器、标记方法、相关列提取、两类克隆、内存估算和 Schema 构造均有同名或等价实现；Rust 用 `Vec<ExprBox>`/`Vec<Column>`/`Vec<Datum>` 的值所有权替代 Go slice 中的 interface/pointer，并以 `Option`/`Result` 表达克隆失败。
+结构字段、访问器、标记方法、相关列提取、两类克隆、内存估算和 Schema 构造均有同名或等价实现；Rust 用 `Vec<ExprBox>`/`Vec<Column>`/`Vec<Datum>` 的值所有权替代 Go slice 中的 interface/pointer，并以 `Option`/`Result` 表达克隆失败。
 
 需要注意以下已验证差异：
 
@@ -97,12 +95,3 @@ RustCodeGraph 对目标文件识别出 17 个符号，并报告其被 `cache_sna
 调整克隆语义时，必须区分普通候选克隆、计划缓存克隆和 cache snapshot 三条路径，并复核 `PhysicalHashJoin::Clone` 对 `IsNullEQ` 的补偿是否仍必要。调整内存统计时，应以 capacity 增量和含动态负载的元素分别测试，避免容器槽位与元素内联大小重复计数。
 
 兼容性风险主要是 Join 输出列顺序/nullability、NULL 安全匹配位图丢失、NA 键角色颠倒；这些会改变计划或查询结果。性能风险主要是克隆深度与内存估算失真，可能影响计划缓存占用判断。并发风险较低，因为本文件无内部并发状态，但不得把可变表达式/列改为跨候选共享而不审计调用方。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/planner/core/operator/physicalop/base_physical_join.rs` 确认目标已索引；`node --file ... --offset 1 --limit 1000` 读取完整 232 行及 17 个符号；对 `BasePhysicalJoin`、`BuildPhysicalJoinSchema` 等执行了 `query`，并对精确 symbol id 执行 `callers`/`callees`。精确边查询无输出后，以 `rg` 补齐索引未覆盖的 Rust 调用边。
-- 生产源码：`base_physical_join.rs`；直接入口/调用方 `base_physical_plan.rs`、`physical_apply.rs`、`physical_hash_join.rs`、`physical_merge_join.rs`、`physical_index_join.rs`、`plan_clone_generated.rs`、`cache_snapshot.rs`、`lib.rs`；执行消费方 `pkg/executor/builder.rs`。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`，确认 crate 名、`lib.rs` 入口、`autotests = false`、相关 path dependencies 与 `package.metadata.porting.go-package`。
-- Go 对照：`pkg/planner/core/operator/physicalop/base_physical_join.go`；相关 Go 语义证据还包括 full join 测试对 `IsNullEQ` 的使用。
-- 独立 Rust 测试：`base_physical_join_test.rs` 验证两类克隆当前的 `IsNullEQ` 差异以及所有向量预留容量的内存计量；`physical_hash_join_test.rs` 提供 NULL 等值/full outer join 的相邻行为证据。本文档任务未运行 Cargo，符合总计划的纯文档约束。
-- 结构验收以任务指定命令检查目标文件存在且恰有十一个固定二级标题；人工复核确认本文区分了当前事实、Go 差异、错误边界和安全扩展点，没有将防御性退化或未测试行为写成额外功能保证。

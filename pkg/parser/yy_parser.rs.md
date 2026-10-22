@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`yy_parser.rs` 是 `astersql-parser` crate 的公开解析门面和 goyacc 运行时适配层。它本身不保存完整 SQL 文法或 LALR 表：`pkg/parser/lib.rs` 在 `parser_impl` 中先 `include!("yy_parser.rs")`，再包含 `generated/main_tables.rs`、`parser.rs` 和其他实现，因此本文件中的私有辅助函数、`Parser` 状态以及后续包含进来的 `yyParse`、词法器和语义动作处于同一 Rust 模块中。
-
-它位于 SQL 文本与 AST 之间：上游（例如 `pkg/session/runtime.rs`、`pkg/session/hint_runtime.rs`、`dumpling/export/schema_projection.rs`）创建 `Parser` 并调用 `ParseSQL` 或 `ParseOneStmt`；下游由 `Scanner` 产出 token，`pkg/parser/parser_runtime.rs` 的 `yyParse` 根据生成表移进/规约，`pkg/parser/parser_actions/*` 构造 `parser_ast` 节点。本文件最终负责收集警告/错误、检查深度、设置表达式标志并返回 AST。
-
-crate 边界由 `pkg/parser/Cargo.toml` 确认：库入口为 `lib.rs`，AST、字符集、MySQL 常量、terror 错误、类型与 parser driver 分别来自同工作区的 `astersql-parser-*` 子 crate；此外直接使用 `regex`。本文件没有条件编译项；测试由 `lib.rs` 中独立的 `yy_parser_test.rs`、`yy_parser_4_aster_unit_test.rs` 等模块包含，测试逻辑未内嵌在生产文件中。
+最终负责收集警告/错误、检查深度、设置表达式标志并返回 AST。
 
 ## 核心职责
 
@@ -91,7 +87,7 @@ AST 结果以 `Vec<Box<dyn parser_ast::Node>>` 持有；成功时 `mem::take` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/yy_parser.go`。错误变量、三种特殊注释正则、`ParserConfig`、`Parser` 的主要状态、`New/Reset/reset`、传统解析入口、SQL mode/窗口函数设置、偏移辅助、hint parser、字面量转换、`ParseParam` 及三个参数类型均保持同名或一一对应。Rust 用 `Box<dyn Node>`/`Box<dyn Any>` 表达 Go 接口值，用 `Option<Box<_>>` 表达 nil，用 `Vec` 表达切片，用 `Result` 加 `ParseSQLWithWarnings` 表达 Go 可同时返回 warnings 与 error 的契约。
+Rust 用 `Box<dyn Node>`/`Box<dyn Any>` 表达 Go 接口值，用 `Option<Box<_>>` 表达 nil，用 `Vec` 表达切片，用 `Result` 加 `ParseSQLWithWarnings` 表达 Go 可同时返回 warnings 与 error 的契约。
 
 需要特别注意的当前差异：
 
@@ -102,8 +98,6 @@ AST 结果以 `Vec<Box<dyn parser_ast::Node>>` 持有；成功时 `mem::take` �
 - Go 文件中的 `setNodeText`、`setLastSelectFieldText` 以及角色/权限转换辅助未出现在本 Rust 文件；对应语义由 Rust 的拆分动作与 AST 接口承担，不能仅凭文件名假设逐函数同位移植。
 - Rust 额外公开 `ErrUnknownCollation`；十进制失败分支与 Go 的截断 warning 路径存在上述差异。
 
-因此，该文件是按 Go API 与行为迁移的解析门面，但不是机械逐行翻译；评审兼容性时应同时查看 Scanner、parser runtime、parser actions 和独立测试。
-
 ## 扩展指南
 
 - 新增公开解析配置时，在 `ParserConfig`、`Parser` 状态、`SetParserConfig` 与 `reset/Reset` 的生命周期语义间保持一致，并同步 Go 对照。若开关影响 token 化，应下沉到 `Scanner`；若影响规约，应接入相应 `parser_actions/*`，不要在公开入口伪造 AST。
@@ -113,12 +107,3 @@ AST 结果以 `Vec<Box<dyn parser_ast::Node>>` 持有；成功时 `mem::take` �
 - 字符集/排序规则改动应落在 `ParseParam` 和 charset encoding 层，保持空字符串默认值及“每轮 resetParams”语义；添加可能失败的参数实现时测试失败前后的警告和 Parser 状态。
 - hint 行为改动应从 `parseHint`、`hintparser.rs`、`hintparserimpl.rs` 和 `parser_actions/query.rs` 联合验证，确保使用实时 SQL mode 与词法位置。
 - 测试继续放在独立文件。优先扩展 `pkg/parser/yy_parser_test.rs`（警告、AST flag、错误上下文与复用）、`pkg/parser/yy_parser_4_aster_unit_test.rs`（辅助函数、参数、特殊注释、Go 边界）、深度相关的 `pkg/parser/go_merge_35_test.rs`，以及需要完整文法覆盖时的 `pkg/parser/parser_3_aster_unit_test.rs`；不要把 `#[cfg(test)]` 测试加入本生产文件。
-
-## 验证依据
-
-- 生产源码：`pkg/parser/yy_parser.rs`（公开入口、状态、辅助函数、错误与深度保护），`pkg/parser/lib.rs`（include 顺序、模块可见性与 re-export），`pkg/parser/parser_runtime.rs`（`yyParse`），`pkg/parser/lexer.rs`（字面量辅助调用），`pkg/parser/parser_actions/misc.rs` 与 `query.rs`（规约完整性计数、hint 调用）。
-- crate 配置：`pkg/parser/Cargo.toml`（库入口、工作区子 crate、`regex` 与 parser driver 依赖、Go package 移植元数据）。`pkg/parser` 下未发现 `doc.go`，所以包契约取自 `lib.rs` 和上述实现。
-- Go 对照：`pkg/parser/yy_parser.go`；并以 `pkg/parser/lexer.go` 核对 Go 括号深度上限。本文明确记录了状态字段、driver 初始化、深度保护、结果所有权和 decimal 失败路径的差异。
-- 独立测试：`pkg/parser/yy_parser_test.rs` 覆盖失败警告、实时 hint mode/位置、AST flag、浮点溢出、UTF-8 字节截断、位置项与参数失败隔离；`pkg/parser/yy_parser_4_aster_unit_test.rs` 覆盖特殊注释、数字辅助、ParseParam、SQL mode、字节偏移、TiDB 文法和复用；`pkg/parser/go_merge_35_test.rs` 覆盖 AST 深度限制。
-- RustCodeGraph：`status` 显示索引包含 Rust/Go；`node check_ast_depth_limit` 给出其调用者 `ParseSQL` 和下游 `ast_depth_error`；`node CharsetConnection` 给出 Rust `Parse`/`ParseOneStmt` 的实例化边；`node ParseOneStmt` 给出 Rust `ParseSQL`、错误和参数构造边；`node yyParse` 确认生成状态机入口。`files --filter pkg/parser/yy_parser` 未返回文件，且部分重名方法查询优先命中 Go，因此文件级和缺失调用边按技能约定用精确源码/`rg` 补充。
-- 结构验证使用任务指定命令，要求目标文件存在且恰好包含本文 11 个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tools/check/ut.rs` 是 `astersql-tools-check` crate 的单元测试驱动主体，复刻同目录 Go 工具 [`tools/check/ut.go`](ut.go) 的命令行语义。crate 由 [`tools/check/Cargo.toml`](Cargo.toml) 定义，库入口 [`tools/check/lib.rs`](lib.rs) 将本文件声明为 `pub mod ut`，二进制壳 [`tools/check/bin_main.rs`](bin_main.rs) 依次调用 `astersql_tools_check::main()`、`ut::main()` 和 `run()`。它驱动的仍是 Go 包和 Go 测试二进制，不是 Rust 测试框架。
-
-Cargo 元数据将该 crate 标为 `kind = "binary"`，且仅直接依赖 `regex`。进程执行、覆盖率解析和正则边界通过 [`tools/check/stubs.rs`](stubs.rs) 适配；生产默认执行真实子进程，测试可注入进程处理器。
+进程执行、覆盖率解析和正则边界通过 [`tools/check/stubs.rs`](stubs.rs) 适配；生产默认执行真实子进程，测试可注入进程处理器。
 
 ## 核心职责
 
@@ -78,11 +76,7 @@ Cargo 元数据将该 crate 标为 `kind = "binary"`，且仅直接依赖 `regex
 
 ## 与 Go 版本的对应关系
 
-Rust 文件几乎按符号对应 [`tools/check/ut.go`](ut.go)：`task → Task`，Go 全局变量 → `UtState`，`cmdList/cmdBuild/cmdRunMulti/cmdRun → cmd_*`，`numa → Numa`，以及构建、枚举、覆盖率归并、JUnit 模型等同名 snake_case 函数。`modulePath`、跳过目录、构建标签、超时、重试条件、长测清单和输出文案均以 Go 实现为语义基准。
-
 刻意的 Rust 化差异包括：全局可变状态收口到可克隆的 `UtState`；`run` 返回退出码以便测试，`main` 才真正退出；goroutine/channel 改为线程和标准库通道；`errgroup` 枚举改为线程加结果通道；`exec.Cmd` 和 Go cover/regexp 包改由本地 `stubs.rs` 适配；XML 改为手工序列化。另一个已注释差异是覆盖率临时目录用 `remove_dir_all` 清理，而 Go 使用 `os.Remove`。
-
-[`tools/check/parity_test.rs`](parity_test.rs) 是相关独立 Rust 测试文件，覆盖正常路径、缺失过滤文件/跳过目录/长测边界、构建或用例失败、非法正则、JUnit 与覆盖率产物及资源收尾。Go 侧没有同名 `ut_test.go`；语义证据主要来自 `ut.go` 本体和 `longtests.go`。
 
 ## 扩展指南
 
@@ -92,11 +86,3 @@ Rust 文件几乎按符号对应 [`tools/check/ut.go`](ut.go)：`task → Task`�
 - 修改覆盖率：同步检查 `collect_cover_profile_file`、`merge_profile`、`append_with_reduce` 和 `stubs::parse_profiles_from_reader`；保持 block 排序/合并不变量并添加非法 profile、重复 block 和 `num_stmt` 冲突测试。
 - 修改 JUnit：在本文件的数据模型与 XML 转义函数中完成，并在 `parity_test.rs` 断言统计、特殊字符和失败内容。不要把测试嵌回 `ut.rs`，仓库规则要求 Rust 源码与测试逻辑分文件。
 - 任何与 Go 行为的有意偏离都应先对照 `ut.go` 对应符号并记录兼容影响；构建参数变化可能影响缓存、race/coverage 兼容与 CI 性能。
-
-## 验证依据
-
-- 已读生产与装配文件：`tools/check/ut.rs`（1725 行、67 个索引符号）、`tools/check/Cargo.toml`、`tools/check/lib.rs`、`tools/check/bin_main.rs`、`tools/check/stubs.rs`、`tools/check/longtests.rs`。
-- 已读对照与测试：`tools/check/ut.go`（对应主流程和 58 个 Go 索引符号）、`tools/check/longtests.go`、`tools/check/parity_test.rs`；同目录没有 `ut_test.rs` 或 `ut_test.go`。
-- RustCodeGraph：`status` 显示项目索引覆盖 11,467 个文件；`files --filter tools/check` 列出目标、入口、Go 对照和 parity 测试；`node --file tools/check/ut.rs --offset 620 --limit 100` 核对 `main/run`；`callees run_test_cases --limit 30` 核对调度下游。组合 `explore` 和部分精确 query/callers 在限定时间内未返回结果，因此调用方向又由 `lib.rs`、`bin_main.rs`、`parity_test.rs` 与源码中的直接调用复核，未将超时输出当作证据。
-- 静态搜索：`rg` 枚举了本文件全部模块级 `pub fn`、结构体和 `impl`，并确认测试导入来自 `parity_test.rs`；Cargo 声明确认 crate 边界和 `regex` 依赖。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级章节，并人工检查未把桩适配描述成完整通用实现、未建议把测试写入生产源文件。

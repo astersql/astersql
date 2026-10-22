@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-dxf-importinto` crate（见 `pkg/dxf/importinto/Cargo.toml`），由 `pkg/dxf/importinto/lib.rs` 以 `pub mod conflictrows` 装配并整体再导出。它处在 IMPORT INTO 冲突行文件的“命名 + 到期清理”边界：写入侧通过 `NewFileNamePrefix` / `NewFileNamePrefixWithUUID` 生成对象名前缀，调度器的过期文件清理侧通过 `CleanConflictRowFiles` 扫描并删除不应继续保留的对象。
-
-对象固定放在 `conflicted-rows/<task-id>/<subtask-id>-<uuid>...` 命名空间，而不是一般的 `<task-id>/` 临时目录。直接调用证据是 `pkg/dxf/importinto/collect_conflicts.rs::getConflictRowFilenamePrefix`（生成前缀）和 `pkg/dxf/importinto/clean_up.rs::ImportCleaner::clean_expired_files`（触发清理）。
+用 `NewFileNamePrefix` 生成带随机 UUID 的冲突行对象前缀，并用 `NewFileNamePrefixWithUUID` 提供可注入 UUID 的确定性路径构造。
 
 ## 核心职责
 
@@ -90,8 +88,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照分为 `pkg/dxf/importinto/conflictrows/path.go` 和 `pkg/dxf/importinto/conflictrows/cleanup.go`。Rust 的路径常量、七天保留期、128/1000/16 三个上限、任务元数据接口、路径解析、删除判定、批次刷新、单次汇总日志和生产入口均保持相同策略。
-
 类型映射上，Go 的 `map[int64][]string` / `[]string` 对应 Rust 的 `HashMap<i64, Vec<String>>` / `Vec<String>`；`*time.Time` 对应 `Option<SystemTime>`；Go 返回 `(cleanupStats, error)`，Rust 用 `Result<CleanupStats, CleanupFailure>` 同时保留部分统计和源错误。Go 通过 `defer sortStore.Close()` 管理资源，Rust 显式在 `CleanFiles` 返回后调用 `Close()`，覆盖相同的成功/失败范围。
 
 存在一处接线层面的实现差异：Go 入口用 `importer.GetSortStore`，Rust 入口直接用 `astersql_objstore::storage::NewFromURL`。就本文件可验证的契约而言，两者都把 URI 解析成对象存储并执行同一清理策略；若未来两种构造器加入不同包装、凭证处理或后端选择，必须专门复核此差异，不能仅以函数名相近认定等价。
@@ -106,12 +102,3 @@ Go 测试 `conflictrows/cleanup_test.go` 覆盖更广的故障重试、日志样
 - 修改批处理策略时，要保持“成功删除后才合并统计”这一不变量，并评估对象数量、不同任务数量、元数据查询规模及删除请求规模。若把软上限改为硬上限，需要同步 Rust/Go 测试和行为，避免同一对象在批次边界被遗漏。
 - 替换存储构造器时，应验证 URI 解析、后端包装、取消传播、关闭顺序和敏感 URI 不进入日志；`CleanFiles` 的依赖注入边界应保留，以便独立测试存储错误。
 - 新增功能或修复应优先扩展同目录独立测试 `pkg/dxf/importinto/conflictrows_test.rs`；如果要求与 Go 完全对齐，还应对照 `pkg/dxf/importinto/conflictrows/cleanup_test.go` 的故障与日志用例补齐，而不是简化 Go 语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 `pkg/dxf/importinto/conflictrows.rs`；`files --filter pkg/dxf/importinto` 确认模块和独立测试；`node --file ...conflictrows.rs` 读取 299 行完整生产源码；`query` 精确定位 `NewFileNamePrefix`、`CleanFiles`、`CleanConflictRowFiles` 及其 Go 对照。图的精确 callers/callees 查询未在命令时限内返回，因此调用点使用下列源码搜索补证，没有据此推断未验证的边。
-- 生产源码：`pkg/dxf/importinto/conflictrows.rs`；直接写入调用者 `pkg/dxf/importinto/collect_conflicts.rs::getConflictRowFilenamePrefix`；直接清理调用者 `pkg/dxf/importinto/clean_up.rs::ImportCleaner::clean_expired_files`；模块入口 `pkg/dxf/importinto/lib.rs`。
-- Crate 边界：`pkg/dxf/importinto/Cargo.toml` 的 package 名、`lib.rs` 路径、`nextgen` feature 以及 proto/storage/objstore/logutil/serde/serde_json/uuid/anyhow 依赖。
-- Rust 测试：`pkg/dxf/importinto/conflictrows_test.rs` 验证正任务 ID 解析、混合删除策略、成功保留期精确边界、命名格式、空统计序列化、任务批次软上限和取消错误统计。
-- Go 对照：`pkg/dxf/importinto/conflictrows/path.go`、`pkg/dxf/importinto/conflictrows/cleanup.go`、`pkg/dxf/importinto/conflictrows/cleanup_test.go`，以及 Go 调用点 `pkg/dxf/importinto/collect_conflicts.go`、`pkg/dxf/importinto/clean_up.go`。
-- 本任务仅生成文档，按计划不运行 Cargo；最终使用任务给定的命令验证文档存在且恰有 11 个固定二级章节，并人工复核本文件的定位、主流程、安全扩展点均有上述源码或测试依据。

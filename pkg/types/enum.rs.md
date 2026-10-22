@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/enum.rs` 实现 MySQL `ENUM` 值的内存表示，以及“成员名 ↔ 从 1 开始的序号”的解析规则。它位于 `pkg/types` 源码目录，但实际由 `pkg/types/internal/metadata/lib.rs` 中的 `enum_defs` 通过 `include!("../../enum.rs")` 编译进 `astersql-types-metadata` crate；该模块随后 `pub use enum_defs::*`，而上层 `pkg/types/lib.rs` 又把该 crate 重导出为 `astersql_types::metadata`。因此调用方通常通过 `types::ParseEnum*` 或 `astersql_types::metadata::ParseEnum*` 使用这里的 API，而不是直接声明本文件为模块。
-
-`pkg/types/Cargo.toml` 声明根 crate `astersql-types`，并以路径依赖 `types-group-4 = { package = "astersql-types-metadata", path = "internal/metadata" }` 连接上述实现。名称比较依赖 `astersql-util-collate`，错误包装依赖 types 错误设施；这些名称在 `enum_defs` 的 `use crate::{ErrTruncated, collate, errors}` 中被显式带入 `include!` 的作用域。
+这里不保存列定义，也不决定有哪些成员；调用方从 `FieldType::GetElems()` 提供有序的 `&[String]`。
 
 ## 核心职责
 
@@ -89,11 +87,9 @@ RustCodeGraph 对 `pkg/types/enum.rs` 识别到 15 个使用文件。代表性�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/enum.go`，测试对照是 `pkg/types/enum_test.go`。Rust 保留了 Go 的字段名、公开函数名和主流程：`Enum{Name, Value}`、深拷贝、字符串/数值表示、名称优先、`strconv.ParseUint(..., base=0, bitSize=64)` 风格回退、1 起始序号以及 `ErrTruncated` 包装。
-
 实现语言差异包括：Go 的值接收者天然复制结构体，Rust 用 `&self` 加显式克隆；Go 通过 `fmt.Stringer` 暴露格式化，Rust 同时保留 Go 风格 `String()` 并实现标准 `Display`；Go 用 `error`，Rust 用 `Result<Enum, errors::SharedError>`。Go 的 `fmt.Sprintf("... %v", elems)` 显示为方括号列表，Rust 用 `elems.join(" ")` 得到对应的空格分隔内容。
 
-`parse_uint_base_zero` 是 Rust 为复刻 `strconv.ParseUint` base-0 行为增加的私有适配层。`pkg/types/enum_test.rs` 在 Go 原测试基础上显式补充 `0x_2`、`0_2` 和 `+1`，`pkg/types/enum_4_aster_unit_test.rs` 还覆盖十六进制序号、上下界、错误文本和 `Copy` 深拷贝。当前直接 Go 测试验证默认、`utf8_unicode_ci`、`utf8_general_ci`、中文名称、数字回退和序号 0；Rust 两份独立测试合计覆盖这些语义并补足迁移边界。
+`parse_uint_base_zero` 是 Rust 为复刻 `strconv.ParseUint` base-0 行为增加的私有适配层。当前直接 Go 测试验证默认、`utf8_unicode_ci`、`utf8_general_ci`、中文名称、数字回退和序号 0；Rust 两份独立测试合计覆盖这些语义并补足迁移边界。
 
 ## 扩展指南
 
@@ -102,12 +98,3 @@ RustCodeGraph 对 `pkg/types/enum.rs` 识别到 15 个使用文件。代表性�
 - 修改序号或零值语义时，应同时审查 `ParseEnumValue`、`pkg/types/datum.rs::convertToMysqlEnum`、table/row codec、ranger 与 planner 调用点。ENUM 序号会进入行数据和键编码，兼容性风险高于普通显示逻辑。
 - 增加公开能力时，要在 `pkg/types/internal/metadata/lib.rs` 的 include/re-export 结构下确认符号可见性，并评估根 `astersql-types` 的 `metadata` 重导出；不要把测试内嵌到 `enum.rs`，应扩展同目录独立测试 `enum_test.rs`，迁移契约类用例可扩展 `enum_4_aster_unit_test.rs`。
 - 性能优化应优先测量调用场景。若考虑索引或缓存，需要证明 collation 配置、成员顺序和重复等价成员的“首个命中”语义不变，并处理缓存所有权与并发生命周期。
-
-## 验证依据
-
-- 源码事实：`pkg/types/enum.rs`（`Enum`、`Copy`、`String`、`ToNumber`、`Display`、`ParseEnum`、`ParseEnumName`、`ParseEnumValue`、三个私有辅助函数）。
-- 装配与依赖：`pkg/types/internal/metadata/lib.rs`（`enum_defs` 的 include 和重导出）、`pkg/types/internal/metadata/Cargo.toml`（metadata crate 依赖）、`pkg/types/lib.rs` 与 `pkg/types/Cargo.toml`（根 crate 的 metadata 重导出和路径依赖）、`pkg/types/errors.rs`（`ErrTruncated` 对应 `WarnDataTruncated`）。
-- Go 对照：`pkg/types/enum.go`、`pkg/types/enum_test.go`。
-- Rust 测试：`pkg/types/enum_test.rs`、`pkg/types/enum_4_aster_unit_test.rs`；补充调用用例见 `pkg/types/convert_test.rs` 和 `pkg/planner/core/tests/pointget/point_get_plan_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/types/enum.rs` 核对完整 152 行实现及 15 个使用文件；`node ParseEnum` 核对 `convertToMysqlEnum → ParseEnum → {ParseEnumName, parse_uint_base_zero, ParseEnumValue}` 与两组测试调用；`node GetCollator` 核对名称入口委托 `GetCollatorWithCollate`。
-- 直接调用检索：`rg` 核对 tablecodec、rowcodec、codec、expression、planner、ranger、table 与 datum 等生产调用点。本文只做静态文档分析，按任务约束未运行 Cargo 或代码测试；结构验证命令在交付前单独执行。

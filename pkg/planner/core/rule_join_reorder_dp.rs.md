@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 根 `pkg/planner/core/lib.rs` 通过 `pub mod rule_join_reorder_dp` 将它注册为公开模块，`pkg/planner/core/Cargo.toml` 则声明该 crate 对应 Go 包 `pkg/planner/core`。它是 Join Reorder 规则的小规模连接组求解器：上游 `rule_join_reorder.rs` 的 `JoinReOrderSolver::optimizeRecursive` 先递归优化子树、抽取连续 Inner Join 组，再在节点数不超过 `dpThreshold.max(2)` 时构造 `joinReorderDPSolver` 并调用 `solve`；更大的组交给贪心求解器。
-
-这里操作的是 Rust 迁移层自己的 `JoinPlan`/`JoinEdge`/`Expression` 数据模型，不直接操作 Go 版的 `base.LogicalPlan`、统计信息接口或表达式树。文件已接入规划器规则主链，并非占位文件；但相对同路径 Go 实现仍存在明确的语义简化，详见“与 Go 版本的对应关系”。
+`dpGraph` 只接受左右子集之间存在等值边的组合，通过 `newJoinWithEdge` 构造候选计划，并为每个子集保留 `row_count` 最小的候选。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ RustCodeGraph 的 `explore` 结果确认了本文件内部 `solve → dpGraph`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/rule_join_reorder_dp.go`，Go 测试是 `pkg/planner/core/rule_join_reorder_dp_test.go`。两版都遵循“等值边建图 → BFS 拆连通分量 → 分量内子集 DP → 分量间 bushy 笛卡尔连接”的主结构，也都通过 `sub`/补集枚举并去除左右镜像。Rust 测试 `dp_reorder_builds_bushy_tree_for_four_cartesian_nodes` 对应 Go `TestDPReorderAllCartesian`，验证四个孤立节点形成左右两侧均为 Join 的灌木树。
-
 当前 Rust 并非 Go 实现的完整等价移植，主要差异如下：
 
 - Go 在 DP 前调用 `generateJoinOrderNode` 派生统计，并用 `calcJoinCumCost` 比较累计代价；Rust 直接比较候选输出 `row_count`。
@@ -113,13 +109,3 @@ RustCodeGraph 的 `explore` 结果确认了本文件内部 `solve → dpGraph`�
 - 若优化 `nodesAreConnected` 性能，可在 BFS 后预建“原节点下标 → 位号”映射，避免每条边重复线性搜索；必须保持分量外节点不匹配和双向边判断不变。
 - 若调整位图或阈值，必须同时覆盖空组、单节点、全连通、多个连通分量、全笛卡尔、接近位宽上限和较大但合法输入的资源风险。
 - Rust 单元测试必须继续放在独立 `pkg/planner/core/rule_join_reorder_dp_test.rs`，不要内嵌回生产源文件。任何对 Go 语义的移植应同步阅读并对齐 `rule_join_reorder_dp_test.go`，尤其是 `TestDPReorderTPCHQ5` 与 `TestDPReorderAllCartesian`。
-
-## 验证依据
-
-- 生产实现：`pkg/planner/core/rule_join_reorder_dp.rs`，逐项核对两个边类型、求解器、两个转发函数以及 `solve`、`bfsGraph`、`dpGraph`、`nodesAreConnected`、`newJoinWithEdge`、`makeBushyJoin`。
-- 上游和共享实现：`pkg/planner/core/rule_join_reorder.rs`，核对 `JoinReOrderSolver::optimizeRecursive` 的 DP/贪心选择、`baseSingleGroupJoinOrderSolver::makeJoin`/`makeBushyJoin`、列定位、行数估计和累计代价辅助函数。
-- crate 边界：`pkg/planner/core/Cargo.toml` 的 `[package]`、`[lib]` 和 `[package.metadata.porting]`；`pkg/planner/core/lib.rs` 的生产模块声明及独立测试挂载。
-- Rust 测试：`pkg/planner/core/rule_join_reorder_dp_test.rs`，覆盖连通四表链、缺失列错误、无边两节点求解及四节点 bushy 笛卡尔树。
-- Go 对照：`pkg/planner/core/rule_join_reorder_dp.go` 与 `pkg/planner/core/rule_join_reorder_dp_test.go`，核对完整 DP 公式、非等值边安放、表达式边物化、累计代价、TPCH Q5 精确树及全笛卡尔结果。
-- RustCodeGraph：`status` 显示本地索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query joinReorderDPSolver` 命中 Rust/Go 类型及 Go 方法；`explore` 给出 Rust 文件内部调用边和上游 `optimizeRecursive`。文件过滤未命中与部分精确调用图查询无响应的限制，已由 `rg` 和直接源码证据补足。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的结构命令确认文件存在且恰有十一个固定二级标题，并人工复核所有“当前支持/尚未对齐”陈述均能回指上述符号或文件。

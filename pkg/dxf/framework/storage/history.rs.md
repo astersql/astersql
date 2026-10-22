@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-storage` crate 的历史任务存储实现。crate 根 `pkg/dxf/framework/storage/lib.rs` 通过 `include!("history.rs")` 将它直接展开到 crate 根，因此文件中的常量、结构体、自由函数以及 `TaskManager` 方法均属于 `astersql_dxf_framework_storage` 的公开或内部 API，而不是独立子模块。crate 边界、`nextgen` feature 和直接依赖见 `pkg/dxf/framework/storage/Cargo.toml`；本文件本身没有条件编译项，也没有独立 feature 分支。
-
-它位于 DXF（Distributed eXecution Framework）存储层：上游调度器完成任务清理后把任务及其子任务从活动表迁到历史表，状态查询接口分页读取历史任务，后台维护逻辑清除过期子任务历史。真实表为 `mysql.tidb_global_task[_history]` 和 `mysql.tidb_background_subtask[_history]`。
+`TaskManager::ListHistoryTasks` 提供按 ID 降序的 keyset 分页、可选 keyspace 过滤和独立的近似总数查询，并将数据库行转换为不会泄露原始错误消息的摘要。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@ GC 与归档可以并发执行；删除判定只基于历史子任务的 `state_
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/storage/history.go`。Rust 保留了 Go 的核心顺序、SQL 条件、分页协议、错误分类和 GC 规则：空批次早返回、归档前刷新 meta、任务先迁移再迁子任务、字符串 task key 加引号、`pageSize + 1` 判定更多页、计数分离读取，以及 14 天默认子任务保留期。
+Rust 保留了 Go 的核心顺序、SQL 条件、分页协议、错误分类和 GC 规则：空批次早返回、归档前刷新 meta、任务先迁移再迁子任务、字符串 task key 加引号、`pageSize + 1` 判定更多页、计数分离读取，以及 14 天默认子任务保留期。
 
-可见差异包括：Rust 将 Go 的 `*HistoryTaskSummary`/`*TaskCleanupInfo` 改为值对象，将 `*time.Time` 改为 `Option<SystemTime>`；空时间在摘要中仍用 `UNIX_EPOCH`。Rust 的 `taskErrorCode` 在 RFC code 为空且数字 code 非零时回退为数字字符串，以兼容历史序列化数据；Go 当前只从可归一化的 PingCAP error 取非零 RFC code，仓库 Rust 测试明确覆盖了命名 RFC code、`kv:1062` 和纯数字 code。Rust 另提供 `ClassifyTaskErrorMessage`，供调度器无需构造存储错误即可复用分类。
-
-Go 测试 `history_test.go::TestClassifyTaskError`、`table_test.go::TestTransferTasks2HistoryWithAdjacentLargeTaskIDs`、`TestGetTaskCleanupInfoByIDs` 以及历史分页/GC 子测试提供迁移语义基线；Rust 的 `converter_1_aster_unit_test.rs`、`table_test.rs`、`sql_backend_test.rs` 提供独立可执行对应证据。
+可见差异包括：Rust 将 Go 的 `*HistoryTaskSummary`/`*TaskCleanupInfo` 改为值对象，将 `*time.Time` 改为 `Option<SystemTime>`；空时间在摘要中仍用 `UNIX_EPOCH`。Rust 的 `taskErrorCode` 在 RFC code 为空且数字 code 非零时回退为数字字符串，以兼容历史序列化数据；Go 当前只从可归一化的 PingCAP error 取非零 RFC code，仓库 Rust 测试明确覆盖了命名 RFC code、`kv:1062` 和纯数字 code。
 
 ## 扩展指南
 
@@ -92,12 +88,3 @@ Go 测试 `history_test.go::TestClassifyTaskError`、`table_test.go::TestTransfe
 - 增加错误类别时在 `ClassifyTaskErrorMessage`/`isDataError` 接入，返回固定枚举式字符串，禁止暴露原始错误；同步 Rust 分类矩阵与 `history_test.go`。消息匹配变化要评估旧历史错误的向后兼容。
 - 调整保留期或 GC 条件时修改 `GCSubtasks` 及 `defaultSubtaskKeepDays` 的定义/测试，并保留 failpoint 以验证边界；评估大表删除的锁、批量化和索引性能。
 - 新增清理字段时扩展 `TaskCleanupInfo` 和活动/历史联合查询，保证两侧列布局一致，并同步 `pkg/dxf/importinto/conflictrows.rs` 消费逻辑及独立测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/framework/storage/history.rs` 定位目标；`node --file ... --offset 1 --limit 500` 返回完整 365 行及 20 个符号；`query` 核对了 `GetTaskCleanupInfoByIDs`、两种迁移、分页、GC、转换和分类符号。对精确 Rust `ListHistoryTasks` 节点执行 callers/callees 未返回边，因此调用关系使用下列源码搜索补证。
-- 生产源码：`pkg/dxf/framework/storage/history.rs`、`lib.rs`、`task_table.rs`、`converter.rs`、`task_state.rs`；上游 `pkg/dxf/framework/scheduler/storage_adapter.rs`、`scheduler_manager.rs`、`scheduler.rs`、`pkg/dxf/framework/handle/status.rs`、`pkg/dxf/importinto/conflictrows.rs`。
-- crate/Go 对照：`pkg/dxf/framework/storage/Cargo.toml`、`pkg/dxf/framework/storage/history.go`。
-- Rust 测试：`pkg/dxf/framework/storage/converter_1_aster_unit_test.rs`（校验上下界、分页参数和归档 SQL 顺序）、`table_test.rs`（清理信息、列序、NULL/错误码分类和大 ID 绑定）、`sql_backend_test.rs`（各 SQL 失败点回滚）；相关调用层测试位于 `pkg/dxf/framework/handle/status_testkit_test.rs` 和调度器测试目录。
-- Go 测试：`pkg/dxf/framework/storage/history_test.go` 与 `table_test.go`，覆盖分类、真实表迁移、GC、大 ID 隔离、清理时间和分页/keyspace 行为。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构检查验证目标文件存在且恰有十一个规定的二级标题；人工复核重点为 SQL 顺序、列索引、错误脱敏、事务边界和 Go/Rust 差异均有上述源码或测试依据。

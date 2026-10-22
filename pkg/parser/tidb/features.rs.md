@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件定义 TiDB 专有语法特性的字符串标识，并提供“一组特性 ID 是否全部可解析”的白名单判定。它属于 `astersql-parser-tidb` crate：`pkg/parser/tidb/Cargo.toml` 将库入口指向 `lib.rs`，`pkg/parser/tidb/lib.rs` 以 `pub mod features; pub use features::*;` 对外公开本文件的 API。
-
-同一源文件还被主解析器通过 `pkg/parser/lib.rs` 中的 `#[path = "tidb/features.rs"] pub mod tidbfeature;` 直接纳入。因此，实际 SQL 词法路径使用的是 `parser::tidbfeature`，而根 workspace 和 `pkg/lib.rs` 又将独立 crate 作为 `facade_parser_tidb` / `parser::tidb` 门面导出。本文件不解析 SQL，也不实现特性本身；它只维护标识和解析准入策略。
+定义 TiDB 专有语法特性的字符串标识，并提供“一组特性 ID 是否全部可解析”的白名单判定。
 
 ## 核心职责
 
@@ -68,8 +66,6 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/parser/tidb/features.go` 是直接对照实现。Rust 与 Go 对外暴露的 `FeatureID*` 字符串值一致，包括 `FeatureIDPresplit = FeatureIDPreSplit` 的兼容关系；Go 的 `featureIDs map[string]struct{}` 和 Rust 的 `FEATURE_IDS` 含有相同的 12 个允许值，两者都故意排除空串 `FeatureIDTiDB` 和 `FeatureIDResourceGroup`。
-
 Go `CanParseFeature(fs ...string)` 遍历可变参数并查 map；Rust `can_parse_feature(&[&str])` 遍历切片并查静态数组。两者在空输入、重复合法项、任一未知项及短路返回方面语义一致；数据结构不同不改变当前小规模白名单的可观测结果。
 
 调用点有一个重要的 Rust 类型化差异：Go `scanFeatureIDs` 以 `nil` 表示格式失败，而 Rust 版返回 `Option<Vec<String>>`；Rust `startWithSlash` 只在 `Some(ids)` 时校验。这个差异属于 lexer 边界表达，不是本文件白名单算法的差异。
@@ -81,12 +77,3 @@ Go `CanParseFeature(fs ...string)` 遍历可变参数并查 map；Rust `can_pars
 - 更新独立测试 `pkg/parser/tidb/migration_aster_unit_test.rs`：至少覆盖字面量、是否注册以及两套公开名的一致性。若特性注释的展开行为改变，还应同步独立的 `pkg/parser/lexer_test.rs`、`pkg/parser/lexer_5_aster_unit_test.rs` 及对应 Go 测试意图，不要把测试嵌入本生产文件。
 - 修改白名单会直接改变解析器是否把特性注释体当作 SQL 令牌处理，属于兼容性行为，不应仅因存在同名常量就加入。
 - 若白名单大幅增长或该函数出现在高频非解析路径，再用基准数据评估是否需要替换线性 `contains`；当前没有为了理论优化而引入运行期集合的证据。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/parser/tidb/features.rs`、`pkg/parser/tidb/lib.rs`、`pkg/parser/tidb/Cargo.toml`、`pkg/parser/lib.rs`、workspace 根 `Cargo.toml` 和 `pkg/lib.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/parser/tidb` 列出 `features.rs`、`features.go`、`lib.rs` 和独立测试；`explore 'pkg/parser/tidb/features.rs can_parse_feature CanParseFeature FEATURE_IDS'` 给出 `CanParseFeature -> can_parse_feature` 调用边及测试引用；`node can_parse_feature` 确认其只引用 `FEATURE_IDS` 且被 Rust `CanParseFeature` 调用。
-- 生产调用链：`pkg/parser/lexer.rs::Scanner::scanFeatureIDs`、`pkg/parser/lexer.rs::startWithSlash`；Go 对照为 `pkg/parser/lexer.go` 中同名符号。
-- Go 语义对照：`pkg/parser/tidb/features.go`，包括常量值、`featureIDs` map 和 `CanParseFeature`。
-- Rust 独立测试：`pkg/parser/tidb/migration_aster_unit_test.rs`、`pkg/parser/go_merge_35_test.rs::go_merge_35_auto_presplit_feature_comment`、`pkg/parser/lexer_test.rs::test_feature_ids_comment`、`pkg/parser/lexer_5_aster_unit_test.rs::lexer_matches_go_version_and_feature_scanners`。Go 对照测试为 `pkg/parser/lexer_test.go::TestFeatureIDsComment` 和 `TestFeatureIDs`。
-- 人工复核结论：文件之所以存在，是为 TiDB 特性注释提供稳定 ID 和可解析准入集；它以静态、无状态、全称量短路校验运行；安全扩展需区分“公开标识”与“允许解析”，并同步 Go 协议值和独立测试。

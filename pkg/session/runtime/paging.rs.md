@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的 session 运行时实现。`pkg/session/runtime.rs` 以私有模块 `mod paging` 装配它，并仅向 crate 外重新导出 `SetResourceGroupRuntimeStates`；其余函数服务于 `ConcreteSession` 内部。文件处在“资源组状态/全局变量”到“具体 coprocessor 请求”的边界：它决定本条语句是否应携带 `Paging.PagingSizeBytes`，真正把预算写进请求的入口位于 `runtime/relational_scan.rs`、`runtime/dispatch.rs` 和 `runtime/canonical_table_reader.rs`。
-
-`pkg/session/Cargo.toml` 将该代码归入 `astersql-session`，并直接依赖 `astersql-domain`、`astersql-meta-model`、`astersql-sessionctx-stmtctx`、`astersql-sessionctx-vardef` 和 `astersql-store-driver`。其中 `astersql-store-driver` 在 `pkg/store/driver/lib.rs` 重新导出固定 tag `v0.4.2-aster.10` 的 `tikv-client` 运行时资源组状态。
+只计算和缓存预算，不执行分页、不发送 RPC，也不实现响应翻页。
 
 ## 核心职责
 
@@ -84,14 +82,8 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照位于 `pkg/session/session.go`：
-
-- Go `GetDistSQLCtx` 在首次创建 statement 的 `DistSQLContext` 时读取 `vardef.PagingSizeBytes`，并在资源控制关闭或 `resourceGroupAllowsPagingSizeBytes` 为假时清零；Rust 将相同决策拆为 `effective_paging_size_bytes` 与 `ConcreteSession::cop_paging_size_bytes`。
-- Go `resourceGroupAllowsPagingSizeBytes` 同样先查询 `Domain.ResourceGroupsController()` 的 runtime state，再回退 `InfoSchema().ResourceGroupByName(...)`，并以 `GetBurstLimitAdjusted() >= 0` 判定有限 burst。
 - Rust 没有直接把具体 controller 类型塞进 session 判断，而是增加 `ResourceGroupRuntimeStateProvider` 适配层，并用 `RUNTIME_RESOURCE_GROUPS` 作为当前 Rust SQL DDL/information_schema 路径的元数据所有者。这是实现接线差异，不改变“运行时状态优先、未知才回退元数据”的意图。
 - Go 把预算随完整 `DistSQLContext` 缓存；Rust 当前只把 `PagingByteBudget` 放入已有 statement DistSQL cache，并在各 concrete cop 请求构造点显式写入字段。两者都保证已初始化上下文/请求不因全局变量更新而改变。
-
-Go 回归证据位于 `pkg/session/tidb_test.go`：`TestDistSQLCtxPagingSizeBytesRequiresHardCappedResourceGroup` 覆盖硬限流、无限 burst 和资源控制关闭；`TestDistSQLCtxPagingSizeBytesGlobalUpdate` 覆盖跨 session 全局更新及已有上下文稳定性。Rust 对应覆盖见下一节列出的独立测试。
 
 ## 扩展指南
 
@@ -101,12 +93,3 @@ Go 回归证据位于 `pkg/session/tidb_test.go`：`TestDistSQLCtxPagingSizeByte
 - 若改变 controller 类型或上游 client-rust 状态结构，应在独立上游仓库完成依赖移植并发布 tag，再更新 `astersql-store-driver` 依赖；不要在本仓库复制或本地 patch 依赖。
 - 测试逻辑应继续放在独立 Rust 测试文件，不能内嵌进 `paging.rs`。RPC 字段传播与完整多页结果应扩展 `pkg/session/tests/paging_rpc.rs`；session 决策单元/集成场景应扩展 `runtime/scan_adapter_runtime_test.rs` 或 `tests/paging_global.rs`。
 - 性能上应避免在请求热路径增加网络访问或扩大全局锁临界区；兼容性上必须保持预算为零时的既有行为，以及 `tidb_enable_resource_control=off` 时强制禁用正预算。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含目标文件；`files --filter pkg/session/runtime/paging.rs` 确认文件与 11 个符号；`node --file ... --offset 1 --limit 400` 读取完整 112 行；`query` 定位 `SetResourceGroupRuntimeStates`、`resource_group_allows_paging_size_bytes`、`effective_paging_size_bytes`；`callers/callees` 确认内部调用和类型构造关系，并暴露跨文件 method callers 未完整解析的限制。
-- 生产源码：`pkg/session/runtime/paging.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/relational_scan.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/canonical_table_reader.rs`、`pkg/domain/resource_group_runtime.rs`、`pkg/domain/domain.rs`、`pkg/store/driver/lib.rs`。
-- crate/依赖：`pkg/session/Cargo.toml`；上游运行时状态的实际 tag 由 `pkg/store/driver/Cargo.toml` 核验。
-- Go 对照：`pkg/session/session.go` 的 `GetDistSQLCtx` 与 `resourceGroupAllowsPagingSizeBytes`；`pkg/session/tidb_test.go` 的两个分页预算回归测试。
-- Rust 独立测试：`pkg/session/runtime/scan_adapter_runtime_test.rs` 覆盖 SQL 请求传播、运行时状态覆盖元数据、statement retry cache 和资源控制开关；`pkg/session/tests/paging_global.rs` 覆盖全局更新、事务可见性与旧请求稳定性；`pkg/session/tests/paging_rpc.rs` 覆盖预算更新期间的真实 RPC 多页与完整 SQL 结果。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前用任务规定的命令确认恰有十一个固定二级标题，并人工复核符号、调用边、边界与扩展测试位置。

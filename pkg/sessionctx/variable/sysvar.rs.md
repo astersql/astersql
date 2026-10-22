@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessionctx-variable` crate，由 `pkg/sessionctx/variable/lib.rs` 以 `pub mod sysvar` 暴露。它移植了 Go `pkg/sessionctx/variable/sysvar.go` 中四组相对独立的逻辑：执行器并发变量的构造片段、安装时系统变量默认值选择、TiFlash 计算派发策略写入，以及流水线 DML 资源策略解析。
-
-这里的 `sysvar::SysVar` 与 `sysvar::SessionVars` 是上述回调所需字段的精简模型，不是 crate 的完整系统变量注册表类型。完整 `SessionVars`、完整 `SysVar` 及钩子类型位于 `pkg/sessionctx/variable/variable.rs`，内建变量注册在 `pkg/sessionctx/variable/sysvar_builtins.rs`。因此，阅读本文件时不能把精简模型的 `SetSession` 直接等同于正式注册表的 `SetSessionFromHook` 链路。
-
-当前可确认的生产接线是：`pkg/session/runtime/control.rs` 在执行 `SET <system-variable> = DEFAULT` 时调用 `sysvar::GlobalSystemVariableInitialValue`；`pkg/sessionctx/variable/nextgen.rs` 用显式的 next-gen `RuntimeEnvironment` 包装 `GlobalSystemVariableInitialValueWithRuntime`。源码检索未发现 `newExecConcurrencySysVar`、`setTiFlashComputeDispatchPolicy` 或 `setPipelinedDmlResourcePolicy` 的非测试 Rust 调用者，它们目前主要由独立测试验证。
+`setPipelinedDmlResourcePolicy` 支持 `standard`、`conservative` 和 `custom{...}` 三类策略，并以临时配置实现失败原子性。
 
 ## 核心职责
 
@@ -98,16 +94,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/sessionctx/variable/sysvar.go`：
-
-- Rust `withAllowAutoValue`、`withMinValue` 和 `newExecConcurrencySysVar` 对应 Go 同名函数（约 102--166 行）。默认元数据与 Go 一致，setter 的正整数解析/回退语义也对应 `tidbOptPositiveInt32`。
 - 差异是 Go 构造出的完整 `SysVar` 还安装 `Validation` 钩子，用于追加旧并发变量指向 `tidb_executor_concurrency` 的弃用警告；本文件精简 `SysVar` 没有 `Validation` 字段，因此没有承载这段告警语义。
-- `GlobalSystemVariableInitialValueWithRuntime` 对应 Go `GlobalSystemVariableInitialValue`（约 4333--4372 行），通过显式环境参数把 Go 的全局配置、`intest.InTest` 和内核检测变为可测试输入。变量分支及“未命中原样返回”保持一致。
-- `setTiFlashComputeDispatchPolicy` 对应 Go 4374--4381 行，均为先解析、后赋值。
 - `setPipelinedDmlResourcePolicy` 对应 Go 4383--4487 行：大小写归一化、三种策略、`FieldsFunc` 式分隔、数值范围和临时配置提交保持一致。Rust 没有移植 Go 对无效数值写后台 warning 日志的副作用，但返回错误与状态不变语义一致。
 - Go 使用完整 `SessionVars` 和完整注册表 `SysVar`；Rust 本文件使用局部精简结构，正式 Rust 注册表位于 `variable.rs`/`sysvar_builtins.rs`。这是当前迁移/接线状态的边界。
 
-Go 测试 `pkg/sessionctx/variable/sysvar_test.go::TestGlobalSystemVariableInitialValue` 验证安装默认值。Rust 的 `sysvar_test.rs::TestGlobalSystemVariableInitialValue` 增加了显式 classic、TiKV 与 next-gen 环境覆盖；`TestPipelinedDmlResourcePolicyFieldsFuncSeparators` 固化 Go 分隔行为。更聚焦的 Rust 测试位于独立文件 `sysvar_3_aster_unit_test.rs`，没有把测试内嵌到生产源文件。
+Rust 的 `sysvar_test.rs::TestGlobalSystemVariableInitialValue` 增加了显式 classic、TiKV 与 next-gen 环境覆盖；`TestPipelinedDmlResourcePolicyFieldsFuncSeparators` 固化 Go 分隔行为。更聚焦的 Rust 测试位于独立文件 `sysvar_3_aster_unit_test.rs`，没有把测试内嵌到生产源文件。
 
 ## 扩展指南
 
@@ -117,13 +108,3 @@ Go 测试 `pkg/sessionctx/variable/sysvar_test.go::TestGlobalSystemVariableIniti
 - 接入 `newExecConcurrencySysVar` 到正式注册表前，必须处理精简 `SysVar` 与 `variable.rs::SysVar` 的类型差异，并补齐 Go `Validation` 弃用告警；不要用当前测试模型替换完整注册链。
 - 接入 TiFlash/流水线 setter 到正式会话时，应在 `sysvar_builtins.rs` 的正式 `SetSessionHook` 中完成适配，并验证正式 `SessionVars` 字段映射。相关测试继续放在独立 `*_test.rs` 文件。
 - 性能上，默认值匹配为常数规模；流水线自定义解析会分配小写字符串和每项 `Vec`。若该路径变成高频路径再考虑消除分配，优化不得改变 Go 兼容的分隔行为和失败原子性。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/sessionctx/variable/sysvar.rs` 与 `git show 2c944fb:pkg/sessionctx/variable/sysvar.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：冻结 Go `sysvar.go::GlobalSystemVariableInitialValue` 同样返回 500000000；Rust `sysvar_test.rs` 的初始化值用例包含该项，注册表测试另证定义默认值为 0。
-- crate 与模块：读取 `pkg/sessionctx/variable/Cargo.toml`、`pkg/sessionctx/variable/lib.rs`、`pkg/sessionctx/variable/variable.rs` 和 `pkg/sessionctx/variable/sysvar_builtins.rs`，确认包依赖、公开模块及精简/正式类型边界；目标包没有 `doc.go`。
-- Rust 测试：读取 `pkg/sessionctx/variable/sysvar_3_aster_unit_test.rs`、`sysvar_test.rs` 1720--1860 行和 `varsutil_test.rs` 的并发变量用例；它们覆盖选项顺序、无效并发回退、运行时默认值、TiFlash 失败不更新、三类流水线策略、范围错误与失败原子性。
-- 常量核对：`pkg/sessionctx/vardef/tidb_vars.rs` 定义 `MaxConfigurableConcurrency=256`、流水线并发范围 1--8192、默认 128/8、保守 2/2 及三种策略字符串。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

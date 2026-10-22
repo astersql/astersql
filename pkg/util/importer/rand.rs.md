@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立库 `astersql-util-importer`。[`Cargo.toml`](Cargo.toml) 指定库入口为 [`lib.rs`](lib.rs)，普通 `[dependencies]` 为空，因此这里的随机数、时间和公历换算只依赖标准库，以及同 crate 的 [`config.rs`](config.rs) 中 `ImporterError`。`lib.rs` 以 `pub mod rand` 装入模块并通过 `pub use rand::*` 重导出公开项。
-
-它位于导入数据生成链的底层：[`db.rs`](db.rs) 的 `generate_column_data` 为非唯一整数、字符串、DATE、TIME、DATETIME/TIMESTAMP 和 YEAR 列调用本文件；`generate_row_data`、`generate_row_data_batch` 再将这些值组装成 INSERT。[`data.rs`](data.rs) 还复用 `civil_from_days`、`days_from_civil` 来生成唯一时间类值。它不负责 SQL 解析、唯一性状态或数据库 I/O。
+用进程级 `AtomicU64` 状态和线性同余生成器（LCG）提供无锁伪随机位；`seed` 允许测试固定序列，`random_u64` 是所有随机 API 的共同底座。
 
 ## 核心职责
 
@@ -80,9 +78,9 @@ LCG 状态静态存活整个进程，无堆资源、文件句柄、任务或通�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`rand.go`](rand.go)。Rust 的 `rand_i64`/`rand_usize`、`rand_float64`、`rand_bool`、`rand_string`、`rand_duration`、四类时间函数分别承接 Go 的 `randInt64`/`randInt`、`randFloat64`、`randBool`、`randString`、`randDuration`、`randDate`/`randTime`/`randTimestamp`/`randYear` 的意图；`db.go` 与 `db.rs` 证明它们在相同列类型生成分支中使用。
+Rust 的 `rand_i64`/`rand_usize`、`rand_float64`、`rand_bool`、`rand_string`、`rand_duration`、四类时间函数分别承接 Go 的 `randInt64`/`randInt`、`randFloat64`、`randBool`、`randString`、`randDuration`、`randDate`/`randTime`/`randTimestamp`/`randYear` 的意图；`db.go` 与 `db.rs` 证明它们在相同列类型生成分支中使用。
 
-关键保持一致的语义包括：范围是闭区间；缺省日期只生成当前年 1..12 月、1..28 日；缺省 TIME 覆盖一天；TIMESTAMP 只有下界时增加整数天并保留下界时钟；YEAR 任一边界为空时取当前年往前十年；有界 YEAR 不是直接均匀选年份，而是在两个元旦之间按经过秒数取样。后两点由 `rand_test.rs` 的独立回归测试锁定。
+关键保持一致的语义包括：范围是闭区间；缺省日期只生成当前年 1..12 月、1..28 日；缺省 TIME 覆盖一天；TIMESTAMP 只有下界时增加整数天并保留下界时钟；YEAR 任一边界为空时取当前年往前十年；有界 YEAR 不是直接均匀选年份，而是在两个元旦之间按经过秒数取样。
 
 实现差异也必须保留在认知中：Go 使用全局 `math/rand`，Rust 自带原子 LCG 且暴露 `seed`；Go `randString` 从一个 `Int63` 缓存提取多个 6 位索引并跳过 62、63，Rust 每字符消耗一个 `u64` 并直接 `% 62`，所以同一种子不承诺同字符串序列；Go 时间解析丢弃 error，Rust 返回 `InvalidRange`；Go 借助 `time.Time`，Rust用整数 civil-date 算法且无时区；Rust 的 `rand_time` 在任一边界缺失时一次采样日内总秒，而 Go 分别采样时、分、秒，输出范围相同但序列不同。
 
@@ -94,11 +92,3 @@ LCG 状态静态存活整个进程，无堆资源、文件句柄、任务或通�
 - 强化时间输入校验时，要明确兼容策略：当前实现接受可解析但超出日历/时钟范围的字段，改变它会影响用户配置错误行为。回归测试应放在独立 [`rand_test.rs`](rand_test.rs)，不要嵌入 `rand.rs`。
 - 扩展极端整数或 Duration 区间前，先处理 `rand_usize` 全宽溢出与 `rand_duration` 最大纳秒端点；测试应覆盖相等上下界、反向区间、epoch 前后、闰日、缺失单边界及并发设种/采样。
 - 生产调用链行为还应同步检查 [`db_test.rs`](db_test.rs)；civil-date 的 crate 内消费者由 [`data_test.rs`](data_test.rs) 覆盖。测试必须继续与源文件分离。
-
-## 验证依据
-
-- 源与边界：`pkg/util/importer/rand.rs`、`config.rs::ImporterError`、`Cargo.toml`、`lib.rs`。
-- 上游与共享消费者：`db.rs::random_integer`、`db.rs::generate_column_data`、`db.rs::generate_row_data`、`data.rs::Datum`；Go 对照为 `rand.go`、`db.go`。
-- 独立测试：`rand_test.rs::timestamp_without_maximum_preserves_minimum_clock_like_go`、`rand_test.rs::bounded_year_samples_elapsed_seconds_like_go`；相关消费者测试还包括 `db_test.rs` 与 `data_test.rs`。
-- RustCodeGraph 状态：索引包含 `pkg/util/importer` 的 22 个 Go/Rust 文件和 `rand.rs` 的 25 个符号。对 `rand_i64`、`rand_date`、`rand_time`、`rand_timestamp`、`rand_year`、`generate_column_data`、`civil_from_days`、`days_from_civil` 执行了 `node` 查询；查询轨迹确认了文中列出的内部 callees、测试调用者及 `generate_row_data -> generate_column_data` 调用边。宽泛 `explore` 对常见 random/time 名称产生大量跨仓库噪声，因此结论只采用精确符号和同目录源码证据。
-- 人工复核重点：公开性、闭区间分支、缺省边界行为、原子状态推进、首次未设种路径、Go 差异及测试隔离均逐行对应上述文件；未把代码注释中的时间设种意图误写成现有行为。

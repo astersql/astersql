@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`tools/check/xprog/xprog.rs` 是 `astersql-tools-check-xprog` crate 的核心实现文件，crate 边界由 `tools/check/xprog/Cargo.toml` 定义。该 crate 被根 `Cargo.toml` 纳入 workspace，声明为 `kind = "binary"`，同时提供库入口 `tools/check/xprog/lib.rs` 和二进制壳 `tools/check/xprog/bin_main.rs`。启动链是 `bin_main.rs::main` → `lib.rs::main` → `xprog.rs::main`。
-
-文件对应 Go `main` 包的 `tools/check/xprog/xprog.go`。它不是测试执行器，而是给 `go test --exec=<xprog>` 使用的包装程序：Go 工具链在临时构建目录生成测试二进制后调用它，它再把二进制搬到仓库内相应包目录，供 `tools/check/ut.go::buildTestBinaryMulti` 或 Rust 对照实现 `tools/check/ut.rs::build_test_binary_multi` 后续发现和执行。
-
-需要区分“Rust crate 已存在”与“现行 Make 流程已切换”两件事：`Makefile` 的 `tools/bin/xprog` 目标目前仍从 `tools/check/xprog/xprog.go` 构建 Go 可执行文件；Rust 文件是 workspace 中的独立移植实现，不能据此声称默认 `make ut` 已使用 Rust 二进制。
+路径兼容逻辑不在本文件重复实现，而由 `tools/check/xprog/stubs.rs::{filepath_join, filepath_clean}` 提供。
 
 ## 核心职责
 
@@ -85,11 +81,11 @@ rename 路径通常在单一文件系统内具有原子移动性质；copy + chm
 
 ## 与 Go 版本的对应关系
 
-Rust `main` 对应 `xprog.go::main` 的退出边界，`run` 把 Go `main` 主体拆成可测试函数；`get_package_info` 对应 `getPackageInfo`；`move_file` 对应导出的 `MoveFile`。字段级映射包括：`os.Args` ↔ `args`，`filepath.Clean/Join/Split` ↔ `stubs::filepath_clean/filepath_join` 加 `Path::parent/file_name`，`os.Rename` ↔ `fs::rename`，`io.Copy` ↔ `io::copy`，`os.Stat/Chmod/Remove` ↔ `metadata/set_permissions/remove_file`。
+字段级映射包括：`os.Args` ↔ `args`，`filepath.Clean/Join/Split` ↔ `stubs::filepath_clean/filepath_join` 加 `Path::parent/file_name`，`os.Rename` ↔ `fs::rename`，`io.Copy` ↔ `io::copy`，`os.Stat/Chmod/Remove` ↔ `metadata/set_permissions/remove_file`。
 
 行为对齐点包括：按固定长度而非后缀内容裁剪 `argv[0]`；只读 `importcfg.link` 首行/首片段；包前缀检查；无条件按 `.test` 长度裁剪；目标命名为 `<leaf>.test.bin`；rename 失败后执行 copy + chmod + remove；错误分类保持 `-1..-4`；违反隐含格式时保留 panic 而非新增容错。
 
-Rust 的结构性差异是把可恢复的两个配置读取错误表示为 `Result<String, i32>`，把主流程状态表示为 `i32`，再由 `main` 执行进程退出，以便测试不必派生子进程。`move_file` 使用 `io::Error` 并保留与 Go 相同的诊断前缀。Rust 还显式关闭输出句柄后再读取权限和删除源文件；Go 输出句柄由 `defer` 在函数返回时关闭，但对当前普通文件场景的最终契约相同。
+Rust 的结构性差异是把可恢复的两个配置读取错误表示为 `Result<String, i32>`，把主流程状态表示为 `i32`，再由 `main` 执行进程退出，以便测试不必派生子进程。Rust 还显式关闭输出句柄后再读取权限和删除源文件；Go 输出句柄由 `defer` 在函数返回时关闭，但对当前普通文件场景的最终契约相同。
 
 ## 扩展指南
 
@@ -100,14 +96,3 @@ Rust 的结构性差异是把可恢复的两个配置读取错误表示为 `Resu
 - 若要让默认 Make 流程使用 Rust 实现，改动点不在本文件本身，而在 `Makefile` 的 `tools/bin/xprog` 构建规则及相关交付接线；这属于独立迁移任务，需验证 Go 工具调用的二进制名称、位置和退出状态兼容性。
 
 兼容风险集中在 Go 隐含 panic/退出码契约和 Unix 路径语义；正确性风险集中在错误裁剪包路径、覆盖错误目标以及失败后留下部分文件；性能风险主要是跨设备回退必须完整复制大型测试二进制。任何扩展都不应通过吞掉这些边界或把所有失败统一成单一错误来“简化”实现。
-
-## 验证依据
-
-- 生产实现：`tools/check/xprog/xprog.rs`，核对 `main`、`run`、`get_package_info`、`move_file` 的完整源码与 RustCodeGraph 符号节点。
-- crate/入口：`tools/check/xprog/Cargo.toml`、`tools/check/xprog/lib.rs`、`tools/check/xprog/bin_main.rs`、根 `Cargo.toml` workspace 成员列表。
-- 路径依赖：`tools/check/xprog/stubs.rs::{filepath_join, filepath_clean}`。
-- Go 对照：`tools/check/xprog/xprog.go::{main,getPackageInfo,MoveFile}`。
-- 上下游工作流：`tools/check/ut.go::buildTestBinaryMulti/testFileName`、`tools/check/ut.rs::build_test_binary_multi/test_file_name`，以及 `Makefile` 的 `tools/bin/xprog` 目标。
-- 独立测试：`tools/check/xprog/parity_test.rs` 覆盖正常 rename、复制回退、路径边界、`-1..-4`、缺参/短包名 panic、内容与权限、失败时保留源文件；`tools/check/xprog/xprog_test.rs::get_package_info_matches_go_read_line_prefix_limit` 覆盖 4096 字节首片段行为。
-- RustCodeGraph 索引状态：项目索引包含 `tools/check/xprog` 的 Rust/Go 文件；`xprog.rs::run` 的节点边显示调用 `filepath_join`、`filepath_clean`、`get_package_info`、`move_file`，并由本文件 `main` 及契约测试调用。外部进程调用关系另由上述 `ut` 命令构造源码核实。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付校验只验证固定十一节结构，并人工复核所有现状判断均能回溯到以上文件或符号。

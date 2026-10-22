@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cascades 规划器描述文本的最小写入适配层：它把 Rust 标准库的 `std::io::Write` 包装成只暴露“写字符串”和“刷新”的 `StrBufferWriter`。源码通过 `pkg/planner/cascades/util/lib.rs` 作为 `astersql-planner-cascades-util` crate 的公开 API 导出；同时，`pkg/planner/cascades/base/lib.rs` 在 `util` 子模块中用 `include!("../util/string_writer.rs")` 嵌入同一实现，使 `Task::Desc` 等基础接口可以使用 `cascades_base::util::StrBufferWriter`。
-
-它位于优化器的诊断/描述输出链，而不是 SQL 解析、优化规则执行或结果持久化链：例如 `pkg/planner/cascades/base/task_stack_base.rs::Task::Desc` 接收该 trait，`pkg/planner/cascades/task/task.rs::Stack::Desc` 逐个调用任务的 `Desc` 并写入换行。文件本身只负责文本缓冲和底层 I/O 适配，不决定描述内容。
+文件本身只负责文本缓冲和底层 I/O 适配，不决定描述内容。
 
 ## 核心职责
 
@@ -63,15 +61,11 @@ RustCodeGraph 对目标文件给出的文件级引用包括 `pkg/planner/cascade
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/util/string_writer.go`：
-
 - Go `StrBufferWriter` 的 `WriteString(string)`/`Flush()` 对应 Rust 同名 trait 方法；两边都隐藏写入长度和错误返回。
 - Go `StrBuffer` 持有 `*bufio.Writer`，Rust `StrBuffer<W>` 持有 `BufWriter<W>`；Rust 用泛型表达 Go `io.Writer` 的可替换性。
 - Go `NewStrBuffer(w io.Writer) StrBufferWriter` 返回接口值；Rust 返回装箱 trait object，并用 `'a` 补充静态借用检查。
 - Go `WriteString` 调用 `bufio.Writer.WriteString`，Rust 调用 `write_all(s.as_bytes())`；对合法 Rust 字符串，两者都按字符串字节顺序写入，并在成功路径接受完整输入。
 - Go 用 `intest.Assert(err == nil, ...)` 检查错误，Rust 使用普通 `assert!(result.is_ok(), ...)`。文档只能确认两者的接口意图与当前源码分支一致；不同构建环境下 `intest.Assert` 与 Rust `assert!` 的启用策略是否完全相同，未在本文件范围内验证。
-
-`pkg/planner/cascades/task/task_test.go::TestTaskFunctionality` 与 Rust 的 `pkg/planner/cascades/task/task_test.rs::TestTaskFunctionality` 都通过 `NewStrBuffer`、任务 `Desc` 和 `Flush` 检查 LIFO 弹栈后的文本值，提供跨语言调用语义证据。
 
 ## 扩展指南
 
@@ -80,13 +74,3 @@ RustCodeGraph 对目标文件给出的文件级引用包括 `pkg/planner/cascade
 - 若需要取回 sink、配置缓冲容量或保证跨线程传递，最可能修改 `StrBuffer`/`NewStrBuffer` 的类型与返回契约；这会影响动态分发、借用生命周期以及 base/util 两条导出路径，必须同时检查 `pkg/planner/cascades/base/lib.rs` 的 `include!` 接线。
 - 若只需要测试某个上游格式，可像 `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_test.rs::StringWriter` 那样实现轻量 trait writer；若要验证真实缓冲行为，则扩展 `pkg/planner/cascades/util/migration_aster_unit_test.rs`。
 - 性能修改应保持写入顺序和显式刷新语义，并覆盖小片段连续追加、大字符串触发底层写入、底层 write/flush 失败等边界。当前独立 Rust 回归测试尚未构造失败 sink。
-
-## 验证依据
-
-- RustCodeGraph `status`：本仓库索引可用，覆盖 7,032 个 Rust 文件；`files --filter pkg/planner/cascades/util` 列出目标 Rust/Go 文件、crate 入口和独立回归测试。
-- RustCodeGraph `node --file pkg/planner/cascades/util/string_writer.rs --offset 1 --limit 240`：读取目标文件全部 67 行，并报告其被 `task_stack_base.rs` 及相关测试引用。
-- RustCodeGraph `query`：唯一定位 Rust trait `pkg/planner/cascades/util/string_writer.rs::StrBufferWriter`、Rust 函数 `...::NewStrBuffer` 和 Rust struct `...::StrBuffer`；限定符 `callers`/`callees` 查询未在等待窗口内返回，已停止，调用关系改由文件级索引结果和精确源码引用交叉核对。
-- 源码与配置：`pkg/planner/cascades/util/string_writer.rs`、`pkg/planner/cascades/util/lib.rs`、`pkg/planner/cascades/util/Cargo.toml`、`pkg/planner/cascades/base/lib.rs`、`pkg/planner/cascades/base/task_stack_base.rs`、`pkg/planner/cascades/task/task.rs`、`pkg/planner/cascades/task/Cargo.toml`。
-- Go 对照：`pkg/planner/cascades/util/string_writer.go`、`pkg/planner/cascades/task/task_test.go`。
-- Rust 独立测试：`pkg/planner/cascades/util/migration_aster_unit_test.rs` 验证短文本在显式 Flush 前保持缓冲、连续写入顺序以及借用 writer；`pkg/planner/cascades/task/task_test.rs::TestTaskFunctionality` 验证真实任务描述经 Flush 后的文本；`pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_apply_test.rs::StringWriter` 证明规则侧可注入自定义 trait 实现。
-- 本任务为纯文档分析，按计划未运行 Cargo；交付前另运行任务指定的 11 章节结构检查。

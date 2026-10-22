@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`error_handling.rs` 属于 `astersql-br-pkg-utils` library crate；crate 根在 `br/pkg/utils/lib.rs`，其中以 `#[path = "error_handling.rs"] pub mod error_handling` 挂载本模块，并将主要类型、构造函数和判定函数再导出到 crate 根。`br/pkg/utils/Cargo.toml` 的 `[package.metadata.porting]` 指明其 Go 包来源为 `br/pkg/utils`；同路径权威对照实现是 `br/pkg/utils/error_handling.go`。
-
-该文件位于 BR 的错误到退避策略转换边界：它不执行 RPC、不睡眠，也不拥有完整重试循环，而是把 BR protobuf 风格错误或非结构化错误消息归类为 `StrategyRetry`、`StrategyGiveUp` 或中间态 `StrategyUnknown`。实际消费这一决策的直接生产入口是 `br/pkg/utils/backoff.rs` 中 `BackoffStrategyImpl::NextBackoff`，后者据此递减尝试次数、扩大延迟或停止退避。
-
-当前 Rust crate 为适配精简构建，没有直接依赖完整 kvproto；`crate::kvproto::brpb::Error` 由 `br/pkg/utils/stubs.rs` 提供，只保留消息文本及 KV、Region、ClusterId 三个布尔标志。因此本文描述的是仓库当前可见实现，不把完整 protobuf oneof 或真实 RPC 接线当作已经具备的能力。
+位于 BR 的错误到退避策略转换边界：它不执行 RPC、不睡眠，也不拥有完整重试循环，而是把 BR protobuf 风格错误或非结构化错误消息归类为 `StrategyRetry`、`StrategyGiveUp` 或中间态 `StrategyUnknown`。
 
 ## 核心职责
 
@@ -109,7 +105,7 @@ RustCodeGraph 显示目标文件被 `backoff.rs`、`backoff_test.rs`、`error_ha
 
 Rust 逐项复刻 `br/pkg/utils/error_handling.go` 的核心契约：错误表和原因常量文本一致；策略枚举顺序一致；`NewDefaultContext` 限制为 1、`NewZeroRetryContext` 限制为 0；结构化错误优先于消息启发式；未知错误按 store 计数并在超过限制后放弃；不可恢复错误的 workaround 文案与 Go 测试相同。
 
-两侧测试也保持对应：Go 的 `TestHandleError`、`TestHandleErrorMsg`、`TestHandleCredentialNotFoundError` 分别映射到 Rust 的 `test_handle_error`、`test_handle_error_msg`、`test_handle_credential_not_found_error`。Rust 另外增加 `cloned_error_context_shares_unknown_retry_quota`，锁定 `Arc` 克隆共享状态这一 Rust 特有语义；`parity_test.rs` 再从公开再导出层做抽样契约检查。
+Rust 另外增加 `cloned_error_context_shares_unknown_retry_quota`，锁定 `Arc` 克隆共享状态这一 Rust 特有语义；`parity_test.rs` 再从公开再导出层做抽样契约检查。
 
 需要注意的实现差异：
 
@@ -128,16 +124,3 @@ Rust 逐项复刻 `br/pkg/utils/error_handling.go` 的核心契约：错误表�
 修改配额逻辑时，应保持“按 UUID 分桶”“克隆共享计数”和阈值边界的明确选择；至少同步 `cloned_error_context_shares_unknown_retry_quota` 和 `test_handle_error_msg`。若要支持重置、淘汰或有界 map，最合适的接入点是 `ErrorContext` 的私有状态与新增显式方法，不应让调用者直接修改 map。
 
 改变公开符号、枚举值或原因文案时，还要同步 `br/pkg/utils/lib.rs` 的再导出、`br/pkg/utils/parity_test.rs` 的公开契约测试，以及 `backoff.rs::BackoffStrategyImpl::NextBackoff` 对 `contextCancelledMsg` 和策略值的依赖。测试逻辑必须继续放在独立的 `br/pkg/utils/error_handling_test.rs`，不要嵌回生产文件。
-
-## 验证依据
-
-本说明基于以下直接证据完成：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，其中 Rust 7,032 个；目标文件可索引。
-- RustCodeGraph `node --file br/pkg/utils/error_handling.rs`：读取目标文件 1–260 行，核对全部常量、类型、构造器、分类函数及分支顺序。
-- RustCodeGraph 对 `HandleBackupError`、`HandleUnknownBackupError`、`handleBackupProtoError`、`MessageIsRetryableStorageError` 的 `query`，以及围绕目标文件和 `backoff.rs::NextBackoff` 的 `explore`：核对公开/内部符号、直接调用边与五个使用文件。
-- RustCodeGraph `node`：读取 `br/pkg/utils/backoff.rs` 400–549 行，确认 `BackoffStrategyImpl::NextBackoff` 的实际消费方式；读取 `br/pkg/utils/stubs.rs` 585–679 行，确认当前 `brpb::Error` 是消息加三个标志的本地精简壳；读取 `br/pkg/utils/lib.rs` 1–220 行，确认模块挂载、再导出和独立测试挂载；读取 `br/pkg/utils/error_handling_test.rs` 1–182 行及 `br/pkg/utils/parity_test.rs` 1–190 行，确认边界与公开契约测试。
-- 直接读取 `br/pkg/utils/Cargo.toml`：确认 crate 名、library 根、Go 包映射、精简构建说明，以及日志依赖来自 `astersql-br-pkg-logutil`。
-- 直接读取 `br/pkg/utils/error_handling.go` 与 `br/pkg/utils/error_handling_test.go`：核对 Go 的类型 switch、分支顺序、计数边界、原因字符串与三组对应测试。
-
-按任务范围未运行 Cargo 或任何代码测试；本任务只新增说明文档。交付前使用任务指定命令检查目标文件存在且恰好包含上述 11 个固定二级标题，并人工复核文档未把 stub 描述为完整生产协议实现。

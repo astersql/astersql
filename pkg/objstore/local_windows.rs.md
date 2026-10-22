@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore` crate 的 Windows 平台目录创建适配层。crate 入口 `pkg/objstore/lib.rs` 公开声明 `local_windows` 模块；`pkg/objstore/local.rs` 仅在 `cfg(windows)` 下导入这里的 `mkdirAll`，在非 Windows 平台则改用 `local_unix.rs` 的同名实现。文件中的导入和函数均受 `#[cfg(windows)]` 约束，因此它不参与非 Windows 目标的有效代码生成。
-
-`pkg/objstore/Cargo.toml` 将该 crate 定义为 `astersql-objstore`，库入口为 `lib.rs`，并通过 `anyhow = "1"` 提供本文件公开签名中的 `Result`。本文件不是完整的本地对象存储实现；对象路径映射、写入、复制和构造流程都位于 `pkg/objstore/local.rs`。
+实现直接调用 `std::fs::create_dir_all(base)`，让已经存在的目录保持成功语义，并把底层 `std::io::Error` 转换为 `anyhow::Error` 后交给调用者。
 
 ## 核心职责
 
@@ -59,24 +57,14 @@ RustCodeGraph 将 `pkg/objstore/local_windows.rs` 识别为含两个符号的已
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/objstore/local_windows.go`：Go 的 `mkdirAll(base string) error` 调用 `os.MkdirAll(base, localDirPerm)`；Rust 的 `mkdirAll(base: &Path) -> anyhow::Result<()>` 调用 `std::fs::create_dir_all(base)`。两者都在 Windows 平台选择、递归创建目录、目录已存在时成功并向上返回错误。
+直接对照是 `pkg/objstore/local_windows.go`：Go 的 `mkdirAll(base string) error` 调用 `os.MkdirAll(base, localDirPerm)`；Rust 的 `mkdirAll(base: &Path) -> anyhow::Result<()>` 调用 `std::fs::create_dir_all(base)`。
 
-签名差异来自语言惯例：Go 使用字符串和 `error`，Rust 使用借用的 `Path` 与 `anyhow::Result`。Go 传入 `localDirPerm`（在 `local.go` 为 `0o777`），但 Windows 不采用 Unix 权限模型；Rust 因此没有 mode 参数。与之相对，`local_unix.go` 会临时清零 umask，`local_unix.rs` 使用 `DirBuilderExt::mode(0o777)` 和 RAII guard 恢复 umask；这些 Unix 专属动作不应加入 Windows 文件。
+签名差异来自语言惯例：Go 使用字符串和 `error`，Rust 使用借用的 `Path` 与 `anyhow::Result`。Go 传入 `localDirPerm`（在 `local.go` 为 `0o777`），但 Windows 不采用 Unix 权限模型；Rust 因此没有 mode 参数。
 
-相关行为测试是独立文件 `pkg/objstore/local_test.rs` 及 Go 对照 `pkg/objstore/local_test.go`：其中写入 `123/456/789.txt` 的场景验证不存在父目录可以被创建并成功写入。当前未发现直接调用 `local_windows::mkdirAll` 的专属 Rust 测试；现有覆盖通过 `LocalStorage` 间接发生，且只有在 Windows 测试目标上才会走本实现。
+当前未发现直接调用 `local_windows::mkdirAll` 的专属 Rust 测试；现有覆盖通过 `LocalStorage` 间接发生，且只有在 Windows 测试目标上才会走本实现。
 
 ## 扩展指南
 
 若要改变 Windows 目录创建行为，最小修改点是 `mkdirAll`，同时必须保持 `local.rs` 三个调用场景的共同契约：递归创建、已存在目录成功、错误可传播。若需求只涉及某一场景（例如写入重试的错误上下文、硬链接策略或根目录校验），应修改 `local.rs` 对应调用者，而不是把业务分支塞进平台适配函数。
 
 测试应继续放在独立文件中，不要内嵌到本源文件。通用本地存储行为优先扩展 `pkg/objstore/local_test.rs`，并同步核对 `pkg/objstore/local_test.go` 的意图；Windows 专属语义可新建同目录独立测试文件并从 `lib.rs` 条件挂载。新增权限、规范化或重试逻辑前，应评估与 Go Windows 行为的兼容性、路径竞态、网络共享路径及错误上下文变化；不要照搬 Unix umask 逻辑。
-
-## 验证依据
-
-- 源文件：`pkg/objstore/local_windows.rs`，确认唯一函数、条件编译、标准库调用和错误转换。
-- crate 与装配：`pkg/objstore/Cargo.toml`、`pkg/objstore/lib.rs`、`pkg/objstore/objectio/lib.rs`，确认 crate 名称、`anyhow` 依赖、正式模块和 Windows 测试装配。
-- 调用方：`pkg/objstore/local.rs`，确认条件导入及 `WriteFile`、`CopyFrom`、`NewLocalStorage` 三处生产调用。
-- 平台对照：`pkg/objstore/local_windows.go`、`pkg/objstore/local_unix.go`、`pkg/objstore/local_unix.rs`、`pkg/objstore/local.go`，确认 Go Windows 语义、Unix 差异及 `localDirPerm = 0o777`。
-- 测试：`pkg/objstore/local_test.rs`、`pkg/objstore/local_test.go`，确认嵌套父目录缺失时的写入行为；未发现本函数的 Windows 专属直接测试。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标文件已索引；`files --filter pkg/objstore/local_windows.rs` 显示目标文件含两个符号；`query mkdirAll --kind function --json` 定位四个 Rust/Go 平台对应实现；`node --file ...` 显示目标源码及文件级使用者 `pkg/objstore/local.rs`。限定名 `callers`/`callees` 未返回函数级结果，此限制已在依赖章节明确说明。
-- 按任务约束未运行 Cargo；交付只执行 Markdown 结构验证，并人工复核文档没有把条件平台门面描述为完整存储实现。

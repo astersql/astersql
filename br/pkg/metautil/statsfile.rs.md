@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-br-pkg-metautil` library crate（见 `br/pkg/metautil/Cargo.toml`），实现 BR 统计信息的备份文件写入与恢复读取协议。`br/pkg/metautil/lib.rs` 以 `pub mod statsfile` 挂载并通过 `pub use statsfile::*` 再导出其公开符号；同 crate 的 `MetaWriter::NewStatsWriter`（`br/pkg/metautil/metafile.rs`）会复用元数据写入器的对象存储与加密配置来构造 `StatsWriter`。
-
-它处在 schema 元数据与对象存储之间：备份侧把每张表或分区的 `JSONTable` 聚合成 `StatsFile`，小文件可内联到 `StatsFileIndex`，其余文件写入 `Storage`；恢复侧读取 index，完成解密、校验、旧物理 ID 到新物理 ID 的重写，再将 `PartitionStatisticLoadTask` 送给统计加载器。当前 RustCodeGraph 索引未发现 `RestoreStats` 的 Rust 生产调用者，只有本文件内部调用和测试覆盖；Go 生产恢复入口仍见 `br/pkg/restore/snap_client/pipeline_items.go`。因此恢复实现是已具备的 crate API，但不能据此断言 Rust 恢复主链已经接线。
+定义两个 Go 对齐的可调阈值：`maxStatsJsonTableSize` 默认 32 MiB，控制累计统计 JSON 何时刷盘；`inlineSize` 默认 8 KiB，控制第一个 stats 文件是否直接内联到索引。
 
 ## 核心职责
 
@@ -99,8 +97,6 @@ RustCodeGraph 确认的文件内主调用边为 `BackupStats -> marshalStatsJSON
 
 ## 与 Go 版本的对应关系
 
-主要逻辑逐项对应 `br/pkg/metautil/statsfile.go`：默认阈值、九位补零文件名、首文件内联规则、严格大于阈值刷盘、明文摘要后加密、末批用首 block ID 命名、四 worker 下载、容量 8 通道、明文校验、缺失 rewrite 报错，以及发送前清空 JSON 字节的意图都保持一致。`br/pkg/metautil/statsfile_test.go::TestStatsWriter` 覆盖明文和 AES-128/192/256-CTR 下的写入/下载闭环；Rust 的 `statsfile_test.rs::test_stats_writer` 复刻该矩阵并比较完整 `JSONTable`。
-
 已确认的实现差异和迁移限制：
 
 - Go 使用真实 `backuppb.StatsFile` protobuf；Rust 当前 `stubs.rs::Message` 用 JSON 序列化容器，只保证本 crate 内 round-trip。
@@ -118,13 +114,3 @@ RustCodeGraph 确认的文件内主调用边为 `BackupStats -> marshalStatsJSON
 - 修改并发、取消或错误优先级时，需同时审视 `RestoreStats` 与 `downloadStats`。若目标是完整复刻 Go `errgroup.WithContext`，应先补“加载器先失败时下载被取消”的独立回归测试，再改变 context 传播，避免通道阻塞或线程泄漏。
 - 要把本模块接入 Rust 生产恢复链，应从 schema 中的 `StatsFileIndex` 与表 ID rewrite map 调用 `RestoreStats`，并提供真实 statistics loader 的 `StatsReadWriter` 实现；同时必须先解决 `stubs.rs` JSON 容器与真实 protobuf 的互操作边界。
 - Rust 单元测试继续放在独立的 `statsfile_test.rs`、`parity_test.rs` 或新的独立 `*_test.rs` 中，不要内嵌到本源文件。
-
-## 验证依据
-
-- 目标源码：`br/pkg/metautil/statsfile.rs`，完整检查 383 行；关键符号为 `StatsWriter`、`BackupStats`、`BackupStatsDone`、`RestoreStats`、`downloadStats`、`downloadOneStatsFile`。
-- crate 与模块：`br/pkg/metautil/Cargo.toml`、`br/pkg/metautil/lib.rs`、`br/pkg/metautil/metafile.rs::MetaWriter::NewStatsWriter`。
-- 本地类型与编码边界：`br/pkg/metautil/stubs.rs::Message`、`parse_from_bytes`、`JSONTable`、`StatsFileIndex`、`StatsBlock`、`StatsFile`、`StatsReadWriter`。
-- Go 对照：`br/pkg/metautil/statsfile.go`、`br/pkg/metautil/metafile.go::MetaWriter.NewStatsWriter`、`br/pkg/restore/snap_client/pipeline_items.go` 的 `metautil.RestoreStats` 调用。
-- 独立测试：`br/pkg/metautil/statsfile_test.rs`、`br/pkg/metautil/parity_test.rs`、`br/pkg/metautil/statsfile_test_support.rs`、`br/pkg/metautil/statsfile_test.go`。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/metautil` 找到目标及相邻 Go/Rust 测试；`node --file br/pkg/metautil/statsfile.rs` 读取全文件；`explore` 与 `callees` 确认写入和恢复主调用边；`query RestoreStats` 仅返回 Go/Rust 定义，未给出 Rust 生产 caller。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求文档存在且恰有十一个规定的二级标题。

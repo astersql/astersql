@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-util-ddl-checker` crate；crate 入口 `pkg/util/ddl-checker/lib.rs` 将本文件模块化并重新导出全部公开检查 API。它把“能否执行一段 SQL”拆成三个边界：`CheckerSession` 负责在隔离会话中执行 SQL，`CheckerParser` 负责把单条 SQL 解析为本文件的 `Statement`，`ExecutableChecker` 负责编排两者并管理关闭状态。相邻的 `ddl_syncer.rs` 是当前仓库中可确认的直接生产消费者：`DDLSyncer::SyncTable` 通过检查器先删本地表，再执行从上游取得的建表 SQL。
-
-这不是 TiDB 主请求链上的 SQL 执行器，而是同步或迁移前的 DDL（数据定义语言）预检组件。`Cargo.toml` 将其声明为独立库，并通过根 `Cargo.toml` 的 `facade_util_ddl_checker` 和 `pkg/lib.rs::util::ddl_checker` 暴露为仓库门面。
+把“能否执行一段 SQL”拆成三个边界：`CheckerSession` 负责在隔离会话中执行 SQL，`CheckerParser` 负责把单条 SQL 解析为本文件的 `Statement`，`ExecutableChecker` 负责编排两者并管理关闭状态。
 
 ## 核心职责
 
@@ -70,13 +68,13 @@ RustCodeGraph 将目标文件识别为 49 个符号，并显示它被 `ddl_synce
 
 ## 与 Go 版本的对应关系
 
-核心行为来自同目录 `executable_checker.go`：Go 版本同样持有 session、parser、原子关闭位，提供 Execute、表存在探测、建表、删表、关闭、解析以及两组表依赖函数。Rust 的 SQL 模板、单次关闭错误文本、drop-table 全表收集、rename 只取第一对和非 DDL 报错均与 Go 语义对齐。
+Rust 的 SQL 模板、单次关闭错误文本、drop-table 全表收集、rename 只取第一对和非 DDL 报错均与 Go 语义对齐。
 
 Rust 为可测试和跨 crate 解耦增加了显式 trait/factory；Go 的 `NewExecutableChecker` 在函数内直接初始化 logger、mock store、bootstrap session 和 parser，Rust 构造函数把这些动作委托给调用方实现。当前独立 Rust 测试中的 `DefaultExecutableCheckerFactory` 提供了真实 parser 与轻量 session，但全仓未检索到生产版 factory 实现，因此不能把 Cargo 中声明的 session/mockstore 依赖等同于本构造器已完成生产接线。
 
-Go 直接返回 parser 的 `ast.StmtNode` 并以类型 switch 判定，Rust 先映射为自有 `Statement`。这要求 `is_ddl_ast` 随 parser AST 类型扩展同步维护。Rust 对空 rename 返回结构化错误，而 Go 会因 `[0]` 越界；Rust 的 `ExecutionContext` 仅保留 request ID 和布尔取消位，并不等价于 Go context 的 deadline、值传播和取消通知能力。
+Go 直接返回 parser 的 `ast.StmtNode` 并以类型 switch 判定，Rust 先映射为自有 `Statement`。Rust 对空 rename 返回结构化错误，而 Go 会因 `[0]` 越界；Rust 的 `ExecutionContext` 仅保留 request ID 和布尔取消位，并不等价于 Go context 的 deadline、值传播和取消通知能力。
 
-`executable_checker_test.rs` 保留 Go 测试的 12 条 fixture 顺序和预期，覆盖 drop database、create/drop table、DML/查询、约束失败与特殊 comment；还额外验证 masking policy、alter database 和六种 fallback AST 被分类为 `OtherDdl`。执行测试使用 testkit mock store，而解析测试通过独立 adapter 走真实 parser。
+`executable_checker_test.rs` 保留 Go 测试的 12 条 fixture 顺序和预期，覆盖 drop database、create/drop table、DML/查询、约束失败与特殊 comment；还额外验证 masking policy、alter database 和六种 fallback AST 被分类为 `OtherDdl`。
 
 ## 扩展指南
 
@@ -86,13 +84,3 @@ Go 直接返回 parser 的 `ast.StmtNode` 并以类型 switch 判定，Rust 先�
 - 若要把检查器接入真实生产构造路径，应在适当模块实现 `ExecutableCheckerFactory`、`CheckerSession` 和 `CheckerParser`，验证 logger/mockstore/bootstrap/session/parser 每一步的错误传播，并补充独立集成测试。不要把测试中的空执行 session 当作生产实现。
 - 若允许不可信表名进入 `DropTable`/`IsTableExist`，应复用 parser/标识符转义设施，而不是继续字符串插值；需要测试反引号、限定名与非法标识符。
 - 若要求自动资源回收，可评估 `Drop` 或显式 guard，但必须处理 `Close` 的幂等契约及无法从析构返回错误的问题。若要求共享并发访问，应先定义 session/parser 的并发保证，而不是仅依赖原子关闭位。
-
-## 验证依据
-
-- 目标源码：`pkg/util/ddl-checker/executable_checker.rs`，RustCodeGraph `node --file` 完整读取 1–387 行，核对 49 个符号、所有分支和原子顺序。
-- crate 边界：`pkg/util/ddl-checker/Cargo.toml`、`pkg/util/ddl-checker/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`。
-- 直接生产关系：`pkg/util/ddl-checker/ddl_syncer.rs` 中 `DDLSyncer::SyncTable`、`DDLSyncer::Close` 及其对检查器的可变借用。
-- Go 对照：`pkg/util/ddl-checker/executable_checker.go`；Go 测试：`pkg/util/ddl-checker/executable_checker_test.go`。
-- Rust 独立测试：`pkg/util/ddl-checker/executable_checker_test.rs`，覆盖解析分类、表依赖清单、其它 DDL fallback 和 testkit 执行结果。
-- 图查询：RustCodeGraph `status` 显示索引含目标文件；执行了目标目录 `files`、目标文件 `node`、`NewExecutableChecker`/`StatementFromAst`/`GetTablesNeededExist` 等 `query`，以及三者的 `callers`/`callees`。精确调用边无返回，故用限定为 Rust 文件的 `rg` 搜索补充使用点。
-- 本任务为纯文档分析，按总计划不运行 Cargo。交付前另运行任务指定的 11 章节结构验证，并人工核对未修改 Rust、Go、Cargo 或 `plan.md`。

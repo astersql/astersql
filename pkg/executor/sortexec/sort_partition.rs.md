@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现串行排序路径中的单个排序分区 `SortPartition`。它位于 `astersql-executor-sortexec` crate 内，由 `lib.rs` 以 `pub mod sort_partition` 暴露模块，但没有在 crate 根直接重导出类型。crate 的 Go 包映射是 `pkg/executor/sortexec`（`Cargo.toml` 的 `package.metadata.porting.go-package`）。
-
-在完整执行链中，`sort.rs::SortExec::fetchUnparallel` 从子执行器读取 `DataChunk`，构造一个或多个 `Arc<Mutex<SortPartition>>`；达到内存阈值时先将当前分区落盘，再开启新分区。输入结束后，`multi_way_merge.rs::sortPartitionSource` 负责让各分区完成内部排序，并逐行读取它们，交给多路归并器生成全局有序结果。因此本文件是“输入 chunk”与“多路归并数据源”之间的可落盘分区边界，不负责整个 SQL 算子的打开、拉取或最终归并。
+输入结束后，`multi_way_merge.rs::sortPartitionSource` 负责让各分区完成内部排序，并逐行读取它们，交给多路归并器生成全局有序结果。
 
 ## 核心职责
 
@@ -100,7 +98,7 @@
 - Go 的 `setError/checkError` 有执行链调用；Rust 只有 `setSpillError` 与 `sort` 的读取端，当前源码搜索未发现生产写入端。
 - Go 的 `add` 估算为行槽开销加 chunk 内存；Rust 使用 `DataChunk::memory_usage()`。两者应保持账户收支自洽，但数值不应假定逐字节相等。
 
-这些差异是当前代码事实。若后续要求完全复刻真实临时文件、异步 spill 或 Go 的错误/等待协议，应作为明确的行为移植任务处理，不能把现有抽象描述成已经支持。
+这些差异是当前代码事实。
 
 ## 扩展指南
 
@@ -110,13 +108,3 @@
 - 若接通后台 spill，不能只依赖 `AtomicI32`：需要为 `savedRows`、`cursor`、错误和关闭状态建立一致的同步协议，并评估 Go 的条件变量等待/广播语义。`setSpillError` 的写入者、可见性和错误优先级也要一并定义。
 - 增加状态时，应同时审查 `add` 的拒绝条件、`spillToDisk` 的幂等条件、`sort_spill.rs::executeAction` 以及独立状态测试，防止出现可继续追加但已承诺 spill 的中间态。
 - 所有行为移植需继续与 `sort_partition.go` 逐项比对；Rust 生产修复应同步独立测试，并遵守仓库要求在可用代码顶部保留/添加相应版权声明。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/sortexec` 确认目标与 42 个相邻 Go/Rust 文件被索引；`node --file pkg/executor/sortexec/sort_partition.rs --offset 1 --limit 400` 返回目标文件全部 193 行和 22 个符号；`query` 精确定位 `newWithKiller`、`spillToDisk`、`getNextSortedRow`、`setSpillError`。精确 `callers/callees` 查询在 30 秒窗口没有返回结果，因此调用边由下面的限定源码搜索补证，未将图查询超时误写成“无调用者”。
-- 目标实现：`pkg/executor/sortexec/sort_partition.rs`。
-- crate 与模块边界：`pkg/executor/sortexec/Cargo.toml`、`pkg/executor/sortexec/lib.rs`。
-- Rust 直接调用者/依赖：`pkg/executor/sortexec/sort.rs`、`multi_way_merge.rs`、`sort_spill.rs`、`sort_util.rs`；使用限定 `rg` 核对 `SortPartition` 及各方法引用。
-- Go 对照：`pkg/executor/sortexec/sort_partition.go`，并通过 `sort.go`、`multi_way_merge.go`、`sort_spill.go` 核对其接线位置。
-- 独立测试：`pkg/executor/sortexec/sort_partition_test.rs`；另读 `sortexec_pkg_test.rs` 中 `interrupted_during_sort_returns_query_interrupted` 和 `interrupted_during_spilling_returns_query_interrupted`，并定位对应 Go 测试 `sortexec_pkg_test.go::TestInterruptedDuringSort/TestInterruptedDuringSpilling`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构命令，并人工复核所有“当前支持”陈述均能回指上述代码或测试。

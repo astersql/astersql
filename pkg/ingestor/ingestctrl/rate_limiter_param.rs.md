@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate；crate 根在 `pkg/ingestor/ingestctrl/lib.rs`，其中以 `pub mod rate_limiter_param;` 公开本模块。`pkg/ingestor/ingestctrl/Cargo.toml` 将该 crate 定位为 Go 包 `pkg/ingestor/ingestctrl` 的 Rust 移植，并把库入口设为 `lib.rs`。
-
-它位于导入控制面的“配置持久化与运行时限速器之间”：定义四项 ingest/split 参数的默认值和进程级原子快照，要求调用方通过 `RateLimiterParamStore` 提供持久化读写能力，再由 getter 向实际 split/ingest 流程暴露数值。需要特别说明的是，当前 Rust 仓库中只有 `lib.rs` 的模块声明和本文件内部引用；未检索到 `RateLimiterParamStore` 实现、`InitializeRateLimiterParam` 调用者或四个 getter 的 Rust 调用者，因此这是已公开但尚未接入 Rust 应用主链的移植边界，而不是当前 Rust 运行时已经启用的配置链。
+位于导入控制面的“配置持久化与运行时限速器之间”：定义四项 ingest/split 参数的默认值和进程级原子快照，要求调用方通过 `RateLimiterParamStore` 提供持久化读写能力，再由 getter 向实际 split/ingest 流程暴露数值。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/ingestor/ingestctrl/rate_limiter_param.go`：四个默认值、四个全局缓存、初始化顺序和四个 getter 的公开语义一致。Go 通过泛型 `initializeVariables` 复用初始化骨架，Rust 则将四段流程展开；Go 用 `atomic.Pointer<T>` 表达“尚未初始化”，Rust 用零初始化原子加 getter 默认语义表达相同的启动期行为。
+Go 通过泛型 `initializeVariables` 复用初始化骨架，Rust 则将四段流程展开；Go 用 `atomic.Pointer<T>` 表达“尚未初始化”，Rust 用零初始化原子加 getter 默认语义表达相同的启动期行为。
 
 关键差异如下：
 
@@ -97,11 +95,3 @@ Rust 文件直接对应 `pkg/ingestor/ingestctrl/rate_limiter_param.go`：四个
 5. 测试必须放在独立测试文件，建议新增同目录 `rate_limiter_param_test.rs` 并在 `lib.rs` 的 `#[cfg(test)]` 区声明，覆盖缺失值写默认、已有值加载、batch 零回退、每一步读写错误短路、部分更新、浮点 bits 往返以及并发读写。不要把测试内嵌进生产源文件。
 
 兼容风险主要是持久化编码/零值语义变化；正确性风险主要是初始化失败后的部分发布和非法数值进入缓存；性能风险较低，运行时读取是单次原子 load，但频繁或并发重新初始化可能造成配置瞬态不一致。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖本文件；`files --filter pkg/ingestor/ingestctrl` 找到 Rust/Go 对照；`node --file pkg/ingestor/ingestctrl/rate_limiter_param.rs` 读取 119 行、15 个符号并报告 `used by 0 files`；`query InitializeRateLimiterParam` 同时定位 Rust 第 64 行和 Go 第 47 行；`explore` 给出初始化函数到八个 trait 方法的调用边。精确 `callers` 查询在本次环境中超时，未将超时结果作为结论依据。
-- Rust 源与模块边界：`pkg/ingestor/ingestctrl/rate_limiter_param.rs`、`pkg/ingestor/ingestctrl/lib.rs`、`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ingestor/ingestctrl/rate_limiter.rs`。
-- Go 对照与运行时入口：`pkg/ingestor/ingestctrl/rate_limiter_param.go`、`pkg/ingestor/ingestctrl/local.go`、`pkg/domain/domain.go`、`pkg/meta/meta.go`、`pkg/ingestor/ingestctrl/rate_limiter.go`。
-- 测试检索：仓库级精确搜索未找到四个 getter、`InitializeRateLimiterParam` 或 `RateLimiterParamStore` 的 Rust/Go 测试引用；现有 `rate_limiter_test.rs`/`.go` 测试的是限速器本体，不是本参数加载模块。因此本文不声称已有直接回归覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行固定十一章节结构检查，并人工复核上述符号、调用边和“Rust 当前未接线”限制。

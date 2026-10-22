@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-topsql-stmtstats`，其 crate 根是同目录的 `lib.rs`。`lib.rs` 通过 `#[path = "test_guard.rs"] pub mod test_support;` 将本文件装配成模块 `test_support`；因此调用路径是 `super::test_support::stmtstats_guard()`，而不是按文件名推导的 `test_guard::...`。
-
-虽然模块没有受 `#[cfg(test)]` 限制并被标记为 `#[doc(hidden)] pub`，当前索引和文本引用都只显示它被本 crate 的 Rust 测试模块使用。它不参与 TopSQL/TopRU 统计的生产请求链，也不实现统计、聚合或上报行为。
+不参与 TopSQL/TopRU 统计的生产请求链，也不实现统计、聚合或上报行为。
 
 ## 核心职责
 
@@ -70,9 +68,9 @@ RustCodeGraph 将本文件列为被以下四个文件使用：
 
 ## 与 Go 版本的对应关系
 
-同路径 Go 包没有 `test_guard.go` 或同名函数。Go 的 `main_test.go` 只进行公共测试环境初始化和 goroutine 泄漏检查；当前同目录 Go 测试中也没有 `t.Parallel()`，所以其共享全局状态测试按默认方式串行运行。
+Go 的 `main_test.go` 只进行公共测试环境初始化和 goroutine 泄漏检查；当前同目录 Go 测试中也没有 `t.Parallel()`，所以其共享全局状态测试按默认方式串行运行。
 
-Rust 移植后，测试 harness 默认并行运行多个 `#[test]`，因此该文件提供了 Go 测试原本隐含的串行执行条件。它对齐的是测试隔离语义，而不是 Go 生产代码中的某个类型或函数。Go 测试通过 `defer state.DisableTopSQL()`、`defer state.DisableTopRU()`、`defer CloseAggregator()` 等方式恢复状态；Rust 测试通常显式调用 `reset_top_state()` 或 `CloseAggregator()`，守卫只负责避免恢复前发生交叠，不能替代这些清理。
+Go 测试通过 `defer state.DisableTopSQL()`、`defer state.DisableTopRU()`、`defer CloseAggregator()` 等方式恢复状态；Rust 测试通常显式调用 `reset_top_state()` 或 `CloseAggregator()`，守卫只负责避免恢复前发生交叠，不能替代这些清理。
 
 ## 扩展指南
 
@@ -83,14 +81,3 @@ Rust 移植后，测试 harness 默认并行运行多个 `#[test]`，因此该�
 若改变中毒策略，需要同步增加独立回归测试，分别覆盖正常互斥、持锁 panic 后的恢复，以及恢复后调用者仍须重置共享状态的约束。若调整 `lib.rs` 的 `#[path]` 或模块名，还需同步全部 `super::test_support::stmtstats_guard()` 调用点，尤其注意当前 `test_support.rs` 实际装配为 `stmtstats_tests`、`test_guard.rs` 实际装配为 `test_support` 的重命名关系。
 
 兼容风险主要是模块可见性和测试调用路径；正确性风险主要是漏加守卫、临界区过短及误认为锁中毒恢复会清理状态；性能风险限于测试并行度，生产运行时不经过此函数。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标工程已建立索引。
-- RustCodeGraph `files --filter pkg/util/topsql/stmtstats`：确认本 crate 的 Rust/Go 源文件及独立测试分布。
-- RustCodeGraph `node --file pkg/util/topsql/stmtstats/test_guard.rs`：确认文件只有 `stmtstats_guard` 与局部静态锁，并列出四个使用文件。
-- RustCodeGraph `query stmtstats_guard --kind function`：唯一结果为 `test_guard.rs:8`。`callers` 查询在本次执行中未在 60 秒内返回，调用点改由文件级索引结果和 `rg` 逐项核对；未据此推断额外调用边。
-- RustCodeGraph `node`：读取 `lib.rs` 及 `aggregator_1_aster_unit_test.rs`、`aggregator_test.rs`、`aggregator_bench_test.rs`、`kv_exec_count_test.rs`，核对模块装配、guard 持有位置和受保护的测试行为。
-- 直接读取 `Cargo.toml`，确认 crate 名、crate 根、路径依赖和 `go-package = "pkg/util/topsql/stmtstats"` 移植元数据。
-- 直接读取 Go `main_test.go`，并检索同目录 `*_test.go` 的 TopSQL/TopRU、聚合器生命周期及 `t.Parallel()` 使用，确认没有直接 Go 对应守卫且当前测试未显式并行。
-- 最终结构检查应确认本文恰好包含计划要求的十一个二级标题；本任务是纯文档分析，按计划不运行 Cargo。

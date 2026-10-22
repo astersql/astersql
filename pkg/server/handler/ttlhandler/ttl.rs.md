@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-server-handler-ttlhandler`，crate 入口是同目录的 `lib.rs`，并由其中的 `pub mod ttl` 对外暴露。它实现 `/test/ttl/trigger/{db}/{table}` 的核心请求控制流：检查 HTTP 方法、规范化路由参数、取得 session domain、触发指定表的 TTL 清理任务，并把结果或错误交给运行时写回。crate 的 Go 来源包由 `Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/server/handler/ttlhandler"` 明确记录。
-
-在 Rust 服务器中的直接入口位于 `pkg/server/http_status.rs`：路由注册把 `/test/ttl/trigger/{db}/{table}` 交给 `ttl_trigger_response`，后者构造 `TtlStatusRuntime`，再调用 `NewTTLJobTriggerHandler(()).ServeHTTP(&mut runtime)`。需要注意，当前这个 Rust 适配器使用 `Store = ()`、`SessionDomain = ()`，并在 `trigger_new_ttl_job` 中仅模拟 `test_ttl.t1` 成功；因此本文件的控制流已接入 Rust HTTP 状态服务，但真实 session/TTL client 后端尚未在该适配器中接通。
+通过 `TTLJobTriggerHandler<S>` 保存存储句柄，并在每次请求中按固定顺序执行方法检查、参数解析、domain 获取和任务触发。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ TTL job 的实际异步调度和互斥不在本文件管理。Go 集成测试会
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/server/handler/ttlhandler/ttl.go`。两版都保存 store，都通过 `NewTTLJobTriggerHandler` 构造，并在 `ServeHTTP` 中依次执行 POST 检查、读取 `db/table`、转小写、取请求上下文、获取 domain、触发 TTL job、写出结果和记录日志。
+Rust 版把这些操作全部放入 `TTLHandlerRuntime`，从而能用 `RecordingRuntime` 做确定性单元测试，但也意味着真实行为只有在具体 runtime 接线后才成立。
 
-Go 版使用具体实现：`mux.Vars` 读路径参数，`session.GetDomain(h.store)` 获取 domain，`dom.TTLJobManager().GetCommandCli()` 获取命令客户端，`ttlcient.TriggerNewTTLJob` 发送命令，`handler.WriteError/WriteData` 写 HTTP 响应，`log`/`logutil.Logger(ctx)` 记录日志。Rust 版把这些操作全部放入 `TTLHandlerRuntime`，从而能用 `RecordingRuntime` 做确定性单元测试，但也意味着真实行为只有在具体 runtime 接线后才成立。
-
-可见差异包括：Go 构造函数返回指针，Rust 返回按值 handler；Go handler 方法按值接收器，Rust 用 `&self`；Go 使用 `strings.ToLower`，Rust 使用 Unicode `str::to_lowercase`，对非 ASCII 标识符的转换细节可能不同；Go 的非 POST 错误文本是 `This api only support POST method`，当前 Rust status 适配器构造的是 `This API only supports POST method`，而单元测试替身保留 Go 文本。若错误正文属于兼容契约，应在真实适配器接入时统一。
+可见差异包括：Go 构造函数返回指针，Rust 返回按值 handler；Go handler 方法按值接收器，Rust 用 `&self`；Go 使用 `strings.ToLower`，Rust 使用 Unicode `str::to_lowercase`，对非 ASCII 标识符的转换细节可能不同；Go 的非 POST 错误文本是 `This api only support POST method`，当前 Rust status 适配器构造的是 `This API only supports POST method`，而单元测试替身保留 Go 文本。
 
 迁移状态应表述为：handler 分支逻辑和单元测试已经移植，Rust HTTP 路由也已注册；但当前 `TtlStatusRuntime` 是模拟实现，并未复刻 Go 的 `session.GetDomain → TTLJobManager → CommandCli → TriggerNewTTLJob` 真实链路。
 
@@ -91,14 +87,3 @@ Go 版使用具体实现：`mux.Vars` 读路径参数，`session.GetDomain(h.sto
 - 若改变响应结构，应先在 `pkg/ttl/client/command.rs` 的 `TriggerNewTtlJobResponse` 定义和解析逻辑中建模，再由 `TTLResponse` 继续复用；同步覆盖 handler 的完整响应透传和 HTTP JSON 输出。
 - 若让写出或日志可失败，需要重新设计 trait 返回值和错误优先级，并明确“任务已触发但响应写出失败”时是否重试，避免重复 TTL job。
 - 性能上本层主要成本是两个路径字符串的分配/小写转换和 runtime 调用。不要为微小分配优化而绕过规范化；真实热点更可能位于 domain/client 和后端调度，应以测量为依据。
-
-## 验证依据
-
-- 源码：`pkg/server/handler/ttlhandler/ttl.rs`，核对 `TTLResponse`、`TTLHandlerRuntime`、`TTLJobTriggerHandler`、`NewTTLJobTriggerHandler`、`ServeHTTP` 和 `serve_http` 的签名、分支及调用顺序。
-- crate 边界：`pkg/server/handler/ttlhandler/Cargo.toml` 与 `lib.rs`，核对包名、Go 来源元数据、依赖、公开模块和独立测试模块。
-- Rust 上游：`pkg/server/http_status.rs`，核对 `TtlStatusRuntime`、`ttl_trigger_response`、`NewTTLJobTriggerHandler(()).ServeHTTP(...)` 以及 `/test/ttl/trigger/{db}/{table}` 路由注册，并确认当前适配器为模拟后端。
-- Rust 下游：`pkg/ttl/client/command.rs`，通过 RustCodeGraph `node` 核对 `TriggerNewTtlJobResponse.table_result` 和真实 `trigger_new_ttl_job` 的请求构造、命令调用与反序列化流程。
-- Rust 测试：`pkg/server/handler/ttlhandler/ttl_test.rs`，核对四个分支、调用次数、小写参数、完整响应透传、错误/日志内容和失败后的短路行为。
-- Go 对照：`pkg/server/handler/ttlhandler/ttl.go`，核对具体 session/domain/client/HTTP/log 接线；`pkg/server/http_status.go` 核对相同测试路由；`pkg/server/handler/tests/http_handler_serial_test.go::TestTTL` 核对成功结果、job history、运行中任务重试与不存在表错误。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/server/handler/ttlhandler` 列出 `lib.rs`、`ttl.rs`、`ttl_test.rs` 和 Go 对照；文件节点显示 `ttl.rs` 被 `pkg/server/http_status.rs` 使用；`callees` 确认 `ServeHTTP` 到十个 runtime 方法及 `serve_http` 到 `ServeHTTP` 的边。由于同名符号较多，宽泛 callers/callees 查询产生歧义，调用者结论同时以文件节点和 `http_status.rs` 的直接源码为准。
-- 本任务为纯文档分析，不运行 Cargo。交付前使用任务规定的结构命令验证目标文件存在且恰有十一个固定二级章节，并人工检查没有把当前模拟适配器描述成真实 TTL 后端。

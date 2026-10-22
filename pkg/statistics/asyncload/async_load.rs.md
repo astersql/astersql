@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-statistics-asyncload` crate 的核心数据结构：一个进程级、分片加锁的“待异步加载统计项”集合。crate 入口 `pkg/statistics/asyncload/lib.rs` 通过 `mod async_load` 声明本模块，并以 `pub use async_load::*` 导出其公开接口；`pkg/statistics/asyncload/Cargo.toml` 则表明生产依赖只有 `astersql-meta-model`，数据类型直接复用其中的 `TableItemID` 与 `StatsLoadItem`。
-
-它位于查询规划与统计加载之间，但不访问 KV，也不创建后台线程：Session/Planner/Domain 将尚未完整加载的列或索引登记到 `AsyncLoadHistogramNeededItems`，`Domain::load_needed_histograms` 再取得快照、加载统计并逐项删除。对应生产证据见 `pkg/session/runtime/control.rs::collect_predicate_columns_point`、`pkg/planner/core/optimizer_runtime.rs` 的同步加载失败回退，以及 `pkg/domain/domain.rs::{enqueue_async_load_items,load_needed_histograms}`。
+提供插入、精确删除、全量快照和计数接口，供生产链和独立测试使用（`NeededStatsMap::{Insert,Delete,AllItems,Length}`）。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ RustCodeGraph 对目标文件识别出 17 个符号，并定位了上述 Domain/
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/asyncload/async_load.go`。Rust 保留了 Go 的两层结构、128 分片、按 `abs(ID) % shardCnt` 路由、每分片读写锁、全量枚举、精确删除和长度汇总。Go 的 `Insert` 在旧值已经为 `true` 时提前返回，否则写入新值；Rust 的 `*current |= full_load` 与其真值表一致，表达得更紧凑。
+Go 的 `Insert` 在旧值已经为 `true` 时提前返回，否则写入新值；Rust 的 `*current |= full_load` 与其真值表一致，表达得更紧凑。
 
 主要实现差异是：Go 直接以 `model.TableItemID` 为 map 键，Rust 用私有 `TableItemKey` 获得 `Eq + Hash` 后在边界转换；Go 全局变量立即构造并持有指针，Rust 用 `LazyLock<NeededStatsMap>` 惰性构造；Go 对负 ID 手动取反，Rust 用不会在 `i64::MIN` 溢出的 `unsigned_abs`。这些差异不改变正常 ID 下的队列语义。
 
-Go 集成测试 `pkg/statistics/asyncload/async_load_test.go` 的五个场景已在独立 Rust 集成测试 `async_load_test.rs` 中对应：表删除、列删除、索引所属表删除、索引删除、损坏桶数据。Rust 测试因本工作区加载职责由 Domain 持有而调用 `domain.load_needed_histograms()`，并显式驱逐分析后的缓存以复现 Go 的轻量缓存状态；这些适配在测试文件头部有说明。Rust 特有的结构级语义测试位于独立文件 `migration_aster_unit_test.rs`，没有把测试内嵌到生产源文件。
+Rust 测试因本工作区加载职责由 Domain 持有而调用 `domain.load_needed_histograms()`，并显式驱逐分析后的缓存以复现 Go 的轻量缓存状态；这些适配在测试文件头部有说明。Rust 特有的结构级语义测试位于独立文件 `migration_aster_unit_test.rs`，没有把测试内嵌到生产源文件。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Go 集成测试 `pkg/statistics/asyncload/async_load_test.go` 的五个场景已
 - 若要实现真正的 drain、批量领取、重试或状态机，不应仅把 `AllItems` 改名；需要定义快照与并发插入/删除的线性化语义，并同步调整 `Domain::load_needed_histograms` 的删除和失败策略。
 - 若增加后台任务、容量限制或清理机制，应放在拥有调度生命周期的 Domain/统计处理层；本 crate 当前只是数据结构。新增测试仍应放在同目录独立测试文件：容器不变量放 `migration_aster_unit_test.rs`，跨 SQL/Domain 行为放 `async_load_test.rs`。
 - 对公开 API 或依赖边界的改变要同步检查 `pkg/statistics/asyncload/lib.rs`、本 crate 的 `Cargo.toml` 以及 Domain/Planner 的 Cargo 依赖；不要假设所有 manifest 依赖都有直接调用。
-
-## 验证依据
-
-- 目标源码：`pkg/statistics/asyncload/async_load.rs`，核对了全部 179 行、17 个索引符号及公开/私有边界。
-- crate 边界：`pkg/statistics/asyncload/{lib.rs,Cargo.toml}`；确认模块导出、生产依赖、集成测试声明和无 feature 条件。
-- Go 对照：`pkg/statistics/asyncload/async_load.go`；逐项核对两层分片结构、锁、合并、删除、枚举、计数和路由算法。
-- 测试证据：`pkg/statistics/asyncload/migration_aster_unit_test.rs` 覆盖空集合、完整键和值、单调升级、精确删除、正负 ID 碰撞和并发写；`async_load_test.rs` 与 `async_load_test.go` 覆盖五个 SQL/DDL/损坏统计场景。
-- 生产调用证据：`pkg/domain/domain.rs::{load_needed_histograms,load_needed_column_histogram,load_needed_index_histogram,enqueue_async_load_items_for_physical_id}`、`pkg/session/runtime/control.rs::collect_predicate_columns_point`、`pkg/planner/core/optimizer_runtime.rs` 的同步失败回退分支。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/statistics/asyncload` 找到目标及 Go/Rust 测试；`node --file` 和 `query` 核对目标源码与符号。方法 `callers`/`callees` 未返回精确静态全局调用边，已用上述精确引用搜索补齐并在“依赖与调用关系”中披露限制。
-- 结构检查要求：文档必须存在，且固定的 11 个二级标题各出现一次；本任务是纯文档分析，按计划不运行 Cargo。

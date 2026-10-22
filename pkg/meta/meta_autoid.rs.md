@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/meta/meta_autoid.rs` 属于 `astersql-meta` crate，由 [`pkg/meta/lib.rs`](lib.rs) 的 `mod meta_autoid` 挂载并通过 `pub use meta_autoid::*` 对外再导出。crate 边界由 [`pkg/meta/Cargo.toml`](Cargo.toml) 定义：库入口是 `lib.rs`，此文件直接使用同 crate 的 `Mutator`、键编码函数、`errors` 与 `model::AutoIdGroup`。在元数据主链中，它位于 `Mutator` 与底层 `TxStructure` hash 操作之间，为单表的 RowID、AUTO_INCREMENT、AUTO_RANDOM 和 Sequence 水位提供类型化访问面。
-
-直接上游入口是 [`pkg/meta/meta.rs`](meta.rs) 中的 `Mutator::get_auto_id_accessors(db_id, table_id)`，它调用本文件的 `new_auto_id_accessors`。[`pkg/meta/reader.rs`](reader.rs) 中 `Reader::get_auto_id_accessors` 的 `Mutator` 实现只是再委托给该入口。
+在不校验 schema/table 当前是否存在的前提下，提供单类 ID 的读取、覆盖、自增、跨表复制和删除。
 
 ## 核心职责
 
@@ -66,8 +64,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 [`pkg/meta/meta_autoid.go`](meta_autoid.go) 的同序结构移植：`AutoIdAccessor` 对应 `AutoIDAccessor`，`AutoIdAccessorImpl` 对应 `autoIDAccessor`，`AutoIdAccessors`/`AutoIdAccessorsImpl` 对应 `AutoIDAccessors`/`autoIDAccessors`，`AccessorPicker` 同名，`SEP_AUTO_INC_VER` 对应 `sepAutoIncVer`，`new_auto_id_accessors` 对应 `NewAutoIDAccessors`。两者的键选择、V5 分界、组操作顺序、rename 时保留完整 ID 以及 `CopyTo` 的零值保护一致。
-
 已核实的差异有：
 
 - Go `AutoIDAccessors` interface 显式嵌入 `AccessorPicker`；Rust `AutoIdAccessors` trait 没有以 supertrait 约束 `AccessorPicker`。当前具体 `AutoIdAccessorsImpl` 同时实现两者，但单独的 `dyn AutoIdAccessors` 类型面不自动包含 picker 方法。
@@ -82,12 +78,3 @@ Rust 文件按 [`pkg/meta/meta_autoid.go`](meta_autoid.go) 的同序结构移植
 - 修改 `copy_to` 时必须保留或用等价方案替代零值不覆盖保护，并重验跨版本 BR/TiDB rename 场景。
 - 若要缩小公开 API 或使 Rust trait 层级与 Go 对齐，需先检查 `pub` 字段的外部构造用法，并评估将 `AutoIdAccessors: AccessorPicker` 设为 supertrait 对 trait object 和下游约束的兼容影响。
 - 测试不应内嵌到本生产文件。直接 Rust 回归应继续放在同目录独立的 [`pkg/meta/migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 或 [`pkg/meta/meta_test.rs`](meta_test.rs)；Go 对照回归位于 [`pkg/meta/meta_test.go`](meta_test.go)。至少覆盖缺失键返回 0、正负 step、V4/V5 分键、零/非零复制、中途错误顺序以及 snapshot 写拒绝。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，`pkg/meta/meta_autoid.rs` 被索引为 215 行、34 个符号；通过 `node --file` 读取了目标文件、`pkg/meta/lib.rs`、`pkg/meta/meta.rs`、`pkg/meta/reader.rs`、`pkg/meta/harness.rs`、Rust 测试和 Go 对照文件。
-- RustCodeGraph 符号核验：查询到 `AutoIdAccessors`、`AutoIdAccessorsImpl`、`AutoIdAccessorImpl`、`AccessorPicker`、`new_auto_id_accessors` 和 `sequence_cycle_key`；对后两者的精确 `callers/callees` 图查询为空，后续用 `meta.rs:311-313`、`reader.rs:185-187` 与 `meta.rs:1404-1407` 的源码引用补足调用证据。
-- Rust 行为测试：[`pkg/meta/migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `auto_id_picker_copy_and_group_order_match_go` 验证组 put/get、RowID 自增、V4 共享 TID、V5 独立 IID、非零跨表复制、零值不覆盖和组删除；[`pkg/meta/meta_test.rs`](meta_test.rs) 的 `test_meta` 验证建表后组值读取与 RowID 自增。
-- Go 行为对照：[`pkg/meta/meta_autoid.go`](meta_autoid.go) 提供逐符号实现依据；[`pkg/meta/meta_test.go`](meta_test.go) 覆盖 RowID 增读、删除后回到 0、不存在库/表仍可自增以及建表设置 AutoID。
-- crate 与底层证据：[`pkg/meta/Cargo.toml`](Cargo.toml) 核对 crate 入口和依赖；[`pkg/meta/harness.rs`](harness.rs) 的 `TxStructure::{hget_i64,hset,hinc,hdel}` 核对缺失值、十进制存储、锁范围和只读 snapshot 错误。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验收使用任务指定的 `test -f` 与 11 个固定二级标题计数命令。

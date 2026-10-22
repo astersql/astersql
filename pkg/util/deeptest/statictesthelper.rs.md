@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-deeptest` crate 的深克隆测试断言。它不是 SQL 请求、事务或存储运行时的一环，而是供测试代码描述任意值的结构，并检查“内容相等但独立分配”或“每个可比较位置都不相等”。crate 入口 `pkg/util/deeptest/lib.rs` 声明并全量再导出 `statictesthelper`；根 facade 又在 `pkg/lib.rs` 的 `util::deeptest` 中再导出该 crate。
-
-`pkg/util/deeptest/Cargo.toml` 将库入口设为 `lib.rs`，唯一直接依赖是 `globset = "0.4"`。由于 Rust 没有 Go `reflect` 那样的通用运行时反射，调用方必须先构造 `DeepValue`；因此本文件是 Go `pkg/util/deeptest/statictesthelper.go` 的显式动态值适配层，而不是对任意 Rust 类型自动反射的通用断言。
+指针、切片和映射额外保存调用方提供的 `usize` 地址令牌，用于区分共享存储与深克隆。
 
 ## 核心职责
 
@@ -81,11 +79,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/util/deeptest/statictesthelper.go` 使用 `reflect.Value` 自动读取真实值的 kind、字段、地址和 map 键；Rust 版把同一分派显式编码到 `DeepValue`，并要求调用方提供类型名及地址令牌。两版均从 `$` 生成路径，支持 ignore/pointer-compare glob，并保持“同类后一个 option 覆盖前一个”的 `applyOptions` 语义。
+Go 对照文件 `pkg/util/deeptest/statictesthelper.go` 使用 `reflect.Value` 自动读取真实值的 kind、字段、地址和 map 键；Rust 版把同一分派显式编码到 `DeepValue`，并要求调用方提供类型名及地址令牌。
 
 两套核心算法的分支意图基本对应：递归不等遍历公共切片前缀和公共 map 键；深克隆相等默认要求内容相同但指针/切片/map 存储不同；pointer-compare 改为验证共享身份并停止内容递归；函数只能忽略或按地址比较；深相等只允许 nil channel。
 
-Rust 版有必须留意的表示差异：map 键限定为 `String`；slice 的逻辑类型名从首元素推导；`UnsafePointer` 没有独立变体；结构体字段可由调用方任意命名和排序；地址的真实性无法由 helper 校验。Go 的 `require.TestingT` 将失败交给测试对象，Rust 版直接 panic。`pkg/util/deeptest/statictesthelper_test.rs` 复刻 Go 主测试，`migration_aster_unit_test.rs` 额外固定 glob 覆盖顺序、channel 和迁移边界。
+Rust 版有必须留意的表示差异：map 键限定为 `String`；slice 的逻辑类型名从首元素推导；`UnsafePointer` 没有独立变体；结构体字段可由调用方任意命名和排序；地址的真实性无法由 helper 校验。`pkg/util/deeptest/statictesthelper_test.rs` 复刻 Go 主测试，`migration_aster_unit_test.rs` 额外固定 glob 覆盖顺序、channel 和迁移边界。
 
 ## 扩展指南
 
@@ -94,12 +92,3 @@ Rust 版有必须留意的表示差异：map 键限定为 `String`；slice 的�
 扩展路径选项时，优先修改 `OptionKind`、`TestOption`、`apply_options` 和两个递归入口的前置判断，并明确新选项与“同类后者覆盖前者”的兼容关系。若要支持非字符串 map 键或自动从业务类型生成 `DeepValue`，应在调用侧或单独适配模块实现稳定编码，避免把领域依赖引入这个通用 crate。
 
 任何行为变化都应同步更新独立测试 `pkg/util/deeptest/statictesthelper_test.rs`；涉及迁移差异、glob 顺序、channel 或额外边界时也更新 `pkg/util/deeptest/migration_aster_unit_test.rs`，并核对 Go 文件及 `statictesthelper_test.go`。测试逻辑不应内嵌回生产源文件。主要兼容风险是改变既有 panic 条件、路径字符串或 option 覆盖规则；主要性能风险是 map 线性查找和深层递归，不能在未测量时悄悄改变可观察顺序或错误路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/util/deeptest` 列出 Rust/Go 实现和测试；`node --file pkg/util/deeptest/statictesthelper.rs` 读取全部 661 行；`query` 定位 `DeepValue`、两个公开断言和两个 option 构造器；对应 `callers`/`callees` 查询为空，已按索引限制处理。
-- 源码与装配：`pkg/util/deeptest/statictesthelper.rs`、`pkg/util/deeptest/lib.rs`、`pkg/util/deeptest/Cargo.toml`、workspace `Cargo.toml`、`pkg/lib.rs`、`pkg/ddl/Cargo.toml`。
-- Go 对照：`pkg/util/deeptest/statictesthelper.go` 与 `pkg/util/deeptest/statictesthelper_test.go`。
-- Rust 测试：`pkg/util/deeptest/statictesthelper_test.rs` 与 `pkg/util/deeptest/migration_aster_unit_test.rs`；它们覆盖标量、nil、结构体、指针、切片、map、interface、function、channel、glob 及 option 覆盖顺序。
-- 仓库引用复核：对公开符号执行 `rg`，确认当前真实 Rust 调用集中在上述独立测试；`pkg/meta/metabuild/context_test.rs` 的命中属于 `GO_REFERENCE` 字符串。
-- 本任务只新增说明文档；按总计划要求不运行 Cargo。交付前使用任务指定命令验证文件存在且恰有 11 个固定二级标题，并人工复核未把索引空调用边或 Go 参考字符串写成实际运行关系。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`eval_type.rs` 位于 `astersql-parser-types` crate 的类型子系统中。crate 根 `pkg/parser/types/lib.rs` 通过 `types::eval_type` 模块 `include!("eval_type.rs")`，随后先在 `types` 内、再在 crate 根公开再导出该文件的全部公开项。因此，下游既可经 `parser_types::types::EvalType`，也可经 crate 根再导出使用这些定义。
-
-这个文件定义的不是 MySQL 列的物理类型码，而是表达式系统使用的较粗粒度求值类别。典型入口是相邻文件 `pkg/parser/types/field_type.rs` 的 `FieldType::EvalType`：它把 `TypeTiny`、`TypeDouble`、`TypeDatetime`、`TypeJSON` 等存储类型折叠成这里的九类结果。之后，规划、类型聚合和表达式执行代码根据该结果选择强制转换或具体的 `Eval*`/`VecEval*` 路径，例如 `pkg/planner/core/expression_rewriter.rs` 的转换分支与 `pkg/expression/chunk_executor.rs::evalOneVec` 的向量化分派。
-
-`pkg/parser/types/Cargo.toml` 将本目录声明为包 `astersql-parser-types`，库入口为 `lib.rs`，且没有为本文件设置条件 feature；本文件自身唯一的直接依赖是标准库 `std::fmt`。
+用 `EvalType(pub u8)` 表示可复制、可比较、可哈希的求值类别，同时保留 Go `type EvalType byte` 能承载未知字节值的性质。
 
 ## 核心职责
 
@@ -89,17 +85,10 @@ RustCodeGraph 对文件节点报告的直接使用文件包括 `pkg/parser/types
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/types/eval_type.go`。Rust 实现保持了以下语义：
-
-- Go `type EvalType byte` 对应 Rust `EvalType(pub u8)`，两者都允许表示九个已知常量之外的字节。
 - Go `iota` 常量顺序与 Rust 显式 `0..=8` 数值完全一致。
-- `IsStringKind` 和 `IsVectorKind` 的成员集合一致，包括 VectorFloat32 同时属于 string-kind 与 vector-kind。
 - Go `fmt.Stringer` 的 `String() string` 由 Rust 的 `Display` 承担标准格式化职责，同时额外保留同名 `String() -> String` 供机械移植代码调用。
-- 九个显示名称逐项一致，非法值也都 panic 并包含数值。
 
-Rust 的主要实现差异是使用 newtype 而非类型别名，以获得独立的 trait 实现；`String` 返回拥有所有权的 `String`，Go 返回语言内建字符串。Rust 还派生了 `Debug`、相等比较和哈希能力。当前实现不是桩或未接线门面：`FieldType::EvalType`、类型聚合、规划重写和执行分派均在生产 Rust 路径中消费这些定义。
-
-Go 同目录没有针对 `eval_type.go` 的独立测试文件；Rust 的直接移植对照覆盖位于独立文件 `pkg/parser/types/migration_aster_unit_test.rs::type_names_and_eval_types_match_go`，它逐项验证九个名称，并检查 VectorFloat32 的两个分类谓词和 `ETInt` 的非字符串分类。
+Rust 的主要实现差异是使用 newtype 而非类型别名，以获得独立的 trait 实现；`String` 返回拥有所有权的 `String`，Go 返回语言内建字符串。当前实现不是桩或未接线门面：`FieldType::EvalType`、类型聚合、规划重写和执行分派均在生产 Rust 路径中消费这些定义。
 
 ## 扩展指南
 
@@ -112,18 +101,3 @@ Go 同目录没有针对 `eval_type.go` 的独立测试文件；Rust 的直接�
 5. 在独立测试文件中同步测试。最低限度应扩展 `pkg/parser/types/migration_aster_unit_test.rs` 的名称与分类矩阵；若边界增多，宜新建并由 `lib.rs` 注册独立的 `eval_type_test.rs`，不要把测试嵌入生产源文件。还应为实际消费者补充针对分派或类型合并的回归测试。
 
 兼容风险主要是编号漂移、显示文本变化以及 string-kind 集合变化；它们会影响 Go/Rust 对齐、诊断输出、CAST 决策和类型合并。性能风险较低，但新增类别若在执行层退回字符串通路，可能引入错误转换或额外分配。设计新类别时还要决定未知值继续 panic 的契约是否保持；不要只在 `Display` 中提供名称而遗漏生产者和执行器。
-
-## 验证依据
-
-本说明依据以下代码与查询结果编写：
-
-- RustCodeGraph `status`：索引覆盖当前仓库，包含 `pkg/parser/types/eval_type.rs`；文件节点完整显示该文件 91 行源码。
-- RustCodeGraph `node --file pkg/parser/types/eval_type.rs --offset 1 --limit 260`：核对 `EvalType`、九个常量、三个方法/实现及非法值 panic。
-- RustCodeGraph `query EvalType --limit 20`：定位本文件结构体、`field_type.rs::FieldType::EvalType` 和表达式侧消费点。
-- RustCodeGraph 文件节点：读取 `pkg/parser/types/field_type.rs` 第 250 行附近的映射与比较逻辑、`pkg/types/field_type.rs` 第 130 行附近的类型合并、`pkg/expression/chunk_executor.rs` 第 90 行附近的求值分派、`pkg/planner/core/expression_rewriter.rs` 第 4500 行附近的 CAST 分支，以及 `pkg/table/column.rs` 第 985 行附近的向量非空检查。
-- `pkg/parser/types/Cargo.toml` 与 `pkg/parser/types/lib.rs`：核对 crate 名称、库入口、无条件模块装配、公开再导出和独立测试注册。
-- `pkg/parser/types/eval_type.go` 与 `pkg/parser/types/field_type.go`：核对 Go 常量顺序、分类集合、显示/失败行为和字段类型映射。
-- `pkg/parser/types/migration_aster_unit_test.rs::type_names_and_eval_types_match_go`：核对现有 Rust 测试对九个名称及关键分类边界的覆盖。`pkg/parser/types/field_type_test.rs` 未直接测试本文件方法，主要覆盖消费 `EvalType` 的字段类型行为。
-- 在 RustCodeGraph 无法返回大写 impl 方法调用边后，使用 `rg` 精确检索 `.IsStringKind()`、`.IsVectorKind()` 和 `types::ET*`，确认前述生产消费者；未用这些文本结果推断未读取的行为。
-
-本任务是纯文档分析，按计划未运行 Cargo。结构校验应确认文件存在且恰有本文这十一个固定二级标题；人工复核重点是每项行为都能回指上述定义、生产调用点、Go 对照或独立测试，而没有把预期设计写成当前事实。

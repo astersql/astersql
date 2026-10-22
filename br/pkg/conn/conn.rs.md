@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`conn.rs` 是 Cargo 包 `astersql-br-pkg-conn` 的主要实现文件，由同目录的 [`lib.rs`](./lib.rs) 以 `#[path = "conn.rs"] pub mod conn` 装配并整体重导出。包元数据在 [`Cargo.toml`](./Cargo.toml) 中把它归入 Go 包 `br/pkg/conn` 的 Rust 移植库；当前依赖只有 BR errors/glue/version、公共 errors、`fail`、`serde` 和 `serde_json`，没有直接依赖真实 TiKV client、kvproto、grpcio 或 HTTP runtime。
-
-该文件位于 BR 与集群控制面的连接边界：向上提供 `Mgr`、store 枚举/过滤、PD 时间戳、备份客户端句柄、TiKV 配置读取等 API；向下把 PD、HTTP、Storage、Domain、StoreManager、GC 和关闭动作抽象成 trait。源码顶部说明这是 Darwin arm64 下的精简边界，因此这里的“连接”多数是依赖注入接口，不应误解为文件自身建立了真实 gRPC/HTTP 客户端。
-
-RustCodeGraph 的文件节点显示本文件被 58 个文件引用，示例包括 `br/pkg/restore/import_mode_switcher.rs`、`br/pkg/restore/internal/import_client/import_client.rs` 和 `br/pkg/restore/log_client/client.rs`。但精确查询 `conn.rs::NewMgr`、自由函数 `conn.rs::GetConfigFromTiKV` 和 `conn.rs::ProcessTiKVConfigs` 的 callers/callees 均返回空边；结合源码搜索可确认当前 Rust 生产树中还存在 `br/pkg/task/common.rs::NewMgr` 等独立抽象，不能据“同名”推断它们必然调用本文件的 `NewMgr`。本文件的构造主链目前最直接的可执行证据来自 [`parity_test.rs`](./parity_test.rs) 的 `go_rust_public_contract_matches`。
+位于 BR 与集群控制面的连接边界：向上提供 `Mgr`、store 枚举/过滤、PD 时间戳、备份客户端句柄、TiKV 配置读取等 API；向下把 PD、HTTP、Storage、Domain、StoreManager、GC 和关闭动作抽象成 trait。
 
 ## 核心职责
 
@@ -83,17 +79,12 @@ PD/store 枚举错误通过 `Trace` 返回；`ErrorOnTiFlash` 以 `ErrPDInvalidR
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对照 [`conn.go`](./conn.go)，核心对应为：Go `Mgr` ↔ Rust `Mgr`，Go `VersionCheckerType` ↔ Rust 同名枚举，Go `GetAllTiKVStoresWithRetry`/`checkStoresAlive`/`NewMgr` ↔ Rust 同名流程，Go `ProcessTiKVConfigs`/`IsLogBackupEnabled`/`GetConfigFromTiKV`/`handleTiKVAddress` ↔ Rust 配置链。
-
-主要语义保持包括：三类版本检查选择、TiFlash 策略、`tikv://...?disableGC=true` 打开路径、Domain 后置 DDL 版本检查、keyspace GC 选择、TLS 决定 HTTP scheme、配置读取失败时保留默认值、所有 TiKV 的 log-backup 开关取 AND、以及 Domain 必须早于 storage 关闭。
-
 已验证的差异与移植边界如下：
 
 - Go 直接持有 `pdutil.PdController`、`kv.Storage`、`tikv.Storage`、真实 gRPC client 和 `utils.StoreManager`；Rust 用 trait 与轻量 `BackupClient`/`LogBackupClient` 句柄注入，且没有 Go 的 `GetStore`、`GetLockResolver` 实体能力。
 - Go 利用 `util.GetConfigFromTiKVStores` 和 `kvconfig` 解析器；Rust 在本文件内实现地址、HTTP 重试和 JSON/字节单位解析，后续 Go 行为变化不会自动同步。
 - Go `NewMgr` 接受 context、TLS config、keepalive 并创建 tracing span；Rust 构造签名改为 `tls_present` 加 `NewMgrDeps`，没有 tracing 和 keepalive 参数。
 - Go 会设置全局 store type；Rust 使用 `STORE_IS_TIKV`，且置位时机早于实际类型验证。
-- 源码与 Go 当前常量均声明 `DefaultImportNumGoroutines = 36`，但 [`parity_test.rs`](./parity_test.rs) 的 `go_rust_public_contract_matches` 断言 128。由于本任务不运行 Cargo、不修改测试，此处记录为现有测试漂移，不能把 128 写成生产事实。
 - `CheckStoresAlive` 在两端当前都只统计/记录存活数量而不要求非零；Rust 没有日志边界，因此计数结果直接丢弃。
 
 ## 扩展指南
@@ -105,11 +96,3 @@ Rust 文件直接对照 [`conn.go`](./conn.go)，核心对应为：Go `Mgr` ↔ 
 - 改地址解析时至少覆盖 IPv4、方括号 IPv6、通配 status host、缺失 status address、缺失端口和非法 scheme；若换用通用 URL crate，需要验证字符串输出仍与 Go 测试一致。
 - 性能优化若把串行 HTTP 改成并行，必须为并发上限、取消、回调线程安全、确定性错误和聚合顺序增加独立测试；当前 `FnMut` 与 `&mut KVConfig` 明确假设串行执行。
 - 修复现有常量测试漂移时，应先以 Go `conn.go` 和用户可见配置默认值为依据统一 `DefaultImportNumGoroutines`，而不是为通过单个 parity 断言修改生产值。
-
-## 验证依据
-
-- RustCodeGraph：运行 `status` 确认索引可用；`files --filter br/pkg/conn` 确认目标文件被索引；用 `node --file br/pkg/conn/conn.rs --offset 1 --limit 500` 和 `--offset 501 --limit 700` 读取完整 1135 行及 58 个引用文件摘要；`query NewMgr/GetConfigFromTiKV/ProcessTiKVConfigs --kind function --json` 精确定位 Rust/Go 同名节点；对 Rust 节点执行 `callers`/`callees` 得到空数组，作为索引边界而非“无人调用”的证明。
-- 生产源码与装配：完整核对 [`conn.rs`](./conn.rs)、[`lib.rs`](./lib.rs) 和 [`Cargo.toml`](./Cargo.toml)；通过源码搜索核对本文件主要符号及 BR 树中的直接引用。
-- Go 对照：完整核对 [`conn.go`](./conn.go) 的 `Mgr`、`NewMgr`、重试、关闭、配置读取与地址委派；核对 [`conn_test.go`](./conn_test.go) 的 Go 行为用例。
-- Rust 独立测试：核对 [`conn_test.rs`](./conn_test.rs) 的重试取消/Unknown、三种 store 行为、取消客户端、PD 时间戳、StoreManager 委派、HTTP 200、配置聚合、log-backup AND 和 IPv4/IPv6 地址用例；核对 [`parity_test.rs`](./parity_test.rs) 的 `NewMgr`、非 TiKV 拒绝、关闭顺序及常量断言；核对 [`main_test.rs`](./main_test.rs) 的公开导出可达性。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构检查，并人工复核：所有限制均以当前源码或测试为依据，没有把精简 trait 当成真实网络实现，也没有把 RustCodeGraph 的空调用边扩张成生产接线结论。

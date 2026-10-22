@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`simple.rs` 属于 `astersql-executor` crate，由 `pkg/executor/lib.rs` 以 `pub mod simple` 公开。它把不产生结果行的“简单语句”抽象成 `Statement`，由 `SimpleExec<B>::Next` 做一次性分派，再把真正的会话、权限、系统表、事务、统计信息和集群操作交给 `SimpleBackend`。覆盖范围包括用户/角色管理、事务控制、`USE`、`FLUSH`、`KILL`、统计信息刷新、会话状态恢复、`ADMIN`、资源组与 placement range。
-
-当前接线状态必须与设计意图分开理解：仓库内没有 `SimpleBackend` 的生产实现，也没有生产代码构造 Rust `SimpleExec`；唯一实现位于 `pkg/executor/simple_test.rs`。因此本文件当前是公开的、可单测的 Rust 语义模型和 Go 移植层，还不能证明真实 SQL 请求已走到这里。完整生产行为仍在同路径 `pkg/executor/simple.go` 的 `SimpleExec` 中。
-
-`pkg/executor/Cargo.toml` 声明 crate 根为 `lib.rs`，`simple.rs` 自身直接使用标准库和 `astersql-parser-ast`（`alterUserHasPrivilegedOptions`）；`nextgen` feature 没有为本文件增加条件编译。本文件也没有 `#[cfg(...)]` 项。
+管理路径处理刷新/删除统计信息、TLS reload、计划缓存、BDR role、资源组、range placement、会话状态恢复和关闭实例。
 
 ## 核心职责
 
@@ -85,8 +81,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/simple.go`。名称和大体分派保持对应：两者都有 `SimpleExec.Next`、账户/角色、事务、KILL、统计刷新、FLUSH、关机、会话状态和 ADMIN 方法，也共享 `notSpecified`、密码选项/复用信息及用户名变体等概念。`autoNewTxn` 的语句集合基本一致，`Next` 都以 `done` 防止重复执行，`BinlogStmt` 都被忽略。
-
 Rust 版本不是逐能力等价的完整接线，主要差异如下：
 
 - Go `SimpleExec` 嵌入真实 `BaseExecutor`、AST 节点、InfoSchema 和 resolve context；Rust 使用自定义 `Statement`、`Operation` 与 trait 后端，且目前没有生产实现。
@@ -108,12 +102,3 @@ Rust 版本不是逐能力等价的完整接线，主要差异如下：
 - 扩展 KILL、广播或 shutdown 时，应对齐 Go 的远程 response close、warning 和进程优雅退出生命周期；扩展统计语句时要保留数据库全限定名与本地/集群作用域。
 - 性能风险主要在批量用户操作的逐项查询/写入、密码历史全量装载排序，以及广播操作；兼容风险集中在权限 bypass、warning/error 分类、主机名大小写、认证插件和隐式提交语义。
 - Rust 测试必须继续放在独立文件：行为测试优先扩充 `pkg/executor/simple_test.rs`，AST 特权 allowlist 扩充 `pkg/executor/simple_internal_test.rs`，不要把测试内嵌回 `simple.rs`。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/simple.rs`，RustCodeGraph `node --file` 分段核对了 1–1924 行；重点符号为 `SimpleExec::Next`、`SimpleBackend`、`Statement`、`Operation`、账户/角色执行方法及密码复用函数。
-- 模块与 crate：`pkg/executor/lib.rs` 确认 `pub mod simple` 和两个独立测试模块；`pkg/executor/Cargo.toml` 确认 crate 名、`lib.rs` 根、`nextgen` feature、parser AST 依赖和 Go package 移植元数据。
-- Rust 测试：`pkg/executor/simple_test.rs` 验证 user@host 格式、双密码意图、认证插件回退、统计表/分区 ID 顺序，以及密码历史为新记录预留空间和策略关闭行为；`pkg/executor/simple_internal_test.rs` 验证 ALTER USER 特权选项 allowlist。
-- Go 对照：`pkg/executor/simple.go` 的 `SimpleExec.Next`（约 145 行）、`executeCreateUser`（约 1049 行）、`checkPasswordReusePolicy`（约 1640 行）、`executeKillStmt`（约 3050 行）、`autoNewTxn` / shutdown / session states / ADMIN（约 3568–3729 行）；`pkg/executor/simple_test.go` 覆盖 refresh/flush stats，`pkg/executor/simple_internal_test.go` 覆盖 ALTER USER allowlist。
-- 调用图：RustCodeGraph `status` 显示索引包含目标文件；`query SimpleExec`、`query executeCreateUser`、`query checkPasswordReusePolicy`、`query executeKillStmt` 找到 Rust/Go 对照符号。`Next` 的同名图查询发生歧义，故上游接线结论另以全仓 `SimpleBackend` 实现与 `SimpleExec` 构造搜索核验；结果只有测试后端，没有生产构造点。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证文档存在且恰有十一个固定二级章节，并人工复核没有把未接线抽象描述为已支持的生产能力。

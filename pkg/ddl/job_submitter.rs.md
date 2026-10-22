@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-ddl`，由 `pkg/ddl/lib.rs` 以 `pub mod job_submitter` 公开。它实现一个内存化的 DDL Job 提交模型：接收 [`JobSpec`](job_submitter.rs) 列表，按规则合并可批量执行的 `CREATE TABLE`，以 Job ID 去重后写入内存映射和待处理队列，并记录“有新任务”的通知次数。
-
-它目前不是 Rust DDL 生产主链的持久化提交器。仓库内非测试 Rust 源码没有调用本文件的 `JobSubmitter`、`JobSpec` 或两个合并辅助函数；直接调用者是 `pkg/ddl/job_submitter_test.rs`、`pkg/ddl/executor_nokit_test.rs` 和 `pkg/ddl/tests/fastcreatetable/fastcreatetable_test.rs`。Rust 的真实系统表提交能力另位于 `pkg/ddl/jobsubmit/submit.rs`，会处理会话池、校验、全局 ID 分配和 `mysql.tidb_ddl_job` 插入。因此，阅读本文件时应把它视为已公开、由测试约束的局部语义模型，而不能等同于 Go `pkg/ddl/job_submitter.go` 的完整生产实现。
-
-按照 DDL 包契约（`pkg/ddl/doc.go`），完整 DDL 需要维持全局 schema 版本同步不变量；本文件只覆盖“提交前合并”和“内存排队”这一小段，不实现 schema 状态转换、owner 调度、重组回填或版本同步。
+实现一个内存化的 DDL Job 提交模型：接收 [`JobSpec`](job_submitter.rs) 列表，按规则合并可批量执行的 `CREATE TABLE`，以 Job ID 去重后写入内存映射和待处理队列，并记录“有新任务”的通知次数。
 
 ## 核心职责
 
@@ -97,8 +93,6 @@ Go 生产链则明确为 `pkg/ddl/ddl.go::Start` 启动 `JobSubmitter.submitLoop
 
 ## 与 Go 版本的对应关系
 
-一致或有意对齐的局部语义：
-
 - Rust `merge_create_table_jobs` 对应 Go `mergeCreateTableJobs`：排除预分配 ID 和含外键的建表任务；同 schema 分组；最大批次为 8；使用均匀拆批策略。Go `executor_nokit_test.go::TestMergeCreateTableJobs` 与 Rust 两个 nokit 测试固定了 9→5/4、7→7、22→8/7/7 等结果。
 - Rust `build_query_string_from_jobs` 对应 Go `buildQueryStringFromJobs`：`TrimSpace`/`trim`、仅在无尾分号时补分号、语句间加单个空格；两端的 nokit 测试使用相同示例。
 - Rust 合并宿主采用组内最低 ID，是 Rust 为稳定结果增加的排序规则；Go 采用 map 分组后每组输入顺序的首项，未承诺跨组最终顺序。
@@ -125,15 +119,3 @@ Go 生产链则明确为 `pkg/ddl/ddl.go::Start` 启动 `JobSubmitter.submitLoop
 - Rust 单元测试继续放在同目录独立 `*_test.rs` 中，不要内嵌回生产文件。生产链扩展还应同步或新增 `pkg/ddl/tests/fastcreatetable/fastcreatetable_test.rs` 一类集成行为测试。
 
 主要兼容风险是改变合并资格或返回向量基数后破坏上层结果关联；正确性风险是仅记录宿主 ID导致被合并 ID可重复提交；性能风险来自大 SQL 和 `merged_jobs` 的多次克隆。任何生产化改动还需评估系统表格式、全局 ID、owner failover 和 schema 同步兼容性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件、4,415 个 Go 文件；目标源码通过 `node --file pkg/ddl/job_submitter.rs` 完整读取为 154 行。
-- RustCodeGraph `query`：确认 `job_submitter.rs::merge_create_table_jobs(Vec<JobSpec>) -> Vec<JobSpec>`、`job_submitter.rs::build_query_string_from_jobs(&[JobSpec]) -> String`，以及对应的三个 Rust nokit 测试符号。对精确符号执行 `callers`/`callees` 未返回调用边，故再以模块装配和仓库搜索核验真实调用范围。
-- 已读 Rust 源码：`pkg/ddl/job_submitter.rs`、`pkg/ddl/ddl.rs`、`pkg/ddl/lib.rs`；其中 `lib.rs` 公开模块并装配独立测试，`ddl.rs` 定义 `Job` 且显示 `Ddl::submit_job` 是独立路径。
-- 已读 Cargo：`pkg/ddl/Cargo.toml`，确认 crate 名、`lib.rs` 入口、Go 包映射以及本文件无条件编译 feature。
-- 已读 Rust 测试：`pkg/ddl/job_submitter_test.rs`、`pkg/ddl/executor_nokit_test.rs`、`pkg/ddl/tests/fastcreatetable/fastcreatetable_test.rs`。关键断言覆盖合并后的单一返回、重复 ID、通知、分号、JobState 无关、资格规则、均衡批次及批次共同成败。
-- 已读 Go 对照：`pkg/ddl/job_submitter.go`、`pkg/ddl/executor_nokit_test.go`、`pkg/ddl/job_submitter_test.go`、`pkg/ddl/ddl.go`、`pkg/ddl/job_scheduler.go`，确认完整 Go 主链、合并细节、持久化与 owner 通知差异。
-- 已读包级契约和 DDL 导航：`pkg/ddl/doc.go`、`docs/agents/ddl/README.md`。后者只作为导航，所有本文行为结论均回查到源码或测试。
-- 仓库搜索 `JobSubmitter|JobSpec|merge_create_table_jobs|build_query_string_from_jobs` 并排除测试与目标文件后，没有发现本模块的非测试生产调用；同名 Lightning trait 和 `pkg/ddl/jobsubmit::JobSpec` 属于不同类型，不混为本文件调用者。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰有固定的 11 个二级标题；内容已人工复核，能够回答文件为何存在、当前如何运行、与 Go 的差距及安全扩展位置。

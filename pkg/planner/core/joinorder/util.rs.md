@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-joinorder` crate 的共享模型与辅助算法层，由同目录 [`lib.rs`](lib.rs) 以 `pub mod util` 暴露。crate 边界见 [`Cargo.toml`](Cargo.toml)：它对应 Go 包 `pkg/planner/core/joinorder`，当前活跃 Rust 实现只依赖标准库的 `BTreeMap`、`BTreeSet`；Cargo 中列出的 TiDB 风格内部依赖均位于 `cfg(windows)` 目标段，不能据此声称当前自包含模型已经接入完整 planner 对象体系。
-
-源码第 22—290 行是被块注释包围的迁移设计稿，不参与编译。真正的生产代码从 `use std::collections::{BTreeMap, BTreeSet};` 开始，向 `conflict_detector.rs`、`join_order.rs`、`ordered_leading.rs` 提供连接类型、表达式、计划节点、hint 及若干构造/规范化函数。完整优化入口位于 `JoinOrder::optimize`，本文件本身不负责枚举连接顺序。
+提供表达式分析和改写：列/叶集合收集、确定性判断、派生列递归替换、外连接多叶过滤器检查。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 [`util.go`](util.go) 是语义参照，但两者不是逐类型可替换实现：
-
 - Rust `JoinMethodHint` 用四个布尔位；Go 用 `PreferJoinMethod uint` 加 `*hint.PlanHints`，还能保留 hint 来源信息。Rust 合并只能表达算法偏好，无法复现 Go 的 `HintInfo` 覆盖与 `SetPreferredJoinType()` 归一化。
 - Rust `LeadingTree` 是名称二叉树；Go `BuildLeadingTreeFromList` 直接消费 parser 的嵌套 `ast.LeadingList`，支持 warning、`ok` 软失败和失败时返回原列表。Rust 当前 API 只保留递归消费/合并的核心形状。
 - Rust `Expr`/`PlanNode` 是自包含值模型；Go 使用 `expression.Expression`、`base.LogicalPlan`、`logicalop.LogicalJoin`、session query-block alias 等真实 planner 状态。
@@ -102,12 +98,3 @@
 - 修改列替换时，保留循环映射终止性；若加入函数缓存或共享节点，需要像 Go 一样处理写时复制和缓存失效。
 - 相关测试应继续放在独立文件：直接工具回归放 [`util_test.rs`](util_test.rs)，跨 `JoinOrder`/`ConflictDetector` 的流程回归放 [`join_order_test.rs`](join_order_test.rs) 或 [`conflict_detector_test.rs`](conflict_detector_test.rs)，不要把测试内嵌进生产源文件。
 - 兼容风险主要来自 Rust 简化模型与 Go 真实 planner 对象的差距；性能风险主要来自递归集合分配和深克隆。扩展后应分别验证 Go 对应边界与大连接组上的集合/克隆开销。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust/Go 源与测试均已索引。
-- RustCodeGraph 源码/符号查询：`node --file pkg/planner/core/joinorder/util.rs`（完整 1—556 行），以及对 `build_leading_tree_from_list`、`substitute_columns`、`outer_join_side_filters_touch_multiple_leaves`、`align_join_edge_args` 的 `query`。`callers` 查询没有产出可用结果，因此调用边又以同目录精确符号引用核验，没有据此臆造图边。
-- 已读生产路径：[`util.rs`](util.rs)、[`conflict_detector.rs`](conflict_detector.rs)、[`join_order.rs`](join_order.rs)、[`ordered_leading.rs`](ordered_leading.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。当前目录无 `doc.go`；最近的 `pkg/planner/core/base/doc.go` 属于另一个子包，不作为本 crate 合同依据。
-- Go 对照：[`util.go`](util.go)；并通过 `join_order.go`、`pkg/planner/core/rule_join_reorder.go`、`rule_join_reorder_dp.go`、`rule_join_reorder_projection_inline.go` 的精确调用位置核对 Go 主链接线。
-- 已读 Rust 测试：[`util_test.rs`](util_test.rs)、[`join_order_test.rs`](join_order_test.rs)、[`ordered_leading_test.rs`](ordered_leading_test.rs)。直接证据包括多叶过滤器真/假两例、列替换链 `1 -> 2 -> 3`、hint 冲突不覆盖以及 Join 优化完整消费边。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前另以规定命令检查目标文件存在且固定二级标题恰好为 11 个，并人工复核唯一生产物、源码链接和未接线能力表述。

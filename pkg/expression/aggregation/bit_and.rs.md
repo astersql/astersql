@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-aggregation` crate，提供旧式行式聚合接口 `Aggregation` 的 `BIT_AND` 具体实现。crate 由 `pkg/expression/aggregation/Cargo.toml` 定义，入口是同目录 `lib.rs`；`lib.rs` 以私有模块 `mod bit_and` 编译本文件，再通过 `pub use bit_and::*` 导出 `bitAndFunction`。
-
-它位于“聚合描述符已经建立，执行器按分组逐行求值”的运行阶段，不负责 SQL 解析、返回类型推断或物理执行器调度。普通描述符入口 `AggFuncDesc::GetAggFunc`（`descriptor.rs:297`）在名称为 `ast::AggFuncBitAnd` 时构造它；从 tipb 恢复分布式聚合的入口 `NewDistAggFunc`（`aggregation.rs:31`）在类型为 `tipb::ExprType::AggBitAnd` 时构造它。执行方随后通过 `Box<dyn Aggregation>` 的统一接口创建分组状态、逐行更新并读取结果。
+以单个 `Datum` 同时提供最终结果和单列部分结果，使 Complete/Partial/Final 聚合阶段可以复用同一位表示。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ NULL 被显式忽略；空输入、全 NULL 输入和刚重置的分组结果都
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/bit_and.go`。Rust 保留了 Go 的类型角色和五个接口方法：两者都以 `math.MaxUint64`/`u64::MAX` 初始化和重置；都求值首参数、跳过 NULL；都为 `KindUint64` 提供直接路径，否则执行 `ToInt64` 后转为无符号数；都返回当前值，并把单个最终值作为部分结果。
+Rust 保留了 Go 的类型角色和五个接口方法：两者都以 `math.MaxUint64`/`u64::MAX` 初始化和重置；都求值首参数、跳过 NULL；都为 `KindUint64` 提供直接路径，否则执行 `ToInt64` 后转为无符号数；都返回当前值，并把单个最终值作为部分结果。
 
 语言层差异主要是所有权和错误表达：Go 的 `*AggEvaluateContext`/interface 对应 Rust 的引用与 `Box<dyn Aggregation>`；Go 返回 `error`，Rust 返回 `Result<(), Error>`；Go 直接返回 `evalCtx.Value`，Rust 显式 `clone`；Go 的 `uint64(int64Value)` 对应 Rust 的 `as u64`。Rust `ResetContext` 先调用更完整的公共 `aggFunction::ResetContext`，而 Go 版本直接替换 `Ctx` 并设置 `Value`；对本聚合的可观察值语义相同，Rust 同时清理了公共辅助字段。
 
-Go 回归 `aggregation_test.go::TestBitAnd` 是移植语义基准。Rust 没有同名 `bit_and_test.rs`，而是在独立文件 `aggregation_test.rs::TestBitAnd` 中转发到 `aggregation_aster_unit_test.rs::bit_aggregates_preserve_empty_values_nulls_and_reset`。该测试覆盖空集、整数轨迹、NULL、部分结果、Reset 与 Decimal 转换，并与 Go 用例保持一致。
+Rust 没有同名 `bit_and_test.rs`，而是在独立文件 `aggregation_test.rs::TestBitAnd` 中转发到 `aggregation_aster_unit_test.rs::bit_aggregates_preserve_empty_values_nulls_and_reset`。
 
 ## 扩展指南
 
@@ -92,12 +90,3 @@ Go 回归 `aggregation_test.go::TestBitAnd` 是移植语义基准。Rust 没有�
 回归测试应继续放在独立 Rust 测试文件，不要嵌入 `bit_and.rs`。现有入口是 `aggregation_test.rs` 与共享实现 `aggregation_aster_unit_test.rs`；新增边界可在共享函数中扩充，或在需要隔离时新建并从 `lib.rs` 的 `#[cfg(test)]` 模块区接入。至少应覆盖：空集和全 NULL、`u64::MAX` 与超过 `i64::MAX` 的无符号值、负有符号值、转换错误不提交状态、Reset 后跨组隔离、部分阶段再次合并。
 
 兼容风险集中在空集返回值、负数/大无符号数的位模式和单列部分结果格式；正确性风险集中在绕过 `KindUint64` 快路径或在转换失败后错误写状态；性能风险较低，但不应为每行增加堆分配或克隆完整描述符。若更改参数约束或返回类型，还应同步 Go 对照、类型推断和独立测试，而不能只修改本文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/aggregation` 确认目标及相邻 Rust/Go/测试文件均已索引。
-- RustCodeGraph `node --file pkg/expression/aggregation/bit_and.rs --offset 1 --limit 240`：完整读取 62 行目标源码，并报告使用文件 `aggregation.rs`、`descriptor.rs`、`go_merge_44_test.rs`；`node bitAndFunction --file ...` 确认两条实际构造边来自 `NewDistAggFunc` 和 `GetAggFunc`。
-- RustCodeGraph `node NewDistAggFunc`、`node GetAggFunc`、`node Aggregation`、`node aggFunction`、`node AggEvaluateContext`：核对 tipb/描述符入口、trait 契约、公共状态布局及创建/重置语义。对过宽的 `explore` 结果未用作结论，避免把仓库内其他同名 `Update` 混入本文件调用链。
-- 已读 crate/生产边界：`pkg/expression/aggregation/Cargo.toml`、`lib.rs`、`aggregation.rs`、`descriptor.rs` 的图节点、`base_func.rs` 相关分支，以及 Go 对照 `bit_and.go`。
-- 已读独立测试：`aggregation_test.rs::TestBitAnd`、`aggregation_aster_unit_test.rs::bit_aggregates_preserve_empty_values_nulls_and_reset` 和 `aggregation_test.go::TestBitAnd`。`rg` 确认当前没有独立 `bit_and_test.rs`，BIT_AND 的 Rust 行为测试由上述聚合测试文件承载。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核没有修改 Rust、Go、Cargo 或只读的 `plan.md`。

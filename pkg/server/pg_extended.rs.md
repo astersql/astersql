@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 AsterSQL PostgreSQL 兼容监听器的 Extended Query 协议状态机，处理前端消息 `Parse`（`P`）、`Bind`（`B`）、`Describe`（`D`）、`Execute`（`E`）、`Close`（`C`）、`Sync`（`S`）和 `Flush`（`H`）。连接级入口在 `pkg/server/pg_conn.rs:356`：认证和启动响应完成后，每条连接创建一个 `Extended`，循环读取消息并调用 `Extended::handle`；当 `handle` 对简单查询 `Q` 返回 `false` 时，控制权回到 `pg_conn.rs` 的 simple-query 路径。
-
-该模块属于 `astersql-server` crate。`pkg/server/Cargo.toml` 以 `lib.rs` 为 crate 根，`pkg/server/lib.rs:168-171` 将独立测试 `pg_extended_test.rs` 和生产模块 `pg_extended.rs` 分别装配。直接使用的外部 crate 只有 `chrono` 和 `astersql-types`，两者均由该 Cargo manifest 声明；协议、会话、目录查询和结果编码能力来自同 crate 模块。
+管理连接内 prepared statement 与 portal 的创建、绑定、描述、分段执行、关闭及错误恢复，并保证引擎 statement handle 在替换或关闭时得到释放（`Statement`、`Portal`、`Extended`，`:403-893`）。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ RustCodeGraph 的 `query`/`node` 确认 `Extended`（`:426`）、`markers`（`:6
 
 仓库 `pkg/server` 下没有 `pg_extended.go` 或等价的 Go PostgreSQL Extended Query 状态机；相邻 Go server 文件主要是原 TiDB/MySQL 协议实现。因此本文件不是同路径 Go 文件的逐函数复刻，而是 Rust PostgreSQL 兼容入口的新增实现，不能从 Go 代码推断其协议行为。
 
-可对齐的引擎契约仍来自 Rust `TiDBContext` 对既有 server/session 能力的封装：Prepare、Execute、Close、事务状态、取消和结果生命周期均通过该抽象接入，而非在协议层复制 SQL 执行器。语义回归的直接依据是独立 Rust 测试 `pkg/server/pg_extended_test.rs`，以及真实客户端覆盖 `pkg/server/pg_client_integration_test.rs`；当前无同路径 Go 测试可一一对应。
-
 ## 扩展指南
 
 - 新增 frontend tag：在 `Extended::handle` 的允许列表和 `process` 分支同时接入，明确错误后的 Sync 行为、响应 tag 与消息体完整消费；在 `pg_extended_test.rs` 通过真实 socket 增加正常、截断、尾随字节和恢复用例。
@@ -87,13 +83,3 @@ RustCodeGraph 的 `query`/`node` 确认 `Extended`（`:426`）、`markers`（`:6
 - 修改 statement/portal 生命周期：集中检查 `Parse` 替换、`reset_unnamed`、`Close` 和 `Sync` 四个清理点，确保仅真实引擎 statement 调用 `close_prepared_statement`，且关联 portal 不悬挂。相关回归应留在独立 `pg_extended_test.rs`，不要把测试嵌入生产源文件。
 - 新增结果格式或流式执行：`description_formats` 与 Execute 编码必须保持同一 OID、长度和 format code；当前 portal 完整缓存结果，若改为流式需要重新定义 response lifecycle、取消、错误后 Sync、事务边界和 portal 重入语义。
 - 兼容风险集中在 PostgreSQL SQLSTATE、消息顺序、statement/portal 命名规则和 Describe/Execute 元数据一致性；性能风险集中在 SQL marker 线性扫描、metadata/参数克隆及完整结果缓存。任何优化都应保持客户端可观察顺序，并用真实监听器测试验证。
-
-## 验证依据
-
-- 生产源码：`pkg/server/pg_extended.rs` 全文；重点为 `Reader`（`:19-56`）、参数解析（`:61-400`）、状态结构（`:403-432`）、入口/恢复（`:434-504`）、消息分派（`:506-893`）和描述编码（`:896-911`）。
-- 应用接线：`pkg/server/pg_conn.rs:356-416`，确认连接级实例、`handle`/`reset_unnamed` 调用、prepared execute 闭包及 simple-query 分流；`pkg/server/lib.rs:168-171` 确认生产模块与独立测试装配。
-- crate 边界：`pkg/server/Cargo.toml`，确认 crate 名 `astersql-server`、根 `lib.rs`、`chrono`、`astersql-types` 和测试依赖；没有为本任务引入或修改依赖。
-- 独立测试：`pkg/server/pg_extended_test.rs`。`parse_bind_execute_sync` 覆盖完整消息链、目录查询、描述、portal/statement 生命周期、分页与恢复；`marker_mapping_preserves_literals_comments_and_index_order` 覆盖 marker 语义；`text_parameters_are_typed_and_reject_loss` 覆盖类型和精度；`canonical_prepare_parameter_syntax_probe` 证明底层引擎仍使用 `?`；`pg_introspection_parameters_live` 覆盖 OID、重排/重复/NULL、注入输入和错误状态；`pg_introspection_binary_results_and_recovery` 覆盖结果格式及 Sync 恢复。
-- RustCodeGraph：`status` 显示索引存在；`query Extended --kind struct`、`query markers --kind function`、`query description_formats --kind function` 定位目标定义；`node Extended` 返回目标结构；`callees pg_extended.rs::process`/`callees pg_extended.rs::markers` 给出目标内部及 `pg_name`、`pg_result` 调用。`files --filter pkg/server/pg_extended` 未命中且 callers 对短名未返回可靠边，故这些缺口由上述直接源码证据补齐并在本文显式限定。
-- Go 对照检查：搜索 `pkg/server/**/*.go` 及同目录 `*pg*` 文件，未发现 `pg_extended.go` 或 Go PostgreSQL Extended Query 实现；因此本文只陈述“无同路径对应”，不臆造迁移关系。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核唯一生产物、源码符号、调用边、限制和独立测试位置。

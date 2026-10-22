@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现旧式行求值聚合接口 `Aggregation` 下的 `GROUP_CONCAT` 运行时对象 `concatFunction`。它属于 Cargo crate `astersql-expression-aggregation`（`pkg/expression/aggregation/Cargo.toml`），由 `lib.rs` 的私有 `mod concat` 纳入 crate，再通过 `pub use concat::*` 向 crate 使用者导出。
-
-常规执行路径由 `AggFuncDesc::GetAggFunc`（`descriptor.rs:297`）按 `ast::AggFuncGroupConcat` 构造对象，并从表达式上下文注入 `group_concat_max_len`；PB/下推路径由 `NewDistAggFunc`（`aggregation.rs:31`）在遇到 `tipb::ExprType::GroupConcat` 时构造对象。后续调用通过 `Box<dyn Aggregation>` 动态分派。本文件只负责按调用顺序拼接已经交给它的行；`ORDER BY` 的排序不在此文件中实现，因此这里不能单独保证输入顺序，只会保留上游传入行的顺序。
+`GetResult`、`GetPartialResult` 暴露最终/部分结果；上下文的创建和清理复用 `aggFunction` 的公共实现。
 
 ## 核心职责
 
@@ -81,11 +79,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/aggregation/concat.go`。Rust 保留了 Go 的字段与主流程：最后一参作 separator、NULL 行跳过、DISTINCT 元组检查、非首行前插入 separator、按字节长度截断、生命周期内只告警一次、空分组返回 NULL，以及 Reset 不清除 `sepInited`/`truncated`。
+Rust 保留了 Go 的字段与主流程：最后一参作 separator、NULL 行跳过、DISTINCT 元组检查、非首行前插入 separator、按字节长度截断、生命周期内只告警一次、空分组返回 NULL，以及 Reset 不清除 `sepInited`/`truncated`。
 
-表示层差异主要有三点：Go 使用可空 `*bytes.Buffer` 表示“尚无结果”，Rust 使用始终存在的 `Vec<u8>` 加 `BufferInitialized`；Go `writeValue` 对非字节 Datum 使用 `fmt.Fprintf("%v", GetValue())`，Rust 使用可能失败的 `Datum::ToString()`；Go 的字符串可保留任意字节，Rust `GetResult` 使用有损 UTF-8 转换。普通整数和合法 UTF-8 测试覆盖下二者一致，但特殊 Datum 格式和截断多字节字符需要针对性兼容测试。
+表示层差异主要有三点：Go 使用可空 `*bytes.Buffer` 表示“尚无结果”，Rust 使用始终存在的 `Vec<u8>` 加 `BufferInitialized`；Go `writeValue` 对非字节 Datum 使用 `fmt.Fprintf("%v", GetValue())`，Rust 使用可能失败的 `Datum::ToString()`；Go 的字符串可保留任意字节，Rust `GetResult` 使用有损 UTF-8 转换。
 
-Go `TestConcat`（`aggregation_test.go:503`）验证初始 NULL、两行 separator 拼接、NULL 跳过、部分结果和 DISTINCT。Rust 对应入口 `aggregation_test.rs::TestConcat` 调用 `aggregation_aster_unit_test.rs::group_concat_matches_go_separator_null_distinct_and_reset_cases`；独立的 `concat_test.rs` 进一步验证 Reset 后只告警一次及 separator 跨分组保留。当前 Rust 独立测试没有逐项覆盖 NULL separator、字节 Datum、多参数元组、求值错误和多字节截断。
+Rust 对应入口 `aggregation_test.rs::TestConcat` 调用 `aggregation_aster_unit_test.rs::group_concat_matches_go_separator_null_distinct_and_reset_cases`；独立的 `concat_test.rs` 进一步验证 Reset 后只告警一次及 separator 跨分组保留。当前 Rust 独立测试没有逐项覆盖 NULL separator、字节 Datum、多参数元组、求值错误和多字节截断。
 
 ## 扩展指南
 
@@ -95,12 +93,3 @@ Go `TestConcat`（`aggregation_test.go:503`）验证初始 NULL、两行 separat
 - 调整长度限制或告警时，同时检查 `descriptor.rs::GetAggFunc` 的 `maxLen` 注入、`aggregation.rs::NewDistAggFunc` 的下推默认值和 `truncated` 生命周期。性能风险包括先追加后截断造成的峰值分配，以及每次超限仍重复追加/截断。
 - 若要支持有序拼接，不应只在本文件中宣称支持；应先确认上游是否已按 ORDER BY 排列输入，或设计排序所需的独立部分状态、合并协议与内存管理。
 - 测试逻辑必须继续放在 `concat_test.rs` 或现有独立聚合测试文件中，不应嵌入 `concat.rs`。新增生产行为还需维持 Go 版本的真实逻辑，不用简化实现替代兼容性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标 `concat.rs` 有 11 个符号；`files --filter pkg/expression/aggregation` 确认目标、Go 对照与独立测试均被索引；`node --file` 读取了 `concat.rs`、`lib.rs`、`aggregation.rs`、`descriptor.rs`、`concat.go`、`concat_test.rs`；`query` 确认了 `concatFunction`、`writeValue`、`initSeparator`、`GetResult`、`GetPartialResult`、`CreateContext`、`ResetContext`、`GetAggFunc` 与 `NewAggFuncDesc`。`callers/callees` 查询在本地索引后端超时，因此没有把缺失的精确函数级边当作已验证事实。
-- crate 与装配：`pkg/expression/aggregation/Cargo.toml`、`pkg/expression/aggregation/lib.rs`。
-- 运行时契约与构造：`pkg/expression/aggregation/aggregation.rs` 的 `NewDistAggFunc`、`Aggregation`、`AggEvaluateContext`、`aggFunction::{CreateContext, ResetContext}`；`pkg/expression/aggregation/descriptor.rs::AggFuncDesc::GetAggFunc`。
-- 直接实现与对照：`pkg/expression/aggregation/concat.rs`、`pkg/expression/aggregation/concat.go`。
-- 测试证据：`pkg/expression/aggregation/concat_test.rs`；`pkg/expression/aggregation/aggregation_test.rs::TestConcat`；`pkg/expression/aggregation/aggregation_aster_unit_test.rs` 中 GROUP_CONCAT 共享测试与空首值测试；Go 的 `pkg/expression/aggregation/aggregation_test.go::TestConcat`。
-- 人工复核结论：该文件存在的原因是为行式 `Aggregation` 接口提供 GROUP_CONCAT 的状态机；安全扩展必须同时考虑描述符构造、每组上下文与聚合器生命周期状态、Go 对照和独立测试。按任务约束未运行 Cargo。

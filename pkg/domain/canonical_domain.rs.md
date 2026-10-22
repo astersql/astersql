@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate。`pkg/domain/Cargo.toml` 将 crate 根指定为 `lib.rs`；`pkg/domain/lib.rs` 以 `pub mod canonical_domain` 暴露模块，并在 crate 根重导出 `DdlMetadataChange`、`DdlMetadataService`、`InfoSchemaLoader`、`KvInfoSchemaLoader`、`LoadedInfoSchema` 和 `StorageHandle`。因此它不是独立 DDL 执行器，而是 Rust `Domain` 与规范 TiDB KV 元数据 ABI 之间的适配层。
-
-在完整应用中，它同时承担三条边界：`DdlMetadataService` 把 `Domain::ddl_*` 请求原子写入 KV；`KvInfoSchemaLoader` 从当前版本或历史快照重建会话可见 `InfoSchema`；`StorageHandle` 让 Domain、统计模块和会话运行时共享同一存储实例并统一关闭。上层接线位于 `pkg/domain/domain.rs`，会话通常通过 `pkg/session/runtime.rs` 或 `pkg/testkit/mockstore.rs` 构造 `KvInfoSchemaLoader`。
-
-本文件没有条件编译项，也没有内嵌测试。独立测试由 `pkg/domain/lib.rs` 的 `#[cfg(test)] #[path = "canonical_domain_test.rs"]` 装配，符合生产逻辑与测试分文件的约定。
+封装单一 `kv::Storage` 的共享访问、可选 region-split 能力与关闭排他性，并实现统计模块要求的 `StatsKvStorage`。
 
 ## 核心职责
 
@@ -102,15 +98,11 @@ RustCodeGraph 对目标符号的精确查询确认：`load_info_schema` 与 `loa
 
 ## 与 Go 版本的对应关系
 
-Go 没有同名 `canonical_domain.go`；对应职责分散在 `pkg/domain/domain.go`、`pkg/meta/meta.go`、InfoSchema loader/builder 和 DDL 包。Rust 文件是移植后的收敛边界，而非逐函数同文件翻译。
-
-- Go `Domain.store`、`InfoSchema`、`GetSnapshotInfoSchema`、`Reload` 和 `Close` 对应 Rust `StorageHandle`、注入的 `InfoSchemaLoader` 以及 `pkg/domain/domain.rs` 的 cache/reload/close 编排。两边都要求一个实例围绕单一 storage 管理 schema 生命周期。
 - Go `meta.NewMutator` 在事务上设置 `AllowedOnAlmostFull`，并通过 `NextGlobalID`、`SchemaVersionKey`、`DBs`、`DB:<id>` 维护元数据；Rust `mutate_with_kv` 和 key helper 保留这些键与磁盘满策略。
 - Go `GenSchemaVersion`/`GenGlobalID` 使用结构化事务的原子 `Inc`；Rust 在本地 writer mutex 下读取、计算并 `Set`，跨进程串行能力较弱，不能据此推断已等价实现完整分布式 DDL owner 协议。
 - Go Domain 依赖 `issyncer` loader/builder 应用精细 `SchemaDiff`；Rust 当前发布 `regenerate_schema_map=true` 的通用 diff并从完整目录重建，以正确性优先换取更多加载成本。
 - Go 的 schema 快照缓存会先尝试按 timestamp 命中；Rust `KvInfoSchemaLoader::load_snapshot_info_schema` 直接在给定版本读取，外层 Domain cache 决定是否需要调用它。
 - Rust 私有 `ASTERDDL2` catalog 没有直接 Go 对等物；它是迁移期完整目录快照。测试证明当 Go 格式元数据存在或同版本发生删除时，loader 仍以公开 Go ABI 为准。
-- `index_visibility_equal_fold` 明确复现 Go `strings.EqualFold` 的简单 Unicode 匹配，包括 Kelvin sign、long s、final sigma，而不把 Turkish dotted/dotless I 或 `ß` 当成同一简单折叠。
 
 Go `pkg/domain/domain_test.go` 覆盖 Domain reload、关闭和外部 workload 行为；本文件更直接的 Rust 对照验证集中在 `pkg/domain/canonical_domain_test.rs`。涉及更完整 schema diff/loader 行为时，还应参照 `pkg/infoschema/issyncer/loader.go` 与其 Rust 移植，而不要把所有差异塞进本文件。
 
@@ -124,13 +116,3 @@ Go `pkg/domain/domain_test.go` 覆盖 Domain reload、关闭和外部 workload �
 - 新增 keyspace 支持需要同时改变 `keyspace_exists`、加载时的 storage/version 选择、Domain runtime 接线和隔离测试；不能只接受新的字符串。
 - 修改锁范围或 storage 关闭顺序时，需验证写者串行、读快照一致性、关闭等待和 Domain drop 后拒绝新事务。若支持多个 writer 实例/进程，还必须依靠 KV 冲突或 owner 机制，而非当前进程内 mutex。
 - 重点回归文件为 `pkg/domain/canonical_domain_test.rs`；按功能还应同步 `pkg/domain/domain_test.rs`、session DDL 独立测试或 InfoSchema loader 测试。兼容风险集中在 Go 元数据键/模型编码和错误语义，性能风险集中在全目录扫描/编码及全量 schema 重建。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`query DdlMetadataService`、`query KvInfoSchemaLoader`、`query DdlMetadataChange`、`query mutate_with_kv` 定位目标定义。`node load_at` 明确给出 `load_info_schema/load_snapshot_info_schema → load_at → read_catalog + build_info_schema/build_info_schema_v2`；`node build_info_schema` 确认其被 `load_at` 和 `build_info_schema_v2` 调用。文件过滤命令未返回目标路径，因此按技能规则用精确源码读取补足未覆盖内容。
-- 源码与 crate 边界：完整读取 `pkg/domain/canonical_domain.rs`；读取 `pkg/domain/Cargo.toml` 的 `[lib]`、运行依赖和 dev-dependencies；读取 `pkg/domain/lib.rs` 的模块、重导出与独立测试装配；目标包不存在 `pkg/domain/doc.go`。
-- 生产调用证据：`pkg/domain/domain.rs` 的 `Domain` 字段、`new_with_storage_handle`、`publish_ddl_metadata_change`、各 `ddl_*` 接线、`load_info_schema/load_snapshot_info_schema` 和 storage 生命周期；跨 crate 构造点以 `rg` 核对到 `pkg/session/runtime.rs`、`pkg/session/runtime/session_factory.rs` 与 `pkg/testkit/mockstore.rs`。
-- Go 对照：读取 `pkg/domain/domain.go` 的 `Domain`、`InfoSchema`、`GetSnapshotInfoSchema`、`Reload`、`Close`、`NewDomainWithEtcdClient`；读取 `pkg/meta/meta.go` 的键布局、`NewMutator`、全局 ID 与 schema version 语义。Go 中没有同路径同名文件，因此文档明确按职责映射而非虚构一对一实现。
-- Rust 测试：读取 `pkg/domain/canonical_domain_test.rs`。直接证据包括 Go 格式元数据无私有 catalog 也可加载并被 Rust 更新、canonical storage 的加载/重载/快照/关闭链、`AllowedOnAlmostFull`、空数据库可见、保留系统 ID 不推进用户分配器、同版本 Go 元数据删除优先、changing index Unicode folding，以及 TTL 外部回调失败时元数据不删除。
-- Go 测试：读取 `pkg/domain/domain_test.go` 的 schema reload、Domain close 和外部 workload 相关用例，作为生命周期与行为意图的旁证；本任务没有运行 Go 或 Cargo 测试，因为只新增分析文档且任务明确禁止 Cargo。
-- 交付检查：使用任务指定命令验证目标文件存在且恰有 11 个固定二级章节；另以 `git diff --check` 检查文档空白错误，并人工确认所有现状、限制和扩展建议都能回溯到上述源码、调用边、Cargo 或测试证据。

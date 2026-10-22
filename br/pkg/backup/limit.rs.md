@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明的真实源文件是 [`br/pkg/backup/limit.rs`](limit.rs)。它属于 `astersql-br-pkg-backup` library crate；该 crate 的入口是 `br/pkg/backup/lib.rs`，入口通过 `#[path = "limit.rs"] pub mod limit` 注册模块，再以 `pub use limit::*` 平铺导出公共符号。`br/pkg/backup/Cargo.toml` 把 Go 包映射记录为 `br/pkg/backup`，且本文件只依赖 Rust 标准库的 `std::sync::{Condvar, Mutex}`，不依赖该 crate 声明的 `serde` 或 `serde_json`。
-
-它位于备份请求主链的资源控制点：`client.rs::BackupClient::BackupRanges` 根据 `rangeLimit` 创建一个 `ResourceConcurrentLimiter`，存入 `MainBackupLoop::Limiter`；主循环把同一个 `Arc` 克隆给各 store 的异步发送任务，最终由 `store.rs::doSendBackup` 在发起一次 `Backup` 调用前后申请和释放资源量。它限制的是并发请求所携带的 range 数量估算，而不是线程个数、字节数或完整响应流的存活时间。
+用 `ResourceConcurrentLimiter` 保存阈值、当前累计占用量和条件变量，向多个线程提供共享的资源计数闸门。
 
 ## 核心职责
 
@@ -78,11 +76,7 @@ RustCodeGraph 对 `br/pkg/backup/limit.rs::NewResourceMemoryLimiter` 的节点�
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/backup/limit.go` 是逐符号对照来源：Go 与 Rust 都有 `ResourceConcurrentLimiter`、`NewResourceMemoryLimiter`、`Acquire` 和 `Release`，都以同一把锁保护 `current`，都在 `current >= threshold` 时循环等待，并在释放后广播。
-
 主要语言映射如下：Go 的 `*sync.Cond` 加内部 `sync.Mutex` 对应 Rust 的内嵌 `Condvar` 和 `Mutex<isize>`；Go 构造器返回指针，Rust 构造器返回值并由调用方在生产主链中包装为 `Arc`；Go 的 `int` 对应 Rust 的 `isize`。Rust 额外明确处理锁中毒，而 Go 没有对应概念。除这些所有权和运行时差异外，阈值判断时机、整笔加减以及广播语义保持一致。
-
-独立测试也保持对应：`limit_test.go::TestResourceConcurrentLimiter` 与 `limit_test.rs::test_resource_concurrent_limiter` 验证达到 100 后大额申请被阻塞，释放后恢复；第二组测试以 20 个并发执行单元和每次 30 的申请验证峰值允许达到但不超过 120。Rust 的 `parity_test.rs::go_rust_public_contract_matches` 还覆盖了顺序累计/释放以及限流器在 `doSendBackup` 错误和资源清理路径中的接线。
 
 ## 扩展指南
 
@@ -93,12 +87,3 @@ RustCodeGraph 对 `br/pkg/backup/limit.rs::NewResourceMemoryLimiter` 的节点�
 若增加输入校验，需决定兼容策略：构造器或 `Acquire` 当前不返回错误，改签名会影响 `BackupRanges`、测试及 crate 根的公共 API。至少应覆盖零/负阈值、零/负申请、过量释放、单次申请大于阈值、底层 `Backup` 失败与 panic 安全性。测试逻辑应继续放在独立的 `limit_test.rs`，不要嵌入生产源文件。
 
 性能调整需保留“条件判断与计数修改同锁”的原子性。把 `notify_all` 改为单唤醒可能减少惊群，但在不同请求大小、公平性和持续超阈值场景下会改变进度特征，必须用并发回归证明不会让等待者饥饿。
-
-## 验证依据
-
-- 生产源码：`br/pkg/backup/limit.rs`（类型、构造、等待循环、计数与锁中毒处理）；`br/pkg/backup/lib.rs`（模块注册、测试模块和公共再导出）；`br/pkg/backup/client.rs`（`MainBackupLoop::Limiter`、`BackupRanges` 构造、`RunLoop` 传递）；`br/pkg/backup/store.rs`（`startBackup` 克隆及 `doSendBackup` 的资源量和申请/释放边界）。
-- crate 边界：`br/pkg/backup/Cargo.toml`（library 入口、Go 包映射、依赖与无 feature 条件）。
-- Go 对照：`br/pkg/backup/limit.go`、`br/pkg/backup/client.go`、`br/pkg/backup/store.go`。
-- 独立测试：`br/pkg/backup/limit_test.rs`、`br/pkg/backup/limit_test.go`；补充接线证据来自 `br/pkg/backup/parity_test.rs`、`store_test.rs` 和 `client_test.rs`。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件（Rust 7,032）；`query ResourceConcurrentLimiter --kind struct` 和 `query NewResourceMemoryLimiter --kind function` 定位 Rust/Go 双版本；`node br/pkg/backup/limit.rs::ResourceConcurrentLimiter`、`node br/pkg/backup/limit.rs::NewResourceMemoryLimiter` 复核源码、导入边和直接测试调用。组合 `explore` 及独立 `callers` 查询曾在 30 秒窗口内超时，故具体生产调用点由上述已索引节点加精确源码搜索补齐，未据超时结果推断不存在调用边。
-- 人工边界复核：实现是当前已接入备份请求链的真实同步组件，不是门面、生成代码或桩；文档没有把宽松阈值描述为严格容量上限，也没有声称存在当前源码未提供的取消、公平性、参数校验或 RAII 释放。

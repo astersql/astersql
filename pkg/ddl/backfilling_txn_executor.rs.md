@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl` crate 的在线 DDL 回填基础设施。`pkg/ddl/Cargo.toml` 通过 `[lib] path = "lib.rs"` 定义 crate 入口，`pkg/ddl/lib.rs` 以 `pub mod backfilling_txn_executor` 对外公开本模块，并在测试配置下以独立文件 `backfilling_txn_executor_test.rs` 接入单元测试。
-
-当前 Rust 文件同时容纳四类小型基础能力：重组扫描的 `DistSQLContext` 构造、回填配置到简化会话状态的临时切换、事务回填执行器的内存模型，以及 ingest 流水线的 worker 配比和任务 ID 分配。它处在 DDL reorg/backfill 阶段，而不是 SQL DDL 语句提交、DDL job 持久化、schema state 推进或 schema version 同步的入口。就 DDL 生命周期问题而言，它服务于需要扫描/重写存量数据的 reorg 阶段；本文件自身不保存 checkpoint，不操作 `mysql.tidb_ddl_reorg`，也不实现取消后的回滚或 delete-range GC。
-
-需要特别区分“模块名表达的目标角色”和当前接线事实：Go 同名文件的 `txnBackfillExecutor` 会建立异步 worker、channel 和事务回填器；Rust 的 `TxnBackfillExecutor` 目前只保存 worker 槽位及两个 FIFO 队列，尚未执行存储事务。仓库中的生产调用主要落在 `expected_ingest_worker_count` 和 `TaskIdAllocator`，而 `TxnBackfillExecutor`、两个 DistSQL context 构造器及简化的 `SessionContext` 当前只在独立测试中直接使用。
+`ReorgMeta` 和 `SessionContext::{initialize_for_reorganization, restore}` 描述并实现一组简化的“保存旧会话状态—应用回填参数—整体恢复”流程，其中 batch size 被规范为至少 1。
 
 ## 核心职责
 
@@ -90,13 +86,12 @@ context 构造函数没有返回 `Result`，因为当前仅执行 clone/default/
 Go 对照文件是 `pkg/ddl/backfilling_txn_executor.go`，Rust 类型/函数沿用其命名与部分规则，但移植覆盖度不同：
 
 - `maxBackfillWorkerSize = 16` 对应 `MAX_BACKFILL_WORKER_SIZE`；`expectedIngestWorkerCnt` 的 global sort、未知行宽默认值以及五档行宽比例被逐项保留。Rust 独立测试复用了 Go 测试的十组表格用例，并额外固定 global sort 零并发及“大行 reader 不截断”的语义。
-- Go `taskIDAllocator` 与 Rust `TaskIdAllocator` 都从 0 开始先取值后自增。Rust 版本已被 `backfilling_operators.rs` 的任务切分生产路径使用。
 - Go `newDefaultReorgDistSQLCtx` 设置 KV client、限速动作、killer、内存/CPU/runtime stats、UTC、TiFlash 默认值等完整请求上下文；Rust 默认构造器只显式设置 warning、chunk RPC、`NotFillCache` 和 `ErrCtx`。Go `newReorgDistSQLCtxWithReorgMeta` 还解析 location、按 SQL mode 设置错误级别且可失败；Rust 只复制资源组名。这是当前功能差异，不应描述为等价移植。
 - Go `initSessCtx/restoreSessCtx` 操作真实 `sessionctx.Context`，保存并恢复 row encoder、SQL mode、除法精度、时区、type/error flags 和资源组；Rust `SessionContext` 是四字段模型，额外保存 batch size，但未连接真实 session。这同样是简化边界。
 - Go `txnBackfillExecutor` 持有 context、reorg info、session pool、table、decode map、worker、wait group、有缓冲 task/result channel；按五种 backfiller 类型构造真实 worker 并启动 goroutine，关闭时关闭 channel、可强制停止并等待 worker。Rust 同名类型没有这些依赖，只建槽位和无界内存队列，因此不能执行 Go 的事务回填行为。
 - Go `sendTask` 可被 context cancellation 中断；Rust `send_task` 只检查本地 `closed`。Go `resultChan` 暴露异步接收端；Rust `result` 是同步 pop。
 
-Go 测试证据包括 `pkg/ddl/backfilling_txn_executor_test.go::TestExpectedIngestWorkerCnt` 的配比表，以及 `pkg/ddl/backfilling_test.go::TestReorgDistSQLCtxNotFillCache` 对两类 context 的 `NotFillCache` 约束。Go 的 session-context 测试还验证 SQL mode/location 等完整上下文行为，但这些字段并未全部进入当前 Rust 模型。
+Go 的 session-context 测试还验证 SQL mode/location 等完整上下文行为，但这些字段并未全部进入当前 Rust 模型。
 
 ## 扩展指南
 
@@ -109,15 +104,3 @@ Go 测试证据包括 `pkg/ddl/backfilling_txn_executor_test.go::TestExpectedIng
 若扩展任务编号，先确认 ID 是否仅作单次流水线内排序。需要跨重启或多生产者分配时，不应给当前 `usize` allocator 简单加锁后冒充持久化 ID，而应由 job/subtask metadata 提供稳定标识，并同步 `TableScanTaskSource::generate_tasks` 的契约与测试。
 
 兼容性风险集中在三处：改变 worker 公式会改变资源占用和吞吐；改变非强制关闭的队列保留语义会影响排空；改变 ID 起点/连续性会影响结果关联。性能改动应保留 Go 规则，除非有明确的跨语言差异决策和基准证据。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 Rust 文件在索引中完整覆盖 322 行。
-- RustCodeGraph `explore "backfilling_txn_executor.rs transaction backfill executor"`：识别本文件核心符号、Go 对照符号以及 `expected_ingest_worker_count` 的 read-index 调用关系。
-- RustCodeGraph `query`：精确定位 `TxnBackfillExecutor`、`expected_ingest_worker_count`、`new_default_reorg_dist_sql_context`、`TaskIdAllocator`，并区分 Rust 与 Go 同名实现。
-- RustCodeGraph `node --file`：读取 `pkg/ddl/backfilling_txn_executor.rs` 全部 322 行、`pkg/ddl/backfilling_txn_executor_test.rs` 全部 130 行，以及 `backfilling_read_index.rs`、`backfilling_operators.rs`、`modify_column_pipeline.rs` 的直接调用片段。精确 `callers` 子命令曾连续无输出并被中止，因此调用边又以成功的 explore 结果和全仓符号搜索交叉核验。
-- crate/模块证据：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`。
-- Rust 数据类型与生产调用证据：`pkg/ddl/backfilling.rs`、`pkg/ddl/backfilling_read_index.rs`、`pkg/ddl/backfilling_operators.rs`、`pkg/session/runtime/modify_column_pipeline.rs`。
-- Go 对照与测试证据：`pkg/ddl/backfilling_txn_executor.go`、`pkg/ddl/backfilling_txn_executor_test.go`、`pkg/ddl/backfilling_test.go`。
-- Rust 独立测试证据：`pkg/ddl/backfilling_txn_executor_test.rs` 覆盖 cache 旁路与资源组、worker 配比、并发边界、会话恢复、batch size 下限及任务 ID；当前没有覆盖任务/结果 FIFO、关闭后入队、强制/非强制清理的测试。
-- 本任务是纯文档分析，依计划不运行 Cargo；交付验证只执行文档结构检查、引用/事实复核和 diff 自审。

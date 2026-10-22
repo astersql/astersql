@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-topsql-stmtstats` crate 的测试辅助实现，服务于语句统计聚合器、TopSQL 和 TopRU 的 Rust 单元测试。crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，直接依赖执行明细、reporter 指标和 TopSQL 状态三个本地 crate。
-
-[`lib.rs`](lib.rs) 通过 `#[path = "test_support.rs"]` 将本文件装配为隐藏的公共模块 `stmtstats_tests`；同目录测试使用 `use super::stmtstats_tests::*` 同时取得本文件的辅助符号以及 `pub use super::*` 重导出的 crate API。不要把名称相近的 `test_support` 模块混为一谈：`lib.rs` 将 [`test_guard.rs`](test_guard.rs) 装配成 `test_support`，后者只提供串行化全局状态测试的 `stmtstats_guard`。
-
-本文件没有 `#[cfg(test)]` 门控，因而辅助类型会进入 crate 的普通编译表面，但模块被 `#[doc(hidden)]` 隐藏；它们的实际引用均位于同目录 Rust 测试，而不是数据库运行时主链。
+`StatementCollector` 实现生产 trait `Collector`，把聚合器推送的每一份 `StatementStatsMap` 按到达顺序完整保存在内存中，供测试检查批次数和批次内容。
 
 ## 核心职责
 
@@ -78,7 +74,7 @@ mock 的批次会一直保留到所有 `Arc` 和 collector 自身被释放，没
 
 ## 与 Go 版本的对应关系
 
-Go 没有同名 `test_support.go`；对应语义分散在测试文件中。[`aggregator_test.go`](aggregator_test.go) 的 `mockCollector`、`mockRUCollector` 与 `mockRUVersionProvider` 分别对应 Rust 的 `StatementCollector`、`TestRUCollector` 与 `TestRUVersionProvider`。Go mock 通过可选闭包即时执行断言或收集数据，Rust helper 则固定把事件写入线程安全 `Vec`，便于测试结束后断言；这是测试支撑方式的差异，不改变生产 trait 合约。
+Go mock 通过可选闭包即时执行断言或收集数据，Rust helper 则固定把事件写入线程安全 `Vec`，便于测试结束后断言；这是测试支撑方式的差异，不改变生产 trait 合约。
 
 Go 的 `mockRUVersionProvider` 直接读取普通字段，相关测试在同一 goroutine 中赋值；Rust 版本用 `AtomicI32` 支持跨线程可见的动态切换。Go 的 RU collector 可通过 `fWithVersion`/`onChange` 分别观察数据和版本通知，Rust 用 `batches`/`changes` 保存相同两类证据。
 
@@ -93,12 +89,3 @@ Go 测试直接构造或修改资源控制器的 `RUDetails`，Rust 因执行明
 修改全局状态清理时，应先检查 TopSQL/TopRU 状态 crate 的计数语义，并保持 [`test_guard.rs`](test_guard.rs) 的串行隔离。若引入 RAII 清理，需覆盖正常返回和 panic 展开两条路径，且不能在析构中意外关闭其他并发测试刚启用的状态。
 
 测试逻辑继续放在独立 `*_test.rs` 文件中，不应内嵌到本文件。需要模拟阻塞或回调协调的专用 double（如 `aggregator_test.rs::BlockingRUCollector`）可留在使用它的测试文件；只有多个测试文件共同复用、且行为足够通用的 helper 才适合加入本文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标仓库索引包含 11,467 个文件；`files --filter pkg/util/topsql/stmtstats` 确认本目录 Rust/Go 文件；`node --file .../test_support.rs` 读取了完整 115 行；`query` 精确定位了 `StatementCollector`、`TestRUCollector`、`TestRUVersionProvider`、`ru_details`、`add_ru`、`reset_top_state` 及各 trait 方法。`callers/callees` 对这些 helper 未返回可用调用边，因此没有据此臆造上游。
-- 模块与依赖：读取 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)，确认 crate 名、三个直接依赖、隐藏模块装配、父模块重导出及测试文件列表；读取 [`test_guard.rs`](test_guard.rs) 区分串行守卫模块。
-- 生产定义：通过 RustCodeGraph 读取 [`aggregator.rs`](aggregator.rs) 的 collector traits/聚合器、[`rustats.rs`](rustats.rs) 的版本与共享 RU 类型、[`stmtstats.rs`](stmtstats.rs) 的执行上下文和统计容器。
-- Rust 测试：读取并检索 [`aggregator_test.rs`](aggregator_test.rs)、[`stmtstats_test.rs`](stmtstats_test.rs)、[`aggregator_bench_test.rs`](aggregator_bench_test.rs) 与 [`kv_exec_count_test.rs`](kv_exec_count_test.rs)，确认每个 helper 的真实使用场景、边界和全局状态清理方式。
-- Go 对照：读取 [`aggregator_test.go`](aggregator_test.go) 的三个 mock 与 TopRU 清理循环、[`stmtstats_test.go`](stmtstats_test.go) 的 RU 场景及 [`main_test.go`](main_test.go) 的测试生命周期设置。仓库中没有与本文件一一对应的 Go 生产文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰含 11 个固定二级章节，并人工复核只新增本说明文档、不修改 Rust、Go、Cargo 或只读的 `plan.md`。

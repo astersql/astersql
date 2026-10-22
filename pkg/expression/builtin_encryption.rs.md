@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate；`pkg/expression/Cargo.toml` 以 `lib.rs` 为库入口，`pkg/expression/lib.rs:194-195` 再用 `#[path = "builtin_encryption.rs"] mod builtin_encryption_kernel;` 将它编入 crate。它是加密、摘要、MySQL 历史密码/编码、压缩和密码强度算法的标量运行时内核，不负责 SQL 函数注册、参数表达式求值、类型推导或会话变量读取。
-
-当前生产接线必须与算法覆盖范围分开理解：RustCodeGraph 将本文件列为被 `builtin.rs`、两份独立测试、`builtin_encryption_vec.rs` 和其测试/可选属性测试等文件使用；直接源码复核显示，`pkg/expression/builtin.rs:4491-4500` 的 `CoreBuiltinKind::Md5` 会调用这里的 `md5_hash`。其余公开函数目前主要通过 `pkg/expression/lib.rs:749-751` 的 `#[cfg(test)]` 门面暴露给独立测试。`pkg/expression/builtin_encryption_vec.rs` 是一套独立向量化实现，并不以本文件函数作为统一内核，因此不能据本文件的函数齐全程度推断所有 SQL 标量路径已经接线。
+用 `aes_mode`、`checked_iv`、`aes_encrypt` 和 `aes_decrypt` 实现 MySQL/TiDB AES 模式解析、密钥派生、IV 规则、加解密及失败转 SQL `NULL` 的语义（`builtin_encryption.rs:121-209`）。
 
 ## 核心职责
 
@@ -76,15 +74,9 @@ RustCodeGraph 的文件节点给出本文件被 5 个文件使用的概览；精
 
 ## 与 Go 版本的对应关系
 
-主对照文件是 `pkg/expression/builtin_encryption.go`，其 SQL 层同时负责 function class 构建、参数/返回类型、PB code、会话变量、警告写入和实际算法。本 Rust 文件抽取了其中的算法结果与警告分类：
-
-- `aes_encrypt`/`aes_decrypt` 对应 `builtinAesEncrypt{,IV}Sig.evalString` 和 `builtinAesDecrypt{,IV}Sig.evalString`：模式、MySQL 密钥派生、IV 截断、ECB 忽略警告及密码库失败转 `NULL` 一致；Rust 在一个入口中覆盖四种模式。
-- `sql_decode`/`sql_encode`、`mysql_password`、摘要和随机字节分别对应 Go 的同名 builtin sig；`builtin_encryption_test.rs` 用固定向量验证 MD5/SHA/SM3、PASSWORD 和 SQL crypt 输出，并验证随机长度边界。
 - `compress` 特意用 `normalize_go_zlib_end` 保持 Go `compress/flate` 的字节级结果，而不仅保证可往返解压。Rust 测试断言 `hello world` 的完整十六进制输出；Go 测试 `TestCompress`/`TestUncompress` 是来源对照。
-- `uncompress` 与 Go 一样把损坏流映射为 zlib data 警告，把膨胀结果超过声明长度映射为 buffer 警告；`builtin_encryption_test.rs::scalar_uncompress_rejects_output_beyond_declared_length` 与 Go 的 `TestUncompressRejectsInflatedDataLargerThanDeclaredLength`、手工载荷用例对应。
-- `validate_password_strength` 保留 Go 的 0/25/50/75/100 阶梯，但将 Go `CurrentUser`、session/global vars 和 `pwdValidator` 查询前移为 `PasswordPolicy`。因此算法结果可独立测试，但当前文件本身不证明 SQL 层动态配置接线完整。
 
-Go 版本还有表达式共享约束、PB 下推码、可选属性、statement memory tracker 和更完整的 SQL 错误类型；这些属于适配层而非本算法文件。相反，Rust 当前只有 MD5 已直接进入 `builtin.rs` 的生产标量分派；其余函数是已实现、已由独立测试验证的迁移内核，不应描述为已全部替代 Go builtin。
+相反，Rust 当前只有 MD5 已直接进入 `builtin.rs` 的生产标量分派；其余函数是已实现、已由独立测试验证的迁移内核，不应描述为已全部替代 Go builtin。
 
 ## 扩展指南
 
@@ -95,12 +87,3 @@ Go 版本还有表达式共享约束、PB 下推码、可选属性、statement m
 5. Rust 单元测试必须继续放在独立文件，不要嵌入本生产文件。最近的标量测试是 `pkg/expression/builtin_encryption_test.rs`，补充覆盖还可参考 `builtin_encryption_11_aster_unit_test.rs`；向量行为测试在 `builtin_encryption_vec_test.rs`。修改实现后按仓库规则运行 `cargo fmt --all`，但本次纯文档任务不运行 Cargo。
 
 兼容风险集中在可观察密文/摘要/压缩字节、SQL `NULL` 与硬错误的分界、警告类别和顺序；性能风险集中在压缩复制、Huffman 线性查表、密码字典扫描及 Unicode 分类。引入缓存或共享状态前必须重新评估并发安全和租户/会话隔离。
-
-## 验证依据
-
-- 源码与模块：完整读取 `pkg/expression/builtin_encryption.rs:1-716`；复核 `pkg/expression/lib.rs:194-197, 749-751` 和 `pkg/expression/builtin.rs:4491-4500`。
-- crate 声明：读取 `pkg/expression/Cargo.toml`，确认库入口、`autotests = false`、算法依赖和 Go 包迁移元数据。
-- RustCodeGraph：`status` 显示当前项目索引包含 11,467 个文件；`node --file pkg/expression/builtin_encryption.rs --offset 1 --limit 1200` 返回完整文件及 5 个使用文件；`query aes_encrypt --kind function --json` 精确定位 `builtin_encryption.rs::aes_encrypt`。限定符号的 `callers`/`callees` 查询在 30 秒内未返回，调用边因此由限定路径与导入源码补证。
-- Rust 测试：读取 `pkg/expression/builtin_encryption_test.rs`，确认 AES 全模式/密钥长度向量、IV/坏密文、摘要/PASSWORD/SQL crypt、随机长度、COMPRESS 精确字节、损坏/超声明长度解压及密码评分；抽查 `builtin_encryption_11_aster_unit_test.rs` 的重复 Go 向量。测试由 `lib.rs:477-481` 显式装配，因为 crate 关闭自动测试发现。
-- Go 对照：读取/定位 `pkg/expression/builtin_encryption.go` 的 AES sig（约 143-380）、压缩/解压（约 876-1071）和密码评分（约 1084-1151）；定位 `pkg/expression/builtin_encryption_test.go` 的 `TestSQLDecode`、`TestSQLEncode`、`TestAESEncrypt`、`TestAESDecrypt`、`TestMD5Hash`、`TestRandomBytes`、`TestCompress`、`TestUncompress`、`TestUncompressLength`、`TestValidatePasswordStrength`、`TestPassword` 及膨胀长度防护用例。
-- 本任务只新增说明文档，未运行 Cargo。交付结构检查要求目标文件存在且固定二级标题恰好 11 个；同时人工复核文档区分了当前生产接线、测试门面、独立向量实现和 Go 完整 SQL 适配层。

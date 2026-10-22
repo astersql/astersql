@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件定义逻辑计划节点 `LogicalSequence`，位于 `astersql-planner-core-operator-logicalop` crate。模块由 `logicalop/lib.rs` 声明并通过 `pub use logical_sequence::*` 对外导出；crate 的 `Cargo.toml` 用 `package.metadata.porting.go-package` 指向 Go 包 `pkg/planner/core/operator/logicalop`。
-
-`LogicalSequence` 表示一个有顺序约束的 CTE（公用表表达式）计划组：前面的子节点是 CTE producer，最后一个子节点是主查询。节点本身不执行 CTE，也不保存 CTE 专属字段；它主要维持子计划顺序，并把对外可见的 schema、谓词、列需求和统计语义落到主查询子节点。Rust 优化器在 `pkg/planner/core/optimizer_runtime.rs` 的 `push_down_sequence_owned`/`attach_pushed_sequence` 中识别和重建该节点。
-
-当前移植边界必须特别说明：Rust 的逻辑节点及 Sequence 下推规则已经存在并被独立测试覆盖；但 `pkg/planner/core/operator/physicalop/physical_sequence.rs` 中 `ExhaustPhysicalPlans4LogicalSequence` 的完整逻辑仍以注释形式保留。因此，不能仅凭本文件断言 Rust 已具备 Go 版本从逻辑 Sequence 到物理 Sequence 的完整物理化链路。
+`impl LogicalPlan for LogicalSequence` 提供动态向下转型和基类访问，并将上述四个专用行为接入统一的逻辑计划 trait 分派。
 
 ## 核心职责
 
@@ -117,7 +113,7 @@ RustCodeGraph 将目标文件标为被多个逻辑算子和 memo 文件使用，
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_sequence.go`。结构与核心意图一致：两者都只嵌入基础逻辑计划，规定前置孩子为 CTE producer、末孩子为主查询，并只对主查询执行 schema、谓词下推、列裁剪和统计语义。
+结构与核心意图一致：两者都只嵌入基础逻辑计划，规定前置孩子为 CTE producer、末孩子为主查询，并只对主查询执行 schema、谓词下推、列裁剪和统计语义。
 
 主要差异如下：
 
@@ -129,8 +125,6 @@ RustCodeGraph 将目标文件标为被多个逻辑算子和 memo 文件使用，
 - 可能属性：Go 遍历 `PossiblePropertiesInfo`，忽略 `nil` 元素，并聚合 `HasTiFlash`；Rust 接收纯 `&[bool]`，不存在 nil，要求非空且全部为真。
 - 哈希/相等：Go 生成代码按 `BaseLogicalPlan`（其中用 plan ID 区分 Sequence）计算；当前 Rust `hash64_equals_generated.rs` 按动态 schema 计算。Rust 独立测试明确覆盖了这一现状，因此它是可观察差异，不应描述为完全等价。
 - 物理化：Go `physicalop/physical_sequence.go::ExhaustPhysicalPlans4LogicalSequence` 已按 Root/MPP 与 CTE producer 状态生成候选；Rust对应文件只保留注释参考，尚不能作为已接线能力。
-
-Go 的计划构造入口 `logical_plan_builder.go` 会过滤无需物化的 CTE、按定义顺序创建 `LogicalCTE`、把主查询追加到最后并设置 `FlagPushDownSequence`。本次搜索未发现 Rust 逻辑计划 builder 中等价的直接构造入口；Rust 已确认的生产构造点是 Sequence 下推规则的重建路径。这是迁移状态说明，不代表 CTE 的其他 Rust 构造路径绝对不存在。
 
 ## 扩展指南
 
@@ -146,18 +140,3 @@ Go 的计划构造入口 `logical_plan_builder.go` 会过滤无需物化的 CTE�
 - 物理接线完成时同步 `physical_sequence_test.rs`，覆盖 Root/MPP、排序属性和 CTE producer 状态组合。
 
 性能风险主要来自误遍历或克隆全部 producer；当前热路径只定位末孩子，除统计值克隆外为常数级节点开销。正确性风险高于局部性能风险：任何孩子重排、主查询丢失或将谓词传播到 producer 都可能改变 CTE 语义。兼容性上还需对照 Go 的 reload、nil possible-properties、plan-ID hash 以及 MPP 候选规则。
-
-## 验证依据
-
-本说明基于以下本地证据，未运行 Cargo：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标 Rust 文件可读取且共 99 行。
-- RustCodeGraph `explore "pkg/planner/core/operator/logicalop/logical_sequence.rs LogicalSequence"`：识别 `Schema`、`PredicatePushDown`、`PruneColumns`、`DeriveStats`、`PreparePossibleProperties` 以及优化器侧 Sequence 相关符号。
-- RustCodeGraph `node --file pkg/planner/core/operator/logicalop/logical_sequence.rs`：核对目标文件全部定义和 trait 实现。
-- RustCodeGraph `node` 核对 `base_logical_plan.rs` 的 `PredicatePushDownPlan`、`LogicalPlan`、`BaseLogicalPlan`、`NewBaseLogicalPlan` 与 `PreparePossibleProperties`；核对 `optimizer_runtime.rs` 的 `PushedSequence`、`push_down_sequence_owned`、`attach_pushed_sequence`；核对 `hash64_equals_generated.rs` 的 Sequence 哈希/相等实现。
-- crate 与模块边界：`pkg/planner/core/operator/logicalop/Cargo.toml`、`pkg/planner/core/operator/logicalop/lib.rs`。
-- Go 对照：`pkg/planner/core/operator/logicalop/logical_sequence.go`、`pkg/planner/core/logical_plan_builder.go`、`pkg/planner/core/operator/physicalop/physical_sequence.go`。
-- Rust 物理迁移边界：`pkg/planner/core/operator/physicalop/physical_sequence.rs`，其中逻辑 Sequence 穷举物理计划的主体仍为注释。
-- 独立测试：`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs::push_down_sequence_moves_sequence_below_unary_main_query` 与 `pkg/planner/core/operator/logicalop/logicalop_test/hash64_equals_test.rs::TestLogicalSequence`。`pkg/planner/core/rule_push_down_sequence_test.rs` 还覆盖简化 `PlanNode` 模型的下推、非重复与嵌套顺序，但它不直接实例化本文件类型，故只作为规则意图的辅助证据。
-
-结构验收应使用任务指定命令，要求目标文件存在且上述固定二级标题恰好 11 个。人工复核重点是：所有“已实现”陈述均可由当前 Rust 源码或独立测试支持；Go 完整实现和 Rust 注释骨架仅标为对照或迁移缺口。

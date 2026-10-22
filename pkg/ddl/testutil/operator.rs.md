@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-testutil` crate，由 `pkg/ddl/testutil/lib.rs` 公开为 `operator` 模块。它不是 DDL owner、作业调度或 schema 状态机的一部分，而是一组供数据流算子测试使用的内存 Source/Sink 辅助设施：测试可以预置输入、连接通道、异步搬运数据，再收集输出。crate 边界由 `pkg/ddl/testutil/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/ddl/testutil"` 确认。
-
-RustCodeGraph 将该文件识别为包含 31 个符号的 Rust 源文件；仓库 Rust 调用搜索目前只找到同 crate 的 `pkg/ddl/testutil/operator_test.rs` 直接构造这些辅助类型。因此，它当前是已实现并有单元测试的测试工具，但尚未成为 Rust DDL 执行主链的组成部分。Go 对照则已在 `pkg/ddl/export_test.go::FetchChunk4Test` 中用于连接表扫描算子。
+`OperatorTestSource<T>` 在 `Open` 创建的后台线程中按顺序发送预置值，最后关闭通道；`Close` 负责等待线程结束。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ RustCodeGraph 将该文件识别为包含 31 个符号的 Rust 源文件；仓�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/testutil/operator.go`：
-
 - Go `chan T` 对应 Rust `DataChannel<T>`；Go 的无缓冲发送天然阻塞，Rust 用单元素入队后等待队列清空模拟。
 - Go `errgroup.Group` 对应 Rust 的单个 `Option<JoinHandle<()>>`。当前两边每个辅助对象都只启动一个 goroutine/thread；Rust 额外显式暴露 `AlreadyOpen` 和 `WorkerPanicked`。
 - Go Source 接受可变参数 `toBeSent ...T`，Rust 构造器接受 `Vec<T>`；两边均按输入顺序发送并在结束后关闭通道。
@@ -86,7 +82,7 @@ RustCodeGraph 将该文件识别为包含 31 个符号的 Rust 源文件；仓�
 - Go Sink 的 `collected []T` 直接返回；Rust 为跨线程共享改为 `Arc<Mutex<Vec<T>>>`，`Collect` 因而要求 `T: Clone` 并返回快照。
 - Go 版本允许多次 `Open` 向同一个 `errgroup` 增加 goroutine；Rust 在 worker 尚未 join 时拒绝重复打开。这是有意的安全边界，但不是逐字等价行为。
 
-Go 的真实使用证据是 `pkg/ddl/export_test.go::FetchChunk4Test`：它构造测试 Source/Sink，经 `operator.Compose` 连接 `ddl.NewTableScanOperator`，再执行/关闭异步管线并读取扫描结果。Rust 独立测试目前只验证 Source 与 Sink 直接相连，尚未覆盖这条 DDL 表扫描集成路径。
+Rust 独立测试目前只验证 Source 与 Sink 直接相连，尚未覆盖这条 DDL 表扫描集成路径。
 
 ## 扩展指南
 
@@ -96,12 +92,3 @@ Go 的真实使用证据是 `pkg/ddl/export_test.go::FetchChunk4Test`：它构�
 - 增加结果读取 API 时注意锁持有时长与克隆成本；若数据量大，可考虑在关闭后转移所有权，但需保持 Go `Collect` 的调用预期或清晰记录差异。
 - 如需复刻 `FetchChunk4Test` 集成行为，应另在对应 Rust DDL 独立测试中覆盖 `source → scan operator → sink`，并验证空输入、单元素、多元素、算子错误和关闭顺序；不能用当前直连测试代替。
 - 对公开 API 的命名或语义调整需同步核对 `pkg/ddl/testutil/operator.go`、`pkg/dxf/operator/{operator.rs,compose.rs}` 和 `pkg/ddl/testutil/operator_test.rs`，避免迁移接口继续漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/ddl/testutil` 确认本 crate 的 Rust/Go 源与独立测试；`node --file pkg/ddl/testutil/operator.rs --offset 1 --limit 400` 读取本文件全部 268 行；`query OperatorTestSource`、`query OperatorTestSink`、`query DataChannel` 核对主要符号；`node` 读取 `pkg/dxf/operator/operator.rs` 与 `pkg/dxf/operator/compose.rs` 核对 DXF traits 和 Compose 通道契约。
-- 源码与模块边界：`pkg/ddl/testutil/operator.rs`、`pkg/ddl/testutil/lib.rs`、`pkg/ddl/testutil/Cargo.toml`。
-- Rust 回归证据：`pkg/ddl/testutil/operator_test.rs::source_uses_go_equivalent_unbuffered_channel`，验证未启动 Sink 时 Source 保持阻塞，启动后按序收集 `[1, 2, 3]`，并验证 `"testSink"` 名称。
-- Go 对照与集成证据：`pkg/ddl/testutil/operator.go`；`pkg/ddl/export_test.go::FetchChunk4Test`。
-- 仓库调用搜索：`rg` 查找 `NewOperatorTestSource`、`NewOperatorTestSink`、`OperatorTestSource`、`OperatorTestSink` 与 `DataChannel()`；Rust 侧仅发现独立测试的直接使用，Go 侧发现 `FetchChunk4Test` 的集成使用。
-- 本任务为纯文档分析，按总计划不运行 Cargo；结构验收以任务指定的 11 个固定二级标题检查为准。

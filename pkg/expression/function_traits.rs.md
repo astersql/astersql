@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`function_traits.rs`](function_traits.rs) 是 `astersql-expression` crate 的内置函数语义分类表。crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确定；[`lib.rs`](lib.rs) 一方面用 `mod function_traits; pub use function_traits::*;` 将公开常量和查询函数再导出到 crate 根，另一方面以 `function_traits_kernel` 名称装入同一文件，供 crate 内部代码和独立测试稳定引用。它不执行内置函数，而是回答“某个规范化函数名具有什么优化或 DDL 属性”。
-
-该文件位于 SQL 表达式层和多个策略消费者之间：规划器据此决定计划缓存中的延迟求值，DDL 据此拒绝生成列中的不安全函数，表达式工具据此保留有副作用的重复表达式。RustCodeGraph 的文件节点还直接列出 [`pkg/ddl/generated_column.rs`](../ddl/generated_column.rs)、[`builtin_inference_test.rs`](builtin_inference_test.rs) 和 [`pkg/planner/core/expression_rewriter.rs`](../planner/core/expression_rewriter.rs) 三个使用文件。
+通过小型查询 API 隐藏集合实现，使调用者只依赖语义判定；所有字符串查询均为大小写敏感的精确匹配，调用方应传入解析器已规范化的小写名。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ RustCodeGraph 对若干薄查询函数没有产生函数级 callers 输出，因
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`function_traits.go`](function_traits.go)。Rust 的 `UNCACHEABLE_FUNCTIONS`、`UNFOLDABLE_FUNCTIONS`、`DISABLE_FOLD_FUNCTIONS`、`TRY_FOLD_FUNCTIONS`、生成列非法表、延迟表、分区函数/运算符表、不等式表、可变影响表、空 noop 表和布尔函数表均按 Go 同名或同职责变量移植；Go 使用 `ast` 常量和 `opcode.Op`，Rust 当前用对应的小写字符串及本地 `PartitionOp`。
+Rust 的 `UNCACHEABLE_FUNCTIONS`、`UNFOLDABLE_FUNCTIONS`、`DISABLE_FOLD_FUNCTIONS`、`TRY_FOLD_FUNCTIONS`、生成列非法表、延迟表、分区函数/运算符表、不等式表、可变影响表、空 noop 表和布尔函数表均按 Go 同名或同职责变量移植；Go 使用 `ast` 常量和 `opcode.Op`，Rust 当前用对应的小写字符串及本地 `PartitionOp`。
 
-Go `IsDeferredFunctions` 先查 `deferredFunctions`，再在 `SYSDATE` 且 `GetSysdateIsNow()` 时返回真；Rust 的 `IsDeferredFunctions -> is_deferred` 保留相同分支。Go 注释说明延迟函数必须本身可折叠，Rust 将这项约束通过两张独立集合表达，维护时仍须人工保持不冲突。
+Go `IsDeferredFunctions` 先查 `deferredFunctions`，再在 `SYSDATE` 且 `GetSysdateIsNow()` 时返回真；Rust 的 `IsDeferredFunctions -> is_deferred` 保留相同分支。
 
-Go 的 `TestIllegalFunctions4GeneratedColumns` 对全部 builtin 的合法列表做精确快照。Rust [`function_traits_test.rs`](function_traits_test.rs) 保留同一测试意图，但明确只对 Rust 当前已注册 builtin 的交集比较，并额外覆盖正反例、全部分区运算符、`sysdate_is_now` 两个分支、空 noop 和布尔分类。[`builtin_inference_test.rs`](builtin_inference_test.rs) 则补充 `embed_text` 的跨注册表约束。两种实现当前都把 `embed_text` 放入不可折叠、生成列非法和可变影响分类。
+Rust [`function_traits_test.rs`](function_traits_test.rs) 保留同一测试意图，但明确只对 Rust 当前已注册 builtin 的交集比较，并额外覆盖正反例、全部分区运算符、`sysdate_is_now` 两个分支、空 noop 和布尔分类。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Go 的 `TestIllegalFunctions4GeneratedColumns` 对全部 builtin 的合法列表
 测试必须继续放在独立文件中。直接分类行为应扩展 [`function_traits_test.rs`](function_traits_test.rs)，至少覆盖命中与未命中、会话开关分支及精确注册表决策；新增 inference builtin 还应同步相关独立 builtin 测试。行为来自 Go 移植时，应同步核对 [`function_traits.go`](function_traits.go) 和 [`function_traits_test.go`](function_traits_test.go)，保留 Go 的安全约束，不用缩减快照来绕过失败。
 
 兼容性风险集中在错误分类：漏标可导致错误复用计划、规划期提前求值、删除副作用表达式或允许不安全生成列；误标会降低缓存/折叠收益或拒绝原本合法的 SQL。性能风险通常不是单次哈希查询，而是新增策略是否迫使更多表达式退出缓存、折叠或去重。名称必须使用解析器/注册表实际采用的规范拼写。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 Rust 与 Go 文件；`node --file pkg/expression/function_traits.rs` 读取了完整 340 行，并报告三个直接使用文件。
-- RustCodeGraph `query`：确认 Rust/Go 两个 `IsDeferredFunctions` 定义，以及 Rust 的 `is_illegal_generated_column_function`、`is_allowed_partition_function`、`has_mutable_effect` 定义。
-- RustCodeGraph `callees IsDeferredFunctions`：确认 Rust 调用 `is_deferred` 和 `BuildContext::GetSysdateIsNow`；`callers` 对所查薄查询未返回函数级边，因此文档只陈述随后由源码定位核实的调用关系。
-- 已读生产与装配文件：[`function_traits.rs`](function_traits.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`util.rs`](util.rs)、[`pkg/ddl/generated_column.rs`](../ddl/generated_column.rs)、[`pkg/planner/core/expression_rewriter.rs`](../planner/core/expression_rewriter.rs)。
-- 已读 Go 对照与测试：[`function_traits.go`](function_traits.go)、[`function_traits_test.go`](function_traits_test.go)。
-- 已读独立 Rust 测试：[`function_traits_test.rs`](function_traits_test.rs)、[`builtin_inference_test.rs`](builtin_inference_test.rs)，并由代码搜索确认 [`fts_to_like_36_aster_unit_test.rs`](fts_to_like_36_aster_unit_test.rs) 还有一组分类烟雾覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令校验恰有十一个固定二级标题，并人工复核链接、符号名、调用边及边界陈述。

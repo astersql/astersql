@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-importer` crate；crate 根 `pkg/executor/importer/lib.rs` 以 `mod kv_encode` 装入它，并通过 `pub use kv_encode::*` 对外导出公共接口。它位于导入链路中“解析后的逻辑行”与 Lightning/TiKV “记录 KV、索引 KV”之间：上游准备字段映射、会话参数和行号，本文件补齐并转换一行，再把最终记录交给 `BaseKVEncoder::Record2KV`。它不负责解析 CSV/Parquet、不写 SST，也不附加 MVCC 版本。
-
-常规文件导入从 `TableImporter::getKVEncoder`（`table_import.rs`）进入 `NewTableKVEncoder`，随后 `ChunkEncoder::encodeLoop`（`chunk_process.rs`）逐行调用 `TableKVEncoder::Encode`。查询导入、大小采样和冲突处理还可从持久化 `TableInfo` 经 `NewTableDefinitionFromMeta`、`NewTableKVEncoderFromMeta` 构造同一编码流水线。
+调用 `ImportDatumConverter` 做目标列类型转换，再由 `BaseKVEncoder::ProcessColDatum` 补默认值、自动值等列语义，并求值生成列。
 
 ## 核心职责
 
@@ -78,13 +76,10 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 主流程直接对应 `pkg/executor/importer/kv_encode.go`：`TableKVEncoder`、两个控制器构造入口、字段映射、用户变量、缺失 NOT NULL 时间列、SET 求值、cast、`ProcessColDatum`、隐式 row ID、生成列、`Close` 以及索引过滤均保留。
-
 已确认的 Rust 扩展/差异如下：
 
 - Rust 新增 `NewTableKVEncoderFromMeta`、`CanonicalImportDatumConverter`、`NewTableDefinitionFromMeta` 和 `encodingColumnType`，服务查询导入、采样及不具备 Go `table.Table` mutation 接口的运行时；Go 同路径文件没有这些入口。
 - Rust 构造阶段显式校验 Base encoder 与目标表的列数；Go 的 `newTableKVEncoderInner` 不做此检查。
-- Go `Encode` 最终把原始 `rowID` 传给 `Record2KV`；Rust 对非聚簇表从 record 末尾取 `AutoIDFn` 生成的实际 handle，保证分片/非恒等 row ID 的记录键与行内容一致。Rust 独立测试覆盖 identity 与 sharded 两种情况。
 - Go 的 RowID allocator `Rebase` 可返回错误并传播；当前 Rust allocator 调用没有可传播返回值。不能据此假定两边故障模型完全相同。
 - Go 的缺失时间列直接用 `types.CurrentTime`；Rust 委托 `ImportDatumConverter::CurrentTime`，使控制器实现与 canonical 实现可分别决定转换细节。
 
@@ -96,14 +91,3 @@ Rust 主流程直接对应 `pkg/executor/importer/kv_encode.go`：`TableKVEncode
 - 修改索引筛选时同步 `GetIndicesGenKV` 与 `NewTableDefinitionFromMeta`：前者影响引擎/调度分组，后者决定实际 KV 编码；两者对 Public、聚簇主键的判断若漂移，会造成计数与输出不一致。
 - 保持 Go 对照逻辑；若 Rust 为真实运行时增加必要能力，应在本文列明差异，并在 `kv_encode_test.rs` 或同目录独立测试文件增加回归。性能上需维持缓存复用，避免逐行重复构造列元数据或不必要 clone。
 - 新调用方必须明确 `row_id` 的来源、session SQL mode/时间戳、allocator 所有权，并保证所有退出路径调用 `Close`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/importer` 确认目标、Go 对照及独立测试均已索引。
-- RustCodeGraph `node --file pkg/executor/importer/kv_encode.rs`：逐行读取完整 522 行，确认构造入口、类型映射、三段行处理流水线、资源关闭和索引过滤实现；文件节点报告被 11 个文件使用。
-- RustCodeGraph 精确源码节点：读取 `table_import.rs` 的构造调用、`chunk_process.rs` 的逐行调用、`sampler.rs` 的元数据/采样调用、`session/runtime/import_query.rs` 的查询导入调用，以及 `dxf/importinto/conflict_resolution.rs` 的 worker 构造与编码调用。
-- crate/模块边界：`pkg/executor/importer/Cargo.toml` 与 `pkg/executor/importer/lib.rs`。
-- Go 对照：`pkg/executor/importer/kv_encode.go`；Go 回归：`pkg/executor/importer/kv_encode_test.go`（identity/sharded row ID、tinyint/enum cast 错误）。
-- Rust 独立测试：`pkg/executor/importer/kv_encode_test.rs`（整数主键 handle、分片 row ID、cast 错误、VARCHAR 索引恢复）；`pkg/executor/importer/kv_encode_aster_unit_test.rs`（元数据 cast/隐藏 handle、Public 非聚簇索引过滤）。
-- 调用搜索：精确 `rg` 核对 `NewTableKVEncoder*`、`NewTableDefinitionFromMeta`、`GetIndicesGenKV`、`GetNumOfIndexGenKV` 及 `.Encode(` 的 Rust 调用点。RustCodeGraph 的通用符号 `callers/callees` 查询未产生可用输出，故按索引图覆盖不足规则用该精确搜索补齐证据。
-- 本任务只新增说明文档；按计划不运行 Cargo。交付前以任务指定命令验证恰有 11 个固定二级章节，并人工复核文档未把未证实设计写成现状。

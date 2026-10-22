@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-lightning-common` crate，负责把 Lightning 导入链路中形态各异的 `CommonError` 归一为“可重试”或“不可重试”的布尔决策。模块在 [`pkg/lightning/common/lib.rs`](lib.rs) 中以私有 `mod retry` 装配，再通过 `pub use retry::*` 导出公开项；crate 边界及 Go 包映射由 [`pkg/lightning/common/Cargo.toml`](Cargo.toml) 声明。
-
-当前可确认的生产消费点是 [`pkg/lightning/common/util.rs`](util.rs) 的 `Retry`：动作失败且不是 not-found 时，它调用 `IsRetryableError(Some(&error))` 决定是否进入下一次尝试。因此本文件只负责错误分类，不负责等待、尝试次数、日志或动作执行。RustCodeGraph 将本文件标记为被 `util.rs` 和独立测试 `retry_test.rs` 使用；其函数级外部 caller 查询未返回额外生产调用边。
+`ErrWriteTooSlow` 构造一个专用 `CommonError`，把“gRPC 写入长期阻塞”转换为显式可重试种类。
 
 ## 核心职责
 
@@ -78,14 +76,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go `retry.go::isSingleRetryableError` 同样在 Cause 解包后、sentinel 分类前调用 `ossstore.IsTransientNoCredentialsError`。Rust helper 接收扁平 Message，测试用 ECS timeout 与本地配置文件缺失作正反例，避免把所有 credential-chain 错误都判为瞬态。
-
-直接对照文件是 [`pkg/lightning/common/retry.go`](retry.go)，Rust 保留了 Go 的主要分类层次：消息片段列表、TiKV/PD 错误 ID、write-too-slow sentinel、URL 内因、网络/系统调用、MySQL/TiDB 编号、HTTP 状态、gRPC code、组合错误的全员可重试规则。Rust 独立测试 [`retry_test.rs`](retry_test.rs) 与 Go 测试 [`retry_test.go`](retry_test.go) 覆盖相同的主要正反例。
+直接对照文件是 [`pkg/lightning/common/retry.go`](retry.go)，Rust 保留了 Go 的主要分类层次：消息片段列表、TiKV/PD 错误 ID、write-too-slow sentinel、URL 内因、网络/系统调用、MySQL/TiDB 编号、HTTP 状态、gRPC code、组合错误的全员可重试规则。
 
 实现表示方式存在以下差异：
 
 - Go 依靠具体错误类型、`errors.Cause`、`errors.As` 和 gRPC status 解码；Rust 将这些信息预先归一到 `CommonError` 的字符串 kind、编号、ID 和可选字段。因此 Rust 语义正确性还依赖上游错误转换是否填入一致字段。
-- Go 的 `ErrWriteTooSlow` 是包级错误值，Rust 是每次构造 `CommonError` 的函数。
 - Go 在遇到非取消的不可重试错误时记录类型和值；Rust 分类器没有对应日志副作用。
 - Go 使用两个 URL 取消消息条目；Rust 用较短的共同前缀包含匹配，同时覆盖二者。
 - Go 的网络类型匹配可通过标准库 unwrap 查找嵌套 syscall；Rust 的普通根因解包只沿第一个 cause，而网络 syscall 辅助函数遍历全部 `Causes`。
@@ -100,10 +95,3 @@ Go `retry.go::isSingleRetryableError` 同样在 Cause 解包后、sentinel 分�
 - 每次规则变更都应同步独立的 `pkg/lightning/common/retry_test.rs`，不要把测试内嵌到生产源文件；若目标是继续保持 Go 对齐，还要核对并按实际 Go 行为更新 `retry_test.go` 的同类用例。
 - 若要改变尝试次数、间隔、not-found 优先级或错误包装，应修改并测试 `util.rs::Retry`，而不是把执行策略塞入本分类文件。
 - 兼容性风险主要是永久错误被误判后重复写入，以及瞬态错误被拒绝后提前终止导入；性能风险主要来自 cause 深度和消息扫描，但当前列表很小。新增递归结构时还应保持 `CommonError` 无环这一值语义前提。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`isSingleRetryableError` 分类顺序、`retry_test.rs` ECS timeout/本地配置缺失正反例、Go `retry.go`；helper 实现在 `pkg/objstore/ossstore/store.rs::IsTransientNoCredentialsError`，仅需 IP 与超时文案共同命中。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

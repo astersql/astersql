@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-dbutil` crate 的表级元数据辅助模块，由 [`pkg/util/dbutil/lib.rs`](lib.rs) 以 `pub mod table` 暴露。crate 清单 [`pkg/util/dbutil/Cargo.toml`](Cargo.toml) 将 Go 包对应关系声明为 `pkg/util/dbutil`，而本文件直接依赖 `astersql-infoschema` 提供的 `CiString` 与 `ColumnInfo`。
-
-它只实现两个小型、无状态的查询/校验原语：按不区分大小写的名称查列，以及拒绝对非 Normal 模式表执行受保护操作。RustCodeGraph 将本文件识别为 8 个符号，并显示索引中的使用文件为 `pkg/util/dbutil/table_test.rs` 与 `pkg/planner/core/expression_rewriter.rs`；进一步核查后，后者调用的是 `IndexInfo::FindColumnByName`（定义于 `pkg/meta/model/index.rs`），不是本文件函数。因此当前 Rust 生产代码中没有找到本模块 API 的真实调用者，确定的 Rust 调用仅来自独立测试。
+只实现两个小型、无状态的查询/校验原语：按不区分大小写的名称查列，以及拒绝对非 Normal 模式表执行受保护操作。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ RustCodeGraph 的 `query` 能定位 `TableMode`、`FindColumnByName`、`CheckTab
 
 ## 与 Go 版本的对应关系
 
-[`pkg/util/dbutil/table.go`](table.go) 是直接对照文件。`FindColumnByName` 的 Rust 实现保持了 Go 版的核心语义：查询名先转小写、顺序扫描列、比较折叠名称、返回第一项或缺失值。类型差异是 Go 接受 `[]*model.ColumnInfo` 并返回可空指针，Rust 接受 `&[ColumnInfo]` 并返回 `Option<&ColumnInfo>`，从类型上排除了切片元素为空指针的情况。
+`FindColumnByName` 的 Rust 实现保持了 Go 版的核心语义：查询名先转小写、顺序扫描列、比较折叠名称、返回第一项或缺失值。类型差异是 Go 接受 `[]*model.ColumnInfo` 并返回可空指针，Rust 接受 `&[ColumnInfo]` 并返回 `Option<&ColumnInfo>`，从类型上排除了切片元素为空指针的情况。
 
-`CheckTableModeIsNormal` 同样保留“仅 Normal 放行”的判断和包含表名/模式的错误意图，但并非完全等价移植：Go 使用 `ast.CIStr`、`model.TableMode` 与 `infoschema.ErrProtectedTableMode.FastGenByArgs` 生成结构化 TiDB 错误；Rust 使用 `astersql_infoschema::CiString`、本地 `TableMode` 与普通字符串。这意味着错误码、类型识别、统一格式化，以及与元数据层模式枚举的直接连接目前没有在本文件中体现。
+`CheckTableModeIsNormal` 同样保留“仅 Normal 放行”的判断和包含表名/模式的错误意图，但并非完全等价移植：Go 使用 `ast.CIStr`、`model.TableMode` 与 `infoschema.ErrProtectedTableMode.FastGenByArgs` 生成结构化 TiDB 错误；Rust 使用 `astersql_infoschema::CiString`、本地 `TableMode` 与普通字符串。
 
-Go 注释说明该检查用于优化阶段、外键触发器构建以及某些未进入 `ResolveContext` 的 DDL 执行路径；仓库引用也与此一致。Rust 当前缺少这些生产调用边，因此应把本模块视为已实现并测试的局部移植，而不是已完成全链路替换。
+Rust 当前缺少这些生产调用边，因此应把本模块视为已实现并测试的局部移植，而不是已完成全链路替换。
 
 ## 扩展指南
 
@@ -84,11 +82,3 @@ Go 注释说明该检查用于优化阶段、外键触发器构建以及某些�
 - 若调用方需要按错误码判断受保护表，应把 `String` 升级为项目统一错误类型，并同步错误兼容测试。不能只改文案来模拟结构化错误。
 - 性能敏感且重复查列的场景可由上层建立名称索引；本函数的职责是简单线性查询，不应在这里引入全局缓存或延长元数据生命周期。
 - 测试必须继续放在独立的 `pkg/util/dbutil/table_test.rs`，不要内嵌进生产源文件；Go 行为变更时同步审查 `pkg/util/dbutil/table.go` 与 `pkg/util/dbutil/table_test.go`。
-
-## 验证依据
-
-- 源码与边界：`pkg/util/dbutil/table.rs`（完整 57 行）、`pkg/util/dbutil/lib.rs`、`pkg/util/dbutil/Cargo.toml`。
-- Go 对照：`pkg/util/dbutil/table.go`；生产引用通过精确检索确认于 `pkg/ddl/executor.go`、`pkg/planner/core/optimizer.go`、`pkg/planner/core/operator/physicalop/foreign_key.go` 和 `pkg/util/dbutil/index.go`。
-- 测试依据：`pkg/util/dbutil/table_test.rs` 的 `protected_table_modes_are_rejected_with_table_identity` 覆盖 Normal/Import/Restore 与精确错误文本；`find_column_by_name_is_case_insensitive_and_preserves_missing_semantics` 覆盖大小写不敏感、保留原名与缺失返回 `None`。`pkg/util/dbutil/table_test.go` 的 `TestTable` 证明 Go 版在解析所得列集合上的命中/缺失意图；Go 文件没有针对模式校验的同目录测试。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳 `1791342965170`；`files --filter pkg/util/dbutil` 确认目标、模块、Go 对照和测试均已索引；`node --file pkg/util/dbutil/table.rs` 返回完整源码；`query` 定位三个主要符号；`callers`/`callees` 未给出同名函数边，因此调用关系以精确引用检索补证并剔除了 `IndexInfo::FindColumnByName` 的同名误关联。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核没有把 Go 侧调用链描述为 Rust 已接线事实。

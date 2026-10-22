@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-table-tables` crate 的缓存表核心状态模块，由 [`lib.rs`](lib.rs) 以公开模块 `pub mod cache` 暴露。它承载单表内存快照、读写租约换算、远程状态句柄串行访问和容量门槛判断；远程锁状态机的具体实现位于 [`state_remote.rs`](state_remote.rs)，其中 `StateRemoteHandle<S>` 实现本文件定义的 `StateRemote` trait。
-
-当前 Rust 接线边界需要特别说明：仓库搜索显示，这里的 `CachedTable<R>` 及其方法目前只被独立测试 [`cache_test.rs`](cache_test.rs) 直接构造和调用，尚未实现上层 `table-dependency` crate 在 [`../table.rs`](../table.rs) 中定义的 `CachedTable: Table` 接口，也没有接入 Go 版本的 SQL 执行、事务变更和异步整表装载链。因此它是已经可测试的底层核心，而不是完整 Rust 缓存表功能的生产入口。
+承载单表内存快照、读写租约换算、远程状态句柄串行访问和容量门槛判断；远程锁状态机的具体实现位于 [`state_remote.rs`](state_remote.rs)，其中 `StateRemoteHandle<S>` 实现本文件定义的 `StateRemote` trait。
 
 ## 核心职责
 
@@ -78,17 +76,12 @@
 
 | Rust 符号 | Go 对照 | 对齐情况 |
 | --- | --- | --- |
-| `CacheData` | `cacheData` | 对齐 `Start`、`Lease` 和“空缓冲表示装载中”；Rust 用 `Option<Arc<BTreeMap<...>>>`。 |
-| `lease_from_ts` | `leaseFromTS` | 对齐丢弃逻辑位并在物理时间上加租约；Rust 对数值溢出额外采用饱和语义。 |
-| `TokenLimit<R>` | `tokenLimit chan StateRemote` | 对齐容量一、阻塞/非阻塞取得和归还；Rust 重复归还会断言。 |
-| `try_read_from_cache` | `TryReadFromCache` | 对齐有效窗口、loading 和半租约阈值；Rust 只返回 `should_renew`，不自行启动 goroutine，也没有 Go failpoint 强制触发分支。 |
-| `install_cache` | `updateLockForRead` 的异步装载完成分支 | 只抽取快照安装与大小统计；Rust 没有扫描存储、指标记录和 `Start == ts` 的陈旧装载防护。 |
-| `can_apply_mutation` | `AddRecord` / `UpdateRecord` 前的大小检查 | 对齐“检查既有大小、当前变更可跨界”；Rust 尚未返回 `ErrOptOnCacheTable` 或接入表变更。 |
-| `update_lock_for_read` | `updateLockForRead` 中的 `LockForRead` | 仅对齐远程请求参数；Rust 不负责异步调度和装载原表。 |
-| `renew_lease` | `renewLease` | 对齐旧租约、新租约和正值更新规则；Go 另有日志、retryable-error 区分和 ABA failpoint 测试。 |
-| `lock_for_write` | `lockForWrite` | 对齐固定 5 秒写租约；Go 另有 `WriteLockAndKeepAlive` / `renew`，Rust 本文件尚无周期保活。 |
-
-Go 集成测试 [`cache_test.go`](cache_test.go) 还验证 SQL 扫描/索引/连接命中、写入使缓存失效、事务 ABA、全局租约变量、等待时长和指标；这些是完整 Go 子系统的证据，不代表 Rust 单元已经覆盖相同集成行为。
+| `CacheData` | `cacheData` | 对齐 `Start`、`Lease` 和“空缓冲表示装载中”；Rust 用 `Option<Arc<BTreeMap<...>>>`。|
+| `lease_from_ts` | `leaseFromTS` | 对齐丢弃逻辑位并在物理时间上加租约；Rust 对数值溢出额外采用饱和语义。|
+| `try_read_from_cache` | `TryReadFromCache` | 对齐有效窗口、loading 和半租约阈值；Rust 只返回 `should_renew`，不自行启动 goroutine，也没有 Go failpoint 强制触发分支。|
+| `install_cache` | `updateLockForRead` 的异步装载完成分支 | 只抽取快照安装与大小统计；Rust 没有扫描存储、指标记录和 `Start == ts` 的陈旧装载防护。|
+| `can_apply_mutation` | `AddRecord` / `UpdateRecord` 前的大小检查 | 对齐“检查既有大小、当前变更可跨界”；Rust 尚未返回 `ErrOptOnCacheTable` 或接入表变更。|
+| `lock_for_write` | `lockForWrite` | 对齐固定 5 秒写租约；Go 另有 `WriteLockAndKeepAlive` / `renew`，Rust 本文件尚无周期保活。
 
 ## 扩展指南
 
@@ -99,13 +92,3 @@ Go 集成测试 [`cache_test.go`](cache_test.go) 还验证 SQL 扫描/索引/连
 - 修改大小策略时需明确近似口径及“当前变更跨界”的兼容行为；相关 Rust 测试应更新 [`cache_test.rs`](cache_test.rs)，SQL 层接通后还应增加独立集成测试，而不是只验证方法返回值。
 - 修改租约换算、窗口边界或远程协议时，要同步检查 [`state_remote.rs`](state_remote.rs) 及其独立测试 [`state_remote_test.rs`](state_remote_test.rs)，特别关注逻辑位、到期等号、旧租约参数和远程返回 0 的含义。
 - 若要增强异常安全，优先把远程令牌封装为 Drop 时自动归还的守卫；否则每个新增提前返回、错误映射或 panic 边界都可能遗失令牌。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件、目标文件识别出 30 个符号；`node --file pkg/table/tables/cache.rs` 核对了完整 257 行源码，`query` 精确确认了 `CachedTable`、`TokenLimit`、`try_read_from_cache`、`renew_lease`、`install_cache`、`update_lock_for_read` 和 `can_apply_mutation` 的定义位置。
-- 调用图验证：对目标方法运行了 `callers` / `callees` 与精确 `explore`；因仓库大量跨语言同名符号造成图查询噪声，随后按技能允许的回退方式用 Rust 源码搜索消歧，确认生产 Rust 无直接调用，直接调用集中于 `pkg/table/tables/cache_test.rs`。
-- 已读 Rust 路径：`pkg/table/tables/cache.rs`、`pkg/table/tables/lib.rs`、`pkg/table/tables/cache_test.rs`、`pkg/table/tables/state_remote.rs`、`pkg/table/tables/state_remote_test.rs` 的关联位置，以及 `pkg/table/table.rs` 的上层 `CachedTable` trait。目标目录没有 `doc.go`。
-- 已读边界配置：`pkg/table/tables/Cargo.toml`，确认 crate 名、入口、feature、依赖与 `go-package = "pkg/table/tables"` 移植元数据。
-- 已读 Go 对照：`pkg/table/tables/cache.go` 完整实现与 `pkg/table/tables/cache_test.go` 完整测试，核对了异步装载、容量门槛、读/写租约、ABA、SQL 命中和指标等语义。
-- Rust 独立测试证据：`cache_test.rs` 覆盖 TSO 换算、容量一令牌、有效窗口和半租约、KV 字节计数、当前变更跨界、远程参数、错误后令牌归还、正租约更新快照；这些测试未在本纯文档任务中运行 Cargo。
-- 交付结构以任务规定命令验证，目标是恰好包含本文 11 个固定二级标题；另外人工检查所有本地链接目标存在、没有把 Go 集成行为误写为 Rust 已接线能力。

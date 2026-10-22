@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`type.rs` 是 `astersql-config-kerneltype` crate 中定义“当前二进制属于哪种内核形态”的名称与匹配规则文件。crate 根 `pkg/config/kerneltype/lib.rs` 以原始标识符 `mod r#type` 声明它，再通过 `pub use r#type::*` 无条件对外重导出其 API。因此外部调用方使用 `astersql_config_kerneltype::Name` 或 `astersql_config_kerneltype::IsMatch`，不需要感知 `type` 是 Rust 关键字，也不需要直接访问子模块。
-
-该文件处在配置与进程启动的交界处：`cmd/tidb-server/main.rs::createStoreDDLOwnerMgrAndDomain` 在创建存储、DDL owner manager 和 Domain 之前，把 PD 上报的 `KernelType` 交给 `IsMatch` 检查；不匹配时中止启动。`pkg/util/printer/printer.rs::{PrintTiDBInfo, GetTiDBInfo}` 则使用 `Name` 展示构建的内核类型。
+只把编译期形态映射为名称，并提供纯函数式比较；实际的 Classic/NextGen 布尔判定由相邻的 `classic.rs` 或 `nextgen.rs` 提供。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ RustCodeGraph 的精确 `node` 证据确认 `IsMatch` 调用 `Name`，且 `Name`
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/config/kerneltype/type.go`：两个规范名称、`IsMatch`的空值分支、非空值与 `Name` 直接比较，以及 `Name` 根据 `IsNextGen` 二选一的控制流程均保持一致。Go 返回 `string`，Rust 借助常量返回 `&'static str`，这是所有权/分配模型上的语言差异，不改变字符串内容或比较语义。
+Go 返回 `string`，Rust 借助常量返回 `&'static str`，这是所有权/分配模型上的语言差异，不改变字符串内容或比较语义。
 
 Go 通过 `classic.go`/`nextgen.go` 的 build tag 选择 `IsNextGen`；Rust 通过 Cargo `nextgen` feature 和 `#[cfg]` 条件模块/导入达到同样的“不同形态产生不同二进制”效果。`pkg/config/kerneltype/doc.go` 明确说明不支持在同一部署中混用不同 kernel type 的组件，这是启动链使用 `IsMatch` 阻止混连的背景。
-
-Go 测试 `type_test.go::{TestKernelType, TestIsMatch}` 的核心断言已在独立 Rust 测试 `type_test.rs::{test_kernel_type, test_is_match}` 中保留。Rust 还有 `migration_aster_unit_test.rs`，补充验证 feature 与名称的对应、`IsMatch(Name())`、大小写敏感和两种内核对空值/对方名称的全部矩阵。
 
 ## 扩展指南
 
@@ -90,13 +86,3 @@ Go 测试 `type_test.go::{TestKernelType, TestIsMatch}` 的核心断言已在独
 - 若希望接受大小写不同、首尾空白或别名，接入点是 `IsMatch`，但这是 PD 协议语义扩张，不应只为让某个调用方通过而宽松比较。需增加独立回归用例并评估错误接受不同内核类型的安全风险。
 
 本文件不存在性能热点式复杂路径；扩展的首要风险是协议和部署兼容性，其次才是字符串比较本身。Rust 测试逻辑应继续保持在同目录的独立 `*_test.rs` 文件中，不应内嵌到 `type.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件，其中 7,032 个 Rust 文件；`files --filter pkg/config/kerneltype` 列出本 crate 的 Rust/Go 对照文件。
-- RustCodeGraph 源码/符号证据：`node --file pkg/config/kerneltype/type.rs`；`node pkg/config/kerneltype/type.rs::IsMatch`；`node pkg/config/kerneltype/type.rs::Name`。精确节点显示 `IsMatch -> Name`，`Name` 节点显示来自 `IsMatch` 的调用边。
-- crate 与条件编译证据：`pkg/config/kerneltype/Cargo.toml`、`pkg/config/kerneltype/lib.rs`、`pkg/config/kerneltype/classic.rs`、`pkg/config/kerneltype/nextgen.rs`。
-- 包语义与 Go 对照证据：`pkg/config/kerneltype/doc.go`、`pkg/config/kerneltype/type.go`、`pkg/config/kerneltype/type_test.go`。
-- Rust 测试证据：`pkg/config/kerneltype/type_test.rs`、`pkg/config/kerneltype/migration_aster_unit_test.rs`。前者保留 Go 测试的主要断言，后者增加完整匹配矩阵和 feature/名称一致性检查。
-- 应用调用点证据：`cmd/tidb-server/main.rs::createStoreDDLOwnerMgrAndDomain`、`cmd/tidb-server/stubs.rs::Storage::{new, from_registered}`、`pkg/util/printer/printer.rs::{PrintTiDBInfo, GetTiDBInfo}`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付时使用任务指定的结构命令，验证目标文件存在且恰好包含 11 个固定二级章节。

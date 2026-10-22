@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-memory` crate 的主机/cgroup 内存探针实现，由 [`pkg/util/memory/lib.rs`](lib.rs) 以 `pub mod meminfo` 暴露。它把“机器或容器可用的内存上限”“当前系统已用内存”和“当前 AsterSQL 进程堆占用”统一为字节数查询接口，供服务启动、全局内存仲裁、优化器、内存告警和缓存淘汰逻辑使用。
-
-crate 边界由 [`pkg/util/memory/Cargo.toml`](Cargo.toml) 定义：本文件直接使用 `astersql-util-cgroup`（别名 `cgroup_crate`）读取 cgroup 状态，使用 `sysinfo` 读取宿主机内存，并通过同 crate 的 [`memstats.rs`](memstats.rs) 取得进程堆统计。文件没有条件编译项，也不受 `mem-arbitrator` feature 控制。
+以 `MemTotal`、`MemUsed` 两个可热替换的函数指针提供当前生效的系统内存探针；默认指向普通宿主机实现。
 
 ## 核心职责
 
@@ -121,12 +119,3 @@ Rust 基本沿用 [`meminfo.go`](meminfo.go) 的公共名称、TTL、最小值�
 - 修改 TTL 或并发刷新方式时，应评估系统调用成本、告警时效和惊群；若引入单飞刷新，不能在持缓存写锁期间执行慢 I/O。
 - 测试必须继续放在独立的 [`meminfo_test.rs`](meminfo_test.rs)，不要嵌入生产文件。至少应同步覆盖选择顺序、错误传播、缓存命中/过期、探针切换及并发读取；涉及 Go 语义变更时同时核对 [`meminfo.go`](meminfo.go) 和其调用方预期。
 - 若补齐 Go 的 `RegisterGetMemoryCapacity`、日志或 failpoint 行为，应先确认 Rust 对应基础设施与真实消费者，避免为了表面对齐引入无调用方的桩。
-
-## 验证依据
-
-- 源文件：[`pkg/util/memory/meminfo.rs`](meminfo.rs)，逐项核对了 2 个类型别名、2 个公共静态探针、`CacheValue`、3 个缓存入口、缓存辅助函数、普通/cgroup 探针、选择函数、初始化函数和实例堆函数；文件无 `cfg` 项。
-- crate 与模块：[`pkg/util/memory/Cargo.toml`](Cargo.toml)、[`pkg/util/memory/lib.rs`](lib.rs)，确认 crate 名、模块公开方式、`cgroup_crate`/`sysinfo` 依赖和独立测试挂接。
-- RustCodeGraph：`status` 显示索引覆盖本仓库；`files --filter pkg/util/memory` 收录目标源和测试；`node --file ...` 核对完整源码；`query MemTotal`/`query MemUsed`/`query MemAvailable` 确认符号集合且本文件没有 `MemAvailable`；`node InitMemoryHook`、`node MemTotalCGroup`、`node MemUsedCGroup`、`node InstanceMemUsed`、`node GetMemTotalIgnoreErr` 取得上述调用 Trail。一次 `callers InitMemoryHook` 查询长时间无输出后中止，调用方改由索引文件信息和仓库直接引用搜索核验。
-- Go 对照：[`pkg/util/memory/meminfo.go`](meminfo.go)，核对公共 API、TTL、缓存、cgroup 选择、错误顺序、failpoint、日志和 sysutil 回调差异。
-- 独立测试：[`pkg/util/memory/meminfo_test.rs`](meminfo_test.rs)，确认容器分支不求值闭包，以及非容器 limit 错误与三类比较结果；同目录没有专门的 `meminfo_test.go`，Go 直接证据来自生产对照文件与调用方测试。
-- 上下游直接证据：[`pkg/util/cgroup/cgroup_memory.rs`](../cgroup/cgroup_memory.rs)、[`pkg/util/cgroup/cgroup_cpu_linux.rs`](../cgroup/cgroup_cpu_linux.rs)、[`pkg/util/memory/memstats.rs`](memstats.rs)，以及启动、仲裁器、优化器、告警和 LRU 调用路径。本文只说明当前实现，没有运行 Cargo，也没有把未覆盖行为表述为已验证。

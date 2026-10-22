@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`metrics.rs`](metrics.rs) 是 `astersql-metrics` crate 的包级指标中枢。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod metrics` 暴露本模块，并把 DDL、DistSQL、Domain、Executor、Session、Server、Telemetry、TiKV client 等指标模块汇总在同一 crate 内。该 crate 的边界和依赖由 [`Cargo.toml`](Cargo.toml) 定义：核心依赖是 `prometheus`，channelz 实现使用 `grpcio`，并直接连接 DXF、ingestor、timer、intest、promutil 等本地 crate。
-
-它负责四类工作：定义跨子系统共用的标签和两个包级 collector；按固定顺序初始化各子系统 collector；把选定 collector 注册到默认 Prometheus registry；管理简化模式和进程级 gRPC channelz collector。它不是每个指标的具体定义文件，实际指标大多位于同目录的 `ddl.rs`、`server.rs`、`session.rs` 等模块。
-
-当前 Rust 应用接线需要与模块能力区分开看。代码搜索显示，服务启动入口 [`cmd/tidb-server/main.rs`](../../cmd/tidb-server/main.rs) 调用的是 `pkg/util/metricsutil/common.rs::RegisterMetrics`；该函数初始化拆分到多个 owner crate 的父 collector，并未直接调用本文件的 `InitMetrics` 或 `RegisterMetrics`。本文件的这两个入口目前主要由 metrics/server 测试环境调用。另一方面，生产 HTTP 指标响应 [`pkg/server/http_status.rs`](../server/http_status.rs) 直接调用本文件的 `GatherText` 采集默认 registry。`ToggleSimplifiedMode` 未检出 Rust 生产调用者，因此不能把 Go 侧系统变量接线当作 Rust 已有事实。
+负责四类工作：定义跨子系统共用的标签和两个包级 collector；按固定顺序初始化各子系统 collector；把选定 collector 注册到默认 Prometheus registry；管理简化模式和进程级 gRPC channelz collector。
 
 ## 核心职责
 
@@ -98,13 +94,13 @@ channelz collector 的创建、注册、读取测试状态和清理都通过 `GR
 
 Rust 常量、`RetLabel`、初始化顺序、集中注册列表、简化模式指标集合和 channelz 过滤条件均以同路径 [`metrics.go`](metrics.go) 为语义基准。`PanicCounter`/`MemoryUsage` 在 Go 中由 `InitMetrics` 赋值，在 Rust 中改为 `LazyLock`，因此可在显式 `InitMetrics` 前访问；其描述符保持一致。
 
-Go 通过包级 `init()` 自动调用 `InitMetrics`，且 `RegisterMetrics` 使用 `MustRegister`，冲突时 panic。Rust 没有对应包 `init()`；`InitMetrics` 是显式、一次性且返回 `Result` 的 `unsafe fn`，`RegisterMetrics` 也返回 `Result`。Rust 当前生产启动由拆分 crate 的 `metricsutil` 路径接线，不能视为 Go 包初始化的逐句等价调用。
+Rust 没有对应包 `init()`；`InitMetrics` 是显式、一次性且返回 `Result` 的 `unsafe fn`，`RegisterMetrics` 也返回 `Result`。Rust 当前生产启动由拆分 crate 的 `metricsutil` 路径接线，不能视为 Go 包初始化的逐句等价调用。
 
 Go `RegisterMetrics` 还替换 Go runtime collector；Rust 使用 rust-prometheus 的平台默认 process collector，不存在 Go runtime collector 替换步骤。Rust 额外提供 `GatherText` 供自身 HTTP server 编码默认 registry。
 
-Go 简化模式恢复注册时记录错误并中断，函数无返回值；Rust 将首个注册错误返回给调用者。两者都先更新模式状态，且都不做事务回滚。Go 系统变量层存在 `metrics.ToggleSimplifiedMode(...)` 调用，而 Rust 搜索未发现对应生产接线。
+Go 简化模式恢复注册时记录错误并中断，函数无返回值；Rust 将首个注册错误返回给调用者。Go 系统变量层存在 `metrics.ToggleSimplifiedMode(...)` 调用，而 Rust 搜索未发现对应生产接线。
 
-Go channelz 状态显式拥有 bufconn listener、gRPC server 和 client connection，并在清理时逐项关闭；Rust 把这些细节封装进 `channelz.rs::ChannelzCollector`，本文件只管理 collector/registered。两边都跳过测试环境、复用单例、过滤自身 bufnet 通道和无 remote socket，并将初始化失败视为 best-effort。Go 会记录 warning，Rust 当前只丢弃该错误，没有日志输出。
+Go channelz 状态显式拥有 bufconn listener、gRPC server 和 client connection，并在清理时逐项关闭；Rust 把这些细节封装进 `channelz.rs::ChannelzCollector`，本文件只管理 collector/registered。Go 会记录 warning，Rust 当前只丢弃该错误，没有日志输出。
 
 孤儿 gauge 的集中注册对应 Go `metrics.go::RegisterMetrics`；Rust text 导出额外显式经过 common gather 包装，不能仅依据 Go 注册列表推断这一后处理行为。
 
@@ -119,10 +115,3 @@ Go channelz 状态显式拥有 bufconn listener、gRPC server 和 client connect
 修改 channelz 时，应在 `channelz.rs` 实现采集细节，在本文件维持单例与注册生命周期；同步覆盖重复初始化、测试环境跳过、cleanup、内部目标过滤和真实 leaf-subchannel/socket 快照。不要在并行测试中绕过 `GRPC_CHANNELZ_TEST_LOCK`。
 
 若目标是让 Rust 生产路径直接使用本文件 `InitMetrics/RegisterMetrics` 或接通 `ToggleSimplifiedMode`，这属于跨 crate 接线变更，必须先审查 `pkg/util/metricsutil/common.rs` 现有拆分 owner 设计和重复注册风险，不能仅在本文件增加调用。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/metrics/metrics.rs` 定位增量、`git show 2c944fb:pkg/metrics/metrics.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、Go `metrics.go`；`pkg/metrics/common/wrapper.rs` 为采集期转换，`pkg/server/http_status.rs` 为 GatherText 消费入口；既有 `metrics_test.rs` 覆盖统一注册，`pkg/util/metricsutil/common_test.rs` 覆盖纯 gather 及并发标签，不据此声称已运行 HTTP 集成。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-operator` crate，由 [`pkg/dxf/operator/lib.rs`](lib.rs) 以公开模块 `pipeline` 导出。它位于 DXF 算子抽象之上：[`pkg/dxf/operator/operator.rs`](operator.rs) 定义 `Operator`/`TunableOperator`，本文件则把一组 `Box<dyn Operator>` 组织成具有统一启动、关闭、状态查询和拓扑描述能力的 `AsyncPipeline`。
-
-当前 Rust 生产代码搜索不到 `NewAsyncPipeline` 或 `GetReaderAndWriter` 的调用点；可见调用均位于独立测试 [`pkg/dxf/operator/pipeline_test.rs`](pipeline_test.rs) 和 [`pkg/dxf/operator/migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。因此它是已实现、由 crate 公开但尚未在 Rust 生产主链接线的基础设施。Go 对照实现则已被 `pkg/dxf/importinto/task_executor.go` 使用。
+只管理生命周期顺序和算子集合，不建立数据通道，也不执行具体数据变换；通道连接由 `compose.rs` 完成，算子行为由 `operator.rs`、`wrapper.rs` 中的实现提供。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/dxf/operator/pipeline.go`](pipeline.go)。Rust 保留了 `AsyncPipeline`、`Execute`、`IsStarted`、`Close`、`NewAsyncPipeline`、`String`、`GetReaderAndWriter` 的名称和主要控制流：顺序打开、失败逆序关闭前置算子、正常关闭全量遍历并返回首错、四段拓扑选择下标 1/2。
-
 主要语言差异如下：
 
 - Go 构造器接收 `ops ...Operator` 并返回指针；Rust 接收 `Vec<Box<dyn Operator>>` 并按值返回所有者。
@@ -100,13 +96,3 @@ Rust 的 `pipeline_test.rs` 移植了 Go 的多算子词频集成场景；额外
 - 若要支持并发共享管道，需要先为 `Operator` trait、内部对象和生命周期方法建立清晰的 `Send`/`Sync` 与锁策略；不能只依赖现有 `AtomicBool`。
 - 若要保证异常路径自动释放，应评估 `Drop` 与可能阻塞/失败的 `Operator::Close` 是否兼容；Rust 的 `Drop` 不能返回关闭错误。
 - 测试应继续放在独立文件 `pipeline_test.rs` 或 `migration_aster_unit_test.rs`，不要把测试模块内嵌回生产源文件。生产接线后还应在直接调用模块的独立测试中覆盖空管道、重复生命周期调用及关闭失败后的资源状态。
-
-## 验证依据
-
-- 源码：`pkg/dxf/operator/pipeline.rs`，核对全部 1–113 行以及 `AsyncPipeline` 的七个公开符号。
-- trait 与真实资源行为：`pkg/dxf/operator/operator.rs`，核对 `Operator`、`TunableOperator`、`AsyncOperator` 的 `Open/Close` 和可调接口转换。
-- crate 声明与入口：`pkg/dxf/operator/Cargo.toml`、`pkg/dxf/operator/lib.rs`，核对 crate 名、路径形式的 `workerpool` 依赖、无 feature 声明及公开模块/测试装配。
-- Go 对照：`pkg/dxf/operator/pipeline.go`、`pkg/dxf/operator/pipeline_test.go`，以及生产调用 `pkg/dxf/importinto/task_executor.go:346-351`。
-- Rust 测试：`pkg/dxf/operator/pipeline_test.rs` 验证五段真实异步数据流、拓扑字符串和关闭时上下文错误；`pkg/dxf/operator/migration_aster_unit_test.rs` 验证逆序回滚、首个关闭错误、启动标志和四段 reader/writer。
-- RustCodeGraph：`status` 显示索引包含 `pkg/dxf/operator/pipeline.rs`（8 个符号）；`files --filter pkg/dxf/operator` 列出 Rust/Go 源与测试；`query AsyncPipeline`、`query NewAsyncPipeline --kind function` 定位 Rust/Go 对照符号；`node --file pkg/dxf/operator/pipeline.rs --offset 1 --limit 180` 返回完整源码并报告测试文件使用关系。对限定名执行 `callers`/`callees` 未得到调用边，因此以 `rg` 补充验证生产调用缺失和测试调用位置。
-- 人工复核边界：确认正常关闭为正序而非逆序、回滚关闭错误被忽略、启动失败不重置旧标志、四算子长度不保证可调接口存在，且当前 Rust 侧未生产接线。

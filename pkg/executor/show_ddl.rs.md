@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate：`pkg/executor/Cargo.toml` 的 `[lib]` 将 `lib.rs` 设为 crate 根，`pkg/executor/lib.rs` 通过 `pub mod show_ddl;` 公开该模块。它描述 `ADMIN SHOW DDL` 的结果执行阶段：把构建阶段已经取得的 schema 版本、DDL Owner、本节点 ID 和当前作业快照写成一行六列结果。
-
-当前 Rust 接线是不完整的。仓库内除模块声明和本文件自身外，没有代码构造或调用 `show_ddl::ShowDDLExec`；`pkg/executor/builder.rs::buildShowDDL` 只通过抽象的 `BuilderDependencies::build_show_ddl_executor` 请求外部依赖构造执行器，未直接绑定本文件的类型。因此，本文件是可复用的结果组装核心和运行时适配边界，不能据此声称 Rust SQL 主链已经实际执行它。
+仓库内除模块声明和本文件自身外，没有代码构造或调用 `show_ddl::ShowDDLExec`；`pkg/executor/builder.rs::buildShowDDL` 只通过抽象的 `BuilderDependencies::build_show_ddl_executor` 请求外部依赖构造执行器，未直接绑定本文件的类型。
 
 ## 核心职责
 
@@ -64,11 +62,11 @@ Owner 地址只在第一次尚未完成的 `Next` 中查询一次；成功后不
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/show_ddl.go` 是直接语义来源。字段一一对应：`ddlOwnerID/selfID/ddlInfo/done` 对应 Rust 的 `ddl_owner_id/self_id/ddl_info/done`；Go 的 `ddl.Info.SchemaVer` 与 `Jobs` 被压缩为 Rust 的 `DdlInfo`，而 `job.String()` 与 `job.Query` 被预先表示为 `DdlJobInfo.description/query`。
+字段一一对应：`ddlOwnerID/selfID/ddlInfo/done` 对应 Rust 的 `ddl_owner_id/self_id/ddl_info/done`；Go 的 `ddl.Info.SchemaVer` 与 `Jobs` 被压缩为 Rust 的 `DdlInfo`，而 `job.String()` 与 `job.Query` 被预先表示为 `DdlJobInfo.description/query`。
 
-两版 `Next` 都先清空 chunk、对完成状态返回空批次、以换行连接多个作业、查询 Owner 地址、按相同六列顺序写入并在末尾置 `done`。主要差异是 Go 直接调用 `infosync.GetServerInfoByID` 并实现 `exec.Executor`，Rust 通过泛型 trait 注入运行时能力，且目前没有实现统一 Rust executor trait 的证据。Go 的构建器拥有三秒 Owner 查询超时和事务快照获取逻辑；这些策略不在本文件内。
+主要差异是 Go 直接调用 `infosync.GetServerInfoByID` 并实现 `exec.Executor`，Rust 通过泛型 trait 注入运行时能力，且目前没有实现统一 Rust executor trait 的证据。
 
-`pkg/executor/test/executor/executor_test.go::TestAdmin` 验证六列、schema 版本、Owner 地址、空作业描述以及第二次 `Next` 返回零行。`pkg/executor/test/executor/executor_test.rs` 保留了相同场景和断言形态，但内容仍使用 Go 风格测试 API，并且 `pkg/executor/lib.rs` 没有将它注册为本模块单测；因此它是迁移语义证据，不是本文件已执行的 Rust 回归测试证据。
+`pkg/executor/test/executor/executor_test.rs` 保留了相同场景和断言形态，但内容仍使用 Go 风格测试 API，并且 `pkg/executor/lib.rs` 没有将它注册为本模块单测；因此它是迁移语义证据，不是本文件已执行的 Rust 回归测试证据。
 
 ## 扩展指南
 
@@ -77,13 +75,3 @@ Owner 地址只在第一次尚未完成的 `Next` 中查询一次；成功后不
 - 接通真实 Rust 主链时，需要为 `ShowDdlRuntime` 提供 Owner 地址与 `Chunk` 适配实现，并在 `BuilderDependencies::build_show_ddl_executor` 的实现中把 builder 的 `Box<dyn DdlInfo>` 转成此处的 `DdlInfo`；还应接入统一 executor trait，而不是绕过 builder 的三秒超时、系统会话释放和错误传递流程。
 - 测试应放在独立文件（建议 `pkg/executor/show_ddl_test.rs`）并由 `pkg/executor/lib.rs` 的 `#[cfg(test)]` 模块声明接入，至少覆盖六列顺序、多作业换行、空作业、第二次调用为空、地址查询失败后 `done` 不变且可重试。不要把测试写回生产源文件。
 - 性能风险集中在两个 `collect::<Vec<_>>().join("\n")` 的临时向量与结果字符串分配；若作业量可能很大，优化时仍须保持顺序、分隔符和错误前不写部分行的行为。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/show_ddl.rs`（`DdlJobInfo`、`DdlInfo`、`ShowDdlRuntime`、`ShowDDLExec::Next`）。
-- crate 与模块：`pkg/executor/Cargo.toml` 的 `[lib]`、`astersql-util-chunk` 依赖；`pkg/executor/lib.rs` 的 `pub mod show_ddl` 及相邻测试模块声明。
-- Rust 构建链：`pkg/executor/builder.rs::BuilderDependencies::{ddl_owner_id, ddl_info_with_new_transaction, build_show_ddl_executor}` 与 `ExecutorBuilder::buildShowDDL`。
-- Go 对照：`pkg/executor/show_ddl.go::ShowDDLExec.Next`；`pkg/executor/builder.go::buildShowDDL` 及计划分派分支。
-- 测试证据：`pkg/executor/test/executor/executor_test.go::TestAdmin` 的 show DDL 段；迁移参考 `pkg/executor/test/executor/executor_test.rs` 对应段。仓库内未发现 `show_ddl_test.rs` 或直接构造 Rust `ShowDDLExec` 的测试。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；目标文件被索引为 10 个符号，文件查询显示 `used by 0 files`，精确查询确认 Rust/Go 两个同名 `ShowDDLExec` 定义；对本文件未返回静态 caller/callee。
-- 辅助搜索：`rg` 用于 Cargo、模块声明、未形成图边的 Rust 引用及测试路径核对。未运行 Cargo，符合本纯文档任务约束。

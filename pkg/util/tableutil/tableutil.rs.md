@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-tableutil` crate 的核心实现，定义临时表的会话/事务态抽象以及一个可替换的构造工厂。crate 入口 `pkg/util/tableutil/lib.rs` 通过 `mod tableutil` 加载本文件并用 `pub use tableutil::*` 对外再导出；`pkg/util/tableutil/Cargo.toml` 将 crate 根指定为 `lib.rs`，只直接依赖 `astersql-meta-autoid` 和 `astersql-meta-model-group4`。
-
-它不实现具体临时表，也不保存某个会话的临时表集合。具体状态由 `TempTable` 的实现者持有；本文件只规定跨模块契约，并保存进程级构造函数槽位。RustCodeGraph 将本文件列为被 `pkg/table/tblctx/table.rs` 和 `pkg/util/tableutil/migration_aster_unit_test.rs` 使用。
+具体状态由 `TempTable` 的实现者持有；本文件只规定跨模块契约，并保存进程级构造函数槽位。
 
 ## 核心职责
 
@@ -76,15 +74,12 @@ trait 不验证实现者的业务不变量：允许任意 `i64` size、任意 `A
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/tableutil/tableutil.go` 是直接语义来源。方法集合一一对应；主要表示差异是：
+方法集合一一对应；主要表示差异是：
 
 - Go `autoid.Allocator` 对应 Rust `Arc<dyn autoid::Allocator>`，显式表达共享所有权。
 - Go `any` 对应 `Arc<dyn Any + Send + Sync>`；Rust 增加线程安全和生命周期约束，但仍避免 statistics 循环依赖。
-- Go `*model.TableInfo` 对应工厂输入 `Arc<TableInfo>`，而 `GetMeta` 返回 `&TableInfo`。
 - Go 的包级 `var TempTableFromMeta func(...)` 可直接赋值；Rust 用私有 `LazyLock<RwLock<Option<...>>>` 加公开 setter/getter 模拟，并额外提供旧值恢复能力。
 - Go 具体实现 `pkg/table/tables/tables.go::TemporaryTable` 初始化 pseudo stats 和临时表 autoID allocator，并由 `init` 自动注册。当前 Rust 搜索只发现测试实现 `TestTempTable`，未发现本 crate 外的具体 `TempTable` impl 或与 Go `tables.init` 等价的生产工厂注册。因此接口与失败语义已有回归覆盖，但完整构造接线仍属于未验证的迁移状态。
-
-Go 行为测试证据包括 `pkg/table/tblsession/table_test.go`：加入全局临时表后 modified 为真，committed size 来自会话数据，dirty size 可按正负 delta 更新。Rust 的直接接口测试在 `pkg/util/tableutil/migration_aster_unit_test.rs`；Rust tblctx 的大小转发另由 `pkg/table/tblctx/table_test.rs` 和 `migration_aster_unit_test.rs` 覆盖。
 
 ## 扩展指南
 
@@ -93,10 +88,3 @@ Go 行为测试证据包括 `pkg/table/tblsession/table_test.go`：加入全局�
 - 若改变工厂注册 API，必须保留并发替换、未初始化失败语义和旧值恢复测试；不要在持有 `RwLock` 时执行用户工厂。
 - 若要完成生产接线，最可能的接入点是具体临时表实现的初始化/装配层，而不是在本接口 crate 中引入 tables/session 依赖。需增加独立集成测试，证明注册发生在首次 `TempTableFromMeta` 调用前，并证明同表不同会话不共享 modified、size、stats 或 autoID 状态。
 - 性能风险主要来自热路径中的动态分派、`Arc` 克隆和全局读锁；兼容风险包括修改 Go 风格方法名、统计对象具体类型、panic 文本或 size 语义。优化前应先用真实调用链和基准确认瓶颈，不能以移除会话隔离换取简化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且 `pkg/util/tableutil/tableutil.rs` 已索引；`files --filter pkg/util/tableutil` 找到 `lib.rs`、本文件、Go 对照和迁移测试；`node --file ...` 展示本文件 1–93 行及两个直接使用文件；`query tableutil` 找到 trait、七个方法、setter/getter 与 Go 对照符号；`callers/callees` 查询未找到 Rust 工厂的生产调用边；`node/callers NewTemporaryTableHandler` 找到 tblctx 转发及其两个 Rust 测试调用者。
-- 已读 Rust/Cargo：`pkg/util/tableutil/tableutil.rs`、`pkg/util/tableutil/lib.rs`、`pkg/util/tableutil/Cargo.toml`、`pkg/util/tableutil/migration_aster_unit_test.rs`、`pkg/table/tblctx/table.rs`、`pkg/table/tblctx/Cargo.toml`，并用仓库搜索核对 crate 依赖和所有相关 Rust 符号引用。
-- 已读 Go：`pkg/util/tableutil/tableutil.go`、`pkg/table/tables/tables.go` 的注册与具体实现、`pkg/sessionctx/variable/session.go::GetTemporaryTable`、`pkg/table/tblctx/table.go`、`pkg/table/tblsession/table.go` 及 `pkg/table/tblsession/table_test.go` 的临时表断言。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令；其结果应为退出码 0，并人工复核本文明确区分源码事实、Go 对照和尚未发现的 Rust 生产接线。

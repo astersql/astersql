@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-gluetikv` library crate；crate 根 `br/pkg/gluetikv/lib.rs` 以 `#[path = "glue.rs"]` 挂载该模块，并把模块内符号重新导出。它实现 `br/pkg/glue/glue.rs` 定义的 `Glue` trait，为“不经过 TiDB SQL/Domain 层”的 BR 场景提供统一适配面。直接的上层组合者是 `br/pkg/gluetidb/glue.rs`：其中的 TiDB Glue 持有 `TikvGlue`，并把 `Open`、`StartProgress`、`Record`、`GetVersion` 委托到这里。
-
-当前实现处于迁移期。`br/pkg/gluetikv/Cargo.toml` 明确为避开 arm64/grpc 依赖，将真实 TiKV driver、进度展示和 summary 收集替换为本地实现。因此，本文件是可编译、可测试的接口适配器，但 `default_open` **不会建立真实 PD/TiKV 连接**。
+实现 `br/pkg/glue/glue.rs` 定义的 `Glue` trait，为“不经过 TiDB SQL/Domain 层”的 BR 场景提供统一适配面。
 
 ## 核心职责
 
@@ -60,11 +58,9 @@ hook 返回的错误由 `Open` 原样传播。TLS 全局配置写入发生在调
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `br/pkg/gluetikv/glue.go`。两端一致的公开意图包括：仅 TiKV 的 Glue、拥有打开的 storage、`ClientCLP`、`"BR\n" + build.Info()`、CA 非空时同步三项 cluster SSL 配置、`UseOneShotSession` 不调用回调，以及通过 `StdIOGlue` 提供控制台能力。
-
 迁移差异必须显式保留：Go `Open` 调用真实 `driver.TiKVDriver{}.Open(path)`，Rust `default_open` 仅验证部分 URL 并返回 `NamedStorage`；Go `StartProgress` 调用 `utils.StartProgress`，Rust 只有内存计数；Go `Record` 写 summary 聚合器，Rust 写测试可排空的全局向量；Go 的 `GetDomain`/`CreateSession` 返回 `nil, nil`，Rust 用 `Domain`/`NilSession` 占位以满足非可空 trait 返回类型。`br/pkg/gluetikv/Cargo.toml` 将真实 driver/summary 接线明确列为 grpc 环境健康后的待办，因此这些差异不是已完成能力。
 
-`br/pkg/gluetikv/glue_test.go::TestGetVersion` 只约束版本字符串顺序。Rust 的 `glue_test.rs::test_get_version` 对齐该断言；`parity_test.rs::go_rust_public_contract_matches` 进一步固定存储所有权、客户端类型、空会话行为、记录单位数、进度计数、TLS 条件副作用、hook 错误透传、默认路径校验和控制台暴露。
+Rust 的 `glue_test.rs::test_get_version` 对齐该断言；`parity_test.rs::go_rust_public_contract_matches` 进一步固定存储所有权、客户端类型、空会话行为、记录单位数、进度计数、TLS 条件副作用、hook 错误透传、默认路径校验和控制台暴露。
 
 ## 扩展指南
 
@@ -73,11 +69,3 @@ Go 对照文件是 `br/pkg/gluetikv/glue.go`。两端一致的公开意图包括
 恢复真实进度或 summary 时，修改 `StartProgress`/`Record`，同时确认并发、关闭语义、输出重定向和聚合单位仍与 Go 一致；如果保留测试 hook，应避免进程级测试状态在并行执行时串扰。若要改变 URL 解析，优先复用真实 driver 的解析实现，而不是继续扩充一套可能漂移的局部解析器。
 
 扩展 session/domain 能力不应直接让 `NilSession` 静默成功；应先调整 `br/pkg/glue/glue.rs` 的抽象和上层调用契约，再与 `br/pkg/gluetidb/glue.rs` 的真实 Domain/session 路径划清职责。任何公开方法语义变化都应同步核对 `br/pkg/gluetikv/glue.go`、`glue_test.go`、`glue_test.rs` 和 `parity_test.rs`，并评估全局配置兼容性、mutex 争用以及真实网络 I/O 带来的性能和生命周期风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/gluetikv` 确认目标及 Go/测试邻接文件；`node --file br/pkg/gluetikv/glue.rs` 读取 309 行实现并报告 38 个符号；`explore` 确认 `set_open_hook_for_test -> parity_test`、`default_open -> validate_tikv_path`、`Record -> records_slot` 等调用边。
-- Rust 源与接口：`br/pkg/gluetikv/glue.rs`、`br/pkg/gluetikv/lib.rs`、`br/pkg/glue/glue.rs`、`br/pkg/gluetidb/glue.rs`。
-- crate 边界：`br/pkg/gluetikv/Cargo.toml`；其 porting metadata 指向 Go 包 `br/pkg/gluetikv`，依赖注释记录了当前替身范围。
-- Go 对照：`br/pkg/gluetikv/glue.go`、`br/pkg/gluetikv/glue_test.go`；Go CLI 入口还可在 `br/cmd/br/backup.go`、`br/cmd/br/restore.go` 看到 `gluetikv.Glue{}` 的使用。
-- 独立 Rust 测试：`br/pkg/gluetikv/glue_test.rs`、`br/pkg/gluetikv/parity_test.rs`。本任务为纯文档分析，按计划未运行 Cargo；结论来自结构查询和源码/测试对照，不声称执行过测试。

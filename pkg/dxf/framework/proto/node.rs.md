@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-proto` crate，是 DXF（分布式执行框架）共享协议模型中的“受管节点与节点资源”定义。crate 入口 `pkg/dxf/framework/proto/lib.rs` 通过 `pub mod node` 声明模块，并以 `pub use node::*` 将这里的公开符号重新导出；`pkg/dxf/framework/proto/Cargo.toml` 则把该 crate 映射到 Go 包 `pkg/dxf/framework/proto`。
-
-在 DXF 全局结构中，`ManagedNode` 承载调度侧可见的节点身份、服务角色和 CPU 槽位数量，`NodeResource` 承载单节点 CPU、内存、磁盘容量快照及其比例换算。框架总览 `pkg/dxf/framework/doc.go` 规定“一核对应一个 slot”，单 slot 的内存和磁盘份额按节点总量除以总核数计算；本文件的 `GetStepResource` 和 `GetTaskDiskResource` 正是这一抽象的数值实现。
-
-当前 Rust 生产接线应按实际代码区分：`pkg/dxf/framework/storage/nodes.rs` 使用本文件的 `proto::NodeResource` 保存进程内资源快照，并从 `mysql.dist_framework_meta` 构造本文件的 `proto::ManagedNode`；调度器随后在 `pkg/dxf/framework/scheduler/storage_adapter.rs::all_nodes` 将其转换成调度器自身的节点类型。仓库中还存在 taskexecutor、scheduler、testutil 等模块各自的同名资源类型，不能仅凭名称将它们视为本文件类型。
+`NodeResource` 以整数保存节点总 CPU、总内存字节数和总磁盘字节数；`NewNodeResource` 集中构造该快照。
 
 ## 核心职责
 
@@ -107,14 +103,8 @@ RustCodeGraph 确认的文件内调用边为 `LimitDXFResource -> getLimitedDXFC
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/proto/node.go`，Rust 保留了相同的结构名、字段名、计算顺序和主要注释：
-
 - Go `ManagedNode`、`NodeResource` 与 Rust 对应结构字段一一匹配；Go 的 CPU 字段使用平台相关 `int`，Rust 固定为 `i32`，只在预期核数范围内语义等价，内存和磁盘则分别保持 `int64/i64` 与 `uint64/u64`。
 - Go `NewNodeResource` 返回指针，Rust 返回拥有所有权的 `NodeResource` 值；因此 Rust 调用者通过移动、借用或显式重建处理共享，而不是依赖可空指针。
-- 两端 `LimitDXFResource` 都先计算可用 CPU，在 CPU 不变或总 CPU 非正时复制原资源；否则按最终 CPU 比例缩放内存并保留磁盘。
-- 两端 `getLimitedDXFCPU` 都使用向上取整、至少一核、至多总核数的顺序。
-- 两端 `GetStepResource` 都以 `TaskBase.GetRuntimeSlots()` 作为 CPU 容量，并按 `slots / TotalCPU` 缩放内存。
-- 两端 `GetTaskDiskResource` 都先取总磁盘和 quota hint 的较小值，再按 slots 比例缩放。
 - Go `NodeResourceForTest` 是可替换的包级指针变量；Rust 是不可变 `static` 值。这是所有权/可变性差异，使用者不能假设 Rust 端可像 Go 一样重绑该变量。
 
 回归证据也保持对应：Go 的 `pkg/dxf/framework/proto/task_test.go::TestTaskBaseGetRuntimeSlots` 验证 30%、100% 和至少一核三个分支；Rust 的 `pkg/dxf/framework/proto/task_test.rs::test_task_base_get_runtime_slots` 复现相同断言，`migration_aster_unit_test.rs::migration_node_and_allocatable_match_go` 再覆盖 16 核按 30% 裁剪为 5 核、1600 内存裁剪为 500。
@@ -134,18 +124,3 @@ RustCodeGraph 确认的文件内调用边为 `LimitDXFResource -> getLimitedDXFC
 - 若变更 `ManagedNode` 字段或角色语义，同步检查 `pkg/dxf/framework/storage/nodes.rs::getAllNodesWithSession`、`pkg/dxf/framework/scheduler/storage_adapter.rs::all_nodes` 以及 scheduler 的节点筛选测试。
 
 兼容风险主要是 Go/Rust 数值舍入差异、公开字段/构造函数签名变化、不同模块同名类型漏同步；性能风险主要来自把当前常数时间纯计算改成锁操作或外部探测。保持本文件为轻量值模型，有助于避免在调度热路径引入额外共享状态。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph 状态：索引包含 11467 个文件、307296 个节点和 1848419 条边；目标 `pkg/dxf/framework/proto/node.rs` 被识别为 128 行、8 个符号。
-- RustCodeGraph 源码与符号：`node.rs` 全文；`NewNodeResource`、`LimitDXFResource`、`GetStepResource`、`GetTaskDiskResource`、`getLimitedDXFCPU`；下游 `subtask.rs::NewAllocatable` 与 `task.rs::GetRuntimeSlots`。
-- RustCodeGraph 调用边：`LimitDXFResource -> NewNodeResource`、`LimitDXFResource -> getLimitedDXFCPU`；`storage/nodes.rs::GetAllNodes -> getAllNodesWithSession`；`scheduler/storage_adapter.rs::all_nodes` 对节点字段的转换。
-- crate 与模块边界：`pkg/dxf/framework/proto/Cargo.toml`、`pkg/dxf/framework/proto/lib.rs`、根 `Cargo.toml` 的 workspace 成员和 facade 依赖。
-- 框架契约：`pkg/dxf/framework/doc.go` 的 slot、节点角色和 DXF 资源管理说明。
-- Go 对照：`pkg/dxf/framework/proto/node.go`、`pkg/dxf/framework/proto/task_test.go`。
-- Rust 测试：`pkg/dxf/framework/proto/task_test.rs`、`pkg/dxf/framework/proto/migration_aster_unit_test.rs`、`pkg/dxf/framework/integrationtests/framework_test.rs`；引用搜索未发现 `GetTaskDiskResource` 的 Rust 调用或测试。
-- 生产接线：`pkg/dxf/framework/storage/nodes.rs`、`pkg/dxf/framework/scheduler/storage_adapter.rs`、`pkg/dxf/framework/handle/status.rs`。
-
-本任务是纯文档分析，按计划未运行 Cargo。结论限于上述静态源码、索引和引用搜索；没有验证运行期极端浮点转换、零 `TotalCPU` 行为或未接线的 `GetTaskDiskResource`。结构验证要求本文恰好包含计划指定的十一个二级标题。

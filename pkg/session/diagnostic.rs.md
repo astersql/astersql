@@ -4,7 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session`，由 `pkg/session/lib.rs` 的 `pub mod diagnostic` 装配；函数本身为 crate 内可见。它提供既有存储的诊断启动入口，与正常 bootstrap/upgrade 分离。相邻 `diagnostic_sql.rs` 负责客户端 SQL allowlist，两者不能互相替代。
+在已经 bootstrap 的 Domain 上建立 ConcreteSession，验证持久化版本，只读载入查询所需元数据，再启动诊断 Domain 服务和统计读取。
 
 ## 核心职责
 
@@ -48,17 +48,8 @@ Domain 通过 Arc 共享，会话也持有其引用；本文件不创建线程�
 
 ## 与 Go 版本的对应关系
 
-对应 `pkg/session/diagnostic.go::bootstrapSessionImplDiagnostic` 的独立诊断启动意图。Go 接受 context/store，初始化 schema cache、MDL、全局变量，再取得 Domain，创建三条 restricted session，装配 Domain on-close 清理，启动 privilege/sysvar/binding 循环、blacklist 和统计读取。
-
-Rust 接受已创建的 Domain，用具体 metadata reader 与 Domain API 编排，并额外显式校验 SQL/KV 版本一致；本文件没有 Go 三会话数组、defer 出错关闭 Domain 或全部初始化调用。不能仅凭入口名称宣称两边资源清理及后台服务完全等价。
+Rust 接受已创建的 Domain，用具体 metadata reader 与 Domain API 编排，并额外显式校验 SQL/KV 版本一致；本文件没有 Go 三会话数组、defer 出错关闭 Domain 或全部初始化调用。
 
 ## 扩展指南
 
 诊断启动新增服务前应核实只读职责、持久化写入和关闭机制，保持正常 bootstrap/upgrade 分离。修改版本校验应同步 `dml_runtime_test.rs`，覆盖未 bootstrap、版本缺失/不一致及旧版本保留；修改客户端允许面需另审 `diagnostic_sql.rs` 及独立 `diagnostic_sql_test.rs`。错误后的部分服务清理需要独立回归，不应从 Arc 自动释放推断。
-
-## 验证依据
-
-- 用 `git diff ad0a6f4..2c944fb -- pkg/session/diagnostic.rs` 确认新增文件，并读取冻结全文件、`runtime/session.rs` 的启动分支、校验函数和 metadata reader；读取 `runtime.rs`、`lib.rs`、`Cargo.toml` 确认可见性与接线。`pkg/session/doc.go` 不存在。
-- `dml_runtime_test.rs::start_diagnostic_preserves_persisted_bootstrap_versions` 将 SQL/KV 版本都降到 current-1，调用本入口后重读仍为旧值，最后关闭 Domain。该测试不证明所有错误清理分支。
-- Go 对照为冻结 `diagnostic.go`；RustCodeGraph status 可用且含 Rust，但索引不代表冻结 blob，行为以 git show 为准。
-- 本次只做文档 Ready 等价检查：八篇各 11 个二级章节、局部链接、尾随空白和 diff 空白；不运行 Cargo、Go 测试或构建。Ready skill 路径缺失，按计划采用文档验证；上述测试仅审阅源码。

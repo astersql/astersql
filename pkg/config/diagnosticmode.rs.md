@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件由 `pkg/config/lib.rs` 的 `pub mod diagnosticmode` 导出，属于 `astersql-config`（`pkg/config/Cargo.toml`）。它保存进程级诊断开关，具体诊断行为由消费者实施。包契约参照 `pkg/config/diagnosticmode/doc.go`。
+保存未初始化、禁用、启用三态；提供启动期初始化、查询和受保护的测试覆盖；共享 DDL 拒绝错误。
 
 ## 核心职责
 
@@ -39,9 +39,3 @@ Go 对照位于 `pkg/config/diagnosticmode/`，doc.go 定义同样的固定初�
 ## 扩展指南
 
 新增消费者时明确其阻止的具体行为并补独立测试；不要把 Enabled 当作整机只读证明。调整初始化必须同时审查串行启动前提及测试恢复路径；扩展错误保持既有 DDL 文本和状态转换兼容。
-
-## 验证依据
-
-冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`。经 `git diff ad0a6f4..2c944fb -- pkg/config/diagnosticmode.rs`、`git show 2c944fb:pkg/config/diagnosticmode.rs` 核对，目标 blob 为 `2a76ab51a13de5d9d6389664f792a71f55a13fc3`。模块入口及 Cargo 声明均以同一提交读取。独立测试 `pkg/config/diagnosticmode_test.rs` 和 Go 对照 `pkg/config/diagnosticmode/doc.go` 为静态证据，未运行测试。
-
-RustCodeGraph 当前索引包含 Rust，但不是冻结快照；本篇结论以 Git blob 为准。Ready 文档校验确认 11 章节、引用存在和差异无空白错误；按计划不运行 Cargo，不验证真实网络或存储。

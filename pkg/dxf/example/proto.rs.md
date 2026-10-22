@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-example` crate 的任务元数据协议层。crate 根模块 `pkg/dxf/example/lib.rs` 以私有 `mod proto` 装载它，再通过 `pub use proto::*` 导出两个公开结构体及其公开编解码方法。`pkg/dxf/example/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/dxf/example`，当前可用依赖只有 DXF `taskexecutor` 和日志 crate；本文件自身只使用 Rust 标准库，没有直接依赖框架类型或第三方 JSON 库。
-
-该协议位于示例应用的调度端和执行端之间：`schedulerImpl::Init` 从框架任务的 `Task.Meta` 解出 `taskMeta`，`schedulerImpl::OnNextSubtasksBatch` 为每个步骤生成 `subtaskMeta`，而 `stepExecutor::RunSubtask` 从 `Subtask.Meta` 解回消息。它是教学用 DXF 示例的轻量 JSON 适配层，不是通用 JSON 库，也不是生产级 protobuf 实现（依据：`proto.rs` 文件注释、`scheduler.rs`、`task_executor.rs`）。
+定义任务级 `taskMeta { SubtaskCount }`，在任务提交者和调度器之间传递“每个 step 生成多少个子任务”。
 
 ## 核心职责
 
@@ -72,9 +70,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/dxf/example/proto.go` 只声明 `taskMeta.SubtaskCount int`（JSON 键 `subtask_count`）和 `subtaskMeta.Message string`（JSON 键 `message`）；实际编解码由 `encoding/json` 在 `app_test.go`、`scheduler.go` 和 `task_executor.go` 中完成。Rust 把这部分隐式库行为显式移植为两个 `Marshal`/`Unmarshal` 方法和私有解析器。
-
-字段与主链语义保持一致：Go 测试提交 `SubtaskCount: 3`；Go scheduler 解码任务 meta、每步生成对应数量的消息；Go step executor 解码消息并记录日志。Rust `app_test.rs::test_example_application` 用已移植 scheduler/executor 和内存 `TaskTable` 跑通相同的两步、每步三个子任务，但其注释明确说明真实 scheduler/handle/storage/testkit crate 尚以 `cfg(any())` 依赖占位，因此这不是完整 Go 框架环境的等价集成测试。
+Rust `app_test.rs::test_example_application` 用已移植 scheduler/executor 和内存 `TaskTable` 跑通相同的两步、每步三个子任务，但其注释明确说明真实 scheduler/handle/storage/testkit crate 尚以 `cfg(any())` 依赖占位，因此这不是完整 Go 框架环境的等价集成测试。
 
 需要注意类型差异：Go 字段是平台相关的 `int`，Rust 固定为 `i64`；在当前协议示例中，Rust 的有效范围由 `i64` 解析决定。可见性也不同：Go 两个结构体及字段都是包内符号，Rust 结构体和字段经 crate 根再导出为公开 API，这是 Rust crate 间调用和测试所需的接线差异。
 
@@ -85,12 +81,3 @@ Go 对照文件 `pkg/dxf/example/proto.go` 只声明 `taskMeta.SubtaskCount int`
 新增 subtask 字段或按 step 使用不同 meta 时，应修改/新增对应结构和编解码入口，并同步 `schedulerImpl::OnNextSubtasksBatch` 的生成逻辑、`stepExecutor::RunSubtask` 的消费逻辑及 `app_test.rs` 的端到端断言。若继续复用本解析器，应先确认新增类型已被 `JsonValue` 表达且与 Go `encoding/json` 的目标类型转换一致。
 
 若协议复杂度继续增长，优先评估采用 workspace 已批准的 JSON 实现，而不是继续扩张教学用解析器；替换时必须保留现有 Go 兼容测试所证明的字段折叠、重复键、null、无效 UTF-8、代理项和 HTML 安全转义语义。性能风险主要来自未知对象/数组的完整中间树分配和多次字符串分配；兼容风险主要来自 Go `encoding/json` 的边缘规则，而不是 DXF 框架接口。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、7032 个 Rust 文件；目标 `pkg/dxf/example/proto.rs` 已索引，共 361 行、35 个符号。
-- 已通过 RustCodeGraph `node --file` 阅读：`pkg/dxf/example/proto.rs`、`proto_test.rs`、`lib.rs`、`scheduler.rs`、`task_executor.rs`、`app_test.rs` 以及包契约 `pkg/dxf/example/doc.go`。
-- 已通过 RustCodeGraph 精确名称查询 `taskMeta`、`subtaskMeta`、`Unmarshal`，并运行 `callers`/`callees`；重名结构体查询未产生可用函数级边，因此又以已索引的直接调用现场核验调用关系。
-- 已核对 crate/移植边界：`pkg/dxf/example/Cargo.toml`；已核对 Go 对照与调用现场：`proto.go`、`scheduler.go`、`task_executor.go`、`app_test.go`。
-- 独立 Rust 测试证据：`proto_test.rs` 覆盖折叠字段名和最后值获胜、无效 UTF-8、不成对 UTF-16 代理项、顶层 null；`app_test.rs` 覆盖任务/子任务 meta 的主链往返、未知字段、字符串转义、缺失字段及负子任务数的下游边界。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令确认目标文档存在且恰好包含上述 11 个固定二级标题，并人工复核未把尚未移植的完整 DXF 集成描述为当前已支持行为。

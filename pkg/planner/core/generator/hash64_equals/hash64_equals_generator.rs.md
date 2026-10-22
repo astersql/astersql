@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-generator-hash64_equals`，包入口是同目录的 `lib.rs`，并通过 `pub use hash64_equals_generator::*` 再导出本文件的公共 API。它是一个代码生成器：输入逻辑算子及参与结构哈希的字段描述，输出 `package logicalop` 下各算子的 Go `Hash64` 和 `Equals` 方法源码；输出最终用于 Cascades 优化器比较逻辑计划结构，而本文件本身不在 SQL 请求的运行时热路径上。
-
-crate 边界由 `pkg/planner/core/generator/hash64_equals/Cargo.toml` 确认：该包没有声明外部 Rust 依赖，`[package.metadata.porting].go-package` 指向同路径 Go 包。固定清单入口 `GenHash64Equals4LogicalOps` 对应 Go 的同名函数，生成结果由 `pkg/planner/core/operator/logicalop/hash64_equals_generated.go` 承载。
+用 `HashFieldKind`、`HashField`、`LogicalOperator` 提供显式的公共元数据 API，替代 Go 版本依赖 `reflect` 和 ``hash64-equals:"true"`` struct tag 的发现过程。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ RustCodeGraph 显示，`gen_hash64_equals_for_logical_ops` 的仓库内直接调
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/generator/hash64_equals/hash64_equals_generator.go`。两者共享算子清单、codec 映射、生成文件头、Hash64/Equals 控制流、nil 标志、切片长度/顺序递归和复合字段调用规则。Go 的 `GenHash64Equals4LogicalOps` 以真实 `logicalop` 零值列表为输入，`genHash64EqualsForLogicalOps` 通过反射和 struct tag 自动发现字段类型；Rust 无法反射 Go 类型，因此 `logical_operator_specs` 手工保存同一事实，公共入口则要求调用者传入 `LogicalOperator` 元数据。
+Go 的 `GenHash64Equals4LogicalOps` 以真实 `logicalop` 零值列表为输入，`genHash64EqualsForLogicalOps` 通过反射和 struct tag 自动发现字段类型；Rust 无法反射 Go 类型，因此 `logical_operator_specs` 手工保存同一事实，公共入口则要求调用者传入 `LogicalOperator` 元数据。
 
 Go 的 `EqualsElement`/`Hash64Element` 对不支持的反射类型会 panic，并用接口实现检查决定复合字段调用；Rust 在建模阶段就把支持集合封闭为 `FieldType`。Go 使用 `go/format.Source` 格式化输出，Rust 写出器直接生成与已提交文件相同的 gofmt 形状。Rust 接收者名为 `p`，Go 为 `op`；两个 Rust 对照测试只归一化这一词法差异后进行完整内容、行数和字节长度检查。
 
@@ -93,13 +91,3 @@ Go `main` 调用生成器并以 `0644` 写入目标文件；Rust `GenHash64Equal
 - 若强化公共输入校验，最可能修改 `gen_hash64_equals_for_logical_ops`、`validate_name`，并新增对字段名和 codec 表达式的独立测试；需注意避免拒绝当前合法的 Go 选择器/表达式。
 - 测试应继续放在独立文件 `hash64_equals_test.rs` 或 `hash64_equals_generator_test.rs`，不要嵌入生产源文件。至少覆盖固定输出与已提交 Go 文件一致、每个清单项同时生成两种方法、codec 非空、指针/切片 nil 分支、嵌套切片变量与索引、所有标量类别、`Ignored` 过滤、空字段算子以及非法名称错误。
 - 性能风险主要来自重复构造完整输出与深层递归；兼容风险主要来自清单、字段顺序、codec 或 nil 语义偏离 Go。任何变更都应同时查看生成文件 diff，而不能只以 Rust API 返回成功作为完成证据。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust/Go 源和测试均在索引中。
-- RustCodeGraph 源码读取：`hash64_equals_generator.rs` 第 1–591 行；确认公共/私有类型、常量、21 项规格、codec 映射、写出器和校验器。
-- RustCodeGraph 查询：`query gen_hash64_equals_for_logical_ops`、`query write_hash_method`、`query write_equals_method`；调用查询确认 `gen_hash64_equals_for_logical_ops → generate/validate_name`、`generate → write_hash_method/write_equals_method/validate_name`、`write_hash_method → write_hash_field/line`、`write_equals_method → write_equals_element/line`。
-- crate 与模块证据：`pkg/planner/core/generator/hash64_equals/Cargo.toml`、`pkg/planner/core/generator/hash64_equals/lib.rs`。
-- Go 对照证据：`pkg/planner/core/generator/hash64_equals/hash64_equals_generator.go`、`pkg/planner/core/generator/hash64_equals/hash64_equals_test.go`。
-- 独立 Rust 测试证据：`pkg/planner/core/generator/hash64_equals/hash64_equals_test.rs`、`pkg/planner/core/generator/hash64_equals/hash64_equals_generator_test.rs`；前者覆盖清单、codec、生成文件漂移和字段级 nil 分支，后者归一化接收者名后逐行、行数和字节长度对照已提交 Go 文件。
-- 任务是纯文档分析，按计划不运行 Cargo；结构验证命令及最终退出状态在交付记录中报告。

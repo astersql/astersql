@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-session` crate 的 `runtime` 模块，由 `pkg/session/runtime.rs` 以 `pub mod crossks_runtime` 装配。它不是跨 Keyspace 管理策略本身；管理器、句柄和通用 `SessionManager` 位于 `pkg/domain/crossks/cross_ks.rs`。本文件提供面向生产环境的具体工厂和 DDL 后端，把目标 Keyspace 的 Store、Domain、系统会话池、etcd 命名空间、Schema 同步器、DDL Owner 与最小 Job ID 刷新循环组装成通用 `astersql_domain_crossks::SessionManager`。
-
-正常服务器启动时，`pkg/session/runtime/session.rs` 在同时取得 PD 与 etcd 地址后，通过 `KeyspaceSessionFactory::install_on_domain` 接入跨 Keyspace 能力；本文件的 `CrossKSProductionRuntimeFactory::install_on_domain` 是该生产装配链上的具体安装入口。测试还可直接构造该工厂，但 `with_clients` 仅在 `cfg(test)` 下存在。
+`CrossKSProductionDdlBackend` 将通用跨 Keyspace DDL 客户端所需的元数据解析、会话变量读取、Server State 刷新、Job 提交、Owner 通知与历史 Job 查询映射到 session/runtime 中的具体实现。
 
 ## 核心职责
 
@@ -96,10 +94,6 @@ Alter Table Mode 请求由 `pkg/domain/crossks/ddl_submit.rs` 的 `DdlClient::al
 
 ## 与 Go 版本的对应关系
 
-主要对照为 `pkg/domain/crossks/cross_ks.go` 的 `Manager.createSessionManager` 与 `SessionManager.close`，以及 `pkg/domain/crossks/ddl_submit.go` 的 DDL 提交流程。
-
-保持的语义包括：按目标 Keyspace 打开 Store；建立隔离的会话池和 Schema 协调/同步设施；注册虚拟服务器；初始化 Schema 与 Server State；建立 DDL 系统表、最小 Job ID 刷新器和提交客户端；通知 DDL Owner；轮询目标历史表；失败时按已创建资源回滚；关闭时停止后台循环并回收注册、客户端、池与 Store。
-
 实现形态并非逐行相同：Go 将大部分资源直接放在一个 `SessionManager` 并用 context、channel 与 wait group 管理 goroutine；Rust 将通用管理策略放入 `astersql-domain-crossks`，本文件用 `Lifecycle` 对象和显式线程拼装具体实现。Go 使用 UUID 作为虚拟 Server ID，Rust 默认 `create` 使用进程 ID 与 Keyspace 组合，但正常注册路径通过 `create_with_server_info` 复用注册器生成的 ID。Go 的提交选项携带真实会话上下文中的 CDC write source；当前本文件的 `session_variables` 固定返回 `0`，这是需保留关注的迁移差异。
 
 ## 扩展指南
@@ -111,12 +105,3 @@ Alter Table Mode 请求由 `pkg/domain/crossks/ddl_submit.rs` 的 `DdlClient::al
 - 增加 TableMode 枚举值时，必须同步更新 `resolve_table` 的穷尽映射以及独立测试。
 - 测试必须继续放在独立的 `pkg/session/runtime/crossks_runtime_test.rs`，不要内嵌到生产文件。真实网络路径使用现有 ignored 测试；失败回滚、内存 etcd、Job 元数据和轮询边界使用本地独立测试。
 - 兼容风险集中在 Go 编码的 DDL Job/历史记录、etcd key/namespace、Server ID 一致性和关闭顺序；性能风险集中在每个目标 Keyspace 的独立 Domain/会话池/线程，以及历史状态的固定间隔轮询。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`query CrossKSProductionRuntimeFactory --kind struct` 与 `node CrossKSProductionRuntimeFactory` 定位到 `pkg/session/runtime/crossks_runtime.rs:35`。索引未暴露 `create_runtime`、`install_on_domain` 的独立 method 节点，因此其调用关系由精确源码搜索补证，而非推测。
-- 生产源码：`pkg/session/runtime/crossks_runtime.rs`；模块入口 `pkg/session/runtime.rs`；服务器安装链 `pkg/session/runtime/session.rs`；通用 Manager/RuntimeFactory/SessionManager 生命周期 `pkg/domain/crossks/cross_ks.rs`；通用 DDL 状态机 `pkg/domain/crossks/ddl_submit.rs`。
-- crate 边界：`pkg/session/Cargo.toml` 的 `[lib]`、`[features]`、`[dependencies]`。
-- Go 对照：`pkg/domain/crossks/cross_ks.go` 与 `pkg/domain/crossks/ddl_submit.go`。
-- 独立 Rust 测试：`pkg/session/runtime/crossks_runtime_test.rs` 覆盖真实 TiKV 路径（ignored）、生产后端提交/通知/历史等待、Store 错误后的虚拟注册清理、Go meta/history 编码、Server State/BDR/Flashback 限制、重试型 KV 冲突、noop/名称不匹配、不可变快照及结构化历史错误。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节结构、真实路径引用和上述事实证据。

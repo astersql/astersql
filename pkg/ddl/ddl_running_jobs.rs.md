@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；crate 根在 [`pkg/ddl/lib.rs`](lib.rs) 以 `pub mod ddl_running_jobs` 导出模块，依赖边界由 [`pkg/ddl/Cargo.toml`](Cargo.toml) 定义。它位于 DDL owner 的作业调度路径中，不执行具体 schema 变更，而是在调度器把持久化作业交给 general/reorg worker 前，判断作业声明的对象范围能否与其他作业并行。
-
-直接生产调用者是 [`pkg/ddl/job_scheduler.rs`](job_scheduler.rs) 的 `JobScheduler`。内存队列路径 `JobScheduler::schedule` 和持久化系统表路径 `JobScheduler::schedule_persisted` 都持有一个 `RunningJobs`，并围绕每次 worker step 调用 `check_runnable`、`add_pending`、`add_running`、`finish_or_pend_job` 和 `reset_all_pending`。因此，本文件是调度层的对象级冲突登记表，而不是数据库锁、事务锁或持久化队列本身。
+提供独立的 `has_conflict`，用于比较两组对象描述是否重叠且至少一方为独占模式。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ Rust 实现没有内部 mutex、原子量或后台任务；所有状态修改都
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/ddl/ddl_running_jobs.go`](ddl_running_jobs.go)。Rust 的 `RunningJobs`/`Objects`、`check_runnable`、`has_schema_conflict`、add/remove/pending/reset 流程与 Go 的 `runningJobs`/`objects` 保持同一核心语义，Rust 测试也复刻了 Go 测试中的精确表、`db.*`、`*.*`、policy、resource group、共享/独占和公平性案例。
-
 存在以下实现层差异：
 
 - Go 版含 `sync.RWMutex`，因为注释明确 worker goroutine 可并发调用 `removeRunning`；Rust 版由 `&mut self` 和当前同步 `JobScheduler` 串行驱动，没有内部锁。
@@ -96,12 +92,3 @@ Rust 实现没有内部 mutex、原子量或后台任务；所有状态修改都
 扩展通配符时必须同时审查 `has_schema_conflict` 与 `object_overlap`。尤其应明确 database 级 `*` 是否允许 shared 模式，并补左右两侧通配符的对称用例；不能假定主路径的“全局独占快速拒绝”覆盖所有新模式。
 
 若引入并行 worker，不应破坏 `RunningJobs` 的单写者不变量；推荐由 worker 发送完成结果、调度器统一调用 `finish_or_pend_job`。性能上，当前检查复杂度约为“作业涉及对象数 × 至多三份 map 查询”，BTree 查询还带对数因子；只有实测成为瓶颈后才值得替换结构，同时必须保留稳定 ID 输出与引用计数语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/ddl/ddl_running_jobs.rs` 确认目标文件已索引并有 30 个符号；`node --file ...` 阅读了目标文件 1–414 行、`job_scheduler.rs` 100–330 行、Rust 测试 1–277 行、Go 实现 1–366 行和 Go 测试 1–360 行。对 Rust 方法执行 `callers/callees` 未产生边，故使用精确引用搜索验证生产接线。
-- 源与模块边界：`pkg/ddl/ddl_running_jobs.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- 直接调用证据：`pkg/ddl/job_scheduler.rs` 中的 `JobScheduler::schedule` 与 `JobScheduler::schedule_persisted`。
-- Rust 行为测试：`pkg/ddl/ddl_running_jobs_test.rs` 的 `running_schema_jobs_follow_go_conflict_rules`、`schema_policy_and_resource_group_conflicts_match_go`、`exclusive_shared_and_pending_jobs_are_fair`、`finish_or_pend_updates_counts_atomically`。
-- Go 语义对照：`pkg/ddl/ddl_running_jobs.go` 与 `pkg/ddl/ddl_running_jobs_test.go` 的 `TestRunningJobs`、`TestSchemaPolicyAndResourceGroup`、`TestExclusiveShared`。
-- 本任务仅新增说明文档，按计划不运行 Cargo 或代码测试；交付验证以固定章节结构、链接/引用存在性、范围检查和人工事实复核为准。

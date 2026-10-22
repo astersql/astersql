@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/test_driver/test_driver_helper.rs` 是 `astersql-parser-test_driver` crate 的基础数值辅助模块。crate 入口 `pkg/parser/test_driver/lib.rs` 通过 `#[path = "test_driver_helper.rs"] mod test_driver_helper` 装入它，再以 `pub use test_driver_helper::*` 将本文件的符号提升为 crate 级 API。该 crate 的边界由 `pkg/parser/test_driver/Cargo.toml` 定义，包名为 `astersql-parser-test_driver`；本文件自身不直接使用 Cargo 外部依赖。
-
-它不负责 SQL 主解析器的词法分析。虽然函数名 `isDigit` 与 `pkg/parser/lexer.rs` 中的局部辅助函数同名，本文件的真实调用方位于测试驱动 crate：`pkg/parser/test_driver/test_driver_mydecimal.rs` 使用字符和十进制幂辅助函数，`pkg/parser/test_driver/test_driver_datum.rs::DefaultTypeForValue` 使用整数位数辅助函数。`lib.rs` 将测试驱动进一步提供给依赖该 crate 的解析器及其他移植代码。
+`isSpace`、`isDigit`、`myMin`、`pow10` 支撑 `MyDecimal` 的十进制文本扫描、定长 word 拆装和格式化。
 
 ## 核心职责
 
@@ -86,17 +84,11 @@ RustCodeGraph 的文件节点将本文件识别为 8 个符号；其全局名称
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/parser/test_driver/test_driver_helper.go`。Rust 逐项保留了 Go 的功能分组和命名：
-
 - Go `isSpace` 的两个显式字节比较对应 Rust 的两个字节比较；Rust 没有改用 Unicode 空白判断。
-- Go `isDigit` 的范围比较对应 Rust `u8::is_ascii_digit`，接受集合相同。
-- Go `myMin(int, int) int` 对应 Rust `myMin(i32, i32) -> i32`；类型收窄与 Rust `MyDecimal` 的 `i32` 位数计算一致。
-- Go `int32(math.Pow10(x))` 对应 Rust `10_f64.powi(exponent) as i32`。二者都经过浮点幂再转 32 位整数，但极端越界转换的语言细节不应外推为完全等价；当前真实调用域是小范围非负指数。
-- Go `Abs` 的 `(n ^ y) - y` 对应 Rust 的异或加 `wrapping_sub`。显式 wrapping 避免 Rust 调试构建在 `i64::MIN` 上溢出 panic，并保留 Go 的位模式。
 - 两边的 `uintSizeTable` 都有 21 项、冗余下标 0 和最大值末项。Go 使用无界 `for i := 1; ; i++`；Rust 使用数组长度限制并在理论不可达位置显式失败，正常输入结果一致。
 - Go 长度函数返回平台 `int`，Rust 返回 `i32`；结果域仅 1 至 20，调用侧再转 `isize`，不会丢失有效结果。
 
-相关 Go 使用点是 `test_driver_mydecimal.go` 和 `test_driver_datum.go`；Rust 同路径文件保持相同职责。仓库另有生产工具 `pkg/util/mathutil` 的近似实现和测试，但它不是本 test_driver 文件的真实实现位置。
+相关 Go 使用点是 `test_driver_mydecimal.go` 和 `test_driver_datum.go`；Rust 同路径文件保持相同职责。
 
 ## 扩展指南
 
@@ -108,16 +100,3 @@ RustCodeGraph 的文件节点将本文件识别为 8 个符号；其全局名称
 - 若新增公开辅助符号，应确认是否确实需要经 `lib.rs` 的通配再导出暴露；本 crate 当前没有 feature 门控。避免与 `pkg/util/mathutil` 的同名实现混淆或制造行为漂移。
 
 兼容性风险主要是偏离 Go 的字节级解析、负最小值语义和显示宽度；性能风险较低，但 `StrLenOfUint64Fast` 当前最多比较 20 次，替换算法前应有可证明收益并保持所有边界。该模块是测试驱动基础层，错误结果会间接改变 AST 字面量类型元数据或十进制解析结果，影响面可能大于文件体量所示。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/parser/test_driver` 确认同 crate 文件集合；`node --file pkg/parser/test_driver/test_driver_helper.rs` 核对 94 行源码和 8 个符号；`query` 核对 `StrLenOfUint64Fast`、`StrLenOfInt64Fast`、`isSpace`、`pow10` 的同名实现位置。通用名称的全局 `explore/callers/callees` 结果存在跨包歧义，故调用边另以 crate 导入和源码引用消歧。
-- 源码与装配：`pkg/parser/test_driver/lib.rs`、`test_driver_mydecimal.rs`、`test_driver_datum.rs`。
-- crate 边界：`pkg/parser/test_driver/Cargo.toml`。
-- Go 对照：`pkg/parser/test_driver/test_driver_helper.go`、`test_driver_mydecimal.go`、`test_driver_datum.go`。
-- 独立测试：`pkg/parser/test_driver/migration_aster_unit_test.rs::helper_lengths_match_go_boundaries` 和 `decimal_round_trips_go_supported_forms`；`test_driver_test.rs` 不覆盖本文件辅助逻辑。
-- 引用核对：对 `pkg/parser`、`pkg/types` 和 `pkg/util/mathutil` 执行符号搜索，区分 test_driver 的真实调用点与其他包的同名实现。
-
-人工复核结论：该文件因 Go parser test_driver 移植而存在；运行时仅执行同步字符判断和整数计算；安全扩展必须同步 Go 对照、两个直接调用模块及独立迁移测试。未运行 Cargo 或代码测试，因为任务限定为纯文档分析；结构验收使用任务文件指定的 11 章节命令。

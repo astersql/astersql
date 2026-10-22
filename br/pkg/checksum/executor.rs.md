@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-checksum` crate 的 checksum 请求构造与执行实现，对应 Go 文件 [`br/pkg/checksum/executor.go`](executor.go)。crate 根 [`br/pkg/checksum/lib.rs`](lib.rs) 以 `pub mod executor` 装配本文件，并通过 `pub use executor::*` 暴露其公开 API；[`br/pkg/checksum/Cargo.toml`](Cargo.toml) 指定 `lib.rs` 为库入口，且当前没有外部 Rust 依赖，因此 TiDB/TiKV 侧类型与接口来自同 crate 的 [`stubs.rs`](stubs.rs)，不是完整的 TiKV 客户端实现。
-
-在已接线的上游中，`br/pkg/backup/schema.rs::schemaInfo::calculateChecksum` 用 `checksum::NewExecutorBuilder` 构造执行器，设置 BR 请求来源和并发度，调用 `Executor::Execute` 后把 `ChecksumResponse` 的 `Checksum`、`TotalKvs`、`TotalBytes` 写入 schema 备份元数据。RustCodeGraph 的文件节点还显示本文件被同目录测试及若干迁移测试引用；这些测试引用是契约证据，不应误写成生产调用链。
+`buildChecksumRequest`、`buildRequest`、`buildTableRequest`、`buildIndexRequest` 把一张逻辑表展开成表记录与公开索引的 DistSQL checksum `Request` 列表；分区表还会按定义顺序为每个分区重复展开。
 
 ## 核心职责
 
@@ -77,9 +75,9 @@ rewrite 状态只有在提供 `old_table` 时产生。记录和索引规则都�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按函数结构直接对应 `executor.go`：builder 字段与 setter、表/分区/索引展开顺序、低优先级请求、Crc64 XOR、rewrite 前缀、逐请求重试、进度回调以及末尾上下文检查均保持一致。Rust 使用所有权式链式 setter，而 Go 在指针 receiver 上原地修改；可观察构造结果一致。
+Rust 使用所有权式链式 setter，而 Go 在指针 receiver 上原地修改；可观察构造结果一致。
 
-需要特别保留的语义差异处理有三处：Rust 的 `updateChecksumResponse` 使用 `wrapping_add` 明确复制 Go `uint64` 溢出回绕；Rust 在所有提前返回分支显式调用 `Close` 并让关闭错误覆盖原错误，以复制 Go named-return `defer`；Go failpoint 由 `stubs.rs` 的线程局部 consume-once 标志代替。`executor_test.rs` 对应 Go `executor_test.go` 的主要正常、取消、rewrite、common-handle 和 failpoint 场景，`executor_nokit_test.rs` 对应 Go 的 request-source setter 用例，`parity_test.rs` 补充精确编码、错误覆盖、分区失败、重试权重与回调次数等契约矩阵。
+需要特别保留的语义差异处理有三处：Rust 的 `updateChecksumResponse` 使用 `wrapping_add` 明确复制 Go `uint64` 溢出回绕；Rust 在所有提前返回分支显式调用 `Close` 并让关闭错误覆盖原错误，以复制 Go named-return `defer`；Go failpoint 由 `stubs.rs` 的线程局部 consume-once 标志代替。
 
 当前 Rust crate 还通过 `stubs.rs` 模拟 `kv.Client`、DistSQL、元数据和编码依赖；Go 版本则直接依赖 TiDB/TiKV 包。因此本文能够确认接口和受测语义对齐，但不能据此宣称 Rust 路径已具备 Go 生产栈的全部网络、调度或存储行为。
 
@@ -90,11 +88,3 @@ Rust 文件按函数结构直接对应 `executor.go`：builder 字段与 setter�
 新增扫描对象或改变展开规则时，优先修改 `buildChecksumRequest`/`buildRequest`，保持稳定顺序，并重新核对 `Len`、`Each`、`RawRequests` 和 `update_fn` 次数。涉及 rewrite 时必须同时定义旧/新对象的匹配规则和 keyspace 前缀，补充分区缺失、旧索引缺失、非公开状态等失败用例。
 
 改变传输或重试逻辑时，应集中在 `sendChecksumRequest`/`Execute`，保留“每次响应必关闭、关闭错误覆盖、失败不触发进度、最终检查上下文”的契约。同步测试应放在独立的 `executor_test.rs` 或 `parity_test.rs`，不要把测试内嵌到生产文件；若 Go 行为同时变化，还需更新同路径 Go 测试和本文的对照说明。性能风险主要来自分区乘索引导致的请求数增长、串行请求执行和重试退避；兼容风险主要来自键范围编码、rewrite 前缀、索引名匹配和聚合算术变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter br/pkg/checksum` 列出目标、crate 根、桩和独立测试；`node --file br/pkg/checksum/executor.rs --offset 1 --limit 500` 及后续 500--583 行读取了完整 583 行源码，并报告本文件被 7 个文件引用。精确 `query ExecutorBuilder` 与 `query sendChecksumRequest` 确认 Rust/Go 对照符号位置；通用 callers/callees 命令本次超时，故调用边又由源码入口和精确文本搜索交叉核验。
-- 生产与 crate 证据：`br/pkg/checksum/executor.rs`、`br/pkg/checksum/lib.rs`、`br/pkg/checksum/stubs.rs`、`br/pkg/checksum/Cargo.toml`、`br/pkg/backup/schema.rs::schemaInfo::calculateChecksum`。目标目录没有 `doc.go`。
-- Go 对照：`br/pkg/checksum/executor.go`、`executor_test.go`、`executor_nokit_test.go`、`main_test.go`。
-- Rust 测试证据：`br/pkg/checksum/executor_test.rs`、`executor_nokit_test.rs`、`parity_test.rs`；覆盖请求构造与顺序、范围编码、rewrite、XOR/回绕累加、上下文取消、重试、退避权重、关闭错误、资源释放和回调次数。
-- 本任务是只新增说明文档的分析任务，按计划不运行 Cargo；交付检查使用任务指定的 11 个固定章节结构命令，并人工复核所有主要结论均能回指上述符号或文件。

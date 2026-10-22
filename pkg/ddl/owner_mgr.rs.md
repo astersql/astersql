@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；crate 根在 `pkg/ddl/lib.rs` 中以 `pub mod owner_mgr` 公开该模块，独立测试则以 `#[cfg(test)] mod owner_mgr_test` 接入。它提供一个按 keyspace 划分的、进程内全局 DDL owner 状态表，以及启动、关闭和查询该状态的 API（`OWNER_MANAGERS`、`start_owner_manager`、`close_owner_manager`、`owner_manager`）。
-
-当前 Rust 实现只维护内存状态，并没有持有 etcd client、租约或 `astersql-owner` 的选举管理器。仓库内对这些公开函数的 Rust 引用仅见 `pkg/ddl/owner_mgr_test.rs`；因此它目前是已公开但尚未接入 Rust DDL 生产启动主链的移植片段，不能等同于 Go 版本实际参与 DDL owner 选举的实现。`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/ddl"` 共同确认了 crate 边界与 Go 对照目录。
+当前 Rust 实现只维护内存状态，并没有持有 etcd client、租约或 `astersql-owner` 的选举管理器。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ ID 序号通过 `AtomicU64` 分配，即使未来分配动作移出互斥区仍�
 
 ## 与 Go 版本的对应关系
 
-结构映射如下：Rust 的 `OWNER_MANAGERS` 对应 Go 的 `globalOwnerManagers`；`start_owner_manager`/`close_owner_manager` 对应 `StartOwnerManager`/`CloseOwnerManager`；Rust `OwnerManager` 对应 Go 私有 `ownerManager`；空字符串默认 keyspace 和按 `store.GetKeyspace()` 分桶的设计意图一致。
-
 已对齐的局部语义包括：非 TiKV 路径启动为空操作；重复启动幂等；TiKV 路径缺少 etcd 时使用相同错误文本；关闭后管理器条目保留；classic 与 nextgen 可使用空或命名 keyspace。Rust 测试 `pkg/ddl/owner_mgr_test.rs::test_owner_manager` 覆盖这两种 keyspace、UniStore、缺 etcd、TiKV 成功、重复启动和关闭后的状态；Go 测试 `pkg/ddl/owner_mgr_test.go::TestOwnerManager` 验证 UniStore 不创建资源、TiKV 创建资源。
 
-尚未对齐的关键行为是：Go `ownerManager` 持有 `*clientv3.Client` 和 `owner.Manager`，使用 UUID，调用 `owner.NewOwnerManager`，并在 `Close` 中关闭竞选管理器与 etcd client；Rust 只有字符串和布尔状态，成功启动便直接把 `is_owner` 置真。Go 的 `ddl.go::newDDL` 会取得真实 owner manager 并注入调度链，Rust 仓库没有对应调用。因此当前 Rust 文件不具备真实分布式互斥、租约续期、owner 转移、故障恢复或资源关闭能力。
+尚未对齐的关键行为是：Go `ownerManager` 持有 `*clientv3.Client` 和 `owner.Manager`，使用 UUID，调用 `owner.NewOwnerManager`，并在 `Close` 中关闭竞选管理器与 etcd client；Rust 只有字符串和布尔状态，成功启动便直接把 `is_owner` 置真。Go 的 `ddl.go::newDDL` 会取得真实 owner manager 并注入调度链，Rust 仓库没有对应调用。
 
 ## 扩展指南
 
@@ -86,13 +82,3 @@ ID 序号通过 `AtomicU64` 分配，即使未来分配动作移出互斥区仍�
 任何网络或竞选初始化都不应长时间占用当前全局 mutex；可考虑把“定位 keyspace 条目”与“启动外部资源”分阶段设计，同时防止并发双启动。若 API 改为返回共享句柄而非克隆快照，应明确锁粒度、句柄生命周期和关闭时的竞态。ID 若需与 Go 兼容或跨进程唯一，应替换当前进程计数器，而不是依赖 `ddl-owner-{n}`。
 
 测试必须继续放在独立的 `pkg/ddl/owner_mgr_test.rs`，不要内嵌到生产源文件。至少同步覆盖：并发启动同一/不同 keyspace、失败后重试、关闭后重启、资源关闭错误、竞选成功与失主、panic/poison 策略，以及生产构造入口确实消费该 manager。涉及 Go 语义对齐时还应复核 `pkg/ddl/owner_mgr.go`、`pkg/ddl/owner_mgr_test.go` 和 `pkg/ddl/ddl.go::newDDL`，避免把当前简化状态模型误当作完整移植。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库，目标文件可由 `node --file pkg/ddl/owner_mgr.rs --offset 1 --limit 400` 完整读取；索引识别 `OwnerManager`、`start_owner_manager`、`close_owner_manager` 和 `owner_manager`。
-- RustCodeGraph `query OwnerManager --limit 20` 及对三个自由函数的 `query --kind function --json`：区分了 `pkg/ddl/owner_mgr.rs`、`pkg/ddl/owner_mgr.go` 和 `pkg/owner/manager.rs` 等同名符号。`callers/callees` 对这些短小自由函数未返回可用边，因而用精确仓库引用搜索补证。
-- 生产源码：`pkg/ddl/owner_mgr.rs`（完整 92 行），用于核对所有静态量、结构体、方法、状态转换、错误文本和同步原语。
-- crate 与模块入口：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`，用于核对 `astersql-ddl` 归属、Go 移植元数据、公开模块和独立测试模块。
-- Rust 测试：`pkg/ddl/owner_mgr_test.rs::test_owner_manager`，用于核对空/命名 keyspace、UniStore、TiKV、缺 etcd、重复启动和关闭保留条目的行为。
-- Go 对照：`pkg/ddl/owner_mgr.go`、`pkg/ddl/owner_mgr_test.go::TestOwnerManager`、`pkg/ddl/ddl.go::newDDL`，用于核对真实 etcd/owner 资源生命周期及生产接线，并识别 Rust 当前未实现的部分。
-- 精确 `rg` 调用点检查：除目标文件外，三个 Rust API 的直接使用只出现在 `pkg/ddl/owner_mgr_test.rs`；`pkg/ddl/lib.rs` 仅公开模块。这是“尚未接入 Rust 生产主链”结论的直接依据。

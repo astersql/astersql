@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-restore-split`。该 crate 的入口是同目录 `lib.rs`；入口以 `#[path = "sum_sorted.rs"] pub mod sum_sorted` 装配本模块，并通过 `pub use sum_sorted::*` 将其 API 扁平导出。`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/restore/split`，因此这里是同路径 `sum_sorted.go` 的 Rust 移植，而不是一套独立算法。
-
-在恢复主链中，本文件处在“文件范围统计”和“实际 Region 分裂”之间：`br/pkg/restore/log_client/log_split_strategy.rs::Accumulate` 与 `compacted_file_strategy.rs::Accumulate` 把日志文件或 SST 的键范围及规模合并进 `SplitHelper`；`br/pkg/restore/split/splitter.rs::RewriteSplitter` 持有该结构，`SplitHelperIterator::Traverse` 按表读取其片段，最终由 `SplitPoint` 将非零片段映射到 TiKV Region 并驱动分裂。本文件只维护有序、互不重叠的带权键区间，不访问 PD/TiKV，也不执行 key rewrite 或 split RPC。
+提供升序、可提前终止的 `Traverse`，供内存统计与 `splitter.rs` 的 Region 分裂主链消费。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `Value`、`Span`、`Valued`、`SplitHelper` 以及 `NewValued`、`NewSplitHelper`、`Merge`、`Traverse`、`mergeWithOverlap`、`overlapped`、`checkOverlaps` 均与 `br/pkg/restore/split/sum_sorted.go` 同名或一一对应。Go 使用 `google/btree.BTree` 和 `Valued.Less` 排序；Rust 用 `BTreeMap<StartKey, Valued>` 把比较键显式放在容器键位。Go 的 `ReplaceOrInsert` 对应 Rust `insert`，二者都以起始键唯一标识片段。
+Go 使用 `google/btree.BTree` 和 `Valued.Less` 排序；Rust 用 `BTreeMap<StartKey, Valued>` 把比较键显式放在容器键位。
 
 Rust 为保持 Go 算术行为，在 `join` 以及单段三分前的乘法中使用 `wrapping_*`；这是 Rust 版本额外显式化的兼容点，并由独立 Rust 测试覆盖。Rust 的 `GetStartKey`/`GetEndKey` 必须克隆 `Vec<u8>`，而 Go 返回 slice；可观察的键内容一致，但 Rust 调用会产生复制。`MemSize` 中 Rust 用 `size_of::<Vec<u8>>()`，Go 用 slice header 的反射大小，意图相同，平台结构体尺寸由各语言 ABI 决定。
-
-`br/pkg/restore/split/sum_sorted_test.go::TestSumSorted` 与 Rust `sum_sorted_test.rs::test_sum_sorted` 使用同一组重叠、相邻、嵌套和边界对齐用例，核对遍历后的 MB/条目序列及字符串格式。Rust 另外有 `test_go_integer_overflow_semantics`，专门证明回绕加法和三分路径与 Go 一致。当前 Rust 测试比 Go 测试多了遍历数量断言，仍保持同一行为契约。
 
 ## 扩展指南
 
@@ -89,13 +85,3 @@ Rust 为保持 Go 算术行为，在 `join` 以及单段三分前的乘法中使
 - 若优化性能，可考虑减少 `Traverse` 与重叠收集中的克隆，但必须保持回调不能破坏树内不变量、不能在遍历期间可变更新容器。任何改为借用的 API 都会影响 `SplitHelperIterator` 与 `SplitPoint` 的闭包生命周期。
 - 若修改 `MemSize`，需明确它是指标估算，并同步检查 `log_split_strategy.rs::maybeUpdateMemUsage`；不要在未计入树节点、容量和分配器开销时声称为精确内存。
 - 新增测试逻辑继续放在独立的 `sum_sorted_test.rs`，不要嵌回生产源文件；跨 Go/Rust 公共契约还可同步 `parity_test.rs`，但本文件的核心算法回归应保留在最近的独立测试中。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；目标文件被索引。
-- RustCodeGraph `node --file br/pkg/restore/split/sum_sorted.rs --offset 1 --limit 360`：读取目标文件全部 281 行，核对所有类型、函数、方法、内部算法和注释。
-- RustCodeGraph `explore "br/pkg/restore/split/sum_sorted.rs SumSorted NewSumSortedTree Traverse GetSplitKeys"`：确认 `splitter.rs::Traverse → sum_sorted.rs::Traverse` 调用边，并发现 `sum_sorted_test.rs`、`parity_test.rs` 的测试引用。精确 `callers` 子命令本次未输出文本，因此调用关系又用已索引调用方源码与仓库搜索交叉核对。
-- RustCodeGraph `node`：读取 `br/pkg/restore/split/lib.rs`，确认模块装配、公开再导出和独立测试挂载；读取 `splitter.rs` 的 `RewriteSplitter`、`SplitHelperIterator::Traverse`、`PipelineRegionsSplitterImpl::ExecuteRegions` 与 `SplitPoint`；读取 `log_split_strategy.rs::Accumulate/maybeUpdateMemUsage` 和 `compacted_file_strategy.rs::Accumulate`。
-- 直接读取 `br/pkg/restore/split/Cargo.toml`，确认 crate 名、`lib.rs` 入口、Go 包映射和 restore-utils 路径依赖。
-- 直接读取 `br/pkg/restore/split/sum_sorted.go`、`sum_sorted_test.go` 与独立 Rust 测试 `sum_sorted_test.rs`，核对 API、合并算法、半开区间、字符串格式、表驱动期望和 Rust 的 Go 溢出兼容测试。
-- 本任务仅产出文档，按计划不运行 Cargo；交付前使用任务指定命令验证文档存在且固定二级标题恰好为 11 个，并人工复核未把估算权重、内存估算或调用方约束描述成更强保证。

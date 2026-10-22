@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`typed_runaway_checker.rs`](typed_runaway_checker.rs) 是 `astersql-session` crate 的私有 `runtime::typed_runaway_checker` 模块，由 [`runtime.rs`](../runtime.rs) 的 `mod typed_runaway_checker;` 装配。它不实现 runaway 判定算法，而是在会话侧把 `astersql-resourcegroup-runaway` 的规范 `Checker` 适配为 `astersql-kv` 定义的、可跨存储请求链传递的 `RunawayChecker` trait object。
-
-唯一生产入口位于 [`scan_adapter_runtime.rs`](scan_adapter_runtime.rs) 的 `SessionBoundAdapterOwner::RunawayBeforeExecutor`：语句编译后先从 Domain 的 runaway manager 派生并执行规范 checker，再用本文件的 `SessionRunawayChecker` 包装同一个 `Arc<Checker>`，写入会话状态供后续 DistSQL/KV 请求使用。crate 归属和 Go 包映射由 [`pkg/session/Cargo.toml`](../Cargo.toml) 的 `name = "astersql-session"`、`[lib] path = "lib.rs"` 与 `package.metadata.porting.go-package = "pkg/session"` 确认；`nextgen` feature 不改变本文件。
+不实现 runaway 判定算法，而是在会话侧把 `astersql-resourcegroup-runaway` 的规范 `Checker` 适配为 `astersql-kv` 定义的、可跨存储请求链传递的 `RunawayChecker` trait object。
 
 ## 核心职责
 
@@ -74,9 +72,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 没有同路径的 `pkg/session/runtime/typed_runaway_checker.go`；本文件是 Rust 分 crate 后新增的类型桥。主要语义对照是 [`pkg/resourcegroup/checker.go`](../../resourcegroup/checker.go) 的 `RunawayChecker` 接口、[`pkg/resourcegroup/runaway/checker.go`](../../resourcegroup/runaway/checker.go) 的 `Checker` 实现，以及 [`pkg/store/copr/coprocessor.go`](../../store/copr/coprocessor.go) 的调用位置。
+Go 没有同路径的 `pkg/session/runtime/typed_runaway_checker.go`；本文件是 Rust 分 crate 后新增的类型桥。
 
-Go 的 `Checker` 直接接收 `*tikvrpc.Request`、`*util.RUDetails` 和 `error`，所以无需本文件的 DTO/错误转换；Rust 为隔离 session、KV、resourcegroup 和 store-copr crates 增加两级适配。两边都在请求前处理 deadline/CoolDown/SwitchGroup/Kill，在响应后累计跨 task 的 processed keys，在 task-sender 周期结束时重置，并允许并发调用动作查询与阈值检查。
+Go 的 `Checker` 直接接收 `*tikvrpc.Request`、`*util.RUDetails` 和 `error`，所以无需本文件的 DTO/错误转换；Rust 为隔离 session、KV、resourcegroup 和 store-copr crates 增加两级适配。
 
 关键差异是 Rust KV trait 只暴露三态动作和字符串错误，且 processed keys 使用 `u64`；本文件分别用有损动作映射、字符串包装和饱和转换弥合差异。规范 Rust checker 的核心阈值优先级及原子状态与 Go 实现保持一致，但 Go 的 failpoint 注入和 nil receiver 安全不属于本适配器；Rust 通过非空 `Arc` 从类型上排除 nil checker。
 
@@ -87,12 +85,3 @@ Go 的 `Checker` 直接接收 `*tikvrpc.Request`、`*util.RUDetails` 和 `error`
 - 调整错误合同前，应先固定“原错误原样返回不代表 checker 新失败”的不变量，并覆盖无设置、普通存储错误、deadline 错误、Kill 替换错误及非 Kill 超限。
 - 修改计数类型时，应保持超大 `u64` 不环绕、并发累计与 reset 的语义；性能上不要在每个 Cop 响应的热路径引入分配之外的阻塞 I/O 或锁。
 - Rust 回归测试必须继续放在独立文件。最直接位置是 [`scan_adapter_runtime_test.rs`](scan_adapter_runtime_test.rs) 的 `canonical_runaway_checker_crosses_kv_interface_with_deadline_and_processed_keys`；wire 映射应同步 [`pkg/store/driver/coprocessor_adapter_test.rs`](../../store/driver/coprocessor_adapter_test.rs)，规范算法变化应同步 [`pkg/resourcegroup/runaway/checker_test.rs`](../../resourcegroup/runaway/checker_test.rs)。
-
-## 验证依据
-
-- RustCodeGraph `status`：本地索引包含 7,032 个 Rust 文件、307,296 个节点和 1,848,419 条边；`query SessionRunawayChecker` 唯一定位到 [`typed_runaway_checker.rs`](typed_runaway_checker.rs)，`node --file` 完整读取其 59 行，并报告被 [`scan_adapter_runtime.rs`](scan_adapter_runtime.rs) 与 [`scan_adapter_runtime_test.rs`](scan_adapter_runtime_test.rs) 使用。
-- RustCodeGraph 源码核验：读取了 [`scan_adapter_runtime.rs`](scan_adapter_runtime.rs) 的 `RunawayBeforeExecutor`、[`pkg/kv/lib.rs`](../../kv/lib.rs) 的 KV trait/DTO、[`pkg/resourcegroup/runaway/checker.rs`](../../resourcegroup/runaway/checker.rs) 的规范 checker，以及 [`pkg/store/driver/runaway_adapter.rs`](../../store/driver/runaway_adapter.rs) 的存储侧桥。图对 trait impl 的方法 callers/callees 无完整结果，已用 `rg` 精确核对调用点。
-- crate 与模块证据：[`pkg/session/Cargo.toml`](../Cargo.toml)、[`runtime.rs`](../runtime.rs)；`pkg/session` 没有 `doc.go`，因此不存在可补读的 package contract。
-- 独立 Rust 测试：[`scan_adapter_runtime_test.rs`](scan_adapter_runtime_test.rs) 的 `canonical_adapter_runaway_manager_switches_group_before_executor` 验证 checker 安装和资源组切换，`canonical_runaway_checker_crosses_kv_interface_with_deadline_and_processed_keys` 验证最大执行时长、跨调用累计阈值及 Kill 动作。相关规范 checker 与存储桥测试分别位于 [`pkg/resourcegroup/runaway/checker_test.rs`](../../resourcegroup/runaway/checker_test.rs) 和 [`pkg/store/driver/coprocessor_adapter_test.rs`](../../store/driver/coprocessor_adapter_test.rs)。
-- Go 对照：[`pkg/resourcegroup/checker.go`](../../resourcegroup/checker.go)、[`pkg/resourcegroup/runaway/checker.go`](../../resourcegroup/runaway/checker.go)、[`pkg/resourcegroup/runaway/checker_test.go`](../../resourcegroup/runaway/checker_test.go)、[`pkg/store/copr/coprocessor.go`](../../store/copr/coprocessor.go)。Go 测试覆盖阈值动作与 reset/check 并发；Rust 桥测试覆盖本文件直接转换边界。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付检查使用任务指定的结构命令验证文件存在且恰含 11 个固定二级标题，并人工复核了符号、调用链、边界和扩展位置。

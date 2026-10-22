@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`aes.rs` 是 `astersql-util-encrypt` crate 的 AES 基础实现，位于 SQL 表达式层与 RustCrypto 算法 crate 之间。crate 入口 `pkg/util/encrypt/lib.rs` 以 `pub mod aes` 声明此模块，并以 `pub use aes::*` 再导出它的公开 API。`pkg/util/encrypt/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/util/encrypt`，并声明 `aes`、`cipher`、`cbc`、`cfb-mode`、`ctr` 和 `ofb` 等密码依赖。
-
-应用主链中，`pkg/expression/builtin_encryption.rs::aes_encrypt` 和 `aes_decrypt` 先解析 SQL 的 `block_encryption_mode`、校验 IV，再用本文件的 `DeriveKeyMySQL` 派生密钥，最后调用 ECB/CBC/OFB/CFB 入口。该上层会把底层加解密错误转换为 SQL `NULL`。CTR API 是本 crate 的通用公开能力，RustCodeGraph 在当前生产路径中未找到标量 SQL 调用者，但有独立测试向量验证。向量化 SQL 路径 `pkg/expression/builtin_encryption_vec.rs` 自带分组模式实现；不应把它概括为全部调用本文件。
+实现 `PKCS7Pad`/`PKCS7Unpad`，为 ECB 和 CBC 块模式提供补位与严格解补位。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ RustCodeGraph 的文件级索引还列出 `pkg/expression/builtin_encryption_vec
 
 ## 与 Go 版本的对应关系
 
-Rust 公开 API 与 `pkg/util/encrypt/aes.go` 保持同名对应：`PKCS7Pad`/`Unpad`、`AESEncryptWith*`/`AESDecryptWith*` 以及 `DeriveKeyMySQL`。两版本都支持 AES-128/192/256，ECB/CBC 使用 PKCS#7，OFB/CTR 用同一密钥流函数完成双向变换，CFB 区分加密和解密方向，MySQL 密钥派生则逐字节循环异或。`pkg/util/encrypt/aes_test.rs` 保留了 `aes_test.go` 的表驱动密文向量、非法密钥和填充分支；`migration_aster_unit_test.rs` 另以固定 Go 密文和错误文本做迁移回归。
-
 实现差异主要是安全边界的表达方式：Go 的 ECB `CryptBlocks` 在非整块或目标缓冲不足时 `panic`，Rust 的内部 `ecb_crypt` 直接返回 `EncryptError`，并在内部自行分配输出。Go 的 `PKCS7Pad` 使用 `append`，注释提醒容量充足时可改写底层内存；Rust 总是复制到新 `Vec`。Rust 额外拒绝 `PKCS7Pad` 的 0 或大于 255 块大小，并让 `DeriveKeyMySQL(..., 0)` 返回空向量；Go 实现没有这两个显式防护，因此扩展或改动时要区分“密文兼容”与“无效参数的宿主语言行为”。
 
 ## 扩展指南
@@ -84,12 +80,3 @@ Rust 公开 API 与 `pkg/util/encrypt/aes.go` 保持同名对应：`PKCS7Pad`/`U
 - 若要向 SQL 暴露新模式，仅修改本文件不足；还需在 `pkg/expression/builtin_encryption.rs` 的模式解析、IV 规则和加解密分派中接线，并评估 `pkg/expression/builtin_encryption_vec.rs` 的独立向量化路径是否需要对齐。
 - 保持无认证模式的兼容性时，不要将解密成功解释为完整性证明。如果新增 AEAD，必须单独设计 nonce/tag 输入输出和错误合约，避免破坏现有密文向量。
 - 性能优化应重点衡量输入复制、输出分配和每次构造 cipher 的成本；如果引入缓存或可复用状态，必须重新审查线程安全、密钥生命周期和跨调用状态泄漏风险。
-
-## 验证依据
-
-- 源码与 crate 边界：`pkg/util/encrypt/aes.rs`、`pkg/util/encrypt/lib.rs`、`pkg/util/encrypt/Cargo.toml`。源文件已通过 RustCodeGraph `node --file` 完整读取，确认 295 行内的全部公开函数、内部辅助函数、宏分派与无条件编译项。
-- RustCodeGraph 状态：项目索引可用，包含 `pkg/util/encrypt/aes.rs`。精确查询确认 `check_key` 的 7 个内部调用者、`check_iv` 的 6 个内部调用者，以及 ECB/CBC/OFB/CFB 公开 API 到 `pkg/expression/builtin_encryption.rs::aes_encrypt`/`aes_decrypt` 的上游调用边。CTR 公开 API 在当前索引中只见独立测试调用边。
-- 上层精确源码：RustCodeGraph `node aes_encrypt --file pkg/expression/builtin_encryption.rs` 和对应 `aes_decrypt` 节点，确认 MySQL 密钥派生、模式分派和错误转 SQL `NULL` 的逻辑；`node crypt_ofb --file pkg/expression/builtin_encryption_vec.rs` 证实向量化路径有独立实现。
-- Go 对照：`pkg/util/encrypt/aes.go` 的 ECB 类型、通用填充、五种模式和 `DeriveKeyMySQL`；该文件已完整读取并与 Rust 分支逐项核对。
-- 测试证据：`pkg/util/encrypt/aes_test.rs` 覆盖 PKCS#7 正反例、AES-128/192/256 ECB 基础向量、五种模式的固定密文与非法密钥/填充，以及 MySQL 密钥派生；`pkg/util/encrypt/aes_test.go` 是其 Go 意图来源；`pkg/util/encrypt/migration_aster_unit_test.rs` 覆盖迁移密文向量和错误文本。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时以任务指定的 11 个固定二级标题结构检查、路径存在性检查和人工事实复核作为完成证据。

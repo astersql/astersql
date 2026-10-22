@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-源码入口：[sessionvars.rs](./sessionvars.rs)。
-
-本文件属于 `astersql-expression-expropt` crate，是表达式“可选求值属性”机制中会话变量这一项的适配层。它不创建或复制会话变量，而是把 `variable::SessionVars` 包装成 `exprctx::OptPropSessionVars` 对应的 provider，并给表达式侧提供带类型检查的 reader。模块由 `pkg/expression/expropt/lib.rs` 的 `mod sessionvars; pub use sessionvars::*;` 纳入并公开。
-
-完整应用中的上游装配点是 `pkg/expression/sessionexpr/sessionctx.rs` 的 `NewEvalContext`：该函数从 `SessionContext::session_vars()` 得到 `Arc<SessionVars>`，构造 `SessionVarsPropProvider`，再写入求值上下文的可选属性表。下游包括 `pkg/expression/builtin.rs` 中用户变量读写、`pkg/expression/extension.rs` 中扩展函数上下文，以及 `pkg/planner/core/expression_rewriter.rs` 中用户变量和 `LIKE` 转义规则的表达式改写。
-
-crate 边界由 `pkg/expression/expropt/Cargo.toml` 定义：包名为 `astersql-expression-expropt`，依赖 `astersql-expression-exprctx`、`astersql-sessionctx-variable`、`astersql-util-intest` 和 `anyhow`；本文件分别借助这些依赖表达属性键、会话状态、断言开关与可恢复读取错误。Cargo 文件没有为本逻辑声明条件 feature。
+不创建或复制会话变量，而是把 `variable::SessionVars` 包装成 `exprctx::OptPropSessionVars` 对应的 provider，并给表达式侧提供带类型检查的 reader。
 
 ## 核心职责
 
@@ -96,16 +90,10 @@ RustCodeGraph 能解析本文件内部的 `get_session_vars -> get_prop_provider
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/expropt/sessionvars.go`：
-
 - Go `SessionVarsPropProvider.vars variable.SessionVarsProvider` 对应 Rust `Arc<dyn ExproptSessionVarsProvider>`；Rust 用拥有型 `Arc` 满足 trait object 生命周期，而不增加 `Send/Sync` 要求。
 - Go `NewSessionVarsProvider` 的非空断言在 Rust 中由 `Arc<T>` 的非空类型性质替代。
-- Go `Desc`、`RequiredOptionalEvalProps` 和 `GetSessionVars` 分别对应 Rust 同职责实现，属性键和缺失属性错误路径保持一致。
 - Go 通过运行时类型断言取 provider；Rust 的公共 `get_prop_provider` 用 `Any::downcast_ref` 实现安全向下转型，并额外明确报告键不一致。
-- Go 在 `intest.EnableAssert` 时调用 `exprctx.AssertLocationWithSessionVars(ctx.Location(), ...)`。Rust 将等价检查局部化为 `assert_session_vars_location_matches`，并通过 `SessionVars` 的专门 trait 实现确保第三项来自 `StmtCtx.TimeZone()`。
 - Rust 的窄接口允许 `location_name()` 返回 `None`，这种测试替身会跳过断言；完整 `exprctx::EvalContext` 的 blanket 实现总是返回 `Some(self.Location().to_string())`，对应生产 Go 路径。
-
-Go 测试 `pkg/expression/expropt/optional_test.go` 验证缺失 provider 报错与返回同一 SessionVars；`pkg/expression/sessionexpr/sessionctx_test.go::TestSessionEvalContextOptProps` 验证真实 EvalContext 注册和指针同一性。Rust 的对应证据位于独立测试文件 `pkg/expression/expropt/optional_test.rs`、`pkg/expression/expropt/migration_aster_unit_test.rs`、`pkg/expression/expropt/sessionvars_test.rs` 和 `pkg/expression/sessionexpr/sessionctx_test.rs`。
 
 ## 扩展指南
 
@@ -115,12 +103,3 @@ Go 测试 `pkg/expression/expropt/optional_test.go` 验证缺失 provider 报错
 - 修改属性键、描述或 downcast 机制时，应同步检查 `pkg/expression/exprctx/optional.rs`、`pkg/expression/expropt/optional.rs` 和 `pkg/expression/sessionexpr/sessionctx.rs`；键编号与描述表下标是不变量。
 - 测试必须继续放在独立文件，不要内嵌到 `sessionvars.rs`。至少同步 `sessionvars_test.rs` 的严格时区名称用例、`optional_test.rs` 的缺失/注册/指针同一性用例，以及 `migration_aster_unit_test.rs` 的语句时区漂移用例；若改动真实装配，再同步 `sessionexpr/sessionctx_test.rs`。
 - 兼容性风险主要是 Go/Rust 错误文字、时区名称比较和 required-property 集合漂移；性能风险主要是把热路径读取改成克隆 SessionVars、重复分配，或增加无条件检查。当前 reader 只做一次注册表查找和引用返回，额外时区字符串构造仅在断言路径发生。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/expropt` 确认目标 Rust/Go 文件与独立测试均在索引中。
-- RustCodeGraph `query`：定位 `ExproptSessionVarsProvider`、`SessionVarsPropProvider`、`SessionVarsPropReader` 和 `assert_session_vars_location_matches`；`callees get_session_vars` 核对 reader 到 `location_name`、provider getter 和断言函数的内部调用边。跨文件 callers 缺失时使用源码搜索补证。
-- 已读生产路径：`pkg/expression/expropt/sessionvars.rs`、`optional.rs`、`lib.rs`、`Cargo.toml`，`pkg/expression/exprctx/optional.rs`，`pkg/expression/sessionexpr/sessionctx.rs`，`pkg/expression/builtin.rs`，`pkg/expression/extension.rs`，`pkg/planner/core/expression_rewriter.rs`。
-- 已读 Go 对照：`pkg/expression/expropt/sessionvars.go`、`optional_test.go`，以及真实装配测试 `pkg/expression/sessionexpr/sessionctx_test.go`。
-- 已读 Rust 测试：`pkg/expression/expropt/sessionvars_test.rs`、`optional_test.rs`、`migration_aster_unit_test.rs`、`pkg/expression/sessionexpr/sessionctx_test.rs`。这些测试分别覆盖严格时区名称、缺失属性、注册后指针同一性、语句时区漂移和真实 EvalContext 装配。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另以任务指定命令验证文件存在且固定二级标题恰好为 11 个，并人工复核唯一生产物、源码链接和无测试内嵌建议。

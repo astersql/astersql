@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-server-internal-handshake`，crate 边界由同目录的 `Cargo.toml` 定义，入口是 `lib.rs`。`lib.rs` 通过 `pub mod handshake` 装载本文件，再以 `pub use handshake::*` 对外再导出其中的公开项。当前文件只有 `Response41` 一个生产符号，没有函数、trait、常量、条件编译项或协议解析实现。
-
-它位于 MySQL 客户端初始握手响应的数据模型层：保存客户端在 Protocol 4.1 握手响应中声明的能力、身份、认证数据和可选元数据。字节流解析位于相邻 crate 的 `pkg/server/internal/parse/parse.rs`，而不是本文件。根 `Cargo.toml` 以 `facade_server_internal_handshake` 登记该 crate，`pkg/server/Cargo.toml` 和 `pkg/server/internal/parse/Cargo.toml` 都通过路径依赖引用它。
-
-当前 Rust 接线只可确认到解析层：仓库中的 Rust 引用由 `pkg/server/internal/parse/lib.rs` 转接，再由 `handshake_response_header` 与 `handshake_response_body` 写入 `Response41`。没有找到与 Go `pkg/server/conn.go` 中连接认证流程等价的 Rust 生产调用者，因此不能把 Go 侧完整的 TLS 升级、认证插件协商和开会话流程描述成 Rust 已接线能力。
+提供 `Default` 初始状态，使解析器能先建立全空/全零对象，再按实际包内容逐项填充；该约定由 `pkg/server/internal/handshake/migration_aster_unit_test.rs` 验证。
 
 ## 核心职责
 
@@ -84,8 +80,6 @@ RustCodeGraph 对 `Response41` 的精确查询找到了 Rust/Go 两个定义和�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/server/internal/handshake/handshake.go`。Rust 与 Go 均定义八个同义字段，顺序一致：Attrs、User、DBName、AuthPlugin、Auth、ZstdLevel、Capability、Collation；`u32`/`uint32` 和 `u8`/`uint8` 宽度直接对应，`isize` 对应 Go 的本机宽度 `int`。
-
 存在以下语言层差异：
 
 - Go 的 `string` 能保存任意字节且不可变；Rust 使用可变的 `Vec<u8>`，同样避免强制 UTF-8，但允许调用方原地改变内容。
@@ -104,16 +98,3 @@ Go 的完整生产路径已接入 `pkg/server/conn.go`；Rust 当前可确认的
 4. 更新独立测试，而不是把测试嵌入本源文件。结构默认值和字段保持测试放在 `pkg/server/internal/handshake/migration_aster_unit_test.rs`；解析分支与畸形包测试放在 `pkg/server/internal/parse/migration_aster_unit_test.rs`；真实抓包兼容性放在 `pkg/server/internal/parse/handshake_test.rs`。
 
 兼容性风险主要是 capability 与字段顺序不一致、整数宽度变化、错误地拒绝非 UTF-8 输入，以及把“字段缺失”和“空值”混为一谈。性能风险主要来自对网络包逐字段复制和属性集合的多次分配；若要减少复制，需要连同生命周期和异步连接缓冲区所有权整体设计，不能只把字段替换成借用切片。安全风险包括认证载荷日志泄漏、超大属性分配以及绕过解析器手工构造未经验证的对象。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/server/internal/handshake/handshake.rs`，确认仅有 `Response41` 及八个公开字段。
-- crate 边界：`pkg/server/internal/handshake/Cargo.toml`、`pkg/server/internal/handshake/lib.rs`、根 `Cargo.toml`、`pkg/server/Cargo.toml`。
-- Rust 解析与依赖：`pkg/server/internal/parse/Cargo.toml`、`pkg/server/internal/parse/lib.rs`、`pkg/server/internal/parse/parse.rs`。
-- Go 对照和生产流程：`pkg/server/internal/handshake/handshake.go`、`pkg/server/internal/parse/parse.go`、`pkg/server/conn.go`。
-- 独立测试：`pkg/server/internal/handshake/migration_aster_unit_test.rs`、`pkg/server/internal/parse/migration_aster_unit_test.rs`、`pkg/server/internal/parse/handshake_test.rs`、`pkg/server/internal/parse/handshake_test.go`。
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`files --filter pkg/server/internal/handshake` 确认目标、入口和迁移测试均已索引；`node --file .../handshake.rs` 核对完整源码；`query Response41 --json` 核对 Rust/Go 定义和测试；`callers/callees Response41` 未给出函数调用边，之后以精确 `rg` 引用搜索核对真实数据流。
-
-任务要求的结构校验用于确认本文恰有十一个固定二级章节。按照纯文档任务约束未运行 Cargo；行为描述来自源码、图索引、Cargo 声明、Go 对照和独立测试的静态核验。

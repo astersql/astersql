@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-charset` crate 中一套公开的 ASCII 编码实现。crate 入口 `pkg/parser/charset/lib.rs` 通过 `include!("encoding_ascii.rs")` 将其放入 `encoding_ascii` 模块，并以 `pub use encoding_ascii::*` 再导出。`pkg/parser/charset/Cargo.toml` 指定该 crate 的入口为 `lib.rs`，Go 包对应关系为 `pkg/parser/charset`。
-
-当前 crate 内还存在一套位于 `pkg/parser/charset/encoding.rs` 的私有 `EncodingAscii`。通用 `FindEncoding(CharsetASCII)` 返回的是那套私有静态实例，而不是本文件的 `ENCODING_ASCII_IMPL`。本文件的真实接线是：独立测试直接使用其公开 API，`lib.rs` 为它实现 `EncodingView`，`EncodingBase` 再可通过 `EncodingRef::Ascii` 回调本实例。因此阅读或扩展时不能把通用 `FindEncoding` 的调用者直接算作本文件调用者。
+提供名称、类型、多字节长度、大小写、首字符探测、整段合法性校验、转换和逐字符遍历 API。
 
 ## 核心职责
 
@@ -79,11 +77,7 @@ Cargo 依赖中，与这条链直接相关的是外部 `encoding = "0.2.33"` 及
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/charset/encoding_ascii.go`。`EncodingASCIIImpl`/`init`、`encodingASCII`、`Name`、`Tp`、`Peek`、`IsValid`、`Transform` 和 `Foreach` 均在本文件有对应物。两侧都以 Nop 编码器构造基座、补上 self 回指、只接受最大 ASCII 字节、在合法转换时返回原输入，并用 UTF-8 Peek 宽度聚合非法片段。
-
 Rust 的表现形式差异包括：Go 全局指针与包初始化函数被 `OnceLock` 和显式 `init_encoding_ascii` 取代；Go 的嵌入方法由显式委托 `mb_len`、`to_upper`、`to_lower` 取代；Go `[]byte`/`*bytes.Buffer` 的返回关系由 `TransformResult::Borrowed/Owned` 和 `Option<&mut Vec<u8>>` 明确表达；回调使用泛型闭包而非函数值。
-
-`pkg/parser/charset/encoding_test.go::TestEncodingValidate` 给出 ASCII 空串、普通文本、`Ê`、中文和混合输入的期望。Rust 的 `encoding_test.rs::test_encoding_validate` 保留了相同表格意图，不过它通过通用 `FindEncoding` 覆盖并行实现；本文件自身由 `encoding_ascii_test.rs` 专门验证。两套测试都应继续保持一致。
 
 ## 扩展指南
 
@@ -96,16 +90,3 @@ Rust 的表现形式差异包括：Go 全局指针与包初始化函数被 `Once
 若计划消除 `encoding_ascii.rs` 与 `encoding.rs` 的重复实现，需要单独设计统一方案：核对两个 `EncodingTp`、两个编码 trait/引用类型、两个错误返回模型和 `FindEncoding` 的所有调用者。最小验证至少应同时覆盖 `encoding_ascii_test.rs`、`encoding_test.rs` 和 Go 对照用例，避免只让一条入口语义正确。
 
 性能相关修改应保留线性扫描、切片借用和按需分配特征；对 `foreach` 的宽度计算必须以剩余输入为界，避免越界，并保留回调提前停止能力。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点与 1,848,419 条边，可覆盖本任务的 Rust/Go 源和测试。
-- RustCodeGraph `node --file pkg/parser/charset/encoding_ascii.rs`：核对了全部 121 行、单例、类型及 9 个公开方法，并确认索引报告的直接使用测试文件。
-- RustCodeGraph `node init_encoding_ascii` 与 `explore`：确认初始化函数实例化 `EncodingAscii`、引用单例，并由两个 Rust 测试入口调用；确认 `peek`、`is_valid`、`transform`、`foreach` 的内部调用关系。
-- RustCodeGraph 读取 `pkg/parser/charset/lib.rs`：核对模块 include/再导出、`EncodingView` 适配、`EncodingRef::Ascii` 派发、操作位、缓冲及 UTF-8 Peek 规则。
-- RustCodeGraph 读取 `pkg/parser/charset/encoding_base.rs`：核对非法慢路径的缓冲清理、字符遍历、首错、替换/截断、回指初始化前提和错误格式。
-- RustCodeGraph 读取 `pkg/parser/charset/encoding.rs`：核对通用 `FindEncoding` 使用并行私有实现，而非本文件单例；同时核对通用测试链的行为边界。
-- `pkg/parser/charset/Cargo.toml`：核对 crate 名称、`lib.rs` 入口、内部 parser 错误依赖、`encoding` 依赖及 Go 包元数据。
-- Go 对照 `pkg/parser/charset/encoding_ascii.go` 与 `encoding_test.go`：核对全局实例、self 回指、ASCII 上界、合法快路径、UTF-8 宽度分组和表格化边界结果。
-- Rust 测试 `pkg/parser/charset/encoding_ascii_test.rs`、`encoding_test.rs` 与 `charset_1_aster_unit_test.rs`：核对公开方法、零复制、目标缓冲保持、替换结果、非法分组和回调提前停止。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的命令验证文档恰有 11 个固定二级标题。

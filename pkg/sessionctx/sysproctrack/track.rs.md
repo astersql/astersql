@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`track.rs` 是 `astersql-sessionctx-sysproctrack` crate 的系统进程跟踪契约文件。crate 入口 `pkg/sessionctx/sysproctrack/lib.rs` 通过 `mod track; pub use track::*;` 将本文件的公开项全部再导出；`Cargo.toml` 的 `package.metadata.porting.go-package` 指向同目录 Go 包 `pkg/sessionctx/sysproctrack`。它处在会话状态与系统进程管理的边界：被跟踪对象暴露 `SessionVars` 和 `ProcessInfo`，跟踪器负责按连接 ID 注册、注销、列举和发出终止请求。
-
-本文件只有 trait 与类型别名，不保存注册表、不开线程，也没有具体 `Tracker` 生产实现。当前 Rust 仓库中 `pkg/domain/domain.rs` 虽有另一套 `SysProcesses`/`SystemProcess` 实现，但没有 `impl sysproctrack::Tracker for SysProcesses`，其数据类型与部分行为也不同，不能视为本契约已经接入 `Domain`。RustCodeGraph 对本文件的索引使用者主要指向测试文件，这与普通 Rust 搜索未发现生产 `impl Tracker` 的结果一致。
+处在会话状态与系统进程管理的边界：被跟踪对象暴露 `SessionVars` 和 `ProcessInfo`，跟踪器负责按连接 ID 注册、注销、列举和发出终止请求。
 
 ## 核心职责
 
@@ -84,13 +82,9 @@ Rust 类型边界还有三项需要实现者显式处理：`Mutex<SessionVars>` 
 
 ## 与 Go 版本的对应关系
 
-`pkg/sessionctx/sysproctrack/track.go` 与本文件逐项对应：Go `TrackProc` 的两个方法映射为 Rust `TrackProc`，Go `Tracker` 的四个方法映射为 Rust `Tracker`，`uint64` 映射为 `u64`，`map[uint64]*ProcessInfo` 映射为拥有所有权的 `HashMap<u64, Arc<ProcessInfo>>`。
-
 为表达 Go 指针/接口语义，Rust 增加了显式同步和所有权包装：`*SessionVars` 变为 `&Mutex<SessionVars>`，可空 `*ProcessInfo` 变为 `Option<Arc<ProcessInfo>>`，接口值变为 `Arc<dyn TrackProc>`。Rust 还给两个 trait 加上 `Send + Sync`，把 Go 实现依靠锁达到的跨线程使用要求前移到类型边界。
 
-Go 接口文件本身同样不写实现；权威生产实现位于 `pkg/domain/domain.go::SysProcesses`。当前 Rust `pkg/domain/domain.rs::SysProcesses` 是独立 API：它以 `SystemProcess`、自定义 `ProcessInfo` 和 `BTreeMap` 工作，拒绝所有重复 ID，`kill` 对不存在 ID 返回 `DomainError`，且没有实现本文件 `Tracker`。这些差异说明迁移接线尚未完成，不能声称 Rust 已完整替代 Go 系统进程主链。
-
-`migration_aster_unit_test.rs` 用 mock 对齐了同对象重复注册、异对象冲突、`ConnectionID` 设置/清零、列表过滤和未知 ID kill 忽略；它没有覆盖 Go 生产实现中的 `SQLKiller.Reset` 与 `SendKillSignal(QueryInterrupted)`，也没有并发压力测试。
+当前 Rust `pkg/domain/domain.rs::SysProcesses` 是独立 API：它以 `SystemProcess`、自定义 `ProcessInfo` 和 `BTreeMap` 工作，拒绝所有重复 ID，`kill` 对不存在 ID 返回 `DomainError`，且没有实现本文件 `Tracker`。这些差异说明迁移接线尚未完成，不能声称 Rust 已完整替代 Go 系统进程主链。
 
 ## 扩展指南
 
@@ -100,12 +94,3 @@ Go 接口文件本身同样不写实现；权威生产实现位于 `pkg/domain/d
 - 需要稳定错误处理时，可引入结构化错误再由 `TrackError` 包装，但应保留现有调用者可传播任意错误的能力，并评估是否会破坏字符串兼容。
 - 并发实现应记录锁顺序，避免在注册表锁内执行外部阻塞逻辑；高频 `GetSysProcessList` 场景还应评估快照分配、`Arc` 克隆和持读锁时间。
 - 测试必须继续放在独立文件中。直接契约回归应扩展 `pkg/sessionctx/sysproctrack/migration_aster_unit_test.rs`；生产接线后，还应在具体实现同目录的独立测试中覆盖 SQLKiller 重置/发送、并发 Track/UnTrack、注销清理和端到端 process-list 可见性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/sessionctx/sysproctrack/track.rs --offset 1 --limit 400` 读取完整 72 行源码；`query TrackProc --kind trait` 与 `query Tracker --kind trait` 精确定位两个 trait；`node pkg/sessionctx/sysproctrack/track.rs::TrackProc` 和 `node ...::Tracker` 复核签名。因同名符号很多，宽泛 `explore` 结果未用于具体调用结论。
-- Rust 源与 crate 边界：`pkg/sessionctx/sysproctrack/track.rs`、`lib.rs`、`Cargo.toml`；工作区和消费者线索来自根 `Cargo.toml`、`pkg/util/sqlexec/lib.rs`、`pkg/util/sqlexec/restricted_sql_executor.rs`、`pkg/domain/domain.rs`。
-- Go 对照：`pkg/sessionctx/sysproctrack/track.go` 定义同构接口；`pkg/domain/domain.go::SysProcesses` 提供注册、注销、列表和 kill 的生产语义；`pkg/statistics/handle/autoanalyze/exec/exec.go::RunAnalyzeStmt` 与 `pkg/statistics/handle/util/auto_analyze_proc_id_generator.go::AutoAnalyzeTracker` 展示成对注册链；`pkg/domain/domain.go::CheckAutoAnalyzeWindows` 展示 kill 调用链。
-- 独立 Rust 测试：`pkg/sessionctx/sysproctrack/migration_aster_unit_test.rs` 的 `track_preserves_identity_and_connection_id_rules`、`process_list_skips_nil_and_mismatched_snapshots`、`kill_only_targets_a_tracked_process`。本任务按计划不运行 Cargo，因此这些测试仅作为已读行为证据，不作为本轮执行结果。
-- 人工源码搜索确认：Rust 生产代码未发现 `impl Tracker for SysProcesses` 或其他本 trait 的生产实现；同名 `Tracker` 结果已按路径消歧。
-- 结构验收使用任务文件规定的命令，要求目标存在且固定二级标题恰好为 11 个；具体退出码记录在任务交付结果中。

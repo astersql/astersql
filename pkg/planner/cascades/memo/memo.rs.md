@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Cascades 优化器的 Memo 图总控：把逻辑计划树转换成由等价类 `Group` 和组表达式 `GroupExpression` 组成的搜索空间，维护全局表达式去重、等价 Group 合并、根节点以及逻辑计划备选枚举。源码由同 crate 的 [`lib.rs`](lib.rs) 私有声明为 `mod memo` 后整体再导出；crate 名为 `astersql-planner-cascades-memo`，其边界与直接依赖见 [`Cargo.toml`](Cargo.toml)。
-
-应用主链入口在 [`../cascades.rs`](../cascades.rs)：外层 `cascades::Memo` 包装本文件的 `Memo`，`Optimizer::NewOptimizer` 经外层 `Memo::Init` 调用本文件 `Memo::Init`，随后以根 Group 创建优化任务；规则任务则通过 `TaskContext::CopyIn`、`CopyInWithChildren` 和 `RemoveOut` 回写 Memo。因此本文件位于“逻辑计划输入 → Memo 探索空间 → 规则变换/枚举”的中枢，而不是逻辑算子本身或任务调度器。
+实现 Cascades 优化器的 Memo 图总控：把逻辑计划树转换成由等价类 `Group` 和组表达式 `GroupExpression` 组成的搜索空间，维护全局表达式去重、等价 Group 合并、根节点以及逻辑计划备选枚举。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ Memo 图采用以下不变量：每个存活 Group 同时出现在 `groups` 与 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`memo.go`](memo.go)，测试对照为 [`memo_test.go`](memo_test.go)。Rust 保留了 Go 的公开命名和主算法：`NewMemo`、`Init`、`CopyIn`、全局去重、source → target 合并、父表达式重写、延后递归合并、`RemoveOut` abandoned 语义，以及从根 Group 枚举逻辑计划组合。
-
 已确认的实现差异如下：
 
 - Go 使用链表保存 Group、generic hashmap 保存全局表达式并复用 Memo 内 hasher；Rust 使用 `Vec<GroupRef>`、线性 `globalExpressions`，`GetHasher` 每次新建 hasher。Rust 构造参数 `capacities` 当前未用于预分配；Go 版本则把容量交给 hashmap。
@@ -102,8 +98,6 @@ Memo 图采用以下不变量：每个存活 Group 同时出现在 `groups` 与 
 - Go 的 `IteratorLP::Next` 用栈逐次选择表达式，重设逻辑算子的 Children 与 `PlanIDsHash`，返回 `base.LogicalPlan`；Rust 在构造迭代器时预计算不可变选择树 `PlanAlternative`，保留表达式句柄而不回写包装的逻辑算子。这是返回类型、求值时机和副作用上的实质差异。
 - Go 通过对象 ID/`Equals` 比较 Group；Rust 在合并与边维护的关键位置使用 `Rc::ptr_eq` 区分具体共享对象，同时表达式语义相等仍基于 GroupID。
 - Go 的容器和裸指针式关系由 GC 管理；Rust 以 `Rc`/`Weak` 明确表达强弱所有权，并通过 `RefCell` 提供单线程运行时借用检查。
-
-因此，“算法意图对齐”不等于所有性能、错误传播和迭代副作用完全一致；扩展或回归时应同时检查两份实现，而不能只根据同名函数推断行为。
 
 ## 扩展指南
 
@@ -116,15 +110,3 @@ Memo 图采用以下不变量：每个存活 Group 同时出现在 `groups` 与 
 - 对外层优化器接线的修改应同步检查 [`../cascades.rs`](../cascades.rs) 及任务上下文；尤其规则输出的浅算子必须继续携带 Binder 的 `child_groups`。
 
 兼容风险主要是 Go/Rust 迭代返回值不同和统计/属性错误路径不同；正确性风险集中在全局哈希失效、父反向边漏维护和递归合并顺序；性能风险集中在线性全局查重及备选笛卡尔积全量物化。
-
-## 验证依据
-
-本说明基于以下直接证据完成：
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中同时存在 `memo.rs`、`memo.go` 及各自独立测试。
-- RustCodeGraph 文件/符号读取：[`memo.rs`](memo.rs) 全 496 行；`CopyIn` 的已识别下游为 `derive_tree`、`NewGroupExpression`、`InsertGroupExpression`，上游为 `Init` 和 `CopyInWithGroupChildren`；`InsertGroupExpression` 下游为 `find_global`、`NewGroup`、`mergeGroup`，上游为两个 CopyIn 入口；`NewIterator` 下游为 `IteratorLP::new`；`mergeGroup` 下游包含 `remove_global`、`replaceGEChild`、`find_global`。
-- 应用入口：[`../cascades.rs`](../cascades.rs) 的外层 `Memo`、`TaskContext`、`Context` 与 `Optimizer::NewOptimizer`。
-- crate 与所有权实现：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`group.rs`](group.rs)、[`group_expr.rs`](group_expr.rs)、[`group_id_generator.rs`](group_id_generator.rs)。目标包及上层 `pkg/planner/cascades` 未发现 `doc.go`。
-- Rust 独立测试：[`memo_test.rs`](memo_test.rs) 的 `TestMemo`、`TestInsertGE`、`TestMergeGroup`、`TestRecursiveMergeGroup`、`TestIteratorLogicalPlan`，分别验证建图/ID、去重删除、父边重写、上层递归合并和 2×2 笛卡尔积及唯一 hash。
-- Go 对照：[`memo.go`](memo.go) 全文件，以及 [`memo_test.go`](memo_test.go) 对应建图、合并、递归合并与迭代场景。
-- 本任务是纯文档分析，按任务约束未运行 Cargo 或代码测试；交付验证只执行任务指定的 11 章节结构检查，并人工复核上述路径与符号能够回答文件定位、运行流程和安全扩展要求。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 中系统 DDL 会话与 CREATE TABLE 外部资源之间的适配层。它没有作为普通模块从 `runtime.rs` 公开，而是由 `pkg/session/runtime/system_session.rs:997-998` 通过 `#[path = "create_table_resources.rs"] mod create_table_resources;` 私有装入；对外入口也都只有 `pub(super)` 可见性。
-
-上游主链是 `pkg/ddl/persistent_create_table.rs` 的持久化 CREATE TABLE 状态机调用 `JobExecutionContext`，`pkg/session/runtime/system_session.rs:1370-1398` 的 `ConcreteJobExecutionContext` 实现再把 TiFlash、placement、columnar、affinity 和 auto-ID 操作转发到本文件。标签迁移和删除 affinity 则分别由同一适配器的 `update_table_labels`、`delete_drop_table_affinity` 转入。因而本文件负责的是元数据事务之外的资源接线，不负责表元数据校验、DDL 状态迁移或 schema version 发布。
-
-`pkg/session/Cargo.toml` 表明它属于 `astersql-session`，直接使用的边界包括 `astersql-domain`、`astersql-meta-autoid`、`astersql-autoid_service`、`astersql-domain-affinity`、`astersql-domain-infosync`、`astersql-ddl-placement`、`astersql-tablecodec`、`reqwest` 与 `serde_json`。该 crate 只有 `nextgen` feature；本文件自身没有条件编译项。
+将表级或分区级 affinity 转成编码后的物理 key range，并通过 mock 全局管理器或真实 PD HTTP 客户端创建/删除 affinity group。
 
 ## 核心职责
 
@@ -112,7 +108,6 @@ RustCodeGraph 明确识别了 `rebase_ids → requirement`、`create_affinity/pu
 - `configure_replica`、`put_bundles`、`create_affinity` 分别对应 `pkg/ddl/create_table.go:118-159` 的 TiFlash 配置、`PutRuleBundlesWithDefaultRetry` 和 `createTableAffinityGroupsInPD`。mock 路径直接复用 Go 兼容的 infosync/affinity API；真实路径在 Rust 中通过 PD HTTP JSON 实现同等外部效果。
 - affinity group 命名和物理范围与 `pkg/ddl/affinity.go` 的 `buildAffinityGroupDefinitions`、`createTableAffinityGroupsInPD`、`deleteTableAffinityGroupsInPD` 对齐。Go 注释将创建定义为关键路径、删除定义为 best-effort；本文件只返回删除错误，是否忽略仍由上游动作决定。
 - `update_labels` 对应 `pkg/ddl/table.go:1842-1880` 的 `getOldLabelRules` / `updateLabelRules`：都只克隆存在的旧规则，重写 schema/table/partition 名称和物理 IDs，再提交 patch。Rust 额外以 `delete_old` 明确控制是否删除旧 rule IDs。
-- Rust 当前实现不是对 Go 文件逐行复制：它将 CREATE TABLE 所需的多个 Go helper 汇聚到 session runtime 边界，并区分 mock 与真实 PD transport。扩展时应保持可观察语义和错误边界一致，而不是要求内部调用形式相同。
 
 ## 扩展指南
 
@@ -124,14 +119,3 @@ RustCodeGraph 明确识别了 `rebase_ids → requirement`、`create_affinity/pu
 - 修改 columnar gate 时，同步 Go 的 create-table 检查和错误码，并扩展 `normal_ddl_create_table_columnar_gate`，尤其保留 replica count 0 的绕过以及 `ON`/`1` 接受规则。
 - 修改 label 迁移时，应新增或扩展独立 runtime 测试，覆盖 v1/v2 codec、表/分区规则缺失、rename、truncate、`delete_old` 两种模式；当前没有直接以本文件函数命名的单元测试，不能用邻近 CREATE TABLE 测试代替新增回归。
 - 性能上要避免在 DDL worker 热路径增加无界重试、逐分区额外连接或重复读取 TLS 文件；兼容性上要保留 Go key 格式和 PD API payload。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/create_table_resources.rs` 与 `git show 2c944fb:pkg/session/runtime/create_table_resources.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：`pkg/ddl/affinity.rs` 的 keyspace ID helper、Go `pkg/ddl/affinity.go::GetTableAffinityGroupID/GetPartitionAffinityGroupID`；独立 `pkg/ddl/affinity_test.rs::test_affinity_group_id_includes_keyspace_in_next_gen` 覆盖命名，runtime CREATE TABLE affinity 测试覆盖 PD/range 接线，不能把前者当作 runtime 全链测试。
-- Rust 上游：`pkg/ddl/persistent_create_table.rs:82-170`、`pkg/ddl/job_worker.rs:326-388`、`pkg/session/runtime/system_session.rs:997-998,1303-1398`。
-- crate 边界：`pkg/session/Cargo.toml`；`pkg/session` 当前没有 `doc.go`，因此无可读取的 package doc contract。
-- Go 对照：`pkg/ddl/create_table.go:56-213`、`pkg/ddl/affinity.go:104-160`、`pkg/ddl/table.go:1842-1880`。
-- 独立 Rust 测试：`pkg/session/runtime/normal_ddl_create_table_test.rs` 中的 `normal_ddl_plan_create_table_auto_id_independent_notification_retry`、`normal_ddl_plan_create_table_extra_row_and_random_bases`、`normal_ddl_plan_create_table_pd_placement_and_tiflash_requests`、`normal_ddl_plan_create_table_affinity_requests_failure_and_range_encoding`、`normal_ddl_create_table_columnar_gate`；materialized-view shadow 的同类资源路径另由 `normal_ddl_create_materialized_view_shadow_test.rs` 覆盖。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

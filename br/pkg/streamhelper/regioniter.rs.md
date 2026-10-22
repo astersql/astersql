@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-streamhelper` library crate；crate 的清单是 `br/pkg/streamhelper/Cargo.toml`，入口 `br/pkg/streamhelper/lib.rs` 通过 `#[path = "regioniter.rs"] pub mod regioniter` 挂载本模块，并在末尾用 `pub use regioniter::*` 将其公开 API 扁平导出。它位于日志备份 checkpoint 推进链的集群元数据边界：上游用它把任意键范围分页解析为连续的 TiKV Region，下游再依据每个 Region 的 leader 按 Store 收集 flush TS。
-
-直接业务入口是 `CheckpointAdvancer::GetCheckpointInRange`（`br/pkg/streamhelper/advancer.rs`）：该函数构造 `IterateRegion(self.env.as_ref(), start, end)`，循环调用 `Done`/`Next`，并把每个 `RegionWithLeader` 交给 `ClusterCollector::CollectRegion`。同一文件定义的 `Store` 与 `TiKVClusterMeta` 也被 `br/pkg/streamhelper/flush_subscriber.rs`、`advancer_env.rs` 等模块复用，因此它不只是一个迭代器实现，也是 streamhelper 访问 PD/TiKV 拓扑、GC safe point 和 TSO 的公共抽象边界。
+同一文件定义的 `Store` 与 `TiKVClusterMeta` 也被 `br/pkg/streamhelper/flush_subscriber.rs`、`advancer_env.rs` 等模块复用，因此它不只是一个迭代器实现，也是 streamhelper 访问 PD/TiKV 拓扑、GC safe point 和 TSO 的公共抽象边界。
 
 ## 核心职责
 
@@ -94,9 +92,7 @@ RustCodeGraph 的 `explore "regioniter RegionIter"` 还显示 `IterateRegion` �
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `br/pkg/streamhelper/regioniter.go`，Rust 独立测试对照 `br/pkg/streamhelper/regioniter_test.rs` 与 Go 的 `regioniter_test.go`。
-
-保持一致的行为包括：默认页大小 2048；`RegionWithLeader`/`Store`/`TiKVClusterMeta` 的业务角色；初始化游标；单键扫描 limit=1；四类连续性校验；`Next` 用本页最后终点校验非空页；8 次、固定 500 ms 重试；空末 Region 标记无限扫描结束；有限区间使用 `currentStartKey >= endKey` 判定完成。Rust 测试复刻了局部范围、起点落在首 Region 内、10,000 Region 多页扫描、扫描到 +∞、从键空间开头扫描到有限终点等 Go 用例，并额外用 `next_uses_go_equivalent_retry_backoff` 锁定首次失败后的退避。
+Rust 测试复刻了局部范围、起点落在首 Region 内、10,000 Region 多页扫描、扫描到 +∞、从键空间开头扫描到有限终点等 Go 用例，并额外用 `next_uses_go_equivalent_retry_backoff` 锁定首次失败后的退避。
 
 实现形态差异包括：Go 的 Region/Peer 是 protobuf 指针，Rust 使用拥有值；Go 方法接收 `context.Context`，Rust trait 无上下文；Go 返回带错误类别的 PingCAP error 并记录日志/指标，Rust 返回 `String`；Go 的 `utils.WithRetry` 接受上下文，Rust 是本地阻塞循环；Go 的 `String` 使用 key stringify/redact，Rust `Display` 使用 `Debug`。这些差异意味着核心分页语义已经移植，但可观测性、取消和错误分类并非完全等价，不能把文档中的“对齐”理解为所有运行环境能力都已等价。
 
@@ -108,17 +104,3 @@ Go 对照文件是 `br/pkg/streamhelper/regioniter.go`，Rust 独立测试对照
 - 调整 `RegionWithLeader` 或 `Store` 字段时，检查 `ClusterCollector::CollectRegion` 的 leader 路由和 `FlushSubscriber::UpdateStoreTopology` 的重启检测，不可只验证迭代器测试。
 - 若恢复 Go 的取消、结构化错误、日志或 metrics，避免在本文件中引入一套与 crate 环境重复的客户端生命周期；优先把上下文/错误契约放在 trait 边界，并保留失败时不推进游标的不变量。
 - 测试逻辑必须继续放在 `regioniter_test.rs` 等独立测试文件，不能内嵌到生产源文件。性能改动需关注默认每页 2048 条的内存复制，以及固定阻塞退避对推进器线程的延迟。
-
-## 验证依据
-
-本说明依据以下静态证据完成，未运行 Cargo（任务明确为纯文档分析）：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；随后用 `node --file br/pkg/streamhelper/regioniter.rs` 阅读本文件 1–211 行，并用 `query`/`explore` 核对 `RegionWithLeader`、`TiKVClusterMeta`、`IterateRegion`、`Next`、`CheckRegionConsistency` 的调用关系。
-- `br/pkg/streamhelper/regioniter.rs`：类型、常量、构造函数、一致性校验、重试、分页和结束条件的直接实现。
-- `br/pkg/streamhelper/lib.rs` 与 `br/pkg/streamhelper/Cargo.toml`：模块挂载、公开再导出、crate 类型、Go package 映射和依赖边界。
-- `br/pkg/streamhelper/advancer.rs`：`GetCheckpointInRange` 的迭代消费主链，以及 GC/TS 能力的业务使用。
-- `br/pkg/streamhelper/collector.rs`、`flush_subscriber.rs`、`advancer_env.rs`：Region leader 路由、Store 拓扑用途、`Env` 组合及集群方法转发。
-- `br/pkg/streamhelper/regioniter.go`：Go 原实现；逐项核对接口、页大小、一致性规则、重试、游标推进与完成条件。
-- `br/pkg/streamhelper/regioniter_test.rs` 与 `regioniter_test.go`：局部/无限范围、万级分页和 Rust 退避行为的测试证据；`parity_test.rs` 提供包级公开契约的补充证据。
-
-结构验收使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题。人工复核重点是：本文区分了当前 Rust 事实与 Go 完整能力，没有把同步字符串错误层描述成已具备 Go 的取消、日志、指标或类型化错误。

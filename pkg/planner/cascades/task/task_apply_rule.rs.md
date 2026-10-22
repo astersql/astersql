@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-task` crate；crate 入口 `pkg/planner/cascades/task/lib.rs` 将本模块声明为 `task_apply_rule` 并公开再导出其符号。它位于 Cascades 逻辑优化的任务链中段：`OptGroupExpressionTask::Execute` 为一个 `GroupExpression` 选择启用且 operand 匹配的规则，构造 `NewApplyRuleTask`；`ApplyRuleTask::Execute` 枚举规则模式的绑定、执行变换并把结果写回 Memo；新增的组表达式再交给 `NewOptGroupExpressionTask` 继续探索。
-
-该文件只负责“一条规则作用于一个组表达式”的调度步骤，不负责规则选择、模式匹配算法、Memo 去重/合并的具体实现，也不负责最终物理计划选择。直接证据见 `pkg/planner/cascades/task/task_opt_group_expression.rs`、`pkg/planner/cascades/rule/binder.rs` 和 `pkg/planner/cascades/memo/memo.rs`。
+把每个变换结果通过 `Context::CopyInWithChildren` 写入原表达式所属的等价 Group，保留 `BoundPlan::ChildGroups` 提供的 Memo 子组连接，并为返回的表达式压入新的 `OptGroupExpressionTask`。
 
 ## 核心职责
 
@@ -85,10 +83,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/task/task_apply_rule.go`。两版保持了相同主语义：先检查 `IsExplored(rule.ID())`/`IsAbandoned`，再以规则 Pattern 创建 Binder；每个 holder 依次经过 `PreCheck`、`XForm`；逐个 CopyIn 并调度 `NewOptGroupExpressionTask`；按 `remove` 删除旧表达式；循环结束后 `SetExplored`；`Desc` 输出同样的字段顺序。
-
-Rust 版的必要类型适配包括：
-
 - Go 返回 `*ApplyRuleTask`，Rust 返回 `Box<dyn Task>`，直接满足异构任务栈的所有权要求。
 - Go 通过接口/指针共享 Context、GroupExpression 和 Rule；Rust 分别使用 `Rc<RefCell<dyn Context>>`、`GroupExpressionRef` 和 `Rc<dyn Rule>`。
 - Go 的 `binder.Next()` 以 `nil` 表示耗尽；Rust 返回 `Option<BoundPlan>`。
@@ -107,12 +101,3 @@ Rust 版的必要类型适配包括：
 - 若增加并行执行，需整体替换 `Rc<RefCell<_>>` 与线程本地/LIFO 假设，审查 Rule trait 对象、Memo 图和任务栈的同步策略；不能仅给 `ApplyRuleTask` 添加 `Send`。
 - 修改诊断格式时同步维护 `RuleWriter` 适配和任务栈描述测试。Rust 单元测试应继续放在独立的 `task_test.rs`/`task_scheduler_test.rs`，不要内嵌到本生产文件。
 - 性能风险主要来自 Binder 的绑定组合数、每个输出的 Memo 去重/合并，以及对每个新表达式继续入栈；新增规则应避免过宽 Pattern 和无界输出，并用多子组、多等价表达式场景测量任务数量。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/cascades/task/task_apply_rule.rs`。核对了 `RuleRef`、`ApplyRuleTask`、`NewApplyRuleTask`、`Task::Execute`、`Task::Desc`、`RuleWriter::{WriteString, Flush}` 的完整定义；无条件编译项。
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`query ApplyRuleTask`、`query NewApplyRuleTask --kind function`、`query RuleWriter` 确认 Rust 与 Go 对照符号；`explore` 返回目标文件完整源码。由于 `Execute`/`Desc` 是常见名称，图的 callers/callees 查询出现跨仓库同名歧义，调用关系改由精确引用搜索和相邻源码核验，不把歧义结果当作证据。
-- crate 与装配：`pkg/planner/cascades/task/Cargo.toml`、`pkg/planner/cascades/task/lib.rs`。
-- 上下游实现：`pkg/planner/cascades/task/task_opt_group_expression.rs`、`base.rs`、`task_scheduler.rs`、`task.rs`，`pkg/planner/cascades/rule/rule.rs`、`binder.rs`，`pkg/planner/cascades/memo/group_expr.rs`、`memo.rs`，`pkg/planner/cascades/cascades.rs`。
-- Go 对照：`pkg/planner/cascades/task/task_apply_rule.go` 的 `ApplyRuleTask`、`NewApplyRuleTask`、`Execute` 和 `Desc`。
-- 独立 Rust 测试：`pkg/planner/cascades/task/task_test.rs::task_chain_uses_real_memo_and_rule_contracts` 验证真实 Memo、Binder、规则变换、CopyIn、继续调度以及 explored 状态；`pkg/planner/cascades/cascades_test.rs::test_registered_rule_is_explored` 验证注册规则经完整优化入口被探索；`pkg/planner/cascades/memo/memo_test.rs::TestInsertGE` 验证去重、Group 合并以及 RemoveOut 后 abandoned/索引清理。未运行 Cargo，符合本计划的纯文档范围。

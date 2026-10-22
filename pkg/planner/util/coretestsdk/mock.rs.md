@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-planner-util-coretestsdk`，由同目录 `lib.rs` 以公开模块 `pub mod mock` 暴露。它是规划器测试 SDK 的夹具实现，不在 SQL 请求的生产执行链上：调用方取得一组确定的表、索引、分区、视图和会话状态快照，再把它们交给测试套件或被测规划器接口。crate 边界和 Go 来源由 `pkg/planner/util/coretestsdk/Cargo.toml` 的 `[package]`、`[lib]` 与 `[package.metadata.porting].go-package` 明确记录。
-
-当前 Rust 文件并未直接使用真实的 `astersql-meta-model`、`astersql-domain` 或 `astersql-infoschema` 类型，而是在文件内定义最小值对象。`Cargo.toml` 中对应 AsterSQL 组件依赖全部位于 `target.'cfg(windows)'.dependencies`；因此不能从这些依赖声明推断本文件已接通真实 planner/domain。直接的跨 crate 使用证据是 `pkg/planner/core/casetest/dag/dag_test.rs` 导入 `mock_signed_table` 与 `mock_unsigned_table`，同 crate 的聚合入口则是 `pkg/planner/util/coretestsdk/testkit.rs`。
+规划器测试 SDK 的夹具实现，不在 SQL 请求的生产执行链上：调用方取得一组确定的表、索引、分区、视图和会话状态快照，再把它们交给测试套件或被测规划器接口。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ Go `MockContext` 会创建 mock store、mock domain 和 stats handle，并可能
 
 ## 与 Go 版本的对应关系
 
-权威对照是同目录 `mock.go`。公开构造器基本一一对应：Rust snake_case 名称对应 Go `Mock*` 名称；表/列/索引/分区的固定名称、ID、offset、状态、标志、边界和值由 `coretestsdk_aster_unit_test.rs` 针对关键字段回归。
+公开构造器基本一一对应：Rust snake_case 名称对应 Go `Mock*` 名称；表/列/索引/分区的固定名称、ID、offset、状态、标志、边界和值由 `coretestsdk_aster_unit_test.rs` 针对关键字段回归。
 
 主要差异如下：
 
@@ -93,13 +91,3 @@ Go `MockContext` 会创建 mock store、mock domain 和 stats handle，并可能
 若目标是接入真实 Rust planner/domain，应把它作为独立迁移工作：明确转换边界或替换最小类型、处理 charset/collation 和完整 flags、定义真实资源错误与生命周期，并检查所有依赖此 crate 的测试。当前 `cfg(windows)` 依赖布局和现有轻量 API 都表明这不是可在单个夹具函数中安全完成的局部修改。
 
 兼容风险主要是固定名称、ID/offset、索引顺序和公开字段的断言；性能风险很低，数据规模固定且只做小向量构造/克隆。扩大默认表集合或把轻量类型替换成真实对象时，才可能显著增加测试初始化成本。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库索引包含 `pkg/planner/util/coretestsdk/mock.rs`，识别 43 个符号；`node --file` 核对了全文件 737 行和“used by 56 files”的文件级使用概览。
-- RustCodeGraph 符号证据：`node mock_signed_table` 核对其对 `TableInfo`/`column` 的依赖，以及五个派生构造器的直接调用边；`node mock_context` 核对其仅实例化本地 `MockContext`；`node mock_partition_info_schema` 核对其调用 `mock_signed_table` 并实例化 `ColumnInfo`、`PartitionInfo`、`InfoSchema`。
-- 源码与 crate 边界：`pkg/planner/util/coretestsdk/mock.rs`、`pkg/planner/util/coretestsdk/lib.rs`、`pkg/planner/util/coretestsdk/Cargo.toml`。
-- 直接 Rust 消费面：`pkg/planner/util/coretestsdk/testkit.rs`、`pkg/planner/core/casetest/dag/dag_test.rs`。
-- 独立 Rust 回归：`pkg/planner/util/coretestsdk/coretestsdk_aster_unit_test.rs`，覆盖基础表属性、派生表/分区形状、全局索引、`SchemaState::None`、上下文与分区 schema。
-- Go 语义对照：`pkg/planner/util/coretestsdk/mock.go`；其真实模型、上下文初始化和各构造器固定字段用于识别 Rust 的对齐范围与缺口。
-- 本任务是只读源码分析加 Markdown 新增，按计划不运行 Cargo；交付前以固定 11 章节命令做结构验证，并人工复核本文件不是生产 planner/domain 实现。

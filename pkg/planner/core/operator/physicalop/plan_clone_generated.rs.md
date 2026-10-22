@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明的真实源码是 [`plan_clone_generated.rs`](plan_clone_generated.rs)。它属于 `astersql-planner-core-operator-physicalop` crate；模块入口在 `pkg/planner/core/operator/physicalop/lib.rs` 的 `pub mod plan_clone_generated`，crate 边界和依赖由同目录 `Cargo.toml` 定义。它处理“把物理计划复制为可跨执行复用的缓存快照”这一窄职责，但必须区分文件中的两层内容：第 16--592 行是注释形式保留的 Go 生成文件参考，第 594--855 行才是会参与 Rust 编译的接线代码。
-
-该 Rust 接线目前更接近迁移中的兼容层，而不是完整替代 Go 生成实现。精确搜索 `plan_clone_generated::CloneForPlanCache`、`CachePlan` 及其变体后，仓库内只有 `plan_clone_generated_test.rs` 显式导入此 trait，未找到生产代码构造或消费 `CachePlan`。生产计划体系另有 `base::Plan::clone_for_plan_cache(new_ctx)` 动态分发接口；两者同名但签名和调用体系不同，不能视为同一调用链。
+处理“把物理计划复制为可跨执行复用的缓存快照”这一窄职责，但必须区分文件中的两层内容：第 16--592 行是注释形式保留的 Go 生成文件参考，第 594--855 行才是会参与 Rust 编译的接线代码。
 
 ## 核心职责
 
@@ -85,15 +83,12 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `plan_clone_generated.go` 是 `plan_clone_generator` 生成的权威对照，包含 25 个 `CloneForPlanCache(newCtx)` 方法。Rust 文件将这 25 个名称保留在注释参考和 `CachePlan` 变体中，但可执行实现并非逐类型完整复刻：
+Rust 文件将这 25 个名称保留在注释参考和 `CachePlan` 变体中，但可执行实现并非逐类型完整复刻：
 
-- 对齐部分：DML 外键门禁、hash join runtime-filter 门禁、子计划失败向上传播，以及 join/DML 若干字段的专用克隆意图与 Go 一致。
 - 表示收敛：TableScan、IndexScan、Selection、Projection、TopN、Limit、两种 Agg、多个 Reader、PointGet、Union 等在 `CachePlan` 中都由 `PhysicalPlanNode` 承载，只执行通用 children 克隆；Go 则逐类型重建表达式、列、ranges、flattened plan、partition 信息等字段，并有额外拒绝条件。
 - 上下文差异：Go 每个方法都接收 `newCtx` 并重绑基类；Rust trait 不接收 context，只有部分 join 从旧计划读取 context。
 - 返回差异：Go 返回 `(base.Plan, bool)`，Rust 返回 `Option<Self>`；Rust 本文件没有不可缓存原因字符串，也不通过 `dyn base::Plan` 返回。
 - 类型差异：Go 的 `PhysicalIndexHashJoin` 在克隆后重置 `Self` 自引用；Rust 这里实现的是 `LegacyPhysicalIndexHashJoin`，通过递归 outer/inner 后结构更新完成，没有对应的 `Self` 字段操作。
-
-`cache_snapshot_contract_test.rs` 通过读取 Go 文件验证 crate 根的 `CACHE_SNAPSHOT_PLAN_CONTRACT` 恰有 25 项并保持类型映射；它证明清单完整性，不证明本文件 25 个变体都具备 Go 的字段级行为。直接行为测试 `plan_clone_generated_test.rs` 只证明三种 DML 在外键检查或级联非空时返回 `None`。
 
 ## 扩展指南
 
@@ -105,14 +100,3 @@
 - 修改 `Insert` 可选子计划逻辑时要保留 `TransposeOption` 的三态不变量；若改成 `Result`，应明确是否需要向上传递具体失败原因。
 - 性能风险集中在递归深克隆和向量/表达式复制；正确性风险集中在遗漏共享可变字段、保留旧 session context、未重建派生 plan 列表，以及错误接受 Go 明确拒绝的特殊状态。
 - 该文件头部声明包含 Go 参考实现且 Go 原文件标注“生成，勿直接编辑”。若 Go 行为变化，应优先确认生成器和 Go 输出，再同步 Rust 可执行部分与测试，避免只修改注释副本造成漂移。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被索引为 855 行、48 个符号。
-- RustCodeGraph `node --file pkg/planner/core/operator/physicalop/plan_clone_generated.rs`：核对了注释参考区与第 594--855 行全部可执行声明，包括 `CloneForPlanCache`、10 个载荷实现/辅助实现、`TransposeOption`、`CachePlan` 及其分发实现。
-- RustCodeGraph `query CloneForPlanCache`、`query CachePlan`、`query TransposeOption` 和 `node clone_for_plan_cache`：核对同名符号、候选调用边及 `base::Plan` 同名接口；再用精确引用搜索排除了把动态主链误认成本文件 trait 的结论。
-- 读取 `pkg/planner/core/operator/physicalop/Cargo.toml` 与 `lib.rs`：确认 crate 名称、`expression` 等依赖、公开模块声明以及测试模块的 `#[cfg(test)]` 接线。
-- RustCodeGraph 读取 `pkg/planner/core/operator/physicalop/plan_clone_generated.go` 全部 552 行：确认 25 个生成方法、`newCtx` 参数、字段级深克隆、派生列表重建和不可缓存条件。
-- RustCodeGraph 读取 `plan_clone_generated_test.rs` 全部 65 行：确认直接测试仅覆盖 Insert/Update/Delete 的外键检查与级联拒绝。
-- RustCodeGraph 读取 `cache_snapshot_contract_test.rs`：确认 25 项 Go/Rust 类型清单的漂移检查；抽查 `cache_snapshot_test.rs` 的 DML round trip 与外键拒绝用例，确认它验证的是另一套 `CachedPlan` 快照主链。
-- 结构验证按任务要求执行；本任务是纯文档分析，未运行 Cargo，也未修改 Rust、Go、Cargo 或只读的总计划。

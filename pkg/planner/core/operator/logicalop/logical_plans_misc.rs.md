@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-logicalop` crate，是逻辑算子层的共享辅助函数集合。crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 以私有模块 `logical_plans_misc` 装配它，再通过 `pub use logical_plans_misc::*` 将全部函数重新导出，因此同 crate 的逻辑算子可以直接调用，物理算子等下游 crate 则可通过 `logicalop::...` 调用。
-
-它不定义新的计划节点，而是操作 `LogicalPlan` trait 对象、`LogicalPlanRef` 子树、`Expression` 和聚合描述符。当前生产接线中，`LogicalUnionAll::PredicatePushDown` 调用 `AddSelection`；多个物理计划生成路径调用 `GetHasTiFlash`。其余函数在当前 Rust 搜索结果中没有跨文件生产调用，或只被本文件内部递归调用，必须视为已导出但尚未充分接线的迁移接口，而不是完整主链能力。
-
-crate 边界由 `pkg/planner/core/operator/logicalop/Cargo.toml` 确认：本文件直接用到本 crate 的计划抽象，以及 `aggregation`、`expression` 和 `rule_util` 三个依赖；manifest 的 `package.metadata.porting.go-package` 指向同路径 Go 包 `pkg/planner/core/operator/logicalop`。
+不定义新的计划节点，而是操作 `LogicalPlan` trait 对象、`LogicalPlanRef` 子树、`Expression` 和聚合描述符。
 
 ## 核心职责
 
@@ -128,17 +124,3 @@ Go 对照文件是 `pkg/planner/core/operator/logicalop/logical_plans_misc.go`�
 修改树指纹时，应明确它与 `BaseLogicalPlan::plan_ids_hash` 缓存的关系，增加独立测试覆盖 child 顺序、负 ID 转换、空子树和溢出回绕；若用于缓存键，还需评估哈希碰撞与跨版本稳定性。若计划树可能很深，考虑把 `FlattenTreePlan` 和 `RecursiveMemoryUsage` 改为显式栈遍历。
 
 扩展重复无关聚合白名单时，必须先核对 Go `GetDupAgnosticAggCols` 与聚合函数对重复行的数学性质，再同步独立测试；不能仅根据函数名推断。所有 Rust 生产代码修改完成后应按仓库规则运行 `cargo fmt --all`，但本次纯文档任务不修改 Rust，也不运行 Cargo。
-
-## 验证依据
-
-已读取并交叉核验以下直接证据：
-
-- 目标源码 `pkg/planner/core/operator/logicalop/logical_plans_misc.rs:1-157`：八个函数的完整实现。
-- crate 边界 `pkg/planner/core/operator/logicalop/Cargo.toml` 与模块入口 `pkg/planner/core/operator/logicalop/lib.rs`：依赖、Go 包映射、模块装配与公开 re-export。
-- Rust 独立测试 `pkg/planner/core/operator/logicalop/logical_plans_misc_test.rs:1-106`：TiFlash 缓存读取和重复无关聚合边界；crate 根以 `#[cfg(test)] mod logical_plans_misc_test` 装配测试。
-- Rust 真实入口 `pkg/planner/core/operator/logicalop/logical_union_all.rs:38-52`，以及 `physicalop` 下对 `GetHasTiFlash` 的调用点。
-- Rust 基类 `pkg/planner/core/operator/logicalop/base_logical_plan.rs:576-588`：计划 ID 哈希缓存的 setter/getter，证明它与本文件现场计算函数并存。
-- Go 对照 `pkg/planner/core/operator/logicalop/logical_plans_misc.go:85-168,299-331`、`base_logical_plan.go:404-417`，以及 Go 的 Sort、TopN、Aggregation、CTE 调用点。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点和 1,848,419 条边；`files --filter` 定位目标为含 11 个符号的已索引 Rust 文件；`node --file ... --offset 1 --limit 400` 返回完整源码并报告 8 个使用文件。带 `--file` 的精确 callers/callees 查询未返回可用文本，因此调用边又以 `rg` 精确符号搜索核实，未采用模糊 `explore` 的同名噪声。
-
-结构验证应使用任务指定命令，要求文件存在且恰好命中上述十一个固定二级标题。本说明仅描述静态代码事实，未运行 Cargo 或运行时测试；未验证的重点是未接线辅助函数在未来调用场景中的行为，以及 `pushDownTopNForBaseLogicalPlan` 委托与 Go 展开实现是否在所有计划类型上等价。

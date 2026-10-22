@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-table-router`，crate 入口 `pkg/util/table-router/lib.rs` 将本模块及其公开项全部再导出。它移植自同目录 `router.go`，提供两层职责：一是定义可由配置和其他路由实现复用的 `TableRule` 及三种提取器；二是实现基于 `astersql-util-table-rule-selector` trie 的旧式 `Table` 路由器。
-
-当前仓库的运行时接线需要区分“规则类型”和“旧路由实现”。`pkg/util/regexpr-router/regexpr_router.rs` 通过 `pub use router_crate::router` 复用这里的 `TableRule`、校验和提取器定义，Lightning 的 `lightning/pkg/importer/import.rs::addExtendDataForCheckpoint` 实际构造的是 `NewRegExprRouter`。仓库搜索未发现测试之外直接构造本文件 `NewTableRouter` 的生产调用；因此 `Table` 目前主要是 Go 兼容实现与回归基准，不能表述为 Lightning 当前扩展列流程的实际路由器。
+`NewTableRouter`、`Table::{AddRule,UpdateRule,RemoveRule}` 管理 trie 中的规则，并保留 Go 风格错误上下文。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@ RustCodeGraph 对 `router.rs::NewTableRouter` 的精确节点显示其调用 `Ta
 
 ## 与 Go 版本的对应关系
 
-同目录 `router.go` 是直接语义基准。Rust 保留了 Go 的公开类型/字段/方法命名、schema/table 两级优先级、目标回退、重复冲突、三种 extractor 顺序和多捕获组拼接。`router_test.go` 的 `TestRoute`、`TestCaseSensitive`、`TestFetchExtendColumn` 在独立 `router_test.rs` 中有对应主流程测试。
+所有权层面，Go 接受并原地修改 `*TableRule`，Rust 的构造和增删改按值接收并在存入 selector 前克隆，避免注册规则受调用者后续修改；行为测试以显式 clone 模拟 Go 生命周期。Go `regexp` 由 `go_regex.rs` 兼容层映射到 Rust regex；`router_test.rs` 额外覆盖 Go 1.25.10 的 regexp oracle、错误文本、部分校验状态和未校验 panic。
 
-所有权层面，Go 接受并原地修改 `*TableRule`，Rust 的构造和增删改按值接收并在存入 selector 前克隆，避免注册规则受调用者后续修改；行为测试以显式 clone 模拟 Go 生命周期。Go 的 `error`/PingCAP errors 包装在 Rust 中压平为精确格式的 `String`。Go `regexp` 由 `go_regex.rs` 兼容层映射到 Rust regex；`router_test.rs` 额外覆盖 Go 1.25.10 的 regexp oracle、错误文本、部分校验状态和未校验 panic。
-
-需要特别保留的相同点包括：`FetchExtendColumn` 不执行大小写归一化；校验会留下先前 extractor 的部分编译状态；正则不匹配仍返回列名和空值；公开 selector 可承载任意动态规则。Rust 特有的 `TableRouter` 别名不是 Go 新行为，只是命名兼容。
+Rust 特有的 `TableRouter` 别名不是 Go 新行为，只是命名兼容。
 
 ## 扩展指南
 
@@ -81,14 +77,3 @@ RustCodeGraph 对 `router.rs::NewTableRouter` 的精确节点显示其调用 `Ta
 修改匹配优先级或冲突策略时，入口是 `classify_rules`、`Route` 和 `FetchExtendColumn`，同时评估 regexpr router 是否必须保持同样语义。修改规则生命周期时应保持 selector 的缓存失效契约，避免绕过 `Insert/Replace/Remove`。不要把测试嵌回源文件；应更新同目录独立 `router_test.rs`，并视 Go 行为变更同步 `router_test.go` 或补充 `migration_aster_unit_test.rs`。跨实现兼容还应更新 `pkg/util/regexpr-router/regexpr_router_test.rs`。
 
 主要兼容风险是 Go/Rust Unicode 小写与 regexp 方言差异、精确错误文本差异和公开动态 selector 的 downcast；正确性风险是 table/schema 级优先级或空目标回退改变；性能风险集中在规则变更导致缓存频繁失效、复杂正则编译，以及匹配后对目标字符串和扩展值的分配。当前文档任务未改变代码，以上是后续改动的检查清单。
-
-## 验证依据
-
-- 目标实现与模块装配：`pkg/util/table-router/router.rs`、`pkg/util/table-router/lib.rs`、`pkg/util/table-router/go_regex.rs`。
-- crate 与依赖边界：`pkg/util/table-router/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- selector 数据结构和同步依据：`pkg/util/table-rule-selector/trie_selector.rs` 中的 `Rule`、`Selector`、`RuleSet`、`trieSelector`、`NewTrieSelector`、`Insert/Replace`。
-- Go 对照：`pkg/util/table-router/router.go`、`pkg/util/table-router/router_test.go`。
-- Rust 独立测试：`pkg/util/table-router/router_test.rs` 覆盖主路由、大小写、错误上下文、Go regexp oracle、部分校验状态与未初始化 panic；`pkg/util/table-router/migration_aster_unit_test.rs` 覆盖移植生命周期、冲突和捕获拼接。
-- 当前调用接线：`pkg/util/regexpr-router/Cargo.toml`、`pkg/util/regexpr-router/regexpr_router.rs`、`pkg/util/regexpr-router/regexpr_router_test.rs`、`lightning/pkg/importer/Cargo.toml`、`lightning/pkg/importer/stubs.rs`、`lightning/pkg/importer/import.rs::addExtendDataForCheckpoint`。
-- RustCodeGraph：`status` 显示索引覆盖 7032 个 Rust 文件；`files --filter pkg/util/table-router` 命中目标 Rust/Go/测试文件；精确 `node router.rs::NewTableRouter` 确认其调用 `insert_rule`，并列出 `router_test.rs` 的构造调用者。宽泛 `explore` 因同名 `Route/table` 噪声未作为跨模块调用结论，跨 crate 接线改用限定 `rg` 核对。
-- 人工复核结论：本文件存在的原因是共享 Go 兼容规则模型并保留 trie 路由实现；运行路径由规则校验/归一化、selector 变更或匹配、规则分级、路由/捕获组成；安全扩展必须同步共享规则消费者和独立测试，并保留上述兼容边界。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-streamhelper`；包入口 `br/pkg/streamhelper/lib.rs` 以 `pub mod advancer_env` 挂载它，并再导出主要 trait、常量和配置解析函数。它位于日志备份 checkpoint 推进器与具体集群能力之间：`br/pkg/streamhelper/advancer.rs` 面向这里定义的 `Env` 编程，而实际能力由元数据客户端、TiKV/PD 适配器或测试环境提供。
-
-当前 Rust 文件是接口与轻量适配层，并不是 Go 生产环境装配的完整复刻。Go 同路径文件还定义了 `clusterEnv`、`CliEnv`、`TiDBEnv`、真实 TiKV RPC 连接缓存和锁解析器；Rust 本文件没有这些构造路径，只有 `AdvancerExtEnv`、`PDRegionScanner` 委托包装以及配置字节解析逻辑。
+位于日志备份 checkpoint 推进器与具体集群能力之间：`br/pkg/streamhelper/advancer.rs` 面向这里定义的 `Env` 编程，而实际能力由元数据客户端、TiKV/PD 适配器或测试环境提供。
 
 ## 核心职责
 
@@ -63,21 +61,10 @@ GC 安全点、客户端连接缓存和后台任务的真实生命周期不在�
 
 ## 与 Go 版本的对应关系
 
-Rust 保留了 Go `Env` 的能力分组、常量值、`PDRegionScanner` 表面 API、最大 flush 间隔选择和 `StreamMeta` 操作意图。`advancer_env_test.rs` 进一步覆盖 Go 时长语法中的复合值、小数和微秒符号。
-
-差异是实质性的：Rust 去掉所有 `context.Context`；任务事件用可变 `Vec<TaskEvent>` 而非发送通道；暂停没有可变选项；错误降级为字符串。Go 文件内的真实 `clusterEnv`、StoreManager/grpc 客户端、HTTP 拉取 TiKV 配置、TLS 选择、TiDB/CLI 构造器及 `AdvancerLockResolver` 均未在此 Rust 文件实现。Go 会跳过 TiFlash、排除 tombstone Store，并在 flush 配置不一致时记录 warning；Rust 本文件没有对应生产取数与日志行为。`PDRegionScanner` 的 Rust 方法只是委托，行为完整度取决于注入的 `TiKVClusterMeta`。
+差异是实质性的：Rust 去掉所有 `context.Context`；任务事件用可变 `Vec<TaskEvent>` 而非发送通道；暂停没有可变选项；错误降级为字符串。Go 会跳过 TiFlash、排除 tombstone Store，并在 flush 配置不一致时记录 warning；Rust 本文件没有对应生产取数与日志行为。`PDRegionScanner` 的 Rust 方法只是委托，行为完整度取决于注入的 `TiKVClusterMeta`。
 
 ## 扩展指南
 
 新增推进器所需环境能力时，应先在专用 trait 中定义最小方法，再加入 `Env` 父 trait列表，同时更新所有独立实现：至少包括 `basic_lib_for_test.rs`、`collector_test.rs`、`parity_test.rs` 和相关 `regioniter_test.rs` 夹具；不要把测试实现放回生产文件。新增元数据操作应优先在 `AdvancerExt`/`MetaDataClient` 实现，再由 `AdvancerExtEnv` 做薄适配。
 
 扩展时长语法或配置结构时，应同步 `advancer_env_test.rs` 的接受/拒绝边界，并与 Go `time.ParseDuration`、`configtypes.Duration` 行为核对，重点评估溢出、亚纳秒截断和多 Store 部分失败。若补齐生产环境，不能只增加构造器桩：还需对齐 Go 的 TLS/HTTP 配置拉取、TiFlash/tombstone 过滤、连接缓存清除、PD caller component、GC 安全点校验及锁解析语义，并放在独立源文件与独立测试文件中。
-
-## 验证依据
-
-- 目标源码：`br/pkg/streamhelper/advancer_env.rs`，核对常量、5 个环境能力 trait、blanket impl、适配器、JSON/时长解析、最大值聚合、PD 包装器及再导出。
-- 入口与依赖：`br/pkg/streamhelper/lib.rs`、`br/pkg/streamhelper/Cargo.toml`；该目录没有 `doc.go`。
-- Rust 调用证据：`br/pkg/streamhelper/advancer.rs` 中任务 Begin、checkpoint 读写、GC 安全点、TSO、flush 周期、暂停与锁解析调用；`flush_subscriber.rs` 中 Store 枚举；`advancer_cliext.rs` 与 `client.rs` 中实际元数据方法。
-- Rust 测试：`br/pkg/streamhelper/advancer_env_test.rs` 验证复合/小数/微秒时长、空白/零/负数/溢出拒绝和多配置取最大值；`advancer_test.rs`、`parity_test.rs`、`basic_lib_for_test.rs` 提供 GC、checkpoint 与完整 `Env` 测试实现证据。
-- Go 对照：`br/pkg/streamhelper/advancer_env.go`；Go 测试 `br/pkg/streamhelper/advancer_test.go::TestGetLogBackupFlushIntervalFromTiKVConfig` 覆盖聚合成功、解析失败和空 Store。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/streamhelper` 显示目标文件 41 个符号；`query` 定位 Rust/Go 同名配置函数、`StreamMeta`、`PDRegionScanner` 和 `NewMetaBoundEnv`。`explore/node/callers/callees` 本次未返回正文，故未将缺失图边作为事实依据。

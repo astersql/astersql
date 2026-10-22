@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的私有 `runtime::typed_dml_executor` 模块；`pkg/session/runtime.rs` 通过 `mod typed_dml_executor;` 装配它，但不对 crate 外再导出。它位于“会话已绑定 canonical DML SQL”与通用执行适配器 `astersql_executor::adapter::ExecStmt` 之间：`pkg/session/runtime/scan_adapter_runtime.rs::SessionBoundAdapterOwner::BuildExecutor` 在 `PlanInfo::IsDML()` 为真时取出先前绑定的 SQL，并构造 `SessionTypedDMLExecutor`。
-
-该类型不是 DML 算法本体。它把适配器要求的 `ExecExecutor` 生命周期翻译为会话运行时调用，真正的 INSERT、UPDATE、DELETE 逻辑分别位于 `ConcreteSession::{execute_insert, execute_update, execute_delete}`（`pkg/session/runtime/control.rs`），关系表写入、约束检查、事务和级联细节继续落到 `pkg/session/runtime/dml.rs` 等文件。
-
-`pkg/session/Cargo.toml` 将本文件归入 `astersql-session`，并证明这里直接使用的本地 crate 边界包括 `astersql-errors`、`astersql-executor`、`astersql-parser-ast`、`astersql-parser-mysql`、`astersql-parser-types` 和 `astersql-util-chunk`。文件没有条件编译项，也没有专属 feature；crate 的 `nextgen` feature 不改变本文件代码。
+`ExecExecutor::{Open,Next,Close}` 提供一次性、惰性的 DML 生命周期：`Open` 不写数据，第一次 `Next` 才执行，后续 `Next` 只清空输出并成功返回。
 
 ## 核心职责
 
@@ -92,15 +88,11 @@ RustCodeGraph 将本文件索引为 26 个符号，并显示它由 `pkg/session/
 
 ## 与 Go 版本的对应关系
 
-Rust 的直接协议对照位于 Go `pkg/executor/adapter.go`、`foreign_key.go`、`insert.go`、`update.go` 和 `delete.go`。Go `ExecStmt` 同样在构建并 `Open` 执行器后调用 `prepareFKCascadeContext`，对无结果 DML走 no-delay/悲观路径；外键阶段先在必要时 `StmtCommit`，再执行 checks 和 cascades，级联批次每次执行/关闭后再次 `StmtCommit`，并以 15 层为深度边界。
+另一个重要差异是 AST 来源。Go 主执行器通常持有 planner 构造的具体执行器，Go 外键级联注释明确说明级联 AST 直接构造以避免 Datum 字符串往返风险；本 Rust 根 DML 执行器保存 canonical SQL，并在第一次 `Next` 中按当前 SQL mode 重新解析，再以 `PlanKind` 下转 AST。
 
-Go 的 `WithForeignKeyTrigger` 由 Insert/Update/Delete 执行器直接提供 `GetFKChecks`、`GetFKCascades`、`HasFKCascades`。本 Rust 文件采用较薄的桥接：父键检查已在 `ConcreteSession` DML 内同步完成，所以 `CheckForeignKeys` 为空；删除级联先写入会话 `pending_fk_delete_cascades`，再由 `TakeForeignKeyCascades` 转为通用批对象；`PrepareFKCascadeContext` 为空，因为保存点由 `SessionBoundAdapterOwner` 的运行时钩子维护。
+Rust 当前 `HasForeignKeyCascades` 只对 Delete 返回可能为真，`TakeForeignKeyCascades` 也只包装 `RuntimeForeignKeyDeleteCascade`。
 
-另一个重要差异是 AST 来源。Go 主执行器通常持有 planner 构造的具体执行器，Go 外键级联注释明确说明级联 AST 直接构造以避免 Datum 字符串往返风险；本 Rust 根 DML 执行器保存 canonical SQL，并在第一次 `Next` 中按当前 SQL mode 重新解析，再以 `PlanKind` 下转 AST。文档不能把这种重新解析桥接描述为 Go executor builder 的逐对象等价实现。
-
-Rust 当前 `HasForeignKeyCascades` 只对 Delete 返回可能为真，`TakeForeignKeyCascades` 也只包装 `RuntimeForeignKeyDeleteCascade`。`ConcreteSession` 其他路径确有更新级联逻辑，但不通过本文件的批对象暴露；扩展 Go 对齐时应先确认触发器是在根 DML 内同步完成还是需要纳入适配器递归协议，避免重复执行。
-
-Go 回归证据包括 `pkg/executor/test/fktest/foreign_key_test.go` 的 ON DELETE/ON UPDATE cascade、深度限制和权限场景，以及 `pkg/executor/executor_failpoint_test.go::TestHandleForeignKeyCascadePanic`。它们说明上游语义目标，但 Rust 当前行为以独立 Rust 测试和目标调用链为准。
+Go 回归证据包括 `pkg/executor/test/fktest/foreign_key_test.go` 的 ON DELETE/ON UPDATE cascade、深度限制和权限场景，以及 `pkg/executor/executor_failpoint_test.go::TestHandleForeignKeyCascadePanic`。
 
 ## 扩展指南
 
@@ -111,13 +103,3 @@ Go 回归证据包括 `pkg/executor/test/fktest/foreign_key_test.go` 的 ON DELE
 - 修改 `adapter_dml_defer_fk_locks` 必须保持 RAII 清理，且同步验证 `dml.rs` 中 `TxnCtx.AddUnchangedKeyForLock` 与适配器第二阶段锁获取。性能风险主要是重复解析 canonical SQL、复制 SQL/schema/config，以及级联批逐项构造；任何缓存 AST 的优化都必须证明 SQL mode、prepared 参数和重试期间状态不会失配。
 - 若希望支持 `Detach`，不能只返回 boxed self：`Rc<ConcreteSession>`、`RefCell` 状态、事务所有权和 pending cascade 都是线程/会话绑定的。应先设计拥有独立快照或事务句柄的写执行模型，并增加资源释放与取消测试。
 - 建议最小 Rust 回归集合为 `scan_adapter_runtime_test.rs` 中 canonical DML 惰性执行、Insert/Update/Delete、FK parent check/delete cascade、FK shared-lock second phase、真实触发器错误回滚和悲观重试用例；更底层关系 DML 边界继续由 `pkg/session/dml_runtime_test.rs` 覆盖。测试逻辑必须保持在独立 `*_test.rs` 文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/session/runtime` 确认目标及相邻实现已索引；`node --file pkg/session/runtime/typed_dml_executor.rs --offset 1 --limit 260` 读取目标 175 行并确认 26 个符号；精确 `query` 确认 `SessionTypedDMLExecutor` 唯一定义在第 18 行、`FKLockDeferGuard` 在本文件及级联执行器各有一个定义。宽泛同名方法的 caller/callee 结果存在全仓重载噪声，因此方法级边由下列限定源码位置交叉核对。
-- 装配与上游：`pkg/session/runtime.rs:140-145`；`pkg/session/runtime/scan_adapter_runtime.rs:266-309`；`pkg/executor/adapter.rs:288-328, 1240-1461, 1825-1867`。
-- 下游实现：`pkg/session/runtime.rs:1273-1299`（SQL mode 解析）；`pkg/session/runtime/control.rs:2104-2291`（三类 DML 入口）；`pkg/session/runtime/dml.rs:510-575, 1862-1899`（延迟父键锁、pending 删除级联和深度边界）；`pkg/session/runtime/typed_fk_cascade_executor.rs:65-140`（批次子执行器与 RAII 清理）；`pkg/session/runtime/session.rs:173-190`（会话状态字段）。
-- crate 边界：`pkg/session/Cargo.toml` 的 `[package]`、`[lib]`、`[features]`、`[package.metadata.porting]` 和依赖声明；最近路径下不存在 `doc.go`，因此没有额外 package contract 可读。
-- Rust 独立测试：`pkg/session/runtime/scan_adapter_runtime_test.rs::canonical_adapter_dml_executes_lazily_and_locks_insert_update_delete_mutations`、`typed_dml_writer_defers_mutation_until_next_and_adapter_rejects_snapshot_writes`、`adapter_dml_preserves_canonical_fk_parent_check_and_delete_cascade`、`adapter_real_fk_trigger_error_restores_parent_delete_and_keeps_transaction_active`、`adapter_dml_acquires_fk_parent_shared_lock_in_second_phase`、`canonical_dml_error_bridge_preserves_write_conflict_for_adapter_retry`；关系 DML 的级联限制另见 `pkg/session/dml_runtime_test.rs` 的 cascade 测试。
-- Go 对照：`pkg/executor/adapter.go:800-1050`、`pkg/executor/foreign_key.go:47-108`、`pkg/executor/{insert,update,delete}.go` 的 `WithForeignKeyTrigger` 实现；Go 测试位置为 `pkg/executor/test/fktest/foreign_key_test.go` 和 `pkg/executor/executor_failpoint_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰好包含 11 个固定二级标题，并人工复核没有把未接线能力写成已支持，也没有建议把 Rust 测试写回生产源文件。

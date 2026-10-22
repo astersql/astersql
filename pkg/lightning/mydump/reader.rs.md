@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-lightning-mydump`（见 `pkg/lightning/mydump/Cargo.toml`），由 `pkg/lightning/mydump/lib.rs` 以 `mod reader; pub use reader::*;` 纳入并公开。它位于 Lightning/mydumper 导入链的输入边界，承担两类职责：读取并规范化 schema SQL 文件，以及为 SQL/CSV 分块解析器提供可 seek、可限流的读取器。它不是 SQL 语法解析器；行/Token 解析继续由 `parser.rs`、`csv_parser.rs` 等模块完成。
-
-直接上游分为两条链：`loader.rs::MDDatabaseMeta::GetSchema` 和 `MDTableMeta::GetSchema` 调用 `ExportStatement` 取得建库、建表或建视图 SQL；`parser.rs::makeBlockParser` 调用 `MakePooledReader`，把数据文件流装入 `BlockParser`。`lib.rs` 将本文件 API 再导出给 `lightning/pkg/importer`、`pkg/executor/importer` 及测试使用。
+`StringReader` 为内存字节提供 `Read + Seek`，主要用于构造解析器和测试。
 
 ## 核心职责
 
@@ -89,13 +87,3 @@ RustCodeGraph 的文件节点显示 `reader.rs` 被 23 个文件引用；精确�
 - 新增存储后端需实现 `Storage::open`，并确保传入的 `Compression` 被正确处理；若资源关闭可能失败，当前 trait/`PooledReader::Close` 无法表达该错误，改变契约会影响 `parser.rs::BlockParser` 和所有实现者。
 - 调整限流策略时修改 `WorkerPool::acquire` 或 `PooledReader` 的三条 I/O 路径，并补充独立并发测试，验证上限、等待唤醒、错误时令牌归还、`Current(0)` 绕过和零容量归一化。不要把测试嵌入 `reader.rs`。
 - 兼容性风险主要是 schema 文本输出变化和错误类型/消息变化；性能风险主要是 schema 全量驻留、逐行拼接重分配，以及 `ReadFull` 长时间持有令牌造成的公平性影响。
-
-## 验证依据
-
-- Rust 主实现：`pkg/lightning/mydump/reader.rs`，已核对全部 274 行及 `decodeCharacterSet`、`Storage`、`ExportStatement`、`StringReader`、`WorkerPool`、`PooledReader`、`reader_closed`。
-- crate 边界：`pkg/lightning/mydump/Cargo.toml` 与 `pkg/lightning/mydump/lib.rs`；确认包名、`encoding_rs` 依赖、公开再导出和独立测试挂载。
-- 直接调用证据：`pkg/lightning/mydump/loader.rs` 的 `MDDatabaseMeta::GetSchema`、`MDTableMeta::GetSchema`；`pkg/lightning/mydump/parser.rs` 的 `makeBlockParser`、`BlockParser::{read_block,SetPos,ScannedPos,Close}` 和 `NewChunkParser`。
-- Rust 独立测试：`pkg/lightning/mydump/reader_test.rs`，覆盖无尾换行、块注释、GB18030、乱码、字符集名称大小写、非 EOF I/O 错误、gzip、尾分号/BOM和关闭后行为。
-- Go 对照：`pkg/lightning/mydump/reader.go` 与 `pkg/lightning/mydump/reader_test.go`，用于核对移植分支、worker 使用、压缩/上下文/日志及显式关闭差异。
-- RustCodeGraph：执行了 `status`、`files --filter pkg/lightning/mydump`、针对 `reader.rs`/`MakePooledReader` 的 `explore`、`query`、文件节点读取；索引包含 11,467 个文件，目标文件有 36 个符号，调用流确认 `parser.rs::makeBlockParser -> reader.rs::MakePooledReader`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令和人工事实复核验收。

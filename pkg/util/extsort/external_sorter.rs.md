@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-extsort` crate 的抽象边界，定义外部键值排序所需的三个公开 trait：`ExternalSorter`、`Writer` 和 `Iterator`，以及它们共用的错误类型。crate 入口 `pkg/util/extsort/lib.rs` 同时公开 `external_sorter` 与 `disk_sorter`，并重新导出两者的公开项；因此调用方通常从 extsort crate 使用这些契约，而具体的落盘、压缩和恢复行为位于 `pkg/util/extsort/disk_sorter.rs`。
-
-`pkg/util/extsort/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/util/extsort`，运行时依赖只有 `serde`、`serde_json` 和 `tokio-util`。本文件自身只直接使用标准库错误 trait 与 `tokio_util::sync::CancellationToken`，不实现存储格式，也不拥有后台任务。
-
-在当前应用调用链中，一个明确的生产使用者是 `pkg/lightning/duplicate/detector.rs`：`Detector` 持有 `Arc<dyn ExternalSorter>`，经 `key_adder` 创建写入器，在 `detect_inner` 中排序，再在 `get_range_bounds` 和 `pkg/lightning/duplicate/worker.rs::scan_task` 中创建独立迭代器扫描结果。因此该文件是 Lightning 重复键检测与具体磁盘外排实现之间的依赖倒置边界。
+`seek` 定位第一个 `>= key` 的条目，`next` 成功后的键必须严格大于此前键，这一约束把跨文件重复键消除纳入实现责任。
 
 ## 核心职责
 
@@ -98,17 +94,12 @@ crate 边界由 `pkg/util/extsort/lib.rs` 建立；`external_sorter_test.rs` 作
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/extsort/external_sorter.go` 是直接语义对照：Go 的 `ExternalSorter`、`Writer`、`Iterator` 方法在 Rust 中均有蛇形命名对应项，写入→排序→迭代→关闭的阶段契约、并发 writer/iterator、去重和严格递增语义一致。`external_sorter_test.go` 与 `external_sorter_test.rs` 都使用固定随机种子，覆盖单 writer、10 个并发 writer、排序前拒绝迭代、按 key 字典序输出及结果条数。
-
 需要注意的 Rust 差异：
 
 - Go 使用 `context.Context`，Rust 使用 `CancellationToken`；后者只表达取消信号，不携带 Go context 的任意值或 deadline API。
 - Go 的 `Put` 约束是不修改也不保留传入切片；Rust 文档用“返回前复制切片”表达同一可复用缓冲目的。
 - Go 的 `Error() error` 可直接返回接口值；Rust 同时提供借用的 `error()` 和取得所有权的 `take_error()`，后者解决动态错误在迭代器销毁后的生命周期与向下转型需求。
-- `JoinedError`/`join_errors` 对齐 Go `errors.Join` 在“主操作失败且 close 也失败”时保留两项错误的语义，但它是固定两项的本地实现，不是通用任意数量错误组。
 - Go 接口没有在类型签名中标注并发约束；Rust 通过 `Send + Sync`/`Send` 显式表达可跨线程边界。
-
-当前 Rust 公共测试生成唯一 key，因此验证了全局排序和不丢记录，但不单独覆盖接口注释所称的重复 key 去重；跨文件去重可从 `MergingIter::next` 的实现和磁盘排序器测试获得直接证据。扩展重复值选择语义时仍应新增专门对照测试。
 
 ## 扩展指南
 
@@ -119,13 +110,3 @@ crate 边界由 `pkg/util/extsort/lib.rs` 建立；`external_sorter_test.rs` 作
 - 若改变 `unsafe_key`/`unsafe_value` 的有效期、复制策略或移动后行为，需要同步所有基于借用缓冲的调用者，尤其是 Lightning 的 `get_range_bounds` 和 `scan_iterator`。
 - 若改变重复 key 的 value 选择规则或排序比较规则，必须先核对 `external_sorter.go` 与 Go 测试，评估 Lightning 重复检测内部键编码的兼容性，并新增包含跨 writer、跨文件重复 key 的 Rust/Go 对照用例。
 - 性能敏感扩展应避免把具体缓冲、文件格式或锁策略塞进 trait；抽象只固定可观察契约，批量大小、压缩并发、reader pool 等策略应继续留在实现层。
-
-## 验证依据
-
-- 目标源码：`pkg/util/extsort/external_sorter.rs`，RustCodeGraph `node --file ... --offset 1 --limit 260` 核对了 126 行全貌，包括三个 trait、错误别名、`JoinedError` 和 `join_errors`。
-- 图查询：RustCodeGraph `status` 显示目标已在索引中；`query ExternalSorter`、`query Writer`、`query Iterator`、`query JoinedError`、`query join_errors` 用于消歧；聚焦 `explore` 与 `node` 核对了 `DiskSorter` 实现、`MergingIter` 的 `join_errors` 调用、Lightning `Detector::key_adder/detect_inner/get_range_bounds` 和 `Worker::scan_task` 调用链。常见方法名的独立 `callers/callees` 查询未产生稳定消歧结果，因此本文只采用精确文件/符号查询确认的调用关系。
-- crate 与模块：`pkg/util/extsort/Cargo.toml`、`pkg/util/extsort/lib.rs`。
-- Rust 实现与测试：`pkg/util/extsort/disk_sorter.rs`、`pkg/util/extsort/external_sorter_test.rs`、`pkg/util/extsort/disk_sorter_test.rs`。
-- Go 对照与测试：`pkg/util/extsort/external_sorter.go`、`pkg/util/extsort/external_sorter_test.go`；另外核对了调用链中的 `lightning/pkg/importer/dup_detect.rs`。
-- 人工复核结论：本文区分了接口保证、具体 `DiskSorter` 事实和尚未由公共测试单独覆盖的性质；未把接口注释误写成类型系统自动强制的能力，也未复制整段源码。
-- 本任务仅新增说明文档，不修改运行时代码；按计划不运行 Cargo。结构验证命令与结果应在交付检查中记录。

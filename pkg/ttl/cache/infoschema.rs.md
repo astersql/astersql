@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ttl-cache` crate（见 `pkg/ttl/cache/Cargo.toml`），由 crate 入口 `pkg/ttl/cache/lib.rs` 以 `pub mod infoschema` 公开。它位于 TTL 元数据进入扫描、删除流程之前：把 InfoSchema 提供的逻辑表及分区元数据转换为以物理表 ID 为键的 `PhysicalTable` 映射，从而让后续逻辑不必反复扫描全部 TTL 表。
-
-当前 Rust 仓库中，这个模块的 API 只在 `pkg/ttl/cache/infoschema_test.rs` 被直接使用；对生产 `.rs` 文件搜索 `NewInfoSchemaCache`、`InfoSchemaCache`、`InfoSchemaProvider` 和 `TTLTableEntry` 没有发现调用者。crate 的其他模块已被 session、ttlworker 等生产代码使用，但不能据此推断本文件已经接入 Rust TTL 调度主链。Go 对照实现则由 TTL worker 使用，因此这里应视为已实现、已测试但尚未完成生产接线的移植单元。
+`InfoSchemaProvider` 隔离具体 InfoSchema 实现，只要求提供 schema 元数据版本与 TTL 候选表列表。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ provider 在一次 `Update` 调用期间被同步读取。`ttl_tables()` 返回�
 
 ## 与 Go 版本的对应关系
 
-`pkg/ttl/cache/infoschema.go` 是直接语义来源。两版均以 schema version 避免无变化重建，过滤 TTL 未启用/非 public 表，按 table ID 或 partition ID 建立完整新映射，并尝试复用旧物理表。
-
 主要差异如下：
 
 - Go `Update` 从 `session.Session` 取得真实 `infoschema.InfoSchema`；Rust 改为 `InfoSchemaProvider`，便于独立测试，但尚无生产 adapter/调用者。
@@ -98,7 +94,7 @@ provider 在一次 `Update` 调用期间被同步读取。`ttl_tables()` 返回�
 - Go 使用 `ast.CIStr` 保存大小写信息，Rust 使用 `String`，仅在查找分区和 TTL 时间列时执行 ASCII 不区分大小写比较。
 - Rust 增加了显式的 `ttl.is_none()` 过滤；Go 的等价条件是 `tblInfo.TTLInfo == nil`。
 
-Go 测试 `pkg/ttl/cache/infoschema_test.go::TestInfoSchemaCache` 通过真实 mock store/session 与 SQL DDL 验证刷新节拍、普通表和分区表。Rust 测试用 `MockInfoSchema` 复现这些核心断言，并额外直接覆盖 disabled 和非 public 过滤，但没有覆盖真实 InfoSchema/session 集成。
+Rust 测试用 `MockInfoSchema` 复现这些核心断言，并额外直接覆盖 disabled 和非 public 过滤，但没有覆盖真实 InfoSchema/session 集成。
 
 ## 扩展指南
 
@@ -108,14 +104,3 @@ Go 测试 `pkg/ttl/cache/infoschema_test.go::TestInfoSchemaCache` 通过真实 m
 - 修改复用规则时，重点检查 schema 重命名、分区重命名、同 ID 元数据变化，以及 `PhysicalTable` 中由 `TableInfo` 派生的键列/时间列/索引是否同步刷新。若改用 `Arc` 等共享结构，需要额外评估跨线程同步和内存驻留。
 - 若 provider 改为借用迭代器或异步接口，应重新定义条目生命周期、失败传播与更新的原子边界，避免在半途失败后发布不完整快照。
 - 性能关注点包括完整候选列表分配、每次版本变化的全量遍历、`TableInfo`/`PhysicalTable` 克隆和 HashMap 重建；优化前应以真实 TTL 表及分区数量测量，不能用跳过校验的方式换取性能。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `pkg/ttl/cache/infoschema.rs` 共识别 16 个符号。
-- RustCodeGraph 文件/符号读取：`pkg/ttl/cache/infoschema.rs:1-132`、`pkg/ttl/cache/base.rs:1-60`、`pkg/ttl/cache/table.rs:185-272`、`pkg/ttl/cache/infoschema_test.rs:1-174`。
-- RustCodeGraph 调用边：`NewInfoSchemaCache -> newBaseCache`；`ShouldUpdate -> baseCache::ShouldUpdate`；`Update -> schema_meta_version/ttl_tables/newTable/MarkUpdated`；`newTable -> NewPhysicalTable`。
-- crate 与模块证据：`pkg/ttl/cache/Cargo.toml`、`pkg/ttl/cache/lib.rs`、根 `Cargo.toml` 的 `facade_ttl_cache` workspace 依赖。
-- Go 对照：`pkg/ttl/cache/infoschema.go`；Go 回归语义：`pkg/ttl/cache/infoschema_test.go::TestInfoSchemaCache`。
-- Rust 回归语义：`pkg/ttl/cache/infoschema_test.rs` 的四个测试，覆盖首次刷新、普通表同步、分区展开、disabled/non-public 过滤。
-- 上游接线核验：对目标四个公开符号进行全仓 Rust 搜索，排除本文件及其测试后无匹配；只据此判断“当前未发现生产接线”，不推断未来设计。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构检查，并人工复核本文没有把 Go 接线描述成 Rust 已支持能力。

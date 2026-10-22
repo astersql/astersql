@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（见 `pkg/ddl/Cargo.toml` 的 `[package]` 与 `[lib] path = "lib.rs"`），由 `pkg/ddl/lib.rs` 以 `pub mod backfilling_import_cloud` 暴露。它描述分布式 DDL 全局排序路径中的“云端文件写入并摄取”阶段：上游读取/排序阶段把索引 KV 与统计信息写入对象存储，当前模块把这些文件组织成外部引擎配置并交给导入后端摄取。
-
-需要区分 Rust 当前实现与 Go 生产主链：Go 的 `pkg/ddl/backfilling_dist_executor.go:newBackfillStepExecutor` 在 `BackfillStepWriteAndIngest` 分支直接构造 `newCloudImportExecutor`；Rust 的 `pkg/ddl/backfilling_dist_executor.rs:BackfillDistExecutor::get_step_executor` 目前只校验并返回 `BackfillStep::WriteAndIngest`，全仓库 Rust 引用中没有构造 `CloudImportExecutor` 的生产接线。因此本文件已有可测试的阶段逻辑和公共数据类型，但尚不能据此认定 Rust 完整应用主链已经调用该执行器。
+`run_subtask` 从 `BackfillSubTaskMeta` 选择索引、合并 `SortedKvMeta`、构造 `ExternalEngineConfig`、关闭外部引擎后检查其存在性，再执行摄取并归一化错误。
 
 ## 核心职责
 
@@ -74,11 +72,7 @@ RustCodeGraph 对 `run_subtask` 给出的关键下游边为 `get_index_info_and_
 
 Rust 的 `CloudImportExecutor`、`CloudImportBackend` 和 `ExternalEngineConfig` 对应 Go `pkg/ddl/backfilling_import_cloud.go:cloudImportExecutor` 对真实 ingest/Lightning 对象的使用；`run_subtask` 对应 `RunSubtask` 的核心索引选择、元信息合并、旧版 `RangeJobKeys` 回退、外部引擎关闭/查找/导入及重复键转换流程。
 
-已明确保留的语义包括：未知单元素 ID 返回命名返回值零值；空元素 ID 使用首个索引且仅单索引时携带索引信息；多个 ID 报错；资源并发相同可直接成功、引擎未开始则要求重试；`Processed` 把有符号字节数转换为 `u64`，负数按补码产生大值；并发度 `0` 原样传递。
-
 Rust 尚未复刻 Go 的完整外围能力：创建本地 backend/backend context、对象存储打开与访问计量、子任务字节解码、Lightning 指标注册、真实 UUID 生成、分区表元数据、split-region 参数、failpoint、`RealtimeSummary`、错误链中的 `terror`/`kv.ErrKeyExists` 转换，以及分布式框架的真实执行器构造。Rust 还把 Go 的原子引擎指针简化为布尔运行标志，并用字符串作为引擎 ID。`LocalBackendNotFound` 与 `IndexNotFound` 的 Rust 枚举存在但当前路径未使用。相关差异是迁移状态，不应通过文档宣称已经完整等价。
-
-Go 同名专用测试文件不存在；`pkg/ddl/backfilling_dist_scheduler_test.go` 只覆盖包含 `BackfillStepWriteAndIngest` 的调度阶段。当前文件的局部契约主要由独立 Rust 测试 `pkg/ddl/backfilling_import_cloud_test.rs` 覆盖。
 
 ## 扩展指南
 
@@ -89,14 +83,3 @@ Go 同名专用测试文件不存在；`pkg/ddl/backfilling_dist_scheduler_test.
 - 修改资源或限速逻辑时同步 `resource_modified`、`task_meta_modified` 和独立测试，确认零并发、相同并发、未启动引擎、后端更新失败及内存值透传。
 - 修改计量时注意 Go 注释指出 Region job 重试可能使累计值大于总 KV 大小；不要把计数强制截断到 `total_file_size`。测试仍应位于独立的 `pkg/ddl/backfilling_import_cloud_test.rs`，不要内嵌到生产文件。
 - 兼容与性能风险集中在旧版元数据解释、唯一索引冲突呈现、切分键选择、资源更新时机、对象存储访问量和大文件导入内存；任何接线都应保留这些边界并增加端到端阶段验证。
-
-## 验证依据
-
-- Rust 源码：`pkg/ddl/backfilling_import_cloud.rs`（RustCodeGraph `node --file ... --offset 1 --limit 500` 覆盖全 319 行）。
-- RustCodeGraph：`explore "pkg/ddl/backfilling_import_cloud.rs symbols callers callees cloud import backfill"`；`callees CloudImportExecutor::run_subtask` 确认 Rust `run_subtask` 到后端 trait、配置和索引解析的边；`callees resource_modified` 确认三个资源方法调用；`callees get_index_info_and_id` 确认异常分支。限定方法名查询会同时返回 Go/Rust 同名候选，因此调用链结论均按文件路径消歧。
-- crate/模块：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`；Cargo 未为本文件设置单独 feature，测试模块由 `cfg(test)` 独立挂载。
-- 直接 Rust 证据：`pkg/ddl/backfilling_dist_executor.rs`、`pkg/ddl/backfilling_merge_sort.rs`、`pkg/ddl/backfilling_merge_temp.rs`、`pkg/ddl/backfilling_read_index.rs`。
-- Go 对照：`pkg/ddl/backfilling_import_cloud.go`、`pkg/ddl/backfilling_dist_executor.go:newBackfillStepExecutor`；Go 专用 `backfilling_import_cloud*_test.go` 不存在，阶段调度参考 `pkg/ddl/backfilling_dist_scheduler_test.go`。
-- 独立 Rust 测试：`pkg/ddl/backfilling_import_cloud_test.rs` 验证未知单 ID 的零值结果、零并发透传、有符号到无符号计量转换、以及引擎未运行时资源更新要求重试。
-- 仓库 DDL 契约：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md` 用于定位 DDL/reorg 背景；具体结论均由上述源码与测试复核。
-- 本任务仅新增说明文档，未运行 Cargo。交付结构检查要求目标文件存在且恰有十一个规定的二级标题；路径和引用通过 `rg`/`test -f` 核验。

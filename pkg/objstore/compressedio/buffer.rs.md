@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-objstore-compressedio` crate，定义压缩输出使用的内存缓冲 `Buffer` 及工厂 `new_buffer`。crate 根 `pkg/objstore/compressedio/lib.rs` 公开 `buffer` 模块并再导出其公开项；`pkg/objstore/compressedio/Cargo.toml` 表明该 crate 直接依赖 `flate2`、`snap` 和 `zstd`，具体编码器由同 crate 的 `writer.rs` 封装。
-
-在对象存储写入链中，`pkg/objstore/objectio/writer.rs::new_intercept_buffer` 对 `NoCompression` 使用 `PlainBuffer`，对 Gzip、Snappy、Zstd 调用本文件的 `new_buffer`。因此本文件不是上传器，也不决定对象路径；它位于分块写入器与压缩编码器之间，收集编码器生成的压缩字节，供 `BufferedWriter::upload_chunk` 复制、清空并交给底层对象存储 `Writer`。
+`SharedBuffer` 让压缩 `Writer` 和外层 `Buffer` 共同持有同一个 `Vec<u8>`：前者追加编码结果，后者读取长度、获取快照或清空内容。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/compressedio/buffer.go`：Go 的 `Buffer` 内嵌 `*bytes.Buffer`，保存 `Writer` 和固定的 `cap`；Rust 用 `SharedBuffer` 加 trait object 表达同一关系。两者均让 `Write` 进入压缩器，让编码结果落到可读取/清空的底层字节缓冲，并提供 Len/Cap/Reset/Flush/Close/Compressed。
+直接对照文件是 `pkg/objstore/compressedio/buffer.go`：Go 的 `Buffer` 内嵌 `*bytes.Buffer`，保存 `Writer` 和固定的 `cap`；Rust 用 `SharedBuffer` 加 trait object 表达同一关系。
 
 对应关系与差异如下：
 
@@ -94,7 +92,6 @@
 - Go 的嵌入指针让编码器和外层天然引用同一 buffer；Rust 用 `Arc<Mutex<Vec<u8>>>` 达成共享并处理内部可变性。
 - Go `errors.Trace` 包装 `Write` 错误；Rust 保留原始 `io::Error`，没有附加调用栈语义。
 - Go `NewWriter` 对未知/无压缩类型返回 nil，Rust 返回 `None`；直接对 nil/None writer 写、刷、关都会失败为 panic。对象写入层两种语言都在此前为无压缩选择 plain buffer。
-- Rust 的 `bytes()` 是快照且 `cap()` 是声明容量，不能据此推断与 Go 的切片别名或 `bytes.Buffer.Cap()` 动态容量完全相同。上层 Rust 代码已针对压缩头部超过声明容量使用 `saturating_sub`。
 
 仓库中未发现本目录下独立的 Go `buffer_test.go`；Go 行为依据 `buffer.go`、`writer.go` 与 `objectio/writer.go` 的直接实现核对，Rust 回归证据来自下节列出的独立测试文件。
 
@@ -106,12 +103,3 @@
 - 若优化 `bytes()` 的复制，需要同时设计快照在 `reset` 后的所有权，避免底层上传仍读取已被复用或改写的内存；性能测试应关注块大小、压缩比、峰值内存和锁持有时间。
 - 生产逻辑修改后，测试仍应放在独立文件，不嵌入 `buffer.rs`。至少同步 `pkg/objstore/compressedio/buffer_test.rs`（nil/None 边界）、`migration_aster_unit_test.rs`（三种格式往返与 reset）以及涉及分块链的 `pkg/objstore/objectio/migration_aster_unit_test.rs`。
 - 保持 Go/Rust 对齐时还应复查 `pkg/objstore/compressedio/buffer.go`、`writer.go` 和 `pkg/objstore/objectio/writer.go`，尤其是错误传播和 close 时尾块上传顺序。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`node --file pkg/objstore/compressedio/buffer.rs` 覆盖源文件全部 129 行。
-- RustCodeGraph 符号证据：`node new_buffer` 显示其调用 `SharedBuffer::with_capacity`，并被 `objectio::new_intercept_buffer`、`buffer_test.rs`、`migration_aster_unit_test.rs` 等调用；`node/callees new_intercept_buffer` 确认 `new_intercept_buffer → new_buffer`；`node new_buffered_writer` 确认 `new_buffered_writer → new_intercept_buffer` 以及对象写入测试调用者。
-- 已读生产文件：`pkg/objstore/compressedio/buffer.rs`、`lib.rs`、`writer.rs`、`def.rs`、`Cargo.toml`，以及直接上游 `pkg/objstore/objectio/writer.rs`。
-- 已读 Go 对照：`pkg/objstore/compressedio/buffer.go`、`writer.go`、`def.go`、`pkg/objstore/objectio/writer.go`。
-- 已读独立测试：`pkg/objstore/compressedio/buffer_test.rs`、`migration_aster_unit_test.rs`，以及 `pkg/objstore/objectio/migration_aster_unit_test.rs` 的 Gzip 真实压缩与 close 尾部验证。
-- 现有测试表达的边界：三种 Go 对应格式写入、flush/close 后均能解压还原；reset 清空可见输出并保留声明容量；NoCompression 的直接 write/flush/close 均 panic；对象写入链 close 后的 Gzip 数据包含可解压尾部。本任务是纯文档分析，按计划不运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-dxf-framework-proto`；crate 入口 `pkg/dxf/framework/proto/lib.rs` 通过 `pub mod modify` 声明模块，并用 `pub use modify::*` 将其公开类型和常量提升到 crate 根。该 crate 的边界由 `pkg/dxf/framework/proto/Cargo.toml` 定义，Go 对照包记录为 `pkg/dxf/framework/proto`。
-
-它是 DXF（分布式执行框架）的“运行中任务修改”协议层：描述要改什么、目标值是多少、修改前任务处于什么状态，并提供与 Go 日志格式一致的字符串展示。它不负责校验目标值、持久化、状态迁移、调度器重建或修改任务元数据；这些行为分别位于 storage、scheduler 及具体任务的 extension 中。
+DXF（分布式执行框架）的“运行中任务修改”协议层：描述要改什么、目标值是多少、修改前任务处于什么状态，并提供与 Go 日志格式一致的字符串展示。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 将 `ModifyParam` 的构造者定位到 handle 测试、framework 
 
 ## 与 Go 版本的对应关系
 
-权威对照为 `pkg/dxf/framework/proto/modify.go`：四个常量的字符串、`ModifyParam`/`Modification` 字段以及三个字符串方法的输出均逐项对应。`pkg/dxf/framework/proto/migration_aster_unit_test.rs::migration_subtask_and_modification_match_go` 验证单项输出；`pkg/dxf/framework/integrationtests/modify_test.rs::concurrency_and_node_count_modifications_keep_wire_names` 验证多项顺序和历史 wire name。
-
 已确认的语言差异如下：
 
 - Go 的 `ModificationType` 是独立的 `string` 定义；Rust 是 `&'static str` 类型别名，类型隔离更弱，并通过扩展 trait 模拟 `String` 方法。
@@ -96,13 +92,3 @@ RustCodeGraph 将 `ModifyParam` 的构造者定位到 handle 测试、framework 
 - 具体任务的 scheduler/extension 测试，以及对应 Go 测试（当前 Go 主覆盖包括 `pkg/dxf/framework/integrationtests/modify_test.go`、`pkg/dxf/framework/storage/task_state_test.go` 和 `pkg/ddl/index_nokit_test.go`）。
 
 兼容性风险主要是改动 wire string、JSON 字段名或展示格式；正确性风险主要是遗漏消费者、接受溢出/非法 `To`、破坏 `PrevState` 并发门禁；性能风险通常较小，但修改 required slots 会触发 scheduler 重建，max-node-count 会影响重平衡，修改列表过大还会增加持久化与日志开销。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/dxf/framework/proto` 覆盖 `modify.rs`、Go 对照和相关独立测试。
-- RustCodeGraph 源码/符号查询：`modify.rs`（101 行）、`ModifyParam`、`ModificationTypeExt`、`Modification`；图中 `ModifyParam` 的构造边包括 framework integration tests、handle tests、mock tests 和 import-into 代码。
-- crate 与模块：`pkg/dxf/framework/proto/Cargo.toml`、`pkg/dxf/framework/proto/lib.rs`。
-- Rust 直接运行链：`pkg/dxf/framework/proto/task.rs`、`pkg/dxf/framework/storage/task_state.rs`、`pkg/dxf/framework/storage/converter.rs`、`pkg/dxf/framework/scheduler/storage_adapter.rs`、`pkg/dxf/framework/scheduler/scheduler.rs`。
-- Go 对照与真实生产入口：`pkg/dxf/framework/proto/modify.go`、`pkg/dxf/framework/storage/task_state.go`、`pkg/dxf/framework/scheduler/scheduler.go`、`pkg/ddl/index.go`、`pkg/ddl/backfilling_dist_scheduler.go`。
-- Rust 测试证据：`pkg/dxf/framework/proto/migration_aster_unit_test.rs`、`pkg/dxf/framework/integrationtests/modify_test.rs`、`pkg/dxf/framework/storage/task_state_test.rs`、`pkg/dxf/framework/storage/converter_1_aster_unit_test.rs`。
-- 本任务为纯文档分析，按计划未运行 Cargo；最终仅执行任务文件规定的 11 章节结构验证，并人工复核上述路径、符号和边界陈述。

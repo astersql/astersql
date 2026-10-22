@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于物理算子 crate `astersql-planner-core-operator-physicalop` 中；crate 入口在 [`lib.rs`](./lib.rs) 以 `pub mod physical_sequence` 暴露模块，并把 `TypedPhysicalSequence` 重导出为 crate 级 `PhysicalSequence`。因此要区分两个同文件类型：`physical_sequence::PhysicalSequence` 是便于属性穷举与独立测试的轻量模型，`TypedPhysicalSequence` 才是接入 `base::Plan`/`base::PhysicalPlan` trait 体系的具体算子类型。
-
-该算子对应 Go 的 [`physical_sequence.go`](./physical_sequence.go)：Sequence 把若干 CTE producer 和最后一个主查询组织为同一物理节点。孩子顺序是核心协议——`children[..len-1]` 是 CTE producer，`children[len-1]` 是主查询；输出 Schema 和任务统计均以最后一个孩子为准。
-
-[`Cargo.toml`](./Cargo.toml) 声明该目录为独立 crate（`lib.rs`、`autotests = false`），并通过本地依赖连接 `base`、`expression`、`logicalop`、`property`、`plancodec` 等规划组件。当前文件的可执行轻量层直接复用同 crate 的 `physical_common_plans`，typed 层直接使用 `base`、`expression` 和 crate 根导出的基础计划类型。
+`PhysicalSequence` 保存有序孩子、简化 Schema、查询块偏移和会话 MPP 开关，为 CTE Sequence 的属性枚举提供可执行模型。
 
 ## 核心职责
 
@@ -92,8 +88,6 @@ Rust `exhaust_physical_sequence` 保留了 Go `ExhaustPhysicalPlans4LogicalSeque
 - Go `Attach2Task` 在所有任务为 MPP 时可组装新的 MPP task，否则返回最后任务，并合并 warning；当前 Rust `pkg/planner/core/task.rs` 把任务统一升 Root，而轻量 `attach_to_tasks` 只组装节点。任务类型、分区列和 warning 合并尚未在本文件形成一比一实现。
 - Go `PhysicalSequence` 直接嵌入 `PhysicalSchemaProducer`；Rust 用 `TypedPhysicalSequence` 承担这一角色，同时保留一个同名轻量模型。文件前半的注释记录了目标 Go 形状，但不是编译产物。
 
-相关 Rust 回归集中在 [`physical_sequence_test.rs`](./physical_sequence_test.rs)：覆盖 MPP 属性传播、失败拒绝、Root/MPP 双候选、排序或 MPP 禁用、主查询 Schema/统计、Explain 和 typed 克隆孩子顺序。仓库搜索未发现专门命名的 Go `physical_sequence_test.go`；Go 语义的直接依据是生产文件 `physical_sequence.go`、`task.go` 与 `fragment.go`。
-
 ## 扩展指南
 
 - 修改候选选择条件时，优先改 `exhaust_physical_sequence`，并在 `physical_sequence_test.rs` 增加对应独立测试；至少覆盖 MPP/Root、三种 CTE 状态、排序有无、MPP 开关和 `no_cop_push_down` 传播，保持与 Go 决策矩阵一致。
@@ -103,12 +97,3 @@ Rust `exhaust_physical_sequence` 保留了 Go `ExhaustPhysicalPlans4LogicalSeque
 - 若对齐 Go MPP attach，应在 `pkg/planner/core/task.rs` 的独立测试中验证 MPP 保留、分区信息和 warning 传播，不能通过简化 Root 转换掩盖差异。
 - 性能风险主要是按候选深克隆所有孩子和属性；优化前先保持候选隔离与孩子顺序，并用多 producer 场景验证。兼容风险主要来自 EXPLAIN ID、MPP attach 和空孩子行为的 Rust/Go 差异。
 - 测试逻辑应继续放在独立 `physical_sequence_test.rs`，不要嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前索引包含 11,467 个文件、307,296 个节点；`node --file pkg/planner/core/operator/physicalop/physical_sequence.rs --offset 1 --limit 500` 读取了全部 345 行，并报告该文件被 executor RU、CTE table/projection/Sequence 测试等文件使用；`query PhysicalSequence` 和 `query exhaust_physical_sequence --kind function` 核对了类型及函数位置。
-- RustCodeGraph `explore "pkg/planner/core/operator/physicalop/physical_sequence.rs PhysicalSequence"` 给出 `exhaust_physical_sequence` 的四个直接测试调用、`sequence` 在 `find_best_task.rs`/测试中的引用，以及 Go `Schema`、`Init`、attach helper 的调用关联。单独 `callers/callees` 查询在 30 秒窗口内未返回，因此未据此声称完整调用图；缺口由模块接线和精确文本搜索补验。
-- 源码：[`physical_sequence.rs`](./physical_sequence.rs) 的可执行轻量结构、候选函数和 typed 结构；[`lib.rs`](./lib.rs) 的模块声明、重导出、`ConcretePhysicalOperator` 与宏接线；[`physical_common_plans.rs`](./physical_common_plans.rs) 的公共属性/节点模型。
-- crate：[`Cargo.toml`](./Cargo.toml) 的 `lib.rs` 入口、`autotests = false`、本地规划依赖及 `package.metadata.porting.go-package`。
-- Go 对照：[`physical_sequence.go`](./physical_sequence.go) 的完整算子与穷举逻辑；`pkg/planner/core/task.go::attach2Task4PhysicalSequence` 的 MPP task 组装；[`fragment.go`](./fragment.go) 的 CTE producer/主查询拆分。
-- 测试：[`physical_sequence_test.rs`](./physical_sequence_test.rs) 的六个独立测试；`pkg/executor/statement_ru_plan_walk_test.rs` 的 typed Sequence RU 遍历用例。未运行 Cargo，符合本任务纯文档约束。

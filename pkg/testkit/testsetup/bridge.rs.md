@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`bridge.rs` 是 `astersql-testkit-testsetup` crate 的公共测试初始化实现。crate 根文件 [`lib.rs`](lib.rs) 通过 `pub mod bridge` 声明该模块，并用 `pub use bridge::*` 将其公开项直接再导出，因此测试 crate 通常以 `astersql_testkit_testsetup::SetupForCommonTest()` 调用，而不需要显式经过 `bridge` 模块。
-
-它位于测试基础设施而非数据库请求执行主链中：调用者主要是各包的 Rust 测试入口或测试夹具，在测试逻辑开始前读取进程环境变量 `log_level` 并设置 `log` facade 的全局 logger 和最大级别。RustCodeGraph 的文件节点将该文件关联到 104 个使用文件；仓库文本检索还可见不同导入别名及调用方式，说明它是跨 planner、executor、session、store、BR 和集成测试复用的进程级设施，而不是某个业务包的局部工具。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确定：库入口是 `lib.rs`，运行时依赖只有 `log = "0.4"`，没有 feature 条件。源文件唯一的条件编译项是末尾 `#[cfg(test)]` 的独立测试模块 `bridge_test.rs`。
+`TextLogger` 为没有其他 logger 时提供写向标准错误的最小文本 logger，并通过 `INSTALL_LOGGER` 保证全局 logger 安装动作至多执行一次。
 
 ## 核心职责
 
@@ -91,8 +87,6 @@ RustCodeGraph 能精确识别 `SetupForCommonTest`、`apply_os_log_level`、`par
 
 ## 与 Go 版本的对应关系
 
-同目录 [`bridge.go`](bridge.go) 是直接对照：Go 的 `SetupForCommonTest` 调用私有 `applyOSLogLevel`；后者读取同名 `log_level`，非空时构建文本格式的 PingCAP logger 配置，初始化失败写 stderr 并 `os.Exit(-1)`，成功则用 `log.ReplaceGlobals` 替换全局 logger。Rust 保留了入口名、环境变量名、空值不操作、文本 stderr 方向及顶层失败退出语义。
-
 两者并非完全等价：
 
 - Go 每次成功时通过 `InitLogger`/`ReplaceGlobals` 安装完整 PingCAP/zap logger，并为 fatal 级别配置 stacktrace；Rust 使用最小 `log::Log` 实现，没有结构化字段和 stacktrace。
@@ -101,7 +95,7 @@ RustCodeGraph 能精确识别 `SetupForCommonTest`、`apply_os_log_level`、`par
 - Go `ReplaceGlobals` 可替换全局 logger；Rust `log::set_logger` 受“一进程一次”约束，所以稳定保留一个代理并仅调整级别，而且无法覆盖先安装的第三方 logger。
 - Go 文件带 `//go:build !codes`；Rust crate 没有对应 feature，生产实现始终编译，仅独立测试模块受 `cfg(test)` 控制。
 
-同目录没有 Go `_test.go` 覆盖此文件。Rust 侧以 `bridge_test.rs` 检查解析细节，以 `migration_aster_unit_test.rs` 检查未设置、成功覆盖和非法值三条配置路径，并由多个包级 `main_test.rs` 验证实际接线与重复调用。
+Rust 侧以 `bridge_test.rs` 检查解析细节，以 `migration_aster_unit_test.rs` 检查未设置、成功覆盖和非法值三条配置路径，并由多个包级 `main_test.rs` 验证实际接线与重复调用。
 
 ## 扩展指南
 
@@ -112,13 +106,3 @@ RustCodeGraph 能精确识别 `SetupForCommonTest`、`apply_os_log_level`、`par
 - 若要支持并发一致的动态级别更新，需要同时考虑本地原子阈值与 `log::set_max_level` 两份状态；只增强原子排序不能自动把两个写操作变成事务。
 - 改动公开入口 `SetupForCommonTest` 的命名或失败策略会影响大量测试 crate 和 Go 对齐，应优先保留兼容门面，把可恢复的新行为放在 `apply_os_log_level` 或新的公开函数中。
 - 添加生产依赖时要同步 `pkg/testkit/testsetup/Cargo.toml`；当前 crate 的低依赖面使它适合作为广泛测试依赖，重量级依赖会扩大大量测试目标的构建成本。
-
-## 验证依据
-
-- 目标实现：`pkg/testkit/testsetup/bridge.rs`，核对了三个静态状态、`TextLogger` 的 `Log` 实现、两个公开结果类型、三个公开函数、私有解析函数及 `cfg(test)` 模块声明。
-- crate 边界：`pkg/testkit/testsetup/lib.rs` 与 `pkg/testkit/testsetup/Cargo.toml`，确认模块公开再导出、库入口、唯一 `log` 依赖、无 feature，以及 Go 包迁移元数据。
-- Go 对照：`pkg/testkit/testsetup/bridge.go`，核对 `SetupForCommonTest -> applyOSLogLevel`、`log_level`、文本 logger、错误输出、退出和全局替换行为；目录检索确认没有同路径 Go 测试文件。
-- Rust 测试：`pkg/testkit/testsetup/bridge_test.rs` 验证 `warning` 别名与大小写；`pkg/testkit/testsetup/migration_aster_unit_test.rs` 验证 unset noop、`debug` 覆盖和非法值错误，并展示环境变量串行锁。
-- 上游样本：`pkg/store/main_test.rs`、`pkg/store/driver/txn/main_test.rs` 验证重复调用；`pkg/planner/util/main_test.rs` 验证调用方用 `Once` 模拟包级初始化。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件和 307,296 个节点；`files --filter pkg/testkit/testsetup` 覆盖目标、Go 对照、crate 根及两个 Rust 测试；目标文件节点显示 136 行、22 个符号和 104 个使用文件；精确 `query` 确认四个核心函数节点及签名。callers/callees 对同名符号产生跨文件噪声，具体调用边因此以源码和入口检索交叉核验。
-- 结构验证以任务指定命令检查文档存在且恰有十一个固定二级标题。该任务只生成文档，按计划没有运行 Cargo、构建或代码测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-topsql-state` crate 的状态实现，crate 入口 `pkg/util/topsql/state/lib.rs` 通过 `#[path = "state.rs"] mod state` 加载它并 `pub use state::*`。`pkg/util/topsql/state/Cargo.toml` 将库入口指定为 `lib.rs`，仅直接依赖 `log` 与 `thiserror`，并用 `package.metadata.porting.go-package = "pkg/util/topsql/state"` 标明 Go 对照目录。根 workspace 和 TopSQL 门面、reporter、collector、stmtstats 等 crate 都以路径依赖接入该 crate；`pkg/util/topsql/lib.rs` 又将它公开为 `topsqlstate`。
-
-它不采集、聚合或上报数据，而是保存进程级 TopSQL/TopRU 开关和容量、时间参数，供这些执行组件快速判断是否工作。TopSQL 是按 SQL/计划摘要进行画像的路径；TopRU 是按 Resource Unit 汇总的路径。源码没有条件编译项，测试模块由 `lib.rs` 在 `cfg(test)` 下独立挂载，符合生产逻辑与测试分文件的布局。
+以 `GlobalState: State` 集中保存可跨线程访问的原子状态。
 
 ## 核心职责
 
@@ -82,7 +80,7 @@ RU 生命周期以订阅者引用计数建模。CAS 循环保证并发关闭时�
 
 主要语言差异如下：Go 用 `go.uber.org/atomic` 的堆指针字段，Rust 将原子值直接嵌入 `State`；Go setter 接收 `tipb.ItemInterval`，Rust因生成枚举不能保留未知数值而在边界使用 `type ItemInterval = i32`；Go 通过 `fmt.Errorf("%w: %d", ErrInvalidTopRUItemInterval, value)` 保留可供 `errors.Is` 判断的哨兵错误，Rust通过结构化枚举和一致文本表达同一错误类别；Go 用 `logutil`/`zap` 结构化日志，Rust用 `log` 宏写等价字段文本。
 
-`pkg/util/topsql/state/state_test.go` 与 `state_test.rs` 对应验证引用计数、最后退出复位、额外关闭不下溢、合法 interval 后写覆盖、`0` 归一化及非法值不覆盖。Rust 另有 `migration_aster_unit_test.rs` 验证 TopSQL/TopRU 组合开关、精确错误文本和默认常量/原子初值。当前对照证据未显示 Rust 版有意删减这些核心语义。
+`pkg/util/topsql/state/state_test.go` 与 `state_test.rs` 对应验证引用计数、最后退出复位、额外关闭不下溢、合法 interval 后写覆盖、`0` 归一化及非法值不覆盖。当前对照证据未显示 Rust 版有意删减这些核心语义。
 
 ## 扩展指南
 
@@ -91,11 +89,3 @@ RU 生命周期以订阅者引用计数建模。CAS 循环保证并发关闭时�
 - 修改启停语义时，至少联查 `reporter/datasink.rs` 的注册/注销/关闭、`stmtstats/aggregator.rs` 的门控和 `session/runtime/scan_adapter_runtime.rs` 的语句快照。TopSQL 当前在本文件只是布尔值，引用计数在注册器中；若把计数下沉到这里，必须避免形成双重计数。
 - 修改内存顺序前应逐字段证明只需哪种同步保证。公开容量读取已有 `Relaxed` 与 `SeqCst` 混用，而生命周期状态统一用 `SeqCst`；不要仅为性能改成弱顺序而忽略订阅线程与采集线程的观察关系。
 - 新增测试应放在同目录独立测试文件，通过 `lib.rs` 的 `cfg(test)` 模块挂载，并使用 `test_util::{lock_global_state, reset_global_state}`。涉及生产集成时可扩展 `reporter/datasink_test.rs`、`reporter/pubsub_test.rs` 或 `stmtstats/aggregator_test.rs`，但不要依赖测试执行顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/util/topsql/state` 找到 `lib.rs`、`state.rs`、Rust/Go 测试及 Go 实现；`node --file pkg/util/topsql/state/state.rs` 读取完整 187 行并识别 14 个符号；对 `TopProfilingEnabled`、`SetTopRUItemInterval`、`EnableTopRU`、`TopSQLEnabled` 执行 `query`，再对精确 Rust 符号执行 `callers`/`callees`，后者为空，故没有据此虚构调用边。
-- crate 与装配证据：`pkg/util/topsql/state/{Cargo.toml,lib.rs}`、根 `Cargo.toml`、`pkg/util/topsql/{Cargo.toml,lib.rs}`，以及 reporter/collector/stmtstats 的 Cargo 路径依赖。
-- 生产调用证据：`pkg/util/topsql/reporter/{datasink.rs,reporter.rs,datamodel.rs,pubsub.rs,report_ticker.rs}`、`pkg/util/topsql/stmtstats/{aggregator.rs,kv_exec_count.rs}`、`pkg/util/topsql/{topsql.rs,collector/cpu.rs}`、`pkg/session/runtime/scan_adapter_runtime.rs`。
-- Go 对照与测试证据：`pkg/util/topsql/state/state.go`、`pkg/util/topsql/state/state_test.go`。
-- Rust 独立测试证据：`pkg/util/topsql/state/state_test.rs`、`migration_aster_unit_test.rs`、`test_util.rs`；这些测试证明组合开关、引用计数、默认值、interval 校验/复位和全局状态串行隔离意图。本任务依计划为纯文档分析，未运行 Cargo 或代码测试。

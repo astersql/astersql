@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-bindinfo` crate 的全局 SQL Binding 入口层。`pkg/bindinfo/lib.rs` 将 `binding_handle` 声明为私有模块后通过 `pub use binding_handle::*` 重新导出其公开项，因此其他 crate 看到的是 `astersql_bindinfo` 根上的 `BindingHandle`、`NewBindingHandle` 和相关常量，而不是直接访问子模块。
-
-它不实现绑定匹配、持久化写入或候选计划评分，而是把三个已存在的能力对象组装为一个统一句柄：`BindingCacheUpdater`（缓存及存储同步）、`BindingOperator`（绑定写操作）和 `BindingPlanEvolution`（候选计划探索）。目标文件自身共 142 行，没有条件编译项，也没有启动线程、定时器或 owner 选举的代码。
-
-`pkg/bindinfo/Cargo.toml` 说明该 crate 名为 `astersql-bindinfo`、库入口为 `lib.rs`、关闭自动测试发现和 doctest，并以 `package.metadata.porting.go-package = "pkg/bindinfo"` 指向 Go 对照包。目标文件只直接使用 crate 内再导出接口和 Rust 标准库；Cargo 中的 parser、hint、serde 等依赖由同 crate 的其他模块消费。
+用 `BindingHandle: Send + Sync` 给上层提供缓存、写操作和计划演进三个组件的统一访问点。
 
 ## 核心职责
 
@@ -87,8 +83,6 @@ SQL 常量是跨实现公共契约，空格、大小写、换行和引号都可�
 
 ## 与 Go 版本的对应关系
 
-共同点来自 `pkg/bindinfo/binding_handle.go`：两版都保留 3 秒 `Lease`、相同的 owner/prompt/锁行/维护 SQL 文本，都把缓存更新、写操作、计划演进聚合到 `bindingHandle`，并暴露 `last_plan_binding_update_time` 会话级状态。
-
 已验证的差异如下：
 
 - Go 的 `Lease` 是可变包变量；Rust 是 `pub const Duration`，运行时不能覆盖。
@@ -99,7 +93,7 @@ SQL 常量是跨实现公共契约，空格、大小写、换行和引号都可�
 - Go 使用 `types.Time.String()` 作为状态值，Rust直接把 `BindingTime.0` 数值转为字符串。Go 测试 `TestBindingLastUpdateTime` 期望 SQL 时间文本，故两者展示格式并不等价。
 - Go 注释明确重复伪记录可能由 BR 跨集群同步产生，且清理 SQL 只应由 BR 执行；Rust保留相同 SQL，但目标文件没有表达或强制该调用限制。
 
-这些差异表明当前 Rust 文件是面向可注入适配器的独立 crate 实现，并非 Go 服务器接线的逐签名替换。后续对齐必须补充真实调用和测试证据，不能从 Go 接入情况推断 Rust 已接入。
+这些差异表明当前 Rust 文件是面向可注入适配器的独立 crate 实现，并非 Go 服务器接线的逐签名替换。
 
 ## 扩展指南
 
@@ -110,14 +104,3 @@ SQL 常量是跨实现公共契约，空格、大小写、换行和引号都可�
 - 扩展状态项时，在 `Stats` 中新增稳定键，并为作用域、初始值、格式和注册路径添加独立测试。若目标是服务器可见状态，还必须实现并验证 Rust 侧注册接线；仅修改映射不够。
 - 若接入 owner 选举或周期刷新，应放到拥有任务生命周期和关闭信号的上层组件，不应让这个当前无生命周期管理的值对象悄然 spawn 后台任务。
 - 性能上，三个访问器无额外分配；`Stats` 每次分配 `HashMap` 和两个字符串。高频采集若成为热点，可在保持返回所有权和并发快照语义的前提下优化。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`pkg/bindinfo` 下 45 个文件均在索引中。
-- RustCodeGraph 源码/符号：完整读取 `pkg/bindinfo/binding_handle.rs`；查询 `BindingHandle`、`NewBindingHandle`、`NewBindingCacheUpdater`、`newBindingOperator`、`newBindingAuto`、`LastUpdateTime`、`BindingStore`；对 `NewBindingHandle` 及访问器运行 callers/callees，未返回跨文件静态调用边。
-- RustCodeGraph 相邻实现：读取 `pkg/bindinfo/lib.rs`、`binding_cache.rs` 的同步器与构造段、`binding_operator.rs` 全部接口和实现、`binding_auto.rs` 的运行时/演进接口与构造段。
-- crate 边界：读取 `pkg/bindinfo/Cargo.toml`，确认包名、库入口、依赖和 Go 包映射。
-- Go 对照：读取 `pkg/bindinfo/binding_handle.go` 全文，并读取 `binding_operator_test.go::TestBindingLastUpdateTime`，确认注册、作用域和状态格式契约；Go 源码注释提供 BR 去重 SQL 的使用限制。
-- Rust 测试：读取 `pkg/bindinfo/binding_handle_test.rs` 全文；它只精确断言 `LockBindInfoSQL` 和 `StmtRemoveDuplicatedPseudoBinding` 文本。相关操作行为另位于独立的 `binding_operator_test.rs`。
-- 文本补查：在 Rust 源码中搜索句柄、构造函数及常量，确认 `LockBindInfoSQL` 的生产消费点和当前缺失的 Rust 服务器接入。该补查用于弥补图查询未生成的调用边，不替代图中的符号事实。
-- 本任务是纯文档分析，按计划未运行 Cargo。最终结构检查要求本文恰有十一个固定二级标题；事实复核范围限于目标文件及上述直接模块、Go 对照和测试，未验证完整服务器运行时集成。

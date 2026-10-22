@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`telemetry.rs` 是 `astersql-telemetry` crate 的上报入口与轻量运行时边界。它由 [`pkg/telemetry/lib.rs`](lib.rs) 通过 `mod telemetry` 装入，并经 `pub use telemetry::*` 把类型、常量和入口函数暴露到 crate 根。文件负责回答“是否允许上报”、承载当前 Rust 遥测采集所需的上下文摘要、触发载荷生成与上报后清理，以及保存可观测的内存报告；具体功能统计、窗口统计和 TTL 统计分别位于 `data_feature_usage.rs`、`data_window.rs` 和 `ttl.rs`。
-
-所属 crate 由 [`pkg/telemetry/Cargo.toml`](Cargo.toml) 定义，库入口是 `lib.rs`。清单把 Go 包映射记录为 `pkg/telemetry`，但生产依赖全部放在恒假的 `target.'cfg(any())'.dependencies` 下；当前文件实际只使用标准库和同 crate 的重导出符号。`pkg/domain/Cargo.toml`、`pkg/session/Cargo.toml` 和 `pkg/distsql/Cargo.toml` 声明了对该 crate 的依赖，但 Rust 源码引用搜索没有发现这些上层 crate 调用本文件入口。因此它目前是可复用的已实现边界，不应描述成已经接入 Rust 服务器的周期调度链。
+文件负责回答“是否允许上报”、承载当前 Rust 遥测采集所需的上下文摘要、触发载荷生成与上报后清理，以及保存可观测的内存报告；具体功能统计、窗口统计和 TTL 统计分别位于 `data_feature_usage.rs`、`data_window.rs` 和 `ttl.rs`。
 
 ## 核心职责
 
@@ -97,16 +95,13 @@ Rust 上游方面，`lib.rs` 重导出了所有公开符号；精确 Rust 引用
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/telemetry/telemetry.go`](telemetry.go)：
-
-- `ReportInterval`、`getTelemetryGlobalVariable`、`IsTelemetryEnabled`、`ReportUsageData`、`InitialRun` 和 `Logger` 的职责与大体顺序对应。
 - Go 读取 `config.GetGlobalConfig().EnableTelemetry` 与真实 `GlobalVarsAccessor.GetGlobalSysVar`；Rust 用原子布尔和 `HashMap<String, String>` 模拟这两个边界。Go 的 `variable.TiDBOptOn` 与 Rust 当前测试一致地接受 `on` 大小写变体和 `1`。
 - Go 的上下文是 `sessionctx.Context`，功能采集会连接真实系统状态；Rust 的 `SessionContext` 是显式字段集合和失败注入模型，不具备真实会话、infoschema 或 SQL 执行能力。
 - 两边都在禁用时跳过载荷生成与后置处理，也都在生成数据后调用 `postReportTelemetryData`。Go 用 `encoding/json.Marshal`，失败可返回 error；Rust 用不可失败的手写 `Marshal`。
 - Go 把 JSON 交给带 `category=telemetry` 的 zap logger；Rust 把 JSON 放入无限增长的内存向量，`Logger()` 仅返回类别字符串。两者最终输出介质和故障模型并不等价。
 - Go 的 `Domain.TelemetryLoop` 负责首次运行、六小时 ticker、窗口轮转、退出与 goroutine 恢复；当前 Rust 文件没有对应调度器，且 Rust 引用搜索未发现运行时接线。
 
-Rust 独立测试 [`pkg/telemetry/telemetry_test.rs`](telemetry_test.rs) 只覆盖全局变量解析和缺键错误，没有覆盖进程开关短路、上报禁用路径、配置/JSON 追加顺序、全局状态恢复或并发调用。Go 同目录没有 `telemetry_test.go`；Go 的实际调度依据来自 `domain.go`，而不是本包内单测。
+Rust 独立测试 [`pkg/telemetry/telemetry_test.rs`](telemetry_test.rs) 只覆盖全局变量解析和缺键错误，没有覆盖进程开关短路、上报禁用路径、配置/JSON 追加顺序、全局状态恢复或并发调用。
 
 ## 扩展指南
 
@@ -116,17 +111,3 @@ Rust 独立测试 [`pkg/telemetry/telemetry_test.rs`](telemetry_test.rs) 只覆�
 - 若接入 Rust 运行时调度，应在拥有服务器/domain 生命周期的模块创建 ticker 和退出机制，并调用本文件入口；不要让本文件自己拥有后台线程。还需独立测试首次运行、周期触发、关闭清理和错误重试，并确认 Cargo 依赖不再只是声明。
 - 若内存列表继续用于生产，至少需要界限、清理/消费语义和并发测试；若改接日志或网络 sink，应让 `Logger`/上报返回值反映真实后端错误。迁移时需保留 Go 的 category、JSON 字段和禁用短路行为。
 - 性能风险集中在 `Reports()` 的全量克隆、无界字符串累积，以及并发报告的重复载荷生成。优化时不能牺牲调用者可观察顺序或在持有报告锁时执行昂贵采集。
-
-## 验证依据
-
-本说明依据以下可复核材料：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/telemetry` 确认目标和 Go/Rust 对照文件均已索引。
-- RustCodeGraph `node --file pkg/telemetry/telemetry.rs --offset 1 --limit 400`：读取完整 165 行目标文件，并识别 21 个符号；`query` 分别定位了 `ReportUsageData`、`InitialRun`、`IsTelemetryEnabled`、`getTelemetryGlobalVariable` 及其 Go 对照，另定位了 `generateTelemetryData`、`postReportTelemetryData` 的 Go/Rust 实现。
-- RustCodeGraph 的文件级关系报告称目标被 6 个文件使用；精确 `callers/callees` 查询两轮均在 30 秒内无输出而超时，因此没有把该近似关系直接当作调用边，转而用精确源码引用搜索核验上下游。
-- 已读 Rust 生产文件：`pkg/telemetry/telemetry.rs`、`lib.rs`、`Cargo.toml`、`data.rs:1-76`、`data_feature_usage.rs:500-610`、`ttl.rs:120-160`；包内不存在 `doc.go`。
-- 已读独立 Rust 测试：`pkg/telemetry/telemetry_test.rs` 和 `main_test.rs`。前者直接证明变量解析边界；后者只是其他采集函数的测试包装，没有覆盖本文件上报入口。
-- 已读 Go 对照与入口：`pkg/telemetry/telemetry.go`、`main_test.go`、`pkg/domain/domain.go:1699-1727`。Go 调度链为 `Domain.TelemetryLoop -> InitialRun/ReportUsageData`，Rust 侧未发现等价调用。
-- 已检查 Rust/Cargo 引用：`pkg/domain`、`pkg/session`、`pkg/distsql` 声明依赖该 crate，但 Rust 源码只出现目标文件内部和测试侧入口引用，故文档明确标记当前运行时未接线。
-
-人工复核结论：该文件存在的目的，是为遥测提供统一的启用门、采集输入模型和单次报告生命周期；安全扩展必须同时维护开关短路、采集/基线推进顺序、共享状态并发语义、Go 兼容输出和独立测试。该任务是纯文档分析，按计划不运行 Cargo 或代码测试。

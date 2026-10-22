@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-executor-join`，由包入口 `pkg/executor/join/lib.rs:17-18` 以公开模块 `concurrent_map` 装配。它位于 Hash Join v1 的构建侧哈希表下层：`pkg/executor/join/hash_table_v1.rs:936-990` 用 `ConcurrentMap<RowPointer>` 保存哈希值到构建侧行指针链的映射，`HashRowContainer::new` 在 `concurrent` 为 `true` 时选择这一实现（`hash_table_v1.rs:1007-1012`）。
-
-`pkg/executor/join/Cargo.toml` 将该目录定义为独立 join crate，库入口为 `lib.rs`，并用 `[package.metadata.porting] go-package = "pkg/executor/join"` 声明 Go 对照包。当前实现只使用 Rust 标准库的 `HashMap`、`Arc` 和 `RwLock`，不直接依赖 Cargo 中列出的其他 crate。
+位于 Hash Join v1 的构建侧哈希表下层：`pkg/executor/join/hash_table_v1.rs:936-990` 用 `ConcurrentMap<RowPointer>` 保存哈希值到构建侧行指针链的映射，`HashRowContainer::new` 在 `concurrent` 为 `true` 时选择这一实现（`hash_table_v1.rs:1007-1012`）。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接基线是 `pkg/executor/join/concurrent_map.go`：两边均固定 320 个 shard，以 `hashKey % 320` 定位，插入时把新节点链接到旧头，并逐 shard 加读锁遍历。`pkg/executor/join/concurrent_map_test.go` 的核心意图也已迁移：并发写入 1000 项、对 111 取模制造碰撞、逐链找回所有项，以及核对插入内存增量。
-
 主要差异如下：
 
 - Go 的节点是外部 `*entry`，`Insert` 原地写 `value.Next`；Rust 用泛型 `Entry<V>` 和 `Arc` 在 map 内创建不可变节点，避免裸指针所有权与锁外悬垂风险。
@@ -92,13 +88,3 @@
 - 修改内存统计时，必须让 `insert` 返回值与 `real_memory_bytes` 使用同一口径，并同步审视上层 `ConcurrentMapHashTable::put` 额外计入的 `RowPointer`，避免重复或漏计。若目标是实际分配字节，应另行实现分配器/容器级统计，不应把当前槽位估算悄然改名为精确值。
 - 增加删除/替换操作时，要处理外部 `Arc` 仍可持有旧链的语义，并定义长度与 memory delta 如何变化；当前 API 和测试只覆盖追加构建后只读的 Hash Join 生命周期。
 - 若允许 visitor 重入、长时间运行或并行执行，应先把回调移出锁区或建立快照，同时评估克隆链头的内存与一致性代价。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11467 个文件、7032 个 Rust 文件；目标 `concurrent_map.rs` 被识别为 15 个符号。使用了 `status`、`files --filter pkg/executor/join`、`explore`、`query`、`node`，并对 `ConcurrentMap` 执行精确节点查询。精确 `callers/callees` 命令未返回额外明细，因此没有据此臆造调用关系。
-- 生产源码：`pkg/executor/join/concurrent_map.rs:108-198`（当前实现），以及 `:22-107`（仅注释的迁移草稿）。
-- crate 与模块边界：`pkg/executor/join/Cargo.toml`、`pkg/executor/join/lib.rs:17-18,92-94`。
-- 直接 Rust 调用边：`pkg/executor/join/hash_table_v1.rs:726,936-990,1007-1012`。
-- 独立 Rust 测试：`pkg/executor/join/concurrent_map_test.rs:26-85`、`pkg/executor/join/hash_table_v1_test.rs:136-161`。
-- Go 对照：`pkg/executor/join/concurrent_map.go:23-95`、`pkg/executor/join/concurrent_map_test.go:26-106`。
-- 本任务是纯文档分析，按任务约束未运行 Cargo，也未修改 Rust、Go、Cargo 或只读的 `plan.md`。交付前使用任务给定命令确认目标文档存在且恰有 11 个固定二级章节，并人工复核文件定位、执行链、锁与资源生命周期、Go 差异和安全扩展点均有上述路径/符号依据。

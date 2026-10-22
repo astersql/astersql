@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`mvmap.rs` 是 `astersql-util-mvmap` crate 的核心实现文件，由 [`pkg/util/mvmap/lib.rs`](lib.rs) 通过 `include!("mvmap.rs")` 内联到 crate 根。crate 边界和 Go 来源由 [`pkg/util/mvmap/Cargo.toml`](Cargo.toml) 声明：package 名是 `astersql-util-mvmap`，`package.metadata.porting.go-package` 指向 `pkg/util/mvmap`，且没有第三方依赖。
-
-它提供一个“同一 key 可以保存多个 value”的字节级哈希表，优化目标是将 key/value 和元数据分片连续存储，减少每条记录的独立分配。当前 Rust 生产接线是 [`pkg/expression/aggregation/util.rs`](../../expression/aggregation/util.rs) 中 `distinctChecker`：它以编码后的聚合参数为 key，先用 `MVMap::Get` 判重，再用 `MVMap::Put` 记录首次出现。`pkg/executor/join/Cargo.toml` 也声明了该 crate，但 `pkg/executor/join/index_lookup_join.rs` 里的 `MVMap` 用法目前只存在于注释化的 Go 对照代码，不是已运行的 Rust 调用链。
+提供一个“同一 key 可以保存多个 value”的字节级哈希表，优化目标是将 key/value 和元数据分片连续存储，减少每条记录的独立分配。
 
 ## 核心职责
 
@@ -70,16 +68,12 @@ key 和 value 都在 `Put` 时复制进内部 data 分片；`Get`/`Next` 返回�
 
 ## 与 Go 版本的对应关系
 
-Rust [`mvmap.rs`](mvmap.rs) 与 Go [`mvmap.go`](mvmap.go) 基本是结构和控制流的逐项移植：`entry`/`entryStore`/`dataStore`/两种地址类型、两个分片上限、零地址哨兵、链头插入、`Get` 最后的整体反转、value 计数和物理顺序迭代都保持一致。FNV 实现被拆在 Rust [`fnv.rs`](fnv.rs) 与 Go [`fnv.go`](fnv.go) 中。
-
 语言层面的主要差异是：
 
 - Go `NewMVMap` 返回 `*MVMap`，Rust 返回按值所有的 `MVMap`，由调用者决定是否再装入 `Box`/`Arc` 等容器。
 - Go 用 `nil` 表示查找节点不匹配或迭代耗尽；Rust 内部 `dataStore::get` 用 `Option<&[u8]>`，迭代对外用 `(Option<&[u8]>, Option<&[u8]>)`。
 - Go `Get` 可复用调用者 slice 的 backing array；Rust `Get` 接收并返回 `Vec<&[u8]>`，value 本身不复制，但 vector 的所有权会移入再移出。
 - Go 注释要求只在一个 goroutine 中使用；Rust 依赖借用检查器约束普通安全访问，但仍没有内部锁或面向并发操作的 API。
-
-Go 原测试 [`mvmap_test.go`](mvmap_test.go) 的同 key 多 value、`Len`、遍历顺序和耗尽哨兵已在独立 Rust 测试 [`mvmap_test.rs`](mvmap_test.rs) 中对齐。[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步固定了缺失 key、seed 反转、重复耗尽、64 KiB data 换片和 8192 entry 换片行为。
 
 ## 扩展指南
 
@@ -89,12 +83,3 @@ Go 原测试 [`mvmap_test.go`](mvmap_test.go) 的同 key 多 value、`Len`、遍
 - 调整 `Get` 的 seed 处理或返回顺序会改变 Go 兼容语义。先在 `migration_aster_unit_test.rs::get_matches_go_seed_reversal_semantics` 和 Go 对照测试中明确新契约，再修改 `MVMap::Get`。
 - 对超大输入增加安全保护时，优先在 `dataStore::put`/`MVMap::Put` 入口使用可检查长度转换并设计可观察的错误 API；这会影响现有无 `Result` 签名，需同时检查 `distinctChecker` 和未来 lookup join 接线。
 - 性能调整应使用独立 [`bench_test.rs`](bench_test.rs) 与 Go [`bench_test.go`](bench_test.go) 比较 Put/Get，并用跨 data/entry 分片的功能测试防止只优化小数据路径。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11467 个文件，其中 7032 个 Rust 文件；`files --filter pkg/util/mvmap` 列出 11 个 Rust/Go 源文件与测试文件。
-- RustCodeGraph 源码节点：`node --file pkg/util/mvmap/mvmap.rs --offset 1 --limit 400` 读取全部 302 行实现；`node pkg/util/mvmap/mvmap.rs::NewMVMap` 确认构造签名和哨兵初始化，并将图中同名 `put` 边与函数体交叉核对为 `entryStore::put`；`node pkg/util/mvmap/mvmap.rs::MVMap` 确认四个状态字段。
-- 上游与下游依据：RustCodeGraph 读取 `pkg/expression/aggregation/util.rs`，确认 `createDistinctChecker -> NewMVMap` 和 `distinctChecker::Check -> Get/Put`；文本搜索确认 `pkg/executor/join/index_lookup_join.rs` 中只有注释化用法，并在 Go `index_lookup_join.go` 中找到实际 `NewMVMap`/`Put`/`Get` 接线。
-- crate 与模块证据：读取 `pkg/util/mvmap/Cargo.toml` 和 `lib.rs`，确认 crate 名、Go 对照路径、`include!` 装配和三个独立 Rust 测试模块；该目录没有 `doc.go`。
-- 语义与边界证据：逐项对照 `mvmap.go`、`mvmap_test.go`、`mvmap_test.rs` 和 `migration_aster_unit_test.rs`，确认多 value 顺序、value 计数、seed 整体反转、迭代耗尽以及 data/entry 跨片边界。
-- RustCodeGraph 的自然语言 `explore` 和批量 `callers/callees` 在 30 秒窗口内未返回结果；因此调用关系用可成功返回的精确 `node` 轨迹、已索引上游文件和 `rg` 精确引用搜索交叉核验，未将超时查询解读为“无调用者”。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`grouping_sets.rs`](./grouping_sets.rs) 是 `astersql-expression` crate 内的 GROUPING SETS / ROLLUP 表达式侧算法实现。它定义三层布局数据结构，提供前缀合并、普通聚合目标布局选择、列克隆判定、protobuf 编码、ROLLUP 展开、可空性修正、GROUP BY 表达式去重与还原，以及 distinct grouping id 计算。
-
-模块由 [`lib.rs`](./lib.rs) 以私有的 `grouping_sets_kernel` 编译进 crate；`lib.rs` 只在 `#[cfg(test)]` 的 `expression_files_36::grouping_sets` 中再导出这些符号。仓库搜索未发现其他 Rust 生产文件调用本文件 API，因此当前可确认的 Rust 接线是“crate 内已编译、独立测试已覆盖”，不能据此声称它已经接入 Rust 规划或执行主链。Go 侧的同路径实现 [`grouping_sets.go`](./grouping_sets.go) 则是移植语义基准。
-
-crate 边界见 [`Cargo.toml`](./Cargo.toml)：包名为 `astersql-expression`，`[lib]` 入口是 `lib.rs`，并关闭自动测试发现（`autotests = false`）。本文件直接使用 crate 根再导出的表达式、Schema、KV 客户端、MySQL 标志位、内存常量和错误类型，并使用 `tipb` protobuf 依赖。
+定义三层布局数据结构，提供前缀合并、普通聚合目标布局选择、列克隆判定、protobuf 编码、ROLLUP 展开、可空性修正、GROUP BY 表达式去重与还原，以及 distinct grouping id 计算。
 
 ## 核心职责
 
@@ -103,16 +99,7 @@ Cargo 层面，`kv-dependency`、`parser-mysql-dependency` 和 Git `tipb` 是上
 
 ## 与 Go 版本的对应关系
 
-[`grouping_sets.go`](./grouping_sets.go) 是逐项对照基准。Rust 的 `new_grouping_sets`、`merge`、`merge_one`、`target_one`、`need_clone_column`、空值/集合/克隆/字符串/内存/PB 方法、ROLLUP、可空性、去重、还原与 distinct-size 算法均有同名或 snake_case 对应。
-
-已核对的共同语义包括：
-
-- 合并按列 `UniqueID` 的集合包含关系组织前缀链，不可比较的表达式组进入新 set。
 - `target_one` 忽略聚合参数中不引用列的部分；无列参数默认布局 0，跨布局无法同时满足时返回 -1。
-- ROLLUP 对 `n` 个输入产生 `n + 1` 个从空集到完整前缀的布局。
-- 只要分组列在某一布局中缺失，就清除其 Schema `NotNullFlag`；无关列和每层都存在的列不变。
-- GROUP BY 去重按 `CanonicalHashCode`，位置数组可在投影为 Column 后恢复重复次序。
-- distinct 布局数严格超过默认 64（或注入阈值）才生成 gid；等价布局共享 gid。
 
 实现层面的差异：Go 使用 `intset.FastIntSet` 和普通 map，Rust 使用有序的 `BTreeSet` / `BTreeMap`；Go 的类型断言 `one.(*Column)` 与 Rust 的 `downcast_ref::<Column>().expect(...)` 都把“必须为 Column”作为强前置条件；Go 去重直接保留首次出现的表达式接口值，而 Rust 调用 `CloneExpr`；Go 的 `AdjustNullabilityFromGroupingSets` 假定 `RetType` 存在，Rust 对 `Option` 做条件修改；Rust 的字符串接口固定传入 `None` 和 `RedactLogDisable`，没有暴露 Go 版本的 ctx/redact 参数。以上差异不改变已测试的核心布局语义，但调用者不应假设对象共享或诊断参数完全一致。
 
@@ -128,13 +115,3 @@ Cargo 层面，`kv-dependency`、`parser-mysql-dependency` 和 Git `tipb` 是上
 - 修改 protobuf 结构时，从 `GroupingSet::to_pb` 接入并保留错误传播；同步检查 `tipb` schema、`ExpressionsToPBList` 行为和下推端兼容性。
 - 若要把本模块接入 Rust 生产主链，需要显式选择导出边界并在真实 planner/Expand 调用处完成接线；当前同名 planner 类型不是本模块类型。此类改动应补独立集成测试，而不能以现有单元测试代表生产接线。
 - 大量布局场景下，修改嵌套扫描或容器类型前应对 `merge`、`need_clone_column`、`distinct_size_with_threshold` 做基准和顺序稳定性验证。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标 Rust、Go 和测试文件均可查询。
-- RustCodeGraph 源码与符号查询：`explore "pkg/expression/grouping_sets.rs GroupingSets GroupingSet TargetOne"`；`query GroupingSets --kind struct`；`query rollup_grouping_sets --kind function`；按文件分段读取 `grouping_sets.rs` 全部 417 行。
-- RustCodeGraph 调用边：`merge` 调用 `merge_one` 和 `GroupingExprs::clone`；`GroupingSets::to_pb` 调用 `GroupingSet::to_pb`；`adjust_nullability_from_grouping_sets` 调用 `all_sets_col_ids`；`deduplicate_gby_expression` 调用 `CanonicalHashCode` 与 `CloneExpr`。图中的直接上游调用者集中在独立 Rust 测试。
-- 读取的 Rust 装配与依赖文件：[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)。仓库搜索确认目标模块是私有 `grouping_sets_kernel`，测试态再导出，且未找到其他 Rust 生产调用点。
-- 读取的独立 Rust 测试：[`grouping_sets_test.rs`](./grouping_sets_test.rs)，覆盖前缀合并与目标布局、ROLLUP 可空性、去重/还原、阈值 gid 和非 Column panic；`lib.rs` 还挂载 `grouping_sets_runtime_aster_unit_test.rs`。
-- 读取的 Go 对照：[`grouping_sets.go`](./grouping_sets.go) 全部核心符号及 [`grouping_sets_test.go`](./grouping_sets_test.go) 的目标布局、合并、ROLLUP、去重/还原和 distinct gid 场景。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构验证要求本文件存在且恰有十一个规定的二级标题；验证命令及退出码在任务交付时报告。

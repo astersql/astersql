@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-serialization` crate 的读取侧实现，与同目录的 `serialization_util.rs` 成对定义聚合中间状态（partial result）在 spill（内存压力下落盘）后的二进制恢复协议。crate 根 `lib.rs` 将本模块的公开项全部再导出；`Cargo.toml` 表明它直接依赖 `astersql-util-chunk`、`astersql-types-datum` 和 `astersql-types-json-binary`，分别提供列字节、SQL 数据类型与 Binary JSON/Opaque 类型。
-
-应用侧的主要接入点是 `pkg/executor/aggfuncs/spill_deserialize_helper.rs`：`DeserializeHelper::next` 用 `PosAndBuf::Reset` 选中 spill 列的一行，再把同一个游标交给具体 `Deserialize*` 函数。`pkg/executor/aggfuncs/spill_serialize_helper.rs`、`pkg/executor/aggfuncs/func_max_min_count.rs` 与 `pkg/executor/aggregate/agg_spill.rs` 也直接按字段顺序读取聚合状态。因此，本文件不是通用持久化格式框架，而是与写入侧及 Go 实现共同约束的、面向聚合 spill 的本机格式解码器。
+用 `PosAndBuf` 保存当前行的自有字节副本和下一次读取的字节偏移，并在每次成功取值后推进 `Pos`。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@ RustCodeGraph 的文件节点报告本文件被 8 个文件使用，并能解析
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/serialization/deserialization_util.go`，写入协议对照是同目录 Go/Rust 两版 `serialization_util` 和 `common_util`。Rust 版本保留了 Go 的函数族、字段顺序、类型码、native-endian 标量布局、`int` 长度前缀和未知 interface 类型 panic 文案。
+Rust 版本保留了 Go 的函数族、字段顺序、类型码、native-endian 标量布局、`int` 长度前缀和未知 interface 类型 panic 文案。
 
 实现层面的差异必须视为兼容边界：
 
@@ -108,12 +106,3 @@ Go 侧聚合行为回归主要位于 `pkg/executor/aggfuncs/spill_helper_test.go
 4. 变长格式应复用或等价遵循 `deserializeBuffer` 的长度检查；若希望从 panic 改为 `Result`，这会改变全部公开函数和 spill 调用链，必须作为协议/API 迁移整体设计，不能只改一个函数。
 5. 修改 `PosAndBuf` 或 native-endian/`isize` 规则前，要评估历史 spill 数据、32/64 位与不同端序环境兼容性。当前格式只适合配套读写端运行于相容本机架构。
 6. 对大载荷优化复制时，要同时证明返回值在下一次 `Reset` 后仍有效，并检查 `DeserializeHelper` 的逐行复用模式；不能用借用优化破坏现有所有权边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/util/serialization` 列出目标、Go 对照、crate 根和三个独立 Rust 测试；`node --file pkg/util/serialization/deserialization_util.rs --offset 1 --limit 500` 读取了完整 298 行及“used by 8 files”文件关系；`query DeserializeInterface`、`query DeserializeMyDecimal` 消除了 Go/Rust 同名歧义；`callees deserialization_util.rs::DeserializeInterface` 验证其到具体解码器的分派边。符号级外部 callers 未返回边，故使用精确引用搜索补足。
-- 源码与配置：`pkg/util/serialization/deserialization_util.rs`、`serialization_util.rs`、`common_util.rs`、`lib.rs`、`Cargo.toml`。
-- Go 对照：`pkg/util/serialization/deserialization_util.go`、`serialization_util.go`、`common_util.go`；聚合行为测试 `pkg/executor/aggfuncs/spill_helper_test.go`。
-- Rust 上游调用：`pkg/executor/aggfuncs/spill_deserialize_helper.rs`、`spill_serialize_helper.rs`、`func_max_min_count.rs`、`pkg/executor/aggregate/agg_spill.rs`。
-- Rust 独立测试：`pkg/util/serialization/migration_aster_unit_test.rs` 验证类型码、标量/结构体往返、位置推进、`Reset`、interface 全分支、未知类型码和截断；`go_merge_32_test.rs` 验证向量精确推进与非法载荷；`go_merge_34_test.rs` 验证零值和普通向量往返。
-- 按任务约束未运行 Cargo。本任务的交付验证是固定 11 章节的结构检查，并辅以人工复核：本文说明了文件存在原因、真实执行主链、安全扩展同步点，以及已知兼容和性能边界。

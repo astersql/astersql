@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/ddl/lib.rs` 公开为 `persistent_masking_actions` 模块。它不是脱敏策略 CREATE/ALTER/DROP DDL 的主实现；它把表级持久化 DDL 动作与 `mysql.tidb_masking_policy` 的伴随维护放在同一条 worker 执行路径中，并同时承载 DROP、RENAME、TRUNCATE 的表元数据状态推进。
-
-直接分派入口是 `pkg/ddl/persistent_actions.rs::step`：action 11 进入 `truncate_table`，14/47 进入 `rename_tables`，4/87/88/94 进入 `drop_table`。此外，`pkg/ddl/persistent_drop_column.rs::step` 调用 `policies_on_column`，`pkg/ddl/persistent_modify_column.rs::sync_policy` 调用 `policies_on_table`。因此本文件既是持久化表动作处理器，也是列动作复用的策略查询边界。
+私有 `update_materialized_view_dependencies` 与 `check_materialized_view` 保护物化视图依赖关系；`sql_string` 负责本文件动态 SQL 字符串值的反斜线和单引号转义。
 
 ## 核心职责
 
@@ -93,15 +91,11 @@ DROP 的状态机把可见性变更分散到多个 worker step，最终 `None` �
 
 ## 与 Go 版本的对应关系
 
-Go 对照不是单一同名文件，而是 `pkg/ddl/table.go` 与 `pkg/ddl/masking_policy.go` 的组合：
-
 - Rust `read_policies` 对应 Go `queryMaskingPoliciesFromSysTable` 及其固定 SELECT；Rust显式验证字符串行，Go 交给 `maskingPolicyFromSysTableRow` 构造强类型 `MaskingPolicyInfo`。
-- Rust `drop_policies_on_table` 对应 Go `dropMaskingPoliciesOnTable`；两者都先取得全部策略再逐条按 ID 删除。
 - Rust `update_policy_names` 对应 Go `updateMaskingPolicyNamesAfterRename`；两者按大小写不敏感名称判断跳过，并只更新库名、表名和更新时间。
-- Rust `truncate_table` 中的策略迁移对应 Go `updateMaskingPolicyTableIDAfterTruncate`：更新表 ID 和更新时间，保留 column ID。Go `TestMaskingPolicyTruncateKeepsPolicy` 验证策略仍可启停和删除。
 - Rust DROP/RENAME/TRUNCATE 的大流程分别对应 `table.go` 的 drop 收尾、`onRenameTable`/`onRenameTables`、truncate 流程。Rust还在同一文件中包含物化视图依赖、TTL、placement、TiFlash、affinity 等必要接线，不应把它误解为只维护 masking policy 的小工具。
 
-已核对的 Go 回归包括 `pkg/ddl/masking_policy_internal_test.go::TestMaskingPolicyOperationsRequireSysTable`、`pkg/ddl/masking_policy_test.go::{TestMaskingPolicyRenameTable, TestMaskingPolicyRenameTableCrossDatabase, TestMaskingPolicyRenameTableNoPolicy, TestMaskingPolicyTruncateKeepsPolicy}`。Rust 仓库搜索未发现直接引用本模块或这些公开函数的同名独立测试；`pkg/ddl/masking_policy_test.rs` 测试的是内存 `MaskingPolicyStore`/表达式逻辑，不覆盖本文件的 durable worker 接线。
+Rust 仓库搜索未发现直接引用本模块或这些公开函数的同名独立测试；`pkg/ddl/masking_policy_test.rs` 测试的是内存 `MaskingPolicyStore`/表达式逻辑，不覆盖本文件的 durable worker 接线。
 
 ## 扩展指南
 
@@ -111,11 +105,3 @@ Go 对照不是单一同名文件，而是 `pkg/ddl/table.go` 与 `pkg/ddl/maski
 - 调整 RENAME：同时考虑跨库 auto-ID 归属、外键 child table、PD label、masking policy 名称与 `affected_options`；多表 action 47 还要保持 job 临时 table ID/name 和最终完成列表一致。
 - 调整 TRUNCATE：保持旧/新表与分区 ID 映射、策略 column ID 不变、TTL 补偿、placement/TiFlash/affinity 顺序及 finished args。外部资源操作存在部分完成风险，新增步骤必须设计重试或补偿。
 - 测试应优先新增/扩展 `pkg/ddl` 下独立 `*_test.rs`，构造可记录 SQL、事务和资源回调的 `JobExecutionContext`；并继续对照 Go 的 masking policy 与 table 测试。当前直接 Rust 回归缺口值得在后续实现任务中补齐，但不属于本纯文档任务。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/persistent_masking_actions.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
-- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
-- 冻结 `pkg/ddl/table_mode.rs`、`pkg/session/runtime/system_session.rs` 核对标记传播；Go 对照 `pkg/ddl/job_worker.go::transitOneJobStep` 的整事务重开分支，以及 `mview_worker.go`/`table.go` 对应动作。
-- 冻结 `pkg/ddl/tests/materializedview/materialized_view_create_test.rs` 的 `mview_cleanup_rollback_discards_metadata_and_retries_schema_version`、`mview_cleanup_rollback_notification_failure_is_atomic`、`mview_cleanup_rollback_rechecks_job_meta_after_reopen` 使用模拟 executor/session 验证丢弃元数据、两次读取、零返回版本及并发修改拒绝；不是本文件动作的端到端 SQL 覆盖，未运行。
-- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。

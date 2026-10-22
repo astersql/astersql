@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-implementation` crate（见 `pkg/planner/implementation/Cargo.toml`），由 `lib.rs` 的私有 `simple_plans` 模块加载并通过 `pub use simple_plans::*` 对外再导出。它位于旧 Cascades 优化器从逻辑表达式生成物理候选的下游：`pkg/planner/cascades/old/implementation_rules.rs` 构造具体 `Physical*` 节点，再调用本文件的 `New*Impl` 将物理节点包装成 `astersql_planner_memo::Implementation`，供 Memo 计算代价、剪枝和挂接子计划。
-
-RustCodeGraph 的文件节点显示，本文件当前被 `pkg/planner/cascades/old/implementation_rules.rs` 使用。文件只负责 Show、Limit、Projection、Selection、HashAgg、TopN、UnionAll、Apply、MaxOneRow 和 Window 这些“简单计划”的 Implementation 包装与代价策略；逻辑到物理节点的属性匹配、统计缩放和节点字段填充不在这里，而在上述 implementation rules 中。
+保存“物理计划节点 + 已缓存代价”：每个实现都含 `BaseImpl` 和一个装箱的计划访问 trait object；`BaseImpl` 内部以 `Cell<f64>` 保存代价。
 
 ## 核心职责
 
@@ -86,17 +84,12 @@ UnionAll 的“并行”仅体现在成本公式取最大分支成本，本文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/implementation/simple_plans.go`，总体公式和上游构造器一一对应：
-
-- Rust 的 Projection、Show、Limit、UnionAll、Apply、MaxOneRow、Window 对应 Go 同名结构和构造器。
 - Go 为 TiDB/TiKV Selection、HashAgg、TopN 分别声明结构；Rust 合并成一个结构，通过布尔标志与公开类型别名保留调用端语义。该合并没有删减两端成本分支。
 - Go Projection 调用 `utilfuncp.GetCost4PhysicalProjection`；Rust 把等价计算放入上游 `PlanAdapter<PhysicalProjection>::SelfCost`，本文件只组合自身成本与孩子成本。
 - Go HashAgg/TopN/Apply 直接向具体物理节点调用 `GetCost`；Rust 通过相应 `*CostPlan` trait 转发，隔离具体类型但保留参数顺序和 root 标志。
-- Go UnionAll 明确说明孩子并行，取最大孩子成本；Rust 的 `fold(0.0, f64::max)` 与同一公式一致。两版均不缩减 UnionAll 的成本上限。
-- Go Apply 在左条件非空时乘 `cost.SelectionFactor`；Rust 由 `HasLeftConditions` 和 `SelectionFactor` 实现相同分支。两版在还没有孩子时均原样返回成本上限。
 - Go `baseImpl.AttachChildren` 直接挂接孩子计划接口；Rust 为满足所有权模型先克隆孩子计划，再挂接。逻辑树结构一致，但 Rust 额外要求 `clone_physical` 成功。
 
-当前 Rust 文件已经具有 AsterSQL 处理标记和保留的 PingCAP Apache License。没有发现本文件独有而 Go 版本缺失的运行时功能，也没有条件编译造成的版本分叉。
+没有发现本文件独有而 Go 版本缺失的运行时功能，也没有条件编译造成的版本分叉。
 
 ## 扩展指南
 
@@ -106,12 +99,3 @@ UnionAll 的“并行”仅体现在成本公式取最大分支成本，本文�
 - 不要把单元测试嵌入本生产文件。应在同目录独立测试文件中扩展；现有 `base_test.rs` 直接覆盖 `LimitImpl` 的计划类型、默认成本和缓存读写，但 Projection、Selection、HashAgg、TopN、UnionAll、Apply、MaxOneRow、Window 尚无同目录直接成本公式测试。新增公式测试宜新建或扩展独立 `*_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] #[path = "..."]` 声明加载。
 - 建议覆盖的边界包括：TiDB/TiKV 因子选择、UnionAll 空/多分支和最大成本、Apply 空孩子/左条件/零左行数、缺少必需孩子时的契约，以及 AttachChildren 的克隆行为。
 - 兼容风险主要是与 Go 成本排序发生偏差；性能风险主要是错误的基数或并发因子改变候选选择，以及不必要的物理计划克隆。修改后应优先做精确代价单测和旧 Cascades 规则测试，而不是用“可编译”代替行为验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/planner/implementation/simple_plans.rs` 与文件节点均确认目标已索引；`node --file ... --offset 1/261` 读取了 389 行全文件，并报告唯一使用文件为 `pkg/planner/cascades/old/implementation_rules.rs`。精确 `node --file ... NewApplyImpl` 核对了构造器定义；一次精确 `callers` 查询未返回结果，因此调用点另以精确源码引用搜索核验。
-- 生产源码：完整读取 `pkg/planner/implementation/simple_plans.rs`；读取 `base.rs` 的 `BaseImpl`、各成本 trait、`ChildRows`/`ChildCost`、`AttachChildren` 和 `impl_implementation!`；读取 `lib.rs` 的模块与再导出；读取 `pkg/planner/cascades/old/implementation_rules.rs` 的 `PlanAdapter` 成本实现和所有相关 `Impl*` 规则。
-- crate 配置：读取 `pkg/planner/implementation/Cargo.toml`，确认 crate 名、`lib.rs` 入口、Go package metadata、工作区依赖和测试依赖。
-- Go 对照：完整读取 `pkg/planner/implementation/simple_plans.go`，并读取 `base.go` 核对默认成本、成本上限和孩子挂接语义；精确搜索确认 Go/Rust implementation rules 均调用对应构造器。
-- 测试证据：读取 `pkg/planner/implementation/base_test.rs`（直接覆盖 `NewLimitImpl`、`CalcCost`、`SetCost`/`GetCost`、默认成本上限和挂接辅助）、`main_test.rs`；读取 `pkg/planner/cascades/old/implementation_rules_test.rs`，确认其当前只覆盖 HashJoin FullOuterJoin 拒绝分支，并未直接覆盖本文件各简单算子的代价公式。Go 的 `base_test.go` 提供默认实现对照；同目录不存在 `simple_plans_test.rs` 或 `simple_plans_test.go`。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。最终结构检查要求目标文件存在且恰好包含本页列出的十一个固定二级标题。

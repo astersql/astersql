@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor-join` crate。模块由 `pkg/executor/join/lib.rs` 以 `pub mod hash_join_spill_helper` 导出，直接依赖同 crate 的 `join_row_table`、`joiner` 和 `row_table_builder`，因此位于 Hash Join 的分区 row table 与 build/probe 数据之间，负责内存超限后的分区选择、临时存储、恢复队列和状态同步。
-
-当前接线必须与设计意图区分：`pkg/executor/join/hash_join_spill.rs` 的 `HashJoinSpillAction` 持有本文件的 `Arc<HashJoinSpillHelper>`，会调用 `wait_while_spilling`、`status`、`can_spill` 和 `set_need_spill` 完成 OOM 触发状态转换；但 `pkg/executor/join/hash_join_v2.rs` 的活跃 `HashJoinV2Exec::spill_helper` 使用的是该文件内部另行定义的同名简化类型，而不是本模块的类型。RustCodeGraph 未找到本文件 `spill_row_tables`、`spill_probe_chunk` 或 `prepare_for_restoring` 的生产调用者，这些完整落盘/恢复入口目前由独立 Rust 测试直接验证。
-
-源文件第 16--655 行是一段整体注释掉的 Go 风格迁移草稿，不参与编译。实际 Rust 实现从 `use crate::join_row_table::{RowTable, RowTableSegment}` 开始；理解或修改行为时不能把注释草稿中的 `HashJoinV2Exec`、真实磁盘 `DataInDiskByChunks`、SQL killer 或 failpoint 当作当前 Rust 已支持能力。
+`build_spill_bytes`、`probe_spill_bytes`、`spilled_valid_row_num` 及测试标志提供统计或验证信号；`close`、`reset` 管理本轮资源状态。
 
 ## 核心职责
 
@@ -83,7 +79,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照为 `pkg/executor/join/hash_join_spill_helper.go`。Rust 保留了三态状态机、0.5 释放目标、优先 spill 大分区、build 三元组语义、worker/partition 二维布局、probe 配对、restore stack、最大轮次限制以及测试观察接口。名称按 Rust 风格改为 PascalCase/snake_case，并将依赖执行器内部字段的构造改为显式参数。
+Rust 保留了三态状态机、0.5 释放目标、优先 spill 大分区、build 三元组语义、worker/partition 二维布局、probe 配对、restore stack、最大轮次限制以及测试观察接口。名称按 Rust 风格改为 PascalCase/snake_case，并将依赖执行器内部字段的构造改为显式参数。
 
 当前 Rust 与 Go 的重要差异如下：
 
@@ -103,12 +99,3 @@ Go 权威对照为 `pkg/executor/join/hash_join_spill_helper.go`。Rust 保留�
 若调整分区选择，修改入口是 `choose_partitions_to_spill`。需维持“已 spill 分区优先计入”“占用降序”“相等时确定性排序”和“达到 0.5 目标即停止”，并补充长度错误、已有分区已足够、全部分区仍不足、零/负用量等测试。若 `RowTableSegment` 获得有效键位置集合，应同步改写 `generate_spilled_valid_join_key`，不可继续用前 N 行近似。
 
 轮次或恢复策略变更集中在 `prepare_for_restoring`、`RestorePartition` 和 `RestoreStack`；需验证越界不改状态、空 build 不建任务、多 worker 同分区聚合、LIFO 次序和 respill 轮次。测试逻辑继续放在独立的 `*_test.rs` 文件，不能内嵌到本生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标文件被索引为 1296 行、72 个符号。
-- RustCodeGraph 源码与符号：`HashJoinSpillHelper`（本文件约 814 行）、`spill_row_tables`（1128 行）、`prepare_for_restoring`（1199 行）、`spill_probe_chunk`（1086 行）、`choose_partitions_to_spill`（990 行）。`callees spill_row_tables` 返回 `set_in_spilling`、`choose_partitions_to_spill`、`spill_selected_partitions`、`set_not_spilled`；`callees prepare_for_restoring` 返回轮次错误常量、`RestorePartition`、`RestoreStack::push` 和 chunk 读取；这些入口未返回生产 caller。
-- 已读生产与装配文件：`pkg/executor/join/hash_join_spill_helper.rs`、`pkg/executor/join/hash_join_spill.rs`、`pkg/executor/join/hash_join_v2.rs`、`pkg/executor/join/lib.rs`、`pkg/executor/join/Cargo.toml`。
-- Go 对照：完整读取 `pkg/executor/join/hash_join_spill_helper.go`，核对构造、状态、选择算法、build/probe 写出、并发 worker、reset、restore stack、轮次和关闭语义。
-- Rust 独立测试：`pkg/executor/join/hash_join_spill_helper_test.rs` 验证只 spill 已标记的残留分区；`hash_join_spill_test.rs` 验证阈值、fallback 和 16 线程单次置位；`inner_join_spill_test.rs` 验证最大分区选择、build/probe 写出、恢复与 round 限制；`outer_join_spill_test.rs` 验证两侧内容完整、空 probe 和 reset 边界。
-- 人工复核结论：本文明确区分注释迁移草稿与可执行实现、内存模拟与真实磁盘、状态机已接线部分与完整 spill/restore 尚未接入 v2 主执行器的部分；没有把 Go 独有的 SQL killer、failpoint、rehash 或并行写盘描述为 Rust 已支持。

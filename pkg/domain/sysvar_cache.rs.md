@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate；`pkg/domain/Cargo.toml` 以 `lib.rs` 为 crate 入口，而 `pkg/domain/lib.rs` 通过 `pub mod sysvar_cache` 公开此模块。它提供一个与具体 `Domain`、SQL 执行器和系统变量注册表解耦的 Rust 系统变量缓存核心：调用方提供持久化值来源、变量定义、配置覆盖值以及全局副作用回调，缓存负责生成 session/global 两份快照并提供查询。
-
-当前接线状态必须与 Go 版本区分：仓库中的生产 Rust 文件没有引用 `SysVarCache`、`SysVarDefinition` 或 `SysVarSource`；直接使用者仅见于 `pkg/domain/sysvar_cache_test.rs` 和 `pkg/domain/main_test.rs`。因此它目前是由 `pkg/domain/lib.rs` 暴露且经测试验证的独立组件，尚未接入 Rust `Domain` 的启动、定时刷新或 etcd 通知链。文件第 16–304 行还保留了一段块注释形式的 Go 机械翻译草稿；可执行实现从 `use std::collections::BTreeMap` 开始，不能把草稿中的 `Domain`、session pool、restricted SQL 或 info cache 接线当成现状。
+提供一个与具体 `Domain`、SQL 执行器和系统变量注册表解耦的 Rust 系统变量缓存核心：调用方提供持久化值来源、变量定义、配置覆盖值以及全局副作用回调，缓存负责生成 session/global 两份快照并提供查询。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ Go 的真实应用主链可作为未来接线参照：`pkg/domain/domain.go::Loa
 
 ## 与 Go 版本的对应关系
 
-`pkg/domain/sysvar_cache.go` 是直接语义基准。Rust `SysVarCache` 对应 Go `sysVarCache`，两个 `RwLock<BTreeMap>` 对应 Go 嵌入式 `RWMutex` 保护的两个 map，`rebuild_lock` 对应 `rebuildLock`。Rust definitions 循环复现了 `SkipInit`、`HasGlobalScope`、`IsInitedFromConfig`、relaxed validation、`SkipSysvarCache` 和 `SetGlobal` 的关键判定；`config_overrides` 的“仅覆盖已存在键”复现 `overrideSysVarWithConfig` 对 `MaxAllowedPacket` 的行为。
+Rust definitions 循环复现了 `SkipInit`、`HasGlobalScope`、`IsInitedFromConfig`、relaxed validation、`SkipSysvarCache` 和 `SetGlobal` 的关键判定；`config_overrides` 的“仅覆盖已存在键”复现 `overrideSysVarWithConfig` 对 `MaxAllowedPacket` 的行为。
 
 Rust 仍有明确差异：
 
@@ -100,13 +98,3 @@ Rust 仍有明确差异：
 涉及并发一致性时，应先决定是否需要 session/global 联合快照；若需要，应该改为单锁保护组合状态或引入代际快照，而不是简单调整两个赋值次序。任何锁结构变化都应新增独立并发测试，特别覆盖源读取失败、回调失败/panic、并发重建和并发读取。引入自动空缓存重建时还要避免多个读者触发重建风暴，并与 Go 的错误类型和日志行为保持兼容。
 
 性能风险主要来自：每次 session 初始化克隆整张 map；`BTreeMap` 操作是对数复杂度；重建锁把外部读取与全部回调串行化。兼容风险主要来自错误字符串、回调筛选语义、配置覆盖仅作用于既有表键，以及 `initialized_from_config` 对表值的强制忽略。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 `11467` 个文件，目标 `pkg/domain/sysvar_cache.rs` 已收录；`node --file pkg/domain/sysvar_cache.rs` 核对了全文件 452 行及可执行实现。
-- RustCodeGraph `query`：确认 `SysVarCache` 位于第 331 行，`rebuild_with_policy` 位于第 377 行，`session_cache` 位于第 431 行，`global_var` 位于第 444 行；对这些符号执行 callers/callees 未得到生产调用边。
-- 源与模块边界：[`pkg/domain/sysvar_cache.rs`](sysvar_cache.rs)、[`pkg/domain/lib.rs`](lib.rs)、[`pkg/domain/Cargo.toml`](Cargo.toml)。
-- Rust 测试：[`pkg/domain/sysvar_cache_test.rs`](sysvar_cache_test.rs) 验证校验后回调、回调筛选、作用域拆分、默认值、配置覆盖、配置初始化、深拷贝和重复重建回调；[`pkg/domain/main_test.rs`](main_test.rs) 验证 `set_global` 返回错误仍发布缓存。
-- Go 对照与真实接线：[`pkg/domain/sysvar_cache.go`](sysvar_cache.go)、[`pkg/domain/domain.go`](domain.go)；相关 Go 回归证据位于 [`pkg/domain/domain_test.go`](domain_test.go)。
-- 仓库引用搜索：除目标文件外，生产 Rust 代码未引用三个公开类型；当前直接 Rust 使用点仅在上述两个独立测试文件。该结果与 RustCodeGraph 未发现生产 callers 相符。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工核对文档没有把注释草稿或 Go 的运行接线描述为当前 Rust 事实。

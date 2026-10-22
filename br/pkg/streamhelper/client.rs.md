@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-源文件：[client.rs](client.rs)。`client.rs` 是 `astersql-br-pkg-streamhelper` crate 的日志备份元数据客户端实现。crate 入口 [lib.rs](lib.rs) 以 `pub mod client` 装载本文件，并通过 `pub use client::*` 将其公开类型和函数提升为包级 API。该 crate 的 [Cargo.toml](Cargo.toml) 将库入口设为 `lib.rs`，直接依赖 `serde`、`serde_json`、`regex` 和 `uuid`；本文件实际直接使用前两者完成任务与暂停记录的 JSON 编解码。
-
-文件位于日志备份 checkpoint 推进链的元数据边界：上层通过 `MetaDataClient` 创建、查询、暂停、恢复和删除任务，通过 `Task` 读取范围、检查点和末次错误；下层不是直接绑定 etcd SDK，而是依赖 `stubs.rs` 中的 `EtcdKV: Send + Sync`。生产适配器和测试内存实现都必须遵守这个接口。本文件不是单纯门面：任务键空间的读写顺序、检查点解析、全局水位计算和暂停载荷协议都在这里实现。
+定义暂停元数据协议：`RFC3339Time`、`PauseV2`、`PausePayload`、`NewLocalPauseV2`、`PauseWithMessage` 与 `PauseWithErrorSeverity` 负责构造、序列化、解析和展示暂停原因。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 显示 `NewMetaDataClient` 的 Rust 调用者包括 `advancer_clie
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 `br/pkg/streamhelper/client.go` 的公开模型和方法逐项移植：严重级别字符串、PauseV2 JSON 字段名与 MIME 值、`SetBakcupStreamError` 的历史拼写、checkpoint 类型推断、键格式、任务 CRUD、Task 便捷方法以及全局 checkpoint 汇总规则均有直接对应。`parity_test.rs::go_rust_public_contract_matches` 和 `task_metadata_methods_match_go_contract` 覆盖 store/global 解析、文本/错误 payload、任务写读、暂停恢复、范围、storage/global checkpoint、last-error 和删除清理。
-
 当前实现存在必须如实保留的移植差异：
 
 - Go 的 `StreamBackupTaskInfo` 与 `StreamBackupError` 使用 protobuf；Rust 任务路径在本文件中用 serde JSON，错误 payload 则委托本地 `Marshal`/`Unmarshal` 抽象。
@@ -94,8 +90,6 @@ Rust 文件按 `br/pkg/streamhelper/client.go` 的公开模型和方法逐项移
 - Go `GetTaskCount` 用只取一项的分页扫描获取计数行为；Rust 读取并反序列化全部任务后取长度，任务多时成本更高且任一坏值会导致计数失败。
 - Go `RFC3339Time` 基于 `time.Time`；Rust 保存原始字符串并自行校验。Go 通过 `os.Hostname()` 获取系统主机名；Rust 只读 `HOSTNAME`。
 - Go 扫描范围与 checkpoint 使用分页器；Rust 假设 `GetPrefix` 一次返回全部条目，内存与响应规模边界由底层实现决定。
-
-因此本文件应视为对 Go 行为契约的本地抽象移植，而不是 etcd 客户端实现细节的完全等价替换。
 
 ## 扩展指南
 
@@ -106,13 +100,3 @@ Rust 文件按 `br/pkg/streamhelper/client.go` 的公开模型和方法逐项移
 扩展 checkpoint 格式时，应同步修改 `CheckpointType`、`Checkpoint::Type`、`ParseCheckpoint` 和 `models.rs` 的键编码，并覆盖前缀、分段、数值溢出、8 字节边界及旧版 store-ID 回退。全局水位算法的修改必须明确安全语义：Store 取最小、storage 取最大、central-global 优先是当前不变量，错误调整可能导致数据尚未备份就推进水位。
 
 若要提高生产等价性，最优先的接入点是扩充 `EtcdKV` 的事务/一致性读取能力，再让 `PutTask`、`DeleteTask` 和 `GetTaskWithPauseStatus` 使用原子操作；其次是为大前缀扫描加入分页或流式接口。此类修改会影响 `advancer_cliext` 的快照/watch 交接，必须同步验证 revision 不丢事件，并评估大量任务/range/checkpoint 下的内存与延迟。
-
-## 验证依据
-
-- 目标源码：`br/pkg/streamhelper/client.rs`（674 行，RustCodeGraph 报告 66 个符号）；核对了全部常量、类型、函数、impl 和无条件编译路径，文件内没有测试模块或 feature 条件分支。
-- crate 边界：`br/pkg/streamhelper/Cargo.toml` 与 `br/pkg/streamhelper/lib.rs`；确认 crate 名、`lib.rs` 入口、`client` 模块和包级再导出。
-- 直接模型/KV 证据：RustCodeGraph `node EtcdKV`、`node models.rs::CheckPointsOf`、`node models.rs::RangeKeyOf`；确认线程安全 trait、revision/前缀 API、尾斜杠和二进制 range 键约束。
-- 调用图证据：RustCodeGraph `explore "br/pkg/streamhelper/client.rs MetaDataClient PauseV2 Checkpoint"`；确认 `NewMetaDataClient`、`GetAllTasksWithRevision`、`ParseCheckpoint`、Pause 方法在 advancer、集成和契约测试中的上下游关系。精确 `callers/callees` 子命令在本次索引上未输出额外结果，因此调用边又以 `node` 的 Trail 和源码入口交叉核对。
-- Go 对照：`br/pkg/streamhelper/client.go` 全文件；逐项核对 PauseV2、checkpoint 解析、事务 CRUD、Task 方法、storage/global checkpoint 与 last-error 语义，并记录事务、Context、分页、protobuf/JSON 和 hostname/time 差异。
-- 独立 Rust 测试：`br/pkg/streamhelper/client_test.rs` 验证旧版空 Pause；`models_test.rs` 验证二进制 range key；`parity_test.rs` 验证公开契约与 Task 方法；`integration_test.rs` 验证 CRUD、暂停/恢复、删除清理、检查点和 StreamBackupError payload。相关 Go 测试语义由同路径 Go 实现及 Rust 测试中的 Go-equivalent 注释交叉确认。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含规定的 11 个二级标题，并人工复核重要结论均能回指上述符号或文件。

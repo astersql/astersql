@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate。crate 根在 [`pkg/executor/Cargo.toml`](Cargo.toml) 中以 `lib.rs` 声明，[`pkg/executor/lib.rs`](lib.rs) 通过 `pub mod analyze_worker;` 将本模块公开，并仅在测试构建中装配独立测试模块 `analyze_worker_test`。
-
-它描述的是 ANALYZE 管线末端的“统计结果保存 worker”：接收已经计算完成的分区或表统计结果，委托运行时把结果持久化，结束对应分析作业，并释放结果载荷。它直接对照 [`pkg/executor/analyze_worker.go`](analyze_worker.go) 的同名 worker。
-
-需要特别区分“已实现模块”和“已接入生产主链”：仓库内 Rust 引用搜索只发现 `lib.rs` 的模块声明与 [`pkg/executor/analyze_worker_test.rs`](analyze_worker_test.rs) 的测试调用，未发现 Rust 生产代码调用 `newAnalyzeSaveStatsWorker` 或 `analyzeSaveStatsWorker::run`。当前 Rust ANALYZE 生产实现仍由 [`pkg/executor/analyze.rs`](analyze.rs) 的 `AnalyzeExec::handleResultsErrorWithConcurrency` 自行创建保存线程并调用 `analyzeRuntime::save_analyze_result`。因此本文件当前是可测试的移植边界，还不是 Rust ANALYZE 主链的实际保存入口。
+普通保存错误不会进入 drain 模式；后续分区仍获得保存机会，允许出现“部分统计已落盘”的结果，与 Go 实现注释和行为一致。
 
 ## 核心职责
 
@@ -87,18 +83,10 @@ Go 生产调用链是 `pkg/executor/analyze.go::AnalyzeExec.handleResultsErrorWi
 
 ## 与 Go 版本的对应关系
 
-Rust `analyzeSaveStatsWorker` 对应 Go `analyzeSaveStatsWorker`，`newAnalyzeSaveStatsWorker` 对应同名构造函数，`run` 对应 Go 方法 `(*analyzeSaveStatsWorker).run`。两者都遵守：逐项检查 kill、kill 后 drain、普通保存失败仍继续、每个正常结果结束作业并回池、每个 worker 至多上报一次错误，以及 recover/catch 后上报 panic 错误。
-
-关键映射如下：
-
-- Go `<-chan *statistics.AnalyzeResults` 对应 Rust `mpsc::Receiver<analyzeResults>`；Go 指针载荷的销毁方法映射为 Rust 拥有型载荷交给 `destroy_and_put_to_pool`。
-- Go `*sqlkiller.SQLKiller.HandleSignal`、`*handle.Handle.SaveAnalyzeResultToStorage`、`finishJobWithLog` 和日志函数被统一抽象为 Rust `analyzeSaveStatsRuntime`，因此 Rust 文件本身不直接依赖 statistics/handle/sqlkiller crate。
-- Go `util.StatsMetaHistorySourceAnalyze` 对应 Rust `statsMetaHistorySource::Analyze`；Go `analyzeSnapshot` 原样对应 Rust `analyzeSnapshot`。
-- Go `defer recover` 对应 Rust `catch_unwind`；Go `getAnalyzePanicErr` 的职责由 `panic_message` 加运行时 `analyze_panic_error` 分担。
 - Go 的 `errCh chan<- error` 可能由上层容量决定；Rust 使用无界标准库发送端，并通过 `report_once` 固化最多一次上报。
 - Go 在 panic 时直接向 `errCh` 发送；Rust 若错误接收端已关闭会记录 `log_error_channel_closed`，不会二次 panic。
 
-Go 端有真实生产接线和端到端回归：`pkg/executor/analyze_test.go::TestAnalyzeSaveResultErrorDoesNotHang` 验证保存失败不会挂住，`TestAnalyzeKillDuringSaveDoesNotHang` 用 failpoint 验证保存阶段收到 kill 后仍排空且作业记录为中断。Rust 本文件不实现该 failpoint，且当前没有生产接线；这些 Go 测试只能作为移植意图证据，不能当作 Rust 端到端验证结果。
+Rust 本文件不实现该 failpoint，且当前没有生产接线；这些 Go 测试只能作为移植意图证据，不能当作 Rust 端到端验证结果。
 
 ## 扩展指南
 
@@ -109,16 +97,3 @@ Go 端有真实生产接线和端到端回归：`pkg/executor/analyze_test.go::T
 - 若要支持多消费者，不能简单共享本结构；应重新设计接收端所有权或在上层受控加锁，并验证有界通道下的无死锁行为与吞吐影响。
 - 改动 panic 策略时应补充非字符串 panic、错误通道关闭、panic 后当前作业/载荷清理等测试。目前独立 Rust 测试只覆盖字符串 panic 转换，未证明 panic 后继续排空。
 - 保持许可证头不被删除；Rust 生产逻辑真正修改后按仓库规则保留或添加 `// Copyright 2026 AsterSQL.`，并先运行 `cargo fmt --all`。本说明任务不改 Rust 代码，也不运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件可由文件节点读取；`query analyze_worker --json` 枚举出目标文件的错误类型、上下文/作业/结果类型、运行时 trait 及其方法。
-- RustCodeGraph `node --file pkg/executor/analyze_worker.rs --offset 1 --limit 260`：读取目标文件全部 190 行，核对符号、分支、所有权转移、panic 与通道行为。
-- RustCodeGraph `node --file pkg/executor/analyze_worker_test.rs --offset 1 --limit 500`：读取全部 219 行。四个测试分别证明成功事件顺序、保存失败只上报一次且后续仍保存、kill 后以同一错误 drain，以及 panic 转换为 worker 错误。
-- RustCodeGraph 对精确 `callers` 的查询在本地索引上超时；因此调用关系另用精确仓库搜索复核。搜索只发现 `pkg/executor/lib.rs`、`pkg/executor/analyze_worker_test.rs` 对本 Rust 模块的声明/使用，没有发现 Rust 生产调用点。
-- `pkg/executor/Cargo.toml` 与 `pkg/executor/lib.rs`：核对 crate 名称、`lib.rs` 根、`nextgen` feature，以及生产模块/独立测试模块的装配。目标文件没有条件编译项，也不直接使用 Cargo 中的外部或工作区依赖。
-- `pkg/executor/analyze.rs`：核对当前 Rust 生产保存路径 `AnalyzeExec::handleResultsErrorWithConcurrency`，以及上游 `analyzeWorker`/`trySendAnalyzeResult` 的结果生产流程，确认它与本模块尚未接线且职责不完全相同。
-- `pkg/executor/analyze_worker.go` 与 `pkg/executor/analyze.go`：核对 Go 同名类型、构造、`run` 的真实生产调用，以及 drain、一次上报、保存失败继续与 panic 恢复语义。
-- `pkg/executor/analyze_test.go`：核对 `TestAnalyzeSaveResultErrorDoesNotHang` 和 `TestAnalyzeKillDuringSaveDoesNotHang` 的端到端意图。Rust 边界行为由独立的 `pkg/executor/analyze_worker_test.rs` 验证。
-- `pkg/executor` 不存在 `doc.go`；本任务无法从该文件取得额外包契约，模块定位以 Cargo、`lib.rs`、生产调用与测试为准。
-- 本次为纯文档分析，按任务约束未运行 Cargo 或代码测试；交付验证仅包含规定的章节结构检查与人工事实复核。

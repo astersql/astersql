@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`mem_syncer.rs`](mem_syncer.rs) 属于 `astersql-ddl-schemaver` crate；crate 入口 [`lib.rs`](lib.rs) 将该模块的公开项重新导出。它提供 [`Syncer`](syncer.rs) 协议的纯内存实现，模拟真实 `etcdSyncer` 的“节点上报版本、owner 发布版本、等待节点追上、session 失效/重启”接口，主要用于无需 etcd 的测试和本地推演。
-
-当前 Rust 接线需要谨慎区分两层事实：`MemSyncer` 已能作为 `Syncer` trait object 被通用 DDL schema barrier 使用，但仓库中 `NewMemSyncer` 的 Rust 直接调用者只出现在 `mem_syncer_test.rs`、`syncer_test.rs` 等独立测试；未在非测试 Rust 文件中找到选择它作为生产后端的构造调用。对应 Go 实现则由 `pkg/ddl/ddl.go:newDDL` 在 `EtcdCli == nil` 的本地存储/测试路径中选用。
+提供 [`Syncer`](syncer.rs) 协议的纯内存实现，模拟真实 `etcdSyncer` 的“节点上报版本、owner 发布版本、等待节点追上、session 失效/重启”接口，主要用于无需 etcd 的测试和本地推演。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义：直接依赖 `astersql-domai
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`mem_syncer.go`](mem_syncer.go)。两者保持以下核心语义：2 ms 检查周期；MDL 按 job 保存版本、非 MDL 保存单一版本；`Init` 不重置非 MDL 版本；更新错误和 owner 慢检查可注入；全局通知容量为 1 且不阻塞；等待以 `>= latestVer` 为成功条件；成功节点数为 1；session 可关闭和重启；后台循环、serverinfo 注入和 `Close` 为空操作。
+Rust 额外保存 retired sender，显式维持 Go 旧 channel 未关闭的效果。
 
-Rust 为适应所有权和线程安全做了结构性改写：Go 的 `sync.Map` 对应 `Mutex<HashMap<...>>`，原子函数对应 `AtomicI64`，channel 字段拆为受锁保护的 sender/receiver，`DoneSignal` 取代可关闭 channel。Rust 额外保存 retired sender，显式维持 Go 旧 channel 未关闭的效果。Go failpoint 对应 `syncer.rs` 的全局原子开关。
-
-已确认的接线差异是：Go `NewMemSyncer() Syncer` 返回接口，并在 `pkg/ddl/ddl.go:newDDL` 的 nil-etcd 分支直接使用；Rust `NewMemSyncer() -> Arc<MemSyncer>` 返回具体类型，当前非测试 Rust 搜索未发现直接构造调用。因此本文不声称 Rust 的无 etcd DDL 启动路径已经完成同等接线。
+已确认的接线差异是：Go `NewMemSyncer() Syncer` 返回接口，并在 `pkg/ddl/ddl.go:newDDL` 的 nil-etcd 分支直接使用；Rust `NewMemSyncer() -> Arc<MemSyncer>` 返回具体类型，当前非测试 Rust 搜索未发现直接构造调用。
 
 ## 扩展指南
 
@@ -83,12 +79,3 @@ Rust 为适应所有权和线程安全做了结构性改写：Go 的 `sync.Map` 
 - 若改变初始化语义，必须保留或明确更新两项 Go 兼容约束：`selfSchemaVersion` 是否跨 `Init` 保留，以及旧 watch channel 是否保持打开。相关回归分别位于 `syncer_test.rs:mem_syncer_init_preserves_non_mdl_self_schema_version_like_go` 和 `mem_syncer_test.rs:init_keeps_previous_global_version_channel_open_like_go`。
 - 若改变等待策略，应覆盖：已达标、低于目标、context 取消/超时、MDL job 隔离、慢 job 注入，以及 `>=` 边界。降低轮询间隔会增加锁/CPU 压力；改成条件变量或通知机制时须防止错过先于订阅发生的版本更新。
 - 若让 `Close` 或空操作方法承担真实资源清理，必须说明幂等性和并发调用契约，并避免破坏当前测试替身“无外部副作用”的定位。
-
-## 验证依据
-
-- 源码与协议：`pkg/ddl/schemaver/mem_syncer.rs`、`pkg/ddl/schemaver/syncer.rs`（`Context`、`DoneSignal`、`WatchChan`、`SyncSummary`、`Syncer` 及测试开关）、`pkg/ddl/schemaver/lib.rs`。
-- crate 与上游：`pkg/ddl/schemaver/Cargo.toml`、工作区 `Cargo.toml`、`pkg/ddl/Cargo.toml`、`pkg/ddl/schema_version.rs:NormalDdlSchemaBarrier::{wait,recover}`。
-- Go 对照：`pkg/ddl/schemaver/mem_syncer.go`、`pkg/ddl/schemaver/syncer.go`、`pkg/ddl/ddl.go:newDDL`、`pkg/ddl/schema_version.go:waitVersionSynced`、`pkg/ddl/job_worker.go` 的全局版本发布路径。
-- 独立测试：`pkg/ddl/schemaver/mem_syncer_test.rs`；`pkg/ddl/schemaver/syncer_test.rs` 中 canonical session/watch、跨 `Init` 保留非 MDL 版本、MDL job 分流和注入错误用例；Go 的 `pkg/ddl/schemaver/syncer_test.go` 用于核对真实 etcd 同步器的协议预期。
-- RustCodeGraph：`status` 确认索引含 11,467 个文件并覆盖 `pkg/ddl/schemaver/{mem_syncer.rs,mem_syncer.go}`；`query MemSyncer --json` 定位 Rust/Go 类型及构造器。自然语言 `explore` 与部分精确 callers/callees 在当前 CLI 未返回可用结果，调用边因此又以 `rg` 和相邻源码核验；未把缺失图结果当作已验证事实。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工检查无整段源码复制、无 Rust 生产接线臆测。

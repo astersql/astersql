@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/extension/function.rs` 属于 `astersql-extension` crate，是扩展框架与表达式内核之间的自定义 SQL 函数契约层。`pkg/extension/lib.rs` 通过 `pub mod function` 和 `pub use function::*` 导出公开类型；`pkg/extension/Cargo.toml` 表明本 crate 通过路径依赖复用 `astersql-util-chunk`、`astersql-types`、parser 身份类型和 session variable 类型。
-
-该文件不实现 SQL 名称解析、参数 CAST、权限判定或实际表达式求值器。它定义扩展作者可见的 `FunctionContext`、`FunctionDef` 和回调类型，并用 `FUNCTION_HOOKS` 打破 `astersql-extension` 与 `pkg/expression` 之间的依赖环。真实内核实现位于 `pkg/expression/extension.rs`：其 `init` 安装注册/删除钩子，`registerExtensionFunc` 把定义转为表达式函数类，`extensionFuncSig` 在查询执行时调用本文件保存的求值回调。
+真实内核实现位于 `pkg/expression/extension.rs`：其 `init` 安装注册/删除钩子，`registerExtensionFunc` 把定义转为表达式函数类，`extensionFuncSig` 在查询执行时调用本文件保存的求值回调。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ RustCodeGraph 能完整读取目标文件及相邻实现，但对 `InstallExtens
 
 ## 与 Go 版本的对应关系
 
-`pkg/extension/function.go` 是直接语义基准。`FunctionContext` 的五个方法、`FunctionDef` 的七个字段及 `Validate` 的两项检查与错误文案保持一致。Go 的函数值在 Rust 中变为 `Option<Arc<dyn Fn + Send + Sync>>`，指针/切片分别对应借用或 `Arc`/`Vec`，Go 的 `error` 对应 `ExtensionError`。
+Go 的函数值在 Rust 中变为 `Option<Arc<dyn Fn + Send + Sync>>`，指针/切片分别对应借用或 `Arc`/`Vec`，Go 的 `error` 对应 `ExtensionError`。
 
 Go 使用包级可变函数变量 `RegisterExtensionFunc` 和 `RemoveExtensionFunc` 来规避依赖环；Rust 以私有的 `OnceLock<RwLock<Option<FunctionHooks>>>` 封装同一机制，并增加显式安装函数、未安装注册错误以及锁中毒恢复。Go 的 `FunctionDef` 可以用 `nil` 指针表示缺失定义，Rust Manifest 使用 `Vec<Arc<FunctionDef>>`，因此 Rust 表达式注册函数仍保留 `Option<&Arc<FunctionDef>>` 来覆盖 Go 的 nil 错误语义，但本文件的桥接签名本身不接受空定义。
-
-`pkg/extension/function_test.rs::canonical_extension_function_validates_name_and_optional_arity` 覆盖 Rust 本层的空名、合法可选参数、负数和超过参数总数，并核对精确错误文本。Go 的 `function_test.go` 还覆盖会话上下文、字符串/整数求值、可选参数、冲突/重复、动态权限和不被常量折叠；其中大部分行为属于表达式消费层。对应 Rust 的注册原子性和钩子幂等证据在 `pkg/expression/extension_runtime_aster_unit_test.rs`。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Go 使用包级可变函数变量 `RegisterExtensionFunc` 和 `RemoveExtensionFu
 调整参数规则时必须保持“可选参数只能位于尾部”的现有表示，或显式迁移数据模型；特别要在任何 `i32 → usize` 转换和减法之前维持 `Validate` 调用。调整名称规则时要同时评估注册时小写化、删除时精确键行为、内建冲突和错误兼容性。
 
 若修改全局钩子，应保留锁外调用外部闭包的结构，并为未安装、重复安装、并发安装/调用和锁中毒策略补充独立测试。性能上需避免在逐行求值路径复制大对象；兼容性上需关注计划缓存禁用、权限在构建期与执行期双检，以及已构建签名在注册表删除后的 `Arc` 生命周期。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/extension` 列出目标 Rust/Go 文件和独立测试。
-- RustCodeGraph 目标证据：`node --file pkg/extension/function.rs` 完整读取 155 行；`query FunctionDef`、`query InstallExtensionFunctionHooks` 定位定义和相邻消费者；`callees register_extension_function` 确认其调用 `function_hooks`。跨 crate callers 未被图解析，改由相邻已索引源码核验。
-- 注册与运行时证据：读取 `pkg/extension/manifest.rs::{WithCustomFunctions,newManifestWithSetup}`、`pkg/expression/extension.rs::{registerExtensionFunc,newExtensionFuncClass,extensionFuncSig,extensionFnContext,init}` 和 `pkg/extension/lib.rs`。
-- crate 与 Go 对照证据：读取 `pkg/extension/Cargo.toml`、`pkg/extension/function.go` 和 `pkg/extension/function_test.go`。
-- Rust 测试证据：读取 `pkg/extension/function_test.rs::canonical_extension_function_validates_name_and_optional_arity`；读取 `pkg/expression/extension_runtime_aster_unit_test.rs::{extension_registration_matches_go_validation_and_atomicity,extension_hooks_can_be_installed_idempotently}`。
-- 本任务为纯文档分析，按计划未运行 Cargo 或代码测试；验证采用源码/调用关系人工复核与固定十一章节结构检查。

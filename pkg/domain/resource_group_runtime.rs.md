@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[pkg/domain/resource_group_runtime.rs](resource_group_runtime.rs) 是 astersql-domain crate 的资源组运行时状态边界。它由 [pkg/domain/lib.rs](lib.rs) 通过公开模块 resource_group_runtime 暴露，但不拥有 PD token 响应状态，也不实现分页策略；文件只定义 Domain 能依赖的抽象查询接口。
-
-crate 边界由 [pkg/domain/Cargo.toml](Cargo.toml) 确定：包名为 astersql-domain，library 入口为 lib.rs。本文件不引用外部 crate；真实控制器类型留在 astersql-store-driver/tikv-client 一侧，避免 Domain 层绑定具体实现。
+定义公开 trait ResourceGroupRuntimeStateProvider，为 Domain 提供“指定资源组是否具有受限 burst”的运行时信号。
 
 ## 核心职责
 
@@ -81,15 +79,9 @@ Domain 构造时 provider 为 None；控制器就绪后由 session runtime 安�
 
 ## 与 Go 版本的对应关系
 
-Go 没有同路径 resource_group_runtime.go 或对应 interface。直接行为对照位于 pkg/session/session.go::resourceGroupAllowsPagingSizeBytes：
-
-1. 先拒绝 nil Domain 或空资源组名。
-2. 从 Domain::ResourceGroupsController() 获取具体 Go 控制器；若 GetResourceGroupRuntimeState 命中，直接返回 state.HasLimitedBurst。
-3. 仅在无可用运行时状态时，从 InfoSchema 查询资源组并检查调整后的 burst limit。
-
 Rust 保留相同优先级和三态语义，但因 crate 分层不同，将 Go Domain 直接持有 controller 改为“Domain 持有 trait object，session 适配 ResourceGroupRuntimeStates”。Rust 的元数据回退使用 runtime 资源组表，而非 Go InfoSchema；这是当前存储位置差异，不改变接口表达的优先级。
 
-Go 回归 pkg/session/tidb_test.go::TestDistSQLCtxPagingSizeBytesRequiresHardCappedResourceGroup 验证 hard-capped 与 unlimited 元数据分支；Rust 独立测试进一步验证 token 响应覆盖元数据。行为来源 Go 提交为 10292a4f8697f6fe7ae3965f3ebd6656c1ab37ed，Rust 对齐提交为 c2c8c005ec1346b28981b650499378fcbdd18109。
+Go 回归 pkg/session/tidb_test.go::TestDistSQLCtxPagingSizeBytesRequiresHardCappedResourceGroup 验证 hard-capped 与 unlimited 元数据分支；Rust 独立测试进一步验证 token 响应覆盖元数据。
 
 ## 扩展指南
 
@@ -98,14 +90,3 @@ Go 回归 pkg/session/tidb_test.go::TestDistSQLCtxPagingSizeBytesRequiresHardCap
 - 修改名称、大小写或 tombstone 语义时，需要与带 tag 的 astersql/client-rust 上游实现协同：在上游移植、提交和发布新 tag，再让 Cargo manifests 一致引用；不要复制实现或用本地 patch。
 - 测试应留在独立 Rust 测试文件。直接回归位于 pkg/session/runtime/scan_adapter_runtime_test.rs；至少覆盖首个响应前回退、Some(true)、Some(false)、tombstone、provider 卸载和真实 SQL 请求字节数。Go 语义变化时同步对照 pkg/session/session.go 与 pkg/session/tidb_test.go。
 - 此查询位于 statement/DistSQL 上下文构建路径；实现中应避免网络 I/O、阻塞等待或长时间持锁。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含目标文件；文件节点报告它被 pkg/domain/domain.rs 和 pkg/session/runtime/paging.rs 使用。
-- RustCodeGraph 符号：ResourceGroupRuntimeStateProvider 位于第 6 行；has_limited_burst 签名位于第 7 行；方法 trail 指向 pkg/domain/domain.rs::resource_group_has_limited_burst。
-- 已读 Rust 生产路径：pkg/domain/resource_group_runtime.rs、pkg/domain/lib.rs、pkg/domain/domain.rs、pkg/session/runtime/paging.rs、pkg/store/driver/lib.rs。
-- crate/依赖证据：pkg/domain/Cargo.toml 确认 astersql-domain 与 lib.rs 入口；pkg/store/driver/Cargo.toml 和 Domain manifest 一致引用 tikv-client tag v0.4.2-aster.10。
-- 已读 Rust 独立测试：pkg/session/runtime/scan_adapter_runtime_test.rs::paging_runtime_grants_override_real_resource_group_metadata、paging_context_caches_grants_and_budget_until_statement_retry_reset、paging_runtime_grants_are_consumed_by_sql_select_requests。第一项直接覆盖无响应、运行时 true/false、tombstone 和卸载后回退。
-- 已读 Go 对照：pkg/session/session.go::resourceGroupAllowsPagingSizeBytes、pkg/domain/domain.go::ResourceGroupsController、pkg/session/tidb_test.go::TestDistSQLCtxPagingSizeBytesRequiresHardCappedResourceGroup，以及 Go 行为提交 10292a4f8697f6fe7ae3965f3ebd6656c1ab37ed。
-- 实现历史：c2c8c005ec1346b28981b650499378fcbdd18109 同时新增 trait、Domain 接线、session 适配、store-driver 重导出和 Rust 回归，证明本文件是已接线边界。
-- 本任务按计划不运行 Cargo。结构验证应确认文档存在且恰含要求的 11 个二级标题。

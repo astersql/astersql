@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`admin.rs` 是 `astersql-parser` crate 的语义动作分片，位于词法/语法规约与 `parser-ast` AST 类型之间。它不负责识别 token 或驱动 LR 状态机；`pkg/parser/parser_runtime.rs` 在规约时构造 `Rhs` 与 `parser_actions::Context`，再由 `pkg/parser/parser_actions/mod.rs::apply` 按稳定 `RuleId` 分派到本文件的 `owns`/`apply`。本文件覆盖的范围比 SQL 的 `ADMIN` 前缀更广，包含资源组、统计、备份恢复、SET/SHOW/FLUSH、绑定、权限、锁、序列、Plan Replayer、流量回放、Query Watch 等管理类或运维类语法。
-
-crate 边界由 `pkg/parser/Cargo.toml` 确认：当前库名为 `astersql-parser`，AST 来自本地依赖 `parser-ast`，时长解析还使用本地 `parser-duration`；本文件通过 `use super::super::*` 复用解析器内部的 `RuleId`、`yySymType`、辅助类型与函数，因此不是可独立调用的公共 API。
+`identify` 将生成器提供的稳定字符串规则 ID 映射为私有 `AdminRule` 枚举，隔离易变化的 LR 数字规约号。
 
 ## 核心职责
 
@@ -76,16 +74,9 @@ crate 边界由 `pkg/parser/Cargo.toml` 确认：当前库名为 `astersql-parse
 
 ## 与 Go 版本的对应关系
 
-权威 Go 对照是 `pkg/parser/parser.y`，而不是一个同名 Go 文件。`AdminRule::*AltNN` 基本逐一对应 grammar 中同名非终结符的备选，`apply_rule` 则把 Go action 中的类型断言、slice append 和 AST 字段赋值改写为 Rust downcast、`Vec` 追加和结构体构造。
+`AdminRule::*AltNN` 基本逐一对应 grammar 中同名非终结符的备选，`apply_rule` 则把 Go action 中的类型断言、slice append 和 AST 字段赋值改写为 Rust downcast、`Vec` 追加和结构体构造。
 
-关键一致性证据包括：
-
-- `AdminStmtLimitOpt` 的三种 LIMIT 写法保持 offset/count 交换规则；`AdminStmt` 的 show/check/cancel/pause/resume/binding/BDR/alter-job 分支保持相同 AST 字段。
-- `ResourceGroupOptionList`、runaway/background/Query Watch 列表保持 Go 的重复项检查；priority 数值仍是 LOW=1、MEDIUM=8、HIGH=16；`UNLIMITED` watch duration 仍归一化为空字符串。
-- `PlanReplayerStmt` 保持 dump/analyze/slow-query/file/list/load/capture/remove 的字段组合，并保留可选 historical stats 信息。
-- `DropQueryWatchStmt` 仍区分数值 ID、静态资源组名和用户变量表达式；`RefreshStatsStmt` 保留 global/database/table scope、FULL/LITE 与 CLUSTER 标志。
-
-Go `parser_test.go::TestAdminStmt` 提供兼容样例与失败样例；Rust 的 `parser_3_aster_unit_test.rs` 和 `yy_parser_4_aster_unit_test.rs` 验证迁移后的公开 parser 确实产生对应 AST。迁移不是“支持全部 Go 行为”的自动证明：新增 Go grammar action 时，Rust 的稳定 ID 映射、RHS 位置、AST 类型以及独立 Rust 回归测试都必须显式同步。
+迁移不是“支持全部 Go 行为”的自动证明：新增 Go grammar action 时，Rust 的稳定 ID 映射、RHS 位置、AST 类型以及独立 Rust 回归测试都必须显式同步。
 
 ## 扩展指南
 
@@ -100,17 +91,3 @@ Go `parser_test.go::TestAdminStmt` 提供兼容样例与失败样例；Rust 的 
 - 与 Go 兼容相关的语法同步 `pkg/parser/parser_test.go`/`parser.y` 的既有意图；AST restore/visitor 行为应在 `pkg/parser/ast/*_test.rs` 的相应独立测试中覆盖。
 
 主要风险是稳定 RuleId 漏接导致规约语义不完整、RHS 回退量错位导致字段误填或 panic、默认值掩盖必需类型缺失，以及 Rust/Go 在校验和错误行为上漂移。该层只在解析时按产生式执行，通常不构成独立性能热点；但大列表分支会克隆已有向量，扩展时不应引入与输入规模无关的额外扫描。
-
-## 验证依据
-
-- 增量行为证据：冻结 `parser.y` 的 `"DEFAULT" "NDVRATE"` 和 `"RECOMMEND" "INDEX" "RETURN" "RESULT" "FOR"` 动作与 `main.astergram` 对照；`parser_test.rs::recommend_index_return_result_ast_is_read_only` 检查 return action、SQL、选项数和只读分类，`analyze_default_ndvrate` 检查 NDVRate、空 Value 和 Restore。仅审阅，未运行。
-
-- 本次同步固定依据 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异与目标提交 blob；不采用工作区 Rust 源码或后续提交。只读审计与文档校验不表示 Rust 测试已执行。
-
-- 目标源码：`pkg/parser/parser_actions/admin.rs`；确认唯一模块级类型 `AdminRule`，以及 `identify`、`owns`、`apply`、`apply_rule` 四个函数；枚举和稳定映射包含 553 个 action 规则。
-- 主链：`pkg/parser/parser_runtime.rs` 的 reduction 调用与默认 `$1` 移动；`pkg/parser/parser_actions/mod.rs` 的分片分派、`Context` 和 `has_semantic_action`。
-- crate：`pkg/parser/Cargo.toml` 的 `astersql-parser` 库、`parser-ast` 与 `parser-duration` 本地依赖。
-- Rust 测试：`pkg/parser/parser_actions/remaining_aster_unit_test.rs`（唯一 owner、admin_count=551、禁止数字回退），`pkg/parser/parser_runtime_aster_unit_test.rs`（稳定 RuleId 分派），`pkg/parser/parser_3_aster_unit_test.rs`（ADMIN 具体字段及资源组、Query Watch、Refresh Stats、Plan Replayer、Traffic 等完整性），`pkg/parser/yy_parser_4_aster_unit_test.rs`（公开 parser 的 TiDB 管理语法接受范围与非法输入）。
-- Go 对照：`pkg/parser/parser.y` 的 `ResourceGroupOptionList`、`AdminStmtLimitOpt`/`AdminStmt`、`PlanReplayerStmt`、`AddQueryWatchStmt`/`DropQueryWatchStmt`；`pkg/parser/parser_test.go::TestAdminStmt` 及资源组、Plan Replayer 用例。
-- RustCodeGraph：本次 `status` 显示 11,527 个文件且包含 Rust；该索引对应工作区。本次同步采用冻结 blob 作为事实依据，没有执行旧说明中记录的图节点/调用边查询。
-- 本任务为纯文档分析，依照计划未运行 Cargo；交付前使用任务指定命令验证目标存在且恰有 11 个固定二级章节，并人工复查仅更新任务拥有的说明文件（任务文件按完成协议删除）。

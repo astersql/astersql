@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明的真实源文件是 [`chunk_in_disk.rs`](chunk_in_disk.rs)。它属于 Cargo crate `astersql-util-chunk`（`pkg/util/chunk/Cargo.toml`），实现以 `Chunk` 为单位的临时磁盘 spill 容器。它不是独立 Rust 模块文件：`pkg/util/chunk/internal/group1/lib.rs` 的 `chunk_in_disk_impl` 通过 `include!("../../chunk_in_disk.rs")` 注入实现，再由 `pub use chunk_in_disk_impl::*` 以及 crate 根的 `pub use group_1::*` 对外导出。
-
-该容器位于列式 `Chunk` 与临时文件 I/O 之间：上游提交完整 `Chunk`，本文件负责序列化、记录每块起始偏移和磁盘用量，之后按块索引恢复。当前检索到的活跃生产接线是 `pkg/executor/aggregate/agg_hash_partial_worker.rs` 中的 `PartialResultSpill`：它按分区创建 `DataInDiskByChunks`，通过 `Add` 落盘聚合中间结果，再用 `GetChunk` 恢复。`pkg/executor/aggregate/agg_spill.rs`、若干 join 文件中的同名内容目前是注释化的 Go 迁移草稿，不应视为已接线调用者。
+只保存临时、进程内可恢复的数据，不定义跨进程、跨版本或跨机器的持久化格式。
 
 ## 核心职责
 
@@ -109,12 +107,3 @@
 - 若优化内存，重点观察 `buf` 峰值保留、`deserializeSel` 分配和 `fieldTypes.clone()`；性能调整不能改变 selection、null bitmap、变长列 offsets 和辅助 Chunk 元数据的往返结果。
 - 若调整底层 I/O，必须联合检查 `pkg/util/chunk/chunk_util.rs::diskFileReaderWriter::{write,getSectionReader}` 与本文件对 `offWrite` 的维护，先解决或明确双重推进的预期，再建立回归测试。
 - 新增生产调用者时，应维持“字段类型匹配、索引有效、单实例串行访问、所有退出路径最终 Close”的契约，并把容器 tracker 挂接/汇总到所属执行器的资源跟踪体系。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/util/chunk` 确认目标 Rust/Go/测试文件均已索引；`node --file pkg/util/chunk/chunk_in_disk.rs --offset 1 --limit 420` 读取了完整 408 行和 31 个符号，并给出 13 个文件级使用者。`query DataInDiskByChunks`、`query NewDataInDiskByChunks` 同时命中 Go/Rust 定义；精确 `callers/callees` 因同名符号歧义未产生可用边，因此用定向源码检索消歧，未把模糊图结果当作确定调用边。
-- 源与装配：`pkg/util/chunk/chunk_in_disk.rs`；`pkg/util/chunk/internal/group1/lib.rs` 的 `chunk_in_disk_impl`；`pkg/util/chunk/lib.rs` 的 group re-export 和独立测试挂接。
-- crate 与下游：`pkg/util/chunk/Cargo.toml`；`pkg/util/chunk/chunk_util.rs` 的 `diskFileReaderWriter`；`pkg/executor/aggregate/agg_hash_partial_worker.rs` 的 `PartialResultSpill::{new,flush,restore_partition}`。
-- Go 对照：`pkg/util/chunk/chunk_in_disk.go`；Go 测试 `pkg/util/chunk/chunk_in_disk_test.go`。
-- Rust 测试：`pkg/util/chunk/chunk_in_disk_test.rs` 覆盖 100 个、每个 1000 行 Chunk 的两种恢复路径，含字符串、整数、null、JSON、Chunk 元数据、selection、计量与关闭；还覆盖空 Chunk 拒绝和 failpoint 回调。`pkg/util/chunk/alloc_1_aster_unit_test.rs` 另有直接构造、字节计量、恢复与关闭检查。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收只执行固定十一章节的结构命令，并人工复核上述符号、调用边和边界均可回到列出的源码证据。

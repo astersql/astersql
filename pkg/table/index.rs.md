@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/table/index.rs` 属于 `astersql-table` crate，由 `pkg/table/lib.rs` 以 `pub mod index` 挂载并通过 `pub use index::*` 重导出。它对应 Go 的 `pkg/table/index.go`，位于表层 DML 与 KV 索引编码之间：定义“索引实现必须提供哪些操作”，并提供把一行的普通或多值索引数据逐项转换成 key/value 的有状态生成器。
-
-crate 边界由 `pkg/table/Cargo.toml` 确认：本文件直接依赖 `astersql-kv` 的 `Handle`/`Transaction`、`astersql-meta-model` 的 `IndexInfo`/`TableInfo`、`astersql-types` 的 `Datum`、`astersql-errctx`、`astersql-util-chunk`、`astersql-table-tblctx` 和 `chrono-tz`。它不实现具体字节编码或 KV 写入策略，而是将这些行为留给 `Index` trait 实现者。
+对应 Go 的 `pkg/table/index.go`，位于表层 DML 与 KV 索引编码之间：定义“索引实现必须提供哪些操作”，并提供把一行的普通或多值索引数据逐项转换成 key/value 的有状态生成器。
 
 ## 核心职责
 
@@ -68,9 +66,9 @@ RustCodeGraph 将 `pkg/table/index.rs` 标记为被 14 个索引文件使用，�
 
 ## 与 Go 版本的对应关系
 
-Rust 基本保留了 `pkg/table/index.go` 的名称和操作顺序：`IndexIterator`、`CreateIdxOpt`、`CreateIdxOption`、`Index`、`IndexKVGenerator`、两个构造函数以及 `Next`/`Valid` 都能一一对应。Go `NewCreateIdxOpt(opts ...CreateIdxOption) *CreateIdxOpt` 在 Rust 中是选项 trait-object 切片并按值返回；Go 的 interface/nil 语义则用 trait object、`Box<dyn Handle>` 和 `Option<Box<dyn Handle>>` 表达。Go `*time.Location` 在 Rust 中收窄为可拷贝的 `chrono_tz::Tz`。
+Go `NewCreateIdxOpt(opts ...CreateIdxOption) *CreateIdxOpt` 在 Rust 中是选项 trait-object 切片并按值返回；Go 的 interface/nil 语义则用 trait object、`Box<dyn Handle>` 和 `Option<Box<dyn Handle>>` 表达。
 
-`IndexKVGenerator::Next` 与 Go 顺序一致：先取当前值、再生成 key、再生成 value，只在都成功后增加游标；`Valid` 对普通索引仍以游标是否为 0 判断。`FromBackfill` 的语义也保留了 Go 注释的关键约束：backfill-merge 时 DML 产生的 KV 可被重定向到临时索引，DDL backfill worker 自身产生的 KV 不应被重定向。
+`IndexKVGenerator::Next` 与 Go 顺序一致：先取当前值、再生成 key、再生成 value，只在都成功后增加游标；`Valid` 对普通索引仍以游标是否为 0 判断。
 
 差异和迁移边界是：Go 的完整生产具体实现位于 `pkg/table/tables/index.go`，其 `GenIndexKVIter` 可真正返回 `table.IndexKVGenerator`；Rust `pkg/table/tables/index.rs` 当前并未实现这里的 `Index` trait，而且使用了该模块自己的精简元数据与 Datum 类型。因此本文件的契约、选项组装和生成器逻辑有独立测试，但与生产具体索引实现的端到端接线尚不能从当前 Rust 源码证明。
 
@@ -82,13 +80,3 @@ Rust 基本保留了 `pkg/table/index.go` 的名称和操作顺序：`IndexItera
 - 修改 `Next` 时必须保留 key-before-value、`distinct` 传递、`untouched = false`、输入缓冲复用与“全部成功后才前进”的不变量。如果计划将耗尽后的 panic 改为错误，这是与 Go 当前行为的显式 API 变更，需单独做兼容性决策。
 - 索引契约与生成器回归应优先扩展独立测试 `pkg/table/index_migration_aster_unit_test.rs`；选项在 Add/Update/Create 间的传递同时更新 `pkg/table/table_test.rs` 和 `pkg/table/table_migration_aster_unit_test.rs`，并与 Go `pkg/table/table_test.go` 对照。真实实现接线后，还需在独立的 `pkg/table/tables/index_test.rs` 中覆盖编码、唯一/含 NULL、多值和部分索引边界；不要把测试内嵌到生产 `.rs` 文件。
 - 性能审查重点是 Datum 集合的所有权转移、handle 动态分派和 key/value 缓冲复用；兼容性审查重点是重复键检查时机、backfill 重定向、时区编码、部分索引前置判断与错误后重试语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个符号、1848419 条边；`files --filter pkg/table` 确认目标、Go 对照和独立测试都在索引中。
-- RustCodeGraph 源码查询：`node --file pkg/table/index.rs --offset 1 --limit 260` 与 `--offset 251 --limit 260` 覆盖全部 468 行；`query` 确认 Rust/Go 的 `NewCreateIdxOpt`、`NewMultiValueIndexKVGenerator`、`IndexKVGenerator` 和 `Index` 候选。`callers`/`callees` 对限定名称未返回边，因此又以精确符号搜索补证直接接线，未把缺失的图边当成“无调用者”。
-- 读取的生产路径：`pkg/table/index.rs`、`pkg/table/lib.rs`、`pkg/table/Cargo.toml`、`pkg/table/table.rs`、`pkg/table/tables/index.rs`。其中 Cargo 声明和 `lib.rs` 证明 crate/重导出边界，`table.rs` 证明选项与上下文接线，`tables/index.rs` 证明当前具体 Rust 索引类型尚未实现本 trait。
-- Go 对照：`pkg/table/index.go` 的 204 行全文验证公共契约、选项标志、生成次序和游标语义；`pkg/table/table_test.go:50-83` 验证默认值与 `WithCtx`/`WithIgnoreAssertion`/`FromBackfill` 组合。Go 生产 `pkg/table/tables/index.go::GenIndexKVIter` 仅作为完整实现对照，未将其调用链误记为 Rust 已接线。
-- Rust 独立测试：`pkg/table/index_migration_aster_unit_test.rs` 验证选项默认/累积、`dyn Index` 对象安全、普通生成器一次性与缓冲前缀保留、多值顺序遍历，以及 key/value 失败时游标不前进。`pkg/table/table_test.rs:120-150` 与 `pkg/table/table_migration_aster_unit_test.rs:90-147` 验证公共变更选项向 `CreateIdxOpt` 传递。
-- 精确 `rg` 补证：搜索 `impl Index for`、`GenIndexKVIter(`、`NewCreateIdxOpt`、两个 generator 构造函数与选项符号，用于弥补 RustCodeGraph 调用边输出为空的部分，并确认相关 Rust 测试位于独立文件。
-- 本任务仅新增说明文档，按计划不运行 Cargo。文档结构用任务指定的 `test -f` + `rg -c` 命令验证；代码行为结论均来自上述源文件、符号查询和测试断言，未以理想架构代替当前迁移状态。

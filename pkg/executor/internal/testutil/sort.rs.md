@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-internal-testutil` crate，是执行器内部测试工具中的 Sort 用例参数模块。crate 入口 [`lib.rs`](lib.rs) 通过 `pub mod sort` 装配本模块，并用 `pub use sort::*` 将其公开符号再导出。它不是 SQL 请求执行链中的 Sort 算子实现；真正的 Go Sort 执行器位于 `pkg/executor/sortexec`，Rust Sort 的行为测试也位于该目录。本文件只提供测试场景的 schema、数据分布、排序列和内存限制配置。
-
-[`Cargo.toml`](Cargo.toml) 将该目录定义为独立 library crate，crate 根为 `lib.rs`，移植元数据指向 Go 包 `pkg/executor/internal/testutil`。目标文件自身只引用同 crate 的 `testutil` 模块和标准库格式化接口，不直接调用 `astersql-executor-internal-exec`；后者是该 crate 声明的常规依赖，由通用测试工具使用。
+用 `SortCase::Columns` 固定提供两列 `LongLong` schema，并用 `Display::fmt` 生成与 Go `String()` 一致的用例名称，便于测试或 benchmark 标识场景。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@ Go 对照调用者包括 `pkg/executor/sortexec/benchmark_test.go` 和多项 `so
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`sort.go`](sort.go)。字段、两列 LongLong schema、300,000 默认行、排序下标 `[0, 1]`、NDV `[0, 0]`、Chunk 大小重置和字符串格式均保持 Go 意图。Rust 使用 `Vec<usize>`/`usize` 表示索引和行数、`Vec<i32>` 表示 NDV，并按值返回 `SortCase`；Go 使用 `[]int`/`int` 且返回 `*SortCase`。
+Rust 使用 `Vec<usize>`/`usize` 表示索引和行数、`Vec<i32>` 表示 NDV，并按值返回 `SortCase`；Go 使用 `[]int`/`int` 且返回 `*SortCase`。
 
 Go 默认构造器通过 `memory.NewTracker(-1, -1)` 新建语句 tracker；Rust 用 `MemoryTracker { limit: -1, attached: false }` 表达同一测试所需状态。Go 受限构造器分别新建会话与语句 tracker，并执行 `StmtCtx.MemTracker.AttachTo(SessionVars.MemTracker)`；Rust 将两者 limit 设为相同值，并用 `statement_memory_tracker.attached = true` 模拟挂接结果，没有实现真实 tracker 层级、消费传播或 OOM action。
 
-Go 的 `Columns` 返回 `[]*expression.Column`，字段类型来自 MySQL `TypeLonglong`；Rust 返回本地 `Vec<ColumnDef>`，`FieldKind::LongLong` 是测试替身。因而这里验证的是参数与类型语义对齐，不是生产 expression/sessionctx/memory 类型的完整替代。
+Go 的 `Columns` 返回 `[]*expression.Column`，字段类型来自 MySQL `TypeLonglong`；Rust 返回本地 `Vec<ColumnDef>`，`FieldKind::LongLong` 是测试替身。
 
 ## 扩展指南
 
@@ -79,11 +77,3 @@ Go 的 `Columns` 返回 `[]*expression.Column`，字段类型来自 MySQL `TypeL
 任何行为修改都应同步 Go `sort.go` 的对应语义，或在文档和测试中明确记录有意差异。Rust 回归应继续放在独立的 [`testutil_test.rs`](testutil_test.rs)，不要嵌入 `sort.rs`；至少覆盖默认 Chunk 大小、默认 tracker、受限 tracker 两级 limit/挂接状态、schema，以及 Display 格式。若要让 Rust Sort benchmark/spill 测试复用此类型，还需显式接线目标 crate 依赖和类型转换，不能仅假定同名局部 `SortCase` 已经兼容。
 
 兼容性风险主要是 Display 文本影响 benchmark 名称、字段类型/排序下标影响比较语义、tracker 模型差异掩盖真实 spill 生命周期。性能风险不在构造器本身，而在默认 `Rows = 300_000` 及 NDV/排序列组合造成的测试工作量；派生用例应避免无意扩大矩阵。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件且目标目录已收录；`files --filter pkg/executor/internal/testutil` 列出 `sort.rs`、Go 对照、crate 入口和独立测试；`node --file pkg/executor/internal/testutil/sort.rs` 核对 99 行源码及 6 个符号；`query` 核对 `SortCase`、`DefaultSortTestCase`、`SortTestCaseWithMemoryLimit` 与 `resetChunkSizes` 定义；`callers/callees` 查询未给构造器解析出 callees，文件级关系指向 `testutil_test.rs`。
-- 已读 Rust 文件：`pkg/executor/internal/testutil/sort.rs`、`lib.rs`、`testutil.rs` 的 `ColumnDef`/`MemoryTracker`/`SessionContext`/`resetChunkSizes` 区段、`testutil_test.rs`，以及 `pkg/executor/sortexec/benchmark_test.rs` 的局部用例定义和执行流程。
-- 已读配置与 Go 对照：`pkg/executor/internal/testutil/Cargo.toml`、`sort.go`、`pkg/executor/sortexec/benchmark_test.go`、`sort_spill_test.go` 的构造辅助流程。
-- 仓库搜索：`rg` 确认 Rust 构造器只由 `testutil_test.rs` 直接调用；Go 构造器由 Sort benchmark 调用，Go `SortCase` 字段还被 Sort/Parallel Sort/TopN spill 测试消费。
-- 测试证据：`sort_case_string_matches_go_format` 锁定 Display 输出；`operator_cases_match_go_defaults` 锁定受限场景中两个 limit 和语句 tracker 的挂接标记。按任务要求这是纯文档分析，未运行 Cargo。

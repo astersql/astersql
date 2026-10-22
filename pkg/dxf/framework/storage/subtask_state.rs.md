@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-storage` crate，源码不是独立模块声明，而是由 `pkg/dxf/framework/storage/lib.rs` 的 `include!("subtask_state.rs")` 直接挂入 crate 根作用域。因此，文件中的 `impl TaskManager` 可直接使用 crate 根已经定义或引入的 `Context`、`Error`、`proto`、`sqlexec`、`injectfailpoint`、`TaskIDToKey`、`serializeErr`、`serializeErrOption` 与 `ErrSubtaskNotFound`。
-
-它位于 DXF 分布式任务执行链的持久化边界：上层 `pkg/dxf/framework/taskexecutor/task_executor.rs` 与 `manager.rs` 驱动子任务执行、取消和暂停，`pkg/dxf/framework/scheduler/storage_adapter.rs` 驱动恢复；本文件把这些动作转换成对 `mysql.tidb_background_subtask` 的带条件 `UPDATE`。文件不定义新的结构体、枚举、trait、常量或条件编译项，只为 `TaskManager` 增加八个公开方法。
-
-`pkg/dxf/framework/storage/Cargo.toml` 将库入口设为 `lib.rs`，关闭自动测试发现（`autotests = false`）和 doctest，并声明 `nextgen` feature；本文件自身没有 feature 分支。crate 直接依赖 `astersql-config`、`astersql-config-kerneltype`、`parking_lot`、`proto-crate`、`schstatus-crate`、`serde` 和 `serde_json`，其中本文件显式使用的 DXF 状态类型由 crate 根的 `proto` 兼容层提供。
+`StartSubtask` 仅允许持有匹配 `id + exec_id` 的执行节点把记录标为 `running`，并用受影响行数检测所有权已变化或记录不存在。
 
 ## 核心职责
 
@@ -88,9 +84,9 @@ RustCodeGraph 能解析八个方法到 `ExecuteSQLWithNewSession` 或 `WithNewTx
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/dxf/framework/storage/subtask_state.go`。八个 Rust 方法保留了 Go 版本的 SQL 条件、时间字段、失败点位置、事务选择与快速返回语义：尤其是 `StartSubtask` 的 `AffectedRows == 0 -> ErrSubtaskNotFound`、`FailSubtask` 的空错误短路和 `limit 1`、故障恢复的空切片短路及逐条事务更新。
+八个 Rust 方法保留了 Go 版本的 SQL 条件、时间字段、失败点位置、事务选择与快速返回语义：尤其是 `StartSubtask` 的 `AffectedRows == 0 -> ErrSubtaskNotFound`、`FailSubtask` 的空错误短路和 `limit 1`、故障恢复的空切片短路及逐条事务更新。
 
-主要语言映射是：Go `error` 对应 Rust `Result<(), Error>`，可空 Go 错误对应 `Option<Error>`，`[]byte` 对应 `Vec<u8>`，`[]*proto.SubtaskBase` 对应拥有所有权的 `Vec<proto::SubtaskBase>`。Go 的可变参数 SQL 参数在 Rust 中显式组成 `Vec<Value>`；Go `defer` 式 Session/事务清理由 `task_table.rs` 的封装实现。
+Go 的可变参数 SQL 参数在 Rust 中显式组成 `Vec<Value>`；Go `defer` 式 Session/事务清理由 `task_table.rs` 的封装实现。
 
 当前可观察差异不改变核心状态语义：Rust 的 `UpdateSubtaskStateAndError` 使用 `serializeErrOption` 明确处理 `None`，而 Go 调用 `serializeErr(nil)`；Rust 的 `FailSubtask` 接收拥有所有权的 `Option<Error>`。调用方 trait `pkg/dxf/framework/taskexecutor/interface.rs` 使用引用参数，实际适配层需完成引用到本文件拥有值参数的转换，扩展时应同时检查接口和存储实现，避免只改单侧签名。
 
@@ -101,14 +97,3 @@ RustCodeGraph 能解析八个方法到 `ExecuteSQLWithNewSession` 或 `WithNewTx
 若新增批量动作，需要明确是单 SQL 集合更新还是 `WithNewTxn` 内逐条 CAS，并记录原子性、失败回滚和大事务风险。错误字段变更应复用 `serializeErr`/`serializeErrOption`，恢复类操作要明确是否清理旧错误；时间字段变更需分别说明 `start_time`、`state_update_time`、`end_time` 的含义，避免把暂停/恢复误当作终态。
 
 测试不要内嵌到生产源文件。优先扩展同目录独立 Rust 测试：SQL 形状与 `AffectedRows` 可放在 `converter_1_aster_unit_test.rs`，事务、批量回退和状态入口可放在 `table_test.rs`；上层重试与分支行为放在 `pkg/dxf/framework/taskexecutor/*_test.rs`。还应同步 Go 对照测试 `pkg/dxf/framework/storage/table_test.go`，确保移植语义没有分叉。
-
-## 验证依据
-
-- 生产源码：`pkg/dxf/framework/storage/subtask_state.rs`；确认唯一顶层项为 `impl TaskManager`，内部包含八个公开方法，无条件编译项。
-- crate 与装配：`pkg/dxf/framework/storage/Cargo.toml`、`pkg/dxf/framework/storage/lib.rs`；确认 crate 名、入口、feature、依赖以及 `include!("subtask_state.rs")`。
-- 事务与 Session：`pkg/dxf/framework/storage/task_table.rs` 中 `WithNewSession`、`WithNewTxn`、`ExecuteSQLWithNewSession` 和 `ErrSubtaskNotFound`。
-- RustCodeGraph：`files --filter pkg/dxf/framework/storage/subtask_state.rs` 返回该文件及 10 个索引符号；`query SubtaskState`/`query subtask_state` 定位 Rust/Go 状态与文件；对八个 `subtask_state.rs::<方法>` 执行 `node`，确认源码与到 `WithNewTxn`/`ExecuteSQLWithNewSession` 的调用边。callers 查询未解析出结果，故调用方另以精确引用搜索核验。
-- Rust 调用方：`pkg/dxf/framework/taskexecutor/task_executor.rs`、`pkg/dxf/framework/taskexecutor/manager.rs`、`pkg/dxf/framework/scheduler/storage_adapter.rs`、`pkg/dxf/importinto/scheduler_testkit_test.rs`。
-- Rust 独立测试：`pkg/dxf/framework/storage/converter_1_aster_unit_test.rs::start_subtask_checks_affected_rows_like_go` 验证零/一受影响行；同文件 `history_validation_nodes_and_state_sql_match_go` 验证暂停 SQL；`pkg/dxf/framework/storage/table_test.rs::TestRunningSubtasksBack2Pending` 验证空输入、逐条参数和状态条件。`table_test.rs` 还调用失败、取消、暂停和恢复入口。
-- Go 对照与测试：`pkg/dxf/framework/storage/subtask_state.go`；`pkg/dxf/framework/storage/table_test.go` 的 `TestRunningSubtasksBack2Pending`、`TestSubtasksState` 及暂停/恢复、上下文取消、陈旧 `exec_id` 等用例，覆盖状态、时间、错误和条件更新边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文档存在且恰含 11 个固定二级章节，并人工复核所有“已支持”陈述均有上述源码、调用边或测试依据。

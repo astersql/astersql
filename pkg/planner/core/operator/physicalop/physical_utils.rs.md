@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`，由同目录 `lib.rs` 以 `mod physical_utils` 纳入并通过 `pub use physical_utils::*` 对外重导出。它不是单一算子的实现，而是物理计划层的横向辅助模块：围绕 `base::PhysicalPlan` 提供计划树遍历、克隆、存储引擎判定、统计信息定位、动态分区访问描述、唯一索引键编码、虚拟列展开和子节点期望行数估算。
-
-该 crate 的 `Cargo.toml` 将 `base`、`expression`、`model`、`property`、`types`、`kv`、`vardef` 等声明为直接依赖，正好覆盖本文件使用的计划接口、表达式、元数据、物理属性、Datum、存储类型与优化器变量。全仓调用搜索显示，它位于规划后的多个消费点：`pkg/planner/optimize.rs` 用其检查混合 TiKV/TiFlash 计划，`pkg/planner/core/plan_cost_ver1.rs` 与 `plan_cost_ver2.rs` 用其查找表统计，`pkg/session/runtime/relational_scan.rs` 用其把下推树线性化后构造扫描请求。
+检查物理计划树使用的存储引擎，以及索引连接内侧是否是单次扫描，从而为优化器的跨引擎安全检查提供事实（`StorageEngineUsage`、`HasSingleScanIndexJoin`）。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@
 
 ## 与 Go 版本的对应关系
 
-同目录 `physical_utils.go` 是直接语义基线。计划克隆、两种 flatten、首孩子统计查找、虚拟列下标解析、Plan Cache 克隆、常量二维克隆、虚拟列展开和 `CalcChildExpectedCnt` 均保留了 Go 的主要流程。独立的 `physical_utils_test.rs` 也用与 `physical_utils_test.go` 相同的单链和分支树形状验证 flatten 顺序；Rust 用已接入 `PhysicalPlan` 的 `PhysicalIndexLookUpReader` 替代 Go fixture 的 `PhysicalLocalIndexLookUp`，测试关注点仍是二元节点遍历。
+独立的 `physical_utils_test.rs` 也用与 `physical_utils_test.go` 相同的单链和分支树形状验证 flatten 顺序；Rust 用已接入 `PhysicalPlan` 的 `PhysicalIndexLookUpReader` 替代 Go fixture 的 `PhysicalLocalIndexLookUp`，测试关注点仍是二元节点遍历。
 
 差异需要明确：
 
@@ -104,11 +102,3 @@
 接通动态分区或唯一索引编码前，应先提供真实的 resolver/encoder 适配实现，并用独立测试覆盖全分区、空结果、剪枝失败、非法下标、字符串/枚举/溢出以及与 Go `tablecodec` 的字节级一致性。当前 trait 是边界，不应把缺失的生产实现误认为已完成接线。
 
 扩展虚拟列逻辑时需保持 `schema.Columns` 和返回 `ColumnInfo` 一一对应，特别验证只有 Extra 列、普通列后带多个 Extra 列、重复依赖和元数据缺失。调整期望行数公式时，应同步 `base_physical_plan.rs` 的 Apply/Join 调用语义，并覆盖无排序、零/负统计、ratio 为零及父期望不收紧等边界。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/planner/core/operator/physicalop/physical_utils.rs`（449 行）；模块入口：同目录 `lib.rs` 的 `mod physical_utils`、`pub use physical_utils::*`；crate 边界：同目录 `Cargo.toml`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点与 1,848,419 条边；`files --filter` 确认目标文件已索引且含 38 个符号；`query` 精确定位了 `StorageEngineUsage`、`HasSingleScanIndexJoin`、`ClonePhysicalPlan`、两种 flatten 的 Rust/Go 定义。`callers`/`callees` 在本次命令时限内未返回，因此调用点另以全仓 `rg` 补证，未把图查询超时解释为“无调用”。
-- 生产调用证据：`pkg/planner/optimize.rs`、`pkg/session/runtime/relational_scan.rs`、`pkg/planner/core/plan_cost_ver1.rs`、`plan_cost_ver2.rs`、`physical_batch_point_get.rs`、`physical_indexmerge_reader.rs`、`base_physical_plan.rs`。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_utils.go`、`storage_engine_usage.go`、`single_scan_index_join.go`；独立测试：`physical_utils_test.rs` 与 `physical_utils_test.go`。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验收以目标文件存在且固定的十一个二级标题各出现一次为准；事实复核同时区分了已接入调用、生成器字符串、注释化迁移代码和未发现调用的 API。

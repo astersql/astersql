@@ -4,15 +4,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-planner-extstore` crate 的生产实现，由同目录 [`lib.rs`](./lib.rs) 以 `root_feature_extstore` 私有模块载入后整体重导出。crate 的边界和依赖声明在 [`Cargo.toml`](./Cargo.toml)：默认无 feature，`nextgen` feature 会传递给 `astersql-config-kerneltype/nextgen`；直接依赖包括配置、内核类型、对象存储、会话变量，以及 `anyhow`、`chrono`、`path-clean` 和 `url`。
-
-它位于 SQL 规划相关目录，但职责不是制定查询计划，而是为 Plan Replayer、诊断 extract 等上层功能提供统一的 `StorageRef`。生产调用证据包括：
-
-- `pkg/session/runtime/dispatch.rs` 的 Plan Replayer 保存路径获取全局存储并调用 `WriteFile`；
-- `pkg/server/http_status.rs` 的 Plan Replayer 下载路径通过全局存储执行 `FileExists` 和 `ReadFile`；
-- `pkg/server/extract_runtime.rs` 使用全局存储写入 extract 归档，并通过 `Open` 返回流式读取器。
-
-`pkg/domain/plan_replayer.rs` 与 `pkg/domain/extract.rs` 中还能看到 Go 迁移留下的注释代码，但它们不是当前可执行的 Rust 调用边。
+`NewExtStorage` 把原始 URI 解析成 `objstore` backend，再创建真正的对象存储实现；本文件只负责编排，不实现对象读写协议。
 
 ## 核心职责
 
@@ -108,13 +100,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`extstore.go`](./extstore.go)，Rust 独立测试与 [`extstore_test.go`](./extstore_test.go) 保持相同的主要意图。
-
 - Go 的 `storeapi.Storage + sync.Mutex` 对应 Rust 的 `StorageRef + Mutex<Option<_>>`；Rust 用 `Arc::clone` 暴露共享实例。
-- Go 的 `context.Context`、`objstore.ParseRawURL`、`ParseBackendFromURL`、`objstore.New` 分别对应 Rust 的 `Context` 和同名移植 API。
 - Go 从 `keyspace.GetKeyspaceNameBySettings()` 取命名空间；Rust 通过 `config::get_global_keyspace_name()` 获取已移植配置值。
 - Go 的可选 `afero.Fs`/`testLocalPathFS` 对应 Rust 的窄接口 `ProbeFileSystem`。Rust 没有保留 `getLocalPathDirName(vfs ...afero.Fs)` 的可变参数形式，而是统一从受 mutex 保护的测试钩子选择替身。
-- Go 使用 `filepath.Abs` 和 `filepath.Join`。Rust 以 `current_dir + path_clean` 保留“不要求路径真实存在”的词法绝对化语义，并专门过滤 namespace 的根组件以保持既有 URL path；`migration_aster_unit_test.rs` 覆盖了相对路径和以 `/` 开头的 namespace。
 - Go 在测试构建中用 `intest.Assert` 约束 close/remove 成功；Rust 当前对这两类失败记录 warning，但仍以写入结果判定可写。这是可观察的错误处理差异，不能在文档中声称完全等价。
 - Go 和 Rust 都在 classic 内核或空 URI 时选本地路径；`migration_aster_unit_test.rs` 进一步验证 nextgen 配置云 URI 时不会执行本地探测。
 
@@ -126,13 +114,3 @@
 - 收紧 namespace：在 `NewExtStorage` 解析完成、backend 构造之前验证组件，特别关注 `..`、平台前缀和绝对路径。不能通过删除 Go 已有语义来简化实现。
 - 修改全局或测试钩子时，要保持所有共享状态受锁保护，并继续把状态型测试放在同目录独立测试文件中；不要把测试内嵌回 `extstore.rs`。
 - 应同步的直接测试是 `pkg/planner/extstore/extstore_test.rs` 和 `pkg/planner/extstore/migration_aster_unit_test.rs`，并根据调用行为检查 session/server 的 Plan Replayer 与 extract 测试。兼容风险主要是 URI/path 变化，正确性风险主要是缓存失效与目录逃逸，性能风险主要是持锁初始化和远端 backend 构造延迟。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/extstore` 确认本目录的 Rust、Go 和测试文件均已索引。
-- RustCodeGraph `node --file pkg/planner/extstore/extstore.rs --offset 1 --limit 500`：读取目标文件 281 行全貌，并确认图索引报告该文件被 26 个文件使用。
-- RustCodeGraph `query`：分别定位 Rust/Go 的 `GetGlobalExtStorage`、`NewExtStorage`、`getLocalPathDirName`、`canWriteToFileInternal` 及对应测试符号。
-- RustCodeGraph `callers/callees` 的精确查询没有输出可用调用边；因此没有把缺失结果推断为“无调用者”，而是用已索引文件节点与定向 `rg` 核对当前可执行上游，并用 `node --file` 阅读 `pkg/session/runtime/dispatch.rs`、`pkg/server/http_status.rs`、`pkg/server/extract_runtime.rs` 的调用现场。
-- 已读直接文件：`pkg/planner/extstore/Cargo.toml`、`lib.rs`、`extstore.go`、`extstore_test.rs`、`extstore_test.go`、`migration_aster_unit_test.rs`；另以 Cargo manifest 检索核对直接依赖 crate。
-- 测试证据：`extstore_test.rs` 覆盖本地 backend CRUD/流式 IO/rename/批量删除以及日志目录探测与临时目录回退；`migration_aster_unit_test.rs` 覆盖绝对形态 namespace、未落盘相对路径、classic/nextgen 选路、探测操作序列和 `Arc` 缓存身份。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的结构命令确认目标文件存在且恰有 11 个固定二级标题，并人工复核文档未把注释代码写成当前调用关系。

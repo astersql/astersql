@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-statistics-util`；crate 入口 `pkg/statistics/util/lib.rs` 通过 `pub mod json_objects` 声明模块，并用 `pub use json_objects::*` 再导出全部公开对象。它定义统计信息导入、导出边界使用的数据形状，而不负责从内存统计构造对象、JSON 编解码、gzip 分块或数据库持久化。
-
-Rust 接口层已经消费这里的 `JSONTable`：`pkg/statistics/handle/types/interfaces.rs` 将其再导出，并在 `StatsReadWriter`、`PartitionStatisticLoadTask` 和 `PersistFunc` 的签名中用作统计导入、导出及分区任务载荷。当前完整的 Go 运行链位于 `pkg/statistics/handle/storage/json.go` 和 `stats_read_writer.go`；Rust 侧另有 `pkg/statistics/handle/storage/json.rs::JsonTable` 这一不同的数据模型和编码实现，不能与本文件的 `JSONTable` 混为一体。
+没有实现 JSON wire format。
 
 ## 核心职责
 
@@ -77,15 +75,9 @@ Go 主链的直接对应关系是 `storage.GenJSONTableFromStats` 构造对象�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/util/json_objects.go`：常量、三个结构体、字段语义、`Sort` 和 `TotalMemoryUsage` 均为逐项移植。主要对应如下：
-
-- Go `map[string]*T` 对应 Rust `HashMap<String, Box<T>>`；Go `nil` 指针载荷对应 Rust `Option<Box<T>>`。
-- Go `*int64 StatsVer` 对应 `Option<i64>`，保留旧格式缺字段语义。
-- Go `[]*JSONPredicateColumn` 对应 `Vec<Box<JSONPredicateColumn>>`。
-- Go `slices.SortFunc(... cmp.Compare(a.ID, b.ID))` 对应 Rust `sort_by(|a, b| a.ID.cmp(&b.ID))`，排序方向和重复值处理一致。
 - Go protobuf 的 `Size()` 对应 Rust protobuf 2.8 的 `compute_size()`；两侧都只累计 Histogram、CMSketch、FMSketch。
 
-重要差异是 Go 字段带有 `json:"..."` tag，原生参与 `encoding/json`；Rust 字段目前没有 serde 派生和 rename 属性。另一个 Rust 模块 `pkg/statistics/handle/storage/json.rs` 使用蛇形字段的 `JsonTable`/`PredicateColumn` 和自有二进制 payload 编码，是独立实现而非本结构的序列化器。Go 回归测试 `pkg/statistics/handle/storage/dump_test.go::TestJSONTableToBlocks` 验证 dump、分块、还原后的 JSON 等价，并在比较前按谓词列 ID 排序；它证明 Go wire 行为，不能替代 Rust 本结构的序列化测试。
+重要差异是 Go 字段带有 `json:"..."` tag，原生参与 `encoding/json`；Rust 字段目前没有 serde 派生和 rename 属性。Go 回归测试 `pkg/statistics/handle/storage/dump_test.go::TestJSONTableToBlocks` 验证 dump、分块、还原后的 JSON 等价，并在比较前按谓词列 ID 排序；它证明 Go wire 行为，不能替代 Rust 本结构的序列化测试。
 
 ## 扩展指南
 
@@ -94,12 +86,3 @@ Go 主链的直接对应关系是 `storage.GenJSONTableFromStats` 构造对象�
 - 若改变 `Sort`，至少保留 ID 升序、负数、重复 ID、空向量测试；若期望递归排序或 map 确定性，必须新增明确 API，因为当前方法只处理顶层 `PredicateColumns`。
 - 若改变 `TotalMemoryUsage` 口径，应同步 Go 方法和内存 tracker 的消费语义，并新增单项存在、组合存在、全缺失和较大消息测试；将容器开销纳入口径属于兼容/性能语义变更。
 - Rust 单元测试继续放在独立的 `pkg/statistics/util/migration_aster_unit_test.rs`，不要内嵌回生产文件。生产代码行为变化时按仓库要求在独立测试中先建立回归失败证据，再验证修复。
-
-## 验证依据
-
-- 源码与模块：`pkg/statistics/util/json_objects.rs`、`pkg/statistics/util/lib.rs`。
-- crate 边界：`pkg/statistics/util/Cargo.toml`，确认 crate 名称、lib 入口、protobuf/tipb 依赖及 tipb feature。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`node --file pkg/statistics/util/json_objects.rs` 读取完整 92 行并报告直接使用文件；`query JSONTable/JSONColumn/JSONPredicateColumn --kind struct --json` 将本文件符号与同名 Go、其他 Rust 类型消歧；`files --filter pkg/statistics/util` 确认该目录的索引覆盖。
-- Rust 调用与测试：`pkg/statistics/handle/types/interfaces.rs`、`pkg/planner/core/casetest/cbotest/cbo_test.rs`、`pkg/statistics/util/migration_aster_unit_test.rs`。独立单元测试覆盖谓词列负数/重复 ID 排序、无 protobuf 时为零、三个 protobuf 尺寸求和。
-- Go 对照与回归：`pkg/statistics/util/json_objects.go`、`pkg/statistics/handle/storage/json.go`、`pkg/statistics/handle/storage/stats_read_writer.go`、`pkg/statistics/handle/storage/dump_test.go::TestJSONTableToBlocks`。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构校验要求文档存在且恰有十一个固定二级标题。

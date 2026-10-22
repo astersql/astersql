@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate，crate 根由 [`pkg/expression/Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 指定；[`pkg/expression/lib.rs`](lib.rs) 通过 `#[path = "builtin_op_vec.rs"] mod builtin_op_vec_kernel;` 将它编译为私有内核模块。它承载逻辑、位运算、真值判断、`IS NULL` 和一元运算的列式逐行计算，对应 Go 文件 [`pkg/expression/builtin_op_vec.go`](builtin_op_vec.go)。
-
-当前接线边界需要特别说明：Rust 的 `lib.rs` 只在 `#[cfg(test)]` 下用 `builtin_op_vec` 模块再导出 `builtin_op_vec_kernel::*`，仓库静态引用也只命中独立 Rust 测试。因此，这里已有可执行的 `Column -> Column` 向量内核和错误模型，但尚未像 Go 的各个 `builtin*Sig.vecEval*` 那样接入生产表达式签名、参数求值器、缓冲区分配器和 SQL 执行主链。文件顶部注释也把参数求值与签名装配留给上层集成任务。
+实现整数、浮点、DECIMAL 的逻辑非与一元负号，并为整数负号执行有符号/无符号 BIGINT 溢出检查。
 
 ## 核心职责
 
@@ -71,15 +69,12 @@
 
 ## 与 Go 版本的对应关系
 
-Go [`builtin_op_vec.go`](builtin_op_vec.go) 的每个 `builtin*Sig.vecEval*` 同时负责参数向量求值、临时列借还、NULL 合并与逐行运算；Rust 把其中“参数已成为 Column 后”的逐行部分提炼为自由函数。主要映射如下：
+Go [`builtin_op_vec.go`](builtin_op_vec.go) 的每个 `builtin*Sig.vecEval*` 同时负责参数向量求值、临时列借还、NULL 合并与逐行运算；Rust 把其中“参数已成为 Column 后”的逐行部分提炼为自由函数。
 
-- `builtinLogic{Or,And,Xor}Sig` 对应 `vec_logic_{or,and,xor}`；OR/AND 的 `fallbackEvalInt` 和 warning 截断对应两个 `*_with_fallback` 包装，XOR 不需要该回退。
 - `builtin{BitOr,BitXor,BitAnd,LeftShift,RightShift,BitNeg}Sig` 对应 `vec_bit_*`、`vec_*_shift` 和 `vec_bit_neg`。Rust 显式规定移位量大于等于 64 为零，结果与 Go 的 `uint64` 移位语义一致。
-- `builtinUnaryNot{Int,Real,Decimal}Sig` 与 `builtinUnaryMinus{Int,Real,Decimal}Sig` 分别对应同名 `vec_unary_*` 组；整数负号保留 Go 的 signed/unsigned 溢出边界。
-- `builtin{Int,Real,Decimal}Is{True,False}Sig` 对应六个真值包装；Go 签名字段 `keepNull` 在 Rust 中是函数参数 `keep_null`。
 - 五种 `builtin*IsNullSig` 对应五个类型命名包装，但 Rust 共用只读 NULL 位图的 `vec_is_null`。
 
-语义对齐由 [`builtin_op_vec_19_aster_unit_test.rs`](builtin_op_vec_19_aster_unit_test.rs) 覆盖完整三值表、warning/错误回退、位运算和逻辑移位、各类型真值/NULL、一元负号边界与列长错误；[`builtin_op_vec_test.rs`](builtin_op_vec_test.rs) 提供较小的冒烟回归。Go 的 [`builtin_op_vec_test.go`](builtin_op_vec_test.go) 则通过表达式注册表和 `vecEvalType` 验证签名级标量/向量一致性及整数负号溢出。Rust 当前缺少这一级生产注册与端到端签名测试，不能仅凭内核测试宣称已完成整条 SQL 表达式接线。
+Rust 当前缺少这一级生产注册与端到端签名测试，不能仅凭内核测试宣称已完成整条 SQL 表达式接线。
 
 ## 扩展指南
 
@@ -88,12 +83,3 @@ Go [`builtin_op_vec.go`](builtin_op_vec.go) 的每个 `builtin*Sig.vecEval*` 同
 若要完成生产接线，修改点不应局限于本文件：需要让 Rust 表达式签名在参数求值后调用这些内核，并提供真实 warning 上下文、标量回退和临时列复用。接线前应核对 Go `builtin_op_vec.go` 的 `EvalContext`、`bufAllocator` 和每个签名的输入类型；接线后应在独立测试文件中补签名级/注册级测试，而不是把测试内嵌进生产 `.rs`。
 
 任何行为扩展都应同步 [`builtin_op_vec_19_aster_unit_test.rs`](builtin_op_vec_19_aster_unit_test.rs) 的精确边界测试和 [`builtin_op_vec_test.rs`](builtin_op_vec_test.rs) 的冒烟覆盖，并与 Go [`builtin_op_vec_test.go`](builtin_op_vec_test.go) 的标量/向量一致性用例比较。重点兼容风险是 SQL NULL 真值表、warning 回退时点、unsigned BIGINT 边界和大/负移位量；性能风险是逐行方法调用、每次新建结果列，以及生产接线后若没有复用临时列造成的分配开销。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引健康，包含 Rust/Go 文件；`node --file pkg/expression/builtin_op_vec.rs --offset 1 --limit 500` 与尾段查询读取了目标文件全部 528 行，并报告其测试侧使用者。
-- RustCodeGraph 对 `pkg/expression/lib.rs` 的节点读取确认：生产编译模块名为 `builtin_op_vec_kernel`，两个独立 Rust 测试受 `#[cfg(test)]` 控制，测试别名模块再导出全部内核符号。
-- 精确 `callers/callees` 查询未在时限内返回边；因此用 `rg` 核对全仓 Rust 引用。结果只发现模块装配、测试再导出和测试调用，没有生产签名调用者。该限制也是本文将模块描述为“已实现但未接入生产调度”的依据之一。
-- 已读源码与配置：`pkg/expression/builtin_op_vec.rs`、`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`；该目录不存在 `doc.go`。
-- 已读对照与测试：`pkg/expression/builtin_op_vec.go`、`pkg/expression/builtin_op_vec_test.go`、`pkg/expression/builtin_op_vec_test.rs`、`pkg/expression/builtin_op_vec_19_aster_unit_test.rs`；另核查了图列出的 `builtin_convert_charset_test.rs`，确认它不提供本文件行为覆盖。
-- 人工事实复核覆盖：三值逻辑表、右参数 warning/错误触发回退、位模式与移位、NULL/`keep_null`、signed/unsigned 负号溢出，以及当前生产接线缺口。本任务仅写文档，按计划不运行 Cargo。

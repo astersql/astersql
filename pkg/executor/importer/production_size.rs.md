@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-importer` crate。模块根 `pkg/executor/importer/lib.rs` 以 `mod production_size` 挂载它，并通过 `pub use production_size::*` 导出 `HostImportSizeEstimator`。它位于 IMPORT INTO / LOAD DATA 的文件发现与导入计划准备阶段：`LoadDataController` 扫描源文件并填充 `SourceFileMeta.real_size` 时，通过 `ImportSizeEstimator` trait 调用这里的宿主实现；该估算值随后参与总真实体量统计和调度资源估算，而不是实际的数据解码执行。
-
-生产接线位于 `pkg/dxf/importinto/scheduler.rs::ImportSchedulerServices::FromEncodeRuntime`：该入口用 `HostImportSizeEstimator` 包装运行时原有的 `SizeEstimator`，从而让常见压缩文件使用本文件的采样逻辑，同时保留宿主提供的 Parquet 估算能力。crate 归属、`flate2`、`snap`、`zstd` 以及对象存储依赖由 `pkg/executor/importer/Cargo.toml` 声明。
+该实现是估算器而非完整性校验器。
 
 ## 核心职责
 
@@ -88,16 +86,11 @@ RustCodeGraph 对 `calculate_file_bytes` 给出的直接调用边包括 `Context
 
 ## 与 Go 版本的对应关系
 
-主要对照为 `pkg/lightning/mydump/loader.go`：
-
 - Rust `calculate_file_bytes` 对应 Go `calculateFileBytes`。两者都以 4096 字节缓冲采样；第一遍只读一次以找出解码器实际消费的有效压缩边界，第二遍限制原始 reader 到该边界并读尽解压输出。
 - Rust `EstimateRealSize` 对应 Go `EstimateRealSizeForFile` 加 `SampleFileCompressRatio` 的组合：无压缩时返回物理大小，采样成功时以膨胀比乘完整文件大小，普通采样失败时回退物理大小。
 - Go 通过 `NewLimitedInterceptReader` 和 `Seek(0, io.SeekCurrent)` 得到压缩位置；Rust 对象 reader 的统一抽象虽支持 seek，但这里用 `MeasuredReader` 直接累计实际读取字节，并用第二遍的 `limit` 模拟有限 reader。这是实现手段差异，算法意图相同。
-- Go 的压缩类型转换集中在 `ToStorageCompressType`；Rust 直接匹配 `Compression::{Gz, Snappy, Zstd}` 并实例化对应 crate decoder。
 - Go 估算错误会写日志后回退；Rust 对非取消错误静默回退，但对已取消上下文返回错误，以便 Rust 调度链终止。这是可观察的错误语义差异。
 - Go 的 Parquet 体积逻辑位于其他宿主组件；Rust 通过 `ParquetEstimator` 明确保留该边界，没有在本文件复刻 Parquet decoder。
-
-Go 测试 `pkg/lightning/mydump/loader_test.go::TestEstimateFileSize` 验证无压缩、成功比例和失败回退；同文件的压缩采样测试验证实际 Gzip 比例。Rust 独立测试 `pkg/executor/importer/production_size_test.rs::compressed_file_estimator_samples_real_gzip_twice_and_observes_cancel` 验证真实 Gzip 的 10000 字节估算、Parquet 委托返回值以及取消传播。
 
 ## 扩展指南
 
@@ -107,14 +100,3 @@ Go 测试 `pkg/lightning/mydump/loader_test.go::TestEstimateFileSize` 验证无�
 - 修改 reader 生命周期时，应保留所有返回路径的关闭保证，并为 close 失败是否可见作出明确设计。当前 `Drop` 的 best-effort 语义不能证明远端 close 成功。
 - 修改 Parquet 行为应优先落在注入的宿主 estimator；若改变此处的委托接口，还需同步 `ImportSizeEstimator` trait、DXF `FromEncodeRuntime` 接线和 `estimateFormatSizeExpansionRatio` 调用方。
 - 性能评估应关注每个受支持压缩文件固定两次对象打开、远端请求次数、decoder 预读量和极高压缩比下第二遍的 CPU/输出字节量；不要用缓存改变跨任务隔离，除非同时定义失效与并发规则。
-
-## 验证依据
-
-- 生产源码与符号：`pkg/executor/importer/production_size.rs`；RustCodeGraph 索引显示 142 行、14 个符号，并确认 `calculate_file_bytes -> Context::check / MeasuredReader / read / decode_reader` 的内部边。
-- 公开契约与调用点：`pkg/executor/importer/import.rs::ImportSizeEstimator`、文件扫描阶段的 `EstimateRealSize` 调用、`estimateFormatSizeExpansionRatio`；`pkg/executor/importer/lib.rs` 的模块挂载与再导出。
-- 生产构造点：`pkg/dxf/importinto/scheduler.rs::ImportSchedulerServices::FromEncodeRuntime`。RustCodeGraph 的 `HostImportSizeEstimator` trail 也列出该实例化边。
-- crate 与依赖：`pkg/executor/importer/Cargo.toml`，确认 crate 名、模块根及 `flate2`、`snap`、`zstd`、mydump、objectio/storeapi 依赖。
-- 资源与取消契约：`pkg/objstore/objectio/interface.rs::{Context, Reader}`、`pkg/objstore/storeapi/storage.rs::Storage::Open`。
-- Rust 测试：`pkg/executor/importer/production_size_test.rs`；另参考 `pkg/dxf/importinto/scheduler_test.rs` 的服务接线构造。
-- Go 对照与测试：`pkg/lightning/mydump/loader.go::{calculateFileBytes, SampleFileCompressRatio, EstimateRealSizeForFile}`、`pkg/lightning/mydump/loader_test.go`；`pkg/executor/importer/import.go` 还证明 Go IMPORT INTO 扫描流程调用 `mydump.EstimateRealSizeForFile`。
-- 未运行 Cargo：任务是纯文档分析，计划明确禁止 Cargo。验收采用固定章节结构检查和人工事实复核。

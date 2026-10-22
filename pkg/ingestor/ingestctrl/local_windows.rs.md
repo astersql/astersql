@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`local_windows.rs` 属于 `astersql-ingestor-ingestctrl` crate；该 crate 由 `pkg/ingestor/ingestctrl/Cargo.toml` 定义，库入口是同目录的 `lib.rs`。`lib.rs` 通过 `pub mod local_windows` 公开本模块，并将独立测试放在 `local_windows_test.rs`，没有把测试嵌入生产源文件。
-
-本文件是 Windows 平台的进程打开文件数限制（rlimit）兼容桩。它保留与 Go `local_windows.go` 相同的 API 形状和返回语义，但不访问 Windows API，也不读取或修改真实系统资源限制。尤其需要注意：当前 Rust 模块声明和函数本身没有 `#[cfg(windows)]`；同时 `local.rs::NewBackend` 直接调用 `crate::local_unix::VerifyRLimit`，没有根据平台选择本模块。因此本文描述的是已经实现并由单元测试覆盖的 Windows 契约，不表示该契约已经接入 Rust local backend 的生产创建路径。
+用 `RlimT` 为 Windows 分支提供与 Go `uint64` 对应的资源限制值类型。
 
 ## 核心职责
 
@@ -60,9 +58,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ingestor/ingestctrl/local_windows.go`，它用 `//go:build windows` 限定平台。对应关系如下：
-
-- Go `type RlimT = uint64` 对应 Rust `pub type RlimT = u64`。
 - Go `GetSystemRLimit` 返回 `(math.MaxInt32, nil)`；Rust 返回 `Ok(i32::MAX as u64)`，数值和成功语义一致。
 - Go `VerifyRLimit(estimateMaxFiles uint64)` 不使用参数并始终 `errors.New(...)`；Rust同样忽略参数并始终返回同文本的 `Error::InvalidData`。
 - Go 文件有 Windows build tag；Rust 文件及 `lib.rs` 的模块声明没有等价 `cfg(windows)`。此外，当前 Rust `NewBackend` 使用 `local_unix` 而非平台分派。这是实际迁移/接线差异，不应在文档中解释成已经完成的平台等价。
@@ -76,14 +71,3 @@
 若要真正接入 Windows 平台，修改点不应局限于本文件：需要在 `lib.rs` 或 `local.rs::NewBackend` 附近增加清晰的平台选择，使 Windows 构建调用本模块、Unix 构建调用 `local_unix`，并确认 Unix FFI 不会进入 Windows 编译/链接路径。应把平台分派测试放在独立测试文件中；真实 Windows 行为还需要 Windows 环境上的构建与运行验证。
 
 若要实现真实 Windows 资源检查，应先定义可验证的 Windows 等价资源和错误契约，再引入最小 OS 依赖、处理系统调用失败，并为零值、极大值、系统调用失败和并发调用增加独立测试。不要把 Unix `RLIMIT_NOFILE` 的含义直接套到 Windows handle 模型，也不要在生产源文件内嵌测试。
-
-## 验证依据
-
-- `pkg/ingestor/ingestctrl/local_windows.rs`：完整读取；确认 `RlimT`、`GetSystemRLimit`、`VerifyRLimit`、统一错误类型以及无条件编译/无状态实现。
-- `pkg/ingestor/ingestctrl/lib.rs`：确认公开模块声明、独立测试装配和 `Error::InvalidData` 的 crate 级含义。
-- `pkg/ingestor/ingestctrl/local.rs`：确认 `NewBackend` 当前实际调用 `local_unix::VerifyRLimit`，而非 Windows 平台分派。
-- `pkg/ingestor/ingestctrl/Cargo.toml`：确认 crate 名称、`lib.rs` 入口、Go 包移植元数据和 Windows 目标依赖边界。
-- `pkg/ingestor/ingestctrl/local_windows.go`：确认 Windows build tag、`uint64` 类型、`math.MaxInt32` 返回值及固定错误文本。
-- `pkg/ingestor/ingestctrl/local_windows_test.rs`：确认独立测试对成功值、`0`/`u64::MAX` 边界和精确错误文本的断言。
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/ingestor/ingestctrl/local_windows.rs` 和 `node --file ...` 显示文件有 5 个符号并由 `local_windows_test.rs` 使用；`query GetSystemRLimit`、`query VerifyRLimit` 将 Rust 符号分别定位到第 27、34 行，并同时定位到 Go 对照符号。对 callers/callees 的查询没有返回额外生产调用边，仓库 `rg` 搜索进一步确认当前唯一直接 Rust 使用来自测试，而 `NewBackend` 指向 Unix 实现。
-- 未运行 Cargo：任务是纯文档分析，且计划明确排除 Cargo 验证；文档结构检查用于交付验证。

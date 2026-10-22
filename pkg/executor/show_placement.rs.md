@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/executor/show_placement.rs` 是 `astersql-executor` crate 中 `SHOW PLACEMENT` 与 `SHOW PLACEMENT LABELS` 的 Rust 逻辑层。`pkg/executor/lib.rs` 通过 `pub mod show_placement` 导出它；`pkg/executor/Cargo.toml` 将 crate 命名为 `astersql-executor`，并以同目录 `lib.rs` 为库入口。本文件本身只直接使用 `std::collections::{HashMap, HashSet}` 和 `std::fmt::Display`；InfoSchema、权限、DDL range 策略、表 key 编码与 PD 复制状态都经 `ShowPlacementBackend` trait 注入，而不是直接依赖 Cargo 中的具体 crate。
-
-当前 Rust 接线状态需要特别说明：全仓 Rust 引用搜索中，`ShowPlacementExec` 以及 `fetchShowPlacement*` 入口只由 `pkg/executor/show_placement_test.rs` 调用，没有找到 `ShowPlacementBackend` 的生产实现或 SQL 执行主链调用者。因此它是已移植并被单测验证的可注入核心，但不应将其描述成已取代 Go 生产路径。Go 的真实入口仍是 `pkg/executor/show.go` 对 `ShowExec.fetchShowPlacement*` 的分派，实现位于 `pkg/executor/show_placement.go`。本目录没有 `doc.go`。
+针对指定数据库、表或分区提供精确查询，并在库/表全量查询时执行权限可见性过滤（`fetchShowPlacementForDB`、`fetchShowPlacementForTable`、`fetchShowPlacementForPartition`、`fetchAllDBPlacements`、`fetchAllTablePlacements`）。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 对文件内部主调用链的核对结果包括 `fetchShowPlaceme
 
 ## 与 Go 版本的对应关系
 
-Rust 的主要函数与 `pkg/executor/show_placement.go` 的同名方法基本一一对应：完整/指定对象查询、policy 枚举、DB/表/分区 policy 解析、range policy、调度状态缓存与汇总，以及保留 Go 拼写的 `fetchRangesPlacementPlocy`。关键语义对齐包括：policy 按原始名排序；分区继承表 policy；权限不可见对象在全量列表中被过滤；调度状态取最落后值；非 `Scheduled` 短路；成功 PD 查询按物理 ID 缓存；range hex 解码错误被忽略。
-
 两者的主要结构差异是：
 
 - Go 方法直接挂在生产 `ShowExec` 上，并直接调用 session/privilege/InfoSchema/DDL/infosync/tablecodec；Rust 将这些收口为 `ShowPlacementBackend`，但尚没有生产 adapter。
@@ -100,12 +96,3 @@ Go 回归 `pkg/executor/show_placement_test.go` 还覆盖 SQL 分派、实际权
 - 改动结果顺序时，需区分 policy 排序、schema 可见性、special-attribute 分组顺序、表名排序和分区定义顺序；同步验证 Rust `show_placement_test.rs` 及 Go `show_placement_test.go`，避免不必要的 golden 顺序变化。
 - 改动 labels 解析/输出时，同步 `showPlacementLabelsResultBuilder`、`ShowPlacementBackend::restricted_store_labels`、`pkg/executor/show_placement_labels_test.rs` 和 Go 对照测试。兼容性风险是 SQL 列类型从 JSON 数组退化为普通字符串，或丢失稳定排序。
 - 若要把 Rust 路径接入真实 SQL 执行，需在另一层实现生产 `ShowPlacementBackend`，并从 Rust SHOW 分派器构造 `ShowPlacementExec`。重点验证权限错误类型、InfoSchema 快照一致性、table key 编码、PD 状态映射和 JSON 列类型；不应仅依赖现有 mock 测试。
-
-## 验证依据
-
-- 源码全貌：RustCodeGraph `node --file pkg/executor/show_placement.rs --offset 1 --limit 900` 读取了全部 791 行，确认常量、DTO、trait、builder、执行器方法、状态函数和内部工具；文件无条件编译项。
-- 符号与调用边：RustCodeGraph `explore 'pkg/executor/show_placement.rs ShowPlacementExec placement'`、`query ShowPlacementExec`、`callers/callees fetchShowPlacement`、`callers/callees fetchScheduleState`、`callers ShowPlacementExec`。Explore 确认文件内主链；精确 callers 查询未返回生产边，再用 `rg` 核对全仓 Rust 引用，只找到源文件与独立测试。
-- crate 边界：读取 `pkg/executor/Cargo.toml` 和 `pkg/executor/lib.rs`，确认 crate 名、库入口、`nextgen` feature、模块导出及两个独立 Rust 测试的挂载位置。`pkg/executor/doc.go` 不存在，因此无可读的包级 Go 合同文件。
-- Rust 回归：`pkg/executor/show_placement_test.rs` 验证最落后状态、policy 排序、分区继承/覆盖、标识符转义、缓存调用数、非 Scheduled 短路、分区 PD 错误状态、DB 可见性和缺失 policy；`pkg/executor/show_placement_labels_test.rs` 验证空输入、null、合并去重排序及非 array/null 拒绝。
-- Go 对照：RustCodeGraph 读取 `pkg/executor/show_placement.go`、`pkg/executor/show_placement_test.go`、`pkg/executor/show_placement_labels_test.go`；另以 `rg` 确认 `pkg/executor/show.go:279-287` 的生产分派边。Go 测试补充了 SQL 输出、权限、缺失对象和 PD HTTP 状态映射证据。
-- 本任务仅生成说明文档，依计划不运行 Cargo；结构验证使用任务文件指定的 `test -f` 与 11 个固定二级标题计数命令。

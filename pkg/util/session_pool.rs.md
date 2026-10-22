@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util` crate 中的通用会话资源池实现，源码由 [`pkg/util/lib.rs`](lib.rs) 的 `pub mod session_pool` 暴露。crate 边界由 [`pkg/util/Cargo.toml`](Cargo.toml) 定义；该实现直接使用标准库的 `Arc`、`Mutex`、`VecDeque` 和 `Any`，并使用 `anyhow` 表达工厂及取资源错误、使用 `fail` 提供与 Go failpoint 对齐的错误注入。
-
-它位于具体 SQL session 实现之下：本文件不知道事务、SQL 或存储类型，只管理实现了 `Resource` 的共享对象。直接可见的下游使用包括 `pkg/domain/sqlsvrapi/lib.rs` 对 `DestroyableSessionPool` 的再导出，以及 `pkg/dxf/framework/dxfutil/lib.rs` 中 `TaskManager` 持有该 trait object、调用 `Get`/`Put` 并借助 `as_any` 恢复具体 session 上下文。它不是 `pkg/session/runtime/system_session.rs` 中高级系统会话池的实现，两者不应混为一谈。
+位于具体 SQL session 实现之下：本文件不知道事务、SQL 或存储类型，只管理实现了 `Resource` 的共享对象。
 
 ## 核心职责
 
@@ -77,13 +75,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/session_pool.go`](session_pool.go)，对应测试是 [`pkg/util/session_pool_test.go`](session_pool_test.go)。Rust 保留了 Go 的 `SessionPool`、`DestroyableSessionPool`、`NewSessionPool`、`Get`、`Put`、`Destroy`、`Close` 名称和主要行为：空闲优先、池空则创建、容量限制空闲缓存、归还溢出即关闭、显式销毁回调、关闭幂等以及关闭后 `Get` 的固定错误文本。
+Rust 保留了 Go 的 `SessionPool`、`DestroyableSessionPool`、`NewSessionPool`、`Get`、`Put`、`Destroy`、`Close` 名称和主要行为：空闲优先、池空则创建、容量限制空闲缓存、归还溢出即关闭、显式销毁回调、关闭幂等以及关闭后 `Get` 的固定错误文本。
 
 实现机制有所不同：Go 用有缓冲 channel 保存空闲资源，并用 `RWMutex` 保护关闭/发送的竞态；Rust 用一个 `Mutex` 同时保护 `VecDeque` 与关闭位。Go channel 的非阻塞收发与 Rust 队首弹出/队尾追加都形成 FIFO 风格的空闲复用。Go 的 `pools.Resource` 只要求 `Close`，Rust 额外要求 `Any + Send + Sync` 并提供 `as_any`，以支持 trait object 的类型恢复及跨线程共享。
 
-已核对的细节差异包括：Go failpoint 设置命名返回值 `err`，函数仍携带局部 `resource` 返回；Rust failpoint 直接 `Err` 提前返回并丢弃局部句柄。Rust 的中毒锁会 panic，而 Go 锁无此状态。两版 `Put` 都在判断关闭/容量之前执行 put 回调，且溢出关闭不执行 destroy 回调；Rust 测试中关于“溢出触发 on_destroy”的注释不能作为实现事实，实际计数下降来自 `put_callback`。
+已核对的细节差异包括：Go failpoint 设置命名返回值 `err`，函数仍携带局部 `resource` 返回；Rust failpoint 直接 `Err` 提前返回并丢弃局部句柄。Rust 的中毒锁会 panic，而 Go 锁无此状态。
 
-Rust 独立测试 [`pkg/util/session_pool_test.rs`](session_pool_test.rs) 移植了 Go `TestSessionPool` 的容量 1 借还、回调计数、溢出关闭、重复关闭、关闭后归还和关闭后取资源错误。`pkg/util/security_2_aster_unit_test.rs` 还覆盖复用、溢出关闭、关闭时释放空闲资源及关闭后归还。当前测试没有单独断言工厂错误、failpoint、显式 `Destroy`、零容量、锁中毒或 `Get`/`Close` 并发窗口。
+当前测试没有单独断言工厂错误、failpoint、显式 `Destroy`、零容量、锁中毒或 `Get`/`Close` 并发窗口。
 
 ## 扩展指南
 
@@ -93,13 +91,3 @@ Rust 独立测试 [`pkg/util/session_pool_test.rs`](session_pool_test.rs) 移植
 - 若要强化关闭屏障，必须处理已通过首次关闭检查但仍在工厂中的 `Get`，并定义借出资源是否等待回收；这属于接口并发语义变化，需同步检查 Go 版本和直接消费者。
 - 若新增返回错误的方法或允许回调失败，应避免在错误路径遗失资源，并明确是重入队、显式关闭还是转交调用方。
 - 测试应继续放在独立文件 [`pkg/util/session_pool_test.rs`](session_pool_test.rs)，不要内嵌到生产文件；与 Go 行为同步时也更新 [`pkg/util/session_pool_test.go`](session_pool_test.go) 的对应意图。至少补充所改分支的工厂错误、`Destroy` 回调、零容量、并发 `Get`/`Put`/`Close` 和 panic/清理行为。性能风险集中在全局状态锁竞争、工厂并发风暴及回调/关闭耗时，兼容风险集中在回调顺序、固定错误文本和关闭竞态语义。
-
-## 验证依据
-
-- 生产实现：[`pkg/util/session_pool.rs`](session_pool.rs)，核对 `Resource`、类型别名、两个公开 trait、`PoolState`、`Pool`、`NewSessionPool` 以及四个生命周期方法的全部实现。
-- crate 与模块装配：[`pkg/util/Cargo.toml`](Cargo.toml) 和 [`pkg/util/lib.rs`](lib.rs)，核对 crate 名、依赖、`autotests = false`、模块导出及独立测试挂载；`pkg/util` 下没有 `doc.go` 可作为额外包契约。
-- Go 对照：[`pkg/util/session_pool.go`](session_pool.go) 与 [`pkg/util/session_pool_test.go`](session_pool_test.go)，核对接口、channel/锁实现、回调时序、错误文本和测试断言。
-- Rust 测试：[`pkg/util/session_pool_test.rs`](session_pool_test.rs) 与 `pkg/util/security_2_aster_unit_test.rs`，核对容量、复用、回调、关闭和错误边界；本任务依照计划不运行 Cargo，因此这里只引用并人工审查测试证据。
-- 直接调用证据：`pkg/domain/sqlsvrapi/{Cargo.toml,lib.rs,server.rs}` 和 `pkg/dxf/framework/dxfutil/{Cargo.toml,lib.rs}`，核对依赖别名、trait 再导出及 `TaskManager::WithNewSession` 的 `Get` → downcast → callback → `Put` 链路。
-- RustCodeGraph：`status` 显示索引可用（11,467 文件、307,296 节点）；`query NewSessionPool --kind function` 和 `query DestroyableSessionPool` 定位了本文件声明及相关符号，但文件过滤和限定 `node/callers/callees` 未解析出该 Rust 节点。调用关系因此进一步使用精确 `rg` 与上述源码读取验证，并明确保留这一图覆盖限制。
-- 结构验收使用任务指定命令，确认文件存在且固定二级标题恰为 11 个；同时人工复核本文没有把测试注释、理想设计或未取得的调用图边写成当前实现事实。

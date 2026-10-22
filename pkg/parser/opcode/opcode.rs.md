@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-opcode` crate 的核心实现，定义跨 parser/expression 边界使用的表达式运算符编号及其文本元数据。crate 入口 `pkg/parser/opcode/lib.rs` 通过 `pub mod opcode` 和 `pub use opcode::*` 导出这里的 `Op`，并把 `astersql_parser_format` 再导出为 `crate::format`；`pkg/parser/opcode/Cargo.toml` 也表明该 crate 唯一的直接依赖是相邻的 `astersql-parser-format`。
-
-它不解析 SQL，也不执行运算。其职责是为运算符提供稳定判别值、内部名称、SQL 字面量、关键字分类，以及将单个运算符格式化或恢复成 SQL 片段的能力。工作区中 `pkg/expression`、`pkg/session`、`pkg/ddl` 和 `pkg/planner/indexadvisor` 的 Cargo manifest 直接依赖此 crate；实际 Rust 使用示例包括 `pkg/expression/planner_bridge.rs::RefineComparedConstant` 和 `pkg/expression/util.rs::symmetricOp`。
-
-需要区分另一个当前实现：`pkg/parser/ast/expressions.rs` 自己定义了用于 Rust AST 恢复与优先级判断的 `expressions::Op`。该枚举包含 `MemberOf`、`Between`、`Collate` 等额外成员，当前并非这里的 `opcode::Op` 的别名。本文件因此是共享 opcode/Go 兼容边界，而不是当前 Rust AST 表达式恢复的唯一运算符实现。
+需要区分另一个当前实现：`pkg/parser/ast/expressions.rs` 自己定义了用于 Rust AST 恢复与优先级判断的 `expressions::Op`。
 
 ## 核心职责
 
@@ -78,9 +74,7 @@ RustCodeGraph 索引将本文件标记为被 36 个文件使用，但对同名 `
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/opcode/opcode.go`。Rust 的 `Op` 成员顺序和数值与 Go 的 `type Op int`、`iota + 1` 对齐；`EMPTY_OP` 和 `ops[0]` 对应 Go 数组因首个编号为 1 而留下的零值槽；31 项 `name/literal/isKeyword` 与 Go 表逐项一致。
-
-方法映射如下：Go `String() string` 对应 Rust `String() -> &'static str`；Go `Format(io.Writer)` 对应泛型 `Format<W: Write>`；Go `IsKeyword() bool` 直接对应；Go `Restore(*format.RestoreCtx) error` 对应 Rust `Restore(&mut RestoreCtx) -> io::Result<()>`。两边 `Format` 都忽略 writer 错误，两边 `Restore` 都按关键字标志分流。
+Rust 的 `Op` 成员顺序和数值与 Go 的 `type Op int`、`iota + 1` 对齐；`EMPTY_OP` 和 `ops[0]` 对应 Go 数组因首个编号为 1 而留下的零值槽；31 项 `name/literal/isKeyword` 与 Go 表逐项一致。
 
 存在语言模型差异：Go 可表示任意整数 opcode，Rust `enum` 只允许声明过的有效判别值；Go 测试可把 `op` 设为 0 后调用 `String`，Rust 只能验证零号表项。Rust 还通过类型系统把表下标绑定为 `usize` 并把静态字符串生命周期显式化。这些差异不改变有效 1..=31 范围内的移植语义。
 
@@ -93,12 +87,3 @@ RustCodeGraph 索引将本文件标记为被 36 个文件使用，但对同名 `
 若新运算符参与真实表达式语义，还需按用途检查 `pkg/expression/builtin.rs`、`pkg/expression/planner_bridge.rs`、`pkg/expression/util.rs`。若它也应进入当前 Rust AST 恢复链，则必须另外评估 `pkg/parser/ast/expressions.rs` 的本地 `Op`、SQL 文本、关键字分类、优先级和括号逻辑；仅扩展本文件不会自动扩展该 AST 枚举。
 
 兼容风险主要是编号重排和文本变化；性能风险很低，因为访问是常量时间数组索引且无分配。把符号误标为关键字会改变 `RestoreCtx` 大小写处理，把关键字误标为普通文本则会绕过恢复 flag；修改 `Not` 的尾随空格或 `NE` 的拼写也可能改变生成 SQL 的精确文本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/opcode` 确认目标 Rust、Go 和测试文件均已索引。
-- RustCodeGraph `node --file pkg/parser/opcode/opcode.rs`：核对 `Op`、`OpInfo`、`EMPTY_OP`、`ops` 及四个公开方法的完整实现；索引报告该文件被 36 个文件使用。
-- RustCodeGraph `node`：阅读 `pkg/parser/opcode/lib.rs`、`pkg/parser/opcode/opcode.go`、`pkg/parser/opcode/opcode_test.rs`、`pkg/parser/opcode/opcode_test.go`、`pkg/parser/opcode/migration_aster_unit_test.rs`，并核对 `pkg/parser/ast/expressions.rs`、`pkg/expression/planner_bridge.rs`、`pkg/expression/util.rs` 的直接上下文。
-- 配置读取：`pkg/parser/opcode/Cargo.toml` 证明 crate 名、入口、唯一直接依赖和 Go 包迁移元数据；工作区 Cargo 引用搜索确认 session、expression、DDL、indexadvisor 与根 facade 的依赖声明。
-- 调用核对：RustCodeGraph 的同名符号查询存在碰撞后，使用 Rust 源码引用搜索确认 `opcode::Op` 在表达式内建、常量精化与对称映射中的使用，并确认本地 opcode 测试对四个方法的直接覆盖。
-- 未运行 Cargo 或代码测试：本任务是纯文档分析，计划明确禁止 Cargo；结论建立在已索引源码、Cargo 配置、Go 对照和既有独立测试上。

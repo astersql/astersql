@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-planner-util-costusage`；crate 根 `pkg/planner/util/costusage/lib.rs` 通过 `pub mod cost_misc` 声明模块，并用 `pub use cost_misc::*` 对外重导出全部公开项。`pkg/planner/util/costusage/Cargo.toml` 的 `package.metadata.porting.go-package` 指向同目录 Go 包，说明它是 `pkg/planner/util/costusage/cost_misc.go` 的 Rust 移植边界。
-
-该 crate 被 planner core、`core/base`、物理算子和 `utilfuncp` 作为低层依赖引用。例如 `pkg/planner/core/Cargo.toml` 以 `costusage-dependency` 引入它，`pkg/planner/core/operator/physicalop/Cargo.toml` 以 `costusage` 引入它。这样，物理计划接口可以共享成本类型和标志而不反向依赖完整 planner core，避免 Go 文件头注释所描述的 `base`、`util` 与 `core` 循环依赖。
-
-在运行链路中，本文件不读取统计信息，也不决定某种物理算子的成本公式；它提供 Cost Model V2 的通用“值 + 可选追踪”容器及组合运算。具体算子公式主要由 `pkg/planner/core/plan_cost_ver2.rs` 构造，`pkg/planner/core/operator/physicalop/base_physical_plan.rs::GetPlanCostVer2` 则负责递归取得子计划成本、汇总并缓存。
+具体算子公式主要由 `pkg/planner/core/plan_cost_ver2.rs` 构造，`pkg/planner/core/operator/physicalop/base_physical_plan.rs::GetPlanCostVer2` 则负责递归取得子计划成本、汇总并缓存。
 
 ## 核心职责
 
@@ -95,18 +91,12 @@ RustCodeGraph 的文件节点报告 `cost_misc.rs` 被 10 个已索引文件使�
 
 ## 与 Go 版本的对应关系
 
-Rust 符号基本逐项对应 `pkg/planner/util/costusage/cost_misc.go`：三个 `CostFlag*` 常量、`CostVer2`、`CostTrace`、零值构造、标志判断、追踪判断、基础项构造、因子、求和、乘除、无追踪附加值以及 `PlanCostOption` 均保留 Go 语义。
-
-需要注意的语言适配：
-
 - Go 用 `*CostTrace == nil`，Rust 用 `Option<CostTrace>`；Go 的可变指针 getter 在 Rust 中变为只读借用。
 - Go 的可变接收者 `WithCostFlag` 返回原指针，并对 nil 接收者返回 nil；Rust 使用按值建造者，不存在 nil 接收者。两者都替换标志字段而非自动 OR。
-- Go 的变参 `SumCostVer2(costs ...CostVer2)` 在 Rust 中是切片参数 `&[CostVer2]`。
 - Go 传值的乘除和附加函数在 Rust 中分别使用不可变借用或所有权，以避免不必要地要求调用方共享可变对象。
 - Rust 显式实现 `format_go_float` 和固定两位格式，补偿 Rust 默认格式与 Go `%v` / `FormatFloat` 在 Infinity、指数形式等细节上的差异。
-- Rust `get_cost` 显式保留 NaN 后再对普通值执行 `max(0.0)`，使移植意图和测试边界清晰。
 
-Go 同目录没有 `*_test.go` 专门测试这些辅助函数；本仓库的直接移植回归位于独立 Rust 文件 `cost_misc_test.rs` 和 `migration_aster_unit_test.rs`。更高层 Go 行为由 `pkg/planner/core/plan_cost_ver2_test.go` 等成本模型测试覆盖，但它们验证的是整体公式与 SQL/计划效果，不是本文件每个辅助函数的逐项单测。
+Go 同目录没有 `*_test.go` 专门测试这些辅助函数；本仓库的直接移植回归位于独立 Rust 文件 `cost_misc_test.rs` 和 `migration_aster_unit_test.rs`。
 
 ## 扩展指南
 
@@ -117,13 +107,3 @@ Go 同目录没有 `*_test.go` 专门测试这些辅助函数；本仓库的直�
 - 新增无追踪修正：先确认它是否应影响校准因子与 EXPLAIN。若不应展示，可沿用 `add_cost_without_trace`；若应展示，必须使用 traced 基础项和组合函数，避免数值与 trace 不一致。
 - 性能风险集中在 TRACE 开启后的 map 合并、key 克隆和字符串拼接；新增热路径组合时应避免在未追踪分支提前构造公式。
 - 兼容性风险集中在公开公式文本、因子名称、特殊浮点格式以及 `with_cost_flag` 的替换语义；这些可能被解释输出或成本校准工具依赖。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标 Rust/Go 文件；`files --filter pkg/planner/util/costusage` 确认目标、Go 对照和两个独立测试；`node --file` 完整读取 `cost_misc.rs`、`cost_misc.go`、`cost_misc_test.rs` 与 `lib.rs`；`query --kind function --json` 精确定位四个组合入口。文件节点还报告目标被 10 个索引文件使用。`callers/callees` 本次未返回文本，调用边因此使用下列源码调用点交叉验证。
-- 源文件：`pkg/planner/util/costusage/cost_misc.rs`，核对全部 268 行公开/私有符号、分支和格式逻辑。
-- crate 边界：`pkg/planner/util/costusage/Cargo.toml` 与 `pkg/planner/util/costusage/lib.rs`；依赖入口还核对了 `pkg/planner/core/Cargo.toml`、`pkg/planner/core/base/Cargo.toml`、`pkg/planner/core/operator/physicalop/Cargo.toml`、`pkg/planner/util/utilfuncp/Cargo.toml`。
-- 上游调用：`pkg/planner/core/plan_cost_ver2.rs` 的 `canonical_term`、`canonical_net_cost` 及组合调用；`pkg/planner/core/operator/physicalop/base_physical_plan.rs::GetPlanCostVer2` 的缓存、递归汇总与重算分支。
-- Go 对照：`pkg/planner/util/costusage/cost_misc.go` 全文件，并检索 `pkg/planner/core/plan_cost_ver2_test.go` 等上层 Go 成本模型测试。
-- Rust 测试：`pkg/planner/util/costusage/cost_misc_test.rs` 验证非有限值和科学计数法格式；`pkg/planner/util/costusage/migration_aster_unit_test.rs` 验证标志位、公式惰性、零值、因子合并、乘除缩放、负值/NaN 和无追踪 tie-breaker。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试；交付结构使用任务指定命令验证。仓库提到的 `.agents/skills/tidb-verify-profile` 在当前工作区不存在，无法额外执行该技能入口。

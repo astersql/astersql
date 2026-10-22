@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-implementation`，由同目录 `lib.rs` 的私有模块 `mod sort` 纳入，并通过 `pub use sort::*` 将公开符号重新导出。这个包位于旧版 Cascades 优化器与 Memo 物理实现层之间：上游实现规则创建具体物理计划，下游 Memo 通过 `astersql_planner_memo::Implementation` 的统一接口计算代价、挂接孩子并取得最终物理计划。
-
-文件提供两种一元排序 Implementation：`SortImpl` 包装需要真实执行排序的计划，`NominalSortImpl` 表示孩子已经满足顺序属性、无需保留真实排序节点的候选。生产入口可见于 `pkg/planner/cascades/old/implementation_rules.rs` 的 `ImplSort::OnImplement`；真实排序还会由 `pkg/planner/cascades/old/enforcer_rules.rs` 的 `OrderEnforcer::OnEnforce` 强制插入。
-
-直接 crate 边界来自 `pkg/planner/implementation/Cargo.toml`：本文件使用 `astersql-planner-core-base` 的 `PhysicalPlan`、`astersql-planner-memo` 的 `ImplementationRef`，并使用当前 crate 在 `base.rs` 定义的公共基座、访问 trait 与辅助函数。该 manifest 没有为本模块声明条件 feature；本文件本身也没有条件编译项。
+前者由 `ImplSort` 根据 `GetPropByOrderByItems` 的结果决定，后者由 `PhysicalSort` 及执行器负责。
 
 ## 核心职责
 
@@ -100,16 +96,11 @@ RustCodeGraph 的文件节点把 `sort.rs` 的直接使用文件列为 `pkg/plan
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/implementation/sort.go`。
-
-- Go `SortImpl`、`NewSortImpl`、`CalcCost` 与 Rust 同名符号一一对应。两边都以 `min(孩子 RowCount, 第一个孩子 Required Property 的 ExpectedCnt)` 作为排序行数，并加上孩子代价。
 - Rust 通过 `SortCostPlan` 从具体物理计划抽取 `ExpectedCount`、`SelfCost` 和挂接改写，使 implementation crate 不必在结构字段中固定 `PhysicalSort`；Go 则在 `baseImpl.plan` 中保存并向下断言具体类型。
 - Go 的 `math.Min` 遇到 NaN 会返回 NaN。Rust 没有直接使用 `f64::min`，而是显式检测 NaN，避免 Rust `min` 选择另一操作数；独立 Rust 回归测试覆盖了这点。
 - Go `SortImpl.AttachChildren` 原地设置孩子并调用 `plannercore.InjectProjBelowSort`，返回自身；Rust 为避免把 Memo 孩子计划直接移入候选，会先克隆孩子，并把适配器返回的树缓存在 `attached_plan`。如上一节所述，当前生产适配器尚未实现 Go 的标量排序键 Projection 注入。
 - Go `NominalSortImpl.AttachChildren` 直接返回 `children[0]`。Rust 的 `Implementation::AttachChildren` 签名只能返回 `&mut dyn Implementation`，所以改为缓存孩子物理计划的克隆，并让后续 `GetPlan` 返回该克隆；可观察的最终计划仍绕过名义排序节点。
 - Go `NominalSortImpl` 未覆盖 `CalcCost`，继承 `baseImpl` 的孩子代价求和；Rust 明确转发 `BaseImpl::CalcCost`。Rust 挂接时额外把缓存成本设置为第一个孩子成本，以保持透传候选的代价。
-
-相关 Go 规则 `pkg/planner/cascades/old/implementation_rules.go::ImplSort` 同样在排序项全为列时生成 `NominalSort`，否则生成 `PhysicalSort`。Rust `implementation_rules.rs::ImplSort` 保持这一分支意图。
 
 ## 扩展指南
 
@@ -120,18 +111,3 @@ RustCodeGraph 的文件节点把 `sort.rs` 的直接使用文件列为 `pkg/plan
 - 新增状态字段时，要明确它在 `AttachChildren` 重入时是替换、累计还是禁止，并确认 trait object 与物理计划克隆的所有权。
 - Rust 测试逻辑应继续放在独立测试文件，不嵌入 `sort.rs`。最接近的现有测试是 `pkg/planner/implementation/base_test.rs`；规则分支测试应放在 `pkg/planner/cascades/old/implementation_rules_test.rs`，强制排序路径测试应放在 `pkg/planner/cascades/old/enforcer_rules_test.rs`。Go 对照测试和行为也应同步核对。
 - 兼容风险主要是 Go/Rust Projection 改写差异和 NaN 语义；正确性风险是孩子数量与挂接前后计划身份；性能风险集中在排序计数裁剪、`PhysicalSort::GetCost` 的 CPU/内存/spill 参数，以及不必要的计划克隆。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标实现：`pkg/planner/implementation/sort.rs` 的 `SortImpl`、`NewSortImpl`、`NominalSortImpl`、`NewNominalSortImpl` 及两个 `impl_implementation!` 调用。
-- 公共契约：`pkg/planner/implementation/base.rs` 的 `BaseImpl`、`PlanAccess`、`SortCostPlan`、`ClonePlan`、`ChildCost` 与 `impl_implementation!`。
-- crate 装配：`pkg/planner/implementation/lib.rs` 和 `pkg/planner/implementation/Cargo.toml`。
-- 生产入口：`pkg/planner/cascades/old/implementation_rules.rs` 的 `PlanAdapter<PhysicalSort>`、`defaultImplementationMap`、`ImplSort::OnImplement`；`pkg/planner/cascades/old/enforcer_rules.rs` 的 `SortPlan` 与 `OrderEnforcer::OnEnforce`。
-- 物理行为：`pkg/planner/core/operator/physicalop/physical_sort.rs::PhysicalSort::GetCost` 与 `pkg/planner/core/operator/physicalop/nominal_sort.rs::NominalSort::Attach2Task`。
-- Go 对照：`pkg/planner/implementation/sort.go` 以及 `pkg/planner/cascades/old/implementation_rules.go::ImplSort`。
-- 独立测试：`pkg/planner/implementation/base_test.rs::sort_count_min_propagates_nan_like_go`；`pkg/planner/cascades/old/enforcer_rules_test.rs` 只覆盖 enforcer 选择和新孩子属性清空，不覆盖 `SortImpl` 挂接；`implementation_rules_test.rs` 中未检索到 `ImplSort`/`NominalSort` 专项测试。
-- RustCodeGraph：`status` 显示索引包含目标文件；`node --file pkg/planner/implementation/sort.rs` 给出完整源码并报告直接使用文件；`query` 同时定位 Rust/Go 的 `SortImpl`、`NewSortImpl`、`NominalSortImpl`、`NewNominalSortImpl`；对限定 Rust 符号执行的 `callers/callees` 查询在本次限定时间内未返回结果，因此调用边又用上述索引文件节点与精确文本搜索交叉核验。
-
-本任务是纯文档分析，未运行 Cargo 或代码测试。结构验收应确认本文恰好包含计划要求的十一个固定二级标题；人工复核重点是：真实/名义排序的分流、挂接前后 `GetPlan` 的变化、一元孩子不变量、NaN 兼容行为，以及 Projection 注入尚未与 Go 对齐的事实均有源码依据。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`infoschema_reader.rs`](./infoschema_reader.rs) 位于 `astersql-executor` crate；`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 与 `pkg/executor/lib.rs` 中的 `pub mod infoschema_reader` 共同把它暴露为公开模块。文件没有 `cfg`/feature 条件，crate 的 `nextgen` feature 也没有在本文件中直接分支。
-
-它承担 Information Schema（内存系统表）读取的 Rust 契约和通用控制流：定义行/单元格模型、谓词和快照状态、数据源接口、按表名分发的通用检索器，以及 COLUMNS、DDL jobs、TABLE_STORAGE_STATS、事务、锁等待、死锁和 TiFlash 系统表等专用分页检索器。
-
-当前接线状态需要谨慎理解：RustCodeGraph 能解析本文件及其内部调用边，`lib.rs` 也会编译该模块；但对仓库生产 Rust 源做精确符号检索，没有找到这些检索器在本文件之外的构造或调用。已确认的直接使用者主要是 `infoschema_reader_test.rs`、`infoschema_reader_internal_test.rs`、`infoschema_reader_keyspace_test.rs` 和 `infoschema_cluster_table_test.rs`。因此，本文件目前是可测试的移植抽象/行为契约；它是否已接入完整 SQL 执行主链未得到代码证据，不能按 Go 版本的已上线接线来理解。
+文件自身主要决定“何时、以什么参数读取”，数据生产由 trait 实现者负责。
 
 ## 核心职责
 
@@ -119,13 +115,3 @@
 - 增加真实生产接线时，应在 executor builder/memtable reader 层增加明确构造点，并为 `InfoSchemaDataSource` 提供真实实现；在此之前不要让文档或 API 注释声称真实 PD/TiKV/DDL 调用已经由 Rust 完成。
 - 测试必须保持与源码分文件：纯函数放 `infoschema_reader_test.rs`，内部分发/内存/权限放 `infoschema_reader_internal_test.rs`，keyspace label 放 `infoschema_reader_keyspace_test.rs`，集群/存储统计放 `infoschema_cluster_table_test.rs`。如扩展 DDL、事务、锁、死锁或 TiFlash 状态机，应新增相邻独立测试文件或扩展最贴近的现有文件，而不是把测试内嵌进生产文件。
 - 性能风险集中在全量物化、行克隆、重复字符串和错误的终止条件；兼容风险集中在表名分发、Go/Rust 权限差异、DataRequest 参数和列 offset。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标 Rust 文件；`node --file pkg/executor/infoschema_reader.rs` 分段读取了 1–1545 行；`query memtableRetriever/DDLJobsReaderExec/TiFlashSystemTableRetriever/adjustColumns` 定位 Rust/Go 对照；`callees` 核对了通用和专用 `retrieve` 到快照、分发、数据源、权限、游标与投影的边。
-- 源码与装配：`pkg/executor/infoschema_reader.rs`、`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`。
-- Go 对照：`pkg/executor/infoschema_reader.go` 中的 `memtableRetriever`、`hugeMemTableRetriever`、`DDLJobsReaderExec`、`tableStorageStatsRetriever`、事务/锁/死锁 reader、`TiFlashSystemTableRetriever` 与 label rule 助手；`pkg/executor/memtable_reader.go` 仅作为 Go 上游接口位置证据。
-- Rust 测试：`pkg/executor/infoschema_reader_test.rs`（精度、字符长度、ANALYZE 亚秒估算），`infoschema_reader_internal_test.rs`（统计请求、CHECK_CONSTRAINTS、KEYWORDS、USER_ATTRIBUTES 可见性/错误/内存），`infoschema_reader_keyspace_test.rs`（keyspace rule 与 table ID 解码），`infoschema_cluster_table_test.rs`（CLUSTER_INFO、Region 状态、TABLE_STORAGE_STATS 谓词和分页）。
-- Go 测试：`pkg/executor/infoschema_reader_internal_test.go`、`infoschema_reader_keyspace_test.go`、`infoschema_reader_test.go`、`infoschema_cluster_table_test.go`，用于核对移植命名、表形状和边界意图。
-- 生产接线限制：对 `pkg/executor/**/*.rs` 精确搜索主要 reader 类型和助手，除目标文件与上述测试外未发现构造/调用；RustCodeGraph 的文件级“used by”包含共享符号造成的宽泛引用，未据此宣称存在执行主链接线。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行固定 11 章节的结构验证。

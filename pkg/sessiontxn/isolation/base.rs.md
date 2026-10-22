@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`base.rs` 是会话事务隔离 crate 的公共状态机与运行时边界。它不选择具体隔离级别，而是定义四种 Provider 共用的事务初始化、时间戳准备/激活、快照、提交选项和悲观公平锁骨架。模块入口 [lib.rs](./lib.rs) 将本文件导出，并由 `RegisteredTxnContextProvider`/`TxnContextProvider` 把上层调用分发给 `optimistic.rs`、`readcommitted.rs`、`repeatable_read.rs`、`serializable.rs` 中的具体 Provider。
-
-本文件同时是一个适配层：`IsolationRuntime` 把状态机与真实会话、Oracle、KV 事务、InfoSchema 和公平锁实现隔开；`PlanInspection`、`StatementInspection` 则只暴露隔离策略所需的计划形状和语句只读属性。因此这里保存的是可执行的隔离状态机和选项语义，不是完整的 session/store 实现。当前 Rust 测试使用 [main_test.rs](./main_test.rs) 的内存 `MockRuntime` 驱动这条边界；Go 版本则直接连接 `sessionctx.Context` 和 `kv.Transaction`。
+同时是一个适配层：`IsolationRuntime` 把状态机与真实会话、Oracle、KV 事务、InfoSchema 和公平锁实现隔开；`PlanInspection`、`StatementInspection` 则只暴露隔离策略所需的计划形状和语句只读属性。
 
 ## 核心职责
 
@@ -82,11 +80,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [base.go](./base.go)。Rust 的 `BaseTxnContextProvider`、`BasePessimisticTxnContextProvider` 分别对应 Go 的 `baseTxnContextProvider`、`basePessimisticTxnContextProvider`；`OnInitialize`、`GetTxnInfoSchema`、TS 准备/激活、snapshot、提交选项和公平锁方法保持相同的主干顺序与关键分支。Rust 测试 [base_test.rs](./base_test.rs) 还明确验证了 Go 基类钩子副作用：开始语句只更新上下文，而提交/回滚基类钩子不覆盖它。
+Rust 测试 [base_test.rs](./base_test.rs) 还明确验证了 Go 基类钩子副作用：开始语句只更新上下文，而提交/回滚基类钩子不覆盖它。
 
 Rust 不是逐类型直译：Go 直接持有 `sessionctx.Context`、`kv.Transaction` 和 Oracle Future，并通过 `SetOption` 安装行为；Rust 把这些对象压缩为 `SessionState`、`IsolationRuntime` 以及 `TxnActivationOptions`/`CommitOptions`。Go 通过函数字段让子类提供 read/for-update TS，Rust 则由具体 Provider 方法分发覆盖。Go 的 `SetOptionsOnTxnActive` 直接安装 commit hook、RPC 拦截器、资源组 tagger 和后台 goroutine hooks；Rust 当前只把配置/安装意图传给 runtime。
 
-存在需要扩展时特别核对的语义差异：Go `OnInitialize` 会拒绝未配置 TS 函数和未知进入类型，Rust 的枚举使未知类型不可表示，也没有函数指针空值；Go `forcePrepareConstStartTS` 只设置标志，Rust 同时安装 `ConstantFuture`；Go 创建本地临时表时会立即给活跃事务更新 snapshot interceptor，Rust 只通过 `attach_local_temporary_tables` 更新 InfoSchema；Go pipelined DML 在兼容时提前返回且不触碰事务选项，Rust仍生成带 `pipelined_noop` 的 `CommitOptions` 并调用 runtime。修改这些区域时不能只依赖名称相同，应同时复核 Go 当前行为和 runtime 实现。
+存在需要扩展时特别核对的语义差异：Go `OnInitialize` 会拒绝未配置 TS 函数和未知进入类型，Rust 的枚举使未知类型不可表示，也没有函数指针空值；Go `forcePrepareConstStartTS` 只设置标志，Rust 同时安装 `ConstantFuture`；Go 创建本地临时表时会立即给活跃事务更新 snapshot interceptor，Rust 只通过 `attach_local_temporary_tables` 更新 InfoSchema；Go pipelined DML 在兼容时提前返回且不触碰事务选项，Rust仍生成带 `pipelined_noop` 的 `CommitOptions` 并调用 runtime。
 
 ## 扩展指南
 
@@ -96,10 +94,3 @@ Rust 不是逐类型直译：Go 直接持有 `sessionctx.Context`、`kv.Transact
 - 增加隔离级别差异：不要把策略硬编码进基类；在相应具体 Provider 覆盖 TS、错误或计划建议逻辑，并保持 [lib.rs](./lib.rs) 的注册分发完整。
 - 改变公平锁：修改 `BasePessimisticTxnContextProvider` 与 runtime 回调，分别覆盖成功、失败、重试、取消，以及连接 ID 为零/内部 SQL/未激活时不启动的边界。
 - 测试必须继续放在独立文件：本文件的直接基类测试在 [base_test.rs](./base_test.rs)，共享夹具在 [main_test.rs](./main_test.rs)，综合选项/InfoSchema/公平锁测试在 [isolation_aster_unit_test.rs](./isolation_aster_unit_test.rs)，各隔离级别行为在对应 `optimistic_test.rs`、`readcommitted_test.rs`、`repeatable_read_test.rs`、`serializable_test.rs`；不要把测试内嵌回 `base.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query BaseTxnContextProvider --kind struct` 定位到 `base.rs:405`；`node BaseTxnContextProvider` 核对字段；`node --file pkg/sessiontxn/isolation/base.rs --offset 535 --limit 365` 核对准备、激活、TS、snapshot、提交和公平锁实现；`node --file pkg/sessiontxn/isolation/lib.rs --offset 130 --limit 210` 核对注册 Provider 的上游分发。`callees ActivateTxn` 对目标 Rust 定义识别出 `PrepareTxn`、`TimestampFuture::wait`、`IsolationRuntime::session/session_mut/activate_transaction` 和 `TxnActivationOptions` 构造等直接下游；同名查询包含其他语言/模块结果，本文只采用路径限定到本文件的边。
-- 读取的生产路径：[base.rs](./base.rs)、[lib.rs](./lib.rs)、[Cargo.toml](./Cargo.toml)、`optimistic.rs`、`readcommitted.rs`、`repeatable_read.rs`、`serializable.rs` 的直接调用位置，以及 Go 对照 [base.go](./base.go)。
-- 读取的测试路径：[base_test.rs](./base_test.rs)、[main_test.rs](./main_test.rs)、[isolation_aster_unit_test.rs](./isolation_aster_unit_test.rs)，并检索四个隔离级别的 Rust/Go 独立测试。直接证据包括：基类语句钩子副作用、单调 Oracle 时钟与惰性激活、激活/提交选项保真、InfoSchema 仅扩展一次、RC snapshot 标记以及 RR 公平锁重试序列。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章结构检查，并人工确认本文区分了当前 Rust 抽象边界、Go 真实接线和未由本文件实现的子类策略。

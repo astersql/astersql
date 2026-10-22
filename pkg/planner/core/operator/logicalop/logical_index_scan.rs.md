@@ -4,15 +4,7 @@
 
 ## 文件定位
 
-本文件实现逻辑优化阶段的索引扫描叶子算子 `LogicalIndexScan`。它位于
-`astersql-planner-core-operator-logicalop` crate；`lib.rs` 通过
-`mod logical_index_scan` 注册模块并以 `pub use logical_index_scan::*` 对外导出。
-crate 的 Go 对照包由 `Cargo.toml` 的 `package.metadata.porting.go-package` 指向
-`pkg/planner/core/operator/logicalop`。
-
-它不是直接执行存储读取的执行器，而是把 `DataSource` 已选择的索引访问路径固化为逻辑计划节点。
-`DataSource::buildIndexGather` 创建该节点并把它挂到 `TiKVSingleGather` 之下；随后传统物理计划枚举
-`ExhaustPhysicalPlans` 或旧 Cascades 规则 `ImplIndexScan` 将其转换成物理索引扫描。
+描述索引能够提供的有序性，并判断一个具体物理排序属性是否可由该索引满足（`PreparePossibleProperties`、`MatchIndexProp`）。
 
 ## 核心职责
 
@@ -122,11 +114,6 @@ crate 的 Go 对照包由 `Cargo.toml` 的 `package.metadata.porting.go-package`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_index_scan.go`。两侧共同保留
-`LogicalIndexScan`、`Init`、`ExplainInfo`、`BuildKeyInfo`、`DeriveStats`、
-`PreparePossibleProperties`、`MatchIndexProp`、`GetPKIsHandleCol` 和
-`matchIndicesProp` 的核心意图：索引扫描状态、唯一键推导、统计、索引顺序匹配及整数句柄主键回查。
-
 当前 Rust 实现并非逐行机械翻译，已存在可核验差异：
 
 - Go 的 `DeriveStats` 委托 `utilfuncp.DeriveStats4LogicalIndexScan`；Rust 在本文件内实现缓存复用、按索引 ID 查找 `CountAfterAccess`、NDV 钳制和缓存写回。
@@ -153,21 +140,3 @@ crate 的 Go 对照包由 `Cargo.toml` 的 `package.metadata.porting.go-package`
 - 增加 EXPLAIN 内容时，要维持隐藏列使用生成表达式、普通列使用索引名的兼容格式，并检查参数化表达式的求值上下文。
 - 性能风险主要在规划阶段的表达式/Range 克隆和线性路径、列扫描；兼容风险集中在
   EXPLAIN 文本、计划缓存标记、排序可满足性和唯一键推导，这些都会影响计划选择而不只是展示。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；对目标文件执行
-  `node --file ... --offset 1 --limit 500`，读到完整 323 行源码，并报告直接使用文件为
-  `logical_datasource.rs`、`physicalop/base_physical_plan.rs`、
-  `cascades/old/implementation_rules.rs` 和 `optimizer_runtime.rs`。
-- 主要符号查询：`query LogicalIndexScan --kind struct`、
-  `query matchIndicesProp --kind function`、`query MatchIndexProp --kind method`，确认 Rust/Go 对照符号和辅助函数位置。方法级 `callers/callees` 查询未输出边，因此调用关系由上述文件索引结果与直接源码交叉核验，没有据此臆造额外调用者。
-- 读过的生产与配置文件：`logical_index_scan.rs`、`logical_datasource.rs`、
-  `logicalop/lib.rs`、`logicalop/Cargo.toml`、
-  `physicalop/base_physical_plan.rs`、`cascades/old/implementation_rules.rs`、
-  `logical_index_scan.go`，以及包契约 `pkg/planner/core/base/doc.go`。
-- 测试证据：`logical_index_scan_test.rs::build_key_info_rebuilds_keys_from_all_index_paths_and_handle`
-  验证唯一索引键和整数句柄键同时进入 `PKOrUK`；
-  `cascades/old/optimize_test.rs::test_prepare_possible_properties` 通过包含
-  `LogicalIndexScan` 的计划验证索引顺序传播。当前独立测试没有逐项覆盖本文件的 EXPLAIN、统计和所有排序拒绝分支，属于后续扩展时应补的覆盖面，而非已验证事实。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付前使用任务文件指定的命令校验文档存在且固定二级标题恰为 11 个，并人工复核所有行为描述均可回指上述符号或直接调用文件。

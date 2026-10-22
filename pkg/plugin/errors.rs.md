@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`errors.rs`](errors.rs) 是 `astersql-plugin` crate 的统一错误模型。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod errors` 声明该模块，并通过 `pub use errors::*` 将 `PluginError` 与 `PluginErrorKind` 暴露到 crate 根；因此同 crate 的加载、校验、审计事件解析和 SPI 回调都能使用同一种 `Result<_, PluginError>` 边界。
-
-该文件只定义错误分类、错误载荷和标准 trait 适配，不执行插件加载，也不持有插件状态。实际错误产生点主要位于 [`helper.rs`](helper.rs)、[`plugin.rs`](plugin.rs) 和 [`audit.rs`](audit.rs)。所属 crate 由 [`Cargo.toml`](Cargo.toml) 定义为 `astersql-plugin`，库入口为 `lib.rs`；本文件只依赖 Rust 标准库 `std::fmt`，没有 feature 条件或外部运行时依赖。
+只定义错误分类、错误载荷和标准 trait 适配，不执行插件加载，也不持有插件状态。
 
 ## 核心职责
 
@@ -94,7 +92,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 [`errors.go`](errors.go) 使用 `dbterror.ClassPlugin.NewStd(errno.*)` 定义六个包内标准错误：非法 ID、manifest、名称、版本、重复插件和版本要求检查失败。Rust 的前六个专门枚举成员与这些使用场景逐项对应；`helper.go::ID.Decode`、`plugin.go::Plugin.validate`、`plugin.go::Load/loadOne/loadManifestByGoPlugin` 是相应生产点。
+Rust 的前六个专门枚举成员与这些使用场景逐项对应；`helper.go::ID.Decode`、`plugin.go::Plugin.validate`、`plugin.go::Load/loadOne/loadManifestByGoPlugin` 是相应生产点。
 
 两侧错误表示并不等价：Go 标准错误带 TiDB errno、模板参数，并可通过 `GenWithStackByArgs` 生成带栈实例；Rust 只保存类别和最终字符串，没有 errno、模板参数和栈。Rust 的 `PluginNotFound`、`PluginNotReady`、`FlushUnsupported` 对应 Go `plugin.go::supportsFlush` 中三个 `errors.Errorf` 分支，而不是 `errors.go` 中的标准错误变量。Rust 的 `Backend` 还统一承接 Rust 锁中毒、测试/回调错误及其他后端失败，Go 没有同名的本地标准错误。
 
@@ -107,11 +105,3 @@ Go 对照文件 [`errors.go`](errors.go) 使用 `dbterror.ClassPlugin.NewStd(err
 - 修改既有消息前应搜索字符串断言和外部日志消费者。当前 `plugin_test.rs` 明确断言模拟 `plugin.Open` 文案以及 `EOF` 的 `Display` 透传。
 - 测试应放在独立文件，不能嵌入 `errors.rs`。可新增同目录 `errors_test.rs` 并在 `lib.rs` 以 `#[cfg(test)] #[path = "errors_test.rs"]` 挂载；若只验证现有生产路径，则扩展 `helper_test.rs` 或 `plugin_test.rs` 更贴近行为所有者。新增测试应覆盖构造器分类、`backend` 固定分类、`Display` 原样消息和新增成员的真实生产分支。
 - 增加字段会影响公开结构体字面量、`Clone/PartialEq/Eq` 语义和潜在内存成本；增加错误链时需决定 clone/equality 如何处理 source。当前错误不在热循环中主动分配额外数据，但每次构造消息都会形成一个拥有所有权的 `String`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/plugin` 列出 31 个 Go/Rust 文件；`query PluginError --json` 精确得到 `pkg/plugin/errors.rs:50:struct:PluginError`，`query PluginErrorKind --json` 得到 `pkg/plugin/errors.rs:25:enum:PluginErrorKind`；`node --file pkg/plugin/errors.rs --offset 1 --limit 180` 核对了完整 78 行源码。对这两个类型节点执行 `callers`/`callees` 没有返回类型引用边，因此使用目录内精确符号检索补充调用证据。
-- Rust 源与配置：`pkg/plugin/errors.rs`、`pkg/plugin/lib.rs`、`pkg/plugin/Cargo.toml`、`pkg/plugin/helper.rs`、`pkg/plugin/plugin.rs`、`pkg/plugin/audit.rs`、`pkg/plugin/spi.rs`、`pkg/plugin/conn_ip_example/conn_ip_example.rs`。
-- Go 对照：`pkg/plugin/errors.go`、`pkg/plugin/helper.go`、`pkg/plugin/plugin.go`；其中 `errors.go` 证明六个标准 `dbterror` 定义，`plugin.go::supportsFlush` 证明另外三个 Flush 前置失败是格式化错误。
-- 独立测试：`pkg/plugin/helper_test.rs::test_decode` 与 `pkg/plugin/helper_test.go::TestDecode` 验证无分隔符 ID 失败；`pkg/plugin/plugin_test.rs` 的加载用例覆盖错误传播、模拟打开失败文案和 `PluginError::backend("EOF")` 的显示结果，对照 `pkg/plugin/plugin_test.go`。同目录不存在独立 `errors_test.rs`，现有测试也未逐项断言 `PluginErrorKind`。
-- 本任务是只新增说明文档的静态分析；按计划不运行 Cargo。交付前使用任务指定命令确认本文恰有 11 个固定二级标题，并人工复核所有现状结论均能回指上述符号或文件。

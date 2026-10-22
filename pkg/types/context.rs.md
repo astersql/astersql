@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/types/context.rs` 定义标量类型转换所需的轻量上下文：转换策略位、时区、warning 接收器，以及“发生截断但仍有可用结果值”时的返回协议。它不是进程取消用的 `std::task::Context` 或 Go `context.Context`，而是 Go `pkg/types.Context` 的 Rust 对应物。
-
-该文件的实际 crate 归属不是直接由 `pkg/types/Cargo.toml` 编译：`pkg/types/internal/scalar/lib.rs` 通过 `#[path = "../../context.rs"] mod context` 把它挂到 `astersql-types-scalar`，随后公开重导出全部符号。顶层 `astersql-types` 再通过 `types-group-1` 依赖和 `pkg/types/lib.rs` 重导出 `Context`、`Flags`、`NewContext` 与默认上下文。因此调用方既可能写 `types_crate::scalar::Context`，也可能从 `astersql_types` 或表达式层的再导出入口取得这些类型。
-
-`pkg/types/internal/scalar/Cargo.toml` 表明本文件的直接外部边界是 `chrono-tz`、`astersql-util-context` 与 `astersql-types-time`；顶层 `pkg/types/Cargo.toml` 则说明该标量 crate 是整个 `astersql-types` 聚合 crate 的组成部分，并以 `pkg/types` 作为 Go 移植包。
+`Flags` 以 `u16` 位掩码集中表达转换策略，涵盖截断、负数转无符号、日期容错、字符集检查和 TIME 转 YEAR 的兼容路径。
 
 ## 核心职责
 
@@ -103,15 +99,13 @@ Rust 返回类型还刻意区别于 Go：Go 只返回 `error`，结果值由调�
 
 ## 与 Go 版本的对应关系
 
-主要一一对应关系位于 `pkg/types/context.go`：`Flags uint16` 对应 `Flags(pub u16)`；十个常量保持相同位序；所有查询和 `With*` 方法保持名称与布尔语义；`WithSkipSACIICheck` 同样保留历史拼写；`Context` 都保存 flags、location 和 warning handler；默认 flags 及两个全局上下文也保持一致。
+Rust 用值语义强化了 Go 的运行时约束。Go `NewContext` 和 `WithLocation` 对 nil 做测试期断言，`Location`/`AppendWarning` 还包含 nil 回退；Rust 的 `Tz` 和 `Arc<dyn WarnAppender + Send + Sync>` 无法表示这些 nil 状态，所以没有对应防御分支。
 
-Rust 用值语义强化了 Go 的运行时约束。Go `NewContext` 和 `WithLocation` 对 nil 做测试期断言，`Location`/`AppendWarning` 还包含 nil 回退；Rust 的 `Tz` 和 `Arc<dyn WarnAppender + Send + Sync>` 无法表示这些 nil 状态，所以没有对应防御分支。Go 的 `*time.Location` 对应可复制的 `chrono_tz::Tz`，支持的时区语义应以 `chrono-tz` 的数据库为准。
-
-Go 的 warning handler 是接口值，Rust 明确要求 `Send + Sync` 并由 `Arc` 共享。Go 的全局变量在包初始化时构造；Rust 使用 `LazyLock` 首次访问才构造。对调用者而言，两者都应视作共享基准值，局部改配置时使用 `With*` 派生，而不是试图修改全局实例。
+Go 的 warning handler 是接口值，Rust 明确要求 `Send + Sync` 并由 `Arc` 共享。Go 的全局变量在包初始化时构造；Rust 使用 `LazyLock` 首次访问才构造。
 
 截断逻辑在 Go 中位于独立的 `pkg/types/truncate.go`，而目标 Rust 文件自身包含面向“值 + 错误”的通用 `HandleTruncate<T>`。仓库另有 `pkg/types/truncate.rs`，它更贴近 Go 的 errno 过滤和可选错误接口，但该文件不由 `pkg/types/internal/scalar/lib.rs` 当前模块装配链挂载；不能把它的分类行为当成此 `Context::HandleTruncate<T>` 已具备的能力。
 
-测试对应关系清楚：`pkg/types/context_test.rs::test_with_new_flags` 对齐 Go `TestWithNewFlags`，`test_simple_on_off_flags` 对齐 `TestSimpleOnOffFlags`，`WarnStore`/`warn_store_matches_go_helper` 对齐 Go 的 `warnStore` 辅助行为。Rust 测试额外用 `catch_unwind` 明确验证未实现的 `AppendNote` 会 panic。
+Rust 测试额外用 `catch_unwind` 明确验证未实现的 `AppendNote` 会 panic。
 
 ## 扩展指南
 
@@ -124,14 +118,3 @@ Go 的 warning handler 是接口值，Rust 明确要求 `Send + Sync` 并由 `Ar
 修改时区或时间 warning 行为时，应直接测试 `impl types_time::TimeContext for Context`：四个日期/转换位的映射、非 UTC `Tz` 传播、`TimeError` 包装后是否到达同一 handler。相关集成消费面包括 `pkg/types/time.rs`、表达式静态求值上下文和 DDL 日期解析路径。
 
 性能方面，保持 `Flags` 和 `Tz` 的值复制以及 `Arc` 浅克隆很重要；不要在每次标志读取或默认上下文访问时分配。兼容性方面，公开方法采用 Go 风格命名并由 crate 级 `allow(non_snake_case)` 接受，重命名会破坏大量迁移代码和 Go/Rust 对照，不应仅为 Rust 命名习惯调整。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/types` 确认目标源、Go 对照及独立测试均已索引。
-- RustCodeGraph 文件节点：`node --file pkg/types/context.rs --offset 1 --limit 500` 读取完整 327 行，报告 44 个符号及 61 个使用文件；据此核对全部常量、类型、方法、trait 实现和静态值。
-- RustCodeGraph 符号/调用查询：查询了 `Context`、`Flags`、`NewContext`、`HandleTruncate`、两个默认上下文，并执行 `callers/callees`。宽查询确认 `IgnoreTruncateErr`、`TruncateAsWarning`、字符集开关等真实使用边；精确带路径的 `callers/callees` 未返回独立输出，因此调用关系又以仓库精确文本搜索及调用方源码位置交叉核验，没有据此臆造完整调用图。
-- 模块与 Cargo：读取 `pkg/types/internal/scalar/lib.rs`、`pkg/types/internal/scalar/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`，确认实际 crate 挂载、依赖、feature 和顶层重导出链。
-- Go 对照：读取 `pkg/types/context.go` 与 `pkg/types/truncate.go`，核对位序、构造/派生语义、nil 边界、默认值和截断错误分类；同时读取未挂载的 `pkg/types/truncate.rs`，避免把它的行为误归于目标文件。
-- 独立测试：读取 `pkg/types/context_test.rs` 与 `pkg/types/context_test.go`，核对不可变更新、四个标志的开关行为及 warning 存储辅助；通过仓库搜索定位 `pkg/types/convert_test.rs`、`pkg/types/time_test.rs` 及其他间接消费测试。未运行 Cargo，符合本纯文档任务约束。
-- 代表性直接调用证据：`pkg/expression/exprstatic/evalctx.rs`、`pkg/sessionctx/stmtctx/stmtctx.rs`、`pkg/types/convert.rs`、`pkg/types/internal/datum/lib.rs`、`pkg/types/binary_literal.rs`、`pkg/session/runtime/planning.rs`、`pkg/ddl/persistent_masking_actions.rs`。
-- 完成前按任务指定命令验证文档恰含 11 个固定二级标题，并人工复核所有重要结论均指向真实符号或路径，无整段源码复制、无把未挂载模块描述为已接线的结论。

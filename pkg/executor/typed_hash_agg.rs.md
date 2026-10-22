@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Rust typed 物理执行链中的哈希聚合节点 `TypedHashAgg`。`pkg/executor/lib.rs` 将其公开为 `typed_hash_agg` 模块；`pkg/executor/builder.rs` 的 `build_typed_physical_plan` 在识别到 `PhysicalHashAgg` 时先递归构造唯一子节点，再把计划中的 `AggFuncs`、`GroupByItems` 和计划上下文交给 `TypedHashAgg::new`。因此它位于“规范化物理计划 → typed executor → child chunk”链路中，而不是 Go 执行器的通用 `aggregate.HashAggExec` 本体。
-
-该类型实现 `crate::adapter::ExecExecutor`，遵循 `Open`、反复 `Next`/`NextWithContext`、`Close` 的拉取协议。crate 边界由 `pkg/executor/Cargo.toml` 的 `astersql-executor` 定义；本文件直接依赖表达式、聚合描述符、类型/Datum、chunk、codec、collation、错误和 `astersql-executor-aggfuncs` 等同 workspace crate，且不受 `nextgen` feature 条件编译控制。
+实现 Rust typed 物理执行链中的哈希聚合节点 `TypedHashAgg`。
 
 ## 核心职责
 
@@ -87,11 +85,9 @@ NULL 规则需要特别保持：除 `FIRST_ROW` 外，只要已求值参数中�
 
 ## 与 Go 版本的对应关系
 
-最近的 Go 行为对照是 `pkg/executor/aggregate/agg_hash_executor.go::HashAggExec`，而非同名同路径文件。两者都以编码 group key 映射 partial state，先从 child 拉取 chunk、逐行更新，再分页输出；Go `unparallelExec` 同样在空输入且无 GROUP BY 时加入空组，并使用独立 group key 顺序数组避免遍历哈希集合造成随机分页。Rust 的 `groups + group_indexes` 对应 Go 的 `groupKeys/groupSet + partialResultMap`。
+MAX_COUNT/MIN_COUNT 的具体语义由 Rust `pkg/executor/aggfuncs/func_max_min_count.rs` 移植层承担；Go 测试 `pkg/executor/aggfuncs/func_max_min_count_test.go` 证明 NULL、重复极值、类型覆盖和 partial merge 预期，Rust typed 测试则覆盖真实扫描与空输入结果。
 
-语义对齐点还包括 `Open` 重置状态、`Next` 重置输出 chunk、空标量聚合一行/空分组聚合零行，以及聚合函数分配 partial state 后更新并生成最终值。MAX_COUNT/MIN_COUNT 的具体语义由 Rust `pkg/executor/aggfuncs/func_max_min_count.rs` 移植层承担；Go 测试 `pkg/executor/aggfuncs/func_max_min_count_test.go` 证明 NULL、重复极值、类型覆盖和 partial merge 预期，Rust typed 测试则覆盖真实扫描与空输入结果。
-
-重要差异是 Go `HashAggExec` 同时具有串行与多 worker 并行路径、memory/disk tracker、OOM spill、runtime/hash state stats、failpoint 和更通用的 `AggFunc` 集合；Rust `TypedHashAgg` 只实现聚焦的串行内存路径和白名单函数。Go 的 child/context 接口、锁处理和错误类型也不同。因此扩展时应对齐相关 Go 行为，但不能简单宣称两者功能等价。
+重要差异是 Go `HashAggExec` 同时具有串行与多 worker 并行路径、memory/disk tracker、OOM spill、runtime/hash state stats、failpoint 和更通用的 `AggFunc` 集合；Rust `TypedHashAgg` 只实现聚焦的串行内存路径和白名单函数。Go 的 child/context 接口、锁处理和错误类型也不同。
 
 ## 扩展指南
 
@@ -100,14 +96,3 @@ NULL 规则需要特别保持：除 `FIRST_ROW` 外，只要已求值参数中�
 改变分组或 DISTINCT 编码时必须保留 SQL 类型、时区/location、collation 和 NULL 语义，并评估编码兼容性与内存放大。增加 spill、并行或内存限制不是局部枚举改动：需要设计 group state 可移动/可合并性、child 拉取与取消同步、错误汇聚、顺序/分页、资源回收和统计接口，且应以 Go worker/spill 实现为行为参考而不是直接简化。
 
 回归测试应继续放在独立的 `pkg/executor/typed_hash_agg_test.rs`，不要嵌入生产文件。现有测试覆盖跨输入页归组和输出分页、空标量 COUNT、消费 child 前取消、MAX_COUNT/MIN_COUNT 的真实扫描及空输入；新增函数至少应补 NULL、DISTINCT、空输入、分组、多页输出、支持的 mode、错误传播和类型/collation 边界。若修改共享 count-extrema evaluator，还应同步检查 `pkg/executor/aggfuncs/func_max_min_count_test.go` 对应的 Go 语义证据和 Rust aggfuncs 自身独立测试。
-
-## 验证依据
-
-- 源文件：`pkg/executor/typed_hash_agg.rs`，核对了所有模块级 enum/struct、`TypedHashAgg` 全部方法、三个自由辅助函数及完整 `ExecExecutor` 实现；文件无条件编译项。
-- 模块与构建入口：`pkg/executor/lib.rs` 的 `pub mod typed_hash_agg`/`#[cfg(test)] mod typed_hash_agg_test`；`pkg/executor/builder.rs` 的 `BuildTypedPhysicalPlan`、`BuildTypedPhysicalPlanWithBindings`、`build_typed_physical_plan` 及 `PhysicalHashAgg` 分支。
-- crate 与接口：`pkg/executor/Cargo.toml`、`pkg/executor/adapter.rs::ExecExecutor`、`ExecutionContext`、`ChunkConfig`、`SchemaColumn`。
-- 聚合依赖：`pkg/expression/aggregation/aggregation.rs::AggFunctionMode`；`pkg/executor/aggfuncs/func_max_min_count.rs::CountExtremaAgg` 和 `build_count_extrema_function`。
-- Rust 独立测试：`pkg/executor/typed_hash_agg_test.rs` 的四项测试，分别覆盖跨页分组/分页、空标量输入、取消、count-extrema 真实扫描与空输入。
-- Go 对照：`pkg/executor/aggregate/agg_hash_executor.go::HashAggExec`、`Open`、`Next`、`unparallelExec`、`execute`、`getPartialResults`，以及 `pkg/executor/aggfuncs/func_max_min_count_test.go`。
-- RustCodeGraph：在项目根运行 `rustcodegraph status`，索引报告 11,467 个文件、307,296 个节点、1,848,419 条边；随后 `files --filter pkg/executor/typed_hash_agg` 返回无匹配，`query TypedHashAggExecutor --json` 返回空数组。由于目标文件未被当前图命中，调用边改由上述 builder/module 源码和 `rg` 精确引用核验；本文未把图中不存在的边当作已验证事实。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以指定命令确认目标文件存在且恰有 11 个固定二级标题，并人工复核文档只陈述可由以上源码、配置和测试支持的现状。

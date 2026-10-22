@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`lightning/pkg/server/lightning.rs` 是 `astersql-lightning-pkg-server` crate 的核心编排文件。crate 根 `lightning/pkg/server/lib.rs` 通过 `mod lightning; pub use lightning::*;` 导出这里的公开项；`lightning/pkg/server/Cargo.toml` 将该 crate 标记为 Go 包 `lightning/pkg/server` 的 library 移植，并直接依赖 checkpoints、progress、importer、importinto 四个已移植 crate。HTTP、TLS、PD、TiKV、对象存储、指标等当前迁移边界则主要由同 crate 的 `stubs.rs` 提供。
-
-应用主入口位于 `lightning/cmd/tidb-lightning/main.rs`：`run_with_factory` 用 `server::New` 构造实例，`RealLightning` 再把 `GoServe`、`RunServer`、`RunOnceWithOptions`、`Stop`、`TaskCanceled` 转发给本文件。常驻 server mode 与一次性导入最终都汇入 `Lightning::run`，所以本文件是控制面和任务生命周期的汇合点，而不是解析数据或写入 TiKV 的算法实现。
-
-同路径 Go 对照为 `lightning/pkg/server/lightning.go`。Rust 文件覆盖其服务生命周期、任务 HTTP API、数据源准备、资源检查、模式切换和 importer 选择；Go 文件中的 `CleanupMetas`、证书过期时间修改及私钥解析 helper 当前不在本 Rust 文件中，不能视为已经由这里移植。
+`SwitchMode` 为 `tidb-lightning-ctl` 等调用者把 `import`/`normal` 字符串转换为 TiKV protobuf mode，并遍历 store 执行切换。
 
 ## 核心职责
 
@@ -113,8 +109,6 @@ HTTP server 和 `SIGUSR1` 启动路径使用 `thread::spawn`；任务本身由�
 
 空目录错误与 Go `lightning.go` 对齐，使用 `objstore.RedactURL` 对应的共享 Rust helper；server crate 通过 Cargo 的 `astersql-objstore` 依赖接入，不能据这处错误替换推断整个存储替身已成为真实远程实现。
 
-Rust 的 `Lightning`、`initEnv/New`、`GoServe/goServe`、`RunServer`、`RunOnceWithOptions/run`、`initDataSource`、`initDBAndKeyspace`、`Stop/Status/Metrics`、任务 HTTP handlers、进度/loglevel handlers、两个检查函数、`SwitchMode`、`LightningImporter/newImporter` 均可在 `lightning.go` 找到同名或直接对应实现。主流程顺序、HTTP 路径、状态码、队列动作、open-files 估算公式和 checkpoint schema 错误分类均以 Go 为语义基准。
-
 当前差异/迁移限制包括：Rust 的 HTTP 访问包装只记录 method、URL、status，没有 Go `loggingResponseWriter` 的非 gzip body 摘要；Rust `SIGUSR1` 分支没有复用完整 mux；Rust 的 failpoint 注入为空闭包，没有恢复 Go 的动态测试值语义；Rust TaskID 来自 UUID 截断，而 Go 使用 `crypto/rand.Int`；Rust adapters 对 DB/storage/checkpoint/pauser 的传递仍有内存替身和丢失字段；import-into pause/resume 明确不支持；Go 的 `CleanupMetas` 和证书 helper 不在本文件。这些差异都应在声称“完全对齐”前单独处理。
 
 独立 Rust 测试与 Go 测试有清晰对应：`lightning_serial_test.rs` 对照 `lightning_serial_test.go` 的 init/run/rlimit/schema 场景；`lightning_server_serial_test.rs` 对照 `lightning_server_serial_test.go` 的 server mode、GET/DELETE、非 server mode HTTP 协议；`parity_test.rs` 额外集中验证 Rust/Go 公共合同；`lightning_test.rs` 回归了 HTTP 启动后再开启 server mode 时 `HttpState` 必须刷新。
@@ -130,10 +124,3 @@ Rust 的 `Lightning`、`initEnv/New`、`GoServe/goServe`、`RunServer`、`RunOnc
 修改数据源或资源检查时，应继续在 importer 构造前失败，保持空目录、storage error、rlimit 和 checkpoint schema 的错误类别；同步 `lightning_serial_test.rs`。修改 Go 对照逻辑时要逐项确认 Rust 是否使用真实外部资源还是 `stubs.rs`/内存对象，尤其关注 TLS、HTTP、SQL、PD/TiKV、对象存储的兼容与性能风险。
 
 性能敏感点包括 `MDLoader` 扫描并发 `RegionConcurrency * 2`、文件描述符估算、单个 mutex 覆盖完整 importer `Run`、HTTP state 整体锁和跨所有 store 的模式切换。任何并发优化都必须同时证明状态发布顺序、取消、关闭和 Go 可观察行为不变。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
-- 本次人工复核：`Lightning` 的数据源初始化、WalkDir 哨兵和空目录错误；Go `lightning.go` 对应错误使用 RedactURL。相邻 `lightning_test.rs` 为既有服务测试背景，未据其宣称新增脱敏场景已运行。
-- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
-- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

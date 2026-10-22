@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-backup-prepare-snap`。该包以 `br/pkg/backup/prepare_snap/lib.rs` 为 crate 根，Cargo 元数据把它对应到 Go 包 `br/pkg/backup/prepare_snap`，且依赖表为空；因此这里的错误实现是 crate 内部自足的适配层，不依赖 PingCAP 的 Go 错误库或额外 Rust 错误库（依据：`br/pkg/backup/prepare_snap/Cargo.toml`、`br/pkg/backup/prepare_snap/lib.rs`）。
-
-`lib.rs` 通过 `#[path = "errors.rs"] pub mod errors` 装入本模块，并向 crate 调用者重新导出 `Error`、`Result`、`convertErr`、`leaseExpired`、`retryLimitExceeded` 和 `unsupported`。`eof` 仍可通过 `crate::errors::eof` 使用，但没有从 crate 根重新导出。源码没有条件编译项；测试只是在 `lib.rs` 的 `cfg(test)` 下以独立文件挂载。
+为租约过期、不支持、重试耗尽和流结束提供稳定构造器，使 `stream.rs`、`prepare.rs` 与 Go 版本共享关键文案或控制信号。
 
 ## 核心职责
 
@@ -87,9 +85,9 @@ RustCodeGraph 状态显示该索引包含目标文件的 21 个符号，文件�
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/backup/prepare_snap/errors.go` 定义 `convertErr`、`leaseExpired`、`unsupported`、`retryLimitExceeded` 四个函数。Rust 版本逐一保留名称、nil/`None` 分支和三条固定业务文案：Go 的 `errors.New(err.Message)` 对应 Rust 的 `Error::new(err.Message.clone())`。
+Rust 版本逐一保留名称、nil/`None` 分支和三条固定业务文案：Go 的 `errors.New(err.Message)` 对应 Rust 的 `Error::new(err.Message.clone())`。
 
-Rust 版本为承接 Go 包普遍使用的 `errors.Annotate`/`Annotatef`，额外实现了本地 `Error`、`Result` 和 cause 链；这些在 Go 文件中由 `github.com/pingcap/errors` 提供，而不是 `errors.go` 自己定义。Rust 的 `annotatef` 接收已格式化的 `String`，不是 Go 风格的格式串与变参。
+Rust 版本为承接 Go 包普遍使用的 `errors.Annotate`/`Annotatef`，额外实现了本地 `Error`、`Result` 和 cause 链；这些在 Go 文件中由 `github.com/pingcap/errors` 提供，而不是 `errors.go` 自己定义。
 
 `eof()` 也属于 Rust 迁移适配：Go mock/流直接返回标准 `io.EOF`，Go Finalize 用 `err == io.EOF` 判定结束；Rust 用私有 `ErrorKind::Eof` 和 `is_eof()` 提供对应身份。该身份只检查最外层，和 Go 侧经包装后需区分 cause 的完整错误生态并不等价，当前调用顺序通过在包装前识别 EOF 避开这一差异。
 
@@ -100,13 +98,3 @@ Rust 版本为承接 Go 包普遍使用的 `errors.Annotate`/`Annotatef`，额�
 - 改动 `annotate`、`Display` 或 `source()` 时，要同步独立测试 `br/pkg/backup/prepare_snap/errors_test.rs`，并检查 `prepare_test.rs`、`parity_test.rs` 中对包装文案和重试/Finalize 行为的断言；不要把测试写回生产源文件。
 - 改动三个固定业务构造器时，必须与 `errors.go` 同步，并验证 `stream.go`/`prepare.go` 对应调用点；文案兼容会影响现有子串断言和运维日志。
 - 若引入外部错误依赖，需更新 `Cargo.toml` 并重新评估当前无依赖、可克隆、可跨线程传递的性质；本文件处于高频错误路径，但正常成功路径不会分配这些错误，性能风险主要来自深链格式化和克隆。
-
-## 验证依据
-
-- 目标源码：`br/pkg/backup/prepare_snap/errors.rs`，核对全部 137 行、`Error`/`ErrorKind`、2 个 trait 实现、2 个 `From` 实现、`Result` 和 5 个辅助函数；无条件编译项。
-- crate 边界：`br/pkg/backup/prepare_snap/Cargo.toml`、`br/pkg/backup/prepare_snap/lib.rs`；确认 crate 名、Go 包映射、空依赖表、模块挂载和重新导出范围。
-- 直接 Rust 调用：`br/pkg/backup/prepare_snap/stream.rs`、`prepare.rs`、`env.rs`；确认协议转换、lease/未知类型事件、重试耗尽、上下文包装和 EOF 消费位置。
-- Go 对照：`br/pkg/backup/prepare_snap/errors.go`、`stream.go`、`prepare.go`；确认四个函数、固定文案及其生产调用点。
-- 独立测试：`br/pkg/backup/prepare_snap/errors_test.rs` 验证 EOF 身份边界；`parity_test.rs::contract_error_retry_limit` 和 `contract_resource_finalize_clears_lease` 验证重试文案、三类业务文案与 `convertErr` 的空值/消息转换；`prepare_test.rs` 与 Go `prepare_test.go` 提供流结束、失败重试和租约场景证据。
-- RustCodeGraph：`status` 显示 7,032 个 Rust 文件已索引；`files --filter br/pkg/backup/prepare_snap` 确认目标、Go 对照及独立测试都在索引范围；`node --file .../errors.rs` 返回完整源码及 41 个使用文件；`query` 定位 Rust/Go 同名符号；`callers/callees` 的通用名结果存在歧义，故调用边以精确目录搜索和源码复核为准。
-- 本任务是纯文档分析，按任务计划不运行 Cargo；交付前以 `test -f` 和固定标题的 `rg -c` 组合命令验证文档存在且恰有 11 个固定二级章节（退出码 0），并人工检查未把本地适配层描述为完整 PingCAP 错误生态。

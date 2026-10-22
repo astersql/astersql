@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（`pkg/expression/Cargo.toml` 的 `[package]` 与 `[lib]`），由 `pkg/expression/lib.rs:359-360` 以 `#[path = "vectorized.rs"] mod vectorized_kernel;` 装配成私有模块。它只定义一个公开到父模块可见范围内的函数 `genVecFromConstExpr`，负责把一次标量表达式求值结果广播成一列。
-
-需要特别区分当前接线与同名实现：crate 根在 `pkg/expression/lib.rs:368` 再导出的是 `core_support::*`，而没有再导出 `vectorized_kernel::*`。因此 `pkg/expression/column.rs` 和 `pkg/expression/constant.rs` 中经 `use crate::*` 解析到的是 `pkg/expression/core_support.rs:722` 的同名函数；本文件函数的已确认直接使用者是 `pkg/expression/scalar_function_37_aster_unit_test.rs:294,299`。RustCodeGraph 因同名符号也把 `column.rs`、`constant.rs` 的调用列在本函数名下，阅读调用图时必须结合模块可见性消歧。
+只定义一个公开到父模块可见范围内的函数 `genVecFromConstExpr`，负责把一次标量表达式求值结果广播成一列。
 
 ## 核心职责
 
@@ -61,11 +59,11 @@ crate 边界由 `pkg/expression/Cargo.toml` 确认：库入口是 `lib.rs`、关
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/vectorized.go:23-128`，函数名、参数角色、缺省一行、空输入清理、类型分派、NULL 广播以及错误文本均一一对应。Rust 用 `Result` 与 `?` 代替 Go 的三返回值加显式 `if err != nil`，用 trait object 借用代替 Go interface 值。
+Rust 用 `Result` 与 `?` 代替 Go 的三返回值加显式 `if err != nil`，用 trait object 借用代替 Go interface 值。
 
-固定宽度非 NULL 写法不同：Go 先 `Resize*(n, false)` 再取得类型 slice 批量赋值；Rust 先 `Reset` 再逐项 `Append*`。时长方面 Go 写入 `types.Duration.Duration` 字段，Rust `AppendDuration(v.clone())` 交给 Rust 列 API。JSON、向量和字符串都保持 reserve 后逐行 append；Rust 对拥有所有权或复合值的类型显式 `clone`/`Clone`。
+固定宽度非 NULL 写法不同：Go 先 `Resize*(n, false)` 再取得类型 slice 批量赋值；Rust 先 `Reset` 再逐项 `Append*`。
 
-迁移状态存在一项结构性差异：本文件是 Go 同路径函数的近直接移植，但生产 `Constant`/`CorrelatedColumn` 当前使用 `core_support.rs` 中的同名实现。后者要求非可选 `&Chunk`、错误文案也不同。因而不能宣称本文件已成为生产广播路径的唯一实现；统一两份实现属于后续接线/去重工作，不在本次纯文档任务范围内。
+迁移状态存在一项结构性差异：本文件是 Go 同路径函数的近直接移植，但生产 `Constant`/`CorrelatedColumn` 当前使用 `core_support.rs` 中的同名实现。后者要求非可选 `&Chunk`、错误文案也不同。
 
 ## 扩展指南
 
@@ -74,11 +72,3 @@ crate 边界由 `pkg/expression/Cargo.toml` 确认：库入口是 `lib.rs`、关
 任何生产接线调整都必须先决定两份同名实现的权威来源：若让 `vectorized_kernel` 服务生产调用，需要显式再导出或使用限定路径，并处理 `Option<&Chunk>` 与 `&Chunk` 签名差异；若保留 `core_support` 为生产实现，则本文件可能只用于兼容测试。不要仅依据 RustCodeGraph 的裸名称 caller 输出替换接线。
 
 测试应放在独立文件，不能嵌入本源文件。至少扩展 `pkg/expression/scalar_function_37_aster_unit_test.rs`，覆盖 NULL、`None`、零行不求值、求值错误、unsupported 类型以及每个类型族；若改变生产 `Constant`/`CorrelatedColumn` 路径，还应同步 `pkg/expression/constant_test.rs`、`pkg/expression/column_test.rs` 及 Go 的 `constant_test.go`/`column_test.go`。兼容风险集中在 NULL 位图、selection 后逻辑行数、时间戳布局和错误文案；性能风险集中在大 `n` 下逐项 clone/append。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/expression/vectorized.rs` 确认目标文件及 2 个符号记录；`node --file ...` 读取了完整 148 行源文件。
-- RustCodeGraph `query genVecFromConstExpr` 找到 `vectorized.rs:26`、`core_support.rs:722` 与 `vectorized.go:23` 三个同名定义；`node genVecFromConstExpr` 给出的裸名称 caller 包含 `column.rs`/`constant.rs`，并已用 `lib.rs:359-368` 的模块声明与再导出规则人工消歧。
-- 已阅读 Rust 路径：`pkg/expression/vectorized.rs`、`lib.rs`、`column.rs:45-134`、`constant.rs:240-343`、`core_support.rs:722-826`、`scalar_function_37_aster_unit_test.rs:283-302`。
-- 已阅读 crate/Go/测试路径：`pkg/expression/Cargo.toml`、`vectorized.go`、`constant_test.go:478-533`、`column_test.go`、`column_test.rs:296-382`。包内不存在 `doc.go`，因此没有可读取的最近包契约文件。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构检查，并人工复核唯一生产物、源码链接、当前接线边界与未覆盖测试说明。

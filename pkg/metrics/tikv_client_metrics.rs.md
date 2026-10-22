@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate；`pkg/metrics/Cargo.toml` 将该 crate 的入口指定为 `lib.rs`，而 `pkg/metrics/lib.rs` 以公开模块 `tikv_client_metrics` 挂载它。它不是 Rust TiKV 客户端的埋点实现，而是 TiDB 指标层的一组 **client-go 描述符兼容 collector**：AsterSQL 使用的 Rust TiKV 客户端自带 Prometheus 0.13 私有注册表，不能直接向本 crate 使用的 Prometheus 0.14 注册表提供 TiDB 仪表盘所需的那 8 个 client-go collector，因此这里在 0.14 侧重建相同的名称、标签和桶定义。
-
-模块位于包级指标初始化链上：`pkg/metrics/metrics.rs::RegisterMetrics` 调用本文件的 `RegisterMetrics`，把 collector 注册到默认 registry；同文件的 `ToggleSimplifiedMode` 调用 `unused_collectors`，在普通模式与简化模式之间注销或重新注册它们。指标值真正在哪里被观测需要区分实现：Go 版由 client-go 请求路径更新；本仓库 Rust 搜索只发现本模块定义、注册及测试引用，没有发现业务请求路径对这 8 个静态量调用 `observe`/`inc`，所以当前有注册兼容性，但不能据此声称 Rust TiKV 请求会填充这些序列。
+通过 `RegisterMetrics` 将整组 collector 注册到调用方提供的 `Registry`，并保留首个注册错误。
 
 ## 核心职责
 
@@ -92,11 +90,8 @@ RustCodeGraph 将文件识别为 4 个节点（文件节点，以及 `InitMetric
 
 ## 与 Go 版本的对应关系
 
-仓库 Go 入口 `pkg/metrics/metrics.go::ToggleSimplifiedMode` 直接引用 `github.com/tikv/client-go/v2/metrics` 的同名 8 个 collector，并把它们和其他“不被 Grafana 使用”的指标一起切换。`go.mod` 固定 client-go 为 `v2.0.8-0.20260928031501-8edb23f6c7ee`；该版本模块缓存中的 `metrics/metrics.go` 证明这 8 项的 namespace、subsystem、name、help、标签和桶与本文件逐项一致。
-
 Go 与 Rust 的关键差异是所有权和数据来源：
 
-- Go 版 collector 由 client-go 创建、注册并在真实客户端路径中更新。例如 `rawkv/rawkv.go` 观测 RawKV 命令耗时，`internal/client/conn_batch.go` 增加过载计数，`internal/client/client.go` 观测连接回收，`internal/locate/region_request.go` 观测 Region 请求重试，`internal/locate/store_cache.go` 观测状态 API 耗时，`metrics::ObserveReadSLI` 根据键数、大小和耗时选择小读取耗时或读取吞吐量。
 - Rust 文件只在 `astersql-metrics` 的 Prometheus 0.14 侧复制描述符并负责注册生命周期；它没有上述请求路径接线。模块注释明确说明 Rust TiKV 客户端的 Prometheus 0.13 私有 registry 无法直接提供这些 0.14 collector。
 - Go `ToggleSimplifiedMode` 自身不返回错误：恢复注册遇错时记录日志并停止；Rust `ToggleSimplifiedMode` 与本文件 `RegisterMetrics` 使用 `Result` 将注册错误向上返回。两边注销都不把失败作为切换失败。
 - Go 定义可接受额外 `constLabels`；本文件工厂调用没有设置常量标签。当前文档只确认默认描述符兼容，不推断带 keyspace 等常量标签配置时仍完全等价。
@@ -112,12 +107,3 @@ Go 与 Rust 的关键差异是所有权和数据来源：
 5. 如果目标是让 Rust TiKV 请求真正产生样本，还必须在 Rust 客户端或适配边界建立观测接线，并单独验证样本值；仅新增这里的描述符不能完成数据采集。跨 Prometheus 0.13/0.14 桥接还需评估依赖版本、重复注册、状态共享和抓取性能。
 
 兼容风险主要是仪表盘查询因名称/标签变化而失效、直方图桶变化导致聚合不可比，以及同名 collector 重复注册。性能风险主要来自高基数 `store`/`type` 标签和新增直方图桶；正确性风险则是注册了空兼容序列却误认为底层客户端已经埋点。
-
-## 验证依据
-
-- 源文件：`pkg/metrics/tikv_client_metrics.rs`，核对了 2 个常量、8 个 `LazyLock` 静态 collector、3 个公开函数，以及 `RegisterMetrics -> unused_collectors -> InitMetrics` 的内部流程。
-- crate 与模块边界：`pkg/metrics/Cargo.toml`（`astersql-metrics`、`prometheus = "0.14"`、`astersql-metrics-common` 路径依赖）和 `pkg/metrics/lib.rs`（公开模块声明）。该包没有 `doc.go`，因此以 crate 入口注释作为最近的包级契约。
-- Rust 上游与测试：`pkg/metrics/metrics.rs::{RegisterMetrics, ToggleSimplifiedMode}`；`pkg/metrics/metrics_internal_test.rs::test_tikv_simplified_collectors_match_go_descriptors`。仓库搜索未发现同名独立 `tikv_client_metrics*_test.rs`，相关回归测试位于上述独立测试模块。
-- Go 对照：`pkg/metrics/metrics.go::ToggleSimplifiedMode`；`go.mod` 中 client-go 固定版本；模块缓存 `github.com/tikv/client-go/v2@v2.0.8-0.20260928031501-8edb23f6c7ee/metrics/metrics.go`、`metrics/shortcuts.go`、`rawkv/rawkv.go`、`internal/client/{conn_batch.go,client.go}`、`internal/locate/{region_request.go,store_cache.go}`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件且目标文件已收录；`files --filter pkg/metrics/tikv_client_metrics.rs` 显示该文件有 4 个符号；`node --file ... --offset 1 --limit 400` 返回完整 173 行源码及引用摘要；`query tikv_client_metrics --json` 返回文件节点和三个函数节点；`callers`/`callees` 输出确认内部调用边，并暴露同名符号歧义，故调用者另用路径限定的 `rg` 复核。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且恰好包含这 11 个固定二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（见 `pkg/expression/Cargo.toml`），由 `pkg/expression/lib.rs:261-262` 以私有模块 `builtin_string_kernel` 装配。它不是 SQL 表达式框架的完整函数类实现，而是从 Go `pkg/expression/builtin_string.go` 抽出的“求值无关”字符串语义内核：输入已经是 Rust 字符串、字节串或整数，输出普通值或 `Option`，不直接持有 `BuildContext`、`EvalContext`、`Expression`、行数据、类型元数据、告警上下文或 protobuf 签名。
-
-当前运行时接线是局部的。`pkg/expression/builtin.rs` 的 `CoreBuiltin` 构造与求值路径直接调用本模块的 `charLength`、`hexInt`、`hexString`、`rpadUtf8`、`insertUtf8`、`substringBytes`、`substringUtf8`、`trimLeft`、`trimRight` 和 `trimBoth`；文件中的其他公开函数目前主要由独立测试调用，不能据此认定全部 44 项规格都已经接入 SQL 执行主链。
+实现两类边界：binary 路径按字节处理，UTF-8 路径按 Unicode 标量值（Rust `char`，对应 Go `rune`）处理。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@ SQL NULL 在这里没有统一类型：`concat`、`concatWS` 和 `elt` 的 `Opti
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照是 `pkg/expression/builtin_string.go`，测试对照是 `pkg/expression/builtin_string_test.go`。Rust 函数名大体保留 Go 的驼峰命名和边界算法，binary/UTF-8 双签名对应 Go 中按 `[]byte` 与 `[]rune` 分支的 builtin signature；`FORMAT_MAX_DECIMALS`、包大小检查、位置规则、Base64 换行、TRANSLATE 重复来源字符规则及 `LOAD_FILE` 返回 NULL 都有对应测试证据。
+Rust 函数名大体保留 Go 的驼峰命名和边界算法，binary/UTF-8 双签名对应 Go 中按 `[]byte` 与 `[]rune` 分支的 builtin signature；`FORMAT_MAX_DECIMALS`、包大小检查、位置规则、Base64 换行、TRANSLATE 重复来源字符规则及 `LOAD_FILE` 返回 NULL 都有对应测试证据。
 
-结构上两者并不等价：Go 文件定义完整的 function class、builtin signature、Clone、类型/长度/charset/collation 推导、行求值、错误与 statement warning、向量化标记及 protobuf code；Rust 本文件只保留纯算法和简化规格。Rust 的 `case_insensitive: bool` 不能替代 Go collator 的完整排序规则，`convertCharset` 和 FORMAT 错误通道也比 Go 简化。因此扩展时应复用这里的算法，但必须在 `builtin.rs` 或相应框架层补足类型系统、上下文和错误/告警接线。
+结构上两者并不等价：Go 文件定义完整的 function class、builtin signature、Clone、类型/长度/charset/collation 推导、行求值、错误与 statement warning、向量化标记及 protobuf code；Rust 本文件只保留纯算法和简化规格。Rust 的 `case_insensitive: bool` 不能替代 Go collator 的完整排序规则，`convertCharset` 和 FORMAT 错误通道也比 Go 简化。
 
-独立 Rust 测试 `builtin_string_test.rs` 列出与 Go 同名的测试入口并覆盖 NULL、边界长度、二进制/多字节字符、签名和 locale；`builtin_string_25_aster_unit_test.rs` 则对本文件公开辅助函数给出直接断言。两者均与生产源文件分离，符合仓库测试组织要求。
+独立 Rust 测试 `builtin_string_test.rs` 列出与 Go 同名的测试入口并覆盖 NULL、边界长度、二进制/多字节字符、签名和 locale；`builtin_string_25_aster_unit_test.rs` 则对本文件公开辅助函数给出直接断言。
 
 ## 扩展指南
 
@@ -79,11 +77,3 @@ Go 权威对照是 `pkg/expression/builtin_string.go`，测试对照是 `pkg/exp
 修改位置/长度算法时优先复用 `substringBounds` 一类统一边界转换，避免一基/零基和正负位置分支漂移。修改会分配内存的函数时，先用 checked arithmetic 预算，再应用真实包限制；不要把 `usize::MAX` 当成最终会话配置。新增字符集或 collation 行为时，应评估 `encoding_rs` 映射和 `case_insensitive` 简化是否足够，完整 SQL 语义应接入 crate 现有 charset/collator 设施。
 
 测试应同步更新独立文件，而不是内嵌进 `builtin_string.rs`：纯算法回归放入 `builtin_string_25_aster_unit_test.rs`；Go 对齐场景放入 `builtin_string_test.rs`，并核对 `builtin_string_test.go`；若新增运行时接线，还应覆盖 `builtin.rs` 的构造、SQL NULL、返回类型/charset/collation、错误或 warning；向量路径变化则同步相应 `builtin_string_vec*_test.rs`。兼容性重点是多字节边界、collation、NULL 与警告的区分；性能重点是全量字符收集、重复小写转换、映射构建和大结果分配。
-
-## 验证依据
-
-- 源码与装配：`pkg/expression/builtin_string.rs`（常量、规格及全部辅助函数），`pkg/expression/lib.rs:261-262,823-824`（生产模块与测试重导出），`pkg/expression/builtin.rs`（核心工厂、注册表和已接线求值分支）。目标包不存在 `doc.go`。
-- crate 边界：`pkg/expression/Cargo.toml` 的 `[lib] path = "lib.rs"`、`base64 = "0.22"`、`encoding_rs = "0.8.35"` 以及 `package.metadata.porting.go-package = "pkg/expression"`。
-- Go 对照：`pkg/expression/builtin_string.go` 与 `pkg/expression/builtin_string_test.go`；Rust 测试：`pkg/expression/builtin_string_test.rs`、`pkg/expression/builtin_string_25_aster_unit_test.rs`，并参考 `builtin_string_vec_test.rs` 与 `builtin_string_vec_generated_test.rs` 的模块装配。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`query reverseBytes` 与 `query formatByLocale` 命中目标符号，精确 `callers`/`callees` 查询未返回边，因此调用关系由上述直接源码位置核验。最初 `files --filter pkg/expression/builtin_string` 未列出文件，故未把图输出当作唯一依据。
-- 结构验证应确认本文存在且固定二级标题恰为 11 个；本任务是纯文档分析，按计划不运行 Cargo。

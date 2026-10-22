@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[源文件 `interface.rs`](./interface.rs) 是 `astersql-ingestor-ingestcli` crate 的公共协议层，定义“把 KV 流式写给 TiKV worker 生成 SST，再把该 SST 导入目标 Region”所需的数据类型和 trait。crate 根 `pkg/ingestor/ingestcli/lib.rs` 将 `interface` 声明为私有子模块，再以 `pub use interface::*` 重新导出这些符号；真正的 HTTP、后台线程和线格式实现位于同 crate 的 `client.rs`，错误分类位于 `ingest_err.rs`。
-
-`pkg/ingestor/ingestcli/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/ingestor/ingestcli`，库入口为 `lib.rs`。本文件自身只直接依赖标准库的 `Arc` 和 crate 根导出的 `Error`、`NextGenSstMeta`，不执行网络 I/O，也没有条件编译项、模块级常量或自由函数。
-
-当前接线范围要谨慎理解：Rust 生产代码中，`ClientImpl`、`WriteClientImpl`（`client.rs`）和独立 mock（`mock/client_mock.rs`）实现这些 trait；搜索 `pkg/ingestor/**/*.rs` 未发现 Rust `ingestctrl` 生产路径消费该 crate。完整应用级调用顺序目前仍由 Go `pkg/ingestor/ingestctrl/job_worker.go` 直接证明。因此本文件是可用的 Rust 接口与实现边界，但不能据此宣称 Rust 导入控制主链已经完成接线。
+提供 `Write`、`Recv`、`Close`、`WriteClient`、`Ingest` 这些 Go 风格兼容别名；它们只负责克隆必要的请求并转发给 snake_case 核心方法，不包含另一套行为。
 
 ## 核心职责
 
@@ -94,8 +90,6 @@ Go 风格别名会克隆请求，因此保持语义但可能增加内存和 CPU 
 
 ## 与 Go 版本的对应关系
 
-`interface.rs` 对应 `pkg/ingestor/ingestcli/interface.go`，保留了 `WriteRequest`、`WriteResponse`、`IngestRequest`、`WriteClient` 和 `Client` 的核心职责及调用顺序。`Write`/`Recv`/`Close`、`WriteClient`/`Ingest` 大写别名让命名也可与 Go 对照。
-
 主要迁移差异是：
 
 - Go 的 KV 使用 `[]*import_sstpb.Pair`，Region 使用 `*split.RegionInfo`；Rust 定义拥有型本地镜像 `Pair`、`RegionInfo` 等，未直接绑定 protobuf/split crate。
@@ -106,7 +100,7 @@ Go 风格别名会克隆请求，因此保持语义但可能增加内存和 CPU 
 - Go `Write`/`Ingest` 借用指针；Rust snake_case 方法取得请求所有权，大写兼容别名通过深克隆维持借用调用形态。
 - Go `writeClient` 用 `io.Pipe`、goroutine 和 WaitGroup；Rust实现用有界同步通道、线程、`JoinHandle` 和 `Mutex<Option<Result<...>>>`。接口层保持相同的多写一次接收与错误路径关闭语义。
 
-Go `job_worker.go` 是当前完整主链证据；Rust `client_test.rs` 证明具体传输语义，但 Rust `ingestctrl` 尚未发现生产接线。后续迁移不能只复制类型签名，还需保留上游分批、清理和延迟错误处理行为。
+Go `job_worker.go` 是当前完整主链证据；Rust `client_test.rs` 证明具体传输语义，但 Rust `ingestctrl` 尚未发现生产接线。
 
 ## 扩展指南
 
@@ -116,14 +110,3 @@ Go `job_worker.go` 是当前完整主链证据；Rust `client_test.rs` 证明具
 - 新增 Region/Store 字段时，要区分“为模型对齐保留”与“实际在线格式使用”；同步测试 URL、Store 选择、缺 leader/epoch 等边界，避免只增加未消费字段。
 - 如需减少大请求复制，优先让新 Rust 调用方使用 snake_case 所有权 API；若改变 Go 风格别名签名或克隆策略，需要评估 mock、外部 crate API 兼容性和内存峰值。
 - 将此接口接入 Rust `ingestctrl` 时，应以 Go `objStoreRegionJobWorker` 为行为基线：按大小分批、出错必清理、最后 `recv`、保存 `WriteResponse`、再按 Region 调 `ingest`；同时为生产接线另建独立测试，而不是把测试嵌入本源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 `interface.rs` 被识别为 29 个符号。
-- RustCodeGraph `node --file pkg/ingestor/ingestcli/interface.rs`：核对了本文件 174 行全部定义、可见性、派生、默认方法和 trait 约束。
-- RustCodeGraph `query`：查询了 `WriteClient`、`Client`、`SplitClient`、`RequestContext`、`Pair`、`IngestRequest`，定位到 Rust trait、具体实现、mock、Go 接口和相关测试。
-- RustCodeGraph 调用关系：确认五个 Go 风格默认方法向 snake_case 方法转发；确认 `client.rs::ClientImpl`/`WriteClientImpl` 为具体实现，`client_test.rs` 覆盖关键调用。
-- 已读生产与声明文件：`pkg/ingestor/ingestcli/interface.rs`、`lib.rs`、`client.rs`、`Cargo.toml`，以及 Go 对照 `interface.go`、`client.go`、上游 `pkg/ingestor/ingestctrl/job_worker.go`。
-- 已读独立测试：`pkg/ingestor/ingestcli/interface_test.rs` 验证 RequestContext 原样进入 `SplitClient`；`client_test.rs` 验证写入线格式、SST 访问、延迟 HTTP 错误、成功/失败 ingest、Store 地址选择和耗时指标。
-- 生产 Rust 搜索 `astersql_ingestor_ingestcli|ingestcli::|WriteRequest|IngestRequest|SharedSplitClient`：消费点限于本 crate 实现和 mock，未发现 Rust `ingestctrl` 主链接线；这构成本文迁移状态判断的直接证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证目标文件存在且恰含 11 个固定二级标题，并人工复核未把接口模型误写成已实现校验或已接线功能。

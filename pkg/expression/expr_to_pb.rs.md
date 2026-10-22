@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`expr_to_pb.rs` 是 `astersql-expression` crate 中的“表达式→TiPB”边界适配层。`pkg/expression/lib.rs` 将它声明为私有模块 `expr_to_pb_kernel`，再通过 `pub use expr_to_pb_kernel::*` 对外暴露公开 API。该文件把 root 端的 `Expression` 树、`FieldType` 以及 GROUP BY / ORDER BY 项编码为 `tipb` 协议对象，供 planner 构造 TiKV/TiFlash DAG 请求；它只在内存中构造消息，不发送 RPC。
-
-crate 边界由 `pkg/expression/Cargo.toml` 定义：库入口为 `lib.rs`，本文件直接依赖 `protobuf` 2.8 的枚举转换、Git 固定 revision 的 `tipb`，并通过 crate 内再导出使用 `astersql-kv`、`astersql-types`、codec、collate 和下推黑名单实现。直接独立 Rust 测试在 `pkg/expression/expr_to_pb_test.rs`，由 `lib.rs` 中的 `#[cfg(test)]` 模块声明接入，没有把测试嵌入生产文件。
+`ToPBFieldType`、`ToPBFieldTypeWithCheck` 和 `FieldTypeFromPB` 处理类型元数据的双向转换，并在 TiFlash 边界拒绝非法 Decimal。
 
 ## 核心职责
 
@@ -81,17 +79,12 @@ crate 边界由 `pkg/expression/Cargo.toml` 定义：库入口为 `lib.rs`，本
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/expression/expr_to_pb.go`。Rust 的公开函数、`PbConverter`、四类表达式分派、Datum 映射、新旧 ColumnRef 协议、字段类型往返、TiFlash Decimal 检查、GROUP/ORDER BY 包装与 Go 的同名逻辑逐项对应。关键兼容行为包括：
-
 - Projection 的顶层列不检查 Set/Geometry/Enum 等计算类型限制。
-- Float 负零留在 root，避免 `ATAN2` 等函数因符号位丢失改变结果。
-- MySQL Time 需要 DAG 类型能力，且按 EvalContext 时区编码。
-- 新 collation 开启时，ScalarFunction 把派生 collation 强制写入返回类型副本。
 - 标量函数同时检查函数名和完整签名键；Rust 用 TiPB 枚举的 `Debug` 名称复现 Go `String()` 用于第二级键。
 
 实现形式的差异是：Go 使用指针/nil 和三元 `(tp, val, ok)`，Rust 用拥有值的 `Option`/`Result`；Go 在 `scalarFuncToPBExpr` 对无效 PbCode 包含测试 failpoint panic，Rust 生产文件只返回 `None`；Go 将 metadata protobuf 在此处 marshal，Rust 的 `builtinFunc::metadata() -> Option<Vec<u8>>` 已经交付序列化 bytes，因此这里直接写入 `Expr.val`。这些是 API/基础设施差异，不应在后续修改中误当成可删减的 Go 行为。
 
-Rust 回归 `pkg/expression/expr_to_pb_test.rs` 覆盖字段类型往返、TiFlash Decimal、常量/负零、Projection 特例、新旧列协议、标量函数与 GROUP/ORDER BY。Go 的 `pkg/expression/expr_to_pb_test.go` 更广泛地覆盖函数签名、排序规则、下推开关和负零回归，是扩展 Rust 测试时的语义源。
+Go 的 `pkg/expression/expr_to_pb_test.go` 更广泛地覆盖函数签名、排序规则、下推开关和负零回归，是扩展 Rust 测试时的语义源。
 
 ## 扩展指南
 
@@ -101,13 +94,3 @@ Rust 回归 `pkg/expression/expr_to_pb_test.rs` 覆盖字段类型往返、TiFla
 - 修改列协议：必须同时保持 modern `Index + FieldType` 和 legacy `ID` 分支，并继续拒绝 legacy ID `0/-1`。Projection 的 `check_type=false` 是可见语义，不能在普通 `ExprToPB` 中全局关闭类型检查。
 - 扩展 `FieldType`：必须对称更新 `ToPBFieldType` 与 `FieldTypeFromPB`，并增加往返测试；若是 TiFlash 特有限制，放在 `ToPBFieldTypeWithCheck` 并保留其他 store 的 Go 兼容行为。
 - 性能审查重点是大型表达式树的递归深度、metadata/Datum bytes 拷贝和批量 `Vec` 分配；正确性审查重点是能力检查、排序规则、时区、Decimal 精度和负零。测试仍应放在独立 `pkg/expression/expr_to_pb_test.rs`，不应放回生产文件。
-
-## 验证依据
-
-- 生产源：`pkg/expression/expr_to_pb.rs` 全文（符号、分支、错误和资源生命周期）；`pkg/expression/lib.rs` 的模块声明、再导出与独立测试接线。目标包下无 `doc.go`，因此没有可读的包级 Go 契约文件。
-- crate 边界：`pkg/expression/Cargo.toml`，包括 `[lib] path = "lib.rs"`、`protobuf = "=2.8.0"`、固定 revision 的 `tipb` 和本地 kv/types/codec/collate 相关依赖。
-- RustCodeGraph：`status` 显示索引可用（11,467 files / 307,296 nodes）；`query` 找到 Rust/Go 同名符号；`node expr_to_pb.rs::ExpressionsToPBList`、`node expr_to_pb.rs::ExprToPB`、`node expr_to_pb.rs::scalarFuncToPBExpr`、`node expr_to_pb.rs::encodeDatum`、`node expr_to_pb.rs::ToPBFieldTypeWithCheck` 和 `node expr_to_pb.rs::SortByItemToPB` 核对了主要调用边。独立 `callers` 命令未返回完整跨 crate 边，故用下列真实源文件调用点补齐。
-- 上下游源：`pkg/expression/pushdown_context.rs`、`pkg/expression/aggregation/agg_to_pb.rs`、`pkg/expression/aggregation/{aggregation,window_func}.rs`、`pkg/expression/grouping_sets.rs`、`pkg/planner/core/operator/physicalop/{physical_projection,physical_hash_join,physical_topn,physical_sort,physical_limit,physical_window,physical_table_scan,physical_selection,physical_exchange_sender}.rs` 以及 `pkg/session/runtime/relational_scan.rs`。
-- Go 对照：`pkg/expression/expr_to_pb.go` 的全部同名实现；`pkg/expression/expr_to_pb_test.go` 中的常量/函数签名、GROUP/ORDER BY、collation、下推开关和负零用例。
-- Rust 测试：`pkg/expression/expr_to_pb_test.rs` 的 7 个独立用例，覆盖 FieldType 往返、TiFlash/TiKV Decimal 分歧、Decimal/非 Decimal 边界、字面量与负零、Projection/协议版本、ScalarFunction/列表错误以及 GROUP/ORDER BY。`pkg/expression/builtin_registry_aster_unit_test.rs` 额外验证注册 builtin 的 `ExprToPB` 签名编码。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 shell 命令校验文件存在且恰有 11 个固定二级标题，并人工复核不含源码整段复制或无依据的支持性声明。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`sql_type.rs` 属于 `astersql-dumpling-export` library crate。crate 根文件 [`dumpling/export/lib.rs`](lib.rs) 通过 `include!("sql_type.rs")` 将它并入与 Go `dumpling/export` 包相近的单包命名空间，而不是声明独立 Rust module；因此本文件可直接使用 crate 根引入的 `HashSet`、`OnceLock`，以及先于它载入的 [`stubs.rs`](stubs.rs) 中的 `RawBytes` 和 [`ir.rs`](ir.rs) 中的 `RowReceiver`。
-
-它位于数据库结果解码和导出格式 writer 之间：一部分代码把数据库原生类型名分为字符串、整数、数值和二进制集合；另一部分代码把一行的各列保存为 `Option<Vec<u8>>`，供 SQL、CSV、Parquet writer 消费。它不解析 SQL 类型声明，也不把原始字节转换成 Rust 数值。
-
-[`dumpling/export/Cargo.toml`](Cargo.toml) 将 crate 定义为 `astersql-dumpling-export`，`[lib] path = "lib.rs"`，porting metadata 对应 Go 包 `dumpling/export`。本文件没有自己的 feature 或直接外部依赖；最终的 SQL/CSV/Parquet 编码由 crate 依赖的 dumpformat crates 和 `parquet` 完成。
+类型集合只影响后续编码策略或分片键选择，不决定 `RowReceiverArr` 的槽位类型：所有列统一表示为原始字节，`None` 表示 SQL `NULL`，`Some(vec![])` 表示非 NULL 的空值（`RawBytes` 定义见 [`stubs.rs`](stubs.rs)）。
 
 ## 核心职责
 
@@ -88,13 +84,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现是 [`dumpling/export/sql_type.go`](sql_type.go)。四组类型名和总体用途保持一致：Go 在 `initColumnTypeSets` 中填充 package-level map；Rust 用 `OnceLock<HashSet<_>>` 实现可从任一查询函数安全惰性调用的线程安全初始化。Go 的 `dataTypeNumArr` 由整数数组追加构造，Rust 显式列出同一批整数名，因此扩展整数类型时必须同时维护 Rust 的整数与数值列表。
+四组类型名和总体用途保持一致：Go 在 `initColumnTypeSets` 中填充 package-level map；Rust 用 `OnceLock<HashSet<_>>` 实现可从任一查询函数安全惰性调用的线程安全初始化。Go 的 `dataTypeNumArr` 由整数数组追加构造，Rust 显式列出同一批整数名，因此扩展整数类型时必须同时维护 Rust 的整数与数值列表。
 
-Go 的 `MakeRowReceiver` 返回指针，Rust 返回拥有值；两者都只使用列数。Go `BindAddress` 首次调用时把 `args[i]` 设为内部 `sql.RawBytes` 的指针，此后因 `bound` 而直接返回；Rust 的 stub `Rows::Scan` 接收值槽位，无法保留同样的指针关系，所以 Rust 每次都从 `args` 克隆数据，且 `ir.rs::decodeFromRows` 在成功扫描后第二次绑定。这不是简单逐句翻译，而是为当前 Rust Rows adapter 保留实际行为的适配。
+Go 的 `MakeRowReceiver` 返回指针，Rust 返回拥有值；两者都只使用列数。Go `BindAddress` 首次调用时把 `args[i]` 设为内部 `sql.RawBytes` 的指针，此后因 `bound` 而直接返回；Rust 的 stub `Rows::Scan` 接收值槽位，无法保留同样的指针关系，所以 Rust 每次都从 `args` 克隆数据，且 `ir.rs::decodeFromRows` 在成功扫描后第二次绑定。
 
 Go `GetRawBytes`/`appendRawBytes` 复制 slice header 中的 `sql.RawBytes`，底层字节可能共享；Rust 的 `Vec<u8>` 所有权模型使这两个方法深克隆字节。Go 生产代码仍直接查询 package maps，Rust 通过 contains helpers 查询；当前 `dataTypeStringContains` 在 Rust 生产路径未接线，而 Go 的 string map仍见于 Go 测试分类逻辑。
-
-仓库未提供独立的 `sql_type_test.go`；Go 侧相关行为分散在 `sql_test.go`、`writer_util.go`/其测试及 dump 路径中。Rust 的直接对齐回归集中在 `sql_type_test.rs`，另由 `parity_test.rs` 和 `writer_util_test.rs` 覆盖 writer 集成行为。
 
 ## 扩展指南
 
@@ -104,13 +98,3 @@ Go `GetRawBytes`/`appendRawBytes` 复制 slice header 中的 `sql.RawBytes`，�
 - 改动 `RowReceiverArr` 时必须保留 NULL、空字节、非 UTF-8、跨行覆盖和列数一致性。新增测试继续放在独立的 `sql_type_test.rs`，不要嵌入生产文件。
 - 如需消除每行深克隆，应从 `Rows::Scan -> decodeFromRows -> RowReceiver -> writer` 整条所有权链设计借用方案，不能只让 `GetRawBytes` 返回内部引用后跨下一次 Decode 使用。该改动同时影响 SQL、CSV、Parquet 三条路径，兼容和生命周期风险较高。
 - 若要把长度不匹配变成错误，需要修改 `RowReceiver::BindAddress` trait 签名及所有实现/调用者，属于跨文件协议变更；单独在这里 panic 会改变当前静默行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 7,032 个 Rust 文件；`files --filter dumpling/export` 确认目标、Go 对照、测试及模块入口均已索引；`query MakeRowReceiver`、`query dataTypeStringContains`、`query BindAddress`、`query RawBytes` 确认定义位置与签名。精确 callers/callees 命令未产出稳定结果，自然语言查询出现跨模块同名串扰，因此调用边又以限定在 `dumpling/export` 的 `rg` 引用搜索核验，未采用串扰结果。
-- 目标实现：[`sql_type.rs`](sql_type.rs) 的四个静态集合、五个分类函数、`MakeRowReceiver`、`RowReceiverArr` 及其 trait/inherent impl。
-- crate 与协议：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`ir.rs`](ir.rs) 的 `RowReceiver`/`decodeFromRows`、[`stubs.rs`](stubs.rs) 的 `RawBytes`/`Rows`。
-- 生产调用：[`writer_util.rs`](writer_util.rs) 的 SQL、CSV、Parquet 行循环与 `columnKinds`；[`sql.rs`](sql.rs) 的整数分片键筛选。
-- Go 对照：[`sql_type.go`](sql_type.go)，以及引用分类 map/receiver 的 `sql_test.go`、`writer_util.go`、`dump.go`。
-- Rust 测试：[`sql_type_test.rs`](sql_type_test.rs) 验证数值分类、未知类型、NULL/空字节、追加语义、非 UTF-8 与跨行刷新；[`parity_test.rs`](parity_test.rs) 验证 `INT` 原始值进入 SQL writer 后输出 `(42)`；[`writer_util_test.rs`](writer_util_test.rs) 验证 SQL/CSV/Parquet 集成路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收以固定十一个二级标题检查；人工复核重点是文件存在理由、初始化/解码/消费流程、真实调用边、Go 差异和安全扩展点。

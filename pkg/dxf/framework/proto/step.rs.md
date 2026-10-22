@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-proto` crate，crate 入口 `pkg/dxf/framework/proto/lib.rs` 以 `pub mod step` 声明模块并用 `pub use step::*` 重导出其公开符号。它位于 DXF（Distributed eXecution Framework）的协议层：DXF 将一个任务顺序拆成多个 step，再把每个 step 拆成可并行执行的 subtask；该整体抽象可在 `pkg/dxf/framework/doc.go` 的 “Task abstraction” 部分核对。
-
-文件本身不调度任务，也不执行导入或回填。它定义持久化/跨层共享的 step 数值、任务类型到 step 名称的映射，以及两种合法性判断。实际推进 step 的调度器、按 step 生成物理计划的 planner、执行不同 step 的 executor 和存储层共同消费这些值。
-
-`pkg/dxf/framework/proto/Cargo.toml` 声明此 crate 的库入口为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/dxf/framework/proto"` 标出 Go 对照包。该 Cargo 文件列出的 `bytesize`、`chrono`、`serde`、`serde_json` 均不是 `step.rs` 的直接依赖；本文件只引用同 crate 的 `TaskType` 与三种任务类型常量。
+不同任务类型可以复用同一个正整数，因为解释时必须同时提供 `TaskType`。
 
 ## 核心职责
 
@@ -99,11 +95,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/proto/step.go`。Rust 版本逐项保留了 Go 的 `Step int64`、三个负数框架标记、三组业务常量、字符串映射、未知值格式和合法性逻辑。Go 的 `switch` 对应 Rust 的 `match`；Go 的 `fmt.Sprintf` 对应 Rust 的 `format!`；Go 的 `strings.Contains` 对应 Rust `str::contains`。
+Rust 版本逐项保留了 Go 的 `Step int64`、三个负数框架标记、三组业务常量、字符串映射、未知值格式和合法性逻辑。
 
-当前可见差异主要是语言表达，不是业务差异：Rust 的 `TaskType` 是同 crate 中的 `&'static str` 别名，返回拥有所有权的 `String`；模块通过 `lib.rs` 重导出；命名保留 Go 风格并由 crate 根的 lint allow 支持。`pkg/dxf/framework/proto/Cargo.toml` 的 porting metadata 明确将整个 crate 对应到 Go 包。
+当前可见差异主要是语言表达，不是业务差异：Rust 的 `TaskType` 是同 crate 中的 `&'static str` 别名，返回拥有所有权的 `String`；模块通过 `lib.rs` 重导出；命名保留 Go 风格并由 crate 根的 lint allow 支持。
 
-测试也成对存在：`pkg/dxf/framework/proto/step_test.rs` 对应 `step_test.go`，两者覆盖 Backfill、ImportInto、Example、未知编号、未知类型、框架标记和业务步判断。Rust 测试另外显式断言未知任务类型分支；`migration_aster_unit_test.rs` 再覆盖 `BackfillStepMergeTempIndex`、冲突解决阶段和 prepare 合法性，防止迁移漂移。
+Rust 测试另外显式断言未知任务类型分支；`migration_aster_unit_test.rs` 再覆盖 `BackfillStepMergeTempIndex`、冲突解决阶段和 prepare 合法性，防止迁移漂移。
 
 ## 扩展指南
 
@@ -116,13 +112,3 @@
 5. 同步扩展独立测试 `pkg/dxf/framework/proto/step_test.rs`，不要把测试嵌入生产源文件；同时更新 `step_test.go` 或至少核对 Go 行为。迁移契约发生变化时还应补充 `migration_aster_unit_test.rs`。
 
 兼容风险集中在持久化数字和公开字符串；正确性风险集中在遗漏某个 scheduler/planner/executor 分支；性能风险通常很低，但新增基于大表或动态注册的映射时应避免把锁或线性扫描引入高频格式化路径。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；本次查询时目标文件已被索引。
-- RustCodeGraph `files --filter pkg/dxf/framework/proto`：确认 `step.rs`、crate 入口、Go 对照和 Rust/Go 独立测试均位于同一协议包边界。
-- RustCodeGraph `node --file pkg/dxf/framework/proto/step.rs`：逐行核对全部 226 行，确认类型别名、17 个公开 step 常量（3 个框架标记、3 个示例阶段、7 个 ImportInto 阶段、4 个 Backfill 阶段）、3 个公开函数、4 个私有函数、1 个私有字符串常量，以及不存在条件编译项。
-- RustCodeGraph `explore "Step2Str IsValidBusinessStep ..."`：确认内部调用边 `IsValidBusinessStep → IsValidStep → Step2Str`、三类映射分派、`unknownStepStr` 汇合，以及 `TaskBase::String → Step2Str` 的直接上游。
-- 已读源码/配置：`pkg/dxf/framework/proto/step.rs`、`lib.rs`、`task.rs`、`type.rs`、`Cargo.toml`，以及框架契约 `pkg/dxf/framework/doc.go`。
-- 已读对照与测试：`pkg/dxf/framework/proto/step.go`、`step_test.go`、`step_test.rs`、`migration_aster_unit_test.rs`。
-- 使用 `rg` 核对未由代码图完整展开的消费点，确认 import-into 的 scheduler、planner、executor、job 与 history 模块直接引用 `ImportStep*`/`Step2Str`。本任务是纯文档分析，按计划不运行 Cargo。

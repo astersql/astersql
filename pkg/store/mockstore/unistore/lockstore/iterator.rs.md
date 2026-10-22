@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-unistore-lockstore` crate，crate 入口 `pkg/store/mockstore/unistore/lockstore/lib.rs` 通过 `pub mod iterator` 声明模块，并以 `pub use iterator::*` 再导出其公开项。`pkg/store/mockstore/unistore/lockstore/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/store/mockstore/unistore/lockstore`；`tikv`、`server` 和可选的 `cophandler` crate 在各自 `Cargo.toml` 中依赖这个 lockstore crate。
-
-它位于 mock UniStore 的锁存储层，不是通用 KV 迭代器：操作对象是 `lockstore.rs` 中 arena-backed 跳表 `MemStore`，职责是给该有序结构提供前向、反向和边界定位。当前 Rust 生产代码中，直接调用者是 `load_dump.rs::MemStore::DumpToFile`；迭代语义另由同 crate 的独立测试文件覆盖。不能仅凭依赖声明推断 `tikv`、`server` 或 `cophandler` 的 Rust 运行路径已经直接调用此迭代器。
+`setKeyValue` 集中处理“找到节点或越界”两种结果，并复用 `Vec` 容量刷新当前位置。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ RustCodeGraph 对目标文件的索引显示 14 个符号；结合精确引用�
 
 ## 与 Go 版本的对应关系
 
-Rust `Iterator`、`NewIterator`、`Valid`、`Key`、`Value`、`Next`、`Prev`、`Seek`、`SeekForPrev`、`SeekToFirst`、`SeekToLast` 和私有 `setKeyValue` 逐项对应同目录 `iterator.go`。关键布尔参数也一致：前向 seek 允许相等，next 禁止相等；反向 seek 允许相等，prev 禁止相等。两端都以空 key 代表无效，并通过重用已有缓冲区复制 key/value。
-
 表达方式上的差异是：Go 保存 `*MemStore` 并返回可变 `[]byte`，Rust 以生命周期约束的 `&MemStore` 保存借用，`Key`/`Value` 只返回 `&[u8]`；Go 的 `append(it.key[:0], ...)` 对应 Rust 的 `clear + extend_from_slice`。Rust 的 `entry::getValue` 返回拥有型 `Vec`，所以实现细节上比 Go 的 arena 切片多一层临时复制。
 
-当前 Go `iterator.go` 没有 `SeekForExclusivePrev`，Rust 版本补充了这一严格小于定位方法；`migration_iterator_boundaries_match_go` 将其作为明确迁移边界验证，而原 Go `TestIterator` 与对应 Rust `test_iterator` 都因上游 #26235 标记为跳过/ignore。除这个附加 API 外，核心迭代逻辑保持 Go 语义。
+当前 Go `iterator.go` 没有 `SeekForExclusivePrev`，Rust 版本补充了这一严格小于定位方法；`migration_iterator_boundaries_match_go` 将其作为明确迁移边界验证，而原 Go `TestIterator` 与对应 Rust `test_iterator` 都因上游 #26235 标记为跳过/ignore。
 
 ## 扩展指南
 
@@ -90,12 +86,3 @@ Rust `Iterator`、`NewIterator`、`Valid`、`Key`、`Value`、`Next`、`Prev`、
 - 若收紧封装并将 `ls`/`key`/`val` 改为私有，需要先迁移 `load_dump.rs::DumpToFile` 对 `it.key`/`it.val` 的直接读取，改用 `Key`/`Value`。
 - 行为变更应更新独立测试文件，不能把测试嵌入 `iterator.rs`：常规定位覆盖位于 `lockstore_test.rs`，迁移差异与 `SeekForExclusivePrev` 覆盖位于 `migration_aster_unit_test.rs`；同时核对 Go 的 `iterator.go` 与 `lockstore_test.go`。
 - 性能改动应关注每步跳表查找和双重拥有型复制，并保留 `lockstore_test.rs::benchmark_mem_store_iterate` 对应的全表遍历工作负载。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/store/mockstore/unistore/lockstore` 确认 Rust/Go 源与独立测试；`node --file .../iterator.rs` 读取 14 个目标符号；对 `lockstore.rs`、`lockstore_test.rs`、`migration_aster_unit_test.rs` 和 `load_dump.rs` 的节点读取核验了查找算法、调用边、测试和生产使用。宽泛 `explore` 未可靠消歧 `Iterator`/`NewIterator`，因此没有把其噪声结果作为调用关系结论。
-- Rust 源：`pkg/store/mockstore/unistore/lockstore/iterator.rs`；直接依赖实现 `lockstore.rs` 中的 `entry::getValue`、`MemStore::getNext`、`findGreater`、`findLess`、`getArena` 以及 arena/原子生命周期代码。
-- crate 边界：`pkg/store/mockstore/unistore/lockstore/Cargo.toml`、`lib.rs`，以及 `tikv/Cargo.toml`、`server/Cargo.toml`、`cophandler/Cargo.toml` 的依赖声明。
-- Rust 调用与测试：`load_dump.rs::DumpToFile`；`lockstore_test.rs::test_iterator`（`#[ignore]`）和 `benchmark_mem_store_iterate`；`migration_aster_unit_test.rs::migration_iterator_boundaries_match_go`（非 ignore，覆盖主要边界及严格前驱）。
-- Go 对照：`pkg/store/mockstore/unistore/lockstore/iterator.go`、`lockstore_test.go::TestIterator`、`BenchmarkMemStoreIterate`，并通过引用检索确认 `raw_handler.go`、`cophandler/closure_exec.go`、`tikv/mvcc.go` 和 `load_dump.go` 的调用面。
-- 本任务仅做静态文档分析，按计划不运行 Cargo；最终以固定 11 章节结构命令和人工事实复核作为交付验证。

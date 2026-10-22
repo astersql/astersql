@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-br-pkg-encryption-master-key` library crate 中；crate 的入口 `br/pkg/encryption/master_key/lib.rs` 以 `#[path = "master_key.rs"] pub mod master_key` 装配该模块，并通过 `pub use master_key::*` 重导出其公开符号。`br/pkg/encryption/master_key/Cargo.toml` 的 `[package.metadata.porting]` 将本 crate 对应到 Go 包 `br/pkg/encryption/master_key`，因此本文件是同路径 `master_key.go` 的 Rust 工厂与统一后端门面。
-
-它不实现具体密码算法：文件密钥的读取和 AES-GCM 解密由 `file_backend.rs` 承担，云密钥的数据密钥解封与缓存由 `kms_backend.rs` 承担。本文件负责根据 protobuf 风格的 `MasterKeyBackend` 配置选择实现，并用 `AnyBackend` 把两种具体类型统一为一个可返回的 Rust 类型。
-
-当前生产侧直接入口是 `multi_master_key_backend.rs::NewMultiMasterKeyBackend`：它逐个调用 `CreateBackend(Some(mk))` 建立候选后端，之后按顺序尝试解密。crate 外也可以通过 `lib.rs` 的重导出直接使用这里的公开 API；现有 RustCodeGraph/文本引用未显示其他 Rust 生产调用者。
+只负责装配和静态分派，不读取文件内容、不调用远程 KMS 解密、不缓存数据密钥，也不执行加密。
 
 ## 核心职责
 
@@ -92,15 +88,12 @@ KMS provider 的注入类型要求 `Provider + Send`。真正的并发保护位�
 
 ## 与 Go 版本的对应关系
 
-Rust 的三个厂商常量、`Backend` 抽象、`CreateBackend` 分支、云 provider 选择和主要错误文本，均直接对应 `br/pkg/encryption/master_key/master_key.go`。
-
 实现形态存在以下已验证差异：
 
 - Go `Backend` 是动态接口，工厂返回 `Backend`；Rust 用 `AnyBackend` 枚举承载当前两种实现，同时仍提供 `Backend` trait。新增后端时必须同时扩展枚举及两处分派。
 - Go `Decrypt(ctx context.Context, ...)` 把取消上下文贯穿统一接口；Rust `Backend::Decrypt` 不接收上下文，`KmsBackend::Decrypt` 使用默认上下文，只有具体方法 `DecryptWithContext` 能显式接收 KMS crate 的 `Context`。因此经 `AnyBackend`/`MultiMasterKeyBackend` 的公共路径不能传入调用方取消信号。
 - Go protobuf oneof 未设置时落入 switch 默认分支；Rust 用显式 `MasterKeyBackend::Unset` 表达并返回同类错误。
 - Go 返回接口中的指针后端；Rust 枚举按值拥有 `FileBackend`/`KmsBackend`，并通过借用调用方法。
-- Go `createCloudBackend` 会记录 region、endpoint、key ID、vendor；Rust 对应函数当前不产生日志。
 - Go 将同一个 protobuf KMS 配置直接传给 provider 构造器；Rust 显式克隆字段，转换成 KMS crate 的配置类型。
 - Go 的 provider 接口类型没有在此签名展示并发限定；Rust 注入点显式要求 `Send`。
 
@@ -116,15 +109,3 @@ Rust 的三个厂商常量、`Backend` 抽象、`CreateBackend` 分支、云 pro
 - 性能关注：本文件的配置克隆仅发生在构造期；不要把 provider 创建或配置克隆移入逐次 `Decrypt`。真正的 KMS 网络重试和缓存性能应在 `kms_backend.rs` 及其独立测试中验证。
 
 Rust 单元测试应继续放在独立文件中。与本文件最直接的是 `br/pkg/encryption/master_key/parity_test.rs`；多后端抽象与回退行为位于 `multi_master_key_backend_test.rs`，具体文件/KMS 行为分别位于 `file_backend_test.rs`、`kms_backend_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标目录；`files --filter br/pkg/encryption/master_key` 列出 `master_key.rs`、Go 对照、模块入口及独立测试。
-- RustCodeGraph `node --file br/pkg/encryption/master_key/master_key.rs`：核对 3 个常量、`Backend`、`AnyBackend`、3 个工厂函数及全部分支。
-- RustCodeGraph `explore "MasterKeyBackend EncryptedContent create_backend br/pkg/encryption/master_key/master_key.rs"`：核对 `CreateBackend -> createCloudBackend -> CreateKmsBackendWithProvider` 以及文件/KMS 的解密和关闭分派。
-- `br/pkg/encryption/master_key/Cargo.toml`、`lib.rs`：核对 library crate、Go 包映射、KMS 路径依赖、模块装配和公开重导出。
-- `br/pkg/encryption/master_key/master_key.go`：核对工厂分支、厂商选择、错误上下文、日志与 context 差异。
-- `br/pkg/encryption/master_key/multi_master_key_backend.rs`、`multi_master_key_backend.go`：核对生产上游、逐后端构造、解密回退和关闭生命周期。
-- `br/pkg/encryption/master_key/parity_test.rs`：核对缺失、Plaintext、Unset、File、Azure、AWS、GCP 的真实 Rust 测试断言；该测试由 `lib.rs` 以 `#[cfg(test)]` 独立装配。
-- `br/pkg/encryption/master_key/multi_master_key_backend_test.go`：核对 Go trait 替身对首个成功、后续成功、全部失败和空集合的行为约束。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，计划明确禁止 Cargo；事实验证使用索引、源码、Cargo 声明、Go 对照与现有独立测试完成。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table` crate（`pkg/table/Cargo.toml`），负责把一条表记录的原始 value 解码成调用者请求的列值，并补回未直接存放在 value 中的句柄列、在线 DDL 变更列和默认值。`pkg/table/lib.rs` 以 `pub mod raw_row` 挂载模块并用 `pub use raw_row::*` 再导出 API。
-
-当前 Rust 文件提供的是解码能力，不负责从 KV 读取记录：调用者必须已经持有 `Handle`、原始 `value`、表元数据和目标列集合。仓库搜索仅发现 `pkg/table/column_test.rs` 对元数据级入口的直接 Rust 调用；尚未发现 Rust 运行时路径调用这两个入口。相对地，Go 对照实现已由 `pkg/table/tables/tables.go::RowWithCols` 接到“编码记录键、从事务取 value、再解码”的读行路径。
+对旧记录中缺失的非虚拟生成列，补在线 DDL 变更值或列默认值。
 
 ## 核心职责
 
@@ -88,12 +86,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/table/tables/tables.go::DecodeRawRowData`（约 `1074` 行）。两版保持相同主序：恢复整数句柄列；识别可由 common handle 完整恢复的列和前缀列；按目标类型解码 row map；优先采用真实存储值；跳过虚拟生成列；最后补变更列或默认值。Go 的 `containFullColInHandle` 对应 Rust 在主索引上的内联搜索，Go 的 `GetChangingColVal`/`GetColDefaultValue` 对应 Rust `pkg/table/column.rs` 中的同名函数。
-
 已确认的 Rust 适配差异：
 
 - Rust 把核心逻辑拆成接受 `TableInfo` 和 `use_new_collation` 的 `DecodeRawRowDataWithMeta`，便于不构造具体表实现的独立测试；Go 只有表对象入口。
-- Rust 请求列类型为 `Arc<Column>`，不需要 Go 对 nil 列指针的跳过逻辑。
 - Rust 默认值缓存为 `Vec<Option<Datum>>`，可准确区分未计算与已计算出的 NULL；Go 使用 `[]Datum` 的 NULL 状态作为缓存哨兵。
 - Rust 对负数和越界模式偏移显式返回错误；Go 对应代码直接按偏移索引。
 - Go 的 `RowWithCols` 已把解码函数接入 KV 读行流程，并由 `pkg/table/tables/tables_test.go` 验证普通列、列子集和无符号主键。当前 Rust 搜索未找到等价运行时接线，因此这些 Go 测试只能作为目标语义证据，不能作为 Rust 集成覆盖声明。
@@ -106,18 +101,3 @@
 - 若要把能力接入 Rust 运行时，应在持有 KV value 与 `Table` 的读行边界调用 `DecodeRawRowData`，并增加独立集成测试，至少覆盖列子集、有符号/无符号整数句柄、common handle、旧模式缺列和错误传播。不要仅凭 Go `RowWithCols` 的存在假定 Rust 已接线。
 - 性能敏感修改需留意 `value.to_vec()`、字段类型装箱、Datum 克隆、主索引逐列搜索及每行 HashMap/HashSet 分配；优化不能改变请求顺序、列 ID 映射或时区/排序规则语义。
 - 兼容性审查应同时核对 Go `pkg/table/tables/tables.go::DecodeRawRowData`，尤其是 common-handle 前缀、在线 DDL 和默认值分支。
-
-## 验证依据
-
-已核对的事实来源：
-
-- `pkg/table/raw_row.rs`：两个公开函数、全部分支、返回类型和错误转换。
-- `pkg/table/lib.rs`：模块声明、crate 级再导出及独立测试挂载。
-- `pkg/table/Cargo.toml`：`astersql-table` crate 边界、直接依赖和无 feature 门控事实。
-- `pkg/table/column.rs:1145`、`pkg/table/column.rs:1168`：默认值与在线 DDL 变更列的下游实现。
-- `pkg/table/column_test.rs::{go_merge_49_raw_row_decode_restores_changing_column, go_merge_49_raw_row_decode_restores_integer_handle, raw_row_defaults_use_full_schema_for_null_after_hidden_column}`：Rust 回归边界。
-- `pkg/table/tables/tables.go::{RowWithCols, DecodeRawRowData, GetChangingColVal, GetColDefaultValue}`：Go 主链和移植语义。
-- `pkg/table/tables/tables_test.go` 的 `RowWithCols`、`TestUnsignedPK` 与记录迭代相关断言：Go 普通行、列子集和无符号句柄行为。
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/table/raw_row.rs` 显示 10 个符号；`node --file pkg/table/raw_row.rs --offset 1 --limit 260` 读取完整 144 行并报告 4 个文件级使用者；`query` 精确定位两个入口及 `GetChangingColVal`/`GetColDefaultValue`。精确 `callers` 查询未产出可用结果，故调用结论由 `rg` 的符号级结果交叉核对。
-
-本任务为纯文档分析，按计划未运行 Cargo。结构验证使用任务指定命令，要求本文恰有 11 个固定二级标题；交付前另以 `git diff --check` 检查文档补丁格式。

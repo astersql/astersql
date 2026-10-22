@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`builtin_json.rs` 是 `astersql-expression` crate 内的 JSON 标量语义内核，对照 Go 的 `pkg/expression/builtin_json.go` 实现 JSON 值上的类型查询、路径提取与修改、构造、合并、包含关系、元数据查询、schema 验证和 CRC32 汇总。它操作 `types-json-functions` 提供的 TiDB `BinaryJSON`，不是纯文本 JSON 工具集。
-
-crate 根 `pkg/expression/lib.rs:226-230` 用 `#[path = "builtin_json.rs"]` 将文件装入私有模块 `builtin_json_kernel`，再通过公开模块 `builtin_json` 重导出全部公开符号。`pkg/expression/lib.rs:767-769` 还为 crate 内测试提供 `expression_builtin_json` 别名。`pkg/expression/Cargo.toml` 定义包名 `astersql-expression`、库入口 `lib.rs`，并声明本文件直接用到的 `crc32fast`、`serde_json`、`jsonschema` 和 path 依赖 `types-json-functions`。
-
-这个文件不定义 SQL 函数类、`Expression` 参数求值、返回字段类型、PB signature 或向量化行调度。源码头注释也明确说明“表达式构造与行级调度由上层完成”。精确 Rust 引用搜索显示，本文件的标量函数当前主要由独立测试直接调用；不应仅凭 `lib.rs` 的公开重导出宣称其已接入完整 SQL 求值主链。
+用 `jsonschema` 验证 JSON document，用 `crc32fast` 实现 JSON 数组元素类型转换后的 IEEE CRC32 累加。
 
 ## 核心职责
 
@@ -94,7 +90,6 @@ Go 的 `builtinJSON*Sig` 注释要求新字段必须可线程安全或不可变�
 
 ## 与 Go 版本的对应关系
 
-- Rust 的 `json_type`、`json_extract`、`json_unquote`、SET/INSERT/REPLACE/REMOVE、merge/object/array、contains/overlaps、append/insert/search、storage/depth/keys/length 和 schema/CRC32 函数，对应 Go `builtinJSON*Sig.evalString/evalJSON/evalInt` 中的核心值语义。
 - Go 实现通常有两层：`json*FunctionClass.getFunction/verifyArgs` 负责实参数、隐式 CAST、返回 `FieldType`、charset/collation 和 PB code；`builtinJSON*Sig.eval*` 负责逐行求值。本 Rust 文件仅对应后者的语义核心，接收的已是类型化值，不得把缺少的函数类检查误认为无需要。
 - Rust `json_modify` 显式保留 Go `jsonModify` 的“先求值/解析所有路径，后求修改值”顺序；`argument_value` 保留 SQL NULL value 变 JSON null 的语义。
 - Rust `json_merge` 与 `json_merge_preserve` 的返回值一致，但 Go 的 deprecated `JSON_MERGE` 还会通过求值上下文追加弃用 warning。本文件没有 `EvalContext`，注释明确把告警交给上层。
@@ -113,14 +108,3 @@ Go 的 `builtinJSON*Sig` 注释要求新字段必须可线程安全或不可变�
 6. 若为 `json_schema_valid` 增加 cache，需要先定义 cache key（schema 值还是求值上下文）、构建失败是否缓存、clone 与跨会话共享语义，并添加真正观测初始化次数的并发/上下文测试；仅重复调用结果正确不是 cache 证据。
 7. 测试必须保持在独立文件。直接标量语义优先同步 `pkg/expression/builtin_json_test.rs`；Go 分支覆盖/迁移 parity 可同步 `pkg/expression/builtin_json_14_aster_unit_test.rs`；涉及批量行或向量化调度时同步 `pkg/expression/builtin_json_vec_test.rs` 和 `pkg/expression/builtin_json_vec_13_aster_unit_test.rs`，并检查 `builtin_json_vec.rs` 的独立实现。
 8. 扩展后要分别验证正常值、SQL NULL、JSON null、路径缺失、多选路径、非法模式/escape、类型转换失败、多对顺序和标量/向量一致性。
-
-## 验证依据
-
-- 计划与依赖：已读取只读总计划 `.plans/2026-10-07-rust-全架构逐文件解析/plan.md` 与任务 1171；任务标注“批次 1，无依赖”，因此开始条件已满足。
-- RustCodeGraph 状态：`rustcodegraph status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边。`files --filter builtin_json.rs` 未直接列出文件，但 `node --file pkg/expression/builtin_json.rs --offset ...` 能完整读取 589 行并报告引用概览；`query json_extract/json_modify/json_sum_crc32 --kind function` 精确定位到本文件符号。
-- RustCodeGraph 调用边：`callees` 输出确认 `json_extract -> parsed_paths`、`json_set/json_insert/json_replace -> json_modify`、`json_modify -> parsed_paths + argument_value`、`json_merge -> json_merge_preserve`、`json_contains_path -> normalized_one_or_all`、`json_search -> normalized_one_or_all + parsed_paths`、`json_sum_crc32 -> display_sum_item`；对重名候选的噪声已用精确文件引用搜索排除。
-- 已读 Rust 源码：`pkg/expression/builtin_json.rs` 全部 589 行，以及 `pkg/expression/lib.rs` 的模块装配/测试装配片段。目标包没有 `pkg/expression/doc.go`。
-- 已读 crate 声明：`pkg/expression/Cargo.toml`，核对了库入口、`autotests = false`、`doctest = false`、`types-json-functions`、`crc32fast`、`serde_json`、`jsonschema` 及 porting metadata。
-- 已读 Go 对照：`pkg/expression/builtin_json.go` 中 JSON_TYPE/SUM_CRC32/EXTRACT、修改、构造/合并、contains/overlaps、append/insert/search、storage/depth/keys/length 和 schema validation 的函数类与 `eval*` 实现，特别复核了弃用告警、构建期类型限制与 schema cache 差异。
-- 已读独立 Rust 测试 `pkg/expression/builtin_json_test.rs` 全部 465 行，并检查 `builtin_json_14_aster_unit_test.rs` 与 `builtin_json_vec_13_aster_unit_test.rs` 的测试名/覆盖面；证据包括 SQL NULL 转 JSON null、重复键覆盖、missing path、多选路径拒绝、append 数组嵌套、CRC32 类型错误和 schema object 限制。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付验证为固定十一章结构检查及人工事实复核，不以编译或零测试替代源码证据。

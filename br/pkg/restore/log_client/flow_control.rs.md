@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-log-client` library crate；crate 根 `br/pkg/restore/log_client/lib.rs` 通过 `pub mod flow_control` 挂载它。它位于压缩 SST 恢复的入口与真正导入之间：`LogClient::RestoreSSTFileSets` 在切换 TiKV import mode、调用 `GoRestore` 之前，先调用 `LogClient::adjustTiKVFlowControlForCompactedSSTRestore`。因此这里不是通用限速器，而是为 compacted-SST restore 预先放宽 TiKV pending-compaction 软/硬阈值的保护步骤。
-
-`br/pkg/restore/log_client/Cargo.toml` 将该目录声明为独立 crate，`[lib] path = "lib.rs"`，并通过 `astersql-br-pkg-restore` 获得 `BatchBackupFileSet`。该目录没有 `doc.go`；Rust crate 入口 `lib.rs` 和 Go 同路径实现 `flow_control.go` 是最近的职责定义。
+`adjustTiKVFlowControlForCompactedSSTRestore` 通过受限 SQL 读取全体 TiKV 配置，仅在估计 pending bytes 超过 100 GiB 且至少一个实例配置不足时执行全局 `SET CONFIG`，并固定先写 hard、后写 soft。
 
 ## 核心职责
 
@@ -84,15 +82,12 @@ RustCodeGraph 的 callee 结果确认主入口调用 `getTiKVConfigValues`、`es
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `br/pkg/restore/log_client/flow_control.go`，主要公式、阈值、配置键、Size_ 优先规则、饱和运算、跳过条件以及“先 hard 后 soft”的顺序一致。Go 的 `compactedSSTSizeForFlowControl`、`saturatingAddUint64`、`saturatingMulUint64`、`ceilDivUint64` 在 Rust 中分别内联为 fold 分支、标准 `saturating_add`/`saturating_mul` 和 `ceilDiv`。
-
 当前可观察差异如下：
 
 - Go 会为跳过、解析失败、估算结果和成功调整记录结构化日志；Rust 当前没有对应日志函数，`TiKVConfigValue.instance` 因而也未用于诊断。
 - Go 通过 `kv.WithInternalSourceType(ctx, kv.InternalTxnBR)` 标记内部 SQL 来源；Rust 的本地 `Session` 接口直接接收 `Context`，未显式附加该标记。
 - Go 使用 `docker/go-units` 的 `RAMInBytes`/`FromHumanSize`；Rust 是本地兼容解析器。`flow_control_test.rs::byte_size_config_preserves_docker_units_numeric_and_spacing_rules` 专门锁定指数与空格规则。
 - Go 类型和辅助函数多为包内私有；Rust 因分文件测试和 crate API 组织暴露了若干 `pub` 符号。
-- Go 独立测试入口位于 `export_test.go`，实际断言位于 `client_test.go::TestEstimateCompactedSSTFlowControl`、`TestEstimatePendingCompactionBytes` 和 `TestCompactedSSTFlowControlTarget`；Rust 对应测试集中在独立文件 `flow_control_test.rs`。
 
 ## 扩展指南
 
@@ -102,12 +97,3 @@ Rust 文件直接对应 `br/pkg/restore/log_client/flow_control.go`，主要公�
 - 改动 SQL 列或 Session 抽象时，同步 `getTiKVConfigValues`、`sqlString`、`setTiKVConfig` 及 `ConfigSession` 测试桩；保留参数绑定，不把配置值拼接进 SQL。
 - 若增加恢复后回滚、幂等确认或并发协调，应在 `LogClient` 的恢复生命周期层设计明确所有权，并增加部分写失败、取消和并发恢复测试；不能仅在本文件末尾隐式恢复，因为当前调用方在返回后还有模式切换和异步导入阶段。
 - 任何行为改动都应同时核对 `client.rs::RestoreSSTFileSets` 的调用顺序，以及 Go `flow_control.go`/`client.go`；Rust 测试必须继续放在 `flow_control_test.rs`，不要内嵌到生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/restore/log_client` 定位目标及相邻文件；`node --file br/pkg/restore/log_client/flow_control.rs` 读取完整 257 行和四个引用文件；`query` 核对主入口、估算、解析、目标计算及 SQL helper；`callees` 核对主入口和关键纯函数的下游边。
-- Rust 生产代码：`br/pkg/restore/log_client/flow_control.rs`、`client.rs:1029-1069`、`lib.rs`。
-- crate 边界：`br/pkg/restore/log_client/Cargo.toml`；未发现该包的 `doc.go`。
-- Rust 独立测试：`br/pkg/restore/log_client/flow_control_test.rs`，覆盖估算与饱和、目标值、所有跳过条件、配置读取/写入顺序、读写错误短路、恢复流水线顺序、store/replica 初始化及 Docker units 兼容规则。
-- Go 对照：`br/pkg/restore/log_client/flow_control.go`、`client.go:370-393`、`export_test.go:139-177`、`client_test.go:1984-2049`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令确认目标存在且恰有 11 个固定二级章节，并人工复核唯一生产物与 Git 暂存范围。

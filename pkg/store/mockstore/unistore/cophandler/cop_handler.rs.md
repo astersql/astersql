@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Rust UniStore mock coprocessor crate 的公共数据模型与请求分派门面。crate 入口 `pkg/store/mockstore/unistore/cophandler/lib.rs` 以 `pub mod cop_handler` 导出它；同一 crate 的 `analyze.rs`、`mpp_exec.rs`、`mpp.rs`、`topn.rs` 和 `closure_exec.rs` 都复用这里定义的 `Datum`、`Expr`、`Executor`、`KvReader`、`Response` 与 `CopError`。
-
-对外的主入口是 `handle_cop_request(&dyn KvReader, &Request) -> Response`（第 761 行）。它接收 Rust 自定义请求，而不是 Go 版本的 `coprocessor.Request` protobuf；仓库搜索到的直接调用目前集中在同 crate 的独立测试 `cop_handler_test.rs`，没有发现 Rust 服务端把真实 RPC 解码后接到该入口。因此它当前主要承担可测试的 mock 执行内核和移植语义载体，而不是 Go `HandleCopRequest` 的线协议替代品。
-
-`pkg/store/mockstore/unistore/cophandler/Cargo.toml` 将该目录定义为 `astersql-store-mockstore-unistore-cophandler` crate，`[lib]` 指向 `lib.rs`，并用 `package.metadata.porting.go-package` 标明对应 Go 包 `pkg/store/mockstore/unistore/cophandler`。清单列出的 TiDB 子 crate 依赖均为 optional；本文件自身只直接使用标准库及本 crate 的 `analyze`、`mpp_exec` 模块。
+用 `KvReader` 抽象范围扫描；以 `MemoryReader` 提供按 `commit_ts <= start_ts` 过滤的内存实现，并提供默认 checksum 算法。
 
 ## 核心职责
 
@@ -97,7 +93,7 @@ RustCodeGraph 的 `query` 精确定位了 `handle_cop_request`（`cop_handler.rs
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/cophandler/cop_handler.go`，测试是同目录 `cop_handler_test.go`。已对齐的核心意图包括：请求按 DAG/Analyze/Checksum 分派、执行器列表转树、每 chunk 64 行、Region 范围裁剪与倒序、锁信息结构、时区缓存的读写锁，以及 checksum mock 固定返回 `(1,1,1)`。Rust 测试 `ChecksumResponseMatchesGoMock`、`ExtractKVRangesRejectsOpenEndedRequestRange` 和 `ExtractKVRangesRejectsReversedRange` 固化了其中的边界。
+已对齐的核心意图包括：请求按 DAG/Analyze/Checksum 分派、执行器列表转树、每 chunk 64 行、Region 范围裁剪与倒序、锁信息结构、时区缓存的读写锁，以及 checksum mock 固定返回 `(1,1,1)`。
 
 当前 Rust 实现有以下明确差异，扩展时不能忽略：
 
@@ -109,8 +105,6 @@ RustCodeGraph 的 `query` 精确定位了 `handle_cop_request`（`cop_handler.rs
 - Go 响应包含 protobuf SelectResponse、warnings、SQL 错误码、ExecDetails/V2、intermediate outputs 和精确执行器摘要；Rust 响应模型只覆盖其中一个子集。
 - Go 缓存语义由 failpoint 控制 cache version；Rust 用 `start_ts` 代替。Go checksum 固定值经 protobuf marshal，Rust 是三个连续的大端 `u64`，只保证本地测试所断言的值序列。
 - Go 范围裁剪假定输入 ranges 已排序，越过 region end 时可 `break`；Rust 遍历所有 range 并跳过空交集。两者正常有序输入结果一致，但异常无序输入行为不应默认等价。
-
-因此，本文件是“行为意图的轻量 Rust 移植”，不是 Go 文件逐 API、逐协议的完整替换。
 
 ## 扩展指南
 
@@ -124,14 +118,3 @@ RustCodeGraph 的 `query` 精确定位了 `handle_cop_request`（`cop_handler.rs
 - Rust 测试逻辑继续放在同目录独立文件 `cop_handler_test.rs`（由 `lib.rs` 挂载），不要内嵌进生产源文件；Go 对照回归位于 `cop_handler_test.go`。
 
 兼容风险主要是私有编码与未来 protobuf 的差异、简化类型转换与 MySQL 语义的差异、缓存/分页提示被上层误当成完整实现；性能风险主要是整批扫描、执行器树和行的多次克隆，以及 `encode_chunk` 额外构造完整 data 缓冲。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore/unistore/cophandler` 列出该目录 22 个 Go/Rust 文件。
-- RustCodeGraph 源码读取：`node --file pkg/store/mockstore/unistore/cophandler/cop_handler.rs --offset 1 --limit 500` 与 `--offset 480 --limit 520` 覆盖目标文件全部 967 行。
-- RustCodeGraph 符号查询：`handle_cop_request`（`:761`）、`executor_list_to_tree`（`:695`）、`extract_kv_ranges`（`:888`）、`check_lock`（`:937`）、`mpp_exec.rs::execute_executor`（`:118`）。`callers handle_cop_request` 在 30 秒窗口内未返回，调用者结论另由 Rust 引用搜索核验。
-- 读取的 crate/入口证据：`pkg/store/mockstore/unistore/cophandler/Cargo.toml`、`pkg/store/mockstore/unistore/cophandler/lib.rs`。
-- 读取的 Go 对照证据：`pkg/store/mockstore/unistore/cophandler/cop_handler.go`，重点核对 `HandleCopRequestWithMPPCtx`、`ExecutorListsToTree`、`buildDAG`、`genRespWithMPPExec`、`extractKVRanges`、`appendRow` 与 `handleCopChecksumRequest`。
-- 读取的独立测试：`pkg/store/mockstore/unistore/cophandler/cop_handler_test.rs`；并参考 Go `pkg/store/mockstore/unistore/cophandler/cop_handler_test.go` 的数据、点查、执行器和范围测试架构。
-- 测试事实：Rust 测试覆盖 range 非法边界、固定 checksum、SQL NULL、点查、Selection、TopN、取消、DAG 冒烟及扫描字节统计；没有发现缓存、`check_lock`、`LocationMap`、`append_row` 或精确分页的直接 Rust 回归。
-- 结构验证使用任务指定命令，要求目标文件存在且固定二级标题恰好为 11 个。本任务为纯文档分析，按计划不运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-watcher` crate 的事件模型层，源码入口为 [`event.rs`](event.rs)，由 [`lib.rs`](lib.rs) 以 `pub mod event` 声明并通过 `pub use event::*` 在 crate 根重新导出。crate 的清单 [`Cargo.toml`](Cargo.toml) 指定 `lib.rs` 为库入口，运行时唯一外部依赖是 `crossbeam-channel`；该依赖由监视器实现使用，本文件自身只依赖 Rust 标准库的 `Metadata`、`PathBuf` 和 `SystemTime`。
-
-它位于轮询式文件监视链路的模型边界：[`watcher.rs`](watcher.rs) 获取文件元数据快照、比较新旧状态并构造 `Event`，调用方从 `Watcher::Events` 接收这些值。本文件不扫描文件系统、不启动线程，也不负责通道投递。
+用 `FileInfo` 封装 `std::fs::Metadata`，为轮询差异比较提供目录、修改时间、大小、权限模式和文件身份查询。
 
 ## 核心职责
 
@@ -77,12 +75,9 @@ RustCodeGraph 对 `event.rs` 识别出 16 个符号，并可定位 `OpString`、
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`event.go`](event.go)：
-
 - Rust `Op = u32` 与 Go `type Op uint32` 数值布局一致，六个常量顺序一致；Rust 使用显式移位，Go 使用 `iota`。
 - Rust `OpString(op)` 对应 Go `(Op).String()`；两者都按固定顺序输出大写名称、以 `|` 分隔、对零值返回空串。Rust 是自由函数，因为类型别名不能实现固有方法或外部 trait。
 - Go `Event.FileInfo` 使用 `os.FileInfo` 接口，Rust 用私有 `Metadata` 包装 `FileInfo`，对监视器只暴露所需查询。Go 路径是 `string`，Rust 路径是能保留平台原生表示的 `PathBuf`。
-- Go 的 `(*Event).IsDirEvent`、`(*Event).HasOps` 会显式接受 `nil` 接收者并返回 `false`。Rust 的实例方法要求 `&Event`，因此另设两个接收 `Option<&Event>` 的兼容辅助函数。
 - Go `HasOps(ops ...Op)` 是可变参数，Rust `HasOps(&[Op])` 用切片表达相同的“任一操作位命中”行为。
 - Rust 为轮询差异逻辑增加了 `FileInfo` 的 `ModTime`、`Size`、`Mode`、`same_file` 接口；Go watcher 直接调用 `os.FileInfo` 的对应方法以及 `os.SameFile`。Unix 的 device/inode 比较与 Go 在支持平台上的同文件判定目标一致，但 Rust 非 Unix 版本恒 false，是需要保留关注的平台差异。
 
@@ -96,13 +91,3 @@ RustCodeGraph 对 `event.rs` 识别出 16 个符号，并可定位 `OpString`、
 - 若给 `Event` 新增字段，需同步 `watcher.rs::event` 的构造、所有结构体字面量、crate 的公开 API 文档和 Go 对照；评估字段克隆成本、后台线程到接收方的所有权，以及公开字段带来的兼容性。
 - 若希望拒绝未知位或实现更强的位集不变量，应考虑从 `type Op = u32` 迁移为新类型。这会是公开 API 兼容性变化，不能只改格式化函数。
 - 性能风险主要来自每轮元数据快照克隆、rename/move 候选的两层配对，以及事件字段的克隆。仅调整本文件时不要误称已经优化 watcher；性能结论需在 `poll_events` 的真实路径上验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/watcher` 定位到本模块 8 个 Go/Rust 文件；`node --file pkg/util/watcher/event.rs --offset 1 --limit 260` 返回完整 145 行与 16 个符号；`query` 精确定位 `OpString`、`FileInfo`、`IsDirEventOption`、`HasOpsOption`。相应 `callers`/`callees` 无返回，已在“依赖与调用关系”中声明限制。
-- 生产源码：[`event.rs`](event.rs)（目标模型）、[`watcher.rs`](watcher.rs)（构造、差异分类与发送）、[`lib.rs`](lib.rs)（模块声明与重新导出）。
-- crate 配置：[`pkg/util/watcher/Cargo.toml`](Cargo.toml) 与根 [`Cargo.toml`](../../../Cargo.toml)，确认库入口、依赖、Go 包迁移元数据和工作区别名。
-- Go 对照：[`event.go`](event.go)（操作位、字符串、事件方法）、[`watcher.go`](watcher.go)（`os.FileInfo`/`os.SameFile` 在轮询中的实际使用）。
-- 独立测试：[`watcher_test.rs`](watcher_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 和 [`watcher_test.go`](watcher_test.go)。本任务按计划仅作纯文档分析，未运行 Cargo；测试文件用于核验既有意图与边界，不作为本次新执行结果。
-- 仓库搜索：`rg` 确认事件模型的 Rust 引用集中在当前 crate 的 `watcher.rs` 与两个独立测试模块，工作区只在根 `Cargo.toml` 声明 `facade_util_watcher` 路径依赖。
-- 结构验收命令：`test -f pkg/util/watcher/event.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' pkg/util/watcher/event.rs.md)" -eq 11`。交付前应以退出码 0 确认固定章节恰好 11 个。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-old` crate，负责旧版 Cascades 优化器的物理属性强制（enforcer）阶段。crate 入口 `pkg/planner/cascades/old/lib.rs` 将 `enforcer_rules` 声明为私有模块后公开重导出其符号；`pkg/planner/cascades/old/Cargo.toml` 通过 `../../../expression`、`../../core/base`、`../../core/operator/physicalop`、`../../implementation`、`../../memo`、`../../property` 和 `../../util` 等路径依赖接入表达式、物理计划、Memo、属性与代价实现。
-
-它位于常规实现规则枚举之后的兜底路径：`pkg/planner/cascades/old/optimize.rs::Optimizer::implGroup` 先寻找自然满足所需物理属性的实现，再调用本文件的 `GetEnforcerRules`，必要时放宽孩子属性并在孩子实现上包一层 `PhysicalSort`。当前规则集只处理 TiDB 引擎上的非空排序需求，不处理 TiKV、TiFlash/MPP、分区或其他物理属性。
+`Enforcer` trait 统一描述强制规则的三个阶段：生成孩子需要满足的放宽属性、把强制算子挂到孩子实现之上、估算强制算子自身代价。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ RustCodeGraph 已索引目标文件及上述依赖，并能解析 `GetEnforcerRu
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cascades/old/enforcer_rules.go`，生产调用对照是 `pkg/planner/cascades/old/optimize.go::implGroup`。两边的核心语义一致：只为 TiDB Group 的非空排序属性返回一个 `OrderEnforcer`；放宽属性时清空排序并设置最大期望行数；先估算 Sort 代价并扣减成本上限；递归取得孩子后在上方加入 `PhysicalSort`；最终用孩子代价加 enforcer 代价参与最优实现选择。
-
 Rust 移植存在以下可核验差异：
 
 - Go 的 `orderEnforcer` 是 `*OrderEnforcer`，Rust 使用零大小静态值并返回 `&'static dyn Enforcer`。
@@ -89,7 +85,7 @@ Rust 移植存在以下可核验差异：
 - Go `GetEnforceCost` 直接使用 `g.Prop.Stats` 和 `g.Prop.Schema`；Rust 在统计缺失时采用默认值，但 Schema 缺失会明确 panic。两边都依赖首个等价表达式提供会话上下文。
 - Rust 的 Sort 挂接路径会通过 `SortCostPlan::InjectProjectionBelowSort` 克隆计划并设置孩子；这是 Rust `SortImpl` 抽象所需的适配细节，不改变“在孩子之上增加实际排序”的目标语义。
 
-`pkg/planner/cascades/old/enforcer_rules_test.go` 与独立 Rust 测试 `enforcer_rules_test.rs` 都覆盖空排序属性不返回规则、非空排序属性恰好返回一个规则，以及 `NewProperty` 清空排序项。Go 通过类型断言确认 `OrderEnforcer`；Rust 因 `Enforcer` 未继承 `Any`，改用唯一规则的可观察行为确认。当前两边测试都没有直接覆盖非 TiDB 引擎、`OnEnforce` 组树或 `GetEnforceCost` 的前置条件与成本。
+Go 通过类型断言确认 `OrderEnforcer`；Rust 因 `Enforcer` 未继承 `Any`，改用唯一规则的可观察行为确认。当前两边测试都没有直接覆盖非 TiDB 引擎、`OnEnforce` 组树或 `GetEnforceCost` 的前置条件与成本。
 
 ## 扩展指南
 
@@ -99,14 +95,3 @@ Rust 移植存在以下可核验差异：
 - 若让 trait 可向下转型或新增状态，需重新评估静态单例的 `Sync` 要求及 `Rc<RefCell>` 单线程约束；当前无状态设计不应被误解为整个返回计划可跨线程共享。
 - 测试必须继续放在独立的 `pkg/planner/cascades/old/enforcer_rules_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] mod enforcer_rules_test;` 装配。建议补充 EngineTiDB/非 TiDB 分支、排序列与 `Desc` 映射、孩子 context/statistics/offset/Schema 保留、Sort 孩子属性、总成本相加，以及空 Equivalents、缺 Schema、默认统计等边界；对应 Go 测试也应保持相同意图。
 - 性能风险主要在排序本身的 `n log n` CPU、内存及可能的磁盘 spill，以及 `OnEnforce` 挂接时对孩子计划和 Sort 的克隆。新增强制候选还会增加 `implGroup` 的递归搜索分支，应确保成本上限剪枝仍在递归前扣除 enforcer 代价。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/cascades/old/enforcer_rules.rs` 确认目标文件已索引并包含 16 个符号。
-- 目标源码：`pkg/planner/cascades/old/enforcer_rules.rs` 的 `Enforcer`、`GetEnforcerRules`、`OrderEnforcer`、`SortPlan` 及其三个 trait impl。
-- crate 与模块边界：`pkg/planner/cascades/old/Cargo.toml`、`pkg/planner/cascades/old/lib.rs`。
-- Rust 上游调用：`pkg/planner/cascades/old/optimize.rs::Optimizer::implGroup` 中连续调用 `GetEnforcerRules`、`NewProperty`、`GetEnforceCost`、递归 `implGroup` 和 `OnEnforce` 的分支。
-- Rust 下游语义：`pkg/planner/property/physical_property.rs::IsSortItemEmpty`、`pkg/planner/implementation/sort.rs::{NewSortImpl, SortImpl::calc_cost, SortImpl::attach_children}`、`pkg/planner/core/operator/physicalop/physical_sort.rs::GetCost`、`pkg/planner/memo/implementation.rs::{Implementation, ImplementationRef}`。
-- Go 对照与调用：`pkg/planner/cascades/old/enforcer_rules.go`、`pkg/planner/cascades/old/optimize.go::implGroup`。
-- 独立测试：`pkg/planner/cascades/old/enforcer_rules_test.rs` 与 `pkg/planner/cascades/old/enforcer_rules_test.go`。它们验证规则选择和属性放宽，但不覆盖组树、代价及 panic 前置条件；文档未把这些未测试分支描述成已由测试保障。
-- 本任务只新增说明文档，按计划未运行 Cargo。结构验证检查目标文件存在且恰好包含规定的十一个二级标题；人工复核覆盖了文件存在原因、执行链、状态与生命周期、Go 对照、边界和安全扩展入口。

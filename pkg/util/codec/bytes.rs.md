@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-codec` crate 的字节序列编码基础层，源码由 [`pkg/util/codec/lib.rs`](./lib.rs) 中的私有模块 `bytes_codec` 通过 `include!("bytes.rs")` 纳入，再以 `pub use bytes_codec::*` 对外导出。因此调用方通常使用 `astersql_util_codec::EncodeBytes`，或在本 crate 内直接使用这些符号，而不会引用 `bytes_codec` 模块名。
-
-它位于通用 Datum 编解码的下一层：[`pkg/util/codec/codec.rs`](./codec.rs) 的 `encodeBytes` 根据 `comparable1` 选择本文件的 `EncodeBytes` 或 `EncodeCompactBytes`，`DecodeOne` 和 `Decoder::DecodeOne` 再按 `bytesFlag` / `compactBytesFlag` 调用相应解码函数。由此，本文件同时服务于需要保持键顺序的 key 编码，以及只要求紧凑存储的 value 编码。
-
-crate 边界由 [`pkg/util/codec/Cargo.toml`](./Cargo.toml) 定义，包名为 `astersql-util-codec`，库入口是 `lib.rs`。本文件直接使用的 `errors`、`binary` 和 `EncodeVarint` / `DecodeVarint` 均由 `lib.rs` 的模块作用域注入；没有本文件专属 feature 或可选依赖。
+`EncodedBytesLength` 计算精确的 memcomparable 长度，`reallocBytes` 预留追加容量，`reverseBytes` 按目标架构选择实现。
 
 ## 核心职责
 
@@ -99,11 +95,11 @@ memcomparable 编码的核心不变量是：每个组固定为 8 字节数据加
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/codec/bytes.go`](./bytes.go)，独立测试是 [`pkg/util/codec/bytes_test.go`](./bytes_test.go)。Rust 保留了 Go 的公开函数集合、8+1 分组线格式、额外终止组、Raw KV 旁路、正/降序互逆、compact 长度前缀、错误判定和已有前缀保留行为。Rust 测试 [`pkg/util/codec/bytes_test.rs`](./bytes_test.rs) 迁移了 Go 的正序/降序向量、畸形输入和 Raw KV 分支；[`pkg/util/codec/bytes_1_aster_unit_test.rs`](./bytes_1_aster_unit_test.rs) 额外覆盖 compact payload/leftover 与高层 Datum 有序性。
+Rust 保留了 Go 的公开函数集合、8+1 分组线格式、额外终止组、Raw KV 旁路、正/降序互逆、compact 长度前缀、错误判定和已有前缀保留行为。Rust 测试 [`pkg/util/codec/bytes_test.rs`](./bytes_test.rs) 迁移了 Go 的正序/降序向量、畸形输入和 Raw KV 分支；[`pkg/util/codec/bytes_1_aster_unit_test.rs`](./bytes_1_aster_unit_test.rs) 额外覆盖 compact payload/leftover 与高层 Datum 有序性。
 
 实现层差异主要来自语言模型：Go 使用 `[]byte` 和可选的 `nil` buffer，Rust 使用拥有所有权的 `Vec<u8>`、`Option<Vec<u8>>` 与借用切片；Go compact 解码对下游错误调用 `errors.Trace`，Rust 直接用 `?` 传播 `SharedError`，可观察的成功数据与错误分类意图不变。Go `fastReverseBytes` 通过 `unsafe` 把字节切片解释为 `[]uintptr` 后按机器字取反；Rust 的同名函数用安全的 chunk 遍历并逐字节取反，结果一致，但优化机制并不等价。
 
-Go 的 `supportsUnaligned` 在运行时由 `runtime.GOARCH` 常量表达，Rust 用条件编译为 x86/x86_64 生成常量。两边都在其他架构回退到安全逐字节路径。
+Go 的 `supportsUnaligned` 在运行时由 `runtime.GOARCH` 常量表达，Rust 用条件编译为 x86/x86_64 生成常量。
 
 ## 扩展指南
 
@@ -112,13 +108,3 @@ Go 的 `supportsUnaligned` 在运行时由 `runtime.GOARCH` 常量表达，Rust 
 新增解码校验应集中在 `decodeBytes`，以同时覆盖正序和降序；新增公共包装函数应在 `bytes.rs` 实现，由 `lib.rs` 的现有整体再导出暴露。若改变容量估算，必须同步 `EncodedBytesLength`、`EncodeBytes` 的预留公式和 `codec.rs::sizeBytes`，否则可能出现长度预估错误或额外分配。
 
 测试逻辑必须继续放在独立文件中。优先扩展 `bytes_test.rs` 的 Go 对齐向量和畸形输入表；Rust 特有或跨层回归可放入 `bytes_1_aster_unit_test.rs`。至少覆盖空值、7/8/9 字节边界、内含零字节、已有前缀、leftover、正序/降序往返、Raw KV 两分支、错误 marker/padding、compact 负数/超长/截断长度。性能优化必须同时验证不同架构路径结果一致，并关注 `Decoder` 缓冲区复用是否退化。
-
-## 验证依据
-
-- RustCodeGraph `status`：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标源码和两份 Rust 测试均可按文件读取。
-- RustCodeGraph `node --file pkg/util/codec/bytes.rs`：核对了 259 行完整源码、全部常量/函数/条件编译项，并得到“被 34 个文件使用”的文件级关系。
-- RustCodeGraph `query`：确认 Rust 与 Go 的 `EncodeBytes`、`decodeBytes`、`EncodeCompactBytes`、`reverseBytes`、`reallocBytes` 对应符号及位置。
-- RustCodeGraph `explore`：确认 Go 侧 `EncodeBytes -> encodeBytes`、`DecodeBytes -> DecodeOne` 等调用关系，以及 tablecodec/BR 等下游使用面；精确限定文件的 `callers/callees` 子命令未返回可用结果，因此以局部 `rg` 补查 Rust 直接调用点。
-- 已读源码与配置：`pkg/util/codec/bytes.rs`、`lib.rs`、`codec.rs`、`number.rs`、`Cargo.toml`；Go 对照 `bytes.go`；测试 `bytes_test.rs`、`bytes_1_aster_unit_test.rs`、`bytes_test.go`。
-- 局部调用搜索确认了 `codec.rs::encodeBytes`、两个 `DecodeOne` 路径，以及 `pkg/meta/reader.rs`、`pkg/session/runtime/*`、`br/pkg/restore/*` 的代表性生产调用。
-- 本任务只新增说明文档，不修改运行时代码；按计划不运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题。

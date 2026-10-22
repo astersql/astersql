@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-statistics-handle-history` crate 中的历史统计基础实现，由同目录 `lib.rs` 的 `pub mod history_stats` 声明并整体重导出。crate 边界由 `pkg/statistics/handle/history/Cargo.toml` 定义：库入口是 `lib.rs`，Go 对应包是 `pkg/statistics/handle/history`。该 manifest 中原 Go 实现所需的 session/storage/model 等依赖全部放在 `target.'cfg(any())'.dependencies` 下，因而当前 Rust 文件通过本地 trait 抽象隔离具体 SQL 和 session 类型，自身不直接连接数据库。
-
-在当前 Rust 应用中，该 crate 已被 `pkg/statistics/handle/Cargo.toml` 作为普通依赖引入，但对外实际复用的主要是 `HistoricalStatsMeta` 和 `MAX_COLUMN_SIZE`：`pkg/statistics/handle/handle.rs` 重导出前者，并在历史 JSON 分块时使用后者。本文件的 `StatsHistory` 门面目前仅在同 crate 的独立单元测试中构造；完整应用的 ANALYZE 路径现由 `pkg/session/runtime/statistics.rs` 调用 `DomainStatsContext::record_historical_stats_to_storage`，后者在 `pkg/domain/domain.rs` 中直接协调当前 `Handle` 与 `stats_store`。因此，本文件是可测的迁移语义核心和共享类型/常量边界，不应误述为当前所有生产请求的直接运行入口。
+该 manifest 中原 Go 实现所需的 session/storage/model 等依赖全部放在 `target.'cfg(any())'.dependencies` 下，因而当前 Rust 文件通过本地 trait 抽象隔离具体 SQL 和 session 类型，自身不直接连接数据库。
 
 ## 核心职责
 
@@ -74,11 +72,9 @@
 
 - Rust `StatsHistory` 对应 Go `statsHistoryImpl`，三个方法对应 `RecordHistoricalStatsToStorage`、`RecordHistoricalStatsMeta` 和 `CheckHistoricalStatsEnable`。Rust 通过两个 trait 注入能力；Go 持有 `types.StatsHandle`，并通过 session pool 与 `CallWithSCtx` 打开事务/session 边界。
 - Go 在分区和非分区分支分别调用 `TableStatsToJSON` 与 `DumpStatsToJSON`；Rust 把该差异收入 `StatsSnapshot::dump_stats(database, table_id, is_partition)` 实现。Go 用 `storage.JSONTableToBlocks`，Rust 通过 `StatsSnapshot::blocks`。
-- 两者在无快照时都返回版本 `0`，在有分区时都取分区版本最大值，并都用 `5 << 20` 作为分块上限。
 - Go 用 `time.Now().Format("2006-01-02 15:04:05.999999")`；Rust 用 `SystemTime` 和公历换算构造相同长度和微秒字段的 UTC 文本。这里存在一项语义差异：Go `time.Now()` 的格式化使用该 `Time` 的 location（通常是本地时区），Rust 实现明确是 UTC。现有测试只保证文本形状、微秒精度和同批共享，不保证时区一致。
 - Go 的 meta 函数使用 `SELECT ... FOR UPDATE` 后 `REPLACE ... NOW(6)`，具体锁和事务由 session context 提供。Rust 只表达 `stats_meta` 后 `replace_meta_history` 的顺序，必须由 `HistoryStore` 实现保持两步的事务/锁语义。
 - Go 批量 meta 路径在开关查询或单表写入失败时记录日志；Rust 当前把开关错误当作 `false`，并静默丢弃单表错误。Go 在 `enforce == true` 时保留输入列表（包括理论上的零 ID，然后由单表函数报错）；Rust 无论 `enforce` 值都预先排除零 ID。这两点是当前迁移差异。
-- `pkg/statistics/handle/handletest/handle_test.go::TestRecordHistoricalStatsToStorage` 验证 Go 的整合行为；Rust 对应的 `go_test_record_historical_stats_to_storage` 验证当前 domain/handle 生产接线。本文件自身的行为由同目录 `history_stats_aster_unit_test.rs` 的六个独立测试覆盖。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@
 - 若要把本文件的 `StatsHistory` 门面接入完整应用，需先解决它与 `pkg/statistics/handle/types/interfaces.rs::StatsHistory` 的签名差异，并与现有 `Handle`/`DomainStatsContext` 历史路径选定单一权威实现。不应在不处理交易、日志、`TableInfo` 和分区 `physical_id` 的情况下直接替换生产路径。
 - 增加并行写块前，需保留序号稳定、同批时间戳一致和失败后可预测的部分写入/回滚契约，同时补充并发、重试和大快照内存占用测试。
 - 修改时间戳逻辑时，应在独立测试中覆盖 epoch、闰年、跨日和时区预期，并核对 `mysql.stats_history.create_time` 的 DATETIME(6) 语义。当前 `SystemTime::now()` 不可注入，若需稳定的日期测试，应先抽出时钟或纯格式化函数。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，目标目录内 `history_stats.rs` 识别出 22 个符号；通过 `node --file` 读取了目标全文，并对 `record_historical_stats_to_storage`、`record_historical_stats_meta`、`current_history_timestamp` 和 `civil_date_from_days` 执行了 `query/callers/callees`。
-- 源码与装配：`pkg/statistics/handle/history/history_stats.rs`、`pkg/statistics/handle/history/lib.rs`、`pkg/statistics/handle/history/Cargo.toml`、`pkg/statistics/handle/Cargo.toml`。
-- 直接 Rust 调用/接线证据：`pkg/statistics/handle/handle.rs`（`HistoricalStatsMeta` 重导出和 `MAX_COLUMN_SIZE` 用法）、`pkg/domain/domain.rs::DomainStatsContext::record_historical_stats_to_storage`、`pkg/domain/domain.rs::analyze_stats_table`、`pkg/session/runtime/statistics.rs`的 ANALYZE 完成路径、`pkg/domain/historical_stats.rs::HistoricalStatsWorker`、`pkg/statistics/handle/types/interfaces.rs::StatsHistory`。
-- Rust 测试：`pkg/statistics/handle/history/history_stats_aster_unit_test.rs` 覆盖分区最大版本与共享时间戳、空快照、meta 过滤与继续处理、无效/缺失 meta、零版本/关闭开关、快照/分块错误和首个插入错误停止；`pkg/statistics/handle/handletest/handle_test.rs::go_test_record_historical_stats_to_storage` 覆盖当前 Rust 生产接线的整合落盘。
-- Go 对照：`pkg/statistics/handle/history/history_stats.go`、`pkg/statistics/handle/types/interfaces.go`、`pkg/statistics/handle/handle.go`、`pkg/domain/historical_stats.go`、`pkg/statistics/handle/handletest/handle_test.go::TestRecordHistoricalStatsToStorage`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认本文件存在且上述固定二级标题恰好 11 个；人工复核重点是不将本地门面误写成已直接接入的唯一生产路径。

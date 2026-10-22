@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-chunk` crate 的核心列式批容器 `Chunk`。它不是独立模块入口，而是由 `pkg/util/chunk/internal/group1/lib.rs` 的 `chunk_impl` 通过 `include!("../../chunk.rs")` 注入，再由 `pkg/util/chunk/lib.rs` 的 `pub use group_1::*` 暴露给其他 crate。`pkg/util/chunk/Cargo.toml` 将 crate 根设为 `lib.rs`，并通过 `types`、`types-field`、`types-scalar` 提供 Datum、字段类型和标量类型依赖。
-
-在完整应用中，`Chunk` 是 SQL 执行链上的批量行载体：执行器按列写入结果，表达式按逻辑行读取或临时设置 selection vector，协议层和游标逐行消费。例如 `pkg/session/runtime/canonical_table_reader.rs` 用 `Reset`、`IsFull`、`AppendDatum` 生成结果批，`pkg/server/internal/resultset/cursor.rs` 用 `NumRows`/`GetRow` 消费批，`pkg/expression/chunk_executor.rs` 用 `SetSel` 临时过滤后恢复 selection。对象池入口则经本文件的 `NewChunkFromPoolWithCapacity`/`Destroy` 转到 `internal/group1/lib.rs` 的桥接函数，再落到 `pkg/util/chunk/pool.rs`。
+提供列投影、列引用、交换、深拷贝、截断、内存估算和调试格式化等批操作。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ RustCodeGraph 显示 `NewChunkWithCapacity -> New`，`CopyConstructSel -> CopyCo
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/util/chunk/chunk.go` 的 `Chunk`、构造函数、容量控制、selection、追加、复制、截断、引用和对象池 API。关键一致性包括：`requiredRows` 默认取最大批大小；`NumRows` 的 selection/虚拟行/首列优先级；容量仅在当前批已满时倍增；`CopyConstructSel` 忽略未选物理行；`TruncateTo` 清理 null bitmap 尾部无效位；`AppendDatum` 覆盖相同 MySQL Datum 类别。
+关键一致性包括：`requiredRows` 默认取最大批大小；`NumRows` 的 selection/虚拟行/首列优先级；容量仅在当前批已满时倍增；`CopyConstructSel` 忽略未选物理行；`TruncateTo` 清理 null bitmap 尾部无效位；`AppendDatum` 覆盖相同 MySQL Datum 类别。
 
 Rust 特有适配包括：Go 的 nil slice 用 `Option<Vec<usize>>` 和 `Vec` 的“长度/容量”状态近似；`IntoFieldType` 兼容值与 `Box`；`Box<Chunk>` 表达堆所有权；同一 Chunk 内列交换另设 `swapColumnWithin` 以避免制造两个别名 `&mut Chunk`；裸指针入口使用 `std::slice::from_raw_parts`。Rust 还额外提供 `AppendRaw`，用于行落盘解码时追加已编码单元格。
 
-当前 Rust 测试 `pkg/util/chunk/chunk_test.rs` 是独立测试文件，覆盖普通值/NULL、容量与已用内存、Append/Truncate/Copy/selection、requiredRows、投影/虚拟行、零列批增长、引用交换和格式化。Go 的更大测试集位于 `pkg/util/chunk/chunk_test.go`；后续移植功能时应先找到其中对应测试意图，再在独立 Rust 测试文件中保持相同分支，而不是把测试嵌入生产文件。
+Go 的更大测试集位于 `pkg/util/chunk/chunk_test.go`；后续移植功能时应先找到其中对应测试意图，再在独立 Rust 测试文件中保持相同分支，而不是把测试嵌入生产文件。
 
 ## 扩展指南
 
@@ -95,14 +93,3 @@ Rust 特有适配包括：Go 的 nil slice 用 `Option<Vec<usize>>` 和 `Vec` �
 - 修改对象池：保持 `NewChunkFromPoolWithCapacity` 与 `Destroy` 的字段列表、列数和列宽对称，测试放在 `pkg/util/chunk/pool_test.rs`，Chunk 行为测试仍放在 `chunk_test.rs`。
 
 性能风险主要来自逐单元复制、selection 物化、无意深拷贝和频繁重建列；兼容风险集中在 Go nil/空状态、Datum kind、null bitmap、变长 offsets 与 raw row 编码。所有新 API 应明确是引用、视图还是深拷贝。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/chunk` 确认该目录 Rust/Go 文件均已索引。
-- `rustcodegraph node --file pkg/util/chunk/chunk.rs --symbols-only`：确认本文件有 `Chunk`、3 个常量/trait 项及构造、状态、追加、复制、选择、池化等共 78 个符号；分段 `node --file` 阅读了全部 924 行。
-- RustCodeGraph 调用证据：`NewChunkWithCapacity -> New`；`CopyConstructSel -> CopyConstruct, renewWithCapacity, appendCellByCell`；`GrowAndReset -> Reset, renewColumns, reCalcCapacity`；`AppendDatum -> 13 个具体追加函数`；`Destroy -> putChunkFromPool`。精确 caller 查询未返回部分跨 crate 使用，因此用源码搜索补充，未把缺失图边解释为“没有调用者”。
-- crate 与装配：`pkg/util/chunk/Cargo.toml`、`pkg/util/chunk/lib.rs`、`pkg/util/chunk/internal/group1/lib.rs`；后者确认 `include!("../../chunk.rs")`、`Row` 再导出、`sizeUint32` 及对象池桥接。
-- 直接实现依赖：`pkg/util/chunk/column.rs` 的 `same_ref`/`reference_clone`；`pkg/util/chunk/pool.rs` 的全局池、`GetChunk`、`PutChunk`。
-- Go 对照：完整核对 `pkg/util/chunk/chunk.go` 的同名结构和方法；相关回归意图来自 `pkg/util/chunk/chunk_test.go`。
-- Rust 测试：完整读取 `pkg/util/chunk/chunk_test.rs`；并通过调用搜索确认 `pool_test.rs`、`chunk_in_disk_test.rs`、`row_container_test.rs` 等相邻独立测试使用核心构造/回收 API。
-- 本任务是纯文档分析，按任务要求未运行 Cargo；结构验证命令及退出码在交付前单独执行并报告。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`mock.rs` 是 `astersql-ddl-ingest` crate 中的 ingest 测试替身模块，由 [`lib.rs`](lib.rs) 以 `pub mod mock` 无条件导出。它不是 DDL owner、job 状态机或真实本地 ingest 引擎的生产入口；它在单元测试中包装真实 [`BackendContext`](backend.rs)，并用内存行缓冲实现 [`Engine`](engine.rs) / [`Writer`](engine.rs) 接口。
-
-在完整 DDL 链路中，ingest 属于加索引等 reorg/backfill 的写入与导入环节；本文件只为该环节提供可观测、不依赖真实本地引擎的测试对象。当前 Rust 直接使用点只在 [`mock_test.rs`](mock_test.rs)；RustCodeGraph 曾将 `backfilling_import_cloud.rs` 和 `index_presplit.rs` 列为文件级使用者，但源码搜索没有找到它们对本文件公开类型的直接引用，因此不把这两条视为已验证的运行时调用边。
+`MockEngineInfo` 实现 `Engine`，为一个 `index_id` 创建可共享的内存写入器，并提供 `rows()` 快照和 `set_hook()` 注入点。
 
 ## 核心职责
 
@@ -71,9 +69,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 直接对照文件是 [`mock.go`](mock.go)，Cargo porting metadata 也指向 `pkg/ddl/ingest`。当前 Rust 是聚焦测试所需契约的移植，不是 Go mock 的完整 API 复刻。
-
-- 已对齐：检查点查询/更新方法、ingest 后推进已导入水位线的目标语义；`MockEngineInfo::Flush` 成功、`Close` no-op、创建 writer 成功；hook 完全替代默认写入路径；`WrittenBytes` 返回零。
 - Rust 扩展：`MockBackendContext` 包装 Rust 真实 `BackendContext` 并增加 `written_chunks`；`MockEngineInfo` 将默认写入保存在内存 `Vec` 以供断言，而 Go 默认路径通过 session transaction 的 `Txn(true).Set(key, idxVal)` 写入存储。
 - 尚未对齐：Rust 没有 Go `NewMockBackendCtx(job, sessCtx, cpOp) -> BackendCtx` 构造和 `BackendCtx` 完整接口实现，也没有 `Register`、`FinishAndUnregisterEngines`、`CollectRemoteDuplicateRows`、`IngestIfQuotaExceeded`、`GetLocalBackend`、`Close`、`GetDiskUsage` 等 Go 方法。
 - 尚未对齐：Rust writer 没有 Go 的 session 事务、`sync.Mutex` 临界区精确形态、`onMockWriterWriteRow` / `afterMockWriterWriteRow` failpoint、`MockExecAfterWriteRow` 全局回调、key/value 日志以及 `LockForWrite`。Rust trait 本身也不接收 context、handle 或 local-writer config。
@@ -87,11 +82,3 @@ Go 直接对照文件是 [`mock.go`](mock.go)，Cargo porting metadata 也指向
 - 若要测试真实 close、cleanup、内存配额、磁盘占用、有序导入或同 key 覆盖，应使用 [`engine.rs`](engine.rs) 的 `EngineInfo` 及其独立 `engine_test.rs`，不要为了这些生产语义改变 mock 的 Go 对齐 no-op 行为。
 - 若要将 Rust mock 接入完整 DDL 测试链，需先明确补齐 Go `BackendCtx` 契约与注入点的范围；这是跨 `mock.rs`、backend manager、testutil 和集成测试的独立任务，不应在本文件的局部扩展中隐式完成。
 - 修改 Rust 生产源文件时，测试仍应保持在独立 `mock_test.rs`，不嵌入 `mock.rs`；并同步复核 [`mock.go`](mock.go) 及 Go 集成测试使用的 failpoint 契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含 11,467 个文件；`files --filter pkg/ddl/ingest` 列出本 crate 的 52 个 Go/Rust 文件；`query MockBackendCtx`、`query MockEngineInfo` 核对了 Go/Rust 对照类型；`query write_row --kind method` 核对 `engine.rs::Writer::write_row`；`node --file pkg/ddl/ingest/mock.rs --offset 1 --limit 320` 读取并列出目标文件全部 140 行及文件级使用提示。`callers/callees` 对目标 Rust 类型未产生可用边，已用源码引用搜索补齐。
-- 已读 Rust 生产路径：[`mock.rs`](mock.rs)、[`backend.rs`](backend.rs)、[`checkpoint.rs`](checkpoint.rs)、[`engine.rs`](engine.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)；仓库约束入口为 [`pkg/ddl/doc.go`](../doc.go) 和 `docs/agents/ddl/README.md`。
-- 已读独立 Rust 测试 [`mock_test.rs`](mock_test.rs)：`mock_backend_forwards_the_complete_checkpoint_contract` 证明分片进度、import TS 和水位线委托；`hook_replaces_the_default_write_path_like_go` 证明 hook 替代 rows 追加且字节数为零；`mock_engine_close_is_a_noop_like_go` 证明 `close(true)` 不清除行。
-- 已读 Go 对照 [`mock.go`](mock.go) 和注入辅助 [`testutil/testutil.go`](testutil/testutil.go)，并搜索 `integration_test.go` 对 `InjectMockBackendCtx`、`onMockWriterWriteRow` 和 `afterMockWriterWriteRow` 的使用，用于区分已移植契约与尚未接线的 Go 能力。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时用任务给定的 `test -f` + 11 章节 `rg -c` 命令做结构验证，并用 `git diff --check` 与目标范围 diff 做文档质量复核。

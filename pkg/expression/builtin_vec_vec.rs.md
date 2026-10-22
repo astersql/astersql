@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 的向量（`VectorFloat32`）内置函数列式求值实现。crate 根在 [`pkg/expression/lib.rs`](lib.rs) 中用 `#[path = "builtin_vec_vec.rs"] mod builtin_vec_vec_kernel;` 私有挂载它，并在 `builtin_vec` 门面中再导出其实现；相邻的 [`pkg/expression/builtin_vec.rs`](builtin_vec.rs) 定义同一组签名类型、函数类和标量求值路径。它处于“表达式子节点批量求值 → 本文件逐行执行向量运算 → 写入结果 `chunk::Column`”这条执行链中，不负责 SQL 名称注册、参数类型推断或标量实现。
-
-[`pkg/expression/Cargo.toml`](Cargo.toml) 将该目录声明为 `astersql-expression` 库（入口为 `lib.rs`，`autotests = false`）。本文件直接使用 crate 内的表达式抽象，并通过 `chunk-dependency`、`contextutil-dependency` 和 `types-dependency` 的根模块再导出访问列式批、共享错误和向量类型。
+只提供签名类型上的 `vecEval*` 方法。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@ RustCodeGraph 对 `vectorizedDistance` 的精确 callee 查询给出到 `evaluat
 
 ## 与 Go 版本的对应关系
 
-[`pkg/expression/builtin_vec_vec.go`](builtin_vec_vec.go) 是由 generator 生成的直接对照。Rust 与 Go 均覆盖 `VecDims`、四个双向量度量、`VecL2Norm`、`VecFromText`、`VecAsText`，并保持以下语义一致：先批量求参数、逐行传播 NULL、底层错误立即返回、NaN 距离/范数变为 NULL，以及文本解析后的目标列维度检查。
+Rust 与 Go 均覆盖 `VecDims`、四个双向量度量、`VecL2Norm`、`VecFromText`、`VecAsText`，并保持以下语义一致：先批量求参数、逐行传播 NULL、底层错误立即返回、NaN 距离/范数变为 NULL，以及文本解析后的目标列维度检查。
 
 实现层面的差异是：
 
@@ -94,7 +92,7 @@ RustCodeGraph 对 `vectorizedDistance` 的精确 callee 查询给出到 `evaluat
 - Go 通常先 `Resize*(n, false)`、`MergeNulls`，再取得底层切片按下标写入；Rust 以零长度重置或预留容量后逐行 `Append*`。
 - Go 每个签名在生成文件中显式提供 `vectorized() == true`；Rust 本文件只提供 `vecEval*`，向量化能力由 Rust 表达式框架的签名分派体现。
 
-Go 的 [`pkg/expression/builtin_vec_vec_test.go`](builtin_vec_vec_test.go) 用 `vecBuiltinVecCases` 表驱动覆盖八个函数族、正常值、NULL 和余弦 NaN。Rust 的 `builtin_vec_vec_test.rs` 锁定相同的八项清单，并调用 `builtin_vec_vec_31_aster_unit_test.rs` 中的完整回归集合；后者额外明确验证数值、维度不匹配、非法文本、常量广播、NULL/NaN 和函数类下推编码。
+Rust 的 `builtin_vec_vec_test.rs` 锁定相同的八项清单，并调用 `builtin_vec_vec_31_aster_unit_test.rs` 中的完整回归集合；后者额外明确验证数值、维度不匹配、非法文本、常量广播、NULL/NaN 和函数类下推编码。
 
 ## 扩展指南
 
@@ -109,13 +107,3 @@ Go 的 [`pkg/expression/builtin_vec_vec_test.go`](builtin_vec_vec_test.go) 用 `
 - 若 Go 对照语义发生变化，同步核对 `builtin_vec_vec.go`（生成来源）及 `builtin_vec_vec_test.go`，不要只让 Rust 测试通过。
 
 兼容风险主要是 SQL NULL/错误语义、文本格式和下推签名一致性；性能风险主要是每批临时列分配、逐行追加以及重复解析/格式化。改动后应以独立单元测试比较标量与向量化结果，而不能只验证编译。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，覆盖本仓库 Rust 与 Go 文件。
-- RustCodeGraph `node --file pkg/expression/builtin_vec_vec.rs --offset 1 --limit 400`：读取目标文件 181 行全貌，确认两个内部辅助、一个宏、四次距离宏展开和四个显式签名实现。
-- RustCodeGraph `query vectorizedDistance`、`query evaluateVectorArgument` 与 `callees vectorizedDistance`：确认精确符号位置以及 `vectorizedDistance → evaluateVectorArgument` 调用边。针对重载 `vecEval*` 的查询返回大量同名候选，因此未把含歧义结果写成精确调用边。
-- RustCodeGraph `node` 读取 `pkg/expression/lib.rs`：确认 crate 根、模块挂载、测试模块挂载及 `builtin_vec` 再导出关系。
-- RustCodeGraph `node` 读取 `pkg/expression/builtin_vec_vec_test.rs` 与 `pkg/expression/builtin_vec_vec_31_aster_unit_test.rs`：确认八个函数族，以及数值、NULL、NaN、维度错误、非法文本、广播和下推编码测试。
-- 直接读取未由调用图完整表达的 `pkg/expression/Cargo.toml`、Go 对照 `pkg/expression/builtin_vec_vec.go` 和 Go 测试 `pkg/expression/builtin_vec_vec_test.go`：确认 crate 边界、依赖再导出来源和 Go/Rust 语义对应。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定的 11 章节结构命令和人工事实复核验收。

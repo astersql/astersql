@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-cascades-base` crate 的哈希/相等性契约定义，源码由 [`pkg/planner/cascades/base/lib.rs`](./lib.rs) 的 `base` 模块通过 `include!("base.rs")` 纳入，并随 `pub use base::*` 从 crate 根重新导出。crate 的边界由 [`pkg/planner/cascades/base/Cargo.toml`](./Cargo.toml) 声明；该清单没有直接依赖，`Hash64` 所接收的 `Hasher` 来自同一 `base` 模块中紧接着包含的 [`hash_equaler.rs`](./hash_equaler.rs)。
-
-它处在 Cascades 优化器“为对象生成有损摘要，再在摘要冲突时确认语义相等”的契约层，而不是哈希算法或 Memo 容器的实现层。一个明确的生产接入点是 [`pkg/planner/core/base/plan_base.rs`](../../core/base/plan_base.rs) 中的 `LogicalPlan: Plan + cascades_base::HashEquals`：逻辑计划必须同时具备哈希与相等能力，才能满足这一上层接口。
+只定义协议，不决定哪些字段参与哈希或相等比较，也不实现 FNV-1a、Memo 插入和冲突桶管理。
 
 ## 核心职责
 
@@ -76,14 +74,10 @@ RustCodeGraph 已索引 `base.rs` 的 6 个节点，并能定位三个 trait 及
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/planner/cascades/base/base.go`](./base.go)：声明顺序和组合关系均为 `Hash64`、`Equals`、`HashEquals`。
-
-- Go `Hash64(h Hasher)` 对应 Rust `Hash64(&self, h: &mut dyn Hasher)`。Rust 显式表达接收者共享借用和哈希器独占可变借用；两者都把状态写入外部哈希器而非直接返回 `u64`。
 - Go `Equals(any) bool` 对应 Rust `Equals(&self, &dyn Any) -> bool`。Go 实现常用类型断言；Rust 实现使用 `downcast_ref`。Rust 参数是借用，因此不复制或转移被比较值。
-- Go `HashEquals` 通过嵌入两个接口组成。Rust 用超 trait 表达，并以 blanket impl 恢复“方法集满足后自动实现”的效果。
 - Go 接口可被任意具有匹配方法集的类型隐式满足；Rust 仍要求显式实现 `Hash64` 与 `Equals`，只有组合 trait 的实现是自动的。
 
-测试语义并非逐项一一相同：[`base_test.go`](./base_test.go) 用两个 benchmark 比较泛型接口断言与 `any` 类型断言的开销；[`base_test.rs`](./base_test.rs) 将其改成确定性单元测试，验证同类型比较成功及类型擦除后错误类型返回 `false`，不保留性能基准。`migration_aster_unit_test.rs` 另用 `Value` 验证本文件真实 `Equals` trait 的同值、异值和异类型分支。
+测试语义并非逐项一一相同：[`base_test.go`](./base_test.go) 用两个 benchmark 比较泛型接口断言与 `any` 类型断言的开销；[`base_test.rs`](./base_test.rs) 将其改成确定性单元测试，验证同类型比较成功及类型擦除后错误类型返回 `false`，不保留性能基准。
 
 ## 扩展指南
 
@@ -95,13 +89,3 @@ RustCodeGraph 已索引 `base.rs` 的 6 个节点，并能定位三个 trait 及
 4. 将测试放在独立 Rust 测试文件中。契约级边界可扩展 `pkg/planner/cascades/base/base_test.rs` 或 `migration_aster_unit_test.rs`；具体实现应在其同目录独立测试中覆盖“相等对象同哈希”“强制/已知哈希冲突仍不相等”“异类型返回 false”以及 nil、空集合、顺序等边界。
 
 若修改 trait 签名或超 trait，需要同步审查 `LogicalPlan`、所有 `impl Hash64/Equals`、trait object 使用点和 crate 再导出。兼容性风险主要是破坏下游实现或对象安全；正确性风险是哈希/相等字段漂移；性能风险来自在 `Equals` 中引入昂贵比较或在热路径 `Hash64` 中分配。仅增加对象实现时通常无需修改本文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，共 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录与 `base.rs` 均已收录。
-- RustCodeGraph `files --filter pkg/planner/cascades/base`：确认目标生产文件、crate 入口、Go 对照和独立 Rust/Go 测试均在索引中。
-- RustCodeGraph `node --file`：完整读取 `base.rs`（45 行）、`base_test.rs`（108 行）、`base.go`（37 行）、`base_test.go`（79 行）、`lib.rs`、`hash_equaler.rs`，并读取 `plan_base.rs`、`group_expr.rs`、`memo.rs` 与 `migration_aster_unit_test.rs` 的直接相关片段。
-- RustCodeGraph `query`：精确确认 `Hash64`、`Equals`、`HashEquals` 位于 `base.rs`，`Hasher` 位于 `hash_equaler.rs`；`callers HashEquals` 返回空，故未把图查询缺边误写成“无调用者”。
-- Cargo 与源码搜索：读取 `pkg/planner/cascades/base/Cargo.toml`，并用 `rg` 核验 `LogicalPlan: ... HashEquals`、直接 trait 实现与导入位置，补足 `include!`/trait 边。
-- Go 与测试对照：读取 `base.go`、`base_test.go`、`base_test.rs`、`migration_aster_unit_test.rs`，确认接口形状、类型不匹配行为和 benchmark 到确定性测试的迁移差异。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构检查并人工复核链接、符号和边界陈述。

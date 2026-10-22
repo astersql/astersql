@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`channelz.rs` 是 `astersql-metrics` crate 内部的 gRPC channelz 到 Prometheus 的转换层。模块由 `pkg/metrics/lib.rs` 以私有 `mod channelz` 装配；外部不会直接构造它，而是经 `pkg/metrics/metrics.rs` 中的 `RegisterMetrics -> setup_channelz_collector -> init_grpc_channelz_collector_locked -> ChannelzCollector::new` 注册到默认 Prometheus registry。crate 边界和直接依赖由 `pkg/metrics/Cargo.toml` 确认：本文件直接使用 `grpcio`、`prometheus` 与 `serde_json`。
-
-生产采集时，`Collector::collect` 直接读取 grpcio C-core 的进程级 channelz JSON 快照。它不是 gRPC 服务端，也不管理网络监听器或客户端连接；单例创建、注册、注销和测试隔离由相邻的 `pkg/metrics/metrics.rs` 负责。
+`ChannelzCollector` 实现 `prometheus::core::Collector`，声明并产出 9 个指标族：通道调用量及最后调用时间、socket 流/消息/keepalive、最后流/消息时间、流控窗口，以及按 RPC 分类的抓取错误总数。
 
 ## 核心职责
 
@@ -82,11 +80,7 @@ collector 可被克隆和并发 gather：共享描述符只读，错误只通过
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现位于 `pkg/metrics/metrics.go`。两版对齐的外部语义包括：在指标注册流程安装单例 collector；测试模式跳过；过滤 target 为 `bufnet`/`passthrough:///bufnet` 的内部通道和无 remote/remoteName 的内部 socket；只采集叶子 subchannel 与 socket；重复初始化保持幂等；cleanup 后清空状态。`pkg/metrics/metrics_internal_test.go` 和 Rust 的 `metrics_internal_test.rs` 对这些单例、跳过、过滤和 gather 行为做了对应验证。
-
 实现机制存在重要差异。Go 版创建 `bufconn.Listener`、channelz gRPC server、client connection，再使用 `tikvcollectors.NewChannelzCollector` 通过 RPC 采集；Rust 版没有移植这组网络资源，而是在 `SystemSource` 中直接调用 `grpcio` C-core channelz API，并在本文件自行完成 JSON 遍历、过滤、地址/时间转换及 Prometheus protobuf 编码。因此扩展 Go 的 `ChannelzCollectorOpts` 或 tikv collector 指标时，Rust 侧必须显式审查并同步相应字段、标签和边界逻辑，不能假设依赖库自动继承变化。
-
-`pkg/metrics/channelz_test.rs` 进一步固定了 Go 风格边界：零 ID 与无 `data` 节点不产出业务指标；UDS/TCP 地址格式化一致；Unix epoch 的最后流时间不输出。`metrics_internal_test.rs::test_grpc_channelz_snapshot_emits_leaf_subchannel_and_socket_metrics` 验证真实形状的静态拓扑能够生成叶子 subchannel 和 socket 指标，而不只是错误 counter。
 
 ## 扩展指南
 
@@ -96,11 +90,3 @@ Go 对照实现位于 `pkg/metrics/metrics.go`。两版对齐的外部语义包�
 - 改动地址或时间格式必须覆盖 IPv4、IPv4-mapped IPv6、IPv6、UDS、named address、空/非法 Base64、带小数秒和 epoch 等边界。当前手写 Base64 和日期转换没有外部 crate 的完整校验，替换实现时需确认输出兼容性。
 - 性能风险主要来自全量 JSON 解析、递归遍历、每个样本的标签字符串分配和高基数标签。新增字段前应评估 gather 频率、拓扑规模和指标数量，避免把父级聚合节点也纳入而重复计数。
 - 若修改 collector 的共享字段或错误统计，必须维持 `Clone + Send + Sync` 的实际可用性，并核对 `metrics.rs` 中克隆注册/注销及 `handle_id` 单例测试。
-
-## 验证依据
-
-- 源码全读：`pkg/metrics/channelz.rs`；模块与注册入口：`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`；crate 声明：`pkg/metrics/Cargo.toml`。
-- Rust 独立测试：`pkg/metrics/channelz_test.rs`；相关单例、过滤、gather 和静态拓扑验证：`pkg/metrics/metrics_internal_test.rs`；另由 `pkg/metrics/metrics_2_aster_unit_test.rs` 覆盖内部 target/socket 判定。
-- Go 对照：`pkg/metrics/metrics.go` 的 `setupChannelzCollector`、`initGrpcChannelzCollectorLocked`、`channelzCollectorOpts`、内部连接判定和 cleanup；测试依据为 `pkg/metrics/metrics_internal_test.go`。
-- RustCodeGraph：`status` 显示本仓库索引可用（11,467 files、307,296 nodes、1,848,419 edges）；`query ChannelzCollector --kind struct` 和 `node ChannelzCollector` 定位到 `channelz.rs:72`，`query collect_snapshots_for_test --kind function` 定位到 `channelz.rs:733`。`files --filter pkg/metrics/channelz` 没有命中，`callers/callees` 查询未产出可用边，因此调用边另以直接源码引用核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认文档存在且恰好包含 11 个固定二级章节，并人工检查没有修改 Rust、Go、Cargo 或只读的 `plan.md`。

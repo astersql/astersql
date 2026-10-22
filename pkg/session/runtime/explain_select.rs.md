@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`explain_select.rs` 属于 `astersql-session` crate（`pkg/session/Cargo.toml`），由 `pkg/session/runtime.rs` 以私有模块 `mod explain_select;` 编入会话运行时，并通过 `use explain_select::*;` 与同层分派代码共享。它不定义新的会话类型，而是为 `runtime/session.rs` 中的 `ConcreteSession` 补充非 `ANALYZE` 的关系型 `SELECT` EXPLAIN 渲染。`runtime/dispatch.rs:3131` 在事务、MDL、grouping 和 `ONLY_FULL_GROUP_BY` 检查后调用 `explain_relational_select`；写语句和若干特化分支也会先调用本文件的 `explain_partition_integration_plan`。
-
-本文件约 9,164 行，包含 16 个模块级辅助函数和一个大型 `impl ConcreteSession`；没有自定义 `struct`、`enum`、`trait`、常量或 feature gate。唯一条件编译项是 `#[cfg(test)] #[path = "explain_select_test.rs"] mod tests;`，使测试保持在独立文件。`pkg/session` 下未发现 `doc.go`，因此包边界以 `Cargo.toml`、`runtime.rs` 和直接分派入口为准。
+为 range/list/hash/key 分区裁剪提供字面量、时间 `EXTRACT`、等值、`IN`/`BETWEEN`、析取与布尔表达式评估辅助，并在静态/动态裁剪下生成不同树形。
 
 ## 核心职责
 
@@ -72,11 +70,9 @@ SQL 普通比较遇到 NULL 在顶层 `WHERE` 为 UNKNOWN，`comparison_has_null
 
 ## 与 Go 版本的对应关系
 
-`pkg/session/Cargo.toml` 的 `[package.metadata.porting] go-package = "pkg/session"` 将 crate 边界对应到 Go `pkg/session`，但不存在同路径 `pkg/session/runtime/explain_select.go`。Go 主链是 `pkg/planner/core/planbuilder.go:6025` 的 `PlanBuilder.buildExplain`、`buildExplainPlan`，随后由 `pkg/executor/builder.go:1634` 构建 `ExplainExec`，`pkg/executor/explain.go` 执行/生成输出，`pkg/planner/core/common_plans.go` 的 `Explain.RenderResult` 和各 physical operator `ExplainInfo` 负责格式化。Rust 的 `explain_optimized_relational_select` 回退路径对应这条真实 planner 语义。
-
 本文件额外承担一个迁移期兼容层：对 Go planner/executor 测试已固定、而 compact Rust optimizer 尚未统一暴露的 IndexMerge、特定 join/MPP、partition integration、redaction 和 vector 形状，直接渲染同样的稳定树。源码注释明确要求需要完整优化器的视图、CTE、窗口、复杂连接、CostVer2 和 TiFlash aggregate/derived query 回退真实流程，说明兼容分支不是 Go planner 的简化替代。
 
-直接 Rust 独立测试 `pkg/session/runtime/explain_select_test.rs` 验证了分区写 EXPLAIN 只在悲观事务（或 NextGen 默认）增加 `SelectLock`，并验证 date-only/time-only 字面量在 `extract_partition_value` 中不混淆。Go 对照证据分散在 `pkg/planner/core/casetest/**`、`pkg/planner/core/tests/redact/redact_test.go`、`pkg/planner/core/casetest/partition/integration_partition_test.go`、`pkg/executor/explain*_test.go` 等 golden/行为测试，而非单一同名 Go 测试。
+直接 Rust 独立测试 `pkg/session/runtime/explain_select_test.rs` 验证了分区写 EXPLAIN 只在悲观事务（或 NextGen 默认）增加 `SelectLock`，并验证 date-only/time-only 字面量在 `extract_partition_value` 中不混淆。
 
 ## 扩展指南
 
@@ -85,11 +81,3 @@ SQL 普通比较遇到 NULL 在顶层 `WHERE` 为 UNKNOWN，`comparison_has_null
 新增分区裁剪时，从 `range_extract_partition_names`、`equality_partition_name`、`hash_partition_names` 或 `list_partition_names` 扩展，保持“无法证明则不裁剪”的保守性，同时检查 NULL、MAXVALUE、非单调函数、FSP、负时间、组合列和空分区集。新增索引/点查时必须检查 index visibility、covering projection、unique composite key 完整性、排序方向和分区模式。
 
 回归测试优先扩展独立文件 `pkg/session/runtime/explain_select_test.rs`，不将测试内联到生产文件；如果行为对应特定 Go golden，同步核对相应 `pkg/planner/core/casetest/**`/`tests/**` 用例。每个新分支至少应覆盖命中形状、近似但不应命中的 SQL、format 差异、统计/catalog 状态和回退路径。主要正确性风险是分支顺序导致错误截获、过度分区裁剪或计划与实际执行分叉；兼容风险是 Go 计划文本/warning 改变；性能风险是反复规范化 SQL、遍历大量表/索引/分区或过早进入完整优化器。
-
-## 验证依据
-
-本说明直接核对了：生产源 `pkg/session/runtime/explain_select.rs`；crate 边界 `pkg/session/Cargo.toml`；模块入口 `pkg/session/runtime.rs`；上游分派 `pkg/session/runtime/dispatch.rs`；独立 Rust 测试 `pkg/session/runtime/explain_select_test.rs`；Go 主链 `pkg/planner/core/planbuilder.go`、`pkg/planner/core/common_plans.go`、`pkg/executor/builder.go`、`pkg/executor/explain.go`；Go 对照测试入口 `pkg/planner/core/tests/redact/redact_test.go`、`pkg/planner/core/casetest/partition/integration_partition_test.go`、`pkg/planner/core/casetest/planstats/plan_stats_test.go` 和 `pkg/executor/explain*_test.go`。
-
-RustCodeGraph `status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query explain_select --json` 定位了文件及 `extract_partition_value`、`range_extract_partition_names`、`equality_partition_name`、`hash_partition_names`、`list_partition_names`、`explain_pushdown_predicate` 等符号，`node --file pkg/session/runtime/explain_select.rs` 核对了源码。对 `explain_relational_select`/`explain_partition_integration_plan` 的 callers/callees 因大型 impl 索引限制返回空集，所以用 `rg` 确认了 `runtime.rs:58,151`、`dispatch.rs:3016,3094,3131` 和测试直接调用。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的结构命令确认文档存在且恰有 11 个固定二级章节，并人工检查本文能回答文件为何存在、如何运行、何时回退真实优化器以及如何安全扩展。

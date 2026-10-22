@@ -2,24 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-util-utilfuncp` crate，是 Go 包
-`pkg/planner/util/utilfuncp` 的 Rust 对应实现。crate 根
-[`lib.rs`](./lib.rs) 将本文件私有模块中的所有公开项重新导出；工作区根
-`Cargo.toml` 又以 `facade_planner_util_utilfuncp` 引入该 crate，并由
-`pkg/lib.rs` 的 facade 模块继续再导出。
-
-文件承担两个相互独立、但都用于解除 planner 子包耦合的职责：
-
-1. `define_callback_slots!` 声明 98 个与 Go 包级函数变量同名的回调槽，并用
-   `CallbackSlot`/`CallbackError` 提供线程安全、运行时类型检查的安装与查询接口。
-2. `Clone*ForPlanCache` 系列函数按 `SafeToShareAcrossSession` 判断表达式对象能否跨会话共享，
-   只在必要时为计划缓存建立独立副本。
-
-当前接线状态必须与能力本身分开理解：这些 API 已由 crate 和顶层 facade 导出，
-但仓库内 Rust 生产代码尚未检索到对本文件回调槽的具体 `install`/`get` 调用；
-`pkg/planner/core/operator/physicalop/plan_clone_generated.rs` 中的克隆调用也仍是 Go 形态的注释。
-`pkg/planner/core/core_init.rs` 维护的是另一套回调**名称集合**，不是本文件
-`HashMap<CallbackName, CallbackEntry>` 的安装入口。
+不执行优化算法、不计算代价，也不调用已注册回调；它只提供注入设施和缓存克隆策略。
 
 ## 核心职责
 
@@ -158,9 +141,6 @@ Go 文件 `func_pointer_misc.go` 用 98 个包级 `var ... func(...)` 打断 imp
 `CallbackSlot` 保存类型擦除值。名称覆盖一致，但 Rust 不在静态声明中编码每个 Go 函数签名，
 而是在安装与查询双方的泛型 `T` 上动态达成一致，并新增了显式的缺失/类型错误。
 
-五个克隆入口的主要对应关系为：
-
-- Go `nil` 切片对应 Rust 外层 `Option::None`。
 - Go 全部安全时原样返回切片；Rust 用 `PlanCacheSlice::Shared` 明示零拷贝借用。
 - Go 复用 `cloned[:0]`；Rust `reuse_or_new_vec` 执行 `clear` 并保留容量。
 - Go 列/常量/标量函数慢路径共享安全指针、克隆不安全对象；Rust 用 `Arc::clone` 与新 `Arc` 表达同一意图。
@@ -170,7 +150,6 @@ Go 文件 `func_pointer_misc.go` 用 98 个包级 `var ... func(...)` 打断 imp
   `func_pointer_misc_test.rs` 均以 issue #66265 场景验证中间空项。
 - Go 列扫描会在 `nil` 上解引用；Rust 用 `unwrap` 明确保留这一行为。
 
-Go 文件只声明函数变量，不负责它们的赋值；Go 的具体赋值通常由 planner/core 初始化完成。
 Rust 当前另有 `pkg/planner/core/core_init.rs` 名称登记，但没有证据表明它向本文件 98 个槽安装了具体函数，
 所以迁移状态应描述为“槽位基础设施存在、具体生产接线未验证/尚未检索到”，不能写成完整等价运行链。
 
@@ -191,25 +170,3 @@ Rust 当前另有 `pkg/planner/core/core_init.rs` 名称登记，但没有证据
   兼容风险集中在回调名称、类型和安装顺序不一致，以及把 `None` 与空切片混为一谈。
 - 若将生成的物理计划克隆代码从注释迁移为可编译 Rust，优先接入这些公开入口，而不是复制判断逻辑；
   同时用真实编译调用重新验证当前仅由字符串/注释形成的“上游”关系。
-
-## 验证依据
-
-- 源码：[`func_pointer_misc.rs`](./func_pointer_misc.rs)，完整检查宏清单、注册表、错误类型、
-  `PlanCacheSlice` 及五个克隆入口；宏清单机械计数为 98。
-- crate 边界：[`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)；确认正常依赖仅
-  `astersql-expression`，其余签名依赖被置于永不成立的 `cfg(any())`，并确认全部公开项再导出。
-- Go 对照：[`func_pointer_misc.go`](./func_pointer_misc.go)，核对 98 个函数变量及五个克隆函数的
-  `nil`、安全快路径、缓冲复用和逐元素策略。
-- 独立测试：[`func_pointer_misc_test.rs`](./func_pointer_misc_test.rs) 与
-  [`func_pointer_misc_test.go`](./func_pointer_misc_test.go)，核对 issue #66265 的中间空常量回归场景。
-- 直接接线证据：`pkg/planner/core/core_init.rs`、`pkg/planner/core/core_init_test.rs`、
-  `pkg/planner/core/operator/physicalop/plan_clone_generated.rs`、
-  `pkg/planner/implementation/Cargo.toml`、工作区 `Cargo.toml` 与 `pkg/lib.rs`；据此区分名称登记、
-  manifest 依赖、注释中的 Go 形态和真实 Rust 调用。
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter` 找到本目录 Rust/Go
-  源与测试；`node --file` 完整读取目标、测试、Go 对照和 crate 根；`query` 消除同名 Go/Rust
-  `CloneExpressionsForPlanCache` 歧义；`explore` 给出 `callbacks`、`get`、`remove`、
-  `reuse_or_new_vec` 和克隆入口的文件级调用关系。精确 callers/callees 查询未返回额外生产边，
-  因而又用限定 Rust/Cargo 的 `rg` 核对当前接线边界。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证恰有 11 个固定二级标题，
-  并人工复核没有把未接线能力描述为已运行的生产路径。

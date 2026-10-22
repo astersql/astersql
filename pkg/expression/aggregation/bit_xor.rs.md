@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-对应生产源文件：[`pkg/expression/aggregation/bit_xor.rs`](./bit_xor.rs)。
-
-该文件属于 `astersql-expression-aggregation` crate 的行式聚合运行时，实现 SQL 聚合函数 `BIT_XOR`。crate 入口 `pkg/expression/aggregation/lib.rs` 以 `mod bit_xor` 装入模块并公开再导出其符号；`pkg/expression/aggregation/Cargo.toml` 的 `[package.metadata.porting]` 将本 crate 对应到 Go 包 `pkg/expression/aggregation`。
-
-它位于聚合描述与逐行执行之间：`AggFuncDesc::GetAggFunc` 根据 `ast::AggFuncBitXor` 构造 `bitXorFunction`，分布式下推路径 `NewDistAggFunc` 则根据 `tipb::ExprType::AggBitXor` 构造同一实现。构造完成后，上层通过 `Aggregation` trait 驱动创建分组状态、逐行更新以及读取部分或最终结果；本文件不负责 SQL 名称解析、返回类型推断、分组调度或结果输出到数据块。
+实现是直接的逐行状态机，不在本文件处理 `DISTINCT`、聚合阶段模式或多个参数。
 
 ## 核心职责
 
@@ -88,15 +84,8 @@ crate 直接依赖 `expression`、`chunk`、`stmtctx` 及由 `datum-dependency` 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/aggregation/bit_xor.go`。Rust 保留了 Go 的类型名和五个接口方法，并逐项对齐：
-
 - Go 的嵌入字段 `aggFunction` 在 Rust 中改为具名公开字段 `aggFunction: aggFunction`。
-- 两版 `CreateContext` 都先调用公共构造器，再把结果设为 `uint64(0)`。
-- 两版 `ResetContext` 都只替换求值上下文并清零 `Value`，不会执行公共 `aggFunction.ResetContext` 的全量清理。
-- 两版 `Update` 都先求值第一个参数，跳过 `NULL`，对 `KindUint64` 走直接路径，否则经 `ToInt64(TypeCtx)` 后转 `u64`，最后异或写回。
 - 两版最终结果都是当前 Value，部分结果都是只含该值的单元素集合。
-
-Go 测试 `pkg/expression/aggregation/aggregation_test.go::TestBitXor` 覆盖初值、整数序列、NULL、重复值抵消、部分结果、Reset 与 Decimal 转换。Rust 的共享用例 `aggregation_aster_unit_test.rs::bit_aggregates_preserve_empty_values_nulls_and_reset` 覆盖相同类别；`aggregation_test.rs::TestBitXor` 转发到该共享用例；独立的 `bit_xor_test.rs` 进一步验证 Reset 保留无关通用字段。
 
 ## 扩展指南
 
@@ -106,13 +95,3 @@ Go 测试 `pkg/expression/aggregation/aggregation_test.go::TestBitXor` 覆盖初
 - 若部分聚合格式变化，需要同步审查 `GetPartialResult`、`AggFuncDesc` 的阶段拆分以及 `NewDistAggFunc` 的 PB 模式路径，确认下游把单个 `u64` Datum 解释一致。
 - 新增参数校验应优先放在 `NewAggFuncDesc`/类型推断层，并为绕过构造器的路径保留清晰边界；直接在 `Update` 中扩展参数数量会改变热路径。
 - 任何行为调整都应同步 Go 对照意图，而不是为 Rust 单独简化。性能上应保持逐行常数开销，避免在 `Update` 中引入堆分配；兼容性上重点关注 Datum 转换、负数位模式、空组默认值和部分结果编码。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含目标文件；`files --filter pkg/expression/aggregation/bit_xor.rs` 报告该文件有 8 个符号。
-- RustCodeGraph 源码与关系：`node --file pkg/expression/aggregation/bit_xor.rs` 核对完整 62 行实现；`node bit_xor.rs::bitXorFunction` 报告构造调用边来自 `aggregation.rs::NewDistAggFunc` 和 `descriptor.rs::GetAggFunc`；目标文件还被这两个文件使用。
-- Rust 生产代码：`pkg/expression/aggregation/aggregation.rs`（`Aggregation`、`AggEvaluateContext`、`aggFunction::CreateContext`、`NewDistAggFunc`）、`pkg/expression/aggregation/descriptor.rs`（`GetAggFunc`）、`pkg/expression/aggregation/lib.rs`（模块装配与测试装配）。
-- crate 边界：`pkg/expression/aggregation/Cargo.toml`（crate 名、库入口、直接依赖与 Go 包映射）。
-- Go 对照：`pkg/expression/aggregation/bit_xor.go` 和 `pkg/expression/aggregation/aggregation_test.go::TestBitXor`。
-- Rust 测试：`pkg/expression/aggregation/bit_xor_test.rs`、`pkg/expression/aggregation/aggregation_test.rs::TestBitXor`、`pkg/expression/aggregation/aggregation_aster_unit_test.rs::bit_aggregates_preserve_empty_values_nulls_and_reset`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以固定标题计数命令验证恰有 11 个二级章节，并人工复核所有行为结论均可回指上述符号或测试。

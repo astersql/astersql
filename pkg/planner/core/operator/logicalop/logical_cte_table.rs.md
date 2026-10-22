@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-logicalop` crate，crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 以私有模块 `logical_cte_table` 装载它，再通过 `pub use logical_cte_table::*` 导出 `LogicalCTETable`。`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 Go 包 `pkg/planner/core/operator/logicalop`；本文件直接使用该 crate 重导出的逻辑计划、schema 和统计类型，并通过 `base`、`expression` 两个路径依赖完成上下文与空 schema 初始化。
-
-在 SQL 规划链中，它表示递归 CTE 对工作表（中间物化结果）的逻辑引用，而不是 CTE 定义本身。`pkg/planner/core/logical_plan_builder_runtime.rs` 的 CTE 绑定构建逻辑仅在 `binding.recursive_reference` 为真且未内联时构造 `LogicalCTETable`；普通非内联引用构造 `LogicalCTE`，内联引用则直接消费种子计划。
+`LogicalPlan` 实现只提供动态类型访问、基类访问以及统计推导分派；其余通用逻辑计划行为来自 `BaseLogicalPlan`/`LogicalSchemaProducer`，本文件不实现底层表扫描或 CTE 迭代。
 
 ## 核心职责
 
@@ -67,8 +65,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/operator/logicalop/logical_cte_table.go`。两端都嵌入 schema producer，保存 `SeedStat`、`Name`、`IDForStorage`、`SeedSchema`，并以 CTETable 类型和查询块 offset 初始化基类。两端在无需 reload 且已有缓存时都返回缓存和 `false`，否则复制/设置种子统计并返回 `true`。
-
 关键实现差异如下：
 
 - Go 的 `SeedStat` 是 `*property.StatsInfo`，生产侧通过覆盖指针指向的值传播更新；Rust 用 `Arc<RwLock<StatsInfo>>` 表达共享可变所有权，并在消费时克隆快照。
@@ -84,15 +80,3 @@ Go 对照文件是 `pkg/planner/core/operator/logicalop/logical_cte_table.go`。
 若接通列统计使用收集，应以 Go 的 `collect_column_stats_usage.go` 为行为证据，在 Rust 对应规则中消费 `SeedSchema` 并验证可见列到种子列的映射；不要在本逻辑叶子中臆造扫描逻辑。若扩展物理属性或执行行为，应同步检查 `base_physical_plan.rs` 对 root task、排序和 `PhysicalCteScan` 的约束，以及 `physical_cte_table.rs`/执行器的存储 ID 契约。
 
 测试必须放在独立测试文件中。当前最接近的 Rust 测试是 `logical_datasource_aster_unit_test.rs::cte_uses_shared_seed_statistics`（验证 `LogicalCTE` 共享统计）和 `physicalop/physical_cte_table_test.rs`（验证物理表选优/克隆），但它们不直接实例化本类型。新增行为应在同目录独立 `*_test.rs` 中直接覆盖：缓存命中返回 `false`、强制 reload 观察共享更新、锁污染恢复、初始化类型/offset，以及存储 ID 到物理扫描的传递；并在 `logicalop/lib.rs` 的测试模块区接线。
-
-## 验证依据
-
-- 目标实现：`pkg/planner/core/operator/logicalop/logical_cte_table.rs`，已核对结构体、`Default`、`Init`、固有/trait `DeriveStats` 和动态类型/基类访问方法。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml` 与 `lib.rs`，已核对 crate 名、`base`/`expression` 路径依赖、Go 包映射、模块声明和重导出。
-- 构建入口：`pkg/planner/core/logical_plan_builder_runtime.rs` 的递归引用分支，已核对字段来源、`Init`、schema/输出名设置和普通 CTE 分流。
-- 共享状态生产侧：`pkg/planner/core/operator/logicalop/logical_cte.rs::LogicalCTE::DeriveStats`，已核对读写锁、种子统计推导和写回时机。
-- 物理消费侧：`pkg/planner/core/operator/physicalop/base_physical_plan.rs`，已核对具体类型下转、root/sort 边界、名称/存储 ID/schema/统计传递，以及自连接存储 ID 辅助逻辑。
-- Go 语义：`pkg/planner/core/operator/logicalop/logical_cte_table.go`、`logical_cte.go` 和 `pkg/planner/core/rule/collect_column_stats_usage.go`；相关 Go 测试引用见 `collect_column_stats_usage_test.go`。
-- Rust 测试现状：`pkg/planner/core/operator/logicalop/logical_datasource_aster_unit_test.rs` 与 `pkg/planner/core/operator/physicalop/physical_cte_table_test.rs`；搜索未发现直接实例化 `LogicalCTETable` 的独立 Rust 单测。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；精确 `node` 查询确认两层 `DeriveStats` 的委托边，并显示固有方法经逻辑计划统计路径被 `refresh_join_order_stats`、`is_empty` 触发。综合 `explore`/宽调用者查询曾超时，因此调用链结论同时以精确节点轨迹和上述源码入口交叉验证。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构验证要求文档存在且固定二级标题恰好 11 个。

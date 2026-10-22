@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`table_lock.rs` 位于 `astersql-ddl` crate，模块由 `pkg/ddl/lib.rs` 的 `pub mod table_lock` 对外公开。它用内存数据结构表达 MySQL 风格 `LOCK TABLES`、`UNLOCK TABLES` 和 `ADMIN CLEANUP TABLE LOCK` 所需的表锁元数据、兼容性检查及逐步状态推进逻辑。
-
-该文件是 Go `pkg/ddl/table_lock.go` 的聚焦移植模型，但当前 Rust 接线范围有限：仓库搜索只找到测试代码直接调用 `check_rename_table_lock`、`check_drop_schema_lock`、`lock_table` 和 `unlock_table`；`advance_lock_tables`、`advance_unlock_tables` 没有文件外调用者。Rust 的 `pkg/ddl/executor.rs::lock_tables` / `unlock_tables` 使用另一套简化的 `TableInfo.table_lock` 与 `SessionContext.locked_tables` 路径，并未调用本文件。因此，本文件当前不是 Rust DDL worker 的实际分派入口，不能把 Go 中 `job_worker.go -> onLockTables/onUnlockTables` 的完整接线视为 Rust 已支持。
-
-从 DDL 机制看，这是 job-based 表锁算法的纯状态部分：它不执行 SQL 解析、job 持久化、owner 调度、schema 同步或元数据 I/O，而是让上层以重复调用的方式推进一个批次。依据为 `advance_lock_tables` / `advance_unlock_tables` 的参数全部是可变内存对象和标量，没有事务、存储或异步运行时依赖。
+用 `check_rename_table_lock` 和 `check_drop_schema_lock` 提供 RENAME TABLE 与 DROP SCHEMA 的锁前置条件检查。
 
 ## 核心职责
 
@@ -107,12 +103,9 @@ Go 生产路径依赖 DDL owner 串行执行 lock/unlock job，并在每步通�
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/table_lock.go` 是最直接对照：
-
 - Rust `find_session_info_index` 对应 Go `findSessionInfoIndex`，只是用 `Option<usize>` 代替 `-1`。
 - Rust `lock_table` / `check_table_locked` / `unlock_table` 分别对应 Go `lockTable` / `checkTableLocked` / `unlockTable`，保留共享读/只读锁、重复加锁、唯一 owner 切换和 cleanup 语义。
 - Rust `advance_lock_tables` 合并了 Go `onLockTables` 的算法部分及其对 `unlockTables` 的优先调用；Rust `advance_unlock_tables` 对应 Go `unlockTables` / `onUnlockTables` 的逐项推进部分。
-- 两版都先解锁旧表，只在第一次加锁时预检全部目标；都忽略批量解锁中已经被删除的表；都让 `None -> PreLock -> Public` 每步产生 schema 版本变化。
 - Go 使用 `model.TableInfo`、`model.LockTablesArgs`、`jobContext`、`model.Job`、meta transaction 和 TiDB 错误体系；Rust使用本文件自定义的最小类型与内存 `BTreeMap`，未实现 job 取消、`FillArgs` 持久化、`FinishTableJob` 或 `updateVersionAndTableInfo`。
 - Go 对未知锁状态有 `default` 分支并取消 job；Rust `TableLockState` 是封闭枚举，match 已穷尽，`InvalidState` 主要用于 rename 的非 Public 状态和防御性检查。
 - Rust 额外提供 `check_rename_table_lock` / `check_drop_schema_lock` 作为独立校验模型。对应用户可见行为由 Go `pkg/ddl/db_rename_test.go` 覆盖：持写锁者可 rename、读锁者收到“未为写锁”错误、持锁会话不能 drop database。
@@ -128,14 +121,3 @@ Go `pkg/ddl/table_modify_test.go::TestConcurrentLockTables` 还证明 Read 可�
 - 若增强损坏元数据检测，可把“有锁但 sessions 为空”从回退 owner 改为显式错误；这属于兼容性变化，需要先与 Go 行为和持久化数据兼容策略对齐。
 - 测试必须继续放在独立文件中。优先扩展 `pkg/ddl/table_lock_rename_aster_unit_test.rs` 覆盖 rename/drop；建议新增独立的 `table_lock_test.rs`（并在 `lib.rs` 以 `#[cfg(test)] mod ...` 接入）覆盖 `advance_lock_tables` / `advance_unlock_tables`、共享锁去重、cleanup、缺表、版本增量和每步 `finished`。Go 语义回归应对照 `pkg/ddl/table_modify_test.go`、`pkg/ddl/table_test.go` 与 `pkg/ddl/db_rename_test.go`。
 - 性能上，预检是 O(目标表数)，会话查找和移除是 O(单表持锁会话数)，`Vec::remove` 会移动后续元素。通常会话数很小；若未来允许大量共享 owner，再考虑索引结构，同时保持确定性 owner 报错语义。
-
-## 验证依据
-
-- 源文件：`pkg/ddl/table_lock.rs`，逐项核对全部 9 个公开数据类型/枚举、8 个公开函数、1 个私有兼容函数及其分支；文件无 trait、impl、常量或条件编译项。
-- crate 与模块边界：`pkg/ddl/Cargo.toml`（`name = "astersql-ddl"`、`[lib] path = "lib.rs"`）及 `pkg/ddl/lib.rs`（`pub mod table_lock` 和独立测试模块声明）。
-- RustCodeGraph：`node advance_lock_tables`、`node check_table_locked`、`node advance_unlock_tables` 确认源码与内部调用边；仓库索引可识别目标符号。单独的 callers 查询未给出文件外生产调用者，随后用 `rg` 做全仓补证。
-- Rust 调用与测试：`pkg/ddl/table_lock_rename_aster_unit_test.rs`、`pkg/ddl/db_rename_test.rs`；全仓 `rg` 还确认 `advance_lock_tables` / `advance_unlock_tables` 只在定义和文档注释中出现。
-- Rust 平行入口：`pkg/ddl/executor.rs::lock_tables`、`pkg/ddl/executor.rs::unlock_tables`，确认当前 executor 未调用本文件状态机。
-- Go 对照与主链：`pkg/ddl/table_lock.go`、`pkg/ddl/job_worker.go`；行为测试参考 `pkg/ddl/table_modify_test.go::TestConcurrentLockTables`、`pkg/ddl/table_test.go` 表锁 helper/历史 job 检查以及 `pkg/ddl/db_rename_test.go`。
-- DDL 契约背景：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`；仅用作定位，涉及本文件的结论均由源码与测试复核。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构校验要求目标文档恰有 11 个固定二级标题。

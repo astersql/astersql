@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-[`conn_stmt.rs`](conn_stmt.rs) 位于 `astersql-server` crate，crate 根由 [`pkg/server/Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 指向 [`lib.rs`](lib.rs)，后者通过 `pub mod conn_stmt` 暴露本模块。它承载 MySQL 二进制预处理语句协议的共享状态和协议语义，覆盖 `COM_STMT_PREPARE`、`COM_STMT_EXECUTE`、`COM_STMT_FETCH`、`COM_STMT_CLOSE`、`COM_STMT_SEND_LONG_DATA`、`COM_STMT_RESET` 与 `COM_SET_OPTION`。
-
-本文件同时存在两种接线层次，阅读时必须区分：
-
-- 生产连接主链是 [`conn.rs`](conn.rs) 的 `ClientConn::dispatch` → `ClientConn::handleStmt`。它直接复用本文件的 `PreparedStatement`、`LongDataState`、`ParseExecuteParams` 和 `Error`，但自行负责真实 Session 调用、PacketIO 写包、flush 和生产游标。
-- 本文件的 `clientConn`、`StatementRuntime`、`ProtocolEvent` 及 `HandleStmtPrepare` 等自由函数是一套精简的可注入运行时/可观察事件模型，完整表达协议状态转换、重试和游标资源规则，主要由 [`conn_stmt_test.rs`](conn_stmt_test.rs) 及 `pkg/server/tests/{commontest,cursor}` 使用。仓库内生产 `dispatch` 并不直接调用这些自由处理器。
-
-文件没有条件编译项；独立 Rust 测试通过 [`lib.rs`](lib.rs) 中 `#[path = "conn_stmt_test.rs"] mod conn_stmt_test` 接入，符合源文件与测试文件分离约束。
+定义预处理语句的连接内状态：SQL、参数数目与类型、long-data、最后一次参数、游标和最大包限制，核心载体是 `PreparedStatement`。
 
 ## 核心职责
 
@@ -145,9 +138,6 @@ RustCodeGraph 对目标文件报告 88 个符号并显示被 `conn.rs`、`conn_s
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`conn_stmt.go`](conn_stmt.go)，测试证据来自 [`conn_stmt_test.go`](conn_stmt_test.go) 和 [`conn_stmt_params_test.go`](conn_stmt_params_test.go)。主要对应关系如下：
-
-- Rust `HandleStmtPrepare` 对应 Go `(*clientConn).HandleStmtPrepare`；Rust 事件化元信息，Go 直接编码参数/列定义、兼容 `ClientDeprecateEOF` 并 flush。
 - Rust `ParseExecuteParams` 抽取了 Go `handleStmtExecute` 前半段的二进制参数解析和无条件 `stmt.Reset` 语义；生产 Rust `conn.rs` 再负责 Session 状态、执行和真实写包。
 - Rust `executePlanCacheStmt` 保留 Go 的“事务管理器允许时重试”和“TiFlash timeout 时临时回退 TiKV、恢复并追加 warning”的控制结构，但具体判定下沉到 `StatementRuntime`，精简层没有 Go 的 parse duration、RetryInfo、execdetails 等会话细节。
 - Rust eager/lazy 游标保留 Go 的两种策略和资源清理意图；精简 eager 实现只用内存 `Vec`，未复刻 Go `RowContainer` 的磁盘 spill、内存/磁盘 tracker 和 fetch notifier。生产 Rust 则通过 `QueryResult` 的流式 cursor 走 [`conn.rs`](conn.rs)。
@@ -155,8 +145,6 @@ RustCodeGraph 对目标文件报告 88 个符号并显示被 `conn.rs`、`conn_s
 - Rust long-data 对齐 Go 的最大包限制、延迟 EXECUTE 报错和 Session 内存配额记账；Rust 独立测试进一步固定空分片替换、精确配额边界、共享消耗和释放行为。
 - Rust 诊断字符串是简化实现；Go 会通过 parser Normalize、redact 模式和 plan-cache 参数生成安全日志文本，并能区分缓存类型失效。
 - Rust 精简 `handleSetOption` 只改本地能力位并产出 `Ok`；Go 同时把能力同步进 Session、写 EOF 并 flush。生产 Rust 的 `ClientConn::handleSetOption` 实现了真实连接侧行为。
-
-因此，本文件不是对 Go 文件所有服务器副作用的一比一替换；它是“共享协议状态/解码 + 精简可测试模型”，生产网络、Session 和观测功能由 [`conn.rs`](conn.rs) 等模块补齐。
 
 ## 扩展指南
 
@@ -167,13 +155,3 @@ RustCodeGraph 对目标文件报告 88 个符号并显示被 `conn.rs`、`conn_s
 - 改重试/TiFlash 策略时，应实现或扩展 `StatementRuntime` 方法，并与 Go `executePlanCacheStmt` 的重试资格、warning 时序和引擎恢复语义逐项核对；不要在精简层硬编码某个 Session 实现。
 - 改诊断输出时必须先决定它是否用于日志。若用于生产日志，应补齐 Go 的 Normalize/redaction 语义，不能直接扩展当前 `render_param` 后宣称安全。
 - 性能风险集中在 eager 游标全量物化、参数/行的多次 clone 和诊断字符串分配；兼容风险集中在包长度、游标标志、类型复用、EOF/OK 差异和错误码文本。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`pkg/server/conn_stmt.rs` 已索引，共 88 个符号。已执行目标文件 `files`、分段 `node`，以及 `HandleStmtPrepare`、`handleStmtExecute`、`ParseExecuteParams`、`executePlanCacheStmt`、`executePreparedStmtAndWriteResult`、`executeWithCursor`、`writeExecuteResultWithCursor`、FETCH/CLOSE/LONG_DATA/RESET/SET_OPTION/诊断函数的 `query`、`callers`、`callees` 查询。
-- 已读 Rust 生产路径：[`conn_stmt.rs`](conn_stmt.rs) 全部 890 行；[`conn.rs`](conn.rs) 的 `dispatch`、`handleStmt`、`write_prepared_cursor_fetch`、`handleSetOption`；[`lib.rs`](lib.rs) 模块装配。
-- 已读 crate 声明：[`Cargo.toml`](Cargo.toml)，核对 crate 名、lib 路径、porting 元数据和本文件实际使用的依赖。
-- 已读 Rust 测试：[`conn_stmt_test.rs`](conn_stmt_test.rs)，重点包括 prepare/long-data/reset/close、畸形包、解析失败清游标、eager/lazy 关闭、FETCH 边界、真实 TCP/Session 写响应、包上限和内存配额；另通过调用检索核对 `pkg/server/tests/commontest/tidb_part4_aster_unit_test.rs` 与 `pkg/server/tests/cursor/cursor_test.rs` 的直接覆盖。
-- 已读 Go 对照：[`conn_stmt.go`](conn_stmt.go) 全文件，并检索 [`conn_stmt_test.go`](conn_stmt_test.go)、[`conn_stmt_params_test.go`](conn_stmt_params_test.go) 中的 cursor、long-data、execute 参数测试入口。
-- 人工复核结论：本文件存在是为了集中预处理协议共享状态、二进制参数/long-data 规则和可注入的状态机；生产运行由 `conn.rs` 复用核心类型与解码器并补齐真实 Session/网络副作用；安全扩展必须同时检查共享状态、生产接线和独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时使用任务指定命令验证恰有 11 个固定二级章节，并用 `git diff --check` 检查文档补丁格式。

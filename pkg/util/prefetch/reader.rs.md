@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-prefetch` crate 的核心业务逻辑：把一个同时支持读取和关闭的顺序字节流包装成带后台预取的读取器。crate 入口 [`lib.rs`](lib.rs) 声明 `reader` 模块并通过 `pub use reader::*` 再导出本文件的公开项；[`Cargo.toml`](Cargo.toml) 表明该 crate 只直接依赖 `crossbeam-channel = "0.5"`，并以 `pkg/util/prefetch` 为 Go 移植来源。
-
-当前已接线的生产入口是对象存储读取路径。`pkg/objstore/s3like/store.rs::Storage::Open` 在 `ReaderOption.PrefetchSize > 0` 时，用 `NewReader(reader, range.RangeSize(), prefetchSize)` 包装新打开的对象 Range；`pkg/objstore/s3like/io.rs::S3ObjectReader::{reopen, seek}` 在重开或远距离 seek 后做相同包装。因此本文件位于“对象存储 Range 流 → 后台预取 → 上层顺序读取”的 I/O 边界，而不是 SQL 执行或存储事务逻辑本身。
+实现的目标是把底层读取与前台消费重叠，降低顺序读取对象数据时的同步 I/O 等待；它不提供随机访问、seek、自动重试或数据校验，这些职责由 `S3ObjectReader` 等上层承担。
 
 ## 核心职责
 
@@ -91,22 +89,14 @@ crate 内没有 feature 开关。直接依赖只有 `crossbeam-channel`；`Arc`�
 
 ## 与 Go 版本的对应关系
 
-主要映射以 [`reader.go`](reader.go) 为准：
-
 | Go | Rust | 语义说明 |
 | --- | --- | --- |
-| `io.ReadCloser` | `ReadCloser: Read + Send` | Rust 额外要求可发送到后台线程。 |
-| `Reader.buf [2][]byte`、`bufIdx` | `run` 的 `[Vec<u8>; 2]`、`bufIdx` | Go 把缓冲保存在结构体，Rust 把后台独占状态移动进线程。 |
-| `chan []byte` | `crossbeam_channel::bounded::<Vec<u8>>(0)` | 都是无缓冲交付；Rust 因所有权需要复制有效字节。 |
-| `go ret.run()`、`sync.WaitGroup` | `thread::spawn`、`JoinHandle` | `run` 返回代表 worker 完成，`join` 对应 `Wait`。 |
-| `io.ReadFull` | `readFullGo` | 保留分片读取、部分字节和终止错误的处理顺序。 |
-| `bytes.Reader` | `Cursor<Vec<u8>>` | 保存并消费当前预取块。 |
-| `err error` | `Option<(ErrorKind, String)>` | Rust 重建错误，只保留 kind 与文本。 |
-| `close(closedCh)` | `closedCh.take()` | 丢弃唯一发送端使接收端观察到断开。 |
+| `io.ReadCloser` | `ReadCloser: Read + Send` | Rust 额外要求可发送到后台线程。|
+| `err error` | `Option<(ErrorKind, String)>` | Rust 重建错误，只保留 kind 与文本。
 
-Rust 主体保持了 Go 的双缓冲、先交付部分数据再暴露错误、精确 Range 尾部转换、跨块填充和重复关闭语义。差异包括 Rust EOF 表示为 `Ok(0)` 而非返回 `io.EOF`、底层流和错误槽需要同步原语、块交付发生复制，以及底层读取期间持有互斥锁造成的关闭/阻塞关系。
+差异包括 Rust EOF 表示为 `Ok(0)` 而非返回 `io.EOF`、底层流和错误槽需要同步原语、块交付发生复制，以及底层读取期间持有互斥锁造成的关闭/阻塞关系。
 
-[`reader_test.rs`](reader_test.rs) 基本逐项对应 [`reader_test.go`](reader_test.go)：`test_basic`/`TestBasic`、`test_convert_unexpected_eof`/`TestConvertUnexpectedEOF`、`test_close_before_drain_read`/`TestCloseBeforeDrainRead`、`test_fill_prefetch_buffer`/`TestFillPrefetchBuffer`。Rust 的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 另补了重复关闭只触发一次底层关闭的断言。
+Rust 的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 另补了重复关闭只触发一次底层关闭的断言。
 
 ## 扩展指南
 
@@ -118,13 +108,3 @@ Rust 主体保持了 Go 的双缓冲、先交付部分数据再暴露错误、�
 - 增加生产调用点：调用方须提供准确的总 Range 字节数、至少 2 的有效预取尺寸，并确保最终调用 `close`。对象存储侧若改变 Range/seek 约定，应同步复核三个 `NewReader` 调用点。
 
 测试逻辑应继续放在独立的 `reader_test.rs` 或 `migration_aster_unit_test.rs`，不要内嵌到生产文件。若行为也要求与上游 Go 保持一致，应同步检查 `reader.go` 和 `reader_test.go`，区分有意的 Rust API 差异与移植偏差。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/prefetch` 确认本 crate 的 Rust/Go 源与测试均已索引。
-- RustCodeGraph `node --file pkg/util/prefetch/reader.rs`：核对了完整 261 行源码、`ReadCloser`、`Reader`、`NewReader`、`run`、`readFullGo`、`Read`、`Close` 及两个 trait impl；精确 `node NewReader --file ...` 给出 `NewReader → run` 调用边。
-- RustCodeGraph `node --file`：读取并核对了 `pkg/util/prefetch/lib.rs`、`reader.go`、`reader_test.rs`、`reader_test.go`、`migration_aster_unit_test.rs`，以及生产调用点 `pkg/objstore/s3like/{store.rs,io.rs}`。
-- 配置读取：`pkg/util/prefetch/Cargo.toml` 确认 crate 名、入口、唯一直接依赖和 Go 包元数据；仓库 Cargo 清单搜索确认对象存储 crate 与根 facade 的路径依赖。
-- 调用点搜索：Rust 生产源码中直接调用本 `NewReader` 的位置为 `s3like/store.rs` 一处和 `s3like/io.rs` 两处；其他命中位于本 crate 测试或同名 API。RustCodeGraph 的精确 `callers/callees` 命令在限定时间内未返回结果，因此调用方集合同时用已索引调用文件源码和仓库符号搜索交叉核验。
-- 测试事实：Rust 与 Go 测试共同覆盖跨缓冲顺序、整段/短段读取、正常 EOF、底层 `UnexpectedEof`、未消费完即关闭、分片源填满半缓冲；迁移补充测试覆盖重复关闭幂等和底层只关闭一次。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核文档只描述当前代码可证事实。

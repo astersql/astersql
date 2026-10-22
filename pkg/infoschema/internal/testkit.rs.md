@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-infoschema-internal`。crate 入口
-[`pkg/infoschema/internal/lib.rs`](./lib.rs) 将 `testkit` 声明为公开模块，并把本文件的公开项再导出；根门面
-[`pkg/lib.rs`](../../lib.rs) 又通过 `pkg::infoschema::internal` 暴露该 crate。它是 InfoSchema 测试夹具，不在 SQL 请求、DDL 执行或 InfoSchema 构建的生产主链上。
-
-[`pkg/infoschema/internal/Cargo.toml`](./Cargo.toml) 表明该 crate 的常规依赖只有
-`astersql-store-mockstore`。上层 `astersql-infoschema` 对它的依赖位于
-`[target.'cfg(any())'.dependencies]`；`cfg(any())` 永远为假。因此，当前 Rust 代码中真实执行本文件逻辑的直接证据仅见同 crate 的独立测试
-[`pkg/infoschema/internal/testkit_test.rs`](./testkit_test.rs)，不能把 Go 测试中广泛使用同名 helper 的事实等同为 Rust 已完成接线。
+`TestStore` 组合真实的 `MockStorage` 句柄和一份进程内 `MetadataState`，并在其上提供 ID 分配、最小化库表模型、资源组和 Placement Policy 的构造及增删改 helper。
 
 ## 核心职责
 
@@ -107,8 +100,6 @@ Go 调用面明显更广：`pkg/infoschema/infoschema_v2_test.go`、`infoschema_
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/infoschema/internal/testkit.go`](./testkit.go)：
-
 - 两边的慢日志样例字段和两条记录保持一致；Go helper 通过 `testing.T` 立即断言失败，Rust helper 返回 `std::io::Result`。
 - Go `mockAutoIDRequirement` 实现生产 `autoid.Requirement`，持有 `kv.Storage` 和可空的 `*autoid.ClientDiscover`；Rust 定义局部 `AutoIdRequirement` trait，持有 `TestStore`，客户端类型简化为 `Option<()>`。
 - Go `GenGlobalID` 在带 `InternalTxnDDL` 来源的真实 KV 新事务中调用
@@ -132,20 +123,3 @@ Go 调用面明显更广：`pkg/infoschema/infoschema_v2_test.go`、`infoschema_
 - 若要支持 Windows，应替换或条件封装 Unix 的 `OpenOptionsExt::mode`；同时验证文件权限语义，而不是只依赖 Cargo 的 Windows 条件依赖。
 - 性能风险主要来自每次操作完整克隆 `MetadataState`。大规模夹具若出现明显成本，应设计变更日志或更细粒度回滚，但必须保留原子失败语义并补并发测试。
 - 慢日志字段更新应同步检查 Go 常量及 Rust 集群慢日志测试中自行维护的样例，防止三份测试数据漂移。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，其中 Rust 7,032 个；目标目录中识别到 `lib.rs`、`testkit.rs`、`testkit_test.rs` 及 Go 对照文件。
-- RustCodeGraph `node --file pkg/infoschema/internal/testkit.rs`：读取目标文件全部 544 行，核对所有常量、类型、trait、函数、实现和内部调用。
-- RustCodeGraph `node --file pkg/infoschema/internal/testkit_test.rs`：读取全部 75 行，核对两个独立测试覆盖的边界。
-- RustCodeGraph `node --file pkg/infoschema/internal/lib.rs`：确认公开模块、再导出和独立测试接线。
-- RustCodeGraph `query GenGlobalID --kind function` 与 `query AddTable --kind function --json`：确认 Go/Rust 同名定义及目标文件中的精确符号。路径限定的 `callers`/`callees` 查询在 30 秒内未返回，未将其当成调用关系证据。
-- 直接读取 `pkg/infoschema/internal/Cargo.toml`、`pkg/infoschema/Cargo.toml`、根
-`Cargo.toml` 与 `pkg/lib.rs`：确认 crate、常规依赖、永假上层依赖和门面再导出。
-- 直接读取 `pkg/infoschema/internal/testkit.go`：核对 Go 的 KV 事务、Meta Mutator、生产模型和断言式错误处理。
-- 路径限定 `rg`：核对 Rust 当前调用面，以及 Go
-`infoschema_v2_test.go`、`infoschema_test.go`、`builder_test.go` 和集群慢日志测试中的使用位置。
-
-结构校验使用任务规定的命令，目标是本文件恰好具有上述十一个固定二级标题。任务是纯文档分析，按计划不运行 Cargo；行为结论来自源码、调用点、Cargo 配置和既有测试，而不是本轮代码执行。

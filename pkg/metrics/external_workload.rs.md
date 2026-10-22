@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate；`pkg/metrics/Cargo.toml` 以 `lib.rs` 为 crate 根，`pkg/metrics/lib.rs` 通过公开模块 `external_workload` 暴露本文件。它负责定义外部工作负载管理器的 Prometheus 指标描述和动作标签，不实现任务调度或 RPC。
-
-在指标包内部，`pkg/metrics/metrics.rs::InitMetrics` 调用 `InitExternalWorkloadMetrics` 创建 collector，随后 `RegisterMetrics` 把 `ExternalWorkloadTaskCounter` 注册到默认 Prometheus registry。当前 Rust 业务接线并未完整复刻 Go：`astersql-extworkload` 的 `Cargo.toml` 不依赖 `astersql-metrics`，`pkg/extworkload/manager.rs` 使用的是 `pkg/extworkload/lib.rs::metrics` 中同名的本地空操作桩。因此，本文件当前已接入指标初始化与暴露链，但外部工作负载 RPC 路径尚未向这里的真实 counter 打点。
+负责定义外部工作负载管理器的 Prometheus 指标描述和动作标签，不实现任务调度或 RPC。
 
 ## 核心职责
 
@@ -79,9 +77,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/external_workload.go` 与本文件在四个动作字符串、全局变量角色、指标 namespace/subsystem/name/help 以及 `[LblType, LblAction]` 标签顺序上逐项一致。Rust 额外使用 `Option` 表示 Go 的 nil 指针状态，用 `unsafe static mut` 保存 collector，并增加 `PACKAGE_INIT_LOCK` 以串行化写入；Go 函数是直接赋值。
+Rust 额外使用 `Option` 表示 Go 的 nil 指针状态，用 `unsafe static mut` 保存 collector，并增加 `PACKAGE_INIT_LOCK` 以串行化写入；Go 函数是直接赋值。
 
-Go 的 `pkg/metrics/metrics.go` 在包初始化序列调用 `InitExternalWorkloadMetrics`，并在 `RegisterMetrics` 中执行 `prometheus.MustRegister(ExternalWorkloadTaskCounter)`。Rust 对应总入口用 `Once` 缓存初始化结果，注册接口返回 `Result`，但对未初始化的 `Option` 仍会 panic。
+Rust 对应总入口用 `Once` 缓存初始化结果，注册接口返回 `Result`，但对未初始化的 `Option` 仍会 panic。
 
 最大迁移差异在消费者侧：Go 的 `pkg/extworkload/manager.go` 导入 `pkg/metrics`，拦截器实际递增本 counter；Go 的 `pkg/extworkload/manager_test.go` 验证各业务方法携带正确标签。Rust 的 `pkg/extworkload/manager.rs` 复刻了标签注入位置，但 `astersql-extworkload` crate 目前仅依赖 client、Tokio、Tonic，并使用自身 `lib.rs::metrics` 的空操作 `Counter`。所以不能宣称 Rust 已完成端到端指标采集；当前独立 metrics 测试只证明 collector 本身可初始化、递增、注册和被 gather。
 
@@ -93,16 +91,3 @@ Go 的 `pkg/metrics/metrics.go` 在包初始化序列调用 `InitExternalWorkloa
 - 若改善全局安全性，优先评估 `OnceLock`/`LazyLock` 或锁保护句柄，并同步调整 `InitMetrics`、`RegisterMetrics` 和所有访问方；不能只局部替换类型后留下裸 `static mut` 读取。
 - 测试必须继续放在独立的 `pkg/metrics/external_workload_test.rs`，不要内嵌进生产源文件。若验证 extworkload 接线，则相应扩展同目录独立的 `pkg/extworkload/manager_test.rs` 或迁移测试文件。
 - 性能审查重点是标签基数和热路径递增开销；正确性审查重点是初始化/注册顺序、事件是在 RPC 前还是成功后计数，以及动作标签与 Go 语义一致。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被索引为 64 行、2 个图符号，并显示由 `pkg/metrics/metrics.rs` 和一个测试文件使用。
-- RustCodeGraph `node --file pkg/metrics/external_workload.rs`：核对全部源代码、四个常量、全局 counter 和初始化函数；`query InitExternalWorkloadMetrics` 同时定位 Rust 与 Go 定义。
-- RustCodeGraph `node --file`：核对 `pkg/metrics/metrics.rs` 的初始化/注册链、`pkg/extworkload/manager.rs` 的标签注入与拦截器、`pkg/extworkload/lib.rs` 的 metrics 桩、`pkg/metrics/bindinfo.rs` 和 `pkg/metrics/common/wrapper.rs` 的构造链。精确 `callers`/`callees` 查询未返回边，因此相关调用关系又以这些索引源码片段和精确符号搜索交叉确认，未臆造图边。
-- crate 与模块边界：`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/extworkload/Cargo.toml`。
-- Go 对照：`pkg/metrics/external_workload.go`、`pkg/metrics/metrics.go`、`pkg/extworkload/manager.go`、`pkg/extworkload/manager_test.go`。
-- Rust 测试与消费者证据：`pkg/metrics/external_workload_test.rs`、`pkg/extworkload/manager_test.rs`、`pkg/extworkload/migration_aster_unit_test.rs`。
-
-按任务约束未运行 Cargo。交付前运行任务指定的结构命令，确认本文件存在且恰好包含上述十一个固定二级标题；同时人工复核文档明确回答了文件存在目的、初始化与注册流程、当前未完成的 Rust 业务接线及安全扩展位置。

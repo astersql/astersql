@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`manager_global.rs` 属于 `astersql-br-pkg-gc` library crate；crate 根由 `br/pkg/gc/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 `br/pkg/gc/lib.rs`，后者以 `pub mod manager_global` 编入本文件。它是 `Manager` 抽象的“全局/Nullspace”实现，与 `manager_keyspace.rs` 的 keyspace 级 GC barrier 实现并列。
-
-正常构造路径是 `manager.rs::NewManager(pd_client, keyspace_id)`：仅当 `keyspace_id == NullspaceID` 时调用 `newGlobalManager`，否则构造 `keyspaceManager`。因此本文件不负责判断运行模式，也不直接对外重导出具体类型；调用方通常持有 `Arc<dyn Manager>`。RustCodeGraph 对当前 Rust 树的直接调用检索主要落在 `br/pkg/gc/manager_test.rs`、`br/pkg/gc/parity_test.rs` 和 `br/pkg/gc/mock_test.rs`，未显示 BR 生产入口直接构造该具体类型；所以它是已经实现并由 crate 工厂接线的实现层，但不能据此断言所有 Go BR 生产调用链都已迁移到该 Rust crate。
+`Manager` 抽象的“全局/Nullspace”实现，与 `manager_keyspace.rs` 的 keyspace 级 GC barrier 实现并列。
 
 ## 核心职责
 
@@ -96,9 +94,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/gc/manager_global.go`。类型、工厂和三项接口逐一对应：Go `globalManager.pdClient` 对应 Rust `pd_client`；Go `newGlobalManager` 返回指针对应 Rust 值再由 `NewManager` 包入 `Arc`；三项 PD 参数保持一致。
-
-已确认的语义对齐包括：查询使用 `UpdateGCSafePoint(ctx, 0)`；设置使用 `BackupTS-1`；删除使用 `UpdateServiceGCSafePoint(ID, 0, 0)`；PD 错误向上传播；set/delete 探针仅在 PD 成功后运行；set 探针保留三秒观察窗口；PD 实际 safepoint 更高且 TTL 为正时仅告警。
+类型、工厂和三项接口逐一对应：Go `globalManager.pdClient` 对应 Rust `pd_client`；Go `newGlobalManager` 返回指针对应 Rust 值再由 `NewManager` 包入 `Arc`；三项 PD 参数保持一致。
 
 实现形态上的差异包括：
 
@@ -107,8 +103,6 @@
 - Go `errors.Trace` 可携带栈信息；Rust `Trace` 当前只透传 boxed error。
 - Go 文件用编译期接口断言 `var _ Manager = (*globalManager)(nil)`；Rust 的 `impl Manager for globalManager` 已由类型系统直接检查。
 - Rust 的减法显式写为 `wrapping_sub(1)`，把 Go `uint64` 在零值时的回绕行为写清楚。
-
-`br/pkg/gc/manager_test.go::TestNewManager`、`TestGlobalManager` 与 Rust `manager_test.rs::test_new_manager`、`test_global_manager` 对应，验证 global/keyspace 隔离和 Set/Delete/Get。`parity_test.rs::go_rust_public_contract_matches` 进一步断言全局 PD 调用序列精确为 `("br-test-global", 300, 999)` 后接 `("br-test-global", 0, 0)`，并验证 set/get 错误传播。
 
 ## 扩展指南
 
@@ -123,16 +117,3 @@
 - 涉及 global/keyspace 路径识别时，核对 `tests/realtikvtest/brietest/harness.rs` 中四个 GC 信号探针的隔离约定。
 
 兼容性风险集中在旧 PD API 参数、`BackupTS-1`、TTL=0 删除约定和错误透传；性能风险主要是 set 探针同步 sleep 及信号文件 I/O。不要把告警条件擅自升级为错误，也不要在未证明调用方契约的情况下把 global 路径改成 keyspace barrier API。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/gc` 找到本 crate 的生产与独立测试文件。
-- RustCodeGraph `node --file br/pkg/gc/manager_global.rs --offset 1 --limit 260`：读取目标文件完整 126 行和全部 7 个符号。
-- RustCodeGraph `query GlobalGCManager`、`query NewGlobalGCManager`、`node NewManager`、`node GetGCSafePoint`、`node SetServiceSafePoint`、`node DeleteServiceSafePoint`：核对 Rust/Go 对应定义；图中明确给出 `NewManager -> newGlobalManager`，以及 Rust set/delete 到 `failpoint_signal_file` 的调用边。宽泛 `explore` 受仓库大量同名符号干扰，未把其非目标结果作为结论。
-- 源与边界：`br/pkg/gc/manager.rs`、`br/pkg/gc/lib.rs`、`br/pkg/gc/safepoint.rs`、`br/pkg/gc/Cargo.toml`。
-- Go 对照：`br/pkg/gc/manager_global.go`、`br/pkg/gc/manager_test.go`。
-- Rust 独立测试：`br/pkg/gc/manager_test.rs`、`br/pkg/gc/parity_test.rs`、`br/pkg/gc/mock_test.rs`；集成探针约定还参考 `tests/realtikvtest/brietest/harness.rs`。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验收要求本文恰有上述十一个固定二级标题；事实复核重点是工厂分派、三个 PD 调用参数、成功后探针、错误透传及 Go/Rust 测试对应关系。

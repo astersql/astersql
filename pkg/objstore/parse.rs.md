@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`parse.rs` 是 `astersql-objstore` crate 的存储地址解析边界，由 `pkg/objstore/lib.rs` 以 `pub mod parse` 对外暴露。它把用户或上层模块提供的字符串 URI、已解析 URL 以及额外后端选项，转换为本 crate 使用的统一 `StorageBackend`；反向还可把后端格式化成不含认证 query 的规范 URI。
-
-该文件不创建网络客户端，也不执行对象读写。真正的实例化在 `pkg/objstore/storage.rs` 的 `New`/`NewFromURL` 中完成；本文件负责在进入该层以前确定后端种类、bucket、prefix、endpoint、认证信息等配置。生产调用证据包括 `pkg/objstore/helper.rs::ValidateCloudStorageURI`、`pkg/executor/importer/precheck.rs::validate_global_sort_uri`、`pkg/planner/extstore/extstore.rs::NewExtStorage`、`pkg/session/runtime/load_data.rs` 和 `pkg/importsdk/file_scanner.rs`。
-
-`pkg/objstore/Cargo.toml` 声明 crate 名为 `astersql-objstore`，入口是同目录 `lib.rs`。本文件直接使用其中声明的 `anyhow`、`base64`、`sha2`、`url` 和本地 `parser-ast` 依赖；标准库承担路径处理、环境变量与凭证文件读取。
+`FormatBackendURL` 生成不携带 endpoint、访问密钥、token 等选项的后端地址；`IsLocalPath`、`IsLocal`、`IsS3Like` 提供轻量分类。
 
 ## 核心职责
 
@@ -104,7 +100,7 @@ RustCodeGraph 对 `pkg/objstore/parse.rs` 报告 53 个符号，并指出 6 个�
 
 ## 与 Go 版本的对应关系
 
-主要语义以同路径 `pkg/objstore/parse.go` 及 `pkg/objstore/parse_test.go` 为基准：`+` 保护、scheme 分派、bucket/prefix 提取、query 优先级、query 清除、S3 provider、路径判断和脱敏格式化均保持相同意图。Rust 独立测试 `pkg/objstore/parse_test.rs` 对应覆盖 Go 的创建、格式化、原始 URL、本地判断、profile/凭证和默认 path-style 用例。
+Rust 独立测试 `pkg/objstore/parse_test.rs` 对应覆盖 Go 的创建、格式化、原始 URL、本地判断、profile/凭证和默认 path-style 用例。
 
 实现形态存在以下明确差异：
 
@@ -115,7 +111,7 @@ RustCodeGraph 对 `pkg/objstore/parse.rs` 报告 53 个符号，并指出 6 个�
 - Rust 为贴近 Go 额外实现了含端口 authority 保留、`filepath.Abs` 风格的词法清理、显式空 authority 重建以及 endpoint 必须含 `://` 的检查；对应边界由 Rust 测试直接固定。
 - 错误类型不同：Go 主要以 `ErrStorageInvalidConfig` 注解错误，Rust 使用 `anyhow` 文本错误并在上层按需转换。因此调用方不应依赖 Rust 侧的结构化错误身份。
 
-Go `parse.go` 同样增加安全的 `RedactURL` 与选项副本 `Redacted`。Rust 额外校验 authority 转义、映射固定解析错误，并保留 userinfo 空 host 后续缺 bucket 的 Go 错误阶段；不要回退成暴露原始 url parse error。
+Rust 额外校验 authority 转义、映射固定解析错误，并保留 userinfo 空 host 后续缺 bucket 的 Go 错误阶段；不要回退成暴露原始 url parse error。
 
 ## 扩展指南
 
@@ -128,10 +124,3 @@ Go `parse.go` 同样增加安全的 `RedactURL` 与选项副本 `Redacted`。Rus
 - 兼容风险主要是既有 URI 解析结果、错误脱敏和默认 path-style；性能风险主要来自解析阶段同步读取大 GCS 凭证文件及反复克隆 options，但当前配置规模很小，不能在无基准证据时引入全局缓存或共享状态。
 
 增加敏感字段或 scheme 时同时核对 `Redacted`、AST query 掩码和所有错误格式化位置，扩展独立 `parse_test.rs` 中 malformed URL、userinfo、未知 scheme 与原选项不变的断言。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/objstore/parse.rs` 定位增量、`git show 2c944fb:pkg/objstore/parse.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：`pkg/objstore/lib.rs` / `Cargo.toml` 和 Go `parse.go`；独立 `parse_test.rs` 中 `test_backend_options_redacted`、`test_redact_url`、`test_parse_raw_url_error_does_not_leak_url`、`test_parse_backend_missing_bucket_does_not_leak_userinfo` 与 `missing_bucket_errors_redact_cloud_credentials` 提供副本、错误及 userinfo 安全边界断言。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

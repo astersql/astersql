@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-streamhelper`（包入口为 [`lib.rs`](lib.rs)，manifest 为 [`Cargo.toml`](Cargo.toml)），是日志备份 checkpoint advancer 与元数据存储之间的扩展层。模块由 `lib.rs` 以 `advancer_cliext` 公开，并通过 `pub use advancer_cliext::*` 扁平导出。
-
-它承担两条彼此相关的路径：一条把任务与暂停键的初始快照和后续 watch 变化转换成 `TaskEvent`；另一条管理每个任务的 V3 全局检查点，包括读取、单调上传、清理和等待推进。生产侧适配见 [`advancer_env.rs`](advancer_env.rs) 的 `AdvancerExtEnv: StreamMeta`；其中同步环境接口目前调用 `BeginSnapshot`，而需要实时事件的调用方可直接调用 `AdvancerExt::Begin`。
+承担两条彼此相关的路径：一条把任务与暂停键的初始快照和后续 watch 变化转换成 `TaskEvent`；另一条管理每个任务的 V3 全局检查点，包括读取、单调上传、清理和等待推进。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@ RustCodeGraph 的 `query AdvancerExt` 能定位 Rust struct（`advancer_cliext.r
 
 ## 与 Go 版本的对应关系
 
-对应源是 [`advancer_cliext.go`](advancer_cliext.go)。Rust 保留了 Go 的事件枚举顺序、快照后从 `rev + 1` 监听、任务/暂停双 watch、取消时排空、checkpoint 大端编码、严格推进判断、单调上传、请求重试和 watch progress/idle timeout 等核心语义。
-
 当前实现差异必须在扩展时显式考虑：
 
 - Go 直接使用 etcd v3 watcher、protobuf `StreamBackupTaskInfo`、gRPC status code、结构化日志、failpoint、PingCAP 错误类型、redaction 和 Prometheus 指标；Rust 通过 [`stubs.rs`](stubs.rs) 的抽象 transport、JSON 解码、字符串错误及进程内 `HashMap` 指标表达这些行为。因此 Rust 的错误分类、可观测性和敏感值脱敏尚不等价于 Go 生产实现。
@@ -100,8 +96,6 @@ RustCodeGraph 的 `query AdvancerExt` 能定位 Rust struct（`advancer_cliext.r
 - Go `Begin` 是主环境的实时入口并最终关闭输出 channel；Rust `StreamMeta` 的同步签名目前只能调用 `BeginSnapshot`，实时 `Begin` 是额外 API。不能把 snapshot 适配误述为已接通生产实时 watch。
 - Go 在 checkpoint watch 压缩或关闭时返回专用可重启错误，再由外层重试；Rust 对普通 receiver 断开直接重读重建，对三次创建 deadline 才产生字符串形式的 restart-required 错误。
 - Go 的上传接收调用者 context；Rust 上传内部创建新的 `WatchContext`，因此当前 API 没有让调用者取消上传的参数。
-
-Go 的直接回归证据集中在 [`integration_test.go`](integration_test.go)：覆盖任务关闭事件、watch progress 超时、checkpoint 读写与防回退、读取/上传超时重试、提交后超时重试及 revision compaction。Rust 对应的细粒度测试位于独立文件 [`advancer_cliext_test.rs`](advancer_cliext_test.rs)。
 
 ## 扩展指南
 
@@ -112,12 +106,3 @@ Go 的直接回归证据集中在 [`integration_test.go`](integration_test.go)�
 - 改变重试策略时，应集中修改 `METADATA_REQUEST_TIMEOUTS` 和 `runMetadataRequestWithRetry`，保持只重试瞬态错误、每次取消并 join worker、watch deadline 时重置 transport 的约束。
 - 扩充生产接线时，应评估 `StreamMeta::Begin` 的同步 `Vec` 签名是否需要演进，使 `AdvancerExtEnv` 能使用实时 `Begin`；这会影响 `advancer_env.rs`、`advancer.rs`、fake env 及其独立测试，不能只改本文件。
 - 性能风险主要来自每次请求新建线程、10ms watch 轮询、任务 `Put` 时再次读取 ranges，以及进程全局 mutex 指标；优化时必须保留现有错误与顺序语义。
-
-## 验证依据
-
-- 生产源：[`advancer_cliext.rs`](advancer_cliext.rs)（全部 495 行），重点核对 `runMetadataRequestWithRetry`、`EventType`、`TaskEvent`、`AdvancerExt::{BeginSnapshot, Begin, toTaskEvent, GetGlobalCheckpointForTask, UploadV3GlobalCheckpointForTask, ClearV3GlobalCheckpointForTask}` 以及 `MetaDataClient::{getGlobalCheckpointWithRevision, WaitGlobalCheckpointAdvance}`。
-- crate 边界与接线：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`advancer_env.rs`](advancer_env.rs) 的 `StreamMeta`/`AdvancerExtEnv`、[`advancer.rs`](advancer.rs) 的 checkpoint 读取、清理和上传调用。
-- Rust 独立测试：[`advancer_cliext_test.rs`](advancer_cliext_test.rs) 覆盖 snapshot/live 事件、畸形事件隔离、等待推进与取消、上传单调性与指标、compaction 后 response revision、瞬态/永久错误重试、watch reset、worker join、取消排空和非取消 EOF；[`integration_test.rs`](integration_test.rs) 还覆盖公开路径的快照、实时监听和 checkpoint 生命周期。
-- Go 对照：[`advancer_cliext.go`](advancer_cliext.go)；相关 Go 场景位于 [`integration_test.go`](integration_test.go)。仓库中不存在同名 `advancer_cliext_test.go`，所以未虚构该路径。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`query AdvancerExt --kind struct` 定位到 Rust `advancer_cliext.rs:209` 和 Go `advancer_cliext.go:72`。`explore`、`node --file` 以及 Rust impl 方法查询未返回完整边，故对未覆盖调用边使用 `rg` 核验，并发现 `advancer_env.rs` 的适配调用和 `advancer.rs` 的消费点。
-- 本任务是纯文档分析，依计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核没有把 Go 的生产能力误写成 Rust 当前事实。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 workspace 成员 crate `astersql-br-pkg-backup-prepare-snap` 的核心状态机实现。crate 入口 `br/pkg/backup/prepare_snap/lib.rs` 将它声明为 `prepare` 模块，并重新导出 `New` 与 `Preparer`；`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/backup/prepare_snap`。它负责进入快照备份窗口前的 TiKV `WaitApply` 协调，以及窗口结束时的流清理，不负责真正读取或写出备份数据。
-
-当前 Rust 接线需与 Go 的生产位置区分：根 `Cargo.toml` 把本 crate 纳入 workspace，但仓库内没有其他 `Cargo.toml` 声明对 `astersql-br-pkg-backup-prepare-snap` 的依赖。现有 Rust operator 文件 `br/pkg/task/operator/prepare_snap.rs` 从同 crate 的 `stubs.rs::NewPreparer` 获取另一套桩 `Preparer`，并未调用本文件的 `prepare::New`。因此，本文件目前是独立、可测试的移植实现，而不是 Rust operator 已接通的生产入口。
+`Finalize` 并行关闭所有 per-store 流，并在关闭期间持续处理、最后排空事件，确保 lease 过期或连接错误不会被静默吞掉。
 
 ## 核心职责
 
@@ -77,7 +75,6 @@
 
 ## 与 Go 版本的对应关系
 
-- Rust 的 `New`、`Preparer` 字段、驱动/事件/空洞/重试/发送/建流/Finalize 方法与 `prepare.go` 同名或一一对应；默认重试次数、退避、lease 和事件缓冲容量也保持一致。
 - Go 用 `btree.BTreeG` 保存成功区间，Rust 用 `BTreeMap<Vec<u8>, rangeOrRegion>`；两者都按 `startKey` 扫描空洞。Rust 同起点覆盖旧值，对应 Go `ReplaceOrInsert`。
 - Go 用 `time.Timer` 和可空 retry channel，Rust 用 `Option<Instant>` 加短超时轮询；两者都在新失败到达时重置退避，使一批失败聚合后一起重试。
 - Go 用 channel/select 和 `errgroup`，Rust 用 `SyncSender/Receiver`、线程与 join 汇聚。Rust `Finalize` 明确在所有流完成后排空已缓冲事件，保留 Go “关闭前继续处理事件”的控制流意图。
@@ -94,11 +91,3 @@
 - 改动资源关闭时同时审查本文件 `Finalize` 与 `stream.rs::stopClientLoop`，并同步 `test_lease_timeout`、`test_many_messages_when_finalizing` 和 `contract_resource_finalize_clears_lease`。兼容风险是遗留 lease，性能风险是事件反压或 join 等待造成关闭停顿。
 - 若把本 crate 接入 Rust operator，应新增明确的 Cargo 依赖，实现真实 `RegionCacheLike`/`StoreManagerLike`，并替换 `task/operator/stubs.rs::NewPreparer` 路径；接线测试需要证明 operator 的 prepare、备份窗口保持及 cleanup 都实际调用本 `Preparer`。
 - Rust 测试逻辑必须继续放在独立的 `prepare_test.rs`/`parity_test.rs`，不要内嵌进生产源文件；同时保持与 `prepare_test.go` 的场景和断言意图对齐。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标文件已索引；`node --file br/pkg/backup/prepare_snap/prepare.rs` 核对了 578 行完整实现；`query` 定位 `DriveLoopAndWaitPrepare`、`WaitAndHandleNextEvent`、`PrepareConnections`；`callees` 验证了驱动、事件、推进、空洞和重试方法之间的调用边。
-- crate 与接线：读取 `br/pkg/backup/prepare_snap/Cargo.toml`、`lib.rs` 和根 `Cargo.toml`；全仓检索包名只命中本 crate manifest。读取 `br/pkg/task/operator/prepare_snap.rs` 与 `stubs.rs::NewPreparer`，确认当前 operator 使用另一套桩入口。
-- 直接依赖：读取 `env.rs` 的 `Env`/`PrepareClient`/`CliEnv`，以及 `stream.rs` 的 `prepareStream::InitConn`、`Finalize`、`client_loop`、`convert_to_event`，核对连接、lease、事件与关闭边界。
-- Go 对照：读取 `br/pkg/backup/prepare_snap/prepare.go` 全部状态机，逐项核对常量、字段、方法和异常路径。
-- 测试证据：读取 `prepare_test.rs` 的基础成功、epoch 零值、持续/瞬时失败、lease 超时、连接延迟、钩子时序、Finalize 压力和 context 取消用例；读取 `parity_test.rs` 的正常、重试上限和资源清理契约；读取 `prepare_test.go` 对应 Go 用例。按任务约束，本次纯文档分析未运行 Cargo 或测试。

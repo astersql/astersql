@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-cmd-importer` crate 的配置层。crate 根在 `cmd/importer/lib.rs` 中以 `pub mod config` 暴露本模块，二进制入口由 `cmd/importer/Cargo.toml` 的 `[[bin]]` 指向 `bin_main.rs`，实际业务入口 `cmd/importer/main.rs::run_with_args` 依次调用 `NewConfig` 和 `Config::Parse`。因此它位于“进程参数进入 importer”之后、“DDL 解析、数据库连接、统计加载和导入任务调度”之前，负责把默认值、可选 TOML 与命令行参数合并成其余模块消费的 `Config`。
-
-Cargo 元数据把本 crate 标记为 Go 包 `cmd/importer` 的二进制移植（`package.metadata.porting`），本文件直接使用的外部解析依赖是 `toml = "0.8"`；错误抽象则来自 crate 内的 `crate::stubs::{Error, Result}`。它不是通用 TiDB 配置中心，也不负责建立连接、解析 SQL 或启动 worker。
+因此它位于“进程参数进入 importer”之后、“DDL 解析、数据库连接、统计加载和导入任务调度”之前，负责把默认值、可选 TOML 与命令行参数合并成其余模块消费的 `Config`。
 
 ## 核心职责
 
@@ -83,15 +81,11 @@ Cargo 元数据把本 crate 标记为 Go 包 `cmd/importer` 的二进制移植�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `DBConfig`、`DDLConfig`、`StatsConfig`、`SysConfig` 和 `Config` 逐项对应 `cmd/importer/config.go` 的同名结构；CLI 短参数、TOML 节/键和默认值也逐项一致。`Config::Parse` 保留 Go 版两次 `FlagSet.Parse`、中间 `toml.DecodeFile`、最后拒绝 `FlagSet.Args()` 的顺序。
-
 实现差异主要有三类：
 
 - Go 在 `Config` 中嵌入 `*flag.FlagSet`；Rust 用手写 `parse_flags` 和内部状态代替，因此新增 flag 必须同步维护匹配分支、默认值、TOML 映射和测试。
 - Go 的 BurntSushi TOML 直接按 struct tag 解码；Rust 用 `toml::Table` 后显式提取已知字段。当前已验证的已知字段类型和覆盖行为对齐，但未知字段不会由本文件报错。
 - Go 的 nil 方法接收者可自然输出 `"<nil>"`；Rust 通过 `String(Option<&...>)` 显式表达。`Config::String` 的 `FlagSet` 指针只是输出形状兼容，不代表存在真实 flag 集合。
-
-`cmd/importer/config_test.rs` 专门覆盖 Go 风格整数/TOML/flag/字符串契约；`cmd/importer/parity_test.rs` 进一步覆盖默认值、非法 TOML 类型、帮助、未知 flag、尾随参数及进程退出码。仓库中没有同路径 `config_test.go`，因此 Go 语义的直接权威来源是 `config.go`、`main.go` 与 Rust 对齐测试中的明确断言。
 
 ## 扩展指南
 
@@ -104,13 +98,3 @@ Rust 的 `DBConfig`、`DDLConfig`、`StatsConfig`、`SysConfig` 和 `Config` 逐
 5. 在独立的 `cmd/importer/config_test.rs` 添加默认值、CLI、TOML、优先级、非法类型和边界回归；跨模块/退出码契约放在 `cmd/importer/parity_test.rs`。不要把 Rust 测试内嵌回 `config.rs`。
 
 兼容风险集中在 flag 错误文本、双解析优先级、Go 基数整数与本机位宽；性能风险通常较低，因为配置文件只读一次，但不要在解析器中引入与参数数量无关的昂贵扫描。涉及密码的诊断扩展需特别注意：当前 `DBConfig::String` 和 `Config::String` 会输出 `Password`，新增日志调用前应评估泄露风险。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、7032 个 Rust 文件；`files --filter cmd/importer` 确认目标、入口、Go 对照与独立测试均已索引，`config.rs` 记录 26 个符号。
-- RustCodeGraph 源码节点：`cmd/importer/config.rs` 全部 530 行；核心符号 `NewConfig`（31）、`Config::Parse`（174）、`configFromFile`（229）、`parse_flags`（268）、`parse_go_int`（418）及 TOML 辅助函数（491-530）。
-- RustCodeGraph 查询：`query NewConfig` 同时定位 Go `config.go:26` 与 Rust `config.rs:31`；`query Parse` 定位 Rust `config.rs:174`；`query configFromFile` 和 `query parse_flags` 确认内部节点。`explore` 给出 `NewConfig` 的 parity 测试调用方和本文件内部调用链；精确方法图命令未返回额外边，未据此臆造覆盖关系。
-- 读取的 crate/入口证据：`cmd/importer/Cargo.toml`、`cmd/importer/lib.rs`、`cmd/importer/main.rs`、`cmd/importer/main.go`。
-- 读取的 Go 对照：`cmd/importer/config.go`；其字段、默认值、两次解析和 TOML 解码顺序与本文逐项核对。
-- 读取的独立测试：`cmd/importer/config_test.rs`、`cmd/importer/parity_test.rs`；覆盖本机位宽整数、TOML 语法与类型、CLI 优先级、帮助、错误文本、默认值和入口退出码。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证恰有 11 个固定二级标题，并人工复查文档没有把未知键、业务范围验证或图中缺失边描述成已支持事实。

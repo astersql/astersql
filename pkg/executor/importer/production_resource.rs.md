@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本说明对应生产源码 [`production_resource.rs`](./production_resource.rs)。它属于 `astersql-executor-importer` crate；[`lib.rs`](./lib.rs) 以 `mod production_resource` 挂载模块并通过 `pub use production_resource::*` 公开两个资源计算适配器。crate 名、库入口以及 DXF handle/scheduler 直接依赖由 [`Cargo.toml`](./Cargo.toml) 声明，`package.metadata.porting.go-package = "pkg/executor/importer"` 表明其 Go 对照包。
-
-该文件位于 IMPORT INTO 准备阶段的资源估算边界：上游 `pkg/dxf/importinto/scheduler.rs::ImportSchedulerServices::FromEncodeRuntime` 构造 `HostImportResourceCalculator`，`prepareImportTask` 将其注入 `LoadDataController`，随后 `LoadDataController::CalResourceParams` 查询目标节点 CPU、调优因子和索引体积比，再调用本文件的计算实现，最终把线程数、最大节点数和 DistSQL 扫描并发写回 `Plan`。
-
-本文件不实现资源估算公式本身，也不负责发现数据文件或执行导入。公式位于 `pkg/dxf/framework/scheduler/autoscaler.rs`；控制器编排和结果落盘位于 `pkg/executor/importer/import.rs`。`HandleImportResourceCalculator` 是直接组合 DXF handle 与 `KVSizeSamplerService` 的适配器；当前仓库的生产装配明确使用 `HostImportResourceCalculator`，直接适配器在本次搜索中只被 `production_resource_test.rs` 构造，不能据此宣称它已进入生产主链。
+为索引体积比提供两种可替换路径：`HandleImportResourceCalculator` 调用控制器的 `sampleIndexSizeRatio` 并使用专门的 `KVSizeSamplerService`；`HostImportResourceCalculator` 把采样委托给构造时保存的原始 `ImportResourceCalculator`。
 
 ## 核心职责
 
@@ -89,9 +85,7 @@ RustCodeGraph 对 `scheduler.rs::FromEncodeRuntime` 的节点轨迹明确给出�
 
 ## 与 Go 版本的对应关系
 
-主要 Go 对照位于 `pkg/executor/importer/import.go::LoadDataController.CalResourceParams` 与 `pkg/dxf/framework/scheduler/autoscaler.go`。Go 控制器同样按“CPU → 调优因子 → 有索引才采样 → RCCalc → 三个 Plan 字段”的顺序运行；Rust 把原来直接调用的外部服务抽成 `ImportResourceCalculator`，再由本文件提供生产适配器。
-
-公式对应关系为：Rust `NewRCCalc` 对应 Go `scheduler.NewRCCalc`，`required_slots` 对应 `CalcRequiredSlots`，`max_node_count_for_import_into` 对应 `CalcMaxNodeCountForImportInto`，`CalcDistSQLConcurrency` 保持同名。`pkg/dxf/framework/scheduler/autoscaler_test.rs` 以与 Go 测试相同的边界表覆盖零/负数据量、CPU 为零、节点上限、舍入、索引比例、放大因子和 DistSQL 插值。
+Go 控制器同样按“CPU → 调优因子 → 有索引才采样 → RCCalc → 三个 Plan 字段”的顺序运行；Rust 把原来直接调用的外部服务抽成 `ImportResourceCalculator`，再由本文件提供生产适配器。
 
 当前可见差异与限制：
 
@@ -109,14 +103,3 @@ RustCodeGraph 对 `scheduler.rs::FromEncodeRuntime` 的节点轨迹明确给出�
 - 扩展 `ScheduleTuneFactors` 时，必须在本文件两个 `ScheduleTuneFactors` 实现和 `calculate_go_import_resources` 的 DXF 类型映射中同步字段，避免配置已读取却在边界丢失。
 - 修改整数转换时要保留“超大 `usize` 不回绕、负 scheduler 结果不转成巨大 `usize`”的不变量，并增加独立测试。兼容风险是计划字段变化导致任务调度不同；性能风险是线程/节点/扫描并发过大或过小；正确性风险主要来自 CPU/比例/放大因子错误传播，而非本文件的共享状态。
 - 若要让 `HandleImportResourceCalculator` 进入新的生产路径，应先找到明确装配点并增加端到端准备阶段测试；当前证据只支持 host 适配器已在 DXF import scheduler 接线。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/executor/importer` 确认目标、独立测试和模块入口均已索引。
-- RustCodeGraph 符号查询：`query HandleImportResourceCalculator`、`query HostImportResourceCalculator`、`query calculate_go_import_resources`、`query TargetNodeCPUCnt`、`query ScheduleTuneFactors`、`query SampleIndexSizeRatio`、`query CalResourceParams`。
-- RustCodeGraph 节点/调用证据：`node production_resource.rs::calculate_go_import_resources` 显示两个 `Calculate` 调用者；`node import.rs::CalResourceParams` 显示四个 trait 方法调用；`node scheduler.rs::FromEncodeRuntime` 显示 `HostImportResourceCalculator` 的生产实例化和字段来源。`explore` 与按文件 `node` 本次未产生输出，因此源码全貌和未接线结论用精确 `query/node` 加直接引用搜索补证。
-- 生产 Rust 源：`pkg/executor/importer/production_resource.rs`、`import.rs::{ImportResourceCalculator, LoadDataController::CalResourceParams}`、`sampler.rs::sampleIndexSizeRatio`、`lib.rs`、`pkg/dxf/importinto/scheduler.rs::{FromEncodeRuntime, prepareImportTask}`、`pkg/dxf/framework/handle/handle.rs::{GetCPUCountOfNode, GetScheduleTuneFactors}`、`pkg/dxf/framework/scheduler/autoscaler.rs`。
-- crate 边界：`pkg/executor/importer/Cargo.toml`，核对 crate 名、`lib.rs` 入口、Go 来源元数据以及 handle/scheduler 路径依赖。目标包没有 `doc.go`，模块级 Rust 说明由 `lib.rs` 提供。
-- Rust 测试：`pkg/executor/importer/production_resource_test.rs::handle_resource_calculator_uses_go_import_rccalc`；公式边界由 `pkg/dxf/framework/scheduler/autoscaler_test.rs` 覆盖。`importer_testkit_test.rs::TestCalResourceParams` 当前包含移植测试形状，但其局部桩实现自带 `CalResourceParams`，不作为生产控制器行为的直接运行证据。
-- Go 对照与测试：`pkg/executor/importer/import.go::LoadDataController.CalResourceParams`、`pkg/dxf/framework/scheduler/autoscaler.go`、`pkg/executor/importer/importer_testkit_test.go::TestCalResourceParams`，用于核对调用顺序、公式和 200 TiB/300 GiB 场景预期。
-- 本任务仅新增说明文档，按计划不运行 Cargo。交付检查使用任务文件指定的结构命令验证恰有 11 个固定二级标题，并人工复核文档能够回答文件存在原因、生产接线、失败边界和安全扩展位置。

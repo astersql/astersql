@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-codec`（`pkg/util/codec/Cargo.toml`），由 `pkg/util/codec/lib.rs` 的私有模块 `decimal` 通过 `include!("decimal.rs")` 纳入 crate，并通过 `pub use decimal::*` 暴露公开函数。它位于通用 Datum 编解码层：上游把 `types::MyDecimal` 连同精度信息交给这里，本文件负责生成或解析 TiDB/MySQL DECIMAL 的可比较二进制载荷；外围 `codec.rs` 再添加 `decimalFlag` 等 Datum 类型标记。
-
-文件只实现 DECIMAL 载荷，不定义十进制定点算法。二进制体的实际布局和数值转换由 `astersql-types-decimal` 提供的 `MyDecimal::{WriteBin, FromBin}` 与 `DecimalBinSize` 决定；本文件增加两字节 `precision`/`frac` 头、输入检查和错误适配。源码中没有类型、trait、常量或条件编译项，只有三个函数。
+二进制体的实际布局和数值转换由 `astersql-types-decimal` 提供的 `MyDecimal::{WriteBin, FromBin}` 与 `DecimalBinSize` 决定；本文件增加两字节 `precision`/`frac` 头、输入检查和错误适配。
 
 ## 核心职责
 
@@ -61,7 +59,7 @@ RustCodeGraph 显示主要上游边为：`codec.rs::encode`、`codec.rs::HashGro
 
 类型层面的差异是 Go 使用 `[]byte`、`*types.MyDecimal`、`int` 和多返回值，Rust 使用拥有所有权的 `Vec<u8>`、借用/拥有的 `MyDecimal`、`i32` 元数据和 `Result`。Go 用 `errors.Trace` 保留错误链，Rust 当前以 `error.to_string()` 重建 `SharedError`，因此错误分类身份未在此层显式保留。Go 解码错误时可能返回已推进的切片、nil decimal 及已读元数据；Rust 的 `Result::Err` 不携带这些部分结果。
 
-`pkg/util/codec/decimal_test.rs` 对齐 `decimal_test.go` 的两组测试：多种正负数和零值的编码/解码比较，以及整数 3、decimal 0.03 的字符串小数位保持。Rust 额外直接证据包括 `bytes_1_aster_unit_test.rs:103-118` 的既有前缀、自动推导和短输入测试，`codec_test.rs:719-744` 的字典序、估算长度及截断/溢出测试，`tablecodec_test.rs:410-412` 的故障注入传播测试。
+Rust 额外直接证据包括 `bytes_1_aster_unit_test.rs:103-118` 的既有前缀、自动推导和短输入测试，`codec_test.rs:719-744` 的字典序、估算长度及截断/溢出测试，`tablecodec_test.rs:410-412` 的故障注入传播测试。
 
 ## 扩展指南
 
@@ -70,11 +68,3 @@ RustCodeGraph 显示主要上游边为：`codec.rs::encode`、`codec.rs::HashGro
 测试逻辑必须继续放在独立文件，优先扩展 `pkg/util/codec/decimal_test.rs`；排序、尺寸和通用 Datum 接线应同步 `pkg/util/codec/codec_test.rs`，故障注入传播应同步 `pkg/tablecodec/tablecodec_test.rs`。Go 对齐修改还应核对对应的 `decimal_test.go`、`codec_test.go` 和 `tablecodec_test.go`。应重点加入：最大 precision/frac、非法或截断 body、串联载荷的剩余切片、已有缓冲区前缀、负数排序，以及 `valueSizeOfDecimal` 与真实编码长度的一致性。
 
 性能上，避免把当前追加式 `Vec` 编码改成额外复制；解码应继续借用剩余输入。正确性上，不要自行重写 `MyDecimal` 二进制算法，应在 `astersql-types-decimal` 中处理其内部格式并由本层只维护封装契约。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`files --filter pkg/util/codec` 确认目标、Go 对照和测试均已索引；`node --file pkg/util/codec/decimal.rs` 确认文件共 91 行及三个函数；`node/callers/callees` 查询 `EncodeDecimal`、`DecodeDecimal`、`valueSizeOfDecimal` 确认直接上游边。图未识别 decimal 类型方法的下游边，改由函数体与 Cargo 再导出核对。
-- 源码与装配：`pkg/util/codec/decimal.rs`、`pkg/util/codec/lib.rs:157-162,193-195`、`pkg/util/codec/Cargo.toml`、`pkg/util/codec/codec.rs:104-106,277-279,1371-1376,1662-1667,1814-1823`。
-- Go 对照：`pkg/util/codec/decimal.go`、`pkg/util/codec/codec.go`、`pkg/expression/expr_to_pb.go:164-172`、`pkg/expression/distsql_builtin.go:1364-1370`。
-- 独立测试：`pkg/util/codec/decimal_test.rs` 与 `decimal_test.go`；补充边界证据来自 `pkg/util/codec/bytes_1_aster_unit_test.rs:103-118`、`codec_test.rs:719-744` 和 `pkg/tablecodec/tablecodec_test.rs:410-412`，对应 Go 测试亦已核对。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本文所有关键结论均可回到上述符号、调用点、Cargo 声明或测试。

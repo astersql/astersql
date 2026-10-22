@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-br-pkg-kms` crate 的 GCP Cloud KMS 解密后端，crate 入口 `br/pkg/kms/lib.rs` 通过 `pub mod gcp` 加载并重导出其公开符号。它位于 BR 主密钥解密链的云厂商适配层：`br/pkg/encryption/master_key/master_key.rs::createCloudBackend` 在厂商为 `gcp` 时调用 `NewGcpKms`，再把结果装箱为统一的 `Provider`，交给 `KmsBackend` 解开数据加密密钥。
-
-文件对照 Go 实现 `br/pkg/kms/gcp.go`，但并非仅有占位逻辑：`GcpSdkClient` 已连接 `google-cloud-kms-v1` 和 `google-cloud-auth`，会读取可选凭证文件并发起真实 Decrypt RPC。`br/pkg/kms/stubs.rs` 只定义配置和可注入客户端 trait；真正的 GCP SDK 适配在本文件中。
+该模块只负责“用 GCP 主密钥解开 data key”，不缓存 data key，也不直接解密备份内容；缓存、重试和内容解密由 `br/pkg/encryption/master_key/kms_backend.rs::KmsBackend::DecryptWithContext` 负责。
 
 ## 核心职责
 
@@ -99,7 +97,7 @@ RustCodeGraph 显示目标文件被 `gcp_test.rs` 和 `parity_test.rs` 直接使
 
 Rust 用泛型 `GcpDecryptClient` 代替 Go 结构体中固定的 `*kms.KeyManagementClient`，从而可以在独立测试中记录请求、注入错误。Go 使用标准库 CRC 表，Rust 以逐位算法产生相同 Castagnoli 结果。Go 直接接受 `context.Context`，Rust 用包含 `CancellationToken` 的 `Context`，SDK 适配器通过 `tokio::select!` 实现取消传播。
 
-差异和迁移边界包括：Go 构造器假设 KeyId 已在参数解析阶段验证，直接切前四段；Rust 增加了分段数量检查以避免越界。Rust 显式识别四类凭证 JSON，未知类型会在本地拒绝；Go 将文件交给 Google option 层解析。Rust SDK 的可选响应 CRC 缺失时视为 `0`。最重要的是 Rust 生产 Close 当前为空操作，而 Go 会真实关闭 client。
+差异和迁移边界包括：Go 构造器假设 KeyId 已在参数解析阶段验证，直接切前四段；Rust 增加了分段数量检查以避免越界。Rust 显式识别四类凭证 JSON，未知类型会在本地拒绝；Go 将文件交给 Google option 层解析。最重要的是 Rust 生产 Close 当前为空操作，而 Go 会真实关闭 client。
 
 Go 同目录没有独立 `gcp_test.go`；本任务能核对的 Go 行为依据是 `br/pkg/kms/gcp.go` 本身，边界回归主要由 Rust 的 `gcp_test.rs` 和 `parity_test.rs` 固化。
 
@@ -112,12 +110,3 @@ Go 同目录没有独立 `gcp_test.go`；本任务能核对的 Go 行为依据�
 - 若增加凭证类型或 ADC 配置，修改 `NewGcpKms` 的凭证分派，并增加不访问真实云服务的构造边界测试。凭证解析错误不得输出 JSON 内容或密钥材料。
 - 回归测试继续放在独立文件 `br/pkg/kms/gcp_test.rs` 或跨语言契约文件 `br/pkg/kms/parity_test.rs`，不要把测试嵌入生产源文件。
 - 性能改动要关注每次解密的逐位 CRC 成本和同步 `block_on`；若替换 CRC 实现或 runtime 所有权模型，需保持输出和取消语义不变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7032 个 Rust 文件；`files --filter br/pkg/kms` 确认目标、模块入口、Go 对照和独立测试；`node --file br/pkg/kms/gcp.rs` 阅读全部 224 行并列出其两个直接测试使用方；`explore 'br/pkg/kms/gcp.rs GCP KMS symbols callers callees'` 核对 `NewGcpKmsWithClient`、Decrypt/Close、CRC 与 `Provider` 调用关系。
-- 生产源码：`br/pkg/kms/gcp.rs`、`br/pkg/kms/kms.rs`、`br/pkg/kms/stubs.rs`、`br/pkg/kms/lib.rs`、`br/pkg/encryption/master_key/master_key.rs`、`br/pkg/encryption/master_key/kms_backend.rs`、`br/pkg/task/encryption.rs`。
-- crate 边界：`br/pkg/kms/Cargo.toml`，确认库入口为 `lib.rs`，并声明 Google KMS/Auth、Tokio、bytes 与 serde_json 依赖。
-- Go 对照：`br/pkg/kms/gcp.go`，核对构造、KeyId/location、CRC、错误包装和关闭语义；同目录未发现 `gcp_test.go`。
-- Rust 测试：`br/pkg/kms/gcp_test.rs::close_error_is_reported_like_go` 验证关闭错误被记录且不导致失败；`br/pkg/kms/parity_test.rs::{gcp_key_id_trims_exactly_one_trailing_slash,gcp_request_crc_response_crc_and_close_match_go,gcp_decrypt_errors_match_go,go_rust_public_contract_matches}` 验证规范化、location、请求与响应 CRC、错误文案、厂商名和关闭委托。
-- 本任务是只读行为分析加文档输出，按计划不运行 Cargo；结构验证命令及退出码在任务交付时记录。

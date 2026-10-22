@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`metrics.rs` 属于 `astersql-workloadlearning` crate，是工作负载学习链路共享的数据模型层，而不是主动执行分析的入口。crate 根 `pkg/workloadlearning/lib.rs` 以 `mod metrics` 装配该模块并通过 `pub use metrics::*` 对外再导出 `CIStr` 与 `TableReadCostMetrics`；同 crate 的 `handle.rs` 负责产生、累加、归一化并序列化这些指标，`cache.rs` 负责从存储反序列化并缓存它们。
-
-该文件对应 Go 的 `pkg/workloadlearning/metrics.go`。Rust 版本在五个业务字段之外增加了 serde 兼容逻辑，使模型可以跨 `WorkloadStore` 的 JSON 字符串边界保存和恢复。`pkg/workloadlearning/Cargo.toml` 表明此 crate 直接依赖带 derive 功能的 `serde` 和 `serde_json`，且移植来源包为 `pkg/workloadlearning`。
+只定义模型、构造和序列化规则；按表 ID 聚合、代价计算、持久化、缓存加锁均由相邻模块承担。
 
 ## 核心职责
 
@@ -68,11 +66,11 @@ RustCodeGraph 对文件的索引显示 15 个符号，并将其关联到 `handle
 
 ## 与 Go 版本的对应关系
 
-`metrics.go::TableReadCostMetrics` 与 Rust 结构体字段一一对应：Go 的 `ast.CIStr` 对应本地 `CIStr`，`time.Duration` 对应 `std::time::Duration`，三个数值字段类型与含义保持一致。Go 注释明确扫描时间和内存均按读取频率加权，读取频率为同表记录频率之和，最终代价为扫描占比与内存占比之和；这些计算实际由 Rust `handle.rs` 完成，而本文件保存结果。
+Go 注释明确扫描时间和内存均按读取频率加权，读取频率为同表记录频率之和，最终代价为扫描占比与内存占比之和；这些计算实际由 Rust `handle.rs` 完成，而本文件保存结果。
 
-主要差异是 Rust 为跨存储边界显式派生 serde，并定义纳秒 wire format；Go 当前结构体注释仍有“添加 JSON tag”的 TODO。Rust 本地 `CIStr` 的字符串/`null` 反序列化属于兼容扩展，不是 Go 结构定义中可见的 API。Rust `CIStr::new` 的 Unicode 小写语义由 `metrics_test.rs` 两个测试验证，以贴近 Go `ast.NewCIStr`；但对象形式 `O`/`L` 的缺省和不一致行为、`null`、`Duration` 饱和序列化尚无本文件专门测试证明。
+主要差异是 Rust 为跨存储边界显式派生 serde，并定义纳秒 wire format；Go 当前结构体注释仍有“添加 JSON tag”的 TODO。Rust `CIStr::new` 的 Unicode 小写语义由 `metrics_test.rs` 两个测试验证，以贴近 Go `ast.NewCIStr`；但对象形式 `O`/`L` 的缺省和不一致行为、`null`、`Duration` 饱和序列化尚无本文件专门测试证明。
 
-Go 的 `handle_test.go` 与 `cache_test.go` 进一步验证指标的累加、保存、读取和空缓存行为；Rust 对应证据位于独立的 `handle_test.rs`、`cache_test.rs`。Rust 测试还验证缓存查询会清空库表名，仅暴露成本字段。
+Rust 测试还验证缓存查询会清空库表名，仅暴露成本字段。
 
 ## 扩展指南
 
@@ -83,12 +81,3 @@ Go 的 `handle_test.go` 与 `cache_test.go` 进一步验证指标的累加、保
 - 测试必须继续放在独立文件：构造/serde 边界放入 `pkg/workloadlearning/metrics_test.rs`；聚合和归一化放入 `handle_test.rs`；存储恢复、坏行和查询投影放入 `cache_test.rs`。需要同步核对 Go 的 `metrics.go`、`handle_test.go`、`cache_test.go`，不能为了测试通过而弱化 Go 已有语义。
 
 主要兼容风险是持久化 JSON 不兼容，正确性风险是 `O`/`L` 失配或单位误解导致表解析和成本计算错误，性能风险则来自新增大字段在每次 clone、序列化和缓存快照替换中的复制开销。
-
-## 验证依据
-
-- 目标源码：`pkg/workloadlearning/metrics.rs`，核对 `CIStr`、手写 `Deserialize`、`TableReadCostMetrics` 与 `duration_nanos` 的完整实现。
-- RustCodeGraph：`status` 确认索引可用；`files --filter pkg/workloadlearning` 确认模块文件集合；`node --file pkg/workloadlearning/metrics.rs` 读取 83 行源码和 15 个索引符号；`query TableReadCostMetrics --kind struct` 定位 Go/Rust 定义及 `handle.rs`、`cache.rs` 相关入口；`node --file` 核对 `handle.rs` 的分析、聚合、保存调用链和 `cache.rs` 的恢复、查询调用链。`callers`/`callees` 命令未返回可用边，因此调用关系以索引文件上下文和精确源码引用交叉确认。
-- crate 与装配：`pkg/workloadlearning/Cargo.toml`、`pkg/workloadlearning/lib.rs`。
-- Go 对照：`pkg/workloadlearning/metrics.go`；相关行为测试为 `pkg/workloadlearning/handle_test.go`、`pkg/workloadlearning/cache_test.go`。
-- Rust 测试：`pkg/workloadlearning/metrics_test.rs` 验证 Unicode 小写与旧字符串 JSON；`handle_test.rs` 验证保存、按频率累计和归一化；`cache_test.rs` 验证序列化记录恢复、缓存读取投影与空缓存。
-- 人工复核结论：该文件存在的原因是为工作负载学习的“提取—聚合—持久化—缓存”链提供稳定共享模型和 JSON 边界；运行路径与安全扩展点均能由上述真实符号定位。未运行 Cargo，符合本纯文档任务约束。

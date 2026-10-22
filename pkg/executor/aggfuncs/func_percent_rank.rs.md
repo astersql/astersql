@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor-aggfuncs` crate（见 `pkg/executor/aggfuncs/Cargo.toml`），实现 SQL 窗口函数 `PERCENT_RANK()` 的 Rust 状态机。模块由 `pkg/executor/aggfuncs/lib.rs` 的 `pub mod func_percent_rank` 公开；窗口构建器 `build_window_function` 在遇到 `FunctionName::PercentRank` 时生成 `AggImplementation::PercentRank`（`pkg/executor/aggfuncs/builder.rs`）。
-
-需要区分“构建元数据”和“具体状态机接线”：当前仓库能构造 `AggImplementation::PercentRank`，但对 Rust 源码的精确检索只发现 `PercentRank<T>` 在 `func_percent_rank_test.rs` 和 `window_func_test.rs` 中被直接实例化，尚未发现生产执行器把该枚举实例化为本文件状态机的接线。因此，本文件已有可执行、受测试的算法实现，但不能仅凭 builder 枚举认定 Rust SQL 执行主链已经使用它。
+调用方必须先提供同一分区且顺序正确的行，并通过 `next_by` 注入符合 SQL `ORDER BY` 语义的比较器。
 
 ## 核心职责
 
@@ -83,17 +81,13 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_percent_rank.go`：
-
-- Go `partialResult4Rank` 对应 Rust `RankState<T>`，都保存行缓冲、当前下标和最近 rank。
-- Go `ResetPartialResult` 与 Rust `reset` 都归零两个计数并把行缓冲逻辑长度清零。
 - Go `UpdatePartialResult` 与 Rust `update` 都追加整批行，并按行数乘固定 `DefRowSize`/`DEF_ROW_SIZE` 报告内存增量。
 - Go `AppendFinalResult2Chunk` 与 Rust `next_by` 都令首行为 0、以相邻行比较结果识别同行组，并使用 `(rank-1)/(n-1)`。
 - Go 的 `rowComparer.compareRows` 由 `buildPercentRank` 根据 `orderByCols` 构造；Rust 将这一策略作为 `next_by` 闭包注入。本文件本身没有 Go `baseAggFunc.ordinal` 和写 chunk 的职责，而是直接返回 `f64`。
 
-Go 已通过 `builder.go::buildPercentRank` 返回实现 `AggFunc` 的 `percentRank`，属于完整构建/执行接线。Rust builder 当前只生成实现枚举，未在检索范围内发现把该枚举落到本文件状态机的生产分支，这是迁移状态上的主要差异。
+Rust builder 当前只生成实现枚举，未在检索范围内发现把该枚举落到本文件状态机的生产分支，这是迁移状态上的主要差异。
 
-测试对应方面，Go `func_percent_rank_test.go::TestMemPercentRank` 主要验证三种输入形状的部分结果基线和逐行内存增量；Rust `func_percent_rank_test.rs` 覆盖相同批次增量，并额外直接验证公式、reset 和自定义 peer 比较。Go `window_func_test.go::TestWindowFunctions` 的 PERCENT_RANK 三组结果由 Rust `window_func_test.rs::test_window_functions` 镜像验证。
+测试对应方面，Go `func_percent_rank_test.go::TestMemPercentRank` 主要验证三种输入形状的部分结果基线和逐行内存增量；Rust `func_percent_rank_test.rs` 覆盖相同批次增量，并额外直接验证公式、reset 和自定义 peer 比较。
 
 ## 扩展指南
 
@@ -105,19 +99,3 @@ Go 已通过 `builder.go::buildPercentRank` 返回实现 `AggFunc` 的 `percentR
 - 若新增公开 API，保持测试位于同目录独立 `*_test.rs` 文件；不要删除源文件现有 PingCAP Apache License 或 AsterSQL 处理标记。
 
 兼容风险主要是 SQL 排序等价性与 Go 结果偏离；正确性风险集中在分区尚未收齐就开始求值；性能风险来自整分区 O(n) 缓冲、`T` 深拷贝以及大分区后 `reset` 保留容量。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- `pkg/executor/aggfuncs/func_percent_rank.rs`：`PercentRank<T>`、`Default`、`reset`、`update`、`next_by`、`next` 的完整实现。
-- `pkg/executor/aggfuncs/func_rank.rs`：`RankState<T>`、`DEF_ROW_SIZE` 和相同 rank 跳号规则。
-- `pkg/executor/aggfuncs/Cargo.toml`：crate 名、`lib.rs` 入口、端口元数据和依赖边界。
-- `pkg/executor/aggfuncs/lib.rs`：生产模块公开及独立测试模块声明。
-- `pkg/executor/aggfuncs/builder.rs`：`FunctionName::PercentRank`、`AggImplementation::PercentRank` 以及 `build_window_function` 映射。
-- `pkg/executor/aggfuncs/func_percent_rank.go`、`builder.go::buildPercentRank`：Go 状态机、内存规则、比较器和生产构建接线。
-- `pkg/executor/aggfuncs/func_percent_rank_test.rs`、`window_func_test.rs`：Rust 行为、内存、边界和重置证据。
-- `pkg/executor/aggfuncs/func_percent_rank_test.go`、`window_func_test.go`：Go 对照用例与预期结果。
-- RustCodeGraph：检查了索引状态，以文件节点读取目标实现、Rust/Go 测试及对照实现，并查询 `PercentRank`、`next_by`、builder 映射和调用关系。由于通用方法名调用图存在同名噪声，又用全仓精确检索核对生产实例化点；截至本次分析，仅确认 builder 枚举映射及测试直接调用，未确认生产执行器消费本文件状态机。
-
-结构检查应保证本文存在且固定二级标题恰为以上十一项。本任务是纯文档分析，按计划不运行 Cargo 或代码测试；行为结论来自源码、调用/引用搜索和现有独立测试，而非本次动态执行。

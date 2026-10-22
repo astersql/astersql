@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-源码入口为 [`rule_init.rs`](./rule_init.rs)。该文件属于 Cargo crate `astersql-planner-core-rule`，crate 根为同目录的 `lib.rs`，并由其中的 `pub mod rule_init` 公开。`Cargo.toml` 的 `package.metadata.porting.go-package` 将整个 crate 对应到 Go 包 `pkg/planner/core/rule`；本文件直接对应 `rule_init.go`，但还承载了 Rust 规则实现共用的一套精简表达式/逻辑计划 IR。
-
-它有两个需要严格区分的角色：
-
-1. `init()` 是生产优化链上的初始化桥。`pkg/planner/core/optimizer_runtime.rs::logical_optimize_in_place` 在遍历真实的 `LOGICAL_RULES` 前调用它，为 `rule/util` 安装谓词简化和谓词下推标志回调。
-2. `Value`、`Expr`、`Plan`、`LogicalRule` 等是同 crate 若干已移植规则及独立测试使用的精简 IR。生产主优化器在 `optimizer_runtime.rs` 中实际处理的是 `logicalop::LogicalPlanRef`，因此不能把这里的 `Plan` 当作完整 TiDB/AsterSQL 逻辑计划表示。
-
-目标目录没有 `doc.go`；包级 Go 语义由同路径 `rule_init.go` 及实际调用点核对。
+定义规则侧精简值与表达式模型：`Value`、`FieldType`、`Expr`，并提供列依赖、结果类型和确定性分析。
 
 ## 核心职责
 
@@ -105,11 +98,9 @@ RustCodeGraph 将本文件识别为包含 68 个符号并被 107 个文件使用
 
 ## 与 Go 版本的对应关系
 
-- Go `rule_init.go::init()` 在包加载时直接把 `applyPredicateSimplification`、`applyPredicateSimplificationForJoin`、`setPredicatePushDownFlag` 赋给 `rule/util` 的三个函数变量。
 - Rust 没有依赖 Go 式包初始化副作用，改为由 `logical_optimize_in_place` 显式调用 `rule_init::init()`。其中两个谓词简化钩子的具体注册被集中到 `logicalop::InstallPredicateSimplificationPassthrough()`，第三个仍从 rule crate 注册；最终仍满足 `RuleInitHooksRegistered()` 对三槽齐备的检查。
 - Go 使用可重新赋值的包变量；Rust 使用 `OnceLock`，因此生命周期更严格：只允许首次注册、不可覆盖，调用前未注册则明确 panic。
 - Go 文件只负责 3 个回调接线，不包含本 Rust 文件的精简 `Value`/`Expr`/`Plan`/`LogicalRule`。这些类型是 Rust 移植层为同目录规则与测试增加的本地抽象，不应声称为 Go `rule_init.go` 的逐项翻译。
-- Go 同路径没有 `rule_init_test.go`。Rust 独立测试补充验证注册完整性、幂等性和谓词下推位的 OR 语义；其他规则测试间接覆盖精简 IR。
 
 ## 扩展指南
 
@@ -119,14 +110,3 @@ RustCodeGraph 将本文件识别为包含 68 个符号并被 107 个文件使用
 - 修改 `Plan::walk_mut()` 时要保留或明确改变后序顺序，因为键构建、统计汇总一类父节点逻辑可能依赖已处理子节点；若需要错误传播或提前停止，宜新增返回 `Result`/控制流的遍历 API，避免破坏现有简单回调。
 - 新增生产规则应修改 `optimizer_runtime.rs` 的真实规则枚举、顺序和 flag 映射，并按需更新 `default_rule_names()`；在后者被真正接线前，不应仅修改名称列表就声称规则已加入优化流水线。
 - 兼容性风险集中在初始化时序、规则顺序、flag 位保留以及 IR 枚举匹配；性能风险集中在表达式递归集合分配和计划树递归遍历。扩展后应优先增加针对这些边界的独立回归测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/core/rule/rule_init.rs` 确认目标已索引，`node --file ...` 显示 272 行、68 个符号及文件级使用关系。
-- RustCodeGraph 符号查询：`query default_rule_names --kind function`、`query LogicalRule --kind trait --json`；`callers/callees` 对这些 Rust 符号未返回边，因此又用精确仓库搜索核对实际引用，未把图的空结果解释为不存在行为。
-- 目标源码：`pkg/planner/core/rule/rule_init.rs`，核对 `init`、全部枚举/结构、三个 `Expr` 方法、两个 `Plan` 方法、`LogicalRule` 与 `default_rule_names`。
-- crate 边界：`pkg/planner/core/rule/Cargo.toml` 与 `pkg/planner/core/rule/lib.rs`，核对 crate 名、Go 包映射、路径依赖、公开模块及独立测试装配。
-- 生产入口与下游：`pkg/planner/core/optimizer_runtime.rs::logical_optimize_in_place`、`pkg/planner/core/operator/logicalop/logical_datasource.rs::InstallPredicateSimplificationPassthrough`、`pkg/planner/core/rule/util/misc.rs` 的三个 `OnceLock`/注册/调用函数、`pkg/planner/core/rule/logical_rules.rs::set_predicate_push_down_flag`。
-- Go 对照：`pkg/planner/core/rule/rule_init.go::init`，核对三项函数变量赋值与包依赖方向说明。
-- 独立 Rust 测试：`pkg/planner/core/rule/rule_init_test.rs::init_registers_all_go_rule_hooks_idempotently`；同目录其他规则的 `*_test.rs` 证明精简 IR 和 `LogicalRule` 是共享测试表面。未发现同路径 Go 初始化专用测试。
-- 本任务为纯文档分析，按任务约束未运行 Cargo；交付前以任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核文档区分了生产 `LogicalPlanRef` 与精简 `Plan`、真实调度表与未接线名称列表。

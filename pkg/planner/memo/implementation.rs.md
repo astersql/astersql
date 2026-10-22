@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`implementation.rs`](implementation.rs) 位于 `astersql-planner-memo` crate，是旧版 Cascades 优化器中“物理实现候选”的抽象边界。`pkg/planner/memo/lib.rs` 将本模块声明为私有模块后通过 `pub use implementation::*` 公开其 API，因此其他 crate 使用的是 `astersql_planner_memo::{Implementation, ImplementationRef}`。
-
-这个文件不实现任何具体物理算子，也不执行搜索；它只定义对象安全的 `Implementation` trait 和统一引用类型 `ImplementationRef`。逻辑等价表达式由 `Group` 保存，而满足某个 `PhysicalProperty` 的最佳物理候选由 `Group::ImplMap` 以 `ImplementationRef` 缓存（`pkg/planner/memo/group.rs` 的 `Group::GetImpl`、`Group::InsertImpl`）。实际代价公式和物理计划持有者位于 `pkg/planner/implementation/*.rs`，搜索编排位于 `pkg/planner/cascades/old/optimize.rs::implGroup`。
-
-`pkg/planner/memo/Cargo.toml` 将该目录定义为包 `astersql-planner-memo`，库入口为 `lib.rs`。本文件自身唯一的工作区依赖是 `astersql-planner-core-base::PhysicalPlan`；`Rc`、`RefCell` 来自标准库。
+具体语义由各实现负责；例如 `pkg/planner/implementation/base.rs::BaseImpl` 默认把子代价求和，而 reader、join、sort 和 simple-plan 实现会叠加各自的算子代价。
 
 ## 核心职责
 
@@ -93,7 +89,7 @@ trait 本身所有方法都返回普通值或引用，没有 `Result`/`Option`�
 
 ## 与 Go 版本的对应关系
 
-直接原型是 `pkg/planner/memo/implementation.go::Implementation`。Rust 保留了相同的六个方法名和总体语义：计算/读写代价、取得计划、挂接孩子、推导下一子 Group 的代价上限。参数中的 Go variadic `children ...Implementation` 对应 Rust 借用切片 `&[ImplementationRef]`。
+参数中的 Go variadic `children ...Implementation` 对应 Rust 借用切片 `&[ImplementationRef]`。
 
 主要表示差异如下：
 
@@ -103,7 +99,7 @@ trait 本身所有方法都返回普通值或引用，没有 `Result`/`Option`�
 - Go `SetCost` 的接收者由具体类型决定；Rust trait 明确要求 `&mut self`。当前 `BaseImpl` 内部虽用 `Cell`，宏仍通过可变 trait 方法对外暴露写操作。
 - Rust 的引用模型是单线程 `Rc<RefCell>`；Go interface 没有对应的编译期线程限制。移植新路径时不能假设 Rust 候选可跨线程使用。
 
-行为一致性的直接测试包括：`pkg/planner/implementation/base_test.rs::TestBaseImplementation` 对应 Go `base_test.go::TestBaseImplementation`；`base_implementation_children_follow_go` 验证子代价求和、剩余上限和计划挂接；`pkg/planner/memo/memo_aster_unit_test.rs::implementation_cache_keys_by_full_physical_property_hash` 与 Go `group_test.go::TestGetInsertGroupImpl` 共同验证按物理属性缓存实现。Rust memo 目录没有同名 `implementation_test.rs`，相关测试按职责放在独立的 `memo_aster_unit_test.rs` 和 implementation crate 的 `base_test.rs`，符合源文件与测试分离要求。
+Rust memo 目录没有同名 `implementation_test.rs`，相关测试按职责放在独立的 `memo_aster_unit_test.rs` 和 implementation crate 的 `base_test.rs`，符合源文件与测试分离要求。
 
 ## 扩展指南
 
@@ -117,16 +113,3 @@ trait 本身所有方法都返回普通值或引用，没有 `Result`/`Option`�
 6. 如果为 trait 增加必需方法，所有具体类型、`impl_implementation!` 宏和测试桩都必须同步修改；优先考虑有可靠默认语义的默认方法，以减小破坏面。
 
 测试应继续放在独立文件。通用协议或成本基座行为应扩展 `pkg/planner/implementation/base_test.rs`；Group 属性缓存行为应扩展 `pkg/planner/memo/memo_aster_unit_test.rs`；具体算子的公式应在 implementation crate 的相应独立测试文件中覆盖。至少验证正常成本、超限剪枝、子节点数量/顺序、特殊浮点值和计划挂接后的树形结构。兼容风险集中在 Go 浮点语义、缓存写入时机和 `AttachChildren` 返回同一对象；性能风险集中在重复克隆物理子树与 `RefCell` 动态借用。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/planner/memo/implementation.rs`，确认仅含 `ImplementationRef` 与 `Implementation` 六方法协议。
-- crate/模块边界：`pkg/planner/memo/Cargo.toml`、`pkg/planner/memo/lib.rs`；具体消费 crate 依赖见 `pkg/planner/implementation/Cargo.toml` 与 `pkg/planner/cascades/old/Cargo.toml`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/planner/memo` 定位 Rust/Go 对照及独立测试；`explore "pkg/planner/memo/implementation.rs Implementation ImplementationRef CalcCost AttachChildren GetCostLimit"` 找到 `BaseImpl`、实现规则、Group 缓存和测试调用；`node` 核对了目标文件、`group.rs`、`old/optimize.rs`、`implementation/base.rs`、`enforcer_rules.rs`、`base_test.rs` 与 `memo_aster_unit_test.rs` 的相关源码。对 trait 本身执行 `callers`/`callees` 没有给出方法级边，故又以精确符号引用搜索补齐动态分发调用证据。
-- Go 对照：`pkg/planner/memo/implementation.go::Implementation`；缓存测试为 `pkg/planner/memo/group_test.go::TestGetInsertGroupImpl`，基础成本测试为 `pkg/planner/implementation/base_test.go::TestBaseImplementation`。
-- Rust 测试：`pkg/planner/memo/memo_aster_unit_test.rs::{TestImplementation, implementation_cache_keys_by_full_physical_property_hash}` 与 `pkg/planner/implementation/base_test.rs::{TestBaseImplementation, base_implementation_children_follow_go, zero_cost_calc_does_not_reset_cached_cost, reader_zero_workers_follow_go_float_semantics, readers_use_the_same_row_size_source_as_go, sort_count_min_propagates_nan_like_go}`。
-- 应用主链：`pkg/planner/cascades/old/optimize.rs::{findBestPlan, implGroup, implGroupExpr}`，规则构造见 `implementation_rules.rs::implementation_ref`，强制排序见 `enforcer_rules.rs::OrderEnforcer::OnEnforce`。
-
-本任务是纯文档分析，按计划不运行 Cargo 或代码测试。结构验证要求本文恰好包含约定的十一个二级章节；事实复核限于当前工作区源码与 RustCodeGraph 索引，没有验证运行时性能或执行完整 SQL 集成流程。

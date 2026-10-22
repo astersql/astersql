@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-lockstats` 子 crate 的“加统计锁”实现，源码由同目录 `lib.rs` 以 `mod lock_stats` 纳入并通过 `pub use lock_stats::*` 导出。它把表或分区的物理 ID 写入统计锁存储，并同步推进对应 `stats_meta.version`，使统计缓存能够感知锁状态变化；解锁实现位于同目录 `unlock_stats.rs`，查询实现位于 `query_lock.rs`。
-
-应用主链的直接证据是 `pkg/session/runtime/admin.rs::execute_lock_stats`：会话层先把 SQL AST 中的表名、分区名解析成物理 ID，再通过 `Domain::stats_lock` 取得本文件构造的 `statsLockImpl`，最终调用 `LockTables` 或 `LockPartitions`。`pkg/domain/domain.rs::stats_lock` 用 Domain 持有的 `stats_store` 构造 `SessionRef`；Domain 的分区元数据协调逻辑还会直接调用 `InsertLockAndUpdateVersion`，让已锁父表的新分区继承锁状态。
-
-`Cargo.toml` 将 crate 命名为 `astersql-statistics-handle-lockstats`，入口为 `lib.rs`，并用 `package.metadata.porting.go-package` 指向 Go 包 `pkg/statistics/handle/lockstats`。当前列出的迁移依赖全部置于 `target.'cfg(any())'`，即不会参与实际编译；本文件实际依赖的是 crate 根中定义的本地抽象，而不是这些关闭的依赖项。
+`pkg/domain/domain.rs::stats_lock` 用 Domain 持有的 `stats_store` 构造 `SessionRef`；Domain 的分区元数据协调逻辑还会直接调用 `InsertLockAndUpdateVersion`，让已锁父表的新分区继承锁状态。
 
 ## 核心职责
 
@@ -93,8 +89,6 @@ RustCodeGraph 的文件节点报告本文件被 `pkg/domain/domain.rs`、`pkg/st
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/lockstats/lock_stats.go`。Rust 保留了 Go 的类型/函数命名、核心分支、事务包装意图、稳定排序文案，以及“插入锁后更新 `stats_meta.version`”的顺序。Rust 独立测试复刻了 Go 测试中的空、单项、多项、部分成功、全部跳过、父表已锁及写入错误场景。
-
 主要实现差异如下：
 
 - Go 的 `NewStatsLock` 返回 `types.StatsLock` 接口，Rust 返回具体 `statsLockImpl`；应用侧通过该具体类型调用。
@@ -112,12 +106,3 @@ RustCodeGraph 的文件节点报告本文件被 `pkg/domain/domain.rs`、`pkg/st
 新增用户可见分支时必须同步独立测试 `pkg/statistics/handle/lockstats/lock_stats_test.rs`，并与 `lock_stats_test.go` 的对应场景核对；测试逻辑不应内嵌回生产文件。涉及解锁文案时还要检查 `unlock_stats.rs` 与 `unlock_stats_test.rs`，因为它们复用本文件的动作/状态常量和稳定消息函数。涉及 SQL 入口时应同步检查 `pkg/session/runtime/admin.rs` 以及执行器层对空输入、名称解析和 warning 的处理。
 
 兼容性风险集中在精确提示字符串、父表与分区的独立锁语义、错误发生后的回滚以及版本更新顺序。性能上应保持“一次查询锁全集、内存中过滤”的批量模式，避免为每个 ID 单独查询；若输入很大，可优化集合容量或批量写入，但必须保留幂等、事务和部分跳过提示语义。若将 `cfg(any())` 下的迁移依赖真正启用，应先确认 crate 根的本地 trait 与真实类型边界，而不能仅替换 import。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/statistics/handle/lockstats` 列出 Rust/Go 实现与测试；`node --file .../lock_stats.rs` 读取了 224 行完整源码并报告直接使用文件；`query LockStats` / `query lock_stats` 定位 `NewStatsLock`、`statsLockImpl`、Go 对照和执行器符号。逐符号 `callers AddLockedTables` 在 30 秒内无结果并被终止，故未把它作为正向证据。
-- 生产源码：`pkg/statistics/handle/lockstats/lock_stats.rs`、`lib.rs`、`query_lock.rs`，以及直接入口 `pkg/session/runtime/admin.rs`、`pkg/domain/domain.rs`、`pkg/executor/lockstats/lock_stats_executor.rs`。
-- crate 配置：`pkg/statistics/handle/lockstats/Cargo.toml`；工作区及相邻 manifest 的精确引用由 `rg 'astersql-statistics-handle-lockstats'` 核验。
-- Go 对照：`pkg/statistics/handle/lockstats/lock_stats.go` 与 `lock_stats_test.go`。
-- Rust 独立测试：`pkg/statistics/handle/lockstats/lock_stats_test.rs`，覆盖稳定消息、过滤与写入副作用、父表锁短路、首错停止和事务包装。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核唯一生产物、路径引用、当前事实与未验证限制。

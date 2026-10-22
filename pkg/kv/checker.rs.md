@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`checker.rs` 属于 `astersql-kv` crate；crate 清单为 `pkg/kv/Cargo.toml`，入口 `pkg/kv/lib.rs` 通过 `include!("checker.rs")` 将其装入公开的 `checker` 模块，再以 `pub use checker::*` 重导出。因此调用方通常使用 `kv::RequestTypeSupportedChecker` 和 `kv::ExprType`，而不是引用文件级模块路径。
-
-该文件位于 SQL 表达式/算子转换与存储客户端之间，是一个同步、纯计算的“能力白名单”。它只回答某类请求或表达式类型是否被历史 KV 下推协议接受，不负责生成 protobuf、选择具体存储引擎、发送请求或验证某个引擎的全部能力。实际生产接线可见 `pkg/store/driver/kv_adapter.rs` 的 `Client::IsRequestTypeSupported` 实现，以及 `pkg/session/runtime/planning.rs` 的规划期 `SessionPushdownCapabilityClient`。
+实际生产接线可见 `pkg/store/driver/kv_adapter.rs` 的 `Client::IsRequestTypeSupported` 实现，以及 `pkg/session/runtime/planning.rs` 的规划期 `SessionPushdownCapabilityClient`。
 
 ## 核心职责
 
@@ -74,15 +72,12 @@ RustCodeGraph 对目标文件给出的内部调用边为 `IsRequestTypeSupported
 
 ## 与 Go 版本的对应关系
 
-权威对照是 `pkg/kv/checker.go`，测试对照是 `pkg/kv/checker_test.go`。Rust 的请求分流、基础类型、聚合、窗口函数、`Desc`/`Signature` 特例及默认拒绝分支，与 Go 的两个 `switch` 保持一致；`MaxCount`、`MinCount` 也由 `pkg/kv/checker_test.rs::go_merge_4_max_min_count_are_supported` 补充验证。
-
 实现形式存在三点差异：
 
 - Go 直接使用生成的 `tipb.ExprType`；Rust 在本文件定义所需编号的 `ExprType` 子集，以避免该纯能力判断耦合 protobuf/gRPC 运行时。
 - Go 的 `tipb.ExprType(subType)` 隐式按底层 `int32` 转换；Rust 用 `as i32 as i64` 显式复现。Rust 独立测试比 Go 测试覆盖了更多高位截断和整数极值。
-- Rust 的方法和局部参数保留 Go 风格名称，服务于逐文件移植的一致性；这不是常规 Rust snake_case 风格。
 
-两边同样只做历史粗粒度白名单，不应把它解释为某个具体 TiKV/TiFlash 版本的完整能力协商。Go 注释中的弃用方向和聚合额外检查说明也已保留在 Rust `supportExpr` 文档中。
+Go 注释中的弃用方向和聚合额外检查说明也已保留在 Rust `supportExpr` 文档中。
 
 ## 扩展指南
 
@@ -94,12 +89,3 @@ RustCodeGraph 对目标文件给出的内部调用边为 `IsRequestTypeSupported
 - 改变转换规则：必须保持 Go `tipb.ExprType` 的 `int32` 转换语义，除非 Go 侧协议也同步改变；尤其不可直接用完整 `i64` 匹配取代当前截断。
 
 测试逻辑必须继续放在独立的 `pkg/kv/checker_test.rs`，不要嵌入生产文件。至少同步覆盖新增正例、相邻未知编号负例、三个请求路径（`Select`/`Index`/`DAG`）、`Analyze` 的无条件分支和高 32 位输入。若变更影响实际客户端接线，还应检查 `pkg/store/driver/coprocessor_adapter_test.rs`；若影响表达式转换，则应同步相应的 `pkg/expression/*_test.rs` 独立测试。兼容性风险主要是协议编号漂移和错误扩大下推范围；性能风险较低，但热路径中应继续保持无分配的常数时间判断。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/kv/checker.rs`；`files --filter pkg/kv/checker.rs` 确认目标文件有 44 个符号；`node --file pkg/kv/checker.rs --offset 1 --limit 500` 读取完整 213 行；`query` 定位 `RequestTypeSupportedChecker`、`IsRequestTypeSupported`、`supportExpr`、`ExprType` 和相关常量；`callees` 确认 Rust `IsRequestTypeSupported` 调用私有 `supportExpr`，而 `supportExpr` 无下游函数调用。
-- 源码与装配：`pkg/kv/checker.rs`、`pkg/kv/kv.rs`、`pkg/kv/lib.rs`、`pkg/kv/Cargo.toml`。
-- 直接生产调用证据：`pkg/store/driver/kv_adapter.rs`、`pkg/session/runtime/planning.rs`、`pkg/expression/expr_to_pb.rs`、`pkg/expression/aggregation/agg_to_pb.rs`、`pkg/expression/aggregation/window_func.rs`、`pkg/session/runtime/relational_scan.rs`。
-- Go 对照：`pkg/kv/checker.go` 与请求常量/`Client` 接口所在的 `pkg/kv/kv.go`。
-- 测试证据：`pkg/kv/checker_test.rs` 覆盖典型白名单、`MaxCount`/`MinCount`、32 位转换、未知请求和整数边界；`pkg/kv/checker_test.go` 覆盖 Go 基准行为。任务为纯文档分析，按计划未运行 Cargo 或代码测试。
-- 人工复核结论：该文件存在的原因是为 planner、表达式 protobuf 转换和真实存储客户端提供与 Go 一致的粗粒度下推能力判断；安全扩展必须同时维护协议编号、Go 对照、独立测试及更精确的引擎特定外层检查。

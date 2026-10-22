@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-executor-join`；同目录 `Cargo.toml` 把 `lib.rs` 设为 crate 根，`lib.rs` 再通过 `pub mod hash_join_v1` 公开本模块。它实现内存模型下的 Hash Join v1 执行器，并在同一模块中提供简化的相关子查询 `NestedLoopApplyExec`。上游通常经 `hash_join_test_util.rs::build_hash_join_v1_exec` 或 `HashJoinV1Exec::{new,new_full_outer}` 组装实例，下游依赖 `hash_join_base.rs` 的共享构建状态与 worker 防护、`hash_table_v1.rs` 的哈希行容器、`joiner.rs` 的连接语义以及 `row_table_builder.rs` 的行/chunk 数据模型。
-
-文件第 13 行起到实际 `use crate::hash_join_base` 之前是一大段注释化的 Go 迁移草稿，不参与编译；当前有效 Rust 实现从约第 1450 行的导入区开始。草稿保存了 Go goroutine、channel、failpoint 和完整 NAAJ 分支的迁移线索，但本文描述“当前行为”时只以编译态 Rust 符号为准。
-
-`Cargo.toml` 的普通依赖只有 `astersql-executor-internal-exec` 与 `astersql-util-execdetails`；本文件直接使用后者的 `HashStateRuntimeStats`、`RuntimeStatsColl`。大量历史 Join 依赖被声明在 Windows target 下，但本文件本身没有条件编译项。仓库中 `pkg/executor` 与 `pkg/executor/join` 均没有 `doc.go`，模块边界由 `lib.rs` 和附近源码给出。
+实现内存模型下的 Hash Join v1 执行器，并在同一模块中提供简化的相关子查询 `NestedLoopApplyExec`。
 
 ## 核心职责
 
@@ -95,9 +91,7 @@ Apply 的 `InnerBuilder: Send + Sync` 允许安全封装可共享闭包，但 `N
 
 ## 与 Go 版本的对应关系
 
-Go `HashJoinCtxV1`、`ProbeSideTupleFetcherV1`、`ProbeWorkerV1`、`BuildWorkerV1`、`HashJoinV1Exec` 与 `NestedLoopApplyExec` 都能在 Rust 中找到同名或等价类型；总体意图仍是 build 哈希表、probe、按 Joiner 语义输出，以及按关联键缓存 Apply 内表结果。Rust 的注释草稿还保留了 Go 原方法形状，便于逐段核对。
-
-主要语义对齐点包括：build/probe 两阶段、outer-build 的 used 标记与尾扫、Full Outer 两侧保留及单侧过滤、NAAJ 对条件 NULL 的区分、Apply 缓存跨 `Next` 复用、重复 open 重置缓存，以及 close 时注册统计。Rust 独立测试直接固定 inner/left outer 多匹配、outer-build 未匹配行、重复 open/close、hash-state 行数和 Apply 缓存计数。
+Rust 独立测试直接固定 inner/left outer 多匹配、outer-build 未匹配行、重复 open/close、hash-state 行数和 Apply 缓存计数。
 
 当前差异也很显著：Go 从真实子执行器增量拉取 chunk，以 goroutine、channel、多个 probe worker 和 wait group 并行流水；Rust接收预置 `Vec<Chunk>`，顺序 build/probe 并一次性物化全部输出。Go 的内存/磁盘 tracker、OOM action、required rows 反压、failpoint 和 panic channel 协调更完整；Rust只保留可选字节阈值与简化 spill 标志。Go Apply 支持 outer/inner filter、真实 executor 生命周期、类型化 codec、可选缓存及内存 tracker；Rust始终启用内存 HashMap 缓存，并以闭包代替 inner executor。
 
@@ -114,12 +108,3 @@ Go NAAJ 对 null bucket、same-key bucket、all bucket 有细分的快速返回�
 - 新增运行时统计时，检查 `open` 重置还是累计、`close` 是否恰好注册一次、重复 open/close 的计数含义，并同步 `hash_join_stats.rs` 及对应独立测试。
 
 兼容风险集中在 SQL NULL/NAAJ、outer 行布局、列投影和 Full Outer 过滤；正确性风险集中在 used 标记与关联键碰撞；性能风险集中在 build/probe/input 克隆、Apply 缓存克隆和全量输出物化。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/join` 确认目标、Go 对照与测试均已索引。
-- RustCodeGraph `node --file pkg/executor/join/hash_join_v1.rs`：读取目标文件并确认它被 `pkg/executor/benchmark_test.rs`、`pkg/executor/join/hash_join_v1_test.rs` 使用；`node HashJoinV1Exec`、`node NestedLoopApplyExec` 对照 Rust/Go 类型；`node produce_all`、`node join_probe_row` 提供 `next -> produce_all -> join_probe_row` 及其下游调用边。精确 `callers/callees` 命令在 30 秒内没有返回结果，因此其他入口以源码引用搜索补证。
-- 已读生产/装配路径：`pkg/executor/join/hash_join_v1.rs`、`hash_join_base.rs`、`hash_table_v1.rs` 的类型节点、`joiner.rs` 的类型节点、`hash_join_test_util.rs`、`lib.rs`、`Cargo.toml`；`pkg/executor` 和 `pkg/executor/join` 无 `doc.go`。
-- Go 对照：`pkg/executor/join/hash_join_v1.go` 的 context/worker/执行器、`Next`、build、Apply 和统计段；Rust 文件头部注释草稿仅作为迁移线索，没有当作活动实现证据。
-- 独立 Rust 测试：`hash_join_v1_test.rs` 覆盖 inner/left outer、outer-build、重复 open/close、hash-state 统计与 Apply 缓存；`full_outer_join_test.rs` 覆盖双侧未匹配、other condition、两侧过滤和 spill；`hash_join_test_util.rs` 明确 open/next/close 调用协议。源码引用还显示 `join_pkg_test.rs`、`benchmark_test.rs` 和 `test/jointest/hashjoin/hash_join_test.rs` 的直接用例。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付以任务指定的固定 11 个二级标题结构检查、链接/事实人工复核及 Git diff 范围检查作为验证。

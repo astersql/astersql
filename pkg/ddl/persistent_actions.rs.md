@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml`，由 `pkg/ddl/lib.rs:289` 公开为 `persistent_actions` 模块），是 Rust 普通 DDL worker 在持久事务中执行具体 action 的分派层。直接主链是 `table_mode.rs::NormalDdlExecutor::step` 在复制并补齐持久化 `Job` 后调用 `persistent_actions::step`；更外层的 `job_worker.rs::JobWorker::transit_persisted_job_step` 负责 owner 租约检查、`mysql.tidb_ddl_job` 原始字节复核、事务提交/回滚与作业重新编码。
-
-因此它不是 SQL AST 入口、任务提交器或调度器，也不独立完成所有 DDL。它只接收已经持久化并被 owner worker 选中的 `astersql_meta_model::group_3::Job`，在 `JobExecutionContext` 提供的 SQL/KV 能力内执行一步。复杂动作会转发给同目录的 `persistent_*` 模块；简单元数据动作则在本文件内完成。
-
-按 `docs/agents/ddl/README.md` 的问题框架，本文件处理的是 **job-based** 路径：元数据型动作通常一次完成并保持/结束于 `Public`，无需 reorg；ADD INDEX/主键、修改列、物化视图等动作可能跨状态或 reorg，但本文件只负责分派或初始化阶段。持久点包括 KV 元数据、schema version/diff、DDL job 行，以及特定动作的通知或 storage-class transition 历史行。
+按 `docs/agents/ddl/README.md` 的问题框架，本文件处理的是 **job-based** 路径：元数据型动作通常一次完成并保持/结束于 `Public`，无需 reorg；ADD INDEX/主键、修改列、物化视图等动作可能跨状态或 reorg，但本文件只负责分派或初始化阶段。
 
 ## 核心职责
 
@@ -83,11 +79,7 @@ schema version、diff、DB/Table 元数据和重新编码的 job 行属于一次
 
 ## 与 Go 版本的对应关系
 
-- `create_schema`、`modify_schema_charset`、`modify_schema_placement` 分别对照 `pkg/ddl/schema.go` 的 `onCreateSchema`、`onModifySchemaCharsetAndCollate`、`onModifySchemaDefaultPlacement`。
-- `modify_table_metadata`、`refresh_meta` 与版本更新 helper 对照 `pkg/ddl/table.go` 的 `onModifyTableComment`、`onModifyTableAutoIDCache`、`onRefreshMeta`、`updateVersionAndTableInfo[WithCheck]`。
-- `drop_foreign_key` 对照 `pkg/ddl/foreign_key.go::onDropForeignKey/dropForeignKey`，包括找不到 FK 时取消和 rollback 完成状态。
 - `alter_ttl` 对照 `pkg/ddl/ttl.go::onTTLInfoChange/onTTLInfoRemove`；Rust 把 model TTLInfo 经 JSON 转为本地结构，并用 `apply_model_ttl_change` 保留未显式指定字段，再同步外部 workload。
-- `modify_engine_attribute` 对照 `pkg/ddl/engine_attribute.go::onModifyTableEngineAttribute` 及 storage-class transition staging；Rust 当前直接借 context SQL 管理 history 表。
 - `async_notify_event` 对照 `pkg/ddl/ddl.go::asyncNotifyEvent`：都跳过系统 schema，并将 multi-schema 的隐式 sub-job ID 替换为 Seq；Rust 路径没有 Go 单测环境的 channel/backoff 分支，而是直接发布事务内 notifier 记录。
 
 总体语义目标是 Go worker 的“一个持久 job step”，但 Rust 文件是按 action 拆分后的路由与共享 helper，不是同路径 Go 单文件翻译。已知差异必须按上节边界看待，尤其是 InfoSchema 检查、通用 update helper、测试 failpoint 和尚未实现的索引后续阶段。
@@ -101,11 +93,3 @@ schema version、diff、DB/Table 元数据和重新编码的 job 行属于一次
 测试必须保持在独立 Rust 测试文件中。最接近的接入点是：普通事务/statement stage 与元数据版本用 `pkg/ddl/table_mode_test.rs`；owner/提交回滚用 `pkg/ddl/job_worker_test.rs`；TTL 用 `pkg/ddl/ttl_test.rs` 和 `pkg/ddl/table_test.rs`；FK 用 `pkg/ddl/foreign_key_test.rs`；storage-class 用 `pkg/ddl/storage_class_transition_test.rs`；物化视图 dispatch 用 `pkg/ddl/persistent_mview_out_of_place_cutover_test.rs`。新增 bug fix 应添加先失败后通过的回归测试，并保留 Rust/Go 行为对照。
 
 兼容性风险最高的是 action 数值、job raw args V1/V2 解码、错误码、schema diff 和 terminal state；正确性风险集中于 statement stage 外做副作用、误用返回版本 0、漏发事件或遗漏回滚清理；性能风险主要是 `list_databases` 冲突检查、storage-class history 查询/逐行更新，以及对大 metadata/targets 的 JSON 编解码。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点和 1,848,419 条边；`files --filter pkg/ddl/persistent_actions.rs` 报告目标文件 39 个符号；`node --file ... --offset 1/501` 完整读取 875 行；`query/node` 核验 `handler_available`、`step`、`async_notify_event`、`initialize_reorg_indexes` 和 `job_worker.rs::transit_persisted_job_step`，后者的调用轨迹确认事务、租约、job 行更新与 rollback 边界。
-- Rust 源与装配：`pkg/ddl/persistent_actions.rs`、`pkg/ddl/table_mode.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/lib.rs`、`pkg/meta/model/job.rs`；crate/依赖边界由 `pkg/ddl/Cargo.toml` 核验。
-- Go 对照：`pkg/ddl/schema.go`、`pkg/ddl/table.go`、`pkg/ddl/foreign_key.go`、`pkg/ddl/ttl.go`、`pkg/ddl/engine_attribute.go`、`pkg/ddl/ddl.go`。
-- 独立 Rust 测试：`pkg/ddl/table_mode_test.rs`（真实 metadata/diff 与 statement cleanup）、`pkg/ddl/job_worker_test.rs`（owner、commit/rollback、RU）、`pkg/ddl/ttl_test.rs`、`pkg/ddl/table_test.rs`、`pkg/ddl/foreign_key_test.rs`、`pkg/ddl/storage_class_transition_test.rs`、`pkg/ddl/persistent_mview_out_of_place_cutover_test.rs`。这些测试是相关行为证据；本任务按计划为纯文档分析，未运行 Cargo，也未声称目标文件每个分支均有直接测试。
-- DDL 背景入口：`docs/agents/ddl/README.md` 仅用于定位 job/owner/schema-sync 问题，具体结论均回到上述代码与测试复核。

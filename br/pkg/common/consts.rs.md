@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`br/pkg/common/consts.rs` 是 `astersql-br-pkg-common` 库 crate 的常量实现文件。crate 根 `br/pkg/common/lib.rs` 通过 `#[path = "consts.rs"] pub mod consts` 挂载它，并用 `pub use consts::*` 将其内容扁平重导出；因此外部 crate 使用的公开路径是 `astersql_br_pkg_common::MaxStoreConcurrency`，而不必经过 `consts` 子模块。
-
-`br/pkg/common/Cargo.toml` 将库入口指定为 `lib.rs`，并以 `package.metadata.porting.go-package = "br/pkg/common"` 记录对应 Go 包。该清单没有普通依赖或 feature，说明本文件位于 BR 子系统的低层公共契约边界，不依赖其他 Rust 业务模块。
+这个值用于在 store 数量增长时限制连接或工作任务的扇出规模，避免并发度无条件随集群 store 数增长。
 
 ## 核心职责
 
@@ -65,9 +63,9 @@ Go 侧的实际消费者是 `br/pkg/restore/data/data.go` 的 `ReadRegionMeta`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/common/consts.go`。两侧都导出 `MaxStoreConcurrency`，值均为 128，注释都将其解释为面向 TiKV 连接池的经验上限。Go 使用无类型整数常量；Rust 显式选择 `usize`，以便与 `Vec`/slice 的 `len()` 结果直接比较。这是类型系统层面的差异，不是数值语义差异。
+Go 使用无类型整数常量；Rust 显式选择 `usize`，以便与 `Vec`/slice 的 `len()` 结果直接比较。这是类型系统层面的差异，不是数值语义差异。
 
-Go 侧已经在 `br/pkg/restore/data/data.go` 两处和 `br/pkg/task/backup_ebs.go` 一处将该公共常量用于真实并发计算。Rust 公共 crate 的 API 和测试已建立，但迁移状态并不完全相同：`backup_ebs.rs` 只有占位引用，`restore/data` 仍复制同值桩常量。后续接线时应复用公共 crate，而不是继续增加副本；不过消除现有桩属于消费 crate 的迁移任务，不是本文件的职责。
+Rust 公共 crate 的 API 和测试已建立，但迁移状态并不完全相同：`backup_ebs.rs` 只有占位引用，`restore/data` 仍复制同值桩常量。后续接线时应复用公共 crate，而不是继续增加副本；不过消除现有桩属于消费 crate 的迁移任务，不是本文件的职责。
 
 ## 扩展指南
 
@@ -76,16 +74,3 @@ Go 侧已经在 `br/pkg/restore/data/data.go` 两处和 `br/pkg/task/backup_ebs.
 - 为现有 Rust 恢复/备份逻辑接线时，优先在消费 crate 的 `Cargo.toml` 声明 `astersql-br-pkg-common` 并从 crate 根导入；不要复制第三份同名常量。应在对应消费模块的独立 `*_test.rs` 或 `parity_test.rs` 中验证实际限流行为，而不是把测试写入 `consts.rs`。
 - 如果并发上限未来需要按配置、store 类型或运行时负载变化，它就不再适合作为单一 `const`；应由配置层计算有效值，同时保留清晰默认值，并测试 0、1、128、超过上限和整数转换等边界。
 - 性能风险主要来自上调造成连接/RPC/内存峰值增加，或下调造成大集群任务变慢；兼容风险来自 Rust 和 Go 数值漂移，以及公共常量与 `restore/data/stubs.rs` 副本漂移。
-
-## 验证依据
-
-本说明核对了以下直接证据：
-
-- 源码与入口：`br/pkg/common/consts.rs`、`br/pkg/common/lib.rs`。
-- crate 边界：`br/pkg/common/Cargo.toml`；外部依赖示例：`br/pkg/task/Cargo.toml`。
-- Rust 测试：`br/pkg/common/consts_test.rs`、`br/pkg/common/parity_test.rs`。
-- Go 对照与调用：`br/pkg/common/consts.go`、`br/pkg/restore/data/data.go`、`br/pkg/task/backup_ebs.go`。
-- Rust 当前消费状态：`br/pkg/task/backup_ebs.rs`、`br/pkg/restore/data/data.rs`、`br/pkg/restore/data/stubs.rs`、`br/pkg/restore/data/Cargo.toml`。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/common` 找到 `consts.rs`、`consts_test.rs`、`lib.rs`、`parity_test.rs` 与 Go 对照；`node --file br/pkg/common/consts.rs --offset 1 --limit 240` 返回完整 26 行和单一常量。`query MaxStoreConcurrency` 存在同名桩歧义，`callers/callees` 查询未在时限内完成，因此以上调用边由 Cargo 清单和 `rg` 精确引用补证。
-
-任务是纯文档分析，按计划不运行 Cargo。交付前以指定结构命令验证本文档存在且恰好包含十一个固定二级标题，并人工复核所有“已接线”描述均与当前源码一致。

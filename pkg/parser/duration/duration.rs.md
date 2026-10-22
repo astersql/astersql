@@ -2,15 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-duration` crate 的唯一业务实现文件，负责把 AsterSQL 配置和 SQL 选项使用的简化时长文本转换为标准库 `std::time::Duration`。crate 边界由 `pkg/parser/duration/Cargo.toml` 定义；`pkg/parser/duration/lib.rs` 通过 `pub mod duration` 装载本文件，并用 `pub use duration::*` 将 `ParseDuration` 提升为 crate 根 API。
-
-它不是通用的 Go `time.ParseDuration` 或 MySQL `TIME` 解析器。这里接受的是 TiDB 原有 `pkg/parser/duration/duration.go` 定义的窄语法：数值后只能跟 `d`、`h`、`m`，多个片段可以直接连接。当前 Rust 生产调用主要位于：
-
-- `pkg/parser/parser_actions/admin.rs`：解析 `CALIBRATE RESOURCE` 的 `DURATION` 选项时即时校验文本。
-- `pkg/parser/parser_actions/ddl.rs`：解析表选项 `TTL_JOB_INTERVAL` 时即时校验文本。
-- `pkg/session/runtime/ttl_metadata.rs`：收集已启用 TTL 表的调度信息时，把间隔解析成秒。
-
-RustCodeGraph 还将 `pkg/expression/builtin.rs` 列为本文件的使用者，但该文件实际调用的是 `types_dependency::time::ParseDuration`，不是本 crate 的函数；这是同名符号/文件依赖分析带来的近似结果，不能当作直接调用边。
+公共函数 `ParseDuration(&str) -> Result<Duration, String>` 反复读取“数值 + 单字节单位”，换算为纳秒并累加，最终构造 `Duration`。
 
 ## 核心职责
 
@@ -107,8 +99,6 @@ RustCodeGraph 还将 `pkg/expression/builtin.rs` 列为本文件的使用者，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/duration/duration.go`：Rust `read_float` 对应 Go `readFloat`，Rust `ParseDuration` 对应 Go `ParseDuration`。两者保持相同的片段读取顺序、`d/h/m` 单位、复合片段累加、小数换算、裸 `0` 特判，以及空串因零次循环返回零值的现状。`pkg/parser/duration/duration_test.go::TestParseDuration` 的七个合法用例已在 Rust 独立测试中逐项复刻。
-
 需要注意的实现差异：
 
 - Go 用 `unicode.IsDigit` 扫描 rune 并按字节下标切片；Rust 用 `char_indices` 和 `is_numeric` 保存 UTF-8 字节边界。两者都可能先把非 ASCII 数字纳入 token，随后在浮点解析阶段报错；`migration_aster_unit_test.rs` 用阿拉伯-印度数字覆盖了这一迁移语义。
@@ -127,15 +117,3 @@ RustCodeGraph 还将 `pkg/expression/builtin.rs` 列为本文件的使用者，�
 测试必须继续放在独立文件中：常规行为更新 `pkg/parser/duration/duration_test.rs`，Go 迁移差异更新 `pkg/parser/duration/migration_aster_unit_test.rs`，并同步检查 `pkg/parser/duration/duration_test.go` 的原始意图。解析器调用契约变化还应覆盖对应 parser actions 测试；TTL 消费语义变化则应覆盖 session runtime 的 TTL 测试。不要把测试内嵌到 `duration.rs`。
 
 性能方面应保留单次线性扫描和借用后缀，避免为每个片段创建临时字符串。兼容性方面尤其要谨慎处理空串、大小写、非 ASCII 数字、浮点截断与超大值，这些边界比新增普通合法用例更容易造成 Go/Rust 行为漂移。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 实现与装配：`pkg/parser/duration/duration.rs`、`pkg/parser/duration/lib.rs`、`pkg/parser/duration/Cargo.toml`。
-- Go 对照：`pkg/parser/duration/duration.go`、`pkg/parser/duration/duration_test.go`。
-- Rust 独立测试：`pkg/parser/duration/duration_test.rs`、`pkg/parser/duration/migration_aster_unit_test.rs`。
-- 直接调用现场：`pkg/parser/parser_actions/admin.rs`、`pkg/parser/parser_actions/ddl.rs`、`pkg/session/runtime/ttl_metadata.rs`，以及相关 `pkg/parser/Cargo.toml`、`pkg/session/Cargo.toml` 依赖声明。
-- RustCodeGraph：`status` 显示索引包含本目录的 Go/Rust 文件；`files --filter pkg/parser/duration` 确认实现、入口和测试集合；`node --file pkg/parser/duration/duration.rs`、`query ParseDuration`、`node ParseDuration`、`node read_float`、`callers/callees` 确认符号源码和 `ParseDuration -> read_float` 及生产调用边。通用 callers 查询受同名定义影响，最终调用结论以限定路径的 node 输出和调用现场交叉核验。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务文件指定命令，要求本文档存在且恰好包含上述十一个固定二级标题；语义验收通过逐项对照源码、Go 版本、独立测试和调用现场完成。

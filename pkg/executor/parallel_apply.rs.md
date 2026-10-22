@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应源码 [`parallel_apply.rs`](parallel_apply.rs)。该文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod parallel_apply` 导出该模块，直接依赖由 `pkg/executor/Cargo.toml` 声明的 `astersql-errors` 与 `astersql-util-chunk`。它实现 Parallel Nested Loop Apply 的 Rust 版本：对外层行绑定相关列后反复执行内层计划，并用多个内层 worker 并行完成相关子查询。
-
-当前接线状态需要谨慎理解：仓库级 Rust 搜索只发现 `pkg/executor/parallel_apply_test.rs` 使用这里的公开类型，没有找到 Rust 生产构造者；实际 SQL 执行器构造证据仍在 Go 的 `pkg/executor/builder.go`，其中 `executorBuilder` 在 `PhysicalApply.Concurrency > 1` 时构造 Go `ParallelNestedLoopApplyExec`。因此，本文件是可独立驱动并有 Rust 单测覆盖的移植实现，但“已由 Rust SQL 主链调用”未得到代码证据。
+内层路径为每个选中的外层行绑定相关列，经 `fetchAllInners` 执行、过滤或缓存内层结果，再委托 `ParallelApplyJoiner` 产生连接输出；未匹配时由 `OnMissMatch` 实现 outer/semi 类语义。
 
 ## 核心职责
 
@@ -81,13 +79,11 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 主流程与 `pkg/executor/parallel_apply.go` 的同名类型和方法一一对应：`Open/Next/Close`、`outerWorker`、乱序/保序 inner worker、`processOneOuterRow`、`reorderWorker`、`fetchAllInners`、`fetchNextOuterRow`、`fillInnerChunk` 和 panic 处理均有直接语义来源。
-
 Rust 用 trait 把 Go 的 `exec.Executor`、`join.Joiner`、表达式、applycache、memory tracker、failpoint 和 runtime stats 适配为可注入边界；用 `std::sync::mpsc::sync_channel` 和 `finishSignal` 对应 Go channel 加 `exit`/context cancellation；用 `BTreeMap` 对应 Go pending map，但显式以 `nextSeq` 取有序项。Go 的 `chunk.Iterator` 在 Rust 中变为 `Vec<chunk::Row> + innerCursor`，因此 Rust 额外检查 joiner 必须推进游标。
 
 两版都以 `concurrency*4` pace 容量限制保序 pending 的增长，以缓存访问/命中计数计算命中率，并在关闭时取消正在执行的扫描。Go 的生产构造已在 `builder.go` 验证；Rust 目前只有模块导出和单测构造证据，不能据此宣称已替代 Go 生产路径。
 
-Go 测试 `pkg/executor/parallel_apply_test.go` 覆盖计划选择、正确性、执行中取消、保序、边界条件、大内层结果、left outer semi join、goroutine panic、kill signal 和嵌套 Apply。Rust 独立测试目前只覆盖构造不变量、初始内存，以及一个两 worker 保序场景的输出顺序、打开次数、tracker attach/detach、运行统计与关闭后零内存；Go 的广泛回归面尚未在 Rust 测试中等量复刻。
+Rust 独立测试目前只覆盖构造不变量、初始内存，以及一个两 worker 保序场景的输出顺序、打开次数、tracker attach/detach、运行统计与关闭后零内存；Go 的广泛回归面尚未在 Rust 测试中等量复刻。
 
 ## 扩展指南
 
@@ -98,12 +94,3 @@ Go 测试 `pkg/executor/parallel_apply_test.go` 覆盖计划选择、正确性�
 - 修改关闭或错误路径时验证阻塞中的外/内 `Next` 能被 `Cancellation::Cancel` 打断，所有线程可 join，tracker 恰好 attach/detach 一次，并且 close 日志错误不会遮蔽主错误。
 - Rust 回归应放在独立的 `pkg/executor/parallel_apply_test.rs`，不要嵌入生产文件。至少同步 Go 测试中的取消、panic、kill、缓存命中/失败、保序大结果与 outer/semi 边界；若将来接入 Rust 生产 builder，还应新增构造主链测试。
 - 兼容性风险集中在相关键编码、NULL/未匹配语义和输出顺序；性能风险集中在锁粒度、全量内层物化、缓存快照克隆和通道背压。任何优化都应与 Go 行为逐项对照，而不是删减路径。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/executor/parallel_apply.rs`，核对公开 trait/类型、内部状态、`new/Open/Next/Close`、两种 worker 流程、缓存、重排、取消、内存及 panic 路径。
-- crate 与模块：`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`；确认 crate 名、直接依赖、公开模块及独立测试模块。
-- Rust 测试：`pkg/executor/parallel_apply_test.rs`；确认零 worker panic、初始零内存、保序输出 `(3,10),(1,10),(2,10)`、三次内层打开、tracker 生命周期和关闭统计。
-- Go 对照：`pkg/executor/parallel_apply.go`、`pkg/executor/builder.go`、`pkg/executor/parallel_apply_test.go`；确认生产构造条件、逐方法移植关系、取消/保序/缓存设计和现有回归范围。
-- RustCodeGraph：`status` 显示索引含 Rust/Go 文件；`query ParallelNestedLoopApplyExec --kind struct` 同时定位 Go 与 Rust 类型，`query fetchAllInners --kind function` 和 `query innerWorkerOrdered --kind function` 定位 Rust 实现，`node --file pkg/executor/parallel_apply.rs --offset 378 --limit 120` 核对主类型与构造器。`files --filter pkg/executor/parallel_apply` 未命中，callers/callees 未形成可用结果，故调用者结论又以 `rg` 精确符号搜索复核。
-- 结构验收使用任务指定命令，要求目标文件存在且上述固定二级标题恰好 11 个；本任务为纯文档分析，按计划不运行 Cargo。

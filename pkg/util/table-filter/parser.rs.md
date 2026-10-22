@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`parser.rs`](parser.rs) 是 `astersql-util-table-filter` crate 的规则文本解析层。crate 入口 [`lib.rs`](lib.rs) 将本模块公开为 `parser` 并再导出其符号；上层 [`table_filter.rs`](table_filter.rs) 的 `Parse` 和 [`column_filter.rs`](column_filter.rs) 的 `ParseColumnFilterRules` 分别用它把字符串参数或 `@file` 中的行转换成 `tableRule`、`columnRule`。本文件只负责语法解析、匹配器构造和来源位置错误，不负责最终的“后写规则优先”排序或实际匹配；规则反转与匹配发生在上述两个上层文件。
-
-[`Cargo.toml`](Cargo.toml) 定义本目录为独立库 crate `astersql-util-table-filter`，库入口是 `lib.rs`，直接依赖 `regex = "1.11"` 和 `regex-syntax = "0.8"`。其中本文件通过同 crate 的 `newRegexpMatcher` 间接使用正则实现，而不是直接导入这两个 crate。
+`columnRulesParser::parse` 使用同一套模式语法解析单列规则，并在保存前调用 `matcher::toLower`，落实列名始终大小写不敏感的约定。
 
 ## 核心职责
 
@@ -94,12 +92,11 @@ RustCodeGraph 将 [`parser_test.rs`](parser_test.rs)、[`table_filter.rs`](table
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`parser.go`](parser.go)。Rust 保留了 Go 的两类规则解析器、位置上下文、四种模式语法、glob 到正则转换、禁止递归导入、列匹配器小写化以及主要错误消息。`table_filter_test.go`、`column_filter_test.go` 与对应 Rust 独立测试沿用了匹配、失败和导入用例。
+Rust 保留了 Go 的两类规则解析器、位置上下文、四种模式语法、glob 到正则转换、禁止递归导入、列匹配器小写化以及主要错误消息。
 
 实现层面的主要差异如下：
 
 - Go 用预编译正则寻找 `/.../`、引号和字符类边界；Rust 用 `find_quoted_end`、`character_class_end` 手工扫描，并由 [`parser_test.rs`](parser_test.rs) 专门验证空定界模式及字符类的 Go 兼容边界。
-- Go 将共同的 `importFile` 放在 `matcherParser` 并接收解析回调；Rust 在表/列解析器中各有一个同形私有 `import_file`。
 - Go 使用 `bufio.Scanner`，Rust 使用 `BufRead::lines()`。因此 Rust 没有 Scanner 默认 token 大小限制，并要求输入行是有效 UTF-8；这两项并非完全等价，若过滤文件可能包含极长行或非 UTF-8 字节，应增加独立兼容测试再决定行为。
 - Go 的 `errors.Annotatef` 建立错误链；Rust 的 `FilterError` 目前保存格式化后的单个字符串，因此可见错误文本对齐，但不保留可供程序遍历的底层错误类型链。
 - Go 正常导入结束后先恢复外层来源，再检查 `Scanner.Err()`；Rust 对 `lines()` 的读取错误在恢复前立即返回。两者在失败后复用内部解析器时都有状态细节，公开 `Parse`/`ParseColumnFilterRules` 路径则直接返回并销毁解析器。
@@ -112,11 +109,3 @@ RustCodeGraph 将 [`parser_test.rs`](parser_test.rs)、[`table_filter.rs`](table
 - 扩展 `@file` 能力时，应优先抽取两个重复的 `import_file`，并用作用域守卫确保任何错误路径都恢复 `fileName`/`lineNum`。若允许递归导入，还必须增加深度/循环检测与路径解析策略，不能只把 `can_import` 改成 `true`。
 - 测试逻辑必须继续放在独立文件。解析扫描器的局部边界放在 [`parser_test.rs`](parser_test.rs)；公开表规则行为放在 [`table_filter_test.rs`](table_filter_test.rs)；公开列规则行为放在 [`column_filter_test.rs`](column_filter_test.rs)。需要保持 Go 语义时同步检查同名 `.go` 测试。
 - 性能风险主要来自把原本可用 `stringMatcher` 的模式误判为正则、无界长导入行以及重复编译大量等价正则；兼容风险主要集中在错误文本、Unicode、转义、字符类和文件读取差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 20 个索引文件；`files --filter pkg/util/table-filter` 确认目标源码、Go 对照与测试均在索引中；`node --file pkg/util/table-filter/parser.rs --offset 1 --limit 500` 读取目标文件 358 行和 19 个符号；`query` 确认 Rust/Go 两侧的 `tableRulesParser`、`columnRulesParser`、`matcherParser`、`parsePattern`、`parseWildcardPattern` 及两个私有扫描函数。精确 callers/callees 查询未产出稳定结果，方法级调用边用同目录直接引用搜索补证。
-- 源码与 crate 边界：[`parser.rs`](parser.rs)、[`matchers.rs`](matchers.rs)、[`table_filter.rs`](table_filter.rs)、[`column_filter.rs`](column_filter.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。本包没有 `doc.go`。
-- Go 对照：[`parser.go`](parser.go)、[`table_filter_test.go`](table_filter_test.go)、[`column_filter_test.go`](column_filter_test.go)。
-- Rust 独立测试：[`parser_test.rs`](parser_test.rs) 验证空定界模式和字符类错误边界；[`table_filter_test.rs`](table_filter_test.rs) 与 [`column_filter_test.rs`](column_filter_test.rs) 覆盖公开解析、匹配、错误、导入及递归导入行为。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前仅执行任务指定的 11 章节结构检查，并人工复核本文没有把推测写成已支持行为。

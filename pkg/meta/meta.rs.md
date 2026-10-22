@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/meta/meta.rs` 是 `astersql-meta` crate 的核心元数据实现，负责把数据库、表、AutoID、Schema 版本、策略、资源组、DDL 历史等对象映射到统一的 KV 键空间。crate 入口 `pkg/meta/lib.rs` 以私有模块 `mod meta` 挂载本文件，再通过 `pub use meta::*` 暴露公开 API；相邻的 `reader.rs` 在只读接口中复用 `Mutator` 的查询逻辑，`meta_autoid.rs` 则构造单表 AutoID 访问器。
-
-当前 Rust crate 的依赖接线需要谨慎理解：`pkg/meta/Cargo.toml` 声明 crate 名 `astersql-meta`，直接依赖 `astersql-kv`、`astersql-util-codec`、`astersql-meta-model`、`serde/serde_json`、`chrono`、`futures` 等，但本文件使用的 `kv`、`structure`、`model`、`runtime`、`metrics` 等名称由 `pkg/meta/lib.rs` 的 `harness` 模块导出。这里已经实现并测试 Go `pkg/meta/meta.go` 的主要数据布局和事务语义，但不能仅凭本文件断言它已经接上完整 TiKV 生产后端。
-
-文件没有条件编译项；测试模块由 `lib.rs` 在 `cfg(test)` 下从独立的 `meta_test.rs`、`migration_aster_unit_test.rs` 和 `harness_test.rs` 装配，符合测试与生产源码分离约束。
+保存和倒序读取 DDL 历史，支持按 schema/table 名过滤；同时提供 DDL 回填元素的稳定二进制编码（`LastJobIterator`、`HLastJobIterator`、`Element`）。
 
 ## 核心职责
 
@@ -81,11 +77,9 @@ Cargo 没有声明 feature 或条件依赖。`package.metadata.porting.go-packag
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/meta.go`。Rust 基本保持 Go 的键常量、两级 hash 布局、ID/Schema 自增、CRUD 前置校验、默认资源组、magic byte、表快速加载条件、DDL job 大端 ID 与倒序迭代、系统库 classic/nextgen 分支以及表 revision 自增。
-
 明确的语言适配包括：Go `Option func(*Mutator)` 变为一次性 `OptionFn`；指针/`nil` 结果变为值、`Option<T>` 或 `(value, is_null)`；Go Reader 接口由 `reader.rs` 的 Rust trait 实现；Go 的回调对象指针变为拥有所有权的模型值；Go `LastJobIterator.GetLastJobs(num, jobs)` 变为返回新 `Vec<Job>`。`IsJobMatch` 的 Rust 条件显式加括号，表达注释所述“schema 条件与 table 条件同时满足”；这比 Go 源码中容易受运算符优先级影响的书写更明确。
 
-测试对应关系可由 `pkg/meta/meta_test.rs` 与 `pkg/meta/meta_test.go` 逐项核验：policy/masking/resource-group CRUD、`TestMeta`、snapshot、Element、键往返、数据库遍历、系统库、must-load、名称提取、数据库存在性、boot table version 和 DXF 因子均有对应 Rust 用例。`pkg/meta/migration_aster_unit_test.rs` 另行覆盖 Go 键字节布局、范围切分、库表/Reader 往返、AutoID、标量/策略/历史状态。当前 Rust 测试是基于共享内存 harness 的契约验证，不等价于真实 TiKV 集成测试。
+当前 Rust 测试是基于共享内存 harness 的契约验证，不等价于真实 TiKV 集成测试。
 
 ## 扩展指南
 
@@ -96,11 +90,3 @@ Cargo 没有声明 feature 或条件依赖。`package.metadata.porting.go-packag
 新增可并发扫描逻辑时，应沿用 `iter_all_tables` 的共同 snapshot、取消传播、1..=15 并发限制和串行回调约束；如果希望回调并行，必须先改变 API 的线程安全契约并评估调用方顺序假设。新增 ID 空间要明确是否需要独立锁及溢出上限。新增表更新路径必须决定是否递增 `revision`。
 
 接真实生产后端时，重点核验 `new_mutator` 的事务优先级/磁盘满策略、snapshot 的内部请求来源选项、MVCC key 编码、metrics 标签、错误类型兼容性和提交生命周期。性能风险主要集中在整库 `hget_all`、完整 JSON 解码、全局回调锁和静态 ID 锁；兼容风险集中在持久化键、magic byte、枚举整数值和 JSON marker。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标 `pkg/meta/meta.rs` 含 239 个符号；通过 `node --file` 分段阅读完整 1—1409 行；`query` 确认 Rust/Go `Mutator`、`new_mutator`、`iter_all_tables` 定义；`callees iter_all_tables` 确认 `split_range_int64_max`、`db_scan_key`、`parse_db_key` 以及前缀常量边。公开函数的部分 callers 查询为空，随后仅对这项索引缺口使用 `rg` 补查。
-- 源码与装配：`pkg/meta/meta.rs`、`pkg/meta/lib.rs`、`pkg/meta/reader.rs`、`pkg/meta/Cargo.toml`；直接调用点补查覆盖 `br/pkg/utils/common.rs`、`pkg/ddl/schema_version.rs` 和 session runtime/bootstrap 测试。
-- Go 对照：`pkg/meta/meta.go`；核验了 `NewMutator`、ID 与键布局、CRUD、`IterAllTables`、magic byte、DDL history、ingest、bootstrap、Element/RU 等对应实现。
-- 独立测试：`pkg/meta/meta_test.rs`、`pkg/meta/migration_aster_unit_test.rs`、`pkg/meta/harness_test.rs`；Go 对照测试为 `pkg/meta/meta_test.go` 和 `pkg/meta/main_test.go`。本任务遵循纯文档约束，没有运行 Cargo 或代码测试。
-- 人工复核结论：本文件存在的原因是提供统一、事务化且与 Go 持久化格式兼容的元数据访问层；运行主线是“事务包装 → 键/存在性校验 → 编解码 → structure KV 操作”，大扫描与快速 JSON 路径是其主要性能分支；安全扩展必须同步持久化格式、Go 对照和独立测试。

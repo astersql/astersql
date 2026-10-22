@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/prefix_helper.rs` 是根工具 crate `astersql-util` 中的字节序键前缀辅助模块。`pkg/util/lib.rs` 通过 `pub mod prefix_helper` 将它公开；`pkg/util/Cargo.toml` 指定该 crate 的入口为 `lib.rs`，并声明本文件唯一直接使用的外部依赖 `anyhow`。它位于通用 KV 边界，而不是具体存储引擎：调用者通过本文件定义的 `Retriever`、`RetrieverMutator` 和 `KvIterator` 适配自己的有序 KV 实现。
-
-当前文件同时定义了一套本地 `Key` 与 KV trait，并没有复用 `pkg/kv/key.rs` 的 `Key`。因此它目前是一个自包含的移植边界。RustCodeGraph 对 `ScanMetaWithPrefix`、`DelKeyWithPrefix` 和 `RowKeyPrefixFilter` 的调用者查询只找到 `pkg/util/cpu_posix_1_aster_unit_test.rs::prefix_helpers_scan_stop_delete_and_compare_like_go`，未找到生产调用者；`pkg/util/prefix_helper_test.rs` 还通过 `pkg/util/lib.rs` 的 `cfg(test)` 模块声明覆盖同一 API。这里的“应用位置”应理解为可供 `astersql-util` 用户调用的通用能力，而不能宣称已经接入 SQL、事务或元数据主链。
+`KvIterator`、`Retriever`、`RetrieverMutator` 把算法与存储实现解耦；本文件本身不持有数据库连接、事务或全局状态。
 
 ## 核心职责
 
@@ -84,11 +82,9 @@ RustCodeGraph 的被调用关系显示：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/prefix_helper.go`，测试是 `pkg/util/prefix_helper_test.go`。三个公开助手在流程上保持一致：都以 `PrefixNext` 建立半开区间、以 `HasPrefix` 防止越界；扫描回调可正常早停；删除先克隆键再逐个删除；行键过滤器对“仍有前缀”返回 `false`。Rust 的 `Key::PrefixNext` 还与 `pkg/kv/key.go::PrefixNext` 的逐字节进位、空键/全 `0xff` 追加零语义一致。
-
 主要类型差异是 Go 直接使用 `pkg/kv` 的 `Key`、`Retriever`、`RetrieverMutator` 和 `FnKeyCmp`，Rust 文件则在本地重新定义对应抽象。Go 用 `errors.Trace` 包装迭代和删除错误；Rust 使用 `anyhow::Error` 原样传播，不保留等价的新增调用栈上下文。Go 的 `defer iter.Close()` 与 Rust 的显式 `iter.close()` 都在函数退出附近执行；当前 Rust 删除路径并未实现源码注释所说的“先关闭再删除”。
 
-`pkg/util/prefix_helper_test.go::TestPrefix` 验证实际 mockstore 事务中的扫描早停和按前缀删除，`TestPrefixFilter` 验证含 NUL 字节的前缀。Rust 独立测试 `pkg/util/prefix_helper_test.rs` 用 `BTreeMap`/快照迭代器覆盖相同核心语义，并额外检查密集数字前缀的整段删除；`pkg/util/cpu_posix_1_aster_unit_test.rs` 还有一组重复的迁移回归。Rust 测试没有真实事务、错误注入、关闭顺序或 `PrefixNext` 极端输入覆盖，不能据此证明这些边界已被动态验证。
+Rust 独立测试 `pkg/util/prefix_helper_test.rs` 用 `BTreeMap`/快照迭代器覆盖相同核心语义，并额外检查密集数字前缀的整段删除；`pkg/util/cpu_posix_1_aster_unit_test.rs` 还有一组重复的迁移回归。Rust 测试没有真实事务、错误注入、关闭顺序或 `PrefixNext` 极端输入覆盖，不能据此证明这些边界已被动态验证。
 
 ## 扩展指南
 
@@ -98,13 +94,3 @@ RustCodeGraph 的被调用关系显示：
 - 若要求原子删除、错误回滚或并发一致性，必须由具体存储/事务层提供契约。本地 trait 当前没有事务边界，不能用循环补出原子性。
 - 若把该模块接入生产路径，应优先评估复用 `pkg/kv/key.rs::Key` 和已有 KV trait，而不是继续维护平行抽象；同时用 RustCodeGraph 复查新增 callers，确认没有跨 crate 类型转换和重复分配风险。
 - 性能风险主要来自 `PrefixNext` 的键复制、删除前收集全部键及每键一次删除调用。大前缀批量删除可考虑有界批次，但必须保持 Go 行为、错误边界和资源关闭语义，并补充兼容性测试。
-
-## 验证依据
-
-- 源码：`pkg/util/prefix_helper.rs`，核对了 `Key`、三个 trait、`FnKeyCmp`、三个公开函数和完整控制流。
-- crate 与模块：`pkg/util/Cargo.toml`、`pkg/util/lib.rs`，确认 crate 名、`anyhow` 依赖、公开模块和独立测试装配。
-- Go 对照：`pkg/util/prefix_helper.go`、`pkg/kv/key.go::PrefixNext`、`pkg/util/prefix_helper_test.go`。
-- Rust 对照与测试：`pkg/kv/key.rs::{PrefixNext, HasPrefix}`、`pkg/util/prefix_helper_test.rs`、`pkg/util/cpu_posix_1_aster_unit_test.rs::prefix_helpers_scan_stop_delete_and_compare_like_go`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；对目标文件执行了 `node --file`，对 `ScanMetaWithPrefix`、`DelKeyWithPrefix`、`RowKeyPrefixFilter`、`PrefixNext` 执行了精确 `query`/`callers`/`callees`（用 `--file pkg/util/prefix_helper.rs` 消除 Go/Rust 同名歧义）。图确认内部依赖和当前唯一识别出的测试调用者；模块源码补充了图未报告的 `prefix_helper_test.rs` 测试装配证据。
-- 静态人工复核确认：文件没有条件编译项、全局可变状态、异步/锁/通道；错误点仅来自 `iter`、`next`、`delete`；关闭调用位于成功取得迭代器后的公共退出路径，但 panic 不受保护。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文件存在且固定二级章节恰好为 11 个。

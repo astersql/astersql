@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate；`pkg/domain/Cargo.toml` 以 `lib.rs` 为 crate 根，而 `pkg/domain/lib.rs` 通过 `pub mod resource_group_controller_options` 公开该模块。它位于 Domain 初始化资源组查询控制器的接线边界：`Domain::init_resource_groups_controller` 在创建 `tikv_client::resource_group_lookup::ResourceGroupLookupController` 前调用本文件，把 Domain 已经判定好的部署模式和降级开关转换为 client 可消费的 `CreateOption` 列表（`pkg/domain/runaway.rs:119-143`）。
-
-该文件不是资源组缓存、重试循环或 runaway 判定的实现；这些行为由 `tikv-client` 的查询控制器和 `pkg/resourcegroup/runaway` 承担。本文件只负责为控制器构造与 Go 版本一致的参数。
+只负责为控制器构造与 Go 版本一致的参数。
 
 ## 核心职责
 
@@ -64,11 +62,11 @@ provider 缺失、client 构造失败、资源组 RPC 失败和 Domain 关闭由
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/domain/resource_group_controller_options.go`：五个常量数值、降级 RU protobuf 形状、最大等待 option 和四项条件追加 option 均与 Rust 一致。Go 的 `newDefaultDegradedRUSettings` 返回指针，Rust 返回拥有所有权的 protobuf 值；这是语言所有权模型差异，不改变字段语义。
+Go 的 `newDefaultDegradedRUSettings` 返回指针，Rust 返回拥有所有权的 protobuf 值；这是语言所有权模型差异，不改变字段语义。
 
-主要接线差异是配置来源。Go `newResourceGroupsControllerOptions()` 无参数，内部查询进程级 `deploymode` 与全局配置；Rust `new_resource_groups_controller_options(is_starter, enable_fallback)` 接收调用者已判定的值。Rust 源码注释明确称其为 entry adapter 的显式 deploy-mode 决策，测试也可以直接覆盖三个组合而不修改全局配置。
+主要接线差异是配置来源。Go `newResourceGroupsControllerOptions()` 无参数，内部查询进程级 `deploymode` 与全局配置；Rust `new_resource_groups_controller_options(is_starter, enable_fallback)` 接收调用者已判定的值。
 
-Go 的 `TestResourceGroupsControllerOptions`（`pkg/domain/runaway_test.go:188-258`）验证 Starter 开启、Starter 关闭和非 Starter 三条分支；Rust 的 `resource_group_options_preserve_provider_settings_outside_enabled_starter` 保留相同分支意图。Rust 的 `starter_degraded_resource_group_recovers_without_caching` 还直接核验默认 RU 设置和恢复行为。Go 注释强调降级组是资源管理器暂时不可用时的 best-effort UX fallback，不定义精确的跨 RPC RU 限流/记账契约，也不能进入正常元数据缓存；Rust 当前行为由恢复测试支持这一边界。
+Go 注释强调降级组是资源管理器暂时不可用时的 best-effort UX fallback，不定义精确的跨 RPC RU 限流/记账契约，也不能进入正常元数据缓存；Rust 当前行为由恢复测试支持这一边界。
 
 ## 扩展指南
 
@@ -77,11 +75,3 @@ Go 的 `TestResourceGroupsControllerOptions`（`pkg/domain/runaway_test.go:188-2
 - 若修改最大等待时间，应先核对共享来源 `pkg/resourcegroup/runaway/manager.rs::MaxWaitDurationMillis` 及 Go 的 `runaway.MaxWaitDuration`，避免 Domain 与 runaway 出现两套值。
 - 测试应继续放在独立的 `pkg/domain/runaway_test.rs` 中。至少同步三类断言：开启分支的最终 client config、关闭/非 Starter 时 provider config 不被覆盖、临时失败后的降级值不会缓存且能恢复到真实值；Go 对照行为变化时也应核对 `pkg/domain/runaway_test.go::TestResourceGroupsControllerOptions`。
 - 兼容性风险主要是 option 条件、时间单位、整数类型或顺序改变造成 client 配置漂移；性能风险主要来自重试间隔/次数和降级等待时长改变，而不是本文件的构造成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/domain/resource_group_controller_options.rs` 报告 10 个索引符号；`node --file ... --offset 1 --limit 260` 读取完整 53 行源码并报告 `pkg/domain/runaway.rs`、`pkg/domain/runaway_test.rs` 两个使用文件；`query` 分别唯一定位两个公开函数。对两函数运行 `callers`/`callees` 未得到函数级输出，未据此作否定推断。
-- 生产源码与 crate 边界：`pkg/domain/resource_group_controller_options.rs`、`pkg/domain/runaway.rs`、`pkg/domain/lib.rs`、`pkg/domain/Cargo.toml`、`pkg/resourcegroup/runaway/manager.rs`。
-- Go 对照：`pkg/domain/resource_group_controller_options.go`、`pkg/domain/runaway.go`。
-- 独立测试：`pkg/domain/runaway_test.rs`、`pkg/domain/runaway_test.go`；重点核对降级 RU 值、三个开关组合、provider 恢复与不缓存行为。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本文没有把 client/Domain 的运行期职责误写成本文件职责。

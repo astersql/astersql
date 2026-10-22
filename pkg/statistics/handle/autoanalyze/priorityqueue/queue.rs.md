@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-statistics-handle-autoanalyze-priorityqueue` crate 中的自动 ANALYZE 优先队列状态机。crate 入口 `pkg/statistics/handle/autoanalyze/priorityqueue/lib.rs` 以 `mod queue` 装配本文件并通过 `pub use queue::*` 导出其 API；底层堆、权重计算和作业协议分别来自同 crate 的 `heap.rs`、`calculator.rs` 与 `job.rs`。
-
-从当前 Rust 接线看，它是一个可独立使用的队列实现，而不是已经接入完整服务主链的唯一实现：`pkg/statistics/handle/autoanalyze/refresher/refresher.rs` 目前维护自己的 `BinaryHeap`，其 `Cargo.toml` 对本 crate 的依赖还在 `[target.'cfg(any())'.dependencies]` 下，恒不启用。仓库内可执行的直接使用者主要是 `queue_test.rs` 和 `queue_ddl_handler_test.rs`；`queue_ddl_handler.rs` 则在同一类型上补充 DDL 事件入口。因而本文区分“本文件已经实现的行为”和“Go 版本已有、Rust 尚未完成的生产接线”。
+`DeleteByTableID` 与 `RecreateAndPushJob` 为 `queue_ddl_handler.rs` 的 DDL 处理提供删除和重建原语。
 
 ## 核心职责
 
@@ -99,8 +97,6 @@ worker 使用 1 秒 tick 累计时间，而不是三个独立 ticker。退出有
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/handle/autoanalyze/priorityqueue/queue.go`。Rust 保留了队列类型、主要公开方法名、三个周期、堆/running/must-retry 三类状态，以及“重试前先删除标记”“Close 后可重新 Initialize”等核心意图，但不是逐语句等价移植：
-
 - Go 持有真实 `StatsHandle`、session context 和 DML 版本游标；Rust 把全量构建、增量选择、单项重建、指标刷新抽象为 `QueueSource`，自身没有 `lastDMLUpdateFetchTimestamp`，是否漏/重放 DML 由适配器负责。
 - Go `Initialize(ctx)` 检查取消、保存可取消 context 并在出错时 Close；Rust `Initialize()` 没有 context 或取消传播，只在数据源错误时返回。
 - Go 在 `Pop` 时注册完成钩子；Rust 在每次 `push_locked` 时注册。Rust 的钩子使用 `Weak` 处理队列释放，达到 Go 在 owner switch 后允许运行中作业结束的相似安全目标。
@@ -122,12 +118,3 @@ worker 使用 1 秒 tick 累计时间，而不是三个独立 ticker。退出有
 - 修改 DDL 行为时，接入点是 `DeleteByTableID`/`RecreateAndPushJob` 与 `queue_ddl_handler.rs`；需同步 `queue_ddl_handler_test.rs`，并验证未初始化时 DDL 事件的 readiness 语义。
 - 修改线程生命周期时，必须保持“等待 worker 时不持有 worker/state 锁”、钩子只持有 `Weak`、重复 `Close` 不 panic、Close 后可再初始化等不变量。相关测试仍放在 `queue_test.rs`；Go 注释中的并发 Close 用例目前不可执行，若补齐应转成真正的 Rust 测试而不是据注释宣称已覆盖。
 - 正式把本 crate 接入 `refresher` 时，需要先处理当前两套优先队列的职责重叠，并移除或替换 `cfg(any())` 依赖门。此工作超出本单文件文档任务，不能仅靠调用 `NewAnalysisPriorityQueue` 视为完成。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/statistics/handle/autoanalyze/priorityqueue` 显示目标 Rust/Go/测试文件均被索引。
-- RustCodeGraph 文件节点：完整读取 `queue.rs` 第 1–474 行；查询确认 `queue.rs::NewAnalysisPriorityQueue`、`queue.rs::ProcessDMLChanges`、`queue.rs::RecreateAndPushJob` 的签名和位置；读取 `queue_ddl_handler.rs` 第 60–228 行核对 DDL 调用链。精确 caller/callee 命令曾执行，但未在 30 秒限制内产出边，故未把其缺失结果当作“无调用者”。
-- crate 与接线证据：读取 `priorityqueue/Cargo.toml`、`priorityqueue/lib.rs`、`refresher/Cargo.toml` 和 `refresher/refresher.rs`；仓库搜索核对 facade 导出、`cfg(any())` 依赖及实际 Rust 引用。
-- Go 对照：通过 RustCodeGraph 读取 `queue.go` 第 380–789、960–1274 行，核对初始化、全量构建、后台循环、DML 游标、重试、指标刷新、钩子、快照和关闭语义。
-- 测试证据：通过 RustCodeGraph 读取 `queue_test.rs` 第 1–520、760–1064 行。可执行测试位于文件末部；前部 Go 形状的大段内容为注释迁移记录，本文没有将其当成已经执行的 Rust 测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `rg -c` 命令校验本文恰有十一个固定二级标题，并人工复核唯一生产物、源码链接、已实现/未接线边界和独立测试位置。

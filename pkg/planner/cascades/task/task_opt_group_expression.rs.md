@@ -2,17 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-task` crate；crate 入口
-[`lib.rs`](lib.rs) 将该模块声明为私有模块，再通过
-`pub use task_opt_group_expression::*` 导出其公开符号。它位于 Cascades
-优化器的任务调度层：上游的 `OptGroupTask` 把一个 Memo `Group` 拆成多个
-`GroupExpression` 任务，本文件再为单个表达式安排子 Group 探索与规则应用。
-
-应用主链可由
-[`cascades.rs`](../cascades.rs) 的 `Optimizer::NewOptimizer` 和
-`Optimizer::Execute` 复核：根 Group 先进入 `NewOptGroupTask`，随后产生本文件的
-`NewOptGroupExpressionTask`，最终由串行 LIFO 调度器逐项执行。规则产生新表达式时，
-[`task_apply_rule.rs`](task_apply_rule.rs) 还会再次构造表达式级任务，使搜索继续扩展。
+从表达式根算子的 `Operand` 出发，向共享 `Context` 取得候选规则。
 
 ## 核心职责
 
@@ -124,12 +114,6 @@ Group 和 Rule 的生命周期。Memo 表达式对所属 Group 使用弱回指�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是
-[`task_opt_group_expression.go`](task_opt_group_expression.go)。结构和调度次序基本一一
-对应：两边都有 `BaseTask`、目标 GroupExpression、构造函数、`Execute`、`Desc` 和
-私有规则过滤器；两边都先压规则任务，再从最后一个输入向第一个输入压子 Group
-任务，以便 LIFO 先执行第 0 个子 Group。
-
 需要明确记录的迁移差异如下：
 
 - Go 构造函数返回具体指针；Rust 返回 `Box<dyn Task>`。
@@ -159,23 +143,3 @@ Group 和 Rule 的生命周期。Memo 表达式对所属 Group 使用弱回指�
   建议补充：禁用规则不生成任务、根 Operand 不匹配被过滤、多个规则的 LIFO 顺序、
   多个子 Group 的先后次序，以及 Go 表达式敏感规则集语义的等价覆盖。
 - 更改 `Desc` 时同步检查任务栈描述测试或新增独立断言，保持文本对诊断工具稳定。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、目标文件 6 个符号；`explore`/`node`
-  读取了目标文件全貌，并确认 `getValidRules → Execute` 的文件内调用关系。
-- 目标与装配：[`task_opt_group_expression.rs`](task_opt_group_expression.rs)、
-  [`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- 上下游实现：[`task_opt_group.rs`](task_opt_group.rs)、
-  [`task_apply_rule.rs`](task_apply_rule.rs)、[`base.rs`](base.rs)、
-  [`task_scheduler.rs`](task_scheduler.rs)、[`../cascades.rs`](../cascades.rs)、
-  [`../memo/group_expr.rs`](../memo/group_expr.rs)。
-- Go 对照：[`task_opt_group_expression.go`](task_opt_group_expression.go)，并结合
-  `pkg/planner/cascades/rule/ruleset/rule_set.rs` 核对表达式敏感过滤语义。
-- 测试证据：[`task_test.rs`](task_test.rs) 的
-  `task_chain_uses_real_memo_and_rule_contracts` 通过真实 Memo、规则、
-  `NewOptGroupTask` 间接覆盖本任务链，并断言新表达式写入及规则 explored 状态；
-  [`task_scheduler_test.rs`](task_scheduler_test.rs) 的 `TestSimpleTaskScheduler` 验证
-  LIFO 与错误短路。当前没有同名独立测试，也没有逐项断言本文件所有过滤和顺序边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证使用任务规定的 11 章节结构命令，
-  并人工核对上述路径、符号和调用边。

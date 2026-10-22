@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate（见 `pkg/metrics/Cargo.toml`），是 Go 包 `pkg/metrics/infoschema.go` 的 Rust 兼容门面。它由 crate 根 `pkg/metrics/lib.rs` 以公开模块 `infoschema` 暴露，负责把 InfoSchema V2 缓存指标接到 metrics 包的统一初始化、注册流程，并构造 `TableByName` 的 hit/miss 耗时直方图句柄。
-
-它不实现 InfoSchema、表缓存或查询逻辑。缓存指标的实际 collector 定义在依赖 crate `astersql-infoschema-metrics` 的 `pkg/infoschema/metrics/lib.rs`；缓存事件写入由 `pkg/infoschema/metrics.rs::sieveStatusHookImpl` 完成；全局初始化和注册分别由 `pkg/metrics/metrics.rs::InitMetrics`、`RegisterMetrics` 驱动。
+不实现 InfoSchema、表缓存或查询逻辑。
 
 ## 核心职责
 
@@ -86,15 +84,11 @@ Prometheus 的 `CounterVec`、`Gauge`、`HistogramVec` 及其克隆句柄可共�
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/infoschema.go` 与本文件具有同名的七个变量和同名初始化函数。两者对 TableByName 直方图使用相同的 namespace、subsystem、name、help、`type` 标签、指数桶以及 hit/miss 预绑定方式；两者也都由各自的 `metrics.InitMetrics` 初始化并由注册入口注册 collector。
-
 主要差异有三点：
 
 1. Go 在本函数中重新构造四个缓存 collector；Rust 改为克隆 `pkg/infoschema/metrics/lib.rs` 的共享 collector，以便 `sieveStatusHookImpl` 的写入和全局 metrics 注册落到同一状态。
 2. Go 包变量是未显式包装的 collector 接口/指针；Rust 用 `Option` 表达初始化前状态，并因 `static mut` 暴露 `unsafe` 初始化。
 3. Go 的 `pkg/infoschema/infoschema_v2.go` 在 `TableByName` 命中和未命中路径分别调用两个 observer；Rust 的 `pkg/infoschema/infoschema_v2.rs::TableByName` 当前只执行查找、缓存 Get/Set 和错误返回，未发现对应观测调用。这是迁移接线缺口，不应由本说明宣称已实现。
-
-共享缓存指标的 Rust 行为由 `pkg/infoschema/metrics_test.rs::sieve_status_hook_updates_shared_prometheus_metrics` 验证：evict/hit/miss 各递增一次，内存、对象数和上限 Gauge 更新为指定值。
 
 ## 扩展指南
 
@@ -103,16 +97,3 @@ Prometheus 的 `CounterVec`、`Gauge`、`HistogramVec` 及其克隆句柄可共�
 - 若要补齐 Rust TableByName 耗时观测，应在 `pkg/infoschema/infoschema_v2.rs::TableByName` 的实际 hit/miss 分支接线，并把测试放在独立的 `*_test.rs` 文件；需要明确 special-table、元数据缺失、缓存 miss 后加载失败等分支是否计入 miss，严格对照 Go 行为。
 - 新 collector 必须加入 `InitInfoSchemaV2Metrics` 的初始化顺序和 `pkg/metrics/metrics.rs::RegisterMetrics` 的注册清单；若真实所有者仍是 infoschema 子 crate，还需更新 `pkg/infoschema/metrics/Cargo.toml`/`lib.rs` 对应定义。
 - 不应在本生产文件内嵌测试；优先扩展 `pkg/metrics/bindinfo_1_aster_unit_test.rs`（初始化契约）或新增同目录独立测试文件，并用 `pkg/infoschema/metrics_test.rs` 覆盖缓存写入端。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标文件已索引为 84 行、11 个符号。
-- RustCodeGraph `node --file pkg/metrics/infoschema.rs`：核对七个静态量、初始化锁、四个共享 collector 克隆、直方图参数和 observer 派生顺序。
-- RustCodeGraph `query InitInfoSchemaV2Metrics` 与 `explore "InitInfoSchemaV2Metrics in pkg/metrics/metrics.rs"`：确认 Go/Rust 两个定义，并识别 Rust `InitMetrics` 和初始化冒烟测试调用者。精确 `callers`/`callees` 对该 Rust 节点返回空边，因此又以索引的 `explore` 结果和直接引用搜索补齐图未覆盖的边。
-- `pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`：核对 crate 边界、公开模块和 `astersql-infoschema-metrics`/`prometheus` 依赖。
-- `pkg/metrics/metrics.rs::{InitMetrics,RegisterMetrics}`：核对一次性生产初始化、调用顺序以及五个 collector 的注册清单。
-- `pkg/metrics/bindinfo.rs::compat_prometheus`、`pkg/metrics/common/wrapper.rs::NewHistogramVec`：核对 `Observer`、标签绑定、指数桶和常量标签注入语义。
-- `pkg/infoschema/metrics/lib.rs`、`pkg/infoschema/metrics.rs`、`pkg/infoschema/metrics_test.rs`：核对缓存 collector 的真实所有权、写入钩子及共享状态测试。
-- `pkg/infoschema/infoschema_v2.rs::TableByName`、`pkg/infoschema/infoschema_v2.go`：核对 Rust 当前未接耗时 observer、Go 已在 hit/miss 分支观测的差异。
-- `pkg/metrics/infoschema.go`、`pkg/metrics/metrics.go`：核对 Go 指标元数据、初始化和注册语义。
-- `pkg/metrics/bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata`：核对本初始化函数已有的 Rust 冒烟覆盖；本任务按计划只做文档分析，未运行 Cargo。

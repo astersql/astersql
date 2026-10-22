@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate。crate 入口在 `pkg/planner/core/lib.rs:148` 以私有模块 `mod hint_utils` 纳入它，并在 `pkg/planner/core/lib.rs:215` 通过 `pub use hint_utils::*` 导出本文件的公开项。其输入不是 SQL AST，而是 `common_plans.rs` 中的简化物理计划模型 `PlanNode`、`PlanKind`、`StoreType`，以及 `flat_plan.rs` 的 `FlatPhysicalPlan`；输出是本文件自有的 `OptimizerHint` 列表。
-
-从用途看，它负责从既有物理计划反推可描述该计划选择的优化器 Hint，属于“计划结果 -> Hint 表示”的逆向转换层。当前 Rust 代码搜索只发现独立测试 `pkg/planner/core/hint_utils_test.rs` 直接调用公开入口，未发现 Rust 生产调用者；因此它是已导出的迁移实现，但不能据此声称已接入 Rust 的完整 `EXPLAIN FORMAT=HINT` 主链。对应 Go 生产接线位于 `pkg/planner/core/common_plans.go:992-996`。
+`extractTableAsName` 和 `extractOrderedPhysicalJoinGroup` 负责从计划形状中安全提取连接表名与线性连接次序（`hint_utils.rs:135-200`）。
 
 ## 核心职责
 
@@ -109,7 +107,7 @@ Rust 的公开入口和若干辅助函数与 `pkg/planner/core/hint_utils.go` �
 - Go 的表提取识别 reader 与有限包装算子，优先表别名，并保留数据库名（Go `hint_utils.go:513-541`）；Rust 识别 `TableScan`/`DataSource`，不使用 `DataSource.alias`，并可穿过任意单孩子节点。
 - 两边连接组规则的核心意图一致：拒绝笛卡尔 Hash Join、只接受可重排 join type、拒绝 bushy tree、把非 join 叶依次追加到线性组（Go `hint_utils.go:582-637`；Rust `hint_utils.rs:145-200`）。但 Go 同时记录 visited join ID，并把具体节点交给查询块/表名生成器；Rust 直接返回字符串表名。
 
-因此新增行为时应以 Go 文件作为语义目标，但不能直接假定 Go 已有的所有能力在 Rust 中可用。当前 Rust 测试名称 `index_join_variants_keep_their_go_hint_names` 也明确把 Hint 名称兼容性作为已有移植约束。
+因此新增行为时应以 Go 文件作为语义目标，但不能直接假定 Go 已有的所有能力在 Rust 中可用。
 
 ## 扩展指南
 
@@ -120,14 +118,3 @@ Rust 的公开入口和若干辅助函数与 `pkg/planner/core/hint_utils.go` �
 涉及表身份的改动应同步处理 `DataSource.alias`、数据库名和查询块信息，避免同名表、自连接、派生表场景产生不可回放 Hint。性能上应保留单次或少量线性遍历，避免对每个 join 重扫完整子树。
 
 测试必须继续放在独立文件 `pkg/planner/core/hint_utils_test.rs`，并通过 `lib.rs` 的测试模块接线；不要把测试嵌入生产源文件。优先补充：三表左深/右深 `LEADING` 顺序、别名与自连接、包装节点、畸形孩子数、聚合与存储读取、重复去重、扁平计划的 CTE/子查询策略，以及与 Go golden 行为的一致性。若 Rust 生产主链完成接线，还应增加从计划生成到 Hint SQL 恢复的集成验证。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引覆盖 11,467 个文件，其中 Rust 7,032 个、Go 4,415 个；使用 `node --file` 阅读了 `pkg/planner/core/hint_utils.rs` 全部 200 行。
-- RustCodeGraph 符号与调用查询：查询了 `OptimizerHint`、两个公开入口、`collect`、`genHintsFromSingle`、`join_tables`、`extractTableAsName`、`extractOrderedPhysicalJoinGroup`，并对关键入口执行 `callers`/`callees`；据此核对了本文件内部调用链和 Rust 生产调用者缺失的现状。
-- Rust 数据模型：通过图节点核对 `pkg/planner/core/common_plans.rs` 的 `StoreType`、`PlanKind`、`PlanNode`，以及 `pkg/planner/core/flat_plan.rs` 的 `FlatPlanTree`、`FlatPhysicalPlan`、`FlatOperator`。
-- crate 与模块边界：读取 `pkg/planner/core/Cargo.toml` 和 `pkg/planner/core/lib.rs:148,215,330-331`。
-- Rust 测试：读取 `pkg/planner/core/hint_utils_test.rs` 全文，核对 index join 名称、`LEADING` 拒绝条件和算法 Hint 的存储字段约束。
-- Go 对照：读取 `pkg/planner/core/hint_utils.go:27-210,300-637`，并读取生产入口 `pkg/planner/core/common_plans.go:970-1014` 和对照用例 `pkg/planner/core/casetest/dag/dag_test.go:215-239`。
-- 仓库搜索：核对 `hint_utils` 的模块声明、再导出和 Rust 调用点；未把没有调用证据的 Rust 生产接线描述为现状。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前用任务指定命令验证文档存在且恰有 11 个固定二级章节，并人工复核所有关键结论均指向上述符号或文件证据。

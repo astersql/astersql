@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`common.rs`](common.rs) 属于 Cargo crate `astersql-br-pkg-mock`。该 crate 由 [`Cargo.toml`](Cargo.toml) 将 `lib.rs` 设为库入口，且 `[package.metadata.porting]` 明确对应 Go 包 `br/pkg/mock`；它没有外部 Cargo 依赖，依靠同 crate 的本地替身工作。模块入口 [`lib.rs`](lib.rs) 通过 `pub mod common` 装载本文件，再用 `pub use common::*` 将其符号平铺导出。
-
-本文件是 Go MockGen 产物 [`common.go`](common.go) 的手写 Rust 移植，只提供 `ChunkFlushStatus.Flushed` 的期望录制与返回值注入。它是测试辅助模块，不执行刷盘，也不属于备份恢复或 Lightning 的生产执行链。当前 Rust 仓库中直接构造它的独立测试是 [`parity_test.rs`](parity_test.rs) 的 `go_rust_public_contract_matches`；未发现 Rust 生产代码构造 `MockChunkFlushStatus`。
+参数匹配、`AnyTimes`、`Times`、`After`、`DoAndReturn` 等完整 gomock 能力不在本文件内，也未由当前 `stubs::Controller` 实现。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的两个结构体、构造器、`EXPECT`、`ISGOMOCK`、mock 方法和 recorder 方法逐项对应 [`common.go`](common.go) 的 MockGen 输出。两端正常路径都是“共享控制器 → 录制 `Flushed` → 设置布尔返回 → 调用时由控制器分发”。方法名保留 Go 风格大小写，以便迁移代码与 parity 检查直接对照。
-
 主要差异如下：
 
 - Go 构造器接收 `*gomock.Controller` 并返回指针；Rust 按值接收/返回轻量句柄，内部通过 `Arc` 共享。
@@ -105,14 +101,3 @@ Rust 的两个结构体、构造器、`EXPECT`、`ISGOMOCK`、mock 方法和 rec
 若目标是支持重复调用、参数匹配或结束时自动验证，应优先扩展 [`stubs.rs`](stubs.rs) 的通用 `Controller`/`Call`，而不是在本文件中特判 `Flushed`。此类变化会影响同 crate 的所有生成式 mock，需要检查 `backend.rs`、`encode.rs`、`importer.rs` 和 `task_register.rs` 的共享控制器用法及相关独立测试。
 
 若要把本 mock 接到 Rust Lightning importer，必须先决定统一使用 canonical `pkg/lightning/common/util.rs::ChunkFlushStatus` 还是 mock crate 的本地替身；直接假定两个同名 trait 可互换会造成类型不兼容。还应同步验证 `EngineWriter::Close` 的 trait 对象类型、跨线程约束，以及 Go importer 中 data/index 状态必须同时 flushed 的行为。性能风险很低但非零：每次录制和调用都获取互斥锁并进行 `Any` 向下转换；该设计适用于测试，不应进入高频生产路径。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/mock` 确认本文件、Go 对照、crate 入口与独立测试均已索引。
-- RustCodeGraph 源码节点：`br/pkg/mock/common.rs`（完整 80 行）、`br/pkg/mock/lib.rs`、`br/pkg/mock/stubs.rs`、`br/pkg/mock/parity_test.rs`、`br/pkg/mock/common.go`、`pkg/lightning/common/util.go`、`pkg/lightning/common/util.rs`、`lightning/pkg/importer/table_import_test.go`。
-- RustCodeGraph 符号查询：`query MockChunkFlushStatus --kind struct`、`query NewMockChunkFlushStatus --kind function`、`query Flushed --kind method`。对精确构造器/方法执行的 `callers` 与 `callees` 没有产生可用边，故没有据此扩大调用关系结论。
-- Cargo 边界：[`Cargo.toml`](Cargo.toml) 的 package 名为 `astersql-br-pkg-mock`，库入口为 `lib.rs`，porting 元数据指向 `br/pkg/mock`，依赖表为空。
-- Rust 行为测试：[`parity_test.rs`](parity_test.rs) 的 `go_rust_public_contract_matches` 录制 `Flushed().Return1(true)` 并断言实际调用为真。
-- Go 使用证据：[`lightning/pkg/importer/table_import_test.go`](../../../lightning/pkg/importer/table_import_test.go) 第 406–411、974–979 行以 `AnyTimes` mock 刷盘状态；[`lightning/pkg/importer/table_import.go`](../../../lightning/pkg/importer/table_import.go) 第 722–723、766、839–858、902 行保存并查询 data/index 刷盘状态。
-- 仓库引用搜索只找到上述 Rust parity 测试直接使用 `NewMockChunkFlushStatus`；没有发现 Rust 生产调用者。该结论限定于当前工作树和本次局部搜索。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档恰有 11 个固定二级章节，并人工复核源文件链接、事实边界和独立测试位置。

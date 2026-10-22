@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate，是 BR（Backup & Restore）观测指标的 Rust 定义与初始化模块。crate 入口 `pkg/metrics/lib.rs` 以 `pub mod br` 暴露该模块；包级中枢 `pkg/metrics/metrics.rs::InitMetrics` 在其他子系统之后调用 `br::InitBRMetrics`，随后 `RegisterMetrics` 将其中 13 个 collector 注册到默认 Prometheus registry。
-
-它不执行备份、恢复或 PiTR，也不负责主动采样；它只建立可供业务代码调用的 collector。当前仓库中这些 collector 的真实业务消费证据主要位于 Go BR 实现（如 `br/pkg/restore/log_client/client.go`、`br/pkg/restore/snap_client/import.go`），Rust 生产代码尚未直接读写本模块的静态指标。因而本文件是已移植的指标边界，而不是 Rust BR 主流程实现。
-
-crate 边界由 `pkg/metrics/Cargo.toml` 确认：本文件直接使用 crate 内的 Go 兼容封装，并最终依赖 `prometheus = "0.14"`；没有 BR crate 依赖，也没有 feature 条件控制。
+在 `InitBRMetrics()` 中一次构造全部 collector，固定 metric namespace、subsystem、name、help、桶边界和标签名。
 
 ## 核心职责
 
@@ -86,15 +82,13 @@ Prometheus collector handle 本身可克隆并可被并发更新，但其全局�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/metrics/br.go`：17 个变量名、collector 类型、namespace/subsystem/name/help、桶边界、标签名以及 `InitBRMetrics` 的构造顺序均保持 Go 形状。Rust 以 `Option<T>` 表达 Go 中初始化前的 nil/零值，并以兼容层保留 Go 风格字段名和构造 API。
-
 主要实现差异有三点：
 
 1. Rust 增加 `PACKAGE_INIT_LOCK` 和包级 `INIT_METRICS_ONCE` 配合，Go 依赖 package `init` 的单次串行语义。
 2. Rust 对可变全局状态使用 `unsafe static mut Option<T>`；Go 使用包级 collector 变量。
 3. Go BR 业务代码已经大量调用这些指标；当前 Rust 生产消费者尚未接到 `astersql_metrics::br`，因此功能覆盖只到指标元数据初始化/前 13 项注册，而非完整观测行为。
 
-Go 测试未发现专门针对 `pkg/metrics/br.go` 的独立测试。Rust 同样没有 `br_test.rs`；最近的直接测试是 `pkg/metrics/bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata`，它只证明初始化不拒绝这些元数据，不验证所有名称、桶、标签、注册或业务采样行为。
+Rust 同样没有 `br_test.rs`；最近的直接测试是 `pkg/metrics/bindinfo_1_aster_unit_test.rs::all_metric_initializers_accept_go_metadata`，它只证明初始化不拒绝这些元数据，不验证所有名称、桶、标签、注册或业务采样行为。
 
 ## 扩展指南
 
@@ -106,13 +100,3 @@ Go 测试未发现专门针对 `pkg/metrics/br.go` 的独立测试。Rust 同样
 4. 新增独立 Rust 测试文件，而非把测试放入 `br.rs`。建议覆盖完整 metric family 名、help、桶边界、标签维度、初始化后可注册与重复初始化策略，并在必要时验证真实 BR 调用点。
 
 兼容风险集中在 metric family 名和标签集合：更改 namespace、subsystem、name 或标签会破坏 dashboard、告警和查询；桶变化会改变聚合精度及时间序列数量；新增无界标签值会放大基数。并发风险集中在公开 `static mut` 的重初始化和锁外访问。性能风险主要来自过细桶、过多标签组合以及热路径上的频繁观测。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/metrics` 确认 `br.rs`、`br.go`、模块入口及测试布局；`node --file pkg/metrics/br.rs --offset 1 --limit 240` 读取全部 225 行并报告该文件由 `metrics.rs` 与 `bindinfo_1_aster_unit_test.rs` 使用；`query/callers` 与 `explore` 确认 `InitBRMetrics` 的上游入口。
-- 源文件：`pkg/metrics/br.rs`，核对 17 个静态 collector、唯一初始化函数、全部元数据、桶和标签。
-- crate/入口：`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`，核对 crate 依赖、模块可见性、一次初始化、注册集合和错误边界。
-- Go 对照：`pkg/metrics/br.go`、`pkg/metrics/metrics.go`，核对变量、初始化和注册语义。
-- 业务调用：`br/pkg/restore/snap_client/import.go`、`br/pkg/restore/snap_client/pitr_collector.go`、`br/pkg/restore/snap_client/client.go`、`br/pkg/restore/log_client/client.go`、`br/pkg/restore/log_client/import.go`、`br/pkg/task/stream.go`、`br/pkg/task/restore.go`。
-- 测试：`pkg/metrics/bindinfo_1_aster_unit_test.rs` 提供直接 Rust 初始化冒烟证据；全仓搜索未发现同名独立 Rust/Go 测试或 Rust 生产消费者。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核“定位、运行、扩展”三类问题均有源码依据。

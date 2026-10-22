@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`typed_limit.rs` 位于 `astersql-executor` crate 中；该 crate 由 [`pkg/executor/Cargo.toml`](Cargo.toml) 的 `[package] name = "astersql-executor"` 与 `[lib] path = "lib.rs"` 定义。模块在 [`pkg/executor/lib.rs`](lib.rs) 中以 `pub mod typed_limit` 公开，因此 [`TypedLimit`](typed_limit.rs) 是 crate 对外可见的 typed executor 实现，而不是未接线的占位文件。
-
-它处于物理计划到执行器的转换链中：[`builder.rs`](builder.rs) 会把 canonical `PhysicalLimit`、索引下推树中的 `PhysicalLimit`，以及 `PhysicalIndexLookUpReader.PushedLimit` 包装为 `TypedLimit`。运行时它位于任意实现 [`ExecExecutor`](adapter.rs) 的子执行器之上，按 `OFFSET` 跳过输入行，再至多输出 `COUNT` 行。
+将 schema、chunk 配置、扫描计数和外键级联相关操作委托给子执行器；自身只负责 LIMIT/OFFSET 过滤和对应的页级锁键。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ RustCodeGraph 将 `TypedLimit` 定位在本文件第 14 行，并显示 [`typed_
 
 ## 与 Go 版本的对应关系
 
-直接语义基线是 [`pkg/executor/select.go`](select.go) 的 `LimitExec`：Go 版本同样维护区间起点/终点与跨批次 cursor，忽略 offset 行、最多返回 count 行，遇到 LIMIT 后不再向子节点取数，并在 `Open` 重置状态、在 `Close` 关闭子树。
-
 Rust 的 `offset`/`count` 与 Go 的 `begin`/`end` 表达方式不同：Rust 分别记录已见与已返回数量；Go 以 `cursor` 对照 `[begin, end)`。Rust 每行搬运，Go 会计算首个有效批次的切片边界并通过 `adjustRequiredRows` 限制对子节点的请求量。因此两者结果语义一致，但批次调度和性能策略并非逐字段复刻。
 
-Go `LimitExec` 还拥有 inline projection 的列交换、adaptive-limit controller、tracing span 和慢关闭日志；这些职责当前不在 `TypedLimit` 中。Rust 特有职责是 typed pipeline 的 `ExecutionContext` 转发、逐行 record lock key 过滤、外键接口委托和 `Detach` 快照。文档不把 Go 的附加能力声明为 Rust 已支持；若未来移植，应分别补生产接线与独立 Rust 测试。
+Rust 特有职责是 typed pipeline 的 `ExecutionContext` 转发、逐行 record lock key 过滤、外键接口委托和 `Detach` 快照。文档不把 Go 的附加能力声明为 Rust 已支持；若未来移植，应分别补生产接线与独立 Rust 测试。
 
 相关 Go 回归基线包括 [`executor_required_rows_test.go`](executor_required_rows_test.go) 的 `TestLimitRequiredRows`，它验证 Go 的 required-rows 优化；该优化不能当作当前 Rust 逐行实现已具备的证据。
 
@@ -91,12 +87,3 @@ Go `LimitExec` 还拥有 inline projection 的列交换、adaptive-limit control
 - 新增生命周期能力时，应同时检查 `Open` 重置、`Close` 幂等性和 `Detach` 是否需要复制或清空新状态；尤其不能让 detached 实例重复暴露旧 `page_keys`。
 - 若增加 Go 已有的 required-rows、自适应停止、inline projection 或 tracing，需先确认 `ExecExecutor`/`Chunk` 接口能表达相应契约，再在独立 `*_test.rs` 中验证，而不要把测试代码放入本生产文件。
 - 修改 builder 接线时应覆盖三条现有入口：普通 `PhysicalLimit`、下推计划中的 `PhysicalLimit`、`PhysicalIndexLookUpReader.PushedLimit`。性能风险主要来自逐行 `Append` 与大 offset 扫描；兼容风险主要来自上下文转发、锁键顺序和重复调用行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认仓库索引可用；`query TypedLimit --kind struct` 与 `node TypedLimit` 定位公开结构；`node --file pkg/executor/typed_limit.rs --offset 1 --limit 260` 读取完整 173 行实现；`node ExecExecutor` 核对 trait 契约；`node --file pkg/executor/builder.rs --offset 260 --limit 420` 核对构建链。方法级 callers/callees 未由当前索引解析，未据此作超出源码的推断。
-- 源与装配：[`pkg/executor/typed_limit.rs`](typed_limit.rs)、[`pkg/executor/adapter.rs`](adapter.rs)、[`pkg/executor/builder.rs`](builder.rs)、[`pkg/executor/lib.rs`](lib.rs)。
-- crate 边界：[`pkg/executor/Cargo.toml`](Cargo.toml)，确认 crate 名、库入口、`astersql-errors` 与 `astersql-util-chunk` 直接依赖；本文件没有 feature gate。
-- Rust 独立测试：[`pkg/executor/typed_limit_test.rs`](typed_limit_test.rs) 验证 offset/count 跨页流式执行、只转发返回行锁键、达到 LIMIT 后不继续扫描、detach 独立续读、零 count 不读子节点，以及 canonical `PhysicalLimit` 能构建惰性 typed pipeline。另有 [`typed_index_lookup_test.rs`](typed_index_lookup_test.rs) 覆盖 `PushedLimit` 计划输入的构造场景。
-- Go 对照：[`pkg/executor/select.go`](select.go) 的 `LimitExec.Next`、`Open`、`Close`、`adjustRequiredRows`；[`pkg/executor/executor_required_rows_test.go`](executor_required_rows_test.go) 的 `TestLimitRequiredRows`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务指定命令验证恰好存在 11 个固定二级标题，并人工复核未把 Go 专属功能描述成 Rust 当前能力。

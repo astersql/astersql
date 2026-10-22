@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Lightning 文件型 checkpoint 的 protobuf 线协议实现，位于独立 crate `astersql-lightning-pkg-checkpoints-checkpointspb` 中。crate 边界由同目录 `Cargo.toml` 的 `[lib] path = "lib.rs"` 确定；`lib.rs` 通过 `#[path = "file_checkpoints.pb.rs"]` 装入本模块并 `pub use file_checkpoints_pb::*`，所以业务层实际从 crate 根使用这里的类型，而不是直接引用本文件模块。
-
-它不是 checkpoint 状态机或持久化后端。上层 `lightning/pkg/checkpoints/checkpoints.rs` 持有 `checkpointspb::CheckpointsModel`，在文件 checkpoint 的加载路径调用 `Unmarshal`，在 `file_cp_save` 及初始化、更新、插入 engine 等保存路径调用 `Marshal`；本文件只负责内存模型与 protobuf 字节之间的转换。源码注释明确说明它是 Go `file_checkpoints.pb.go` 的手写 wire-compatible 镜像，并保留 gogo/protobuf 旧接口。
+上层 `lightning/pkg/checkpoints/checkpoints.rs` 持有 `checkpointspb::CheckpointsModel`，在文件 checkpoint 的加载路径调用 `Unmarshal`，在 `file_cp_save` 及初始化、更新、插入 engine 等保存路径调用 `Marshal`；本文件只负责内存模型与 protobuf 字节之间的转换。
 
 ## 核心职责
 
@@ -67,9 +65,9 @@ RustCodeGraph 索引显示本文件被 12 个文件使用。业务主链中，`l
 
 ## 与 Go 版本的对应关系
 
-权威 schema 是同目录 `file_checkpoints.proto`，Go 基准是 `file_checkpoints.pb.go`。五个消息、字段号、字段 wire 类型、939 字节 descriptor 及 `XXX_*` 方法均与 Go/gogo 生成物对应。Rust 显式实现 Go 生成器的重要语义：proto3 零值省略、`sint32` map 键 zigzag32、负 `int32` repeated 的符号扩展、fixed64 小端布局、未知字段跳过、空输入保留旧值，以及重复 map value 以最后一个完整消息替换而非递归合并。
+Rust 显式实现 Go 生成器的重要语义：proto3 零值省略、`sint32` map 键 zigzag32、负 `int32` repeated 的符号扩展、fixed64 小端布局、未知字段跳过、空输入保留旧值，以及重复 map value 以最后一个完整消息替换而非递归合并。
 
-差异也必须保留在认知中：Go map value 与任务字段是指针，Rust map value 是值且仅任务字段为 `Option`；Go `init` 注册消息和文件，Rust `init()` 无操作；Go deterministic 路径委托 protobuf runtime，Rust无条件使用排序后的手写编码；Go 可保存任意字节字符串，Rust进行有损 UTF-8 转换；Go 的反射和 compact text 能力并未完整移植。这里的目标是业务所需线协议与兼容方法，而不是提供完整 protobuf runtime。
+差异也必须保留在认知中：Go map value 与任务字段是指针，Rust map value 是值且仅任务字段为 `Option`；Go `init` 注册消息和文件，Rust `init()` 无操作；Go deterministic 路径委托 protobuf runtime，Rust无条件使用排序后的手写编码；Go 可保存任意字节字符串，Rust进行有损 UTF-8 转换；Go 的反射和 compact text 能力并未完整移植。
 
 ## 扩展指南
 
@@ -78,11 +76,3 @@ RustCodeGraph 索引显示本文件被 12 个文件使用。业务主链中，`l
 更改 wire helper 时至少同步独立测试 `file_checkpoints.pb_test.rs` 与 `parity_test.rs`：前者覆盖重复 map value 的替换语义，后者覆盖完整嵌套 round-trip、零值/空输入、负 engine key、packed/fixed 字段、截断和非法 wire type、descriptor、未知字段、`XXX_*` 合并以及两种目标缓冲区放置规则。业务接线变化还应检查 `lightning/pkg/checkpoints/checkpoints_file_test.rs` 和 `checkpoints_test.rs`，但测试逻辑应继续放在独立文件，不能内嵌到本生产文件。
 
 性能风险主要来自 `MarshalToSizedBuffer` 的整消息临时分配、嵌套消息逐级分配和 map 键排序；若优化为原地倒序写入，必须保持稳定字节输出与缓冲区放置契约。兼容性风险集中在字段号/wire type、signed 转换、`Size` 一致性、重复字段合并规则及未知字段行为。若要修复无效 UTF-8 或完整反射兼容，应先增加与 Go 实际字节输出直接比较的测试，不能仅凭 Rust round-trip 判断成功。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter lightning/pkg/checkpoints/checkpointspb` 确认源、Go 对照、入口和两份独立测试均已索引；目标文件节点显示 1648 行、91 个符号并被 12 个文件使用。
-- RustCodeGraph：对 `file_checkpoints.pb.rs`、五个模型及 `Marshal`/`Unmarshal` 的 `explore`/`node` 查询确认内部调用链；图中可见 `sovFileCheckpoints` 的 8 个调用点、`skip_unknown -> skipFileCheckpoints`、上层 `checkpoints.rs` 的 `file_cp_save` 保存链，以及 `Get` 的解码链。
-- 已读源码与配置：`file_checkpoints.pb.rs`、`Cargo.toml`、`lib.rs`、`file_checkpoints.proto`、Go 对照 `file_checkpoints.pb.go`。
-- 已读独立测试：`file_checkpoints.pb_test.rs`、`parity_test.rs`；并通过 RustCodeGraph 检查业务测试与调用入口 `checkpoints.rs`、`checkpoints_file_test.rs`、`checkpoints_test.rs`。
-- 按任务约束未运行 Cargo；本任务只新增说明文档。结构验证要求本文件存在且恰有上述 11 个固定二级标题。

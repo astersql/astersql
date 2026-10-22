@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-copr` crate。`pkg/store/copr/Cargo.toml` 以 `lib.rs` 为库入口，`pkg/store/copr/lib.rs` 声明 `pub mod mpp` 并公开再导出其符号。它位于 MPP 计划/协调层与 TiFlash RPC 后端之间：接收查询身份、计划片段和 key range，把 range 转为按 Region/store 聚合的 batch cop 任务，再负责下发、取消、建立结果流、检查快照可见性及统计可用 MPP store。
-
-真实依赖通过两个 trait 注入：`BatchTaskSource` 提供 Region 切分和拓扑信息，`MppTransport` 提供网络操作及缓存失效。`pkg/store/copr/store.rs::Store::get_mpp_client` 用 `RegionCache` 和 `StoreMppTransport` 组装具体 `MppClient`。但当前 `MppClient` 没有实现 `pkg/kv/mpp.rs::MPPClient`，`pkg/store/driver/kv_adapter.rs` 暴露给统一 KV 接口的仍是 `UnsupportedMppClient`；因此本文件是可组装的 copr 内部实现，不能据此宣称 Rust 上层 MPP 主链已经完整接通。
+位于 MPP 计划/协调层与 TiFlash RPC 后端之间：接收查询身份、计划片段和 key range，把 range 转为按 Region/store 聚合的 batch cop 任务，再负责下发、取消、建立结果流、检查快照可见性及统计可用 MPP store。
 
 ## 核心职责
 
@@ -79,9 +77,9 @@ store 数缓存采用无锁原子协调。`last_update` 既是刷新时间又充
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/store/copr/mpp.go`。Rust 保留了 Go 的主要阶段和参数：分区/非分区任务构造，60 秒下发超时，Region task 不本地重试，无 Region task 退避，stale Region 失效，取消向所有 store 并发广播，receiver task ID 为 -1，超长连接读，以及 120 秒 store 计数缓存和 write node 过滤。`mpp_test.rs::repeated_cancel_broadcasts_and_wire_meta_matches_go` 进一步确认专用 cancel meta 只填充 Go 对应字段，并证明对同一输入重复调用 Rust 方法会重复广播；Go 注释所说“只允许第一次生效”依赖更上层的独占调用约束，不由 `mpp.go::CancelMPPTasks` 自身保存状态。
+`mpp_test.rs::repeated_cancel_broadcasts_and_wire_meta_matches_go` 进一步确认专用 cancel meta 只填充 Go 对应字段，并证明对同一输入重复调用 Rust 方法会重复广播；Go 注释所说“只允许第一次生效”依赖更上层的独占调用约束，不由 `mpp.go::CancelMPPTasks` 自身保存状态。
 
-Rust 通过 `BatchTaskSource`/`MppTransport` 解耦了 Go 对 `kvStore`、PD client、Region sender 和 tikvrpc 的直接依赖。Rust 用 `(Option<T>, bool, Option<BatchError>)` 表达响应、重试和错误三元组，而 Go 使用多返回值。Rust 请求允许在没有 `meta` 时回退到显式地址；Go `DispatchMPPTask` 仍调用 `req.Meta.GetAddress()`，其高层类型约束不同。
+Rust 用 `(Option<T>, bool, Option<BatchError>)` 表达响应、重试和错误三元组，而 Go 使用多返回值。Rust 请求允许在没有 `meta` 时回退到显式地址；Go `DispatchMPPTask` 仍调用 `req.Meta.GetAddress()`，其高层类型约束不同。
 
 尚未对齐或未在本文件体现的部分包括：Go 将 `StartTS` 注入 context、Region sender 的 execution-info 收集和 RPC error 日志、protobuf/tikvrpc 包装、gRPC status 的取消判定、failpoint、stale Region 日志原因、建连失败时关闭已得到的 stream，以及生产 `kv.MPPClient` 接线。Rust 的 `MppStream` 还是内存包集合，不等同于 Go 的 server-streaming response。上述差异均应视为当前迁移边界，不应从 Go 行为推断 Rust 已支持。
 
@@ -94,13 +92,3 @@ Rust 通过 `BatchTaskSource`/`MppTransport` 解耦了 Go 对 `kvStore`、PD cli
 - 修改取消并发时测试空输入、多地址、部分失败、重复调用和大量地址的资源上限；若改为线程池/异步任务，必须保留返回前是否等待全部取消完成的契约。
 - 修改 store 数缓存时测试 TTL 命中、首次并发初始化、刷新竞争、fetch 失败后重试、write node 过滤及时间倒退；测试逻辑继续放在独立 `mpp_test.rs`，不要嵌入生产文件。
 - 将 `MppStream` 升级为真实流时，需要定义 Recv/Close/Drop、半开连接错误回收、背压、取消和 packet 所有权，并同步协调器适配层，避免仅在内存 `Vec` 上模拟成功。
-
-## 验证依据
-
-- 目标源码：`pkg/store/copr/mpp.rs`，通过 RustCodeGraph `files --filter` 确认已索引，`node --file ... --offset 280 --limit 340` 阅读客户端、重试、取消、建连和缓存尾部，并人工核对文件前半的数据结构、trait 与常量。
-- RustCodeGraph：`status` 报告索引含 7032 个 Rust 文件、目标文件 49 个符号；`explore` 查询 `MppClient` 及六个主入口，`query --json` 精确定位 `construct_mpp_tasks`、`get_mpp_store_count` 和 `MppStoreCount`。调用图对重载符号存在歧义且按内部小写/上层大写接口分流，因此又用源码搜索核对真实接线，没有把模糊 blast-radius 当作唯一证据。
-- crate 与组装：`pkg/store/copr/Cargo.toml`、`pkg/store/copr/lib.rs`、`pkg/store/copr/store.rs`，确认 crate 入口、依赖、再导出、`StoreMppTransport` 委托和 `Store::get_mpp_client` 的构造关系。
-- 上层边界：`pkg/kv/mpp.rs`、`pkg/executor/internal/mpp/local_mpp_coordinator.rs`、`pkg/planner/core/operator/physicalop/fragment.rs`、`pkg/store/driver/kv_adapter.rs`；确认统一 trait、协调器消费方式、planner fragment 生成，以及当前 `UnsupportedMppClient`。`rg` 未发现 `MppClient` 对 `kv::MPPClient` 的实现。
-- Go 对照：`pkg/store/copr/mpp.go`，核对任务构造、下发/取消/建连、重试与 PD/Region 缓存失效、store 数缓存；仓库中不存在 `pkg/store/copr/mpp_test.go`，因此没有声称 Go 独立测试覆盖。
-- Rust 独立测试：`pkg/store/copr/mpp_test.rs`，当前唯一 `#[test]` 验证重复取消广播及专用 cancel meta 字段；任务构造、下发、建连、store 数缓存和生产接线尚无该文件内的直接测试证据。
-- 本任务按总计划仅做文档分析，不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰好包含十一个固定二级标题，并人工复查只新增本说明文档、未修改 `plan.md` 或运行时代码。

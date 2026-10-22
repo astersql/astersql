@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-sessionctx-variable` crate（见同目录 `Cargo.toml`），由 `lib.rs` 以公开模块 `embedding_vars` 挂载并再导出全部公开项。它位于系统变量注册层与 `sessionctx/vardef` 的进程级存储之间：`sysvar_builtins.rs::register_builtin_sysvars` 在一次性初始化内建变量表时调用 `register_embedding_vars`，后续 SQL 全局变量读写通过注册到 `SysVar` 的 `SetGlobal`/`GetGlobal` 钩子进入本文件。
-
-这里管理六个实验性 embedding 服务 API key，以及 OpenAI 兼容 API base。它不是 embedding 请求执行器；Go 版本的实际消费者在 `pkg/inference/sqlembed.go::NewEmbedFn` 和缓存键构造处。仓库内 Rust 生产代码目前只直接使用本文件的变量识别、脱敏、URL 规范化与注册能力，未发现 Rust embedding 推理实现读取这些 key 或 `embedding_config_version()`。
+用 `EMBEDDING_API_KEYS`、`EMBEDDING_API_BASE` 和 `DEFAULT_EMBEDDING_API_BASE` 定义本模块处理的系统变量集合及默认 endpoint。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ host 白名单采用完整匹配或 Azure 后缀匹配：`api.openai.com.evil` �
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `NormalizeOpenAIEmbeddingAPIBase` 和 `GetOpenAIEmbeddingBaseURL` 对齐同目录 `embedding_vars.go`；系统变量注册、key getter/setter、脱敏与版本递增则对应 `sysvar.go::newEmbeddingAPIKeySysVar` 及 `SysVars` 中的七个条目。常量和存储对应 `pkg/sessionctx/vardef/tidb_vars.go`。
-
 已验证的一致语义包括：六种 provider、仅 GLOBAL 字符串变量、允许空值、相同 key 不递增版本、空 base 与默认 base 等价、SQL getter 保留末四位、HTTPS/host/query 白名单限制、移除末尾 `/embeddings`。Rust 独立测试还覆盖保留显式端口、保留未清理的点路径以及百分号解码。
 
 存在两项当前差异/边界：Go 的 `SysVar` key 条目显式设置 `IsSensitive: true`，Rust 的 `register_embedding_vars` 没有设置该字段，而是依赖本文件 getter、session runtime 和 executor 审计路径的专门脱敏；扩展诊断接口时不能假定元数据已标敏。其次，Go 推理代码实际读取 key/base 与版本构造 provider 和缓存键，Rust 仓库中尚未发现对应生产消费链，故 Rust 当前属于变量基础设施已接线、推理消费者未验证的状态。
@@ -111,14 +107,3 @@ Go 测试 `embedding_vars_test.go` 覆盖规范化、默认值、版本和六个
 若接入 Rust embedding 执行器，应读取 `vardef` holder 或本文件 getter，并把 `EmbeddingConfigVersion` 纳入缓存失效设计；在实际调用边出现前，不应仅凭这些变量存在就宣称 Rust 推理链支持动态配置。
 
 性能上，读 key 会克隆完整字符串，设置会取得写锁；这些操作适合低频配置路径。不要把 `embedding_api_key` 或 getter 放入无缓存的高频逐行执行路径，也不要把秘密本身放进缓存键、错误或日志。
-
-## 验证依据
-
-- 目标源码：`pkg/sessionctx/variable/embedding_vars.rs`，逐项核对 4 个常量、10 个函数及注册闭包。
-- crate 与模块边界：`pkg/sessionctx/variable/Cargo.toml`（crate 名、`url` 与 `vardef` 依赖）及 `pkg/sessionctx/variable/lib.rs`（公开挂载、再导出、独立测试模块）。该目录没有 `doc.go`，最近的 Rust crate 说明来自 `lib.rs`。
-- 状态定义：`pkg/sessionctx/vardef/tidb_vars.rs` 的 `AtomicStringValue`、`AtomicU64Value`、七个 holder 和 `EmbeddingConfigVersion`。
-- 上游调用：`pkg/sessionctx/variable/sysvar_builtins.rs::register_builtin_sysvars`、`pkg/session/runtime/control.rs` 的读取/设置分支、`pkg/executor/set.rs` 的审计脱敏分支。
-- Rust 测试：`pkg/sessionctx/variable/embedding_vars_test.rs`；测试位于独立文件，覆盖 URL 正反例、key 掩码、GLOBAL-only、重复设置、默认 base 等价及版本不误增。
-- Go 对照：`pkg/sessionctx/variable/embedding_vars.go`、`embedding_vars_test.go`、`sysvar.go::newEmbeddingAPIKeySysVar` 与相关 `SysVars` 条目、`pkg/sessionctx/vardef/tidb_vars.go`、`pkg/inference/sqlembed.go`。
-- RustCodeGraph：`status` 显示目标已索引（全库 11,467 文件，目标文件报告 18 个符号）；`query` 定位了 `register_embedding_vars`、`NormalizeOpenAIEmbeddingAPIBase`、`GetOpenAIEmbeddingBaseURL`、`embedding_config_version`、`embedding_api_key`、`is_embedding_api_key`、`mask_embedding_api_key`、`set_config`、`config_holder`、`resolve_base`。本次 `explore/node` 无输出，`callers/callees` 在限定时间内未返回，因此调用边改由上述直接引用搜索和源码核验，未将图缺失推断为无调用者。
-- 结构验证按任务命令执行；本任务是纯文档分析，依计划不运行 Cargo。

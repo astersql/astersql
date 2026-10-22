@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-rowDecoder` crate 的实际实现文件。crate 入口 `pkg/util/rowDecoder/lib.rs` 以 `mod decoder` 引入它，再用 `pub use decoder::*` 重导出全部公共 API；根 workspace 的 `Cargo.toml` 将该 crate 列为成员，并通过 `facade_util_rowDecoder` 暴露到 `pkg/lib.rs` 的 `util::rowDecoder` 门面。`pkg/util/rowDecoder/Cargo.toml` 没有声明第三方依赖，说明这里当前使用的是自包含的简化数据模型和行编码，而不是直接组合 Rust 版 `tablecodec`、`types`、`table` 或 `expression` crate。
-
-从接线状态看，`pkg/ddl/Cargo.toml` 和 `pkg/executor/Cargo.toml` 虽声明了该 crate，但对 Rust 源码检索未找到本文件公共 API 的生产调用；可确认的直接 Rust 调用者位于独立测试 `pkg/util/rowDecoder/decoder_test.rs`。因此它目前是已纳入 workspace、已被 facade 导出的移植实现，但不能据此声称已经替代 Go 主链。Go 对应实现 `pkg/util/rowDecoder/decoder.go` 则真实接入 DDL 回填、executor sample 和 admin 行检查等路径。
+`DecodeTheExistedColumnMap` 支持分阶段处理：只解码已有列并补普通默认值，生成列和变更列先保持 `Null`，留给后续统一转换/求值。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ RustCodeGraph 将 `NewRowDecoder` 的可见直接调用定位到 `pkg/util/rowDe
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `RowDecoder`、`Column`、`NewRowDecoder`、`DecodeAndEvalRowWithMap`、`DecodeTheExistedColumnMap`、`EvalRemainedExprColumnMap`、`CurrentRowWithDefaultVal` 和 `BuildFullDecodeColMap` 均与 `pkg/util/rowDecoder/decoder.go` 的同名符号对应。共同语义包括：三种 handle 目标选择、先填内部可变行再求值生成列、生成列按 offset 顺序执行、普通默认值在完整路径中只供内部行使用，以及分阶段路径暂不处理生成列/变更列。
-
 重要差异如下：
 
 - Go 使用真实的 `table.Table`、`chunk.MutRow`、`types.Datum`、`expression.Expression`、`kv.Handle`、`tablecodec` 和 `rowcodec`；Rust 在单文件内定义简化替身及私有编码格式，类型覆盖和 SQL 兼容性明显更窄。
@@ -85,7 +81,6 @@ Rust 的 `RowDecoder`、`Column`、`NewRowDecoder`、`DecodeAndEvalRowWithMap`�
 - Go 默认值和列变更分别委托 `tables.GetColDefaultValue`、`tables.GetChangingColVal`，带完整上下文和错误规则；Rust 仅 clone 默认值或从单个 source ID 取值再做简化 cast。
 - Go 生成表达式通过 `EvalCtx` 和真实 `chunk.Row` 运行，并调用 `table.CastColumnValue`；Rust trait 接收简化 `BuildContext` 与 `&[Datum]`。
 - Go 主链已有 DDL/executor/admin 调用者；Rust 当前只有 crate/facade 声明和独立测试调用证据，生产接线未验证到。
-- `pkg/util/rowDecoder/decoder_test.rs` 移植了 Go `TestRowDecoder` 与 `TestClusterIndexRowDecoder` 的关键意图：默认值参与生成列、NULL 传播、有符号/无符号整数 handle、common handle，以及无生成列路径。它用秒数整数代替 timestamp/duration，用 `AddColumns` 代替 SQL 表达式，不能覆盖 Go 的真实类型系统、时区和 collation 行为。
 
 ## 扩展指南
 
@@ -96,12 +91,3 @@ Rust 的 `RowDecoder`、`Column`、`NewRowDecoder`、`DecodeAndEvalRowWithMap`�
 - 新增生成列能力应保持 offset 有序不变量，并测试生成列依赖前序生成列、表达式错误后的部分状态、schema offset 越界策略以及目标类型 cast。
 - 若开始在 DDL/executor Rust 生产代码中调用，应先确认实例生命周期为 worker/请求隔离，避免跨并发任务共享可变 `RowDecoder`；同时评估每行 clone/sort/allocation 的性能，必要时在构造期预计算有序生成列列表。
 - Go 对照行为发生变化时，应同时检查 `pkg/util/rowDecoder/decoder.go`、`decoder_test.go` 和 Rust 独立测试，不能仅靠当前简化测试宣称完整一致。
-
-## 验证依据
-
-- Rust 源码：`pkg/util/rowDecoder/decoder.rs`（624 行），核对了全部常量、类型、trait、函数、`impl` 和错误分支；文件无条件编译项。
-- crate/出口：`pkg/util/rowDecoder/Cargo.toml`、`pkg/util/rowDecoder/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`，确认 workspace 成员、porting 元数据、无 crate 级依赖以及 facade 重导出；另核对 `pkg/ddl/Cargo.toml`、`pkg/executor/Cargo.toml` 的依赖声明。
-- Rust 独立测试：`pkg/util/rowDecoder/decoder_test.rs`，确认 `TestRowDecoder`、`TestClusterIndexRowDecoder` 和 short-schema panic；`pkg/util/rowDecoder/main_test.rs` 只覆盖一次性测试初始化，不覆盖 decoder 运行逻辑。
-- Go 对照：`pkg/util/rowDecoder/decoder.go`、`pkg/util/rowDecoder/decoder_test.go`、`pkg/util/rowDecoder/main_test.go`；直接调用位置通过 `pkg/ddl/index.go`、`pkg/ddl/column.go`、`pkg/ddl/partition.go`、`pkg/executor/sample.go`、`pkg/util/admin/admin.go` 交叉核对。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标 `decoder.rs` 有 64 个符号；`files --filter pkg/util/rowDecoder` 确认同目录七个索引文件；`explore`/`query` 定位 `RowDecoder`、`NewRowDecoder`、`DecodeAndEvalRowWithMap`、`EvalRemainedExprColumnMap`，并将 Rust `NewRowDecoder` 的直接调用归到独立测试。精确 callers/callees 查询未返回目标 Rust 方法的生产边，因此又以 Rust 源码检索确认当前未见生产 API 使用。
-- 本任务是纯文档分析，依任务说明不运行 Cargo。交付前使用任务指定命令验证本文恰有十一个固定二级章节，并人工复核所有“已接线/已支持”陈述都有上述源码、索引、manifest 或测试证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-cgroup` crate 的非 Linux 内存 cgroup 实现。`pkg/util/cgroup/lib.rs` 仅在 `cfg(not(target_os = "linux"))` 下声明并公开重导出本模块；Linux 构建改用同目录的 `cgroup_memory.rs`。crate 边界由 `pkg/util/cgroup/Cargo.toml` 定义，运行时依赖只有 `anyhow`。
-
-它同时承担两种角色：面向 crate 使用者的四个 `Get*` API 是明确的“不支持平台”桩；带 `root: &Path` 参数的 `getCgroup*` 和 `detect*` 函数则保留真实的 v1/v2 文件解析能力，供临时文件树测试和跨平台语义复用。因此不能把整个文件概括为无行为的空实现。
+`detectMemStatValue` 实现 `memory.stat` 键值扫描，并有意模拟 Go `bufio.Scanner` 的 64 KiB token 上限和终止错误被忽略后的“键不存在”结果。
 
 ## 核心职责
 
@@ -71,11 +69,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/cgroup/cgroup_memory_unsupport.go`。四个公共 API 的非 Linux 语义一致：零限额、零用量、零 inactive-file 用量以及 `Unknown` 版本。Go 文件同样保留可注入 root 的真实 v1/v2 探测辅助和 `detectMemStatValue`，Rust 用 `Result<T>` 替代 Go 的多返回值错误。
+Go 文件同样保留可注入 root 的真实 v1/v2 探测辅助和 `detectMemStatValue`，Rust 用 `Result<T>` 替代 Go 的多返回值错误。
 
-Rust 的统计解析显式重现 Go `bufio.Scanner` 默认 64 KiB token 上限，并像 Go 实现一样不读取 `scanner.Err()`，所以超长 token 归并为 missing-key。Rust 对数值先做 ASCII 数字检查，再解析 `u64`，对应 Go `strconv.ParseUint(..., 10, 64)` 的关键接受范围。
+Rust 的统计解析显式重现 Go `bufio.Scanner` 默认 64 KiB token 上限，并像 Go 实现一样不读取 `scanner.Err()`，所以超长 token 归并为 missing-key。
 
-需要注意两处当前实现差异。第一，Go 非 Linux 混合版本分支依据 `len(ver) == 2`，Rust相同，但 Rust v2 回退路径使用 `mounts[0]`；Linux Rust 实现和 Linux Go 实现对限额混合挂载会使用第二个挂载点。第二，Go 非 Linux 未知版本格式化整个 `ver` 切片，Rust只报告 `versions[0]`。本文只记录这些事实，不推断或修正其意图。
+需要注意两处当前实现差异。第一，Go 非 Linux 混合版本分支依据 `len(ver) == 2`，Rust相同，但 Rust v2 回退路径使用 `mounts[0]`；Linux Rust 实现和 Linux Go 实现对限额混合挂载会使用第二个挂载点。第二，Go 非 Linux 未知版本格式化整个 `ver` 切片，Rust只报告 `versions[0]`。
 
 相关 Go 行为测试在 `pkg/util/cgroup/cgroup_mock_test.go`，Rust 对照测试在独立文件 `cgroup_mock_test.rs` 与 `cgroup_memory_unsupport_test.rs`，符合测试不内嵌生产源文件的仓库规则。
 
@@ -86,12 +84,3 @@ Rust 的统计解析显式重现 Go `bufio.Scanner` 默认 64 KiB token 上限�
 修改路径选择或混合 v1/v2 回退时，应扩展 `cgroup_mock_test.rs` 的表驱动用例，并与 `cgroup_mock_test.go` 的挂载、namespace、缺文件、解析失败和版本断言逐项核对。修改扫描器时必须同步独立的 `cgroup_memory_unsupport_test.rs`，至少保留 64 KiB 无换行 token、非法数字、`u64` 边界和缺键行为；不要把测试写回生产文件。
 
 兼容风险集中在错误文本、零值含义、混合挂载索引和 `memory.max` 的特殊值处理。性能风险较低，但不应去掉行长度上限或引入跨调用全局缓冲；若有意改变 Go Scanner 兼容行为，应同时更新 Go/Rust 对照证据和调用方对错误的预期。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本目录 22 个 Go/Rust 文件；`files --filter pkg/util/cgroup` 确认目标、平台实现与测试均已索引；`node --file pkg/util/cgroup/cgroup_memory_unsupport.rs --offset 1 --limit 220` 核对了完整 185 行源码及文件引用。对 `callers/callees --file` 的精确查询在本环境长时间无输出后被中止，因此调用边又以限定目录的 `rg` 结果和逐文件源码复核，未采用自然语言 `explore` 返回的同名噪声。
-- 生产与装配：`pkg/util/cgroup/cgroup_memory_unsupport.rs`、`pkg/util/cgroup/lib.rs`、`pkg/util/cgroup/cgroup.rs`、`pkg/util/cgroup/Cargo.toml`。
-- 直接调用者：`pkg/util/memory/meminfo.rs`、`pkg/util/cgmon/cgmon.rs`；限定 Rust 源码搜索还确认三个可注入 root 的函数只由同目录 mock 测试直接调用。
-- Go 对照：`pkg/util/cgroup/cgroup_memory_unsupport.go`、Linux 语义参照 `pkg/util/cgroup/cgroup_memory.go`、表驱动测试 `pkg/util/cgroup/cgroup_mock_test.go`。
-- Rust 测试证据：`pkg/util/cgroup/cgroup_mock_test.rs` 覆盖 v1/v2、namespace、无 controller、缺文件、非法值、版本与 `max`；`pkg/util/cgroup/cgroup_memory_unsupport_test.rs::unsupported_stat_scanner_stops_after_go_max_token_size` 覆盖 64 KiB token 边界；`pkg/util/cgroup/cgroup_memory_test.rs` 提供 Linux 实现的字节与扫描语义参照。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务文件指定的 11 章节结构命令，并人工核对本文能回答文件存在原因、执行路径、安全扩展位置和测试同步点。

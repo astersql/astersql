@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/owner/mock.rs` 属于 `astersql-owner` crate，由 [`pkg/owner/lib.rs`](lib.rs) 公开为 `mock` 模块并整体再导出。它实现与 etcd 版本相同的 `Manager` trait，但把选主状态放在进程内，供本地存储和不依赖真实 etcd 的测试/运行路径使用。真实 etcd 选主、`Manager` 契约、`Context`、`Listener`、`OpType` 与 `OwnerError` 定义在 [`pkg/owner/manager.rs`](manager.rs)，共享的进程内 Owner 表位于 [`pkg/owner/mock_owner_state.rs`](mock_owner_state.rs)。
-
-crate 边界由 [`pkg/owner/Cargo.toml`](Cargo.toml) 确认：运行时依赖 `async-trait`、`tokio`、`tokio-util`、`tracing`，同时仍保留 `etcd-client` 给同 crate 的真实实现；本文件自身不访问网络或 etcd。RustCodeGraph 对 `NewMockManager` 的调用结果显示，它除 owner crate 测试外，还被 `pkg/session/runtime/session.rs::from_storage_for_test`、`pkg/session/runtime/crossks_owner.rs::new` 及若干 session/runtime 测试构造，说明它是测试/本地服务接线中的可替换 Owner 实现，而不是独立进程入口。
+`NewMockManager` 构造实现 `Manager` 的 `MockManager`，用存储 UUID 与 owner key 确定独立竞选域，并把进程级 `OpType` 重置为 `OpNone`。
 
 ## 核心职责
 
@@ -85,9 +83,9 @@ RustCodeGraph 的精确 `callers/callees` 子命令未为这些 async trait 方�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/owner/mock.go`](mock.go)。字段和路径大体一一对应：`id/storeID/key/context/listener`、进程级 `mockOwnerOpValue`、`MockGlobalStateEntry.OwnerKey`、约一秒竞选节奏、become/retire 回调、`ForceToBeOwner` 空操作，以及 `BreakCampaignLoop` 委托 `Close` 的已知契约偏离。
+字段和路径大体一一对应：`id/storeID/key/context/listener`、进程级 `mockOwnerOpValue`、`MockGlobalStateEntry.OwnerKey`、约一秒竞选节奏、become/retire 回调、`ForceToBeOwner` 空操作，以及 `BreakCampaignLoop` 委托 `Close` 的已知契约偏离。
 
-Rust 使用 `CancellationToken + JoinHandle` 代替 Go 的 `context.CancelFunc + WaitGroup + channel`，用 `Mutex<Option<MockCampaign>>` 使重复 `CampaignOwner` 幂等；Go 每次调用都会启动 goroutine。Rust `ResignOwner` 在发通知前同步卸任，而 Go 仅向 `resignDone` 发送，由循环退位。Rust 在 spawn 前立即尝试一次，再丢弃 interval 的立即 tick；Go 在 goroutine 的 `default` 分支首次尝试。两者随后都给其他管理器约一秒接管窗口。
+Rust 使用 `CancellationToken + JoinHandle` 代替 Go 的 `context.CancelFunc + WaitGroup + channel`，用 `Mutex<Option<MockCampaign>>` 使重复 `CampaignOwner` 幂等；Go 每次调用都会启动 goroutine。Rust `ResignOwner` 在发通知前同步卸任，而 Go 仅向 `resignDone` 发送，由循环退位。Rust 在 spawn 前立即尝试一次，再丢弃 interval 的立即 tick；Go 在 goroutine 的 `default` 分支首次尝试。
 
 Rust 额外维护 `OwnerEpoch`，在发布所有权前增加 tenure，用于拒绝旧任期工作；Go `mock.go` 没有对应字段。Rust `Close` 显式再次条件卸任并以原子位幂等，Go 依赖取消后的循环退位并等待 `WaitGroup`。Rust 当前没有移植 Go `SetOwnerOpValue` 中的 `MockNotSetOwnerOp` failpoint；现有 Rust 测试验证正常初始化/更新，而不是该注入分支。以上差异应被视为当前实现事实，修改时需决定是保持 Rust 加强语义还是进一步贴合 Go。
 
@@ -98,14 +96,3 @@ Rust 额外维护 `OwnerEpoch`，在发布所有权前增加 tenure，用于拒�
 新增状态必须先决定隔离维度：Owner 归属按 `(store_id, owner_key)` 隔离，而 `OpType` 按 Go 语义是进程全局。不要默认所有 mock 状态都按 key 隔离。涉及 tenure 的改动还需维持“先发布新 epoch，再发布 Owner”的顺序，并补测失败抢占、重新获取和旧工作拒绝场景。
 
 测试逻辑必须继续放在独立文件，不嵌入 `mock.rs`。最接近的回归位置是 [`pkg/owner/mock_test.rs`](mock_test.rs)（全局 OpValue）、[`pkg/owner/manager_1_aster_unit_test.rs`](manager_1_aster_unit_test.rs)（竞争、退位、监听器、epoch）和 [`pkg/owner/manager_test.rs`](manager_test.rs)（`Manager` 公共契约与真实 etcd 对照）。若改动追求 Go 兼容，还应同步审阅 `pkg/owner/mock.go` 与 `pkg/owner/manager_test.go::TestGetOwnerOpValueBeforeSet`。主要风险是并发时重复回调、关闭后任务泄漏、错误的 key 隔离、旧 tenure 工作被误接受，以及为了“简化 mock”而偏离 Go 的可观察行为。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，`pkg/owner` 下的 `mock.rs`、`manager.rs`、`mock_owner_state.rs` 及相关测试均已索引；目标文件节点显示 278 行、38 个符号。
-- RustCodeGraph `query/node/explore`：核对 `NewMockManager`、`MockManager`、`try_become_owner`、`retire_owner_if_current`、`campaign_loop` 及完整 `Manager` 实现；索引给出的内部流包括 `campaign_loop → try_become_owner` 和 `campaign_loop → retire_owner_if_current`，并列出 session/runtime 与 owner 测试调用者。
-- [`pkg/owner/mock.rs`](mock.rs)：构造、竞选、退位、关闭、监听器、epoch 和 OpValue 的直接实现依据。
-- [`pkg/owner/mock_owner_state.rs`](mock_owner_state.rs)：按 `(store_id, owner_type)` 隔离的互斥映射，以及 `SetOwner/UnsetOwner/IsOwner` 的原子条件更新依据。
-- [`pkg/owner/manager.rs`](manager.rs)：`Manager`/`Listener`/`OwnerError`/`OpType` 契约及 `GetOwnerOpValue(None) → mock_owner_op_value` 依据。
-- [`pkg/owner/Cargo.toml`](Cargo.toml) 与 [`pkg/owner/lib.rs`](lib.rs)：crate 依赖、模块公开边界及独立测试装配依据。
-- [`pkg/owner/mock.go`](mock.go) 与 [`pkg/owner/manager_test.go`](manager_test.go)：Go 构造、竞选、退位、关闭、空操作和全局 OpValue 语义的对照依据。
-- [`pkg/owner/mock_test.rs`](mock_test.rs)、[`pkg/owner/manager_1_aster_unit_test.rs`](manager_1_aster_unit_test.rs)、[`pkg/owner/manager_test.rs`](manager_test.rs)：跨路径共享值、竞争接管、监听器、epoch、先读后写等边界的独立 Rust 测试证据。本任务按计划不运行 Cargo，未重新执行这些测试。

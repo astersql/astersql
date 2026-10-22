@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-infoschema` crate 的 InfoSchema V1 核心数据模型与查询实现。crate 根模块 `pkg/infoschema/lib.rs` 以 `pub mod infoschema` 装配本文件，并重导出 `InfoSchema`、`infoSchema`、`Table`、`TableInfo`、`DBInfo`、脱敏策略类型及常用辅助函数。`pkg/infoschema/Cargo.toml` 指定 `lib.rs` 为库入口，并直接依赖 `astersql-meta-model`、`astersql-infoschema-context`、`astersql-parser-ast`、`astersql-util-dbterror` 等元数据和错误基础 crate。
-
-在完整应用中，本文件提供“某一 schema version 下可并发读取的元数据快照”：`pkg/infoschema/builder.rs` 的 `Builder::Build` 创建 `infoSchema` 并调用 `add_schema`；`pkg/domain/canonical_domain.rs` 也会从 catalog 数据构造该类型；`pkg/session/runtime/session.rs` 用 `SessionExtendedInfoSchema` 在基础快照之上叠加会话临时表和 MDL 固定元数据。它不负责从持久化元数据增量计算快照（由 Builder 负责），也不实现 InfoSchema V2 的缓存/惰性表加载（见 `pkg/infoschema/infoschema_v2.rs`）。
+实现脱敏策略的惰性加载、过滤 ID 规范化、1024 条分批、稳定排序、持久化字符串解析和 SQL 形状构造。
 
 ## 核心职责
 
@@ -93,7 +91,6 @@ RustCodeGraph 对 `add_schema` 给出的被调用边为 `tableBucketIdx`、`addR
 - Go 的 `model.TableInfo` 与 `table.Table` 更完整；Rust 同时维护精简索引字段和可选 `model_meta`，缺少后者时部分完整元数据 API 会报错。
 - Go 的 masking loader 直接获取 session resource、执行 restricted SQL、处理 snapshot option 并解析 row；Rust 用 `MaskingPolicyLoader` trait 注入这些动作，`buildLoadMaskingPoliciesQuery` 仅保留查询和参数形状。
 - Go 首次加载用 `maskingPoliciesLoadCh` 让其他 goroutine 等待，Rust 以覆盖 loader 调用的 `Mutex<bool>` 实现单加载者；可见结果相同，但锁持有时间和阻塞方式不同。
-- Go 的 SessionExtendedInfoSchema 类型字段为可选的 LocalTemporaryTables/MdlTables；Rust 构造时总是创建两个空 `SessionTables`，查询优先级保持一致。
 - Rust `MaskingPolicyByName` 与当前 Go 代码都在同名策略跨表歧义时返回未命中；扩展时应维持这项精确查找边界，优先使用表/列 ID API。
 
 ## 扩展指南
@@ -104,12 +101,3 @@ RustCodeGraph 对 `add_schema` 给出的被调用边为 `tableBucketIdx`、`addR
 - 修改脱敏策略加载时需同步核对 `loadMaskingPoliciesIfNeeded`、`loadMaskingPoliciesWithTableIDs`、三类字符串解析器和 Go 同名函数；保留“nil/空即无过滤”“非空但全非法即匹配空集”、1024 分批与稳定排序契约。
 - 修改临时表覆盖顺序或 detach 语义时，应同时覆盖按名、按 ID、schema ID、MDL 表与 `HasTemporaryTable`；生产接线在 `pkg/session/runtime/session.rs`，独立测试应继续放在 `pkg/infoschema/infoschema_test.rs` 或对应 session 测试文件，不能内嵌回生产源文件。
 - 性能扩展的重点是 `FindTableByPartitionID`、按 ID 扫描策略/资源组以及首次 masking loader 的锁持有时间；任何新索引都要说明构建成本、快照内存和更新一致性。
-
-## 验证依据
-
-- 源码与边界：完整阅读 `pkg/infoschema/infoschema.rs`；读取 crate 入口 `pkg/infoschema/lib.rs` 和依赖声明 `pkg/infoschema/Cargo.toml`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标文件含 179 个符号；执行了 `files --filter pkg/infoschema/infoschema.rs`，以及对 `InfoSchema`、`infoSchema`、`MockInfoSchema`、`FindTableByTblOrPartID`、`LoadMaskingPolicies`、`SchemaByTable` 等的 `query`；对 `add_schema`、`TableByID`、`loadMaskingPoliciesIfNeeded`、`loadMaskingPoliciesWithTableIDs` 等执行了 `callers`/`callees`。
-- 生产接线：读取 `pkg/infoschema/builder.rs` 中 `infoSchema::new`/`add_schema` 调用，`pkg/domain/canonical_domain.rs` 中 catalog 构建入口，以及 `pkg/session/runtime/session.rs` 中 `SessionExtendedInfoSchema::new` 调用。
-- Go 对照：读取 `pkg/infoschema/infoschema.go` 中结构体与基础查询、脱敏加载/批次/解析、`SessionExtendedInfoSchema`、`FindTableByTblOrPartID` 等同名实现。
-- 独立测试：完整阅读 `pkg/infoschema/infoschema_test.rs`。其中 `test_basic` 固定大小写名称、缺失 schema 空列表、正 ID 约束；`test_local_temporary_tables` 固定会话表生命周期；`test_schema_by_table_falls_back_to_table_id` 固定 DBID 回退；`test_masking_policy_parsers_match_go_persisted_contract` 与 `test_masking_policy_query_and_batches_match_go` 固定持久化字符串、SQL 形状、1024 分批和排序。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终结构以任务指定命令检查 11 个固定二级标题。

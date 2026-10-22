@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pd.rs` 是 `astersql-executor-internal-pdhelper` crate 的核心实现文件，由同目录的 `lib.rs` 以私有模块 `mod pd` 装配并通过 `pub use pd::*` 再导出。它把 Go 包 `pkg/executor/internal/pdhelper` 中“从 PD 估算表行数、必要时回退到受限 SQL，并短期缓存结果”的行为移植为独立 Rust API。
-
-crate 边界由 `pkg/executor/internal/pdhelper/Cargo.toml` 定义：生产依赖只有启用 failpoint 的 `fail` 与 `lru`，测试依赖配置、autoid 和 testsetup crate；`autotests = false`，所以独立测试文件由 `lib.rs` 的 `#[cfg(test)]` 路径显式挂载。根 `Cargo.toml` 将该 crate 纳入 workspace，并登记别名 `facade_executor_internal_pdhelper`。
-
-当前接线状态必须与实现能力分开看：RustCodeGraph/源码搜索只发现本文件和同 crate 测试直接调用这些 Rust API，没有发现其它 Rust 生产文件使用 `GlobalPDHelper`。`pkg/executor/builder.rs::getApproximateTableCountFromStorage` 目前从 `dependencies.analyze_table_counts(task)` 取得可选值，并非调用本 crate。Go 运行主链则已接线：`pkg/executor/select.go` 启停全局 helper，`pkg/executor/builder.go` 和 `pkg/executor/infoschema_reader.go` 查询它。
+用 `get_approximate_table_count_from_storage` 实现无缓存决策树：先请求指定物理表 ID 的 PD Region 统计；Region 数大于 2 时直接采用 `storage_keys`，否则执行 `select count(*)`。
 
 ## 核心职责
 
@@ -97,13 +93,11 @@ RustCodeGraph 对精确入口执行 `callers`/`callees` 未返回跨文件静态
 
 ## 与 Go 版本的对应关系
 
-- `GlobalPDHelper`、`defaultPDHelper`、`PDHelper::Start/Stop`、缓存入口和无缓存入口逐项对应 `pd.go` 同名符号；Rust 另提供 snake_case 核心函数和 Go 风格转发别名。
 - Go `ttlcache.Cache[string,float64]` 对应 Rust `Mutex<LruCache<String, CacheEntry>>` 加自管 TTL；默认 TTL、容量、命中返回 `true`、失败结果也缓存的行为保持一致。
 - Go `sync.Once` 对应 `AtomicBool::swap`。效果上均只允许包级首次启动；Rust 的清理线程、条件变量与显式句柄承担 Go `WaitGroupWrapper` 和 ttlcache 后台循环的生命周期职责。
 - Go 对 `sessionctx.Context`、`helper.Storage` 和 restricted executor 的直接调用，在 Rust 中被压缩为 `SessionContext` trait；`kv.WithInternalSourceType(...StatsForegroundPriority)` 对应 `InternalSourceContext::with_internal_stats_foreground`。
 - Go 使用 `sqlescape.MustFormatSQL(..., %n)`；Rust `quote_identifier` 实现本任务涉及的反引号标识符规则。`migration_aster_unit_test.rs` 用包含反引号和空格的名字核对生成文本。
 - Go failpoint 会原地覆盖 `err` 和 Region 统计；Rust 包装函数直接返回固定 `RegionStats`，对后续分支的可观察效果相同。
-- Go 测试 `pd_test.go::TestTTLCache` 只覆盖命中、容量驱逐和过期序列；Rust `pd_test.rs::test_ttl_cache` 对齐该序列，`migration_aster_unit_test.rs` 进一步覆盖大小表分支、转义、失败、失败缓存和 worker 生命周期。
 - 关键迁移差异是生产接线：Go helper 被 executor 实际调用；当前 Rust crate 只有测试调用，且 Rust builder 的同名方法通过 `AnalyzeBuilderDependencies` 获取预计算值。
 
 ## 扩展指南
@@ -115,17 +109,3 @@ RustCodeGraph 对精确入口执行 `callers`/`callees` 未返回跨文件静态
 - 修改清理策略时，关注全局 once、停止后不可重启、非首个实例无 worker、并发同键重复查询和锁持有时间；对应更新 `cleanup_worker_start_and_stop_are_idempotent` 及 TTL/LRU 测试。
 - 增加可传播错误属于公共契约变化：当前所有错误都折叠为布尔值。若要改变，需同时审查 Go 调用者、Rust builder 依赖接口和信息模式路径，而不是只改本文件。
 - 性能上，大表路径应维持一次 PD 查询；小表 COUNT 虽被限制在不超过两个 Region 的判断下，仍可能昂贵。任何阈值、TTL、容量或并发去重改动都应配套基准或调用次数测试。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中的 `pd.rs`、`lib.rs`、两份 Rust 测试以及 Go 对照均在索引中。
-- 目标实现：`pkg/executor/internal/pdhelper/pd.rs` 的 `PDHelper`、`get_approximate_table_count_from_storage`、`cleanup_loop`、`count_sql`、failpoint 和全局实例。
-- crate 装配：`pkg/executor/internal/pdhelper/lib.rs` 与 `Cargo.toml`；workspace 成员及 façade 别名来自根 `Cargo.toml`。
-- Go 对照：`pkg/executor/internal/pdhelper/pd.go`、`pd_test.go`，以及生产调用位置 `pkg/executor/select.go`、`builder.go`、`infoschema_reader.go`。
-- Rust 测试：`pkg/executor/internal/pdhelper/pd_test.rs` 和 `migration_aster_unit_test.rs`；`main_test.rs` 仅提供包级测试配置与 failpoint 场景，不改变生产算法。
-- Rust 主链核对：`pkg/executor/builder.rs::getApproximateTableCountFromStorage` 从 builder dependency 读取 `approximate_storage_count`；全仓 Rust 搜索未找到本 crate 的生产调用或真实 trait 适配器。
-- RustCodeGraph 查询覆盖 `status`、目标目录 `files`、目标/Go/测试/模块文件 `node`、主要入口 `query` 以及入口的 `callers`/`callees`；精确图查询没有返回跨文件生产调用边，因此使用源码搜索确认当前接线边界。
-
-这是纯文档分析，按任务约束未运行 Cargo。交付结构检查要求本文恰有十一个规定的二级标题；内容人工复核重点是区分 Go 已接线主链与 Rust 当前仅 crate 内测试可达的事实。

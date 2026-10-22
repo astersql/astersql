@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate（`pkg/metrics/Cargo.toml`），由 `pkg/metrics/lib.rs` 通过 `pub mod stats` 公开。它是 statistics 与 Plan Replayer 相关 Prometheus collector 的定义和初始化层，不负责统计信息计算、ANALYZE 调度、缓存更新或 Plan Replayer 任务执行。
-
-正常启动链中，`pkg/metrics/metrics.rs::InitMetrics` 在 `INIT_METRICS_ONCE` 保护的初始化序列里调用 `stats::InitStatsMetrics`；随后 `pkg/metrics/metrics.rs::RegisterMetrics` 把本文件的 19 个 collector 注册到默认 Prometheus registry。业务侧只有两个本文件封装的写入口：`pkg/session/runtime/statistics.rs::execute_analyze` 调用 `IncManualAnalyzeCounter`，`pkg/domain/domain.rs` 的自动 ANALYZE 路径调用 `IncAutoAnalyzeCounter`。其余公开 collector 由注册中枢或其他模块直接读取、派生标签句柄。
+向下游提供共享向量：统计缓存模块从 `StatsCacheCounter`/`StatsCacheGauge` 派生固定标签句柄，Domain metrics 从 `HistoricalStatsCounter`、`PlanReplayerTaskCounter` 和 `PlanReplayerRegisterTaskGauge` 绑定业务句柄。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metrics/stats.go`。Rust 的 19 个全局量、`InitStatsMetrics` 创建顺序、namespace/subsystem/name/help、标签顺序和全部指数桶参数与 Go 保持一致。Go 的全局接口或指针变量对应 Rust 的 `Option<...>`，用 `None` 明确表达初始化前状态。
+Go 的全局接口或指针变量对应 Rust 的 `Option<...>`，用 `None` 明确表达初始化前状态。
 
 主要差异有三点：
 
@@ -82,7 +80,7 @@
 2. Go 包初始化语义通常在启动阶段赋值一次；Rust 的包级 `InitMetrics` 有 `Once`，但公开的 `InitStatsMetrics` 本身可重入并会替换全部句柄。`pkg/domain/metrics/migration_aster_unit_test.rs` 明确验证了重初始化后旧值清零、下游重新绑定的测试语义。
 3. 指标定义已对齐不代表所有 Go 采集点都已接入这组 Rust 静态量。当前可确认的直接业务接线只有手动/自动 ANALYZE helper，以及已读取到的 Domain 标签绑定；其他同名指标在若干 Rust 子 crate 中存在独立实现，应逐调用点核实，不能仅按名称推断共享。
 
-Go 同路径没有独立 `stats_test.go`。Rust 也没有 `pkg/metrics/stats_test.rs`；相关行为分散在 ANALYZE、统计缓存和 Domain metrics 的独立测试中。
+Rust 也没有 `pkg/metrics/stats_test.rs`；相关行为分散在 ANALYZE、统计缓存和 Domain metrics 的独立测试中。
 
 ## 扩展指南
 
@@ -92,12 +90,3 @@ Go 同路径没有独立 `stats_test.go`。Rust 也没有 `pkg/metrics/stats_tes
 - 调整 histogram 桶或单位：同时检查 Grafana、告警与查询表达式；`seconds` 与 `millis` 指标不能混用。桶变化会改变导出的 `_bucket{le=...}` 时序，属于监控兼容性变更。
 - 调整重初始化：必须处理 `static mut` 同步、registry 中旧 collector 和下游派生句柄三者的一致性；不要假设重新赋父 `Option` 会自动更新已有 clone。
 - 测试必须放在独立文件。初始化/注册和元数据适合扩展 `pkg/metrics/metrics_test.rs` 或 `metrics_internal_test.rs`；ANALYZE 计数扩展 `pkg/statistics/handle/handletest/analyze/analyze_test.rs`；缓存绑定扩展 `pkg/statistics/handle/cache/metrics/migration_aster_unit_test.rs`；历史统计/Plan Replayer 绑定扩展 `pkg/domain/metrics/migration_aster_unit_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引：`status` 显示 11,467 个文件、307,296 个节点、1,848,419 条边，目标文件已索引；`files --filter pkg/metrics` 显示 `stats.rs` 含 4 个索引符号；`explore "pkg/metrics/stats.rs StatsCacheCounter StatsCacheMissCounter"` 给出完整文件上下文，并报告 `InitStatsMetrics` 的 5 个调用者、两个 `Inc*AnalyzeCounter` 各 1 个业务调用者；`query` 确认 Go/Rust 两个 `InitStatsMetrics` 定义及两个 Rust helper。精确 `callers/callees --file` 在本次索引上未输出文本，因此调用边又用索引文件片段和精确 `rg` 交叉验证。
-- 源码与入口：`pkg/metrics/stats.rs`（19 个全局 collector、3 个公开函数）；`pkg/metrics/lib.rs`（公开模块与标签常量）；`pkg/metrics/metrics.rs`（一次性初始化、注册前置条件及 19 个注册项）；`pkg/session/runtime/statistics.rs`（手动 ANALYZE 结果计数）；`pkg/domain/domain.rs`（自动 ANALYZE 两条执行路径的结果计数）。目标包没有 `doc.go`。
-- crate 与 Go 对照：`pkg/metrics/Cargo.toml`（crate 名、入口和依赖）；`pkg/metrics/stats.go`（全局量与初始化配置逐项对照）。
-- 下游绑定：`pkg/domain/metrics/metrics.rs`（历史统计、Plan Replayer 标签组合）；`pkg/statistics/handle/cache/metrics/metrics.rs`（缓存标签组合及初始化顺序约束）。
-- 独立测试：`pkg/statistics/handle/handletest/analyze/analyze_test.rs::TestAnalyzeMetricsCounters` 验证手动和自动成功计数；`pkg/statistics/handle/cache/statscache_test.rs::global_configuration_metrics_and_failpoints` 验证缓存 hit/miss/update 以及 `StatsDeltaLoadHistogram` 样本数；`pkg/statistics/handle/cache/metrics/migration_aster_unit_test.rs` 验证缓存派生句柄共享父时序；`pkg/domain/metrics/migration_aster_unit_test.rs` 验证历史统计/Plan Replayer 标签绑定与重初始化。Go 同路径未发现独立 `stats_test.go`。
-- 本任务只新增说明文档，按计划不运行 Cargo。结构验收由固定 11 个二级标题检查完成；文档中的路径、符号、标签和调用边均以以上源码与测试为直接证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Rust 规划器的逻辑聚合算子 `LogicalAggregation`，表示 SQL 中的全局聚合、`GROUP BY` 聚合以及 `SUM`/`COUNT`/`MIN`/`MAX`/`FIRST_ROW` 等聚合函数在物理计划生成前的节点形态。它属于 crate `astersql-planner-core-operator-logicalop`（`pkg/planner/core/operator/logicalop/Cargo.toml`），由 `lib.rs` 声明为私有模块后将公开符号重导出。
-
-真实主链上，`logical_plan_builder_runtime.rs::build_aggregation_runtime`构造节点，填充 `AggFuncs`/`GroupByItems`/输出 schema/子计划与 hint，并开启聚合相关优化规则。`optimizer_runtime.rs::logical_optimize_in_place` 随后通过 `LogicalPlan` trait 调用列裁剪、键推导与谓词下推。本文件不执行聚合计算；物理算子选择和执行属于后续层。
+实现 Rust 规划器的逻辑聚合算子 `LogicalAggregation`，表示 SQL 中的全局聚合、`GROUP BY` 聚合以及 `SUM`/`COUNT`/`MIN`/`MAX`/`FIRST_ROW` 等聚合函数在物理计划生成前的节点形态。
 
 ## 核心职责
 
@@ -71,7 +69,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_aggregation.go`。结构主字段、`Init`、谓词下推、列裁剪、键/统计/列组/排序属性/FD 推导、coprocessor 禁止位、模式判定和 `CanPullUp` 都有对应概念。Rust 通过 `pub use aggregation::{AggFuncDesc, AggFunctionMode, ...}` 复用共享聚合描述符；`logical_aggregation_descriptor_aster_unit_test.rs` 用 `TypeId` 验证该类型恒等关系及 Partial1/Complete/Dedup 判定。
+结构主字段、`Init`、谓词下推、列裁剪、键/统计/列组/排序属性/FD 推导、coprocessor 禁止位、模式判定和 `CanPullUp` 都有对应概念。
 
 已核对的关键一致点包括：直接分组列保留顺序和重复；全局聚合推导最多一行；分组 NDV 用共享多列估算器；裁剪时保留副作用和一个占位聚合；`MIN/MAX` 仅在无 DISTINCT、无 ORDER BY、单个上下文常量参数时可与参数结果等价；空函数列表不是模式判定的正常输入。
 
@@ -79,7 +77,6 @@
 
 - Rust `ExplainInfo` 仅用分组表达式 hash 和函数名生成摘要，Go 使用完整的 explain 表达式/聚合函数格式化，因而文本精度不同。
 - Go 谓词下推先对分组聚合中的常量 `MIN/MAX` 输出作列替换和常量折叠，且对纯常量谓词同时下推与保留；Rust 虽有 `getAggFuncsColsForConstResult`，但当前 `splitCondForAggregation` 未使用它，并且分组不变判定排除无列谓词。
-- Go 谓词下推以 schema 替换和更细的 group-by/firstrow 回退流程实现；Rust 是基于 `UniqueID` 集合的收敛实现，虽支持 DNF 共同可下推部分，不应宣称已覆盖 Go 的全部细节。
 - Go `BuildKeyInfo` 对空 `AggFuncs` 有显式保护；Rust 当前在调用 `IsPartialModeAgg` 前没有该保护。Go `DeriveStats` 在复用缓存统计时会刷新 `GroupNDVs`，Rust 早返路径直接复制缓存。
 - Go `PossibleProperties` 同时携带 `HasTiFlash`；Rust 本类型字段仅保存排序列向量。Go 的 `NoCopPushDown` 已标记为由物理属性替代的废弃字段，Rust 仍直接在 `CanPushToCop` 中检查它。
 
@@ -91,13 +88,3 @@
 - 修改统计或键/FD 逻辑时，从 `DeriveStats`、`ExtractColGroups`、`BuildSelfKeyInfo`、`ExtractFD` 接入；检查缓存重用、多列 NDV、伪统计上限、表达式分组、直接列分组、Partial1 模式和 firstrow 不应产生假 FD 等风险。
 - 修改模式或物理属性时，不要把 `Partial2`/`Final`/`Dedup` 当成 `Partial1` 或 `Complete`；同时评估 DISTINCT 参数、聚合 `ORDER BY`、分区键、coprocessor 禁止位和冲突 hint 处理。
 - Rust 生产代码和测试必须继续分文件放置。主要同步测试是 `logical_aggregation_test.rs`、`logical_aggregation_descriptor_aster_unit_test.rs` 与 `logical_relational_aster_unit_test.rs`；如果对齐 Go 行为，还应对照 `logical_aggregation.go` 及上层 planner 的聚合回归测试，不得为通过测试而简化 Go 语义。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/core/operator/logicalop` 确认目标 Rust/Go/测试文件均在索引中。
-- RustCodeGraph 源码读取：`node --file pkg/planner/core/operator/logicalop/logical_aggregation.rs --offset 1 --limit 500` 与 `--offset 500 --limit 500`，覆盖目标文件全部 864 行；索引报告该文件被 12 个文件引用。
-- RustCodeGraph 符号/图查询：`query LogicalAggregation --kind struct --limit 10 --json`、`query PredicatePushDown --kind method --limit 20 --json`、`query PruneColumns --kind method --limit 20 --json`、`query DeriveStats --kind method --limit 20 --json`，并尝试了 `callers`/`callees` 查询。后者未返回可用方法边，所以上下游另由文件反向引用、构建器与优化器精确引用核验。
-- 已读直接生产证据：`pkg/planner/core/operator/logicalop/Cargo.toml`、`lib.rs`、`base_logical_plan.rs`、`logical_selection.rs`，`pkg/planner/core/logical_plan_builder_runtime.rs`、`optimizer_runtime.rs`；目标包无 `doc.go`，已读最近的接口契约 `pkg/planner/core/base/doc.go`。
-- 已读 Go 对照：`pkg/planner/core/operator/logicalop/logical_aggregation.go` 全部 843 行，重点核对结构字段、谓词下推、列裁剪、统计、FD、属性、模式判定与上拉条件。
-- 已读独立 Rust 测试：`logical_aggregation_test.rs`、`logical_aggregation_descriptor_aster_unit_test.rs`、`logical_relational_aster_unit_test.rs`。它们分别验证直接分组列顺序/重复、常量分组与上拉、空值评估、聚合结果等价限制、描述符类型/模式、分组 NDV、全局聚合行数和分组不变谓词。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` 与固定二级标题计数命令验证文档存在且恰有 11 个规定章节。

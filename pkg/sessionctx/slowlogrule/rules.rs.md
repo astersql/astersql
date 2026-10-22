@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-sessionctx-slowlogrule`，crate 根 `pkg/sessionctx/slowlogrule/lib.rs` 通过 `pub mod rules` 声明模块并用 `pub use rules::*` 重导出全部公开符号。`pkg/sessionctx/slowlogrule/Cargo.toml` 指定 `lib.rs` 为库入口，并把 Go 对照包标记为 `pkg/sessionctx/slowlogrule`。
-
-它只定义慢日志规则的数据结构和一个会话包装构造器，不负责把文本解析成规则，也不负责执行匹配。当前 Rust 的实际解析、字段访问器和匹配主链位于 `pkg/sessionctx/variable/slow_log.rs` 与 `pkg/executor/adapter_slow_log.rs`，那里维护的是另一套 snake_case、类型化阈值结构。仓库搜索到本 crate 被 `pkg/executor/Cargo.toml`、`pkg/sessionctx/variable/tests/Cargo.toml` 和根 `Cargo.toml` 声明为依赖或 facade，但目标类型的直接 Rust 使用证据仅见本 crate 的 `migration_aster_unit_test.rs`；不能据此声称本文件已经接入运行时主链。
+用 `GlobalSlowLogRules` 按连接 ID 保存全局配置解析后的规则桶，其中键 `-1` 按 Go 约定代表所有会话共享的规则。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@ Go 主链的直接关系更完整：`pkg/sessionctx/variable/session.go` 调用 
 
 ## 与 Go 版本的对应关系
 
-`pkg/sessionctx/slowlogrule/rules.go` 与本文件字段逐项对应：Go `any` 对应 `Box<dyn Any>`，`map[string]struct{}` 对应 `HashSet<String>`，`[]*SlowLogRule` 对应 `Vec<Box<SlowLogRule>>`，`map[int64]*SlowLogRules` 对应 `HashMap<i64, Box<SlowLogRules>>`。Rust 使用显式 `Box` 表达 Go 指针所有权，并保留 PascalCase 名称以方便迁移核对。
+Rust 使用显式 `Box` 表达 Go 指针所有权，并保留 PascalCase 名称以方便迁移核对。
 
-`NewSessionSlowLogRules` 的初始化语义与 Go 一致：保留传入规则对象，创建空 `EffectiveFields`，默认全局哈希为零，并标记需要更新。`migration_aster_unit_test.rs` 的三个测试分别验证这一初始化、`Any` 阈值类型/条件分组，以及连接 ID `42` 与全局键 `-1` 能同时存在。
-
-差异也必须保留在认知中：Go 的接口值、map 和指针有 nil 状态，而目标 Rust API 要求传入非空 `Box<SlowLogRules>`；Go map 是引用型，Rust 容器及 box 有单一所有权；Rust 的 `dyn Any` 默认没有线程安全约束。更重要的是，当前运行时使用 `pkg/sessionctx/variable/slow_log.rs` 中的另一套 `Threshold` 枚举、`BTreeSet`/`BTreeMap` 和 `Option<SlowLogRules>` 模型，因此本文件目前是独立的 Go 结构迁移层，而非运行时唯一事实源。
+差异也必须保留在认知中：Go 的接口值、map 和指针有 nil 状态，而目标 Rust API 要求传入非空 `Box<SlowLogRules>`；Go map 是引用型，Rust 容器及 box 有单一所有权；Rust 的 `dyn Any` 默认没有线程安全约束。
 
 ## 扩展指南
 
@@ -83,13 +79,3 @@ Go 主链的直接关系更完整：`pkg/sessionctx/variable/session.go` 调用 
 若要把本 crate 接入实际 Rust 主链，不能仅替换 import：需先解决它与 `pkg/sessionctx/variable/slow_log.rs` 同名类型之间的模型差异，包括 `Box<dyn Any>` 与 `Threshold`、`HashSet/HashMap` 与有序集合、boxed/optional 规则、字段命名，以及 `Send`/`Sync` 和派生 trait 能力。匹配语义应继续在独立源文件实现，测试也应放在独立测试文件中，不应内嵌到 `rules.rs`。
 
 安全扩展至少同步以下测试面：结构与构造语义用 `pkg/sessionctx/slowlogrule/migration_aster_unit_test.rs`；若改变解析或匹配契约，再同步 `pkg/sessionctx/variable/tests/slowlog/slow_log_test.rs`、Go 同路径测试以及 executor 的独立慢日志测试。主要兼容风险是 Go/Rust 字段语义漂移，正确性风险是 `Fields` 与 `Rules` 不一致或阈值下转类型错误，性能风险是无谓复制规则文本/集合或在热路径反复动态下转。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/sessionctx/slowlogrule` 列出 `lib.rs`、`rules.rs`、`rules.go` 和 `migration_aster_unit_test.rs`。
-- RustCodeGraph `node --file pkg/sessionctx/slowlogrule/rules.rs --offset 1 --limit 260`：完整读取 113 行目标源，确认五个结构体、一个函数、标准库依赖及无条件编译项；图报告该文件含 7 个符号。
-- RustCodeGraph `query NewSessionSlowLogRules --kind function`：区分 Go、目标 Rust 和 `sessionctx/variable` 三个同名构造器；`query SlowLogRule` 与精确文件节点用于消除同名符号歧义。
-- 已读直接文件：`pkg/sessionctx/slowlogrule/Cargo.toml`、`lib.rs`、`rules.go`、`migration_aster_unit_test.rs`；已核对依赖声明 `pkg/executor/Cargo.toml`、`pkg/sessionctx/variable/tests/Cargo.toml` 和根 `Cargo.toml`。
-- 已读接线证据：RustCodeGraph 文件节点 `pkg/sessionctx/variable/slow_log.rs`（模型与构造器）和 `pkg/executor/adapter_slow_log.rs`（字段合并、AND/OR 匹配）；相关独立 Rust 测试为 `pkg/sessionctx/slowlogrule/migration_aster_unit_test.rs`。`pkg/sessionctx/variable/tests/slowlog/slow_log_test.rs` 验证当前另一套运行时模型，不直接实例化本文件类型。
-- 已读 Go 对照：`pkg/sessionctx/slowlogrule/rules.go`；并通过搜索核对 `pkg/sessionctx/variable/session.go`、`slow_log.go`、`pkg/executor/adapter_slow_log.go` 及 `pkg/sessionctx/variable/tests/slowlog/slow_log_test.go` 的真实接线和边界测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构命令用于确认目标文档存在且恰含 11 个固定二级标题，另人工复核所有运行时接线陈述均区分目标 crate 与同名实现。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor` crate 的语句适配层，由 [`pkg/executor/lib.rs`](lib.rs) 以公开模块 `adapter_slow_log` 装配。它承接 [`pkg/sessionctx/variable/slow_log.rs`](../sessionctx/variable/slow_log.rs) 定义的慢日志规则、字段访问器和日志条目类型，负责规则字段预采集、匹配、条目补全、对象复用，以及 `WRITE_SLOW_LOG` hint 的强制输出。
-
-当前 Rust 接线并不完整。`WriteForcedSlowLog`/`WriteForcedSlowLogTo` 已由 [`pkg/session/runtime/dispatch.rs`](../session/runtime/dispatch.rs) 和 [`pkg/session/runtime/control.rs`](../session/runtime/control.rs) 的真实语句结束路径调用；RustCodeGraph 与全仓库检索没有发现 `PrepareSlowLogItemsForRules`、`ShouldWriteSlowLog`、`SetSlowLogItems`、`putSlowLogItems` 的生产调用者。因此规则引擎主体目前是已实现、可测试的迁移接口，不能描述成已经替代 Go 的完整慢查询主链。
+承接 [`pkg/sessionctx/variable/slow_log.rs`](../sessionctx/variable/slow_log.rs) 定义的慢日志规则、字段访问器和日志条目类型，负责规则字段预采集、匹配、条目补全、对象复用，以及 `WRITE_SLOW_LOG` hint 的强制输出。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@ hint 延迟输出时，日志条目由 session 状态的队列持有，直到协
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `mergeConditionFields`、`updateAllRuleFields`、对象池、`PrepareSlowLogItemsForRules`、`Match`、`ShouldWriteSlowLog`、`CompleteSlowLogItemsForRules` 和 `SetSlowLogItems` 分别对应 [`pkg/executor/adapter_slow_log.go`](adapter_slow_log.go) 的同名实现。核心语义保持一致：字段并集缓存、惰性分配、规则 OR/条件 AND、会话/连接/全局默认三级匹配，以及归还前清零。
-
 存在以下重要差异：
 
 - Go 把规则状态直接放在 `SessionVars.SlowLogRules`，Rust 暂以 `SessionSlowLogRules` 和 `SlowLogRuleContext` 抽象隔离；当前没有真实生产上下文实现。
@@ -96,12 +92,3 @@ Rust 的 `mergeConditionFields`、`updateAllRuleFields`、对象池、`PrepareSl
 修改 plan digest 行为时应保持缓存、扁平计划复用、规范化与大小写匹配约定一致，并同步 [`pkg/executor/adapter_slow_log_aster_unit_test.rs`](adapter_slow_log_aster_unit_test.rs) 及 [`pkg/sessionctx/variable/tests/slowlog/slow_log_test.rs`](../sessionctx/variable/tests/slowlog/slow_log_test.rs)。修改规则预采集/池行为时同步 [`pkg/executor/adapter_slow_log_test.rs`](adapter_slow_log_test.rs)；Rust 测试继续放在独立文件中，不嵌入生产源文件。
 
 兼容风险主要是 Go/Rust 字段集合或匹配顺序漂移；正确性风险是未知字段、无 setter 字段或空规则的处理差异；性能风险是提前分配、重复填充、plan digest 重算以及全局池锁竞争。生产接线完成前应明确保留“尚未接线”标记，不能用单元测试覆盖替代运行时调用证据。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件 397 行被完整读取。
-- RustCodeGraph 查询过 `updateAllRuleFields`、`PrepareSlowLogItemsForRules`、`ShouldWriteSlowLog`、`SetSlowLogItems`、`WriteForcedSlowLog`、`session_plan_digest` 的节点、callers/callees；关键边见“依赖与调用关系”。图查询显示规则主体没有 Rust 生产调用者，强制输出入口由 session runtime 调用。
-- 读取的 Rust 生产证据：[`pkg/executor/adapter_slow_log.rs`](adapter_slow_log.rs)、[`pkg/executor/lib.rs`](lib.rs)、[`pkg/session/runtime/dispatch.rs`](../session/runtime/dispatch.rs)、[`pkg/session/runtime/control.rs`](../session/runtime/control.rs)、[`pkg/sessionctx/variable/slow_log.rs`](../sessionctx/variable/slow_log.rs)；`pkg/executor` 没有 `doc.go`。
-- 读取的边界与对照证据：[`pkg/executor/Cargo.toml`](Cargo.toml)、[`pkg/executor/adapter_slow_log.go`](adapter_slow_log.go)、[`pkg/executor/adapter.go`](adapter.go)。Go 的 `LogSlowQuery` 明确串联规则预采集、判断、延迟补全、池回收、限流和输出。
-- 读取的测试证据：[`pkg/executor/adapter_slow_log_test.rs`](adapter_slow_log_test.rs) 验证无 setter 字段不分配条目；[`pkg/executor/adapter_slow_log_aster_unit_test.rs`](adapter_slow_log_aster_unit_test.rs) 验证 hint 输出门控和 plan-digest 注册；[`pkg/sessionctx/variable/tests/slowlog/slow_log_test.rs`](../sessionctx/variable/tests/slowlog/slow_log_test.rs) 验证字段访问器、阈值和 AND/OR 语义；Go `adapter_test.go` 验证预采集/补全、三级规则匹配和 lazy/prealloc 基准场景。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；完成判据使用任务文件指定的 11 章节结构命令。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-lockstats` crate，是统计锁子系统的只读查询与集合过滤层。crate 入口 `pkg/statistics/handle/lockstats/lib.rs` 以私有模块 `query_lock` 装配本文件，再通过 `pub use query_lock::*` 导出公开查询 API；同一入口定义了本文件依赖的 `RestrictedSQLExecutor`、`StatsSession`、`SessionRef` 和 `StatsError`。Cargo 元数据 `pkg/statistics/handle/lockstats/Cargo.toml` 把该 crate 对应到 Go 包 `pkg/statistics/handle/lockstats`，库入口为 `lib.rs`。
-
-它位于统计锁操作的共同前置步骤：`lock_stats.rs` 在新增锁前查询已有记录以跳过重复对象，`unlock_stats.rs` 在回灌统计增量和删除锁记录前查询实际锁定对象，而 `statsLockImpl::GetLockedTables` 对外提供指定 ID 集合的锁定状态。该文件只观察 `mysql.stats_table_locked` 的 ID 集合，不创建、更新或删除锁。
+`QueryLockedTablesWithExecutor` 从一个已经取得的受限 SQL 执行器读取所有锁定的表或分区 ID，并转换为 `HashMap<i64, ()>`。
 
 ## 核心职责
 
@@ -72,11 +70,9 @@ Cargo 文件中的旧 Go 包依赖均位于 `target.'cfg(any())'.dependencies`�
 
 ## 与 Go 版本的对应关系
 
-Rust `selectSQL`、`QueryLockedTables` 和 `GetLockedTables` 分别对应 `pkg/statistics/handle/lockstats/query_lock.go` 的同名常量与函数。两版都把所有 `table_id` 收集成集合，并通过候选 ID 与全集的交集返回锁定子集；空集合行为一致。
+关键实现差异是：Go `QueryLockedTables(ctx, sctx)` 直接调用 `util.ExecRowsWithCtx(ctx, sctx, selectSQL)`，逐行读取第 0 列，并由调用方传入带有内部统计请求来源的 context；Rust `QueryLockedTables(session)` 不接收 context，也不直接调用 `ExecRestrictedSQL`，而是通过 `WithSession(false, ...)` 和 `LockedTableIds` 抽象查询。
 
-关键实现差异是：Go `QueryLockedTables(ctx, sctx)` 直接调用 `util.ExecRowsWithCtx(ctx, sctx, selectSQL)`，逐行读取第 0 列，并由调用方传入带有内部统计请求来源的 context；Rust `QueryLockedTables(session)` 不接收 context，也不直接调用 `ExecRestrictedSQL`，而是通过 `WithSession(false, ...)` 和 `LockedTableIds` 抽象查询。请求来源、SQL 执行与行解码必须由生产执行器适配层兑现，不能仅凭本文件的 `selectSQL` 常量推断已经使用该 SQL。
-
-Rust 额外提供 crate 私有 `QueryLockedTablesWithExecutor`，供事务内加锁/解锁路径复用现有执行器。Go 调用点则直接把 `sessionctx.Context` 传给公开查询函数。Rust 使用 `HashMap<i64, ()>` 对应 Go 的 `map[int64]struct{}`；Rust `ids: &[i64]` 对应 Go 可变参数 `tableIDs ...int64`。
+Rust 额外提供 crate 私有 `QueryLockedTablesWithExecutor`，供事务内加锁/解锁路径复用现有执行器。Rust 使用 `HashMap<i64, ()>` 对应 Go 的 `map[int64]struct{}`；Rust `ids: &[i64]` 对应 Go 可变参数 `tableIDs ...int64`。
 
 Go 测试验证 0/1/2 行、执行错误及统计前台内部请求 context；Rust 独立测试验证过滤、空结果、错误透传、全量 ID 和重复行去重。Rust 测试没有直接验证 SQL 文本或请求来源 context，这是当前覆盖差异。
 
@@ -87,13 +83,3 @@ Go 测试验证 0/1/2 行、执行错误及统计前台内部请求 context；Ru
 - 若调整会话或事务策略，必须同时检查 `statsLockImpl::GetLockedTables` 的非事务读取，以及 `AddLockedTables`、`AddLockedPartitions`、`RemoveLockedTables`、`RemoveLockedPartitions` 对执行器版本的事务内调用，避免嵌套会话或检查—写入窗口扩大。
 - 功能回归测试应继续放在独立文件 `pkg/statistics/handle/lockstats/query_lock_test.rs`，不要嵌入生产文件；Go 对齐变化同步核对 `query_lock_test.go`。应覆盖成功、空集、重复 ID、底层错误、过滤交集，以及新增执行器/上下文契约。
 - 返回类型若从 map 改为有序结构，会影响调用方的成员判断复杂度和无序语义；大锁集合路径应关注一次全量加载的时间与内存成本。错误包装变化则可能破坏当前 `StatsError` 精确透传测试与上层诊断。
-
-## 验证依据
-
-- 目标实现：`pkg/statistics/handle/lockstats/query_lock.rs`；确认 1 个常量和 3 个函数的签名、控制流及可见性。
-- crate 边界：`pkg/statistics/handle/lockstats/lib.rs` 与 `pkg/statistics/handle/lockstats/Cargo.toml`；确认 trait、会话引用、错误类型、模块导出、Go 包映射及 `cfg(any())` 依赖区。
-- Rust 上游：`pkg/statistics/handle/lockstats/lock_stats.rs`、`pkg/statistics/handle/lockstats/unlock_stats.rs`；确认公开会话查询与事务内执行器查询的各自调用点。
-- Rust 测试：`pkg/statistics/handle/lockstats/query_lock_test.rs`；确认非事务标志、过滤交集、空存储、重复行去重和错误透传。
-- Go 对照：`pkg/statistics/handle/lockstats/query_lock.go`、`pkg/statistics/handle/lockstats/query_lock_test.go`，并参考 `lock_stats.go`、`unlock_stats.go` 的调用点；确认 SQL、行读取、context 约束和集合语义。
-- RustCodeGraph：索引覆盖目标目录；`query` 定位 `QueryLockedTablesWithExecutor`、Rust/Go `QueryLockedTables` 和 `GetLockedTables`；`callees QueryLockedTables` 确认 Rust 公开函数到执行器函数的调用边；`explore` 确认执行器函数被 Rust 加锁/解锁四个入口调用，公开函数被三个 Rust 单测调用。trait 动态派发边未由图工具解析，已用 `lib.rs` 和函数体补证。
-- 结构验收使用任务指定命令，要求本文存在且恰好包含上述 11 个固定二级标题；本任务为纯文档分析，未运行 Cargo。

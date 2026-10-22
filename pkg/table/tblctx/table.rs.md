@@ -5,9 +5,7 @@ Go 对照：[`table.go`](./table.go)
 
 ## 文件定位
 
-本文件位于 `astersql-table-tblctx` crate，是表写入路径与会话、DDL/导入等上层运行环境之间的能力契约。它不执行完整的增删改，也不持有事务；它把行编码、统计增量、缓存表、临时表、交换分区约束检查和 ID 分配所需的环境能力拆成 trait，供表实现通过统一上下文访问。crate 入口 `pkg/table/tblctx/lib.rs` 以私有 `mod table` 加公开 `pub use table::*` 导出这些 API；`pkg/table/tblctx/Cargo.toml` 声明 crate 名为 `astersql-table-tblctx`，并通过本地依赖接入 `model`、`autoid`、`stmtctx`、`variable`、`rowcodec`、`tableutil`、`exprctx` 与 `infoschema`。
-
-在 Rust 表 API 中，`pkg/table/table.rs` 的 object-safe `MutateContext` 对本文件的正式 `MutateContext` 做 blanket adapter，使 `Table::AddRecord`、`UpdateRecord`、`RemoveRecord` 等动态分发入口能接收具体实现。当前主要会话实现是 `pkg/table/tblsession/table.rs::MutateContext<C>`；该实现从 session 状态生成编码配置、返回复用缓冲，并按事务上下文是否存在暴露可选能力。
+不执行完整的增删改，也不持有事务；它把行编码、统计增量、缓存表、临时表、交换分区约束检查和 ID 分配所需的环境能力拆成 trait，供表实现通过统一上下文访问。
 
 ## 核心职责
 
@@ -101,17 +99,13 @@ handler 对临时表和 data 使用拥有所有权的 `Box`，没有借用外部
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/table/tblctx/table.go`：`RowEncodingConfig`、四个 support 接口、`TemporaryTableHandler`、`MutateContext` 与 `AllocatorContext` 均保留 Go 名称和职责。主要语言映射如下：
-
 - Go 接口返回值在 Rust 中用关联类型表达，随后由 `pkg/table/table.rs` 在需要动态分发的位置对象化；这避免在底层接口中无差别使用 `dyn Any`。
-- Go 的 `*rowcodec.Encoder` 映射为 `Option<rowcodec::Encoder>`；Go 的 nil 接口映射为 `Option` 加可用布尔值。
-- Go `any` 缓存表 handle 映射为 `Box<dyn Any + Send + Sync>`，增加了 Rust 跨线程类型约束。
 - Go 的 `tableutil.TempTable` 与 `variable.TemporaryTableData` 直接作为字段接口；Rust 增加两个本地 trait 和 blanket impl，以便隔离依赖并构造小型 mock。
 - Go `UpdateTxnDeltaSize(delta int)` 在 Rust 使用 `i64`。这与受支持的 64 位生产目标语义一致，并由 `table_test.rs` 的大于 `i32::MAX` 回归测试锁定。
 - Go handler 方法使用指针 receiver；Rust 的只读方法用 `&self`，变更 dirty size 的方法用 `&mut self`。
 - Go 注释称 `AlternativeAllocators` 的“第二返回值为 nil”属于文字错误，实际签名和 Rust 都是 `bool`；语义由 `bool` 表示是否提供替代 allocator。
 
-Go 表写入消费链比本文件更完整可见：`tables.go` 在 Add/Update 路径使用编码、统计和临时表能力，`cache.go` 使用缓存表能力，`partition.go` 使用交换分区能力。Rust 已有接口、session 实现和 object-safe 桥接；未在直接证据中发现与这些 Go 文件完全等价的所有 Rust 消费逻辑，因此这里只陈述已接线部分，不宣称全链路已经移植完成。
+Rust 已有接口、session 实现和 object-safe 桥接；未在直接证据中发现与这些 Go 文件完全等价的所有 Rust 消费逻辑，因此这里只陈述已接线部分，不宣称全链路已经移植完成。
 
 ## 扩展指南
 
@@ -122,18 +116,3 @@ Go 表写入消费链比本文件更完整可见：`tables.go` 在 Add/Update �
 修改 `TemporaryTable` 或 `TemporaryTableData` 时，要验证其上游依赖仍可通过 blanket impl，并避免把测试实现放进 `table.rs`。修改缓存表 handle 类型时，需要评估 `Any` downcast 契约、`Send + Sync` 兼容性和事务提交阶段的消费者。修改交换分区 infoschema 类型时，要同时满足正式 trait 的 `MetaOnlyInfoSchema` 与桥接层的 `Any + Sized`，并验证约束检查所需方法仍可访问。
 
 兼容性风险主要来自公开 trait 的破坏性变更（所有实现者都需更新）、Go/Rust 数值宽度差异、可选能力双返回值不一致，以及关联类型到 trait object 的转换限制。性能风险主要在不必要地重复构造编码器、丢失 `MutateBuffers` 复用、对临时表 committed size 做昂贵查询，或把原本按借用返回的支持对象改为频繁分配。
-
-## 验证依据
-
-本说明使用以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `table.rs` 已索引。
-- RustCodeGraph `files --filter pkg/table/tblctx`：确认 `table.rs`、`lib.rs`、Cargo 之外的 Go 对照与独立 Rust 测试布局。
-- RustCodeGraph `node --file pkg/table/tblctx/table.rs --offset 1 --limit 500`：读取目标文件全部 179 行，并获得 45 个符号及 63 个文件引用概览。
-- RustCodeGraph `query`：查询 `RowEncodingConfig`、`TemporaryTableHandler`、`NewTemporaryTableHandler`、`MutateContext`、`AllocatorContext`、`TemporaryTableSupport`、`ExchangePartitionDMLSupport`，定位定义、实现和桥接候选。
-- RustCodeGraph `callers/callees`：对精确的 Rust `NewTemporaryTableHandler` 节点查询均返回空；随后由已索引的 `pkg/table/tblsession/table.rs:240-250` 显式调用补足调用边证据，并在本文注明图索引限制。
-- 已读生产文件：`pkg/table/tblctx/lib.rs`、`pkg/table/tblctx/Cargo.toml`、`pkg/table/tblsession/table.rs`、`pkg/table/table.rs`；Go 对照/消费文件为 `pkg/table/tblctx/table.go`、`pkg/table/tables/tables.go`、`pkg/table/tables/cache.go`、`pkg/table/tables/partition.go`。
-- 已读独立测试：`pkg/table/tblctx/table_test.rs`、`pkg/table/tblctx/migration_aster_unit_test.rs`、`pkg/table/tblsession/table_test.rs` 与 `pkg/table/tblsession/migration_aster_unit_test.rs` 的相关引用。它们覆盖 64 位 delta、正负 dirty 增量、无/有 committed data、事务上下文能力开关、编码配置及交换分区支持。
-- `pkg/table/tblctx` 不存在 `doc.go`，因此没有额外的包级 Go 契约文件；最近的权威定义是同目录 `table.go` 和 crate 入口 `lib.rs`。
-
-本任务为纯文档分析，未运行 Cargo 或代码测试。结构验证要求本文恰好包含计划规定的 11 个二级标题；行为结论通过上述源码、索引查询、Go 对照和独立测试进行人工交叉核验。

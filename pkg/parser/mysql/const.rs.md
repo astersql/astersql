@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`const.rs` 位于独立 crate `astersql-parser-mysql`（`pkg/parser/mysql/Cargo.toml`）中，由 `pkg/parser/mysql/lib.rs` 以 `pub mod r#const` 公开。它集中定义 MySQL/TiDB 协议常量、会话 `sql_mode` 位集合、服务端版本串与语句优先级转换，是协议层和 SQL 兼容层共用的“常量与轻量转换”边界，不负责网络收发、SQL 解析、认证执行或系统表访问。
-
-上层 `astersql-parser` 在 `pkg/parser/lib.rs::mysql` 中只选择性再导出 `DefaultSQLMode`、`GetSQLMode`、`SQLMode` 及若干解析器关心的 mode 位；其他消费者可直接使用 `astersql_parser_mysql::r#const`。RustCodeGraph 的文件节点显示该文件被 82 个文件使用，调用面横跨 session、server、expression、dumpling 和测试代码，因此协议数值与字符串字面量属于跨模块兼容契约。
+用 `SQLMode(i64)` 表示 MySQL `sql_mode` 位集合，提供查询、置位、清位、组合模式展开、字符串规范化与严格解析。
 
 ## 核心职责
 
@@ -68,11 +66,11 @@ RustCodeGraph 的 `status` 与分段 `node` 确认源码和文件级消费者，
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/parser/mysql/const.go`，Rust 保留了协议数值、SQL mode 位序、组合展开表、版本校验和优先级语义。`pkg/parser/mysql/const_test.rs` 对照 `const_test.go`，逐项锁定 bit 0..31、`VersionSeparator`、CLOUD 版本成功/失败样例和占位版本改写；`ModeAllowInvalidDates` 位于新增的 bit 32，源码与 Go 定义保持同序。
+`pkg/parser/mysql/const_test.rs` 对照 `const_test.go`，逐项锁定 bit 0..31、`VersionSeparator`、CLOUD 版本成功/失败样例和占位版本改写；`ModeAllowInvalidDates` 位于新增的 bit 32，源码与 Go 定义保持同序。
 
 两边存在实现形状差异：Go 的 `ServerVersion` 是包初始化时计算的变量，Rust 是每次读取 `TiDBReleaseVersion` 的函数；Go 的 maps 在 Rust 中多为有序切片并通过线性查找；Go `PriorityEnum.Restore` 写入 `format.RestoreCtx`，Rust 为避免把完整 format crate 引入该轻量 crate，直接返回 `&'static str`；Go 用 `errors.Errorf`，Rust 统一构造 `SQLError`。这些差异不改变已覆盖的外部字符串与位值语义，但 `ServerVersion` 的动态读取和 `static mut` 安全责任是 Rust 特有边界。
 
-相关 Rust 边界测试不只在同目录：`pkg/types/const_test.rs` 覆盖合法/非法 SQL mode 字符串、mode 查询方法和游标状态位；`pkg/parser/mysql/charset_1_aster_unit_test.rs` 与 `unit_test.rs` 还覆盖组合展开、未知 mode、prerelease 和版本错误。它们提供迁移语义证据，但本任务未运行 Cargo，未把测试结果误报为本轮执行证据。
+相关 Rust 边界测试不只在同目录：`pkg/types/const_test.rs` 覆盖合法/非法 SQL mode 字符串、mode 查询方法和游标状态位；`pkg/parser/mysql/charset_1_aster_unit_test.rs` 与 `unit_test.rs` 还覆盖组合展开、未知 mode、prerelease 和版本错误。
 
 ## 扩展指南
 
@@ -81,13 +79,3 @@ RustCodeGraph 的 `status` 与分段 `node` 确认源码和文件级消费者，
 调整格式化逻辑要明确是否仍保留 Go 的“只裁尾空格、不裁每段空格”和“组合成员在组合名之前”的行为；这会影响系统变量拒绝边界和规范字符串。版本规则变化必须同步年份/月范围、占位值、server 拼接及 printer/启动路径，并在独立的 `pkg/parser/mysql/const_test.rs` 中补成功、边界和错误样例。协议/SQL mode 边界可同步扩展 `pkg/types/const_test.rs`，测试不要内嵌到生产文件。
 
 `PriorityEnum` 若增加成员，要同步常量、`Priority2Str`、`Str2Priority`、`Restore` 及配置镜像测试。性能风险主要来自热路径新增线性表扫描或额外分配；兼容风险则集中在公开数值、字符串大小写/空白规则、错误码和展示顺序。任何涉及 `TiDBReleaseVersion` 的扩展还必须处理 `static mut` 的并发安全，而不能仅增加另一个 `unsafe` 访问点。
-
-## 验证依据
-
-- 目标源码：RustCodeGraph `node --file pkg/parser/mysql/const.rs` 分段读取全部 712 行，核对了 imports、版本函数、协议常量、SQL mode 位/表/方法、优先级转换及末尾压缩常量；文件节点报告 82 个消费者。
-- crate 与模块：`pkg/parser/mysql/Cargo.toml`（`astersql-parser-mysql`、`semver = "1"`、库入口 `lib.rs`），`pkg/parser/mysql/lib.rs`（公开 `r#const`），`pkg/parser/lib.rs::mysql`（选择性再导出）。该目录没有 `doc.go`，因此包契约以 Rust manifest 和库入口为准。
-- 直接调用证据：`pkg/session/runtime/control.rs` 的 `sql_mode` 写入链；`pkg/expression/exprstatic/evalctx.rs`、`dumpling/export/schema_projection.rs` 的格式化/解析链；`cmd/tidb-server/main.rs::deriveRuntimeVersionsFromBuildInfo` 的版本链；`pkg/server/server.rs`、`pkg/server/runtime.rs`、`pkg/session/sessmgr/processinfo.rs` 的命令展示引用。
-- Go 对照：`pkg/parser/mysql/const.go` 与 `pkg/parser/mysql/const_test.go`，核对协议数值、SQL mode、组合模式、版本转换和优先级恢复语义。
-- 独立 Rust 测试：`pkg/parser/mysql/const_test.rs`、`pkg/types/const_test.rs`、`pkg/parser/mysql/charset_1_aster_unit_test.rs`、`pkg/parser/mysql/unit_test.rs`。本任务按计划是纯文档分析，未运行 Cargo。
-- RustCodeGraph：运行 `status`、目标 `explore`、目标文件分段 `node` 以及 `query GetSQLMode`、`query FormatSQLModeStr`、`query BuildTiDBXReleaseVersion`、`query SQLMode`；索引有效。精确 callers/callees 未产出边，故按技能允许的回退使用 `rg` 限定 Rust 调用点补证。
-- 交付验证：使用任务指定命令确认目标文件存在且恰有 11 个固定二级标题，并人工复核只有该说明文档与任务文件删除属于本会话变更。

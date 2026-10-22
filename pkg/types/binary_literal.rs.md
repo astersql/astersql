@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现 MySQL `BIT` 与十六进制字面量的共享字节表示、解析、格式化、数值转换和比较，是类型系统中“SQL 字面量文本/整数”与“按大端保存的字节序列”之间的标量转换层。源码并不是由根 crate 直接声明：`pkg/types/internal/scalar/lib.rs` 通过 `#[path = "../../binary_literal.rs"] mod binary_literal` 挂载并 `pub use` 全部公开符号，因此实际编译归属是 `astersql-types-scalar`；根 `pkg/types/lib.rs` 再把该 crate 暴露为 `astersql_types::scalar`，并选择性再导出 `Context` 等上下文符号。
-
-Cargo 边界由 `pkg/types/internal/scalar/Cargo.toml` 定义；本文件直接使用标准库、该 crate 的 `Context`/`ValueResult`/`errors`，以及 `hex = "0.4"`。`pkg/types/Cargo.toml` 则说明上层 `astersql-types` 依赖并命名该子 crate 为 `types-group-1`。文件没有条件编译项；测试分别从根 crate 的 `pkg/types/binary_literal_test.rs` 和标量子 crate 的 `pkg/types/binary_literal_1_aster_unit_test.rs` 挂载，测试逻辑未内嵌在生产文件中。
+实现 MySQL `BIT` 与十六进制字面量的共享字节表示、解析、格式化、数值转换和比较，是类型系统中“SQL 字面量文本/整数”与“按大端保存的字节序列”之间的标量转换层。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ RustCodeGraph 对目标文件报告被 28 个文件使用，并能定位 `Binary
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/binary_literal.go`，独立 Go 测试是 `pkg/types/binary_literal_test.go`。Rust 保留了 Go 的三种类型、公开函数名称、接受的前缀大小写、位/十六进制补零规则、大端整数语义、非法宽度 panic、超过 8 有效字节时裁剪到最大无符号整数、忽略前导零的比较，以及空字面量行为。`pkg/types/binary_literal_test.rs` 的表驱动案例基本逐项复刻 Go 测试；`pkg/types/binary_literal_1_aster_unit_test.rs` 另验证标量子 crate 中的集成路径和严格截断错误。
+Rust 保留了 Go 的三种类型、公开函数名称、接受的前缀大小写、位/十六进制补零规则、大端整数语义、非法宽度 panic、超过 8 有效字节时裁剪到最大无符号整数、忽略前导零的比较，以及空字面量行为。
 
 实现形态上的主要映射是：Go 的切片别名变为拥有 `Vec<u8>` 的 tuple struct；Go 的包级 `ZeroBinaryLiteral` 变量变为每次构造新空向量的函数；Go `bytes.Compare` 变为 Rust 切片比较加私有 `OrderingSignum`；Go 的 `(uint64, error)` 变为能在错误中保留裁剪值的 `ValueResult<u64>`。
 
@@ -91,11 +89,3 @@ RustCodeGraph 对目标文件报告被 28 个文件使用，并能定位 `Binary
 - 若需要无损字节到文本转换，不应直接改变 `ToString` 而忽略 Go 兼容性；可考虑新增明确编码方式的 API，并补充非法 UTF-8 回归测试。现有有效 UTF-8 用例不足以覆盖这一风险。
 - 若要减少大 BIT 字面量的峰值分配，可考虑不构造补齐后的完整 `String` 而按首块位数解析；必须保持左补零、字节边界与错误输入行为，并用独立基准或大输入测试证明收益。
 - 新的公开符号需要从 `pkg/types/internal/scalar/lib.rs` 的现有 glob re-export 路径保持可达；若期望根 `astersql-types` 直接暴露，还需显式评估 `pkg/types/lib.rs` 的再导出策略和 Cargo 依赖边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/types/binary_literal.rs --offset 1 --limit 400` 读取了目标文件 252 行全貌；`query` 定位了目标 `BinaryLiteral`、`ParseBitStr`、`ParseHexStr`、`NewBinaryLiteralFromUint` 节点；对精确节点执行 `callers`/`callees` 无返回，故跨文件调用改由源码调用点核验。
-- 生产源码：`pkg/types/binary_literal.rs`；模块与 crate 边界：`pkg/types/internal/scalar/lib.rs`、`pkg/types/internal/scalar/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`；截断策略：`pkg/types/context.rs`。
-- 上游直接证据：`pkg/types/parser_driver/value_expr.rs` 与其 `Cargo.toml`、`pkg/expression/chunk_executor.rs`、`pkg/types/datum.rs`、`pkg/tablecodec/tablecodec.rs`、`pkg/util/rowcodec/common.rs`；仓库级 `rg` 同时核对了其他构造、转换和编解码调用点。
-- 语义对照：`pkg/types/binary_literal.go`、`pkg/types/binary_literal_test.go`；Rust 独立测试：`pkg/types/binary_literal_test.rs`、`pkg/types/binary_literal_1_aster_unit_test.rs`。这些测试覆盖解析表、格式化、比较、整数构造与截断；HEX 空字符串测试误调用 BIT 解析器这一覆盖缺口已在文档中标出。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的结构命令，要求文档存在且固定二级标题恰好 11 个；并人工复核只有本说明文档与任务文件删除属于本任务变更，`plan.md` 未修改。

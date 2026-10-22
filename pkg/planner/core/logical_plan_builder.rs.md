@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core`（`pkg/planner/core/Cargo.toml`），由 crate 根 `pkg/planner/core/lib.rs` 以公开模块 `pub mod logical_plan_builder` 挂载。它在 `PlanBuilder` 上实现一套以轻量 `task::{PlanNode, Expression, FieldType}` 为数据模型的逻辑计划构建骨架，并定义与该骨架配套的 SELECT、JOIN、集合运算、窗口、CTE、UPDATE 和 DELETE 输入类型。
-
-需要特别区分两条路径：本文件头注释与 `lib.rs` 都将它标为“简化/骨架实现”；解析真实 parser AST、构造 `logicalop` 计划的完整运行时实现位于同 crate 的 `logical_plan_builder_runtime.rs` 和 `planbuilder_runtime.rs`。因此，本文件可由公开 API、同 crate 的 `integration_test.rs` 以及若干单元测试直接调用，但不能据此认定其中每个轻量分支都是服务器 SQL 入口当前采用的完整实现。Go 的语义来源是同路径 `pkg/planner/core/logical_plan_builder.go`，Rust 运行时实现是另一个需要同步核对的落点。
+在 `PlanBuilder` 上实现一套以轻量 `task::{PlanNode, Expression, FieldType}` 为数据模型的逻辑计划构建骨架，并定义与该骨架配套的 SELECT、JOIN、集合运算、窗口、CTE、UPDATE 和 DELETE 输入类型。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@
 
 ## 与 Go 版本的对应关系
 
-`Cargo.toml` 的 `[package.metadata.porting]` 明确把本 crate 对应到 Go 包 `pkg/planner/core`。Go 同路径文件中存在对应入口：`buildAggregation`、`buildJoin`、`buildSelection`、`buildSetOpr`、`extractLimitCountOffset`/`buildLimit`、`buildSelect`、`buildDataSource`、`buildUpdate`/`buildUpdateLists`、`buildDelete`、`buildWindowFunctions`、`mergeWindowSpec`、`buildWindowSpecs`、`appendDynamicVisitInfo`、`appendVisitInfo`、`buildWith` 和 `getResultCTESchema`。
+Rust 骨架保持了 Go 的高层顺序和若干可观察规则：窗口继承不能继承带 frame 的父规格，子规格不能覆盖 PARTITION BY；命名窗口大小写不敏感且禁止环；LIMIT 只接受非负整数并饱和处理 offset+count；集合运算按列数与类型对齐；LATERAL 转 Apply；UPDATE/DELETE 在修改前应用过滤、排序和限制；权限信息维持追加顺序。
 
-Rust 骨架保持了 Go 的高层顺序和若干可观察规则：窗口继承不能继承带 frame 的父规格，子规格不能覆盖 PARTITION BY；命名窗口大小写不敏感且禁止环；LIMIT 只接受非负整数并饱和处理 offset+count；集合运算按列数与类型对齐；LATERAL 转 Apply；UPDATE/DELETE 在修改前应用过滤、排序和限制；权限信息维持追加顺序。`logical_plan_builder_test.rs` 明确以 “like_go” 测试窗口继承、排序项和 frame 等价性。
-
-但两者并非等量实现。Go 文件接收完整 parser AST、表达式/Schema/统计/提示/权限上下文并构造正式 logical plan；本文件使用字符串前缀（如 `agg:`、`window:`、`grouping_set:`）和简化基数来模拟语义。实际 Rust 运行时移植位于 `logical_plan_builder_runtime.rs`。因此 Go 新增逻辑的正确迁移路径是：先判断行为属于骨架测试面、正式运行时面还是两者，再分别保持输入模型与错误语义一致，禁止把字符串骨架当成完整 AST 实现。
+但两者并非等量实现。Go 文件接收完整 parser AST、表达式/Schema/统计/提示/权限上下文并构造正式 logical plan；本文件使用字符串前缀（如 `agg:`、`window:`、`grouping_set:`）和简化基数来模拟语义。
 
 ## 扩展指南
 
@@ -85,12 +81,3 @@ Rust 骨架保持了 Go 的高层顺序和若干可观察规则：窗口继承�
 测试不得内嵌到本源文件。骨架级回归优先放在同目录独立文件 `logical_plan_builder_test.rs`，跨模块轻量计划用例可沿用 `integration_test.rs` 的现有 typed-plan 区域；正式 parser AST/`logicalop` 行为则应扩展 `logical_plan_builder_runtime_test.rs`、相关 `*_aster_unit_test.rs` 或 `casetest/logicalplan/logical_plan_builder_test.rs`，并与 Go 的 `logical_plan_builder_test.go`/`planbuilder_test.go` 对照。服务器可见行为还必须同步审查运行时实现，而不是仅覆盖骨架 API。
 
 兼容风险集中在错误文本、schema 类型/列序、优化标志和 CTE 状态；性能风险集中在计划 clone、窗口分组的重复扫描与大 UNION 的逐子计划投影。扩展前应通过 RustCodeGraph 查询目标符号 callers/callees，并搜索 `PlanKind`、标签字符串和 `optFlag` 消费者，避免产生无人读取的元数据。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
-
-- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/logical_plan_builder.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
-- 核对 `buildUpdate` 的输入形状、标签赋值和相邻 `planbuilder_runtime.rs` 的不同计划表示；Go 对照 `logical_plan_builder.go`，独立测试入口为 `integration_test.rs`、`logical_plan_builder_test.rs`。没有把 runtime 用例当成轻量标签的直接测试。
-- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
-- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。

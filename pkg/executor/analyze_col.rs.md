@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文同步基于冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`，增量比较基点为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9`。
-
-`pkg/executor/analyze_col.rs` 属于 `astersql-executor` crate；crate 根由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/lib.rs` 以 `pub mod analyze_col;` 对外公开本模块。文件移植自同目录的 `analyze_col.go`，负责表达列统计 ANALYZE 下推请求的参数、结果流生命周期边界和作业描述文本。
-
-冻结版本的精确检索只找到 `pkg/executor/analyze_col_test.rs` 导入本模块并实现 `analyzeColumnRuntime`；Rust 主调度 `analyze.rs` 使用自己的 `analyzeColumnsExec`，采样模块也有独立泛型类型。本文件是公开、可独立测试的列下推边界，尚无生产适配接线证据。
+由 `AnalyzeColumnsExec::open` 安装语句级内存追踪器，按有符号 `int64` 边界处理 handle 范围，并用 `tableResultHandler` 保存一段或两段结果流。
 
 ## 核心职责
 
@@ -118,15 +114,6 @@ Rust 生产主链的相关但不同类型是 `pkg/executor/analyze.rs::analyzeCo
 
 ## 与 Go 版本的对应关系
 
-### 已保持的语义
-
-- 唯一索引资格条件与 `pkg/executor/analyze_col.go::{isColumnCoveredBySingleColUniqueIndex,isSingleColNonPrefixUniqueIndex}` 一致：Public、unique/primary、单列、无前缀、无条件。
-- `open` 都安装不限额的语句级 tracker、拆分整型边界、先建第一段请求，并在有第二段时保存双结果。
-- `buildResp` 都以快照开关选择 SI/RC，以 ANALYZE 专用 store batch size 同时控制 merge/serial 标志，并固定无序扫描。
-- NDVRATE 文案与 Go 读取 `analyzePB.ColReq.NdvRate` 的意图一致：仅展示实际下发值；`analyze_ndv_rate_is_rendered_in_job_info_when_sent_to_storage` 静态断言结尾为 `with 0.01 samplerate, 0.25 ndvrate`。本文件不负责阈值决策、选项校验或保存。
-- 作业文案的 auto 前缀、索引/列全量或子集、选项顺序以及 samples 与 samplerate 二选一规则与 Go 一致。
-- Rust 测试 `analyze_request_is_unordered_for_store_batching` 对应 Go `pkg/executor/analyze_test.go::TestAnalyzeBuildsRequest` 的核心请求断言：`keepOrder=false`、并发度传播、batch size 传播以及两个 batch 布尔标志随零值关闭。
-
 ### 已知差异与迁移状态
 
 - Go 文件直接使用 TiDB 的 `model.TableInfo`、`plannerutil.HandleCols`、`memory.Tracker`、`distsql.RequestBuilder` 和 `distsql.Analyze`；Rust 使用轻量本地结构和 trait 注入，目前未见这些 trait 到真实 crate 类型的生产适配。
@@ -146,12 +133,3 @@ Rust 生产主链的相关但不同类型是 `pkg/executor/analyze.rs::analyzeCo
 6. 修改唯一索引优化时，同步 `analyze_col_sampling` 中 TopN 抑制的调用点，覆盖非 Public、复合、前缀、条件、普通非唯一和 primary index。
 
 兼容风险主要是 job 文案成为可观测状态、隔离级别或 start timestamp 改变读取一致性、range split 改变无符号主键覆盖面。性能风险主要是错误开启有序扫描、batch flags、错误并发度，以及未关闭结果流或未 detach tracker 造成资源积累。
-
-## 验证依据
-
-- 冻结审计：`git diff ad0a6f4..2c944fb -- pkg/executor/analyze_col.rs` 和 `git show 2c944fb:pkg/executor/analyze_col.rs`；已核对全文件、NDVRate 枚举/标签、可选请求 rate、文案与请求克隆路径。
-- 冻结装配：`pkg/executor/lib.rs`、`Cargo.toml`；`git grep` 对目标提交的模块引用及 trait 实现仅找到独立 `analyze_col_test.rs`。`pkg/executor/doc.go` 不存在；没有据 manifest 推定生产接线。
-- Go 对照：冻结 `pkg/executor/analyze_col.go::prepareAnalyzeColumnsJobInfo` 读取实际 protobuf `NdvRate`；同时保留范围拆分、无序/batch 参数及失败清理差异说明。
-- 静态读取冻结 `pkg/executor/analyze_col_test.rs::analyze_ndv_rate_is_rendered_in_job_info_when_sent_to_storage`，核对实际 rate 文案；既有独立测试覆盖无序/store batch 请求与 modify-column 列计数。未运行代码测试。
-- RustCodeGraph status/explore 仅辅助工作区符号定位；冻结 blob 是本文事实依据，旧索引统计不再作为验证结论。
-- Ready 文档验证：任务指定的固定 11 节与 `git diff --check`；验证 profile 技能缺失，按计划使用等价检查。没有修改 Rust/Go/Cargo 或运行 Cargo。

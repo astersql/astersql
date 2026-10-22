@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-extworkload` crate 的轻量判定与 Manager 存取边界，源码见 [`util.rs`](./util.rs)。crate 根在 [`lib.rs`](./lib.rs) 中以 `#[path = "util.rs"] mod util; pub use util::*;` 将其公开符号重导出，因此上游以 `astersql_extworkload::...` 调用，而不需要知道私有的 `util` 模块名。[`Cargo.toml`](./Cargo.toml) 声明该 crate 的库入口为 `lib.rs`；本文件没有自己的 feature 开关，也没有直接引用 Cargo 外部依赖，而是使用 crate 内的 `Manager`、`config`、`context`、`keyspacepb` 和 `ManagerError`。
-
-在完整应用中，它位于“Domain 拥有 Manager”与“session/GC worker 消费 Manager”之间：[`pkg/domain/domain.rs`](../domain/domain.rs) 实现 `ManagerStore` 并负责替换/关闭 Manager；[`pkg/session/runtime/session.rs`](../session/runtime/session.rs) 在升级与 GCV2 初始化路径调用本文件函数；[`pkg/store/gcworker/gc_worker.rs`](../store/gcworker/gc_worker.rs) 用 keyspace GC 模式判定决定是否通知外部控制器。
+定义 Manager 的共享所有权和存储抽象：`SharedManager`、`ManagerStore`、`SetManagerForStore` 与 `GetManagerFromStore`，让具体 `Domain` 保留生命周期所有权，而不引入进程全局注册表。
 
 ## 核心职责
 
@@ -80,15 +78,9 @@ keyspace GC 判定仅读取 `KeyspaceMeta.config` 的一个键值。大小写或
 
 ## 与 Go 版本的对应关系
 
-[`util.go`](./util.go) 是主要直接对照：
-
 - Go `IsEnabled(m Manager) bool { return m != nil }` 对应 Rust `Option<&dyn Manager>::is_some()`。Rust 用 `Option` 显式表达可空接口，不复制 Go interface 的 nil 表示。
-- 四个角色谓词和 `roleIs` 保留 Go 的短路语义：Manager 为空时不调用 `Role()`，非空时严格比较角色值。
-- Go `AbortGCV2ForUpgrade` 先通过 `IsGCV2Worker` 判定；Rust 内联了等价的 `None`/角色分支。两者都只在中止成功时返回 `true`，并传播 `AbortGCV2` 错误。
 - Go 把 Manager 以私有 `managerStoreKey` 存在通用 `kv.Storage` option 中，setter 无返回值；Rust 不复制通用 option 表，而用 `ManagerStore` 让 canonical Domain 显式持有类型化字段，且 setter 返回旧 `SharedManager` 以便关闭。这是所有权/生命周期适配差异，不是行为无关的逐句翻译。
 - Rust `IsKeyspaceUsingKeyspaceLevelGC` 没有位于 Go `pkg/extworkload/util.go` 的同名函数。Go 的 GC/session 相关调用点使用 PD 客户端的 `pd.IsKeyspaceUsingKeyspaceLevelGC`；Rust 迁移层在本 crate 中对当前 `KeyspaceMeta` 桩类型实现相同的门控语义。
-
-[`util_test.go`](./util_test.go) 与 [`util_test.rs`](./util_test.rs) 对齐空 Manager、四角色互斥矩阵、非 GCV2 不中止、GCV2 成功中止和中止错误传播。Rust 还有 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 对空值与角色矩阵的 crate 级回归。ManagerStore 与 keyspace GC 门控的集成语义则由 [`pkg/domain/canonical_domain_test.rs`](../domain/canonical_domain_test.rs)、[`pkg/store/gcworker/gc_worker_test.rs`](../store/gcworker/gc_worker_test.rs) 和 [`pkg/session/runtime/ttl_sysvar_test.rs`](../session/runtime/ttl_sysvar_test.rs) 覆盖。
 
 ## 扩展指南
 
@@ -97,12 +89,3 @@ keyspace GC 判定仅读取 `KeyspaceMeta.config` 的一个键值。大小写或
 - 修改 GC 配置键或认可值时，必须与 PD/Go 协议同步，并更新 GC worker 与 session 的 keyspace-level/unified/missing-meta 用例。不要在本函数中默认接受未知值，否则可能让两套 GC 管理路径同时运行或都不运行。
 - 新增 `ManagerStore` 实现时，实现者要保证 replace/get 的并发一致性，并明确旧 Manager 由谁、在何时调用 `Close`。还要测试 store 为 `None`、首次安装、替换、删除与 store 实例隔离。当前可参考 `canonical_domain_test.rs` 的隔离与删除断言。
 - 性能上，角色谓词目前为常数次查询，但四个包装函数每次会为 `&str` 角色常量创建 `String`；如果要优化这一点，应保持 Go/Rust 公开签名与字符串比较语义，用基准或热路径证据驱动，不要为文档对齐任务扩大修改范围。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：`rustcodegraph status` 报告项目已索引 11,467 个文件，其中 Rust 7,032 个；`rustcodegraph files --filter pkg/extworkload` 确认 `util.rs`、`util_test.rs`、Go 对照和模块入口均在索引中。
-- RustCodeGraph 源码/符号：`rustcodegraph explore "pkg/extworkload/util.rs ..."` 返回目标文件完整源码；对公开函数、`ManagerStore` 和 `SharedManager` 的 `query` 确认定义位置及 Domain 中的存取相关符号。`node Manager` 进一步显示 Domain 的 Manager 字段为 `RwLock<Option<Arc<Mutex<Box<dyn Manager>>>>>`。
-- RustCodeGraph 调用边限制：精确 `callers SetManagerForStore` 在本地索引上连续 90 秒无输出，已中止；因此调用点以 `rg` 对 Rust 源文件做精确符号搜索后读取直接上下文核验，没有伪称该条图查询成功。
-- 已读源码与边界：[`util.rs`](./util.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、[`external_workload.rs`](./external_workload.rs)、[`pkg/domain/domain.rs`](../domain/domain.rs)、[`pkg/session/runtime/session.rs`](../session/runtime/session.rs) 与 [`pkg/store/gcworker/gc_worker.rs`](../store/gcworker/gc_worker.rs)。`pkg/extworkload` 目录下无 `doc.go`，因此无额外包约定文件可读。
-- 已读对照与测试：[`util.go`](./util.go)、[`util_test.rs`](./util_test.rs)、[`util_test.go`](./util_test.go)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；并通过直接调用点与用例定位了 `canonical_domain_test.rs`、`gc_worker_test.rs` 和 `ttl_sysvar_test.rs` 的 ManagerStore/keyspace GC 边界覆盖。
-- 本任务只新增说明文档，没有修改 Rust、Go、Cargo 或测试，按计划不运行 Cargo。交付时使用任务指定的 11 章结构检查，并人工复核符号、调用边、Go 差异和扩展风险。

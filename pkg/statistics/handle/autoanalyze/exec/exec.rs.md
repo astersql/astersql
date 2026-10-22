@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 crate `astersql-statistics-handle-autoanalyze-exec` 的业务实现，由同目录 `lib.rs` 通过 `mod exec; pub use exec::*;` 导出。它对应 Go 包 `pkg/statistics/handle/autoanalyze/exec`，把自动 ANALYZE 的语句转义与执行、系统进程登记、全局参数筛选、时间窗解析及窗口外中断集中在一个边界层中。
-
-当前 Rust 接线状态必须与 Go 主链区分：RustCodeGraph 显示本文件由 `exec_test.rs` 使用；上层 `autoanalyze` 和 `refresher` 的 Cargo 依赖位于 `target.'cfg(any())'.dependencies`，不会在正常配置中启用。因此这里是已实现且有独立测试覆盖的移植模块，还不是 Rust 自动分析生产调度链的已启用入口。Go 版本则由 `autoanalyze.go`、`refresher/refresher.go`、priority queue 和 `Domain.CheckAutoAnalyzeWindows` 实际调用。
+将执行错误转换为 `AutoAnalyze` 的布尔结果和错误日志，或由 `RunAnalyzeStmt` 原样返回给需要错误细节的调用方。
 
 ## 核心职责
 
@@ -84,7 +82,6 @@ crate 边界由同目录 `Cargo.toml` 定义。生产依赖分别提供系统变
 
 ## 与 Go 版本的对应关系
 
-- `AutoAnalyze`/`RunAnalyzeStmt` 保留 Go 的主分层：外层记录失败并返回布尔值，内层执行并返回错误；SQL 转义、v2 断言、legacy 重写告警、进程 ID 分配与释放也有直接对应。
 - Rust 用三个 trait 注入会话、Handle 和 sys-proc tracker；Go 直接依赖 `sessionctx.Context`、`StatsHandle`、`sysproctrack.Tracker` 及 `statsutil.ExecWithOpts`。
 - Go `RunAnalyzeStmt` 还传入 analyze snapshot、partition prune mode、当前 session、sys-proc tracking 等 `sqlexec` options，并返回 rows/fields；Rust 只执行已经转义的 SQL 字符串并返回 `Result<(), AnalyzeError>`。这些会话 option 和结果行语义尚未移植到本文件。
 - Go 外层上报 `AutoAnalyzeHistogram`、成功/失败 counter，并在 panic 时恢复后释放 ID；Rust 当前不写 metrics，也没有 `catch_unwind`。Rust guard 能覆盖普通 `Result` 退出和栈展开时的析构，但进程 abort 不在保证范围内。
@@ -102,13 +99,3 @@ crate 边界由同目录 `Cargo.toml` 定义。生产依赖分别提供系统变
 - 若扩展全局参数，更新常量、`GetAutoAnalyzeParameters` 白名单、默认值处理和上层查询职责；同时评估 Go `mysql.global_variables` 查询及 priority queue/refresher 调用方的兼容性。
 - 若修改时间格式或窗口算法，同步 `parse_time`、`analysis_time_as_utc`、`CheckAutoAnalyzeWindow` 以及 `pkg/util/timeutil/time_zone.rs::WithinDayTimePeriod` 的契约，并添加普通窗口、跨午夜、边界等于起止点、非零偏移、非法输入的独立测试。
 - Rust 测试继续放在同目录 `exec_test.rs`，Go 对照测试位于 `exec_test.go`；不要把测试逻辑内嵌回 `exec.rs`。兼容风险主要是 Go/Rust 选项差异和时间偏移语义，性能风险主要是重复 SQL 分配、全局列表遍历及窗口外批量 kill。
-
-## 验证依据
-
-- 目标实现：`pkg/statistics/handle/autoanalyze/exec/exec.rs`；crate 导出：`pkg/statistics/handle/autoanalyze/exec/lib.rs`；依赖边界与移植元数据：同目录 `Cargo.toml`。
-- Rust 独立测试：`pkg/statistics/handle/autoanalyze/exec/exec_test.rs`，覆盖真实自动分析、legacy v2 告警、NaN、固定宽度时间格式、Track 失败清理以及并发窗口外中断。
-- Go 对照：同目录 `exec.go` 与 `exec_test.go`；生产调用证据来自 `pkg/statistics/handle/autoanalyze/autoanalyze.go`、`refresher/refresher.go`、priority queue 文件及 `pkg/domain/domain.go::CheckAutoAnalyzeWindows`。
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边。文件查询识别 `exec.rs` 的 47 个符号；`explore` 与 `callers/callees` 核对了 `AutoAnalyze -> RunAnalyzeStmt`、`RunAnalyzeStmt` 的 executor/tracker/ID/版本处理调用，以及 `KillAutoAnalyzeOutsideWindow -> CheckAutoAnalyzeWindow -> ParseAutoAnalysisWindow`。
-- `rustcodegraph node WithinDayTimePeriod` 核实 Rust 实现把三个时间转换为 UTC 分钟，普通窗口使用闭区间，跨午夜窗口使用析取条件；其调用轨迹包含本文件的 `CheckAutoAnalyzeWindow`。
-- 仓库反向搜索确认当前 Rust 直接调用只在 `exec_test.rs`，并确认上层 `autoanalyze`/`refresher` 对本 crate 的依赖位于 `cfg(any())`；因此文档没有宣称生产 Rust 主链已经接通。
-- 本任务是纯文档分析，按任务约束不运行 Cargo。交付前使用任务给定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核以上每项结论均可回指到符号、调用边、Cargo、Go 对照或独立测试。

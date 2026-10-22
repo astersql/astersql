@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`modify_column.rs` 属于 `astersql-ddl` crate，并由 [`pkg/ddl/lib.rs`](lib.rs) 以 `pub mod modify_column` 公开。它用仓库内的简化 `column::{ColumnInfo, TableInfo, SchemaState, ...}` 模型表达 MODIFY/CHANGE COLUMN 的路径选择、前置校验和一次一步的在线状态推进，便于 Rust 侧对 Go 语义做独立、确定性的单元验证。
-
-当前接线边界必须明确：代码搜索未发现生产模块调用本文件的主入口 `advance_modify_column`；直接调用者均是 `column_modify_test.rs`、`column_type_change_test.rs`、`db_change_test.rs`、`db_integration_test.rs` 等测试。真正接收持久化 DDL Job 的 Rust 生产链是 [`persistent_actions.rs`](persistent_actions.rs) 分派到 [`persistent_modify_column.rs`](persistent_modify_column.rs) 的 `step`。因此，本文件不是完整 SQL→Job→存储事务执行器，也不直接访问 `mysql.tidb_ddl_job`、重组表或 KV；它是公开的、可测试的 MODIFY COLUMN 语义模型与移植辅助实现。
-
-[`pkg/ddl/Cargo.toml`](Cargo.toml) 将 crate 命名为 `astersql-ddl`，入口为 `lib.rs`，并以 `[package.metadata.porting].go-package = "pkg/ddl"` 声明 Go 对照包。本文件自身只直接依赖标准库 `BTreeSet` 以及同 crate 的 `column`、`generated_column` 模块，没有条件编译项、异步函数或外部 crate API。
+生成存量数据探测条件：`build_check_sql_from_modify_column` 只构造 `SELECT ... WHERE ... LIMIT 1`，调用者负责执行 SQL，并把结果折叠成 `data_is_valid` 传给状态机。
 
 ## 核心职责
 
@@ -98,10 +94,6 @@ Go 完整主链则为 executor 创建 `model.ActionModifyColumn` Job，owner wor
 - `no_reorg_data_strict`、`need_row_reorganization`、`need_index_reorganization` 分别对应 Go 同名逻辑；Rust 的 `ColumnKind`/`flen` 规则是压缩模型，Go 还处理 DECIMAL 编码、默认整型宽度、binary padding、vector、collation compatibility 和 restored-data 等细节。
 - `build_check_sql_from_modify_column` 对应 Go `buildCheckSQLFromModifyColumn`，保留整数范围、字符串长度、VARCHAR→CHAR 尾空格以及 NULL→NOT NULL 条件；Go 随后通过 restricted SQL executor 执行并生成带坏值的具体错误，Rust 只生成 SQL。
 - `check_partition_column_modifiable` 对应 Go 同名守卫及 `checkPartitionColumnTypeChangeAllowlist`。Rust 保留 KEY、RANGE/LIST COLUMNS、表达式分区的主要白名单思想，但没有 Go 的字段 EvalType/flag 全量比较、合法分区类型检查及“生成 SHOW CREATE 片段→重新解析→重建定义”的最终验证。
-- `advance_modify_column` 概括 Go `onModifyColumn`、无重组完成、changing object 创建和回滚的状态语义，但没有 Go 的 worker transaction、行更新、索引 backfill、reorg stage、delete range、统计信息与通知流程。
-- `check_auto_random` 对应 Go `checkAutoRandom` 的核心位数与列属性约束，但不是完整替代。
-
-[`modify_column_test.rs`](modify_column_test.rs) 大部分测试是对 Go 测试步骤的 `CaseRecorder` 记录，返回成功并不执行对应 SQL；其中 `parity_tests` 的两个普通断言测试真实执行了分区表达式分类与白名单拒绝逻辑。更直接验证本文件状态机的测试位于 `column_modify_test.rs`、`column_type_change_test.rs`、`db_change_test.rs`、`db_integration_test.rs`。Go 的真实 SQL 回归位于 `modify_column_test.go`，覆盖 NULL/NOT NULL、字符集、时间类型、写冲突、skip reorg、路径选择、并行 ALTER、collation、统计信息和加载范围错误。
 
 ## 扩展指南
 
@@ -113,12 +105,3 @@ Go 完整主链则为 executor 创建 `model.ActionModifyColumn` Job，owner wor
 - 修改 AUTO_RANDOM 时应同步 Go `checkAutoRandom` 的 clustered PK/AUTO_INCREMENT 转换规则；仅扩展本地 context 不足以证明生产兼容。
 - 性能风险主要来自误选 `Reorg` 导致全表扫描，或误选快路径导致数据/索引编码不兼容；兼容风险主要在旧 Job args、分区定义、collation 和 rolling upgrade。任何路径放宽都应以 Go 行为和真实 Rust production worker 的双重证据为准。
 - Rust 测试继续放在独立 `*_test.rs` 文件，不在本源文件内嵌测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/ddl/modify_column.rs` 读取了完整 1–1025 行并报告 26 个使用文件；`query advance_modify_column`、`query get_modify_column_type` 定位到源文件符号；`callers/callees advance_modify_column` 未返回边，因此调用接线改用文本搜索核验。
-- Rust 源与装配：`pkg/ddl/modify_column.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/column.rs`、`pkg/ddl/generated_column.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/persistent_modify_column.rs`。
-- crate 边界：`pkg/ddl/Cargo.toml` 的 package、lib、dependencies、dev-dependencies 和 porting metadata。
-- Rust 测试：`pkg/ddl/modify_column_test.rs`、`pkg/ddl/column_modify_test.rs`、`pkg/ddl/column_type_change_test.rs`、`pkg/ddl/db_change_test.rs`、`pkg/ddl/db_integration_test.rs`。
-- Go 对照：`pkg/ddl/modify_column.go`、`pkg/ddl/modify_column_test.go`；DDL 包契约与导航依据为 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`、`docs/agents/ddl/07-modify-column.md`，其中说明性文档只作为导航，结论已由源码/测试复核。
-- 本任务是纯文档分析，按任务要求不运行 Cargo。结构验证要求本文恰有十一个固定二级标题；最终交付前另行运行该命令并记录退出码。

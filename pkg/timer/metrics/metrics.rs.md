@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-timer-metrics` crate 的指标实现文件。crate 边界由 `pkg/timer/metrics/Cargo.toml` 定义，`pkg/timer/metrics/lib.rs` 公开 `metrics` 模块并用 `pub use metrics::*` 再导出本文件的全部公开符号。它不负责定时器调度、事件执行或持久化，只定义 timer 子系统共享的 Prometheus 事件计数器及其标签选择入口。
-
-Rust 生产接线位于全局指标 crate：`pkg/metrics/metrics.rs::InitMetrics` 调用 `astersql_timer_metrics::InitTimerMetrics`，`register_external_metrics` 随后克隆并注册 `TimerEventCounter`。因此本文件处于“timer 事件产生者—全局 Prometheus 注册/采集”边界。当前 Rust `pkg/timer/runtime/runtime.rs` 与 `worker.rs` 尚未调用本文件：它们分别使用本地 `Counter(Arc<AtomicU64>)` 和 `WorkerCounters` 记录进程内计数；不能把 Go runtime 对本包的直接调用误写成已经完成的 Rust 生产接线。
+注册发生在 `pkg/metrics/metrics.rs::register_external_metrics`，增加动作由取得具体 `Counter` 的调用方执行。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ RustCodeGraph 对本文件给出的文件级反向使用者是 `pkg/metrics/metr
 
 ## 与 Go 版本的对应关系
 
-`pkg/timer/metrics/metrics.go` 是逐项语义来源：Go 的 `TimerEventCounter *prometheus.CounterVec` 对应 Rust 的带初始化状态和锁的全局存储；两边 `InitTimerMetrics` 都经 metrics common 包装创建 namespace `tidb`、subsystem `server`、name `timer_event_count`、help `Counter of timer event.`、标签 `scope/type` 的向量；两边 Hook 包装都生成 `hook.%s`；普通包装都按 scope、event 顺序选择标签。
-
 实现差异主要来自全局状态模型。Go 包变量可直接赋值，未初始化时调用会发生 nil pointer panic；Rust 用 `OnceLock + RwLock + Option` 明确表示两个未就绪阶段，并给出固定 expect 文本，同时从锁毒化中恢复。Go 的 `InitMetrics` 直接初始化并用 `MustRegister` 注册，Rust 的全局 metrics crate 把初始化和向指定 registry 注册拆开，注册失败可作为 `prometheus::Error` 返回。
 
-生产调用迁移尚不完全对称：Go `pkg/timer/runtime/runtime.go::NewTimerRuntimeBuilder` 使用 `TimerScopeCounter` 创建刷新计数器，`worker.go::newHookWorker` 使用 `TimerHookWorkerCounter` 创建六类 Hook 事件计数器；当前对应 Rust runtime 使用独立原子计数结构，未依赖 `astersql-timer-metrics`。因此本文件已对齐指标定义、全局初始化和注册，但不能据此声称 Rust timer runtime 的全部事件已经写入 Prometheus。
+生产调用迁移尚不完全对称：Go `pkg/timer/runtime/runtime.go::NewTimerRuntimeBuilder` 使用 `TimerScopeCounter` 创建刷新计数器，`worker.go::newHookWorker` 使用 `TimerHookWorkerCounter` 创建六类 Hook 事件计数器；当前对应 Rust runtime 使用独立原子计数结构，未依赖 `astersql-timer-metrics`。
 
 ## 扩展指南
 
@@ -89,14 +85,3 @@ RustCodeGraph 对本文件给出的文件级反向使用者是 `pkg/metrics/metr
 - 若需要支持安全重初始化，应重新设计注册表与全局句柄的一致性；仅在现有写锁内替换向量会使已注册 collector 分叉。更稳妥的生产约束仍是由上层 `call_once` 保证一次初始化。
 - 新增 reset、删除标签或注销功能时，应明确并发语义以及注册表所有权；这些操作不应绕过 `pkg/metrics/metrics.rs` 的集中注册流程。
 - 回归测试应优先扩展 `pkg/timer/metrics/migration_aster_unit_test.rs`；跨 crate 初始化/注册行为扩展 `pkg/metrics/metrics_internal_test.rs`。Go 语义调整还应同步检查 `pkg/timer/metrics/metrics.go` 以及 runtime/worker 的 Go 测试意图。
-
-## 验证依据
-
-- 目标源码与模块边界：`pkg/timer/metrics/metrics.rs`、`pkg/timer/metrics/lib.rs`、`pkg/timer/metrics/Cargo.toml`。
-- 下游构造语义：`pkg/metrics/common/wrapper.rs::{GetConstLabels, NewCounterVec}`；确认常量标签快照、标签切片转换和非法 options 的 panic 行为。
-- Rust 生产接线：`pkg/metrics/metrics.rs::{InitMetrics, RegisterMetrics, register_external_metrics}`；确认一次性初始化、外部 collector 注册及初始化先决条件。
-- Rust 独立测试：`pkg/timer/metrics/migration_aster_unit_test.rs::{init_matches_go_metric_descriptor_and_labels, hook_worker_counter_uses_go_scope_format_and_shares_the_vector}`；跨 crate 注册测试：`pkg/metrics/metrics_internal_test.rs::test_external_subsystem_metrics_are_initialized_and_registered`。
-- Go 对照与生产调用：`pkg/timer/metrics/metrics.go`、`pkg/metrics/metrics.go`、`pkg/timer/runtime/runtime.go::NewTimerRuntimeBuilder`、`pkg/timer/runtime/worker.go::newHookWorker`。同目录未发现直接断言本指标的 Go 测试。
-- Rust 迁移现状反证：对 `pkg/timer/runtime/**/*.rs` 检索只发现 `runtime.rs::Counter` 和 `worker.rs::WorkerCounters` 等本地原子计数，没有 `TimerScopeCounter`/`TimerHookWorkerCounter` 调用；Rust Cargo 生产依赖仅由 `pkg/metrics/Cargo.toml` 指向本 crate，Go Bazel runtime 依赖则保留在 `pkg/timer/runtime/BUILD.bazel`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file` 读取目标、Go 对照、模块入口、测试和上层指标文件；`query` 定位三个函数的 Rust/Go 定义；`callees` 确认 `TimerHookWorkerCounter -> TimerScopeCounter`。符号级 `callers` 未返回跨 crate 边，调用者以文件级 used-by 信息和精确 `rg` 引用补证。
-- 按计划未运行 Cargo。验证范围是代码/配置/测试事实复核与 Markdown 固定章节结构检查，不代表执行了运行时回归。

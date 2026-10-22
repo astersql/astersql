@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`misc.rs` 属于 Cargo 包 `astersql-br-pkg-restore-utils`。该包由同目录的 `Cargo.toml` 定义为 library crate，入口是 `lib.rs`；`lib.rs` 以 `pub mod misc` 装载本文件，再以 `pub use misc::*` 扁平导出其公开项。因此，其他 crate 可以直接从 `astersql_br_pkg_restore_utils` 使用这里的常量与函数。
-
-本文件位于 BR 恢复工具层，连接两类工作：一类是根据恢复前后的表元数据建立物理表、分区和索引 ID 映射，供 `rewrite_rule.rs` 生成 TiKV 键重写规则；另一类是处理带 MVCC 时间戳的键和 TiDB memcomparable 键前缀，供日志恢复范围扫描、去重及导入请求构造使用。它不执行网络 I/O、持久化或调度。
+位于 BR 恢复工具层，连接两类工作：一类是根据恢复前后的表元数据建立物理表、分区和索引 ID 映射，供 `rewrite_rule.rs` 生成 TiKV 键重写规则；另一类是处理带 MVCC 时间戳的键和 TiDB memcomparable 键前缀，供日志恢复范围扫描、去重及导入请求构造使用。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 还显示 `utils/parity_test.rs::go_rust_public_contract_matches` 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/restore/utils/misc.go`，五个函数与两个常量在名称和主要分支上逐项对应：分区按 `Name.L` 匹配、表映射包含分区加整表、索引按名称匹配、时间戳固定移除 8 字节、键前缀仅编码完整 8 字节组。
-
 可见的语言适配差异为：
 
 - Go 的空 `TruncateTS` 返回 `nil`，Rust 用 `None` 表达；非空结果由 Go 切片视图改为拥有型 `Vec<u8>`。
@@ -93,7 +89,7 @@ RustCodeGraph 还显示 `utils/parity_test.rs::go_rust_public_contract_matches` 
 - Go 的 `EncodeKeyPrefix` 依赖 `codec.EncodeBytes` 后直接做切片；Rust 使用 `saturating_sub`，使空键/异常短编码结果不发生下溢。
 - Go 使用真实 `pkg/meta/model` 与 `pkg/util/codec`；当前 Rust crate 通过 `stubs.rs` 的精简模型和 codec 门面实现所需契约。尤其索引 `CIStr` 的相等规则应随真实模型接线再次核对。
 
-`misc_test.go` 与独立的 `misc_test.rs` 都验证 16 字节、15 字节、2 字节键的截断/前缀编码结果。Rust 的 `parity_test.rs` 额外验证空键、分区/表/索引 ID 映射及公开常量契约。
+Rust 的 `parity_test.rs` 额外验证空键、分区/表/索引 ID 映射及公开常量契约。
 
 ## 扩展指南
 
@@ -102,17 +98,3 @@ RustCodeGraph 还显示 `utils/parity_test.rs::go_rust_public_contract_matches` 
 - 若改变时间戳长度或键格式，必须同步检查 `import_retry.rs::CreateRangeController` 与 `log_file_manager.rs::ReadFilteredEntriesFromFiles` 的范围和去重语义；还应评估 `internal/rawkv/rawkv_client.rs` 中同语义私有实现的漂移。
 - 若替换或增强 `codec::EncodeBytes`，应保留“每 8 字节一组、每组 1 字节 marker、末尾终止组”的契约，或同步重写 `EncodeKeyPrefix`，并在 `misc_test.rs` 增加 0、7、8、9、15、16、17 字节边界。
 - Rust 单元测试继续放在同目录独立文件 `misc_test.rs`；跨模块 Go/Rust 公开契约放在 `parity_test.rs`，不要把测试嵌回 `misc.rs`。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 源码：`br/pkg/restore/utils/misc.rs`（两个常量、五个公开函数的完整实现）。
-- crate 边界：`br/pkg/restore/utils/Cargo.toml`、`br/pkg/restore/utils/lib.rs`。
-- 直接实现依赖：`br/pkg/restore/utils/stubs.rs` 中的 `model` 类型与 `codec::EncodeBytes`。
-- 下游调用：`br/pkg/restore/utils/rewrite_rule.rs`、`br/pkg/restore/log_client/import.rs`、`br/pkg/restore/log_client/import_retry.rs`、`br/pkg/restore/log_client/log_file_manager.rs`。
-- 对照实现与测试：`br/pkg/restore/utils/misc.go`、`misc_test.go`、`misc_test.rs`、`parity_test.rs`。
-- 相邻同语义实现边界：`br/pkg/restore/internal/rawkv/rawkv_client.rs` 的私有 `TruncateTS`。
-- RustCodeGraph：索引状态为 7,032 个 Rust 文件；`node --file br/pkg/restore/utils/misc.rs` 确认本文件 105 行及引用文件，`explore` 确认 `Get*IDMap`、`TruncateTS`、`EncodeKeyPrefix` 的主要调用边；对未由图精确定位的 Cargo、Go 和测试内容使用文件读取与 `rg` 核验。
-
-本任务为纯文档分析，未运行 Cargo。结构验证应确认目标文件存在，且上述固定二级标题恰好为 11 个。

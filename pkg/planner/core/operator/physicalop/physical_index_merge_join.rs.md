@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core-operator-physicalop` crate；crate 根在同目录的 `lib.rs`，并通过 `pub mod physical_index_merge_join` 暴露本模块、通过 `pub use physical_index_merge_join::PhysicalIndexMergeJoin` 再导出 Go 兼容类型。`Cargo.toml` 的 `[package.metadata.porting]` 把整个 crate 对应到 Go 包 `pkg/planner/core/operator/physicalop`。
-
-文件描述的是“索引归并连接”物理计划，而不是执行器本身。它在索引连接共有状态之上保存连接键的索引顺序、比较器、outer 是否要排序及 inner 扫描方向。当前文件并存两套表示：`LegacyPhysicalIndexMergeJoin` 面向 `PhysicalPlanNode` 的简化/遗留模型；`PhysicalIndexMergeJoin` 包装完整的 `crate::PhysicalIndexJoin`，是由 `lib.rs` 接入 `base::PhysicalPlan` 体系并被其他 crate 使用的 Go 兼容模型。
-
-源文件第 16—105 行还有一段被逐行注释掉的早期移植草稿，其中提到的 `Init`、`GetCost`、`GetPlanCostVer1/2` 和 `Attach2Task` 不是该段的可执行 API。判断现状应以第 108 行以后的实际定义以及 `lib.rs` 的宏接线为准。
+`New`、`Clone`、`MemoryUsage` 维护具体变体的构造、跨上下文克隆和容量计费；缓存快照与计划改写可以据此保留 merge 专属字段。
 
 ## 核心职责
 
@@ -95,17 +91,16 @@ RustCodeGraph 的项目索引状态为 11,467 个文件、307,296 个节点，�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `physical_index_merge_join.go`。完整 Rust 结构的六个字段逐项对应 Go 结构，`ExplainInfo`、`ExplainNormalizedInfo` 和 `MemoryUsage` 的意图也一致。Rust `JoinCompareFunc` 用 `Arc<dyn Fn + Send + Sync>` 表达 Go `expression.CompareFunc` 函数槽；Rust 键位使用 `Vec<i32>` 对齐 Go `[]int` 的有符号语义，但位宽并不相同。
+Rust `JoinCompareFunc` 用 `Arc<dyn Fn + Send + Sync>` 表达 Go `expression.CompareFunc` 函数槽；Rust 键位使用 `Vec<i32>` 对齐 Go `[]int` 的有符号语义，但位宽并不相同。
 
 差异与未完全移植点如下：
 
 - Go `Init(ctx)` 设置类型、从会话原子 PlanID 计数器取新 ID、设置上下文并更新 `Self` 回指；Rust `New(join)` 只在已有基类上设置类型并初始化 merge 字段，ID/上下文来自传入的 `PhysicalIndexJoin`。
 - Go 在本文件公开 `GetCost`、`GetPlanCostVer1`、`GetPlanCostVer2`、`Attach2Task` 并通过 `utilfuncp` 函数指针下沉到 core。Rust 实际定义没有这些同名 merge 专属方法；`lib.rs` 的通用宏会调用可经 `Deref` 获得的索引连接成本入口，具体接线不能据顶部注释草稿认定为已经逐项等价。
-- Go V1 merge 成本的真实实现位于 `pkg/planner/core/plan_cost_ver1.go:getCost4PhysicalIndexMergeJoin`，包含过滤、batch 排序去重、inner worker 并发、匹配对数和批结果内存；`LegacyPhysicalIndexMergeJoin::cost` 只是明显较小的近似模型。
 - Go `attach2Task4PhysicalIndexMergeJoin` 位于 `pkg/planner/core/task.go`；Rust `Legacy::attach_to_task` 直接把两个节点拼成 `[outer, inner]`，不执行 root task 转换，也不遵循 `InnerChildIdx` 重排。
 - Go `MemoryUsage` 含 nil receiver 保护并按 `size.SizeOfSlice`/`SizeOfFunc` 计费；完整 Rust 版本用本平台 `size_of`，还显式加入三个 `Vec` 头和两个 bool。两者目标相同，但数值只应在各自 ABI 内解释。
 
-Go 侧直接回归证据包括 `physical_utils_test.go`：它验证嵌入 `PhysicalIndexJoin` 的 merge 变体会被 `HasSingleScanIndexJoin` 识别。Rust 对应的缓存与变体契约覆盖在 `cache_snapshot_test.rs` 和 `canonical_router_aster_unit_test.rs`，而本文件的独立测试只覆盖 Legacy 内存容量计费。
+Rust 对应的缓存与变体契约覆盖在 `cache_snapshot_test.rs` 和 `canonical_router_aster_unit_test.rs`，而本文件的独立测试只覆盖 Legacy 内存容量计费。
 
 ## 扩展指南
 
@@ -118,14 +113,3 @@ Go 侧直接回归证据包括 `physical_utils_test.go`：它验证嵌入 `Physi
 测试必须保持在独立文件中。局部行为优先扩展 `physical_index_merge_join_test.rs`；完整类型的克隆/缓存字段保真扩展 `cache_snapshot_test.rs`；动态类型及基类路由扩展 `canonical_router_aster_unit_test.rs`；计划遍历资源计量扩展 `pkg/executor/statement_ru_plan_walk_test.rs`。不要把 `#[cfg(test)]` 测试内嵌回生产源文件。
 
 兼容性风险主要是缓存恢复遗漏新字段、计划改写丢失具体变体或键位映射解释变化；性能风险主要是错误触发 outer 排序、比较器槽/闭包内存漏计以及成本模型低估并发或批排序。任何完整行为变更还应与同路径 Go 文件及其测试保持一致。
-
-## 验证依据
-
-- 生产源：`pkg/planner/core/operator/physicalop/physical_index_merge_join.rs`，完整读取 260 行，核对两个结构、各方法、注释草稿及无条件编译状态。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml` 与 `lib.rs`；确认 crate 名、Go 包映射、`base`/`expression`/`ranger` 依赖来源、模块公开与再导出、`join_operator_core!`、`JoinCompareFunc`、通用基类路由及变体保型。
-- Rust 直接调用/状态证据：`cache_snapshot.rs`、`plan_clone_generated.rs`、`base_physical_plan.rs`、`cache_snapshot_test.rs`、`canonical_router_aster_unit_test.rs`、`pkg/executor/statement_ru_plan_walk_test.rs`。
-- 独立 Rust 测试：`physical_index_merge_join_test.rs`；确认当前专属测试只断言 Legacy 比较函数字符串向量的预留容量计费。
-- Go 对照：`physical_index_merge_join.go`、`base_physical_join.go`、`single_scan_index_join.go`、`physical_utils_test.go`，以及 planner core 的 `core_init.go`、`task.go`、`plan_cost_ver1.go`；确认字段、解释、内存、成本函数指针和任务装配的实际位置。
-- 搜索证据：`rg` 找到 Rust 完整类型的构造点（缓存测试、canonical router 测试、executor RU 遍历测试）、缓存捕获/恢复点和 crate 宏接线；Go 搜索找到 planner 枚举、成本、task、hint/cache/stringer 等消费者。
-- RustCodeGraph：`status` 成功；目标文件过滤无命中，故未将图查询当作该文件调用边的充分证据，后续结论均由直接源码与引用搜索支撑。
-- 结构验收使用任务指定命令，要求目标文件存在且固定二级标题恰好为 11 个；本任务为纯文档分析，按计划不运行 Cargo。

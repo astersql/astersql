@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server-handler-tikvhandler` crate（见同目录 `Cargo.toml`），为 NextGen status API 提供“全局系统变量诊断快照”的组装与脱敏逻辑。`lib.rs` 通过 `pub mod global_variables` 声明模块并以 `pub use global_variables::*` 导出公开函数；直接生产调用者是 `pkg/server/http_status.rs` 中的 `global_variables_response`。后者只在 `astersql_config_kerneltype::IsNextGen()` 为真时把 `/variables/global` 注册到路由，先从 `Domain::global_system_variables` 取得内存缓存快照，再调用本文件的 `global_variables`，最后序列化为 JSON 并设置 `Cache-Control: no-store`。
-
-这里不是完整 HTTP handler，也不负责实时查询 `mysql.global_variables`。HTTP 方法检查、状态码、JSON 序列化和响应头均由 `pkg/server/http_status.rs` 处理；本文件只把调用者给出的覆盖值与系统变量注册表组合成适合诊断输出的 `BTreeMap<String, String>`。
+在最终输出边界执行防泄漏处理：`tidb_cloud_storage_uri` 对调用者提供的原始覆盖值调用 `astersql_parser_ast::misc::redact_url`，其他标为 `IsSensitive` 的非空值统一替换为 `vardef::MaskPwd`（当前为 `******`），空敏感值仍保持为空。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是同目录 `global_variables.go`。两版共同语义包括：遍历 `variable.GetSysVars()`；排除纯 session 变量；按 `EnableNoopVariables` 控制 noop 可见性；通过 `GetGlobalFromHook` 获取全局值；对非空 `IsSensitive` 值统一使用 `vardef.MaskPwd`；任一读取失败时放弃响应。Go 集成测试 `pkg/server/handler/tests/global_variables_test.go::TestGlobalVariables` 还验证 GET-only、`no-store`、当前全局值、noop 可见性、多类敏感变量、空值和多种云 URI 脱敏行为。
-
 架构差异是 Rust 已将 HTTP 与变量快照拆开：Go 的 `GlobalVariablesHandler::ServeHTTP` 在请求内创建真实 `session.Session`，设置基于请求上下文的超时并在结束时关闭 session；Rust 的 `global_variables` 使用只读 `SnapshotAccessor` 和内存中的 Domain 覆盖快照，不访问存储，也没有超时上下文。Go 注释说明云 URI 的 getter 已完成 `ast.RedactURL`；Rust 对调用者提供的 `tidb_cloud_storage_uri` 覆盖值显式再次调用 `redact_url`。因此 Rust 当前是面向 NextGen 诊断端点的缓存快照实现，不能被描述为 Go handler 的完整存储/session 生命周期复刻。
 
 ## 扩展指南
@@ -80,12 +76,3 @@ Go 对照文件是同目录 `global_variables.go`。两版共同语义包括：�
 - 若要支持需要 `mysql.tidb`、存储或写操作的 getter，不能简单把 `SnapshotAccessor::unsupported` 改成成功桩。应先明确新的资源、超时、取消和错误传播契约，并评估是否应由真实 session 路径承载；否则会破坏当前“无 I/O、只读快照”的不变量。
 - 若改变覆盖表键格式，应在入口统一规范化整个映射，或明确扩大 `get_global_sys_var` 与云 URI 特例的查找规则；两处必须保持一致，并测试混合大小写及重复规范化键的冲突策略。
 - 性能上，每次请求当前至少克隆 Domain 覆盖表、`SnapshotAccessor` 映射和整个 `SysVar` 注册表。变量量级扩大或请求频率升高时，可评估减少克隆，但必须保证 hook 执行期间不持有全局锁，并保持单次快照一致性与稳定输出顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/server/handler/tikvhandler/global_variables.rs` 确认文件含 10 个符号；`node --file ... --offset 1 --limit 260` 展示完整 94 行源码并报告文件级使用者 `pkg/session/runtime/control.rs`；`query global_variables`、`query SnapshotAccessor`、`query GlobalVarAccessor` 和 `query global_variables_response` 用于消歧主要符号。精确 `callers/callees global_variables` 因重名未返回可用函数边，因此生产调用边另外由源码搜索核验。
-- 目标与模块边界：`pkg/server/handler/tikvhandler/global_variables.rs`、`pkg/server/handler/tikvhandler/lib.rs`、`pkg/server/handler/tikvhandler/Cargo.toml`。
-- 直接入口和状态来源：`pkg/server/http_status.rs::global_variables_response`、`pkg/server/http_status.rs::build_status_router`、`pkg/server/server.rs::Domain::global_system_variables`、`pkg/server/runtime.rs` 的 Domain 转发实现、`pkg/domain/domain.rs::global_system_variables`。
-- 下游语义：`pkg/sessionctx/variable/variable.rs::GlobalVarAccessor`、`SessionVars::new`、`SysVar::GetGlobalFromHook`、`GetSysVars`，以及 `pkg/sessionctx/vardef/sysvar.rs::MaskPwd`、`pkg/sessionctx/vardef/tidb_vars.rs::{TiDBCloudStorageURI, EnableNoopVariables, ScopeSession}`。
-- Rust 测试：`pkg/server/handler/tikvhandler/global_variables_test.rs::{masks_sensitive_values_and_redacts_cloud_storage_credentials, preserves_empty_sensitive_values}`；HTTP 集成层证据为 `pkg/server/http_status_test.rs::nextgen_global_variables_route_masks_diagnostic_secrets`。
-- Go 对照：`pkg/server/handler/tikvhandler/global_variables.go::{GlobalVariablesHandler, NewGlobalVariablesHandler, ServeHTTP}` 和 `pkg/server/handler/tests/global_variables_test.go::TestGlobalVariables`。本任务按计划为纯文档分析，未运行 Cargo 或代码测试；验收采用固定章节结构检查和上述源码/图证据人工复核。

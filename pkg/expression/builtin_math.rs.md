@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate 的数学内建函数标量实现。`pkg/expression/lib.rs` 通过 `#[path = "builtin_math.rs"] mod builtin_math_kernel;` 将它编入 crate，并在测试配置下通过 `mod builtin_math { pub use crate::builtin_math_kernel::*; }` 暴露给独立测试 `pkg/expression/builtin_math_test.rs`。它与向量实现 `pkg/expression/builtin_math_vec.rs` 并列，负责承载 Go `pkg/expression/builtin_math.go` 中数学函数的 Rust 标量语义、签名选择元数据以及错误/告警模型。
-
-需要注意当前接线边界：对 `builtin_math::*` 和本文件公开入口的仓库级 Rust 搜索未发现生产调用者，RustCodeGraph 对关键入口也未返回上游调用边；`lib.rs` 中面向 `builtin_math_kernel` 的再导出只存在于 `#[cfg(test)]` 模块。因此，本文件当前可确认是已编译的私有实现和迁移/测试基线，不能仅凭其 API 完整度断言生产表达式执行器已经使用这些标量函数。生产向量路径及真正的 pb/表达式分发需分别到 `builtin_math_vec.rs`、`builtin_core.rs` 等接线处继续核验。
+与向量实现 `pkg/expression/builtin_math_vec.rs` 并列，负责承载 Go `pkg/expression/builtin_math.go` 中数学函数的 Rust 标量语义、签名选择元数据以及错误/告警模型。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ CONV 的中间表示是 `u64`。负输入通过 `wrapping_neg` 保留二进制�
 
 ## 与 Go 版本的对应关系
 
-Go `pkg/expression/builtin_math.go` 是语义对照源，包含 `builtinAbs*Sig`、`builtinRound*Sig`、`builtinCeil*Sig`、`builtinFloor*Sig`、`builtinLog*Sig`、`builtinRand*Sig`、`builtinPowSig`、`builtinConvSig`、`builtinCRC32Sig` 和 `builtinTruncate*Sig` 等类型专用实现。Rust 将 Go 中分散在 function class、signature struct 和 `eval*` 方法里的逻辑压缩成枚举分发与普通函数，但保留主要分支：有/无符号整数、DECIMAL/REAL、单/双参数、RAND 常量/非常量种子以及 CEIL/FLOOR 返回类型差异。
+Rust 将 Go 中分散在 function class、signature struct 和 `eval*` 方法里的逻辑压缩成枚举分发与普通函数，但保留主要分支：有/无符号整数、DECIMAL/REAL、单/双参数、RAND 常量/非常量种子以及 CEIL/FLOOR 返回类型差异。
 
 独立 Rust 测试 `pkg/expression/builtin_math_test.rs` 核对了 Go 语义的关键边界：`i64::MIN` ABS 溢出、正负 CEIL/FLOOR、负小数位 ROUND/TRUNCATE、对数/根号/反三角定义域、固定种子随机序列、POW/EXP/COT 溢出、CONV 的正负进制、UTF-8 CRC32、NaN 传播和签名选择。Go 的完整测试面还包括 `pkg/expression/builtin_math_test.go`；Rust 的向量语义由 `builtin_math_vec.rs` 及 `builtin_math_vec_test.rs` 覆盖，不应把标量测试视为向量接线证据。
 
-已观察到的结构差异是：Go 文件中的签名类型直接参与 Go 表达式框架，而本 Rust 文件的签名选择器尚无已验证的生产 builder 接线，但 `round_with_frac_int` 已被遗留向量 kernel 直接复用。因此“局部函数与 Go 逻辑对齐”已有源码和测试证据，“已替代 Go 生产路径”仍没有证据，保持未验证。
+已观察到的结构差异是：Go 文件中的签名类型直接参与 Go 表达式框架，而本 Rust 文件的签名选择器尚无已验证的生产 builder 接线，但 `round_with_frac_int` 已被遗留向量 kernel 直接复用。
 
 ## 扩展指南
 
@@ -83,11 +81,3 @@ Go `pkg/expression/builtin_math.go` 是语义对照源，包含 `builtinAbs*Sig`
 若修改 FLOOR/CEIL 或 ROUND/TRUNCATE，必须同步审查 `get_eval_type_for_floor_and_ceil`、`floor_and_ceil_unsigned`、`calculate_decimal_for_round_and_truncate`，避免只改求值而遗漏返回元数据。修改 CONV 时同时覆盖前缀扫描、正负基数、`u64/i64` 边界和二进制字面量；修改 RAND 时必须区分共享序列和逐行首值，不能把两条路径合并。
 
 测试应继续放在独立文件 `pkg/expression/builtin_math_test.rs`，并按需要同步 `builtin_math_16_aster_unit_test.rs`、Go `builtin_math_test.go` 以及向量测试 `builtin_math_vec_test.rs`，不要把测试嵌入生产源文件。若目标是接入生产执行链，还需在表达式 builder/pb 分发处增加显式接线并用调用边和端到端测试证明；仅新增本文件公开函数或枚举变体不足以证明可用。主要兼容风险是 MySQL 的 NULL/告警/溢出文本、有符号 CONV、DECIMAL 精度和 RAND 序列；性能风险集中在逐值字符串分配、二进制字面量展开以及误用标量路径替代向量执行。
-
-## 验证依据
-
-- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/builtin_math.rs`，不把工作区后续变化作为行为依据。
-- `pkg/expression/builtin_math_test.rs::round_integer_with_fraction_preserves_exact_values` 覆盖正负半值、超 f64 精度整数、unsigned 位模式、极端 fraction、i64/u64 溢出及 1690 文本；Go 对照 `pkg/expression/builtin_math.go::roundIntWithFrac` 和 `builtinRoundWithFracIntSig::evalInt`。
-- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
-- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
-- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

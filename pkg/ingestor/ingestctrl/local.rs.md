@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`local.rs`](local.rs) 是 `astersql-ingestor-ingestctrl` crate 的 local backend 控制面实现。它位于“已排序 KV / 外部有序数据”与“按 Region 写入并 ingest SST”之间：向上提供 `Backend`、`BackendConfig`、版本检查和辅助查询，向下把 Engine 生命周期交给 [`engine_mgr.rs`](engine_mgr.rs)，把实际并发导入交给 [`import_pipeline.rs`](import_pipeline.rs) 与 [`job_worker.rs`](job_worker.rs)。模块由 [`lib.rs`](lib.rs) 的 `pub mod local` 暴露。
-
-仓库级 [`pkg/ingestor/doc.go`](../doc.go) 将 `ingestor` 定义为直接向底层存储 ingest SST，并负责本地/全局排序、Region split/scatter 和导入环境准备的包；本文件实现其中本地 Engine 的编排层，而不是 SST 编码器、RegionJob 的重试细节或底层存储客户端本身。当前可见的生产接线在 [`pkg/session/runtime/import_sst.rs`](../../session/runtime/import_sst.rs)：它以 `StoreBridge` 同时实现 `StoreHelper` 和导入客户端工厂，构造 `NewBackend`，再将其适配为 Lightning `backend::Backend`。
+状态与工具：维护每个 Engine 的已导入 KV 数，提供重复键控制器、磁盘占用快照、磁盘余量检查、Range 属性切分、Region 参数协商、SST 目录和后继键计算。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 [`local.go`](local.go)，保留了版本常量、`BackendConfig`/`Backend`、Range 属性切分、Engine 导入、磁盘检查、重复键入口和统计校验的主要概念，命名也刻意保留 Go 风格以便逐项对照。独立 Rust 测试 [`local_test.rs`](local_test.rs) 与 [`local_check_test.rs`](local_check_test.rs) 对应同目录 Go 测试，而非内嵌在生产源文件中。
+独立 Rust 测试 [`local_test.rs`](local_test.rs) 与 [`local_check_test.rs`](local_check_test.rs) 对应同目录 Go 测试，而非内嵌在生产源文件中。
 
 当前 Rust 不是 Go 文件的完整等价移植，重要差异包括：
 
@@ -97,11 +95,3 @@ Rust 文件直接对应 [`local.go`](local.go)，保留了版本常量、`Backen
 - 修改 Range 切分时保持半开区间、无空洞/重叠、忽略越界属性和小尾段合并不变量，并扩展 `split_range_merges_tail_without_additional_properties` 与 Go `TestRangeProperties` 对应案例。
 - 补齐 Go 的 PD scheduler、import mode 或动态 Region 配置属于跨模块能力，需先定义客户端 trait 和生命周期，再在本文件注入；同时评估取消后恢复 scheduler/mode 的清理保证，避免只接入成功路径。
 - 性能风险主要在 worker 并发、split key 数量、锁持有时间和外部 Engine pool 生命周期；兼容风险主要在缺失 Engine、TS 分配、TiFlash 前置检查和计数校验与 Go 的差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ingestor/ingestctrl` 确认 `local.rs`、`local_test.rs`、`local_check_test.rs` 等均已索引；`node --file pkg/ingestor/ingestctrl/local.rs --offset ...` 完整读取 826 行并显示该文件被 10 个文件使用。精确查询确认 `local.rs::NewBackend`（371 行）和 `local.rs::splitRangeBySizeProps`（708 行）符号；`callers/callees` 对这些精确符号未输出调用边，此限制已用直接引用搜索补证。
-- 已读生产与配置：[`local.rs`](local.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`engine_mgr.rs`](engine_mgr.rs) 的直接接口引用、[`pkg/ingestor/doc.go`](../doc.go)、[`pkg/session/runtime/import_sst.rs`](../../session/runtime/import_sst.rs)。
-- Go 对照：[`local.go`](local.go) 中版本检查、`BackendConfig`、`NewBackend`、`splitRangeBySizeProps`、`verifyImportedStatistics`、`ImportEngine`、`SetTSBeforeImportEngine`；测试目录对照为 [`local_test.go`](local_test.go)。
-- Rust 测试：[`local_test.rs`](local_test.rs) 的 `split_range_merges_tail_without_additional_properties`、`import_propagates_cancellation_from_active_client`、`test_check_disk_avail`、`test_backend_close_without_ti_kv_client`、`worker_error_cancels_other_running_workers`、`external_import_pipeline_tunes_and_closes_actual_region_workers`、`backend_imports_registered_external_data_and_verifies_loaded_statistics`；[`local_check_test.rs`](local_check_test.rs) 的 `test_check_requirements_ti_flash` 与 `test_get_region_split_size_keys`。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试。交付结构以任务给定的 11 章节命令验证，并人工复核上述符号、调用方向、Go 差异及扩展风险均有源码或测试依据。

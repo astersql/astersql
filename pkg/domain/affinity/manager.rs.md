@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`manager.rs` 是 `astersql-domain-affinity` crate 的 Affinity Group 生命周期管理核心。crate 入口 `pkg/domain/affinity/lib.rs` 公开重导出本文件和 `interface.rs`；`pkg/domain/affinity/Cargo.toml` 又以 `go-package = "pkg/domain/affinity"` 明确它对应同目录 Go 包。文件本身不负责生成表/分区 key range，也不直接拼装 HTTP 请求，而是在上层业务与 `PdClient` 之间定义稳定的创建、删除、查询语义以及旧版 PD 的兼容回退。
-
-运行时有两种接入方式。包级 API `pkg/domain/affinity/interface.rs` 把 `new_pd_manager` 或 `new_mock_manager` 存入进程级 `PackageState`，随后由 `create_groups_if_not_exists`、`delete_groups`、`get_groups` 分派；当前会话建表资源路径 `pkg/session/runtime/create_table_resources.rs` 也会在非 mock storage 下直接构造 `PdManager`，为建表创建 affinity groups，并在删除资源时清理它们。真实网络落点是 `pkg/domain/affinity/http_client.rs` 的 `HttpClient: PdClient` 实现。
+这些职责由 `PdManager::{create_affinity_groups_if_not_exists, delete_affinity_groups, get_affinity_groups}`、辅助函数 `should_*` / `filter_affinity_groups`，以及 `MockManager` 的同名 trait 实现共同承担。
 
 ## 核心职责
 
@@ -98,11 +96,7 @@ RustCodeGraph 将 `manager.rs` 标记为被 `http_client.rs`、`interface_test.r
 
 ## 与 Go 版本的对应关系
 
-`pkg/domain/affinity/manager.go` 是逐项语义基准：Go `Manager`/`pdManager`/`mockManager` 分别对应 Rust `Manager`/`PdManager`/`MockManager`；两个阈值、空输入短路、首次 `skip_exist_check`、创建回退、查询全量回退、强制删除、客户端侧过滤和 mock 幂等逻辑均保持一致。`pkg/domain/affinity/Cargo.toml` 的 porting metadata 也把该 crate 指向这个 Go 包。
-
 有意的表示差异包括：Go 直接嵌入 `pdhttp.Client`，Rust 通过 `Arc<dyn PdClient>` 解耦；Go 状态值是指针，Rust map 保存可克隆值；Go 使用 `context.Context`，Rust 仅移植取消与 deadline 子集；Go 用 `errors.Cause` 和 TiDB errno 识别无状态码服务错误，Rust 在 `AffinityError` 中保存显式标记；Go mock 将锁与 map 分开并容忍 nil map，Rust `Default` 保证 map 初始化并把它整体置于 `RwLock` 中。
-
-URL 长度算法通过相同的重复 `ids` 参数和百分号编码保持一致。独立 Rust 测试与 Go 测试都验证 `"/".repeat(1364)` 恰为 4096 字节、1365 个斜杠超出 3 字节，以及 101 个 ID 触发全量扫描。
 
 ## 扩展指南
 
@@ -114,13 +108,3 @@ URL 长度算法通过相同的重复 `ids` 参数和百分号编码保持一致
 - 测试逻辑应继续放在 `pkg/domain/affinity/manager_test.rs` 或迁移期独立测试中，不要放回生产源文件；Go 对齐变化还应同步检查 `manager_test.go`。
 
 兼容性风险主要是混合版本 PD 的错误识别和返回过滤；性能风险主要是超过阈值后的全量扫描与结果克隆；并发正确性风险主要是回退的查后建竞态和 mock 锁中毒。任何改动都应优先复用现有 trait 边界，而不是绕过 manager 直接依赖具体 HTTP client。
-
-## 验证依据
-
-- 生产源码：`pkg/domain/affinity/manager.rs`（全部 421 行）；关键依据为 `Manager`/`PdClient`、`PdManager` 三条主路径、回退判定纯函数、`filter_affinity_groups` 和 `MockManager`。
-- crate 与模块：`pkg/domain/affinity/Cargo.toml`、`pkg/domain/affinity/lib.rs`、`pkg/domain/affinity/interface.rs`、`pkg/domain/affinity/http_client.rs`。
-- 应用接线：`pkg/session/runtime/create_table_resources.rs::create_affinity` 与 `delete_affinity`。
-- Go 对照：`pkg/domain/affinity/manager.go`；Go 独立测试：`pkg/domain/affinity/manager_test.go`。
-- Rust 独立测试：`pkg/domain/affinity/manager_test.rs` 验证首次 skip、409/服务错误回退、500 透传、响应过滤、长度/数量阈值和状态码匹配；`pkg/domain/affinity/migration_aster_unit_test.rs` 另验证过滤去重、mock 首次写入不覆盖、全量扫描与包级强制删除重试。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/domain/affinity` 覆盖目标、Go 对照及独立测试；`node --file` 读取目标源码、模块入口、相邻实现和测试；`query` 精确定位 `PdManager`、`new_pd_manager`、`should_fallback_create_affinity_groups`、`filter_affinity_groups`、`new_mock_manager`。该索引对本文件 Rust trait 方法的精确 `callers/callees` 没有输出，调用边已用上述直接源码与限定范围搜索交叉确认。
-- 本任务是纯文档分析，未运行 Cargo；验收使用任务文件规定的 11 个固定二级标题结构检查，并人工复核所有“已支持”陈述均可回指到上述符号或文件。

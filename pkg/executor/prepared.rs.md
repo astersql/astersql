@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 通过 `pub mod prepared` 公开该模块，独立测试则以 `#[path = "prepared_test.rs"] mod prepared_test` 接入。它抽象了 SQL 预处理语句生命周期中的三个阶段：`PREPARE`、`EXECUTE` 和 `DEALLOCATE`，对应 Go 实现 `pkg/executor/prepared.go`。
-
-当前接线状态需要特别区分：仓库内 Rust 生产代码没有实现 `PrepareBackend`、`ExecuteBuilder` 或 `DeallocateBackend`，也没有直接构造这些 Rust 执行器；除模块导出外，直接使用只出现在 `pkg/executor/prepared_test.rs`。因此它是已实现并有单元测试的迁移边界，而不是已经替代 Go 生产链路的执行器。Go 生产链仍由 `pkg/executor/builder.go`、`pkg/executor/adapter.go` 和 `pkg/session/session.go` 接线。
+`PrepareExec::Next` 编排一次预处理：防重试重复登记、解析 SQL、限制为单语句、重置语句上下文、生成计划缓存语句与计划、注册 TopSQL、计算结果字段，最后分配 ID 并登记。
 
 ## 核心职责
 
@@ -81,13 +79,11 @@ Go 对照链路是：
 
 ## 与 Go 版本的对应关系
 
-Rust `PrepareExec::Next` 的步骤顺序基本对应 `pkg/executor/prepared.go::(*PrepareExec).Next`：重试幂等、选择解析参数、保留/修整告警、拒绝多语句、重置 statement context、调用 `GeneratePlanCacheStmtWithAST`、TopSQL 登记、清理 PlanID/PlanColumnID、生成结果字段、分配 ID、绑定名称并登记。Rust 将具体 TiDB 类型和函数拆到 `PrepareBackend`，未直接表现 Go 的 charset/collation 参数数组、SQLParser fallback 或扩展列哈希表字段；这些责任必须由 backend 实现承担。
+Rust 将具体 TiDB 类型和函数拆到 `PrepareBackend`，未直接表现 Go 的 charset/collation 参数数组、SQLParser fallback 或扩展列哈希表字段；这些责任必须由 backend 实现承担。
 
 Rust `ExecuteExec::Build` 对应 Go 的 `Build`：先构建真实执行器，构建失败即返回；只有 `NoPriority` 时计算降级。差异是 Go 会记录 warning log 并用 `errors.Trace` 包装 builder 错误，Rust trait 当前只原样传播错误；Rust `Next` 和 Go `Next` 都是空操作。
 
-Rust `DeallocateExec::Next` 保留 Go 的关键顺序：名称查 ID、断言对象是 `PlanCacheStmt`、删除名称、可选构造并删除缓存键、移除语句。Rust 测试特别确认即使缓存关闭也不能跳过对象有效性检查，以及缓存键错误发生时名称已经删除。
-
-Go 版本实现 `exec.Executor` 并连接真实 session/planner/cache 类型；Rust 版本尚无这些 trait 的生产实现。因此语义对应不等于迁移已完成。
+Go 版本实现 `exec.Executor` 并连接真实 session/planner/cache 类型；Rust 版本尚无这些 trait 的生产实现。
 
 ## 扩展指南
 
@@ -97,13 +93,3 @@ Go 版本实现 `exec.Executor` 并连接真实 session/planner/cache 类型；R
 - 改变 DEALLOCATE 时必须审视部分失败状态以及 `IgnorePreparedCacheCloseStmt` 对应语义；若要做原子化清理，那会偏离当前 Go 行为，需要兼容性说明和两端同步。
 - Rust 测试应继续放在独立的 `pkg/executor/prepared_test.rs`，不要内嵌到生产文件。新增行为至少增加 trait mock 的成功、失败与副作用顺序断言；Go 兼容行为应同步核对 `pkg/executor/prepared_test.go` 和 `pkg/executor/test/seqtest/prepared_test.go`。
 - 性能风险集中在重复解析/计划生成、结果字段物化及缓存键构造；兼容风险集中在错误类型、告警裁剪、ID/名称映射时序和缓存关闭策略。
-
-## 验证依据
-
-- 源文件：`pkg/executor/prepared.rs`，逐项核对全部公开结构、trait、构造函数及三个 impl；文件无条件编译分支、常量、静态变量或 `unsafe`。
-- crate 边界：`pkg/executor/Cargo.toml` 的 package/lib/porting 元数据；`pkg/executor/lib.rs` 的 `pub mod prepared` 与独立测试模块声明。
-- Rust 独立测试：`pkg/executor/prepared_test.rs`，覆盖 EXECUTE 构建成功/失败及降优先级、DEALLOCATE 的无效对象与缓存键失败顺序、PREPARE 登记失败后的状态保留。
-- Go 实现与生产接线：`pkg/executor/prepared.go`、`pkg/executor/builder.go::buildPrepare/buildExecute/buildDeallocate`、`pkg/executor/adapter.go::ExecStmt.buildExecutor`、`pkg/session/session.go::PrepareStmt`。
-- Go 行为测试：`pkg/executor/prepared_test.go` 与 `pkg/executor/test/seqtest/prepared_test.go`，后者包含多语句错误、参数与结果字段、EXECUTE 以及 DEALLOCATE/计划缓存场景。
-- RustCodeGraph：`status` 显示索引包含 `pkg/executor/prepared.rs`；`query PrepareExec`、`query DeallocateExec`、`query NewPrepareExec` 和文件 `node` 核对符号及源码。精确 callers/callees 未给出可用的生产 Rust 边，随后用全仓 Rust 符号搜索确认直接引用仅见独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定命令验证恰有十一个固定二级章节，并人工复核当前接线状态与 Go/Rust 差异没有被写成未证实的支持结论。

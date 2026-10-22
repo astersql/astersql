@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate；该归属由同目录 [`Cargo.toml`](Cargo.toml) 的包名、`[lib] path = "lib.rs"` 以及 [`lib.rs`](lib.rs) 中公开的 `pub mod rule_derive_topn_from_window` 共同确认。它提供一个基于 [`task.rs`](task.rs) 中简化 `PlanNode`/`PlanKind` 模型的 Window→TopN 规则，主要用于独立规则测试和 Go 迁移语义核对。
-
-需要区分这个文件与真实逻辑计划运行时：`optimizer_runtime.rs` 的规范规则序列虽然包含 `LogicalRule::DeriveTopNFromWindow`，但分派时调用的是 `derive_top_n_from_window_descendants`，后者对真实 `LogicalSelection` 调用 `LogicalSelection::DeriveTopN`；当前没有从该生产分派到本文件 `DeriveTopNFromWindow::Optimize` 的调用边。因此，本文件不是完整 SQL 优化主链的实现入口，而是公开、可直接测试的简化规则模型。
+提供一个基于 [`task.rs`](task.rs) 中简化 `PlanNode`/`PlanKind` 模型的 Window→TopN 规则，主要用于独立规则测试和 Go 迁移语义核对。
 
 ## 核心职责
 
@@ -68,11 +66,9 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 [`rule_derive_topn_from_window.go`](rule_derive_topn_from_window.go) 定义同名无字段类型。Go `Optimize(context.Context, base.LogicalPlan)` 直接返回 `p.DeriveTopN(), false, nil`，`Name()` 同样返回 `derive_topn_from_window`。Rust 文件对齐了无状态规则、规则名、计划可能变化但 changed 固定为 false 的契约。
+Rust 文件对齐了无状态规则、规则名、计划可能变化但 changed 固定为 false 的契约。
 
 实现层级并非一一对应：Go 规则把遍历和节点分派交给 `LogicalPlan.DeriveTopN`；本 Rust 文件在简化 `PlanNode` 上自行递归，并以表达式名称编码上界。真实 Rust 对应语义存在于 `optimizer_runtime.rs::derive_top_n_from_window_descendants` 和 `LogicalSelection::DeriveTopN`：后者构造真实 `LogicalTopN`，保留排序方向、分区键、schema、上下文与 query-block offset。这一差异意味着本文件适合验证规则轮廓，不能单独证明真实 SQL 表达式识别和完整生产计划属性。
-
-Go [`casetest/rule/rule_derive_topn_from_window_test.go`](casetest/rule/rule_derive_topn_from_window_test.go) 通过 SQL、TiFlash/MPP 和 golden plan 验证四个 Window 场景，并另测关闭该开关时含 `rand()` 的普通 TopN。Rust casetest 会读取相同 fixture 清单，但其中对 `rand()` 的覆盖是隔离的静态形状断言；这也应在解释迁移覆盖时如实区分。
 
 ## 扩展指南
 
@@ -81,14 +77,3 @@ Go [`casetest/rule/rule_derive_topn_from_window_test.go`](casetest/rule/rule_der
 若扩展真实 SQL 行为，还必须同时评估 `LogicalSelection::windowIsTopN`、`LogicalSelection::DeriveTopN` 和 `optimizer_runtime.rs::derive_top_n_from_window_descendants`，并对照 Go 的 `LogicalSelection.DeriveTopN` 及 SQL golden；只修改本文件不会改变真实运行时分派。新增条件形式时应明确上界类型、多个条件的优先级、重复执行幂等性、PartitionBy/OrderBy 保留方式，以及与后续 `PushDownTopN` 规则的顺序交互。
 
 兼容性风险主要是误识别条件后改变结果语义，或丢失真实计划属性；性能风险主要是无效/重复 TopN、额外表达式克隆和递归深度。任何更改都应继续验证 changed=false 是否仍是 Go 兼容要求，不能仅因树改变就擅自改为 true。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；查询了 `DeriveTopNFromWindow`、目标文件源码、文件使用关系、`optimizer_runtime.rs` 的规则表/分派/递归函数，以及 Rust/Go `LogicalSelection::DeriveTopN`。
-- 目标源码：[`rule_derive_topn_from_window.rs`](rule_derive_topn_from_window.rs) 的 `DeriveTopNFromWindow::{Optimize, Name}`。
-- crate 与模块边界：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)；该 crate 没有为本规则设置专属 feature。
-- 简化数据模型：[`task.rs`](task.rs) 的 `Expression`、`PlanKind`、`PlanNode`。
-- Go 对照：[`rule_derive_topn_from_window.go`](rule_derive_topn_from_window.go) 和 [`operator/logicalop/logical_selection.go`](operator/logicalop/logical_selection.go)。
-- Rust 测试：[`rule_derive_topn_from_window_test.rs`](rule_derive_topn_from_window_test.rs)、[`casetest/rule/rule_derive_topn_from_window_test.rs`](casetest/rule/rule_derive_topn_from_window_test.rs)、[`casetest/windows/window_push_down_test.rs`](casetest/windows/window_push_down_test.rs)。
-- Go 测试：[`casetest/rule/rule_derive_topn_from_window_test.go`](casetest/rule/rule_derive_topn_from_window_test.go)。
-- 本任务按计划是纯文档分析，未运行 Cargo；完成前另执行任务规定的 11 章节结构检查并人工复核调用边和迁移边界。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-importsdk` crate 的内部 `pattern` 模块。模块由 `pkg/importsdk/lib.rs` 的 `mod pattern;` 装配，但没有被 `pub use` 直接导出；入口 `generateWildcardPath` 也只有 `pub(crate)` 可见性。因此它不是 SDK 的外部 API，而是文件扫描流程内部用于把“一张表的一组数据文件”收敛成一条可供 `IMPORT INTO` 使用的通配路径的辅助层。
-
-直接生产调用点是 `pkg/importsdk/file_scanner.rs` 的 `fileScanner::buildTableMeta`：该函数先构造 `TableMeta` 和数据文件清单，再以 `table.data_files`、扫描所得的全局 `all_files`、路由后的数据库名与表名调用 `generateWildcardPath`，随后通过 `buildWildcardPath` 把结果与存储 URI 组合并写入 `TableMeta.WildcardPath`。空表在调用前由 `buildTableMeta` 提前返回，所以本文件的空输入错误同时也是供其他 crate 内调用者复用的防御性契约。
-
-crate 边界由 `pkg/importsdk/Cargo.toml` 定义：本文件直接使用 `astersql-lightning-mydump` 的 `FileInfo`/`Compression`，使用 `astersql-errors` 的共享错误与注解能力，并引用 crate 内 `ErrNoTableDataFiles`、`ErrWildcardNotSpecific` 两个错误哨兵。
+不扫描存储、不读取文件内容，也不决定 URI scheme；这些均由 `file_scanner.rs` 及对象存储层负责。
 
 ## 核心职责
 
@@ -78,11 +74,9 @@ crate 边界由 `pkg/importsdk/Cargo.toml` 定义：本文件直接使用 `aster
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/importsdk/pattern.go`，Rust 保留了相同的决策顺序、空/单文件行为、两类候选、全局特异性校验、字节式公共前后缀算法和逐路径组件回退策略。错误哨兵与主要错误文本也保持对应。
+最明显的签名差异是 Go 的 `generateMydumperPattern` 从 `FileInfo.TableName` 读取路由结果，而 Rust 的 `FileInfo` 形状不在此处承载同样信息，因此 `generateWildcardPath` 和 `generateMydumperPattern` 显式接收 `database`、`table`。
 
-最明显的签名差异是 Go 的 `generateMydumperPattern` 从 `FileInfo.TableName` 读取路由结果，而 Rust 的 `FileInfo` 形状不在此处承载同样信息，因此 `generateWildcardPath` 和 `generateMydumperPattern` 显式接收 `database`、`table`。生产调用点从 `MDDatabaseMeta.name`、`MDTableMeta.name` 传入；`pattern_test.rs::generate_mydumper_pattern_uses_routed_table_name` 锁定了这一适配，防止错误地从 `incoming/part-0001.csv` 等物理文件名推断表名。
-
-第二个实现差异是 Go 直接调用 `filepath.Match`，Rust 由 `pathPatternMatches` 及其私有解析函数复刻所需语义。`pattern_test.rs::generated_pattern_uses_go_filepath_character_class_semantics` 验证方括号仍是字符类而非普通文件名字节。Rust 独立测试还覆盖 Go 测试中的公共前后缀、空输入、Mydumper 压缩后缀、通用回退、冲突文件和子目录组件边界，并额外锁定 Aurora 分区目录场景。
+第二个实现差异是 Go 直接调用 `filepath.Match`，Rust 由 `pathPatternMatches` 及其私有解析函数复刻所需语义。Rust 独立测试还覆盖 Go 测试中的公共前后缀、空输入、Mydumper 压缩后缀、通用回退、冲突文件和子目录组件边界，并额外锁定 Aurora 分区目录场景。
 
 ## 扩展指南
 
@@ -91,12 +85,3 @@ crate 边界由 `pkg/importsdk/Cargo.toml` 定义：本文件直接使用 `aster
 若扩展 glob 语法，应修改 `componentPatternMatches`、`matchComponent` 或字符类辅助函数，同时以 Go `filepath.Match` 为兼容基准。特别需要增加非法模式、转义、Unicode、取反字符类、范围边界和多 `/` 组件测试。若想处理文件名中的 glob 元字符，应先明确 Go 端是否也转义，并确保生成与验证采用完全相同的语法，否则可能产生看似精确但实际误匹配的路径。
 
 测试必须继续放在独立的 `pkg/importsdk/pattern_test.rs`，不要内嵌到生产源文件；Go 语义变化时同步参考 `pkg/importsdk/pattern_test.go`。涉及完整扫描到 `TableMeta.WildcardPath` 的行为还应扩展 `pkg/importsdk/file_scanner_test.rs`。兼容性风险集中在 Go glob 语义、路由后表名和错误哨兵；性能风险集中在超长模式、超长路径或非常大的 `all_files` 集合上的匹配成本。
-
-## 验证依据
-
-- 源码与符号：`pkg/importsdk/pattern.rs` 全部 341 行；关键入口为 `generateWildcardPath`，关键校验/生成函数为 `isValidPattern`、`generateMydumperPattern`、`generatePrefixSuffixPattern`，私有匹配链终止于 `matchComponent`、`matchCharacterClass`、`escapedClassCharacter`。
-- 模块与依赖：`pkg/importsdk/lib.rs` 的 `mod pattern;` 和独立 `#[cfg(test)] mod pattern_test;`；`pkg/importsdk/Cargo.toml` 的 `astersql-importsdk` crate 声明以及 `astersql-errors`、`astersql-lightning-mydump` 依赖。
-- 上下游调用：RustCodeGraph `status` 显示索引包含 `pkg/importsdk/pattern.rs`；文件级查询显示该文件被 `file_scanner.rs` 与 `pattern_test.rs` 使用；流程查询确认 `fileScanner::buildTableMeta -> generateWildcardPath` 以及入口到三项核心辅助函数的调用边。`pkg/importsdk/file_scanner.rs` 第 602 行起的实现确认结果写入 `TableMeta.WildcardPath`。
-- Go 对照：`pkg/importsdk/pattern.go` 的八个对应函数及 `filepath.Match` 校验；`pkg/importsdk/pattern_test.go` 的公共前后缀、Mydumper、排他校验、回退和子目录用例。
-- Rust 测试：`pkg/importsdk/pattern_test.rs` 的 11 个独立测试覆盖公共前后缀、候选校验、空表、单文件、压缩 Mydumper、Aurora 分区目录、回退/冲突、组件边界、路由表名和字符类语义。
-- 本任务为纯文档分析，按任务约束未运行 Cargo 或代码测试；交付结构通过任务文件规定的 11 个固定二级标题检查，并人工复核未把测试放入生产文件、未把未验证设想写成现状。

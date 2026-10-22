@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate，由 [`pkg/session/lib.rs`](lib.rs) 的 `pub mod starter_bootstrap_file` 公开。它实现 Starter 部署模式专用的、由 JSON 文件驱动的版本化 SQL 初始化与升级流程，并与 TiDB 核心 bootstrap 生命周期分离（文件级说明与 `reconcile_starter_bootstrap_with_metadata`）。生产入口位于 [`pkg/session/runtime/session.rs`](runtime/session.rs) 的 `CanonicalSessionFactory::reconcile_configured_starter_bootstrap`：Domain 完成核心初始化并启动正常 DDL 后，它加载清单并调用本文件的协调器。
-
-该文件还处理分支或恢复场景中的权限表重置：从 keyspace 元数据读取 `serverless_is_branch_bootstrapped`、`serverless_is_bootstrapped_for_restore` 标记，在持锁状态下清空指定权限表、重新执行 bootstrap SQL，并通过 PD HTTP CAS 更新标记。它不是通用 SQL migration 框架，也不负责核心系统表 bootstrap。
+还处理分支或恢复场景中的权限表重置：从 keyspace 元数据读取 `serverless_is_branch_bootstrapped`、`serverless_is_bootstrapped_for_restore` 标记，在持锁状态下清空指定权限表、重新执行 bootstrap SQL，并通过 PD HTTP CAS 更新标记。
 
 ## 核心职责
 
@@ -91,13 +89,11 @@ PD 完成请求对各 endpoint 依次尝试；网络错误和非 2xx 响应可�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/session/starter_bootstrap_file.go`](starter_bootstrap_file.go)，对应测试是 [`pkg/session/starter_bootstrap_file_test.go`](starter_bootstrap_file_test.go)。Rust 保留了 Go 的核心语义：清单字段和验证规则、版本排序及二分选择、Starter/空路径门控、单语句执行、restricted SQL 恢复、首次 bootstrap 事务、root 用户不变量、逐语句幂等升级、双版本崩溃修复、owner 锁二次检查、权限表批量删除、keyspace reset 标记及 PD CAS 完成。
+Rust 保留了 Go 的核心语义：清单字段和验证规则、版本排序及二分选择、Starter/空路径门控、单语句执行、restricted SQL 恢复、首次 bootstrap 事务、root 用户不变量、逐语句幂等升级、双版本崩溃修复、owner 锁二次检查、权限表批量删除、keyspace reset 标记及 PD CAS 完成。
 
-Rust 手写 `Deserialize` 是为弥合 serde 与 Go `encoding/json` 默认行为的差异：字段名大小写不敏感、重复字段覆盖、`null` slice/元素转零值，同时仍执行 Go 的 `DisallowUnknownFields` 和单顶层值约束。错误文本也在反序列化阶段把反引号替换成双引号，以贴近 Go 测试可观察信息。
+Rust 手写 `Deserialize` 是为弥合 serde 与 Go `encoding/json` 默认行为的差异：字段名大小写不敏感、重复字段覆盖、`null` slice/元素转零值，同时仍执行 Go 的 `DisallowUnknownFields` 和单顶层值约束。
 
-接线层面存在实现形态差异：Go `upgradeStarterBootstrap` 自行创建并销毁 session/domain、直接获取锁；Rust 在已经初始化的 `CanonicalSessionFactory` 中复用 Domain，并由工厂注入锁和 metadata 适配器。Go 使用 PD client/infosync；Rust 的生产适配器刷新元数据后调用本文件的阻塞 HTTP PATCH。两者目标状态机一致，但这些边界变化是 Rust 架构接线，不应误写成逐行翻译。
-
-Rust 独立测试 [`pkg/session/starter_bootstrap_file_test.rs`](starter_bootstrap_file_test.rs) 对应 Go 测试覆盖解析兼容性、加载门控、SQL/事务行为、部分升级失败、版本快路径与锁内复查、DML/root 校验、大表分批删除、布尔标记、PD CAS/HTTP 和工厂启动接线。测试逻辑没有内嵌在生产源文件；仅由 `lib.rs` 的 `#[cfg(test)] mod starter_bootstrap_file_test` 装配。
+接线层面存在实现形态差异：Go `upgradeStarterBootstrap` 自行创建并销毁 session/domain、直接获取锁；Rust 在已经初始化的 `CanonicalSessionFactory` 中复用 Domain，并由工厂注入锁和 metadata 适配器。Go 使用 PD client/infosync；Rust 的生产适配器刷新元数据后调用本文件的阻塞 HTTP PATCH。
 
 ## 扩展指南
 
@@ -109,13 +105,3 @@ Rust 独立测试 [`pkg/session/starter_bootstrap_file_test.rs`](starter_bootstr
 - 扩展 reset marker 或 PD 协议时修改 `parse_privilege_reset`、`privilege_reset_completion_params`、生产 metadata 实现和 HTTP 测试；保留 observed-value precondition，避免丢失并发修改。
 - 涉及并发或启动时序的变更，应检查 `runtime/session.rs::reconcile_configured_starter_bootstrap` 与 owner lock 生命周期，确保核心 Domain/DDL 已可用且锁内仍进行二次状态检查。
 - Rust 生产修改应同步独立测试文件 `pkg/session/starter_bootstrap_file_test.rs`，并继续与 Go 的同路径实现和测试保持语义一致，不把测试移入本源文件。
-
-## 验证依据
-
-- 目标源码：[`pkg/session/starter_bootstrap_file.rs`](starter_bootstrap_file.rs)，逐项核对全部常量、数据结构、trait、公开函数、私有辅助函数及事务/HTTP 分支。
-- crate 与模块边界：[`pkg/session/Cargo.toml`](Cargo.toml)、[`pkg/session/lib.rs`](lib.rs)；确认 `astersql-session`、`nextgen` feature、模块公开与独立测试装配，以及 serde、regex、Domain、KV、meta、日志、SQL 转义等依赖。
-- 直接上游与生产适配器：[`pkg/session/runtime/session.rs`](runtime/session.rs)；确认 Domain 启动后的调用顺序、owner lock 注入、`StarterStoreMetadata` 和失败关闭 Domain 的行为。
-- Go 对照：[`pkg/session/starter_bootstrap_file.go`](starter_bootstrap_file.go) 与 [`pkg/session/session.go`](session.go)；后者在 Go 启动 bootstrap 主链调用 `upgradeStarterBootstrap`。
-- 独立测试：[`pkg/session/starter_bootstrap_file_test.rs`](starter_bootstrap_file_test.rs) 与 [`pkg/session/starter_bootstrap_file_test.go`](starter_bootstrap_file_test.go)，覆盖解析、加载、首次初始化、升级、崩溃恢复、权限重置和 PD 完成边界。
-- RustCodeGraph：`rustcodegraph status` 显示索引可用（11,467 files / 307,296 nodes / 1,848,419 edges），但 `rustcodegraph files --filter pkg/session/starter_bootstrap_file` 返回 `No files found matching the criteria`；因此没有虚构图调用边，改用源码符号引用与 `rg` 结果核验直接调用关系。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务规定的 11 章节结构命令，并人工复核唯一生产物、链接、事实限定和扩展风险。

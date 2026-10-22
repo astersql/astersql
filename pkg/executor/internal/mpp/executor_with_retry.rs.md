@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-internal-mpp` crate；crate 根由 `pkg/executor/internal/mpp/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`lib.rs` 将本模块声明为私有模块并公开再导出其中的重试执行器、注册表、工厂接口和配置。它位于 MPP 响应消费链的协调器上层：实现 `kv::Response`，把一个 `kv::MppCoordinator` 包装成带有限缓冲和可恢复重建能力的响应源（`ExecutorWithRetry`、`impl kv::Response`，源文件第 163–382 行）。
-
-当前 Rust 接线状态需要和接口实现本身区分：仓库内非测试 Rust 源码没有找到 `NewExecutorWithRetry` 的调用者，也没有生产环境的 `CoordinatorFactory` 实现；可见实例化均位于 `executor_with_retry_test.rs` 和 `executor_with_retry_aster_unit_test.rs`。因此该文件已经提供可测试的行为契约并由 `lib.rs` 导出，但不能仅凭当前代码声称它已经接入 Rust SQL 请求主链。Go 对照文件则由自身保存会话、计划和 infoschema，并直接构造 `localMppCoordinator`（`executor_with_retry.go:71-111,256-260`）。
+在构造和恢复时经 `CoordinatorFactory::Build` 创建协调器，调用 `Execute` 获取 KV 范围，并拒绝节点数不大于零的无效执行（`NewExecutorWithRetry`、`setupMPPCoordinator`）。
 
 ## 核心职责
 
@@ -96,11 +94,7 @@
 
 ## 与 Go 版本的对应关系
 
-共同语义：
-
 - 两版都处于 `kv.Response` 与 MPP coordinator 之间，先有限缓冲，只有结果尚未对外可见时才允许恢复；恢复成功后丢弃旧缓冲并重建 gather（Go `executor_with_retry.go:35-66,114-128,183-248`；Rust `ExecutorWithRetry::nextWithRecovery` 与 `Next`）。
-- 两版都在每轮 setup 前分配新 gather ID，以查询 ID 加 gather ID 注册；执行后要求 TiFlash 节点数大于零；恢复失败和重建失败都向上返回原始 MPP 错误。
-- 两版的 `ReportsExecutionSummariesDirectly` 都跟随当前协调器，恢复后可反映新协调器属性。
 
 Rust 的抽象差异：
 
@@ -118,14 +112,3 @@ Rust 的抽象差异：
 - 修改注册键或状态路由时，应同步 `CoordinatorUniqueId`、`MppCoordinatorManager`、gRPC 路由接线及重复/迟到 report 测试，确保旧 gather 不能污染新 gather。
 - 修改缓冲容量或输出次序时，应保留 FIFO、容量有界和结果首次暴露后禁止恢复三个契约；性能风险主要是持锁调用协调器、过大 holder 增加内存与首行延迟，以及 `SeqCst` 分配在高并发下的争用。
 - 测试应继续放在独立文件：一般回归放 `executor_with_retry_test.rs`，更完整的注册、FIFO、幂等关闭和重建状态机覆盖放 `executor_with_retry_aster_unit_test.rs`。若完成生产接线，还应增加调用侧的集成测试，证明配置映射、真实 `LocalMppCoordinator` 工厂和状态上报路由连通。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/internal/mpp/executor_with_retry.rs`，RustCodeGraph `node --file ... --offset 1 --limit 500` 返回完整 388 行及“由测试和 local coordinator 使用”的索引信息。
-- 符号/调用查询：RustCodeGraph `query NewExecutorWithRetry`、`query setupMPPCoordinator`、`query MppCoordinatorManager`、`callers/callees NewExecutorWithRetry`、`callers/callees setupMPPCoordinator`，以及聚焦 `local_mpp_coordinator.rs NewExecutorWithRetry CoordinatorFactory CoordinatorRegistry ExecutorWithRetry` 的 `explore`。可信边包括构造器到 `NewRecoveryHandler`/首次 setup、setup 到 `Build/Register/Unregister/Execute/GetNodeCnt`，以及测试到构造器/`Next`/`Close`；通用名称产生的跨模块候选未作为结论。
-- crate 与模块边界：`pkg/executor/internal/mpp/Cargo.toml`、`pkg/executor/internal/mpp/lib.rs`。目录不存在 `doc.go`，故以 crate 根注释和 Cargo 元数据作为最近模块契约。
-- 直接依赖实现：`pkg/executor/internal/mpp/recovery_handler.rs`；RustCodeGraph 完整读取其恢复次数、handler、FIFO、内存记账和 tracker 生命周期。
-- Go 对照：`pkg/executor/internal/mpp/executor_with_retry.go`，RustCodeGraph 完整读取 267 行；对照了构造配置、setup、恢复、关闭、gather 分配和本地协调器构造。
-- 独立 Rust 测试：`pkg/executor/internal/mpp/executor_with_retry_test.rs` 验证重建失败保留原 MPP 错误；`pkg/executor/internal/mpp/executor_with_retry_aster_unit_test.rs` 验证重复注册、FIFO、关闭幂等、恢复重建、旧缓冲丢弃、gather 递增和当前协调器 summary 路由。当前目录没有同名 Go 测试文件，Go 行为依据来自生产对照文件及 Rust 回归契约。
-- 生产接线检查：`rg -n "NewExecutorWithRetry|ExecutorWithRetry|MppRecoveryConfig|CoordinatorFactory" --glob '*.rs'` 只命中目标、`lib.rs` 与两个测试文件，因此将 Rust 生产调用者和生产工厂明确标为当前未见，而非推测已接线。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证为固定 11 章节结构检查、引用路径检查、范围检查和 diff 人工复核。

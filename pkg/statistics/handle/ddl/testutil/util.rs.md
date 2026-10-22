@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-ddl-testutil` crate 的核心实现，源码入口由同目录 [`lib.rs`](lib.rs) 的 `mod util; pub use util::*;` 统一导出。它不是 DDL 生产处理器，而是统计信息相关测试在制造或截获 `SchemaChangeEvent` 后使用的辅助层：一组函数负责通过真实统计会话事务路径处理事件，另一组函数负责从事件接收端筛选目标 `ActionType`。crate 边界和四个直接依赖见同目录 [`Cargo.toml`](Cargo.toml)。
-
-该文件位于 `pkg/statistics/handle/ddl/testutil`，对应 Go 包 `pkg/statistics/handle/ddl/testutil`。Rust 当前通过 `TransactionalDDLHandle` 抽象所需的 Handle 能力；同目录独立测试实现了该 trait，但本文件本身没有为完整生产 `statistics::handle::Handle` 提供实现。因此它应被理解为测试基础设施及未来生产 Handle 接线边界，而不是已接入应用 DDL 主循环的组件。
+Rust 当前通过 `TransactionalDDLHandle` 抽象所需的 Handle 能力；同目录独立测试实现了该 trait，但本文件本身没有为完整生产 `statistics::handle::Handle` 提供实现。
 
 ## 核心职责
 
@@ -81,16 +79,13 @@ Rust `std::sync::mpsc::Receiver` 是单消费者端。本文件没有克隆 rece
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`util.go`](util.go)，四个同名函数逐一对应：
-
 - Go `HandleDDLEventWithTxn(*handle.Handle, *SchemaChangeEvent)` 直接依赖具体 Handle；Rust 用泛型 `H: TransactionalDDLHandle` 暂代生产 Handle 接线，但仍强制从 Handle 取得 pool 并走真实 `call_with_sctx(FLAG_WRAP_TXN)`，没有把事务行为降级为可替换闭包。
-- 两个版本都在事件处理前将上下文来源设为 `InternalDDLNotifier`，并调用 Handle 的 DDL 事件处理入口。
 - Go `HandleNextDDLEventWithTxn` 直接从 `<-h.DDLEventCh()` 读取；Rust 用 `Mutex<Receiver<_>>` 表达接收端的独占访问，并对关闭通道给出明确 panic 文本。行为意图相同，但 Rust 的失效位置更明确。
 - Go `FindEvent` 反复读取并跳过非目标事件；Rust 保持相同行为，并显式处理 disconnected。
 - Go 超时版使用一次 `time.NewTicker(timeout seconds)`，首次 tick 后返回 `nil`；Rust 用固定 deadline 和 `recv_timeout` 返回 `None`。两者都采用总超时而非逐消息重置超时。Rust 明确断言正超时，以复现 `time.NewTicker` 对非正 duration 的 panic。
 - Go 从关闭通道读取到 `nil` 后在 `event.GetType()` 处失败；Rust 不能产生 nil 事件，因而在 `recv`/`recv_timeout` 返回断开时主动 panic，保留“关闭是可见失败”的测试语义。
 
-同目录 [`util_test.rs`](util_test.rs) 是 Rust 的独立回归测试，覆盖 Go 语义及 Rust 显式边界。Go 实际调用面还包括 `pkg/statistics/handle/ddl/ddl_test.go`、`pkg/statistics/handle/updatetest/update_test.go`、`pkg/statistics/handle/autoanalyze/priorityqueue/queue_ddl_handler_test.go` 等测试。
+同目录 [`util_test.rs`](util_test.rs) 是 Rust 的独立回归测试，覆盖 Go 语义及 Rust 显式边界。
 
 ## 扩展指南
 
@@ -100,14 +95,3 @@ Go 对照文件是 [`util.go`](util.go)，四个同名函数逐一对应：
 - 若修改超时单位或类型，应同时对齐 Go `FindEventWithTimeout`、正值校验、总 deadline 不变量和边界测试。高事件速率下必须继续以固定 deadline 计算剩余预算，否则持续的非目标事件可能让调用永不超时。
 - 新测试继续放在独立 [`util_test.rs`](util_test.rs)，不要内嵌到源文件。至少覆盖成功匹配、非目标跳过、截止超时、非正超时、通道关闭、事务成功提交和事件错误回滚。
 - 兼容风险主要是 Go/Rust 边界差异和 panic/`Result` 的选择；性能风险主要是持锁阻塞接收及线性丢弃大量非目标事件。任何改变都应先核对现有测试调用是否依赖这些特性。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标目录列出 `lib.rs`、`util.rs`、`util_test.rs` 和 `util.go`，其中 `util.rs` 识别出 17 个符号。
-- RustCodeGraph 源码与符号查询：[`util.rs`](util.rs) 的 `TransactionalDDLHandle`、`HandleDDLEventWithTxn`、`HandleNextDDLEventWithTxn`、`FindEvent`、`FindEventWithTimeout`；调用边为 `HandleDDLEventWithTxn → SPool/HandleDDLEvent` 和 `HandleNextDDLEventWithTxn → DDLEventCh/HandleDDLEventWithTxn`。
-- 下游实现查询：`pkg/statistics/handle/util/util.rs` 的 `call_with_sctx`、`wrap_txn`、`finish_transaction`，确认会话变量同步、悲观事务、提交、回滚及原始错误保留；`pkg/kv/option.rs::WithInternalSourceType` 确认内部请求标记；`pkg/ddl/notifier/events.rs::GetType` 确认事件类型读取及空内部事件的 `ActionNone`。
-- crate 与模块边界：同目录 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)。Cargo metadata 明确 Go 包对应关系和四个 path dependency，未声明 feature。
-- Go 对照：同目录 [`util.go`](util.go) 的四个同名函数；精确引用搜索确认这些 helper 被统计 Handle、DDL、更新、自动分析等 Go 测试使用。
-- Rust 测试：同目录 [`util_test.rs`](util_test.rs) 的 `handle_next_event_uses_real_wrapped_transaction`、`handle_event_error_rolls_back_and_propagates`、三个事件筛选测试以及关闭通道/非正超时 panic 测试。
-- 目标目录及向上至 `pkg/statistics` 未找到 `doc.go`，因此没有额外的包级 Go 契约需要纳入。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工复核所有行为陈述均能追溯到上述源码、图查询或测试。

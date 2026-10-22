@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-util` crate；crate 根 `pkg/statistics/handle/util/lib.rs` 以 `pub mod lease_getter` 声明模块，并通过 `pub use lease_getter::*` 重导出其公开 API。它对应 Go 文件 `pkg/statistics/handle/util/lease_getter.go`，目标是把“统计缓存租约”封装成可在多个线程间共享、运行时可更新的窄接口。
-
-当前 Rust 主统计句柄尚未接入这里的具体实现：仓库搜索只在本文件发现 `AtomicLeaseGetter` 和 `new_lease_getter`，而 `pkg/statistics/handle/handle.rs` 的 `Handle<B>` 仍直接保存 `lease: Duration`，通过其固有方法 `Handle::lease`/`Handle::set_lease` 读写。另一方面，`pkg/statistics/handle/types/interfaces.rs` 已将本文件的 `LeaseGetter` 作为组合 trait `StatsHandle` 的父能力。因此，本文件目前既是接口层契约，也是一个可复用但尚未被 Rust 主句柄构造链采用的原子实现。
+`LeaseGetter` 定义读取和更新统计租约的线程安全协议，并以 `Send + Sync` 约束实现者可跨线程传递和共享。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ Rust `Duration` 不表示负时长，因此 Rust API 从类型层排除了负租
 
 ## 与 Go 版本的对应关系
 
-`pkg/statistics/handle/util/lease_getter.go` 的 `LeaseGetter`、私有 `leaseGetter`、`NewLeaseGetter`、`Lease` 和 `SetLease` 分别对应 Rust 的 `LeaseGetter`、`AtomicLeaseGetter`、`new_lease_getter`、`lease` 和 `set_lease`。两版都提供共享安全的即时读写，不包含过期调度逻辑。
-
-实现形态存在三点差异。第一，Go 具体类型私有并持有 `*atomic.Duration`，Rust 具体类型公开且内嵌 `AtomicU64`。第二，Go `SetLease` 注释说明主要供测试使用，Rust trait 没有限制该方法用途，且 `pkg/domain/domain.rs::set_stats_lease` 表明运行时配置也需要类似能力。第三，Go `time.Duration` 是有符号时长，而 Rust `Duration` 非负；Rust 还明确把超过 `u64::MAX` 纳秒的值饱和到上界。
+实现形态存在三点差异。第二，Go `SetLease` 注释说明主要供测试使用，Rust trait 没有限制该方法用途，且 `pkg/domain/domain.rs::set_stats_lease` 表明运行时配置也需要类似能力。第三，Go `time.Duration` 是有符号时长，而 Rust `Duration` 非负；Rust 还明确把超过 `u64::MAX` 纳秒的值饱和到上界。
 
 接线进度也不同：Go `pkg/statistics/handle/handle.go` 在构造 `Handle` 时执行 `handle.LeaseGetter = util.NewLeaseGetter(lease)`，所以接口和原子实现直接进入主句柄；Rust `Handle<B>` 当前使用自身字段和固有方法，尚未构造 `AtomicLeaseGetter`。因此本文件是 Go 抽象的实现移植，但尚不是 Rust 主句柄租约状态的真实存储位置。
 
@@ -83,13 +79,3 @@ Rust `Duration` 不表示负时长，因此 Rust API 从类型层排除了负租
 若要把原子实现接入 Rust 主统计句柄，应先决定单一事实源：用 `Arc<dyn LeaseGetter>` 替换 `pkg/statistics/handle/handle.rs::Handle<B>::lease`，或保留现有字段而不启用本实现；不能同时维护两份未同步租约。需要同步检查 `pkg/statistics/handle/types/interfaces.rs` 的 `StatsHandle` 组合约束、`pkg/statistics/handle/cache/statscache.rs` 的显式 trait 调用、`pkg/domain/domain.rs::set_stats_lease`，以及 `pkg/statistics/handle/analyze_runtime_aster_unit_test.rs` 和 `pkg/planner/core/casetest/planstats/plan_stats_test.rs` 的租约往返测试。
 
 扩展返回旧值、条件更新或变更通知会改变 trait 契约和并发语义，应新增方法而非暗改现有 `set_lease` 行为，并评估所有 trait 实现者。改变纳秒存储上限或饱和策略则有兼容风险；引入锁或通知机制会增加热路径争用和生命周期管理成本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录清单确认 `lease_getter.rs` 被索引且含 10 个符号。
-- RustCodeGraph `query`：精确定位 `LeaseGetter`（第 25 行）、`AtomicLeaseGetter`（第 31 行）、`duration_nanos`（第 55 行）和 `new_lease_getter`（第 60 行）；`node` 核对了 trait 的 `Send + Sync` 及两个方法签名。
-- RustCodeGraph `explore`：确认 `new_lease_getter -> AtomicLeaseGetter::new -> duration_nanos` 的文件内调用路径；精确 callers 查询未返回文件外调用边，随后用全仓文本引用搜索复核未接线事实。图结果中的同名 Go/Rust 符号存在歧义，因此未把宽泛的同名 blast-radius 列表当作本文件的调用证据。
-- 源码与模块证据：`pkg/statistics/handle/util/lease_getter.rs`、`pkg/statistics/handle/util/lib.rs`、`pkg/statistics/handle/util/Cargo.toml`、`pkg/statistics/handle/types/interfaces.rs`、`pkg/statistics/handle/handle.rs`、`pkg/statistics/handle/cache/statscache.rs`、`pkg/domain/domain.rs`。
-- Go 对照证据：`pkg/statistics/handle/util/lease_getter.go` 与 `pkg/statistics/handle/handle.go`。
-- 测试证据：未发现本原子类型或工厂的同名独立 Rust 单元测试；`pkg/statistics/handle/analyze_runtime_aster_unit_test.rs::handle_exposes_lease_and_forced_delta_flush` 验证当前 `Handle` 的零值和毫秒级往返，`pkg/planner/core/casetest/planstats/plan_stats_test.rs::test_stats_lease_round_trip_matches_go_defer_pattern` 验证 Domain 临时更新后恢复原租约。Go 侧 `pkg/statistics/integration_test.go` 和 `pkg/statistics/handle/syncload/stats_syncload_test.go` 展示了读取、临时设置和 defer 恢复的真实用法。
-- 本任务是只读行为分析加文档新增，按计划不运行 Cargo；最终以固定十一章节结构命令验证文档形状，并人工复核上述现状/边界结论均能回指到源码或调用证据。

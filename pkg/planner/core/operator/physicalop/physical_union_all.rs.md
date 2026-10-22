@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-operator-physicalop` crate 中 `UNION ALL` 物理算子的 Rust 实现，源码入口为 [`physical_union_all.rs`](physical_union_all.rs)。它处在逻辑计划和任务选择之间：`ExhaustPhysicalPlans4LogicalUnionAll`、`ExhaustPhysicalPlans4LogicalPartitionUnionAll` 将逻辑 Union 节点转换为 Root/MPP 物理候选，随后通用 `PhysicalPlan` 接口负责成本比较和任务挂接。
-
-模块由 [`lib.rs`](lib.rs) 的 `mod physical_union_all` 纳入并通过 `pub use physical_union_all::*` 导出；同文件中的 `ConcretePhysicalOperator for PhysicalUnionAll` 和 `impl_concrete_physical_plan!(PhysicalUnionAll)` 将这里的固有方法接入统一物理计划接口。crate 边界及直接依赖由 [`Cargo.toml`](Cargo.toml) 声明，其中本文件直接依赖 `base`、`costusage`、`expression`、`logicalop`、`property`、`plancodec` 和 `vardef`。
+处在逻辑计划和任务选择之间：`ExhaustPhysicalPlans4LogicalUnionAll`、`ExhaustPhysicalPlans4LogicalPartitionUnionAll` 将逻辑 Union 节点转换为 Root/MPP 物理候选，随后通用 `PhysicalPlan` 接口负责成本比较和任务挂接。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`physical_union_all.go`](physical_union_all.go)。结构体字段、`Init`/`Clone`/`MemoryUsage`/`Attach2Task`/两套成本入口和两个 `Exhaust...` 名称均保持可辨认对应，候选过滤条件、四个子属性字段、统计缩放、Root 下追加 MPP 方案以及 `TypePartitionUnion` 语义也一致。
-
 实现组织存在以下差异：
 
 - Go 的 `Attach2Task` 与成本方法通过 `utilfuncp` 函数指针进入 `pkg/planner/core`；Rust 在算子内实现成本逻辑，并通过 `lib.rs` 中的 trait 默认挂接构造 `RootTask`。
@@ -95,13 +91,3 @@
 - 若新增结构体字段，需同步 `Clone`、`MemoryUsage`、[`cache_snapshot.rs`](cache_snapshot.rs) 的 `CachedUnionAll` capture/restore，以及 `lib.rs` 中相应 trait 行为；必要时同步计划缓存契约测试。
 - 若改变候选数或 task type，需同时检查普通与分区两个公开入口、Root/MPP 两种 required task、MPP 禁用会话，以及 `lib.rs` 的默认 attach/RootTask 语义。兼容风险主要是 plan shape 与 hint/MPP 选择变化，性能风险主要是成本偏置或并发摊薄不一致。
 - Go/Rust 对齐修改应以 [`physical_union_all.go`](physical_union_all.go) 和相关 Go 成本/task 文件为语义基线，不应为通过单个 Rust 测试而删减候选、属性传播或错误边界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，可用于本次 Rust/Go 符号核验。
-- `rustcodegraph node --file pkg/planner/core/operator/physicalop/physical_union_all.rs --offset 1 --limit 320`：读取完整 246 行目标源码，确认 1 个公开结构体、7 个公开固有方法、2 个公开自由函数、1 个私有构造器，无常量、trait 定义或条件编译项。
-- `rustcodegraph query PhysicalUnionAll` 与 `query physical_union_all`：确认 Rust/Go 对照符号、crate 导出/测试/缓存等相邻引用；`callers` 对两个 Rust `Exhaust...` 和 `build_union_plans` 未返回调用方，未把缺失图边写成已验证调用。
-- `rustcodegraph callees build_union_plans` 及两个 `Exhaust...`：确认公开入口到私有构造器、再到 `Init` 等内部边；成本查询确认 v2 到 `div_cost_ver2`，并确认成本方法读取 session context/variables。
-- 已核读路径：[`physical_union_all.rs`](physical_union_all.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`physical_union_all_test.rs`](physical_union_all_test.rs)、[`physical_union_all.go`](physical_union_all.go)、[`cache_snapshot.rs`](cache_snapshot.rs)、`pkg/planner/core/operator/physicalop/base_physical_plan.rs`。补充 `rg` 用于图未返回 callers 时定位 Rust 模块/trait 接线和 Go 上游入口。
-- 测试证据：`physical_union_all_test.rs::v1_cost_includes_go_union_worker_overhead` 断言零孩子成本为默认 concurrency factor，两个零成本孩子在强制重算时为 `4 * factor`，对应“最大子成本 + (1 + child count) * factor”。本任务按计划不运行 Cargo。
-- 交付结构验证使用任务规定的命令，要求文件存在且固定二级标题恰好为 11 个；另人工复核本文没有把测试写入生产源文件，也没有声称未由索引或源码证明的 Rust 上游调用。

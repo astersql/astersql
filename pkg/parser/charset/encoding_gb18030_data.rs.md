@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-parser-charset` crate；crate 入口 `pkg/parser/charset/lib.rs` 以 `pub mod encoding_gb18030_data` 声明模块，并通过 `pub use encoding_gb18030_data::*` 再导出其公开数据和访问函数。它不是通用 GB18030 编解码器本体，而是为 GB18030-2022 兼容覆盖与 MySQL 大小写语义提供静态数据及只读查询接口。实际字符边界探测、转换和 `Encoding` trait 实现在 `pkg/parser/charset/encoding_gb18030.rs`，二进制排序键的一个直接消费者位于 `pkg/util/collate/gb18030_bin.rs`。
-
-`pkg/parser/charset/Cargo.toml` 将本目录定义为独立 crate `astersql-parser-charset`，入口为 `lib.rs`。本文件自身只依赖 Rust 标准库的 `HashMap` 与 `LazyLock`，没有条件编译项、外部 I/O 或环境配置。
+实际字符边界探测、转换和 `Encoding` trait 实现在 `pkg/parser/charset/encoding_gb18030.rs`，二进制排序键的一个直接消费者位于 `pkg/util/collate/gb18030_bin.rs`。
 
 ## 核心职责
 
@@ -70,9 +68,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/charset/encoding_gb18030_data.go`。Go 在 `init()` 中遍历局部 `gb18030EncodingList`，填充包级 `unicodeToGB18030` 与 `gb18030ToUnicode`；Rust 把同一数据提升为公开常量切片，并以两个 `LazyLock<HashMap<...>>` 惰性构造，避免可变全局状态。`CaseRange` 与 `GB18030_CASE_RANGES` 对应 Go 的 `unicode.CaseRange` 和 `GB18030Case`，保留大写、小写、标题三项 delta。
+Go 在 `init()` 中遍历局部 `gb18030EncodingList`，填充包级 `unicodeToGB18030` 与 `gb18030ToUnicode`；Rust 把同一数据提升为公开常量切片，并以两个 `LazyLock<HashMap<...>>` 惰性构造，避免可变全局状态。
 
-调用接线并非完全逐行等同。Go 的 `pkg/parser/charset/encoding_gb18030.go::customGB18030Encoder.Transform` 查询正向表，`customGB18030Decoder.Transform` 查询反向表，然后才回退 `simplifiedchinese.GB18030`。当前 Rust 的 `pkg/parser/charset/encoding_gb18030.rs` 主编解码路径直接使用 `encoding_rs::GB18030`；仓库内确认的正向表生产消费者是 `pkg/util/collate/gb18030_bin.rs::encode_char`，反向表当前没有生产消费者。因此，文档不能把 Rust 双向表描述为编码器与解码器都已接线。
+调用接线并非完全逐行等同。当前 Rust 的 `pkg/parser/charset/encoding_gb18030.rs` 主编解码路径直接使用 `encoding_rs::GB18030`；仓库内确认的正向表生产消费者是 `pkg/util/collate/gb18030_bin.rs::encode_char`，反向表当前没有生产消费者。
 
 Go `strings.ToUpperSpecial`/`ToLowerSpecial` 在特殊表之外使用 Unicode 简单映射，每个 rune 仍映射为单个 rune；Rust `char::to_uppercase`/`to_lowercase` 可能产生多个字符。私有的 `go_simple_upper`/`go_simple_lower` 补上这一语义差异，相关独立测试覆盖 `ß`、希腊组合形式和 `U+0130`。
 
@@ -83,11 +81,3 @@ Go `strings.ToUpperSpecial`/`ToLowerSpecial` 在特殊表之外使用 Unicode �
 修改大小写规则时，应同步 `GB18030_CASE_RANGES` 与 Go `GB18030Case`，保留零 delta 项的屏蔽作用，并检查区间不重叠。特殊表行为可在 `charset_1_aster_unit_test.rs::gb18030_special_case_overrides_unicode_defaults` 覆盖；Go/Rust 默认映射差异则应放在 `encoding_gb18030_data_test.rs::gb18030_case_fallback_uses_go_simple_case_mapping`。若要新增标题格式 API，需要明确使用 `delta[2]`，同时实现与 Go 简单标题映射一致的回退，而不是复用完整 Unicode 展开。
 
 性能风险主要有两处：增加映射会提高首次哈希表初始化成本和常驻内存；增加或重排大小写区间会影响每个字符的线性扫描成本。若区间规模显著增长，可以在保持“首个匹配/无重叠”语义并补充等价测试后考虑二分查找。兼容性风险包括排序键改变、已有数据比较顺序改变、Go/Rust 大小写结果分叉，以及错误地把大端编码整数当作宿主端序字节。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`query` 将 `unicode_to_gb18030`、`gb18030_to_unicode`、`gb18030_case` 定位到本文件；`explore`/调用关系确认 `encoding_gb18030.rs::{ToUpper,ToLower}`、`gb18030_bin.rs::encode_char` 及两处 Rust 测试调用。
-- 源码与模块：`pkg/parser/charset/encoding_gb18030_data.rs`（2,534 行）、`pkg/parser/charset/lib.rs`、`pkg/parser/charset/Cargo.toml`、`pkg/parser/charset/encoding_gb18030.rs`、`pkg/util/collate/gb18030_bin.rs`。
-- Go 对照：`pkg/parser/charset/encoding_gb18030_data.go` 与 `pkg/parser/charset/encoding_gb18030.go`；后者直接展示 Go 编码器/解码器对正反向表的查询位置。
-- 测试证据：`pkg/parser/charset/encoding_gb18030_data_test.rs` 验证 Go 简单大小写回退；`pkg/parser/charset/charset_1_aster_unit_test.rs` 验证欧元双向映射、列表长度和 µ/μ 特例；`pkg/parser/charset/encoding_gb18030_2_aster_unit_test.rs` 与 Go `pkg/parser/charset/encoding_test.go::TestEncodingGB18030` 覆盖更完整的 GB18030-2022 往返及非法输入行为。
-- 静态计数：`rg -c "^    \\('" pkg/parser/charset/encoding_gb18030_data.rs` 得到 2,094；`rg -c '^    CaseRange \\{' ...` 得到 58。结构验收命令见任务验证记录；按任务约束未运行 Cargo。

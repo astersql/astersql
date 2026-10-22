@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-globalsort` crate；`pkg/ingestor/globalsort/Cargo.toml` 将 `lib.rs` 设为 crate 入口，`lib.rs` 以 `pub mod split` 公开本模块。它位于全局排序产物和后续合并/导入计划之间：输入是外部存储上的 data/stat 文件对及其 `RangeProperty`，输出是连续的 ranges group、组内 range-job 边界和 TiKV Region 预分裂边界。
-
-直接生产调用者有两类。`merge_v2.rs::MergeOverlappingFilesV2` 按本模块给出的 `[current_start, current_end)` 和文件集合分窗读取、排序并写回；`pkg/session/runtime/modify_column_cloud_planner.rs::Planner::cloud_plans` 用 `CalRangeSize` 计算任务粒度，再用 `NewRangeSplitter`/`SplitOneRangesGroup` 生成 ingest 子任务元数据。`testutil.rs::testReadAndCompare` 是共享测试辅助调用者。
+这里不读取或合并完整业务 KV（旧格式 `populate_properties` 回退除外），也不直接执行 Region split；它只产出后续读取、调度和 split 所需的边界与文件清单。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ Cargo 清单没有为本文件单独引入第三方 crate；核心类型来自�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 `pkg/ingestor/globalsort/split.go`：`ExhaustedHeapElem` 对应 `exhaustedHeapElem`，`RangeSplitter` 的三套阈值/计数、active 文件、延迟边界标志和耗尽堆均保持 Go 算法结构；`CalRangeSize` 的 6.5 份额、向上计算 range 数和按 Region 整数倍对齐也一致。Rust 独立测试 `split_test.rs` 对照 Go 的 GeneralProperties、OnlyOneGroup、SortedData、StrictCase、ExactlyKeyNum、3KFiles 和 CalRangeSize 场景。
-
 已确认的实现差异：
 
 - Go 构造器接收 `context.Context`、建立 logger，并委托 `simplesst.NewMergePropIter`；Rust 没有 context/logger，使用本地 `PropertyMerge` 与 `StreamStatsReader`。
@@ -112,12 +108,3 @@ Rust 文件直接对应 `pkg/ingestor/globalsort/split.go`：`ExhaustedHeapElem`
 调整 range 内存模型时，应同步 `CalRangeSize`、`SIZE_OF_SLICE`/`SplitOneRangesGroup` 的估算公式、`modify_column_cloud_planner.rs` 的调用假设，以及 Rust/Go 两侧 `TestCalRangeSize`。若引入超大计数，还需明确 `u64 -> i64` 转换和 group/Region 加法的溢出策略。
 
 若增加并行消费，应重新设计整个有状态游标，而不是在现有实例外共享可变引用；还需定义 reader 所有权、结果顺序、错误后的停止语义和 `Close` 竞态。所有 Rust 测试继续保留在 `split_test.rs`，不要嵌入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 Rust 7,032 个；目标文件被识别为由 `merge_v2.rs`、`modify_column_cloud_planner.rs` 和一个会话测试使用。
-- RustCodeGraph `node --file pkg/ingestor/globalsort/split.rs`：核对全部 478 行、公开 API、内部 heap/iterator 和状态机流程。
-- RustCodeGraph `query RangeSplitter`、`query SplitOneRangesGroup`、`query CalRangeSize`：核对 Rust/Go 对应符号及测试符号；精确 callers/callees 命令在当前索引未返回文本，因此调用边又由索引的 `used by` 结果和精确符号引用交叉确认。
-- 已读直接证据：`pkg/ingestor/globalsort/Cargo.toml`、`lib.rs`、`reader.rs::StreamStatsReader`、`merge_v2.rs`、`testutil.rs`、`pkg/session/runtime/modify_column_cloud_planner.rs`。
-- 已读对照与测试：`pkg/ingestor/globalsort/split.go`、`split_test.rs`，并以 `split_test.go` 的测试入口与调用位置核对 Go 覆盖面。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核源码链接、已知差异及未验证边界。

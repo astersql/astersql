@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 workspace crate `astersql-planner-util-coretestsdk`，由同目录 `lib.rs` 以公开模块 `testkit` 暴露。它是规划器相关测试使用的夹具层，而不是 SQL 请求的生产执行路径：一部分 API 解析 EXPLAIN 文本字段，另一部分 API 将 `mock.rs` 中的表元数据、会话上下文和规划上下文组装为 `PlannerSuite`。
-
-`Cargo.toml` 通过 `package.metadata.porting.go-package = "pkg/planner/util/coretestsdk"` 指明 Go 对照包。真实的 domain、infoschema、parser、sessionctx 等 crate 目前只出现在 `cfg(windows)` 条件依赖中；本文件实际编译的实现使用 `crate::mock` 的本地简化类型。因此它当前验证的是移植夹具的数据和初始化约定，不能视为已经接入完整 Rust planner、parser 或 domain。
+`ParserConfig` 和 `Parser` 保存测试关注的两个解析器开关，不执行 SQL 解析。
 
 ## 核心职责
 
@@ -78,11 +76,7 @@ Go 默认构造器创建真实 mock domain/statistics handle，失败时 panic�
 
 ## 与 Go 版本的对应关系
 
-主要映射为：Go `GetFieldValue` 对应 Rust `get_field_value`；Go `PlannerSuite` 与四个 getter 对应 Rust 同名结构及两组访问器；Go `CreatePlannerSuite` 对应 `create_planner_suite`；Go 私有 `createPlannerSuite` 的默认装配对应 `create_planner_suite_elements`；Go `CreatePlannerSuiteElems` 对应 `create_planner_suite_elems`。默认表顺序、全局递增 ID、窗口函数开关和严格 DOUBLE 检查均保留。
-
 差异必须视为当前迁移限制：Rust `Parser` 是配置桩；`InfoSchema` 是 `Vec<TableInfo>` 容器；`MockContext`/`PlanContext` 是值对象；Rust 没有创建 store client、真实 domain、schema validator 或 info cache，也不会执行真实 stats handle 的创建/关闭。Go 的 `PlannerSuite.ctx` 在默认路径指向 mock context，而 Rust 保存的是由它生成的 `PlanContext` 快照。Rust 额外提供 `is_closed` 和 `From<Vec<TableInfo>>`，用于本地测试和便利构造，不是 Go API 原样翻译。
-
-`coretestsdk_aster_unit_test.rs` 明确检查字段解析边界、自定义构造器不开启 parser 选项、默认 ID 顺序、数据库名以及 close 状态；这些测试是当前 Rust 对齐程度的权威边界。
 
 ## 扩展指南
 
@@ -93,12 +87,3 @@ Go 默认构造器创建真实 mock domain/statistics handle，失败时 panic�
 - 若允许构造后更新 session schema，应先决定 `PlannerSuite.info_schema`、`MockContext.info_schema` 和 `PlanContext.info_schema` 的一致性模型；当前克隆快照语义容易产生陈旧状态。
 
 兼容风险主要来自 Go/Rust 夹具语义漂移和 ID 顺序变化；性能风险当前限于克隆完整 schema，测试规模较小，但扩展到大表集或真实 infoschema 后需重新评估；并发风险要在引入共享真实上下文时重新设计。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/planner/util/coretestsdk` 确认 crate 的六个已索引文件；`node --file pkg/planner/util/coretestsdk/testkit.rs` 读取完整 265 行及 19 个符号；`query` 定位 `get_field_value`、`PlannerSuite` 和三个构造器；`callers`/`callees` 查询确认图中可见的内部转发边，但调用者结果为空，因此上游使用另以源码搜索核验。
-- Rust 实现：`pkg/planner/util/coretestsdk/testkit.rs`；直接模型与构造器：`pkg/planner/util/coretestsdk/mock.rs`；模块入口：`pkg/planner/util/coretestsdk/lib.rs`。
-- crate 边界：`pkg/planner/util/coretestsdk/Cargo.toml`；workspace 与若干测试 crate 的 Cargo manifest 证明 crate 被纳入并声明为依赖，但不等价于本文件 API 被调用。
-- Go 对照：`pkg/planner/util/coretestsdk/testkit.go`；Go 使用样例包括 `pkg/planner/core/casetest/partition/partition_pruner_test.go`、`pkg/planner/core/logical_plans_test.go`、`pkg/planner/core/lateral_join_test.go` 和 `pkg/planner/core/rule_generate_column_substitute_test.go`。
-- Rust 独立回归测试：`pkg/planner/util/coretestsdk/coretestsdk_aster_unit_test.rs`。源码搜索确认它是当前直接调用本文件 API 的 Rust 测试；按任务约束未运行 Cargo。
-- 人工复核结论：该文件存在是为 Rust 规划器测试提供 Go coretestsdk 的局部可执行替身；当前运行路径只组装内存值和状态标志，安全扩展必须同步同目录独立测试，并区分已实现桩语义与尚未接通的真实 TiDB 资源语义。

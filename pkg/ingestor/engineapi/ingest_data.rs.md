@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-engineapi` crate，是 TiKV write + ingest 数据路径的公共协议层。它不读取文件、不生成 SST，也不发起 RPC，而是定义数据源、前向迭代器、取消状态和跨线程错误的共同形状。crate 入口 `pkg/ingestor/engineapi/lib.rs` 将这里的 `Context`、`EngineError`、`ForwardIter`、`IngestData` 公开再导出；相邻的 `engine.rs` 用 `DataAndRanges { Data: Box<dyn IngestData>, SortedRanges }` 把数据和待处理范围交给导入流水线。
-
-所属 crate 由 `pkg/ingestor/engineapi/Cargo.toml` 声明，包名为 `astersql-ingestor-engineapi`，库入口是 `lib.rs`，本文件唯一直接的外部 crate 依赖是工作区内的 `astersql-lightning-membuf`。`[package.metadata.porting]` 将其对应到 Go 包 `pkg/ingestor/engineapi`。
+不读取文件、不生成 SST，也不发起 RPC，而是定义数据源、前向迭代器、取消状态和跨线程错误的共同形状。
 
 ## 核心职责
 
@@ -77,18 +75,16 @@ RustCodeGraph 的文件索引显示 `ingest_data.rs` 被 13 个文件引用；�
 
 ## 与 Go 版本的对应关系
 
-权威对照是同目录 `pkg/ingestor/engineapi/ingest_data.go`。Rust 保留了 Go 接口的方法集合、PascalCase 名称、半开范围、空 bound、同一 TS 用作 start/commit、显式引用计数、可多次 `Finish`，以及 `ForwardIter` 的读取和缓冲生命周期。
+Rust 保留了 Go 接口的方法集合、PascalCase 名称、半开范围、空 bound、同一 TS 用作 start/commit、显式引用计数、可多次 `Finish`，以及 `ForwardIter` 的读取和缓冲生命周期。
 
 主要表示差异如下：
 
 - Go 的 `error` 映射为 `EngineError`，额外增加 `Send + Sync + 'static` 约束。
-- Go 的 `context.Context` 映射为本地最小 `Context`，目前只有取消布尔值，没有 deadline、value、Done channel 或取消原因。
-- Go 的 `nil, nil, nil` 映射为 `Ok((None, None))`；非空键由拥有所有权的 `Vec<u8>` 返回。
 - Go `ForwardIter.Error() error` 的 nil 映射为 `Option<&EngineError>`；Rust 只借用迭代器保存的错误。
 - Go 接口值映射为 `Box<dyn IngestData>`，进入多任务流水线后再转为 `Arc<dyn IngestData>`。Rust 的 `Arc` 只管理 trait object 自身的内存，不能替代 Go 语义中的 `IncRef`/`DecRef`，后者可能管理底层 reader、文件或缓存。
 - Go 切片的失效约定由注释规定；Rust 返回切片借用并要求实现维持其底层存储，但 `ReleaseBuf` 后仍需调用方遵守协议，不能保留自有指针绕过借用系统。
 
-Go 测试 `pkg/ingestor/globalsort/engine_test.go::TestMemoryIngestData` 验证无界、闭左开右、空结果、单键、重复键和前向遍历；Rust 的 `pkg/ingestor/globalsort/engine_test.rs::test_memory_ingest_data` 保留相同用例。`pkg/ingestor/engineapi/migration_aster_unit_test.rs::migration_ingest_data_range_iteration_ref_and_finish_match_go` 另以独立假实现验证接口级范围、释放、引用归零和 `Finish` 累加。
+Go 测试 `pkg/ingestor/globalsort/engine_test.go::TestMemoryIngestData` 验证无界、闭左开右、空结果、单键、重复键和前向遍历；Rust 的 `pkg/ingestor/globalsort/engine_test.rs::test_memory_ingest_data` 保留相同用例。
 
 ## 扩展指南
 
@@ -97,13 +93,3 @@ Go 测试 `pkg/ingestor/globalsort/engine_test.go::TestMemoryIngestData` 验证�
 - 若扩充 `Context`（如 deadline 或取消原因），必须同步 `LocalData::NewIter`、`DataAdapter::NewIter` 及所有 engine/mock 实现，避免不同数据源呈现不同取消结果。
 - 若修改 trait 方法签名或错误模型，需同步 `engine.rs::DataAndRanges` 的 trait object 使用、`ingestctrl/import_pipeline.rs`、`globalsort/engine_api.rs` 和独立测试；不要把单元测试嵌入本生产文件，继续放在 `migration_aster_unit_test.rs` 或对应实现的 `*_test.rs`。
 - 兼容风险集中在 Go 对齐、动态 trait object 的对象安全和取消语义；正确性风险集中在半开范围、重复键顺序、引用不配对和结束后错误检查；性能风险集中在为延长 KV 生命周期而复制数据、锁竞争及过强原子顺序。修改前后应同时跑接口迁移测试和具体实现的范围/生命周期测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录列出 `ingest_data.rs`、Go 对照、模块入口与独立迁移测试。
-- RustCodeGraph `node --file pkg/ingestor/engineapi/ingest_data.rs`：核对完整 128 行及 21 个符号；`query IngestData --kind trait` 定位本 trait；`query MemoryIngestData --kind struct` 定位具体 Go/Rust 实现与相关测试。
-- RustCodeGraph 源码节点：`pkg/ingestor/engineapi/engine.rs`、`pkg/ingestor/ingestctrl/import_pipeline.rs`、`pkg/ingestor/ingestctrl/job_worker.rs`、`pkg/ingestor/globalsort/engine_api.rs`，用于核对批次所有权、动态分发、引用/完成顺序、取消和关闭行为。
-- crate 与包契约：`pkg/ingestor/engineapi/Cargo.toml`、`pkg/ingestor/engineapi/lib.rs`、`pkg/ingestor/doc.go`。
-- Go 对照：`pkg/ingestor/engineapi/ingest_data.go`；Go 测试证据：`pkg/ingestor/globalsort/engine_test.go::TestMemoryIngestData` 及 `pkg/ingestor/ingestctrl/local_test.go` 的 mock 迭代器和阻塞 `DecRef` 实现。
-- Rust 测试证据：`pkg/ingestor/engineapi/migration_aster_unit_test.rs::migration_ingest_data_range_iteration_ref_and_finish_match_go`、`migration_engine_channel_context_statistics_and_ranges_match_go`，以及 `pkg/ingestor/globalsort/engine_test.rs::test_memory_ingest_data`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档存在且恰好包含上述 11 个固定二级章节，并人工复核只新增本文档、未修改 Rust/Go/Cargo/`plan.md`。

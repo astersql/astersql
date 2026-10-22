@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现自动统计优先队列中的“动态分区裁剪表”分析作业。它位于 `astersql-statistics-handle-autoanalyze-priorityqueue` crate 中，由同目录 `lib.rs` 声明并公开重导出；crate 的 `Cargo.toml` 仅直接依赖 `astersql-statistics-handle-logutil`，本文件自身则通过 `crate::job::*` 使用队列公共的作业、运行时、元数据和日志/冷却判断抽象。
-
-源码链接：[`dynamic_partitioned_table_analysis_job.rs`](dynamic_partitioned_table_analysis_job.rs)。
-
-作业由 `AnalysisJobFactory::CreateDynamicPartitionedTableAnalysisJob` 创建：工厂汇总需要重分析的分区 ID、缺统计的新索引及调度指标，再调用 `NewDynamicPartitionedTableAnalysisJob`，以 `Box<dyn AnalysisJob>` 交给队列。`AnalysisPriorityQueue::Push`/`Pop` 管理这个 trait object；但当前生产 Rust 源码中未检索到 `Pop` 后调用 `ValidateAndPrepare` 或 `Analyze` 的执行器，因此“创建和排队”已有接线，而实际调度执行入口仍未在 Rust 生产链中验证。对应的完整 Go 执行语义在同路径 `.go` 文件中。
+在 `ValidateAndPrepare` 中重新读取当前表元数据，将持久的 ID 映射为执行 SQL 所需的 schema、表、分区和索引名称，并执行最近失败分析的冷却检查。
 
 ## 核心职责
 
@@ -78,8 +74,6 @@ RustCodeGraph 确认的下游边包括：`ValidateAndPrepare → AnalysisRuntime
 
 ## 与 Go 版本的对应关系
 
-总体流程与 `dynamic_partitioned_table_analysis_job.go` 对齐：相同的构造输入、ID 到名称延迟解析、失败冷却、分批 SQL、统计版本 2 只分析首个索引、钩子以及展示字符串。Go 的 `AutoAnalyzePartitionBatchSize` 对应 Rust 运行时方法，`exec.AutoAnalyze` 对应 `execute_analyze`，`statsutil.CallWithSCtx` 的 session 获取被收敛到 Rust 的运行时边界。
-
 已验证的差异如下：
 
 - Go 在 `ValidateAndPrepare` 中分别查表和 schema；Rust 的 `table_by_id` 一次返回带 schema 名的 `TableMetadata`，所以只能表达“表不存在”或“非分区表”。
@@ -96,13 +90,3 @@ RustCodeGraph 确认的下游边包括：`ValidateAndPrepare → AnalysisRuntime
 - 改变元数据失效策略时，修改 `ValidateAndPrepare` 并同步独立测试 `dynamic_partitioned_table_analysis_job_test.rs`；当前过期 ID 被忽略且可形成成功空操作，这是已锁定行为。
 - 调整 JSON/Display 输出时同时核对 `job.rs::AnalysisJobJSON`、`format_go_string_list_map`、`format_go_duration` 以及 Go `AsJSON`/`String`，明确兼容目标。
 - 测试必须继续放在独立的 `dynamic_partitioned_table_analysis_job_test.rs`。新增执行语义至少应覆盖多批次参数、首批失败短路、`Err` 传播、成功/失败钩子恰好一次以及多索引只执行一次；真实 session/statistics 集成仍需与 Go 同路径测试的断言对齐。
-
-## 验证依据
-
-- 目标源码：`pkg/statistics/handle/autoanalyze/priorityqueue/dynamic_partitioned_table_analysis_job.rs`（结构体、构造器、辅助函数、`AnalysisJob`/`Display` 实现）。
-- crate 与装配：同目录 `Cargo.toml`、`lib.rs`。
-- 直接上游/公共契约：`analysis_job_factory.rs::CreateDynamicPartitionedTableAnalysisJob`、`queue.rs` 的 `Push`/`Pop`/快照接口、`job.rs` 的 `AnalysisJob`、`AnalysisRuntime`、`IsValidToAnalyze`、`IsDynamicPartitionedTableAnalysisJob`。
-- RustCodeGraph：索引状态为 11,467 文件；`node --file` 读取目标文件；`query` 定位 `DynamicPartitionedTableAnalysisJob` 和构造器；`callees` 核对 `ValidateAndPrepare`、`Analyze`、`AnalyzePartitions`、`AnalyzePartitionIndexes`、`GetPartitionSQL` 的调用边。图未返回 trait 方法调用者，故用限定 `rg` 补查工厂、队列及生产执行引用。
-- Rust 独立测试：`dynamic_partitioned_table_analysis_job_test.rs` 的三个可执行测试覆盖两分区 SQL、零分区模板、名称展平/新增索引判定、缺表不可重试钩子，以及过期分区/索引 ID 的成功空操作；文件中注释化的 Go 集成测试仅作迁移意图证据，不算可执行覆盖。
-- Go 对照：`dynamic_partitioned_table_analysis_job.go`；Go 独立测试 `dynamic_partitioned_table_analysis_job_test.go` 覆盖真实分区统计、索引统计、失败冷却与查询计划。
-- 本说明是只读分析，不运行 Cargo；最终以任务规定的 11 个固定二级标题结构检查作为交付验证。

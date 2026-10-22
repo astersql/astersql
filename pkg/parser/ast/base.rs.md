@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`base.rs` 是 `astersql-parser-ast` crate 的 AST 公共基础层。crate 根在 `pkg/parser/ast/Cargo.toml` 中把 `lib.rs` 指定为入口，`lib.rs:4966` 以 `pub mod base` 暴露本文件；`lib.rs:183-204` 定义的对象安全 `Node` trait，再通过 `node_text`/`node_text_mut` 把所有节点的文本操作委托给这里的 `AstNode`。
-
-它位于“解析器生成节点”与“恢复、日志、优化器等消费者”之间：`pkg/parser/parser_actions/misc.rs:1507-1510` 在语句归约后写入原 SQL、编码及 `NO_BACKSLASH_ESCAPES` 状态；`pkg/parser/ast/sql_restore.rs:76,697,707,901`、`pkg/session/runtime/dispatch.rs:675,689-693` 和 `pkg/server/conn.rs:732` 等下游读取规范化文本。本文件不负责词法/语法分析或 AST 遍历，而负责节点共有的源码文本、偏移、表达式类型/标志，以及 Go 风格分类基类。
+`convertBinaryStringLiterals` 将整段 SQL 解码为 UTF-8，同时把引号内无法严格解码或包含控制字符的内容转换成基于原始字节的 `0x...`，使文本可安全用于日志与 SQL restore（`base.rs:227-344`）。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ RustCodeGraph 索引显示 `base.rs` 被 71 个文件使用，但对常见方法
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/parser/ast/base.go`，两版的核心算法和边界基本逐段对应：`node` ↔ `AstNode`/`NodeText`，`convertBinaryStringLiterals` 及四个扫描辅助函数、五种分类基类、`exprNode` 的类型/flag 均保留。Rust 的 `TexprNode = ExprNodeBase` 对应 Go `type TexprNode = exprNode`（Go `base.go:378-441`；Rust `base.rs:346-437`）。
-
 主要语言映射差异如下：
 
 - Go 将文本保存为 `string`，用 `*sync.Once` 和 `utf8Text` 缓存；Rust保存原始 `Vec<u8>`，用 `Option<Box<NodeText>>` 优化空节点，并用 `OnceCell<String>` 惰性缓存。
@@ -95,11 +91,3 @@ Go 对照为 `pkg/parser/ast/base.go`，两版的核心算法和边界基本逐�
 - 修改 `ExprNodeBase` 的类型或 flag 时，要核对 `ast.rs:25-53` 的公开 trait/位定义以及所有访问者/表达式构造点，避免绕过 setter 造成元数据不一致。
 - 性能敏感改动需保留无引号快路径、首次替换才分配缓冲区和 `Text` 惰性缓存；`base_test.rs:242-269` 提供长查询冒烟，Go `base_test.go:255-347` 还给出更完整的 benchmark 场景，可作为 Rust benchmark 扩展依据。
 - 兼容风险集中在日志/restore 文本变化、字符集严格解码、注释识别和 token 粘连；这些行为改变会影响 parser 之外的 session/server 消费者，必须同时检查直接读取 `Text`/`OriginalText` 的调用点。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/parser/ast` 确认目标、Go 对照和独立测试均已索引；`node --file pkg/parser/ast/base.rs --offset 1 --limit 500` 读取完整 437 行并报告该文件被 71 个文件使用；对 `AstNode`、`Node`、`ResultSetNode`、`DDLNode`、`DMLNode`、`convertBinaryStringLiterals`、`SetText` 做了 `query`。精确 callers/callees 查询未返回方法级边，故未把缺失图边当作不存在调用。
-- 已读生产源与入口：`pkg/parser/ast/base.rs`、`pkg/parser/ast/lib.rs:1-120,150-329,4966`、`pkg/parser/ast/ast.rs:1-150`、`pkg/parser/parser_actions/misc.rs:1507-1510`、`pkg/parser/yy_parser.rs:282`、`pkg/parser/ast/sql_restore.rs` 的直接文本读取位置。
-- 已读配置：`pkg/parser/ast/Cargo.toml`，确认 crate 名、`lib.rs` 入口、路径依赖和无 feature 声明。
-- 已读对照与测试：完整 `pkg/parser/ast/base_test.rs`，Go `pkg/parser/ast/base.go` 和 `pkg/parser/ast/base_test.go` 的行为及边界段；另由源码搜索确认 session/server 的代表性下游调用点。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文档存在且固定二级标题恰好为 11 个，并人工复核本文覆盖“为何存在、如何运行、如何安全扩展”。

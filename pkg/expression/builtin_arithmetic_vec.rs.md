@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 内的向量化算术内核。`pkg/expression/lib.rs:171-172` 通过 `#[path = "builtin_arithmetic_vec.rs"] mod builtin_arithmetic_vec_kernel;` 将它作为私有模块挂载；`pkg/expression/Cargo.toml` 则确认 crate 名称、`lib.rs` 入口，以及这里直接使用的 `types-dependency` 和 `thiserror` 依赖。
-
-这里的“向量化”是对两列等长数据逐行批量计算，而不是接受完整表达式树或 `chunk::Chunk`。仓库搜索只发现测试模块通过 `pub use crate::builtin_arithmetic_vec_kernel::*` 使用这些公开符号，未发现非测试 Rust 调用者。因此当前可确认的状态是：算术内核已经实现、被 crate 编译并由独立单测覆盖，但尚无证据表明它已接入 Rust 表达式执行主链。Go 版本的完整主链位置在 `pkg/expression/builtin_arithmetic_vec.go`，它直接求值参数表达式并管理 chunk 缓冲列；这部分不能视为 Rust 已接线能力。
+为 20 个 Go 同名算术签名提供 `vectorized() == true` 标记，并为其中的 REAL、DECIMAL、整数加减乘除、整除和取模签名实现逐列求值。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ NULL 槽位中的值只是占位数据，不具备 SQL 语义。运算循环必�
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/builtin_arithmetic_vec.go` 定义同名的 20 个向量化签名，Rust 的 `vectorized_signatures!` 保留这组分派标识。REAL、DECIMAL、四种整数取模、整数加减乘、整数 `DIV` 与 DECIMAL `DIV` 的分支结构均能在 Go 文件找到直接对应；`pkg/expression/builtin_arithmetic_vec_1_aster_unit_test.rs` 又覆盖 NULL、除零、溢出、四种符号组合、`NO_UNSIGNED_SUBTRACTION`、DECIMAL 舍入和 `(-1, 0] -> 0` 特例。
-
-两版职责边界并不相同。Go `vecEval*` 从 `b.args` 求值到 chunk 列，合并 NULL，读取字段 flag 和 SQL mode，并使用会话 `EvalContext` 的错误上下文；Rust 将这些输入压缩为自有 `Vector`/`IntVector` 和布尔策略，返回自有 `ArithmeticError`。Go 错误中包含原表达式文本，Rust 仅保留通用 lhs/rhs 占位。Go 基准/表驱动测试在 `builtin_arithmetic_vec_test.go` 覆盖集成式向量表达式框架，Rust 独立测试验证内核算法，但不等价于 Go 的 chunk、allocator 或表达式分派集成覆盖。
+Go `vecEval*` 从 `b.args` 求值到 chunk 列，合并 NULL，读取字段 flag 和 SQL mode，并使用会话 `EvalContext` 的错误上下文；Rust 将这些输入压缩为自有 `Vector`/`IntVector` 和布尔策略，返回自有 `ArithmeticError`。Go 错误中包含原表达式文本，Rust 仅保留通用 lhs/rhs 占位。Go 基准/表驱动测试在 `builtin_arithmetic_vec_test.go` 覆盖集成式向量表达式框架，Rust 独立测试验证内核算法，但不等价于 Go 的 chunk、allocator 或表达式分派集成覆盖。
 
 ## 扩展指南
 
@@ -81,12 +77,3 @@ NULL 槽位中的值只是占位数据，不具备 SQL 语义。运算循环必�
 整数扩展必须明确输入四种符号组合、结果符号和位模式，优先使用 checked 运算或 `types_dependency` 的兼容辅助函数。任何变更都应保持“先合并 NULL、再算术”的顺序，并为 `LengthMismatch`、NULL 行中的危险值、零除数和边界值补充用例。测试逻辑应继续放在独立文件 `pkg/expression/builtin_arithmetic_vec_1_aster_unit_test.rs`（由 `builtin_arithmetic_vec_test.rs` 挂载），不要内嵌到生产文件；生产文件尾部现有 `#[cfg(test)]` 仅是对独立测试模块的挂载。
 
 若目标是接入真实 SQL 执行，还需修改本文件之外的表达式分派层：把参数表达式/Chunk 转换为这些列类型，从字段元数据传入无符号标志，从会话上下文生成策略，并把 `ArithmeticError` 映射回 TiDB 错误/警告。接线后应增加覆盖真实表达式入口的独立集成测试，并比较 Go 的 `builtin_arithmetic_vec_test.go`；尤其关注额外分配、错误文本、warning 语义和 DECIMAL 精度。
-
-## 验证依据
-
-- 源码全貌：RustCodeGraph `node --file pkg/expression/builtin_arithmetic_vec.rs` 分段读取全部 993 行，确认 51 个索引符号、20 个签名、各公共辅助函数和文件尾测试挂载。
-- 索引与调用证据：`rustcodegraph status` 显示项目索引包含 11,467 个文件；`query BuiltinArithmeticIntDivideDecimalSig` 找到 Go 定义/方法，`query vec_eval_int --kind method` 未找到 Rust 方法。随后用精确仓库搜索补足宏生成类型的索引缺口，并确认除测试模块外没有本文件签名的 Rust 调用者。
-- crate 与模块证据：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs:171-172`、`pkg/expression/lib.rs:429-432`；目标包未发现 `doc.go`。
-- Go 对照：`pkg/expression/builtin_arithmetic_vec.go` 的全部 `vectorized`/`vecEval*` 符号纲要及 REAL、DECIMAL、整数减法、整数/DECIMAL DIV、整数加法关键实现；`pkg/expression/builtin_arithmetic_vec_test.go` 的 `TestVectorizedBuiltinArithmeticFunc` 与 `TestVectorizedDecimalErrOverflow`。
-- Rust 测试证据：`pkg/expression/builtin_arithmetic_vec_test.rs` 和 `pkg/expression/builtin_arithmetic_vec_1_aster_unit_test.rs`，后者包含 8 个独立测试，覆盖上述算法边界和全部签名的 `vectorized()` 声明。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务规定命令验证恰有 11 个固定二级标题，并人工复核未把未接线能力写成已支持。

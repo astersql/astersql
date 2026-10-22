@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-infoschema` crate 内的通用、线程安全 SIEVE 缓存。模块由 [`lib.rs`](lib.rs) 以 `pub mod sieve` 装配，并重导出 `Sieve`、`SieveStatusHook`、`EmptySieveStatusHook` 和 `newSieve`。直接生产使用方是 [`infoschema_v2.rs`](infoschema_v2.rs)：`Data::table_cache` 以 `(table_id, schema_version)` 为键缓存 `Table`，服务于 InfoSchema V2 按名称或 ID 读取表元数据的路径。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，库入口为 `lib.rs`。本实现自身只使用 Rust 标准库；它通过公开钩子 trait 与 [`metrics.rs`](metrics.rs) 的 Prometheus 指标实现衔接。
+`SetCapacityAndWaitEvict` 提供同步缩容语义；`Set` 则保留 Go 版“插入前检查”的行为，因此新条目可以让总大小暂时超过容量，直到后续写入或显式同步缩容。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@ RustCodeGraph 的索引查询识别了 `pkg/infoschema/sieve.rs` 中的 `Sieve`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/sieve.go`，测试对照为 `sieve_test.go` 与 `sieve_test.rs`。Rust 保留了 Go 的核心行为：映射加插入链、命中只置 `visited`、从尾部/hand 反向扫描、第二次机会清位、已有键更新不重排、插入前批量淘汰、同步缩容，以及删除/淘汰/容量变化的钩子通知。
+Rust 保留了 Go 的核心行为：映射加插入链、命中只置 `visited`、从尾部/hand 反向扫描、第二次机会清位、已有键更新不重排、插入前批量淘汰、同步缩容，以及删除/淘汰/容量变化的钩子通知。
 
 已确认的差异如下：
 
@@ -100,14 +98,3 @@ RustCodeGraph 的索引查询识别了 `pkg/infoschema/sieve.rs` 中的 `Sieve`�
 - 若要优化高并发读取，不能简单换成读写锁，因为 `Get` 会修改 `visited`；需要同时设计访问位的原子性、淘汰扫描与删除的同步关系。
 - 若引入真正的关闭状态或后台资源，需明确 `Close` 的幂等性、关闭后 `Set/Get` 的行为，并同步 Go 对应语义及 `test_set_after_close`。
 - 性能风险主要在 `VecDeque::retain` 的线性删除、值/键克隆以及单锁串行访问；正确性风险主要在 hand 环绕、删除 hand、零容量和钩子重入。
-
-## 验证依据
-
-- 生产源码：[`pkg/infoschema/sieve.rs`](sieve.rs)，逐项核对 trait、内部状态、全部公开方法与三个私有辅助函数。
-- crate 与模块边界：`pkg/infoschema/Cargo.toml`、`pkg/infoschema/lib.rs`。
-- 直接生产调用：`pkg/infoschema/infoschema_v2.rs` 的 `Data::new`、`Data::add`、`Data::SetCacheCapacity`、`Data::SetStatusHook`、`infoschemaV2::TableIsCached`、`EvictTable`、`TableByName`、`TableByID`。
-- 指标实现：`pkg/infoschema/metrics.rs` 的 `sieveStatusHookImpl` 及其 `SieveStatusHook` 实现。
-- Rust 独立测试：`pkg/infoschema/sieve_test.rs` 覆盖基本存取、缺失删除、热条目第二次机会、存在性、重复更新大小、清空和关闭后写入；`pkg/infoschema/infoschemav2_cache_test.rs` 通过生产 `Data` 验证 hit/miss/evict/update/update-limit 事件序列。
-- Go 对照：`pkg/infoschema/sieve.go`、`pkg/infoschema/sieve_test.go`，并以 `pkg/infoschema/infoschema_v2.go` 的生产接线核对缓存用途。
-- RustCodeGraph：`status` 显示索引覆盖本仓库；`query Sieve --kind struct`、`query newSieve --kind function`、`query SieveStatusHook --kind trait` 识别 Rust/Go 对应符号及指标实现。`explore` 与文件级 `node` 本次无输出，因此调用边改用精确 `rg` 和源码读取核验。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另执行任务规定的 11 章节结构检查并人工复核上述事实。

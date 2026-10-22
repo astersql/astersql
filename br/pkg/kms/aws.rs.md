@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`br/pkg/kms/aws.rs` 是 `astersql-br-pkg-kms` crate 的 AWS KMS 后端实现。crate 入口 `br/pkg/kms/lib.rs` 以 `pub mod aws` 装载本文件并通过 `pub use aws::*` 暴露其公共符号；`br/pkg/kms/Cargo.toml` 将该 crate 定义为库，并声明 `aws-config`、`aws-sdk-kms`、`aws-smithy-http-client`、`hyper-rustls`、`tokio` 等生产依赖。
-
-在完整解密链中，`br/pkg/encryption/master_key/master_key.rs::createCloudBackend` 遇到 vendor `"aws"` 时调用 `NewAwsKms`，将结果作为 `Box<dyn Provider + Send>` 交给 `CreateKmsBackendWithProvider`。随后 `br/pkg/encryption/master_key/kms_backend.rs::KmsBackend::DecryptWithContext` 校验密文元数据中的厂商名、提取密文 data key，并经 `Provider::DecryptDataKey` 进入本文件。因此，本文件负责“用 AWS CMK 解开 data key”，不负责使用该 data key 解密业务内容；后者由上层 `MemAesGcmBackend` 完成。
+与上层用于选择实现的配置 vendor `"aws"` 大小写不同：前者参与加密内容元数据校验，后者见 `master_key.rs::StorageVendorNameAWS`。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ RustCodeGraph 将 `br/pkg/kms/aws.rs` 的直接使用文件识别为 `br/pkg/kms
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/kms/aws.go` 是直接语义基准。两端都保存 client、key id、region、endpoint；都把 `"AWS"` 作为厂商名；都只在 access key 与 secret key 同时存在时使用静态凭证；都向 Decrypt 请求传入密文字节和 key id；都无需显式 Close；错误码到前缀的四类映射一致。
-
 主要实现差异如下：
 
 - Go 的 `*kms.Client` 直接接受 `context.Context`；Rust 用 `AwsDecryptClient` 隔离 SDK，并以本地 `Context`/`CancellationToken` 传递取消，再由 `AwsSdkClient` 用 `tokio::select!` 适配。
@@ -97,7 +93,7 @@ RustCodeGraph 将 `br/pkg/kms/aws.rs` 的直接使用文件识别为 `br/pkg/kms
 - Go `classifyDecryptError` 同时通过 Smithy `APIError` code 和具体 error 类型做 `errors.As`；Rust 适配层已把 SDK 错误归一为 code/message，所以分类函数只匹配 code。
 - Go 成功时直接返回 `result.Plaintext`；Rust 对缺失的可选 plaintext 使用空向量默认值。
 
-同目录没有 `aws_test.go`，因此没有可读取的 Go AWS 单测。Rust 侧以 `aws_test.rs`、`kms_test.rs` 和 `parity_test.rs` 固化当前 Go 对齐语义；其中 parity 测试验证配置字段复制、请求中的 ciphertext/key id、明文透传、所有错误类别、厂商名与 `Provider` 多态调用。
+Rust 侧以 `aws_test.rs`、`kms_test.rs` 和 `parity_test.rs` 固化当前 Go 对齐语义；其中 parity 测试验证配置字段复制、请求中的 ciphertext/key id、明文透传、所有错误类别、厂商名与 `Provider` 多态调用。
 
 ## 扩展指南
 
@@ -108,13 +104,3 @@ RustCodeGraph 将 `br/pkg/kms/aws.rs` 的直接使用文件识别为 `br/pkg/kms
 - 改变取消或异步模型时同时检查 `Context`、`AwsSdkClient` 所有 runtime、`KmsBackend::with_retry` 的取消检查和 sleep 行为；不要只修改 `tokio::select!`。
 - 若增加需释放的 client 资源，必须同时实现固有 `Close` 与 trait `Provider::Close`，并补充上层 `KmsBackend::Close` 链路测试。目前空 Close 是明确契约，不代表未来资源可被忽略。
 - 性能上，runtime 和 SDK client 应继续按 provider 生命周期复用；不要在每次 `DecryptDataKey` 中重新加载配置或建立 client。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件；读取 `br/pkg/kms/aws.rs` 全部 175 行，识别 19 个符号，并核对 `NewAwsKmsWithClient`、`NewAwsKms`、`DecryptDataKeyWithContext`、`classifyDecryptError` 等入口及调用关系。
-- 生产源码：`br/pkg/kms/aws.rs`；统一 trait：`br/pkg/kms/kms.rs`；配置与 client 边界：`br/pkg/kms/stubs.rs`；crate 入口：`br/pkg/kms/lib.rs`。
-- crate/依赖证据：`br/pkg/kms/Cargo.toml`；上游路径依赖：`br/pkg/encryption/master_key/Cargo.toml`。
-- 应用调用链：`br/pkg/encryption/master_key/master_key.rs::createCloudBackend` 与 `CreateKmsBackendWithProvider`；消费和重试：`br/pkg/encryption/master_key/kms_backend.rs::KmsBackend::DecryptWithContext`、`with_retry`。
-- Go 对照：`br/pkg/kms/aws.go`；上层 Go 接线：`br/pkg/encryption/master_key/master_key.go::createCloudBackend`。检索确认同目录不存在 `aws_test.go`。
-- Rust 独立测试：`br/pkg/kms/aws_test.rs::non_service_sdk_error_is_annotated_once_like_go`、`br/pkg/kms/kms_test.rs::provider_propagates_cancellation_context_to_client`、`br/pkg/kms/parity_test.rs::aws_constructor_request_and_all_error_classes_match_go` 与 `go_rust_public_contract_matches`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证文档存在且恰有 11 个固定二级章节，并人工复核未把测试替身误写为生产实现、未声称存在 Go AWS 单测。

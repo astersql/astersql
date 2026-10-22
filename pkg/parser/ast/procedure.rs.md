@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-ast` crate（见 [`Cargo.toml`](Cargo.toml) 的 `[package]` 与 `[lib] path = "lib.rs"`），由 [`lib.rs`](lib.rs) 通过 `pub mod procedure` 公开。它提供一套以 `ProcedureNode::restore() -> Result<String, String>` 为核心的存储过程 SQL 文本还原模型，覆盖参数、声明、复合语句、条件/循环、游标、处理器、标签和跳转。
-
-需要区分两套同名类型：本文件中的类型位于 `astersql_parser_ast::procedure` 子模块；解析器主 AST 的 `ProcedureInfo`、`ProcedureLabelBlock`、`ProcedureJump` 等仍定义在 [`lib.rs`](lib.rs)，`parser_actions/misc.rs` 构造的是后者。因此，本文件目前是可独立组装和还原 SQL 的移植层，并不是 Rust 解析动作直接产出的主 AST 表示。RustCodeGraph 的文件查询显示本文件已被索引（587 行、89 个符号），但对本文件 `ProcedureInfo`/`ProcedureLabel` 的 callers 查询没有返回生产调用者；直接使用证据主要来自独立测试。
+按 Go [`procedure.go`](procedure.go) 的 `Restore` 语义拼接关键字、分隔符和空格；`name()`、`string()` 分别负责反引号标识符与单引号字面量转义。
 
 ## 核心职责
 
@@ -72,16 +70,12 @@ RustCodeGraph 对 `ProcedureNode`、`ProcedureInfo`、`ProcedureLabel` 的精确
 
 ## 与 Go 版本的对应关系
 
-Go 基准文件是 [`procedure.go`](procedure.go)，其类型集合和常量分组与本文件大体一一对应。参数方向、DECLARE/BEGIN-END、CREATE/DROP、IF/CASE、WHILE/REPEAT、游标、handler、标签的关键字顺序和空格主要按各 `Restore` 方法移植；[`procedure_test.go`](procedure_test.go) 通过真实 parser、visitor 和 round-trip restore 覆盖了广泛 SQL 形态。
-
 当前 Rust 版并非完整替换：
 
 - Go 节点实现统一的 `Node`/`StmtNode`、`Accept(Visitor)` 与 `format.RestoreCtx`；本文件改为较小的 `ProcedureNode` trait，没有 visitor、源码文本和格式上下文。
 - Go 的类型字段使用 `*types.FieldType`、`ExprNode`、`StmtNode`、`TableName`；本文件以 `String` 和 `Box<dyn ProcedureNode>` 简化表示。表达式、名称和类型的合法性不在此处验证。
 - Go `ProcedureBlock.Accept` 有意只遍历声明、不遍历过程语句；本文件没有对应 visitor 语义。
 - Go parser 产出主 AST（Rust 的对应物目前在 [`lib.rs`](lib.rs)），而本文件节点由测试/调用方手工组装。不能仅凭本文件的 restore 测试推断 Rust parser 已产出这些子模块类型。
-- `ProcedureParamStr` 在 Go 与本文件中都存在但不参与展示出的 `Restore` 路径；本文件保留字段以对齐结构。
-- Go 跳转名称使用标识符写法，本文件 `ProcedureJump` 当前使用 `string()` 输出单引号；这是测试确认的现状，不应写成完全等价。
 
 ## 扩展指南
 
@@ -91,11 +85,3 @@ Go 基准文件是 [`procedure.go`](procedure.go)，其类型集合和常量分�
 4. 涉及标识符或字面量时复用 `name()`/`string()`，但跳转标签应先核对 Go `WriteName` 语义，再决定是否修正当前单引号差异。
 5. 测试必须放在独立文件：主要同步 [`procedure_test.rs`](procedure_test.rs)；跨模型契约可同步 [`model_7_aster_unit_test.rs`](model_7_aster_unit_test.rs)，parser 接线则同步 [`parser_actions/misc_test.rs`](../parser_actions/misc_test.rs)。同时参考 Go [`procedure_test.go`](procedure_test.go) 的对应案例，不能用更窄的 Rust 案例替代既有语义。
 6. 兼容风险集中在精确文本（大小写、空格、逗号、分号、引用方式）和错误先后顺序；性能风险主要是深层/大型过程树的递归与中间字符串分配。任何行为修改都应覆盖成功、空集合、未知状态、子节点失败和标签不匹配。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引包含 11,467 个文件；`files --filter pkg/parser/ast/procedure.rs` 确认目标文件被索引；`node --file pkg/parser/ast/procedure.rs --offset 1/499` 阅读完整 587 行；`query ProcedureNode/ProcedureInfo/ProcedureLabel` 核对主要定义；`callers ProcedureInfo/ProcedureLabel` 未发现本子模块类型的明确生产调用；精确 `node` 查询核对了 `lib.rs`、`parser_actions/misc.rs`、`walk.rs`、`sem.rs` 和测试证据。
-- 读取的 Rust 源与配置：[`procedure.rs`](procedure.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`parser_actions/misc.rs`](../parser_actions/misc.rs)、[`walk.rs`](walk.rs)、[`sem.rs`](sem.rs)。
-- 独立 Rust 测试：[`procedure_test.rs`](procedure_test.rs) 覆盖基本节点、默认表达式错误、参数类型、DROP、循环、游标、handler、IF/CASE 和标签；[`model_7_aster_unit_test.rs`](model_7_aster_unit_test.rs) 覆盖未知参数模式、跳转文本和不匹配标签错误。
-- Go 对照：[`procedure.go`](procedure.go) 核对类型、`Restore`、visitor 和标签接口；[`procedure_test.go`](procedure_test.go) 核对 parser/visitor/round-trip 的真实语法覆盖。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构验证要求目标文档存在，且固定二级标题恰好为 11 个；此外人工复核本说明明确回答了文件存在目的、直接执行流程、未接入解析主链的边界及安全扩展位置。

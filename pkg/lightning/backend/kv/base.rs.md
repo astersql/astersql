@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 [`base.rs`](./base.rs) 的中文逻辑说明，也是 `astersql-lightning-backend-kv` crate 的 SQL 行到 TiKV KV 编码基座。crate 由同目录 `Cargo.toml` 定义，入口 `lib.rs` 通过 `mod base` 加载本模块并以 `pub use base::*` 导出其 API。直接上游是 `sql2kv.rs::tableKVEncoder::Encode`：它按列置换组装一行，再调用这里的列值填充、生成列求值和落 KV 能力。直接下游是本 crate 的 `session.rs`、`canonical.rs`，以及 `astersql-tablecodec` 提供的行键、索引键和值编码器。
-
-本文件不负责批次切分、校验和分类或反向解码；这些分别位于 `sql2kv.rs` 和 `kv2sql.rs`。它持有一次编码会话和表级元数据，将“一行已解析的 `encode::Datum`”转换为会话事务中的记录键、记录值及二级索引键值。
+`TableDefinition`、`IndexDefinition` 和 `GeneratedCol` 提供 Lightning 轻量编码模型，并通过 `impl encode::Table for TableDefinition` 接入 `EncodingConfig::Table`。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ crate 依赖由 `pkg/lightning/backend/kv/Cargo.toml` 限定为：`encode`（Dat
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/backend/kv/base.go`，测试对照是 `base_test.go`；结构上的主要对应为 `BaseKVEncoder`、`GeneratedCol`、`RowArrayMarshaller`、`NewBaseKVEncoder`、`Record2KV`、`ProcessColDatum`、`getActualDatum`、生成列求值和错误日志方法。Rust 的 `base_test.rs` 保留了日志内容、Datum 调试字符串、可比序 RowID 和 sentinel 类型名的针对性验证。
-
 当前 Rust 并非 Go 实现的逐项等价替换：
 
 - Go 使用真实 `table.Table`、`model.TableInfo`、表达式引擎和 `table.AddRecord`；Rust 用 `TableDefinition` 加 `canonical.rs`/`tablecodec` 重建必要语义，并在 `source_meta` 存在时提高与持久化元数据的一致性。
@@ -99,12 +95,3 @@ crate 依赖由 `pkg/lightning/backend/kv/Cargo.toml` 限定为：`encode`（Dat
 调整自增/自随机逻辑时，修改 `NewBaseKVEncoder`、`ProcessColDatum` 和 allocator rebase 规则；应与 Go 的 shard 位布局、符号/无符号列、range bits、溢出及 incremental mask 行为对齐。性能上要保留 record 缓存，并注意每个索引当前会 clone 表元数据、索引元数据和 canonical values，新增索引能力时应评估分配量。
 
 修改诊断输出时必须保留长度上限并补充 UTF-8 边界、脱敏和不可打印 bytes 测试。若实现 warning 清理，应让 `TruncateWarns` 委托 `Session` 的真实 warning 状态，而不是只改变方法表象。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 `pkg/lightning/backend/kv/base.rs`；`files --filter pkg/lightning/backend/kv` 显示该模块 Rust/Go 源及独立测试均在索引内。
-- RustCodeGraph 调用证据：`callees NewBaseKVEncoder --file .../base.rs` 指向 `NewSession`、`CollectGeneratedColumnsFromTable`；`callees Record2KV` 指向 `AddRecord`、`LogKVConvertFailed`、`encodeComparableVarint`；`callees AddRecord` 指向 `canonical.rs` 中的 handle、row、table/index 元数据与 Datum 适配函数。调用者查询未返回结果，故用 `rg` 和 `sql2kv.rs` 源码核实直接上游。
-- 已读生产代码：`base.rs` 全文、`sql2kv.rs` 的构造和 `Encoder::Encode` 主链、`canonical.rs` 的 Datum/行/索引/handle 适配、`lib.rs` 模块导出、`Cargo.toml` crate 依赖。
-- 已读对照代码：`base.go` 全文及 `base_test.go`；它们用于确认同名职责和明确 Rust 当前未移植或语义不同之处。
-- 已读 Rust 测试：`base_test.rs`；`sql2kv_test.rs` 中的日志编组、基本记录/索引编码、编码解码往返、唯一索引、row format v2、时间、缺失自增值、生成列、AUTO_RANDOM 和 ShardRowID 测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构命令，并人工复核本文只陈述上述源码、图索引、Cargo、Go 对照和测试能够支持的事实。

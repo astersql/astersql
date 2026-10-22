@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-memo` crate 的等价类容器实现。crate 根 `pkg/planner/memo/lib.rs` 将 `group` 模块的公开项全部再导出；`pkg/planner/memo/Cargo.toml` 通过 `package.metadata.porting.go-package = "pkg/planner/memo"` 明确它移植自同路径 Go 包。它位于旧 Cascades 优化器的核心数据通路上：`pkg/planner/cascades/old/optimize.rs::FindBestPlan` 在预处理逻辑计划后调用 `Convert2Group` 建立 Memo，探索阶段通过 `Group::Insert`、`Group::Delete`、`Group::DeleteAll` 改写等价表达式，物理实现阶段通过 `GetImpl`、`InsertImpl` 复用已求得的最优实现。
-
-这里的 `Group` 不是普通计划树节点，而是“逻辑语义等价表达式”的集合。集合元素由相邻文件 `pkg/planner/memo/group_expr.rs::GroupExpr` 表示；每个表达式保存逻辑算子和若干子 `Group`，因此普通的 `LogicalPlan` 树经 `Convert2Group` 后变为适合规则枚举和动态规划的 Memo 图。
+用 `Group` 保存同一逻辑语义下的所有 `GroupExprRef`，并维护按表达式指纹去重的 `Fingerprints` 索引。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@ RustCodeGraph 对目标文件给出的明确下游边包括 `Convert2GroupExpr -
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/memo/group.go`。字段和主流程基本一一对应：Go 的 `container/list.List` 在 Rust 中改为 `Vec<GroupExprRef>`，指向链表元素的两个 map 改为“指纹/Operand -> 下标”，因此 Rust 每次增删后调用 `rebuild_indexes`；这一实现保留了“同 Operand 连续、首项稳定”的可观察顺序。Go 指纹键是 `string`，Rust 使用原始 `Vec<u8>`；Go Group 自指纹使用对象地址字符串，Rust 改为原子分配 ID 的大端字节，从而不依赖地址格式。
+字段和主流程基本一一对应：Go 的 `container/list.List` 在 Rust 中改为 `Vec<GroupExprRef>`，指向链表元素的两个 map 改为“指纹/Operand -> 下标”，因此 Rust 每次增删后调用 `rebuild_indexes`；这一实现保留了“同 Operand 连续、首项稳定”的可观察顺序。Go 指纹键是 `string`，Rust 使用原始 `Vec<u8>`；Go Group 自指纹使用对象地址字符串，Rust 改为原子分配 ID 的大端字节，从而不依赖地址格式。
 
 Go 的 `NewGroupWithSchema` 接受可能为 `nil` 的表达式并由 `Insert` 忽略 nil；Rust 用 `impl Into<Option<GroupExprRef>>` 显式表达可空输入。Go 的探索位图依赖机器字宽和移位语义，Rust 固定为 `u64` 并对越界轮次做 no-op。Go `BuildKeyInfo` 假定 Group 至少有首表达式并直接取 `Front().Value`，Rust 对空 Group 安全返回；非空路径仍保持先递归孩子、单孩子继承键、调用逻辑算子推导、合并 `MaxOneRow` 的语义。
 
-Rust 将 Go 的 `logicalop.HasMaxOneRow` 行为局部实现为 `inherits_max_one_row`：Lock、Limit、Sort、Selection、Apply、Projection、Window、Aggregation 继承第一个孩子；半连接类只看左孩子；普通 Join 要求恰有两个孩子且两侧都最多一行；其他 Operand 不继承。最终值仍是 `ExprNode.MaxOneRow() || inherited`。`pkg/planner/memo/group_test.rs` 以手工计划树覆盖这些规则，因为仓库当前没有可编译的 Rust `BuildLogicalPlanForTest` 全链路；Go 测试 `group_test.go` 则通过真实 SQL 解析和计划构建验证对应场景。
+Rust 将 Go 的 `logicalop.HasMaxOneRow` 行为局部实现为 `inherits_max_one_row`：Lock、Limit、Sort、Selection、Apply、Projection、Window、Aggregation 继承第一个孩子；半连接类只看左孩子；普通 Join 要求恰有两个孩子且两侧都最多一行；其他 Operand 不继承。`pkg/planner/memo/group_test.rs` 以手工计划树覆盖这些规则，因为仓库当前没有可编译的 Rust `BuildLogicalPlanForTest` 全链路；Go 测试 `group_test.go` 则通过真实 SQL 解析和计划构建验证对应场景。
 
 ## 扩展指南
 
@@ -88,11 +86,3 @@ Rust 将 Go 的 `logicalop.HasMaxOneRow` 行为局部实现为 `inherits_max_one
 - 改动实现缓存键时，必须继续使用能够区分完整物理需求的哈希；`memo_aster_unit_test.rs::implementation_cache_keys_by_full_physical_property_hash` 已验证 `ExpectedCnt` 不同不应命中同一缓存。
 - 如要支持并行优化，不能只替换全局 ID 原子顺序；必须整体重做 `Rc<RefCell<_>>` 所有权、动态借用和表达式弱反向引用。当前类型边界明确限定在单线程。
 - 测试逻辑应继续放在独立的 `group_test.rs`/`memo_aster_unit_test.rs`，不要内嵌到生产源文件。修改 Go 移植语义时还应同步核对 `pkg/planner/memo/group_test.go`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/memo` 确认目标目录的 Rust/Go 源与测试均在索引中。
-- RustCodeGraph 源码与关系查询：读取 `pkg/planner/memo/group.rs` 全部 361 行；`explore` 确认 `Convert2GroupExpr -> NewGroupExpr`，并显示目标文件被旧 Cascades 优化器/字符串化及 Memo 测试使用；对精确 `Convert2GroupExpr`、`Convert2Group`、`NewGroupWithSchema` 节点执行了 `callers`/`callees` 查询。因同名符号消歧下部分查询未输出边，又以限定 Rust 路径的 `rg` 结果核对调用点。
-- 读取的直接实现证据：`pkg/planner/memo/group_expr.rs`（指纹、子 Group、弱反向引用），`pkg/planner/memo/lib.rs`（模块装配与再导出），`pkg/planner/cascades/old/optimize.rs`（建 Memo、探索改写、实现缓存主链），`pkg/planner/cascades/old/transformation_rules.rs` 的命中位置（属性推导和新 Group 构造）。
-- 读取的边界与依赖证据：`pkg/planner/memo/Cargo.toml`，Go 对照 `pkg/planner/memo/group.go`，Go 测试 `pkg/planner/memo/group_test.go`，Rust 独立测试 `pkg/planner/memo/group_test.rs` 和 `pkg/planner/memo/memo_aster_unit_test.rs`。
-- 测试覆盖事实：Rust 测试覆盖新建/去重/删除幂等、同指纹不同对象删除、DeleteAll、Operand 首项、物理属性缓存、计划树拆分、键与 `MaxOneRow` 传播、重复 `BuildKeyInfo` 和越界探索轮次。本任务是纯文档分析，按计划不运行 Cargo。

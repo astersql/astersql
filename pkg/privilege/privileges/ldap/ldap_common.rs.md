@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-privilege-privileges-ldap` crate 的 LDAP 公共实现层，由 [`lib.rs`](lib.rs) 声明为 `ldap_common` 模块。它不直接处理 MySQL 客户端协议，而是为 [`simple.rs`](simple.rs) 的 Simple Bind 认证和 [`sasl.rs`](sasl.rs) 的 SASL 认证提供共享的配置、TLS 建连、r2d2 连接池、用户 DN 搜索与 DN 规范化能力。crate 边界和依赖由 [`Cargo.toml`](Cargo.toml) 确认：错误上下文使用 `anyhow`，LDAP 同步客户端使用带 `sync`/`tls-native` feature 的已发布 `ldap3` Git tag `v0.12.3`，TLS 使用 `native-tls`，连接池使用 `r2d2`。
+不直接处理 MySQL 客户端协议，而是为 [`simple.rs`](simple.rs) 的 Simple Bind 认证和 [`sasl.rs`](sasl.rs) 的 SASL 认证提供共享的配置、TLS 建连、r2d2 连接池、用户 DN 搜索与 DN 规范化能力。
 
 ## 核心职责
 
@@ -63,8 +63,6 @@ r2d2 可在创建 `min_idle` 连接时异步执行 manager 逻辑；本文件本
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接对应 [`ldap_common.go`](ldap_common.go)。`LdapConfig` + `LdapState` + `RwLock` 拆分了 Go `ldapAuthImpl` 中内嵌 `sync.RWMutex` 和所有字段；`LdapConnectionManager`/r2d2 取代 `pools.ResourcePool` 与 `connectionFactory`；`connect_ldap` 对应 Go 的明文/StartTLS/直连 TLS 选择；`search_user`、`canonicalize_dn`、容量校验、setter/getter 与 10 次、500 ms 重试均保留了 Go 意图。
-
 已确认的差异与实现选择如下：
 
 - Go `getConnection` 自己从池中取出对象后 root bind，失败则丢弃对象再重试；Rust 把 root bind 放到 r2d2 `test_on_check_out`/`is_valid` 中，外层对 `pool.get()` 重试。
@@ -73,8 +71,6 @@ Rust 文件直接对应 [`ldap_common.go`](ldap_common.go)。`LdapConfig` + `Lda
 - Go 有 `skipTLSForTest` 可在测试中禁用 LDAPS 回退，且测试可临时缩短可变 `ldapTimeout`；Rust 常量不可变且没有该测试开关，所以 Rust 超时测试等待真实 10 秒，TLS 测试分开验证 LDAPS 目标与 StartTLS 失败。
 - Go `canonicalizeDN` 依赖非空 DN 前置条件并直接访问 `dn[0]`；Rust `strip_prefix` 对空字符串也安全。Rust `auth_simple` 另外使用 `simple_bind_bytes`保留 LDAP OCTET STRING 的非 UTF-8 密码能力。
 
-[`ldap_common_test.go`](ldap_common_test.go) 与 [`ldap_common_test.rs`](ldap_common_test.rs) 共同锁定 DN 规范化、StartTLS 失败后直连 TLS、拒绝 TLS 1.1 以及 StartTLS 超时。Rust 的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步覆盖 getter/setter、池重建世代、CA I/O/PEM 错误与清空路径。
-
 ## 扩展指南
 
 - 新增会影响建连的配置时，应同时扩展 `LdapConfig`、对应 `Set*`/`Get*`、`LdapConnectionManager` 的快照使用点以及 `rebuild_pool` 触发条件；不能只更改 `state.config`，否则现有 manager 仍使用旧快照。在独立 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 中增加重建/不重建断言。
@@ -82,11 +78,3 @@ Rust 文件直接对应 [`ldap_common.go`](ldap_common.go)。`LdapConfig` + `Lda
 - 改动用户查找时从 `search_filter`、`search_user` 和 `auth_simple` 中的对应内联流程同步接入，避免 Simple 与 SASL 路径分叉。尤其是 filter escaping、多结果、DN 唯一性或搜索属性集都会改变当前 Go 兼容行为，需同时扩展 [`ldap_common_test.rs`](ldap_common_test.rs) 与相应 Go 对照测试。
 - 修改锁粒度或重试策略时，必须保留 `auth_simple` 的“一次认证使用一致配置/池”不变量和 checkout 前 root bind 的身份重置意图。应在独立测试文件中补充并发 setter/认证、池耗尽和失效连接场景，并评估持读锁 sleep 对配置更新延迟的影响。
 - 任何网络或密码处理更改都要关注凭据泄漏、LDAP filter injection、TLS 降级、超时乘数和池资源占用。修改 Rust 行为时必须同步相关独立 Rust 测试，并与 [`ldap_common.go`](ldap_common.go) 对照，不以简化实现代替完整语义。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，目标 [`ldap_common.rs`](ldap_common.rs) 被识别为 527 行、57 个符号。通过 `files --filter pkg/privilege/privileges/ldap`、`node --file .../ldap_common.rs`、`query` 及 `explore` 核对了 `LdapAuthImpl`、`auth_simple`、`search_user`、`connect_ldap` 与上游调用边。
-- 生产源码：[`ldap_common.rs`](ldap_common.rs) 的常量、`LdapConfig`、`LdapState`、`LdapConnectionManager`、`ManageConnection` 实现、`LdapAuthImpl` 及全部 setter/getter；[`simple.rs`](simple.rs) 的 `AuthLDAPSimple`；[`sasl.rs`](sasl.rs) 的 `AuthLDAPSASL`；[`lib.rs`](lib.rs) 的模块与测试装配。
-- crate 与对照：[`Cargo.toml`](Cargo.toml) 的 package/lib/依赖/porting metadata；[`ldap_common.go`](ldap_common.go) 的 `ldapAuthImpl`、`searchUser`、`canonicalizeDN`、`connectionFactory`、`getConnection`、`initializePool` 与 setter/getter。
-- 测试：[`ldap_common_test.rs`](ldap_common_test.rs) 的 `TestCanonicalizeDN`、`search_filter_matches_go_literal_formatting`、`set_ca_path_does_not_rebuild_connection_pool`、`TestConnectThrough636`、`TestConnectWithTLS11`、`TestLDAPStartTLSTimeout`；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `canonicalize_dn_matches_go_cases`、`setters_getters_and_pool_rebuild_rules_match_go`、`ca_path_reports_io_and_pem_errors_and_can_be_cleared`；[`ldap_common_test.go`](ldap_common_test.go) 的四个对应边界测试。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付时使用任务指定的结构命令检查文档存在且上述 11 个二级标题各出现一次，并人工复核本文未将门面、测试或期望设计误写为已接线的生产实现。

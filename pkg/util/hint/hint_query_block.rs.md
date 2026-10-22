@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-hint` crate，crate 入口 `pkg/util/hint/lib.rs` 通过 `pub mod hint_query_block` 声明模块并用 `pub use hint_query_block::*` 重导出其公开 API。`pkg/util/hint/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/util/hint`；本文件的直接 Go 对照是 `pkg/util/hint/hint_query_block.go`。
-
-它位于“SQL 语句已解析为 AST”与“优化器根据查询块消费 hint”之间：先为 SELECT 查询块分配 offset，收集显式 `QB_NAME`，拆分视图 hint，再把 hint 按 offset 分发。Rust 中可确认的直接生产入口是 `pkg/util/hint/hint_processor.rs::ParseHintsSet`，它构造 `QBHintHandler`、调用 `Process`，然后使用 offset 查询和 `GenerateQBName` 归一化 hint。`pkg/planner/core/planbuilder_runtime.rs::PendingPlanBuilder::Init` 也接收 handler 并创建 `QBHintBuildState`，但当前 Rust 文本引用中未找到该规划器运行时直接调用本文件 `Process` / `GetCurrentStmtHints` / `MarkViewQBNameUsed` 的生产边；不应将 Go 规划器的完整接线当成 Rust 已接线事实。
+`QBHintHandler::Process` 以所有权方式遍历并替换 AST：SELECT 按访问顺序从 1 编号，Update/Delete 顶层使用 offset 0，并递归处理 CTE、派生表、集合运算、Join 与表达式子查询（`Process`，源文件 124–335 行）。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ RustCodeGraph 将本文件标记为被 16 个文件使用，并确认 Rust `Gene
 
 ## 与 Go 版本的对应关系
 
-Rust 主要数据结构、常量、告警文本、首次映射优先策略、视图 hint 两阶段拆分、块名解析、按 offset 去重分发和 `GenerateQBName` 分支，都逐项对应 `pkg/util/hint/hint_query_block.go`。`pkg/util/hint/hint_processor_1_aster_unit_test.rs` 还对重名告警、视图拆分、默认 `sel_2`、跨 offset state 复用、未知块忽略及名称生成做了 Rust 回归。
-
 最明显的实现差异是遍历机制：Go `QBHintHandler` 实现 `ast.InPlaceVisitor::Enter/Leave`，由 `ast.Walk` 统一递归；Rust parser visitor 节点不提供同样的可变替换路径，所以 `Process` 消费 `Box<dyn ast::Node>`，针对支持的 statement/result-set/expression 分支手动递归并返回替换后 AST。这不是简化语义：当前源码显式覆盖 Update、Delete、Select、Insert、Set operation、CTE、Join、派生表及各主要表达式容器。但新增 AST 字段/节点时，Go 通用 visitor 可能自然覆盖，Rust 则需在 `Process` 或对应 `process*` 辅助函数中显式补边。
 
 表示层差异包括：Go 保存 `*ast.TableOptimizerHint` 指针，Rust 保存值并在分发时 clone；Go map 可为 nil，Rust map 默认为空；Rust `ViewQBNameUsed` 使用 `Option<HashSet<_>>` 表示 Go nil map；Go `NewBuildState` 对 nil receiver 返回 nil，Rust 借用方法无 nil receiver 状态。这些差异不改变已验证的业务分支。
@@ -86,11 +82,3 @@ Rust 主要数据结构、常量、告警文本、首次映射优先策略、视
 - 新告警应继续走 `hintWarnHandler`，保持“有 handler 则记录，无 handler 则安静退化”，并对照 Go 的文本和触发条件。
 - 首选扩展 `pkg/util/hint/hint_processor_1_aster_unit_test.rs` 的聚焦单元测试；需要真实 SQL 解析与 plan hint 绑定时，扩展 `pkg/planner/core/casetest/hint/hint_test.rs` 或 `pkg/planner/core/casetest/join/join_test.rs`。Go 对照回归在 `pkg/sessionctx/stmtctx/stmtctx_test.go::TestQBHintHandlerBuildState` 及规划器 hint 相关测试中。
 - 性能风险主要来自 AST 深度、hint 数量和值 clone：`Process` 是树遍历，`handleViewHints` 两遍扫描，`GetCurrentStmtHints` 的 `Vec::contains` 为每个 offset 线性去重。除非有 profile 证据，不应为文档或风格原因更换这些与 Go `slices.Contains` 对齐的策略。
-
-## 验证依据
-
-- RustCodeGraph 状态：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/hint` 返回 9 个 Go/Rust 文件，包含目标 Rust、Go 对照、模块入口和两个独立 Rust 测试。
-- RustCodeGraph 源码证据：`node --file pkg/util/hint/hint_query_block.rs` 分段读取了全部 616 行；`node --file pkg/util/hint/hint_query_block.go --offset 220 --limit 160` 核对了 Go 的未使用视图告警、块名解析、分发和名称生成。`explore` 确认 Rust `GenerateQBName` 的 `ParseHintsSet` 与测试调用者；精确 impl 方法图查询无法消除同名符号，该部分已用限定 Rust 文本搜索补齐。
-- 读取的 crate/接线路径：`pkg/util/hint/Cargo.toml`、`pkg/util/hint/lib.rs`、`pkg/util/hint/hint_processor.rs`、`pkg/planner/core/planbuilder_runtime.rs`、`pkg/planner/optimize.rs`。目标目录及父级 `pkg/util` 下未发现适用的 `doc.go`。
-- 读取的对照/测试路径：`pkg/util/hint/hint_query_block.go`、`pkg/util/hint/hint_processor.go`、`pkg/util/hint/hint_processor_1_aster_unit_test.rs`、`pkg/planner/core/casetest/join/join_test.rs`、`pkg/planner/core/casetest/hint/hint_test.rs`、`pkg/sessionctx/stmtctx/stmtctx_test.go`。关键断言覆盖重名保留首值、视图 hint 拆分、`sel_2` 默认补全、未知块警告与忽略、跨 offset state 复用、Update/Select 块名生成，以及真实 SQL 下的命名查询块绑定。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付时使用任务指定的 11 章节结构检查，并人工核对本文不把 Go 生产调用误写为 Rust 已接线事实。

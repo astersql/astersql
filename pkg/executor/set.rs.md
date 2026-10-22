@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`set.rs` 是 `astersql-executor` crate 中对 SQL `SET` 语句核心执行语义的 Rust 移植。模块由 [`pkg/executor/lib.rs`](./lib.rs) 以 `pub mod set` 公开，源文件本身不受 feature 条件控制；[`pkg/executor/Cargo.toml`](./Cargo.toml) 将该目录声明为 `astersql-executor`，并提供这里直接使用的 `astersql-sessionctx-variable` 依赖。
-
-该文件位于“已解析的变量赋值”与“真实会话、权限、全局配置、审计和 InfoSchema 服务”之间：`SetExecutor<B>` 负责控制流程，`SetBackend` 把具体运行时能力抽象成关联类型和必选方法。当前仓库内可检索到的 Rust `SetBackend` 具体实现位于独立测试 [`pkg/executor/set_test.rs`](./set_test.rs)，未检索到生产后端实现或 Rust builder 对 `SetExecutor` 的实例化；因此这里是公开且可测试的执行核心，但生产主链接线尚未由现有直接证据确认。Go 生产实现位于 [`pkg/executor/set.go`](./set.go) 的同名类型中。
+位于“已解析的变量赋值”与“真实会话、权限、全局配置、审计和 InfoSchema 服务”之间：`SetExecutor<B>` 负责控制流程，`SetBackend` 把具体运行时能力抽象成关联类型和必选方法。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ Go 对照的上游主链更完整：Go builder 产生 `SetExecutor`，通用 Exe
 
 ## 与 Go 版本的对应关系
 
-Rust `SetExecutor::Next`、`setSysVariable`、`setCharset`、`getVarValue`、方法/自由函数版 `loadSnapshotInfoSchemaIfNeeded` 分别对应 [`pkg/executor/set.go`](./set.go) 中的同名实现。大小写折叠、用户变量 NULL 删除、权限与 SEM 检查、noop/INSTANCE 告警、三类作用域、事务限制、快照校验回滚、字符集变量集合、`DEFAULT` 语义及临时表附着顺序均保持了 Go 主流程。
+大小写折叠、用户变量 NULL 删除、权限与 SEM 检查、noop/INSTANCE 告警、三类作用域、事务限制、快照校验回滚、字符集变量集合、`DEFAULT` 语义及临时表附着顺序均保持了 Go 主流程。
 
 Rust 用泛型 `SetBackend` 替代 Go 的 `exec.BaseExecutor` 与全局服务调用，用 `SetDatum` 替代完整 Datum，并以关联类型隔离表达式、字段类型和 InfoSchema。Rust `String` 天然拥有缓冲，因此 `getVarValue` 的 `clone` 表达的是 Go `strings.Clone` 的所有权意图，而非完全相同的内存实现。
 
@@ -92,11 +90,3 @@ Rust 独立测试名称与 Go 测试意图基本对应：用户变量、字符�
 - 测试应继续放在独立的 [`pkg/executor/set_test.rs`](./set_test.rs)，不要内嵌到生产源文件。至少覆盖新增成功路径、权限/事务错误、部分副作用、敏感值展示以及失败回滚；Go 行为变化时同步核对 [`pkg/executor/set_test.go`](./set_test.go) 和 [`pkg/executor/set_internal_test.go`](./set_internal_test.go)。
 
 兼容性风险集中在 MySQL/TiDB 的 `DEFAULT`、字符集联动和作用域语义；正确性风险集中在权限检查顺序、写入后的不可回滚副作用与快照状态一致性；性能风险较低，主要成本来自逐赋值求值、持久化访问、审计，以及非零快照触发的 InfoSchema 加载。
-
-## 验证依据
-
-- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/executor/set.rs`，不把工作区后续变化作为行为依据。
-- `pkg/executor/set_test.rs::sem_v2_internal_session_without_privilege_manager` 覆盖内部会话写受限 session/global 变量及普通会话的两类权限拒绝；Go 对照 `pkg/executor/set.go`。
-- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
-- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
-- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

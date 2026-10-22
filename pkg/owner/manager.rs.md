@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`manager.rs` 是 `astersql-owner` crate 中基于 etcd 的 Owner 选举实现，同时提供 Owner key 辅助操作和一个基于 etcd lease 的分布式锁。crate 入口 `pkg/owner/lib.rs` 公开 `manager` 模块并再导出本文件的公开项；`pkg/owner/Cargo.toml` 将库入口设为 `lib.rs`，直接依赖 `etcd-client`、`tokio`、`tokio-util`、`async-trait`、`thiserror` 和 `tracing`。
-
-Owner 是需要单实例执行的后台服务的领导权抽象。当前 Rust 生产接线包括：`pkg/session/runtime/session.rs` 为普通 DDL 构造 `NewOwnerManager`，并用 `AcquireDistributedLock` 串行化 bootstrap/升级；`pkg/session/runtime/normal_ddl_service.rs` 启动竞选、升级时强制接管，并用 `OwnerEpoch` 拒绝前一任 Owner 启动的工作；`pkg/session/runtime/ttl_runtime.rs` 为 TTL job manager 创建 Owner；`pkg/session/runtime/crossks_runtime.rs` 为 cross-keyspace DDL 创建 Owner；`pkg/autoid_service/autoid.rs` 为 AutoID 服务注册监听器并竞选。
-
-本文件不是薄门面：它持有 etcd lease、竞选 key、后台任务和状态回调的完整生命周期。无 etcd 的本地实现位于 `pkg/owner/mock.rs`；本文件的 `GetOwnerOpValue(None, ...)` 仅把查询转接到该 mock 状态。
+`Manager` trait 定义统一的 Owner 生命周期：查询身份、发起/中止竞选、退位、关闭、读取或修改 Owner 附加操作值，以及升级期间的强制接管。
 
 ## 核心职责
 
@@ -100,7 +96,7 @@ listener 回调按状态变更线程同步执行。`ListenersWrapper` 也串行�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/owner/manager.go`，行为测试分别在 `pkg/owner/manager_test.go` 与 Rust 的 `pkg/owner/manager_test.rs`。主要同构关系为：Go `ownerManager` ↔ Rust `OwnerManagerInner`/`OwnerManager`，Go `concurrency.Session` ↔ `SessionRuntime`，Go `campaignLoop`/`campaignAndWatch` ↔ Rust `campaign_loop`/`watch_owner`，Go `getOwnerInfo`/value codec/CAS ↔ 同名 snake_case 辅助函数，Go `AcquireDistributedLock` 返回 release closure ↔ Rust `DistributedLock` RAII 句柄。
+主要同构关系为：Go `ownerManager` ↔ Rust `OwnerManagerInner`/`OwnerManager`，Go `concurrency.Session` ↔ `SessionRuntime`，Go `campaignLoop`/`campaignAndWatch` ↔ Rust `campaign_loop`/`watch_owner`，Go `getOwnerInfo`/value codec/CAS ↔ 同名 snake_case 辅助函数，Go `AcquireDistributedLock` 返回 release closure ↔ Rust `DistributedLock` RAII 句柄。
 
 已验证的共同语义包括：默认 60 秒 session TTL；竞选成功通知 become、key 删除或停止时通知 retire；session/lease 失效后重建并重选；按 create revision 选择 leader；Owner value 的下划线格式；同值 op 更新幂等且不同 owner/revision 竞态失败；强制接管删除其他候选 key；分布式锁跨 client 互斥；多 listener 顺序广播。
 
@@ -125,13 +121,3 @@ Rust 的明确差异/扩展：
 修改强制接管时必须保留“多实例调用前先持分布式锁”的外部约束（生产锁接线在 `pkg/session/runtime/session.rs`），并评估 get 与 txn 之间新候选加入的竞态。修改分布式锁时应保持失败清理和 Drop 不续租，测试显式释放、取消、重试耗尽、遗弃后 TTL 回收；性能上关注每把锁一个 keep-alive task、500ms 线性退避和最多十次尝试的累计延迟。
 
 错误语义若需增强，应优先让 timeout 与显式取消可区分，并决定 `ForceToBeOwner` 是否需要报告三次失败；这会改变现有调用契约，必须同步 Go 对照分析和上游错误处理，而不是只改枚举。
-
-## 验证依据
-
-- 源码全貌：`pkg/owner/manager.rs`（986 行）；核对了常量、`OwnerError`、traits、`OwnerManager` 私有辅助函数与 `Manager` 实现、Owner 信息函数、分布式锁、listener 包装器。
-- crate 边界：`pkg/owner/Cargo.toml`、`pkg/owner/lib.rs`；确认库入口、直接依赖、公开再导出及独立测试装配。`pkg/owner/doc.go` 不存在。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件，本文件被识别为 115 个符号并被 12 个文件使用；执行了 `files --filter pkg/owner`、文件 `node` 全量读取、主要符号 `query`，以及 `NewOwnerManager`、`CampaignOwner`、`AcquireDistributedLock`、`get_owner_info` 的 `callers`/`callees`。`callers` 无输出，故上游调用以 `rg` 和对应源码上下文补证。
-- Rust 上游：`pkg/session/runtime/session.rs`、`normal_ddl_service.rs`、`ttl_runtime.rs`、`crossks_runtime.rs`、`crossks_owner.rs`、`pkg/autoid_service/autoid.rs`。
-- Go 对照：`pkg/owner/manager.go`、`pkg/owner/manager_test.go`；核对接口、session/campaign/watch、强制接管、value CAS、分布式锁与 listener 行为。
-- Rust 测试：`pkg/owner/manager_test.rs` 验证锁重试、强制接管、session/revoke 恢复、epoch、op CAS、多节点交接、watch、快速取消、锁生命周期和 listener；`pkg/owner/manager_1_aster_unit_test.rs` 验证 value codec、`OpType` 和 listener 广播。测试由 `pkg/owner/lib.rs` 以独立文件模块装配。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终结构验证要求文档存在且恰有 11 个固定二级标题。

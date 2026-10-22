@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/mock_conn.rs` 是 `astersql-server` crate 中公开的测试辅助模块。crate 根文件 `pkg/server/lib.rs` 通过 `pub mod mock_conn` 暴露它，同时只在 `cfg(test)` 下挂载同目录的独立测试 `pkg/server/mock_conn_test.rs`。`pkg/server/Cargo.toml` 指定 crate 名为 `astersql-server`、库入口为 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/server"` 标明 Go 对照包。
-
-该文件位于服务端边界，但不承担真实 TCP 监听、MySQL 包解析或生产会话实现。它用 `MockDriver`/`MockSession` 两层 trait 隔离真实驱动和会话，再用 `mockConn` 提供可观察的输出缓冲、连接登记与关闭行为，供 server 单元测试和跨模块兼容测试构造轻量连接。当前源码没有模块级业务常量、条件编译项或异步运行时接线；唯一的函数内静态量是 `CreateMockConn` 中的 `NEXT_CONNECTION_ID`。
+提供连接测试门面：`MockConn` 及其实现 `mockConn` 将查询/分发结果写入内部缓冲，暴露会话、连接 ID、关闭操作和“取走并轮换输出缓冲”的能力。
 
 ## 核心职责
 
@@ -98,7 +96,7 @@ RustCodeGraph 的明确上游证据包括：
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/server/mock_conn.go`。两边保留了 `MockConn`、`mockConn`、`CreateMockServer`、`CreateMockConn`、`MockOSUserForAuthSocket` 和 `ClearOSUserForAuthSocket` 的总体用途，以及查询、分发、上下文、关闭、ID 和输出轮换等接口意图，但 Rust 当前是聚焦测试所需行为的独立抽象，并非 Go 实现的逐字段包装。
+两边保留了 `MockConn`、`mockConn`、`CreateMockServer`、`CreateMockConn`、`MockOSUserForAuthSocket` 和 `ClearOSUserForAuthSocket` 的总体用途，以及查询、分发、上下文、关闭、ID 和输出轮换等接口意图，但 Rust 当前是聚焦测试所需行为的独立抽象，并非 Go 实现的逐字段包装。
 
 关键差异如下：
 
@@ -122,14 +120,3 @@ Go `pkg/server/tests/commontest/tidb_test.go::TestAuthSocket` 通过实际登录
 - 扩展 Auth Socket 模拟时，同步 `pkg/server/tests/commontest/tidb_part4_aster_unit_test.rs` 和 Go `TestAuthSocket` 的意图；若要接入生产认证，必须另外验证真实认证模块调用边，不能仅修改此测试辅助函数。
 - 为全局 OS 用户状态增加并行测试时，建议使用自动恢复的 guard 或测试串行化。仅在测试末手工清除无法覆盖 panic/提前返回路径。
 - 对公开 API 的签名或 Go 风格方法名做重构会影响外部 crate 测试（它们以 `astersql_server::mock_conn::*` 引用），应先用 RustCodeGraph 查询 callers/impact，并检查 `pkg/server/lib.rs` 的公开模块边界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph 文件读取：`node --file pkg/server/mock_conn.rs` 核对了完整 215 行源码；`node MockConn`、`node CreateMockConn` 与 `callees` 查询核对 trait、工厂及 `open`、`authenticate_root`、`handle_query`、`dispatch` 等下游边。
-- RustCodeGraph 上游证据：`CreateMockConn` 的 Rust 调用者包括 `mock_connection_dispatches_and_rotates_output_between_reads` 与 `closing_many_connections_releases_every_server_session`；Auth Socket 查询定位到 Rust 的 `auth_socket_os_user_override_is_always_recoverable` 和 Go 的 `TestAuthSocket`。
-- 已读取源码/边界：`pkg/server/mock_conn.rs`、`pkg/server/lib.rs`、`pkg/server/Cargo.toml`。
-- 已读取 Go 对照：`pkg/server/mock_conn.go`；Go Auth Socket 测试调用边来自 `pkg/server/tests/commontest/tidb_test.go::TestAuthSocket`。
-- 已读取 Rust 测试：`pkg/server/mock_conn_test.rs`、`pkg/server/tests/commontest/tidb_part3_aster_unit_test.rs` 的批量关闭测试、`pkg/server/tests/commontest/tidb_part4_aster_unit_test.rs` 的 Auth Socket 测试。
-- 人工复核结论：文档区分了轻量测试抽象与真实服务端主链，逐项说明创建、写入、输出轮换、关闭、全局桩、错误和并发生命周期，并明确标注当前未发现生产 Auth Socket 接线的验证边界。
-- 本任务是纯文档分析，按计划未运行 Cargo；结构命令已以退出码 0 验证目标文件存在且恰好包含规定的 11 个二级标题。

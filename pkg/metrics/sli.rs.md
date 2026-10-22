@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/metrics/sli.rs` 属于 Cargo 包 `astersql-metrics`（见 `pkg/metrics/Cargo.toml`），由 crate 根 `pkg/metrics/lib.rs` 以 `pub mod sli` 暴露。它是 SLI（Service Level Indicator，服务水平指标）的 **Prometheus 指标定义层**：声明并构造两个事务写入体验直方图，但不负责累计事务状态、判断事务大小、观测样本或直接注册 collector。
-
-在包级主链中，`pkg/metrics/metrics.rs::InitMetrics` 调用 `crate::sli::InitSliMetrics` 完成句柄初始化；同文件的 `RegisterMetrics` 再注册 `SmallTxnWriteDuration` 与 `TxnWriteThroughput`。因此，本文件位于“包级指标初始化”与“事务写入 SLI 观测”之间的指标句柄边界，而不是 SQL 执行或事务提交路径本身。
-
-当前 Rust 迁移还存在一条需要区分的平行实现：事务累计与上报规则位于 `pkg/util/sli/sli.rs::TxnWriteThroughputSLI`，但其 `metrics` 名称解析到 `pkg/util/sli/lib.rs` 内的轻量观察器，并未直接引用本文件的两个 Prometheus 句柄。故不能仅凭本文件断言 Rust SQL 事务运行时已把样本写入这里定义的 collector。
+明确不做以下工作：不调用 Prometheus 注册表，不采集当前事务数据，不区分小事务与大事务，不处理 commit，也不发起数据库或网络 I/O。
 
 ## 核心职责
 
@@ -80,11 +76,7 @@ RustCodeGraph 对 `InitSliMetrics` 返回 Go 与 Rust 两个同名定义，并�
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/sli.go` 是直接对照源。两边均定义 `SmallTxnWriteDuration`、`TxnWriteThroughput` 和 `InitSliMetrics`，且 namespace、subsystem、name、help 与两组桶参数完全一致：`(0.001, 2, 28)` 和 `(64, 1.3, 40)`。
-
 主要表示差异是 Go 包级变量直接持有 `prometheus.Histogram` 接口值，Rust 使用 `static mut Option<prometheus::Histogram>` 表达“尚未初始化”。Go 的包初始化和测试运行模型隐含串行初始化；Rust 通过外层 `InitMetrics` 的 `Once` 补充一次性约束。Go 的 `metricscommon.NewHistogram` 与 Rust 兼容包装都负责应用包级常量标签。
-
-Go 运行时的真实消费链是 `pkg/util/sli/sli.go::TxnWriteThroughputSLI::reportMetric → pkg/metrics` 两个句柄。Rust 的 `pkg/util/sli/sli.rs` 保留了相同分类和计算语义，但当前导入的是自身 crate 的 `metrics` 模块；`pkg/util/sli/lib.rs` 提供的是用于记录次数/总和的轻量观察器。因此，“定义和注册 parity”已经存在于本文件及 `pkg/metrics/metrics.rs`，而“事务运行时观测直达本 collector”的 Rust 接线不能从现有代码得到证明。
 
 ## 扩展指南
 
@@ -98,11 +90,3 @@ Go 运行时的真实消费链是 `pkg/util/sli/sli.go::TxnWriteThroughputSLI::r
 - `pkg/metrics/metrics_2_aster_unit_test.rs::package_metrics_initialization_covers_go_success_boundary_and_error_paths`：间接覆盖 `InitMetrics` 成功路径，未逐项断言本文件两个 collector。
 - `pkg/util/sli/migration_aster_unit_test.rs`：覆盖小/大事务边界、无效事务、观测公式和 reset/failpoint，但使用 `pkg/util/sli/lib.rs` 的轻量观察器，不是本文件 collector 的集成测试。
 - `pkg/executor/executor_failpoint_test.go::TestTxnWriteThroughputSLI`：Go 侧端到端行为依据。
-
-## 验证依据
-
-本说明读取并核对了以下直接证据：`pkg/metrics/sli.rs`、`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`、`pkg/metrics/sli.go`、`pkg/metrics/bindinfo.rs`、`pkg/metrics/common/wrapper.rs`、`pkg/util/sli/sli.rs`、`pkg/util/sli/lib.rs`、`pkg/util/sli/sli.go`、`pkg/metrics/metrics_test.rs`、`pkg/metrics/metrics_internal_test.rs`、`pkg/metrics/metrics_2_aster_unit_test.rs`、`pkg/util/sli/migration_aster_unit_test.rs` 与 `pkg/executor/executor_failpoint_test.go`。`pkg/metrics` 下不存在 `doc.go`，因此没有额外包契约文件可读。
-
-RustCodeGraph 证据包括：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file pkg/metrics/sli.rs` 展示目标文件 61 行全貌并指出由 `pkg/metrics/metrics.rs` 使用；`query InitSliMetrics` 命中 Go/Rust 两个定义；`callees InitSliMetrics` 确认 Rust 定义下游包含 `ExponentialBuckets`；对 `pkg/metrics/metrics.rs`、`pkg/metrics/lib.rs`、`pkg/util/sli/sli.rs` 和相关测试的 `node` 查询补齐初始化、注册、切换和观测边界。精确 `rg` 又确认 `metrics.rs` 第 129、378–379、497–498 行分别承担初始化、注册和简化模式切换，并确认没有直接引用把 Rust `pkg/util/sli` 的观测写入本文件句柄。
-
-本任务为纯文档分析，按计划未运行 Cargo。文档结构由任务规定的 11 个固定二级标题命令验证；事实人工复核重点是：本文件为何存在、初始化与注册如何分离、共享静态状态的并发前提、Go parity，以及当前 Rust 运行时接线仍未由代码证明的限制。

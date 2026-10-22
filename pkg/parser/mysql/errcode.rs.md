@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-mysql` crate，是 MySQL 协议兼容层的数字错误码目录。crate 入口 `pkg/parser/mysql/lib.rs` 以 `pub mod errcode` 暴露它，`pkg/parser/lib.rs` 又在 `mysql` 模块中执行 `pub use parser_mysql::errcode::*`，因此解析器及其使用方可以通过 `parser::mysql::ErrParse` 一类路径取得这些常量。它只声明协议编号，不负责生成消息、选择 SQLSTATE、格式化错误或发送协议包；这些职责分别位于同目录的 `errname.rs`、`state.rs` 和 `error.rs`。
-
-`pkg/parser/mysql/Cargo.toml` 表明该 crate 的库入口是 `lib.rs`，依赖只有 `astersql-errors`、`semver` 和 `unicode-general-category`。`errcode.rs` 自身不导入这些依赖，也没有条件编译项；其内容可在编译期作为纯 `u16` 常量使用。
+文件的唯一职责是把 MySQL、MariaDB 和 TiDB 兼容错误的符号名固定到线上协议使用的 16 位无符号整数。
 
 ## 核心职责
 
@@ -69,9 +67,9 @@ RustCodeGraph 对目标文件显示 986 行、单一文件节点且 `used by 0 f
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/mysql/errcode.go`。机械抽取 Rust 的 `pub const 名称: u16 = 数值;` 与 Go 的 `名称 = 数值` 后，两侧均得到 954 项，逐项 `diff` 无输出，说明当前符号顺序、名称和值完全一致。Rust 将 Go `const (...)` 块展开为独立的 `pub const u16`；这是类型表达差异，不改变协议数值。
+Rust 将 Go `const (...)` 块展开为独立的 `pub const u16`；这是类型表达差异，不改变协议数值。
 
-两端都保留 `ErrErrorFirst/ErrHashchk = 1000`、`ErrErrorLast/ErrRowInWrongPartition = 1863`、后续稀疏 MySQL 编号、MariaDB 扩展和 TiDB 8061–8066，并都以注释要求新错误码转到 `pkg/errno`。Rust 额外在文件顶部和分段处写了迁移/兼容说明，但没有新增计算逻辑或改变 Go 语义。
+Rust 额外在文件顶部和分段处写了迁移/兼容说明，但没有新增计算逻辑或改变 Go 语义。
 
 ## 扩展指南
 
@@ -80,13 +78,3 @@ RustCodeGraph 对目标文件显示 986 行、单一文件节点且 `used by 0 f
 新增 TiDB 全局错误码时应遵循文件末尾指示，优先修改 `pkg/errno/errcode.rs` 及其 Go 对照，而不是继续扩展这里。只有维持 parser 旧 API/协议兼容所必需的变更才应进入本文件，并应同步独立测试 `pkg/parser/mysql/errcode_2_aster_unit_test.rs`；若涉及消息或状态，还应同步 `error_3_aster_unit_test.rs`、`error_test.rs` 或 `unit_test.rs`。测试逻辑必须继续放在独立测试文件中，不能内嵌到 `errcode.rs`。
 
 建议至少验证：Go/Rust 名称和值全量相等；首尾共享值保持不变；代表性的 MySQL 稀疏码、MariaDB 码和 TiDB 码保持原值；新增码在消息表与 SQLSTATE 表中的有意映射或回退行为有测试。兼容性风险高于性能风险；常量访问没有可测量的运行时开销。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含目标文件；`files --filter pkg/parser/mysql` 确认源文件、Go 对照和独立测试；`node --file pkg/parser/mysql/errcode.rs --offset ...` 读取完整 986 行；`query/callers` 暴露了目标常量未被单独索引的限制。
-- 源码：`pkg/parser/mysql/errcode.rs`（954 个公开 `u16` 常量、分段与停止新增说明）、`pkg/parser/mysql/lib.rs` 和 `pkg/parser/lib.rs`（模块声明与再导出）。
-- crate 边界：`pkg/parser/mysql/Cargo.toml`（`astersql-parser-mysql`、`lib.rs` 入口及直接依赖）。
-- 运行链证据：`pkg/parser/mysql/errname.rs`、`state.rs`、`error.rs`、`pkg/parser/yy_parser.rs`、`pkg/parser/hintparserimpl.rs`、`pkg/parser/terror/terror.rs`。
-- Go 对照：`pkg/parser/mysql/errcode.go`；抽取双方常量后计数均为 954，名称和值的统一 diff 为空。
-- 独立测试：`pkg/parser/mysql/errcode_2_aster_unit_test.rs` 验证首尾哨兵、MariaDB/TiDB 代表值及消息表；`error_3_aster_unit_test.rs`、`error_test.rs`、`unit_test.rs` 验证编号参与消息和 SQLSTATE 构造；`pkg/parser/terror/terror_test.rs` 验证 terror 映射与 `ErrUnknown` 回退。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令确认本文件存在且恰有 11 个固定二级章节，并人工复核没有把 RustCodeGraph 的缺失调用边写成未接线事实。

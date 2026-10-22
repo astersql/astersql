@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/server/pg_name.rs` 属于 `astersql-server` crate；crate 根在 `pkg/server/lib.rs`，通过私有的 `mod pg_name;` 挂载本模块，因此这里的 API 只服务于 server crate 内部。`pkg/server/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/server`，并声明本文件直接使用的 `astersql-parser` 与 `astersql-parser-ast` 路径依赖；该 manifest 没有为本模块设置独立 feature。
-
-本文件位于 PostgreSQL 协议 SQL 与原生 MySQL 方言执行引擎之间，职责不是执行 SQL 或完成对象权限检查，而是在 SQL 进入原生解析/执行链之前处理 PostgreSQL 标识符和关系名：把双引号标识符转换为反引号，把 PostgreSQL 的 `public`/未限定关系映射到当前原生数据库，并拒绝当前适配层无法安全表达的命名形式。文件头注释和 `adapt`、`validate_relations`（`pkg/server/pg_name.rs:439,467`）共同限定了这个边界。
-
-它有两条生产入口：普通/扩展 PostgreSQL 查询通过 `pkg/server/pg_conn.rs` 和 `pkg/server/pg_extended.rs::process` 调用 `adapt`；`pkg/server/pg_catalog.rs::evaluate` 在实现 `pg_get_viewdef` 时调用 `stored_view_select`，从原生 `ViewInfo` 保存的文本中取出 SELECT 定义。
+`adapt`（`pkg/server/pg_name.rs:439-463`）为协议主链提供按需适配：无关系查询不访问引擎；只有遇到“未选择当前数据库”信号时才执行 `SELECT DATABASE()`，随后重写并做 AST 级跨库校验。
 
 ## 核心职责
 
@@ -97,11 +93,9 @@ token 的 `start`/`end` 是原 SQL 的字节偏移。扫描对 ASCII 语法字�
 
 ## 与 Go 版本的对应关系
 
-仓库不存在同路径 `pkg/server/pg_name.go`，在 `pkg/server` 的 Go 文件中也找不到本文件的同名函数或这些 SQLSTATE 错误文本。因此没有可声称逐函数对应的 Go 实现；`pkg/server/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/server"` 只能证明 crate 的包级迁移归属，不能证明该 Rust 文件是某个 Go 文件的机械翻译。
+Go 侧 `pkg/server/server.go` 属于原有 TiDB server 主体，而这里的 `pg_*` 模块由 `pkg/server/lib.rs` 在 Rust server crate 内装配，服务新增的 PostgreSQL 协议兼容路径。
 
-Go 侧 `pkg/server/server.go` 属于原有 TiDB server 主体，而这里的 `pg_*` 模块由 `pkg/server/lib.rs` 在 Rust server crate 内装配，服务新增的 PostgreSQL 协议兼容路径。`pkg/server/internal/testserverclient/server_client.go` 中的 CREATE VIEW 用例证明 Go server 测试覆盖原生视图行为，但不覆盖 PostgreSQL 名称重写、search path、双引号转义或 `pg_get_viewdef` 的文本提取规则。
-
-因此迁移/兼容判断应以行为边界为单位：最终 SQL 必须仍由原生 parser、对象查找与授权链验证；本文件只弥合 PostgreSQL 命名语法。未来若 Go 侧加入对应适配，需逐项比较 SQLSTATE、search path、CTE 可见性、视图源文本保真和协议错误顺序，而不能只比较重写后的字符串。
+因此迁移/兼容判断应以行为边界为单位：最终 SQL 必须仍由原生 parser、对象查找与授权链验证；本文件只弥合 PostgreSQL 命名语法。
 
 ## 扩展指南
 
@@ -111,15 +105,3 @@ Go 侧 `pkg/server/server.go` 属于原有 TiDB server 主体，而这里的 `pg
 - 新增原生 AST 可表达但 token 状态机看不到的关系节点时，扩展 `validate_relations::Guard`。需保持“解析失败不在这里抢先返回”的错误顺序约束，并在扩展协议测试中验证参数 OID 错误优先级不回归。
 - 修改数据库获取策略时聚焦 `adapt`，保留无关系 SQL 零额外查询的不变量。若引入缓存，必须明确连接切库、事务和 session 生命周期中的失效规则；当前实现没有缓存，天然读取调用时的数据库。
 - 兼容风险主要是错误 SQLSTATE/先后顺序、带引号大小写、search path 和跨库隔离；性能风险主要是对所有查询无条件访问引擎或增加重复解析。任何支持面扩大都应同时经过纯重写测试和简单/扩展协议真实链路测试。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 生产源码：`pkg/server/pg_name.rs` 全部 509 行；模块与会话边界：`pkg/server/lib.rs`、`pkg/server/pg_session.rs`；调用入口：`pkg/server/pg_conn.rs`、`pkg/server/pg_extended.rs`、`pkg/server/pg_catalog.rs`；错误类型：`pkg/server/pg_catalog_query.rs`。
-- crate 配置：`pkg/server/Cargo.toml`，确认 crate 名、`lib.rs` 根、Go 包迁移元数据、parser/AST 依赖及无本模块 feature。
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/server/pg_name.rs` 读取全文件；`node pg_name.rs::adapt` 确认 `process → adapt → rewrite/validate_relations`；`node pg_name.rs::stored_view_select` 确认 `evaluate → stored_view_select`；`node pg_name.rs::rewrite`、`scope`、`validate_relations` 确认内部调用边。常见名的独立 `callers/callees` 查询存在歧义，故只采用带文件限定节点和源码可复核的边。
-- 独立测试：`pkg/server/pg_name_test.rs` 验证字符串/注释保护、双引号、CTE 作用域、DML/DDL 重写和 SQLSTATE 拒绝边界；`pkg/server/pg_query_test.rs::pg_introspection_names_live_tables` 验证简单/扩展协议、真实多数据库隔离、search path 和 CRUD；`pkg/server/pg_extended_test.rs` 验证 prepared statement 中的 `public` 关系；`pkg/server/pg_client_integration_test.rs::pg_introspection_clients_stored_view_source` 验证视图源提取。
-- Go 对照搜索：`pkg/server` 下无 `pg_name.go`，Go 文件中无对应符号/错误文本；仅 `pkg/server/internal/testserverclient/server_client.go` 有一般 CREATE VIEW 测试，因此文档明确标为 Rust PG 专用新增逻辑而非直接 Go 复刻。
-
-本任务是只读行为分析与文档新增，按计划未运行 Cargo 或代码测试。交付结构检查要求目标文件存在且恰有上述 11 个固定二级标题；人工复核重点是每项行为均可回溯到点名的符号、调用边或测试，且没有把原生 parser/授权职责误写成本文件职责。

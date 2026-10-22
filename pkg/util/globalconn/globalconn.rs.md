@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-util-globalconn`，由同目录的 [`lib.rs`](lib.rs) 作为 `globalconn` 模块装入并公开再导出。它实现 Global Connection ID（GCID）的位级编解码，以及关闭或开启 GlobalKill 时使用的两类连接号分配器；实际 ID 池算法位于同 crate 的 [`pool.rs`](pool.rs)。[`Cargo.toml`](Cargo.toml) 仅直接依赖 `log`，并用 `package.metadata.porting.go-package = "pkg/util/globalconn"` 标明 Go 对照包。
-
-当前 Rust 接线状态需要与 Go 生产链区分：根 workspace 和 `pkg/lib.rs` 已纳入并再导出此 crate，`pkg/domain/Cargo.toml`、`pkg/executor/Cargo.toml` 也声明了依赖，但全仓 Rust 符号搜索只发现本 crate 测试使用这些 API，未发现 domain/executor 的生产 Rust 调用。完整应用中已验证的生产接线仍在 Go：`pkg/domain/domain.go` 根据配置创建 `NewGlobalAllocator` 或 `NewSimpleAllocator`，`pkg/executor/simple.go` 用 `ParseConnID` 支持跨实例 kill。因此，本文件是已经实现且可测试的 Rust 能力模块，但不能仅凭 Cargo 依赖断言它已进入 Rust 请求主链。
+`Allocator` 抽象统一提供 `NextID`、`Release` 和 `GetReservedConnID`。
 
 ## 核心职责
 
@@ -72,11 +70,9 @@ Rust 测试中的 `lock_free_pool_preserves_values_under_concurrent_producers_an
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项保留了 [`globalconn.go`](globalconn.go) 的 GCID 字段、位布局、常量、`Allocator` 三方法、两类分配器、升级/降级阈值、保留号算法和 ldflag 解析。`AtomicI32` 对应 Go `sync2.AtomicInt32`，闭包类型对应 `func() uint64`，`Result<(GCID, bool), String>` 承载 Go 的 `(GCID, isTruncated, error)`。
-
 主要语言差异有三点：Rust 构造器按值返回分配器而非 Go 指针；Rust 的 `init()` 不会自动运行；Go 包级变量可由链接参数设置，而 Rust 当前以公开 `static mut &str` 和显式初始化函数模拟，带来额外 `unsafe` 约束。另有测试覆盖差异：Go `BenchmarkLocalConnIDAllocator` 真正用 `RunParallel` 执行三类池的多并发 benchmark，Rust 同名函数只保留结构，没有 `#[bench]` 或 criterion 接线。
 
-Go 的生产链已经在 `pkg/domain/domain.go` 构造分配器，在 `pkg/executor/simple.go` 解析 GCID 并决定本地或远程 kill；对应 Rust 生产代码尚未找到 API 调用。迁移后续若接线，必须保持这些选择条件、截断兼容和错误行为，而不只是让 crate 编译存在。
+Go 的生产链已经在 `pkg/domain/domain.go` 构造分配器，在 `pkg/executor/simple.go` 解析 GCID 并决定本地或远程 kill；对应 Rust 生产代码尚未找到 API 调用。
 
 ## 扩展指南
 
@@ -85,11 +81,3 @@ Go 的生产链已经在 `pkg/domain/domain.go` 构造分配器，在 `pkg/execu
 新增分配策略时，优先通过 `Allocator` trait 接入，并保持测试逻辑位于独立测试文件，不放回生产 `.rs`。若改变池复用或并发行为，还需同步检查 [`pool.rs`](pool.rs) 及其独立测试；特别关注重复 ID、32/64 位模式切换抖动、锁竞争和保留区碰撞。
 
 把该能力接入 Rust domain/executor 时，至少需要复刻 Go 的启停选择、动态 ServerID getter、连接关闭时 `Release`、kill 语句的截断检测及远程路由，并新增调用链级独立测试。不要把现有 Cargo 依赖当作接线完成证据。若要让 ldflag 初始化自动发生，应先确定 Rust 进程初始化入口，再显式调用 `initByLDFlagsForGlobalKill`；不要依赖函数名 `init` 产生 Go 式副作用。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标 [`globalconn.rs`](globalconn.rs) 含 39 个符号。`node --file` 用于核对完整实现，`query` 定位 `ParseConnID`、`GlobalAllocator`、`Allocate`、`NextID`、`Release`、构造器和初始化入口，`callers/callees` 核对主要内部调用边。
-- 已读生产与装配文件：[`globalconn.rs`](globalconn.rs)、[`pool.rs`](pool.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、Go 对照 [`globalconn.go`](globalconn.go)。另以 workspace `Cargo.toml`、`pkg/lib.rs`、`pkg/domain/Cargo.toml`、`pkg/executor/Cargo.toml` 和精确全仓搜索核对 crate 边界与当前 Rust 接线状态。
-- 已读测试：Rust [`globalconn_test.rs`](globalconn_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，Go [`globalconn_test.go`](globalconn_test.go)。这些测试覆盖编码越界 panic、解析溢出与截断、32/64 位往返、保留号、捕获式 ServerID getter、32 位分配/释放以及底层池并发完整性；Rust benchmark 仅为未接线骨架。
-- Go 生产调用证据：`pkg/domain/domain.go` 创建两类分配器，`pkg/executor/simple.go` 调用 `ParseConnID` 并使用 `GCID` 处理 kill。全仓 Rust 精确搜索未发现对应生产调用，这是“Rust API 已实现但生产主链未验证接线”的依据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰有 11 个固定二级章节，并人工复核所有“已支持/已接线”陈述均有上述文件或查询证据。

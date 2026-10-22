@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-对应源码：[topn.rs](./topn.rs)。本文件属于 `astersql-executor-sortexec` crate；crate 入口 `pkg/executor/sortexec/lib.rs` 将 `topn` 声明为公开模块，并重导出 `Limit`、`RankInfo`、`TopNExec`。它为 Rust 执行层提供 `ORDER BY ... LIMIT offset, count` 的物理 TopN 算子：上游 `pkg/executor/physical_plan_runtime.rs::execute_node` 遇到 `PhysicalTopN` 时构造它，再由 `drain_topn` 反复调用 `Next` 排空结果。
-
-`pkg/executor/sortexec/Cargo.toml` 把该目录定义为独立 crate，`[lib]` 指向 `lib.rs`，并以 `package.metadata.porting.go-package = "pkg/executor/sortexec"` 声明 Go 对照包。其完整依赖目前仅配置在 `cfg(windows)` 下；本文件自身直接依赖同 crate 的 `multi_way_merge`、`sort`、`sort_util`、`topn_chunk_heap`、`topn_spill`、`topn_worker` 和 Rust 标准库。
+为 Rust 执行层提供 `ORDER BY ... LIMIT offset, count` 的物理 TopN 算子：上游 `pkg/executor/physical_plan_runtime.rs::execute_node` 遇到 `PhysicalTopN` 时构造它，再由 `drain_topn` 反复调用 `Next` 排空结果。
 
 ## 核心职责
 
@@ -81,14 +79,11 @@ spill 状态转换为 `notSpilled -> needSpill -> inSpilling -> notSpilled`。�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/executor/sortexec/topn.go`。两版共同保留的主语义是：`TopNExec` 对应 `ORDER BY + LIMIT`；排序期间使用完整 child 行；内联投影只作用于最终输出；普通 TopN 使用容量为 `Offset + Count` 的堆；内存压力可触发 spill；多 run 通过多路归并得到全局顺序；最终严格执行 OFFSET/COUNT。
-
 当前 Rust 版是较小的同步实现，以下差异不能当作已经对齐：
 
 - Go `OpenSelf` 建立 channel、WaitGroup、多个 goroutine worker、语句级 tracker/fallback action；Rust 只建立多个受锁保护的堆并在调用线程轮询处理。
 - Go 分“初始装载/建堆”和“更新堆”两个阶段，并记录各阶段 spill；Rust 每个 chunk 后统一判断 tracker，立即同步 spill。
 - Go 的 Rank TopN 使用截断表达式、字符前缀、collator、前缀键和有序输入边界来减少读取；Rust `RankInfo` 只有 `SortKey`/数量字段，且当前两字段未使用，实际为全量排序。
-- Go 的 `DiskRun` 路径对应真实临时存储与异步资源协调；Rust 当前 `DiskRun` 是内存 chunk 容器。
 - Go 通过 result channel 流式产生结果并包含 panic 恢复；Rust 首次 `Next` 完整物化到 `VecDeque`，没有 panic 转错误层。
 
 因此，Rust 当前能提供仓库已有测试覆盖的排序、窗口、投影和内存模拟 spill 行为，但不能声称具有 Go 版相同的并发度、Rank 前缀优化、真实磁盘落盘或语句上下文集成。
@@ -103,12 +98,3 @@ Go 对照文件为 `pkg/executor/sortexec/topn.go`。两版共同保留的主语
 - 若调整取消语义，需决定 Rank、归并和结果排空阶段的检查点，并在测试中证明错误传播与 tracker/child 清理，而非仅观察 `IsKilled`。
 
 兼容风险集中在排序比较（NULL、DESC、混合类型）、Rank 前缀等价、LIMIT 窗口和投影列映射；性能风险集中在 Rank 全量排序、首次 `Next` 全量物化、多 worker 实际串行、run/行克隆以及“磁盘”run 仍占内存。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且覆盖 `pkg/executor/sortexec/topn.rs`；`files --filter pkg/executor/sortexec` 列出该模块 43 个已索引文件；`node --file` 完整读取 `topn.rs`、`topn_worker.rs`、`topn_spill.rs`、`topn_chunk_heap.rs`、`sort_util.rs`；限定 `TopNExec::Next`/`fetchTopN` 的 `explore` 给出 `child.next -> fetchTopN/fetchRankTopN`、`fetch -> fetchTopN` 以及测试到 `Next` 的调用边。
-- crate/入口：`pkg/executor/sortexec/Cargo.toml`、`pkg/executor/sortexec/lib.rs`。
-- 应用接线：`pkg/executor/physical_plan_runtime.rs` 中 `PhysicalTopN -> TopNExec::new -> drain_topn -> Next`。
-- Go 对照：`pkg/executor/sortexec/topn.go` 的 `TopNExec`、`OpenSelf`、`Next`、`fetchChunks`、Rank 前缀处理、spill 两阶段执行和结果生成。
-- Rust 独立测试：`pkg/executor/sortexec/sortexec_pkg_test.rs` 覆盖 count=0、offset/count、后置投影、空输入、spill tracker 清理和重复关闭；`topn_spill_test.rs` 覆盖 spill 后窗口；`rank_topn_test.rs` 覆盖 Rank 路径仍严格应用 LIMIT；`pkg/executor/executor_required_rows_test.rs` 覆盖分页；`pkg/executor/benchmark_test.rs` 对比内联与外层投影。
-- 人工复核结论：本文件存在于物理 TopN 接线中；普通路径依靠局部有界堆、同步 spill 与全局归并运行；安全扩展必须保留完整行排序、最终 LIMIT、错误传播和 Close 资源归还，并明确处理当前与 Go 的并发/Rank/磁盘差距。

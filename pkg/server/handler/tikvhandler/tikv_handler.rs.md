@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-handler-tikvhandler` crate 中通用 TiKV 状态 HTTP 接口的主体实现。crate 入口 [`lib.rs`](./lib.rs) 公开 `tikv_handler` 模块并再导出其符号；[`Cargo.toml`](./Cargo.toml) 通过 `package.metadata.porting.go-package` 明确其 Go 来源是 `pkg/server/handler/tikvhandler`。状态服务器的直接接线位于 `pkg/server/http_status.rs`：适配函数构造本文件的 handler、把外层请求转换成 `Request`，调用 `ServeHTTP`，再把 `ResponseWriter` 转成真实 HTTP 响应。
-
-它覆盖 schema、表/Region、MVCC、TiFlash 副本、DDL 诊断、节点信息、profile、测试 GC、删除测试 key、server label、ingest 并发参数和事务 GC 状态等运维接口。文件不是底层 TiKV/PD/DDL 客户端本身：真实副作用经 `Storage`/`PdClient` 持有的 `Arc<dyn TikvRuntime>` 注入。当前源码还在文件内定义了 `TableInfo`、`Request`、`ResponseWriter`、`Data` 等适配/占位类型，因此应把它理解为“Go handler 行为的 Rust 端口与状态服务边界”，而不是所有依赖子系统的完整 Rust 数据模型。
+保留 Go 实现的重要保护条件：只允许特定 HTTP 方法、设置值范围检查、DDL 查询分页约束、GC 单实例执行、ingest 非负值以及不支持操作的显式错误。
 
 ## 核心职责
 
@@ -74,11 +72,11 @@ Go 版 scatter helper 会关闭 PD HTTP response body，session 分支会 `defer
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`tikv_handler.go`](./tikv_handler.go)。Rust 保留了 Go 的 handler 名称、构造器、操作常量、分派顺序和主要响应结构，并刻意复现以下可观察语义：空设置值不触发修改、非正 DDL slow threshold 不更新、query 中无 `=` 的键与空值不同、startTS 使用 base-0 有符号解析、表/索引 ID 后继使用 `int64` 回绕、TiFlash 可用性判断、GC 原子标志和 ingest 方法/范围检查。
+Rust 保留了 Go 的 handler 名称、构造器、操作常量、分派顺序和主要响应结构，并刻意复现以下可观察语义：空设置值不触发修改、非正 DDL slow threshold 不更新、query 中无 `=` 的键与空值不同、startTS 使用 base-0 有符号解析、表/索引 ID 后继使用 `int64` 回绕、TiFlash 可用性判断、GC 原子标志和 ingest 方法/范围检查。
 
-二者实现层次并不相同。Go 文件直接使用 `kv.Storage`、InfoSchema、PD HTTP/client、session、DDL owner、meta transaction、tablecodec 和日志设施；Rust 文件将这些行为压缩到 `TikvRuntime`，并以内置轻量结构承接 wire 所需字段。比如 Go `TableHandler.ServeHTTP` 直接查 schema 和分区，Rust 先规范化分区名再调用 `resolve_table_route`；Go ingest handler 直接开启 KV 事务并更新进程全局原子值，Rust 通过 `ingest_get/ingest_set` 委托；Go txn GC 直接取得 PD GC client，Rust 委托 `gc_state`。因此“接口路径与外部行为已移植”不等于“Go 下游实现已全部位于此文件”。
+Go 文件直接使用 `kv.Storage`、InfoSchema、PD HTTP/client、session、DDL owner、meta transaction、tablecodec 和日志设施；Rust 文件将这些行为压缩到 `TikvRuntime`，并以内置轻量结构承接 wire 所需字段。比如 Go `TableHandler.ServeHTTP` 直接查 schema 和分区，Rust 先规范化分区名再调用 `resolve_table_route`；Go ingest handler 直接开启 KV 事务并更新进程全局原子值，Rust 通过 `ingest_get/ingest_set` 委托；Go txn GC 直接取得 PD GC client，Rust 委托 `gc_state`。
 
-另一个差异是 Go 类型 `FlashReplicaDeprecatedHandler` 在 Rust 中表现为 `FlashReplicaHandler`，且当前 Rust 状态服务也使用后者。扩展或比对时应按路由和响应行为对应，而不能只按类型名机械匹配。
+另一个差异是 Go 类型 `FlashReplicaDeprecatedHandler` 在 Rust 中表现为 `FlashReplicaHandler`，且当前 Rust 状态服务也使用后者。
 
 ## 扩展指南
 
@@ -88,11 +86,3 @@ Go 版 scatter helper 会关闭 PD HTTP response body，session 分支会 `defer
 - 修改表/MVCC 编码：保持 TiDB comparable integer、半开区间、分区展开、base-0 数值和 query 重复值语义；同步独立测试 [`tikv_handler_test.rs`](./tikv_handler_test.rs)，不要把测试嵌回生产文件。
 - 修改并发 GC：确保互斥状态跨实际请求共享，并用作用域守卫保证所有返回/异常路径复位。修改 ingest 时要在运行时保持元数据持久化与进程内限流值更新的一致性。
 - 对齐 Go 新行为时，应逐个核验 `tikv_handler.go` 的输入校验、错误文本/状态、资源关闭和 response shape；不要仅添加返回成功的桩。兼容风险主要在 URL/数字编码、JSON 形状和错误码，性能风险主要在大 schema/region 列表、MVCC 解码及 `manualWriteJSONArray` 是否仍保持单数组且避免不必要复制。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `tikv_handler.rs`；`files --filter pkg/server/handler/tikvhandler` 确认源、Go 对照与独立测试均已索引；`query` 定位 `tikv_handler.rs::serve_table_http`（611 行）、`serve_mvcc_txn_http`（876 行）和 `TikvRuntime`（1519 行）；`node --file` 用于通读 2284 行源码。对关键函数执行 `callers/callees` 返回空边，因此未以图中不存在的动态/门面调用边作结论。
-- Rust 源与 crate：[`tikv_handler.rs`](./tikv_handler.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)。上游接线补充读取 `pkg/server/http_status.rs` 与 `pkg/server/server.rs`。
-- Go 对照：[`tikv_handler.go`](./tikv_handler.go)，重点核验 Settings、Table、MVCC、Test/GC、Ingest 和 TxnGCStates 的 `ServeHTTP` 及 `parseQuery`。
-- 独立测试：[`tikv_handler_test.rs`](./tikv_handler_test.rs) 验证单数组响应、分区 ID 查找、非分区 range 形状、Go base-0 startTS、严格 base64 和 `int64` 回绕；`pkg/server/handler/tests/http_handler_serial_test.rs` 提供 `TikvRuntime` 替身并覆盖真实状态 TCP 路由及 txn GC 的 GET/405 行为。
-- 本任务是纯文档分析，未运行 Cargo。结构验收由任务指定的 11 个固定二级标题检查完成；人工复核重点是区分本文件已实现的路由/校验逻辑与 `TikvRuntime` 下游责任。

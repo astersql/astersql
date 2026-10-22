@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 内的正则函数内核。`pkg/expression/lib.rs` 通过 `#[path = "builtin_regexp.rs"] mod builtin_regexp_kernel;` 将其作为私有模块装配；测试配置下的 `expression_regexp` 再导出它供迁移测试使用。crate 边界由 `pkg/expression/Cargo.toml` 定义，直接使用其中的 `regex = "1"` 和 `thiserror = "2"`。
-
-生产求值接线中，`pkg/expression/builtin.rs` 已确认会从 `CoreBuiltinKind::RegexpInstr`、`RegexpSubstr`、`RegexpReplace` 调用本文件的 `RegexpEngine`。`RegexpEngine::regexp_like` 及其缓存/向量辅助目前能在独立 Rust 测试中直接使用，但搜索未发现 `builtin.rs` 对它的生产调用，因此不能仅凭内核存在断言 `REGEXP_LIKE` 已经通过该引擎接入 SQL 求值主链。
+用 `RegexpEngine` 实现 `REGEXP_LIKE`、`REGEXP_SUBSTR`、`REGEXP_INSTR`、`REGEXP_REPLACE` 的标量、简单批量及 binary 辅助路径。
 
 ## 核心职责
 
@@ -77,13 +75,11 @@ RustCodeGraph 的文件节点显示本文件被 `builtin.rs`、两个正则测�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/expression/builtin_regexp.go`。`RegexpBase` 对应 `regexpBaseFuncSig`：二者都只在 pattern 和可选 match type 达到上下文常量级别时记忆化，并按 statement/context id 隔离；`builtin_regexp_test.go` 直接验证动态参数不入缓存、常量参数入缓存。
+Rust 固定 flag 输出顺序，避免 Go set 迭代顺序不稳定，但语义等价。
 
-`get_regexp_match_type` 对应 Go `getRegexpMatchType`，保留 ci collation 默认忽略大小写、`c/i` 后出现者覆盖先出现者以及 `m/s` 独立生效。Rust 固定 flag 输出顺序，避免 Go set 迭代顺序不稳定，但语义等价。
+Go regexp 的 Perl 字符类采用 ASCII 语义，Rust regex 默认 Unicode；Rust 额外用 `normalize_go_perl_classes` 显式改写类和词边界。
 
-Go regexp 的 Perl 字符类采用 ASCII 语义，Rust regex 默认 Unicode；Rust 额外用 `normalize_go_perl_classes` 显式改写类和词边界。`builtin_regexp_test.rs` 对阿拉伯数字、`é`、Unicode 空白、转义和词边界进行了针对性回归。
-
-替换指令解析与 Go `getInstructions` 对齐，包括 `\0..\9`、普通转义和尾随反斜杠。差异是 Go 的完整签名层还缓存常量 replacement 指令并直接拥有 function class、collation 和 chunk 向量求值；本 Rust 文件只提供内核参数视图及逐行批量包装，不包含完整表达式对象构建。生产接线目前明确看到 INSTR/SUBSTR/REPLACE 使用 `new(false)`，因此 collation 派生、binary 选择和常量缓存尚不能从这些调用边证明已完整等价。
+差异是 Go 的完整签名层还缓存常量 replacement 指令并直接拥有 function class、collation 和 chunk 向量求值；本 Rust 文件只提供内核参数视图及逐行批量包装，不包含完整表达式对象构建。
 
 ## 扩展指南
 
@@ -93,11 +89,3 @@ Go regexp 的 Perl 字符类采用 ASCII 语义，Rust regex 默认 Unicode；Ru
 - 将 LIKE 或更多向量路径接入生产时，应在 `builtin.rs`/注册层传入真实 collation、常量级别与 statement context id，不能只调用 `new(false)` 后宣称已利用缓存。
 - 调整缓存并发策略时，保留按 context 隔离、成功与失败都缓存、clone 共享生命周期三项不变量，并增加并发回归测试。
 - 任何行为变化都需与 `builtin_regexp.go` 和 `builtin_regexp_test.go` 的实际分支逐项核对；binary 返回格式、错误文本和 NULL 传播属于兼容风险，正则重复编译和全局锁竞争属于性能风险。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认项目索引包含 11,467 个文件；`node --file pkg/expression/builtin_regexp.rs --offset 1 --limit 500` 与 `--offset 480 --limit 420` 覆盖目标文件 1–836 行，并给出文件级使用者；`query RegexpEngine --kind struct` 定位结构体；`callers regexp_like_cached` 未返回方法级结果，故未据此推断调用边。
-- 源与装配：`pkg/expression/builtin_regexp.rs`、`pkg/expression/lib.rs`、`pkg/expression/builtin.rs`、`pkg/expression/Cargo.toml`。目标目录未发现 `doc.go`，包契约以 crate 根 `lib.rs` 为最近入口。
-- Go 对照：`pkg/expression/builtin_regexp.go`、`pkg/expression/builtin_regexp_test.go`、`pkg/expression/builtin_regexp_vec_const_test.go`。
-- Rust 独立测试：`pkg/expression/builtin_regexp_test.rs`、`pkg/expression/builtin_regexp_util_23_aster_unit_test.rs`、`pkg/expression/builtin_regexp_vec_const_test.rs`，另有 `pkg/expression/builtin_like_test.rs` 直接覆盖基础 LIKE 引擎用例。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付检查只执行任务指定的 11 章节结构命令，并人工核对上述符号、调用边和已声明限制。

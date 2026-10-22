@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate；crate 入口 `pkg/executor/aggfuncs/lib.rs` 以公开模块 `func_rank` 暴露它。它实现可复用的泛型 `RANK` / `DENSE_RANK` 排名状态机和 ORDER BY 多列同行组（peer group）比较器，不直接解析 SQL、读取表达式或向结果 `Chunk` 写列。
-
-SQL 函数名到实现描述的入口在 `pkg/executor/aggfuncs/builder.rs::build_window_function`：`FunctionName::Rank` 和 `FunctionName::DenseRank` 分别生成 `AggImplementation::Rank { dense: false }` 与 `{ dense: true }`。当前非测试 Rust 源码搜索只找到这一构建描述，没有找到将该变体实例化为本文件 `Rank<T>` 的生产调用；因此本文件的算法已有独立测试覆盖，但完整 Rust 执行器接线仍是“未验证”，不能用 Go 的完整执行链替代这一事实。
+实现可复用的泛型 `RANK` / `DENSE_RANK` 排名状态机和 ORDER BY 多列同行组（peer group）比较器，不直接解析 SQL、读取表达式或向结果 `Chunk` 写列。
 
 ## 核心职责
 
@@ -76,9 +74,7 @@ API 不返回 `Result`，也不产生领域错误。空状态或全部输出完�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/aggfuncs/func_rank.go`：Rust `RankState<T>` 对应 Go `partialResult4Rank`，`Rank<T>` 对应 Go `rank` 中的 `isDense` 加部分结果状态，`RowComparer<T>` 对应 Go `rowComparer`。两端首行秩为 1、同行沿用旧秩、新组按 dense 模式 `+1` 或取当前行号，算法一致。
-
-生命周期映射为：Rust `Rank::new`/默认状态约等于 Go `AllocPartialResult`，`reset` 对应 `ResetPartialResult`，`update` 对应 `UpdatePartialResult`，`next_by` 对应 `AppendFinalResult2Chunk` 的排名推进部分。Go 最终把 `int64` 直接追加到 `chunk.Chunk`，Rust 则返回 `Option<i64>`，将输出容器留给调用方；Go 方法还返回 `error`，但当前实现始终返回 `nil`，Rust 因而没有等价错误通道。
+Go 最终把 `int64` 直接追加到 `chunk.Chunk`，Rust 则返回 `Option<i64>`，将输出容器留给调用方；Go 方法还返回 `error`，但当前实现始终返回 `nil`，Rust 因而没有等价错误通道。
 
 比较器层面，Go `buildRowComparer` 从 `expression.Column` 的类型取得 `chunk.CompareFunc` 并保存列索引；Rust `RowComparer` 只保存对整个 `T` 的函数指针，不负责从表达式/字段类型构建比较器。这说明 Rust 核心算法与 Go 对齐，但生产层的类型感知比较器构建尚未在本文件中移植。
 
@@ -91,12 +87,3 @@ API 不返回 `Result`，也不产生领域错误。空状态或全部输出完�
 - 若补全生产接线，应从 `builder.rs::AggImplementation::Rank { dense }` 的消费者接入本状态机，并证明 ORDER BY 行提取、比较器构建、结果列写入和每分区 reset；不要仅凭构建器已有变体宣称运行时已接通。
 - 若调整状态字段或记账，必须复核 `DEF_PARTIAL_RESULT_RANK_SIZE`、公共 `DEF_ROW_SIZE`、`func_percent_rank.rs` 对 `RankState` 的复用，以及 Go `DefPartialResult4RankSize` / `TestMemRank` 的兼容意图。
 - 性能敏感点是缓存整个分区和逐行保留 `T`。改变为流式算法前需确认执行器是否要求预收集、spill 协议以及 `PERCENT_RANK` 等复用者；当前文件本身没有 spill 序列化接线。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7032 个 Rust 文件；`files --filter pkg/executor/aggfuncs` 确认目标、Go 对照与独立测试；`node --file pkg/executor/aggfuncs/func_rank.rs --offset 1 --limit 260` 读取完整 142 行；`query RankState/Rank/DenseRank/RowComparer` 定位核心符号；`explore "pkg/executor/aggfuncs/func_rank.rs Rank DenseRank PercentRank CumeDist"` 给出目标符号及测试/相邻复用命中。通用名称的单独 `callers`/`callees` 查询未返回可用输出，未据此虚构调用边。
-- 源码：`pkg/executor/aggfuncs/func_rank.rs`（全部实现）、`lib.rs`（模块与独立测试装配）、`aggfuncs.rs::DEF_ROW_SIZE`、`builder.rs::{AggImplementation, build_window_function}`、`func_percent_rank.rs`、`func_cume_dist.rs`。
-- crate 边界：`pkg/executor/aggfuncs/Cargo.toml` 的包名、`lib.rs` 入口和 package porting 元数据。
-- Go 对照：`pkg/executor/aggfuncs/func_rank.go`、`func_rank_test.go`、`window_func_test.go::TestWindowFunctions`。
-- Rust 测试：`pkg/executor/aggfuncs/func_rank_test.rs`、`window_func_test.rs::{collect_rank, test_window_functions}`。本任务按计划为纯文档分析，未运行 Cargo 或代码测试。
-- 人工复核：文档区分了核心状态机、构建描述和未验证的生产实例化接线；没有把预期架构写成当前事实，也没有建议把测试放入生产源文件。

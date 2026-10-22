@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-mockcopr` crate 的内部 `executor` 模块。crate 入口 `pkg/store/mockstore/mockcopr/lib.rs` 将它声明为私有模块，但 `cop_handler_dag.rs` 会直接使用其中的 `executor` trait 和五类执行器，因而它是 mock TiKV Coprocessor DAG 的行式执行核心，而不是 SQL 层通用执行器。
-
-真实请求链从 `coprHandler::handleCopDAGRequest` 开始：`buildDAGExecutor` 校验请求并建立 `dagContext`，`buildDAG` 按 `DagRequest.executors` 从扫描叶子向根部逐个调用 `buildExec`，再通过 `executor::SetSrcExec` 串成拉取链。根执行器随后被反复调用 `Next`，直至返回 `Ok(None)`；扫描计数和执行明细分别通过 `Counts`、`ExecDetails` 写回响应。上述入口与组装逻辑位于 `pkg/store/mockstore/mockcopr/cop_handler_dag.rs:138-325`。
-
-`pkg/store/mockstore/mockcopr/Cargo.toml` 指定本 crate 的 `[lib] path = "lib.rs"`，并用 `package.metadata.porting.go-package = "pkg/store/mockstore/mockcopr"` 标明 Go 对照包。当前文件本身仅依赖同 crate 的 `copr_handler` 与 `topn` 模块；Cargo 中大量可选 TiDB 子 crate 依赖并未被本文件直接引用。
+提供行列辅助函数 `hasColVal`、`getRowData` 和 `convertToExprs`，服务于列存在性检查、按列 ID 投影及表达式所有权转换（`executor.rs:480-515`）。
 
 ## 核心职责
 
@@ -111,8 +107,6 @@ RustCodeGraph 的文件级导航确认 `executor.rs` 被索引为 74 个符号�
 
 ## 与 Go 版本的对应关系
 
-主要结构一一对应 `pkg/store/mockstore/mockcopr/executor.go` 中的 `executor`、`execDetail`、`tableScanExec`、`indexScanExec`、`selectionExec`、`topNExec`、`limitExec`、`evalBool`、`hasColVal`、`getRowData` 和 `convertToExprs`。共同语义包括：拉取式单行接口、子执行器统计在前、错误调用也更新执行明细、Selection 的 NULL/假短路、TopN 先消费输入再输出、Limit 只统计实际行，以及计数沿非扫描算子向叶子透传。
-
 当前 Rust 是有意可见的简化移植，不能据名称推断完全等价：
 
 - Go TableScan/IndexScan 按 range 和 `seekKey` 每次读取一个 KV，区分 point/range、隔离级别和 resolved locks，并现场解码行/索引；Rust 委托 `KvReader::scan` 一次加载所有 `Row`。Go `ResetCounts` 维护 `start` 窗口，Rust 清零整个定长计数向量。
@@ -123,7 +117,7 @@ RustCodeGraph 的文件级导航确认 `executor.rs` 被索引为 74 个符号�
 - Go `convertToExprs` 调用 `expression.PBToExpr`，可能失败；Rust 版本仅克隆已经构造好的 `Expr`，不会产生错误。
 - Go `Next` 接收 `context.Context`；Rust 无取消参数。
 
-独立 Rust 测试 `pkg/store/mockstore/mockcopr/executor_test.rs` 明确验证了两项 Go 对齐语义：扫描计数只随已返回行增加且可清零，以及失败的 `Next` 也增加 iteration。其 `test_resolved_large_txn_locks` 还以底层 MVCC store 验证大事务次级锁解析后旧版本可见、主锁仍存活，对照 Go `executor_test.go::TestResolvedLargeTxnLocks`；不过该测试不是对本文件所有算子的全面等价证明。
+独立 Rust 测试 `pkg/store/mockstore/mockcopr/executor_test.rs` 明确验证了两项 Go 对齐语义：扫描计数只随已返回行增加且可清零，以及失败的 `Next` 也增加 iteration。
 
 ## 扩展指南
 
@@ -135,15 +129,3 @@ RustCodeGraph 的文件级导航确认 `executor.rs` 被索引为 74 个符号�
 - 修改 `getRowData` 时，应先决定是否要逼近 Go rowcodec 行为；默认值、NOT NULL、unsigned handle 和格式探测不可用简单投影代替。相应测试应新增到 `executor_test.rs`，并以 `executor.go:616-663` 为语义基线。
 - 若需要执行器可重用，应新增明确的完整 reset 生命周期，而不是扩张现有 `ResetCounts` 的含义；改变该方法会影响响应统计契约。
 - 性能方面，扫描全量缓存和 TopN 全量消费是首要风险。任何流式化改动都要保持错误调用计数、range counts 和响应顺序，并用独立测试验证失败中途的状态。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore/mockcopr` 列出 27 个 Go/Rust 文件，目标 `executor.rs` 有 74 个符号。
-- 目标源码：`pkg/store/mockstore/mockcopr/executor.rs:21-515`，用于核对全部类型、trait、函数、impl、状态和错误路径。
-- 直接入口与调用边：`pkg/store/mockstore/mockcopr/cop_handler_dag.rs:138-325`，确认 `handleCopDAGRequest → buildDAGExecutor → buildDAG → buildExec`、各构造函数、`SetSrcExec`、根 `Next/Counts/ExecDetails`。
-- 下游类型与读取契约：`pkg/store/mockstore/mockcopr/copr_handler.rs:27-260`，确认 `CopError`、`Datum`、`KeyRange`、`KvReader`、`MemoryReader` 和 MVCC 可见性简化；`pkg/store/mockstore/mockcopr/topn.rs:21-195`，确认比较、容量堆和最终排序。
-- crate 边界：`pkg/store/mockstore/mockcopr/Cargo.toml` 与 `lib.rs:18-54`，确认 crate 名、Go 包映射、私有模块装配和独立测试模块。
-- Go 对照：`pkg/store/mockstore/mockcopr/executor.go:39-675`，用于核对接口、扫描游标、Selection、TopN、Limit、行解码及表达式转换的共同点与差异。
-- Rust 独立测试：`pkg/store/mockstore/mockcopr/executor_test.rs:30-209`，覆盖列存在性、已返回行计数、失败 iteration 及大事务锁解析；DAG 请求入口的空 range 校验见 `cop_handler_dag_test.rs:23-43`。
-- Go 独立测试：`pkg/store/mockstore/mockcopr/executor_test.go:42-122`，确认 `TestResolvedLargeTxnLocks` 的端到端 SQL、BatchGet、PointGet 和主锁存活意图。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定的结构命令验证文档存在且恰有 11 个固定二级标题，并人工复核未把上述 Rust 简化实现描述成完整 Go 等价实现。

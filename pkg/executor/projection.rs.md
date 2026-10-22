@@ -4,12 +4,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor` crate（`pkg/executor/Cargo.toml`），并由 `pkg/executor/lib.rs` 以 `pub mod projection` 公开。它包含两层能力：
-
-- `ProjectRows` 是已经接入 Rust 运行时的轻量列投影函数。`pkg/executor/physical_plan_runtime.rs::ExecuteLimitRows` 在 Limit 的内联投影路径调用它；`pkg/executor/benchmark_test.rs` 还用它比较 TopN/Limit 的内联投影与外层投影结果。
-- `ProjectionExec<B>` 是以 `ProjectionBackend` 抽象宿主能力的完整 Chunk 投影执行器，复刻 Go `ProjectionExec` 的 Open/Next/Close、串行执行和 Fetcher/Worker 并行流水线。当前仓库搜索不到 `ProjectionBackend` 的具体实现，也没有构建器构造这个泛型类型；`pkg/executor/builder.rs::buildProjection` 当前经 `ExecutorBuildDependencies::build_parallel_unary_executor` 接线，而规范物理计划的实际执行还由 `physical_plan_runtime.rs` 和 `typed_projection.rs` 承担。因此该泛型执行器是公开的移植边界，但不能据此宣称已进入当前 SQL 主链。
-
-文件直接使用 `astersql-executor-sortexec::{Row, SortError}`；Cargo 清单将该依赖映射到同目录子 crate `pkg/executor/sortexec`。本文件没有 feature 条件编译项。
+Open/执行/Close 全程维护 Chunk 内存差额，Close 负责停止并 join 后台线程、排空对象池并登记并发度。
 
 ## 核心职责
 
@@ -94,8 +89,6 @@ trace guard 覆盖 Fetcher/Worker 各自整个 `run` 生命周期。线程 `join
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `projectionInput`、`projectionOutput`、`projectionExecutorContext`、`ProjectionExec`、Fetcher、Worker、`recoveryProjection` 和 `readProjection` 均直接对应 `pkg/executor/projection.go` 的同名结构与流程。串行 required-rows 下传、不可向量化时强制串行、并行对象池、内存差记账、Close 等待后台工作和运行时并发度登记都保留了 Go 意图。
-
 实现层差异如下：
 
 - Go 直接依赖 `BaseExecutorV2`、`chunk.Chunk`、`EvaluatorSuite` 和 session context；Rust 用 `ProjectionBackend` 关联类型抽象这些生产组件，但当前没有具体实现接线。
@@ -104,7 +97,7 @@ Rust 的 `projectionInput`、`projectionOutput`、`projectionExecutorContext`、
 - Go builder 还依据估算行数、DML/锁状态等决定并发度；Rust 本文件只接受既定 `numWorkers` 并检查 evaluator 是否可向量化。并发度的上游选择属于 builder/backend 边界。
 - `ProjectRows` 是 Rust 额外的简化行容器入口，不对应 Go 文件里的独立函数；它只支持已解析列下标，不执行任意表达式。
 
-Go 测试证据包括 `executor_required_rows_test.go::TestProjectionSerialRequiredRows`、被跳过的 `TestProjectionParallelRequiredRows`、`test/issuetest/executor_issue_test.go::TestIssue24210` 以及 `benchmark_test.go` 的外层 Projection 基准路径。Rust 直接覆盖目前集中在 `benchmark_test.rs` 的 `ProjectRows` 成功路径；没有与本文件同名的独立 `projection_test.rs`，也没有泛型并行执行器的具体 backend 测试。
+Rust 直接覆盖目前集中在 `benchmark_test.rs` 的 `ProjectRows` 成功路径；没有与本文件同名的独立 `projection_test.rs`，也没有泛型并行执行器的具体 backend 测试。
 
 ## 扩展指南
 
@@ -114,13 +107,3 @@ Go 测试证据包括 `executor_required_rows_test.go::TestProjectionSerialRequi
 - 修改 required-rows 时应同步独立 Rust 测试，至少覆盖串行多次非均匀请求、并行 1/N worker、EOF 与不同调度顺序；Go 对照矩阵在 `pkg/executor/executor_required_rows_test.go`。调度敏感断言应避免固定 sleep。
 - 修改错误或 panic 行为时应覆盖 child 错误、evaluate 错误、output 尚未取得时 panic、完成通道断开、锁 poisoning 和 Close 竞态，并对照 Go `TestIssue24210`。性能风险主要来自轮询间隔、`yield_now` 忙重试、字段克隆和过度锁竞争。
 - Rust 单元测试应放在同目录独立 `*_test.rs` 并由 `lib.rs` 的 `#[cfg(test)] mod ...` 接入；不要放回 `projection.rs`。若只扩展 `ProjectRows`，可在独立测试中覆盖空列、重复列、列重排和越界错误。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；查询时目标文件完整可用。
-- RustCodeGraph `node --file pkg/executor/projection.rs`：读取了 1–792 行，核对全部常量、类型、trait、函数、impl 和无条件编译事实。
-- RustCodeGraph 精确查询：`ProjectionExec`、`ProjectRows`、`projectionInputFetcher`、`projectionWorker`；调用流确认 `ProjectRows -> physical_plan_runtime/benchmark_test`，以及 `Next -> 串行/并行`、`parallelExecute -> prepare`、`prepare -> Fetcher/Worker::run`、`run -> run_loop/recoveryProjection` 等边。
-- crate/模块证据：`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`、`astersql-executor-sortexec` 路径依赖和 `pkg/executor/lib.rs::pub mod projection`。
-- Rust 调用/测试证据：`pkg/executor/physical_plan_runtime.rs`、`pkg/executor/builder.rs`、`pkg/executor/benchmark_test.rs`、`pkg/executor/test/issuetest/executor_issue_test.rs`；仓库搜索未找到 `ProjectionBackend` 实现或泛型 `ProjectionExec` 的生产构造点。
-- Go 对照/测试证据：`pkg/executor/projection.go`、`pkg/executor/executor_required_rows_test.go`、`pkg/executor/test/issuetest/executor_issue_test.go`、`pkg/executor/benchmark_test.go`、`pkg/executor/pkg_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；完成前使用任务指定命令检查目标存在且固定二级标题恰好为 11，并人工复核源文件链接、接线边界和扩展风险。

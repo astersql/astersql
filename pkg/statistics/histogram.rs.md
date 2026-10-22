@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`histogram.rs` 是 `astersql-statistics` crate 的直方图核心实现。crate 根 `pkg/statistics/lib.rs` 通过私有模块 `mod histogram` 装配它，再以 `pub use histogram::*` 将其 API 暴露给列统计、索引统计、表统计和统计加载链路。`pkg/statistics/Cargo.toml` 的 `[package.metadata.porting]` 将整个 crate 对应到 Go 包 `pkg/statistics`，本文件的直接 Go 对照是 `pkg/statistics/histogram.go`。
-
-它位于统计信息生产、持久化和优化器消费之间：ANALYZE 或存储加载得到桶边界与计数，`Histogram` 提供等值、范围和越界行数估计；全局统计构建可合并多个分区直方图；`Column`、`Index` 等上层对象还复用这里定义的加载/驱逐状态。RustCodeGraph 显示该文件被约 30 个文件引用；可见的直接消费点包括 `pkg/statistics/index.rs` 的 `Index::QueryBytes`、`pkg/statistics/column.rs`/`table.rs` 的加载状态判断，以及 `pkg/statistics/handle/runtime_stats.rs` 的分区统计合并。
+位于统计信息生产、持久化和优化器消费之间：ANALYZE 或存储加载得到桶边界与计数，`Histogram` 提供等值、范围和越界行数估计；全局统计构建可合并多个分区直方图；`Column`、`Index` 等上层对象还复用这里定义的加载/驱逐状态。
 
 ## 核心职责
 
@@ -103,7 +101,7 @@ NULL-only 范围的新增保护在 `OutOfRangeShape` 中、标量转换之前执
 
 ## 与 Go 版本的对应关系
 
-Rust 类型和主要 API 名称刻意保持 Go 风格，对照文件为 `pkg/statistics/histogram.go`，Rust 独立测试注释也关联 `TestTruncateHistogram`、`TestMergePartitionLevelHist`、`TestMergeBucketNDV`、`TestNewPseudoHistogramReuseChunk` 等 Go 用例。已核对的一致语义包括累计 Count、上界 Repeat、桶 NDV、交错边界、Proto 字段、TopN 从 CMS 扣减、越界三角面积以及加载/驱逐判定。
+Rust 类型和主要 API 名称刻意保持 Go 风格，对照文件为 `pkg/statistics/histogram.go`，Rust 独立测试注释也关联 `TestTruncateHistogram`、`TestMergePartitionLevelHist`、`TestMergeBucketNDV`、`TestNewPseudoHistogramReuseChunk` 等 Go 用例。
 
 当前仍有必须显式看待的差异：
 
@@ -124,11 +122,3 @@ Rust 类型和主要 API 名称刻意保持 Go 风格，对照文件为 `pkg/sta
 - 修改分区合并时，必须区分累计桶和独立质量，保留相同上界归入同一全局桶、桶预算、总非 NULL Count、NULL/总列大小求和、列桶 NDV 清零和索引 Repeat 汇总。复杂重叠、相同边界、TopN、时区值及大分区数都应有独立测试。
 - 修改加载状态时同步 `column.rs`、`index.rs`、`table.rs` 与 handle 加载/缓存路径；当前仅有全载和全驱逐两个有效值，任意中间值会由 `StatusToString` 显示为 `unknown`。
 - 所有 Rust 行为改动按仓库规则先与 Go 增量和测试意图核对，修复源文件时保留版权头并同步同目录独立测试；完成后再执行适用的格式化和验证。本说明任务本身不修改 Rust 代码，也不运行 Cargo。
-
-## 验证依据
-
-增量为 `OutOfRangeShape` 对 NULL/`MinNotNull` 上界的提前返回。读取冻结 `histogram.rs`（含 `ScaleOutOfRangeShape` 的分支顺序），对照 `histogram.go` 同一保护。独立测试 `histogram_test.rs::null_only_range_skips_out_of_range_estimation` 遍历 NULL 和 MinNotNull 上界，断言 `Impossible` 且允许修改量时估计为零；`out_of_range_shape_empty_impossible_and_determinate_order` 说明空图、不可行范围以及禁用修改量时的单值基线优先级。
-
-本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/histogram.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
-
-纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

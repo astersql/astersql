@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate，是 Rust 物理计划实例缓存边界上的“拥有所有权、可跨线程传递”的表达式快照层。它不执行表达式，也不直接管理缓存；它把运行时的 `Expression` trait object、`Schema`、`NameSlice` 等对象转换为只含自有值的闭合表示，并在新的 `BuildContext` 中重建运行时对象。
-
-模块由 `pkg/expression/lib.rs` 以私有模块 `cache_snapshot` 装配，再通过 `pub use cache_snapshot::*` 导出公开类型。实际生产上游集中在 `pkg/planner/core/operator/physicalop/cache_snapshot.rs`：物理计划快照捕获列、条件、函数参数和 schema，命中缓存后再用新的表达式上下文恢复它们。`Column::ToCacheSnapshot` 与 `Schema::ToCacheSnapshot`（分别位于 `column.rs`、`schema.rs`）是包内兼容命名的便捷入口。
-
-`pkg/expression/Cargo.toml` 声明本 crate 名为 `astersql-expression`，并以 `package.metadata.porting.go-package = "pkg/expression"` 指向 Go 对照包；本文件本身没有外部 feature 门控，也不引入新的直接依赖。
+不执行表达式，也不直接管理缓存；它把运行时的 `Expression` trait object、`Schema`、`NameSlice` 等对象转换为只含自有值的闭合表示，并在新的 `BuildContext` 中重建运行时对象。
 
 ## 核心职责
 
@@ -123,16 +119,10 @@
 
 Go `pkg/expression` 下没有 `cache_snapshot.go` 或同名快照类型；因此本文件不是同路径逐文件翻译，而是 Rust 为跨上下文、跨线程的实例计划缓存新增的边界层。
 
-所承载的语义字段与 Go 类型保持对应：
-
-- `CachedColumn` 对应 `pkg/expression/column.go::Column` 的 `RetType`、`ID`、`UniqueID`、`Index`、`VirtualExpr`、`OrigName`、隐藏/前缀/operand 标记、collation 和 `CorrelatedColUniqueID`。Go 的 `hashcode` 是派生缓存，同 Rust 一样不应作为稳定快照状态。
 - `CachedCorrelatedColumn` 对应 Go `CorrelatedColumn{Column, Data}`，但 Rust 恢复时主动建立新 datum 槽，从而满足跨线程/跨会话边界；Go 的普通 `Clone` 会保留 `Data` 指针，语义目的不同。
-- `CachedConstant` 对应 `constant.go::Constant` 的值、返回类型、`DeferredExpr`、`ParamMarker.order`、`SubqueryRefID` 与 collation；这保留了 prepared statement 和延迟非确定函数在计划缓存中的语义。
-- `CachedScalarFunction` 对应 `scalar_function.go::ScalarFunction` 的函数名/返回类型/builtin 语义，但不复制具体 builtin 实例，而是以稳定 ID 经 Rust 核心注册表重建。
 - `CachedSchema` 对应 `schema.go::Schema`。Go `Clone` 同样分别复制 Columns、PKOrUK 和 NullableUK；Rust 快照额外把它们转换成 `Send + Sync` 的自有表示。
-- `CachedFieldName` 对应 `pkg/types/field_name.go::FieldName` 的全部显示字段和标记；`CachedNameSlice` 保留 Go `NameSlice` 的位置语义。
 
-Go 仍通过 `CloneForPlanCache` 等既有路径处理计划缓存；不能把 Rust 的 stable builtin ID 白名单机制描述为 Go 已存在的 API。两边应对齐的是恢复后的表达式行为、字段和值语义，而非内部快照实现形状。
+Go 仍通过 `CloneForPlanCache` 等既有路径处理计划缓存；不能把 Rust 的 stable builtin ID 白名单机制描述为 Go 已存在的 API。
 
 ## 扩展指南
 
@@ -146,17 +136,3 @@ Go 仍通过 `CloneForPlanCache` 等既有路径处理计划缓存；不能把 R
 - 改 stable ID 格式：视为缓存协议版本变更，必须定义旧 ID 的处理策略并测试未知版本；当前实现会直接拒绝非 `builtin:v1:`。
 
 相关测试必须继续放在独立的 `cache_snapshot_test.rs`，不要嵌入生产源文件。对主链接线的改变还应同步 `pkg/planner/core/operator/physicalop/cache_snapshot_test.rs` 以及会话计划缓存的针对性测试。
-
-## 验证依据
-
-事实核对使用了以下直接证据：
-
-- RustCodeGraph `status`：索引包含本仓库 Rust/Go 文件；`node --file pkg/expression/cache_snapshot.rs` 读取了完整 453 行源码。
-- RustCodeGraph `query`：定位 `CachedExpression`（第 167 行）、`CachedColumn`（第 56 行）、`CachedSchema`（第 72 行）及精确方法节点 `try_from_expression`、`try_from_schema`、`from_name_slice`。
-- RustCodeGraph 文件节点给出本文件被 `pkg/expression/cache_snapshot_test.rs` 及物理计划/执行相关文件使用；精确 `callers` 查询在本次环境中长时间无输出后被中止，因此生产调用边又以仓库 `rg` 逐项核对，没有把模糊的同名 `snapshot` 结果当作证据。
-- 源码与装配：`pkg/expression/cache_snapshot.rs`、`pkg/expression/lib.rs`、`pkg/expression/builtin_core.rs`、`pkg/expression/column.rs`、`pkg/expression/schema.rs`、`pkg/expression/Cargo.toml`。
-- 生产调用：`pkg/planner/core/operator/physicalop/cache_snapshot.rs`，包括批量 expression/column 捕获恢复、`CachedPlanBase` 与 `CachedSchemaProducer`。
-- Rust 独立测试：`pkg/expression/cache_snapshot_test.rs`，覆盖七个测试：快照类型 `Send + Sync`、四种表达式 round trip 与 hash 语义、嵌套 builtin/deferred constant、稳定 builtin ID、未知 ID 拒绝、所有核心 builtin ID，以及 schema/name slice 的列/key/空位行为（其中 schema/name 断言位于同一测试函数）。
-- Go 语义对照：`pkg/expression/column.go`、`constant.go`、`scalar_function.go`、`schema.go` 和 `pkg/types/field_name.go`；未发现 Go 同名 `cache_snapshot` 文件。
-
-本任务为纯文档分析，按计划未运行 Cargo 或代码测试。结构完整性由任务指定的 11 章节检查验证；行为结论来自上述源码、调用点和既有独立测试，不把测试未覆盖的场景表述为已验证行为。

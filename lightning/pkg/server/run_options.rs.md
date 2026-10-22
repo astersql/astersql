@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-server` crate。crate 入口 `lightning/pkg/server/lib.rs` 以 `mod run_options` 装入本模块并通过 `pub use run_options::*` 重新导出其公开项；`lightning/pkg/server/Cargo.toml` 则把该 crate 标为 Go 包 `lightning/pkg/server` 的 Rust 移植库。它位于 Lightning 单次导入入口与具体任务初始化之间：`Lightning::RunOnceWithOptions` 接收一组 `RunOption`，组装 `options`，随后把它传给 `Lightning::run`。
-
-该文件只定义单次任务的可选依赖和覆盖方式，不启动任务、不打开存储、不连接数据库，也不负责释放资源。真实消费逻辑位于 `lightning/pkg/server/lightning.rs` 的 `RunOnceWithOptions`、`run`、`initDataSource` 和 `initDBAndKeyspace`。
+为每个槽位提供单一用途的 `With*` 构造函数。
 
 ## 核心职责
 
@@ -60,23 +58,12 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `lightning/pkg/server/run_options.go`。字段集合和六个 Go helper（dump storage、checkpoint storage、prom factory、prom registry、logger、dup indicator）在 Rust 中逐项保留；Go 的 nil 指针/接口对应 Rust 的 `Option<T>`，Go `Option func(*options)` 对应带 `Send` 约束的 boxed `FnOnce`。
+Rust 默认实现显式把可选字段设为 `None`，并初始化空 checkpoint 名和全局 logger；标准入口再覆盖实例级指标对象，这与 Go `RunOnceWithOptions` 的对象字面量初始化顺序一致。Rust 额外公开 `WithDB` 作为测试 helper，而 Go 测试因处在同一 package 直接设置 `options.db`。
 
-Rust 默认实现显式把可选字段设为 `None`，并初始化空 checkpoint 名和全局 logger；标准入口再覆盖实例级指标对象，这与 Go `RunOnceWithOptions` 的对象字面量初始化顺序一致。Rust `WithLogger` 接收拥有所有权的 `zap::Logger`，Go 接收 `*zap.Logger`。Rust 额外公开 `WithDB` 作为测试 helper，而 Go 测试因处在同一 package 直接设置 `options.db`。
-
-当前移植仍有可见差异：Go failpoint `setExtStorage` 会实际解析并创建存储，Rust 对应注入点目前为空闭包；这属于 `lightning.rs` 而非本文件的职责，但意味着不能仅凭本文件 helper 推断两端 failpoint 行为完全等价。Rust 的二进制适配器当前传空 `Vec<RunOption>`，而 API 仍保留库集成所需注入面。
+当前移植仍有可见差异：Go failpoint `setExtStorage` 会实际解析并创建存储，Rust 对应注入点目前为空闭包；这属于 `lightning.rs` 而非本文件的职责，但意味着不能仅凭本文件 helper 推断两端 failpoint 行为完全等价。
 
 ## 扩展指南
 
 新增任务级可注入依赖时，应同时完成以下接线：在 `options` 增加明确的 `Option<T>` 或安全默认值；更新 `Default`；新增只修改对应字段的 `With*`；在 `RunOnceWithOptions`/`run` 的恰当阶段消费；对照更新 Go 语义或明确记录 Rust 特有差异。若字段代表成对配置，优先用一个 helper 原子设置，避免出现半配置状态。
 
 测试逻辑必须继续放在独立文件。应扩展 `lightning/pkg/server/parity_test.rs` 验证默认值、helper 应用和多次覆盖顺序；涉及运行期消费、错误清理或数据库注入时，应扩展 `lightning/pkg/server/lightning_serial_test.rs`。同步关注 Go 的 `run_options.go` 与 `lightning_serial_test.go`。兼容风险主要是改变默认值/覆盖优先级；资源风险主要是误判外部存储所有权或遗漏指标注销；性能风险主要来自把 I/O、建连或重型克隆错误地提前到 option 闭包中。
-
-## 验证依据
-
-- 源码与装配：`lightning/pkg/server/run_options.rs`、`lightning/pkg/server/lib.rs`、`lightning/pkg/server/Cargo.toml`。
-- Rust 消费链：`lightning/pkg/server/lightning.rs` 中的 `RunOnceWithOptions`（应用 options）、`run`（注册指标和组装 controller）、`initDataSource`（选择数据源/所有权）、`initDBAndKeyspace`（测试 DB 或默认建连）。
-- Rust 测试：`lightning/pkg/server/parity_test.rs:105-118` 直接应用六个 helper 并检查关键字段；`lightning/pkg/server/lightning_serial_test.rs` 覆盖无 options 的入口错误清理以及直接注入 logger/DB 后的运行错误路径。当前未发现直接调用 `WithDB` 的测试。
-- Go 对照：`lightning/pkg/server/run_options.go`、`lightning/pkg/server/lightning.go`、`lightning/pkg/server/lightning_serial_test.go`。
-- RustCodeGraph：`status` 显示目标 Rust 文件已索引；`node --file lightning/pkg/server/run_options.rs` 核对全部 124 行和 10 个符号；`callees RunOnceWithOptions` 确认 Rust 入口实例化 `options` 并调用 `run`；逐项 `callees With*` 显示 helper 无业务调用（`WithLogger` 仅有包装初始化边）。图查询未解析这些 boxed closure 的 callers，因此调用点以 `rg` 对索引内 Rust/Go/测试文件补证。
-

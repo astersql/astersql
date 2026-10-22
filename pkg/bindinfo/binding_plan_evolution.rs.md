@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-bindinfo` crate 的计划演进层，定义“如何给一组候选绑定计划打分”的抽象和默认实现。模块由 `pkg/bindinfo/lib.rs` 声明并公开重导出；真正组织候选收集、计划生成和推荐回退的是相邻的 `binding_auto.rs`。因此本文件不生成计划、不查询统计、不写绑定，只消费 `BindingPlanInfo` 中已经汇总的计划文本与执行指标。
-
-`pkg/bindinfo/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/bindinfo`，且本文件只使用 crate 内的 `BindingPlanInfo`、`IsSimplePointPlan` 和统一 `Result`，没有直接引入新的外部依赖或 feature 条件。文件中没有条件编译项。
+因此本文件不生成计划、不查询统计、不写绑定，只消费 `BindingPlanInfo` 中已经汇总的计划文本与执行指标。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ RustCodeGraph 的文件节点显示目标文件被 `binding_auto.rs`、`binding_
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/bindinfo/binding_plan_evolution.go`。Rust 保留了 `PlanPerfPredictor`、`ruleBasedPlanPerfPredictor`、`llmBasedPlanPerfPredictor`、`PerfPredicate` 的命名、三条规则的优先级、固定解释文本，以及 LLM TODO 的全零占位行为。`pkg/bindinfo/binding_plan_evolution_test.go::TestRuleBasedPlanPerfPredictor` 覆盖的点查、批量点查、规则 2、规则 3 和无推荐场景均在 Rust 独立测试中复现。
+Rust 保留了 `PlanPerfPredictor`、`ruleBasedPlanPerfPredictor`、`llmBasedPlanPerfPredictor`、`PerfPredicate` 的命名、三条规则的优先级、固定解释文本，以及 LLM TODO 的全零占位行为。
 
-需要注意的实现差异：Go 使用 `sort.Slice`，当首指标相等时以三个次级指标同时更小作为比较条件；Rust 使用四个字段的确定性字典序 `total_cmp`。常规测试场景语义一致，但次级指标互有优劣或含特殊浮点值时，Rust 的排序更全序化，不能宣称逐比较器完全等价。Rust 还用值切片代替 Go 指针切片，并通过 `Result`/`Vec` 明确表达错误和所有权。
-
-Rust 测试 `binding_plan_evolution_test.rs` 在 Go 测试之外明确验证空输入、单候选、缺执行统计时不排序、50% 严格边界和 LLM 不改写计划文本。这些是当前 Rust 行为契约，不应在扩展时无意破坏。
+需要注意的实现差异：Go 使用 `sort.Slice`，当首指标相等时以三个次级指标同时更小作为比较条件；Rust 使用四个字段的确定性字典序 `total_cmp`。Rust 还用值切片代替 Go 指针切片，并通过 `Result`/`Vec` 明确表达错误和所有权。
 
 ## 扩展指南
 
@@ -93,14 +89,3 @@ Rust 测试 `binding_plan_evolution_test.rs` 在 Go 测试之外明确验证空�
 - 若允许第三方预测器，应在 `PlanPerfPredictor` 契约或 `fillRecommendation` 中决定是否强制校验向量长度、NaN、无穷和范围；否则调用者对异常实现只有部分防护。
 - 性能方面，点查和缺统计扫描为 `O(n)`，规则排序为 `O(n log n)`，规则 3 再做一次 `O(n)` 比较。候选量扩大时应优先评估是否需要无需整体排序的最小值选择。
 - 测试逻辑应继续保留在独立 `binding_plan_evolution_test.rs`，不要嵌入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标包内目标文件有 7 个符号；`files --filter pkg/bindinfo` 确认源文件、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file pkg/bindinfo/binding_plan_evolution.rs`：核对完整 112 行源码、trait、两个实现、排序字段、阈值及文件使用者。
-- RustCodeGraph `query PerfPredicate`、`query ruleBasedPlanPerfPredictor`、`query llmBasedPlanPerfPredictor`：定位 Rust/Go 声明与测试实现；精确 `callers/callees` 查询超时无输出，调用边改由下列源码位置交叉核验。
-- `pkg/bindinfo/binding_auto.rs`：核对 `BindingPlanInfo` 字段来源、`newBindingAuto` 组装、`ExplorePlansForSQL` 回退顺序、`fillRecommendation` 调用及错误传播。
-- `pkg/bindinfo/Cargo.toml` 与 `pkg/bindinfo/lib.rs`：核对 crate 名、Go 包映射、依赖边界、模块声明、公开重导出及统一错误类型。
-- `pkg/bindinfo/binding_plan_evolution.go` 与 `pkg/bindinfo/binding_plan_evolution_test.go`：核对 Go 三条规则、解释文本、排序逻辑和原始测试意图。
-- `pkg/bindinfo/binding_plan_evolution_test.rs`：核对 Rust 推荐规则、输入重排、边界条件和 LLM 占位契约；`pkg/bindinfo/binding_auto_test.rs::ZeroPredictor` 作为回退链的直接测试证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另运行固定十一章节结构检查并人工复核所有“当前支持”结论均有上述源码或测试依据。

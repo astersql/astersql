@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件实现 `astersql-util-topsql-stmtstats` crate 的进程级语句统计聚合器。crate 入口 `pkg/util/topsql/stmtstats/lib.rs` 通过 `mod aggregator; pub use aggregator::*;` 导出这里的 API；`pkg/util/topsql/stmtstats/Cargo.toml` 则表明它直接依赖执行详情、TopSQL reporter 指标和 TopSQL/TopRU 全局开关三个相邻 crate。
-
-在应用主链中，`pkg/util/topsql/topsql.rs::SetupTopProfiling` 将 reporter 包装成 `Collector`，在 reporter 支持 RU 时再包装成 `RUCollector`，绑定 `RUVersionProvider` 后调用 `SetupAggregator`。会话侧由 `pkg/util/topsql/stmtstats/stmtstats.rs::CreateStatementStats` 创建 `StatementStats` 并注册到 `global_aggregator()`。因此本文件位于“各会话累积统计”与“reporter 消费批次”之间，负责定时抽取、跨会话合并、开关门控和生命周期清理，而不负责产生单条语句统计或把批次发送到外部服务。
+每轮必须先执行 `drain_and_push_ru`，再执行 `drain_and_push_stmt_stats`。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ RU 版本改变时，本轮旧状态被重置且只发送版本变化通知，�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/topsql/stmtstats/aggregator.go`。Rust 保留了相同的核心语义：1 秒周期、RU-first、finished stats 清理、TopSQL/TopRU 独立门控、RU 版本切换重置、1,000,000 stats 上限、10,000 distinct RU key 上限、丢弃指标以及两套 collector API。
-
 实现机制上的差异如下：
 
 - Go 使用 `context.CancelFunc`、`time.Ticker`、goroutine 和 `sync.WaitGroup`；Rust 使用 `mpsc::recv_timeout`、OS thread 和 `JoinHandle`。
@@ -96,8 +92,6 @@ Go 对照文件是 `pkg/util/topsql/stmtstats/aggregator.go`。Rust 保留了相
 - Rust 向多个 collector 发送 `total.clone()`；Go map 直接交给各回调。两者约定 collector 消费聚合批次，但 Rust 在所有权层面隔离每个回调。
 - Go 的指标句柄被直接使用；Rust 的 `record_dropped_ru` 容忍句柄尚未初始化。这是启动边界差异，不改变 key 上限本身。
 
-对应测试也保持同名或同意图覆盖：Rust `aggregator_test.rs` 对照 Go `aggregator_test.go` 验证生命周期、注册、门控、尾部 RU、版本切换、并发注销和容量；`aggregator_1_aster_unit_test.rs` 另以独立 Rust 测试加强 RU 顺序、版本与上限语义。基准对应位于 `aggregator_bench_test.rs` / `aggregator_bench_test.go`。
-
 ## 扩展指南
 
 - 新增语句批次处理规则时，优先修改 `drain_and_push_stmt_stats`，并在独立的 `aggregator_test.rs` 扩展测试；不要把测试内嵌进生产文件。必须保留“先 Take、再按开关决定是否发送”的现有清理语义，除非同步论证并修改 Go 对照行为。
@@ -106,13 +100,3 @@ Go 对照文件是 `pkg/util/topsql/stmtstats/aggregator.go`。Rust 保留了相
 - 调整周期或生命周期时，修改 `start`/`close` 并同时覆盖重复 start/close、关闭等待和阻塞回调情形。不要依赖 `Drop` 代替显式关闭。
 - 调整 stats 容量或注册结构时，应保持并发容量检查与插入不可分割，并验证重复 `Arc`、并发注册和 finished 自动注销。现有直接测试包括 `go_merge_39_register_stops_at_capacity` 与 `go_merge_40_concurrent_registration_honors_capacity`。
 - 任何行为变化都应先对照 `aggregator.go` 和 `aggregator_test.go`，保持移植语义；若有意产生差异，应在此文档和独立 Rust 测试中明确边界、兼容性与性能影响。
-
-## 验证依据
-
-- 目标实现：`pkg/util/topsql/stmtstats/aggregator.rs`，核对了全部 374 行、两个常量、两个 trait、`Aggregator` 字段及 impl、`Drop`、指标辅助函数、全局实例和七个全局门面函数。
-- crate 边界：`pkg/util/topsql/stmtstats/Cargo.toml` 与 `pkg/util/topsql/stmtstats/lib.rs`；目标目录没有 `doc.go`。
-- 生产入口：`pkg/util/topsql/topsql.rs::SetupTopProfiling`；stats 注册入口：`pkg/util/topsql/stmtstats/stmtstats.rs::CreateStatementStats`。
-- Go 对照：`pkg/util/topsql/stmtstats/aggregator.go`；Go 回归测试：`pkg/util/topsql/stmtstats/aggregator_test.go`；Rust 独立测试：`pkg/util/topsql/stmtstats/aggregator_test.rs`、`pkg/util/topsql/stmtstats/aggregator_1_aster_unit_test.rs`，基准文件为两种语言的 `aggregator_bench_test.*`。
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/util/topsql/stmtstats` 找到目标文件及同目录实现/测试；`node --file ...aggregator.rs` 读取完整目标并给出直接使用文件；`query`/`node` 核对了 `Aggregator`、`aggregate_all`、`drain_and_push_ru`、`drain_and_push_stmt_stats`、`SetupAggregator`、`RegisterCollector`、`current_ru_version`、`CreateStatementStats` 和 `SetupTopProfiling` 的定义与可复核调用轨迹。自然语言 `explore` 未在等待窗口内返回，已中止并改用精确查询，不将其作为结论依据。
-- 人工复核结论：本文件存在的原因是把大量会话局部统计转换为受开关、版本和容量约束的 reporter 批次；安全扩展的关键不变量是 RU-first、版本切换隔离、快照后锁外回调、显式 close/join，以及 Rust/Go 行为和独立测试同步。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认文件存在且恰有十一个规定的二级标题。

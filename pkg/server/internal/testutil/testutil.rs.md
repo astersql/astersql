@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-internal-testutil` crate 的实现文件，提供 server 测试代码复用的两个轻量工具：以内存字节模拟连接读侧的 `BytesConn`，以及从 TCP 套接字地址提取端口的 `get_port_from_tcp_addr`。同目录 [`lib.rs`](./lib.rs) 以 `pub mod testutil` 装入本文件并通过 `pub use testutil::*` 再导出公开符号；[`Cargo.toml`](./Cargo.toml) 将其定义为无第三方依赖的工作区库，并以 `package.metadata.porting.go-package = "pkg/server/internal/testutil"` 记录 Go 来源。
-
-它位于服务端测试基础设施边界，而不是线上连接处理主链：`BytesConn` 让协议/缓冲逻辑可在无真实 socket 的情况下消费确定字节；端口辅助函数被 [`../../tests/servertestkit/testkit.rs`](../../tests/servertestkit/testkit.rs) 用于把测试服务器实际绑定的 SQL 与 status 地址回填给测试客户端。工作区根 `Cargo.toml` 还以 `facade_server_internal_testutil` 登记此 crate；多个 server 测试 crate 声明了它，但精确 Rust 引用表明当前目标文件的跨 crate 直接调用集中在 `servertestkit` 的端口提取流程。
+`BytesConn` 保存一个 `Cursor<Vec<u8>>`，实现 `std::io::Read`，使读取按当前位置顺序消费构造时提供的字节，并在耗尽后按标准 `Read` 语义返回 `Ok(0)`。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ deadline 不会创建计时器或后台任务，`flush` 不触发系统调用，
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`testutil.go`](./testutil.go)。Go `BytesConn` 嵌入 `bytes.Buffer`，Rust 则用私有 `Cursor<Vec<u8>>`；两者都按顺序读取、耗尽后报告 EOF，并让 `Write` 返回 `(0, nil)`。Go 为满足 `net.Conn` 实现 `Read`、`Write`、`Close`、`LocalAddr`、`RemoteAddr` 与三个 deadline 方法；Rust 没有对应的统一连接 trait，本文件分别实现标准 `Read`/`Write`，并把其余方法作为固有方法保留。
+Go `BytesConn` 嵌入 `bytes.Buffer`，Rust 则用私有 `Cursor<Vec<u8>>`；两者都按顺序读取、耗尽后报告 EOF，并让 `Write` 返回 `(0, nil)`。Go 为满足 `net.Conn` 实现 `Read`、`Write`、`Close`、`LocalAddr`、`RemoteAddr` 与三个 deadline 方法；Rust 没有对应的统一连接 trait，本文件分别实现标准 `Read`/`Write`，并把其余方法作为固有方法保留。
 
 地址语义保持一致：Go 两个 getter 返回 nil，Rust 返回 `None`；deadline 和 close 都忽略输入/状态并成功。一个表现差异是 Go 的 `bytes.Buffer.Read` 在空缓冲通常返回 `io.EOF`，而 Rust `Read` 约定通过 `Ok(0)` 表示 EOF；调用 `read_to_end` 等上层 API 时两者都正常结束。Rust 额外提供了 `new`、`From<Vec<u8>>`、`Default` 和 `Debug`，用于适应 Rust 的构造与测试习惯。
-
-Go `GetPortFromTCPAddr(net.Addr) uint` 在内部把接口值断言为 `*net.TCPAddr`，错误地址类型会 panic，且结果扩宽为平台字宽的 `uint`。Rust `get_port_from_tcp_addr(SocketAddr) -> u16` 在类型层排除了非 IP socket 地址，直接返回端口的协议宽度；IPv4 和 IPv6 由同一枚举覆盖。两端测试服务器调用都在监听建立后读取实际绑定端口，语义一致。
 
 Go 侧 `BytesConn` 被 `server_test.go`、`conn_test.go` 和 `internal/packetio_test.go` 等大量测试用作 buffered connection 的底层 `net.Conn`；Rust 侧当前精确引用只在本 crate 的迁移测试中出现。因此这些 Go 调用说明该替身的原始测试用途，但不能写成 Rust PacketIO 已使用它的证据。
 
@@ -90,12 +86,3 @@ Go 侧 `BytesConn` 被 `server_test.go`、`conn_test.go` 和 `internal/packetio_
 扩展端口辅助函数时优先保持窄类型输入和 `u16` 返回值。若确实要接受更抽象的地址，应返回可判定的 `Result`/`Option`，避免复刻 Go 的运行时断言 panic；同时覆盖 IPv4、IPv6、端口 0 和非 IP 地址。真实测试服务器接线变化需同步验证 `servertestkit::create_tidb_test_suite_with_cfg` 的 SQL/status 两个回填点。
 
 性能风险很低，主要是大输入向量的持有和每次读取复制；应继续按值接管 `Vec`，避免无必要克隆。兼容风险集中在 EOF 表达、`write` 返回 0、关闭后仍可读及 deadline 无效这四个刻意的桩行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/server/internal/testutil` 列出目标实现、crate 入口、Go 对照和迁移测试；`node --file pkg/server/internal/testutil/testutil.rs --offset 1 --limit 400` 读取完整 102 行及 14 个符号；`node` 核对 `BytesConn`、所有方法和端口函数；`new` 的 trail 显示 `from` 调用边，端口函数的 callers 显示迁移测试与 `create_tidb_test_suite_with_cfg`。对 `BytesConn` 的 callers 查询返回空结果，因此又以精确 Rust 引用搜索核验使用点。
-- 已读 Rust 源码与 crate 边界：`pkg/server/internal/testutil/testutil.rs`、`lib.rs`、`Cargo.toml`，以及工作区根 `Cargo.toml`、`pkg/server/Cargo.toml` 和 `pkg/server/tests/servertestkit/Cargo.toml` 的依赖声明。目标目录不存在 `doc.go`。
-- 已读独立 Rust 测试：`pkg/server/internal/testutil/migration_aster_unit_test.rs`，覆盖顺序读取/EOF、写与连接元数据空操作、写不破坏输入，以及 IPv4/IPv6 端口。
-- 已读 Rust 直接调用：`pkg/server/tests/servertestkit/testkit.rs::create_tidb_test_suite_with_cfg`，确认监听启动后回填 SQL 与 status 端口的生产化测试流程。
-- 已读 Go 对照与引用：`pkg/server/internal/testutil/testutil.go`；精确搜索确认 `BytesConn` 用于 `pkg/server/server_test.go`、`conn_test.go`、`internal/packetio_test.go`，`GetPortFromTCPAddr` 用于 `pkg/server/tests/servertestkit/testkit.go`、commontest、standby、TLS 和 handler 测试。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付验证使用任务指定命令确认目标文件存在且恰有 11 个固定二级标题，并人工复核唯一产物、符号名称、调用边、Go/Rust 差异和独立测试建议。

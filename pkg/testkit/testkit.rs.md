@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/testkit/testkit.rs` 是 `astersql-testkit` crate 的同步 SQL 测试门面。crate 根模块 `pkg/testkit/lib.rs` 以 `pub mod testkit` 装配本文件，并再导出 `NewTestKit`、`TestKit`、`TestSession`、`TestSessionVars` 和 `TestMemTracker`。它不实现解析器、优化器或存储，而是把测试代码使用的 Go 风格 API 适配到 `pkg/testkit/db_driver.rs` 的 `Database: Send + Sync + 'static` 抽象，再把查询结果交给 `pkg/testkit/result.rs::Result` 做断言。
-
-该文件主要供 Rust 单元、集成和 RealTiKV 测试构造会话并执行 SQL。直接使用点包括 `tests/readonlytest/readonly_test.rs`、`tests/realtikvtest/txntest/*.rs` 和多个 RealTiKV harness；RustCodeGraph 将该文件标记为被 210 个文件使用。它是测试基础设施，不在数据库服务的线上请求主链中。
+`TestKit` 保存共享存储、当前会话、连接 ID、诊断注释和最近一次执行结果，为测试提供 `Exec`/`Query`、`MustExec`/`MustQuery`、错误断言及执行计划断言。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ RustCodeGraph 的文件关系显示该文件被广泛使用，但当前索引对
 
 ## 与 Go 版本的对应关系
 
-Rust `TestKit` 对应 `pkg/testkit/testkit.go::TestKit` 的核心用途：保存 store/session，执行 SQL，提供 must-style 断言、错误断言及 EXPLAIN 辅助。`MustUseIndex`、`MustNoIndexUsed`、`CheckExecResult`、`MustPointGet`、`HasKeywordInOperatorInfo` 的判断意图与 Go 同名方法一致。`pkg/testkit/testkit_test.rs::TestMultiStatementInTk` 也逐步复刻 `pkg/testkit/testkit_test.go::TestMultiStatementInTk` 的 100 次多语句和 MemTracker 清理回归。
-
 关键差异如下：
 
 - Go 构造器接收 `testing.TB` 与 `kv.Storage`，建立 testify assertions、chunk allocator、真实 session，并把会话登记到 mock session manager；Rust 接收 `Arc<dyn Database>`，不持有测试框架对象或 allocator，靠 trait 适配具体后端。
@@ -94,13 +90,3 @@ Rust `TestKit` 对应 `pkg/testkit/testkit.go::TestKit` 的核心用途：保存
 扩展 prepared statement 或资源操作时，应保留显式释放路径，并在独立测试文件中覆盖失败后的清理。不要把 Rust 测试写入本生产文件；核心回归应更新同目录 `pkg/testkit/testkit_test.rs`，涉及具体 session adapter 的行为则同步其独立测试。Go 同名行为存在时，应同时阅读 `pkg/testkit/testkit.go` 和 `pkg/testkit/testkit_test.go`，保持实际语义，而不是只复刻方法名。
 
 修改计划断言时要基于 EXPLAIN 的真实列契约，并覆盖标准与紧凑行布局，尤其防止在 access-object 或 execution-info 中的诱饵文本被错当成算子/operator info。修改构造和 clone 语义时需评估共享 session、连接 ID 唯一性与并发测试隔离。添加跨 crate 类型或接口还需同步 `pkg/testkit/Cargo.toml`，并按仓库规则评估构建元数据影响。
-
-## 验证依据
-
-- Rust 源码：`pkg/testkit/testkit.rs`（579 行），核对全部模块级状态、6 个公开结构体、各 impl、两个 `NewTestKit` 入口及私有 `failure`。
-- crate 边界：`pkg/testkit/lib.rs` 的模块声明、再导出和独立测试挂载；`pkg/testkit/Cargo.toml` 的 crate 名、根路径、porting 元数据和 workspace 依赖。
-- 下游契约：`pkg/testkit/db_driver.rs::Database`、`QueryRows::string_rows`；`pkg/testkit/result.rs::Result`。
-- Go 对照：`pkg/testkit/testkit.go` 的 `TestKit`、构造/session、执行、错误和 EXPLAIN 辅助；`pkg/testkit/testkit_test.go::TestMultiStatementInTk`。
-- Rust 测试：`pkg/testkit/testkit_test.rs::TestMultiStatementInTk`、`plan_assertions_use_the_access_object_column`、`plan_and_operator_info_helpers_use_the_go_columns`。这些测试分别证明多语句资源清理、索引列选择、算子首列选择及标准/紧凑 operator-info 列兼容。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/testkit/testkit.rs` 找到目标；`node --file` 读取目标、crate 根、Go 对照和测试；`query TestKit`/`query NewTestKit`/`query MustPointGet` 确认同名 Rust 与 Go 符号。对 Rust impl 方法的 callers/callees 查询无返回，故使用 `rg -n --glob '*.rs' 'TestKit::new\\(|\\bNewTestKit\\(' pkg tests br cmd` 补充直接调用证据。
-- 人工复核结论：该文件存在的原因是为 Rust 数据库测试提供统一、Go 兼容的 SQL 会话与断言门面；运行时由构造器建立后端会话，由 `Database` 执行真实操作，由 `Result` 断言结果；安全扩展应从 `TestKit` 组合层或 `Database` 能力边界接入，并同步独立测试。

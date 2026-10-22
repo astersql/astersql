@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ddl-bdr` crate 的核心策略实现，回答“给定 BDR（Bidirectional Replication，双向复制）角色与 DDL 形态，是否应拒绝该操作”。crate 入口 `pkg/ddl/bdr/lib.rs` 将本模块的三个公开函数重新导出；`pkg/ddl/bdr/Cargo.toml` 表明其直接依赖仅是 parser AST、parser types 与 meta model 三个工作区 crate。
-
-它位于 DDL job 持久化之前的策略边界，而不是 DDL job、schema state、reorg 或 schema-version 同步的执行器。Rust 生产链中，`pkg/session/runtime/normal_ddl_submit.rs`、`crossks_job_submit.rs` 和 `system_session.rs` 把字符串角色转换为 `ast::BDRRole`，再通过 `IsDenied` 决定 job submission 是否允许继续。因此这里不创建任务、不修改元数据，也不负责回滚。
+调用方负责把 `true` 转成用户可见错误并停止提交。
 
 ## 核心职责
 
@@ -76,8 +74,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 三个函数逐一对应 `pkg/ddl/bdr/bdr.go` 的同名函数，主要控制流、允许组合、动作分类与唯一索引特判保持一致：
-
 - Go `[]*ast.ColumnOption` 对应 Rust `&[ast::ColumnOption]`；Rust 消除了 nil 元素可能性，但判定仍只读 `Tp`。
 - Go 按值传 `FieldType` 并对旧值取地址；Rust 直接借用新旧 `FieldType`，调用同语义的 `Equal`。
 - Go `model.JobArgs` 通过类型断言取得 `*ModifyIndexArgs`；Rust 使用 `Option<&dyn Any>` 与 `downcast_ref`。两者类型错误都会失败，Rust 明确 panic 消息。
@@ -93,13 +89,3 @@ Rust 三个函数逐一对应 `pkg/ddl/bdr/bdr.go` 的同名函数，主要控�
 - 调整 ADD COLUMN 规则应修改 `IsAddColumnDenied` 并同步 `ADD_COLUMN_DENIED_CASES`；调整 MODIFY COLUMN 规则应修改 `IsModifyColumnDenied` 并同步对应测试。测试逻辑继续放在独立 `bdr_test.rs`，不要内嵌到生产文件。
 - 若要宣称 Rust 与 Go BDR 防护完整等价，必须先为两个细粒度函数补齐 Rust 生产调用点，并验证系统 schema 例外等调用层语义；本文件自身不能替代这些接线。
 - 性能上三个函数为 O(n)：列函数按选项数扫描，动作查表为均摊 O(1)。扩展时应避免在每次提交上构造新映射或执行 I/O。
-
-## 验证依据
-
-- 目标源码：`pkg/ddl/bdr/bdr.rs`，RustCodeGraph `node --file` 确认 174 行及三个公开函数 `IsAddColumnDenied`、`IsModifyColumnDenied`、`IsDenied`。
-- 图查询：RustCodeGraph `status` 显示索引含本文件；`files --filter pkg/ddl/bdr` 列出 Rust/Go 实现与测试；文件节点给出四个 Rust 引用文件。三个函数的 `callers`/`callees` 查询为空，故使用直接引用核验并在文中披露此限制。
-- crate 与类型来源：`pkg/ddl/bdr/Cargo.toml`、`pkg/ddl/bdr/lib.rs`、`pkg/meta/model/bdr.rs`、`pkg/parser/types/field_type.rs`。
-- Rust 上游：`pkg/session/runtime/normal_ddl_submit.rs`、`pkg/session/runtime/crossks_job_submit.rs`、`pkg/session/runtime/system_session.rs`。
-- Go 对照与生产接线：`pkg/ddl/bdr/bdr.go`、`pkg/ddl/executor.go:2676`、`pkg/ddl/modify_column.go:2333`。
-- 独立测试：`pkg/ddl/bdr/bdr_test.rs`、`pkg/ddl/bdr/migration_aster_unit_test.rs`、`pkg/ddl/bdr/bdr_test.go`。测试覆盖角色矩阵、安全/不安全/不受管控/未知动作、列选项组合、字段类型变化、唯一/非唯一索引、Job V1/V2 参数往返和未知角色。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构检查用于确认目标文件存在且恰有十一个固定二级标题。

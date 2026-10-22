@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-distsql` crate 的发送与结果包装层。crate 入口 `pkg/distsql/lib.rs` 以 `pub mod distsql` 暴露它；请求的完整结构与构造逻辑位于 `pkg/distsql/request_builder.rs`，响应的解码、统计归集和关闭逻辑位于 `pkg/distsql/select_result.rs`。因此这里不规划 SQL、也不直接实现 TiKV/TiFlash 网络协议，而是把已经构造好的 `KvRequest` 交给 `KvClient`，再为返回的 `ResponseSource` 配置 `selectResult` 及其统计上下文。
-
-`pkg/distsql/Cargo.toml` 表明该文件属于 `astersql-distsql`，本文件直接使用的 crate 依赖是 `astersql-config`、`astersql-kv` 和 `astersql-util-execdetails`。RustCodeGraph 将该文件识别为 45 个符号，并显示直接使用者集中在同 crate 的 `request_builder.rs`、`select_result.rs` 及三份独立测试文件；仓库搜索没有发现 `Select`、`Analyze`、`Checksum` 等发送入口被 Rust 生产代码直接调用，故当前实现主要是可复用 API 与已覆盖测试的迁移边界，不能据此声称 Rust SQL 执行主链已经完整接线。
+用 `KvClient` 抽象实际传输，用 `ResponseSource` 抽象分批响应，隔离本文件与具体 KV 客户端实现。
 
 ## 核心职责
 
@@ -75,9 +73,7 @@ Chunk 能力检查目前只验证 `enable_chunk_rpc` 与 `align_of::<i128>() >= 
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/distsql/distsql.go`。Rust 保留了 `GenSelectResultFromMPPResponse`、`Select`、`SetTiFlashConfVarsInContext`、`SelectWithRuntimeStats`、`Analyze`、`Checksum`、`SetEncodeType`、端序辅助函数和 SQL KV 计数器绑定这些概念，并用独立测试覆盖关键迁移语义。
-
-当前 Rust 是缩减接口而非完整逐行等价：Go `Select` 建立 tracing region、测试 hook、事务事件回调、内存 tracker、限流动作、CopLiteWorker/failpoint、TiFlash replica read/warning，并绑定真实 client-go RPC interceptor；Rust `Select` 目前只处理 query limiter、发送和结果统计上下文。Go 的 TiFlash 配置写入 gRPC outgoing context，Rust 写入调用方提供的 metadata 向量。Go chunk 对齐依据 `MyDecimal` 布局，Rust依据 `i128` 对齐。Go `WithSQLKvExecCounterInterceptor` 在 counter 非空时绑定 RPC interceptor，Rust版本要求非空 `Arc` 并仅存进 `RequestContext`。
+当前 Rust 是缩减接口而非完整逐行等价：Go `Select` 建立 tracing region、测试 hook、事务事件回调、内存 tracker、限流动作、CopLiteWorker/failpoint、TiFlash replica read/warning，并绑定真实 client-go RPC interceptor；Rust `Select` 目前只处理 query limiter、发送和结果统计上下文。Go 的 TiFlash 配置写入 gRPC outgoing context，Rust 写入调用方提供的 metadata 向量。Go `WithSQLKvExecCounterInterceptor` 在 counter 非空时绑定 RPC interceptor，Rust版本要求非空 `Arc` 并仅存进 `RequestContext`。
 
 Rust 在已移植范围内保留的重要一致性包括：`-1` 是四项 TiFlash 整数变量的唯一省略哨兵、非正内存配额发送 0、Analyze 将来源标为内部统计并在发送时捕获执行信息开关、SelectWithRuntimeStats 保存计划 ID、MPP 的直报判断保持动态、显式 cop limiter 与 query limiter 相互独立。差异应视为迁移状态与扩展风险，而非自动判定为缺陷。
 
@@ -90,12 +86,3 @@ Rust 在已移植范围内保留的重要一致性包括：`-1` 是四项 TiFlas
 - 改动 chunk 编码前同时核对 Rust 数据布局、tipb 协议表示与 Go `checkAlignment` 语义；大端/小端和未满足对齐时的回退都需要独立测试。
 - 若要把 `KvExecCounter` 真正接入 RPC，必须在具体 `KvClient` 发送实现中消费 `RequestContext::counter` 并调用 `on_request`，同时补充生产调用边；仅修改绑定函数不会产生计数。
 - 若后续接入 executor 主链，应先用 RustCodeGraph/仓库搜索确认真实调用者，再记录 wiring；不要以 Go 调用关系代替 Rust 证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/distsql` 列出 25 个文件；`node --file pkg/distsql/distsql.rs --offset 1 --limit 500` 读取完整 431 行和 45 个符号，并报告直接使用文件。对关键符号执行了 `query` 及 `callers/callees`；后者未给出可用生产调用边，因此未据此扩大结论。
-- 源码与 crate 边界：`pkg/distsql/distsql.rs`、`pkg/distsql/lib.rs`、`pkg/distsql/Cargo.toml`、`pkg/distsql/request_builder.rs`、`pkg/distsql/select_result.rs`。
-- Go 对照：`pkg/distsql/distsql.go`，重点核对发送选项、TiFlash metadata、Analyze/Checksum、chunk 编码与 interceptor 语义。
-- Rust 独立测试：`pkg/distsql/distsql_test.rs`，覆盖 limiter 独立性、Analyze 原始/未消费统计、MPP 动态路由、请求标签与并发、payload 不复核、TiFlash 哨兵/配额和 chunk 端序。Go 回归参考：`pkg/distsql/distsql_test.go`。
-- 仓库搜索：对主要公开入口执行 `rg`，未发现本文件发送 API 的 Rust 生产直接调用；同名 trait/函数按路径区分，没有当成本文件调用者。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务规定的命令验证恰有 11 个固定二级章节，并人工复核所有“当前已支持”陈述均能回指上述源码或测试。

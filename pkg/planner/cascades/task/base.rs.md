@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-task` crate，是 Cascades 搜索任务层的共享契约与轻量基类。crate 入口 [`lib.rs`](./lib.rs) 将本模块私有挂载后再公开导出全部符号；上层 `pkg/planner/cascades` 通过 Cargo 依赖名 `task` 使用它。它位于优化器入口与具体任务之间：上层 [`../cascades.rs`](../cascades.rs) 创建实现 `task::Context` 的 `TaskContext`，具体的 `OptGroupTask`、`OptGroupExpressionTask` 和 `ApplyRuleTask` 则持有这里定义的 `BaseTask`。
-
-该文件本身不执行规则匹配、Memo 搜索或调度循环。它只规定具体任务可以向优化器请求哪些服务，并把“派生任务入栈”这一共同操作集中到 `BaseTask::Push`。真正的 LIFO 执行循环位于 [`task_scheduler.rs`](./task_scheduler.rs) 及上层 `SharedTaskScheduler`。
+`BaseTask` 保存该句柄，让三种具体任务复用同一上下文；`Push` 只调用 `Context::PushTask`，不会在当前调用栈中直接执行新任务。
 
 ## 核心职责
 
@@ -78,9 +76,9 @@ crate 边界由 [`Cargo.toml`](./Cargo.toml) 声明。当前文件直接依赖�
 
 [`base.go`](./base.go) 的 `BaseTask` 只保存 `cascadesctx.Context`，`Push` 直接调用 `ctx.PushTask`；Rust 的 `BaseTask` 与这两点保持一致，并增加 `New` 构造函数和 `Clone`。Go 的接口值天然支持共享动态分发，Rust 用 `Rc<RefCell<dyn Context>>` 显式表达同线程共享和内部可变性。
 
-Rust 的 `Context` trait 比 Go [`../base/cascadesctx/cascades_ctx.go`](../base/cascadesctx/cascades_ctx.go) 中的基础接口更贴近任务实际需求：Go 任务通过 `GetMemo()`、`GetRuleMask()` 等入口取得对象后操作，Rust 则把 `CopyIn`、`CopyInWithChildren`、`RemoveOut`、`RulesFor` 和 `RuleEnabled` 收窄为直接能力。这避免具体任务依赖完整 Memo/位集合类型，但也意味着新增任务能力时必须同步修改 trait 及其生产、测试实现。
+Rust 的 `Context` trait 比 Go [`../base/cascadesctx/cascades_ctx.go`](../base/cascadesctx/cascades_ctx.go) 中的基础接口更贴近任务实际需求：Go 任务通过 `GetMemo()`、`GetRuleMask()` 等入口取得对象后操作，Rust 则把 `CopyIn`、`CopyInWithChildren`、`RemoveOut`、`RulesFor` 和 `RuleEnabled` 收窄为直接能力。
 
-两边的 `Push` 都只调度。Go `SimpleTaskScheduler` 与 Rust 调度器都使用栈，因此派生任务采用后进先出顺序；Rust 独立测试还验证了失败任务会使执行循环短路。
+Go `SimpleTaskScheduler` 与 Rust 调度器都使用栈，因此派生任务采用后进先出顺序；Rust 独立测试还验证了失败任务会使执行循环短路。
 
 ## 扩展指南
 
@@ -89,12 +87,3 @@ Rust 的 `Context` trait 比 Go [`../base/cascadesctx/cascades_ctx.go`](../base/
 - 修改 `CopyInWithChildren` 时必须维护“目标 Group、逻辑表达式、绑定孩子 Group”三者一致性；应覆盖无孩子、多个孩子、重复表达式和 Memo 拒绝写入等边界。默认退化行为的兼容性也需单独评估。
 - 改变共享指针或调度模型属于高风险修改：从 `Rc<RefCell<_>>` 迁移到多线程结构会影响所有任务构造、动态借用语义和调度顺序。性能上还需关注 `RulesFor` 克隆规则向量及频繁 `RefCell` 借用的成本。
 - 若改变 `Push` 的“只入栈”不变量，必须同步审查三个具体任务的压栈顺序以及 [`task_scheduler_test.rs`](./task_scheduler_test.rs) 的 LIFO/错误短路断言；内联执行会改变搜索顺序并可能引入深递归。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/planner/cascades/task/base.rs --offset 1 --limit 260` 读取到完整 78 行与 `Context`、`ContextRef`、`BaseTask`；`query BaseTask --kind struct` 同时定位 Rust 和 Go 定义。方法级 callers 查询未及时返回，因此调用边用下述精确源码搜索补证。
-- 目标与模块：[`base.rs`](./base.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)。Cargo 文件确认 crate 名、入口和六个本地依赖；本文件没有 feature 或条件编译分支。
-- 直接调用边：[`task_opt_group.rs`](./task_opt_group.rs)、[`task_opt_group_expression.rs`](./task_opt_group_expression.rs)、[`task_apply_rule.rs`](./task_apply_rule.rs) 中的 `BaseTask::New`、`BaseTask::Push` 与各 `Context` 方法调用。
-- 生产接线：[`../cascades.rs`](../cascades.rs) 中的 `SharedTaskScheduler`、`TaskContext`、`impl task::Context for TaskContext`、`Context::TaskContext`、`Optimizer::NewOptimizer` 和 `Optimizer::Execute`。
-- Go 对照：[`base.go`](./base.go) 与 [`../base/cascadesctx/cascades_ctx.go`](../base/cascadesctx/cascades_ctx.go)，并复核三个具体任务的同路径 `.go` 文件。
-- 独立测试：[`task_test.rs`](./task_test.rs) 的 `TaskContextHarness` 和 `task_chain_uses_real_memo_and_rule_contracts` 覆盖真实 Memo、规则、派生任务与探索标记；[`task_scheduler_test.rs`](./task_scheduler_test.rs) 及 Go 对应测试覆盖 LIFO 和错误短路。未运行 Cargo，符合本任务的纯文档限制。

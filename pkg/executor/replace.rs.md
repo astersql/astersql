@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate 的 REPLACE 数据修改执行器实现。`pkg/executor/lib.rs` 通过 `pub mod replace` 公开该模块，crate 根由 `pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 声明。它把 Go 版 `pkg/executor/replace.go` 中依赖会话、事务、表、索引和外键的操作抽象为 `ReplaceRuntime`，并由泛型 `ReplaceExec<R>` 保存运行时。
-
-当前接线状态需要特别区分：模块已经公开，算法主体和独立 Rust 单元测试已经存在；但仓库搜索只发现 `pkg/executor/replace_test.rs` 为 `ReplaceRuntime` 提供实现，没有发现生产实现或构造 `ReplaceExec` 的 Rust 调用者。因此，本文件目前是可测试的移植边界，不能据此宣称 Rust SQL 主链已经实际使用它。RustCodeGraph 将文件列为被 `pkg/session/nontransactional.rs` 使用，但源码级 `rg` 没有找到该文件对 `replace`、`ReplaceExec` 或 `ReplaceRuntime` 的直接引用，故这条图关系不作为已接线证据。
+当前接线状态需要特别区分：模块已经公开，算法主体和独立 Rust 单元测试已经存在；但仓库搜索只发现 `pkg/executor/replace_test.rs` 为 `ReplaceRuntime` 提供实现，没有发现生产实现或构造 `ReplaceExec` 的 Rust 调用者。
 
 ## 核心职责
 
@@ -87,13 +85,11 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `ReplaceExec` 对照 `pkg/executor/replace.go::ReplaceExec`，核心流程逐项保持：Open 时初始化写统计和内存追踪；主键冲突先删；唯一键冲突循环删除；无冲突后插入；批量预取后逐行替换并 `MayFlush`；Next 在 SELECT 与 VALUES 间分派；Close 设置消息、关闭 SELECT 并登记统计；外键方法返回检查和级联集合。
-
 主要结构差异来自解耦方式：Go `ReplaceExec` 内嵌 `*InsertValues` 并直接操作 `sessionctx`、`kv.Transaction`、`table`、`chunk` 与外键执行器；Rust 将这些全部放入 `ReplaceRuntime` 关联类型和方法。因此 Go 中 `replaceRow` 每行重新通过 `Ctx().Txn(true)` 取事务，而 Rust `exec` 获取一次事务并把可变引用传给所有 `replaceRow`。在通常由会话返回同一语句事务的前提下意图相同，但生产运行时尚未接线，等价性仍需集成验证。
 
 Rust 还显式化了若干 Go 细节：`Close` 用普通控制流确保关闭失败后仍登记统计；`exec` 在三个错误/返回分支手动结束快照统计；`setMessage` 用饱和减法；运行时增加 `reset_write_runtime_stats` 与 `record_write_cpu_work` 接口。Go 的 trace region、具体 MySQL `ErrInsertInfo` 格式表、allocator runtime-stats context 注入和两类独立 runtime stats 注册，在 Rust 中由抽象运行时合并或没有直接表现。
 
-Rust 单元测试覆盖输入行计数、Open 重置写统计、Close 错误时的统计登记顺序，以及 handle 加多个唯一键冲突的连续删除。Go 测试还覆盖外键、REPLACE ... SELECT、临时/分区表、内存追踪、failpoint 事务限制和物化视图日志等系统行为；这些不能视为当前 Rust 泛型单测已覆盖。
+Go 测试还覆盖外键、REPLACE ... SELECT、临时/分区表、内存追踪、failpoint 事务限制和物化视图日志等系统行为；这些不能视为当前 Rust 泛型单测已覆盖。
 
 ## 扩展指南
 
@@ -104,12 +100,3 @@ Rust 单元测试覆盖输入行计数、Open 重置写统计、Close 错误时�
 - 扩展外键行为时，访问器仍应只暴露运行时拥有的集合；实际触发顺序应与 `insert_common`/Go `InsertValues` 语义共同验证，并补 `pkg/executor/test/fktest/foreign_key_test.go` 所代表场景的 Rust 测试。
 - 性能变化重点审查 `keys_need_check` 的批量化、预取是否仍早于逐行探测、重复键模式是否每批只计算一次，以及唯一键冲突循环是否可能退化。兼容性风险集中在事务身份、错误分类、影响行数和新旧行相同短路。
 - 若启用并发批处理，不能直接共享当前 `&mut ReplaceExec`/事务；需要先定义行间冲突、删除顺序、统计合并和事务隔离约束，并证明不改变 Go 的可观察结果。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件；`node --file pkg/executor/replace.rs --offset 1 --limit 500` 读取了完整 285 行源码；`query ReplaceRuntime`、`query ReplaceExec --kind struct`、`query replaceRow`、`query removeIndexRow` 定位了主要符号及 Go 对照。针对泛型方法的 `callers`/`callees` 查询没有返回精确调用边，因此调用关系又由源码调用点核实。
-- Rust 源与装配：`pkg/executor/replace.rs`、`pkg/executor/lib.rs:184-186`、`pkg/executor/Cargo.toml`（crate 名、lib 路径、`astersql-util-chunk` 依赖）。
-- Rust 独立测试：`pkg/executor/replace_test.rs`，其中 `TestRuntime` 是仓库内唯一检出的 `ReplaceRuntime` 实现；四个测试分别验证批量计数/统计、Open 重置、Close 错误清理顺序和多类冲突删除。
-- Go 对照：`pkg/executor/replace.go` 的 `ReplaceExec` 及同名方法；相关系统行为证据包括 `pkg/executor/test/fktest/foreign_key_test.go::TestForeignKeyOnReplaceIntoChildTable`、`pkg/executor/test/oomtest/oom_test.go::TestMemTracker4InsertAndReplaceExec`、`pkg/executor/executor_failpoint_test.go` 的 REPLACE ... SELECT 事务场景，以及 `pkg/executor/test/writetest/mview_log_write_basic_test.go` 的主键/唯一键冲突场景。
-- 接线限制：`rg` 在全部 Rust 文件中仅找到 `pkg/executor/replace_test.rs` 实现 `ReplaceRuntime`，仅找到 `pkg/executor/lib.rs` 和测试引用该模块；因此生产接线标记为未验证，而不是依据设计意图推断已支持。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付结构以任务文件指定的 11 个固定二级标题命令验证，并人工复核“为何存在、如何运行、如何安全扩展”三项问题均可由以上路径和符号追溯。

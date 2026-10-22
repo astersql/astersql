@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`base.rs` 位于 `astersql-ttl-cache` crate（声明见 `pkg/ttl/cache/Cargo.toml`），由 crate 入口 `pkg/ttl/cache/lib.rs` 以 `pub mod base` 导出。它不保存 TTL 表或作业内容，而是提供一个最小的“刷新节拍”组件 `baseCache`，让具体缓存统一判断何时应重新读取数据。
-
-当前 Rust 代码中，`InfoSchemaCache`（`pkg/ttl/cache/infoschema.rs`）和 `TableStatusCache`（`pkg/ttl/cache/ttlstatus.rs`）各自把 `baseCache` 作为私有字段组合进去。前者缓存开启 TTL 的物理表元数据，后者缓存 `mysql.tidb_ttl_table_status` 的作业状态。RustCodeGraph 的文件关系也显示 `base.rs` 被这两个实现及相应独立测试引用。
-
-需要区分“组件已实现”和“完整调度链已接线”：仓库内 Rust 生产代码对 `NewInfoSchemaCache` / `NewTableStatusCache` 的直接引用目前只在各自定义文件中，尚未看到 Rust TTL JobManager 使用它们；完整的周期调度入口可在 Go 的 `pkg/ttl/ttlworker/job_manager.go::jobLoopWithSession` 中确认。因此本文只把 Rust cache crate 内的组合关系描述为已实现事实。
+不保存 TTL 表或作业内容，而是提供一个最小的“刷新节拍”组件 `baseCache`，让具体缓存统一判断何时应重新读取数据。
 
 ## 核心职责
 
@@ -84,8 +80,6 @@ Go 完整链路中，`JobManager::jobLoopWithSession` 读取两个具体缓存�
 
 ## 与 Go 版本的对应关系
 
-对应文件是 `pkg/ttl/cache/base.go`，核心语义保持一致：都有 `interval`、最近更新时间、`newBaseCache`、`ShouldUpdate`、`SetInterval` 和 `GetInterval`，并以“距上次更新严格大于 interval”判定超时。
-
 主要差异如下：
 
 - Go 用 `time.Time` 零值表示从未更新；Rust 用 `Option<Instant>::None`，首次判断语义更显式。
@@ -105,12 +99,3 @@ Go 完整链路中，`JobManager::jobLoopWithSession` 读取两个具体缓存�
 若要对齐 Go JobManager 的周期调度，最小接线点是为 Rust 的 `InfoSchemaCache` 和 `TableStatusCache` 明确提供 `GetInterval` 转发（或由构造方单独持有配置），随后在真正的 Rust 调度入口使用；同时应更新各自独立测试，而不能仅依赖 `base_test.rs`。这属于未来实现范围，本文未把它写成已支持能力。
 
 性能风险主要来自过短间隔造成频繁全量扫描；正确性风险来自在刷新失败或内容替换前过早调用 `MarkUpdated`；兼容风险来自改变严格 `>` 判定、首次必刷语义或公开命名，从而偏离 Go 行为及现有调用约定。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录共 24 个 Go/Rust 文件，`base.rs` 识别出 8 个符号。
-- RustCodeGraph `node --file pkg/ttl/cache/base.rs`：核实 `baseCache`、`newBaseCache`、四个方法及全部字段/分支。
-- RustCodeGraph `node`：读取 `pkg/ttl/cache/lib.rs`、`infoschema.rs`、`ttlstatus.rs`、`base_test.rs`，核实模块导出、两个组合调用者、成功标记位置与独立测试。
-- RustCodeGraph `query`：区分 Go/Rust 同名 `newBaseCache`、`ShouldUpdate`、`SetInterval`、`MarkUpdated`；精确 `callers` 未产生可用输出，因此使用限定 `pkg/ttl` 的 `rg` 补齐嵌入字段的方法调用。
-- Cargo 与源码：`pkg/ttl/cache/Cargo.toml`、`pkg/ttl/cache/base.go`、`pkg/ttl/cache/base_test.go`、`pkg/ttl/ttlworker/job_manager.go`；核实 crate 边界、Go 零值/匿名嵌入语义、原测试意图和完整 Go 调度链。
-- 人工复核：文档将 Rust 已实现的 cache crate 组合关系与仅在 Go 中确认的完整 JobManager 调度关系分开陈述；没有宣称未找到的 Rust 生产接线已存在。

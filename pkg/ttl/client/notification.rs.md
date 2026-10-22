@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ttl-client` crate 的通知通道实现，源码为 [`notification.rs`](notification.rs)，由 [`lib.rs`](lib.rs) 公开为 `notification` 模块并再导出全部公开项。它与 [`command.rs`](command.rs) 的请求/响应命令通道并列：通知通道只按类型发布事件，不分配请求 ID，也不等待响应。`Cargo.toml` 将该 crate 映射到 Go 包 `pkg/ttl/client`；当前清单没有常规外部依赖，通知实现直接复用同 crate 的上下文、内存 etcd 和 mock 基础设施。
-
-在完整应用的现有接线中，Go 版 [`notification.go`](notification.go) 被 [`../ttlworker/job_manager.go`](../ttlworker/job_manager.go) 使用：创建 TTL 作业后发送 `scan` 通知，各节点的 manager loop 收到通知后重新调度扫描任务。仓库内 Rust 生产代码尚未调用 `new_notification_client`、`new_mock_notification_client` 或 `NotificationClient`；Rust 实现目前由 [`command_test.rs`](command_test.rs) 直接验证。因此，本文件已经提供可用的 Rust 通知抽象和进程内后端，但不能据此声称 Rust TTL worker 主链已经接入。
+为 `EtcdClient` 实现带一秒租约的键写入及 watch 事件转换；这里只转发 `Put`，忽略 `Delete`。
 
 ## 核心职责
 
@@ -61,9 +59,9 @@ mock 的 watcher 通道容量固定为 8。在容量未满时，`notify` 持有 
 
 ## 与 Go 版本的对应关系
 
-Rust `NotificationClient`、`new_notification_client`、`notify` 和 `watch_notification` 分别对应 Go `NotificationClient`、`NewNotificationClient`、`Notify` 和 `WatchNotification`。两版共享完全相同的键前缀；真实发布都使用一秒租约，真实订阅都 watch 拼接后的精确键。Rust 用本地 `EtcdStore` 模拟 etcd，并把 etcd watch 响应收敛为仅含文本的 `NotificationEvent`；Go 直接返回 `clientv3.WatchChan`，因此包含更完整的 etcd 响应和错误信息。
+Rust 用本地 `EtcdStore` 模拟 etcd，并把 etcd watch 响应收敛为仅含文本的 `NotificationEvent`；Go 直接返回 `clientv3.WatchChan`，因此包含更完整的 etcd 响应和错误信息。
 
-mock 对齐点更明确：两版均按类型保存 watcher、每个 watcher 容量为 8、无 watcher 时成功、发布空事件而忽略 `data`，并在第一个阻塞 watcher 处把剩余投递转入后台。Go 后台 goroutine 对每个剩余 channel 在“上下文取消”和“阻塞发送”之间选择；Rust 以 10 ms `try_send` 重试近似这一可取消等待。两版 mock 都不因订阅上下文结束而主动移除 notification watcher。
+Go 后台 goroutine 对每个剩余 channel 在“上下文取消”和“阻塞发送”之间选择；Rust 以 10 ms `try_send` 重试近似这一可取消等待。
 
 差异也必须保留在使用预期中：Go 真实 watch 直接暴露 etcd channel 的关闭和错误响应；Rust 转换层忽略 `Delete`，且无法把异步 watch 错误作为结构化 `ClientError` 交给调用者。Go TTL worker 已把该接口接入生产调度循环，而仓库当前 Rust TTL worker 没有对应调用边。
 
@@ -74,11 +72,3 @@ mock 对齐点更明确：两版均按类型保存 watcher、每个 watcher 容�
 若要增强可靠性或暴露 watch 错误，应从 `NotificationReceiver`/`NotificationEvent` 的 API 设计入手，而不是只改后台线程；需明确 channel 关闭、取消、错误、积压和重复通知的契约。改变 mock watcher 清理或背压策略会偏离 Go 测试替身语义，必须有明确迁移动机。
 
 相关测试应继续放在独立文件 [`command_test.rs`](command_test.rs)，不要内嵌到生产源文件。至少覆盖：一秒租约、无 watcher 且上下文已取消、空 mock 事件、容量 8 后的背压与取消、不同类型隔离、真实 `Put` 转发/`Delete` 忽略、无效 UTF-8 和 receiver 丢弃后的线程退出。若 Rust TTL worker 将来完成接线，还应在其独立集成测试中复刻 Go `TestTriggerScanTask` 的“提交作业触发重新调度”场景。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ttl/client` 收录目标源、Go 对照和独立 Rust/Go 测试；`node --file pkg/ttl/client/notification.rs` 核对了完整 208 行及文件级使用关系；`query Notification`、`query new_notification_client`、`query watch_notification` 核对了主要符号。精确 callers/callees 未产出边，故没有据此推断无调用。
-- 目标实现：[`notification.rs`](notification.rs) 的 `NotificationReceiver`、`NotificationClient`、两套构造函数及 `EtcdClient`/`MockClient` impl。
-- crate 和直接依赖：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`command.rs`](command.rs) 中的 `ClientError`、`ClientContext`、`EtcdStore::put`/`watch`、`MockState` 和 `MockNotificationWatcher`。
-- Go 语义与应用位置：[`notification.go`](notification.go)、[`../ttlworker/job_manager.go`](../ttlworker/job_manager.go) 的订阅、重订阅和作业创建后通知路径，以及 [`../ttlworker/job_manager_integration_test.go`](../ttlworker/job_manager_integration_test.go) 的 `TestTriggerScanTask`。
-- Rust 独立测试：[`command_test.rs`](command_test.rs) 的 `etcd_notification_expires_after_go_one_second_lease` 与 `mock_notification_keeps_go_empty_event_and_no_watcher_cancel_semantics`。本任务是纯文档分析，按计划没有运行 Cargo。

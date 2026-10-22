@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/store/etcd.rs` 属于 `astersql-store` crate（`pkg/store/Cargo.toml`），并由 `pkg/store/lib.rs` 的私有 `mod etcd` 装配后通过 `pub use etcd::*` 对外导出。它位于通用 `Storage` 抽象与 `etcd-client` 之间：从存储对象提取元数据 etcd 地址、TLS 配置和 keyspace codec，再构造带命名空间的异步客户端。
-
-当前生产接线需要谨慎理解。`Storage::AsEtcdBackend` 在 `pkg/store/store.rs` 中默认返回 `None`，该文件中的 `RegisteredTiKVStorage` 和 `LocalStorage` 均未覆盖它；仓库搜索到的 Rust `EtcdBackend` 实现只有 `pkg/store/etcd_test.rs` 与 `pkg/store/migration_aster_unit_test.rs` 的测试后端。因此本文件的客户端能力已经实现并从 crate 根导出，但当前 `astersql-store` 的生产 `Storage` 实现不会经 `NewEtcdCli` 建立客户端。这是现有迁移状态，不应推断为完整生产主链已经接通。
+`NewEtcdCliWithSettings` 把拨号超时、keepalive 和可选 TLS 转换成 `ConnectOptions`，负责真正的异步连接和错误归一化。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/store/etcd.go` 是直接语义对照。Rust 保留了 `NewEtcdCli`、`GetEtcdAddrs`、`NewEtcdCliWithAddrs` 和 `EtcdBackend` 的 Go 风格命名，并保持以下行为：只取 `EtcdAddrs` 而非 PD 地址、无地址返回 nil/`None`、V2 codec 添加 keyspace namespace、拨号超时 5 秒，以及 TLS/keepalive 配置意图。设置对象还保留了 Go 的自动同步 30 秒和最大退避 3 秒默认值，但如下所述尚未应用到底层连接。
+Rust 保留了 `NewEtcdCli`、`GetEtcdAddrs`、`NewEtcdCliWithAddrs` 和 `EtcdBackend` 的 Go 风格命名，并保持以下行为：只取 `EtcdAddrs` 而非 PD 地址、无地址返回 nil/`None`、V2 codec 添加 keyspace namespace、拨号超时 5 秒，以及 TLS/keepalive 配置意图。设置对象还保留了 Go 的自动同步 30 秒和最大退避 3 秒默认值，但如下所述尚未应用到底层连接。
 
 已验证的差异如下：
 
@@ -87,12 +85,3 @@
 - 若改变 namespace 格式，应同步检查 `pkg/keyspace/keyspace.rs`、Go `pkg/keyspace/keyspace.go`、真实 etcd 测试中的 `/keyspaces/tidb/42direct-key` 断言及所有跨 keyspace 兼容风险。
 - 若改动空输入或后端识别规则，必须保留“没有能力/地址不触网”的不变量，并同步 `pkg/store/etcd_test.rs` 与 `pkg/store/migration_aster_unit_test.rs`。
 - 性能风险主要在重复建连、端点同步和并发共享策略；兼容风险主要在前缀格式、TLS、keepalive 与 Go 客户端策略差异。不要通过 `inner_mut` 新增默认绕过 namespace 的业务路径。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；已查询 `EtcdBackend`、`GetEtcdAddrs`、`NewEtcdCliWithSettings`，并按文件读取 `pkg/store/etcd.rs`、`pkg/store/etcd_test.rs`、`pkg/store/store.rs`、`pkg/util/etcd/etcd.rs` 和 `pkg/keyspace/keyspace.rs`。
-- 源码事实：`pkg/store/etcd.rs` 的 `EtcdBackend`、`EtcdClientSettings::default`、`EtcdClient::{Put, Get}`、`NewEtcdCli`、`GetEtcdAddrs`、`EtcdNamespace`、`NewEtcdCliWithAddrs`、`NewEtcdCliWithSettings`。
-- crate 与装配事实：`pkg/store/Cargo.toml` 的依赖/feature，以及 `pkg/store/lib.rs` 的模块声明、公开再导出和独立测试模块路径。
-- Go 对照：`pkg/store/etcd.go` 与 `pkg/store/etcd_test.go`；Rust 独立测试：`pkg/store/etcd_test.rs`、`pkg/store/migration_aster_unit_test.rs`。
-- 调用与接线复核：仓库搜索 `NewEtcdCli`、`GetEtcdAddrs`、`impl EtcdBackend`、`AsEtcdBackend`，确认构造器当前只被 Rust 测试直接调用，Rust 后端实现也只存在于测试；`RegisteredTiKVStorage` 和 `LocalStorage` 使用默认 `AsEtcdBackend(None)`。
-- 未运行 Cargo：任务是纯文档分析，计划明确禁止 Cargo。结构验证及文档人工复核在交付前执行。

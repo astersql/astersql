@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根 `pkg/executor/lib.rs` 以 `pub mod analyze_global_stats` 公开该模块，`pkg/executor/Cargo.toml` 则把 `lib.rs` 声明为库入口。它描述动态分区裁剪模式下，在各物理分区完成 ANALYZE 后，将分区统计合并为逻辑表级全局统计的执行侧协调逻辑。对应的 Go 实现是 `pkg/executor/analyze_global_stats.go`。
-
-当前 Rust 接线需要特别区分两层：`pkg/executor/analyze.rs::handleGlobalStats` 已在 ANALYZE 主流程中收集待合并的表、列和索引信息，而本文件另行定义了自己的 `AnalyzeExec`、`globalStatsMap` 和 `globalStatsRuntime`。RustCodeGraph 与全仓引用搜索均未发现生产代码构造这里的 `AnalyzeExec` 或调用这里的 `AnalyzeExec::handleGlobalStats`。因此，本模块目前是可编译公开的合并协调边界，但尚未接到 `analyze.rs` 的实际主链，不能把 Go 端已接线状态等同于本 Rust 文件的运行时状态。
+此文件本身不加载分区统计，也不实现直方图、TopN、FM Sketch 或 CM Sketch 的合并算法；这些行为由 `merge_partition_stats_to_global_and_persist` 的实现者负责。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/analyze_global_stats.go` 是逐项核对的主要来源：两版都先对表 ID 去重，再逐表扫描待合并对象；元数据缺失时跳过；表级 v2 选项覆盖默认选项；每个对象都创建、启动并结束合并作业；最后每表记录一次历史统计；合并和历史失败只记录，函数返回成功。
-
 主要表达差异如下：
 
 - Go 直接持有真实 `*handle.Handle`、Domain、InfoSchema、日志器和上下文；Rust 将这些依赖收敛为 `globalStatsRuntime`，便于隔离实现与测试。
@@ -103,12 +99,3 @@
 - 修改合并结果语义时同步检查 `pkg/executor/test/analyzetest/analyze_test.rs` 中 `analyze_partition_dynamic_mode_builds_global_and_partition_stats`、`analyze_partition_static_to_dynamic_rebuilds_global_stats` 等独立测试及对应 Go 测试。
 - 若为本模块补直接单元测试，应新建同目录独立测试文件并由 `lib.rs` 在 `#[cfg(test)]` 下声明，覆盖空映射、同表多对象、表级选项覆盖、元数据缺失、登记/合并/历史错误以及“合并失败仍结束作业”。不要把测试内嵌进本生产文件。
 - 接入前应评估：重复合并与历史记录的性能成本、运行时持久化原子性、多个 ANALYZE 并发时的作业状态一致性，以及稳定遍历顺序是否无意形成外部契约。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库索引包含 `pkg/executor/analyze_global_stats.rs`，文件共 233 行、25 个符号；通过 `files`、`explore`、`query` 和 `node --file` 核对了文件、`handleGlobalStats`、`newAnalyzeHandleGlobalStatsJob` 及其内部运行时调用。
-- 生产源码：`pkg/executor/analyze_global_stats.rs`（全部类型、trait、常量和两个方法）、`pkg/executor/analyze.rs`（主链收集函数、worker 调用点和 `analyzeRuntime::merge_global_stats` 边界）、`pkg/executor/lib.rs`（模块公开声明）。
-- crate 边界：`pkg/executor/Cargo.toml` 的包名为 `astersql-executor`、库入口为 `lib.rs`；本模块源码自身只引用标准库。
-- Go 对照：`pkg/executor/analyze_global_stats.go`（合并协调和作业描述）与 `pkg/executor/analyze.go`（真实调用入口）。
-- 测试证据：`pkg/executor/analyze_test.rs::TestAnalyzeIndexExtractTopN` 验证主链映射收集；`pkg/executor/show_stats_test.rs::TestShowAnalyzeStatus` 与 `pkg/executor/show_stats_test.go` 验证列/索引全局合并作业文本；`pkg/executor/test/analyzetest/analyze_test.rs` 及其 Go 对照验证动态分区模式能产生和重建表级全局统计。仓库未发现直接实现 `globalStatsRuntime` 或直接调用本模块 `AnalyzeExec::handleGlobalStats` 的 Rust 测试。
-- 人工边界复核：文档将“Go 已接线的目标语义”“Rust 系统现有集成行为”和“本文件当前无生产调用者”分开陈述，没有把 trait 注释中的下游责任当作本文件已完成的实现。

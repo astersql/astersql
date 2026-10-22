@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate；crate 入口 `pkg/expression/expropt/lib.rs` 通过私有模块 `current_user` 加载它，再以 `pub use current_user::*` 导出其公开类型。`pkg/expression/expropt/Cargo.toml` 的 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `pkg/expression/expropt`，本文件的直接 Go 对照是 `pkg/expression/expropt/current_user.go`。
-
-它位于表达式求值上下文和会话身份之间：`pkg/expression/sessionexpr/sessionctx.rs::NewEvalContext` 把会话的当前认证用户和活跃角色包装成 `CurrentUserPropProvider`，注册到可选属性表；`CurrentUserPropReader` 则声明并读取 `exprctx::OptPropCurrentUser`。仓库当前非测试 Rust 代码已接线 provider，但未发现 reader 在表达式内建函数中的直接调用；reader 的直接使用目前由 `expropt` 和 `sessionexpr` 的独立测试覆盖。因而它是已接入求值上下文的类型安全属性边界，不应把 `pkg/expression/builtin_info.rs` 中基于 `SessionInfo` 的 `CURRENT_USER()`/`CURRENT_ROLE()` 格式化逻辑误认为本文件的直接下游。
+`CurrentUserPropProvider` 保存一个惰性回调，在读取发生时提供一对值：`Arc<auth::UserIdentity>` 和 `Vec<Arc<auth::RoleIdentity>>`。
 
 ## 核心职责
 
@@ -88,14 +86,3 @@ Go 测试 `pkg/expression/expropt/optional_test.go::TestOptionalEvalPropProvider
 - 若新增字段或身份种类，要同步 `CurrentUserPropProvider` 回调返回值、两个 reader、`sessionexpr::NewEvalContext` 接线和 Go 对照文件，并评估所有权与克隆成本。
 - Rust 测试应继续放在独立文件中：核心 provider/reader 契约更新 `pkg/expression/expropt/optional_test.rs` 和 `migration_aster_unit_test.rs`；真实会话接线更新 `pkg/expression/sessionexpr/sessionctx_test.rs`。不要把测试内嵌进 `current_user.rs`。
 - 兼容风险集中在键编号/描述一致性、Go/Rust 签名对齐和错误文本依赖；性能风险集中在每次 reader 调用都会执行完整闭包并构造角色 `Vec`。
-
-## 验证依据
-
-- 源文件：`pkg/expression/expropt/current_user.rs`，确认两个公开类型、trait 实现、读取路径及无条件编译项。
-- crate 与模块：`pkg/expression/expropt/Cargo.toml`、`pkg/expression/expropt/lib.rs`，确认 crate 名、Go 包映射、依赖和再导出关系；目标目录没有 `doc.go`。
-- 公共注册表：`pkg/expression/expropt/optional.rs`、`pkg/expression/exprctx/optional.rs`，确认定长槽位、安全 downcast、错误分支，以及 `OptPropCurrentUser` 为键 0。
-- 生产接线：`pkg/expression/sessionexpr/sessionctx.rs::NewEvalContext`，确认闭包从同一个会话取得当前用户和活跃角色并注册 provider。
-- Rust 独立测试：`pkg/expression/expropt/optional_test.rs::verify_current_user`、`migration_aster_unit_test.rs::{registry_and_missing_reader_paths_match_go,current_user_and_ddl_owner_readers_preserve_provider_values,provider_type_mismatch_is_an_error_instead_of_an_unsafe_cast}`、`pkg/expression/sessionexpr/sessionctx_test.rs::test_session_eval_context_opt_props`。
-- Go 对照与测试：`pkg/expression/expropt/current_user.go`、`pkg/expression/expropt/optional_test.go::TestOptionalEvalPropProviders`。
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；文件节点确认 `current_user.rs` 共 93 行；调用边确认两个 reader 均调用 `get_provider` 和 `call`，而 `get_provider` 调用 `optional.rs::get_prop_provider`。全仓 `rg` 用于补足图中歧义符号的精确 caller 核验。
-- 结构验证按任务指定命令执行；本任务是纯文档分析，按计划不运行 Cargo。

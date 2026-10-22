@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `IMPORT INTO` 分布式任务在 `ImportStepConflictResolution` 阶段的 Rust 执行逻辑。它位于“收集冲突 KV”之后：输入是子任务元数据中按 KV group（数据组 `data` 或索引组）记录的冲突 SST 文件，输出效果是通过集群事务删除与这些冲突对应的表行及索引项。模块由 `pkg/dxf/importinto/lib.rs` 的 `pub mod conflict_resolution` 导出，所属 crate 是 `astersql-dxf-importinto`；`pkg/dxf/importinto/Cargo.toml` 声明其直接使用的 framework execute/proto、conflictedkv、importer、globalsort、objstore、tablecodec 等内部 crate，并只提供与本文件无直接条件分支的 `nextgen` feature。
-
-框架侧有两条可见接线。`pkg/dxf/importinto/task_executor.rs::GetConflictResolutionStepExecutor` 校验步骤并构造本文件的 `ConflictResolutionStepExecutor`；同文件的 `ConflictNodeStepExecutor` 与 `ImportConflictExtension::GetStepExecutor` 又把它适配到节点执行器的命令通道和生命周期。目标包没有 `pkg/dxf/importinto/doc.go`，因此包级定位以 `lib.rs`、Cargo manifest 和上述真实接线为准。
+`ResolveConflictGroup` 提供已经准备好 codec 时的较低层处理入口；两条路径最终都使用 `conflictedkv::NewDeleter` 执行真实的快照读取、行/索引定位和事务删除。
 
 ## 核心职责
 
@@ -95,11 +93,7 @@ RustCodeGraph `status` 显示索引覆盖本文件，`files --filter pkg/dxf/imp
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/dxf/importinto/conflict_resolution.go`，独立 Go 回归为 `pkg/dxf/importinto/conflict_resolution_test.go`。
-
-- 两版都有 step executor 的 `Init`、`RunSubtask`、`Cleanup`、summary/reset 和 collector processed 计数；都从 cloud storage 读冲突文件，按 KV group 串行、组内并行调用 `conflictedkv.NewDeleter`。
 - Go 的 `RunSubtask` 用 `json.Unmarshal` 后在 `ExternalPath` 非空时调用 `ReadJSONFromExternalStorage`；Rust 把兼容解析集中到 `ReadConflictResolutionMeta`，显式重建当前需要的 `Count`/`Files` 映射。
-- Go 在主 goroutine 先用 `createEncoders` 创建全部 encoder，然后启动 error-group worker。Rust保留 `createEncoders` 和低层 `ResolveConflictGroup` 以表达/测试该模式，但框架生产路径使用 `ResolveConflictGroupFromMeta`，在各 scoped worker 内创建 encoder，并用 ready 屏障保证“读取前全部初始化”的同一不变量。
 - Go 通过 context/error group 传播取消与 panic recovery；Rust使用 `CancellationToken`、`ConflictContext`、scoped thread join 和 watcher 完成等价的读取/worker收尾，但错误是字符串化后包装为 `SharedError`/`anyhow::Error`，错误类型身份不保留。
 - Go 直接依赖 TiDB session/store/logger 构造 importer；Rust通过 `ConflictResolutionRuntime`/`ConflictResolutionImporter` 隔离宿主集成，并由 `ConfiguredConflictResolutionRuntime` 提供生产桥接，便于独立测试真实执行生命周期。
 - Go 测试制造 3 行 data/index 冲突并验证只剩 4、5 两行。Rust 独立测试不仅保留该意图，还覆盖内联/外部 meta、reader 错误与取消、真实 data/unique-index 删除、完整 framework/node 生命周期、分区与公共 handle 保真，以及隐藏函数索引列之后的可见列重编码。
@@ -114,12 +108,3 @@ RustCodeGraph `status` 显示索引覆盖本文件，`files --filter pkg/dxf/imp
 - 增强 runtime 热更新：`TaskMetaModified`/`ResourceModified` 目前不实现；若支持，需定义 importer、正在运行 worker、下一 group 和 framework resource 之间的一致性边界，不能只把错误改成成功。
 - 修改删除语义应优先进入 `pkg/dxf/importinto/conflictedkv`，本文件只负责输入、codec 和调度。测试仍应放在独立 `conflict_resolution_test.rs`（或 conflictedkv 对应独立测试）中，不能内嵌回生产文件。
 - 性能风险集中在 worker 数、每 worker 一个 encoder、同步通道容量、对象存储读取方式和 group 串行；正确性风险集中在 handle/keyspace、函数索引隐藏列投影、错误优先级以及资源取消/关闭顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status`（索引 11,467 个文件，目标在索引内）、`files --filter pkg/dxf/importinto`、目标文件 `node --file ... --offset/--limit` 全量 1–1035 行；另读取 `lib.rs`、`task_executor.rs` 的分发/节点适配段和 `conflict_resolution_test.rs` 的相关源码节点。对精确符号执行的 `callers/callees`/限定 `explore` 未返回可用细边，故未据此扩张结论。
-- 生产源码：`pkg/dxf/importinto/conflict_resolution.rs`；模块入口：`pkg/dxf/importinto/lib.rs`；直接框架接线：`pkg/dxf/importinto/task_executor.rs`。
-- crate 边界：`pkg/dxf/importinto/Cargo.toml`，确认包名、lib 入口、`nextgen` feature 和本文件所用内部依赖。
-- Go 对照：`pkg/dxf/importinto/conflict_resolution.go`；Go 回归：`pkg/dxf/importinto/conflict_resolution_test.go::TestConflictResolutionStepExecutor`。
-- Rust 独立测试：`pkg/dxf/importinto/conflict_resolution_test.rs`，重点包括 `conflict_resolution_reads_files_and_deletes_conflicted_rows`、`conflict_resolution_propagates_reader_error_and_cancellation`、`worker_local_importer_codecs_delete_three_real_conflicted_rows`、`unique_index_conflict_group_deletes_three_real_rows`、`resolution_meta_loads_inline_and_external_conflict_infos`、`framework_conflict_resolution_lifecycle_deletes_rows_and_closes_resources`、`importer_preserves_partition_and_common_handle_identity`、`data_handler_reencodes_visible_columns_after_functional_index`。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收依赖固定 11 章节的结构检查和人工事实复核。

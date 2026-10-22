@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-bindinfo` crate 的会话级 SQL Plan Binding 边界。`pkg/bindinfo/lib.rs` 以私有模块 `session_handle` 装配它，再通过 `pub use session_handle::*` 对外导出其公开符号；`pkg/bindinfo/Cargo.toml` 则表明该 crate 直接依赖 `astersql-parser`、`serde` 与 `serde_json`，其中本文件实际使用前者计算规范化 SQL 摘要，使用后两者保存和恢复会话状态。
-
-它与全局绑定句柄不同：`NewSessionBindingHandle` 创建的是进程内、句柄私有的缓存，不访问绑定系统表，也没有后台刷新逻辑。当前 Rust 仓库中，生产代码尚未创建 `NewSessionBindingHandle` 或通过 `SessionBindInfoKeyType` 将其接入会话上下文；除本文件自身外，这些符号的 Rust 使用者仅见 `pkg/bindinfo/session_handle_test.rs`。因此这里已经具备可执行、已单测的会话绑定 API，但不能据此断言完整 Rust SQL 会话主链已经接线。RustCodeGraph 曾把 `pkg/server/driver_tidb.rs::DecodeSessionStates` 识别为同名调用者；源码复核显示该方法只恢复 prepared statements，使用的也不是本文件的 `SessionStates`，不是本模块的实际入口。
+`sessionBindingHandle` 组合 `Arc<dyn BindingCache>` 与外层 `RwLock<()>`：缓存负责摘要索引、绑定存储和跨库候选匹配，外层锁负责把一批句柄操作串成一致的临界区。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/bindinfo/session_handle.go`。trait 方法总体对应 Go `SessionBindingHandle`，创建、删除、枚举、状态编解码、旧格式恢复与上下文键字符串都保留原意；`pkg/bindinfo/session_handle_test.go` 进一步证明 Go 主链支持创建/覆盖/删除 session binding、session 优先于 global binding、跨默认库匹配、SHOW 展示和 prepared statement 应用。
-
 关键差异如下：
 
 - Go `sessionBindingHandle` 直接持有 `map[string]*Binding`，匹配时遍历 map；Rust 复用 `BindingCache` 及 no-db 摘要索引，列表还会按 `SQLDigest` 排序。
@@ -107,12 +103,3 @@
 调整匹配策略应落在 `BindingCache::MatchingBinding` 或 `binding.rs::crossDBMatchBindings`，而不是在句柄层复制逻辑；同时覆盖当前库、显式库名、通配库名、禁用状态和多个候选优先级。调整关闭语义时应明确是否禁止复用，并处理已外借 `Arc<Binding>` 的存活行为。
 
 若要完成 Rust 主链接线，最可能的接入点是会话初始化、上下文值存储、SQL CREATE/DROP/SHOW BINDING 执行路径、优化前匹配以及统一 `SessionStatesHandler` 注册。实施前必须以对应 Rust 会话与执行器的真实接口为准；当前文件的 `SessionStates` 还未实现 `pkg/sessionctx/context.rs::SessionStatesHandler`，不可仅复制 Go 调用点。风险主要包括：摘要算法或 DB 大小写不一致导致无法命中，锁序变化导致死锁，状态格式变化破坏滚动升级，以及用有限缓存容量意外淘汰会话绑定。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/bindinfo` 确认目标、模块入口、缓存、Go 对照及测试均已索引。
-- RustCodeGraph 查询：`explore` 覆盖 `SessionBindingHandle`、`NewSessionBindingHandle`、创建/匹配/编解码和上下文键；`query` 定位 Rust `NewSessionBindingHandle`、trait 方法、`BindingTime`、`prepareHints`、`noDBDigestFromBinding` 与 `crossDBMatchBindings`；`node --file` 核验 `pkg/bindinfo/lib.rs`、`binding.rs`、`binding_cache.rs`、`session_handle.go`、`session_handle_test.go` 和疑似同名调用者 `pkg/server/driver_tidb.rs`。
-- 已读生产与配置路径：`pkg/bindinfo/session_handle.rs`、`pkg/bindinfo/lib.rs`、`pkg/bindinfo/Cargo.toml`、`pkg/bindinfo/binding.rs`、`pkg/bindinfo/binding_cache.rs`、`pkg/sessionctx/context.rs`、`pkg/server/driver_tidb.rs`。
-- 已读对照与测试路径：`pkg/bindinfo/session_handle.go`、`pkg/bindinfo/session_handle_test.rs`、`pkg/bindinfo/session_handle_test.go`；仓库搜索还核验了 Go 接线点 `pkg/session/session.go`、`pkg/executor/bind.go`、`pkg/executor/show.go`、`pkg/executor/adapter.go` 与 `pkg/bindinfo/binding.go`。
-- Rust 独立单测的直接证据：`canonical_session_binding_round_trips_state_and_drops_by_derived_digest` 覆盖创建、匹配、新格式 round-trip、删除和关闭；`create_is_atomic_and_replaces_same_normalized_sql_like_go` 覆盖准备失败不落库及同摘要覆盖；`session_state_empty_invalid_and_old_style_paths_match_go` 覆盖空值、非法 JSON 和旧格式；`session_bind_info_key_string_matches_go` 覆盖键字符串。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务规定命令确认本文档存在且恰有 11 个固定二级标题，并人工复核未把 Go 生产调用边误写为 Rust 已接线行为。

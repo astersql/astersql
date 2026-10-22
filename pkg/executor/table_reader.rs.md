@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`table_reader.rs`](table_reader.rs) 属于 `astersql-executor` crate；[`lib.rs`](lib.rs) 以 `pub mod table_reader` 公开它，[`Cargo.toml`](Cargo.toml) 则把该 crate 映射到 Go 包 `pkg/executor`。文件移植 Go [`table_reader.go`](table_reader.go) 的表扫描执行逻辑：把表或分区的逻辑范围编码为 DistSQL/Coprocessor 请求，在 TiKV 或 TiFlash 上执行，再把结果逐批写入调用方 Chunk。
-
-当前 Rust 文件是一个通过泛型后端隔离具体 TiDB 类型的可复用逻辑层。核心实现依赖 `TableReaderBackend`、`kvRangeBuilder` 和 `SelectResultOverride` 注入实际的会话、计划、请求和结果类型。仓库搜索未发现这些 trait 的具体实现，也未发现 Rust 代码构造本文件的 `TableReaderExecutor`；因此它虽然已经由 crate 公开并会参与编译，当前证据只能证明逻辑骨架已移植，不能证明它已接入 Rust SQL 执行主链。
+`tableResultHandler` 在跨 int64 边界的两个结果流之间维持稳定顺序，并负责原始数据读取和关闭清理。
 
 ## 核心职责
 
@@ -108,17 +106,14 @@ crate 级依赖由 [`Cargo.toml`](Cargo.toml) 声明，相关边界包括 `aster
 
 ## 与 Go 版本的对应关系
 
-Rust 的字段、函数名和控制流直接对应 [`table_reader.go`](table_reader.go)：`tableReaderExecutorContext`、`TableReaderExecutor`、`Open/Next/Close`、四个 `buildKVReq*` 路径、虚拟列辅助函数及 `tableResultHandler` 均能逐项对应。关键语义也保持一致：相关列触发 DAG/范围重建；无符号主键跨 int64 边界时分两段；dummy 只收集键；TiFlash 分区按 batch cop 选择单请求或多请求；多个分组结果按 `byItems` 归并；required-rows 不在 TableReader 层被重置。
-
 Rust 的结构性差异主要来自移植边界：
 
 - Go 直接依赖 `sessionctx.Context`、`distsql.RequestBuilder`、`kv.Request`、`chunk.Chunk` 等具体类型；Rust 通过 `TableReaderBackend` 关联类型和方法表达同一操作。
 - Go 的可空接口/指针映射为 Rust `Option`，结果和错误映射为 `Result`，共享注入对象使用 `Arc<dyn Trait>`。
 - Go `getDDLOwner` 保存可选闭包；Rust context 保存布尔能力标志并在需要时回调 backend。
-- Go 的 `closeAll` 行为在 Rust 中展开为“两路都尝试关闭、保留首错、最后 trace”。
 - Rust 文件目前没有具体 backend 和生产调用点，因此尚不能把 Go 已运行的 executor 行为等同为 Rust 已上线行为。
 
-测试证据也存在迁移差异。Go [`table_readers_required_rows_test.go`](table_readers_required_rows_test.go) 的 `TestTableReaderRequiredRows` 直接构造 `TableReaderExecutor`，验证多组非均匀 required-rows 请求。Rust [`table_readers_required_rows_test.rs`](table_readers_required_rows_test.rs) 虽沿用同名文件，但当前只构造 `distsql::IndexReaderExecutor`；它不能作为本文件 TableReader 的直接回归测试。仓库中未找到本文件的独立 Rust 单元测试。
+测试证据也存在迁移差异。Rust [`table_readers_required_rows_test.rs`](table_readers_required_rows_test.rs) 虽沿用同名文件，但当前只构造 `distsql::IndexReaderExecutor`；它不能作为本文件 TableReader 的直接回归测试。
 
 ## 扩展指南
 
@@ -129,12 +124,3 @@ Rust 的结构性差异主要来自移植边界：
 - 修改 `Next` 时不要无条件 reset Chunk；应增加与 Go `TestTableReaderRequiredRows` 相同矩阵的 Rust TableReader 回归测试，证明 required-rows 原样抵达底层 `SelectResult`。
 - 修改虚拟列时，同时验证列 offset 排序、返回类型顺序和依赖前序虚拟列的表达式。修改关闭逻辑时验证双路均被关闭及首错优先级。
 - 性能风险主要在范围克隆、每分区请求数量、全局键排序、多路 merge sort 和 DAG 克隆；兼容风险主要在请求选项遗漏、分区物理 ID、扫描顺序与上下文错误规范化。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/table_reader.rs` 确认目标文件已索引。
-- RustCodeGraph `node --file pkg/executor/table_reader.rs` 分段读取了全部 940 行，核对了本文列出的 trait、结构体、函数、分支和内部调用关系。
-- RustCodeGraph `query` 核对了 Rust/Go 同名的 `TableReaderExecutor`、`tableResultHandler`、`buildVirtualColumnIndex` 和 `sortAndGetKVRangesFromReqs`；自然语言 `explore` 还确认了 `Open`、请求构建、结果处理及后端方法的局部调用边。
-- 读取 [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)，确认 crate 名为 `astersql-executor`、Go 包映射为 `pkg/executor`，且模块公开；仓库搜索确认没有 `TableReaderBackend` 的具体实现或本文件执行器的 Rust 构造点。
-- 读取 Go [`table_reader.go`](table_reader.go) 的完整核心实现和 [`table_readers_required_rows_test.go`](table_readers_required_rows_test.go) 的 `TestTableReaderRequiredRows`；读取 Rust [`table_readers_required_rows_test.rs`](table_readers_required_rows_test.rs) 全文，确认它当前只覆盖 IndexReader 而非本文件。
-- 包目录不存在 `doc.go`，因此没有额外的包级 Go 契约可读。仓库指令所述 `.agents/skills/tidb-verify-profile` 在当前检出中也不存在，无法运行其 Ready 入口；本任务按编号任务要求执行文档结构验证，不运行 Cargo。

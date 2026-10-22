@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-`size.rs` 是 `astersql-util-size` crate 的实现文件，定义两组可在编译期求值的公共常量：二进制容量单位和 Go 常见值类型的浅层大小。crate 入口 [`lib.rs`](lib.rs) 通过 `mod size; pub use size::*;` 将这里的全部常量提升为 crate 根 API；[`Cargo.toml`](Cargo.toml) 将库入口指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/util/size"` 标明它来自同目录 Go 包。它不参与 SQL 请求处理或存储 I/O，而是被表达式、KV、规划器、类型元数据和 codec 等模块用作内存占用估算的叶子常量库。
+第一项职责是提供 `KB`、`MB`、`GB`、`TB`、`PB` 五个 1024 进制的字节倍率，保持 [`size.go`](size.go) 中逐级乘以 1024 的定义。
 
 ## 核心职责
 
@@ -58,20 +58,12 @@ RustCodeGraph 的文件查询将 `size.rs` 标记为被 35 个文件使用，但
 
 ## 与 Go 版本的对应关系
 
-[`size.go`](size.go) 是逐项对照基准。Rust 保留了全部五个容量常量和十五个 `SizeOf*` 名称、公开性及整数类型意图：容量为 `u64`，大小为 `i64`。标量使用直接对应的 Rust 类型；Go slice/string/interface 的运行时头部用固定数量的 `usize` 表示；Go pointer/map/function 值用一个 Rust 指针宽度表示。
+标量使用直接对应的 Rust 类型；Go slice/string/interface 的运行时头部用固定数量的 `usize` 表示；Go pointer/map/function 值用一个 Rust 指针宽度表示。
 
-这是一种 Go 兼容记账模型，而非声称 Rust 与 Go 的所有 ABI 布局相同。尤其是 Rust 原生 slice 引用、trait object、函数对象和集合可能具有不同表示；这里选择的占位类型只为重现 `unsafe.Sizeof` 在 Go 文件中的结果。独立测试 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 验证二进制单位的精确数值、标量对应、三/二/一机器字头部关系，并通过 `include_str!("size.rs")` 检查 AsterSQL 版权行。搜索未发现同目录 Go 单元测试；仓库中的 Go 调用者测试只间接消费 `pkg/util/size`。
+这是一种 Go 兼容记账模型，而非声称 Rust 与 Go 的所有 ABI 布局相同。尤其是 Rust 原生 slice 引用、trait object、函数对象和集合可能具有不同表示；这里选择的占位类型只为重现 `unsafe.Sizeof` 在 Go 文件中的结果。
 
 ## 扩展指南
 
 新增常量时，应先确认它是 Go `pkg/util/size` 的现有/新增公共契约，还是 Rust 独有需求。Go 对齐项应在 `size.rs` 保持原名、符号类型和浅层/深层含义，并在独立的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 增加等价断言；不要把测试内嵌回生产文件。若常量描述容器，文档和测试必须明确是否包含底层存储，避免下游重复或遗漏计数。
 
 修改机器字模型时需要同时检查 32 位与 64 位语义，以及所有使用 `capacity() * SizeOf*` 的调用点；修改容量单位会影响配置阈值或测试期望，不能把二进制单位悄然改成十进制。若要计算 Rust 数据结构的真实布局，宜建立语义清楚的新 API，而不是改变既有 Go 兼容常量。性能风险很低，因为读取常量没有运行时成本；主要兼容风险是改变公共数值后使内存追踪、限额或缓存估算发生系统性偏差。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/size` 找到 `lib.rs`、`size.rs`、`size.go` 与独立迁移测试；`node --file pkg/util/size/size.rs --offset 1 --limit 260` 读取完整 129 行实现并报告 35 个使用文件。对 `SizeOfSlice`、`SizeOfMap`、`PB` 执行 `query/callers` 时，索引未能解析本文件的常量定义，这一覆盖限制已用精确源码搜索补充，未把同名符号误当成调用边。
-- 源与 crate 边界：完整核对 [`size.rs`](size.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml) 以及根 workspace 的成员/依赖声明。
-- Go 对照：逐项核对 [`size.go`](size.go) 的 `uint64` 容量链与 `unsafe.Sizeof` 定义。
-- 测试证据：读取 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `binary_capacity_units_match_go_constants`、`scalar_sizes_match_go_unsafe_sizeof`、`go_runtime_header_sizes_exclude_backing_storage` 和编译期版权断言；精确搜索没有发现同目录 Go 测试。
-- 调用证据：用 `rg` 核对 `SizeOf*` 在表达式、KV、planner、types 与 codec Rust 文件中的真实读取，以及各下游 `Cargo.toml` 对 `astersql-util-size` 的路径依赖。按任务约束未运行 Cargo；文档结构另以任务给定命令验证。

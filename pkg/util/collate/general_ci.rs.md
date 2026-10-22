@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-collate` crate 中 `utf8_general_ci` 与 `utf8mb4_general_ci` 的具体排序规则实现。crate 入口 `pkg/util/collate/lib.rs` 以 `general_ci` 模块装入并重新导出这里的公开符号；`pkg/util/collate/Cargo.toml` 的默认 feature `full_collate` 启用后，`pkg/util/collate/collate.rs::group2_collator` 才会把上述两个名称注册为 `generalCICollator`。调用方通常不直接构造该类型，而是经 `GetCollator`/`GetCollatorByID` 获得 `Box<dyn Collator>`。
-
-它位于 SQL 字符串语义的公共底层：表达式比较和 LIKE、类型层的字符串/枚举/集合比较、range 构造、codec 排序 key、聚合与会话运行时都通过通用 Collator 工厂间接使用这里的行为。具体使用点可见 `pkg/expression/builtin.rs`、`pkg/expression/builtin_string_vec.rs`、`pkg/types/compare.rs`、`pkg/util/ranger/points.rs`、`pkg/util/codec/codec.rs` 和 `pkg/session/runtime/relational_value.rs`。
+`generalCICollator` 实现 `Collator`，为字符串比较、原始字节比较、排序 key、最大 key 长度、通配符 pattern 与克隆提供统一接口。
 
 ## 核心职责
 
@@ -68,7 +66,7 @@ PAD SPACE 只裁 U+0020/字节 `0x20`，不裁制表符、换行、全角空格�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/util/collate/general_ci.go`。Rust 保留了 Go 的类型和方法名称、PAD SPACE 调用顺序、每 rune 两字节 big-endian key、11 个专用平面表、稀疏 `planeTable`、非 BMP 到 `0xFFFD` 的回退，以及 wildcard 自定义权重比较。`pkg/util/collate/collate_test.go` 的比较/key 表是更完整的上游语义基准，涵盖 ASCII 大小写、重音字符、尾空格、tab、`ß`、组合字符、CJK、韩文与补充平面字符。
+Rust 保留了 Go 的类型和方法名称、PAD SPACE 调用顺序、每 rune 两字节 big-endian key、11 个专用平面表、稀疏 `planeTable`、非 BMP 到 `0xFFFD` 的回退，以及 wildcard 自定义权重比较。
 
 关键语言差异是 Go `string` 可保存任意字节，而 Rust `&str` 必须是合法 UTF-8。Rust 因此在 `Collator` trait 增加 `CompareBytes`/`KeyBytes`，general_ci 覆盖它们并使用 `decodeRune` 恢复 Go 的“RuneError 且长度为 1 才算非法”判断。Rust 的 `KeyWithoutTrimRightSpace(&str)` 不需要 Go 循环中的非法序列分支；该分支只存在于 `key_bytes_without_trim`。
 
@@ -82,12 +80,3 @@ PAD SPACE 只裁 U+0020/字节 `0x20`，不裁制表符、换行、全角空格�
 - 调整非法 UTF-8 行为时应同时核对 `collate.rs::decodeRune`、`compareCommonBytes` 和本文件的 `key_bytes_without_trim`，并扩展 `collate_test.rs::test_campare_invalid_utf8_rune`；不能用 `from_utf8_lossy` 替代，因为那会把非法字节变成合法 U+FFFD 并改变提前终止语义。
 - 调整 wildcard 行为时，语法解析与回溯算法属于 `pkg/util/stringutil/string_util.rs`，本文件只应维护权重相等闭包；测试放在独立 general_ci 测试或 `collate_test.rs` 中。
 - 新增 collation 名称或 ID 不是本文件单点修改：还需更新 `collate.rs` 工厂和 charset 元数据，并确认 `full_collate` feature、全局开关以及关闭时的 binary 回退语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/collate` 确认目标、Go 对照和独立测试均已索引；`node --file pkg/util/collate/general_ci.rs` 读取了完整 743 行并报告 17 个引用文件；`query generalCICollator`、`query convertRuneGeneralCI --kind function`、`query ciPattern` 核对了 Rust/Go 符号。精确 `callers`/`callees` 查询在 30 秒窗口内未返回，因此没有把其空输出当作“无调用”，而以文件节点的使用关系和下面的直接搜索补证。
-- 源码与 crate 边界：`pkg/util/collate/general_ci.rs`、`pkg/util/collate/lib.rs`、`pkg/util/collate/collate.rs`、`pkg/util/collate/Cargo.toml`。其中工厂注册、feature 条件、trait 契约、公共比较/解码辅助和模块导出共同证明本文件的运行位置。
-- Go 对照：`pkg/util/collate/general_ci.go` 与 `pkg/util/collate/collate_test.go`，用于核对权重表、非法 UTF-8、比较与 key 的原始语义。
-- Rust 测试：`pkg/util/collate/general_ci_2_aster_unit_test.rs` 直接覆盖大小写/重音/PAD SPACE/key/最大长度/非 BMP/wildcard；`pkg/util/collate/collate_test.rs` 覆盖工厂名称和 ID、完整比较/key 表及非法 UTF-8 字节入口；`pkg/util/collate/collate_bench_test.rs` 证明 general_ci 的比较/key 路径具有独立基准入口。
-- 上游调用搜索：对仓库 Rust 文件检索 `GetCollator(`、`GetCollatorByID(`，确认表达式、types、ranger、codec、planner、executor、statistics 与 session runtime 等真实消费点；对 collate 目录检索具体类型与名称，确认注册和测试边。
-- 本任务只新增说明文档，不修改运行时代码，按计划不运行 Cargo。结构验证要求文档存在且恰有固定的 11 个二级章节；交付前另以 `git diff --check` 和限定路径差异复核无额外产物。

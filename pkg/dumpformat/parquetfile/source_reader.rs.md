@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dumpformat-parquetfile` crate 的对象存储读取适配层。它把“按半开区间 `[start, end)` 打开独立字节流”的 `RangeOpener` 转成 parquet-rs 所需的 `Length` 与 `ChunkReader`，使 `SerializedFileReader<SourceReader>` 能用同一接口读取 footer、列块和数据页。模块由 `lib.rs` 公开为 `source_reader`；crate 边界与依赖见 `pkg/dumpformat/parquetfile/Cargo.toml`，其中 `bytes` 提供零拷贝切片，带 tag 的 AsterSQL `parquet` 分支提供流式 page reader。
-
-生产入口主要有两处：`pkg/executor/importer/import.rs::open_parquet_file` 将 `Storage::Open` 包装为带取消检查的范围读取器；`lightning/pkg/importer/chunk_process.rs::parquet_source` 将 Lightning `Storage::OpenRange` 与 `FileSize` 包装为同一接口。两者构造 `SourceReader` 后交给 `pkg/dumpformat/parquetfile/file_parser.rs::FileParser`，后者再经 `parser.rs::open_file_reader` 进入 parquet-rs 的流式解码路径。
+实现 parquet-rs 的 `Length` 和 `ChunkReader`，同时提供缓存占用、峰值与关闭接口，供 `FileParser::adjust_memory_estimate` 和资源回收使用。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@ metadata 建立后的局部接线为：
 
 ## 与 Go 版本的对应关系
 
-Go 没有同名 `source_reader.go`；对应行为分散在 `reader_wrapper.go` 和 `parser.go`。Rust 常量分别对应 Go 的 `wholeFileInMemoryThreshold`（32 MiB）与 `rowGroupInMemoryThreshold`（128 MiB）。Rust 的 `prepare_with_thresholds` 对应 Go `prepareReader` 的 whole-file 选择，`Buffer`/whole-group 状态对应 `inMemoryReaderBase`，`set_ranges` 所用范围来自与 Go `rowGroupRangeFromMeta` 对齐的 Rust `reader_wrapper::row_group_range_from_meta`。
+Rust 的 `prepare_with_thresholds` 对应 Go `prepareReader` 的 whole-file 选择，`Buffer`/whole-group 状态对应 `inMemoryReaderBase`，`set_ranges` 所用范围来自与 Go `rowGroupRangeFromMeta` 对齐的 Rust `reader_wrapper::row_group_range_from_meta`。
 
 Go `Parser::getBuilder` 对当前 row group 选择 whole-file、row-group preload 或 per-column streaming；Rust 把策略集中到一个实现 `ChunkReader` 的共享 `SourceReader` 中，由 parquet-rs 按需回调。Go 小 row group 的 `newInMemoryReaderBase` 会用最多 8 个任务分段并行读取，Rust `load` 当前为一次范围流加同步 `read_exact`，并不复刻该内部并行方式。Go per-column 路径由 `readerWrapper` 的 skip buffer 减少 seek/reopen；Rust 则保存最近列流至多 64 KiB 的 `stream` 前缀，目标相同但机制不同。
-
-Go `parser_test.go::TestParquetParserWholeFileInMemory` 验证相等阈值启用、未知大小禁用、超阈值禁用以及大 row group 流式分支，并检查对象存储 GET 次数。Rust `tests/whole_file_preload.rs` 用真实 decoder 复现相同四策略、1 次/4 次请求、内存估算替换和关闭/越界行为；`tests/page_streaming_peak.rs` 补充真实大 page 峰值验证。因此这里应视为行为对齐而非逐类型机械翻译。
 
 ## 扩展指南
 
@@ -98,13 +94,3 @@ Go `parser_test.go::TestParquetParserWholeFileInMemory` 验证相等阈值启用
 - Rust 测试必须保持独立文件。策略与边界回归优先放入 `tests/whole_file_preload.rs`，大页/峰值回归放入 `tests/page_streaming_peak.rs`；与行解析组合相关的用例可放入现有 `parser_test.rs`。Go 对齐需同步考虑 `parser_test.go::TestParquetParserWholeFileInMemory` 及 row-group streaming/内存估算用例。
 
 主要兼容风险是改变范围终点或 EOF 语义导致 parquet-rs 读取失败；正确性风险是缓存返回不完整/错误偏移的字节；性能风险是对象存储请求放大、锁内慢 IO 和多份大缓冲重叠。
-
-## 验证依据
-
-- 目标源码：`pkg/dumpformat/parquetfile/source_reader.rs`，核对了全部 252 行以及 `RangeOpener`、`SourceReader`、`load`、`prepare[_with_thresholds]`、`set_ranges`、`cached`、`Length`、`ChunkReader`。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/dumpformat/parquetfile` 确认模块与测试集合；`node --file .../source_reader.rs` 返回完整源码及 9 个引用文件；`query`/`node` 核对 `SourceReader`、`prepare`、`prepare_with_thresholds`、`set_ranges`、`get_read`、`get_bytes`、`parser::DEFAULT_BUFFER_SIZE` 和 `parser::open_file_reader`。精确 callers/callees 对 trait 间接调用未返回边，故没有据此虚构调用者。
-- crate 与模块：`pkg/dumpformat/parquetfile/Cargo.toml`、`pkg/dumpformat/parquetfile/lib.rs`。
-- 直接 Rust 接线：`pkg/dumpformat/parquetfile/file_parser.rs`、`pkg/dumpformat/parquetfile/parser.rs`、`pkg/executor/importer/import.rs`、`lightning/pkg/importer/chunk_process.rs`。
-- Rust 测试：`pkg/dumpformat/parquetfile/tests/whole_file_preload.rs`、`pkg/dumpformat/parquetfile/tests/page_streaming_peak.rs`、`pkg/dumpformat/parquetfile/parser_test.rs`，另由 `pkg/executor/importer/production_storage_test.rs` 检查生产存储入口的 whole preload 状态。
-- Go 对照：`pkg/dumpformat/parquetfile/reader_wrapper.go`、`pkg/dumpformat/parquetfile/parser.go`、`pkg/dumpformat/parquetfile/parser_test.go`。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；验收采用任务指定的固定章节结构命令，并人工复核上述符号、调用链、边界与扩展点均有直接源码或测试依据。

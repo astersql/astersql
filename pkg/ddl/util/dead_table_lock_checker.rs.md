@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl-util` crate（见 `pkg/ddl/util/Cargo.toml`），实现“失效表锁”检测：这里的“失效”是表锁登记的 TiDB `server_id` 已不在 etcd schema-version 发布者集合中，不是事务等待形成的死锁。`pkg/ddl/util/lib.rs` 将本模块声明为私有模块后通过 `pub use dead_table_lock_checker::*` 公开其 API。
-
-当前 Rust 仓库中，生产侧只找到 crate 再导出，没有找到 `NewDeadTableLockChecker`、`DeadTableLockChecker` 或 `GetDeadLockedTables` 的 Rust 调用者；唯一直接调用位于独立测试 `pkg/ddl/util/dead_table_lock_checker_test.rs`。因此该文件已具备局部检测算法和测试夹具，但尚无证据表明它已接入 Rust DDL owner 的周期清理主链。Go 对照实现则已由 `pkg/ddl/ddl.go` 的 `newDDL` 构造并由 `startCleanDeadTableLock` 每 10 秒在 owner 节点调用。
+`MetaOnlyInfoSchema` 把检查器与具体 infoschema 实现隔离；`InMemoryInfoSchema` 是本文件提供的最小内存实现，会过滤无锁表和过滤后为空的库分组。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ Go 生产链通过 DDL 实例的 ticker 和 wait group 管理周期任务生命�
 
 ## 与 Go 版本的对应关系
 
-核心算法按 `pkg/ddl/util/dead_table_lock_checker.go` 对齐：默认 5 次重试、200ms 间隔；从 `DDLAllSchemaVersions` 前缀收集 server ID；按 infoschema 中 `Lock != nil` 的表扫描；以完整会话为键聚合失效表的 schema/table ID 和锁类型。
-
 主要差异如下：
 
 - Go 使用真实 `clientv3.Client`、`context.Context` 和每次请求的一秒子超时；Rust 使用 crate 内内存 `EtcdClient` 与协作式 `CancellationToken`，`DEFAULT_TIMEOUT` 尚未生效。
@@ -83,8 +79,6 @@ Go 生产链通过 DDL 实例的 ticker 和 wait group 管理周期任务生命�
 - Go 重试失败会记录日志；Rust 只返回最后错误。Go 休眠同样不受 context 直接打断，但下一轮会检查取消。
 - Go 无 etcd 时返回 `nil` map；Rust 返回空 map。
 - Go 已在 `pkg/ddl/ddl.go` 的 owner 周期任务中使用并继续提交解锁 job；Rust 只有 crate 导出和独立单元测试调用，不能视为完整迁移完成。
-
-独立 Rust 测试 `pkg/ddl/util/dead_table_lock_checker_test.rs::exact_schema_version_prefix_key_matches_go_trim_prefix_semantics` 验证键恰好等于 `DDLAllSchemaVersions` 时不会错误地剥离前缀，且相同字符串的 `server_id` 被判为存活。仓库内没有找到直接针对 Go `DeadTableLockChecker` 的 `_test.go` 用例。
 
 ## 扩展指南
 
@@ -94,12 +88,3 @@ Go 生产链通过 DDL 实例的 ticker 和 wait group 管理周期任务生命�
 - 修改表扫描或聚合时，应保持完整 `SessionInfo` 分组以及 `TableInfo.db_id/id`、`lock_type` 的逐项映射；若增加去重或排序，必须说明对调用者和 Go 对齐的行为变化及额外时间/内存成本。
 - 测试必须继续放在独立文件 `pkg/ddl/util/dead_table_lock_checker_test.rs`，不要内嵌回生产源文件。建议补充：无客户端、取消、重试恢复/耗尽、空存活集合、存活与失效会话混合、多表同会话聚合、无锁表过滤和零次重试。
 - 若新增外部依赖或改变 crate 边界，需同步 `pkg/ddl/util/Cargo.toml`；当前该 manifest 没有外部依赖。
-
-## 验证依据
-
-- Rust 源码：`pkg/ddl/util/dead_table_lock_checker.rs`；依赖类型实现：`pkg/ddl/util/util.rs`；模块声明与公开再导出：`pkg/ddl/util/lib.rs`。
-- crate 边界：`pkg/ddl/util/Cargo.toml`，包名为 `astersql-ddl-util`，`lib.path = "lib.rs"`，`go-package = "pkg/ddl/util"`，且 `[dependencies]` 为空。
-- Rust 独立测试：`pkg/ddl/util/dead_table_lock_checker_test.rs`。该文件当前只有 `exact_schema_version_prefix_key_matches_go_trim_prefix_semantics` 一个测试。
-- Go 对照：`pkg/ddl/util/dead_table_lock_checker.go`；生产接线与后续清理：`pkg/ddl/ddl.go` 中的 `ddlCtx.tableLockCkr`、`newDDL`、`startCleanDeadTableLock`、`cleanDeadTableLock`。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/ddl/util` 显示该文件有 11 个符号；`explore` 返回完整源码及 `GetDeadLockedTables → get_alive_servers/list_tables_with_locks` 关系；`query` 分别定位 `GetDeadLockedTables`、`get_alive_servers`、`NewDeadTableLockChecker`、`MetaOnlyInfoSchema`。`callers/callees` 未返回额外外部边，随后用全仓 Rust 搜索确认仅独立测试调用。
-- 人工边界复核：文档区分 Rust 当前事实与 Go 设计位置，未把未生效的 `DEFAULT_TIMEOUT`、未接线的 owner 清理链或内存 etcd 模型描述成生产能力。

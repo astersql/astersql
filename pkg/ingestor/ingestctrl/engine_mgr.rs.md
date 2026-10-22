@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-ingestor-ingestctrl`（`pkg/ingestor/ingestctrl/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `lib.rs` 以 `pub mod engine_mgr` 暴露。它位于 Rust 本地导入后端的控制面：上层 `local.rs::Backend` 持有 `Arc<EngineManager>`，将打开、关闭、重置、清理、Writer 创建、磁盘/内存统计以及外部 Engine 查询委托给这里；真正的有序 KV、导入状态和 Region 切分逻辑位于同 crate 的 `engine.rs::Engine`。
-
-本文件不是完整存储引擎实现。它维护本地与外部 Engine 注册表、排序目录、锁状态入口和 TSO 分配，并把具体操作下沉给 `Engine`、`Writer`、`StoreHelper` 与 `ExternalEngine`。Cargo 清单表明当前无条件直接依赖包括 `astersql-ingestor-engineapi`；大量完整 TiDB/Lightning 依赖仅列在 `cfg(windows)` 目标段，阅读时不能据此推断本文件已拥有 Go 版 Pebble 后端的全部能力。
+`openEngine`、`closeEngine`、`resetEngine`、`cleanupEngine` 和 `close` 组织本地 Engine 生命周期；`registerExternalEngine` 及外部查询方法管理实现 `ExternalEngine` trait 的对象。
 
 ## 核心职责
 
@@ -87,9 +85,9 @@ Engine 操作锁不是 Rust guard，而是 `engine.rs` 的原子状态协议，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ingestor/ingestctrl/engine_mgr.go`，测试对照为 `engine_mgr_test.go`。Rust 保留了 Go 的 `StoreHelper`、管理器双注册表、锁辅助、Engine 生命周期、TSO 分配、统计访问和排序目录准备等总体职责；Rust 测试 `TestEngineManager`、`TestGetExternalEngineKVStatistics`、`TestCleanupAllLocalEnginesLogsErrorOnly` 的命名也指向相应 Go 测试意图。
+Rust 保留了 Go 的 `StoreHelper`、管理器双注册表、锁辅助、Engine 生命周期、TSO 分配、统计访问和排序目录准备等总体职责；Rust 测试 `TestEngineManager`、`TestGetExternalEngineKVStatistics`、`TestCleanupAllLocalEnginesLogsErrorOnly` 的命名也指向相应 Go 测试意图。
 
-已对齐的关键语义包括：同 ID open 幂等、未知 reset 返回成功、未知 cleanup 不报错、TSO 由物理/逻辑部分合成、清理后注册表视图为空，以及 codec 由 StoreHelper 透传。Rust 还用独立测试 `open_engine_is_idempotent_for_an_existing_id` 和 `reset_missing_engine_is_a_noop` 显式固定前两项。
+Rust 还用独立测试 `open_engine_is_idempotent_for_an_existing_id` 和 `reset_missing_engine_is_a_noop` 显式固定前两项。
 
 尚未完整对齐之处必须保留在迁移视野中：
 
@@ -111,11 +109,3 @@ Engine 操作锁不是 Rust guard，而是 `engine.rs` 的原子状态协议，�
 若补齐 Go 的持久化重复检测、buffer pool 或 checkpoint 保留策略，它们不应被伪装成当前 `Vec<KvPair>`/无条件删目录的小改动；需要同步扩展 `BackendConfig`、构造失败清理、close 顺序和资源泄漏测试。性能上尤其关注 `openEngine` 持有全局注册表锁期间执行 I/O/TSO 请求、遍历统计的 O(n) 成本，以及外部 `Close` 在表锁内执行的阻塞风险。
 
 相关测试应继续放在独立文件 `pkg/ingestor/ingestctrl/engine_mgr_test.rs`。Go 对照行为则在 `engine_mgr_test.go`；涉及 Engine 状态机和 Writer 的边界还应同步检查同目录 `engine_test.rs`，但不要把测试内嵌到 `engine_mgr.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 68 个文件；`node --file pkg/ingestor/ingestctrl/engine_mgr.rs --offset 1 --limit 520` 返回目标文件完整 419 行；`query EngineManager --kind struct` 区分出 Rust `EngineManager`（第 74 行）与 Go `engineManager`（第 62 行）。
-- RustCodeGraph 调用/被调用查询：`explore "engine_mgr.rs EngineManager"` 给出 `local.rs::NewBackend -> newEngineManager`、`local.rs` 各 Backend 门面对生命周期/统计方法的调用，以及 `resetEngine -> lockEngine/openEngine/GetRegionSplitKeys/Close`、`closeEngine -> lockEngine/Close` 等边；精确 `callees openEngine|closeEngine|resetEngine` 进一步按路径分离了 Go/Rust 同名定义。通用名 `close` 的图结果歧义过大，因此最终关系用 `local.rs` 直接调用点复核。
-- 已读生产路径：`engine_mgr.rs`、`Cargo.toml`、`lib.rs`、`local.rs`、`engine.rs`；本包不存在 `doc.go`，所以以 `lib.rs` 的 crate/module 文档作为最近的模块契约。
-- 已读对照与测试：`engine_mgr.go`、`engine_mgr_test.rs`、`engine_mgr_test.go`。Rust 测试覆盖 TSO/open/close/reset/cleanup、重复 open 幂等、未知 reset、未知外部统计和批量清理；Go 测试补充了原始日志/错误聚合意图。
-- 本任务是纯文档分析；按总计划不运行 Cargo。结构验收以固定 11 个二级标题、文件存在和人工事实复核为准。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`redact.rs` 是 `astersql-util-redact` crate 的业务实现文件，由 `pkg/util/redact/lib.rs` 以 `pub mod redact` 声明并全量重导出。crate 的 `Cargo.toml` 将库入口设为 `lib.rs`，直接依赖 `kvproto` 的 BR protobuf 类型和 `path-clean`。根 workspace 又通过 `facade_util_redact` 将它纳入顶层 facade。
-
-它不是 SQL 脱敏的通用解析器，而是面向日志、EXPLAIN 展示、反脱敏工具和 BR 备份任务展示的底层实用 API。当前可直接确认的生产接线包括：`pkg/session/nontransactional.rs::redact_sql` 调用 `String`，`pkg/session/runtime/explain_select.rs` 在构造执行计划字面量时调用 `WriteRedact`。`DeRedactFile`、全局开关 API 和 `TaskInfoRedacted` 在本 crate 中有独立测试证据，但本次检索未证实它们已由其他生产 Rust 代码直接调用。
+管理进程内全局脱敏开关，并为普通值与二进制 key 提供简便展示函数。
 
 ## 核心职责
 
@@ -74,15 +72,11 @@ RustCodeGraph 将目标文件标记为被 6 个文件使用，但对精确符号
 
 ## 与 Go 版本的对应关系
 
-Rust 文件以 `pkg/util/redact/redact.go` 为直接对照，`Cargo.toml` 的 `package.metadata.porting.go-package` 也指向 `pkg/util/redact`。主要对应关系如下：
-
-- Go `String` / `redactStringer` / `Stringer` 对应 Rust 同名 API 与 `FmtStringer`；三模式、Unicode rune/char 遍历和标记加倍语义一致。
 - Go `DeRedactFile` / `DeRedact` 对应 Rust 同名函数；路径清理、`-` 表示 stdout、输出文件截断与 Unix `0644`、标记转义、未闭合文本保留、每行分隔符语义一致。实现级差异是 Rust `lines` 没有 Go Scanner 的 token 上限。
 - Go 的 `errors.RedactLogEnabled` 原子容器被 Rust `OnceLock<RwLock<String>>` 取代；可观察的 `InitRedact` / `NeedRedact` / `Value` / `Key` 常规路径保持一致，但 Rust 额外有锁中毒 panic 边界。
-- Go `WriteRedact` 与 Rust 实现的三分支相同：`MARKER` 包裹，`ON` 写问号，其他原样输出。
 - Go `TaskInfoRedacted.String` 使用浅层结构复制再逐后端复制；Rust 使用 protobuf `clone` 得到深副本。两者都遮盖 S3/GCS/Azure 的同组凭证，不改原对象，并生成紧凑 protobuf 文本。
 
-`pkg/util/redact/redact_test.go` 是基础对照测试。Rust `redact_test.rs` 覆盖同样的模式、反脱敏和全局开关，并增加输出文件 `0644` 验证；`migration_aster_unit_test.rs` 补充 Unicode、转义标记、自定义行分隔符、大写 key 编码以及三种云存储凭证的不泄露/不修改原对象契约。
+Rust `redact_test.rs` 覆盖同样的模式、反脱敏和全局开关，并增加输出文件 `0644` 验证；`migration_aster_unit_test.rs` 补充 Unicode、转义标记、自定义行分隔符、大写 key 编码以及三种云存储凭证的不泄露/不修改原对象契约。
 
 ## 扩展指南
 
@@ -92,13 +86,3 @@ Rust 文件以 `pkg/util/redact/redact.go` 为直接对照，`Cargo.toml` 的 `p
 - 全局开关如果需要支持更多状态或可恢复的锁错误，应先与 Go `errors.RedactLogEnabled` 的语义对齐，再调整 `REDACT_LOG_ENABLED`；不要仅为了 Rust 实现便利而改变对外观察结果。
 - 生产逻辑必须继续放在 `redact.rs`，测试修改同步放在独立的 `redact_test.rs` 或 `migration_aster_unit_test.rs`，不将 `#[cfg(test)]` 测试逻辑内嵌到生产文件。Go 可观察行为变更时还需同步核对 `redact.go` / `redact_test.go`。
 - 性能上，`String(MARKER)` 是线性遍历，`DeRedact` 会为每行创建 `Vec<char>`，`Key` 逐字节使用 `format!`，`TaskInfoRedacted` 会克隆整个 protobuf。优化这些路径时应保留 Unicode、错误边界、不修改原对象和输出格式等契约。
-
-## 验证依据
-
-- 源码：`pkg/util/redact/redact.rs`，RustCodeGraph `node --file ... --offset 1 --limit 500` 返回完整 368 行与 29 个符号。
-- crate 边界：`pkg/util/redact/Cargo.toml` 和 `pkg/util/redact/lib.rs`；前者确认 crate 名、入口、`kvproto` / `path-clean` 依赖与 Go package 映射，后者确认重导出和独立测试接线。
-- Go 对照：`pkg/util/redact/redact.go` 与 `pkg/util/redact/redact_test.go`。
-- Rust 测试：`pkg/util/redact/redact_test.rs` 和 `pkg/util/redact/migration_aster_unit_test.rs`；后者明确覆盖 S3/GCS/Azure 遮盖与原对象不变。
-- 直接上游证据：`pkg/session/nontransactional.rs::redact_sql`、`pkg/session/runtime/explain_select.rs` 字面量闭包，以及 `pkg/planner/core/tests/redact/redact_test.rs`。
-- RustCodeGraph 查询：`status`、`files --filter pkg/util/redact`、`explore 'pkg/util/redact/redact.rs ...'`、完整 `node --file`、`query` 主要符号，以及精确 `callers` / `callees`。最后一组未返回边，因此使用 `rg` 精确检索补足并限定上游结论。
-- 人工复核结论：文档覆盖了文件存在原因、三类执行流程、共享状态与 I/O 生命周期、Go 对齐点、已知差异、扩展接入点及应同步的独立测试。本任务是纯文档分析，按计划不运行 Cargo。

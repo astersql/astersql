@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-errors` crate 中“规范化错误”实现，源码入口为 [`normalize.rs`](normalize.rs)。它把可复用的错误原型表示为 `Error`，统一保存 MySQL 数值码、RFC 文本码、消息模板、格式参数、可选 cause 和生成位置，并提供按进程级开关脱敏及 JSON 兼容能力。`pkg/errors/mod.rs` 将这里的公开类型、常量和函数重新导出，因此业务 crate 通常从 `astersql_errors` 直接使用 `Normalize`、`ErrorEqual` 等 API，而不直接引用私有模块 `normalize`。
-
-`pkg/errors/Cargo.toml` 定义 crate 名为 `astersql-errors`、库入口为 `mod.rs`；本文件直接使用 `serde` 做错误 JSON 编解码，并通过同 crate 的 `core`、`wrap`、`stack` 能力完成消息格式化、共享错误链和堆栈处理。工作区根 `Cargo.toml` 以 `facade_errors` 指向该 crate，多个 SQL、执行、存储、BR 等子 crate 也以路径依赖接入，因此这是跨子系统的基础错误协议，不属于某一条具体 SQL 执行链。
+把可复用的错误原型表示为 `Error`，统一保存 MySQL 数值码、RFC 文本码、消息模板、格式参数、可选 cause 和生成位置，并提供按进程级开关脱敏及 JSON 兼容能力。
 
 ## 核心职责
 
@@ -84,14 +82,11 @@ RustCodeGraph 对全局同名 `Normalize` 的宽查询会同时命中 SQL 规范
 
 ## 与 Go 版本的对应关系
 
-仓库 `go.mod` 锁定 `github.com/pingcap/errors v0.11.5-0.20260508054701-306e305bcf41`；其模块缓存中的 `normalize.go` 和 `normalize_test.go` 是本次直接对照。Rust 保留了 Go 的公开命名和总体语义：三态脱敏、错误原型、六条生成路径、ID 判等、单层 `Cause`、标准 unwrap、文本格式、JSON 字段及 class 映射。
-
 主要语言适配和差异如下：
 
 - Go 的 `NormalizeOption` 是修改 `*Error` 的闭包，Rust 用可枚举、可克隆的 `NormalizeOption`；两者都顺序应用，Rust API 接收切片。
 - Go 的 `atomic.String` 对应 Rust 的 `AtomicU8` 编码；Rust 未知输入明确归一为 OFF。
 - Go 用 `runtime.Caller`，Rust 用 `#[track_caller]`/`Location::caller`；快速路径都不记录位置。Go 无法取位置时写 `<unknown>/-1`，Rust 当前没有该失败分支。
-- Go 的 `error`/`fmt.Formatter` 对应 Rust 的 `StdError`、`Display` 和 `Debug`；Rust 的交替 Debug 承担 Go `%+v` 的 cause 展开语义。
 - Go 的参数是 `[]interface{}`，Rust 使用受控的 `ErrorArg`；MARKER 的 `redactFormatter` 对应 `ErrorArg::Redacted`。Rust 测试确认数字格式与标记字符转义语义得以保留。
 - Go 指针/`nil` 语义由 Rust 的 `Error` 值、`SharedError` 和 `Option` 表达。Rust `Error::Equal` 没有 Go 中“根因就是原型同一指针”的单独分支，但规范化错误仍按 ID 判等；模块级 `ErrorEqual` 保留 `ptr_eq` 快路径。
 - Go 自定义 JSON 方法与 Rust serde 实现都只编码 `class/code/message/rfccode`。Rust 独立测试额外明确反序列化后没有 cause。
@@ -103,12 +98,3 @@ RustCodeGraph 对全局同名 `Normalize` 的宽查询会同时命中 SQL 规范
 新增错误 class/组件时，必须成对更新 `component_for_class` 与由其反查的 `class_for_component` 语义，并扩展 `normalize_identity_test.rs` 的当前 schema 和旧 class-only schema 用例。需要评估已有持久 JSON、日志消费端及 RFC 码兼容性，不能重用或重编号既有 class。
 
 调整生成行为时，优先修改唯一汇合点 `Error::generate`，并在 `pkg/errors/tests/normalize_generation_test.rs` 同步覆盖六个公开入口、带栈/无栈、位置、三种脱敏状态、cause 模板和 `HackedStr` 快照。改变相等性或错误链时，同步扩展 `normalize_identity_test.rs`、`std_interop_test.rs` 与 `normalize_test.rs` 的单层 Cause 回归。性能敏感路径应保留 `FastGen*` 不捕获堆栈的性质；安全敏感改动要特别检查全局模式竞态、越界/重复脱敏位置和 MARKER 格式转义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录中 `normalize.rs` 有 67 个符号；`node --file pkg/errors/normalize.rs` 完整读取 1–489 行；`explore` 识别 `Normalize` 的目标文件调用面及测试覆盖，并显示该文件被 85 个文件使用。精确 callers/callees 因同名符号消歧查询在时限内未返回，已用局部源码引用补证。
-- 生产源码：`pkg/errors/normalize.rs`；模块边界与公开再导出：`pkg/errors/mod.rs`；crate 声明与依赖：`pkg/errors/Cargo.toml`；工作区接线：根 `Cargo.toml` 及各消费 crate 的路径依赖。
-- Rust 测试：`pkg/errors/normalize_test.rs`（Cause 只下钻一层）、`pkg/errors/tests/normalize_generation_test.rs`（六条生成路径、堆栈、三态脱敏、cause、冻结字符串）、`pkg/errors/tests/normalize_identity_test.rs`（码、ID、相等、包装、JSON）、`pkg/errors/tests/std_interop_test.rs`（标准 source/downcast 与栈标记）、`pkg/errors/tests/api_parity_test.rs`（公开 API 面）。
-- Go 对照：`go.mod` 锁定版本在本机模块缓存中的 `github.com/pingcap/errors@v0.11.5-0.20260508054701-306e305bcf41/normalize.go` 与 `normalize_test.go`。仓库 `pkg/errors` 下没有同路径 Go 源文件或 `doc.go`。
-- 调用样本：`pkg/parser/terror/terror.rs`、`lightning/pkg/importer/dup_detect.rs`、`pkg/types/internal/core_time/lib.rs`、`pkg/types/string.rs`。这些样本分别验证原型定义、跨工具复用和 `HackedStr` 实现入口，不代表穷尽列表。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工检查仅新增本说明、链接指向真实文件、重要结论均可由上述符号或测试复核。

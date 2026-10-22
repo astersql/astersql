@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/store/store.rs` 是 `astersql-store` crate 的存储注册表与打开入口。crate 根 `pkg/store/lib.rs` 通过 `mod store; pub use store::*;` 将本文件 API 提升到 `astersql_store::*`；`pkg/store/Cargo.toml` 则表明该 crate 默认采用 Classic 内核，`nextgen` feature 同时启用 `kerneltype/nextgen` 与 `keyspace-dependency/nextgen`。
-
-在应用主链中，`cmd/tidb-server/main.rs::registerStoresWithTiKVDriver` 先把真实 `TiKVStoreDriver` 注册为 `tikv`，把 `LocalStoreDriver` 注册为 `mocktikv` 与 `unistore`；随后 `initRegisteredStorage` 通过 `BuildStoragePath` 和 `New` 打开目标 keyspace，并把返回的 `StorageRef` 交给 SQL 侧 `kv::Storage::from_registered`。因此本文件承担的是“按 URI scheme 选择驱动、建立存储实例、管理 SYSTEM keyspace 句柄”的边界，而不是事务读写、Region 路由或 SQL 执行本身。
+`LocalStoreDriver` 为 mock/unistore 启动路径提供轻量实现，只从 URI 读取 `keyspaceName` 并构造 `BasicCodec`，不冒充真实 TiKV 客户端。
 
 ## 核心职责
 
@@ -96,8 +94,6 @@
 
 ## 与 Go 版本的对应关系
 
-核心结构与 `pkg/store/store.go` 对齐：Go 的 `storeDrivers + sync.RWMutex` 对应 Rust 的 `OnceLock<RwLock<HashMap<...>>>`；`Register` 的合法性和重复检查、`New/newStoreWithRetry/loadDriver`、四类重试条件、`MustInitStorage` 与 SYSTEM keyspace 分支、`InitStorage` 路径拼装均保留。
-
 需要注意的实现差异：
 
 - Go 使用 `url.Parse` 取得 scheme，并用 `util.RunWithRetry`；Rust 为保留逗号分隔多 PD 地址，只拆分 `://`，并显式实现相同的尝试次数和线性退避。Rust 额外暴露 `newStoreWithRetryAndInterval`，使测试能以零间隔覆盖相同分支。
@@ -107,8 +103,6 @@
 - Go 的 `systemStore` 是未加锁包级变量；Rust 用 `RwLock<Option<StorageRef>>` 支持并发安全访问，并在 `SetSystemStorage` 中无条件执行 SYSTEM 断言，而 Go 的 `intest.Assert` 语义偏测试期检查。
 - Rust 增加了真实 TiKV driver adapter、规范 store 克隆、cluster ID/TSO/identity/type-name 等启动接线能力；这些是 Rust client 接入所需局部接线，不改变 Go 注册/重试的主语义。
 
-`pkg/store/store_test.go::{TestRetryOpenStore, TestRegister, TestInitStorage}` 分别是重试分类、注册边界与 Classic/NextGen 初始化的直接 Go 对照；Rust 的同名/对应测试保留这些意图，并补充零重试及规范 TiKV 客户端共享断言。
-
 ## 扩展指南
 
 - 新增 store scheme：先在 `astersql-config::StoreType` 中建立合法类型，再实现独立的 `Driver`/`Storage`，在进程入口调用 `Register`。不要把真实 TiKV 类型接到 `LocalStoreDriver`；同步扩展 `pkg/store/store_test.rs` 的非法/重复/打开测试和服务器注册接线测试。
@@ -117,17 +111,3 @@
 - 扩展 `Storage`：优先给不具备能力的实现提供明确失败，而不是伪造值；若方法涉及真实资源，更新 `RegisteredTiKVStorage`、`LocalStorage`、mock/teststore 的独立测试文件及服务器关闭顺序。
 - 修改 keyspace/codec：必须同时检查 `RegisteredTiKVStorage::new`、`LocalStoreDriver::Open`、`BuildStoragePath`、`MustInitStorage` 和 SYSTEM 不变量。必须保留 `ClientRuntime::keyspace_id -> TikvStore::GetKeyspaceID -> BasicCodec.keyspace_id` 的传递链；`None` 回落的零不能当作已解析成功的证据。
 - 修改全局状态：保持锁临界区最小且不在持有 registry 锁时执行网络操作。新增生产资源槽位时需设计明确关闭路径；测试清理逻辑继续放在独立 `*_test.rs` 或测试辅助文件，不能嵌入生产源文件。
-
-## 验证依据
-
-- 冻结增量：`RegisteredTiKVStorage::new` 在读取 keyspace 名后取得 `GetKeyspaceID().unwrap_or_default()`；名称仍决定 API V1/V2，ID 来自同一规范 store 的 runtime。`store_test.rs::registered_tikv_storage_exposes_the_same_canonical_store_clone` 证明共享 store 接线，但使用注入后端，不能证明真实 PD keyspace ID；本次未进行集群验证。
-
-本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
-
-- 目标源码：`pkg/store/store.rs`，逐项核对常量、trait、实现、全局状态、注册、重试、错误链与初始化函数。
-- crate 边界：`pkg/store/lib.rs` 的 `pub use store::*`；`pkg/store/Cargo.toml` 的 `astersql-store-driver`、config/keyspace/kerneltype/url 依赖和 `nextgen` feature。
-- 应用入口与生命周期：`cmd/tidb-server/main.rs::registerStoresWithTiKVDriver`、`initRegisteredStorage`、`closeDDLOwnerMgrDomainAndStorage`。
-- Rust 直接测试：`pkg/store/store_test.rs::test_retry_open_store`、`test_zero_retry_count_matches_go_nil_success`、`test_register`、`test_init_storage`、`registered_tikv_storage_exposes_the_same_canonical_store_clone`、`local_storage_rejects_canonical_tikv_clone_requests`；补充迁移回归位于 `pkg/store/migration_aster_unit_test.rs`，覆盖快速重试、错误链、路径拼装与 SYSTEM 断言。
-- Go 对照：`pkg/store/store.go`；直接测试 `pkg/store/store_test.go::TestRetryOpenStore`、`TestRegister`、`TestInitStorage`。
-- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
-- 本任务为纯文档分析，没有修改 Rust/Go/Cargo，也未运行 Cargo。文档结构以任务指定的 11 个固定二级标题命令校验；内容人工复核了定位、运行流程、安全扩展点和未被实现掩盖的边界。

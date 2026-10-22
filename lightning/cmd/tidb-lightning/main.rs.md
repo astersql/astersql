@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo package `astersql-lightning-cmd-tidb-lightning` 的实际进程控制模块，对照 Go 的 `lightning/cmd/tidb-lightning/main.go`。`Cargo.toml` 把 `lib.rs` 设为库入口、把 `bin_main.rs` 设为同 package 的二进制入口；运行时的直接链路是 `bin_main.rs::main -> lib.rs::main -> entry::main`，其中 `lib.rs` 通过 `#[path = "main.rs"] pub mod entry` 将本文件装入 crate。
-
-它处在 Lightning CLI 的最外层编排边界：接收进程参数，构造 `server::Lightning`，启动状态服务，选择常驻 server mode 或单次导入，统一取消、日志和退出码。真正的数据导入、checkpoint、调度和 HTTP 服务实现位于 `astersql-lightning-pkg-server` 及其下游；本文件只调用这些能力，不实现导入算法。
-
-`Cargo.toml` 的 `package.metadata.porting` 将整个 crate 标记为 Go package `lightning/cmd/tidb-lightning` 的 `binary` 移植单元。其直接 path 依赖只有 `astersql-lightning-pkg-progress` 和 `astersql-lightning-pkg-server`；配置、日志、信号、内存钩子和退出函数则由同 crate 的 `stubs.rs` 提供迁移期适配。
+处在 Lightning CLI 的最外层编排边界：接收进程参数，构造 `server::Lightning`，启动状态服务，选择常驻 server mode 或单次导入，统一取消、日志和退出码。
 
 ## 核心职责
 
@@ -101,19 +97,9 @@ RustCodeGraph 的精确查询把本文件的 `run_with_factory` 定位在第 100
 
 ## 与 Go 版本的对应关系
 
-`main.rs` 基本逐段对应 `main.go`：配置装载、日志文件提示、`server.New`、非致命内存钩子、四种信号与 `Stop`、非 local 的 GOGC=500、`GoServe`、进度启用、server/run-once 分派、context canceled 归一化、最终消息、文件日志同步和退出条件都保留了相同顺序。
-
-Rust 为可测试性增加了三层结构：`LightningApp` 抽象真实服务；`run_with_factory` 注入工厂和信号开关；`run`/`main` 分离返回码与进程退出。Go 则直接使用具体 `server.Lightning`、goroutine 和包级可替换变量 `exit = os.Exit`。Rust 的 `Arc<Mutex<_>>` 是 Go 指针跨 goroutine 共享的同步替代，但也带来锁中毒和持锁等待边界。
+Rust 为可测试性增加了三层结构：`LightningApp` 抽象真实服务；`run_with_factory` 注入工厂和信号开关；`run`/`main` 分离返回码与进程退出。Rust 的 `Arc<Mutex<_>>` 是 Go 指针跨 goroutine 共享的同步替代，但也带来锁中毒和持锁等待边界。
 
 Rust 还显式调用 `fips::init_fips_only_tls_for_boringcrypto_build()`；Go 的 `fips.go` 只在 `boringcrypto` build tag 下通过空白导入触发副作用。当前 Rust 函数为空，因此只对齐非 boringcrypto 行为并保留未来接线点，不能声称 Rust 已支持 FIPS TLS。
-
-测试对应关系如下：
-
-- `main_test.go::TestRunMain` 过滤 `DEVEL` 和 `-test.*`，替换 exit，并在 goroutine 中等待 `main()` 返回；`main_test.rs::test_run_main` 用子进程、线程和 channel 近似同一入口契约。
-- `parity_test.rs::contract_normal_run_once_success` 验证 `GoServe` 先发生且 run-once 恰好一次。
-- `contract_boundary_gogc_and_log_file` 固定 local/non-local GC 行为、无状态地址的 server mode 配置错误为 2，以及版本参数早退出为 0。
-- `contract_error_paths` 固定内存钩子非致命、HTTP 服务失败返回 0、导入失败返回 1。
-- `contract_resource_cleanup_sync_and_cancel` 固定日志同步失败不改变结果、非 server 取消返回 0、状态地址启用进度及信号触发 `Stop()`。
 
 ## 扩展指南
 
@@ -124,18 +110,3 @@ Rust 还显式调用 `fips::init_fips_only_tls_for_boringcrypto_build()`；Go �
 - 改变信号或取消模型时，应评估 `Arc<Mutex<_>>` 的持锁时长、锁中毒、线程无法 join 和重复信号行为；至少同步真实信号子进程测试及注入信号的资源清理测试。
 - 改变退出码或错误严重性前，必须保留已由 Go 和 parity 测试固定的特殊边界：`GoServe` 失败为 0、非 server 用户取消为 0、server mode 用户取消为 1、配置 `Must` 错误为 2、日志 sync 失败不覆盖主结果。
 - 性能敏感的改动应特别关注 GOGC 分支和锁范围。不要在持有应用锁时加入与应用无关的慢 I/O，也不要把 local backend 误纳入 500 的默认 GC 百分比。
-
-## 验证依据
-
-本说明使用并交叉核对了以下证据：
-
-- `lightning/cmd/tidb-lightning/main.rs`：完整 255 行目标源码，确认 trait、适配器、三个公开入口、所有分支、锁/线程和退出条件。
-- `lightning/cmd/tidb-lightning/Cargo.toml`：确认 package 名、库/二进制目标、Go package 元数据及 progress/server 两个直接 path 依赖。
-- `lightning/cmd/tidb-lightning/lib.rs` 与 `bin_main.rs`：确认 `bin_main -> lib::main -> entry::main` 的实际装配链和两个独立 Rust 测试模块。
-- `lightning/cmd/tidb-lightning/fips.rs`：确认当前 FIPS 初始化函数是保留语义位置的空实现。
-- `lightning/cmd/tidb-lightning/main.go`：完整 135 行 Go 对照，确认控制流顺序、GOGC 理由、HTTP 服务失败、取消、日志同步和退出语义。
-- `lightning/cmd/tidb-lightning/main_test.go` 与 `main_test.rs`：确认参数过滤、可替换 exit、并发等待以及 Rust 子进程隔离方式。
-- `lightning/cmd/tidb-lightning/parity_test.rs`：完整 522 行，确认正常、配置边界、错误、取消、日志同步和真实/注入信号契约，以及 `MockApp` 对 `LightningApp` 的独立测试实现。
-- RustCodeGraph：`status` 显示索引覆盖 7032 个 Rust 文件；`files --filter lightning/cmd/tidb-lightning` 返回目标、入口、Go 对照和测试文件；`node --file` 读取目标及相邻 Rust/Go 文件；精确 `query run_with_factory --json` 定位 `lightning/cmd/tidb-lightning/main.rs:100`；`explore` 确认 `run_with_factory` 的五个直接调用者及五项 Lightning 方法调用汇聚关系。
-
-目标目录没有 `doc.go`；最近的 crate 合同由 `lib.rs` 模块文档和 `Cargo.toml` 提供。本任务只新增说明文档，未运行 Cargo，也未修改 Rust、Go、Cargo 或总计划。

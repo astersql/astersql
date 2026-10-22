@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics-handle-autoanalyze-refresher` crate，crate 根在同目录的 [`lib.rs`](lib.rs)，后者公开 `refresher`、`worker` 两个模块并重新导出其符号。该 crate 的 [`Cargo.toml`](Cargo.toml) 用 `package.metadata.porting.go-package` 指向 Go 包 `pkg/statistics/handle/autoanalyze/refresher`，说明这里是自动 ANALYZE 刷新器的 Rust 移植面。
-
-当前 Rust 文件实现的是一个可独立测试的调度核心：从抽象 `JobSource` 取得初始化作业和 DML 增量，把 `AnalysisJob` 放入优先队列，在时间窗口和并发上限允许时交给同 crate 的 `Worker`。它不是 SQL ANALYZE 的真实执行入口；具体执行由 `Worker` 持有的 `AnalysisExecutor` 完成（见 [`worker.rs`](worker.rs) 的 `AnalysisExecutor::analyze` 和 `Worker::submit_job`）。
-
-需要特别注意当前接线状态：上层 Rust [`../autoanalyze.rs`](../autoanalyze.rs) 定义了另一套 `PriorityRefresher` 抽象和 `StatsAnalyze<R>` 门面，但仓库中没有本文件 `Refresher` 对该 trait 的实现，也没有生产调用 `Refresher::new`；`../Cargo.toml` 对本 crate 的依赖位于 `target.'cfg(any())'.dependencies`。因此，Rust 版本目前是独立移植/单元测试实现，尚不能据此声称已进入完整 Rust 应用主链。实际 TiDB 自动分析主链仍可在 Go 的 [`../autoanalyze.go`](../autoanalyze.go) 中看到：`NewStatsAnalyze` 构造 `refresher.NewRefresher`，`handleAutoAnalyze` 调用 `AnalyzeHighestPriorityTables`。
+**管理队列与 Worker 生命周期**：提供快照、长度、运行集合、等待完成、只清队列和整体关闭等接口。
 
 ## 核心职责
 
@@ -99,9 +95,7 @@ RustCodeGraph 对 `analyze_highest_priority_tables` 给出的直接下游边包�
 
 ## 与 Go 版本的对应关系
 
-Rust 与 [`refresher.go`](refresher.go) 的对应骨架如下：`Refresher::new` 对应 `NewRefresher`，`update_concurrency` 对应 `UpdateConcurrency`，`analyze_highest_priority_tables` 对应 `AnalyzeHighestPriorityTables`，快照/运行集合/等待/长度/关闭接口也有同名或同义方法。两边都坚持“初始化队列先于时间窗口判断”，都按剩余并发槽位从优先队列取作业，并跳过当前正在运行的表；“只关闭队列不停止 Worker”也保持一致。
-
-但这不是完整的一比一移植：
+两边都坚持“初始化队列先于时间窗口判断”，都按剩余并发槽位从优先队列取作业，并跳过当前正在运行的表；“只关闭队列不停止 Worker”也保持一致。
 
 - Go 构造器直接接收 `StatsHandle`、`sysproctrack.Tracker`、DDL notifier，创建真实 priority queue/worker，并注册 DDL handler；Rust 用 `JobSource`/`AnalysisExecutor` 抽象，未接真实依赖。
 - Go 每轮从 session 读取自动分析比例、分区裁剪模式和时间参数；配置变化会 `Rebuild` 队列。Rust 时间窗口由调用方以分钟显式设置，没有比例/裁剪模式状态。
@@ -124,15 +118,3 @@ Go 测试 [`refresher_test.go`](refresher_test.go) 覆盖真实 mock store、统
 - **修改关闭行为**：维持 `close_priority_queue` 与 `close` 的区别；新增可重开或取消语义时，需明确原子状态机、正在运行作业的归属及等待规则。
 
 性能风险主要来自锁竞争、重复作业和无界队列增长；兼容风险主要来自改变同优先级顺序、时间窗口边界或错误返回语义；正确性风险主要来自把当前隔离 Rust 实现误接成完整 Go 等价实现而遗漏配置重建、DDL 事件和作业校验。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件；目标目录的 `refresher.rs`、`worker.rs`、对应 Rust/Go 测试及实现均在索引中。
-- RustCodeGraph `node --file ... --symbols-only`：确认本文件包含 `QueuedJob`、`JobSource`、`Refresher` 及 17 个相关 impl 方法；完整文件读取确认源码共 248 行、无条件编译项。
-- RustCodeGraph `callees analyze_highest_priority_tables`：确认核心入口的直接内部调用边；对 `initialize_queue`、`process_dml_changes`、`update_concurrency`、`requeue_must_retry` 的查询进一步确认 `JobSource` 和 `QueuedJob` 边。
-- RustCodeGraph 精确 callers 查询未在限定时间内返回，随后用 `rg` 复核：Rust 的构造与核心调度调用仅位于 [`refresher_test.rs`](refresher_test.rs)，未发现生产接线；这一限制已在“文件定位”和“依赖与调用关系”中明确记录。
-- 已读 Rust 路径：[`refresher.rs`](refresher.rs)、[`worker.rs`](worker.rs)、[`lib.rs`](lib.rs)、[`refresher_test.rs`](refresher_test.rs)、上层 [`../autoanalyze.rs`](../autoanalyze.rs)。
-- 已读配置路径：本 crate [`Cargo.toml`](Cargo.toml) 与上层 [`../Cargo.toml`](../Cargo.toml)，用于确认 crate 边界、移植元数据和 `cfg(any())` 接线状态。
-- 已读 Go 对照：[`refresher.go`](refresher.go)、[`refresher_test.go`](refresher_test.go)、[`../autoanalyze.go`](../autoanalyze.go)，用于核对真实生产入口、初始化时序、并发提交、关闭行为及未移植能力。
-- Rust 独立测试提供的事实包括：窗外仍初始化、初始化前忽略 DML、初始化错误可重试、按优先级填满动态并发槽位、初始化后同轮消费 DML、跨午夜窗口与非法边界、只关队列不停止 Worker。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰好包含 11 个固定二级章节，并人工检查所有“已支持”表述均限定在当前源码能够证明的范围内。

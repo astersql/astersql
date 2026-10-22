@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-stream-crr-service` library crate 的服务层主实现。crate 边界由同目录 `Cargo.toml` 和 `lib.rs` 确定：`lib.rs` 以 `pub mod service` 挂载本文件并用 `pub use service::*` 导出 API，本 crate 直接依赖 `astersql-br-pkg-stream-crr-internal-checkpoint` 与 `prometheus`。它位于 CRR（跨区域复制）checkpoint 路径的外层：内层 `Calculator` 负责计算可安全推进的 checkpoint，本文件则负责循环驱动、失败重试、无进展等待、resume 状态持久化与运行状态联动。
-
-当前接线存在明确边界：`br/pkg/stream/crr/config/config.rs` 直接依赖本 crate 的 `Config` 和 `DefaultRetryInterval`；但顶层 `br/pkg/task/operator/crr_checkpoint.rs` 当前从同包 `stubs.rs` 引入另一套 `CRRService`/`NewCRRService`，且 operator manifest 未引用本 crate。因而本文件是有独立行为测试的实现，不能据此宣称它已经被 operator 生产组装路径调用。
+位于 CRR（跨区域复制）checkpoint 路径的外层：内层 `Calculator` 负责计算可安全推进的 checkpoint，本文件则负责循环驱动、失败重试、无进展等待、resume 状态持久化与运行状态联动。
 
 ## 核心职责
 
@@ -81,18 +79,12 @@ watcher 的阻塞生命周期由 `Context` 约束；实现必须在取消后返�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `br/pkg/stream/crr/service/service.go`：`Config`、waiter/store traits、`Deps`、`Service`、`New`、`Run`/`runOnce`、resume 方法、错误重试与 `sleepContext` 都保留了相同的职责和分支顺序。Rust `RunStopGuard` 等价于 Go `defer s.flushPendingResumeStateOnShutdown()` 与 `defer s.status.stop()`；其 `drop` 中先 flush 后 stop，与 Go defer 的后进先出实际顺序一致。
-
-需要注意的语言适配有：
-
 - Go 的 `Config` 匿名嵌入 `CalculatorConfig`，Rust 使用显式 `CalculatorConfig` 字段，因此任务名路径是 `cfg.CalculatorConfig.TaskName`。
 - Go `New` 检查 `deps.Watcher == nil`；Rust `Box<dyn UpstreamCheckpointWaiter>` 不表示空值，这一不变量由类型系统保证。Go 的可空 `ResumeStateStore` 对应 Rust `Option<Box<...>>`。
 - Go calculator 是可变指针，Rust 使用 `Mutex<Calculator>` 为 `&self` 方法提供内部可变性。Go 字段依赖运行时并发约定，Rust trait 要求 `Send + Sync`。
 - Go 用 `observedCalculatorError` 及 `errors.As` 防止双计，Rust 用 `RunOnceError` enum。Go 用 `errors.Is` 识别 context 终止，Rust 当前使用错误文本包含判断。
 - Go `sleepContext` 用 timer/select，Rust 用 5ms 分段 `thread::sleep`；取消语义相同，但运行时唤醒模型和性能特征不同。
 - Go 用结构化 logger 记录 shutdown flush 失败，Rust 当前使用 `eprintln!`，不带结构化字段。
-
-`service_test.rs` 明确标注与 Go `service_test.go` 的对应场景，包括成功推进、错误降级、calculator 失败不双计、watch 阻塞/恢复、resume Load/Save 重试与关机 flush。
 
 ## 扩展指南
 
@@ -103,12 +95,3 @@ Rust 文件逐项对应 `br/pkg/stream/crr/service/service.go`：`Config`、wait
 - 新增状态字段或事件时，接入点是 `record_service_failure`、`StatusObserver` 和 `status.rs`，同时需更新 `http.rs`、`metrics.rs`、`service_test.rs`、`status_test.rs` 与 Go 对照测试。
 - 将本实现接入 `br/pkg/task/operator/crr_checkpoint.rs` 时，应删除或隔离当前 operator stubs 的重复概念，实现 `ExternalStorage`/PD mgr 到本文件 traits 的适配，传入 watcher，并明确 `Context` 与 cleanup 的所有权。这是跨 crate 接线任务，不应仅通过同名类型替换。
 - Rust 测试继续放在独立 `service_test.rs`/`parity_test.rs`，不要内嵌回生产文件。任何行为修改还应对照 `service.go` 与 `service_test.go`，避免 Rust 路径被简化为只满足现有用例。
-
-## 验证依据
-
-- 生产源码：`br/pkg/stream/crr/service/service.rs`（`Config`、`Deps`、`Service`、`New`、`Run`、`run_once`、resume 方法、`RunStopGuard`、`RunOnceError`、`should_stop`、`sleep_context`）。
-- crate 与模块边界：`br/pkg/stream/crr/service/Cargo.toml` 和 `br/pkg/stream/crr/service/lib.rs`；相邻状态实现：`br/pkg/stream/crr/service/status.rs`。该包没有 `doc.go`，因此 Go 语义以同路径生产文件为准。
-- Go 对照：`br/pkg/stream/crr/service/service.go` 与 `br/pkg/stream/crr/service/service_test.go`。Rust 独立测试：`br/pkg/stream/crr/service/service_test.rs` 和 `br/pkg/stream/crr/service/parity_test.rs`。
-- 上游配置证据：`br/pkg/stream/crr/config/config.rs` 导入本 crate 的 `Config`/`DefaultRetryInterval`；生产接线限制证据：`br/pkg/task/operator/crr_checkpoint.rs`、`br/pkg/task/operator/stubs.rs` 以及全库 Cargo manifest 中只有 CRR config crate 对本 service crate 的路径依赖。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`query UpstreamCheckpointWaiter`、`query ResumeStateStore`、`query NewExistenceSyncChecker`、`query Service` 定位了 Rust/Go 对应定义；`node br/pkg/stream/crr/service/service.rs::Service` 返回字段源码，并给出 `parity_test.rs::contract_normal_status_and_http` 的实例化边。自然语言 `explore` 与最初 `node --file` 未产生输出，故其余直接证据按技能回退规则使用精确 `rg` 和文件读取核验。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验收以目标文件存在且上述 11 个二级标题各出现一次为准。

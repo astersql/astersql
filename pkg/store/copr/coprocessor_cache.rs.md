@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-copr` crate。crate 由 [`pkg/store/copr/Cargo.toml`](Cargo.toml) 定义，以 [`pkg/store/copr/lib.rs`](lib.rs) 为入口；`lib.rs` 将 `coprocessor_cache` 声明为公开模块并重新导出其公开项。它位于 TiDB/AsterSQL 到 TiKV 的 coprocessor 请求链上：[`Store::new`](store.rs) 创建可选缓存并以 `Arc<CoprocessorCache>` 共享给 [`CopClient`](coprocessor.rs)，[`CopTaskWorker`](coprocessor.rs) 在发送任务前查缓存、在收到可缓存响应后写缓存。
-
-该文件实现的是进程内响应缓存及其键编码、准入和容量策略，不负责 Region 路由、RPC、重试或 TiKV 端缓存版本判定。当前 Rust 调用链与 Go 版本在命中校验上并不等价，具体差异见“与 Go 版本的对应关系”。
+用 `CoprocessorCacheConfig` 把 MB 和毫秒配置转换为缓存内部使用的字节数与 `Duration`，并用 `Option` 表达关闭状态。
 
 ## 核心职责
 
@@ -99,15 +97,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`coprocessor_cache.go`](coprocessor_cache.go)，行为测试是 [`coprocessor_cache_test.go`](coprocessor_cache_test.go)，Rust 独立测试位于 [`coprocessor_cache_test.rs`](coprocessor_cache_test.rs)。
-
-已对齐部分：
-
-- 配置字段、缓存值元数据、`Display/String` 格式、成本估算的设计意图一致。
-- 关闭语义、容量/最大项校验错误文本、range 与响应准入边界、分页后续页三分之一耗时门槛和分页任务上限 50 一致。
-- 构键字节布局一致：小端长度前缀，分页仅追加单一 marker，不编码分页具体数值。
-- `set` 都会强制值内 key 与调用 key 一致，`get` 都会在取值后复核完整 key，以防只依赖哈希命中。
-
 明确差异：
 
 - Go 使用 Ristretto（带准入/频率策略、异步写入和回调指标）；Rust 使用同步 `HashMap + FIFO`，所以命中时序、淘汰选择、指标和性能特征不等价。
@@ -117,7 +106,7 @@
 - Go 分页命中恢复 `PageStart` 与 `PageEnd` 到 response range；当前 Rust 命中分支只把 `page_start` 放入 `CopResponse.start_key`。
 - Rust 增加了同步 FIFO 驱逐计数接口 `evictions()`，但尚未接入 Go 的 `CoprCacheCounterEvict/Hit/Miss` 指标。
 
-因此，本文件是真实可执行缓存，不是桩；但其 Go 缓存协议移植仍不完整。后续补齐时应限定在相关调用链接线和独立测试中，不能仅修改此文件后宣称协议已对齐。
+因此，本文件是真实可执行缓存，不是桩；但其 Go 缓存协议移植仍不完整。
 
 ## 扩展指南
 
@@ -128,12 +117,3 @@
 - 增加指标：应在命中、未命中和实际驱逐的确定位置接入 `astersql-store-copr-metrics`，并评估可选依赖/feature 边界，避免让核心缓存无条件依赖可选 metrics crate。
 - 优化并发：若替换全局互斥锁或 FIFO，需要保持 `entries`、成本和顺序结构的原子不变量，并用并发独立测试或模型测试证明没有重复键、成本漂移和锁顺序问题。
 - 修改成本估算：同步更新 `CoprocessorCacheValue::len` 和 `cache_value_len_counts_struct_and_owned_bytes`；明确它是策略成本还是精确内存占用，避免两种含义混用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/store/copr` 确认目标源、Go 对照和独立测试均已索引；`query CoprocessorCache` 定位 `CoprocessorCacheConfig`、`CoprocessorCacheRequest`、`CoprocessorCacheValue`、`CoprocessorCache`、`new/get/set` 和构键函数；`node --file pkg/store/copr/coprocessor_cache.rs --offset 1 --limit 400` 读取了目标文件全部 276 行。精确 `callers/callees` 对常见方法名出现跨仓库同名歧义且部分查询超时，因此调用边改用以下精确源码搜索核验。
-- 生产源码：[`coprocessor_cache.rs`](coprocessor_cache.rs)（全部符号与内部算法）、[`coprocessor.rs`](coprocessor.rs)（`response_cache_key`、`CopTaskWorker` 的查找/写入路径）、[`store.rs`](store.rs)（构造、共享和关闭生命周期）、[`lib.rs`](lib.rs)（模块声明和 re-export）。本目录没有 `doc.go`/`doc.rs` 包契约文件。
-- crate 配置：[`Cargo.toml`](Cargo.toml) 确认 crate 名、库入口、Go 包映射和依赖边界。
-- Go 对照：[`coprocessor_cache.go`](coprocessor_cache.go)（Ristretto 实现）以及 [`coprocessor.go`](coprocessor.go) 的 `buildCacheKey`/`handleCopCache`（Region、时间戳、TiKV 版本确认和分页回填）。
-- 测试证据：[`coprocessor_cache_test.rs`](coprocessor_cache_test.rs) 覆盖键布局、配置、准入边界、长度、显示格式、实际 get/set 和负容量；[`coprocessor_cache_test.go`](coprocessor_cache_test.go) 提供原始 Go 边界和分页回填语义。Rust 测试文件前半还保留 `GO_REFERENCE` 文本，但真正可执行的 Rust 测试从 `config()` 及其后的 `#[test]` 开始。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节、链接/范围和事实可追溯性。

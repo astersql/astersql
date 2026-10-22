@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明的真实源文件是 [`session_pool.rs`](./session_pool.rs)。它属于 workspace 成员 `astersql-ddl-session`（[`Cargo.toml`](./Cargo.toml)），由模块入口 [`lib.rs`](./lib.rs) 以 `pub mod session_pool` 声明并整体再导出。它位于 DDL 后台 SQL 执行所需的会话抽象之上：相邻文件 [`session.rs`](./session.rs) 定义 `SessionContext`、`SessionVariables`、`ExecutionContext` 和 `SessionError`，本文件则把任意实现了 `ResourcePool` 的底层池包装成 DDL 内部会话池 `Pool`。
-
-根 `Cargo.toml` 将该 crate 纳入 workspace，并以 `facade_ddl_session` 登记；`pkg/ddl/Cargo.toml`、`pkg/ddl/jobsubmit/Cargo.toml`、`pkg/ddl/ingest/Cargo.toml`、`pkg/ddl/notifier/Cargo.toml`、`pkg/session/Cargo.toml` 和 `pkg/executor/Cargo.toml` 声明了路径依赖。不过，对 Rust 生产源码的精确检索没有发现 `new_session_pool`、本文件 `Pool` 或 `ResourcePool` 的实际调用，当前可核实的直接使用者仅为 `pkg/ddl/session/session_pool_test.rs`。因此它是已经形成独立 API 和测试的 Go 语义移植边界，但不能据现有证据声称已经接入 Rust DDL 运行主链。
+位于 DDL 后台 SQL 执行所需的会话抽象之上：相邻文件 [`session.rs`](./session.rs) 定义 `SessionContext`、`SessionVariables`、`ExecutionContext` 和 `SessionError`，本文件则把任意实现了 `ResourcePool` 的底层池包装成 DDL 内部会话池 `Pool`。
 
 ## 核心职责
 
@@ -108,9 +106,6 @@ RustCodeGraph 的精确符号查询识别了 `internal_session_ids`、`validate_
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`session_pool.go`](./session_pool.go)，测试对照为 [`session_pool_test.go`](./session_pool_test.go) 与 [`session_pool_test.rs`](./session_pool_test.rs)。
-
-- Go `Pool` 的 `mu.closed + resPool util.SessionPool` 对应 Rust `PoolState::closed + Arc<dyn ResourcePool>`。
 - Go `NewSessionPool` 对应 `new_session_pool`/`Pool::new`。Go 用 `intest.AssertNotNil` 拒绝 nil；Rust 的 `Arc<dyn ResourcePool>` 类型本身没有 nil 值。
 - Go `Get` 的类型断言、自动提交、restricted SQL、statement timezone、disk-full option 和 `infosync.StoreInternalSession`，分别对应 Rust `Resource` 判别、四个 `SessionVariables` 设置方法和本地 `store_internal_session`。Rust 登记的是 session ID；Go 的 infosync 路径最终面向内部会话可观测信息，二者存储模型并非同一实现。
 - Go `Put` 在 `intest` 构建中断言没有有效事务，然后回滚、清选项、归还和注销；Rust `put` 把该不变量提升为所有构建均会返回的 `SessionError::Transaction`，并且会传播 `transaction(false)` 错误。
@@ -129,14 +124,3 @@ RustCodeGraph 的精确符号查询识别了 `internal_session_ids`、`validate_
 若要把该池接入 Rust 生产主链，应先实现真实 `SessionContext` 和 `ResourcePool` 适配器，再在拥有会话工厂与关闭顺序的组装层构造 `Pool`。接线验证应覆盖 DDL 内部 SQL、关闭期间 outstanding session 归还、内部会话可观测性以及销毁后不复用；仅在 Cargo manifest 添加依赖不足以证明接入完成。
 
 涉及并发语义时，应补充 `get`/`close` 交错、并发重复 `close`、并发读 `internal_session_ids` 和重复 ID 的测试。任何可能 panic 的真实底层 `close` 或锁 poison 策略也应明确，而不是依赖当前 `unwrap()` 的隐式行为。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引覆盖 11,467 个文件，其中 Rust 7,032 个；目标文件完整索引为 209 行。
-- RustCodeGraph 文件查询：`files --filter pkg/ddl/session` 确认 Rust/Go 源与对应独立测试文件；`node --file pkg/ddl/session/session_pool.rs --offset 1 --limit 500` 读取全部目标源码。
-- RustCodeGraph 符号查询：确认 `internal_session_ids`（第 70 行）、`validate_idle`（第 138 行）、`new_session_pool`（第 207 行）；图输出核实了 `get`、`put`、`destroy`、`close` 的上述文件内调用边。跨文件 callers 因同名符号消歧未产生可靠结果，因此没有据此声称生产接线。
-- 读取的 crate 与相邻定义：`pkg/ddl/session/Cargo.toml`、`pkg/ddl/session/lib.rs`、`pkg/ddl/session/session.rs`；根 `Cargo.toml` 与相关子 crate Cargo manifests 用于核对 workspace 和依赖声明。
-- Go 对照：`pkg/ddl/session/session_pool.go`；Go 测试：`pkg/ddl/session/session_pool_test.go`。
-- Rust 独立测试：`pkg/ddl/session/session_pool_test.rs`，包含 `test_session_pool`、`test_pessimistic_txn`、`test_session_pool_destroy_resource_pool`、`test_session_pool_destroy_destroyable_session_pool`。
-- 精确源码检索：生产 Rust 文件未发现 `new_session_pool` 或本文件池类型的直接使用，只有目标文件及其测试；据此将当前运行主链接线标为未出现，而非推定已支持。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构校验要求本文恰有 11 个固定二级标题。

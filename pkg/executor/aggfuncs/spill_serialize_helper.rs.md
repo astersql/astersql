@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate，模块由 `pkg/executor/aggfuncs/lib.rs` 声明，其 `SerializeHelper` 被 crate 根重导出。它位于哈希聚合的内存 partial result 与 spill chunk 中字节列之间：向下调用 `astersql-util-serialization` 中与 Go 兼容的基础编码器，向上由 `aggfuncs.rs` 的 `Serializer`/`StateSerializer<T>` 和 `pkg/executor/aggregate/agg_hash_partial_worker.rs` 的落盘流程使用。
-
-`pkg/executor/aggfuncs/Cargo.toml` 将 crate 入口定为 `lib.rs`，并以普通 workspace 路径依赖引入 `astersql-util-serialization`；本文件没有条件编译项。它只描述 partial data，聚合函数配置仍由 `StateSerializer<T>::template` 和构建器保留。
+处理 Go 协议中的特殊表示：浮点 DISTINCT 的位模式、decimal 精度、Time/Duration 内部位、VectorFloat32 零拷贝格式，以及不支持的 PERCENTILE 空状态。
 
 ## 核心职责
 
@@ -71,7 +69,7 @@ buffer 在 helper 存活期内保留 capacity，helper 被 drop 时一次性释�
 
 ## 与 Go 版本的对应关系
 
-Go 直接对照文件是 `pkg/executor/aggfuncs/spill_serialize_helper.go`。两者都以 64 字节初始 buffer，在每次调用前复用容量，并通过同名 serialization primitives 保持字段布局。旧式 Rust `serialize_*` 与 Go `serializePartialResult4*` 一一对应，包括 nil/空 GROUP_CONCAT buffer 的 bool 标志、JSON 元素逐项编码、FIRST_ROW 的双状态位，以及向量只在真实非 NULL 值时写负载。
+旧式 Rust `serialize_*` 与 Go `serializePartialResult4*` 一一对应，包括 nil/空 GROUP_CONCAT buffer 的 bool 标志、JSON 元素逐项编码、FIRST_ROW 的双状态位，以及向量只在真实非 NULL 值时写负载。
 
 Rust 版在同一文件中又引入 `SpillElement`/`SpillState` 泛型抽象，用 trait 实现取代 Go 中多个专用 set/slice 循环，但线上格式仍对齐 Go：集合先写数量，distinct decimal 写 key/value 对，方差写三个标量，APPROX_COUNT_DISTINCT 直接使用自带格式。`Percentile<T>::read_spill` 对 Time/Duration 特意按每项 8 字节计费，是源码注释明示的 Go 兼容行为，而不是 Rust 类型的实际 `size_of`。
 
@@ -86,13 +84,3 @@ Rust 版在同一文件中又引入 `SpillElement`/`SpillState` 泛型抽象，�
 5. 同步更新独立测试 `pkg/executor/aggfuncs/spill_helper_test.rs`：至少覆盖空状态、边界值、大负载导致的 buffer 扩容、经 chunk 的真实往返、源 chunk 重置后的所有权和内存计费。若修改 Go 兼容格式，还必须同步 `spill_helper_test.go` 中的对照情形。
 
 主要兼容风险是字段顺序、长度前缀、nil/空差异或特殊类型格式变化导致旧 spill 数据无法恢复；正确性风险是重建去重容器时改变 NaN/位模式或键语义；性能风险是不必要的中间拷贝、过度保留大 buffer capacity 以及内存计费不准。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 Rust 7,032 个；本次查询时索引可用。
-- RustCodeGraph `node --file pkg/executor/aggfuncs/spill_serialize_helper.rs --offset 1/521`：读取完整 935 行源码，并确认图中直接使用文件为 `aggfuncs.rs` 和 `aggregate/agg_hash_partial_worker.rs`。
-- RustCodeGraph `query SerializeHelper --kind struct` 与 `query SpillState --kind trait`：核对 Rust/Go 对照符号以及 trait 在 `aggfuncs.rs` 的定义位置。宽泛 `explore` 输出同时显示 `spill_maps`、`serialize_state`、`write_spill`/`read_spill` 相关边；结论又由下列源码局部核验。
-- 已读边界/接线文件：`pkg/executor/aggfuncs/Cargo.toml`、`lib.rs`、`aggfuncs.rs`、`spill_deserialize_helper.rs`、`pkg/executor/aggregate/agg_hash_partial_worker.rs`。
-- 已读 Go 对照：`pkg/executor/aggfuncs/spill_serialize_helper.go`；已检索 Go 回归 `spill_helper_test.go`。
-- 已读/检索独立 Rust 测试：`spill_helper_test.rs`、`spill_deserialize_helper_test.rs`、`func_max_min_count_test.rs`。关键用例包括 `spill_count_round_trips_through_chunk_storage`、`spill_long_string_round_trip_preserves_null_and_payload`、`spill_distinct_count_preserves_int_real_decimal_duration_string_and_multi_keys`、`spill_approximate_count_and_variance_preserve_full_partial_state`、`spill_percentile_preserves_all_five_typed_samples_and_memory_charges`、`spill_first_vector_preserves_unseen_null_empty_and_nonempty_flags` 和 `spill_native_sql_values_keep_full_decimal_precision_time_bits_and_vectors`。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构校验命令和结果在任务交付时记录。

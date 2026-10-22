@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/domain/test_helper.rs` 属于 `astersql-domain` crate（见 `pkg/domain/Cargo.toml`），由 `pkg/domain/lib.rs` 通过公开模块 `pub mod test_helper` 装配。它不参与 Domain 的后台运行主链，而是给测试代码提供 `DomainTestHelper` 扩展 trait，使测试能够替换当前 InfoSchema、按名称取得表/分区标识，以及枚举当前内存快照中的 schema 和表。
-
-文件前半段第 23–142 行是被逐行注释掉的早期机械翻译草稿，不会进入编译产物；实际实现从 `use std::sync::Arc` 和 `pub trait DomainTestHelper` 开始。虽然用途是测试辅助，模块本身并未使用 `#[cfg(test)]` 隔离；只有同目录的 `test_helper_test.rs` 在 `lib.rs` 中受 `#[cfg(test)]` 控制。
+这些能力只读取或替换内存中的元数据快照，不执行 DDL、不访问 KV，也不等待 schema 同步。
 
 ## 核心职责
 
@@ -69,11 +67,9 @@ RustCodeGraph 对本文件给出的内部调用边为：`must_get_table_id -> mu
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/domain/test_helper.go`。Rust 的五个方法均能找到同名 Go 意图，但接口和行为并非全部一一等价：
+Rust 的五个方法均能找到同名 Go 意图，但接口和行为并非全部一一等价：
 
-- `MockInfoCacheAndLoadInfoSchema`：两版都执行容量 16 的 `Reset`，再以时间戳/版本参数 0 `Insert`；Rust 接受 `SchemaRef` 并通过公开访问器取得 cache。
 - `MustGetTableInfo`：Go 接收 `*testing.T`，用 `require.Nil(t, err)` 让测试失败后返回 `tbl.Meta()`；Rust 不接收测试句柄，直接 panic，并返回 `Arc<TableInfo>` 缓存视图。两版都通过大小写不敏感名称查询。
-- `MustGetTableID`：两版都复用表查询并读取 ID。
 - `MustGetPartitionAt`：两版都直接按索引读取分区定义；Rust 额外显式区分“无分区”的 `expect("table is not partitioned")`，索引越界仍 panic。
 - `FetchAllSchemasWithTables`：这是关键迁移差异。Go 接收 `meta.Reader`，转发到 `do.isSyncer.FetchAllSchemasWithTables`，返回完整 `[]*model.DBInfo` 和 `error`，相关 Go 测试还覆盖 failpoint 错误。Rust 不接收 reader、不调用 syncer、也不返回错误，而是枚举当前 InfoSchema 并投影成名称/ID 元组。因此 Rust 版本只是当前测试所需的轻量视图，不能视为 Go 持久化读取与错误语义的完整移植。
 
@@ -85,13 +81,3 @@ RustCodeGraph 对本文件给出的内部调用边为：`must_get_table_id -> mu
 - 若要让 cache 替换可与并发读取安全共存，应在 `InfoCache` 层提供单次加锁的替换操作，而不是在 helper 中拼接 `Reset` 与 `Insert`；需同步验证版本排序、旧 `Arc` 生命周期和空窗口消失。
 - 任何依赖枚举顺序的新断言都应先在 helper 内显式排序，或在测试中使用集合式比较，避免把底层 map/vector 顺序误当稳定 API。
 - 当前最明显的覆盖缺口是 `mock_info_cache_and_load_info_schema`；为它补测试时应验证旧快照被清除、容量行为不会阻止首次插入、最新快照和 schema 版本可被正确读回。
-
-## 验证依据
-
-- 目标实现：`pkg/domain/test_helper.rs`，确认一个公开 trait、一个针对 `Domain` 的实现、五个可编译方法，以及不参与编译的注释草稿。
-- 模块与 crate：`pkg/domain/lib.rs`（公开 `test_helper` 模块及独立 `#[cfg(test)] mod test_helper_test`）和 `pkg/domain/Cargo.toml`（`astersql-domain`、`astersql-infoschema` 路径依赖）。该目录没有 `pkg/domain/doc.go`。
-- Rust 下游实现：`pkg/domain/domain.rs` 的 `Domain::{info_cache, info_schema}`，`pkg/infoschema/cache.rs` 的 `SchemaRef`、`InfoCache::{Reset, Insert, GetLatest}`，以及 `pkg/infoschema/infoschema.rs` 的 `CiString`、`InfoSchema::{TableByName, AllSchemas}`。
-- Rust 测试：`pkg/domain/test_helper_test.rs` 验证大小写不敏感查询、表 ID、分区 ID、schema 枚举、缺表 panic 和分区索引越界 panic；没有直接覆盖 cache 替换 helper。
-- Go 对照：`pkg/domain/test_helper.go`；`pkg/domain/db_test.go` 进一步证明 Go 的 `FetchAllSchemasWithTables` 读取元数据 reader、返回完整 DB 信息并传播注入错误。
-- RustCodeGraph：`status` 报告索引含 7,032 个 Rust 文件；`explore` 确认两条 helper 内部调用边及 `test_helper_test.rs` 的上游测试调用。精确 `callers/callees` 命令未产生额外输出，未据此推断不存在调用，而是以 `explore` 与仓库范围代码搜索交叉核验。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定命令验证目标文件存在且恰好包含十一个固定二级标题。

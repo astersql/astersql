@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`wait.rs` 属于 `astersql-br-pkg-utils` library crate；crate 边界由 `br/pkg/utils/Cargo.toml` 的 `[lib] path = "lib.rs"` 确定。`br/pkg/utils/lib.rs` 以 `#[path = "wait.rs"] pub mod wait` 挂载本文件，并通过 `pub use wait::WaitUntil` 把唯一公开函数提升到 crate 根，因此外部预期入口是 `astersql_br_pkg_utils::WaitUntil`。
-
-这个文件移植自同目录 `br/pkg/utils/wait.go`，负责提供与具体备份、恢复业务无关的同步条件轮询原语。当前仓库搜索只发现 Rust crate 入口和测试引用，没有发现生产 Rust 调用点；也就是说，API 已接线并可被下游使用，但尚不能据现有调用关系断言它已进入 Rust BR 主流程。Go 版的直接生产调用位于 `br/pkg/task/stream.go::waitUntilSchemaReload`，用于等待 schema lease 恢复。
+除基本轮询外，该实现还模拟 Go `time.Ticker` 的两个重要语义：节拍以初始时间为基准按固定速率推进；条件检查耗时跨过多个节拍时，最多保留一个未消费 tick，其余 tick 丢弃，不把积压检查连续突发执行。
 
 ## 核心职责
 
@@ -75,9 +73,7 @@ RustCodeGraph 的精确 `callers`/`callees` 查询在当前索引上超时且未
 
 ## 与 Go 版本的对应关系
 
-共同语义以 `br/pkg/utils/wait.go::WaitUntil` 为基准：两者都先做一次不受取消/超时影响的快速条件检查；快路径失败后才建立总时限；随后在取消/超时与 ticker 事件间等待；条件为真返回成功；父 context 取消应与普通 timeout 区分。
-
-实现手段不同：Go 通过 `context.WithTimeout`、`time.NewTicker` 和 `select` 管理两个 channel，并以 `defer cancel()`、`defer ticker.Stop()` 清理资源；Rust 通过 `Instant`、局部节拍状态和 `Context` condvar 完成同样的同步效果，不创建 timeout child context 或 ticker 对象。Rust 显式实现 `time.Ticker` 的单槽/丢 tick 语义，相关回归在独立文件 `br/pkg/utils/wait_test.rs`。
+实现手段不同：Go 通过 `context.WithTimeout`、`time.NewTicker` 和 `select` 管理两个 channel，并以 `defer cancel()`、`defer ticker.Stop()` 清理资源；Rust 通过 `Instant`、局部节拍状态和 `Context` condvar 完成同样的同步效果，不创建 timeout child context 或 ticker 对象。
 
 错误形态也不同：Go 在父 context 失败时直接返回 `ctx.Err()`，超时使用 `errors.Errorf`；Rust 将取消映射为 `astersql_br_pkg_errors::Canceled`，将总超时表示为包装后的 `std::io::ErrorKind::TimedOut`。Rust 参数使用 `Duration`，只能表达零或正值，因此只需检测零 interval；Go `time.Duration` 可为负，`time.NewTicker` 会对所有非正值 panic。
 
@@ -91,11 +87,3 @@ RustCodeGraph 的精确 `callers`/`callees` 查询在当前索引上超时且未
 - 若把条件升级为可失败闭包或异步 future，需要重新设计返回类型与取消机制，不能在现有 `FnMut() -> bool` 内隐式丢弃错误；同时评估是否还要精确保留 Go `time.Ticker` 的单槽行为。
 - 不要把条件闭包改成并发执行而不定义重入和顺序契约。当前调用者可以安全依赖 `FnMut` 串行修改捕获状态。
 - 性能风险主要来自过小 interval 导致高频唤醒、慢条件占用调用线程，以及取消检查/条件读取的外部成本；兼容风险集中在快路径顺序、deadline 边界、错误类型和固定速率 cadence。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utils` 确认 `wait.rs`、`wait_test.rs`、`lib.rs` 和 Go 对照文件；`node --file br/pkg/utils/wait.rs --offset 1 --limit 240` 读取完整 113 行实现；`query WaitUntil --kind function --json` 区分目标函数与同名/近名符号。精确 `callers`/`callees` 查询超时且无结果，故调用边以局部引用搜索补证。
-- 生产源码：`br/pkg/utils/wait.rs`；直接取消依赖：`br/pkg/utils/stubs.rs::context::Context`；crate 入口与再导出：`br/pkg/utils/lib.rs`；crate 元数据和依赖：`br/pkg/utils/Cargo.toml`。
-- Go 对照与实际使用：`br/pkg/utils/wait.go::WaitUntil`、`br/pkg/task/stream.go::waitUntilSchemaReload`。
-- 独立 Rust 测试：`br/pkg/utils/wait_test.rs::slow_condition_does_not_cause_burst_checks_for_dropped_ticks`；crate 契约测试：`br/pkg/utils/parity_test.rs::wait_until_uses_ticker_interval_and_honors_timeout_deadline` 以及同文件快路径检查。限定搜索未发现同目录 Go 测试直接覆盖 `WaitUntil`。
-- 人工复核结论：该文件存在是为了把 Go BR 的可取消、带总时限的条件轮询语义提供给 Rust utils crate；运行方式、节拍状态、错误边界、当前未接入生产 Rust 调用链的事实，以及安全扩展时需同步的测试位置均已在上述章节明确。

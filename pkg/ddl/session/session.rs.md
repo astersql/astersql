@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-ddl-session` 的核心会话抽象。crate 入口 `pkg/ddl/session/lib.rs` 将本模块与 `session_pool` 模块公开并再导出二者的公共符号；`pkg/ddl/session/Cargo.toml` 指定 `lib.rs` 为入口、声明 Go 对照包 `pkg/ddl/session`，且自身没有第三方依赖。它位于普通 SQL 会话与 DDL 后台逻辑之间：上层拿到 `Session` 后使用统一的事务和内部 SQL API，具体数据库行为由 `SessionContext` 的实现提供。
-
-生产适配器在 `pkg/session/runtime/system_session.rs`：`ConcreteDdlContext` 实现 `SessionContext`，把事务方法和内部 SQL 执行映射到真实 `ConcreteSession`。一个直接的 DDL 消费者是 `pkg/ddl/notifier/store.rs`，其中 `DdlSessionBackend` 用本文件的 `Session` 开启、提交或回滚事务，并执行通知器系统表 SQL。因此，本文件提供的是 DDL 内部 SQL 会话的能力边界，不负责 DDL job 持久化、owner 调度、schema 状态迁移、reorg 或 schema version 同步。
+生产适配器在 `pkg/session/runtime/system_session.rs`：`ConcreteDdlContext` 实现 `SessionContext`，把事务方法和内部 SQL 执行映射到真实 `ConcreteSession`。
 
 ## 核心职责
 
@@ -95,15 +93,10 @@ failpoint 会合使用 `while` 循环重新检查 `pending`，可抵御条件变
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/ddl/session/session.go`：
-
-- Rust `Session::new`、`begin`、`begin_pessimistic`、`commit`、`transaction`、`rollback`、`reset`、`execute`、`context`、`run_in_transaction` 分别对应 Go `NewSession`、`Begin`、`BeginPessimistic`、`Commit`、`Txn`、`Rollback`、`Reset`、`Execute`、`Session`、`RunInTxn`。
-- 两版 begin 都在底层事务创建成功后设置 in-transaction；commit 都先 statement commit 再提交事务；rollback/reset 的边界一致。
-- 两版 execute 都在调用方未指定来源时补 DDL 内部来源、以批大小 8 排空结果、关闭结果集并记录带 label 的耗时/成败。Rust 将 Go 的 `context.Context`、`any` 参数、`chunk.Row`、metrics 和 error wrapping 分别抽象成 `ExecutionContext`、`SqlValue`、`Row`、`DurationObserver` 和 `SessionError`。
 - Go `RunInTxn` 的 `NotifyBeginTxnCh` failpoint、`MockDDLOnce` 与 channel 握手被 Rust 映射为原子模式、公开标志以及 `Mutex`/`Condvar` 会合；语义目标相同，但 Rust 需要显式调用 `set_notify_begin_transaction_mode`，没有 Go failpoint 框架的动态注入。
 - Rust 额外引入对象安全的 `SessionContext`/`RecordSet` trait 和线程安全的 `SessionVariables`，用于隔离生产适配器和 mock；Go 直接嵌入 `sessionctx.Context`。
 
-独立 Rust 测试 `pkg/ddl/session/session_pool_test.rs` 对照 Go `pkg/ddl/session/session_pool_test.go`，验证乐观 begin/transaction/execute/commit 主链与悲观事务锁阻塞。Rust 测试使用 mock 行锁模拟冲突，不等同于 Go 测试中的真实 mock store/KV 锁；它证明的是包装层调用顺序及并发等待约束。`pkg/ddl/notifier/store_test.rs::table_store_uses_real_ddl_session_sql_transactions` 另验证 notifier 对此抽象的真实 SQL 事务接线。
+Rust 测试使用 mock 行锁模拟冲突，不等同于 Go 测试中的真实 mock store/KV 锁；它证明的是包装层调用顺序及并发等待约束。
 
 ## 扩展指南
 
@@ -114,13 +107,3 @@ failpoint 会合使用 `while` 循环重新检查 `pending`，可抵御条件变
 - 修改 `SessionVariables` 时保持线程安全访问器，不直接暴露可变字段；池借出/归还默认值需同步检查 `session_pool.rs` 及其测试。
 - 修改 failpoint 会合时要维持 Go 的两端握手意图，并增加超时或隔离测试时评估全局状态兼容性；任何生产调用都不应依赖该测试设施。
 - 性能方面，关注每次 execute 的上下文克隆、结果行聚合和参数绑定；正确性方面，确保事务失败不会把有效事务归还池；兼容性方面，保持 `SessionError::Display`、请求来源和 Go 行为对齐。
-
-## 验证依据
-
-- 目标源码与 crate：`pkg/ddl/session/session.rs`、`pkg/ddl/session/lib.rs`、`pkg/ddl/session/Cargo.toml`。
-- 直接相邻实现：`pkg/ddl/session/session_pool.rs`。
-- 生产适配器与真实消费者：`pkg/session/runtime/system_session.rs`、`pkg/session/Cargo.toml`、`pkg/ddl/notifier/store.rs`、`pkg/ddl/notifier/Cargo.toml`。
-- Go 对照：`pkg/ddl/session/session.go`、`pkg/ddl/session/session_pool_test.go`。
-- 独立 Rust 测试：`pkg/ddl/session/session_pool_test.rs`；消费者接线测试：`pkg/ddl/notifier/store_test.rs::table_store_uses_real_ddl_session_sql_transactions`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ddl/session` 列出该目录 7 个 Go/Rust 文件；`node --file pkg/ddl/session/session.rs --offset 1 --limit 500` 读取全部 436 行并报告 82 个符号、27 个使用文件；同样用 `node --file` 读取了 Go 对照和 Rust 独立测试。精确 callers/callees 未产出可用边，故调用点以 `rg` 和上述源码复核。
-- 人工复核结论：本文件存在的理由是为 DDL 后台 SQL 提供可替换、可测试的会话边界；主要运行路径是池借出上下文后经 `Session` 委托到底层适配器；安全扩展必须同步 trait、生产适配器、独立 Rust 测试和 Go 语义。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-selection` crate 的算法实现文件，crate 根由 [`lib.rs`](./lib.rs) 声明 `selection` 模块并重新导出其公共项；crate 清单 [`Cargo.toml`](./Cargo.toml) 指定 `lib.rs` 为库入口，运行时依赖只有 `rand = "0.8"`。根 workspace 又以 `facade_util_selection` 引入该 crate，并在 `pkg/lib.rs` 的 `util::selection` 模块中重新导出，因此 `Interface` 与 `Select` 同时可从独立 crate 和总 facade 到达。
-
-它实现的是“从可比较、可交换的序列中就地找出第 k 小元素”的 introselect，而不是 SQL `SELECT`、执行器筛选算子或完整排序。当前 Rust 仓库搜索只发现 facade/依赖声明和本目录测试对 `Select` 的使用，没有发现生产 Rust 调用点；`pkg/executor/aggfuncs/Cargo.toml` 虽将 `astersql-util-selection` 声明为可选依赖，但 `func_percentile.rs` 当前直接使用切片的 `select_nth_unstable_by`。Go 侧的实际业务入口仍是 `pkg/executor/aggfuncs/func_percentile.go::percentile` 调用 `selection.Select`。
+以公开函数 `Select` 接受从 1 开始的排名，将其转换为从 0 开始的索引，并对非空序列执行 introselect；空序列返回哨兵 `-1`（`selection.rs::Select`）。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ Select -> Interface::Len
 
 ## 与 Go 版本的对应关系
 
-Rust `selection.rs` 与同目录 `selection.go` 基本逐函数对应：`Interface` 保留 `sort.Interface` 的三方法形状；`Select` 同样把 1-based 排名减一、空输入返回 `-1`、以 `6` 为 introselect 深度预算；`introselect`、`quickselect`、median-of-medians、两种 partition 以及五元素插入排序的分支和索引计算一致。
-
 可见差异主要是语言适配：Go 使用 `type Interface = sort.Interface`，Rust 定义独立 trait；Go 的 `int` 映射为 Rust `isize`；Go 的 `rand.Int() % width` 映射为 `rand 0.8` 的闭区间 `gen_range`；Rust 借用系统把可变数据访问表达为 `&mut dyn Interface`。这些差异没有改变正常排名语义。
 
 测试也保持对照：`selection_test.go` 与 `selection_test.rs` 都覆盖基本、重复值、百万随机数据和百万逆序数据，并保留 introselect/quickselect/全排序的基准辅助结构；`migration_aster_unit_test.rs` 额外明确覆盖空输入 `-1`、首尾排名、全重复值和较大确定性数据。Go 的 `main_test.go` 负责通用测试环境及 goroutine 泄漏检查，Rust 算法无后台任务，因此没有对应生命周期夹具。
@@ -99,13 +95,3 @@ Rust `selection.rs` 与同目录 `selection.go` 基本逐函数对应：`Interfa
 - 生产接线若要让 Rust 百分位聚合复用本 crate，需同时审查 `pkg/executor/aggfuncs/func_percentile.rs` 的 NaN 比较、空集/百分比为零语义与 Cargo feature 接线，不能仅替换函数名。Go 行为基线仍应以 `func_percentile.go::percentile` 和 `selection.go` 为准。
 - 测试必须继续放在独立文件：算法变更同步更新 `pkg/util/selection/selection_test.rs`；Go 对齐或迁移契约变化同步更新 `migration_aster_unit_test.rs`，必要时对照 `selection_test.go`。建议补充的边界包括最小/最大合法排名、所有元素相等和刻意触发深度回退；若决定定义非法排名行为，应先写对应回归测试。
 - 随机 pivot 会造成执行路径不确定；正确性测试应比较选中值与完整排序后的第 `k-1` 项，而不应断言最终排列或 pivot 序列。性能评估应在独立 benchmark harness 中进行，不把大规模基准嵌入普通单元测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/selection` 确认实现、模块入口和 Rust/Go 测试均在索引中。
-- RustCodeGraph 文件节点：`node --file pkg/util/selection/selection.rs --offset 1 --limit 260` 读取了完整 210 行源文件并列出 14 个符号；精确 `node` 查询核对了 `Select`、`introselect`、`medianOfMedians`、`medianOfMediansPivot`、`partitionIntro`、`quickselect` 的源码和内部调用边。
-- 实现与装配：`pkg/util/selection/selection.rs`、`pkg/util/selection/lib.rs`、`pkg/util/selection/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照与业务入口：`pkg/util/selection/selection.go`、`pkg/executor/aggfuncs/func_percentile.go`。
-- 独立测试：`pkg/util/selection/selection_test.rs`、`pkg/util/selection/migration_aster_unit_test.rs`、`pkg/util/selection/selection_test.go`、`pkg/util/selection/main_test.go`。
-- Rust 现状交叉核验：`pkg/executor/aggfuncs/func_percentile.rs` 与其 `Cargo.toml`，以及对 `facade_util_selection`、`astersql_util_selection`、`selection::Select`、`Select(` 的限定仓库搜索；未发现本目录测试以外的可靠生产 Rust 调用。
-- 本任务是纯文档分析，依计划未运行 Cargo 或代码测试；交付验证仅检查固定十一章节、链接/路径和事实一致性。

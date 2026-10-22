@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-util-topsql-reporter` crate 的数据输出边界，定义 reporter 与具体输出实现之间的共享载荷、接口、注册器和生命周期规则。crate 根 `pkg/util/topsql/reporter/lib.rs` 以 `pub mod datasink` 装入本文件并 `pub use datasink::*`，因此这里的公开类型也是 crate 级 API。`RemoteTopSQLReporter` 在 `reporter.rs::NewRemoteTopSQLReporter` 中持有一个 `DefaultDataSinkRegisterer`，把整理完成的 TopSQL/TopRU 数据广播给已注册的数据汇；具体数据汇由 `pubsub.rs::PubSubDataSink` 和 `single_target.rs::SingleTargetDataSink` 实现。
-
-该文件不负责采集、聚合、网络编码或阻塞发送。它负责规定“什么可以被发送”“输出端如何接入”“订阅如何影响全局采集开关”，并提供并发安全的 sink 集合。直接依赖边界可由 `pkg/util/topsql/reporter/Cargo.toml` 核对：tipb protobuf 载荷来自 `tipb`，错误派生来自 `thiserror`，TopSQL/TopRU 开关由同 workspace 的 `astersql-util-topsql-state`（代码中 `crate::topsql_state`）管理。
+负责规定“什么可以被发送”“输出端如何接入”“订阅如何影响全局采集开关”，并提供并发安全的 sink 集合。
 
 ## 核心职责
 
@@ -84,16 +82,10 @@ RustCodeGraph 的文件索引显示本文件有 23 个符号；其探索结果�
 
 ## 与 Go 版本的对应关系
 
-对应实现是 `pkg/util/topsql/reporter/datasink.go`，行为主干保持一致：四类 `ReportData` 载荷、`hasData` 判空、最多 10 个 sink、重复注册幂等、SingleTarget 默认启用 TopSQL、PubSub 按订阅启用 TopSQL/TopRU、TopSQL 本地计数归零关闭、TopRU 借助 state 层引用计数，以及后注册 TopRU interval 覆盖先前值。
-
-Rust 为所有权和 trait object 做了几处等价适配：
-
 - Go 用 `map[DataSink]struct{}` 以接口值作键；Rust 用 `Arc<dyn DataSink>` 加擦除后的数据指针键，表达同一实例身份。
 - Go 通过对 `*pubSubDataSink` 的具体类型断言获取订阅字段；Rust 把它提升为 `DataSink::subscription_config`，无配置的实现自然采用 SingleTarget 默认值。
 - Go 用 `context.Context.Done()` 判定注册器关闭；Rust 用 `AtomicBool`、显式 `close` 和 `Drop` 表达生命周期，并额外负责 drain sink 和调用 `on_reporter_closing`。Go 的 reporter 关闭通知逻辑分布在 reporter 侧，Rust 将这部分收拢进注册器。
 - Go 载荷通过指针共享；Rust 用 `Arc<ReportData>` 明确并发共享所有权。Go 的错误是字符串/包装错误，Rust 用可比较的 `DataSinkError` 枚举保留稳定分类。
-
-独立测试 `datasink_test.rs` 与 `datasink_test.go` 一一覆盖基本注册、两个 TopRU sink、重复注册、并发交错、TopSQL/TopRU-only 隔离和 SingleTarget 混合行为。Rust 测试用 `serial_test::serial` 与 `StateGuard` 隔离进程级状态；该测试必须继续保留在独立文件中，不应内嵌回生产源文件。
 
 ## 扩展指南
 
@@ -104,12 +96,3 @@ Rust 为所有权和 trait object 做了几处等价适配：
 - 若改变 sink 身份规则，必须先定义 clone Arc、不同 trait-object 视图和对象重建的等价性，避免出现无法注销或错误合并。当前 `data_sink_key` 的对象身份语义应由专门回归测试锁定。
 - 测试应优先扩展同目录独立文件 `pkg/util/topsql/reporter/datasink_test.rs`，并同步核对 `datasink_test.go` 的原始意图；涉及发送行为时再扩展 `pubsub_test.rs` 或 `single_target_test.rs`。共享全局开关的用例继续使用串行执行和 RAII 复位，避免测试间污染。
 - 兼容风险集中在 Go/Rust 注册语义、错误分类及 interval 归一化；性能风险集中在锁内调用 state 函数、HashMap 快照克隆 Arc 和逐 sink 串行 `try_send`。未知 sink 回调不得移入锁内。
-
-## 验证依据
-
-- 源文件：`pkg/util/topsql/reporter/datasink.rs`，RustCodeGraph `node --file ... --offset 1 --limit 260` 完整读取 248 行，并确认常量、错误枚举、载荷、两个 trait、注册器实现、Drop 和指针键函数。
-- crate 边界：`pkg/util/topsql/reporter/Cargo.toml` 与 `pkg/util/topsql/reporter/lib.rs`，确认 crate 名、`autotests = false`、`datasink` 的公开再导出、tipb/thiserror/topsql_state 依赖和独立 `mod datasink_test` 接线。
-- RustCodeGraph 调用证据：`status` 显示本地索引含 11,467 个文件且 `datasink.rs` 已索引；`files --filter pkg/util/topsql/reporter` 确认 Rust/Go 实现与测试；`query`/`explore`/`node` 核对 `DefaultDataSinkRegisterer`、`ReportData`、`data_sink_key`、`NewRemoteTopSQLReporter`、`PubSubDataSink`、`SingleTargetDataSink` 及调用链。
-- 直接 Rust 邻接证据：`reporter.rs::{NewRemoteTopSQLReporter,Register,Deregister,reportWorker,doReport,trySend,Close}`，`pubsub.rs::{TopSqlPubSubService::subscribe,DataSink for PubSubDataSink}`，`single_target.rs::{Start,trySwitchRegistration,Close,DataSink for SingleTargetDataSink}`，`state/state.rs::{EnableTopRU,DisableTopRU,SetTopRUItemInterval}`。
-- Go 对照：`pkg/util/topsql/reporter/datasink.go`；独立测试：`pkg/util/topsql/reporter/datasink_test.rs` 与 `pkg/util/topsql/reporter/datasink_test.go`。测试证据确认基本生命周期、幂等、上限相关状态模型、TopRU 引用计数/interval、并发交错及混合订阅语义。本任务按计划只做文档分析，未运行 Cargo 或代码测试。
-- 人工复核结论：本文区分了本文件承担的注册/状态职责与具体 sink 的发送职责，列出了真实符号、上下游、锁和资源生命周期、Go 差异及安全扩展点；未把未执行的代码测试描述为已验证。

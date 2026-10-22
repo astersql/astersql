@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-hack` crate；crate 入口 `pkg/util/hack/lib.rs` 以 `pub mod swiss_map` 暴露该模块。它是 Rust 侧专用的安全存储层，为 `pkg/util/hack/map_abi.rs`（Go 1.25 语义）和 `pkg/util/hack/map_abi_go126.rs`（Go 1.26 语义）中的 `MemAwareMap<K, V>` 提供底层 `SwissMap<K, V>`。`pkg/util/hack/Cargo.toml` 表明该 crate 对应 Go 包 `pkg/util/hack`，本文件本身不引入外部运行时依赖，仅使用标准库。
-
-这里保存的是 Rust 拥有的键值和一份可追踪的 Go Swiss map 分配历史，不把 Rust `HashMap`、`Vec` 或枚举内存重解释成 Go runtime 对象。文件头模块注释以及 `From<HashMap<K, V>>` 的重新插入逻辑都明确了这一边界。因此，它服务于内存计费和 Go 行为迁移，不是通用高性能 map 的透明替代品，也不是 `map_abi*.rs` 中原始指针 ABI 镜像的替身。
+用 `Slot<K, V>`、`Table<K, V>` 和 `SwissMap<K, V>` 实现八槽一组、开放寻址、二次式探测的安全键值存储（`SLOTS = 8`）。
 
 ## 核心职责
 
@@ -77,13 +75,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 目录没有 `swiss_map.go`；Go 1.25/1.26 的真实存储就是内建 `map[K]V`，`pkg/util/hack/map_abi.go` 与 `map_abi_go126.go` 通过 `unsafe` 读取 runtime map/type/table/group 布局。Rust 无法把 `std::collections::HashMap` 安全重解释为这些对象，所以本文件是迁移时新增的安全模型，并由两个 Rust `map_abi` 版本共享。
+Rust 无法把 `std::collections::HashMap` 安全重解释为这些对象，所以本文件是迁移时新增的安全模型，并由两个 Rust `map_abi` 版本共享。
 
-对应关系如下：`SwissMap.used` 对应 Go runtime map 的 `Used`；`seed`、目录、局部/全局深度效果、`tombstone_possible` 和 `clear_seq` 对应 Go map 状态；`Table::growth_left` 对应 Go table 的剩余增长额度；八槽 group、7/8 负载、1024 槽拆表以及清空不释放容量与 Go 测试意图对齐。`pkg/util/hack/map_abi_test.go::TestSwissTable` 提供 group 布局、八到九元素扩容、目录大小、删空换种子、clear 序号和内存值的 Go 基准。
+差异必须保留在理解中：Rust 槽是安全枚举且保存完整 `u64` 哈希，不是 Go control bytes；目录保存下标而非 table 指针；Rust `Iter` 不实现 Go 的随机迭代状态或并发修改检测；哈希采用 Rust `Hash`/`Eq`；`From<HashMap>` 会逐项重建 Go 风格存储，不能继承标准库 map 的不透明分配。
 
-差异必须保留在理解中：Rust 槽是安全枚举且保存完整 `u64` 哈希，不是 Go control bytes；目录保存下标而非 table 指针；Rust `Iter` 不实现 Go 的随机迭代状态或并发修改检测；哈希采用 Rust `Hash`/`Eq`；`From<HashMap>` 会逐项重建 Go 风格存储，不能继承标准库 map 的不透明分配。`group_size` 只复现计费所需布局规则，并针对 `String`、`&str`、`Vec<u8>`、大于 128 字节字段和零大小尾字段做显式换算。
-
-`pkg/util/hack/swiss_map_test.rs` 是本文件的直接白盒测试；`map_abi_test.rs`、`migration_aster_unit_test.rs` 和 Go `map_abi_test.go` 则从包装层交叉验证计费和 CRUD。Go 1.26 包装文件与 1.25 文件接口类似，因此本安全存储不是由 Cargo feature 选择其中一套，而是两套 Rust 模块均可直接引用。
+Go 1.26 包装文件与 1.25 文件接口类似，因此本安全存储不是由 Cargo feature 选择其中一套，而是两套 Rust 模块均可直接引用。
 
 ## 扩展指南
 
@@ -93,13 +89,3 @@ Go 目录没有 `swiss_map.go`；Go 1.25/1.26 的真实存储就是内建 `map[K
 - 修改 Go 布局计费时从 `go_field_layout` 和 `group_size` 接入，并同时对照 Go 1.25/1.26 runtime 布局。兼容风险集中在字符串/切片 header、超过 128 字节的间接字段、混合对齐以及零大小尾字段。
 - 新行为测试应继续放在独立的 `pkg/util/hack/swiss_map_test.rs`，不要内嵌到生产文件；包装层行为同步更新 `map_abi_test.rs`、`migration_aster_unit_test.rs`，必要时对照 `map_abi_test.go`。至少覆盖结构不变量、覆盖插入、借用查询、删空换种子、墓碑探测链、table 拆分、clear 重用与精确计费。
 - 若需要并发访问，应在调用层增加锁或并发容器，不应在本文件暗中加入内部同步，因为这会改变泛型 trait、性能和资源生命周期。若需要 Go 式迭代清空检测，则应先明确 Rust API 如何允许这种变更；当前安全借用模型下 `clear_seq` 不参与 `Iter`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/util/hack` 确认 `swiss_map.rs`、独立测试及两套 ABI 文件；`node --file pkg/util/hack/swiss_map.rs` 读取完整 504 行实现；对 `SwissMap`、`group_size` 和文件路径的 `query`/`explore` 用于核对符号与调用面。宽泛 `explore` 对 `insert`、`remove` 等通用名产生大量歧义，因此调用关系另由精确模块导入核验。
-- 源码：`pkg/util/hack/swiss_map.rs`，重点符号为 `Slot`、`Table::{find,vacancy,prune_tombstones}`、`SwissMap::{with_capacity,insert,grow,remove,clear,size}`、`Iter` 和 `group_size`。
-- crate 与模块：`pkg/util/hack/Cargo.toml`、`pkg/util/hack/lib.rs`；前者确认 crate 边界和无普通外部依赖，后者确认公开模块及独立测试装配。
-- 直接调用者：`pkg/util/hack/map_abi.rs`、`pkg/util/hack/map_abi_go126.rs`；两者均导入 `crate::swiss_map::SwissMap`，由 `MemAwareMap` 和 `NewMemAwareMap` 使用，并在初始化时调用 `group_size`。
-- Rust 测试：`pkg/util/hack/swiss_map_test.rs` 覆盖容量提示、目录/table 不变量、6000 元素拆分、删除与重填、墓碑裁剪、删空换种子、非空改种子 panic、借用查询/clone/drop 和 Go 槽布局；`pkg/util/hack/map_abi_test.rs`、`pkg/util/hack/migration_aster_unit_test.rs` 覆盖包装层内存与 CRUD。
-- Go 对照：`pkg/util/hack/map_abi.go`、`pkg/util/hack/map_abi_go126.go`、`pkg/util/hack/map_abi_test.go`；它们验证真实 Go runtime ABI 包装、`MemAwareMap`、八到九元素扩容以及清空和精确内存值。本目录没有同名 `swiss_map.go`，因此文档没有把 Rust 安全模型误述为 Go 同名源码复刻。
-- 按任务约束，本次是纯文档分析，没有运行 Cargo；验收使用任务指定的 11 章节结构命令，并人工核对上述符号、调用边、边界和扩展位置。

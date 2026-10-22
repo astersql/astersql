@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics` crate。`pkg/statistics/Cargo.toml` 将 crate 根设为 `lib.rs`；`pkg/statistics/lib.rs` 以 `mod merge_global;` 装配本模块，再以 `pub use merge_global::*;` 导出唯一公开入口 `MergePartTopNAndHistToGlobal`。它把多个分区的 `TopN` 与 `Histogram` 快照合并为一份全局 TopN 和全局直方图，供分区表的全局统计使用。
-
-直接生产调用见 `pkg/statistics/handle/runtime_stats.rs`：列统计传 `is_index = false`，索引统计传 `is_index = true`；调用方把返回的 TopN、桶、空值数和列总大小写回全局统计结构。该函数本身不负责读取存储、调度 ANALYZE 或发布统计，只处理已经规范化的内存统计对象。
+汇总所有非空分区直方图的桶内总行数、`NullCount` 和 `TotColSize`，并以第一个非空直方图提供的 ID、类型、版本构造结果（`MergePartTopNAndHistToGlobal`）。
 
 ## 核心职责
 
@@ -74,11 +72,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/statistics/histogram.go` 的同名 `MergePartTopNAndHistToGlobal` 及其辅助类型/函数。两版都执行相同的两遍结构：展平、排序、压缩分区 TopN；用桶上界 k 路归并合成候选；有界堆选择全局 TopN；把未晋级 TopN 转为虚拟点桶；最后从右向左按等深阈值、同上界合并和重叠切分重建直方图。两版也共享 1024 次一次的取消检查、动态默认 TopN 单例过滤、16 位引用容量限制、质量/Repeat 所有权和 NDV 置零语义。
+两版也共享 1024 次一次的取消检查、动态默认 TopN 单例过滤、16 位引用容量限制、质量/Repeat 所有权和 NDV 置零语义。
 
-Rust 将 Go 的 `topNCursor` 直接折叠为紧凑向量索引，把 `bucketGroupCursor` 映射为 `BucketCursor`，把 `globalMergeRefs`/`buildGlobalHistogram` 合并到 `MergeRefs` 及其 `build` 方法；Go 的 `generic.NewBoundedMinHeap` 对应 Rust 的 `Vec<Candidate>` 加 `up`/`down`。Rust 用 `Option` 表示 nil 项、用 `Cow` 混合借用与自有直方图，并克隆 TopN 编码；Go 版本会输出分阶段统计日志，当前 Rust 文件没有等价日志。上述实现形式不同，但核心计数、切分与错误边界由 Rust 独立测试按 Go 测试案例与额外不变量覆盖。
+Rust 用 `Option` 表示 nil 项、用 `Cow` 混合借用与自有直方图，并克隆 TopN 编码；Go 版本会输出分阶段统计日志，当前 Rust 文件没有等价日志。上述实现形式不同，但核心计数、切分与错误边界由 Rust 独立测试按 Go 测试案例与额外不变量覆盖。
 
-Go `buildGlobalHistogram` 注释还记录一个当前算法限制：只有阈值触发点仍位于结果桶上界组时，第二阶段才会完整重聚同有效上界组；若阈值在更深处触发，同值质量可能跨切点成为桶内质量，降低点等值估算精度。Rust `MergeRefs::build` 采用同一条件，因此扩展时不能把这项精度问题误写为已解决。
+Go `buildGlobalHistogram` 注释还记录一个当前算法限制：只有阈值触发点仍位于结果桶上界组时，第二阶段才会完整重聚同有效上界组；若阈值在更深处触发，同值质量可能跨切点成为桶内质量，降低点等值估算精度。
 
 ## 扩展指南
 
@@ -87,12 +85,3 @@ Go `buildGlobalHistogram` 注释还记录一个当前算法限制：只有阈值
 - 修改桶引用表示时，必须一起审视入口容量检查、`BucketCursor`、`MergeRefs::merge_virtual` 的分块/索引计算以及大规模虚拟条目测试，避免静默整数截断。
 - 修改等深切分时，集中在 `MergeRefs::build`、`mass`、`remaining` 和 `effective`；至少验证桶数上限、累计质量、Repeat 边界、相邻范围顺序、重叠质量守恒及 Go 版本同一算法限制。性能变更还应关注重叠扫描的最坏复杂度和 8192 分区规模案例。
 - 新回归测试应继续放在独立的 `pkg/statistics/merge_global_test.rs`，由 `lib.rs` 的 `#[cfg(test)] #[path = ...]` 接入，不应把测试写回生产源文件。若改变公开行为，还需同步核对 Go 的 `pkg/statistics/merge_global_test.go`、`merge_global_cases_test.go`、`merge_global_types_test.go` 及 `histogram_fuzz_test.go`，并审视 `handle/runtime_stats.rs` 的列/索引调用契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7032 个 Rust 文件；`files --filter pkg/statistics/merge_global.rs` 确认目标文件含 28 个符号；`query MergePartTopNAndHistToGlobal --kind function` 定位 Rust 入口与 Go 对照；`node --file ...` 读取完整 614 行实现；`callees MergePartTopNAndHistToGlobal` 确认入口到 `MergeContext`、`BucketCursor`、`MergeRefs`、`NewTopN`、`NewHistogram` 等直接边。名称消歧不足的 `callers`/方法查询没有被用于推断调用关系。
-- Rust 源与装配：`pkg/statistics/merge_global.rs`、`pkg/statistics/lib.rs`、`pkg/statistics/Cargo.toml`。
-- 生产调用：`pkg/statistics/handle/runtime_stats.rs` 中列统计与索引统计两处 `astersql_statistics::MergePartTopNAndHistToGlobal` 调用。
-- Go 对照：`pkg/statistics/histogram.go` 中 `topNCursor`、`bucketGroupCursor`、`flattenSortedTopN`、`selectGlobalTopN`、`globalMergeRefs`、`mergeVirtualTopN`、`buildGlobalHistogram` 和同名公开入口。
-- Rust 独立测试：`pkg/statistics/merge_global_test.rs` 覆盖合并计数、Repeat 归属、输入不变、空输入/取消、虚拟分块、动态默认单例过滤、类型矩阵、索引编码路径、重叠切分、容量错误、生产规模和确定性模糊不变量。Go 相关测试证据位于 `pkg/statistics/merge_global_test.go`、`merge_global_cases_test.go`、`merge_global_types_test.go` 与 `histogram_fuzz_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定的 11 个固定二级标题结构检查、链接/路径检查和人工事实复核为验收。

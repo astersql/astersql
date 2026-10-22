@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate：`pkg/executor/Cargo.toml` 以 `lib.rs` 为 crate 根，`pkg/executor/lib.rs` 通过 `pub mod shuffle;` 公开模块，并在测试配置下把独立的 `shuffle_test.rs` 注册为单测模块。它实现 root executor 层的 Shuffle 数据重分布核心：从多个上游 `dataSources` 并行取 `Chunk`，按哈希键或已排序连续组路由给固定数量的 worker，再汇总各 worker 内 child executor 的输出。
-
-当前 Rust 接线需要分层理解。`ShuffleExec`、receiver/worker、两种 splitter、线程与通道生命周期均有实际实现；`pkg/executor/builder.rs::buildShuffle` 也会收集数据源和 worker 计划。但是 builder 最终只调用抽象的 `ExecutorBuilderDependencies::build_shuffle_executor`，仓库搜索未找到该方法的具体实现，也未找到直接构造本文件 `ShuffleExec` 的生产调用点。因此本文件是完整的可运行并发核心与适配边界，不能仅凭模块导出断言 Rust SQL 主链已经绑定它。
+`ShuffleExecutor` 抽象 source、worker child 与 base executor 的 `Open/Next/Close`、Chunk 创建及运行时统计能力；本文件不提供“成功但不做事”的默认实现。
 
 ## 核心职责
 
@@ -74,13 +72,11 @@ coordinator join 全部 source/worker 后将 `allSourceAndWorkerExitForTest` 置
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/shuffle.go` 是直接语义来源。两版都有 `ShuffleExec`、`shuffleOutput`、`shuffleReceiver`、`shuffleWorker`、`partitionSplitter` 及 hash/range 两种实现；`Open` 建通道并预填空 Chunk，首次 `Next` 懒启动并发拓扑，source 分发、worker 汇总、consumer 归还 Chunk，`Close` 广播退出并记录并发统计，整体结构相同。
-
 Rust 用 `std::thread`、`SyncSender`、`finishSignal` 和显式 `catch_unwind` 替代 Go goroutine、channel、`context.Context` 与 `recover`。Go `closeCh`/关闭 channel 的广播语义在 Rust 中变成原子标志加轮询；Go `WaitGroup` 变成保存所有 `JoinHandle` 的 coordinator。Rust 额外校验 hash key 数、splitter 输出行数和 worker 下标，并在构造函数中断言拓扑数量一致。
 
 哈希版 Rust 内嵌 MurmurHash3 x86-32 seed 0，Go 调用 `murmur3.Sum32`；两边都对 worker 数取模。Range 版都借助 group checker 获取连续半开区间，并在组与组之间 round-robin；Go 注释明确要求 source 已分组，Rust 保留同一约束且让 `idx` 跨 Chunk 延续。
 
-测试对照方面，`pkg/executor/shuffle_test.go::TestPartitionRangeSplitter` 的 13 行/6 组预期被 `pkg/executor/shuffle_test.rs::partition_range_splitter_matches_go_group_round_robin` 复刻，Rust 还验证了跨 Chunk 轮询状态和 hash splitter 的正并发约束。Go `pkg/executor/executor_failpoint_test.go::TestShuffleExit` 同时覆盖 Next/source/worker failpoint 与 SQL 级退出；Rust `pkg/executor/executor_failpoint_test.rs` 目前只直接验证 `shuffleWorkerRun` 钩子在可恢复边界内 panic，尚无本文件完整并发拓扑或 SQL 主链回归证据。
+Go `pkg/executor/executor_failpoint_test.go::TestShuffleExit` 同时覆盖 Next/source/worker failpoint 与 SQL 级退出；Rust `pkg/executor/executor_failpoint_test.rs` 目前只直接验证 `shuffleWorkerRun` 钩子在可恢复边界内 panic，尚无本文件完整并发拓扑或 SQL 主链回归证据。
 
 ## 扩展指南
 
@@ -90,13 +86,3 @@ Rust 用 `std::thread`、`SyncSender`、`finishSignal` 和显式 `catch_unwind` 
 - 修改通道容量、holder 回收或取消协议时，应增加完整 `Open -> 多次 Next -> Close` 测试，覆盖消费端提前停止、source/child 出错、panic、通道背压和线程全部退出；不要把测试嵌入生产 `.rs`。
 - Range splitter 的调用者必须保证同键行连续；若要支持无序输入，应在计划中增加排序或选择 hash splitter，而不是在 `split` 内偷偷排序并改变内存/时延特征。
 - 性能敏感点包括逐行 `AppendRow`、每批 group key 编码、互斥锁获取、2ms/10ms 取消轮询和 `M×N` 路由 Chunk。优化时必须维持有界背压、Chunk 所有权归还、同键同 worker 以及关闭可终止性。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/shuffle.rs` 的三个适配 trait、`ShuffleExec::{new, Open, Next, Close, prepare4ParallelExec, fetchDataAndSplit}`、`shuffleReceiver`、`shuffleWorker::run`、两种 splitter 与 `murmur3Sum32`。
-- crate 与模块：`pkg/executor/Cargo.toml` 的 `[lib]`、`astersql-errors`、`astersql-util-chunk`、`fail` 依赖；`pkg/executor/lib.rs` 的 `pub mod shuffle` 和独立 `shuffle_test.rs` 注册。
-- Rust 构建链：`pkg/executor/builder.rs::executorBuilder::buildShuffle`、`ShufflePlanData` 与 `ExecutorBuilderDependencies::build_shuffle_executor`；全仓搜索只发现 trait 声明和调用，未发现该依赖方法实现或 `ShuffleExec::new` 的生产构造点。
-- Go 对照：`pkg/executor/shuffle.go`、`pkg/executor/builder.go::buildShuffle/buildShuffleReceiverStub`。
-- 测试证据：`pkg/executor/shuffle_test.rs` 的正并发断言、13 行 range 分组映射和跨 Chunk 游标测试；`pkg/executor/executor_failpoint_test.rs::shuffle_worker_failpoint_panics_inside_the_recovered_worker_boundary`；Go 的 `pkg/executor/shuffle_test.go::TestPartitionRangeSplitter` 与 `pkg/executor/executor_failpoint_test.go::TestShuffleExit`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；精确 `query` 找到 `pkg/executor/shuffle.rs::ShuffleExec`、`buildPartitionRangeSplitter`、`fetchDataAndSplit`，`explore` 给出 `Next -> prepare4ParallelExec -> fetchDataAndSplit/run`、splitter、group checker、failpoint 和测试调用关系。对精确 ID 执行 `callers/callees/impact` 未产生额外输出，因此跨模块接线结论以 builder 源码和 `rg` 交叉核验。
-- 未运行 Cargo，符合本纯文档任务约束；结构验证单独执行并记录。

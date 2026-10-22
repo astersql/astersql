@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`scalar.rs` 属于 `astersql-statistics` crate，是统计直方图与旧版基数估算共用的“可比较标量/小离散区间”辅助层。模块由 `pkg/statistics/lib.rs` 以 `mod scalar` 装配，并通过 `pub use scalar::*` 将公开函数重导出到 crate 根；crate 自身由 `pkg/statistics/Cargo.toml` 定义，直接依赖本仓库的 `astersql-types-datum`（在代码中名为 `types`）。
-
-它位于两条运行路径的中间：一条把 `Datum` 和直方图桶边界压成 `f64`，供桶内均匀分布假设下的插值、越界估算和全局桶合并使用；另一条把足够短的整数、时长或时间范围枚举成若干 `Datum`，供 StatsVer 1 基数估算逐点查询。源文件不负责比较器、桶定位、CMSketch 查询或统计持久化。
+`calcFraction4Datums` 为不依赖某个 `Histogram` 实例的桶合并/裁切场景提供相同的三点插值。
 
 ## 核心职责
 
@@ -95,8 +93,6 @@ RustCodeGraph 对 `pkg/statistics/scalar.rs` 给出的直接使用文件为：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/statistics/scalar.go`，主要函数、阈值和分支结构一一对应：`calcFraction`、`convertDatumToScalar`、`Histogram.PreCalculateScalar`、`Histogram.calcFraction`、`commonPrefixLength`、`convertBytesToScalar`、`calcFraction4Datums`、`maxNumStep`、`EnumRangeValues`。Rust 的 `Option<Vec<Datum>>` 对应 Go 的 `nil` 切片；`roundDuration` 是为复现 Go `time.Duration.Round` 单独写出的辅助函数；Rust 的 `wrapping_*` 保留 Go 整数溢出行为。
-
 已验证的语义差异/迁移边界如下：
 
 - Go 为非法/零日期定义了 `UTCWithAllowInvalidDateCtx`，timestamp 标量化和枚举使用允许非法日期的上下文；Rust 当前使用 `types::DefaultStmtNoWarningContext`，没有本文件级等价上下文。不能仅凭 Go 注释断言 Rust 对非法日期完全等价。
@@ -115,12 +111,3 @@ Go 测试 `TestCalcFraction` 和 `TestEnumRangeValues` 是移植意图的权威�
 所有 Rust 测试应继续放在独立的 `pkg/statistics/scalar_test.rs`，不要嵌入生产源文件。至少同步覆盖：区间内/外/退化/NaN 比例，新的类型矩阵，转换失败回退，开闭端点，空与超大范围，定宽整数边界，时间类型/FSP/时区或非法日期。Go 语义变化还应对照更新 `pkg/statistics/scalar.go` 与 `scalar_test.go` 的差异，尤其关注 BIT 和非法日期上下文这两个当前缺口。
 
 涉及 `Histogram::Scalars` 的改动还应复核 `pkg/statistics/histogram.rs` 的桶内估算、越界估算、TopN 抽取和桶合并，以及 `pkg/statistics/table.rs` 的缓存刷新接线；涉及枚举返回契约的改动应复核两个 planner 调用方在 `None` 时是否仍正确回退到范围估算。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/statistics/scalar.rs --offset 1 --limit 500` 完整读取 367 行，并报告 5 个直接使用文件；`query` 分别确认 Rust/Go 的 `calcFraction`、`convertDatumToScalar`、`PreCalculateScalar`、`commonPrefixLength`、`convertBytesToScalar`、`calcFraction4Datums`、`EnumRangeValues` 符号。
-- 源码与装配：`pkg/statistics/scalar.rs`、`pkg/statistics/histogram.rs`（`Histogram`、`scalar`、桶内估算和合并调用点）、`pkg/statistics/lib.rs`（模块及重导出）、`pkg/statistics/Cargo.toml`（crate 和 `types` 依赖）。该目录不存在 `doc.go`，因此没有额外的包级 Go 契约文件可读。
-- 上游调用：`pkg/statistics/merge_global.rs`、`pkg/statistics/table.rs`、`pkg/planner/cardinality/row_count_column.rs`、`pkg/planner/cardinality/row_count_index.rs`；调用点由 RustCodeGraph 文件节点和精确符号搜索交叉核对。
-- Go 对照与测试：`pkg/statistics/scalar.go`、`pkg/statistics/scalar_test.go`。
-- Rust 独立测试：`pkg/statistics/scalar_test.rs` 的 `scalar_conversion_and_fraction_match_boundaries`、`datum_fraction_matches_go_type_matrix`、`small_integer_ranges_are_enumerated_with_exclusions`、`temporal_ranges_follow_fractional_precision`、`integer_ranges_wrap_at_machine_boundaries`、`enum_ranges_match_go_temporal_and_empty_cases`；`pkg/statistics/main_test.rs` 另有基础枚举断言。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核文档只描述上述源码和调用证据。

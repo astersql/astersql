@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate，由 [`lib.rs`](lib.rs) 以公开模块 `rule_aggregation_elimination` 装配；同目录独立测试 [`rule_aggregation_elimination_test.rs`](rule_aggregation_elimination_test.rs) 仅在 `cfg(test)` 下装配。它移植并精简表达 Go 文件 [`rule_aggregation_elimination.go`](rule_aggregation_elimination.go) 的聚合消除规则：当分组列覆盖子计划唯一键时，将“一组最多一行”的聚合改写为投影；同时消除由唯一键保证无重复的聚合函数 `DISTINCT`，以及 Semi/AntiSemi Join 内侧只做去重的聚合。
-
-需要区分两个层次：本文件以 `crate::task::{Expression, FieldType, JoinType, PlanNode}` 构造独立的精简 `LogicalPlan`，并被 `rule_aggregation_push_down.rs`、`rule_aggregation_skew_rewrite.rs`、`rule_resolve_grouping_expand.rs` 复用；完整应用的逻辑优化入口 `optimizer_runtime.rs::LogicalOptimize` 则在 `LogicalRule::EliminateAgg` 分支调用 `eliminate_aggregation_descendants`，直接处理 `logicalop::LogicalPlanRef`。因此本文件是可执行、可测试的规则移植模型和同组规则公共 IR，但不是当前生产优化流水线唯一的实现位置。
-
-`Cargo.toml` 将本目录声明为包 `astersql-planner-core`（`[lib] path = "lib.rs"`、`autotests = false`），未为本模块设置专属 feature；`nextgen` feature 与本文件逻辑无直接条件编译关系。本文件自身只直接使用 crate 内 `task` 模块和标准库 `HashSet`。
+由 `aggregationEliminateChecker` 集中执行安全性判定：分组键必须覆盖非空唯一键；`GROUP_CONCAT` 和明确禁止消除的聚合不得转投影；聚合下推后的旧聚合还可启用外连接可空侧检查。
 
 ## 核心职责
 
@@ -96,19 +92,16 @@ RustCodeGraph 的精确文件查询给出本文件内部主调用边：
 
 ## 与 Go 版本的对应关系
 
-符号基本一一对应：Rust `AggregationEliminator`/`aggregationEliminateChecker`、`tryToEliminateAggregation`、`tryToEliminateDistinct`、`canEliminateSemiJoinInnerDistinct`、`CheckCanConvertAggToProj`、`ConvertAggToProj`、`rewriteExpr`、`rewriteCount`、`rewriteBitFunc`、`wrapCastFunction` 和 `Optimize` 均可在同路径 Go 文件找到来源。规则名同为 `aggregation_eliminate`，总体顺序同为“递归孩子 → Semi 风格内侧去重 → DISTINCT 消除 → 聚合转投影”。
-
 当前精简 Rust 文件与 Go 仍有可观察差异，不能把两者视为完全等价：
 
 - Go 使用真实 `logicalop`、`expression`、session context 和 Schema；本文件使用 `task` 中的简化表达式、类型与计划枚举。生产运行时的更完整 Rust 对照位于 `optimizer_runtime.rs::eliminate_aggregation_descendants`。
 - Go DISTINCT 检查同时遍历 `PKOrUK` 与 `NullableUK`；本文件的 `LogicalPlan::unique_keys()` 只有一个键集合，没有单独的 nullable unique key 表达。
 - Go `CheckCanConvertAggToProj` 会从聚合参数表达式树提取列；本文件只检查参数顶层的 `Expression.column`。
 - Go `rewriteExpr` 对 FinalMode 且非空的单参数 COUNT 可直接 cast，对 MAX/MIN 的 binary literal 会拒绝消除；本文件没有这两处分支。
-- Go 位聚合执行双层整数转换并构造真实 IFNULL 表达式；本文件用名称字符串和目标类型近似表达。
 - Go Semi Join 路径针对 `LogicalApply` 且覆盖更多 semi 风格 join 类型；本文件用 `LogicalPlan::Join`，只枚举 `Semi` 与 `AntiSemi`。完整 Rust 运行时同时识别 `LogicalApply`/`LogicalJoin` 和四种 semi 风格类型，还能穿过无副作用 Projection/MaxOneRow 找到内侧聚合。
 - 本文件有 `no_eliminate` 字段检查，而同路径 Go checker 中没有直接读取同名字段。
 
-相关 Rust 单元测试覆盖 GROUP_CONCAT 不消除、含非列参数的 DISTINCT 不消除、Semi Join 内侧去重不依赖唯一键、MAX 返回类型不同时 cast，以及优化器实际移除 Semi Join 右侧聚合。Go 集成测试 `casetest/rule/rule_correlate_test.go::TestCorrelatedInApplyEliminatesDistinct` 通过开关 `aggregation_eliminate` 比较 Explain 计划并校验查询结果。完整 Rust 运行时另由 `optimizer_logical_entry_aster_unit_test.rs` 验证唯一键分组转投影与可空 COUNT 语义；这些测试验证生产接线，但不是本文件精简 IR 的直接调用者。
+相关 Rust 单元测试覆盖 GROUP_CONCAT 不消除、含非列参数的 DISTINCT 不消除、Semi Join 内侧去重不依赖唯一键、MAX 返回类型不同时 cast，以及优化器实际移除 Semi Join 右侧聚合。
 
 ## 扩展指南
 
@@ -120,17 +113,3 @@ RustCodeGraph 的精确文件查询给出本文件内部主调用边：
 - 性能风险主要来自每个聚合重复克隆唯一键/孩子、递归重建整棵树以及集合构造；正确性风险集中在 NULL 语义、类型 cast、可空唯一键、列身份映射和 changed 标志。任何优化都不应以跳过这些语义检查为代价。
 
 测试必须继续放在独立的 `pkg/planner/core/rule_aggregation_elimination_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；随后以目标文件限定查询 `AggregationEliminator`、`tryToEliminateAggregation`、`ConvertAggToProj`、`rewriteExpr`、`Optimize` 及其 callers/callees。
-- RustCodeGraph 完整读取 `pkg/planner/core/rule_aggregation_elimination.rs`（1–452 行），并确认上述内部调用边；callers 查询对部分递归/同名符号未返回稳定结果，因此上游使用者另由精确 `rg` 交叉核验。
-- crate 与装配证据：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`、`pkg/planner/core/rule/rule_init.rs`。
-- 直接相邻实现：`pkg/planner/core/rule_aggregation_push_down.rs`、`pkg/planner/core/rule_aggregation_skew_rewrite.rs`、`pkg/planner/core/rule_resolve_grouping_expand.rs`。
-- 完整应用主链：`pkg/planner/core/optimizer_runtime.rs::LogicalOptimize`、`eliminate_aggregation_descendants`、`semi_inner_distinct_aggregation`、`rewrite_single_row_aggregate`；辅助规则名入口为 `pkg/planner/core/optimizer.rs`。
-- Go 对照：`pkg/planner/core/rule_aggregation_elimination.go`（1–289 行）。
-- 测试证据：`pkg/planner/core/rule_aggregation_elimination_test.rs`（1–145 行）、`pkg/planner/core/casetest/rule/rule_correlate_test.go::TestCorrelatedInApplyEliminatesDistinct`、`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs` 中两个聚合消除测试。
-
-任务是纯文档分析，按计划未运行 Cargo。最终结构检查要求目标文件存在，并且恰好出现“文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据”十一个二级标题。

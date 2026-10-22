@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`ddl.rs` 是 `astersql-session` crate 中 `ConcreteSession` 的会话级 DDL 执行层。模块由 [`pkg/session/runtime.rs`](../runtime.rs) 的 `mod ddl;` 私有装配，并由 [`pkg/session/runtime/dispatch.rs`](dispatch.rs) 在完成语句分类、DDL 隐式提交以及部分 SQL 文本兼容检查后调用。它不实现 DDL owner/worker 本身，而是把解析后的 AST 转成元数据对象或 normal DDL action，执行会话变量、权限、现有数据和兼容性校验，再调用 `Domain`/`astersql-ddl` 的持久化接口。
-
-该文件属于 [`pkg/session/Cargo.toml`](../Cargo.toml) 声明的 `astersql-session` crate；直接使用的主要工作区依赖包括 `astersql-ddl`、`astersql-domain`、`astersql-meta-model`、`astersql-meta-metabuild`、`astersql-parser-ast`、`astersql-kv`、`astersql-expression` 和 `astersql-testkit-testfailpoint`。文件没有 feature 条件分支；唯一条件编译项是末尾 `#[cfg(test)] #[path = "ddl_test.rs"] mod tests;`，测试逻辑保存在独立文件 [`pkg/session/runtime/ddl_test.rs`](ddl_test.rs)。
+不实现 DDL owner/worker 本身，而是把解析后的 AST 转成元数据对象或 normal DDL action，执行会话变量、权限、现有数据和兼容性校验，再调用 `Domain`/`astersql-ddl` 的持久化接口。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ RustCodeGraph 的精确 `callees` 为 `execute_alter_table` 找到 `stats_table`
 
 ## 与 Go 版本的对应关系
 
-主要 Go 对照位于 [`pkg/ddl/executor.go`](../../ddl/executor.go)：`(*executor).CreateTable`、`CreateTableWithInfo`、`preSplitAndScatter`、`AlterTable`、`DropTable`、`TruncateTable`；外键父表校验对应 [`pkg/ddl/foreign_key.go`](../../ddl/foreign_key.go) 的 `checkTableForeignKeysValid`。Rust 版本保留了建表元数据构造、DDL 前置校验、临时表跳过预切分、Restore 模式跳过预切分、外键检查、分区/TTL/placement 等关键分支。
+两者的架构边界不同：Go `pkg/ddl/executor.go` 直接处于完整 DDL executor/owner 体系；Rust 文件还承担 mock/runtime catalog、局部临时表和运行时作业快照的兼容接线，并在 `persistent_actions_enabled()` 下把 Go action type 参数序列化后交给 normal DDL owner。
 
-两者的架构边界不同：Go `pkg/ddl/executor.go` 直接处于完整 DDL executor/owner 体系；Rust 文件还承担 mock/runtime catalog、局部临时表和运行时作业快照的兼容接线，并在 `persistent_actions_enabled()` 下把 Go action type 参数序列化后交给 normal DDL owner。直接 `Domain::ddl_*` 路径与 action 路径并存，说明当前处于渐进迁移状态。
-
-已确认的限制包括：部分 ALTER 类型明确要求 full DDL session ABI，CACHE/NOCACHE 无完整异步实现，schema version retry 是同步模拟。以上均以 Rust 当前代码为准，不把 Go 已有能力自动视为 Rust 已支持。
+已确认的限制包括：部分 ALTER 类型明确要求 full DDL session ABI，CACHE/NOCACHE 无完整异步实现，schema version retry 是同步模拟。
 
 ## 扩展指南
 
@@ -93,12 +89,3 @@ RustCodeGraph 的精确 `callees` 为 `execute_alter_table` 找到 `stats_table`
 - 会改变物理 table/partition ID 的操作应评估 snapshot、auto ID、region split/scatter、cross-keyspace 记录和 schema version 更新；失败后必须保证 `RuntimeDdlJobGuard` 收束。
 - 回归测试应继续放在独立的 [`pkg/session/runtime/ddl_test.rs`](ddl_test.rs)，不能内嵌到生产源文件；还应按行为补充邻近 session runtime 测试。涉及 Go 对齐时同步核对 `pkg/ddl/*_test.go` 的原始边界，但不要为了文档或单一增量递归补齐整个 DDL 子系统。
 - 兼容风险集中在 error code/message、IF EXISTS warning、权限访问顺序和 action JSON ABI；性能风险集中在 `scan_registered_table` 的全表唯一/外键校验、分区批量变更和同步预切分。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点；`files --filter pkg/session/runtime/ddl.rs` 确认目标文件已索引；`node --file ...` 核对源码；对 `execute_create_table`、`execute_alter_table`、`execute_drop_table`、`execute_truncate_table`、`execute_create_database`、`execute_rename_table_pairs`、`execute_add_foreign_key` 执行了 `query`、`callers`、`callees`。图中 callers 缺边，已用 `runtime/dispatch.rs` 源码补证并在上文披露限制。
-- 生产源码：[`pkg/session/runtime/ddl.rs`](ddl.rs)、[`pkg/session/runtime.rs`](../runtime.rs)、[`pkg/session/runtime/dispatch.rs`](dispatch.rs)、[`pkg/session/runtime/normal_ddl_submit.rs`](normal_ddl_submit.rs)。
-- crate 边界：[`pkg/session/Cargo.toml`](../Cargo.toml) 的 package、feature 和 workspace dependencies。
-- 独立 Rust 测试：[`pkg/session/runtime/ddl_test.rs`](ddl_test.rs) 当前覆盖 persisted empty database 的 `IF NOT EXISTS`、temporary table 跳过 split、显式 table/index split policy 覆盖全局关闭，以及 Restore 模式跳过 split。该文件当前只有 6 个直接单元测试，不能据此声称本文列出的全部 DDL 分支均有本地测试覆盖。
-- Go 对照：[`pkg/ddl/executor.go`](../../ddl/executor.go) 的 Create/Alter/Drop/Truncate 与 pre-split 入口，以及 [`pkg/ddl/foreign_key.go`](../../ddl/foreign_key.go) 的 `checkTableForeignKeysValid`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节、链接/路径和事实一致性。

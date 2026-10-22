@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`context.rs` 是 `astersql-errctx` crate 的核心实现文件，由同目录的 `lib.rs` 以 `pub mod errctx` 暴露。它位于 SQL 执行链的错误策略层：调用方把带 MySQL/TiDB 错误码的 `SharedError` 交给 `Context`，本文件再依据错误所属的 `ErrGroup` 决定返回错误、追加 warning，或忽略错误。它不生成 SQL 错误，也不保存完整的语句诊断区；错误类型和因果链来自 `contextutil_crate::errors`，warning/note 的实际存储由注入的 `contextutil::WarnAppender` 完成。
-
-`pkg/errctx/Cargo.toml` 将该 crate 定义为 `astersql-errctx`，入口为 `lib.rs`，直接依赖 `astersql-errno` 和 `astersql-util-context`。生产调用可经本 crate 直接访问，也会通过 expression、statement context、DistSQL context、table context 和 ranger context 等门面继续向上暴露。RustCodeGraph 的文件查询显示本文件被 59 个文件引用；范围化源码检索确认典型接线位于 `pkg/sessionctx/stmtctx/stmtctx.rs`、`pkg/expression/exprstatic/evalctx.rs`、`pkg/distsql/context/context.rs` 和 `pkg/table/column.rs`。
+普通错误、无法转换为 `u16` 的错误码以及未登记 errno 均不会被降级，而是返回调用方提供的 `err` 别名。
 
 ## 核心职责
 
@@ -95,13 +93,7 @@ RustCodeGraph 的精确 `callers/callees` 子命令在本次索引上超时且�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `Level`、`LevelMap`、`Context`、`ErrGroup`、三个 `With*` 方法、两个处理入口、两个构造函数、严格静态上下文以及 `ResolveErrLevel` 均对应 `pkg/errctx/context.go` 的同名概念。`ErrGroupForCode` 的 `match` 是 Go `init` 中 `group2Errors`/`errGroupMap` 的静态等价物；测试逐码覆盖了 Go 表中的全部分类。
-
-关键语义保持一致：默认零值语义是 Error；派生上下文不修改原上下文；错误组顺序处理并在首个返回错误处停止；内部错误负责分类，返回/告警别名负责用户可见内容；`ignore` 在 `ResolveErrLevel` 中优先于 `warn`。
-
-实现差异主要来自语言模型：Rust 用 `[Level; 7]` 和枚举转下标代替 Go 数组索引；用 `Option<SharedError>` 表示 nil；用 `Arc<dyn WarnAppender + Send + Sync>` 排除 nil handler；用 `LazyLock` 建立静态上下文；用 `errors::Errors` 加指针同一性判断来识别错误组，而 Go 直接断言 `errors.ErrorGroup`。另外，Go 的 `AppendWarning`/`AppendNote` 在非测试构建下仍对 nil handler 做保护，Rust 无对应 nil 分支。
-
-`pkg/errctx/context_test.rs` 复刻 Go `context_test.go` 的核心断言；`pkg/errctx/migration_aster_unit_test.rs` 进一步覆盖全部 errno 映射、嵌套组合错误短路、warning/note 级别、别名及 `ResolveErrLevel` 四种输入组合。
+实现差异主要来自语言模型：Rust 用 `[Level; 7]` 和枚举转下标代替 Go 数组索引；用 `Option<SharedError>` 表示 nil；用 `Arc<dyn WarnAppender + Send + Sync>` 排除 nil handler；用 `LazyLock` 建立静态上下文；用 `errors::Errors` 加指针同一性判断来识别错误组，而 Go 直接断言 `errors.ErrorGroup`。
 
 ## 扩展指南
 
@@ -112,13 +104,3 @@ Rust 的 `Level`、`LevelMap`、`Context`、`ErrGroup`、三个 `With*` 方法�
 改变组合错误处理时，应优先扩展独立测试文件，而不要在 `context.rs` 内嵌测试。重点覆盖嵌套组、首个 fatal 后不再产生 warning、单子项组以及根因包装。改变 alias 规则时，应分别断言内部分类错误、返回别名和 warning 别名的指针身份。
 
 性能上，热路径目前是定长数组索引和常量 `match`；不要无必要地引入分配或动态映射。兼容性上，最敏感的是默认 Error 语义、短路顺序、errno 清单和 `ignore > warn > error` 的优先级。并发扩展应保持 handler 的 `Send + Sync` 约束，不应在 `Context` 内引入无界增长的共享可变状态。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标目录列出 `context.rs`、`context_test.rs`、`migration_aster_unit_test.rs` 及 Go 对照文件。
-- RustCodeGraph 源码节点：`pkg/errctx/context.rs` 全部 254 行；主要符号包括 `Level`、`ErrGroup`、`Context`、`HandleError`、`HandleErrorWithAlias`、`ErrGroupForCode`、`NewContextWithLevels`、`StrictNoWarningContext`、`ResolveErrLevel`。
-- crate 与模块证据：`pkg/errctx/Cargo.toml`、`pkg/errctx/lib.rs`。
-- Rust 独立测试：`pkg/errctx/context_test.rs`、`pkg/errctx/migration_aster_unit_test.rs`。
-- Go 对照：`pkg/errctx/context.go`、`pkg/errctx/context_test.go`。
-- 上游桥接与直接使用证据：`pkg/sessionctx/stmtctx/stmtctx.rs`、`pkg/session/runtime/system_session.rs`、`pkg/expression/errors.rs`、`pkg/expression/exprstatic/evalctx.rs`、`pkg/distsql/context/context.rs`、`pkg/table/column.rs`、`pkg/util/ranger/ranger.rs`。
-- RustCodeGraph 的精确 `callers/callees` 查询连续超时且未输出；调用边由已索引源码节点与范围化 `rg` 交叉核验。任务是纯文档分析，按计划未运行 Cargo 或代码测试。

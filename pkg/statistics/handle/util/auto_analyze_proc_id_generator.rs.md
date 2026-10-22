@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-statistics-handle-util`；crate 入口 `pkg/statistics/handle/util/lib.rs` 公开声明 `auto_analyze_proc_id_generator` 模块并通过 `pub use` 重导出其 API。它位于统计信息 handle 的工具层，负责把自动 ANALYZE 使用的“伪进程 ID”分配接口、进程内活动 ID 集合和进程跟踪回调抽象放在一个可复用边界中。
-
-当前 Rust 主链中，`pkg/statistics/handle/autoanalyze/exec/exec.rs` 通过 Cargo 依赖 `astersql-statistics-handle-util` 使用 `AutoAnalyzeProcIdGenerator`、`TrackProc` 和 `GLOBAL_AUTO_ANALYZE_PROCESS_LIST`；`pkg/util/expensivequery/expensivequery.rs` 读取全局集合，以便对自动分析进程应用最长运行时间限制。代码搜索未发现 Rust 生产代码调用 `new_generator` 或 `new_auto_analyze_tracker`，因此它们目前是已公开的兼容/注入 API，而不是现有 Rust 自动分析执行路径的装配入口。
+`GlobalAutoAnalyzeProcessList` 与 `GLOBAL_AUTO_ANALYZE_PROCESS_LIST` 保存本进程内当前被视为自动分析任务的 ID，供执行、窗口检查和昂贵查询检查共同查询。
 
 ## 核心职责
 
@@ -84,10 +82,6 @@ ID getter、release 回调和 untrack 回调的签名都不返回错误；若闭
 
 ## 与 Go 版本的对应关系
 
-同路径 Go 文件 `pkg/statistics/handle/util/auto_analyze_proc_id_generator.go` 是直接语义基准：Go 的 `AutoAnalyzeProcIDGenerator` / `generator` / `NewGenerator` 分别对应 Rust trait、`Generator` 和 `new_generator`；Go 的 `globalAutoAnalyzeProcessList`、全局变量、`Tracker`、`Untracker`、`All`、`Contains` 对应 Rust 的集合类型、单例及四个方法；Go 的 `AutoAnalyzeTracker` 和 `NewAutoAnalyzeTracker` 对应 Rust 同名类型与 snake_case 构造函数。
-
-主要保持项是：集合采用读写锁保护；重复 ID 按集合去重；跟踪时先加入全局集合再调用外部回调；注销时先从集合删除再调用外部回调；跟踪回调错误不会在工具层自动回滚。
-
 可见差异是：Go 的跟踪上下文使用 `pkg/sessionctx/sysproctrack.TrackProc`，Rust 在本文件定义了拥有 `database/table/statement` 字符串的 `TrackProc`；Go 全局值由显式构造函数创建，Rust 用 `LazyLock` 延迟创建；Go 返回指针/接口，Rust 用 `Arc<dyn ...>` 或按值返回跟踪器；Rust 的锁中毒会因 `unwrap` panic，而 Go 的 `sync.RWMutex` 没有锁中毒概念。Go 的 `pkg/statistics/handle/handle.go` 已调用 `util.NewGenerator` 完成真实 handle 装配，当前 Rust 搜索未找到等价的 `new_generator` 装配点。
 
 ## 扩展指南
@@ -99,13 +93,3 @@ ID getter、release 回调和 untrack 回调的签名都不返回错误；若闭
 测试应保持与源文件分离。可在同目录新增独立 `auto_analyze_proc_id_generator_test.rs` 并由 `lib.rs` 的 `#[cfg(test)]` 模块接入，覆盖闭包转发、重复插入、删除不存在 ID、并发访问、无序快照比较以及 track 回调失败后的显式清理；跨模块行为继续在 `pkg/statistics/handle/autoanalyze/exec/exec_test.rs` 验证。不要把测试内嵌进本生产源文件。
 
 兼容性风险集中在公开 trait/字段与回调顺序；正确性风险集中在失败清理、ID 重用和双重释放；性能风险主要是所有自动分析任务共享一个 `RwLock<HashSet<_>>`，以及 `all` 每次复制全部 ID。除非有实际争用证据，不应为了优化改变简单且与 Go 对齐的同步模型。
-
-## 验证依据
-
-- RustCodeGraph `status`：本仓库索引可用，包含目标 Rust 文件；`files --filter pkg/statistics/handle/util` 显示同路径 Rust、Go、Cargo 和相邻测试文件。
-- RustCodeGraph `node --file pkg/statistics/handle/util/auto_analyze_proc_id_generator.rs --offset 1 --limit 260`：读取了目标文件完整 154 行，核对 20 个符号及实现顺序。
-- RustCodeGraph `query`：分别定位 `AutoAnalyzeTracker`、`new_auto_analyze_tracker`、`new_generator`、`AutoAnalyzeProcIdGenerator`，并确认 trait 在 `exec.rs` 与 `types/interfaces.rs` 的导入。精确 `callers` 查询在 30 秒内未返回，因此调用点改用下述源码搜索核验，未把不完整图结果当作事实。
-- 源码与配置：`pkg/statistics/handle/util/Cargo.toml`、`pkg/statistics/handle/util/lib.rs`、`pkg/statistics/handle/util/util.rs`（`StatsError`）、`pkg/statistics/handle/autoanalyze/exec/Cargo.toml`、`pkg/statistics/handle/autoanalyze/exec/exec.rs`、`pkg/statistics/handle/types/interfaces.rs`、`pkg/util/expensivequery/expensivequery.rs`。
-- Go 对照：`pkg/statistics/handle/util/auto_analyze_proc_id_generator.go` 与 `pkg/statistics/handle/handle.go`。
-- 相关独立测试：同目录没有该文件的专用 Rust 测试；`pkg/statistics/handle/autoanalyze/exec/exec_test.rs::test_run_analyze_stmt_releases_process_id_when_tracking_fails` 验证跟踪失败时当前主链仍会释放、注销并清除全局集合。代码搜索未发现直接覆盖 Go 工具文件的 `*_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅运行任务指定的十一章节结构检查，并人工复核“定位、运行、扩展”均由上述路径或符号支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 Lightning/IMPORT INTO 数据导入链路使用的本地 KV 校验和，是 workspace crate `astersql-lightning-verification` 的主体。crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，未声明第三方 Rust 依赖；[`lib.rs`](lib.rs) 以私有 `mod checksum` 挂载本文件，再用 `pub use checksum::*` 暴露全部公开项。workspace 根 `Cargo.toml` 将该 crate 纳入成员，并由 importer、session、dxf/importinto 以及 Lightning backend 等 crate 通过路径依赖复用。
-
-它不负责读取源数据、编码 SQL 行、写入 TiKV 或发起远端校验。它只维护本地摘要：每条 `keyspace || key || value` 的 CRC64-ECMA 值以 XOR 聚合，同时累计 KV 数和字节数；分组层再将记录 KV 与各索引 KV 分开统计。典型入口是 `pkg/executor/importer/chunk_process.rs::EncodedKVGroupBatch::Add`，典型终点是 `pkg/executor/importer/table_import.rs::PostProcess` 将 `MergedChecksum` 与远端结果比较。
+`MakeKVChecksum`、`AddRawGroup` 和 `MergedChecksum` 在“已有三元组”与运行时对象之间转换，支持 checkpoint、分布式任务元数据及后处理聚合，而无需保留原始 KV。
 
 ## 核心职责
 
@@ -91,7 +89,7 @@ keyspace 在 `KVGroupChecksum` 构造时复制为 `Vec<u8>`，因此不依赖调
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`checksum.go`](checksum.go)，测试对照是 [`checksum_test.go`](checksum_test.go)。Rust 保留 Go 风格公开命名和主要数据模型：同样使用 CRC64-ECMA，按 `keyspace + key + value` 计算单条 CRC，以 XOR 聚合，并维护 `bytes`/`kvs`；`DataKVGroupID`、分组懒创建、`AddRawGroup`、data/index 汇总和最终合并也一一对应。
+Rust 保留 Go 风格公开命名和主要数据模型：同样使用 CRC64-ECMA，按 `keyspace + key + value` 计算单条 CRC，以 XOR 聚合，并维护 `bytes`/`kvs`；`DataKVGroupID`、分组懒创建、`AddRawGroup`、data/index 汇总和最终合并也一一对应。
 
 已确认的实现差异：
 
@@ -99,7 +97,6 @@ keyspace 在 `KVGroupChecksum` 构造时复制为 `Vec<u8>`，因此不依赖调
 - Go 的批量 `Update` 在一个循环中积累局部变量，Rust 复用 `UpdateOne`；结果相同，Rust 更直接但每条都会写回对象字段。
 - Go 构造器返回指针，Rust 返回拥有型值并通过可变借用更新。
 - Go `MarshalJSON` 返回 `([]byte, error)`，Rust 返回不可失败的 `Vec<u8>`；Go 直接实现 zap 接口，Rust 通过本地 `LogEncoder` trait 隔离日志后端。
-- Go `GetInnerChecksums` 显式逐项复制指针指向的值，Rust `HashMap::clone` 产生同等的深值克隆。
 - Go 注释规定 `NewKVGroupChecksumForAdd` 不应用于原始 KV 更新；Rust 构造器实际等价于空 keyspace 的普通分组对象，并未在类型或运行时禁止更新。安全扩展仍应遵守 Go 的用途约束，避免把“聚合已有摘要”与“从原始 KV 计算”混在同一实例中。
 - Go 的无符号整数天然回绕；Rust 显式使用 wrapping 运算，使 debug/release 构建一致。
 
@@ -111,13 +108,3 @@ keyspace 在 `KVGroupChecksum` 构造时复制为 `Vec<u8>`，因此不依赖调
 - 若要并行化内部计算，不应直接给类型加入隐式锁；现有契约是值类型加 `&mut self`，同步边界由 importer 决定。优先保持分片本地累加、边界处 `Add` 合并。
 - 性能优化可考虑 CRC 查表和减少新组创建时的 keyspace 克隆，但必须以 Go 固定向量、keyspace 用例和分片合并等价性为基准，不能只验证空 keyspace。
 - 测试应继续放在独立的 `pkg/lightning/verification/checksum_test.rs`，不要内嵌到源文件。修改跨 crate 接线时还应补对应调用方的独立测试，例如 importer 的 `chunk_process_testkit_test.rs`、dxf/importinto 的 `encode_and_sort_operator_test.rs` 或 backend/kv 的 `sql2kv_test.rs`。
-
-## 验证依据
-
-- Rust 源码：`pkg/lightning/verification/checksum.rs`，完整 291 行；重点符号为 `update_crc`、`KVChecksum::UpdateOne`、`KVChecksum::{Add,Sub}`、`KVGroupChecksum::{Add,AddRawGroup,MergedChecksum}`。
-- crate/模块：`pkg/lightning/verification/Cargo.toml`、`pkg/lightning/verification/lib.rs`；workspace 与直接路径依赖由根 `Cargo.toml` 及各调用 crate 的 `Cargo.toml` 核验。
-- Go 对照：`pkg/lightning/verification/checksum.go`；Go 测试：`pkg/lightning/verification/checksum_test.go`。
-- Rust 独立测试：`pkg/lightning/verification/checksum_test.rs`，覆盖固定 CRC、空批次、重复输入 XOR 自逆、JSON/Display、日志字段与错误传播、分组/合并、深克隆、keyspace、Add/Sub 以及 `u64` 回绕。
-- 直接调用证据：`pkg/executor/importer/chunk_process.rs`、`pkg/executor/importer/table_import.rs`、`pkg/session/runtime/import_query.rs`、`pkg/dxf/importinto/subtask_executor.rs`、`pkg/dxf/importinto/encode_and_sort_operator.rs`、`pkg/dxf/importinto/proto.rs`、`pkg/lightning/backend/kv/sql2kv.rs`。
-- RustCodeGraph：`status` 报告索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/lightning/verification` 返回 5 个相关文件；`node --file pkg/lightning/verification/checksum.rs --offset 1 --limit 500` 返回完整源码并报告 45 个使用文件；`query` 找到 Rust/Go 对应符号。`explore` 与 `callers/callees` 在本次共享索引环境中超时无输出，调用边改由精确 `rg` 与调用点源码读取验证。
-- 人工一致性检查：文档区分了源码内纯计算责任与上层 IO/并发责任，并明确记录 keyspace、回绕、分组、日志顺序和调用者前置条件；未把未成功返回的图查询描述为已验证调用边。

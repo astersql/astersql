@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-ddl-systable`；crate 入口 `pkg/ddl/systable/lib.rs` 将 `min_job_id` 声明为公开模块并重新导出其符号。它位于 DDL 系统表访问层，依赖同 crate 的 `Manager` 与 `Context`，维护 `mysql.tidb_ddl_job` 当前最小作业 ID 的进程内缓存。
-
-这个水位不是 DDL job 分配器，也不执行 job、schema 状态迁移或 reorg/backfill。它以 `Manager::get_min_job_id` 为唯一数据源，为两类下游查询提供更接近现存记录的扫描起点：InfoSchema MDL 刷新，以及提交 DDL 前的 FLASHBACK CLUSTER 冲突检查。Go 文件注释把其直接动机归为避免从已删除记录形成的低位区间开始扫描（`pkg/ddl/systable/min_job_id.go:30-33`）。
+以 `Manager::get_min_job_id` 为唯一数据源，为两类下游查询提供更接近现存记录的扫描起点：InfoSchema MDL 刷新，以及提交 DDL 前的 FLASHBACK CLUSTER 冲突检查。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ RustCodeGraph 的文件索引确认 `min_job_id.rs` 含 16 个符号；精确 `q
 
 ## 与 Go 版本的对应关系
 
-Rust 对照 `pkg/ddl/systable/min_job_id.go` 保留了关键算法：初值 0、每轮先刷新后等待、查询失败后下轮重试，以及用 `max(current, next)` 防止表清空时从 100 回退到 0。`pkg/ddl/systable/min_job_id_test.rs::test_refresh_min_job_id` 与 Go 的 `TestRefreshMinJobID` 使用相同的 0→1→100→0 序列，并额外核对每次传入 Manager 的 previous 值为 0、1、100。
+`pkg/ddl/systable/min_job_id_test.rs::test_refresh_min_job_id` 与 Go 的 `TestRefreshMinJobID` 使用相同的 0→1→100→0 序列，并额外核对每次传入 Manager 的 previous 值为 0、1、100。
 
 当前可见差异如下：
 
@@ -103,12 +101,3 @@ Rust 对照 `pkg/ddl/systable/min_job_id.go` 保留了关键算法：初值 0、
 - 若要把 `running` 用作重复启动保护，需以 `compare_exchange` 明确定义第二次 `start` 是报错、立即返回还是共享既有循环，并增加并发回归测试；当前布尔值不能提供该保证。
 - 改动取消协议时，必须保持普通 Domain、目标 keyspace、cross-keyspace 三条生命周期路径都能先取消、再 join、最后释放系统 session pool。
 - 性能风险集中在刷新频率和查询下界：过短间隔增加内部 SQL 压力，水位不前进则扩大扫描范围；正确性风险集中在错误地允许水位回退或越过仍需检查的 job。
-
-## 验证依据
-
-- 源文件与主要符号：RustCodeGraph `node --file pkg/ddl/systable/min_job_id.rs --offset 1 --limit 260`；`query MinJobIdRefresher`；`query new_min_job_id_refresher --kind function`。
-- 调用流：RustCodeGraph `explore "pkg/ddl/systable/min_job_id.rs MinJobIDRefresher refresh get_min_job_id get_global_min_job_id"`；并以限定符号搜索复核三个生产 runtime、InfoSchema 与 jobsubmit 调用点。精确 `callers` 查询在本地索引上未在时限内返回，因此未把它当作唯一证据。
-- crate 边界：`pkg/ddl/systable/Cargo.toml` 声明 crate 名、`lib.rs` 入口、Go package 映射，唯一显式依赖为路径 crate `astersql-meta-model`；`pkg/ddl/systable/lib.rs` 负责模块声明、重导出和独立测试挂载。
-- 直接实现证据：`pkg/ddl/systable/manager.rs`、`pkg/infoschema/issyncer/syncer.rs`、`pkg/ddl/jobsubmit/submit.rs`、`pkg/ddl/jobsubmit/types.rs`、`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/session/runtime/crossks_runtime.rs`、`pkg/session/runtime/crossks_session_pool.rs`、`pkg/session/runtime/normal_ddl_submit.rs`。
-- Go 对照与测试：`pkg/ddl/systable/min_job_id.go`、`pkg/ddl/systable/min_job_id_test.go`；Rust 独立测试为 `pkg/ddl/systable/min_job_id_test.rs`。
-- 人工复核结论：文档区分了水位缓存、系统表查询、MDL 消费与 flashback guard，未把该文件描述成 job 执行器或 schema 状态机；测试建议保持在独立测试文件。

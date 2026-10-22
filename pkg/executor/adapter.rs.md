@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`adapter.rs` 是 `astersql-executor` crate 的语句执行适配层。crate 根 `pkg/executor/lib.rs` 以公开模块 `pub mod adapter` 暴露它；`pkg/executor/Cargo.toml` 则声明该 crate 的根为 `lib.rs`，并把 planner、parser、session context、resource group、executor metrics、chunk、execdetails、sqlkiller 等本地 crate 接入同一执行边界。
-
-它位于“物理计划已经产生、具体算子即将运行”与“会话/协议层消费结果”之间：上游会话桥接在 `pkg/session/runtime/typed_adapter_bridge.rs` 构造 `ExecStmt` 并调用 `ExecStmt::Exec`，下游通过 `AdapterRuntime` 构建具体 `ExecExecutor`。有结果的语句返回 `RecordSet` 给 server/session 逐批拉取；无结果 DML、悲观锁语句和 PointGet 则走各自的专用分支。
-
-这个文件不是具体扫描、连接或 DML 算子的实现。它负责统一调度、事务/锁协议、结果集生命周期、外键级联、RU 结算和结束时的可观测性；实际算子树由 `AdapterRuntime::BuildExecutor*` 提供，具体会话实现位于 `pkg/session/runtime/typed_adapter_bridge.rs` 等文件。
+负责统一调度、事务/锁协议、结果集生命周期、外键级联、RU 结算和结束时的可观测性；实际算子树由 `AdapterRuntime::BuildExecutor*` 提供，具体会话实现位于 `pkg/session/runtime/typed_adapter_bridge.rs` 等文件。
 
 ## 核心职责
 
@@ -108,8 +104,6 @@ RustCodeGraph 的精确查询把 `ExecStmt` 同时定位到 `pkg/executor/adapte
 
 ## 与 Go 版本的对应关系
 
-主对照文件是 `pkg/executor/adapter.go`。Rust 保留了 Go 的核心形状和顺序：`ExecStmt`、`recordSet`、PointGet/Exec/RebuildPlan、外键 trigger/cascade、no-delay、悲观 SELECT/DML、锁错误重试、阶段耗时、FinishExecuteStmt、慢日志/summary/plan digest/TopSQL，以及 `moveWrittenSharedLockKeysToExclusive` 均有明确同名或等价符号。
-
 主要表达差异如下：
 
 - Go 直接依赖 `sessionctx.Context`、`exec.Executor`、`sqlexec.RecordSet`；Rust 用 `AdapterRuntime`、`ExecExecutor`、`RecordSet` trait 隔离会话和具体算子，使测试可注入最小实现。
@@ -131,15 +125,3 @@ Go/Rust 已有对齐证据包括：`FormatSQL` 的 `QueryLogMaxLen` 字节限制
 - 改动 RU 结算时维持“first outcome wins”和“无 typed evidence 不猜测”两个不变量，并同步 `pkg/executor/statement_ru_plan_walk_test.rs`、`statement_ru_result_test.rs` 及 session runtime 测试。
 - 改动日志文本时同步 `FormatSQL`、hint 移除、`GetTextToLog` 的会话/全局脱敏选择和 UTF-8 截断测试；避免把简单字符串处理扩展成不完整 SQL 解析器。
 - 与 Go 移植对齐时以 `pkg/executor/adapter.go` 的对应增量和测试意图为准，只引入必要局部接线；当前文档不是补建整个 session/runtime 子系统的授权。
-
-## 验证依据
-
-本说明基于以下直接材料：
-
-- 目标源码：`pkg/executor/adapter.rs`（完整阅读；主要锚点为 `ExecStmt::Exec`、`exec_inner`、三个 RecordSet、悲观锁/外键路径、`FinishExecuteStmt` 和日志/计划辅助函数）。
-- crate 边界：`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`。
-- Rust 上游/桥接：`pkg/session/runtime/planning.rs`、`pkg/session/runtime/typed_adapter_bridge.rs`、`pkg/session/runtime/explain_analyze.rs`、`pkg/server/internal/resultset/resultset.rs`、`pkg/server/internal/resultset/cursor.rs`。
-- Rust 独立测试：`pkg/executor/adapter_test.rs`、`pkg/executor/adapter_internal_test.rs`；补充行为证据来自 `pkg/session/runtime/scan_adapter_runtime_test.rs`、`pkg/session/runtime_test/typed_adapter_bridge.rs`、`pkg/executor/statement_ru_plan_walk_test.rs` 和 `pkg/server/internal/resultset/resultset_aster_unit_test.rs`。
-- Go 对照：`pkg/executor/adapter.go`、`pkg/executor/adapter_test.go`、`pkg/executor/adapter_internal_test.go`。
-- RustCodeGraph：`status` 显示本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query ExecStmt --kind struct`、`query FinishExecuteStmt --json`、`query handlePessimisticDML --json`、`query TryDetach --json` 定位 Rust/Go 对应符号；`explore`/`callees` 提供 Go adapter 到 builder、session transaction manager、resource group、foreign key、statement RU 的调用证据。当前 CLI 对精确 Rust caller ID 的调用未返回结果，所以调用者结论另由限定目录的 `rg` 搜索复核。
-- 结构验收使用任务指定命令，要求目标文档存在且恰好包含本文件列出的 11 个固定二级标题。本任务只写文档，按计划不运行 Cargo 或代码测试。

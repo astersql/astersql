@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-parser-mysql` crate。crate 入口 `pkg/parser/mysql/lib.rs` 通过 `pub mod r#type` 公开该模块；使用原始标识符是因为 `type` 是 Rust 关键字。它位于 parser 的 MySQL 协议与列元数据基础层，集中定义字段类型编号、列属性位掩码、`MEDIUMINT` 数值边界，以及读取标志位的纯函数。
-
-这里不定义完整的字段类型对象，也不负责 SQL 类型推导、值转换或协议编解码；上层 `FieldType`、planner、executor、DDL、table 和 codec 等模块把本文件的数值常量与标志位作为共同契约使用。`pkg/parser/mysql/Cargo.toml` 声明 crate 名为 `astersql-parser-mysql`、edition 为 2024；本文件只使用整数与按位运算，不直接使用该 manifest 中的任何外部依赖，也没有 feature、平台分支或条件编译项。
+用 `HasFlag` 实现统一的非破坏性位检测，并用 16 个语义明确的 `Has*Flag` 函数封装常用标志。
 
 ## 核心职责
 
@@ -64,11 +62,11 @@ RustCodeGraph 显示这些 helper 已进入多个业务层。例如 `pkg/executo
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/mysql/type.go`。Rust 保留了 Go 的全部类型编号、`TypeTiDBVectorFloat32`、第 0 至 24 位标志、`NumFlag`/`GroupFlag` 同位关系、三个 `TypeInt24` 边界，以及 16 个专用检测函数和通用 `HasFlag`。两边的检测条件均为按位与后大于零。
+Rust 保留了 Go 的全部类型编号、`TypeTiDBVectorFloat32`、第 0 至 24 位标志、`NumFlag`/`GroupFlag` 同位关系、三个 `TypeInt24` 边界，以及 16 个专用检测函数和通用 `HasFlag`。
 
 表示层面的主要差异是：Go 类型编号用 `byte`、Rust 用等宽的 `u8`；Go 标志用 `uint`、Rust 用 `usize`；Go 的无类型整型边界常量在 Rust 中显式标为 `i32`。Rust 的专用 helper 统一委托 `HasFlag`，而 Go 的专用函数直接重复按位表达式；对单比特常量而言行为一致。
 
-独立测试 `pkg/parser/mysql/type_test.rs::test_flags` 对照 `pkg/parser/mysql/type_test.go::TestFlags`，保留相同断言顺序，包括重复验证 `HasNotNullFlag(NotNullFlag)`。两侧当前都覆盖 12 个基础 helper 的真值路径，没有在这两个文件中覆盖零值、组合掩码、错误常量、`HasDropColumnWithIndexFlag`、`HasParseToJSONFlag`、`HasIsBooleanFlag`、`HasPreventNullInsertFlag`、`HasEnumSetAsIntFlag` 或类型编号/边界常量；不能把现有测试解释为所有公开符号均已逐项验证。
+两侧当前都覆盖 12 个基础 helper 的真值路径，没有在这两个文件中覆盖零值、组合掩码、错误常量、`HasDropColumnWithIndexFlag`、`HasParseToJSONFlag`、`HasIsBooleanFlag`、`HasPreventNullInsertFlag`、`HasEnumSetAsIntFlag` 或类型编号/边界常量；不能把现有测试解释为所有公开符号均已逐项验证。
 
 ## 扩展指南
 
@@ -77,12 +75,3 @@ RustCodeGraph 显示这些 helper 已进入多个业务层。例如 `pkg/executo
 新增常用标志 helper 时，优先沿用“专用函数委托 `HasFlag`”的结构，并在独立测试文件 `pkg/parser/mysql/type_test.rs` 增加自身位为真、零值为假、无关位为假的断言；同步核对 Go 测试意图。Rust 单元测试不要放回 `type.rs`。若需求是“组合掩码全部存在”，应新增语义明确的实现与测试，而不是误用当前的任一位相交逻辑。
 
 兼容性风险高于实现复杂度：类型编号改变会影响协议和跨组件类型解释；标志位碰撞会让元数据属性不可区分；更改 helper 语义会波及 planner、executor、DDL、table、server 与 codec。性能风险很低，当前所有访问均为常量读取或单次按位运算；扩展时应维持无分配和纯函数属性。
-
-## 验证依据
-
-- 源码与符号：RustCodeGraph `node --file pkg/parser/mysql/type.rs --offset 1 --limit 500` 显示完整 221 行，确认类型常量、标志常量、三个边界常量、16 个专用 helper 和 `HasFlag`，且没有条件编译、类型定义或 I/O。
-- crate 边界：RustCodeGraph 读取 `pkg/parser/mysql/lib.rs`，确认 `pub mod r#type` 与 `#[cfg(test)] mod type_test`；`pkg/parser/mysql/Cargo.toml` 确认 crate 名、edition、入口和依赖。本文件没有直接导入项。
-- 调用图：`rustcodegraph callers HasFlag --file pkg/parser/mysql/type.rs --json` 返回 16 个本文件包装器；针对 `HasNotNullFlag`、`HasUnsignedFlag`、`HasPriKeyFlag` 等查询并筛选 `.rs` 路径，定位到 `pkg/ddl/index.rs`、`pkg/executor/typed_index_reader.rs`、`pkg/executor/typed_kv_scan.rs`、`pkg/planner/core/operator/physicalop/base_physical_plan.rs`、`pkg/server/pg_catalog.rs`、`pkg/session/runtime/*` 等调用者。
-- Go 对照：`pkg/parser/mysql/type.go`；逐项核对数值、位位置、边界和 helper 语义。Rust 的 `usize`/`i32` 是显式类型适配，未改变当前常量数值。
-- 测试依据：RustCodeGraph 读取 `pkg/parser/mysql/type_test.rs::test_flags`，并与 `pkg/parser/mysql/type_test.go::TestFlags` 对照；两者均是独立测试文件，覆盖范围及缺口已在文中明确列出。
-- 本任务为纯文档分析，按任务约束不运行 Cargo。交付检查使用任务指定命令验证目标存在且恰有 11 个固定二级标题，并人工复核文档能够说明文件存在理由、执行方式、边界、真实调用关系与安全扩展位置。

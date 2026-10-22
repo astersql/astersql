@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-israce` crate 的 **race 构建变体**。crate 根模块 [`pkg/util/israce/lib.rs`](./lib.rs) 始终声明 `israce` 与 `norace` 两个子模块，但只有在 Cargo feature `race` 启用时才通过 `pub use israce::*` 把本文件的公开项导出到 crate 根；未启用时改为导出 [`norace.rs`](./norace.rs) 的实现。
-
-crate 边界由 [`pkg/util/israce/Cargo.toml`](./Cargo.toml) 定义：库入口为 `lib.rs`，默认 feature 集为空，`race` 是一个不附带依赖的空 feature。因此本文件不是运行时探测器，而是一个由编译配置选中的常量实现。
+与 [`norace.rs`](./norace.rs) 组成互斥实现：前者在 `#[cfg(feature = "race")]` 下定义真值，后者在 `#[cfg(not(feature = "race"))]` 下定义假值。
 
 ## 核心职责
 
@@ -62,11 +60,11 @@ crate 边界由 [`pkg/util/israce/Cargo.toml`](./Cargo.toml) 定义：库入口�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/israce/israce.go`](./israce.go)：Go 通过 `//go:build race` 纳入文件，并定义 `const RaceEnabled = true`；Rust 通过 `#[cfg(feature = "race")]` 和 Cargo feature 表达同一二选一语义。两边的公开名称、布尔类型和 race 变体值一致。
+直接对照文件是 [`pkg/util/israce/israce.go`](./israce.go)：Go 通过 `//go:build race` 纳入文件，并定义 `const RaceEnabled = true`；Rust 通过 `#[cfg(feature = "race")]` 和 Cargo feature 表达同一二选一语义。
 
 Go 的配对文件 [`norace.go`](./norace.go) 使用 `//go:build !race` 并定义 `false`；Rust 的 [`norace.rs`](./norace.rs) 使用 `#[cfg(not(feature = "race"))]`。差异在于 Go 的 `race` 构建标签通常由 Go 的 race 构建模式设置，而 Rust 侧这里是仓库自定义 Cargo feature，当前文件没有把它与具体检测器或编译器选项绑定。
 
-Go 的直接消费点包括 [`br/pkg/version/build/info.go`](../../../br/pkg/version/build/info.go) 和 [`pkg/util/printer/printer.go`](../printer/printer.go)。Rust 已接线 BR 版本信息；Rust printer 当前使用其自身占位模块，因此该部分尚不是对本 crate 的等价调用链。
+Rust 已接线 BR 版本信息；Rust printer 当前使用其自身占位模块，因此该部分尚不是对本 crate 的等价调用链。
 
 ## 扩展指南
 
@@ -75,11 +73,3 @@ Go 的直接消费点包括 [`br/pkg/version/build/info.go`](../../../br/pkg/ver
 - 若改变公开语义，必须同时核对 Go 的 `israce.go`/`norace.go`；不能把“feature 已启用”无依据地扩写为“检测器已实际工作”。
 - 测试逻辑应继续放在独立的 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)，不要嵌入生产源文件。至少覆盖 `race` 与非 `race` 两种配置；上层展示契约则同步维护 BR 的独立 `parity_test.rs`。
 - 若要让 `pkg/util/printer` 使用本 crate，需要单独处理其 crate 依赖和模块接线，并验证 Go/Rust 输出；这不是修改本常量本身即可完成的工作。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库；`files --filter pkg/util/israce` 确认 Rust/Go 配对文件与独立测试；`node --file pkg/util/israce/israce.rs`、`lib.rs`、`norace.rs`、`migration_aster_unit_test.rs` 核对全部源码和条件编译；`node astersql_util_israce` 确认 BR 生产文件及测试的导入节点。图对条件常量的精确 `query/callers/callees` 未建立定义，已在“依赖与调用关系”中明确记录该限制。
-- crate 与 feature：读取 [`pkg/util/israce/Cargo.toml`](./Cargo.toml)、根 [`Cargo.toml`](../../../Cargo.toml) 和 [`br/pkg/version/build/Cargo.toml`](../../../br/pkg/version/build/Cargo.toml)。
-- Go 对照：读取 [`israce.go`](./israce.go)、[`norace.go`](./norace.go)、[`br/pkg/version/build/info.go`](../../../br/pkg/version/build/info.go) 与 [`pkg/util/printer/printer.go`](../printer/printer.go)。
-- Rust 调用与测试：读取 [`lib.rs`](./lib.rs)、[`norace.rs`](./norace.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)、[`br/pkg/version/build/info.rs`](../../../br/pkg/version/build/info.rs)、[`br/pkg/version/build/parity_test.rs`](../../../br/pkg/version/build/parity_test.rs) 以及 printer 的本地占位实现。
-- 独立迁移测试 `migration_race_enabled_matches_go_build_tag` 在 `race` 配置断言 `super::RaceEnabled` 为真，在默认配置断言其为假；BR 契约测试则验证该值进入用户可见文本。按任务约束，本次纯文档分析没有运行 Cargo。

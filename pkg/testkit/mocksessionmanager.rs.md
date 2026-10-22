@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-testkit` crate；crate 入口由 `pkg/testkit/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 `pkg/testkit/lib.rs`，后者通过 `pub mod mocksessionmanager;` 将本模块公开。它是测试基础设施中的内存态会话管理器，用简化的 Rust 数据结构复刻 Go `pkg/testkit/mocksessionmanager.go` 的主要可观察行为，供测试构造进程、事务、连接及内部会话状态。
-
-它不是生产服务器会话管理器：当前文件没有实现 `pkg/session/sessmgr` 中的管理器 trait，也没有连接真实 `Session`、`Domain`、TLS 配置或 SQL 执行链。仓库 Rust 引用搜索显示，实际方法调用集中在独立测试 `pkg/testkit/mocksessionmanager_test.rs`；因此应把它理解为可独立使用的 test double，而非应用主链组件。
+测试基础设施中的内存态会话管理器，用简化的 Rust 数据结构复刻 Go `pkg/testkit/mocksessionmanager.go` 的主要可观察行为，供测试构造进程、事务、连接及内部会话状态。
 
 ## 核心职责
 
@@ -71,12 +69,8 @@
 
 ## 与 Go 版本的对应关系
 
-Go 权威对照为 `pkg/testkit/mocksessionmanager.go`。Rust `processes` 对应 `PS` + `PSMu`，`State::explicit_transactions` 对应 `TxnInfo`，`connections` 对应 `Conn`，`connection_attributes` 对应 `ConAttrs`，`server_id` 对应 `SerID`，`internal_sessions` 对应 `internalSessions`。进程/事务“显式集合非空则优先，否则连接回退”、kill/TLS/status 空操作，以及内部会话 start TS 收集的总体意图一致。
-
 当前 Rust 版有明确简化：
 
-- 用自定义 `ProcessInfo`、`TxnInfo`、`SessionSnapshot` 代替 Go 的 `sessmgr.ProcessInfo`、`txninfo.TxnInfo` 和 `sessionapi.Session`，因此不会动态读取真实 session 状态。
-- 没有 Go `Dom` 字段，`ShowProcessList` / `GetProcessInfo` 不会合并 `Domain.SysProcTracker()` 的系统进程。
 - Rust `GetConAttrs()` 没有 `*auth.UserIdentity` 参数；`Kill` 也没有 Go 接口中的 query/connection/server-side 标志，且额外以 `bool` 暴露固定失败结果。
 - Rust 内部会话以数值 ID 和存储时的可选事务快照建模，而 Go 以对象身份为 key、查询时动态调用 `TxnInfo()`。
 - Rust `CheckOldRunningTxn` 使用 `HashSet<i64>`，只表达 job ID 删除；Go 使用 `map[int64]*mdldef.JobMDL` 并委托 `variable.RemoveLockDDLJobs`。
@@ -93,12 +87,3 @@ Go 权威对照为 `pkg/testkit/mocksessionmanager.go`。Rust `processes` 对应
 若实现真实 kill 或 TLS 更新，不能只填充现有空方法：需要先对齐目标 trait 签名、锁顺序和调用者预期，特别要消除 `KillNonFlashbackClusterConn` 持 state 锁调用 `Kill` 的潜在重入死锁。若引入 workspace crate 类型或新依赖，还需同步 `pkg/testkit/Cargo.toml`，并检查它是否改变 testkit crate 的依赖边界和编译成本。
 
 兼容性风险主要来自公开结构字段和大写方法名；正确性风险集中在显式/回退优先级、map key 与 `SessionSnapshot::connection_id` 不一致，以及 Go/Rust 类型语义差异；性能风险较低，但所有连接和事务查询均为线性遍历或整集合 clone，大 fixture 下会放大锁持有时间和分配量。
-
-## 验证依据
-
-- 源文件：`pkg/testkit/mocksessionmanager.rs`，核对 4 个结构体、`MockSessionManager` 固有实现的全部方法、锁域和分支；文件没有条件编译项。
-- crate 与模块边界：`pkg/testkit/Cargo.toml`、`pkg/testkit/lib.rs`。
-- Rust 独立测试：`pkg/testkit/mocksessionmanager_test.rs`，覆盖 kill 空操作、显式 fixture 覆盖连接回退、无进程信息事务过滤、内部会话身份/计数/start TS、server ID、连接属性、MDL job 清理及空 status vars。
-- Go 对照：`pkg/testkit/mocksessionmanager.go`；仓库引用搜索还确认其用于 Go testkit/store 及 planner、executor、infoschema 等测试，但这些 Go 调用关系不等同于 Rust 已接线。
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/testkit/mocksessionmanager.rs` 报告 33 个符号；`node --file ...` 返回完整 288 行源码及两个文件级 “used by” 关系；`query` 确认 Rust `MockSessionManager`、`State`、`SessionSnapshot`、`ProcessInfo`、`TxnInfo` 及方法节点。精确 `callers`/`callees` 命令在本次执行中超时且未返回边，故调用事实以图的文件级关系和 `rg` 实际引用结果为准，未将未返回的图边推断为事实。
-- 人工复核：本文明确回答该文件为何存在（测试用会话管理替身）、状态如何写入和查询、显式/回退流程、锁与 clone 生命周期、Go 差异，以及安全扩展时的测试和死锁注意点。

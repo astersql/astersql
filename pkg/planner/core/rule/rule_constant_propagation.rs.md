@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于逻辑优化规则 crate `astersql-planner-core-rule`，由同目录 `lib.rs` 以公开模块 `rule_constant_propagation` 导出。它在 `rule_init.rs` 定义的精简逻辑计划 IR（`Plan`、`PlanKind`、`Expr`、`JoinType`）之上实现跨查询块常量谓词上拉：从 Join 子树中的 Selection（可穿过可消除的 Projection）找到“列与常量比较”谓词，在 Join 上方包一层新的 Selection，供后续谓词下推把约束传播到 Join 另一侧。
-
-`rule_init::default_rule_names()` 把字符串 `constant_propagation` 放在默认规则名序列中、位于 `predicate_simplification` 之后。但在当前 Rust 代码中，仓库搜索只找到测试直接构造 `ConstantPropagationSolver`，没有找到生产路径实例化该类型或把规则名解析为本类型的工厂。因此，本文件已提供可调用的规则实现和模块导出，不能仅凭默认名字列表断言它已接入生产优化器执行链。实际生产逻辑计划上的同类入口还可见于 `pkg/planner/core/optimizer_runtime.rs`；那不是本文件使用的精简 `Plan` 类型。
+`join_candidates` 根据 Join 类型限制候选来源：Inner 读取两侧，LeftOuter 只读取左侧保留端，RightOuter 只读取右侧保留端，Semi/AntiSemi 不处理。
 
 ## 核心职责
 
@@ -86,12 +84,6 @@
 
 Rust `ConstantPropagationSolver::{name,optimize}` 对应 Go `rule_constant_propagation.go` 的 `Name`、`Optimize`；二者名称一致，且 Go 的 `planChanged` 始终为 `false`，Rust 测试显式锁定该行为。Go `Optimize` 先对根调用 `ConstantPropagation(nil, 0)`，再递归子节点；Rust `propagate` 也先提取当前节点候选，再递归子节点，保持“当前节点优先”的意图。
 
-Go 把节点特定逻辑分散在逻辑算子方法中：
-
-- `LogicalJoin.ConstantPropagation` 按 Join 类型选择子侧并调用 `PullUpConstantPredicates`，再由 `addCandidateSelection` 接入父节点；Rust 集中为 `join_candidates` 和 `propagate`，通过值重建在 Join 外包 Selection。
-- `LogicalSelection.PullUpConstantPredicates` 调用表达式层 `ValidCompareConstantPredicate`；Rust 用本地 `valid_compare_constant_predicate` 对精简 `Expr` 做形状判断。
-- `LogicalProjection.PullUpConstantPredicates` 先要求 `canProjectionBeEliminatedLoose`，按表达式哈希映射列并用 rule-util 改写克隆表达式；Rust 用“表达式数匹配 schema、单子节点、Projection 项为纯列”的局部条件和列 ID 映射近似该语义。
-
 因此两者核心意图、Join 侧选择、比较谓词筛选、Projection 列改写和 `changed=false` 已对齐，但 Rust 文件基于精简 IR，缺少 Go 的 session/eval context、完整表达式哈希、父节点原位接线以及所有真实 LogicalPlan 类型。不能把本文件视为 Go 生产实现的逐类型完整替代。Go 注释还明确后续由 predicate push down 把上拉谓词传播到另一侧；Rust 本文件没有执行该后续阶段。
 
 ## 扩展指南
@@ -102,15 +94,3 @@ Go 把节点特定逻辑分散在逻辑算子方法中：
 - 若将本规则接入生产优化器，需要在规则名到实现的构造/调度处增加真实接线，而不只是编辑 `default_rule_names`；同时增加从优化器入口触发本类型的测试，以弥补当前只有直接单测的证据缺口。
 - 若改变新 Selection 的元数据继承方式，修改 `propagate` 并验证 schema、keys、统计信息及估算行数的契约。当前整棵 `plan.clone()` 有潜在复制成本，优化所有权重建时必须保持递归后子树和候选提取时机一致。
 - Rust 测试必须继续放在独立的 `rule_constant_propagation_test.rs`，不要内嵌回生产文件；如对齐 Go 行为有变化，还应同步检查 `rule_constant_propagation.go`、`logical_join.go`、`logical_selection.go`、`logical_projection.go` 及真实优化入口测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标 Rust 文件可按文件节点读取。
-- 目标实现：`pkg/planner/core/rule/rule_constant_propagation.rs`，符号查询确认 `ConstantPropagationSolver`、`propagate`、`join_candidates`、`pull_up_constant_predicates`、`valid_compare_constant_predicate`、`replace_column`；callees 查询确认核心内部调用边和递归关系。
-- 公共 IR 与规则顺序：`pkg/planner/core/rule/rule_init.rs` 中的 `Expr`、`JoinType`、`PlanKind`、`Plan`、`LogicalRule`、`default_rule_names`。
-- crate 边界与模块导出：`pkg/planner/core/rule/Cargo.toml`、`pkg/planner/core/rule/lib.rs`。
-- 独立 Rust 单测：`pkg/planner/core/rule/rule_constant_propagation_test.rs`，覆盖 Inner Join 上拉及 `changed=false`、LeftOuter 保留侧、Semi 不改写、Projection 列映射和拒绝 `ne`。
-- Rust 真实优化入口旁证：`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs` 的 `constant_propagation_pulls_derived_table_predicate_above_join`，验证 `FLAG_CONSTANT_PROPAGATION` 路径会在真实逻辑计划上增加 Selection；该测试不直接调用本文件类型。
-- Go 对照：`pkg/planner/core/rule/rule_constant_propagation.go` 的 `Optimize`、`execOptimize`、`Name`；`pkg/planner/core/operator/logicalop/logical_join.go` 的 `ConstantPropagation`；`logical_selection.go` 与 `logical_projection.go` 的 `PullUpConstantPredicates`。
-- 调用搜索限制：RustCodeGraph 未给出本文件公开类型的生产 caller；仓库 `rg` 搜索同样只发现模块导出、默认名字和测试直接调用。因此文档把生产接线标为未验证，而非推测已支持。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证在文档生成后单独执行。

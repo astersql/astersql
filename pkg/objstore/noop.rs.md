@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明的源码是 [`pkg/objstore/noop.rs`](./noop.rs)，它实现 `astersql-objstore` crate 的空操作对象存储后端。模块由 `pkg/objstore/lib.rs` 的 `pub mod noop` 暴露，统一工厂 `pkg/objstore/storage.rs::New` 在收到 `StorageBackend::Noop` 时调用 `newNoopStorage`，再包装成 `Arc<dyn Storage>` 返回。因此它位于对象存储抽象层的后端分发端，而不是一个真正保存对象的介质。
-
-`pkg/objstore/Cargo.toml` 将 crate 根设为 `lib.rs`，且没有控制 noop 的 feature；该实现随 crate 一起编译。它只依赖标准库、`anyhow::Result`，以及同 crate 的 `storage` 模块接口。
+所有写入、删除、重命名、遍历和关闭操作都立即成功且不保存状态；整文件读取返回空字节，存在性检查恒为 `false`，URI 恒为 `noop:///`。
 
 ## 核心职责
 
@@ -64,7 +62,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/noop.go`。Rust 保留了 Go 的 `noopStorage`/`noopReader`/`NoopWriter` 三类角色、`newNoopStorage` 构造名，以及各方法的固定返回语义：删除和写入成功、整文件读取为空、存在性为假、遍历为空、URI 为 `noop:///`、预签名结果为空、流式读写报告消费完整缓冲区且关闭成功。
+Rust 保留了 Go 的 `noopStorage`/`noopReader`/`NoopWriter` 三类角色、`newNoopStorage` 构造名，以及各方法的固定返回语义：删除和写入成功、整文件读取为空、存在性为假、遍历为空、URI 为 `noop:///`、预签名结果为空、流式读写报告消费完整缓冲区且关闭成功。
 
 类型系统差异包括：Go 构造器返回 `*noopStorage`，Rust 返回零大小值并由工厂包入 `Arc`；Go `Open` 返回值形式的 `noopReader`，Rust 返回装箱 trait object；Go `Seek` 使用 `int64` 并直接返回传入偏移，Rust 必须满足 `std::io::Seek` 的 `u64` 返回类型，因此负的相对偏移被钳制为零。Rust 的 `Storage` 还提供 `CopyFrom` 和 `is_strong_consistent` 默认方法，本文件没有为 noop 添加 Go 文件中不存在的专用行为。
 
@@ -74,11 +72,3 @@
 - 若要改变范围读语义，需同时审查 `NoopReader::{read, seek}`、`pkg/objstore/storage.rs::ReadDataInRange` 以及 `pkg/objstore/helper_2_aster_unit_test.rs::noop_and_range_read_keep_go_edge_cases`。尤其不能把 `read` 改成返回 `0` 而不调整预期，否则 `read_exact` 会得到 EOF。
 - 若增加 `Storage` trait 方法，应明确 noop 是固定成功、固定空值，还是沿用默认的不支持错误，并在独立 `*_test.rs` 文件中增加回归；不要把测试内嵌进 `noop.rs`。
 - URI 或工厂接线变化还需同步检查 `storage.rs::New`、`parse.rs`、`parse_test.rs` 及 Go 对照。兼容风险主要是上层依赖“成功但不产生副作用”的控制流；性能风险当前仅为 trait object 和 `Arc` 的固定开销，无 I/O 或随数据量增长的内存占用。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 `pkg/objstore/noop.rs`（147 行、24 个符号）；`node --file` 核对了文件全貌，精确节点 trail 确认 `storage.rs::New` 与 `helper_2_aster_unit_test.rs::noop_and_range_read_keep_go_edge_cases` 调用 `newNoopStorage`。
-- 生产源码：`pkg/objstore/noop.rs`；接口与工厂：`pkg/objstore/storage.rs`；模块入口：`pkg/objstore/lib.rs`；crate 声明：`pkg/objstore/Cargo.toml`。
-- Go 对照：`pkg/objstore/noop.go` 与 `pkg/objstore/storage.go::{New, ReadDataInRange}`。
-- 独立 Rust 测试：`pkg/objstore/helper_2_aster_unit_test.rs::noop_and_range_read_keep_go_edge_cases` 验证 noop 范围读返回缓冲区长度但不改变原内容，并验证负起始偏移报错；`pkg/objstore/parse_test.rs::{test_parse_backend,test_format_backend_url}` 验证 `noop://` 后端解析和规范 URI `noop:///`。同目录不存在专门的 `noop_test.rs` 或 `noop_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另以规定命令验证本文恰有十一个固定二级标题。

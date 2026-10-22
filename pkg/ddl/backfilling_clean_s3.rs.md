@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl` crate，由 `pkg/ddl/lib.rs` 以 `pub mod backfilling_clean_s3` 公开。它描述分布式 DDL 回填使用云存储全局排序后的收尾逻辑：删除中间文件、在限定条件下聚合计量数据，最后脱敏任务元数据中的云存储 URI。
-
-当前 Rust 模块的定位是可独立测试的领域逻辑，而不是已接入分布式任务框架的运行时 cleaner：全仓 Rust 搜索中，生产代码没有构造或调用 `BackfillCleaner`，仅 `pkg/ddl/backfilling_clean_s3_test.rs` 直接调用它。对应 Go 实现则由 `pkg/ddl/ddl.go:812` 的 `scheduler.RegisterCleanerFactory(proto.Backfill, newBackfillCleaner)` 注册进生产主链。
+`BackfillCleaner::clean` 按固定顺序编排清理：判空和校验 URI，清理当前 task ID 前缀，必要时清理旧版 job ID 前缀，可选上报计量，然后脱敏 URI。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ Go 生产对照链为 `pkg/ddl/ddl.go:812` 注册 factory → `newBackfillCleane
 
 ## 与 Go 版本的对应关系
 
-`pkg/ddl/backfilling_clean_s3.go` 是直接语义来源。两版共同保留了如下顺序与规则：空 URI 早返回；先按 task ID 清理；版本 1 之前再按 job ID 清理；只对 next-generation kernel 下成功且非 merge-temp-index 任务计量；计量聚合成功 Read Index 子任务的行数与 processed/index-KV 字节数；最后脱敏 URI。
-
 当前 Rust 实现缩小了基础设施边界，但不应被误读为 Go 运行时的完整替代：
 
 - Go `Clean` 从 `proto.Task.Meta` JSON 反序列化 `BackfillTaskMeta`；Rust 直接接收已类型化的 `CleanupTask`。
@@ -92,12 +88,3 @@ Go 生产对照链为 `pkg/ddl/ddl.go:812` 注册 factory → `newBackfillCleane
 - 改变操作顺序前，明确部分失败的重试语义；特别是“已删文件、计量失败、URI 未脱敏”和“新前缀成功、旧前缀失败”两种状态。
 - 扩展 URI 校验或脱敏规则时，优先与 `astersql-parser-ast` 的 `redact_url` 及 Go `ast.RedactURL` 对齐，并在独立测试文件中增加协议、重复 query key、非云 URL 和非法输入用例；不要把测试内嵌进生产 `.rs` 文件。
 - 存储适配器应明确前缀删除的幂等、重试、超时和部分成功契约；性能风险主要来自前缀列举/批量删除和子任务 summary 的收集，而不是本文件内的简单遍历。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：`11467` 个文件、`307296` 个节点、`1848419` 条边；`node --file pkg/ddl/backfilling_clean_s3.rs` 读取了全部 165 行，`node BackfillCleaner` 核对了 Rust 结构体和 `clean` 方法。
-- RustCodeGraph 精确查询确认了 `BackfillCleaner`、`send_meter_on_clean`、`redact_cloud_storage_uri`、`valid_cloud_storage_uri`、`BackfillTaskMeta` 和 `SubtaskSummary` 的定义；`callers send_meter_on_clean` 在当前索引上长时间无返回而中止，因此调用者结论另用全仓精确符号搜索复核，没有把超时解释为零调用边。
-- 已读生产与装配证据：`pkg/ddl/backfilling_clean_s3.rs`、`pkg/ddl/backfilling_dist_executor.rs`、`pkg/ddl/backfilling_read_index.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- 已读 Go 对照与接线证据：`pkg/ddl/backfilling_clean_s3.go` 和 `pkg/ddl/ddl.go:802-812`。
-- 已读独立 Rust 测试 `pkg/ddl/backfilling_clean_s3_test.rs`：覆盖敏感 query key 脱敏、重复 key 归一化、新旧前缀顺序、多 summary 聚合、全部计量门禁、空/非法 URI、存储错误与计量错误的短路和脱敏时机。
-- 本任务为纯文档分析，按计划不运行 Cargo；文档结构由任务文件指定的 11 章命令校验。

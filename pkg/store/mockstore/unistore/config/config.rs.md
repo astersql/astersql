@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-store-mockstore-unistore-config` crate 的核心实现；crate 入口 `pkg/store/mockstore/unistore/config/lib.rs` 以 `pub mod config` 加载它，并通过 `pub use config::*` 对外重导出。`pkg/store/mockstore/unistore/config/Cargo.toml` 的 `package.metadata.porting.go-package` 指向同目录 Go 包，表明这里是 `pkg/store/mockstore/unistore/config/config.go` 的 Rust 移植边界。
-
-它位于 mockstore/unistore 的配置层，不自行启动服务、打开数据库或创建后台任务。其产物由上层组装代码消费：`pkg/store/mockstore/unistore/mock.rs::New` 克隆 `DefaultConf` 并按测试存储路径调整引擎参数，`pkg/store/mockstore/unistore/server/server.rs::{create_db,get_region_options,new_mock,new}` 将配置映射为数据库、Region 和服务启动参数，`pkg/store/mockstore/unistore/util/lockwaiter/lockwaiter.rs::NewManager` 读取悲观事务的唤醒延迟。
+通过 `DefaultConf: LazyLock<Config>` 提供一份可克隆的默认配置，默认值与 Go 的包级 `DefaultConf` 对齐。
 
 ## 核心职责
 
@@ -84,9 +82,7 @@ RustCodeGraph 将目标文件识别为含 20 个符号的已索引文件；精�
 
 `config.go` 与本文件具有相同的五段顶层结构、TOML 名称和核心默认值；Rust 的 `i32` 对应若干 Go `int` 字段，容量和等待时间继续使用 `i64`。Go `options.CompressionType` 在 Rust 中被本地 `CompressionType` 取代，但 switch 语义保持为仅识别小写 `snappy`、`zstd`。
 
-Go 的可变包级变量 `DefaultConf` 在 Rust 中变为 `LazyLock<Config>`；七个空压缩槽位、地址、容量、tick、Region 键阈值及悲观锁参数与 Go 对照文件一致。Rust 还显式填入 Go 零值所隐含的 `SyncWrite = false`、`IngestCompression = ""`、`VolatileMode = false`。
-
-Go `ParseDuration` 先调用 `time.ParseDuration`，失败后追加 `s`，随后对错误或负值 `Fatalf`。Rust 以本地解析器复刻纳秒、复合单位、小数与溢出语义，最终以 panic 表示致命配置错误。`config_test.rs` 特别覆盖 Go 微秒拼写、小数精度和无符号累加；`migration_aster_unit_test.rs` 覆盖默认值、压缩 switch、常见 duration、秒回退及非法/负数。
+Rust 还显式填入 Go 零值所隐含的 `SyncWrite = false`、`IngestCompression = ""`、`VolatileMode = false`。
 
 ## 扩展指南
 
@@ -97,13 +93,3 @@ Go `ParseDuration` 先调用 `time.ParseDuration`，失败后追加 `s`，随后
 修改 duration 时，优先保持 `parse_go_duration` 的复合片段、微秒别名、截断和边界语义，并把测试放在独立的 `config_test.rs` 或 `migration_aster_unit_test.rs`，不要嵌入生产文件。需特别覆盖 `i64::{MIN,MAX}` 纳秒附近、累加回绕、长小数、无单位秒回退、负数和非法单位。若改用 manifest 中的 `go-parse-duration` 依赖，必须先用现有边界用例证明语义等价。
 
 性能风险主要来自改变容量、缓存、compact 和同步写默认值；兼容风险主要来自 TOML 键名、字段必填性、duration 致命错误方式及未知压缩算法的降级行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/store/mockstore/unistore/config` 确认目标、Go 对照和测试均在索引中；`node --file .../config.rs --offset 1 --limit 500` 读取目标文件 440 行及 20 个符号；`query ParseDuration`、`query ParseCompression`、`query DefaultConf` 精确定位目标符号。函数级 `callers/callees` 未产生可用输出，已如实回退到局部引用搜索。
-- 实现与边界：`pkg/store/mockstore/unistore/config/config.rs`。
-- crate 边界：`pkg/store/mockstore/unistore/config/Cargo.toml`、`pkg/store/mockstore/unistore/config/lib.rs`，以及直接消费者的 Cargo manifests。
-- Go 语义：`pkg/store/mockstore/unistore/config/config.go`。
-- 独立测试：`pkg/store/mockstore/unistore/config/config_test.rs`、`pkg/store/mockstore/unistore/config/migration_aster_unit_test.rs`。
-- 真实调用点：`pkg/store/mockstore/unistore/mock.rs::New`、`pkg/store/mockstore/unistore/server/server.rs::{create_db,get_region_options,new_mock,new}`、`pkg/store/mockstore/unistore/util/lockwaiter/lockwaiter.rs::NewManager`。
-- 按任务约束未运行 Cargo；结构验收仅检查目标文档存在且恰有十一个固定二级标题。

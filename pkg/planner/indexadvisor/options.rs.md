@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-indexadvisor` crate；同目录 `Cargo.toml` 将 `lib.rs` 设为 crate 根，`lib.rs` 再把本文件公开为 `options` 模块。它位于索引顾问的配置边界：定义四个配置名、一次推荐所用的参数快照、用户值类型、持久化抽象，以及默认值、校验、读取补缺和 Go 风格 duration 解析。
-
-当前 Rust 接线分为两个层次。`AdvisorOptions` 已进入推荐主链：`indexadvisor.rs::advise_indexes_for_sql` 接收它并传给 `algorithm.rs::advise_indexes`，后者使用索引数量、索引宽度和超时约束搜索。另一方面，`OptionStore`、`fill_options`、`set_option`、`set_options` 和 `get_options` 的仓库内直接调用目前只出现在独立的 `options_test.rs`；没有发现把这些函数接到数据库或 `pkg/executor/recommend_index.rs::IndexAdvisor` trait 的具体生产实现。因此，本文件表达了选项读写语义，但自身不执行 SQL，也不能据此宣称 Rust 已完成 `mysql.tidb_kernel_options` 的生产接线。
-
-源码包含 5 个公开常量和 1 个公开常量数组、2 个公开类型、1 个公开 trait、7 个公开函数、2 个私有辅助函数及 1 个 `Default` 实现；没有条件编译项或全局可变状态。文件开头的大段注释是 Go 迁移草图，不参与编译，真实行为以第 113 行后的 Rust 定义为准。
+用 `OptionStore` 隔离实际持久化机制；`get_options` 负责读取后补默认值，`set_option(s)` 负责校验后按顺序写入。
 
 ## 核心职责
 
@@ -90,7 +86,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/indexadvisor/options.go`，相关行为测试为 `options_test.go`。Rust 保留了以下核心语义：模块名和四个选项名、`5/3/1000/30s` 默认值、持久化值先读而用户运行时选项后覆盖、只补零值字段、数量必须为正、timeout 必须是 duration 字符串且不能为负、逐项写入遇错即停、缺失持久化项回落默认值，以及固定英文描述。
+Rust 保留了以下核心语义：模块名和四个选项名、`5/3/1000/30s` 默认值、持久化值先读而用户运行时选项后覆盖、只补零值字段、数量必须为正、timeout 必须是 duration 字符串且不能为负、逐项写入遇错即停、缺失持久化项回落默认值，以及固定英文描述。
 
 当前差异和迁移状态如下：
 
@@ -111,14 +107,3 @@
 - 扩展 `parse_duration` 时应保持检查运算、非负 `Duration` 边界、连续单位和小数截断规则，并补充溢出、Unicode 微秒单位、正负零及非法尾部测试。
 - 若改为结构化错误，调用方和 store 适配器需同步迁移；用户可见错误文本、Go 兼容性和 executor 的错误转换都应纳入审查。
 - 性能方面，现有四项配置不构成热点；真实风险主要来自将来 store 的逐项网络/SQL 往返。批处理优化不得悄然改变 `set_options` 的有序部分成功语义。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/indexadvisor/options.rs`，通过 RustCodeGraph 文件节点完整核对 384 行、27 个索引符号、公开性、分支、错误路径和 duration 算法。
-- crate 与模块边界：`pkg/planner/indexadvisor/Cargo.toml`、`pkg/planner/indexadvisor/lib.rs`；目标目录没有 `doc.go`，因此无额外包契约可读。
-- Rust 生产消费面：`pkg/planner/indexadvisor/indexadvisor.rs::advise_indexes_for_sql`、`pkg/planner/indexadvisor/algorithm.rs::{advise_indexes, check_timeout}`。
-- executor 边界：`pkg/executor/recommend_index.rs::{IndexAdvisor, RecommendIndexExec::Next, showOptions}`；仅作为未适配的相邻接口证据。
-- Rust 独立测试：`pkg/planner/indexadvisor/options_test.rs::{option_duration_parser_matches_go_units_and_rejects_invalid_values, fill_options_ignores_invalid_persisted_integers_like_go, option_store_reads_defaults_and_applies_overrides_in_go_order, option_validation_and_sequential_writes_match_go}`。`algorithm_test.rs`、`indexadvisor_sql_test.rs`、`indexadvisor_test.rs` 和 `indexadvisor_tpch_test.rs` 另有 `AdvisorOptions` 的直接或间接算法消费证据。
-- Go 对照：`pkg/planner/indexadvisor/options.go::{fillOption, SetOptions, optionVal, SetOption, GetOptions, description, defaultVal, intVal}`；`options_test.go` 覆盖四项 SET、默认/持久化 SHOW、多项部分成功、运行时 override 和 timeout 行为。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件，目标目录 27 个被索引代码文件；精确 `query` 定位 `AdvisorOptions`、`fill_options`、`set_option(s)`、`get_options`、`option_value`、`parse_positive`、`parse_duration`、`description`、`default_value`。文件节点确认 `AdvisorOptions` 被 `indexadvisor.rs` 与 `algorithm.rs` 消费。通用名称使部分 `callers/callees` 查询出现同名噪声，`fill_options` 调用查询还超时无输出，因此按技能规则用限定目录的精确 `rg` 补证，确认存储 API 目前仅由 `options_test.rs` 直接调用。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行任务指定的结构验证，确认文件存在且恰含 11 个固定二级标题，并人工复核未把迁移草图、同名 executor trait 或 Go 集成能力误写成当前 Rust 已接线事实。

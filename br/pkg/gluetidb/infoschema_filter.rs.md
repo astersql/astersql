@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-gluetidb`（清单见 `br/pkg/gluetidb/Cargo.toml`），由 `br/pkg/gluetidb/lib.rs` 以 `pub mod infoschema_filter` 挂载，并通过 `pub use infoschema_filter::*` 扁平再导出。它是 Go 文件 `br/pkg/gluetidb/infoschema_filter.go` 的 Rust 对照实现，在 BR 创建或取得 TiDB Domain 时提供按数据库名裁剪 InfoSchema 加载范围的策略。
-
-该实现目前采用本 crate 内定义的最小 `Filter`、`InfoSchema`、`SchemaDiff` 和 `DBInfo` 抽象，而不是直接实现 `pkg/infoschema/issyncer/filter.rs` 中的同名 trait。`br/pkg/gluetidb/glue.rs` 的 `Glue::InfoSchemaFilter` 和 `DomainHooks::GetOrCreateDomainWithFilter` 使用的是这里的 `Filter`。仓库引用搜索未发现 Rust 生产代码直接调用本文件的 `NewInfoSchemaFilter`；直接调用只出现在 `br/pkg/gluetidb/parity_test.rs`。`br/cmd/br` 当前使用 `br/cmd/br/stubs.rs` 中另一套 `NewInfoSchemaFilter`/`InfoSchemaFilter` 桩，因此不能据 Go 接线推断本 Rust 构造函数已经接入真实 CLI 主链。
+Go 文件 `br/pkg/gluetidb/infoschema_filter.go` 的 Rust 对照实现，在 BR 创建或取得 TiDB Domain 时提供按数据库名裁剪 InfoSchema 加载范围的策略。
 
 ## 核心职责
 
@@ -94,7 +92,7 @@ Go `SkipLoadDiff` 在最终决定跳过时记录动作类型、schema/table/old-
 
 ## 与 Go 版本的对应关系
 
-主要语义与 `br/pkg/gluetidb/infoschema_filter.go` 对齐：空谓词不安装过滤器；特殊动作、零 SchemaID、缺少 latest InfoSchema、反查失败以及 allow 取反的分支顺序一致；`SkipLoadSchema(nil)` 也都不跳过。`ActionType` 判别值已用 `pkg/meta/model/job.go` 的常量核对。
+主要语义与 `br/pkg/gluetidb/infoschema_filter.go` 对齐：空谓词不安装过滤器；特殊动作、零 SchemaID、缺少 latest InfoSchema、反查失败以及 allow 取反的分支顺序一致；`SkipLoadSchema(nil)` 也都不跳过。
 
 已确认的差异包括：
 
@@ -103,7 +101,7 @@ Go `SkipLoadDiff` 在最终决定跳过时记录动作类型、schema/table/old-
 - Go 对每个被跳过的 diff 写 info 日志；Rust 明确保持静默，所以 `Version`、`TableID`、`OldSchemaID` 尚无运行时用途。
 - Go 的 CLI 接线在 `br/cmd/br/cmd.go` 可见；当前 Rust CLI 使用另一套本地桩，尚未验证到本文件构造函数的生产调用。
 
-相关 Rust 独立测试为 `br/pkg/gluetidb/parity_test.rs`，覆盖空谓词、建库动作、零 SchemaID、缺失 InfoSchema、允许库反查、空 DBInfo 和拒绝库。它没有逐项覆盖六种 placement/resource-group 动作、`SchemaByID` 未命中、已允许库的 `SkipLoadSchema`，也没有验证跳过日志（当前实现本就没有日志）。Go 同路径没有独立 `infoschema_filter_test.go`；`pkg/infoschema/issyncer/loader_test.go` 定义了模拟 BR 语义的 `testNameFilter`，属于 loader 层的间接对照而非本类型的直接测试。
+它没有逐项覆盖六种 placement/resource-group 动作、`SchemaByID` 未命中、已允许库的 `SkipLoadSchema`，也没有验证跳过日志（当前实现本就没有日志）。
 
 ## 扩展指南
 
@@ -114,13 +112,3 @@ Go `SkipLoadDiff` 在最终决定跳过时记录动作类型、schema/table/old-
 若补齐 Go 的日志行为，应在 `SkipLoadDiff` 的最终 `skip == true` 路径记录 `Type`、`SchemaID`、`TableID`、`OldSchemaID`、`Version`，并评估高频 schema 同步时的日志量。若更改 `AllowFn` 的并发约束或引入缓存，还需评估共享方式、锁顺序、失效时机和 Domain 生命周期。
 
 建议补充的边界测试包括：六个全局对象动作分别不跳过；`SchemaByID` 返回 `None` 时跳过；允许库与拒绝库的 `SkipLoadSchema` 对称断言；谓词调用次数与特殊分支不调用谓词；通过 `Glue::getDomainInner` 将安装的过滤器传给 hook 的接线测试。
-
-## 验证依据
-
-- 源码与模块：`br/pkg/gluetidb/infoschema_filter.rs`、`br/pkg/gluetidb/lib.rs`、`br/pkg/gluetidb/glue.rs`。
-- crate 边界：`br/pkg/gluetidb/Cargo.toml`；确认包名、`lib.rs` 入口及 `astersql-br-pkg-glue` 路径依赖。
-- Go 对照：`br/pkg/gluetidb/infoschema_filter.go`、`br/cmd/br/cmd.go`、`pkg/meta/model/job.go`。
-- Rust 与 Go 测试证据：`br/pkg/gluetidb/parity_test.rs`、`pkg/infoschema/issyncer/loader_test.go`；同目录未发现独立的 `infoschema_filter_test.go` 或 `infoschema_filter_test.rs`。
-- RustCodeGraph：`status` 报告索引包含 7032 个 Rust 文件；`files --filter br/pkg/gluetidb` 收录目标实现、Go 对照和 `parity_test.rs`；`explore "br/pkg/gluetidb/infoschema_filter.rs NewInfoSchemaFilter SkipLoadDiff SkipLoadSchema"` 与目标文件 `node` 查询确认 15 个符号及 `SkipLoadDiff -> skip_load_diff_inner -> SchemaByID` 调用链。图对 Go/Rust 同名符号会合并候选，因此上游接线另以精确路径 `rg` 复核。
-- 引用搜索：`rg -n "NewInfoSchemaFilter\\(|InfoSchemaFilter\\s*[:=]" --glob '*.rs' --glob '*.go' br`，确认本 Rust 构造函数的直接调用仅在 `br/pkg/gluetidb/parity_test.rs`，并识别 `br/cmd/br/stubs.rs` 的同名独立桩。
-- 人工复核结论：文件存在的原因是把 BR 的库名 allow 规则转换为 issyncer 风格的 skip 规则；运行核心是上述有序短路决策；安全扩展必须同步动作语义、独立测试和实际 Domain/CLI 接线。

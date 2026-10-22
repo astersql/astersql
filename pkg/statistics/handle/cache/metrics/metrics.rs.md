@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是统计信息缓存指标的“标签绑定层”：它不创建或注册 Prometheus collector，而是把父级 `StatsCacheCounter`、`StatsCacheGauge` 中固定 `type` 标签对应的 time series 绑定为缓存代码可直接使用的全局句柄。源码由同 crate 的 [`lib.rs`](./lib.rs) 以 `cache_metrics` 模块载入；crate 名为 `astersql-statistics-handle-cache-metrics`，仅直接依赖 `prometheus = "0.14"`，其移植元数据指向 Go 包 `pkg/statistics/handle/cache/metrics`（[`Cargo.toml`](./Cargo.toml)）。
-
-应用初始化链位于 `pkg/util/metricsutil/common.rs`：`initParentMetricsCollectors` 先调用该 crate 的 `metrics::init_parent_metrics()` 创建父向量，`initMetrics` 再调用本模块 `InitMetricsVars()`。缓存 crate 和 LFU 子 crate 通过各自的 Cargo 路径依赖消费这些句柄。
+由 `InitMetricsVars` 使用固定标签值把上述句柄绑定到父 `CounterVec`/`GaugeVec`，保持指标名、标签和值域与 Go 实现一致。
 
 ## 核心职责
 
@@ -67,9 +65,7 @@ RustCodeGraph 将目标文件标记为被 `migration_aster_unit_test.rs` 和 `st
 
 ## 与 Go 版本的对应关系
 
-同路径 [`metrics.go`](./metrics.go) 定义完全相同的八个导出句柄、`init()` 和 `InitMetricsVars()`，标签映射逐项一致。Rust 使用 `Option` 表达 Go 全局接口变量初始化前的空状态，并用 `expect` 明确父向量初始化顺序；Go 的包初始化机制会自动执行 `init()`，Rust 则由 `metricsutil` 显式接线。
-
-父指标的命名空间、子系统、名称、帮助文本和 `type` 标签可在 `pkg/metrics/stats.go::InitStatsMetrics` 与 Rust `pkg/metrics/stats.rs::InitStatsMetrics` 中交叉验证。当前指标更新点也保持 Go 意图：`statscacheinner.go` 更新 hit/miss/update/del，`internal/lfu/lfu_cache.go` 更新 capacity/cost/evict/reject。
+Rust 使用 `Option` 表达 Go 全局接口变量初始化前的空状态，并用 `expect` 明确父向量初始化顺序；Go 的包初始化机制会自动执行 `init()`，Rust 则由 `metricsutil` 显式接线。
 
 一个需注意的实现差异是 Rust 消费者多在句柄为 `None` 时跳过更新，而 Go 依赖包初始化后句柄总是可用；扩展时不能据此把“未初始化也正常”当作完整应用的预期状态。
 
@@ -80,12 +76,3 @@ RustCodeGraph 将目标文件标记为被 `migration_aster_unit_test.rs` 和 `st
 测试应保持在独立文件中：优先扩展 `pkg/statistics/handle/cache/metrics/migration_aster_unit_test.rs` 验证新句柄与父 series 共享、重复初始化不清零；涉及真实缓存路径时扩展 `pkg/statistics/handle/cache/statscache_test.rs`，LFU 行为则在相应独立测试中验证。测试全局 `static mut` 时应沿用串行或子进程隔离，避免并行污染。
 
 若要降低 `static mut` 风险，可评估一次性容器或同步封装，但这会改变公开句柄访问方式和重复绑定语义，不能作为本文件的局部机械替换。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、目标目录四个索引文件；`node --file` 核对了 `metrics.rs`、`lib.rs`、`metrics.go`、`migration_aster_unit_test.rs` 和 `statscache_test.rs`。目标文件索引显示被后两份 Rust 测试使用；精确 `callers/callees` 未返回边，故未据此宣称不存在调用。
-- 源码与配置：`pkg/statistics/handle/cache/metrics/metrics.rs`（八个全局句柄、`init`、`InitMetricsVars`）；同目录 `Cargo.toml` 与 `lib.rs`（crate 边界、依赖、父向量）；`pkg/util/metricsutil/common.rs`（完整应用初始化顺序）。
-- 生产调用点：`pkg/statistics/handle/cache/statscacheinner.rs` 与 `pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs`；父 collector 定义还与 `pkg/metrics/stats.rs`、`pkg/metrics/stats.go` 核对。
-- Go 对照：`pkg/statistics/handle/cache/metrics/metrics.go`、`pkg/statistics/handle/cache/statscacheinner.go`、`pkg/statistics/handle/cache/internal/lfu/lfu_cache.go`。
-- 独立测试：`pkg/statistics/handle/cache/metrics/migration_aster_unit_test.rs::cache_metric_handles_match_go_labels_and_share_parent_series` 验证八个标签、父子 series 共享和重复绑定不清零；`pkg/statistics/handle/cache/statscache_test.rs::global_configuration_metrics_and_failpoints` 验证 hit/miss/update/del/cost 在真实缓存操作中的更新。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付前以规定命令验证目标文档存在且恰好包含十一个固定二级标题，并人工复核无运行时能力臆测。

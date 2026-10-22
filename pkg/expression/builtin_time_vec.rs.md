@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate（`pkg/expression/Cargo.toml`），由 `pkg/expression/lib.rs:275-276` 以私有模块 `builtin_time_vec_kernel` 装入。它实现一组以 `NullableVec<T>` 为输入/输出的时间函数向量内核，覆盖日历字段提取、日期构造、会计期运算、MySQL `TIME` 运算、语句时间广播、TSO 解析、时区转换和有界陈旧读时间钳位。
-
-这里的“向量化”是保持列的行序并逐行处理 `Option<T>`，不是直接实现生产表达式框架的 `Expression::VecEval*` 或 `chunk::Column` 接口。仓库范围的 Rust 引用搜索显示，本文件的 `vec_*` 入口目前只被 `builtin_time_vec_29_aster_unit_test.rs` 和 `builtin_time_vec_test.rs` 调用；`lib.rs:835-837` 也只在 `cfg(test)` 下通过 `expression_builtin_time_vec` 重新导出。因此它是已实现、可独立验证的迁移内核，但尚未接到当前生产表达式派发主链。Go 的生产实现位于 `pkg/expression/builtin_time_vec.go`，直接挂在各 `builtin*Sig.vecEval*` 方法上。
+实现一组以 `NullableVec<T>` 为输入/输出的时间函数向量内核，覆盖日历字段提取、日期构造、会计期运算、MySQL `TIME` 运算、语句时间广播、TSO 解析、时区转换和有界陈旧读时间钳位。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ TSO 的低 18 位是逻辑计数，高位是物理毫秒；转换后输出 FSP 6
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/expression"` 明确 crate 的 Go 来源。Rust 函数可对应到 `builtin_time_vec.go` 的如下生产方法：`vec_month/year/date` 对应 `builtinMonthSig`、`builtinYearSig`、`builtinDateSig.vecEval*`；名称、星期、末日和构造函数对应各同名 `builtin*Sig`；会计期对应 `builtinPeriodDiffSig`/`builtinPeriodAddSig`；duration 分量和构造对应 `builtinHour/Minute/Second/MicroSecond/TimeToSec/SecToTime/MakeTimeSig`；TSO、时区和陈旧读对应 `builtinTidbParseTsoSig`、`builtinConvertTzSig`、`builtinTiDBBoundedStalenessSig`。
+Go 直接操作 `chunk.Column`、使用表达式参数求值与 buffer allocator，并通过完整 session/type context 生成 TiDB 错误和 warning；Rust 使用本地 `NullableVec`、`MysqlTime`、`EvalContext` 和 `TimeVecError`。因此 Rust 不是 Go 文件 3014 行全部签名的一一替换，也未覆盖 Go 文件中的全部时间函数。
 
-两端共同保持行序、NULL 合并、两位数年份、838 小时上限、period 合法性、零日期模式、TSO 高位物理毫秒以及 `CONVERT_TZ` 非法参数返回 NULL 等核心语义。Go 直接操作 `chunk.Column`、使用表达式参数求值与 buffer allocator，并通过完整 session/type context 生成 TiDB 错误和 warning；Rust 使用本地 `NullableVec`、`MysqlTime`、`EvalContext` 和 `TimeVecError`。因此 Rust 不是 Go 文件 3014 行全部签名的一一替换，也未覆盖 Go 文件中的全部时间函数。
-
-`builtin_time_vec_29_aster_unit_test.rs` 验证闰日、NULL、星期编号、严格/非严格零日期、两位数年份、period、duration 符号与截断、TSO、时区和 bounded staleness。`builtin_time_vec_test.rs` 中大部分 Go 表驱动结构仍是迁移说明/轻量占位，三个 Go 同名测试入口实际复用 parity suite；性能 benchmark 函数也未执行真实 benchmark。文档因此不把这些占位描述为完整 Go 测试矩阵已运行。
+`builtin_time_vec_test.rs` 中大部分 Go 表驱动结构仍是迁移说明/轻量占位，三个 Go 同名测试入口实际复用 parity suite；性能 benchmark 函数也未执行真实 benchmark。文档因此不把这些占位描述为完整 Go 测试矩阵已运行。
 
 ## 扩展指南
 
@@ -91,12 +87,3 @@ TSO 的低 18 位是逻辑计数，高位是物理毫秒；转换后输出 FSP 6
 - 若将本内核接入生产表达式主链，接入点应是 `pkg/expression/lib.rs` 的生产模块装配及相应 `builtin*Sig`/`VecEval*` 实现；必须在 `chunk.Column` 与 `NullableVec`/本地时间类型之间明确所有权、NULL bitmap、FSP、类型标志和 warning 的转换，不能仅把测试 re-export 当作接线。
 - 测试逻辑应继续放在独立文件：优先扩展 `pkg/expression/builtin_time_vec_29_aster_unit_test.rs` 的真实断言，并同步审阅 `pkg/expression/builtin_time_vec_test.rs` 与 Go 的 `builtin_time_vec_test.go`；不要把 `#[test]` 嵌入本生产源文件。
 - 性能敏感变更应关注每次调用的向量分配、字符串创建、时区逐行解析和 chrono 转换；行为验证之后再与 Go chunk/buffer 路径做等量 benchmark。
-
-## 验证依据
-
-- 源码与装配：完整阅读 `pkg/expression/builtin_time_vec.rs`；核对 `pkg/expression/lib.rs:272-276` 的模块声明、`lib.rs:610-625` 的独立测试模块以及 `lib.rs:831-837` 的测试期 re-export。目标包没有 `doc.go`。
-- crate 配置：阅读 `pkg/expression/Cargo.toml`，确认 crate 名、`autotests = false`、`chrono`、`chrono-tz`、`thiserror` 依赖、Go 包迁移元数据及显式测试目标。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点和 1,848,419 条边；对 `vec_convert_tz`、`vec_bounded_staleness`、`vec_date`、`vec_sec_to_time`、`vec_make_time`、`vec_period_add`、`MysqlTime`、`TimeVecError` 执行 `query`，并对六个主要 `vec_*` 入口执行 `callers`/`callees`。调用者为空，内部 callee 边与源码一致；再以仓库引用搜索确认外部引用仅来自独立测试。
-- Go 对照：阅读 `pkg/expression/builtin_time_vec.go` 中对应 `builtin*Sig.vecEval*` 的实现片段，阅读 `pkg/expression/builtin_time_vec_test.go` 的表驱动入口、空格式回归和 `TestVecMonth`；标量实现边界参考 `pkg/expression/builtin_time.go` 的存在及同名 `get_format` 实现位置。
-- Rust 测试：完整阅读 `pkg/expression/builtin_time_vec_29_aster_unit_test.rs`，以及 `pkg/expression/builtin_time_vec_test.rs` 的 Go 同名测试入口、严格模式说明和固定偏移 `CONVERT_TZ` 回归。按任务要求本次是纯文档分析，未运行 Cargo 或 Rust 测试。
-- 结构验收使用任务文件给定命令，要求目标文档存在且恰有十一个固定二级标题；人工复核同时确认本文明确回答文件为何存在、现有运行路径、未接线边界以及安全扩展位置。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`byitem.rs` 属于 `astersql-planner-util` crate，由 [`pkg/planner/util/lib.rs`](lib.rs) 的 `mod byitem` 纳入并通过 `pub use byitem::*` 对外再导出。它位于 SQL 规划的通用数据模型层：把一个表达式与排序方向绑成 `ByItems`，供逻辑 `Sort`/`TopN`、物理 `Sort`/`TopN`、聚合函数的 `ORDER BY` 以及 Cascades 指纹比较共用。它不解析 SQL，也不自己执行排序。
-
-crate 边界由 [`pkg/planner/util/Cargo.toml`](Cargo.toml) 确认：直接使用 `astersql-expression`、`astersql-planner-cascades-base` 和 `astersql-util-size`；该 manifest 无 feature 开关，`autotests = false`，测试由 `lib.rs` 显式挂载。目录下没有 `doc.go`，因此包边界以 Cargo manifest、`lib.rs` 与同路径 Go 文件为准。
+提供带上下文的语义相等、字符串化、深拷贝和内存估算，供上层计划结构递归处理。
 
 ## 核心职责
 
@@ -62,15 +60,11 @@ crate 边界由 [`pkg/planner/util/Cargo.toml`](Cargo.toml) 确认：直接使�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 [`pkg/planner/util/byitem.go`](byitem.go) 的 `ByItems`、`Hash64`、`Equals`、`StringWithCtx`、`Clone`、`Equal`、`MemoryUsage` 和 `StringifyByItemsWithCtx`。核心顺序与格式均保留：哈希是“表达式后方向”，降序字符串追加 ` true`，切片文本为方括号加空格分隔。
-
 语言模型带来三个可见差异：
 
 1. Go 用 `*ByItems` 和接口字段，因此 `Equals` 显式拒绝 nil，`MemoryUsage` 允许 nil receiver 和 nil `Expr`；Rust 用值类型加非空 `ExprBox`，这些 nil 分支不可表示。
 2. Go `Clone` 显式调用 `by.Expr.Clone()`；Rust 通过派生 `Clone` 到 `ExprBox::CloneExpr()` 达到同样的深拷贝语义。
 3. Go `StringifyByItemsWithCtx` 使用 `strings.Builder`；Rust 收集为 `Vec<String>` 后 `join(" ")`。输出一致，但 Rust 路径会为中间向量和每项字符串分配内存，如果未来成为高频热点，可考虑直接写入 `String`。
-
-同目录未发现专门的 `byitem_test.rs`/`byitem_test.go`。Go 的 [`hash64_equals_test.go`](../core/operator/logicalop/logicalop_test/hash64_equals_test.go) 和 Rust 的同名独立测试都通过 `LogicalTopN`/`LogicalSort` 间接校验表达式及方向对哈希/相等的影响。
 
 ## 扩展指南
 
@@ -80,13 +74,3 @@ Rust 文件逐项对应 [`pkg/planner/util/byitem.go`](byitem.go) 的 `ByItems`�
 - 新增本类型的直接单元测试时，按仓库规则放在独立 `pkg/planner/util/byitem_test.rs` 中，并由 `lib.rs` 的 `#[cfg(test)] #[path = "byitem_test.rs"] mod byitem_test;` 挂载，不要把测试内嵌到 `byitem.rs`。
 - 最小回归集应覆盖：不同动态类型的 `Equals == false`；相同表达式在 `Desc` 不同时哈希与相等均不同；克隆后更改表达式不影响原值；空/多项字符串化；上下文相等；内存估算包含表达式。同时保留 [`logicalop_test/hash64_equals_test.rs`](../core/operator/logicalop/logicalop_test/hash64_equals_test.rs)、[`logical_sort_test.rs`](../core/operator/logicalop/logical_sort_test.rs)、[`logical_top_n_test.rs`](../core/operator/logicalop/logical_top_n_test.rs) 和 [`physical_plan_runtime_test.rs`](../../executor/physical_plan_runtime_test.rs) 的集成语义验证。
 - 兼容风险集中在 Go/Rust 指纹和输出差异；正确性风险集中在优化改写时丢失方向或共享表达式；性能风险集中在高频克隆及 `StringifyByItemsWithCtx` 的中间分配。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/planner/util` 确认 Rust/Go 目标和独立测试文件边界。
-- `rustcodegraph node --file pkg/planner/util/byitem.rs --offset 1 --limit 240`：读取全部 94 行，确认 1 个公开结构、2 个 trait 实现、4 个关联方法和 1 个自由函数，且无条件编译项。
-- `rustcodegraph query ByItems --kind struct --json` 与 `node pkg/planner/util/byitem.rs::ByItems`：定位 Rust/Go 两个结构，trail 显示 `DeriveTopN`、`TestLogicalSortHash64Equals`、`restore_by_items` 的实例化边。
-- `rustcodegraph query StringifyByItemsWithCtx --json` 及 callees 结果：确认 Rust/Go 同名符号，并确认 Rust 函数下调 `StringWithCtx`。精确 callers 查询未返回调用边，随后用 `rg` 核对 Rust 生产文件，仅有定义。
-- 已读源与边界文件：[`byitem.rs`](byitem.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`byitem.go`](byitem.go)、[`pkg/expression/expression.rs`](../../expression/expression.rs)、[`pkg/expression/aggregation/descriptor.rs`](../../expression/aggregation/descriptor.rs)、[`explain_misc.rs`](explain_misc.rs)、[`physical_plan_runtime.rs`](../../executor/physical_plan_runtime.rs)。
-- 已读测试证据：[`logicalop_test/hash64_equals_test.rs`](../core/operator/logicalop/logicalop_test/hash64_equals_test.rs) 校验 `LogicalSort` 的方向参与哈希/相等；[`logical_sort_test.rs`](../core/operator/logicalop/logical_sort_test.rs) 和 [`logical_top_n_test.rs`](../core/operator/logicalop/logical_top_n_test.rs) 校验表达式替换及降序 explain；[`physical_plan_runtime_test.rs`](../../executor/physical_plan_runtime_test.rs) 校验多列 TopN 的实际排序消费；Go [`hash64_equals_test.go`](../core/operator/logicalop/logicalop_test/hash64_equals_test.go) 提供移植意图对照。同目录无专用 byitem 测试。
-- 本任务为纯文档分析，按计划不运行 Cargo；完成判定以固定十一章结构检查和上述源码/调用边人工复核为准。

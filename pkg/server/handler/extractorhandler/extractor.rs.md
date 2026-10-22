@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server-handler-extractorhandler` crate 的核心实现，负责把 Extract HTTP 查询参数转换为抽取任务，并把任务名或生成的 zip 内容写回 HTTP 响应。crate 根 `pkg/server/handler/extractorhandler/lib.rs` 通过 `pub mod extractor` 和 `pub use extractor::*` 导出这里的 API；`pkg/server/handler/extractorhandler/Cargo.toml` 将 crate 映射到 Go 包 `pkg/server/handler/extractorhandler`，没有声明 feature。
-
-生产调用链为 `pkg/server/http_status.rs` 注册 `/extract_task/dump` → `pkg/server/extract.rs::ExtractTaskServeHandler::handle` 构造本文件的 `NewExtractTaskServeHandler` → `ExtractTaskServeHandler::ServeHTTP`。真正的 Domain 与外部存储操作不在本文件内，而由 `pkg/server/extract_runtime.rs::CanonicalExtractRuntime` 实现 `ExtractRuntime` 后注入。因此，本文件是协议与流程编排层，不是计划包生成或存储实现层。
+把 Extract HTTP 查询参数转换为抽取任务，并把任务名或生成的 zip 内容写回 HTTP 响应。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ RustCodeGraph 对主要函数的 callee 结果确认了内部边：`buildExtract
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/server/handler/extractorhandler/extractor.go`。Rust 保留了 `ExtractTaskServeHandler`、`NewExtractTaskServeHandler`、`ServeHTTP`、`streamExtractResponse`、`buildExtractTask`、`buildExtractPlanTask`、`extractBoolParam` 的流程和 Go 风格名称。
-
 - Go 直接依赖 `*domain.ExtractHandle`、`http.Request/ResponseWriter`、`extstore`、日志和 failpoint；Rust 用三个 trait 抽出这些能力，再由 `pkg/server/extract.rs` 与 `pkg/server/extract_runtime.rs` 接回真实系统。
 - Go 的任务提交使用 `context.Background()`，流式打开使用 `req.Context()`；Rust 分别使用 `RequestContext::default()` 和 `request.context`，保持阶段差异。
 - Go 用 `strings.ToLower(...) == "plan"`；Rust 用 `eq_ignore_ascii_case`。对 ASCII 常量 `plan`，可接受输入一致。
@@ -99,13 +95,3 @@ RustCodeGraph 对主要函数的 callee 结果确认了内部边：`buildExtract
 修改路径拼接时，需要同步验证 Unix 对象键、空目录/空名称、绝对路径、连续 `..` 和不可越根规则。当前单测只锁定一个 `filepath.Join` 样例，不能把它视为完整等价证明。
 
 若增加共享缓存、异步 reader 或后台任务，必须继续满足 `ExtractRuntime: Send + Sync`，明确所有权、取消与关闭顺序，并把并发测试放在独立测试文件。crate 的生产 API 已被 server 适配层使用，重命名公开符号或改变 trait 方法会同时影响 `pkg/server/extract.rs`、`pkg/server/extract_runtime.rs`、`pkg/server/server.rs`、`pkg/server/runtime.rs` 及其测试。
-
-## 验证依据
-
-- 目标源码：`pkg/server/handler/extractorhandler/extractor.rs`，RustCodeGraph `node --file ... --offset 1 --limit 500` 返回完整 331 行与 44 个索引符号。
-- 图查询：RustCodeGraph `query` 定位 `ExtractTaskServeHandler`、`NewExtractTaskServeHandler`、`streamExtractResponse`、`buildExtractTask`、`buildExtractPlanTask`、`extractBoolParam`；`callers NewExtractTaskServeHandler --json` 返回生产调用者 `pkg/server/extract.rs::handle`；`callees` 查询核对了 builder、runtime trait 方法、路径拼接与流式写出边。
-- crate/模块边界：`pkg/server/handler/extractorhandler/Cargo.toml`、`pkg/server/handler/extractorhandler/lib.rs`；查询键定义：`pkg/server/handler/util.rs`。
-- 生产入口与下游：`pkg/server/http_status.rs`、`pkg/server/extract.rs`、`pkg/server/extract_runtime.rs`、`pkg/server/runtime.rs`。它们分别证明路由注册、HTTP 适配、Domain/存储 runtime 实现和 Domain 暴露 runtime 的接线。
-- Go 语义：`pkg/server/handler/extractorhandler/extractor.go`；Go 集成意图：`extract_test.go`；Go 测试进程设置：`main_test.go`。
-- 独立 Rust 测试：`pkg/server/handler/extractorhandler/extract_test.rs` 覆盖 failpoint、默认/显式窗口、Go 查询键与布尔拼写、解析错误日志和 dump 流；`extractor_test.rs` 覆盖路径清理；`pkg/server/extract_test.rs` 覆盖 server 适配器委托到 canonical handler。`main_test.rs` 只负责测试环境的一次性初始化，不证明 handler 业务分支。
-- 本任务是纯文档分析，按计划不运行 Cargo；完成检查采用任务指定的固定章节结构命令，并人工复核所有结论均可回指上述源码、调用图或测试。

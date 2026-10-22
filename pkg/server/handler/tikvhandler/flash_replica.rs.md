@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-server-handler-tikvhandler`，由同目录 `lib.rs` 以 `pub mod flash_replica` 声明并通过 `pub use flash_replica::*` 再导出。它只定义 `GET /tiflash/replica` 所需的响应数据契约和 `reload` 查询参数解析器，不直接注册路由，也不持有 server、domain、InfoSchema 或存储对象。
-
-运行时接线位于 `pkg/server/http_status.rs`：`build_status_router` 将 `/tiflash/replica` 注册到 `tiflash_replica_summary_response`；后者调用本文件的 `parse_flash_replica_reload_query`，读取 domain 状态并构造 `FlashReplicaSummary`，最后调用 `to_json` 生成响应。RustCodeGraph 给出的直接调用边是 `tiflash_replica_summary_response -> parse_flash_replica_reload_query`，并显示该函数会实例化 `FlashReplicaSummary`。
+用 `parse_flash_replica_reload_query` 复刻 Go `strconv.ParseBool` 在此端点采用的合法拼写，并为缺失或空参数提供 `false` 默认值。
 
 ## 核心职责
 
@@ -71,13 +69,13 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `flash_replica.go` 是语义基准。Rust `FlashReplicaSummary` 的七个字段及 JSON 名称与 Go 结构体一致；Rust `usize table_count` 对应 Go `int TableCount`，Rust 显式 `to_json` 对应 Go `encoding/json` 根据 struct tag 自动编码。
+Rust `FlashReplicaSummary` 的七个字段及 JSON 名称与 Go 结构体一致；Rust `usize table_count` 对应 Go `int TableCount`，Rust 显式 `to_json` 对应 Go `encoding/json` 根据 struct tag 自动编码。
 
-Rust `parse_flash_replica_reload_query(Option<&str>)` 对应 Go `parseFlashReplicaReloadQuery(*http.Request)` 的值解析部分：两者都把缺失/空值视为 false，并接受 Go `strconv.ParseBool` 的全部真/假拼写。差异是 Rust 函数不认识 HTTP request，只接收已经提取的值，并以 `String` 返回错误。
+差异是 Rust 函数不认识 HTTP request，只接收已经提取的值，并以 `String` 返回错误。
 
-Go 将 `FlashReplicaSummaryHandler.ServeHTTP`、domain 获取/Reload、InfoSchema 特殊属性遍历、全局变量读取和写响应全部放在同文件。Rust 将这些编排迁至 `pkg/server/http_status.rs::tiflash_replica_summary_response`，本文件保留可复用的契约和纯函数。Go 的 `ListTablesWithSpecialAttribute(TiFlashAttribute)` 与 Rust 上游遍历所有 schema/table 后检查 `metadata.TiFlashReplica.is_some()` 是对应计数意图；具体实现位置不同。
+Go 的 `ListTablesWithSpecialAttribute(TiFlashAttribute)` 与 Rust 上游遍历所有 schema/table 后检查 `metadata.TiFlashReplica.is_some()` 是对应计数意图；具体实现位置不同。
 
-`pkg/server/handler/tests/http_handler_test.go::TestTiFlashReplicaSummary` 覆盖 Go 端点的完整语义，包括分区表按表计数、启停 replica、drop 残留排除、列存开关、列存类型、keyspace、reload 失败及方法限制。Rust 的近邻单元测试覆盖本文件纯逻辑，`pkg/server/http_status_test.rs` 再覆盖 Rust 运行时接线。
+`pkg/server/handler/tests/http_handler_test.go::TestTiFlashReplicaSummary` 覆盖 Go 端点的完整语义，包括分区表按表计数、启停 replica、drop 残留排除、列存开关、列存类型、keyspace、reload 失败及方法限制。
 
 ## 扩展指南
 
@@ -86,12 +84,3 @@ Go 将 `FlashReplicaSummaryHandler.ServeHTTP`、domain 获取/Reload、InfoSchem
 - 改变 `can_disable` 或计数规则时，主要接入点不是本文件，而是 `tiflash_replica_summary_response`；应同步 Go `ServeHTTP` 以及两侧端到端测试。需特别评估分区计数、drop/truncate 残留、schema lease 延迟和 reload 成本。
 - 若需要强一致的“可禁用”判断，不能只在 DTO 中增加判断；需要在 domain/集群协调层设计锁或版本校验，并明确检查—操作窗口。该类变更有并发和可用性风险。
 - 测试继续放在独立文件：本 crate 的纯逻辑测试位于 `flash_replica_test.rs`，路由集成测试位于 `pkg/server/http_status_test.rs`，不要把 `#[cfg(test)]` 测试模块嵌回本生产文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标仓库索引包含 Rust 文件；`files --filter pkg/server/handler/tikvhandler` 列出 `flash_replica.rs`、`flash_replica_test.rs` 与 `lib.rs`；`query/node/explore` 确认 `FlashReplicaSummary`、`parse_flash_replica_reload_query`，以及 `tiflash_replica_summary_response -> parse_flash_replica_reload_query` 调用边和 summary 实例化关系。
-- 生产源码：`pkg/server/handler/tikvhandler/flash_replica.rs`（DTO、JSON 投影、解析白名单）；`pkg/server/http_status.rs`（生产调用、错误映射、数据收集与路由注册）；`pkg/server/handler/tikvhandler/lib.rs`（模块声明、再导出、独立测试模块）。
-- crate 边界：`pkg/server/handler/tikvhandler/Cargo.toml`（crate 名、`lib.rs` 入口、Go package 移植元数据、`serde_json` 及 AsterSQL 子系统依赖）。
-- Go 对照：`pkg/server/handler/tikvhandler/flash_replica.go`（完整 handler、响应字段、reload 语义与一致性限制）；`pkg/server/http_status.go`（GET 路由注册）。
-- 测试证据：`pkg/server/handler/tikvhandler/flash_replica_test.rs`（解析合法集合与不泄露 tables）；`pkg/server/http_status_test.rs`（Rust listener 的 200/400/405、计数、reload 和列存开关）；`pkg/server/handler/tests/http_handler_test.go::TestTiFlashReplicaSummary`（Go 完整行为与边界）。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构检查要求目标文档存在且恰有十一个规定的二级标题。

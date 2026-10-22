@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`id.rs` 属于 `astersql-util-plancodec` crate（`pkg/util/plancodec/Cargo.toml`），由 crate 根 `pkg/util/plancodec/lib.rs` 以 `mod id; pub use id::*;` 纳入并再导出。它位于执行计划文本/压缩编码与解码的基础层：为物理计划节点提供稳定的类型字符串和数字 ID，并在两者之间转换。调用者不必直接引用私有 `id` 模块，而是通过 crate 根使用这些公开常量和函数。
-
-该文件不负责构造、优化或执行计划，也不读写协议流；真正的计划行编码、归一化和解码位于 `pkg/util/plancodec/codec.rs`。这里提供的是这些流程依赖的兼容性字典。数字 ID 会写入可持久化或可传输的计划表示，因此既有映射属于线格式兼容契约。
+位于执行计划文本/压缩编码与解码的基础层：为物理计划节点提供稳定的类型字符串和数字 ID，并在两者之间转换。
 
 ## 核心职责
 
@@ -68,13 +66,11 @@ API 不返回 `Result`，也不会主动 panic。`TypeStringToPhysicalID` 对大
 
 ## 与 Go 版本的对应关系
 
-此次增量与冻结 Go 一致，在 Analyze=64 后追加 MV 的 65/66；既有 1..=64 保持原值。独立 `id_test.rs` 的冻结表新增两个映射，`test_reverse` 区间扩大到 1..=66；旧解码器遇到这些 ID 仍可能显示 UnknownPlanID，因此跨版本传输时需考虑消费者版本。
+Go 使用 `int`，Rust 使用 `isize`；Go 反向函数直接返回常量字符串，Rust 因为未知分支需要动态格式化而统一返回 `String`。Go 用 `strconv.Itoa` 拼接未知 ID，Rust 用 `format!` 得到同形字符串。
 
-Rust 实现逐项对应 `pkg/util/plancodec/id.go`：公开 `Type*` 字符串、私有数字常量、`TypeStringToPhysicalID` 和 `PhysicalIDToTypeString` 的分支及回退语义一致。Go 使用 `int`，Rust 使用 `isize`；Go 反向函数直接返回常量字符串，Rust 因为未知分支需要动态格式化而统一返回 `String`。Go 用 `strconv.Itoa` 拼接未知 ID，Rust 用 `format!` 得到同形字符串。
+Go 测试 `pkg/util/plancodec/id_test.go` 冻结代表性历史 ID，往返范围仍为 1..=64，未扩展到新增 MV ID；Rust 独立测试 `pkg/util/plancodec/id_test.rs` 保留相同意图，并额外点名 Analyze=64。
 
-Go 测试 `pkg/util/plancodec/id_test.go` 冻结代表性历史 ID，往返范围仍为 1..=64，未扩展到新增 MV ID；Rust 独立测试 `pkg/util/plancodec/id_test.rs` 保留相同意图，并额外点名 Analyze=64。AsterSQL 迁移测试 `migration_aster_unit_test.rs` 补齐外键、Expand、ScalarSubQuery、物理 CTE 等映射以及未知值边界。
-
-已核对的差异不是功能简化：Rust 将 Go 包级导出改为 crate 根再导出，并将字符串常量显式声明为 `&str`；转换结果及编号保持一致。两端都声明 `TypeSequence` 但没有为它分配物理 ID。
+已核对的差异不是功能简化：Rust 将 Go 包级导出改为 crate 根再导出，并将字符串常量显式声明为 `&str`；转换结果及编号保持一致。
 
 ## 扩展指南
 
@@ -83,11 +79,3 @@ Go 测试 `pkg/util/plancodec/id_test.go` 冻结代表性历史 ID，往返范�
 测试必须放在独立文件中：优先扩展 `pkg/util/plancodec/id_test.rs` 的冻结表和完整往返范围，并同步 `pkg/util/plancodec/id_test.go`；针对迁移边界可扩展 `migration_aster_unit_test.rs`。不要把测试嵌入 `id.rs`。若新增编号不再形成连续范围，应把往返测试改为显式映射集合，避免连续区间对保留空洞产生错误假设。
 
 扩展还需审查 `codec.rs` 的线格式消费者和 planner 计划哈希调用点。兼容性风险是旧数据被解为错误算子或计划哈希改变；性能风险主要来自继续扩大线性 `match` 代码及反向分配，不过当前规模下应以稳定性和清晰审计优先。若要给 `TypeSequence` 正式分配 ID，必须视为新的协议能力而非修复拼写，并同时增加双向映射与跨语言测试。
-
-## 验证依据
-
-- 冻结 `id.rs` 与 `id.go` 核对 65/66 字符串、编号和两个方向的分支；`lib.rs`、`Cargo.toml` 与 `codec.rs` 核对模块重导出与线格式消费者。
-- 冻结独立 `id_test.rs` 冻结表包含 MV 两项，`test_reverse` 验证 1..=66；`migration_aster_unit_test.rs` 保留 Sequence=0、未知 ID 和历史编号边界。Go 对照测试为 `id_test.go`。
-- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/plancodec/id.rs` 审计增量，并以 `git show 2c944fb:pkg/util/plancodec/id.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
-- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
-- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

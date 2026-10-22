@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-aggregation` crate（见同目录 `Cargo.toml`），实现行式聚合运行时中的 `MAX`/`MIN`。模块入口 `lib.rs` 以 `mod max_min` 装载它，并通过 `pub use max_min::*` 将实现提供给 crate 内的描述符构造和分布式聚合构造流程。
-
-它不是规划器中的类型推断实现，也不是执行器的分组容器：`AggFuncDesc::GetAggFunc`（`descriptor.rs`）和 `NewDistAggFunc`（`aggregation.rs`）负责根据函数名或 tipb 表达式创建本文件的对象；执行器通过 `Aggregation` trait 驱动对象逐行更新。RustCodeGraph 对 `maxMinFunction` 的反向关系也只列出这两个实例化入口。
+本实现只维护一个当前极值，不排序、不缓存全部输入，因此每行更新所需额外空间为常数；比较成本由具体 `Datum` 类型和字符串排序规则决定。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@ RustCodeGraph 将源文件标记为被 `aggregation.rs` 和 `descriptor.rs` 使�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是同目录 `max_min.go`。Rust 保留了相同的 `maxMinFunction` 三项概念字段、五个聚合接口方法，以及“求值—初始化—忽略 NULL—按 collation 比较—按方向替换”的语义。
-
 两版有两处写法差异但结果等价：Go 在当前结果为 `NULL` 时先把输入复制到状态，然后若输入为 `NULL` 再返回；Rust 先跳过输入 `NULL`，只把首个非空值写入状态。Go 比较 `current.Compare(new)`，在 `MAX` 得到 `-1` 或 `MIN` 得到 `1` 时替换；Rust比较 `new.Compare(current)`，分别检查正数或负数。Rust 用拥有型赋值/`clone` 代替 Go 的 `Datum.Copy`。
 
-测试对应关系也保持明确：Go `aggregation_test.go::TestMaxMin` 验证初始 NULL、输入 `2/3/1/NULL` 后的最大值 3、最小值 1，以及单元素部分结果；Rust `aggregation_test.rs::TestMaxMin` 转发到独立的 `aggregation_aster_unit_test.rs::first_row_max_and_min_match_go_row_order_and_null_cases`，覆盖相同序列和断言。Rust 当前没有单独的 `max_min_test.rs`，测试仍与源文件分离，符合仓库测试组织要求。
+Rust 当前没有单独的 `max_min_test.rs`，测试仍与源文件分离，符合仓库测试组织要求。
 
 ## 扩展指南
 
@@ -97,12 +93,3 @@ Go 对照文件是同目录 `max_min.go`。Rust 保留了相同的 `maxMinFuncti
 - 若增加专属状态，优先在独立生产类型或通用 `AggEvaluateContext` 中明确生命周期，并同步 `CreateContext`/`ResetContext`；不要把测试逻辑内嵌进 `max_min.rs`。
 - 回归测试应扩展独立的 `aggregation_aster_unit_test.rs`，并保留 `aggregation_test.rs::TestMaxMin` 的对外测试名。建议新增字符串不同 collation、相等值、求值/比较错误以及 Reset 后重新聚合的用例；同时核对 Go `aggregation_test.go::TestMaxMin`，避免 Rust 特有简化。
 - 性能审查应关注 `Datum` 克隆和 collation 比较成本。当前算法的常数空间与单遍扫描特性不应因功能扩展而退化为保存全部输入。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/expression/aggregation/max_min.rs` 确认目标文件含 7 个符号；`node --file ...` 读取完整 69 行实现。
-- RustCodeGraph 符号证据：`node pkg/expression/aggregation/max_min.rs::maxMinFunction` 显示其定义及两条实例化反向边：`aggregation.rs::NewDistAggFunc`、`descriptor.rs::GetAggFunc`。
-- 源码证据：`max_min.rs::{maxMinFunction, Update, GetResult, GetPartialResult, CreateContext, ResetContext}`；`aggregation.rs::{Aggregation, AggEvaluateContext, aggFunction::CreateContext, aggFunction::ResetContext, NewDistAggFunc}`；`descriptor.rs::AggFuncDesc::GetAggFunc`；`lib.rs` 的模块声明和再导出。
-- crate 证据：`pkg/expression/aggregation/Cargo.toml` 的 `[lib]`、`[dependencies]` 与 `[package.metadata.porting] go-package = "pkg/expression/aggregation"`。
-- Go 对照：`pkg/expression/aggregation/max_min.go` 与 `pkg/expression/aggregation/aggregation_test.go::TestMaxMin`。
-- Rust 测试：`pkg/expression/aggregation/aggregation_test.rs::TestMaxMin` 和 `pkg/expression/aggregation/aggregation_aster_unit_test.rs::first_row_max_and_min_match_go_row_order_and_null_cases`。本任务为纯文档分析，按计划未运行 Cargo；验证限于静态源码、索引调用边、Go/Rust 测试意图与文档结构。

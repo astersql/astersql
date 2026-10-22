@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-metrics` crate 中的“预绑定句柄层”：底层 Prometheus 向量由 `pkg/metrics/executor.rs`、`pkg/metrics/session.rs` 与 `pkg/metrics/server.rs` 创建，本文件再用固定标签取得 `Observer`、`Counter`、`Gauge` 句柄，供执行器热路径直接打点。crate 入口 `pkg/executor/metrics/lib.rs` 以 `executor_metrics` 模块加载本文件，并重导出上述父级指标定义；`pkg/executor/metrics/Cargo.toml` 声明 crate 名、`lib.rs` 入口和直接 `prometheus = "0.14"` 依赖，porting 元数据指向 Go 包 `pkg/executor/metrics`。
-
-生产侧目前直接调用本文件辅助函数的入口集中在 `pkg/executor/adapter.rs`：语句执行结束、执行器锁统计、阶段耗时和补充指标都从这里进入。RustCodeGraph 的文件反向边也只列出该 adapter 与独立迁移测试 `pkg/executor/metrics/migration_aster_unit_test.rs`。其余大量公开静态句柄主要是对 Go 公共包变量的移植兼容面；当前 Rust 全仓直接引用搜索没有发现它们被其他生产 Rust 文件逐项消费。
+定义 15 个稳定的执行阶段标签：锁定读/最终执行各自的 build、open、next、lock，2PC 的 prewrite、commit 和四类等待，以及写响应阶段（`PhaseBuildLocking` 至 `PhaseWriteResponse`）。
 
 ## 核心职责
 
@@ -87,9 +85,9 @@ Prometheus 句柄自身可克隆并共享；map 中的 Observer clone 与独立�
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/metrics/metrics.go` 是直接对照：阶段常量、包级句柄集合、固定标签值以及两张 15 项 phase map 均逐项保持。Go 的包级 `init()` 会自动先运行 `InitMetricsVars` 再运行 `InitPhaseDurationObserverMap`；Rust 将字段改成 `Option` 并提供显式 `init()`，这是最关键的生命周期差异。
+Go 的包级 `init()` 会自动先运行 `InitMetricsVars` 再运行 `InitPhaseDurationObserverMap`；Rust 将字段改成 `Option` 并提供显式 `init()`，这是最关键的生命周期差异。
 
-五个 `Record*` 函数不是 Go 同路径文件中的 API，而是 Rust adapter 为承接 Go `pkg/executor/adapter.go` 分散的直接指标操作增加的局部桥接。它们保留了 Go 的条件分支：例如 fair-locking 在语句/事务完成时分别计数，phase 按 internal 标志选表，网络/阶段/锁统计仍由 adapter 的对应完成点触发。
+五个 `Record*` 函数不是 Go 同路径文件中的 API，而是 Rust adapter 为承接 Go `pkg/executor/adapter.go` 分散的直接指标操作增加的局部桥接。
 
 迁移状态不是完全等价：Go 自动初始化两张 phase map；Rust 当前生产初始化链只调用 `InitMetricsVars`。此外，Go 生产文件会在 distsql、MPP manager 等处直接使用 IndexLookUp、MPP、network 句柄，而当前 Rust 直接引用主要集中在 adapter helper；未发现的 Rust 消费点应记录为尚未接线，而不能仅凭公开静态变量声称已使用。
 
@@ -100,12 +98,3 @@ Prometheus 句柄自身可克隆并共享；map 中的 Observer clone 与独立�
 - 若修复生产 phase map 接线，应在 `pkg/util/metricsutil/common.rs::initMetrics` 调用完整 `executor_metrics::init()`，或在 `InitMetricsVars` 后明确调用 `InitPhaseDurationObserverMap`；必须增加独立集成级测试证明真实注册路径后 map 非空，而不只测试 crate 内手工 `subject::init()`。
 - 调整指标标签、名称或单位具有监控兼容风险；尤其不能随意改变 `"0"/"1"`、general/internal、事务三维标签顺序和 Go 既有字符串。
 - 修改全局初始化或支持动态重载时，需要先消除 `static mut` 的并发不安全设计。测试逻辑应继续放在 `pkg/executor/metrics/migration_aster_unit_test.rs` 等独立文件，不内嵌进生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/executor/metrics` 找到 `lib.rs`、`metrics.rs`、Go 对照和迁移测试；`node --file pkg/executor/metrics/metrics.rs` 完整读取 550 行并报告该文件被 `pkg/executor/adapter.rs` 与迁移测试使用；`query` 精确定位五个 `Record*`、`InitMetricsVars`、`InitPhaseDurationObserverMap`。精确 `callers/callees` 未产生函数边，已用直接引用搜索补证。
-- Rust 源：`pkg/executor/metrics/metrics.rs`；调用入口 `pkg/executor/adapter.rs`；父级指标 `pkg/metrics/executor.rs`；生产初始化 `pkg/util/metricsutil/common.rs`；crate 入口 `pkg/executor/metrics/lib.rs`。
-- crate 声明：`pkg/executor/metrics/Cargo.toml`；消费依赖：`pkg/executor/Cargo.toml`。
-- Go 对照：`pkg/executor/metrics/metrics.go`；相关 Go 生产消费点通过 `rg` 核对了 `pkg/executor/adapter.go`、`pkg/executor/distsql.go` 与 `pkg/executor/mppcoordmanager/mpp_coordinator_manager.go`。
-- 独立 Rust 测试：`pkg/executor/metrics/migration_aster_unit_test.rs::initializes_all_go_prebound_metrics_and_phase_maps` 验证父级标签、两张各 15 项 map、共享 Observer、五个 helper 的代表分支及全部预绑定句柄非空。同目录没有 Go `*_test.go` 专门测试此文件，相关 Go 行为由上述生产调用点提供直接证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含规定的 11 个二级标题；事实人工复核特别检查了初始化先后、当前生产 phase map 缺口、条件打点边界及 Go/Rust 生命周期差异。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-server` crate 内部的结果集线程边界适配层，由 [`pkg/server/lib.rs`](lib.rs) 以私有模块 `protocol_result` 挂载。它位于会话执行与网络协议编码之间：`pkg/server/runtime.rs::run_session_worker` 拥有真正的 `ConcreteRecordSet`，而网络连接线程只持有实现 `pkg/server/conn.rs::ProtocolResultSet` 的 `ResultHandle`。两端通过 `SessionRequest::ResultOperation` 通信，因而 `chunk::Row`、惰性游标和底层结果集不会离开其会话工作线程。
-
-`pkg/server/Cargo.toml` 将该边界所需的 `astersql-session`、`astersql-server-internal-resultset`、`astersql-server-internal-column`、`astersql-util-chunk` 和 `astersql-util-sqlexec` 都声明为同一 workspace 内的路径依赖；该文件不是独立 crate，也没有自己的 feature 开关。
+位于会话执行与网络协议编码之间：`pkg/server/runtime.rs::run_session_worker` 拥有真正的 `ConcreteRecordSet`，而网络连接线程只持有实现 `pkg/server/conn.rs::ProtocolResultSet` 的 `ResultHandle`。
 
 ## 核心职责
 
@@ -83,12 +81,7 @@
 
 ## 与 Go 版本的对应关系
 
-仓库中没有同路径 `pkg/server/protocol_result.go`；Rust 文件是为“会话工作线程拥有 canonical record set、协议线程消费 owned values”新增的桥接层。其复用的语义来自以下 Go 实现：
-
 - `pkg/server/internal/resultset/resultset.go::ResultSet` 定义 `Columns/NewChunk/Next/Close/IsClosed/FieldTypes/Finish/TryDetach`；`CanonicalResultSet` 实现同一生命周期接口。Go `tidbResultSet` 用 `finishLock` 允许外部 goroutine 协调 Finish/Close，而 Rust 通过单工作线程消息串行化达到对应互斥目的。
-- `pkg/server/internal/resultset/cursor.go::WrapWithLazyCursor` 与 `lazyRowIterator` 是 Rust `WorkerResult::cursor` 直接复用的行为模型：`Current` 首次触发读取，`Next` 跨 chunk 补充，空行作为 End，错误保存在 iterator 上供调用者检查。
-- `pkg/server/conn.go::writeChunks` 同样要求先 `Next` 再发送列元数据，循环写 chunk，随后 `Finish` 和 EOF；Rust `conn.rs::write_result_chunks` 维持该边界次序，并另行 Close。
-- `pkg/server/conn.go::writeChunksWithFetchSize` 在 `COM_STMT_FETCH` 中按 fetch size 使用 `Current/Next`，检查 iterator 错误，更新 cursor 状态，并把 `OnFetchReturned` 排除在写响应耗时外；Rust `write_prepared_cursor_fetch` 与 `Operation::{Current,Advance,FetchReturned}` 对齐这些行为。
 - Go 的 `TryDetach` 可为部分结果集启用真正的 lazy execution；当前 `CanonicalResultSet::TryDetach` 明确返回不支持。RU v2 tracker 的 Rust 钩子也为空。因此这两项是已知迁移差异，不应描述为已支持。
 
 ## 扩展指南
@@ -99,11 +92,3 @@
 - 若实现 `TryDetach`、prepared statement 归属或 RU v2 tracker，不能只填充空方法；需要对照 Go 的所有权转移、失败后结果集是否仍可用、tracker attach/report 时点，并增加独立 Rust 回归测试。
 - 任何会阻塞的逻辑都不应放入 `ResultHandle::drop`。调整通道或关闭协议时须验证连接关闭、结果提前丢弃、工作线程先退出以及多个 `Arc` 同时释放的路径，避免死锁和资源滞留。
 - 性能敏感点是每个协议操作一次通道往返、每个单元一次字符串复制/转换，以及 cursor 的逐行 `Current`/`Advance` 请求。批处理优化必须保留 Go 可观察的 fetch 边界、错误出现位置和事件次序。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件完整读取为 357 行。执行了 `status`、`files --filter pkg/server`、目标文件 `node --file`、符号 `query`、`callers/callees` 及聚焦 `explore`。通用名称的图查询噪声较大，因此用精确引用搜索补齐目标调用边。
-- 目标与直接 Rust 证据：`pkg/server/protocol_result.rs`；`pkg/server/runtime.rs::{SessionRequest,run_session_worker,execute_on_session,execute_prepared_on_session,result_metadata,protocol_value}`；`pkg/server/conn.rs::{ProtocolResultSet,QueryResult,write_prepared_cursor_fetch,write_result_chunks}`；`pkg/server/lib.rs`；`pkg/server/Cargo.toml`。
-- 独立测试证据：`pkg/server/protocol_result_test_support.rs::BoundaryProbe`；`pkg/server/conn_stmt_test.rs::{next_and_finish_are_excluded_and_errors_preserved,cursor_iteration_is_timed_and_notification_excluded,cursor_iterator_error_is_accounted,multichunk_next_failure_preserves_written_rows,empty_results_and_successful_flush_are_accounted,worker_releases_domain_when_context_is_dropped}`；`pkg/server/conn_test.rs::go_merge_139_cursor_consumer_only_synchronizes_response_bytes`。未发现同名 `protocol_result_test.rs`，测试逻辑没有写入生产源文件。
-- Go 对照证据：`pkg/server/internal/resultset/resultset.go::{ResultSet,tidbResultSet}`；`pkg/server/internal/resultset/cursor.go::{CursorResultSet,WrapWithLazyCursor,lazyRowIterator,FetchNotifier}`；`pkg/server/conn.go::{writeResultSet,writeChunks,writeChunksWithFetchSize}`；`pkg/server/conn_stmt.go::{executeWithLazyCursor,writeExecuteResultWithCursor,handleStmtFetch}`。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验收使用任务指定命令，要求文档存在且恰好包含上述 11 个固定二级标题。

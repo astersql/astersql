@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto-conflictedkv` crate；crate 入口 `pkg/dxf/importinto/conflictedkv/lib.rs` 通过 `mod row_handle` 加载它并用 `pub use row_handle::*` 导出其公开项。它服务于 IMPORT INTO 的 collect-conflicts 阶段：处理唯一索引冲突时，同一物理行可能被多个索引 KV 指向，因而需要在内存预算内记录已经成功处理的完整数据行键，避免重复计算原行 checksum 和重复写出冲突行。包级背景及该去重目的见 `pkg/dxf/importinto/conflictedkv/doc.go`。
-
-直接生产调用链是 `pkg/dxf/importinto/collect_conflicts.rs::CollectConflictGroup` → `pkg/dxf/importinto/conflictedkv/collector.rs::NewCollector` → `pkg/dxf/importinto/conflictedkv/handler.rs::IndexKVHandler`。本文件只维护行键集合和过滤判定，不负责解析索引、读取快照、解码行、计算 checksum 或写对象存储。
+`KeyFilter` 分离两种作用域：只读的 global 集合代表更早 KV 组已经处理的行；互斥保护的 local 集合代表当前 worker 在此前批次中成功处理的行（`KeyFilter::{isHandledGlobally,isHandledLocally,addLocal}`）。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ global 集合以 `Arc<BoundedKeySet>` 只读共享；worker local 集合以 `Arc
 
 ## 与 Go 版本的对应关系
 
-Rust 文件直接移植自 `pkg/dxf/importinto/conflictedkv/row_handle.go`：`KeyFilter`、`BoundedKeySet`、128 的初始容量提示、完整 row key 身份、共享原子预算、重复 Add 收费、无二次收费的 Merge 及 `>=` 上限判定均保持一致。
-
 有以下明确差异：
 
 - Go 允许在 nil `*KeyFilter` 接收者上调用三个方法并返回 false/空操作；Rust 不允许空对象，调用侧以 `Option<KeyFilter>` 和 `is_some_and` 表达同一语义。`row_handle_test.rs::test_key_filter` 验证 `None` 不过滤。
@@ -100,13 +96,3 @@ Go 测试还直接验证分区 handle 编码为不同物理 row key；Rust 本�
 - 若改变合并来源，必须保证 `Merge` 两侧共享同一计数器，或为跨预算合并设计重新计费；否则 `BoundExceeded` 会低估实际保留键。
 - 若增加可恢复的锁错误处理，应调整 `KeyFilter` 方法签名和 `IndexKVHandler` 的错误传播；当前 `unwrap` 的 panic 契约不能在调用侧无感改变。
 - 行处理成功时机相关修改应同步 `handler_test.rs::index_key_is_registered_only_after_successful_row_callback`，并保留“失败回调不登记、成功后才登记”的不变量。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，共 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件节点显示 96 行、18 个符号，并报告由 `collect_conflicts.rs`、`collector.rs`、`scheduler.rs`、`conflict_resolution_test.rs` 使用。
-- RustCodeGraph `query`：核对了 Rust/Go 两侧 `BoundedKeySet`、`NewBoundedKeySet`、`KeyFilter`、`NewKeyFilter`、`isHandledGlobally`、`isHandledLocally`、`addLocal` 的定义位置；精确 callers/callees 请求未在 30 秒内返回，因此调用边再用局部源码引用核验，未把超时结果当作完整调用图。
-- 生产源码：`row_handle.rs`；直接入口与调用边：`lib.rs`、`collector.rs::{NewCollector,MergeRowKeysInto}`、`handler.rs::IndexKVHandler::{HandleOne,handleBufferedHandles}`、`collect_conflicts.rs::{collectConflictsStepExecutor,CollectConflictGroup}`。
-- crate 边界：`pkg/dxf/importinto/conflictedkv/Cargo.toml`，其中 `[lib] path = "lib.rs"`、porting 元数据和 `astersql-kv` 路径依赖与本文描述一致。
-- Go 对照：`pkg/dxf/importinto/conflictedkv/row_handle.go`；包级业务语义：同目录 `doc.go`。
-- 独立测试：`row_handle_test.rs` 验证 None 过滤器、精确达到上限、超限静默跳过、空合并、共享计数和 global/local 分离；`handler_test.rs::index_key_is_registered_only_after_successful_row_callback` 验证登记时机；`conflict_resolution_test.rs` 覆盖 `CollectConflictGroup` 的多 worker 非空快照流程。Go 对照边界来自 `row_handle_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终仅运行任务指定的 11 章节结构检查，并人工检查关键陈述均可回溯到上述符号或文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`external_storage.rs`](external_storage.rs) 属于 `astersql-br-pkg-checkpoint` library crate；`br/pkg/checkpoint/Cargo.toml` 以 `lib.rs` 为 crate 根，`lib.rs` 将本模块声明为公开模块并通过 `pub use external_storage::*` 展平导出。它位于通用 `CheckpointRunner`（`checkpoint.rs`）与对象存储抽象 `Storage`（`stubs.rs`）之间：上层选择 checkpoint 目录和是否启用锁，本文件负责把数据分片、校验分片和锁文件落实为外部存储对象。
-
-当前有两类直接装配入口：`backup.rs::{StartCheckpointBackupRunnerForTest, StartCheckpointRunnerForBackup}` 传入 `Some(timer)` 和备份锁路径，启用互斥锁；`manager.rs` 中 `StorageMetaManager` 的快照恢复、日志恢复 `StartCheckpointRunner` 传入 `None`，并使用 `flushPathForRestore` 产生的空 `CheckpointLockPath`，因此只使用分片落盘能力。该文件不是门面或生成代码，而是 `checkpointStorage` trait 的外部对象存储实现。
+为 backup 场景实现基于 TSO 的租约式互斥：构造时初始化锁，Runner 定时调用 `updateLock` 续期，`CheckpointLock` 以 JSON 保存持有者 ID 和过期物理时间。
 
 ## 核心职责
 
@@ -76,13 +74,11 @@ RustCodeGraph 对 `external_storage.rs` 建立了 34 个符号并识别到 7 个
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应同目录 `external_storage.go`：路径常量与辅助函数、`externalCheckpointStorage` 字段、可选 timer 构造语义、UUID `.cpt` 分片、TSO 组合、5 分钟租约、已有锁判断、3 秒初始化复检、续锁和空 `close` 均保持相同主流程；`CheckpointLock` 的 JSON 字段名及两类冲突错误文案也保持兼容。
+Go 的 `utils.NewAggressivePDBackoffStrategy()` 在当前 Rust 桩接口中体现为 `WithRetry(..., 32)`；`external_storage_test.rs::get_ts_uses_go_aggressive_pd_attempt_count` 以 8 次失败后第 9 次成功验证会继续重试。
 
-主要语言适配是 Go 的嵌入 `flushPath` 在 Rust 中变为命名字段，接口值变为 `Arc<dyn Storage>`/`Arc<dyn GlobalTimer>`，普通 `uint64` 锁 ID 变为 `Mutex<u64>`，Go error wrapping 变为 Rust `Result` 传播。Go 的 `utils.NewAggressivePDBackoffStrategy()` 在当前 Rust 桩接口中体现为 `WithRetry(..., 32)`；`external_storage_test.rs::get_ts_uses_go_aggressive_pd_attempt_count` 以 8 次失败后第 9 次成功验证会继续重试。
+Go 使用 failpoint 框架注入 `failed-after-checkpoint-updates-lock`；Rust 使用 `AtomicBool` 测试钩子复现相同的“锁已写入、随后返回错误”时点，`external_storage_test.rs::update_lock_preserves_go_post_write_failpoint` 验证其错误文本。
 
-Go 使用 failpoint 框架注入 `failed-after-checkpoint-updates-lock`；Rust 使用 `AtomicBool` 测试钩子复现相同的“锁已写入、随后返回错误”时点，`external_storage_test.rs::update_lock_preserves_go_post_write_failpoint` 验证其错误文本。Go `checkpoint_test.go::TestCheckpointRunnerLock` 与 Rust `checkpoint_test.rs::test_checkpoint_runner_lock` 都覆盖旧锁冲突、过期锁接管和新实例冲突三阶段。
-
-可观察差异是 Go `getTS` 会记录每次失败重试日志、`flushLock`/过期自有锁也会记录日志；当前 Rust 实现没有对应日志，仅保留控制流和错误结果。扩展监控时应补齐日志/指标而不改变锁判定。Rust 测试钩子是进程级原子状态，Go failpoint 则由 failpoint 运行时管理，测试隔离方式不同。
+可观察差异是 Go `getTS` 会记录每次失败重试日志、`flushLock`/过期自有锁也会记录日志；当前 Rust 实现没有对应日志，仅保留控制流和错误结果。Rust 测试钩子是进程级原子状态，Go failpoint 则由 failpoint 运行时管理，测试隔离方式不同。
 
 ## 扩展指南
 
@@ -93,11 +89,3 @@ Go 使用 failpoint 框架注入 `failed-after-checkpoint-updates-lock`；Rust �
 新增写入策略、压缩或命名规则时，应确认 `walkCheckpointFile` 对文件后缀和内容格式的读取假设，并为重复写、部分失败和对象存储最终一致性补独立测试。不要在本实现内部重复 Runner 已负责的内容序列化、加密和失败队列逻辑。增加 Cargo 依赖或 feature 时需同步 `br/pkg/checkpoint/Cargo.toml`，并评估分片写入路径的性能和二进制体积。
 
 restore 当前依赖 `timer: None + Duration::ZERO + 空锁路径` 三者配合来禁用锁；若未来让 restore 使用锁，应一次性提供非空锁路径、timer 和非零续期间隔，并增加多实例冲突、过期接管、关闭后过期的测试，避免只改变其中一项而访问空对象名或在 TTL 后失锁。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/checkpoint` 确认目标、模块入口、Go 对照和独立测试均已索引；`node --file` 完整读取了 `external_storage.rs` 261 行及 `external_storage_test.rs` 70 行；精确 `query` 确认 Rust/Go 同名符号节点。callers 查询无输出并在等待后中止，故未将其作为完成证据。
-- 生产源码：`br/pkg/checkpoint/external_storage.rs`（全部符号和控制流）、`br/pkg/checkpoint/checkpoint.rs`（`flushPath`、`lockTimeToLive`、`checkpointStorage`、Runner 写入/续锁/关闭调用）、`br/pkg/checkpoint/backup.rs`（带锁构造入口）、`br/pkg/checkpoint/manager.rs`（restore 路径和无锁构造入口）、`br/pkg/checkpoint/lib.rs`（模块装配和导出）。
-- crate/对照：`br/pkg/checkpoint/Cargo.toml` 核对 crate 边界及 serde/uuid 依赖；`br/pkg/checkpoint/external_storage.go` 核对路径、落盘、TSO 锁协议、错误文案和 failpoint 时点。
-- 测试：`br/pkg/checkpoint/external_storage_test.rs` 覆盖 TSO 重试次数和写锁后故障注入；`br/pkg/checkpoint/checkpoint_test.rs::test_checkpoint_runner_lock` 与 Go `br/pkg/checkpoint/checkpoint_test.go::TestCheckpointRunnerLock` 覆盖锁互斥三阶段。
-- 调用边补证：对 `newExternalCheckpointStorage`、路径辅助函数、`checkpointStorage` 方法和锁相关符号执行限定 Rust 文件的 `rg`，再读取命中的调用片段，确认上游/下游关系；没有运行 Cargo，符合本任务纯文档约束。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`hint.rs` 是 `astersql-util-hint` crate 的核心实现文件，由 [`lib.rs`](lib.rs) 通过 `include!("hint.rs")` 纳入 crate 根并公开其符号。它位于 parser 产出的 `ast::TableOptimizerHint` 与 planner/session 消费的语句级、计划级 Hint 状态之间：先把 Hint AST 分类为 `StmtHints` 或 `PlanHints`，再提供表/索引匹配、恢复文本和未命中告警。Hint 只约束优化与执行策略，不改变 SQL 的语义结果。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，直接依赖 parser AST、`dbterror`/planner error、MySQL errno、元数据索引模型和类型常量；无 feature 条件或条件编译逻辑。查询块名字到 select offset 的解析由同 crate 的 [`hint_query_block.rs`](hint_query_block.rs) 提供，AST Hint 的收集与绑定处理则在 [`hint_processor.rs`](hint_processor.rs)。
+`ParseStmtHints` 解析作用于整条语句的 Hint，包括内存配额、最大执行时间、只读副本、`SET_VAR`、假想索引、计划缓存、资源组和慢日志开关；同时返回真正生效的输入 offset 与非致命 warning。
 
 ## 核心职责
 
@@ -86,13 +84,13 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，直接依赖 parser AST、`d
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`hint.go`](hint.go)。Rust 保留了 Go 的公开名称、字段组织、位图顺序、重复 Hint 规则、warning 文本、query-block offset、匹配后置 `Matched` 标志以及未匹配告警顺序。`StmtHints::Clone` 明确保留 Go“不复制 `HintedHypoIndexes`”的特殊语义。
+Rust 保留了 Go 的公开名称、字段组织、位图顺序、重复 Hint 规则、warning 文本、query-block offset、匹配后置 `Matched` 标志以及未匹配告警顺序。
 
-主要语言映射是：Go slice/map 对应 `Vec`/`HashMap`，nil 指针对应 `Option`，Go interface 载荷断言对应 `ast::HintData` 枚举匹配，Go 包级 checker 变量加锁对应 `RwLock<Option<fn>>`，Go error 返回对应 `errors::Error`/`Result`。Rust 的载荷枚举比 Go 的运行时 type assertion 更显式，但类型错配仍选择 panic，以保持内部不变量失败的性质。
+Rust 的载荷枚举比 Go 的运行时 type assertion 更显式，但类型错配仍选择 panic，以保持内部不变量失败的性质。
 
 需要留意两类表示差异。其一，Go `nil` slice 与空 slice 可在个别分支表达不同意图，Rust 统一为 `Vec::is_empty`；例如弃用 `HintINLMJ` 和 `MERGE` 的判断以空集合近似 Go 的 nil 判断，新增 parser 表示时需做兼容回归。其二，Rust `ParsePlanHints` 直接原地构造 `PlanHints`，Go 先收集局部变量再统一构造返回值；最终字段与行为应保持一致，而不要求控制流逐行相同。
 
-Go 同目录没有独立 `*_test.go`；Rust 的最近单测 [`hint_2_aster_unit_test.rs`](hint_2_aster_unit_test.rs) 专门覆盖本文件。更高层 Go/Rust 对照由 planner casetest 和 Go 原测试/黄金数据提供。
+Go 同目录没有独立 `*_test.go`；Rust 的最近单测 [`hint_2_aster_unit_test.rs`](hint_2_aster_unit_test.rs) 专门覆盖本文件。
 
 ## 扩展指南
 
@@ -108,13 +106,3 @@ Go 同目录没有独立 `*_test.go`；Rust 的最近单测 [`hint_2_aster_unit_
 - `SET_VAR`、`write_slow_log` 与受限 Hint：`pkg/planner/core/hint_test.rs`。
 - 真实 SQL 到 `StmtHints`/`PlanHints`：`pkg/planner/core/casetest/hint/hint_test.rs`。
 - 子查询 flags：`pkg/planner/core/casetest/correlated/correlated_test.rs`；JOIN/QB 名和 build/probe：`pkg/planner/core/casetest/join/join_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/hint` 列出本 crate 的 9 个 Go/Rust 源文件，`hint.rs` 含 60 个符号。
-- RustCodeGraph `query`/`node`：确认 `ParseStmtHints` 位于 `hint.rs:373`、`PlanHints` 位于 `hint.rs:752`、`ParsePlanHints` 位于 `hint.rs:1008`、`CollectUnmatchedHintWarnings` 位于 `hint.rs:1546`，并逐段读取了完整 1,689 行目标源码。
-- RustCodeGraph `explore`：确认 `ParseStmtHints` 的 Rust 上游为 planner `parseStatementHints` 与 session `parse_statement_hints`；`ParsePlanHints` 被 planner 的 JOIN casetest及运行时构建链使用；`CollectUnmatchedHintWarnings` 由 logical-plan builder 运行时消费。精确 `callers` 子命令两次运行超过 90 秒无返回后中止，未据此补充未经 `explore`/源码确认的边。
-- 已读边界与装配文件：`pkg/util/hint/Cargo.toml`、`pkg/util/hint/lib.rs`、`pkg/util/hint/hint_query_block.rs`/`hint_processor.rs` 的索引关系，以及 `pkg/session/hint_runtime.rs`、`pkg/planner/optimize.rs`、planner core 运行时入口。
-- 已读 Go 对照：`pkg/util/hint/hint.go` 的 `StmtHints`、`ParseStmtHints`、`PlanHints`、`ParsePlanHints`、恢复与未匹配告警实现。
-- 已读测试：`pkg/util/hint/hint_2_aster_unit_test.rs`、`pkg/planner/core/hint_test.rs`、`pkg/planner/core/casetest/hint/hint_test.rs`、`pkg/planner/core/casetest/correlated/correlated_test.rs`、`pkg/planner/core/casetest/join/join_test.rs`；`rg` 还确认同目录不存在 Go 测试文件。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章结构命令，并人工检查唯一生产物、源码链接、事实边界及无测试内嵌建议。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-executor-aggfuncs` crate，由 `pkg/executor/aggfuncs/lib.rs` 以 `pub mod func_ntile` 公开，提供 SQL 窗口函数 `NTILE(n)` 的 Rust 状态机。它负责在已经知道一个窗口分区总行数的前提下，按行生成从 1 开始的桶号；它不负责解析 SQL、计算窗口边界、读取表达式或向结果 `Chunk` 写列。
-
-当前生产接线需要谨慎区分两层：`builder.rs::build_window_function` 能把 `FunctionName::Ntile` 转换成描述性元数据 `AggImplementation::Ntile { n }`，但全仓 Rust 引用检索没有发现把该枚举变体实例化为本文件 `Ntile` 的生产代码；`Ntile` 的直接调用者目前是 `func_ntile_test.rs` 和 `window_func_test.rs`。因此，本文件已经具有可执行、受测的分桶算法，但尚不能据现有证据宣称它已接入完整 Rust SQL 执行链。
+只维护六个 `u64` 字段，不实现 `aggfuncs.rs::AggFunc`、`Serializer` 或 `SlidingWindowAggFunc`，也没有内存增量、spill、合并部分结果等接口。
 
 ## 核心职责
 
@@ -82,11 +80,7 @@ RustCodeGraph 对目标文件报告的文件级反向引用仅包含 `window_fun
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/aggfuncs/func_ntile.go`：
-
-- Rust `Ntile.n` 对应 Go `ntile.n`；Rust 其余五个字段合并了 Go `partialResult4Ntile` 的状态。
 - `new` 的初始化对应 Go `AllocPartialResult` 创建 `curGroupIdx: 1`，但 Rust 不返回 `DefPartialResult4Ntile` 内存增量。
-- `reset` 逐字段对应 `ResetPartialResult`，两边都保留 `quotient` 与 `remainder`。
 - `update(row_count)` 对应 `UpdatePartialResult(rowsInGroup)`：Go 从切片长度取得增量，Rust 由调用者传入行数；两边都累计后重算商和余数，返回路径都没有动态内存增长。
 - `next_value` 对应 `AppendFinalResult2Chunk` 的分桶和游标推进部分；Go 直接向 `Chunk` 追加 `uint64` 或 NULL 并返回 `error`，Rust 只返回 `Option<u64>`。
 - Go `ntile` 嵌入 `baseAggFunc`，由 `builder.go::buildNtile` 构造并通过 `BuildWindowFunctions` 接入 `AggFunc` 执行链；Rust builder 当前只返回 `AggImplementation::Ntile { n }` 元数据，未发现到本文件类型的生产实例化。
@@ -100,14 +94,3 @@ Go 行为测试 `window_func_test.go` 验证 4 行/3 桶得到 `1,1,2,3`，3 行
 若要完成生产接线，应在消费 `builder.rs::AggImplementation` 的执行器工厂中新增 `Ntile` 实例化与完整窗口生命周期适配，而不能仅修改本文件。适配层需要决定如何先获得完整分区行数、如何把 `Option<u64>` 写成 SQL 值/NULL、如何报告内存、以及是否实现 `AggFunc` 或专门窗口 trait；这些属于本文件当前能力之外。还应新增从描述符构建到执行输出的集成级 Rust 测试，确认 `AggImplementation::Ntile { n }` 不再只是元数据。
 
 性能上应保持每行 O(1) 和固定内存；兼容性上必须保留 1 起始桶号、余数优先前桶、`n > 行数` 时一行一桶，以及 NULL/0 参数边界。若改变 `reset` 清理商和余数的策略，必须同步评估现有测试锁定的 Go 兼容行为。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标工程；目标文件被完整索引为 87 行、6 个符号。
-- RustCodeGraph `node --file pkg/executor/aggfuncs/func_ntile.rs`：核对 `Ntile` 六个字段及 `new`、`reset`、`update`、`next_value` 的完整实现。
-- RustCodeGraph `query Ntile` 与 `files --filter pkg/executor/aggfuncs`：定位 Rust/Go 类型、builder 枚举、独立测试及模块范围。
-- RustCodeGraph 对 `builder.rs`、`lib.rs`、`func_ntile_test.rs`、`window_func_test.rs` 的文件节点：核对模块公开、构建元数据和测试调用链。符号级 `callers/callees` 查询未返回可用边，因此使用文件反向引用及全仓 `rg` 补齐调用证据，并明确记录未接线结论。
-- `pkg/executor/aggfuncs/Cargo.toml`：核对 crate 名、`lib.rs` 入口及 Go 包映射；目标文件自身没有外部依赖。
-- `pkg/executor/aggfuncs/func_ntile.go`、`builder.go`、`func_ntile_test.go`、`window_func_test.go`：核对 Go 的完整 `AggFunc` 生命周期、builder 接线、内存测试和输出案例。
-- `pkg/executor/aggfuncs/builder.rs`：核对 `FunctionName::Ntile` 到 `AggImplementation::Ntile { n }` 的描述符构建路径；全仓 Rust 检索未发现该变体的生产消费端。
-- 交付结构检查使用任务指定命令，要求本文档存在且恰好包含全部 11 个固定二级标题。本任务为纯文档分析，按计划不运行 Cargo。

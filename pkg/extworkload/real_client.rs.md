@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-extworkload` crate 内部的生产客户端适配层。模块由 [`lib.rs`](lib.rs) 以私有 `real_client` 模块装入；根层 `client::New` 遇到非 `stub://` 地址时调用 `RealController::connect`，而测试专用地址继续走 `StubController`。因此它不定义业务协议，也不直接组装 protobuf，而是在同步的 `crate::client::Client` 契约与异步的 `astersql-extworkload-client` gRPC 客户端之间架桥。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：本 crate 直接依赖同工作区 `client` 子 crate、Tokio 多线程运行时和 tonic TLS 类型；远端 RPC 的消息构造、地址规范化、响应错误映射位于 [`client/client.rs`](client/client.rs)，不在本文件重复实现。
+实现同步 `client::Client` 的全部方法；除同步 `Close` 外，每个方法都用私有运行时 `block_on` 等待对应异步 RPC。
 
 ## 核心职责
 
@@ -77,17 +75,12 @@ RustCodeGraph 索引识别出本文件 20 个符号，包括 `RealController`、
 
 ## 与 Go 版本的对应关系
 
-Go 没有单独的 `real_client.go`：对应行为分散在 [`manager.go`](manager.go) 的同步 Manager 链和 [`client/client.go`](client/client.go) 的具体 `grpcClient`。Rust 因远端客户端采用 async trait，而迁移后的根层 Manager 保持同步接口，才增加本文件作为语言运行时适配层。
-
-对应关系如下：
+Rust 因远端客户端采用 async trait，而迁移后的根层 Manager 保持同步接口，才增加本文件作为语言运行时适配层。
 
 - Go `client.New` 的地址、TLS、身份字段和惰性 `grpc.NewClient`，由 Rust 远端 `client/client.rs::New` 实现；本文件负责把根层选项送入它。
-- Go `grpcClient` 的十个操作与本文件的 `client::Client` 实现逐项对应，业务参数不变；真正的 protobuf 请求与 `mapResponse` 语义仍在远端 Rust 客户端。
 - Go `context.Context` 可携带精确 deadline、取消和值；本文件只根据根层 Rust context 的布尔 deadline 选择固定 30 秒或 background，属于迁移后的信息损失。
 - Go 将 `Interceptors` 交给 `grpc.WithChainUnaryInterceptor`；当前适配器没有复制拦截器。远端 Rust 客户端本身支持拦截器且其独立测试验证调用，但真实根层链路未接线。
 - Go 返回可由 `errors.Is` 匹配的 `ErrControllerPaused`；远端 Rust 有 `ClientError::ControllerPaused`，但本层字符串化后根层只能按文本观察，不能保持类型匹配。
-
-因此不能仅凭远端客户端的 Go 对齐测试认定整个同步适配链完全等价；拦截器、上下文和错误类型是需要单独关注的边界。
 
 ## 扩展指南
 
@@ -98,16 +91,3 @@ Go 没有单独的 `real_client.go`：对应行为分散在 [`manager.go`](manag
 若要保留精确 deadline 或取消，首先必须增强根层 `context::Context` 的数据模型，再修改 `RealController::context`；仅在本文件改常量不能恢复调用方 deadline。若要保留 `ControllerPaused` 的类型语义，应让根层 `ClientError` 成为可区分的枚举或保留 error source，并同步 Manager 错误传播测试。
 
 性能与兼容风险主要是：每实例两线程的资源成本、同步 `block_on` 对调用线程的占用、嵌套 Tokio runtime 的使用限制、改变 30 秒超时对慢请求的影响，以及错误类型/文本变化对上层判断和日志的影响。扩展后应同步 [`manager_test.rs`](manager_test.rs) 验证根层参数与 deadline，另在独立的适配层测试验证真实桥接；远端协议字段和响应语义继续由 [`client/client_test.rs`](client/client_test.rs) 覆盖。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/extworkload` 确认目标与相邻 Rust/Go 文件均已索引。
-- RustCodeGraph `query real_client`：定位 `RealController`、`connect`、`context`、`map_error`、`Ping`、`Close` 和九个状态 RPC；`node --file pkg/extworkload/real_client.rs` 读取完整 172 行源码。`callers/callees` 对同名 trait 方法未返回边，已用索引中的 `lib.rs`、`manager.rs` 源码和 `rg` 唯一引用补证。
-- [`real_client.rs`](real_client.rs)：确认运行时构造、选项映射、上下文转换、同步/异步桥接和错误字符串化。
-- [`Cargo.toml`](Cargo.toml) 与 [`client/Cargo.toml`](client/Cargo.toml)：确认 crate、Tokio/tonic 依赖边界以及远端客户端子 crate。
-- [`lib.rs`](lib.rs)：确认 `real_client` 是私有模块、根层 `client::Client` 契约，以及真实地址到 `RealController::connect` 的唯一分流入口。
-- [`manager.rs`](manager.rs)：确认生产构造/Ping 链、30 秒超时、业务调用上游、TLS 与根层指标拦截器来源。
-- [`client/client.rs`](client/client.rs)：确认 async 远端 trait、惰性 tonic channel、请求超时、请求头、拦截器支持和业务错误映射。
-- Go 对照 [`manager.go`](manager.go)、[`client/client.go`](client/client.go) 与 [`client/client_test.go`](client/client_test.go)：确认原始同步调用、精确 context、拦截器传递、RPC 参数和响应错误语义。
-- Rust 测试 [`manager_test.rs`](manager_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 与 [`client/client_test.rs`](client/client_test.rs)：前两者通过假客户端覆盖 Manager 参数/deadline/标签，后者通过本地 tonic stub 覆盖远端全部 RPC、请求头、拦截器及错误映射；未发现直接穿过 `RealController` 的独立测试，这是当前验证缺口。
-- 本任务为只读行为分析和单文档新增，按计划不运行 Cargo；交付前使用固定标题命令验证本文恰有十一个规定章节。

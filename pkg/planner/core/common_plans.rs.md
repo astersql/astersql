@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`common_plans.rs`](common_plans.rs) 属于 `astersql-planner-core` crate。该 crate 的入口 [`lib.rs`](lib.rs) 以私有模块 `mod common_plans` 装配本文件，再用 `pub use common_plans::*` 将其中的公开符号提升为 crate API；因此外部 crate 使用的是 `astersql_planner_core::{PlanNode, Explain, ...}`，而不是直接访问模块路径。[`Cargo.toml`](Cargo.toml) 将 crate 根设为 `lib.rs`、关闭自动测试发现，并声明 `nextgen` feature；本文件自身没有条件编译项，唯一直接的外部类型依赖是 `parser_ast_dependency::{FieldsClause, LinesClause}`，其余导入来自同一 crate 的扁平计划与 EXPLAIN 渲染层。
-
-它同时承担两类职责。第一类是可执行规划骨架：`PlanKind`、`PlanNode`、`PlannerContext` 和 `SessionVars` 为 Rust 规划、计划变换、扁平化及展示提供一套轻量计划树。第二类是与 Go `pkg/planner/core/common_plans.go` 对齐的语句计划数据结构及帮助函数，例如 ANALYZE、LOAD DATA、DDL 管理、EXPLAIN JSON 和自动提交点查判定。大量字段目前以 `String`、`CIString` 或轻量集合表示，说明这是迁移边界上的共享模型，不等同于 Go 版本完整的强类型计划体系。
+用 `JoinType`、`StoreType` 和 `PlanKind` 描述计划节点类别、Join 语义以及执行落点；`PlanKind::name` 给 EXPLAIN/字符串化提供稳定显示名，并特别区分普通 `UnionAll` 与 `PartitionUnionAll`。
 
 ## 核心职责
 
@@ -84,13 +82,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`common_plans.go`](common_plans.go)，直接 Go 测试是 [`common_plans_test.go`](common_plans_test.go)。Rust `NewLineFieldsInfo` 与 Go 版本的默认值、可选字段覆盖顺序一致；Rust/Go 测试使用相同七类 LOAD DATA 场景。`ExplainInfoForEncode` 的 JSON 字段名和省略规则与 Go struct tag 对齐，Rust 测试额外锁定了缩进、转义和尾随换行。
+Rust `NewLineFieldsInfo` 与 Go 版本的默认值、可选字段覆盖顺序一致；Rust/Go 测试使用相同七类 LOAD DATA 场景。`ExplainInfoForEncode` 的 JSON 字段名和省略规则与 Go struct tag 对齐，Rust 测试额外锁定了缩进、转义和尾随换行。
 
 Rust `ExplainRUResult` 及 `SetRUResult` 保留 Go 的 occurrence ownership 与清空旧快照语义；独立 Rust 测试覆盖主树、CTE、标量子查询中重复 ID、无效 operator 和 `None` 清空。Rust `RenderResult` 只覆盖“扁平化后按 RU 或普通行格式输出”的子集；Go 版本还处理 EXPLAIN EXPLORE、true-cardinality cost、binary plan、runtime stats、schema 和更多格式错误，因此不能把 Rust 结构视为 Go `Explain` 的完整移植。
 
 管理计划也多为形状对齐而非类型等价：Go 使用 `table.Table`、`model.TableInfo`、AST 节点、真实 session context 和 physical plan interface，Rust 多处暂用 `String`、`CIString`、`InitializedPlan` 或本文件的 `PlanNode`。例如 `DDL.Statement` 在 Rust 是字符串，而 Go 是 `ast.DDLNode`；`SplitRegion.TableInfo` 在 Rust 是字符串，而 Go 是 `*model.TableInfo`。
 
-`IsAutoCommitTxn` 的布尔意图一致；`IsPointGetWithPKOrUniqueKeyByAutoCommit` 则是收窄迁移。Go 能识别 `PhysicalIndexReader`、`PhysicalTableReader`、`PointGetPlan` 并验证 range、common handle、二次读取和 cache table，Rust 只依据轻量 `PlanKind`。后续对齐必须补足模型信息和独立测试，不能仅增加一个名字匹配分支。
+Go 能识别 `PhysicalIndexReader`、`PhysicalTableReader`、`PointGetPlan` 并验证 range、common handle、二次读取和 cache table，Rust 只依据轻量 `PlanKind`。
 
 ## 扩展指南
 
@@ -102,12 +100,3 @@ Rust `ExplainRUResult` 及 `SetRUResult` 保留 Go 的 occurrence ownership 与�
 - 若新增大容量字段，应同步评估 `MemoryUsage`，明确计入长度还是容量；深树处理若进入不可信输入边界，需要评估递归深度和克隆成本。
 
 兼容风险主要在公开再导出的字段名和 Go 风格方法名，改变它们会影响 crate 外部调用者；正确性风险集中在点查资格、RU 结果复用和 JSON 契约；性能风险集中在深递归、计划深拷贝和不完整的内存估算。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
-
-- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/common_plans.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
-- 新增模型对照 `mview_refresh_builder.rs` 和独立 `casetest/mview/mv_refresh_test.rs` 的依赖偏移、snapshot、ExplainInfo/树转换测试；Go 对照 `common_plans.go`、`mview_refresh_builder.go`。
-- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
-- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。

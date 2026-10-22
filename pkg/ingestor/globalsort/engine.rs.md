@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`engine.rs` 是 `astersql-ingestor-globalsort` crate 中的外部存储导入引擎实现。它位于全局排序产物与 TiKV Region 写入之间：从 data/stat 对象文件按 job key 范围读取 KV，在内存中排序并处理重复键，然后交付可按 Region 范围迭代的 `MemoryIngestData`。包入口 `pkg/ingestor/doc.go` 将 global sort 定义为借助外部存储保存中间有序文件并归并的 ingest 路径，本文件正是其加载与内存数据生命周期边界。
-
-crate 通过 `pkg/ingestor/globalsort/lib.rs` 的 `pub mod engine` 公开此模块；`pkg/ingestor/globalsort/Cargo.toml` 将 crate 名定为 `astersql-ingestor-globalsort`，并声明它是 Go 包 `pkg/ingestor/globalsort` 的移植。实际生产接线在 `pkg/dxf/importinto/write_ingest_backend.rs`：`GlobalSortWriteIngestBackend::CloseExternalEngine` 构造 `NewExternalEngine`，包装成 `ExternalEngineAdapter` 并按 subtask ID 保存；后续 `ImportEngine` 用它生成 Region jobs。
+`load_range_batch_data` 完成单批读取、排序、重复键处理、内存在途计费与范围构造。
 
 ## 核心职责
 
@@ -78,13 +76,7 @@ RustCodeGraph 将 `engine.rs` 标记为被 18 个文件使用，其中直接证�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/ingestor/globalsort/engine.go`，Rust 沿用了 `Engine`、`NewExternalEngine`、`LoadIngestData`、`loadRangeBatchData`、`handleConcurrencyChange`、`waitIngestDataReleased`、`MemoryIngestData` 及其范围/引用/统计 API 的语义结构。两者共有的重要行为包括：
-
-- 内存份额是总 write-step 容量的 `3 / 6.5`；读取 OOM 时需等下游批次释放。
-- 每批产生约等于 worker 并发度的范围；并发度变更前必须等旧数据被消费再重建缓冲。
-- `Ignore` 保留历史兼容行为，仍返回重复键错误；`Record`/`Remove` 整组删除重复 key，`Record` 写 `<prefix>/dup`。
-- `MemoryIngestData` 的显式引用归零释放批内存，并通知 loader 继续；发布 released 的时机晚于缓冲清理和回调。
-- 范围查询和迭代均是 `[lower, upper)`，基于有序 KV 二分定位。
+Go 对照文件为 `pkg/ingestor/globalsort/engine.go`，Rust 沿用了 `Engine`、`NewExternalEngine`、`LoadIngestData`、`loadRangeBatchData`、`handleConcurrencyChange`、`waitIngestDataReleased`、`MemoryIngestData` 及其范围/引用/统计 API 的语义结构。
 
 Rust 的明确差异也应在扩展时保留意识：Go 构造器直接返回指针，Rust 构造器增加参数校验并返回 `Result<Engine>`；Go 使用 membuf pool/limiter，Rust 将已交付 payload 字节显式纳入 `in_flight_bytes`；Go 用 channel，Rust 用 Condvar 状态机表达资源确认和释放信号；Rust 的 `LoadIngestDataWith` 及适配器实现了原生有界通道的逐批交付，而 `LoadIngestData` 是为现有用例保留的收集式包装。Go 版还含 metrics、logging 和 failpoint，本 Rust 文件未实现这些可观测/故障注入细节，不应在文档中声称已对齐。
 
@@ -96,13 +88,3 @@ Rust 的明确差异也应在扩展时保留意识：Go 构造器直接返回指
 - 改动 `MemoryIngestData` 时，不要将 Rust `Arc` 强引用数误当作通用 engine API 的显式引用协议。要保持 `DecRef` 仅在从 1 到 0 时释放、回调最多一次、drop 能回收未被消费的批次，且迭代器共享原 payload。
 - 新增公开 API 时，检查是否应同步 `engine_api.rs` 的 `ExternalEngineAdapter`/`DataAdapter` 以及 `astersql-ingestor-engineapi` trait，并在 `engine_api_test.rs` 增加适配边界测试。
 - 性能风险集中在 payload 克隆、在途内存漏计、重复键临时缓冲、线性扫描和资源变更等待。正确性风险集中在半开边界、重复 key 整组删除、释放发布顺序和错误优先级。兼容性风险是更改 `Ignore` 的历史行为、`"external"` ID、dup 文件路径/编码或 Go 接口形状。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件，其中 Rust 7,032 个；`files --filter pkg/ingestor/globalsort` 确认源、Go 对照和独立测试都在索引中。
-- RustCodeGraph `node --file pkg/ingestor/globalsort/engine.rs` 读取了全部 887 行，核对了构造、加载、去重、内存等待、资源更新、范围迭代与释放协议；索引报告此文件被 18 个文件使用。
-- RustCodeGraph 查询 `NewExternalEngine`、`MemoryIngestData`、`DecRef` 确认 Rust/Go 同名实现与相关测试符号；宽泛 `explore` 因 `Engine`/`close`/`flush` 同名噪声过多，未将其推测结果用作调用链证据。
-- 已读取生产路径：`pkg/ingestor/doc.go`、`pkg/ingestor/globalsort/lib.rs`、`pkg/ingestor/globalsort/Cargo.toml`、`pkg/ingestor/globalsort/engine_api.rs`、`pkg/dxf/importinto/write_ingest_backend.rs`。它们分别支持包定位、模块导出/crate 公共类型、移植边界与依赖、通用 API 适配、以及 Import Into 生产接线结论。
-- Go 语义依据：RustCodeGraph `node --file pkg/ingestor/globalsort/engine.go` 读取了 `NewExternalEngine`、`loadRangeBatchData`、`LoadIngestData`、`UpdateResource`、`MemoryIngestData` 等对应实现，核对了预算、分批、重复键、信号顺序和引用释放语义及上述差异。
-- Rust 测试依据：`pkg/ingestor/globalsort/engine_test.rs` 的 `test_memory_ingest_data`、`test_engine_on_dup`、`test_load_ingest_data_multi_batch`、`test_update_resource_and_worker_pool`、`test_wait_ingest_data_released`、`external_engine_range_iterators_share_the_ingest_buffer`、`external_engine_budget_includes_batches_held_by_downstream`、`collecting_external_engine_reports_exhausted_budget_without_waiting_on_its_own_outputs`、`record_duplicate_uploads_stream_before_each_batch_is_handed_off`、`release_completion_waits_for_buffer_cleanup_and_callback`、`discard_completion_waits_for_release_callback` 与 `external_engine_resizes_down_and_up_and_updates_after_loading_finishes` 分别覆盖范围、重复、批次、调谐、等待、共享、预算、流式写与释放顺序。`pkg/ingestor/globalsort/engine_test.go` 是对应的 Go 回归面。
-- 本任务仅做文档分析，按计划不运行 Cargo。交付时使用任务文件指定的 11 章节结构检查，并人工复核文档只描述已有代码/测试中可追溯的行为。

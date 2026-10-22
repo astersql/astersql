@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util` crate 的通用工具实现，由 [`pkg/util/lib.rs`](./lib.rs) 以公开模块 `pub mod util` 挂载。它直接移植自同目录的 Go 文件 [`pkg/util/util.go`](./util.go)，把字节换算、字符串集合转换、结构化 SQL 日志字段生成、非 ASCII 字节展示、TCP I/O 计数、逐行读取、标识符检查、panic 转换、protobuf 深拷贝以及 PD 地址交集判断集中在一个模块中。Cargo 清单 [`pkg/util/Cargo.toml`](./Cargo.toml) 表明该模块属于 `astersql-util`，直接依赖 `anyhow`、`prost`、`astersql-parser`（代码别名 `task_parser`）、`astersql-session-sessmgr`（`task_sessmgr`）和 `astersql-util-traceevent`（`task_traceevent`）。
-
-RustCodeGraph 将本文件识别为 442 行的已索引 Rust 源文件，并列出直接使用文件 `pkg/util/util_test.rs`、`pkg/util/security_2_aster_unit_test.rs`、`pkg/util/codec/codec_test.rs` 和 `pkg/util/regionsplit/model_handle.rs`。经源码搜索，能明确归属于本模块 API 的 Rust 使用点集中在前两个测试文件；后两个是索引的文件级关联，未找到对本文符号的显式调用。因此，不能据此声称这些工具已经全部接入 Rust 生产主链。
+直接移植自同目录的 Go 文件 [`pkg/util/util.go`](./util.go)，把字节换算、字符串集合转换、结构化 SQL 日志字段生成、非 ASCII 字节展示、TCP I/O 计数、逐行读取、标识符检查、panic 转换、protobuf 深拷贝以及 PD 地址交集判断集中在一个模块中。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ TCP 计数采用 `Ordering::Relaxed`，只保证各次加法原子且最终可�
 
 ## 与 Go 版本的对应关系
 
-Rust 的函数集合和主流程基本对应 `pkg/util/util.go`，独立 Rust 测试 `pkg/util/util_test.rs` 也对应 `pkg/util/util_test.go`。确定的语义对齐包括：GiB 基数、集合去重、无效整数变为 `0`、日志字段顺序、SQL 规范化/截断、ASCII/DEL 处理、实际 I/O 字节计数、`ReadLine` 分片限制怪癖、空/尾空格标识符、protobuf 深拷贝和地址交集判定。
+确定的语义对齐包括：GiB 基数、集合去重、无效整数变为 `0`、日志字段顺序、SQL 规范化/截断、ASCII/DEL 处理、实际 I/O 字节计数、`ReadLine` 分片限制怪癖、空/尾空格标识符、protobuf 深拷贝和地址交集判定。
 
 已验证的差异包括：Rust `GenLogFields` 未生成 Go 的 cop-task 详情和 `mem_arbitration` 字段，代码注释将后者归因于当前 non-arbitrator 构建；Rust 对可选 `StmtCtx`/`StatsInfo` 更防御，而 Go 直接调用；Rust 的 stats 键排序，Go map 迭代顺序不固定；Rust SQL 截断避免破坏 UTF-8，Go 直接按字节切片；Rust `GetRecoverError` 对非字符串载荷给固定消息，Go 会格式化任意值并追踪 `error`；Rust `ProtoV1Clone` 使用 prost 编解码且可失败，Go `proto.Clone` 直接返回同类消息；Rust 数据库抽象没有体现 Go 的 `rows.Close`；Rust TCP 构造器返回具体包装类型，Go 返回 `net.Conn` 接口。
 
-测试方面，`pkg/util/util_test.rs` 覆盖日志、行读取、标识符和 protobuf；`pkg/util/security_2_aster_unit_test.rs` 补充多项小工具和同集群交集。`SliceToMap`、`StringsToInterfaces`、TCP 计数、panic 转换、PD 查询闭包以及部分错误路径尚未在这两个直接测试文件中得到同等覆盖。
+`SliceToMap`、`StringsToInterfaces`、TCP 计数、panic 转换、PD 查询闭包以及部分错误路径尚未在这两个直接测试文件中得到同等覆盖。
 
 ## 扩展指南
 
@@ -89,11 +87,3 @@ Rust 的函数集合和主流程基本对应 `pkg/util/util.go`，独立 Rust �
 修改读行逻辑时必须保留或有意更新“仅跨缓冲片段才检查上限”的兼容约束，并同步 Rust/Go 测试。扩展 `TCPConnWithIOCounter`（例如 vectored I/O、超时或 shutdown）时，应继续以底层实际完成字节数计数，并评估是否仍只需 Relaxed 顺序。为 `GetPDsAddrWithoutScheme` 接入真实驱动时，优先给行集抽象补充可验证的资源释放方案和错误测试。
 
 通用转换若改变容错策略会有兼容风险：尤其是 `Str2Int64Map` 的错误转零、DEL 隐藏规则、地址的精确字符串比较和标识符函数的反向布尔语义。性能上应避免在日志热路径增加无界分配；当前 SQL、统计信息和字段值均会分配拥有所有权的字符串。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`node --file pkg/util/util.rs --offset 1 --limit 400` 与后续 `offset 90 --limit 360` 覆盖目标文件；`query GenLogFields --kind function --json` 定位 Rust/Go 两个实现；文件索引给出四个关联文件。精确 callers/callees 查询未在 30 秒时限内返回，因此没有把缺失结果当成调用事实。
-- Rust 源与 crate 边界：`pkg/util/util.rs`、`pkg/util/lib.rs`、`pkg/util/Cargo.toml`。
-- Go 对照：`pkg/util/util.go`；生产使用搜索包括 `pkg/util/expensivequery/expensivequery.go`、`pkg/util/memoryusagealarm/memoryusagealarm.go`、`pkg/util/stmtsummary/v2/reader.go`、`pkg/util/wait_group_wrapper.go`、`pkg/util/topsql/reporter/pubsub.go` 与 `single_target.go`。
-- 独立测试：`pkg/util/util_test.rs`、`pkg/util/security_2_aster_unit_test.rs`，并与 `pkg/util/util_test.go` 对照。测试证明日志基本字段及脱敏/截断、EOF 和分片行长语义、标识符边界、protobuf 深拷贝、小工具容错和 PD 地址交集。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的结构命令确认文件存在且固定二级标题恰好为 11，并人工检查未把索引关联误写成生产调用。

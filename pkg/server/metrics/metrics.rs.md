@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-server-metrics` 的实际实现文件；crate 根 `pkg/server/metrics/lib.rs` 通过 `#[path = "metrics.rs"] mod implementation` 装载它，并把全部公开项再导出。`pkg/server/metrics/Cargo.toml` 表明该 crate 只直接依赖 `prometheus = "0.13.4"`，其职责是提供服务器协议层会用到的查询、断连、连接空闲时长和包字节指标句柄，而不是实现 MySQL 连接或请求执行本身。
-
-在当前 Rust 接线中，明确的生产初始化入口是 `pkg/util/metricsutil/common.rs::initMetrics`：它先初始化各指标父 collector，再调用 `server_metrics::InitMetricsVars()`。`pkg/server/Cargo.toml` 也把本 crate 作为路径依赖纳入 server workspace；但在当前 Rust 源码中，除初始化器和本 crate 测试外，尚未检索到这些公开计数器在 Rust 连接处理路径中的直接增量调用。对应的完整消费位置目前仍可在 Go 的 `pkg/server/conn.go` 与 `pkg/server/internal/packetio.go` 中看到，因此不能把 Go 已有埋点误写成 Rust 已完全接线。
+定义 MySQL 命令字节常量和命令到 Prometheus `type` 标签的稳定映射，核心入口为 `cmd_to_string` / `CmdToString`。
 
 ## 核心职责
 
@@ -76,15 +74,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/server/metrics/metrics.go`。两者保持的语义包括：13 个 MySQL 命令标签、未知命令数字回退、成功/失败查询数组的稀疏索引、默认资源组标签、三类断连结果、事务内外空闲标签和包方向标签。
-
 实现差异主要有三点：
 
 1. Go 使用 `pkg/metrics` 中已经定义的 `QueryTotalCounter`、`DisconnectionCounter`、`ConnIdleDurationHistogram`、`PacketIOCounter`；Rust 本文件自行构造同名描述的本地向量。`pkg/util/metricsutil/common.rs` 的注释也明确说明 Rust 树把父 collector 分散在 owner crates 中。
 2. Go 的包级 `init()` 自动调用 `InitMetricsVars()`；Rust 用显式 `init()` 函数和生产初始化链调用，函数名相同不代表语言运行时会自动执行它。
 3. Go 查询数组元素类型为 `prometheus.Counter`，空洞表现为 `nil`；Rust 用 `Option<Counter>` 显式表达空洞。Rust 的 `LazyLock` 还使初始化幂等，而 Go 的 `InitMetricsVars` 每次会重新给包变量赋句柄。
-
-未发现 `pkg/server` 下直接覆盖这些符号的 Go 专项测试。Rust 的独立迁移测试 `pkg/server/metrics/migration_aster_unit_test.rs` 因而是当前最直接的行为契约，但它验证的是本地 collector 标签和更新能力，不证明 Rust server 请求路径已经埋点。
 
 ## 扩展指南
 
@@ -95,13 +89,3 @@
 把指标真正接入 Rust server 时，应优先对照 `pkg/server/conn.go` 和 `pkg/server/internal/packetio.go` 的更新时机，在 Rust 的连接关闭分类、命令完成、空闲采样和包读写边界分别接线；需要特别保持“错误/成功仅计一次”、命令数组越界/空洞回退、字节数口径以及事务状态采样时点。性能上应继续复用预绑定句柄，避免每次请求动态创建标签字符串或执行 vector 查找。
 
 兼容性复核重点是指标全名、标签键、标签值大小写和桶边界；任何变化都可能导致监控时间序列断裂。若要改用共享 `pkg/metrics` Rust collector，需要先验证 registry 所有权和初始化顺序，不能仅替换类型来源。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/server/metrics` 找到 `lib.rs`、`metrics.rs`、`metrics.go`、`migration_aster_unit_test.rs`。
-- RustCodeGraph 源码与符号：`node --file pkg/server/metrics/metrics.rs` 读取全部 220 行；`query` 确认 `query_counters`、`cmd_to_string`、`init_metrics_vars`、`init`、`CmdToString`、`InitMetricsVars`；图中可核对 `init -> init_metrics_vars`、`CmdToString -> cmd_to_string`、`InitMetricsVars -> init_metrics_vars`。
-- RustCodeGraph 使用方：目标文件报告由 `pkg/server/metrics/migration_aster_unit_test.rs`、`pkg/server/runtime.rs`、`pkg/util/metricsutil/common.rs` 使用；进一步源码检索确认可见的生产初始化调用位于 `common.rs::initMetrics`，未把图的文件级使用关系夸大为运行时指标更新。
-- 已读 Rust/Cargo 路径：`pkg/server/metrics/metrics.rs`、`pkg/server/metrics/lib.rs`、`pkg/server/metrics/Cargo.toml`、`pkg/server/Cargo.toml`、`pkg/util/metricsutil/common.rs`、`pkg/server/runtime.rs`。
-- 已读 Go 对照路径：`pkg/server/metrics/metrics.go`、`pkg/util/metricsutil/common.go`；调用点通过 `rg` 核对 `pkg/server/conn.go` 与 `pkg/server/internal/packetio.go`。
-- 已读独立测试：`pkg/server/metrics/migration_aster_unit_test.rs`。它覆盖 13 个已知命令和未知命令回退、查询数组长度及 `COM_CREATE_DB` 空洞、查询三标签组合、断连/空闲/包 IO 标签与可观察增量。未发现同目录 Go 专项测试。
-- 本任务是纯文档分析，依计划不运行 Cargo。交付前使用任务指定命令验证本文恰有 11 个固定二级章节，并人工复核结论均区分当前 Rust 事实、Go 对照和未接线边界。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-s3store` crate 的底层 S3 协议边界。`pkg/objstore/s3store/lib.rs` 通过 `#[path = "interface.rs"] mod interface;` 装入并用 `pub use interface::*` 对外再导出，因此这里的公开请求/响应类型、`S3API` trait、`AwsS3Api`、错误辅助和响应体适配器共同构成高层 S3 客户端可见的基础 API。
-
-在运行链上，`pkg/objstore/s3store/store.rs::build_api` 用已配置的 `aws_sdk_s3::Client`、共享 Tokio `Runtime` 和可选访问统计构造 `AwsS3Api`；`pkg/objstore/s3store/client.rs::S3Client` 再以 `Arc<dyn S3API>` 持有该实现，完成桶前缀、权限检查、对象读写和分片上传等更高层语义。测试或兼容后端可注入其他 `S3API` 实现而不发起真实网络请求。
-
-该文件本身没有条件编译项。测试装配位于 `lib.rs` 的 `#[cfg(test)]` 模块声明中，独立测试文件是 `pkg/objstore/s3store/interface_test.rs`，没有把测试逻辑内嵌进生产源文件。
+用 `AwsBody` 将异步 `ByteStream` 暴露为同步 `ReadCloser`，保持分块惰性读取；`MemoryBody` 为内存响应和测试提供相同关闭契约。
 
 ## 核心职责
 
@@ -86,13 +82,11 @@ trait 的 `Send + Sync` 约束支持共享服务实例并发调用；具体并�
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/objstore/s3store/interface.go::S3API` 定义 14 个 AWS SDK v2 操作，Rust trait 保留了相同的 Head/List/Get/Put/Delete/Copy/multipart/object-lock 方法集合；`ListObjectsInput.marker` 明确保留 Go v1 列举分页契约，`interface_test.rs::s3_api_exposes_go_list_objects_v1_contract` 验证该方法存在及默认错误。
-
 两版的抽象层次不同。Go trait 直接使用 `context.Context`、`s3.*Input/Output` 和可变参数 `func(*s3.Options)`，真实 `*s3.Client` 可直接满足接口；Rust 为对象安全和同步上层代码定义自有 DTO、`RequestOptions` 与 `ReadCloser`，再用显式 `AwsS3Api` 适配 AWS SDK future。Rust trait 还增加 `presign_get_object` 与 `bucket_region`，对应 Rust 高层所需能力，而不是声称它们属于 Go 同路径接口。
 
 错误判断也采用不同机制：Go `client.go` 通过 `errors.As(..., smithy.APIError)` 读取 modeled code；Rust 用 `S3Error` / `error_code` 并由 `sdk_error` 从 SDK 错误文本识别有限的常见 code。请求选项方面，Go 的 `withContentMD5` 是 SDK option function；Rust 将其压缩成 `RequestOptions::content_md5`。Put/UploadPart 可直接设置 Content-MD5，但 DeleteObjects 因 Rust SDK 不暴露序列化 XML body 而使用 CRC32 checksum，这是已记录的实现差异，不能视为字节级完全相同。
 
-Go 请求天然异步感知传入 context；Rust 通过共享 runtime 上的 `run_cancellable` 恢复取消语义。Rust `AwsBody` 则负责把异步 `ByteStream` 转成 Go `io.ReadCloser` 风格的同步接口。Go 接口没有默认实现，Rust 的默认错误是为局部 mock/迁移提供的便利，不代表操作在生产实现中缺失；`AwsS3Api` 已逐项覆盖。
+Go 请求天然异步感知传入 context；Rust 通过共享 runtime 上的 `run_cancellable` 恢复取消语义。Rust `AwsBody` 则负责把异步 `ByteStream` 转成 Go `io.ReadCloser` 风格的同步接口。
 
 ## 扩展指南
 
@@ -103,11 +97,3 @@ Go 请求天然异步感知传入 context；Rust 通过共享 runtime 上的 `ru
 新增错误分支时不要仅在高层匹配字符串；先扩展/验证 `sdk_error` 能稳定产出结构化 code，并在 `interface_test.rs` 或相邻独立测试中覆盖包装后的 `error_code`。修改响应 body 时必须保持 `Read` 的 EOF、关闭后错误和 SDK 流错误传播契约，并同步 `client_1_aster_unit_test.rs` 中 `MemoryBody` / `AwsBody` 测试。
 
 修改取消行为时要分别覆盖“调用前已取消”和“在途取消”。如果把 `presign_get_object` 也改为在途可取消，应通过统一 helper 实现并证明 SDK presign future 的生命周期；如果调整 runtime 所有权，必须保证已返回的 `AwsBody` 仍能继续拉取数据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 11,467 个文件、目标 Rust 文件已索引；`files --filter pkg/objstore/s3store` 列出目标、Go 对照、模块入口和测试；`node --file pkg/objstore/s3store/interface.rs` 完整读取 1–1004 行，并报告该文件被 9 个文件使用。对 `S3API`、`AwsS3Api`、`run_cancellable`、`MemoryBody`、`AwsBody` 的 `query` 找到目标定义及 `store.rs::build_api` / body 测试等候选；`callers/callees` 对这些 trait/struct 名称没有返回边，因此使用精确 `rg` 补充实际使用点，没有把空图结果解释为“无调用者”。
-- 生产源码与装配：读取 `pkg/objstore/s3store/interface.rs`、`pkg/objstore/s3store/lib.rs`、`pkg/objstore/s3store/client.rs`、`pkg/objstore/s3store/store.rs`、`pkg/objstore/s3store/ks3.rs` 的直接相关符号；读取 `pkg/objstore/s3store/Cargo.toml` 和 `pkg/objstore/{Cargo.toml,lib.rs}` 核对 crate 与路径依赖边界。本包没有 `doc.go`，最近的模块契约由 `lib.rs` 提供。
-- Go 对照：读取 `pkg/objstore/s3store/interface.go` 的完整方法集，以及 `client.go`、`store.go` 的直接使用和真实 SDK 构造路径。
-- 独立测试：读取 `pkg/objstore/s3store/interface_test.rs`（在途取消、ListObjects v1 默认契约）、`pkg/objstore/s3store/client_1_aster_unit_test.rs`（`MemoryBody` / `AwsBody` 读与 close 语义）和 `pkg/objstore/s3store/client_test.rs`（错误码、Range、分页、批量删除等 DTO/trait 使用）。这些是静态事实证据；按任务约束未运行 Cargo。
-- 人工复核结论：本文件存在于高层前缀客户端与异步 AWS SDK 之间，统一可注入操作集合、同步取消桥、响应体、错误码和兼容请求选项；安全扩展必须同步 trait、真实适配器、mock/高层调用和独立测试，并关注取消、流生命周期、错误分类及 payload 内存成本。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-utils` library crate；crate 根由 `br/pkg/utils/Cargo.toml` 的 `[lib] path = "lib.rs"` 指向 `br/pkg/utils/lib.rs`，后者以 `pub mod backoff` 挂载本文件，并把 `BackoffStrategy` 再导出到 crate 根。它位于 BR 公共工具层，不执行具体的备份或恢复 RPC，而是把“还能尝试几次、失败后等待多久、哪些错误应继续”封装成可变策略，交给 `br/pkg/utils/retry.rs` 的 `WithRetry`、`WithRetryV2` 和 `WithRetryReturnLastErr` 驱动。
-
-RustCodeGraph 的文件关系显示本文件由 `br/pkg/utils/lib.rs`、`br/pkg/restore/snap_client/import.rs` 和 `br/pkg/restore/log_client/client.rs` 使用；仓库源码搜索还能确认 `br/pkg/backup/store.rs` 和 `br/pkg/conn/util/util.rs` 通过 crate API 消费其策略。因而它是 BR 的重试“决策层”，上游业务负责发起操作，下游等待与取消由重试循环负责。
+为 Import/Download/Peer Download/Backup SST、PD、磁盘检查、recovery、flashback、checksum、raw client 等场景提供具名工厂和参数预置。
 
 ## 核心职责
 
@@ -86,13 +84,9 @@ gRPC code 并非通过结构化 status 类型解析，而是匹配 `Display` 文
 
 ## 与 Go 版本的对应关系
 
-Rust 文件明确移植自 `br/pkg/utils/backoff.go`，公开 trait、常量组、`RetryState`、option 构造器、场景工厂和 `NextBackoff` 决策顺序基本一一对应。Rust 的 `Box<dyn BackoffStrategy>` 对应 Go interface，`SharedError`/`Errors` 对应 Go error 与 `multierr.Errors`，本地 `SqlErrNoRows`/`IoEof` 对应 `sql.ErrNoRows`/`io.EOF`。
-
 Go 使用 `errors.Is`、`errors.Cause` 和 `status.Code` 进行结构化分类；Rust 对 BR sentinel 仍使用 `Is`/downcast，但 gRPC code 改为错误文本匹配，这是当前最重要的实现差异。Go failpoint 会真实改变剩余次数，Rust 的 `inject_failpoint` 是空桩，因此本文件当前没有等价的 failpoint 注入能力。
 
-两端都保留了一个容易误读的行为：recovery、flashback、checksum 虽定义了场景最大等待常量，却没有在对应工厂设置 `maxDelayTime`，所以实际使用默认 10 秒上限。Rust 独立测试专门锁定了这一 Go 兼容语义。
-
-`br/pkg/utils/backoff_test.go` 与 `backoff_test.rs` 共同证明主要路径对齐：可重试错误最终成功、致命错误立即停止、PD 对 EOF 的处理、SST 场景调用次数、ConstantBackoff 的取消/近似无限重试。Rust 额外覆盖 peer-download 中“传输层 gRPC Canceled 可重试、真实 context cancel 停止”以及默认最大延迟。
+Rust 额外覆盖 peer-download 中“传输层 gRPC Canceled 可重试、真实 context cancel 停止”以及默认最大延迟。
 
 ## 扩展指南
 
@@ -103,13 +97,3 @@ Go 使用 `errors.Is`、`errors.Cause` 和 `status.Code` 进行结构化分类�
 测试应继续放在独立的 `br/pkg/utils/backoff_test.rs`，并由 `br/pkg/utils/lib.rs` 的 `#[cfg(test)]` 模块声明接入，不要内嵌到生产源文件。Go 语义变更还应同步核对 `br/pkg/utils/backoff.go` 与 `backoff_test.go`。至少覆盖：首轮/封顶等待、预算耗尽、fatal 与 retry 同时可能命中时的优先级、真实取消与 gRPC Canceled 的身份差异、组合错误只看最后一项、未知错误阈值累计。
 
 兼容风险主要来自公开工厂参数、公开常量及 trait 行为；性能风险主要是过大的默认重试预算和等待上限延长故障恢复时间，或零等待造成忙循环。新增共享/并发用法前还需确认 trait 的 `Send`/`Sync` 约束，不能从当前串行使用方式外推。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 7032 个 Rust 文件；`files --filter br/pkg/utils` 确认目标、Go 对照和独立测试均已索引；`node --file br/pkg/utils/backoff.rs` 读取全部 644 行并得到文件级使用方；`node` 还读取了 `br/pkg/utils/lib.rs`、`retry.rs`、`br/pkg/restore/snap_client/import.rs`、`br/pkg/restore/log_client/client.rs`、`br/pkg/backup/store.rs`、`br/pkg/conn/util/util.rs` 的直接接线片段。
-- RustCodeGraph 对 `NewImportSSTBackoffStrategy` 等符号的 `query` 能区分 Go/Rust 定义；带目标文件限定的 `callers` 查询为空，因此调用关系以文件级图结果和上述真实源码接线交叉验证，未虚构函数级图边。
-- crate/入口：`br/pkg/utils/Cargo.toml`、`br/pkg/utils/lib.rs`；目标 package 未发现 `doc.go`。
-- Go 对照：`br/pkg/utils/backoff.go`、`br/pkg/utils/backoff_test.go`。
-- Rust 测试：`br/pkg/utils/backoff_test.rs`，覆盖默认封顶、成功/未知/致命/可重试路径、PD、三类 SST、ConstantBackoff 与 peer-download 取消身份。
-- 生产调用证据：`br/pkg/utils/retry.rs`、`br/pkg/backup/store.rs`、`br/pkg/restore/snap_client/import.rs`、`br/pkg/restore/log_client/client.rs`、`br/pkg/conn/util/util.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前只执行任务规定的 11 章节结构检查以及文档/变更范围检查。

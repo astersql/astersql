@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/executor/lib.rs` 的 `pub mod sample` 暴露。它是 Go `pkg/executor/sample.go` 的 Rust 移植边界：为 `TABLESAMPLE ... REGIONS()` 一类“按 Region 取代表行”的执行方式提供通用状态机，但把真实存储、Region 查询、KV 扫描、行解码和 chunk 写入抽象为 `TableSampleRuntime`。
-
-当前 Rust 代码的直接使用者仅见独立单元测试 `pkg/executor/sample_test.rs`；仓库内未发现 Rust `builder.rs` 构造 `TableSampleExecutor` 或实现真实存储运行时。因而本文件目前是可测试的执行核心和移植基础，不应表述为已接入 Rust 生产执行器主链。Go 主链的真实入口是 `pkg/executor/builder.go::executorBuilder.buildTableSample`。
+Go `pkg/executor/sample.go` 的 Rust 移植边界：为 `TABLESAMPLE ... REGIONS()` 一类“按 Region 取代表行”的执行方式提供通用状态机，但把真实存储、Region 查询、KV 扫描、行解码和 chunk 写入抽象为 `TableSampleRuntime`。
 
 ## 核心职责
 
@@ -79,10 +77,6 @@ Go 对照的上游链为 `executorBuilder.buildTableSample` → `newTableRegionS
 
 ## 与 Go 版本的对应关系
 
-Rust `TableSampleExecutor`、`TableRegionSampler`、`newTableRegionSampler`、`writeChunk`、`initRanges`、`pickRanges`、`writeChunkFromRanges`、`splitTableRanges`、`splitIntoMultiRanges`、`sortRanges`、`scanFirstKVForEachRange` 和 `finished` 均可在 `pkg/executor/sample.go` 找到同名或大小写对应实现。Rust 保留了 Go 风格方法名（文件级 `#![allow(non_snake_case)]`），便于逐项对照。
-
-关键语义一致点包括：每个 Region 取首条记录、按范围顺序消费、降序仅反转范围顺序、空 Region 不产出行、按 chunk 剩余容量分轮、解码并追加后清空复用 row map。`pkg/executor/sample_test.rs` 还专门验证并发完成顺序不会打乱范围顺序，以及 `decode → append → reset` 的事件顺序。
-
 当前差异与迁移边界如下：
 
 - Go `TableSampleExecutor` 实现真实 `exec.Executor`，由 builder 根据临时表与采样方法选择 `emptySampler` 或 Region sampler；Rust门面是泛型结构，尚无相应 builder/执行器 trait 接线。
@@ -101,14 +95,3 @@ Go 测试 `pkg/executor/sample_test.go` 覆盖 SQL 层空表/多 Region、默认
 - 修改请求容量语义时必须同步维护 `required_rows` 和 `request_is_full`，并验证空 Region 后补充、最大 chunk、多次 `Next` 与完成后的空批次。
 - 扩展解码列能力时，对照 Go `buildSampleColAndDecodeColMap` 处理普通列、虚拟生成列、额外 handle 与 commit timestamp；测试应同时覆盖事件顺序和 SQL 层列值正确性。
 - 若要优化性能，可评估复用工作线程、流式按序消费和避免每批重建列映射，但必须保留错误顺序、范围顺序和资源收敛保证，并测量大 Region 数下的线程与内存成本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点，目标 `pkg/executor/sample.rs` 已索引为 323 行、41 个符号。
-- RustCodeGraph `node --file pkg/executor/sample.rs`：核对全部类型、trait、函数、实现和并发代码；`query` 核对 `TableSampleExecutor`、`TableRegionSampler`、`newTableRegionSampler`、`writeChunk*`、`split*`、`sortRanges`、`scanFirstKVForEachRange`。
-- RustCodeGraph `callees scanFirstKVForEachRange` 与 `callees writeChunkFromRanges`：确认并发度运行时调用，以及扫描、容量检查、解码、追加、row map 重置的下游边。
-- RustCodeGraph callers 对 Rust 关键入口没有返回生产调用方；随后用 Rust 文件引用检查确认直接引用仅位于 `pkg/executor/sample_test.rs`。这是“尚未发现生产接线”的依据，而非对未来接线的假设。
-- 读取 `pkg/executor/Cargo.toml` 与 `pkg/executor/lib.rs`：确认 crate 名、根文件、`pub mod sample` 以及独立 `sample_test.rs` 的测试接线；目标包未发现 `doc.go`。
-- 读取 Go 对照 `pkg/executor/sample.go`、生产入口 `pkg/executor/builder.go::buildTableSample` 和 Go 测试 `pkg/executor/sample_test.go`：核对执行器构造、TiKV/解码细节、错误边界和 SQL 行为。
-- 读取 Rust 独立测试 `pkg/executor/sample_test.rs`：核对多轮 `Next`、边界排序去重、非切分表、分区降序、chunk 上限、keyspace 范围、前缀消费、空 Region 补充、并发保序、row map 重置顺序和区间内正向扫描。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证本文恰含 11 个固定二级章节。

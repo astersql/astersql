@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`builtin_inference.rs` 属于 `astersql-expression` crate，是 SQL 内建函数 `EMBED_TEXT(model, text[, options])` 的 Rust 运行时实现。crate 根在 `pkg/expression/lib.rs:875-883` 装入该模块，并向 crate 外导出部署检查、参数结构与参数/结果转换函数。`pkg/expression/builtin.rs:6394-6414,6794` 把名称 `embed_text` 注册到函数类，并限制为 2–3 个参数；因此本文件位于“SQL 表达式已经解析/重写完成”之后、“调用 embedding provider 并产生向量 Datum”之前。
-
-`pkg/expression/Cargo.toml` 将该目录定义为 `astersql-expression`，本文件直接使用的显式 crate 依赖包括 `astersql-inference`（`inference`）、`astersql-config-deploymode`（`deploymode`）、`astersql-expression-expropt`（`expropt`）、`astersql-types`（`types-dependency`）和 `serde_json`。本文件没有条件编译项；只有对应的独立测试模块在 `pkg/expression/lib.rs:877-878` 上受 `#[cfg(test)]` 约束。
+`EvalEmbedTextArgsToDatum` 调用 provider，传入取消信号和会话上下文值，检查向量维度，再封装成 `types::Datum`（`builtin_inference.rs:233-258`）。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ SQL NULL 与错误是不同通道：`Option<EmbedTextArgs>` 表示 model/text �
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/expression/builtin_inference.go`，主要映射如下：
-
 - Go `embedTextFunctionClass` / `builtinEmbedTextSig` 对应 Rust 同名类型；Go `getFunction` 通过 `newBaseBuiltinFuncWithTp` 统一要求字符串参数和 vector-float32 返回值，Rust 用显式 `BuildCastFunction` 与 `RegistryBuiltinBase` 实现相同契约（Go `builtin_inference.go:60-74`，Rust `builtin_inference.rs:26-50`）。
 - Go `EvalEmbedTextArgs` 返回 `(*EmbedTextArgs, isNull, error)`；Rust 以 `Result<Option<EmbedTextArgs>, Error>` 表达同样的错误/NULL 分离。Go 的 `map[string]any` 空 options 可为 nil，Rust `inference::Options` 在无选项时是空 map，两者的 provider 可见语义一致（Go `builtin_inference.go:114-132,177-203`，Rust `builtin_inference.rs:182-220`）。
 - Go `EvalEmbedTextArgsToDatum` 通过 `domainadaptor.GetEmbedFn(sctx)` 找 runtime，显式传入 `context.Context` 与 SQL killer；Rust 从 `SessionContext` 直接取 runtime、取消信号和 context values。两者均在 provider 返回后检查维度并创建 float32 vector Datum（Go `builtin_inference.go:142-175`，Rust `builtin_inference.rs:233-258`）。
@@ -96,12 +92,3 @@ Go 对照文件为 `pkg/expression/builtin_inference.go`，主要映射如下：
 - 改函数可折叠性、副作或生成列限制时，同步检查 `pkg/expression/function_traits.rs:65-97,220-236`、DDL 的专用例外校验和注册回归；`EMBED_TEXT` 依赖外部 runtime，误标为可折叠会导致规划阶段与运行阶段行为错位。
 - 性能变更要分清两条路：本文件的普通标量调用非 vectorized；STORED 生成列的并发上限和有序结果在 executor helper。任何并发化都必须验证 session 隔离、取消、provider 线程安全及输入/结果顺序。
 - Rust 测试必须继续放在独立的 `pkg/expression/builtin_inference_test.rs`，不要内嵌回生产文件；涉及批量生成列时还应扩展 `pkg/executor/insert_common_test.rs` 或 session/DDL 相应的独立测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/builtin_inference` 与 `node --file pkg/expression/builtin_inference.rs` 确认目标文件已索引且全文为 259 行。
-- RustCodeGraph 查询：`query builtinEmbedTextSig --kind struct`、`query EvalEmbedTextArgsToDatum --kind function`、`explore 'pkg/expression/builtin_inference.rs ...'`，并用精确文件 `node` 查看 Rust 源码、Rust 独立测试、Go 对照和上下游调用点。因索引中 Go/Rust 同名符号会合并 blast radius，调用点另以限定 `*.rs` 的 `rg` 交叉核验。
-- 已读生产/装配路径：`pkg/expression/builtin_inference.rs`、`pkg/expression/lib.rs`、`pkg/expression/builtin.rs`、`pkg/expression/function_traits.rs`、`pkg/expression/Cargo.toml`、`pkg/ddl/generated_column.rs`、`pkg/session/runtime/dml.rs`、`pkg/executor/insert_common.rs`。
-- 已读对照/测试路径：`pkg/expression/builtin_inference.go`、`pkg/expression/builtin_inference_test.go`、`pkg/expression/builtin_inference_test.rs`；额外核对了 `pkg/expression/inference_helper_test.rs` 的 AST 参数边界名称和 `pkg/executor/insert_common_test.rs` 的 `EmbedTextArgs` 直接使用点。
-- 当前代码证据确认：函数存在的目的是在 expression builtin 边界上把 SQL 参数、session/Domain runtime 与 vector Datum 连接起来；普通路径按“部署检查→session→参数→provider→维度检查→Datum”运行，批量生成列路径只复用其公开契约并在外部并发。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务文件指定的 `test` + `rg -c` 命令验证文档存在且恰有 11 个固定二级标题，并对限定 diff 进行人工自审。

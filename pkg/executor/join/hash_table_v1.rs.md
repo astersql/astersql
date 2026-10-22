@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-executor-join`；crate 入口 `pkg/executor/join/lib.rs` 以 `pub mod hash_table_v1` 无条件导出它，并在 `cfg(test)` 下挂接独立测试模块 `hash_table_v1_test.rs`。它位于 Hash Join v1 的 build/probe 中间层：`BuildWorkerV1::build` 把构建侧 `Chunk` 展平成行后创建并填充 `HashRowContainer`，`ProbeWorkerV1::join_probe_row` 和 `join_full_outer_probe_row` 再通过该容器定位候选构建行、取回行值并记录已匹配状态（`pkg/executor/join/hash_join_v1.rs`）。
-
-文件的 1–725 行是由 Go 代码迁移而来的整块注释草稿，不参与编译；活跃实现从 `use crate::concurrent_map::ConcurrentMap` 开始。活跃代码没有条件编译项，也不直接使用 `pkg/executor/join/Cargo.toml` 中的外部 crate：它只依赖同 crate 的 `concurrent_map`、`joiner::Row`、`row_table_builder::Value`，以及标准库集合与原子类型。
+`BaseHashTable` 及其 `UnsafeHashTable`、`ConcurrentMapHashTable` 实现维护“哈希值到一个或多个 `RowPointer`”的桶，保留重复键和哈希碰撞候选，并提供增量内存估算。
 
 ## 核心职责
 
@@ -90,8 +88,6 @@ NULL-aware 探测由 `get_na_rows_by_indices` 完成：先取得普通非 NULL �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/join/hash_table_v1.go`，Go 测试是 `pkg/executor/join/hash_table_v1_test.go`。Rust 活跃实现保留了以下主干：`HashContext` 的批量哈希/NULL 分类、`BaseHashTable` 的重复键链、unsafe/concurrent 两种表、构建侧行容器、NAAJ NULL 桶、碰撞后二次键比较、内存增量读取清零，以及 spill/close 的外部接口形状。
-
 当前 Rust 不是 Go 实现的等量复刻，重要差异必须作为扩展约束：
 
 - Go 使用 `FieldType`、statement type context、`codec.HashChunkSelected` 和 `codec.EqualChunkRow`，覆盖 SQL 类型、字符集/排序规则、选择向量及 `ignoreNulls`；Rust 使用本地 `Value` 标签和 Rust 值相等，没有这些 SQL 语义上下文。
@@ -101,7 +97,7 @@ NULL-aware 探测由 `get_na_rows_by_indices` 完成：先取得普通非 NULL �
 - Go 的 `Len` 只统计哈希表条目，并另以 `hashStateRows` 加 NAAJ NULL 桶；Rust 容器 `len` 统计所有构建行。
 - Rust `EntryStore`/`Entry`/`NaEntry` 是公开但未接线的迁移遗留，实际存储布局不等同 Go 的分片扩容 entry arena。
 
-Rust 测试 `hash_context_and_row_container_match_keys_collisions_nulls_and_spill`、`na_null_bucket_matches_only_equal_non_null_key_positions`、`hash_context_marks_null_keys_beyond_first_bitmap_word` 和 `unsafe_and_concurrent_hash_tables_preserve_duplicate_bucket_rows_and_delta` 验证当前 Rust 契约。Go 的 `TestHashRowContainer` 与 `TestConcurrentMapHashTableMemoryUsage` 则提供完整实现的碰撞、浅拷贝、真实 spill 和分配记账参照，不能反向当作 Rust 已具备这些能力的证据。
+Go 的 `TestHashRowContainer` 与 `TestConcurrentMapHashTableMemoryUsage` 则提供完整实现的碰撞、浅拷贝、真实 spill 和分配记账参照，不能反向当作 Rust 已具备这些能力的证据。
 
 ## 扩展指南
 
@@ -111,11 +107,3 @@ Rust 测试 `hash_context_and_row_container_match_keys_collisions_nulls_and_spil
 - 实现真实 spill 时，修改入口应是 `HashRowContainer::{spill,row,close}` 及所有行所有权字段，并与 `BuildWorkerV1::build`、`HashJoinV1Exec::{IsSpillTriggered,DiskBytes}` 协调；测试必须独立放在 `hash_table_v1_test.rs` 或执行器测试中，覆盖释放、恢复、错误和清理。
 - 若要复用已关闭容器，应新增明确的 reset 或让 `close` 同步清空哈希表、磁盘/布尔状态；否则旧桶指针和新 chunk 坐标可能混淆。
 - 优化内存估算时，保持两种表实现与 Go tracker 定义可解释地对应，并验证 `get_and_clean_memory_delta` 首次返回正增量、第二次返回零。性能修改还应关注大量重复键、哈希碰撞、桶克隆成本和 `get_na_rows_by_indices` 对 NULL 桶的全扫描。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`query HashRowContainer/HashContext/UnsafeHashTable/ConcurrentMapHashTable` 定位到本文件、Go 对照和 Rust 测试；`node --file pkg/executor/join/hash_table_v1.rs --offset 1/992` 读取了完整活跃实现。宽泛 `explore` 因同名符号产生跨仓库噪声，最终调用边以精确符号查询后结合局部引用消歧。
-- 生产源码：`pkg/executor/join/hash_table_v1.rs`（目标实现）、`pkg/executor/join/hash_join_v1.rs`（直接 build/probe/spill/outer/close 调用者）、`pkg/executor/join/lib.rs`（模块装配）、`pkg/executor/join/concurrent_map.rs`、`pkg/executor/join/joiner.rs`、`pkg/executor/join/row_table_builder.rs`（直接依赖）。
-- crate 边界：`pkg/executor/join/Cargo.toml` 的 `[package]`、`[lib]`、`package.metadata.porting` 和依赖分区。
-- 对照与测试：`pkg/executor/join/hash_table_v1.go`、`pkg/executor/join/hash_table_v1_test.go`、`pkg/executor/join/hash_table_v1_test.rs`。Rust 测试覆盖两种表、重复桶、NULL/NAAJ、used、spill 记账和 delta 清零；Go 测试用于识别完整迁移语义及当前差距。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文档存在且恰有 11 个固定二级章节，并人工检查没有把注释草稿或 Go 独有能力表述为活跃 Rust 能力。

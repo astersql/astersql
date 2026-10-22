@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 workspace crate `astersql-util-benchdaily` 的核心实现，负责把一组 Rust 微基准函数运行后写成与 Go `pkg/util/benchdaily` 兼容的 JSON。crate 边界由 `pkg/util/benchdaily/Cargo.toml` 定义，`pkg/util/benchdaily/lib.rs` 通过 `pub mod bench_daily` 和 `pub use bench_daily::*` 导出本文件 API；根门面还在 `pkg/lib.rs` 的 `util::benchdaily` 中重导出该 crate。
-
-它属于测试/CI 性能数据采集设施，而不是 SQL 请求、规划、执行或存储运行时主链。实际使用者是各模块的 benchmark 测试入口，例如 `pkg/session/bench_test.rs::benchdaily_run`、`pkg/statistics/handle/cache/bench_test.rs::TestBenchDaily` 和 `pkg/planner/core/casetest/tpch/tpch_test.rs::test_bench_daily_registration_matches_go`。这些入口把 `fn(&mut Benchmark)` 函数列表交给 `Run`；只有命令行提供非空 `outfile` 时才真正执行并落盘。
+用 `BenchResult`/`BenchOutput` 定义与 Go 导出字段一致的 PascalCase JSON 协议，并提供结果转换和文件读写。
 
 ## 核心职责
 
@@ -90,8 +88,6 @@ runner 自身完全串行：按输入顺序逐个基准计时，`Benchmark::iter
 
 ## 与 Go 版本的对应关系
 
-数据协议直接对应 `pkg/util/benchdaily/bench_daily.go`：`BenchOutput`/`BenchResult` 字段及 PascalCase JSON 名称一致，`benchmark_result_to_json` 对应 `benchmarkResultToJSON`，文件 API 也保留了同名兼容包装。两端都在输出为空时跳过昂贵基准，都从函数入口恢复短名称，并以 JSON 数组加尾部换行写单批结果。
-
 关键差异必须保留在使用预期中：
 
 - Go `testing.Benchmark` 自适应选择 `B.N` 并提供真实 `NsPerOp`、`AllocsPerOp`、`AllocedBytesPerOp`；Rust `execute_benchmark` 固定 100 次，仅计算墙钟平均值，两个分配指标固定为 0。
@@ -100,7 +96,7 @@ runner 自身完全串行：按输入顺序逐个基准计时，`Benchmark::iter
 - Go 文件错误调用 `log.Panic`/`log.Fatal`；Rust 核心 API 返回 `Result`，只有兼容包装 panic。
 - Go 通过 defer 关闭文件；Rust 依赖 RAII，并在写端显式 flush。
 
-`pkg/util/benchdaily/bench_daily_test.go` 的目录扫描和汇总行为没有进入本生产文件；Rust 对应逻辑当前位于独立测试 `pkg/util/benchdaily/bench_daily_test.rs`，只用于验证汇总语义。不能把该测试辅助实现描述为本 crate 的公开生产 API。
+`pkg/util/benchdaily/bench_daily_test.go` 的目录扫描和汇总行为没有进入本生产文件；Rust 对应逻辑当前位于独立测试 `pkg/util/benchdaily/bench_daily_test.rs`，只用于验证汇总语义。
 
 ## 扩展指南
 
@@ -111,12 +107,3 @@ runner 自身完全串行：按输入顺序逐个基准计时，`Benchmark::iter
 若实现自适应迭代或真实分配统计，必须与 Go `testing.Benchmark` 的预热、计时和指标定义核对，不能仅调整常量使测试通过。还需关注长基准耗时、整数溢出、计时噪声和不同平台 allocator 的性能风险。
 
 若把每日扫描/合并提升为生产 API，应从 `pkg/util/benchdaily/bench_daily_test.rs` 提取到新的生产源文件，并保留独立测试；同时定义输入排序、`.git` 跳过、部分文件失败、输出原子性及并发写入策略。当前文件不应悄然承担这些未接线职责。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含 `pkg/util/benchdaily/bench_daily.rs`；`files --filter pkg/util/benchdaily` 列出 Rust/Go 源与独立测试；`node --file pkg/util/benchdaily/bench_daily.rs --offset 1 --limit 400` 读取到本文件完整 287 行及 20 个符号；精确 `query` 定位了 `run_to_file`、`execute_benchmark`、`caller_name_from_pointer` 和 `write_bench_result_to_file`。callers/callees 未产出可用边，调用关系改由调用点源码核验。
-- 源与模块边界：`pkg/util/benchdaily/bench_daily.rs`、`pkg/util/benchdaily/lib.rs`、`pkg/util/benchdaily/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照：`pkg/util/benchdaily/bench_daily.go`、`pkg/util/benchdaily/bench_daily_test.go`、`pkg/util/benchdaily/main_test.go`。
-- Rust 独立测试：`pkg/util/benchdaily/migration_aster_unit_test.rs` 验证指标映射、JSON 精确格式与截断、非法 JSON、短名称和实际执行落盘；`pkg/util/benchdaily/bench_daily_test.rs` 验证汇总扫描、排序、`.git` 跳过及 `BenchOutput`。
-- 直接调用证据：`pkg/session/bench_test.rs`、`pkg/statistics/handle/cache/bench_test.rs`、`pkg/planner/core/casetest/tpch/tpch_test.rs`，以及 `rg` 对 `Run`、`run_to_file`、兼容读写函数和 Cargo 路径依赖的检索结果。
-- 本任务只新增说明文档，按计划不运行 Cargo；结构验证要求目标文件存在且恰有上述 11 个固定二级标题。

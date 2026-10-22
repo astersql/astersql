@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是工作区 crate `astersql-util-channel` 的实际业务实现，crate 边界由 `pkg/util/channel/Cargo.toml` 定义，入口 `pkg/util/channel/lib.rs` 通过 `pub mod channel` 和 `pub use channel::*` 导出本文件 API。根工作区在 `Cargo.toml` 中以 `facade_util_channel` 指向该 crate，`pkg/lib.rs` 又将其公开为 `pkg::util::channel` 风格的门面。
-
-它移植自同目录 Go 文件 `pkg/util/channel/channel.go`，解决的是并发收尾阶段“接收并丢弃 channel 中的所有后续值，直至发送侧全部关闭”的问题。它不是通用队列，也不是一次性的非阻塞清缓存函数。
+针对 `std::sync::mpsc::Receiver<T>` 的实现将标准库 `recv()` 的 `Result<T, RecvError>` 映射成 `Option<T>`。
 
 ## 核心职责
 
@@ -69,11 +67,8 @@ Go 侧直接调用证据包括 `pkg/executor/distsql.go`、`pkg/executor/sample.
 
 ## 与 Go 版本的对应关系
 
-Go 源文件 `pkg/util/channel/channel.go` 的核心实现是 `func Clear[T any, V chan T | <-chan T](ch V) { for range ch {} }`。Rust 对应关系为：
-
 - Go 的 `T any` 对应 Rust 未附加约束的 `T`。
 - Go 的 `chan T | <-chan T` 接收能力约束对应 `DrainableChannel<T>`；当前只为 `std::sync::mpsc::Receiver<T>` 实现。
-- Go 的 `for range ch` 对应 `while let Some(_value) = ch.recv()`，二者都消费至 channel 关闭，空闲但未关闭时都会等待。
 - Go 参数本身是 channel 句柄；Rust `Clear` 按值取得接收端所有权，体现单消费者接收端的所有权模型，调用后无法复用该接收端。
 - Go 对发送/接收均可的 `chan T` 和只接收 `<-chan T` 都可调用；Rust 没有在此暴露发送能力，只要求接收 trait。
 
@@ -86,13 +81,3 @@ Go 源文件 `pkg/util/channel/channel.go` 的核心实现是 `func Clear[T any,
 若要支持异步 channel，应新增异步抽象/入口并保持同步 `Clear` 的兼容性，避免在同步 trait 中阻塞异步执行器线程。性能方面，当前逐项接收和析构是有意行为；批量排空优化必须保留析构时机、关闭等待和背压解除语义。
 
 测试必须继续放在独立文件，不得内嵌到 `channel.rs`。优先扩展 `pkg/util/channel/migration_aster_unit_test.rs`，至少覆盖：缓冲值全部释放、暂时为空不提前结束、多个发送端仅在最后一个关闭后结束，以及新增适配器特有的关闭/错误边界。若把 API 接入执行器，还应在对应执行器的独立测试中验证关闭顺序和后台发送者不会泄漏或死锁。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/util/channel/channel.rs`、`channel.go`、`lib.rs` 和 `migration_aster_unit_test.rs`；`node --file pkg/util/channel/channel.rs` 核对了完整 46 行实现；`query DrainableChannel` 定位到 trait；针对 `Clear` 的通用名称查询存在歧义，因此未把模糊结果当成调用证据。
-- Rust 源与模块：`pkg/util/channel/channel.rs`、`pkg/util/channel/lib.rs`。
-- crate 与门面：`pkg/util/channel/Cargo.toml`、根 `Cargo.toml` 的 `facade_util_channel` 路径依赖、`pkg/lib.rs` 的 `util::channel` 再导出。
-- Go 对照与真实使用：`pkg/util/channel/channel.go`、`pkg/executor/distsql.go`、`pkg/executor/sample.go`、`pkg/executor/analyze_col_sampling.go`。
-- 独立 Rust 测试：`pkg/util/channel/migration_aster_unit_test.rs`；其中两个测试分别验证缓存排空/析构和等待最终关闭。
-- Rust 接线现状：精确检索 `facade_util_channel`、`channel::Clear`、`Clear(receiver)`；实际 Rust 调用只出现在上述独立测试，`pkg/executor/unionexec/union.rs` 与 `pkg/executor/join/index_lookup_merge_join.rs` 等位置仍为注释迁移线索。
-- 本任务是只增说明文档的静态分析，按计划不运行 Cargo；交付前另以任务指定命令检查固定章节数量。

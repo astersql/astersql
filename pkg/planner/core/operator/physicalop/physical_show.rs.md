@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 Rust 侧的 `PhysicalShow` 物理计划节点，位于 `astersql-planner-core-operator-physicalop` crate。该 crate 由同目录 `Cargo.toml` 声明，`lib.rs` 以 `mod physical_show` 装入模块、以 `pub use physical_show::*` 对外再导出，并用 `impl_schema_leaf_operator!(PhysicalShow)` 将它接入通用物理计划接口。
-
-它是 SHOW 类语句从逻辑描述走向物理计划和执行器之间的数据载体：保存输出 Schema、SHOW 参数以及可选的谓词抽取结果。本文件本身不读取系统表、不产生结果行，也不负责把 `LogicalShow` 转成 `PhysicalShow`。当前 Rust 仓库中，除模块接线、通用 trait 宏和独立测试外，没有检索到生产代码直接构造 `PhysicalShow`；完整的逻辑转物理和执行器构建主链仍可在 Go 对照实现中看到。因此它应被视为“已定义并接入物理计划抽象、但 Rust 生产构造链尚未在直接证据中确认”的移植状态。
+当前 Rust 仓库中，除模块接线、通用 trait 宏和独立测试外，没有检索到生产代码直接构造 `PhysicalShow`；完整的逻辑转物理和执行器构建主链仍可在 Go 对照实现中看到。
 
 ## 核心职责
 
@@ -94,12 +92,6 @@ Go 对照中的上游包括 `findBestTask4LogicalShow` 和 `ImplShow.OnImplement
 
 ## 与 Go 版本的对应关系
 
-Rust `PhysicalShow` 三个字段对应 Go `physical_show.go:26-32` 的嵌入 `PhysicalSchemaProducer`、嵌入 `logicalop.ShowContents` 和 `Extractor base.ShowPredicateExtractor`。主要一致点如下：
-
-- `Init` 都创建 `TypeShow` 基础计划并设置 `RowCount = 1` 的伪统计。
-- `MemoryUsage` 都累计 Schema producer、ShowContents 和一个接口槽位；Rust 以两个 `usize` 明确模拟 Go 的 `size.SizeOfInterface`，独立 Rust 测试专门验证这一对齐。
-- 谓词抽取器都服务于 SHOW 过滤和 EXPLAIN。Go 接口及基础实现可见 `base/misc_base.go:37-51` 与 `show_predicate_extractor.go:42-104`。
-
 需要明确的差异和迁移状态：
 
 - Go 文件还定义 `PhysicalShowDDLJobs`、两个 `findBestTask4LogicalShow*` 转换函数；Rust 本文件没有这些符号。
@@ -117,13 +109,3 @@ Rust `PhysicalShow` 三个字段对应 Go `physical_show.go:26-32` 的嵌入 `Ph
 - 修改 EXPLAIN 时，同时检查 `impl_schema_leaf_operator!` 把同一文本用于普通和 normalized 输出的行为；如两者需要不同规范化结果，应调整通用接口而不是只改字符串内容。
 - 测试必须保持独立文件。扩展本节点应同步 `pkg/planner/core/operator/physicalop/physical_show_test.rs`；若新增规划或执行接线，还应在对应独立 planner/executor 测试文件覆盖逻辑转物理、Schema、错误传播和用户可见结果，不要把 `#[cfg(test)]` 测试内嵌到 `physical_show.rs`。
 - 兼容风险主要是 Go/Rust 字段遗漏、EXPLAIN 文本变化和内存统计口径漂移；正确性风险是未设置 Schema、克隆时丢字段或抽取器；性能风险集中在不必要的深克隆和新增堆分配。当前节点自身无 I/O 或并发热点。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_show.rs`，核对 `PhysicalShow` 及 `New`、`Init`、`Clone`、`ExplainInfo`、`MemoryUsage` 全部实现；文件无常量、enum、条件编译或其他本地 trait 定义。
-- crate 与模块：`pkg/planner/core/operator/physicalop/Cargo.toml`；`pkg/planner/core/operator/physicalop/lib.rs:99,212,1666-1725`，核对模块装入、公开再导出和叶子物理算子宏接线。
-- Rust 直接依赖：`physical_schema_producer.rs:28-94`；`operator/logicalop/logical_show.rs:21-129`，核对 Schema 生命周期、抽取器 clone 契约、SHOW 参数和内存口径。
-- Rust 测试：`pkg/planner/core/operator/physicalop/physical_show_test.rs:51-60`，验证 `MemoryUsage` 包含两个机器字的 extractor 接口槽位；未发现本文件其他独立 Rust 测试。
-- Go 对照：`pkg/planner/core/operator/physicalop/physical_show.go:25-105`，核对字段、初始化、内存统计、`PhysicalShowDDLJobs` 和传统最佳任务转换；`pkg/planner/cascades/old/implementation_rules.go:235-259` 核对 Cascades 转换；`pkg/planner/core/stringer.go:181-190` 核对字符串化；`pkg/planner/core/base/misc_base.go:37-51` 与 `pkg/planner/core/show_predicate_extractor.go:42-104` 核对抽取器契约和边界。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 边；`files --filter .../physical_show.rs` 命中目标并报告 9 个符号；`node physical_show.rs::PhysicalShow` 核对结构体；`explore`/`callers`/`callees` 核对 extractor 的 `ExplainInfo` 下游边以及构造调用缺失。因 `New`、`Init`、`Clone`、`MemoryUsage` 同名符号很多，另用限定目录的 `rg` 复核调用者，结论仅限当前工作树。
-- 未运行 Cargo 或代码测试：本任务仅新增分析文档，计划明确禁止 Cargo。结构验证应以任务给定的 11 个固定二级标题命令为准。

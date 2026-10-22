@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 内部的事务提交期 schema 校验适配层。模块由 `pkg/session/runtime.rs` 以私有 `mod schema_validation` 装入，两个符号都只有 `pub(super)` 可见性，不构成 crate 的公开 API。它位于 session 提交流程、`astersql-domain` 的通用 `SchemaChecker`、`astersql-infoschema-isvalidator::Validator` 与 `astersql-kv::TransactionSchemaChecker` 之间，职责是把几套不同的数据和错误接口接成存储层可在 commit timestamp 上调用的闭包。
-
-直接入口位于 `pkg/session/runtime/control.rs` 的提交路径：仅当事务不是只读、session 持有 `schema_validator` 且保留了事务起始 `InfoSchema` 时，才调用本文件的 `checker`，随后以 `kv::SchemaChecker` 事务选项安装到 transaction。表 ID 在进入本文件前已经从写 key 与加锁表收集、排除 ID 0 和临时表、排序并去重；本文件不重复承担这些策略。
+`checker` 固化事务开始时的 schema version、相关物理表 ID 和 delta 检查开关，构造 domain `SchemaChecker`，再包装为存储层认识的 `TransactionSchemaChecker`。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@
 ## 与 Go 版本的对应关系
 
 - Go 的通用逻辑位于 `pkg/domain/schema_checker.go`：`NewSchemaChecker` 保存 validator、schema version、相关表与 delta 标志；`CheckBySchemaVer` 对 `ResultUnknown` 以 500 ms/10 次退避，对 Fail/耗尽分别返回 `ErrInfoSchemaChanged`/`ErrInfoSchemaExpired`。Rust 将这部分放在 `pkg/domain/schema_checker.rs`，本文件只负责类型与错误桥接。
-- Go 的提交接线位于 `pkg/sessiontxn/isolation/base.go::SetOptionsBeforeCommit`：排除临时表后，将 `domain.NewSchemaChecker` 设为 `kv.SchemaChecker`。Rust 的对应接线当前位于 `pkg/session/runtime/control.rs`，同样排除临时表并根据 MDL 决定 delta，但 Rust 还从写 key 与 locking table IDs 构造列表。
-- Go validator 的 `pkg/infoschema/isvalidator/validator.go::Check` 与 Rust `validator.rs::check` 保留相同关键分支：停止/lease 超界为 Unknown，restart 之前的版本为 Fail，schema 前进时区分 nil、空列表与相关表 delta，安全时 Succ。
 - Go `transaction.RelatedSchemaChange` 的 action type 是数值；Rust domain 的通用结构选择字符串，因此本文件执行 `to_string()`。这是显式表示层差异，不应误写为丢弃 action type。
 - `pkg/session/test/session_test.go::TestSchemaCheckerSQL` 覆盖相关表/分区变更拒绝、无关表变更允许；Rust 同路径 `session_test.rs` 中该大段测试目前仅为注释迁移材料，不能算可执行覆盖。可执行 Rust 会话级证据来自 `pkg/session/test/temporarytabletest/temporary_table_test.rs::global_temporary_table_schema_change_keeps_transaction_usable`，它验证临时表变化可提交，而混入普通表变化时 optimistic/pessimistic commit 都返回 `[domain:8028]`。
 
@@ -90,14 +86,3 @@
 - 若调整 Unknown 重试、sleep 或指标，应修改 `pkg/domain/schema_checker.rs` 并扩展 `pkg/domain/schema_checker_test.rs`；该变化会影响提交延迟和线程占用，属于性能与可用性敏感项。
 - 若改变 commit timestamp 的取得/调用时机，应在 `pkg/store/mockstore/mockstorage/canonical_storage_test.rs` 与真实 driver 相关测试中证明“检查的 timestamp 就是提交发布的 timestamp”以及拒绝时写入仍私有。
 - 新增直接适配层测试时，按仓库约定放在独立 `*_test.rs` 文件并由模块入口声明，至少覆盖三态映射、`Some(&[])` 与 `None` 区别、action type 字符串化及两个标准错误映射。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点，目标文件已索引且识别出 6 个节点；`node --file pkg/session/runtime/schema_validation.rs` 读取了完整 51 行源码。
-- RustCodeGraph `node SharedValidator`：确认 `checker` 实例化 `SharedValidator`；`node SchemaValidator` 和 `node --file pkg/domain/schema_checker.rs` 确认 trait 参数、三态结果、默认 500 ms/10 次重试及错误分支。
-- RustCodeGraph `node --file pkg/session/runtime/control.rs`：确认唯一生产调用点的非只读门槛、表 ID 收集/过滤/去重、MDL 开关以及 `kv::SchemaChecker` 安装。
-- RustCodeGraph `node --file pkg/infoschema/isvalidator/validator.rs`：确认停止、restart 版本、nil/空列表、delta/MDL、lease 与三态返回的真实分支。
-- 读取 `pkg/session/Cargo.toml`、`pkg/session/runtime.rs`、`pkg/kv/option.rs`、`pkg/store/driver/kv_adapter.rs` 和 `pkg/store/mockstore/mockstorage/canonical_storage.rs`，核对 crate 依赖、模块边界、闭包类型及两个存储提交入口。`pkg/session/doc.go` 不存在，因此没有额外 package contract 可读。
-- Rust 测试证据：`pkg/domain/schema_checker_test.rs`（参数转发、Unknown 重试、Fail 详情、耗尽/零重试）；`pkg/infoschema/isvalidator/validator_test.rs`（stop、lease、版本与相关表）；`pkg/session/test/temporarytabletest/temporary_table_test.rs`（临时表与普通表提交行为）；`pkg/store/mockstore/mockstorage/canonical_storage_test.rs`（提交 timestamp 与拒绝写入语义）。
-- Go 对照：`pkg/domain/schema_checker.go`、`pkg/infoschema/isvalidator/validator.go`、`pkg/sessiontxn/isolation/base.go`、`pkg/session/test/session_test.go`、`pkg/session/test/temporarytabletest/temporary_table_test.go`。
-- 本任务是只读代码分析与 Markdown 新增，按计划未运行 Cargo 或代码测试。最终结构检查要求文档存在且恰有本文所列 11 个固定二级标题。

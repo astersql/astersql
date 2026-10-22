@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`state.rs` 属于 `astersql-parser-mysql` crate，并由 `pkg/parser/mysql/lib.rs` 以公开模块 `pub mod state` 导出。它位于 MySQL 协议错误元数据层：把 `errcode.rs` 定义的 `u16` 数字错误码关联到客户端可见的五字符 SQLSTATE。该文件不解析 SQL，也不负责生成错误消息；相邻的 `error.rs::NewErr` 和 `error.rs::NewErrf` 在构造 `SQLError` 时消费这里的映射。
-
-`pkg/parser/mysql/Cargo.toml` 将 crate 根设为 `lib.rs`。本文件只使用标准库 `std::collections::HashMap` 和同 crate 的 `super::errcode::*`，不直接使用清单中的外部依赖，不访问网络、磁盘或系统表。
+`DefaultMySQLState` 提供未分类错误的通用回退值 `HY000`。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/mysql/state.go`。两端都定义 `DefaultMySQLState = "HY000"`，并使用相同的错误码常量和 SQLSTATE 字符串。对 Rust 与 Go 的条目进行规范化后，两边各有 243 项，键值对逐项 `diff` 为空。
-
 主要实现差异是生命周期与类型：Go 使用包级 `var MySQLState = map[uint16]string{...}`，进程初始化后复用同一个 map；Rust 使用 `fn MySQLState() -> HashMap<u16, &'static str>`，每次调用创建新 map，随后 `error.rs` 再把命中的静态字符串转成 `String`。因此协议数据目前一致，但分配行为并非逐字等价。
 
 Rust 的回退逻辑不在 `state.rs` 内，而在 `error.rs::NewErr` 与 `NewErrf` 内显式实现；这与 Go 消费方按缺项回退的职责划分一致。当前证据未显示 Rust 侧自动生成或运行时同步 Go 表，后续新增 Go 错误码时需要人工同步本文件。
@@ -95,15 +91,3 @@ Rust 的回退逻辑不在 `state.rs` 内，而在 `error.rs::NewErr` 与 `NewEr
 5. 若优化为共享静态映射，保留公开调用语义或逐一迁移调用者，并用基准或分配证据评估收益。当前错误路径每次建表的性能风险是真实存在的，但不属于本说明任务的行为修改范围。
 
 兼容性上最敏感的是同一数字错误码被映射到不同 SQLSTATE；性能上最敏感的是扩大表后继续在每次错误构造时全量分配；正确性上要同时覆盖已知码命中、未知码缺项以及显式 `HY000` 三种情况。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含目标仓库，目标文件可读取；查询时间为本任务执行时的本地索引状态。
-- RustCodeGraph `node --file pkg/parser/mysql/state.rs`：确认完整 280 行源码、两个公开符号、243 个显式映射条目及 `errcode`/`HashMap` 依赖。
-- RustCodeGraph `callees MySQLState`：未发现函数级下游调用；文件使用关系指向 `error.rs`、`error_3_aster_unit_test.rs` 和 `unit_test.rs`。
-- `pkg/parser/mysql/error.rs`：`NewErr`（第 64 行起）与 `NewErrf`（第 86 行起）证明查询、复制、回退和写入 `SQLError.State` 的流程。
-- `pkg/parser/mysql/lib.rs` 与 `pkg/parser/mysql/Cargo.toml`：证明公开模块装配、crate 名称、库入口和依赖边界。
-- `pkg/parser/mysql/state.go`：Go 权威对照；规范化 Rust/Go 条目后，两侧均为 243 项且 `diff -u` 无输出。
-- `pkg/parser/mysql/error_3_aster_unit_test.rs::sql_error_matches_go_state_formatting_and_redaction`：验证 `ErrNoDB -> 3D000` 和未知码回退；`sql_states_flags_and_type_defaults_match_go` 抽样验证 `23000`、`42S02`、`40001`、`22032`。
-- `pkg/parser/mysql/unit_test.rs::parser_mysql_error_metadata_maps_known_codes`：验证已知条目和未知 `u16::MAX` 缺项；`parser_mysql_sql_error_builds_default_and_custom_messages` 验证通过错误构造器传播状态及默认回退。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另以固定标题命令验证文档恰含十一个要求章节。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-table-tblctx`（`pkg/table/tblctx/Cargo.toml`），由 `pkg/table/tblctx/lib.rs` 的 `mod buffers; pub use buffers::*;` 纳入并公开。它位于表数据变更上下文层：上接 `MutateContext::GetMutateBuffers`，下接 `tablecodec` 行编码、`kv::MemBuffer` 写入和会话级 `variable::WriteStmtBufs`。Rust 会话适配器 `pkg/table/tblsession/table.rs` 中的 `NewMutateContext` 从 session 取出 `WriteStmtBufs` 后调用 `tblctx::NewMutateBuffers`，因此缓冲对象的生命周期绑定于该表突变上下文。
-
-Go 对照实现是 `pkg/table/tblctx/buffers.go`。Go 的完整 DML 消费位置可见 `pkg/table/tables/tables.go` 的 `TableCommon.updateRecord`、`TableCommon.addRecord` 和 `addIndices`；当前 Rust 搜索只确认了构造、trait 暴露及测试中的直接调用，未找到 Rust 生产代码直接调用 `WriteMemBufferEncoded`、`EncodeBinlogRowData` 或 `GetRowToCheck`。因此，本文件已经提供缓冲与编码能力，但不能据此断言 Rust 的完整 AddRecord/UpdateRecord 主链已经接通。
+`CheckRowBuffer` 累积约束检查所需的列值，并生成拥有自身 chunk 底层存储的 `CheckedRow`，避免返回悬垂的临时行视图。
 
 ## 核心职责
 
@@ -95,8 +93,6 @@ binlog 流程独立调用 `EncodeBinlogRowData`：它强制使用旧行格式、
 
 ## 与 Go 版本的对应关系
 
-总体结构与 `pkg/table/tblctx/buffers.go` 一一对应：三个 buffer 类型、两类 getter、容量复用函数、编码/写入分支和 binlog 旧格式均保留。`pkg/table/tblctx/buffers_test.rs` 也复刻 `buffers_test.go` 的新旧格式、checksum、flags、容量保留、共享缓冲和独立 binlog 字节等意图。
-
 重要差异如下：
 
 - Go 持有 `*WriteStmtBufs`，Rust 构造函数取得 `WriteStmtBufs` 所有权并用 `Rc<RefCell<_>>` 共享；Rust `tblsession` 通过 `TakeWriteStmtBufs` 配合这一所有权设计。
@@ -115,13 +111,3 @@ binlog 流程独立调用 `EncodeBinlogRowData`：它强制使用旧行格式、
 - 性能修改应重点测量四处复制/分配：`row.clone()`、`colIDs.clone()`、`encoded.clone()`、`GetRowToCheck` 的 Datum clone；优化时不得破坏 binlog 返回值不共享内部 byte buffer 的契约。
 - 错误策略修改必须覆盖 `errctx` 可忽略/转警告和严格返回两类上下文，并明确编码失败后是否恢复 `RowValBuf`。
 - `ensureCapacityAndReset` 是公开函数；改变断言、默认填充或 optCap 规则前，应同步 Rust `TestEnsureCapacityAndReset` 与 Go `TestEnsureCapacityAndReset` 的语义矩阵。
-
-## 验证依据
-
-- RustCodeGraph 状态：本仓库索引可用，目标目录 9 个文件均被索引；`buffers.rs` 显示 24 个符号。读取了目标文件全部 233 行，并查询了 `NewMutateBuffers`、`WriteMemBufferEncoded`、`ensureCapacityAndReset`、`GetRowToCheck` 的节点/调用边。
-- 源码与装配：`pkg/table/tblctx/buffers.rs`、`pkg/table/tblctx/lib.rs`、`pkg/table/tblctx/table.rs`、`pkg/table/tblctx/Cargo.toml`、`pkg/table/tblsession/table.rs`。
-- 下游实现：`pkg/sessionctx/variable/session.rs::WriteStmtBufs`、`pkg/tablecodec/tablecodec.rs::{EncodeRow, EncodeOldRow}`、`pkg/errctx/context.rs::Context::HandleError`。
-- Rust 测试：`pkg/table/tblctx/buffers_test.rs` 和 `pkg/table/tblctx/migration_aster_unit_test.rs`。覆盖新/旧格式、checksum、flags、容量复用、共享 `WriteStmtBufs`、检查行读取和 binlog buffer 独立性。
-- Go 对照：`pkg/table/tblctx/buffers.go`、`pkg/table/tblctx/buffers_test.go`，以及 `pkg/table/tables/tables.go` 中的 `TableCommon.updateRecord`、`TableCommon.addRecord`、`addIndices`。
-- 全仓 Rust 文本搜索确认：生产侧存在 `tblsession` 构造和 `MutateContext` 暴露；本文件具体编码/检查方法的直接 Rust 调用仅在相关测试中检出。RustCodeGraph 的同名方法调用边主要落到 Go 实现，文档已按语言区分。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行固定 11 章节的结构校验，并人工检查未把 Go 主链当成 Rust 已接线事实。

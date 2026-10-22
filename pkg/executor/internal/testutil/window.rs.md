@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-internal-testutil` crate，是执行器内部测试工具中的窗口算子用例模型。crate 入口 `pkg/executor/internal/testutil/lib.rs` 通过 `pub mod window` 声明模块，并用 `pub use window::*` 再导出本文件的公开项；crate 边界和 Go 包映射由 `pkg/executor/internal/testutil/Cargo.toml` 定义，其中 `package.metadata.porting.go-package` 指向 `pkg/executor/internal/testutil`。
-
-它不是窗口执行器实现。实际 Rust 窗口执行逻辑位于 `pkg/executor/windows/`，而本文件只保存测试/基准所需的参数、默认值和展示文本。当前 Rust 侧可确认的直接消费者是同 crate 的独立测试 `pkg/executor/internal/testutil/testutil_test.rs`；RustCodeGraph 虽把文件关联到 `pkg/executor/benchmark_test.rs`，但精确符号搜索没有发现后者使用本文件的 `WindowTestCase`、`DefaultWindowTestCase` 或简化 `WindowFrame`。该基准文件使用的是 `astersql_executor_windows::window::WindowFrame`，两者不可混同。
+没有帧类型、无界标志或 `CURRENT ROW` 等完整执行语义，解释工作留给未来的适配/执行层。
 
 ## 核心职责
 
@@ -85,18 +83,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/internal/testutil/window.go`。两端共同保留了 `WindowTestCase` 的字段集合、固定四列 schema、展示字段顺序和默认值：`row_number`、函数数 `1`、空帧、NDV `1000`、一千万行、并发度 `1`、流水线 `0`、已排序、16 个 `x`。
-
 主要差异如下：
 
-- Go `Ctx` 是 `sessionctx.Context` 接口，Rust 是精简的测试 `SessionContext` 值。
 - Go `Frame` 指向完整 `logicalop.WindowFrame`，Rust 在本文件内定义了只有 `start`/`end` 的轻量结构；两者不是等价的完整模型。
 - Go `Columns` 是表达式列指针，列类型是完整 `FieldType`；Rust 使用 `ColumnDef` 和 `FieldKind` 的简化表示。
 - Go 构造器返回指针，Rust 按值返回；Go 数值字段是 `int`，Rust 多数为 `usize`。
 - Go 通过 `ast.WindowFuncRowNumber` 常量设置函数名，Rust 当前直接使用字面量 `"row_number"`。
 - Go 基准 `benchmarkWindowExecWithCase` 实际消费全部字段：设置系统变量、构造 mock 数据源、创建窗口执行器并执行 `Open/Next/Close`；当前 Rust 侧该类型仅由独立测试验证，Rust 的真实窗口基准另行构造 `PhysicalWindowPlan`。
-
-因此，本文件已经对齐默认用例的表面契约，但不能据此宣称 Go 窗口基准接线或完整帧表达能力已经移植完成。
 
 ## 扩展指南
 
@@ -107,15 +100,3 @@
 修改展示格式时要把格式看作兼容接口，同步更新 `window_case_string_uses_go_field_type_name`，并检查基准名称消费者。修改固定 schema 时，要检查 `Display` 的首列索引、Go 数据源的四项 `Ndvs`/`Orders` 假设和任何按列位置取分区键的代码。
 
 若要接入 Rust 窗口基准，应新增独立测试文件中的转换/执行验证，而不是把测试嵌入 `window.rs`。至少覆盖默认值到真实 `PhysicalWindowPlan` 的映射、空列格式化边界、零并发/零 NDV 的处理、流水线开关、已排序与未排序输入、多函数以及显式帧。兼容风险集中在 Go/Rust 类型表达差异；性能风险来自默认一千万行和并发矩阵，验证时应把小规模正确性测试与显式的大规模基准分开。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/internal/testutil` 列出本 crate 的 12 个 Go/Rust 文件。
-- RustCodeGraph 源码节点：`window.rs`（完整 94 行）、`lib.rs`、`testutil.rs` 中 `SessionVars`/`SessionContext`/`resetChunkSizes`、`testutil_test.rs` 中两个窗口默认值测试。
-- RustCodeGraph 符号查询：`WindowFrame`、`WindowTestCase`、`DefaultWindowTestCase`、`resetChunkSizes`；精确限定的 `callers`/`callees` 没有返回边，故使用索引报告的文件关系和 `rg` 精确引用结果交叉核对。
-- crate/构建边界：`pkg/executor/internal/testutil/Cargo.toml`、`pkg/executor/internal/testutil/BUILD.bazel`。
-- Go 对照与真实消费路径：`pkg/executor/internal/testutil/window.go`、`pkg/executor/benchmark_test.go` 第 360 行起的 `benchmarkWindowExecWithCase` 及其窗口矩阵调用点。
-- Rust 相关独立测试：`pkg/executor/internal/testutil/testutil_test.rs::window_case_string_uses_go_field_type_name` 和 `operator_cases_match_go_defaults`。没有发现同名独立 `window_test.rs`；测试通过 `lib.rs` 的 `#[cfg(test)]` 模块装配。
-- 人工边界复核：确认本文件没有条件编译项、I/O、错误返回或并发原语；确认 Rust 真实基准的 `WindowFrame` 来自 `astersql_executor_windows`，而非本文件。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付结构以固定 11 个二级标题的检查命令为准。

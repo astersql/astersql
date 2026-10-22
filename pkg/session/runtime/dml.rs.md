@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`dml.rs` 是 `astersql-session` crate 中 `runtime` 私有模块的关系型 DML 执行层。模块由 [`pkg/session/runtime.rs`](../runtime.rs) 以 `mod dml;` 挂入，源码中的 `impl ConcreteSession` 因 `use super::*` 而直接扩展具体会话运行时；它不是通用 planner/executor ABI，也不负责 SQL 文本解析。
-
-上游在 [`control.rs`](control.rs) 中接收规范 AST：`execute_insert`、`execute_update`、`execute_delete` 先处理会话 KV 表、系统表和多表形态，再分别调用本文件的 `execute_relational_insert`、`execute_relational_update`、`execute_relational_delete` 或 join 版本。计划结构和表达式辅助函数来自 [`pkg/session/dml_runtime.rs`](../dml_runtime.rs) 的 `InsertPlan`、`UpdatePlan`、`DeletePlan`、`EvalExpr` 等。本文件把这些计划落实为 record/index/MLog KV mutation，并接入约束、事务、统计和协议状态。
-
-[`pkg/session/Cargo.toml`](../Cargo.toml) 声明 crate 名为 `astersql-session`、库入口为 `lib.rs`，Go 对照包元数据为 `pkg/session`，唯一 crate feature `nextgen` 不对本文件做条件编译。本文件自身没有 `#[cfg]` 项、类型、trait 或模块级常量；主要由 7 个模块级辅助函数和一个大型 `impl ConcreteSession` 组成。
+在写入前后维持 MySQL/TiDB 语义：默认值与 NOT NULL、类型转换、生成列、AUTO_INCREMENT、唯一键、`IGNORE`、`REPLACE`、`ON DUPLICATE KEY UPDATE`、`ORDER BY ... LIMIT`、`CLIENT_FOUND_ROWS` 和 statement message。
 
 ## 核心职责
 
@@ -100,12 +96,7 @@ INSERT 的主流程位于 `execute_relational_insert_with_load_counts`：
 
 ## 与 Go 版本的对应关系
 
-Cargo 的 `package.metadata.porting.go-package = "pkg/session"` 表明 crate 的总体迁移来源是 Go `pkg/session`，但本文件的具体行为横跨 Go 会话事务层与执行器写路径，不存在一个同路径 `pkg/session/runtime/dml.go`。
-
-- Rust `execute_relational_insert_with_load_counts` 对应 Go [`pkg/executor/insert.go`](../../executor/insert.go) 的 `InsertExec`：两者都区分普通插入、`IGNORE`、upsert 和 `REPLACE`，执行重复键预取/检查，维护 record/copied/touched/updated 与 `CLIENT_FOUND_ROWS` 口径，并暴露外键检查/级联统计。
-- Rust UPDATE/DELETE 对应 Go [`pkg/executor/update.go`](../../executor/update.go)、[`pkg/executor/delete.go`](../../executor/delete.go) 和 [`pkg/executor/write.go`](../../executor/write.go) 的执行/`updateRecord` 路径：都必须重算生成列和索引、更新 affected-row message、删除正确的物理 record，并把 FK check/cascade 纳入写操作。
 - Rust 显式事务缓冲和 autocommit commit 边界对应 Go [`pkg/session/txn.go`](../txn.go) 的 statement/transaction 生命周期以及 `txnmanager.go` 的 `OnStmtCommit`。当前 Rust 是面向 `ConcreteSession` 的窄运行时实现，不等价于完整 Go planner/executor 的全部优化和算子框架。
-- 源码中的多处注释明确以 Go 为兼容基准：`INSERT IGNORE` 严格模式截断降 warning、自增 ID 重试复用、`CLIENT_FOUND_ROWS`、共享 FK 锁开关、schema/read-only commit fence、TTL savepoint 计数和级联深度。
 - Rust 独立测试 `dml_runtime_test.rs` 与 `mysql_dml_compat_test.rs` 用真实 SQL/KV 验证这些可观察语义；因此扩展时应优先复刻对应 Go 行为，而不是为了通过局部用例简化错误、锁或计数规则。
 
 ## 扩展指南
@@ -117,12 +108,3 @@ Cargo 的 `package.metadata.porting.go-package = "pkg/session"` 表明 crate 的
 - 新的 commit 期检查应放在 `apply_relational_mutations_with_autocommit` 的真实 `Commit` 前，并保证每个错误分支回滚和释放锁；若它也适用于显式事务，还必须接入外层 transaction commit，而不能只改 autocommit。
 - 新的派生写（例如日志或统计）应尽量与 base row mutation 保持同一事务，并明确失败是否必须回滚主写。性能评审应关注全表扫描、写前/写后行集合复制、唯一/FK 预取次数、全局 mutex 临界区和 mutation 数量。
 - 修改 Rust 逻辑时须遵守仓库规则：同步修改独立测试、保持 Go 语义、先做失败回归再修复，完成后运行 `cargo fmt --all`；本说明任务本身未修改 Rust，因此未运行 Cargo。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/runtime/dml.rs` 确认目标文件已索引且含 759 个符号。`explore`、`node`、`callers`、`callees` 查询覆盖 `execute_relational_insert`、`execute_relational_update`、`execute_relational_delete`、`apply_relational_mutations`、`validate_and_lock_foreign_keys`、`evaluate_generated_columns_inner`、`validate_unique_indexes`、FK cascade 和 `record_relational_stats`。
-- 关键调用边：RustCodeGraph 明确给出 `control.rs::execute_update → dml.rs::execute_relational_update`；综合 `control.rs` 源码确认 insert/delete 的同类分派；本文件多处 `execute_relational_* → apply_relational_mutations`，而 DDL 清理/重组也复用该提交汇聚点。
-- 已读生产路径：[`dml.rs`](dml.rs)、[`runtime.rs`](../runtime.rs)、[`control.rs`](control.rs)、[`dml_runtime.rs`](../dml_runtime.rs)、[`pkg/session/Cargo.toml`](../Cargo.toml)，以及调用关系涉及的 `row_codec.rs`、`source.rs`、`transaction.rs`、`mlog.rs` 的符号/引用。
-- 已读 Go 对照：[`pkg/executor/insert.go`](../../executor/insert.go)、[`pkg/executor/update.go`](../../executor/update.go)、[`pkg/executor/delete.go`](../../executor/delete.go)、[`pkg/executor/write.go`](../../executor/write.go)、[`pkg/session/txn.go`](../txn.go) 与 [`pkg/session/txnmanager.go`](../txnmanager.go)。
-- 已读独立 Rust 测试：[`pkg/session/dml_runtime_test.rs`](../dml_runtime_test.rs) 覆盖真实 KV DML、生成列、commit 失败、auto-ID、外键、MLog、分区和级联深度；[`pkg/session/mysql_dml_compat_test.rs`](../mysql_dml_compat_test.rs) 覆盖默认值/NULL、多行原子性、IGNORE/upsert/REPLACE、affected rows、ORDER/LIMIT 与自增协议状态。未发现同目录 `runtime/dml_test.rs`。
-- 结构验证要求：目标文件必须存在，且固定二级标题必须恰好出现 11 个；交付时另执行 `git diff --check` 和范围检查，确保唯一新增生产物是本说明文档，未修改 Rust、Go、Cargo 或只读 `plan.md`。

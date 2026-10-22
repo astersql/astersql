@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应源文件 [`closure_exec.rs`](./closure_exec.rs)。该文件属于 Cargo crate `astersql-store-mockstore-unistore-cophandler`，由同目录 `lib.rs` 以 `pub mod closure_exec` 导出。它为 UniStore mock coprocessor 保存一组“扫描 KV、用闭包式处理器逐条消费、最后汇总”的执行抽象，并提供一个受限计划形态的 `ClosureExecutor` 门面。其直接类型依赖来自同 crate 的 `cop_handler.rs`（请求、行、表达式、KV 读取和锁错误）、`mpp_exec.rs`（当前实际执行树实现）与 `topn.rs`（有界 TopN 堆）。
-
-当前接线状态必须与设计意图分开理解：`ClosureExecutor::execute` 会调用 `mpp_exec::execute_executor`，但 `cop_handler.rs` 的 DAG 请求入口也直接调用 `execute_executor`，仓库内生产 Rust 代码没有构造 `ClosureExecutor`。源码搜索只找到 `closure_exec_test.rs` 对 `ClosureExecutor::is_point_get_range` 的直接使用，以及 `cop_handler_test.rs` 对 `exceed_end_key` 的使用。因此本文件目前同时包含可复用 API、Go 移植语义的骨架和部分尚未接入请求主链的处理器；不能把所有公开符号都视为线上活跃路径。
+为 UniStore mock coprocessor 保存一组“扫描 KV、用闭包式处理器逐条消费、最后汇总”的执行抽象，并提供一个受限计划形态的 `ClosureExecutor` 门面。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ Cargo 清单把大批 TiDB 子 crate 声明为 `optional = true`，但没有定�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是同目录 `closure_exec.go`。名称上的主要映射包括：`chunkMaxRows`/`CHUNK_MAX_ROWS`、`scanType`/`ScanType`、`execDetail`/`ExecDetail`、`closureExecutor`/`ClosureExecutor`、`closureProcessor`/`ClosureProcessor`、各 count/scan/selection/topN/hashAgg processor，以及 `safeCopy`、`isResolved`、`exceedEndKey`。
-
 Rust 版本不是 Go 文件的等量重写，关键差异如下：
 
 - Go `buildClosureExecutor` 会从 protobuf DAG 建立专用 processor，并由请求测试的 `buildExecutorsAndExecute` 实际执行；Rust 当前 DAG 入口和 `ClosureExecutor::execute` 都复用 `mpp_exec::execute_executor`，本文件 processor 尚未接线。
@@ -109,12 +105,3 @@ Rust 版本不是 Go 文件的等量重写，关键差异如下：
 - 修改分组计数时同步检查 `HashCountProcessor` 的 key 编码/排序语义与 Go 输出顺序。若扩展为通用聚合，应优先复用 `mpp_exec.rs` 已有聚合状态机，避免形成两套不一致实现。
 - 修改锁行为时同时核对 `ClosureExecutor::check_range_locks`、`cop_handler::check_lock` 与 Go `checkRangeLockForRange/checkLock`；兼容风险包括边界是否半开、`<`/`<=`、写锁类型、resolved lock 和 primary get 例外。
 - 修改分块时不要只改 `CHUNK_MAX_ROWS`；当前结果分块实际由 `cop_handler::append_row` 的 `ROWS_PER_CHUNK` 控制，应统一常量来源并补 chunk 边界测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore/unistore/cophandler/closure_exec.rs` 确认目标文件已索引，`node --file ... --offset 1 --limit 500` 读取到全部 415 行和 55 个符号。
-- RustCodeGraph `query`：确认 `ClosureExecutor` 位于第 67 行、`ClosureProcessor` 位于第 155 行、`run_processor` 位于第 332 行、`check_range_locks` 位于第 130 行、`get_scan_executor` 位于第 369 行。方法级 `callers/callees` 未返回可用边，因此调用接线结论改由源码搜索核验。
-- 已读 Rust 生产文件：`closure_exec.rs`、同目录 `Cargo.toml`、`lib.rs`、`cop_handler.rs`、`mpp_exec.rs`，以及直接依赖的 `topn.rs` 符号引用；仓库没有该包的 `doc.go`。
-- 已读测试：`closure_exec_test.rs` 全文、`cop_handler_test.rs` 中 `TestClosureExecutor`/`TestMppExecutor` 及相关扫描断言；全仓库 Rust 搜索用于确认公开符号当前只有上述测试直接使用。
-- 已读 Go 对照：同目录 `closure_exec.go` 的构建、执行、锁检查、各 processor、聚合与辅助函数，以及 `cop_handler_test.go` 的 `buildExecutorsAndExecute`、`TestIsPrefixNext`、`TestPointGet`、`TestClosureExecutor`、`TestMppExecutor`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的结构命令确认文件存在且恰好包含十一个固定二级标题，并人工复核当前接线状态、Go/Rust 差异和安全扩展入口均有源码依据。

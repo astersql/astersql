@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate。crate 入口 `pkg/ingestor/ingestctrl/lib.rs` 通过 `pub mod compress` 公开该模块；`pkg/ingestor/ingestctrl/Cargo.toml` 以普通依赖引入同一工作区内的 `astersql-util-compress`，本文件据此复用全局 gzip Reader/Writer 对象池。
-
-从完整应用链路看，Go 对照实现用于 local backend 创建导入服务 gRPC 连接时的消息压缩；具体入口是 `pkg/ingestor/ingestctrl/local.go::makeConn`。不过当前 Rust 代码的事实不同：仓库内对 `gzipCompressor`、`gzipDecompressor` 的 Rust 引用只出现在 `compress.rs` 自身和独立测试 `compress_test.rs`，`pkg/ingestor/ingestctrl/local.rs` 尚无对应连接压缩接线。因此，本文件当前是已公开、可独立测试的 gzip 适配层，而不是已经进入 Rust ingest 运行主链的组件。
+从完整应用链路看，Go 对照实现用于 local backend 创建导入服务 gRPC 连接时的消息压缩；具体入口是 `pkg/ingestor/ingestctrl/local.go::makeConn`。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的两个类型、`Do`/`Type` 方法名、`"gzip"` 标识以及 Reader/Writer 池复用意图直接对应 `pkg/ingestor/ingestctrl/compress.go`。`compress_test.rs` 也对应 `compress_test.go` 的两个往返测试和四组 benchmark 名称。
-
 已验证的关键差异如下：
 
 - Go 通过编译期断言确认类型实现 `grpc.Compressor`/`grpc.Decompressor`，并由 `local.go::makeConn` 实际注册；Rust 只有固有方法，没有 gRPC trait 实现，也没有 Rust 生产调用者。
@@ -106,14 +102,3 @@ Rust 的两个类型、`Do`/`Type` 方法名、`"gzip"` 标识以及 Reader/Writ
 - 若引入输入/输出限额，应在分配和解压膨胀之前强制执行，并增加压缩炸弹、截断流、无效 header、空输入、writer 部分失败等回归测试。
 - 修改本文件行为时同步更新独立的 `pkg/ingestor/ingestctrl/compress_test.rs`，不得把测试嵌入生产源文件；需要核对 Go 语义时同时参考 `compress_test.go`。若改变公共池语义，还应更新 `pkg/util/compress/migration_aster_unit_test.rs`。
 - 性能敏感改动需关注完整缓冲、额外 clone、全局池无界保留和 Mutex 争用；兼容性改动需保持标准 gzip 格式及 `"gzip"` 协议标识。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ingestor/ingestctrl/compress.rs` 确认目标已索引；`node --file ...` 读取目标、模块入口、Rust/Go 对照和测试；`query gzipCompressor`/`query gzipDecompressor` 定位两种语言定义；结构体 callers/callees 查询没有返回 Rust 生产边。
-- 目标实现：`pkg/ingestor/ingestctrl/compress.rs`，重点符号为 `gzipCompressor::{Do, Type}` 与 `gzipDecompressor::{Do, Type}`。
-- crate 与模块边界：`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ingestor/ingestctrl/lib.rs`。
-- 下游实现：`pkg/util/compress/gzip.rs`、`pkg/util/compress/lib.rs`、`pkg/util/compress/Cargo.toml`，用于核对 `ReusablePool`、`GzipWriter::compress`、`GzipReader::reset` 及 `flate2` 依赖。
-- Go 对照与生产接线：`pkg/ingestor/ingestctrl/compress.go`、`pkg/ingestor/ingestctrl/local.go::makeConn`。
-- 独立测试：`pkg/ingestor/ingestctrl/compress_test.rs`、`pkg/ingestor/ingestctrl/compress_test.go`；补充池语义测试位于 `pkg/util/compress/migration_aster_unit_test.rs`。
-- 精确文本复核：对 `pkg/**/*.rs` 搜索 `gzipCompressor`、`gzipDecompressor`、`WithCompressor`、`WithDecompressor`，只发现目标实现和 `compress_test.rs`，据此将 Rust 生产接线状态记录为“尚未接线”，而不是推断已有调用。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前执行固定十一章节的结构验证，并人工复核本文没有把 Go 调用关系写成 Rust 当前事实。

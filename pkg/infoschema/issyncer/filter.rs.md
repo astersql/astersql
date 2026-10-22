@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`filter.rs` 属于 `astersql-infoschema-issyncer` crate。该 crate 的清单是 `pkg/infoschema/issyncer/Cargo.toml`，crate 根 `pkg/infoschema/issyncer/lib.rs` 通过 `mod filter;` 纳入本文件，再以 `pub use filter::*;` 导出其公开项。因此外部代码使用的是 crate 级公开 trait `Filter`，而不是直接访问私有模块名。
-
-本文件是 InfoSchema 同步加载流程的策略边界：它只声明“是否跳过某个 schema diff”以及“全量加载时是否跳过某个数据库”两个判定，不读取存储、不修改缓存，也不实现任何具体筛选规则。实际执行筛选的是同 crate 的 `Loader`（`pkg/infoschema/issyncer/loader.rs`），`Syncer::New`（`pkg/infoschema/issyncer/syncer.rs`）负责把可选过滤器注入 Loader。
+测试实现 `TestNameFilter` 位于独立文件 `pkg/infoschema/issyncer/loader_test.rs`；cross-keyspace 限制则由 `Loader::skipLoadingDiffWithLatest` 和 `Loader::fetchAllSchemasWithTables` 自行处理。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ Filter 的生命周期由传入 `Syncer::New` 或 `newLoader` 的 `Arc` 决定�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/infoschema/issyncer/filter.go`。Rust 保留了 Go `Filter` 的两个方法名、布尔语义和可空参数语义：Go 的 `*model.SchemaDiff` / `infoschema.InfoSchema` / `*model.DBInfo` 分别映射为 Rust 的 `&SchemaDiff` / `Option<&SchemaInfo>` / `Option<&DBInfo>`。
-
 主要差异是：
 
 - Go interface 没有显式并发标记；Rust trait 加上 `Send + Sync`，与 `Arc<dyn Filter>` 的共享用法配套。
@@ -110,14 +106,3 @@ Filter 的生命周期由传入 `Syncer::New` 或 `newLoader` 的 `Arc` 决定�
 若只改变某类调用方的筛选范围，修改该调用方的具体 Filter，并同步扩展 `pkg/infoschema/issyncer/loader_test.rs`；Go 语义也发生变化时同步核对 `pkg/infoschema/issyncer/filter.go` 和 `loader_test.go`。若改变方法签名或布尔含义，则至少需要同步 `filter.rs`、`loader.rs`、`syncer.rs`、所有 `impl Filter` 以及 crate 对外用户。
 
 兼容风险主要是误跳过 DDL 导致 InfoSchema 与存储版本内容不一致；性能风险主要是每个 diff/数据库都执行昂贵或阻塞式判定；并发风险来自有状态实现内部同步。安全扩展应保持判定快速、无副作用且对同一输入稳定，并为增量和全量两条路径分别添加回归用例。Rust 测试必须继续放在独立测试文件，不能内嵌进 `filter.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引；目标目录包含 `filter.rs`、`loader.rs`、`syncer.rs` 与独立 `loader_test.rs`。
-- RustCodeGraph `node --file pkg/infoschema/issyncer/filter.rs`：确认文件仅有 `Filter` trait 及两个必需方法，并显示使用文件为 `loader.rs`、`loader_test.rs`、`syncer.rs`。
-- RustCodeGraph `node Filter --file ...`、`node skipLoadingDiff --file ...`、`node fetchAllSchemasWithTables --file ...`、`node New --file pkg/infoschema/issyncer/syncer.rs`：确认接口、注入链、增量入口和全量入口。
-- RustCodeGraph 调用边：`Loader::skipLoadingDiff -> skipLoadingDiffWithLatest`、`LoadWithTS -> fetchAllSchemasWithTables`、`Syncer::New -> newSyncer`。对动态 trait 调用，另以 `rg` 的精确直接引用核对。
-- 已读生产文件：`pkg/infoschema/issyncer/filter.rs`、`lib.rs`、`loader.rs`、`syncer.rs`、`Cargo.toml`；`pkg/infoschema` 下不存在需先读取的 `doc.go`。
-- 已读 Go 对照：`pkg/infoschema/issyncer/filter.go`，以及 `loader.go` 中对应调用位置。
-- 已读独立测试：`pkg/infoschema/issyncer/loader_test.rs` 与 `loader_test.go`，重点核对 BR diff 筛选和全量库筛选用例。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付时以固定十一章节结构命令验证文件存在和章节数量。

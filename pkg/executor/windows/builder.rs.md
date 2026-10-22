@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`builder.rs` 是 `astersql-executor-windows` crate 内把窗口执行计划装配为可运行执行器的入口。模块由 [`lib.rs`](./lib.rs) 公开为 `builder` 并整体再导出；crate 边界和 Go 包映射由 [`Cargo.toml`](./Cargo.toml) 声明。它不解析 SQL，也不创建具体窗口函数，而是接收已经包含列下标、窗口函数对象和帧定义的 `PhysicalWindowPlan`，在流水线执行器 `PipelinedWindowExec` 与缓冲式执行器 `WindowExec` 之间选择并初始化状态。
-
-当前接线证据应谨慎理解：RustCodeGraph 将该文件识别为 14 个符号、217 行，并报告直接文件使用者为 `pkg/executor/benchmark_test.rs` 与 `pkg/executor/windows/window_memory_test.rs`；crate 内的 `window_executor_test.rs` 还通过 `super::*` 使用其公开项。仓库搜索没有发现 Rust 生产 SQL 执行主链直接构造 `PhysicalWindowPlan`，所以本文只确认该 crate 的可执行实现与测试/基准入口，不宣称它已经替代 Go 主链中的 `windows.Build`。
+用 `WindowExecutor` 统一包装两种具体执行器，并把 `open`、`next`、`close` 和 `memory_bytes` 原样分派到底层实现。
 
 ## 核心职责
 
@@ -85,11 +83,9 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 [`builder.go`](./builder.go) 是结构和分支选择的主要语义来源：Go `BuildOrdered` 同样强制 `Build(..., true)` 并要求得到 `PipelinedWindowExec`；Go `Build` 同样按强制/会话开关选择流水线，并按无帧、`ROWS`、`RANGE` 选择处理器，且 RANGE 两端都调用比较列初始化。
+Rust 把这些结果前移到 `PhysicalWindowPlan` 和已构造的 `WindowFunction` trait object，只保留列下标与 `OrderBy::descending`，内存初值也由函数方法提供。
 
-Rust 版本不是 Go 函数的逐参数翻译。Go `Build` 接收 `sessionctx.Context`、`physicalop.PhysicalWindow` 与通用 `exec.Executor`，并在构建器内完成以下工作：创建 `BaseExecutor`，从表达式提取分区/排序列，把窗口描述符构造成 `aggfuncs.AggFunc`，分配 partial result，根据会话变量读取流水线开关，并配置 Go RANGE 比较方向/类型信息。Rust 把这些结果前移到 `PhysicalWindowPlan` 和已构造的 `WindowFunction` trait object，只保留列下标与 `OrderBy::descending`，内存初值也由函数方法提供。
-
-因此两者保持的是执行路径与帧装配意图，而不是完整类型体系或接线等价。Go 测试 `window_executor_test.go::TestWindowExecutorsBasic`、`TestBuildOrderedWindowExec` 和 `TestWindowReturnColumnNullableAttribute` 是对应行为来源；Rust 的 `window_executor_test.rs` 用简化 Chunk/计划重建了缓冲与流水线结果、有序强制路径和空帧结果约定。完整 SQL、表达式上下文、nullable 元数据以及 Go session/planner 集成不由本文件实现，不能从这些局部测试推导为 Rust 主链已支持。
+Go 测试 `window_executor_test.go::TestWindowExecutorsBasic`、`TestBuildOrderedWindowExec` 和 `TestWindowReturnColumnNullableAttribute` 是对应行为来源；Rust 的 `window_executor_test.rs` 用简化 Chunk/计划重建了缓冲与流水线结果、有序强制路径和空帧结果约定。
 
 ## 扩展指南
 
@@ -99,13 +95,3 @@ Rust 版本不是 Go 函数的逐参数翻译。Go `Build` 接收 `sessionctx.Co
 - 修改 RANGE 装配时，必须保留起止两端 `update_compare_cols` 的错误传播，并同时检查升序、降序、无 `ORDER BY`、多排序键和列越界场景。相关独立测试宜放在同目录 `window_executor_test.rs` 或 `window_test.rs`，不要嵌入生产源文件。
 - 修改内存初值或状态字段时，要与 `WindowMemoryTracker::open/close`、两种执行器的重置逻辑以及 `window_memory_test.rs` 同步；重点风险是重复计费、漏释放和输出缓冲移交后仍计费。
 - 若要接入真实 Rust planner/session 主链，应新增明确的适配层，把物理计划和表达式描述转换成此处的简化计划，而不是让本文件悄悄承担 SQL 解析或 planner 类型转换；同时需要补充生产调用边和端到端 SQL 测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录文件列表确认 Rust/Go 实现及独立测试均已索引。
-- RustCodeGraph `node --file pkg/executor/windows/builder.rs --offset 1 --limit 400`：读取目标文件完整 217 行，并报告 14 个符号以及 `pkg/executor/benchmark_test.rs`、`pkg/executor/windows/window_memory_test.rs` 两个直接文件使用者。
-- RustCodeGraph `query build_ordered --kind function`：定位 `builder.rs::build_ordered` 与其 Rust 回归测试；针对精确符号的 callers/callees 查询未返回可靠边，因此调用点以索引的 `explore` 结果和仓库 `rg` 交叉核对，不臆造缺失图边。
-- RustCodeGraph `explore "pkg/executor/windows FrameBound update_compare_cols WindowMemoryTracker GroupChecker PipelinedWindowExec WindowExec"`：核对 `build -> build_ordered`、内存测试调用、执行器生命周期、RANGE 比较列和处理器下游关系。
-- RustCodeGraph 文件节点读取：`window.rs` 的 `FrameBound`、`GroupChecker`、三种处理器、`WindowExec`、内存跟踪；`pipelined_window.rs` 的执行器字段及 `open/close` 生命周期。
-- 直接读取的非图/对照证据：`pkg/executor/windows/Cargo.toml`、`lib.rs`、`builder.go`、`window_executor_test.go`；Rust 独立测试 `window_executor_test.rs`、`window_memory_test.rs`，以及 `rg` 得到的 `pkg/executor/benchmark_test.rs` 构建调用点。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题；内容人工复核重点是：不把测试接线写成生产主链接线，不把 Go 中尚未迁入本构建器的 planner/session/表达式职责写成 Rust 已支持。

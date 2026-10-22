@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根在 `pkg/executor/lib.rs`，其中以 `pub mod inspection_result;` 公开本模块。`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 与 `[package.metadata.porting] go-package = "pkg/executor"` 表明它是 Go `pkg/executor` 的 Rust 移植组成部分。文件自身只使用 `std` 的有序集合、格式化和 `Arc`，没有直接引用 Cargo 中的其他 crate。
-
-它描述 `INFORMATION_SCHEMA.INSPECTION_RESULT` 背后的巡检规则引擎：从 `information_schema.cluster_config`、`cluster_info`、`cluster_log`、`cluster_systeminfo` 以及 `metrics_schema` 查询集群状态，生成固定九列的巡检结果。需要注意当前接线状态：Rust 仓库搜索只找到 `lib.rs` 的模块声明和两个独立测试模块，没有发现测试之外构造 `inspectionResultRetriever` 的 Rust 调用点；可确认的完整生产入口仍在 Go `pkg/executor/builder.go` 的 `TableInspectionResult` 分支。因此本文件应视为已经承载主要规则语义、但 Rust 生产执行主链接线尚未由本任务证实的移植模块，而不能据此宣称 Rust 服务已经实际使用它。
+`inspectionResultRetriever::retrieve` 负责一次性执行：建立巡检表缓存、合并测试快照、获取实例地址映射、按规则和检查项过滤、运行五类规则、稳定排序、补齐 `instance`/`statusAddress`，最终物化为 `Vec<Vec<datum>>`。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ RustCodeGraph 对本文件确认的核心下游边包括：`inspectionResultRetr
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/inspection_result.go`。Rust 保留了 Go 的五类 `inspectionRules`、过滤语义、稳定排序字段、地址补全、配置/版本/节点负载/严重错误/阈值规则、block-cache 45% 规则、Region 与 leader-drop 规则，以及九列最终输出。Go 的 `ruleChecker` interface 在 Rust 中改为 `ruleChecker` enum；Go 的 `sessionctx.Context`、restricted SQL executor、statement warning 和 session cache被收敛到 `inspectionDataSource` trait，便于独立测试和后续接线。
+Rust 保留了 Go 的五类 `inspectionRules`、过滤语义、稳定排序字段、地址补全、配置/版本/节点负载/严重错误/阈值规则、block-cache 45% 规则、Region 与 leader-drop 规则，以及九列最终输出。Go 的 `ruleChecker` interface 在 Rust 中改为 `ruleChecker` enum；Go 的 `sessionctx.Context`、restricted SQL executor、statement warning 和 session cache被收敛到 `inspectionDataSource` trait，便于独立测试和后续接线。
 
-Go `retrieve` 由 builder 的 Inspection Result 虚拟表分支实际构造，并通过 session variables 建立/释放 `InspectionTableCache`；Rust 将这些动作抽象为 begin/merge/end，但目前未找到与 Rust executor builder 的生产连接。Go 使用 `plannerutil.QueryTimeRange` 的格式化时间，Rust 使用字符串 `queryTimeRange`。Go 从 `infoschema.MetricTableMap` 获取标签，Rust由数据源的 `metric_labels` 提供。这些抽象必须由未来适配层保持同样的内部事务类型、warning 归属、时间格式和缓存一致性。
+Go `retrieve` 由 builder 的 Inspection Result 虚拟表分支实际构造，并通过 session variables 建立/释放 `InspectionTableCache`；Rust 将这些动作抽象为 begin/merge/end，但目前未找到与 Rust executor builder 的生产连接。Go 使用 `plannerutil.QueryTimeRange` 的格式化时间，Rust 使用字符串 `queryTimeRange`。
 
-测试覆盖也不对称：Go `inspection_result_test.go` 包含 `TestInspectionResult`、三组 threshold、critical error、node load 和 storage block cache 场景；Rust `inspection_result_test.rs` 与 `inspection_result_internal_test.rs` 目前只覆盖过滤/时间条件和容量解析，包括负数及 wrapping 乘法。由此只能确认局部辅助语义，不能将 Go 的端到端行为视为已由 Rust 测试验证。
+测试覆盖也不对称：Go `inspection_result_test.go` 包含 `TestInspectionResult`、三组 threshold、critical error、node load 和 storage block cache 场景；Rust `inspection_result_test.rs` 与 `inspection_result_internal_test.rs` 目前只覆盖过滤/时间条件和容量解析，包括负数及 wrapping 乘法。
 
 ## 扩展指南
 
@@ -92,12 +90,3 @@ Go `retrieve` 由 builder 的 Inspection Result 虚拟表分支实际构造，�
 - 修改 SQL 或输出字段：同步检查 `queryRow` 索引、`degree` 计算、instance/status address 所属列、detail 文案和 Go `inspection_result_test.go` 的期望。最终九列顺序是对外兼容面，不能只改单个规则。
 - 修改容量解析：同时更新 `inspection_result_test.rs` 和 `inspection_result_internal_test.rs`；若意图偏离负数转换或 wrapping 溢出，先确认并记录与 Go `strconv.ParseInt` 后 `uint64` 乘法的兼容影响。
 - 性能上重点关注配置差异的逐项明细查询、leader-drop 的逐地址明细查询、全量结果内存物化和动态标签聚合；新增规则应尽量复用一次巡检缓存，避免为相同表重复拉取数据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳 `1791342965170`；通过 `node --file pkg/executor/inspection_result.rs` 分段读取 1–1621 行，并查询 `inspectionResultRetriever`、`retrieve`、`checkRules` 的定义与调用边。图明确给出 Rust `checkRules` 对 `execute_sql`、`append_warning`、`enable`、`sql`、`result`、`item` 的调用。
-- Rust 源与模块：`pkg/executor/inspection_result.rs`、`pkg/executor/lib.rs`；仓库搜索确认模块声明和两个测试模块之外没有 Rust 使用 `inspectionResultRetriever`/`checkRules` 的生产位置。
-- crate 边界：`pkg/executor/Cargo.toml`，确认 crate 名 `astersql-executor`、根文件 `lib.rs`、Go 包映射 `pkg/executor`；本文件的 import 仅来自 `std`。
-- Go 对照与入口：`pkg/executor/inspection_result.go` 的类型、五类 inspect、`checkRules` 和 `retrieve`；`pkg/executor/builder.go` 的 `infoschema.TableInspectionResult` 分支。
-- 独立测试：Rust `pkg/executor/inspection_result_test.rs`、`pkg/executor/inspection_result_internal_test.rs`；Go `pkg/executor/inspection_result_test.go` 的七个顶层测试覆盖总规则、三组阈值、严重错误、节点负载和 block cache。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令检查目标文件存在且恰有十一个固定二级标题，并人工复核当前接线限制、资源清理、错误降级和测试覆盖差异均有源码依据。

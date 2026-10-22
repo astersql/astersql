@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-tikv` crate。crate 的入口 `pkg/lightning/tikv/lib.rs` 以私有模块 `local_sst_writer` 装载本文件，再通过 `pub use local_sst_writer::*` 公开其公共符号；`pkg/lightning/tikv/Cargo.toml` 用 `[package.metadata.porting] go-package = "pkg/lightning/tikv"` 指明对应的 Go 包。
-
-它处于 Lightning 写入 TiKV write column family（CF）的本地文件边界：调用者按键序提供用户键和短值，`WriteCFWriter` 将其转换成 TiKV MVCC/write-CF 编码，关闭时生成可被 RocksDB/TiKV 工具识别的 BlockBasedTable SST。文件还包含一个面向验证和调试的读取器 `read_local_sst`，用于把本实现写出的记录及表属性读回；当前仓库搜索到的 Rust 调用均位于独立测试 `pkg/lightning/tikv/local_sst_writer_test.rs`，没有发现生产模块直接构造 `WriteCFWriter` 的证据，因此不能把它描述为已经接入 Lightning 生产导入主链。
+处于 Lightning 写入 TiKV write column family（CF）的本地文件边界：调用者按键序提供用户键和短值，`WriteCFWriter` 将其转换成 TiKV MVCC/write-CF 编码，关闭时生成可被 RocksDB/TiKV 工具识别的 BlockBasedTable SST。
 
 ## 核心职责
 
@@ -80,13 +78,9 @@ crate 内依赖来自 `crate::{InternalKey, MvccPropCollector, RangePropertiesCo
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/tikv/local_sst_writer.go`，对应测试是 `pkg/lightning/tikv/local_sst_writer_test.go`。
+实现方式不同：Go `writeCFWriter` 持有 `pebble/sstable.Writer`，`set` 立即调用 `Writer.Set`，`close` 直接调用 Pebble `Close`，并由 Pebble 负责 ZSTD、filter、properties 和 SST 格式。Rust 没有直接依赖 Pebble/RocksDB，而是缓存记录并自行编码 SST；`BlobFileSizeCollector` 仅以属性列表名称体现，没有独立 collector 状态；Rust 额外提供受限的 `read_local_sst`。
 
-语义保持部分包括：短值上限为 255；MVCC key 使用 `z`、TiDB memcomparable bytes 和 `^ts` big-endian 后缀；write value 使用 `P/uvarint(ts)/v/len/value`；目标 data block size 为 32 KiB；Bloom policy 目标为 10 bits；collector 包含 MVCC、Range 和名为 `BlobFileSizeCollector` 的标识；对外保留 `newWriteCFWriter`、`set/Set`、`close/Close` 风格入口。
-
-实现方式不同：Go `writeCFWriter` 持有 `pebble/sstable.Writer`，`set` 立即调用 `Writer.Set`，`close` 直接调用 Pebble `Close`，并由 Pebble 负责 ZSTD、filter、properties 和 SST 格式。Rust 没有直接依赖 Pebble/RocksDB，而是缓存记录并自行编码 SST；`BlobFileSizeCollector` 仅以属性列表名称体现，没有独立 collector 状态；Rust 额外提供受限的 `read_local_sst`。Go 测试中的真实 TiKV import-service 比较是手工开关的集成测试，Pebble 与 TiKV 样例 SST 的完整属性对比也处于 skip/注释状态；Rust 测试覆盖的是本地自产自读、magic、编码、部分属性和错误路径，不能据此宣称逐字节等价于 Go/Pebble/TiKV 输出。
-
-特别需要注意，Go writer 明确配置 `rocks.ZstdCompression`，Rust properties 也声明 ZSTD，但 Rust `write_block` 当前写未压缩 block type 0。新增兼容功能时应以真实 RocksDB/Pebble/TiKV reader 的结果为准，不要仅依靠 `read_local_sst` 的自产自读验证。
+特别需要注意，Go writer 明确配置 `rocks.ZstdCompression`，Rust properties 也声明 ZSTD，但 Rust `write_block` 当前写未压缩 block type 0。
 
 ## 扩展指南
 
@@ -97,12 +91,3 @@ crate 内依赖来自 `crate::{InternalKey, MvccPropCollector, RangePropertiesCo
 - 降低内存占用需要重构 `WriteCFWriter.records` 和 `write_sst` 为增量 block 写入，同时保留 collector、排序校验、最后索引键、Bloom hash 与标准属性所需统计。应专门验证大输入、失败清理和 close 中途 I/O 错误。
 - 强化落盘原子性应采用同目录临时文件、成功 `sync_all` 后 rename，并明确目录同步及失败清理策略；需添加独立故障测试。不要把 Rust 测试写回生产源文件，继续通过 `lib.rs` 的 `#[path = "local_sst_writer_test.rs"]` 挂载。
 - 若要接入生产 Lightning 路径，应先找到真实的 KV 排序/导入边界，明确目标 TiKV/RocksDB 版本和 SST contract，再增加生产调用与端到端 ingest 验证；当前仓库证据不足以证明已有接线。
-
-## 验证依据
-
-- 目标源码：`pkg/lightning/tikv/local_sst_writer.rs`，核对了全部 646 行、公共/私有符号、常量、编码、写入与读取分支；文件无条件编译分支。
-- crate 边界：`pkg/lightning/tikv/Cargo.toml`、`pkg/lightning/tikv/lib.rs`；目标包目录没有 `doc.go`。
-- 直接依赖：`pkg/lightning/tikv/prop_collector.rs` 中 `MvccPropCollector::{Add, Finish}`、`RangePropertiesCollector::{Add, Finish}`，以及 `pkg/lightning/tikv/tikv.rs` 中 `TikvError`。
-- Go 对照：`pkg/lightning/tikv/local_sst_writer.go`；Go 测试：`pkg/lightning/tikv/local_sst_writer_test.go`；Rust 独立测试：`pkg/lightning/tikv/local_sst_writer_test.rs`。
-- RustCodeGraph：`status` 显示目标仓库索引包含 11,467 个文件，`files --filter pkg/lightning/tikv` 确认目标实现、Go 对照和测试均已索引；`node --file ... --offset ...` 读取目标全貌；`query` 定位 `WriteCFWriter`、`write_sst`、`read_local_sst`、`MvccPropCollector`、`RangePropertiesCollector`、`TikvError`；`callees` 验证 `set`、`close/write_sst` 和读取器的内部调用边。精确 caller 查询未返回生产调用，随后以仓库 `rg` 核对，Rust 引用仅见本文件和 `local_sst_writer_test.rs`。
-- 测试证据：`TestIntegrationTest` 检查行数和 range index；`TestProducesRocksDbSst` 检查 RocksDB magic；`TestPebbleWriteSST` 检查顺序、固定编码和 256 字节拒绝；`TestPebbleWriteSSTManyKeys` 覆盖 10,000 条记录与多 data-block；`TestDebugReadSST` 覆盖坏文件和乱序键。按任务要求这是纯文档分析，没有运行 Cargo 或测试。

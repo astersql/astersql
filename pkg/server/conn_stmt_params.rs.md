@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-server` crate（见 `pkg/server/Cargo.toml`），由 `pkg/server/lib.rs` 以公开模块 `pub mod conn_stmt_params` 挂载。它把 MySQL `COM_STMT_EXECUTE` 参数区拆成逐参数的 `BinaryParam`：识别 null bitmap、两字节类型描述、定长或 length-encoded 值，并优先采用 `COM_STMT_SEND_LONG_DATA` 已绑定的字节。
-
-需要区分“模块存在”和“生产主链已接线”：RustCodeGraph 对 `conn_stmt_params.rs::parseBinaryParams` 的 Rust 调用者只找到 `pkg/server/conn_stmt_params_test.rs` 中的测试；当前 Rust `COM_STMT_EXECUTE` 主链是 `pkg/server/conn_stmt.rs::handleStmtExecute -> ParseExecuteParams -> parse_params`，使用该文件内另一套 `BinaryParam` 与解析逻辑。因此本文件是可公开调用、经过独立单测的 Go 逻辑移植，但目前不是 Rust 服务端执行预处理语句时实际经过的解析器。代码图把 Go `pkg/server/conn_stmt.go::handleStmtExecute` 列入同名符号查询结果，属于跨语言同名关联，不能视为 Rust 调用边。
+未提供 decoder 时用 `NewInputDecoder("utf8")`，其实现会直通字节。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/server/conn_stmt_params.go`，主要结构高度一致：bound 参数优先；bitmap NULL 次之；两字节类型含 unsigned 标志；相同类型宽度表；日期/时间单字节长度；BLOB/NEWDECIMAL 与文本类的 length-encoded 长度；文本字符集转换；未知类型与畸形包分流。`takeBinaryParamValue` 的 Rust `usize::try_from + checked_add + get` 对应 Go 的“剩余长度先校验再切片”，并覆盖 Go 回归测试所关注的超大 length-encoded 长度不得 panic。
-
 存在以下可见差异：
 
 - Rust 入口额外预检 `bound_params.len()` 和 null bitmap 容量，避免 Go 版本依赖上层保证时可能出现的索引越界。
@@ -95,14 +91,3 @@
 若目标是改变实际 Rust `COM_STMT_EXECUTE` 行为，仅修改本文件不足：必须同时审查 `pkg/server/conn_stmt.rs::{ParseExecuteParams, parse_params, read_length_encoded_int}` 及其独立测试。更稳妥的演进方向是让生产链复用一个解析实现和一个 `BinaryParam` 定义，但这属于跨文件重构，不是本说明任务的范围；在实施前需要验证 long-data 清理、旧类型数组复用、游标关闭和字符集来源等上层契约。
 
 性能风险主要来自每参数 `Vec` 分配/复制和 bound long-data 克隆；兼容风险集中在类型码分组、NULL 优先级、decoder 适用类型及错误映射。任何接线变更都应增加一条从 `COM_STMT_EXECUTE` 数据包到执行参数的集成回归，而不能只依赖本文件单测。
-
-## 验证依据
-
-- 源码与装配：`pkg/server/conn_stmt_params.rs`、`pkg/server/lib.rs`、`pkg/server/Cargo.toml`。
-- Rust 直接测试：`pkg/server/conn_stmt_params_test.rs`，覆盖安全切片、定宽数值与 unsigned、bitmap/类型 NULL、字符串/BLOB/NEWDECIMAL、bound long-data、UTF-8/GBK decoder、截断包和未知类型。
-- 当前 Rust 生产入口：`pkg/server/conn_stmt.rs` 中 `handleStmtExecute`、`ParseExecuteParams`、`parse_params`、`read_length_encoded_int`。
-- Go 对照与调用者：`pkg/server/conn_stmt_params.go`、`pkg/server/conn_stmt.go::handleStmtExecute`。
-- Go 测试：`pkg/server/conn_stmt_params_test.go` 中 `TestParseExecArgs`、`TestParseExecArgsMalformedLengthEncodedParam`、`TestParseExecArgsAndEncode`，用于核对类型转换边界、超大/截断长度不得 panic 以及 GBK 转换。
-- decoder 实现：`pkg/server/internal/util/util.rs::{InputDecoder, NewInputDecoder, DecodeInput}`，用于确认直通字符集、GBK/GB18030/latin1 映射和解码失败回退原字节。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；限定 `--file pkg/server/conn_stmt_params.rs` 的 `query/node/callers/callees` 验证了公开符号、内部调用边和仅测试侧 Rust callers；对 `pkg/server/conn_stmt.rs` 的查询验证当前生产链走 `ParseExecuteParams -> parse_params`。跨语言同名 caller 结果已与源码区分，未作为 Rust 接线证据。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付时以固定十一章节结构检查、路径/符号人工复核和 Git diff 自审作为验证。

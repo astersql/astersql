@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-sessionctx-variable` crate（见 `pkg/sessionctx/variable/Cargo.toml`），保存已经从系统变量注册表移除、但仍需要被识别并给出迁移说明的变量名。crate 根 `pkg/sessionctx/variable/lib.rs` 以 `pub mod removed` 暴露整个模块，并单独再导出 `CheckSysVarIsRemoved`。
-
-它位于“查不到正常系统变量”之后的兼容诊断路径，而不是系统变量的正常注册、读取或写入路径。当前 Rust 生产调用证据位于 `pkg/planner/core/expression_rewriter.rs::rewriteSystemVariable`：表达式重写器在 `GetSysVar` 返回空时先调用 `CheckSysVarIsRemoved`，从而把已移除变量与普通未知变量区分开。仓库内没有找到 Rust SET 执行路径对 `IsRemovedSysVar` 的生产调用；Go 对照实现则在 `pkg/executor/set.go::SetExecutor.setSysVariable` 中使用它实现 SET 场景的兼容忽略。
+该模块只负责识别和解释，不注册变量、不保存变量值，也不决定 SET、SHOW 或 SELECT 各自如何处理结果；这些策略由上层调用者决定。
 
 ## 核心职责
 
@@ -69,11 +67,9 @@ Rust 实现返回普通 `String`。Go 的 `CheckSysVarIsRemoved` 使用 `ErrVari
 
 ## 与 Go 版本的对应关系
 
-`pkg/sessionctx/variable/removed.go` 是直接语义来源。两边当前包含相同的 13 组变量名与原因，并都提供 `IsRemovedSysVar` 和 `CheckSysVarIsRemoved`。Rust 用静态元组切片替代 Go 的 `map[string]string`：结果一致，但 Go 平均为常数时间查找，Rust 当前为线性查找。
+Rust 用静态元组切片替代 Go 的 `map[string]string`：结果一致，但 Go 平均为常数时间查找，Rust 当前为线性查找。
 
-`pkg/sessionctx/variable/removed_test.rs::test_removed_opt` 对齐 Go 的 `pkg/sessionctx/variable/removed_test.go::TestRemovedOpt`：仍支持的 `TiDBEnable1PC` 不报错且不属于移除表，`tidb_enable_alter_placement` 报错且属于移除表。Rust 的外部测试还检查 streaming 的原因文本。
-
-应用接线尚有两个可见差异：第一，Go 的 `pkg/executor/set.go::SetExecutor.setSysVariable` 对移除变量执行 SET 时成功忽略，仓库内未找到 Rust 对应生产调用；第二，Go 返回标准 8136 数据库错误，Rust 当前仅返回字符串。SELECT/系统变量表达式路径两边都会先把名称转成小写，正常注册表未命中后再用本模块生成比“未知变量”更具体的错误；对应实现分别是 Go 与 Rust 的 `rewriteSystemVariable`。
+应用接线尚有两个可见差异：第一，Go 的 `pkg/executor/set.go::SetExecutor.setSysVariable` 对移除变量执行 SET 时成功忽略，仓库内未找到 Rust 对应生产调用；第二，Go 返回标准 8136 数据库错误，Rust 当前仅返回字符串。
 
 ## 扩展指南
 
@@ -82,13 +78,3 @@ Rust 实现返回普通 `String`。Go 的 `CheckSysVarIsRemoved` 使用 `ErrVari
 测试必须放在独立测试文件，不要嵌入 `removed.rs`。至少同步扩展 `pkg/sessionctx/variable/removed_test.rs` 与 Go 的 `removed_test.go`；若修改错误文本、大小写或公共可见性，还应更新 `pkg/sessionctx/variable/tests/main_test.rs` 和相关的 `error_1_aster_unit_test.rs` 断言。应覆盖命中、未命中、原因文本和大小写边界。
 
 若要补齐 Go SET 的 parse-but-ignore 行为，应在 Rust SET 执行器的“正常系统变量不存在”分支接线，而不是让本文件自行吞掉错误；同时需要执行器级独立回归测试，确认 SET 被忽略而 SELECT 仍报具体错误。若要补齐标准错误兼容，应评估将返回类型改为项目错误类型并使用 `error.rs::ErrVariableNoLongerSupported`，同时检查 planner 的 `.map(errors::New)` 适配及错误码断言。两类改动都属于运行时行为修改，不是简单的数据表扩展。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/sessionctx/variable` 确认目标源、独立测试和 Go 对照均在索引中。
-- RustCodeGraph `explore "pkg/sessionctx/variable/removed.rs RemovedSysVarError check_removed_sys_var"` 与 `node --file pkg/sessionctx/variable/removed.rs`：核对 77 行完整实现、三个公开符号，并得到测试调用关系。
-- RustCodeGraph `node --file pkg/planner/core/expression_rewriter.rs --offset 3345 --limit 65`：核对生产调用顺序、调用前小写化、移除错误与未知变量错误的分流。
-- RustCodeGraph 对 `pkg/sessionctx/variable/tests/main_test.rs`、`error_1_aster_unit_test.rs` 的节点读取：核对外部可见性、原因文本和大小写边界。
-- 直接读取 `pkg/sessionctx/variable/Cargo.toml`、`lib.rs`、`removed.go`、`removed_test.rs`、`removed_test.go`、`error.rs`，以及 Go 的 `pkg/executor/set.go` 和 `pkg/planner/core/expression_rewriter.go`：核对 crate 边界、再导出、Go 映射/错误码、SET 与 SELECT 语义和测试对应关系。
-- 仓库范围符号搜索 `REMOVED_SYS_VARS|IsRemovedSysVar|CheckSysVarIsRemoved|removed::`：确认当前可见调用位置，并发现 Rust planner 生产调用与 Go SET 调用的接线差异。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务指定的标题计数命令验证文件存在且恰好包含 11 个固定二级章节。

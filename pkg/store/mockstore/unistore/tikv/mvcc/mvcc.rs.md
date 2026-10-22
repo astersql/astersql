@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-unistore-tikv-mvcc` crate 中的基础 MVCC 数据格式层，源码由同目录 `lib.rs` 以 `pub mod mvcc` 挂载并再次 `pub use mvcc::*` 导出。它不执行事务调度、持久化或锁等待，而是定义 mock TiKV/UniStore 在这些路径间交换的三类二进制契约：内存锁 `Lock`、版本条目的 `DBUserMeta`，以及 Rollback/`Op_Lock` 使用的额外事务状态键。
-
-crate 边界由 `pkg/store/mockstore/unistore/tikv/mvcc/Cargo.toml` 确定；本文件直接使用本 crate 的 `codec` 适配层、带 `protobuf-codec` feature 的 `kvproto`、`protobuf` 枚举转换和 `hex`。工作区根 `Cargo.toml` 将该 crate 注册为 `facade_store_mockstore_unistore_tikv_mvcc`，`pkg/lib.rs` 再把它放入总 facade。直接依赖还见于 `tikv/dbreader`、`tikv/kverrors`、`tikv/server`、父级 `tikv` 和可选的 `cophandler` Cargo 声明。
+那些策略由调用方实现；例如 Rust 的 `dbreader/db_reader.rs` 使用 `DBUserMeta::{StartTS, CommitTS}` 构造 `MvccWrite` 并执行 RC CheckTS 冲突判断，相邻 `tikv.rs::EncodeLockCFValue` 消费 `Lock` 生成 TiKV Lock CF 格式。
 
 ## 核心职责
 
@@ -83,11 +81,11 @@ Go 对照显示完整应用主链的预期位置：`tikv/write.go` 调用 `Marsh
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/store/mockstore/unistore/tikv/mvcc/mvcc.go`。Rust 保留了 Go 的公开命名、字段和整体字节布局：锁头为 40 字节小端格式，primary/secondaries/value 顺序一致，user meta 是两个小端 `u64`，额外状态键通过首字节偏移隔离，RPC 字段映射和字符串模板也相同。
+Rust 保留了 Go 的公开命名、字段和整体字节布局：锁头为 40 字节小端格式，primary/secondaries/value 顺序一致，user meta 是两个小端 `u64`，额外状态键通过首字节偏移隔离，RPC 字段映射和字符串模板也相同。
 
 两版实现存在有意的语言级差异。Go 用 `unsafe.Pointer` 把头直接映射到内存，Rust 用显式偏移读取/写入并固定清零 padding，从而不依赖宿主 ABI；Go 的 `Lock` 匿名嵌入 `LockHdr`，Rust 使用具名 `LockHdr` 字段；Go 解码先整体 clone 锁体后让各切片共享该 backing array，Rust 分别分配 primary、每个 secondary 和 value；Go `ToLockInfo` 返回指针，Rust 返回拥有型值并复制字段；Go 的无效额外键返回 nil，Rust 表示为 `None`。
 
-当前 Rust 迁移并非完整主链等价接线。独立 crate 和格式测试已经存在，`DBUserMeta` 已被 Rust `dbreader` 消费，`Lock` 已被同 crate TiKV 编码器消费；但仓库文本检索没有发现 Rust 生产代码直接调用本文件的 `DecodeLock`、`MarshalBinary`、`ToLockInfo` 或额外状态键函数。这些入口当前主要由 `mvcc/migration_aster_unit_test.rs` 验证，Go 文件仍提供完整事务主链的行为参照。
+当前 Rust 迁移并非完整主链等价接线。独立 crate 和格式测试已经存在，`DBUserMeta` 已被 Rust `dbreader` 消费，`Lock` 已被同 crate TiKV 编码器消费；但仓库文本检索没有发现 Rust 生产代码直接调用本文件的 `DecodeLock`、`MarshalBinary`、`ToLockInfo` 或额外状态键函数。
 
 ## 扩展指南
 
@@ -98,12 +96,3 @@ Go 对照显示完整应用主链的预期位置：`tikv/write.go` 调用 `Marsh
 强化错误处理时，建议新增返回 `Result` 的严格解析入口，再让现有 Go 兼容函数决定是否继续 panic，避免静默改变调用方契约。必须覆盖短锁头、截断 primary、截断 secondary 长度/内容、数量不一致、超长 secondary、短 `DBUserMeta`、短时间戳键与未知 `Op`。Rust 单元测试应继续放在同目录独立测试文件 `migration_aster_unit_test.rs`（或新的独立 `*_test.rs`），不要内嵌到本生产文件。
 
 性能方面，增加字段或校验时需留意 `DecodeLock` 的多次分配、`ToLockInfo` 的深复制以及由不可信 `SecondaryNum` 驱动的容量分配。兼容性方面，任何 40 字节头、padding、大小端、字段顺序或额外键首字节规则的变化都会影响已有数据和 Go/Rust 互操作。
-
-## 验证依据
-
-- 目标源码：`pkg/store/mockstore/unistore/tikv/mvcc/mvcc.rs`，完整读取 263 行并枚举其常量、结构、私有头编解码方法、公开函数与 impl；该文件没有条件编译项。
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/store/mockstore/unistore/tikv/mvcc` 列出本 crate；`node --file .../mvcc.rs --offset 1 --limit 500` 返回完整源码；对 `DecodeLock`、`MarshalBinary`、`ToLockInfo`、`DecodeKeyTS`、`NewDBUserMeta`、`EncodeExtraTxnStatusKey`、`DecodeExtraTxnStatusKey` 的 `query` 同时定位 Rust 与 Go 定义。图中确认两条内部调用边，精确 callers 查询没有返回 Rust 生产上游，随后由 `rg` 补查未覆盖引用。
-- crate 与装配：`pkg/store/mockstore/unistore/tikv/mvcc/Cargo.toml`、同目录 `lib.rs`、父级 `tikv/Cargo.toml`/`lib.rs`、`tikv/dbreader/Cargo.toml`/`lib.rs`、根 `Cargo.toml` 与 `pkg/lib.rs`。
-- Rust 直接证据：`pkg/store/mockstore/unistore/tikv/dbreader/db_reader.rs`、`pkg/store/mockstore/unistore/tikv/mvcc/tikv.rs`、`pkg/store/mockstore/unistore/tikv/write.rs`。
-- Go 对照与调用证据：`pkg/store/mockstore/unistore/tikv/mvcc/mvcc.go`、`pkg/store/mockstore/unistore/tikv/write.go`、`pkg/store/mockstore/unistore/tikv/mvcc.go`、`pkg/store/mockstore/unistore/tikv/server.go`、`pkg/store/mockstore/unistore/tikv/dbreader/db_reader.go`。
-- 独立测试：`pkg/store/mockstore/unistore/tikv/mvcc/migration_aster_unit_test.rs` 覆盖锁头固定布局与往返复制、`LockInfo`/字符串映射、user meta、降序时间戳与额外状态键；`pkg/store/mockstore/unistore/tikv/dbreader/migration_aster_unit_test.rs` 覆盖 `NewDBUserMeta` 在读取路径中的使用。任务为纯文档分析，按计划未运行 Cargo。

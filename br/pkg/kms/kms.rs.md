@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`br/pkg/kms/kms.rs` 是 `astersql-br-pkg-kms` crate 的公共抽象层：它不创建云客户端，也不执行厂商特有的解密协议，而是定义取消上下文 `Context` 和统一的密钥管理服务接口 `Provider`。crate 入口 `br/pkg/kms/lib.rs` 以 `pub mod kms` 装载本文件，并通过 `pub use kms::*` 将两个符号提升到 crate 根；上层因此可以写 `astersql_br_pkg_kms::{Context, Provider}`，无需依赖内部模块路径。
-
-该 crate 的边界由 `br/pkg/kms/Cargo.toml` 确认：包名为 `astersql-br-pkg-kms`，库入口是 `lib.rs`，`tokio-util = "0.7"` 提供本文件唯一直接依赖的 `CancellationToken`。同一 manifest 中的 AWS、GCP、Tokio 和 TLS 依赖由相邻厂商实现使用，不代表本文件自身执行网络 I/O。
+同一 manifest 中的 AWS、GCP、Tokio 和 TLS 依赖由相邻厂商实现使用，不代表本文件自身执行网络 I/O。
 
 ## 核心职责
 
@@ -76,15 +74,13 @@ trait 的方法接收方式表达生命周期约束：解密与读取名称只�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `br/pkg/kms/kms.go` 只定义 `Provider`：`DecryptDataKey(context.Context, []byte) ([]byte, error)`、`Name() string`、`Close()`。Rust `Provider` 保留相同的三方法职责，但有以下明确差异：
+Rust `Provider` 保留相同的三方法职责，但有以下明确差异：
 
 - Go 直接接受标准库 `context.Context`；Rust 增设本地 `Context`，当前只封装取消 token，不支持 Go context 的 deadline、value 和带 cause 取消。
 - Go 用 `error` 保留动态错误链；Rust 当前压缩为 `String`，结构化错误和 cause 不跨 trait 边界。
 - Go `Name` 返回拥有的字符串值；Rust 返回借用 `&str`，现有实现使用常量，避免分配。
 - Go 接口不在声明处体现可变关闭；Rust `Close(&mut self)` 要求所有者提供可变访问。
 - Rust trait 本身不强制 `Send`；上层构造 `KmsBackend` 时额外要求 `Box<dyn Provider + Send>`。
-
-Rust 的 `Context` 是为了在同步 trait 与异步云 SDK 之间复现 Go 取消传播的局部适配，不应被描述为完整的 `context.Context` 等价物。`br/pkg/kms/kms_test.rs` 验证取消能到达注入的 AWS 客户端；`br/pkg/encryption/master_key/kms_backend_test.rs` 验证克隆共享状态并能停止重试。
 
 ## 扩展指南
 
@@ -97,14 +93,3 @@ Rust 的 `Context` 是为了在同步 trait 与异步云 SDK 之间复现 Go 取
 5. 测试逻辑保持在独立文件。至少扩展 `br/pkg/kms/kms_test.rs` 验证取消传播，并在厂商专属 `*_test.rs` 或 `br/pkg/kms/parity_test.rs` 验证名称、请求参数、错误映射和关闭行为；不要把测试嵌入 `kms.rs`。
 
 若要扩展 `Context` 支持 deadline 或取消原因，需同时修改两个 SDK 适配器、`KmsBackend::with_retry` 的停止判定和独立回归测试，并评估与 Go `context.Context` 的可观察语义差异。若把错误从 `String` 改为结构化类型，则是跨 crate 的接口变更，必须同步所有实现、trait 对象调用者和测试假实现。
-
-## 验证依据
-
-- 目标源码：`br/pkg/kms/kms.rs`，确认 `Context` 的四个方法和 `Provider` 的三个方法，无条件编译项或其他状态。
-- crate 边界：`br/pkg/kms/lib.rs`（模块声明与公开重导出）、`br/pkg/kms/Cargo.toml`（库入口、`tokio-util` 及云 SDK 依赖）、`br/pkg/encryption/master_key/Cargo.toml`（上层路径依赖）。
-- Go 对照：`br/pkg/kms/kms.go`，确认三方法公共契约及 Rust 局部适配差异。
-- 实现方：`br/pkg/kms/aws.rs::{AwsSdkClient::Decrypt, impl Provider for AwsKms<C>}` 与 `br/pkg/kms/gcp.rs::{GcpSdkClient::Decrypt, impl Provider for GcpKms<C>}`，确认 token 消费、解密委托、名称和关闭行为。
-- 上游链路：`br/pkg/encryption/master_key/master_key.rs::{createCloudBackend, CreateKmsBackendWithProvider}` 与 `br/pkg/encryption/master_key/kms_backend.rs::{KmsBackend::DecryptWithContext, KmsBackend::Close, with_retry}`。
-- 独立测试：`br/pkg/kms/kms_test.rs::provider_propagates_cancellation_context_to_client`；`br/pkg/encryption/master_key/kms_backend_test.rs::test_kms_backend_decrypt_propagates_context_cancellation`；`br/pkg/kms/parity_test.rs` 中的 Provider 多态、AWS/GCP 请求与关闭契约测试。
-- RustCodeGraph：运行了 `status`、`files --filter br/pkg/kms`、针对 `Provider`/`Context`/`DecryptDataKey` 的 `query`、`node` 与 `explore`；索引显示 7032 个 Rust 文件，并给出 `KmsBackend::DecryptWithContext → Provider::DecryptDataKey`、AWS/GCP 实现委托及取消测试调用边。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构检查要求文档存在且固定二级标题恰好为 11 个。

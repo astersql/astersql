@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-ddl-mock`，crate 根在 `pkg/ddl/mock/lib.rs` 中声明 `pub mod schema_loader_mock` 并公开再导出本文件的符号。`pkg/ddl/mock/Cargo.toml` 表明它只直接依赖 `astersql-ddl-systable`，后者提供生产接口 `SchemaLoader` 与错误类型 `SchemaLoaderError`；主 DDL crate 则在 `pkg/ddl/Cargo.toml` 中把本 crate 列为开发依赖。因此它是 DDL 测试基础设施，不参与生产 InfoSchema 的真实加载。
-
-在完整运行链中，`pkg/session/runtime/normal_ddl_service.rs` 持有 `Arc<dyn astersql_ddl::SchemaLoader>`，成为 DDL owner 后把加载器交给 `JobScheduler::must_reload_schemas_with`；该方法反复调用 `SchemaLoader::reload`，直到成功或观察到取消。本文件实现同一个 trait，使测试可以在不访问真实元数据存储和 InfoSchema 缓存的情况下观察这条依赖注入边界。它本身不创建 DDL job、不推进 schema state、不执行 reorg，也不更新持久化元数据。
+提供 `SchemaLoader` 的测试 mock，将 `reload()` 调用转换为可录制、消费和校验的类型化期望。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/mock/schema_loader_mock.go`。Go 文件由 MockGen 针对 `pkg/ddl/ddl.go` 的 `SchemaLoader.Reload() error` 生成：`NewMockSchemaLoader` 对应 `new_mock_schema_loader`，`EXPECT()` 对应 `expect()`，`ISGOMOCK()` 对应 `is_mock()`，基础 `Reload()` 与 recorder 的 `Reload()` 分别对应 Rust trait 实现和 `MockSchemaLoaderRecorder::reload`。
+Go 的真实使用证据在 `pkg/ddl/job_scheduler_test.go::TestMustReloadSchemas`：分别录制直接成功、失败后重试成功、失败并取消三种结果，验证 owner schema 重载门槛；Rust 调度器对应行为由 `pkg/ddl/job_scheduler_test.rs::must_reload_schemas_succeeds_retries_and_stops_when_cancelled` 验证，不过该测试使用更简单的 `SequenceLoader`，本 mock 的独立测试集中在前述两个 `*_unit_test.rs` 文件。
 
-核心语义保持一致：默认不强制调用顺序，未声明的调用失败，调用结果由测试预设，且 `Reload` 没有参数。Go 的真实使用证据在 `pkg/ddl/job_scheduler_test.go::TestMustReloadSchemas`：分别录制直接成功、失败后重试成功、失败并取消三种结果，验证 owner schema 重载门槛；Rust 调度器对应行为由 `pkg/ddl/job_scheduler_test.rs::must_reload_schemas_succeeds_retries_and_stops_when_cancelled` 验证，不过该测试使用更简单的 `SequenceLoader`，本 mock 的独立测试集中在前述两个 `*_unit_test.rs` 文件。
-
-Rust 版本不是 GoMock DSL 的完整复刻。Go recorder 返回 `*gomock.Call`，可继续配置 `Return`、次数、`After`/`InOrder` 和回调，且 `gomock.Controller` 与 `testing.T` 集成完成期望校验；Rust recorder 直接接收最终 `Result`，一次录制只代表一次调用，没有顺序约束、次数 DSL、回调或析构自动校验。Rust 还用统一 `ReturnValue` 做运行时返回类型检查，并用 `Mutex` 中毒 panic 表达内部状态损坏。这些差异是当前代码事实，扩展时不应假定完整 GoMock 能力已经存在。
+Go recorder 返回 `*gomock.Call`，可继续配置 `Return`、次数、`After`/`InOrder` 和回调，且 `gomock.Controller` 与 `testing.T` 集成完成期望校验；Rust recorder 直接接收最终 `Result`，一次录制只代表一次调用，没有顺序约束、次数 DSL、回调或析构自动校验。Rust 还用统一 `ReturnValue` 做运行时返回类型检查，并用 `Mutex` 中毒 panic 表达内部状态损坏。这些差异是当前代码事实，扩展时不应假定完整 GoMock 能力已经存在。
 
 ## 扩展指南
 
@@ -96,15 +92,3 @@ Rust 版本不是 GoMock DSL 的完整复刻。Go recorder 返回 `*gomock.Call`
 若要增加调用次数、顺序、回调或更详细诊断，优先扩展 `ExpectedCall`/`Controller` 的通用协议并检查 `systable_manager_mock.rs` 的兼容性，因为两个 mock 共享这些类型。严格顺序不应破坏当前“搜索所有未满足期望”的默认行为；可考虑显式的可选约束。新增调用记录查询时，应返回快照或只读摘要，避免把内部锁暴露给测试。
 
 兼容风险主要是方法名字符串和返回类型映射：`"Reload"` 必须与 recorder 完全一致，生产 trait 错误必须继续保留可诊断文本。并发扩展需保持一次期望最多消费一次，不能在持锁期间执行用户回调以免重入死锁。性能风险当前很低；只有大量期望时，`Vec::position` 加 `Vec::remove` 的线性成本才值得重新设计。任何生产接口变化还需同步 Go 对照与 owner 重试测试，不能只让 mock 编译通过。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，覆盖本仓库 Rust 与 Go 文件。
-- RustCodeGraph `node --file pkg/ddl/mock/schema_loader_mock.rs`：读取本文件 1–220 行，核对全部枚举、结构体、函数、impl 与无条件编译事实。
-- RustCodeGraph `query MockSchemaLoader --kind struct`、`query new_mock_schema_loader --kind function`：定位 Rust/Go 同名结构及 Rust 构造入口。
-- RustCodeGraph `query SchemaLoader --kind trait` 与 `node pkg/ddl/systable/schema_loader.rs::SchemaLoader`：确认生产签名及 `Send + Sync` 约束。
-- RustCodeGraph `node --file pkg/ddl/job_scheduler.rs`：确认 `must_reload_schemas_with` 的成功、取消、重试与休眠边界。`callers`/`callees` 精确查询未返回可用边文本，因此调用点又由下列直接引用检索核实，未据此臆造图边。
-- crate/模块证据：`pkg/ddl/mock/Cargo.toml`、`pkg/ddl/mock/lib.rs`、`pkg/ddl/Cargo.toml`、根 `Cargo.toml`。
-- Rust 调用与测试证据：`pkg/ddl/mock/mock_aster_unit_test.rs`、`pkg/ddl/schema_loader_contract_aster_unit_test.rs`、`pkg/ddl/job_scheduler.rs`、`pkg/ddl/job_scheduler_test.rs`、`pkg/session/runtime/normal_ddl_service.rs`。
-- Go 对照证据：`pkg/ddl/mock/schema_loader_mock.go`、`pkg/ddl/ddl.go::SchemaLoader`、`pkg/ddl/job_scheduler.go::mustReloadSchemas`、`pkg/ddl/job_scheduler_test.go::TestMustReloadSchemas`。
-- 本任务是纯文档分析，未运行 Cargo；交付前仅执行任务规定的 11 章节结构校验，并人工检查唯一新增生产物、源码链接、事实限定和独立测试指引。

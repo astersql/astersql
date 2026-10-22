@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-ingestor-globalsort`，由同目录的 [`lib.rs`](./lib.rs) 通过 `pub mod kvgroup;` 暴露为 `astersql_ingestor_globalsort::kvgroup`。它定义全局排序产物的 KV 分组命名协议：表行数据使用保留名 `"data"`，索引数据使用索引 ID 的十进制文本。该协议让调用方能够以字符串作为对象存储目录、元数据映射键或冲突处理参数，同时保留索引 ID 的往返转换能力。
-
-[`Cargo.toml`](./Cargo.toml) 将本目录声明为独立 library crate，并用 `package.metadata.porting.go-package = "pkg/ingestor/globalsort"` 标明对应的 Go 包。当前文件自身只依赖 Rust 标准库；crate 的对象存储、SST、worker pool 等依赖并未进入这里的转换逻辑。
+该协议让调用方能够以字符串作为对象存储目录、元数据映射键或冲突处理参数，同时保留索引 ID 的往返转换能力。
 
 ## 核心职责
 
@@ -65,7 +63,7 @@ Rust 当前接线范围较窄：仓库搜索未找到目标文件以外的 Rust 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`kvgroup.go`](./kvgroup.go)。三项 API 一一对应：Go `DataKVGroup` 与 Rust 常量值相同；Go `fmt.Sprintf("%d", indexID)` 与 Rust `i64::to_string()` 都输出有符号十进制；Go `strconv.ParseInt(kvGroup, 10, 64)` 与 Rust `parse::<i64>()` 都返回 64 位有符号整数或解析错误。
+三项 API 一一对应：Go `DataKVGroup` 与 Rust 常量值相同；Go `fmt.Sprintf("%d", indexID)` 与 Rust `i64::to_string()` 都输出有符号十进制；Go `strconv.ParseInt(kvGroup, 10, 64)` 与 Rust `parse::<i64>()` 都返回 64 位有符号整数或解析错误。
 
 接口差异在所有权和错误类型：Go 接受拥有值语义的 `string` 并返回 `(int64, error)`；Rust 借用 `&str`，返回 `Result<i64, std::num::ParseIntError>`。Rust 使用 Go 风格的公开符号与参数名，依靠 crate 根的 lint allow 保持迁移 API 对齐。
 
@@ -78,11 +76,3 @@ Go 的实际调用面比 Rust 更完整：`pkg/dxf/importinto/planner.go` 使用
 若把本模块接入 Rust 生产流程，最可能修改的是创建排序元数据映射的规划代码和索引冲突 handler 的预运行逻辑：数据分支使用 `DataKVGroup`，索引分支使用 `IndexID2KVGroup`，消费索引组时显式处理 `KVGroup2IndexID` 错误并验证索引存在。应同步新增独立测试文件，而不是把测试写进 `kvgroup.rs`；至少覆盖 `i64` 极值往返、零、负数、`"data"`、空串、空白、非数字和溢出输入，并保留冲突处理的端到端分流用例。
 
 兼容风险主要是组名格式变化导致旧对象或元数据无法发现；正确性风险是把数据组误当索引组，或解析成功后未验证 index ID；性能风险较低，但高频路径若重复格式化同一 ID，可在调用层复用已拥有的组名，避免改变本模块的无状态职责。
-
-## 验证依据
-
-- RustCodeGraph `status` 确认仓库存在可用索引；`node --file pkg/ingestor/globalsort/kvgroup.rs --offset 1 --limit 500` 返回完整 32 行源码，并列出冲突处理测试使用关系。
-- RustCodeGraph `query IndexID2KVGroup` 同时定位 Go 与 Rust 定义；对 Rust 文件限定的 `callers`/`callees` 查询未返回生产调用边。随后用 `rg` 搜索 Rust 生产文件与测试文件，确认生产侧没有直接引用，测试侧有上述四类直接使用点。
-- 已核对源码 [`kvgroup.rs`](./kvgroup.rs)、crate 清单 [`Cargo.toml`](./Cargo.toml)、模块入口 [`lib.rs`](./lib.rs) 与 Go 对照 [`kvgroup.go`](./kvgroup.go)。目标目录没有 `doc.go`，也没有同名 Rust 或 Go 专属测试文件。
-- 已阅读直接证据位置：`pkg/dxf/importinto/conflict_resolution_test.rs`、`pkg/dxf/importinto/conflictedkv/collector_test.rs`、`deleter_test.rs`、`handler_test.rs`，以及 Go 生产调用点 `pkg/dxf/importinto/planner.go`、`pkg/dxf/importinto/conflictedkv/handler.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认本文恰好包含任务规定的十一个二级标题；行为说明通过源码、调用搜索、Cargo 边界和 Go 对照交叉复核。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`list_migration.rs`](./list_migration.rs) 是 `astersql-br-pkg-task-operator` library crate 中 `list-migrations` 运维子命令的执行模块。crate 根在 [`lib.rs`](./lib.rs) 中以 `pub mod list_migration` 挂载它，并通过 `pub use list_migration::*` 将其公开入口平铺导出；[`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs) 的 `newListMigrationsCommand` 随后把 `RunListMigrations` 注册为 CLI 回调。
-
-该文件对照 [`list_migration.go`](./list_migration.go) 移植，位于“解析命令参数之后、读取 migration 元数据并输出之前”。它本身不解析 flags，也不创建或修改 migration；配置解析由 [`config.rs`](./config.rs) 的 `ListMigrationConfig::ParseFromFlags` 完成，migration 的读取和表格行构造则委托给 [`stubs.rs`](./stubs.rs) 中的本地兼容实现。
+本身不解析 flags，也不创建或修改 migration；配置解析由 [`config.rs`](./config.rs) 的 `ListMigrationConfig::ParseFromFlags` 完成，migration 的读取和表格行构造则委托给 [`stubs.rs`](./stubs.rs) 中的本地兼容实现。
 
 ## 核心职责
 
@@ -79,17 +77,12 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的主控制流与 [`list_migration.go`](./list_migration.go) 对齐：均执行 ParseBackend → Create → MigrationExtension.Load；均将 migration 缺失视为错误；均提供整包 JSON 与 BASE/Layer 表格两种输出；总数均为 `Layers + 1`，层标题均为八位零填充序号。
-
 已确认的差异包括：
 
 - Go `RunListMigrations(ctx, cfg)` 全链路传递 `context.Context`；Rust 签名只有 `cfg`，CLI 获取的默认 context 被忽略。
 - Go 直接使用 `pkg/objstore`、`br/pkg/stream` 和 `br/pkg/glue` 的实现；Rust 当前使用 operator crate 的 `stubs.rs`，实际读取固定的 `migrations.json`，表格目前只含 `Name`。
 - Go `json.Encoder.Encode` 依据 Go struct tags 输出并追加换行；Rust 使用默认 serde 字段名构造字符串后 `println!`。未发现针对此入口 JSON schema 的独立对齐测试，因此不能宣称字段布局与 Go 完全一致。
 - Go 存储创建与加载可因 context 取消返回；Rust 当前没有对应取消边界。
-- 两端都没有在该函数内排序 layers，也都直接传播关键错误。
-
-因此，该文件可视为已接线的 CLI 兼容实现，但不是 Go 生产依赖链的完整等价替代。
 
 ## 扩展指南
 
@@ -99,13 +92,3 @@ Rust 的主控制流与 [`list_migration.go`](./list_migration.go) 对齐：均�
 - 回归测试应放在独立文件，沿用 [`parity_test.rs`](./parity_test.rs) 或新增同目录 `list_migration_test.rs` 并由 `lib.rs` 在 `#[cfg(test)]` 下挂载；不要把测试内嵌进生产源文件。
 - 至少补齐：有效 migration 的 JSON 输出、BASE 加多层表格顺序与八位序号、非法 JSON、缺失文件、空 URI、Go/Rust JSON 字段名一致性。测试输出时应注入或捕获 writer，避免依赖并行测试共享的进程 stdout。
 - 性能上当前会把完整 `migrations.json` 和完整 `Migrations` 一次性载入内存，JSON 分支还会额外分配完整字符串；大 migration 栈若需要流式输出，必须同时评估顺序稳定性与部分输出失败语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 7,032 个 Rust 文件；`files --filter br/pkg/task/operator/list_migration.rs` 确认目标文件已索引。
-- RustCodeGraph `explore "br/pkg/task/operator/list_migration.rs ..."`：读取目标文件完整源码，并识别 `RunListMigrations`、`statusOK`、`newListMigrationsCommand` 与 `parity_test.rs` 的调用/测试关系。
-- 源码：[`list_migration.rs`](./list_migration.rs)、[`lib.rs`](./lib.rs)、[`config.rs`](./config.rs)、[`stubs.rs`](./stubs.rs)、[`br/cmd/br/operator.rs`](../../../cmd/br/operator.rs)。
-- crate 声明：[`Cargo.toml`](./Cargo.toml)。
-- Go 对照：[`list_migration.go`](./list_migration.go)、[`config.go`](./config.go)、[`br/cmd/br/operator.go`](../../../cmd/br/operator.go)。
-- 相关独立 Rust 测试：[`parity_test.rs`](./parity_test.rs) 的 `contract_normal_config_and_helpers` 验证 `statusOK`，`contract_resource_cleanup` 验证空存储缺少 migration 时 `RunListMigrations` 返回错误。仓库搜索未发现直接覆盖该入口的同目录 Go 测试，也未发现 Rust 的成功输出路径测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构以任务指定的 11 个固定二级标题检查。

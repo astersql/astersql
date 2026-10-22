@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-lightning-pkg-server` crate 的 Unix 平台 `SIGUSR1` 适配层。`lightning/pkg/server/lib.rs` 在 `cfg(unix)` 下把它装配成私有模块 `sigusr1`，再用 `pub use sigusr1::*` 导出其公开入口；非 Unix 平台改选 `sigusr1_other.rs`。crate 边界由 `lightning/pkg/server/Cargo.toml` 定义，包名为 `astersql-lightning-pkg-server`，根文件为 `lib.rs`，本实现直接使用其 `libc = "0.2"` 依赖。
-
-在完整应用中，直接生产调用点是 `lightning/pkg/server/lightning.rs` 的 `Lightning::GoServe`：它向 `handleSigUsr1` 注册闭包，使未配置状态服务地址时可以在收到 `SIGUSR1` 后尝试启动 HTTP 监听，已经启动时则记录现有地址。因此本文件只负责可靠地把 Unix 异步信号转交给普通 Rust 执行上下文，不负责 HTTP 服务策略本身。
+文件不解析信号载荷、不管理 HTTP 状态，也不提供注销、停机或恢复旧信号处理器的接口。
 
 ## 核心职责
 
@@ -67,9 +65,7 @@ socket 中的每个字节代表一次待分发通知，但它不是可靠队列�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `lightning/pkg/server/sigusr1_unix.go` 的 `handleSigUsr1` 每次调用都会创建容量为 1 的 `chan os.Signal`，调用 `signal.Notify(ch, syscall.SIGUSR1)`，再启动一个 goroutine 逐次记录日志并调用该次传入的 handler。Rust 保留了“信号接收与业务回调分离”“缓冲通知可合并”“普通执行上下文中记录日志并执行回调”的核心语义。
-
-实现结构并非逐行等价：Rust 只有一个进程级 `sigaction`、socket pair 和读取线程，向全局列表中的全部 handler 广播；Go 则为每次注册保留各自 channel 和 goroutine，由 `os/signal` 向每个注册 channel 送达。Rust 回调要求 `Send + 'static`，Go 闭包没有对应的静态类型约束。Rust 使用整数 signal 字段记录 `SIGUSR1`，Go 使用 `zap.Stringer` 记录 `os.Signal`。两者都没有在本文件中提供注销路径，且缓冲饱和时均不承诺逐信号精确计数。
+实现结构并非逐行等价：Rust 只有一个进程级 `sigaction`、socket pair 和读取线程，向全局列表中的全部 handler 广播；Go 则为每次注册保留各自 channel 和 goroutine，由 `os/signal` 向每个注册 channel 送达。Rust 回调要求 `Send + 'static`，Go 闭包没有对应的静态类型约束。Rust 使用整数 signal 字段记录 `SIGUSR1`，Go 使用 `zap.Stringer` 记录 `os.Signal`。
 
 Go 文件未附带同目录的专用 Go 测试；当前可执行的移植证据来自独立 Rust 测试 `sigusr1_unix_test.rs`。该测试注册两个 handler，调用 `libc::raise(SIGUSR1)`，并要求两个 channel 消息都在两秒内到达，验证了 Rust 全局 dispatcher 的广播语义，而没有覆盖高频信号、初始化失败、panic、注销或 shutdown。
 
@@ -80,13 +76,3 @@ Go 文件未附带同目录的专用 Go 测试；当前可执行的移植证据�
 若要支持注销，应返回稳定的注册 token，并定义注销与已取得快照的并发关系，同时处理闭包捕获资源的释放。若要支持可重启生命周期，还需共同设计 reader 退出、writer 关闭、线程 join、`WRITE_FD` 失效和旧 `sigaction` 恢复；仅从向量删除 handler 不足以释放进程级资源。
 
 若要减少初始化竞争或增强错误可见性，应重点调整 `dispatcher` 中“发布 fd—安装 action—启动线程—提交 `OnceLock`”的顺序及读取错误处理。信号处理器内仍必须限制为异步信号安全操作，不能移入日志、锁、分配或业务回调。任何变更都应同时核对 `lightning.rs::Lightning::GoServe` 的实际使用方式和 Go 对照语义，并增加至少包含连续信号、慢/异常 handler、多次注册和资源清理的独立测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter lightning/pkg/server` 列出目标源、平台替代实现、模块入口、Go 对照和独立测试。
-- RustCodeGraph `node --file lightning/pkg/server/sigusr1_unix.rs`：读取了完整 122 行源码，确认 `Handler`、`Dispatcher`、`DISPATCHER`、`WRITE_FD`、`on_sigusr1`、`dispatcher`、`handleSigUsr1` 及其实现。
-- RustCodeGraph `node handleSigUsr1`、`node dispatcher`、`node on_sigusr1`：确认 `handleSigUsr1 -> dispatcher`、`dispatcher -> on_sigusr1` 的调用/引用关系，以及独立 Rust 测试调用公开入口；常见函数名产生的跨文件候选未被当作事实。
-- RustCodeGraph `node GoServe` 与 `node --file lightning/pkg/server/lightning.rs --offset 430 --limit 80`：确认生产入口 `Lightning::GoServe` 注册回调，以及回调启动或报告 HTTP server 的当前行为。
-- 直接读取 `lightning/pkg/server/lib.rs` 和 `lightning/pkg/server/Cargo.toml`：确认 Unix 条件装配、公开再导出、测试装配、workspace crate 边界及 `libc` 依赖。
-- 直接读取 `lightning/pkg/server/sigusr1_unix.go`、`lightning/pkg/server/lightning.go` 和 `lightning/pkg/server/sigusr1_unix_test.rs`，并搜索 Lightning 测试：确认 Go 注册模型、上层运维用途、Rust 双 handler 广播断言，以及没有找到专用 Go `SIGUSR1` 测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的结构命令确认目标文件存在且恰有 11 个固定二级章节，并人工复核源文件定位、执行流程、安全扩展点和验证边界。

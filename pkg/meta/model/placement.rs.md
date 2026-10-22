@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件定义 placement policy（放置策略）的 Rust 元数据模型，以及一组把设置项渲染成 SQL 风格文本的公共 helper。它只负责数据表示、Serde 编解码、克隆和文本格式化，不访问元数据存储，也不向 PD 下发调度规则；这一边界由文件头说明和文件内没有 I/O、网络或调度依赖共同确认。
-
-实际编译边界不是根 `pkg/meta/model/lib.rs` 直接声明本模块，而是 `pkg/meta/model/internal/group3/lib.rs` 的 `placement` 子模块用 `include!("../../placement.rs")` 引入，再以 `pub use placement::*` 导出。根 crate `astersql-meta-model` 依赖 `astersql-meta-model-group3` 并通过 `group_3` 暴露它。`pkg/meta/model/Cargo.toml` 只依赖四个内部 group crate；本文件实际所需的 `serde` 和 `group-1`（提供 `ast::CIStr`、`SchemaState`）声明在 `pkg/meta/model/internal/group3/Cargo.toml`。
+只负责数据表示、Serde 编解码、克隆和文本格式化，不访问元数据存储，也不向 PD 下发调度规则；这一边界由文件头说明和文件内没有 I/O、网络或调度依赖共同确认。
 
 ## 核心职责
 
@@ -75,11 +73,9 @@ Go `PolicyInfo` 的 settings 是指针，理论上可为 nil；Rust 改为非可
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/meta/model/placement.go`，Rust 保留了三个模型的字段、`String` 顺序、双引号转义、整数格式、默认空格分隔和 Clone 隔离语义。`placement_test.go` 的三组断言在 `placement_test.rs` 中有对应覆盖：基础顺序、角色副本/约束顺序、约束内引号转义，以及两个 Clone 的修改隔离。
-
 主要表示差异是：Go 方法返回指针克隆，Rust 返回拥有型值；Go `PolicyInfo` 匿名嵌入 `*PlacementSettings`，Rust 使用非可选值并通过 `#[serde(flatten)]` 保持 JSON 平铺；Go variadic `func()` separator 由 Rust 的 `&mut [SeparatorFn]` 表示，并显式把 builder 传给闭包；Go duration 可为负，Rust duration 不可为负。Rust 还为设置字段和顶层元数据字段增加 Go 导出名 aliases，以兼容旧 wire 名称，相关断言位于 `placement_test.rs::crossks_align_policy_go_wire_names_and_partial_settings`。
 
-`PolicyRefInfo` 没有显式 Clone 方法，但派生的 `Clone` 覆盖值复制需求。Rust 的 `formatGoDuration` 是为替代 Go 标准库 `Duration.String` 而新增的局部实现，不能简单等同于已经覆盖 Go 标准库的全部输入空间。
+Rust 的 `formatGoDuration` 是为替代 Go 标准库 `Duration.String` 而新增的局部实现，不能简单等同于已经覆盖 Go 标准库的全部输入空间。
 
 ## 扩展指南
 
@@ -88,13 +84,3 @@ Go `PolicyInfo` 的 settings 是指针，理论上可为 nil；Rust 改为非可
 若调整通用 builder 或 duration，应同时检查 `pkg/meta/model/resource_group.rs` 及 `job_3_aster_unit_test.rs::placement_rendering_matches_go_order_escaping_and_duration`，因为分隔符、括号内空格和时长文本会影响资源组展示。新增 duration 能力时至少覆盖零、纳秒/微秒/毫秒、小数秒、整分钟、小时组合和最大值；若要支持负数，需要更换输入表示并明确与现有非负调用方的兼容策略。
 
 若把这些类型接入新的 Rust DDL/executor crate，先确认对方是否已有同名镜像，避免静默引入不兼容的第二套类型。公共 API 命名当前为 Go 风格并由 crate 级 allow 接受；除非进行全调用链迁移，不应仅在本文件改名。涉及 wire format 的修改应保持旧 aliases 或提供迁移方案。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/meta/model` 确认目标、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file pkg/meta/model/placement.rs`：读取完整 305 行，确认全部结构、方法、helper、字段顺序和文件直接使用关系。
-- RustCodeGraph `query PlacementSettings`、`query PolicyRefInfo`：确认本文件符号以及仓库中存在的 Go/Rust 同名镜像；没有把同名结果误认成调用边。
-- RustCodeGraph `node`：读取 `pkg/meta/model/internal/group3/lib.rs` 的 include/re-export 装配、`pkg/meta/model/lib.rs` 的根再导出、`pkg/meta/model/resource_group.rs` 的 helper 复用、`pkg/meta/model/placement.go`、`placement_test.go`、`placement_test.rs` 和 `job_3_aster_unit_test.rs` 的对应行为。
-- Cargo 证据：`pkg/meta/model/Cargo.toml` 确认根 crate 只聚合 group crates；`pkg/meta/model/internal/group3/Cargo.toml` 确认实际 crate 对 `group-1`、`serde`、`serde_json` 的依赖。
-- 测试证据：`placement_test.rs` 验证固定输出顺序、零值省略、双引号转义、Clone 隔离、缺失 settings 解码、snake_case 写出和旧 Go 字段名读取；`job_3_aster_unit_test.rs` 验证 `1500ms` 渲染为 `1.5s`；`job_args_test.rs` 提供策略类型进入 Job 参数序列化路径的证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的命令验证本文恰含 11 个固定二级章节，并人工复查唯一新增生产物为本文件。

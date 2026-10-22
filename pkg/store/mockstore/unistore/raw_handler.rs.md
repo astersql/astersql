@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-unistore` crate；crate 边界由同目录 `Cargo.toml` 的 `[package] name = "astersql-store-mockstore-unistore"` 与 `[lib] path = "lib.rs"` 确定。`lib.rs` 以 `pub mod raw_handler` 声明模块，并通过 `pub use raw_handler::*` 再导出其公开类型和函数。
-
-在完整的进程内 UniStore mock 链路中，本文件实现一套独立于 MVCC 的 Raw KV 内存存储。直接上游是 `rpc.rs` 中的 `RPCClient`：构造函数 `RPCClient::new` 创建一个空 `RawHandler`，`RPCClient::dispatch` 将 `Request::RawGet`、`RawBatchGet`、`RawPut`、`RawBatchPut`、`RawDelete`、`RawBatchDelete`、`RawDeleteRange`、`RawScan` 分发到本文件的同名方法。事务型请求则分发给 `Server::kv_*`，所以 Raw 数据不会进入 MVCC 版本链、锁表或事务提交流程。
-
-该实现仅保存于进程内存。它没有磁盘持久化、Region 路由校验、时间戳、TTL、Column Family 或 RPC protobuf 编解码职责；这些能力不能从本文件的 API 推断为已支持。
+提供正向和反向的有序范围扫描，并明确实现与 Go `rawHandler.RawScan` 一致的边界：正向 `[start, end)`，反向 `(end..start)` 的遍历表现为 start 排他、end 包含。
 
 ## 核心职责
 
@@ -79,9 +75,9 @@ RustCodeGraph 对目标文件识别出 `RawHandler`、全部方法、`copy_pair`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/raw_handler.go`，测试对照是 `raw_handler_test.go`。Rust 保留 Go 的核心结构和行为：独立 Raw 存储、读写锁、单键/批量 CRUD、范围删除、正反向扫描、空值表示未找到，以及扫描结果深拷贝。Go `rpc.go` 的 Raw 命令分发与 Rust `rpc.rs::RPCClient::dispatch` 覆盖同一组八种操作。
+Rust 保留 Go 的核心结构和行为：独立 Raw 存储、读写锁、单键/批量 CRUD、范围删除、正反向扫描、空值表示未找到，以及扫描结果深拷贝。
 
-实现载体不同：Go 使用 `*lockstore.MemStore` 和显式 iterator，Rust 使用 `BTreeMap` 的范围迭代；Go 方法接收 `context.Context` 与 kvproto 请求并返回 protobuf 响应和 `error`，Rust handler 只接收领域字段并返回本地结构，由 `rpc.rs` 负责请求/响应枚举适配。Rust 的 `newRawHandler` 返回值而非指针，正常共享由包含它的 `RPCClient` 管理。
+实现载体不同：Go 使用 `*lockstore.MemStore` 和显式 iterator，Rust 使用 `BTreeMap` 的范围迭代；Go 方法接收 `context.Context` 与 kvproto 请求并返回 protobuf 响应和 `error`，Rust handler 只接收领域字段并返回本地结构，由 `rpc.rs` 负责请求/响应枚举适配。
 
 Rust 为保持 Go 迭代器在倒置边界上的空结果，额外在 `raw_delete_range` 和 `raw_scan` 前做比较检查；否则 `BTreeMap::range` 会 panic。Rust 测试也增加了 Go 测试未单独列出的反向空 start 与倒置区间回归用例。当前 Rust `raw_handler.rs` 没有 Go protobuf/context 外壳，但不应据此把 Go 的边界行为简化掉。
 
@@ -96,14 +92,3 @@ Rust 为保持 Go 迭代器在倒置边界上的空结果，额外在 `raw_delet
 - 若加入持久化、TTL、Column Family、错误恢复或 Region 语义，不宜只扩张本文件的内存映射；应先确认是否应复用 `tikv/server.rs` 的 Raw 状态或在 RPC 层明确两套实现的归属。
 - 测试应继续放在独立的 `pkg/store/mockstore/unistore/raw_handler_test.rs`，不要嵌入生产文件。至少扩充与改动方法对应的 Rust 回归，并以 `raw_handler_test.go` 的既有意图为基线；涉及分发时还应补 `rpc_test.rs` 的端到端请求覆盖。
 - 性能风险集中于全量克隆、大范围扫描持有读锁、范围删除在写锁内分配临时键列表，以及批量请求的线性处理；优化时不得牺牲稳定顺序、拥有型返回值和调用级一致性而不更新契约。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点；目标文件可完整读取为 197 行。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore/raw_handler.rs`：核验 `KvPair`、`RawGetResponse`、`RawHandler`、十个公开方法（含构造函数与 `keys`）、`copy_pair`、`newRawHandler`、`safeCopy` 的签名与实现。
-- RustCodeGraph `query`：精确定位 `RawHandler`、各 `raw_*` 方法、`newRawHandler` 和 `safeCopy`；`callers/callees` 对目标方法未返回边，此限制已在“依赖与调用关系”中披露。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore/rpc.rs --offset 380 --limit 410`：核验 `RPCClient` 持有 handler、构造边和八个 Raw 请求分发边，以及异步请求可从线程进入客户端。
-- `pkg/store/mockstore/unistore/Cargo.toml`、`lib.rs`：核验 crate 名称、库入口、模块声明、公开再导出和独立测试模块接线。
-- `pkg/store/mockstore/unistore/raw_handler.go`、`rpc.go`、`raw_handler_test.go`：核验 Go 侧锁、MemStore iterator、Raw 命令转发、边界与测试意图。
-- `pkg/store/mockstore/unistore/raw_handler_test.rs`：核验 Rust 单键/批量 CRUD、限量正向扫描、半开范围删除、反向空 start 和倒置范围行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查文档固定章节、路径/符号引用和差异范围。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`，其 crate 根为同目录的 `lib.rs`；`lib.rs` 以私有模块 `physical_schema_producer` 装入本文件，再通过 `pub use physical_schema_producer::*` 对外导出两个生产者类型。该包在 `Cargo.toml` 的 `package.metadata.porting.go-package` 中声明对应 Go 包为 `pkg/planner/core/operator/physicalop`。
-
-这里的“producer”不是执行数据的算子，而是计划节点的公共状态组件：`PhysicalSchemaProducer` 服务于物理计划，`SimpleSchemaProducer` 服务于不需要完整物理计划基座的简单计划。它们把输出 `expression::Schema` 的保存、惰性初始化、克隆和内存计量集中起来，具体算子通过组合这些类型复用行为。RustCodeGraph 的文件节点显示本文件被 54 个文件使用；可直接核验的使用者包括 `physical_limit.rs`、`physical_window.rs`、`physical_indexmerge_reader.rs` 和 `physical_delete.rs`。
+具体算子仍须实现自己的 `Plan`/`PhysicalPlan` trait 接线。
 
 ## 核心职责
 
@@ -101,16 +99,10 @@ RustCodeGraph 的精确方法级查询因仓库内大量同名 `Schema` 节点�
 
 ## 与 Go 版本的对应关系
 
-同路径 `physical_schema_producer.go` 是直接语义对照：两边都定义 `PhysicalSchemaProducer` 和 `SimpleSchemaProducer`，都采用一个孩子透传、其他孩子数为空 Schema的物理默认规则，也都让简单生产者默认返回空 Schema。Rust 的 `Option<Arc<Schema>>` 对应 Go 的 `*expression.Schema` nil/非 nil 状态。
-
-主要保持点：
-
-- 计划缓存克隆共享 Schema；Rust 测试 `plan_cache_clones_share_schema_like_go` 对物理和简单生产者都以指针相等验证。
 - 普通物理克隆先复制基座，再克隆 Schema；Rust 会在 Schema 尚未初始化时先执行同样的惰性推导。
-- `ResolveIndices` 对物理生产者委托基座，对简单生产者直接成功。
 - 物理生产者内存只增加一个指针大小；简单生产者累计指针、切片、容量、Schema 和列名对象。Rust 测试 `memory_usage_matches_go_field_accounting` 固定了这一口径。
 
-需要注意的接口差异：Go 的物理克隆方法接收 `newSelf base.PhysicalPlan`，Rust 当前只接收 `new_ctx` 并调用 `CloneWithNewCtx`；文档不能据此推断 Rust 支持 Go 的 self-rebinding 全部细节。Go `SetSchema` 直接保存传入指针，Rust 接收拥有的 `Schema` 后包装为新 `Arc`。Go 的 `MemoryUsage` 可处理 nil receiver，Rust 引用方法没有该状态。Go 的 `names = s.names` 是切片浅复制，Rust 通过 `NameSlice::Shallow` 明确表达该语义。
+需要注意的接口差异：Go 的物理克隆方法接收 `newSelf base.PhysicalPlan`，Rust 当前只接收 `new_ctx` 并调用 `CloneWithNewCtx`；文档不能据此推断 Rust 支持 Go 的 self-rebinding 全部细节。Go 的 `MemoryUsage` 可处理 nil receiver，Rust 引用方法没有该状态。
 
 ## 扩展指南
 
@@ -121,18 +113,3 @@ RustCodeGraph 的精确方法级查询因仓库内大量同名 `Schema` 节点�
 - 修改克隆策略时必须分别验证普通克隆的独立 Schema、计划缓存克隆的共享 Schema以及新上下文绑定；现有直接测试在 `physical_schema_producer_test.rs`，具体算子的行为测试继续放在各自独立 `*_test.rs` 文件，不能内嵌进生产源文件。
 - 修改内存口径时同步核对 Go 文件的 `MemoryUsage`、Rust 的 `memory_usage_matches_go_field_accounting` 以及组合算子的内存测试。风险包括重复计量共享 `Arc`、漏计容量和破坏上层汇总稳定性。
 - 兼容性风险集中在默认多孩子空 Schema、计划缓存共享状态和 Go/Rust 克隆接口差异；性能风险集中在误用普通深克隆代替缓存共享，以及频繁使 Schema 缓存失效。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- `pkg/planner/core/operator/physicalop/physical_schema_producer.rs`：RustCodeGraph 文件节点读取的完整 177 行，包含两个结构体及全部方法。
-- `pkg/planner/core/operator/physicalop/physical_schema_producer.go`：RustCodeGraph 文件节点读取的完整 166 行，用于逐项核对 Go 语义和接口差异。
-- `pkg/planner/core/operator/physicalop/physical_schema_producer_test.rs`：RustCodeGraph 文件节点读取的完整 106 行；覆盖计划缓存 Schema 共享和 Go 内存字段口径。
-- `pkg/planner/core/operator/physicalop/Cargo.toml`：确认 crate 名称、crate 根、workspace 依赖和 Go 包映射；该包未声明 feature 段。
-- `pkg/planner/core/operator/physicalop/lib.rs`：确认模块装入、测试模块独立存在以及公开再导出。
-- `pkg/planner/core/operator/physicalop/physical_limit.rs`：确认物理生产者的构造、Schema 克隆/覆盖和分层索引解析流程。
-- `pkg/planner/core/operator/physicalop/physical_delete.rs`：确认 `Delete`/`Update` 对简单生产者的空 Schema 初始化、trait 转发和计划缓存克隆用法。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter` 找到唯一目标文件；文件节点报告 27 个符号及 54 个使用文件。通用名 `Schema` 的 `explore` 结果跨仓库噪声较大，文件限定的精确方法调用查询超时，故代表调用关系另以限定源码搜索核验，并明确保留这一验证限制。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构检查，并人工复核未把测试写入生产文件、未把推测描述为已支持行为。

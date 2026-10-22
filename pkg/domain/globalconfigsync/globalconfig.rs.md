@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-globalconfigsync` crate 的业务实现，提供“配置项数据模型 + PD 写入抽象 + 有界通知队列”这一组最小能力。crate 入口 `pkg/domain/globalconfigsync/lib.rs` 通过 `pub mod globalconfig` 和 `pub use globalconfig::*` 同时暴露模块与其中的公开 API；`pkg/domain/globalconfigsync/Cargo.toml` 指定 `lib.rs` 为库入口，并声明 `crossbeam-channel`、`log`、`thiserror` 三个直接依赖。
-
-它对应 Go 包 `pkg/domain/globalconfigsync/globalconfig.go`，但当前 Rust 应用集成度与 Go 不同：全仓 Rust 生产源码中没有 `GlobalConfigSyncer::new`、`notify`、`recv_notification` 或实例方法 `store_global_config` 的调用者，已找到的直接调用均在本目录的独立 Rust 测试中。根 `Cargo.toml` 提供 `facade_domain_globalconfigsync` 别名，`pkg/domain/Cargo.toml` 仅在 `cfg(windows)` 依赖区声明该 crate；这只能证明依赖/门面接线，不能证明 Rust `Domain` 已启动消费循环。相反，Go 的 `pkg/domain/domain.go` 已完成构造、通知、后台消费与退出控制。
+`GlobalConfigClient` 把具体 PD 客户端收窄为本同步器所需的单一写接口，使实现不依赖某个具体客户端类型，也便于测试替身注入。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ Go Domain keeper 用 `select` 同时监听通知和 `do.exit`，因此具备显�
 
 ## 与 Go 版本的对应关系
 
-逐项对应关系：
-
 - Go `GlobalConfigSyncer.pd pd.Client` 对应 Rust `Option<Arc<dyn GlobalConfigClient>>`；Rust 用窄 trait 隔离庞大的 PD client API，并显式编码 nil/None。
 - Go 公有 `NotifyCh chan pd.GlobalConfigItem` 对应 Rust 私有 `notify_tx`/`notify_rx` 加 `notify`、`recv_notification` 方法；容量同为 8，但 Rust 不允许调用者直接 select 或关闭通道。
 - Go `pd.GlobalConfigItem` 对应 Rust 本地 `GlobalConfigItem`；Rust 明确复制 `EventType/Name/Value/Payload` 四类数据，并以 `#[repr(i32)]` 固定 PUT/DELETE 数值。
@@ -100,14 +96,3 @@ Go Domain keeper 用 `select` 同时监听通知和 `do.exit`，因此具备显�
 - 接入 Rust Domain 主链时，应在 Domain 的构造/启动/关闭位置分别完成客户端适配、消费者生命周期和退出控制，并在变量变更入口调用 `notify`。需要特别处理阻塞 channel 与异步运行时的边界；完成前不要宣称 Rust 已支持 SQL `SET GLOBAL -> PD` 端到端同步。
 - 若引入真实 `tikv-client`/PD client 适配器，应把外部依赖移植放在其独立上游仓库并通过统一 tag 引用，遵守仓库对外部 Rust 依赖的可复现要求；本 crate 不应复制依赖实现到本地 vendor 或使用本地 `[patch]`。
 - 修改日志时评估敏感值和高频写入的性能风险；修改 `None` 行为时评估无 PD 环境、测试环境及 Go 兼容性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本目录的 `globalconfig.rs`、`globalconfig_test.rs`、`migration_aster_unit_test.rs`、`lib.rs` 及 Go 对照文件；目标文件识别出 13 个符号。
-- RustCodeGraph `node --file pkg/domain/globalconfigsync/globalconfig.rs`：核对常量、枚举、数据结构、错误、trait、同步器字段及全部方法实现。
-- RustCodeGraph 精确查询 `GlobalConfigSyncer`、`recv_notification`、`store_global_config`：确认符号位置；`callers/callees` 对本文件方法未返回调用边，因此又用生产 Rust 全仓文本检索补证，结果仅发现本目录独立测试调用同步器 API，没有生产调用者。
-- `pkg/domain/globalconfigsync/Cargo.toml`、`lib.rs`、根 `Cargo.toml` 与 `pkg/domain/Cargo.toml`：核对 crate 入口、直接依赖、门面别名，以及 Domain crate 中仅位于 `cfg(windows)` 区的依赖声明。
-- `pkg/domain/globalconfigsync/globalconfig_test.rs`：核对基本 notify/recv/store 链、事件/payload 原样透传和两项 FIFO 写入。
-- `pkg/domain/globalconfigsync/migration_aster_unit_test.rs`：核对容量 8、FIFO、无客户端空操作、空 prefix 单项转发和客户端错误原样传播。
-- `pkg/domain/globalconfigsync/globalconfig.go`、`globalconfig_test.go` 与 `pkg/domain/domain.go`：核对 Go API、端到端测试、Domain 初始化、通知、后台 keeper 和退出路径。
-- 本任务是纯文档分析，依计划不运行 Cargo。结构验证要求本文恰好包含上述 11 个固定二级标题；应用主链接线状态由静态索引与文本检索验证，未通过运行中的 AsterSQL 实例验证。

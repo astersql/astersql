@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-telemetry` crate 的“功能使用量”采集层。`pkg/telemetry/lib.rs` 将它声明为 `data_feature_usage` 模块并把公开项重新导出；上游 `pkg/telemetry/data.rs::generateTelemetryData` 调用 `getFeatureUsage` 生成 `telemetryData.FeatureUsage`，随后 `pkg/telemetry/telemetry.rs::ReportUsageData` 将整份报告序列化并缓存。报告成功路径再调用 `postReportTelemetryData`，把本文件维护的增量计数基准推进到当前值。
-
-`pkg/telemetry/Cargo.toml` 声明 crate 名为 `astersql-telemetry`，并用 `package.metadata.porting.go-package = "pkg/telemetry"` 标明 Go 来源。清单中的 TiDB 子系统依赖均位于 `target.'cfg(any())'.dependencies`，该条件恒为假；因此当前 Rust 文件并不直接链接真实 `infoschema`、`metrics`、`sessionctx` 等 crate，而是使用本 crate 在 `telemetry.rs` 中定义的 `SessionContext` 内存模型。这是已接入 Rust 遥测报告流程的实现，但不是对 Go 运行时依赖的逐接口直连。
+提供一组 `postReport*` 钩子，在报告完成后分别刷新基准，防止累计指标被下一周期重复上报。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ RustCodeGraph 的 `callers getFeatureUsage --file ...` 返回空数组，和节�
 
 ## 与 Go 版本的对应关系
 
-对应源文件为 `pkg/telemetry/data_feature_usage.go`，相关 Go 测试为 `data_feature_usage_test.go`。两侧保留了相同的 `featureUsage`/`TxnUsage` 字段集合、主要采集函数名称、累计值减初始值的周期差分模型，以及上报后推进初始基准的生命周期。Rust 测试名也基本逐项对应 Go 测试：事务、临时/缓存表、AutoID、账号锁、分区与放置策略、资源组、各开关、DDL、IndexMerge、TTL、Store Batch Copr 和公平锁。
-
 重要实现差异如下：
 
 - Go `getClusterIndexUsageInfo` 执行 SQL 查询，`collectFeatureUsageFromInfoschema` 访问真实 domain infoschema；Rust 从 `SessionContext.ClusteredTableTypes`、`Schemas`、`PlacementPolicies`、`ResourceGroups` 读取预聚合内存数据。
@@ -106,12 +102,3 @@ RustCodeGraph 的 `callers getFeatureUsage --file ...` 返回空数组，和节�
 5. 并发相关修改必须考虑 current/initial 的一致性和 current→initial 锁顺序；高频采集字段还应评估复制整个 `MetricsSnapshot` 与多次加锁的开销。
 
 高风险位置包括 `TablePartitionMaxPartitionsCnt` 的非普通差分、DDL/Store Batch 中“差分字段 + 实时配置字段”的混合、手工 JSON 格式串，以及报告生成与 post-report 基准推进的时序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/telemetry` 确认本模块及 Rust/Go 测试均已索引。
-- RustCodeGraph：`node --file pkg/telemetry/data_feature_usage.rs --offset 1 --limit 500` 与 `--offset 500 --limit 400` 阅读完整 793 行源码；`node getFeatureUsage` 验证 Rust 主入口的直接下游和测试门面调用轨迹；`callees getFeatureUsage --file ... --json` 验证各 Rust 采集器及 `ttl.rs::getTTLUsageInfo` 边。
-- 已读 Rust 路径：`pkg/telemetry/data_feature_usage.rs`、`Cargo.toml`、`lib.rs`、`data.rs`、`telemetry.rs`、`data_feature_usage_test.rs`；包内不存在 `doc.go`。
-- 已读 Go 对照：`pkg/telemetry/data_feature_usage.go` 与 `pkg/telemetry/data_feature_usage_test.go` 的符号/测试清单及对应实现。
-- Rust 独立测试覆盖 25 个测试入口，包括 `TestFeatureUsageMarshalPreservesGoFields`、差分/基准推进、infoschema 摘要、配置边界、TTL 与 Store Batch Copr；本任务按计划为纯文档分析，未运行 Cargo。
-- 结构验收以任务指定命令检查目标文档存在且恰有十一个固定二级标题；结论均限定在上述源码、调用边、Cargo 声明和测试证据范围内。

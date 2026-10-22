@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`hdfs.rs` 是 `astersql-objstore` crate 中的 HDFS 后端实现，由 `pkg/objstore/lib.rs` 的 `pub mod hdfs` 纳入模块树。它把统一存储接口适配到本机的 Hadoop 命令行程序，而不是链接 HDFS 客户端库：运行时通过 `$HADOOP_HOME/bin/hdfs dfs ...` 子进程访问远端。
-
-完整构造链是 `parse::ParseBackend` / `parseBackend` 将 `hdfs:` URI 原样保存为 `StorageBackend::Hdfs(Hdfs { remote })`，随后 `storage::New` 在该枚举分支调用 `hdfs::NewHDFSStorage`，得到 `Arc<dyn storage::Storage>`。因此本文件位于“后端 URI 解析”与“统一对象存储调用者”之间；`pkg/objstore/storage.rs:256-288` 和 `pkg/objstore/parse.rs:250-329` 是它的直接入口证据。
+依据：`HDFSStorage::new`、`HDFSStorage::remote`、两个 `URI` 实现。
 
 ## 核心职责
 
@@ -101,10 +99,7 @@ RustCodeGraph 的目标文件节点显示该模块被 21 个文件使用，并�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/hdfs.go`。主要对应如下：
-
 - Go `HDFSStorage.remote`、`NewHDFSStorage` 对应 Rust 同名结构和兼容构造器；Rust 另提供惯用的 `new`、`remote`。
-- Go `getHdfsBin`、`getLinuxUser`、`dfsCommand` 对应 Rust `get_hdfs_bin`、`get_linux_user`、`dfs_command_spec`/`dfs_command`。Rust 引入 `CommandSpec` 将“命令是什么”与“启动命令”分开。
 - Go `WriteFile` 用 `bytes.Buffer` 作为 stdin 并调用 `CombinedOutput`；Rust 直接向 piped stdin 写入，再以 `wait_with_output` 合并 stdout 和 stderr。独立测试要求错误文本仍包含两路输出与退出状态。
 - Go `FileExists` 把 `*exec.ExitError` 当作不存在，其他错误带输出返回；Rust 以退出状态成功与否直接返回布尔值，启动失败带上下文返回。通常的非零退出行为对齐，但错误分类和诊断细节并非完全等价。
 - Go 只实现一套存储接口；Rust 为迁移中的 `storeapi::Storage` 和 crate 内 `storage::Storage` 提供平行实现，并共用私有核心逻辑，避免两套行为漂移。
@@ -121,17 +116,3 @@ RustCodeGraph 的目标文件节点显示该模块被 21 个文件使用，并�
 - 优化大对象写入或高输出命令时应审视 stdin 与 stdout/stderr 的并发排空，避免管道背压死锁；同时保留失败时两路输出和退出状态。
 - 若修改 URI/路径拼接，需联动 `parse.rs` 中 HDFS 原始 URI 保留策略、`storage.rs` 的工厂分支，以及 `storage_test.rs` 的 URI 断言，评估重复斜杠、特殊字符和父路径片段的兼容风险。
 - 若增加长寿命客户端、线程或缓存，必须重新实现 `Close` 的资源释放并审查 `Clone`、`Send + Sync` 和并发写同一路径的语义；当前空 `Close` 只因没有持久资源才安全。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标实现：`pkg/objstore/hdfs.rs` 全部 297 行；关键符号包括 `HDFSStorage`、`write_file`、`file_exists`、`dfs_command_spec` 及两套 `Storage` impl。
-- crate 与模块边界：`pkg/objstore/Cargo.toml`、`pkg/objstore/lib.rs`。
-- 构造入口：`pkg/objstore/parse.rs` 的 `StorageBackend::Hdfs` 分支和 `pkg/objstore/storage.rs` 的 `storage::New` HDFS 分支。
-- Go 对照：`pkg/objstore/hdfs.go` 全部 161 行。
-- 独立 Rust 测试：`pkg/objstore/hdfs_test.rs` 的错误输出/退出状态回归与取消 context 回归；`pkg/objstore/storage_test.rs::test_new_hdfs_storage`、`test_new_hdfs_storage_ignores_cancelled_context` 的工厂回归。
-- RustCodeGraph：`status` 确认本地索引包含 11,467 文件、307,296 节点、1,848,419 边；`files --filter pkg/objstore` 确认目标、Go 对照和测试均已索引；`node --file pkg/objstore/hdfs.rs` 返回完整源码、48 个符号及 21 个文件的使用关系；`query HDFS`、`query NewHDFSStorage --kind function --json`、`query dfs_command_spec --kind function --json`、`query write_file --kind function --json` 用于消歧关键符号。精确 `callers/callees` 未返回可辨识边，调用关系因此由已索引源码中的直接工厂和委托语句复核。
-- 人工边界检查：确认没有条件编译、没有内部锁/任务/通道/事务，没有 `hdfs_test.go`，且生产文件未嵌入测试。
-
-按任务约束，本次是纯文档分析，未运行 Cargo 或代码测试。交付结构检查要求本文恰有上述 11 个固定二级标题。

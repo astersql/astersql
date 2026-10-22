@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo 包 `astersql-br-pkg-mock`（见 `br/pkg/mock/Cargo.toml`），由 `br/pkg/mock/lib.rs` 以 `pub mod task_register` 装入，并通过 `pub use task_register::*` 将公开符号平铺到 crate 根。它是 Go 生成文件 `br/pkg/mock/task_register.go` 的 Rust 轻量移植，服务于隔离测试；它不连接 etcd，也不执行真实任务注册、续租或撤销。
-
-虽然文件位于生产候选目录并参与库编译，它的角色仍是测试替身。真实注册协议定义在 `br/pkg/utils/register.rs` 的 `TaskRegister` trait 中，实现由 `TaskRegisterImpl` 承担；本文件的 `MockTaskRegister` 没有实现该 trait，且方法签名也不是 trait 的直接实现形状，因此不能把它视为生产注册器或可透明注入的 trait object。
+Go 生成文件 `br/pkg/mock/task_register.go` 的 Rust 轻量移植，服务于隔离测试；它不连接 etcd，也不执行真实任务注册、续租或撤销。
 
 ## 核心职责
 
@@ -70,11 +68,7 @@ RustCodeGraph 对该文件识别出 12 个符号，并显示 `RegisterTask` 的 
 
 ## 与 Go 版本的对应关系
 
-Rust 的两个结构体、构造函数、`EXPECT`、`ISGOMOCK` 以及三组“业务方法/recorder 方法”逐项对应 `br/pkg/mock/task_register.go` 的 mockgen 输出。两端业务方法名称和单个 context 参数保持一致，错误返回也通过预置值传播。
-
 关键差异必须保留在使用预期中：Go recorder 保存 `*MockTaskRegister`，Rust recorder 直接保存共享 `Controller`；Go 将 receiver、反射方法类型和实参传给 `RecordCallWithMethodType`，Rust 只记录方法名，描述字符串和参数目前不参与匹配；Go `ISGOMOCK` 返回 `struct{}`，Rust 返回单元；Go controller 提供 matcher、`Times`、`DoAndReturn` 等完整能力，本地 `stubs.rs` 明确不支持这些高级能力。
-
-此外，真实 Rust `TaskRegister` trait 的方法使用 `&mut self`，并在 `Close`/`RegisterTaskOnce` 中借用 `&Context`、返回 `SharedError`；本 mock 使用 `&self`、拥有的 `Context` 和本地 `Error`。因此它是 API 形状测试替身，不是对真实 Rust trait 的可替换实现。
 
 ## 扩展指南
 
@@ -83,13 +77,3 @@ Rust 的两个结构体、构造函数、`EXPECT`、`ISGOMOCK` 以及三组“�
 新增方法时，业务方法应继续调用 `Helper`、使用唯一且一致的方法名调用 `Controller::Call`，并选择与返回形状匹配的 `take_*` 解码器；recorder 方法必须使用同一个方法名并返回 `Call`。应在 `parity_test.rs` 增加成功、错误、未登记调用或多次同名期望中与变更最相关的覆盖，Rust 测试逻辑继续放在独立测试文件中。
 
 若要支持参数 matcher、调用次数、动作回调或严格顺序，这属于共享 `stubs::Controller` 的能力扩展，会影响同 crate 的所有生成式 mock；应先评估兼容性与锁竞争，而不是只在本文件做特例。若目标是让 mock 实现真实 `TaskRegister` trait，则必须显式处理 receiver、context 借用及错误类型差异，并为 trait-object 注入补充专门测试。
-
-## 验证依据
-
-- 源文件：`br/pkg/mock/task_register.rs`，核对全部 104 行、两个结构体、一个构造函数、两个 impl 和七个公开方法；无条件编译项。
-- 装配与 crate：`br/pkg/mock/lib.rs`、`br/pkg/mock/Cargo.toml`，确认模块加载、平铺导出、library 边界及空依赖表。
-- 共享运行机制：`br/pkg/mock/stubs.rs` 的 `Context`、`Controller::{new, Helper, Call, RecordCallWithMethodType, remaining}`、`Call::{Return, ReturnError}` 与 `take_error`。
-- Go 对照：`br/pkg/mock/task_register.go`，以及真实接口与实现 `br/pkg/utils/register.rs::TaskRegister` / `TaskRegisterImpl`。
-- 独立测试：`br/pkg/mock/parity_test.rs::go_rust_public_contract_matches` 和 `gomock_expectations_match_out_of_registration_order`；真实状态机边界另见 `br/pkg/utils/register_test.rs`。Go 集成注入例见 `tests/realtikvtest/importintotest/import_into_test.go::TestRegisterTask`。
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/mock` 收录目标、Go 对照和相关测试；`query MockTaskRegister --kind struct` 与 `query NewMockTaskRegister --kind function` 定位 Rust/Go 对应符号；`node --file br/pkg/mock/task_register.rs --offset 1 --limit 180` 核对完整文件；`callees NewMockTaskRegister` 未发现下游调用，图的缺边由模块与文本引用补证。
-- 未运行 Cargo：任务是纯文档分析，计划明确 Cargo 共享槽位规则不适用。交付前按任务给定命令验证文档存在且恰有 11 个固定二级标题。

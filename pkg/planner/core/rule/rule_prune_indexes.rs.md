@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-rule` crate；crate 入口 `pkg/planner/core/rule/lib.rs` 以公开模块 `rule_prune_indexes` 导出它。它实现逻辑优化阶段的“第一阶段索引剪枝”：在真正构造 range 和枚举物理访问路径之前，根据 WHERE、JOIN、ORDER BY 等来源汇总出的感兴趣列，对 `DataSource` 的候选表扫/索引扫路径做保守筛选，降低后续统计加载、range 构造和物理计划枚举成本。
-
-生产调用链并不直接把完整的 `logicalop::DataSource` 传入本文件。`pkg/planner/core/optimizer_runtime.rs::prune_data_source_indexes` 先把真实 planner 对象投影成这里的 `DataSource`、`AccessPath`、`IndexInfo` 等轻量类型，调用 `prune_indexes_by_where_and_order`，再按返回路径的稳定 `id` 回写 `AllPossibleAccessPaths`、`PossibleAccessPaths` 和 `IsSingleScan`。因此，本文件是可执行规则核心，`optimizer_runtime.rs` 是适配和接线层。
-
-文件第 25–602 行是块注释中的迁移参考草稿，不参与编译；活动 Rust 实现从 `use std::cmp::Ordering` 开始。分析当前行为时必须以活动实现和实际调用者为准。
+实现逻辑优化阶段的“第一阶段索引剪枝”：在真正构造 range 和枚举物理访问路径之前，根据 WHERE、JOIN、ORDER BY 等来源汇总出的感兴趣列，对 `DataSource` 的候选表扫/索引扫路径做保守筛选，降低后续统计加载、range 构造和物理计划枚举成本。
 
 ## 核心职责
 
@@ -77,13 +73,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/rule/rule_prune_indexes.go`。Rust 的 `DEFAULT_MAX_INDEXES`、路径分类、部分索引预检、覆盖打分、零分模式、两阶段选择、覆盖支配、稳定索引 ID 排序和安全回退，对应 Go 的 `defaultMaxIndexes`、`PruneIndexesByWhereAndOrder`、`scoreIndexPath`、`scoreAndSort`、`buildFinalResult`、`shouldAddIndex` 等逻辑。
+两种实现的数据边界不同。Rust 活动实现因此没有对应的三个公开/私有解析辅助函数，但端到端职责仍由接线层加规则核心共同覆盖。
 
-两种实现的数据边界不同。Go 版本直接操作 `logicalop.DataSource`、`util.AccessPath`、`expression.Column` 和 `model` 元数据，并在本文件内执行 `collectEqOrInBoundColIDs`、`discountedHandlePrefixCols`、`effectiveIndexColumnIDs` 及 `IsSingleScan`。Rust 把这些 planner 依赖留在 `optimizer_runtime.rs::prune_data_source_indexes`，再把已计算的 `discounted_column_ids`、`effective_index_columns` 和 `single_scan` 输入轻量规则。Rust 活动实现因此没有对应的三个公开/私有解析辅助函数，但端到端职责仍由接线层加规则核心共同覆盖。
+Go 用指针作为路径去重身份、字符串作为覆盖集合键；Rust 用 `AccessPath::id` 和排序后的 `Vec<i64>`。Go 在规则内更新 `path.IsSingleScan` 并有 `InjectCheckForIndexPrune` failpoint；Rust 由调用者预计算/回写单扫标记，活动实现没有该 failpoint。后续若要求严格的调试注入对齐，需要在适配边界或规则返回点另行设计，不能把块注释中的 Go 调用视作已生效。
 
-Go 用指针作为路径去重身份、字符串作为覆盖集合键；Rust 用 `AccessPath::id` 和排序后的 `Vec<i64>`。Go 的 `strings.EqualFold` 由 Rust 本地 `unicode_equal_fold` 承担。Go 在规则内更新 `path.IsSingleScan` 并有 `InjectCheckForIndexPrune` failpoint；Rust 由调用者预计算/回写单扫标记，活动实现没有该 failpoint。后续若要求严格的调试注入对齐，需要在适配边界或规则返回点另行设计，不能把块注释中的 Go 调用视作已生效。
-
-Go 独立测试 `rule_prune_indexes_internal_test.go` 验证未解析索引列不会错误追加 handle，以及部分索引坏偏移得到零分。Rust 独立测试 `rule_prune_indexes_test.rs` 进一步固定静态模式不虚构前缀、空部分索引条件、forced MV 分类、Unicode hint、同覆盖候选选择、折扣前缀冗余、追加 handle 的不同访问顺序及坏偏移行为。
+Rust 独立测试 `rule_prune_indexes_test.rs` 进一步固定静态模式不虚构前缀、空部分索引条件、forced MV 分类、Unicode hint、同覆盖候选选择、折扣前缀冗余、追加 handle 的不同访问顺序及坏偏移行为。
 
 ## 扩展指南
 
@@ -93,13 +87,3 @@ Go 独立测试 `rule_prune_indexes_internal_test.go` 验证未解析索引列�
 - 改变覆盖支配时，必须区分“相同覆盖集合的前缀支配”和“覆盖更多列”；当前设计明确不让更大覆盖集合支配更窄索引，以保留 cost model 的选择空间。
 - 测试必须继续放在独立的 `pkg/planner/core/rule/rule_prune_indexes_test.rs`，不要嵌入源文件。涉及适配计算时还应同步覆盖 `optimizer_runtime.rs` 的现有上层测试；Go 语义变化则对照并同步 `rule_prune_indexes.go` 与 `rule_prune_indexes_internal_test.go`。
 - 性能风险主要来自路径遍历、每个候选的覆盖向量排序以及支配映射增长；兼容风险主要来自 hint 大小写、partial index、common handle/PK handle、静态剪枝和可复现排序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引含目标文件；`files --filter pkg/planner/core/rule` 显示目标 Rust/Go/测试文件；`node --file pkg/planner/core/rule/rule_prune_indexes.rs --offset 1 --limit 500` 与 `--offset 495 --limit 700` 读取了完整 1123 行和 36 个符号；`query prune_indexes_by_where_and_order --kind function` 定位入口第 707 行。`callers`/`callees` 未返回边，故按技能规则以精确源码检索补证。
-- Rust 源与接线：`pkg/planner/core/rule/rule_prune_indexes.rs`、`pkg/planner/core/rule/lib.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/rule/rule_collect_plan_stats.rs`。
-- crate 边界：`pkg/planner/core/rule/Cargo.toml`。
-- Go 对照：`pkg/planner/core/rule/rule_prune_indexes.go`；测试：`pkg/planner/core/rule/rule_prune_indexes_internal_test.go`。
-- Rust 独立测试：`pkg/planner/core/rule/rule_prune_indexes_test.rs`，共八个 `#[test]` 场景，覆盖本文列出的主要边界。
-- 精确调用检索确认 `pkg/planner/core/optimizer_runtime.rs:2303` 是活动生产调用点；`lib.rs` 公开模块并以 `#[cfg(test)] mod rule_prune_indexes_test` 接入独立测试。
-- 本任务仅新增说明文档，按计划不运行 Cargo。交付时运行任务规定的 11 章节结构命令，并人工复核源码链接、活动代码/注释草稿边界、调用链和 Go/Rust 差异。

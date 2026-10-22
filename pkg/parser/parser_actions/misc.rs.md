@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/parser/parser_actions/misc.rs` 是 `astersql-parser` crate 内部的语义动作分片之一，不是独立解析器入口。crate 边界由 `pkg/parser/Cargo.toml` 定义，库入口为 `pkg/parser/lib.rs`；`pkg/parser/parser.rs` 私有引入 `parser_actions`，`pkg/parser/parser_runtime.rs` 在 LR 归约时把稳定的 `RuleId`、右侧语义值 `Rhs` 和可变 `Context` 交给 `parser_actions::apply`，再由 `pkg/parser/parser_actions/mod.rs` 按所有权分派到本文件。
-
-本文件负责 153 个“杂项”文法归约动作，数量由 `pkg/parser/parser_actions/remaining_aster_unit_test.rs::all_action_rules_have_one_owner` 固定验证。范围包括事务控制、`EXPLAIN`/`TRACE`、预处理语句、语句列表、`USE`、过程调用和存储过程控制结构；词法分析、LR 状态机、其他 DDL/DML/表达式/查询动作分别位于相邻模块，不属于这里。
+`identify` 将生成器提供的稳定字符串 `RuleId` 映射为私有枚举 `MiscRule`，避免依赖易漂移的 yacc 数字规则号。
 
 ## 核心职责
 
@@ -66,11 +64,9 @@ AST 子节点和动态中间值由 `Box`/`Vec` 拥有。代码使用 `take()` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/parser.y`，生成的 Go 结果可在 `pkg/parser/parser.go` 中看到。主要语义保持一致：事务模式与 completion type、`EXPLAIN` 的格式/analyze/explore/digest 分支、statement-list 的非空过滤、子查询括号标记、过程声明/handler/游标/控制流、参数 IN/OUT/INOUT 以及标识符小写化都复刻了同名 Go 动作。
+可见差异主要来自运行时表示：Go 用接口类型断言和切片，Rust 用 `yySymType` 的专用字段、`Box<dyn Any>` 降型和 `Box<dyn parser_ast::Node>`；Go 动作中的 `return 1` 错误协议统一保留在 Rust 动作接口的 `Result<bool, isize>`，但本文件当前只返回 `Ok(true/false)`。
 
-可见差异主要来自运行时表示：Go 用接口类型断言和切片，Rust 用 `yySymType` 的专用字段、`Box<dyn Any>` 降型和 `Box<dyn parser_ast::Node>`；Go 动作中的 `return 1` 错误协议统一保留在 Rust 动作接口的 `Result<bool, isize>`，但本文件当前只返回 `Ok(true/false)`。Rust 的 `StatementList` 还显式维护 `reducedStatementCount` 和 `allStatementsSemanticallyComplete`，并从 lexer 同时设置 `NoBackslashEscapes`；这是 Rust runtime 为跟踪移植完整性和节点文本所需的局部接线。
-
-一个已知的移植边界是 `CreateProcedureStmtAlt01`：Go 动作还从原始源码切片设置过程体文本和 `ProcedureParamStr`，本文件只组装 `ProcedureInfo` 的存在标志、名称、参数和 body；不能在没有进一步证据时声称 Rust 此处已覆盖那两项文本提取。相关 Go 恢复用例集中在 `pkg/parser/ast/procedure_test.go`。
+一个已知的移植边界是 `CreateProcedureStmtAlt01`：Go 动作还从原始源码切片设置过程体文本和 `ProcedureParamStr`，本文件只组装 `ProcedureInfo` 的存在标志、名称、参数和 body；不能在没有进一步证据时声称 Rust 此处已覆盖那两项文本提取。
 
 ## 扩展指南
 
@@ -81,12 +77,3 @@ AST 子节点和动态中间值由 `Box`/`Vec` 拥有。代码使用 `take()` �
 3. 若新增规则属于其他动作域，应放入对应 `ddl`、`dml`、`expression`、`query`、`security`、`admin` 或 `mview` 模块，避免 owner 重叠。
 4. 同步 `pkg/parser/parser_actions/remaining_aster_unit_test.rs` 的 owner 数量，并在独立测试文件增加行为回归。misc 行为首选 `pkg/parser/parser_actions/misc_test.rs`；广泛 SQL/恢复兼容性可对照 `pkg/parser/parser_test.rs`、Go 的 `pkg/parser/parser_test.go` 与过程测试 `pkg/parser/ast/procedure_test.go`。
 5. 风险重点是：规则字符串或 RHS 偏移漂移导致动作静默落空，错误降型产生默认 AST，statement-list 文本/SQL mode 丢失，以及大型 AST 不必要克隆带来的性能损失。涉及过程语法时还应检查标签错误、handler 条件节点可遍历性、名称大小写和 Go 的源码文本字段。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/parser/parser_actions` 定位 15 个动作/测试文件；`node --file pkg/parser/parser_actions/misc.rs` 读取 1597 行源码并报告模块使用关系；`query MiscRule/identify/apply_rule/owns` 确认主要符号。按文件消歧的 `callers/callees` 未返回边，故调用关系由下列源码直接补证。
-- Rust 源与装配：`pkg/parser/parser_actions/misc.rs`、`pkg/parser/parser_actions/mod.rs`、`pkg/parser/parser_runtime.rs`、`pkg/parser/parser.rs`、`pkg/parser/lib.rs`。
-- crate 边界：`pkg/parser/Cargo.toml`，确认库入口、本地 AST/types/mysql 依赖和无本文件专属 feature。
-- Go 对照：`pkg/parser/parser.y` 的 `BeginTransactionStmt`、`ExplainStmt`、`RollbackStmt`、`CompletionTypeWithinTransaction`、`StatementList` 和存储过程产生式；生成文件 `pkg/parser/parser.go` 仅用于确认同名动作存在。
-- 测试证据：`pkg/parser/parser_actions/misc_test.rs` 覆盖匹配标签的空 `LabelEnd`、过程声明表达式遍历、handler 条件保留；`pkg/parser/parser_actions/remaining_aster_unit_test.rs` 覆盖唯一 owner、153 条规则和无数字回退；Go 的 `pkg/parser/parser_test.go` 与 `pkg/parser/ast/procedure_test.go` 提供事务、EXPLAIN、保存点和存储过程兼容样例。
-- 本任务只新增说明文档，按任务要求不运行 Cargo；最终以固定 11 章节的结构命令验证，并人工复核上述定位、流程、边界与扩展入口均能回指真实符号或路径。

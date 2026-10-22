@@ -2,16 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore-objectio` crate。crate 入口 `pkg/objstore/objectio/lib.rs` 将本模块的公开项全部重导出，并同时重导出 `compressedio`、`CompressType`、`recording` 以及 `Context`/`Writer` 接口。因此，上层对象存储后端通过 `objectio::new_buffered_writer`、`objectio::new_uploader_writer` 或 Go 风格别名构造这里的写入包装器，而不直接依赖私有缓冲类型。
-
-它位于“存储后端创建的底层 `Writer`”与“调用方连续写入的字节流”之间：把输入按目标块大小同步切分，可选地先压缩，再把已形成的块交给底层 `Writer::write`；最终由 `Writer::close` 刷出尾块并关闭底层对象。`pkg/objstore/objectio/interface.rs` 对 `Writer` 的契约也明确说明：一次 `write` 可能同步上传满块，`close` 负责末块和对象完成。
-
-实际接线可见：
-
-- `pkg/objstore/azblob.rs` 的 `Create` 用 `new_uploader_writer` 包装 `AzureBlockUploader`；块大小来自 `WriterOption::PartSize` 或 Azure 默认值。
-- `pkg/objstore/gcs.rs` 的 `Create` 在并发度大于 1 时，用 `new_buffered_writer` 包装 multipart `GCSWriter`。
-- `pkg/objstore/s3like/store.rs` 的 `Create` 始终用 `NewBufferedWriter` 包装同步 multipart writer 或异步 uploader，并传入访问统计。
-- `pkg/objstore/compress.rs` 的 `CompressionStorage::Create` 在启用压缩时，用固定块大小和相应压缩类型包装下层 writer。
+`pkg/objstore/objectio/interface.rs` 对 `Writer` 的契约也明确说明：一次 `write` 可能同步上传满块，`close` 负责末块和对象完成。
 
 ## 核心职责
 
@@ -123,11 +114,7 @@ RustCodeGraph 将 `writer.rs` 标为至少被 `pkg/objstore/azblob.rs`、`pkg/ob
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/objectio/writer.go`。主要映射如下：
-
 - Go `interceptBuffer` 对应 Rust `InterceptBuffer`；Go `plainBuffer` 嵌入 `bytes.Buffer`，Rust `PlainBuffer` 用 `Vec<u8>` 和独立逻辑容量表达同样行为。
-- Go `BufferedWriter.Write` / `write0` / `uploadChunk` / `Close` / `GetWriter` 分别对应 Rust 的 `Writer::write` / `write_inner` / `upload_chunk` / `Writer::close` / `get_writer`。
-- Go `NewUploaderWriter` 与 `NewBufferedWriter` 对应同名 Rust snake_case 工厂及 Go 风格别名。
 - 两版都只在“当前长度 + 输入长度严格大于容量”时上传；都在压缩路径写入一段后 `continue`，重新按压缩输出长度判断；都忽略中间 flush 与关闭压缩缓冲的错误；都在上传前重置缓冲；都只在尾块上传成功后关闭底层 writer。
 - Go 用可为 nil 的 `*recording.AccessStats`，Rust 用 `Option<Arc<AccessStats>>`；`AccessStats::rec_write` 对 `None` 为 no-op。Rust 失败时取 0 计数，对齐 Go 上传失败返回 0 的主要路径。
 - Rust 特有的 `saturating_sub` 处理“压缩器头部输出大于配置容量”的情况，避免 Go 整数减法机械翻译成 `usize` 后下溢。这不改变正常容量下的分块意图。
@@ -147,17 +134,3 @@ RustCodeGraph 将 `writer.rs` 标为至少被 `pkg/objstore/azblob.rs`、`pkg/ob
 若要支持可靠重试，应首先改变“上传前 reset”或定义可重放块的所有权，同时明确底层短写处理、重复上传和 multipart abort。仅在错误后再次调用现有 writer 不能保证恢复丢失块。
 
 若要接受外部可控块大小，应在构造边界验证 `chunk_size > 0`，并检查 Azure、GCS、S3/KS3 的最小分片要求。修改公开构造签名还需同步 `lib.rs` 重导出使用者以及上述后端调用点。性能评估应关注 `bytes()` 每块克隆、同步上传造成的背压、压缩输出短时越过容量，以及块大小对内存和 multipart 请求数的权衡。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标实现：`pkg/objstore/objectio/writer.rs`；RustCodeGraph 显示 268 行、42 个索引符号，并给出该文件被 Azure、压缩包装、GCS 和相关测试等文件使用。
-- 接口与模块边界：`pkg/objstore/objectio/interface.rs`、`lib.rs`、`Cargo.toml`。crate 名为 `astersql-objstore-objectio`，直接生产依赖包括 compressedio 与 recording 两个本地 crate。
-- 下游实现：`pkg/objstore/compressedio/buffer.rs`、`pkg/objstore/compressedio/writer.rs`、`pkg/objstore/recording/recording.rs`。
-- Rust 上游调用点：`pkg/objstore/azblob.rs::Create`、`pkg/objstore/gcs.rs::Create`、`pkg/objstore/s3like/store.rs::Create`、`pkg/objstore/compress.rs::CompressionStorage::Create`。
-- Go 对照：`pkg/objstore/objectio/writer.go`；调用点搜索还核对了 Azure、GCS、S3-like、KS3 和压缩包装的 Go 接线。
-- 独立测试：`pkg/objstore/objectio/migration_aster_unit_test.rs` 覆盖分块、精确容量、上传和关闭错误、取消 context、统计与 Gzip 尾部；`writer_test.rs` 及 `writer_test.go` 覆盖本地对象完整写入和三种压缩格式往返。
-- RustCodeGraph 查询包括 `status`、目标目录 `files`、目标文件与上述接口/测试/依赖文件的 `node --file`、以及 `BufferedWriter`、`new_buffered_writer`、`new_uploader_writer`、`write_inner`、`upload_chunk`、`rec_write` 的 `query`。常见方法名的全局 callers/callees 结果存在同名噪声，因此跨文件上游边以精确路径搜索和对应调用点源码复核为准。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验收应确认该文件存在，并且恰好包含任务要求的十一个固定二级标题；人工复核重点是调用链、Go 差异、错误丢块边界和安全扩展位置均能回溯到上述源码与测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-objstore-s3like-mock`，crate 入口为同目录的 `lib.rs`，并由其公开为 `client_mock` 模块。`pkg/objstore/s3like/mock/Cargo.toml` 表明该 crate 直接依赖 `anyhow`、`mockall`、`objectio`、`s3like` 和 `storeapi`；父 crate `pkg/objstore/s3like/Cargo.toml` 又把它作为开发依赖提供给 `permission_test.rs`。因此它位于对象存储实现的测试边界，不负责访问 S3，也不保存真实桶、对象或网络连接。
-
-源码头保留了 Go MockGen 的来源信息，但 Rust 实现实际由 `mockall::mock!` 在编译时展开。它为 `s3like::PrefixClient` 提供可编程的测试替身，使 Rust 测试能按 GoMock 风格配置参数匹配、返回值和调用次数。
+通过 `mockall::mock!` 生成公开类型 `MockPrefixClient`，并让它实现 `s3like::PrefixClient`。
 
 ## 核心职责
 
@@ -73,7 +71,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/objstore/s3like/mock/client_mock.go`，它是 MockGen 产物，使用 `gomock.Controller`、`MockPrefixClientMockRecorder` 和 `RecordCallWithMethodType`。Rust 文件保留同名接口方法和近似测试写法，但实现结构存在以下明确差异：
+Rust 文件保留同名接口方法和近似测试写法，但实现结构存在以下明确差异：
 
 - Go 的 `NewMockPrefixClient(ctrl)` 接收外部 controller；Rust 的 `NewMockPrefixClient()` 直接调用 `MockPrefixClient::new()`。
 - Go 的 `EXPECT()` 返回独立 recorder；Rust 的 `EXPECT()` 返回 `&mut Self`，随后使用 `expect_CheckBucketExistence()` 等 mockall 生成方法。
@@ -82,7 +80,7 @@ Go 对照文件为 `pkg/objstore/s3like/mock/client_mock.go`，它是 MockGen �
 - Go `ISGOMOCK()` 返回空结构体；Rust `ISGOMOCK()` 返回单元值且为空操作。
 - GoMock 的控制器显式提供 `Satisfied()`；Rust 测试主要通过 mockall 的 `times` 和生命周期结束时校验期望。
 
-`permission_test.go::TestCheckPermissions` 与 Rust 的 `permission_test.rs::test_check_permissions` 具有相同测试意图：四种权限失败、未知权限拒绝和全部权限成功。Rust 独有的 `mock/migration_aster_unit_test.rs` 进一步覆盖了其余接口方法以及 Rust 所需的 `Option<Box<dyn Trait>>` 边界。
+`permission_test.go::TestCheckPermissions` 与 Rust 的 `permission_test.rs::test_check_permissions` 具有相同测试意图：四种权限失败、未知权限拒绝和全部权限成功。
 
 ## 扩展指南
 
@@ -91,13 +89,3 @@ Go 对照文件为 `pkg/objstore/s3like/mock/client_mock.go`，它是 MockGen �
 新增或调整 mock 能力时，应把测试逻辑放在独立的 `pkg/objstore/s3like/mock/migration_aster_unit_test.rs`，不要内嵌到生产源文件。至少覆盖：参数匹配、成功值、错误传播、所有可空返回，以及新增资源对象的所有权/关闭行为。若变更用于权限主链，还应同步 `pkg/objstore/s3like/permission_test.rs`，并与 `permission_test.go` 的原始意图核对。
 
 兼容风险主要来自方法名、参数类型或 `Option`/`Result` 形状漂移；测试行为风险来自放宽 `times` 或匹配器导致本应发现的调用错误漏报。性能不是该文件的主要约束，但测试不应在返回闭包中引入不必要的真实 I/O。生成宏代码不可被 RustCodeGraph 完整展开，因此导航时应同时核对宏声明和独立测试中的 `expect_*` 用法。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 7,032 个 Rust 文件；`files --filter pkg/objstore/s3like/mock` 识别 `client_mock.rs`、`lib.rs`、Go 对照和迁移单测。
-- RustCodeGraph 源码与调用证据：`node --file pkg/objstore/s3like/mock/client_mock.rs` 显示全部 89 行并标记其被 `permission_test.rs` 使用；`node NewMockPrefixClient` 给出 Rust 构造函数及 `test_check_permissions` 调用边；`node test_check_permissions` 显示其同时调用 `NewMockPrefixClient` 与 `CheckPermissions`。
-- 读取的 Rust 定义：`pkg/objstore/s3like/mock/client_mock.rs`、`pkg/objstore/s3like/mock/lib.rs`、`pkg/objstore/s3like/interface.rs`、`pkg/objstore/s3like/permission.rs`。
-- 读取的 Cargo 接线：`pkg/objstore/s3like/mock/Cargo.toml`、`pkg/objstore/s3like/Cargo.toml` 和根 `Cargo.toml` 中的 facade 依赖。
-- 读取的 Go 对照与测试：`pkg/objstore/s3like/mock/client_mock.go`、`pkg/objstore/s3like/permission_test.go`。
-- 读取的独立 Rust 测试：`pkg/objstore/s3like/mock/migration_aster_unit_test.rs`、`pkg/objstore/s3like/permission_test.rs`。前者覆盖接口域与资源/空值边界，后者覆盖真实权限调用链。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付仅执行固定章节结构检查和 diff 自审。

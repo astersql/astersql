@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`admin.rs` 属于 `astersql-executor` crate，并由 [`pkg/executor/lib.rs`](lib.rs) 的 `pub mod admin` 公开。它承载三类索引维护算法：`ADMIN CHECK INDEX` 的范围扫描、`ADMIN RECOVER INDEX` 的缺失索引回填，以及 `ADMIN CLEANUP INDEX` 的悬空索引删除。crate 归属和 Go 包映射分别由 [`pkg/executor/Cargo.toml`](Cargo.toml) 的包名 `astersql-executor`、`[lib] path = "lib.rs"` 与 `package.metadata.porting.go-package = "pkg/executor"` 确认。
-
-当前 Rust 文件不是完整会话/存储实现：真实 DAG 下发、事务、键编码、分区解析等能力均通过 `AdminRuntime`、`AdminTransaction`、`AdminSelectResult` 注入。仓库搜索未发现这三个 trait 的具体 `impl`，也未发现其他 Rust 文件直接构造 `CheckIndexRangeExec`、`RecoverIndexExec` 或 `CleanupIndexExec`。因此，本文件应理解为已经移植的执行算法与适配契约；不能仅凭其被 `lib.rs` 导出，就断言三个 Rust 执行器已经接入生产构建链。
+`Datum`、`Row`、`AdminChunk`、表/索引元数据及 `Handle` 是本文件自包含的轻量模型，用于表达 Go 版本中 `types.Datum`、`chunk`、`model`、`kv.Handle` 等概念。
 
 ## 核心职责
 
@@ -112,8 +110,6 @@
 
 ## 与 Go 版本的对应关系
 
-[`pkg/executor/admin.go`](admin.go) 是逐函数对照来源：三个执行器、恢复/清理主循环、DAG 的 Scan+Limit 形状、单并发保序扫描、50,000 行恢复日志阈值、TopSQL/磁盘满选项、分区与全局索引处理均在 Rust 中保留。
-
 主要适配差异如下：
 
 - Go 类型来自真实执行栈（`exec.BaseExecutor`、`distsql.SelectResult`、`kv.Transaction`、`table.Index`）；Rust 用本地模型和三个 trait 表达同一能力。因此 Rust 算法可被隔离验证，但具体请求编码、事务重试与表实现必须由尚未发现的适配层提供。
@@ -134,13 +130,3 @@
 - 对性能的主要风险是批量键/Datum 克隆、`HashMap` 聚合和批大小引起的事务膨胀。优化缓冲复用时不能改变 `skip` 的“所有生成条目均缺失才回填”语义。
 - 建议增加独立 Rust 单元测试（例如同目录 `admin_test.rs` 并由 `lib.rs` 的 `#[cfg(test)] mod admin_test;` 接入），使用假 `AdminRuntime`/事务/Select 覆盖：空批后继续、关闭错误优先级、部分索引全跳过仍推进、唯一索引错 handle、全局索引同 handle 不同分区、批边界续扫、零 batchSize 和事务错误传播。现有 `pkg/executor/test/admintest/admin_test.rs` 应继续承担 SQL 级兼容回归。
 - 修改 Go/Rust 对齐行为时，应同步核对 `pkg/executor/admin.go` 与 `pkg/executor/test/admintest/admin_test.go`，但不要为了文档或局部算法对齐递归补建完整运行时子系统。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/admin.rs` 将目标识别为含 112 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/executor/admin.rs --offset ...`：完整读取 1–1266 行，核对所有数据类型、trait、三个执行器及辅助函数；`query` 分别定位 Rust/Go 的 `CheckIndexRangeExec`、`RecoverIndexExec`、`CleanupIndexExec` 与 `buildRecoverIndexKeyRanges`。
-- RustCodeGraph `node --file pkg/executor/admin.go --offset ...`：完整读取 1–919 行，核对 Go 主流程、DAG、事务、分区/全局索引、错误与资源关闭语义。
-- 配置与入口：读取 `pkg/executor/Cargo.toml` 和 `pkg/executor/lib.rs`；目标包没有 `pkg/executor/doc.go`。
-- 测试：读取 `pkg/executor/test/admintest/admin_test.rs` 的 Rust SQL/内存语义用例，并检查 `pkg/executor/test/admintest/admin_test.go` 的 recover、cleanup、多值、聚簇、分区、全局及部分索引回归；另由搜索确认 `pkg/executor/test/executor/executor_test.rs` 与 `pkg/executor/test/writetest/write_test.rs` 存在 SQL 级引用。
-- 接线核验：仓库搜索 `impl AdminRuntime/AdminTransaction/AdminSelectResult`、执行器外部构造和 `admin::...` 引用，无匹配；这支持“模块已公开、算法存在、具体 trait 适配未发现”的边界结论。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证目标存在且恰含 11 个固定二级标题，并人工复核没有把 Go 行为或测试覆盖误写为已确认的 Rust 生产接线。

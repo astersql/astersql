@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-该文件实现 `astersql-timer-tablestore` crate 的表存储后端。`lib.rs` 将 `store` 声明为私有模块后用 `pub use store::*` 再导出其公开项；`Cargo.toml` 的 `[lib] path = "lib.rs"` 确认它属于该库，而不是独立二进制。它位于 Timer API 与系统会话池之间：上层通过 `api::TimerStore` 使用 CRUD/Watch，底层通过 `astersql-session-syssession` 执行由 `sql.rs` 生成的 SQL。
-
-当前生产接线可见于 `pkg/session/runtime/ttl_runtime.rs`：TTL 后台运行时以 `mysql.tidb_timers`、系统会话池及可选通知传输调用 `NewTableTimerStore`，随后把返回的 store 交给 `NewTimerRuntimeBuilder`。因此本文件不是未接线门面；它是 TTL Timer 的持久化适配层。
+`checkUpdateConstraints` 在写入前执行事件 ID、版本、时区和调度策略校验；`runInTxn` 为 Update 提供悲观事务边界。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ Watch 通道的生命周期由 notifier 管理，`TableTimerStoreCore::Close` �
 
 ## 与 Go 版本的对应关系
 
-`pkg/timer/tablestore/store.go` 是逐函数语义基线：构造器、CRUD、更新约束、悲观事务、会话 UTC 隔离、Watch/Close 和通知时机均有直接对应。Rust 将 Go 的多个 `*WithSession` 小函数内联到 trait 方法，并用 `SqlCell/SqlRow/SqlResult` 代替 `chunk.Row` 与 record set drain。
+Rust 将 Go 的多个 `*WithSession` 小函数内联到 trait 方法，并用 `SqlCell/SqlRow/SqlResult` 代替 `chunk.Row` 与 record set drain。
 
 需要关注的实现差异：
 
@@ -102,11 +100,3 @@ Watch 通道的生命周期由 notifier 管理，`TableTimerStoreCore::Close` �
 - 修改时间处理：同时检查 UTC 会话设置、`@@global.time_zone`、`TIDB` 兼容值、无效时区回退以及三个时间字段的 location 转换。
 - 测试必须放在独立文件，不能内嵌到 `store.rs`。近邻入口是 `store_test.rs`（当前仅 index-merge 文本解析）和 `sql_test.rs`（会话清理、事务及 SQL mock）；真实 SQL CRUD/Watch 回归位于 `pkg/session/runtime/ttl_timer_store_test.rs`。还应参考 Go 的 `sql_test.go` 与 `pkg/timer/store_intergartion_test.go` 保持迁移意图。
 - 性能风险集中在 List 的结果全量解码、额外系统变量查询和标签查询所需 index merge；兼容风险集中在列序、时区回退、可接受的单元格类型和错误文本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 `pkg/timer/tablestore` 的 10 个 Go/Rust 文件；读取了 `store.rs` 全部 554 行、`lib.rs`、`store_test.rs`、`sql_test.rs` 相关区段、`ttl_runtime.rs` 生产调用区段和 `ttl_timer_store_test.rs`。查询了 `NewTableTimerStore`、`checkUpdateConstraints`、`executeSQL`、`runInTxn`、`TableTimerStoreCore`；关键 callers/callees 查询无可用输出，故未将其当作否定证据。
-- crate/模块边界：读取 `pkg/timer/tablestore/Cargo.toml` 和 `pkg/timer/tablestore/lib.rs`。
-- Go 对照：通过 RustCodeGraph 读取 `pkg/timer/tablestore/store.go` 全文及 `sql_test.go` 的会话/事务测试区段；精确搜索确认 `pkg/timer/store_intergartion_test.go` 存在构造器集成用例。
-- Rust 测试：`pkg/timer/tablestore/store_test.rs::index_merge_state_matches_tidb_boolean_values` 验证关闭值识别；`pkg/timer/tablestore/sql_test.rs::test_run_in_txn` 及相邻 `with_session` 用例验证事务顺序、错误保留、panic 和不可复用标记；`pkg/session/runtime/ttl_timer_store_test.rs::go_merge_43_ttl_table_timer_store_real_sql_roundtrip` 验证真实 SQL CRUD、二进制/时间解码、三类通知及关闭生命周期。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前另运行任务指定的 11 章节结构命令，并人工复核路径、符号、调用边和未验证边界。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`codec.rs` 是 `astersql-util-plancodec` crate 的文本执行计划线格式与压缩格式实现。crate 入口 `pkg/util/plancodec/lib.rs` 以 `include!("codec.rs")` 将它放入私有 `codec` 模块，再通过 `pub use codec::*` 暴露公开 API；同一 crate 的 `binary_plan_decode.rs` 也直接复用本文件的 `Decompress`、`Error` 和丢弃提示常量。
-
-该文件位于计划的生产、持久化与展示之间：编码侧把计划节点写成以换行分行、tab 分列的紧凑字节格式；存储侧以 Snappy 压缩并用标准 base64 表示；解码侧把物理算子 ID 和 task 编码还原成可读文本树。实际接线可见 `pkg/util/topsql/topsql.rs::default_pipeline`、`pkg/util/stmtsummary/reader.rs` 的 `PlanStr` 工厂以及 `pkg/util/stmtsummary/v2/column.rs` 的 `PlanStr` 工厂。
+`Compress`/`Decompress` 实现标准 base64 外层和 Snappy block 内层；`BinaryPlanDiscardedEncoded` 构造二进制计划的 protobuf 丢弃哨兵。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ RustCodeGraph 的文件节点显示 `codec.rs` 定义 58 个符号，精确查�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/plancodec/codec.go`。Rust 保留了 Go 的常量、`planDecoder`/`planInfo` 结构、解码步骤、表头裁剪、父节点查找、树线填充、列对齐、计划行编码、task 编码和 Snappy+base64 顺序；`codec_test.go` 的 root/cop 与丢弃哨兵用例也在 `codec_test.rs` 中对应存在。
+Rust 保留了 Go 的常量、`planDecoder`/`planInfo` 结构、解码步骤、表头裁剪、父节点查找、树线填充、列对齐、计划行编码、task 编码和 Snappy+base64 顺序；`codec_test.go` 的 root/cop 与丢弃哨兵用例也在 `codec_test.rs` 中对应存在。
 
 实现层差异主要用于精确复刻 Go 运行时语义。Go 的 `string` 可装任意字节，Rust 因而让主要解码结果和 `PlanInfo.fields` 使用 `Vec<u8>`，只在错误 `Display` 边界有损转换；Go `strconv.Atoi`、字符串引用、base64 错误偏移和 Snappy uvarint 宽容度由私有兼容函数复现。Go `sync.Pool` 对应 Rust 的 `LazyLock<Mutex<Vec<_>>>`，语义上均复用 decoder，但 Rust 池不会自动受 GC 清理。
 
@@ -93,12 +91,3 @@ Rust `DecodePlan` 通过双层 `catch_unwind` 复现 Go 的 `defer recover`，�
 调整解压或错误处理时必须保留 Go 的边界：CR/LF、padding 错误偏移、非零 padding bits、十字节非最短 Snappy uvarint、任意非 UTF-8 字节、`isize` 溢出和普通/归一化入口不同的 panic 行为。优化池或缓冲策略时，应继续验证并发隔离、panic 后归还和大计划内存上限；池无界是潜在性能/常驻内存风险，而给池加上限会改变复用特征，应单独基准评估。
 
 二进制哨兵或 protobuf 格式扩展应同步检查 `BinaryPlanDiscardedEncoded`、`binary_plan_decode.rs` 以及构建生成的 `tipb` 类型，不能把文本 `"[discard]"` 与 protobuf 标志混为一种协议。所有 Rust 行为变更都应与 `pkg/util/plancodec/codec.go` 及 `codec_test.go` 对照，避免只为 Rust 测试缩减 Go 语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件、4,415 个 Go 文件；`files --filter pkg/util/plancodec` 确认目标、模块入口、Go 对照和独立测试均已索引；`node --file pkg/util/plancodec/codec.rs` 阅读全部 774 行；`query DecodePlan`、`query EncodePlanNode` 精确区分 Rust/Go 符号。精确 `callers/callees` 对目标函数未返回边，调用关系因此由引用搜索和调用点源码核验。
-- 生产源码：`pkg/util/plancodec/codec.rs`；模块边界：`pkg/util/plancodec/lib.rs`；crate 声明：`pkg/util/plancodec/Cargo.toml`；crate 内下游：`pkg/util/plancodec/binary_plan_decode.rs`。
-- 直接调用点：`pkg/util/topsql/topsql.rs::default_pipeline`、`pkg/util/stmtsummary/reader.rs` 的 `PlanStr` 工厂、`pkg/util/stmtsummary/v2/column.rs` 的 `PlanStr` 工厂。
-- Go 对照：`pkg/util/plancodec/codec.go`；Go 测试：`pkg/util/plancodec/codec_test.go`。
-- Rust 独立测试：`pkg/util/plancodec/codec_test.rs`，覆盖 task/哨兵、base64 padding、负深度与 panic、树对齐与并发池、非 UTF-8、Go 错误文本与整数范围、Snappy uvarint、全部 u8 store 值和 Go Unicode 引用版本。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务规定的 11 章节结构校验，并人工复查所有行为陈述均能回指上述符号或文件。

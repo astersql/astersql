@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`record.rs` 属于 `astersql-resourcegroup-runaway` crate；crate 入口 `pkg/resourcegroup/runaway/lib.rs` 以 `pub mod record` 导出它。它位于 runaway 判定与系统表之间的数据/持久化边界：用 Rust 类型表示失控查询日志和 quarantine watch（隔离监视）记录，并生成交给 `RestrictedSqlExecutor` 执行的参数化 SQL。本文件自身不负责判定查询是否失控、不维护 watch 内存索引，也不创建后台刷盘循环。
-
-该 crate 的 `Cargo.toml` 以 `lib.rs` 为库入口，并通过 `[package.metadata.porting] go-package = "pkg/resourcegroup/runaway"` 声明 Go 对照包。当前依赖只列在 `cfg(windows)` 目标段；本文件直接使用的执行器、动作/匹配枚举、时间戳和统一错误类型均由 crate 根提供，而不是直接引用外部 crate。
+`SqlValue` 是该子系统的受限 SQL 参数值类型，也被 `syncer.rs` 用作系统表结果行的列值表示，因此它同时连接写入和读取两侧。
 
 ## 核心职责
 
@@ -92,7 +90,7 @@ SQL 占位符采用 TiDB 内部执行器约定的 `%?`，不能未经执行器�
 
 ## 与 Go 版本的对应关系
 
-主体逐项对应 `pkg/resourcegroup/runaway/record.go`：Rust `Record` / `RecordKey`、十列 runaway insert、`QuarantineRecord`、九列 watch 参数、批量 insert/delete，以及 done 事务的 SQL 顺序均保留 Go 设计。`record_test.rs` 还内嵌了一段 Go 测试参考文本，但可执行的 Rust 测试位于文件后半部分，独立于生产源码。
+`record_test.rs` 还内嵌了一段 Go 测试参考文本，但可执行的 Rust 测试位于文件后半部分，独立于生产源码。
 
 已确认的语言适配包括：Go `time.Time{}` / `nil` 结束时间映射为 Rust `Timestamp == 0` / `SqlValue::Null`；Go `[]any` 映射为强类型 `Vec<SqlValue>`；Go 指针 map 映射为拥有值的 `HashMap`；Go protobuf 枚举映射为 crate 本地枚举。Rust 用 `From<&Record>` 集中构造复合键，而 Go 在刷盘循环中写结构体字面量。
 
@@ -114,13 +112,3 @@ SQL 占位符采用 TiDB 内部执行器约定的 `%?`，不能未经执行器�
 改变 done 事务语义前，应扩展 `record_test.rs` 的捕获执行器用例，覆盖 begin、insert、delete、rollback、commit 各失败点，并明确是否继续吞掉 commit 错误。若要增强原子性，优先在执行器接口或事务 guard 层提供可验证的提交结果，而不是只改变 SQL 字符串。
 
 性能风险集中在每批对所有字符串的克隆、无稳定顺序的 `HashMap` 展开以及过大批次生成的 SQL/参数体积；兼容风险集中在枚举数值、系统表列序、`%?` 占位符和 commit 错误行为。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter pkg/resourcegroup/runaway` 确认模块文件集合；`node --file pkg/resourcegroup/runaway/record.rs` 读取全部 265 行及 28 个符号；对 `genRunawayQueriesStmt`、`genBatchInsertWatchStmt`、`genBatchDeleteWatchByIDStmt`、`handleRunawayWatchDone` 执行了 callers/callees 查询。图能解析本文件内部调用，但部分自由函数 callers 为空，因此用精确符号搜索补证。
-- 生产源码：`pkg/resourcegroup/runaway/record.rs`（目标实现）、`lib.rs`（模块导出、公共类型与执行器契约）、`manager.rs`（记录生产、队列、单条插入与移除接线）、`flusher.rs`（可复用批量缓冲器）、`syncer.rs`（表名消费、参数值读侧和记录解码）。该目录没有 `doc.go`。
-- crate 边界：`pkg/resourcegroup/runaway/Cargo.toml`，确认库入口、Go 包映射和条件依赖声明。
-- Go 对照：`pkg/resourcegroup/runaway/record.go`（数据模型、SQL、done 事务、手工增删），`manager.go::RunawayRecordFlushLoop`（三个批量函数的真实生产接线），`record_test.go`（复合键语义）。
-- Rust 测试：`pkg/resourcegroup/runaway/record_test.rs` 验证 `RecordKey`/10 参数 runaway insert、watch 的 9 参数批量插入、按 ID 删除、done 四步顺序、commit 错误吞掉，以及 insert/delete 错误触发 rollback；`syncer_test.rs` 为 `SqlValue` 和 watch/done 解码提供相邻读侧证据。
-- 生产引用精确搜索确认：`genRunawayQueriesStmt`、`genBatchInsertWatchStmt`、`genBatchDeleteWatchByIDStmt` 目前只出现在目标文件和 Rust 测试；`manager.rs` 生产调用 `getRecordKey`、`genInsertionStmt` 和 `handleRunawayWatchDone`。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验收使用任务文件规定的 11 个固定二级标题检查，并人工复核源码链接、事实边界与扩展建议。

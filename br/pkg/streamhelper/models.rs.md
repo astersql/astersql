@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-streamhelper` crate 的任务元数据模型与 etcd 键布局定义。crate 根在 [`br/pkg/streamhelper/lib.rs`](lib.rs) 中以 `pub mod models` 挂载本文件，并通过 `pub use models::*` 将公开符号提升为 crate 级 API；[`br/pkg/streamhelper/Cargo.toml`](Cargo.toml) 声明该 crate 对应 Go 包 `br/pkg/streamhelper`，属于 library、porting lane 2。
-
-它不负责访问 etcd、调度备份或推进 checkpoint，而是向这些流程提供稳定的键名、二进制编码和任务构造规则。实际读写者主要是 [`client.rs`](client.rs) 的 `MetaDataClient`/`Task`，监听者还包括 [`advancer_cliext.rs`](advancer_cliext.rs)。当前 Rust 移植通过 [`stubs.rs`](stubs.rs) 的本地 `KeyRange`、`StorageBackend`、`StreamBackupTaskInfo` 表示协议边界，并未直接依赖 Go 版使用的 kvproto/backuppb 类型。
+提供值语义的 `TaskInfo` 建造器，并在 `Check` 中执行写入前的最小合法性检查：存储存在、表过滤链非空、任务名只包含 ASCII 字母数字或下划线。
 
 ## 核心职责
 
@@ -72,7 +70,7 @@ RustCodeGraph 对本文件的文件节点列出 7 个使用文件，包括 `clie
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`br/pkg/streamhelper/models.go`](models.go)。常量值、路径形状、八字节大端编码、`TaskInfo` 字段、建造器顺序和 `Check` 的三项约束均按 Go 语义移植。Rust 的 `path_join` 替代 Go `path.Join`，`RangeKeyOf` 则与 Go 一样绕开路径清洗并保留原始 start key 字节。
+Rust 的 `path_join` 替代 Go `path.Join`，`RangeKeyOf` 则与 Go 一样绕开路径清洗并保留原始 start key 字节。
 
 主要语言适配差异如下：Go `NewTaskInfo` 和建造器返回同一个可变指针，Rust 使用消费 `self` 的值语义；Go `WithRanges` 是 variadic，Rust 接收 `&[KeyRange]`；Go `ToStorage` 接收可空指针，Rust 接收非空值并存为 `Some`；Go `Check` 返回带 `ErrPiTRInvalidTaskInfo` 根因的 annotated error，Rust 返回字符串；Go `RangeKeyOf` 以 `string` 承载任意字节，Rust 显式返回 `Vec<u8>`，避免无效 UTF-8 转换。
 
@@ -87,11 +85,3 @@ Go 文件还提供 `TaskInfo::ZapTaskInfo`，用于生成 protobuf、暂停状�
 - 建议把纯路径/校验回归放在独立 `models_test.rs`，跨模型与客户端的生命周期放在 `integration_test.rs`，Go/Rust 公共契约放在 `parity_test.rs`；不要把测试嵌回 `models.rs`。
 
 兼容性风险集中在持久化键字节、尾斜杠、checkpoint 类型字符串和错误契约；性能风险主要是大批 ranges 时的逐项复制与逐键写入，但本文件本身没有 I/O。任何优化都必须保留二进制 start key 的逐字节一致性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter br/pkg/streamhelper` 确认目标及相邻实现/测试已索引；`node --file br/pkg/streamhelper/models.rs --offset 1 --limit 500` 读取目标文件全部 229 行并列出 7 个使用文件；`explore "NewTaskInfo TaskInfo::Check RangeKeyOf in br/pkg/streamhelper only"` 核对上述生产调用边和测试调用边。单独的 `callers` 批量查询在本地 30 秒窗口内未返回，因此调用边又以该精确 `explore` 结果及下列源文件交叉核验。
-- 源码与 crate 边界：`br/pkg/streamhelper/models.rs`、`br/pkg/streamhelper/lib.rs`、`br/pkg/streamhelper/Cargo.toml`、`br/pkg/streamhelper/stubs.rs`、`br/pkg/streamhelper/client.rs`、`br/pkg/streamhelper/advancer_cliext.rs`。
-- Go 对照：`br/pkg/streamhelper/models.go`，以及调用侧 `br/pkg/streamhelper/client.go`、`br/pkg/streamhelper/advancer_cliext.go` 的同名 API 使用点。
-- Rust 独立测试：`models_test.rs` 验证含 `0xff`、`//`、零字节等 start key 的无损拼接及实际 KV 写入；`parity_test.rs::go_rust_public_contract_matches` 验证路径、大端编码和校验约束，`task_metadata_methods_match_go_contract` 验证 ranges、暂停、checkpoint、错误和删除生命周期；`integration_test.rs::test_checking` 与 `simple_task` 覆盖建造器和错误分支。
-- 本任务只生成文档，按计划不运行 Cargo。交付前使用任务规定的 `rg -c` 命令验证恰有 11 个固定二级章节，并人工复核文档没有把 stub、未实现校验或多键事务写成已具备能力。

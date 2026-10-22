@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate；crate 根由 `pkg/executor/join/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/join/lib.rs` 以公开模块 `left_outer_semi_join_probe` 装配它。它实现 Hash Join probe 阶段的 Left Outer Semi 与 Anti Left Outer Semi 变体：对每条左侧（probe 侧）行保留原行并追加布尔或 `NULL` 标记，而不展开右侧（build 侧）列。
-
-直接构造入口是 `base_join_probe.rs::new_join_probe`。当 `JoinType` 为 `LeftOuterSemi` 或 `AntiLeftOuterSemi` 且 `right_as_build_side == true` 时，工厂创建 `LeftOuterSemiJoinProbe` 并以 `Box<dyn Probe>` 返回；左侧作为 build 侧会直接返回错误。因此，该实现位于“build 侧哈希表已建立、worker 为当前 probe chunk 查找候选行”之后和 `Joiner` 生成最终标记行之前。
+因此，该实现位于“build 侧哈希表已建立、worker 为当前 probe chunk 查找候选行”之后和 `Joiner` 生成最终标记行之前。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@
 
 直接对照文件是 `pkg/executor/join/left_outer_semi_join_probe.go`，两者保持了这些意图：右侧作为 build 侧；每个 probe chunk 重置匹配状态；不扫描 build row table；按是否 anti 生成相反的 0/1（Rust 为 `Bool`）标记；条件为 NULL 时保留 NULL；重复候选只决定一个 outer 标记；spill 恢复后重新初始化状态；扫描初始化/完成查询为不可达 panic。
 
-Rust 当前实现不是 Go 文件的逐语句等价实现：
-
 - Go 直接操作 `chunk.Chunk`、row-table 地址链、tagged pointer、`remainCap`、selection vector、`SQLKiller` 和 probe collision；Rust 活跃实现使用拥有所有权的 `Vec<Row>` 与预先建立的候选下标，相关底层工作集中在 `BaseJoinProbe`/`Joiner`。
 - Go 把 other condition 分成 `probeWithOtherCondition`、`produceResult` 和无条件快路径，并可复制列；Rust 统一通过 `BaseSemiJoin::match_probe_row` 与逐行 `Joiner` 求值，没有该列复制快路径，也没有在本文件中检查 SQL killer。
 - Go 类型以 `isNullRows` 单独记录未知结果；Rust 使用 `BaseSemiJoin::has_null`，并在本文件额外计算 NAAJ 的 key NULL 状态。Rust 结构含 `null_aware` 字段，Go 对照结构本身没有该字段。
@@ -106,13 +102,3 @@ Rust 当前实现不是 Go 文件的逐语句等价实现：
 - Rust 单元测试必须继续放在独立的 `pkg/executor/join/left_outer_semi_join_probe_test.rs`（以及 anti 对应测试文件），不要内嵌进生产源文件。
 
 兼容性重点是标记类型及 NULL 语义、输出行顺序、每个 outer 恰好一行、只支持右 build；正确性重点是错误时的游标与部分结果；性能重点是 NAAJ 每行全 build 扫描及行克隆。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为 15 个符号。
-- RustCodeGraph `node --file pkg/executor/join/left_outer_semi_join_probe.rs`：核对 `LeftOuterSemiJoinProbe`、完整 `Probe` 实现及 359 行源文件；`query LeftOuterSemiJoinProbe` 核对结构和 9 个 trait 方法。
-- RustCodeGraph `callers`/`callees`：对目标 `probe` 的精确节点查询返回空数组；文件关系显示被 `base_join_probe.rs`、`outer_join_probe.rs` 使用。动态分派缺口由 `base_join_probe.rs::new_join_probe` 的直接构造代码补证，不把空图结果解释为“无人调用”。
-- 已读生产与装配证据：`pkg/executor/join/base_join_probe.rs`（`Probe`、`HashJoinContext`、`BaseJoinProbe`、`new_join_probe`）、`base_semi_join.rs`（`reset_probe_state`、`match_probe_row`）、`joiner.rs`（`Joiner::try_to_match_inners`、`on_miss_match`）、`lib.rs`、`Cargo.toml`。
-- 已读 Go 对照：`pkg/executor/join/left_outer_semi_join_probe.go`，逐项核对构造约束、状态重置、两类 probe、标记构造、扫描不可达和完成判定。
-- 已读独立 Rust 测试：`pkg/executor/join/left_outer_semi_join_probe_test.rs`，覆盖 true/false 标记、条件 NULL、重复 build key、spill/恢复、普通 NULL key、null-aware anti 的未知结果，以及两个不可达 panic。Go 测试 `left_outer_semi_join_probe_test.go` 的索引符号另显示 basic、全 join key、other condition、selection、fast path 与 spill 测试面；本任务未运行测试，因为计划明确为纯文档且禁止 Cargo。
-- 结构验证应确认目标文档存在且恰有本页 11 个固定二级标题；最终交付前另人工复核本文只描述可由上述符号和文件支持的当前事实。

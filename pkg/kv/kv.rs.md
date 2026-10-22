@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/kv/kv.rs` 是 `astersql-kv` crate 的核心契约文件。crate 入口 `pkg/kv/lib.rs:494-500` 通过私有模块 `kv` 包含本文件并执行 `pub use kv::*`，因此这里定义的 trait、请求结构、常量与辅助函数构成上层 crate 实际使用的公开 KV API。`pkg/kv/Cargo.toml` 将库入口指定为 `lib.rs`，默认采用 Classic 内核；`nextgen` feature 只向 `kerneltype`、`keyspace` 传播。
-
-它位于 SQL 层与具体存储实现之间：上层会话、执行器、DDL、TTL、domain 和 distsql 面向这里的 `Storage`、`Transaction`、`Snapshot`、`Client`、`Request` 等抽象编程，具体 TiKV/本地存储适配器再实现这些契约。例如 `pkg/store/driver/kv_adapter.rs` 实现了 `Storage` 的 DDL region、TTL region、TiFlash placement 与 SST 导入能力；`pkg/session/runtime/import_sst.rs`、`ttl_metadata.rs`、`modify_column_cloud_planner.rs` 和 `relational_scan.rs` 分别消费这些能力。
-
-本文件不是存储算法实现，也不是纯门面：它既定义跨模块协议，也实现范围整理、并发准入、标签编码等可执行逻辑。键、错误、选项、MPP 等配套类型分别来自同 crate 的 `key.rs`、`error.rs`、`option.rs`、`mpp.rs` 及 `lib.rs` 中的依赖适配模块。
+维护扫描范围结构：`KeyRanges` 保存“分区 → range”的二维结构以及对应 row-count hints，并负责转换、展平、排序、遍历和一致性检查（`kv.rs:352-477`）。
 
 ## 核心职责
 
@@ -121,8 +117,6 @@ SST limiter 要求实现 `Send + Sync`，同一 `Arc` 可跨 store 写 RPC 使�
 
 ## 与 Go 版本的对应关系
 
-主要基线是同路径 `pkg/kv/kv.go`。基础读写接口、staging、事务、公平锁、Client、请求类型号、`StoreType`、`KeyRanges`、`Request`、Snapshot/Storage、region split、优先级、隔离级别和资源组标签的命名与语义总体逐项对齐；`pkg/kv/kv_test.go` 则是 limiter 和标签行为的直接测试对照。
-
 需要明确的 Rust 差异/扩展如下：
 
 - Go 的 `map[string]ValueEntry` 可用 string 无损承载任意字节，Rust 暂以 UTF-8 `String` 为键，所以增加 `KeyMapName` 的十六进制编码约定（`kv.rs:47-57`）；调用方与实现必须统一使用它。
@@ -133,7 +127,7 @@ SST limiter 要求实现 `Send + Sync`，同一 `Arc` 可跨 store 写 RPC 使�
 - Go `ResourceGroupTagBuilder::Build` 防御 nil request；Rust 引用类型天然排除 nil。Go protobuf marshal 返回 nil bytes，Rust返回 `Option<Vec<u8>>`。两者都只在编码成功且非空时覆盖标签。
 - Go `DecodeTableIDFunc` 是可空函数变量；Rust 用 `static mut Option<fn>` 保持回调形状，但增加了 `unsafe` 共享状态风险。
 
-`pkg/kv/kv_test.rs` 与 Go 测试意图基本对齐：容量为 1 的等待/释放与取消、冗余 release panic、32 worker 不突破容量、按 store 隔离，以及空/短/长 digest 和 keyspace 的 protobuf 编解码。Rust 还显式处理 NextGen 测试进程缺少 Go `init()` 的全局 keyspace 初始化差异（`kv_test.rs:197-215`）。
+Rust 还显式处理 NextGen 测试进程缺少 Go `init()` 的全局 keyspace 初始化差异（`kv_test.rs:197-215`）。
 
 ## 扩展指南
 
@@ -145,12 +139,3 @@ SST limiter 要求实现 `Send + Sync`，同一 `Arc` 可跨 store 写 RPC 使�
 - 修改资源组标签时需同时检查 classic/nextgen keyspace、空 key、SQL/plan digest、table ID callback、label 与 protobuf 兼容性；对应文件是 `pkg/kv/kv_test.rs`、`pkg/kv/kv_test.go` 和 `pkg/executor/resource_tag_test.rs`。
 - 若要消除 `DecodeTableIDFunc` 的并发风险，优先使用一次初始化或受控可替换容器，并验证 tablecodec 接线不造成 crate import cycle；不能直接在本 crate 引入上层 tablecodec。
 - Rust 行为应继续对照 `pkg/kv/kv.go`，但 Rust 已有直接调用所必需的扩展不能为了表面一致而删除。任何行为修改都应同步独立 Rust 测试，并按仓库规则在实现修复后保留顶部 AsterSQL 与 PingCAP 版权注释。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/kv` 显示 `kv.rs` 有 255 个符号，`kv.go` 有 238 个符号。`node --file pkg/kv/kv.rs --offset 1 --limit 700` 与 `--offset 701 --limit 500` 完整读取了 1,035 行目标源码，并报告其被 35 个 Rust 文件使用。
-- RustCodeGraph 精确符号查询确认 `KeyRanges`、`ResourceGroupTagBuilder`、`NewCoprRequestLimiter` 在 Go/Rust 同路径均存在。`callers/callees` 查询未返回可用边，因此调用关系改用精确仓库搜索并逐一记录路径；没有把失败查询当作“无调用者”。
-- 已读源码/边界文件：`pkg/kv/kv.rs`、`pkg/kv/lib.rs`、`pkg/kv/Cargo.toml`。
-- 已读 Go 对照：`pkg/kv/kv.go`；已读独立测试：`pkg/kv/kv_test.rs`、`pkg/kv/kv_test.go`。
-- 已核对直接调用/实现证据：`pkg/session/runtime/{relational_scan.rs,import_sst.rs,ttl_metadata.rs,modify_column_cloud_planner.rs}`、`pkg/util/mock/context.rs`、`pkg/domain/domain.rs`、`pkg/store/driver/kv_adapter.rs`，以及搜索命中的 `pkg/distsql`、`pkg/store/copr` 与 `pkg/store/driver` 测试。
-- 本任务只新增说明文档，按计划不运行 Cargo 或代码测试。交付前执行任务规定的 11 章节结构命令，并人工检查：仅说明当前可由源码/调用边验证的行为；未把默认方法或可选 trait 能力宣称为所有后端已实现；没有复制整段源码；测试建议均指向独立测试文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate。crate 入口 `pkg/planner/core/lib.rs` 以 `mod plan;` 装入该模块，并用 `pub use plan::*;` 将其中的公开项重新导出。它不是完整的计划接口定义：`PlanKind`、`PlanNode`、`PlannerContext` 和 `StoreType` 位于同 crate 的 `common_plans.rs`；本文件在这些轻量计划树结构之上补充三类辅助能力：会话规划上下文检查、物理任务包装与细粒度 Shuffle 改写、probe 父节点计数。
-
-`pkg/planner/core/Cargo.toml` 将该 crate 定义为 `astersql-planner-core`、库入口为 `lib.rs`、关闭自动测试发现（`autotests = false`），并声明 `nextgen` feature。本文件没有条件编译项，也没有直接引用外部 crate；其输入类型都经 crate 根导入。仓库搜索只发现 Rust 测试 `pkg/planner/core/plan_test.rs` 直接调用本文件的公开 API，未发现 Rust 生产文件的调用点，因此当前应把它视为“已实现、已独立测试且由 crate 公开，但 Rust 生产主链尚未检出接线”的移植模块，而不是宣称已经驱动完整 Rust 优化器。
+`wrap_shuffle` 在每个符合条件的 `Sort` 子节点外插入 `Shuffle` sender 和 `ShuffleReceiver`，并把两层新节点的执行存储类型标为 `TiFlash`。
 
 ## 核心职责
 
@@ -104,13 +102,3 @@ Shuffle 新节点由 `PlanNode::New` 建立，继承其默认字段语义：默�
 - 新增 probe 父节点类型时，应同时更新 `probe_outer_child` 的允许集合和 build/inner-side 到 outer child 的映射，并在独立测试中覆盖 `build_side` 为 0、1、缺失、非法值以及孩子越界。不要把测试嵌入生产源文件。
 - 若实际统计改为独立集合，应让 `getActualProbeCntFromProbeParents` 接收该集合或稳定查询接口，并复刻 Go 中 root/cop 统计优先级与 PhysicalApply cache-hit TODO 的语义。
 - 修改错误契约时同步核对 Go `AsSctx` 和 `test_as_sctx_preserves_go_error_contract`。改变新节点 id、存储类型或 `info` 格式可能影响 EXPLAIN、编码或执行接线，应评估兼容性；增加深树克隆或表达式复制会带来规划期内存与性能风险。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/core/plan.rs` 确认目标文件已索引且有 18 个符号。
-- RustCodeGraph `node --file pkg/planner/core/plan.rs --offset 1 --limit 260`：读取并核对目标文件完整 196 行，包括全部类型、函数、分支和字段访问。
-- RustCodeGraph 对 `AsSctx`、`optimizeByShuffle`、三个专用 Shuffle 函数及两个 probe 计数函数执行 `query`，确认 Rust/Go 同名定义及各自路径。精确 callers/callees 命令发生符号 ID 消歧异常，未把其噪声结果作为调用关系证据；改以文件索引和限定路径的 `rg` 补核直接调用点。
-- 已读 Rust 路径：`pkg/planner/core/common_plans.rs`（`StoreType`、`PlanKind`、`PlanNode`、`PlannerContext`）、`pkg/planner/core/lib.rs`（模块装配、公开再导出、独立测试挂载）、`pkg/planner/core/plan_test.rs`（Shuffle、probe、错误契约边界）。
-- 已读配置与 Go 对照：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/plan.go`；并通过限定搜索核对 `pkg/planner/core/find_best_task.go`、`pkg/planner/core/core_init.go`、`pkg/planner/core/planbuilder.go`、`pkg/planner/core/common_plans.go` 的 Go 接线。
-- `plan_test.rs` 证明：Window 成功插入 receiver/sender、非 Sort 或关闭配置保持不变、空计划保持不变、低估值不改写、StreamAgg/MergeJoin 可包装、非 probe 父节点被忽略、缺失上下文保留固定错误文本。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构检查和人工事实复核为验收依据。

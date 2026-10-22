@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-util` crate（`pkg/ddl/util/Cargo.toml`），由 `pkg/ddl/util/lib.rs` 通过 `#[path = "watcher.rs"] mod watcher_impl` 编入，并由 `pub use watcher_impl::*` 对外导出。它提供一个面向 crate 内存版 etcd 抽象的、线程安全的精确路径监听器。
-
-当前接线状态需要特别区分：该 API 已进入 crate 的公开表面，但仓库 Rust 源码中没有发现 `astersql_ddl_util::NewWatcher`、本文件 `Watcher` trait 或其附加观测方法的调用点。DDL schema-version 主链在 `pkg/ddl/schemaver/syncer.rs` 中定义并使用另一套本地 `Watcher`，其 `Context`、`EtcdClient` 和 `WatchChan` 类型也不同。因此，本文件目前是可复用的工具实现，不是已验证接入 schema 同步主链的实现。
+只管理“当前通道引用”和诊断状态；事件生成、精确键匹配、失败注入与发送端清理由 `pkg/ddl/util/util.rs` 的 `EtcdClient`/`EtcdState` 实现。
 
 ## 核心职责
 
@@ -84,17 +82,11 @@ RustCodeGraph 将文件识别为 16 个符号，并确认 `NewWatcher` 调用本
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/util/watcher.go`。两版共同保留了 `Watcher`/`watcher`/`NewWatcher`、读写锁保护当前通道、同步 `Watch`，以及“`Rewatch` 先置空旧通道、再异步建立新监听”的总体顺序。
-
-Rust 版存在明确的移植扩展：
-
 - Go 的 `clientv3.Client.Watch` 直接返回通道；Rust 内存客户端返回 `Result<WatchChannel, DdlUtilError>`，所以 Rust trait 增加 `LastError`，并以 `Option` 表示通道缺失。
 - Rust `Rewatch` 为满足线程所有权要求按值接收可克隆的令牌、客户端和 `String`；Go goroutine 捕获借用语义下的 `context.Context`、客户端指针和字符串。
 - Go 在调用 `Rewatch` 时开始计时，并把耗时写入 `DeploySyncerHistogram`，完成后记录日志；Rust 在线程体开始计时，只保存在 `last_rewatch_duration`，没有指标或日志。因此两者的耗时窗口和可观测性不等价。
 - Go context 可持续控制 etcd watch 生命周期；Rust 取消令牌只在注册前采样一次，不能取消已注册监听。
 - Go 文件没有错误观测字段；Rust 额外明确了注册失败状态，但当前没有外部调用或测试证明上层消费方式。
-
-相关 Go 测试中没有发现直接针对 `pkg/ddl/util/watcher.go` 的独立单元测试。`pkg/ddl/serverstate/syncer_test.go` 和 `pkg/ddl/jobsubmit/submit_test.go` 出现的 `WatchChan`/`Rewatch` 验证的是 server-state 接口或 fake，不直接覆盖本实现。
 
 ## 扩展指南
 
@@ -104,12 +96,3 @@ Rust 版存在明确的移植扩展：
 - 若增加前缀、revision 或过滤选项，应修改 `Watcher` trait 与 `EtcdClient::watch` 的契约，并测试历史丢失、重复/漏事件和精确键兼容性。
 - 若保留每次重建一个线程的模型，应评估调用频率、线程创建成本和进程退出行为；高频场景更适合复用执行器或返回可等待句柄。
 - 测试必须放在独立文件而非 `watcher.rs` 内。建议新增 `pkg/ddl/util/watcher_test.rs`，并在 `lib.rs` 以 `#[cfg(test)] #[path = "watcher_test.rs"] mod watcher_test;` 接入；覆盖成功监听、预取消、注入 watch 失败、重建窗口、耗时更新、旧通道克隆以及并发重建顺序。
-
-## 验证依据
-
-- 源码与装配：`pkg/ddl/util/watcher.rs`、`pkg/ddl/util/lib.rs`、`pkg/ddl/util/Cargo.toml`。
-- 下游类型和行为：`pkg/ddl/util/util.rs` 中的 `DdlUtilError`、`CancellationToken`、`WatchChannel`、`EtcdClient::watch` 与 `EtcdClient::notify`。
-- Go 对照：`pkg/ddl/util/watcher.go`。
-- 相邻实际主链与测试边界：`pkg/ddl/schemaver/syncer.rs`、`pkg/ddl/schemaver/syncer_test.rs`、`pkg/ddl/serverstate/syncer_test.rs`、`pkg/ddl/serverstate/syncer_test.go`、`pkg/ddl/jobsubmit/submit_test.go`、`pkg/ddl/util/util_test.rs`。这些路径未提供本文件的直接 Rust 测试。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/ddl/util/watcher.rs` 识别本文件及 16 个符号；`node --file ...` 核对完整 151 行；`query NewWatcher` 区分 Go/Rust 及其他同名实现；`node pkg/ddl/util/watcher.rs::NewWatcher` 确认其到 `default` 的调用边；`node pkg/ddl/util/watcher.rs::Watcher` 核对 trait 与具体 struct。`explore` 和外部 `callers/callees` 未返回可用调用边，故调用状态由模块装配与全仓 `rg` 交叉验证。
-- 人工复核结论：该文件存在是为 `astersql-ddl-util` 提供 Go 对齐的可共享 watch 抽象；其运行核心是同步发布或异步清空后重建通道；安全扩展的首要风险是当前未接线、取消不持续、旧通道不等于注销，以及并发重建结果可能乱序覆盖。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-resourcemanager-poolmanager` crate 内部的任务候选选择器。crate 入口 [`lib.rs`](lib.rs) 依次用 `include!` 合并 `task_manager.rs`、本文件和 `task_manager_scheduler.rs`，因此这里的私有 `TaskManager` 方法可以直接访问前一文件定义的私有字段，并由后一文件的公开调度门面调用。crate 边界由 [`Cargo.toml`](Cargo.toml) 声明，运行时外部依赖只有 `crossbeam-channel = "0.5"`；本文件自身使用的 `Instant`、`Ordering`、`TaskManager` 和 `Meta` 都来自同一合并模块的已有导入或定义。
-
-在完整资源调度链中，[`Pool::tune`](../pool/spool/spool.rs) 根据容量变化调用 `TaskManager::Overclock` 或 `TaskManager::Downclock`；[`task_manager_scheduler.rs`](task_manager_scheduler.rs) 再分别转入本文件的 `getBoostTask` 与 `pauseTask`。所以本文件不决定何时调容，也不直接创建或销毁 worker，而是在已注册任务中选择应扩容或缩容的具体对象。
+只负责“选谁”和发送缩容信号。
 
 ## 核心职责
 
@@ -86,13 +84,11 @@ RustCodeGraph 能识别本文件的 `canPause` 和 `canBoost`，也能确认 `ta
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`task_manager_iterator.go`](task_manager_iterator.go) 和 [`task_manager_scheduler.go`](task_manager_scheduler.go)。Rust 保留了 Go 的方法名、两布尔值谓词协议、八分片扫描、候选初始化、时间偏好和提前退出规则：`canPause` 优先回收已 boost 的任务，否则偏向老任务；`canBoost` 优先补足未达初始并发的任务，否则偏向新任务。
+Rust 保留了 Go 的方法名、两布尔值谓词协议、八分片扫描、候选初始化、时间偏好和提前退出规则：`canPause` 优先回收已 boost 的任务，否则偏向老任务；`canBoost` 优先补足未达初始并发的任务，否则偏向新任务。
 
-同步语义也保持对应：Go 在每个分片上持有 `RLock`，Rust 使用 `RwLock::read`；Go 对 `exitCh` 使用带 `default` 的 `select`，Rust 使用 `try_send`，二者都不阻塞。Go 的 `*Meta` 直接共享状态，Rust 的 `Meta::clone` 通过 `Arc` 和可克隆 channel 句柄共享关键状态。
+同步语义也保持对应：Go 在每个分片上持有 `RLock`，Rust 使用 `RwLock::read`；Go 对 `exitCh` 使用带 `default` 的 `select`，Rust 使用 `try_send`，二者都不阻塞。
 
-可见差异是 Go 用 `nil` 判断退出通道，Rust 的 `SignalChannel` 不是可空类型，改为 `is_closed` 检查；当前 Rust 的 `closed` 标志没有写入路径，实际失败由 `try_send` 吞掉。Go 的零值 `time.Time` 用作初始比较值，Rust 先用 `Instant::now()`，但在每个 `result.is_none()` 的条目上都会立刻改写 `compareTS`，所以后续比较仍以扫描到的条目为基准。两侧都依赖 map 的非稳定遍历次序，不承诺同优先级候选的确定性。
-
-测试对应关系：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 独立验证低于初始并发的任务被 `Overclock` 选中，以及超频任务收到 `Downclock` 信号且重复调用不阻塞；[`../pool/spool/spool_test.rs`](../pool/spool/spool_test.rs) 验证池从 1 扩到 3、再缩回 1 的端到端运行数变化；Go 的 [`../pool/spool/spool_test.go`](../pool/spool/spool_test.go) 中 `TestWithTaskManager` 验证同一调容序列。
+可见差异是 Go 用 `nil` 判断退出通道，Rust 的 `SignalChannel` 不是可空类型，改为 `is_closed` 检查；当前 Rust 的 `closed` 标志没有写入路径，实际失败由 `try_send` 吞掉。Go 的零值 `time.Time` 用作初始比较值，Rust 先用 `Instant::now()`，但在每个 `result.is_none()` 的条目上都会立刻改写 `compareTS`，所以后续比较仍以扫描到的条目为基准。
 
 ## 扩展指南
 
@@ -103,13 +99,3 @@ RustCodeGraph 能识别本文件的 `canPause` 和 `canBoost`，也能确认 `ta
 若要增加可靠缩容确认、关闭语义或多信号积压，需要同时修改 `pauseTask`、`SignalChannel`、`Meta::recv_event` 和 `run_task` 生命周期；必须评估阻塞风险、丢信号行为和 worker 计数回收。若只增加选择测试，应继续放在独立的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 或 [`../pool/spool/spool_test.rs`](../pool/spool/spool_test.rs)，不要把测试嵌入生产 `.rs` 文件。
 
 建议补充的边界回归包括：空管理器、全部任务零运行、多个分片中同时存在可立即命中的任务、仅按创建时间替换候选、满退出通道的重复 `Downclock`，以及登记/删除与扫描并发发生时不死锁。若要求与 Go 完全对齐，应在 Rust 独立测试和 `spool_test.go` 的同类情景中同步维护意图。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的八个 Rust/Go 文件均在索引中；`node --file pkg/resourcemanager/poolmanager/task_manager_iterator.rs` 读取了目标文件完整 103 行。
-- RustCodeGraph 精确查询：`query canPause --kind function` 与 `query canBoost --kind function` 同时返回 Rust 和 Go 对照符号；对两个 Rust 限定名运行 `callers`/`callees` 未返回边，结合 `include!` 结构记录为索引覆盖限制，未将空结果误写为“无调用者”。
-- crate 与模块证据：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`task_manager.rs`](task_manager.rs)、[`task_manager_scheduler.rs`](task_manager_scheduler.rs)。
-- 上下游运行证据：[`../pool/spool/spool.rs`](../pool/spool/spool.rs) 的 `Pool::tune`、`run_with_concurrency`、`run_task`，以及 [`../schedule.rs`](../schedule.rs) 的 `ResourceManager::Exec`。
-- Go 对照证据：[`task_manager_iterator.go`](task_manager_iterator.go)、[`task_manager_scheduler.go`](task_manager_scheduler.go)、[`../pool/spool/spool.go`](../pool/spool/spool.go)。
-- 测试证据：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 的 `overclock_prefers_a_task_below_initial_concurrency`、`downclock_signals_an_overclocked_task_without_blocking`；[`../pool/spool/spool_test.rs`](../pool/spool/spool_test.rs) 和 [`../pool/spool/spool_test.go`](../pool/spool/spool_test.go) 的 `TestWithTaskManager`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付检查仅验证文档结构、链接目标和事实来源。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 库 `astersql-br-pkg-utiltest-crr`，crate 根为 [`lib.rs`](lib.rs)，并由该入口以 `pub use builder::*` 再导出。它不是生产 SQL、备份或复制请求的执行入口，而是 CRR（跨区域复制）测试夹具的静态 Region 布局构建层：调用方先组合布局选项，得到 `Vec<RegionBoundary>`，再把结果交给 [`harness.rs`](harness.rs) 的 `NewLocalTestHarnessWithTestContext` 或 [`pd_sim.rs`](pd_sim.rs) 的 `NewPDSimWithTestContext`，由后者将边界物化为 fakecluster 中的 store 和 region。
-
-直接数据类型 `RegionBoundary` 定义在 [`types.rs`](types.rs)，包含字节形式的 `StartKey`、`EndKey` 与 `StoreID`。空起键表示负无穷，空止键表示正无穷，区间按左闭右开 `[start, end)` 理解。对应 Go 实现为 [`builder.go`](builder.go)。
+`AddRegion`、`AddRegionsBySplitKeys`、`AddRoundRobinRegions` 提供三种可组合的布局选项：追加显式区间、按给定 split key 切段、按自动生成的 `k01` 风格 split key 切段。
 
 ## 核心职责
 
@@ -85,15 +83,11 @@ RustCodeGraph 的符号轨迹显示：
 
 ## 与 Go 版本的对应关系
 
-[`builder.go`](builder.go) 与本文件在 API 角色、选项折叠顺序、split key 生成、store 轮询、逐段校验、错误文本和深拷贝意图上基本一一对应。Rust 的主要适配为：
-
 - Go 的函数类型和可变参数对应 Rust 的 boxed `Fn`、`Vec<RegionLayoutOption>` 与显式 `Vec<u64>`。
 - Go `nil` 切片在 Rust 中统一表示为空 `Vec`；因此 `StoreIDRange(..., 0)` 只能断言 `is_empty()`，不能保留 nil/非 nil 区别。
 - Go 字符串能保存任意字节。Rust 的公开 split key/显式 key 参数仍是 UTF-8 `String`/`&str`，但从已有二进制 `EndKey` 续接时保持 `Vec<u8>`，避免有损转换；[`builder_test.rs`](builder_test.rs) 的二进制边界测试覆盖了这一移植差异。
 - Rust 用 `wrapping_add` 显式复现 Go `uint64` 溢出；相关测试覆盖 `u64::MAX -> 0`。
 - Go 返回 `error`，Rust 返回 `Result<_, String>`；当前没有结构化错误分类。
-
-[`builder_test.go`](builder_test.go) 覆盖三个基础正常路径；Rust [`builder_test.rs`](builder_test.rs) 复刻这些断言并补充溢出与二进制续接。[`parity_test.rs`](parity_test.rs) 进一步覆盖空布局、未闭合末段、首段非空、零 region 与空 store 列表，并验证布局能进入 PDSim/harness 主链。
 
 ## 扩展指南
 
@@ -103,12 +97,3 @@ RustCodeGraph 的符号轨迹显示：
 - 修改轮询算法时，要覆盖从空布局开始和续接未闭合前缀两种下标起点，并评估 store 分布兼容性；大布局的当前实现会在每次 `appendRegion` 深拷贝已有向量，呈二次复制成本，性能优化必须保留失败不泄漏半成品及 Go 值语义。
 - 错误类型或文案变化可能影响按字符串断言的测试及 Go/Rust 对齐，应先检索消费者再调整。
 - Rust 测试继续放在独立的 `builder_test.rs`/`parity_test.rs`，不要内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，包含 7032 个 Rust 文件；`files --filter br/pkg/utiltest/crr` 确认目标、Go 对照和独立测试均被索引。
-- RustCodeGraph `node --file br/pkg/utiltest/crr/builder.rs --offset 1 --limit 260`：读取目标文件全部 210 行；`node BuildRegionLayout`、`node AddRegionsBySplitKeys`、`node AddRoundRobinRegions`、`node appendRegion`、`node RegionLayoutOption` 核对签名、源码与调用轨迹。
-- RustCodeGraph 的独立 `callers/callees --file ...` 查询在本次环境中 30 秒内没有产生输出；调用边改由上述 `node` trail 与精确符号引用检索交叉确认，未据此推断额外调用者。
-- crate 与入口：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)。数据契约与下游物化：[`types.rs`](types.rs) 的 `RegionBoundary`、[`harness.rs`](harness.rs) 的 `newLocalTestHarness`、[`pd_sim.rs`](pd_sim.rs) 的 `NewPDSimWithTestContext`/`validateBoundaries`。
-- Go 对照与测试：[`builder.go`](builder.go)、[`builder_test.go`](builder_test.go)。Rust 独立测试：[`builder_test.rs`](builder_test.rs)、[`parity_test.rs`](parity_test.rs)、[`harness_test.rs`](harness_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收以任务指定命令确认本文档存在且恰有 11 个固定二级标题。

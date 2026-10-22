@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`main.rs`](main.rs) 是 `astersql-br-cmd-br` crate 的 BR 命令行共享入口实现。Cargo 将 [`lib.rs`](lib.rs) 作为库入口、将 [`bin_main.rs`](bin_main.rs) 声明为 `astersql-br-cmd-br` 二进制；实际启动链是 `bin_main.rs::main` → `astersql_br_cmd_br::main`（`lib.rs`）→ `entry::main`（本文件）。因此本文件位于进程壳层与各 BR 子命令实现之间，负责一次性装配和启动根命令，不实现备份、恢复或日志流业务。
-
-[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting` 将该 crate 标记为从 Go 包 `br/cmd/br` 移植而来的 `binary`，且依赖说明明确采用 slim BR crates 与本地 trait/stub，避免在 arm64 Darwin 上引入完整的 KV、domain、kvproto、grpcio 栈。当前入口由 [`lib.rs`](lib.rs) 以 `#[path = "main.rs"] pub mod entry` 纳入库 crate；本文件没有条件编译项、模块级常量或公开 trait。
+因此本文件位于进程壳层与各 BR 子命令实现之间，负责一次性装配和启动根命令，不实现备份、恢复或日志流业务。
 
 ## 核心职责
 
@@ -87,15 +85,13 @@ Cargo 的直接生产依赖为 `astersql-br-pkg-task`、`astersql-br-pkg-task-op
 
 ## 与 Go 版本的对应关系
 
-[`main.go`](main.go) 与 Rust `main()` 的顺序基本逐句对应：背景 context、`StartExitSingleListener`、延迟取消、根 Cobra 命令字段、公共 flags、默认 context、关闭 DDL、六个子命令、stdout、`os.Args[1:]`、执行失败日志和状态码 1 均被保留。六个子命令的顺序也一致，避免改变 CLI 顶层布局。
-
 存在三项可验证差异：
 
 1. Go 使用真实 `context.Context`、信号监听和 Cobra；Rust 当前使用 `stubs.rs` 中的精简 `Context` 与 `Command`，`StartExitSingleListener` 只派生取消标志，命令解析器也明确不是完整 Cobra。
 2. Go 的 `defer cancel()` 在 `os.Exit` 路径不会运行；Rust 用 `CancelOnDrop` 模拟 defer，并在错误分支 `forget` 守卫。但 Rust 的 `os_stub::Exit` 只记录状态码，不实际退出，这是行为尚未完全对齐之处。
 3. Go `rootCmd.SetOut(os.Stdout)` 连接真实标准输出；Rust `SetOut(())` 当前为空操作，命令输出保存在 `Command` 内部缓冲。
 
-Go 的 [`main_test.go`](main_test.go) 用 goroutine/channel 验证 `main()` 可返回，并在 `TestMain` 中过滤 `--skip-goleak`、执行 goleak 检查和清理内存仲裁器。Rust [`main_test.rs`](main_test.rs) 以线程/同步通道保留“入口必须返回”的契约，并把参数过滤抽成纯函数；它验证内存仲裁器清理状态，但没有复刻 Go 的完整 goleak 扫描及忽略列表。内存上限表格测试对应 `cmd.rs::calculateMemoryLimit`，不是本文件行为。
+Rust [`main_test.rs`](main_test.rs) 以线程/同步通道保留“入口必须返回”的契约，并把参数过滤抽成纯函数；它验证内存仲裁器清理状态，但没有复刻 Go 的完整 goleak 扫描及忽略列表。
 
 ## 扩展指南
 
@@ -104,13 +100,3 @@ Go 的 [`main_test.go`](main_test.go) 用 goroutine/channel 验证 `main()` 可�
 - 改变默认 context 或退出行为时，需要同时审视 `CancelOnDrop`、`utils::StartExitSingleListener`、`os_stub::Exit` 与 `main_test.rs::test_run_main`。尤其要决定库调用场景是否允许真实终止进程，并避免在引入真实 `Exit` 后使测试进程被直接杀死。
 - 接入真实 stdout、信号监听或 Cobra 等价解析器时，应替换对应适配层而保持本文件的编排顺序；兼容风险集中在参数解析、usage/输出去向、退出码及取消时机，性能风险主要是重复初始化或额外后台监听线程，而不是本入口的局部计算。
 - 调整全局 DDL 开关时必须确认 BR 离线工具与下游 task 的契约；这是进程级共享状态，测试应在结束时复位，防止并行用例互相影响。
-
-## 验证依据
-
-- 目标源码：[`main.rs`](main.rs)；确认公开 `main`、私有 `CancelOnDrop`、`Drop` 实现、六个命令工厂调用、参数切片、错误日志与退出分支。
-- crate 接线：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`bin_main.rs`](bin_main.rs)；确认 package/binary 元数据、模块重命名和两层转发入口。
-- 直接实现：[`cmd.rs`](cmd.rs) 的 `DefineCommonFlags`、`SetDefaultContext`；[`stubs.rs`](stubs.rs) 的 `Context`、`Command::Execute`/`execute_command`、全局 config、`StartExitSingleListener` 与 `os_stub`。
-- Go 对照：[`main.go`](main.go)；确认启动顺序、根命令字段、子命令顺序、DDL 开关、参数与错误退出意图。
-- 独立测试：[`main_test.rs`](main_test.rs)、[`main_test.go`](main_test.go)；确认入口返回、参数过滤、测试资源清理以及 Rust 与 Go 测试覆盖范围的差异。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/cmd/br` 覆盖目标及直接证据文件；`node --file` 读取上述 Rust/Go 源码；`query` 定位入口、公共 helper 和六个命令工厂。对 `main.rs:23:function:main` 的 `callers`/`callees` 查询返回空数组，故入口调用链改由模块接线源码交叉验证。
-- 任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令校验恰有十一个固定二级标题，并人工检查所有行为结论均可回溯到上述源码或查询结果。

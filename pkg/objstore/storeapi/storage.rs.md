@@ -2,19 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-storeapi` crate 的核心契约文件。crate 入口
-`pkg/objstore/storeapi/lib.rs` 公开 `storage` 模块并通过 `pub use storage::*`
-重导出这里的全部公共符号；`pkg/objstore/storeapi/Cargo.toml` 则把该 crate
-限定为一个很薄的对象存储 API 层，只直接依赖 `anyhow`、AWS Smithy 重试/HTTP
-类型、`objectio` 和 `uuid`。
-
-它位于“调用方所需的统一文件语义”和“本地文件、S3-like、GCS、Azure、HDFS
-等具体后端”之间：上层通过 `Storage`/`StorageRef` 操作对象，下层实现 trait。
-例如 `pkg/objstore/local.rs::LocalStorage`、`pkg/objstore/memstore.rs::MemStorage`、
-`pkg/objstore/s3like/store.rs::Storage`、`pkg/objstore/gcs.rs::GCSStorage`、
-`pkg/objstore/azblob.rs::AzureBlobStorage` 和 `pkg/objstore/hdfs.rs::HDFSStorage`
-都实现了这里的 `Storage`。本文件不选择后端、不解析存储 URI，也不执行网络
-请求；这些职责属于 `pkg/objstore/storage.rs` 及各后端 crate/模块。
+用 `Storage` 定义完整文件读写、流式打开/创建、存在性检查、删除、遍历、。
 
 ## 核心职责
 
@@ -185,25 +173,14 @@ RustCodeGraph 的文件索引报告本文件有 70 个符号并被 10 个已索�
 `Copier`、`CopySpec`、`Storage`、`Options`、前缀规范化、HTTP Range 转换、
 权限探测 key 与 10,000 分片限制均一一对应。
 
-关键语言映射包括：
-
-- Go `context.Context` 对应 `objectio::Context` 借用；Go `error` 对应
-  `anyhow::Result`。
-- Go 的 `*ReaderOption` 及内部 `*int64` 分别对应外层 `Option<&ReaderOption>`
-  和字段 `Option<i64>`；语义上的“未设置”没有丢失。
 - Go interface 对应 Rust trait object；Go 中天然可共享的 interface 在 Rust 中
   通过 `Send + Sync` 和 `Arc<dyn Storage>` 显式表达。
-- Go `aws.Retryer` 字段在 Rust 中收窄为本地 `Retryer` trait，并直接产出 Smithy
-  重试配置/分类器，以适配 Rust AWS SDK。
-- Go 的 `recording.AccessStats` 指针对应 Rust `Arc<AccessStats>`；Go HTTP
-  客户端指针对应 Smithy `SharedHttpClient`。
 - Go `errors.New` 哨兵在 Rust 中是实现 `Error` 的类型化零尺寸值，因此可经包装
   后用类型向下检查。
 
 Rust 还增加了 `Storage::AccessRequestSnapshot`、`StorageRef`、`Prefix::as_str`
 和独立 `ReadSeekCloser` 抽象；它们是 Rust 接线需要，并非 Go 文件中的同名公开
-成员。字段名和方法名有意保留 Go 风格，文件级 `allow(non_snake_case,
-non_upper_case_globals)` 为此关闭相应 lint。
+成员。
 
 `pkg/objstore/storeapi/storage_test.rs` 直接复刻 Go `storage_test.go` 的前缀与范围
 案例；`migration_aster_unit_test.rs` 另覆盖 `ToPath`、bucket 前缀、权限常量、
@@ -228,23 +205,3 @@ non_upper_case_globals)` 为此关闭相应 lint。
   与内存/吞吐变化、错误类型在包装中丢失。
 - 新增 trait 方法时，优先提供可证明安全的默认实现，否则所有真实后端、装饰器、
   mock 和测试替身都必须同步。兼容性审查应覆盖 Cargo 搜索列出的直接依赖 crate。
-
-## 验证依据
-
-- 源码与模块：`pkg/objstore/storeapi/storage.rs`（342 行、70 个索引符号）、
-  `pkg/objstore/storeapi/lib.rs`、`pkg/objstore/storeapi/Cargo.toml`。
-- Go 对照：`pkg/objstore/storeapi/storage.go` 与
-  `pkg/objstore/storeapi/storage_test.go`。
-- Rust 独立测试：`pkg/objstore/storeapi/storage_test.rs`、
-  `pkg/objstore/storeapi/migration_aster_unit_test.rs`；后者验证权限值、前缀路径、
-  相等范围和 UUID，前者验证 Go 基准案例。
-- 真实实现/调用点：`pkg/objstore/local.rs`、`memstore.rs`、`hdfs.rs`、`gcs.rs`、
-  `azblob.rs`、`s3like/store.rs`、`s3store/client.rs`、`s3store/retry.rs`、
-  `ossstore/client.rs`、`ossstore/store.rs`、`compress.rs`、`locking.rs`。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点；`files --filter
-  pkg/objstore/storeapi` 找到 6 个相关文件；`node --file ...storage.rs` 完整读取
-  1–342 行；`query` 精确定位 Rust/Go 同名辅助函数。调用图消歧失败的限制已在
-  “依赖与调用关系”说明，相关边改由 `rg` 的精确符号引用和实现搜索核验。
-- 本任务是纯文档分析，按任务约束不运行 Cargo。交付前执行任务指定的结构命令，
-  确认目标文件存在且恰好包含本页 11 个固定二级章节，并检查 Git 差异仅包含本
-  文档及完成后删除的任务文件。

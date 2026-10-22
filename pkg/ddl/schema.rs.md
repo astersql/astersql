@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`schema.rs`](schema.rs) 属于 `astersql-ddl` crate。crate 根在 [`lib.rs`](lib.rs) 中以 `pub mod schema` 公开该模块，并仅在 `cfg(test)` 下装配独立的 [`schema_test.rs`](schema_test.rs)。[`Cargo.toml`](Cargo.toml) 的 `[package.metadata.porting]` 将整个 crate 对应到 Go 的 `pkg/ddl`；本文件自身只依赖标准库 `std::collections::BTreeMap`。
-
-该文件是数据库（schema）级 DDL 的内存目录与状态机模型：它在单个 `SchemaCatalog` 值内模拟建库、修改默认字符集/排序规则、修改默认 Placement Policy、分阶段删库、按 ID 恢复库和收集表物理 ID。它不是当前 Rust DDL 运行时主链的持久化实现：RustCodeGraph 的 callers 查询没有发现生产调用者，仓库引用搜索只发现独立单元测试直接使用这些 API。实际 Go 主链由 [`job_worker.go`](job_worker.go) 分派到 [`schema.go`](schema.go) 的 job handler，并包含元数据事务、schema version、通知和外部资源清理等机制。
-
-按 DDL 执行框架的问题分类，本文件模拟的是 job handler 内的一小段元数据行为：删除具有 `Public -> WriteOnly -> DeleteOnly -> None` 状态迁移；恢复被压缩为从缓存直接回到 `Public`；没有 job 持久化、owner/failover、reorg/backfill、schema-version 同步、MDL、delete-range GC 或系统表。不能把 `SchemaCatalog` 的成功视为集群级 DDL 已完成。
+提供两个无状态辅助函数：校验有限字符集/排序规则组合，以及按稳定顺序展开表 ID 与分区物理 ID（`validate_charset_and_collation`、`schema_physical_ids`）。
 
 ## 核心职责
 
@@ -121,8 +117,6 @@ Go 运行时关系则是 [`job_worker.go`](job_worker.go) 的 action 分派调�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`schema.go`](schema.go)，相关 Go 回归测试入口是 [`schema_test.go`](schema_test.go)。对应关系不是逐函数等价，而是抽取了部分可测试语义：
-
 - Rust `create_schema` 对照 Go `onCreateSchema` 的重复检查和最终 `Public` 状态；Rust 自行分配内存 ID，而 Go 使用 job 已分配的 `SchemaID`、检查名称和 ID 冲突、更新 schema version，并通过 meta mutator 持久化。
 - Rust `modify_charset_and_collation` 保留 Go `onModifySchemaCharsetAndCollate` 的“先确认库存在”和相同值无实际变更语义，但 Rust 额外做简化字符串校验；Go 的请求值在更上游解析，并会更新 meta/schema version、完成 job。
 - Rust `modify_placement` 对照 Go `onModifySchemaDefaultPlacement` 的查库、无变化判断、设置/清除默认策略；Rust 只拒绝空白名称，不会二次确认 policy 引用存在，也不表达 Go 的完整 placement 引用结构。
@@ -130,7 +124,7 @@ Go 运行时关系则是 [`job_worker.go`](job_worker.go) 的 action 分派调�
 - Rust `recover_schema` 只对照“恢复后保持数据库身份并回到 Public”的结果。Go `worker.onRecoverSchema` 实际执行 `None -> WriteOnly -> Public`，检查/暂时关闭 GC、验证 safe point、从快照加载表与 auto IDs、禁用恢复表 TTL 调度并逐表恢复；Rust 没有这些安全条件。
 - Rust `schema_physical_ids` 表达 drop 清理需要同时覆盖表 ID 和分区 ID 的意图；Go drop handler 使用完整 `TableInfo` 和其他 helper 生成清理/通知数据，而非调用该 Rust helper。
 
-[`schema_test.rs`](schema_test.rs) 验证了大小写不敏感重复创建、`IF NOT EXISTS`、修改、三步删除、按 ID 恢复、元数据 ID 保持、非法局部输入、表/分区 ID 顺序，以及缺失库优先于非法新值。Go [`schema_test.go`](schema_test.go) 还验证 job 历史、实际 meta 状态、含表/空库删除和 owner 等集成行为；这些不能由当前 Rust 单元测试替代。
+Go [`schema_test.go`](schema_test.go) 还验证 job 历史、实际 meta 状态、含表/空库删除和 owner 等集成行为；这些不能由当前 Rust 单元测试替代。
 
 ## 扩展指南
 
@@ -144,16 +138,3 @@ Go 运行时关系则是 [`job_worker.go`](job_worker.go) 的 action 分派调�
 - 扩展物理 ID 收集：修改 `SchemaTable`/`schema_physical_ids` 时明确是否排序、去重以及是否包含其他物理对象，并同步 drop/delete-range 的 Go 语义。
 
 兼容性风险集中在错误顺序、名称折叠、ID 稳定性与状态可见性；正确性风险集中在恢复冲突时的数据保留和最终删除时的所有权转移；性能上当前操作为 `BTreeMap` 的对数查找，`schema_physical_ids` 为表及分区总数的线性扫描。若未来存入大量 dropped 元数据，需要定义淘汰/持久化策略，避免无界内存增长。
-
-## 验证依据
-
-本说明以以下直接证据为准：
-
-- 生产源码：[`schema.rs`](schema.rs) 全部 257 行，核对所有枚举、结构体、方法、辅助函数及注释。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的 package、lib path 与 Go porting metadata；[`lib.rs`](lib.rs) 的 `pub mod schema` 和 `#[cfg(test)] mod schema_test`。
-- Rust 独立测试：[`schema_test.rs`](schema_test.rs) 的三个测试，覆盖创建/修改/删除/恢复、校验/物理 ID、错误优先级。
-- Go 对照：[`schema.go`](schema.go) 的五个 schema job handler及其持久化/副作用；[`job_worker.go`](job_worker.go) 的 action 分派；[`schema_test.go`](schema_test.go) 的 schema 状态与 job 集成检查。
-- 包级契约：[`doc.go`](doc.go) 声明 DDL 的在线算法与全局 schema-version 同步不变量；该契约用于识别本地内存模型尚未覆盖的运行时职责，而不是推断本文件已实现它们。
-- RustCodeGraph：`status` 显示索引覆盖本仓库；`node --file pkg/ddl/schema.rs` 读取完整源码；`query` 定位 `SchemaCatalog`、`SchemaState`、`SchemaError` 及全部主要函数；`callees` 验证校验函数和容器操作的内部边；`callers` 未发现生产调用，随后以仓库引用搜索确认只有独立 Rust 测试直接使用本模块。
-
-结构验收使用任务指定命令，要求文档存在并且恰好包含这里的十一个固定二级标题。由于任务是纯文档分析，按计划不运行 Cargo；运行时接线、集群行为和性能基准均未在本任务中验证。

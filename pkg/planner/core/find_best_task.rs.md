@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate。该 crate 由 `pkg/planner/core/Cargo.toml` 定义，库入口是 `pkg/planner/core/lib.rs`；后者通过 `pub mod find_best_task` 公开本模块，并只在测试配置下以独立文件 `find_best_task_test.rs` 装配单元测试。文件没有条件编译项，`nextgen` feature 也没有直接控制这里的代码。
-
-它承载一套自包含的 Volcano 风格“逻辑计划 + 物理属性 -> 最优 Task”模型：定义精简的逻辑计划、物理属性和访问路径数据，枚举物理候选，按代价挑选计划；对于 `DataSource`，还负责 skyline 剪枝以及 PointGet、IndexScan、IndexMerge、TableScan、MPP 等 Task 的构造。直接下游主要是同 crate 的 `plan_cost_ver1`、`plan_cost_ver2` 和 `task` 模块。
-
-当前接线必须区分两层：
-
-- `find_best_task.rs` 由 `lib.rs` 导出，并被 `index_join_path.rs`、`planbuilder.rs`、`exhaust_physical_plans.rs` 等复用其数据类型或候选比较辅助函数。
-- 全仓 Rust 搜索中，公开函数 `findBestTask` 的直接调用只有本文件对子节点的递归和 `find_best_task_test.rs`；canonical 逻辑计划入口另在 `pkg/planner/core/operator/physicalop/base_physical_plan.rs` 的 `CanonicalFindBestTaskRouter`/内部递归。因此不能把本文件描述为所有 Rust SQL 规划请求已经统一经过的入口。
+承载一套自包含的 Volcano 风格“逻辑计划 + 物理属性 -> 最优 Task”模型：定义精简的逻辑计划、物理属性和访问路径数据，枚举物理候选，按代价挑选计划；对于 `DataSource`，还负责 skyline 剪枝以及 PointGet、IndexScan、IndexMerge、TableScan、MPP 等 Task 的构造。
 
 ## 核心职责
 
@@ -105,8 +98,6 @@ DataSource 分支的主流程如下：
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/planner/core/find_best_task.go` 是语义对照源。两者共享的主干包括：物理属性缓存、物理计划穷举、hint/enforcer 优先级、Task 代价比较、DataSource skyline、PointGet/BatchPointGet/IndexScan/IndexMerge/TableScan 转换、TiKV/TiFlash Task 分流以及独立 mock 测试意图。
-
 Rust 独立测试与 Go `find_best_task_test.go` 对齐了三类核心回归：代价溢出不使 Task 无效、只有允许或 hint 要求时才通过 Sort 强制属性、hint 不可应用时回退并记录一次告警。Rust 还增加了 MPP 分区缓存键区分，以及 Index Join 调整行数稳定/不稳定两种 skyline 行为。
 
 但当前 Rust 文件是精简模型，不应宣称与 Go 完全等价：
@@ -126,11 +117,3 @@ Rust 独立测试与 Go `find_best_task_test.go` 对齐了三类核心回归：�
 - 新增错误场景时：先决定是继续使用 Invalid Task 作为“候选不可行”，还是需要把主 API 改为 `Result`。不要像当前 TABLESAMPLE 校验那样无意丢弃必须上报的错误；若改变错误模型，应对照 Go 的传播语义并更新所有调用者。
 - 性能风险集中在路径两两比较、递归克隆和计划代价重复计算。增加 candidate 维度时须保持支配关系方向一致；增加缓存字段时须确保键完整；增加 clone 时需评估大计划树和大量 IndexMerge 子路径。
 - 按仓库约定，Rust 测试继续放在独立 `*_test.rs` 文件；本模块通过 `lib.rs` 的测试专用 `#[path]` 声明接入测试。
-
-## 验证依据
-
-本文以固定提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/planner/core/find_best_task.rs`，并读取 `git show 2c944fb:路径` 的源码、模块入口、Cargo manifest、独立测试和 Go 对照；没有将后续提交或工作区 Rust 改动纳入。目标包不存在 `doc.go`。
-
-`find_best_task_test.rs::range_count_threshold_limits_equality_in_preference` 覆盖禁用、阈值下/等于/上、双侧超限、仅弱方超限、同等条件数、单 range、反向比较、IndexMerge 与 skyline 参数传递。
-
-RustCodeGraph `status` 已确认索引包含 Rust，但当前索引不是冻结提交快照；本次跨文件关系以冻结 blob 搜索与读取为依据。结构检查要求本篇 11 个二级章节，并运行任务限定的 `git diff --check`。这是 Ready 文档验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，按计划使用文档校验。按纯文档范围不运行 Cargo、make lint 或运行时测试，以上测试为源码证据，不声称执行通过。

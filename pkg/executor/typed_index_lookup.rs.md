@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`typed_index_lookup.rs`](typed_index_lookup.rs) 位于 `astersql-executor` crate（见 [`Cargo.toml`](Cargo.toml) 的 `[package]` 与 `[lib]`），实现 Rust typed physical plan 的索引双读执行器 `TypedIndexLookUp`。模块由 [`lib.rs`](lib.rs) 公开为 `typed_index_lookup`，其唯一生产构造点是 [`builder.rs`](builder.rs) 中 `build_typed_physical_plan` 对 `PhysicalIndexLookUpReader` 的分支：先构造负责表记录解码的 `TypedKVScan`，再创建本执行器，并在外层按物理计划包裹索引侧/表侧选择、其他 pushdown 节点和 `TypedLimit`。
-
-它处于“物理索引范围和 KV 读取绑定已经准备好”到“向上游逐 chunk 返回表记录”之间：索引 KV 只用于恢复 row handle，真正输出的列来自相应 record KV。它不是 Go `IndexLookUpExecutor` 的逐字段复刻，而是 Rust typed 执行链上的同步、惰性实现。
+处于“物理索引范围和 KV 读取绑定已经准备好”到“向上游逐 chunk 返回表记录”之间：索引 KV 只用于恢复 row handle，真正输出的列来自相应 record KV。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ Rust 实现自身不创建线程、任务或通道。`&mut self` 串行保护游
 
 ## 与 Go 版本的对应关系
 
-Go 的直接语义对照是 [`distsql.go`](distsql.go) 中 `IndexLookUpExecutor`，两者都实现索引双读：先从索引侧取得 handle，再读取表记录，并按索引任务顺序向上游返回。两者也都支持分区/全局索引、升降序、推下 limit 的计划语义和 Detach 概念。
-
 当前 Rust 版本是聚焦 typed 本地 KV 绑定的同步实现，不能把 Go 已有能力自动视为 Rust 已支持。Go 实现会构造 DistSQL 请求，启动 `indexWorker`/`tableWorker`，通过 `resultCh` 和 `lookupTableTask` 并发批量查表，并包含内存 tracker、运行时统计、索引使用统计、adaptive limit、分页、关联列重建、grouped ranges/merge sort、union scan dummy 模式、弱一致性及 worker 取消/等待等机制；Rust 本文件逐条索引、逐条 `Get`，没有这些 worker、通道、统计和内存治理设施。
 
 Go `Close` 会取消 worker、清空 channel 并等待两个 wait group；Rust `Close` 仅改变状态。Go `Detach` 复制 executor 并 detach session context；Rust `Detach` 复制纯 typed 执行状态且显式丢弃当前页锁键。扩展 Rust 行为时应保持实际双读顺序、分区 handle 和锁键语义与 Go 一致，但不应在没有相应架构证据时照搬 Go 的并发字段。
@@ -89,14 +85,3 @@ Go `Close` 会取消 worker、清空 channel 并等待两个 wait group；Rust `
 - 若引入批量或并行双读，需设计结果重排、背压、取消、内存计量和 Close/Detach 所有权，不能只并发化 `Get`；Go `distsql.go::IndexLookUpExecutor` 可作为语义参考，但 Rust typed runtime 的 `ExecExecutor` 契约是直接边界。
 - 修改锁键生成时同步检查 `adapter.rs::runPessimisticSelectForUpdate` 的逐页消费方式；返回索引键而非规范 record key 会锁错对象。
 - 修改 builder 接线时同步覆盖 `typed_index_lookup_builder_streams_pushed_limit_and_returned_lock_key`，确认过滤/limit 包裹顺序和 EOF 后不再访问存储。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/typed_index_lookup.rs` 确认目标文件被索引，`node --file ...` 完整核对 238 行生产源码，`query TypedIndexLookUp`、`query next_inner`、`query append_decoded_row_for_table` 核对主要符号。精确 `callers/callees` 对该实现未给出可用边，故调用关系由下列源码入口交叉验证。
-- [`builder.rs`](builder.rs)：`PhysicalIndexLookUpReader` 分支是生产构造入口，提供 retriever、record decoder、索引列数、表 ID、方向和 ranges，并负责外层 filter/pushdown/limit。
-- [`adapter.rs`](adapter.rs)：`ExecExecutor` 定义生命周期与扩展方法；`runPessimisticSelectForUpdate` 证明 `TakeLockKeys` 返回值用于真实行锁。
-- [`typed_kv_scan.rs`](typed_kv_scan.rs)：`append_decoded_row_for_table` 证明 record key table ID 校验、row codec 解码、主键 handle 回填及 chunk 追加语义。
-- [`typed_index_lookup_test.rs`](typed_index_lookup_test.rs)：三个独立测试分别证明规范索引顺序下的分页双读/Detach/扫描计数/锁键、全局索引按分区 ID 读取、builder 接线下 pushed limit 与 EOF 不再迭代。
-- [`distsql.go`](distsql.go) 与 [`detach.go`](detach.go)：核对 Go `IndexLookUpExecutor` 的双读职责、并发 worker 生命周期、结果任务消费、Close 和 Detach，并据此标出 Rust 当前未移植能力。
-- [`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)：核对 crate 名、Go 包映射、直接依赖和模块/独立测试装配。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付只执行固定 11 章节结构检查和 Git 差异范围检查。

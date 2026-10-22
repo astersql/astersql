@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件位于 `astersql-planner-core` crate 内，定义一个面向简化计划树 `crate::task::PlanNode` 的 TopN/Limit 下推器 `PushDownTopNOptimizer`。模块由 `pkg/planner/core/lib.rs` 公开导出，独立测试模块 `rule_topn_push_down_test` 仅在 `cfg(test)` 下装配。crate 边界及模块归属分别由 `pkg/planner/core/Cargo.toml` 的 `[package] name = "astersql-planner-core"`、`[lib] path = "lib.rs"` 和 `lib.rs` 的 `pub mod rule_topn_push_down` 确认。
-
-当前文件不是 Rust 优化主链中的实际执行节点：`pkg/planner/core/optimizer.rs::logicalOptimize` 的规则名数组包含 `"topn_push_down"`，但循环只调用通用 `normalize(&mut plan, rule)`；该函数当前只对 `projection_eliminate` 有行为，不会构造或调用 `PushDownTopNOptimizer`。因此，本文件现状是“已公开、可直接调用并有单测覆盖的局部规则实现”，不能据此宣称 `DoOptimize` 已执行该规则。
+`PushDownTopNOptimizer::Optimize` 先递归处理全部子树，再识别当前节点是否为单孩子的 `PlanKind::TopN` 或 `PlanKind::Limit`（`rule_topn_push_down.rs:15-24`）。
 
 ## 核心职责
 
@@ -69,9 +67,9 @@ TopN/Limit 的分页量是 `u64`（`pkg/planner/core/task.rs::PlanNode`）。分
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/core/rule_topn_push_down.go`。两端一致之处是类型名、规则名，以及即使发生改写也返回 `planChanged = false`。Go 的 `Optimize` 还接受 `context.Context`、返回 `error`，并把行为委托给 `p.PushDownTopN(nil)`；Rust 签名省略上下文和错误通道，直接操作简化 `PlanNode`。
+Go 的 `Optimize` 还接受 `context.Context`、返回 `error`，并把行为委托给 `p.PushDownTopN(nil)`；Rust 签名省略上下文和错误通道，直接操作简化 `PlanNode`。
 
-两者的覆盖范围并不等价。Go 的 `PushDownTopN` 是逻辑计划接口上的多态操作，真实实现分布在 `operator/logicalop` 的 base、projection、limit、sort、union-all、join、lock、CTE、mem-table、partition-union-all 等文件中。Projection 实现还会检查/改写排序表达式；`operator/logicalop/logicalop_test/logical_operator_test.go::TestLogicalProjectionPushDownTopN` 验证表达式经投影内联后的真实 SQL 计划及规则黑名单效果。当前 Rust 文件仅处理 Projection、Selection 与 UnionAll 三种 `PlanKind`，不做表达式替换，也尚未接入 `DoOptimize` 主链，因此应视为局部迁移基线，而非 Go 完整规则的等价移植。
+两者的覆盖范围并不等价。当前 Rust 文件仅处理 Projection、Selection 与 UnionAll 三种 `PlanKind`，不做表达式替换，也尚未接入 `DoOptimize` 主链，因此应视为局部迁移基线，而非 Go 完整规则的等价移植。
 
 ## 扩展指南
 
@@ -81,13 +79,3 @@ Go 对照文件是 `pkg/planner/core/rule_topn_push_down.go`。两端一致之�
 - 若要让规则进入 Rust 优化主链，应在 `optimizer.rs::logicalOptimize` 的实际规则分派处接线，不能只保留字符串；同时验证 `disabled_rules`、追踪顺序与 flag 位语义。
 - 测试应继续放在独立的 `pkg/planner/core/rule_topn_push_down_test.rs`，不要内嵌进生产文件。至少覆盖合法一元树、零/多孩子非法形态、下推边界、UnionAll 多/零分支、TopN 与 Limit 两类、表达式/元数据保留，以及接入主链后的开关行为。
 - 性能审查重点是递归栈深度和 UnionAll 分支克隆成本；兼容性审查重点是 Go 多态实现中尚未迁移的各算子语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件，目标文件被索引且识别出 5 个符号；`files --filter pkg/planner/core/rule_topn_push_down.rs` 与 `node --file ... --offset 1 --limit 500` 核对了文件全貌；`query push_down_top_n`、`explore`、`callers/callees` 用于检查相邻符号和调用边。同名 `Optimize` 导致图查询噪声，故生产调用缺失又以仓库文本搜索和入口源码交叉验证。
-- Rust 源与入口：`pkg/planner/core/rule_topn_push_down.rs`、`pkg/planner/core/task.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/optimizer.rs`。
-- crate 配置：`pkg/planner/core/Cargo.toml`。
-- 独立 Rust 测试：`pkg/planner/core/rule_topn_push_down_test.rs`，覆盖 changed 标志和无符号溢出回绕。
-- Go 对照与主链：`pkg/planner/core/rule_topn_push_down.go`、`pkg/planner/core/optimizer.go`。
-- Go 算子与测试证据：`pkg/planner/core/operator/logicalop/logical_projection.go`、`logical_union_all.go`、`logical_limit.go`、`logical_sort.go`、`logical_plans_misc.go`，以及 `pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.go::TestLogicalProjectionPushDownTopN`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前仅执行任务指定的 11 章节结构校验，并人工检查上述路径、符号、边界和未接线结论。

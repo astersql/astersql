@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`builtin.rs` 是 `astersql-expression` crate 的内置标量函数公共框架与正式注册边界。crate 根文件 `pkg/expression/lib.rs` 以 `#[path = "builtin.rs"] mod expression_builtin` 装入它，并公开再导出 `formal_registry` 及其中的函数类、注册表、工厂和动态构造 API。它处在表达式构建与执行之间：上游按 SQL 函数名取得 `functionClass`、校验实参数量并构造 `builtinFunc`，下游由标量或向量化求值入口执行具体签名。
-
-文件同时保留两层实现。文件前半的 `Error`、`types`、`chunk`、`Expression`、`baseBuiltinFunc` 等是与 Go `builtin.go` 对照的本地精简框架，供移植测试和分段实现复用；`formal_registry` 则使用 crate 根导入的正式 `Expression`、`BuildContext`、`types`、`chunk` 和 `builtinFunc`，是 `lib.rs` 对外再导出的生产接线。阅读或扩展时不能把前半的精简 `ScalarFunction` 当成 crate 对外的正式标量函数节点。
-
-crate 边界由 `pkg/expression/Cargo.toml` 定义：包名为 `astersql-expression`，库入口是 `lib.rs`，关闭自动测试发现和 doctest；该 manifest 的 `[package.metadata.porting]` 明确把 Go 对照包标为 `pkg/expression`。本文件本身主要依赖标准库同步原语，正式注册实现再通过 crate 根类型以及 `types_dependency` 的 JSON 类型接入表达式子系统。
+提供正式动态表达式构造器：`BuildCastFunction`、`BuildGetVarFunction`、`BuildToBinaryFunction`、`BuildFromBinaryFunction`，负责类型标志、collation、常量折叠及会话变量读取边界。
 
 ## 核心职责
 
@@ -100,9 +96,7 @@ RustCodeGraph 对重名符号的调用边分辨有限：例如 `BuildCastFunctio
 
 - Rust `baseBuiltinFunc` 对应 Go `builtin.go` 的同名结构：参数、返回类型、PB code、collator、子节点向量化、clone、相等比较、内存估算和基础 `eval*` 保护路径均保留相同职责。
 - `newBaseBuiltinFunc*` 对应 Go 第 127、186、247、305 行附近的构造器；共同顺序是推导 collation、为参数构造 CAST、建立返回类型、再调整 NULL 标志。Rust 精简实现只实现了足够验证框架的转换子集，正式实现通过 crate 类型补足生产接线。
-- `adjustNullFlagForReturnType` 对应 Go 的三个函数集合：恒非空、恒可空、参数全非空时非空。Rust 当前集合规模小于 Go 完整集合，因此它是迁移框架证据，不应被描述为完整 Go 集合的逐项等价。
 - 正式 `functionClass`、`baseFunctionClass`、`funcs` 和 `extensionFuncs` 对应 Go 的函数类接口、静态 `funcs` map 与扩展函数边界。Rust 用 `RwLock<HashMap>`/`Arc` 模拟 Go map 或并发映射的共享语义。
-- `GetDisplayName` 保留运算符到 SQL 展示文本的映射；`pkg/expression/builtin_test.rs::test_display_name` 与 Go `TestDisplayName` 对照验证 `eq`、`nulleq`、`istrue` 和普通/未知名称。
 - `builtinFuncCache` 对应 Go 文件末尾的泛型缓存：按 statement context ID 命中、上下文变化后重建、并发仅构造一次、错误不缓存。Rust 测试实际执行这些断言，不只是保留 Go 注释。
 - Go `builtin_test.go` 的 `TestIsNullFunc`、`TestLock` 在 Rust 对照测试中转调注册表 parity suite；其余大量 Go 注释用于保留迁移意图。真正的基础框架回归还在独立的 `builtin_32_aster_unit_test.rs`，符合测试与源文件分离要求。
 
@@ -119,11 +113,3 @@ RustCodeGraph 对重名符号的调用边分辨有限：例如 `BuildCastFunctio
 7. 至少覆盖正常值、NULL、错误、参数边界、标量/向量化一致性和跨上下文状态；涉及注册表时还要覆盖重复注册、删除恢复和并发访问。涉及 Go 对齐时保持原有分支与测试意图，不用缩减版实现代替完整行为。
 
 修改已有函数时要特别检查两套同名 API。crate 外部通常通过 `lib.rs` 获得 `formal_registry` 的正式符号；仅修前半精简 `GetDisplayName`、`VerifyArgsWrapper` 或 `BuildCastFunction` 的同名概念，不一定会改变生产路径。
-
-## 验证依据
-
-- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/builtin.rs`，不把工作区后续变化作为行为依据。
-- `pkg/expression/expr_to_pb_test.rs` 构造正式 UnaryMinus 表达式并断言 `UnaryMinusInt` PB 编码；Decimal/Real 映射由冻结源码直接确认，没有将 Int 测试视为三类型全部运行证据。Go 对照 `pkg/expression/builtin_op.go`。
-- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
-- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
-- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

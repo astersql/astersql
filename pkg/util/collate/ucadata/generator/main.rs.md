@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-collate-ucadata-generator` crate 的业务核心，源文件为 [`main.rs`](main.rs)。[`lib.rs`](lib.rs) 通过 `#[path = "main.rs"] pub mod generator` 将其纳入库并重导出公开符号，[`bin.rs`](bin.rs) 的极薄 `main` 只把命令行参数交给 `runGenerator`。[`Cargo.toml`](Cargo.toml) 同时定义了该 library 和名为 `ucadata-generator` 的 binary，且不引入第三方 Rust 依赖。
-
-它不在 SQL 请求运行时临时计算排序权重；它是开发/生成工具，把内嵌 Unicode allkeys 数据转换为 `pkg/util/collate/ucadata` 下的 Go 或 Rust 生成表。运行时排序实现随后消费 `DUCET0400Table` / `DUCET0900Table`，例如 `pkg/util/collate/unicode_0400_ci_impl.rs` 和 `pkg/util/collate/unicode_0900_ai_ci_impl.rs`。
+补齐未在 allkeys 显式出现的码点：`calcImplicitWeight` 根据 `unicodeVersion` 选择 4.0.0 或 9.0.0 隐式权重算法；9.0.0 还处理 surrogate、U+FFFD、Hangul 和 Tangut。
 
 ## 核心职责
 
@@ -66,14 +64,11 @@ RustCodeGraph 的实际调用链为：`bin.rs::main -> runGenerator -> generateO
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`main.go`](main.go)。Rust 保留了 Go 的 CET 解析、去零与权重打包、U+FDFA/U+FFFD 特例、Unicode 4.0.0/9.0.0 隐式权重区间、Hangul 分解、表名和来源 URL。`parseAllKeys` 的逐行恢复策略也与 Go 一致。
-
 差异主要在工程化边界：
 
 - Go `main` 只支持两个 Go 输出，并使用最后一个 `os.Args` 选择；Rust 要求恰好一个路径，并额外支持两个 Rust 输出。
 - Go 通过 `text/template` 和 `go/format.Source` 在进程内生成 Go 源码；Rust 为 Go 模板实现定向渲染，并通过外部 `gofmt` 处理 Go 输出，Rust 输出则使用版本专用模板和外部 `rustfmt`。
 - Go `generateFile` 总是写固定当前目录文件；Rust `generateOutputTarget` 保留输入路径的目录，仅用 basename 判定目标类型。
-- Rust 的 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 是独立测试文件，实例化地核对上述移植语义，符合本仓库“Rust 源码与测试分文件”的约束。
 
 ## 扩展指南
 
@@ -83,12 +78,3 @@ RustCodeGraph 的实际调用链为：`bin.rs::main -> runGenerator -> generateO
 - 修改模板渲染时保持长表排序和生成文件的公共 API 形状；两个 Rust 模板的字段名/API 并不完全相同。在独立测试文件中扩展现有双版本生成用例，不要把测试写入 `main.rs`。
 - 若要将 panic 改为可恢复错误，需从 `format_source`/`write_formatted_source` 一直向上调整 `generateFile`/`generateRustFile` 和 `generateOutputTarget` 签名，同时保留 `bin.rs` 非零退出语义。
 - 性能上，`calcImplicitWeight` 对整个码点空间线性扫描，生成源码也按整表在内存中构造。扩大 `Length` 前应评估内存、渲染时间和生成文件体积。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共索引 11,467 个文件，目标目录中 `main.rs`、`bin.rs`、`lib.rs`、`magic.rs`、`main.go` 和 `migration_aster_unit_test.rs` 均可见。
-- RustCodeGraph 符号/调用证据：`node runGenerator`、`node generateOutputTarget`、`node buildTable`、`node parseAllKeys`。其中 Rust `parseAllKeys` 被 `buildTable` 调用，并调用 `parseCETEntry` 和 `insertWeights`；`generateOutputTarget` 被 `runGenerator` 调用，并调用目标选择、建表与两种生成后端。
-- 已读生产/装配文件：[`main.rs`](main.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`bin.rs`](bin.rs)、[`magic.rs`](magic.rs)，以及运行时消费者 `pkg/util/collate/unicode_0400_ci_impl.rs` 和 `pkg/util/collate/unicode_0900_ai_ci_impl.rs`。本 package 无 `doc.go`。
-- 已读 Go 对照与测试：[`main.go`](main.go)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、`pkg/util/collate/ucadata/unicode_ci_data_test.go`、`pkg/util/collate/ucadata/unicode_0900_ai_ci_data_test.go`。
-- `migration_aster_unit_test.rs` 直接覆盖：十六进制/权重/条目解析，短长权重打包，Hangul 分解，4.0.0/9.0.0 隐式权重，Go/Rust 格式化输出，四种目标路由与未知目标拒绝。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务文件指定的 11 章节结构命令，并人工复核结论均可回溯到上述符号和文件。

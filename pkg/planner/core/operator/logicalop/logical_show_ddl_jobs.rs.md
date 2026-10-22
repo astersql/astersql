@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core-operator-logicalop` crate，定义 `ADMIN SHOW DDL JOBS` 对应的 Rust 逻辑计划节点 `LogicalShowDDLJobs`。crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 通过 `mod logical_show_ddl_jobs` 装配模块并用 `pub use logical_show_ddl_jobs::*` 对外导出该类型；`Cargo.toml` 的 `[package.metadata.porting]` 又把该 crate 映射到 Go 包 `pkg/planner/core/operator/logicalop`。
-
-它处在语句解析/计划构建与物理执行之间的逻辑算子层，但当前 Rust 接线尚不等同于 Go 主链：Rust `pkg/planner/core/planbuilder.rs::buildAdmin` 对 `AdminStatement::ShowDdlJobs` 返回通用的 `BuiltPlan::Admin`，仓库内未找到该构建器实例化 `LogicalShowDDLJobs`；该类型现有的 Rust 外部引用主要是 cascades memo 的哈希/相等分派和独立测试。Go 版本则由 `pkg/planner/core/planbuilder.go` 直接构造该逻辑节点，并在 `pkg/planner/core/operator/physicalop/physical_show.go` 转成 `PhysicalShowDDLJobs`。因此，本文件描述的是已实现的逻辑节点能力，不代表 Rust 规划到执行的完整生产链已经接通。
+不读取 DDL 元数据、不生成结果行，也不实现物理算子。
 
 ## 核心职责
 
@@ -72,13 +70,13 @@ RustCodeGraph 对本文件列出的直接使用文件为 `pkg/planner/cascades/m
 
 ## 与 Go 版本的对应关系
 
-Rust 类型和字段与 `pkg/planner/core/operator/logicalop/logical_show_ddl_jobs.go` 基本一一对应：两侧都有 `LogicalSchemaProducer`、`JobNumber`、`Init` 和自定义统计推导，并都以 `ShowDDLJobs` 作为计划类型。Go `Init` 通过 `plancodec.TypeShowDDLJobs` 传入类型常量并返回指针；Rust 当前传入等值字符串并按值返回。
+Go `Init` 通过 `plancodec.TypeShowDDLJobs` 传入类型常量并返回指针；Rust 当前传入等值字符串并按值返回。
 
 统计语义保持核心意图：Go 在非 reload 且有缓存时复用统计，否则调用 `getFakeStats(selfSchema)`；Rust在相同缓存条件下复用，否则显式产生 `RowCount = 1.0` 且每列 NDV 为 `1.0` 的统计。签名存在迁移差异：Go 从 `reloads []bool` 仅在长度为一时取 reload，并接收子统计/self schema/子 schema；Rust 简化为单个 `reload: bool`，直接从节点 schema 读取列，且当前没有子节点参数。
 
-Go 的生成代码同样只散列和比较 `LogicalSchemaProducer`，不包含 `JobNumber`；Rust 的 `hash64_equals_generated_test.rs::show_ddl_job_number_is_excluded_like_go_generated_contract` 专门锁定这一兼容行为。Go `logicalop_test/hash64_equals_test.go::TestLogicalShowDDLJobs` 与 Rust `logicalop_test/hash64_equals_test.rs::TestLogicalShowDDLJobs` 都验证 schema 改变会改变哈希并导致不相等。
+Go 的生成代码同样只散列和比较 `LogicalSchemaProducer`，不包含 `JobNumber`；Rust 的 `hash64_equals_generated_test.rs::show_ddl_job_number_is_excluded_like_go_generated_contract` 专门锁定这一兼容行为。
 
-生产接线尚有明确差异：Go `planbuilder.go` 和 `physical_show.go` 使用该具体类型贯穿逻辑到物理计划；Rust `planbuilder.rs` 当前走通用 `BuiltPlan::Admin`，且仓库 Rust 搜索未发现相应物理转换。后续迁移不能仅凭类型已存在就声称完整行为对齐。
+生产接线尚有明确差异：Go `planbuilder.go` 和 `physical_show.go` 使用该具体类型贯穿逻辑到物理计划；Rust `planbuilder.rs` 当前走通用 `BuiltPlan::Admin`，且仓库 Rust 搜索未发现相应物理转换。
 
 ## 扩展指南
 
@@ -88,14 +86,3 @@ Go 的生成代码同样只散列和比较 `LogicalSchemaProducer`，不包含 `
 - 若要接通 Rust 生产主链，需要在计划构建层明确创建并设置 `LogicalShowDDLJobs` 的 schema/输出名，并在物理化与 executor builder 边界传递 `JobNumber`；应以 Go `planbuilder.go`、`physical_show.go` 和 executor 行为为对照，但不要在本叶子文件中塞入 DDL 元数据访问。
 - 若改变 `JobNumber` 的合法范围或实际输出语义，应在 AST/planbuilder 或执行层增加验证和用户可见错误，并同步 `pkg/executor/test/executor/executor_test.rs` 中 ADMIN SHOW DDL JOBS 相关测试；本文件只承载计划数据。
 - 性能风险主要来自错误的基数估计影响优化器选择，以及哈希等价字段遗漏造成 memo 合并；兼容风险主要来自列 schema、类型编码和 Go/Rust 语义漂移。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file ...logical_show_ddl_jobs.rs` 完整读取了本文件 82 行，并报告 memo 分派与两处 Rust 测试使用。对 `LogicalShowDDLJobs` 的查询同时定位到 Rust 结构体、Go 对照类型/方法和两侧测试。
-- 目标源码：`pkg/planner/core/operator/logicalop/logical_show_ddl_jobs.rs`，核对结构体、`Init`、固有 `DeriveStats` 和 `LogicalPlan` 实现。
-- 基座与数据定义：`logical_schema_producer.rs`、`base_logical_plan.rs`、`pkg/planner/property/stats_info.rs`，核对 schema/统计访问器、初始化默认值、计划 ID 分配和 `StatsInfo` 字段。
-- crate 与模块：`pkg/planner/core/operator/logicalop/Cargo.toml`、`lib.rs`，核对 crate 名称、路径依赖、Go 包映射以及公开导出。
-- Rust 调用与接线：`pkg/planner/cascades/memo/group_expr.rs`、`pkg/planner/core/planbuilder.rs`、`pkg/planner/core/operator/logicalop/hash64_equals_generated.rs` 和生成器配置，核对 memo 分派、当前通用 ADMIN 构建路径及哈希字段集合。
-- Go 对照：`logical_show_ddl_jobs.go`、`pkg/planner/core/planbuilder.go`、`pkg/planner/core/operator/physicalop/physical_show.go`、`hash64_equals_generated.go`，核对构建、统计、物理化和生成契约。
-- 测试证据：`hash64_equals_generated_test.rs::show_ddl_job_number_is_excluded_like_go_generated_contract`、Rust/Go `logicalop_test/...::TestLogicalShowDDLJobs`；仓库搜索未发现针对本 Rust 类型 `DeriveStats` 的专门测试，因此其缓存与 NDV行为是源码直接验证、不是测试覆盖结论。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证文档存在且恰好包含十一个固定二级章节。

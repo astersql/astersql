@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于独立 crate `astersql-util-dbutil-dbutiltest`，crate 边界由同目录 `Cargo.toml` 定义，入口 `lib.rs` 通过私有 `mod utils` 装载本文件，再用 `pub use utils::*` 将其公开 API 暴露到 crate 根。仓库总门面还在 `pkg/lib.rs` 的 `util::dbutil::dbutiltest` 下再导出这个 crate。
-
-它是测试辅助代码而非数据库请求主链：输入一条 `CREATE TABLE` SQL，构造内存中的 `model::TableInfo`，供不希望启动真实数据库或执行 DDL 的测试使用。文件没有连接数据库、提交事务或写入元数据存储。
+补索引是必要的兼容处理：`BuildTableInfoFromAST` 生成的 `TableInfo` 在 `PKIsHandle == true` 时用行句柄表达整数聚簇主键，而部分测试按 `Indices` 读取主键。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ RustCodeGraph 的文件节点确认 `utils.rs` 含两个索引节点（文件与
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/dbutil/dbutiltest/utils.go`，两版保持相同主流程：解析单条 SQL、确认 `*ast.CreateTableStmt`、调用 `ddl.BuildTableInfoFromAST`、在 `PKIsHandle` 时追加合成主索引，然后返回表元数据。
-
-语义上的对应点包括合成索引的名称、主键/唯一标志、公开状态、B-tree 类型、`GetPkName()` 列名和 `UnspecifiedLength`。Go 版通过 `errors.Trace` 包装解析与构建错误；Rust 版用 `?` 传播 `parser::errors::Error`，没有额外堆叠一层显式 trace。Go 版返回 `*model.TableInfo` 和独立的 `error`，Rust 版返回拥有所有权的 `TableInfo` 包在 `Result` 中。
+Go 版通过 `errors.Trace` 包装解析与构建错误；Rust 版用 `?` 传播 `parser::errors::Error`，没有额外堆叠一层显式 trace。Go 版返回 `*model.TableInfo` 和独立的 `error`，Rust 版返回拥有所有权的 `TableInfo` 包在 `Result` 中。
 
 Go 文件以空白导入 `pkg/planner/core` 初始化表达式求值接线；Rust `Cargo.toml` 仍声明 `astersql-planner-core`，但 `utils.rs` 没有直接导入或调用它。仅凭本文件无法证明 Rust 依赖是否承担同等初始化副作用，因此该点保持“未验证”，不宣称已完全对齐。Go/Bazel 边界由同目录 `BUILD.bazel` 的 `go_library` 定义，Rust crate 边界则由 `Cargo.toml` 和 `lib.rs` 定义。
 
@@ -84,13 +80,3 @@ Go 文件以空白导入 `pkg/planner/core` 初始化表达式求值接线；Rus
 - 若希望让调用者传入 schema 依赖，应先修改 metabuild 上下文设计并评估泛型错误类型；当前 `()`/`Infallible` 明确表达“无外部依赖”。
 - 若改变公开签名或 crate 导出，应同步检查 `lib.rs`、根 `Cargo.toml` 中的 `facade_util_dbutil_dbutiltest`、`pkg/lib.rs` 门面以及潜在消费者。性能风险主要来自解析和 DDL 元数据构建；追加单元素索引本身为常数规模，但不要在本层引入数据库 I/O 或全局锁。
 - Go 的下游测试展示了更广的预期用法，但当前 Rust 对应文件中的旧调用仅是 `GO_REFERENCE` 存档。迁移这些测试时应使用当前 `&mut Parser -> Result<TableInfo, Error>` 签名，而不是照抄 Go 风格的 `(table, err)`。
-
-## 验证依据
-
-- 源码：`pkg/util/dbutil/dbutiltest/utils.rs`，核对唯一公开函数、完整分支、错误传播和合成索引字段。
-- crate 接线：`pkg/util/dbutil/dbutiltest/Cargo.toml`、`pkg/util/dbutil/dbutiltest/lib.rs`、根 `Cargo.toml` 与 `pkg/lib.rs`，核对依赖、再导出和 facade 路径。
-- Rust 独立测试：`pkg/util/dbutil/dbutiltest/utils_aster_unit_test.rs`，核对聚簇整数主键、非句柄主键和非建表语句三类行为。
-- Go 对照与下游意图：`pkg/util/dbutil/dbutiltest/utils.go`、同目录 `BUILD.bazel`、`pkg/util/dbutil/index_test.go`、`pkg/util/dbutil/table_test.go`、`pkg/lightning/common/util_test.go`。
-- Rust 引用排查：`pkg/util/dbutil/index_test.rs` 与 `table_test.rs` 的命中均位于 `GO_REFERENCE` 字符串，已人工确认不属于可执行调用。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/util/dbutil/dbutiltest` 定位到 Rust/Go 实现、入口和独立测试；`node --file .../utils.rs` 返回完整 66 行源码；`query GetTableInfoBySQL --kind function --json` 区分了 Go 与 Rust 两个同名符号。精确 Rust 符号的 callers/callees 查询超时且无输出，未将模糊边作为结论。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终以固定十一个二级标题的结构命令、链接/路径检查、差异复核和人工事实复核完成 Ready 文档验证。

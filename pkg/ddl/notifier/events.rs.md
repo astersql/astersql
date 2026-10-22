@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-notifier` crate，是 DDL schema-change 通知的事件模型与 JSON 线协议实现。crate 入口 `pkg/ddl/notifier/lib.rs` 将本文件的公开项整体再导出，并把 `meta-model` 暴露为 `model`、把 `parser-ast` 暴露为 `ast`；`pkg/ddl/notifier/Cargo.toml` 表明本文件直接依赖这两个元数据 crate，以及 `serde`、`serde_json`。它不执行 DDL 状态机，也不负责订阅调度：上游 DDL worker 构造事件，`publish.rs`/`store.rs` 负责持久化，订阅者再按事件类型读取载荷。
-
-在当前 Rust 生产接线中，`pkg/ddl/persistent_create_table.rs`、`persistent_create_materialized_view.rs`、`persistent_create_materialized_view_log.rs`、`persistent_modify_column.rs`、`persistent_masking_actions.rs` 和 `persistent_mview_out_of_place_cutover.rs` 已直接调用本文件的部分构造器。`pkg/ddl/persistent_actions.rs::async_notify_event` 排除系统库、解析 multi-schema 子任务编号后，通过 `PubSchemaChangeInTransaction` 把事件写入 `mysql.tidb_ddl_notifier`。其余构造器仍完整保留 Go 兼容 API，但不能仅凭定义推断所有 DDL 路径都已在 Rust worker 中接线。
+通过 `WireEvent` 明确定义与 Go `jsonSchemaChangeEvent` 一致的 JSON 字段名、默认值和 `omitempty` 行为；完整的 `TableInfo`、`PartitionInfo`、`ColumnInfo`、`IndexInfo` 由 `meta-model` 自身的 serde 实现承载。
 
 ## 核心职责
 
@@ -77,18 +75,15 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ddl/notifier/events.go`，Rust 基本保留了 Go 的公开命名、action 到字段的映射、诊断字符串顺序和 JSON tag：`mini_db_info`、`table_info`、`old_table_info`、`added_partition_info`、`dropped_partition_info`、`columns`、`indexes`、`Analyzed`、`old_table_id_for_partition`、`type`。
-
 主要语言差异如下：
 
 - Go 使用 `*SchemaChangeEvent`/内部指针，Rust 用拥有型 `SchemaChangeEvent` 与 `Option<JsonSchemaChangeEvent>`；Go nil receiver 的 `String`/`GetType` 对应 Rust 默认空包装的同类行为，但 Rust 的方法不存在 nil receiver。
 - Go getter 返回内部指针/切片，Rust getter clone 后返回 `Option<Box<_>>`/`Vec<Box<_>>`，避免借用内部实现，也带来深拷贝开销。
 - Go 用 `intest.Assert` 检查 action，Rust `expect` 始终用 `expect`/`assert_eq!`；错误调用在 Rust 所有构建模式下都可能 panic。
 - Go 直接让内部结构实现 `encoding/json`，Rust 单独维护 `WireEvent` 以锁定 Go 线格式。`events_test.rs::event_json_preserves_complete_go_model_payload` 验证完整表模型中的列类型、索引、分区、placement policy 与 TTL 字段不会被简化丢失。
-- Go 对 `null` 反序列化为零值内部结构；Rust 测试 `event_json_null_and_empty_mini_slices_match_go` 验证相同行为。空删库表列表在两边都因 `omitempty`/`skip_serializing_if` 不输出 `tables`。
 - Rust 新增 `overwrite_from` 以配合其 store 复用缓冲区的实现；这不是 Go `events.go` 的公开事件 API。
 
-`pkg/ddl/notifier/events_test.go::TestEventString` 与 Rust `events_test.rs::test_event_string` 验证相同的字符串契约；两边也都有物化视图新旧表构造器测试。Rust 测试额外覆盖 JSON 往返、完整模型载荷、null/空切片和模型 action 名称。
+Rust 测试额外覆盖 JSON 往返、完整模型载荷、null/空切片和模型 action 名称。
 
 ## 扩展指南
 
@@ -102,13 +97,3 @@
 6. 评估兼容性与成本：修改现有 JSON 字段名或 action 映射会破坏持久化记录；把完整大对象加入高频事件会增加 clone、JSON 和系统表空间开销；错误使用 getter 会 panic；复用槽位若未更新 `overwrite_from` 可能残留旧字段或丢失新字段。
 
 对于现有但尚未在 Rust 生产 worker 中直接找到调用点的构造器，应先搜索真实 DDL action 接线并补最小调用链，不能仅以 API 已存在宣称功能完成。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/ddl/notifier/events.rs --offset 1 --limit 1200` 返回目标文件完整 675 行及直接使用文件；`explore 'pkg/ddl/notifier/events.rs Event EventType SchemaChangeEvent notifier'` 给出构造器、getter、`MarshalJSON` 与 store/statistics/DDL 调用关系。精确 `callers/callees` 命令未输出额外结果，因此未用其推断未显示的边。
-- 源与 crate：`pkg/ddl/notifier/events.rs`、`pkg/ddl/notifier/lib.rs`、`pkg/ddl/notifier/Cargo.toml`。
-- 发布和存储：`pkg/ddl/notifier/publish.rs::{PubSchemeChangeToStore,PubSchemaChangeInTransaction}`，`pkg/ddl/notifier/store.rs::{Insert,InsertSchemaChangeSQL,SqlListResult::Read,TableListResult::Read,overwrite_slot}`，`pkg/ddl/persistent_actions.rs::async_notify_event`。
-- Rust 生产调用点：`pkg/ddl/persistent_create_table.rs`、`persistent_create_materialized_view.rs`、`persistent_create_materialized_view_log.rs`、`persistent_modify_column.rs`、`persistent_masking_actions.rs`、`persistent_mview_out_of_place_cutover.rs`。
-- Go 对照与消费：`pkg/ddl/notifier/events.go`、`pkg/statistics/handle/ddl/subscriber.go`，以及 Go DDL 的 `schema.go`、`partition.go`、`index.go`、`cluster.go` 调用点。
-- 独立测试：`pkg/ddl/notifier/events_test.rs` 与 `pkg/ddl/notifier/events_test.go`；Rust 测试覆盖字符串、JSON 往返、完整 Go 模型载荷、null/空 Mini 切片、物化视图新旧表。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终使用任务规定的 `test` + `rg -c` 命令验证目标存在且恰有 11 个固定二级章节，并人工复核只新增本说明文档、不修改 Rust/Go/Cargo/`plan.md`。

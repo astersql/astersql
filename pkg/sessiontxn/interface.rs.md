@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`interface.rs` 是 `astersql-sessiontxn` crate 的公共事务管理契约。crate 根 `pkg/sessiontxn/lib.rs` 以 `mod interface` 装入本文件，并通过 `pub use interface::*` 把这里的类型、trait 和辅助函数重新导出。`pkg/sessiontxn/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/sessiontxn`，本文件的直接语义基线是同路径的 `pkg/sessiontxn/interface.go`。
-
-它位于会话层与具体事务策略之间：调用方通过 `TxnManager` 访问事务级 InfoSchema、作用域、读时间戳、快照和生命周期钩子；管理器再通过 `TxnContextProvider` 隔离乐观、悲观、不同隔离级别及陈旧读的差异。文件本身不实现事务、TSO、MVCC 或锁算法，只定义边界并提供四个很薄的编排入口：`GetTxnManager`、`AdviseOptimizeWithPlanAndThenWarmUp`、`NewTxn`、`NewTxnInStmt`。
-
-当前 Rust 接线必须与设计意图区分开看：仓库搜索能确认 `TxnManager`、`TxnAdvisable` 和 `TxnManagerContext` 的实现位于 `pkg/sessiontxn/txn_manager_test.rs` 测试夹具；没有找到连接真实会话的生产实现。`pkg/sessiontxn/isolation/lib.rs` 虽有同名 `TxnContextProvider` 及具体 provider 分发，但它是 isolation 子 crate 自己的、签名不同的 trait，并未实现本文件的 `TxnContextProvider`。因此本文件当前是已测试的公共契约和迁移边界，而不是已经贯通生产会话主链的证据。
+文件本身不实现事务、TSO、MVCC 或锁算法，只定义边界并提供四个很薄的编排入口：`GetTxnManager`、`AdviseOptimizeWithPlanAndThenWarmUp`、`NewTxn`、`NewTxnInStmt`。
 
 ## 核心职责
 
@@ -90,17 +86,11 @@ RustCodeGraph 的文件节点报告 `interface.rs` 被 16 个文件引用，并�
 
 ## 与 Go 版本的对应关系
 
-`pkg/sessiontxn/interface.go` 与本文件的主体一一对应：进入事务枚举/请求、错误处理枚举与辅助函数、三层接口、优化+预热、`NewTxn`、`NewTxnInStmt` 均保留。关键流程也一致：`NewTxn` 使用默认进入类型和 `ast.Optimistic`；`NewTxnInStmt` 在成功进入后无条件把 `GetCurrentStmt` 的结果交给 `OnStmtStart`；优化失败会阻止 warmup。
-
-Rust 为所有权和动态分发做了以下适配：
-
-- Go 的 `error`、`context.Context`、`infoschema.InfoSchema`、`kv.Snapshot`、`kv.Transaction`、`ast.StmtNode` 分别映射为本文件的六个类型别名。
-- Go 的可空接口值映射为 `Option<Box<dyn TxnContextProvider>>` 或 `Option<Statement>`；错误建议的第二返回值映射为 `Option<Error>`。
 - Go 的 `GetTxnManager` 是包级可注入函数变量，Rust 改为 `TxnManagerContext` + 普通泛型函数，避免全局函数指针，同时要求会话显式拥有 manager。
 - Go 接口方法隐含引用语义；Rust 对会改变缓存、TS 或生命周期状态的方法显式使用 `&mut self`。
 - Go 的 `SetOptionsBeforeCommit` 接收事务接口值；Rust 接收 `&mut dyn kv::Transaction`，避免转移调用方的事务所有权。
 
-仍存在必须明确的迁移差异：Go 生产包已经由真实 session 注入和调用 `GetTxnManager`；当前 Rust 搜索未发现本文件 traits 的生产实现。isolation 子 crate 的 provider trait 也尚未与本文件统一，其 `OnInitialize`、InfoSchema、计划检查、激活事务和提交选项等签名不同。后续迁移需做显式适配或统一，而不能仅凭同名认定语义已经贯通。
+仍存在必须明确的迁移差异：Go 生产包已经由真实 session 注入和调用 `GetTxnManager`；当前 Rust 搜索未发现本文件 traits 的生产实现。isolation 子 crate 的 provider trait 也尚未与本文件统一，其 `OnInitialize`、InfoSchema、计划检查、激活事务和提交选项等签名不同。
 
 ## 扩展指南
 
@@ -111,13 +101,3 @@ Rust 为所有权和动态分发做了以下适配：
 - 修改 `NewTxnInStmt` 或优化/预热顺序时，优先扩展 `interface_test.rs` 与 `txn_manager_test.rs` 的事件序列测试；这些顺序影响 provider 初始化、TS 预取和语句状态，属于兼容性边界。
 - 建立生产接线时，需要在真实 session 类型上实现 `TxnManagerContext`，为真实 manager 实现本文件的 `TxnManager`/`TxnAdvisable`，并为 isolation providers 提供签名适配。需要重点评估 `Rc<StmtNode>` 的线程边界、`Box<dyn Transaction>` 的所有权、动态分发开销，以及 Go 接口零值/空字符串语义。
 - 如果改变任何公共类型别名或 trait 方法签名，先用 RustCodeGraph/`rg` 重查所有使用点；这是 crate 根公开再导出的 API，影响不局限于当前文件。
-
-## 验证依据
-
-- 目标源码：`pkg/sessiontxn/interface.rs`，核对全部别名、枚举、结构体、trait、辅助函数及其实际控制流。
-- crate 边界：`pkg/sessiontxn/Cargo.toml` 与 `pkg/sessiontxn/lib.rs`，确认包映射、直接依赖、模块装配和公开再导出；该目录没有 `doc.go`。
-- Go 基线：`pkg/sessiontxn/interface.go`，核对零值、四种进入方式、错误建议、trait 方法语义、`NewTxn`/`NewTxnInStmt` 和包级 `GetTxnManager`。
-- Rust 独立测试：`pkg/sessiontxn/interface_test.rs`、`pkg/sessiontxn/txn_manager_test.rs`、`pkg/sessiontxn/sessiontxn_aster_unit_test.rs`、`pkg/sessiontxn/txn_context_test.rs`，确认默认值、调用顺序、优化失败短路、错误传播、错误动作转发和生命周期事件。
-- 邻接实现：`pkg/sessiontxn/isolation/lib.rs` 与 `pkg/session/txnmanager.rs`。它们证明仓库存在事务策略和另一套管理器迁移实现，同时也证明其签名尚未实现本文件定义的 traits，故未把它们描述为本接口的生产实现。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/sessiontxn` 覆盖目标及 Go/Rust 对照；`node --file pkg/sessiontxn/interface.rs` 显示本文件 263 行并被 16 个文件使用；精确 `query` 找到 Rust/Go 的 `NewTxnInStmt`、`AdviseOptimizeWithPlanAndThenWarmUp`、`GetTxnManager`、`ErrorAction`、`RetryReady`、`NoIdea`。对三个泛型入口的精确 `callers/callees` 未返回结果，因此调用关系另以源码搜索复核并在本文标明限制。
-- 结构验收使用任务指定命令，要求目标文件存在且恰好包含本页的十一个固定二级标题；另外执行 `git diff --check` 检查 Markdown 空白错误。按任务约束未运行 Cargo 或代码测试。

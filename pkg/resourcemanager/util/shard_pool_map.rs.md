@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现资源管理器使用的、按名称分片的池容器映射。它位于 `pkg/resourcemanager/util`，在仓库中有两种装配方式：`pkg/resourcemanager/util/lib.rs` 将其声明为公开模块并再导出全部公开符号，对应独立 crate `astersql-resourcemanager-util`；同时 `pkg/resourcemanager/lib.rs` 通过 `#[path = "util/shard_pool_map.rs"] mod shard_pool_map` 将同一实现直接纳入 `astersql-resourcemanager`，再从 `crate::util` 暴露 `NewShardPoolMap`、`ShardPoolMap` 和 `PoolMapError`。
-
-在完整资源管理流程中，`pkg/resourcemanager/rm.rs` 的 `ResourceManagerInner::poolMap` 持有 `Arc<ShardPoolMap>`。`ResourceManager::Register`/`Unregister` 分别落到本文件的 `Add`/`Del`，`Reset` 用 `NewShardPoolMap` 替换整张表；后台调度入口 `pkg/resourcemanager/schedule.rs::ResourceManager::schedule` 则调用 `Iter`，把每个 `PoolContainer` 交给调度决策与执行逻辑。
+实现资源管理器使用的、按名称分片的池容器映射。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ Cargo 边界由 `pkg/resourcemanager/util/Cargo.toml` 明确为无额外依赖�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/resourcemanager/util/shard_pool_map.go`。Rust 保留了 Go 的 8 分片、首字节取模、逐分片遍历、读写锁、删除不存在 key 的空操作，以及错误文本 `pool is already exist`。Go 的 `*PoolContainer` 对应 Rust 映射中的 `Arc<PoolContainer>`；Go 构造函数返回指针，Rust 构造函数返回值，实际主资源管理器随后再用 `Arc` 共享外层映射。
+Go 的 `*PoolContainer` 对应 Rust 映射中的 `Arc<PoolContainer>`；Go 构造函数返回指针，Rust 构造函数返回值，实际主资源管理器随后再用 `Arc` 共享外层映射。
 
-最重要的当前语义差异在重复注册：Go `poolMap.Add` 仅在 `contain && !intest.InTest` 时返回错误，在 `intest.InTest` 模式下会覆盖原值；Rust 没有 `intest.InTest` 分支，任何环境中只要 key 已存在就返回 `PoolMapError` 并保留原值。对应测试也反映了该差异：Go 测试仅在 `!intest.InTest` 时断言重复添加失败，Rust 测试无条件断言失败。扩展或对齐时不能把两者描述为完全相同。
+最重要的当前语义差异在重复注册：Go `poolMap.Add` 仅在 `contain && !intest.InTest` 时返回错误，在 `intest.InTest` 模式下会覆盖原值；Rust 没有 `intest.InTest` 分支，任何环境中只要 key 已存在就返回 `PoolMapError` 并保留原值。对应测试也反映了该差异：Go 测试仅在 `!intest.InTest` 时断言重复添加失败，Rust 测试无条件断言失败。
 
-另一个实现差异是锁失败处理：Go 的 `sync.RWMutex` 没有中毒概念，Rust 的 `RwLock` 在中毒后会因 `unwrap` panic。两端都在遍历回调期间持有当前分片读锁，也都不承诺 `map`/`HashMap` 内部顺序。
+另一个实现差异是锁失败处理：Go 的 `sync.RWMutex` 没有中毒概念，Rust 的 `RwLock` 在中毒后会因 `unwrap` panic。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Cargo 边界由 `pkg/resourcemanager/util/Cargo.toml` 明确为无额外依赖�
 - 若要让遍历可提前停止或返回错误，应调整 `Iter` 的回调/返回类型，并同步 `ResourceManager::schedule` 调用点与独立测试。若目标是缩短持锁时间，可考虑在锁内克隆 `Arc` 列表、锁外回调，但这会改变删除后的对象可见生命周期和内存开销，必须明确验证。
 - 若要对齐 Go 的 `intest.InTest` 覆盖行为，应先决定 Rust 测试模式的权威开关，并分别测试生产重复注册拒绝与测试模式覆盖；不能简单删除重复检查。
 - 若加入显式清理，不能只在 `Del` 中无条件调用 `ReleaseAndWait`，因为值可能仍被其他所有者引用且锁内阻塞会放大竞争。应由拥有池生命周期的上层定义释放时机，并增加并发与阻塞边界测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 `pkg/resourcemanager/util` 的 Rust/Go 文件；`files --filter pkg/resourcemanager/util` 显示目标、模块入口、Go 对照和两端测试均在图中。
-- RustCodeGraph `query ShardPoolMap --json`、`query NewShardPoolMap --json`、`query PoolMapError --json`：确认公开结构、构造函数、错误类型及 Go 对照符号的位置；目标文件节点列出 14 个符号。
-- RustCodeGraph `node --file pkg/resourcemanager/util/shard_pool_map.rs`：核实 `SHARD`、`hash`、公开 API、私有 `PoolMap`、锁范围和错误文本；`node NewShardPoolMap` 进一步确认其下游为 `std::array::from_fn` 与 `PoolMap::new`。
-- RustCodeGraph 文件节点：读取并核对 `pkg/resourcemanager/rm.rs`、`pkg/resourcemanager/schedule.rs`、`pkg/resourcemanager/lib.rs`、`pkg/resourcemanager/util/lib.rs` 与 `pkg/resourcemanager/util/util.rs`，确认装配方式、上游注册/注销/调度调用和 `PoolContainer` 数据定义。
-- Go 与测试证据：`pkg/resourcemanager/util/shard_pool_map.go`、`pkg/resourcemanager/util/shard_pool_map_test.go`、`pkg/resourcemanager/util/shard_pool_map_test.rs`，用于核对重复键、删除幂等、计数遍历、锁粒度与 Go/Rust 差异。
-- Cargo 证据：`pkg/resourcemanager/util/Cargo.toml`、`pkg/resourcemanager/Cargo.toml` 和工作区根 `Cargo.toml`，用于核对独立 facade crate 与生产 crate 的双重装配边界。
-- 本任务是只读代码分析与文档新增，按计划不运行 Cargo；交付前使用任务规定的命令验证本文恰有 11 个固定二级章节。

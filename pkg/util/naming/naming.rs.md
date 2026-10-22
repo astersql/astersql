@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-naming` crate 的核心实现，提供与 Go 包 `pkg/util/naming` 对齐的名称合法性校验。crate 入口 `pkg/util/naming/lib.rs` 公开 `naming` 模块并通过 `pub use naming::*` 再导出本文件的公开函数；`pkg/util/naming/Cargo.toml` 指定 `lib.rs` 为库入口，运行时依赖只有 `regex = "1"`。
-
-当前已确认的生产接线有两处：`pkg/sessionctx/variable/sysvar_builtins.rs` 在注册实例级系统变量 `tidb_service_scope` 时调用 `naming::Check`；`pkg/server/handler/tikvhandler/dxf.rs` 的 `parseStoredTaskHistoryQuery` 对非空历史任务查询 keyspace 调用 `astersql_util_naming::CheckKeyspaceName`。工作区根 `Cargo.toml` 还以 `facade_util_naming` 名称登记该 crate。`cmd/tidb-server/main.rs` 虽也调用 `naming::Check`，但其导入来自 `cmd/tidb-server/stubs.rs` 的同名桩模块，并非本文件，不能作为本实现已接入启动参数路径的证据。
+不做规范化、大小写折叠、去空白或 Unicode 等价处理；这些都应由调用方在需要时另行完成。
 
 ## 核心职责
 
@@ -83,11 +81,3 @@
 - 新增另一类固定策略时，优先增加薄入口并委托 `CheckWithMaxLen`，避免复制错误文案；若需要不同字符集，则应明确拆分机制而非让现有 API 出现隐式分支。
 - 性能优化应先证明正则编译是热点；缓存或直接扫描必须保持锚定、空串、ASCII 集合、错误文本和 panic 契约。
 - 测试必须继续放在独立文件。基础 Go 对照用例同步更新 `pkg/util/naming/naming_test.rs`，迁移边界和错误契约更新 `pkg/util/naming/migration_aster_unit_test.rs`，并按需要同步 `pkg/util/naming/naming_test.go`。生产调用变化还应在各调用方自己的独立测试中覆盖。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标目录中的 `naming.rs`、`lib.rs`、两个 Rust 测试及 Go 对照均已索引。
-- RustCodeGraph `node --file`：读取 `pkg/util/naming/naming.rs`、`lib.rs`、`naming_test.rs`、`migration_aster_unit_test.rs`、`naming.go`、`naming_test.go`，以及两个生产调用点和聚合接线测试。
-- RustCodeGraph `query/node/callers/callees`：确认三个 Rust/Go 同名符号；确认 Rust 内部的两条委托调用边，且 `CheckWithMaxLen` 没有图中展开的 callee。重名符号的 `callers` 命令未输出上游明细，因此另以精确 `rg` 搜索核对生产引用。
-- 配置证据：`pkg/util/naming/Cargo.toml`、`pkg/sessionctx/variable/Cargo.toml`、`pkg/server/handler/tikvhandler/Cargo.toml`、根 `Cargo.toml`。
-- 行为测试证据：`pkg/util/naming/naming_test.rs`、`pkg/util/naming/migration_aster_unit_test.rs` 和 `pkg/util/naming/naming_test.go`。本任务是纯文档分析，按计划未运行 Cargo 或代码测试。

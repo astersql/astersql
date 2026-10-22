@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`allocator.rs` 属于 `astersql-lightning-backend-kv` crate。该 crate 由同目录 `Cargo.toml` 定义，以 `lib.rs` 为入口；`lib.rs` 通过 `mod allocator` 装入本模块，再以 `pub use allocator::*` 向 crate 使用者公开这里的类型和构造函数。crate 的移植元数据把 Go 对照包标为 `pkg/lightning/backend/kv`。
-
-本文件处于 Lightning/IMPORT INTO 的“行数据编码为 KV”路径内，但不负责从元数据服务申请新 ID。它保存编码过程中已经使用过的 AUTO_RANDOM、AUTO_INCREMENT 和隐式 RowID 的最大值，供上层在导入后处理阶段重设表的 ID 水位。直接消费者包括 `pkg/lightning/backend/kv/base.rs`、`pkg/lightning/backend/kv/sql2kv.rs` 和 `pkg/executor/importer/kv_encode.rs`。
+该事实由 `panickingAllocator` 仅提供 `Rebase`、`Base`、`GetType` 三个操作，以及调用方只在编码既有/派生 ID 后执行 `Rebase` 共同证明。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照为 `pkg/lightning/backend/kv/allocator.go`，测试为 `allocator_test.go`。两版共同点是：三种 allocator 类型、可指定初始 base、CAS 单调 rebase、读取 base/类型，以及将它们用于导入期最大 ID 收集。Rust 的 `allocator_test.rs` 还增加了显式多线程竞争验证；Go 测试则分别验证三种类型的目标水位及回退无效。
+Rust 的 `allocator_test.rs` 还增加了显式多线程竞争验证；Go 测试则分别验证三种类型的目标水位及回退无效。
 
 存在以下已核实差异：
 
@@ -100,13 +98,3 @@
 - 增加错误返回或 context：这是公开 API 变化，会波及全部 `.Rebase` 调用点；应先确定是否需要与 Go 接口完全一致，再统一迁移，避免只对单一路径做版本简化。
 
 兼容风险主要是 `SepAutoInc` 别名语义和外部公开命名；正确性风险是水位回退或不同克隆不再共享；性能风险集中在高并发下 `SeqCst` CAS 的竞争。任何行为修改都应保留 PingCAP 许可证，并按仓库规则在真正处理的 Rust 源文件顶部保留 AsterSQL 标识。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示当前仓库索引可用；`node --file pkg/lightning/backend/kv/allocator.rs` 核对了全部 115 行、主要符号及 `NewPanickingAllocators -> NewPanickingAllocatorsWithBase` 调用边；`node --file pkg/lightning/backend/kv/allocator_test.rs` 核对了并发与回退测试。对同名 Go/Rust 符号执行了 `query`、`callers`、`callees`；工具未能稳定消歧调用者，因此未把空调用者输出当作“无调用”。
-- Rust 源与模块：`pkg/lightning/backend/kv/allocator.rs`、`lib.rs`、`base.rs`、`sql2kv.rs`，以及 `pkg/executor/importer/kv_encode.rs`。
-- crate 边界：`pkg/lightning/backend/kv/Cargo.toml`，确认 crate 名、`lib.rs` 入口、依赖和 Go 包移植元数据；本文件没有直接外部 crate 依赖或 feature 分支。
-- Rust 测试：`pkg/lightning/backend/kv/allocator_test.rs::TestAllocator`，验证指定初值、并发取最大值、不回退和类型标签。
-- Go 对照：`pkg/lightning/backend/kv/allocator.go`、`allocator_test.go`，并额外核对 `pkg/meta/autoid/autoid.go::{NewAllocators, Allocators.Get}` 以确认 `SepAutoInc` 的重定向语义。
-- 精确路径搜索：用 `rg` 核对了 `NewPanickingAllocators`、`AllocatorType`、`Get`、`Rebase`、`Base`、`GetType` 在 Lightning 与导入器 Rust 路径中的直接引用。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在且恰有上述 11 个固定二级章节；交付前另行执行该命令并记录退出码。

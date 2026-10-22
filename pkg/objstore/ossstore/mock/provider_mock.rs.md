@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-objstore-ossstore-mock`，为阿里云 OSS 凭证提供者建立可配置期望的 Rust 测试替身。crate 入口 `pkg/objstore/ossstore/mock/lib.rs` 将 `provider_mock` 声明为公开模块并再导出其全部公开项；根工作区 `Cargo.toml` 把该 crate 纳入 members，并以 `facade_objstore_ossstore_mock` 注册，随后由 `pkg/lib.rs` 的 `objstore::ossstore::mock` 门面再次导出。
-
-它当前是测试兼容层，而不是 OSS 生产凭证链的实现。生产代码使用 `pkg/objstore/ossstore/credential.rs::CredentialsProvider`（小写 `get_credentials`，返回 `ProviderCredentials`）；本文件另行定义 Go 风格的 `CredentialsProvider`（大写 `GetCredentials`/`GetProviderName`）。仓库中的精确符号检索只发现同一 mock crate 的测试直接构造该 mock，没有发现生产 OSS 路径把它注入 `CredentialRefresher`。
+用 `CredentialsError` 提供最小、可比较且实现标准错误接口的失败值，便于期望闭包返回错误。
 
 ## 核心职责
 
@@ -67,9 +65,6 @@ trait 的 `Send + Sync` 上界要求实现对象可跨线程传递和共享，�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/ossstore/mock/provider_mock.go`，它由 Go MockGen 针对阿里云 SDK 的 `providers.CredentialsProvider` 生成。
-
-- 类型名称与方法名称基本对齐：两边都有 `MockCredentialsProvider`、`MockCredentialsProviderMockRecorder`、`NewMockCredentialsProvider`、`EXPECT`、`ISGOMOCK`、`GetCredentials` 和 `GetProviderName`。
 - Go 构造器接收 `*gomock.Controller`，mock 和 recorder 是两个结构体；Rust 构造器零参数，recorder 名称是 mock 本身的别名，`EXPECT` 返回自身可变引用。
 - Go `GetCredentials` 返回 `*providers.Credentials, error`，凭证类型来自阿里云 SDK且允许 nil 指针；Rust 返回本地 `Credentials` 值与本地 `CredentialsError`，没有 nil 凭证状态。
 - GoMock 通过 controller 的 `Call`/`RecordCallWithMethodType` 记录调用；Rust 将匹配与计数委托给 mockall 生成的 `expect_*` API。
@@ -83,12 +78,3 @@ trait 的 `Send + Sync` 上界要求实现对象可跨线程传递和共享，�
 - 若目标是让本 mock 注入 Rust 生产 `CredentialRefresher`，不能只改类型别名：需要先统一或适配本文件与 `credential.rs` 的两个不同 trait、返回类型和命名约定，并为直接接线增加独立回归测试。当前任务没有进行这种行为修改。
 - 保留 Go 风格公开名称时，应继续依赖 `mock/lib.rs` 的 lint 允许项；若改成 Rust 命名，应评估 facade 使用者和迁移测试的兼容性。
 - 并发测试若共享 mock，应先确认 mockall 生成类型在所用期望/返回闭包组合下满足 trait 的 `Send + Sync` 要求，并覆盖跨线程调用次数及析构校验；目前仓库没有这类证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标文件已索引；`files --filter pkg/objstore/ossstore/mock` 列出本 crate 的 Rust/Go 源与测试；`node --file provider_mock.rs` 读取完整 88 行并报告 13 个符号；精确 `query` 确认 trait、错误、构造器和 Go/Rust 同名符号；对构造器及两个 trait 方法执行 `callers`/`callees` 未得到宏内函数边。
-- 源码：`pkg/objstore/ossstore/mock/provider_mock.rs`（本文对象）；模块入口 `pkg/objstore/ossstore/mock/lib.rs`；生产边界 `pkg/objstore/ossstore/credential.rs`；根门面 `pkg/lib.rs`。
-- Cargo：`pkg/objstore/ossstore/mock/Cargo.toml`；根 `Cargo.toml` 的 workspace member 与 `facade_objstore_ossstore_mock` 路径依赖。
-- Go 对照：`pkg/objstore/ossstore/mock/provider_mock.go`；实际 Go 使用与生命周期测试 `pkg/objstore/ossstore/credential_test.go`；刷新器实现 `pkg/objstore/ossstore/credential.go`。
-- Rust 测试：`pkg/objstore/ossstore/mock/provider_mock_test.rs`；`pkg/objstore/ossstore/mock/migration_aster_unit_test.rs::credentials_provider_mock_matches_go_zero_argument_methods`。这些测试证明命名 recorder 契约、成功凭证返回、提供者名称返回、一次调用约束和 `ISGOMOCK` 可调用；错误分支与并发行为未验证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-sortexec` crate，由同目录 `lib.rs` 以 `pub mod parallel_sort_spill_helper` 纳入模块树。它位于并行排序的数据收集与最终输出之间：`SortExec::fetchParallel` 在多个 `parallelSortWorker` 累积输入、内存跟踪器超限时创建 `parallelSortSpillHelper`，触发中间 spill，并在输入耗尽后调用 `mergeAll` 生成最终有序行。该文件不负责 SQL 排序键的构造、输入拉取或结果分块；这些分别由 `sort_util::comparator`、`SortExec` 和 `SortExec::Next` 完成。
-
-`pkg/executor/sortexec/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/executor/sortexec`，未声明 feature；清单中的 workspace 依赖目前都置于 `cfg(windows)` 下。本文件自身只使用标准库同步原语和 crate 内模块，因此它的直接依赖边不涉及外部 crate。
+这里的 `DiskRun` 是 `sort_util.rs` 中持有 `Vec<DataChunk>` 的内存对象，并不执行文件 I/O。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ Rust 的 `spill` 并不并行处理 worker，而是按向量顺序持锁并归�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/sortexec/parallel_sort_spill_helper.go`。两版共有的骨架是：helper 保存已 spill 的有序数据；spill 前将状态设为 `inSpilling`，普通返回时恢复为 `notSpilled`；先排序/归并各 worker 数据，再按固定 chunk 大小写出；最终把历史 run 与残留数据做多路归并。Rust 独立测试 `parallel_sort_spill_helper_test.rs` 专门固定了“空 spill 不算触发”和“可传播错误后恢复状态”的行为。
+Rust 独立测试 `parallel_sort_spill_helper_test.rs` 专门固定了“空 spill 不算触发”和“可传播错误后恢复状态”的行为。
 
 当前 Rust 不是 Go 实现的完整等价移植，已核实的差异包括：
 
@@ -100,15 +98,3 @@ Go 测试 `parallel_sort_spill_test.go` 覆盖真实磁盘路径、全量 spill�
 若引入真正的 worker 并行与通知机制，需要同时审查锁顺序、状态转换、重复触发、取消和 panic 边界。Go 的 `sync.Cond`、WaitGroup、双 channel 与 `finishCh` 是直接语义证据；Rust 可选择不同原语，但不得省略“生产者退出后再销毁资源”和“错误后唤醒等待者”的行为保证。
 
 性能敏感点包括两次完整物化（worker `Vec<Row>` 与 merger `collect`）、`part.to_vec()` 的行克隆、每轮把 worker run 再合成单 run，以及最终 `mergeAll` 再次完整收集。优化时必须保持稳定的排序键语义和各 run 有序不变量，并增加多 worker、多轮 spill、空 worker、升降序/NULL 和大数据量回归测试。
-
-## 验证依据
-
-事实核对覆盖以下路径：
-
-- 目标源码：`pkg/executor/sortexec/parallel_sort_spill_helper.rs`。
-- crate 与模块边界：`pkg/executor/sortexec/Cargo.toml`、`pkg/executor/sortexec/lib.rs`。
-- Rust 直接入口与下游：`sort.rs`、`sort_spill.rs`、`parallel_sort_worker.rs`、`multi_way_merge.rs`、`sort_util.rs`。
-- Rust 独立测试：`parallel_sort_spill_helper_test.rs`、`sort_spill_test.rs`；前者覆盖空 spill 与错误后状态恢复，后者覆盖 action 阈值和 fallback。
-- Go 对照与回归：`parallel_sort_spill_helper.go`、`parallel_sort_spill_test.go`。
-
-RustCodeGraph `status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/sortexec` 将目标列为含 19 个符号的 Rust 文件。执行了对 `parallelSortSpillHelper`、`setNeedSpill`、`isSpillTriggered`、`spillStatus`、`mergeAll`、`mergeRuns` 的 `query`，并对关键方法执行 `callers/callees`；后者没有产出调用边，因此使用局部源码调用点补证。最终交付以任务指定的结构命令验证文档存在且恰有 11 个固定二级标题；这是纯文档分析，按计划不运行 Cargo 或代码测试。

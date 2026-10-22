@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-ingestor-ingestcli` crate 的 HTTP 实现层。crate 根 `pkg/ingestor/ingestcli/lib.rs` 将本文件的公开项重新导出，并用 `interface.rs` 定义的 `Client`、`WriteClient`、`SplitClient`、请求和响应类型约束它。包级说明 `pkg/ingestor/doc.go` 将 `ingestor` 定位为“整理编码 KV、准备 Region、直接导入 SST 到底层存储”的基础设施；本文件负责其中面向下一代 TiKV worker 的最后两段协议：先向 `/write_sst` 流式写 KV 生成 SST，再向 Region leader 所在 store 的 `/ingest_s3` 发起 ingest。
-
-`pkg/ingestor/ingestcli/Cargo.toml` 声明 crate 名为 `astersql-ingestor-ingestcli`，直接依赖 `errdef`（HTTP 状态错误）和 `ingestmetric`（写入/导入耗时指标）；其余 `util`、`logutil`、`redact`、`lightning-common` 依赖目前均为 optional，本文所述文件未使用它们。工作区根 `Cargo.toml` 以 `facade_ingestor_ingestcli` 暴露该 crate，`pkg/ingestor/ingestctrl/Cargo.toml` 也声明了依赖；但仓库搜索只发现 Rust 生产侧的依赖声明与 `pkg/lib.rs` 再导出，没有发现 Rust 生产代码直接构造本文件的 `NewClient`。因此它是已实现、已单测的协议客户端，Rust 生产主链接线状态仍应以实际调用搜索为准，不能仅由 Cargo 依赖推断为已启用。
+`StdHttpTransport` 通过 `TcpStream` 实现最小的 HTTP/1.1 客户端：对写入使用 chunked PUT，对 ingest 使用带 `Content-Length` 的 POST，并解析普通或 chunked 响应体。
 
 ## 核心职责
 
@@ -91,11 +89,7 @@ RustCodeGraph 将 `client.rs` 标记为被 43 个文件使用，并能精确列�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ingestor/ingestcli/client.go`，独立测试是 `client_test.go` 与 `client_test.rs`。
-
-- Go `jsonByteSlice.MarshalJSON` 对应 `JsonByteSlice`/`encode_json_bytes`；两者都把字节编码为 JSON 整数数组，nil 编码为 `null`。
 - Go `nextGenSSTMeta` 对应 `NextGenSstMeta`，字段和 JSON 名一致；Rust 的 `Display` 用长度脱敏代替 Go `redact.Key`，仍避免输出原始 key。
-- Go `writeClient` 的 `io.Pipe + WaitGroupWrapper + atomic.Error` 对应 Rust 的 `sync_channel + JoinHandle + SharedOutcome`。两者都异步发送 chunked PUT、在 `Recv/Close` 关闭写端并等待请求结束，也都让服务端错误主要在 `Recv` 暴露。
 - Go 用 `http.Client` 同时承担 HTTP/TLS、context、超时和连接管理；Rust 把这些能力抽象成 `HttpTransport`，默认 `StdHttpTransport` 只有明文 TCP。TLS 与请求期取消必须由注入 transport 补足。
 - Go 用标准 `encoding/json`；Rust 使用本文件的精简解析器。Rust 测试额外固定了 Go 兼容点：缺失 `sst_meta` 或字段得到零值，未知布尔/浮点字段被忽略。
 - Go `client.Ingest` 与 Rust `ClientImpl::ingest` 都经 split client 找 leader store、构造同一 endpoint、序列化 SST meta、解析非 200 的 `errorpb.Error` 并追加 SST ID。Rust 对缺 leader、缺 meta、缺 epoch 做了显式可选值处理，避免 Go 指针解引用式 panic；epoch 缺失取 0。
@@ -109,12 +103,3 @@ RustCodeGraph 将 `client.rs` 标记为被 43 个文件使用，并能精确列�
 - 若增强 JSON 兼容性，修改 `JsonParser` 时应增加畸形 chunk/JSON、UTF-8、surrogate、数字溢出、未知嵌套字段测试，保持缺失字段零值和未知字段忽略语义。
 - 若改变生命周期或重试，重点审查 `finish`、`cause_closed_pipe`、`Drop` 与 channel 容量，避免重复取 outcome、线程泄漏或在析构时永久阻塞；需要独立并发测试覆盖 worker panic、transport 提前关闭、重复 `recv/close`。
 - 若把该客户端接入 Rust 生产主链，应在 `pkg/ingestor/ingestctrl` 中复刻而非简化 Go 的 `objStoreRegionJobWorker` 行为：分批写、错误路径 close、`Recv` 结果传给 ingest、Region/commit TS 约束与重试分类都需保留。当前只有 Cargo 依赖不能作为已接线证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ingestor/ingestcli` 找到 16 个相关文件；`node --file pkg/ingestor/ingestcli/client.rs --offset 1/261/601` 完整读取 936 行并报告该文件有 96 个节点、被 43 个文件使用。`query` 唯一定位 `WriteClientImpl`、`send_write_request`、`decode_next_gen_response`，并在多候选中定位本文件的 `NewClient`。`explore/callers/callees` 在 30 秒窗口无输出，因此未把缺失的图结果当成事实，转用精确搜索核验调用关系。
-- 源码与边界：完整读取 `pkg/ingestor/ingestcli/client.rs`；读取模块入口 `pkg/ingestor/ingestcli/lib.rs` 与公共接口 `pkg/ingestor/ingestcli/interface.rs`；按仓库预检要求读取最近的包契约 `pkg/ingestor/doc.go`。
-- crate 与接线：读取 `pkg/ingestor/ingestcli/Cargo.toml`；搜索工作区根 `Cargo.toml`、`pkg/lib.rs`、`pkg/ingestor/ingestctrl/Cargo.toml` 以及 Rust 源文件中的 crate/API 引用，确认公开与依赖关系，并明确记录 Rust 生产调用点未发现的验证限度。
-- Go 对照与生产链：完整读取 `pkg/ingestor/ingestcli/client.go`、`pkg/ingestor/ingestcli/client_test.go`；读取 `pkg/ingestor/ingestctrl/local.go:newRegionJobWorker` 和 `pkg/ingestor/ingestctrl/job_worker.go:objStoreRegionJobWorker.write/ingest`，核对构造、分批写、Recv 和 ingest 的真实链路。
-- Rust 测试：完整读取 `pkg/ingestor/ingestcli/client_test.rs`。用例覆盖字节数组 JSON、Go 零值/未知字段兼容、KV 帧、延迟暴露 HTTP 500、两类耗时指标、成功/失败 ingest、SST ID 注释和 URL schema 补全；未运行 Cargo，符合本任务纯文档约束。
-- 人工复核：本文区分默认 transport 与注入 transport、Rust 已实现 API 与当前生产接线、业务协议测试与真实 socket 覆盖，不以设计预期替代代码事实；扩展建议指向独立测试文件。

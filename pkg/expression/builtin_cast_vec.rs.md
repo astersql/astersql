@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（见 `pkg/expression/Cargo.toml`），由 `pkg/expression/lib.rs:175-176` 以私有模块 `builtin_cast_vec_kernel` 挂载。它是 Go `pkg/expression/builtin_cast_vec.go` 的独立 Rust 向量化 CAST 内核：以 `Vec<Option<ScalarValue>>` 表示一列，逐行完成 7 类求值类型之间 Go 已向量化的 49 种转换。
-
-当前接线边界很重要：仓库内 `cast_column` 的直接 Rust 调用者只有 `builtin_cast_vec_3_aster_unit_test.rs`、`builtin_cast_vec_test.rs` 和 `builtin_cast_bench_test.rs`；`lib.rs:724-726` 也只在 `#[cfg(test)]` 下提供测试别名。因此该文件已有完整可执行内核和测试覆盖，但尚未接入生产表达式对象的 `vecEval*` 主链，不能把它描述成现有 SQL 执行路径已经调用的实现。
+`cast_column` 负责列级容量预分配、NULL 原样传播、声明源类型与实际值类型一致性检查，再把非空行交给 `cast_one`。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 文件 `pkg/expression/builtin_cast_vec.go` 为每个签名提供独立 `builtinCast*Sig.vecEval*`，通过 `chunk.Column` 的 typed slice、NULL bitmap 和临时列池批量求值；Rust 将这些签名收敛为 `SUPPORTED_CASTS + cast_one + 七个 cast_*`，用枚举保持显式分支。源文件注释和 Rust 测试均把 49 个源/目标组合定义为对齐目标。
+Go 文件 `pkg/expression/builtin_cast_vec.go` 为每个签名提供独立 `builtinCast*Sig.vecEval*`，通过 `chunk.Column` 的 typed slice、NULL bitmap 和临时列池批量求值；Rust 将这些签名收敛为 `SUPPORTED_CASTS + cast_one + 七个 cast_*`，用枚举保持显式分支。
 
-保留的 Go 语义包括：NULL 传播；UNION unsigned 负数钳零；Int YEAR/boolean JSON；Real→Time 的 3/4 位数字左补零规则；Decimal→Int half-up 舍入；目标 flen/precision/FSP；DATE 清零时间部分；binary string 零填充；`ParseToJSON` 与 opaque binary JSON；Time/Duration/JSON 时态互转及依赖当前时间的 YEAR/Time 转换。
-
-结构差异包括：Rust 不使用 `chunk.Column` 缓冲池，warning 由本地字符串列表表示，而非完整 Go `EvalContext` 的 statement warning 机制；七类 `EvalKind` 合并 Go 的 datetime/timestamp 物理枚举差异；Rust 当前没有生产表达式签名对象的接线。`pkg/expression/builtin_cast_vec_test.go` 的向量化/标量一致性框架和 Real→Time、UNION unsigned 回归用例，是语义基线而非 Rust 运行时接线证据。
+结构差异包括：Rust 不使用 `chunk.Column` 缓冲池，warning 由本地字符串列表表示，而非完整 Go `EvalContext` 的 statement warning 机制；七类 `EvalKind` 合并 Go 的 datetime/timestamp 物理枚举差异；Rust 当前没有生产表达式签名对象的接线。
 
 ## 扩展指南
 
@@ -86,11 +82,3 @@ Go 文件 `pkg/expression/builtin_cast_vec.go` 为每个签名提供独立 `buil
 涉及时间/时长的扩展必须明确：目标 MySQL 类型码、FSP 舍入、时区/location、非法值是 warning 还是错误，以及是否依赖固定 `now`。涉及 unsigned/UNION 时要覆盖负数、边界值和源 unsigned 位；涉及字符串/JSON 时要区分普通字符串、binary opaque、parse-to-JSON 和 JSON→String 不填零的特例。性能修改应保持单次列预分配与 O(n) 遍历，并关注每行字符串格式化/JSON clone 的分配成本。
 
 测试逻辑不得放入本生产文件。应同步扩展独立的 `pkg/expression/builtin_cast_vec_3_aster_unit_test.rs`（签名矩阵、行为和 NULL），必要时在 `builtin_cast_vec_test.rs` 加精确 Go 回归，在 `builtin_cast_bench_test.rs` 加性能覆盖，并核对 `builtin_cast_vec_test.go` 与 `builtin_cast_vec.go`。若要投入生产，还需在表达式构建/求值层增加真实调用接线及端到端测试；仅令 `cast_column` 单测通过不足以证明 SQL 主链已使用它。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 `pkg/expression/builtin_cast_vec.rs`（1192 行、79 个符号）；`node --file` 分段读取全文件；`query cast_column/cast_one/CastSpec` 分别定位主要入口、分派器和规格类型；`callers/callees` 无输出，故以精确引用检索补证。
-- Rust 源与装配：`pkg/expression/builtin_cast_vec.rs`、`pkg/expression/lib.rs:175-176,441-445,724-726`、`pkg/expression/Cargo.toml`。
-- 独立 Rust 测试：`pkg/expression/builtin_cast_vec_3_aster_unit_test.rs` 覆盖 49 签名、NULL、Real→Time、UNION unsigned、舍入与 JSON 模式；`pkg/expression/builtin_cast_vec_test.rs` 覆盖 binary padding 特例；`pkg/expression/builtin_cast_bench_test.rs` 是直接基准调用者。
-- Go 对照：`pkg/expression/builtin_cast_vec.go` 的 49 个 `vecEval*` 实现及 `pkg/expression/builtin_cast_vec_test.go` 的向量化/标量一致性、Real→Time 和 UNION unsigned 回归。
-- 人工复核：公开符号与内部辅助函数清单、49 项矩阵、所有七个源族分派、错误降级边界、生产接线现状均与上述文件交叉核对；本任务为纯文档分析，按任务要求未运行 Cargo。

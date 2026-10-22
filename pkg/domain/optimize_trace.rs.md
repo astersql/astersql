@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate，由 [`pkg/domain/lib.rs`](lib.rs) 以 `pub mod optimize_trace` 公开装配。它负责生成 Optimizer Trace 在外部存储中的**相对目录**，结果形如 `optimizer_trace/<instance_id>`；文件本身不创建目录、不写 trace 文件，也不负责下载或垃圾回收。
-
-RustCodeGraph 的当前索引只找到 [`pkg/domain/optimize_trace_test.rs`](optimize_trace_test.rs) 对本文件 API 的 Rust 调用，没有找到 Rust 生产调用者。因此这里是已经实现并公开的 Domain 边界能力，但尚不能据此声称 Rust 的 trace 生成、HTTP 下载或 GC 主链已经接入。Go 对照实现则已由 `pkg/executor/trace.go`、`pkg/server/handler/optimizor/optimize_trace.go` 和 `pkg/domain/domain.go` 使用。
+Go 对照实现则已由 `pkg/executor/trace.go`、`pkg/server/handler/optimizor/optimize_trace.go` 和 `pkg/domain/domain.go` 使用。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ PID 路径不会预留或创建资源，所以并发调用只会各自构造等�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/domain/optimize_trace.go`](optimize_trace.go) 的 `GetOptimizerTraceDirName() string`。两版共同语义为：尝试读取本节点 server info；只有非空 ID 才优先使用；否则采用当前进程 PID；最后返回 `optimizer_trace/<instance_id>` 相对路径。
-
 主要表示差异如下：
 
 - Go 返回 `string` 并使用 `filepath.Join`；Rust 返回类型更强的 `PathBuf` 并使用 `PathBuf::join`。
@@ -101,17 +97,3 @@ Go 的生产消费者已接入 trace 创建、下载和 GC；当前 Rust 索引�
 - 若需要保留或暴露 infosync 错误，必须重新评估公开签名以及 Go 的静默 PID 兜底兼容性；直接把签名改为 `Result<PathBuf>` 会影响消费者契约。
 - 若要接受非受信任的 server ID，必须增加路径组件验证和跨平台用例，并评估改变已有合法 ID 行为的兼容风险。
 - 此路径函数位于可能频繁访问的生成/下载边界，扩展时应避免网络 I/O 或长时间持锁；当前只执行内存快照读取和少量字符串/路径分配。
-
-## 验证依据
-
-本说明基于以下直接证据完成，未运行 Cargo（任务明确为纯文档分析）：
-
-- Rust 主文件：[`pkg/domain/optimize_trace.rs`](optimize_trace.rs)，核对全部 67 行及四个符号。
-- crate 装配与依赖：[`pkg/domain/lib.rs`](lib.rs) 的 `pub mod optimize_trace`、测试模块声明，以及 [`pkg/domain/Cargo.toml`](Cargo.toml) 的 `astersql-domain` 包信息和 `astersql-domain-infosync` 路径依赖。目标包不存在 `doc.go`。
-- RustCodeGraph：索引状态为 11,467 个文件；`query/node/explore/callers/callees` 确认文件内调用边、infosync 下游调用，以及 Rust 侧仅测试调用的当前事实。
-- infosync 实现：`pkg/domain/infosync/info.rs` 的 `getGlobalInfoSyncer()`、`GetServerInfo()` 和 `InfoSyncer::ServerInfoSyncer()`，核对错误来源、读锁和快照克隆。
-- 独立 Rust 测试：[`pkg/domain/optimize_trace_test.rs`](optimize_trace_test.rs)。`optimizer_trace_directory_owns_server_info_lookup_like_go` 检查根目录与非空末级组件；`optimizer_trace_directory_prefers_non_empty_server_id_and_falls_back_to_pid` 覆盖非空 ID、空 ID 和 `None`。
-- Go 对照：[`pkg/domain/optimize_trace.go`](optimize_trace.go)；生产调用证据来自 `pkg/executor/trace.go::generateOptimizerTraceFile`、`pkg/server/handler/optimizor/optimize_trace.go::OptimizeTraceHandler.ServeHTTP` 和 `pkg/domain/domain.go::NewDomainWithEtcdClient`。全仓库未检索到直接覆盖 `GetOptimizerTraceDirName` 的 Go 测试。
-- 相邻 Rust 下载边界：`pkg/server/handler/optimizor/optimize_trace.rs` 的 `OptimizeTraceRuntime::optimizer_trace_directory` 表明目录由 runtime 注入，未直接调用本文件；其测试仅验证下载路径拼接，不构成本文件的生产调用证据。
-
-人工复核结论：本文区分了当前实现、Go 应用位置和尚未接线的 Rust 生产链；没有把注释中的预期设计当作已经发生的调用，也没有建议把测试写入生产源文件。

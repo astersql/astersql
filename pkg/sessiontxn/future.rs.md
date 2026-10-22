@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`future.rs` 属于 `astersql-sessiontxn` crate。crate 根模块 [`lib.rs`](lib.rs) 以私有模块 `mod future` 装配它，再通过 `pub use future::*` 公开导出其中的 `ConstantFuture`。[`Cargo.toml`](Cargo.toml) 将该 crate 对应到 Go 包 `pkg/sessiontxn`，并以 `astersql-sessionctx` 作为普通依赖；本文件正是通过该依赖实现会话上下文定义的 Oracle Future 契约。
-
-这个文件只提供“已经得到时间戳”的立即完成 Future，不负责向 PD/TSO 请求时间戳，也不负责创建、激活或提交事务。当前 Rust 仓库中，它的直接引用只出现在 [`sessiontxn_aster_unit_test.rs`](sessiontxn_aster_unit_test.rs)；Rust 隔离层另有自己的 `TimestampFuture` 和同名 `ConstantFuture`（[`isolation/base.rs`](isolation/base.rs)），两者的 trait、错误类型及接线位置不同，不能视为同一个实现。
+用 `ConstantFuture(pub u64)` 保存一个预先确定的时间戳。
 
 ## 核心职责
 
@@ -56,9 +54,9 @@ trait-object 路径如下：调用者将值装箱为 `Box<dyn sessionctx::Oracle
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 [`future.go`](future.go) 定义 `type ConstantFuture uint64`，其 `Wait() (uint64, error)` 直接返回转换后的数值和 `nil`。Rust 的元组结构体、固有 `Wait` 与之保持“常量值、立即成功、不产生副作用”的核心语义；Rust 额外显式实现 `sessionctx::OracleFuture`，并用 `Box<Self>` 表达 trait-object 的所有权消费。
+Rust 的元组结构体、固有 `Wait` 与之保持“常量值、立即成功、不产生副作用”的核心语义；Rust 额外显式实现 `sessionctx::OracleFuture`，并用 `Box<Self>` 表达 trait-object 的所有权消费。
 
-Go 版本已经在 [`isolation/base.go`](isolation/base.go) 中为预置 start TS 和 snapshot TS 替换事务 Future，在 [`isolation/readcommitted.go`](isolation/readcommitted.go) 中复用最新 Oracle TS，并在 [`staleread/provider.go`](staleread/provider.go) 中准备 stale-read 时间戳；[`session/syssession/session_integration_test.go`](../session/syssession/session_integration_test.go) 也直接把它交给 `PrepareTSFuture`。当前 Rust 同路径调用尚未使用本文件的类型，而是在 isolation crate 内维护独立适配类型，所以 Rust 的类型契约已具备，但与这些 Go 生产调用点的对齐仍未由当前调用图证明。
+当前 Rust 同路径调用尚未使用本文件的类型，而是在 isolation crate 内维护独立适配类型，所以 Rust 的类型契约已具备，但与这些 Go 生产调用点的对齐仍未由当前调用图证明。
 
 ## 扩展指南
 
@@ -67,13 +65,3 @@ Go 版本已经在 [`isolation/base.go`](isolation/base.go) 中为预置 start T
 - 若要消除 isolation 层的重复 `ConstantFuture`，先验证两个 trait 的 `Wait` 接收者（`Box<Self>` 与 `&mut self`）、错误类型（`GoError` 与 `TxnError`）及 crate 依赖方向，避免为复用制造循环依赖或改变消费语义。
 - 任何行为变化都应同步修改独立测试 [`sessiontxn_aster_unit_test.rs`](sessiontxn_aster_unit_test.rs)；至少覆盖固有方法、trait-object 方法、边界值和新增错误分支。若新增生产接线，还应在对应 isolation/session 独立测试中验证预置 TS、snapshot/stale-read 以及重复等待策略。
 - 性能风险很低，但不应在常量路径中引入网络等待、锁或不必要分配；兼容性重点是保持 Go 风格 `Wait`、公开构造形式以及 trait-object 可用性。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被完整读取为 41 行。
-- RustCodeGraph `query/node`：确认目标符号为 `pkg/sessiontxn/future.rs::ConstantFuture`，确认 [`OracleFuture`](../sessionctx/context.rs) 的签名为 `trait OracleFuture: Send { fn Wait(self: Box<Self>) -> Result<u64, GoError>; }`。
-- RustCodeGraph `callers/callees`：目标 `ConstantFuture` 均未返回生产调用边；文件关系只列出 [`sessiontxn_aster_unit_test.rs`](sessiontxn_aster_unit_test.rs)。因此本文将 Rust 生产接线明确标为未由当前代码证明。
-- 已核对源码与装配：[`future.rs`](future.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`sessionctx/context.rs`](../sessionctx/context.rs)。
-- 已核对 Rust 测试与相邻实现：[`sessiontxn_aster_unit_test.rs`](sessiontxn_aster_unit_test.rs)、[`isolation/base.rs`](isolation/base.rs)、[`isolation/readcommitted.rs`](isolation/readcommitted.rs)、[`isolation/main_test.rs`](isolation/main_test.rs)。
-- 已核对 Go 对照与实际调用：[`future.go`](future.go)、[`isolation/base.go`](isolation/base.go)、[`isolation/readcommitted.go`](isolation/readcommitted.go)、[`staleread/provider.go`](staleread/provider.go)、[`session/syssession/session_integration_test.go`](../session/syssession/session_integration_test.go)。
-- 精确 `rg` 搜索用于区分两个 Rust 同名类型并补足图未表达的 Go 调用；未运行 Cargo，符合本纯文档任务的验证计划。

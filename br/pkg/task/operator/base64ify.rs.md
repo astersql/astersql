@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文对应的生产源码是 [`base64ify.rs`](./base64ify.rs)。它属于 Cargo crate `astersql-br-pkg-task-operator`；该 crate 由 `br/pkg/task/operator/Cargo.toml` 定义，以同目录 `lib.rs` 为入口。`lib.rs` 将本文件声明为公开模块 `base64ify`，并通过 `pub use base64ify::*` 把公开入口平铺到 crate 根。
-
-在应用调用链上，`br/cmd/br/operator.rs::newBase64ifyCommand` 注册 `base64ify [-r] -s <storage>` 子命令，解析 `Base64ifyConfig` 后把命令级取消标志转换成 `stubs::Context`，再调用本文件的 `Base64ify`。该命令生成可传给 `tikv-ctl compact-log-backup` 等工具的外部存储 protobuf Base64 字符串；它不读写备份对象。
+`Base64ify`/`runEncode` 实现命令业务流程：解析外部存储 URI、尝试构造并立即关闭存储以校验配置、在需要携带凭证时警告用户，最后输出编码结果。
 
 ## 核心职责
 
@@ -85,15 +83,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/task/operator/base64ify.go`：Rust 的 `Base64ify → runEncode → ParseBackend → New → Close → 可选警告 → Marshal → StdEncoding` 保持相同阶段和顺序，警告文本也保留了 Go 中的历史拼写 `Credientials`。
-
 主要实现差异有三点：
 
 1. Go 直接调用生成的 protobuf `s.Marshal()`；Rust 当前没有在本 crate 中依赖对应生成类型，而是由 `marshal_backend` 手工写 wire format。`base64ify_uses_backuppb_protobuf_wire_format` 用 Noop、Local、HDFS、S3、GCS、Azure 的固定结果约束兼容性。
 2. Go 的 objstore 生产接线能按后端构造真实云存储；当前 Rust `New` 需要调用方提供 `external_factory`，本文件没有提供，所以云后端完整命令路径尚未达到 Go 的可用范围。
 3. Rust 显式拒绝 `MemStore`，注释说明这是为了避免 Rust `NewFromURL` 才有的内存后端捷径；Go 对照流程本来也不提供该命令语义。
-
-已有测试没有直接捕获 stdout/stderr，也没有验证 `LoadCerd=true` 的真实凭证回填；这些能力不能仅由 wire-format 测试推断为已完整对齐。
 
 ## 扩展指南
 
@@ -102,12 +96,3 @@
 - 若增加 GCS/Azure 的 flag 到 operator `BackendOptions`，还必须扩展 `to_objstore_backend_options`。当前转换函数只显式复制 S3 map，不能假设其他后端命令行选项已接入。
 - 若改变输出或警告，需保持 stdout 只有机器可消费的 Base64、stderr 承载安全提示，并补充独立测试；涉及敏感信息时避免在错误或日志中回显 secret。
 - 测试逻辑继续放在同目录独立的 `base64ify_test.rs`，不要内嵌到生产文件。至少覆盖解析失败、各 oneof/字段号、默认值省略、凭证开关、资源关闭和云工厂接线。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/task/operator/base64ify.rs` 定位到目标文件；`explore "br/pkg/task/operator/base64ify.rs Base64ify Base64ifyReader base64ify reader operator"` 给出 `Base64ify → runEncode`、`runEncode → parse_backend/to_objstore_backend_options/marshal_backend` 以及测试调用边；`node --file ... --offset 1 --limit 260` 核对了目标文件全部 216 行和 15 个符号。
-- 生产源码：`br/pkg/task/operator/base64ify.rs`、`br/pkg/task/operator/config.rs`、`br/pkg/task/operator/stubs.rs`、`br/pkg/task/operator/lib.rs`、`br/cmd/br/operator.rs`。
-- crate/下游边界：`br/pkg/task/operator/Cargo.toml`、`pkg/objstore/parse.rs::{StorageBackend, ParseBackend}`、`pkg/objstore/storage.rs::{Context, Options, New}`。
-- Go 对照：`br/pkg/task/operator/base64ify.go`、`br/cmd/br/operator.go::newBase64ifyCommand`。
-- 独立 Rust 测试：`br/pkg/task/operator/base64ify_test.rs` 覆盖取消的 Noop 路径、未知 scheme 和六类 backend 的 protobuf Base64；`br/pkg/task/operator/parity_test.rs::contract_normal_config_and_helpers` 覆盖 flag 解析后的 Noop 公共入口。
-- 本任务是纯文档分析，按总计划不运行 Cargo；交付前使用任务指定命令验证本文恰有 11 个固定二级章节。

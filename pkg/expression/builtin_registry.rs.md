@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate（边界见 `pkg/expression/Cargo.toml`），由 `pkg/expression/lib.rs:259-260` 以私有模块名 `builtin_registry_kernel` 装配。它不是 SQL 内建函数的完整工厂实现，而是一个只依赖标准库 `HashMap` 的轻量注册表/快照工具：给定“函数名 → 任意值”的映射，生成稳定有序且独立拥有的名称列表，并提供最小的插入和查找封装。
-
-模块没有在 `lib.rs` 中被 `pub use` 重新导出，因此其中的 `pub` 项目前仍受私有父模块限制。仓库搜索显示，生产 Rust 路径尚未使用 `BuiltinRegistry<V>`；自由函数 `registered_builtin_function_names` 的直接模块外使用位于独立测试 `pkg/expression/builtin_regexp_util_23_aster_unit_test.rs`。因此本文件当前更准确的角色是已实现、已做局部语义回归，但尚未接入完整 Rust 函数工厂主链的基础组件。
+`BuiltinRegistry<V>` 将同样的 `HashMap<String, V>` 封装为泛型容器，集中表达注册、覆盖、按名读取和枚举名称四项操作。
 
 ## 核心职责
 
@@ -70,8 +68,6 @@ RustCodeGraph 能定位本文件的 `BuiltinRegistry` 与两个同名快照函�
 
 存在三点迁移差异：第一，Rust 函数对值类型泛型化，不依赖 Go 的 `functionClass`；第二，Rust 文件额外提供 `BuiltinRegistry<V>` 容器，而 Go 对照文件没有同名容器；第三，Rust 容器尚未接到完整的 `formal_registry::funcs` 或 SQL 函数构建路径，因此不能替代 Go 包级 `funcs` 的现有作用。
 
-`pkg/expression/builtin.go::GetBuiltinList` 是另一种面向用户展示的列表：它有过滤、扩展函数合并和排序逻辑。`pkg/expression/builtin_registry_aster_unit_test.rs::builtin_listing_and_operator_display_follow_go_filters` 针对的是这套完整列表语义，不是本文件的无过滤快照。Go 的 `pkg/planner/util/null_misc_test.go::TestNullRejectBuiltinRegistrySnapshot` 则调用 `RegisteredBuiltinFunctionNames` 并校验哈希与集合覆盖，说明全量快照的实际用途是检测函数注册集合漂移。
-
 ## 扩展指南
 
 若只需新增一种存储值类型，无需修改本文件，直接实例化 `BuiltinRegistry<NewType>` 即可。若要增加删除、迭代或冲突拒绝能力，应在 `impl<V>` 中新增最小 API，并保持字段私有；重复注册策略发生变化时必须明确兼容影响，因为当前 `insert` 的返回旧值/覆盖新值语义是可观察行为。
@@ -79,13 +75,3 @@ RustCodeGraph 能定位本文件的 `BuiltinRegistry` 与两个同名快照函�
 若要把此容器接入生产函数注册主链，应先核对 `pkg/expression/builtin.rs` 中现有工厂注册、动态扩展和锁策略，避免建立第二份会漂移的注册源；同时决定名称是否统一小写、是否允许别名、是否需要扩展函数，以及快照究竟对应全量 `RegisteredBuiltinFunctionNames` 还是过滤后的 `GetBuiltinList`。这属于接线工作，当前文件没有实现。
 
 测试必须放在独立 Rust 测试文件，不应内嵌到 `builtin_registry.rs`。直接语义应扩展 `pkg/expression/builtin_regexp_util_23_aster_unit_test.rs` 中的快照测试，覆盖空表、重复覆盖、缺失查找和大小写精确匹配；若接入完整注册表，还应同步 `pkg/expression/builtin_registry_aster_unit_test.rs`、其聚合入口 `pkg/expression/builtin_test.rs`，并评估 Go 的 `pkg/planner/util/null_misc_test.go` 快照哈希和 `pkg/expression/function_traits_test.go` 列表约束。性能上需关注频繁全量克隆/排序；兼容性上需避免误把无过滤快照替换为用户展示列表。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/builtin_registry.rs`，核对了自由函数、结构体、三个实例方法、派生能力以及无条件编译项的完整文件。
-- crate 与模块边界：`pkg/expression/Cargo.toml`（crate 名、`lib.rs` 入口、无本文件专属依赖）和 `pkg/expression/lib.rs:259-260,409-410`（私有生产模块与独立测试模块装配）。
-- Go 对照：`pkg/expression/builtin_registry.go::RegisteredBuiltinFunctionNames`；辅助区分 `pkg/expression/builtin.go::{funcs, GetBuiltinList}`。
-- Rust 测试：`pkg/expression/builtin_regexp_util_23_aster_unit_test.rs::registry_snapshot_is_sorted_owned_and_does_not_mutate_source`；完整工厂注册回归参考 `pkg/expression/builtin_registry_aster_unit_test.rs` 与 `pkg/expression/builtin_test.rs`。
-- Go 使用与测试：`pkg/planner/util/null_misc_test.go::TestNullRejectBuiltinRegistrySnapshot`、`pkg/expression/function_traits_test.go::TestIllegalFunctions4GeneratedColumns`。
-- RustCodeGraph：`status` 显示索引包含 `pkg/expression/builtin_registry.rs`（6 个符号）；`query BuiltinRegistry --json` 定位结构体，`query registered_builtin_function_names --json` 定位自由函数和实例方法。图查询未返回生产调用边，随后用 `rg` 核对引用范围。
-- 人工复核结论：该文件存在于“稳定枚举注册名称”的边界；运行时算法是克隆键后排序；安全扩展的关键是保持快照拥有权、区分全量与展示列表、并在接入生产主链时避免双注册源。

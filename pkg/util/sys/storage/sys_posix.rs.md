@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sys-storage` crate 在 Linux 与 macOS 上的 POSIX 实现，源码入口为 [`sys_posix.rs`](sys_posix.rs)。crate 根文件 [`lib.rs`](lib.rs) 通过 `#[cfg(any(target_os = "linux", target_os = "macos"))]` 声明并再导出 `sys_posix`；其他平台分别选择 `sys_windows.rs` 或 `sys_other.rs`，因此同一次编译只暴露一套平台实现。
-
-crate 的 [`Cargo.toml`](Cargo.toml) 将 `lib.rs` 指定为库入口，并只在 Linux/macOS 目标上引入 `libc = "0.2"`。工作区根 `Cargo.toml` 以 `facade_util_sys_storage` 指向该 crate，随后 `pkg/lib.rs` 在 `util::sys::storage` 门面中再导出它。它属于本地文件系统容量探测工具，不负责 SQL、事务、远程存储或容量预留。
+实现把 Rust 路径转换为 POSIX C 字符串，调用 `libc::statfs`，读取 `f_bavail` 与 `f_bsize`，再计算 `f_bavail * f_bsize`。
 
 ## 核心职责
 
@@ -68,13 +66,13 @@ RustCodeGraph 将本文件索引为一个函数节点 `pkg/util/sys/storage/sys_
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`sys_posix.go`](sys_posix.go)，其 build tag 为 `linux || darwin`。Rust 用 Linux/macOS cfg 表达相同范围，其中 Go 的 `darwin` 对应 Rust 的 `target_os = "macos"`。
+Rust 用 Linux/macOS cfg 表达相同范围，其中 Go 的 `darwin` 对应 Rust 的 `target_os = "macos"`。
 
 核心步骤逐项保持一致：Go 声明 `syscall.Statfs_t`，Rust 声明 `libc::statfs`；两者调用平台 `statfs`；失败时都返回零值结果语义之外的原始系统错误；成功时都计算 `Bavail * Bsize` 并返回 `uint64`/`u64`。Rust 的 `wrapping_mul` 是对 Go 无符号乘法溢出规则的显式复刻。
 
 语言边界造成的可见差异是：Rust API 用 `Result<u64, io::Error>` 而不是 `(uint64, error)`，并接受任意 `AsRef<Path>`；FFI 前必须构造 `CString`，所以内部 NUL 被明确映射为 `InvalidInput`。Rust 不要求 UTF-8，因而仍保持 Go `string` 可携带任意非 NUL 字节的关键路径能力。
 
-Go `sys_test.go::TestGetTargetDirectoryCapacity` 与 Rust `sys_test.rs::test_get_target_directory_capacity` 都查询 `"."` 并断言结果至少为 1。Rust 的 `migration_aster_unit_test.rs` 另覆盖临时目录、缺失路径和 Unix 非 UTF-8 路径，是当前实现边界的更细验证证据。
+Rust 的 `migration_aster_unit_test.rs` 另覆盖临时目录、缺失路径和 Unix 非 UTF-8 路径，是当前实现边界的更细验证证据。
 
 ## 扩展指南
 
@@ -83,17 +81,3 @@ Go `sys_test.go::TestGetTargetDirectoryCapacity` 与 Rust `sys_test.rs::test_get
 新增行为测试应放在独立测试文件中，不要嵌入 `sys_posix.rs`：通用契约优先扩展 `migration_aster_unit_test.rs`，与 Go 现有冒烟用例对应的断言扩展 `sys_test.rs`；平台专属边界可以新建同目录的独立 `*_test.rs` 并从 `lib.rs` 的 `#[cfg(test)]` 模块挂载。应至少覆盖内部 NUL、系统调用错误种类、零容量可接受性和乘法策略；涉及真实磁盘数值的断言要避免依赖易变的精确剩余空间。
 
 扩展 `unsafe` 代码时应继续把原始指针生命周期限制在单次系统调用内，并在任何输出字段读取前检查返回码。性能上当前成本主要是一次小型分配和一次系统调用；若上层引入缓存，必须明确过期策略与挂载点变化风险，不能在本底层函数中隐式缓存快照。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含本仓库 Rust/Go 文件；`files --filter pkg/util/sys/storage` 确认平台实现、模块入口与独立测试均在索引中。
-- RustCodeGraph `node --file pkg/util/sys/storage/sys_posix.rs` 及精确 `node pkg/util/sys/storage/sys_posix.rs::GetTargetDirectoryCapacity`：确认文件共 70 行、仅一个函数节点及完整控制流。
-- RustCodeGraph `query GetTargetDirectoryCapacity --kind function`：确认 POSIX Rust/Go、Windows、其他平台与测试中的同名符号。精确 `callers` 查询超时无结果；`callees` 输出发生同名扩散，故未将其误匹配边作为结论。
-- [`sys_posix.rs`](sys_posix.rs)：平台 cfg、函数签名、路径字节转换、`statfs` 调用、错误传播及 `wrapping_mul` 的首要证据。
-- [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、仓库根 `Cargo.toml` 与 `pkg/lib.rs`：crate 边界、目标专属依赖、平台选择及工作区公开门面的证据。
-- [`sys_posix.go`](sys_posix.go)：Go build tag、`syscall.Statfs`、`Bavail * Bsize` 与错误返回的直接对照。
-- [`sys_test.rs`](sys_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`main_test.rs`](main_test.rs)：当前目录冒烟、临时目录、缺失路径、非 UTF-8 路径及测试初始化证据。
-- [`sys_test.go`](sys_test.go)、[`main_test.go`](main_test.go)：Go 冒烟测试和 Go 测试生命周期的对照证据。
-- 全仓 `rg` 对 `GetTargetDirectoryCapacity`、crate 名和门面名的检索：确认 Rust 直接调用目前仅见于上述独立测试，并确认工作区依赖及再导出位置。该结论限于当前检出中的静态文本引用，不等同于证明外部消费者不存在。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验收以文件存在且固定十一个二级标题恰好各出现一次为准，并辅以人工复核：文档说明了文件存在原因、实际执行步骤、平台/FFI 边界、安全扩展入口与当前调用证据的限制。

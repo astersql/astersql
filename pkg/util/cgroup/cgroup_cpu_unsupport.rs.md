@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`cgroup_cpu_unsupport.rs` 属于 `astersql-util-cgroup` crate，是非 Linux 平台的 CPU cgroup 公开门面。crate 入口 [`lib.rs`](lib.rs) 只在 `#[cfg(not(target_os = "linux"))]` 下声明并重导出本模块；Linux 构建改为声明和重导出 `cgroup_cpu_linux.rs`，所以两份平台文件提供相同名称的公开 API，却不会同时进入一个构建产物。
-
-本文件不读取 `/proc`、cgroup v1/v2 控制文件，也不进入 [`cgroup_cpu.rs`](cgroup_cpu.rs) 的平台无关探测编排。它保留 `GetCgroupCPU`、`GetCPUPeriodAndQuota`、`CPUQuotaToGOMAXPROCS`、`InContainer` 四个调用契约，让上层 crate 无需为非 Linux 单独改写导入和控制流；返回值明确表示“只有主机并行度可用，cgroup CPU 配额和容器判断不受支持”。
+为非 Linux 构建提供与 Linux 门面同形的四个公开函数，维持跨平台编译边界。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 声明：包名是 `astersql-util-cgr
 
 ## 与 Go 版本的对应关系
 
-直接语义基准是 [`cgroup_cpu_unsupport.go`](cgroup_cpu_unsupport.go)，其 `//go:build !linux` 与 Rust `lib.rs` 的 `#[cfg(not(target_os = "linux"))]` 对应。四个 API 的主要降级结果一致：主机 CPU 数、`(-1, -1)`、`(-1, CPUQuotaUndefined)`、`false`。
-
 存在两点当前差异：
 
 - Go `GetCgroupCPU` 使用 `runtime.NumCPU()`；Rust 使用 `std::thread::available_parallelism()`，失败时显式回退 `1`。两者目的都是取得非零主机/进程可用并行度，但具体平台和亲和性语义由各自运行时决定。
@@ -93,12 +89,3 @@ Rust 还使用 `anyhow::Result` 和元组承载 Go 的多返回值。API 形状�
 - 修改 `GetCgroupCPU` 的字段默认值时，同步审查 `cgroup_cpu.rs::CPUUsage::CPUShares` 与 `pkg/util/cpu/cpu.rs::observe`，避免产生零除、负 share 或把未知值当成真实用量。性能风险主要在把当前常数时间/一次系统查询的桩变成频繁 I/O。
 - 修改容器判断时，同步审查 `pkg/util/memory/meminfo.rs::InitMemoryHook` 的分支语义；返回 `true` 会绕过后续的 cgroup/物理内存比较，并改变缓存探针选择。
 - 回归测试应放在独立测试文件中。当前 [`cgroup_cpu_test.rs`](cgroup_cpu_test.rs) 会在 `InContainer()` 为 false 时提前返回，只间接确认非容器分支不执行 Linux 断言；仓库没有专门验证四个 non-Linux 哨兵的 Rust 测试。新增覆盖宜建立独立 `*_test.rs` 并由 `lib.rs` 挂接，同时对照 Go unsupported 行为；不要把测试嵌入生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/util/cgroup` 确认目标、平台实现与独立测试均已索引；`node --file pkg/util/cgroup/cgroup_cpu_unsupport.rs` 阅读全部 45 行；`query` 分别定位 `GetCgroupCPU`、`GetCPUPeriodAndQuota`、`CPUQuotaToGOMAXPROCS`、`InContainer` 的 Rust/Go 定义。对四个目标符号执行精确 `callers`/`callees` 均无输出，故条件编译重导出边及上游调用点由源码与 Cargo 声明补证。
-- 已读 Rust 生产/装配路径：`pkg/util/cgroup/cgroup_cpu_unsupport.rs`、`lib.rs`、`cgroup.rs`、`cgroup_cpu.rs`，以及直接上游 `pkg/util/cpu/cpu.rs`、`pkg/util/memory/meminfo.rs`、`pkg/util/cgmon/cgmon.rs`。
-- 已读 crate 声明：`pkg/util/cgroup/Cargo.toml`，并核对 `pkg/util/cpu/Cargo.toml`、`pkg/util/memory/Cargo.toml`、`pkg/util/cgmon/Cargo.toml` 的直接依赖。
-- 已读 Go 对照：`pkg/util/cgroup/cgroup_cpu_unsupport.go`；全仓调用搜索另确认 Go 的 CPU、内存上游位于 `pkg/util/cpu/cpu.go` 与 `pkg/util/memory/meminfo.go`。
-- 已读独立测试：`pkg/util/cgroup/cgroup_cpu_test.rs` 与 `cgroup_cpu_test.go`。二者面向 Linux 真实容器；Rust 测试在 `InContainer() == false` 时提前返回，因此不构成 unsupported 返回值的逐项断言。`lib.rs` 没有挂接专门的 `cgroup_cpu_unsupport_test.rs`，这是当前验证边界而非推测出的覆盖。
-- 本任务仅新增说明文档，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核文档只陈述上述符号、条件编译、调用点和测试可支持的事实。

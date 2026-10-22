@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现非分区表的自动 `ANALYZE` 作业，属于 `astersql-statistics-handle-autoanalyze-priorityqueue` crate。crate 根在 [`lib.rs`](lib.rs) 中将此模块声明为 `non_partitioned_table_analysis_job` 并公开重导出；[`Cargo.toml`](Cargo.toml) 声明了对应的 Go package 为 `pkg/statistics/handle/autoanalyze/priorityqueue`。文件自身仅依赖 [`job.rs`](job.rs) 提供的作业接口、运行时边界、指标和钩子类型，以及标准库的 `HashMap`/`Any`/`fmt`。
-
-上游创建入口是 [`AnalysisJobFactory::CreateNonPartitionedTableAnalysisJob`](analysis_job_factory.rs)：工厂在统计合格且变化率或缺失索引需要分析时，调用本文件的 `NewNonPartitionedTableAnalysisJob`，并以 `Box<dyn AnalysisJob>` 返回。[`AnalysisPriorityQueue::push_locked`](queue.rs) 为作业计算权重、注册钩子并放入堆。当前 Rust 非测试代码中未检索到 `AnalysisJob::ValidateAndPrepare` 或 `AnalysisJob::Analyze` 的调用者，因此文件已实现作业状态机和队列接入，但 Rust 生产执行 worker 的接线仍未在当前索引中证实。
+当前 Rust 非测试代码中未检索到 `AnalysisJob::ValidateAndPrepare` 或 `AnalysisJob::Analyze` 的调用者，因此文件已实现作业状态机和队列接入，但 Rust 生产执行 worker 的接线仍未在当前索引中证实。
 
 ## 核心职责
 
@@ -71,7 +69,7 @@ RustCodeGraph 的精确 `query` 能定位本文件的结构、构造器、`Valid
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`non_partitioned_table_analysis_job.go`](non_partitioned_table_analysis_job.go)。结构字段、整表/索引分流、`%n` 模板参数顺序、只分析第一个索引的 version-2 语义、指标/权重访问和展示字符串都有直接对应。Rust `AnalysisRuntime` 把 Go 中的 `sessionctx.Context`、`StatsHandle`、`sysproctrack.Tracker` 和 `exec.AutoAnalyze` 抽象为可测试边界，而 `AnalyzeDuration` 保留 Go `time.Duration` 的有符号纳秒和格式语义。
+Rust `AnalysisRuntime` 把 Go 中的 `sessionctx.Context`、`StatsHandle`、`sysproctrack.Tracker` 和 `exec.AutoAnalyze` 抽象为可测试边界，而 `AnalyzeDuration` 保留 Go `time.Duration` 的有符号纳秒和格式语义。
 
 需要注意的差异有：
 
@@ -80,7 +78,7 @@ RustCodeGraph 的精确 `query` 能定位本文件的结构、构造器、`Valid
 - Go `AsJSON` 输出 `IndexIDs`、数值 `Weight` 和 `HasNewlyAddedIndex`，不输出准备后名称；Rust 的共享 JSON 类型输出 `SchemaName`/`TableName`/`IndexNames`、字符串权重和字符串指标。这是现有观测契约差异，不应在本文档中宣称完全等价。
 - Go 的生产调用链可直接得到 session 并执行；当前 Rust 仓库搜索只证实了工厂、入堆和测试中的直接执行，未证实生产 worker 调用准备/执行方法。
 
-Go 回归测试在 [`non_partitioned_table_analysis_job_test.go`](non_partitioned_table_analysis_job_test.go) 中覆盖真实 mock store 的行数更新、多索引 version-2 联合刷新、`mysql.analyze_jobs` 仅一条记录以及失败冷却时间线。Rust 独立测试使用内存 `Runtime` 验证作业层契约，没有复刻 Go 的完整 session/统计存储集成环境。
+Rust 独立测试使用内存 `Runtime` 验证作业层契约，没有复刻 Go 的完整 session/统计存储集成环境。
 
 ## 扩展指南
 
@@ -90,13 +88,3 @@ Go 回归测试在 [`non_partitioned_table_analysis_job_test.go`](non_partitione
 - 改变准备失败分类时，同时检查 `AnalysisPriorityQueue::hooks` 的 `running_jobs`/`must_retry_jobs` 转移；永久消失的表应传 `false`，短期冷却或执行失败应传 `true`。
 - 如果补齐 Rust 生产 worker，必须在 Pop 后严格按 `ValidateAndPrepare -> Analyze` 顺序调用，并对 `Ok(false)` 由钩子而非 `Result` 传递的成败契约做显式验证。这属于后续代码任务，不是本纯文档任务的修改范围。
 - 所有作业逻辑测试应保持在独立的 [`non_partitioned_table_analysis_job_test.rs`](non_partitioned_table_analysis_job_test.rs)，不内嵌到源文件。工厂参数派生改动还应同步 [`analysis_job_factory_test.rs`](analysis_job_factory_test.rs)，通用 JSON/钩子/格式改动应同步 [`job_test.rs`](job_test.rs)，队列状态转移改动应同步 [`queue_test.rs`](queue_test.rs)。与 Go 语义对齐时同时对照 Go 源文件和 Go 回归测试，不以缩减集成逻辑的 Rust 测试替代 Go 行为。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：本工作区索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/statistics/handle/autoanalyze/priorityqueue` 确认了本 crate 的 Rust/Go 对照文件集。
-- RustCodeGraph 符号查询：`query NonPartitionedTableAnalysisJob --json` 定位了 Rust/Go 结构、Rust/Go 构造器及 Rust 工厂入口；`query ValidateAndPrepare --json`、`query AnalyzeIndexes --json` 定位了 trait 和具体实现。`callers`/`callees` 对这些 Rust 符号未返回可用边，因此调用关系另用已索引文件节点和 `rg` 引用搜索验证。
-- 主实现证据：[`non_partitioned_table_analysis_job.rs`](non_partitioned_table_analysis_job.rs) 的 258 行全文，以及 [`job.rs`](job.rs) 中 `AnalysisRuntime`、`AnalysisJob`、`IsValidToAnalyze`、`index_names`、`AsJSONIndicators` 的契约。
-- crate 与模块证据：[`Cargo.toml`](Cargo.toml) 的 package/lib/path dependency/Go package metadata，以及 [`lib.rs`](lib.rs) 的模块声明、重导出和独立测试挂载。该目录及 `pkg/statistics` 下未找到 `doc.go`，因此无更近的 package contract 可读。
-- 上游/队列证据：[`analysis_job_factory.rs`](analysis_job_factory.rs) 的 `CreateNonPartitionedTableAnalysisJob`，以及 [`queue.rs`](queue.rs) 的 `hooks`、`push_locked`、`Push`。全库非测试 Rust 搜索未找到 trait 执行入口的生产调用。
-- Go 对照证据：[`non_partitioned_table_analysis_job.go`](non_partitioned_table_analysis_job.go) 全文与 [`non_partitioned_table_analysis_job_test.go`](non_partitioned_table_analysis_job_test.go) 的 SQL、真实统计刷新、多索引和失败冷却测试。
-- Rust 测试证据：[`non_partitioned_table_analysis_job_test.rs`](non_partitioned_table_analysis_job_test.rs) 的 `non_partitioned_job_generates_identifier_parameterized_sql`、`analyze_indexes_matches_go_by_executing_only_the_first_index`、`stale_index_ids_do_not_fall_back_to_analyzing_the_whole_table`、`validate_and_prepare_matches_go_failure_hook_retry_semantics`。本任务为纯文档分析，按计划未运行 Cargo。

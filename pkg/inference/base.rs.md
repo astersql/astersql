@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`base.rs`](base.rs) 是 `astersql-inference` crate 的供应商适配公共层。crate 由 [`lib.rs`](lib.rs) 公开 `base` 模块，并在 [`Cargo.toml`](Cargo.toml) 中声明 `reqwest`、`tokio`、`regex`、`serde_json` 和 `logutil` 等直接依赖。它不负责 SQL 表达式、批处理或缓存；这些职责位于 [`embed_fn.rs`](embed_fn.rs)。本文件把 Cohere、Gemini、HuggingFace、JinaAI、NVIDIA NIM、OpenAI 和 TiDB Cloud 适配器重复需要的配置、URL、鉴权、请求、响应边界与安全错误处理集中起来。
-
-公开 API 主要是字节解码、选项合并、错误脱敏、响应限长、URL 校验，以及 `ProviderError`、`ProviderContext`、`APIKeyProviderConfig`。HTTP 执行器和 JSON 解码辅助函数为 `pub(crate)`，只供当前 crate 内的具体供应商模块使用（`base.rs` 中相应可见性声明）。
+统一 JSON embedding HTTP 生命周期：`execute_json_embedding_call` 负责取消检查、同步到异步运行时桥接、POST、限长读取、严格的 HTTP 200 成功判断、错误体解析与脱敏日志，再把成功体交给供应商 decoder。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 [`embedding/base/base.go`](embedding/base/base.go)，测试为 [`embedding/base/base_test.go`](embedding/base/base_test.go)。Rust 保留了 Go 的 30 秒默认 HTTP timeout、32 MiB 默认体限、限长加一读取、API-key 配置优先级、固定字段覆盖 options、小端 float32 解码、凭据脱敏、严格 200 成功、供应商状态覆盖和通用错误格式。
+Rust 保留了 Go 的 30 秒默认 HTTP timeout、32 MiB 默认体限、限长加一读取、API-key 配置优先级、固定字段覆盖 options、小端 float32 解码、凭据脱敏、严格 200 成功、供应商状态覆盖和通用错误格式。
 
 主要形态差异如下：
 
@@ -98,12 +96,3 @@
 若扩展 URL 行为，必须同时验证普通 reqwest 路径与 escaped dot-segment 的 [`raw_http.rs`](raw_http.rs) 路径，尤其是 query、HTTP proxy absolute target、HTTPS CONNECT 与代理鉴权。若改变取消语义，应同步检查 `ProviderContext::cause`、`Embedder::create_embeddings_with_context` 和批处理层“最后 waiter 才取消 provider”的契约。
 
 若新增敏感字段或 key 格式，应修改 `sanitize_error_text` 并在独立 [`base_test.rs`](base_test.rs) 增加泄漏回归；不可把测试嵌入生产源文件。响应解析扩展应保持 null/type/overflow 的显式规则，并在相应供应商 `*_test.rs` 覆盖数量、顺序、维度及错误 cause。改变默认 timeout/body limit、状态文本或错误格式会影响 Go/Rust 兼容与用户可观察行为；改变每次调用创建 runtime 的策略则需单独评估吞吐、连接复用和取消时延。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引含 11,467 个文件、索引时间戳为 `1791342965170`；`files --filter pkg/inference` 确认目标及相关模块已索引；`node --file pkg/inference/base.rs` 阅读完整 557 行和 47 个符号；`explore "ProviderContext create_embeddings_with_context execute_json_embedding_call pkg/inference"` 确认七个供应商到公共执行器、鉴权辅助的调用边。单独的宽泛 `explore` 产生同名误配，精确 `callers` 对部分自由函数为空，因此调用者集合又以 `rg` 精确复核，未把误配结果用于结论。
-- Rust 源码：[`base.rs`](base.rs)、[`lib.rs`](lib.rs)、[`embed_fn.rs`](embed_fn.rs)、[`raw_http.rs`](raw_http.rs)，以及七个供应商实现 [`cohere.rs`](cohere.rs)、[`gemini.rs`](gemini.rs)、[`huggingface.rs`](huggingface.rs)、[`jina.rs`](jina.rs)、[`nvidia.rs`](nvidia.rs)、[`openai.rs`](openai.rs)、[`tidbcloud.rs`](tidbcloud.rs)。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的 `[lib]`、依赖列表和 `package.metadata.porting.go-package = "pkg/inference"`。
-- 独立 Rust 测试：[`base_test.rs`](base_test.rs) 覆盖 little-endian 解码、options 覆盖、脱敏与 UTF-8 安全截断、body 上限/I/O cause、配置错误身份、URL/转义、代理/超时、decoder 缺失、成功 decoder cause 及 Go 状态文本兼容；供应商 `*_test.rs` 覆盖这些公共入口在具体协议中的组合。
-- Go 对照：[`embedding/base/base.go`](embedding/base/base.go) 与 [`embedding/base/base_test.go`](embedding/base/base_test.go)，用于核对公共职责、边界条件、错误优先级和协议兼容差异。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付前另以任务给定命令验证本文恰有 11 个固定二级章节，并以 `git diff --check` 检查文档差异格式。

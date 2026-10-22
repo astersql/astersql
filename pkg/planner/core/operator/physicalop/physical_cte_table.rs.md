@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core-operator-physicalop` crate，crate 根由同目录 `Cargo.toml` 的 `[lib] path = "lib.rs"` 指定。`lib.rs` 以公开模块 `physical_cte_table` 装配本文件，并重新导出其中的 `PhysicalCTETable`；因此外部 crate 可用 `astersql_planner_core_operator_physicalop::PhysicalCTETable` 访问 Go 形态的具体算子。
-
-它描述“读取某个 CTE 临时存储”的物理叶子，但当前 Rust 文件同时保留了两套用途不同的表示：
-
-- `PhysicalCteTable`、`find_best_task_for_cte_table` 是建立在 `physical_common_plans.rs` 简化计划模型上的选优语义载体，目前 RustCodeGraph 只找到独立测试调用，没有发现生产选优入口调用。
-- `PhysicalCTETable` 使用 crate 的 `PhysicalSchemaProducer` / `BasePhysicalPlan` 体系；其公共物理计划 trait 接线位于 `lib.rs` 的 `ConcretePhysicalOperator for PhysicalCTETable` 和 `impl_concrete_physical_plan!`，并被 `pkg/executor/statement_ru_plan_walk.rs` 的 RU 计划遍历识别。
-
-本文件只建模计划节点，不读取 CTE 数据。Go 执行期的实际读取发生在 `pkg/executor/builder.go::buildCTETableReader`：它按 `IDForStorage` 查找 CTE 存储并构造 `CTETableReaderExec`。目标 Rust 文件中没有对应执行器构造或存储 I/O。
+Go 执行期的实际读取发生在 `pkg/executor/builder.go::buildCTETableReader`：它按 `IDForStorage` 查找 CTE 存储并构造 `CTETableReaderExec`。
 
 ## 核心职责
 
@@ -93,9 +86,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `physical_cte_table.go`：
-
-- Go `PhysicalCTETable` 的嵌入 `PhysicalSchemaProducer` 和 `IDForStorage int` 对应 Rust 具体 `PhysicalCTETable`。Rust 用显式字段组合和 `i32` 存储 ID。
 - Go `Init(ctx, stats)` 同时安装计划基类和统计；Rust `New(ctx, storage_id)` 安装基类与存储 ID，但不接收统计。统计须由公共 producer/base 接线另行设置。
 - Go `ExplainInfo` 对应 Rust `lib.rs::ConcretePhysicalOperator::explain_operator`，两者都输出 `Scan on CTE_<id>`；简化类型还提供相同格式的 `explain_info`。
 - Go `MemoryUsage` 对 nil 指针返回 0，并累计基类与 `size.SizeOfInt`；Rust 引用方法天然要求有效实例，且两条 Rust 内存估算路径的口径不同，见“错误处理与边界”。
@@ -113,13 +103,3 @@ Go 对照文件是 `physical_cte_table.go`：
 - 修改存储 ID 类型或语义时，需联合检查 `LogicalCTETable`、`CTEClass`、CTE definition/consumer、Sequence、扁平计划和执行器存储映射；风险包括错误关联不同 CTE、计划 ID 冲突以及递归轮次读错缓冲。
 - 若实现 Rust 执行器读取，应明确“生产者先建立存储、消费者后查找”的生命周期，复刻 Go 对缺失 storage / `IterInTbl` 的错误，而不是静默返回空结果。
 - 性能风险主要来自不必要的 schema/统计深克隆和错误重复计量 CTE 生产者工作；兼容风险主要是 EXPLAIN 文本、Root 叶子形状及 Go 属性拒绝规则漂移。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件按行读取为 154 行。
-- RustCodeGraph `query/node/callers/callees`：确认 `PhysicalCteTable`、`PhysicalCTETable`、`find_best_task_for_cte_table` 的定义；后者下游构造 `PhysicalKind::CteTable` 与 `PhysicalPlanNode`，上游仅出现独立测试调用。目标文件的直接使用文件为 `lib.rs`、`physical_cte_table_test.rs`、`physical_sequence_test.rs` 和 `pkg/executor/statement_ru_plan_walk.rs`。
-- 生产源码：`physical_cte_table.rs`；装配与 trait 接线：`physicalop/lib.rs`；简化公共模型：`physical_common_plans.rs`；crate 边界：`physicalop/Cargo.toml`。
-- Go 对照：`physical_cte_table.go`、`base_physical_plan.go::FindBestTask`、`pkg/executor/builder.go::buildCTETableReader`；逻辑关联证据：`logicalop/logical_cte_table.rs` / `.go` 与 `logicalop/logical_cte.rs` / `.go`。
-- Rust 独立测试：`physical_cte_table_test.rs` 覆盖非 Root 请求仍生成候选、排序拒绝、具体节点跨上下文克隆及 EXPLAIN；`physical_sequence_test.rs` 覆盖具体节点作为 Sequence 孩子的克隆顺序；`pkg/executor/statement_ru_plan_walk_test.rs` 覆盖 CTE 表叶子的零自有 RU 和共享 CTE forest。
-- Go 相关测试：`pkg/executor/test/executor/executor_test.go` 将 `PhysicalCTETable` 纳入物理算子覆盖清单；它是覆盖性证据，不单独证明本文件每个边界。
-- 本任务是纯文档分析，未修改 Rust/Go/Cargo，也未运行 Cargo。交付前执行任务规定的 11 章节结构检查，并人工复核文档区分“当前 Rust 事实”“Go 对照行为”和“尚未接线能力”。

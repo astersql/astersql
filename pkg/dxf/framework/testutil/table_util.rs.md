@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 DXF（Distributed eXecution Framework）Rust 测试工具 crate `astersql-dxf-framework-testutil` 中的任务表辅助模块，源码见 [`table_util.rs`](./table_util.rs)。crate 入口 [`lib.rs`](./lib.rs) 以 `pub mod table_util` 声明该模块，并用 `pub use table_util::*` 再导出其公开 API；[`Cargo.toml`](./Cargo.toml) 的 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `pkg/dxf/framework/testutil`。
-
-它不实现生产任务表，也不直接执行 SQL。文件用 `TaskTable`、`TableTestRuntime` 两个 trait 把存储查询、嵌入式测试环境初始化和节点资源替换抽象出来，再提供与 Go 测试工具同名的薄封装及 RAII 清理守卫。仓库搜索未找到任何 `impl TableTestRuntime`，所以当前初始化与资源守卫属于可注入接口，不能视为已经接通真实 `storage.TaskManager` 或嵌入式存储。
+`TaskTable` 描述测试所需的最小任务/子任务存储能力：待处理任务查询、当前表与历史表查询、执行节点更新、历史迁移、删除、取消状态检查和诊断输出。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ Go 对照文件 [`table_util.go`](./table_util.go) 则直接依赖 `storage.Task
 
 ## 与 Go 版本的对应关系
 
-[`table_util.go`](./table_util.go) 是逐项命名和语义对照：
-
 - Go `InitTableTest` 直接创建 embedded unistore、容量为 10 的 session pool、设置内部 source type、启用禁用 dist-task 的 failpoint，并 mock 8 CPU；Rust 只把 `Some(8)` 交给抽象 `initialize`，这些具体动作是否发生完全取决于尚未提供的 `TableTestRuntime` 实现。
 - Go 用 `testing.T.Cleanup` 关闭 pool、恢复节点资源，并返回 `context.Context`/`CancelFunc`；Rust 改用 `TableTestGuard`、`NodeResourceGuard` 的 `Drop` 和原子 `Cancellation`。Rust cancellation 不是完整的 Go context：没有 deadline、value 或级联取消。
 - Go 表辅助函数在本文件内组装 SQL并把行转换为 proto；Rust 把这些细节下沉到 `TaskTable`，所以同名函数只是稳定的测试 API 门面。
@@ -91,8 +87,6 @@ Go 对照文件 [`table_util.go`](./table_util.go) 则直接依赖 `storage.Task
 - Go `GetTasksFromHistoryInStates` 的空参数返回 nil slice；Rust 返回空 `Vec`。二者都不查库，调用层面的“无结果”语义一致，但容器表示不同。
 - Go `PrintSubtaskInfo` 自己查询当前表和历史表并记录每条子任务；Rust 只调用一次 `print_subtask_info`，具体查询与日志组合必须由实现者保留。
 - Go `MockNodeResource` 与 Rust 使用相同的 CPU、每 CPU 2 GiB 内存、固定 100 GiB 磁盘公式；Rust guard 保存 `set_node_resource` 返回的旧值来恢复。
-
-因此该文件是“测试 API/生命周期语义移植”，不是 Go SQL 实现的完整复刻。扩展时必须同时检查 Go 文件，避免 trait 适配器遗漏 SQL、上下文标记、failpoint 或全局 manager 安装等副作用。
 
 ## 扩展指南
 
@@ -102,14 +96,3 @@ Go 对照文件 [`table_util.go`](./table_util.go) 则直接依赖 `storage.Task
 - 为 guard 增加清理可观测性时，不要让 `Drop` panic。可考虑在运行时记录错误，或提供显式 `close`/`restore` 方法，使调用者能在析构前处理失败。
 - 资源公式或全局资源语义变更需与 Go `MockNodeResource` 同步，并增加覆盖零 CPU、嵌套 guard、并发替换及恢复失败的独立测试。并发实现必须说明全局锁或序列化约束。
 - 性能风险主要在未来 `TaskTable` 实现：`subtask_nodes` 需要合并当前/历史表并去重，历史计数与状态过滤应避免无界扫描；当前门面本身只做一次动态分派，除 `Arc` 克隆外没有显著分配。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dxf/framework/testutil` 确认目标 crate 的 17 个 Go/Rust 文件均已索引。
-- RustCodeGraph `node --file pkg/dxf/framework/testutil/table_util.rs`：读取目标文件全部 290 行，确认符号、分支、原子顺序和两个 `Drop` 实现；结果标记该文件被 13 个文件使用。
-- RustCodeGraph `query`：精确定位 `TaskTable`、`TableTestRuntime`、`TableTestGuard`、`Cancellation`、各公开辅助函数和 `NodeResourceGuard`；`node` 进一步核对 [`context.rs`](./context.rs) 的 `DxfError`/`NodeResource` 与 [`task_util.rs`](./task_util.rs) 的 `NewSubtask` 字段。精确 `callers`/`callees` 查询尝试运行 30 秒未返回，故没有据此虚构调用边。
-- crate 与模块边界：读取 [`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs) 和 [`BUILD.bazel`](./BUILD.bazel)；读取上层 [`../doc.go`](../doc.go) 核对 DXF 测试工具所处的任务调度/执行架构背景。
-- Go 对照：读取 [`table_util.go`](./table_util.go) 全部 265 行，核对初始化、SQL 表、空状态短路、容错及节点资源公式。
-- Rust 测试：读取 [`table_util_test.rs`](./table_util_test.rs) 全部 63 行和 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 中的 `TaskTable` 假实现；前者直接验证结束时间与诊断打印的错误吞掉语义，后者证明该 trait 也供 `task_util` 插入辅助测试使用。
-- 仓库搜索：`rg` 核对 Rust 符号使用、`TableTestRuntime` 实现和 Cargo 依赖方；未找到 `impl TableTestRuntime`，因此文档明确记录当前未接线边界。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定的 11 个固定二级标题结构命令及文档链接/内容人工复核作为交付验证。

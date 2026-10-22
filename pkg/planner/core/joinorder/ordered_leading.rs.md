@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-joinorder` crate；crate 入口 `pkg/planner/core/joinorder/lib.rs` 以 `pub mod ordered_leading` 公开该模块，`Cargo.toml` 指定库入口为 `lib.rs`。它在自包含的 Rust `PlanNode` 模型上推断“哪张叶表可凭索引顺序承载 ORDER BY”，并可在连接组根 Join 上合成 merge-join 偏好。
-
-当前接线需要特别区分：RustCodeGraph 显示本文件只被 `ordered_leading_test.rs` 和 `join_order_test.rs` 使用；仓库搜索也没有发现 Rust 生产调用者。Rust 的 `rule_order_aware_join_reorder.rs` 仅在注释保存的 Go 对照片段中提及这些 API。因此，本文描述的是已经实现且受单元测试覆盖的 Rust 局部能力，不把它表述为已进入 Rust 优化器主链。当前完整应用主链存在于 Go：`rule_order_aware_join_reorder.go` 调用同目录 `ordered_leading.go`。
-
-源码第 23—221 行是一段注释掉的、贴近 Go 类型体系的迁移参考，不参与编译；实际 Rust 实现从 `OrderedLeadingChoice`（第 227 行）开始。
+本模块只读取和修改内存中的逻辑计划表示，不访问表数据、不扫描索引，也不执行 SQL。
 
 ## 核心职责
 
@@ -88,8 +84,6 @@ Go 主链则是 `pkg/planner/core/rule/rule_order_aware_join_reorder.go` 的递�
 
 ## 与 Go 版本的对应关系
 
-对应文件为 `pkg/planner/core/joinorder/ordered_leading.go`。两版共同保留的意图是：拒绝无效排序要求、选择单一承载叶表、允许确定性等值固定索引前缀、避免覆盖已有算法 hint，并只标注连接组锚点。
-
 关键差异如下：
 
 - Go 的候选选择先按 Schema/UniqueID 判断完整排序向量属于同一顶点，随后由递归调用在 DataSource 层用物理列 ID 和公共可见索引证明顺序；Rust 在一个函数内直接遍历所有表叶和简化索引列表。
@@ -107,13 +101,3 @@ Go 主链则是 `pkg/planner/core/rule/rule_order_aware_join_reorder.go` 的递�
 - 修改匹配规则时重点维护 `index_matches_ordering` 的不变量：固定列只能在第一个排序列之前跳过，排序匹配一旦开始便必须连续；同步扩展 `ordered_leading_test.rs` 或 `join_order_test.rs`，不要把测试内嵌进生产源文件。
 - 若增加 `IN`、可变表达式、降序或反向扫描支持，应分别补充正反例，并让 `reverse` 由真实方向证明产生，而不是只改变返回字段。
 - 当前“首个叶/首个索引胜出”依赖树和索引枚举顺序。若改成成本选择或稳定排序，需要记录选择准则和性能影响，避免无意改变计划稳定性。
-
-## 验证依据
-
-- Rust 源码：`pkg/planner/core/joinorder/ordered_leading.rs`，实际符号位于第 227—424 行；RustCodeGraph `node --file ... --offset 230 --limit 220` 返回了完整实现段。
-- 模块与类型：`pkg/planner/core/joinorder/lib.rs`、`pkg/planner/core/joinorder/util.rs`。
-- crate 边界：`pkg/planner/core/joinorder/Cargo.toml`（package `astersql-planner-core-joinorder`，库入口 `lib.rs`）。
-- 独立 Rust 测试：`pkg/planner/core/joinorder/ordered_leading_test.rs`；补充固定索引前缀回归：`pkg/planner/core/joinorder/join_order_test.rs::ordered_leading_skips_fixed_index_prefix`。
-- Go 对照与生产调用：`pkg/planner/core/joinorder/ordered_leading.go`、`pkg/planner/core/rule/rule_order_aware_join_reorder.go`；Rust 对应 rule 中仅有注释对照：`pkg/planner/core/rule/rule_order_aware_join_reorder.rs`。
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`query` 唯一定位 `find_ordered_leading_choice`（第 239 行）、`try_annotate_ordered_leading`（第 287 行）和 `index_matches_ordering`（第 399 行）。`callees` 证实前述内部调用边；`explore` 的 blast radius 与仓库搜索共同证实上游仅为 Rust 测试。
-- 人工复核结论：文档区分了不可执行的迁移注释、当前 Rust 局部实现和已接线的 Go 主链，并列明安全扩展时必须同步的独立测试与兼容风险。

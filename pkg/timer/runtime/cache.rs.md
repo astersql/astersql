@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cache.rs` 是 `astersql-timer-runtime` crate 的内存调度缓存实现，由 crate 入口 `pkg/timer/runtime/lib.rs` 以 `pub mod cache` 暴露。它位于持久化 `TimerStore` 与 `TimerGroupRuntime` 的触发循环之间：存储记录通过全量刷新、增量刷新或 worker 响应进入缓存；运行时再按缓存维护的时间顺序寻找可触发定时器。该文件不负责持久化、不创建 worker，也不执行 hook。
-
-crate 边界由 `pkg/timer/runtime/Cargo.toml` 确定：包名是 `astersql-timer-runtime`，定时器领域类型来自同 workspace 的 `astersql-timer-api`（在代码中经 `crate::api` 再导出），本文件直接使用 `chrono` 处理时间，并仅使用标准库集合与 `Arc`。模块入口还把独立测试文件 `cache_test.rs` 和 `cache_1_aster_unit_test.rs` 挂到 `cfg(test)` 下；测试逻辑没有内嵌在本生产文件中。
+向 runtime 提供有序扫描、处理状态迁移、重试时间调整和时区偏移变化判断（`iterTryTriggerTimers`、`setTimerProcStatus`、`updateNextTryTriggerTime`、`locationChanged`）。
 
 ## 核心职责
 
@@ -91,8 +89,6 @@ RustCodeGraph 的精确 Trail 还确认：`partialBatchUpdateTimers → updateTi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/timer/runtime/cache.go`，Rust 保留了相同的状态常量、核心类型和方法名，主要行为逐项对应：版本/Location 去重、记录克隆、下一事件计算、手动请求立即触发、Idle/Trigger 排序键、全量删缺失、等待关闭集合、重试下限、有序 Idle 遍历和 Location 偏移比较。
-
 实现层差异如下：
 
 - Go `timerCacheItem.timer` 是可空指针；Rust 用非可空的 `TimerRecord` 加私有 `initialized` 表达相同状态，避免把空 ID 错当未初始化。
@@ -100,8 +96,6 @@ RustCodeGraph 的精确 Trail 还确认：`partialBatchUpdateTimers → updateTi
 - Go 用 `container/list` 及条目内 `sortEle` 做局部移动；Rust 为避免安全代码中的自引用节点，用 `Vec<String>` 保存 ID，每次变化执行全量稳定排序。语义一致，但更新时间复杂度从 Go 的定位后线性移动变为 Rust 的向量排序，定时器规模较大或更新频繁时需关注性能。
 - Go `timeutil.Zone` 与 Rust `locationOffset` 都以偏移比较 Location；Rust 的命名时区偏移通过 `Utc::now()` 取得，因此同样是比较当前有效偏移，而非名称身份。
 - Go 构造函数返回指针；Rust 返回拥有所有权的 `TimersCache`，由上层 `Mutex` 管理共享可变访问。
-
-`pkg/timer/runtime/cache_test.go` 与 `cache_test.rs` 的对应测试覆盖更新、排序、全量刷新和 Location。Rust 另有两项明确补齐 Go 值/指针语义的回归：Trigger 缺失开始时间映射 Go 零值，以及空 ID 的初始化判定。
 
 ## 扩展指南
 
@@ -112,13 +106,3 @@ RustCodeGraph 的精确 Trail 还确认：`partialBatchUpdateTimers → updateTi
 测试应继续放在独立文件。Go 对齐行为优先扩展 `pkg/timer/runtime/cache_test.rs` 并与 `pkg/timer/runtime/cache_test.go` 相应场景核对；AsterSQL 特有或跨 cache/worker/runtime 的回归可放在 `pkg/timer/runtime/cache_1_aster_unit_test.rs`。若修改公开接口，还需检查 `pkg/timer/runtime/runtime_test.rs`。重点边界包括：相同/更旧版本、同版本不同时区偏移、无效策略、禁用记录、手动请求、缺失 EventStart、空 ID、不存在 ID、相同排序键、状态迁移、全量删除和重试时间下限。
 
 性能方面，新增频繁更新路径前应评估 `resort` 的全量排序成本；若改为树或堆，需要同时保留按 ID 更新/删除、稳定或明确定义的同键顺序、提前停止遍历以及测试可观察性。兼容方面，不要把 Location 名称比较替换偏移比较，也不要把 Trigger 的缺失 `EventStart` 改回远未来，除非 Go 基准行为同步改变并有迁移依据。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`pkg/timer/runtime/cache.rs` 被索引为 38 个符号。通过 `node --file` 阅读了目标文件全部 360 行，并查询了 `TimersCache`、`updateTimer`、`iterTryTriggerTimers`、`fullUpdateTimers`、`setTimerProcStatus`、`updateNextTryTriggerTime` 的定义与 Trail。
-- 目标源码：`pkg/timer/runtime/cache.rs`。关键证据包括 `TimerCacheItem::update`（第 101–144 行）、`TimersCache`（第 148–159 行）、单条/批量/全量更新（第 216–272 行）、状态与重试（第 275–308 行）、有序遍历/重排（第 311–338 行）、Location 比较（第 341–360 行）。
-- 上游调用：`pkg/timer/runtime/runtime.rs`。核对了缓存构造（第 81–103 行）、全量刷新（第 315–338 行）、触发扫描与 worker 投递（第 340–412 行）、worker 响应（第 486–520 行）、增量/Watch/等待关闭刷新（第 522–619 行）及测试辅助入口（第 641–701 行）。
-- crate 与模块边界：`pkg/timer/runtime/Cargo.toml`、`pkg/timer/runtime/lib.rs`；前者确认依赖和 Go 包元数据，后者确认 `cache` 的公开模块位置及独立测试挂载。
-- Go 对照：`pkg/timer/runtime/cache.go` 全文件，特别是 `timerCacheItem.update`、`timersCache`、`resort`、`locationChanged`；相关基准测试为 `pkg/timer/runtime/cache_test.go`。
-- Rust 测试：`pkg/timer/runtime/cache_test.rs` 覆盖更新去重、无效策略/禁用/手动请求、状态迁移、Go 零时间、空 ID、排序、全量刷新和 Location；`pkg/timer/runtime/cache_1_aster_unit_test.rs` 补充固定时钟下的 Go 对齐及 runtime/worker 联动证据。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构验证要求文档存在且恰有本文 11 个固定二级标题；同时人工复核所有行为陈述均可回指上述源码、调用边或测试，没有把错误吞并解释成上层已处理，也没有把未实现能力写成已支持。

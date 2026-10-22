@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`engine.rs` 是 Cargo 包 `astersql-util-engine` 的业务实现文件，负责把 PD/kvproto store 标签归一为三个 TiFlash 节点判定 API。crate 入口 `pkg/util/engine/lib.rs` 通过 `pub mod engine` 和 `pub use engine::*` 公开本文件的类型与函数；根 facade 又在 `pkg/lib.rs` 的 `util::engine` 下重导出该 crate。`pkg/util/engine/Cargo.toml` 没有声明运行时依赖，说明传输类型适配被刻意留给调用方，而不是由该 crate 直接依赖 kvproto 或 PD HTTP 模型。
-
-文件对应 Go 包 `pkg/util/engine`，但 Rust 版本用 `Label`、`LabelStore` 两个 trait 代替 Go 函数签名中的具体 `metapb.Store` 和 `pdhttp.MetaStore`。因此它当前是轻量、同步、只读的标签策略层，而不是 store 获取、状态管理或网络访问层。
+`IsTiFlashWriteHTTPResp` 定义更窄的“可写/承载 Region 的 TiFlash”集合：只接受 `engine=tiflash`，从而排除 `engine=tiflash_compute`。
 
 ## 核心职责
 
@@ -76,15 +74,9 @@ API 没有 `Result`、错误类型或 panic 分支：未知、缺失和不完整
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/engine/engine.go` 提供同名的三个函数，匹配集合与 Rust 完全一致：
+主要实现差异是类型接线。Go 直接访问具体类型的 `Labels`、`Key`、`Value` 字段；Rust 通过 trait 隔离传输模型，所以 crate 自身没有 kvproto/PD HTTP 依赖，调用方需提供适配实现。
 
-- Go `IsTiFlash(*metapb.Store)` 对应 Rust `IsTiFlash(&impl LabelStore)`。
-- Go `IsTiFlashHTTPResp(*pdhttp.MetaStore)` 对应 Rust `IsTiFlashHTTPResp(&impl LabelStore)`。
-- Go `IsTiFlashWriteHTTPResp(*pdhttp.MetaStore)` 对应 Rust `IsTiFlashWriteHTTPResp(&impl LabelStore)`。
-
-主要实现差异是类型接线。Go 直接访问具体类型的 `Labels`、`Key`、`Value` 字段；Rust 通过 trait 隔离传输模型，所以 crate 自身没有 kvproto/PD HTTP 依赖，调用方需提供适配实现。两边都按顺序扫描并在首个命中处返回，且都不要求 NextGen 写节点显式出现 `engine_role=write`。
-
-Go 测试 `pkg/util/engine/engine_test.go` 只覆盖两个 HTTP 函数；Rust 的 `engine_test.rs` 复刻相同表格，而 `migration_aster_unit_test.rs` 额外覆盖 `IsTiFlash` 及无关标签在前的情形。Rust 测试与生产逻辑保持在独立文件中，并由 `lib.rs` 的 `#[cfg(test)]`/`#[path]` 接线。
+Go 测试 `pkg/util/engine/engine_test.go` 只覆盖两个 HTTP 函数；Rust 的 `engine_test.rs` 复刻相同表格，而 `migration_aster_unit_test.rs` 额外覆盖 `IsTiFlash` 及无关标签在前的情形。
 
 ## 扩展指南
 
@@ -93,13 +85,3 @@ Go 测试 `pkg/util/engine/engine_test.go` 只覆盖两个 HTTP 函数；Rust �
 若接入新的 store 数据模型，优先在数据模型所属 crate 实现 `Label`/`LabelStore`，或像 `br/pkg/conn/util/util.rs` 一样建立局部适配器；不要把传输层依赖加入本 crate，除非确有必要改变其无依赖边界。若适配会复制全部字符串，应评估能否直接借用原模型以避免每次判定分配。
 
 行为修改必须同步独立测试文件 `pkg/util/engine/engine_test.rs` 和 `pkg/util/engine/migration_aster_unit_test.rs`，并核对 Go 的 `pkg/util/engine/engine.go`、`engine_test.go`。应至少保留 Classic、NextGen write、NextGen compute、未知 engine、空标签、无关标签先于有效标签、大小写/空白精确匹配等用例。兼容风险主要是调用方筛选集合改变；性能风险主要来自高频调用时的标签遍历和调用方适配分配。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录的 Rust/Go 源与测试均已索引。
-- RustCodeGraph `node --file pkg/util/engine/engine.rs`：核对 `Label`、`LabelStore`、`is_tiflash_label` 以及三个公开函数的完整实现。
-- RustCodeGraph `query`、`callers`、`callees` 与精确 `explore`：确认两个宽口径函数调用 `labels`，写口径函数调用 `labels`/`key`/`value`；调用者查询存在同名歧义，因此又以精确源码引用补充核验，未把 Go 调用边误记为 Rust 调用边。
-- RustCodeGraph `node`：读取 `pkg/util/engine/lib.rs`、`pkg/util/engine/engine_test.rs`、`pkg/util/engine/migration_aster_unit_test.rs`、`pkg/util/engine/engine.go`、`pkg/util/engine/engine_test.go`、`br/pkg/conn/util/util.rs` 与 `pkg/lib.rs`，核对模块导出、测试合同、Go 对照和直接生产接线。
-- 原始配置读取：`pkg/util/engine/Cargo.toml`、`pkg/util/engine/BUILD.bazel`、工作区根 `Cargo.toml` 及相关 crate manifest 引用，核对 crate 名称、Go 包映射、无 Rust 外部依赖边界和工作区接线。
-- `rg` 补充图未能无歧义覆盖的引用搜索：确认本文件公开符号在 Rust 生产源码中的直接引用，并区分同名字段、局部 stand-in 与真实 crate 导入。
-- 未运行 Cargo 或 Go 测试：本任务只创建说明文档，任务计划明确要求以事实查询和结构检查验证，不运行 Cargo。

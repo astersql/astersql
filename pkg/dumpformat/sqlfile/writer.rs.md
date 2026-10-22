@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`writer.rs`](writer.rs) 属于 `astersql-dumpformat-sqlfile` crate。该 crate 的入口 [`lib.rs`](lib.rs) 将本文件的 `Config`、`Writer` 与 [`sql.rs`](sql.rs) 的 `append_value` 一并公开；[`Cargo.toml`](Cargo.toml) 表明它只直接依赖上层 `astersql-dumpformat` crate，后者提供共享列分类 `FieldKind`。
-
-在应用链路中，本文件是 Dumpling SQL 数据导出的“行到 INSERT 文本”编码器。生产调用点 [`dumpling/export/writer_util.rs`](../../../dumpling/export/writer_util.rs) 的 `writeSQLFile`（Go 对应入口名为 `WriteInsert`）生成 INSERT 前缀和列类型，构造 `SQLWriter`，逐行调用 `write`，再用 `estimate_file_size` 驱动进度统计与文件大小切分，最终显式调用 `close`。它不负责查询数据库、选择输出文件、缓冲、文件轮转或特殊注释；这些职责均由调用者承担。
+`Writer<W>` 把一行 `&[Option<Vec<u8>>]` 编码为 SQL 元组，按 `FieldKind` 委托 `append_value` 生成数值、字符串、二进制或 `NULL` 字面量。
 
 ## 核心职责
 
@@ -73,9 +71,7 @@ RustCodeGraph 的文件索引将 `writer.rs` 标为含 10 个符号，并显示�
 
 ## 与 Go 版本的对应关系
 
-同路径 [`writer.go`](writer.go) 是直接语义基准：Go `Config`/`Writer`/`NewWriter`/`Write`/`EstimateFileSize`/`Close` 分别对应 Rust 的同名概念（构造器在 Rust 中为 `Writer::new`）。字段、分支顺序、列宽错误文本、尺寸预记、阈值判断和幂等关闭逻辑逐项一致。
-
-输入表示的语言差异是 Go 使用 `[]sql.RawBytes`，其中 `nil` 表示 NULL；Rust 使用 `&[Option<Vec<u8>>]`，其中 `None` 表示 NULL。Go 保存 `*Config`，Rust 按值保存可复制的 `Config`，因此 Rust writer 构造后的行为不会随外部配置变量变化。Go 的 `w.Write` 与 Rust 的 `Write::write` 都忽略返回的写入长度，只传播错误，短写风险也一致。
+输入表示的语言差异是 Go 使用 `[]sql.RawBytes`，其中 `nil` 表示 NULL；Rust 使用 `&[Option<Vec<u8>>]`，其中 `None` 表示 NULL。Go 的 `w.Write` 与 Rust 的 `Write::write` 都忽略返回的写入长度，只传播错误，短写风险也一致。
 
 [`writer_test.go`](writer_test.go) 覆盖基本 framing、两种字符串转义、语句切分和空元组；Rust 独立测试 [`writer_test.rs`](writer_test.rs) 保留这些意图，并额外锁定二进制字节编码、阈值 6/7 的待分隔符计数、重复关闭、宽度错误无副作用、sink 错误传播及“不预测下一行”的边界。Rust 生产接线 [`dumpling/export/writer_util.rs`](../../../dumpling/export/writer_util.rs) 与 Go [`dumpling/export/writer_util.go`](../../../dumpling/export/writer_util.go) 都在特殊注释之后创建 writer、逐行导出、按估算尺寸切文件并显式关闭。
 
@@ -86,11 +82,3 @@ RustCodeGraph 的文件索引将 `writer.rs` 标为含 10 个符号，并显示�
 - 改变语句或文件尺寸语义时，必须同时审查 `statement_size`、`file_size`、切分判断、最终分隔符记账，以及 `dumpling/export/writer_util.rs` 的指标/文件轮转计算。兼容风险包括输出分块位置和监控字节数变化，性能风险包括额外分配或重复扫描行。
 - 改善 I/O 完整性最集中的入口是两处 `W::write`。若改为 `write_all`，应新增会返回短写 `Ok(n)` 的自定义 sink 测试，并验证状态及错误后的重试契约；同时保持 Go 版本对齐或明确记录差异。
 - 若增加自动关闭、flush 或取回 sink 的能力，需先决定失败可见性和所有权语义。不能依赖 `Drop` 报告 I/O 错误；显式 `close` 仍应是可验证的主路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 7 个已索引文件；`files --filter pkg/dumpformat/sqlfile` 找到 `writer.rs`、`writer_test.rs`、`writer.go`、`writer_test.go`、`sql.rs` 和模块入口；`node --file pkg/dumpformat/sqlfile/writer.rs --offset 1 --limit 500` 返回目标文件全部 104 行、10 个符号及对 `writer_test.rs` 的直接引用信息。`explore` 和泛型方法精确查询未给出可用调用边，该限制已在“依赖与调用关系”中说明。
-- Rust 源与模块证据：[`writer.rs`](writer.rs)、[`sql.rs`](sql.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、共享 [`kind.rs`](../kind.rs)。
-- Rust 调用与测试证据：[`dumpling/export/writer_util.rs`](../../../dumpling/export/writer_util.rs)、[`dumpling/export/Cargo.toml`](../../../dumpling/export/Cargo.toml)、[`dumpling/export/parity_test.rs`](../../../dumpling/export/parity_test.rs)、[`writer_test.rs`](writer_test.rs)。
-- Go 对照证据：[`writer.go`](writer.go)、[`writer_test.go`](writer_test.go)、[`dumpling/export/writer_util.go`](../../../dumpling/export/writer_util.go)。
-- 人工复核结论：本文件存在于数据库行与 Dumpling 对象 sink 之间，负责稳定生成多行 INSERT framing、尺寸估算和语句终止；安全扩展必须保持字段分类/转义、尺寸预记、显式关闭和外层轮转契约一致。

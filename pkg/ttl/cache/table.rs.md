@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`table.rs` 属于 `astersql-ttl-cache` crate；crate 入口 `pkg/ttl/cache/lib.rs` 通过 `pub mod table` 导出本模块。它位于 TTL 元数据进入扫描调度之前的适配层：把简化的表、分区、列和索引元数据整理成 `PhysicalTable`，计算过期水位，并把 TiKV Region 原始键边界转换为 TTL 扫描使用的半开区间 `[start, end)`。
-
-当前可确认的 Rust 运行时接线在 `pkg/session/runtime/ttl_metadata.rs`：该文件构造本模块的 `PhysicalTable`，在版本门禁允许时调用 `FindTTLIndex` 与 `SplitIndexScanRanges`，否则调用 `SplitScanRanges` 回退到表键路径；同一调用方也直接使用自由函数 `EvalExpireTime`。RustCodeGraph 的文件节点还把 `pkg/ttl/session/session.rs` 和 `pkg/ttl/sqlbuilder/sql.rs` 列为文件级使用方，但精确文本核验没有发现前者引用本模块，后者只有已注释的旧 `cache::PhysicalTable` 草稿并另有自己的 `PhysicalTable`，因此不能把二者视为已确认的活动调用链。
+只计算元数据、计划和范围，不读取行、不生成 SQL、不删除数据，也不维护跨调用缓存。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ RustCodeGraph 对 `SplitScanRanges` 给出的下游边包括 `newDatumRange`、`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ttl/cache/table.go`，测试是 `pkg/ttl/cache/table_test.go`。Rust 保留了 Go 的主要形状和命名：`PhysicalTable`、构造函数、`ScanRange`、`ValidateKeyPrefix`、`FullName`、过期时间计算、主键/索引 Region 拆分、`TTLIndexScanPlan` 以及句柄边界辅助函数。Rust 独立测试 `pkg/ttl/cache/table_test.rs` 覆盖无 TTL、三类表键、分区、时间列、key prefix、日/月/周/分钟/HOUR_MINUTE、Region 回退与基础拆分，以及索引选择。
-
 两者并非完整等价，扩展时必须以差异为约束：
 
 - Go `PhysicalTable::EvalExpireTime` 从 session 读取全局时区，保留输入 location，并用表达式框架处理 DST、精度截断和 SQL interval；Rust 接口只有无时区的秒级 `i64`，月历计算按 UTC 式 epoch 天数进行。Go 测试覆盖上海、柏林、洛杉矶 DST 等语义，Rust 测试没有等价覆盖。
@@ -98,12 +94,3 @@ RustCodeGraph 对 `SplitScanRanges` 给出的下游边包括 `newDatumRange`、`
 - 若要达到 Go 时间语义，不能只扩展 `TimeUnit`；需要设计时区、DST、SQL interval、亚秒精度和溢出策略，并在 session 调用链中传递 location。应移植 `table_test.go` 的时区回归用例，而不是仅比较 Unix 秒。
 - 若要宣称真实 KV 编码兼容，应替换或验证 `record_prefix`、`index_prefix`、`decode_index_time_boundary` 与 Go `tablecodec`/`codec` 的一致性，并用真实编码向量或跨语言夹具验证。
 - 性能上关注 `PhysicalTable` 的整表克隆、计划构造中的多次线性查找，以及 Region/范围 Vec 分配；优化时先保持错误降级和顺序不变量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/ttl/cache/table.rs` 确认目标已索引；`node --file ... --offset 1/500` 读取 809 行源码并显示文件级使用关系；`query PhysicalTable`、`query splitRawKeyRanges`、`query EvalExpireTime` 消除同名符号歧义；`callees SplitScanRanges` 验证范围拆分下游边。部分 `callers` 查询无结果，因此上游关系又用精确文本搜索核验。
-- Rust 源与装配：`pkg/ttl/cache/table.rs`、`pkg/ttl/cache/lib.rs`、`pkg/ttl/cache/Cargo.toml`。
-- Rust 直接调用证据：`pkg/session/runtime/ttl_metadata.rs`；同时核验 `pkg/ttl/session/session.rs` 和 `pkg/ttl/sqlbuilder/sql.rs`，后者的 cache 类型引用仅存在于注释草稿，不能作为活动调用证据。
-- Go 对照：`pkg/ttl/cache/table.go`、`pkg/ttl/cache/table_test.go`。
-- Rust 独立测试：`pkg/ttl/cache/table_test.rs`，测试与生产源文件分离。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节、文件存在性、链接与事实一致性。

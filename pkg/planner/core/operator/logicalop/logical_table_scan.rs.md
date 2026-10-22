@@ -4,15 +4,7 @@
 
 ## 文件定位
 
-本文件实现逻辑优化阶段的表路径扫描叶子算子 `LogicalTableScan`。它属于
-`astersql-planner-core-operator-logicalop` crate；同目录 `lib.rs` 以
-`mod logical_table_scan` 注册模块、以 `pub use logical_table_scan::*` 导出符号，并在
-`#[cfg(test)]` 下装配独立测试 `logical_table_scan_test.rs`。`Cargo.toml` 的
-`package.metadata.porting.go-package` 将该 crate 对应到 Go 包
-`pkg/planner/core/operator/logicalop`。
-
-该算子不直接访问 KV。`logical_datasource.rs::DataSource::buildTableGather` 把一个已选定的表访问路径固化为本节点，再将其置于 `TiKVSingleGather` 之下；旧 Cascades 实现规则
-`ImplTableScan` 随后读取本节点状态并构造 `PhysicalTableScan`。因此，本文件处在“数据源访问路径选择”和“物理表扫描执行计划”之间，负责保存路径语义并提供逻辑属性。
+因此，本文件处在“数据源访问路径选择”和“物理表扫描执行计划”之间，负责保存路径语义并提供逻辑属性。
 
 ## 核心职责
 
@@ -106,10 +98,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/logical_table_scan.go`；Go 的统计实现委托到 `pkg/planner/core/stats.go::deriveStats4LogicalTableScan`。两侧共同保留
-`LogicalTableScan`、`Init`、`ExplainInfo`、`BuildKeyInfo`、`DeriveStats` 和
-`PreparePossibleProperties` 的核心意图：表示表访问路径、展示条件、继承来源键、推导统计与 Range、报告句柄顺序和 TiFlash 能力。
-
 当前可核验差异如下：
 
 - Go 结构只有 `Source`、`HandleCols`、`AccessConds` 和 `Ranges`；Rust 还显式保存
@@ -119,7 +107,6 @@
   `TableStats`，并用表路径的 `CountAfterAccess` 覆盖行数、钳制 NDV。两者不是逐行等价的统计计算实现。
 - 两侧都用访问条件构建句柄 Range，并在无句柄时依据无符号主键生成全整数范围；Rust 额外显式处理无上下文、无句柄列类型和 ranger 错误。
 - Go `BuildKeyInfo` 直接把当前 schema 参数交给 `Source.BuildKeyInfo`；Rust 先让来源更新自己的 schema，再把来源的 `PKOrUK`、`NullableUK` 克隆到扫描 schema。
-- 两侧 EXPLAIN 都使用 `Source.HandleCols`，而非扫描结构的 `HandleCols`。Rust 对来源缺失提供降级文本，Go 正常路径假定来源和上下文存在。
 - Go 将 `hasTiFlash` 缓存在嵌入的基础计划字段；Rust 返回 `PossiblePropertiesInfo` 中的值，不在本节点额外保存该字段。
 
 扩展或修复时应以这些当前事实为准，并核对 Go 行为意图；不能为了表面字段一致而删除 Rust 构造链已经传递的状态。
@@ -133,22 +120,3 @@
 - 修改 TiFlash 判定时，应同时保留“副本可用”和“会话允许 MPP”两个条件，并检查 memo 属性传播；否则可能让优化器枚举不可执行的 MPP 计划。
 - 修改 EXPLAIN 格式要注意其兼容性和日志脱敏语义；当前 Rust 使用求值上下文格式化表达式，但 Go 还显式传入 `EnableRedactLog`，两侧行为需要专项核验。
 - 修改 `Source` 借用或可变状态时，应保持短借用作用域，避免 `RefCell` 运行时借用冲突。性能风险集中在条件/Range 克隆和路径线性查找，兼容风险集中在统计基数、顺序属性、Range 边界、MPP 可用性和 EXPLAIN 文本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和
-  1,848,419 条边；`node --file pkg/planner/core/operator/logicalop/logical_table_scan.rs --offset 1 --limit 400` 读取到完整 206 行目标源码，并报告该文件被 32 个文件使用。
-- 符号与图查询：`query LogicalTableScan --limit 20 --json` 同时确认 Rust 结构、Go 对照结构/方法和物理扫描工厂；对精确 Rust 符号执行 `callers`/`callees` 未返回方法级边，且 `files --filter` 未命中该路径，因此调用关系用图的文件使用摘要和局部源码搜索交叉核验，没有据此臆造调用者。
-- 读过的生产与配置路径：`logical_table_scan.rs`、`logicalop/Cargo.toml`、
-  `logicalop/lib.rs`、`logical_datasource.rs::buildTableGather`、
-  `base_logical_plan.rs`、`cascades/memo/group_expr.rs`、
-  `cascades/pattern/pattern.rs`、`cascades/old/transformation_rules.rs`、
-  `cascades/old/implementation_rules.rs`、`physicalop/physical_table_scan.rs`、
-  `logical_table_scan.go` 和 `core/stats.go::deriveStats4LogicalTableScan`。目标 Go 包及其父级未提供适用的 `doc.go` 包契约。
-- 独立测试 `logical_table_scan_test.rs`：
-  `explain_uses_source_handle_and_formats_access_conditions_like_go` 验证来源句柄优先及条件文本；
-  `tiflash_property_requires_an_mpp_enabled_context_like_go` 验证仅有可用副本而无 MPP 上下文仍返回 false；
-  `derive_stats_builds_a_full_integer_range_without_handle_columns` 验证表行数、重新计算标志和无句柄全整数范围。
-- 当前独立测试没有覆盖有句柄的 `BuildTableRange`、错误传播、统计缓存、正数
-  `CountAfterAccess`、NDV 钳制、`BuildKeyInfo` 或真实 MPP 上下文成功分支；这些是扩展时应补的测试范围，不能表述为已经验证。
-- 本任务只新增说明文档，按任务约束未运行 Cargo。交付前使用任务指定的 shell 结构检查确认文件存在且固定二级标题恰为 11 个，并人工复核文档能回答文件定位、运行路径与安全扩展方式。

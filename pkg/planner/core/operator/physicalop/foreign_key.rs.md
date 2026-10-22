@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-physicalop` crate。该 crate 的 [`Cargo.toml`](Cargo.toml) 将 `lib.rs` 指定为根模块并声明 `autotests = false`；[`lib.rs`](lib.rs) 以 `pub mod foreign_key` 公开本模块，并在 `#[cfg(test)]` 下单独装配 `foreign_key_test.rs`。因此这里定义的类型可被同 crate 的 DML 物理计划持有，也可由上层 crate 通过模块路径访问。
-
-文件位于 INSERT/UPDATE/DELETE 规划与外键执行之间：它把表和外键元数据转换成两类规划期描述——`FkCheck` 表示父行必须存在或子行必须不存在，`FkCascade` 表示 `ON DELETE`/`ON UPDATE` 的 `CASCADE` 或 `SET NULL` 动作。[`physical_common_plans.rs`](physical_common_plans.rs) 的 `Insert`、`Update`、`Delete` 已有 `fk_checks` 与 `fk_cascades` 字段承接这些结果；[`plan_clone_generated.rs`](plan_clone_generated.rs) 会拒绝缓存携带任一外键描述的 DML 计划。
-
-当前 Rust 接线必须与 Go 主线明确区分。RustCodeGraph 对 `build_on_insert_fk_triggers`、`build_on_update_fk_triggers`、`build_on_delete_fk_triggers` 和 `get_update_columns_info` 未返回生产调用者，仓库搜索只找到独立 Rust 测试直接调用前两个入口。也就是说，文件后半是可编译、可测试、公开的简化移植模型，但尚不能据此声称完整 Rust DML 规划主链已经生成这些触发器。文件前半约 660 行的 `//` 注释保留了更完整的拟移植控制流，注释不是可执行实现。
+不读取 InfoSchema、不解析真实 `model::FKInfo`、不寻找支持索引、不创建 `BasePhysicalPlan`、不执行检查或级联，也不管理执行期生成的级联子计划。
 
 ## 核心职责
 
@@ -113,8 +109,6 @@ Go 生产主链则将同名方法实现为 `Insert`/`Update`/`Delete` 的方法�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`foreign_key.go`](foreign_key.go)。主要对应关系如下：
-
 - Rust `FkCheck` / `FkCascade` 对应 Go `FKCheck` / `FKCascade` 的规划意图，但 Rust 不嵌入 `BasePhysicalPlan`，不持有真实 `table.Table`、`table.Index`、`model.FKInfo`、`ReferredFKInfo`、列元数据或执行期 `CascadePlans`。
 - Rust `access_object`/`operator_info` 保留展示格式的核心含义；Go 使用表名和可选索引名，Rust 只使用表 ID。Rust 未提供组合二者的 `explain_info`。
 - `FkCheck::memory_usage` 保留“浅层加检查列动态占用”的方向，但以 `String::capacity` 近似 CIStr 占用；`FkCascade::memory_usage` 与 Go 一样只计算浅层结构。由于两侧结构不同，数值不能直接比较。
@@ -135,15 +129,3 @@ Go 生产主链则将同名方法实现为 `Insert`/`Update`/`Delete` 的方法�
 测试必须继续放在独立文件，不能写入生产 `.rs`。最低同步面是 [`foreign_key_test.rs`](foreign_key_test.rs)：补充 DELETE、禁用外键、`NoAction`/`SetNull`、空列、父子列不匹配、结果顺序和 `get_update_columns_info` 的缺表/重叠/越界用例。若改变 DML 持有或缓存规则，还要同步 [`plan_clone_generated_test.rs`](plan_clone_generated_test.rs)。接入真实主链后必须增加能证明调用点实际生成并消费这些节点的规划/SQL 集成测试，不能只保留对公开辅助函数的直接单测。
 
 兼容性风险集中在 `enabled` 与 Go `Version` 的映射、ASCII 大小写与 `CIStr.L`、错误类型/文本及 `SET DEFAULT` 默认分支；正确性风险集中在遗漏索引与列校验、生成列传播和多表 UPDATE 分组；性能风险集中在 UPDATE 的嵌套大小写扫描、字符串克隆和不完整内存统计。
-
-## 验证依据
-
-本说明使用了以下直接证据：
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter .../foreign_key.rs` 确认目标文件；`node --file ... --offset 1/500` 读取完整 938 行；`query` 定位四个公开入口与 `build_referred_trigger`；`callees` 证明 INSERT → `build_referred_trigger`/`build_child_check`，UPDATE → 前两者及 `contains_any`，DELETE → `build_referred_trigger`，而 callers 查询未返回生产调用边。
-- Rust 生产源码：[`foreign_key.rs`](foreign_key.rs) 的可执行部分；[`physical_common_plans.rs`](physical_common_plans.rs) 的 `Insert`、`Update`、`Delete` 外键字段；[`plan_clone_generated.rs`](plan_clone_generated.rs) 的三类 DML 缓存拒绝；[`lib.rs`](lib.rs) 的公开模块和独立测试装配。
-- crate 与仓库契约：[`Cargo.toml`](Cargo.toml) 的 crate 名、根模块、依赖和 `package.metadata.porting.go-package`；最近的 `pkg/planner/core/base/doc.go` 要求 planner base 抽象避免依赖具体实现，本文件当前没有修改 base 接口。
-- Rust 独立测试：[`foreign_key_test.rs`](foreign_key_test.rs) 覆盖子表修改检查父行存在、UPDATE 对父列的大小写不敏感匹配和级联、`SET DEFAULT` 走限制检查、非 Public `CASCADE` 强制限制；[`plan_clone_generated_test.rs`](plan_clone_generated_test.rs) 覆盖携带检查或级联的 DML 计划不可缓存。
-- Go 对照：[`foreign_key.go`](foreign_key.go) 的 `FKCheck`、`FKCascade`、三个 `BuildOn*FKTriggers`、`GetUpdateColumnsInfo`、`buildTbl2UpdateColumns`、`buildOnDeleteOrUpdateFKTrigger`、`buildFKCheck`、`buildFKCascade`。同目录 Go 测试搜索未找到这些符号的直接单元测试，因此本文没有声称存在对应 Go 单测覆盖。
-
-本任务是纯文档分析，按计划未运行 Cargo。结构验收使用任务指定命令确认本文存在且恰含十一个固定二级标题；人工复核重点是明确区分注释草案、当前可执行简化实现、DML 数据接线和尚未存在的生产调用链。

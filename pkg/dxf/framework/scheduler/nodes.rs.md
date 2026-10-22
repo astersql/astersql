@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-framework-scheduler` crate 的节点视图层。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod nodes` 声明模块并通过 `pub use nodes::*` 再导出其公开项；[`Cargo.toml`](Cargo.toml) 则表明该 crate 直接依赖 DXF 的 proto、调度状态、存储和指标 crate。本文件自身不负责发现集群节点，也不直接访问 SQL/元数据表，而是通过 [`TaskManager`](interface.rs) 抽象接收持久化节点数据。
-
-它位于调度主链的共享状态位置：[`scheduler_manager.rs`](scheduler_manager.rs) 构造唯一的 `Arc<NodeManager>` 并注入调度器、槽位管理器和均衡器；[`scheduler.rs`](scheduler.rs) 与 [`balancer.rs`](balancer.rs) 读取其 managed 节点快照来选择子任务执行节点；[`slots.rs`](slots.rs) 用同一快照过滤节点资源用量。
+`NodeManager::get_nodes` 提供隔离的节点列表副本，`filter_by_scope` 再按节点角色和任务 `target_scope` 生成有序的执行器 ID 列表。
 
 ## 核心职责
 
@@ -92,7 +90,7 @@ RustCodeGraph 将目标文件标记为被 17 个文件使用，并能识别 `get
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`nodes.go`](nodes.go)，测试对照是 [`nodes_test.go`](nodes_test.go)。Rust 的 `NodeManager`、`maintain_live_nodes`、`refresh_nodes`、`get_nodes`、`filter_by_scope` 分别对应 Go 的同名驼峰实现；关键语义已经对齐：新旧存活集合相同即跳过、删除失败不发布新存活快照、选择第一个正 CPU 数、返回节点副本，以及 background 对空 scope 的优先级。Go 的 `SlotManager.updateCapacity` 本身也忽略非正值，所以 Rust 在调用前过滤正数与最终容量行为一致。
+Rust 的 `NodeManager`、`maintain_live_nodes`、`refresh_nodes`、`get_nodes`、`filter_by_scope` 分别对应 Go 的同名驼峰实现；关键语义已经对齐：新旧存活集合相同即跳过、删除失败不发布新存活快照、选择第一个正 CPU 数、返回节点副本，以及 background 对空 scope 的优先级。Go 的 `SlotManager.updateCapacity` 本身也忽略非正值，所以 Rust 在调用前过滤正数与最终容量行为一致。
 
 仍存在明确的迁移/接线差异：
 
@@ -100,7 +98,6 @@ RustCodeGraph 将目标文件标记为被 17 个文件使用，并能识别 `get
 - Go 提供 `maintainLiveNodesLoop` 与 `refreshNodesLoop`，由 Go `Manager.Start` 启动 ticker；当前 Rust `Manager::start` 只同步调用一次 `refresh_nodes`，且没有生产调用连接 `maintain_live_nodes`。
 - Go 版本包含 context 取消、采样日志、trace region/flight recorder 与 `syncRefresh` failpoint；Rust 文件没有对应机制，并将错误交给调用者。
 - Go managed 快照使用 `atomic.Pointer`，Rust 使用 `RwLock<Arc<Vec<_>>>`；两者都提供整表发布和返回副本，但并发实现及锁中毒行为不同。
-- Go 构造器按 server ID 配置日志器，Rust `new` 无参数且不拥有日志器。
 
 这些差异应被视为当前代码事实；本文不据此宣称 Rust 已具备 Go 的周期维护、观测或故障注入能力。
 
@@ -113,12 +110,3 @@ RustCodeGraph 将目标文件标记为被 17 个文件使用，并能识别 `get
 若接通存活维护生产路径，应从 `Manager` 生命周期或等价 owner 入口接线，服务发现结果显式传给 `maintain_live_nodes`；需要补充失败重试、取消和周期测试，并验证删除失败时快照不前移。不要让 `set_nodes` 绕过存储成为生产刷新捷径。
 
 修改锁策略时需特别审查：`maintain_live_nodes` 的串行提交不变量、`get_nodes` 的副本隔离、两个视图无需原子同步这一现状，以及存储调用期间持锁的延迟风险。性能上最显著的成本是 `get_nodes` 每次深克隆所有 `String`；若改为共享快照 API，必须防止消费者原地修改内部数据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含 7,032 个 Rust 文件；`node --file pkg/dxf/framework/scheduler/nodes.rs` 读取了目标文件全部 127 行，并列出 17 个使用文件。
-- RustCodeGraph：读取了 [`nodes_test.rs`](nodes_test.rs)、[`scheduler_manager.rs`](scheduler_manager.rs)、[`scheduler.rs`](scheduler.rs)、[`balancer.rs`](balancer.rs)、[`slots.rs`](slots.rs)、[`interface.rs`](interface.rs) 与 [`lib.rs`](lib.rs) 的相关已索引源码；图查询确认 `filter_by_scope` 被调度、均衡和 scope 测试消费，`get_nodes` 被调度、均衡和槽位更新消费。
-- crate/模块证据：[`Cargo.toml`](Cargo.toml) 的 package、lib path、porting 元数据和依赖；[`lib.rs`](lib.rs) 的 `pub mod nodes`、公开再导出及独立 `nodes_test` 模块声明。
-- Go 对照：[`nodes.go`](nodes.go)、[`nodes_test.go`](nodes_test.go) 及 [`slots.go`](slots.go) 的 `updateCapacity`，用于核对周期循环、失败提交点、容量更新、快照复制和 scope 语义。
-- Rust 测试：[`nodes_test.rs`](nodes_test.rs) 覆盖死节点删除与重复快照快速返回、首个正 CPU 容量、返回副本隔离、空刷新保留容量和九组 scope 边界；[`slots_test.rs`](slots_test.rs) 额外覆盖刷新后槽位快照剔除缩容节点。
-- 本任务是纯文档分析，按计划不运行 Cargo；只执行任务指定的 Markdown 结构验证，并人工核对公开符号、当前生产接线、Go 差异与安全扩展入口。

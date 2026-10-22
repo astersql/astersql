@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`memstore.rs` 是 `astersql-objstore` crate 的进程内对象存储后端。crate 入口 `pkg/objstore/lib.rs` 以公开模块 `pub mod memstore` 暴露它；它实现 `pkg/objstore/storage.rs` 定义的 `Storage`、`ObjectReader` 和 `ObjectWriter` 抽象，因此可以作为 `StorageRef = Arc<dyn Storage>` 进入统一对象存储调用链。
-
-生产侧的直接接线位于 `storage.rs`：`NewFromURL` 遇到 `memstore://` 时直接构造 `NewMemStorage()`，`New` 遇到 `StorageBackend::MemStore` 时也返回该实现。它不访问磁盘或云服务，数据只存在于当前进程内；`URI` 固定返回 `memstore://`。仓库中它主要用于测试、内存替身和无需持久化的轻量场景，不能据此推断数据能够跨进程或跨重启保存。
-
-所属 crate 由 `pkg/objstore/Cargo.toml` 的 `[package] name = "astersql-objstore"` 和 `[lib] path = "lib.rs"` 确认。此文件直接使用标准库同步原语及 `anyhow`；Cargo 清单没有为内存后端设置独立 feature。
+`MemStorage` 用以对象名为键的哈希表保存 `MemFile`，实现整对象写入、读取、存在性检查、删除、重命名、遍历、流式创建和范围读取。
 
 ## 核心职责
 
@@ -90,16 +86,13 @@ reader/writer 的 `closed` 使用 Acquire/Release 原子访问，但对象本身
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/objstore/memstore.go`，行为测试是 `pkg/objstore/memstore_test.go`；Rust 的对应独立测试位于 `pkg/objstore/memstore_test.rs`。
-
-主要保持一致之处：Go 的 `map + RWMutex` 对应 Rust 的 `RwLock<Option<HashMap<...>>>`；Go `atomic.Pointer[[]byte]` 的整内容替换对应 Rust `RwLock<Arc<Vec<u8>>>`；两者都复制整对象输入/输出、按排序后的键快照遍历、在 `Create` 时插入空对象并在 writer 关闭时提交、允许 Rename 覆盖目标、让已打开 reader 在对象删除后继续读取，并固定返回 `memstore://`。`go_path_base` 专门保持 Go `path.Base/filepath.Base` 对空串和根路径的结果，相关 Rust 测试覆盖 `.` 与 `/`。
+主要保持一致之处：Go 的 `map + RWMutex` 对应 Rust 的 `RwLock<Option<HashMap<...>>>`；Go `atomic.Pointer[[]byte]` 的整内容替换对应 Rust `RwLock<Arc<Vec<u8>>>`；两者都复制整对象输入/输出、按排序后的键快照遍历、在 `Create` 时插入空对象并在 writer 关闭时提交、允许 Rename 覆盖目标、让已打开 reader 在对象删除后继续读取，并固定返回 `memstore://`。
 
 可观察差异与迁移边界：
 
 - Rust `NewMemStorage` 返回值而非指针，通常由调用方再包进 `Arc`；Go 返回 `*MemStorage`。
 - Go `Close` 把 map 设为 `nil`，其后某些写操作可能触发 Go 的 nil-map 行为；Rust 用 `None` 明确让结构性写操作返回 `mem storage closed`，读取则呈现为空/不存在。
 - Go reader 在关闭或达到范围末端时返回 `io.EOF`；Rust `Read` 按 Rust 约定返回 `Ok(0)`。两边测试分别断言各自接口惯例。
-- Rust `Open` 显式拒绝负 `start`，并把打开时数据复制进 `Cursor<Vec<u8>>`。Go `bytes.Reader` 引用当时的字节切片；因 Go 写入也以新切片替换，所以同样保持已打开 reader 的内容稳定。
 - Go 文件显式实现 `DeleteFiles`；Rust 使用 `Storage::DeleteFiles` 的顺序默认实现，仍是逐项删除、首错返回。
 - Rust `WalkOption` 比这段 Go 实现的当前使用面包含更多字段，但本实现与 Go `memstore.go::WalkDir` 一样只处理 `SubDir/sub_dir` 和 `ObjPrefix/obj_prefix`。
 
@@ -112,12 +105,3 @@ reader/writer 的 `closed` 使用 Acquire/Release 原子访问，但对象本身
 - 若改变关闭语义，应分别覆盖存储关闭、reader 关闭、writer 关闭和存储关闭前取得的句柄；当前四者并非联动。若需要可恢复错误，应避免新增 `expect` 锁获取，并评估既有锁中毒策略。
 - 若优化大对象内存，当前至少存在输入复制、`Arc<Vec<u8>>` 内容和 `Open` 的游标复制；任何零拷贝方案都必须保留外部修改隔离与已打开 reader 快照语义。
 - Go 对照变更时同步检查 `pkg/objstore/memstore.go` 与 `memstore_test.go`；Rust 生产代码变更后按仓库规则更新独立的 `memstore_test.rs`，并执行适用验证。本说明任务本身不运行 Cargo。
-
-## 验证依据
-
-- 源码全貌：`pkg/objstore/memstore.rs`，核对 `MemFile`、`MemStorage`、`NewMemStorage`、`go_path_base`、完整 `Storage` 实现、`MemFileReader` 和 `MemFileWriter`；文件无条件编译项。
-- crate 与接线：`pkg/objstore/Cargo.toml`（crate 名、lib 路径、`anyhow` 依赖、无专属 feature），`pkg/objstore/lib.rs`（公开模块和独立测试模块），`pkg/objstore/storage.rs`（trait 契约、选项、`NewFromURL` 与 `New` 两条构造路径）。
-- Go 对照：`pkg/objstore/memstore.go` 与 `pkg/objstore/memstore_test.go`，核对锁、拷贝、Create/Close、range reader、排序遍历、重命名和并发修改语义。
-- Rust 测试：`pkg/objstore/memstore_test.rs`。`test_mem_store_basic` 覆盖基本 IO、Create 延迟提交、reader 快照和 Rename 覆盖；`test_mem_store_open_range_seek` 覆盖范围与 seek；`test_mem_store_walk_dir` 和 `test_mem_store_walk_dir_root_basename` 覆盖筛选与路径边界；`test_mem_store_presign_file_go_basename_edges` 覆盖 Go basename；`test_mem_store_manipulate_bytes` 覆盖拷贝隔离；`test_mem_store_write_during_walk_dir` 覆盖键快照与回调期间并发修改。
-- RustCodeGraph：`status` 显示索引包含 `pkg/objstore/memstore.rs`；`files --filter pkg/objstore` 将其列为含 37 个符号的 Rust 文件；`query NewMemStorage --kind function --json` 定位 `memstore.rs::NewMemStorage`（第 58 行），`query go_path_base --kind function --json` 定位 `memstore.rs::go_path_base`（第 76 行）。`explore/node/callers/callees` 对本文件未返回正文或边，因此调用关系另由上述源码精确引用与 `rg` 交叉验证，未把同名符号当作证据。
-- 结构验收使用任务指定命令，要求文件存在且固定二级标题恰好为 11 个；本任务是纯文档分析，未运行 Cargo 或代码测试。

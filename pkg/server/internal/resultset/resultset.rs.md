@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明的真实源文件是 [`resultset.rs`](./resultset.rs)。它属于 Cargo crate `astersql-server-internal-resultset`（`pkg/server/internal/resultset/Cargo.toml`，库入口为同目录 `lib.rs`）。`lib.rs` 将本文件的结果集 API 与 `cursor.rs` 的逐行游标 API 一并重新导出，供服务端协议层把执行器的 `astersql_util_sqlexec::RecordSet` 适配成可按 chunk 拉取、可关闭、可分离的服务端结果集。
-
-当前 Rust 服务端中的直接消费位置包括 `pkg/server/protocol_result.rs`：`WorkerResult` 保存 `Box<dyn ResultSet>`，普通结果通过 `NewChunk`/`Next` 取批，游标结果通过 `cursor.rs::WrapWithLazyCursor` 逐行读取，协议生命周期操作再转发到 `Finish`、`OnFetchReturned` 和 `Close`。因此本文件位于“session 已产生记录集”与“MySQL 协议编码/游标发送”之间，而不负责 SQL 规划、执行或网络编码。
+`ResultSet` 定义服务端需要的统一能力：列元数据、chunk 分配与拉取、字段类型、关闭状态、执行结束、可分离结果集、fetch 通知和游标 RU v2 增量同步。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RU tracker 可以被 `Arc` 共享，内部 mutex 避免多个 fetch 边界同时
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/server/internal/resultset/resultset.go`。Rust 的 `TidbResultSet`、`ResultSet`、`CursorRUV2Tracker`、构造/挂载/报告函数以及 `Columns`、`NewChunk`、`Next`、`Finish`、`Close`、`IsClosed`、`FieldTypes`、`SetPreparedStmt`、`TryDetach` 均对应 Go 同名或同职责符号，核心顺序与锁策略保持一致。
-
 主要表示差异如下：
 
 - Go 用 nil 指针/interface 表示缺失，Rust 用 `Option`；Go `TryDetach` 先类型断言 `DetachableRecordSet`，Rust 的 `sqlexec::RecordSet` trait 本身定义 `TryDetach`，再用返回的 bool 表示能力/结果。
@@ -93,8 +89,6 @@ RU tracker 可以被 `Arc` 共享，内部 mutex 避免多个 fetch 边界同时
 - Go 的 `Finish` 还对底层记录集做可选接口断言；Rust 直接调用 `RecordSet::Finish`。二者在锁忙时都返回成功且不等待。
 - Go 的列缓存存放在 `PlanCacheStmt.PointGet.ColumnInfos` 的动态值中；Rust 通过强类型的 `CachedColumnInfos`/`CacheColumnInfos` API 存取 `Arc<Info>`。
 - Go 用 `int32` 原子值表示关闭状态，Rust 用 `AtomicBool`；二者都只允许一次底层 Close，并在之后移除记录集引用。
-
-Go 回归证据 `pkg/server/conn_stmt_test.go::TestCursorWithParams` 验证 RU response bytes 的初始同步、增量同步、bypass 以及首次 Next 出错时不提前访问列。Rust 的 `pkg/server/conn_test.rs::go_merge_139_cursor_consumer_only_synchronizes_response_bytes` 对应验证缺失输入、重复报告、bypass 暂停/恢复；同目录 `resultset_aster_unit_test.rs` 则覆盖适配器内部生命周期。
 
 ## 扩展指南
 
@@ -105,14 +99,3 @@ Go 回归证据 `pkg/server/conn_stmt_test.go::TestCursorWithParams` 验证 RU r
 - 修改 RU 同步时应联动 `pkg/util/execdetails/internal/util/lib.rs::SyncRUV2MetricsFromRUDetails`，并覆盖创建前累计、连续增量、零增量、bypass 切换和并发报告；同时对照 Go `resultset.go` 与 `conn_stmt_test.go`。
 - 修改 chunk/字段路径时应覆盖空结果、首个 Next 失败、缺失 column、allocator 分配以及 lazy cursor 跨 chunk 行序；性能上避免在热路径重复转换列信息或深拷贝整批 metadata。
 - 本仓库约定测试与生产 Rust 源文件分离；本模块现有独立测试文件是 `pkg/server/internal/resultset/resultset_aster_unit_test.rs`，协议级补充测试位于 `pkg/server/conn_test.rs` 和 `pkg/server/tests/commontest/cursor_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`files --filter pkg/server/internal/resultset` 确认目标 Rust/Go 文件、`cursor.rs`、`lib.rs` 和独立测试均在图中。
-- RustCodeGraph 源码读取：`resultset.rs` 全部 310 行、`resultset_aster_unit_test.rs` 全部 316 行、`lib.rs`、`cursor.rs`、`pkg/server/protocol_result.rs` 和 `pkg/server/conn_test.rs` 的相关片段。
-- RustCodeGraph 符号/调用查询：`query TidbResultSet`、`query NewCursorRUV2Tracker`、`query AttachCursorRUV2Tracker`、`query ReportCursorRUV2Delta`；文件限定的 `callers`/`callees` 查询确认上述下游边，并显示部分通用上游方法边缺失。
-- Cargo 边界：`pkg/server/internal/resultset/Cargo.toml` 的 package、lib path、porting metadata 和 dependencies。
-- Go 对照：`pkg/server/internal/resultset/resultset.go` 全部 231 行；Go 测试 `pkg/server/conn_stmt_test.go::TestCursorWithParams` 相关子测试。
-- Rust 测试：`pkg/server/internal/resultset/resultset_aster_unit_test.rs` 的七项测试，以及 `pkg/server/conn_test.rs::go_merge_139_cursor_consumer_only_synchronizes_response_bytes`；另读取 `pkg/util/execdetails/internal/util/lib.rs::SyncRUV2MetricsFromRUDetails` 核对 pending 值排空语义。本任务按计划只做文档分析，未运行 Cargo 或代码测试。
-- 补充引用搜索：使用 `rg` 查找 Rust/Go 中 tracker、detach、finish、fetch 通知和 crate 引用，以补足代码图对通用名称 caller 边的覆盖限制。
-- 结构检查按任务指定命令执行，要求文件存在且固定二级标题恰好 11 个；交付前另人工核对本说明只陈述可由以上符号、文件和测试复核的当前行为。

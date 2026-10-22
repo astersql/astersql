@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-common` crate 的 Unix/类 Unix 本地文件系统实现层，只在 `cfg(unix)` 下由 `pkg/lightning/common/lib.rs` 编译为私有模块 `storage_unix`。对 crate 外的公开边界是 `pkg/lightning/common/storage.rs` 中重导出的同名平台门面：`GetStorageSize` 和 `SameDisk`；本文件本身不定义命令入口、存储抽象或长期服务。
-
-`pkg/lightning/common/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/lightning/common`，并为本实现声明唯一直接外部依赖 `libc = "0.2"`。因此它的作用是把 POSIX 文件系统信息转换成 Lightning 通用类型，而不是通用对象存储层。
+`GetStorageSize` 通过 `libc::statvfs` 一次获取路径所在文件系统的总块数、非特权用户可用块数与基本块大小，输出字节数快照 `StorageSize`。
 
 ## 核心职责
 
@@ -66,8 +64,6 @@ Go 主链证据位于 `lightning/pkg/importer/precheck_impl.go`：`localDiskPlac
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现是 `pkg/lightning/common/storage_unix.go`，两边共享的核心语义为：容量等于总块数乘块大小，可用空间等于 `Bavail`/`f_bavail` 乘块大小，同盘判定等于两个 `Stat` 结果的设备号相等，系统调用失败立即向上传播。
-
 已核实的差异有：
 
 - Go `GetStorageSize` 包含 `failpoint.Inject("GetStorageSize", ...)`，可为导入预检查注入容量；Rust 实现没有对应 failpoint。Go 测试 `lightning/pkg/importer/check_info_test.go::TestLocalResource` 依赖该注入点，Rust 中出现的同路径字符串不能改变本文件的返回值。
@@ -75,7 +71,7 @@ Go 对照实现是 `pkg/lightning/common/storage_unix.go`，两边共享的核�
 - Go 用 `errors.Annotatef` 保留可解包的原始错误；Rust 将 OS 错误格式化进 `CommonError.Message`，没有结构化 cause。
 - Rust 输入是 `&str`，因而 API 不能表示非 UTF-8 Unix 路径，且会在内含 NUL 时于 FFI 前报错；Go `string` 也不能把内含 NUL 的值作为有效 C 路径，但错误产生点由 Go 的系统调用封装决定。
 
-现有 Go 测试 `pkg/lightning/common/storage_test.go::TestGetStorageSize` 和 Rust 门面测试 `pkg/lightning/common/storage_test.rs::test_get_storage_size` 都只要求临时目录的 `Capacity` / `Available` 为正数。Rust 独立测试 `storage_unix_test.rs::get_storage_size_does_not_depend_on_df_or_path` 还在清空 `PATH` 的子进程中运行查询，证明实现不依赖外部 `df` 命令。现有 Rust 独立测试尚未覆盖 `SameDisk`、失败路径、NUL 输入或乘法溢出。
+现有 Go 测试 `pkg/lightning/common/storage_test.go::TestGetStorageSize` 和 Rust 门面测试 `pkg/lightning/common/storage_test.rs::test_get_storage_size` 都只要求临时目录的 `Capacity` / `Available` 为正数。现有 Rust 独立测试尚未覆盖 `SameDisk`、失败路径、NUL 输入或乘法溢出。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ Go 对照实现是 `pkg/lightning/common/storage_unix.go`，两边共享的核�
 - 若要对齐 Go 的导入预检查，除本文件外还需在相应 Rust 业务链接入 `storage` 公开门面；不要误把 Go 调用者或 failpoint 字符串当成 Rust 接线。
 - 测试逻辑必须继续放在独立的 `pkg/lightning/common/storage_unix_test.rs`，不得内嵌进生产文件。优先增加：同目录/不同已知设备的 `SameDisk` 用例（无可移植的第二设备时应可跳过）、不存在路径的错误用例、内含 NUL 的 `GetStorageSize` 用例，以及可注入数值计算的纯函数测试。
 - 若改变公开结果或错误约定，同步复核 `storage.rs`、Windows 实现及对应独立测试，并与 `storage_unix.go` 的应用语义比较。兼容风险主要是可用空间口径和错误文本/类型改变；性能风险主要是把当前单次系统调用改成多次查询或外部命令。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引，目标文件被识别为 67 行、6 个符号；`node --file pkg/lightning/common/storage_unix.rs` 返回完整源码并报告 `storage_unix_test.rs` 的使用关系。
-- RustCodeGraph 符号查询：`query GetStorageSize --kind function` 定位 `storage_unix.rs::GetStorageSize` （签名 `(dir: &str) -> Result<StorageSize, CommonError>`）；`query SameDisk --kind function` 定位 `storage_unix.rs::SameDisk` （签名 `(dir1: &str, dir2: &str) -> Result<bool, CommonError>`）。精确 `callers` / `callees` 命令在本次环境中长时间无输出而终止，因此没有将其当作已成功证据；调用边由已索引节点源码、模块门面和全仓精确引用搜索交叉核对。
-- Rust 代码与 crate 边界：`pkg/lightning/common/storage_unix.rs`、`storage.rs`、`lib.rs`、`errors.rs`、`Cargo.toml`。目录下不存在 `doc.go`，因此无额外包约定可读。
-- 独立测试：`pkg/lightning/common/storage_unix_test.rs`、`pkg/lightning/common/storage_test.rs`；对照 Go 测试为 `pkg/lightning/common/storage_test.go` 和 `lightning/pkg/importer/check_info_test.go::TestLocalResource`。
-- Go 对照与业务位置：`pkg/lightning/common/storage_unix.go`、`lightning/pkg/importer/precheck_impl.go`；全仓精确引用搜索用于区分 Go 主链与 Rust 当前接线。
-- 本任务是纯文档分析，依照总计划与任务要求不运行 Cargo。交付前仅运行任务指定的 11 章结构校验，并人工复核每个“已支持”陈述均有上述源码、配置、调用或测试证据。

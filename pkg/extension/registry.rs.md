@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`registry.rs` 是 `astersql-extension` crate 的进程级扩展注册入口。crate 由 `pkg/extension/Cargo.toml` 定义，`pkg/extension/lib.rs` 通过 `pub mod registry` 和 `pub use registry::*` 暴露本文件 API。它位于“扩展声明”与“扩展消费”之间：注册方提交 `Option` 或延迟工厂，本文件把它们转换成有序的 `Manifest` 集合；启动流程和 bootstrap、会话、鉴权等消费者再从 `Extensions` 读取结果。
-
-本文件本身不定义扩展选项如何改变系统变量、动态权限、函数或认证插件；这些副作用由 `pkg/extension/manifest.rs` 的 `newManifestWithSetup` 执行。本文件负责安排构建顺序、缓存结果、聚合清理函数，并给这些操作提供进程内同步边界。
+负责安排构建顺序、缓存结果、聚合清理函数，并给这些操作提供进程内同步边界。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ RustCodeGraph 确认的本文件内部调用边包括 `GetExtensions → registr
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/extension/registry.go`：Go 的 `sync.RWMutex` 对应 `RwLock<registryState>`，两个集合与 `setup/extensions/close` 字段保持同一职责；注册校验、名称排序、双重检查式惰性 Setup、逐 Manifest 构建、失败回滚和 Reset 顺序均被保留。
+所有权表达存在必要差异：Go 用 `*Extensions` 和 `func()`，Rust 用 `Option<Arc<Extensions>>` 与一次性的 `ClearFunc`；Go 的可变参数 `Register(name, options ...Option)` 映射为 Rust 的 `Register(name, Vec<Option>)`；Go 工厂是普通函数值，Rust 工厂增加 `Send + Sync` 并包在 Arc 中。
 
-所有权表达存在必要差异：Go 用 `*Extensions` 和 `func()`，Rust 用 `Option<Arc<Extensions>>` 与一次性的 `ClearFunc`；Go 的可变参数 `Register(name, options ...Option)` 映射为 Rust 的 `Register(name, Vec<Option>)`；Go 工厂是普通函数值，Rust 工厂增加 `Send + Sync` 并包在 Arc 中。Go 的 nil map 通过首次注册时分配，Rust 的 HashMap 由 `Default` 初始化。
-
-空集合的可观察表达不同但意图一致：Go `doSetup` 返回 nil `*Extensions`，其测试利用 nil 接收者上的 `Manifests` 获得空切片；Rust 返回 `None`，Rust 测试与 bootstrap 消费者显式检查该值。错误消息、按名称排序和 Reset 清理一次的行为由两侧 `registry_test` 直接对照。Rust 测试还单独固定了失败时回滚先前扩展的语义。
+空集合的可观察表达不同但意图一致：Go `doSetup` 返回 nil `*Extensions`，其测试利用 nil 接收者上的 `Manifests` 获得空切片；Rust 返回 `None`，Rust 测试与 bootstrap 消费者显式检查该值。Rust 测试还单独固定了失败时回滚先前扩展的语义。
 
 ## 扩展指南
 
@@ -94,14 +90,3 @@ Rust 文件逐项对应 `pkg/extension/registry.go`：Go 的 `sync.RWMutex` 对�
 调整并发策略时要保持 `Extensions` 的二次 setup 检查，否则两个首次读取者可能重复运行有全局副作用的工厂。若计划在执行工厂时释放锁，则需要另行设计“初始化中”状态、等待/失败传播与 Reset 竞态，不能仅缩小现有锁范围。若改变失败后是否允许重试，也要明确工厂是否可重复调用和固定 `Option` 中闭包的克隆语义。
 
 兼容性风险主要是公开错误文本、空集合的 `None` 语义、Manifest 排序与清理顺序；性能风险主要是注册时重复排序和 Setup 在写锁内执行所有工厂。当前测试以进程级单例为对象，新增用例必须使用 `serial_test::serial` 或等价隔离，并在前后调用 Reset。
-
-## 验证依据
-
-- 目标源码：`pkg/extension/registry.rs`（197 行），核对了全部类型别名、结构体、静态项、方法和顶层函数；文件无条件编译项。
-- crate 与模块边界：`pkg/extension/Cargo.toml`、`pkg/extension/lib.rs`；确认 crate 名称、入口、公开再导出、无 registry feature，以及 `serial_test` 开发依赖。
-- 直接实现依赖：`pkg/extension/manifest.rs::newManifestWithSetup`、`pkg/extension/util.rs::{ExtensionError, ClearFunc, clearFuncBuilder}`、`pkg/extension/extensions.rs::Extensions`。
-- 上游消费证据：`cmd/tidb-server/main.rs::setupExtensions`、`pkg/extension/extensionimpl/bootstrap.rs::Bootstrap`。
-- Rust 独立测试：`pkg/extension/registry_test.rs` 覆盖排序、迟到注册、名称错误、Reset 单次清理和失败回滚；`pkg/extension/main_test.rs` 覆盖空注册表；`pkg/extension/extensionimpl/bootstrap_test.rs` 覆盖无扩展短路与注册表错误传播；`pkg/extension/auth_1_aster_unit_test.rs` 提供跨扩展集合行为证据。
-- Go 对照：`pkg/extension/registry.go`、`pkg/extension/registry_test.go`，核对字段、控制流、错误文本、清理和空结果行为。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且覆盖 `pkg/extension/registry.rs`；`files --filter pkg/extension` 确认相邻源与测试；`query` 定位 Rust/Go 的 `GetExtensions`、`RegisterFactory`、`doSetup`；`callers`/`callees` 确认 `GetExtensions → registry::Extensions`、`Setup → doSetup`、`Register → RegisterFactory`、`doSetup → Extensions::from_manifests` 及相关测试调用。闭包内调用边由源码补验，未把索引缺失当作不存在调用。
-- 按任务约束未运行 Cargo；本次为纯文档分析，最终以固定章节结构检查和人工事实复核作为验证。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`query.rs` 是 `astersql-session` crate 内 `runtime` 模块的关系查询执行层。模块由 `pkg/session/runtime.rs:74` 以私有 `mod query` 装配，并在 `pkg/session/runtime.rs:162` 将其项目导入同一父模块；因此本文件的大多数 API 使用 `pub(super)`，服务于会话运行时，而不是 crate 外部公共接口。crate 边界及 Go 包映射由 `pkg/session/Cargo.toml` 的 `[package] name = "astersql-session"`、`[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/session"` 确认。
-
-它位于 SQL 语句分派与底层关系数据访问之间：`pkg/session/runtime/dispatch.rs:3176-3230` 对集合操作和 `SELECT` 调用本文件的结果集、完整查询或紧凑查询入口；复杂数据源、CTE、集合操作和连接的递归执行由 `pkg/session/runtime/source.rs:2065` 的 `execute_insert_select_node_with_outer` 承担；本文件则集中处理表达式、聚合/窗口、结果元数据、普通扫表查询、读时间戳、访问路径、锁和 `INSERT ... SELECT` 的写入桥接。
-
-本文件不是 Go 同路径文件的逐行翻译：仓库中不存在 `pkg/session/runtime/query.go`。它把 Go TiDB 中分散在 session、planner、executor、expression 和事务层的行为压入 `ConcreteSession` 的紧凑运行时；具体对照只能按行为和注释追踪，不能假定一一对应。
+`execute_insert_select` 先执行查询子树，再构造 values 形式的 `ast::InsertStmt`，最终复用 `execute_relational_insert` 的默认值、冲突处理、约束与原子写入逻辑。
 
 ## 核心职责
 
@@ -118,12 +114,9 @@ RustCodeGraph 的节点证据显示，`execute_relational_select` 定义于本�
 
 ## 与 Go 版本的对应关系
 
-Go 同路径实现不存在；本文件顶部模块说明和 `pkg/session/Cargo.toml` 仅声明它属于 Go `pkg/session` 的迁移范围。可验证的行为对照如下：
+Go 同路径实现不存在；本文件顶部模块说明和 `pkg/session/Cargo.toml` 仅声明它属于 Go `pkg/session` 的迁移范围。
 
-- `execute_insert_select` 的源码注释明确对齐 Go `pkg/executor/insert.go:362` 的 `InsertExec.Next`：查询产出最终复用普通 INSERT 执行器，而不是另建写入语义。
 - LIMIT 下推注释指向 Go `pkg/planner/core/task.go:611-627` 的 `attach2Task4PhysicalLimit`；Rust 仅在无窗口、连接、锁、分组、HAVING、DISTINCT 等安全条件下把窗口嵌入扫描。
-- 锁类型来自与 Go `pkg/parser/ast/dml.go:663-724` 相同的 `SelectLockType` 概念；Go 的选择锁执行入口位于 `pkg/executor/select.go:254`，Rust 在本文件内直接编排行锁、重扫和乐观冲突记录。
-- Go session 的语句入口是 `pkg/session/session.go:2460` 的 `ExecuteStmt`，PointGet 与一般 executor 在其中分流；Rust 的对应入口由 `runtime/dispatch.rs` 直接选择系统查询、完整关系查询、普通关系查询和常量查询。
 - Rust 的 `Option<String>` 行模型、marker、内存物化连接/窗口及若干紧凑快路径是当前 Rust runtime 的实现手段，不等价于 Go 的 chunk/executor pipeline。文档只能声称已由源码和测试覆盖的 SQL 行为一致，不能声称执行架构完全一致。
 
 独立 Rust 回归测试进一步固定迁移语义：`pkg/session/runtime_test/query.rs` 覆盖字符串/数值比较、information_schema 元数据、派生 UNION/CROSS JOIN、投影函数、INSERT SELECT 冲突与原子性、外连接降级及窗口嵌套子查询；`pkg/session/runtime/query_binary_test.rs` 固定 BLOB 经 INSERT SELECT 后的逐字节保持。
@@ -139,12 +132,3 @@ Go 同路径实现不存在；本文件顶部模块说明和 `pkg/session/Cargo.
 - 修改 INSERT SELECT：保留二进制转 hex literal、源/目标列数检查及复用 `execute_relational_insert` 的结构，并同步 `runtime_test/query.rs` 的冲突/原子性/外连接测试与 `runtime/query_binary_test.rs`。
 
 兼容风险主要是 MySQL/TiDB 的 NULL、类型强制、列名/字段类型和错误文本；正确性风险集中在 stale read、锁后重扫、谓词下推和复杂查询路由；性能风险集中在全量物化、笛卡尔连接、排序/DISTINCT/窗口、无效下推以及共享索引统计锁。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个文件、307,296 个节点、1,848,419 条边；`pkg/session/runtime/query.rs` 已索引为 3,357 行、501 个符号，并显示被 105 个文件使用。
-- RustCodeGraph 文件/节点查询：`files --filter pkg/session/runtime`；`node --file pkg/session/runtime/query.rs --offset ...`；`node execute_relational_select`；`node execute_relational_query_record_set`；`node execute_insert_select`；`node relational_query_expression_value`。其中确认了 dispatch 调用边、INSERT control 调用边及本文件递归表达式引用。
-- 阅读的生产文件：`pkg/session/runtime/query.rs`（全貌及全部顶层/impl 符号）、`pkg/session/runtime.rs`（模块装配）、`pkg/session/runtime/dispatch.rs`（语句入口）、`pkg/session/runtime/source.rs`（完整查询递归入口）、`pkg/session/Cargo.toml`（crate、feature 与依赖）。目标包未发现 `doc.go`。
-- 阅读的测试：`pkg/session/runtime_test/query.rs`、`pkg/session/runtime/query_binary_test.rs`；另由 `pkg/session/runtime_test.rs:325` 确认前者是独立测试模块。未运行 Cargo，符合本任务的纯文档约束。
-- 阅读的 Go 对照：`pkg/executor/insert.go:362`、`pkg/planner/core/task.go:611-627`、`pkg/parser/ast/dml.go:663-724`、`pkg/executor/select.go:254`、`pkg/session/session.go:2460`。仓库无 `pkg/session/runtime/query.go`，故未声称逐函数移植对应。
-- 结构验证命令：`test -f pkg/session/runtime/query.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' pkg/session/runtime/query.rs.md)" -eq 11`。交付时还应确认仅新增本文档、未修改源码/Cargo/总计划，并人工复核所有“已支持”结论均有上述符号、调用边或测试依据。

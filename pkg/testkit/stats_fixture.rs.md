@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-testkit` crate，是测试侧的 TiDB JSON 表统计 fixture 适配器。crate 根模块 `pkg/testkit/lib.rs` 以 `pub mod stats_fixture` 挂载它，并以 `pub use stats_fixture::LoadTableStats` 重导出唯一公开入口，因此调用方通常使用 `astersql_testkit::LoadTableStats`，而不是直接依赖子模块。
-
-它位于“测试已创建表的元数据”与“规划器可读取的内存统计缓存”之间：输入是一个 JSON 文件路径和已初始化的 `astersql_domain::Domain`，输出不是新对象，而是把解析出的 `astersql_statistics_handle::TableStats` 写入该 `Domain` 的统计 handle。已确认的上游包括 `pkg/planner/core/casetest/ch/ch_test.rs::run_ch_explain_case` 和 `pkg/planner/core/casetest/tpch/tpch_test.rs::load_stats`；这些测试先创建表，再加载统计，随后执行带代价或选择率判断的规划测试。它不是生产 SQL 请求链上的自动统计导入接口。
-
-`pkg/testkit/Cargo.toml` 声明 crate 名为 `astersql-testkit`，本文件直接使用其中的 `astersql-domain`、`astersql-statistics-handle`、`base64` 和 `serde_json` 依赖。文件没有 feature gate 或条件编译项；独立测试则由 `pkg/testkit/lib.rs` 在 `#[cfg(test)]` 下通过 `stats_fixture_test.rs` 挂载。
+刻意只实现当前 Rust 规划测试需要的内存统计子集：不会创建表，不会把统计持久化到系统表，也不会处理 Go 完整导入链中的分区、扩展统计、谓词列使用记录、历史统计语义或压缩 fixture 回退。
 
 ## 核心职责
 
@@ -80,13 +76,3 @@ Go 对照入口是 `pkg/testkit/testkit.go::LoadTableStats`。两者共同目标
 若要追平 Go 的 zip 回退、分区统计或完整 `LoadStatsFromJSON` 行为，应把它视为兼容性扩展而非简单字段追加：需要核对 Go `pkg/testkit/testkit.go::LoadTableStats`、`loadTableStatsFromZip` 以及 statistics handle 的真实导入 API，并明确是否仍只修改内存缓存。特别是分区统计可能产生多个物理 ID，不能沿用当前“一文件只提交一份 `TableStats`”的假设。
 
 测试必须继续放在独立的 `pkg/testkit/stats_fixture_test.rs`，不要嵌入生产文件。字段扩展至少应增加成功映射断言；解析规则变更还应覆盖缺字段、类型错误、非法 Base64、未知列/索引、零行数和重复覆盖。并发行为若改变，应验证锁持有范围和同表写入策略。兼容性风险主要是接受/拒绝 JSON 格式与 Go 不一致；正确性风险是名称到 ID 映射或版本字段映射错误影响计划选择；性能风险来自大 fixture 的全量读取、复制和在缓存中保留所有 bucket/TopN。
-
-## 验证依据
-
-- 目标源码：`pkg/testkit/stats_fixture.rs`，逐行核对 `field`、`string_field`、`i64_field`、`u64_field`、`f64_field`、`decode_bound`、`histogram`、`top_n` 和 `LoadTableStats`。
-- crate 与模块边界：`pkg/testkit/Cargo.toml` 的依赖声明，以及 `pkg/testkit/lib.rs` 的模块挂载、公开重导出和 `#[cfg(test)]` 独立测试挂载。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`node pkg/testkit/stats_fixture.rs::LoadTableStats` 给出对本文件解析辅助函数的调用边及 `pkg/testkit/lib.rs` 导入边；`node` 还核对了 `pkg/domain/domain.rs::table_by_name`、`stats_handle` 和 `pkg/statistics/handle/handle.rs` 中 `TableStats`、`ColumnStats`、`IndexStats`、`Bucket`、`StatsCache::put`、`Handle::cache_mut` 的实际定义。图中跨 crate 重导出调用边不完整，因此调用点另以源码搜索确认。
-- Rust 测试：`pkg/testkit/stats_fixture_test.rs` 创建真实库表，写入临时 JSON，加载后检查缓存中的非伪/初始化状态、行数、修改数、列/索引数量、NDV 和解码后的 bucket 边界，并删除临时文件。
-- 实际上游：`pkg/planner/core/casetest/ch/ch_test.rs` 与 `pkg/planner/core/casetest/tpch/tpch_test.rs` 均从各自 `testdata` 目录拼出路径后调用公开重导出入口。
-- Go 对照：`pkg/testkit/testkit.go::LoadTableStats` 与 `loadTableStatsFromZip`，用于确认 testdata 路径、zip 回退、强类型 `JSONTable` 和 `LoadStatsFromJSON` 语义差异；仓库中未找到专门命名为 `TestLoadTableStats` 的 Go 单元测试，Go 规划 case 测试是主要调用证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务文件给出的命令验证目标文件存在且固定二级标题恰好为 11 个，并人工复核未把未实现的 Go 语义写成 Rust 现状。

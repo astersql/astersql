@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate；crate 根在 [`pkg/planner/core/lib.rs`](lib.rs) 中以 `pub mod subquery_plan_builder;` 公开模块，crate 清单是 [`pkg/planner/core/Cargo.toml`](Cargo.toml)。它实现一组“窗口表达式中的子查询需要外层相关列时，为 SELECT 列表补辅助字段”的 Rust 侧辅助逻辑，数据模型来自 [`logical_plan_builder.rs`](logical_plan_builder.rs) 的 `SelectField`、[`task.rs`](task.rs) 的 `Expression`/`PlanNode`，构建器与错误类型来自 [`planbuilder.rs`](planbuilder.rs) 的 `PlanBuilder`/`Result`。
-
-当前接线状态需要特别区分：模块已经进入 crate，但仓库内对 Rust `appendAuxiliaryFieldsForSubqueries` 的全文检索只命中其定义和内部调用，未发现生产调用者；相对地，Go 同名方法在 [`logical_plan_builder.go`](logical_plan_builder.go) 的 `resolveWindowFunction` 中处理 SELECT 字段、窗口定义和带窗口函数的 ORDER BY 三类节点。因此，本文件是已编译进模块树的迁移实现，尚不能据此断言 Rust 主规划链已经使用这套辅助字段逻辑。
+`PlanBuilder::appendAuxiliaryFieldsForSubqueries` 去掉已经存在或重复发现的列，把缺失列构造成新的无别名、非通配符 `SelectField` 返回。
 
 ## 核心职责
 
@@ -70,11 +68,9 @@ Go 应用主链是 [`logical_plan_builder.go`](logical_plan_builder.go) 的 `res
 
 ## 与 Go 版本的对应关系
 
-Rust 文件对应 [`subquery_plan_builder.go`](subquery_plan_builder.go)。符号大体一一对应：两个版本都有 `subqueryExprExtractor`、`Enter`/`Leave`、`findColumnNameByUniqueID` 和 `PlanBuilder.appendAuxiliaryFieldsForSubqueries`，都保留 USING/NATURAL JOIN 相关列的完整 schema 回退、穿透一元包装、忽略已有无别名列并追加辅助列的意图。
-
 但实现并非等价移植。Go 按真实 AST 类型识别 `SubqueryExpr`、`ExistsSubqueryExpr`、`CompareSubqueryExpr` 和具有非空 `Sel` 的 `PatternInExpr`，Rust按名称前缀识别且没有 `IN` 的 `Sel != nil` 检查；Go 递归 `ast.Walk`，Rust不递归；Go 通过 `rewrite` 生成逻辑计划并调用 `ExtractCorrelatedCols4LogicalPlan`，Rust直接解析 `corr=` 文本；Go 从 `Schema/OutputNames` 与 `FullSchema/FullNames` 取列，Rust从浮点值 `labels` 映射的键取列；Go 新字段显式设 `Auxiliary: true`，Rust `SelectField` 类型没有这个字段；Go 可传播重写错误，Rust当前不会报错。
 
-测试证据也要分层理解。[`casetest/windows/window_with_exist_subquery_test.go`](casetest/windows/window_with_exist_subquery_test.go) 的 `TestWindowSubqueryRewrite` 和 `TestWindowSubqueryOuterRef` 验证 Go 主链中窗口子查询、IN/ANY 与外层引用结果；对应 Rust 文件 [`casetest/windows/window_with_exist_subquery_test.rs`](casetest/windows/window_with_exist_subquery_test.rs) 验证 SQL 结果和后续解相关形状。[`lateral_join_test.go`](lateral_join_test.go) 与 [`lateral_join_test.rs`](lateral_join_test.rs) 覆盖 USING/NATURAL 合并列和 Apply 保留。但没有测试直接调用本文件的 Rust 符号，所以这些只能证明邻近规划行为，不能证明当前 Rust 主入口的标签解析、去重和错误边界。
+[`casetest/windows/window_with_exist_subquery_test.go`](casetest/windows/window_with_exist_subquery_test.go) 的 `TestWindowSubqueryRewrite` 和 `TestWindowSubqueryOuterRef` 验证 Go 主链中窗口子查询、IN/ANY 与外层引用结果；对应 Rust 文件 [`casetest/windows/window_with_exist_subquery_test.rs`](casetest/windows/window_with_exist_subquery_test.rs) 验证 SQL 结果和后续解相关形状。但没有测试直接调用本文件的 Rust 符号，所以这些只能证明邻近规划行为，不能证明当前 Rust 主入口的标签解析、去重和错误边界。
 
 ## 扩展指南
 
@@ -83,12 +79,3 @@ Rust 文件对应 [`subquery_plan_builder.go`](subquery_plan_builder.go)。符�
 修改子查询种类时同步更新 `is_subquery_expression`，修改标签格式时同步更新 `lookup_column_label` 及上游标签生产者，修改 Join/Apply schema 行为时同步检查 `findColumnNameByUniqueID`，修改 `SelectField` 表示时应考虑补上等价的 auxiliary 标识。不要把测试嵌入本源文件；按仓库约定在同目录独立测试文件中新增直接单元测试，至少覆盖四种前缀、嵌套非顶层节点、多个/非法/负相关 ID、普通与 full-column 标签、一元链与多孩子边界、别名/限定名/大小写去重、重复 ID 和缺失列。
 
 兼容性风险集中在标识符匹配与 Go 语义偏差；正确性风险是静默跳过导致外层列被投影裁剪；性能风险是若未来接入真实 AST 后重复重写每个子查询，可能重现 Go 文件中的 TODO 成本。接线或修正行为时应同步运行窗口子查询和 LATERAL USING/NATURAL 的独立测试，并增加本模块的直接单元测试，不能只依赖 SQL 端到端用例。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`explore "pkg/planner/core/subquery_plan_builder.rs SubqueryPlanBuilder build_handle_subquery optimize_subquery"` 返回目标文件与内部 blast radius；`node --file pkg/planner/core/subquery_plan_builder.rs --offset 1 --limit 260` 完整读取 192 行；`query/callers/callees` 核对内部边，并发现同名 Go/Rust 符号存在歧义。
-- 源码与边界：完整阅读 [`subquery_plan_builder.rs`](subquery_plan_builder.rs)、[`task.rs`](task.rs) 的 `Expression`/`PlanKind`/`PlanNode`、[`logical_plan_builder.rs`](logical_plan_builder.rs) 的 `SelectField`、[`planbuilder.rs`](planbuilder.rs) 的 `Result`。
-- crate 与接线：阅读 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs)；用 `rg` 核实模块公开声明、Rust 侧无生产调用者，以及 `corr=`/标签协议没有其他明确生产者。
-- Go 对照：完整阅读 [`subquery_plan_builder.go`](subquery_plan_builder.go)，并阅读 [`logical_plan_builder.go`](logical_plan_builder.go) 中 `resolveWindowFunction` 与 `resolveHavingAndOrderBy` 的调用上下文；Git 历史 `6d7c23bd9d` 证明 Go 文件由逻辑计划构建器抽取而来，Rust 文件则由 `fac562eba9` 初次加入。
-- 测试：阅读 Go/Rust 窗口子查询对照测试 [`casetest/windows/window_with_exist_subquery_test.go`](casetest/windows/window_with_exist_subquery_test.go) 与 [`casetest/windows/window_with_exist_subquery_test.rs`](casetest/windows/window_with_exist_subquery_test.rs)，以及 USING/NATURAL/LATERAL 相关的 [`lateral_join_test.go`](lateral_join_test.go) 与 [`lateral_join_test.rs`](lateral_join_test.rs)。仓库中没有直接针对本 Rust 文件的独立测试。
-- 本任务为纯文档分析，按计划不运行 Cargo 或代码测试；交付前运行任务规定的 11 章节结构命令，并对链接目标、唯一产物和 diff 范围做静态复核。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`pkg/errors/stack.rs`](stack.rs) 是 `astersql-errors` crate 的调用栈基础层。crate 入口 `pkg/errors/mod.rs` 将本文件声明为私有模块，并重新导出 `Frame`、`StackTrace`、`Stack`、`StackTracer`、`StackTraceCarrier`、`GetStackTracer` 与 `NewStack`，因此调用方通过 `astersql_errors::*` 使用这些 API，而不直接访问 `stack` 模块。`pkg/errors/Cargo.toml` 指定 crate 根为 `mod.rs`，本文件唯一直接的第三方运行时依赖是 `backtrace = "0.3"`。
-
-它处在错误构造/包装与最终诊断展示之间：`pkg/errors/core.rs` 的 `New`、`Errorf` 和 `pkg/errors/wrap.rs` 的 `WithStack`、`AddStack`、`Wrap` 等路径调用 `NewStack`；之后 `GetStackTracer` 从错误 cause 链中找出可见栈，格式化实现再将帧输出给日志、Debug 展示或调用方。它不是 SQL 请求主链的业务错误定义文件，而是跨子系统复用的诊断基础设施。
+定义错误链暴露与查找栈的抽象，使 `core.rs` 和 `wrap.rs` 中不同错误实现能被统一查询（`StackTracer`、`StackTraceCarrier`、`GetStackTracer`）。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 已索引 `pkg/errors/stack.rs` 的 37 个符号，并精确定位
 
 ## 与 Go 版本的对应关系
 
-仓库 `go.mod` 锁定 `github.com/pingcap/errors v0.11.5-0.20260508054701-306e305bcf41`；该版本模块缓存中的 `stack.go` 和 `stack_test.go` 是直接对照证据。主要对应如下：
-
 - Go `Frame uintptr` 延迟用 `runtime.FuncForPC` 解码；Rust `Frame` 同时保留指令指针，并在捕获或显式构造时急切保存结构化符号数据。
 - Go `StackTrace []Frame` 与 Rust `StackTrace(Vec<Frame>)` 都规定 newest-to-oldest 顺序；Rust 通过私有字段限制外部改写。
 - Go `%v`/`%+v` 映射为 Rust 的普通展示/交替 Debug。Rust 没有完整复刻 Go 的 `%s`、`%d`、`%n` 和 `%#v` formatter verb 组合，而是提供 getter、`compact`、`extended` 与标准 trait。
@@ -93,8 +89,6 @@ RustCodeGraph 已索引 `pkg/errors/stack.rs` 的 37 个符号，并精确定位
 - Go `NewStack(skip)` 返回 `StackTracer` 接口；Rust 返回具体 `Stack`，它实现 `StackTracer` 和 `StackTraceCarrier`。两者都保证 `skip=0` 以调用点为首帧。
 - Go `GetStackTracer` 依靠 `WalkDeep(error, ...)` 做运行时接口断言；Rust 以显式 `StackTraceCarrier` trait 取代断言。目前 Rust 只跟随 `cause`，没有 Go `WalkDeep` 的 error-group 分支。
 - Go 函数名格式化会移除包路径并保留包内名称；Rust 仅移除编译器哈希，扩展格式通常保留 Rust 完整模块路径。这是可见输出差异，不应在兼容测试中假设逐字相同。
-
-独立 Rust 测试 `pkg/errors/tests/stack_test.rs` 对应 Go `stack_test.go` 的主要意图：有效/无效帧、skip、空栈、两种格式和 cause 链查找。`api_parity_test.rs` 触及公开类型和 Go 风格别名；`wrap_test.rs`、`example_test.rs`、`format_test.rs`、`adaptor_test.rs` 与 `normalize_generation_test.rs` 从错误包装和生成路径验证栈的集成行为。
 
 ## 扩展指南
 
@@ -105,12 +99,3 @@ RustCodeGraph 已索引 `pkg/errors/stack.rs` 的 37 个符号，并精确定位
 若要补齐 Go `WalkDeep` 的多原因链行为，不应仅在本文件中硬编码 `ErrorGroup` 具体类型；应先设计能表达 cause 与 group children 的统一借用接口，再同步 `group.rs`/`join.rs` 和独立测试。必须防止环形图导致无限遍历，并明确“第一条栈”的确定顺序。
 
 若要降低开销，可研究延迟符号化、帧数上限或共享不可变栈，但必须先测量捕获和克隆两类成本。当前 benchmark 只覆盖格式化，新增优化需要单独基准，且不能以丢失 Go 对照要求的帧、skip 或展示语义换取通过测试。
-
-## 验证依据
-
-- 源码与 crate 边界：`pkg/errors/stack.rs`、`pkg/errors/mod.rs`、`pkg/errors/Cargo.toml`。
-- 直接 Rust 接线：`pkg/errors/core.rs`、`pkg/errors/wrap.rs`；外部格式化基准：`benches/errors.rs::benchmark_stack_formatting`。
-- 独立 Rust 测试：`pkg/errors/tests/stack_test.rs`（主要行为）、`api_parity_test.rs`（API 面）、`wrap_test.rs`、`example_test.rs`、`format_test.rs`、`adaptor_test.rs`、`normalize_generation_test.rs`（集成路径）。
-- Go 版本锁定：`go.mod` 与 `go.sum` 中的 `github.com/pingcap/errors ...-306e305bcf41`；直接对照文件为该版本模块的 `stack.go`、`stack_test.go` 和 `errors.go`。
-- RustCodeGraph：`status` 显示仓库索引包含 7,032 个 Rust 文件；`files --filter pkg/errors` 列出目标及独立测试；`query NewStack`、`query GetStackTracer`、`query resolve_backtrace`、`query StackTrace` 精确命中本文件。`explore/callers/callees` 本轮无边输出，调用关系另用 `rg` 对目标符号做精确核验。
-- 结构验收使用任务指定命令，要求文件存在且固定二级标题恰好为 11 个。任务是纯文档分析，按计划不运行 Cargo 或代码测试；行为结论来自源码、调用点、Go 对照和既有独立测试的静态复核。

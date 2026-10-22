@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/extension/auth.rs` 位于 `astersql-extension` crate，定义扩展框架的自定义认证与附加权限检查契约。crate 入口 `pkg/extension/lib.rs` 以 `pub mod auth` 声明模块并通过 `pub use auth::*` 对外再导出这些 API；`pkg/extension/Cargo.toml` 表明该文件直接依赖 `rustls`，并经 crate 内再导出使用 `astersql-privilege-conn`、`astersql-parser-auth` 和 `astersql-parser-mysql`。
-
-该文件处在两条链路的交界处：注册期由 `WithCustomAuthPlugins` 把插件放入 `Manifest`，`newManifestWithSetup` 调用 `validateAuthPlugin` 拒绝无效声明；运行期由 `Extensions::GetAuthPlugins` 或 `newSessionExtensions` 汇总插件。当前 Rust 代码还在 `pkg/executor/utils.rs::encodePasswordWithPlugin` 中使用 `GenerateAuthString` 和 `ValidateAuthString`。仓库搜索未发现非测试 Rust 代码构造 `AuthenticateRequest`、`VerifyStaticPrivRequest`、`VerifyDynamicPrivRequest`，也未发现调用另外三个运行时回调，因此这些部分目前是已定义、可注册和可查询的契约，不能据此宣称登录认证与附加权限检查主链已经完整接线。
+以 `AuthConn` 隔离扩展插件与 privilege 层原始连接接口，并由 `AuthConnAdapter<T, C>` 负责转发认证数据包操作和注入 `Flush` 所需上下文。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@ TLS 状态和角色身份使用 `Arc` 延长到回调结束之后也可安全共
 
 ## 与 Go 版本的对应关系
 
-`pkg/extension/auth.go` 是主要语义基准。Rust 的 `AuthPlugin` 字段、三个请求对象和 `validateAuthPlugin` 的检查顺序、错误文案与 Go 基本对应；`pkg/extension/registry_test.go::TestAuthPluginValidation` 覆盖空名、三个必填回调、重复名、保留名和成功注册，Rust 的 `auth_test.rs` 与 `auth_1_aster_unit_test.rs` 对这些边界作了独立回归。
-
 关键表示差异是：Go 使用可空函数值，Rust 用 `Option<Arc<dyn Fn...>>`；Go 的切片/指针在 Rust 中变为拥有的 `Vec`、`String` 和 `Arc`；Go `conn.AuthConn` 在 Rust 中由本文件的对象安全 trait 加 `AuthConnAdapter` 桥接到 `RawAuthConn`；Go `*tls.ConnectionState` 对应 Rust `Option<Arc<rustls::ServerConnection>>`。Rust 额外公开了 `validate_auth_plugins`，使独立测试无需构造完整 Manifest。
 
-Go 注释规定 `RequiredClientSidePlugin` 为空时使用 `AuthPlugin.Name`，也说明静态/动态权限回调只在 SQL 层已授权后作为附加检查；本文件的数据结构保留这些字段，但当前目标文件自身不实现回退或调用时机，非测试 Rust 搜索也未找到相应消费点。因此这些是需要上游接线维持的协议语义，不能归功于本文件当前实现。
+Go 注释规定 `RequiredClientSidePlugin` 为空时使用 `AuthPlugin.Name`，也说明静态/动态权限回调只在 SQL 层已授权后作为附加检查；本文件的数据结构保留这些字段，但当前目标文件自身不实现回退或调用时机，非测试 Rust 搜索也未找到相应消费点。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ Go 注释规定 `RequiredClientSidePlugin` 为空时使用 `AuthPlugin.Name`，�
 新增握手能力时，优先扩展 `AuthConn` 和 `AuthConnAdapter` 的成对方法，并在独立测试 `auth_1_aster_unit_test.rs::auth_conn_adapter_uses_the_migrated_privilege_connection_contract` 中验证参数、返回值、错误映射和上下文传递；不要把测试嵌入生产文件。若改动 `RawAuthConn` 契约，还必须同步 `astersql-privilege-conn` 的接口和所有实现。
 
 接通登录或权限主链时，应在实际调用点构造完整请求，明确 TLS 状态取得方式、角色快照、连接所有权以及“SQL 层先授权、插件后附加拒绝”的次序，并新增对应模块的独立回归测试。性能上应避免逐语句重复复制大角色集合或认证数据；兼容性上不得改变插件名大小写规则、默认插件保留集合或既有错误文案而不评估 Go 行为。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `pkg/extension/auth.rs` 被完整读取为 245 行、18 个符号。
-- RustCodeGraph 文件/符号证据：读取 `auth.rs`、`manifest.rs`、`registry.rs`、`extensions.rs`、`session.rs`、`lib.rs`、`pkg/executor/utils.rs`；查询 `AuthPlugin`、三个请求类型、`AuthConnAdapter`、`validateAuthPlugin` 和 `validate_auth_plugins`。图的常见名称解析对 `Flush` 等方法产生歧义，因此仅采用能由精确文件源码复核的调用边。
-- crate 与对照证据：`pkg/extension/Cargo.toml`、`pkg/extension/auth.go`、`pkg/extension/registry_test.go::TestAuthPluginValidation`。
-- Rust 测试证据：`pkg/extension/auth_test.rs::canonical_auth_plugin_validation_rejects_missing_callbacks_and_duplicates`；`pkg/extension/auth_1_aster_unit_test.rs::auth_validation_matches_go_errors_and_reserved_names` 与 `auth_conn_adapter_uses_the_migrated_privilege_connection_contract`。
-- 补充搜索：在 RustCodeGraph 未给出可靠使用边后，用 `rg` 检索请求类型、适配器、校验函数及五个回调字段；确认 Manifest 校验调用和 executor 的两项回调消费，并记录其他运行时接线未发现。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；验收以源码/图事实复核及固定十一章节结构检查为准。

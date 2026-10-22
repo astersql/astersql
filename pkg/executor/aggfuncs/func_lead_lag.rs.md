@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-aggfuncs` crate，crate 根由 `pkg/executor/aggfuncs/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`lib.rs` 通过 `pub mod func_lead_lag` 暴露该模块。它提供 LEAD/LAG 窗口函数的泛型、预求值状态机：调用方先把目标表达式和当前行默认表达式求值为 `LeadLagRow<T>`，再按分区内行序逐行取结果。
-
-该文件本身不解析 SQL、不排序或划分窗口分区，也不操作 `chunk::Row`。`builder.rs::build_window_function` 会把 `FunctionName::Lead`/`Lag` 路由到 `build_lead_lag`，生成带值类型、偏移和默认常量的 `BuiltAggFunc` 元数据；但仓库内对本文件 `Lead<T>`、`Lag<T>`、`LeadLagRow<T>` 的直接引用目前只见于 `func_lead_lag_test.rs` 和 `go_scenario_coverage_test.rs`。因此，源码证据能确认状态机与构建元数据分别存在，不能据此断言这两个泛型状态对象已经由完整 SQL 执行器实例化。
+`LeadLagState<T>` 保存固定 `offset`、整个分区的行缓冲和下一个待输出行的游标，并统一实现追加、重置及内存增量估算。
 
 ## 核心职责
 
@@ -64,11 +62,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_lead_lag.go`。两版共享核心不变量：按分区缓存全部行；LEAD 使用 `curIdx + offset`，LAG 使用 `curIdx - offset`；越界时在当前行求值默认表达式；每次产出后游标加一；重置清空逻辑长度并归零游标；追加内存按行数乘固定行大小估算。
+Go 版缓存 `chunk.Row`，在 `AppendFinalResult2Chunk` 内通过 `valueEvaluator` 求值并可能返回错误；Rust 版要求上游提前得到 `Option<T>`，所以 `next_value` 无表达式错误通道，也不直接向结果 chunk 写列。Go 的 `AllocPartialResult` 还报告状态结构体基线大小，Rust 本文件没有等价分配 API，只报告追加行增量。
 
-Rust 版把 Go 的 `baseLeadLag`、`partialResult4LeadLag` 和 `lead`/`lag` 拆成 `LeadLagRow<T>`、共享 `LeadLagState<T>` 及两个泛型包装器。Go 版缓存 `chunk.Row`，在 `AppendFinalResult2Chunk` 内通过 `valueEvaluator` 求值并可能返回错误；Rust 版要求上游提前得到 `Option<T>`，所以 `next_value` 无表达式错误通道，也不直接向结果 chunk 写列。Go 的 `AllocPartialResult` 还报告状态结构体基线大小，Rust 本文件没有等价分配 API，只报告追加行增量。
-
-`func_lead_lag_test.go::TestLeadLag` 覆盖 offset 0、1、2、3、1,000,000，以及 NULL、常量默认值和当前行列默认值；`TestMemLeadLag` 覆盖基线与逐行内存记账。Rust `func_lead_lag_test.rs` 复刻主要 offset/default 矩阵，并额外直接验证重置、耗尽和目标值为 NULL 时不使用默认值。当前 Rust 状态机的预求值接口与 Go 完整执行接口并非一一同型，后续接线必须保留 Go 的求值错误传播和结果类型转换语义。
+Rust `func_lead_lag_test.rs` 复刻主要 offset/default 矩阵，并额外直接验证重置、耗尽和目标值为 NULL 时不使用默认值。当前 Rust 状态机的预求值接口与 Go 完整执行接口并非一一同型，后续接线必须保留 Go 的求值错误传播和结果类型转换语义。
 
 ## 扩展指南
 
@@ -77,11 +73,3 @@ Rust 版把 Go 的 `baseLeadLag`、`partialResult4LeadLag` 和 `lead`/`lag` 拆�
 - 将状态机接入生产执行器时，接入点应从 `builder.rs` 的 `AggImplementation::Lead/Lag` 实例化路径建立；需要明确把表达式求值结果转换为 `LeadLagRow<T>`、按分区 reset、把外层耗尽与内层 SQL NULL 分开，并恢复 Go 路径具有的表达式错误传播。
 - 支持大对象或流式窗口时要评估 O(分区大小) 缓冲、`T::clone` 和固定 `DEF_ROW_SIZE` 估算偏差。LEAD 需要未来行，若改成增量输出，必须证明缓冲水位至少覆盖 offset；LAG 可只保留历史窗口，但这会改变共享状态设计，应分别验证两条路径。
 - 新增值类型时需同步 `builder.rs::value_kind`、`AggImplementation::Lead/Lag` 的实例化逻辑和 builder 测试；仅让构建器接受类型不足以证明运行时状态机已接线。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/executor/aggfuncs` 确认目标源、Go 对照与独立测试均在索引内。
-- RustCodeGraph 源码读取：`node --file pkg/executor/aggfuncs/func_lead_lag.rs` 核对全部 155 行及 `LeadLagRow`、`LeadLagState`、`Lead`、`Lag`；`node --file .../func_lead_lag_test.rs` 核对 offset/default、内存、reset、耗尽和 NULL 测试；`node --file .../lib.rs` 核对模块与测试装配。
-- RustCodeGraph 调用检索：`explore` 确认 `build_window_function -> build_lead_lag`，并列出 `collect_lead`、`collect_lag` 等测试调用；`node --file .../builder.rs` 核对 `FunctionName`、`AggImplementation` 和 `build_lead_lag` 的 offset/default 构建逻辑。对泛型类型引用图边覆盖不足处，再用精确 `rg` 核对直接引用范围。
-- 配置与对照读取：`pkg/executor/aggfuncs/Cargo.toml`、`func_lead_lag.go`、`func_lead_lag_test.go`；这些文件分别证明 crate/移植边界、Go 运行语义与 Go 测试矩阵。
-- Rust 测试证据：`pkg/executor/aggfuncs/func_lead_lag_test.rs` 与 `go_scenario_coverage_test.rs`。依任务约束，本次纯文档分析未运行 Cargo，也未执行代码测试。

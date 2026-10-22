@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-common` crate（`pkg/lightning/common/Cargo.toml`），实现导入链路共用的“有序 KV 流相邻重复检测”核心。`pkg/lightning/common/lib.rs` 以 `mod dupdetect` 装配模块并通过 `pub use dupdetect::*` 公开再导出其 API。它位于排序存储迭代器与重复记录库之间：上游提供当前位置已经有效、且按编码键排序的 `KVIter`，检测器借助 `KeyAdapter::Decode` 恢复业务键；下游通过 `WriteBatch` 持久化一个重复组中的全部原始 KV。
-
-RustCodeGraph 已索引本文件的 30 个符号，并定位 `NewDupDetector`、`DupDetector` 与 `DupDetectLogger`；仓库搜索未发现独立 Rust 测试之外的 Rust 生产调用者。因此当前可确认的是：Rust API 已由 crate 根导出并有独立单元测试，但不能据此声称 Rust 生产导入主链已经接线。对应 Go 生产入口是 `pkg/ingestor/ingestctrl/iterator.go:newDupDetectIter`。
+`MemoryWriteBatch`、`NoopDupDetectLogger` 提供轻量默认实现/适配点，但核心逻辑并不创建真实磁盘数据库，也不负责构造或排序输入流。
 
 ## 核心职责
 
@@ -70,8 +68,6 @@ RustCodeGraph 已索引本文件的 30 个符号，并定位 `NewDupDetector`、
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `DupDetector`、`NewDupDetector`、`KVIter`、`Init`、`Next`、`record`、`flush`、`Close` 和 `DupDetectOpt` 逐一对应 `pkg/lightning/common/dupdetect.go`。两者共享 4 MiB 阈值、相邻解码键比较、重复组首只记录一次、同步提交后重置，以及“报错模式不记录”的语义。
-
 实现差异主要来自抽象与所有权：Go 直接依赖 `*pebble.Batch` 和 `log.Logger`，Rust 以 `WriteBatch`、`DupDetectLogger` trait 注入；Go 复用切片容量，Rust 当前多次构造/克隆 `Vec<u8>`；Go 返回 `(key, value, ok, err)`，Rust 返回 `Result<Option<(Vec<u8>, Vec<u8>)>, CommonError>`。Go 的重复错误显式复制键值以隔离后续缓冲复用；Rust 的 `ErrFoundDuplicateKeys` 接收切片并立即构造自有错误消息，达到相同生命周期隔离目的。
 
 Go 生产代码已经用 Pebble 完成接线；Rust 当前文件只提供抽象实现、内存批和测试替身，仓库搜索没有找到真实磁盘 `WriteBatch` 适配器或生产构造调用。因而它是行为移植完成但生产接线尚未由当前证据确认的模块，不能把 `MemoryWriteBatch` 描述为生产重复库。
@@ -84,12 +80,3 @@ Go 生产代码已经用 Pebble 完成接线；Rust 当前文件只提供抽象�
 - 改变键相等定义时，应优先修改/扩展 `KeyAdapter` 并同步 `pkg/lightning/common/key_adapter_test.rs`，同时验证排序顺序仍保证相同解码键连续；否则本文件的相邻扫描算法不成立。
 - 增加自动清理或错误恢复时，要明确提交失败后是否允许重试、关闭失败优先级及日志副作用，避免用 `Drop` 隐式执行可能失败的同步 I/O。
 - 测试逻辑继续放在独立的 `pkg/lightning/common/dupdetect_test.rs`，不要内嵌进生产源文件；真实接线的集成行为应在拥有迭代器/存储生命周期的 ingestor 测试中覆盖。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/lightning/common` 确认目标源、独立测试、Go 对照和 crate 入口均已索引；`node --file pkg/lightning/common/dupdetect.rs --offset 1 --limit 500` 读取完整 168 行和 30 个符号；`query NewDupDetector --kind function --json` 同时定位 Rust/Go 构造函数；`query DupDetectLogger --kind trait --json` 定位 Rust trait。精确 `callers/callees` 查询未返回可用边，故按技能规则用仓库搜索核对未覆盖调用关系。
-- Rust 源与 crate：`pkg/lightning/common/dupdetect.rs`、`pkg/lightning/common/key_adapter.rs`、`pkg/lightning/common/errors.rs`、`pkg/lightning/common/lib.rs`、`pkg/lightning/common/Cargo.toml`。
-- Rust 独立测试：`pkg/lightning/common/dupdetect_test.rs` 验证两条重复记录均被记录、日志调用两次、关闭时同步提交并关闭，以及报错模式不写批也不记录日志。
-- Go 对照与生产入口：`pkg/lightning/common/dupdetect.go`、`pkg/ingestor/ingestctrl/iterator.go`、`pkg/executor/importer/import.go`、`pkg/ddl/ingest/config.go`。
-- Go 测试：`pkg/ingestor/ingestctrl/iterator_test.go` 验证排序输入的唯一键输出、完整重复组落库、解码适配和 benchmark。`pkg/lightning/common` 下没有直接对应的 `dupdetect_test.go`。
-- 人工复核结论：文件存在是为了把排序迭代、业务键解码、冲突策略与重复库批写解耦；安全扩展必须维持输入排序、初始化先行、完整重复组记录、提交成功后才重置以及显式关闭这些契约。按任务要求未运行 Cargo。

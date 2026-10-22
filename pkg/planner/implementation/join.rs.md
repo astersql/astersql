@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-implementation`（见同目录 [Cargo.toml](Cargo.toml) 的 `[package]` 与 `[lib] path = "lib.rs"`）。[lib.rs](lib.rs) 以私有模块 `mod join` 装入本文件，并通过 `pub use join::*` 对 crate 使用者公开其类型和构造函数。它位于旧版 Cascades/Memo 优化链的“物理计划候选包装”层：上游 [implementation_rules.rs](../cascades/old/implementation_rules.rs) 先从逻辑 Join 构造 `PhysicalHashJoin` 或 `PhysicalMergeJoin`，再用本文件的构造函数包装成 `ImplementationRef`；[optimize.rs](../cascades/old/optimize.rs) 的 `implGroup` 对候选递归求子计划、计算总代价、剪枝并挂接最终孩子。
-
-本文件不负责选择连接类型、生成连接键、设置孩子所需物理属性，也不执行 Join。它只把已经构造好的二元 Join 物理节点适配到 `astersql_planner_memo::Implementation` 接口，并统一完成代价汇总、计划访问、孩子挂接和剩余代价上限计算。
+`binary_join_implementation!` 为二元 Join 生成相同形状的 Implementation 包装，避免 HashJoin 与 MergeJoin 重复实现 Memo 接口。
 
 ## 核心职责
 
@@ -86,16 +84,13 @@ crate 依赖边界由 `pkg/planner/implementation/Cargo.toml` 给出：本文件
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/implementation/join.go`：
-
 - Go 分别手写 `HashJoinImpl` 和 `MergeJoinImpl`；Rust 用 `binary_join_implementation!` 合并相同结构与控制流。
-- 两版均按“自身 Join 代价 + 左子代价 + 右子代价”计算并缓存总代价，也都忽略 `CalcCost` 的输出行数参数。
 - Go 构造函数接受具体的 `*physicalop.PhysicalHashJoin`/`*PhysicalMergeJoin`，并依赖运行时类型断言；Rust 构造函数接受 `Box<dyn BinaryJoinCostPlan>`，由 `PlanAdapter<T>` 在上游做静态类型适配。
 - Go 在 `CalcCost` 调用底层 `GetCost` 前先把两个孩子直接 `SetChildren` 到 Join 上，之后 `AttachChildren` 又设置一次。Rust 的当前底层 `GetCost(left, right, ...)` 只使用显式行数（HashJoin 还读取自身并发度），所以 `calc_cost` 不提前挂接孩子，而只在候选胜出后的 `AttachChildren` 中克隆并挂接。这是实现时序差异；若底层成本函数将来读取 `children`，必须重新评估并恢复计算前挂接。
 - Go 的 `AttachChildren` 复用孩子计划指针；Rust 通过 `CloneChildren` 克隆计划以满足 Rust 所有权和 trait object 生命周期要求，最终树的逻辑顺序保持一致。
 - Go 两种 Join 调用不同的 `GetCost` 参数签名；Rust 将差异封装在 `implementation_rules.rs` 的两个 `BinaryJoinCostPlan for PlanAdapter<...>` 实现中。
 
-当前 Rust 独立测试没有直接构造 `HashJoinImpl` 或 `MergeJoinImpl` 来断言成本与挂接行为。`pkg/planner/cascades/old/implementation_rules_test.rs::build_right_rejects_full_outer_join` 仅验证 FullOuterJoin 在 HashJoin build-right 规则中不产生候选；它是上游规则边界证据，不是本文件宏行为的直接覆盖。
+当前 Rust 独立测试没有直接构造 `HashJoinImpl` 或 `MergeJoinImpl` 来断言成本与挂接行为。
 
 ## 扩展指南
 
@@ -105,16 +100,3 @@ crate 依赖边界由 `pkg/planner/implementation/Cargo.toml` 给出：本文件
 - 修改孩子挂接策略：保持左/右顺序、计划可克隆性以及“只有胜出候选进入最终物理树”的优化器流程。若在 `calc_cost` 前挂接，应验证多候选共享/克隆不会污染 Memo 状态。
 - 补测试时遵守仓库要求，不把测试内嵌到 `join.rs`。最合适的位置是新增同目录独立 `join_test.rs` 并由 `lib.rs` 的 `#[cfg(test)]` 装入，或扩展现有独立测试装配；至少覆盖两种 Join 的自身代价转发、子树成本相加、缓存写回、左右行数顺序、两个孩子挂接、成本上限扣减，以及少于两个孩子这一结构前置条件。
 - 上游规则变化应同步 `pkg/planner/cascades/old/implementation_rules_test.rs`，尤其是 JoinType、build/inner 侧、排序属性和无连接键时不生成 MergeJoin 的边界。性能风险主要来自成本公式失真导致错误选型，以及不必要的计划克隆；兼容风险主要来自偏离 Go 的候选集合或左右侧语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录清单确认 `join.rs`、`base.rs`、`lib.rs`、Go 对照和独立测试文件均在索引中。
-- RustCodeGraph `node --file pkg/planner/implementation/join.rs`：核对 73 行完整源码、宏定义、两次展开调用及导入。
-- RustCodeGraph `explore "NewHashJoinImpl NewMergeJoinImpl HashJoinImpl MergeJoinImpl"`：确认 `NewHashJoinImpl` 的调用者包含 Go/Rust `getImplForHashJoin`，`NewMergeJoinImpl` 的 Go 调用入口为 `ImplMergeJoin::OnImplement`，并读取 Go 对照全貌。宏生成的 Rust 符号未被 `query` 单独展开，因此调用位置另以索引文件源码和精确 `rg` 复核。
-- RustCodeGraph `node` 读取 `pkg/planner/implementation/base.rs`、`lib.rs`、`pkg/planner/cascades/old/implementation_rules.rs`（尤其 996–1199 行）、`optimize.rs`（280–389 行）及 `implementation_rules_test.rs`：核对 trait 桥接、孩子克隆、候选构造、剪枝/计价/挂接顺序和现有测试范围。
-- `pkg/planner/implementation/Cargo.toml`：核对 crate 名、`lib.rs` 入口、Go package 移植元数据及 planner core/memo/physicalop 依赖边界；该 manifest 没有 feature 声明。
-- `pkg/planner/implementation/join.go`：核对两个 Go Implementation 的公式、构造器和挂接时序。
-- `pkg/planner/core/operator/physicalop/physical_hash_join.rs::GetCost` 与 `physical_merge_join.rs::GetCost`：核对当前 Rust 自身成本公式确实只使用显式输入行数（HashJoin 另用并发度），不读取已挂接孩子。
-- `rg` 对 `pkg/planner/**/*_test.rs`/`*_test.go` 的符号检索只发现 `implementation_rules_test.rs` 对 `ImplHashJoinBuildRight` 的覆盖，未发现直接引用 `NewHashJoinImpl`、`NewMergeJoinImpl`、`HashJoinImpl` 或 `MergeJoinImpl` 的独立测试。
-
-本任务只生成文档，未运行 Cargo。最终结构验证要求目标文件存在，且上述十一个固定二级标题各出现一次。

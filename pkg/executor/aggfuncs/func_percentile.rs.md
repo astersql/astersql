@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate；crate 入口 `pkg/executor/aggfuncs/lib.rs` 以 `pub mod func_percentile` 暴露它。它提供 APPROX_PERCENTILE 所需的、与具体 SQL 输入类型解耦的内存状态和序数秩选择算法，而不是完整的表达式求值器或输出 `Chunk` 的实现。
-
-当前可确认的生产接线路径是：`builder.rs::build_approx_percentile` 把合法描述符映射为 `AggImplementation::Percentile { kind, percent }` 或不支持类型的 `PercentileNull`；`aggfuncs.rs::BuiltAggFunc::spill_function` 再为 `Int`、`Float64`、`Decimal`、`Time`、`Duration` 构造本文件的 `Percentile<T>`，交给 spill 序列化框架。定向搜索未发现 `Percentile<T>` 自身实现 `aggfuncs.rs::AggFunc`；因此不能仅据本文件声称 Rust 已具备 Go 版本完整的逐行求值和最终结果写出链路。
-
-`pkg/executor/aggfuncs/Cargo.toml` 将该目录定义为 `astersql-executor-aggfuncs`，并用 `package.metadata.porting.go-package = "pkg/executor/aggfuncs"` 标明 Go 移植来源。该包没有 `doc.go`；最近的模块契约来自 `lib.rs` 及 `aggfuncs.rs` 的 trait 定义。
+`result_by` 用调用方提供的比较器执行选择；对实现 `Ord` 的类型由 `result` 提供默认入口，对 `f32`/`f64` 分别由专用方法处理偏序比较。
 
 ## 核心职责
 
@@ -88,13 +84,13 @@ RustCodeGraph 将目标文件标为被 `aggfuncs.rs`、`func_sum.rs`、`spill_se
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_percentile.go`。`ordinal_rank` 对应其 `percentile` 中的 `ceil(P/100*N)` 与样本数截断；Rust 返回从 1 开始的 rank，调用点再减 1，而 Go 的 `selection.Select` 负责其索引约定。Go 回归 `TestFix26807` 验证 28 个元素的 100% 必须选中 28，Rust 的 `func_percentile_test.rs` 和 `export_test.rs` 验证对应边界。
+`ordinal_rank` 对应其 `percentile` 中的 `ceil(P/100*N)` 与样本数截断；Rust 返回从 1 开始的 rank，调用点再减 1，而 Go 的 `selection.Select` 负责其索引约定。
 
-Go 为 int、real、decimal、time、duration 分别定义 partial-result slice 和执行器类型；Rust 用一个 `Percentile<T>` 及五个别名复用状态逻辑。两侧都忽略 NULL、按“目标在前、源在后”合并并清空源、空组输出 NULL，并为五类数据提供路径。Rust 测试 `percentile_executes_all_go_typed_paths` 覆盖这些本地值类型。
+Go 为 int、real、decimal、time、duration 分别定义 partial-result slice 和执行器类型；Rust 用一个 `Percentile<T>` 及五个别名复用状态逻辑。
 
 重要差异是 Go 文件同时实现 `AggFunc` 生命周期：分配、表达式求值、合并、最终写入 chunk、spill 序列化/恢复；Rust 本文件只实现状态与选择算法，spill 接线位于相邻文件，且当前没有 `AggFunc for Percentile<T>` 的直接实现证据。Go 的 real 路径只有 `float64`；Rust 额外提供未见生产 builder 使用的 `f32` 结果方法。Go 的 decimal 注释保留“大值复制”的 TODO，Rust 同样把 `Decimal` 值直接存进向量，没有在本文件采用指针间接层。
 
-Go `func_percentile_test.go::TestPercentile` 经完整聚合测试器覆盖 SQL 类型；Rust 独立测试目前直接测试状态和 spill，而非本文件到 `Chunk` 的完整聚合接口。因此不能把 Rust 单元覆盖等同于 Go 端到端覆盖。
+Go `func_percentile_test.go::TestPercentile` 经完整聚合测试器覆盖 SQL 类型；Rust 独立测试目前直接测试状态和 spill，而非本文件到 `Chunk` 的完整聚合接口。
 
 ## 扩展指南
 
@@ -106,16 +102,3 @@ Go `func_percentile_test.go::TestPercentile` 经完整聚合测试器覆盖 SQL 
 - 若为大分组改成近似摘要，属于算法和状态格式变更：需要定义精度、合并律、spill 兼容及旧状态迁移，不能只替换 `result_by`。
 
 兼容风险主要集中在序数秩的 1/0 基转换、NULL/空组输出、浮点 NaN、时间/时长比较及 spill 格式；性能风险集中在保存全部样本、合并时重新分配以及外层为只读 source 做克隆。
-
-## 验证依据
-
-本说明读取并交叉核对了以下直接证据：
-
-- 目标源码 `pkg/executor/aggfuncs/func_percentile.rs`：常量、泛型状态、全部方法、类型别名和 `cfg(test)` 项。
-- crate 边界 `pkg/executor/aggfuncs/Cargo.toml` 与模块入口 `pkg/executor/aggfuncs/lib.rs`；目标包未找到 `doc.go`。
-- 生产接线 `pkg/executor/aggfuncs/builder.rs`、`pkg/executor/aggfuncs/aggfuncs.rs`、`pkg/executor/aggfuncs/spill_serialize_helper.rs`。
-- Rust 独立测试 `pkg/executor/aggfuncs/func_percentile_test.rs`，以及直接相关的 `export_test.rs`、`spill_helper_test.rs`。
-- Go 对照实现 `pkg/executor/aggfuncs/func_percentile.go` 与测试 `pkg/executor/aggfuncs/func_percentile_test.go`。
-- RustCodeGraph：`status` 确认索引含 11,467 文件、307,296 节点和 1,848,419 边；`files --filter pkg/executor/aggfuncs` 确认目标及相邻文件；`node --file` 读取目标、模块入口、Rust/Go 测试和 Go 实现；`query` 定位 `Percentile`、`ordinal_rank`、`result_by`、`merge_from`；`callers/callees` 对目标泛型方法无输出后，以限定在 `pkg/executor/aggfuncs/*.rs` 的符号搜索补齐实际接线。
-
-本任务是纯文档分析，未运行 Cargo。结构检查用于确认目标文件存在且恰好包含任务规定的 11 个二级标题；人工复核重点是区分本文件已实现的状态算法、相邻模块已实现的 spill 接线，以及尚无直接证据的完整 `AggFunc` 执行链。

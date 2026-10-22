@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/execdetails/util.rs` 是 `astersql-util-execdetails-util` 内部支撑 crate 的主体实现之一。它本身不是由顶层 `pkg/util/execdetails/lib.rs` 直接声明为模块，而是被 `pkg/util/execdetails/internal/util/lib.rs` 以 `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../util.rs"))` 编译；随后顶层 `lib.rs` 通过 `pub mod util { pub use execdetails_util::*; }` 把其公共 API 暴露为 `astersql_util_execdetails::util::*`。对应 Cargo 边界见 `pkg/util/execdetails/internal/util/Cargo.toml`（直接依赖 `tdigest = "1.0.0"`）和聚合 crate 的 `pkg/util/execdetails/Cargo.toml`（依赖内部 `execdetails-util` crate，并声明 Go 包映射 `pkg/util/execdetails`）。
-
-该文件对应 Go 的 `pkg/util/execdetails/util.go`，负责三组通用能力：执行明细在轻量 `Context` 中的初始化、继承、同步和读取；原子 TiKV 执行计数的值快照；泛型百分位统计及 Go 风格耗时格式化。它不负责定义完整 SQL 执行统计模型；`StmtExecDetails`、上下文 key、RU 桩等直接支撑类型由 `pkg/util/execdetails/internal/util/lib.rs` 提供，完整运行时统计另由 `execdetails.rs`、`runtime_stats.rs` 及 `internal/group1/lib.rs` 组装。
+对应 Go 的 `pkg/util/execdetails/util.go`，负责三组通用能力：执行明细在轻量 `Context` 中的初始化、继承、同步和读取；原子 TiKV 执行计数的值快照；泛型百分位统计及 Go 风格耗时格式化。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ RustCodeGraph 对本文件给出的直接证据包括：`ContextWithRUV2Metrics 
 
 重要类型差异包括：Go 的 `Int64`、`Duration` 是新定义类型，Rust 目前是 `i64` 和 `StdDuration` 的类型别名；Go 的空百分位极值是类型零值，Rust 用 `Option<T>` 明确“尚无样本”；Go 的 influxdata t-digest 通过逐点 `Add`/centroid merge，Rust 使用 `tdigest 1.0.0` 的 `merge_unsorted`/`merge_digests`，因此大样本分位只要求近似语义而非逐位相同。Rust 的格式化辅助函数手工复现 Go `time.Duration.String`，因为标准库 `StdDuration` 没有同样的字符串协议。
 
-测试对应关系：`pkg/util/execdetails/util_3_aster_unit_test.rs` 覆盖 context 指针保留、继承不覆盖、RU drain 幂等结果、原子快照隔离、精确与 digest 百分位、merge 计数以及完整格式表；它由 `internal/util/lib.rs` 在 `#[cfg(test)]` 下挂载。Go 侧 `pkg/util/execdetails/execdetails_test.go` 覆盖 `LoadTiKVExecDetails` 十二字段及 `TestFormatDurationForExplain` 表格；Rust 的 `pkg/util/execdetails/execdetails_test.rs` 还从聚合 crate 边界验证快照和格式化输出。
+Go 侧 `pkg/util/execdetails/execdetails_test.go` 覆盖 `LoadTiKVExecDetails` 十二字段及 `TestFormatDurationForExplain` 表格；Rust 的 `pkg/util/execdetails/execdetails_test.rs` 还从聚合 crate 边界验证快照和格式化输出。
 
 ## 扩展指南
 
@@ -85,11 +83,3 @@ RustCodeGraph 对本文件给出的直接证据包括：`ContextWithRUV2Metrics 
 - 修改 `Percentile` 阈值、压缩参数或分位定义时，应同时验证精确路径下标规则、精确与 digest 互相 merge、最小/最大值携带的原对象、`Size`/`Sum` 守恒以及近似误差范围。不要假设本文件与 `internal/group1/lib.rs` 的同名 `Percentile` 自动同步；若公共行为需要一致，两个实现及各自测试都要审查。
 - 修改耗时格式时，应维护 Go 表格全部单位边界（1µs、10 倍单位、进位到 ms/s/min/h）及 Rust 两处同名实现的一致性；兼容风险主要是 EXPLAIN、慢日志和运行时统计文本变化。
 - 性能敏感点是每次 digest 追加的合并分配、精确路径首次查询的排序、逐字段原子读取以及 metrics mutex。改动前应确认真实调用的是 `execdetails::util` 还是 group1 导出的根 API，避免优化错误实现。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标区域列出 `util.rs`、`util_3_aster_unit_test.rs`、Go 对照和相关 runtime 文件。使用了 `files --filter pkg/util/execdetails`、目标文件 `node`、精确 `query` 以及含全部关键入口的 `explore`；`explore` 核对了上述内部调用边和外部调用者。
-- 完整阅读：`pkg/util/execdetails/util.rs`（511 行）、`pkg/util/execdetails/util.go`、`pkg/util/execdetails/Cargo.toml`、`pkg/util/execdetails/internal/util/Cargo.toml`、`pkg/util/execdetails/lib.rs`、`pkg/util/execdetails/internal/util/lib.rs`、`pkg/util/execdetails/util_3_aster_unit_test.rs`。
-- 直接辅助证据：`pkg/util/execdetails/ruv2_metrics.rs`（生产 RU 同步语义）、`pkg/util/execdetails/execdetails_test.go`、`pkg/util/execdetails/execdetails_test.rs`，以及 `rg` 得到的 `slow_log.rs`、两个 statement summary 文件调用位置。
-- 人工复核结论：该文件存在是为了集中 Go `util.go` 对应的上下文/快照/聚合/格式化工具；它由内部 util crate 实际编译并经顶层 `util` 模块再导出，安全扩展必须保持共享对象身份、原子快照字段集合、百分位边界和 Go 文本兼容性。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构以任务指定命令验证，要求且只允许上述 11 个固定二级章节。

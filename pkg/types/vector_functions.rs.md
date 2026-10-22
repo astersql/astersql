@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件为 `VectorFloat32` 补充距离、内积、范数、逐元素算术和全序比较能力。它不定义向量的存储格式；存储、解析和序列化实现在 [`pkg/types/vector.rs`](vector.rs)，其中 `VectorFloat32` 用一个维度字和若干 `f32` 数据字保存内容，并通过 `Len`、`Elements`、`ElementsMut` 暴露本文件所需的视图。
-
-模块由 [`pkg/types/internal/vector/lib.rs`](internal/vector/lib.rs) 通过 `#[path = "../../vector_functions.rs"] mod vector_functions` 挂入 `astersql-types-vector` 子 crate。该子 crate 的公开向量符号再经 [`pkg/types/lib.rs`](lib.rs) 的 `pub use types_vector as vector` 暴露给上层。根 [`pkg/types/Cargo.toml`](Cargo.toml) 以路径依赖 `types-vector = { package = "astersql-types-vector", path = "internal/vector" }` 建立这一边界；具体测试目标则定义在 [`pkg/types/internal/vector/Cargo.toml`](internal/vector/Cargo.toml)。
+不定义向量的存储格式；存储、解析和序列化实现在 [`pkg/types/vector.rs`](vector.rs)，其中 `VectorFloat32` 用一个维度字和若干 `f32` 数据字保存内容，并通过 `Len`、`Elements`、`ElementsMut` 暴露本文件所需的视图。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`pkg/types/vector_functions.go`](vector_functions.go)。Rust 保留了 Go 的算法分层、`float32` 累计策略、错误文本、余弦夹紧、零范数返回 NaN、逐元素结果检查和字典序比较。`L2Norm` 同 Go/pgvector 一样使用双精度累计。
+Rust 保留了 Go 的算法分层、`float32` 累计策略、错误文本、余弦夹紧、零范数返回 NaN、逐元素结果检查和字典序比较。
 
 实现形式上的差异是：Go 分别实现 `Add`、`Sub`、`Mul` 的循环，Rust 抽出 `binary_operation` 消除重复；Go 出错时返回 `ZeroVectorFloat32` 加错误，Rust 用 `Result` 的 `Err` 不携带占位向量；Go 的值接收者映射为 Rust 的共享引用；Go 通过索引循环，Rust 使用 `zip`。这些差异不改变已验证的成功值或错误文案。
 
@@ -95,12 +93,3 @@ Go 只在 `Mul` 处记录 underflow TODO；Rust 将统一辅助上的注释视�
 行为测试应放在独立测试文件，不嵌入生产源文件。最直接的同步位置是 [`pkg/types/truncate_12_aster_unit_test.rs`](truncate_12_aster_unit_test.rs) 的 `vector_deserialize_and_arithmetic_match_go`；比较、零向量与格式契约也可在 [`pkg/types/vector_test.rs`](vector_test.rs) 扩展，并同步核对 Go 的 [`pkg/types/vector_test.go`](vector_test.go)。涉及 SQL NULL 或批量执行时，还应扩展 [`pkg/expression/builtin_vec_vec_test.rs`](../expression/builtin_vec_vec_test.rs) 等表达式测试。
 
 兼容性风险主要是浮点累计精度、NaN/零范数映射、错误文本和不同维度行为；性能风险主要是无意把单遍度量改成多遍、引入额外分配，或破坏批量表达式路径。调整 `Compare` 时还需考虑 Datum 排序和 session 关系比较的一致性。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，共 11,467 个文件；`files --filter pkg/types/vector_functions.rs` 识别该文件及 16 个符号。
-- RustCodeGraph `query`/`node`：定位 Rust 与 Go 的 `L2SquaredDistance`、`checkIdenticalDims` 以及私有 `binary_operation`，并读取目标文件完整 172 行。精确 `callers`/`callees` 对这些 inherent methods 返回空边，因此调用关系改用精确源码引用搜索补证，未据此误判为“无调用”。
-- 读取的实现和装配文件：`pkg/types/vector_functions.rs`、`pkg/types/vector.rs`、`pkg/types/internal/vector/lib.rs`、`pkg/types/internal/vector/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`。
-- 读取的上游证据：`pkg/expression/builtin_vec.rs`、`pkg/expression/builtin_vec_vec.rs`、`pkg/session/runtime/relational_value.rs`、`pkg/types/datum.rs`。
-- 读取的对照与测试：`pkg/types/vector_functions.go`、`pkg/types/vector_test.go`、`pkg/types/vector_test.rs`、`pkg/types/truncate_12_aster_unit_test.rs`；其中 `vector_deserialize_and_arithmetic_match_go` 验证数值结果、比较、零向量余弦、维度错误、overflow 和反序列化 NaN 算术错误。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行固定章节结构检查并人工核对上述事实、链接和边界描述。

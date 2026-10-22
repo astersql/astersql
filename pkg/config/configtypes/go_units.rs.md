@@ -2,14 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-config-configtypes` crate，提供两个在 crate 根公开重导出的 Go 兼容解析入口：`ParseGoFloat64(&str) -> Result<f64, String>` 与 `ParseGoSize(&str, bool) -> Result<i64, String>`。模块本身在 `pkg/config/configtypes/lib.rs` 中以私有 `mod go_units` 装配，但两个函数通过 `pub use go_units::{ParseGoFloat64, ParseGoSize}` 成为 crate 公共 API。
-
-它不是 `ByteSize` 配置类型的主体实现；后者位于相邻的 `types.rs`。本文件承担更窄的兼容层职责：复现 Go `strconv.ParseFloat` 的完整 float64 文法和 `docker/go-units v0.5.0` 的容量字符串解析约定，供需要与既有 Go 行为逐项一致的上层路径直接调用。`pkg/config/configtypes/Cargo.toml` 将该目录声明为 `astersql-config-configtypes` 库，`go_units.rs` 自身只使用 Rust 标准库，不引入 Cargo 依赖或 feature 条件。
-
-当前生产调用链有两条：
-
-- `pkg/sessionctx/variable/sysvar_builtins.rs::ddl_write_speed` 调用 `ParseGoSize(value, true)`，解析 `tidb_ddl_reorg_max_write_speed` 一类值，采用 `RAMInBytes` 的 1024 进制倍率，并在调用后施加 `[0, 1 PiB]` 上限。
-- `pkg/store/driver/region_split_config.rs::get_region_split_config` 调用 `ParseGoSize(size, false)`，解析 TiKV `/config` 返回的 `region-split-size`，采用 `FromHumanSize` 的 1000 进制倍率。
+十六进制浮点数不经由普通浮点累加，而由 `hexadecimal` 以整数尾数、二进制缩放和 round-to-nearest-even 规则直接构造 IEEE-754 位模式，避免双重舍入；这也是文件头模块注释指出的存在理由。
 
 ## 核心职责
 
@@ -96,11 +89,7 @@ RustCodeGraph 的文件关系报告将本文件标记为被 `go_units_test.rs`�
 
 ## 与 Go 版本的对应关系
 
-浮点部分对照 Go 标准库 `strconv.ParseFloat(..., 64)` 的可观察语义，而不是仓库内某个同名 Go 文件：支持十进制和 `0x...p...` 十六进制、数字间下划线、特殊值、范围错误及 float64 舍入。`pkg/config/configtypes/go_units_test.rs` 重点锁定 Rust 标准解析器不能直接覆盖的十六进制位级结果，包括 half-even 舍入、sticky 位、次正规最小值、下溢、最大有限值和溢出。
-
-容量部分直接对照仓库 `go.mod` 锁定的 `github.com/docker/go-units v0.5.0`：其 `size.go::FromHumanSize` 使用十进制映射，`RAMInBytes` 使用二进制映射，两者共用 `parseSize` 的最后分隔符、float 解析、负值拒绝、大小写不敏感后缀和 float64-to-int64 转换。本文件把两个 Go 入口合并为 `ParseGoSize(text, binary)`，以布尔参数选择映射。
-
-仓库同目录 `types.go::ByteSize.UnmarshalJSON/UnmarshalText` 调用 `units.RAMInBytes`，说明配置字节数的既有 Go 语义是二进制倍率。Rust 的相邻 `types.rs` 当前有独立 `parse_byte_size` 实现，并未调用本文件；因此不能把 `go_units.rs` 描述为所有 Rust `ByteSize` 反序列化的统一入口。当前真实接线仅是上述系统变量和 region split 配置两条生产路径。
+Rust 的相邻 `types.rs` 当前有独立 `parse_byte_size` 实现，并未调用本文件；因此不能把 `go_units.rs` 描述为所有 Rust `ByteSize` 反序列化的统一入口。当前真实接线仅是上述系统变量和 region split 配置两条生产路径。
 
 Go 测试 `pkg/config/configtypes/types_test.go` 验证 `1MiB`、`512KiB` 的配置反序列化和格式化；Rust 直接兼容证据来自独立的 `go_units_test.rs`，上层链路还分别由 `sysvar_builtins_test.rs::ddl_write_speed_uses_go_ram_units_and_global_hooks` 和 `region_split_config_test.rs::pd_split_config_uses_first_successful_tikv_and_decimal_go_units` 覆盖。
 
@@ -112,14 +101,3 @@ Go 测试 `pkg/config/configtypes/types_test.go` 验证 `1MiB`、`512KiB` 的配
 - 若需要消除 `binary: bool` 的误用风险，可在保持公共兼容性的前提下新增语义化包装函数；所有调用点必须明确选择 `RAMInBytes` 或 `FromHumanSize` 语义，并分别更新 `sysvar_builtins_test.rs` 与 `region_split_config_test.rs`。
 - 若统一 `types.rs::parse_byte_size` 与本文件，必须单独评估现有错误文本、非有限值和溢出差异；这超出当前文件文档任务，不能仅因逻辑相似就假定可直接替换。
 - 错误文本可能被日志、测试或上层错误包装观察。改变 `number_error`、`invalid size`、`invalid suffix` 前应加入精确错误回归，并检查两个生产调用者的错误适配。
-
-## 验证依据
-
-- RustCodeGraph `status`：当前索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/config/configtypes` 确认目标源、模块入口和独立测试均已索引。
-- RustCodeGraph `node --file pkg/config/configtypes/go_units.rs --offset 1 --limit 260`：读取 238 行完整源文件，确认 7 个符号、签名、实现分支，并报告三个使用文件。
-- RustCodeGraph `query ParseGoFloat64 --kind function` 与 `query ParseGoSize --kind function`：确认公开符号分别位于第 131、199 行，签名分别为 `(&str) -> Result<f64, String>` 和 `(&str, bool) -> Result<i64, String>`。
-- RustCodeGraph 对两个限定符号执行 `callers`/`callees` 未返回函数级结果；随后通过已索引文件节点和精确调用点核实 `ParseGoSize` 的两个生产调用者及内部 `ParseGoFloat64` 调用，不据空结果推断“无调用者”。
-- 已读源码与配置：`pkg/config/configtypes/go_units.rs`、`lib.rs`、`Cargo.toml`、`types.rs`，以及 `pkg/sessionctx/variable/sysvar_builtins.rs`、`pkg/store/driver/region_split_config.rs` 的直接调用段。
-- 已读对照实现：`pkg/config/configtypes/types.go`、`types_test.go`，仓库 `go.mod`/`go.sum` 锁定的 `github.com/docker/go-units v0.5.0`，以及本机模块缓存对应版本的 `size.go::{FromHumanSize,RAMInBytes,parseSize}`。
-- 已读独立 Rust 测试：`pkg/config/configtypes/go_units_test.rs`、`pkg/sessionctx/variable/sysvar_builtins_test.rs` 的 DDL 写速率用例、`pkg/store/driver/region_split_config_test.rs` 的十进制单位用例。它们分别验证底层位级/文法边界、二进制上层接线和十进制上层接线。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终使用任务指定命令验证目标文件存在且恰含 11 个固定二级章节，并人工复核未修改 Rust、Go、Cargo 或只读的 `plan.md`。

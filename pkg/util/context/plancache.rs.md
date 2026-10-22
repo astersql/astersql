@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`plancache.rs` 属于 `astersql-util-context` crate，crate 入口 `pkg/util/context/lib.rs` 通过 `pub mod plancache` 公开该模块。它不存放执行计划本身，而是提供“当前规划过程是否仍可使用计划缓存”的线程安全状态以及 range 构建回退时的告警协调。主要持有者是 `pkg/sessionctx/stmtctx/stmtctx.rs` 的 `StatementContext::PlanCacheTracker`；range 构建上下文则在 `pkg/util/ranger/context/context.rs` 中借用 tracker 和 fallback handler。
-
-`pkg/util/context/Cargo.toml` 将该目录定义为独立 crate，并用 `[package.metadata.porting].go-package = "pkg/util/context"` 记录 Go 来源。本文件的直接 crate 内依赖是 `crate::errors` 和 `crate::warn::WarnAppender`；前者是 crate 入口重导出的 `astersql-errors`，后者是警告追加抽象。
+不存放执行计划本身，而是提供“当前规划过程是否仍可使用计划缓存”的线程安全状态以及 range 构建回退时的告警协调。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/util/context/plancache.go`。Rust 保留了同名枚举值、tracker 五个可变字段、所有公开操作、告警文案、强制缓存分支、non-prepared 告警开关以及 range fallback 的 `sync.Once` 语义。Go 的零值 `PlanCacheTracker` 与 Rust `NewPlanCacheTracker` 初始状态等价；Go `sync.Mutex` 映射为 `Mutex<PlanCacheState>`，Go 的嵌入字段则集中到私有 state struct。
+Go 的零值 `PlanCacheTracker` 与 Rust `NewPlanCacheTracker` 初始状态等价；Go `sync.Mutex` 映射为 `Mutex<PlanCacheState>`，Go 的嵌入字段则集中到私有 state struct。
 
 主要语言差异是：Rust 构造器要求拥有 `Arc<dyn WarnAppender + Send + Sync>`，而 Go 保存接口值；Rust fallback handler 用生命期检查两个借用，Go 用指针/接口；Rust 读取原因和快照时需 clone 拥有的 `String`；Rust 锁中毒会在 `expect` 处 panic，Go 锁没有对应的 poison 状态。这些是表示和故障模型差异，不改变正常路径的分支语义。
 
-Go 相关测试 `pkg/sessionctx/stmtctx/stmtctx_test.go` 覆盖 statement context 快照恢复后的缓存状态，`pkg/util/ranger/context/context_test.go` 覆盖 Detach 保留 handler 身份。Rust 直接行为对照测试位于独立文件 `pkg/util/context/migration_aster_unit_test.rs`，没有把测试嵌入生产源文件。
+Rust 直接行为对照测试位于独立文件 `pkg/util/context/migration_aster_unit_test.rs`，没有把测试嵌入生产源文件。
 
 ## 扩展指南
 
@@ -80,11 +78,3 @@ Go 相关测试 `pkg/sessionctx/stmtctx/stmtctx_test.go` 覆盖 statement contex
 - 改变 range fallback 时，不要把 tracker 禁用放进 `Once` 闭包；只有容量告警应去重。还应评估 handler 粒度变化是否导致每条语句出现多次告警。
 - 回归测试应放在独立 Rust 测试文件，首选扩展 `pkg/util/context/migration_aster_unit_test.rs`；若改动 statement 快照或 ranger 借用语义，同步扩展 `pkg/sessionctx/stmtctx/stmtctx_test.rs` 或 `pkg/util/ranger/context/context_test.rs`，并核对对应 Go 测试意图。
 - 性能风险主要在高频调用的互斥锁竞争、原因字符串 clone 和持锁追加 warning；兼容风险则包括告警文案、枚举数值及首因保留规则的变化。
-
-## 验证依据
-
-- RustCodeGraph `status` 确认索引含 7,032 个 Rust 文件；`files --filter pkg/util/context` 确认 `plancache.rs`、Go 对照和独立迁移测试均在索引中。
-- RustCodeGraph `explore "pkg/util/context/plancache.rs PlanCacheTracker PlanCacheType EnablePlanCache"` 显示表达式静态/会话上下文、statement context 等使用者；`node --file pkg/util/context/plancache.rs` 核对了全部 242 行生产源码。精确 `callers/callees` 对 Rust 同名方法未返回边，因此用限定 `*.rs` 的 `rg` 补齐上述直接调用点。
-- 已读生产/配置证据：`pkg/util/context/plancache.rs`、`pkg/util/context/lib.rs`、`pkg/util/context/Cargo.toml`、`pkg/util/context/warn.rs`、`pkg/sessionctx/stmtctx/stmtctx.rs`、`pkg/util/ranger/context/context.rs` 和 `pkg/util/context/plancache.go`。
-- 已读独立测试证据：`pkg/util/context/migration_aster_unit_test.rs` 的 `migration_plan_cache_tracker_matches_go_branches` 与 `migration_range_fallback_warns_once_but_always_disables_cache`，`pkg/sessionctx/stmtctx/stmtctx_test.rs` 的 `test_logical_plan_build_state_restore`，以及 `pkg/util/ranger/context/context_test.rs` 的 `test_context_detach`。还用 `rg` 确认了对应 Go 测试路径。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认本文件存在且恰有十一个规定的二级标题。

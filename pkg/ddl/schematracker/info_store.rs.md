@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-schematracker` crate，是 schema tracker 的可变内存元数据存储层。crate 入口 `pkg/ddl/schematracker/lib.rs` 将本模块私有装配后公开再导出其符号；上层 `SchemaTracker`（`dm_tracker.rs`）持有一个 `InfoStore`，用它模拟 DDL 对数据库和表元数据的影响，`Checker`（`checker.rs`）再利用该状态做一致性检查。因此它不是持久化 DDL job 存储，也不执行真实集群上的 schema state 转换、回填或版本同步。
-
-`pkg/ddl/schematracker/Cargo.toml` 指定 crate 根为同目录 `lib.rs`，并以 `meta-model` 和 `parser-ast` 提供本文件直接使用的 `DBInfo`、`TableInfo`、`CIStr` 类型；错误类型定义在 crate 根。Cargo 的 `package.metadata.porting.go-package` 指向 `pkg/ddl/schematracker`，明确了 Go 对照包。
+`ciStr2Key` 统一所有库名和表名的索引规则：`lowerCaseTableNames == 0` 使用 `CIStr.O` 原始形式，其他值使用 `CIStr.L` 小写形式。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/schematracker/info_store.go`。Rust 保留了 Go 的两级 map、`lowerCaseTableNames` 键规则、覆盖写、删库级联、缺库/缺表区分、未排序名称枚举，以及 `InfoStoreAdaptor` 的四个查询入口。`InitFromIS` 也保持 Go 的操作顺序：先 `PutSchema`，再取该库表清单，失败即返回且不回滚。
+Rust 保留了 Go 的两级 map、`lowerCaseTableNames` 键规则、覆盖写、删库级联、缺库/缺表区分、未排序名称枚举，以及 `InfoStoreAdaptor` 的四个查询入口。
 
-语言适配差异包括：Go 存储指针，Rust 存储拥有型值；Go `TableByName` 接收未使用的 `context.Context`，Rust 核心方法不携带 context；Go 适配器把 `TableInfo` 包成 `tables.MockTableFromMeta`，Rust 当前仅包成 `TableHandle(TableInfo)`；Go 通过嵌入完整 `infoschema.InfoSchema` 补齐未实现方法，Rust 适配器只声明实际提供的局部接口。因此 Rust `InfoStoreAdaptor` 不能据此宣称实现了完整 InfoSchema。
+语言适配差异包括：Go 存储指针，Rust 存储拥有型值；Go `TableByName` 接收未使用的 `context.Context`，Rust 核心方法不携带 context；Go 适配器把 `TableInfo` 包成 `tables.MockTableFromMeta`，Rust 当前仅包成 `TableHandle(TableInfo)`；Go 通过嵌入完整 `infoschema.InfoSchema` 补齐未实现方法，Rust 适配器只声明实际提供的局部接口。
 
-`pkg/ddl/schematracker/info_store_test.go` 的大小写和删除用例在独立 Rust 文件 `info_store_test.rs` 中有对应覆盖。Rust 还增加了初始化加载失败后保留 schema 的回归测试，显式验证 Go 源码中由语句顺序形成但 Go 测试未单列的部分写入语义。
+Rust 还增加了初始化加载失败后保留 schema 的回归测试，显式验证 Go 源码中由语句顺序形成但 Go 测试未单列的部分写入语义。
 
 ## 扩展指南
 
@@ -80,11 +78,3 @@
 - 扩充适配器时先确认调用方真正需要的接口。若需要完整 InfoSchema/table 行为，应补真实 Rust 抽象，而不是假设 `TableHandle` 等价于 Go `table.Table`。
 - 若引入并发共享，需在上层定义锁粒度、快照一致性与克隆成本；不要仅在单个方法内加锁而留下跨多个读改写步骤的竞态窗口。
 - 改变名称枚举的排序属于可观察行为和性能权衡。需要稳定顺序时优先由调用方排序，除非 API 契约明确要求仓库保证顺序。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ddl/schematracker` 确认 Rust/Go 源和独立测试布局；`node --file pkg/ddl/schematracker/info_store.rs` 核对全部 192 行与 23 个索引符号。
-- RustCodeGraph 调用证据：`explore` 显示 `NewInfoStore` 的生产调用者 `NewSchemaTracker`，以及 `TableByName` 被 `dm_tracker.rs` 的建表、分区、重命名等流程使用；`callees InitFromIS` 给出 Rust 边 `AllSchemas`、`SchemaTableInfos`、`PutSchema`、`PutTable`；`callees TableByName` 确认键转换与适配器委托关系。
-- 已阅读源码/装配：`pkg/ddl/schematracker/info_store.rs`、`lib.rs`、`dm_tracker.rs` 的持有与初始化段、`checker.rs` 的直接引用，以及 `pkg/ddl/schematracker/Cargo.toml`。
-- 已阅读对照与测试：`pkg/ddl/schematracker/info_store.go`、`info_store_test.go`、`info_store_test.rs`。它们共同覆盖大小写模式、覆盖/查找、缺库/缺表、删除级联，以及初始化失败的部分写入。
-- 人工边界复核：该文件是 metadata-only 的内存模拟组件，不创建 DDL job，不经历 schema state、reorg/backfill、schema version sync、持久化、取消或 GC 生命周期；文档未把 DDL 框架概览误写为本文件行为。

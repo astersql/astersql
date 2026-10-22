@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-parser-types` crate 的核心字段类型描述。crate 根 `pkg/parser/types/lib.rs` 在 `types::field_type` 模块中通过 `include!("field_type.rs")` 装入本文件，再经 `pub use field_type::*`、`pub use types::*` 公开，因此下游通常以 `parser_types::FieldType`、`types::NewFieldType` 等路径使用它。`pkg/parser/types/Cargo.toml` 表明该 crate 直接依赖 parser 的 `charset`、`format`、`mysql`、`terror`、`util` 子 crate，以及 `serde`/`serde_json`。
-
-它位于 SQL 类型元数据链的基础层：解析和元数据代码构造 `FieldType`，表达式与执行器通过 `EvalType`、标志位和长度信息选择求值路径，AST/DDL 展示通过 `Restore`、`String`、`InfoSchemaStr` 重建类型文本。RustCodeGraph 将该文件识别为 73 个符号、被 162 个已索引文件引用；仓库搜索还找到 271 个含 `NewFieldType(` 的 Rust 文件，代表性生产调用包括 `pkg/expression/pb_to_expr_runtime.rs`、`pkg/expression/builtin.rs`、`pkg/meta/model/column.rs` 和 `pkg/ddl/create_table.rs`。
+提供构造、读取和原地修改 API，并维持数组类型的特殊视图：`GetType` 在 `array == true` 时对外返回 JSON，而 `RestoreAsCastType` 仍依据底层 `tp` 输出元素类型并追加 `ARRAY`。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ RustCodeGraph 的文件级结果给出 162 个引用文件，但本次对 `NewFi
 
 ## 与 Go 版本的对应关系
 
-主要控制流逐段对应 `pkg/parser/types/field_type.go`：字段、类型分类、比较、字符串化、AST/CAST 恢复、存储长度、JSON 键和内存估算的顺序均保持一致。`pkg/parser/types/field_type_test.rs` 对照 `field_type_test.go` 覆盖常见 `String`/`InfoSchemaStr`、`HasCharset`、ENUM/SET 输出、`Equal` 和严格整数显示宽度；Rust 另有 `test_json_nil_slice_parity` 明确验证 nil slice 编码为 `null`、非 nil 空 slice 编码为 `[]`。
-
 需要注意的语言与迁移差异：
 
 - Go `NewFieldType` 返回 `*FieldType`，Rust 返回值；Go `ArrayType` 在非数组时返回原指针，Rust 总是克隆并返回值，因此 Rust 调用者不能依赖对象身份或就地别名。
@@ -107,13 +103,3 @@ RustCodeGraph 的文件级结果给出 162 个引用文件，但本次对 `NewFi
 修改元素 API 时，应消除或明确 `elems` 与 `elemsIsBinaryLit` 的长度不变量，并决定非法索引是继续 panic 还是改为 `Result`；该选择会影响 Go 兼容性。修改全局严格宽度接线时，应优先采用原子值或不可变配置快照，并保留 TINYINT(1) 与 ZEROFILL 的兼容特例。
 
 性能上，`ArrayType`、`Clone`、JSON 投影和 `FormatAsCastType` 都会复制拥有的数据；对含大量 ENUM/SET 元素的热点路径做优化时，应先测量，不能通过引入共享别名破坏现有值语义。兼容性上，JSON 键名、nil/空数组区别、字段哈希顺序及类型文本都是外部可观察行为。
-
-## 验证依据
-
-- 源码全貌：`pkg/parser/types/field_type.rs`（648 行），核对了常量、两个结构体、全部 `FieldType` 方法、两个转换实现、serde trait、`Display` 和辅助函数；无条件编译分支。
-- crate 边界：`pkg/parser/types/Cargo.toml`、`pkg/parser/types/lib.rs`；确认 crate 名、直接依赖、`include!`/再导出关系和独立测试挂载。
-- Go 对照：`pkg/parser/types/field_type.go`；逐段核对字段、分支顺序、JSON 与内存估算，并记录 Rust 所有权、错误返回和反序列化差异。
-- 测试证据：`pkg/parser/types/field_type_test.rs`、`pkg/parser/types/field_type_test.go`；Rust 测试覆盖 Go 的主要输出和比较场景，另覆盖 JSON nil/空 slice。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/parser/types` 覆盖目标 Rust/Go/测试；`node --file pkg/parser/types/field_type.rs` 返回完整 648 行及“used by 162 files”；`query FieldType --kind struct` 定位 `field_type.rs::FieldType` 与 `jsonFieldType`。方法级 `callers/callees` 本次无输出，调用关系改由仓库搜索验证。
-- 调用搜索：`rg -l 'NewFieldType\\(' --glob '*.rs'` 得到 271 个文件；并核对 `pkg/expression/pb_to_expr_runtime.rs`、`pkg/expression/builtin.rs`、`pkg/expression/chunk_executor.rs`、`pkg/executor/select_into.rs`、`pkg/meta/model/column.rs`、`pkg/ddl/create_table.rs` 的直接使用点。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令及人工事实复核作为验收。

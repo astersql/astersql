@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`disttest_util.rs`](./disttest_util.rs) 属于 `astersql-dxf-framework-testutil` crate，是 DXF（Distributed eXecution Framework）集成测试的适配层。它不实现生产调度循环或任务存储，而是把测试提供的闭包包装成步骤执行器、任务执行器扩展和清理器，并用 trait 抽象任务类型注册表与任务运行时，使测试可以用内存桩验证注册、提交、等待和回滚流程。
-
-crate 入口 [`lib.rs`](./lib.rs) 声明 `disttest_util` 模块并再导出其公开 API；[`Cargo.toml`](./Cargo.toml) 将该 crate 映射到 Go 包 `pkg/dxf/framework/testutil`，没有 feature 开关。目标文件直接使用同 crate 的 `context`、`scheduler_util` 和 `task_util`，因此其类型最终连接到 DXF 的 proto、scheduler、taskexecutor、handle 与 storage 等工作区 crate，但本文件自身通过测试抽象隔离这些实现。
+不实现生产调度循环或任务存储，而是把测试提供的闭包包装成步骤执行器、任务执行器扩展和清理器，并用 trait 抽象任务类型注册表与任务运行时，使测试可以用内存桩验证注册、提交、等待和回滚流程。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ RustCodeGraph 对目标文件的精确 `callers`/`callees` 命令未产出函数
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`disttest_util.go`](./disttest_util.go)。两端保留了相同的助手分组和主意图：通用 executor 默认幂等且错误不可重试，step executor 的 init/cleanup 成功且摘要为空，rollback executor 收集子任务，提交 `Example` 后等待 done-or-paused，`WaitTaskDone` 只接受 done。
-
 Rust 并非对 Go 机制的逐行复刻，主要差异如下：
 
 - Go 通过 gomock 对生产接口设置 `AnyTimes` 期望；Rust 用具体包装结构和 `Arc<dyn Fn>` 实现同样的可注入行为。
@@ -96,12 +92,3 @@ Rust 并非对 Go 机制的逐行复刻，主要差异如下：
 新增等待条件时，应同时修改 `WaitCondition`、两个 runtime 适配面和 Go 对照语义，并为“初始任务已经处于目标状态”“暂停后等待 Done”“任务已进入历史表”“不存在 key”“runtime 返回错误”建立独立测试。若引入超时或取消，需在 `DistributedTaskRuntime` 合同中显式表达，而不是在 `waitTaskUntil` 中隐式忙等。改变提交参数时要同步检查 `TASK_TYPE_EXAMPLE`、`getTaskKS`、并发度、scope 与 meta 的传递，不得把 `submit_task` 返回 ID 和按 key 回查所得 ID 混为一谈。
 
 性能上，本文件只有 `Arc` 克隆和 trait/闭包动态分派，通常不是测试瓶颈；真正的等待和存储开销在 runtime 实现。兼容性风险主要来自公开的 Go 风格函数名、固定任务类型字符串、注册顺序、默认不可重试策略和 RAII 清理范围。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标工程；`node --file pkg/dxf/framework/testutil/disttest_util.rs` 核对了完整 303 行及所有常量、别名、结构、trait、函数和 `Drop` 实现；`query` 分别定位 Rust/Go 的 `RegisterTaskType`、`RegisterTaskTypeForRollback`、`SubmitAndWaitTask`、`waitTaskUntil`；文件使用关系指向 `pkg/dxf/framework/integrationtests/framework_test.rs`。精确 callers/callees 查询没有返回函数级边，因此未据此作否定结论。
-- crate 边界：[`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs) 证明 crate 名、Go 包映射、模块声明和公开再导出；未发现条件 feature。
-- Go 对照：[`disttest_util.go`](./disttest_util.go) 核对 gomock 默认行为、全局 factory 注册/清理、rollback 收集、提交参数以及 done/done-or-paused 谓词。
-- Rust 测试：[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 的 `executor_helpers_run_and_cleanup_with_raii_registration` 验证执行器回调与相邻注册守卫；[`framework_test.rs`](../integrationtests/framework_test.rs) 的 `framework_executor_failure_is_returned_without_hiding_cleanup`、`framework_cleanup_routine_is_repeatable_after_task_transfer_error`、`framework_executor_factory_error_is_not_replaced_by_success` 验证错误与默认清理行为；[`framework_rollback_test.rs`](../integrationtests/framework_rollback_test.rs) 的 `RollbackRuntime` 与 `test_framework_rollback` 验证 `DistributedTaskRuntime` 合同、提交参数后的状态流和 `DoneOrPaused` 判定。
-- 引用搜索：`rg` 确认 `executor_util.rs`、上述 Rust 测试及多个 Go 集成测试对这些助手的调用。当前未发现直接覆盖 `RegisterTaskType` 三个注册阶段分别失败、`RegistrationGuard` 全注册清理或 `WaitTaskDone` 暂停分支的 Rust 测试，这些属于扩展时应补的验证缺口，而不是已验证能力。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以任务给定命令验证文档恰有十一个固定二级章节。

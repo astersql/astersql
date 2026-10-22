@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`errmsg.rs`](errmsg.rs) 是 `astersql-util-errmsg` crate 的核心实现文件，负责在 SQL 错误发送给客户端之前，按全局配置中的正则规则为 `mysql::SQLError.Message` 追加说明后缀。crate 边界由 [`Cargo.toml`](Cargo.toml) 和 [`lib.rs`](lib.rs) 定义：`lib.rs` 将本文件作为私有 `errmsg` 模块加载，再对外重导出 `Extend`。顶层 [`pkg/lib.rs`](../../lib.rs) 又通过 `util::errmsg` 门面重导出该 crate。
-
-这是一个窄而专一的错误呈现层：它不创建 SQL 错误、不改变错误码或 SQLSTATE，也不编译正则。正则的编译、排序和发布由 [`pkg/config/config.rs`](../../config/config.rs) 负责。
+正则的编译、排序和发布由 [`pkg/config/config.rs`](../../config/config.rs) 负责。
 
 ## 核心职责
 
@@ -61,7 +59,7 @@ Go 生产链的真实上游是 [`pkg/server/conn.go`](../../server/conn.go) 的 
 
 ## 与 Go 版本的对应关系
 
-Rust [`errmsg.rs`](errmsg.rs) 逐结构对应 Go [`errmsg.go`](errmsg.go)：`Extend` 的 nil/空配置快速返回、空后缀跳过、正则匹配、首次命中返回，以及 `extendErrorMessage` 的句点规范化格式均保持一致。Rust 的 `Option<&mut SQLError>` 对应 Go 指针的 nil 可能性；`trim_end_matches('.')` 对应 Go `strings.TrimRight(..., ".")`。
+Rust [`errmsg.rs`](errmsg.rs) 逐结构对应 Go [`errmsg.go`](errmsg.go)：`Extend` 的 nil/空配置快速返回、空后缀跳过、正则匹配、首次命中返回，以及 `extendErrorMessage` 的句点规范化格式均保持一致。
 
 规则准备也对齐：Rust `pkg/config/config.rs::prepare_error_message_extensions` 和 Go `pkg/config/config.go::prepareErrorMessageExtensions` 都跳过发布时的无效正则，并按模式长度、模式文本、后缀文本排序。两个独立 Rust 测试文件覆盖了 Go 表驱动用例、nil 防御、无效正则、更长模式优先和并发发布。
 
@@ -74,13 +72,3 @@ Rust [`errmsg.rs`](errmsg.rs) 逐结构对应 Go [`errmsg.go`](errmsg.go)：`Ext
 - 将功能接入 Rust 服务端时，应以 Go `clientConn.writeError` 为时序基准：在错误已转换为 `SQLError`、但尚未计算包长和写入协议包之前调用一次。应新增 server 层独立回归测试，证明客户端实际收到扩展消息。
 - 兼容风险集中在用户可见消息的精确文本、规则优先级和单次追加约定；性能风险集中在每个错误克隆全部规则及线性匹配。如果优化为借用 `Arc` 或其他结构，必须保留单次调用的快照一致性。
 - 为保持 Go/Rust 移植对齐，任何行为变更都应比对 [`errmsg.go`](errmsg.go) 和 [`errmsg_test.go`](errmsg_test.go)；若是 Rust 有意分歧，需明确记录理由和兼容影响。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7032 个 Rust 文件；`files --filter pkg/util/errmsg` 列出 `errmsg.rs`、`lib.rs`、两个 Rust 测试及 Go 对照文件，并标识 `errmsg.rs` 有 3 个节点。`query extendErrorMessage --kind function --json` 同时找到 Go/Rust 私有辅助函数。当次 `explore/node/callers/callees` 未返回可用调用边，因此调用关系又用下述精确源码搜索补齐，未把空图结果当作生产已接线的证据。
-- 实现与 crate 边界：[`errmsg.rs`](errmsg.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`pkg/lib.rs`](../../lib.rs)。
-- 配置和状态语义：[`pkg/config/config.rs`](../../config/config.rs) 的 `ErrorMessageExtension::matches`、`prepare_error_message_extensions`、`PREPARED_EXTENSIONS`、`get_error_message_extensions` 和 `store_global_config`；[`pkg/config/config_test.rs`](../../config/config_test.rs) 验证规则拷贝与无效配置。
-- Go 对照与生产入口：[`errmsg.go`](errmsg.go)、[`errmsg_test.go`](errmsg_test.go)、[`pkg/config/config.go`](../../config/config.go) 和 [`pkg/server/conn.go`](../../server/conn.go) 的 `clientConn.writeError`。
-- Rust 独立测试：[`errmsg_test.rs`](errmsg_test.rs) 覆盖表驱动匹配、空配置、无效正则、最长模式优先和并发发布；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 额外覆盖 `Extend(None)` 并作为 Go 迁移回归。
-- 调用面搜索：`rg -n --glob '*.rs' '\bExtend\s*\(' pkg` 只命中本实现和两个 Rust 测试；`rg -n --glob '*.go' 'errmsg\.Extend\s*\(' pkg cmd tests` 命中 `pkg/server/conn.go`。
-- 按总计划要求，本任务是纯文档分析，未运行 Cargo。结构验证应确认本文档存在且恰有任务指定的 11 个二级标题。

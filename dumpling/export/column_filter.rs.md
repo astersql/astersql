@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpling-export` library crate；crate 清单位于 [`dumpling/export/Cargo.toml`](Cargo.toml)，入口 [`dumpling/export/lib.rs`](lib.rs) 通过 `include!("column_filter.rs")` 把它并入与 Go `dumpling/export` 包相近的单包作用域。因此，文件中的 `Config`、`Result`、`errors_new`、`escapeString` 和 `Arc` 来自 crate 级共享作用域，而不是本文件自己的 `use`。
-
-它位于“命令行配置”与“导出列投影”之间：[`Config::ParseFromFlags`](config.rs) 读取 `--column-filter`、`--column-filter-file` 和 `--case-sensitive` 后调用 `Config::parseColumnFilterOptions`；运行期的 [`buildColumnProjection`](dump.rs) 再调用 `columnFilterConfig::applyToColumns`，把数据库返回的可写列裁剪成查询字段及其原始位置。该文件本身不执行导出、SQL 查询或写文件，只负责配置解码、规则编译、选项约束和列选择。
+本身不执行导出、SQL 查询或写文件，只负责配置解码、规则编译、选项约束和列选择。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@ RustCodeGraph 的文件关系显示 `column_filter.rs` 被 `config.rs`、`dump.r
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`dumpling/export/column_filter.go`](column_filter.go)。Rust 保留了 Go 的四段语义：从文件/参数解码、验证并编译规则、后写匹配组优先、未命中表时保留全部列。对应的 Go 测试集中在 [`dumpling/export/config_test.go`](config_test.go) 的 `TestColumnFilters`、`TestParseColumnFilterFile`、`TestParseColumnFilterFlag`、`TestColumnFilterOptions`，导出投影边界在 [`dumpling/export/dump_test.go`](dump_test.go) 中验证。
+Rust 保留了 Go 的四段语义：从文件/参数解码、验证并编译规则、后写匹配组优先、未命中表时保留全部列。
 
-实现形态存在有意差异：Go 的 `columnFilterRule` 同时保存可由 TOML 反序列化的 `Matcher`/`Columns` 和编译字段，并通过 `compileForOption` 原地填充；Rust 用 `toml::Value` 手工解码，最终结构只保存编译字段。Go 用值切片保存规则，Rust 用 `Vec<Arc<_>>` 以支持配置克隆。Go 的 `matchColumnRules` 把逆序命中组的列规则连接后调用 `MatchColumn`；Rust 不复制规则，而是对逆序命中组执行 `find_map(match_rule)`。由于 `match_rule` 暴露每组首个显式包含/排除结果，这与 Go 的“后写组规则排在前面、首个匹配决定结果”一致。
+实现形态存在有意差异：Go 的 `columnFilterRule` 同时保存可由 TOML 反序列化的 `Matcher`/`Columns` 和编译字段，并通过 `compileForOption` 原地填充；Rust 用 `toml::Value` 手工解码，最终结构只保存编译字段。Go 用值切片保存规则，Rust 用 `Vec<Arc<_>>` 以支持配置克隆。Go 的 `matchColumnRules` 把逆序命中组的列规则连接后调用 `MatchColumn`；Rust 不复制规则，而是对逆序命中组执行 `find_map(match_rule)`。
 
-Rust 独立测试 [`dumpling/export/config_test.rs`](config_test.rs) 覆盖规则优先级、大小写、未命中表、零列错误、内联/文件解析错误及错误下标；[`dumpling/cmd/dumpling/config_flags_test.rs`](../cmd/dumpling/config_flags_test.rs) 覆盖真实 CLI flags 接线；[`dumpling/export/dump_test.rs`](dump_test.rs) 覆盖投影和 CSV 输出确实排除敏感列。当前 Rust 版本还保留 Go 提交哈希注释以说明 `--no-schemas` 已不再冲突。
+Rust 独立测试 [`dumpling/export/config_test.rs`](config_test.rs) 覆盖规则优先级、大小写、未命中表、零列错误、内联/文件解析错误及错误下标；[`dumpling/cmd/dumpling/config_flags_test.rs`](../cmd/dumpling/config_flags_test.rs) 覆盖真实 CLI flags 接线；[`dumpling/export/dump_test.rs`](dump_test.rs) 覆盖投影和 CSV 输出确实排除敏感列。
 
 ## 扩展指南
 
@@ -94,11 +92,3 @@ Rust 独立测试 [`dumpling/export/config_test.rs`](config_test.rs) 覆盖规�
 - 新增命令行互斥条件时，应优先接入 `Config::parseColumnFilterOptions` 或 `validateColumnFilterOptions`，并保留 `Dumper::Dump` 对绕过 flags 的运行期保护；同步覆盖 `config_test.rs` 与 `dumpling/cmd/dumpling/config_flags_test.rs`。
 - 若需要保留或展示原始规则，应谨慎扩展 `columnFilterRule`，确认 `Config` 克隆、调试输出和内存占用；不要破坏当前编译成功后只读共享的生命周期。
 - 测试应继续放在独立的 `*_test.rs` 文件，不能内嵌到本生产文件。最接近的测试落点是 `dumpling/export/config_test.rs`（解析与匹配）、`dumpling/export/dump_test.rs`（投影/导出），跨 crate flags 行为放在 `dumpling/cmd/dumpling/config_flags_test.rs`；依赖库匹配语义放在 `pkg/util/table-filter/*_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件（其中 Rust 7,032 个）；`files --filter dumpling/export/column_filter.rs` 确认目标已索引；`explore` 确认文件有 9 个符号、被配置/导出/测试文件引用，并给出 `applyToColumns`、`parseColumnFilterArgs`、`parseColumnFilterConfig`、`validateColumnFilterOptions` 的调用者。索引没有为 Rust `impl Config::parseColumnFilterOptions` 生成可查询的方法节点，相关边因此以已索引文件源码和精确调用点补证，而非推测。
-- 生产源码：[`column_filter.rs`](column_filter.rs)、[`lib.rs`](lib.rs)、[`config.rs`](config.rs)、[`dump.rs`](dump.rs)、[`Cargo.toml`](Cargo.toml)、[`pkg/util/table-filter/column_filter.rs`](../../pkg/util/table-filter/column_filter.rs)、[`pkg/util/table-filter/table_filter.rs`](../../pkg/util/table-filter/table_filter.rs)。
-- Rust 测试：[`config_test.rs`](config_test.rs) 的 `column_filters_preserve_rule_priority_case_and_unmatched_tables`、`column_filter_inline_validation_preserves_errors_and_indices`、`column_filter_file_validation_and_flags_match_inline_rules`；[`dump_test.rs`](dump_test.rs) 的投影缓存和 CSV 过滤测试；[`dumpling/cmd/dumpling/config_flags_test.rs`](../cmd/dumpling/config_flags_test.rs) 的 CLI 优先级与互斥测试。
-- Go 对照：[`column_filter.go`](column_filter.go)、[`config.go`](config.go)、[`dump.go`](dump.go)、[`config_test.go`](config_test.go)、[`dump_test.go`](dump_test.go)。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付时用任务指定命令确认本文档存在且恰有 11 个固定二级章节，并人工复核唯一新增生产物、相对链接目标、符号名称、错误边界与扩展入口。

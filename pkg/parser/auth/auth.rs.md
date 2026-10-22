@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`auth.rs`](./auth.rs) 是 `astersql-parser-auth` crate 中的身份数据模型文件。crate 根在 [`lib.rs`](./lib.rs) 中以 `pub mod auth` 暴露本模块，并通过 `parser::auth::auth` 兼容迁移后的导入路径；[`Cargo.toml`](./Cargo.toml) 指定 crate 名为 `astersql-parser-auth`、库入口为 `lib.rs`，且以 `astersql-parser-format` 和 `serde` 分别提供 SQL 恢复与序列化能力。
-
-本文件位于“SQL 语法身份表示”边界：解析器的安全相关动作会构造 `UserIdentity`/`RoleIdentity`，AST 节点和会话变量会保存它们，后续权限、会话、表达式与执行模块再读取这些值。它不实现密码散列、认证插件协议、权限匹配或网络握手；同 crate 的 `mysql_native_password.rs`、`caching_sha2.rs`、`tidb_sm3.rs` 承担散列/校验逻辑。
+位于“SQL 语法身份表示”边界：解析器的安全相关动作会构造 `UserIdentity`/`RoleIdentity`，AST 节点和会话变量会保存它们，后续权限、会话、表达式与执行模块再读取这些值。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@ Go 可在 nil `*UserIdentity` 上调用 `String`/`LoginString`；Rust 的实例�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`auth.go`](./auth.go)。常量值、两个结构体的数据含义、`CURRENT_USER` 分支、用户 `user@host` 恢复、角色空主机省略、认证身份优先显示以及登录身份显示均保持一致。
+常量值、两个结构体的数据含义、`CURRENT_USER` 分支、用户 `user@host` 恢复、角色空主机省略、认证身份优先显示以及登录身份显示均保持一致。
 
 主要语言映射与差异如下：
 
@@ -99,11 +97,3 @@ Go 可在 nil `*UserIdentity` 上调用 `String`/`LoginString`；Rust 的实例�
 - 测试必须放在独立 Rust 测试文件。最直接的同步位置是 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；若改变解析构造规则，还应扩展 parser 的独立 lexer/parser 测试。不要把 `#[cfg(test)]` 测试内嵌到 `auth.rs`。
 
 性能上，这些方法都会为显示结果分配新 `String`，`restore` 则流式写入。若新增高频格式化路径，应避免无必要的重复克隆，但不能以缓存换取会话身份陈旧或引入共享可变状态。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/parser/auth` 确认目标源码、Go 对照和独立测试均已索引；`node --file pkg/parser/auth/auth.rs --offset 1 --limit 260` 读取了完整 137 行源码并报告直接使用文件；`query UserIdentity`、`query RoleIdentity`、`query identity_string --json` 核对了主要符号；精确 `callers` 查询未返回方法级调用边，已用直接源码引用补证。
-- 源文件：[`auth.rs`](./auth.rs)；crate 边界：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)；格式化语义：[`format/format.rs`](../format/format.rs)。
-- 上游构造与承载：[`parser_actions/security.rs`](../parser_actions/security.rs)、[`ast/lib.rs`](../ast/lib.rs)；跨模块消费通过 `pkg/sessionctx/variable/variable.rs`、`pkg/session/sessionapi/lib.rs`、`pkg/expression/sessionexpr/lib.rs` 等引用核对。
-- Go 对照：[`auth.go`](./auth.go)。独立 Rust 测试：[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 的 `identities_match_go_display_and_restore_rules` 与 `current_user_restore_matches_go`，覆盖认证身份优先、登录身份、None/nil 兼容、名称转义、角色空主机和 `CURRENT_USER`。同目录 Go 测试主要覆盖各密码插件，没有 `auth.go` 身份结构的同名独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工核对只新增本说明、未修改 Rust/Go/Cargo/`plan.md`。

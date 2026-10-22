@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于物理计划算子 crate `astersql-planner-core-operator-physicalop` 中，由同目录 [`lib.rs`](./lib.rs) 以 `pub mod physical_expand` 导出。它用一个轻量 Rust 数据模型描述 Expand 物理算子：把同一输入行按多个 grouping level 投影成多行，供 `ROLLUP`、`CUBE`、`GROUPING SETS` 等聚合语义使用。crate 归属和本地依赖以 [`Cargo.toml`](./Cargo.toml) 为准；本文件实际只直接依赖同 crate 的 [`physical_common_plans.rs`](./physical_common_plans.rs)。
-
-当前接线状态需要与 Go 主实现区分：仓库搜索与 RustCodeGraph 均只发现 `exhaust_physical_expand` 被独立测试直接调用，未发现生产 Rust 调用者；[`task.rs`](../../task.rs) 中另有基于通用 `PlanNode`/`PlanKind::Expand` 的任务附着路径，但没有直接消费本文件的 `PhysicalExpand`。因此，本文件已经表达并测试若干 Go 对齐规则，但不能据此断言它已完整接入 Rust 优化器主链。
+`PhysicalExpand` 保存每个展开层的表达式、生成列名、grouping id/位置、输出 schema 和唯一子计划。
 
 ## 核心职责
 
@@ -84,20 +82,15 @@ Go 主链更完整：[`physical_expand.go`](./physical_expand.go) 的 `ExhaustPh
 
 ## 与 Go 版本的对应关系
 
-Rust 字段大体对应 Go `PhysicalExpand` 的 V2 路径：`levels` 对应 `LevelExprs`，`generated_column_names` 对应 `ExtraGroupingColNames`，`schema`/`child` 对应 `PhysicalSchemaProducer` 管理的输出与孩子。Rust 额外显式保存 `grouping_ids`、`grouping_pos` 并转交 `ExpandExecutor`；Go `Expand2` protobuf 在本文件所读路径中主要写 `ProjExprs` 与 `GeneratedOutputNames`。
-
-对齐之处包括：有排序要求时返回空候选和 `false`；仅支持 Root/MPP 请求；MPP 不接受具体分区要求；Root 请求枚举 MPP 与本地执行所需的多种孩子任务；EXPLAIN 使用 `level-projection:...; schema: [...]` 形状；levels 相对孩子 schema 解析索引。
+Rust 额外显式保存 `grouping_ids`、`grouping_pos` 并转交 `ExpandExecutor`；Go `Expand2` protobuf 在本文件所读路径中主要写 `ProjExprs` 与 `GeneratedOutputNames`。
 
 尚未等价之处包括：
 
-- Go 受 session `IsMPPAllowed()` 控制，Rust 无上下文参数并始终为 Root 请求生成 MPP 候选。
 - Go 区分 `CopSingleReadTaskType` 与 `CopMultiReadTaskType`；Rust 类型系统只有一个 `Cop`，但当前 Root 候选实际为 `Mpp, Cop, Mpp, Root`。它保持了四候选数量，却不是 Go 任务类型的一一映射。
 - Go `Init` 设置计划上下文、类型、属性与按 expected count 缩放的统计；Rust 直接组装轻量节点，原样克隆 `Stats`。
 - Go `ToPB`/`toPBV2` 生成真正的 `tipb::Executor`，做表达式转换，并仅在 TiFlash 下嵌入 child 与 executor ID；Rust `to_pb` 忽略 `_store`，总是返回相同的内部结构。测试 `protobuf_shape_is_independent_of_non_tiflash_store_selection` 明确固定的是当前简化行为。
 - Go 同时保留旧版 `GroupingSets`/`GroupingIDCol` 和 V2 `LevelExprs` 路径；Rust 只有 levels 路径。
 - Go `Clone`、`MemoryUsage`、`ResolveIndices` 还复用基类行为；Rust 没有对应完整基类，并且内存估算更窄。
-
-Go 回归证据还包括 [`logical_plans_test.go`](../../logical_plans_test.go) 对优化后 level projections、NULL 补位、grouping id、nullable schema 与输出名的验证；这些主要约束上游逻辑 Expand，不能替代本文件的物理候选测试。
 
 ## 扩展指南
 
@@ -111,14 +104,3 @@ Go 回归证据还包括 [`logical_plans_test.go`](../../logical_plans_test.go) 
 - 修改内存估算时应覆盖所有 vector 容量、嵌套表达式和孩子所有权，并评估四候选深克隆的性能风险。
 
 测试必须继续放在独立的 [`physical_expand_test.rs`](./physical_expand_test.rs)，不要内嵌进生产源文件。兼容性风险集中在 EXPLAIN 文本、候选顺序/布尔语义、任务类型映射和 protobuf 字段；性能风险集中在表达式及孩子计划的重复深克隆。
-
-## 验证依据
-
-- 目标源码：[`physical_expand.rs`](./physical_expand.rs)，核对 `PhysicalExpand`、四个方法、`format_expr`、`ExpandExecutor` 与 `exhaust_physical_expand` 的全部实现。
-- crate 与装配：[`Cargo.toml`](./Cargo.toml) 确认 crate 名、`lib.rs` 入口、`autotests = false` 与本地依赖；[`lib.rs`](./lib.rs) 确认公开模块和独立 `#[cfg(test)]` 测试装配。
-- 共享类型：[`physical_common_plans.rs`](./physical_common_plans.rs) 的 `PhysicalExpr::resolve_indices`、`TaskType`、`PartitionType`、`PhysicalProperty`、`Stats`、`PhysicalKind::Expand`、`PhysicalPlanNode`。
-- Rust 测试：[`physical_expand_test.rs`](./physical_expand_test.rs) 的五个测试；逻辑来源由 [`logical_relational_aster_unit_test.rs`](../logicalop/logical_relational_aster_unit_test.rs) 和 [`optimizer_logical_entry_aster_unit_test.rs`](../../optimizer_logical_entry_aster_unit_test.rs) 的 Expand 用例补证。
-- Go 对照：[`physical_expand.go`](./physical_expand.go) 的 `PhysicalExpand`、`ExplainInfo`、`ResolveIndices`、`ToPB`/`toPBV2`、`ExhaustPhysicalPlans4LogicalExpand`；[`logical_plans_test.go`](../../logical_plans_test.go) 的 rollup level projection 回归。
-- 任务附着边界：[`task.rs`](../../task.rs) 的 `attach2Task4PhysicalExpand` 与 `attach2Task`，证明通用 Expand task 路径存在，同时其类型与本文件轻量结构不同。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`explore "pkg/planner/core/operator/physicalop/physical_expand.rs PhysicalExpand"`、`query PhysicalExpand`、`query exhaust_physical_expand --kind function`、`query ExpandExecutor` 用于确认符号与 blast radius。精确 callers/callees 查询未返回额外边，因此又以全仓 `rg` 复核直接引用，未发现测试之外的本文件入口。
-- 按本计划不运行 Cargo；交付验证只执行任务指定的 11 章节结构检查，并人工复核以上结论均区分当前事实、Go 对照与未接线边界。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-operator-logicalop` crate 的逻辑计划公共基座。crate 入口 `pkg/planner/core/operator/logicalop/lib.rs` 将 `base_logical_plan` 声明为私有模块，再以 `pub use base_logical_plan::*` 对外重导出，因此 planner、Cascades 规则和各逻辑算子通常通过 `logicalop::LogicalPlan`、`logicalop::BaseLogicalPlan` 等名称使用它。
-
-它位于 SQL 优化阶段的逻辑算子层：`pkg/planner/core/optimizer_runtime.rs` 的规则驱动器对计划根调用 `PredicatePushDownPlan`、`PruneColumns`、`BuildKeyInfo` 等契约；具体的 `LogicalJoin`、`LogicalProjection`、`LogicalSelection` 等节点内嵌 `BaseLogicalPlan` 并按需覆盖默认行为。此文件不负责 SQL 解析、物理计划执行或存储访问，而是统一逻辑计划树的身份、子节点、schema、统计、函数依赖和优化遍历协议。
-
-crate 边界由同目录 `Cargo.toml` 定义，包名为 `astersql-planner-core-operator-logicalop`，库入口为 `lib.rs`，并直接依赖 `base`、`expression`、`fd`、`kv`、`property` 等规划基础 crate；`[package.metadata.porting]` 将 Go 对照包指向 `pkg/planner/core/operator/logicalop`。
+这些默认实现只适合其注释和分支明确覆盖的形状。
 
 ## 核心职责
 
@@ -114,7 +110,7 @@ RustCodeGraph 将目标文件标为被 34 个文件使用，并识别 `Predicate
 
 ## 与 Go 版本的对应关系
 
-主要 Go 对照是 `pkg/planner/core/operator/logicalop/base_logical_plan.go`，下推判定与 `HasMaxOneRow` 的 Go 实现在同目录 `logical_plans_misc.go`。Rust 保留了公共基座、默认优化契约、任务缓存、FD、TiFlash 属性、标志位和 Cascades 重分配等概念，但当前语义并非完整逐项移植：
+Rust 保留了公共基座、默认优化契约、任务缓存、FD、TiFlash 属性、标志位和 Cascades 重分配等概念，但当前语义并非完整逐项移植：
 
 - Go 的 `BaseLogicalPlan` 嵌入 `baseimpl.Plan`，schema/输出名默认转发到首子节点，并用 `self base.LogicalPlan` 保留具体动态类型；Rust 将身份、schema、输出名直接存进基座，以 trait object 动态分派，不保存 `self` 指针。
 - Go `AddSelection` 会先做谓词化简，并能把恒假/NULL 条件折叠成 `LogicalTableDual`；Rust `AttachSelectionToPlan` 只处理空条件、已有零行 dual 和普通 Selection 包裹。文档使用者不能假设 Rust 已具备 Go 的常量折叠路径。
@@ -142,12 +138,3 @@ RustCodeGraph 将目标文件标为被 34 个文件使用，并识别 `Predicate
 扩展 Coprocessor 判定或 `MaxOneRow` 时，不宜继续只增加模糊类型字符串：JoinType、DataSource 路径、缓存表、聚合禁用标志和 CTE 递归状态都是 Go 侧真实语义输入。应优先让具体算子暴露/覆盖自身判定，并添加 TiKV/TiFlash、半连接族、普通 Join 和未知算子的表驱动测试。
 
 任何修改都应同步核对 `base_logical_plan.go`、`logical_plans_misc.go` 和直接调用者，且保持 PingCAP 许可证。Rust 生产逻辑修复后按仓库约定保留顶部 `// Copyright 2026 AsterSQL.`；测试继续放在独立文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter` 确认目标文件已索引，文件节点报告 667 行、100 个符号并被 34 个文件使用。
-- RustCodeGraph 源码/符号查询：读取 `base_logical_plan.rs` 全部 667 行；`query PredicatePushDownPlan --json` 定位到 `base_logical_plan.rs::PredicatePushDownPlan` 第 47 行，`query NewBaseLogicalPlan` 同时定位 Rust 第 266 行与 Go 第 434 行。`callers`/`callees` 查询未产生可用文本，因此调用边又由已索引调用文件和精确源码搜索交叉核验，未据此臆造边。
-- 读取的生产文件：`pkg/planner/core/operator/logicalop/base_logical_plan.rs`、同目录 `lib.rs`、`Cargo.toml`、`logical_window.rs` 等直接调用片段，以及 `pkg/planner/core/optimizer_runtime.rs` 的规则入口和 decorrelation 路径。
-- Go 对照：`pkg/planner/core/operator/logicalop/base_logical_plan.go`、`pkg/planner/core/operator/logicalop/logical_plans_misc.go`；crate 元数据也明确声明该 Go 包为 porting 来源。
-- 测试证据：同名独立 Rust 测试不存在；读取了 `logical_plans_misc_test.rs`（TiFlash 缓存行为）、`logical_relational_aster_unit_test.rs`（trait 动态分派、谓词下推、统计和 `MaxOneRow` 的相关行为），并定位 `logical_schema_producer_test.rs`、`logical_table_dual_test.rs`、`logical_union_all_test.rs`、`logical_cte_test.rs`、Cascades rule/memo 测试等间接覆盖面。Go 侧读取 `logicalop_test/logical_operator_test.go` 的基座克隆/子节点共享测试。
-- 本任务只新增说明文档，按计划不运行 Cargo。结构验证要求是目标文件存在且恰好出现十一个规定的二级标题；交付前另行执行该精确命令并记录退出码。

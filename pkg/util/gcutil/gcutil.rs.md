@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`gcutil.rs` 是 Rust crate `astersql-util-gcutil` 的核心实现文件，处理 TiDB GC 全局开关、从 `mysql.tidb` 读取 GC safe point，以及基于 safe point 校验历史快照时间戳。crate 入口 [`lib.rs`](lib.rs) 以私有模块 `mod gcutil` 装载本文件，再用 `pub use gcutil::*` 暴露公开 API；根 crate 的 `pkg/lib.rs` 又通过 `facade_util_gcutil` 重导出它。
-
-该文件属于 SQL 会话与 GC 元数据之间的工具边界，而不是 TiKV GC worker 本身：它通过抽象的会话能力读写 `tidb_gc_enable`，并执行受限 SQL 查询 `tikv_gc_safe_point`，不调度 GC、不推进 safe point，也不直接访问 TiKV/PD。对应的 Go 实现是 [`gcutil.go`](gcutil.go)。
-
-RustCodeGraph 将本文件识别为含 27 个符号的 Rust 文件，并能验证文件内部调用边。仓库搜索只发现同目录 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 直接调用这里的 Rust API；若干 crate 在 Cargo manifest 中声明 `astersql-util-gcutil` 依赖，但这不足以证明这些 API 已接入其 Rust 运行时路径。
+用 `Context`、`GlobalVarAccessor`、`RestrictedSqlExecutor` 等窄 trait 隔离完整会话实现，避免为这一工具复制 Go `sessionctx.Context` 的庞大方法集。
 
 ## 核心职责
 
@@ -126,8 +122,6 @@ RustCodeGraph 验证的关键内部调用边包括：
 
 ## 与 Go 版本的对应关系
 
-Rust 的六个公开操作与 [`gcutil.go`](gcutil.go) 一一对应：`CheckGCEnable`、`DisableGC`、`EnableGC`、`ValidateSnapshot`、`ValidateSnapshotWithGCSafePoint`、`GetGCSafePoint`。固定 SQL、变量名、ON/OFF 值、safe point 比较方向和 SnapshotTooOld 描述符保持一致。
-
 主要适配差异如下：
 
 - Go 直接接收完整 `sessionctx.Context`；Rust 定义 `Context` 窄 trait，并把全局变量和受限 SQL 能力进一步拆成两个 `Send + Sync` trait。
@@ -149,18 +143,3 @@ Go 同路径没有专属 `gcutil_test.go`；Rust 的行为证据集中在独立�
 - 若接入真实 Rust 会话实现，应为 `Context` 两个 accessor 提供生产适配器，并增加独立集成测试，证明受限 SQL 的内部来源、错误传播和变量读写；不要把测试模块内嵌回 `gcutil.rs`。
 - 临时关闭 GC 的新工作流需要在更上层设计恢复策略或守卫，本文件目前只有无状态的单次 setter，不应被误认为自动恢复机制。
 - 任何兼容性变更都应同时检查 [`gcutil.go`](gcutil.go) 和 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)；性能风险主要来自重复受限 SQL 和不必要的分配，正确性风险集中在时间解析、TSO 算术和全局开关恢复。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标目录包含 `gcutil.rs`、`lib.rs`、`migration_aster_unit_test.rs` 和 Go 对照 `gcutil.go`。
-- RustCodeGraph `node --file pkg/util/gcutil/gcutil.rs --offset 1 --limit 400`：读取本文件完整 259 行和 27 个符号，并确认内部实现。
-- RustCodeGraph 对 `GetGCSafePoint`、`ValidateSnapshot`、`ValidateSnapshotWithGCSafePoint`、`CheckGCEnable`、`EnableGC`、`DisableGC` 的 `query`/`callees`：确认上述内部调用边。`callers` 对同名 Go/Rust 符号未返回可用的目标限定结果，因此上游使用情况改由精确仓库搜索核验，没有把图缺失解释为不存在调用。
-- [`Cargo.toml`](Cargo.toml)：确认 crate 名称、`lib.rs` 入口、五项直接依赖和 `go-package = "pkg/util/gcutil"` 移植元数据。
-- [`lib.rs`](lib.rs) 与 `pkg/lib.rs`：确认模块装载、公开重导出、测试模块挂载和工作区 facade。
-- [`gcutil.go`](gcutil.go)：核对六个对应操作、固定 SQL、变量访问、内部事务来源、时间解析/TSO 转换及快照边界。
-- [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)：核对 ON/1 读取，OFF/ON 写入，依赖错误透传，SQL/参数/`gc` 来源，零行/多行，小数秒与旧时区缩写，非法时间，epoch 前转换，以及相等边界和错误码 8055。
-- `rg` 对 Rust 函数名、crate 名和重导出名的搜索：确认同目录迁移测试是当前可见的直接 Rust API 调用者；Cargo 声明和 facade 重导出作为可达性证据单独记录，不冒充运行时调用证据。
-
-本任务是纯文档分析，依计划未运行 Cargo。交付前另以任务规定的命令验证目标文档存在且恰有 11 个固定二级章节，并人工复核没有把未验证的 Rust 生产接线写成既成事实。

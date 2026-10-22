@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-importer` crate，负责把配置中的 `CREATE TABLE` 和可选的 `CREATE [UNIQUE] INDEX` 文本转换为导入器使用的轻量表元数据。crate 入口 `pkg/util/importer/lib.rs` 将 `parser` 声明为公开模块并重导出其公开项；生产入口 `pkg/util/importer/importer.rs::process` 依次调用 `parse_table_sql`、`parse_index_sql`，随后才执行 DDL 和并发数据生成。因此这里位于“读取导入配置”与“生成 INSERT 数据”之间，不负责向数据库执行 SQL，也不是通用 SQL 解析器。
-
-`pkg/util/importer/Cargo.toml` 的真实 `[dependencies]` 为空。完整 TiDB parser 相关 crate 只列在 `target.'cfg(any())'.dependencies` 下，该条件恒假；当前实现实际使用字符串扫描，而非构造 SQL AST。这一边界决定了本文件只应覆盖导入工具所需的 DDL 子集。
+`parse_table_sql` 验证建表语句的基本头部和外层括号，解析表名、列定义及表级约束，并生成 `Table::columns`、`unique_indices`、`indices`、`unsigned_columns` 与 `column_list`。
 
 ## 核心职责
 
@@ -83,9 +81,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/importer/parser.go`。Rust 的 `Column`、`Table`、`parse_table_sql` 和 `parse_index_sql` 分别对应 Go 的 `column`、`table`、`parseTableSQL` 和 `parseIndexSQL`；注释规则、列序号、默认步长、第二次解析只替换列切片、空索引 SQL 成功、表名不匹配失败等语义均有对应实现或 Rust 回归测试。
+Rust 的 `Column`、`Table`、`parse_table_sql` 和 `parse_index_sql` 分别对应 Go 的 `column`、`table`、`parseTableSQL` 和 `parseIndexSQL`；注释规则、列序号、默认步长、第二次解析只替换列切片、空索引 SQL 成功、表名不匹配失败等语义均有对应实现或 Rust 回归测试。
 
-主要实现差异是 Go 版本通过 `parser.New().ParseOneStmt` 获得 `ast.CreateTableStmt` / `ast.CreateIndexStmt`，字段类型由 `types.FieldType` 表示，并使用 `dbutil.ColumnName` 引用列名；Rust 版本没有运行时 parser 依赖，而是手写轻量扫描并用 `FieldKind` / `FieldType` 保存数据生成所需子集。Cargo 中的 parser/dbutil 依赖仅为 `cfg(any())` 下的移植元数据，不能作为当前运行时调用关系。
+主要实现差异是 Go 版本通过 `parser.New().ParseOneStmt` 获得 `ast.CreateTableStmt` / `ast.CreateIndexStmt`，字段类型由 `types.FieldType` 表示，并使用 `dbutil.ColumnName` 引用列名；Rust 版本没有运行时 parser 依赖，而是手写轻量扫描并用 `FieldKind` / `FieldType` 保存数据生成所需子集。
 
 错误策略也不同：Go 的 `parseRule` 对非法 `step` 调用 `log.Fatal`，Rust 返回 `ImporterError::Parse` 给调用方；这使 Rust 可测试且不会在库函数中终止进程。Go 的索引 map 保存 `*column`（未知列为 `nil`），Rust 普通索引用 `Option<Arc<Column>>` 显式表达相同边界，而唯一索引只保留列名，因为下游只查询成员关系。Rust 额外维护 `FieldType::unsigned` 和 `unsigned_columns`；实际数据生成读取前者，后者目前没有生产消费方。
 
@@ -97,12 +95,3 @@
 - 若要恢复完整 parser crate，应先改变 Cargo 的真实依赖边界，再以 Go AST 行为为准替换轻量扫描；不能仅启用当前 `cfg(any())` 条目并假定 API 已接线。
 - 调整表复用行为前，应确认是否继续保留 Go 的“只清列、不清 map”语义；若决定清理旧索引状态，这属于可见行为变化，必须有调用方证据和回归测试。
 - 性能上，`find_column` 是线性搜索，约束列多时会重复扫描；若改为名称索引，应保持 `Arc` 身份、未知列的 `None` 表达和列顺序不变。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 `pkg/util/importer/parser.rs`；`files --filter pkg/util/importer` 列出该文件、`parser_test.rs`、`importer.rs`、`db.rs` 等直接相关文件；`node --file pkg/util/importer/parser.rs --offset 1 --limit 500` 返回完整 460 行源码及 41 个符号。精确 `query parse_table_sql --kind function` 定位到第 300 行。`callers parse_table_sql` 在本次环境中长时间无输出后被中断，故调用边由下述仓库文本引用交叉核验，没有据此臆造图边。
-- 源码：`pkg/util/importer/parser.rs`（全部类型、辅助函数与两个公开入口）、`pkg/util/importer/importer.rs`（生产调用顺序）、`pkg/util/importer/db.rs`（解析结果的下游消费）、`pkg/util/importer/lib.rs`（模块声明与重导出）、`pkg/util/importer/config.rs`（错误枚举）、`pkg/util/importer/data.rs`（`Datum` 状态归属）。
-- crate 边界：`pkg/util/importer/Cargo.toml`，确认 crate 名、`lib.rs` 入口、空的真实依赖表和 `cfg(any())` 下未启用的 Go parser 对应依赖。
-- Go 对照：`pkg/util/importer/parser.go` 与 `pkg/util/importer/importer.go`，核对 AST 解析流程、规则语义、表复用、索引分类及主流程调用位置。
-- Rust 测试：`pkg/util/importer/parser_test.rs` 覆盖重复/非法注释规则、第二次解析、转义标识符与注释、LOB 默认长度、空白索引 SQL及未知索引列；`pkg/util/importer/tests.rs` 覆盖外键/范围边界、索引唯一性和数据生成联动；`pkg/util/importer/db_test.rs` 覆盖解析类型到生成范围的消费关系。
-- 文档交付只新增本文件，不修改 Rust、Go、Cargo 或总计划；按任务要求不运行 Cargo。结构验收命令及退出码在任务完成时单独记录。

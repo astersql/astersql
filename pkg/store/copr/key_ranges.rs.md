@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-copr` crate 中键区间集合的操作层，对应的真实源码为 [`key_ranges.rs`](./key_ranges.rs)。`KeyRange` 和 `KeyRanges` 本体定义在 `pkg/store/copr/batch_request_sender.rs`，本文件通过 `pub use crate::batch_request_sender::{KeyRange, KeyRanges}` 重导出它们，并为 `KeyRanges` 增加访问、切片、按键拆分、转换和展示能力。`pkg/store/copr/lib.rs` 公开 `key_ranges` 模块并再导出其符号，因此 crate 使用者可直接使用 `NewKeyRanges` 和相关类型。
-
-`pkg/store/copr/Cargo.toml` 将该 crate 声明为 `astersql-store-copr`，并用 `package.metadata.porting.go-package = "pkg/store/copr"` 记录 Go 对照包。本文件自身只直接依赖 Rust 标准库的格式化 API 和 crate 内部类型；它不直接执行 RPC，而是为 Region 定位与 coprocessor 任务构建提供基础数据操作。
+提供与 Go `%q` 字节串输出相容的 `Display` 实现，使不可见字符和非法 UTF-8 字节可稳定诊断。
 
 ## 核心职责
 
@@ -83,9 +81,7 @@ RustCodeGraph 的文件关系显示目标文件被 `coprocessor.rs`、`region_ca
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/copr/key_ranges.go`，对照测试是 `pkg/store/copr/key_ranges_test.go`；Rust 独立测试为 `pkg/store/copr/key_ranges_test.rs`。两版本的主要 API 一一对应：`NewKeyRanges`、`RefAt/ref_at`、`At/at`、`Slice/slice`、`Do/for_each`、`Split/split`、`ToRanges/to_ranges`、`Reset/reset`、`ToPBRanges/to_pb_ranges` 和 `String/Display`。
-
-必须保留的行为对齐包括：区间为半开边界；按首个 `end > key` 或无界 `end` 的位置拆分；键在区间内时左右各保留一个截断片段；键在边界或间隙时不生成空片段；展示格式为连续的 `[%q, %q]`。Rust 测试 `key_ranges_split_matches_all_go_cases` 复现了 Go `TestCopRangeSplit` 的边界、内部键、间隙与尾部案例，并额外覆盖无界 `end`、`reset`、转换和非法 UTF-8 格式化。
+Rust 测试 `key_ranges_split_matches_all_go_cases` 复现了 Go `TestCopRangeSplit` 的边界、内部键、间隙与尾部案例，并额外覆盖无界 `end`、`reset`、转换和非法 UTF-8 格式化。
 
 当前实现差异：
 
@@ -103,17 +99,3 @@ RustCodeGraph 的文件关系显示目标文件被 `coprocessor.rs`、`region_ca
 - 若要减少分配，需要评估 Go `first/mid/last` 表示的所有权 Rust 替代（例如共享不可变存储加索引视图）。这会影响 `KeyRanges` 的公开 tuple 字段、`RegionInfo.Ranges`、所有直接 `.0` 访问及并发任务所有权，应作为单独性能/兼容性任务。
 - 若 `to_pb_ranges` 未来真正转换为 protobuf 类型，应同步修改 `CopWireRequest.ranges`、网络后端适配层和序列化测试，并明确是否仍需与 Go 零拷贝策略对齐。
 - 扩展 Go 引号规则时，优先在 `key_ranges_test.rs::key_ranges_string_matches_go_quoted_bytes` 补充控制字符、有效 Unicode、U+2028/U+2029、截断 UTF-8 和连续无效字节案例，并与 Go `%q` 实际输出对照。
-
-## 验证依据
-
-本文档基于以下直接证据：
-
-- RustCodeGraph `status`：当前项目索引包含 11,467 个文件，其中 7,032 个 Rust 文件；`files --filter pkg/store/copr` 确认目标、Go 对照与独立测试均已索引。
-- RustCodeGraph `node --file pkg/store/copr/key_ranges.rs --offset 1 --limit 400`：读取目标文件全部 161 行，确认所有导出、impl、私有格式化辅助函数和构造函数。
-- RustCodeGraph `query KeyRanges --kind struct`：确认 Rust 实体定义位于 `pkg/store/copr/batch_request_sender.rs`，并确认同路径 Go 类型；`node --file .../batch_request_sender.rs --offset 80 --limit 65` 核对字段和基础方法。
-- RustCodeGraph `node --file pkg/store/copr/key_ranges_test.rs --offset 1 --limit 300`：读取全部 155 行 Rust 独立测试，核对访问、所有合法切片、Go 拆分用例、无界末段、reset/PB 转换和引号字节行为。
-- `pkg/store/copr/Cargo.toml`、`pkg/store/copr/lib.rs` 与根 `Cargo.toml`：确认 crate 名、Go 包映射、workspace 成员身份、模块声明和对外再导出。目标包下没有 `doc.go`，最近的模块契约为 `lib.rs` 顶部文档。
-- `pkg/store/copr/key_ranges.go` 与 `pkg/store/copr/key_ranges_test.go`：核对 Go 的 `first/mid/last` 表示、切片优化、二分拆分、`unsafe` PB 转换和原始边界用例。
-- 定向调用点搜索及源码片段：`coprocessor.rs::{ensure_monotonic_key_ranges, build_cop_tasks, calculate_retry, calculate_remain, build_wire_request}`、`region_cache.rs::{split_region_ranges, split_key_ranges_by_locations, split_key_ranges_by_buckets}` 和 `range_diagnostics.rs::{range_issues_for_key_ranges, min_start_and_max_end_key_of_key_ranges}`。
-
-人工复核结论：该文件存在于把 Go coprocessor 的键区间访问与边界拆分语义提供给 Rust 任务构建链；其运行依赖有序半开区间与空 `end` 无上界约定；安全扩展需同步 Rust 独立测试，并重新检查 coprocessor 重试、Region 切分、PB 请求类型及 Go 对照语义。本任务为纯文档分析，按计划不运行 Cargo。

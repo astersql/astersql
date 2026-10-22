@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-planner-core-operator-physicalop`（见同目录 `Cargo.toml`），实现 `SELECT ... FOR UPDATE / SHARE` 锁定读在物理规划层的表示与枚举。`lib.rs` 通过 `pub mod physical_lock` 声明模块并用 `pub use physical_lock::*` 向上层再导出公开项。
-
-当前 Rust 文件同时保留两套表示，阅读时必须区分：`LegacyPhysicalLock` 与 `ExhaustPhysicalPlans4LogicalLock` 已接入现有 `dyn base::PhysicalPlan` 优化器主链；`PhysicalLock`、`LockInfo` 与 `exhaust_physical_lock` 是基于 `PhysicalPlanNode` 的简化表示，直接调用证据目前来自独立测试 `physical_lock_test.rs`，生产源码中没有找到对 `exhaust_physical_lock` 的调用。文件顶部的大段块注释是更贴近 Go 完整结构的迁移草稿，不是可执行代码。
+真实锁执行发生在后续执行器/存储链路；这里的输出用于表达锁类型、等待时间和定位行所需的列。
 
 ## 核心职责
 
@@ -89,13 +87,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `physical_lock.go`。Go `PhysicalLock` 嵌入 `BasePhysicalPlan`，保存 `*ast.SelectLockInfo`、`TblID2Handle` 和 `TblID2PhysTblIDCol`；Go 枚举函数从 `LogicalLock` 原样传递三组锁元数据，缩放统计，并返回 `([]PhysicalPlan, true, nil)`。MPP 分支发出相同警告并返回“无候选、枚举完成”。
-
 Rust 主链保留了 MPP 拒绝、child essential property、统计缩放、query block offset、schema、锁类型和等待时间，但 `LegacyPhysicalLock` 没有保存 Go 的 handle 与物理表 ID 映射；锁类型被提前降为字符串。Rust 简化 `PhysicalLock` 虽然有两张 ID 映射，却没有接入主枚举路由，且用整数列 ID 代替 Go 的 `HandleCols` trait/interface 与 `expression.Column`。
 
 方法层面对照：Go `ResolveIndices` 先解析基类，再按 child schema 重写每个 `HandleCols`；Rust 简化方法只做存在性校验。Go `CloneForPlanCache` 深克隆基类、handle 切片和物理表 ID 列，但按标签浅共享只读 AST 锁元数据；Rust 主链依赖 `CachedSelectLock` 快照且没有两张映射，简化版本则整体深克隆。Go `MemoryUsage` 统计两张 map、handle 实例和物理 ID 列；两套 Rust 估算均未达到这一完整口径。
 
-Go 侧 `pkg/planner/core/casetest/plancache/plan_cache_rebuild_test.go` 验证 `TblID2Handle` 的 map、slice 和 context 不得被不安全共享；Rust 侧 `physical_lock_test.rs` 验证非 MPP child property 保留、handle 校验成功与 MPP 警告，`cache_snapshot_test.rs` 验证主链锁节点缓存往返。未找到同目录直接针对 Go `ResolveIndices`/枚举函数的独立 `_test.go`。
+Go 侧 `pkg/planner/core/casetest/plancache/plan_cache_rebuild_test.go` 验证 `TblID2Handle` 的 map、slice 和 context 不得被不安全共享；Rust 侧 `physical_lock_test.rs` 验证非 MPP child property 保留、handle 校验成功与 MPP 警告，`cache_snapshot_test.rs` 验证主链锁节点缓存往返。
 
 ## 扩展指南
 
@@ -105,13 +101,3 @@ Go 侧 `pkg/planner/core/casetest/plancache/plan_cache_rebuild_test.go` 验证 `
 - 若改变计划缓存语义，需同步 `LegacyPhysicalLock::Clone`、`CachedSelectLock::{capture,restore}`、Rust `cache_snapshot_test.rs`，以及 Go 的 shallow/deep clone 不变量；特别注意 context 必须替换，容器和可变列对象不得跨缓存实例共享。
 - 若继续发展 `PhysicalPlanNode` 简化路径，需先建立明确的生产调用点和计划 ID 分配方式，再补 `physical_lock_test.rs` 中的缺列失败、物理表 ID 列、所有锁类型、统计与 clone 隔离测试。Rust 单元测试应继续放在独立的 `physical_lock_test.rs`，不要内嵌到生产文件。
 - 兼容风险集中在 Explain 文本、警告文案、锁等待单位、未知锁类型、缓存克隆和分区锁键；性能风险集中在大映射的深克隆与内存估算偏低。任何行为变化都应逐项和 `physical_lock.go` 对照。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/operator/physicalop/physical_lock.rs`，已核对全部可执行结构、块注释中的非执行迁移草稿及两套表示。
-- crate/模块：`pkg/planner/core/operator/physicalop/Cargo.toml`、`lib.rs`。
-- 主链接线：`pkg/planner/core/operator/physicalop/base_physical_plan.rs` 中逻辑枚举路由和 `attach_canonical_root_lock`；`cache_snapshot.rs` 中 `CachedSelectLock` 捕获/恢复。
-- Rust 测试：`physical_lock_test.rs`、`cache_snapshot_test.rs`。直接测试分别覆盖简化枚举/handle 校验/MPP 警告，以及主链缓存往返。
-- Go 对照：`physical_lock.go`；补充测试证据为 `pkg/planner/core/casetest/plancache/plan_cache_rebuild_test.go`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`query/node` 定位到 `LegacyPhysicalLock`、`PhysicalLock`、`ExhaustPhysicalPlans4LogicalLock` 和 `exhaust_physical_lock`。`node` 显示简化入口的调用者是 `physical_lock_test.rs` 两个测试，`LegacyPhysicalLock` 的生产实例化边来自 `cache_snapshot.rs::restore`。`callers/callees` 对这些精确函数未返回额外边，因此跨模块主链又用上述路由源码直接核验。
-- 人工复核结论：该文件存在于逻辑锁到 Root 锁执行器之间；当前真实主链以 `LegacyPhysicalLock` 工作，简化表示尚未成为枚举主入口；安全扩展必须同时维护枚举、Root 附着、缓存快照和独立测试。

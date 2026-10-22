@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`topsql.rs`](topsql.rs) 属于 `astersql-metrics` crate；该 crate 的入口 [`lib.rs`](lib.rs) 以 `pub mod topsql` 暴露本模块，边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确定。本文件是 **TopSQL Prometheus 父指标的声明和构造层**：它只创建三个指标向量，不采集 SQL、执行计划或 RU（Request Unit）数据，也不连接 TopSQL agent。
-
-包级中枢 [`metrics.rs`](metrics.rs) 在 `InitMetrics` 中调用 `crate::topsql::InitTopSQLMetrics`，随后在 `RegisterMetrics` 的 collector 列表中注册三个向量。因此它位于“进程指标初始化/注册”链上，而不是 TopSQL 数据采集与上报的业务链上。
+因而本文件当前提供的是 `astersql-metrics` 注册表中的 TopSQL 指标定义，不应宣称已与 Rust reporter 的写入路径接通。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@ CounterVec/HistogramVec 是 Prometheus collector 句柄；注册时会 clone，�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 [`topsql.go`](topsql.go)。Rust 保留了三个全局句柄、初始化顺序、完整 metric descriptor、标签维度和桶参数：
-
 | 语义 | Go | Rust |
 | --- | --- | --- |
 | 未初始化状态 | `nil` 指针 | `Option::None` |
@@ -107,17 +103,3 @@ CounterVec/HistogramVec 是 Prometheus collector 句柄；注册时会 clone，�
 5. 测试必须放在独立测试文件，不能内嵌到 `topsql.rs`。最近的指标标签/父序列行为测试是 [`../util/topsql/reporter/metrics/migration_aster_unit_test.rs`](../util/topsql/reporter/metrics/migration_aster_unit_test.rs)；若测试本文件本身，应在 `pkg/metrics` 新增或扩展独立 `*_test.rs`，并从 [`lib.rs`](lib.rs) 的 `#[cfg(test)]` 区域接入。
 
 若目标是消除 Rust 的两套 TopSQL 父向量，需先设计 crate 依赖方向，避免 reporter 与 `astersql-metrics` 形成环；这超出本文件的局部修改范围，不能仅通过删除 reporter 侧定义完成。迁移时还应验证注册表中 descriptor 唯一、子句柄写入能由已注册父向量采集，并评估标签基数与 histogram 内存成本。
-
-## 验证依据
-
-本说明基于以下直接证据（均为只读分析，未运行 Cargo）：
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件、4415 个 Go 文件；`files --filter pkg/metrics` 确认 `topsql.rs`、`topsql.go`、crate 入口和相关测试均已索引。
-- RustCodeGraph `node --file pkg/metrics/topsql.rs`：核对三个静态量、唯一初始化函数、descriptor、标签和桶参数；文件共 73 行。
-- RustCodeGraph 对 `InitTopSQLMetrics` 的 `query/callers/callees`：查询识别 Go/Rust 同名函数；通用名称的 callers 结果只返回 Go `InitMetrics`，而带 Rust 节点标识的调用边未返回结果，因此又以 RustCodeGraph 的文件使用关系和 [`metrics.rs`](metrics.rs) 源码第 132、402–404 行直接核验 Rust 初始化与注册边。
-- RustCodeGraph `node`：读取 [`topsql.go`](topsql.go)、[`metrics.rs`](metrics.rs)、[`bindinfo.rs`](bindinfo.rs)、Rust reporter 的 [`metrics.rs`](../util/topsql/reporter/metrics/metrics.rs) 及其 [`migration_aster_unit_test.rs`](../util/topsql/reporter/metrics/migration_aster_unit_test.rs)。
-- 配置与模块证据：读取 [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs) 和 reporter-metrics 的 [`Cargo.toml`](../util/topsql/reporter/metrics/Cargo.toml)、[`lib.rs`](../util/topsql/reporter/metrics/lib.rs)；`pkg/metrics` 不存在 `doc.go`。
-- `rg` 全仓引用核验：Rust 中本文件三个静态量只在本文件和 `pkg/metrics/metrics.rs` 直接出现；同名引用还出现在 reporter-metrics 独立 crate，源码及 Cargo 依赖证明它是另一组静态量。Go 中 `pkg/metrics/metrics.go` 负责初始化/注册，`pkg/util/topsql/reporter/metrics/metrics.go` 负责具体标签绑定。
-- 相关独立测试：没有 `pkg/metrics/topsql_test.rs` 或同目录同名测试；[`../util/topsql/reporter/metrics/migration_aster_unit_test.rs`](../util/topsql/reporter/metrics/migration_aster_unit_test.rs) 验证 ignored/duration/data 的标签集合及子句柄与其父向量共享 series，但由于使用 reporter-metrics 自有父向量，只能证明镜像实现和 Go 标签语义，不能证明本文件与 reporter 的运行时接线。
-
-人工复核结论：本文件存在的原因是为 `astersql-metrics` 定义并注册 TopSQL 的三类父指标；执行由一次性包级初始化触发；安全扩展必须同时维护 descriptor、注册、标签绑定和独立测试，并正视当前 Rust reporter 指标所有权分离这一兼容性风险。

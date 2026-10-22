@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server` crate；crate 根在 `pkg/server/lib.rs`，其中以 `pub mod rpc_server` 暴露本模块，crate 清单 `pkg/server/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认了这一边界。它定义一层与具体 gRPC 库解耦的 RPC 服务模型，覆盖单次/流式 Coprocessor、批量命令以及 MPP 任务状态上报，并通过 trait 注入会话、执行器、流和协调器。
-
-当前 Rust 接线范围有限：仓库内除 `pkg/server/rpc_server_test.rs` 外，没有 `RpcServer::new` 或这些公开处理方法的 Rust 调用点；因此这里是可测试的服务核心与移植接口，并非已经监听端口、注册 protobuf service 的生产传输层。生产 Go 主链仍由 `pkg/server/http_status.go::startStatusServerAndRPCServer` 调用 `pkg/server/rpc_server.go::NewRPCServer` 创建和启动真正的 `grpc.Server`。
+`RpcServer` 保存共享的 `Domain`、`RpcSessionFactory`、`CoprocessorExecutor` 和 `MppCoordinator`，为各处理入口提供依赖注入，而不直接构造数据库会话或绑定网络协议。
 
 ## 核心职责
 
@@ -81,16 +79,13 @@ panic 展开期间，已构造的 `SessionGuard` 仍按 Rust RAII 析构。`Arc`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/server/rpc_server.go`：
-
 - `NewRPCServer` 对应 `RpcServer::new` 加 `RpcServerConfig::from` 的部分配置语义。两者都使用 keepalive time/timeout、5 秒最小 ping 间隔、最大并发流、初始窗口和最大发送消息；但 Go 同时创建 `grpc.Server`、注册 Diagnostics/TiKV/TopSQL service，Rust 只保存配置与诊断日志路径。
 - Go `rpcServer` 内嵌生成的 `tikvpb.TikvServer` 并保存真实 `domain.Domain`、session manager；Rust 改为小型 trait 和 `Arc<dyn ...>` 注入，便于独立测试，但其 DTO 并非 protobuf 类型。
 - Go `Coprocessor -> handleCopRequest` 对应 Rust `coprocessor -> handle_coprocessor`：都创建会话、写入 peer、执行 DAG handler，并把 panic/创建错误放入 `OtherError`。Go `createSession` 还完成 InfoSchema、权限、扩展、聚合并发、内存动作、max_allowed_packet 和 session manager 等大量初始化；Rust 只调用工厂和 `initialize_memory_tracker`，这些语义是否存在取决于工厂实现，而仓库当前没有生产实现证据。
-- Go `handleCopRequest` 在 defer 中 detach statement memory tracker 并关闭会话；Rust单次路径由 `SessionGuard` 保持同样顺序。Go `CoprocessorStream` 只 close、不设置 peer、不 detach，Rust 当前与此一致。
 - Go `BatchCommands` 支持 protobuf 的未知命令回退为空响应并持续循环；Rust 通过封闭 `BatchCommand` 枚举消除了未知变体。两者都串行调用单次 Coprocessor并回传 request IDs；Go receive 遇 EOF 也作为错误记录/返回，而 Rust `None` 是显式正常结束。
 - Go `ReportMPPTaskStatus` 调用全局 `InstanceMPPCoordinatorManager`；Rust通过注入 `MppCoordinator` 转发，避免硬编码全局实例。
 
-Go 同路径不存在独立 `pkg/server/rpc_server_test.go`。相关 Go 证据主要来自生产接线 `pkg/server/http_status.go`，以及会创建 `NewRPCServer` 的 `pkg/ddl/tiflash_replica_test.go`、`pkg/executor/cluster_table_test.go`、`pkg/executor/infoschema_cluster_table_test.go` 和 `pkg/infoschema/test/clustertablestest/cluster_tables_test.go`；这些是跨模块集成使用证据，不等价于对本 Rust 实现的测试覆盖。
+相关 Go 证据主要来自生产接线 `pkg/server/http_status.go`，以及会创建 `NewRPCServer` 的 `pkg/ddl/tiflash_replica_test.go`、`pkg/executor/cluster_table_test.go`、`pkg/executor/infoschema_cluster_table_test.go` 和 `pkg/infoschema/test/clustertablestest/cluster_tables_test.go`；这些是跨模块集成使用证据，不等价于对本 Rust 实现的测试覆盖。
 
 ## 扩展指南
 
@@ -101,12 +96,3 @@ Go 同路径不存在独立 `pkg/server/rpc_server_test.go`。相关 Go 证据�
 - 修改 panic 策略时分别审视三种入口：unary 返回错误响应、stream 发送错误响应、batch 吞掉 panic 并返回成功；尤其要评估 transport 是否会误判批流正常结束。
 - 扩展 MPP 时接入 `MppCoordinator`，并为 accepted/error、协调器异常和并发调用增加独立测试；当前测试 `TestMpp` 只返回默认值，未直接断言转发内容。
 - 兼容风险集中在 protobuf 字段/错误文本、Go 会话初始化缺口和流终止语义；性能风险集中在批内严格串行、新建会话成本、payload clone（默认流执行）和无背压抽象。任何生产接线都应另行验证并发、取消、消息上限和资源释放。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/server/rpc_server.rs --offset 1 --limit 260` 与 `--offset 220 --limit 140` 覆盖目标文件全部 337 行；对 `RpcServer::{coprocessor,batch_commands,report_mpp_task_status}` 的 callers/callees 查询未返回可用的符号级生产边，因此再以仓库精确搜索确认接线范围。
-- 源码：`pkg/server/rpc_server.rs`（全部类型、trait、配置转换、守卫和五个公开服务方法）；`pkg/server/server.rs::{StatusConfig,Domain}`（直接类型依赖）；`pkg/server/lib.rs`（公开模块及独立测试挂载）。
-- crate：`pkg/server/Cargo.toml`（`astersql-server`、`lib.rs` crate 根、`autotests = false` 和包级依赖边界）。
-- Rust 测试：`pkg/server/rpc_server_test.rs::{unary_detaches_memory_tracker_before_closing_session,stream_session_creation_error_is_sent_as_other_error,stream_closes_session_without_unary_peer_or_detach_side_effects,batch_command_panic_is_recovered_without_transport_error}`。
-- Go 对照：`pkg/server/rpc_server.go::{NewRPCServer,Coprocessor,CoprocessorStream,BatchCommands,handleCopRequest,createSession,ReportMPPTaskStatus}`；生产入口 `pkg/server/http_status.go::startStatusServerAndRPCServer`；上述跨包 Go 测试中的 `NewRPCServer` 调用。
-- 人工边界复核：Rust 当前没有真实 gRPC 注册/监听、生产会话工厂、protobuf 类型适配、Diagnostics/TopSQL 注册或专门 Go 单元测试证据；文档均按“未接入/未在本文件实现”表述，没有用 Go 能力代替 Rust 现状。

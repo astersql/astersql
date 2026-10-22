@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-cmd-benchraw` crate 中可复用、可测试的命令实现层。`Cargo.toml` 把 `lib.rs` 设为库根、把 `bin_main.rs` 设为二进制入口；调用链为 `bin_main.rs::main -> astersql_cmd_benchraw::main（lib.rs）-> entry::main（本文件）`。`lib.rs` 通过 `#[path = "main.rs"] pub mod entry` 暴露本文件，并在测试构建中挂载独立的 `parity_test.rs`。
-
-该命令用于对 TiKV RawKV 执行并发盲写压测。Cargo 元数据 `package.metadata.porting.go-package = "cmd/benchraw"`、`kind = "binary"` 表明它对齐同目录的 Go 命令 `main.go`，不是 SQL 服务主链的一部分。外部系统适配集中在 `stubs.rs`；本文件只负责编排参数、日志、pprof、缓冲区、客户端工厂、worker 和结果输出。
+外部系统适配集中在 `stubs.rs`；本文件只负责编排参数、日志、pprof、缓冲区、客户端工厂、worker 和结果输出。
 
 ## 核心职责
 
@@ -82,13 +80,9 @@ RawKV 客户端在启动 worker 前创建一次，由 `Arc` 分发；每个 work
 
 ## 与 Go 版本的对应关系
 
-`default_flags` 对应 `main.go:35-43` 的七个包级 flag；Rust `main + run_with_flags` 合起来对应 Go `main.go::main`；Rust `batch_raw_put` 对应 Go `batchRawPut`。两版都设置 Warn 日志、后台监听 `:9191`、构造全零 value、创建一个 RawKV 客户端、用整除分片并发写 `key_<n>`、等待 worker，再输出耗时和配置目标总数。
-
 主要结构差异是 Rust 为可测试性显式传入 `Flags`、`ClientFactory` 和 `start_pprof`，而 Go 读取包级 flag 指针并直接调用 `rawkv.NewClient`。Go 用 goroutine/`sync.WaitGroup`，Rust 用 OS 线程/`JoinHandle`；Go Put 接收 `context.Background()`，Rust 适配层内部用 Tokio runtime 同步等待异步 client。Rust 每个 worker、每次 Put 都克隆 value，Go goroutine 共享同一只读 slice；可观察数据内容一致，但复制和内存成本不同。
 
 Go 的 pprof 来自空导入 `net/http/pprof`；Rust `stubs.rs` 用 `tiny_http` 与 `pprof` crate 提供兼容端点，但 `/debug/pprof/trace` 明确返回 501，因此不是 Go pprof 能力的完整等价实现。Rust 的 `format_elapse_line` 是测试辅助接口；生产输出逻辑仍与 Go 格式对齐，但通过另一处格式化表达式实现。
-
-独立 Rust 测试位于 `cmd/benchraw/parity_test.rs`。它覆盖默认值、参数停止规则、真实工厂拒绝不可达 PD、真实监听绑定失败、pprof 索引、TLS/多 PD 透传、正常与余数分片、空 value、key 区间唯一性、建连/Put/非法参数/零 worker 失败、负 value 在建连前失败，以及 worker 完成和 pprof 错误日志。Go 同目录没有 `*_test.go`；语义基准直接来自 `main.go`。
 
 ## 扩展指南
 
@@ -98,11 +92,3 @@ Go 的 pprof 来自空导入 `net/http/pprof`；Rust `stubs.rs` 用 `tiny_http` 
 - 改变并发模型或共享 value 时，应保持客户端 `Send + Sync`、worker 返回前完成、key 不重叠和 panic 可见性，并测量大 value 下的复制成本；异步化还需明确 Tokio runtime 所有权，避免嵌套 runtime 或客户端先于任务析构。
 - 使 pprof 端口可配置或增加关闭能力时，应同时修改 `run_with_flags` 与 `stubs.rs::listen_and_serve` 边界，并补充端口冲突、启动失败和生命周期测试。
 - 若引入新的外部 Rust 依赖，必须遵守仓库规则：在独立上游仓库移植、提交并打 tag，本仓库所有 Cargo manifest 使用同一已发布 tag；不得复制到 `vendor/third_party` 或用本地 `[patch]`。
-
-## 验证依据
-
-- 源码：完整读取 `cmd/benchraw/main.rs`；入口与模块证据来自 `cmd/benchraw/bin_main.rs`、`cmd/benchraw/lib.rs`；外部边界来自 `cmd/benchraw/stubs.rs`；crate 边界和依赖来自 `cmd/benchraw/Cargo.toml`。
-- Go 对照：读取 `cmd/benchraw/main.go` 的 flags、`batchRawPut` 和 `main`；`cmd/benchraw/BUILD.bazel` 进一步确认 Go 二进制及其依赖。目录中不存在 `doc.go` 或 Go 测试文件。
-- 测试：读取独立的 `cmd/benchraw/parity_test.rs`。直接引用检索确认其导入 `default_flags`、`run_with_flags`、`batch_raw_put` 和 `format_elapse_line`，并覆盖正常、边界、错误、生产适配器及资源生命周期契约。
-- RustCodeGraph：`status` 报告索引包含 7032 个 Rust 文件；`files --filter cmd/benchraw` 列出本 crate 的六个 Rust/Go 文件。`query` 精确定位 `batch_raw_put`、`format_elapse_line`、`default_flags` 和本文件的 `run_with_flags`；`node` 提供源码与调用 trail，确认 `main -> run_with_flags -> batch_raw_put`、`run_with_flags -> listen_and_serve`、三项 parity 契约分组直接调用 `batch_raw_put`，以及 `format_elapse_line` 只被正常路径契约调用。单独的 `callers batch_raw_put` 在约 60 秒内无输出，已中断；调用者结论由同一索引的 `node` trail 与源码导入/调用交叉核验。
-- 结构验收使用任务规定的命令，要求目标文件存在且恰有十一个固定二级标题；本任务为纯文档分析，按计划不运行 Cargo。

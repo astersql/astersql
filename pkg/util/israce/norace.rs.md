@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`norace.rs` 是 `astersql-util-israce` crate 的非 race 构建变体，源码入口由同目录的 `lib.rs` 声明为 `pub mod norace`。当 crate 未启用 Cargo feature `race` 时，`lib.rs` 通过 `#[cfg(not(feature = "race"))] pub use norace::*` 将本文件的 `RaceEnabled` 重导出为 crate 根 API。
-
-crate 边界由 `pkg/util/israce/Cargo.toml` 定义：库入口是 `lib.rs`，默认 feature 集为空，另有一个无附加依赖的 `race` feature。因此普通/default 构建选择本文件的 `false` 变体；启用该 feature 时则由相邻的 `israce.rs` 提供 `true` 变体。
+因此普通/default 构建选择本文件的 `false` 变体；启用该 feature 时则由相邻的 `israce.rs` 提供 `true` 变体。
 
 ## 核心职责
 
@@ -64,11 +62,7 @@ RustCodeGraph 对 `pkg/util/israce/norace.rs` 的文件节点报告 1 个符号�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 `pkg/util/israce/norace.go`：它以 `//go:build !race` 选择非 race 构建，并声明 `const RaceEnabled = false`。Rust 版本用 `#[cfg(not(feature = "race"))]` 和 Cargo feature 模拟同一二选一契约，常量名称、类型语义和值一致。
-
 配对的 Go 文件 `pkg/util/israce/israce.go` 使用 `//go:build race` 并提供 `true`；Rust 的 `israce.rs` 与之对应。差异在于 Go 的 `race` build tag 通常由 Go race 构建方式提供，而 Rust 侧从当前代码可确认的机制仅是 Cargo feature；二者的选择机制不能视为自动等价。
-
-消费者也保持用途对齐：Go 的 `br/pkg/version/build/info.go` 和 `pkg/util/printer/printer.go` 将 `israce.RaceEnabled` 写入版本/启动信息，Rust 对应文件执行相同类别的展示。目标目录未发现 Go 单测，因此 Rust 的 `migration_aster_unit_test.rs` 是迁移后新增的独立契约测试。
 
 ## 扩展指南
 
@@ -77,13 +71,3 @@ RustCodeGraph 对 `pkg/util/israce/norace.rs` 的文件节点报告 1 个符号�
 - 若希望反映真实 Rust 竞态检测状态，需要先建立工具链或构建系统到 Cargo feature 的可靠接线；不能仅修改本常量值。该接线应有独立构建配置验证。
 - 修改常量契约时，应同步更新独立测试 `pkg/util/israce/migration_aster_unit_test.rs`，并检查 `br/pkg/version/build/parity_test.rs` 的输出断言；不要把测试嵌入 `norace.rs`。
 - 兼容风险集中在公开名称和值：上层版本信息依赖它。性能风险近乎为零，因为读取会被编译为常量；错误 feature 接线则会造成诊断信息与实际构建方式不一致。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件、307,296 个节点；`files --filter pkg/util/israce` 列出目标源、配对源、模块入口和独立测试。
-- RustCodeGraph `node --file pkg/util/israce/norace.rs`：确认文件共 27 行、唯一生产定义为第 27 行的 `RaceEnabled`，并报告无直接文件使用边。
-- RustCodeGraph `node --file pkg/util/israce/lib.rs`：确认 `norace` 模块声明、条件重导出以及独立测试装配；`node --file pkg/util/israce/migration_aster_unit_test.rs` 确认默认分支断言 `!super::RaceEnabled`、race 分支断言其为真。
-- crate 与装配证据：`pkg/util/israce/Cargo.toml`、`pkg/util/israce/lib.rs`、根 `Cargo.toml` 的 workspace 成员和 `facade_util_israce` 路径依赖。
-- Rust 调用证据：`br/pkg/version/build/info.rs`、`br/pkg/version/build/parity_test.rs`、`pkg/util/printer/printer.rs`。
-- Go 对照证据：`pkg/util/israce/norace.go`、`pkg/util/israce/israce.go`、`br/pkg/version/build/info.go`、`pkg/util/printer/printer.go`；同目录文件清单和 `rg` 搜索均未发现 Go 测试文件。
-- Cargo 清单搜索未发现针对 `astersql-util-israce`/`facade_util_israce` 启用 `race` feature 的配置；因此本文只确认显式 feature 语义，不声称它与某种 Rust race 工具自动联动。

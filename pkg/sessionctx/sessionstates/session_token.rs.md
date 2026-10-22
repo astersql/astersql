@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应真实源文件 [`session_token.rs`](./session_token.rs)。该文件属于 `astersql-sessionctx-sessionstates` crate，由同目录的 `lib.rs` 以 `pub mod session_token` 声明并通过 `pub use session_token::*` 再导出。它实现会话迁移令牌的 JSON 形状、签发、验签以及签名证书轮换；同一 crate 中的 `session_states.rs` 提供其对外错误类型 `SessionStateError` 和标准错误码 `ErrCannotMigrateSession`。
-
-令牌解决的是代理迁移会话时无法保存用户密码的问题：源节点签发带用户名和有效期的令牌，目标节点用共享证书验签后允许对应用户恢复会话。Rust 实现目前在 crate 内完整存在并由独立 Rust 测试覆盖；仓库搜索没有发现测试之外的 Rust 生产调用者。完整应用中的实际接线仍见 Go：`pkg/executor/show.go::fetchShowSessionStates` 签发令牌，`pkg/privilege/privileges/privileges.go` 在 `AuthTiDBSessionToken` 认证分支验签，`pkg/domain/domain.go::LoadSigningCertLoop` 配置并周期重载证书。
+令牌解决的是代理迁移会话时无法保存用户密码的问题：源节点签发带用户名和有效期的令牌，目标节点用共享证书验签后允许对应用户恢复会话。
 
 ## 核心职责
 
@@ -69,8 +67,6 @@ JSON 编解码错误通过 `?` 转为 `SessionStateError::Json`，其 `code()` �
 
 Rust 文件逐项镜像 `pkg/sessionctx/sessionstates/session_token.go`：常量和 Starter 分支相同；`SessionToken` JSON 字段与 Go struct tag 相同；创建时签名无签名字段的 JSON、验证时清空签名再序列化的顺序相同；证书缓存的最新项优先、旧证宽限期和“遇到首个过期项即停止”相同；用户名使用 Unicode 简单大小写折叠，测试覆盖希腊 sigma 的普通/终结形式。
 
-密码学覆盖也与 Go 测试意图对齐：RSA 2048/4096 位的 SHA-256/384/512 PKCS#1 与 PSS、ECDSA 三种摘要组合、Ed25519；RSA-PSS 两端使用等于摘要长度的 salt。Rust 的 ECDSA 路径显式使用 DER 编解码，Ed25519 使用无摘要的一次性接口。
-
 需要注意的实现差异是：Go `checkAndLoadCert` 会记录成功/失败日志，Rust 丢弃加载错误；Go 用嵌入式 `sync.RWMutex`，Rust 用全局 `RwLock<SigningCert>`；Go failpoint 注入 `time.Duration`，Rust 用全局原子毫秒偏移；Go 返回 `*SessionToken`，Rust 返回拥有所有权的 `SessionToken`。此外，Go 已接入 Domain、Executor 和 Privilege 生产链，Rust 当前只有 crate 导出和测试调用证据，不能宣称生产迁移链已经切换到 Rust。
 
 ## 扩展指南
@@ -81,12 +77,3 @@ Rust 文件逐项镜像 `pkg/sessionctx/sessionstates/session_token.go`：常量
 - 改动证书热加载时必须保留公私钥匹配检查、加载失败不破坏旧缓存、缓存新到旧排序和旧证宽限期；同步扩展 `set_cert_and_key_matches_go`、宽限期与并发测试。
 - 若要把这些 API 接入 Rust 生产主链，应在对应 Rust Domain/Executor/Privilege 边界做最小接线并新增各自独立测试，而不是把集成测试写入本文件。还应明确外层重载任务的启动、停止和失败可观测性。
 - 修改共享全局状态或锁粒度时，需评估磁盘 I/O、OpenSSL 操作持锁时间、锁中毒策略和测试隔离；性能优化不能让签发观察到未配对的证书与私钥。
-
-## 验证依据
-
-- 源码：`pkg/sessionctx/sessionstates/session_token.rs`，核对全部常量、类型、公开入口、内部算法分派、锁和测试时钟；`pkg/sessionctx/sessionstates/session_states.rs`，核对 `SessionStateError`、`ErrCannotMigrateSession` 与错误码。
-- crate/模块：`pkg/sessionctx/sessionstates/Cargo.toml` 和 `pkg/sessionctx/sessionstates/lib.rs`，核对包名、依赖、`nextgen` feature、公开再导出和独立测试模块。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files/node/query/callers/callees` 查询确认目标文件、`SessionToken`、`CreateSessionToken`、`ValidateSessionToken` 及内部调用链。图查询显示调用者集中在 Rust 测试；随后用仓库搜索确认没有非测试 Rust 调用者。
-- Rust 测试：`pkg/sessionctx/sessionstates/session_token_test.rs`，覆盖 JSON/base64、缺证书错误码、证书路径与不匹配密钥、算法矩阵、过期/伪造/用户名、Unicode 折叠、Starter 时长、旧证宽限期和并发读写；`pkg/sessionctx/sessionstates/session_states_1_aster_unit_test.rs` 提供额外的 Go 行为对照调用证据。
-- Go 对照：`pkg/sessionctx/sessionstates/session_token.go`、`session_token_test.go`；生产入口证据来自 `pkg/domain/domain.go::LoadSigningCertLoop`、`pkg/executor/show.go::fetchShowSessionStates` 和 `pkg/privilege/privileges/privileges.go` 的会话令牌认证分支。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复查：所有当前能力均能回指上述符号或测试，Rust 生产接线缺口已明确标注，未把 Go 接线当成 Rust 已支持事实。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 根由 [`pkg/executor/Cargo.toml`](Cargo.toml) 的 `lib.path = "lib.rs"` 指向 [`pkg/executor/lib.rs`](lib.rs)，后者通过 `pub mod opt_rule_blacklist` 公开本模块，并仅在 `cfg(test)` 下装配独立测试文件 [`pkg/executor/opt_rule_blacklist_test.rs`](opt_rule_blacklist_test.rs)。目标源码是 `ADMIN RELOAD OPT_RULE_BLACKLIST` 管理动作的 Rust 侧加载逻辑：它从系统表 `mysql.opt_rule_blacklist` 取得规则名，将结果转换为禁用规则集合，再通过抽象上下文发布给会话/规划器侧。
-
-当前迁移状态必须与设计意图区分：[`pkg/executor/builder.rs`](builder.rs) 已定义 `ExecutorKind::ReloadOptRuleBlacklist`、`Plan::ReloadOptRuleBlacklist` 和叶子执行器构建分支，但仓库搜索只发现测试代码实现 `OptRuleBlacklistContext`，也只发现本文件与测试调用 Rust `LoadOptRuleBlacklist`。因此，本文件的通用加载算法已有测试，生产上下文适配和从通用 `ExecutorBox` 到这里的具体执行器接线则未在现有 Rust 代码中得到验证。
+本模块只负责“读取、去重、整集合替换”的边界，不解析或规范化规则名，也不判断某个名称是否对应有效逻辑优化规则。
 
 ## 核心职责
 
@@ -64,7 +62,7 @@ Go 主链证据更完整：[`pkg/executor/opt_rule_blacklist.go`](opt_rule_black
 
 ## 与 Go 版本的对应关系
 
-[`pkg/executor/opt_rule_blacklist.go`](opt_rule_blacklist.go) 是直接对照：两者均执行相同的 `HIGH_PRIORITY` SQL，均以内部权限来源执行，均对名称进行精确去重，并仅在查询成功后整体替换状态。Rust 的 `HashSet<String>` 对应 Go 的 `set.StringSet`；Rust 通过 trait 抽象受限 SQL 和发布操作，Go 则直接取得 `RestrictedSQLExecutor` 并调用 `plannercore.DefaultDisabledLogicalRulesList.Store`。
+Rust 的 `HashSet<String>` 对应 Go 的 `set.StringSet`；Rust 通过 trait 抽象受限 SQL 和发布操作，Go 则直接取得 `RestrictedSQLExecutor` 并调用 `plannercore.DefaultDisabledLogicalRulesList.Store`。
 
 差异与迁移缺口如下：
 
@@ -78,13 +76,3 @@ Go 主链证据更完整：[`pkg/executor/opt_rule_blacklist.go`](opt_rule_black
 若要完成生产接线，应优先实现 `OptRuleBlacklistContext`：将 `exec_restricted_sql` 接到真实会话的受限 SQL 能力，并让 `replace_disabled_logical_rules` 一次性更新规划器实际消费的状态；随后把 `builder.rs` 的叶子执行器分派和 Rust bootstrap 路径接到 `ReloadOptRuleBlacklistExec`/`LoadOptRuleBlacklist`。接线前应先确认规划器期望 `Vec<String>` 还是集合，以及规则匹配是否区分大小写，不能只为类型兼容静默改变 Go 语义。
 
 新增逻辑时应同步扩展独立文件 [`pkg/executor/opt_rule_blacklist_test.rs`](opt_rule_blacklist_test.rs)，不要把测试嵌入生产源码。建议覆盖：空结果清空旧状态、重复项与大小写、真实状态替换的并发可见性、无效/未知规则名、查询解码错误、启动加载以及管理命令端到端生效。若修改 SQL、权限来源或错误传播，还需与 Go 文件和其调用链保持一致。性能风险主要是一次加载同时持有 `Vec` 与 `HashSet`、以及发布时可能复制集合；正确性风险集中在非原子发布、接错会话上下文和规则名规范化差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标工作区索引包含 11,467 个文件；`node --file pkg/executor/opt_rule_blacklist.rs` 读取了完整 72 行，并标出测试与 `pkg/session/syssession/session.rs` 的索引关系；`query LoadOptRuleBlacklist`、`query OptRuleBlacklistExec` 和 `explore` 确认核心符号与 `Next -> LoadOptRuleBlacklist -> trait 方法` 调用链。
-- 源码：[`pkg/executor/opt_rule_blacklist.rs`](opt_rule_blacklist.rs)（常量、trait、执行器与加载函数）。
-- crate/装配：[`pkg/executor/Cargo.toml`](Cargo.toml)、[`pkg/executor/lib.rs`](lib.rs)、[`pkg/executor/builder.rs`](builder.rs)。
-- Rust 规划器状态：[`pkg/planner/core/optimizer_runtime.rs`](../planner/core/optimizer_runtime.rs)。
-- 独立 Rust 测试：[`pkg/executor/opt_rule_blacklist_test.rs`](opt_rule_blacklist_test.rs)。
-- Go 对照与生产入口：[`pkg/executor/opt_rule_blacklist.go`](opt_rule_blacklist.go)、[`pkg/session/session.go`](../session/session.go)。
-- 仓库搜索：`rg` 只找到测试中的 `OptRuleBlacklistContext` 实现，且 Rust 侧未找到 `LoadOptRuleBlacklist` 的生产调用；因此文中把生产适配、启动接线和实际规划器消费明确标为未验证/迁移缺口。

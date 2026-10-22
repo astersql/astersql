@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-sortexec` crate；crate 入口 `pkg/executor/sortexec/lib.rs` 以 `pub mod sort_spill` 暴露它。它位于排序执行器的内存配额响应层：把“内存 tracker 超限”转换为串行分区或并行排序 helper 的 spill 动作，但不实现行排序、磁盘 run 格式或最终多路归并，这些工作分别下沉到 `SortPartition`、`parallelSortSpillHelper` 和 `sort_util::DiskRun`。
-
-当前 Rust 接线范围有限。仓库中的 Rust 生产文件没有构造 `sortPartitionSpillDiskAction` 或 `parallelSortSpillAction`；直接使用者是独立测试 `pkg/executor/sortexec/sort_spill_test.rs`。因此，本文件提供了公开动作类型和可执行语义，但尚不能据此断言 Rust `SortExec` 主链已经安装这些 OOM action。对应的 Go 文件 `pkg/executor/sortexec/sort_spill.go` 已接入 TiDB 的 `memory.ActionOnExceed` 模型。
+位于排序执行器的内存配额响应层：把“内存 tracker 超限”转换为串行分区或并行排序 helper 的 spill 动作，但不实现行排序、磁盘 run 格式或最终多路归并，这些工作分别下沉到 `SortPartition`、`parallelSortSpillHelper` 和 `sort_util::DiskRun`。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@ Rust 实现是同步的：`SortPartition::spillToDisk` 和 `parallelSortSpillHel
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/sortexec/sort_spill.go`。
-
 - 两端都有 `sortPartitionSpillDiskAction` 和 `parallelSortSpillAction`，并保留“排序数据至少达到外部限制的十分之一才值得 spill”的判断。
 - Go 类型嵌入 `memory.BaseOOMAction`、实现 `memory.ActionOnExceed`、提供 `GetPriority`，并由 tracker 传参给 `Action(t)`；Rust 改为本地 `SpillAction` trait，将 tracker 保存在并行 action 字段中，没有优先级 API。
 - Go 串行 action 会等待正在进行的 spill，检查 `hasEnoughDataToSpill`，以 `sync.Once` 异步启动 spill，并在 tracker 不再超限时停止 fallback；Rust 不等待、不检查分区数据量和 tracker 是否仍超限，未完成 spill 时同步调用 `spillToDisk`，已完成后才 fallback。
@@ -108,13 +104,3 @@ Rust 实现是同步的：`SortPartition::spillToDisk` 和 `parallelSortSpillHel
 - 若追求 Go 行为等价，需要设计条件等待、单次异步触发、错误回存、priority 和触发时用量快照；这些不是本文件当前支持的能力。引入异步执行前应评估锁顺序、executor 谁负责执行/等待 spill、关闭时如何 join，以及 fallback 是否允许在锁外调用。
 - fallback 的新增实现必须避免反向锁定当前 partition/helper；更安全的改动方向是先确定状态与动作，再释放锁后调用不需要受保护状态的 fallback，但这会改变当前原子性，需要并发回归测试。
 - 性能方面重点观察 mutex 持有时长、同步磁盘 I/O 延迟、重复状态竞争及小 limit 导致的零门槛；兼容性方面重点保持 Go 的触发条件、错误可见性和完整排序结果。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/sortexec/sort_spill.rs`，完整读取 105 行并核对 trait、两个结构体、构造函数、`executeAction` 与 trait impl。
-- crate 边界：`pkg/executor/sortexec/Cargo.toml`、`pkg/executor/sortexec/lib.rs`；确认 crate 名、Go 包映射、公开模块与独立测试模块。
-- RustCodeGraph：`status` 显示索引含目标目录；`files --filter pkg/executor/sortexec` 确认目标、Go 对照和测试；`node --file .../sort_spill.rs` 确认完整源码；`node executeAction --file .../sort_spill.rs` 给出两处同名定义及 `spillStatus`、`spillToDisk`、fallback 调用边；对 `spillToDisk`、`setNeedSpill`、`spill` 的 callers 查询用于核对下游关系。图对两个同名 `executeAction` 的 callers/callees 存在合并歧义，因此最终结论再由源码逐分支核验。
-- 下游源码：通过 RustCodeGraph 读取 `pkg/executor/sortexec/sort_partition.rs` 与 `pkg/executor/sortexec/parallel_sort_spill_helper.rs`，核对状态机、锁、原子迁移、磁盘 run、tracker 与错误传播。
-- Go 对照：`pkg/executor/sortexec/sort_spill.go`、`pkg/executor/sortexec/sort_spill_test.go`；核对 ActionOnExceed、条件变量、goroutine、十分之一门槛、fallback 和集成测试意图。
-- Rust 独立测试：`pkg/executor/sortexec/sort_spill_test.rs`；有效 Rust 测试覆盖未超限不 fallback、低于门槛 fallback 和 `DiskRun` 关闭边界。全仓 Rust 搜索未发现测试之外构造本文件两个 action，支持“当前未接入生产 Rust 主链”的结论。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前使用任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工检查没有把 Go 草稿或预期架构写成 Rust 已实现事实。

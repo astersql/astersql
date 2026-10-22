@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 MySQL/TiDB 的 `gbk_bin` 排序规则，是 `astersql-util-collate` crate 中面向 GBK 字符集的二进制 Collator。crate 入口 `pkg/util/collate/lib.rs` 将本模块声明为 `gbk_bin` 并公开再导出；`pkg/util/collate/collate.rs::new_collator` 在新 collation 开启时把名称 `gbk_bin` 构造成 `gbkBinCollator`，`GetCollatorByID` 则先通过字符集元数据把 ID（测试确认是 87）解析成名称后走同一工厂。
-
-它位于 SQL 字符串排序语义的基础设施层：上层只依赖 `Collator` trait，用本实现比较 GBK 字符串、生成可用于排序或索引的 key，并创建 LIKE 通配符匹配器。`pkg/util/collate/Cargo.toml` 表明该实现属于 `astersql-util-collate` 库；直接运行时依赖是本地 crate `astersql-parser-charset` 提供的 TiDB 定制 GBK 编码器。`full_collate` feature 不控制本文件，`gbk_bin` 始终属于 `new_collator` 的第一组实现。
+位于 SQL 字符串排序语义的基础设施层：上层只依赖 `Collator` trait，用本实现比较 GBK 字符串、生成可用于排序或索引的 key，并创建 LIKE 通配符匹配器。
 
 ## 核心职责
 
@@ -94,12 +92,8 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/collate/gbk_bin.go`。Rust 保留了同名核心类型和 `Compare`、`Key`、`ImmutableKey`、`KeyWithoutTrimRightSpace`、`MaxKeyLen`、`Pattern`、`Clone` 的总体契约：逐字符 GBK 编码、失败替换为 `?`、PAD SPACE、单字符最大 2 字节，以及直接复用 derived binary pattern。
-
 实现形态有三点明确差异：
 
-- Go 的 `gbkBinCollator` 持有 `*encoding.Encoder`，Rust 类型无字段并在 `encode_char` 中为每个字符新建 `NewCustomGBKEncoder`。两边都逐字符转换并在错误时替换 `?`，但 Rust 避免共享有状态编码器。
-- Go string 可直接携带非法 UTF-8，Go 的主方法按首字节估算 rune 长度处理。Rust `str` 保证合法 UTF-8，因此新增 `CompareBytes`/`KeyBytes` 显式保存原始字节兼容语义，并通过 `decodeRune` 对非法字节逐个替换。
 - Go `ImmutableKey` 直接调用 `KeyWithoutTrimRightSpace(truncateTailingSpace(str))`；Rust 调用 `Key(str_)`，当前结果等价。Rust 另有 `as_any`，用于 trait object 向下转型；这是 Rust trait 工厂需要的接线，不是 Go API。
 
 Go 当前文件没有单独的 `gbk_bin_test.go`；共享的 `pkg/util/collate/collate_test.go` 覆盖工厂返回类型和非法 UTF-8。Rust 将对应覆盖保留在 `collate_test.rs`，并在独立的 `gbk_bin_test.rs` 增加 U+20AC 定制编码器回归测试，在 `bin_1_aster_unit_test.rs` 覆盖中文 key、PAD SPACE 和 `MaxKeyLen`。
@@ -115,13 +109,3 @@ Go 当前文件没有单独的 `gbk_bin_test.go`；共享的 `pkg/util/collate/c
 若优化分配，可考虑复用输出缓冲或按字符串批量编码，但不能直接引入共享可变编码器：必须验证线程安全、编码器重置、逐字符短路次序、U+20AC 和其他不可编码字符、非法 UTF-8 每字节替换，以及 key 的稳定性。任何对 `MaxKeyLen` 的调整必须仍是所有可接受输入的安全上界。
 
 工厂可见性变更应在 `collate.rs::new_collator`、字符集名称/ID 元数据和 `collate_test.rs` 的名称与 ID 断言中同步；`Cargo.toml` 的 `full_collate` 当前与 `gbk_bin` 无关，不应无依据地给本模块增加 feature 门控。
-
-## 验证依据
-
-- Rust 生产实现：`pkg/util/collate/gbk_bin.rs`，确认 22 个索引符号、全部 trait 方法、内部编码/字节比较帮助函数、pattern 包装和无条件编译事实。
-- crate 边界：`pkg/util/collate/Cargo.toml` 与 `pkg/util/collate/lib.rs`，确认库路径、默认 feature、`parser_charset` 依赖、模块声明、公开再导出和独立测试接线。
-- 工厂与共享语义：`pkg/util/collate/collate.rs::{Collator, WildcardPattern, new_collator, GetCollator, GetCollatorByID, truncateTailingSpace, truncateTailingSpaceBytes, decodeRune, sign}`；`pkg/util/collate/bin.rs::derivedBinPattern`。
-- Go 对照：`pkg/util/collate/gbk_bin.go`；相关 Go 测试 `pkg/util/collate/collate_test.go` 的 `GetCollator("gbk_bin")`、ID 87 和非法 UTF-8 用例。
-- Rust 测试：`pkg/util/collate/gbk_bin_test.rs::euro_uses_tidb_custom_gbk_replacement`；`pkg/util/collate/bin_1_aster_unit_test.rs::gbk_and_gb18030_keys_match_go_examples`、`focused_registry_returns_group_collators_and_binary_fallback`；`pkg/util/collate/collate_test.rs::{test_utf8_collator_compare, test_utf8_collator_key, test_campare_invalid_utf8_rune}` 及工厂类型断言。
-- RustCodeGraph 检查：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/collate` 确认目标及对照文件已索引；`node --file pkg/util/collate/gbk_bin.rs` 读取完整实现；精确 `query/node/callers/callees` 确认 `gbkBinCollator`、`encode_char`、`encode_bytes`、`compare_encoded_bytes`、`gbkBinPattern`、`derivedBinPattern`，其中可靠的内部调用边为 `encode_bytes → decodeRune/encode_char` 和 `compare_encoded_bytes → encode_bytes`。图对 trait 动态分派调用者没有给出完整方法级 caller 边，因此上游工厂关系由已索引的 `collate.rs::new_collator` 源码和测试共同核验，未据此推测业务调用方。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的 `test`/`rg` 命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核只新增本说明和删除完成后的任务文件。

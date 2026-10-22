@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-mock` crate。`pkg/util/mock/Cargo.toml` 将 `lib.rs` 设为 crate 入口，`lib.rs` 以 `mod iter; pub use iter::*;` 将这里的公开符号提升到 crate 根，并把依赖 `astersql-kv` 重新导出为 `crate::kv`。因此它是测试辅助层中的 KV 迭代器实现：用内存中的固定记录模拟 `pkg/kv/kv.rs` 定义的 `kv::Iterator`，供测试确定性地制造遍历、推进失败和资源关闭场景，而不是 SQL 请求或存储引擎的生产迭代路径。
-
-当前 Rust 仓库中，`NewSliceIter`、`MockedIter` 的直接使用证据位于同 crate 的 `pkg/util/mock/iter_test.rs` 和 `pkg/util/mock/migration_aster_unit_test.rs`；全仓 Rust 搜索没有发现 `NewMockIterFromRecords` 的外部调用。对应 Go 辅助实现则被 `pkg/store/driver/txn/union_iter_test.go` 和 `pkg/table/temptable/main_test.go` 等测试使用。这个差异表示 Rust API 已实现并导出，但不能据此宣称所有 Go 测试调用点都已迁移。
+两个类型都实现 `kv::Iterator`，所以需要该 trait 的测试代码可以通过 trait object 使用它们，而测试也可调用额外的固有方法检查内部测试状态。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@ RustCodeGraph 对同名方法的图查询存在歧义，因此调用边结论以
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/mock/iter.go` 是直接对照。两版的 `SliceIter` 都以位置 0 开始，使用相同有效性条件，保持输入顺序，在无效状态返回空语义，非法 `Next` 使用相同错误文本，并以 `-1` 表示关闭。`pkg/util/mock/iter_test.rs` 对照 `pkg/util/mock/iter_test.go::TestSliceIter`，覆盖 nil/空、1 至 3 项、不排序输入、自然结束、关闭以及记录不被遍历修改。
-
 语言所有权带来几项可见差异：Go 保存 `[]*kv.Entry` 并返回底层 key/value 切片，Rust 保存拥有的 `Vec<kv::Entry>`，`Key`/`Value` 会克隆；Go 的无效返回是 `nil`，Rust 分别用默认空 `kv::Key` 和空向量表达，不能保留 nil 与 empty 的区别。Rust `NewSliceIter` 也无法区分 Go 测试中的 nil slice 与非 nil 空 slice，这两者都成为空 `Vec`，但当前迭代行为一致。
 
-`MockedIter` 的核心语义同样对齐：注入错误优先于底层 `Next`，`Closed` 跟踪关闭，策略开启时重复关闭令测试失败。Go 保存 `*testing.T` 并调用 `assert.FailNow`；Rust 构造器不接收测试句柄，而以 panic 直接失败当前测试。Rust 额外提供 `InjectNextErrorValue`、`ClearInjectedNextError`，并把接收文本的 `InjectNextError` 与 Go 接收任意 `error` 的接口分开。Go 外部测试调用点多于当前 Rust 调用点，所以功能对应不等于测试迁移覆盖已经完全对应。
+Go 保存 `*testing.T` 并调用 `assert.FailNow`；Rust 构造器不接收测试句柄，而以 panic 直接失败当前测试。Rust 额外提供 `InjectNextErrorValue`、`ClearInjectedNextError`，并把接收文本的 `InjectNextError` 与 Go 接收任意 `error` 的接口分开。Go 外部测试调用点多于当前 Rust 调用点，所以功能对应不等于测试迁移覆盖已经完全对应。
 
 ## 扩展指南
 
@@ -86,12 +82,3 @@ RustCodeGraph 对同名方法的图查询存在歧义，因此调用边结论以
 - 若将其用于跨线程测试，必须先在 `kv::Iterator` trait object 边界明确 `Send`/`Sync` 契约并增加独立并发测试，不能仅给结构体添加锁便宣称线程安全。
 - 性能上，`Key`/`Value` 每次读取都会克隆。若测试数据变大而需要借用返回值，必须连同 `kv::Iterator` trait 签名一起设计，不能只在本文件局部消除克隆。
 - Rust 单元测试应继续放在独立的 `iter_test.rs` 或其他独立测试文件中，不要内嵌到 `iter.rs`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引含 11,467 个文件；`files --filter pkg/util/mock` 找到 `iter.rs`、`iter_test.rs` 及 Go 对照文件。
-- RustCodeGraph 源码节点：`pkg/util/mock/iter.rs`（全 224 行）、`pkg/util/mock/iter_test.rs`（全 88 行）、`pkg/util/mock/iter.go`（全 133 行）、`pkg/util/mock/iter_test.go`（全 93 行）、`pkg/kv/kv.rs:923-929` 的 `Iterator` trait，以及 `pkg/util/mock/migration_aster_unit_test.rs:70-123` 的相关测试。
-- RustCodeGraph/搜索调用证据：`NewMockIterFromRecords → NewSliceIter` 与 `MockedIter::new`；全仓定向搜索确认 Rust 直接使用集中在 `pkg/util/mock` 测试，而 Go 调用位于 `pkg/store/driver/txn/union_iter_test.go:181-263`、`pkg/table/temptable/main_test.go:222-258` 和 `pkg/table/temptable/interceptor_test.go:1204-1229`。
-- crate 与模块证据：`pkg/util/mock/Cargo.toml`、`pkg/util/mock/lib.rs`；前者确认 `astersql-kv` 路径依赖和无 feature，后者确认模块声明与公开再导出。
-- 边界测试证据：`iter_test.rs::test_slice_iter` 覆盖空/多项、自然结束和关闭后行为；`migration_aster_unit_test.rs::{slice_iter_matches_go_cursor_and_close_behavior,mocked_iter_injects_error_without_advancing_and_tracks_close,mocked_iter_can_fail_on_multiple_close_calls}` 覆盖空键值、精确错误、持久注入、清除、关闭状态及重复关闭 panic。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终仅以固定章节结构检查和人工事实复核验证文档。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`env.rs` 属于 `astersql-ddl-ingest` crate，并由 `pkg/ddl/ingest/lib.rs` 以公开模块 `env` 暴露。它位于 DDL ingest（本地排序并批量导入）链路的进程级环境边界：保存本进程的 ingest 临时数据根目录，按 DDL job 生成后端目录，计算活跃/过期目录集合，并把已初始化的路径转换为磁盘预检所需的 `DiskRoot`。
-
-生产链已有两个直接入口：`pkg/ddl/backfilling_read_index.rs` 的 `ReadIndexStepExecutor::init` 读取 `ingest_temp_data_dir` 后执行本地排序磁盘预检；`pkg/ddl/index.rs` 将 `init_global_lightning_env` 和 `initialized_disk_root` 再导出，`pkg/session/runtime/system_session.rs` 的 `ConcreteJobExecutionContext::{ingest_initialized,pre_check_ingest_disk}` 通过该门面检查环境。相对地，`generate_ingest_temp_data_dir`、`processing_job_ids` 和 `stale_temp_directories` 当前只在 `pkg/ddl/ingest/env_test.rs` 出现，尚未接入 Rust 生产清理循环。
+用 `initialized_disk_root` 把已注册路径适配成 `disk_root::DiskRoot`，供 DDL job 初始化前执行真实文件系统空间检查。
 
 ## 核心职责
 
@@ -75,7 +73,7 @@ RustCodeGraph 将 `env.rs` 标记为被上述四个文件使用，但对逐符�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/ddl/ingest/env.go`，相关测试是 `env_test.go`。Rust 与 Go 已对齐的语义包括：维护 ingest 根路径、沿用 backend tag 协议、忽略不可解码名称，以及对过期 job 同时处理普通目录和查重目录。Rust 独立测试 `env_test.rs` 覆盖了这些目录规则。
+Rust 与 Go 已对齐的语义包括：维护 ingest 根路径、沿用 backend tag 协议、忽略不可解码名称，以及对过期 job 同时处理普通目录和查重目录。
 
 关键差异如下：
 
@@ -84,8 +82,6 @@ Go 对照文件是 `pkg/ddl/ingest/env.go`，相关测试是 `env_test.go`。Rus
 - Go `CleanUpTempDir` 自行读取目录、查询 `mysql.tidb_ddl_job` 并执行 `os.RemoveAll`，且由 `pkg/ddl/ddl.go` 每分钟运行；Rust 只提供 `processing_job_ids` 和 `stale_temp_directories` 的纯计算，没有数据库会话、定时循环或删除操作。
 - Go 的 `LitDiskRoot` 是长期全局资源跟踪器；Rust `initialized_disk_root` 每次返回新建的零缓存 `DiskRoot`，当前只适合作为路径驱动的预检适配器。
 
-因此本文件是部分语义移植和局部接线，不能据此宣称 Rust 已具备 Go 的完整 ingest 环境与清理生命周期。
-
 ## 扩展指南
 
 若要扩展启动初始化，应优先修改 `init_global_lightning_env` 及其上层启动调用，并决定是否需要把长期 `DiskRoot`/内存根纳入共享状态；同时补充独立的 `env_test.rs`，验证重复初始化、失败原子性和资源恢复。不要把测试放进 `env.rs`。
@@ -93,9 +89,3 @@ Go 对照文件是 `pkg/ddl/ingest/env.go`，相关测试是 `env_test.go`。Rus
 若要把清理能力接入生产，应复用 `processing_job_ids`/`stale_temp_directories` 和 backend tag 协议，但数据库活跃状态查询、目录枚举、定时调度及实际删除应放在合适的 DDL 会话/生命周期层。必须复刻 `env.go` 的保守错误策略，并增加“活跃 job 不删除、结束 job 成对删除、未知路径/无效名称安全忽略”的回归测试；删除属于高风险操作，还需处理查询与删除之间 job 状态变化的竞态。
 
 若改变 tag 格式，必须同步 `pkg/ddl/ingest/backend_mgr.rs`、`env_test.rs` 及 Go 对照协议，评估升级期间旧临时目录兼容性。若让 `initialized_disk_root` 承担用量跟踪或启动检查，则应避免每次新建造成状态丢失，并同步 `disk_root.rs` 相关测试。性能上，目录分类目前对活跃集合查询为对数复杂度，`processing_job_ids` 还会排序；大目录场景接线前应评估枚举、排序和重复候选成本。
-
-## 验证依据
-
-事实依据包括：目标源码 `pkg/ddl/ingest/env.rs`；crate 边界 `pkg/ddl/ingest/{Cargo.toml,lib.rs}`；目录协议与磁盘对象 `pkg/ddl/ingest/{backend_mgr.rs,disk_root.rs}`；Rust 单元测试 `pkg/ddl/ingest/env_test.rs`；生产调用点 `pkg/ddl/backfilling_read_index.rs`、`pkg/ddl/index.rs`、`pkg/session/runtime/system_session.rs`；共享环境回归测试 `pkg/session/runtime/{normal_ddl_index_reorg_initialization_test.rs,normal_ddl_masking_policy_test.rs}`；Go 对照 `pkg/ddl/ingest/{env.go,env_test.go}` 与启动/清理调用 `pkg/ddl/ddl.go`。
-
-RustCodeGraph 验证包括 `status`、`files --filter pkg/ddl/ingest`、对 `env.rs` 的 `node --file`、主要符号 `query` 以及逐符号 `callers/callees`；索引识别 12 个文件节点符号并报告四个使用文件，但逐符号边为空，故使用源码搜索补证。按任务约束未运行 Cargo；最终以固定十一章节的结构命令验证文档形状，并人工核对当前支持范围、错误边界与 Go 差异没有被写成理想状态。

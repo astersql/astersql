@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-extension` crate（见 `pkg/extension/Cargo.toml` 的 `[lib] path = "lib.rs"`），是扩展注册完成后的只读聚合层。`pkg/extension/lib.rs` 通过 `pub mod extensions` 和 `pub use extensions::*` 将这里的 API 暴露到 crate 根。
-
-上游构造入口位于 `pkg/extension/registry.rs`：`registry::doSetup` 按扩展名排序并构造 `Manifest`，随后调用 `Extensions::from_manifests`，再把结果以 `Arc<Extensions>` 缓存在全局注册表中。下游主要有两类：`pkg/extension/extensionimpl/bootstrap.rs::Bootstrap` 调用 `Extensions::Bootstrap`，`pkg/extension/session.rs::newSessionExtensions` 调用 `Manifests` 生成每个会话自己的扩展句柄。当前 Rust 仓库中，`GetAccessCheckFuncs` 和 `GetAuthPlugins` 的直接使用主要见扩展测试；Go 版本还由权限、执行器和服务器包消费，不能据此宣称相应 Rust 主链已经全部接线。
+通过 `manifests_or_empty` 为可选扩展值提供“无扩展即空列表”的局部适配。
 
 ## 核心职责
 
@@ -78,9 +76,7 @@ bootstrap 回调是同步串行调用，共享同一个可变 `BootstrapContext`
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/extension/extensions.go`。字段和五个核心方法逐项对应：`manifests`、`Manifests`、`Bootstrap`、`GetAccessCheckFuncs`、`NewSessionExtensions`、`GetAuthPlugins`。Rust 保留 Go 风格的公开方法名以便迁移比对，并额外提供 `from_manifests` 与 `manifests_or_empty`。
-
-主要一致点：Manifest 按既有顺序遍历；bootstrap 首错返回；访问检查仅收集非空回调；认证插件以名称建表并让后者覆盖；会话构造委托给 session 模块。`pkg/extension/bootstrap_test.rs` 对照 Go `bootstrap_test.go::TestBootstrap` 验证 bootstrap SQL 顺序；`registry_test.rs` 验证按名称排序；`event_listener_test.rs` 验证会话监听器按 Manifest 顺序广播；`auth_1_aster_unit_test.rs` 验证全局认证表累加而会话表采用最后一个非空 Manifest 的 Go 语义。
+Rust 保留 Go 风格的公开方法名以便迁移比对，并额外提供 `from_manifests` 与 `manifests_or_empty`。
 
 主要差异：Go 对 nil receiver 返回 nil/无操作，Rust 依赖引用和 `Option`；Go `NewSessionExtensions` 返回指针，Rust 返回值；Go 空 registry 当前产生可调用的空集合，Rust `GetExtensions` 返回 `None`；Rust 使用 `Arc` 表达共享所有权。Go 生产侧对访问检查、认证插件和会话扩展的接线比当前 Rust 搜索结果更完整，迁移状态应以实际 Rust 调用者为准。
 
@@ -92,11 +88,3 @@ bootstrap 回调是同步串行调用，共享同一个可变 `BootstrapContext`
 - 若要扩展 nil/无扩展兼容 API，应统一使用 `Option<&Extensions>` 边界并核对 Go nil receiver 语义；不要假设现有所有方法都支持空值。
 - 应把 Rust 测试逻辑放在独立测试文件，而不是嵌入 `extensions.rs`。适合扩展的现有测试面包括 `bootstrap_test.rs`、`registry_test.rs`、`event_listener_test.rs` 和 `auth_1_aster_unit_test.rs`；新增访问检查聚合行为时宜在同目录新增或扩展独立测试文件，并同步核对 `extensions.go` 及相应 Go 测试意图。
 - 性能敏感调用要注意 `Manifests`/`GetAccessCheckFuncs` 的向量克隆、`GetAuthPlugins` 的映射重建，以及 `Arc` 引用计数操作；若引入缓存，需要重新评估 registry reset 和插件生命周期。
-
-## 验证依据
-
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`files --filter pkg/extension` 找到目标文件；`node --file pkg/extension/extensions.rs` 读取完整 85 行并报告使用文件；`query Extensions` 核对 `Extensions`、`from_manifests`、五个公开方法和 `manifests_or_empty`。细粒度 `callers/callees` 未返回结果，因此未将其当作已验证调用边。
-- Rust 源与 crate 边界：`pkg/extension/extensions.rs`、`pkg/extension/Cargo.toml`、`pkg/extension/lib.rs`、`pkg/extension/registry.rs`、`pkg/extension/manifest.rs`、`pkg/extension/session.rs`、`pkg/extension/extensionimpl/bootstrap.rs`、`cmd/tidb-server/main.rs`。
-- Rust 独立测试：`pkg/extension/bootstrap_test.rs`、`pkg/extension/registry_test.rs`、`pkg/extension/event_listener_test.rs`、`pkg/extension/auth_1_aster_unit_test.rs`、`pkg/extension/extensionimpl/bootstrap_test.rs`。
-- Go 对照与测试：`pkg/extension/extensions.go`、`pkg/extension/session.go`、`pkg/extension/bootstrap_test.go`、`pkg/extension/registry_test.go`、`pkg/extension/auth_test.go`；生产调用证据还包括 `pkg/extension/extensionimpl/bootstrap.go`、`pkg/privilege/privileges/privileges.go`、`pkg/executor/simple.go`、`pkg/executor/grant.go`、`pkg/server/server.go` 和 `pkg/server/rpc_server.go`。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。交付检查以固定章节结构、链接/路径存在性、精确引用搜索和人工事实复核为准。

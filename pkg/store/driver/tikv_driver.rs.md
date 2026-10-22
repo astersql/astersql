@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-driver` crate 的 TiKV 存储入口，位于 SQL/会话层与 PD、TiKV、Coprocessor、元数据服务之间。crate 根 `pkg/store/driver/lib.rs` 以私有模块 `tikv_driver` 装入本文件，再用 `pub use tikv_driver::*` 导出其公开 API；`pkg/store/driver/Cargo.toml` 的 `[package.metadata.porting]` 将该 crate 对应到 Go 包 `pkg/store/driver`。
-
-服务启动链路中，`cmd/tidb-server/main.rs::registerStoresWithTiKVDriver` 把 `TiKVDriver` 包装成 `pkg/store/store.rs::TiKVStoreDriver` 并注册到 store registry；后者的 `Driver::Open` 调用本文件的 `TiKVDriver::Open`，随后调用 `TikvStore::StartGCWorker`。跨 keyspace 会话还会由 `pkg/session/runtime/crossks_store.rs::open_target_store_with_driver_and_tls` 和 `pkg/session/runtime/session_factory.rs` 直接调用 `OpenWithOptions`。
-
-本文件不是单纯门面：它包含 URI/TLS/客户端选项解析、后端抽象、Store 缓存与资源回收、事务和元数据入口、锁等待聚合、请求追踪注入。但当前实现同时保留若干兼容占位，不能把所有与 Go 同名的方法理解为等价的完整实现。
+`TikvStore` 对外提供地址/TLS/客户端、事务时间戳、选项表、锁等待、keyspace 元数据和关闭生命周期。
 
 ## 核心职责
 
@@ -113,13 +109,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/store/driver/tikv_driver.go`。Rust 保留了 `TiKVDriver`、Option 构造器、`Open/OpenWithOptions`、`tikvStore` 别名、地址/TLS/GC/事务/锁等待/追踪注入等接口形状，并由独立测试固定若干 Go 行为：
-
-- 每次 Open 先重载全局默认再应用 option；option 不回写全局配置。
-- `tikv://pd1,pd2` 的逗号地址、`disableGC` 和 keyspace 解析语义。
-- 相同 cluster/keyspace 复用缓存 Store，命中缓存后关闭多余 PD；Close 幂等并移除缓存。
-- `disableGC` 阻止 GC 启动标记；动态 option 的 `None` 删除语义。
-- 锁等待聚合跳过失败响应；同步/异步追踪均在转发前注入 `SourceStmt`。
+Rust 保留了 `TiKVDriver`、Option 构造器、`Open/OpenWithOptions`、`tikvStore` 别名、地址/TLS/GC/事务/锁等待/追踪注入等接口形状，并由独立测试固定若干 Go 行为：
 
 主要差异也必须保留在阅读结论中：
 
@@ -128,7 +118,6 @@ Go 对照文件是 `pkg/store/driver/tikv_driver.go`。Rust 保留了 `TiKVDrive
 - Go 的 `Begin`、`GetSnapshot`、`GetMPPClient`、`GetMemCache` 返回完整实现；Rust同名普通入口多为轻量类型或占位，真实事务能力集中在 `BeginPessimistic`/`kv_adapter`。
 - Go 的全局缓存以强引用保存 `*tikvStore`；Rust使用弱引用，存活性由外部 `Arc` 决定。
 - Go 同步追踪包装还检查 flight-recorder dump trigger；Rust未移植该副作用。
-- Rust新增 `metadata_snapshot`/`EtcdMetadataStore` 适配，惰性持有元数据 PD 客户端并计算 `/keyspaces/tidb/{id}` namespace。
 
 ## 扩展指南
 
@@ -140,21 +129,3 @@ Go 对照文件是 `pkg/store/driver/tikv_driver.go`。Rust 保留了 `TiKVDrive
 - 扩展请求追踪时同时更新 `SendRequest` 与 `SendRequestAsync`，保持“先注入、后转发”和错误/回调透传；同步 `client_test.rs`，如需对齐 Go 还应评估 flight-recorder trigger。
 - 实现目前的占位接口时不要只替换返回类型外形；应接到同一 `ClientRuntime`/Coprocessor Store，避免创建第二套路由缓存或事务客户端，并在独立测试文件中验证真实行为。Rust 源文件和测试逻辑必须继续分文件保存。
 - 性能风险集中在全局 Open 锁、每次访问的 Store Mutex、锁内 backend 时间戳调用及全量锁等待聚合；兼容风险集中在 Go 接口语义、keyspace API V1/V2、资源关闭顺序和错误映射。
-
-## 验证依据
-
-- 增量证据：`OpenWithOptions` 在路径解析成功后按 `diagnosticmode::Enabled` 安装 `EnsureDiagnosticRpcGuard`；这只能证明 guard 接线，不能证明本文件已覆盖所有 RPC 的诊断策略。`GetKeyspaceID` 从 runtime 读取 ID，与 `metadata_snapshot` 的惰性元数据连接分开。现有 `driver_lifecycle_test.rs` 证明缓存与关闭意图，未直接覆盖这两项新增行为的网络结果。
-
-本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
-
-事实核验读取了以下路径：
-
-- 目标实现：`pkg/store/driver/tikv_driver.rs`。
-- crate 边界与依赖：`pkg/store/driver/lib.rs`、`pkg/store/driver/Cargo.toml`。
-- Go 对照：`pkg/store/driver/tikv_driver.go`。
-- 生产调用入口：`cmd/tidb-server/main.rs`、`pkg/store/store.rs`、`pkg/session/runtime/crossks_store.rs`、`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/session.rs`。
-- 独立 Rust 测试：`pkg/store/driver/config_test.rs`、`driver_lifecycle_test.rs`、`client_test.rs`、`meta_service_group_test.rs`、`kv_adapter_test.rs`、`real_tikv_test.rs`；其中元数据 group 测试标记为 `ignore` 并要求外部 `ASTER_ETCD_TEST_ENDPOINT`。
-
-- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
-
-相关测试给出的直接行为证据包括：`config_test.rs` 的默认/option/路径断言，`driver_lifecycle_test.rs` 的缓存、关闭顺序、GC 标志和锁等待断言，`client_test.rs` 的同步/异步追踪注入与错误透传，`meta_service_group_test.rs` 的元数据缓存和 Close 后失效，以及 `real_tikv_test.rs` 的错误 PD 快速失败。此次任务为纯文档分析，按计划不运行 Cargo；最终仅执行固定十一章节的结构命令，并人工检查未把占位接口写成完整实现。

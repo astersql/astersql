@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-timer-tablestore` crate 的 SQL 表达层，位于 Timer API 数据模型与系统表存储执行器之间。模块入口 `pkg/timer/tablestore/lib.rs` 将 `sql` 声明为私有模块并通过 `pub use sql::*` 再导出；`pkg/timer/tablestore/Cargo.toml` 表明该 crate 直接依赖 `astersql-timer-api`，而实际会话执行依赖由相邻的 `store.rs` 通过 `astersql-session-syssession` 承担。
-
-它不打开会话、不启动事务，也不发送 watch 通知；它只负责两件事：把 `api::TimerRecord`、`api::TimerUpdate` 和 `api::Cond` 转成带 `%?` 占位符的 SQL/`SqlArg`，以及把 `TIMER_EXT` 列中的 JSON 与 Rust 内存对象互转。生产调用链见 `pkg/timer/tablestore/store.rs`：`TableTimerStoreCore::{Create,List,Update,Delete}` 分别调用本文件的插入、查询、更新、删除构造器，`decode_timer` 调用 `decode_timer_ext`。
+`SqlArg` 为会话执行边界提供类型化绑定值；本文件生成 SQL 和参数，但具体到会话层值的转换与执行发生在 `store.rs::executeSQL`。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ SQL 构造函数返回 `api::TimerResult`，但大多数固定格式构造本身
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/timer/tablestore/sql.go`，测试基线是 `pkg/timer/tablestore/sql_test.go`。Rust 保留了 Go 的函数划分、SQL 文本、列顺序、参数顺序、空状态默认为 IDLE、条件树括号规则、JSON tag 查询、merge-patch 清空语义和每次更新递增 VERSION 的行为。
+Rust 保留了 Go 的函数划分、SQL 文本、列顺序、参数顺序、空状态默认为 IDLE、条件树括号规则、JSON tag 查询、merge-patch 清空语义和每次更新递增 VERSION 的行为。
 
 主要实现差异来自语言边界。Go 使用 `[]any` 与 `json.RawMessage`，Rust 使用 `SqlArg`；Go 的零值 `time.Time` 对应 Rust 的 `Option<Timestamp>`；Go 用 `encoding/json`，Rust 以 `encode_*` 和 `JsonParser` 复现当前 `TIMER_EXT` 所需行为。Rust 的 `BTreeMap` 明确固定 patch 键顺序，而 Go map 的 JSON 编码器同样按键排序产生现有测试期望。Rust 独立测试 `test_timer_ext_json_matches_go_encoding_edges` 额外锁定 Go JSON 对 `<`、`>`、`&`、U+2028/U+2029 的转义、代理对和尾随逗号行为。
 
-一个需保持可见的差异是 Go 的 `buildOperatorCriteria` 对未知 operator 有显式错误分支；当前 Rust `api::OperatorTp` 是只含 AND/OR 的封闭枚举，match 已穷尽，因此无需运行时“未知操作符”分支。若 API 枚举未来扩展，编译器会迫使这里同步处理。
+一个需保持可见的差异是 Go 的 `buildOperatorCriteria` 对未知 operator 有显式错误分支；当前 Rust `api::OperatorTp` 是只含 AND/OR 的封闭枚举，match 已穷尽，因此无需运行时“未知操作符”分支。
 
 ## 扩展指南
 
@@ -91,13 +89,3 @@ SQL 构造函数返回 `api::TimerResult`，但大多数固定格式构造本身
 新增查询条件时，先在 API crate 的条件模型中定义语义，再扩展 `buildTimerCondCriteria` 或 `buildCondCriteria` 的分派，并在 `pkg/timer/tablestore/sql_test.rs` 添加独立测试，检查已有参数前缀不被覆盖、占位符数量和嵌套优先级。LIKE 条件若要支持字面前缀，需要同时定义转义字符和 SQL `ESCAPE` 规则，不能只转义 Rust 字符串。
 
 扩展 `TIMER_EXT` 时，应同时更新 `TimerExt`、编码、解码、Go 对照结构及边界测试。若引入浮点数、任意 JSON 或更复杂 schema，现有私有 `JsonValue::Number(i64)` 不够；应评估使用通用 JSON 库，而不是让手写解析器逐渐承担完整规范。所有 Rust 测试应继续放在独立的 `pkg/timer/tablestore/sql_test.rs`，不要内嵌进生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含目标；`files --filter pkg/timer/tablestore` 列出 `sql.rs`、`store.rs`、`sql_test.rs` 及 Go 对照；`node --file pkg/timer/tablestore/sql.rs --offset 1 --limit 400` 与后续 400 行节点读取覆盖全部 861 行；`query buildInsertTimerSQL --kind function --json` 区分出 Rust 符号 `sql.rs::buildInsertTimerSQL`。调用图命令在当前环境中未返回，未将其结果冒充证据。
-- 源码：`pkg/timer/tablestore/sql.rs`，核对 55 个索引符号、四类 CRUD 构造、条件递归、更新时间三态、JSON 编解码及错误路径。
-- crate/模块：`pkg/timer/tablestore/Cargo.toml`、`pkg/timer/tablestore/lib.rs`，核对 crate 名、API 与会话依赖、模块声明和再导出边界。
-- 生产调用：`pkg/timer/tablestore/store.rs` 的导入及 `TableTimerStoreCore::{Create,List,Update,Delete}`、`decode_timer`，核对生成结果的真实消费位置。
-- Go 对照：`pkg/timer/tablestore/sql.go`、`pkg/timer/tablestore/store.go`，核对 SQL 文本、零值、条件、merge patch、版本与 CRUD 接线。
-- 独立测试：`pkg/timer/tablestore/sql_test.rs` 的 `test_build_insert_timer_sql`、`test_build_cond_criteria`、`test_build_select_timer_sql`、`test_build_update_criteria`、`test_build_update_timer_sql`、`test_build_delete_timer_sql`、`test_timer_ext_json_matches_go_encoding_edges`；并对照 `pkg/timer/tablestore/sql_test.go` 的同类测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只执行任务规定的 11 章节结构检查，并人工复核本文未把会话、事务、通知等相邻职责归入本文件。

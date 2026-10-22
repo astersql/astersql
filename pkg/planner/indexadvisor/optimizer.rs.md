@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-indexadvisor`。crate 由同目录 [`lib.rs`](lib.rs) 装配，并通过公开模块 `optimizer` 暴露本文件中的 what-if 优化器抽象；[`Cargo.toml`](Cargo.toml) 的 `[lib]` 将 crate 根指定为 `lib.rs`，移植元数据把它对应到 Go 包 `pkg/planner/indexadvisor`。
-
-它位于索引顾问的“算法与真实规划器/元数据之间”这一边界：上层候选枚举、列收集和推荐结果整理只依赖 `Optimizer` trait，不直接访问表元数据或 planner。当前可执行 Rust 实现是 `InMemoryOptimizer`，以调用方提供的 `TableMetadata` 和代价回调模拟该边界，主要服务算法联调和独立测试；它不是 Go `optimizerImpl` 的 session-backed 生产适配器。文件第 22—84 行的大段内容均为注释中的迁移设计草案，不参与编译，不能视为已经接线的能力。
+用 `TableMetadata` 保存内存表目录和统计摘要，用 `InMemoryOptimizer` 提供确定性、无外部 I/O 的 trait 实现。
 
 ## 核心职责
 
@@ -83,7 +81,7 @@ RustCodeGraph 能定位 `InMemoryOptimizer`、trait 方法和文件使用者，�
 
 ## 与 Go 版本的对应关系
 
-[`optimizer.go`](optimizer.go) 是直接 Go 对照文件。Rust `Optimizer` 的七个方法逐项对应 Go 接口的 `ColumnType`、`PrefixContainIndex`、`PossibleColumns`、`TableColumns`、`IndexNameExist`、`EstIndexSize`、`QueryPlanCost`，前缀判断、系统库过滤和缺列统计按每列 `8 * RealtimeCount` 回退等核心规则保持一致。
+Rust `Optimizer` 的七个方法逐项对应 Go 接口的 `ColumnType`、`PrefixContainIndex`、`PossibleColumns`、`TableColumns`、`IndexNameExist`、`EstIndexSize`、`QueryPlanCost`，前缀判断、系统库过滤和缺列统计按每列 `8 * RealtimeCount` 回退等核心规则保持一致。
 
 两者的关键实现差异是：
 
@@ -93,7 +91,7 @@ RustCodeGraph 能定位 `InMemoryOptimizer`、trait 方法和文件使用者，�
 - Go 从 `InfoSchema` 获得规范化 `CIStr` 名称；Rust 依赖调用方用小写键准备内存目录，因此部分方法存在显式的大小写敏感边界。
 - Go 接口明确非线程安全，因为它临时修改 session；Rust 内存实现不修改 session，但 trait 仍未承诺线程安全。
 
-[`optimizer_test.go`](optimizer_test.go) 以 mock store 覆盖真实表类型、索引最左前缀、多表同名列、表列枚举、名称检查、统计大小和假设索引降低计划代价。Rust [`optimizer_test.rs`](optimizer_test.rs) 覆盖内存实现的对应元数据契约与大小写/错误边界，但真实 SQL 解析、session 状态恢复和 planner 假设索引效果仍只由 Go 测试验证。
+Rust [`optimizer_test.rs`](optimizer_test.rs) 覆盖内存实现的对应元数据契约与大小写/错误边界，但真实 SQL 解析、session 状态恢复和 planner 假设索引效果仍只由 Go 测试验证。
 
 ## 扩展指南
 
@@ -104,12 +102,3 @@ RustCodeGraph 能定位 `InMemoryOptimizer`、trait 方法和文件使用者，�
 - 修改大小估算时，需要说明缺统计回退、溢出语义和单位；同步更新 `optimizer_test.rs` 及 Go 统计测试所表达的意图。
 - 为 trait 增加方法会影响 `InMemoryOptimizer`、测试中的 `SizeErrorOptimizer` 等所有实现；应先搜索 `impl Optimizer for`，再更新独立测试，不要把测试逻辑内嵌到 `optimizer.rs`。
 - 代价回调处于候选组合的高频热路径。新增克隆、解析或 I/O 前应评估算法枚举放大效应，并保留确定性错误传播。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/planner/indexadvisor` 确认目标、Go 对照和相关测试；`node --file pkg/planner/indexadvisor/optimizer.rs` 阅读完整 268 行并确认文件使用者；`query InMemoryOptimizer --kind struct`、`query query_plan_cost --kind method`、`query possible_columns --kind method`、`query prefix_contain_index --kind method` 核对主要符号。trait-object caller/callee 查询未返回可用边，因此另以调用点搜索补齐动态调用证据。
-- Rust 源与 crate 边界：[`optimizer.rs`](optimizer.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`model.rs`](model.rs)。
-- 直接 Rust 调用者：[`algorithm.rs`](algorithm.rs)、[`utils.rs`](utils.rs)、[`indexadvisor.rs`](indexadvisor.rs)。
-- 独立 Rust 测试：[`optimizer_test.rs`](optimizer_test.rs)；补充集成语义可见 `algorithm_test.rs`、`utils_test.rs`、`indexadvisor_test.rs`、`indexadvisor_sql_test.rs` 和 `indexadvisor_tpch_test.rs`。
-- Go 对照与测试：[`optimizer.go`](optimizer.go)、[`optimizer_test.go`](optimizer_test.go)。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务规定的 11 章节结构检查，并人工复核当前实现与注释草案、Rust 与 Go 能力边界没有混写。

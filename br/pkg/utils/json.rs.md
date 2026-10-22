@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 library crate `astersql-br-pkg-utils`（`br/pkg/utils/Cargo.toml`），由 `br/pkg/utils/lib.rs` 通过 `#[path = "json.rs"] pub mod json` 公开挂载。它移植 Go 的 `br/pkg/utils/json.go`，在 BR 的 protobuf 元数据对象与便于人工查看、跨语言交换的 JSON 之间转换，覆盖 `BackupMeta`、拆分元数据 `MetaFile` 和统计分片 `StatsFile` 三种根对象。
-
-这里不是通用 JSON 或 SQL JSON 实现，也不负责文件、对象存储或网络 I/O。RustCodeGraph 将该文件识别为 807 行、50 个符号的纯转换模块；仓库引用复核显示，当前 Rust 直接使用者仅有 `br/pkg/utils/json_test.rs` 和 `br/pkg/metautil/debug_test.rs`，尚无 Rust 生产文件调用这六个公开入口。相对地，Go 生产路径已在 `br/cmd/br/debug.go` 使用 `MarshalBackupMeta`/`UnmarshalBackupMeta`，并在 `br/pkg/metautil/debug.go` 使用 `MarshalMetaFile`/`MarshalStatsFile`。因此，本文件目前是公开且有兼容性测试的 Rust 格式实现，但不能据此宣称 Rust BR 调试主链已经完成接线。
+用 `insert_string`、`insert_u64`、`insert_hex` 和各 `*_to_map` 辅助函数实现类似 Go `encoding/json` 的 `omitempty`：空字符串、空字节、零整数、`false` 及空数组通常不输出。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@
 
 ## 与 Go 版本的对应关系
 
-六个公开函数及三层对象转换结构对应 `br/pkg/utils/json.go` 的同名函数与 `jsonFile`、`jsonRawRange`、`jsonSchema`、`jsonBackupMeta`、`jsonMetaFile`、`jsonStatsBlock`、`jsonStatsFile` 包装结构。Rust 手工构造 `serde_json::Map` 来模拟 Go protobuf 字段与 `omitempty` 的组合效果；`br/pkg/utils/json_test.rs` 复用 Go `json_test.go` 的真实 backup/meta/stats 夹具，并用解析后的 `serde_json::Value` 比较逻辑相等。
+Rust 手工构造 `serde_json::Map` 来模拟 Go protobuf 字段与 `omitempty` 的组合效果；`br/pkg/utils/json_test.rs` 复用 Go `json_test.go` 的真实 backup/meta/stats 夹具，并用解析后的 `serde_json::Value` 比较逻辑相等。
 
 两侧关键一致点是：File/RawRange 键用 hex；Go `[]byte` 默认 JSON 编码对应 Rust 对 IV 和 backup range 使用的标准 Base64；schema 和统计载荷嵌套为 JSON；BackupMeta DDL 是单个 JSON 值，MetaFile DDL 是值数组；零值字段省略；缺失嵌套值按 `null`/空字节规则恢复。
 
@@ -95,11 +93,3 @@
 - 修改嵌套 JSON 或 `omitempty` 规则时，同步 `br/pkg/utils/json_test.rs` 与 `br/pkg/utils/json_test.go` 的 BackupMeta、MetaFile、StatsFile 夹具；比较 JSON 逻辑值，不依赖键序或空白。Rust 测试继续放在独立 `json_test.rs`，不要内嵌到生产源文件。
 - 若将 Rust 生产调试路径接到本模块，应从 Go 的 `br/cmd/br/debug.go`、`br/pkg/metautil/debug.go` 核对调用时机、读写载体和错误注释链，并新增调用方级测试；公开模块存在本身不能替代接线验证。
 - 兼容性风险最高的是落盘字段名、hex/Base64 选择、零值省略、整数有符号/宽度及嵌套 `null` 语义。性能风险来自整树解析和重复分配；如需流式化，应先保证输出逻辑树和错误原子性不变，而非直接替换现有格式。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utils` 确认 Rust/Go 实现与测试均已索引；`node --file br/pkg/utils/json.rs --offset 1 --limit 260` 和 `--offset 261 --limit 600` 读取完整 807 行，并报告目标被 58 个文件建立文件级使用关系；`query` 精确确认六个公开函数的 Rust 定义 ID、签名及 Go 同名候选。对六个 Rust 函数 ID执行 `callers --limit 50` 无输出，未将其当作生产调用证据。
-- 源码与 crate：`br/pkg/utils/json.rs`（全部实现）、`br/pkg/utils/lib.rs`（公开模块装配）、`br/pkg/utils/Cargo.toml`（crate 名、library 入口、`serde_json`/`astersql-errors` 依赖及本地 stub 边界）、`br/pkg/utils/key.rs`（hex 辅助的直接依赖）。目标包不存在 `doc.go`。
-- Go 对照：RustCodeGraph 读取 `br/pkg/utils/json.go` 全部 371 行；限定生产 Go 搜索确认 `br/cmd/br/debug.go` 和 `br/pkg/metautil/debug.go` 的真实调用位置。
-- 测试：RustCodeGraph 读取 `br/pkg/utils/json_test.rs` 的夹具说明与第 580 至 678 行测试入口；测试覆盖三类往返、空嵌套 JSON 错误、缺省 `null`、非标准 Base64、错误已知字段类型。Go 对照测试为 `br/pkg/utils/json_test.go`。另以 Rust 引用搜索确认 `br/pkg/metautil/debug_test.rs` 的解码调用。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付检查使用任务指定的结构命令，要求文档存在且恰好包含这 11 个固定二级标题；同时人工复核唯一生产物为本文件、没有修改 Rust/Go/Cargo/`plan.md`，且扩展建议保持测试在独立文件中。

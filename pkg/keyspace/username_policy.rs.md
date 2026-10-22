@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 [`astersql-keyspace`](Cargo.toml) crate。crate 入口 [`lib.rs`](lib.rs) 以私有 `mod username_policy` 装载它，再通过 `pub use username_policy::*` 将公开的 `UsernamePolicy` trait 和 `GetUsernamePolicy` 工厂提升到 crate 根。它位于 keyspace 多租户边界：根据部署模式为用户名选择“直接放行”或“必须携带当前 keyspace 前缀”的策略。
-
-该文件只定义策略及字符串转换，不负责读取登录报文、查询 `mysql.user`、执行 `CREATE/ALTER/GRANT`，也不修改全局配置。Rust 全仓引用搜索目前只找到独立测试调用这些公开 API，未找到 Rust 生产调用点；因此当前可确认的是策略实现和测试已经迁移，不能据此声称 Rust 登录或执行器主链已完成接线。Go 生产版本的实际入口位于 `pkg/server/conn.go`、`pkg/executor/grant.go` 与 `pkg/executor/simple.go`。
+`DefaultUsernamePolicy` 保持传统部署兼容：任意用户名均校验成功、任意格式均视为有效，并且不生成别名、不执行去前缀转换。
 
 ## 核心职责
 
@@ -93,13 +91,10 @@ RustCodeGraph 的 `explore` 将 Rust `GetUsernamePolicy` 的调用者识别为 `
 
 ## 与 Go 版本的对应关系
 
-直接对照 [`username_policy.go`](username_policy.go) 后，Rust 保留了 Go 的接口方法、工厂分支、两个私有策略、空前缀宽松规则、点号计数规则、候选拼接、前缀剥离和标准错误参数顺序。主要语言映射为：
+直接对照 [`username_policy.go`](username_policy.go) 后，Rust 保留了 Go 的接口方法、工厂分支、两个私有策略、空前缀宽松规则、点号计数规则、候选拼接、前缀剥离和标准错误参数顺序。
 
 - Go `UsernamePolicy` interface → Rust 对象安全 trait；Go 接口返回值 → `Box<dyn UsernamePolicy>`。
-- Go `error`/`nil` → Rust `Result<(), SharedError>` 的 `Err`/`Ok(())`。
 - Go `nil` 或空 `[]string` → Rust 空 `Vec<String>`；对当前调用者的迭代与 `Empty` 判断语义一致，但 nil 身份不保留。
-- Go 值类型 `prefixPolicy{userPrefix: ...}` → Rust 拥有 `String` 的 `PrefixPolicy`。
-- Go `strings.HasPrefix`、`strings.Count` 和切片去前缀 → Rust `starts_with`、`matches('.').count()` 和 `strip_prefix`。
 
 Go 的 [`keyspace_test.go`](keyspace_test.go) 覆盖默认策略与 NextGen Starter 分支；Rust 的 [`keyspace_test.rs`](keyspace_test.rs) 对齐这些用例，并额外由 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 检查标准错误消息与错误分类。Rust 测试目前覆盖了正确前缀、缺失前缀、错误/多段名字、变体和去前缀；空 keyspace 下前缀策略的完整四方法组合没有在这两个直接测试中单独构造，因为工厂依赖全局模式与配置。
 
@@ -116,11 +111,3 @@ Go 的 [`keyspace_test.go`](keyspace_test.go) 覆盖默认策略与 NextGen Star
 - 测试必须继续放在独立文件。优先扩展 [`keyspace_test.rs`](keyspace_test.rs) 或 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，同步核对 [`keyspace_test.go`](keyspace_test.go)；建议覆盖空 keyspace、大小写、`ks.`、多点用户名，以及任何新增生产接线的调用级行为。
 
 主要兼容风险是改变用户名解析后影响现有账户查找与错误码；正确性风险是四方法语义不一致或把 Go 接线误认为 Rust 已接线；性能风险局限于热路径上的装箱与字符串构造，本文件没有网络、锁竞争或数据库访问。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含 11,467 个文件、307,296 个节点与 1,848,419 条边；`explore "pkg/keyspace/username_policy.rs UsernamePolicy GetUsernamePolicy PrefixPolicy DefaultUsernamePolicy"` 返回目标 Rust/Go 全文及调用概览；`query GetUsernamePolicy --json` 精确区分 `username_policy.rs:40` 与 `username_policy.go:38`，`query expected_prefix --json` 定位 Rust 私有助手。精确 `callers/callees` 查询本次未完成，未据此虚构边。
-- 已读 Rust 与 crate 边界：[`username_policy.rs`](username_policy.rs)、[`lib.rs`](lib.rs)、[`keyspace.rs`](keyspace.rs)、[`Cargo.toml`](Cargo.toml)、[`pkg/config/deploymode/mode.rs`](../config/deploymode/mode.rs)、[`pkg/util/dbterror/exeerrors/errors.rs`](../util/dbterror/exeerrors/errors.rs)。修改行为前已读取包契约 [`doc.go`](doc.go)。
-- 已读独立测试：[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 与 [`keyspace_test.rs`](keyspace_test.rs)，分别验证策略/错误对齐和 Go `TestUsernamePolicy` 迁移行为；测试未嵌入生产文件。
-- 已读 Go 对照与生产调用：[`username_policy.go`](username_policy.go)、[`keyspace_test.go`](keyspace_test.go)、`pkg/server/conn.go`、`pkg/executor/grant.go`、`pkg/executor/simple.go`。全仓 `rg` 同时确认 Rust 直接调用只出现在上述 keyspace 测试，而 Go 生产调用覆盖认证和用户管理路径。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令验证恰有 11 个固定二级标题，并人工检查源码链接、迁移状态、边界与扩展建议均有直接证据。

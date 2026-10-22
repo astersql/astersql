@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 crate `astersql-store-mockstore-unistore-client`，crate 入口 `pkg/store/mockstore/unistore/client/lib.rs` 通过 `pub mod client` 挂载本模块，并用 `pub use client::*` 在 crate 根重新导出其公共项。`pkg/store/mockstore/unistore/client/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `package.metadata.porting.go-package` 分别确认了 crate 边界及其 Go 来源 `pkg/store/mockstore/unistore/client`。
-
-它位于 mock UniStore 的 RPC 抽象层，只定义“关闭客户端”和“同步发送一次请求”所需的最小接口，不保存连接、不选择协议，也不执行请求。workspace 根 `Cargo.toml` 将该 crate 注册为 `facade_store_mockstore_unistore_client`，`pkg/lib.rs` 再从 `store::mockstore::unistore::client` 门面导出。TiKV crate 和 cophandler crate 的 Cargo 清单也声明了依赖（后者为 optional），但当前 Rust 生产源码检索不到对该 trait 的实现或调用；因此这些清单只能证明可见性/依赖边界，不能证明运行主链已经接入。
+位于 mock UniStore 的 RPC 抽象层，只定义“关闭客户端”和“同步发送一次请求”所需的最小接口，不保存连接、不选择协议，也不执行请求。
 
 ## 核心职责
 
@@ -64,8 +62,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 源 `pkg/store/mockstore/unistore/client/client.go` 同样只声明 `Client` 接口，包含 `Close() error` 和 `SendRequest(context.Context, string, *tikvrpc.Request, time.Duration) (*tikvrpc.Response, error)`，目的也是避开与 TiKV client 包的循环依赖。Rust 逐项保留了关闭、上下文、地址、请求、超时、响应和错误这七个语义位置。
-
 主要差异是 Rust 将 Go 的固定协议类型泛化为四个关联类型，并用借用表达输入生命周期；Go 的 `context.Context` 和 `tikvrpc` 请求/响应由编译期固定，Rust trait 仅靠实现方解释。Go 接口方法集合可由 `rpc.go::RPCClient` 隐式满足，Rust 必须显式写 `impl Client for ...`。Go `Close` 不要求可变接收者，而 Rust 的 `&mut self` 在类型层表达独占关闭。Go `error` 没有等价的 `Send + Sync + 'static` 声明；Rust 额外约束错误便于跨线程传播。
 
 迁移状态不是完全等价接线：Go 消费者已经通过接口调用生产 `RPCClient`，Rust 目标 trait 当前只在迁移单元测试中实现。Rust 相邻 `rpc.rs::RPCClient` 的签名也尚不匹配，不能声称 Go 的生产调用链已经通过此 trait 移植完成。
@@ -77,11 +73,3 @@ Go 源 `pkg/store/mockstore/unistore/client/client.go` 同样只声明 `Client` 
 - 增加重试、异步发送、按地址关闭、事件监听等能力前，应确认它们是否属于所有客户端的最小共同边界；实现特有能力宜留在扩展 trait 或具体类型，避免扩大依赖面。
 - 修改 `Client` 的关联类型约束或方法签名时，应同步更新独立测试 `pkg/store/mockstore/unistore/client/migration_aster_unit_test.rs`，并检索 facade、TiKV/cophandler Cargo 使用者及所有 `impl Client for`。Rust 测试逻辑应继续放在独立测试文件，不嵌入 `client.rs`。
 - 兼容风险主要是 trait 实现破坏和 facade 公共 API 变化；正确性风险集中在超时/取消被实现忽略及关闭与在途请求竞态；性能风险来自为适配借用接口而进行不必要复制或在共享 `send_request` 上加入粗粒度锁。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点，目标目录列出 `client.rs`、`lib.rs`、`client.go` 和独立迁移测试；目标文件节点显示 54 行及唯一 `Client` trait。对精确符号 `pkg/store/mockstore/unistore/client/client.rs::Client` 的 callers/callees 查询未得到可用静态调用边，因此用直接引用检索补齐未覆盖的 Cargo、门面和测试证据。
-- 已读生产/装配文件：`pkg/store/mockstore/unistore/client/client.rs`、`client/lib.rs`、`client/Cargo.toml`、workspace `Cargo.toml`、`pkg/lib.rs`、`pkg/store/mockstore/unistore/rpc.rs`，以及 TiKV/cophandler 的 Cargo 清单。
-- 已读 Go 对照与消费证据：`pkg/store/mockstore/unistore/client/client.go`、`pkg/store/mockstore/unistore/rpc.go`、`pkg/store/mockstore/unistore/tikv/server.go`、`pkg/store/mockstore/unistore/cophandler/cop_handler.go`、`mpp.go`、`mpp_exec.go`。
-- 已读独立 Rust 测试：`pkg/store/mockstore/unistore/client/migration_aster_unit_test.rs`。其中 `send_request_preserves_context_address_request_and_timeout` 覆盖成功透传，`close_releases_client_and_send_errors_are_preserved` 覆盖错误保留与显式关闭标志。Go 同目录没有 `client_test.go`；全目录测试检索只发现 `pd_test.go` 持有具体 `RPCClient`，没有直接测试该接口声明。
-- 人工核对结论：该文件存在是为了提供避免具体协议依赖的最小 RPC 客户端边界；它的运行行为完全由实现决定；当前 Rust 生产主链尚未通过该 trait 接线。未运行 Cargo，符合本纯文档任务的明确限制。

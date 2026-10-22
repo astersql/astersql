@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 DXF（Distributed eXecution Framework）执行节点上的 CPU slot 管理器。对应源码为 [`slot.rs`](slot.rs)。它属于 `astersql-dxf-framework-taskexecutor` crate；模块入口 [`lib.rs`](lib.rs) 以 `mod slot` 装配本文件，并通过 `pub use slot::*` 把公开符号重导出给同 crate 的执行管理器和测试使用。
-
-在完整执行链中，`Manager::NewManager` 以节点资源 `NodeResource.TotalCPU` 调用 `newSlotManager`，因此一个 `slotManager` 对应一个执行节点的本地并发容量。它只管理“任务占多少 slot、能否分配、哪些低优先级任务可被抢占”这组内存状态；任务发现、取消、执行线程和持久化均由 `manager.rs`、`task_executor.rs` 及 `TaskTable` 承担。
+实现 DXF（Distributed eXecution Framework）执行节点上的 CPU slot 管理器。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照实现是 `pkg/dxf/framework/taskexecutor/slot.go`，Rust 独立测试对应 `slot_test.rs`，Go 测试对应 `slot_test.go`。核心语义保持一致：容量来自 CPU 数、按 `TaskBase.Compare` 排序、仅抢占更低优先级任务、`alloc` 不直接执行抢占、未知任务释放无操作，以及 `exchange` 以新旧 slot 差值更新容量。
-
 实现形式存在以下差异：
 
 - Go 的管理器保存 `*proto.TaskBase`，Rust 保存 `TaskBase` 克隆；Rust 返回的抢占列表也是独立快照。
@@ -104,12 +100,3 @@ Go 对照实现是 `pkg/dxf/framework/taskexecutor/slot.go`，Rust 独立测试�
 - 测试逻辑应继续放在独立的 `slot_test.rs`，不要嵌入生产源文件；生产文件中的 `TasksForTest` 仅作为受 `cfg(test)` 限制的观察接口。
 
 兼容性风险主要来自改变抢占次序或布尔/候选列表语义；正确性风险集中在容量重复扣减/归还和索引失配；性能风险集中在锁竞争、任务克隆、排序和全量索引重建。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标仓库；`files --filter pkg/dxf/framework/taskexecutor` 确认目标及相邻 Rust/Go 文件；`node --file pkg/dxf/framework/taskexecutor/slot.rs` 读取 127 行源码并报告 13 个符号与 24 个反向使用文件；`query` 定位 `slotManager`、`newSlotManager`、`canAlloc0`、`canAlloc`、`free`、`exchange`、`availableSlots`、`usedSlots`、`rebuild` 和 `TasksForTest`。精确 callers/callees 命令在当前索引上超时、无输出，未把它作为调用边证据。
-- 生产源码：[`slot.rs`](slot.rs)、[`lib.rs`](lib.rs)、[`interface.rs`](interface.rs)、[`manager.rs`](manager.rs)、[`task_executor.rs`](task_executor.rs)。
-- crate 边界：[`Cargo.toml`](Cargo.toml)。
-- Go 对照：[`slot.go`](slot.go)。
-- 独立测试：[`slot_test.rs`](slot_test.rs) 与 [`slot_test.go`](slot_test.go)；相邻管理器和执行器测试中的调用点通过目录级源码搜索核对。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求目标文档存在，并且固定的十一个二级标题各出现一次。

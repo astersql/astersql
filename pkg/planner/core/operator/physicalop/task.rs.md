@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core-operator-physicalop` crate。crate 根 `lib.rs` 以私有模块 `mod task;` 编译它，再以 `pub use task::*;` 导出其接口。它处在物理算子生成与执行形态选择的边界：把一棵 `dyn PhysicalPlan` 包装成 TiDB 本地执行的 `RootTask`，保存尚未组装成 reader 的 `CopTask` 两侧计划，并提供 Cop 收尾和物理树遍历工具。
-
-这里的“任务”是优化器候选计划的执行载体，不是异步运行时任务。其公共契约来自 `pkg/planner/core/base/task_base.rs` 的 `Task` trait。`Cargo.toml` 将本 crate 映射到 Go 包 `pkg/planner/core/operator/physicalop`，本文件直接使用 `base`、`expression`、`property` 与 `kv` 等工作区 crate。
+`CopTask`：保存 reader 构造前的表侧/索引侧下推计划，负责将不可下推条件物化为 Root `PhysicalSelection`、在索引侧结束时迁移统计，以及辨认计划实际使用的存储类型。
 
 ## 核心职责
 
@@ -64,8 +62,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `task.go`，而 `RootTask`/完整 `CopTask` 结构和 Cop-to-Root 主流程位于 `task_base.go`。
-
 - `FinishIndexPlan` 与 Go 保持“幂等、索引统计覆盖表统计、保留表统计版本”的核心语义；Rust 使用 trait 方法，不依赖 Go 的 `*PhysicalTableScan` 强制类型断言。
 - `GetStoreType` 保留空计划为 TiKV、分叉为 TiFlash、叶子表扫描读 `StoreType` 的规则；Rust 还允许 `BasePhysicalPlan` 携带 store type，这是额外兼容路径。
 - Go `handleRootTaskConds` 在方法内调用 `cardinality.Selectivity`，失败时回退 `cost.SelectionFactor`；Rust 把选择率作为参数传入，并只校验有限性，默认值硬编码为 `0.8`。Rust 还把条件、选择率和来源标记留存在 `RootTask` 中。
@@ -80,12 +76,3 @@
 扩展 Cop 收尾字段或行为时，应先以 Go `task_base.go`/`task.go` 的真实增量为依据，避免把完整 Go 子系统递归搬入本文件。修改 `FinishIndexPlan`、`HandleRootTaskConds` 或 `GetStoreType` 时，分别补充缺失单侧/重复调用、非法选择率/空条件、未知叶子/多孩子等边界。测试必须继续放在同目录独立文件 `task_test.rs`，不要嵌入生产源文件。
 
 要实现完整虚拟列展开，最合适的接入点是 `TryExpandVirtualColumn` 的 visitor 或一个包装函数；需明确 visitor 返回 `true` 是“本节点已处理，停止下钻”，并验证克隆/替换不会改变计划 ID、统计、schema 或上下文。任何将这些辅助方法接入生产主链的改动都应同时核对 Go 调用点与 Rust 调用图，并评估深克隆带来的内存和规划时延。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/planner/core/operator/physicalop/task.rs --offset 1 --limit 500` 覆盖目标文件全部 291 行；`query RootTask/CopTask/MppTask` 用于消除同名类型歧义；`explore` 确认 `RootTask::New/NewWithMpp` 的物理算子调用面以及目标文件的使用范围。
-- Rust 源码：`pkg/planner/core/operator/physicalop/task.rs`；trait 契约 `pkg/planner/core/base/task_base.rs`；模块声明和再导出 `pkg/planner/core/operator/physicalop/lib.rs`；直接调用样例集中在 `base_physical_plan.rs`、`physical_projection.rs`、`physical_apply.rs`、`physical_batch_point_get.rs` 与 `physical_indexlookup_reader.rs`。
-- crate 边界：`pkg/planner/core/operator/physicalop/Cargo.toml`，包括 `base`、`expression`、`property`、`kv` 依赖及 `package.metadata.porting.go-package`。
-- Go 对照：`pkg/planner/core/operator/physicalop/task.go` 的四个对应辅助行为；`task_base.go` 的 `RootTask`、完整 `CopTask` 和 `convertToRootTaskImpl`；生产调用点还包括 `pkg/planner/core/find_best_task.go` 与 `pkg/planner/core/task.go`。
-- 独立测试：`pkg/planner/core/operator/physicalop/task_test.rs` 覆盖叶子 store type、统计版本保留、Root selection 物化和可剪枝遍历；`task_base_test.rs` 属于另一个 `task_base` 模型，只作为相邻迁移证据，不能替代本文件测试。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验证要求目标文件存在且上述固定二级标题恰好出现 11 个；另以路径和符号搜索人工复核链接、调用点与“尚未接入生产调用”的限制说明。

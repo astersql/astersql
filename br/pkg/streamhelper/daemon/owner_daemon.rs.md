@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-streamhelper-daemon` 独立 library crate 的 owner 生命周期编排实现，由同目录 [`lib.rs`](lib.rs) 以 `owner_daemon` 模块加载并扁平再导出。crate 在根 `Cargo.toml` 的 workspace members 中，但仓库内除自身 `Cargo.toml` 外没有其他 Cargo manifest 依赖该 crate；因此当前 Rust 实现已经具备可测试的公开 API，却尚未接入 Rust 生产调用主链。真实生产入口仍是 Go：`br/pkg/task/stream.go` 的 `RunStreamAdvancer` 和 `pkg/domain/domain.go` 的 `initLogBackup` 创建 `daemon.OwnerDaemon`，分别服务命令行日志备份 checkpoint advancer 与 TiDB domain 内的日志备份 advancer。
-
-文件只负责把业务守护对象 [`Interface`](interface.rs) 与选举抽象 [`Manager`](interface.rs) 组合起来，不实现 etcd 选举，也不保存业务进度。源码明确要求业务 daemon 无状态，避免不同节点依赖各自内存或本地存储形成不一致。
+文件只负责把业务守护对象 [`Interface`](interface.rs) 与选举抽象 [`Manager`](interface.rs) 组合起来，不实现 etcd 选举，也不保存业务进度。
 
 ## 核心职责
 
@@ -87,7 +85,7 @@ Go `Begin` 返回 `func()`，Rust 返回 `DaemonLoop`，调用方以 `run().awai
 
 Go 直接依赖 `pkg/owner.Manager` 和 `context.Context`；Rust 相邻 `interface.rs` 定义精简 `Manager` trait，并以 `tokio_util::sync::CancellationToken` 包装 `Context`，避免当前独立 crate 拉入完整 etcd/kvproto 依赖。Go 每个 tick 在日志和分支中可能调用两次 `IsOwner()`；Rust先读取一次保存为 `is_owner`，让本轮日志与分支使用同一快照。
 
-`owner_daemon_test.go::TestDaemon` 的启动、首次任期、tick、卸任、清理、再夺主与再次 tick 场景由 Rust `owner_daemon_test.rs::test_daemon` 对照覆盖；Rust `parity_test.rs` 额外验证 Campaign 错误短路、tick 错误不中断、Force/Retire 透传、ticker 从 `Begin` 起算及零 interval panic。测试使用 mock manager，不验证真实 etcd 租约或多节点故障时序。
+`owner_daemon_test.go::TestDaemon` 的启动、首次任期、tick、卸任、清理、再夺主与再次 tick 场景由 Rust `owner_daemon_test.rs::test_daemon` 对照覆盖；Rust `parity_test.rs` 额外验证 Campaign 错误短路、tick 错误不中断、Force/Retire 透传、ticker 从 `Begin` 起算及零 interval panic。
 
 ## 扩展指南
 
@@ -97,12 +95,3 @@ Go 直接依赖 `pkg/owner.Manager` 和 `context.Context`；Rust 相邻 `interfa
 - 若要接入 Rust 生产路径，需由实际上层 crate 在 Cargo manifest 增加带路径的 workspace 依赖并构造真实 `Manager`/业务 `Interface` 实现；当前仅根 workspace membership 不代表生产可达。接线还需对照 Go 的 `RunStreamAdvancer`、`initLogBackup` 以及 manager 关闭责任，避免泄漏选举后台任务。
 - 若要降低锁风险，可评估把回调串行执行与状态标记拆分，但必须保证同一任期不重复 `OnBecomeOwner`、失主 cancel 不丢失、`Running` 语义不变；任何解锁后回调方案都需处理任期在窗口内变化的问题。
 - 兼容性风险主要是 Go/Rust 生命周期顺序和 `Running` 语义漂移；性能风险主要来自锁内执行用户回调及过短 tick；正确性风险主要来自失主清理延迟、上下文取消遗漏和重复任期启动。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter br/pkg/streamhelper/daemon` 确认目标、接口、模块入口及独立测试均已索引；`node --file br/pkg/streamhelper/daemon/owner_daemon.rs` 阅读完整 232 行源码；查询/探索确认 `run → ownerTick`、`run → cancelRun` 以及测试侧 `New`/`Begin`/`run` 使用。
-- Rust 源与模块：`br/pkg/streamhelper/daemon/owner_daemon.rs`、`interface.rs`、`lib.rs`。
-- crate 边界：`br/pkg/streamhelper/daemon/Cargo.toml` 声明 library path、porting 元数据及 `tokio`/`tokio-util`/`tracing` 依赖；根 `Cargo.toml` 将其列为 workspace member；全仓搜索未发现其他 manifest 引用包名。
-- Go 对照与生产入口：`br/pkg/streamhelper/daemon/owner_daemon.go`、`owner_daemon_test.go`、`br/pkg/task/stream.go:1017-1067`、`pkg/domain/domain.go:975-989`。
-- Rust 独立测试：`br/pkg/streamhelper/daemon/owner_daemon_test.rs`、`parity_test.rs`。它们验证生命周期时序、失主取消、再夺主、错误策略、强制/卸任透传和 ticker 边界；未运行 Cargo，符合本任务纯文档约束。
-- 人工复核结论：本文件存在的原因是把 owner 选举状态转换成无状态业务 daemon 的启动/任期/tick/失主取消协议；安全扩展点集中在 `Begin`、`DaemonLoop::run`、`ownerTick` 以及独立测试文件，且当前 Rust 生产接线状态已明确标为未完成而非推测已支持。

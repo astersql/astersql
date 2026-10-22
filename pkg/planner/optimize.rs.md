@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner` crate 的顶层优化编排层：它接收已经解析并包装为 `resolve::NodeW` 的 AST，协调只读准入、两类计划缓存、语句 hint、快速点查、SQL Binding、逻辑计划构建、物理优化和诊断辅助，最终返回 `Box<dyn base::Plan>` 与输出列名。crate 根 `pkg/planner/lib.rs` 将 `Optimize`、`OptimizeAstNode`、`OptimizeAstNodeNoCache`、`OptimizeExecStmt`、`OptimizeForForeignKeyCascade` 及安装/诊断接口重新导出；`pkg/planner/Cargo.toml` 则表明它直接依赖 parser AST、infoschema、sessionctx、planner core、logical/physical operator 与 rule 等内部 crate。
-
-它不是具体优化规则的实现位置。计划树由 `core::PlanBuilder::Build` 构造，规则和代价优化由 `core::DoOptimize` 执行；本文件负责决定何时、以什么会话状态和优化标志调用这些能力。跨 crate 的执行器、缓存、Binding、权限和事务能力通过 `OptimizeRuntimeService`、`NonPreparedPlanCacheService`、`PlannerDiagnosticRuntime` 及函数指针注入。
-
-当前接线边界必须特别注意：`InstallOptimizeCallbacks` 会把本文件的两个 AST 优化入口发布给 `core::InstallOptimizeAstNode`，但全仓 Rust 搜索除定义与 `pkg/planner/lib.rs` 再导出外，没有发现 `InstallOptimizeCallbacks`、`InstallDefaultOptimizeCallbacks`、`InstallPlannerDiagnosticRuntime` 或 `InstallReadOnlyAdmissionCallbacks` 的调用点。因此源码具备真实编排实现和公开安装接口，但不能仅据此断言完整服务器启动路径已经安装这些服务；未安装时相关入口会返回明确错误。
+计划树由 `core::PlanBuilder::Build` 构造，规则和代价优化由 `core::DoOptimize` 执行；本文件负责决定何时、以什么会话状态和优化标志调用这些能力。
 
 ## 核心职责
 
@@ -100,15 +96,15 @@ RustCodeGraph 对 `pkg/planner/optimize.rs` 报告 217 个符号。精确节点�
 
 ## 与 Go 版本的对应关系
 
-冻结 Go 在多语句中读取 `core.PointPlanKey`，仅 `PointPlanVal.Plan != nil` 时旁路；Rust 将该检测抽象为 `NonPreparedPlanCacheService::has_prebuilt_point_plan`，不能从 trait 声明推断已有生产实现。`multi_statement_test.rs` 三项独立测试验证无预建计划可准入、有预建计划旁路和普通单语句资格；只验证资格 helper，不证明服务器已安装服务或 SQL 缓存端到端命中。
+冻结 Go 在多语句中读取 `core.PointPlanKey`，仅 `PointPlanVal.Plan != nil` 时旁路；Rust 将该检测抽象为 `NonPreparedPlanCacheService::has_prebuilt_point_plan`，不能从 trait 声明推断已有生产实现。
 
-直接对照文件是 `pkg/planner/optimize.go`。Rust 保留了 Go 的主要阶段：只读准入、EXECUTE 分流、非预处理缓存、panic 恢复、hint/Binding/FastPlan/事务预热、默认与替代逻辑计划轮次、五组逻辑构建状态、诊断钩子和 PlanID 提取。七个替代轮的顺序、主要启用条件、规则位调整、引擎限制及严格小于代价比较均能在两端对应。
+Rust 保留了 Go 的主要阶段：只读准入、EXECUTE 分流、非预处理缓存、panic 恢复、hint/Binding/FastPlan/事务预热、默认与替代逻辑计划轮次、五组逻辑构建状态、诊断钩子和 PlanID 提取。七个替代轮的顺序、主要启用条件、规则位调整、引擎限制及严格小于代价比较均能在两端对应。
 
 实现形态有明显差异：Go 通过包级函数变量、`init()` 和直接访问 session/executor/bindinfo 完成接线；Rust 为消除 crate 环依赖，把这些能力抽象为 trait 和 `OnceLock` 安装接口。Go 的 `sync.Pool` 复用 `PlanBuilder`，Rust `buildPlan` 每轮调用 `core::NewPlanBuilder()` 新建 builder。Go 的 panic 恢复用 `defer/recover`，Rust 用 `catch_unwind`；Go 的轮次 cleanup 用闭包 `defer`，Rust 用 `Drop` guard。
 
 还存在不可忽略的语义/接线差异。Go `OptimizeForForeignKeyCascade` 只构建 statement plan，并明确绕过缓存、Binding 和权限检查；Rust 同名函数直接调用内部 `optimize`，即执行构建加 `DoOptimize` 的多轮优化，但仍绕过公开 `Optimize` 的只读准入、缓存和 Binding。Go `buildAndOptimizeLogicalPlanRound` 在首次构建后执行 privilege、table lock、table mode 检查并 `RecheckCTE`；本 Rust 文件没有这些直接调用，是否由注入服务或更下层承担不能从本文件确认。Go `init()` 会立即设置优化/诊断钩子，而 Rust 当前仓库中未发现安装函数调用点。这些均应作为当前迁移状态记录，不能描述为完全等价。
 
-Go 对 Binding 的 EXPLAIN 内层 hint、verbose note、baseline evolution task 等细节比本文件可见逻辑更丰富；Rust 将其中一部分委托给服务，且 `plan_contains_read_from_storage_hint` 的结果目前只被读取后丢弃。因此扩展或修复时应逐分支对照 Go，而不能只看公共函数名称。
+Go 对 Binding 的 EXPLAIN 内层 hint、verbose note、baseline evolution task 等细节比本文件可见逻辑更丰富；Rust 将其中一部分委托给服务，且 `plan_contains_read_from_storage_hint` 的结果目前只被读取后丢弃。
 
 ## 扩展指南
 
@@ -119,15 +115,3 @@ Go 对 Binding 的 EXPLAIN 内层 hint、verbose note、baseline evolution task 
 - 修改状态快照时应同时更新 `DefaultLogicalPlanBuildState` 的保存/恢复和独立幂等测试；遗漏任一组可能使低价胜者携带错误的表、hint、子查询 ID 或 rewrite 计时。
 - 修改只读准入时同步 Go 的白名单、COMMIT 语义与 `false` 参数约束，并扩展 `read_only_mode_*`/`commit_decision_*` 测试。
 - 修改 Go 对齐行为前，重点审查当前已知差异：外键级联是否应仅 build、权限/锁/table mode/CTE 检查的真实所有者、诊断/优化回调的生产安装点、Binding evolution 的下游副作用。性能上重点关注 builder 每轮新建、替代轮重建次数和缓存 miss 路径。
-
-## 验证依据
-
-本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/optimize.rs` 并读取 `git show 2c944fb:pkg/planner/optimize.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
-
-- Rust 源码：`pkg/planner/optimize.rs`，完整检查 1–1836 行；关键符号包括 `Optimize`、`getPlanFromNonPreparedPlanCache`、`optimizeNoCacheInner`、`optimize`、`buildPlan`、`InstallOptimizeCallbacks`、各 guard 和诊断函数。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边，目标文件含 217 个符号；`files --filter pkg/planner/optimize.rs` 确认文件入图；`node optimize.rs::Optimize`、`node optimize.rs::InstallOptimizeCallbacks`、`node optimize.rs::getPlanFromNonPreparedPlanCache`、`node optimize.rs::optimizeNoCacheInner`、`node optimize.rs::OptimizeForForeignKeyCascade` 给出了上述调用/被调用边。宽泛 `explore` 因 `Optimize` 名称高歧义产生跨仓库噪声，故用限定节点与 `rg` 补充上游接线搜索。
-- crate 与模块边界：`pkg/planner/Cargo.toml`、`pkg/planner/lib.rs`、`pkg/planner/core/optimizer_runtime.rs`；Cargo 元数据将 Go package 标为 `pkg/planner`，core 侧以两个 `OnceLock<OptimizeAstNodeFn>` 接收回调。
-- Go 对照：`pkg/planner/optimize.go`，核对 `Optimize`、`optimizeCache`、`optimizeNoCache`、`optimize`、`alternativeRounds`、`buildAndOptimizeLogicalPlanRound`、`OptimizeExecStmt`、`OptimizeForForeignKeyCascade`、`allowInReadOnlyMode`、诊断函数与 `init()`。
-- 独立 Rust 测试：`pkg/planner/optimize_aster_unit_test.rs`，覆盖只读分类/COMMIT 错误传播、非预处理缓存资格与 hit/miss、warning 条件、scope 恢复、替代轮和引擎轮资格、引擎覆盖恢复、FastPlan/Binding/Baseline 条件、五组状态反复恢复、构建前瞬态清理和 PlanID 非计划值拒绝。
-- 接线核验：全仓 `rg` 对四个 `Install*` 函数未发现 `pkg/planner/optimize.rs` 定义和 `pkg/planner/lib.rs` 再导出之外的调用；因此文档将生产安装状态标为“未发现接线”，而非“已支持”。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在，且固定的十一个二级标题恰好各出现一次。

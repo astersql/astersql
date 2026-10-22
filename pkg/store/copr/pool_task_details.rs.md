@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-copr` crate。crate 入口 `pkg/store/copr/lib.rs` 将其声明为公开模块 `pool_task_details` 并整体再导出；`pkg/store/copr/Cargo.toml` 表明该 crate 对应 Go 包 `pkg/store/copr`，本文件直接依赖 `std::time::Duration` 和该 crate 的 `kvproto` 依赖。
-
-它位于 TiKV coprocessor 响应的协议解析边界：`pkg/store/copr/network_backend.rs::pool_task_details` 从 `kvrpcpb::ExecDetailsV2.read_pool_task_details` 取出单次任务的 protobuf 统计，调用本文件的 `PoolTaskDetails::merge_from_pb` 转成 Rust 聚合值，再放入 `CopProtocolResponse.read_pool_task_details`。随后 `pkg/store/driver/read_pool_task_details.rs::cop_read_pool_task_details` 把它逐字段转换为上层统一的 `astersql_kv::PoolTaskDetails`。
+只负责两件事：定义 read-pool 任务统计的内部聚合结构 `PoolTaskDetails`，以及把一条 `kvrpcpb::PoolTaskDetails` 样本合并进该聚合。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 Go 入口位于 `pkg/store/copr/coprocessor.go`：处理 `ExecDetailsV2` 时取得 `GetReadPoolTaskDetails()`，确保 `copStats.ReadPoolTaskDetails` 已分配后调用 client-go `util.PoolTaskDetails.MergeFromPB`。Rust 将这一外部聚合行为本地化为当前文件的 `PoolTaskDetails::merge_from_pb`，再由 `network_backend.rs` 接入响应解析。
+Rust 特有差异是使用 snake_case 字段和 `Option` 表示诊断缺失，并在 `pkg/store/driver/read_pool_task_details.rs` 显式转为 Go 风格命名的规范 KV 类型。
 
-字段集合与上层 Go 使用的 `util.PoolTaskDetails` 对齐：任务、poll、dispatch、task wall、queue/wake、fair queue、poll CPU/wall 的 total/max/min 均被保留。Rust 特有差异是使用 snake_case 字段和 `Option` 表示诊断缺失，并在 `pkg/store/driver/read_pool_task_details.rs` 显式转为 Go 风格命名的规范 KV 类型。
-
-`pkg/store/copr/pool_task_details_test.rs::go_merge_48_pool_task_details_merge_samples_and_minima` 验证两个 protobuf 样本合并后的任务数、计数总量/极值、wall/queue 时间和 fair-queue waited slices，与 Go `MergeFromPB` 的聚合意图一致。当前仓库没有同路径独立 Go 单元测试专测该方法；Go 侧直接实现来自 client-go，仓库内的直接证据是 `coprocessor.go` 的调用接线。
+当前仓库没有同路径独立 Go 单元测试专测该方法；Go 侧直接实现来自 client-go，仓库内的直接证据是 `coprocessor.go` 的调用接线。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@
 协议到 SQL 可见诊断是一条逐字段链路，通常还需同步：`pkg/store/driver/read_pool_task_details.rs::cop_read_pool_task_details`、`pkg/util/execdetails/internal/group1/lib.rs::PoolTaskDetails` 的合并/展示逻辑，以及使用这些统计的 explain/slow-log 测试。遗漏 driver 转换会让字段在 copr 层存在却在 KV 边界静默丢失。
 
 测试应继续放在独立的 `pkg/store/copr/pool_task_details_test.rs`，至少覆盖首样本、多个样本、零值不应更新 min、公平队列关闭、poll count 为零、wake/poll CPU/poll wall 等现有测试尚未直接断言的分支。还应保留 `pkg/store/driver/read_pool_task_details_test.rs` 的端到端字段保真断言。兼容风险主要是 protobuf 版本/字段口径漂移；性能风险较低，但该函数位于每个带执行详情响应的热路径，避免分配和格式化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 `pkg/store/copr/pool_task_details.rs`；`query pool_task`、`query merge_from_pb` 和 `query PoolTaskDetails` 定位本文件 6 个索引符号、上游 `network_backend.rs::pool_task_details`、driver 转换和规范 KV 类型；`node --file pkg/store/copr/pool_task_details.rs --offset 1 --limit 200` 核对完整 148 行实现。图对方法未返回 callers/callees 边，因此又用精确引用检索补齐直接调用关系。
-- 生产源码：`pkg/store/copr/pool_task_details.rs`、`pkg/store/copr/network_backend.rs`、`pkg/store/copr/coprocessor.rs`、`pkg/store/copr/batch_coprocessor.rs`、`pkg/store/driver/read_pool_task_details.rs`、`pkg/store/driver/kv_adapter.rs`、`pkg/util/execdetails/internal/group1/lib.rs`。
-- crate/模块边界：`pkg/store/copr/Cargo.toml`、`pkg/store/copr/lib.rs`。
-- Go 对照：`pkg/store/copr/coprocessor.go` 中 `GetReadPoolTaskDetails` 与 `MergeFromPB` 接线，以及 `pkg/util/execdetails/execdetails.go::MergeReadPoolTaskDetails` 的后续聚合入口。
-- 独立测试：`pkg/store/copr/pool_task_details_test.rs` 验证 protobuf 样本合并；`pkg/store/driver/read_pool_task_details_test.rs` 验证 copr 响应跨 KV 边界后字段与格式保真。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前执行任务规定的 11 章节结构命令，并人工复核上述符号、边界和扩展链路。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-executor` crate；crate 根在 `pkg/executor/Cargo.toml` 中指定为 `lib.rs`，并由 `pkg/executor/lib.rs` 的 `pub mod trace;` 公开模块。它承载 `TRACE` SQL 的 Rust 侧核心算法：执行被包裹的语句、收集 basictracer 风格日志或 appdash 风格树、把轨迹写入结果 Chunk，以及生成 optimizer trace 归档名。
-
-当前实现采用泛型 trait 隔离 TiDB 会话、SQL 执行器、tracer、Chunk 与外部存储。仓库搜索只找到本文件中的 `TraceBackend` 和 `OptimizerTraceStorage` 定义，没有生产实现或 Rust 侧 `TraceExec` 构造点。因此，本文件已经实现可复用的 TRACE 控制流和格式化逻辑，但尚未像 Go 的 `executorBuilder.buildTrace` 那样接入完整生产执行链；现有 Rust 接线是 `lib.rs` 的模块导出及独立单元测试模块 `trace_test.rs`。
+仓库搜索只找到本文件中的 `TraceBackend` 和 `OptimizerTraceStorage` 定义，没有生产实现或 Rust 侧 `TraceExec` 构造点。
 
 ## 核心职责
 
@@ -72,11 +70,9 @@ statement context 与 restricted SQL 是临时会话状态。前者在 `Next` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/trace.go`。Rust 的 `TraceExec::Next`、`nextTraceLog`、`nextRowJSON`、`executeChild`、`drainRecordSet`、`dfsTree`、`generateLogResult`、`generateOptimizerTraceFile` 分别对应 Go 同名符号，主分支、事件文本、树形前缀、兄弟排序、4096 字节 JSON 分片和归档命名均保留 Go 语义。
+主要结构差异来自适配方式：Go 直接依赖 `exec.BaseExecutor`、session context、opentracing/basictracer/appdash、global external storage；Rust 通过 `TraceBackend`、`TraceRecordSet`、`TraceChunk`、`OptimizerTraceStorage` 注入。
 
-主要结构差异来自适配方式：Go 直接依赖 `exec.BaseExecutor`、session context、opentracing/basictracer/appdash、global external storage；Rust 通过 `TraceBackend`、`TraceRecordSet`、`TraceChunk`、`OptimizerTraceStorage` 注入。Rust 的时间和 duration 由后端预格式化，tags 也由后端提供 Go `%v` 表示。
-
-Go `builder.go::buildTrace` 是生产构造入口，且为非 optimizer 的 log 格式添加按 timestamp 排序的 `SortExec`。Rust 当前无等价 builder 接线，因此不能仅凭本文件断言端到端 `TRACE` 已在 Rust server 可用。Go `trace_test.go::TestTraceExec` 覆盖 insert/select/delete/analyze、row 顺序和 log 查询；Rust `trace_test.rs` 目前只覆盖树排序/前缀与 event 字段过滤，未覆盖 `TraceExec::Next`、错误路径、JSON 分片、状态恢复或 archive 创建。
+Rust 当前无等价 builder 接线，因此不能仅凭本文件断言端到端 `TRACE` 已在 Rust server 可用。Go `trace_test.go::TestTraceExec` 覆盖 insert/select/delete/analyze、row 顺序和 log 查询；Rust `trace_test.rs` 目前只覆盖树排序/前缀与 event 字段过滤，未覆盖 `TraceExec::Next`、错误路径、JSON 分片、状态恢复或 archive 创建。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@ Go `builder.go::buildTrace` 是生产构造入口，且为非 optimizer 的 log 
 - 修改树渲染时同步覆盖空 timespan、相同 `start_order`、多层前缀和极深树；修改 log 渲染时覆盖空 tags、多 field 和非 event 字段。
 - 接入 optimizer archive 时实现 `OptimizerTraceStorage`，验证随机失败、创建失败、目录尾斜杠、URL-safe Base64 padding 及 writer 生命周期。测试逻辑应继续放在独立 `trace_test.rs`，不要内嵌进生产源文件。
 - 性能风险主要是 trace 全量驻留内存、树递归与排序、JSON 一次性序列化；扩展时避免额外复制或在未验证 Go 兼容性的情况下改成流式输出。
-
-## 验证依据
-
-- Rust 源与符号：`pkg/executor/trace.rs`；RustCodeGraph `node --file` 核对 453 行全貌，并对 `Next`、`nextTraceLog`、`nextRowJSON`、`executeChild`、`drainRecordSet`、`dfsTree`、`generateLogResult`、`generateOptimizerTraceFile` 执行精确 `callees --file pkg/executor/trace.rs`。
-- crate 与模块：`pkg/executor/Cargo.toml` 的 package/lib/features/dependencies；`pkg/executor/lib.rs` 的 `pub mod trace;` 及 `#[path = "trace_test.rs"] mod trace_test;`。
-- Go 对照与生产入口：`pkg/executor/trace.go`、`pkg/executor/builder.go::buildTrace`；Go 回归测试为 `pkg/executor/trace_test.go::TestTraceExec`。
-- Rust 独立测试：`pkg/executor/trace_test.rs::trace_tree_sorts_children_and_preserves_row_prefixes` 与 `trace_log_emits_only_event_fields_with_span_tags`。
-- 接线限制：全仓精确搜索未发现 `TraceBackend` 或 `OptimizerTraceStorage` 的 Rust 实现，也未发现生产侧 Rust `TraceExec` 构造表达式；因此端到端 Rust TRACE 状态记为“未接线/未验证”，而非“已支持”。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前只执行任务指定的 11 章节结构校验，并人工复核上述路径、符号和限制描述。

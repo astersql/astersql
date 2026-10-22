@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-kv` crate。其 crate 边界由 [`pkg/kv/Cargo.toml`](Cargo.toml) 定义，库入口是 [`pkg/kv/lib.rs`](lib.rs)；入口用 `#[path = "utils.rs"] mod utils_impl` 装入本文件，再通过 `pub use utils_impl::*` 把五个函数从 crate 根公开。因此，上层可以直接调用 `astersql_kv::IncInt64`、`GetInt64`、`WalkMemBuffer`、`IsUserKS` 和 `IsSystemKS`，而不需要知道私有模块名 `utils_impl`。
-
-它位于 KV 抽象层的便捷操作面：前三个函数建立在 [`pkg/kv/kv.rs`](kv.rs) 的 `Retriever`、`Mutator`、`RetrieverMutator` 和 `Iterator` trait 之上，用统一接口处理十进制整数值和缓冲区遍历；后两个函数建立在 `Storage::GetKeyspace`、`kerneltype` 与 `keyspace` 上，为 SQL/server 生命周期代码区分 classic、nextgen 用户 keyspace 和 SYSTEM keyspace。本文件没有条件编译项，但 [`pkg/kv/Cargo.toml`](Cargo.toml) 的 `nextgen` feature 会同时启用 `kerneltype/nextgen` 与 `keyspace/nextgen`，从而改变 keyspace 判定结果。
+保持与 [`pkg/kv/utils.go`](utils.go) 的接口意图和边界语义一致，同时适配 Rust 的 trait object、`Result`、所有权和显式溢出行为。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ keyspace 判定只做内核模式与字符串相等比较，不校验空 keyspac
 
 ## 与 Go 版本的对应关系
 
-直接对照为 [`pkg/kv/utils.go`](utils.go)，测试对照为 [`pkg/kv/utils_test.go`](utils_test.go)。五个 Rust 函数逐一保留 Go 的名称与职责：缺失整数键的初始化/零值语义、十进制文本编码、全范围正向遍历、回调/推进错误短路，以及 nextgen SYSTEM/用户 keyspace 判定表达式均一致。
+五个 Rust 函数逐一保留 Go 的名称与职责：缺失整数键的初始化/零值语义、十进制文本编码、全范围正向遍历、回调/推进错误短路，以及 nextgen SYSTEM/用户 keyspace 判定表达式均一致。
 
 语言层差异如下：
 
@@ -91,7 +89,7 @@ keyspace 判定只做内核模式与字符串相等比较，不校验空 keyspac
 - Go 的 `Iter(nil, nil)` 用 nil 表达无界；Rust 接口要求起点 `Key`，因此用 `Key::default()`（空字节 key）和 `None` 上界表达同一全范围意图。
 - Go `defer iter.Close()` 对应 Rust 先保存循环结果、再显式 `Close`。当前 Rust trait 的 `Close` 无返回值，注释所说“忽略 Close 错误”是对 Go 语义的说明，不代表 Rust 侧存在可检查的关闭错误。
 
-[`pkg/kv/utils_test.rs`](utils_test.rs) 覆盖缺失初始化、连续增量、非法整数、跨 `u32::MAX`、读回值以及 classic/nextgen 的用户/SYSTEM 判定；[`pkg/kv/mpp_2_aster_unit_test.rs`](mpp_2_aster_unit_test.rs) 额外覆盖 `WalkMemBuffer` 遍历两个条目。Go 测试覆盖整数与 keyspace 分支，但其本地 `mockMap::Iter` 返回 nil，因此没有直接测试 `WalkMemBuffer`。
+[`pkg/kv/utils_test.rs`](utils_test.rs) 覆盖缺失初始化、连续增量、非法整数、跨 `u32::MAX`、读回值以及 classic/nextgen 的用户/SYSTEM 判定；[`pkg/kv/mpp_2_aster_unit_test.rs`](mpp_2_aster_unit_test.rs) 额外覆盖 `WalkMemBuffer` 遍历两个条目。
 
 ## 扩展指南
 
@@ -102,17 +100,3 @@ keyspace 判定只做内核模式与字符串相等比较，不校验空 keyspac
 扩展 `WalkMemBuffer` 时应保持“取得迭代器后必定关闭”的不变量，并为 `Iter`、回调、`Next` 的失败分别添加可观察清理测试。如果要允许回调修改同一 mem buffer，必须先核对具体迭代器的失效与锁规则，不能从 `Retriever` trait 推断安全性。改变起止边界时应优先新增独立函数或显式参数，避免悄然改变当前全范围 API。
 
 新增 keyspace 类别时，需要同步检查 `kerneltype`、`keyspace::System`、`Storage::GetKeyspace` 以及所有 `IsUserKS`/`IsSystemKS` 调用者。当前“非 SYSTEM 即用户”的二分法可能无法表达第三类保留空间。这里的主要正确性风险是误分类后走错 bootstrap、系统会话池或关闭流程；兼容性风险是改变 classic 下恒 false 的约定；性能风险总体较低，但 `IncInt64` 每次都进行分配、文本解析与格式化，热路径改动应避免额外往返和复制。
-
-## 验证依据
-
-本说明使用了以下直接证据：
-
-- RustCodeGraph `status`：本地索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；任务无前置依赖，目标文件已被索引。
-- RustCodeGraph `query`：分别定位 `IncInt64`、`GetInt64`、`WalkMemBuffer`、`IsUserKS`、`IsSystemKS` 的 Rust 与 Go 定义；精确 `node pkg/kv/utils.rs::<符号>` 核对了五个函数的签名和源码。`node` 还报告 `WalkMemBuffer` 被 `mpp_2_integer_helpers_and_walk_match_go` 调用。部分精确 callers/callees 查询长时间无输出，未用其缺失结果推断调用关系。
-- 目标源码：[`pkg/kv/utils.rs`](utils.rs)，核对全部五个公开函数，确认没有其他常量、类型、实现或条件编译项。
-- crate 与接口边界：[`pkg/kv/Cargo.toml`](Cargo.toml)、[`pkg/kv/lib.rs`](lib.rs)、[`pkg/kv/kv.rs`](kv.rs)、[`pkg/kv/error.rs`](error.rs) 和 [`pkg/kv/key.rs`](key.rs)。
-- Go 对照：[`pkg/kv/utils.go`](utils.go)；独立 Go 测试：[`pkg/kv/utils_test.go`](utils_test.go)。
-- 独立 Rust 测试：[`pkg/kv/utils_test.rs`](utils_test.rs) 与 [`pkg/kv/mpp_2_aster_unit_test.rs`](mpp_2_aster_unit_test.rs)。
-- 上游调用点：[`pkg/structure/string.rs`](../structure/string.rs)、[`pkg/session/runtime/crossks_session_pool.rs`](../session/runtime/crossks_session_pool.rs)、[`pkg/session/runtime/system_session.rs`](../session/runtime/system_session.rs)、[`pkg/session/runtime/session.rs`](../session/runtime/session.rs)、[`pkg/meta/reader.rs`](../meta/reader.rs)、[`pkg/ddl/persistent_masking_actions.rs`](../ddl/persistent_masking_actions.rs) 和 [`cmd/tidb-server/main.rs`](../../cmd/tidb-server/main.rs)。
-
-本任务只新增说明文档，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核以上结论均可回溯到所列符号、接口、调用点或测试。

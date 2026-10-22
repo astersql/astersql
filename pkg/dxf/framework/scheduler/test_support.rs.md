@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-scheduler` crate 的共享测试支撑模块。`lib.rs` 仅在 `#[cfg(test)]` 下声明 `mod test_support`，文件内所有对外符号也都限制为 `pub(super)`；因此它不会进入正常库 API，更不属于线上 Owner 调度链。它存在的目的，是让同 crate 的独立 `*_test.rs` 文件用确定性的内存对象驱动真实 `BaseScheduler`、`Manager`、`NodeManager`、`SlotManager`、balancer 和 slots 逻辑。
-
-`Cargo.toml` 将该 crate 映射到 Go 包 `pkg/dxf/framework/scheduler`，并无专门的 `test_support.go`。Rust 侧把 Go 测试中分散的 gomock 期望与装配代码集中成此模块，以降低状态机测试的重复配置；生产持久化实现仍是 `storage_adapter.rs`，不能把 `TestTaskManager` 当作其等价替代。
+`TestTaskManager` 完整实现 `interface.rs::TaskManager`，用 `Mutex<HashMap/Vec>` 提供可预置、可读取的任务、节点、子任务、统计和错误视图。
 
 ## 核心职责
 
@@ -73,11 +71,11 @@ RustCodeGraph 对 `TestTaskManager`、`TestExtension`、`task`、`scheduler` 的
 
 ## 与 Go 版本的对应关系
 
-Go 同目录没有与本文件一一对应的 `test_support.go`。对应意图分布在 `scheduler_nokit_test.go`、`scheduler_manager_nokit_test.go`、`scheduler_test.go`、`nodes_test.go`、`slots_test.go`、`balancer_test.go`，以及生成的 `mock/scheduler_mock.go`：Go 测试用 `mock.NewMockTaskManager`、`schmock.NewMockExtension` 和 `EXPECT()` 逐次规定返回值/调用；Rust 则用 `TestTaskManager`/`TestExtension` 的可变字段与副作用日志表达这些期望。
+对应意图分布在 `scheduler_nokit_test.go`、`scheduler_manager_nokit_test.go`、`scheduler_test.go`、`nodes_test.go`、`slots_test.go`、`balancer_test.go`，以及生成的 `mock/scheduler_mock.go`：Go 测试用 `mock.NewMockTaskManager`、`schmock.NewMockExtension` 和 `EXPECT()` 逐次规定返回值/调用；Rust 则用 `TestTaskManager`/`TestExtension` 的可变字段与副作用日志表达这些期望。
 
-`TestExtension` 对应 Go `MockExtension` 的关键可控面：下一步骤、eligible instances、子任务规划、Prepare、Done、错误是否可重试和 meta 修改。`TestTaskManager` 对应 Go `MockTaskManager` 的存储边界，但额外维护足够真实的内存状态，使同一对象可跨多个 `schedule_once` 使用。Rust `scheduler` 辅助函数则集中替代 Go 测试中反复构造 `BaseScheduler`、mock manager、节点和资源池的代码。
+`TestTaskManager` 对应 Go `MockTaskManager` 的存储边界，但额外维护足够真实的内存状态，使同一对象可跨多个 `schedule_once` 使用。Rust `scheduler` 辅助函数则集中替代 Go 测试中反复构造 `BaseScheduler`、mock manager、节点和资源池的代码。
 
-两者不能机械等同：Go gomock 能严格校验调用顺序与次数，Rust 夹具多数方法只记录结果或返回克隆，未使用的预置值不会自动导致测试失败；Rust 的 `modify_meta` 字符串追加、单节点八槽位、一次性错误和非事务多容器更新也都是本地测试约定。对齐 Go 新用例时，应移植被验证的状态与调用契约，而不是照搬 gomock 语法或把夹具行为提升为生产规范。
+两者不能机械等同：Go gomock 能严格校验调用顺序与次数，Rust 夹具多数方法只记录结果或返回克隆，未使用的预置值不会自动导致测试失败；Rust 的 `modify_meta` 字符串追加、单节点八槽位、一次性错误和非事务多容器更新也都是本地测试约定。
 
 ## 扩展指南
 
@@ -87,11 +85,3 @@ Go 同目录没有与本文件一一对应的 `test_support.go`。对应意图�
 - 改动 `scheduler` 默认环境会影响大量用例。节点 ID、CPU/容量、已用槽位、server ID 或默认 `allocated_slots` 语义变化前，要检查七个消费者；多节点/特殊 scope 场景更适合由测试在构造后显式配置，避免扩大共享默认值。
 - 增强调用验证时，可增加专用原子计数或参数日志，但不要引入依赖真实 SQL、时间或线程调度的非确定性。若需要验证真实事务边界，应测试 `storage_adapter.rs`，而不是让本夹具伪装成数据库。
 - 与 Go 新回归对齐时，同时阅读对应 `*_test.go` 与生成 mock 接口，保留实际错误、重试、状态和副作用意图；注意 gomock 的严格期望在字段式夹具中可能需要额外调用日志才能等价证明。
-
-## 验证依据
-
-- 本轮依据固定范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `git diff` 与 `git show 2c944fb:pkg/dxf/framework/scheduler/test_support.rs`，不采用工作区未提交源码。
-- 接线核对：`scheduler/lib.rs`、`scheduler/Cargo.toml`、`storage/lib.rs`；包级契约为 `pkg/dxf/framework/doc.go`。RustCodeGraph 的当前索引不能代替冻结 blob，调用关系以目标版本源码为准。
-- 成功 meta 链：`interface.rs::TaskManager`、`scheduler.rs::switch_to_next_step`、`storage_adapter.rs::succeed_task`、`storage/task_state.rs::SucceedTask`；Go 对照为 `scheduler/scheduler.go`、`scheduler/interface.go` 与 `storage/task_state.go`，后者同样接受完整 task 并更新 meta。
-- 独立 Rust 测试证据：`scheduler/scheduler_nokit_test.rs` 的状态机与完成错误分支、`storage/task_state_test.rs::TestTaskState` 的 summary 参数断言；测试支持以 `scheduler/test_support.rs` 为边界，不等同真实数据库验证。
-- 纯文档交付使用任务指定的七文件存在性、11 节结构、空白和 `git diff --check` 校验；未运行 Cargo、Go 或真实存储测试。现存正文行号仅作定位提示，冻结版本符号为准。

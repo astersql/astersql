@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-cmd-tidb-lightning-ctl` crate 的进程装配层。crate 在 [`Cargo.toml`](Cargo.toml) 中声明为 `kind = "binary"`，库入口是 [`lib.rs`](lib.rs)，可执行壳是 [`bin_main.rs`](bin_main.rs)。`lib.rs` 通过 `#[path = "fips.rs"] pub mod fips` 暴露本模块；随后 [`main.rs`](main.rs) 的 `main_with_args` 在解析配置或执行控制命令之前调用 `fips::enable_fips_only()`。
-
-它不是 TLS 实现、加密算法实现或运行时配置中心，而是为 Go 版本的 FIPS 构建期副作用保留的 Rust 初始化接点。当前文件已经带有 AsterSQL 处理标记与原 PingCAP Apache License 注释。
+当前唯一职责是提供公开函数 `enable_fips_only()`，让进程启动流程显式保留“执行 FIPS-only 初始化”的阶段。
 
 ## 核心职责
 
@@ -64,14 +62,10 @@ RustCodeGraph 的文件关系报告为 `fips.rs` 被 `main.rs` 与 `parity_test.
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`fips.go`](fips.go)：它带有 `//go:build boringcrypto`，并以 `_ "crypto/tls/fipsonly"` 空白导入触发包初始化。该文件只存在于带 `boringcrypto` 标签的 Go 构建中；副作用来自标准库包初始化，而不是由 `main.go` 显式调用函数。
-
 Rust 没有复刻这一条件构建和空白导入机制。它改为让 [`main.rs`](main.rs) 无条件显式调用 `enable_fips_only()`，但函数体为空。因此两者当前只在“保留启动阶段的意图/接点”上对应：
 
 - 普通非-boringcrypto Go 构建与当前 Rust 在“不额外施加 FIPS TLS 限制”这一行为上相近。
 - boringcrypto Go 构建会启用 `crypto/tls/fipsonly` 的真实限制，当前 Rust 不具备等价行为。
-
-[`parity_test.rs`](parity_test.rs) 的 `contract_normal` 仅断言该入口可调用且不 panic；它没有检查允许的 cipher suite、provider 身份或非 FIPS 算法被拒绝。因此测试名称中的 parity 不应被解读为 boringcrypto 语义已完整移植。
 
 ## 扩展指南
 
@@ -80,12 +74,3 @@ Rust 没有复刻这一条件构建和空白导入机制。它改为让 [`main.r
 扩展时应重点确认：目标平台与构建产物如何声明 FIPS 模式、provider 安装是否只能发生一次、重复调用如何处理、初始化失败如何传到进程退出边界，以及普通构建是否保持现有行为。不要仅填充函数体便宣称与 Go boringcrypto 等价；需要以实际 TLS 握手/算法拒绝行为作为证据。
 
 测试应放在独立文件而非 `fips.rs` 内。至少同步扩展 [`parity_test.rs`](parity_test.rs) 中的 FIPS 契约，必要时新增同目录独立测试文件，并覆盖普通构建、FIPS 构建、重复初始化、并发初始化和失败传播。若修改 Cargo feature 或依赖，还要验证各支持平台的构建矩阵及生成元数据要求。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter lightning/cmd/tidb-lightning-ctl` 找到目标文件及直接入口/测试；`query enable_fips_only --kind function` 精确定位本函数；文件节点读取确认完整 24 行源码、唯一函数签名及 `main.rs`/`parity_test.rs` 使用关系。
-- Rust 源码：[`fips.rs`](fips.rs) 的模块注释和空函数体；[`lib.rs`](lib.rs) 的公开模块声明；[`main.rs`](main.rs) 的 `main_with_args` 启动顺序；[`bin_main.rs`](bin_main.rs) 的二进制转发入口。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 的库/二进制目标、porting metadata 与依赖表；其中未声明 FIPS feature 或 TLS provider。
-- Go 对照：[`fips.go`](fips.go) 的 `boringcrypto` 构建标签与 `crypto/tls/fipsonly` 空白导入；[`main.go`](main.go) 的真实控制命令入口。
-- 测试证据：[`parity_test.rs`](parity_test.rs) 的 `contract_normal` 直接调用 `fips::enable_fips_only()`；[`main_test.rs`](main_test.rs) 和 [`main_test.go`](main_test.go) 主要验证进程入口/退出与资源清理，没有验证 FIPS 密码学行为。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终用任务指定的标题计数命令验证文档恰好包含 11 个固定二级章节，并人工复核未把 no-op 描述成已启用 FIPS。

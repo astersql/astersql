@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate，是持久化普通 DDL worker 对 `ACTION_ALTER_MATERIALIZED_VIEW_REFRESH`（动作值 89）的单步执行器。模块由 `pkg/ddl/lib.rs` 公开声明，并由 `pkg/ddl/persistent_actions.rs::step` 在识别到该动作后调用 `persistent_alter_materialized_view_refresh::step`。上游 SQL 构造逻辑位于 Go 的 `pkg/ddl/materialized_view.go::(*executor).alterMaterializedViewRefresh`；Rust 侧当前负责消费已经持久化的 `Job`，不负责解析 SQL、校验刷新表达式类型或计算运行时的下一次刷新时间。
-
-从 DDL 生命周期看，这是一个 job-based、metadata-only 的快速路径：它不进行 reorg/backfill，也不让表经历 `delete only`、`write only` 等 schema state；目标表在读取和完成时都保持 `SchemaState::Public`。持久队列的 owner/lease、提交、回滚和提交后的 schema 同步由 `pkg/ddl/job_scheduler.rs::schedule_persisted` 与 `pkg/ddl/job_worker.rs::transit_persisted_job_step` 统一管理，而不是由本文件自行实现。
+唯一公开函数 `step` 完成以下职责：解码刷新配置参数；在 DDL 元数据事务中取得并校验 public 状态的目标表；确认对象确实是物化视图；处理 multi-schema job 从可回滚到不可回滚的阶段切换；更新 `MaterializedViewInfo` 中的刷新方法、调度表达式及按条件更新的 SQL mode；生成 schema version/schema diff 并持久化表信息；发布包含修改前后表快照的 schema-change 事件；最后将 job 标记为 `Done/Public` 并写入 history table info。
 
 ## 核心职责
 
@@ -72,11 +70,11 @@ Go 入口还有一条不经过本文件的后续支线：DDL job 成功后派生
 
 ## 与 Go 版本的对应关系
 
-直接对照实现是 `pkg/ddl/mview_worker.go::onAlterMaterializedViewRefresh`。Rust 与 Go 按相同顺序执行：解码参数并在失败时取消 job；读取表并校验物化视图类型；multi-schema 可回滚阶段调用 `MarkNonRevertible` 后早退；克隆旧表；覆盖 `RefreshMethod`、`RefreshStartWith`、`RefreshNext`，按 `UpdateRefreshSchedule` 覆盖 SQL mode；更新 schema version/table；发布 `NewAlterMaterializedViewRefreshEvent`；以 `Done/Public` 完成 table job。
+Rust 与 Go 按相同顺序执行：解码参数并在失败时取消 job；读取表并校验物化视图类型；multi-schema 可回滚阶段调用 `MarkNonRevertible` 后早退；克隆旧表；覆盖 `RefreshMethod`、`RefreshStartWith`、`RefreshNext`，按 `UpdateRefreshSchedule` 覆盖 SQL mode；更新 schema version/table；发布 `NewAlterMaterializedViewRefreshEvent`；以 `Done/Public` 完成 table job。
 
 实现形态上的差异主要来自运行框架：Go 函数直接接收 `jobContext` 与 session，并调用 `updateVersionAndTableInfo`；Rust 函数通过 trait 化的 `JobExecutionContext` 打开事务，使用 `TransactionMutator` 和 `persistent_actions` 公共帮助函数。Go 使用 `errors.Trace` 保留错误链，Rust 当前统一向上传递 `String`。语义上 Rust 的 `output: Option<(TableInfo, TableInfo)>` 明确区分 multi-schema 仅切换不可回滚标记的步骤，避免误发事件或提前完成 job。
 
-Go SQL 入口 `pkg/ddl/materialized_view.go::alterMaterializedViewRefresh` 在 worker 完成后还更新运行时 schedule-info；这不是 `onAlterMaterializedViewRefresh` 的职责，也尚未包含在本 Rust 文件中。文档中的“已对齐”仅指 worker 元数据步骤，不表示整条 Go SQL 后处理链已由此文件迁移。
+Go SQL 入口 `pkg/ddl/materialized_view.go::alterMaterializedViewRefresh` 在 worker 完成后还更新运行时 schedule-info；这不是 `onAlterMaterializedViewRefresh` 的职责，也尚未包含在本 Rust 文件中。
 
 ## 扩展指南
 
@@ -87,12 +85,3 @@ Go SQL 入口 `pkg/ddl/materialized_view.go::alterMaterializedViewRefresh` 在 w
 测试应放在独立文件而非源文件内。当前最接近的 Rust 覆盖是 `pkg/meta/model/go_merge_15_test.rs`（参数 round-trip）和 `pkg/ddl/notifier/events_test.rs::materialized_view_alter_event_constructors_preserve_old_and_new_tables`（事件 old/new 快照）；本文件没有同名专属 Rust 单元测试。新增 worker 分支时，建议在独立 `pkg/ddl/persistent_alter_materialized_view_refresh_test.rs` 中以 mock `JobExecutionContext` 覆盖：错误参数取消、非物化视图错误、multi-schema 两步行为、SQL mode 条件更新、meta/通知失败回滚和最终 history 信息；SQL 可见行为继续同步 Go 的 `pkg/ddl/tests/materializedview/materialized_view_alter_test.go`。
 
 兼容性风险集中在 job 参数 wire 格式和旧 job 默认值；正确性风险集中在不可回滚边界、old/new 事件顺序及通知失败的事务语义；性能风险较低，因为本步只读写单个 `TableInfo`，但完整克隆表信息和事件 JSON 大小会随表元数据规模增长。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库索引包含 11,467 个文件；`node --file pkg/ddl/persistent_alter_materialized_view_refresh.rs` 确认文件共 81 行、唯一函数为 `step`，并显示由 `persistent_actions.rs` 使用。
-- RustCodeGraph 调用证据：`persistent_actions.rs::step` 在动作 89 分支调用本文件；`job_scheduler.rs::schedule_persisted` 调用 `job_worker.rs::transit_persisted_job_step` 并随后 `wait_synced`；辅助符号 `public_table`、`update_version_and_table`、`async_notify_event`、`mark_non_revertible`、`finish_table_job` 的源码与调用轨迹均已核对。
-- Rust 源与 crate 证据：已读 `pkg/ddl/persistent_alter_materialized_view_refresh.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/job_scheduler.rs`、`pkg/ddl/lib.rs`、`pkg/meta/model/job_args.rs`、`pkg/meta/model/job.rs`、`pkg/ddl/notifier/events.rs` 和 `pkg/ddl/Cargo.toml`。
-- Go 对照证据：已读 `pkg/ddl/mview_worker.go::onAlterMaterializedViewRefresh`、`pkg/ddl/job_worker.go` 的动作分派、`pkg/ddl/materialized_view.go::alterMaterializedViewRefresh` 及 `pkg/meta/model/job_args.go`。
-- 测试证据：已核对 `pkg/meta/model/job_args_test.go::TestGetAlterMaterializedViewRefreshArgs`、`pkg/meta/model/go_merge_15_test.rs`、`pkg/ddl/notifier/events_test.rs`，以及 `pkg/ddl/tests/materializedview/materialized_view_alter_test.go` 中调度禁用、锁竞争 warning、权限、SQL mode/时区测试和 `pkg/ddl/tests/materializedview/materialized_view_basic_test.go` 的元数据断言/表达式类型测试。
-- 本任务为只写文档的静态分析，按计划未运行 Cargo 或 Go 测试；结构校验命令与结果在任务交付时单独记录。

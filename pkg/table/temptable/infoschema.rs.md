@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`infoschema.rs`](infoschema.rs) 属于 `astersql-table-temptable` crate。crate 入口 [`lib.rs`](lib.rs) 将其作为 `infoschema` 模块公开并再导出全部公共项；同一 crate 的 [`ddl.rs`](ddl.rs) 使用这里的会话目录完成本地临时表的创建、删除和截断。它不是完整 TiDB InfoSchema 的移植，而是当前 Rust 临时表子系统自带的最小元数据模型、会话目录和挂载适配层。
-
-[`Cargo.toml`](Cargo.toml) 的 `[lib]` 指向 `lib.rs`，`package.metadata.porting.go-package` 指向 Go 包 `pkg/table/temptable`。当前常规 `[dependencies]` 为空；列出的 AsterSQL crate 全部位于永不成立的 `target.'cfg(any())'` 下，因此本文件实际只依赖标准库以及同 crate `interceptor` 模块的 `MemBuffer`。这说明当前实现仍是一个可独立编译的局部移植边界，不能据此宣称已接入仓库的完整 Rust `pkg/infoschema` 主链。
+通过 `SessionVariables`/`SessionVarsProvider` 保存会话目录和临时表数据缓冲，并提供确保、挂载和分离目录的顶层函数。
 
 ## 核心职责
 
@@ -85,11 +83,9 @@ RustCodeGraph 对三个顶层确保/挂载函数没有显示生产代码中的�
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照文件是 [`infoschema.go`](infoschema.go)。四个顶层函数一一对应：Go 的 `getLocalTemporaryTables`/`ensureLocalTemporaryTables` 对应 Rust 的同名蛇形函数，`AttachLocalTemporaryTableInfoSchema`/`DetachLocalTemporaryTableInfoSchema` 对应 Rust 的 attach/detach 函数。两边都在会话没有目录时跳过挂载，已扩展时只允许一次后续设置，分离后仍保留扩展 InfoSchema 的外形。
-
 重要差异是 Go 文件复用 `pkg/infoschema.SessionTables`、`infoschema.SessionExtendedInfoSchema`、`model.TableInfo` 和会话变量中的 `any` 类型断言；Rust 文件为降低当前 crate 的接线依赖，在本地重新定义了精简模型和 `InfoSchema` trait，并用静态类型的 `Mutex<Option<Arc<_>>>` 代替运行时断言。Go 的完整 `SessionTables` 逻辑实际位于 `pkg/infoschema/infoschema.go`，而 Rust 当前只移植了临时表 DDL 所需子集。
 
-[`infoschema_test.rs`](infoschema_test.rs) 记录了四项明确兼容意图：Unicode 小写键、库 ID 不一致时 panic、删除库内最后一张表时移除库索引、首次重新挂载替换初始目录且之后冻结，以及分离后保持扩展层类型但不再暴露本地表。测试没有覆盖完整 Go InfoSchema API，也没有证明 Rust 的 Unicode 小写与所有 Go `CIStr`/排序规则完全等价。
+测试没有覆盖完整 Go InfoSchema API，也没有证明 Rust 的 Unicode 小写与所有 Go `CIStr`/排序规则完全等价。
 
 ## 扩展指南
 
@@ -100,12 +96,3 @@ RustCodeGraph 对三个顶层确保/挂载函数没有显示生产代码中的�
 改变大小写规则时，应修改 `CiString` 并增加非 ASCII、大小写展开和目标 collation 的对照用例。改变 ID/名称唯一性或支持并发 DDL 时，应把跨索引原子性、锁顺序、重复 ID 竞争和读者中间态纳入设计与测试，避免只增加单个 `HashMap` 操作。
 
 若将当前 `cfg(any())` 下的真实 AsterSQL 依赖启用，应以 `Cargo.toml` 和完整 `pkg/infoschema` API 为迁移边界，逐项核对 `TableInfo`、错误类型、自动 ID 分配器和会话变量所有权；不能仅删除局部类型而不处理调用者。此类行为改动还需同步 Go 对照语义和独立 Rust 测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录内 `infoschema.rs` 被识别为 430 行、66 个符号。
-- RustCodeGraph 文件节点：完整读取 `pkg/table/temptable/infoschema.rs`，确认所有类型、trait、函数、impl 与锁字段；读取 `pkg/table/temptable/lib.rs`，确认模块声明、再导出和独立测试装配。
-- RustCodeGraph 精确节点：`attach_local_temporary_table_info_schema` 调用 `get_local_temporary_tables`、`as_any`、`attach_once`，并由 `first_reattach_replaces_the_initial_local_tables_then_once_freezes_it` 调用；`detach_local_temporary_table_info_schema` 调用 `as_any`，并由 `detach_preserves_the_go_extended_info_schema_shape_without_local_tables` 调用；`ensure_local_temporary_tables` 调用 `SessionVarsProvider::session_variables`。
-- RustCodeGraph 精确节点：`pkg/table/temptable/ddl.rs::SessionTemporaryTableDdl::create_local_temporary_table` 的源码在第 105 行起，直接执行 `ensure_local_temporary_tables(...).add_table(...)`，构成生产侧局部入口证据。
-- 对照读取：`pkg/table/temptable/Cargo.toml`、`pkg/table/temptable/infoschema.go`、`pkg/table/temptable/infoschema_test.rs`。Cargo 证明 crate 边界与当前禁用依赖；Go 文件证明四个顶层函数的来源语义；Rust 独立测试证明关键不变量和挂载/分离行为。
-- 结构检查要求：本文必须恰好包含本计划规定的十一个二级标题；本任务是纯文档分析，按计划不运行 Cargo 或代码测试。

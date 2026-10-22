@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate（`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/executor/lib.rs` 中的 `pub mod physical_plan_runtime` 对外暴露。它位于规划器产出的规范 `PhysicalPlan` 与已有 Rust 执行器/存储接口之间：会话层在 `pkg/session/runtime/planning.rs` 的 `ExecutePlannedKVSelect` 和 `ExecutePreparedPlannedKVSelect` 中构造 `KVRetrieverTableSource`，再调用 `ExecutePhysicalPlan` 执行优化后的物理树。
-
-这不是完整 Go executor 框架的逐类型重建，而是一条受控的物理计划解释路径。当前可识别 `PhysicalTableReader`、`PhysicalIndexLookUpReader`、`PhysicalTableScan`、`PhysicalUnionScan`、`PhysicalSelection`、`PhysicalStreamAgg`、`PhysicalHashAgg`、`PhysicalTopN`、`PhysicalSort`、`PhysicalLimit` 和 `PhysicalProjection`；其他算子由 `execute_node` 明确拒绝。排序本身委托给 `astersql-executor-sortexec`，KV 行读取和解码委托给 `astersql-kv` 与 `astersql-tablecodec`。
+TopN/Sort 只负责把计划参数转换成 `SortKey`、构造现有 `TopNExec`/`SortExec` 并排空输出；`ExecuteLimitRows` 同样复用 `ProjectRows` 和 `ExecuteLimitValues`。
 
 ## 核心职责
 
@@ -97,15 +95,3 @@ crate 依赖可在 `pkg/executor/Cargo.toml` 核对：本文件直接使用 exec
 - 增强 UnionScan 时应接入真实事务本地数据来源，处理删除标记、虚拟列、分区/global index 与锁生命周期，并以 `pkg/executor/union_scan.go` 的 `UnionScanExec` 为行为对照。
 - 改动扫描或 Limit 时必须保留 iterator 的无条件关闭与提前停止传播；测试至少覆盖错误路径、offset、count=0、过滤后取满和正/反向扫描。TopN/Sort 错误路径还应验证 executor 能否得到关闭。
 - 性能风险主要来自意外退回 `Vec<Row>` 物化、重复 Datum/SortValue 转换、UnionScan 全量排序以及固定单并发。兼容风险主要来自扩大支持范围时与 Go 的 NULL、collation、decimal/time 比较、聚合 mode 或事务可见性不一致。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph：`status` 显示索引含目标文件；`query physical_plan_runtime` 找到 `ExecutePhysicalPlan`、`PhysicalTableSource`、`ScanRowsWhile`、`CountRows`、`projection_columns` 等符号；`node --file pkg/executor/physical_plan_runtime.rs` 阅读了 1–1086 行；`explore "ExecutePhysicalPlan PhysicalTableSource KVRetrieverTableSource ExecuteLimitRows"` 给出 `ExecutePhysicalPlan -> execute_node -> ExecuteLimitRows`，并列出 session 与测试调用者。
-- 源与 crate 边界：`pkg/executor/physical_plan_runtime.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`。
-- 生产入口：`pkg/session/runtime/planning.rs` 中 `ExecutePlannedKVSelect` 和 `ExecutePreparedPlannedKVSelect`。
-- Rust 独立测试：`pkg/executor/physical_plan_runtime_test.rs` 的 `strict_t_multi_uses_physical_tree_and_real_topn_executor`、`limit_stops_kv_scan_after_enough_filtered_rows`、`cached_table_scalar_count_executes_canonical_union_scan_tree`、`union_scan_merges_by_handle_and_dirty_rows_shadow_snapshot_rows`、三组 FIRST_ROW 测试、`scalar_count_streams_large_input_without_materializing_rows` 与 `scalar_count_extrema_uses_typed_kernel_for_nulls_and_duplicates`。这些测试分别固定了表前缀、存储变更可见性、提前停止、dirty-row 覆盖、空/NULL/首行、快速计数和 typed kernel 行为。
-- Go 对照：`pkg/executor/select.go`、`pkg/executor/projection.go`、`pkg/executor/union_scan.go`、`pkg/executor/sortexec/topn.go`、`pkg/executor/aggregate/agg_stream_executor.go`、`pkg/executor/aggregate/agg_hash_executor.go`。
-
-本任务是纯文档分析，按计划不运行 Cargo；文档只陈述上述源码与测试可验证的当前行为。未验证的范围包括真实 TiKV 上的端到端事务可见性、Go/Rust 全算子等价性，以及 sort executor 在 `Next` 错误时的隐式析构清理保证。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`contextimpl.rs` 位于 `astersql-session` crate 的会话层，crate 根 `pkg/session/lib.rs` 通过 `pub mod contextimpl;` 公开它。它是一个很薄的规划上下文装配层：接收实现 `astersql_planner_plannersession::SessionContext` 的会话对象，同时保存原始会话引用和由该引用派生的 `PlanCtxExtended`。
-
-当前 Rust 接线仍是局部移植状态。仓库对 `newPlanContextImpl` 的 Rust 引用只有 `pkg/session/contextimpl_test.rs`；尚未发现 Rust 生产会话构造路径调用它。相对地，Go 同路径实现由 `pkg/session/session.go` 的会话字段和初始化流程实际使用。因此，本文件当前不能被描述为已经进入 Rust SQL 请求主链。
+一个很薄的规划上下文装配层：接收实现 `astersql_planner_plannersession::SessionContext` 的会话对象，同时保存原始会话引用和由该引用派生的 `PlanCtxExtended`。
 
 ## 核心职责
 
@@ -99,14 +97,3 @@ Rust 文件对应 `pkg/session/contextimpl.go`，保留了 `planContextImpl`、`
 - 修改构造流程时要保持“同一会话引用构造两个字段”的不变量，并在 `pkg/session/contextimpl_test.rs` 中继续使用身份比较和可观察委托验证，避免只检查类型可编译。
 - 涉及表达式上下文替换时，要处理 `GetNullRejectCheckExprCtx` 的身份断言和旧包装失效风险；涉及只读变量时，要验证 `Reset` 的语句生命周期清理；涉及事务预热时，要同时覆盖成功和 `PlannerSessionError` 传播。
 - 性能方面，当前构造只增加 `Arc` 引用计数并建立小型扩展对象；不要在这个热路径无证据地加入深拷贝、锁或额外全局状态。
-
-## 验证依据
-
-- 目标源码：`pkg/session/contextimpl.rs`，确认文件只有一个结构体、一个构造函数、两个字段，无条件编译项和错误分支。
-- crate 边界：`pkg/session/Cargo.toml` 的 `[package]`、`[lib]`、`[features]` 与 `astersql-planner-plannersession` 路径依赖；`pkg/session/lib.rs` 的 `pub mod contextimpl` 和独立 `contextimpl_test` 声明。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点；`query` 定位 Rust/Go 同名符号；`callees newPlanContextImpl` 确认 Rust 构造函数调用 `NewPlanCtxExtended` 并实例化 `planContextImpl`；`callees NewPlanCtxExtended` 确认其调用 `GetExprCtx` 与 `WithNullRejectCheck`。`callers` 未给出 Rust 生产调用边。
-- 文本引用复核：`rg` 对非 Markdown 文件的全仓引用只找到 Rust 源文件与 `pkg/session/contextimpl_test.rs`；Go 引用位于 `pkg/session/session.go`、`pkg/session/bootstrap_test.go` 和 `pkg/session/contextimpl.go`。
-- Rust 测试：`pkg/session/contextimpl_test.rs::new_plan_context_impl_preserves_session_and_builds_real_extension` 验证会话指针身份、null-reject 标记、事务预热委托一次、只读变量写入与 `Reset` 清理。
-- Go 对照：`pkg/session/contextimpl.go` 验证匿名嵌入和接口断言设计；`pkg/session/session.go` 验证生产初始化位置；`pkg/session/bootstrap_test.go` 验证测试构造顺序。
-- 下游契约：`pkg/planner/plannersession/context.rs` 定义 `SessionContext`、`PlanCtxExtended`、构造与扩展方法；`pkg/planner/planctx/context.rs` 定义完整 `PlanContext` trait，支持判断当前 Rust 适配器尚未实现完整接口。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证命令及人工复核结果在任务交付时记录。

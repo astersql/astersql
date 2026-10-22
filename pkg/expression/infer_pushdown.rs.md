@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 内的表达式下推策略实现，回答一个规划期问题：某个 `Expression` 或一组表达式是否能编码并交给 TiKV、TiFlash 或 TiDB 侧执行。`pkg/expression/lib.rs:344-345` 以私有模块名 `infer_pushdown_kernel` 装入本文件，再由 `pkg/expression/lib.rs:66-79` 的公开 `infer_pushdown` 模块同时再导出表达式模型与判定 API；因此外部调用者使用 `expression::infer_pushdown::*`，不直接依赖私有模块名。
-
-它位于 SQL 规划到存储执行的策略边界：例如 `pkg/planner/core/operator/physicalop/physical_projection.rs:148` 将投影表达式转换为本文件使用的策略表达式后调用 `can_exprs_push_down`，而 `pkg/expression/expr_to_pb.rs:303-310` 将生产编码路径中的 `kv::StoreType` 映射到这里的 `StoreType` 并复用黑名单判定。RustCodeGraph 将本文件识别为 41 个符号，并给出了 `can_expr_push_down -> can_func_be_pushed` 的核心调用边及 `pkg/planner/core/integration_test.rs` 的直接使用证据。
+只做能力推断，不生成 TiPB，也不执行表达式；真正的表达式数据模型来自 `pkg/expression/fts_to_like.rs`，生产 PB 编码还由 `pkg/expression/expr_to_pb.rs` 负责。
 
 ## 核心职责
 
@@ -92,8 +90,6 @@ RustCodeGraph 的无文件限定 `explore` 还同时返回了 Go 同名符号；
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/expression/infer_pushdown.go`。Rust 的 `can_func_be_pushed`、`can_expr_push_down`、三类存储能力函数、`can_enum_pushdown_preliminarily`、`IsPushDownEnabled` 掩码逻辑和四个批量 API 分别对应 Go 的同名 camelCase/PascalCase 实现。能力白名单与签名特例按 Go `switch` 展开；独立测试 `pkg/expression/infer_pushdown_test.rs` 特别锁定了 Go 明确允许和未允许的 TiFlash round/truncate/least/greatest 签名，并验证 `NullEQInt`。
-
 主要表示差异如下：
 
 - Go 黑名单是 `atomic.Pointer[map[string]uint32]`，Rust 使用 `RwLock<HashMap<...>>`；Go 时间戳记录“重载时间”，本文件的原子值是每次替换加一的序号。
@@ -112,11 +108,3 @@ RustCodeGraph 的无文件限定 `explore` 还同时返回了 Go 同名符号；
 新增存储类型时必须成组审查 `StoreType` 判定值、`mask()` 的 Unspecified 并集、`name()`、`can_func_be_pushed` 分派、`pkg/expression/expr_to_pb.rs` 和规划器中的类型映射，以及黑名单加载器的 store mask。枚举判别值参与持久黑名单位语义，不能随意重排。
 
 动态黑名单扩展应保持两级键（函数名与 `函数.小写签名`）以及整体替换原子性。性能风险主要来自扩大静态切片后的线性查找、在热规划路径增加锁持有时间，或让递归重复构造字符串；正确性风险主要是错误放宽 TiFlash 类型/签名、绕过 metadata 可序列化要求，或使 Rust 与 Go/PB 协议支持集漂移。
-
-## 验证依据
-
-- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/infer_pushdown.rs`，不把工作区后续变化作为行为依据。
-- `pkg/expression/expr_to_pb_test.rs` 验证 unaryminus 的 TiFlash 下推判定及正式表达式的 UnaryMinusInt 编码；`pkg/expression/infer_pushdown_test.rs` 为相邻能力/类型门禁证据。Go 对照 `pkg/expression/infer_pushdown.go`。
-- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
-- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
-- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

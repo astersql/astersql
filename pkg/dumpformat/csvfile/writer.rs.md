@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-dumpformat-csvfile` crate 的单流 CSV 行写入器。crate 入口 `pkg/dumpformat/csvfile/lib.rs` 将本模块公开为 `pub mod writer`，并把 `Writer` 重导出到 crate 根；crate 清单 `pkg/dumpformat/csvfile/Cargo.toml` 只依赖父级 `astersql-dumpformat`，其中 `FieldKind` 再经 `csvfile.rs` 暴露给本文件。
-
-它位于 Dumpling 导出链的格式化末端：`dumpling/export/writer_util.rs::writeCSVFile` 把 Dumpling 的 `ObjectWriter` 包装成实现 `std::io::Write` 的 `CSVObjectWriter`，构造本文件的 `Writer`，逐行编码，并根据累计写入量决定文件轮转。文件自身只负责一个 sink 内的 CSV framing，不负责打开文件、缓冲策略、压缩、轮转、指标或行迭代器生命周期；这一边界也由 `pkg/dumpformat/csvfile/lib.rs` 的模块注释明确说明。
+CSV 字段语义并不在本文件重复实现，而由 `pkg/dumpformat/csvfile/csv.rs::append_field` 集中决定：`None` 输出 `null_value`，数字原样输出，其他类型按配置包围并转义，字节还可选择 HEX 或 Base64。
 
 ## 核心职责
 
@@ -83,13 +81,11 @@ CSV 字段语义并不在本文件重复实现，而由 `pkg/dumpformat/csvfile/
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dumpformat/csvfile/writer.go`。结构字段与流程基本逐项对应：Go `Writer` 的 `w/cfg/kinds/buf/written` 对应 Rust 的 `sink/cfg/kinds/buf/written`；`NewWriter`、`Write`、`WriteHeader`、`flush`、`EstimateFileSize`、`Close` 分别对应 `new`、`write`/`write_borrowed`、`write_header`、`flush_row`、`estimate_file_size`、`close`。
-
-两版共同保持以下语义：写数据前校验列数；复用 scratch buffer；字段级逻辑委托给同目录 CSV 编码器；表头统一按字符串编码；每行只调用一次底层 `write`；累计底层返回的实际字节数；`Close/close` 当前不做事。Go 的 `flush` 即使同时得到 `n` 和错误也会先累计 `n` 再返回错误；Rust `Write` 的返回类型不能在 `Err` 中同时携带 `n`，因此 Rust 只在 `Ok(n)` 时计数，这是接口模型带来的细微差异。
+Go 的 `flush` 即使同时得到 `n` 和错误也会先累计 `n` 再返回错误；Rust `Write` 的返回类型不能在 `Err` 中同时携带 `n`，因此 Rust 只在 `Ok(n)` 时计数，这是接口模型带来的细微差异。
 
 Rust 额外提供 `write_borrowed`，让 Dumpling 从行接收器借用原始字节，避免为 `Vec<Option<Vec<u8>>>` 再分配；公开 `write` 保留拥有型便利接口。Go 使用 `[]sql.RawBytes` 与 nil 表示 NULL，Rust 使用 `Option<&[u8]>`/`Option<Vec<u8>>` 表达同一语义。
 
-Rust `pkg/dumpformat/csvfile/csv_test.rs` 与 Go `csv_test.go` 对齐覆盖反斜杠转义、引号倍增、NULL 与类型、HEX/Base64、空行、无包围模式、表头、大小估算和行宽错误；Rust 还增加多字节包围符/自定义转义与短写计数测试。Dumpling 集成级 `dumpling/export/writer_test.rs::csv_file_size_rotation_preserves_all_rows` 验证小文件阈值会切分且拼接结果不丢行。
+Rust `pkg/dumpformat/csvfile/csv_test.rs` 与 Go `csv_test.go` 对齐覆盖反斜杠转义、引号倍增、NULL 与类型、HEX/Base64、空行、无包围模式、表头、大小估算和行宽错误；Rust 还增加多字节包围符/自定义转义与短写计数测试。
 
 ## 扩展指南
 
@@ -101,14 +97,3 @@ Rust `pkg/dumpformat/csvfile/csv_test.rs` 与 Go `csv_test.go` 对齐覆盖反�
 - 性能上应保留 `buf` 复用与借用行入口；新逻辑需关注超大行导致的容量常驻、多字节分隔符扫描以及每字段追加次数。并发扩展不能破坏当前单实例顺序写入和行边界。
 
 本仓库要求 Rust 测试与生产文件分离；新增回归应放在 `pkg/dumpformat/csvfile/csv_test.rs`，跨文件轮转/对象存储行为则放在现有 Dumpling 独立测试文件中，不应把 `#[cfg(test)]` 测试内嵌到 `writer.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件；目标文件节点列出 85 行、11 个符号及 5 个引用文件。
-- RustCodeGraph `node --file pkg/dumpformat/csvfile/writer.rs`：核对 `Writer`、七个方法、字段与完整控制流。
-- RustCodeGraph `explore`/`query`：确认 `append_field` 的两条目标调用边，以及 `dumpling/export/writer_util.rs::writeCSVFile`、`CSVObjectWriter` 等上游符号。对同名 `writer.rs::*` 执行 `callers/callees` 时工具会混入其他同名文件，本文未把这些歧义结果当作目标调用证据。
-- crate 与模块边界：`pkg/dumpformat/csvfile/Cargo.toml`、`pkg/dumpformat/csvfile/lib.rs`、`pkg/dumpformat/csvfile/csvfile.rs`、根 `Cargo.toml` workspace 成员声明，以及 `dumpling/export/Cargo.toml` 的路径依赖。
-- 下游实现与应用接线：`pkg/dumpformat/csvfile/csv.rs`、`dumpling/export/writer_util.rs`。
-- Go 对照：`pkg/dumpformat/csvfile/writer.go` 与 `pkg/dumpformat/csvfile/csv_test.go`。
-- Rust 测试证据：`pkg/dumpformat/csvfile/csv_test.rs`；集成级轮转证据：`dumpling/export/writer_test.rs::csv_file_size_rotation_preserves_all_rows`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 章结构检查和人工事实复核为验收。

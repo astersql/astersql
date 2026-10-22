@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-ddl` crate（`pkg/ddl/Cargo.toml` 的 `[lib] path = "lib.rs"`），并由 `pkg/ddl/lib.rs` 以 `pub mod backfilling_read_index` 导出。它描述分布式 ADD INDEX 回填中 read-index 阶段的 Rust 数据模型、生命周期状态和统计聚合规则。
-
-需要区分“模型”与“完整执行链”：当前 Rust 生产模块主要复用这里的 `SortedKvMeta` 和 `SubtaskSummary`，例如 `backfilling_dist_executor.rs`、`backfilling_dist_scheduler.rs`、`backfilling_merge_sort.rs`、`backfilling_import_cloud.rs` 和 `backfilling_clean_s3.rs`。代码搜索没有发现生产 Rust 模块构造或调用 `ReadIndexStepExecutor`；它目前由独立测试 `backfilling_read_index_test.rs` 直接覆盖。Go 版本的完整 read-index 执行器则由 `backfilling_dist_executor.go::newBackfillStepExecutor` 在 `proto.BackfillStepReadIndex` 分支创建。
-
-从 DDL 生命周期看，这一阶段属于 job 驱动的 ADD INDEX reorg/backfill 工作负载，而不是 metadata-only 快路径：它扫描某个物理表或分区的行键范围并生成索引 KV。该 Rust 文件本身不推进 schema state、不更新 schema version，也不持久化 DDL job/checkpoint；这些职责不应从文件名推断为已经在此实现。
+`SubtaskSummary` 统一保存读取字节、处理字节、处理行数以及对象存储 GET/PUT 次数，并提供清零和合并操作。
 
 ## 核心职责
 
@@ -94,13 +90,8 @@ Go 对照使用 `atomic.Pointer[operator.AsyncPipeline]` 暴露当前真实 pipe
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/backfilling_read_index.go`：
-
-- Rust `ReadIndexStepExecutor` 对应 Go `readIndexStepExecutor` 的部分配置、摘要、pipeline 状态与生命周期方法；Rust `new/init/run_subtask/task_meta_modified/resource_modified/on_finished/cleanup` 的命名和阶段与 Go 基本对应。
 - Rust 以“非空字符串”判定云模式，包含仅空格的 URI；独立测试 `nonempty_cloud_uri_uses_global_sort_like_go` 固化了 Go `len(uri) > 0` 的语义。
 - Rust `init` 已对齐 Go 本地排序的初始化时磁盘准入意图，并接收 exec ID/runtime slots；但 Go 还设置 `UseCloudStorage`、注册指标、按存储类型创建真实 local backend。
-- Go `RunSubtask` 解码持久化元数据、创建可取消 worker context、打开带访问记录的对象存储，并分别运行 `runGlobalPipeline` 或 `runLocalPipeline`。Rust `run_subtask` 接收已经生成的 meta/summary，不执行这些 I/O。
-- Go 本地 pipeline 注册 ingest engines、处理分布式锁/检查点、在失败时清数据、成功时检查重复键；Rust 无对应句柄或错误分支。
 - Go global pipeline 在 writer 并发关闭时按 group offset 聚合元数据，随后写外部元数据并 marshal 回 `subtask.Meta`；Rust 只更新内存结构。
 - Rust `table_start_end_key` 是纯映射回退；Go `getTableStartEndKey` 还解析 `PartitionedTable`，并在升级兼容场景（分区且 `RowStart` 为空）读取有效版本、重新计算表范围，错误会记录日志并传播。
 - Rust `DistTaskRowCountCollector` 对应 Go `distTaskRowCntCollector`。`accepted(-1)` 转 `u64` 以及有符号计数溢出由 Rust 独立测试固定；Go 还直接更新 Prometheus counter 和 metering recorder。
@@ -116,13 +107,3 @@ Go 对照使用 `atomic.Pointer[operator.AsyncPipeline]` 暴露当前真实 pipe
 - 修改本文件行为应扩展独立测试 `pkg/ddl/backfilling_read_index_test.rs`，不要把测试内嵌进生产源文件。至少覆盖初始化失败的状态、非法/空范围、meta 与 index 数量不匹配、cleanup 后重入、运行中资源调整及本地/云模式差异。
 - 兼容性风险集中在持久化元数据字段顺序/分组位置、Go 环绕计数语义、非空 URI 判定和分区升级回退；性能风险集中在 worker 比例、重复克隆 `generated_meta`、汇总结构的锁粒度以及对象存储请求量。
 - 该阶段只负责 reorg/backfill 数据面；schema state、job persistence、取消/回滚和 schema version 同步应继续由 DDL job 框架承担，不能在此文件私自建立第二套状态机。
-
-## 验证依据
-
-- 目标源码：`pkg/ddl/backfilling_read_index.rs`，已核对全部 428 行及其中 34 个 RustCodeGraph 符号。
-- crate/模块边界：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`；确认 `astersql-ddl-ingest` 路径依赖和模块导出。
-- 下游 Rust 证据：`pkg/ddl/backfilling_dist_executor.rs`、`backfilling_dist_scheduler.rs`、`backfilling_merge_sort.rs`、`backfilling_import_cloud.rs`、`backfilling_clean_s3.rs`、`backfilling_merge_temp.rs`，以及 `backfilling_txn_executor.rs::expected_ingest_worker_count`。
-- Go 对照：`pkg/ddl/backfilling_read_index.go` 全文件及 `pkg/ddl/backfilling_dist_executor.go::newBackfillStepExecutor` 的 read-index 分支。
-- 独立 Rust 测试：`pkg/ddl/backfilling_read_index_test.rs`，覆盖非空 URI、云模式调参、element IDs 回写和 Go 风格转换/溢出；相邻共享类型测试见 `backfilling_dist_executor_test.rs`、`backfilling_dist_scheduler_test.rs`、`backfilling_merge_sort_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点、1,848,419 边；`files --filter` 命中目标；文件 `node` 给出源码及 5 个直接使用文件。精确 `callers ReadIndexStepExecutor` 在 30 秒内没有返回结果，因此生产接线结论又用仓库全文符号搜索复核；没有把超时当作“无调用”的唯一证据。
-- 按任务约束未运行 Cargo。文档结构通过任务规定的 11 标题检查后方可交付。

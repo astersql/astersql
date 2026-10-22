@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`errors.rs`](errors.rs) 是 `astersql-privilege-privileges` crate 的错误模型文件。crate 入口 [`lib.rs`](lib.rs) 以私有 `mod errors` 装配该模块，再通过 `pub use errors::*` 将其公开项提升到 crate 根，因此同 crate 的 `cache.rs`、`privileges.rs`、`tidb_auth_token.rs` 以及外部依赖者都可以从 crate 根使用 `PrivilegeError` 和标准错误元数据常量。
-
-本文件处在权限数据加载、连接鉴权、动态权限注册和 Auth Token/JWKS 校验的共同错误边界上，但它本身不执行权限判断，也不读写权限状态。其直接依赖只有 `thiserror::Error`；[`Cargo.toml`](Cargo.toml) 声明包名为 `astersql-privilege-privileges`，并把 `lib.rs` 设为库入口。
+各变体保留鉴权主体、失败次数或底层错误文本等运行时上下文，并由 `thiserror` 生成 `Display` 与 `std::error::Error` 实现。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 同路径 [`errors.go`](errors.go) 只声明七个 `dbterror.ClassPrivilege.NewStd(mysql.<errno>)` 错误变量：两个为包内小写（`errInvalidPrivilegeType`、`errLoadPrivilege`），五个为导出或既有命名。Rust 对应常量全部是 `pub`，可见性比 Go 更宽；名称、代码和模板则由 [`errors_test.rs`](errors_test.rs) 逐项锁定。
+Rust 对应常量全部是 `pub`，可见性比 Go 更宽；名称、代码和模板则由 [`errors_test.rs`](errors_test.rs) 逐项锁定。
 
-错误码在 `pkg/errno/errcode.go`/`errcode.rs` 中分别核对为 8050、1141、8049、1045、3118、3955、1862，消息模板在 `pkg/errno/errname.go`/`errname.rs` 中也与本文件一致。Go 生产代码通过 `FastGenByArgs` 或 `GenWithStackByArgs` 从标准错误对象生成带协议码的错误；Rust 生产代码目前主要构造 `PrivilegeError` 变体，尚没有等价生成器或标准码映射。
+Go 生产代码通过 `FastGenByArgs` 或 `GenWithStackByArgs` 从标准错误对象生成带协议码的错误；Rust 生产代码目前主要构造 `PrivilegeError` 变体，尚没有等价生成器或标准码映射。
 
-反过来，Rust 枚举中的 `Authentication`、`InvalidJson`、`Io`、`NoSuchTable` 等泛化类别并不是 [`errors.go`](errors.go) 里的同名标准变量；它们是 Rust 移植为统一 `Result` 接口增加的内部错误边界。`PrivilegeErrorKind` 常量也不会自动覆盖这些变体。
+反过来，Rust 枚举中的 `Authentication`、`InvalidJson`、`Io`、`NoSuchTable` 等泛化类别并不是 [`errors.go`](errors.go) 里的同名标准变量；它们是 Rust 移植为统一 `Result` 接口增加的内部错误边界。
 
 ## 扩展指南
 
@@ -93,12 +91,3 @@ Go 同路径 [`errors.go`](errors.go) 只声明七个 `dbterror.ClassPrivilege.N
 - 若新增错误可被上游恢复或分类，优先添加结构化字段/变体及匹配测试；若必须保留底层类型或错误链，应评估去掉部分 `Clone/Eq` 约束或引入适合的 source 包装，而不是继续 `to_string()`。
 - Rust 单元测试继续放在独立的 [`errors_test.rs`](errors_test.rs)，由 `lib.rs` 的 `#[cfg(test)] mod errors_test` 接入；不要把测试嵌入生产源文件。涉及具体业务分支时，还应同步相邻的 `cache_test.rs`、`privileges_test.rs` 或 `tidb_auth_token_test.rs`。
 - 兼容风险主要是客户端可见错误码/模板、大小写和参数顺序；正确性风险是把账户状态、认证失败或解析失败错误分错类；本文件没有热路径运算，单纯增加常量几乎无性能风险，但无界保存底层长错误文本会增加错误路径分配量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/privilege/privileges` 确认目标及相邻 Go/Rust 文件已索引；`query PrivilegeError --kind enum` 定位到 `errors.rs:22`；`node --file pkg/privilege/privileges/errors.rs --offset 1 --limit 240` 读取完整 134 行源码。自然语言 `explore` 因通用 `Error` 名称产生歧义，限定符号的 `callers/callees` 未给出边，故没有据此虚构图关系。
-- 目标与装配：[`errors.rs`](errors.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- 直接 Rust 使用点：[`cache.rs`](cache.rs)、[`privileges.rs`](privileges.rs)、[`tidb_auth_token.rs`](tidb_auth_token.rs)；精确搜索覆盖 `PrivilegeError` 各变体和七个 `PrivilegeErrorKind` 常量。
-- Go 对照与权威元数据：[`errors.go`](errors.go)、[`privileges.go`](privileges.go)、`pkg/errno/errcode.go`、`pkg/errno/errname.go`，并交叉检查 `pkg/errno/errcode.rs`、`pkg/errno/errname.rs`。
-- 独立 Rust 测试：[`errors_test.rs`](errors_test.rs) 验证七个标准描述符的名称、代码和模板；`privileges_test.rs` 对 `InvalidPrivilegeType`、`MustChangePassword` 等真实业务分支有匹配断言。没有运行 Cargo，符合本任务纯文档约束。
-- 交付结构检查使用任务文件指定命令，要求目标存在且恰好包含上述 11 个固定二级标题；另以差异审查确认只新增本说明文档，并在成功后删除编号任务文件，保持总计划只读。

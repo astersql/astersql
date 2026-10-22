@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-memory` crate 的内存配额动作层，由 [`lib.rs`](lib.rs) 以 `pub mod action` 暴露。它定义一套共享、线程安全的 `ActionOnExceed` 接口，以及日志告警、查询取消和 fallback 链所需的公共实现；上游在内存 `Tracker` 超过配额时选择并触发这些动作。
-
-当前仓库存在一个重要迁移边界：本文件的接口使用 `&self`、`Arc<Mutex<dyn ActionOnExceed + Send>>`，而 [`tracker.rs`](tracker.rs) 仍定义另一套使用 `&mut self`、`Box<dyn ActionOnExceed>` 的同名接口。会话运行时通过 [`pkg/session/runtime.rs`](../../session/runtime.rs) 的 `RuntimePanicOnExceed` 将本文件的 `PanicOnExceed` 适配给后者；不能把两套同名 trait 当成同一个类型。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名是 `astersql-util-memory`，库入口为 `lib.rs`；本文件直接依赖 crate 内再导出的 `logutil_crate` 和 `sqlkiller_crate`，并读取同 crate 的 `tracker::Tracker`。`mem-arbitrator` feature 不改变本文件的条件编译，本文件自身没有 `#[cfg]` 分支。
+定义一套共享、线程安全的 `ActionOnExceed` 接口，以及日志告警、查询取消和 fallback 链所需的公共实现；上游在内存 `Tracker` 超过配额时选择并触发这些动作。
 
 ## 核心职责
 
@@ -100,8 +96,6 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名是 `astersql-util-mem
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`action.go`](action.go)。Rust 保留了 Go 的主要公共语义：`ActionOnExceed` 六个方法、优先级包装、finished 节点跳过、五档默认优先级、一次性日志，以及 `PanicOnExceed` 每次发送 kill 信号并 panic 传播 `HandleSignal` 错误。
-
 主要实现差异如下：
 
 - Go 接口值和指针由 GC 管理；Rust 版本用 `Arc<Mutex<dyn ...>>` 表达共享动态动作，并用 `Option` 表达 Go 的 nil fallback。
@@ -120,13 +114,3 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 确认：包名是 `astersql-util-mem
 - 修改日志字段或 killer 行为时，应同步核对 `action.go`、`sqlkiller` 的错误身份，以及 `pkg/session/runtime/dispatch.rs` 的 OOM action 选择。错误兼容风险主要是 panic 文本/错误类型和日志字段变化。
 - 若要统一本文件与 `tracker.rs` 的两套 trait，需要把它视为跨模块重构：同时处理 `Box` 与 `Arc<Mutex>` 所有权、`&mut self` 与内部可变性、fallback 保真及全部 tracker 实现。尤其要消除 `RuntimePanicOnExceed` 当前丢弃 fallback 的局部接线，不能仅改类型别名。
 - 性能上应关注热路径锁竞争：hook、日志和 `HandleSignal` 当前都在 `acted` 锁内执行；若移出锁，必须先设计一次性状态机，证明不会重复日志或发生 killer 顺序回归。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件完整索引为 333 行，并报告被 18 个文件使用。
-- RustCodeGraph 源码/符号查询：`node --file pkg/util/memory/action.rs`；`query ActionOnExceed`、`NewActionWithPriority`、`GetFallback`、`TriggerFallBackAction`、`LogOnExceed`、`PanicOnExceed`；以及对 `BaseOOMAction`、`LogOnExceed`、`PanicOnExceed` 等执行的 callers/callees 查询。重名导致部分图查询无精确调用输出，因此又以精确文件节点和文本引用核验接线。
-- 已读生产源码：`pkg/util/memory/action.rs`、`pkg/util/memory/tracker.rs`、`pkg/util/memory/lib.rs`、`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs`。
-- 已读 crate 配置：`pkg/util/memory/Cargo.toml`，确认包名、库入口、feature 和 `logutil`/`sqlkiller` 路径依赖。
-- 已读 Go 对照：`pkg/util/memory/action.go`；已读 Go 测试证据：`pkg/util/memory/tracker_test.go:230-266`。
-- 已读独立 Rust 测试：`pkg/util/memory/action_1_aster_unit_test.rs`，覆盖优先级包装、finished fallback 跳过、并发一次性日志和 SQLKiller panic 路径。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验收通过后，文档应恰好包含本页所列 11 个固定二级标题。

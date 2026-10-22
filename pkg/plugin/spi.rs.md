@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`spi.rs`](spi.rs) 是 `astersql-plugin` crate 的服务提供方接口（SPI）基础层。crate 入口 [`lib.rs`](lib.rs) 将它声明为公开模块并重导出全部公开项，因此插件加载器、内置插件和 crate 外调用方都可以直接使用这里的 `Context`、`Manifest`、专用清单及导出接口。crate 的 [`Cargo.toml`](Cargo.toml) 指定 `lib.rs` 为库入口，并用 `package.metadata.porting.go-package = "pkg/plugin"` 标明它对应 Go 的 `pkg/plugin` 包；本文件本身只依赖标准库以及同 crate 的 `Kind`、`PluginError`。
-
-在完整插件链路中，本文件定义“插件向框架交付什么数据和回调”，而 [`plugin.rs`](plugin.rs) 负责“怎样加载、校验、初始化、刷新和关闭插件”，[`helper.rs`](helper.rs) 负责把通用 `Manifest` 恢复为具体插件类别的清单。它不是动态库加载实现，也不保存全局插件注册状态。
+提供稳定的空值构造：`Manifest::new` 构造指定种类/名称/版本且无钩子的清单，各 `Default` 实现供测试和渐进式组装使用。
 
 ## 核心职责
 
@@ -77,13 +75,10 @@ RustCodeGraph 对目标文件给出的文件级结果显示它被 `plugin.rs`、
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`spi.go`](spi.go)，独立 Go 回归是 [`spi_test.go`](spi_test.go)。两边的 `LibrarySuffix`/`ManifestSymbol`、通用清单字段、四类生命周期钩子以及 Authentication/Schema/Daemon 清单角色一致；Rust 的 [`spi_test.rs`](spi_test.rs) 对齐 Go `TestExportManifest`，验证 `OnInit` 与审计事件回调在导出—声明后仍可触发。
-
 关键实现差异：
 
 - Go `ExportManifest(any)` 通过 `reflect` 与 `unsafe.Pointer` 把“首字段为 `Manifest`”的专用结构体指针重解释为 `*Manifest`；Rust 禁止这种布局假设，改用 `ExportManifest` trait、克隆通用字段，并在类型擦除的 `extension` 中保留专用回调。
 - Go 使用标准 `context.Context`，取消和值形成上下文链；Rust `Context` 是本地最小实现：克隆族共享取消/重试状态，值使用写时复制快照，没有截止时间、取消原因或父上下文链。
-- Go `Manifest` 内部还持有 `flushWatcher`；Rust 将 watcher 放在 [`plugin.rs`](plugin.rs) 的 `Plugin` 中，SPI 清单保持为可公开克隆的数据/回调描述。
 - Go 的 `Kind` 零值是 `0`；Rust `Manifest::default` 明确选 `Kind::Audit` 作为测试占位。
 - Go 认证清单字段也是无参数函数，但 Rust 用 `Option<Arc<dyn Fn() + Send + Sync>>` 表达可选、共享且线程安全的回调。
 
@@ -97,11 +92,3 @@ RustCodeGraph 对目标文件给出的文件级结果显示它被 `plugin.rs`、
 - 在复用 `Manifest.extension` 前先确认类别协议。该槽当前只能保存一个具体 `Any` 值；若需要组合多种扩展，应设计显式容器或枚举，并保持已有 downcast 兼容，不能简单覆盖。
 - 修改动态库后缀、入口符号、名称或版本语义时，应同步检查 `PluginLoader`、`load_one` 和 Go `spi.go`/`plugin.go`；这些值是加载 ABI/协议边界，存在平台兼容风险。
 - 性能上重点关注 `Context::with_value` 的映射复制和大量清单克隆；只有实测证明它们进入高频路径后再改变表示，并用并发与往返测试保证共享状态、值隔离和回调身份不退化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/plugin` 确认目标源、Go 对照与测试均已索引；`node --file pkg/plugin/spi.rs --offset 1 --limit 500` 读取目标文件全部 267 行；另读取 `plugin.rs`、`helper.rs`、`audit.rs`、`spi_test.rs`、`helper_test.rs`、`lib.rs` 的相关节点。
-- RustCodeGraph 符号查询：`query export_manifest --kind function` 返回本文件的 trait 实现/自由函数及 `audit.rs` 实现；`query authentication_callbacks --kind function` 定位恢复入口；文件级引用显示 `spi.rs` 被 `plugin.rs`、`helper.rs` 与相关测试使用。由于重载符号的 `callers`/`callees` 没有返回精确边，使用 `rg` 对 `export_manifest`、`authentication_callbacks`、`Context` 方法、两项加载常量和 `Manifest::new` 做了定向补充核验。
-- 直接读取：[`Cargo.toml`](Cargo.toml)、[`spi.go`](spi.go)、[`spi_test.go`](spi_test.go)；它们分别证明 crate/Go 包边界、原始 SPI 语义与 Go 导出回归意图。
-- 独立 Rust 测试证据：[`spi_test.rs`](spi_test.rs) 验证值派生不修改父级、同键遮蔽、取消向克隆传播及审计清单回调往返；[`helper_test.rs`](helper_test.rs) 验证四类清单往返，尤其认证回调保持同一 `Arc`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求文档存在且恰含“文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据”十一个二级章节。

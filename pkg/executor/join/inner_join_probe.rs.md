@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate，由 [`lib.rs`](lib.rs) 以 `pub mod inner_join_probe` 暴露。它实现 Hash Join 的 Inner Join 探测策略：`InnerJoinProbe` 持有一个 `BaseJoinProbe`，并为它实现统一的 `Probe` trait（`inner_join_probe.rs:121-207`）。
-
-当前接线需要区分两层事实：[`base_join_probe.rs`](base_join_probe.rs) 的 `new_join_probe` 在 `JoinType::Inner` 分支确实构造 `InnerJoinProbe`（`base_join_probe.rs:325-335`），但全仓非测试 Rust 搜索未发现生产代码调用 `new_join_probe`；当前 [`hash_join_v2.rs`](hash_join_v2.rs) 的 `HashJoinV2Exec::fetch_and_probe_hash_table` 直接调用 `ProbeWorkerV2::probe_row`。因此，本文件是已实现、可通过公共工厂构造并有独立测试覆盖的 Probe 策略，不应误述为当前 Rust Hash Join V2 执行器主路径上的实际调用对象。
+因此，本文件是已实现、可通过公共工厂构造并有独立测试覆盖的 Probe 策略，不应误述为当前 Rust Hash Join V2 执行器主路径上的实际调用对象。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ crate 边界：[`Cargo.toml`](Cargo.toml) 将本目录声明为 `astersql-execut
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`inner_join_probe.go`](inner_join_probe.go)，同样以 `innerJoinProbe` 嵌入/持有公共 probe 状态，`NeedScanRowTable` 返回 false，三个扫描方法 panic。两者都按容量分批、处理 other condition，并保留续跑游标这一总体意图。
-
 主要实现差异如下：
 
 - Go 在紧凑 row table 的同哈希链上逐个取 tagged pointer，并用 `isKeyMatched` 二次确认 key；Rust 基类在 `set_chunk_for_probe` 时已经把候选解析成 `Vec<usize>` 并过滤完整 key，本文件消费行下标。
@@ -103,14 +99,3 @@ Go 测试 [`inner_join_probe_test.go`](inner_join_probe_test.go) 覆盖不同 ke
 - 若要把该策略接入当前 `HashJoinV2Exec` 主路径，应先决定替换/统一 `ProbeWorkerV2::probe_row` 的边界，并补生产执行器级测试；只让工厂可构造不等于完成主路径接线。
 - 若追求 Go 对齐，应重点补 SQL killer、碰撞统计定义、类型/NULL/selection/左右 build side 测试矩阵，以及 spill 当前行部分消费的精确恢复语义。不要在本文件中内嵌测试；仓库约定继续使用同目录独立 `*_test.rs`。
 - 性能敏感点是候选行 `clone`、临时 `inners: Vec<_>` 分配及逐行谓词计算。优化时必须保留 `current_candidate` 的可续跑不变量，并证明单次输出不超过 `max_chunk_size`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件在索引中，共 207 行。
-- RustCodeGraph `node --file pkg/executor/join/inner_join_probe.rs --offset 1 --limit 500`：核对 `InnerJoinProbe` 及完整 `Probe` 实现。
-- RustCodeGraph `query InnerJoinProbe --json --limit 20`：定位 Rust/Go 类型和 Go 的四个直接测试入口。
-- RustCodeGraph `callees 'inner_join_probe.rs::InnerJoinProbe' --limit 30`：识别本文件 trait 方法；图只解析出 `probe -> is_current_chunk_probe_done`，因此其余委托关系由已索引源码节点核对。宽泛 `callers` 查询长时间无输出后被中止，未把它当作否定证据。
-- 已读生产源码/配置：`pkg/executor/join/inner_join_probe.rs`、`base_join_probe.rs`、`joiner.rs`、`hash_join_v2.rs`、`lib.rs`、`Cargo.toml`。
-- 已读对照与测试：`pkg/executor/join/inner_join_probe.go`、`inner_join_probe_test.rs`、`inner_join_probe_test.go`；Rust 测试具体覆盖见“与 Go 版本的对应关系”。
-- 全仓非测试 Rust 搜索 `new_join_probe|InnerJoinProbe|ProbeFlavor`：只发现本文件、基类工厂及类型映射，未发现生产调用工厂；这一结果与 `hash_join_v2.rs` 的直接 worker 主链共同支撑“尚未接入当前主路径”的结论。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构检查要求文档存在且恰有十一个固定二级标题。

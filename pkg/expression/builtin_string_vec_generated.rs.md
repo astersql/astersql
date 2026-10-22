@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 内的 FIELD 函数向量内核，源文件通过 `pkg/expression/lib.rs:263-264` 以私有模块 `builtin_string_vec_generated_kernel` 装配。文件头声明其对应 `expression/generator` 的生成产物；当前 Rust 内容聚焦 FIELD 的整型、实数和字符串三条逐列求值路径，而不是 Go 版本完整的 `Expression`、`chunk.Column` 与缓冲区分配器适配层。
-
-当前生产接线边界必须特别区分：仓库搜索只发现 `pkg/expression/builtin_string_vec_generated_test.rs` 和 `pkg/expression/builtin_regexp_util_23_aster_unit_test.rs` 直接导入本模块；除 `lib.rs` 的模块声明外，没有 Rust 生产调用点。因此它是已实现、可由独立测试验证的内核，但尚不能据此断言已经进入 Rust SQL 表达式的生产求值主链。
+三个 `field_*_vectorized` 常量函数声明对应类型路径具备向量实现；它们与 Go 生成文件中三个签名的 `vectorized() bool { return true }` 对应。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@ crate 边界由 `pkg/expression/Cargo.toml` 确认：包名为 `astersql-express
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/builtin_string_vec_generated.go`。Go 为 `builtinFieldIntSig`、`builtinFieldRealSig`、`builtinFieldStringSig` 分别生成 `vecEvalInt` 和 `vectorized` 方法；三条路径都先求值第一个参数列，再逐个求值候选列，并以“已有结果、任一 NULL、否则比较”的顺序处理每一行。Rust 的 `field_by` 保留了首匹配、NULL 跳过、1-based 下标及零默认值这些核心行为。
-
 差异在适配层而非上述核心结果语义：
 
 - Go 从 `input *chunk.Chunk` 调用每个子表达式的 `VecEval*`，写入调用方提供的 `result *chunk.Column`；Rust 接收已求值的 `Option<T>` 列并返回新 `Vec<i64>`。
@@ -86,7 +82,7 @@ crate 边界由 `pkg/expression/Cargo.toml` 确认：包名为 `astersql-express
 - Go 字符串路径固定调用 `b.ctor.Compare(...) == 0`；Rust 由调用方注入比较器，从而保留签名相关 collation 的扩展边界，但生产调用方尚未出现。
 - Go 各候选参数可以复用同一临时列并按参数逐次求值；Rust 要求所有候选列预先物化，因此峰值输入内存形态不同。
 
-Go 独立测试 `pkg/expression/builtin_string_vec_generated_test.go` 用三类 `vecExprBenchCase` 经过通用 `testVectorizedEvalOneVec` / `testVectorizedBuiltinFunc` 验证完整表达式框架，并保留 benchmark。Rust 对照测试 `pkg/expression/builtin_string_vec_generated_test.rs` 保存同样的三类 case 元数据，但实际断言聚焦本文件内核；其 benchmark 函数仅保留入口形状，没有执行性能测量。因此当前迁移覆盖不能等同于 Go 完整集成与 benchmark 覆盖。
+Rust 对照测试 `pkg/expression/builtin_string_vec_generated_test.rs` 保存同样的三类 case 元数据，但实际断言聚焦本文件内核；其 benchmark 函数仅保留入口形状，没有执行性能测量。因此当前迁移覆盖不能等同于 Go 完整集成与 benchmark 覆盖。
 
 ## 扩展指南
 
@@ -96,11 +92,3 @@ Go 独立测试 `pkg/expression/builtin_string_vec_generated_test.go` 用三类 
 - 若要对齐 Go 完整执行链，接线位置应是表达式/chunk 适配层：负责逐个求值参数、控制临时缓冲生命周期、把内核结果写回结果列并传播子表达式错误。不要把这些职责隐藏进纯比较内核。
 - 变更生成规则时还需检查 `pkg/expression/generator/string_vec.rs` 与 Go 生成器 `pkg/expression/generator/string_vec.go`。当前 Rust 生成器的 `generate_one_file` 生成的是 `.go` / `_test.go` 文件，并不证明本 Rust 内核可被自动重建；编辑带有 “DO NOT EDIT” 标记的文件前应先确认实际生成源与流程。
 - 性能变化应关注 `O(R × C)` 扫描、候选列全部预物化和已匹配行的后续遍历；需要性能结论时补 Rust benchmark，不能引用当前仅为空壳的 benchmark 入口。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/expression/builtin_string_vec_generated.rs` 读取了完整 118 行源码，并报告两个使用文件；`query` 定位了 `FieldVectorError`、`validate_lengths`、`field_by`、三个类型入口和三个能力标记。精确 callers/callees 查询未返回额外边，因此生产接线结论又用全仓引用搜索复核。
-- 源码与装配：`pkg/expression/builtin_string_vec_generated.rs`、`pkg/expression/lib.rs:263-264,594-595`、`pkg/expression/Cargo.toml`。
-- Rust 测试：`pkg/expression/builtin_string_vec_generated_test.rs`；补充交叉回归证据为 `pkg/expression/builtin_regexp_util_23_aster_unit_test.rs:157-199`。
-- Go 对照：`pkg/expression/builtin_string_vec_generated.go`、`pkg/expression/builtin_string_vec_generated_test.go`；生成入口参考 `pkg/expression/generator/string_vec.go:196-209` 和 `pkg/expression/generator/string_vec.rs:308-330`。
-- 人工复核结论：该文件存在是为了隔离三类 FIELD 的共同向量匹配语义；运行方式是类型入口选择比较器后委托 `field_by`；安全扩展需要维持列长前置校验、NULL 不匹配、首匹配和 collation 边界，并同步独立测试与 Go 对照。

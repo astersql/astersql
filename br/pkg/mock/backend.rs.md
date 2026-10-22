@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-br-pkg-mock` crate，crate 边界由 [`br/pkg/mock/Cargo.toml`](Cargo.toml) 定义，入口是 [`br/pkg/mock/lib.rs`](lib.rs)。`lib.rs` 通过 `pub mod backend` 加载本文件，再以 `pub use backend::*` 平铺导出其中的公开符号。该 crate 的 Cargo 清单没有外部依赖，并明确说明它用本地 stubs 代替 PD、TiKV、gRPC 与 Lightning 服务边界。
-
-它是 Go 生成文件 [`br/pkg/mock/backend.go`](backend.go) 的手写 Rust 移植，模拟 Lightning `Backend`、`EngineWriter`、`TargetInfoGetter` 三组接口。它属于测试替身层，不打开真实引擎、不写 SST，也不访问目标集群。当前 Rust 文件没有条件编译项；真正的测试模块由 `lib.rs` 在 `#[cfg(test)]` 下独立加载，测试逻辑没有嵌入本源文件。
+`MockEngineWriter` 模拟行追加、关闭后刷盘状态与同步状态，并实现 `stubs::EngineWriter`，因此可作为 `Box<dyn EngineWriter>` 传给被测代码。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@ RustCodeGraph 将 `backend.rs` 报告为被 `br/pkg/task/common_test.rs` 使用�
 
 ## 与 Go 版本的对应关系
 
-Go 来源文件声明它由 MockGen 从 Lightning `Backend,EngineWriter,TargetInfoGetter` 生成；Rust 版本保留了三组类型、构造器、`EXPECT` / `ISGOMOCK` 以及方法名称和大体签名。`ImportEngine` 的两个 `i64`、writer 的列名/Rows、目标库表的 list/map 形状均可逐项对应。
+Go 来源文件声明它由 MockGen 从 Lightning `Backend,EngineWriter,TargetInfoGetter` 生成；Rust 版本保留了三组类型、构造器、`EXPECT` / `ISGOMOCK` 以及方法名称和大体签名。
 
 主要语义差异如下：
 
@@ -89,9 +87,6 @@ Go 来源文件声明它由 MockGen 从 Lightning `Backend,EngineWriter,TargetIn
 - Go recorder 将实际参数匹配器交给 gomock，并用反射记录方法类型；Rust recorder 当前丢弃 recorder 参数，`Controller` 也仅按方法名匹配。
 - Go 的错误和值通过类型断言取得，缺失值通常得到 nil/零值；Rust 为 trait object 提供 `NilEngineWriter` 或 `SimpleChunkFlushStatus`，为集合提供空集合，从而避免 `Option`/downcast panic，但这也改变了 nil 可观察性。
 - Go mock 直接满足真实 Lightning 三个接口；Rust 只有 `MockEngineWriter` 实现本地 `EngineWriter` trait。`MockBackend` 与 `MockTargetInfoGetter` 当前是同名固有方法集合，没有对应本地 trait 实现。
-- Go gomock 支持参数 matcher、调用次数、顺序组合和完成时校验；本地 `Controller` 明确不支持 `Times`、`After`、`DoAndReturn` 等高级能力。
-
-因此，本文件是面向当前 Rust 测试的兼容替身，不是 Go MockGen 行为的完整等价实现。
 
 ## 扩展指南
 
@@ -105,13 +100,3 @@ Go 来源文件声明它由 MockGen 从 Lightning `Backend,EngineWriter,TargetIn
 6. 参数匹配、调用次数或跨 mock 同名隔离属于 `stubs::Controller` 的横切能力；需要这些能力时应在那里设计并测试，而不是在单个 mock 方法里临时实现。
 
 兼容风险主要是 Go/Rust 返回值空值语义差异与参数不匹配无法被发现；正确性风险是返回槽次序或方法字符串写错；性能风险很低，但大对象参数会被拥有并装箱，`EngineWriter::AppendRows` 还会复制列名。扩展时应避免把真实网络、磁盘或重试逻辑放入本文件。
-
-## 验证依据
-
-- 源码：`br/pkg/mock/backend.rs`，核对 6 个 struct、3 个构造器、3 组固有 impl、3 组 recorder impl，以及唯一的 `EngineWriter for MockEngineWriter` trait 实现。
-- crate 装配：`br/pkg/mock/Cargo.toml` 与 `br/pkg/mock/lib.rs`，核对 crate 名、空依赖、本地 stub 边界、模块加载、平铺导出和独立测试模块。
-- 控制器与类型语义：`br/pkg/mock/stubs.rs` 的 `Controller::{Call,RecordCallWithMethodType,remaining}`、`Call::{Return,Return1,Return2,ReturnError}`、`take_error`、`take_one`、`EngineWriter`、`NilEngineWriter` 及简化数据类型。
-- Go 对照：`br/pkg/mock/backend.go`，核对 MockGen 来源、三个接口的方法集合、签名、返回槽和 recorder 形状。
-- 独立 Rust 测试：`br/pkg/mock/parity_test.rs::go_rust_public_contract_matches`，覆盖 backend 成功路径与标量、writer 状态对象、目标模型 list/map 和剩余期望；`gomock_expectations_match_out_of_registration_order` 佐证控制器的跨方法乱序匹配。仓库检索未发现专属于 `backend.rs` 的其他 Rust 测试文件。
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter br/pkg/mock` 确认同目录 Rust/Go/测试集合；`node --file br/pkg/mock/backend.rs` 与 `node --file br/pkg/mock/backend.go` 读取完整实现；精确查询三个构造器后执行 `callers` / `callees` 未返回调用边，因此上游引用以 `lib.rs` 与文本检索结果为准。
-- 结构验证应确认本文恰有任务规定的 11 个二级标题。该任务是纯文档分析，按计划不运行 Cargo。

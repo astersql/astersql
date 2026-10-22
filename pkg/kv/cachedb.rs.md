@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/kv/cachedb.rs` 属于 `astersql-kv` crate。该 crate 由 `pkg/kv/Cargo.toml` 的 `[lib] path = "lib.rs"` 定义；`pkg/kv/lib.rs` 在 `cachedb` 模块中通过 `include!("cachedb.rs")` 装入本文件，并用 `pub use cachedb::*` 导出其公开项。文件没有条件编译项；只有配套测试由模块入口以 `#[cfg(test)]` 装入 `pkg/kv/cachedb_test.rs`。
-
-它提供按 table ID 隔离的只读回填缓存：位于事务缓冲/调用方与 `Snapshot` 读取之间，命中时避免再次访问底层快照，未命中时经 `GetValue` 回源并写回。公开边界是 `MemManager` trait 和构造函数 `NewCacheDB`，具体类型 `cacheDB` 以及环形缓存后端均未公开。
-
-需要注意当前接线状态：`Storage::GetMemCache` 在 `pkg/kv/kv.rs` 中以 `&dyn MemManager` 暴露缓存，但仓库内对 `NewCacheDB()` 的精确搜索只找到测试调用。TiKV 适配器目前在 `pkg/store/driver/kv_adapter.rs` 使用独立的 `AdapterMemManager`，mock storage 也在 `pkg/store/mockstore/mockstorage/canonical_storage.rs` 实现自己的 `MemManager`。因此，本文件是完整且已测试的缓存实现，但不能据现有直接证据声称生产 `TikvStore` 正在实例化它。
+`MemManager::UnionGet` 实现“缓存优先、快照回源、成功后回填”的读取流程；`MemManager::Delete` 以 table ID 为粒度使整张表的缓存失效。
 
 ## 核心职责
 
@@ -81,13 +77,11 @@ entry 的 value 容量和当前 value 长度分开记录。缩小覆盖可复用
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/kv/cachedb.go`。公开契约一一对应：Go `MemManager` 的 `UnionGet`/`Delete` 对应 Rust 同名 trait 方法，Go `NewCacheDB() MemManager` 对应 Rust `NewCacheDB() -> Box<dyn MemManager>`，Go 的 `map[int64]*freecache.Cache` 与 `sync.RWMutex` 对应 Rust 的 `HashMap<i64, TableCache>` 与 `RwLock`。
-
-Go 在首次 set 时调用 `freecache.NewCache(100 * 1024 * 1024)`，然后 `Set(key, value, 0)`；Rust 在本文件内移植所需的 freecache v1.2.1 后端，保持 100 MiB、256 segment、xxHash64、零 TTL、输入上限、覆盖容量、环形搬迁和淘汰语义。`pkg/kv/cachedb_test.rs::freecache_v1_2_1_differential_ring_traces` 用相同操作流与 Go freecache oracle 的四组 digest 校验内部状态，而不只比较最终命中数。
+Go 在首次 set 时调用 `freecache.NewCache(100 * 1024 * 1024)`，然后 `Set(key, value, 0)`；Rust 在本文件内移植所需的 freecache v1.2.1 后端，保持 100 MiB、256 segment、xxHash64、零 TTL、输入上限、覆盖容量、环形搬迁和淘汰语义。
 
 可观察差异主要来自语言错误模型。Go `sync.RWMutex` 不会返回中毒状态，Rust 外层锁可能被映射为错误、未命中或静默删除失败；Rust segment `Mutex` 中毒则 panic。Go `Delete` 先 `Clear()` 再从 map 删除，Rust 因没有逸出的 `TableCache` 引用而直接 `remove` 并 drop，最终资源效果等价。Go 依赖外部 `github.com/coocood/freecache`，Rust Cargo 只声明 `xxhash-rust`，缓存算法代码在本文件内并保留其 MIT 许可说明。
 
-仓库没有 `pkg/kv/cachedb_test.go`；Go 对照行为来自生产 `cachedb.go` 与 Rust 测试内可重放的 freecache v1.2.1 oracle。不能据此声称已运行本任务中的测试，因为本次按纯文档任务要求不运行 Cargo。
+仓库没有 `pkg/kv/cachedb_test.go`；Go 对照行为来自生产 `cachedb.go` 与 Rust 测试内可重放的 freecache v1.2.1 oracle。
 
 ## 扩展指南
 
@@ -98,12 +92,3 @@ Go 在首次 set 时调用 `freecache.NewCache(100 * 1024 * 1024)`，然后 `Set
 - 若优化并发，最敏感处是外层 `RwLock` 当前覆盖内部 segment 操作的锁顺序。缩小锁范围需要为 `TableCache` 引入可安全共享的所有权（例如 `Arc`），同时证明 `Delete` 与进行中的 get/set 的失效语义；避免形成外层锁与 segment 锁的反向获取。
 - 若增加负缓存或允许空值命中，必须明确区分“不存在”和“存在但为空”，同时核对 `GetValue`/`ValueEntry` 契约，不能仅删除当前的 `filter(|value| !value.is_empty())`。
 - 性能与资源风险包括每表固定 100 MiB、同 segment 热点、全局写锁串行化、读操作复制整个 value，以及 slot 扩容一次搬移所有 256 个 slot。新增指标或可配置容量时需保持默认 Go 行为，并验证删除后资源释放。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11467 个文件、307296 个节点和 1848419 条边；目标源码可由 `node --file pkg/kv/cachedb.rs` 完整读取，并报告被 24 个文件使用。
-- RustCodeGraph 查询：`query NewCacheDB --kind function` 定位 Rust `cachedb.rs::NewCacheDB` 与 Go `pkg/kv/cachedb.go::NewCacheDB`；`query cacheDB --kind struct` 定位 `cacheDB`、`TableCache`、`CacheEntryPtr`、`CacheHeader`、`CacheSegment`；`query MemManager --kind trait` 定位本文件 trait；`query GetValue --kind function` 定位 `pkg/kv/kv.rs::GetValue`。对 Rust `NewCacheDB` 和 trait `UnionGet` 的 callers/callees 查询返回空，故调用接线另以精确文本搜索核验并在本文明确标注图限制。
-- 已读生产与装配文件：`pkg/kv/cachedb.rs`、`pkg/kv/lib.rs`、`pkg/kv/kv.rs`、`pkg/kv/Cargo.toml`、`pkg/store/driver/kv_adapter.rs`、`pkg/store/mockstore/mockstorage/canonical_storage.rs`。
-- 已读 Go 对照：`pkg/kv/cachedb.go`。仓库中不存在同名 `pkg/kv/cachedb_test.go`。
-- 已读独立 Rust 测试：`pkg/kv/cachedb_test.rs`，覆盖拒绝边界、复制隔离、覆盖、幂等删除、空值/错误、`Send + Sync`、segment 压力淘汰、freecache 差分轨迹、并发读写删除和 tombstone/容量增长；另读 `pkg/kv/assertion_1_aster_unit_test.rs::cache_db_preserves_freecache_entry_limits`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令检查本文存在且恰有 11 个固定二级标题，并人工复核所有“当前已接线”陈述均有上述源码或搜索证据。

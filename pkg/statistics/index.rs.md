@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`index.rs` 定义单个数据库索引的统计信息载体及其基础查询、内存核算和驱逐操作。它属于 `astersql-statistics` crate：`pkg/statistics/Cargo.toml` 将 crate 根设为 `lib.rs`，`pkg/statistics/lib.rs` 以私有 `mod index` 装配本文件，再通过 `pub use index::*` 将其中的类型和函数暴露给 planner、统计缓存与统计加载模块。
-
-该文件位于优化器统计链的中间层：下游组合 `Histogram`、`CMSketch`、`TopN`、`FMSketch` 和 `StatsLoadedStatus`；上游由 `pkg/planner/cardinality/row_count_index.rs`、`pkg/planner/cardinality/selectivity.rs` 等读取，用于索引范围行数与等值条件选择率估算。`pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs` 会通过这里的驱逐和内存接口保留低成本统计壳，`pkg/statistics/handle/syncload/stats_syncload.rs` 则读取完整加载状态决定是否补载。
-
-本文件不是存储读取器，也不负责 ANALYZE、异步加载调度或加锁；它只描述一个已经构造出来的索引统计对象及其本地派生行为。源码没有条件编译项。独立 Rust 测试位于 `pkg/statistics/index_test.rs`，另有 `pkg/statistics/histogram_test.rs` 覆盖查询优先级；测试没有内嵌在生产源文件中。
+为 planner 提供总行数、等值编码键频次、实时行数放大系数、有效性判断和加载状态查询。
 
 ## 核心职责
 
@@ -96,9 +92,7 @@ RustCodeGraph 的 `node --file pkg/statistics/index.rs` 报告本文件被 7 个
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/statistics/index.go`，`pkg/statistics/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/statistics"` 也声明了移植来源。Rust 保留了 Go `Index` 的主要字段与方法命名，并以 `Deref` 模拟 Go 匿名嵌入的直方图访问；Rust 的 `IndexInfo` / `IndexColumnInfo` 是本地精简模型，而 Go 使用 `model.IndexInfo`。
-
-已经对齐的核心语义包括：V2 总行数叠加 TopN；`QueryBytes` 按 TopN → CMSketch → histogram 回退；放大系数的零值保护；驱逐后保留统计壳；`MemoryUsage` 不计 `FMSketch`。`pkg/statistics/index_test.rs` 的四个测试分别锁定字符串列数、测试驱逐边界、内存口径和“驱逐不自动无效”；`pkg/statistics/histogram_test.rs` 与 Go `histogram_test.go::TestIndexQueryBytes` 提供查询路径证据。
+Rust 保留了 Go `Index` 的主要字段与方法命名，并以 `Deref` 模拟 Go 匿名嵌入的直方图访问；Rust 的 `IndexInfo` / `IndexColumnInfo` 是本地精简模型，而 Go 使用 `model.IndexInfo`。
 
 当前可见差异必须在扩展时保留或显式解决：
 
@@ -109,7 +103,7 @@ RustCodeGraph 的 `node --file pkg/statistics/index.rs` 报告本文件被 7 个
 - Go `QueryBytes` 显式计算 Murmur3 哈希并允许传入 plan context 记录 debug trace；Rust 把哈希细节封装在 `CMSketch::QueryBytes`，且没有 trace context。
 - Go `IsAllEvicted` 对 nil receiver 返回 true；Rust 必须先有 `Index` 值。Go 的 `IsEvicted` 是 `evictedStatus != AllLoaded`；Rust 委托 `IsLoadNeeded`，额外要求状态已初始化。
 
-因此本文件属于功能可用但并非 Go 全签名/全副作用等价的移植。尤其不能把当前 `IndexStatsIsInvalid` 描述为已经完成异步加载调度。
+因此本文件属于功能可用但并非 Go 全签名/全副作用等价的移植。
 
 ## 扩展指南
 
@@ -122,12 +116,3 @@ RustCodeGraph 的 `node --file pkg/statistics/index.rs` 报告本文件被 7 个
 若改变 `InfoRef` 的 panic 策略，应统一审计 `String`、planner 的唯一索引/列数判断和所有测试构造器；可选元信息是当前类型事实，不能只在某个调用点静默填默认值。若改变驱逐逻辑，应分别为 `DropUnnecessaryData` 与 `EvictAllStats` 添加版本化载荷断言，并验证 `MemoryUsage` 的前后差值和重新加载判定。
 
 性能风险主要在热路径的克隆、内存计算和等值查询。`QueryBytes` 必须维持常见高频值优先命中 TopN；`Copy` 会深拷贝所有载荷，不宜无意加入 planner 查询热路径；驱逐清理若保留容器容量，应结合真实缓存压力测试决定是否改为释放容量。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/statistics/index.rs --offset 1 --limit 500` 读取了目标文件 1–229 行，并报告 7 个引用文件，包括 `pkg/planner/cardinality/cross_estimation.rs`、`row_count_index.rs`、`selectivity.rs`、`pkg/statistics/index_test.rs` 和 `histogram_test.rs`。`query IndexStatsIsInvalid --kind function --json` 同时定位 Go 与 Rust 定义。Rust `impl` 方法节点/精确调用边查询未返回可用结果，故没有据此臆造边。
-- 源码与模块边界：完整阅读 `pkg/statistics/index.rs`；读取 `pkg/statistics/lib.rs` 的 `mod index`、`pub use index::*` 和独立测试装配；读取 `pkg/statistics/Cargo.toml` 的 crate 根、本地 `types` 依赖与 Go 包映射；目标包未发现 `doc.go`。
-- 上游/下游证据：检查 `pkg/planner/cardinality/row_count_index.rs`、`pkg/planner/cardinality/selectivity.rs`、`pkg/statistics/table.rs`、`pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs`、`pkg/statistics/handle/syncload/stats_syncload.rs` 的直接调用点，并读取 `pkg/statistics/histogram.rs` 中版本、驱逐常量和 `StatsLoadedStatus` 判定。
-- Go 对照：完整读取 `pkg/statistics/index.go`；读取 `pkg/statistics/histogram_test.go::TestIndexQueryBytes`，并检索 Go 测试中的 `IndexStatsIsInvalid`、`TotalRowCount` 与加载行为调用点。
-- Rust 测试：完整读取 `pkg/statistics/index_test.rs`；读取 `pkg/statistics/histogram_test.rs::index_query_bytes_prefers_topn_then_cms`。它们覆盖本文件最关键的列数格式化、驱逐边界、内存口径、有效性与查询优先级，但没有覆盖 `InfoRef` panic、V1/V2 `DropUnnecessaryData` 差异、零总数放大系数及纯直方图回退，属于后续可补的独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文档存在且恰有 11 个固定二级章节，并人工复核所有“已支持”和差异说明都能回溯到以上代码或测试。

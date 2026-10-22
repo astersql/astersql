@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo crate `astersql-br-pkg-encryption-master-key`，crate 入口是同目录的 `lib.rs`，其中以 `pub mod file_backend` 装配本模块并通过 `pub use file_backend::*` 重导出其公开符号。`Cargo.toml` 将该 crate 标为 library，并声明 `aes-gcm`、`rand` 与 `astersql-br-pkg-kms` 依赖；本文件本身不直接调用加密库，而是把本地文件中的主密钥交给 `mem_backend.rs` 的内存 AES-GCM 后端。
-
-在主密钥装配链中，`master_key.rs::CreateBackend` 遇到 `MasterKeyBackend::File` 时读取 `MasterKeyFile.Path`，调用 `createFileBackend`，再包装成 `AnyBackend::File`。因此本文件是“文件配置”到“可执行 AES-256-GCM 后端”的适配层，不负责解析命令行配置，也不负责持久化业务密文。
+该层不缓存文件路径、不重新读取或监控文件，也不直接保留文件句柄；创建成功后，后续密码学操作只依赖 `memCache` 中已经构造的密钥状态。
 
 ## 核心职责
 
@@ -91,7 +89,7 @@ RustCodeGraph 的文件关系报告将 `file_backend_test.rs` 和 `multi_master_
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `AesGcmKeyLen`、`FileBackend.memCache`、`createFileBackend`、`Encrypt`、`Decrypt` 和 `Close` 逐项对应 `file_backend.go`。文件格式、检查顺序、AES-256-GCM 内存后端构造以及错误语境均保持同一意图；Rust 测试也复用了 Go 测试中的密钥、明文、密文和 IV 向量。
+文件格式、检查顺序、AES-256-GCM 内存后端构造以及错误语境均保持同一意图；Rust 测试也复用了 Go 测试中的密钥、明文、密文和 IV 向量。
 
 主要实现差异如下：
 
@@ -110,12 +108,3 @@ Rust 的 `AesGcmKeyLen`、`FileBackend.memCache`、`createFileBackend`、`Encryp
 若要支持密钥热轮换，需要显式设计文件变更检测、原子后端替换、并发读写和旧密钥回退，而不是在现有 `Encrypt`/`Decrypt` 中临时重复读文件。现有对象不保存路径，`MultiMasterKeyBackend` 已提供“多个既定后端顺序尝试”的静态回退机制，可作为兼容性参照。
 
 安全扩展时还应关注：密钥文件权限与符号链接策略、密钥字节的内存清零、错误文本是否泄露敏感内容、随机 IV 的唯一性，以及 `Close` 是否需要演化为真正的清理动作。若改变统一生命周期接口，需同步 `master_key.rs::Backend`、`AnyBackend` 分派和多后端关闭逻辑。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7032 个 Rust 文件；`files --filter br/pkg/encryption/master_key` 确认目标及相邻文件入图；`query FileBackend --kind struct`、`query createFileBackend --kind function`、`query decode_hex --kind function` 定位真实符号；`node --file` 读取目标、模块入口、下游实现及测试。`explore` 识别出 `createFileBackend`、`Encrypt`、`Decrypt` 的测试调用关系，并将目标文件关联到 `file_backend_test.rs` 与 `multi_master_key_backend_test.rs`。
-- 生产源码：`file_backend.rs`、`lib.rs`、`master_key.rs`、`multi_master_key_backend.rs`、`mem_backend.rs`、`common.rs`、`pb.rs`。
-- crate/构建边界：`br/pkg/encryption/master_key/Cargo.toml` 与 `BUILD.bazel`。
-- Go 对照：`file_backend.go`，并以 `file_backend_test.go` 核对测试向量、认证错误和清理方式。
-- Rust 独立测试：`file_backend_test.rs` 验证标准向量、往返、tag 篡改和缺失；`multi_master_key_backend_test.rs` 验证两个真实文件密钥的顺序回退解密。
-- 本任务是纯文档分析，未运行 Cargo；交付检查仅执行任务指定的 11 章节结构验证，并人工复核本文件没有宣称热重载、上下文取消、内存清零等源码未实现能力。

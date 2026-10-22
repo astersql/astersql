@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain-infosync` crate（见 `pkg/domain/infosync/Cargo.toml`），实现资源组客户端的内存 Mock，并通过 `pkg/domain/infosync/lib.rs` 重新导出。它使用 `types.rs` 中的 `ResourceManagerClient`、资源组数据结构和 watch 信封，不负责连接真实 PD；`GlobalInfoSyncerInit` 在 `pkg/domain/infosync/info.rs` 中始终用 `NewMockResourceManagerClient` 装配当前 Rust `InfoSyncer`。
-
-文件末尾的 `ResourceManagerProviderAdapter` 还承担一层边界适配：把 infosync 自有的 `ResourceManagerClient` 转成 `tikv_client::resource_group_lookup::ResourceGroupProvider`，供 `pkg/domain/runaway.rs` 中的 `ResourceGroupLookupController` 使用。RustCodeGraph 将该文件列为被 `info.rs`、`runaway.rs`、`runaway_test.rs`、`cmd/tidb-server/main.rs` 和本文件独立测试引用的生产文件。
+`Get`、`Put` 提供最小 metastorage 接口形状：返回带非空 header 的空响应，但不保存或读取 key/value。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@ RustCodeGraph 的关键静态边包括：`GlobalInfoSyncerInit -> NewMockResourc
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/domain/infosync/resource_manager_client.go`。两端都预置同名 default 组，使用容量 100 的事件通道，以名称 map 实现 CRUD，新增/修改发 PUT、删除发 DELETE，并仅为当前 keyspace 的资源组设置路径返回 watch 通道。Rust 测试 `default_group_matches_go_mock`、`crud_and_watch_events_match_go_mock`、`watch_envelope_retains_pre_subscription_events` 和 `watch_capacity_and_shared_consumer_semantics` 专门固定这些移植语义。
+Rust 测试 `default_group_matches_go_mock`、`crud_and_watch_events_match_go_mock`、`watch_envelope_retains_pre_subscription_events` 和 `watch_capacity_and_shared_consumer_semantics` 专门固定这些移植语义。
 
 已确认的差异如下：
 
@@ -101,12 +99,3 @@ RustCodeGraph 的关键静态边包括：`GlobalInfoSyncerInit -> NewMockResourc
 若实现真实 metastorage、revision 或 token bucket 功能，不应继续扩张本 Mock 的无条件成功桩；应在真实客户端实现或 `types.rs` 接口层明确契约，并同步检查 `info.rs` 的装配选择。若改变通道容量、持锁发送或共享接收器模型，需要评估兼容性和吞吐/死锁风险，并更新并发测试。
 
 若 provider 要支持负 fill rate、更多 RU 模式或 runaway 字段，应修改 adapter 的转换逻辑并增加 provider 专项测试；当前测试只验证默认组成功转换，尚未覆盖负 fill rate 的错误分支。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/domain/infosync` 确认目标、Go 对照和独立测试；`node --file pkg/domain/infosync/resource_manager_client.rs` 核对全部 205 行及 21 个符号。
-- RustCodeGraph 调用证据：`explore` 核对 `NewMockResourceManagerClient`、CRUD、watch、provider 的调用者；`callees NewMockResourceManagerClient` 核对默认常量、资源组、设置和接收器构造；`callees NewMockResourceGroupProvider` 核对构造器与 adapter 组合；`node` 核对 `info.rs::GlobalInfoSyncerInit` 和 `runaway.rs::init_resource_groups_controller`。
-- 接口与装配：读取 `pkg/domain/infosync/types.rs` 中 `TokenLimitSettings`、`ResourceGroupWatchReceiver`、`ResourceManagerClient` 和 `group_settings_path_prefix`；读取 `pkg/domain/infosync/lib.rs` 的模块导出和独立测试声明；读取 `pkg/domain/infosync/Cargo.toml` 的 crate、porting metadata 与带 tag 的 `tikv-client` 依赖。
-- Go 对照：RustCodeGraph 完整读取 `pkg/domain/infosync/resource_manager_client.go`，逐项核对默认组、锁/map、CRUD、容量 100 的 channel、事件 envelope、metastorage 空响应和占位方法。
-- 测试证据：RustCodeGraph 完整读取 `pkg/domain/infosync/resource_manager_client_test.rs` 的六个测试，并读取 `pkg/domain/runaway_test.rs::transient_provider` 对 `NewMockResourceGroupProvider` 的实际使用。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另运行任务给定的 11 章节结构检查，并人工复核本文没有把 Mock 行为描述成真实 PD 持久化能力。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tagged_ptr.rs` 属于 Cargo crate `astersql-executor-join`；crate 根由 `pkg/executor/join/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/join/lib.rs` 通过 `pub mod tagged_ptr` 暴露本模块，并在 `#[cfg(test)]` 下挂接独立测试 `tagged_ptr_test.rs`。本文件不依赖 crate 的外部依赖，只使用整数位运算、`std::mem::size_of` 和 `std::ffi::c_void`。
-
-它是 Hash Join v2 的底层 tagged pointer（带标签指针）工具：利用 64 位地址通常未占用的高位保存哈希值高位片段，使桶头或冲突链节点能够在访问行数据前先做一次廉价过滤。Rust 当前接线只覆盖一部分：`join_row_table.rs` 使用 `TaggedPtr`、`TagPtrHelper::get_tagged_value` 和 `get_tagged_bits_from_uintptr`；`TagPtrHelper::to_tagged_ptr`、`to_unsafe_pointer` 的非测试 Rust 调用尚未出现。完整生产用法可在 Go 对照 `tagged_ptr.go`、`hash_table_v2.go`、`hash_join_v2.go` 和各 probe 文件中看到，不能将该 Go 接线直接视为 Rust 已完成的能力。
+由 `TagPtrHelper` 保存当前实例采用的高位掩码，并提供掩码初始化、hash tag 提取、地址与 tag 合并、tag 清除四项操作。
 
 ## 核心职责
 
@@ -82,15 +80,12 @@ Go `hash_table_v2.go::atomicUpdateHashValue` 在并发建表时用原子 CAS 更
 
 ## 与 Go 版本的对应关系
 
-主体为逐符号移植：Rust `MAX_TAGGED_BITS`、`MAX_TAGGED_MASK`、`TAGGED_POINTER_LEN`、`TaggedPtr`、`TagPtrHelper` 及其四个函数/方法，分别对应 `tagged_ptr.go` 中的小写同名概念。Rust 以 `usize`/裸指针转换代替 Go 通过 `unsafe.Pointer` 写入 `uintptr` 的实现，但共同目标都是不把含 tag 的整数作为 GC/运行时可追踪指针。
-
-测试意图也基本对齐：
+Rust 以 `usize`/裸指针转换代替 Go 通过 `unsafe.Pointer` 写入 `uintptr` 的实现，但共同目标都是不把含 tag 的整数作为 GC/运行时可追踪指针。
 
 - Rust `tagged_bits_follow_machine_pointer_leading_zeros` 对应 Go `TestTaggedBits`，并额外覆盖非 64 位返回 0 的分支。
-- Rust `tag_helper_init_matches_all_go_masks` 对应 Go `TestTagHelperInit`，覆盖 24 到 0 的全部掩码。
 - Rust `tagged_pointer_round_trip_preserves_real_allocation` 对应 Go `TestTagHelper` 的地址/tag 往返；Go 用 10 MiB 切片的首尾地址，Rust 用一个 `Box<u64>`，因此 Rust 测试未覆盖跨较大分配范围的首尾地址约束。
 
-可见差异包括：Rust `init(0)` 有显式分支以避免 64 位移位；Rust 类型和字段是公开 API，而 Go 符号是包内私有；Rust 当前生产接线不完整；`join_row_table.rs` 的 tag 比较和地址范围估算与 Go 存在前述语义差异。另有一处文档漂移：`lib.rs` 注释称在“指针低位”嵌入信息，实际 `tagged_ptr.rs` 和 Go 均使用最高位。
+可见差异包括：Rust `init(0)` 有显式分支以避免 64 位移位；Rust 类型和字段是公开 API，而 Go 符号是包内私有；Rust 当前生产接线不完整；`join_row_table.rs` 的 tag 比较和地址范围估算与 Go 存在前述语义差异。
 
 ## 扩展指南
 
@@ -99,12 +94,3 @@ Go `hash_table_v2.go::atomicUpdateHashValue` 在并发建表时用原子 CAS 更
 扩展时需要维护以下不变量：所有被编码地址在统一 `tagged_mask` 位上均为零；helper 位数取所有相关分配可用位数的下界；传入 tag 已被 mask；桶头和 next 链使用同一 helper；恢复地址前清除 tag；分配在链使用期间不移动、不释放。并发桶更新还必须在哈希表层定义清楚原子顺序，不能由本文件的普通整数转换替代。
 
 测试应继续放在独立文件 `pkg/executor/join/tagged_ptr_test.rs`，不要内嵌到生产源文件。至少同步覆盖：0/1/24 位掩码、非法大位数的预期策略、tag 外位输入、空指针、多个真实分配地址或首尾范围、round-trip、非 64 位退化，以及与 Go 链表 tag 判断的契约。若接入建表/probe，还应同步 `hash_table_v2_test.rs`、`join_row_table_test.rs` 和相应 probe 独立测试。兼容性风险集中在地址宽度与平台 ABI；正确性风险是错误清位产生无效地址；性能风险是位数过少降低预过滤效果，而额外边界检查可能进入热点路径。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引包含 11,467 个文件，`files --filter pkg/executor/join` 收录目标及 Go/Rust 对照；`node --file pkg/executor/join/tagged_ptr.rs` 核对了完整 90 行源码和符号；`query TagPtrHelper`、`query get_tagged_bits_from_uintptr` 定位 Rust/Go 定义；精确 callers/callees 未返回方法边，故以源码符号搜索补充。
-- Rust 源与模块边界：`pkg/executor/join/tagged_ptr.rs`、`pkg/executor/join/lib.rs`、`pkg/executor/join/join_row_table.rs`、`pkg/executor/join/row_table_builder.rs`。
-- Cargo 边界：`pkg/executor/join/Cargo.toml`；crate 名为 `astersql-executor-join`，根文件为 `lib.rs`，无 tagged-pointer 专属 feature 或外部依赖。
-- Go 对照：`pkg/executor/join/tagged_ptr.go`、`join_row_table.go`、`hash_table_v2.go`、`hash_join_v2.go`，以及各 probe 文件的 `toUnsafePointer` 调用。
-- 独立测试：`pkg/executor/join/tagged_ptr_test.rs` 和 `pkg/executor/join/tagged_ptr_test.go`；额外直接接线证据来自 `join_row_table_test.rs`、`hash_table_v2_test.rs`。
-- 人工复核结论：本文件存在于 Hash Join v2 的地址压缩/预过滤边界；自身只负责位表示，安全依赖地址高位、统一掩码和外部生命周期；Rust 已有局部 row-table 接线但尚不能据此认定完整 Go 主链已移植。

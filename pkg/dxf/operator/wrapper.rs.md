@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-dxf-operator` crate 的常用算子封装层，由 [`lib.rs`](lib.rs) 以公开模块 `wrapper` 导出。它把 [`compose.rs`](compose.rs) 的通道接线接口和 [`operator.rs`](operator.rs) 的异步变换算子组合成三类便捷组件：有限输入源 `SimpleDataSource<T>`、变换包装器 `SimpleOperator<T, R>`、末端汇聚器 `SimpleSink<R>`。这些组件可作为 `Box<dyn Operator>` 放入 [`pipeline.rs`](pipeline.rs) 的 `AsyncPipeline`。
-
-当前仓库搜索到的 Rust 直接使用者是独立测试 [`pipeline_test.rs`](pipeline_test.rs) 与 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)；未发现生产 Rust 模块调用这三个构造函数。因此它目前是公开、可复用的 DXF 基础门面，也是 Go 实现迁移语义的测试载体，而不能据此宣称已经接入某条生产任务主链。
+`context_error` 与 `join_result` 集中处理取消原因提取、重复关闭和线程 panic 到 `workerpool::Error` 的转换。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ Source 和 Sink 的 `Open` 都立即返回，仅把实际工作交给一个主�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`wrapper.go`](wrapper.go)。两版都包含有限切片/向量数据源、带 drainer 的 Sink、嵌入/包装 `AsyncOperator` 的 Transform，并共享 workerpool Context 以使任一算子报错时整条流水线退出。`String` 的外层格式和 `newSimpleOperator` 固定使用名称 `simple` 也保持一致；[`pipeline_test.go`](pipeline_test.go) 与 Rust [`pipeline_test.rs`](pipeline_test.rs) 都验证同一条词频流水线、拓扑字符串和错误注入分支。
-
 实现机制存在语言适配差异：Go 用 `errgroup.Group` 管理 goroutine，并在 `select` 中同时等待 channel 与 `ctx.Done()`；Rust 的 workerpool Channel API没有在这里提供同构 `select`，所以 Source/Sink 用工作线程加取消监控线程，取消时主动 `Finish` 通道以打断阻塞操作。Go `simpleSink`/`simpleOperator` 是包内类型，Rust 对应类型为 `pub`；Rust 还显式实现 `TunableOperator` 向下访问接口，以替代 Go 的运行期类型断言。
 
-Rust `SimpleDataSource::String` 使用 `std::any::type_name::<T>()`，通常产生完整 Rust 类型路径；Go 使用 `%T`。因此测试应分别断言各语言的本地类型名，不能逐字跨语言复用期望值。
+Rust `SimpleDataSource::String` 使用 `std::any::type_name::<T>()`，通常产生完整 Rust 类型路径；Go 使用 `%T`。
 
 ## 扩展指南
 
@@ -92,13 +88,3 @@ Rust `SimpleDataSource::String` 使用 `std::any::type_name::<T>()`，通常产�
 - 新增算子包装器时实现 `Operator`，并按数据方向实现 `WithSource`/`WithSink`；需要被 `AsyncPipeline::GetReaderAndWriter` 识别时，还要实现 `TunableOperator` 并覆写 `as_tunable_operator(_mut)`。
 - 测试逻辑必须保持在独立 Rust 测试文件，不能内嵌到 `wrapper.rs`。管道行为优先扩展 [`pipeline_test.rs`](pipeline_test.rs)，Rust 特有的取消、panic、重复生命周期和迁移边界优先扩展 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，并与 [`pipeline_test.go`](pipeline_test.go) / [`wrapper.go`](wrapper.go) 的原始意图核对。
 - 并发度或通道策略变化可能改变背压、结果顺序、内存占用和取消延迟；公开构造函数或 trait 边界变化会影响 crate 外调用者。扩展前应再次运行 RustCodeGraph/`rg` 查找外部使用点，不能仅依据当前两个测试调用者推断长期兼容范围。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 7,032 个 Rust 文件；`node --file pkg/dxf/operator/wrapper.rs` 读取目标文件 327 行并列出 26 个符号。
-- RustCodeGraph `query`：确认 `NewSimpleDataSource`、`newSimpleSink`、`newSimpleOperator` 和 `SimpleDataSource` 的定义位置与公开签名。
-- RustCodeGraph `node NewAsyncOperatorWithTransform`：确认 `newSimpleOperator` 是其 Rust 调用者，并确认其继续调用 `newAsyncWorkerCtor`、`NewAsyncOperator`。
-- RustCodeGraph `node Compose`、`node SimpleDataChannel`、目标文件读取：确认容量为 0 的接线通道、显式 `Finish`、Source/Sink 的线程与取消路径。
-- 已读源码与边界文件：[`wrapper.rs`](wrapper.rs)、[`compose.rs`](compose.rs)、[`operator.rs`](operator.rs)、[`pipeline.rs`](pipeline.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- 已读 Go 对照与测试：[`wrapper.go`](wrapper.go)、[`pipeline_test.go`](pipeline_test.go)；已读独立 Rust 测试：[`pipeline_test.rs`](pipeline_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。仓库级 `rg` 复核 Rust 构造函数调用点，未发现两个测试模块之外的生产 Rust 调用。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证恰有 11 个固定二级章节，并人工复核每项行为结论均能回指上述源码、图查询或测试。

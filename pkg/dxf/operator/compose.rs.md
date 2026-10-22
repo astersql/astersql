@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`compose.rs` 是 Cargo 包 `astersql-dxf-operator` 的通道组合层。crate 入口 `pkg/dxf/operator/lib.rs` 公开导出 `compose`，同一 crate 的 `operator.rs` 和 `wrapper.rs` 通过这里定义的 trait 接收输入/输出通道；`pipeline.rs` 负责算子的启停顺序，不负责接线。`pkg/dxf/operator/Cargo.toml` 将该 crate 的库入口指定为 `lib.rs`，并以路径依赖 `workerpool = astersql-resourcemanager-pool-workerpool` 提供真正的通道实现；本文件本身没有 feature 条件或条件编译项。
-
-在完整应用中，本文件位于 DXF 异步数据流的“接线”位置：调用方先构造 Source、Transform、Sink，再用 `Compose` 把相邻算子的同类型输出和输入连接起来，最后由 `AsyncPipeline` 启动它们。`pkg/dxf/operator/pipeline_test.rs::test_pipeline_async_multi_operators_without_error` 展示了 `Source -> lower -> trimmer -> counter -> collector` 的完整链。生产路径目前还在 `pkg/dxf/importinto/encode_and_sort_operator.rs::RunEncodeSortChunks` 中直接使用本模块的 `NewSimpleDataChannel`、`WithSource` 和 `DataChannel`，但该路径手工接线，并不调用 `Compose`。
+用 `DataChannel<T>` 和 `SimpleDataChannel<T>` 封装底层 `workerpool::Channel<T>`，统一暴露取得通道句柄与显式结束数据流的操作。
 
 ## 核心职责
 
@@ -89,8 +87,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/operator/compose.go`，总体语义一致：Go `make(chan T)` 与 Rust `Channel::bounded(0)` 都建立无缓冲连接；`Compose` 都将同一逻辑通道交给上游 Sink 和下游 Source；`Channel`/`Finish` 分别提供收发入口和结束信号。`pkg/dxf/operator/pipeline_test.go::TestPipelineAsyncMultiOperatorsWithoutError` 与 Rust 的同名语义测试都用四次 Compose 建立五段词频管道，并覆盖正常和注错路径。
-
 需要注意的移植差异：
 
 - Go 的 `WithSource`/`WithSink` 接受 `DataChannel[T]` 接口，可注入其他实现；Rust trait 当前固定接受具体 `SimpleDataChannel<T>`，扩展替代通道实现的能力更窄。
@@ -108,14 +104,3 @@
 若要支持缓冲连接，应优先新增明确表达容量的构造/组合入口，而不是悄悄改变 `Compose` 的容量 0 语义；这会改变背压、内存占用和任务交错顺序，需要同步 `migration_aster_unit_test.rs` 的通道测试、`pipeline_test.rs` 的端到端测试以及 Go 对照策略。若要支持多种通道实现，则需要调整 `WithSource`/`WithSink` 当前固定的 `SimpleDataChannel<T>` 参数，并评估对象安全、泛型传播与 workerpool API 的兼容性。
 
 最可能修改的符号是 `Compose`（接线策略）、`WithSource`/`WithSink`（端点抽象）、`DataChannel`（通道能力）和 `SimpleDataChannel`（状态包装）。风险包括：丢失无缓冲背压导致内存/调度变化；遗漏关闭造成死锁；提前关闭造成数据丢失；把业务错误错误地等同于正常 EOF；改变 Clone 共享语义导致上下游不再观察同一关闭状态。应至少同步 `pkg/dxf/operator/migration_aster_unit_test.rs`、`pkg/dxf/operator/pipeline_test.rs`，若影响直接构造通道的用法，还要同步 `pkg/dxf/importinto/encode_and_sort_operator_test.rs`。
-
-## 验证依据
-
-- 目标实现：`pkg/dxf/operator/compose.rs`，完整核对 `WithSource`、`WithSink`、`Compose`、`DataChannel`、`SimpleDataChannel`、`NewSimpleDataChannel` 及两个 impl。
-- crate 边界：`pkg/dxf/operator/Cargo.toml`、`pkg/dxf/operator/lib.rs`；确认包名、库入口、workerpool 路径依赖、模块公开导出和测试模块装配。
-- 底层语义：`pkg/resourcemanager/pool/workerpool/workerpool.rs::Channel`、`Channel::bounded`、`send`、`recv`、`close`、`is_closed`。
-- Rust 直接实现/调用：`pkg/dxf/operator/operator.rs::AsyncOperator::{SetSource,SetSink}`，`pkg/dxf/operator/wrapper.rs::{SimpleDataSource,SimpleSink,SimpleOperator}`，`pkg/dxf/importinto/encode_and_sort_operator.rs::{AsyncEncodeSortOperator,RunEncodeSortChunks}`。
-- Rust 测试：`pkg/dxf/operator/migration_aster_unit_test.rs::{compose_shares_an_unbuffered_channel_and_finish_closes_it,real_source_transform_and_sink_pipeline_processes_every_item,context_error_cancels_the_pipeline_and_close_reports_it}`，以及 `pkg/dxf/operator/pipeline_test.rs::test_pipeline_async_multi_operators_without_error`；import-into 的失败/取消边界由 `pkg/dxf/importinto/encode_and_sort_operator_test.rs::async_encode_operator_cancels_on_worker_error` 佐证。
-- Go 对照：`pkg/dxf/operator/compose.go`、`operator.go`、`wrapper.go` 和 `pipeline_test.go::TestPipelineAsyncMultiOperatorsWithoutError`。
-- RustCodeGraph：索引状态为 11,467 个文件；目标文件识别出 14 个符号。`node Compose` 给出的直接被调边为 `SetSource`、`SetSink`、`clone`、`NewSimpleDataChannel`，直接调用者为上述三项迁移测试；`node NewSimpleDataChannel` 还确认了 import-into 生产入口和相关独立测试调用者。全仓 `rg` 用于补核 Cargo、模块装配及 Rust/Go 引用集合。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按任务约束仅执行固定章节结构验证，并人工核对上述源码与调用边。

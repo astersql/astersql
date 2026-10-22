@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-rule` crate（同目录 `Cargo.toml`），由 `lib.rs` 以 `pub mod rule_max_min_eliminate` 公开。它在 `rule_init.rs` 定义的精简逻辑计划 IR 上实现 `MAX`/`MIN` 标量聚合消除：保留聚合外壳，把输入缩减为排序后的至多一行；多个聚合满足索引前提时，拆成多路聚合并用 Inner Join 合并。
-
-文件必须分成两部分理解。第 16～281 行是注释中的 Go 迁移草稿，不参与 Rust 编译；第 282～461 行才是当前可执行实现。可执行部分只依赖 crate 内的 `AggKind`、`Expr`、`FieldType`、`LogicalRule`、`Plan` 和 `PlanKind`，不直接使用 `Cargo.toml` 中列出的外部 planner/operator/ranger 依赖。
-
-该精简规则不是完整 Rust SQL 优化主链当前执行的实现。生产式逻辑计划入口 `pkg/planner/core/optimizer_runtime.rs` 的 `LogicalRule::MaxMinEliminate` 分支调用的是该文件外的 `eliminate_single_max_min_descendants`；本文件的 `MaxMinEliminator` 当前直接调用证据来自独立规则测试和综合规则测试。Go 主链则在 `pkg/planner/core/optimizer.go::optRuleList` 中注册 `rule.MaxMinEliminator`。
+多聚合只接受裸 `Expr::Column`，且每个列都必须能由 `DataSource` 的首列索引提供顺序；通过检查后，每个聚合得到独立的 `Aggregation -> Limit -> Sort -> 克隆输入` 分支，最终由无连接条件的 Inner Join 合并。
 
 ## 核心职责
 
@@ -89,7 +85,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `MaxMinEliminator`、规则名和公开 `changed = false` 契约对应 Go `rule_max_min_eliminate.go` 的同名类型、`Name` 与 `Optimize`。两者都后序处理子树，要求标量聚合全部为 MAX/MIN，单聚合无条件采用 Limit 改写，多聚合要求每个聚合列能利用索引顺序，并保留聚合外壳处理空输入。
+Rust `MaxMinEliminator`、规则名和公开 `changed = false` 契约对应 Go `rule_max_min_eliminate.go` 的同名类型、`Name` 与 `Optimize`。
 
 当前精简 Rust 对应关系并不完整：
 
@@ -99,9 +95,8 @@ Rust `MaxMinEliminator`、规则名和公开 `changed = false` 契约对应 Go `
 - Go `cloneSubPlans` 针对 Selection/DataSource 有选择地深浅拷贝 access path、schema 和列元数据；Rust 因 owned `Plan` 模型直接深克隆整个输入。
 - Go 拆分聚合后调用真实 `PruneColumns`，失败就放弃；Rust 仅按输出偏移构造单列 schema，没有列裁剪或错误通道。
 - Go 用一系列二叉 Inner Join 合并分支并构造真实 join schema；Rust 用一个允许多 children 的 Join 并拼接列 ID。
-- Go 明确跳过 CTE；精简 IR 没有相应节点。
 
-完整 Rust 主链中的 `optimizer_runtime.rs::eliminate_single_max_min_descendants` 使用真实 logicalop/表达式类型，支持 CTE 边界、ENUM/SET 拒绝、nullable 过滤、Sort 和 Limit，并可能传播表达式构造错误；但它当前只接受单个聚合函数，不实现 Go 的多聚合拆分。因此本文件是可运行的精简语义模型和测试面，不应被描述为完整生产实现的直接入口。
+完整 Rust 主链中的 `optimizer_runtime.rs::eliminate_single_max_min_descendants` 使用真实 logicalop/表达式类型，支持 CTE 边界、ENUM/SET 拒绝、nullable 过滤、Sort 和 Limit，并可能传播表达式构造错误；但它当前只接受单个聚合函数，不实现 Go 的多聚合拆分。
 
 ## 扩展指南
 
@@ -112,15 +107,3 @@ Rust `MaxMinEliminator`、规则名和公开 `changed = false` 契约对应 Go `
 - 若让本类型进入完整优化器，必须明确精简 `Plan` 与 `logicalop::LogicalPlanRef` 的桥接或替换关系，同时检查 `optimizer_runtime.rs::LOGICAL_RULES`、`LogicalRule::MaxMinEliminate` 分支和现有 SQL 级测试；仅保留 `default_rule_names` 中的字符串不构成接线。
 - 多聚合扩展应验证三路以上的 Join 形状、schema、列裁剪和消费者是否接受 n-ary Join；如需对齐 Go，应改为左深二叉链并补充结构测试。
 - 性能风险主要来自每个聚合深克隆输入子树；宽计划或聚合函数较多时，应在不共享可变状态、不破坏分支独立性的前提下评估更轻量的克隆表示。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/planner/core/rule/rule_max_min_eliminate` 未找到目标文件，`query MaxMin --limit 30 --json` 也未命中本规则，只返回其他 Max/Min 符号；因此没有把图缺失解释为“无符号/无调用者”，按技能规则回退到精确源码与文本检索。
-- 目标实现：`pkg/planner/core/rule/rule_max_min_eliminate.rs`，确认注释草稿边界、实际 `MaxMinEliminator`、`eliminate` 和 `index_can_produce_order` 的全部可执行分支。
-- 数据模型与模块边界：`pkg/planner/core/rule/rule_init.rs`、`pkg/planner/core/rule/lib.rs`、`pkg/planner/core/rule/Cargo.toml`；目标目录无 `doc.go`。
-- Rust 调用/测试：`pkg/planner/core/rule/rule_max_min_eliminate_test.rs`、`pkg/planner/core/rule/rule_aster_unit_test.rs`；全仓库 Rust 精确检索确认本类型当前只被这些测试直接构造，`default_rule_names` 只有名称记录。
-- 完整 Rust 主链对照：`pkg/planner/core/optimizer_runtime.rs` 的规则枚举、顺序、分派和 `eliminate_single_max_min_descendants`；`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs::max_min_elimination_adds_null_filter_order_and_limit` 验证完整计划上的 nullable 过滤、降序和 Limit 1。
-- Go 对照：`pkg/planner/core/rule/rule_max_min_eliminate.go`、`pkg/planner/core/rule/rule_max_min_eliminate_test.go`、`pkg/planner/core/optimizer.go`；Go 独立回归确认空聚合不 panic、无错误、changed 为 false 且保持原节点。
-- 人工复核重点：单/多聚合分支、失败恢复、索引判定、固定公开 changed 标志、数据克隆与 schema 构造，以及精简规则和完整运行时实现的边界。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令确认文档存在且恰好包含 11 个固定二级标题。

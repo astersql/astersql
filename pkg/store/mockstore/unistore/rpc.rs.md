@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`rpc.rs` 是 `astersql-store-mockstore-unistore` crate 的进程内 RPC 边界。crate 入口 `pkg/store/mockstore/unistore/lib.rs` 以 `pub mod rpc` 声明本模块并通过 `pub use rpc::*` 导出其 API；`pkg/store/mockstore/unistore/Cargo.toml` 则表明该 crate 直接依赖配置、server、tikv 三个拆分 crate，以及启用 failpoint 的 `fail`。
-
-它不负责网络编解码，也不启动 gRPC 服务。调用方构造强类型的 `Request`，`RPCClient::send_request` 验证客户端状态和目标地址后，在同一进程内把请求转交给 `tikv::server::Server`、`Cluster` 或独立的 `RawHandler`，再用 `Response` 返回结果。`pkg/store/mockstore/unistore/mock.rs::New` 创建 server 和 cluster 后构造 `Arc<RPCClient>`；上层 `pkg/store/mockstore/mockstorage/embedded_rpc.rs::EmbeddedRpcStore` 将它用于 mock 事务读写，`pkg/store/mockstore/redirector.rs` 又把它适配为 `KvClient`。
-
-因此，本文件是“上层 mock 存储请求”与“嵌入式 UniStore 实现”之间的协议适配和分派层，而不是 MVCC、Region 或 Coprocessor 算法本身的实现位置。
+管理共享客户端的测试钩子和生命周期：`RequestInterceptor` 可在真实分派前拒绝请求；请求 marker 以线程局部、客户端局部方式作用于闭包；`close`/`Drop` 停止 server 并在易失模式下清理目录。
 
 ## 核心职责
 
@@ -112,8 +108,6 @@ RustCodeGraph 将本文件标记为被 24 个文件使用，并能解析 160 个
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/rpc.go`。两版共同保留的主干语义包括：RPCClient 持有 server/cluster/path/raw handler/persistent/closed；异步发送包装同步发送；地址先解析；Prewrite/PessimisticLock/Flush 前调用 cluster delay；事务、Raw、Cop、MPP 与调试命令按类型分派；非持久模式关闭时清理目录；按地址关闭为空操作；Debug Region Properties 解码边界并报告 `mvcc.num_rows`。
-
 Rust 版不是 Go 协议层的逐类型机械翻译，而是内部强类型模型，当前差异必须在扩展时显式评估：
 
 - Go 接收 `context.Context` 和 `tikvrpc.Request`，处理 context 取消、附加请求上下文、响应 RegionError 修正以及大量 failpoint；Rust 入口没有 context 取消，只实现 deadline failpoint 和通用 `RequestInterceptor`。
@@ -121,9 +115,8 @@ Rust 版不是 Go 协议层的逐类型机械翻译，而是内部强类型模�
 - Go 的流响应带 gRPC 风格 client、lease cancel 和 timeout，并可能在 `Recv` 时产生错误；Rust `CopStream`、`BatchCop`、`MppStream` 都是预先物化的 `MockStream`。尤其 Rust `CopStream` 只有一个结果，BatchCop 顺序执行全部子请求。
 - Go `CmdStoreSafeTS` 调 server，Rust `StoreSafeTs` 固定返回 0；Go `CmdBufferBatchGet` 调 `KvBufferBatchGet`，Rust 与普通 BatchGet 共用 `kv_batch_get`；两版都把 UnsafeDestroyRange 当作无需真实销毁的成功操作。
 - Go `Close` 忽略目录删除错误且每次写 closed；Rust `close` 幂等并传播 stop/IO 错误，同时由 Drop 尽力调用。
-- Rust 新增了 `RequestInterceptor` 和线程局部 request marker，用于 Rust 上层测试中的请求检查；对应行为不是 `rpc.go` 同名 API。
 
-相关 Rust 独立测试位于 `pkg/store/mockstore/unistore/rpc_test.rs`，没有把测试内嵌到生产源文件。Go 侧本目录没有独立 `rpc_test.go`；Go 语义证据来自 `rpc.go` 本身以及使用 RPCClient 的相邻 Go 测试/实现。
+相关 Rust 独立测试位于 `pkg/store/mockstore/unistore/rpc_test.rs`，没有把测试内嵌到生产源文件。
 
 ## 扩展指南
 
@@ -138,15 +131,3 @@ Rust 版不是 Go 协议层的逐类型机械翻译，而是内部强类型模�
 修改生命周期时要特别测试：重复 close、stop 失败、目录删除失败、close 与在途请求竞态、最后一个 `Arc` 的 Drop。修改 marker/interceptor 时要覆盖嵌套、panic、跨客户端、跨线程以及 poisoned-lock 策略。
 
 修改流式实现时的主要兼容风险是把当前 eager、有序、有限队列改成真正异步流后，首包时机、错误出现位置、内存占用和取消行为都会变化。修改 BatchCop/MPP 路由还需关注执行顺序和 store ID；修改 Region properties 解码则必须保持 memcomparable 分组、marker、填充和空边界规则。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `rpc.rs` 被完整索引为 839 行、160 个符号，并标记为被 24 个文件使用。
-- RustCodeGraph 精确节点/源码：`rpc.rs::RPCClient`（391 行）、`rpc.rs::send_request`（459 行）、`rpc.rs::send_request_async`（493 行）、`rpc.rs::decode_bytes`（791 行）、`rpc.rs::MockStream`（823 行）；另通过 `node --file` 阅读了目标文件全貌。
-- RustCodeGraph 调用图限制：对 `send_request` 的精确 `callers` 查询连续 60 秒没有返回，已中止；随后使用精确文本调用点补证，没有伪造图结果。
-- crate 与装配证据：`pkg/store/mockstore/unistore/Cargo.toml`、`pkg/store/mockstore/unistore/lib.rs`、`pkg/store/mockstore/unistore/mock.rs`。
-- 上下游证据：`pkg/store/mockstore/mockstorage/embedded_rpc.rs`、`pkg/store/mockstore/redirector.rs`、`pkg/store/mockstore/unistore/raw_handler.rs`，以及目标文件引用的 `cluster`、`tikv::server`、`tikv::mvcc` 接口。
-- Go 对照：`pkg/store/mockstore/unistore/rpc.go`（完整 612 行），重点核对 `SendRequest`、流处理、`handleDebugGetRegionProperties`、`Close` 与 mock stream。
-- 测试证据：`pkg/store/mockstore/unistore/rpc_test.rs` 的 `debug_region_properties_reports_mvcc_row_count_like_go` 验证两条已提交 MVCC 记录得到行数 2；`request_marker_is_client_local_nested_and_restored_after_panics` 验证 marker 的客户端、嵌套、panic 和线程边界。
-- 精确搜索证据：`rg` 定位 `RPCClient::new`、`send_request`、`set_request_interceptor`、`with_request_marker` 及主要 `Request` 变体的直接使用点，弥补本次 RustCodeGraph callers 查询挂起。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行固定章节结构检查，并人工复核本文只描述当前源码可证实的行为、明确列出 mock/占位与 Go 差异。

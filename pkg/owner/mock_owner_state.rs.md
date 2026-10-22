@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-owner` crate。`pkg/owner/Cargo.toml` 将 `lib.rs` 设为 crate 入口，`lib.rs` 以公开模块 `mock_owner_state` 装配并再导出本文件的公开项。它不是基于 etcd 的生产选主实现，而是 `pkg/owner/mock.rs` 中本地 `MockManager` 的进程内共享状态后端，用于无 etcd 的模拟竞选和 Owner 生命周期测试。
-
-文件维护的是“某个存储实例、某类 Owner 当前由哪个节点持有”这一最小状态。真实异步竞选循环、监听器通知、取消和退位流程在 `mock.rs`；本文件只负责同步、原子的状态查询与条件更新。
+在同一把 `Mutex` 下实现读取、抢占、条件释放和身份比较，避免并发的 `MockManager` 同时成功成为同一键的 Owner。
 
 ## 核心职责
 
@@ -80,9 +78,7 @@ Owner 的异步任务、`CancellationToken`、`Notify`、监听器及 epoch 生�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/owner/mock_owner_state.go`。Rust 保留了 Go 的核心模型和方法名：全局 `MockGlobalStateEntry`、按 `storeID + ownerTp` 组成的键、互斥锁保护的 map，以及 `GetOwner`、`SetOwner`、`UnsetOwner`、`IsOwner` 四种操作。
-
-语义对应如下：Go 缺失 map 键得到字符串零值，Rust 用 `unwrap_or_default()` 得到空串；Go 在锁内判断空值后赋值，Rust 用 `entry(...).or_default()` 在同一锁守卫内完成；Go 仅在当前值等于传入 Owner 时清空，Rust 完全相同。两者都会保留值为空串的键，而不是删除 map 项。
+语义对应如下：Go 缺失 map 键得到字符串零值，Rust 用 `unwrap_or_default()` 得到空串；Go 在锁内判断空值后赋值，Rust 用 `entry(...).or_default()` 在同一锁守卫内完成；Go 仅在当前值等于传入 Owner 时清空，Rust 完全相同。
 
 实现差异主要来自语言：Rust 把 `(store_id, owner_type)` 封装为派生 `Hash`/`Eq` 的 `OwnerKey`，选择器通过生命周期借用父状态；Rust 读取时克隆字符串以避免泄露锁内引用；Rust `Mutex` 可能中毒并触发 panic，Go `sync.Mutex` 没有对应状态。当前 Rust 文件不是简化桩，其状态转换与 Go 文件逐项对齐；跨进程 etcd 语义仍由另一实现承担。
 
@@ -94,14 +90,3 @@ Owner 的异步任务、`CancellationToken`、`Notify`、监听器及 epoch 生�
 - 若要回收空条目，可在成功释放时删除键，但应评估借用键删除及 Go 行为差异，并增加并发回归测试；当前实现有意采用清空值的 Go 语义。
 - 状态原语的直接回归应继续放在独立文件 `pkg/owner/manager_1_aster_unit_test.rs`，不要把测试嵌入本源文件；至少覆盖键隔离、重复抢占失败、错误持有者释放失败、正确释放成功和空值边界。完整生命周期还应同步 `pkg/owner/mock_test.rs` 或 `pkg/owner/manager_test.rs` 中的 `MockManager` 测试。
 - 性能优化若改成分片锁或并发映射，必须保持单键操作原子，并证明不会在回调或异步等待期间持锁。
-
-## 验证依据
-
-- RustCodeGraph `status --json`：索引已初始化，覆盖 Rust/Go 文件；目标文件节点完整显示 127 行源码，并列出 `pkg/owner/mock.rs` 及相关测试使用者。
-- RustCodeGraph `node --file pkg/owner/mock_owner_state.rs --offset 1 --limit 400`：核对全局变量、两个结构体、五个公开方法及其锁内逻辑。
-- RustCodeGraph `query MockGlobalState`、`query MockGlobalStateSelector`：核对 Rust/Go 同名类型和 Go 对照方法；精确 `callers` 查询在本次环境中未在 60 秒内返回，因此调用边另由已索引的 `mock.rs` 文件节点与精确引用搜索交叉确认。
-- 已读 Rust 路径：`pkg/owner/mock_owner_state.rs`、`pkg/owner/mock.rs`、`pkg/owner/lib.rs`、`pkg/owner/manager_1_aster_unit_test.rs`、`pkg/owner/mock_test.rs`、`pkg/owner/manager_test.rs`。
-- 已读边界声明：`pkg/owner/Cargo.toml`；该目录不存在 `doc.go`，包定位由 `lib.rs` 的 crate 文档和模块声明核对。
-- 已读 Go 对照：`pkg/owner/mock_owner_state.go`、`pkg/owner/mock.go`、`pkg/owner/manager_test.go`。Go 没有该状态表的同名独立测试，`manager_test.go` 通过 `NewMockManager` 的竞选、关闭和 Owner 查询间接覆盖它。
-- 直接 Rust 回归 `mock_global_state_is_scoped_and_compare_and_sets` 验证缺失键空串、`IsOwner("")`、不同 store/type 隔离、首次抢占成功、重复抢占失败、错误 ID 不能释放及正确 ID 释放；`mock_managers_compete_resign_and_notify_like_go` 验证上层竞争与交接。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证仅包含固定章节结构检查和人工事实复核。

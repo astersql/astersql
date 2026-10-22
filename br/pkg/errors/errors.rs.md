@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-errors` 库的实现主体，crate 边界由 [`Cargo.toml`](./Cargo.toml) 定义，包名为 `astersql-br-pkg-errors`，并通过 `package.metadata.porting.go-package = "br/pkg/errors"` 明确对应 Go 包。[`lib.rs`](./lib.rs) 以 `mod errors; pub use errors::*;` 将这里的公开项全部提升到 crate 根，因此调用方通常写 `astersql_br_pkg_errors::ErrInvalidArgument`、`Is` 或 `IsContextCanceled`，不会直接引用私有模块路径。
-
-它位于 BR（Backup & Restore）公共错误层：一方面集中声明跨备份、恢复、PD、流备份、PiTR、外部存储、EBS 和 TiKV 路径共享的稳定 RFC 错误码；另一方面提供按 RFC ID 识别规范化错误和识别 context 取消/超时的辅助函数。它不是错误日志、重试调度或具体业务错误的处理器；这些策略由上游调用方决定。
+`Canceled` 与 `DeadlineExceeded` 提供 Rust 侧等价于 Go `context.Canceled`、`context.DeadlineExceeded` 的哨兵类型，固定显示文本分别为 `context canceled` 和 `context deadline exceeded`（`errors.rs:18-42`）。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@ Go 侧 [`errors.go`](./errors.go) 被更广泛的现有 BR Go 代码使用；Rus
 
 ## 与 Go 版本的对应关系
 
-[`errors.go`](./errors.go) 的 `Is` 使用 `errors.Find` 并比较 `(*errors.Error).ID()`；Rust `Is` 使用同名语义的 `Find` 与 `downcast_ref`，保持“按 RFC ID 穿透包装”的契约。Go `IsContextCanceled` 先执行 `errors.Cause`，然后比较 `context` 两个哨兵并调用标准库 `errors.Is` 处理 `%w`；Rust 通过 `Cause`、两个本地哨兵与 `StdError::source` 链复现这两条路径，并额外回查原始链以避免 Cause 表示丢失标准包装。
+Go `IsContextCanceled` 先执行 `errors.Cause`，然后比较 `context` 两个哨兵并调用标准库 `errors.Is` 处理 `%w`；Rust 通过 `Cause`、两个本地哨兵与 `StdError::source` 链复现这两条路径，并额外回查原始链以避免 Cause 表示丢失标准包装。
 
-Rust 的 `LazyLock` 对应 Go 包级 `var` 初始化：外部观察到的消息模板与 RFC ID 相同，但初始化时机从包加载改为首次访问。Rust 文件的 69 个 `br_err!` 声明与 Go 的 69 个 `errors.Normalize` 声明逐项对应；[`parity_test.rs`](./parity_test.rs) 的 `all_normalized_errors_match_go` 穷举核对全部模板和 ID。
+Rust 的 `LazyLock` 对应 Go 包级 `var` 初始化：外部观察到的消息模板与 RFC ID 相同，但初始化时机从包加载改为首次访问。
 
-[`errors_test.go`](./errors_test.go) 的 `TestIsContextCanceled` 覆盖 nil、普通错误、直接取消/超时、Trace 和 `url.Error` 包装；Rust [`errors_test.rs`](./errors_test.rs) 用实现 `source()` 的 `UrlError` 复现相同矩阵。Go `TestEqual` 与 Rust `test_equal` 都验证 `ErrPDBatchScanRegion` 经 annotate 后仍按身份相等；Rust parity 测试还直接核对 `Is` 的正反例与公共错误快照。
+Go `TestEqual` 与 Rust `test_equal` 都验证 `ErrPDBatchScanRegion` 经 annotate 后仍按身份相等；Rust parity 测试还直接核对 `Is` 的正反例与公共错误快照。
 
 ## 扩展指南
 
@@ -79,12 +77,3 @@ Rust 的 `LazyLock` 对应 Go 包级 `var` 初始化：外部观察到的消息�
 若扩展错误链判定，优先修改 `Is`、`chain_is_canceled`、`shared_is_canceled` 或 `IsContextCanceled` 中最小的语义层，并在独立的 [`errors_test.rs`](./errors_test.rs) 或 [`parity_test.rs`](./parity_test.rs) 增加直接、Trace、标准 `source` 包装、空值和无关错误的回归用例；测试逻辑不要嵌入 `errors.rs`。还需检查 [`br/pkg/utils/backoff.rs`](../utils/backoff.rs) 与 [`br/pkg/conn/conn.rs`](../conn/conn.rs) 是否需要接入新分类。
 
 兼容风险主要是 RFC ID/模板漂移和取消误判；性能风险主要来自让链遍历重复扫描或引入昂贵格式化。新增静态量通常只增加一次惰性初始化成本。不要在这里加入业务重试循环或资源管理，因为该 crate 的职责是稳定错误目录和纯判定辅助。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标目录的 `errors.rs`、`lib.rs`、`errors_test.rs`、`parity_test.rs` 及 Go 对照均在索引内。
-- RustCodeGraph `node --file br/pkg/errors/errors.rs`：核对完整 516 行实现、公开/私有符号、69 个 `br_err!` 调用及各消息/RFC ID；`files --filter br/pkg/errors` 核对模块文件集合。
-- RustCodeGraph `explore`、`callers`、`callees`：确认 `Is -> Find/ID` 的实现语义，确认 `Is` 的 backoff 分类调用者，以及 `IsContextCanceled -> shared_is_canceled -> chain_is_canceled` 和 conn/backoff 的五个生产调用点。
-- 读取 [`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)：核对 crate 名、唯一外部 crate 依赖、Go 包映射、公开再导出和独立测试模块。
-- 读取 [`errors.go`](./errors.go)、[`errors_test.go`](./errors_test.go)、[`errors_test.rs`](./errors_test.rs)、[`parity_test.rs`](./parity_test.rs)：核对 Go/Rust 函数语义、取消边界、包装行为、Equal/Is 身份和 69 项穷举快照。
-- 本任务是只读逻辑分析加文档，不运行 Cargo；交付验证使用任务指定的 11 章节结构命令，并人工检查文档未把错误定义误写成业务重试实现。

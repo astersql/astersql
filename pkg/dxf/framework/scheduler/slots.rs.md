@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 DXF owner 侧调度链中的资源准入与节点容量过滤。DXF 把单个节点上的一个 CPU 核抽象成一个 slot，把“每个受管节点各一个 slot”抽象成一个 stripe；这里的 `SlotManager` 保存单节点容量、任务预留和各节点已用 slot 快照，为任务调度器回答“任务现在能否启动、应否绑定一个具体节点、哪些节点优先承载新子任务”。资源抽象及 owner/follower 分工可由 `pkg/dxf/framework/doc.go` 复核。
-
-crate 边界是 `astersql-dxf-framework-scheduler`（`pkg/dxf/framework/scheduler/Cargo.toml`，库入口为 `lib.rs`）。`lib.rs` 以 `pub mod slots` 声明模块，并通过 `pub use slots::*` 再导出其公共 API。文件直接依赖同 crate 的 `interface::{Result, TaskBase, TaskManager}` 和 `nodes::NodeManager`，不自行访问存储；`TaskManager` 的实际适配器再委托给框架存储管理器。
+DXF 把单个节点上的一个 CPU 核抽象成一个 slot，把“每个受管节点各一个 slot”抽象成一个 stripe；这里的 `SlotManager` 保存单节点容量、任务预留和各节点已用 slot 快照，为任务调度器回答“任务现在能否启动、应否绑定一个具体节点、哪些节点优先承载新子任务”。
 
 ## 核心职责
 
@@ -93,15 +91,7 @@ crate 边界是 `astersql-dxf-framework-scheduler`（`pkg/dxf/framework/schedule
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/dxf/framework/scheduler/slots.go`，Rust 保留了 Go 的核心算法与不变量：
-
-- `TaskStripes` / `Reservations` 对应 Go 的 `taskStripes`、`reservedStripes`、`task2Index`、`reservedSlots`；Rust 将三者封装在同一个锁保护对象中。
-- `update` 同样只保存当前 managed 节点，缺失报告按零处理，存储错误时保留旧快照。
-- `can_reserve` 同样按排名累计更高排名 stripe，并在失败后扫描单节点空余；`reserve`/`unreserve` 同样排序、重建索引并维护节点预留。
-- `adjust_eligible_nodes` 和过滤函数保留 Go 的候选顺序、容量等号边界、缺失节点排除，以及“无足够节点则退回全部候选”策略。
-- Rust 独立测试 `slots_test.rs` 复刻 Go `slots_test.go` 的主要表格与状态变化，包括 next-gen、排名抢占、节点回退、释放后重新准入、缩容快照和无效容量更新。
-
-可见实现差异也应在扩展时保留意识：Go 通过全局 `kerneltype.IsNextGen()` 判定模式，Rust 用每个 `SlotManager` 的 `AtomicBool` 和 `set_next_gen` 注入；Go 初始 CPU 数来自 `cpu.GetCPUCount()`，Rust 使用标准库可用并行度并在失败时回退 1；Go 的用量快照是原子指针，Rust 使用 `RwLock<HashMap<...>>`；Go `updateCapacity` 记录容量变化日志，Rust 当前只更新原子值。这些是当前代码事实，不代表应在本文件中自行补齐全局配置或日志接线。
+可见实现差异也应在扩展时保留意识：Go 通过全局 `kerneltype.IsNextGen()` 判定模式，Rust 用每个 `SlotManager` 的 `AtomicBool` 和 `set_next_gen` 注入；Go 初始 CPU 数来自 `cpu.GetCPUCount()`，Rust 使用标准库可用并行度并在失败时回退 1；Go 的用量快照是原子指针，Rust 使用 `RwLock<HashMap<...>>`；Go `updateCapacity` 记录容量变化日志，Rust 当前只更新原子值。
 
 ## 扩展指南
 
@@ -112,13 +102,3 @@ crate 边界是 `astersql-dxf-framework-scheduler`（`pkg/dxf/framework/schedule
 - 修改 `update` 时保留“外部查询失败不发布半成品快照”；新增错误路径应写入独立的 `slots_test.rs`，不要把测试内嵌到生产文件。
 - 修改过滤回退时需同步检查 `scheduler.rs::schedule_subtasks`、`balancer.rs::balance_subtasks` 和 `integrationtests/resource_control_test.rs`。将软回退改为硬限制会影响过载时可用性，将缺失节点视为零使用则可能把陈旧或未知节点重新纳入。
 - 性能方面，`reserve`/`unreserve` 每次排序或重建索引是线性/对数线性成本；任务数量通常受 `Manager` 并发上限约束。若优化为增量结构，必须证明排名遍历、任务删除及锁内一致性仍等价。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`pkg/dxf/framework/scheduler/slots.rs` 被识别为含 17 个符号的已索引文件。
-- RustCodeGraph 源码/符号检查：`slots.rs` 全部 262 行及 `SlotManager` 查询；直接调用证据来自 `scheduler_manager.rs`（`update`、`can_reserve`、`reserve`、`unreserve`）、`scheduler.rs`（`update`、`adjust_eligible_nodes`）、`nodes.rs`（`update_capacity`）、`balancer.rs`（`filter_nodes_with_enough_slots`）。精确 `callers/callees` 子命令在本次环境中未返回结果，因此调用边又以这些已索引调用点逐一复核，没有据此推断未见调用。
-- crate/模块证据：`pkg/dxf/framework/scheduler/Cargo.toml`、`pkg/dxf/framework/scheduler/lib.rs`。
-- 语义定义与适配证据：`pkg/dxf/framework/doc.go`、`pkg/dxf/framework/scheduler/interface.rs`（`TaskBase::compare`、`TaskManager::used_slots_on_nodes`）、`pkg/dxf/framework/scheduler/storage_adapter.rs`。
-- Go 对照：`pkg/dxf/framework/scheduler/slots.go`、`pkg/dxf/framework/scheduler/slots_test.go`。
-- Rust 测试证据：`pkg/dxf/framework/scheduler/slots_test.rs`；额外的公开过滤边界证据来自 `pkg/dxf/framework/integrationtests/resource_control_test.rs::slot_filter_keeps_go_order_missing_node_and_capacity_boundaries`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核本文能够回答文件存在目的、执行主链、状态不变量、错误/并发边界和安全扩展位置。

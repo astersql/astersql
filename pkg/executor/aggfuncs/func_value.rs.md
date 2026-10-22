@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-源码：[func_value.rs](./func_value.rs)。
-
-本文件属于 `astersql-executor-aggfuncs` crate（见同目录 `Cargo.toml`），由 `lib.rs` 以 `pub mod func_value` 暴露。它实现 `FIRST_VALUE`、`LAST_VALUE`、`NTH_VALUE` 三类窗口取值状态机，以及这些状态机共享的带 SQL NULL 状态和值内存记账的 `ValueEvaluator<T>`。
-
-在窗口函数构建链中，`builder.rs::build_window_function` 会把 `FunctionName::{FirstValue, LastValue, NthValue}` 映射为相应的 `AggImplementation` 元数据，并以返回字段类型选择 `ValueKind`。当前仓库搜索未发现生产 Rust 代码把这些元数据进一步实例化为本文件的 `FirstValue`、`LastValue` 或 `NthValue`；直接使用者是独立测试 `func_value_test.rs` 与 `window_func_test.rs`。因此，本文件已有可执行并受测试的局部状态机，但其完整 Rust 执行器接线不能仅凭现有代码认定为完成。
+提供与 Go 类型专用求值器相对应的 Rust 类型别名，并由 `evaluate_float32` 保留 Go 中从 `float64` 求值结果窄化为 `float32` 的行为。
 
 ## 核心职责
 
@@ -73,11 +69,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_value.go`。Rust `ValueMemory` 加各 `Value4*` 别名对应 Go 的 `valueEvaluator` 与 `value4Int/value4Float32/...` 类型族；Rust 将 Go 各类型重复的求值器存储逻辑统一为泛型，但不包含 Go 的 `expression.Expression.evaluateRow` 和 `chunk.Append*` 接口。
+Rust `ValueMemory` 加各 `Value4*` 别名对应 Go 的 `valueEvaluator` 与 `value4Int/value4Float32/...` 类型族；Rust 将 Go 各类型重复的求值器存储逻辑统一为泛型，但不包含 Go 的 `expression.Expression.evaluateRow` 和 `chunk.Append*` 接口。
 
-`FirstValue` 对应 Go `firstValue` 与 `partialResult4FirstValue`：Go 用 `gotFirstValue` 区分空窗口与首行 NULL，Rust 用 `evaluated`。`LastValue` 对应 `lastValue` 与 `gotLastValue`。`NthValue` 对应 `nthValue` 与 `partialResult4NthValue.seenRows`，两端都按 1-based N 跨批次定位，并把 N=0 或行数不足视为无结果。
+`FirstValue` 对应 Go `firstValue` 与 `partialResult4FirstValue`：Go 用 `gotFirstValue` 区分空窗口与首行 NULL，Rust 用 `evaluated`。
 
-内存差口径基本对齐：固定宽度类型为 0，字符串按长度，JSON 按二进制负载长度，向量按估算负载。Go 在 JSON 和向量求值后显式深拷贝以脱离 chunk 缓冲；Rust 输入已是拥有型 `T`，`update` 再 Clone 后保存。Go 还报告 partial-result 与 evaluator 结构体的初始大小，而本文件的更新 API只报告替换值的负载差；结构体初始内存需要由更上层另行计算，当前 Rust 生产接线未显示这一部分。
+Go 在 JSON 和向量求值后显式深拷贝以脱离 chunk 缓冲；Rust 输入已是拥有型 `T`，`update` 再 Clone 后保存。Go 还报告 partial-result 与 evaluator 结构体的初始大小，而本文件的更新 API只报告替换值的负载差；结构体初始内存需要由更上层另行计算，当前 Rust 生产接线未显示这一部分。
 
 Go `AppendFinalResult2Chunk` 在未命中时直接向结果列追加 NULL；Rust 仅返回三态借用，由尚未发现的上层适配器负责写结果。Go 的表达式求值可能返回错误，Rust 本文件不承担这一职责。这些是职责边界差异，不应把 Rust 局部状态机描述成 Go 完整执行对象的等价替换。
 
@@ -91,13 +87,3 @@ Go 测试 `func_value_test.go::TestMemValue` 覆盖各类型的初始内存与�
 - 修改内存记账时，应验证从大值到小值、值到 NULL、reset 后复用以及 JSON/向量深拥有；同时与 Go `func_value.go` 和 `func_value_test.go` 的口径对照，避免把容量、长度和结构体大小混在同一增量中。
 - 若要完成生产接线，最可能的入口是消费 `builder.rs::AggImplementation` 的执行器工厂。接线必须补充类型分派、表达式求值错误传播、结果 chunk 写入和 partial-result 初始大小记账，并新增独立集成测试；仅让本文件单元测试通过不足以证明窗口 SQL 路径可用。
 - 性能风险主要来自逐行/逐批 Clone 大字符串、JSON 或向量，以及错误的内存差导致内存控制失真；兼容风险主要是改变 NULL presence、Float32 窄化或 NTH_VALUE 的 1-based 规则。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含本仓库；`files --filter pkg/executor/aggfuncs/func_value.rs` 定位目标文件；`node --file ... --offset 1 --limit 500` 读取完整 254 行与 28 个符号；`query` 定位 `ValueEvaluator`、`FirstValue`、`LastValue`、`NthValue`、`evaluate_float32`；精确 `callers/callees` 未返回这些泛型局部边，已作为图谱限制处理。
-- Rust 源码：`pkg/executor/aggfuncs/func_value.rs`；模块入口 `pkg/executor/aggfuncs/lib.rs`；构建元数据接线 `pkg/executor/aggfuncs/builder.rs::build_window_function`。
-- crate 边界：`pkg/executor/aggfuncs/Cargo.toml`，package 为 `astersql-executor-aggfuncs`，library 入口为 `lib.rs`。
-- Rust 测试：`pkg/executor/aggfuncs/func_value_test.rs` 与 `pkg/executor/aggfuncs/window_func_test.rs`。
-- Go 对照：`pkg/executor/aggfuncs/func_value.go`；Go 内存测试 `pkg/executor/aggfuncs/func_value_test.go::TestMemValue`。
-- 仓库搜索：除本文件和两个直接测试外，`FirstValue/LastValue/NthValue/ValueEvaluator/Value4*/evaluate_float32` 的 Rust 命中只有 `builder.rs` 的同名枚举与元数据构建，未找到生产状态机实例化点。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付前使用任务指定命令检查文档存在且固定二级标题恰好为 11 个，并人工复核源码链接、当前接线限制与扩展风险。

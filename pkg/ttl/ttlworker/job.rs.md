@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ttl-ttlworker` crate 的 `job` 模块，由同目录 `lib.rs` 以 `pub mod job` 暴露。crate 的包边界和迁移来源由 `pkg/ttl/ttlworker/Cargo.toml` 声明：包名为 `astersql-ttl-ttlworker`，`package.metadata.porting.go-package` 指向 Go 包 `pkg/ttl/ttlworker`。文件直接依赖同 crate 的 `job_manager::TtlSummary` 和 `session::PhysicalTable`，没有条件编译项。
-
-它位于 TTL 表级作业生命周期的中间层：`job_manager.rs::JobManager::lock_new_job` 创建 `TtlJob` 并登记历史，`JobManager::finish_completed_jobs` 汇总扫描子任务后调用 `TtlJob::finish`。跨节点可靠状态并不由这里的 `JobStore` 提供；系统表事务由 `persistent.rs::PersistentJobStore` 负责，后者明确把系统表视为权威状态、内存 map 视为 worker 缓存。
+跨节点可靠状态并不由这里的 `JobStore` 提供；系统表事务由 `persistent.rs::PersistentJobStore` 负责，后者明确把系统表视为权威状态、内存 map 视为 worker 缓存。
 
 ## 核心职责
 
@@ -90,16 +88,11 @@ crate 层面，`Cargo.toml` 的无条件依赖只有 `astersql-ttl-cache`；大�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ttl/ttlworker/job.go`：
-
-- 四个 Rust SQL 常量分别对应 Go 的 `finishJobTemplate`、`removeTaskForJobTemplate`、`createJobHistoryRowTemplate`、`finishJobHistoryTemplate`；四个 Rust 构造器保持 Go 参数的列顺序和 `running`/`finished` 状态值。
 - Go `createJobHistorySQL` 从 `tbl.Partition.O` 决定 SQL `NULL` 或分区名；Rust 把这一选择显式化为 `partition_name: Option<&str>`。`job_test.rs::create_history_preserves_go_partition_null_semantics` 覆盖两种分支。
 - Go 使用 `time.Time` 并在构造器内按 `timeFormat` 格式化；Rust SQL 构造器接受已格式化文本，内存模型使用 Unix 秒。因此时区和格式正确性已移到调用方，当前测试只验证既成字符串的排列。
 - Go `ttlJob` 保存 `assignTime`、`tableID` 和受 mutex 保护意图的 `status`；Rust `TtlJob` 保存完整 `PhysicalTable` 和 `finished: bool`，没有 reassignment 时间、取消状态或 mutex。两者不是字段级完整移植。
 - Go `ttlJob.finish` 使用新的 `context.TODO()` 在悲观事务中依序执行三条 SQL，即使原 job context 已取消也继续收尾；Rust `TtlJob::finish` 只操作内存。更接近 Go 持久化语义的是 `persistent.rs::PersistentJobStore::finish_job`，它执行 begin/commit/rollback、校验 job 与 owner、删除任务并完成历史，但 SQL 采用 Unix 秒参数而非本文件所有字符串构造器。
 - Go finish 会把 SQL 执行错误包装后返回，并留有 `ttl-finish` failpoint；本文件没有错误/failpoint 路径。不能用本地 `bool` 完成结果替代 Go 数据库事务成功的证据。
-
-Go 的相关回归主要位于 `job_manager_test.go`，其中锁定新作业的预期执行序列调用 `createJobHistorySQL`，并通过测试导出方法调用 `ttlJob.finish`。Rust 的直接单元测试独立放在 `job_test.rs`，符合源文件与测试文件分离要求。
 
 ## 扩展指南
 
@@ -110,13 +103,3 @@ Go 的相关回归主要位于 `job_manager_test.go`，其中锁定新作业的�
 - 增加取消/抢占：先明确本地状态与 `PersistentJobStore::{heartbeat,takeover_timeout_for_job,finish_job}` 的一致性规则。需要保留旧 job 无法误完成新 job 的不变量，并把 owner ID 校验带到所有权威写入。
 - 修改完成条件或任务计数：主要入口在 `JobManager::finish_completed_jobs`，本文件只负责通过 ownership 后清理。测试应覆盖零任务、部分完成、陈旧 job、历史缺失和同物理表替换作业。
 - 性能方面，完成路径的三个 `BTreeMap` 操作为对数复杂度；只有在 profiling 证明大量本地作业造成瓶颈时才考虑更换容器，并先确认是否依赖确定迭代顺序。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ttl/ttlworker/job.rs` 确认目标文件被索引并有 21 个符号。
-- RustCodeGraph `query` 确认主要定义及位置：`TtlJob`（`job.rs:114`）、`JobStore`（`:156`）、`finish_job_sql`（`:45`）、`remove_task_for_job`（`:62`）、`create_job_history_sql`（`:69`）、`finish_job_history_sql`（`:92`）、`create_history`（`:167`）。`node job.rs::finish_job_sql` 显示它引用 `FINISH_JOB_SQL`，并由 `job_test.rs` 导入。
-- RustCodeGraph 对若干哈希 symbol ID 的 `node/callers/callees` 返回空结果，且精确 `callers` 查询未稳定完成；因此调用关系又用仓库引用检索交叉验证，没有把空图结果解释为“无调用者”。
-- 已完整阅读：`pkg/ttl/ttlworker/job.rs`、`job.go`、`job_test.rs`、`Cargo.toml`、`lib.rs`；直接边界还核对了 `job_manager.rs`、`persistent.rs`、`session.rs`。目标包不存在 `doc.go`。
-- Rust 引用检索确认：生产侧 `JobManager::lock_new_job` 调用 `create_history`，`JobManager::finish_completed_jobs` 调用 `finish`，`PersistentJobStore::finish_job` 引用 `REMOVE_TASK_FOR_JOB_SQL`；其余 SQL 构造器只在 `job_test.rs` 出现。
-- 测试证据：`job_test.rs::sql_builders_match_go_templates_and_argument_order` 验证三组模板/参数；`create_history_preserves_go_partition_null_semantics` 验证 history 插入顺序和分区 `NULL`；`local_finish_updates_only_the_current_job_and_cleans_tasks` 验证陈旧作业无副作用、当前作业清理和历史回填。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定的结构命令验证文件存在且恰有 11 个固定二级章节，并人工复核所有“当前已接入/未接入”陈述都有上述源码或调用证据。

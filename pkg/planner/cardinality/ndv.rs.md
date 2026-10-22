@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应真实源文件 [`ndv.rs`](ndv.rs)。该文件属于 `astersql-planner-cardinality` crate，是优化器基数估算层的 NDV（Number of Distinct Values，不同值个数）实现。crate 根 `pkg/planner/cardinality/lib.rs` 以私有模块 `mod ndv` 装入本文件，再通过 `pub use ndv::*` 导出公开入口。它位于统计信息与物理/逻辑规划之间：输入主要是 `statistics::Table` 或 `property::StatsInfo`，输出的单列/列组 NDV 用于 Join 行数、聚合分组数、递归 CTE 去重、Index Join 探测和 Apply 缓存命中率等估算。
-
-`pkg/planner/cardinality/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/planner/cardinality`，并直接依赖 expression、planctx、property、statistics、session variable/vardef 和 types 等本地 crate。本文件经 `use crate::*` 使用这些由 crate 根重导出的命名空间，并调用相邻 `exponential.rs` 的 `ApplyExponentialBackoff`。
+位于统计信息与物理/逻辑规划之间：输入主要是 `statistics::Table` 或 `property::StatsInfo`，输出的单列/列组 NDV 用于 Join 行数、聚合分组数、递归 CTE 去重、Index Join 探测和 Apply 缓存命中率等估算。
 
 ## 核心职责
 
@@ -86,13 +84,11 @@ RustCodeGraph 对本文件的文件节点报告了 planner core 的直接使用�
 
 ## 与 Go 版本的对应关系
 
-Rust 实现逐段对应 `pkg/planner/cardinality/ndv.go`：`distinctFactor`、单列直方图缩放、同版本完整统计查找、GroupNDV 优先、最大单列保守估计、指数退避、risk ratio 插值、UniqueID 包装入口以及两种 NDV 缩放模型的公式均保持一致。公开函数采用 Go 风格名称，`EstimateColsDNVWithMatchedLenFromUniqueIDs` 也保留原有 `DNV` 拼写。
-
 Rust 为 object safety 增加了 `EstimateColsNDVWithSessionVars`：完整 `PlanContext` 入口只取会话变量，物理计划中已有调用者可直接传 `SessionVars`。`estimateColsNDVBySkewRatio` 也是 Rust 为隔离算术和便于测试增加的局部层次，不改变 Go 分支语义。
 
 主要差异有三点：Go 的包 `init()` 自动运行，Rust `init()` 必须显式调用，而当前实际优化器入口选择直接注册闭包；Go 在列不属于 schema 时记录错误日志，Rust 静默回退 `1.0`；Go 接受可空 `*StatsInfo` 并显式防御 nil，Rust 用非空引用消除了该分支。
 
-`pkg/planner/cardinality/ndv_test.rs` 对齐 `ndv_test.go` 的核心数值：均匀缩放边界、风险比 `0/0.5/1`、issue 54812、单列、精确三列 GroupNDV、二/三列指数退避和空键。Go 测试还通过 SQL/EXPLAIN 覆盖真实 session 与计划链，Rust 测试以轻量 `TestContext` 和直接函数调用替代存储支持；因此 Rust 测试证明算法对齐，但不等价于完整 SQL 集成覆盖。
+Go 测试还通过 SQL/EXPLAIN 覆盖真实 session 与计划链，Rust 测试以轻量 `TestContext` 和直接函数调用替代存储支持；因此 Rust 测试证明算法对齐，但不等价于完整 SQL 集成覆盖。
 
 ## 扩展指南
 
@@ -103,12 +99,3 @@ Rust 为 object safety 增加了 `EstimateColsNDVWithSessionVars`：完整 `Plan
 改变风险参数语义时，需同时核对 vardef/variable 的范围校验、相关优化变量记录、`ScaleNDVFunc` 注册点和 Go 对照。尤其不要只修改未被调用的 `init()` 而遗漏 `pkg/planner/core/optimizer_runtime.rs` 的实际注册闭包。若开放 `EstimateColsDNVWithMatchedLenFromUniqueIDs` 的新调用，需确认临时列只依赖 `UniqueID` 的假设仍被 schema 匹配实现满足。
 
 测试应继续放在独立 `ndv_test.rs`，不得嵌入生产源文件。性能方面，列组估算会分配并排序至多输入列数个 NDV；若用于更热路径，可考虑在不改变排序和四列退避语义的前提下减少分配，并用基准或调用侧证据证明收益。
-
-## 验证依据
-
-- 生产实现：`pkg/planner/cardinality/ndv.rs`（完整读取 290 行）及 `pkg/planner/cardinality/exponential.rs::ApplyExponentialBackoff`。
-- crate 边界：`pkg/planner/cardinality/Cargo.toml` 与 `pkg/planner/cardinality/lib.rs`。
-- Rust 独立测试：`pkg/planner/cardinality/ndv_test.rs`；Go 对照实现与测试：`pkg/planner/cardinality/ndv.go`、`pkg/planner/cardinality/ndv_test.go`。
-- 上游/下游直接证据：`pkg/planner/cardinality/join.rs`、`pkg/planner/core/operator/logicalop/logical_aggregation.rs`、`logical_cte.rs`、`pkg/planner/core/operator/physicalop/index_join_probe.rs`、`base_physical_plan.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/property/stats_info.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/planner/cardinality/ndv.rs` 列出完整源码和 planner core 使用文件；`query` 同时定位 Rust/Go 的 `EstimateColumnNDV`、`EstimateColsNDVWithMatchedLen`、`ScaleNDV`。精确 `callers/callees --file` 未返回边，故调用边再以仓库搜索和调用点源码验证，未将空结果推断为“无调用者”。
-- 人工事实复核：文档分别回答文件存在目的、三条计算主流程、回退与数值边界、共享回调生命周期、Go/Rust 差异和安全扩展位置；未运行 Cargo，符合纯文档任务约束。

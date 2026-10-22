@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sem-compat` crate 的测试辅助实现，位于 SEM（Security Enhanced Mode）v1/v2 兼容层中。`pkg/util/sem/compat/lib.rs` 无条件声明 `testhelper` 模块并通过 `pub use testhelper::*` 再导出，因此这里的 `V1`、`V2`、`SwitchToSEMForTest` 和 `compatibleSEMV2Config` 都可由依赖该 crate 的 Rust 测试直接访问；它不是 `#[cfg(test)]` 私有模块，但 API 语义明确面向测试。
-
-crate 边界由 `pkg/util/sem/compat/Cargo.toml` 定义：本文件直接依赖 SEM v1 crate `astersql-util-sem`、SEM v2 crate `astersql-util-sem-v2`、解析器 MySQL 常量 crate `astersql-parser-mysql`（本地别名 `mysql`）以及 `tempfile`。其作用是为兼容层及上层 privilege、session、expression 等测试提供统一的版本切换入口，而不是实现 schema、表、变量、权限或 SQL 的受限判定；真实判定分别位于 `pkg/util/sem/sem.rs`、`pkg/util/sem/v2/sem.rs` 和同目录 `sem.rs` 的分发逻辑。
+只负责准备测试环境并委托给 v1/v2 实现，避免两套测试各自复制切换和配置装载流程。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ SEM 状态、系统变量和 `TiDBReleaseVersion` 都是进程级共享状态。
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/sem/compat/testhelper.go`。两端保留相同版本字符串、相同 v1 `Enable`/`Disable` 配对、相同 v2 发布版本赋值、相同 JSON 内容和相同未知版本失败语义。
-
 语言适配差异如下：
 
 - Go 签名接收 `*testing.T`，用 `t.Fatalf`/`require.NoError` 报错；Rust 不依赖测试句柄，改为返回 `Box<dyn Fn()>` 并在初始化错误时 panic。
@@ -88,8 +84,6 @@ SEM 状态、系统变量和 `TiDBReleaseVersion` 都是进程级共享状态。
 - Rust 在调用按路径读取前显式 `flush`；Go 的 `WriteString` 后直接读取同一文件路径。两者都通过真实文件解析路径启用 v2。
 - Go 的清理类型是 `func()`；Rust 下游清理闭包捕获系统变量备份，因此以 trait object 装箱。
 - 两端都不会恢复 `TiDBReleaseVersion`。Rust 修改可变静态量需要显式 `unsafe`，把 Go 中隐含的进程级可变性暴露为需要审查的边界。
-
-`pkg/util/sem/compat/compat_test.go` 与 `sem_integration_test.go` 提供原始测试意图；Rust 的 `compat_test.rs`、`sem_integration_test.rs` 和 `migration_aster_unit_test.rs` 验证迁移后的辅助函数与配置行为。Rust 集成测试对完整 Go session/privilege 场景作了依赖解耦，真实 session 链路另由 `pkg/session/runtime_test/session.rs` 覆盖。
 
 ## 扩展指南
 
@@ -100,14 +94,3 @@ SEM 状态、系统变量和 `TiDBReleaseVersion` 都是进程级共享状态。
 若要改变临时文件或错误处理，应保持“完整写入并可见后才解析”“解析成功后可删除文件”“启用失败不返回伪清理闭包”这些不变量。若要恢复 `TiDBReleaseVersion`，需要同时评估下游清理闭包捕获原值、并发写入和 Go 对齐，不能仅在本函数末尾恢复，因为配置启用后的测试阶段仍依赖该版本环境。
 
 测试逻辑应继续放在独立文件，不嵌入 `testhelper.rs`。优先扩展同目录 `migration_aster_unit_test.rs` 验证切换不变量，扩展 `compat_test.rs` 验证可见性/权限配置，扩展 `sem_integration_test.rs` 验证 SQL 规则；需要真实 privilege/session 链时在各自 crate 的独立测试中覆盖。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/util/sem/compat` 确认本 crate 的 Rust/Go 源与测试集合。
-- RustCodeGraph `node --file pkg/util/sem/compat/testhelper.rs --offset 1 --limit 400`：读取完整 157 行源码，报告 6 个索引符号以及 5 个直接使用文件。
-- RustCodeGraph `query SwitchToSEMForTest`、`query compatibleSEMV2Config`、`node compatibleSEMV2Config`、`callees SwitchToSEMForTest`：确认两个公开行为/数据入口及函数到配置静态量的引用；`explore` 与限定名 `callers` 未返回可用边，因此调用方用索引的文件使用关系和精确文本引用交叉核验。
-- crate 与模块证据：`pkg/util/sem/compat/Cargo.toml`、`pkg/util/sem/compat/lib.rs`。
-- 下游实现证据：`pkg/util/sem/sem.rs`、`pkg/util/sem/v2/sem.rs`、`pkg/util/sem/v2/testhelper.rs`。
-- Go 对照证据：`pkg/util/sem/compat/testhelper.go`、`pkg/util/sem/compat/compat_test.go`、`pkg/util/sem/compat/sem_integration_test.go`。
-- Rust 测试证据：`pkg/util/sem/compat/compat_test.rs`、`pkg/util/sem/compat/sem_integration_test.rs`、`pkg/util/sem/compat/migration_aster_unit_test.rs`、`pkg/privilege/privileges/privileges_test.rs`、`pkg/session/runtime_test/session.rs`，以及文本引用发现的 expression/sessionstates 独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前用任务指定命令确认本文恰好具有 11 个固定二级章节，并人工复核文档中的符号、调用边、边界与扩展建议均可回溯到上述文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`suite.rs` 属于 `astersql-br-pkg-utiltest` 测试工具 crate，是 Go `br/pkg/utiltest/suite.go` 的 Rust 对照实现。它不执行备份恢复业务，而是为 restore-schema 一类测试一次性装配 mock TiDB 集群、mock glue 与临时目录上的本地对象存储，并负责回收 mock 集群。crate 入口 `br/pkg/utiltest/lib.rs` 以 `pub mod suite` 纳入本文件，并在 crate 根重新导出 `CreateRestoreSchemaSuite`、`RestoreSchemaSuite` 和 `TestRestoreSchemaSuite`。
-
-`br/pkg/utiltest/Cargo.toml` 将该 crate 标记为 `kind = "library"`、Go 包映射为 `br/pkg/utiltest`，直接依赖精简后的 `astersql-br-pkg-gluetidb-mock`、`astersql-br-pkg-mock` 和 `tempfile`。因此这里是 BR 测试夹具层，而不是服务器进程或恢复执行主链的生产入口。
+不执行备份恢复业务，而是为 restore-schema 一类测试一次性装配 mock TiDB 集群、mock glue 与临时目录上的本地对象存储，并负责回收 mock 集群。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-Go `suite.go` 与 Rust 实现的共同顺序是：创建空 `MockGlue`，调用 `mock.NewCluster`，创建测试临时目录和 local storage，启动集群，注册/提供停止清理。公开的 `Mock`、`MockGlue`、`Storage` 三项也逐一对应。
+Go `suite.go` 与 Rust 实现的共同顺序是：创建空 `MockGlue`，调用 `mock.NewCluster`，创建测试临时目录和 local storage，启动集群，注册/提供停止清理。
 
 差异来自语言和测试框架：
 
@@ -97,8 +95,6 @@ Go `suite.go` 与 Rust 实现的共同顺序是：创建空 `MockGlue`，调用 
 - Go 的 `Mock` 是指针、`Storage` 是 `storeapi.Storage`；Rust 的 `Mock` 按值持有，`Storage` 是本 crate 本地定义的 `Arc<dyn Storage>` 精简表面。
 - `RestoreSchemaSuite` 别名及 `Context` 再导出是 Rust 迁移/调用便利层，在 Go 文件中没有对应声明。
 
-`br/pkg/utiltest/parity_test.rs` 是当前最直接的 Rust 对等测试：它验证成功构造的字段状态、本地存储读写和错误分类、裸集群启动失败，以及显式停止、重复停止和停止后存储可用性。
-
 ## 扩展指南
 
 新增套件资源时，应在 `TestRestoreSchemaSuite` 中建立明确所有权，在 `CreateRestoreSchemaSuite` 中按依赖顺序初始化，并在 `Stop`/`Drop` 中确定是否需要清理。资源若依赖临时路径、后台线程、端口、通道或锁，必须把维持其有效性的所有者留在结构体中，并检查字段析构顺序和失败中途的回收行为。
@@ -106,13 +102,3 @@ Go `suite.go` 与 Rust 实现的共同顺序是：创建空 `MockGlue`，调用 
 改变构造契约时，应同步核对 `br/pkg/utiltest/suite.go`，避免擅自缩减 Go 初始化步骤；若 Rust 因平台精简必须不同，应在 Cargo 依赖和文档中明确边界。改变公开字段、别名或再导出时，还要同步 `br/pkg/utiltest/lib.rs`。
 
 测试逻辑必须继续放在独立的 `br/pkg/utiltest/parity_test.rs`，不要内嵌到 `suite.rs`。至少应覆盖正常构造、每个新增可触发的失败阶段、显式与自动清理的组合、重复清理，以及资源在停止前后的可用性。若改变 `Cluster::Start/Stop` 或 storage 生命周期，还需同步检查 `br/pkg/mock/mock_cluster.rs` 和 `br/pkg/utiltest/stubs.rs` 的独立测试。兼容风险集中在 Go/Rust 清理时机与公开 API 形态，性能风险主要是每次工厂调用都启动一套 mock cluster 并创建磁盘临时目录；不要在未量化前把该夹具扩展为更重的真实服务。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/utiltest` 找到目标、Go 对照、crate 入口和 parity 测试。
-- RustCodeGraph `node --file br/pkg/utiltest/suite.rs`：读取目标文件 1–106 行，并报告文件关联；`node br/pkg/utiltest/suite.rs::CreateRestoreSchemaSuite` 给出直接调用者 `br/pkg/utiltest/parity_test.rs::go_rust_public_contract_matches`。
-- RustCodeGraph `callees br/pkg/utiltest/suite.rs::CreateRestoreSchemaSuite` 的符号集合确认本文件中的 `drop` 调用 `Stop`；目标源码本身核对了工厂对 `NewCluster`、`NewLocalStorage` 和 `Mock.Start` 的顺序调用。工具未解析出这些跨 crate 调用的完整 callee 边，因此依赖关系同时以源码与 Cargo 为证，不把缺失图边表述为不存在调用。
-- 已读源码与配置：`br/pkg/utiltest/suite.rs`、`br/pkg/utiltest/lib.rs`、`br/pkg/utiltest/Cargo.toml`、`br/pkg/utiltest/stubs.rs`、`br/pkg/mock/mock_cluster.rs`、`br/pkg/gluetidb/mock/mock.rs`。
-- Go 对照：`br/pkg/utiltest/suite.go`。
-- 独立 Rust 测试：`br/pkg/utiltest/parity_test.rs`；通过 `rg` 另行确认 syncpoint 文件只消费再导出的 `Context`，未调用套件工厂。Go 侧同名工厂还被多个 restore/checkpoint/task 测试使用，但这些仅作为 Go 契约使用面证据。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；交付验证仅执行任务指定的 11 章节结构检查，并人工复核符号、调用关系、边界和扩展建议均有上述路径支撑。

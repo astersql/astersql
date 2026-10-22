@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-collate` crate，是 `gbk_chinese_ci` 排序规则的静态权重数据层。crate 根 `pkg/util/collate/lib.rs` 以 `#[path = "gbk_chinese_ci_data.rs"]` 声明并公开重导出该模块；实际算法位于相邻的 `pkg/util/collate/gbk_chinese_ci.rs`，本文件本身不实现比较、编码、通配匹配或注册逻辑。
-
-`pkg/util/collate/Cargo.toml` 指定 `lib.rs` 为库入口，并声明默认 feature `full_collate`；当前模块在 `lib.rs` 中是无条件接入的，没有 `cfg` 或 feature 分支。它也不直接使用 Cargo 依赖，依赖它的是同 crate 的 GBK 中文排序实现。
+唯一职责是提供 `gbkChineseCISortKeyTable`：以 Unicode BMP code point 为下标、以 GBK `chinese_ci` 排序权重为值的定长查找表。
 
 ## 核心职责
 
@@ -61,11 +59,11 @@ RustCodeGraph 的文件查询确认该文件已索引且只识别到一个符号
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/collate/gbk_chinese_ci_data.go`，其唯一数据为 `[0xFFFF + 1]uint16` 类型的 `gbkChineseCISortKeyTable`。Rust 使用 `[u16; 0xFFFF + 1]`，索引域、元素宽度和名称均直接对应；Rust 用不可变 `pub static`，Go 则是包内变量，但现有 Go 代码只读取它。
+Rust 使用 `[u16; 0xFFFF + 1]`，索引域、元素宽度和名称均直接对应；Rust 用不可变 `pub static`，Go 则是包内变量，但现有 Go 代码只读取它。
 
-对两个声明体抽取十六进制元素后，双方各有 65,536 项且逐项相等。消费逻辑也对应：Go `pkg/util/collate/gbk_chinese_ci.go` 的 `gbkChineseCISortKey(r rune) uint32` 与 Rust 同名函数都在非 BMP 时返回 `0x3F`，否则读取表并转换为 `uint32`/`u32`。
+消费逻辑也对应：Go `pkg/util/collate/gbk_chinese_ci.go` 的 `gbkChineseCISortKey(r rune) uint32` 与 Rust 同名函数都在非 BMP 时返回 `0x3F`，否则读取表并转换为 `uint32`/`u32`。
 
-Rust 侧增加了面向字节的 trait 方法和明确的模块重导出，但没有改变本表语义。测试对照位于 `pkg/util/collate/collate_test.go` 与 `pkg/util/collate/collate_test.rs`：两者都把 `gbk_chinese_ci` 放入同一组表驱动比较和键用例，包括大小写、中文、非 BMP、未映射字符和尾空格。
+Rust 侧增加了面向字节的 trait 方法和明确的模块重导出，但没有改变本表语义。
 
 ## 扩展指南
 
@@ -74,13 +72,3 @@ Rust 侧增加了面向字节的 trait 方法和明确的模块重导出，但�
 测试应优先扩展独立文件 `pkg/util/collate/collate_test.rs`，并同步 Go 的 `pkg/util/collate/collate_test.go`；若是简洁的 GBK/GB18030 键回归，也可扩展 `pkg/util/collate/bin_1_aster_unit_test.rs` 中的 `chinese_ci_weights_and_keys_match_go_tables`。至少覆盖：具体字符权重产生的键、相邻字符排序方向、预期等价字符、U+FFFF/U+10000 边界，以及该表项是否影响通配匹配。
 
 主要风险是兼容性和持久数据一致性：权重改变会改变比较、`ORDER BY`、唯一性判断和索引键，既有索引可能与新规则不一致。性能风险主要来自增大稠密表或把 O(1) 查表替换为更复杂逻辑；公开 API 风险来自该符号已在 crate 根重导出。修改数据时还应避免复制整表造成无关 diff，并保持源文件中的 PingCAP 与 AsterSQL 版权注释。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/util/collate/gbk_chinese_ci_data.rs` 显示该文件和一个符号；`node --file ... --offset 1 --limit 240` 展示声明与表头。精确的 `query/node/callers/callees gbkChineseCISortKeyTable` 均返回未找到，故调用边使用文本搜索补证。
-- 源码与装配：`pkg/util/collate/gbk_chinese_ci_data.rs`、`pkg/util/collate/gbk_chinese_ci.rs`、`pkg/util/collate/lib.rs`、`pkg/util/collate/collate.rs`。
-- crate 边界：`pkg/util/collate/Cargo.toml`。
-- Go 对照：`pkg/util/collate/gbk_chinese_ci_data.go`、`pkg/util/collate/gbk_chinese_ci.go`；脚本抽取声明体的十六进制值，确认 Rust/Go 均为 65,536 项且逐项相等。
-- Rust 测试：`pkg/util/collate/collate_test.rs` 的 `test_utf8_collator_compare`、`test_utf8_collator_key`、`test_campare_invalid_utf8_rune`，以及 `pkg/util/collate/bin_1_aster_unit_test.rs` 的 `chinese_ci_weights_and_keys_match_go_tables`。
-- Go 测试：`pkg/util/collate/collate_test.go` 的 `TestUTF8CollatorCompare`、`TestUTF8CollatorKey` 和非法 UTF-8 比较用例。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；交付只执行固定 11 章节的结构验证和文档范围自检。

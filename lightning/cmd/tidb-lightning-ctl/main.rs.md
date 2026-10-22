@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `tidb-lightning-ctl` Rust crate 的控制面主流程，而不是最外层可执行文件。进程从 `bin_main.rs::main` 进入 `astersql_lightning_cmd_tidb_lightning_ctl::main`，经 `lib.rs::main` 转发到本文件的 `entry::main`。`Cargo.toml` 将该目录同时声明为以 `lib.rs` 为入口的库和以 `bin_main.rs` 为入口的二进制；移植元数据把它标记为 Go 包 `lightning/cmd/tidb-lightning-ctl` 对应的 binary。
-
-该文件负责把命令行解析结果变成集群压缩、TiKV 模式查询/切换或 checkpoint 管理动作。实际参数、PD/TiKV 边界和部分配置适配统一由同目录 `stubs.rs` 导入；checkpoint 控制和模式切换则由 `astersql-lightning-pkg-server` 提供，完整压缩级别常量来自 `astersql-lightning-pkg-importer`。因此它是命令编排层，不承载 checkpoint 数据库或真实网络协议的具体实现。
+因此它是命令编排层，不承载 checkpoint 数据库或真实网络协议的具体实现。
 
 ## 核心职责
 
@@ -91,11 +89,9 @@ checkpoint controller 是分支局部值，操作返回后即释放。legacy con
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `main.go`，总体结构保持一致：配置装载与调整、TLS、PD client、互斥动作顺序、checkpoint controller 的按需创建、usage fallback，以及 `compactCluster`/`fetchMode` 的 store 遍历参数均有明确对应。`checkpointTableNotFoundUsage` 的文本和特殊错误格式也来自 Go 实现。
+Rust 为可测试性拆出了 Go 中没有的层次：`main_with_args` 显式接收 argv，`run_main` 返回数字退出码，`run_loaded` 接收已解析三元组，`dispatch` 单独承担动作选择。Go 的 `defer cli.Close()` 在 Rust 中变为 `dispatch` 后显式 `Close` 加 `Drop` 兜底。
 
-Rust 为可测试性拆出了 Go 中没有的层次：`main_with_args` 显式接收 argv，`run_main` 返回数字退出码，`run_loaded` 接收已解析三元组，`dispatch` 单独承担动作选择。Go 的 `config.Must`/`exit` 行为由这些层和 `call_exit` 共同表达。Go 的 `defer cli.Close()` 在 Rust 中变为 `dispatch` 后显式 `Close` 加 `Drop` 兜底。
-
-另一个重要差异是依赖接线。Go 直接使用 PD HTTP、TiKV、Lightning config/common/server/importer；当前 Rust crate 为 arm64 开发环境使用本地 `stubs.rs` 模拟 CLI、PD/TiKV 网络边界，仅 server checkpoint/mode-switch 与 importer 常量通过直接 crate 依赖复用。因此文档和扩展评审应区分“与 Go 可观察语义对齐”与“已接入同等真实基础设施”。
+另一个重要差异是依赖接线。Go 直接使用 PD HTTP、TiKV、Lightning config/common/server/importer；当前 Rust crate 为 arm64 开发环境使用本地 `stubs.rs` 模拟 CLI、PD/TiKV 网络边界，仅 server checkpoint/mode-switch 与 importer 常量通过直接 crate 依赖复用。
 
 测试对应关系为 `main_test.go::TestRunMain` 对 `main_test.rs::test_run_main`，涵盖入口执行、checkpoint 缺失不打印栈和普通错误保留栈；额外的 `parity_test.rs` 覆盖 Go 布尔 flag 语法、alias 后值覆盖、动作分派、store 状态边界、并行取消、非法 mode、端点 split 和 client 释放。
 
@@ -108,13 +104,3 @@ Rust 为可测试性拆出了 Go 中没有的层次：`main_with_args` 显式接
 改变错误类型或文案时，需要同时检查 `formatFatalError` 的 class 身份判断和退出码分层，避免把用户可纠正错误误报为带栈内部错误。改变多 flag 行为会影响 `dispatch` 的首命中契约，应当显式记录兼容性风险。
 
 测试应继续放在独立文件，不嵌入 `main.rs`：入口/退出码与错误格式同步更新 `main_test.rs`，Go/Rust 外部契约和边界同步更新 `parity_test.rs`；若语义源自 Go，还应核对 `main.go` 与 `main_test.go`。涉及 checkpoint controller 的内部行为应在 `lightning/pkg/server/checkpoint_control_test.rs` 等所属模块测试，而不是让 ctl 入口测试承担全部覆盖。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件；`files --filter lightning/cmd/tidb-lightning-ctl` 列出本 crate 的 Rust/Go 入口、测试和 stub。
-- RustCodeGraph `node --file lightning/cmd/tidb-lightning-ctl/main.rs`：读取完整 237 行源码，确认 15 个索引符号、文件被 `parity_test.rs` 使用，以及入口、分派、格式化和两个集群动作的实现。
-- RustCodeGraph `query`：确认 `run_loaded`、本文件 `dispatch`、`compactCluster`、`fetchMode`、`run_main`，以及 `stubs.rs` 中 `LoadGlobalConfigWithCtl`、`NewClient`、`ForAllStores`、`call_exit` 和 server 的 `NewCheckpointControl` 的真实位置。
-- RustCodeGraph `node`：读取 `lib.rs`、`bin_main.rs`、`stubs.rs` 相关片段、`main_test.rs`、`parity_test.rs`、Go `main.go` 与 `main_test.go`，并读取 `lightning/pkg/server/checkpoint_control.rs` 的 trait、factory 和 legacy 资源边界。
-- `lightning/cmd/tidb-lightning-ctl/Cargo.toml`：核对 library/binary 入口、Go 包映射、binary 移植类型和两个直接依赖。
-- 精确图命令 `rustcodegraph callers run_loaded` 在本地索引上超过 60 秒未返回并被中止；调用关系改由完整已索引源码、文件使用关系和直接测试调用交叉验证，不据此推断缺失调用边。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级章节的结构命令和人工事实复核验收。

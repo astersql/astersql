@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore` crate，由 [`pkg/objstore/lib.rs`](lib.rs) 以 `pub mod gcs_extra` 公开。它是 GCS 后端的分片上传辅助层：将同步的 `objectio::Writer` 接口桥接到 `object_store::MultipartUpload` 的异步 API，并保留一组与 Go XML multipart 实现对应的数据结构和 HTTP 传输默认值。真正的存储后端选择、路径组装和 `Storage::Create` 入口在 [`pkg/objstore/gcs.rs`](gcs.rs) 中。
-
-crate 边界由 [`pkg/objstore/Cargo.toml`](Cargo.toml) 定义：本文件直接使用 `anyhow`、`bytes`、带 `gcp` feature 的 `object_store`、本地 `objectio` 与 `storeapi` crate，并通过 `ObjectStorageCore` 复用 `azblob.rs` 中的专用 Tokio runtime。
+GCS 后端的分片上传辅助层：将同步的 `objectio::Writer` 接口桥接到 `object_store::MultipartUpload` 的异步 API，并保留一组与 Go XML multipart 实现对应的数据结构和 HTTP 传输默认值。
 
 ## 核心职责
 
@@ -77,17 +75,12 @@ multipart session 的所有权由 `upload: Option<Box<dyn MultipartUpload>>` 管
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/objstore/gcs_extra.go`](gcs_extra.go)。两版共同保留 5 MiB/5 GiB 分片范围、最多 10,000 parts、零 part 关闭成功、失败时 abort、原错误与 abort 错误同时可见，以及 30s connect/keep-alive、90s idle、10s TLS handshake、1s expect-continue、100 全局 idle 连接和 `CPU + 1` 每主机 idle 连接的默认意图。
-
 实现机制存在重要差异：
 
-- Go 直接实现 GCS XML multipart：生成 V4 signed URL，发送 POST/PUT/DELETE，解析 upload ID 和 ETag，排序 part 后序列化 XML。Rust 把这些协议细节委托给 `object_store` crate。
 - Go 创建 `workers` 个 goroutine，通过 channel 并行上传，每个 `xmlMPUPart` 最多尝试 3 次；Rust 保存并校验 `workers`，但当前串行上传，也没有在本层使用 `DEFAULT_RETRY`。底层 `object_store` 是否重试属于其自身配置，本文件没有证据可将其视为 Go 的等价三次重试。
 - Go `Write` 只复制数据并入队，worker 异步记录错误；Rust `write` 在返回前等待当前 part 上传结束，因而错误更早向调用者暴露。
 - Go DTO 带 XML tag 并直接参与协议；Rust 同名 DTO 不带 serde/XML 标注，当前仅是兼容形状。Rust `create_transport` 也只返回参数摘要，没有对应 Go 的 `localAddr`、环境代理和真实 dialer/transport 对象。
 - Go 对 worker 数未在构造器显式拒绝 0；Rust 显式返回 `parallel worker count must be positive`，避免一个无消费者的配置。
-
-因此，本文件是“保持对外约束与清理语义、替换内部协议实现”的移植，不能将其视为 Go 并行度和重试行为的逐行等价实现。
 
 ## 扩展指南
 
@@ -98,14 +91,3 @@ multipart session 的所有权由 `upload: Option<Box<dyn MultipartUpload>>` 管
 - 修改 part size/part count 边界时，同步扩展 `gcs_test.rs` 中 10,001 part 用例和 [`pkg/objstore/azblob_1_aster_unit_test.rs`](azblob_1_aster_unit_test.rs) 中的最小分片用例，并与 `storeapi` 错误身份保持一致。
 - 若要让 DTO 或 `TransportConfig` 参与真实路径，应先补独立 Rust 测试，验证 part 排序、XML/序列化合同、CPU fallback 和各超时值；不要把测试嵌入生产文件。
 - 新增与本文件直接相关的 Rust 回归应放在同目录的独立 `gcs_test.rs` 或新的 `gcs_extra_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] #[path = ...] mod ...` 接线；不应在 `gcs_extra.rs` 内增加内联测试模块。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/objstore` 确认目标 Rust/Go/测试文件均已索引。
-- RustCodeGraph `node --file pkg/objstore/gcs_extra.rs --offset 1 --limit 260` 与 `--offset 258 --limit 100`：覆盖目标文件全部 312 行、37 个索引符号及源码。
-- RustCodeGraph `query`：确认 `GCSWriter`、`new_with_attributes`、`upload_part`、`MultipartCloseError`、`InitiateMultipartUploadResult`、`sort_parts` 和 `ObjectStorageCore` 的定义位置；`node ObjectStorageCore` 及 `azblob.rs:326-380` 核对 runtime 所有权与构造参数。
-- RustCodeGraph `callers`/`callees` 已对 `GCSWriter`、`create_transport` 和 `sort_parts` 执行，该 CLI 对这些通用/方法名未返回可用边；因而使用 `rg` 的精确符号引用补充确认 `gcs.rs:36,452-460` 的唯一生产构造边与无外部引用的兼容符号。
-- 生产路径：`pkg/objstore/gcs.rs:420-483`、`pkg/objstore/objectio/interface.rs:21-113`、`pkg/objstore/azblob.rs:326-380`、`pkg/objstore/lib.rs`、`pkg/objstore/Cargo.toml`。
-- Go 对照：`pkg/objstore/gcs_extra.go:40-222,224-355,357-442`，核对 worker/channel、错误保留、XML DTO、分片重试、abort 与 transport 默认值。
-- Rust 独立测试：`pkg/objstore/gcs_test.rs:453-652` 覆盖 staging/finalize/abort 故障、原错误链、空/非空成功、取消后仍 abort 与第 10,001 part；`pkg/objstore/azblob_1_aster_unit_test.rs:136-175` 覆盖最小 part size 和实际内存存储写回。Go 回归 `pkg/objstore/gcs_test.go:719-790` 用于对照 abort-on-error 意图。
-- 本任务仅生成文档，按计划不运行 Cargo；结构验证要求目标文件存在且恰好包含上述 11 个固定二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore-ossstore` crate 的凭证层。crate 入口 `pkg/objstore/ossstore/lib.rs` 通过 `mod credential` 声明模块并用 `pub use credential::*` 重导出其公开符号；`pkg/objstore/ossstore/Cargo.toml` 则表明该 crate 直接依赖 `anyhow`、`arc-swap`、`tokio` 以及 reqsign 的 Aliyun OSS、文件读取和 HTTP 发送组件。
-
-它位于 OSS 配置与实际请求之间：`pkg/objstore/ossstore/store.rs::NewOSSStorage` 根据后端配置创建 `StaticCredentialsProvider` 或 `ReqsignCredentialsProvider`，动态凭证再包进 `CredentialRefresher`；`pkg/objstore/ossstore/interface.rs::AliyunOssApi::client` 在构造每次请求使用的 `ali_oss_rs::blocking::Client` 时读取当前凭证快照。文件不执行 OSS 对象操作，也不决定 bucket、region 或 endpoint。
+`ProviderCredentials` 定义 OSS 签名所需的一份完整快照，避免 AK、SK 和 STS token 分字段更新时出现代际混用。
 
 ## 核心职责
 
@@ -102,8 +100,6 @@ worker 持有 `Arc<CredentialRefresher>`，所以仅丢弃外层 `OSSStore` 并�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/objstore/ossstore/credential.go`，独立测试分别是 `credential_test.go::TestCredentialRefresher` 与 `credential_test.rs::test_credential_refresher`。
-
 - Go `credentialRefresher` 与 Rust `CredentialRefresher` 都在启动时同步刷新、默认每五秒刷新、刷新失败仅告警、读取未初始化状态时报错，并在关闭时等待后台执行单元退出。
 - Go 用 `atomic.Pointer[credentials.Credentials]` 发布整快照，Rust 用 `ArcSwapOption<ProviderCredentials>`；两者都避免热读路径因 provider 内部串行获取而阻塞，也都保证字段成组更新。
 - Go 用 `context.WithCancel`、`WaitGroupWrapper` 和 goroutine 管理退出；Rust 用停止布尔值、`Condvar` 和 `JoinHandle`。Rust 额外实现 `Drop`，但生产上仍依赖 `OSSStore::Close` 打破 worker 持有的 `Arc` 生命周期环。
@@ -123,10 +119,3 @@ Go `credential.go::fetchCredentials` 同样使用 30 次、两秒、每五次告
 - 任何安全相关日志都不应输出 AK、SK 或 token；当前日志直接包含错误文本，该文本仍可能携带敏感内容，需在调用边界审查或脱敏。
 
 新增凭据来源或重试分类应同时维护成功恢复、永久错误不重试、次数耗尽及取消用例；安全审查须检查错误链内容，不能把“不主动打印凭证字段”当成完整脱敏保证。
-
-## 验证依据
-
-- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/objstore/ossstore/credential.rs` 定位增量、`git show 2c944fb:pkg/objstore/ossstore/credential.rs` 核对源码。本文不包含目标提交之后的源码变化。
-- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
-- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`store.rs` 及 Go `credential.go::fetchCredentials`；独立 `credential_test.rs::fetch_credentials_retries_only_transient_ecs_metadata_failures` 使用注入间隔，覆盖暂态恢复、永久错误、30 次耗尽和取消；`transient_no_credentials_error_requires_ecs_metadata_timeout` 固定分类信号。
-- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

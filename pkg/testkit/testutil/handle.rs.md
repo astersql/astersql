@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-testkit-testutil` 测试辅助 crate，而不是 SQL 请求运行时的生产主链。crate 根 `pkg/testkit/testutil/lib.rs` 在私有 `handle` 模块中通过 `include!("handle.rs")` 编译本文件，并以 `pub use handle::*` 将两个函数暴露为 crate 根 API。`pkg/testkit/testutil/Cargo.toml` 的 `[lib] path = "lib.rs"` 以及 `codec-dependency`、`kv-dependency`、`mysql-dependency` 三个路径依赖共同确定了这一边界。
-
-文件只定义 `MustNewCommonHandle` 和 `MaskSortHandles` 两个公开、同步、无条件编译的函数；没有类型、trait、模块级可变状态或条件编译项。它存在的目的，是让 Rust 测试使用与 Go `pkg/testkit/testutil/handle.go` 相同的 common handle 构造和分片行号比较语义，而不用在各测试中重复编码细节。
+`MustNewCommonHandle`：把一组 `&dyn Any` 测试值转换成 `Datum`，按可比较 key 格式编码，再构造成实现 `kv::Handle` 的 `CommonHandle`。
 
 ## 核心职责
 
@@ -89,7 +87,7 @@ RustCodeGraph 的 `callers/callees` 裸名查询因 Go/Rust 同名符号而未�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/testkit/testutil/handle.go`。函数结构保持一致：Go 和 Rust 都先 `MakeDatums`、再 `EncodeKey`、再 `NewCommonHandle`；掩码排序也都使用 `64 - typeBitsLength + shardBitsCount + 1` 的移位数，并对归一化结果升序排序。
+函数结构保持一致：Go 和 Rust 都先 `MakeDatums`、再 `EncodeKey`、再 `NewCommonHandle`；掩码排序也都使用 `64 - typeBitsLength + shardBitsCount + 1` 的移位数，并对归一化结果升序排序。
 
 已验证的差异如下：
 
@@ -99,7 +97,7 @@ RustCodeGraph 的 `callers/callees` 裸名查询因 Go/Rust 同名符号而未�
 - Go 的默认类型长度是按类型码索引的 map，Rust是 `(u8, usize)` 切片并线性查找。Rust对未知类型使用 `0`，并显式处理负移位和 `>= 64` 移位；这些保护分支并非逐字复刻 Go 实现。
 - Go 使用 `slices.Sort`，Rust使用 `sort_unstable`；对于这里只比较 `i64` 值的结果序列，两者都产生升序值，但都不应被用来依赖相等元素的来源顺序。
 
-Go 的实际使用面更广：`pkg/kv/key_test.go`、`pkg/ddl/primary_key_handle_test.go`、多个 executor 测试都调用这些辅助函数。Rust 目前确认的调用面集中在 testutil 自测和 `autoid_test.rs`，不能据 Go 调用清单宣称所有测试均已迁移。
+Rust 目前确认的调用面集中在 testutil 自测和 `autoid_test.rs`，不能据 Go 调用清单宣称所有测试均已迁移。
 
 ## 扩展指南
 
@@ -108,13 +106,3 @@ Go 的实际使用面更广：`pkg/kv/key_test.go`、`pkg/ddl/primary_key_handle
 扩展掩码排序时，应在 `MaskSortHandles` 附近保持位宽公式可追溯到 Go 对照，并为未知 `fieldType`、空输入、负值、极端 `shardBitsCount` 以及 32/64 位字段增加独立测试。测试逻辑应继续放在 `pkg/testkit/testutil/migration_aster_unit_test.rs` 或新的同目录 `*_test.rs` 文件中，不嵌入 `handle.rs`。若改变未知类型或越界移位策略，还需评估现有调用是否依赖“全零”结果或 panic。
 
 性能方面，常规改动不应引入每元素查表或重复编码；字段位宽只需在循环前解析一次。兼容性方面，必须同步核对 Go `handle.go`、真实 executor auto-random 场景以及 `TypeLong`/`TypeLonglong` 两种宽度，避免只用合成输入证明公式。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/testkit/testutil` 列出目标 Rust/Go 文件、模块入口和相关测试。
-- RustCodeGraph 源码/符号查询：`node --file pkg/testkit/testutil/handle.rs`、`query MustNewCommonHandle --kind function`、`query MaskSortHandles --kind function`、两个精确 `node` 查询；确认本文件两个公开函数及其完整实现。`callers/callees` 因跨语言同名消歧限制未返回可靠边，文档未将空结果当作“无调用者”。
-- 下游实现查询：`node --file pkg/util/codec/codec.rs`、`pkg/types/datum.rs`、`pkg/kv/key.rs`、`pkg/parser/mysql/const.rs`；核对 Datum 转换、key 编码、common handle 列边界和 MySQL 类型长度。
-- crate 与装配：`pkg/testkit/testutil/Cargo.toml`、`pkg/testkit/testutil/lib.rs`。
-- Go 对照：`pkg/testkit/testutil/handle.go`；实际 Go 调用证据包括 `pkg/executor/test/autoidtest/autoid_test.go`、`pkg/executor/test/seqtest/seq_executor_test.go` 和 `pkg/executor/test/ddl/ddl_test.go`。
-- Rust 测试：`pkg/testkit/testutil/migration_aster_unit_test.rs`、`pkg/executor/test/autoidtest/autoid_test.rs`。前者验证编码列和 32/64 位掩码，后者验证真实 allocator/rebase 流程。
-- 本任务是纯文档分析，按计划未运行 Cargo；最终仅执行固定十一章节的结构验证，并人工检查文档回答了文件定位、运行流程和安全扩展入口。

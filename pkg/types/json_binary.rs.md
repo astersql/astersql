@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 AsterSQL 类型系统中的 MySQL/TiDB 兼容二进制 JSON 基础表示。它不是独立遗留源码：`pkg/types/internal/json_binary/lib.rs` 通过 `#[path = "../../json_binary.rs"]` 将它挂入 `astersql-types-json-binary` 子 crate，并连同 `json_constants.rs` 的布局常量一起公开；根 `pkg/types/lib.rs` 再以 `pub use types_json_binary as json_binary` 将该子 crate 暴露给上层。`pkg/types/internal/json_binary/Cargo.toml` 表明直接依赖为 `base64`、`serde_json`、`thiserror` 与 `dbterror`；本文件实际直接使用前三者中的 `base64`、`serde_json`，错误类型来自同 crate 的 `json_constants` 模块。
-
-它位于 SQL 值与线格式之间：上层把文本或 Rust 值变为 `BinaryJSON`，行编解码、表达式、Datum 与哈希路径再读取其类型码和载荷。可见生产调用包括 `pkg/types/datum.rs` 的 JSON 转换、`pkg/session/runtime/row_codec.rs` 的文本解析、`pkg/lightning/backend/kv/canonical.rs` 的规范化，以及 `pkg/util/codec/codec.rs` 的 `HashValue` 调用。
+在构造阶段执行最大深度 100、对象键最大 65535 字节和数字可解析性等检查。
 
 ## 核心职责
 
@@ -75,11 +73,11 @@ JSON 路径、比较、合并等高级操作主要在 `pkg/types/json_binary_fun
 
 ## 与 Go 版本的对应关系
 
-主要对照文件是 `pkg/types/json_binary.go`，测试对照为 `pkg/types/json_binary_test.go`。Rust 保留了 Go 的 `BinaryJSON` 二字段布局、类型码、容器相对偏移、literal entry 内联、对象键排序、字符串/opaque 长度前缀、深度 100、长键错误、浮点哈希规范化及公开函数命名。`JsonTime`/`JsonDuration` 是为拆分 Rust crate 而引入的轻量替身，对应 Go 的 `Time`/`Duration` 所需字段。
+`JsonTime`/`JsonDuration` 是为拆分 Rust crate 而引入的轻量替身，对应 Go 的 `Time`/`Duration` 所需字段。
 
-需要注意的当前差异：Rust 以 `JsonValue` 和泛型 `Into` 代替 Go 的 `any` 类型开关；Rust `GetValue` 能递归返回数组、对象、literal 和 opaque，而 Go 同名实现只返回若干标量并把其它类型视为不可达；Rust `serde_json` 负责语法解析，Go 使用 `encoding/json.Decoder.UseNumber`。两端都按 int64、uint64、float64 顺序解释数字字符串。Go `CalculateHashValueSize` 的容器分支虽计算局部递归大小，函数当前最终仍返回 `len(Value)+1`；Rust显式保留这一可观察结果，`pkg/types/json_binary_test.rs::TestHashValue` 也锁定了它。
+需要注意的当前差异：Rust 以 `JsonValue` 和泛型 `Into` 代替 Go 的 `any` 类型开关；Rust `GetValue` 能递归返回数组、对象、literal 和 opaque，而 Go 同名实现只返回若干标量并把其它类型视为不可达；Rust `serde_json` 负责语法解析，Go 使用 `encoding/json.Decoder.UseNumber`。Go `CalculateHashValueSize` 的容器分支虽计算局部递归大小，函数当前最终仍返回 `len(Value)+1`；Rust显式保留这一可观察结果，`pkg/types/json_binary_test.rs::TestHashValue` 也锁定了它。
 
-Rust 独立测试 `pkg/types/json_binary_test.rs` 基本沿用 Go 测试命名，并额外以 Rust 断言覆盖。高级 Extract/Modify/Merge/Walk 测试经过 `json_binary_functions` 扩展层；本文件最直接的回归面是 `TestBinaryJSONMarshalUnmarshal`、`TestBinaryJSONCopy`、`TestGetKeys`、`TestBinaryJSONDepth`、`TestParseBinaryFromString`、`TestCreateBinary`、`TestBinaryJSONOpaque` 和 `TestHashValue`。
+Rust 独立测试 `pkg/types/json_binary_test.rs` 基本沿用 Go 测试命名，并额外以 Rust 断言覆盖。
 
 ## 扩展指南
 
@@ -88,11 +86,3 @@ Rust 独立测试 `pkg/types/json_binary_test.rs` 基本沿用 Go 测试命名�
 调整容器布局时必须保持 entry 偏移相对容器起点、literal 内联、对象键和值索引一一对应、头部 size 等于完整容器载荷这四个不变量，并同时更新 `json_constants.rs`。所有新测试应继续放在独立的 `pkg/types/json_binary_test.rs`（或对应高级功能测试文件），不要内嵌到生产源文件。
 
 错误边界扩展优先使用 `CreateBinaryJSONWithCheck`/`MarshalJSON` 返回 `JsonError`，并在 `json_constants.rs` 增加明确 kind；不要把新校验放进只读 getter 后再依赖 panic。性能改动应重点测量深层容器的递归、`valEntryGet` 的子缓冲复制、对象重复遍历，以及大小估算是否仍满足容量上界。兼容性验证应同时比较 Go 的规范文本、精确二进制载荷与哈希结果，尤其覆盖 `2^52` 附近整数、超长键、空容器、opaque 长度跨 uvarint 边界、时间 FSP 和 100/101 层边界。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11467 个文件；`query BinaryJSON --kind struct`、`query ParseBinaryJSONFromString --kind function` 定位到本文件符号。`files --filter pkg/types/json_binary` 与路径限定 `node/callers/callees` 未返回目标，因此调用边按技能规则改用源码和仓库 `rg` 核验。
-- 已读生产文件：`pkg/types/json_binary.rs`、`pkg/types/json_constants.rs`、`pkg/types/internal/json_binary/lib.rs`、`pkg/types/internal/json_binary/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`；仓库未发现 `pkg/types/doc.go`。
-- 已读 Go 对照：`pkg/types/json_binary.go`；已读测试：`pkg/types/json_binary_test.rs`、`pkg/types/json_binary_test.go`。测试证据覆盖文本往返、类型、复制、排序键、65536 字节键失败、深度、空/尾随文本、数值类型、opaque/uvarint、哈希区分与容器 size 现状。
-- 上游调用通过 `rg` 核验于 `pkg/types/datum.rs`、`pkg/session/runtime/row_codec.rs`、`pkg/lightning/backend/kv/canonical.rs`、`pkg/util/codec/codec.rs`、`pkg/util/chunk/mutrow.rs` 和 `pkg/expression/builtin_cast_vec.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认目标文档存在且恰含 11 个固定二级标题，并人工复核文件定位、运行流程和安全扩展入口均有源码或测试依据。

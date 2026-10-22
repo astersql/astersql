@@ -2,21 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-base` crate 的计划抽象边界。crate 入口
-`pkg/planner/core/base/lib.rs` 以私有模块 `mod plan_base` 装入本文件，再通过
-`pub use plan_base::*` 对外暴露公共类型。它位于 AST/会话上下文与具体逻辑、物理算子之间：
-规划阶段用 `PlanContext` 获取会话与表达式服务，以 `LogicalPlan` 表示可改写的算子树，最终以
-`PhysicalPlan` 表示可计价、可下接任务并可编码为 `tipb::Executor` 的执行树。
-
-`pkg/planner/core/base/Cargo.toml` 将该边界声明为独立库 `astersql-planner-core-base`，并直接依赖
-`planctx`、`expression`、`property`、`costusage`、`fd`、`kv`、`tipb`、`execdetails`、
-`cascades-base` 与任务相关的本 crate 类型。具体算子不在这里实现；例如逻辑算子实现在
-`pkg/planner/core/operator/logicalop/`，基础物理实现在
-`pkg/planner/core/operator/physicalop/base_physical_plan.rs`。会话、规划器、执行器和 Cascades
-相关 crate 均通过 Cargo 路径依赖消费该接口。
-
-源码第 23 行所说“本轮不进行 mod.rs 连线”是历史说明；当前事实以 `lib.rs` 为准，本文件已经由
-crate 入口接线并再导出。
+保存并比较逻辑子树可能提供的有序列集合 `PossiblePropertiesInfo`，其稳定哈希和相等语义。
 
 ## 核心职责
 
@@ -170,14 +156,10 @@ PB 构建上下文以 `&mut BuildPBContext` 传入 `to_pb`，保证一次编码�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/core/base/plan_base.go`：
-
 - Rust `Plan`、`LogicalPlan`、`PhysicalPlan`、`GroupExpression`、`PhysicalJoin` 的方法集合与 Go
   同名接口保持同一职责；Rust 采用 snake_case，并补充 `Any` 下转与对象安全入口。
 - Go `PlanContext` 只是 `planctx.PlanContext` 类型别名；Rust 因关联类型无法直接作为 trait object，
   新建对象安全的 `PlanContext` 边界。这是语言适配，不是删减规划期服务。
-- Go 可变参数映射为 Rust 切片或 `Vec`：例如 `TP(...bool)` 对应 `tp(&[bool])`，
-  `Attach2Task(...Task)` 对应 `attach_to_task(Vec<Box<dyn Task>>)`。
 - Go 指针/接口 nil 由 Rust 的 `Option`、借用、`Box` 或 `Arc` 明确表达。
   `PossiblePropertiesInfo` 的 receiver nil 无 Rust 等价值，但 `Orders == nil` 与 nil column 仍保留。
 - `GetGEAndLogicalOp` 的普通计划与 group wrapper 两分支一致；Rust 类型不匹配返回 `None`，而 Go
@@ -208,23 +190,3 @@ PB 构建上下文以 `&mut BuildPBContext` 传入 `to_pb`，保证一次编码�
   nullable column 和被排除字段。
 - 性能方面，避免在高频 getter 中无谓克隆 schema/统计/children；评估 `BuiltinFunctionUsageCounter`
   的全局 mutex 竞争与逻辑树递归中 `Vec` 分配。兼容方面，保持 trait 对象安全和 Cargo 依赖方向。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；
-  `files --filter pkg/planner/core/base` 确认目标源、crate 入口与独立测试均被索引；
-  `node --file pkg/planner/core/base/plan_base.rs --offset 1 --limit 520` 完整返回 514 行源码，并显示
-  该文件被 50 个文件使用。
-- RustCodeGraph 精确查询：`query get_ge_and_logical_op --json` 定位函数至第 366 行；
-  `query prepared_limit_value --json` 同时定位 trait 默认方法与会话实现；
-  `query get_est_row_count_for_display --json` 定位 trait 方法及基础物理实现。对动态 trait 调用执行
-  callers/callees 未返回完整边，故使用实现/调用点搜索补充，而未臆造静态调用图。
-- 已读生产与边界文件：`plan_base.rs`、`lib.rs`、`Cargo.toml`、`doc.go`、Go 对照
-  `plan_base.go`；已搜索 `operator/logicalop`、`operator/physicalop`、`optimizer_runtime.rs`、
-  `property_cols_prune.rs`、Cascades、session 与 executor 中的直接实现和调用点。
-- 已读独立 Rust 测试 `plan_base_test.rs`：覆盖 `FullOuterJoin` 判别值/outer 分类/显示文字，以及
-  `PossiblePropertiesInfo { orders: None }` 的对象非 nil + orders nil 哈希前缀。
-  `base_test.rs` 的仓库搜索结果还显示其覆盖对象安全 context、nil/空属性和忽略 `has_tiflash`；
-  Go 同目录没有独立 `plan_base_test.go`，因此 Go 行为依据来自生产对照文件本身。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验证应确认文件存在并且固定的十一个二级标题
-  各出现一次；人工复核还需确认没有建议把 Rust 单元测试放回生产源文件。

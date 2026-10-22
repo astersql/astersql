@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate。`pkg/executor/aggfuncs/Cargo.toml` 以 `lib.rs` 为库入口，并直接依赖 `astersql-util-serialization`；`lib.rs` 将本文件声明为 `spill_deserialize_helper` 模块，并把 `DeserializeHelper` 重新导出到 crate 根。它位于聚合执行器的 spill 恢复边界：接收已经从落盘数据装入 `chunk::Column` 的逐行字节串，把每一行还原成某一种聚合函数的 partial result（聚合中间状态）。与它成对的编码端是 [`spill_serialize_helper.rs`](spill_serialize_helper.rs)。
-
-真实接线入口在 [`aggfuncs.rs`](aggfuncs.rs) 的 `deserialize_partial_result_common` 和 `StateSerializer::deserialize_partial_result`：前者用目标列及 `Chunk::NumRows()` 创建本辅助器，逐行收集 `PartialResult` 并汇总内存增量；后者通过通用 `SpillState` 路径恢复复杂状态。计数型极值聚合另由 [`func_max_min_count.rs`](func_max_min_count.rs) 调用 `deserialize_count_extrema`。因此，本文件是“字节协议到内存中间态”的适配层，不负责触发 spill、文件 I/O、选择聚合实现或合并最终 SQL 结果。
+`DeserializeHelper::new` 保存列引用和调用方给出的有效行数，但不立即检查列的实际行数；这一延迟行为由 `spill_deserialize_helper_test.rs::constructor_defers_row_count_validation_like_go` 固定。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@ RustCodeGraph 的索引状态显示目标文件已纳入索引，并把 `Deseria
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`spill_deserialize_helper.go`](spill_deserialize_helper.go)。Rust 的四个字段与 Go `deserializeHelper` 的 `column/readRowIndex/totalRowCnt/pab` 一一对应；`new` 同样只保存 `rowNum`；每个传统专用方法同样先检查行数、Reset、按固定顺序解码、递增行号并返回成功标志。`aggfuncs.rs::deserialize_partial_result_common` 也保留 Go 版本“循环至 nil、累加内存、最终检查结果数”的意图。
+Rust 的四个字段与 Go `deserializeHelper` 的 `column/readRowIndex/totalRowCnt/pab` 一一对应；`new` 同样只保存 `rowNum`；每个传统专用方法同样先检查行数、Reset、按固定顺序解码、递增行号并返回成功标志。
 
-Rust 用私有泛型 `next` 消除了 Go 文件中重复的边界与递增样板；用 `deserialize_first_row<T>` 合并 FIRST_ROW 的公共头；用 `SpillState`/`SpillElement` 承载 Go 中 distinct 集合、percentile、variance、vector 等大量专用反序列化逻辑。因此不能仅凭本文件比 Go 文件短就判断功能缺失，相关具体协议主要位于 `spill_serialize_helper.rs` 的 trait 实现。MAX/MIN COUNT 也被抽象为 `CountValue::read`。
+Rust 用私有泛型 `next` 消除了 Go 文件中重复的边界与递增样板；用 `deserialize_first_row<T>` 合并 FIRST_ROW 的公共头；用 `SpillState`/`SpillElement` 承载 Go 中 distinct 集合、percentile、variance、vector 等大量专用反序列化逻辑。
 
-可见差异包括：Rust JSON object 使用标准 `HashMap::entry` 和容量差计算近似 Go `map`/`SetExt` 的内存增量；Rust JSON array 延续 Go 的追加语义；两边 JSON object 都在读取前重置 map；两边均以 panic 处理不可恢复的内部字节协议错误。当前 Rust 传统 FIRST_ROW 专用包装器没有 Go 文件里的 vector 包装器，但 vector 的生产路径通过 `SpillState for FirstRowPartialResult<VectorFloat32>` 实现，并由 `spill_helper_test.rs` 覆盖。Go 对照是语义基线，新增或调整协议时必须同步检查两端字段顺序、nil/空值含义和内存记账。
+可见差异包括：Rust JSON object 使用标准 `HashMap::entry` 和容量差计算近似 Go `map`/`SetExt` 的内存增量；Rust JSON array 延续 Go 的追加语义；两边 JSON object 都在读取前重置 map；两边均以 panic 处理不可恢复的内部字节协议错误。当前 Rust 传统 FIRST_ROW 专用包装器没有 Go 文件里的 vector 包装器，但 vector 的生产路径通过 `SpillState for FirstRowPartialResult<VectorFloat32>` 实现，并由 `spill_helper_test.rs` 覆盖。
 
 ## 扩展指南
 
@@ -93,13 +91,3 @@ Rust 用私有泛型 `next` 消除了 Go 文件中重复的边界与递增样板
 新增 `SpillValue` 变体至少需要同步 `serialize_spill_value`、`deserialize_spill_value`、`value_memory_delta`、相关内存常量与 JSON 聚合往返测试；漏掉任何一处会造成编译穷尽性错误或协议/记账不一致。修改 JSON object 时要特别保留重复 key 的覆盖语义和只对首次插入计费的不变量。修改 GROUP_CONCAT 时要区分不存在 buffer 与存在空 buffer，并保持 `values_buffer` 的重建规则。
 
 安全扩展的最小测试应覆盖：多行顺序消费与耗尽后不再修改目标；空行/空集合；长字符串触发缓冲扩容；每种 interface 标签；截断或非法标签的预期 panic（若协议仍定义为不可恢复）；源 chunk 清空后结果仍有效；返回的内存增量。与 Go 新增功能对齐时，还应在 `spill_deserialize_helper.go`、相关 `func_*.go` 和 `spill_helper_test.go` 中核对原始意图，而不能把 Rust 的现状反推为 Go 规范。
-
-## 验证依据
-
-- RustCodeGraph：`status` 报告索引包含 7,032 个 Rust 文件；`files --filter pkg/executor/aggfuncs/spill_deserialize_helper.rs` 命中目标文件；`query DeserializeHelper --kind struct` 和 `node DeserializeHelper` 定位本文件第 33 行并显示 `aggfuncs.rs` 的导入轨迹。`explore`、按文件 `node` 及部分方法级查询没有产生可用输出，故调用边另由源码与 `rg` 复核。
-- 源文件：`pkg/executor/aggfuncs/spill_deserialize_helper.rs`（完整 563 行）、配对编码器 `spill_serialize_helper.rs`、公共入口 `aggfuncs.rs`、专用调用方 `func_max_min_count.rs`、模块入口 `lib.rs`。
-- crate 边界：`pkg/executor/aggfuncs/Cargo.toml` 的 `[lib] path = "lib.rs"`、`astersql-util-serialization` 直接依赖和本地聚合相关依赖。
-- Go 对照：`pkg/executor/aggfuncs/spill_deserialize_helper.go` 与 `aggfuncs.go::deserializePartialResultCommon`；重点核对了构造延迟、逐行游标、固定字段顺序、JSON/GROUP_CONCAT/FIRST_ROW 语义和内存返回值。
-- 独立 Rust 测试：`spill_deserialize_helper_test.rs` 固定构造不提前校验；`spill_helper_test.rs` 覆盖序列化/反序列化真实列协议、行耗尽、长字符串、JSON、GROUP_CONCAT、通用 `SpillState`、源 chunk 重置后的所有权以及工厂接线。
-- 错误边界：`pkg/util/serialization/deserialization_util.rs` 的 `PosAndBuf::Reset`、`take`、`deserializeBuffer`、`DeserializeBool` 和 `DeserializeInterface` 证明复制/游标推进、截断及非法标签 panic 行为。
-- 本任务是纯文档分析，按总计划不运行 Cargo。交付前使用任务文件指定的命令验证本文恰含 11 个固定二级章节，并人工检查唯一新增生产物、真实符号引用、无运行能力臆测及测试文件分离建议。

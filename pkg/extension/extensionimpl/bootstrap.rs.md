@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/extension/extensionimpl/bootstrap.rs` 是 `astersql-extension-extensionimpl` crate 当前唯一公开子模块 `bootstrap` 的实现文件；`pkg/extension/extensionimpl/lib.rs` 通过 `pub mod bootstrap` 导出它，`Cargo.toml` 将 crate 根指定为 `lib.rs`。它位于扩展注册表与系统会话能力之间：扩展侧只认识 `astersql-extension` 的 `BootstrapContext`/`SessionPool`，本文件则把 Domain 提供的会话池、SQL executor 和 etcd client 组装成该上下文。
-
-该文件是一个 canonical 适配边界，而不是扩展注册表、系统表 bootstrap 或具体扩展逻辑本身。仓库内限定搜索只发现 `bootstrap_test.rs` 实现 `BootstrapDomain` 并调用公开函数 `Bootstrap`，没有发现非测试 Rust 的实现者或调用点；因此当前事实是“实现和回归测试已存在，但生产 Rust 主链尚未发现接线”，不能仅依据公开 API 推断服务器启动时已经执行它。
+用私有 `bootstrapContext` 实现扩展框架的 `ExtensionContext` 与 `BootstrapContext`，向扩展钩子暴露取消状态、内部 SQL 执行、可选 etcd client 和系统会话池。
 
 ## 核心职责
 
@@ -75,8 +73,6 @@ SQL executor 只存在于外层资源借用期间，并通过 `&mut self` 串行
 
 ## 与 Go 版本的对应关系
 
-直接基准是 `pkg/extension/extensionimpl/bootstrap.go`。两版都先取得全局扩展，空集合短路，再从 `Domain.SysSessionPool` 借资源、断言/适配为 session SQL executor、装配 context/etcd/pool、执行全部扩展 bootstrap，最后归还会话。两版 SQL 路径都标记 `InternalTxnBootstrap`，调用内部 SQL，以容量 `8` 排空结果集，并保证关闭；排空错误优先于关闭错误。
-
 Rust 为打破 crate 依赖环增加了 `BootstrapDomain` trait，把 Go 对具体 `*domain.Domain`、`sessionctx.Context` 的直接类型断言改为上游提供的 `GetSQLExecutor` 与 `SessionResourceTypeName`。Go 依靠 `defer pool.Put(r)`，Rust 在 match 后显式 `Put`；正常错误返回上的结果一致，但 Rust 显式清理不具备 panic 展开保护。Go 的 `nil` record set 返回 `nil, nil`，Rust 用 `Ok(Vec::new())` 表示同一“无行”语义。
 
 Go `ExecuteSQL` 接收调用者传入的 `context.Context`，而当前 Rust trait 签名只有 `sql: &str`，使用 `bootstrapContext` 保存的上下文克隆；因此 Rust 扩展不能为每条 bootstrap SQL 单独传入另一上下文。Go 直接返回底层错误，Rust 在 executor/record-set 边界将错误字符串化。Rust 独立测试 `bootstrap_test.rs` 明确覆盖这些有意的表示差异和共同不变量。
@@ -88,13 +84,3 @@ Go `ExecuteSQL` 接收调用者传入的 `context.Context`，而当前 Rust trai
 扩展 `BootstrapContext` 能力时，应同步修改 `pkg/extension/manifest.rs` 的 trait、本文件 `bootstrapContext` 实现、Go 对照接口/实现，以及 `pkg/extension/extensionimpl/bootstrap_test.rs`。新增 SQL 行为应继续保持内部来源标记、结果集必关和“排空错误优先”不变量；若增加参数化执行，需明确参数所有权及 Go API 兼容策略。
 
 修改资源管理时，优先考虑可验证的作用域守卫以覆盖 panic，但必须评估 `SessionPool::Put` 的对象安全和借用顺序，不能让 executor 活过 resource。新增并行钩子会改变 Manifest 顺序、共享可变上下文和错误短路语义，属于兼容性与并发风险，不应只在本文件局部实现。性能上应关注批容量 `8`、全量收集结果行和扩展自行借用额外会话造成的资源占用；改变这些行为须同步 Go 语义与压力边界测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/extension/extensionimpl` 识别 `bootstrap.go`、`bootstrap.rs`、`bootstrap_test.rs`、`lib.rs`，目标 Rust 文件含 12 个符号。
-- RustCodeGraph 源码证据：完整读取 `pkg/extension/extensionimpl/bootstrap.rs`，并读取 `pkg/extension/manifest.rs::BootstrapContext`、`WithBootstrap`、`WithBootstrapSQL`，`pkg/extension/extensions.rs::Extensions::Bootstrap` 与 `pkg/extension/registry.rs::GetExtensions`。精确 `callers/callees` 查询超时且无输出，未把其当作成功证据。
-- crate 与模块证据：`pkg/extension/extensionimpl/Cargo.toml`、`pkg/extension/extensionimpl/lib.rs`。
-- Go 对照证据：`pkg/extension/extensionimpl/bootstrap.go`，逐项核对扩展短路、系统会话借还、类型断言、内部 SQL、容量 `8` 的排空与关闭错误优先级。
-- Rust 独立测试证据：`pkg/extension/extensionimpl/bootstrap_test.rs` 中 `kv_context_is_the_sql_execution_context`、`execute_sql_marks_internal_source_drains_rows_and_closes`、`execute_sql_preserves_go_error_and_close_precedence`、`bootstrap_matches_go_short_circuit_pool_error_and_resource_cleanup_paths`。
-- 限定搜索证据：搜索 `BootstrapDomain` 实现与 extensionimpl `Bootstrap` 调用，只发现上述测试中的 `MockDomain` 和直接调用；因此明确记录生产 Rust 接线“未发现”，而非推测已支持。
-- 本任务是纯文档分析，按计划未运行 Cargo 或代码测试；验证范围是索引/源码事实复核、Go/Rust 测试语义核对及固定十一章节结构检查。

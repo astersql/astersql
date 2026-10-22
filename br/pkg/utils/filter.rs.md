@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-utils`（`br/pkg/utils/Cargo.toml`），由 `br/pkg/utils/lib.rs` 通过 `#[path = "filter.rs"] pub mod filter` 纳入 crate，并在 crate 根再次导出 `MatchSchema`、`MatchTable`、`NewPiTRIdTracker` 与 `PiTRIdTracker`。它对应 Go 文件 `br/pkg/utils/filter.go`，职责是为 PiTR（Point-in-Time Recovery）保存待恢复库、表、分区的身份集合，并在普通 table-filter 外增加 BR 临时系统库名称处理和系统库开关。
-
-RustCodeGraph 的文件节点显示本文件共 132 行、14 个符号，静态文件使用边指向 `br/pkg/utils/lib.rs` 和 `br/pkg/utils/parity_test.rs`。仓库直接搜索进一步确认：当前 Rust 生产文件没有直接引用此处的 `PiTRIdTracker`/`MatchSchema`/`MatchTable`；`br/pkg/task/restore.rs`、`br/pkg/registry/stubs.rs` 等仍保有各自的局部实现。因此本文件目前是已公开的 utils 规范实现和测试契约，不应把相似局部类型误认为它的直接调用者。
+对应 Go 文件 `br/pkg/utils/filter.go`，职责是为 PiTR（Point-in-Time Recovery）保存待恢复库、表、分区的身份集合，并在普通 table-filter 外增加 BR 临时系统库名称处理和系统库开关。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ RustCodeGraph 的文件节点显示本文件共 132 行、14 个符号，静态�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项移植 `br/pkg/utils/filter.go`：四个状态字段、构造器、八个 tracker 方法以及两个过滤包装函数的核心语义一致。`br/pkg/utils/filter_test.rs` 对齐 `filter_test.go` 的空状态、`AddDB`、同库多表、跨库同 table ID 不误命中，以及 `TrackTableId` 隐式登记库等断言。
-
-主要语言差异是：Go 构造器返回 `*PiTRIdTracker`，并在写方法中为 nil map 延迟初始化；Rust 构造器返回值，`Default` 一次性创建空集合，方法通过借用表达读写权限。Go 的 `GetDBNameToTableName` 返回 map 引用语义，Rust 明确返回不可变借用。Go `TrackTableName` 接受两个字符串值，Rust 同样取得 `String` 所有权并在日志字段中克隆后存入集合。
+主要语言差异是：Go 构造器返回 `*PiTRIdTracker`，并在写方法中为 nil map 延迟初始化；Rust 构造器返回值，`Default` 一次性创建空集合，方法通过借用表达读写权限。Go 的 `GetDBNameToTableName` 返回 map 引用语义，Rust 明确返回不可变借用。
 
 迁移接线尚未完全统一：`br/pkg/task/restore.rs`、`br/pkg/registry/stubs.rs` 和 real-TiKV 测试 harness 中存在名称相同但类型独立的 tracker；它们不能作为本文件方法的直接调用证据。后续若改为复用本实现，应先比较字段布局、字符串参数形式和当前局部行为，不能仅替换类型名。
 
@@ -84,12 +80,3 @@ Rust 文件逐项移植 `br/pkg/utils/filter.go`：四个状态字段、构造�
 - 修改系统库过滤时，同时核对 `br/pkg/utils/schema.rs`、`pkg/util/table-filter/table_filter.rs`、Go 的 `br/pkg/utils/filter.go`，并为普通库、三个系统库、BR 临时系统库、`with_sys` 两种取值和大小写输入增加独立测试。
 - 若将其他 BR 模块的局部 tracker/过滤函数接线到本 crate，应逐个清除重复实现并验证真实调用边；不能把本文件当前公开再导出等同于已经进入恢复主链。
 - 性能风险主要来自大量名称/ID 的哈希集合内存占用和高频日志；扩展批量写入时应评估日志量。兼容风险主要是公开字段布局、系统库识别顺序和 `ContainsTableId` 与精确二元组查询之间的语义差异。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/utils` 确认目标、Go 对照和测试均已索引；`node --file br/pkg/utils/filter.rs --offset 1 --limit 260` 返回完整 132 行与 14 个符号，并报告 `lib.rs`、`parity_test.rs` 文件使用边；`query` 核对了 `PiTRIdTracker`、`NewPiTRIdTracker`、`TrackTableId`、`TrackTableName`、`ContainsDBAndTableId`、`MatchSchema`、`MatchTable` 的定义候选。精确 `callers/callees` 查询超出 30 秒窗口且没有输出，未将其当作完成证据。
-- 源码：`br/pkg/utils/filter.rs`（全部实现）、`br/pkg/utils/lib.rs`（模块声明和再导出）、`br/pkg/utils/schema.rs`（临时前缀和系统库定义）、`pkg/util/table-filter/table_filter.rs`（`Filter` trait 与匹配委托契约）。
-- crate 边界：`br/pkg/utils/Cargo.toml`（package 名、library 入口、`astersql-br-pkg-logutil` 与 `astersql-util-table-filter` 依赖）。
-- Go 对照：`br/pkg/utils/filter.go`；独立测试：`br/pkg/utils/filter_test.rs`、`br/pkg/utils/filter_test.go`；公开契约抽样：`br/pkg/utils/parity_test.rs`。
-- 调用/迁移状态复核：全仓 Rust 引用搜索只找到本 crate 测试对真实实现的直接使用；`br/pkg/task/restore.rs`、`br/pkg/registry/stubs.rs`、`tests/realtikvtest/brietest/harness.rs` 中的同名局部实现作为“尚未统一接线”的证据，而非本文件调用者。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务给定命令验证目标文档存在且恰有 11 个固定二级标题，并人工检查未建议把 Rust 测试内嵌到生产源文件。

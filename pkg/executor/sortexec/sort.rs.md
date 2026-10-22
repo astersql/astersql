@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`sort.rs` 是 `astersql-executor-sortexec` crate 中全量排序执行器的核心编排文件。它把上游 `RowSource` 产出的 `DataChunk` 全部物化，依据 `SortKey` 生成的 `RowComparator` 做全局排序，再按调用方要求的 chunk 大小返回结果。crate 根 `pkg/executor/sortexec/lib.rs` 公开重导出 `RowSource` 和 `SortExec`；`pkg/executor/physical_plan_runtime.rs` 的 `PhysicalSort` 分支把子计划结果包装为 `VecRowSource`，调用 `SortExec::new`，并由 `drain_sort` 反复调用 `Next` 直至空 chunk 后 `Close`，这是当前可核验的 SQL 物理计划接线。
-
-该文件本身不负责行值比较规则、分区持久化或多路归并的细节：比较器和基础数据类型来自 `sort_util.rs`，串行分区来自 `sort_partition.rs`，并行本地排序与落盘分别交给 `parallel_sort_worker.rs` 和 `parallel_sort_spill_helper.rs`，最终归并使用 `multi_way_merge.rs`。
-
-`pkg/executor/sortexec/Cargo.toml` 声明包名为 `astersql-executor-sortexec`、库入口为 `lib.rs`，并记录 Go 对照包 `pkg/executor/sortexec`。清单中的 TiDB 子 crate 依赖当前全部位于 `cfg(windows)` 条件段；`sort.rs` 当前直接使用 crate 内模块和标准库，不应据此推断其他平台已经接通 Go 版的 executor/session context 能力。
+用 `RowSource` 抽象上游的 `open` / `next` / `close` 生命周期，并提供 FIFO 内存实现 `VecRowSource`。
 
 ## 核心职责
 
@@ -89,8 +85,6 @@ RustCodeGraph 对 `fetchUnparallel` 和 `fetchParallel` 给出了精确符号节
 
 ## 与 Go 版本的对应关系
 
-Rust `SortExec` 保留了 Go `pkg/executor/sortexec/sort.go` 的总体语义：物化 child、按多键升降序比较、内存压力下 spill、多个有序分区/run 的多路归并、查询取消、资源追踪以及 `Open`/`Next`/`Close` 生命周期。`sort_test.rs` 的串行 spill 用例明确镜像 Go `TestSortInDisk` 合同；`parallel_sort_test.rs` 的可执行部分覆盖 Go `TestParallelSort` 的复用意图和错误收尾核心合同。
-
 仍存在重要实现差异：
 
 - Go `SortExec` 嵌入 `exec.BaseExecutor`，从 session context 取得 executor concurrency、statement memory/disk tracker、临时存储开关和 SQL killer；Rust 构造器直接接收简化的 `RowSource`、并发度和内存限额。
@@ -111,14 +105,3 @@ Rust `SortExec` 保留了 Go `pkg/executor/sortexec/sort.go` 的总体语义：�
 - 若增强错误后重试或执行器复用，需明确复位 `partitions`、helper、result、child 状态和 `killed`。当前 `Close` 不复位 kill 标志，不能沿用普通关闭后的复用假设。
 - 若接入更完整的 executor/session 环境，应从 `physical_plan_runtime.rs` 的 `PhysicalSort` 分支和 `Cargo.toml` 依赖边界入手，保留 Go 版 tracker 与 SQL killer 语义；同时评估当前仅在 Windows 条件下声明依赖的 manifest 结构。
 - 性能风险集中在全量 `collect()`、行克隆/转成 `DiskRun`、最终再次收集、互斥锁粒度和 `maxChunkSize * 8` 固定批次阈值。任何优化都应同时验证稳定排序要求（若有）、NULL/升降序、spill 前后结果一致性以及取消响应。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/sortexec` 找到 43 个文件，`sort.rs` 被识别为含 29 个符号的 Rust 文件。
-- RustCodeGraph 源码/符号：读取 `pkg/executor/sortexec/sort.rs` 全部 289 行；精确查询得到 `sort.rs::fetchUnparallel`（第 112 行）和 `sort.rs::fetchParallel`（第 173 行）。对二者执行 `callers`/`callees` 未返回边，故文档仅用实际源码调用点补足关系并明确图限制。
-- 应用入口证据：`pkg/executor/physical_plan_runtime.rs` 第 392—403 行的 `drain_sort`，以及第 1028—1033 行的 `PhysicalSort` 构造路径。
-- crate 边界证据：`pkg/executor/sortexec/Cargo.toml` 与 `pkg/executor/sortexec/lib.rs`。
-- 直接实现证据：`pkg/executor/sortexec/sort_partition.rs`、`parallel_sort_worker.rs`、`parallel_sort_spill_helper.rs` 和由 `sort.rs` 调用的 `multi_way_merge`/`sort_util` 符号。
-- Go 对照证据：`pkg/executor/sortexec/sort.go`，重点核对 `SortExec` 字段、`Open`、`Next`、`Close`、串/并行 fetch、spill 和比较器建立流程。
-- 独立测试证据：`pkg/executor/sortexec/sort_test.rs`；`pkg/executor/sortexec/parallel_sort_test.rs` 第 270 行后的可执行 Rust 测试。前者覆盖串行 spill、全局有序、输出批上限、tracker 释放、降序与 NULLS LAST；后者覆盖跨 worker 排序、关闭后重开、子源错误/关闭次数和常量排序项。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核没有把 Go 行为或索引空边误写成当前 Rust 已支持能力。

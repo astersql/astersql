@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`fmsketch.rs` 属于 `astersql-statistics` crate（`pkg/statistics/Cargo.toml`），实现统计信息采集使用的 Flajolet–Martin 基数草图。模块在 `pkg/statistics/lib.rs` 中以私有 `mod fmsketch` 装配，再通过 `pub use fmsketch::*` 对 crate 使用者重导出。
-
-它位于 ANALYZE/统计构建链的数据结构层：`pkg/statistics/row_sampler.rs` 为每列和列组维护草图，`pkg/statistics/sample.rs` 在列样本收集及合并时维护草图，`pkg/statistics/runtime_stats_builder.rs::encode_fm_sketch` 为运行时构建的列或索引统计生成落盘字节。`pkg/server/extract_runtime.rs` 和统计存储读取测试还会消费其 protobuf 编解码 API。
+在内存结构与 `tipb::FmSketch`、protobuf 字节之间转换，支持分布式 ANALYZE 传输及统计持久化。
 
 ## 核心职责
 
@@ -91,11 +89,11 @@
 
 直接对照文件是 `pkg/statistics/fmsketch.go`，独立测试是 `pkg/statistics/fmsketch_test.go`；Rust 独立测试位于 `pkg/statistics/fmsketch_test.rs`，没有把测试内嵌到生产源文件。
 
-核心语义保持一致：字段含义、`MaxSketchSize = 10000`、掩码升级公式、集合过滤、NDV/内存估算、合并时取较大掩码、tipb 字段以及解码后回填容量均与 Go 对应。Rust 用 `Option` 表示 Go 的 nil：`FMSketchFromProto(None)` 与 `DecodeFMSketch(None)` 返回 `None`，`FMSketchToProto(None)` 返回空消息，`EncodeFMSketch(None)` 返回空向量。
+Rust 用 `Option` 表示 Go 的 nil：`FMSketchFromProto(None)` 与 `DecodeFMSketch(None)` 返回 `None`，`FMSketchToProto(None)` 返回空消息，`EncodeFMSketch(None)` 返回空向量。
 
-实现层差异包括：Go 用 `map[uint64]bool` 与 `maps.DeleteFunc`，Rust 用 `HashMap<u64, bool>` 与 `retain`；Go 用 `sync.Pool` 复用 `twmb/murmur3.New64`，Rust 内置 x64-128 算法并取 `h1`；Go 的指针接收者显式允许部分 nil 调用，Rust 方法只能在实际对象上调用。Rust 与 Go 的 proto 输出均遍历 map，不承诺序列化字节顺序；集合语义和解码结果不依赖顺序。`hash_values` 的排序只用于显式调用该辅助方法的场景。
+实现层差异包括：Go 用 `map[uint64]bool` 与 `maps.DeleteFunc`，Rust 用 `HashMap<u64, bool>` 与 `retain`；Go 用 `sync.Pool` 复用 `twmb/murmur3.New64`，Rust 内置 x64-128 算法并取 `h1`；Go 的指针接收者显式允许部分 nil 调用，Rust 方法只能在实际对象上调用。Rust 与 Go 的 proto 输出均遍历 map，不承诺序列化字节顺序；集合语义和解码结果不依赖顺序。
 
-测试证据：Rust `fmsketch_test.rs` 覆盖 200 个值触发压缩与字节往返、小容量去重/上限、proto 重复项去重和 `None` 契约、不同 mask 合并；Go `fmsketch_test.go` 还用固定统计样本核对 NDV 数值、合并结果和编码前后 NDV。`pkg/statistics/cmsketch_test.rs` 直接使用 `murmur3Sum128`，说明该哈希实现也是同 crate 其他草图的兼容基础。
+测试证据：Rust `fmsketch_test.rs` 覆盖 200 个值触发压缩与字节往返、小容量去重/上限、proto 重复项去重和 `None` 契约、不同 mask 合并；Go `fmsketch_test.go` 还用固定统计样本核对 NDV 数值、合并结果和编码前后 NDV。
 
 ## 扩展指南
 
@@ -104,11 +102,3 @@
 - 增加 wire 字段（例如持久化 `maxSize`）需要同步 tipb 定义/依赖版本、`FMSketchToProto/FromProto`、`Encode/Decode` 以及 Go 对照；旧消息缺省值和滚动升级兼容必须明确。
 - 新增行为测试应放在独立的 `pkg/statistics/fmsketch_test.rs`，并同步对照 `pkg/statistics/fmsketch_test.go` 的原测试意图；不要把测试加入生产文件。涉及上游采样/持久化链时，再扩展最近的 `row_sampler_test.rs`、`sample_test.rs`、`runtime_stats_builder` 相关测试或 handle 存储测试。
 - 性能评审重点是每值编码分配、`hashRow` 拼接、压缩时全表 `retain`、合并逐项插入以及 `hash_values` 排序的临时分配。任何优化都应先证明不改变哈希字节序列、掩码层级和 proto 兼容性。
-
-## 验证依据
-
-增量包括 HashMap 重复标志、可选 sampled counts、NDV 分流、合并计数、内存估算及 sampled envelope。完整读取冻结 `fmsketch.rs`，核对 `sampled_ndv.rs`、`partition_ndv.rs`、`row_sampler.rs`、`lib.rs`、`Cargo.toml` 和 Go 同名文件。`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 静态断言双向合并 NDV=8、NULL=20、MemoryUsage=224、零样本以及普通 root 升级；`global_stats_sampled_ndv` 验证 `[0,1]` envelope、旧 protobuf 拒绝及无效 payload。
-
-本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/fmsketch.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
-
-纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

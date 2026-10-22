@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-dumpling-log` 的核心实现，对应 Go 包 `dumpling/log` 的 `log.go`。`dumpling/log/lib.rs` 以 `#[path = "log.rs"] mod log` 引入它并通过 `pub use log::*` 暴露公开 API；`dumpling/log/Cargo.toml` 将该包声明为 `library`，入口为 `lib.rs`，移植元数据指向 Go 包 `dumpling/log`。该 crate 没有第三方 Cargo 依赖，日志级别、编码、输出、轮转及保留策略均由本文件用标准库实现。
-
-在 Dumpling 运行链中，`dumpling/export/dump.rs::initLogger` 把导出配置转换为本文件的 `Config`，调用 `InitAppLogger`，再把返回的 `Logger` 放入 Dumpling context；如果调用方已经提供 logger，则该入口不会重复初始化。`dumpling/context/context.rs::Background` 则通过 `Zap()` 为背景上下文安装包级 nop logger。因此本文件既是应用 logger 的构造边界，也是 Dumpling 各子 crate 共享的日志类型与字段协议。
+通过 `Zap` 提供不会被初始化过程替换的包级 nop logger，通过 `NewAppLogger` 包装既有 `ZapLogger`，通过 `ShortError` 生成只含错误消息的结构化字段。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ RustCodeGraph 将 `InitAppLogger` 的直接下游识别为 `Level::parse`、`par
 
 两版实现机制不同。Go 通过 `pingcap/log.InitLogger`、`zap.Logger` 和其 lumberjack 输出间接获得编码与轮转；Rust 以 `ZapLogger`、`Sink` 和 `FileSink` 自行实现这些行为。Go 错误使用 `errors.Trace` 保留包装链，Rust 返回字符串。Go 的 logger 字段嵌入指针，Rust 使用公开字段加转发方法。Rust 额外公开 `Level`、`Field`、`ZapProperties`、捕获 logger 和若干观察方法，以支撑已迁移调用方及独立测试。
 
-`dumpling/log/log_test.go::TestInitLogNoPermission` 与 `dumpling/log/log_test.rs::TestInitLogNoPermission` 对齐了可写基线、无权限目录、只读子目录、目录作文件名、只读文件和嵌套父目录创建。Rust 还在 `log_test.rs` 验证轮转、`DPanic`/`Panic`、`Fatal`，并在 `parity_test.rs` 验证配置错误优先级、JSON 转义、共享 sink、默认值、全局 nop 不变及首次写入创建文件。
-
 ## 扩展指南
 
 - 增加配置字段时，首先修改 `Config`，再把其生效值接入 `InitAppLogger`/`ZapProperties`；若影响文件策略，还需修改 `FileSink`。同时核对 `dumpling/log/log.go` 的公开契约以及 `dumpling/export/dump.rs::initLogger` 是否需要从应用配置传入新值。
@@ -82,11 +78,3 @@ RustCodeGraph 将 `InitAppLogger` 的直接下游识别为 `Level::parse`、`par
 - 调整轮转或保留策略时，修改 `FileSink::{write_line,rotate,next_backup_path,remove_expired_backups}`，重点保持单条超限、恰好达到阈值、首次写入、权限保留、备份排序和数量/年龄联合清理语义。该路径位于每条文件日志的锁内，目录扫描或清理扩张会直接影响写日志延迟。
 - 新增公开日志方法时，应同时在 `ZapLogger` 和 `Logger` 提供一致转发，明确其是否终止进程，并补充独立测试。不要通过 `InitAppLogger` 隐式替换 `Zap()` 的全局 nop 值，否则会破坏 Go 当前的包级状态语义和 context 默认行为。
 - 兼容性风险集中在公开 PascalCase 名称、错误文本、初始化校验顺序、`DPanic` 阈值和 `ShortError(None)` 的 skip 语义；性能风险集中在每条文件日志重新打开文件、全局 sink mutex、轮转时同步扫描目录和同步删除备份。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter dumpling/log` 确认 `lib.rs`、`log.rs`、`log_test.rs`、`parity_test.rs` 及 Go 对照均在索引中；`node --file dumpling/log/log.rs` 核对了完整 811 行实现；`query`/`callees` 核对 `InitAppLogger`、`Zap`、`NewAppLogger`、`ShortError` 及初始化下游边。跨 crate callers 查询为空，故按技能规则以源码搜索补足调用者证据。
-- 实现与 crate 边界：`dumpling/log/log.rs`、`dumpling/log/lib.rs`、`dumpling/log/Cargo.toml`。
-- 生产入口与直接使用者：`dumpling/export/dump.rs::initLogger`、`dumpling/context/context.rs::Background`、`dumpling/cli/versions.rs`、`dumpling/cmd/dumpling/main.rs`，以及相应子 crate 的 `Cargo.toml` 路径依赖。
-- Go 对照：`dumpling/log/log.go`；Go 权限行为测试：`dumpling/log/log_test.go::TestInitLogNoPermission`。
-- 独立 Rust 测试：`dumpling/log/log_test.rs`（权限、轮转、终止级别）与 `dumpling/log/parity_test.rs`（公开契约、错误顺序、JSON、共享 sink、资源与全局状态）。本任务是纯文档分析，按计划未运行 Cargo；上述测试用作静态行为证据，而非本次执行结果。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 SQL 表达式树中的常量节点 `Constant`，同时容纳三种运行形态：编译期即可确定的普通字面量、在执行 prepared statement 时按序号读取的 `ParamMarker`，以及计划缓存命中后才重新求值的 `DeferredExpr`。它属于 `astersql-expression` crate；`pkg/expression/lib.rs:318-319` 以 `expression_constant` 模块挂载本文件，并在 `pkg/expression/lib.rs:386` 将其公开符号重新导出。crate 的边界、`lib.rs` 入口和 `autotests = false` 由 `pkg/expression/Cargo.toml` 声明。
-
-`Constant` 是通用 `Expression` trait 的一种具体节点。固有求值方法位于本文件，而 trait 对象接线位于 `pkg/expression/core_impl.rs:410-520`；常量展示逻辑另由 `pkg/expression/explain.rs:151-184` 扩展。上层常量折叠和传播分别通过 `pkg/expression/constant_fold.rs`、`pkg/expression/constant_propagation.rs` 识别 `as_constant()`，执行器则通过 `Expression::Eval*` 统一消费常量、列和标量函数。
+实现 SQL 表达式树中的常量节点 `Constant`，同时容纳三种运行形态：编译期即可确定的普通字面量、在执行 prepared statement 时按序号读取的 `ParamMarker`，以及计划缓存命中后才重新求值的 `DeferredExpr`。
 
 ## 核心职责
 
@@ -69,13 +67,11 @@ RustCodeGraph 能列出文件级使用关系并解析 `NewOne` 等符号节点�
 
 ## 与 Go 版本的对应关系
 
-主要语义逐段对应 `pkg/expression/constant.go`：构造器（Go 36-141 / Rust 23-90）、`Constant` 和 `ParamMarker`（Go 143-165 / Rust 93-108）、参数与展示（Go 167-210 / Rust 179-226）、类型和向量求值（Go 228-308 / Rust 241-343）、惰性/类型化求值（Go 310-505 / Rust 345-537）、相等/常量级别/哈希/解析/内存（Go 507-673 / Rust 539-698）。Rust 以拥有值和 `Option` 替代 Go 指针/nil，并把 Go 的三返回值 `(value, isNull, error)` 收拢为 `Result<(value, is_null), Error>`。
-
-两版都保留以下关键行为：prepared 参数每次从上下文读取；动态 `GetType` 每次返回独立类型对象；普通常量向量广播而 deferred 表达式委托自身；TypeNull 与 NULL Datum 均短路；十进制按目标 frac half-up 调整；常量无列索引可解析；哈希区分 deferred、parameter 和 plain constant。
+Rust 以拥有值和 `Option` 替代 Go 指针/nil，并把 Go 的三返回值 `(value, isNull, error)` 收拢为 `Result<(value, is_null), Error>`。
 
 已核实的差异包括：Rust `StringWithCtx` 对 MySQL time 补齐声明的小数位，而当前 Go `StringWithCtx` 直接使用 `TruncatedStringify`；Rust `Clone` 对 deferred 表达式调用 `CloneExpr`，Go 测试 `TestDeferredExprNotNull` 的旧断言关注其克隆结果；Rust 的拥有权模型使 `Decorrelate`、`ResolveIndices`、`RemapColumn` 返回克隆，而 Go 可直接返回原指针；Rust 在本文件实现 `Repertoire`，Go 对应能力由包内其他接口/文件组织。Rust 固有 `GetType` 返回 `Option<FieldType>`，但 trait 接线返回存储类型引用，这一点与 Go 单一方法模型不同，扩展参数类型逻辑时必须同时审查接线层。
 
-Rust 独立测试 `pkg/expression/constant_test.rs` 当前覆盖构造器元数据、typed NULL、克隆/哈希隔离、严格常量属性、参数序号和 TypeNull 的具体求值短路。Go `pkg/expression/constant_test.go:336-587` 还覆盖多种 prepared 参数动态类型、deferred 错误/NULL/具体值、向量广播与 selection、`GetType` 返回对象不共享以及 `Hash64`/`Equals`。这些 Go 用例是移植语义证据，但不能当作 Rust 侧已经运行或已完整覆盖的测试证据。
+Go `pkg/expression/constant_test.go:336-587` 还覆盖多种 prepared 参数动态类型、deferred 错误/NULL/具体值、向量广播与 selection、`GetType` 返回对象不共享以及 `Hash64`/`Equals`。这些 Go 用例是移植语义证据，但不能当作 Rust 侧已经运行或已完整覆盖的测试证据。
 
 ## 扩展指南
 
@@ -86,11 +82,3 @@ Rust 独立测试 `pkg/expression/constant_test.rs` 当前覆盖构造器元数�
 修改任何参与结构身份的字段时，必须成对维护 `Hash64`/`Equals` 和字节 `getHashCode`，并定义缓存失效策略；还应测试普通、参数、deferred 三种节点。修改显示或脱敏规则时同时审查 `StringWithCtx` 和 `pkg/expression/explain.rs`，覆盖 redact OFF/MARKER/ON、参数错误、时间小数位和 `SubqueryRefID`。
 
 兼容性风险主要是 MySQL 类型/NULL/舍入与 Go 行为漂移；性能风险主要是把普通常量从“一次求值后广播”退化为逐行转换、频繁克隆 deferred 树，或错误扩大哈希/内存遍历。并发风险集中在动态 `FieldType` 与内部缓存共享，新增缓存前应明确其可变性和跨会话共享条件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file` 完整读取 `pkg/expression/constant.rs`，文件节点报告 98 个使用文件；并查询 `NewOne`、`NewInt64Const` 等符号及 callers/callees，记录到上述 impl 方法/部分函数缺边的索引限制。
-- Rust 源码：`pkg/expression/constant.rs:1-698`；模块与公开边界 `pkg/expression/lib.rs:300-339, 380-388, 635-652`；trait 定义 `pkg/expression/expression.rs:267-335`；trait 实现 `pkg/expression/core_impl.rs:410-520`；向量广播 `pkg/expression/vectorized.rs:23-148`；collation 推导 `pkg/expression/collation.rs:381-395`；展示 `pkg/expression/explain.rs:151-184`；参数错误契约 `pkg/expression/exprctx/param.rs:25-57`。
-- crate 配置：`pkg/expression/Cargo.toml`，核对 crate 名、`lib.rs` 入口、关闭自动测试、依赖边界和 `go-package = "pkg/expression"` 移植元数据。
-- 对照实现与测试：完整读取 `pkg/expression/constant.go:1-673`、`pkg/expression/constant_test.rs:1-129`，并复核 `pkg/expression/constant_test.go:336-587` 的参数、deferred、向量、并发类型和哈希测试。目标包没有 `doc.go`，因此以 crate 根 `pkg/expression/lib.rs` 的包级说明作为最近契约入口。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认本文存在且恰好包含 11 个固定二级章节，并人工复核没有把 Go 测试或图索引缺边误报为 Rust 已验证行为。

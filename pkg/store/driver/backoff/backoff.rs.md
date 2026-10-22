@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`backoff.rs` 是 `astersql-store-driver-backoff` crate 的主要业务实现，由同目录 `lib.rs` 的 `mod backoff; pub use backoff::*;` 对外重导出。它位于 SQL 层与 TiKV 客户端之间的 driver 适配边界：利用上游 `tikv_client::Backoff` 产生单次延迟，在外层补齐 TiDB/client-go 所需的会话变量、总睡眠限额、错误归一化、取消和统计语义（`TiKvBackoffer::backoff`、`Backoffer::Backoff`）。
-
-crate 边界由 `pkg/store/driver/backoff/Cargo.toml` 确认：内部依赖 `astersql-store-driver-error` 和 `astersql-kv`，外部延迟生成器固定为 `astersql/client-rust` 标签 `v0.4.2-aster.10` 中的 `tikv-client = 0.4.2`，取消原语来自 `tokio-util`。本文件不是单独的重试循环；调用者在可重试错误出现时调用它进行一次退避，然后自行重试业务操作。
+实现 client-go 兼容的停止条件：`Context` 取消、`kv::Variables::Killed` 中断、普通总睡眠上限，以及 `tikvServerBusy` 的有界排除额度。
 
 ## 核心职责
 
@@ -64,11 +62,9 @@ RustCodeGraph 对当前 Rust 树的精确查询只识别到 `NewBackofferWithVar
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/store/driver/backoff/backoff.go`。两者的外层 API 一一对应：Go `Backoffer` 包装 `*tikv.Backoffer`，Rust `Backoffer<'a>` 包装本 crate 的 `TiKvBackoffer<'a>`；三个构造函数、`TiKVBackoffer`、两个 backoff 方法以及五个查询方法保留相同的职责与 Go 风格名称。两个 `Backoff*` 方法都在边界调用 `derr::ToTiDBErr`。
-
 关键差异是 Go 文件将延迟、Context、会话变量、限额与统计全部委托给 `github.com/tikv/client-go/v2/tikv.Backoffer`；Rust 上游 `tikv_client::Backoff` 只提供延迟序列，所以本文件在 `TiKvBackoffer` 中本地实现了其余语义。Rust `Context` 不是通用 key/value context，只有取消、身份和可选 `ExecDetails`；它是为此同步兼容 API 设计的精简表示。Rust 还将 Go `int` 表示为 `isize`，并显式用饱和算术防止记账溢出。
 
-`migration_aster_unit_test.rs` 针对上述迁移语义验证构造、weight、记账、超限错误、单次截断、Killed/取消、三条错误环、server-busy 排除和 `ExecDetails`；`backoff_test.rs` 额外验证 `txnLockFast` base override 的大小写不敏感。同目录没有 Go `*_test.go`，因此 Go 语义的直接依据是包装实现和上游调用点，而不是包内 Go 单元测试。
+`migration_aster_unit_test.rs` 针对上述迁移语义验证构造、weight、记账、超限错误、单次截断、Killed/取消、三条错误环、server-busy 排除和 `ExecDetails`；`backoff_test.rs` 额外验证 `txnLockFast` base override 的大小写不敏感。
 
 ## 扩展指南
 
@@ -77,11 +73,3 @@ Go 对照文件是 `pkg/store/driver/backoff/backoff.go`。两者的外层 API �
 - 修改 jitter/base/cap 时应保留 `schedule` 中 client-go 的最小 base 约束，并注意 schedule 按精确字符串名称缓存。若要普遍改为大小写不敏感，必须同时定义统计 map 的 key 兼容性。
 - 如果要用 async sleep 替代当前的同步 5ms 分片，会改变公开方法形态和所有调用者，不应只替换 `sleep`。需要同时验证取消时记账、Killed 检查时机及 driver 错误归一化。
 - 新增生产 Rust 调用者时，应将构造与调用放在对应重试循环，确保每次失败只推进一次 backoffer，并消费 `Result` 来终止循环。同步为调用链添加独立集成/单元测试，不能仅依赖本 crate 的状态机测试。
-
-## 验证依据
-
-- 源码与模块：`pkg/store/driver/backoff/backoff.rs` 的 `ExecDetails`、`Context`、`BackoffConfig`、`TiKvBackoffer`、`Backoffer` 及其 impl；`pkg/store/driver/backoff/lib.rs` 的模块声明和重导出。
-- crate 边界：`pkg/store/driver/backoff/Cargo.toml` 中的 package、path 依赖、固定 tag 的 `tikv-client` 与 `tokio-util`。
-- RustCodeGraph：`status`、`files --filter pkg/store/driver/backoff`、`node --file pkg/store/driver/backoff/backoff.rs --offset 1 --limit 500`、`node --file ... --offset 495 --limit 40`、`query NewBackofferWithVars --kind function`、`callers NewBackofferWithVars`、`callees backoff`，以及包含 `NewBackofferWithVars BackoffWithMaxSleepTxnLockFast GetTotalSleep callers callees` 的精确 `explore` 查询。图显示文件被 crate 广泛引用，但所查公开符号在 Rust 生产链的静态调用证据不足，已在“依赖与调用关系”中作限定。
-- Go 对照与调用：`pkg/store/driver/backoff/backoff.go`；用 `rg` 核对了 `pkg/store/copr/coprocessor.go`、`batch_coprocessor.go`、`mpp.go`、`region_cache.go`、`pkg/store/helper/helper.go` 等调用点。
-- 独立测试：`pkg/store/driver/backoff/backoff_test.rs` 和 `pkg/store/driver/backoff/migration_aster_unit_test.rs`。本件为纯文档任务，按任务约束不运行 Cargo；测试文件仅用于核对边界、不变量和已有验证意图。

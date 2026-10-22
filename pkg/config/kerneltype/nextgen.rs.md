@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`nextgen.rs` 是 `astersql-config-kerneltype` crate 的 NextGen 编译分支实现。crate 根文件 [`lib.rs`](lib.rs) 仅在启用 Cargo feature `nextgen` 时声明 `mod nextgen`，并以 `pub use nextgen::*` 将本文件的接口重导出；未启用该 feature 时，同一公共接口由 [`classic.rs`](classic.rs) 提供。因此调用方看到的是稳定的 crate API，而不是两个实现模块。
-
-[`Cargo.toml`](Cargo.toml) 将该 crate 定义为无默认 feature、仅有空 feature `nextgen` 的库；该 feature 本身不引入运行时依赖，只决定条件编译分支。文件顶部的 `#![allow(non_snake_case)]` 则允许公开函数保留 Go 版本的命名，以减少移植接口差异。
+只负责给 NextGen 构建提供两个互补的内核类型判定函数：`IsNextGen()` 恒为 `true`，`IsClassic()` 返回其取反、因而恒为 `false`。
 
 ## 核心职责
 
@@ -66,7 +64,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`nextgen.go`](nextgen.go)。Go 通过 `//go:build nextgen` 选择该文件，Rust 通过 Cargo feature 与 `#[cfg(feature = "nextgen")]` 达到相同目的；两边的 `IsNextGen` 都直接返回 `true`，`IsClassic` 都返回 `!IsNextGen()`。
+Go 通过 `//go:build nextgen` 选择该文件，Rust 通过 Cargo feature 与 `#[cfg(feature = "nextgen")]` 达到相同目的；两边的 `IsNextGen` 都直接返回 `true`，`IsClassic` 都返回 `!IsNextGen()`。
 
 Rust 版本保留了 Go 的函数名和逻辑，没有把判断改成运行时配置，也没有增加第三种内核状态。主要语言层差异是：Go build tag 位于文件级，Rust 同时依靠 `lib.rs` 的模块级条件和函数上的 `cfg`；Rust crate 还由 `Cargo.toml` 显式声明并由上层 feature 转发。
 
@@ -81,13 +79,3 @@ Rust 版本保留了 Go 的函数名和逻辑，没有把判断改成运行时�
 测试应继续放在独立文件，而不是嵌入本生产源文件。至少同步更新 [`type_test.rs`](type_test.rs) 与 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，并对照 [`type_test.go`](type_test.go)。涉及 feature 接线时需要分别验证默认构建和启用 `nextgen` 的构建；本次纯文档任务按计划不运行 Cargo。
 
 兼容风险主要是改变公开函数名、返回不变量或规范名称后影响大量跨模块条件分支；正确性风险主要是 feature 漏转发；性能风险很低，因为当前实现无 I/O、分配与同步，且结果可在编译优化中折叠。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，其中 Rust 文件 7,032 个；`files --filter pkg/config/kerneltype` 找到 `nextgen.rs` 及其 Go/Rust 对照与测试。
-- RustCodeGraph `node --file pkg/config/kerneltype/nextgen.rs --offset 1 --limit 240`：确认文件共 52 行，公开符号为 `IsNextGen` 和 `IsClassic`，并给出本文件被其他文件使用的索引关系。
-- RustCodeGraph `query IsNextGen --kind function` 与 `query IsClassic --kind function`：确认两个目标符号分别位于第 40、50 行，并同时识别 Go 对照符号。精确 `callers`/`callees` 查询在 30 秒内未返回结果，因此调用边以源码装配和 `rg` 的直接引用补证，未据此臆造完整调用图。
-- 已读取源码与配置：[`nextgen.rs`](nextgen.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`type.rs`](type.rs)、[`classic.rs`](classic.rs)、[`doc.go`](doc.go) 和 [`nextgen.go`](nextgen.go)。
-- 已读取独立测试：[`type_test.rs`](type_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 与 [`type_test.go`](type_test.go)。它们共同证明互补标志、feature 选择、规范名称、空 PD 类型兼容及未知/大小写不匹配边界。
-- `rg` 对 Rust 源码确认了 crate 内 `type.rs::Name` 调用，以及配置、服务启动、会话、存储、KV、分布式导入等代表性公共 API 消费者；对 Cargo manifests 的搜索确认多个上层 `nextgen` feature 向本 crate 转发。
-- 本文只说明现有代码事实，没有修改 Rust、Go、Cargo 或总计划，也没有运行 Cargo。最终交付以任务文件规定的 11 章节结构命令、链接检查和 diff 自检为准。

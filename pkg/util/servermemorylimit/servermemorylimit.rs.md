@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-servermemorylimit` crate 的业务实现文件；对应源码为 [`servermemorylimit.rs`](./servermemorylimit.rs)。同目录的 `lib.rs` 以 `pub mod servermemorylimit; pub use servermemorylimit::*;` 对外暴露。crate 边界和直接依赖记录在 `pkg/util/servermemorylimit/Cargo.toml`：它依赖内存追踪、会话管理、SQL killer、日志、MySQL 类型以及 Datum/时间转换 crate。
-
-它实现的是服务端内存上限控制器及最近 50 次会话 kill 历史，而不是内存统计器或 tracker 本身；全局限额、top-1 tracker、内存采样和全局仲裁均来自 `pkg/util/memory`。当前 Rust 完整实现已被 executor 的内存控制测试直接启动，但生产启动路径尚未接到这个 crate：`cmd/tidb-server/main.rs` 调用的 `dom.ServerMemoryLimitHandle()` 当前来自 `cmd/tidb-server/stubs.rs` 中只记录事件的 `domain::Handle`。同样，Rust `pkg/executor/infoschema_reader.rs` 的内存历史读取走通用 `DataRequest::MemoryUsage { history: true, ... }`，没有直接调用本文件的 `GlobalMemoryOpsHistoryManager.GetRows()`。因此应把“文件内能力已实现”和“生产主链已接线”分开判断。
+`memoryOpsHistoryManager` 用固定 50 槽环形缓冲保存 kill 时的限额、当前堆占用和进程快照，`GetRows` 将其转换为 INFORMATION_SCHEMA 所需的 Datum 列序。
 
 ## 核心职责
 
@@ -71,11 +69,7 @@ Go 生产消费者还包括 `pkg/executor/infoschema_reader.go`：它读取四�
 
 ## 与 Go 版本的对应关系
 
-主要结构与 `pkg/util/servermemorylimit/servermemorylimit.go` 一一对应：相同的全局指标、100 ms tick、`sessionToBeKilled` 状态、5 秒日志节流、60 秒强制结束、最小会话阈值、top-1 kill、50 槽历史和输出列序。`pkg/util/servermemorylimit/servermemorylimit_test.go` 的环形覆盖测试也被独立移植到 `servermemorylimit_test.rs`。
-
 重要差异如下：Go 使用 ticker 和 channel `select`，Rust 用 `Receiver::recv_timeout`；Go 的 `atomic.Value` 被 `RwLock<Option<Arc<dyn Manager>>>` 取代；Go manager 内嵌 mutex，Rust 在全局对象外包 mutex；Go `runtime.GC()` 有实际效果，Rust `runtime_gc()` 是 no-op；Go 包 `init()` 自动运行，Rust 的同名函数只是普通公开函数；Go 生产 domain 和 infoschema 直接接线，Rust 当前主链尚未直接消费本实现。
-
-`migration_aster_unit_test.rs` 补充了 Go 原测试没有直接覆盖的 kill 路径：验证超限发送信号并记录历史、进程消失后复位、低于最小阈值清空 tracker、60 秒后调用 `FinishResultSet`。这些测试证明局部状态机行为，不等同于证明生产启动接线或真实操作系统内存条件下的完整行为。
 
 ## 扩展指南
 
@@ -85,11 +79,3 @@ Go 生产消费者还包括 `pkg/executor/infoschema_reader.go`：它读取四�
 - 若让 Rust INFORMATION_SCHEMA 直接展示这些全局量，需要明确 `DataRequest` 数据源与本 crate 的单一事实来源，避免生产进程出现两套互不一致的历史/指标。
 - 修改裸指针生命周期或成功清理路径前，应专门审查 `reset` 后 CAS 的现有顺序，并增加断言 top-1 槽最终清空的回归测试；不能只依靠现有“状态已复位”断言。
 - 性能方面保持轮询热路径无大范围锁：会话查询、日志字段构造、历史锁只应在越限或诊断分支发生；更高采样频率会放大内存统计成本。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件且目标路径已索引；`files --filter pkg/util/servermemorylimit` 返回 `lib.rs`、目标文件、两个 Rust 测试和 Go 对照文件；`node --file ... --offset 1/360` 读取了目标文件完整 476 行；`query serverMemoryLimit` 定位了构造器、`Run`、`killSessIfNeeded`、历史方法及 Go 对照符号。`callers` 查询在本地长时间无结果后中止，因此调用方结论改由精确源码检索验证，不宣称来自调用图。
-- 已读实现与边界：`pkg/util/servermemorylimit/servermemorylimit.rs`、`lib.rs`、`Cargo.toml`，以及 `pkg/session/sessmgr/processinfo.rs` 的 `Manager`/`ProcessInfo::ToRow` 接口。
-- 已读对照与测试：`pkg/util/servermemorylimit/servermemorylimit.go`、`servermemorylimit_test.go`、`servermemorylimit_test.rs`、`migration_aster_unit_test.rs`。
-- 已核对接线：`cmd/tidb-server/main.rs`、`cmd/tidb-server/stubs.rs`、`pkg/domain/Cargo.toml`、`pkg/executor/infoschema_reader.rs`、`pkg/executor/infoschema_reader.go`，以及两个 executor 内存控制 Rust 测试中的真实 handle 构造点。
-- 本任务按计划是纯文档分析，未运行 Cargo。结构验证应确认本文件存在且恰有 11 个规定的二级标题；人工复核重点是实现能力、测试能力与生产接线状态没有混写。

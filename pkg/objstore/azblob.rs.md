@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/objstore/azblob.rs` 是 `astersql-objstore` crate 的 Azure Blob 后端实现，模块由 `pkg/objstore/lib.rs` 以 `pub mod azblob` 暴露。它把异步的 `object_store::ObjectStore` 包装成 `objectio`/`storeapi` 所定义的同步、可取消接口，并在同一文件中提供认证选择、Azure 配置、范围读取、分块上传以及一个测试用内存后端。
-
-crate 边界见 `pkg/objstore/Cargo.toml`：本文件直接依赖 `object_store` 的 `azure` feature、`tokio` 多线程运行时、`futures`、`bytes`、`url`、`serde`、`sha2`、`base64` 和 `anyhow`，接口来自工作区 crate `astersql-objstore-objectio` 与 `astersql-objstore-storeapi`。目录中没有 `doc.go`；最近的模块契约入口是 `pkg/objstore/lib.rs`。
-
-需要特别区分“模块已公开”和“统一工厂已接线”：`pkg/objstore/parse.rs::ParseBackend` 能把 `azure://`/`azblob://` 解析为配置，但 `pkg/objstore/storage.rs::New` 对云后端仍委托调用方提供的 `external_factory`。仓库搜索只发现 `new_azure_blob_storage` 被本文件测试调用，未发现它已由统一 Rust 工厂直接调用。因此，本文件提供真实 Azure 构造能力，但不能据此推断所有 Rust `StorageBackend::AzureBlobStorage` 都会自动落到这里。
+`AzureBlobStorage` 实现 `storeapi::Storage` 与 `storeapi::StrongConsistency`，提供整对象读写、存在性、删除、范围打开、遍历、URI、分块创建、重命名和不支持预签名 URL 的明确错误。
 
 ## 核心职责
 
@@ -89,7 +85,7 @@ RustCodeGraph 的文件级索引显示 `ObjectStorageCore`/`ObjectStoreReader` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/objstore/azblob.go`，行为测试为 `pkg/objstore/azblob_test.go`。Rust 保留了 Go 的配置键、64 MiB 默认分块、认证优先级大框架、prefix 拼接、Azure `WalkDir` 不使用 `StartAfter`、半开读取范围、seek 到文件尾成功、access tier 与客户加密互斥、同步/并发上传分支以及 stage 失败不 commit 的契约。
+Rust 保留了 Go 的配置键、64 MiB 默认分块、认证优先级大框架、prefix 拼接、Azure `WalkDir` 不使用 `StartAfter`、半开读取范围、seek 到文件尾成功、access tier 与客户加密互斥、同步/并发上传分支以及 stage 失败不 commit 的契约。
 
 主要实现差异如下：
 
@@ -99,7 +95,6 @@ RustCodeGraph 的文件级索引显示 `ObjectStorageCore`/`ObjectStoreReader` �
 - Go `CopyFrom` 只接受 Azure 源，通过 Azure 异步 server-side copy、轮询 copy ID/status 并解析 `progress`；Rust 同一 `ObjectStore` 指针时调用通用 `copy`，不同指针时整对象下载再上传，不轮询 Azure copy 状态。因此 Rust `progress` 目前不是生产复制路径的一部分。
 - Go `Rename` 明确执行 ReadFile→WriteFile→DeleteFile；Rust调用 `ObjectStore::rename`，具体实现通常是 copy+delete，但错误原子性和内存行为由后端决定。
 - Go 下传 encryption scope、客户密钥及摘要；Rust 当前只向 builder 下传 customer key 字段，scope 和摘要没有对应接线。
-- Go 支持调用方自定义 HTTP transport，并在 Client Secret 构造失败时告警后回退 Shared Key；本文件 `StorageOptions` 不含 HTTP client，且 builder 的 Client Secret 配置错误会在最终 build 时直接返回。
 - Go 为每个块生成 UUID/Base64 block ID；Rust依赖 `object_store::MultipartUpload` 生成和按调用顺序管理 block ID。
 
 这些差异是当前源码事实，不应把 Go 的完整能力描述成 Rust 已支持能力。
@@ -113,12 +108,3 @@ RustCodeGraph 的文件级索引显示 `ObjectStorageCore`/`ObjectStoreReader` �
 - 将 Azure 接入统一 Rust 工厂：在负责 `external_factory` 的集成层把 `parse.rs` 的 Azure 配置转换为本文件 `AzureBlobStorageConfig`，并明确映射 `send_credentials`/匿名选项；不要在两个同名配置类型之间依赖隐式等价。
 - 修改 `ObjectStorageCore`、`ObjectStoreReader`、路径或属性辅助函数前，检查 `pkg/objstore/gcs.rs`、`pkg/objstore/local.rs` 及其测试，因为这些是跨后端共享实现。
 - 性能风险集中在每个 core 独立 runtime、大范围读取整段缓冲、跨 store copy 整对象缓冲、`WalkDir` 全量收集后排序，以及批量删除串行执行。优化时需保留确定顺序和错误/取消契约。
-
-## 验证依据
-
-- RustCodeGraph：运行 `rustcodegraph status`，索引覆盖 11,467 个文件，其中 `pkg/objstore/azblob.rs` 有 1,118 行、116 个符号；运行 `files --filter pkg/objstore`；用 `node --file pkg/objstore/azblob.rs --offset 1 --limit 500` 与 `--offset 500 --limit 700` 阅读全文件；用 `query` 精确定位 `new_azure_blob_storage`、`select_azure_client`、`AzureBlobStorage`、`AzureBlockUploader`、`ObjectStoreReader`，并执行相应 `callers`/`callees` 查询。图命令未返回这些 Rust trait/impl 的有效边，因此又以模块源码和测试交叉核对。
-- crate/模块：读取 `pkg/objstore/Cargo.toml`、`pkg/objstore/lib.rs`、`pkg/objstore/storage.rs` 和 `pkg/objstore/parse.rs`；确认依赖、模块导出、云工厂边界和 Azure URI 解析路径。目标目录不存在 `doc.go`。
-- Go 对照：通过 RustCodeGraph 阅读 `pkg/objstore/azblob.go` 的选项/认证、构造、复制、CRUD、reader、uploader 全部相关段落；符号清单和行为与 `pkg/objstore/azblob_test.go` 对照。
-- Rust 独立测试：通过 RustCodeGraph 阅读 `pkg/objstore/azblob_test.rs` 全文件，以及 `pkg/objstore/azblob_1_aster_unit_test.rs` 中 Azure 配置、URL、认证、范围读取与遍历测试。证据覆盖基本 CRUD、确定遍历、认证优先级、截断响应重试、seek 到尾、大对象复制、有界并发、数据所有权、stage 失败、取消和 access tier commit 头。
-- 仓库搜索：确认 `new_azure_blob_storage` 除目标测试外没有 Rust 生产调用；确认共享核心符号被相邻后端复用。该结论只覆盖当前检出的仓库源码，不代表外部 crate 使用情况。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 章节结构命令，并人工复核本文没有把未接线或 Go 独有能力写成 Rust 现状。

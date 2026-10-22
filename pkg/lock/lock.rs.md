@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/lock/lock.rs` 是 `astersql-lock` crate 的表锁访问检查实现。crate 入口 `pkg/lock/lib.rs` 通过 `mod lock; pub use lock::*;` 再导出本文件的公开项；`pkg/lock/Cargo.toml` 将库入口指定为 `lib.rs`，并声明该 crate 对应 Go 包 `pkg/lock`。
-
-本文件位于 SQL 规划完成、真正执行 DDL/DML 之前的访问判定边界：它把“当前会话持有哪些表锁”与“当前 InfoSchema 快照里目标表被怎样锁定”合并，判断某种 `mysql::PrivilegeType` 操作是否允许。需要注意的是，截至本次核验，工作区只有根 `Cargo.toml` 的 `facade_lock` workspace 别名声明，没有其他 Cargo manifest 依赖 `astersql-lock`；RustCodeGraph 也没有找到 Rust `NewChecker` 的外部调用者。因此这里是已经实现并由局部单测覆盖的 Rust 移植模块，但尚无证据表明它已接入 Rust 生产请求主链。当前可验证的在线调用链仍在 Go：`pkg/planner/core/optimizer.go::CheckTableLock` 构造 `lock.NewChecker` 并逐项检查 planner 的 `visitInfo`。
+`Checker::CheckLockInDB` 处理没有具体表名的库级操作：先限制持锁会话的库级 DDL，再遍历带表锁属性的表并复用单表检查。
 
 ## 核心职责
 
@@ -84,11 +82,9 @@ RustCodeGraph 对本文件确认的内部调用边为：`CheckTableLock -> model
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐分支对应 `pkg/lock/lock.go`：`Checker` 字段、`ErrLockedTableDropped`、`NewChecker`、`CheckTableLock`、`checkLockTpMeetPrivilege` 和 `CheckLockInDB` 均有同名 Go 符号，主判断顺序与错误类别保持一致。
-
 可见的实现层差异包括：Go 用 `InfoSchema.TableByName(context.Background(), ...)` 得到 table 对象后读取 `Meta()`，Rust 直接调用 `ModelTableInfoByName`；Go 用 `infoschema.ErrTableNotExists.Equal(err)`，Rust 暂以两个字符串 code 匹配缺表；Go 直接使用 InfoSchema 包级错误原型，Rust 因公开接口缺失而在本文件重建四个 `ClassSchema` 原型；Go 用 `Lock.Sessions[0]`，Rust 用带断言消息的 `first().expect(...)` 显式表达同一非空不变量。
 
-`pkg/lock/lock_aster_unit_test.rs` 只直接覆盖 `checkLockTpMeetPrivilege`：写锁/本地写锁放行常见表级权限，读锁只允许 SELECT，`None`/`ReadLocal`/`ReadOnly`/未知类型不在该辅助函数中放行。端到端 Go 证据主要在 `pkg/ddl/db_table_test.go::TestLockTables` 与 `TestWriteLocal`，覆盖自持读/写/本地写锁、其他会话访问、创建表/视图、库级 DDL 和清理锁；`pkg/ddl/table_modify_test.go::TestLockTableReadOnly` 覆盖 `ReadOnly` 的读放行、写拒绝及 ALTER 特例。Rust 当前没有针对完整 `Checker` 的独立测试，也没有生产上游接线证据。
+Rust 当前没有针对完整 `Checker` 的独立测试，也没有生产上游接线证据。
 
 ## 扩展指南
 
@@ -98,13 +94,3 @@ Rust 文件逐分支对应 `pkg/lock/lock.go`：`Checker` 字段、`ErrLockedTab
 - 若要把 Rust 实现接入生产链，应在实际 planner/session 的 Cargo crate 中显式依赖 `astersql-lock`，将 planner 访问项转换为本入口参数，并移植 Go `pkg/planner/core/optimizer.go::CheckTableLock` 对 `ErrLockedTableDropped` 的特殊 break 语义。接线前不能仅凭 workspace alias 认为模块已启用。
 - 若消除空 `Sessions` panic，必须先确定损坏锁元数据的兼容错误类别，并同时更新 Go/Rust 语义；简单返回任意错误会改变错误码契约。
 - 性能修改应重点度量 `ModelTableInfoByName` 的单次查询，以及 `CheckLockInDB` 的“枚举后逐表再查”路径；源码注释明确要求当前保持与 Go 一致，不能只为减少查询改变可见行为。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/lock` 找到 `lock.rs`、`lock.go`、`lib.rs`、独立 Rust 测试和 context 文件。
-- RustCodeGraph 精确符号：`pkg/lock/lock.rs:72:function:NewChecker`、`:84:function:CheckTableLock`、`:204:function:CheckLockInDB`、`:236:function:checkLockTpMeetPrivilege`；图中确认本文件的内部调用边和 `NewChecker` 无外部 Rust caller。
-- 生产实现：`pkg/lock/lock.rs`；crate 边界与依赖：`pkg/lock/lib.rs`、`pkg/lock/Cargo.toml`、根 `Cargo.toml` 的 `facade_lock` 声明。
-- 会话锁接口：`pkg/lock/context/lockcontext.rs::TableLockReadContext`。
-- Go 语义对照：`pkg/lock/lock.go`；Go 生产上游：`pkg/planner/core/optimizer.go::CheckTableLock`、`pkg/planner/optimize.go::OptimizeForForeignKeyCascade`。
-- 独立测试：`pkg/lock/lock_aster_unit_test.rs`、`pkg/ddl/db_table_test.go::TestLockTables`、`pkg/ddl/db_table_test.go::TestWriteLocal`、`pkg/ddl/table_modify_test.go::TestLockTableReadOnly`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证文档存在且固定二级标题恰好为 11 个，并人工复核未把无 Rust 调用者的模块描述成已接线。

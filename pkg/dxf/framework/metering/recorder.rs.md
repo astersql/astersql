@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 DXF（分布式执行框架）计量子系统中的单任务累计器 `Recorder`。它位于 `astersql-dxf-framework-metering` crate，模块入口 `pkg/dxf/framework/metering/lib.rs` 将其声明为公开 `recorder` 模块并再导出其公共 API。该 crate 通过 `pkg/dxf/framework/metering/Cargo.toml` 直接依赖本地 `astersql-objstore-recording` crate，并由后者提供 `AccessStats` 与 `Traffic` 两类原子计数结构。
-
-在完整链路中，`pkg/dxf/framework/metering/metering.rs` 的 `RegisterRecorder` 根据 `TaskBase` 创建或取得共享的 `Arc<Recorder>`；`Meter::scrape_current_data` 周期性调用 `Recorder::curr_data`，再由 `Data::cal_meter_data_item` 相对上次快照计算要写出的正增量。因而本文件只负责“累计并快照”，不负责调度 flush、重试、持久化或注销策略。
+实现 DXF（分布式执行框架）计量子系统中的单任务累计器 `Recorder`。
 
 ## 核心职责
 
@@ -73,11 +71,7 @@ recorder 不拥有线程、任务、通道、锁、文件句柄或 writer，也�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/dxf/framework/metering/recorder.go`，字段和生产方法保持一一对应：Go `Recorder` 的 `taskID/keyspace/taskType/objStoreAccess/clusterTraffic` 对应 Rust 同名语义字段；`MergeObjStoreAccess`、`IncClusterReadBytes`、`IncClusterWriteBytes` 和私有 `currData` 分别对应 Rust 方法。
-
-关键实现语义也一致：两侧均以原子加法累计，以逐字段原子读取构建包含六项值的累计快照。`pkg/dxf/framework/metering/recorder_test.go::TestRecorder` 与 Rust 的 `recorder_test.rs::test_recorder` 使用相同的 `1/"ks"/"tt"` 元数据以及 `100、200、11、22、300、400` 六项输入，断言相同快照。
-
-Rust 为适配语言和模块边界增加了三点结构差异：显式 `Recorder::new` 构造拥有的字符串；`task_id_for_meter` 代替 Go 同包代码直接读取私有字段；四个 `cfg(test)` 辅助方法代替 Rust 测试对私有 `AccessStats` 字段的直接访问。它们不改变生产计量模型。Rust 引用还排除了 Go 指针参数为 `nil` 的情况。
+Rust 为适配语言和模块边界增加了三点结构差异：显式 `Recorder::new` 构造拥有的字符串；`task_id_for_meter` 代替 Go 同包代码直接读取私有字段；四个 `cfg(test)` 辅助方法代替 Rust 测试对私有 `AccessStats` 字段的直接访问。Rust 引用还排除了 Go 指针参数为 `nil` 的情况。
 
 ## 扩展指南
 
@@ -90,12 +84,3 @@ Rust 为适配语言和模块边界增加了三点结构差异：显式 `Recorde
 5. 若新增生产调用点，确认“成功前计数还是成功后计数”、重试是否会重复计数，以及输入的有符号值如何处理。对象存储累计尤其要确认传入的是本段增量还是全生命周期快照。
 
 兼容性风险主要是改变现有字段名、任务元数据或注册复用语义；正确性风险主要是重复合并、遗漏某个执行分支或误把负数转换为 `u64`；性能风险主要是热路径增加原子操作。若要求跨字段一致性，不能简单加强单个原子的内存序，需重新设计快照同步方案并评估 flush 热点。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标目录中的 `recorder.rs`、`metering.rs`、`data.rs`、对应 Go 文件和测试均在索引内。
-- RustCodeGraph 源码/符号查询：`recorder.rs` 的 `Recorder`、`new`、`MergeObjStoreAccess`、`IncClusterReadBytes`、`IncClusterWriteBytes`、`curr_data`、`task_id_for_meter`；`metering.rs` 的 `RegisterRecorder`、`Meter::get_or_register_recorder`、`scrape_current_data`、`after_flush`；`data.rs` 的 `Data`、`DataValues`、`cal_meter_data_item`。
-- RustCodeGraph 调用证据：`task_executor.rs::ingestCollector::Processed`、`conflict_resolution.rs::ResolutionMeterTraffic` 与 `ConflictResolutionStepExecutor::RunSubtask`、`conflictedkv/handler.rs::BatchGet`、`conflictedkv/deleter.rs::deleteBufferedKeys`。
-- crate 与依赖证据：`pkg/dxf/framework/metering/Cargo.toml`、`pkg/dxf/framework/metering/lib.rs`、`pkg/objstore/recording/recording.rs`。
-- Go 对照与测试证据：`pkg/dxf/framework/metering/recorder.go`、`recorder_test.go`、`recorder_test.rs`、`migration_aster_unit_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务规定的 `test` 加 `rg -c` 命令确认目标文件存在且恰有 11 个固定二级章节。

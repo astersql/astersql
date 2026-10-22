@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`security.rs` 是 `astersql-parser` crate 内主 SQL 文法的安全与账户类语义动作实现。它不是鉴权执行器，也不访问权限表；它处在 LR 解析器的“归约后构造语义值”阶段，把 `pkg/parser/generated/main_tables.rs` 给出的稳定 `RuleId` 和归约栈右部值转换为 `parser_ast`、`parser_auth`、`parser_mysql::privs` 中的 AST/身份/权限对象。模块由 `pkg/parser/parser_actions/mod.rs` 私有声明并分类派发，实际入口来自 `pkg/parser/parser_runtime.rs` 的归约循环。
-
-crate 边界由 `pkg/parser/Cargo.toml` 确认：包名为 `astersql-parser`，本文件直接使用的 AST、身份与 MySQL 权限类型分别来自工作区路径依赖 `astersql-parser-ast`、`astersql-parser-auth`、`astersql-parser-mysql`。文件本身无 feature 或条件编译分支。
+用 `apply`/`apply_rule` 从动态类型的 `Rhs` 读取前序语义值，构造语句节点或中间值，写入 `Context.output`；必要时读取 `Context.parser_state` 的兼容模式，并通过 `Context.lexer` 记录错误或警告。
 
 ## 核心职责
 
@@ -81,18 +79,11 @@ RustCodeGraph 对目标文件的直接关系显示：`apply` 调用 `identify` �
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照不是同名 `.go` 文件，而是 `pkg/parser/parser.y` 中相同非终结符的内嵌语义动作；`pkg/parser/parser.go` 是 goyacc 生成结果。Rust 把这些动作从文法文件拆到本文件，并用稳定哈希式 `RuleId` 替代数字 case。
-
-已核对的等价点包括：CREATE/ALTER/DROP USER/ROLE 的字段组合；角色与用户缺省主机 `%`；权限、对象类型和授权级别映射；`BINLOG MONITOR` 的 MariaDB 开关；GRANT ROLE 的角色转换；`REVOKE ALL [PRIVILEGES], GRANT OPTION` 特例；以及 ENCRYPTION 的 Y/N 分支。
+Rust 把这些动作从文法文件拆到本文件，并用稳定哈希式 `RuleId` 替代数字 case。
 
 实现形态有两项值得注意：Go 使用具体接口断言和指针切片，Rust 使用动态 `Box` 下转型及拥有值向量；Go 的 `ast.RoleOrPriv` 同时承载 node/symbols，Rust 用私有 `RoleOrPrivSemantic::{Role, Dynamic, Priv}` 表达同一中间态。二者不应仅因类型布局不同被误判为行为差异。
 
-相关独立 Rust 测试为：
-
-- `pkg/parser/parser_actions/remaining_aster_unit_test.rs`：规则唯一归属、182 条 security inventory、禁止数字规则回退。
-- `pkg/parser/grant_role_aster_unit_test.rs`：GRANT/REVOKE 裸角色与用户均保留 `%` 缺省主机。
 - `pkg/parser/parser_3_aster_unit_test.rs::parser_3_builds_go_account_option_nodes`：CREATE USER 的 IF NOT EXISTS、认证、REQUIRE SSL、资源限制、密码过期与账户锁定 AST。
-- `pkg/parser/parser_test.rs` / `pkg/parser/parser_test.go`：更广泛的 SQL parser 合同与 Go 回归语料；本任务只将其作为相关测试面，不声称逐案执行。
 
 ## 扩展指南
 
@@ -105,12 +96,3 @@ RustCodeGraph 对目标文件的直接关系显示：`apply` 调用 `identify` �
 5. 测试必须放在独立 Rust 测试文件，至少扩展 `parser_actions/remaining_aster_unit_test.rs` 的归属清单保障，并在 `pkg/parser/*_test.rs` 添加端到端解析断言；同时对照 `parser.y`/Go 测试覆盖缺省值、大小写、非法混用和错误/警告分支。
 
 主要兼容风险是 stable `RuleId` 漂移、RHS 偏移错位、动态下转型类型不匹配、Go 空值与 Rust default 的差异，以及错误类别/文本偏离。性能上，该文件在每次相关归约中做字符串 RuleId 匹配并可能克隆向量；增加大列表动作时应关注重复克隆，但没有证据表明当前实现是性能瓶颈。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、目标 `security.rs` 已索引为 190 个符号；`files --filter pkg/parser/parser_actions` 确认模块及独立测试；精确文件节点读取覆盖 `SecurityRule`、`identify`、`owns`、`role_from_semantic`、`apply`、`apply_rule` 全部 1,840 行。`explore` 给出 `apply → identify/apply_rule`、`owns → identify`、`apply_rule → role_from_semantic` 及归属测试调用边。
-- Rust 源：`pkg/parser/parser_runtime.rs`（RuleId 取得、动作调用、错误状态传播与默认归约）；`pkg/parser/parser_actions/mod.rs`（模块声明、Context、Rhs 索引、总派发）；`pkg/parser/generated/main_tables.rs`（稳定 RuleId 表）；`pkg/parser/lib.rs`（parser runtime/生成表的 crate 装配）。
-- crate 配置：`pkg/parser/Cargo.toml`（包名、lib 路径及 AST/auth/mysql 路径依赖）。
-- Go 对照：`pkg/parser/parser.y` 的 RenameUserStmt、用户/角色、认证、TLS、密码锁定、GRANT/REVOKE、权限与 EncryptionOpt 动作；`pkg/parser/parser.go` 的相应生成 case。
-- 测试：`pkg/parser/parser_actions/remaining_aster_unit_test.rs`、`pkg/parser/grant_role_aster_unit_test.rs`、`pkg/parser/parser_3_aster_unit_test.rs`，以及相关 parser 合同测试路径。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付结构检查要求文档存在且恰有十一个固定二级标题；人工复核范围为文件存在原因、运行路径、安全扩展点及当前行为边界。

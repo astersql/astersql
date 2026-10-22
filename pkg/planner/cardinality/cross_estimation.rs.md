@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cardinality` crate。`pkg/planner/cardinality/Cargo.toml` 将 `lib.rs` 设为 crate 根，`lib.rs` 以私有模块 `mod cross_estimation` 装载本文件，并通过 `pub use cross_estimation::*` 导出其公开项。它位于优化器基数估算层：输入规划上下文、逻辑/表统计和 `AccessPath`，为带 `LIMIT`、排序要求的表扫描或索引扫描估算“为了取得期望输出行数需要扫描多少候选行”。它只读统计信息与会话变量，不访问存储，也不执行物理计划。
-
-Rust 生产主链中，`pkg/planner/core/operator/physicalop/base_physical_plan.rs` 的原始物理表扫描构造逻辑调用 `AdjustRowCountForTableScanByLimit`，随后以结果缩放 `StatsInfo`。仓库搜索没有发现 `AdjustRowCountForIndexScanByLimit` 的 Rust 生产调用者；该入口目前由 crate 公开，但索引扫描侧的实际接线仍应以调用点搜索结果为准。
+`AdjustRowCountForIndexScanByLimit`：尝试索引扫描的跨列估算，并对“索引负责顺序、过滤发生在索引外”的风险增加扫描量。
 
 ## 核心职责
 
@@ -63,11 +61,9 @@ RustCodeGraph 能列出文件被 `base_physical_plan.rs`、相关测试和若干
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/cardinality/cross_estimation.go`。Rust 保留了 `SelectionFactor`、两个公开入口、三个核心辅助函数、相关性阈值判断、负相关反转扫描方向、范围逐项计数、残余条件除以 0.8、结果封顶以及排序索引风险补偿等主逻辑。`Cargo.toml` 的 `[package.metadata.porting] go-package = "pkg/planner/cardinality"` 也声明了移植归属。
+主要表示差异来自 Rust 安全边界：可空列改为 `Option<&Column>`，统计直方图由 `Any` 下转，Go 的 `error` 被匹配并转换为失败标志，范围与表达式通过克隆管理所有权。
 
-主要表示差异来自 Rust 安全边界：可空列改为 `Option<&Column>`，统计直方图由 `Any` 下转，Go 的 `error` 被匹配并转换为失败标志，范围与表达式通过克隆管理所有权。Rust 构造转换范围时逐个 `Clone()` collator；独立测试专门覆盖这一点。Go 和 Rust 的索引包装层目前都传入空相关列，因此两者的精确索引跨列路径都不会由该包装层触发。
-
-端到端对应测试是 Go `pkg/planner/core/casetest/cbotest/cbo_test.go::TestLimitCrossEstimation` 与 Rust `pkg/planner/core/casetest/cbotest/cbo_test.rs::test_cbo_limit_cross_estimation_matches_go_suite_fixture`，二者读取同一 `analyze_suite` 用例，覆盖伪统计、正相关、负相关以及 index join 外层计划中的正确列 ID。Rust `pkg/planner/core/integration_test.rs::ordered_table_limit_uses_expected_scan_count` 还直接验证排序表扫描应用 `OptOrderingIdxSelRatio` 后的行数。
+端到端对应测试是 Go `pkg/planner/core/casetest/cbotest/cbo_test.go::TestLimitCrossEstimation` 与 Rust `pkg/planner/core/casetest/cbotest/cbo_test.rs::test_cbo_limit_cross_estimation_matches_go_suite_fixture`，二者读取同一 `analyze_suite` 用例，覆盖伪统计、正相关、负相关以及 index join 外层计划中的正确列 ID。
 
 ## 扩展指南
 
@@ -76,11 +72,3 @@ RustCodeGraph 能列出文件被 `base_physical_plan.rs`、相关测试和若干
 修改范围截取时应维护以下不变量：升/降序方向与负相关翻转一致；边界排除标志取源边界的逻辑反值；collator 数量和语义不丢失；累计 `count` 只包含目标范围之前已经扫描完的范围。对应单元测试应放在独立的 `pkg/planner/cardinality/cross_estimation_test.rs`，不要嵌回生产文件。规划行为变更还应同步 Go/Rust `TestLimitCrossEstimation` 共享夹具或增加聚焦的 planner 测试。
 
 兼容风险集中在计划选择变化和 EXPLAIN 估算变化；性能风险来自对每个范围分别查询直方图以及克隆过滤表达式/范围。新增统计错误传播策略时要保留优化器在缺失或损坏统计下可回退的性质，避免把估算失败升级为查询失败。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录列出 `cross_estimation.rs`、Go 对照和独立 Rust 测试。`query cross_estimation --json` 识别到本文件的 1 个常量和 8 个函数；`node --file` 完整读取了 423 行目标源码。
-- RustCodeGraph 文件引用结果：目标文件被 `cross_estimation_test.rs`、`base_physical_plan.rs`、`physical_apply.rs` 等文件引用；精确函数 ID 的 `callers`/`callees` 未返回边，因此又用源码及文本调用点核验函数级关系。
-- 已读取路径：`pkg/planner/cardinality/cross_estimation.rs`、`pkg/planner/cardinality/lib.rs`、`pkg/planner/cardinality/Cargo.toml`、`pkg/planner/cardinality/cross_estimation.go`、`pkg/planner/cardinality/cross_estimation_test.rs`、`pkg/planner/core/operator/physicalop/base_physical_plan.rs`、`pkg/planner/core/integration_test.rs`、Go/Rust 两份 `cbo_test` 及 `testdata/analyze_suite_{in,out}.json`。目标包没有 `doc.go`。
-- 独立 Rust 单测 `test_convert_range_preserves_source_collators` 验证升序与降序转换都保留两个 collator；共享 CBO 夹具验证 LIMIT 计划在伪统计、正/负相关和子查询场景下与 Go 预期一致。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证目标文档存在且恰有 11 个固定二级标题，并人工复核公开/私有符号、回退分支、当前未接线状态和测试位置均有直接证据。

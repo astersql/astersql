@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`join.rs`](./join.rs) 属于 `astersql-planner-cardinality` crate，实现 Join 等值条件的输出行数估算。crate 根 [`lib.rs`](./lib.rs) 以 `mod join` 纳入该模块，再用 `pub use join::*` 对外导出，因此调用者通过 `cardinality::EstimateFullJoinRowCount` 访问，而不需要知道私有的 `join` 模块。
-
-`pkg/planner/cardinality/Cargo.toml` 声明该 crate 的库入口为 `lib.rs`，并将 Go 对照包记录为 `pkg/planner/cardinality`。本文件不是独立的完整 Join 基数推导器：它只计算等值连接对应的“full join row count”中间值；外连接下界、半连接系数、伪统计回退和结果 `StatsInfo` 组装由上层逻辑算子完成（`logical_join.rs::LogicalJoin::DeriveStats`、`logical_apply.rs::LogicalApply::DeriveStats`）。
+在有连接键时，分别估算两侧键组 NDV（Number of Distinct Values），用较大的一侧作为分母，计算 `left rows * right rows / max(left NDV, right NDV)`。
 
 ## 核心职责
 
@@ -81,9 +79,7 @@ DP 相关性分支的 `remained` 使用 `i32` 差值后转为 `f64`。若上游�
 
 ## 与 Go 版本的对应关系
 
-Rust `EstimateFullJoinRowCount` 逐分支对应 `pkg/planner/cardinality/join.go::EstimateFullJoinRowCount`：笛卡尔积直接相乘、普通键优先于 NA 键、两侧 NDV 取大值作分母、非 DP 分支直接返回，以及 DP 分支使用 `0.9` 幂，算术语义一致。
-
-类型形状的差异是：Go 使用 profile/schema 指针和可为 `nil` 的键 slice；Rust 使用不可变引用，普通键始终是 slice，只将 NA 键表示为 `Option<&[Column]>`。Go 的 `math.Pow(0.9, ...)` 对应 Rust 的 `0.9_f64.powf(...)`。Rust 用 `CardinalityContext` 窄 trait 代替带关联类型、不能直接作 trait object 的完整 planner context。
+类型形状的差异是：Go 使用 profile/schema 指针和可为 `nil` 的键 slice；Rust 使用不可变引用，普通键始终是 slice，只将 NA 键表示为 `Option<&[Column]>`。
 
 调用面并非完全相同。Go 的 `LogicalJoin::DeriveStats` 直接把 `len(EqualConditions) == 0` 作为 `isCartesian` 传入；Rust 调用者在笛卡尔积分支直接相乘，只在非笛卡尔积时以 `false` 调用本函数。Go 还在 `plan_cost_ver1.go` 中为 index/hash join 成本估算调用它；本次 Rust 直接引用搜索只找到 logical join/apply。
 
@@ -97,14 +93,3 @@ Rust `EstimateFullJoinRowCount` 逐分支对应 `pkg/planner/cardinality/join.go
 - 若改动调用者，同步扩展 `pkg/planner/core/operator/logicalop/logicalop_test/plan_execute_test.rs` 中的统计推导回归；对 NDV 边界则扩展独立的 `pkg/planner/cardinality/ndv_test.rs`。
 
 主要兼容性风险是与 Go 公式或会话开关语义漂移；正确性风险是空键、不对称键和 matched length 不变量被破坏；性能风险主要来自更复杂的 NDV 估算或在规划热路径上增加分配。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，项目包含 7,032 个 Rust 文件。
-- RustCodeGraph `files --filter pkg/planner/cardinality`：确认 `join.rs`、`join.go`、`ndv.rs`、独立测试和 crate 根的实际文件集。
-- RustCodeGraph `node --file pkg/planner/cardinality/join.rs --offset 1 --limit 260`：读取全部 78 行，并报告两个使用文件 `logical_apply.rs` 和 `logical_join.rs`。
-- RustCodeGraph `query EstimateFullJoinRowCount --kind function --limit 20 --json`：定位 Rust 与 Go 两个对应符号。精确 `callers`/`callees` 查询在 30 秒内未返回，因此调用边另用文件节点的 `used by` 结果和直接引用搜索核对。
-- 源码与配置：`pkg/planner/cardinality/join.rs`、`ndv.rs`、`lib.rs`、`Cargo.toml`、`pkg/planner/core/operator/logicalop/logical_join.rs`、`logical_apply.rs`。目标路径下没有 `doc.go`，因此无额外包契约文件可读。
-- Go 对照：`pkg/planner/cardinality/join.go`、`pkg/planner/core/operator/logicalop/logical_join.go`、`logical_apply.go`、`pkg/planner/core/plan_cost_ver1.go`。
-- 测试证据：`pkg/planner/cardinality/ndv_test.rs` 直接覆盖下游 NDV 的单列、GroupNDV、多列指数退避和空键；`pkg/planner/core/operator/logicalop/logicalop_test/plan_execute_test.rs` 通过 `LogicalJoin::DeriveStats` 验证空 CTE Join 的 `RowCount` 与 `EqualCondOutCnt` 为零。未找到直接调用 `EstimateFullJoinRowCount` 的 Rust 或 Go 测试，因此 DP/NA 分支的直接回归覆盖仍是未验证项。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认文档存在且恰有 11 个固定二级标题，并人工复核唯一生产物、链接路径与事实限定。

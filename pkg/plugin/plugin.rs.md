@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/plugin/plugin.rs` 是 `astersql-plugin` crate 的插件运行时核心。crate 入口 `pkg/plugin/lib.rs` 将本模块公开并重导出其 API；清单与回调模型来自同 crate 的 `audit.rs`、`helper.rs`、`spi.rs`、`const.rs` 和 `errors.rs`。本文件负责把插件清单从静态工厂、测试钩子或动态加载抽象装入内存，完成版本校验和生命周期切换，并向 session/executor 等上层提供查询、遍历和跨节点 Flush 能力。
-
-当前 Rust 接线中，`pkg/plugin/helper.rs::load_plugin_for_test` 会串联 `register_static_plugin`、`load` 和 `init`；`pkg/session/runtime/scan_adapter_runtime.rs` 通过 `foreach_plugin(Kind::Audit, ...)` 派发 SQL 完成事件。`pkg/executor/admin_plugins.rs` 只定义 `PluginFlagFlusher` 边界来表达 Go 侧 `ChangeDisableFlagAndFlush` 语义，未在该文件中直接调用本模块的具体函数。
+负责把插件清单从静态工厂、测试钩子或动态加载抽象装入内存，完成版本校验和生命周期切换，并向 session/executor 等上层提供查询、遍历和跨节点 Flush 能力。
 
 ## 核心职责
 
@@ -81,11 +79,11 @@
 
 ## 与 Go 版本的对应关系
 
-主要参照是 `pkg/plugin/plugin.go`。Rust 的 `Config`、`Plugin`、`Plugins`、加载/校验/初始化/关闭、静态注册表、查询遍历、`flushWatcher` 和两个 Flush 控制函数都保留了 Go 的总体顺序和关键分支；`pkg/plugin/plugin_test.rs` 对照 `pkg/plugin/plugin_test.go` 覆盖静态优先、成功加载、跳过失败、严格失败、集合克隆及 watch 退出。
+Rust 的 `Config`、`Plugin`、`Plugins`、加载/校验/初始化/关闭、静态注册表、查询遍历、`flushWatcher` 和两个 Flush 控制函数都保留了 Go 的总体顺序和关键分支；`pkg/plugin/plugin_test.rs` 对照 `pkg/plugin/plugin_test.go` 覆盖静态优先、成功加载、跳过失败、严格失败、集合克隆及 watch 退出。
 
 存在以下实现层差异：Go 直接使用 `plugin.Open`/`Lookup` 并在 `Plugin` 中保留库句柄，Rust 通过注入的 `PluginLoader` 抽象动态加载且不保存句柄；Go 通过原子指针和 copy-on-write 容器发布全局状态，Rust 使用 `OnceLock<RwLock<Option<Plugins>>>`；Go watcher 使用 etcd 的持续 `WatchChan`，Rust 的 `KeyValueClient::watch` 返回事件批次并由外层循环重建；Go 用 `util.WithRecovery` 包裹 goroutine，Rust 后台线程没有 panic 恢复封装；Go 的 `NotifyFlush` 从 `domain.Domain` 获取 etcd 客户端，Rust 直接复用 watcher 中注入的客户端。
 
-Rust `shutdown` 会先从全局槽位取走集合再执行回调，Go 则遍历后用 CAS 清空指针；Rust 因而不会让并发查询继续看到正在关闭的集合。Rust 还把关闭项克隆进本地 `dying_plugins`，但目前没有持久化该集合。静态插件跳过版本文本校验、回调错误的跳过策略、Ready/disabled 过滤以及 watcher 键格式与 Go 意图一致。
+Rust `shutdown` 会先从全局槽位取走集合再执行回调，Go 则遍历后用 CAS 清空指针；Rust 因而不会让并发查询继续看到正在关闭的集合。Rust 还把关闭项克隆进本地 `dying_plugins`，但目前没有持久化该集合。
 
 ## 扩展指南
 
@@ -96,12 +94,3 @@ Rust `shutdown` 会先从全局槽位取走集合再执行回调，Go 则遍历�
 扩展 Flush 协议时，应同时审视 `KeyValueClient`、`FlushWatcher::{refresh_plugin_state, watch_loop_once, watch_loop_with_chan, cancel}` 和两个写入入口。需要保持“先更新禁用值、再执行回调”的既有顺序，决定事件级错误是否继续忽略，并为取消延迟、watch 重连和写入失败补充 `plugin_test.rs` 中的独立测试。若改变键格式或值编码，还必须考虑与 Go 节点的混合集群兼容性。
 
 新增上层消费者时，优先通过 `foreach_plugin` 使用 Ready 且启用的实例，而不是从 `get_all` 快照自行复制过滤规则。回调不得在持有全局锁的调用路径中重入插件注册、load/init/shutdown 等写操作；若确需支持重入，应先重构锁与回调边界并增加并发回归测试。性能上需注意 `get_all` 会克隆整个按种类映射，跨种类单次查找 `get_by_name` 也是线性扫描。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/plugin/plugin.rs`；crate 边界与重导出：`pkg/plugin/lib.rs`、`pkg/plugin/Cargo.toml`。
-- Go 语义对照：`pkg/plugin/plugin.go`；Rust/Go 独立测试对照：`pkg/plugin/plugin_test.rs`、`pkg/plugin/plugin_test.go`。
-- 直接入口与消费者：`pkg/plugin/helper.rs::load_plugin_for_test`、`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/session/runtime_test/typed_adapter_bridge.rs`、`pkg/executor/admin_plugins.rs`，以及 session/server/executor 的 Cargo 路径依赖声明。
-- RustCodeGraph 状态显示索引覆盖 11,467 个文件、307,296 个节点，`pkg/plugin/plugin.rs` 被识别为含 60 个符号；精确查询定位了 `load_one`（第 402 行）、`load_one_from_dir`（第 445 行）、`foreach_plugin`（第 540 行）和 `change_disable_flag_and_flush`（第 632 行）。本次 `explore`、按文件 `node` 及批量 callers/callees 未返回完整可用调用边，因此调用关系另由上述源文件和 `rg` 结果核实，未把空图输出当成事实。
-- 测试证据表明：静态工厂优先且不校验 ID 版本；成功 load/init 后查询与遍历可见；`skip_when_fail` 会跳过重复/缺失项并屏蔽 Disable 插件；严格模式返回错误；克隆容器不受后续容器修改影响；watch 通道取消与断连返回值不同；初始化会执行首次刷新并启动 watcher 处理后续事件。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付前使用任务文件规定的命令确认目标文档存在且恰有十一个固定二级章节，并人工复核所有行为陈述均能回指到上述符号或文件。

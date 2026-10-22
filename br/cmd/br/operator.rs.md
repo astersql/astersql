@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-cmd-br` crate，是隐藏一级命令 `br operator` 的命令树装配层。模块由 `br/cmd/br/lib.rs` 以 `pub mod operator` 纳入 crate，`br/cmd/br/main.rs::main` 将 `newOperatorCommand()` 加入 `br` 根命令；`br/cmd/br/Cargo.toml` 则声明该 crate 直接依赖 `astersql-br-pkg-task` 与 `astersql-br-pkg-task-operator`。因此本文件负责 CLI 边界，不实现迁移、checksum、外部存储探测或集群控制算法，实际业务由 `br/pkg/task/operator/*.rs` 承担。
-
-源文件对应 Go 实现 `br/cmd/br/operator.go`。当前 Rust 文件已接入命令树，但仍依赖 `br/cmd/br/stubs.rs` 提供的 Cobra、context、status mux 与 glue 替身；尤其 CRR 服务运行和 HTTP 注册仍包含明确的 slim-stub 行为，不能据此认定生产能力已与 Go 完全等价。
+因此本文件负责 CLI 边界，不实现迁移、checksum、外部存储探测或集群控制算法，实际业务由 `br/pkg/task/operator/*.rs` 承担。
 
 ## 核心职责
 
@@ -64,7 +62,7 @@ CRR 服务由 `Arc` 在运行端和 registrar 闭包之间共享；cleanup 被 `
 
 ## 与 Go 版本的对应关系
 
-Rust 命令名、帮助文本、子命令顺序、flag 定义入口、`!*.*` checksum 默认过滤、顶层隐藏属性以及新旧快照准备别名均逐项对应 `br/cmd/br/operator.go`。Go 的 `crrCheckpointServiceState` 保存 service 与 cleanup，准备器继承/创建 context 并写入状态，运行时 `defer state.cleanup()`；Rust 用 `Arc<CrrCheckpointServiceState>`、数值 context key 和 `Mutex<Option<FnOnce>>` 表达相同两阶段与单次清理意图。
+Go 的 `crrCheckpointServiceState` 保存 service 与 cleanup，准备器继承/创建 context 并写入状态，运行时 `defer state.cleanup()`；Rust 用 `Arc<CrrCheckpointServiceState>`、数值 context key 和 `Mutex<Option<FnOnce>>` 表达相同两阶段与单次清理意图。
 
 仍有明确差异：Go `service.Run(GetDefaultContext())` 是真实长运行服务，registrar 直接使用 `svc.Register`；Rust `Run/Register` 是本文件内的 slim stub。Go 的多数 operator 执行函数显式接收 context，Rust 只有快照准备和 base64 路径真正向下传递取消标记。Go 的 context key 是私有零大小类型，Rust 替身 API 只支持 `u64`，故使用 `CRR_STATE_KEY`。这些差异是当前迁移状态，不应在文档或后续测试中被掩盖。
 
@@ -75,12 +73,3 @@ Rust 命令名、帮助文本、子命令顺序、flag 定义入口、`!*.*` che
 扩展 checksum 路径需确认 glue 锁持有范围、过滤默认值和潜在全库扫描成本。扩展 CRR 状态时必须保持 context 继承、单实例复用、cleanup 恰好一次及失败资源回收；若替换 slim service，应优先消除本地 `Run/Register` 替身并补充 status 准备失败、缺 context、错误后清理和并发访问的独立测试。若为现有无 context 的 Rust 下游补取消能力，应同时修改 task-operator API 与相应 parity/资源生命周期测试，不能只保留未使用的 `_ctx`。
 
 现有最近测试包括：`br/cmd/br/parity_test.rs::contract_normal_command_tree_and_filters`（operator 顶级隐藏性与根命令位置）、`operator_context_observes_command_cancellation`（取消标记桥接）；下游 `br/pkg/task/operator/parity_test.rs` 覆盖配置、错误与清理契约；`crr_checkpoint_test.rs` 覆盖必需 flag、非日志备份目录、resume 与 lock 文件；`base64ify_test.rs`、`test_storage_test.rs` 覆盖相应业务。新增 CLI 结构契约宜继续放在 `br/cmd/br/parity_test.rs` 或新建同目录独立测试文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter br/cmd/br/operator.rs` 报告 17 个符号；`node --file ... --offset 1 --limit 500` 读取完整 420 行源码；精确 `explore` 给出 `newOperatorCommand -> newCRRCheckpointCommand -> prepareCRRCheckpointStatusServer/getCRRCheckpointServiceState` 及各叶子构造器调用关系。直接 `callers/callees` 在本地后端超时且无输出，因此未将其作为额外证据。
-- 源与入口：`br/cmd/br/operator.rs`、`br/cmd/br/lib.rs`、`br/cmd/br/main.rs`、`br/cmd/br/cmd.rs`、`br/cmd/br/stubs.rs`。
-- crate 与业务边界：`br/cmd/br/Cargo.toml`、`br/pkg/task/operator/lib.rs`、`config.rs`、`crr_checkpoint.rs` 及各 `Run*` 所在模块。
-- Go 对照：`br/cmd/br/operator.go`。
-- 测试证据：`br/cmd/br/parity_test.rs`、`br/pkg/task/operator/parity_test.rs`、`br/pkg/task/operator/crr_checkpoint_test.rs`；搜索确认 `br/cmd/br` 下没有同名 `operator_test.rs`，当前直接 CLI 契约集中在 `parity_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务规定的 11 章节结构检查，并人工复核以上符号、路径和已声明迁移限制。

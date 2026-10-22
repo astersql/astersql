@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`dumpling/export/ir.rs` 是 `astersql-dumpling-export` crate 的中间表示（IR）协议层。crate 入口 `dumpling/export/lib.rs` 通过 `include!("ir.rs")` 将它拼入同一个包级命名空间；紧邻的 `task.rs` 先定义任务载体，`ir_impl.rs` 再提供这些协议的具体实现。该文件不是独立模块，也不负责查询编排或文件格式编码，而是在任务生产端、数据库结果集适配层和 writer 消费端之间定义稳定边界。
-
-`dumpling/export/Cargo.toml` 将 crate 声明为 library，并以 `package.metadata.porting.go-package = "dumpling/export"` 标明 Go 来源。目标文件直接使用的 `Rows`、`Conn`、`RawBytes`、`Error`、`ServerType` 和 `ColumnInfo` 来自同 crate 的 `stubs.rs`；`tcontext::Context` 来自路径依赖 `astersql-dumpling-context`。Parquet 列元数据在本文件中通过 `ColumnInfo` 暴露，实际格式依赖由 crate 的 `astersql-dumpformat-parquetfile` 承担。
+用 `decodeFromRows` 和 `setTableMetaFromRows` 提供两个共享适配点：前者把当前 `Rows` 行解码到接收器，后者从任意查询结果推导匿名 `TableMeta`，主要服务自定义 SQL 导出路径。
 
 ## 核心职责
 
@@ -86,16 +84,15 @@ RustCodeGraph 的文件节点显示 `ir.rs` 被 `dump.rs`、`sql.rs`、`writer.r
 
 ## 与 Go 版本的对应关系
 
-`dumpling/export/ir.go` 是直接语义基线。六个 Rust trait 对应六个 Go interface，两个 Rust helper 对应同名 Go 函数；方法名和总体调用顺序刻意保留 Go 风格。关键差异如下：
+六个 Rust trait 对应六个 Go interface，两个 Rust helper 对应同名 Go 函数；方法名和总体调用顺序刻意保留 Go 风格。关键差异如下：
 
 - Go 的 `TableDataIR.Rows()` 返回 interface 引用语义，Rust 返回拥有型 `Box<dyn SQLRowIter>`；Rust 实现因此明确采用取走/单消费者模型。
 - Go `TableMeta.ColumnInfos()` 返回 `[]*ColumnInfo`，Rust 返回拥有型 `Vec<ColumnInfo>`；Rust 的 `ColumnInfo` 来自本地适配类型，之后再投影到 Parquet crate 类型。
 - Rust 为 `TableMeta` 增加了带默认实现的 `sourceColumnNames`/`sourceColumnTypes`，用于保留原始列与导出列之间的投影；Go 当前在 `ir_impl.go` 通过包级 helper `tableSourceColumnNames`/`tableSourceColumnTypes` 处理等价兼容逻辑。
 - Go 的 `BindAddress` 把 `sql.Rows.Scan` 目标绑定到接收器地址，扫描后数据自然可见；Rust stubs 使用值复制，故 `decodeFromRows` 成功扫描后多一次 `BindAddress`。失败前绑定与关闭 rows 的行为仍与 Go 对齐。
 - Go 使用 `[]any` 和 `*sql.Rows`，Rust 使用 `&mut [RawBytes]` 与本地 `Rows`；错误分别通过 `error`/`errors.Trace` 和 `Result`/`errors_trace` 传播。
-- `setTableMetaFromRows` 两端都复制列类型、反引号包裹列名、以逗号连接字段并注入特殊注释；Rust 显式填写其余 `tableMeta` 字段的零值，以满足结构体完整初始化。
 
-Go 没有独立的 `ir_test.go`；共享迭代语义主要由 `dumpling/export/ir_impl_test.go` 覆盖。Rust 新增 `ir_test.rs` 专门锁定值复制 adapter 下“扫描失败前已绑定且 rows 被关闭”的回归行为，这是实现差异的验证，不是功能简化。
+Rust 新增 `ir_test.rs` 专门锁定值复制 adapter 下“扫描失败前已绑定且 rows 被关闭”的回归行为，这是实现差异的验证，不是功能简化。
 
 ## 扩展指南
 
@@ -106,12 +103,3 @@ Go 没有独立的 `ir_test.go`；共享迭代语义主要由 `dumpling/export/i
 修改 `decodeFromRows` 时应保持三项不变量：扫描前绑定的可观察顺序、扫描失败关闭 rows 并返回原扫描错误、成功后将 Rust `RawBytes` 复制回接收器。至少同步 `ir_test.rs` 的错误回归、`ir_impl_test.rs::test_row_iter` 的成功解码，以及 `sql_type_test.rs` 对 `RowReceiverArr` 的 NULL/二进制值覆盖。
 
 修改生命周期或并发边界时，兼容风险高于局部语法风险：放宽/收紧 `Send + Sync` 会影响任务跨线程传递；改变 `Rows` 的所有权会影响分文件续写；改变 `Close` 错误优先级可能掩盖原始扫描或推进错误。性能上应保留每个迭代器复用 `args` 的策略，避免逐行分配，并避免让 `ColumnTypes`/`ColumnNames` 的克隆进入更内层的逐列热循环。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件；`files --filter dumpling/export` 包含 `ir.rs`、`ir_impl.rs`、writer 与测试；`node --file dumpling/export/ir.rs` 读取完整 114 行并报告 10 个使用文件；`query decodeFromRows` 与 `query setTableMetaFromRows` 分别定位 Go/Rust 同名函数。精确 `callers` 查询超过 60 秒无输出后终止，调用边改由限定目录搜索和源码调用点验证。
-- 源与 crate 边界：`dumpling/export/ir.rs`、`dumpling/export/lib.rs`、`dumpling/export/Cargo.toml`、`dumpling/export/stubs.rs`。
-- 直接实现与调用边：`dumpling/export/ir_impl.rs`、`dumpling/export/task.rs`、`dumpling/export/writer.rs`、`dumpling/export/writer_util.rs`、`dumpling/export/sql_type.rs`、`dumpling/export/sql.rs`、`dumpling/export/dump.rs`。
-- Go 对照：`dumpling/export/ir.go`、`dumpling/export/ir_impl.go`、`dumpling/export/writer.go`、`dumpling/export/writer_util.go`、`dumpling/export/ir_impl_test.go`。
-- Rust 测试证据：`dumpling/export/ir_test.rs::decode_from_rows_binds_receiver_before_scan_error` 验证失败前绑定、关闭和错误文本；`ir_impl_test.rs::test_row_iter` 验证预取、稳定 `HasNext`、解码及推进；`ir_impl_test.rs::test_chunk_row_iter` 验证关闭后解码失败；`writer_serial_test.rs` 的错误迭代器验证行级终态错误传播；`sql_type_test.rs` 验证接收器的 NULL 与原始字节复制。
-- 人工复核结论：本文已回答该文件为何存在、如何沿任务—writer—迭代器主链运行、数据/错误/关闭状态如何流动，以及新增实现或元数据字段时必须同步的生产符号和独立测试。任务为纯文档分析，按计划未运行 Cargo。

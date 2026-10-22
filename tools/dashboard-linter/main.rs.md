@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`main.rs`](main.rs) 是 `astersql-tools-dashboard-linter` crate 的二进制实现，也是 Grafana dashboard JSON 静态检查器的 Rust 规则主体。`tools/dashboard-linter/Cargo.toml` 用 `[[bin]]` 将它注册为 `astersql-tools-dashboard-linter`，并以 `[package.metadata.porting].go-package = "tools/dashboard-linter"` 标明其 Go 对照目录；根 `Cargo.toml` 又把该 crate 纳入 workspace。
-
-同目录的 [`lib.rs`](lib.rs) 通过 `#[path = "main.rs"] pub mod main` 把这份二进制逻辑同时暴露为库模块，并由 `entry()` 转发到 `main::main()`；`#[cfg(test)]` 下则挂接 [`parity_test.rs`](parity_test.rs)。因此本文件既是 CLI 入口，又是 Go/Rust 对齐测试直接调用的生产实现，而不是仅供命令行使用的薄转发层。
-
-Go 侧真实入口是 [`main.go`](main.go)。仓库 `Makefile` 的 `lint` 目标目前仍以 `go run tools/dashboard-linter/main.go <dashboard.json>` 检查 `pkg/metrics/grafana` 与 `pkg/metrics/nextgengrafana` 下的一组 dashboard；Rust 文件移植并复现该行为，但现有 Makefile 证据没有表明 lint 目标已切换到 Rust 二进制。
+`run` 校验参数、读取目标文件，再把原始字节交给 `lint_dashboard`。
 
 ## 核心职责
 
@@ -90,13 +86,11 @@ ID 使用 `i64`，以对应仓库支持的 64 位 Go `int`。区间推进使用 
 
 ## 与 Go 版本的对应关系
 
-结构与主规则逐段对应 [`main.go`](main.go)：`basicDashboard`、`panel`、`rowType` 分别映射为 `BasicDashboard`、`Panel`、`ROW_TYPE`；Go `main` 的参数、读取、解析、字段检查、ID 统计和模式扫描被拆为可测试的 `run` 与 `lint_dashboard`；`indexOfAny` 和 `checkPanel` 分别对应 `index_of_any` 与 `check_panel`。
+为允许测试而产生的 Rust 结构性差异包括：Go 的 `os.Exit(1)` 被内部返回码替代，只有 Rust `main` 真正退出；Go 匿名 `GridPos` 被提取为具名类型；错误使用 `String` 而非 `error`；解析实现移到 `stubs.rs`；统计和无副作用字段收集被提取成辅助函数。
 
-为允许测试而产生的 Rust 结构性差异包括：Go 的 `os.Exit(1)` 被内部返回码替代，只有 Rust `main` 真正退出；Go 匿名 `GridPos` 被提取为具名类型；错误使用 `String` 而非 `error`；解析实现移到 `stubs.rs`；统计和无副作用字段收集被提取成辅助函数。`format_go_int_map` 会排序输出，而 Go map 输出顺序未规定，因此诊断更稳定但键顺序不承诺逐字一致。
+Go `encoding/json` 的相关语义由 `stubs.rs` 与 `parity_test.rs::go_json_unmarshal_contract_matches` 钉住，包括已知字段类型错误、大小写/Unicode simple-fold 字段匹配、重复键后值覆盖、代理对、非 JSON 空白与控制字符。
 
-Go `encoding/json` 的相关语义由 `stubs.rs` 与 `parity_test.rs::go_json_unmarshal_contract_matches` 钉住，包括已知字段类型错误、大小写/Unicode simple-fold 字段匹配、重复键后值覆盖、代理对、非 JSON 空白与控制字符。字符分类由 `go_unicode_title_categories_match` 覆盖。主契约测试还覆盖成功路径、空 dashboard、ID 区间、row 递归、字段错误、重复 ID、模式拒绝、缺失文件 panic 和资源清理。
-
-值得注意的是，Go `checkDashboardPanelFields` 直接 `os.Exit(1)`，Rust 通过返回 `Some(1)` 实现同一 CLI 短路效果；库调用时 Rust 因而可以观察返回码而不终止测试进程。这是为了可测试性做的控制流适配，不是规则放宽。
+值得注意的是，Go `checkDashboardPanelFields` 直接 `os.Exit(1)`，Rust 通过返回 `Some(1)` 实现同一 CLI 短路效果；库调用时 Rust 因而可以观察返回码而不终止测试进程。
 
 ## 扩展指南
 
@@ -109,17 +103,3 @@ Go `encoding/json` 的相关语义由 `stubs.rs` 与 `parity_test.rs::go_json_un
 修改 Unicode 或 JSON 兼容性时不要只依据 Rust 标准库的近似 API。应先核对 Go `unicode.IsUpper`、`unicode.IsDigit` 或 `encoding/json` 的真实行为，再更新 `go_is_upper`、`go_is_digit` 或 `stubs.rs`，并扩充 parity 测试。修改错误文案、打印格式或规则顺序同样具有兼容风险，因为 Makefile lint 与人工修复流程依赖可读诊断。
 
 性能方面，当前工具面向有限大小的 dashboard 并整文件加载。若输入规模增长，优化应保留原始字节模式扫描、确定性错误顺序和 Go 兼容解析；引入流式解析不能悄悄遗漏未知字段中的 `$tidb_cluster` 模式。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter tools/dashboard-linter` 列出 `main.rs`、`lib.rs`、`stubs.rs`、`parity_test.rs` 与 `main.go`。
-- RustCodeGraph `node --file tools/dashboard-linter/main.rs`：核对了本文件 1–353 行的全部类型、常量、入口、规则与私有辅助函数，并显示该文件与 `parity_test.rs`、`stubs.rs` 的文件关系。
-- RustCodeGraph `callees lint_dashboard`：得到 `parse_dashboard_json`、`check_dashboard_panel_fields`、`collect_id_stats`、`index_of_any`、`format_go_int_map`、`format_go_string_slice` 六条直接调用边。
-- RustCodeGraph `callees check_panel`：得到 `go_is_upper` 与 `go_is_digit` 两条直接调用边；`callers` 查询未返回边，因此上游引用另由 `lib.rs` 和 `parity_test.rs` 的源码核实，没有将索引空结果推断为“无调用者”。
-- [`Cargo.toml`](Cargo.toml)：核对 crate 名、workspace 属性、lib/bin target、Go 包映射、binary 移植类别以及无外部依赖事实。
-- [`lib.rs`](lib.rs)、[`stubs.rs`](stubs.rs)：核对库入口、测试模块挂接、最小 JSON 解析边界及与本文件模型的直接依赖。
-- [`main.go`](main.go)：逐段核对数据形状、规则顺序、诊断、panic/退出语义、一层 ID 统计与递归字段检查。
-- [`parity_test.rs`](parity_test.rs)：核对独立测试位置及正常、边界、错误、Unicode/JSON 兼容与资源清理覆盖；本任务按计划不运行 Cargo。
-- 仓库 `Makefile` 与 `tools/dashboard-linter/BUILD.bazel`：核对 Go 工具在 lint 目标中的实际调用，以及 Go binary/library 的构建边界。
-
-本说明只分析 `tools/dashboard-linter/main.rs` 及上述直接证据；未修改或执行 Rust、Go、Cargo/Bazel 构建与测试。

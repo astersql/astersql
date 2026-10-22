@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-timer-api` crate（见 `pkg/timer/api/Cargo.toml`），位于定时器模型/存储抽象与上层运行时之间。`pkg/timer/api/lib.rs` 将 `client` 声明为公开模块并再导出其 API；本文件不保存定时器本身，而是把上层的创建、查询、更新、手动触发、关闭事件和删除请求转换为 `TimerStore` 操作。
-
-生产侧有两条可见接入链：`pkg/timer/runtime/runtime.rs::ensureWorker` 为每个 Hook 构造 `DefaultTimerClient` 并以 `Box<dyn TimerClient>` 交给工厂；`pkg/session/runtime/ttl_runtime.rs::trigger_ttl_command` 用它查询 TTL 定时器、提交手动触发并轮询请求处理结果。`pkg/session/runtime/ttl_timer.rs::SqlTtlTimerHook` 则持有 `Arc<dyn TimerClient>`，在后台任务中读取定时器并关闭 TTL 调度事件。
+以 `TimerClient: Send + Sync` 定义上层可依赖的 CRUD 和事件操作边界，并由 `DefaultTimerClient` 委托 `TimerStore` 实现。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ Option 闭包捕获输入值，并在每次调用时克隆字符串、标签或�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项移植 `pkg/timer/api/client.go`：Option 名称、`TimerClient` 方法集合、默认命名空间、CRUD 委托、手动触发前置条件和版本冲突重试、关闭事件的字段白名单及状态清理均保持一致。`pkg/timer/api/client_test.rs` 对照 `client_test.go` 验证主要语义，`client_1_aster_unit_test.rs` 另补充 AsterSQL 侧覆盖。
-
-可见实现差异如下：Go `NewDefaultTimerClient` 返回接口且存储为指针，Rust 返回具体 `DefaultTimerClient` 并通过内部 `Arc` 共享；Go 的可变参数在 Rust 中表现为 `Vec<Box<dyn Fn...>>`。Go 的 `SchedPolicyType` 是专用类型，Rust Option 接受 `String`。Go 使用 `util.RunWithRetry` 并记录版本冲突警告，Rust 显式循环且不写日志。两边请求 ID 都是无分隔符 UUID 十六进制文本。Go 用零 `time.Time` 清空事件开始时间，Rust 的等价模型是 `Option<Timestamp>::None`。
+可见实现差异如下：Go `NewDefaultTimerClient` 返回接口且存储为指针，Rust 返回具体 `DefaultTimerClient` 并通过内部 `Arc` 共享；Go 的可变参数在 Rust 中表现为 `Vec<Box<dyn Fn...>>`。Go 的 `SchedPolicyType` 是专用类型，Rust Option 接受 `String`。Go 使用 `util.RunWithRetry` 并记录版本冲突警告，Rust 显式循环且不写日志。Go 用零 `time.Time` 清空事件开始时间，Rust 的等价模型是 `Option<Timestamp>::None`。
 
 Rust 版在 API 形态和可观测日志上并非逐字等价，但现有独立测试证明关键状态转换与错误结果对齐；文档不据此推断未测试的具体存储实现完全等价。
 
@@ -83,12 +79,3 @@ Rust 版在 API 形态和可观测日志上并非逐字等价，但现有独立�
 - 修改手动触发协议时，重点保持“每轮重读—同一请求 ID—版本条件更新”的不变量，并扩展 `client_test.rs::manual_trigger_retries_version_conflicts_like_go`、`test_default_client_manual_trigger_retry` 及 Go 的 `TestDefaultClientManualTriggerRetry`。调整退避时需评估阻塞线程和 Context 取消响应。
 - 修改关闭事件时，应同步验证允许字段、默认 Watermark、`CheckEventID`、事件字段清理和手动请求保留行为；主要回归入口是 `client_test.rs::test_default_client`，TTL 使用场景还涉及 `pkg/session/runtime/ttl_timer.rs`。
 - 测试逻辑继续放在独立的 `client_test.rs` 或 `client_1_aster_unit_test.rs`，不要内嵌到生产源文件；Go 对齐修改同时检查 `client.go`/`client_test.go` 的原始意图。
-
-## 验证依据
-
-- 源码与边界：`pkg/timer/api/client.rs`、`store.rs`、`error.rs`、`timer.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 独立测试：`pkg/timer/api/client_test.rs` 覆盖全部 Option、默认 CRUD、事件关闭、手动触发与版本冲突；`pkg/timer/api/client_1_aster_unit_test.rs` 提供补充的端到端及冲突测试。测试由 `lib.rs` 的 `#[cfg(test)] include!` 接入，未与生产文件混放。
-- Go 对照：`pkg/timer/api/client.go`、`pkg/timer/api/client_test.go`。
-- 生产调用证据：`pkg/timer/runtime/runtime.rs::ensureWorker`、`pkg/session/runtime/ttl_runtime.rs::trigger_ttl_command`、`pkg/session/runtime/ttl_timer.rs::SqlTtlTimerHook::OnSchedEvent`、`pkg/timer/api/hook.rs::HookFactory`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query TimerClient`、`query DefaultTimerClient`、`query ManualRequest` 定位了 Rust/Go 定义及 TTL/Hook 关联。对本文件执行 `explore` 以及带精确节点 ID 的 `callers/callees` 未返回调用边并超时，因此调用关系改由上述源码级 `rg` 搜索核验，不把缺失图边当成“无调用者”。
-- 按任务约束未运行 Cargo；验证限于事实复核和 Markdown 结构检查。

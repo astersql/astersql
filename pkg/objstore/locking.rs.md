@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore` crate，由 [`pkg/objstore/lib.rs`](lib.rs) 以公开模块 `objstore::locking` 装配；crate 边界和依赖声明见 [`pkg/objstore/Cargo.toml`](Cargo.toml)。它在通用 `StorageRef` 抽象之上用对象名、条件检查和 JSON 元数据实现跨进程远程锁，因而可供本地文件、内存或对象存储后端复用，而不绑定某个云厂商。
-
-当前仓库的直接 Rust 引用证据主要在独立测试：[`locking_test.rs`](locking_test.rs)、[`helper_2_aster_unit_test.rs`](helper_2_aster_unit_test.rs) 和 S3 根前缀回归测试 [`s3store/s3_test.rs`](s3store/s3_test.rs)。公开 API 可由 crate 外部调用；本次 RustCodeGraph 文件关系没有显示生产 Rust 调用者，因此不能据此声称它已经接入某条更上层业务主链。
+在通用 `StorageRef` 抽象之上用对象名、条件检查和 JSON 元数据实现跨进程远程锁，因而可供本地文件、内存或对象存储后端复用，而不绑定某个云厂商。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ INTENT 的正常生命周期局限于 `commit_to`；目标写入之后才删除 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`locking.go`](locking.go)，行为与命名基本逐项移植：`conditionalPut`/`VerifyWriteContext` 两阶段 INTENT 协议、三种 TryLock 入口、`.WRIT`/`.READ.*` 布局、`RemoteLock`、元数据 JSON、blocker 三项采样、60 次重试和日志字段都有对应实现。独立 Go 测试 [`locking_test.go`](locking_test.go) 与 Rust `locking_test.rs` 覆盖相同核心场景，包括并发唯一胜者、旧 JSON 兼容、冲突元数据、错误采样和取消时保留错误链。
-
 已核实的实现差异如下：Go 用 failpoint 精确控制两阶段并发时序，Rust 并发测试使用线程屏障但没有阶段 failpoint；Go `UnlockOnCleanUp` 在原 context 完成后创建 30 秒超时 context，Rust 使用无截止时间的 `Context::background()`；Go 产出 `zap.Field` 并记录每次重试，Rust 返回字符串字段且本函数本身不输出重试日志；Go 的错误类型可保留多 cause，Rust 通过 `anyhow` 上下文和可 downcast 的 `ErrLocked` 保留可观察信息。Rust 的核心锁兼容规则和持久化字段未做简化。
 
 ## 扩展指南
@@ -95,12 +91,3 @@ INTENT 的正常生命周期局限于 `commit_to`；目标写入之后才删除 
 - Rust 单元测试继续放在独立的 `pkg/objstore/locking_test.rs`，不要内嵌到生产文件；涉及模块级通用行为可同步 `helper_2_aster_unit_test.rs`，后端特有前缀语义放在相应后端测试中。
 
 兼容性风险集中在对象命名和 JSON 字段；正确性风险集中在一致性保证、前缀选择、INTENT 残留及非原子解锁；性能风险集中在每次校验的前缀列举与最多三次 blocker 元数据读取。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本地索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/objstore/locking.rs --offset 1 --limit 400` 与 `--offset 380 --limit 380` 覆盖源文件全貌，并报告 `helper_2_aster_unit_test.rs`、`s3store/s3_test.rs` 两个使用文件。精确 `callers TryLockRemote` 和后续 `explore` 在 30 秒内没有返回内容，所以上游结论由模块装配与直接引用搜索补证，未臆造生产调用边。
-- 源码与装配：`pkg/objstore/locking.rs`、`pkg/objstore/lib.rs`；该目录没有 `doc.go`，因此模块契约以 crate 入口注释、源码与测试为准。
-- crate 边界：`pkg/objstore/Cargo.toml` 的 package 名、`lib.rs` 路径、依赖和 `package.metadata.porting.go-package = "pkg/objstore"`。
-- Rust 测试：`pkg/objstore/locking_test.rs`；补充覆盖为 `pkg/objstore/helper_2_aster_unit_test.rs::remote_lock_enforces_mutex_and_read_write_compatibility` 与 `pkg/objstore/s3store/s3_test.rs::test_try_lock_remote_root_path_prefix`。
-- Go 对照：`pkg/objstore/locking.go`、`pkg/objstore/locking_test.go`，逐项核对两阶段协议、读写规则、重试、清理和诊断语义。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节、文件链接/路径、变更范围和事实一致性。

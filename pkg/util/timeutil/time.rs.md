@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 workspace crate `astersql-util-timeutil`，crate 入口 `pkg/util/timeutil/lib.rs` 以公开模块 `time` 暴露它。它对应 Go 包 `pkg/util/timeutil` 中的 `time.go`，提供一个可被取消的异步等待原语，而不是普通的阻塞睡眠或日期/时区计算。时区解析、系统时区和日内时间窗位于同 crate 的 `time_zone.rs`，不属于本文件职责。
-
-`pkg/util/timeutil/Cargo.toml` 声明库入口为 `lib.rs`，本文件直接依赖 `tokio` 的计时器和选择器以及 `tokio-util` 的取消令牌。workspace 中多个 crate 依赖整个 `astersql-util-timeutil`，但仓库搜索显示当前 Rust 生产代码使用的是 `time_zone` API；`time::Sleep` 目前只被本 crate 的独立测试直接调用，尚无已验证的 Rust 生产调用点。
+不创建 Tokio runtime、不派生后台任务、不管理全局时钟，也不实现截止时间；取消发生的时机由调用者持有的 `CancellationToken` 决定。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@
 
 ## 与 Go 版本的对应关系
 
-Go `pkg/util/timeutil/time.go::Sleep` 调用 `time.NewTimer(d)`，再用 `select` 竞争 `t.C` 与 `ctx.Done()`，并以 `defer t.Stop()` 清理计时器。Rust `Sleep` 用 `tokio::time::sleep`、`context.cancelled()` 和 `tokio::select!` 形成同样的两分支结构，靠丢弃未胜出 future 完成清理。
+Rust `Sleep` 用 `tokio::time::sleep`、`context.cancelled()` 和 `tokio::select!` 形成同样的两分支结构，靠丢弃未胜出 future 完成清理。
 
 两版的自然完成结果一致：Go 返回 `nil`，Rust 返回 `Ok(())`。取消路径的主要差异是 Go 原样返回 `ctx.Err()`，因此可保留 canceled/deadline exceeded；Rust 总是返回 `SleepError::Cancelled`，只用显示文本 `context canceled` 对齐常见取消错误。Go 接受任意 `context.Context`，Rust 固定接受 `CancellationToken`，没有 context value、deadline 查询或父 context 的完整接口。
 
-Go `time_test.go::TestSleep` 只检查短 context timeout 能让十秒睡眠提前结束，且忽略返回错误。Rust `time_test.rs::test_sleep` 进一步断言 `SleepError::Cancelled`；`migration_aster_unit_test.rs` 又覆盖取消分支和计时器正常完成分支。当前独立 Rust 测试未固定同时就绪竞态、预先取消令牌、零时长或错误显示文本。
+当前独立 Rust 测试未固定同时就绪竞态、预先取消令牌、零时长或错误显示文本。
 
 ## 扩展指南
 
@@ -91,13 +89,3 @@ Go `time_test.go::TestSleep` 只检查短 context timeout 能让十秒睡眠提�
 若要区分 deadline 与主动取消，最可能修改 `SleepError` 和 `Sleep` 的参数契约，并同步 `time_test.rs`、`migration_aster_unit_test.rs` 以及 Go 对照说明。该变更具有兼容性风险：新增错误变体会影响穷尽匹配，替换 `CancellationToken` 会影响现有导入；也不能仅凭错误字符串模拟完整 `context.Context`。
 
 若要规定“取消与计时同时就绪”的优先级，需要有意识地调整 `tokio::select!` 策略并添加确定性测试。偏置选择可能改变高并发公平性，循环中频繁调用时还需评估取消检查与计时器分配的性能。若新增后台任务、锁或通道，应在同目录独立测试中证明取消后无泄漏，并更新本节的生命周期说明。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，可用于本次符号与文件导航。
-- RustCodeGraph `node --file pkg/util/timeutil/time.rs`：核对全部 52 行源码以及 `Sleep`、`SleepError`、`CancellationToken` 的定义。
-- RustCodeGraph `node time.rs::Sleep`：确认目标符号源码，并给出 `time_test.rs::test_sleep` 以及字符串型误判 `join_test.rs::test_join_leak`；随后用精确文本检索核验真实引用。
-- 已读取 `pkg/util/timeutil/Cargo.toml` 与 `pkg/util/timeutil/lib.rs`，确认 crate 名、库入口、Tokio/Tokio Util 依赖、公开模块和独立测试装配。
-- 已读取 Go 对照 `pkg/util/timeutil/time.go`、`pkg/util/timeutil/time_test.go`，以及 Rust 测试 `pkg/util/timeutil/time_test.rs`、`pkg/util/timeutil/migration_aster_unit_test.rs` 的相关用例。
-- 已检索 workspace 的 `astersql-util-timeutil` / `astersql_util_timeutil` 引用，区分 crate 依赖者、`time_zone` 使用者和 `Sleep` 的直接调用者。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务规定的命令验证本文恰好包含十一个固定二级章节。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`context.rs`](context.rs) 是 `astersql-sessionctx` crate 的核心 API 边界。crate 根文件 [`lib.rs`](lib.rs) 通过 `mod context; pub use context::*;` 将本文件的全部公开项重新导出；[`Cargo.toml`](Cargo.toml) 表明该 crate 本身只有 `tokio-util = "0.7"` 这一运行时依赖，Go 包映射为 `pkg/sessionctx`。
-
-本文件主要移植 Go [`context.go`](context.go) 的接口面：会话值存储、会话状态编解码、两级计划缓存、规划上下文、表锁、事务 future 和完整会话执行环境。它不是会话状态或事务的具体实现。文件中唯一包含业务执行逻辑的自由函数是 `ValidateSnapshotReadTS`；其余主体是 trait、关联类型、类型别名、上下文键和适配 Oracle 所需的最小接口。
-
-应用侧的直接契约入口之一是 [`pkg/session/sessionapi/session.rs`](../session/sessionapi/session.rs)：`Session: sessionctx::Context`，并要求 `StateHandler: sessionctx::SessionStatesHandler`。这说明本文件位于“具体会话实现”之下、planner/executor/session API 使用者之上的公共能力层。
+用 `Context: PlanContextCommon + TableLockContext` 汇总一条 SQL 会话在规划、执行、事务、锁、缓存、统计和生命周期方面必须提供的能力（`context.rs:99-264`）。
 
 ## 核心职责
 
@@ -80,13 +76,10 @@
 
 ## 与 Go 版本的对应关系
 
-Rust [`context.rs`](context.rs) 与 Go [`context.go`](context.go) 的主要公开接口逐项对应：`SessionStatesHandler`、`SessionPlanCache`、`InstancePlanCache`、`Context`、`TxnFuture`、三个 context key 和 `ValidateSnapshotReadTS` 均保留。Rust 额外拆出了 `ValueStoreContext`、`PlanContextCommon`、`TableLockContext`、`OracleFuture`、`SnapshotReadOracle`、`SnapshotReadStorage`，用关联类型和最小 trait 代替 Go 的包级接口、具体指针与外部依赖。
-
-关键语义保持如下：
+Rust 额外拆出了 `ValueStoreContext`、`PlanContextCommon`、`TableLockContext`、`OracleFuture`、`SnapshotReadOracle`、`SnapshotReadStorage`，用关联类型和最小 trait 代替 Go 的包级接口、具体指针与外部依赖。
 
 - `Context` 仍组合 Go `planctx.Common` 与 `tablelock.TableLockContext` 的完整方法集；Rust 通过父 trait 组合表达（Rust `context.rs:182`；Go `context.go:79-87`）。
 - 语句级提交必须发生在事务提交之前，悲观重试标志的适用范围不变（Rust `context.rs:225-232`；Go `context.go:108-120`）。
-- `BasicCtxType` 的三个数字、字符串和未知值回退与 Go 相同，并由 Rust [`context_test.rs`](context_test.rs) 和 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 覆盖，对照 Go [`context_test.go`](context_test.go)。
 - 快照读校验仍把全部参数交给 Oracle 并固定使用 global scope；Rust 把 `oracle.Option` 表达为本地 `OracleOption`（Rust `context.rs:309-360`；Go `context.go:200-205`）。
 
 需要注意的表达差异：Go `context.Context` 被收窄为 `CancellationToken`；Go `any` 被约束为 `Any + Send + Sync + 'static`；Go 的 nil 接口/指针主要变成 `Option<&T>`；Go `SessionPlanCache.Put` 无返回值而实例缓存 `Put` 返回 bool，这一区分在 Rust 中保持。Rust 当前没有在本文件提供任何具体 `Context` 实现，且定向搜索没有证明 `ValidateSnapshotReadTS` 已接入生产 Rust 调用链，因此迁移完成度应按“公共契约已定义、校验逻辑已有测试、具体生产绑定由下游负责”描述。
@@ -99,13 +92,3 @@ Rust [`context.rs`](context.rs) 与 Go [`context.go`](context.go) 的主要公�
 - **接入生产调用链：** 在真正需要提前校验 read TS 的会话/事务入口调用 `ValidateSnapshotReadTS`；新增独立回归测试覆盖成功、未来时间戳失败、stale-read 标志与取消状态。当前仅迁移测试直接调用，接线前不能删除这些测试。
 - **实现缓存或 Context：** 保持实例缓存 `All` 的只读约定、`StmtCommit`/`CommitTxn` 顺序、咨询锁的会话归属以及 `GetCommitWaitGroup` 的后台任务回收语义。性能风险主要来自 `SharedAny` 的动态 downcast、`Arc` 引用计数、全量 `All` 复制和过宽锁粒度。
 - **依赖边界：** 尽量继续使用关联类型和小 trait，避免把 planner/executor/storage 的具体 crate 引回 `astersql-sessionctx`，否则容易形成循环依赖并扩大基础 crate 的编译面。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`pkg/sessionctx/context.rs` 已索引。
-- RustCodeGraph `files --filter pkg/sessionctx`：确认目标 Rust/Go 文件、独立测试和相邻模块均在索引中。
-- RustCodeGraph `node --file pkg/sessionctx/context.rs --offset 1 --limit 500`：读取完整 360 行源码，并报告该文件被 19 个索引文件使用。
-- RustCodeGraph `node --file pkg/sessionctx/context.rs --symbols-only`：核对 11 个 trait（含辅助边界）、`BasicCtxType`、`OracleOption`、`ValidateSnapshotReadTS` 及全部方法符号。精确 `callers ValidateSnapshotReadTS` 查询在本地长时间无输出而被终止，因此调用者结论改由定向引用搜索复核，不把图缺失推断为无调用。
-- RustCodeGraph `node` 读取 [`context.go`](context.go)、[`context_test.rs`](context_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)；普通文件读取核对 [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、Go [`context_test.go`](context_test.go) 和 [`pkg/session/sessionapi/session.rs`](../session/sessionapi/session.rs)。
-- 定向 `rg` 确认 `Session: sessionctx::Context`、`StateHandler: sessionctx::SessionStatesHandler`；确认 `ValidateSnapshotReadTS` 在目标文件外仅有迁移测试的两处 Rust 调用；确认两个 Rust 独立测试覆盖键字符串，迁移测试额外覆盖所有校验参数、取消状态和错误透传。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行任务规定的 11 章节结构命令；结构结果见任务交付记录。

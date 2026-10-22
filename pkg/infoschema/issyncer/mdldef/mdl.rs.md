@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-infoschema-issyncer-mdldef`，crate 边界由同目录 `Cargo.toml` 定义，入口 `lib.rs` 通过 `pub mod mdl` 声明模块并用 `pub use mdl::*` 导出其中的类型。根工作区 `Cargo.toml` 同时把该目录列为 workspace member，并以 `facade_infoschema_issyncer_mdldef` 暴露门面依赖。
-
-文件从同路径 Go 文件 `mdl.go` 移植，只定义 DDL 元数据锁（Metadata Lock，MDL）检查所需的数据结构 `JobMDL`。把该结构放在独立子 crate 中延续了 Go 子包用来避开上层包循环依赖的边界：例如 `pkg/session/sessmgr/Cargo.toml` 依赖此 crate，`pkg/session/sessmgr/lib.rs::mdldef` 再将其重导出给会话和服务端代码。
-
-需要特别区分 `pkg/infoschema/issyncer/mdl_check.rs::JobMDL`：后者是 issyncer 主 crate 中读取和缓存 `mysql.tidb_mdl_info` 行的同名结构，字段为 `Ver`/`TableIDs`；本文件的类型字段为 `ver`/`table_ids`，用于会话侧事务 MDL 检查。两者在 `pkg/session/runtime/normal_ddl_service.rs::NormalSchemaCoordinator::CheckOldRunningTxn` 等边界显式转换，并非同一 Rust 类型。
+文件从同路径 Go 文件 `mdl.go` 移植，只定义 DDL 元数据锁（Metadata Lock，MDL）检查所需的数据结构 `JobMDL`。
 
 ## 核心职责
 
@@ -73,8 +69,6 @@ RustCodeGraph 对目标文件给出的文件级使用边只指向同 crate 测�
 
 ## 与 Go 版本的对应关系
 
-Go 对照为 `pkg/infoschema/issyncer/mdldef/mdl.go::JobMDL`。映射关系为：Go `Ver int64` 对应 Rust `ver: i64`，Go `TableIDs map[int64]struct{}` 对应 Rust `table_ids: HashSet<i64>`。两者都把表 ID 表达为无附加值的集合，并保留 64 位有符号版本和 ID 语义。
-
 Rust 的 `Default` 与 Go 零值在“版本为 0、集合为空/无成员”这一读取语义上相符，但内存与写入语义并不完全相同：Go 零值 `TableIDs` 是 `nil` map，直接写入前必须初始化；Rust 默认值是已分配语义上的空 `HashSet`，可直接插入。独立 Rust 测试只验证了可观察的零版本、空集合和去重，并未证明两者的所有构造行为完全等价。
 
 Go 注释明确说明独立子包用于避免上层目录的 import cycle；Rust 通过独立 crate、Cargo 依赖和重导出保留了这个依赖方向。字段命名按 Rust snake_case 转换，当前没有 serde/wire 格式，因此字段名不是跨语言序列化协议。
@@ -86,12 +80,3 @@ Go 注释明确说明独立子包用于避免上层目录的 import cycle；Rust
 若改变版本或表集合判断，应优先修改真正拥有算法的 `TransactionMDL::check_jobs` 及其独立测试，而不是把运行逻辑塞进这个定义文件。若只是扩充本类型的默认值、集合语义或调试表现，应继续在同目录独立测试 `migration_aster_unit_test.rs` 中覆盖，遵守“源文件与测试文件分离”。跨链行为可同步覆盖 `pkg/server/runtime_test.rs`、`pkg/session/runtime/normal_ddl_test.rs` 和 `pkg/domain/crossks/*_test.rs` 的现有 MDL 场景。
 
 兼容性风险包括：新增非默认字段会破坏字面量构造；改变 `i64` 或集合表示会影响 Go 对齐及比较语义；增加内部可变性会改变当前廉价只读共享模型；依赖集合遍历顺序会带来不确定测试或日志。性能上，当前从 issyncer 类型到本类型会克隆表集合，大型作业扩展应评估克隆成本，但本文件没有证据表明当前存在性能瓶颈。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标 Rust/Go 文件；`files --filter pkg/infoschema/issyncer/mdldef` 确认 `lib.rs`、`mdl.rs`、`mdl.go` 和独立测试；`node --file .../mdl.rs` 核对完整 35 行源码；`query JobMDL` 区分三处同名定义；对 `session/sessmgr`、`normal_ddl_service`、`server`、`domain/crossks` 的文件节点核对重导出、转换和消费链。
-- crate 与装配：`pkg/infoschema/issyncer/mdldef/Cargo.toml`、同目录 `lib.rs`、`pkg/session/sessmgr/Cargo.toml`、`pkg/session/sessmgr/lib.rs`、根 `Cargo.toml`。
-- Rust 生产证据：`pkg/session/sessmgr/mdl.rs::TransactionMDL::check_jobs`、`pkg/session/sessmgr/processinfo.rs::InfoSchemaCoordinator`、`pkg/session/runtime/normal_ddl_service.rs::NormalSchemaCoordinator`、`pkg/server/server.rs::Server::CheckOldRunningTxn`、`pkg/domain/crossks/coordinator.rs::RegisteredMDLSession`。
-- Go 对照：`pkg/infoschema/issyncer/mdldef/mdl.go`；相关使用路径包括 `pkg/infoschema/issyncer/mdl_check.go`、`pkg/infoschema/issyncer/syncer.go`、`pkg/session/sessmgr/processinfo.go` 和 `pkg/server/server.go`。
-- 测试证据：`pkg/infoschema/issyncer/mdldef/migration_aster_unit_test.rs` 直接覆盖默认值与去重；`pkg/infoschema/issyncer/syncer_test.rs::test_syncer_skip_mdl_check` 覆盖上游作业快照筛选；`pkg/server/runtime_test.rs` 的 MDL 生命周期场景覆盖本类型向 `TransactionMDL::check_jobs` 的真实接线。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令和人工事实复核验证。

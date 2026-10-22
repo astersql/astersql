@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`telemetry.rs` 属于 `astersql-planner-core` crate（见 `pkg/planner/core/Cargo.toml`），提供规划器侧的 TiFlash/MPP 使用情况判定。模块在 `pkg/planner/core/lib.rs` 中以私有 `mod telemetry` 挂载，再通过 `pub use telemetry::*` 将唯一公开函数 `IsTiFlashContained` 暴露到 crate 根。
-
-这个文件只读取一棵轻量 `PlanNode` 计划树并返回两个布尔值，不直接修改遥测计数器。Go 应用中的完整链路是 `pkg/session/session.go:isInternal` 所在的语句收尾逻辑调用 `pkg/planner/core/telemetry.go:IsTiFlashContained`，再更新 `CurrentTiFlashPushDownCount` 和 `CurrentTiFlashExchangePushDownCount`。仓库内尚未找到 Rust 生产代码对 Rust 版函数的调用；当前 Rust 文件是已公开且有独立单元测试的移植实现，而不是已验证接入 Rust 会话主链的实现。
+该短路与 Go 实现的 `if tiFlashPushDown { return }` 一致。
 
 ## 核心职责
 
@@ -72,13 +70,7 @@ Go 的实际上游位于 `pkg/session/session.go`：仅对非内部会话且全�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/telemetry.go`。两版共同语义是：只将 TiFlash `PhysicalTableReader` 计为命中；只检查其 table plan 根是否为 `ExchangeSender`；遇到非物理计划停止；找到首个 TiFlash reader 后停止遍历。
-
-表示映射如下：Go `base.Plan` 对应 Rust `&PlanNode`；Go `base.PhysicalPlan` 类型断言由 Rust 对 `DataSource | Join` 的排除近似；Go `*physicalop.PhysicalTableReader` 对应 `PlanKind::TableReader`；Go `tableReader.StoreType == kv.TiFlash` 对应 `StoreType::TiFlash`；Go `GetTablePlan().TP() == plancodec.TypeExchangeSender` 对应第一个 child 的 `PlanKind::ExchangeSender`。
-
 两版并非完全等价。Go 明确支持 `nil` 与 `*Explain` 解包，Rust 类型目前无法直接表达顶层空值且没有 Explain 分支。Rust 对“物理计划”的判断也只排除了两个已知逻辑变体，并非 Go interface 断言的完整结构保证。这些差异应在未来接入 Rust 主链前通过模型或适配层解决，而不应在文档中视作已支持。
-
-Go 目录中没有找到 `IsTiFlashContained` 的专门 `*_test.go` 调用。Rust 的直接回归覆盖位于独立文件 `pkg/planner/core/telemetry_test.rs`，符合测试与源文件分离要求。
 
 ## 扩展指南
 
@@ -88,12 +80,3 @@ Go 目录中没有找到 `IsTiFlashContained` 的专门 `*_test.go` 调用。Rus
 - 接入 Rust 生产链路时，需要在 Rust 会话语句成功收尾处复现 Go 的非内部会话、全局 telemetry 开关和计数器递增条件；本文件不应自行承担计数器副作用。
 - 行为修改必须同步扩展独立测试 `pkg/planner/core/telemetry_test.rs`。现有四项覆盖普通 TiFlash `TableScan` 不计数、直接 Exchange 根计数、嵌套 Exchange 不计数和逻辑节点阻断；建议补充 TiKV `TableReader`、兄弟子树短路、空 children，以及模型支持后补充 Explain/空目标场景。
 - 若要与 Go 口径对齐，先以 `pkg/planner/core/telemetry.go` 和其真实上游 `pkg/session/session.go` 为依据；性能上保持单次遍历和无堆分配，兼容性上避免改变两个布尔值的顺序或含义。
-
-## 验证依据
-
-- 源实现：`pkg/planner/core/telemetry.rs`，确认唯一公开函数、三段分支与递归短路。
-- 类型与 crate 接线：`pkg/planner/core/common_plans.rs` 中的 `StoreType`、`PlanKind`、`PlanNode`、`PlanNode::IsPhysical`；`pkg/planner/core/lib.rs` 中的 `mod telemetry`、测试模块和 `pub use telemetry::*`；`pkg/planner/core/Cargo.toml` 中的 crate、feature 与依赖声明。
-- Rust 独立测试：`pkg/planner/core/telemetry_test.rs` 的 `only_tiflash_table_readers_are_reported`、`exchange_flag_comes_from_tiflash_table_plan_root`、`nested_exchange_is_not_a_table_plan_root`、`logical_nodes_do_not_expose_physical_descendants`。
-- Go 对照与应用入口：`pkg/planner/core/telemetry.go:IsTiFlashContained`；`pkg/session/session.go` 中成功语句完成后的 telemetry 计数逻辑。搜索未发现 Go 专门测试调用该函数。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query IsTiFlashContained --kind function` 定位 Rust/Go 两个同名实现；`node IsTiFlashContained` 展示两版源码；`query`/`node` 定位 `common_plans.rs` 的 `PlanNode`、`PlanKind`、`StoreType`；文件限定 `callers` 的跨语言结果经 Rust 原始引用搜索复核后，未作为 Rust 生产接线证据；文件限定 `callees` 未给出静态下游边，因此递归与字段访问以源码为准。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求文档存在且恰好包含本页这 11 个固定二级标题；事实复核同时确认没有把未接线 Rust API、Go 的 Explain/nil 行为或任意 TiFlash 算子写成已支持事实。

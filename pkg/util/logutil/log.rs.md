@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-logutil` crate 的核心日志实现。crate 入口 `pkg/util/logutil/lib.rs` 将它公开为 `log` 模块，并把专用的 General Log 与慢查询 logger 分别放在 `general_logger.rs`、`slow_query_logger.rs`。`pkg/util/logutil/Cargo.toml` 的 `[package.metadata.porting]` 明确把该 crate 对应到 Go 包 `pkg/util/logutil`。
-
-它位于应用级日志调用与具体输出目标之间：`cmd/tidb-server/main.rs` 和 `br/cmd/br/cmd.rs` 通过 `InitLogger` 建立进程全局 logger；session、server、DDL、statistics 等模块随后通过 `BgLogger`/`background_logger`、`general_logger` 或采样工厂写日志。这里的级别、字段、全局替换和锁语义属于跨子系统公共契约。
+提供连接/会话追踪字段、轻量 `LogContext`、`TraceSpan` 事件/标签、代理环境变量记录以及采样 logger 工厂。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@
 
 Go `LogConfig` 嵌入外部 `pingcap/log.Config` 并在 `InitLogger` 交给该库；Rust 显式增加超时字段和动作常量。当前本地写入实现没有接入相应策略，不能据外部 Go 类型推断 Rust 已具备同等超时或脱敏行为。
 
-直接对照文件是 `pkg/util/logutil/log.go`，测试对照是 `pkg/util/logutil/log_test.go`。常量、`FileLogConfig`/`LogConfig`、初始化/替换/设级别、背景与 error-verbose logger、trace 字段、代理记录、事件/标签和采样工厂均保留了相同概念与多数 Go 风格别名。
-
 关键差异如下：Go 版本把 `pingcap/log`、zap core、滚动 writer、gRPC logger、TiKV context key、`context.Context`、runtime trace 和 OpenTracing 连接起来；Rust 版本用自有 `Logger`、`LogContext`、`TraceSpan` 和内存/简单文件 sink 表达最小可用语义，`grpc_debug` 目前只是状态标志。Go `ReplaceLogger` 会序列化配置并记录替换消息，Rust 直接复用初始化逻辑。Go 的 error-verbose logger 会按格式与 `DisableErrorVerbose` 构建专用 core，Rust 当前只是 background 克隆；Rust 的 `sample_err_verbose_logger_factory` 也使用传入 logger，而不自行选择全局 error-verbose logger。
 
 Go zap sampler 文档注释指出同类日志计数有实现上限；Rust `HashMap` 没有 4096 种消息上限或后续每 N 条放行逻辑，只放行每窗口前 `first` 条。Go 的代理解析委托 `httpproxy.FromEnvironment`；Rust 显式实现大写优先和小写回退。扩展时应以这些当前差异为事实，不能仅因 API 同名就假定行为完全等价。
@@ -98,11 +94,3 @@ Go zap sampler 文档注释指出同类日志计数有实现上限；Rust `HashM
 - 修改采样时需定义零值、窗口边界、计数表回收及高基数消息的内存上限；同步 `pkg/ddl/logutil/logutil.rs`、statistics 调用点与 `TestSampleLoggerFactory`。
 - 扩展 trace/context 语义前，应决定是继续轻量容器还是接入真正的异步任务上下文；同步核对 Go 的 `WithTraceLogger`、runtime trace 和 OpenTracing 行为。
 - 所有 Rust 行为测试继续放在相邻独立文件 `log_test.rs`；Go 对照语义变化时同时查看 `log.go` 与 `log_test.go`。性能敏感改动需关注每条日志打开文件、字段克隆、全局/采样/sink 锁竞争和无界容器。
-
-## 验证依据
-
-- 冻结 `log.rs` 全文及 `lib.rs`、`Cargo.toml` 核对模型、写入和装配；`LogConfig::default/new` 证明默认动作，`Logger::log` 与 `init_logger` 证明超时字段尚未消费。
-- 冻结 `proxy_fields_from`、`log_env_variables` 和 `Fields::fmt` 证明没有通用脱敏。`log_test.rs` 覆盖文件/共享 logger、级别、trace、代理和采样，但没有超时执行或秘密脱敏测试；Go 对照为 `log.go`、`log_test.go`。
-- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/logutil/log.rs` 审计增量，并以 `git show 2c944fb:pkg/util/logutil/log.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
-- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
-- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate；`pkg/domain/lib.rs` 以公开模块 `plan_replayer_dump` 暴露它，`pkg/domain/Cargo.toml` 则声明了直接用于 ZIP 编解码的 `zip = 0.6.6` 依赖。它位于 Plan Replayer 任务模型（`pkg/domain/plan_replayer.rs` 中的 `PlanReplayerDumpTask`、`PlanReplayerStatusRecord`）与具体会话/存储实现之间：负责决定归档内容和目录布局，但不直接访问会话、InfoSchema、统计服务或外部存储。
-
-当前主要生产接线在 `pkg/session/runtime/dispatch.rs`：`SessionPlanReplaySource` 实现本文件的 `PlanReplaySource`，命令处理路径构造任务，调用 `dump_plan_replayer_info`，再以 `encode_replay_archive` 生成 ZIP 并写入 Plan Replayer 外部存储目录。`decode_replay_archive` 还被 session 导入路径、server 处理路径及其测试用于读取归档。
+隔离数据获取与内容编排：`PlanReplaySource` 把表解析、依赖展开、schema/统计/config/binding/explain 获取留给调用者；`dump_plan_replayer_info` 只负责编排和归档布局。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@ RustCodeGraph 可定位 `dump_plan_replayer_info`（`pkg/domain/plan_replayer_du
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/domain/plan_replayer_dump.go`。路径常量、SQL meta 字段、schema/view/stats/statsMem/TiFlash/variables/SQL/bindings/explain/debug trace/errors 的总体布局，以及 continuous capture + historical stats 开关跳过即时统计的分支，均来自 Go `DumpPlanReplayerInfo` 及其 `dump*` 辅助函数。
-
 主要结构差异如下：
 
 - Go 直接持有 `sessionctx.Context`、`Domain`、`zip.Writer` 和文件，Rust 用 `PlanReplaySource` 与 `ReplayArchive` 把采集、内容编排、ZIP、外部存储分层；Rust 的生产实现位于 session runtime。
@@ -96,13 +92,3 @@ RustCodeGraph 可定位 `dump_plan_replayer_info`（`pkg/domain/plan_replayer_du
 扩展 SQL 语法或依赖发现时，优先替换/增强 `extract_table_references`，并覆盖 quoted identifier、CTE、嵌套查询、多表 DML、注释和字符串等边界；同时核对 Go `tableNameExtractor`、`extractTableNames`、`findFK`。变更对象路径前必须评估 path traversal、重复路径和旧归档消费者兼容性。
 
 更改 capture/历史统计、encoded plan、debug trace 或 status 语义时，必须同步检查 `PlanReplayerDumpTask`、session 调用层及 Go `DumpPlanReplayerInfo`，并保持已有空 debug trace、单/多 SQL explain 路径和 digest 分支。对大归档优化可考虑流式接口，但这会改变 `ReplayArchive` 的确定顺序、错误原子性和调用契约，需要先补兼容测试与资源上限设计。
-
-## 验证依据
-
-- Rust 主体：`pkg/domain/plan_replayer_dump.rs`，重点符号为 `ReplayArchive::write`、`encode_replay_archive`、`decode_replay_archive`、`PlanReplaySource`、`dump_plan_replayer_info`、`extract_table_references`。
-- 任务/status 模型：`pkg/domain/plan_replayer.rs` 的 `PlanReplayerDumpTask`、`PlanReplayerStatusRecord`；模块边界：`pkg/domain/lib.rs`；crate 与 ZIP 依赖：`pkg/domain/Cargo.toml`。
-- 生产接线：`pkg/session/runtime/dispatch.rs` 的 `SessionPlanReplaySource` 和对 dump/encode/decode 的调用；其他消费者由 `rg` 定位到 `pkg/server/extract_runtime.rs`、`pkg/session/runtime_test/session.rs`、`pkg/server/runtime_test.rs` 及 server handler 测试。
-- Rust 独立测试：`pkg/domain/plan_replayer_dump_test.rs` 验证 view 依赖和普通表过滤、fallback 错误、TiFlash、空 debug trace、encoded-plan 路径与 digest、历史统计 meta、别名非 CTE、ZIP 往返。
-- Go 对照：`pkg/domain/plan_replayer_dump.go` 的 `DumpPlanReplayerInfo`、`tableNameExtractor`、`findFK`、`dumpSQLMeta`、`dumpSchemas`、`dumpStats`、`dumpVariables`、bindings、`dumpExplain`、`dumpDebugTrace` 和 `dumpErrorMsgs`。
-- RustCodeGraph：`status` 显示索引包含目标 Rust/Go 文件；`files --filter pkg/domain` 列出目标、Go 对照和独立测试；`query dump_plan_replayer_info --kind function` 定位核心入口。图调用边未返回结果，已用精确源码搜索补证。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证恰有 11 个固定二级章节，并人工复核无运行时“已支持”臆测。

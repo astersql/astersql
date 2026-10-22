@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`mlog.rs` 属于 `astersql-session` crate 的具体 SQL 会话运行时。模块由 `pkg/session/runtime.rs` 的 `mod mlog` 私有装配，并通过同文件的 `use mlog::RuntimeMLog` 仅供 runtime 内部 DML 代码使用；它不是公开的会话 API。`pkg/session/Cargo.toml` 将该 crate 映射到 Go 包 `pkg/session`，并直接依赖 `astersql-kv`、`astersql-meta-model`、`astersql-table` 和 `astersql-types`。
-
-该文件位于“关系型 DML 已确定基础表元数据”与“把基础表及 MLog 的 KV mutation 一并交给事务写入”之间。它只负责同步生成物化视图日志（Materialized View Log，MLog）记录；MLog 的 DDL、读取和后台清理分别在 `runtime/mview_ddl.rs`、`runtime/relational_scan.rs`、`runtime/mlog_purge.rs`，不属于本文件职责。
+`RuntimeMLog::append` 将基础行投影为日志行，补充 `_MLOG$_DML_TYPE`、`_MLOG$_OLD_NEW` 和独立 `_tidb_rowid`，同时生成日志表索引 mutation 与行 mutation。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@
 
 ## 与 Go 版本的对应关系
 
-Go 的主要对照实现不是 `pkg/session` 下的同名文件，而是 `pkg/table/tables/mview_log.go`，由 `pkg/executor/builder.go::wrapTableWithMLogIfExists` 在执行器构建时包装基础表。两端共同语义包括：无 MLog 时直通、拒绝分区表、按 ID 解析日志表、验证元数据、仅投影跟踪列、用 `I/U/D` 与 `-1/1` 标记、更新写旧/新两条、未触及跟踪列时跳过，以及与基础写入共享事务。
-
 实现层级不同：Go 通过实现 `table.Table` 的 `mlogTable` 拦截 `AddRecord`、`UpdateRecord`、`RemoveRecord`，并让日志表自身的 `AddRecord` 处理行 ID 与索引；本文件服务于 Rust 的 `HashMap<String, Option<String>>` 关系运行时，显式调用 auto-ID、行编码和索引 mutation 函数。Go 还用 `sourceStmt` 与 `removedConflict` 区分 REPLACE、LOAD DATA 和冲突更新；Rust 的等价分类由 `runtime/dml.rs` 各语句分支在调用 `append` 时显式给出。
 
-Rust 表层另有更贴近 Go 包装器的一份移植 `pkg/table/mview_log.rs`，其中 `validate_meta` 与 `MLogDMLType` 被本文件直接复用。其独立测试是 `pkg/table/mview_log_test.rs`；会话层端到端语义则由 `pkg/session/dml_runtime_test.rs` 验证。扩展时应同时核对这三层，避免 Go 包装器、Rust 表层契约和 Rust session mutation 管线发生分类或元数据规则漂移。
+Rust 表层另有更贴近 Go 包装器的一份移植 `pkg/table/mview_log.rs`，其中 `validate_meta` 与 `MLogDMLType` 被本文件直接复用。扩展时应同时核对这三层，避免 Go 包装器、Rust 表层契约和 Rust session mutation 管线发生分类或元数据规则漂移。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@ Rust 表层另有更贴近 Go 包装器的一份移植 `pkg/table/mview_log.rs`�
 - 支持分区表前必须设计物理表 ID、分区索引、日志归属和 purge/refresh 读取语义；不能只删除 `for_table` 的拒绝分支。现有拒绝回归位于 `mlog_rejects_import_into_and_partitioned_base_dml`。
 - 优化批量写入时可考虑批量分配 MLog row ID，但必须保持每条日志唯一句柄、索引 mutation 完整、错误传播和事务共存性。性能风险集中在逐行 auto-ID 分配、HashMap 构造及每条日志的索引编码。
 - Rust 单元测试应继续放在独立文件中：表层规则放 `pkg/table/mview_log_test.rs`，session 端到端路径放 `pkg/session/dml_runtime_test.rs`，不要内嵌到 `mlog.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标仓库；`files --filter pkg/session/runtime/mlog.rs` 与 `node --file ...` 确认文件共 6 个图节点、由 `pkg/session/runtime.rs` 使用；`query RuntimeMLog` 定位结构体、父模块导入和 `runtime/dml.rs` 的调用实例。
-- 目标与装配源码：`pkg/session/runtime/mlog.rs`（`RuntimeMLog`、`for_table`、`tracked_changed`、`append`），`pkg/session/runtime.rs`（模块声明与导入），`pkg/session/runtime/dml.rs`（INSERT/UPDATE/DELETE、UPDATE JOIN、外键级联及 mutation 提交调用点）。
-- crate 边界：`pkg/session/Cargo.toml` 的 `[package]`、`[package.metadata.porting]` 和 `astersql-kv`、`astersql-meta-model`、`astersql-table`、`astersql-types` 依赖。`pkg/session` 没有 `doc.go`，因此包级契约以 `runtime.rs` 顶部说明和 Cargo 元数据为最近依据。
-- Rust 直接契约与测试：`pkg/table/mview_log.rs`（`MLogDMLType::as_str`、`validate_meta`、Go 风格包装器），`pkg/table/mview_log_test.rs`；`pkg/session/dml_runtime_test.rs::go_merge_49_sql_mlog_dml_shares_transaction`、`mlog_load_data_uses_insert_mutation_pipeline`、`mlog_rejects_import_into_and_partitioned_base_dml`。
-- Go 对照：`pkg/table/tables/mview_log.go` 的 `WrapTableWithMaterializedViewLog`、`mlogTable`、`shouldLogUpdate`、DML 分类和 `writeMLogRow`，以及 `pkg/executor/builder.go::wrapTableWithMLogIfExists`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令，要求文件存在且固定二级标题恰好 11 个；另人工检查只有本说明和完成后删除的任务文件属于本会话范围。

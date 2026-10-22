@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-br-pkg-logutil`，由 [`br/pkg/logutil/lib.rs`](./lib.rs) 以 `pub mod context` 装配，并把 `CL`、`Context`、`ContextWithField`、`LoggerFromContext`、`ResetGlobalLogger` 重新导出为 crate 公共 API。它移植自 [`br/pkg/logutil/context.go`](./context.go)，职责是把日志器附着到轻量上下文，并为没有上下文日志器的调用提供包级回退。
-
-这里的 `Context` 不是仓库其他子系统中兼具取消、超时和值传递能力的通用上下文；它只保存 `Option<Logger>`。RustCodeGraph 对当前 Rust 源码的检索未发现本文件公开函数在生产文件中的直接调用点；`br/pkg/restore/log_client/*.rs` 中可见的 `logutil::CL` 实际导入自该 crate 自己的 `stubs::logutil`，不能当成本文件已经接入恢复主链的证据。
+由 `LoggerFromContext` 实现固定的三级选择顺序：上下文日志器、`GLOBAL_LOGGER`、`default_logger()`。
 
 ## 核心职责
 
@@ -62,11 +60,7 @@ RustCodeGraph 的直接调用边印证了上述结构：`ContextWithField → Lo
 
 ## 与 Go 版本的对应关系
 
-[`context.go`](./context.go) 的 `globalLogger`、`ResetGlobalLogger`、`ContextWithField`、`LoggerFromContext`、`CL` 均有一一对应的 Rust 符号。选择顺序和关键语义一致：上下文值优先，其次测试可替换的全局日志器，最后使用包默认日志器；已经由 `ContextWithField` 包装的上下文不会因后续全局重置而变化。
-
 主要表示差异如下：Go 使用标准 `context.Context` 和私有 `loggingContextKey`/`context.WithValue`，可同时保留取消、截止时间及其他值；Rust 使用仅含日志器的专用 `Context`，没有这些通用上下文能力。Go `ContextWithField` 接受可变参数 `...zap.Field` 且不消费父上下文；Rust 接受 `IntoIterator<Item = Field>` 并消费 `Context`，复用父上下文时需先 `clone()`。Go 返回 `*zap.Logger`，Rust 返回可克隆的 `Logger` 值。Go 全局变量是裸指针，Rust 用 `LazyLock<RwLock<Option<Logger>>>` 保证并发访问安全，并新增锁中毒 panic 边界。
-
-Go 的 `logging_test.go::TestContextual` 与 Rust 的 `logging_test.rs::test_contextual` 都验证全局 capture 回退、上下文字段继承和字段顺序；`parity_test.rs::go_rust_public_contract_matches` 还验证 `CL` 简写及相同的两条日志契约。
 
 ## 扩展指南
 
@@ -75,12 +69,3 @@ Go 的 `logging_test.go::TestContextual` 与 Rust 的 `logging_test.rs::test_con
 - 若要把真实 BR 生产路径接到此 API，必须先确认调用方使用的是 `astersql_br_pkg_logutil`，而非局部 `stubs::logutil`，并处理专用 `Context` 与调用方通用上下文类型之间的适配。不能仅凭同名 `CL` 判断已经接线。
 - 若要提高测试隔离性，可设计作用域式全局日志器守卫，但需保持现有 `ResetGlobalLogger` 公共契约，并验证并发测试不会互相覆盖。全局单槽位意味着同时替换仍是最后写入者生效。
 - Rust 单元测试应继续放在 `logging_test.rs` 或新增的独立测试文件中，不要内嵌到 `context.rs`；同时保持 Go `TestContextual` 的行为意图，不以简化实现代替移植语义。
-
-## 验证依据
-
-- 源码与模块边界：`br/pkg/logutil/context.rs`、`br/pkg/logutil/lib.rs`、`br/pkg/logutil/logging.rs`、`br/pkg/logutil/Cargo.toml`。
-- Go 对照：`br/pkg/logutil/context.go`、`br/pkg/logutil/logging_test.go::TestContextual`。
-- Rust 独立测试：`br/pkg/logutil/logging_test.rs::test_contextual`、`br/pkg/logutil/parity_test.rs::go_rust_public_contract_matches`；两者验证全局回退、字段继承，后者额外覆盖 `CL`。
-- RustCodeGraph：索引状态为 11,467 个文件（其中 Rust 7,032 个）；`files --filter br/pkg/logutil` 确认目标及相邻实现/测试；`node --file br/pkg/logutil/context.rs` 核对 80 行源码；`query`/`explore` 核对 `LoggerFromContext`、`ContextWithField`、`CL`、`default_logger` 及直接调用边。
-- 普通文本检索仅用于索引外/跨语言与精确接线核验：确认真实 Rust API 的测试引用、Go 对照引用、依赖该 crate 的 Cargo manifests，并辨别 `restore/log_client` 的同名局部桩。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构检查要求本文恰有十一个规定的二级标题。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-dbterror` crate，由 [`pkg/util/dbterror/lib.rs`](lib.rs) 以私有模块 `ddl_terror` 装入并将其公开项重新导出。它不是 DDL job 的执行器，而是 DDL 子系统共享的错误目录：把 `astersql-errno` 提供的 MySQL 错误码和消息表包装成 `astersql-parser-terror::Error`，再向 `pkg/ddl/**` 等调用方提供稳定的错误对象；同时保存 DDL reorganization（reorg/backfill）的可重试错误码与消息边界。
-
-crate 边界由 [`pkg/util/dbterror/Cargo.toml`](Cargo.toml) 给出：生产依赖只有 `astersql-errno` 和 `astersql-parser-terror`，测试依赖为 `astersql-testkit-testsetup`。源码顶部明确对应 Go 文件 [`pkg/util/dbterror/ddl_terror.go`](ddl_terror.go)，当前 Rust 与 Go 两侧都定义了 231 个 `Err*` 错误变量。
+用 `DDL_ERRORS` 和 `initialize_ddl_errors` 强制完成所有懒初始化，恢复 Go 包级 `var` 在包初始化阶段按顺序构造错误对象的语义，避免错误注册表冻结后第一次访问才注册。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ reorg 重试表是一条安全边界：误增会让永久性/数据类错误反�
 
 Go 的 `var (...)` 与 Rust 的 231 个 `pub static Err*: LazyLock<Box<terror::Error>>` 数量一致，定义顺序由 `DDL_ERRORS` 显式复制。Go 导入包时立即执行变量初始化；Rust 没有等价 crate 初始化钩子，所以由 `lib.rs::DBTERROR_PACKAGE_INIT` 在平台启动段中调用 `initialize_ddl_errors`。这是语言运行时差异下的必要接线，不改变错误目录的业务含义。
 
-Go 的 `ClassDDL.NewStd`/`NewStdErr` 分别对应 Rust 同名方法；Go `fmt.Sprintf` 在本文件使用场景中由 `format_mysql_message` 的顺序 `%s` 替换模拟；Go `map[uint16]struct{}` 对应 `LazyLock<HashSet<u16>>`；Go `[]string` 对应静态 `&[&str]`。`CodeResultUndetermined` 在两侧都显式转换为 `u16` 后加入重试集合。
+Go 的 `ClassDDL.NewStd`/`NewStdErr` 分别对应 Rust 同名方法；Go `fmt.Sprintf` 在本文件使用场景中由 `format_mysql_message` 的顺序 `%s` 替换模拟；Go `map[uint16]struct{}` 对应 `LazyLock<HashSet<u16>>`；Go `[]string` 对应静态 `&[&str]`。
 
 现有 Rust 测试并非只检查数量：`ddl_errors_preserve_go_custom_templates_and_codes` 抽检 code/message 分离，`go_merge_11_new_ddl_errors_keep_codes_and_templates` 固定较新的 TiFlash/TTL 模板，`reorg_retryable_lists_match_go_exactly` 完整比较 19 个 code 和四条消息，初始化测试固定注册时序。当前证据支持这些已覆盖契约；未对 231 个错误逐项做运行时全量 message/code 对比，因此不能据此断言每一个自定义模板都已被测试穷举。
 
@@ -80,14 +78,3 @@ Go 的 `ClassDDL.NewStd`/`NewStdErr` 分别对应 Rust 同名方法；Go `fmt.Sp
 修改 reorg 重试边界时，应同步 `ReorgRetryableErrCodes`/`ReorgRetryableErrMsgs`、Go 文件和 `migration_aster_unit_test.rs::reorg_retryable_lists_match_go_exactly`。新增错误的回归测试应继续放在独立测试文件 `pkg/util/dbterror/migration_aster_unit_test.rs`（或同目录新的 `*_test.rs`），不要嵌入生产源文件；若错误由某个 DDL 功能分支生成，还应在该功能已有的独立测试中覆盖参数绑定及错误分类。
 
 兼容风险主要是 SQL error code、RFC class 和用户可见文案变化；正确性风险主要是遗漏 `DDL_ERRORS`、错误选择消息来源、错误扩张 reorg 可重试集合；性能风险很低，但 231 个对象在启动阶段一次性构造是有意的注册时序成本，不应随意改回请求期初始化。若未来移除启动段方案，必须先提供跨目标平台且发生在 `RegisterFinish` 之前的等价初始化入口。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/dbterror` 找到目标 Rust/Go/测试文件。
-- RustCodeGraph `node --file pkg/util/dbterror/ddl_terror.rs`：读取完整 1,499 行源码，确认 231 个错误项、`DDL_ERRORS`、初始化函数及两张 reorg 表；文件节点报告被 12 个文件使用。
-- RustCodeGraph `callees initialize_ddl_errors`：确认其引用 `DDL_ERRORS`；`query format_mysql_message --kind function` 确认签名与位置。Rust 静态变量节点缺失的部分以 `rg` 补查。
-- 已读生产与装配文件：`pkg/util/dbterror/ddl_terror.rs`、`pkg/util/dbterror/terror.rs`、`pkg/util/dbterror/lib.rs`、`pkg/util/dbterror/Cargo.toml`；目标目录没有 `doc.go`。
-- 已读 Go 对照：`pkg/util/dbterror/ddl_terror.go`；文本计数确认 Rust `^pub static Err` 与 Go `Err*=...` 均为 231，Go 尾部的 19 个重试 code 和四条消息与 Rust 一致。
-- 已读独立 Rust 测试：`pkg/util/dbterror/migration_aster_unit_test.rs`、`pkg/util/dbterror/main_test.rs`；相关 Go 测试目录文件为 `pkg/util/dbterror/main_test.go` 与 `pkg/util/dbterror/terror_test.go`，目标文件没有同名独立测试。
-- 已读 DDL 入口说明 `docs/agents/ddl/README.md`，其中 job/owner/reorg 架构陈述仅用于定位，并由本次源码和调用点核验后写入本文。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求本文恰好包含十一个固定二级标题；验证命令及退出码在任务交付时记录。

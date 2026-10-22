@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-meta-tidbvar` crate 的键名定义文件，集中声明 `mysql.tidb` 内部表所使用的变量名，避免各调用点重复拼写字符串。crate 入口 `pkg/meta/tidbvar/lib.rs` 通过 `pub mod vars` 装入本模块，并以 `pub use vars::*` 将其公开项提升到 crate 根；仓库总门面 `pkg/lib.rs` 又将整个 crate 暴露为 `meta::tidbvar`。`pkg/meta/tidbvar/Cargo.toml` 的 `package.metadata.porting.go-package` 明确把它对应到 Go 包 `pkg/meta/tidbvar`。
-
-该文件只定义协议键名，不负责访问 `mysql.tidb`、序列化变量值、判断 TTL 或执行资源伸缩。当前仓库中这些运行时行为仍可在 Go DXF 路径 `pkg/dxf/framework/handle/status.go::getPauseScaleInFlag` 和 `pkg/dxf/framework/handle/handle.go::UpdatePauseScaleInFlag` 中看到。
+用规范的 Rust 名称 `DXF_SCHEDULE_PAUSE_SCALE_IN` 固定 DXF 暂停缩容标志的持久化键值 `"dxf_schedule_pause_scale_in"`。
 
 ## 核心职责
 
@@ -67,7 +65,7 @@ RustCodeGraph 已索引 `vars.rs`，文件节点显示 32 行和一个文件级�
 
 ## 与 Go 版本的对应关系
 
-`pkg/meta/tidbvar/vars.go` 定义 `DXFSchedulePauseScaleIn = "dxf_schedule_pause_scale_in"`，与 Rust 的字面量完全一致。Rust 在此基础上采用双名称策略：全大写的 `DXF_SCHEDULE_PAUSE_SCALE_IN` 符合 Rust 常量惯例，`DXFSchedulePauseScaleIn` 则保留 Go API 名称，并通过 `pub use` 保证二者不会各自维护字符串。
+Rust 在此基础上采用双名称策略：全大写的 `DXF_SCHEDULE_PAUSE_SCALE_IN` 符合 Rust 常量惯例，`DXFSchedulePauseScaleIn` 则保留 Go API 名称，并通过 `pub use` 保证二者不会各自维护字符串。
 
 Go 包注释把 `mysql.tidb` 描述为 bootstrap、GC 与 DXF 等组件共用的内部变量位置；当前这个具体文件只包含 DXF 的一个键，不能从包级说明推导出 Rust 已经移植了其他 bootstrap 或 GC 键。Go DXF 已有真实 SQL 读写调用；Rust 侧目前只有常量、门面/可选依赖接线与迁移单元测试，尚未检索到生产 Rust 调用点。
 
@@ -78,12 +76,3 @@ Go 包注释把 `mysql.tidb` 描述为 bootstrap、GC 与 DXF 等组件共用的
 - 在独立测试文件 `pkg/meta/tidbvar/migration_aster_unit_test.rs` 中同步增加字面量兼容测试与别名一致性测试。按照仓库约定，不要把测试内嵌到 `vars.rs`。
 - 如果为 Rust DXF 增加生产调用，应在对应 crate 中启用/使用 `astersql-meta-tidbvar` 依赖，并引用常量而不是重复字符串；同时为 SQL 读写、JSON 错误、记录缺失、TTL 过期和事务行为在消费者目录增加独立测试。
 - 变更既有键值属于持久化协议变更，需评估滚动升级兼容、旧数据库行迁移和混合版本集群行为。读取常量本身无性能风险，性能与事务风险位于数据库消费者。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/meta/tidbvar/vars.rs:16-32`、`pkg/meta/tidbvar/lib.rs:15-21`、`pkg/meta/tidbvar/Cargo.toml:1-12`。
-- workspace 与门面：根 `Cargo.toml` 的 workspace 成员 `pkg/meta/tidbvar` 和 `facade_meta_tidbvar` 依赖；`pkg/lib.rs::meta::tidbvar`。
-- Go 对照与运行态调用：`pkg/meta/tidbvar/vars.go:15-25`、`pkg/dxf/framework/handle/status.go::getPauseScaleInFlag`、`pkg/dxf/framework/handle/handle.go::UpdatePauseScaleInFlag`。
-- Rust 独立测试：`pkg/meta/tidbvar/migration_aster_unit_test.rs::dxf_schedule_pause_scale_in_matches_go_key` 与 `go_compatible_name_uses_the_canonical_rust_constant`。
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/meta/tidbvar` 确认目标、入口、Go 对照和独立测试均被索引；`node --file pkg/meta/tidbvar/vars.rs --offset 1 --limit 400` 返回目标文件全貌。精确 `query` 未给常量生成独立节点，故调用关系由 `rg`、Cargo 和模块入口交叉核验。
-- 文档结构采用任务要求的十一个固定二级章节；本任务是纯文档分析，按计划不运行 Cargo 或代码测试。

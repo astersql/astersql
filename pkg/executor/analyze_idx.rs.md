@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor` crate 中的索引统计收集实现，源码由 [`lib.rs`](lib.rs) 以公开模块 `analyze_idx` 导出（`lib.rs:47-50`），crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[package] name = "astersql-executor"` 与 `[lib] path = "lib.rs"` 确定（`Cargo.toml:1-8`）。它把“打开索引分析结果流、逐响应合并直方图和 Sketch、整理 v2 统计结果、关闭流”抽象成同步 Rust API。
-
-当前接线状态需要与设计目标分开看：仓库内 Rust 生产代码没有调用 `analyzeIndexPushdown` 或 `analyzeIndexNDVPushDown`，直接引用仅见独立测试 [`analyze_idx_test.rs`](analyze_idx_test.rs)；因此它目前是公开、可测试的移植模块，但尚不能据此断言 Rust SQL 执行主链已经调用它。完整应用中的对应调度位置仍可在 Go 侧看到：普通索引任务由 [`analyze.go`](analyze.go) 的 `analyzeWorker` 调用 `analyzeIndexPushdown`（`analyze.go:914-933`），特殊索引 NDV 子任务由 [`analyze_col_sampling.go`](analyze_col_sampling.go) 的工作循环调用 `analyzeIndexNDVPushDown`（`analyze_col_sampling.go:505-527`）。
+Go 对照实现的真实请求构造位于 `AnalyzeIndexExec.fetchAnalyzeResult`（`analyze_idx.go:147-186`）。
 
 ## 核心职责
 
@@ -89,14 +87,6 @@ RustCodeGraph 对索引中的关键边给出的直接证据包括：
 
 ## 与 Go 版本的对应关系
 
-Rust 的符号基本按 [`analyze_idx.go`](analyze_idx.go) 同名移植：`AnalyzeIndexExec`、`analyzeIndexPushdown`、`buildStats`、`open`、`fetchAnalyzeResult`、`buildStatsFromResult`、`buildSimpleStats`、`analyzeIndexNDVPushDown`、`updateIndexResult` 均能逐一对应（Go `analyze_idx.go:42-366`；Rust `analyze_idx.rs:332-620`）。主要保持的语义包括：
-
-- 单列索引主扫描排除 NULL，另开 NULL 范围；多列索引走全范围。
-- 只支持 v2 统计，合并后扣除 TopN、标准化 v2 直方图、计算 CMS 默认值。
-- 每个响应更新作业进度，合并直方图、CMS/TopN 与 FM Sketch。
-- NDV 路径只需要 FM，并用空直方图携带索引 ID。
-- 构建结束关闭主/NULL 两个结果流。Rust 独立测试专门验证了 Go `closeAll` 的“两者都尝试关闭”意图（`analyze_idx_test.rs:135-172`）。
-
 已确认的简化或差异如下：
 
 - Go 构造完整 `kv.Request`，选择 RC/SI、startTS、keep-order、资源组和请求来源并调用 `distsql.Analyze`（`analyze_idx.go:147-186`）；Rust 把这些行为缩成 `open_index_result` 的索引、范围、公共句柄、NULL 标志、可选快照和并发参数，无法表达其余请求属性。
@@ -118,14 +108,3 @@ Rust 的符号基本按 [`analyze_idx.go`](analyze_idx.go) 同名移植：`Analy
 - 任何 Rust 行为修改都应同步更新独立测试文件；本文件不应内嵌 `#[cfg(test)]` 测试。生产接线完成后还需要 SQL 层测试证明 Rust 路径真实可达。
 
 兼容风险主要来自统计格式和累计计数错误（会影响优化器估算）、NULL 范围差异、TopN 双计数、全局/多值索引标志，以及取消/关闭泄漏；性能风险主要来自响应数乘以桶合并成本、TopN 全量排序、FM `BTreeSet` 操作和后端并发度。
-
-## 验证依据
-
-- 源码全量阅读：[`analyze_idx.rs`](analyze_idx.rs)（685 行）。公开 API、内部实现、常量和无条件编译状态均按源码逐项核对。
-- crate 与模块边界：[`Cargo.toml`](Cargo.toml)（`package/lib/features`，`Cargo.toml:1-15`）和 [`lib.rs`](lib.rs)（`lib.rs:35-52`）。目标包未发现 `doc.go`，因此没有额外的 Go 包契约文件可读。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`explore "pkg/executor/analyze_idx.rs analyzeIndexExec AnalyzeIndexExec"`；`query analyzeIndexPushdown/analyzeIndexNDVPushDown/updateIndexResult`；以及对 Rust `analyzeIndexPushdown`、`analyzeIndexNDVPushDown`、`updateIndexResult` 的 `node` 查询。图确认 `buildStatsFromResult -> updateIndexResult` 等内部边；路径 `files --filter pkg/executor/analyze_idx` 未命中，故按技能规则用源码和 `rg` 补核文件级引用。
-- Rust 上游引用检查：`rg` 只找到 `lib.rs` 模块声明与 [`analyze_idx_test.rs`](analyze_idx_test.rs) 测试引用，没有找到 Rust 生产调用者。
-- Go 对照与调用边：[`analyze_idx.go`](analyze_idx.go)（完整实现），[`analyze.go`](analyze.go) 的 `analyzeWorker`（`analyze.go:910-951`），[`analyze_col_sampling.go`](analyze_col_sampling.go) 的特殊索引 worker（`analyze_col_sampling.go:505-542`）。
-- 独立 Rust 测试：[`analyze_idx_test.rs`](analyze_idx_test.rs) 共三项，验证关闭两流、TopN 扣除与 v2 空桶标准化、跨响应累计计数偏移（`analyze_idx_test.rs:135-242`）。本任务按计划不运行 Cargo，因此这些是测试源码证据，不是本次动态测试结果。
-- Go 相关测试：[`test/analyzetest/analyze_test.go`](test/analyzetest/analyze_test.go) 的 `TestFailedAnalyzeRequestV2`（`analyze_test.go:280-304`）验证 Go 端合并错误传播到 SQL 调用者。
-- 结构验证使用任务指定命令，要求文件存在且恰有 11 个固定二级标题；最终结果及退出码在任务交付时记录。

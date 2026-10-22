@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应源码](builtin_like_vec.rs)是 `astersql-expression` crate 中 SQL `LIKE` 内建函数的遗留向量化求值内核。`pkg/expression/lib.rs` 通过 `#[path = "builtin_like_vec.rs"] mod builtin_like_vec_kernel;` 将它编入 crate；文件本身不定义新类型，而是为 `pkg/expression/builtin_like.rs` 定义的 `builtinLikeSig` 增加批量能力。`pkg/expression/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/expression"` 分别确认 crate 入口及其 Go 对照包。
-
-它位于“函数类构造 `builtinLikeSig` → 表达式选择向量化路径 → 对一个 `Chunk` 批量求值”的末端内核位置。当前文件只依赖 crate 内的签名类型与 `legacy_vectorized_runtime`；校对和通配符实现由签名持有的 `Collator` 间接提供。源码没有模块级常量、独立类型、trait 或条件编译项。
+`builtinLikeSig::vecEvalInt` 将三个参数分别求值为“待匹配字符串列、模式字符串列、转义整数列”，把任一参数的 NULL 传播到结果列，再逐行执行 collation 感知的通配匹配。
 
 ## 核心职责
 
@@ -67,11 +65,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/expression/builtin_like_vec.go` 与本文件具有一一对应的两个方法及相同步骤：声明 vectorized、获取行数、按 value/pattern/escape 顺序求三列、创建局部 matcher、重置 Int64 结果、合并三列 NULL、逐行编译并匹配、把 bool 转为整数。
+Go 测试 `builtin_like_vec_test.go::TestVectorizedBuiltinLikeFunc` 通过通用表驱动框架覆盖 `LIKE(string, string, int) -> int`；Rust 独立测试用具体数据覆盖 `%`、`_`、反斜杠转义、匹配/不匹配和两侧 NULL。
 
-已验证的语义一致点包括：三值 NULL 传播、每行 pattern 与 escape、局部 matcher 避免共享模式状态、escape 转为单字节，以及 `0/1` 结果。Go 测试 `builtin_like_vec_test.go::TestVectorizedBuiltinLikeFunc` 通过通用表驱动框架覆盖 `LIKE(string, string, int) -> int`；Rust 独立测试用具体数据覆盖 `%`、`_`、反斜杠转义、匹配/不匹配和两侧 NULL。
-
-实现层差异是临时列管理：Go 从 `b.bufAllocator` 依次借出三个缓冲并用 `defer` 归还，借用失败也可返回错误；Rust 直接创建三个局部 `Column`，不存在 allocator 获取错误。Go 通过 `b.collator()` 方法取 matcher，Rust 直接读取 `self.collator` 字段。两者不改变匹配结果，但 Rust 当前缺少 Go 的缓冲复用性能特征。另需注意，Rust 专用测试注释中提及 pattern cache，但向量测试验证的实际设计是逐行重编译；缓存初始化与 Clone 隔离由同文件的标量测试验证，属于 `builtin_like.rs` 而非本文件行为。
+实现层差异是临时列管理：Go 从 `b.bufAllocator` 依次借出三个缓冲并用 `defer` 归还，借用失败也可返回错误；Rust 直接创建三个局部 `Column`，不存在 allocator 获取错误。Go 通过 `b.collator()` 方法取 matcher，Rust 直接读取 `self.collator` 字段。两者不改变匹配结果，但 Rust 当前缺少 Go 的缓冲复用性能特征。
 
 ## 扩展指南
 
@@ -81,14 +77,3 @@
 - 若优化临时分配，可在迁移运行时增加明确的缓冲复用机制，但需保持早期错误时的资源释放和结果列重置语义，并评估内存保留与跨线程共享风险。
 - 测试必须保留在独立文件。直接行为测试放在 `pkg/expression/builtin_like_vec_test.rs`；更广的 Go 语义对齐可扩展 `pkg/expression/builtin_like_vec_15_aster_unit_test.rs`。建议新增：escape 超出 `u8` 范围的低八位行为、零行 Chunk、子表达式错误短路、非默认 collator、并发调用同一签名、相邻行相同/不同 pattern。
 - 兼容风险集中在求值顺序、NULL 传播、escape 截断、collation 选择和布尔整型编码；性能风险集中在逐行 Compile 与三个临时列分配。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/builtin_like_vec.rs`，确认全文件仅有 `builtinLikeSig::{vectorized, vecEvalInt}` 两个方法，且无条件编译项。
-- 签名与标量对照：`pkg/expression/builtin_like.rs`，确认三参数校验、字段所有权、默认 binary collator、标量 cache 及 Clone 隔离。
-- 运行时契约：`pkg/expression/legacy_vectorized_runtime.rs`，确认 `Chunk`、`Column`、`LegacyExpression`、`EvalContext`、`EvalError` 和 NULL 合并行为。
-- 模块与 crate：`pkg/expression/lib.rs`、`pkg/expression/Cargo.toml`，确认 path 模块装配、测试再导出、crate 名称和 Go 包迁移元数据。
-- matcher 接口：`pkg/util/collate/collate.rs` 与 `pkg/util/collate/bin.rs`，确认 `Collator::Pattern`、`WildcardPattern::{Compile, DoMatch}` 和默认 binary matcher。
-- Go 对照：`pkg/expression/builtin_like_vec.go`、`pkg/expression/builtin_like_vec_test.go`；Rust 测试：`pkg/expression/builtin_like_vec_test.rs`、`pkg/expression/builtin_like_vec_15_aster_unit_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/expression/builtin_like_vec.rs` 返回完整 55 行源码；`query builtin_like_vec`、`query builtinLikeSig`、`query vecEvalInt` 找到目标方法、Go 对照和两份 Rust 测试。`callers/callees ... --file` 对常见方法名仍混入大量同名 Go/Rust 节点，故调用关系仅采用文件限定源码与 `rg` 的直接调用点复核，不把噪声边当作事实。
-- 本任务是纯文档分析，按任务约束不运行 Cargo；交付结构以固定十一个二级标题检查，链接与路径以仓库文件存在性复核。

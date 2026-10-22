@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tools/check/longtests.rs` 是 `astersql-tools-check` crate 的长耗时测试注册表。模块由 [`tools/check/lib.rs`](lib.rs) 以公开模块 `longtests` 装配，二进制入口 [`tools/check/bin_main.rs`](bin_main.rs) 经 crate 的 `main()` 进入 [`tools/check/ut.rs`](ut.rs) 的命令行驱动。它不执行测试，也不解析参数；它只向调度层提供“哪些测试属于长测”和“长测最多使用多少个 worker”两项静态策略。
-
-所属 crate 由 [`tools/check/Cargo.toml`](Cargo.toml) 定义，库入口为 `lib.rs`，二进制入口为 `bin_main.rs`。本文件只使用标准库 `std::collections::HashMap`，没有直接使用该 crate 声明的 `regex` 外部依赖。
+`LONG_TEST_WORKER_COUNT` 把长测执行并发固定为 `2`。
 
 ## 核心职责
 
@@ -86,8 +84,6 @@ RustCodeGraph 的文件节点报告本文件被 `tools/check/ut.rs` 和 `tools/c
 
 ## 与 Go 版本的对应关系
 
-Rust `long_tests()` 对应 `tools/check/longtests.go` 的包级变量 `longTests`，Rust `LONG_TEST_WORKER_COUNT` 对应 Go 变量 `longTestWorkerCount`。本次逐项核对，两端均为两个包、四个测试、worker 数 `2`。
-
 语义上的主要实现差异是：Go map 在进程生命周期内作为可变包级变量存在；Rust 函数每次返回新容器，避免可变全局状态。对当前只读调用行为，两者等价，并且两端 map/`HashMap` 都不保证遍历顺序。Go `listLongTasks` 对缺失键遍历 `nil` 切片，Rust 用 `if let Some` 跳过，外部结果相同。
 
 Go `cmdRun`、`runTestCases`、`listLongTasks` 和 `numa.testCommand` 分别对应 Rust `cmd_run`、`run_test_cases`、`list_long_tasks` 和 `Numa::test_command`，且在包选择、任务展开、worker 限制、CPU 配额和超时策略上保持相同意图。
@@ -103,13 +99,3 @@ Go `cmdRun`、`runTestCases`、`listLongTasks` 和 `numa.testCommand` 分别对�
 5. 若调整 `LONG_TEST_WORKER_COUNT`，同步修改 Go 常量、parity 断言，并验证 `run_test_cases` 的 worker 行为与 `Numa::test_command` 的 `-test.cpu` 整数除法在最低和较高 `p` 值下仍合理。
 
 兼容性风险主要是遗漏或误跑 CI 用例；性能风险主要是同时运行过多长测或给单个测试过少 CPU。注册表规模很小时无需为减少容器分配而增加全局同步或复杂初始化。
-
-## 验证依据
-
-- 源文件：`tools/check/longtests.rs`，确认唯一函数、唯一常量、完整清单与无条件编译结构。
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file tools/check/longtests.rs` 识别 41 行源码并报告使用文件为 `tools/check/ut.rs`、`tools/check/parity_test.rs`；`query long_tests --json` 定位公开函数签名。
-- crate 边界：`tools/check/Cargo.toml`、`tools/check/lib.rs`、`tools/check/bin_main.rs`。
-- Rust 调用与测试：`tools/check/ut.rs` 的 `cmd_run`、`run_test_cases`、`list_long_tasks`、`Numa::test_command`；`tools/check/parity_test.rs` 的 `contract_normal_paths`、`contract_boundary`。
-- Go 对照：`tools/check/longtests.go`、`tools/check/ut.go` 的 `cmdRun`、`runTestCases`、`listLongTasks`、`numa.testCommand`。
-- 登记测试定义：`pkg/ttl/ttlworker/job_manager_integration_test.go`、`pkg/ttl/ttlworker/task_manager_integration_test.go`、`pkg/ttl/cache/split_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务指定的十一章节结构检查，并人工复核 Rust/Go 清单、直接引用和独立测试证据。

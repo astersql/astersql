@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/session/dml_runtime.rs` 属于 `astersql-session` crate；模块由 `pkg/session/lib.rs` 以 `pub mod dml_runtime` 公开。它位于解析器 AST 与具体会话写入运行时之间，负责把 `InsertStmt`、`UpdateStmt`、`DeleteStmt` 整理为会话层计划，并提供关系表写入所需的一组轻量表达式求值工具。真正的事务开启、锁、KV 编解码、外键/索引维护与提交不在本文件，而在 `pkg/session/runtime/control.rs`、`pkg/session/runtime/dml.rs` 等运行时模块。
-
-文件同时支持两条路径：固定演示表 `aster_session_kv` 使用严格的 `(k, v)` 快路径；其它表生成携带完整 AST、排序与限制信息的关系表计划，再交给完整关系表运行时。因此它不是 Go TiDB 完整 planner/executor 的替代品，也不是独立执行器。
-
-`pkg/session/Cargo.toml` 声明 crate 名为 `astersql-session`，`lib.rs` 为入口，并以 `package.metadata.porting.go-package = "pkg/session"` 标记 Go 移植归属。此文件直接使用工作区 parser/AST/MySQL 常量、meta model、types JSON，以及外部 `chrono`、`regex`、`rust_decimal`；`nextgen` feature 不改变本文件的条件编译，本文件本身没有 `cfg` 项。
+位于解析器 AST 与具体会话写入运行时之间，负责把 `InsertStmt`、`UpdateStmt`、`DeleteStmt` 整理为会话层计划，并提供关系表写入所需的一组轻量表达式求值工具。
 
 ## 核心职责
 
@@ -86,14 +82,9 @@ DELETE 主链与 UPDATE 对称：`runtime/control.rs::execute_delete -> PlanDele
 
 ## 与 Go 版本的对应关系
 
-Go `pkg/session` 没有与本文件一一对应的 `dml_runtime.go`。Rust 将 Go 主链中分散在 planner、executor、expression、table/autoid 和事务上下文的部分语义聚合为具体会话运行时辅助层。因此应按行为而非文件名对照：
-
-- INSERT 列初始化、默认值/生成列与行构造对应 `pkg/executor/insert_common.go`；重复键更新对应 `pkg/executor/insert.go` 和 `pkg/executor/write.go::updateRecord`。
 - UPDATE 的“先求值普通列、检测变化、处理 on-update/generated、再做约束和写入”顺序以 `pkg/executor/write.go::updateRecord` 为 Go 依据；Rust 的完整实现落在 `runtime/dml.rs`，本文件只提供部分表达式求值与计划载体。
-- DELETE 的逐行 handle 构造和删除/批处理语义可对照 `pkg/executor/delete.go`；Rust 的锁、选择和 mutation 仍由 `runtime/dml.rs` 负责。
-- Go 使用完整 expression/type/collation 框架；本文件以 `String`/`Option<String>` 和有限 AST 子集实现兼容路径，因而在隐式转换、collation、warning 与函数覆盖上不能宣称完整等价。
 
-`pkg/session/dml_runtime_test.rs` 以真实 SQL/KV 路径验证若干 Go 对齐语义：显式事务、INSERT IGNORE/ON DUPLICATE、整数溢出告警转换、NULL 时间主键零值、嵌套 JSON 生成列、自增 alloc/rebase 报告、外键阶段、BIT 算术以及 CASE 精确大整数/惰性分支。测试名中的 `follow_go_*` 是行为证据，但不代表未覆盖表达式自动等价于 Go。
+测试名中的 `follow_go_*` 是行为证据，但不代表未覆盖表达式自动等价于 Go。
 
 ## 扩展指南
 
@@ -104,12 +95,3 @@ Go `pkg/session` 没有与本文件一一对应的 `dml_runtime.go`。Rust 将 G
 最小测试面是独立文件 `pkg/session/dml_runtime_test.rs`，而不是把测试嵌入生产源文件。规划边界应覆盖 KV 与关系表各一例；表达式扩展应覆盖 NULL、非法参数、极值与字符/字节差异；事务行为应通过真实会话验证失败前后可见性。涉及 Go 行为对齐时还应定位相应的 `pkg/executor/*_test.go` 或 expression 测试，而不是从单个 Go 实现注释推导兼容性。
 
 性能风险集中在递归求值和每行重复解析/编译：生成表达式 parser、Regex、JSON 文档/path 以及 HashMap 字符串复制都可能进入逐行热点。若引入缓存，需要保持语句时间函数、SQL mode、元数据版本和事务隔离边界正确。兼容风险集中在字符串化类型模型、collation、warning/strict mode 与错误文本；修改前应先增加回归测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；使用 `node --file pkg/session/dml_runtime.rs` 阅读全文件，并对 `PlanInsert`、`PlanUpdate`、`PlanDelete`、`EvalExprWithBitColumns`、`MatchesPredicate`、`ParseGeneratedExpr` 查询定义、callees 与 called-by trail。图确认 `PlanInsert <- execute_insert/execute_load_data`、`PlanUpdate <- execute_update`、`PlanDelete <- execute_delete`，以及 `MatchesPredicate` 的两个 `runtime/dml.rs` 调用点。批量 `callers` 命令未在超时窗口内返回文本，因此又以 node trail 和限定 `rg` 核对调用边。
-- 源与 crate 边界：`pkg/session/dml_runtime.rs`、`pkg/session/lib.rs`、`pkg/session/Cargo.toml`。
-- 直接运行时证据：`pkg/session/runtime/control.rs`、`pkg/session/runtime/dml.rs`、`pkg/session/runtime/relational_value.rs`、`pkg/session/runtime/row_codec.rs`、`pkg/session/runtime/load_data.rs`。
-- 独立 Rust 测试：`pkg/session/dml_runtime_test.rs`；另以 `pkg/session/bench_test.rs` 核对 `RelationalTableState::AllocateAutoID`，以 `pkg/session/test/temporarytabletest/temporary_table_test.rs` 核对公开计划/谓词辅助函数的外部使用。
-- Go 对照：`pkg/executor/insert_common.go`、`pkg/executor/insert.go`、`pkg/executor/write.go`、`pkg/executor/update.go`、`pkg/executor/delete.go`，以及相邻 Go executor 测试。仓库中不存在同名 Go 文件，因此未声称逐函数一一移植。
-- 人工复核结论：该文件存在的原因是给具体 Rust 会话运行时提供 AST DML 计划和有限的写入表达式语义；事务与完整关系执行明确位于调用层；安全扩展必须同时维护独立测试、完整运行时边界以及 Go/MySQL 兼容证据。

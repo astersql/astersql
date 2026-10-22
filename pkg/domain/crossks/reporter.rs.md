@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件说明的真实源码为 [`reporter.rs`](./reporter.rs)。它属于 Cargo 包 `astersql-domain-crossks`，其 crate 根为 `pkg/domain/crossks/lib.rs`。模块入口通过 `pub mod reporter` 声明该模块，并以 `pub use reporter::*` 将其中的公开项重导出到 crate 根。文件当前只有 28 行，是跨 keyspace（多租户命名空间）域中的最小事务开始时间戳上报占位门面，而不是实际的时间戳计算或 etcd 写入实现。
-
-从当前 Rust 接线看，本文件尚未进入 server-info 的运行链：`pkg/domain/crossks/cross_ks.rs::new_manager_with_server_info` 接受的是 `Arc<dyn astersql_domain_serverinfo::MinStartTSReporter>`，实际测试传入 `pkg/domain/serverinfo/syncer.rs::NoopMinStartTSReporter`；仓库内除模块导出外未发现 `crossks::MinStartTsReporter` 的构造或调用。因而本文件目前的准确定位是“公开、可构造，但未接线的 no-op 兼容占位”。
+与 Go 同路径文件 `pkg/domain/crossks/reporter.go` 的空实现保持意图一致，为后续接入真实 reporter 留出稳定的模块边界。
 
 ## 核心职责
 
@@ -73,12 +71,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/domain/crossks/reporter.go`：
-
-- `type minStartTSReporter struct{}` 对应 Rust 的无状态 `MinStartTsReporter`。
-- `func (*minStartTSReporter) ReportMinStartTS(kv.Storage, *concurrency.Session)` 同样为空，仅保留 TODO；这与 Rust no-op 的业务意图一致。
-- Go 类型依靠结构化接口的隐式实现满足 `pkg/domain/serverinfo/syncer.go::MinStartTSReporter`，并在 `pkg/domain/crossks/cross_ks.go` 创建 `serverinfo.NewCrossKSSyncer` 时传入 `&minStartTSReporter{}`。
-
 Rust 移植并未完全对齐这段接线：`MinStartTsReporter` 的参数是无约束泛型，方法名不同，且没有显式实现 `astersql_domain_serverinfo::MinStartTSReporter`。Rust 跨 keyspace 构造链改为由调用者提供该 trait object，现有测试使用 server-info crate 自己的 `NoopMinStartTSReporter`。因此“空操作语义”已对齐，“本地类型参与同步器构造”尚未对齐。
 
 ## 扩展指南
@@ -88,13 +80,3 @@ Rust 移植并未完全对齐这段接线：`MinStartTsReporter` 的参数是无
 若要让本文件承担 Go 对应角色，最小接入点是为 `MinStartTsReporter` 实现 `astersql_domain_serverinfo::MinStartTSReporter`，使用 trait 要求的 `&dyn Storage` 与 `&Session` 签名，并在跨 keyspace manager 的组装位置明确选择该实现。不要仅修改当前泛型方法后便宣称已接线；还需验证 `new_manager_with_server_info` 的 reporter 来源和 `Syncer::ServerInfoSyncLoop` 的周期调用。
 
 若将来实现真实最小 start_ts 计算，需要先确定 Go 上游的最终语义，再设计 store/session 读取、无活跃事务时的哨兵值、并发快照、租约失效和写入失败策略。对应 Rust 测试必须放在独立测试文件中：本模块可新增 `pkg/domain/crossks/reporter_test.rs` 并从 `lib.rs` 以 `#[cfg(test)]` 引入；跨组件接线可扩展 `cross_ks_test.rs`，周期上报与 session 行为应扩展 `pkg/domain/serverinfo/syncer_test.rs`。兼容风险主要是改变 Go 当前 no-op 行为，性能风险主要是周期扫描事务或同步访问存储。
-
-## 验证依据
-
-- 目标源码：`pkg/domain/crossks/reporter.rs`，确认只有 `MinStartTsReporter` 与 `report_min_start_ts`，函数体为空。
-- crate 边界：`pkg/domain/crossks/Cargo.toml` 与 `pkg/domain/crossks/lib.rs`，确认包名、server-info 依赖、模块声明和公开重导出。
-- Rust 调用链：`pkg/domain/crossks/cross_ks.rs::RegisteredRuntimeFactory::create`、`new_manager_with_server_info`、`new_manager_with_server_info_provider`；`pkg/domain/serverinfo/syncer.rs::MinStartTSReporter`、`NoopMinStartTSReporter`、`Syncer::ServerInfoSyncLoop`。
-- Go 对照：`pkg/domain/crossks/reporter.go`、`pkg/domain/crossks/cross_ks.go`、`pkg/domain/serverinfo/syncer.go`，确认 Go 类型的空实现、接口匹配和构造时注入。
-- 测试证据：`pkg/domain/crossks/cross_ks_test.rs` 与 `pkg/domain/serverinfo/syncer_test.rs` 使用 `NoopMinStartTSReporter` 验证同步器注册/清理等生命周期；检索未发现本文件类型或方法的专门测试。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/domain/crossks` 收录 `reporter.rs`，`node --file pkg/domain/crossks/reporter.rs` 返回完整 28 行源码，`query MinStartTsReporter` 定位本类型及相邻 Go/trait 符号。限定 callers/callees 未得到本方法的有效调用边，随后以仓库文本检索核对未接线事实。
-- 文档结构按任务要求以 11 个固定二级标题校验；本任务是纯文档分析，未运行 Cargo 或代码测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate；crate 根由 `pkg/executor/aggfuncs/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`pkg/executor/aggfuncs/lib.rs` 通过 `pub mod func_sum` 将其公开。它承载 SUM 的浮点、Decimal、DISTINCT 浮点、DISTINCT Decimal 状态算法，并提供一个供多个聚合模块复用的简化定点 `Decimal` 类型。整数 SUM 位于相邻的 `func_sum_int.rs`，不属于本文件。
-
-本文件接收的是已经求值后的 `Option<f64>` 或 `Option<Decimal>`，不直接持有表达式、输入 `Row`、输出 `Chunk` 或 SQL 上下文。完整聚合链的上层入口在 `builder.rs::build_sum` 与 `aggfuncs.rs`：构建器按聚合阶段、返回类型和 DISTINCT 标志选择 `AggImplementation`，统一聚合层为 DISTINCT 状态建立 spill/merge 接线。普通 `FloatSum`、`DecimalSum` 在当前搜索结果中主要作为可复用状态及独立测试对象；不能仅凭 `SumFloat64`/`SumDecimal` 枚举存在就断言本文件已经实现 Go 版本完整的表达式求值、最终舍入和 Chunk 写入。
+`Decimal` 用 `(coefficient: i128, scale: u32)` 表示定点数，负责 scale 对齐、checked 加减和按整数相除。
 
 ## 核心职责
 
@@ -70,10 +68,6 @@ RustCodeGraph 文件级结果显示该文件被 `aggfuncs.rs`、`func_group_conc
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/aggfuncs/func_sum.go`，对应测试为 `func_sum_test.go`：
-
-- `FloatSum` 对应 Go `partialResult4SumFloat64` 的 `val` 与 `notNullRowCount` 及 `baseSum4Float64`/`sum4Float64` 的核心更新、合并和滑窗算术；两者都跳过 NULL、顺序执行 `sum += value`，并在零有效行时输出 NULL。
-- `DecimalSum` 对应 `partialResult4SumDecimal` 与 `sum4Decimal` 的核心 DecimalAdd/DecimalSub 状态逻辑。首个值直接赋值、源为空时合并不改变目标、滑窗先加 incoming 再减 outgoing，均与 Go 当前路径对应。
 - Go 的 `AppendFinalResult2Chunk` 会检查返回类型、按目标小数位执行 `ModeHalfUp` 舍入并写入 Chunk；Rust 本文件只返回简化 `Decimal`，因此最终格式化语义尚不等价。
 - `DistinctFloatSum` 对应 `set.Float64SetWithMemoryUsage` 的目标语义，包含 `+0/-0` 合并与 NaN 不自等；但 Rust 使用线性 `Vec`，迭代/求和顺序和性能特征不等同于 Go map。
 - `DistinctDecimalSum` 对应 `StringToDecimalMapWithMemoryUsage` 与 `MyDecimal::ToHashKey` 的目标语义，尾随零不同但数值相同的 Decimal 只保留一个。Rust 的常规 key 是规范化 tuple 的调试字符串，不是 Go wire hash；spill 则保存其收到的 key/value 对。
@@ -89,13 +83,3 @@ RustCodeGraph 文件级结果显示该文件被 `aggfuncs.rs`、`func_group_conc
 - 修改 DISTINCT 数据结构或 key 规则时应同步 `aggfuncs.rs::spill_function`、`merge_spilled_partial_result` 和 spill codec；测试至少覆盖跨分区重复、空集、NULL、Float `+0/-0`、NaN、Decimal 尾随零和恢复后再次 merge。
 - 性能上普通路径为 O(n) 时间/O(1) 状态；当前 DISTINCT 线性查重在 n 个唯一值时可能达到 O(n²)。替换为哈希结构时必须保留 Go 的浮点相等语义、Decimal 规范化语义、内存增量契约及 spill 可恢复性。
 - 错误路径测试应验证状态是否已部分修改，因为当前批量 update/slide 不回滚；若未来要求原子性，需要在接口和调用者层明确新增事务式状态管理，而不能只改错误文本。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/aggfuncs/func_sum.rs`（364 行），核对了 1 个值类型、4 个状态类型、全部方法、7 个类型别名、无条件编译项及可见性。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/executor/aggfuncs/func_sum.rs` 确认目标被索引；`node --file ... --offset 1 --limit 500` 读取全文件；`query` 找到 `FloatSum`、`DecimalSum`、`DistinctFloatSum`、`DistinctDecimalSum`；`callers`/`callees` 对这些类型及重名方法未输出可消歧边，因此用图给出的文件级使用关系和精确文本引用补证。
-- crate 与模块：`pkg/executor/aggfuncs/Cargo.toml`、`pkg/executor/aggfuncs/lib.rs`。
-- 生产接线：`pkg/executor/aggfuncs/builder.rs::build_sum`、`pkg/executor/aggfuncs/aggfuncs.rs::{BuiltAggFunc::spill_function, merge_spilled_partial_result}`、`pkg/executor/aggfuncs/spill_serialize_helper.rs`、`pkg/executor/aggfuncs/func_avg.rs`。
-- Go 对照：`pkg/executor/aggfuncs/func_sum.go`、`pkg/executor/aggfuncs/func_sum_test.go`，核对普通/DISTINCT Float 与 Decimal 的更新、合并、滑窗、内存计量、最终输出和 spill 结构；整数专用滑窗测试只作为相邻边界证据，不归入本文件实现。
-- Rust 独立测试：`pkg/executor/aggfuncs/func_sum_test.rs` 验证普通 merge/slide、顺序浮点、Decimal 中间溢出、Float 键相等和 Decimal 规范化；`func_distinct_agg_test.rs` 验证跨分区 DISTINCT SUM 与空集；`go_scenario_coverage_test.rs` 覆盖 Go 场景；`spill_helper_test.rs` 验证 DISTINCT Float/Decimal 往返和恢复后合并。
-- 本任务只新增说明文档，未修改 Rust/Go/Cargo，按计划不运行 Cargo。交付时运行任务指定的 11 标题结构命令，并人工复核“文件为何存在、状态如何运行、完整接线边界、如何安全扩展”均有直接证据。

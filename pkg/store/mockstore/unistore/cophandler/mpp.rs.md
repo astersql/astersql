@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-store-mockstore-unistore-cophandler` crate；crate 边界由同目录 `Cargo.toml` 定义，`lib.rs` 通过 `pub mod mpp` 将其公开。它位于 UniStore mock coprocessor 的 MPP 层，使用 `cop_handler.rs` 中的请求、执行器树、行和值模型，并把非 Exchange 算子交给 `mpp_exec.rs::execute_executor`。因此它不是网络协议服务端，而是一个进程内、以 Rust 标准库同步通道模拟任务间 Exchange 的实现。
-
-仓库范围的精确引用搜索表明，当前生产 Rust 文件没有调用 `handle_mpp_dag_request`、`MppTaskHandler` 或 `ExchangerTunnel`；直接消费者是 `mpp_test.rs` 与 `cop_handler_test.rs`。这意味着本文件目前已由 crate 公开并具备可执行逻辑，但生产 RPC/调度接线尚未在 Rust 侧得到验证，不能等同于 Go `mpp.go` 已接入的完整 MPP 请求链。
-
-文件没有 feature gate 或其他条件编译项。`MPP_VERSION = 1` 和 `TUNNEL_BUFFER = 10` 是公开常量；前者在当前 Rust 仓库中没有其他引用，后者决定每条内存隧道的背压容量。
+用 `ExchangerTunnel` 封装容量为 10 的 `sync_channel`，提供连接等待、单次激活、发送、接收和关闭语义。
 
 ## 核心职责
 
@@ -88,9 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是同目录 `mpp.go`，运行期 Exchange 还依赖 `mpp_exec.go`。名称上的对应关系是 `MppExecBuilder` 对 `mppExecBuilder`、`MppTaskHandler` 对 `MPPTaskHandler`、`ExchangerTunnel` 对同名 Go 类型、`handle_mpp_dag_request` 对 `HandleMPPDAGReq`。
-
-已对齐的核心意图包括：ExchangeSender 先执行 child；Hash 只依据配置的分区键；相同键必须落到同一 tunnel；每条发送通道容量为 10；任务 handler 注册并在连接到来时激活隧道；接收端合并多个上游的数据。Rust 独立测试 `hash_exchange_uses_only_partition_keys_like_go` 固化了分区键语义，Rust/Go 同名取消回归共同要求连接前取消不能永久阻塞。
+Rust 独立测试 `hash_exchange_uses_only_partition_keys_like_go` 固化了分区键语义，Rust/Go 同名取消回归共同要求连接前取消不能永久阻塞。
 
 Rust 不是 Go 实现的逐字段完整复刻，重要差异必须保留在扩展判断中：
 
@@ -111,17 +105,3 @@ Rust 不是 Go 实现的逐字段完整复刻，重要差异必须保留在扩�
 并发修改需重点验证：重复 establish、cancel 与 establish/register 竞争、关闭前后 send/recv、满缓冲取消、多个接收者、源隧道永久不关闭，以及锁中毒策略。PassThrough 若要求确定性目标，应显式保存有序目标或按 task ID 选择，不应依赖 `HashMap` 顺序。若隧道条目需要长期运行，应增加清理策略，避免 handler 的 map 永久保留已关闭隧道。
 
 测试应继续放在独立文件。首选扩展 `mpp_test.rs` 验证路由和 handler 状态；涉及连接前取消语义时同步 `cop_handler_test.rs` 的 Rust 回归，并参考 Go `cop_handler_test.go::TestExchSenderExecNextReturnsWhenCtxCanceledBeforeTunnelConnected`。涉及 Go 语义对齐时，还应对照 `mpp.go::buildMPPExchangeSender`、`MPPTaskHandler`、`HandleEstablishConn` 以及 `mpp_exec.go` 的 `exchSenderExec`/`exchRecvExec`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为 436 行、36 个符号。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore/cophandler/mpp.rs`：通读目标源文件并核对全部常量、结构体、方法、公开入口与内部哈希函数。
-- RustCodeGraph `query`：查询 `ExchangerTunnel`、`MppTaskHandler`、`MppExecBuilder`、`handle_mpp_dag_request`、`row_hash`，确认 Rust/Go 对应符号和测试引用。
-- RustCodeGraph 调用边：确认 `send -> wait_connected`、`establish_conn -> activate/connect`、`cancel -> close`、`build_and_execute -> send/receive/execute_executor`、`send -> Expr::eval/row_hash`、`receive -> tunnel/connect/recv_chunk`；精确 caller 查询未找到 `handle_mpp_dag_request` 的外部调用方。
-- 读取 `pkg/store/mockstore/unistore/cophandler/Cargo.toml` 与 `lib.rs`：核对 crate 名称、Go 包迁移元数据、模块公开方式、独立测试挂载和依赖边界；目录中不存在 `doc.go`。
-- 读取 `cop_handler.rs` 的 `Datum`、`ExchangeType`、`Executor`、请求/响应和 `CopError` 定义，以及 `mpp_exec.rs::ExecutionOutput`/`execute_executor`：核对数据模型、错误传播和下游执行边。
-- 读取 `mpp_test.rs::hash_exchange_uses_only_partition_keys_like_go` 与 `cop_handler_test.rs::TestExchSenderExecNextReturnsWhenCtxCanceledBeforeTunnelConnected`：核对相同分区键同槽、建连前关闭唤醒及 handler 取消行为。
-- 读取 Go `mpp.go` 的 builder、`HandleMPPDAGReq`、`MPPTaskHandler`、`ExchangerTunnel`，`mpp_exec.go` 的 Exchange 发送/接收逻辑，以及 `cop_handler_test.go` 的 MPP 冒烟与取消回归：核对迁移意图及已知差异。
-- 全仓 `rg` 精确引用检查：排除目标文件和两个 Rust 测试后，没有找到上述 Rust MPP 公共入口/类型的调用，故文档将其生产接线状态明确记为尚未验证。
-
-本任务只做静态分析和文档结构验证，按计划不运行 Cargo，也不以编译或运行测试作为本次完成证据。

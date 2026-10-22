@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`cgroup_cpu.rs` 位于 `astersql-util-cgroup` crate 内，是 cgroup CPU 探测的“平台无关编排层”。它不直接解析 `/proc` 或 cgroup 文件，而是把 `cgroup.rs` 中的路径探测、挂载版本识别以及 v1/v2 文件解析函数组合成一份 `CPUUsage`，并为 `CPUUsage` 提供配额到 CPU 份额的换算。
-
-模块入口 `lib.rs` 以私有模块 `mod cgroup_cpu` 装载本文件，并通过 `pub(crate) use cgroup_cpu::*` 供 crate 内的平台门面使用。Linux 上，[`cgroup_cpu_linux.rs`](cgroup_cpu_linux.rs) 的 `GetCgroupCPU` 和 `GetCPUPeriodAndQuota` 把真实根目录 `/` 传给本文件；非 Linux 由 [`cgroup_cpu_unsupport.rs`](cgroup_cpu_unsupport.rs) 直接返回降级结果，不进入本文件的文件系统探测流程。
+`getCgroupCPUPeriodAndQuota`：执行相同的定位和版本分派，但只读取 period/quota，供轻量监控使用。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 声明：crate 名为 `astersql-util-
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`cgroup_cpu.go`](cgroup_cpu.go)。三个 Rust 符号与 Go 的 `getCgroupCPU`、`getCgroupCPUPeriodAndQuota`、`CPUUsage.CPUShares` 一一对应：控制器字符串、v1/v2 路径拼接、混合模式 v2 优先并回退 v1、未知版本错误，以及非正 quota/period 回退 `NumCPU` 的规则均保持一致。
+三个 Rust 符号与 Go 的 `getCgroupCPU`、`getCgroupCPUPeriodAndQuota`、`CPUUsage.CPUShares` 一一对应：控制器字符串、v1/v2 路径拼接、混合模式 v2 优先并回退 v1、未知版本错误，以及非正 quota/period 回退 `NumCPU` 的规则均保持一致。
 
 语法层差异不改变主流程：Go 通过具名返回值逐字段写 `CPUUsage`，Rust 先取得元组再写结构体；Go 使用包级 `errNoCPUControllerDetected` 便于直接比较，Rust 在本文件现场构造同文案的 `anyhow` 错误，测试和调用方只能按错误内容/传播结果判断；Go 的 `filepath.Join` 对绝对片段有自身语义，Rust 使用 `join_root` 丢弃根目录/父目录等非普通分量，以便把绝对风格 fixture 安全地放进临时根。
 
-平台层也基本对齐：Go/Rust Linux 门面都补 `NumCPU`、公开 period/quota，并以 `ceil(CPUShares)` 推导建议并行度。当前 Rust 没有 Go runtime 的真实 `GOMAXPROCS` 旋钮，相关差异由 `cgroup.rs::SetGOMAXPROCS` 的模块内状态模拟承担，不属于本文件职责。
+当前 Rust 没有 Go runtime 的真实 `GOMAXPROCS` 旋钮，相关差异由 `cgroup.rs::SetGOMAXPROCS` 的模块内状态模拟承担，不属于本文件职责。
 
 ## 扩展指南
 
@@ -92,11 +90,3 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 声明：crate 名为 `astersql-util-
 - 修改 `CPUShares` 时必须同步检查 `cgroup_cpu_linux.rs::CPUQuotaToGOMAXPROCS` 和 `pkg/util/cpu/cpu.rs::observe`；舍入、零值和无限制语义会直接影响并行度与 CPU 利用率。性能上该方法本身是常数时间，主要成本来自每次探测的多次文件 I/O。
 - 若要暴露新的公开 API，应在平台门面中接线而不是把基于 `root` 的测试辅助入口公开到 crate 外；非 Linux 的 `cgroup_cpu_unsupport.rs` 也必须提供语义匹配的降级实现。
 - 兼容性风险集中在内核文件格式、v1/v2 单位差异和错误文本。保持 `anyhow` 路径上下文，并同步 Go 测试 fixture 与 Rust 独立测试，可避免只在一种 cgroup 布局上“通过”。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/util/cgroup` 确认目标及相邻 Go/Rust 文件已索引；`node --file pkg/util/cgroup/cgroup_cpu.rs` 列出全文和“used by `cgroup_cpu_linux.rs`”；`query getCgroupCPU`、`query getCgroupCPUPeriodAndQuota` 定位 Rust/Go 对照符号；精确 `node pkg/util/cgroup/cgroup_cpu.rs::getCgroupCPU` 给出到 Linux 门面的 caller trail。图未解析通配导入的内部 callee，故用源码核验补齐。
-- 已读生产路径：`pkg/util/cgroup/cgroup_cpu.rs`、`cgroup.rs`、`cgroup_cpu_linux.rs`、`cgroup_cpu_unsupport.rs`、`lib.rs`、`Cargo.toml`；直接上游另核验 `pkg/util/cpu/cpu.rs` 与 `pkg/util/cgmon/cgmon.rs`。
-- 已读 Go 对照：`pkg/util/cgroup/cgroup_cpu.go`、`cgroup_cpu_linux.go`、`cgroup_cpu_unsupport.go`。
-- 已读独立测试：`pkg/util/cgroup/cgroup_cpu_test.rs`、`cgroup_mock_test.rs`、`cgroup_cpu_linux_1_aster_unit_test.rs`，并对照 `cgroup_cpu_test.go`、`cgroup_mock_test.go`。测试覆盖真实容器探测、v1/v2 与混合 fixture、错误路径、控制器顺序反转、无限配额及 `CPUShares() == 2.5`。
-- 本任务只新增说明文档，不运行 Cargo。交付前按任务给定命令校验本文恰有 11 个固定二级标题，并人工检查所有运行时结论均能回指上述符号、调用点或测试。

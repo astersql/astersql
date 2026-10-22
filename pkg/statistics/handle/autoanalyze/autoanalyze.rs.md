@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics-handle-autoanalyze` crate 的核心实现文件，由同目录 `lib.rs` 以 `pub mod autoanalyze` 声明并通过 `pub use autoanalyze::*` 全量再导出。它把 Go 版本 `pkg/statistics/handle/autoanalyze/autoanalyze.go` 中较适合独立验证的部分拆成三组 Rust 能力：维护 `mysql.analyze_jobs` 生命周期、根据统计摘要生成自动 `ANALYZE` 请求、通过 `StatsAnalyze<R>` 驱动优先级刷新器。
-
-当前接线状态必须与 Go 版本区分：RustCodeGraph 没有找到本文件公开入口的生产调用者，只有同 crate 的 `autoanalyze_test.rs` 直接使用这些 API；`Cargo.toml` 中完整 TiDB 子系统依赖位于 `[target.'cfg(any())'.dependencies]`，恒假条件意味着它们不会进入正常构建。因而本文件目前是标准库加 trait/值对象构成的可测试移植层，不是 Go `statsAnalyze` 在 Domain 中的完整替代品。Go 的真实生产入口仍是 `statsAnalyze.HandleAutoAnalyze`，由 `pkg/domain/domain.go` 的 `autoAnalyzeWorker` 周期调用。
+用 `PriorityRefresher` 抽象优先级队列的外部实现，`StatsAnalyze<R>` 只规定调用次序和关闭语义。
 
 ## 核心职责
 
@@ -71,13 +69,11 @@ Go 对照的真实上游链是 `pkg/domain/domain.go:autoAnalyzeWorker -> statsA
 
 ## 与 Go 版本的对应关系
 
-Rust `AnalyzeJob`/`AnalyzeProgress`、四个生命周期函数和三条 SQL 常量对应 Go `statistics.AnalyzeJob` 以及 `insertAnalyzeJob`、`startAnalyzeJob`、`updateAnalyzeJobProgress`、`finishAnalyzeJob`、两条 `CleanupCorrupted...`。主要状态选择、剩余进度只用于 TableAnalysis、文本上限和清空 `process_id` 的意图保持一致；Rust 用 `JobStore` 替代 Go 的 session context、`ExecRows`、infosync 和日志/failpoint。
+主要状态选择、剩余进度只用于 TableAnalysis、文本上限和清空 `process_id` 的意图保持一致；Rust 用 `JobStore` 替代 Go 的 session context、`ExecRows`、infosync 和日志/failpoint。
 
-Rust `need_analyze_table` 对应 Go `NeedAnalyzeTable`；`random_pick_one_table_and_try_auto_analyze`、`analyze_table`、`analyze_dynamic_partitions`、`partition_requests` 分别压缩了 Go 的随机 schema/table 扫描、`tryAutoAnalyzeTable` 和 `tryAutoAnalyzePartitionTableInDynamicMode`。Rust 保留了锁表/锁分区、系统库/视图、伪统计、小表、普通/列存/特殊全局索引、动态分批及版本 snapshot 等核心分支，但返回请求而非调用 `exec.AutoAnalyze`，也没有真实 infoschema、锁查询、日志和每三秒调度。
+Rust 保留了锁表/锁分区、系统库/视图、伪统计、小表、普通/列存/特殊全局索引、动态分批及版本 snapshot 等核心分支，但返回请求而非调用 `exec.AutoAnalyze`，也没有真实 infoschema、锁查询、日志和每三秒调度。
 
-Rust `StatsAnalyze<R>` 对应 Go `statsAnalyze` 的优先队列片段，不包含 Go 的 `statsHandle`、`sysProcTracker`、`NewStatsAnalyze`、经典随机路径参数读取或 panic recovery。`parse_auto_analyze_window` 只接受 `HH:MM`，而 Go 生产路径通过 `exec.ParseAutoAnalysisWindow` 处理系统变量时间格式和时区；两者不可直接视为完整等价解析器。
-
-独立 Rust 测试 `autoanalyze_test.rs` 明确区分两类覆盖：`FakeJobStore`/值对象测试直接验证本文件的纯逻辑；后半部分 testkit 用例验证更完整的 Rust Domain 行为，但不等于这些 Domain 路径已调用本文件所有 API。Go `autoanalyze_test.go` 则通过 mock TiDB store/domain、真实 SQL 和 failpoint 覆盖完整接线。
+Rust `StatsAnalyze<R>` 对应 Go `statsAnalyze` 的优先队列片段，不包含 Go 的 `statsHandle`、`sysProcTracker`、`NewStatsAnalyze`、经典随机路径参数读取或 panic recovery。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@ Rust `StatsAnalyze<R>` 对应 Go `statsAnalyze` 的优先队列片段，不包�
 - 新增并发或资源型 refresher 时，实现 `PriorityRefresher` 并明确 `close_priority_queue` 与 `close` 的幂等性、等待行为和调用顺序；相关测试继续放在独立的 `autoanalyze_test.rs`，不要嵌入生产源文件。
 - 若将本 crate 接入生产主链，首先应把 `Cargo.toml` 中所需依赖移出 `cfg(any())`，建立 Go `statsAnalyze` 等价 adapter，再用 RustCodeGraph 确认 Domain/Executor 到本文件的 caller 边；在此之前不应宣称本文件已经执行真实自动分析。
 - 性能风险主要在扫描/克隆全部 schema、表、分区和参数，以及为动态分区生成多个请求；兼容性风险主要在 SQL 占位符列表、时间/时区格式、文本截断、版本 snapshot 与锁信息新鲜度。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录列出了 `autoanalyze.rs`、`lib.rs`、Go 对照和独立测试。通过 `node --file` 完整读取了 `autoanalyze.rs` 1–754 行及 `lib.rs` 1–18 行。
-- RustCodeGraph 查询：精确查询并核对了 `insert_analyze_job`、`start_analyze_job`、`update_analyze_job_progress`、`finish_analyze_job`、两条 `cleanup_corrupted_jobs...`、`random_pick_one_table_and_try_auto_analyze`、`analyze_version_matches_for_table` 和 `handle_priority_queue`；`callees` 证实上述内部调用边，`callers` 未返回本文件公开入口的生产调用者。
-- crate 证据：`pkg/statistics/handle/autoanalyze/Cargo.toml` 声明包名和 `lib.rs` 入口；正常依赖为空，完整移植依赖位于 `target.'cfg(any())'`，测试依赖位于 `dev-dependencies`。`lib.rs` 全量再导出实现，并只在 `cfg(test)` 下装配 `autoanalyze_test.rs`。
-- Go 对照：通过 RustCodeGraph 读取 `pkg/statistics/handle/autoanalyze/autoanalyze.go`，核对了 `statsAnalyze`、Domain 调用链、随机挑表、静态/动态分区、生命周期 SQL、坏作业清理和版本策略；读取 `autoanalyze_test.go` 核对完整 store/domain、failpoint、时间窗口、锁、索引和清理场景。
-- Rust 测试：通过 RustCodeGraph 读取 `pkg/statistics/handle/autoanalyze/autoanalyze_test.rs`，核对 `NeedAnalyzeTable`、坏作业清理、锁、窗口、普通/columnar 索引、版本兼容、动态分区逗号与分批、时间解析、十分钟计算、分区映射以及 testkit 集成场景。
-- 本任务按计划为纯文档分析，未运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核只新增本文档、未修改 Rust/Go/Cargo/`plan.md`。

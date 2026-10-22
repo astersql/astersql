@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-testkit-testenv` 的行为实现，crate 根 [`lib.rs`](./lib.rs) 通过 `mod testenv` 加载它，并用 `pub use testenv::*` 暴露全部公开符号。其职责位于测试基础设施层：一部分为 Rust 测试辅助代码提供统一的并行度上限，另一部分在 nextgen 测试开始时临时切换进程级配置。它不是 SQL 请求、规划或执行主链的一环，也不修改生产请求的业务数据。
-
-[`Cargo.toml`](./Cargo.toml) 将该 crate 映射到 Go 包 `pkg/testkit/testenv`，并声明三个直接依赖：`astersql-config`、`astersql-dxf-framework-handle` 和 `astersql-keyspace`。工作区中 `pkg/session`、`pkg/session/test/bootstraptest`、`pkg/dxf/framework/handle`、`pkg/testkit`、`pkg/server/internal/testserverclient`、`pkg/server/tests/servertestkit` 声明了对本 crate 的依赖；但仓库文本检索未发现这些 crate 的 Rust 源码直接引用本文件 API，因此依赖声明不能当作已接线调用的证据。当前能确认的 Rust 直接使用者是独立测试 [`testenv_test.rs`](./testenv_test.rs)，以及本文件内部的 snake_case 别名转发。
+修改 nextgen 配置前保存完整配置快照，并通过调用方提供的 `TestContext::cleanup` 注册恢复闭包，使测试结束、提前返回或由测试框架捕获的 panic 路径可以恢复旧配置。
 
 ## 核心职责
 
@@ -98,15 +96,12 @@ Go 侧直接调用点可在 `pkg/session/testutil.go`、`pkg/session/test/bootst
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`testenv.go`](./testenv.go)：
-
 | Go | Rust | 对应情况 |
 | --- | --- | --- |
-| `SetGOMAXPROCSForTest` | `SetGOMAXPROCSForTest` | 都把并行度限制到最多 16。Go 实际调用 `runtime.GOMAXPROCS` 改变 Go 调度器；Rust 只写入 `TEST_MAX_PROCS`，需要消费者主动读取，不能视为相同的进程调度效果。 |
-| `UpdateConfigForNextgen(testing.TB)` | `UpdateConfigForNextgen(&dyn TestContext)` | 两者都调用 helper、保存完整配置、注册 cleanup，并设置 SYSTEM keyspace 与 nextgen DXF scope。Rust 用最小 trait 代替完整测试框架接口。 |
-| 无对应导出函数 | `MaxProcsForTest`、`ServiceScopeForTest` 及四个 snake_case 别名 | Rust 为无法直接修改调度器的场景增加读取接口，并提供命名兼容层；这些是 Rust 侧扩展。 |
+| `SetGOMAXPROCSForTest` | `SetGOMAXPROCSForTest` | 都把并行度限制到最多 16。Go 实际调用 `runtime.GOMAXPROCS` 改变 Go 调度器；Rust 只写入 `TEST_MAX_PROCS`，需要消费者主动读取，不能视为相同的进程调度效果。|
+| 无对应导出函数 | `MaxProcsForTest`、`ServiceScopeForTest` 及四个 snake_case 别名 | Rust 为无法直接修改调度器的场景增加读取接口，并提供命名兼容层；这些是 Rust 侧扩展。
 
-Go 注释还明确说明：nextgen 单元测试默认运行在 SYSTEM keyspace；需要引导多个 keyspace 的测试应使用 `CreateMockStoreAndDomainForKS`。Rust 实现保留了字段更新行为，但本文件没有提供多 keyspace 创建路径，因此不能用它替代该专用辅助函数。
+Rust 实现保留了字段更新行为，但本文件没有提供多 keyspace 创建路径，因此不能用它替代该专用辅助函数。
 
 ## 扩展指南
 
@@ -117,13 +112,3 @@ Go 注释还明确说明：nextgen 单元测试默认运行在 SYSTEM keyspace�
 - 若要支持并行运行多个 nextgen 测试，应先设计进程级配置的串行化或作用域化机制。只在本函数内加短时锁不能覆盖测试主体与 cleanup 之间的生命周期。
 - PascalCase 名称承担 Go 移植兼容，snake_case 名称承担 Rust 风格接口。删除或改变任一组前都应搜索外部使用者，并评估 API 兼容风险。
 - 性能风险主要来自全局配置的完整克隆与错误扩展缓存重建；该路径面向测试且调用频率低。若未来进入高频路径，应先测量而不是改为部分原地更新，因为当前快照与整体替换语义也是并发安全边界。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录中识别 `lib.rs`、`testenv.rs`、`testenv_test.rs`、`testenv.go`；目标文件被识别为 123 行、16 个符号。
-- RustCodeGraph `node --file pkg/testkit/testenv/testenv.rs`：核对全部常量、静态量、trait、公开函数、别名和函数体。
-- RustCodeGraph `query`：定位 Rust/Go 两版 `SetGOMAXPROCSForTest`、`UpdateConfigForNextgen`，以及 Rust 的 `MaxProcsForTest`、`ServiceScopeForTest`；定位下游 `get_global_config`、`store_global_config`、`update_global` 和 `NEXT_GEN_TARGET_SCOPE`。
-- RustCodeGraph `callers` / `callees`：对 Rust 的四个关键公开函数执行精确查询，未返回可用调用边；因此又用局部 `rg` 检索符号名和 crate 名补齐并交叉检查调用/依赖事实。
-- 源码与配置：[`testenv.rs`](./testenv.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、`pkg/config/config.rs`、`pkg/keyspace/keyspace.rs`、`pkg/dxf/framework/handle/handle.rs`。
-- 语义对照与测试：[`testenv.go`](./testenv.go)、[`testenv_test.rs`](./testenv_test.rs)，以及上述 Go 调用点；测试证明并行度处于 `1..=16`，并证明 helper、安装值和 cleanup 恢复行为。
-- 未运行 Cargo 或代码测试：本任务只新增说明文档，按计划以源码事实核验和章节结构命令作为验证。

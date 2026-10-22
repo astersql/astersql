@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo library crate `astersql-br-pkg-restore-internal-rawkv` 的主体实现。包入口 `br/pkg/restore/internal/rawkv/lib.rs` 通过 `#[path = "rawkv_client.rs"]` 挂载模块并执行 `pub use rawkv_client::*`，所以 `RawkvClient`、`PdRawkvDialer`、`RawKVBatchClient` 及构造函数都从 crate 根扁平导出。`br/pkg/restore/internal/rawkv/Cargo.toml` 把它映射到 Go 包 `br/pkg/restore/internal/rawkv`，并将 porting lane 标为 2。
-
-它描述 BR 恢复场景中的非事务 RawKV 批量写入边界：上层提供带时间戳后缀的键值，客户端在一个批次内按去掉时间戳的逻辑键去重，再把保留的原始键值交给 `RawkvClient::BatchPut`。这对应 Go 恢复链中 `br/pkg/restore/log_client/client.go` 使用 rawkv 包写回元数据的能力。
-
-当前 Rust crate 的 `[dependencies]` 为空，未链接 `tikv/client-rust`、kvproto、gRPC 或 Prometheus。`NewRawkvClient` 使用的默认 `UnconfiguredPdDialer` 必然返回错误；RustCodeGraph 也未发现目标实现被生产 Rust 主链调用，已确认的语义调用者集中在本 crate 的独立测试。因而本文件目前是可注入的本地移植边界和批处理实现，不代表真实 PD/TiKV 网络链路已经接通。
+因而本文件目前是可注入的本地移植边界和批处理实现，不代表真实 PD/TiKV 网络链路已经接通。
 
 ## 核心职责
 
@@ -88,7 +84,7 @@ Go 侧生产关系不同：`rawkv_client.go` 被 `br/pkg/restore/log_client/clie
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `RawkvClient` 方法面、`NewRawkvClient` 的 10 秒超时、`KVPair`、`RawKVBatchClient` 字段、满批条件、批内去重、较大 `originTs` 胜出、`PutRest`、成功 reset、失败保留以及忽略 Close 错误，逐项对应 `br/pkg/restore/internal/rawkv/rawkv_client.go`。Rust 独立测试 `rawkv_client_test.rs` 复刻 Go `rawkv_client_test.go` 的容量 3、五条输入、3+2 刷新和重复 key1/key4 场景，并通过排序消除 map 遍历顺序差异。
+Rust 独立测试 `rawkv_client_test.rs` 复刻 Go `rawkv_client_test.go` 的容量 3、五条输入、3+2 刷新和重复 key1/key4 场景，并通过排序消除 map 遍历顺序差异。
 
 关键差异在基础设施边界。Go `NewRawkvClient` 直接调用 `tikv/client-go/v2/rawkv.NewClient`，使用真实 `context.Context`、`config.Security`、可变参数 `rawkv.RawOption` 和全局 Prometheus 指标；Rust 用本地 trait、轻量取消容器、字符串安全配置、slice options 和 Vec 指标桩替代，默认拨号器不能联网。Go 用 `hack.MutableString` 避免为 map key 复制字节，Rust 的 `TruncateTS` 总是创建 `Vec<u8>`，并在组批时再次克隆 key/value，内存分配语义不同。
 
@@ -103,13 +99,3 @@ Rust `parity_test.rs::go_rust_public_contract_matches` 在 Go 原测试之外补
 若调整批处理或去重规则，应重点覆盖：相等/逆序 `originTs`、短 key 与非 MVCC key、跨批重复、`cap <= 0`、失败后重试、空/非法列族和底层部分成功。改变 `HashMap` 或排序策略还要确保 keys/values 始终配对，并评估额外复制、峰值内存和批次吞吐。
 
 若希望 Close 自动刷盘，应谨慎改变当前 Go 对齐契约：Close 没有 context 且忽略底层错误，无法可靠报告 flush 失败。更安全的调用约定仍是显式 `PutRest(ctx)` 成功后再 Close，并在上层测试错误退出时的数据保留策略。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件；`files --filter br/pkg/restore/internal/rawkv` 确认模块内 Rust/Go 实现和独立测试集合。
-- RustCodeGraph `node --file br/pkg/restore/internal/rawkv/rawkv_client.rs --offset 1 --limit 420`：读取目标文件完整 361 行，并核对常量、类型、trait、函数、impl、私有辅助和 metrics 模块。
-- RustCodeGraph `query/callers/callees`：核对 `NewRawkvClientWithDialer`、`NewRawKVBatchClient`、`PutRest` 等符号；确认 dialer、BatchPut、列族、指标与 reset 的下游边，并识别 `snap_client/import_test.rs::reset` 为同名误匹配而非业务调用。
-- crate 边界：`br/pkg/restore/internal/rawkv/Cargo.toml`、`lib.rs` 和根 `Cargo.toml`，确认 library 入口、workspace 成员、Go 包映射、独立测试挂载及空依赖。
-- Go 对照：`br/pkg/restore/internal/rawkv/rawkv_client.go`、`rawkv_client_test.go`，以及 Go 生产上游/Bazel 依赖 `br/pkg/restore/log_client/client.go`、`br/pkg/restore/log_client/BUILD.bazel`。
-- Rust 测试：`br/pkg/restore/internal/rawkv/rawkv_client_test.rs` 与 `parity_test.rs`，核对满批/残余刷新、批内与跨批重复、较大 TS 胜出、列族、指标、错误、拨号超时和关闭行为。
-- 本任务为纯文档分析，按计划未运行 Cargo。结构验证使用任务指定命令检查文档存在且恰好包含 11 个固定二级章节；人工复核区分了 Go 生产主链与尚未接线的 Rust 本地 trait 模式。

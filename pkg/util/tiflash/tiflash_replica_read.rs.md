@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-tiflash` crate 中的 TiFlash 副本读策略定义，源码由 [`lib.rs`](lib.rs) 的内部模块通过 `include!("tiflash_replica_read.rs")` 嵌入，再以 `pub use tiflash_replica_read::*` 对 crate 调用方公开。crate 的 [`Cargo.toml`](Cargo.toml) 声明唯一直接依赖为 `astersql-sessionctx-vardef`，用于共享系统变量的规范字符串。
-
-在当前 Rust 接线中，`pkg/distsql/context/context.rs` 的 `DistSQLContext::TiFlashReplicaRead` 使用这里的 `ReplicaRead`，并在默认构造时取 `ReplicaRead::default()`。RustCodeGraph 还识别到会话运行时中多个 `kv::tiflash::ReplicaRead::default()` 使用点，但这些是经 `kv` 命名空间接入，文档不把它们当作本 crate 函数的已验证直接调用。
+只提供策略数据和转换，不执行节点发现、Region 分配或 RPC。
 
 ## 核心职责
 
@@ -60,9 +58,9 @@
 
 Rust 文件逐项对应 [`tiflash_replica_read.go`](tiflash_replica_read.go)：Go 的 `type ReplicaRead int` 对应 Rust tuple newtype；三个 `iota` 常量对应显式的 `0/1/2`；两个值接收者方法对应 Rust `&self` 方法；两个 `switch` 对应带默认分支的 `match`；远程读阈值均为 `3`。
 
-差异主要是语言表达：Rust 为了保留 Go 风格 API 名称使用 `allow(non_snake_case/non_upper_case_globals)`；策略常量不依赖声明顺序自增；字符串转换返回静态引用而非 Go `string` 值。行为上，零值、已知映射、未知值回退和阈值均由 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 专门验证。
+差异主要是语言表达：Rust 为了保留 Go 风格 API 名称使用 `allow(non_snake_case/non_upper_case_globals)`；策略常量不依赖声明顺序自增；字符串转换返回静态引用而非 Go `string` 值。
 
-Go 应用主链中，`pkg/sessionctx/variable/sysvar.go` 用这两个转换函数设置/读取 `tiflash_replica_read`，`pkg/store/copr/batch_coprocessor.go` 用策略方法和阈值实施 store 过滤。当前 Rust 搜索证据只能确认类型进入 DistSQL 上下文，不能声称上述两条 Go 调用链已按相同 API 完整接通。
+当前 Rust 搜索证据只能确认类型进入 DistSQL 上下文，不能声称上述两条 Go 调用链已按相同 API 完整接通。
 
 ## 扩展指南
 
@@ -71,12 +69,3 @@ Go 应用主链中，`pkg/sessionctx/variable/sysvar.go` 用这两个转换函�
 - 修改远程读阈值时，应同步 Go 常量、`migration_aster_unit_test.rs` 和真正执行 store 过滤的下游。特别要检查当前 Rust `pkg/store/copr/batch_coprocessor.rs::MAX_REMOTE_READ_COUNT_PER_NODE_FOR_CLOSEST_REPLICAS`，它是独立常量，存在漂移风险。
 - 若将本 crate 的策略直接接入 Rust Coprocessor，需一并处理当地 `ReplicaReadPolicy` 的转换或去重，并扩展 `pkg/store/copr/batch_coprocessor_test.rs` 的同 zone/跨 zone/远程读边界用例；不要只改本文件便假定调度行为已变更。
 - Rust 测试逵守仓库规则，继续放在独立的 `migration_aster_unit_test.rs` 或相应下游 `*_test.rs` 中，不内嵌进生产源文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；`files --filter pkg/util/tiflash` 确认本 crate 的源文件、Go 对照和独立测试。
-- RustCodeGraph `query TiFlashReplicaRead` / `query tiflash_replica_read`：确认 `ReplicaRead`、两个方法、两个转换函数，以及系统变量和 Go 对照符号。
-- RustCodeGraph `node --file pkg/util/tiflash/tiflash_replica_read.rs`：逐行核对 106 行源文件，并报告 `pkg/distsql/context/context.rs`、`pkg/session/runtime/{canonical_table_reader,explain_read,relational_scan}.rs` 为相关使用文件。`callers/callees` 对关键函数未返回边，因此又以精确 `rg` 核验，并在本文明确限定了接线结论。
-- 已读文件：`pkg/util/tiflash/{Cargo.toml,lib.rs,tiflash_replica_read.go,migration_aster_unit_test.rs}`，以及直接类型消费方 `pkg/distsql/context/{Cargo.toml,context.rs,context_test.rs,migration_aster_unit_test.rs}` 的搜索片段。
-- 独立 Rust 测试 `migration_aster_unit_test.rs` 覆盖：Go 零值、`0/1/2` 编码、两个谓词、正反向映射、负数/未知整数、空串/大小写变体/未知串以及阈值 `3`。Go 系统变量测试 `pkg/sessionctx/variable/sysvar_test.go::TestTiDBTiFlashReplicaRead` 与对应 Rust 测试证明上层枚举校验会拒绝 `random`。
-- 本任务只做文档分析，按计划不运行 Cargo。文档完成后使用任务指定的 `test -f` 与十一个二级标题计数命令做结构验证。

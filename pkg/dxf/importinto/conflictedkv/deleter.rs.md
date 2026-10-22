@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dxf-importinto-conflictedkv` crate；crate 由同目录 `Cargo.toml` 定义，`lib.rs` 将私有模块 `deleter` 的公开项重新导出。它处于 IMPORT INTO 的 `resolve-conflicts` 阶段：上游 `pkg/dxf/importinto/conflict_resolution.rs::ResolveConflictGroup` 从对象存储读取先前记录的冲突 KV，按 worker 分发后为每个接收端构造 `NewDeleter` 并调用 `Deleter::Run`。包级业务背景见 `pkg/dxf/importinto/conflictedkv/doc.go`：此阶段要删除冲突行关联且当前仍存在于集群中的全部 KV，使导入后的表重新一致。
-
-该文件不是存储适配器，也不负责读取冲突文件。它位于 `Handler` 的“冲突 KV 解码/整行重编码”能力和 `ConflictStore` 的“快照读取/事务写入”抽象之间，负责存在性过滤、批量边界、删除 worker、事务重试和取消传播。
+位于 `Handler` 的“冲突 KV 解码/整行重编码”能力和 `ConflictStore` 的“快照读取/事务写入”抽象之间，负责存在性过滤、批量边界、删除 worker、事务重试和取消传播。
 
 ## 核心职责
 
@@ -78,8 +76,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/dxf/importinto/conflictedkv/deleter.go`：相同的 100 ms/1 s/10 次重试参数、2 MiB/9600 缓冲阈值、data/index handler 选择、快照 `BatchGet` 存在性过滤、无缓冲通道背压、事务批量删除和结束冲刷。
-
 重要实现差异如下：
 
 - Go `Run` 用带 recover/context 的 error group 并发运行 handler 与 delete loop；Rust 用调用线程加 scoped worker，并显式 join。两者都在 handler 收尾后关闭删除通道并等待删除结束。
@@ -88,7 +84,7 @@ Rust 文件逐项对应 `pkg/dxf/importinto/conflictedkv/deleter.go`：相同的
 - Go rollback 失败会记录 warning；Rust 丢弃 rollback 错误。Go 构造函数持有 logger 和具体 TiDB storage/encoder，Rust 通过 trait object 注入 store/codec，且无 logger 字段。
 - Rust 阈值采用 `AtomicUsize`，Go 是包变量。Rust 测试需串行保护全局修改；Go 包测试默认顺序行为不同。
 
-测试意图保持对齐：Go `deleter_test.go::TestDeleter` 使用真实 mock TiDB 表验证 data/index 冲突修复并把条数阈值降为 2；Rust `deleter_test.rs::{test_deleter_data_kv_conflicts,test_deleter_index_kv_conflicts}` 用 fake codec/store 驱动真实 handler、快照和 worker 管线，保留每键重复投递及多次冲刷。Go `deleter_internal_test.go` 与 Rust 的 `propagates_commit_error_without_deleting_key`、`transaction_write_conflict_retries_and_commits_deletion` 对齐提交失败与写冲突重试边界。
+测试意图保持对齐：Go `deleter_test.go::TestDeleter` 使用真实 mock TiDB 表验证 data/index 冲突修复并把条数阈值降为 2；Rust `deleter_test.rs::{test_deleter_data_kv_conflicts,test_deleter_index_kv_conflicts}` 用 fake codec/store 驱动真实 handler、快照和 worker 管线，保留每键重复投递及多次冲刷。
 
 ## 扩展指南
 
@@ -98,14 +94,3 @@ Rust 文件逐项对应 `pkg/dxf/importinto/conflictedkv/deleter.go`：相同的
 - 改动事务错误路径时修改 `deleteBufferedKeys`，明确 rollback/commit 错误优先级和可观测性；对应测试应继续放在独立的 `deleter_test.rs`，不要内嵌进生产文件。
 - 增加并行度或缓冲通道容量前，应验证同一行（特别是唯一多值索引）的上游 worker 亲和性，并检查取消时发送方、接收方能否都退出，避免死锁或并发写冲突。
 - 扩展流量统计时注意：读取字节在 `LazyRefreshedSnapshot::BatchGet` 统计命中键和值，写入字节在事务开始前按待删键长度统计，重试可能重复累计写流量；改变口径需同步 `TrafficRecorder` 契约和测试断言。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录的 Rust/Go 文件均已索引。
-- RustCodeGraph 源码/符号查询：`deleter.rs` 全部 275 行；`NewDeleter` 的下游 `NewBaseHandler`、`NewDataKVHandler`、`NewIndexKVHandler`、`NewLazyRefreshedSnapshot`，以及测试调用者 `do_test_deleter`、提交错误测试和事务冲突测试。
-- 生产调用证据：`pkg/dxf/importinto/conflict_resolution.rs::ResolveConflictGroup` 第 191 行起，尤其第 225–229 行的 worker 构造/运行，以及第 282–297 行的关闭、join 和错误汇总。
-- 抽象与下游证据：`pkg/dxf/importinto/conflictedkv/handler.rs` 中 `ConflictContext`、`ConflictStore`、`ConflictTransaction`、`Handler`、`EncodedRowHandler`、data/index handler 和 `LazyRefreshedSnapshot`。
-- crate 与包语义：`pkg/dxf/importinto/conflictedkv/Cargo.toml`、`lib.rs`、`doc.go`。
-- Go 对照：`pkg/dxf/importinto/conflictedkv/deleter.go`、`deleter_test.go`、`deleter_internal_test.go`。
-- Rust 独立测试：`pkg/dxf/importinto/conflictedkv/deleter_test.rs`。它覆盖 data/index KV、重复输入、低阈值多次冲刷、读写流量、提交错误不落地，以及事务写冲突重试成功。
-- 本任务为纯文档分析，按任务约束未运行 Cargo；结构通过任务规定的 11 个固定二级标题命令验证，人工复核未把推测写成已支持行为，也未复制整段源码。

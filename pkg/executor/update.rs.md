@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`update.rs` 位于 `astersql-executor` crate，crate 根由 [`pkg/executor/Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 指定；[`pkg/executor/lib.rs`](lib.rs) 通过 `pub mod update` 将它作为公开模块编入，并在 `cfg(test)` 下把独立的 [`pkg/executor/update_test.rs`](update_test.rs) 挂为测试模块。该文件不拥有具体的 session、chunk、table 或 TiKV 类型，而是用 `UpdateRuntime` 关联类型和方法描述生产边界，再由 `UpdateExec<R>` 编排 UPDATE 的 Open/Next/Close 及逐行辅助步骤。
-
-它对应 Go 的 [`pkg/executor/update.go`](update.go)，但当前不是 Go 实现的等量移植：Go `UpdateExec` 直接持有表达式、表、句柄缓存、事务、内存追踪器及外键执行器，Rust 文件只实现运行时无关的控制流和少量纯函数/统计结构。RustCodeGraph 对文件给出的直接文件级使用者是 `pkg/executor/select.rs` 与 `pkg/executor/update_test.rs`，而精确符号检索没有找到生产代码对 `UpdateExec` 的实例化；因此当前可验证定位是“公开的 UPDATE 执行协议与可测试骨架”，不能据此声称它已接入完整 SQL 执行主链。
+`UpdateRuntime` 定义行预处理、普通列/生成列合成、存储写回、子执行器生命周期、统计、内存和外键钩子，使算法层不绑定具体存储类型。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ Go 版额外管理 chunk 内存计费、handle/merged-row 缓存、事务 snapsh
 
 ## 与 Go 版本的对应关系
 
-Rust 名称刻意对齐 Go `UpdateExec` 的 `prepare`、`mergeNonGenerated`、`mergeGenerated`、`exec`、`Next`、`updateRows`、`fastComposeNewRow`、`composeNewRow`、`Open`、`Close`、外键访问器和重复键优化函数。策略函数的四条结果与 Go 第 706–741 行一致，Rust 把 `txn.IsPipelined()`/`txn.IsPessimistic()` 预先折叠为两个布尔参数。
-
 重要差异如下：
 
 - Go `UpdateExec` 直接保存 assignment、表、handle map、merged row、matched 计数、内存 tracker、外键 map 等；Rust 只保存 runtime。
@@ -84,7 +80,7 @@ Rust 名称刻意对齐 Go `UpdateExec` 的 `prepare`、`mergeNonGenerated`、`m
 - Go `updateRuntimeStats` 合并 snapshot 与 allocator 统计并返回整数类型标识；Rust 统计的是 fetch/compose/check-and-update 三段耗时，`Tp` 返回字符串。两者结构和语义并不等价。
 - Go `Open` 创建并挂接 memory tracker，按需创建 write stats；当前 Rust `Open` 还负责 drained 与求值缓冲复位，但具体分配和挂接都由 runtime 完成。Go `Next` 把总记录数写入 statement context，Rust 只用 matched rows 做 write CPU 记账。
 
-Go 独立测试 [`pkg/executor/update_test.go`](update_test.go) 验证悲观事务主键延迟重复键、未变化键锁、UPDATE IGNORE 重试后重复键、ON UPDATE 与生成列索引一致性；这些是完整 Go 执行器的行为证据，不等同于 Rust 单测覆盖。Rust 独立测试覆盖纯策略/统计、Open/Next 的一次记账语义以及独立的分区行身份追踪；后者未验证真实 SQL runtime。
+Rust 独立测试覆盖纯策略/统计、Open/Next 的一次记账语义以及独立的分区行身份追踪；后者未验证真实 SQL runtime。
 
 ## 扩展指南
 
@@ -93,11 +89,3 @@ Go 独立测试 [`pkg/executor/update_test.go`](update_test.go) 验证悲观事�
 修改生命周期顺序时重点关注 `Open` 失败后的半初始化状态、`Next` 错误时不得 drained/记账、`Close` 错误时仍清理内存。修改重复键策略时要保持 pipelined 高于 IGNORE 的优先级，并同步 Go 行为与 issue 注释所描述的 optimistic/pessimistic 限制。扩展统计时需决定是继续阶段耗时模型还是对齐 Go snapshot/allocator 模型，不能只改 `Tp` 字符串宣称兼容。
 
 测试必须继续放在独立文件 [`pkg/executor/update_test.rs`](update_test.rs)，不要内嵌进生产源文件。新增 runtime 行为应覆盖：非常量赋值触发缓冲初始化、`update_rows` 失败不记账不 drained、child open/close 失败的状态与清理、外键列表/级联判断、所有重复键组合、错误行号映射、生成列双阶段顺序及多表同句柄场景。若完成生产接线，还应补与 Go `update_test.go` 和 [`pkg/executor/test/oomtest/oom_test.rs`](test/oomtest/oom_test.rs) 等价的 SQL/内存回归验证。兼容风险集中在 MySQL affected/matched/warning 消息、UPDATE IGNORE 错误降级、生成列索引一致性；性能风险集中在重复键检查时机、row clone、缓存内存和统计热路径。
-
-## 验证依据
-
-- 冻结依据：逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/executor/update.rs`，并读取 `git show 2c944fb:pkg/executor/update.rs`；本文增量仅反映 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或后续提交行为。
-- 装配依据：冻结提交的 `pkg/executor/lib.rs` 与 `pkg/executor/Cargo.toml`；该包无 `doc.go`。RustCodeGraph `status` 与 `query UpdateRowTracker --limit 3` 确认当前索引含 Rust，但当前索引不能证明冻结历史，故历史行为与引用以 `git show` / `git grep 2c944fb` 为准。
-- 冻结的 `update.go::partitionRowKey`、`prepare` 与合并路径是身份语义对照。Go 自行定位分区（忽略别名的 PARTITION 限制），Rust 接收已计算的 `PartitionRowLocation`，不能据此宣称已移植分区定位。
-- `update_test.rs` 覆盖策略、统计、首次 Next 记账；`multi_table_update_partition_test.rs::multi_table_update_partition_tracks_physical_row_identity` 静态覆盖同 rowid 不同物理分区独立追踪、重复匹配、merged row 隔离、单表不追踪、lookup 失败与外连接无 handle。`lib.rs` 独立挂载两者；`git grep 2c944fb` 仅在该分区测试找到追踪器调用。
-- 交付使用 Ready 文档等价检查：五篇说明各有 11 个二级章节，检查文档差异和行尾空白，并人工复核生产接线、事务及资源边界。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`；按任务限定未运行 Cargo、Go 或 SQL 集成测试，所列测试仅作为静态证据。

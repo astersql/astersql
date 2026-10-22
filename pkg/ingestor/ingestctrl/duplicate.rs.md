@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate；crate 入口 `pkg/ingestor/ingestctrl/lib.rs` 以 `pub mod duplicate` 暴露它。它位于 Lightning local backend 的 ingest 控制面中，承接“从本地或远端来源读取重复 KV，再依处理策略报错、记录或删除”的工作。当前 Rust 应用侧的直接组装入口是 `Backend::GetDupeController`（`pkg/ingestor/ingestctrl/local.rs:676`）：该入口创建 `DupeDetector`，并把 `EngineManager` 提供的重复 KV 集合及 `KeyAdapter` 装入 `DupeController`。
-
-`pkg/ingestor/ingestctrl/Cargo.toml` 将该目录声明为独立 library crate（`[lib] path = "lib.rs"`），并用 `[package.metadata.porting] go-package = "pkg/ingestor/ingestctrl"` 标记 Go 来源。`duplicate.rs` 本身只直接依赖标准库、同 crate 的 `iterator::KeyAdapter`，以及 crate 根定义的 `CancellationToken`、`DuplicateResolution`、`Error`、`KeyRange`、`KvPair` 和 `Result`；它没有直接调用 Cargo 中列出的外部 crate。
+用 `DupeDetector` 执行冲突处理策略：`Error` 在首条冲突处返回原始 KV；其他策略分批写入 `ErrorManager`；`Remove` 还会在事务中仅删除值仍未变化的冲突键。
 
 ## 核心职责
 
@@ -79,7 +77,7 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `duplicate.go` 是来源和完整行为基准。两版都保留最大重试次数 5、默认冲突批大小 1024、流抽象、待处理范围、重复状态和本地/远端检测概念；Rust 独立测试也沿用 Go 的边界意图。不过当前并非逐项等价：
+两版都保留最大重试次数 5、默认冲突批大小 1024、流抽象、待处理范围、重复状态和本地/远端检测概念；Rust 独立测试也沿用 Go 的边界意图。不过当前并非逐项等价：
 
 - Go `pendingIndexHandles` 是四个等长 slice 的 struct-of-arrays，并实现完整 `sort.Interface::Swap`；Rust 是 `Vec<PendingIndexHandle>` 的 array-of-structs，排序结果一致但布局与批量 BatchGet 方式不同。
 - Go 本地流直接迭代 Pebble duplicate DB；Rust 接收内存 `Vec<KvPair>` 快照。Go 远端流封装 ImportSST DuplicateDetect gRPC、Region leader 与请求上下文；Rust 用 `RemoteDuplicateSource` + continuation 抽象，尚无这些具体接线。
@@ -99,12 +97,3 @@
 - 优化本地内存或锁占用时，入口是 `DupeController::CollectLocalDuplicateRows` 与 `DupKVStreamImpl`。流式替代全量 clone/sort 前必须保持半开范围、有序输出、KeyAdapter 解码及锁外处理等可观察行为。
 - 改动 `PendingKeyRanges::finish` 时，应覆盖相离、完全覆盖、左右截断、中间切分、空 end 无上界及多个重叠范围；并行化则还需同步策略和竞态测试。
 - 改动删除路径时，应保持“当前 value 等于扫描 value 才删除”的并发安全条件，并测试 `Begin`、`BatchGet`、`Delete`、取消和 `Commit` 各阶段失败。Rust 单元测试必须继续放在独立的 `pkg/ingestor/ingestctrl/duplicate_test.rs`，不要内嵌到生产文件。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/ingestor/ingestctrl` 确认目标 Rust/Go/测试均已索引，`duplicate.rs` 有 58 个符号。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/duplicate.rs --offset 1 --limit 500` 及 `--offset 489 --limit 100`：核对了全部 520 行生产源码；`query` 核对 `DupeDetector`、`processRemoteDupTask`、`DupeController` 与 `NewLocalDupKVStream` 的定义候选。`callers/callees` 精确查询连续超时，故调用边由下列源码搜索补证，而未把超时结果当作调用关系结论。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/duplicate_test.rs --offset 1 --limit 500`：核对本地流的范围过滤/排序/关闭、原始冲突解包、累计重复标志、范围切分、无界完成范围、句柄排序清空及读取失败仍关闭流。
-- `pkg/ingestor/ingestctrl/lib.rs`：核对模块暴露、统一错误、半开 `KeyRange`、四种 `DuplicateResolution` 和 `CancellationToken`；`pkg/ingestor/ingestctrl/local.rs:675-687`：核对唯一生产组装入口和本地依赖来源。
-- `pkg/ingestor/ingestctrl/Cargo.toml`：核对 crate 边界、Go package 映射及依赖条件；`pkg/ingestor/ingestctrl/duplicate.go`：核对 Go 的本地/远端流、数据/索引冲突、Region 重试、控制器及 Resolve 流程；`pkg/ingestor/ingestctrl/duplicate_test.go`：核对 Go 的任务构造、keyspace 编码、错误解包及行/索引冲突可读错误意图。
-- 仓库 `rg` 调用点搜索：Rust 生产代码只在 `local.rs` 导入并组装这些类型；测试路径为独立的 `duplicate_test.rs`。本任务是纯文档分析，按计划未运行 Cargo 或代码测试。

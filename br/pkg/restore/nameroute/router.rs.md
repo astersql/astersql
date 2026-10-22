@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件由同目录 `lib.rs` 私有挂载并再导出 `NameRouteError`、`ObjectName`、`Rule`、`Router`；属于 `astersql-br-pkg-restore` 的 `nameroute` 模块。本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
+构造精确库/表名称路由，校验规则集合及具体恢复对象的目标唯一性，生成可持久化的规范规则和 SHA-256 指纹。
 
 ## 核心职责
 
@@ -32,14 +32,6 @@
 
 构造后 API 只读，无后台任务或外部资源。路由需为小写键分配字符串，返回拥有的目标字符串；目标唯一性校验额外持有与对象数成比例的两个集合。
 
-## 与 Go 版本的对应关系
-
-对应 `router.go`，表优先、单次匹配、目标碰撞和排序后长度分帧 SHA-256 算法对齐。Go 使用 `ast.CIStr` 的 `.O/.L`，Rust 动态建立小写键；Go `Rules/CanonicalRules` 返回复制切片，Rust 返回借用切片。两者的规范表达都保留原始拼写。
-
 ## 扩展指南
 
 增加规则种类时同时维护解析、规范表达、唯一性和优先级；覆盖表规则覆盖库规则、非链式路由、未改名对象冲突、重复源和规则顺序稳定性。不要让指纹脱离实际路由语义。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 完整读取本文件、parser、模块入口与 restore Cargo 依赖，并对照 `router.go`/`router_test.go`。Rust 独立测试在 `br/pkg/task/restore_name_route_test.rs`，包括优先级、引号与指纹、非法/重复规则及恢复计划冲突。冻结 `git grep` 核实任务层调用范围。RustCodeGraph 用于索引状态检查，未将图边作为冻结调用证据；未运行 Cargo 或这些测试。

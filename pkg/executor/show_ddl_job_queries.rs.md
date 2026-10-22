@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor` crate，并由 `pkg/executor/lib.rs` 以 `pub mod show_ddl_job_queries` 公开。它保存 `ADMIN SHOW DDL JOB QUERIES` 两种形式的 Rust 移植核心：按 Job ID 查询，以及按 `offset`/`limit` 查询。`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/executor"` 共同确认其 crate 与 Go 包对应关系。
-
-当前接线需作区分：`pkg/executor/builder.rs::build` 会把 `Plan::ShowDdlJobQueries` 和 `Plan::ShowDdlJobQueriesWithRange` 分发到同名 builder 方法，但这两个方法仅调用 `build_leaf` 生成对应 `ExecutorKind`；仓库中没有本文件的 `DDLJobSource`、`StringChunk` 实现，也没有构造 `ShowDDLJobQueriesExec` 或 `ShowDDLJobQueriesWithRangeExec` 的 Rust 代码。因此，本文件已经表达核心算法与资源边界，却尚无证据表明它已接入 Rust 实际执行链。Go 的完整接线位于 `pkg/executor/builder.go::buildShowDDLJobQueries*`。
+这用于处理读取期间作业从运行态进入历史态的重叠窗口。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ Go `Open` 通过 `defer ReleaseSysSession(...)` 保证系统会话释放及事�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/show_ddl_job_queries.go`。两边均先打开 base executor，再在内部事务读取运行中与历史作业，按 Job ID 去重并保持“运行中优先”，随后按 chunk 容量分页。默认历史条数 10、按 ID 形式的一列 query、范围形式的 ID/query 两列，以及游标推进方式均逐句对应。
+主要结构差异是 Rust 通过泛型 trait 隔离具体系统会话、meta mutator、DDL API 与 chunk；Go 直接调用 `GetSysSession`、`sessiontxn.NewTxn`、`session.Txn(true)`、`ddl.GetAllDDLJobs`、`ddl.GetLastNHistoryDDLJobs`。
 
-主要结构差异是 Rust 通过泛型 trait 隔离具体系统会话、meta mutator、DDL API 与 chunk；Go 直接调用 `GetSysSession`、`sessiontxn.NewTxn`、`session.Txn(true)`、`ddl.GetAllDDLJobs`、`ddl.GetLastNHistoryDDLJobs`。Rust 的 `with_internal_ddl_transaction` 契约意在承载 Go 的 `defer ReleaseSysSession` 自动回滚语义。
-
-测试证据以 Go 为主：`pkg/executor/test/executor/executor_test.go` 覆盖未知/重复 Job ID、最近历史作业、两种 limit/offset 写法和 DDL 并发期间结果不重复；`pkg/executor/test/issuetest/executor_issue_test.go::TestIssue42298` 覆盖大 limit 与大 offset。`pkg/executor/test/issuetest/executor_issue_test.rs::test_issue42298` 是可执行 Rust 风格用例，但走 testkit SQL 层，不能单独证明本文件已被接线；`pkg/executor/test/executor/executor_test.rs` 明确把大段 Go 原文保存在 `GO_EXECUTOR_TEST_REFERENCE` 字符串中，其中的对应场景只是迁移参考，不是本算法的可执行单元测试。当前没有 `show_ddl_job_queries_test.rs`。
+`pkg/executor/test/issuetest/executor_issue_test.rs::test_issue42298` 是可执行 Rust 风格用例，但走 testkit SQL 层，不能单独证明本文件已被接线；`pkg/executor/test/executor/executor_test.rs` 明确把大段 Go 原文保存在 `GO_EXECUTOR_TEST_REFERENCE` 字符串中，其中的对应场景只是迁移参考，不是本算法的可执行单元测试。当前没有 `show_ddl_job_queries_test.rs`。
 
 ## 扩展指南
 
@@ -90,11 +86,3 @@ Go `Open` 通过 `defer ReleaseSysSession(...)` 保证系统会话释放及事�
 - 修改分页逻辑时，应分别覆盖多 chunk、零容量、空 jobIDs、重复 jobIDs、`jobIDs.len() >= jobs.len()`、offset 等于/大于长度、limit 为 0，以及 `offset + limit` 溢出。需先确认与 Go 的兼容意图，再决定是否同步修复 Go；当前分支不能按直觉删减。
 - 性能上，按 ID 形式当前复杂度约为“请求 ID 数 × 当前批作业数”；若改为索引查找，必须保留请求 ID 顺序、重复 ID 行为和批次游标语义。历史读取量随 `offset + limit` 增长，大范围请求还会放大内存占用。
 - 新增 Rust 回归测试应放在独立测试文件，并从 `pkg/executor/lib.rs` 通过 `#[cfg(test)] mod show_ddl_job_queries_test;` 接入；不能把测试放入本生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个已索引文件；`query ShowDDLJobQueriesExec --kind struct` 和 `query ShowDDLJobQueriesWithRangeExec --kind struct` 同时定位 Rust/Go 定义；`explore pkg/executor/show_ddl_job_queries.rs ShowDDLJobQueriesExecutor` 给出目标文件全文、内部调用以及未发现覆盖测试；针对 builder 的 explore 确认 `build` 是两个 Rust builder 方法的调用者。
-- 已读源码：`pkg/executor/show_ddl_job_queries.rs`、`pkg/executor/lib.rs`、`pkg/executor/builder.rs`、`pkg/planner/core/common_plans.rs`、`pkg/planner/core/planbuilder.rs`。
-- 已读 crate/Go 对照：`pkg/executor/Cargo.toml`、`pkg/executor/show_ddl_job_queries.go`、`pkg/executor/builder.go`。
-- 已读测试证据：`pkg/executor/test/executor/executor_test.go`、`pkg/executor/test/executor/executor_test.rs`、`pkg/executor/test/issuetest/executor_issue_test.go`、`pkg/executor/test/issuetest/executor_issue_test.rs`。
-- 仓库搜索确认：Rust 侧只有目标文件自身实现 `ShowDDLJobQueriesExec`/`ShowDDLJobQueriesWithRangeExec`，没有 `DDLJobSource for`、`StringChunk for` 或两结构体构造表达式；相关 SQL 回归位置如上。未运行 Cargo，符合本纯文档任务约束。

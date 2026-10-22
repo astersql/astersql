@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/config/config_util.rs` 属于 `astersql-config` crate（`pkg/config/Cargo.toml:1-8`），集中放置不属于某一配置结构体的通用操作：配置深拷贝、动态字段合并、嵌套映射展平、热重载回调类型，以及事务作用域读取门面。`pkg/config/lib.rs:37-39` 以私有模块 `config_util` 装配本文件，再通过 `pub use config_util::*` 从 crate 根重导出公开符号。
-
-它不是配置结构定义或配置文件解析入口；主 `Config`、全局配置快照和加载/校验逻辑位于 `pkg/config/config.rs`。当前 Rust 生产接线中，`GetTxnScopeFromConfig` 会被 `pkg/kv/txn_scope_var.rs::NewDefaultTxnScopeVar` 调用；其余工具在仓库内只找到本文件内部调用和独立单元测试调用。尤其是 Go 侧 `pkg/executor/memtable_reader.go:257` 已用 `FlattenConfigItems` 处理 `SHOW CONFIG` 数据，但相应 Rust executor 目前没有直接调用，不能把 Go 接线当作 Rust 已实现的运行链。
+`goFieldName` 把 serde 产生的 kebab-case/snake_case 键还原成合并白名单使用的 Go 导出字段名，并处理 `tikv` 与慢日志阈值两个非普通大小写映射（`pkg/config/config_util.rs:149-172`）。
 
 ## 核心职责
 
@@ -91,7 +89,7 @@ RustCodeGraph 和限定范围源码检索确认的内部调用边为：
 
 ## 与 Go 版本的对应关系
 
-`pkg/config/config_util.go` 是直接对照。Rust 保留了 Go 的符号名称、15 项动态白名单、accepted/rejected 含义、Object/结构体递归、数组不展平、回调参数含义和 TiKV 事务作用域转发。
+Rust 保留了 Go 的符号名称、15 项动态白名单、accepted/rejected 含义、Object/结构体递归、数组不展平、回调参数含义和 TiKV 事务作用域转发。
 
 主要语言映射与迁移差异如下：
 
@@ -103,7 +101,7 @@ RustCodeGraph 和限定范围源码检索确认的内部调用边为：
 - Go `ConfReloadFunc` 可表示普通函数值；Rust `fn` 别名只能表示函数项或不捕获闭包，不能保存捕获环境。
 - Go `tikvcfg` 来自 `github.com/tikv/client-go/v2/config`；Rust 当前 `tikvcfg` 是 `pkg/config/lib.rs` 内部精简实现，从 AsterSQL 全局配置的 `labels["zone"]` 推导 scope。
 
-Go 测试 `pkg/config/config_util_test.go` 与两份 Rust 独立测试覆盖深拷贝、动态/静态字段和数组展平。值得注意的是 Go 测试注释把 `Instance.SlowThreshold` 放在 rejected 区域，但白名单包含该路径且断言期望 6 个 accepted；Rust 测试明确把它作为第六个动态项，并验证值已更新，符合实际 Go 代码与最终断言。
+值得注意的是 Go 测试注释把 `Instance.SlowThreshold` 放在 rejected 区域，但白名单包含该路径且断言期望 6 个 accepted；Rust 测试明确把它作为第六个动态项，并验证值已更新，符合实际 Go 代码与最终断言。
 
 ## 扩展指南
 
@@ -116,13 +114,3 @@ Go 测试 `pkg/config/config_util_test.go` 与两份 Rust 独立测试覆盖深�
 若需要带状态的重载回调，应新增适当的 trait object/泛型接口，而不是把捕获闭包强塞入 `ConfReloadFunc`。若要提高动态合并性能，可把白名单改为惰性静态集合或一次构造后传入递归；这会改变公开 API，应先测量配置重载频率并保持 Go 字段路径兼容。
 
 正确性风险集中在 serde 路径与白名单漂移、`expect` panic 和被跳过字段；兼容性风险集中在 accepted/rejected 路径拼写及展平键格式；性能风险主要是整份配置的 JSON 往返、每个变化叶子重建白名单和递归分配路径字符串。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引有效，含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/config` 将 `config_util.rs` 标为含 9 个符号。
-- RustCodeGraph `query` 定位了 Rust/Go 的 `CloneConf`、`MergeConfigItems`、`mergeConfigItems`、`FlattenConfigItems`、`flatten`、`GetTxnScopeFromConfig`，并定位两份 Rust 测试入口；图输出确认 `MergeConfigItems -> mergeConfigItems -> dynamicConfigItems/goFieldName` 与 `FlattenConfigItems -> flatten`。精确 `callers`/`callees` 在约 30 秒内产生歧义/超时，因此上游调用由限定 Rust/Go 文件范围的 `rg` 与源码逐行复核补齐。
-- 已读 Rust 实现与装配：`pkg/config/config_util.rs`、`pkg/config/lib.rs`、`pkg/config/Cargo.toml`、`pkg/config/config.rs`、`pkg/kv/txn_scope_var.rs`。
-- 已读 Go 对照与生产接线：`pkg/config/config_util.go`、`pkg/executor/memtable_reader.go`，并检索了 Go 的事务作用域调用点。
-- 已读独立测试：`pkg/config/config_util_test.rs`、`pkg/config/config_util_1_aster_unit_test.rs`、`pkg/config/config_util_test.go`；另核对 `pkg/executor/test/distsqltest/distsql_test.rs` 的 zone label 断言。
-- 人工复核结论：本文件存在于配置 crate 的通用转换边界；当前 Rust 生产链只直接使用事务作用域门面，其余能力处于已实现、已单测但未见生产调用的迁移状态。扩展时必须同步 serde 字段表示、Go 风格白名单路径和独立测试。
-- 本任务只新增说明文档，按计划不运行 Cargo。固定章节结构验证与交付时的工作区核对另行执行并记录退出码。

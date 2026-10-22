@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于独立 Rust crate `astersql-expression-generator` 的 `string_vec` 模块，由 [`lib.rs`](./lib.rs) 以 `pub mod string_vec` 暴露。它不是 SQL 表达式的运行时求值实现，而是 Go 源码生成器：在内存中构造 `FIELD` 函数的向量化 Go 实现及配套测试源码，并可将二者写入 `builtin_string_vec_generated.go` 与 `builtin_string_vec_generated_test.go`。
-
-应用侧的原始生成入口仍是 [`../builtin.go`](../builtin.go) 中的 `//go:generate go run generator/string_vec.go`；生成后的代码落在 [`../builtin_string_vec_generated.go`](../builtin_string_vec_generated.go)，并为 [`../builtin_string.go`](../builtin_string.go) 定义的 `builtinFieldIntSig`、`builtinFieldRealSig`、`builtinFieldStringSig` 补充 `vecEvalInt` 与 `vectorized` 方法。因此，本文件位于“开发期代码生成”链路，而不是请求期 SQL 执行链路。
+按 `Int`、`Real`、`String` 的固定顺序生成三个 `builtinField*Sig.vecEvalInt` 实现；整数和浮点数使用列切片直接比较，字符串使用签名中的排序规则比较器 `b.ctor.Compare`。
 
 ## 核心职责
 
@@ -85,8 +83,6 @@ Rust 生成器没有共享锁、静态可变数据、异步任务或跨调用缓
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`string_vec.go`](./string_vec.go)。二者共享相同的 `header`、import、Int/Real/String 类型顺序、`FIELD` 比较分支、测试用例矩阵和“格式化失败仍保留原始源码”的总体语义。仓库现有 [`../builtin_string_vec_generated.go`](../builtin_string_vec_generated.go) 与模板结构相符，确认生成目标确实接入 Go 表达式运行时。
-
 已确认的实现差异如下：
 
 - Go 版本通过 `text/template.Execute` 展开，模板解析在全局初始化时由 `template.Must` 保证；Rust 当前通过 `format!` 手工展开，保留的模板常量不参与执行，因此不存在模板执行错误路径。
@@ -104,12 +100,3 @@ Rust 生成器没有共享锁、静态可变数据、异步任务或跨调用缓
 若要把 Rust 生成器接入自动生成流程，需要在本文件之外增加明确的二进制或构建入口；当前 `builtin.go` 仍调用 Go 生成器，不能仅凭 `default_outputs` 推断 Rust 已替代 `go generate`。若改进写盘可靠性，可考虑临时文件加原子替换或成对提交，但需明确处理并发写、权限和部分失败兼容性。
 
 性能风险主要在生成产物：候选数乘输入行数的双层循环是 `FIELD` 的既有线性搜索语义；固定长切片访问避免逐值 getter，字符串必须承担 collator 比较成本。生成器自身的主要成本是字符串构造和每次调用启动一个 `gofmt` 进程。
-
-## 验证依据
-
-- Rust 源码与符号：[`string_vec.rs`](./string_vec.rs) 中的 `TypeContext`、`types_map`、`render_string_vec`、`generate_dot_go`、`generate_test_dot_go`、`format_go_source`、`generate_one_file`、`default_outputs`。
-- 模块与 crate 边界：[`lib.rs`](./lib.rs) 的 `pub mod string_vec` 及独立 `#[path = "string_vec_test.rs"]` 测试模块；[`Cargo.toml`](./Cargo.toml) 的 crate、依赖和移植元数据。
-- Rust 独立测试：[`string_vec_test.rs`](./string_vec_test.rs) 验证三类上下文顺序/形状、双文件写出、关键 Int/String 生成片段以及模板占位符已完全展开。
-- Go 对照与接线：[`string_vec.go`](./string_vec.go)、[`../builtin.go`](../builtin.go) 的 `go:generate`、[`../builtin_string.go`](../builtin_string.go) 的签名选择与标量语义、[`../builtin_string_vec_generated.go`](../builtin_string_vec_generated.go) 及 [`../builtin_string_vec_generated_test.go`](../builtin_string_vec_generated_test.go) 的现有产物。
-- RustCodeGraph：索引包含目标文件 21 个符号；`generate_dot_go` 的调用边指向 `types_map`、`render_string_vec`、`format_go_source`，调用者为 `generate_one_file` 与 `default_outputs`；`generate_test_dot_go` 的调用者相同；`generate_one_file` 的仓库内调用者为 `string_vec_test.rs::generation_writes_formatted_implementation_and_test_pair`；`render_string_vec` 仅由 `generate_dot_go` 调用。
-- 文档任务按要求不运行 Cargo；验收采用固定十一章节结构检查，并人工复核本文区分了生成期与运行期事实、当前执行代码与保留模板、以及已验证差异与未接线边界。

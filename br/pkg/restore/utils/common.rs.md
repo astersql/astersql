@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-属于 `astersql-br-pkg-restore-utils`；本目录 `lib.rs` 通过 `pub mod common` 和 `pub use common::*` 导出。本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
+表示不可变备份源与恢复目标的分离计划，保存建表后旧表、新表和 rewrite rule 的对应，并提供目标库名称回退、库设置兼容与确定性源库优先比较。
 
 ## 核心职责
 
@@ -34,12 +34,8 @@
 
 ## 与 Go 版本的对应关系
 
-对应 `common.go` 新增计划、TargetDBName 及两个比较函数。Go 计划使用指针和真实 metautil/model，Rust 使用本地 stub 值和克隆；Go policy 取 `.Name.L`，本地 stub 直接存 CIStr 并取 `.L`。Rust snap-client 仍使用另一组同名类型，公开导出不等于主链已迁移。
+Go 计划使用指针和真实 metautil/model，Rust 使用本地 stub 值和克隆；Go policy 取 `.Name.L`，本地 stub 直接存 CIStr 并取 `.L`。
 
 ## 扩展指南
 
 修改源目标字段时需同时审计 snap-client 同名类型及消费者，避免丢失备份 ID 或文件。新增用例应放独立测试文件；不要内嵌测试，也不要仅凭同名结构将两个 crate 的类型混用。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 已审计本文件增量与完整源码、`common.go`、`lib.rs`/`Cargo.toml` 和 `stubs.rs` 对应元数据定义；冻结引用搜索检查 `DatabaseSettingsCompatible`/`SourceDBPrecedes` 及快照类型导入。`snap_client/client_test.rs::test_create_tables_with_plan_preserves_source_metadata` 只覆盖快照 stub 计划，不能算本类型直接测试。本目录无 common 专用测试挂载，未运行 Cargo；图仅检查状态，冻结 git blob 为事实依据。

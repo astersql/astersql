@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`compact_table.rs`](compact_table.rs) 属于 `astersql-executor` crate；[`lib.rs`](lib.rs) 以 `pub mod compact_table` 将它公开，而 [`Cargo.toml`](Cargo.toml) 通过 `[lib] path = "lib.rs"` 定义该 crate。它承载 `ALTER TABLE ... COMPACT TIFLASH REPLICA` 的 Rust 侧执行算法：发现 TiFlash store，针对每个 store 并行工作，并在单个 store 内按物理表、按响应页串行发送压缩请求。
-
-当前仓库中的生产入口只可追踪到 [`executorBuilder::buildCompactTable`](builder.rs)：它校验副本类型与存储、解析分区 ID，再把实际构造委托给 `ExecutorBuilderDependencies::build_compact_table_executor`。代码搜索未找到该 trait 方法的 Rust 生产实现，也未找到测试以外的 `CompactTableTiFlashExec` 构造或 `CompactRuntime` 实现。因此，本文件的算法和抽象边界是实装的，但其 Rust 生产适配接线在当前仓库中未验证；不能仅凭 Go 版本推断已经接入完整 SQL 主链。
+`storeCompactTask::work` 在一个 store 内确定物理表集合并串行处理；分区表在未指定分区时遍历全部定义，指定分区时保持请求给出的 ID 顺序，非分区表使用逻辑表 ID 作为物理表 ID。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ RustCodeGraph 给出的核心调用链是 `CompactTableTiFlashExec::Next -> doCo
 
 Rust 版把 Go 的具体基础设施显式抽象为 trait：`sessionctx`/statement warning 与日志对应 `CompactRuntime`，`tikv.Storage` 客户端和 `context.Context` 对应 `CompactRun`，`backoff.Backoffer` 对应 `CompactBackoff`，protobuf 请求/响应则由本地数据结构表示。Go 使用 `errgroup.WithContext` 传播全局取消；Rust 使用 scoped thread、原子标志与 `CompactRun::Cancel`。Go 的顶层 `_ = g.Wait()` 总是忽略 worker 错误；Rust 同样吸收普通 worker 错误，但额外把 worker panic 转为顶层错误，并显式执行 `Finish`。
 
-[`compact_table_test.rs`](compact_table_test.rs) 覆盖 Rust 抽象下的核心 Go 意图：无副本与一次性执行、过滤非 TiFlash、分页续键、网络重试、busy/unknown 告警、全局取消、不存在分区跳过、指定分区顺序、多 store 独立页序列、无效页、非重试传输错误、退避耗尽及缺失响应体。Go 测试 [`compact_table_test.go`](compact_table_test.go) 还通过真实 testkit/mock RPC 覆盖多 store、范围/哈希分区、TiFlash 下线及恢复；这些集成层场景在 Rust 独立测试中没有等价生产接线验证。
+Go 测试 [`compact_table_test.go`](compact_table_test.go) 还通过真实 testkit/mock RPC 覆盖多 store、范围/哈希分区、TiFlash 下线及恢复；这些集成层场景在 Rust 独立测试中没有等价生产接线验证。
 
 ## 扩展指南
 
@@ -91,12 +89,3 @@ Rust 版把 Go 的具体基础设施显式抽象为 trait：`sessionctx`/stateme
 - 引入并发限制或分区并行时，修改点在 `doCompact` 和 `storeCompactTask::work`。必须保持同表压缩限制、store 间取消传播、进度计数一致性和 `Finish` 恰当收尾，并评估线程数、RPC 压力与 TiFlash 负载。
 - 完成生产接线时，应实现 `CompactRuntime`/`CompactRun`/`CompactBackoff`，并让 `ExecutorBuilderDependencies::build_compact_table_executor` 构造本类型；需要验证查询 kill、deadline、RPC body 类型转换、集群发现、warning/log 注入及所有在途 RPC 的取消。
 - 对用户可见文案或错误分类的修改需与 [`compact_table.go`](compact_table.go) 及其 Go 测试保持一致；若有意分叉，应在文档和独立测试中记录兼容理由。
-
-## 验证依据
-
-- 源码全量阅读：[`compact_table.rs`](compact_table.rs)，包括常量、所有数据类型、三个边界 trait、执行器、store task、分页/重试及十六进制日志辅助函数。
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。`node getTiFlashStores` 验证其调用 `CompactRuntime::GetStoreServerInfo` 且被 `doCompact` 调用；`node doCompact` 验证其调用 `getTiFlashStores`、`BeginRun`、`work`、`Cancel`、`Finish` 并被 `Next` 调用；`node compactOnePhysicalTable` 与 `node sendRequestWithRetry` 验证 `work -> compactOnePhysicalTable -> sendRequestWithRetry` 及其日志、响应、RPC、退避和取消下游边。
-- crate 与模块证据：[`Cargo.toml`](Cargo.toml) 的 package/lib/dependencies 段、[`lib.rs`](lib.rs) 的 `pub mod compact_table` 与独立测试模块声明。
-- 上游证据：[`builder.rs`](builder.rs) 中 `ExecutorBuilderDependencies::build_compact_table_executor` 和 `executorBuilder::buildCompactTable`；仓库搜索只找到 trait 声明，没有找到 Rust 生产实现或测试外的本类型构造，因此生产接线明确记为未验证。
-- 对照与测试证据：完整阅读 [`compact_table.go`](compact_table.go)；阅读 Rust 独立测试 [`compact_table_test.rs`](compact_table_test.rs) 的 12 个测试；核对 Go 测试 [`compact_table_test.go`](compact_table_test.go) 的 15 个测试入口与覆盖主题。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节、文件存在、链接和 diff 范围。

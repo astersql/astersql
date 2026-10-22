@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`cmd.rs` 是 `astersql-br-cmd-br` crate 的 BR 命令公共运行时层，而不是备份、恢复或日志备份的业务实现。crate 由 `br/cmd/br/Cargo.toml` 定义为同时提供 `lib.rs` 和 `bin_main.rs` 的二进制包；`lib.rs` 将本文件公开为 `cmd` 模块，`bin_main.rs` 再经库入口进入 `main.rs`。根入口 `entry::main` 创建 `br` 根命令后调用 `DefineCommonFlags` 和 `SetDefaultContext`，具体子命令随后复用本文件的初始化、日志、内存、状态服务、过滤器、上下文与 tracing 辅助逻辑。
-
-本文件直接对照 `br/cmd/br/cmd.go`。它处于命令树和 `astersql-br-pkg-task` 任务层之间：上游是 `main.rs` 以及 `backup.rs`、`restore.rs`、`stream.rs`、`debug.rs`、`operator.rs`、`abort.rs` 等命令模块；下游主要是 `astersql_br_pkg_task` 的公共 flags/TLS/参数日志能力、`astersql_br_pkg_trace`，以及 `stubs.rs` 暴露的迁移期 CLI、日志、内存、TLS、status mux 和 glue 接口。Cargo 注释明确该 crate 面向 arm64 Darwin 的瘦 BR 依赖布局，部分 TiDB/PD/TiKV/CLI 能力由本地 trait/stub 承接，因此不能把这里的调用形状等同于所有外部服务均已接入真实实现。
+提供 Go 对齐的数据库过滤规则、内存预留公式、日志文件命名和可选 tracing 生命周期包装。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ status preparer 注册表的锁只保护查找/替换，不覆盖 preparer 本�
 
 ## 与 Go 版本的对应关系
 
-Rust 的常量、过滤规则、flags、内存公式、日志/status 初始化顺序主要逐项对应 `br/cmd/br/cmd.go`。`main_test.go::TestCalculateMemoryLimit` 的六个精确表值被 `main_test.rs::test_calculate_memory_limit` 原样复刻；`parity_test.rs` 还验证 4 GiB 拐点、极小/大内存性质、过滤器内容和 context 取消传播。
-
 存在以下实现层差异，扩展时应明确保留或补齐而不是假设完全等价：
 
 - Go 使用包级 `tidbGlue` 与 `sync.Map`，Rust 使用 `OnceLock<Mutex<TidbGlue>>` 和 `Mutex<Vec<(id, preparer)>>`，从而显式串行化访问并按 `Command.id` 关联。
@@ -104,12 +100,3 @@ Rust 的常量、过滤规则、flags、内存公式、日志/status 初始化�
 - 新增共享 glue 操作时要缩小锁范围，避免重入 `tidbGlue()`；临时改写必须返回或创建 RAII 恢复守卫，并为成功、错误及 panic/提前返回路径增加独立测试。兼容风险是全局过滤规则泄漏到后续子命令。
 - 修改 tracing 时建议将 finish 资源改为明确的 Drop guard 后再依赖 panic 安全；现状只保证普通返回。修改 listener/monitor 生命周期时，需要为启动失败和退出清理设计可观察的 handle，而不能假设本文件已经持有它们。
 - 修改过滤列表时同步检查 backup/restore/abort 的 `DefineFilterFlags` 调用点，并在 `parity_test.rs::contract_normal_command_tree_and_filters` 固定系统库排除与权限/bind 表保留意图。
-
-## 验证依据
-
-- 目标源码：RustCodeGraph `node --file br/cmd/br/cmd.rs` 读取了 432 行全貌；`explore "DefineCommonFlags setupMemoryMonitoring Init ctlInit prepareStatusServer setTiDBGlueDBFilter in br/cmd/br/cmd.rs"` 和针对公共 helper 的 callers 查询确认主要调用边。
-- crate/入口：读取 `br/cmd/br/Cargo.toml`、RustCodeGraph 节点 `br/cmd/br/lib.rs`、`main.rs`、`bin_main.rs`，确认库/二进制边界、模块导出和根命令启动顺序。
-- Go 对照：读取 `br/cmd/br/cmd.go` 全文及 `br/cmd/br/main_test.go::TestCalculateMemoryLimit`，核对 flags、初始化、内存、status、context 和精确测试值。
-- Rust 测试：读取 `br/cmd/br/cmd_test.rs`、`main_test.rs` 的内存测试、`parity_test.rs` 的命令/过滤器/边界/context 契约；读取 `operator.rs` 的 CRR status preparer 和 `backup.rs` 的调用、tracing、过滤器恢复路径。
-- RustCodeGraph 的关键结果包括：`Init` 由 backup/debug/stream 命令入口调用；`setTiDBGlueDBFilter` 由逻辑备份使用；`prepareStatusServer` 由 `startStatusServer` 和独立测试调用；`calculateMemoryLimit` 由监控逻辑及两组 Rust 测试调用；`GetDefaultContext`、`HasLogFile`、`with_tracing` 被多个业务命令消费。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构以任务指定命令验证文档存在且恰好包含这 11 个固定二级标题；事实准确性另由上述源码、调用图、Cargo、Go 对照和独立测试人工复核。

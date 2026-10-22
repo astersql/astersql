@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-config` crate。`pkg/lightning/config/Cargo.toml` 将该 crate 的库入口指定为 `lib.rs`，并声明对 `toml = "0.8"` 的直接依赖；`pkg/lightning/config/lib.rs` 公开 `toml_codec` 模块，但不把模块内函数再导出到 crate 根。它处在 TOML 文本与 `pkg/lightning/config/config.rs` 中完整 `Config` 对象之间，负责把任务配置按 Lightning 的配置段逐字段写入现有对象，并提供 `post-restore`、`cron` 两个段的文本编码辅助。
-
-运行时公开入口是 `Config::load_from_toml(&mut self, data)`，其实现直接调用 `toml_codec::load_config_from_toml(self, data)`。`Config::load_from_global` 也先经过这个入口加载 `GlobalConfig::config_file_content`，随后再用全局对象中的若干字段覆盖结果。因此本文件负责“解码和写入”，不负责 `Config::adjust` 中的默认值补齐、字段间合法性检查、TLS 构造或导入执行。
+处在 TOML 文本与 `pkg/lightning/config/config.rs` 中完整 `Config` 对象之间，负责把任务配置按 Lightning 的配置段逐字段写入现有对象，并提供 `post-restore`、`cron` 两个段的文本编码辅助。
 
 ## 核心职责
 
@@ -81,9 +79,9 @@ RustCodeGraph 的文件查询确认目标文件含 41 个索引符号，并给�
 
 ## 与 Go 版本的对应关系
 
-Go 基线位于 `pkg/lightning/config/config.go`。Go `Config.LoadFromTOML` 先用 BurntSushi `toml.Decode` 直接解码结构体，再分别读取 `Config` 与 `GlobalConfig` 的 `Undecoded()` 集合：两边都未消费的键报错，只被全局配置消费的键记录 warning。Rust 用显式 `apply_*`、`used`、`collect_keys` 和 `GLOBAL_ONLY_PREFIXES` 复现核心接受/拒绝语义，但当前不会输出 Go 的全局键 warning。
+Rust 用显式 `apply_*`、`used`、`collect_keys` 和 `GLOBAL_ONLY_PREFIXES` 复现核心接受/拒绝语义，但当前不会输出 Go 的全局键 warning。
 
-字段级对应关系包括：Go `PostOpLevel.UnmarshalTOML`/`MarshalText` 对应 Rust `PostOpLevel::from_toml_value` 与 `encode_post_restore`；Go `CheckpointKeepStrategy.UnmarshalTOML`/`MarshalText` 对应 Rust `from_toml_value`/`marshal_text`；Go `Duration.UnmarshalText`/`MarshalText` 对应 Rust `Duration::unmarshal_text`、`from_toml_value`、`go_string`；Go `MaxError.UnmarshalTOML` 对应 `apply_max_error`。Go 通过 struct tag 自动覆盖大量字段，Rust 则必须在所属 `apply_*` 中逐个接线，所以新增 Go 配置字段不会自动进入 Rust。
+Go 通过 struct tag 自动覆盖大量字段，Rust 则必须在所属 `apply_*` 中逐个接线，所以新增 Go 配置字段不会自动进入 Rust。
 
 Go 的 `DuplicateResolutionAlgorithm` 和 `CompressionType` 已实现 TOML 解码与 `MarshalText`，Rust 本文件的加载路径会调用类型自身的字符串解析方法，但对应 `encode_duplicate`、`encode_compression` 仍为空占位。Go 测试 `config_test.go` 中的 `TestInvalidTOML`、`TestTOMLUnusedKeys`、`TestTomlPostRestore`、`TestCronEncodeDecode` 是 Rust `config_test.rs` 相应测试的语义来源；Rust 独立 `toml_codec_test.rs` 额外集中检查由本 codec 显式拥有的字段接线。
 
@@ -95,12 +93,3 @@ Go 的 `DuplicateResolutionAlgorithm` 和 `CompressionType` 已实现 TOML 解�
 - 改动标量转换时要评估兼容面：`string_value` 当前接受非字符串标量，而 `string_map` 严格；`int_value` 限制为 i32，`u64_value` 拒绝负数。错误文本被现有测试和 Go 对照约束，不宜无依据改写。
 - 若实现 `encode_duplicate` 或 `encode_compression`，应对齐 Go `MarshalText` 的输出，并在独立测试文件增加每个枚举值及非法/占位行为测试；不要把 Rust 测试嵌入生产源文件。
 - 若需要失败不污染原配置，应在 `Config::load_from_toml` 边界引入“副本解码成功后替换”的明确设计并评估克隆成本；不能仅调整某个 `apply_*` 就宣称整体事务化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/lightning/config/toml_codec.rs` 确认目标已索引；`node --file ... --offset 1/401` 读取了完整 926 行并报告 41 个符号；`query load_config_from_toml --kind function` 精确定位公开入口。精确 callers 查询在 30 秒内无返回，未把它当作调用边证据。
-- Rust 源码与模块：`pkg/lightning/config/toml_codec.rs`（全部实现）、`pkg/lightning/config/config.rs`（`Config::load_from_toml` 与 `load_from_global` 调用边）、`pkg/lightning/config/lib.rs`（公开模块和独立测试模块接线）。目标目录没有 `doc.go`。
-- crate 边界：`pkg/lightning/config/Cargo.toml`（crate 名、`lib.rs` 入口、`toml`/serde 依赖及 `go-package = "pkg/lightning/config"` 移植元数据）。
-- Rust 测试：`pkg/lightning/config/toml_codec_test.rs` 验证 codec 所属字段和 routes 的完整写入；`pkg/lightning/config/config_test.rs` 验证非法全局内容、post-restore 非法值与布尔/字符串映射、编码文本及 cron 编解码往返。
-- Go 对照：`pkg/lightning/config/config.go` 的 `Config.LoadFromTOML`、`PostOpLevel.UnmarshalTOML`、`CheckpointKeepStrategy.UnmarshalTOML`、`MaxError.UnmarshalTOML`、`Duration.UnmarshalText` 以及重复键/压缩枚举的 `MarshalText`；`pkg/lightning/config/config_test.go` 的 `TestInvalidTOML`、`TestStringOrStringSlice`、`TestTOMLUnusedKeys`、`TestTomlPostRestore`、`TestCronEncodeDecode`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务规定的 `rg` 结构命令确认恰有 11 个固定二级标题，并人工复核唯一新增生产物、源码链接、边界描述与扩展测试位置。

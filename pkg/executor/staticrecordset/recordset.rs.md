@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-executor-staticrecordset`，crate 入口 `pkg/executor/staticrecordset/lib.rs` 公开 `recordset` 模块并重导出其符号。它在内部执行器接口 `astersql_executor_internal_exec::executor::Executor` 与可逐批消费的 `RecordSet` 抽象之间提供适配：持有一个已经构造好的执行器，并让调用方通过 `NewChunk`、`Next`、`Close` 管理结果读取生命周期。
-
-Cargo 清单 `pkg/executor/staticrecordset/Cargo.toml` 将 `pkg/executor/internal/exec` 声明为唯一无条件依赖；其余规划器、会话游标和工具依赖仅在 Windows 目标下声明。根 facade `pkg/lib.rs` 会重导出整个 crate，`pkg/executor/Cargo.toml` 与 `pkg/session/Cargo.toml` 也声明了依赖，但代码搜索没有发现生产 Rust 代码直接调用本文件的 `New`。当前可确认的 Rust 调用者只有 `pkg/executor/staticrecordset/integration_test.rs`；Rust 执行主链在 `pkg/executor/adapter.rs` 内另有 `detachedRecordSet` 实现。因此，本文件目前是已实现并有独立测试覆盖的迁移模块，而不能据此声称它已取代 Rust 主链中的 detached 结果集。
+在内部执行器接口 `astersql_executor_internal_exec::executor::Executor` 与可逐批消费的 `RecordSet` 抽象之间提供适配：持有一个已经构造好的执行器，并让调用方通过 `NewChunk`、`Next`、`Close` 管理结果读取生命周期。
 
 ## 核心职责
 
@@ -79,8 +77,6 @@ RustCodeGraph 将 `pkg/executor/staticrecordset/integration_test.rs` 标为本�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `staticRecordSet`、`New`、`Fields`、`Next`、`NewChunk`、`Close`、`GetExecutor4Test` 与 `pkg/executor/staticrecordset/recordset.go` 中同名结构和方法一一对应，核心委托模式一致：结果集拥有 detached 执行器，按 chunk 拉取并在结束时关闭。
-
 已确认的语义差异如下：
 
 - Go `ResultField` 使用完整的 `resolve.ResultField` 指针，Rust 本文件的 `ResultField` 只有 `name`，尚不具备数据库、表、类型等协议元数据。
@@ -90,7 +86,7 @@ Rust 的 `staticRecordSet`、`New`、`Fields`、`Next`、`NewChunk`、`Close`、
 - Go `Fields` 返回内部指针切片，Rust 返回克隆值；Rust 因而隔离了调用方修改。
 - Go `Close` 每次都调用 `exec.Close(s.executor)` 后置空，是否可重复调用取决于底层 nil 处理；Rust 明确定义为至多一次调用并保证幂等。
 
-Go 集成测试 `pkg/executor/staticrecordset/integration_test.go` 验证了真实 SQL detach 后的字段和行、事务提交后继续读取、GC safe point 错误、显式事务不可 detach、游标释放与最小 start TS 生命周期。Rust 独立测试只用 `TestExecutor` 验证其中可由当前抽象表达的转发、错误、容量、panic 与关闭顺序；它没有覆盖真实存储、事务或 min-start-TS 行为。
+Rust 独立测试只用 `TestExecutor` 验证其中可由当前抽象表达的转发、错误、容量、panic 与关闭顺序；它没有覆盖真实存储、事务或 min-start-TS 行为。
 
 ## 扩展指南
 
@@ -100,12 +96,3 @@ Go 集成测试 `pkg/executor/staticrecordset/integration_test.go` 验证了真�
 - 若要对齐 Go panic 诊断，应在不泄露敏感 SQL 的前提下让 `sql_text` 进入统一日志/错误设施，并测试 panic 到错误的转换及日志脱敏；当前字段闲置不代表可以无审查删除，因为它是 Go API 对齐参数。
 - 修改块分配策略时同时覆盖默认 `exec::NewFirstChunk` 和自定义 `ChunkAllocator` 两条路径，保持列类型、初始容量、最大容量一致；关闭后的空块行为若改变，也应增加明确回归测试。
 - 修改关闭语义时要保留“底层最多关闭一次”和游标先于结果集关闭的不变量，并覆盖底层关闭报错、重复关闭、关闭后 `Next`/`NewChunk`/测试钩子的行为。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件，目标目录中列出 `recordset.rs`、`cursorrecordset.rs`、`integration_test.rs` 等 8 个源文件；`node --file pkg/executor/staticrecordset/recordset.rs` 展示完整 156 行及其直接使用者。
-- 主要图查询：`query StaticRecordSet` 定位 Rust/Go 两个 `staticRecordSet`；`node staticRecordSet` 确认 Rust `New` 实例化该结构；对通用名 `New`/`Next` 的全局 callers/callees 查询存在大量同名歧义，因此最终调用关系以目标文件节点、精确路径检索和相邻实现交叉核对。
-- 已读 Rust 实现：`pkg/executor/staticrecordset/recordset.rs`、`pkg/executor/staticrecordset/lib.rs`、`pkg/executor/staticrecordset/cursorrecordset.rs`、`pkg/executor/internal/exec/executor.rs`、`pkg/executor/adapter.rs`。
-- 已读清单与接线证据：`pkg/executor/staticrecordset/Cargo.toml`、`pkg/executor/Cargo.toml`、`pkg/session/Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- 已读对照与测试：`pkg/executor/staticrecordset/recordset.go`、`pkg/executor/adapter.go`、`pkg/executor/staticrecordset/integration_test.rs`、`pkg/executor/staticrecordset/integration_test.go`；同目录没有 `recordset_test.rs`，Rust 回归集中在独立的 `integration_test.rs`。
-- 文档只描述上述文件可证实的现状；未运行 Cargo，未验证真实 Rust 会话/存储集成，因为本任务是纯文档分析且计划明确禁止运行 Cargo。

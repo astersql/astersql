@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`tikv.rs`](./tikv.rs) 是 `astersql-store-mockstore-unistore-tikv-mvcc` crate 中面向 TiKV 存储格式的编解码层，与定义 MVCC 内存锁结构的 [`mvcc.rs`](./mvcc.rs) 分工：后者提供 `Lock`/`LockHdr`，本文件把这些状态转换为 TiKV Write CF 和 Lock CF 的字节布局。crate 入口 [`lib.rs`](./lib.rs) 以 `pub mod tikv` 挂载本文件，并通过 `pub use tikv::*` 再导出全部公开符号。
-
-[`Cargo.toml`](./Cargo.toml) 将该 crate 定义为 workspace 内部库，直接使用 `kvproto` 的 `kvrpcpb::Op` 和 `thiserror`；本文件的整数/字节编码则由 crate 内 `codec_adapter.rs` 暴露的 `crate::codec` 提供。它不负责事务冲突检查、CF 写入、锁等待或网络 RPC，只生成或解析值部分的字节。
+用 `WriteType{Put,Delete,Lock,Rollback}` 四个单字节常量定义 Write CF 记录类型，并用 `ParseWriteCFValue` 校验类型、解码 `StartTS` 和保留后续负载。
 
 ## 核心职责
 
@@ -86,7 +84,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`tikv.go`](./tikv.go)。Rust 保留了 Go 的公开符号命名、`P/D/L/R/S` 标记、字段顺序、64 字节短值阈值、未知 lock op 的 panic 语义，以及 `forUpdateTS` 后接 `minCommitTS` 的可选后缀顺序。`migration_aster_unit_test.rs` 对四种 WriteType 往返、非法 Write CF、四种 LockType，以及 64/65 字节分界的实际字节布局提供 Rust 侧回归证据。
+Rust 保留了 Go 的公开符号命名、`P/D/L/R/S` 标记、字段顺序、64 字节短值阈值、未知 lock op 的 panic 语义，以及 `forUpdateTS` 后接 `minCommitTS` 的可选后缀顺序。
 
 可见差异主要是语言表达而非线上布局：
 
@@ -104,12 +102,3 @@
 - 如果要让 `ParseWriteCFValue.ShortVal` 直接返回纯 payload，这不是内部重构，而是公开 API 语义改变；应优先新增显式的短值解析器，保留当前 Go 对齐行为。
 - 如果将这些函数接入 Rust 生产写路径，要在调用层同时测试：长值的 Lock/default CF 原子写入、空值语义、悲观锁 `ForUpdateTS`、异步提交 `MinCommitTS`、以及非法 op 不能来自未信任输入。
 - Rust 测试逻辑应继续保持在独立的 `migration_aster_unit_test.rs` 中，不应内嵌到 `tikv.rs`。对线上格式的新断言应使用确定性字节向量，不只做同一实现的 encode/decode 自往返。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 7,032 个 Rust 文件；`files --filter pkg/store/mockstore/unistore/tikv/mvcc` 确认目标文件、Go 对照和迁移测试都在索引中。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore/tikv/mvcc/tikv.rs --offset 1 --limit 400` 读取了目标文件全部 166 行，确认类型、常量、错误和三个函数的实际实现。
-- RustCodeGraph 对 `ParseWriteCFValue`、`EncodeWriteCFValue`、`EncodeLockCFValue` 的 `query --kind function --json` 均找到同路径 Go/Rust 定义。精确 `callers/callees` 查询未在限定时间内产生边，因此调用者结论另用全仓 Rust `rg` 直接引用搜索补证，结果仅有 `migration_aster_unit_test.rs`。
-- 已读源码/配置：[`tikv.rs`](./tikv.rs)、[`lib.rs`](./lib.rs)、[`mvcc.rs`](./mvcc.rs)、[`codec_adapter.rs`](./codec_adapter.rs)、[`Cargo.toml`](./Cargo.toml)、Go 对照 [`tikv.go`](./tikv.go) 和独立 Rust 测试 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)。Cargo 反向搜索还核对了 workspace facade 与 `server`/`cophandler`/`tikv`/`dbreader`/`kverrors` 的 crate 依赖。
-- 独立测试的 `write_cf_round_trips_all_go_types_and_rejects_invalid_data` 证明四种 WriteType、`StartTS = 300`、保留的 `v + length + payload` 和三类非法输入；`lock_cf_short_and_long_values_match_tikv_encoding` 证明 `P/D/L/S` 映射、短值精确布局、`f/m` 后缀和 65 字节长值分离。
-- 本任务是纯文档分析，按计划不运行 Cargo；完成判定依据是上述源码/调用证据、人工事实复核和任务规定的 11 章结构检查。

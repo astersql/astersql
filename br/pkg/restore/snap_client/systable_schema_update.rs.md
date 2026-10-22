@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-snap-client` library crate。crate 入口 [`lib.rs`](lib.rs) 以 `#[path = "systable_schema_update.rs"]` 装载模块，并通过 `pub use systable_schema_update::*` 暴露其 API；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `br/pkg/restore/snap_client`。它不是独立恢复入口，而是系统表恢复链中的一个兼容层：[`systable_restore.rs`](systable_restore.rs) 的 `updateStatsTableSchema` 在比较真实下游表和 BR 临时上游表时调用这里的分派函数。
-
-当前 crate 的 `model::TableInfo`、`Error` 和 `Result` 来自 [`stubs.rs`](stubs.rs)，Cargo 注释也明确当前 arm64 Darwin 移植使用本地 traits/stubs，而非完整 kv/domain/grpcio 运行栈。因此本文描述的是仓库当前 Rust 实现及其接线，不把它推断成已经接入完整生产 BR 运行时。
+文件只处理 `mysql.stats_meta` 的两代结构兼容：以列 `last_stats_histograms_version` 是否存在区分 V1/V2，并把 BR 临时库 `__TiDB_BR_Temporary_mysql.stats_meta` 调整到真实下游表所需的结构。
 
 ## 核心职责
 
@@ -79,16 +77,9 @@ SQL 查询函数对未知 schema/table/version 返回 `None`。主流程使用 `
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 [`systable_schema_update.go`](systable_schema_update.go) 定义相同的三值版本枚举、V1↔V2 SQL、列存在性检测、升降级循环和 `mysql.stats_meta` 函数映射。Rust 版本保留了以下可观察语义：
+实现形态存在几处差异：Go 用嵌套 map/切片保存 SQL 和函数，Rust 用 `match` 查询函数；Go 回调签名携带 `context.Context`，Rust 回调只接收 SQL 字符串，因此取消、deadline 和 session 生命周期必须由外层执行器承载；Go 直接索引 SQL 切片，而 Rust 对缺失项回退为空串，缺失迁移台阶时的失败可见性更弱。
 
-- 同名列存在为 V2，否则为 V1。
-- 下游 V1、临时上游 V2 时对临时表执行 DROP；下游 V2、临时上游 V1 时执行 ADD。
-- 同版本不执行 SQL；执行错误立即返回。
-- 仅 `mysql.stats_meta` 注册更新函数。
-
-实现形态存在几处差异：Go 用嵌套 map/切片保存 SQL 和函数，Rust 用 `match` 查询函数；Go 回调签名携带 `context.Context`，Rust 回调只接收 SQL 字符串，因此取消、deadline 和 session 生命周期必须由外层执行器承载；Go 直接索引 SQL 切片，而 Rust 对缺失项回退为空串，缺失迁移台阶时的失败可见性更弱。Go 通过 `errors.Trace` 包装执行错误，Rust 在本函数中原样传播，随后由 `updateStatsTableSchema` 添加上下文。
-
-Go 测试 [`systable_schema_update_test.go`](systable_schema_update_test.go) 使用真实 session/InfoSchema 建表并观察 ALTER 后结构；Rust 独立测试使用 `TableInfo` fixture 和捕获回调，验证同样的版本与 SQL 选择，但不验证真实 TiDB DDL 执行。这是当前测试环境边界，不应描述为完整集成等价。
+Go 测试 [`systable_schema_update_test.go`](systable_schema_update_test.go) 使用真实 session/InfoSchema 建表并观察 ALTER 后结构；Rust 独立测试使用 `TableInfo` fixture 和捕获回调，验证同样的版本与 SQL 选择，但不验证真实 TiDB DDL 执行。
 
 ## 扩展指南
 
@@ -101,18 +92,3 @@ Go 测试 [`systable_schema_update_test.go`](systable_schema_update_test.go) 使
 5. 评估兼容性和性能：ALTER 系统统计临时表会影响恢复流程；版本误判可能丢列或使后续导入不匹配。列扫描是 O(列数)，通常不是瓶颈，真正成本在 DDL 执行和潜在多台阶重试。
 
 扩展后至少人工确认 SQL 始终指向 `__TiDB_BR_Temporary_mysql`，真实下游表只作为目标结构依据；还要验证回调错误不会被吞掉，以及已完成台阶后的重试具有幂等性。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件和 4,415 个 Go 文件；目标目录内列出源文件、Go 对照和独立测试。
-- RustCodeGraph `node --file br/pkg/restore/snap_client/systable_schema_update.rs`：读取目标文件 1–125 行，确认 1 个枚举、5 个公开函数、SQL 字面量和完整分支。
-- RustCodeGraph `query`：定位 `SchemaVersionType`、`upgrade_sqls`、`downgrade_sqls`、`getSchemaVersionFromStatsMeta`、`updateStatsMetaSchema`、`update_stats_meta_schema_function_map`。
-- RustCodeGraph `callees updateStatsMetaSchema`：确认 Rust 主函数调用版本检测及两类 SQL 查询；`callees update_stats_meta_schema_function_map` 确认分派到主函数。
-- RustCodeGraph 节点读取：`systable_restore.rs` 250–298 行证明真实下游/临时上游查询与调用链；`export_test.rs` 68–77 行证明测试重导出；`lib.rs` 38–74、112–114 行证明模块装载、公开导出与独立测试挂载。
-- Go 对照：`systable_schema_update.go` 24–101 行；Go 测试：`systable_schema_update_test.go` 30–127 行。
-- Rust 测试：`systable_schema_update_test.rs` 32–138 行，覆盖 V1/V2 判定、同版本零执行、DROP/ADD 精确 SQL，以及回调错误传播。
-- crate 配置：`br/pkg/restore/snap_client/Cargo.toml`；该目录没有 `doc.go`，包契约以 crate 入口 `lib.rs` 和 Cargo metadata 为准。
-
-本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的结构命令验证文档存在且固定二级标题恰好为 11 个，并人工复核唯一新增产物为本文件。

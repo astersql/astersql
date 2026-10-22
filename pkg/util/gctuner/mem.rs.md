@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-gctuner` crate 的进程堆内存适配层，由 [`lib.rs`](lib.rs) 公开为 `mem` 模块。它把 [`task-memory`](../memory/memstats.rs) 提供的跨平台内存快照收敛成调谐器需要的单一 `heap_inuse` 指标，并为 Rust 周期驱动补充“请求系统分配器归还空闲页”的平台边界。crate 归属、依赖别名和 Go 包映射见 [`Cargo.toml`](Cargo.toml)：`task-memory` 实际指向同仓库的 `astersql-util-memory`，迁移来源是 Go `pkg/util/gctuner`。
-
-文件只有两个公开函数 `readMemoryInuse` 与 `releaseUnusedMemory`，以及按目标平台条件编译的三个 C 分配器符号；不保存调谐策略，也不直接设置 GOGC 或 memory limit。策略分别位于 [`tuner.rs`](tuner.rs) 和 [`memory_limit_tuner.rs`](memory_limit_tuner.rs)。
+上层 finalizer 只调用布尔接口，不需要持有 C 指针或了解 libc ABI；内存采样的 macOS、glibc Linux 与其他平台差异则继续由 `task_memory::memstats::ForceReadMemStats` 负责。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ RustCodeGraph 对 `readMemoryInuse` 的直接生产调用边显示：
 
 Go [`mem.go`](mem.go) 的 `readMemoryInuse` 调用 `memory.ForceReadMemStats()` 并返回 `HeapInuse`；Rust 同名函数逐项保持这一语义。Go [`mem_test.go`](mem_test.go) 分配约 100 MiB 并断言读数至少为 100 MiB；Rust [`mem_test.rs`](mem_test.rs) 同样分配大块内存，但先记录基线、按页触碰，并允许约 5 MiB 误差，以适配真实进程与多平台分配器观测。
 
-Go 文件没有 `releaseUnusedMemory`。这个函数是 Rust runtime 适配所需的局部接线：Go [`finalizer.go`](finalizer.go) 借助 tracing GC finalizer 获得每次 GC 后的回调，Rust 没有等价钩子，因此 [`finalizer.rs`](finalizer.rs) 用周期线程主动请求系统分配器回收后再触发回调。它不应被描述为 Go `mem.go` API 的直接移植，也不能据此认为 Rust 已复刻 Go runtime 的精确 GC 时序。
+Go 文件没有 `releaseUnusedMemory`。这个函数是 Rust runtime 适配所需的局部接线：Go [`finalizer.go`](finalizer.go) 借助 tracing GC finalizer 获得每次 GC 后的回调，Rust 没有等价钩子，因此 [`finalizer.rs`](finalizer.rs) 用周期线程主动请求系统分配器回收后再触发回调。
 
 另一个可见差异是底层指标来源：Go 由运行时直接提供 `runtime.MemStats.HeapInuse`；Rust 由 `task-memory` 按平台读取 malloc 统计或回退 RSS。上层公式保持一致，但采样口径和观测时间可能不同。
 
@@ -81,12 +79,3 @@ Go 文件没有 `releaseUnusedMemory`。这个函数是 Rust runtime 适配所�
 - 若要把返回值升级为“本轮确实释放了内存”，必须同步修改 `releaseUnusedMemory` 的契约、[`finalizer.rs`](finalizer.rs) 的调用处理和独立测试；不能继续无条件返回 `true`。
 - 改动采样语义时，应同步检查 `Tuner::tuning`、`MemoryLimitTuner::tuning` 及其独立测试，因为把 `heap_alloc`、RSS 或缓存值误当成 `heap_inuse` 会改变 GOGC 和 memory-limit 的触发点。
 - Rust 单元测试继续放在独立的 [`mem_test.rs`](mem_test.rs)，不要内嵌回生产文件。性能风险主要是强制采样和分配器回收的调用频率；兼容风险主要是不同 libc/allocator 的符号可用性与统计口径。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点；目标目录查询确认 `mem.rs` 有 8 个符号，并被 `mem_test.rs`、`memory_limit_tuner.rs`、`migration_aster_unit_test.rs`、`tuner.rs`、`tuner_test.rs` 使用。
-- RustCodeGraph `node readMemoryInuse`：确认 Rust 定义位于 `mem.rs:36`，直接调用者包含两个 `tuning` 方法及三个测试文件；`node releaseUnusedMemory` 与 `callees`：确认其调用三个平台 FFI 符号，直接调用者包含 finalizer 模块导入及 `allocator_collection_boundary_is_connected`。生产调用点由 `finalizer.rs` 的 `startRuntimeDriver` 源码核实。
-- 已核读 Rust 文件：[`mem.rs`](mem.rs)、[`lib.rs`](lib.rs)、[`mem_test.rs`](mem_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`tuner.rs`](tuner.rs)、[`memory_limit_tuner.rs`](memory_limit_tuner.rs)、[`finalizer.rs`](finalizer.rs)、[`../memory/memstats.rs`](../memory/memstats.rs)。
-- 已核读配置与 Go 对照：[`Cargo.toml`](Cargo.toml)、[`mem.go`](mem.go)、[`mem_test.go`](mem_test.go)、[`tuner.go`](tuner.go)、[`memory_limit_tuner.go`](memory_limit_tuner.go)、[`finalizer.go`](finalizer.go)。
-- 独立测试所证明的边界：100 MiB 活动分配相对基线可见；`readMemoryInuse` 与刚刷新后缓存的 `heap_inuse` 相等；macOS 与 glibc Linux 的回收边界返回支持；迁移聚合测试再次覆盖活动分配可见性。
-- 本任务是纯文档分析，按计划不运行 Cargo。最终结构检查要求本文恰有十一个固定二级标题；链接、重要符号与平台条件另做人工复核。

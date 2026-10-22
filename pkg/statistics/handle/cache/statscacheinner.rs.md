@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-statistics-handle-cache`（`pkg/statistics/handle/cache/Cargo.toml`），由同目录 `lib.rs` 作为私有模块 `statscacheinner` 装配并将其公开项重新导出。它位于上层缓存协调器 `StatsCacheImpl`（`statscache.rs`）和内层存储抽象 `cache_internal::StatsCacheInner`（`internal/inner.rs`）之间：上层只面对 `StatsCache`，本文件再把操作委派给 LFU 或普通 Map 实现。
-
-该文件不是完整的统计信息加载器，也不决定表统计如何从系统表构造；这些流程在 `statscache.rs`。它负责的是单个内存缓存实例的存储策略选择、同步访问、最大统计版本水位和操作指标。
+位于上层缓存协调器 `StatsCacheImpl`（`statscache.rs`）和内层存储抽象 `cache_internal::StatsCacheInner`（`internal/inner.rs`）之间：上层只面对 `StatsCache`，本文件再把操作委派给 LFU 或普通 Map 实现。
 
 ## 核心职责
 
@@ -73,8 +71,6 @@ RustCodeGraph 对 `CopyAndUpdate` 给出的调用边包括 `StatsCacheInner::Cop
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `statscacheinner.go` 的 `StatsCache`：构造时选择 LFU/Map，公开 Len/Get/Put/Values/Cost/SetCapacity/Close/Version，提供 COW 与原地更新，并转发淘汰/等待方法。`Arc<StatisticsTable>` 对应 Go 的 `*statistics.Table`，`Box<dyn StatsCacheInner>` 对应 Go interface，`AtomicU64` 对应 `atomic.Uint64`。
-
 已确认的差异如下：
 
 - Rust 增加 `NewStatsCacheWithCapacity`，把策略与容量显式化，供测试和 `StatsCacheImpl` 的保存设置使用；Go 默认构造器直接读取全局值。
@@ -82,7 +78,6 @@ Rust 文件逐项对应 `statscacheinner.go` 的 `StatsCache`：构造时选择 
 - Rust `fetch_max` 能在竞争中稳定保留最大版本；Go `Put` 使用 CAS 循环，Go `Update` 只做一次 CompareAndSwap。最终目标都是让水位单调前进，但竞争细节不完全相同。
 - Go `putCache` 含 `intest.Assert(ColAndIdxExistenceMap != nil)`；Rust 当前没有对应断言。
 - Rust 指标句柄是 `Option`，未初始化时跳过；Go 直接调用已绑定的包级指标。
-- Rust `CopyAndUpdate` 在循环中直接计算版本最大值；Go 先复制和修改，再单独遍历新增表推进版本，结果等价。
 
 ## 扩展指南
 
@@ -93,13 +88,3 @@ Rust 文件逐项对应 `statscacheinner.go` 的 `StatsCache`：构造时选择 
 修改并发策略时，要评估外层 `Mutex` 的临界区长度、锁中毒处理，以及 `Update` 中“数据先可见、版本后发布”的窗口。若让 `Update` 或 `CopyAndUpdate` 处理 `Put == false`，必须明确批量操作的重试、部分成功、取消和指标语义，不能直接复用无限重试而引入无法终止的批次。
 
 测试应继续放在独立文件：门面和上层行为扩展 `statscache_test.rs`，trait 契约扩展 `internal/inner_test.rs`，LFU/Map 特性分别扩展各自的 `*_test.rs`；性能变化使用 `bench_test.rs` 的 Put/Get/CopyAndUpdate 基准。还应对照更新 `statscacheinner.go` 及其测试意图，避免 Rust 行为无依据偏离 Go。
-
-## 验证依据
-
-- 源文件与符号：`statscacheinner.rs` 的 `StatsCache`、两个构造器、全部 impl 方法、`count`、`set_cost`；RustCodeGraph `node --file ... --offset 1 --limit 260` 显示文件完整 144 行。
-- 图查询：RustCodeGraph `status` 显示索引含该文件；`query StatsCacheInner`、`query CopyAndUpdate`、`callees CopyAndUpdate` 核对 trait、Go/Rust 对照符号及 Copy/Put/Del/Version 调用边。泛型同名方法的 callers 结果不足以唯一定位时，以源码引用搜索补证。
-- crate 与装配：`pkg/statistics/handle/cache/Cargo.toml`、`pkg/statistics/handle/cache/lib.rs`、`pkg/statistics/handle/cache/internal/inner.rs`、两种后端的 Cargo 依赖。
-- 上游流程：`pkg/statistics/handle/cache/statscache.rs` 中 `StatsCacheImpl::new`、`replace`、`UpdateStatsCache`、`Get`、`Put`、`Clear`、容量和淘汰转发。
-- Go 对照：`pkg/statistics/handle/cache/statscacheinner.go`、`pkg/statistics/handle/cache/internal/inner.go`。
-- 测试证据：`pkg/statistics/handle/cache/statscache_test.rs` 的 `quota_eviction_retains_table_metadata_like_go_lfu`、`replace_shares_cache_and_map_copy_preserves_prior_snapshot`、`lease_is_read_dynamically_and_tso_underflow_is_zero`；`pkg/statistics/handle/cache/internal/inner_test.rs::cache_contract_is_object_safe_and_keeps_shared_tables`；性能入口位于 `bench_test.rs`。Go 的 `statscache_test.go` 主要提供 mock 接口覆盖，未发现直接覆盖本门面全部方法的同名独立单元测试。
-- 本任务为纯文档分析，按计划未运行 Cargo；最终以固定 11 章节结构检查和人工事实复核验收。

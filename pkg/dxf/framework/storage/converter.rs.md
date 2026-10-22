@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-storage` crate 的数据库行转换层；对应源码为 [`converter.rs`](converter.rs)。它把 storage 查询返回的 `chunk::Row` 按约定列序转换成 `proto::TaskBase`、`proto::Task`、`proto::SubtaskBase` 和 `proto::Subtask`，并把数值任务 ID 转成子任务表使用的十进制字符串键。crate 根通过 `include!("converter.rs")` 将其直接并入根模块，因此这里的 `pub` 函数就是 crate 根 API，而不是一个独立子模块（`pkg/dxf/framework/storage/lib.rs:1246-1256`）。
-
-crate 清单将库入口指定为 `lib.rs`、关闭自动测试发现，并把 `converter_1_aster_unit_test.rs` 注册为独立测试目标；直接依赖中与本文件最相关的是 `serde` 和 `serde_json`，`nextgen` feature 不改变本文件的条件编译路径（`pkg/dxf/framework/storage/Cargo.toml`）。源文件没有 `cfg` 条件、trait 或 impl；全部逻辑由模块级函数组成。
+按 subtask 查询的固定 10/13 列布局构造基础或完整子任务对象，并兼容以 `VARCHAR` 保存的 task ID、以 `BIGINT` 秒数保存的时间（`row2BasicSubTask`、`Row2SubTask`，`converter.rs:295-358`）。
 
 ## 核心职责
 
@@ -77,7 +75,7 @@ NULL 的语义按字段分别处理：可选时间回退 `UNIX_EPOCH`，ordinal 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [`converter.go`](converter.go)。Rust 保留了 Go 的四段转换结构、列下标、NULL 回退、秒级 bigint 时间、字符串 task key、额外参数/修改参数解析失败继续执行，以及非法子任务 ID 归零等语义。
+Rust 保留了 Go 的四段转换结构、列下标、NULL 回退、秒级 bigint 时间、字符串 task key、额外参数/修改参数解析失败继续执行，以及非法子任务 ID 归零等语义。
 
 主要表示差异如下：
 
@@ -87,7 +85,7 @@ NULL 的语义按字段分别处理：可选时间回退 `UNIX_EPOCH`，ordinal 
 - Go 用结构体 JSON unmarshal 填充 `ModifyParam`；Rust 的手工解析对缺失或错类型的内部字段更明确地使用默认值。任何新字段都应同时核对两端 serde/encoding-json 行为。
 - Go 使用日志组件，Rust 当前使用 `eprintln!`；两者都不把这些兼容性异常向调用者返回。
 
-未发现专门命名为 `converter_test.go` 的 Go 文件。Go 语义依据来自 `converter.go` 本身及 storage 包的调用/测试面；Rust 的专门回归位于 `converter_test.rs` 和独立目标 `converter_1_aster_unit_test.rs`。
+Go 语义依据来自 `converter.go` 本身及 storage 包的调用/测试面；Rust 的专门回归位于 `converter_test.rs` 和独立目标 `converter_1_aster_unit_test.rs`。
 
 ## 扩展指南
 
@@ -97,13 +95,3 @@ NULL 的语义按字段分别处理：可选时间回退 `UNIX_EPOCH`，ordinal 
 - 扩展 `ModifyParam` 或 `ExtraParams` 时同步 Go JSON 标签、Rust serde 定义和失败后的默认对象语义，避免旧行因新字段而无法读取。
 - 修改 `TaskIDToKey` 时必须保持完整有符号十进制域，特别是 `2^53` 相邻值、`i64::MIN` 和 `i64::MAX`；字符串绑定是历史 `VARCHAR task_key` schema 的兼容要求。
 - 若要消除静态泄漏，应先把 proto 中相关静态字符串字段改为拥有型值，并审计 `intern` 在 `task_table.rs` 的共享调用者；仅替换本文件会破坏类型与生命周期契约。
-
-## 验证依据
-
-- Rust 源与装配：`pkg/dxf/framework/storage/converter.rs:25-359`、`pkg/dxf/framework/storage/lib.rs:1246-1256`。
-- crate 边界：`pkg/dxf/framework/storage/Cargo.toml` 的 `[lib]`、`[[test]]`、`[features]`、`[dependencies]` 和 porting metadata。
-- Go 对照：`pkg/dxf/framework/storage/converter.go:29-155`。
-- proto 对照：`pkg/dxf/framework/proto/type.rs:46-53`、`pkg/dxf/framework/proto/modify.rs:61-66`。
-- Rust 专项测试：`pkg/dxf/framework/storage/converter_test.rs:6-80` 覆盖错误规范化与完整 i64 key；`pkg/dxf/framework/storage/converter_1_aster_unit_test.rs:37-162` 覆盖 task 列映射、JSON、错误回退、非法 task ID、类型映射、NULL ordinal、秒级时间和 summary。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/dxf/framework/storage` 确认目标及对照文件已索引；`query/node/explore` 核对了上述符号签名、源码、上下游调用者和测试入口。精确 `callers/callees` 子命令未返回独立文本，调用边采用同一索引的 `explore` blast-radius 结果复核，并与符号源码相互印证。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核本说明未把当前容错行为、日志行为或调用范围写成未经证实的理想设计。

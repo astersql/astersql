@@ -2,19 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-planner-cascades-base-cascadesctx`，由同目录
-`lib.rs` 的 `mod cascades_ctx` 装入并通过 `pub use cascades_ctx::*` 再导出。crate 的
-直接依赖只有 `cascades-base`（调度器与任务抽象）和 `memo`（Cascades 搜索空间），见
-`pkg/planner/cascades/base/cascadesctx/Cargo.toml`；这种依赖方向使任务代码可以面向一个
-较小的上下文边界，而不必反向依赖具体优化器。
-
-当前 Rust 接线必须与设计意图区分：本文件的 `Context` 与 `RuleMask` 已可通过根 facade
-导出，也有同 crate 独立单元测试，但仓库搜索没有发现生产 Rust 代码实现或使用这个
-trait。实际 Rust 优化主链目前使用
-`pkg/planner/cascades/task/base.rs::Context` 和
-`pkg/planner/cascades/cascades.rs::Context`，它们不是本文件的 trait。Go 主链则确实通过
-`cascadesctx.Context` 解开 `cascades` 与 `task` 的导入环。因此本文件当前是已移植、可测试，
-但尚未接入 Rust 主优化链的兼容边界，而不是运行时必经入口。
+`RuleMask` 用规则下标的集合表示选择性启用状态，提供 `Set`、`Test`、`Clear` 三个。
 
 ## 核心职责
 
@@ -120,20 +108,12 @@ trait。实际 Rust 优化主链目前使用
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/planner/cascades/base/cascadesctx/cascades_ctx.go`。两边共同暴露
-`Destroy`、`GetScheduler`、`PushTask`、`GetMemo`、`GetRuleMask`，共同目的都是把上下文
-接口放到较低层包中以避免 `cascades` 与 `task` 导入循环。
-
 Rust 为所有可变资源额外拆出 `GetSchedulerMut`、`GetMemoMut`、`GetRuleMaskMut`，以满足
-借用规则；`PushTask` 因而可作为默认转发实现。Go 返回接口或指针，天然允许内部修改。
-Go 的掩码类型是第三方 `bitset.BitSet`，具体上下文在
-`pkg/planner/cascades/cascades.go::NewContext` 中按 `XFMaximumRuleLength` 创建并
-`SetAll`；本文件的 `RuleMask` 是无上限的稀疏 `BTreeSet` 且默认为空。若未来让 Rust
+借用规则；`PushTask` 因而可作为默认转发实现。若未来让 Rust
 生产主链接入本 trait，构造者必须显式实现与 Go 相同的默认全启用和上界语义，不能只用
 `RuleMask::default()`。
 
-Go 具体 `Context.Destroy` 清理 Memo 后清理 scheduler；Go `Optimizer::NewOptimizer`
-初始化 Memo、压入根 Group 优化任务，`Execute` 再运行任务。当前 Rust 主链在
+当前 Rust 主链在
 `pkg/planner/cascades/cascades.rs` 独立实现了这些行为，但没有实现本文件 trait，说明移植
 已经存在功能重叠，接口统一仍未完成。
 
@@ -154,25 +134,3 @@ Go 具体 `Context.Destroy` 清理 Memo 后清理 scheduler；Go `Optimizer::New
 再逐步替换；否则会出现两个同名 `Context`/`RuleMask` 的语义漂移。兼容风险主要是默认
 规则集合和销毁顺序，性能风险主要是规则掩码表示与共享借用方式改变，正确性风险主要是
 任务在持有借用时再次入队导致动态借用冲突。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标目录的
-  `cascades_ctx.rs`、`cascades_ctx_aster_unit_test.rs`、`lib.rs` 和 Go 对照文件均已索引；
-  目标源识别出 14 个符号。
-- RustCodeGraph `explore`/`node`：核对了 `RuleMask`、`Context`、默认 `PushTask` 的源码及
-  `GetSchedulerMut -> Scheduler::PushTask` 转发；读取了同目录 Rust 独立测试、模块入口和
-  Go 接口。
-- 配置证据：`pkg/planner/cascades/base/cascadesctx/Cargo.toml`、同目录
-  `BUILD.bazel`、根 `Cargo.toml` workspace/facade 声明。
-- Go 调用证据：`pkg/planner/cascades/cascades.go`、
-  `pkg/planner/cascades/task/base.go`、
-  `pkg/planner/cascades/task/task_opt_group_expression.go`。
-- Rust 接线与差异证据：`pkg/planner/cascades/task/base.rs`、
-  `pkg/planner/cascades/cascades.rs`、`pkg/planner/cascades/cascades_test.rs` 和
-  `pkg/planner/cascades/task/task_test.rs`。仓库级引用搜索未发现本文件 trait 的生产实现；
-  后两处测试覆盖的是当前主链的另一套上下文/掩码，不能视为本文件的直接测试。
-- 直接测试证据：
-  `pkg/planner/cascades/base/cascadesctx/cascades_ctx_aster_unit_test.rs` 覆盖默认任务转发、
-  规则设置/查询/清除、Memo 可变访问、销毁效果，以及测试调度器的 LIFO/错误短路。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证另行执行并记录退出码。

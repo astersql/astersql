@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-util-set` crate；`pkg/util/set/Cargo.toml` 将 `lib.rs` 设为 crate 根，`pkg/util/set/lib.rs` 通过 `pub mod int_set` 装入本文件，并用 `pub use int_set::*` 在 crate 根公开其 API。它提供两种只保存整数键的基础集合：平台位宽的 `IntSet` 与固定 64 位的 `Int64Set`。RustCodeGraph 对目标文件报告 11 个符号，并显示该文件没有被其他文件直接引用；仓库内 Rust 引用搜索只找到同 crate 的独立测试。因此可以确认它是公开基础 API，但目前没有证据表明它已被生产 SQL、存储或 DDL 主链直接调用。
+提供两种只保存整数键的基础集合：平台位宽的 `IntSet` 与固定 64 位的 `Int64Set`。
 
 ## 核心职责
 
@@ -58,21 +58,12 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/set/int_set.go`。两边都有 `IntSet`、`Int64Set`、两个构造函数及各自的 `Exist`、`Insert`、`Count`，控制流均为“按输入逐项插入”。Go 用 `map[int]struct{}`/`map[int64]struct{}`，Rust 用 `HashSet<isize>`/`HashSet<i64>`；两者都以键存在表示成员并自动去重。
+Go 用 `map[int]struct{}`/`map[int64]struct{}`，Rust 用 `HashSet<isize>`/`HashSet<i64>`；两者都以键存在表示成员并自动去重。
 
-可见差异如下：Go 构造函数接收变参，Rust 接收切片；Go map 类型允许调用方直接 `len` 和索引，Rust 把 `inner` 封装为私有字段；Go `Count` 返回 `int`，Rust 返回 `usize`；Go map 是引用语义，而 Rust 的 `Clone` 是独立深拷贝，且修改必须持有 `&mut self`。`pkg/util/set/int_set_test.go` 与 `pkg/util/set/int_set_test.rs` 保留了去重、存在/不存在和批量构造的相同测试意图；Rust 迁移测试还补充了负数和 `i64` 两端极值。
+可见差异如下：Go 构造函数接收变参，Rust 接收切片；Go map 类型允许调用方直接 `len` 和索引，Rust 把 `inner` 封装为私有字段；Go `Count` 返回 `int`，Rust 返回 `usize`；Go map 是引用语义，而 Rust 的 `Clone` 是独立深拷贝，且修改必须持有 `&mut self`。
 
 ## 扩展指南
 
 新增成员操作时，应分别评估 `IntSet` 与 `Int64Set` 是否都需要同构 API，并在 `pkg/util/set/int_set_test.rs` 中补充独立测试；跨迁移契约可同步扩展 `pkg/util/set/migration_aster_unit_test.rs`。若目标是继续对齐 Go，先修改或核对 `pkg/util/set/int_set.go` 及 `pkg/util/set/int_set_test.go`，保持命名、边界和返回语义一致。不要把 Rust 测试嵌入本源文件。
 
 若增加删除或清空，可直接在对应 `impl` 中封装 `HashSet::remove`/`clear`，但需明确返回值是否暴露；若增加迭代，必须避免承诺稳定顺序，除非显式排序并承担分配成本。若增加从迭代器构造或集合代数，应考虑复用标准 trait，并确认不会与同 crate 的 `set.rs` 职责重叠。改变 `isize`、`i64` 或 `usize` 会影响 Go 类型对应和跨平台兼容；暴露 `inner` 会扩大 API 并破坏封装。性能改动应保留构造时按输入长度预分配的行为，并用重复值、大集合和极值测试验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/util/set` 确认目标文件含 11 个符号；`node --file pkg/util/set/int_set.rs --offset 1 --limit 260` 读取完整 125 行实现；`query NewIntSet --kind function` 与 `query NewInt64Set --kind function` 精确定位本文件及 Go 对照符号；callers/callees 未返回本文件的跨文件生产调用边。
-- 源码与装配：`pkg/util/set/int_set.rs`、`pkg/util/set/lib.rs`、`pkg/util/set/Cargo.toml`。
-- Go 对照：`pkg/util/set/int_set.go`、`pkg/util/set/int_set_test.go`。
-- Rust 独立测试：`pkg/util/set/int_set_test.rs`；补充迁移边界测试：`pkg/util/set/migration_aster_unit_test.rs::primitive_sets_match_go_membership_and_float_key_semantics`。
-- 全仓 Rust 引用搜索：排除本源文件和主测试后，仅迁移测试直接引用本文件构造函数；未据此推断不存在外部消费者，只记录当前仓库与当前索引能证明的范围。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前执行任务规定的 11 章节结构校验，并人工复核文件定位、运行流程、安全扩展点和未验证边界。

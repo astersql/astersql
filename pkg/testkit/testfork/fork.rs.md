@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`fork.rs`](./fork.rs) 是 `astersql-testkit-testfork` crate 的组合测试枚举器实现。crate 入口 [`lib.rs`](./lib.rs) 通过 `pub mod fork` 声明模块并用 `pub use fork::*` 把本文件的公开 API 提升到 crate 根；仓库根 [`pkg/lib.rs`](../../lib.rs) 又在 `testkit::testfork` facade 下重新导出该 crate。它服务于测试用例的参数组合展开，不参与 SQL 接收、规划、执行或存储等生产运行时主链。
-
-[`Cargo.toml`](./Cargo.toml) 将 crate 的库入口设为 `lib.rs`，没有运行时依赖或 feature，并以 `package.metadata.porting.go-package = "pkg/testkit/testfork"` 指向同目录 Go 包。当前 Rust 源码中的直接调用集中在独立测试 [`fork_test.rs`](./fork_test.rs) 和 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)；`pkg/sessiontxn/Cargo.toml` 与 `pkg/sessiontxn/isolation/Cargo.toml` 把该 crate 声明为开发依赖，但当前相应 Rust 测试尚未调用其 API。Go 侧则已在 `pkg/sessiontxn` 的多项事务测试中使用同路径 `testfork` 包。
+`Pick` / `PickEnum` 在测试闭包执行到某个选择点时，为该深度登记候选集合并返回当前候选。
 
 ## 核心职责
 
@@ -86,21 +84,12 @@ RustCodeGraph 对目标文件的索引列出 18 个符号，并确认 `RunTest` 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`fork.go`](./fork.go)，测试对照是 [`fork_test.go`](./fork_test.go)。主要映射如下：
-
 | Go | Rust | 对应关系与差异 |
 | --- | --- | --- |
-| `pickStack.stack [][]any` | `Vec<Vec<AnyValue>>` | Rust 用 `AnyValue` 同时保存 `Any` 值和诊断文本。 |
-| `newPickStack` | `newPickStack` | 都以 `valid=true` 开始，确保至少运行一次。 |
-| `NextStack` | `NextStack` | 都消费最深层首项、空层向前进位；Rust 用 `remove(0)` 与 `truncate`。 |
-| `PickValue([]any)` | `PickValue(Vec<AnyValue>)` | 空值和非法深度错误文案一致；Rust 返回 `PickError`。 |
-| `Values` / `ValuesText` | 同名方法 | 都输出每层当前值；字符串加引号，其他值的通用格式仅在常见类型上对齐。 |
-| 嵌入 `*testing.T` 的 `T` | 仅含 `&mut pickStack` 的 `T<'a>` | Rust 上下文不能直接提供 Go `testing.T` 的断言、清理或子测试能力。 |
-| `RunTest(t, f)` 调用 `t.Run` | `RunTest(f)` 直接调用闭包 | Go 每组是测试框架子测试；Rust 没有命名子测试，改用 panic 捕获实现失败后继续枚举。 |
-| `require.NoError` / 类型断言 | `expect` / `downcast_ref` / `clone` | 错误最终都令公开调用失败，但 Rust 需要 `Clone + Debug + 'static`。 |
-| `PickEnum(t, item, other...)` | `PickEnum(t, item, Vec<E>)` | Rust 没有变参泛型，调用方显式传其余候选向量。 |
-
-Go `RunTest` 依赖 `testing.T.Run` 返回的成功标志；子测试失败通常不会以可捕获 panic 表示。Rust 版本则把 panic 当作失败协议，并特意在全部组合之后恢复首个 panic。`migration_aster_unit_test.rs::run_test_reports_failure_after_visiting_remaining_combinations` 是这一 Rust 适配行为的直接证据，不能把它描述为 Go 测试框架语义的完全等价实现。
+| `pickStack.stack [][]any` | `Vec<Vec<AnyValue>>` | Rust 用 `AnyValue` 同时保存 `Any` 值和诊断文本。|
+| `Values` / `ValuesText` | 同名方法 | 都输出每层当前值；字符串加引号，其他值的通用格式仅在常见类型上对齐。|
+| `RunTest(t, f)` 调用 `t.Run` | `RunTest(f)` 直接调用闭包 | Go 每组是测试框架子测试；Rust 没有命名子测试，改用 panic 捕获实现失败后继续枚举。|
+| `PickEnum(t, item, other...)` | `PickEnum(t, item, Vec<E>)` | Rust 没有变参泛型，调用方显式传其余候选向量。
 
 ## 扩展指南
 
@@ -111,12 +100,3 @@ Go `RunTest` 依赖 `testing.T.Run` 返回的成功标志；子测试失败通�
 - 若要提供类似 Go `testing.T` 的上下文，应新增明确的 Rust 测试上下文抽象，而不是假定现有 `T` 已具备子测试、清理或断言能力。
 - 优化大量候选时，可评估以当前索引替代 `remove(0)`，但必须保持枚举顺序、动态分支删层和失败诊断值不变；这属于性能/状态布局兼容风险。
 - 扩展诊断格式时同步比较 `AnyValue::new`、`Debug::fmt`、`ValuesText` 与 Go `ValuesText`，并为字符串、自定义类型和转义字符添加对照测试，避免声称所有 `%v` 格式都天然等价。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：仓库索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/testkit/testfork` 找到 `fork.rs`、两个独立 Rust 测试及 Go 对照文件。
-- RustCodeGraph 源码与符号：`node --file pkg/testkit/testfork/fork.rs --offset 1 --limit 260` 读取目标文件完整 253 行；`query RunTest`、`query pickStack`、`query Pick` 定位本文件的驱动、状态机和选择 API；`explore "pkg/testkit/testfork/fork.rs symbols callers callees"` 给出上述内部边及 Rust/Go 测试调用者。
-- crate/导出证据：[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、仓库根 `Cargo.toml` 的 `facade_testkit_testfork`、[`pkg/lib.rs`](../../lib.rs) 的 `testkit::testfork` 再导出，以及 `pkg/sessiontxn{,/isolation}/Cargo.toml` 的开发依赖。
-- Go 对照证据：[`fork.go`](./fork.go) 与 [`fork_test.go`](./fork_test.go)；另以 `pkg/sessiontxn/txn_context_test.go`、`pkg/sessiontxn/isolation/{main,readcommitted,repeatable_read,serializable}_test.go` 核实 Go 包的真实上游用途。
-- Rust 测试证据：[`fork_test.rs`](./fork_test.rs) 验证动态分支的 12 组枚举；[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 还验证错误文案、字符串诊断格式和 panic 后继续枚举。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含“文件定位”至“验证依据”的 11 个固定二级标题；链接、符号名称和“当前已接线/尚未接线”陈述需结合以上源码人工复核。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `pkg/planner/core/optimizer.rs`](optimizer.rs) 属于 `astersql-planner-core` crate（声明见 `pkg/planner/core/Cargo.toml`），由 `pkg/planner/core/lib.rs` 以私有模块 `mod optimizer;` 编译进 crate。它在 `PlanNode` 这一紧凑、值拥有的计划树模型上提供一条可执行的优化流水线，主要用途是保存和验证从 Go `pkg/planner/core/optimizer.go` 迁移而来的核心控制流语义。
-
-它不是当前 crate 对外的完整生产优化器入口：`lib.rs` 公开再导出的 `DoOptimize` 来自 `optimizer_runtime.rs`，而对本文件 `crate::optimizer::DoOptimize` 的直接 Rust 引用只在同 crate 的 `pkg/planner/core/optimizer_test.rs` 中出现。因而理解完整 SQL 规划主链时应从 `optimizer_runtime.rs` 继续阅读；理解紧凑模型中的阶段顺序、树变换与边界条件时，本文件是聚焦入口。
+`postOptimize` 负责连续 Selection 合并、空 UnionScan/单子 Lock 消除、可选并行 Apply 标记、可选运行时过滤器生成，以及 probe 次数传播。
 
 ## 核心职责
 
@@ -75,18 +73,10 @@ crate 边界方面，`Cargo.toml` 指定 `lib.rs` 为库入口、关闭自动测
 
 ## 与 Go 版本的对应关系
 
-Go 对照是 `pkg/planner/core/optimizer.go`。两者保留了 `AllowCartesianProduct`、`initialMaxCores`、`DoOptimize`、逻辑优化、物理优化、后优化、并行 Apply、UnionScan/Lock 消除、通用遍历和笛卡尔积检查等命名与大体阶段顺序；`optimizer_test.rs` 中“inner 嵌套 Apply 不启用并行”和“IndexJoin inner probe 乘父行数”用例直接验证了两项迁移语义。
-
 当前 Rust 文件是显式的“精简迁移基线”，与 Go 完整实现有重要差距：
 
-- Go 根据会话变量选择真正的 Cascades 或 Volcano 优化器，并执行 flag 调整、FD 提取、规则对象、memo/implementation 与代价搜索；这里 `cascades` 只影响追踪标签，逻辑规则多数只记录名称，物理选择固定为 HashJoin。
 - Go 的 `DoOptimize` 位于实际 planner 主链；Rust crate 的同名生产导出来自 `optimizer_runtime.rs`，本文件入口当前只受紧凑单元测试覆盖。
-- Go `postOptimize` 还包含投影处理、列求值规避、MPP/fine-grained shuffle、执行器兼容、reuse chunk 等大量步骤；这里仅保留四类局部后处理。
-- Go 的 UnionScan/Lock 消除会把锁语义和等待时间下推到 PointGet/BatchPointGet，并用通用 transform 删除包装；这里无锁上下文，只要满足局部形状就直接提升子节点。
 - Go 笛卡尔积检查考虑 join type；这里紧凑 `Join` 无 join type，检查范围更宽。
-- Go 的真实 runtime filter 会注册到物理 Join/Scan 和 reader 子计划；这里生成紧凑过滤器列表后只把数量写入根节点说明文本。
-
-因此扩展时应先判断需求属于紧凑迁移模型还是完整运行时优化器，不能只修改本文件便宣称生产 SQL 行为已经对齐。
 
 ## 扩展指南
 
@@ -95,13 +85,3 @@ Go 对照是 `pkg/planner/core/optimizer.go`。两者保留了 `AllowCartesianPr
 修改树形变换时，应明确遍历序（先序或后序）、节点提升后的字段保留策略和多子节点形状。涉及 Apply/IndexJoin 时必须验证 outer/inner 索引和 probe 乘数；涉及 Projection 时必须补充表达式/schema 恒等条件，不能继续把空 `operator_info` 当作充分语义证明；涉及 UnionScan/Lock 时要评估锁信息是否需要下推，而不是机械删除节点。
 
 若目标是生产优化器功能，应修改 `optimizer_runtime.rs` 及其真实逻辑/物理规则依赖，而非仅扩充本文件。需要同步检查 `lib.rs` 的公开再导出、`Cargo.toml` 的依赖/feature、Go `optimizer.go` 的对应流程和相邻独立测试。兼容风险集中在计划形状、条件顺序、join side、错误类型和追踪输出；性能风险集中在每条规则的全树遍历、深递归、运行时过滤器额外扫描及代价累计精度。
-
-## 验证依据
-
-- 源文件：`pkg/planner/core/optimizer.rs`，逐项核对全部 2 个模块级值、1 个结构体、4 个公开函数和 10 个内部函数，以及所有递归与条件分支。
-- 数据与直接依赖：RustCodeGraph `node PlanNode`、`node common_plans.rs::PlanKind`、`node PlannerContext`、`node trace.rs::Trace`、`node RuntimeFilterGenerator`、`node GenerateRuntimeFilter`；定义分别落在 `common_plans.rs`、`trace.rs` 和 `runtime_filter_generator.rs`。
-- 调用图：RustCodeGraph `query DoOptimize`、`query OptimizeOptions`、`query existsCartesianProduct`、`node DoOptimize`。`node DoOptimize` 明确列出本文件入口的主要下游调用；精确 `rg` 进一步确认紧凑入口的直接 Rust 调用仅位于 `optimizer_test.rs`。RustCodeGraph 的 `callers`/`callees` 在使用非唯一符号或路径行号时出现歧义/空输出，未将这些不可靠结果当作生产调用证据。
-- crate 与接线：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。前者确认 crate、feature 和 Go porting 元数据，后者确认私有 `optimizer` 模块以及公开 `DoOptimize` 来自 `optimizer_runtime`。
-- Rust 测试：`pkg/planner/core/optimizer_test.rs`，其中 `parallel_apply_does_not_enable_nested_inner_apply` 和 `probe_parent_counts_follow_index_join_inner_side` 直接调用本文件入口。`runtime_filter_generator_test.rs` 是运行时过滤器自身的相邻独立测试，但不直接覆盖 `postOptimize` 的开关接线。
-- Go 对照：`pkg/planner/core/optimizer.go` 的 `doOptimize`、`DoOptimize`、`postOptimize`、`enableParallelApply`、`logicalOptimize`、`physicalOptimize`、`eliminateUnionScanAndLock`、`iteratePhysicalPlan`、`transformPhysicalPlan`、`existsCartesianProduct`，以及 `pkg/planner/core/optimizer_test.go`。对照只用于说明保留意图与已知差距，未把 Go 的完整能力推断为本文件已支持。
-- 本任务是纯文档分析，依任务计划不运行 Cargo。交付结构以任务指定命令验证：目标文件存在，且固定二级标题恰好 11 个。

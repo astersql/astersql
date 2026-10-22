@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sqlkiller` crate 的核心实现，由同目录 `lib.rs` 以 `pub mod sqlkiller` 暴露。它为一个会话或一条语句保存取消原因，把内存超限、执行超时、连接失活等异步事件统一转换成执行层 `SharedError`，并为需要等待取消的组件提供一次性广播事件。crate 边界见 `pkg/util/sqlkiller/Cargo.toml`：直接依赖执行错误定义、日志工具、`fail` 与 `rand`，没有可选 feature；工作区内的 session、executor、statistics、memory、servermemorylimit、distsql 等 crate 直接或经再导出使用它。
-
-该文件不是进程级信号处理器，也不主动轮询所有查询。生产者调用 `SendKillSignal*` 写入会话级状态，执行路径在检查点调用 `HandleSignal` 才把状态变成错误。`pkg/util/memory/lib.rs` 和 `pkg/util/servermemorylimit/lib.rs` 对本模块再导出，`pkg/distsql/context/context.rs` 则在分离后台游标时有意共享同一个 `SQLKiller`。
+为一个会话或一条语句保存取消原因，把内存超限、执行超时、连接失活等异步事件统一转换成执行层 `SharedError`，并为需要等待取消的组件提供一次性广播事件。
 
 ## 核心职责
 
@@ -87,11 +85,9 @@ Go 注释要求新增信号时同时更新 `store/driver/error/ToTiDBErr`，以�
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项对应 `pkg/util/sqlkiller/sqlkiller.go`：信号常量和值、`SQLKiller` 字段布局意图、首信号 CAS、kill channel 的惰性创建/关闭、带描述的仲裁错误、Finish 回调协议、连接存活节流和 `Reset` 世代语义均保留。Go 的 `chan struct{}` 在 Rust 中实现为共享关闭标志加条件变量；Go `atomic.Pointer` 被 `AtomicPointer<T>` 的互斥锁实现替代；Go `error` 返回被表达为 `Result<(), SharedError>`。
+Go 的 `chan struct{}` 在 Rust 中实现为共享关闭标志加条件变量；Go `atomic.Pointer` 被 `AtomicPointer<T>` 的互斥锁实现替代；Go `error` 返回被表达为 `Result<(), SharedError>`。
 
 Rust 相比 Go 多了 `Default`/`new`、可显式等待超时的 `KillEventChan::wait_timeout`，并用 `Arc`/`Box` 明确回调所有权。Rust 的 `Finish` 额外有内部 mutex，但仍保留 `FinishFuncLock` 以维持 Go 外部同步契约；对 poison 的恢复是 Rust 特有处理。
-
-相关行为由 `pkg/util/sqlkiller/migration_aster_unit_test.rs` 覆盖首信号胜出、广播、Reset 新世代、六类错误映射、Finish 回调与连接节流；`pkg/util/sqlkiller/sqlkiller_test.rs` 和 `go_merge_34_test.rs` 对照 `pkg/util/sqlkiller/sqlkiller_test.go`，验证 Reset 与并发发送/日志之间的锁序。测试独立于生产源文件，新增行为应继续放在这些独立测试文件中。
 
 ## 扩展指南
 
@@ -102,12 +98,3 @@ Rust 相比 Go 多了 `Default`/`new`、可显式等待超时的 `KillEventChan:
 调整 Reset 或事件逻辑时必须维持同一 `killEvent` 临界区覆盖原子清零与事件重置，并同步 `sqlkiller_test.rs`、`go_merge_34_test.rs` 及 Go 测试的竞态用例。调整 Finish 回调时保持锁顺序 `FinishFuncLock -> Finish`，并增加 panic、重入或并发替换测试；不要把 Rust 测试内嵌回本文件。优化 `AtomicPointer` 时需证明连接探测回调与时间戳的 Clone/Send/Sync 语义，并评估高频 `HandleSignal` 的锁开销。
 
 性能风险主要在执行热循环：`Signal.load` 很轻，但启用存活回调后 `lastCheckTime.Load/Store` 会取得 mutex；不要在每行处理时加入额外分配或日志。兼容风险集中在信号编号、错误码/文案和 Reset 世代；正确性风险集中在锁顺序、首信号不被覆盖以及描述与信号的一致快照。
-
-## 验证依据
-
-- 源与 crate：`pkg/util/sqlkiller/sqlkiller.rs`、`pkg/util/sqlkiller/lib.rs`、`pkg/util/sqlkiller/Cargo.toml`。
-- Go 对照：`pkg/util/sqlkiller/sqlkiller.go`、`pkg/util/sqlkiller/sqlkiller_test.go`。
-- Rust 独立测试：`pkg/util/sqlkiller/migration_aster_unit_test.rs`、`pkg/util/sqlkiller/sqlkiller_test.rs`、`pkg/util/sqlkiller/go_merge_34_test.rs`。
-- 直接调用证据：`pkg/util/memory/action.rs`、`pkg/util/memory/tracker.rs`、`pkg/util/servermemorylimit/servermemorylimit.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`、`pkg/session/runtime/control.rs`、`pkg/executor/typed_hash_join.rs`、`pkg/executor/typed_index_lookup.rs`、`pkg/distsql/context/context.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/sqlkiller` 列出本 crate 的 Rust/Go 源与测试；`query SQLKiller`、`query SendKillSignal`、`query HandleSignal` 等确认目标定义和跨模块候选。精确 `callers`/`callees` 查询 30 秒内未返回，故调用关系用上述生产源码逐一复核。
-- 本任务为纯文档分析，按任务约束未运行 Cargo。结构校验要求本文恰好包含任务规定的十一个二级标题；人工复核重点为信号数值、CAS 首写、事件世代、错误映射、锁顺序和 Go 对应关系均有源码或测试依据。

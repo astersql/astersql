@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 根在 [`lib.rs`](lib.rs) 中以 `pub mod rule_decorrelate` 公开该模块，Cargo 边界由 [`Cargo.toml`](Cargo.toml) 定义。它在 `rule_join_reorder.rs` 提供的简化 `JoinPlan`/`JoinNode` 计划模型上实现一组 Apply 去相关辅助逻辑：识别外层相关列、尝试把 Apply 改写为 Join、剪除一种冗余 Apply，并保护 Left Outer Apply 上投影的 NULL 扩展语义。
-
-当前接线范围需要特别说明：仓库内对 `DecorrelateSolver::Optimize` 的直接 Rust 调用位于 `casetest/windows/window_with_exist_subquery_test.rs`；同目录单元测试直接调用相关列提取与投影保护函数。生产逻辑计划的另一条去相关实现位于 `optimizer_runtime.rs`。因此，本文件是公开、可独立测试的简化迁移实现，但现有引用证据不能证明它已经取代 Go `rule_decorrelate.go` 或成为完整生产优化流水线的主入口。
+`DecorrelateSolver::Optimize`/`optimize` 自顶向下递归处理有限的节点种类；当 Apply 未被 `no_decorrelate` 禁止、相关列都由左子树提供，且右侧能提供相关等值边（或本来没有相关列）时，将 Apply 改写为相同连接类型的 Join。
 
 ## 核心职责
 
@@ -100,16 +98,3 @@
 - 修改剪枝前应建立“错误剪枝会丢行”的反例，包括 lateral、多行右侧、分组列只存在于 Apply 输出以及非恒真过滤；`row_count` 是估计值，不宜被扩展为更激进的正确性证明。
 - 若将本规则接入生产优化器，需要在明确的优化规则注册/调度点接线，并确认它与 `optimizer_runtime.rs` 的现有去相关实现不会重复运行或采用冲突模型。
 - 性能变化应关注深树递归、`Vec::contains` 去重和子树克隆；兼容性则以 Go 同路径实现与 SQL 结果/计划回归为准。
-
-## 验证依据
-
-本说明基于以下直接证据（仅做静态分析，按任务要求未运行 Cargo）：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件可由 `node --file pkg/planner/core/rule_decorrelate.rs` 完整读取。
-- RustCodeGraph `query`：确认 Rust 与 Go 两侧的 `DecorrelateSolver`、`ExtractOuterApplyCorrelatedCols`、`pruneRedundantApply`、`skipDecorrelateProjectionForLeftOuterApply`，以及 Rust 私有 `collect_correlated_edges`、`strip_correlated_conditions` 的路径和签名。精确 callers/callees 查询未产出结果并被停止，因此调用者结论另由仓库引用搜索核验。
-- 源与模块边界：`pkg/planner/core/rule_decorrelate.rs`、`rule_join_reorder.rs`、`task.rs`、`lib.rs`、`Cargo.toml`。
-- Go 对照：`pkg/planner/core/rule_decorrelate.go` 的相关列提取、默认聚合值、剪枝、主优化递归和 Left Outer Apply 投影保护实现。
-- 独立 Rust 测试：`pkg/planner/core/rule_decorrelate_test.rs` 验证内部 Apply 相关列排除、常量/外侧/内侧列投影判断；`pkg/planner/core/casetest/windows/window_with_exist_subquery_test.rs` 验证相关和非相关 Apply 改写、嵌套计划保形及外侧列缺失时不改写。
-- 生产路径旁证：`pkg/planner/core/optimizer_runtime.rs` 包含自身的 MaxOneRow 与 Left Outer Apply 投影保护逻辑，说明完整运行时行为不能仅由本文件推断。
-
-人工复核结论：本文能从真实符号回答该文件为何存在、当前如何运行、哪些语义尚未迁移以及扩展时应同步哪些独立测试；未把测试覆盖之外的能力表述为已支持。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 MySQL 时间值的 FSP（Fractional Seconds Precision，小数秒精度）基础规则：校验精度范围、把十进制小数秒文本转换为六位微秒，以及为小数字符串右侧补零。源码本身不声明 Rust 模块；生产接线位于 `pkg/types/internal/field/lib.rs` 的 `fsp` 模块中，该模块以 `include!("../../fsp.rs")` 纳入本文件并用 `pub use fsp::*` 再导出。根 `astersql-types` crate 又在 `pkg/types/lib.rs` 中以 `pub use types_field_group as field` 暴露这个 field 子 crate。因此这里属于 `astersql-types-field` 的生产实现，而不是根 crate 中名为 `fsp` 的直接模块。
-
-`pkg/types/Cargo.toml` 将根包命名为 `astersql-types`，并以路径依赖 `types-field-group = { package = "astersql-types-field", path = "internal/field" }` 连接上述实现。根 `pkg/types/lib.rs` 中的 `mod fsp_test` 仅在 `#[cfg(test)]` 下挂载独立测试，不是生产接线。
+`alignFrac` 只负责文本补零，不解析数值；`AlignFracForTest` 是访问该包内函数的公开测试出口。
 
 ## 核心职责
 
@@ -86,15 +84,11 @@ RustCodeGraph 对 `pkg/types/fsp.rs` 的节点读取显示该文件被多个文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/fsp.go`，测试对照是 `pkg/types/fsp_test.go`：
-
-- 四个常量的名称和数值一致。
 - Go `CheckFsp(int) (int, error)` 对应 Rust 的泛型整数入口与 `(i32, Option<SharedError>)`；两者对 `-1`、其他负值、`>6` 和合法范围的行为一致。Rust 泛型提升到 `i64`，用于保留 Go 测试中大幅越界输入的覆盖能力。
-- Go `ParseFrac(string, int) (int, bool, error)` 对应 Rust 三元组。两者都在 `fsp >= len(s)` 时补齐到六位，在需要降精度时只解析 `fsp+1` 位并执行 `(tmp+5)/10`，也都以独立布尔值表示整秒进位。
 - Rust 将 Go 的 `errors.Trace`/`strconv.ParseInt` 错误改为 `SharedError`，并人工保留 `strconv.ParseInt:` 文本前缀。Rust 额外显式检查截断后的 UTF-8 前缀，避免非法字节边界造成 panic；该行为仍与 Go 对非数字输入返回解析错误的结果类别一致。
 - Go 私有 `alignFrac` 对应 Rust 的 `pub(crate) alignFrac`；Rust 另增 `AlignFracForTest` 测试出口，Go 文件没有这个公开函数。
 
-`pkg/types/fsp_test.rs` 基本逐项移植 Go 测试：覆盖极端上下界、空串、非数字、补齐、舍入和 `999` 进位，并额外覆盖 UTF-8 截断。`pkg/types/internal/field/migration_aster_unit_test.rs` 和 `pkg/types/field_type_5_aster_unit_test.rs` 从实际再导出路径补充验证。
+`pkg/types/fsp_test.rs` 基本逐项移植 Go 测试：覆盖极端上下界、空串、非数字、补齐、舍入和 `999` 进位，并额外覆盖 UTF-8 截断。
 
 ## 扩展指南
 
@@ -103,13 +97,3 @@ RustCodeGraph 对 `pkg/types/fsp.rs` 的节点读取显示该文件被多个文�
 - 若要支持新的输入格式（例如符号、Unicode 数字或超过 `i64` 的文本），应先明确与 Go 的兼容契约，再替换两个解析分支；不能仅放宽一条分支，否则同一输入会因 `fsp` 不同而出现不一致行为。
 - 若生产调用需要直接使用 `alignFrac`，优先在 `astersql-types-field` 内部调用包内函数，不应依赖命名为 `ForTest` 的公开门面。若确认需要稳定的外部 API，应单独设计名称、可见性和输入校验，并增加独立测试文件，而不是把测试写进生产源码。
 - 性能上，本文件处理的有效前缀最多与输入长度相关；避免在热路径中反复调用 `alignFrac` 产生字符串分配。正确性风险主要是舍入进位被忽略、字节长度与字符长度混淆，以及修改错误文本后破坏 Go 兼容断言。
-
-## 验证依据
-
-- 源码与接线：`pkg/types/fsp.rs`、`pkg/types/internal/field/lib.rs`、`pkg/types/lib.rs`。
-- crate 边界：`pkg/types/Cargo.toml`；确认根 crate 通过 `types-field-group` 路径依赖连接 `pkg/types/internal/field`，且没有为本文件声明独立 feature。
-- Go 对照：`pkg/types/fsp.go`、`pkg/types/fsp_test.go`。
-- Rust 独立测试：`pkg/types/fsp_test.rs`、`pkg/types/internal/field/migration_aster_unit_test.rs`、`pkg/types/field_type_5_aster_unit_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`node --file pkg/types/fsp.rs --offset 1 --limit 260` 读取了完整 126 行并报告关联使用文件；`query CheckFsp/ParseFrac/alignFrac --json` 定位到本文件符号；`callees fsp.rs::CheckFsp` 与 `callees fsp.rs::ParseFrac` 验证 `ParseFrac → CheckFsp`、常量引用和错误构造；`callees fsp.rs::AlignFracForTest` 验证测试出口到 `alignFrac`。由于同名符号消歧限制，调用者由上述模块入口和 `rg` 精确搜索补证。
-- 边界证据：Rust 测试覆盖非法负 FSP、大幅正负越界、非数字、空串、UTF-8 截断、补齐、四舍五入和整秒进位；Go 测试提供原始兼容意图。
-- 本任务是纯文档分析，依照任务约束未运行 Cargo。交付前使用任务指定命令验证文档存在且恰含 11 个固定二级章节，并人工复核本文没有把未找到的生产调用描述为已接线行为。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate，由同目录 `lib.rs` 的 `pub mod mview_complete_delta_apply` 导出，`Cargo.toml` 指定 crate 根为 `lib.rs`、Go 包映射为 `pkg/executor`。冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 中它是新增的 COMPLETE DELTA APPLY 行变更内核，直接 Go 对照为 `mview_complete_delta_apply.go`。
-
-它接收已计算的差异行，不负责生成刷新差异、读取子计划或实现统一 executor 生命周期。builder 已有物化视图计划分派端口，但未找到工厂将其接到本文件的生产实现；冻结树中 `MutationRuntime` 的实现只在独立测试。
+按输入顺序将差异转换为 insert、delete 或 update。
 
 ## 核心职责
 
@@ -53,20 +51,12 @@ UPDATE 列数不匹配报 `UPDATE row {idx} column count mismatch`；未知操�
 
 ## 与 Go 版本的对应关系
 
-两边共享操作码、按差异执行写入、只更新变化列以及无变化 UPDATE 跳过的意图。Go 的 `MViewCompleteDeltaApplyExec` 是具体 executor：Open 校验目标表、handle 和列类型，Next 拉取 child chunk、取得事务与表上下文，使用 writable/compare 列映射、比较元数据、bitmap 与复用缓冲，最后写 statement affected rows 和消息；Close 清理缓冲。
+两边共享操作码、按差异执行写入、只更新变化列以及无变化 UPDATE 跳过的意图。
 
-Rust 当前只实现已解码行的应用算法，逐列使用 `Datum::Equals`，没有 Go 的类型感知列比较、chunk 批比较和 touched bitmap 优化，也没有完整刷新执行器生命周期。不能把 Go 的表写入和 SQL 测试行为视为该 Rust 模块已完成的生产能力。
+Rust 当前只实现已解码行的应用算法，逐列使用 `Datum::Equals`，没有 Go 的类型感知列比较、chunk 批比较和 touched bitmap 优化，也没有完整刷新执行器生命周期。
 
 ## 扩展指南
 
 生产接线应在 builder 工厂及 runtime 中完成目标表解析、child 拉取/差异解码、事务回滚与 session 统计；扩展时逐段对照 Go 的列映射、类型比较与表 mutation 语义。保持整个批次出错不发布、写入成功才计数、无变化更新不写入的约束。
 
 测试继续放在独立的 `mview_complete_delta_apply_test.rs`。新增 DELETE、列数错误、runtime 提交错误与类型边界验证时，应断言写入集合和回滚结果，而非只看返回成功；若增加重试，还需覆盖统计是否重复累计。性能优化可考虑复用 touched 缓冲，但必须保持 Datum 比较和计数语义。
-
-## 验证依据
-
-- 冻结增量：`git diff ad0a6f4..2c944fb -- pkg/executor/mview_complete_delta_apply.rs` 为新增 82 行；以 `git show 2c944fb:pkg/executor/mview_complete_delta_apply.rs` 核对全文件，装配读取冻结 `lib.rs` 和 `Cargo.toml`；本包没有 `doc.go`。
-- Go 对照读取冻结 `mview_complete_delta_apply.go` 的类型、Open/Next/Close 和 chunk 应用入口；本说明只归纳可直接确认的 Rust 支持范围。
-- 独立测试 `mview_complete_delta_apply_test.rs` 的四个用例静态覆盖 insert/update 与 touched、无变化更新、第二次写失败时测试 runtime 放弃 staged 状态，以及非法操作码。测试未覆盖 DELETE、列数不匹配或真实事务；测试 runtime 的复制后发布只证明其模拟回滚设计。
-- `git grep 2c944fb` 仅在测试找到 `MutationRuntime` 实现和该模块的导入。RustCodeGraph 当前包含 Rust，但不能代替冻结历史证据，本任务用目标提交 blob 与引用搜索核实。
-- 使用 Ready 文档等价验证：五篇固定 11 章、差异空白和引用存在性检查、人工事实复核；仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`。按任务范围未运行 Cargo 或 Go/SQL 测试，不声称测试执行通过。

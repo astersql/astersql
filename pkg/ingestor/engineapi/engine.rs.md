@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-engineapi` crate，是导入引擎与上层 region-job/IMPORT INTO 流程之间的公共协议层。crate 根 `pkg/ingestor/engineapi/lib.rs` 将 `engine` 模块公开并再导出其中全部符号；`pkg/ingestor/engineapi/Cargo.toml` 指定该 crate 对应 Go 包 `pkg/ingestor/engineapi`，自身仅直接依赖 `astersql-lightning-membuf`（该依赖由同 crate 的 `ingest_data.rs` 使用）。
-
-文件不实现存储、排序或 TiKV ingest。它定义本地引擎和外部排序引擎都必须暴露的 `Engine` trait，以及批次范围、冲突汇总和重复键策略。当前直接实现/适配证据包括 `pkg/ingestor/globalsort/engine_api.rs::ExternalEngineAdapter`、`pkg/ingestor/ingestctrl/import_pipeline.rs::{ExternalEngineSource, LocalEngineSource}`；`pkg/session/runtime/import_sst.rs::CloudEngine` 再把全局排序适配器接到 ingestctrl 的外部引擎边界。
+用 `ConflictInfo` 区分需要做行冲突消解的 PK/UK conflict KV 与更宽泛的 duplicate KV，并提供可累计合并的摘要。
 
 ## 核心职责
 
@@ -74,7 +72,7 @@ RustCodeGraph 对该文件报告 17 个符号并显示被 42 个文件使用。�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ingestor/engineapi/engine.go`。Rust 保留了 Go 的 `Range`、`DataAndRanges`、`Engine`、`ConflictInfo`、`OnDuplicateKey` 名称、字段顺序和方法语义，并使用 `#[allow(non_snake_case)]`/`#[allow(non_upper_case_globals)]` 保持迁移可追踪性。
+Rust 保留了 Go 的 `Range`、`DataAndRanges`、`Engine`、`ConflictInfo`、`OnDuplicateKey` 名称、字段顺序和方法语义，并使用 `#[allow(non_snake_case)]`/`#[allow(non_upper_case_globals)]` 保持迁移可追踪性。
 
 关键映射为：Go `IngestData` 接口值对应 `Box<dyn IngestData>`；Go `chan<- DataAndRanges` 对应 `&SyncSender<DataAndRanges>`；Go `error` 对应 `EngineError`；Go `Engine interface` 对应 `Engine: Send + Sync`；Go `OnDuplicateKey int` 对应开放的 `OnDuplicateKey(i32)`；Go `String()` 同时对应 Rust `Display` 和显式 `String()`。
 
@@ -87,11 +85,3 @@ Rust 的 `ConflictInfo` 未携带 Go 的 JSON tags，因为它不是 serde 数�
 新增 `OnDuplicateKey` 策略必须保持数值和外部字符串稳定，核对 Go `engine.go`、IMPORT INTO 的三处选择函数、globalsort/简单 SST writer 的策略映射，并为未知值回退保留兼容行为。修改 `Range` 语义时要同步 region-job 消费方和重复检测解码约束；不得把 `SSTMeta` 的结束键例外泛化到普通范围。
 
 测试应继续放在独立文件，不内嵌到 `engine.rs`。公共契约优先扩展 `pkg/ingestor/engineapi/migration_aster_unit_test.rs`；实际背压、取消与资源释放扩展 `pkg/ingestor/globalsort/engine_api_test.rs`；本地/外部 pipeline 接线则在 `pkg/ingestor/ingestctrl` 或 `pkg/session/runtime` 的相邻独立测试中验证。兼容风险集中在 trait 实现遗漏、统计元组顺序、键是否解码、常量数值/字符串漂移；性能风险集中在通道容量、阻塞策略和批次所有权释放。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ingestor/engineapi` 确认目标、Go 对照、`ingest_data` 与独立测试均已索引；`node --file pkg/ingestor/engineapi/engine.rs --offset 1 --limit 220` 读取全部 146 行、17 个符号及 42 个文件使用关系；`query ConflictInfo`、`query OnDuplicateKey`、`query DataAndRanges` 定位实现、适配器和测试引用。
-- 源与 crate 边界：`pkg/ingestor/engineapi/engine.rs`、`lib.rs`、`Cargo.toml`、`ingest_data.rs`。
-- Go 对照：`pkg/ingestor/engineapi/engine.go`；类型、常量值、字符串、区间与冲突合并语义逐项核对。
-- 直接实现/调用证据：`pkg/ingestor/globalsort/engine_api.rs`、`pkg/ingestor/ingestctrl/import_pipeline.rs`、`pkg/session/runtime/import_sst.rs`、`pkg/dxf/importinto/task_executor.rs`、`pkg/dxf/importinto/proto.rs`。
-- 独立测试证据：`pkg/ingestor/engineapi/migration_aster_unit_test.rs` 覆盖冲突合并溢出、文件顺序、策略字符串、通道批次、统计、范围、取消与关闭；`pkg/ingestor/globalsort/engine_api_test.rs` 覆盖真实适配器的数据读取、背压取消与内存释放。任务为纯文档分析，按计划未运行 Cargo 或测试二进制。

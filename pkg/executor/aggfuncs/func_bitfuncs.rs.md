@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-aggfuncs` crate；crate 根由 `pkg/executor/aggfuncs/Cargo.toml` 的 `[lib] path = "lib.rs"` 指定，`lib.rs` 通过 `pub mod func_bitfuncs` 公开本模块。它保存 BIT_OR、BIT_XOR、BIT_AND 三种 SQL 位聚合共享的 Rust 累加状态机，直接状态类型是 `BitAggregator`，部分结果类型复用 `aggfuncs.rs` 中的 `PartialResult4BitFunc = u64`。
-
-需要区分“实现存在”和“执行器已接线”：`builder.rs::build` 会把 `FunctionName::{BitOr, BitXor, BitAnd}` 映射成同名 `AggImplementation` 变体，但仓库搜索只发现目标类型被 `func_bitfuncs_test.rs` 与 `go_scenario_coverage_test.rs` 实例化，未发现生产路径把这些变体构造成 `BitAggregator`。因此本文件当前可确认提供位聚合算法与可测试状态，不应据此宣称完整 SQL 执行链已经调用它。
+因此本文件当前可确认提供位聚合算法与可测试状态，不应据此宣称完整 SQL 执行链已经调用它。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/executor/aggfuncs/func_bitfuncs.go`。两端共同使用 `uint64/u64` 部分结果，OR/XOR 的分配和 reset 单位元为 0，AND 覆盖为最大 `uint64`；三种更新都跳过 NULL，把 `int64` 转为无符号位模式后累计，并以同一运算合并部分结果。XOR 是唯一实现滑动窗口撤销的种类。
-
 实现形态存在重要差异：Go 用 `baseBitAggFunc` 实现 partial-result 分配、reset、最终写 chunk、spill 序列化/反序列化，并用 `bitOrUint64`、`bitXorUint64`、`bitAndUint64` 三个不同结构实现 `AggFunc`；Rust 目标文件将三者合并为带 `kind` 的轻量状态机，三个名称只是类型别名。Go 的 `UpdatePartialResult` 自行从 `chunk.Row` 求值并传播表达式错误，Rust `update` 只接收已求值的 `Option<i64>`，因此尚不等价于完整 Go `AggFunc` 接口。
 
 Go `builder.go::{buildBitOr,buildBitXor,buildBitAnd}` 会直接返回具体 `AggFunc`；Rust `builder.rs::build` 当前只产生 `BuiltAggFunc` 元数据。Go 测试 `func_bitfuncs_test.go::{TestMergePartialResult4BitFuncs,TestMemBitFunc}` 的主要意图由 Rust 独立测试覆盖；Rust 还显式覆盖单位元、NULL/reset、负数位模式和 XOR slide。Go 的 spill 行为另由 `spill_helper_test.go::TestPartialResult4BitFunc` 覆盖，不能把它算作目标 Rust 类型自身的调用证据。
@@ -90,14 +86,3 @@ Go `builder.go::{buildBitOr,buildBitXor,buildBitAnd}` 会直接返回具体 `Agg
 若目标是让 SQL 执行器实际运行本实现，需要补齐 `AggImplementation` 消费端到 `BitAggregator` 的生产接线，并同时处理表达式求值、错误传播、最终结果写入、内存计量与 spill 生命周期；只在 `builder.rs` 增加枚举映射不足以证明运行时可用。类型安全要求较高时，可考虑用不同新类型或专用构造器替代当前三个等价别名，但这属于 API 设计变更，需评估现有调用者。
 
 测试必须继续放在独立文件 `pkg/executor/aggfuncs/func_bitfuncs_test.rs`，不要内嵌到生产源文件。至少同步覆盖：每种单位元、NULL/全 NULL、负数位模式、分区合并、错误种类合并的 panic、非 XOR slide 的 panic，以及 XOR 多行移出/移入。若补生产接线，还需在 builder/执行器的独立测试中证明从函数描述符到实际累计结果的端到端路径，并与 Go 的 `func_bitfuncs_test.go`、必要时 `spill_helper_test.go` 对齐。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/aggfuncs/func_bitfuncs.rs`（`BitAggKind`、`BitAggregator`、三个别名及其全部方法）。
-- crate 与模块边界：`pkg/executor/aggfuncs/Cargo.toml`、`pkg/executor/aggfuncs/lib.rs`；本包不存在 `doc.go`。
-- 公共部分结果与相邻能力：`aggfuncs.rs::PartialResult4BitFunc`、`spill_serialize_helper.rs::serialize_bit_func`、`spill_deserialize_helper.rs::deserialize_bit_func`。
-- Rust 构建元数据：`builder.rs::{FunctionName,AggImplementation,build}`；它证明 BIT_* 可被分类，但没有证明 `BitAggregator` 的生产实例化。
-- Rust 独立测试：`func_bitfuncs_test.rs` 的四个测试，以及 `go_scenario_coverage_test.rs::{test_merge_partial_result4_bit_funcs,test_mem_bit_func}`。
-- Go 对照：`func_bitfuncs.go`、`builder.go::{buildBitOr,buildBitXor,buildBitAnd}`、`func_bitfuncs_test.go::{TestMergePartialResult4BitFuncs,TestMemBitFunc}`，以及 spill 场景 `spill_helper_test.go::TestPartialResult4BitFunc`。
-- RustCodeGraph：`status` 显示索引包含目标仓库；`node --file` 读取了目标、crate 入口、builder 与测试；`query BitAggregator`、`query BitAggKind` 和 `query DEF_PARTIAL_RESULT_4_BIT_FUNC_SIZE` 核对定义及测试侧引用。`files --filter` 未命中目标路径，因此对 Cargo、Go 对照及全仓引用使用了 `rg`/文件读取补证。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，验证采用上述源码/调用证据与任务指定的章节结构检查。

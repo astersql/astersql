@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-infoschema` crate 内部的静态目录定义文件，专门保存 `INFORMATION_SCHEMA.SLOW_QUERY`、`INFORMATION_SCHEMA.STATEMENTS_SUMMARY` 与 `INFORMATION_SCHEMA.STATEMENTS_SUMMARY_HISTORY` 的列元数据。它由父模块 [`tables.rs`](tables.rs) 通过 `#[path = "catalog_columns_go45.rs"] mod catalog_columns_go45;` 私有装配，不是 crate 的公共 API；两个构造函数也只开放到父模块（`pub(super)`）。crate 边界由 [`Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 确定，父模块再由 [`lib.rs`](lib.rs) 的 `pub mod tables` 纳入 crate。
-
-文件名中的 `go45` 与文件头注释共同表明，这批列定义来自 Go `pkg/infoschema/tables.go` 中 `slowQueryCols` 和 `tableStatementsSummaryCols` 在合并点 `ad193e964b` 的移植快照。它只描述目录结构，不读取慢日志、聚合语句、生成查询行或执行 SQL。
+`slow_query_columns` 按协议顺序构造 97 个慢查询列，从 `Time` 到 `Query`，覆盖事务、解析/编译、Cop/TiKV、RocksDB、IA 远端读取、资源消耗、计划及会话连接属性等字段。
 
 ## 核心职责
 
@@ -78,11 +76,9 @@ RustCodeGraph 能识别本文件及三个函数，但未生成它们的 callers/
 
 ## 与 Go 版本的对应关系
 
-Go 对照位于 [`tables.go`](tables.go)：`slowQueryCols` 定义慢查询列，`tableStatementsSummaryCols` 定义语句摘要列，`tableNameToColumns` 分别把它们绑定到 `TableSlowQuery`、`TableStatementsSummary` 和 `TableStatementsSummaryHistory`。Rust 的 `default_columns` 保留了同样的三条绑定关系。
+主要表示差异是：Go 使用 `variable`、`execdetails`、`stmtsummary` 等包的字符串常量以及 `mysql.Type*`/位标志；Rust 快照把解析后的列名写成字符串字面量，把类型压缩成 `ColumnType`，把位标志拆成 `unsigned`、`not_null`、`primary_key`、`binary` 四个布尔字段。
 
-主要表示差异是：Go 使用 `variable`、`execdetails`、`stmtsummary` 等包的字符串常量以及 `mysql.Type*`/位标志；Rust 快照把解析后的列名写成字符串字面量，把类型压缩成 `ColumnType`，把位标志拆成 `unsigned`、`not_null`、`primary_key`、`binary` 四个布尔字段。`types.UnspecifiedLength` 在 Rust 声明中表现为 `size: 0`，再由 `buildTableMeta` 按 Blob 类型恢复字段长度。
-
-语义上需要保持的不是源码写法，而是列名、大小写、顺序、类型、显示长度、精度、可空性、无符号标志、主键/二进制标志和注释。当前 Rust 独立回归覆盖了关键数量、首尾、IA 字段位置与类型、`Read_pool_task_details` 的 LongBlob 长度及 `Time` 主键标志；它不是对全部 224 列逐字段自动比对，因此未来同步 Go 变更仍需人工或新增表驱动校验。
+当前 Rust 独立回归覆盖了关键数量、首尾、IA 字段位置与类型、`Read_pool_task_details` 的 LongBlob 长度及 `Time` 主键标志；它不是对全部 224 列逐字段自动比对，因此未来同步 Go 变更仍需人工或新增表驱动校验。
 
 ## 扩展指南
 
@@ -97,13 +93,3 @@ Go 对照位于 [`tables.go`](tables.go)：`slowQueryCols` 定义慢查询列，
 5. 特别评估兼容风险：消费者可能依赖列序号；历史表必须与当前摘要表一致；集群表会在基础结构上形成远端查询契约。性能风险通常很低，但增加大量列会提高注册表和每行结果的元数据/传输开销。
 
 不要在本文件实现慢日志解析或摘要聚合；这些属于数据生产路径。也不要为绕过类型缺口而把字段简化成通用字符串，因为 `buildTableMeta` 的模型类型会直接影响 SQL 类型检查和客户端元数据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示仓库索引包含 7032 个 Rust 文件；`files --filter pkg/infoschema` 找到本文件并报告 5 个索引符号；`node --file pkg/infoschema/catalog_columns_go45.rs --offset ...` 完整读取 1868 行并确认 `col`、`slow_query_columns`、`statements_summary_columns` 的实现。对三者执行带 `--file` 的 `callers`/`callees` 未返回边，因此使用源码检索补证。
-- Rust 生产源码：[`catalog_columns_go45.rs`](catalog_columns_go45.rs)；[`tables.rs`](tables.rs) 的模块装配、`ColumnType`、`columnInfo`、`default_columns`、`table_registry`、`buildTableMeta`、`information_schema_db_with_storage_class`；[`lib.rs`](lib.rs) 的 crate 模块入口。
-- crate 声明：[`Cargo.toml`](Cargo.toml) 确认 crate 名为 `astersql-infoschema`、库入口为 `lib.rs`，并列出父层建模使用的本地依赖。
-- Go 对照：[`tables.go`](tables.go) 的 `slowQueryCols`、`tableStatementsSummaryCols` 与 `tableNameToColumns`。
-- 独立 Rust 回归：[`go_merge_45_test.rs`](go_merge_45_test.rs) 的 `go_merge_45_metrics_and_storage_class_metadata` 验证 97/127 列、关键偏移、类型、长度、标志和 IA 字段；该测试由 [`lib.rs`](lib.rs) 的 `#[cfg(test)] mod go_merge_45_test` 接入。
-- 行为测试：[`test/clustertablestest/cluster_tables_test.rs`](test/clustertablestest/cluster_tables_test.rs) 验证慢日志字段、摘要开关、集群表识别和连接属性；Go [`test/clustertablestest/tables_test.go`](test/clustertablestest/tables_test.go) 的 `TestStmtSummaryTable` 验证列注释及 IA 字段在当前、历史和集群变体中的可见性。
-- 本任务为纯文档分析，按计划不运行 Cargo。最终以任务指定命令校验目标文件存在且恰有 11 个固定二级标题，并人工复核未把数据读取/聚合逻辑归因给本文件。

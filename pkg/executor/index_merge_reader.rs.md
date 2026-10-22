@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate。crate 由 [`pkg/executor/Cargo.toml`](Cargo.toml) 声明，模块由 [`pkg/executor/lib.rs`](lib.rs) 中的 `pub mod index_merge_reader;` 公开。它实现 Index Merge 的运行时执行阶段：接收规划器已经选择的多条 partial 索引/表扫描路径，合并这些路径得到的行 handle，再按 handle 回表生成 SQL 执行器需要的 `chunk::Chunk`。
-
-上游构建入口在 [`pkg/executor/builder.rs`](builder.rs) 的 `executorBuilder::buildIndexMergeReader` / `buildNoRangeIndexMergeReader`：先取得快照时间并构建 draft，再通过 `finalize_index_merge_reader` 接入具体运行时依赖。本文所述执行器本身不解析 SQL、选择索引或直接实现 KV 协议；这些操作经 `IndexMergeRuntimeContext`、`IndexMergePartialSource` 和 `IndexMergeTableReader` 注入。
+实现 Index Merge 的运行时执行阶段：接收规划器已经选择的多条 partial 索引/表扫描路径，合并这些路径得到的行 handle，再按 handle 回表生成 SQL 执行器需要的 `chunk::Chunk`。
 
 ## 核心职责
 
@@ -85,11 +83,8 @@ coordinator 的顺序保证为：join 全部 partial → 向 fetch 发送 `Finis
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/executor/index_merge_reader.go`](index_merge_reader.go)。两版保留相同的核心命名和阶段：`IndexMergeReaderExecutor`、partial table/index worker、process worker、table-scan worker、union/order/intersection 分支、pushed limit、分区/全局索引、内存与运行时统计。Go 的 `Open`/`Next`/`Close` 和 Rust 的生命周期顺序也一致。
-
 主要实现差异如下：
 
-- Go 结构直接持有 TiDB 的 table、DAG request、physical plan、range、session/data reader builder 等具体类型；Rust 通过 `IndexMergeRuntimeContext` 和 `IndexMergeOpaque` 隔离这些实现，以便移植边界保持稳定。
 - Go 使用 goroutine、channel、`sync.WaitGroup` 与 context；Rust 使用 OS thread、`sync_channel`、coordinator `JoinHandle`、`finishSignal` 和显式 cancellation。
 - Go 的有序并集实现使用 `handleHeap` 做多路归并；当前 Rust `fetchLoopUnionWithOrderBy` 收集全部 handle 后去重并全局排序，虽然仍保留 `handleHeap` 类型。这会带来更高峰值内存与排序复杂度，是与 Go 尚未完全同构的性能差异，不能把 Rust 文档描述成流式堆归并。
 - 两版都不支持 intersection 与 keep-order 组合；Go 留有未实现分支，Rust 在 `startWorkers` 返回错误并保留 panic 防线。
@@ -104,12 +99,3 @@ coordinator 的顺序保证为：join 全部 partial → 向 fetch 发送 `Finis
 - 调整分区或全局索引行为：重点复核 `dispatchHandles`、`executeTask` 的 `partition` 选择和 `(partition_id, encoded)` 唯一键；同步动态/静态裁剪、局部/全局索引测试。
 - 修改并发或关闭流程：必须覆盖通道满、主线程提前返回、partial/process/table worker panic、读取器阻塞取消和重复关闭。Go 测试 [`pkg/executor/test/indexmergereadtest/index_merge_reader_test.go`](test/indexmergereadtest/index_merge_reader_test.go) 中的 panic、hang、error、goroutine leak 与 memory tracker 用例是行为清单；Rust `seq_executor_test.rs::test_index_merge_reader_close` 仅是较薄的关闭回归证据，不应替代真实流水线测试。
 - 修改内存统计：逐项列出新结构的登记和释放点，并同步 `IndexMergeReaderMemTracker` 对照场景；防止只增加 `Consume(+)` 而遗漏任务消费、heap pop 或关闭路径的 `Consume(-)`。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 `pkg/executor/index_merge_reader.rs`，文件被识别为 1624 行、183 个符号；`query IndexMergeReaderExecutor` 定位 Rust 主结构于第 389 行，`node --file` 分段核对了完整源码。索引报告的直接使用文件包含 `pkg/executor/test/indexmergereadtest/index_merge_reader_test.rs`。
-- 源码事实：[`pkg/executor/index_merge_reader.rs`](index_merge_reader.rs) 的 `Open`、`startWorkers`、三种 process loop、`dispatchHandles`、`indexMergeTableScanWorker::executeTask`、`Next` 与 `Close`；crate/module 边界来自 [`pkg/executor/Cargo.toml`](Cargo.toml) 和 [`pkg/executor/lib.rs`](lib.rs)。目标包不存在 `pkg/executor/doc.go`。
-- 构建入口：[`pkg/executor/builder.rs`](builder.rs) 的 `executorBuilder::buildIndexMergeReader`、`buildNoRangeIndexMergeReader` 及 `ExecutorBuilderDependencies::{build_no_range_index_merge_reader, finalize_index_merge_reader}`。
-- Go 对照：[`pkg/executor/index_merge_reader.go`](index_merge_reader.go) 中同名执行器和 worker；其函数清单覆盖 Open/Next/Close、并集、有序并集、交集、回表、错误同步和统计。
-- Rust 测试：[`pkg/executor/test/indexmergereadtest/index_merge_reader_test.rs`](test/indexmergereadtest/index_merge_reader_test.rs) 覆盖 handle 去重、分区 union、交集并发、ORDER BY/LIMIT、limit 超过 1024、intersection embedded limit 和动态/静态分区裁剪；[`pkg/executor/test/seqtest/seq_executor_test.rs`](test/seqtest/seq_executor_test.rs) 的 `test_index_merge_reader_close` 提供错误后关闭的轻量证据。
-- Go 测试：[`pkg/executor/test/indexmergereadtest/index_merge_reader_test.go`](test/indexmergereadtest/index_merge_reader_test.go) 进一步覆盖内存 tracker、悲观锁、worker panic/hang/error、coprocessor goroutine 泄漏、竞争和历史 issue。本文只读取这些用例作为迁移语义依据，按任务要求未运行 Cargo 或代码测试。

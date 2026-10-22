@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 AsterSQL Rust 类型系统中的 MySQL 时间语义核心，集中实现 `DATE`、`DATETIME`、`TIMESTAMP` 和作为时长使用的 `TIME`。它不是由根 `pkg/types/lib.rs` 直接声明的普通模块：`pkg/types/internal/time/lib.rs` 通过 `#[path = "../../time.rs"] mod time_impl` 编译本文件并导出全部符号，形成 `astersql-types-time`；根 `pkg/types/Cargo.toml` 再以 `types-time` 路径依赖接入，`pkg/types/lib.rs` 用 `pub use types_time as time` 暴露 `astersql_types::time::*`。
-
-该文件位于 SQL 值与日历/时长表示的公共边界。上游调用者包括 `pkg/types/datum.rs` 的 Datum 转换、`pkg/expression/builtin_cast_vec.rs` 和 `pkg/expression/builtin_time_vec_generated.rs` 的 SQL cast/时间函数、`pkg/expression/planner_bridge.rs` 的计划值转换、`pkg/lightning/backend/kv/canonical.rs` 的导入编码，以及 `pkg/ddl/persistent_masking_actions.rs` 和 `pkg/session/runtime/relational_value.rs`。目标包没有 `pkg/types/doc.go`，最近的模块契约由上述 `internal/time/lib.rs` 和 Cargo 清单给出。
+用 `CoreTime(u64)` 的高 60 位保存年月日时分秒微秒，用低 4 位同时编码 FSP 和 `DATE`/`DATETIME`/`TIMESTAMP` 类型标记，并提供构造、读取、修改、比较和 MySQL packed-u64 编解码（`FromDate`、`NewTime`、`Time::{Type,Fsp,CoreTime,ToPackedUint,FromPackedUint}`）。
 
 ## 核心职责
 
@@ -72,11 +70,11 @@ RustCodeGraph 将本文件标为被 77 个文件使用。图查询确认 `ParseT
 
 ## 与 Go 版本的对应关系
 
-直接对照是 `pkg/types/time.go`，行为测试对照是 `pkg/types/time_test.go`。Rust 保留了 Go 风格的公开命名、`Time`/`Duration` 字段语义、CoreTime 位布局、FSP 常量、两位年份规则、零日期策略、TIMESTAMP 范围、TIME 上限、packed 编码、DATE_FORMAT/STR_TO_DATE、EXTRACT 和 INTERVAL 入口。`pkg/types/time_test.rs` 以独立文件迁移了编码、日期/时间解析、算术、时区、格式化、溢出和数值转换用例；测试没有内嵌在生产文件中。
+Rust 保留了 Go 风格的公开命名、`Time`/`Duration` 字段语义、CoreTime 位布局、FSP 常量、两位年份规则、零日期策略、TIMESTAMP 范围、TIME 上限、packed 编码、DATE_FORMAT/STR_TO_DATE、EXTRACT 和 INTERVAL 入口。
 
 实现手段存在明确差异。Go 使用 `time.Time`/`*time.Location` 和包内 `Context`，Rust 使用 `chrono::DateTime<Tz>`、`chrono_tz::Tz` 与轻量 `TimeContext` trait；Go 的警告/错误处理接入更完整的语句上下文，Rust 通过 `append_warning` 抽象，默认实现会忽略 warning。Go `Time` 自定义 JSON 文本编解码，Rust 当前在 `Time`/`Duration` 上派生 `Serialize`/`Deserialize`，默认结构形状不等价于 Go 的字符串 JSON，不能把“派生可序列化”描述为已完成跨语言 JSON 兼容。
 
-Rust 的 `ParseTime` 主流程较集中地使用 `chrono` 做日历进位和时区转换，但刻意保留部分零日期到 `Time::Check` 决策；若提前把所有输入转成 `NaiveDate`，会错误拒绝 Go 在放宽标志下允许的值。Go 的包级实现还包含更多细分辅助和错误类型，Rust 则统一为 `TimeError`。变更语义时必须同时核对两侧源文件和测试，而不能仅按 chrono 的自然行为推断 MySQL 规则。
+Rust 的 `ParseTime` 主流程较集中地使用 `chrono` 做日历进位和时区转换，但刻意保留部分零日期到 `Time::Check` 决策；若提前把所有输入转成 `NaiveDate`，会错误拒绝 Go 在放宽标志下允许的值。Go 的包级实现还包含更多细分辅助和错误类型，Rust 则统一为 `TimeError`。
 
 ## 扩展指南
 
@@ -86,13 +84,3 @@ Rust 的 `ParseTime` 主流程较集中地使用 `chrono` 做日历进位和时�
 - 扩展格式符或 week-mode 时，同步修改 `DateFormat`、`parse_str_to_date`、`GetFormatType` 及周算法；格式化和反向解析并非自动对称，应为每个新说明符分别添加成功、边界、未知/尾随输入测试。
 - 调整 TIME/INTERVAL 时，联动 `matchDuration`、`Duration` 算术、`ParseDurationValue`、`ExtractDurationValue`、单位分类函数和 `MaxTime` 边界；复合单位的负号、微秒补零、跨日归一化和超界必须单独验证。
 - 性能改动可优先缓存 `parse_composite_duration_value` 的正则或减少 `String`/`Vec` 分配，但不得跳过 Go 已覆盖的宽松解析、警告与错误优先级。日期/时区规则改动还应检查表达式 cast、Datum、Lightning 编码和会话 SQL 路径的代表性调用。
-
-## 验证依据
-
-- 源码全貌：`pkg/types/time.rs`（2812 行）；已盘点常量、`TimeError`、`TimeContext`/`TimeFlags`、`Time`、`Duration`、所有公开解析/格式/区间入口及内部日历辅助，文件没有 `#[cfg]` 条件项。
-- 编译边界：`pkg/types/internal/time/lib.rs` 的 `#[path = "../../time.rs"] mod time_impl` 与 `pub use time_impl::*`；`pkg/types/internal/time/Cargo.toml` 的 `chrono`、`chrono-tz`、`regex`、`rust_decimal`、`serde`、`serde_json`、`parser-mysql`；`pkg/types/Cargo.toml` 和 `pkg/types/lib.rs` 的路径依赖与 `time` 重导出。目标包无 `pkg/types/doc.go`。
-- Go 对照：`pkg/types/time.go`；Go 测试 `pkg/types/time_test.go`，覆盖编码、DATE/DATETIME/TIMESTAMP/TIME、FSP、时区、算术、EXTRACT、INTERVAL、STR_TO_DATE 与边界。
-- Rust 测试：`pkg/types/time_test.rs`（独立测试文件，测试名与 Go 用例成组迁移）以及内部 crate 独立目标 `pkg/types/time_11_aster_unit_test.rs`；本任务按要求未运行 Cargo。
-- RustCodeGraph：`status` 显示 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/types/time.rs` 显示本文件被 77 个文件使用；`callees ParseTime --file pkg/types/time.rs` 得到 `ParseTime` → `parseTime`，`callees ParseDuration --file pkg/types/time.rs` 得到其到 `matchDuration`、`canFallbackToDateTime`、`ParseTime`、`ConvertToDuration` 的边。
-- 上游代码搜索：`pkg/types/datum.rs`、`pkg/expression/builtin_cast_vec.rs`、`pkg/expression/builtin_time_vec_generated.rs`、`pkg/expression/builtin.rs`、`pkg/expression/planner_bridge.rs`、`pkg/lightning/backend/kv/canonical.rs`、`pkg/session/runtime/relational_value.rs` 和 `pkg/ddl/persistent_masking_actions.rs`，证明该文件参与 SQL 值转换、表达式执行、导入编码和 DDL/会话路径。
-- 本任务是纯文档分析；验收只运行任务指定的 11 章节结构检查，不运行 Cargo、代码构建或运行时测试。

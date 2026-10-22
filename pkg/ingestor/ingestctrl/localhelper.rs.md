@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate；crate 入口 `pkg/ingestor/ingestctrl/lib.rs` 以 `pub mod localhelper` 暴露它。它承载 local ingest 后端的四组辅助能力：批量 Region split/scatter、半开键范围判断、按 Store 写入限速、SST compaction 阈值估算。包级契约 `pkg/ingestor/doc.go` 将 Region 预切分和 scatter 定义为写入/ingest 前的环境准备，本文件就是该契约在 Rust 侧的一组基础构件。
-
-当前接线状态必须与设计角色区分：RustCodeGraph 显示 `localhelper.rs` 的直接 Rust 使用者是 `pkg/ingestor/ingestctrl/localhelper_test.rs` 和 `pkg/executor/benchmark_test.rs`，仓库搜索未发现这些公开辅助函数被 Rust 生产路径调用。Go 对照 `localhelper.go` 则已由 `local.go`、`region_job.go`、`pkg/executor/importer/table_import.go` 等生产路径使用。因此本文件是已实现并有独立测试的移植模块，但不能据此宣称 Rust 主链已完成对应接线。
+`beforeEnd`、`keyInsideRegion`、`insideRegion` 和 `largerStartKey` 提供字节字典序上的 Region 边界运算，统一采用 `[start, end)`，空 `end` 表示正无穷。
 
 ## 核心职责
 
@@ -88,7 +86,7 @@ Store 桶按首次访问惰性创建，并以 `Arc` 返回，使等待者能在�
 
 ## 与 Go 版本的对应关系
 
-Rust 的模块划分和算法主体对应 `pkg/ingestor/ingestctrl/localhelper.go`：64 键阈值、平方根稀疏抽样、粗后细两阶段、`[start,end)` 边界、逐 Store 令牌桶、1.2 倍 burst、热更新与 compaction 上下界均保持一致。`localhelper_test.rs` 将 Go 测试意图拆为独立 Rust 测试文件，符合源码与测试分离要求；Go 原始测试位于 `localhelper_test.go`。
+`localhelper_test.rs` 将 Go 测试意图拆为独立 Rust 测试文件，符合源码与测试分离要求；Go 原始测试位于 `localhelper_test.go`。
 
 重要差异如下：
 
@@ -106,12 +104,3 @@ Rust 的模块划分和算法主体对应 `pkg/ingestor/ingestctrl/localhelper.g
 - 修改边界工具时，应增加空 end、等于 start、等于 end、多 meta 的独立测试，并核对 Go 的 protobuf 语义；若需要标准半开子区间包含，应新增语义清楚的函数，避免悄然改变 `insideRegion` 的既有严格终点判断。
 - 修改 compaction 公式时，应同步上下界、2 的幂取整和极值测试，并评估文件数量、迭代成本以及大 SST compaction 时长。Go 注释给出的取舍是尽量把 SST 数控制在约 512，同时避免压缩 32 GiB 以上数据带来的长延迟。
 - 所有 Rust 测试继续放在 `pkg/ingestor/ingestctrl/localhelper_test.rs`，不要内嵌回生产文件；若生产接线跨到 `local.rs`、`region_job.rs` 或 executor，还应同步各自的独立测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目含 11,467 个文件、7,032 个 Rust 文件；`pkg/ingestor/ingestctrl/localhelper.rs` 已索引，共 301 行。
-- RustCodeGraph 源码与符号查询：`node --file pkg/ingestor/ingestctrl/localhelper.rs`；`query splitAndScatterRegionInBatches`、`query EstimateCompactionThreshold2`、`query newStoreWriteLimiter`、`query WaitN`；`explore` 返回了上述 Go/Rust 调用边及测试调用者。
-- 读取的 Rust 直接证据：`pkg/ingestor/ingestctrl/localhelper.rs`、`lib.rs`、`rate_limiter.rs`、`region_job.rs`、`localhelper_test.rs`。
-- 读取的 crate/包证据：`pkg/ingestor/ingestctrl/Cargo.toml`、`pkg/ingestor/doc.go`。
-- 读取的 Go 对照：`pkg/ingestor/ingestctrl/localhelper.go`、`localhelper_test.go`；调用边还指向 `local.go`、`region_job.go` 和 `pkg/executor/importer/table_import.go`。
-- 测试事实：Rust 独立测试覆盖逐 Store 隔离与 burst 分块、限速热更新/关闭、关闭与建桶竞态、粗后细批次、阈值边界、粗阶段错误、取消、末键唯一、半开区间以及 compaction 极值。本任务按计划仅做文档分析，未运行 Cargo。

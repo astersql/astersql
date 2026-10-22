@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util` crate（见 `pkg/util/Cargo.toml`），并由 crate 根 `pkg/util/lib.rs` 通过 `pub mod gogc` 公开。它是 Go `pkg/util/gogc.go` 的迁移期对应实现，为其他 Rust crate 提供进程级 GOGC 数值的初始化、设置和读取接口。
-
-这里的“GOGC”只是一个配置/观测缓存。当前实现没有连接 Rust 分配器或垃圾回收器，也没有 Go `runtime/debug` 的等价运行时边界。因此它在完整应用中的实际位置是 `pkg/util/gctuner` 的共享状态底座，而不是能够直接改变 Rust 进程内存回收策略的 GC 控制器。`pkg/util/gctuner/Cargo.toml` 以 `task-util = { package = "astersql-util", path = ".." }` 引入本 crate，`tuner.rs` 和 `memory_limit_tuner.rs` 再以 `task_util::gogc` 使用这些 API。
+对外提供 `GetGOGC`，原子读取最近一次初始化或设置后的缓存值。
 
 ## 核心职责
 
@@ -75,17 +73,13 @@ RustCodeGraph 对 `pkg/util/gogc.rs` 的文件节点记录了两个直接使用�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/util/gogc.go`。两边共同保留了三个接口概念：初始化时读取 `GOGC` 且默认 `100`，`SetGOGC` 将非正输入归一为 `100`，`GetGOGC` 原子读取缓存。Rust 的 `swap` 返回旧缓存值，在仅由该模块控制状态时与 Go `debug.SetGCPercent` 返回旧运行时百分比的常见调用效果相近，现有 Rust 单测也按这一状态机验证。
+Rust 的 `swap` 返回旧缓存值，在仅由该模块控制状态时与 Go `debug.SetGCPercent` 返回旧运行时百分比的常见调用效果相近，现有 Rust 单测也按这一状态机验证。
 
 但当前并非完整语义对齐：
 
 - Go `init` 在包加载时自动执行，并立即调用 `metrics.GOGC.Set`；Rust `init` 只是未接线的普通函数，懒初始化也不更新指标。
 - Go `SetGOGC` 调用 `runtime/debug.SetGCPercent`，更新 `metrics.GOGC`，再写 `gogcValue`；Rust 只交换缓存，不改变任何运行时行为或指标。
 - Go 返回真实 runtime 先前值，Rust 返回本地缓存先前值；若未来存在其他运行时修改入口，两者可能分离。
-- Go 缓存为 `int64`、函数参数/结果为 `int`，Rust 统一为 `i32`，环境解析范围更窄。
-- 两边初始化都接受可解析的非正整数且不归一化，也都把 `GOGC=off` 当成整数解析失败而采用本文件默认值；这对应这里的缓存逻辑，不等同于 Go runtime 对环境变量的全部原生解释。
-
-Go 树中没有检索到直接覆盖 `SetGOGC`/`GetGOGC` 的 `*_test.go`。Rust 的直接回归证据位于独立文件 `pkg/util/cpu_posix_1_aster_unit_test.rs`，符合测试不内嵌到生产源文件的仓库规则。
 
 ## 扩展指南
 
@@ -96,11 +90,3 @@ Go 树中没有检索到直接覆盖 `SetGOGC`/`GetGOGC` 的 `*_test.go`。Rust 
 若扩大数值类型，需要同时检查环境解析、原子类型、gctuner 中 `u32` 转换以及 `(100 + GOGC)` 运算。兼容风险主要是返回旧值语义、非正初始化值和公开签名变化；正确性风险是缓存与真实 runtime 脱节；性能风险较低，当前热路径只有顺序一致原子操作，但新增指标或 runtime 桥接后应重新评估调用频率和同步成本。
 
 新增测试应继续放在独立文件，优先扩展 `pkg/util/cpu_posix_1_aster_unit_test.rs`，或为职责清晰新建 `pkg/util/gogc_test.rs` 并在 `pkg/util/lib.rs` 的 `cfg(test)` 区域挂载，不能把测试写入 `gogc.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`node --file pkg/util/gogc.rs` 核对了完整 58 行源文件及两个使用文件；`query SetGOGC/GetGOGC` 核对了 Rust/Go 同名定义；`callers`、`callees` 和精确 `explore` 核对调用点，并记录了 `callers --file` 对跨模块引用未产出边的限制。
-- Rust 源码：`pkg/util/gogc.rs`（目标实现）、`pkg/util/lib.rs`（模块公开与测试挂载）、`pkg/util/gctuner/tuner.rs`（写调用者）、`pkg/util/gctuner/memory_limit_tuner.rs`（读调用者）、`pkg/util/cpu_posix_1_aster_unit_test.rs`（直接状态转换回归测试）。
-- crate 配置：`pkg/util/Cargo.toml` 确认目标属于 `astersql-util` 且无专用外部依赖；`pkg/util/gctuner/Cargo.toml` 确认 `astersql-util-gctuner` 通过 `task-util` 路径依赖调用本模块。
-- Go 对照：`pkg/util/gogc.go` 核对自动初始化、`runtime/debug.SetGCPercent`、指标更新和原子缓存；`pkg/util/gctuner/tuner.go` 核对调谐器对返回旧值的使用方式。对 `pkg/**/*_test.go` 的检索没有找到直接调用 `SetGOGC` 或 `GetGOGC` 的 Go 测试。
-- 本任务只生成说明文档，按计划不运行 Cargo；最终以固定十一个二级标题的结构命令验证，并人工复核文档区分了当前缓存实现与尚未接线的 runtime/metrics 语义。

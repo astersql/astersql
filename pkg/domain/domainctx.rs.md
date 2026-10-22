@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-domain` crate 的上下文适配边界。`pkg/domain/lib.rs` 以公开模块 `pub mod domainctx` 暴露它；它引用同一 crate 的 `crate::domain::Domain`，没有自行创建、初始化或关闭 Domain。
-
-它解决的是“调用方持有会话类上下文，但 Domain 可能不存在”这一接口问题。跨 keyspace 会话不归属于单个 Domain，因此这里把缺失状态作为正常返回值表达，而不是把 Domain 当成必然存在的全局对象。当前 Rust 实现只有接口和一次转发；仓库搜索未发现生产代码中的 `DomainContext` 实现或 `get_domain` 调用，现阶段属于已经定义、已有独立测试、但尚未接入 Rust 生产主链的兼容适配层。
+`get_domain` 提供与 Go `GetDomain` 同用途的统一入口，把动态 trait 对象上的查询原样转发给实现者。
 
 ## 核心职责
 
@@ -88,8 +86,6 @@ Go 版本的直接生产调用者包括 `pkg/domain/domain.go::init`、`pkg/doma
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/domain/domainctx.go`。其 `GetDomain(ctx contextutil.ValueStoreContext) *Domain` 调用 `ctx.GetDomain()`，执行 `*Domain` 类型断言：断言成功返回指针，类型不匹配或空值返回 `nil`。`pkg/domain/domainctx_test.go::TestDomainCtx` 分别验证绑定 `nil` 时为 `nil`、绑定 `&Domain{}` 时非 `nil`。
-
 Rust 版本保留“可能没有 Domain”的核心语义，但实现机制不同：
 
 - Go 接受通用值存储，并在本函数内做运行时类型断言；Rust 把类型契约前移为 `DomainContext` trait，不需要 `Any` 下转型。
@@ -97,8 +93,6 @@ Rust 版本保留“可能没有 Domain”的核心语义，但实现机制不�
 - Go 返回共享指针；Rust 明确返回 `Arc<Domain>`，把共享所有权计入类型。
 - Go 测试覆盖有值和无值两条路径；Rust 独立测试当前只覆盖 `None`。
 - Go 函数已有多个生产调用者；Rust 适配层目前未发现生产实现者或调用者，因此只能认定接口语义已部分移植，不能认定调用链已经对齐。
-
-Go 测试中的 `TestGetRUVersionWithoutController` 测试的是 `Domain::GetRUVersion` 默认行为，不直接覆盖 `GetDomain`，不应算作本文件的边界证据。
 
 ## 扩展指南
 
@@ -111,13 +105,3 @@ Go 测试中的 `TestGetRUVersionWithoutController` 测试的是 `Domain::GetRUV
 5. 若需要区分缺失原因，应评估新增错误枚举或更丰富返回类型的兼容影响；直接把现有 `Option` 改成 `Result` 会破坏所有实现者和调用者。
 
 主要风险是：把跨 keyspace 的合法 `None` 当成异常导致用户路径失败；返回错误 keyspace 的 Domain 导致元数据隔离被破坏；长期保存 `Arc` 延长资源生命周期。单次动态分派和 `Arc` 克隆通常开销有限，但高频热路径接线前仍应确认是否已有更直接的上下文访问方式。
-
-## 验证依据
-
-- 源文件：`pkg/domain/domainctx.rs`，确认唯一 trait、方法、转发函数、导入和注释契约。
-- crate 装配：`pkg/domain/lib.rs` 的 `pub mod domainctx` 与 `pub use domain::Domain`；`pkg/domain/Cargo.toml` 的包名、库入口和依赖边界。
-- Rust 测试：`pkg/domain/domainctx_test.rs::canonical_domain_context_preserves_absent_cross_keyspace_domain`。
-- Go 对照：`pkg/domain/domainctx.go::GetDomain`、`pkg/domain/domainctx_test.go::TestDomainCtx`；生产调用位置由 RustCodeGraph 的 Go 调用边及源码搜索核对。
-- RustCodeGraph：`status` 显示索引包含 `pkg/domain/domainctx.rs`；`node --file pkg/domain/domainctx.rs` 核对全文件；`node pkg/domain/domainctx.rs::get_domain` 确认 `get_domain -> domain`；`query DomainContext` 核对 trait、方法和测试实现；`node pkg/domain/domainctx.go::GetDomain` 核对 Go 生产调用者。
-- 全仓精确搜索：`rg -n --glob '*.rs' '\b(get_domain|DomainContext)\b' pkg cmd br` 用于区分本符号与同名函数，并确认当前 Rust 生产接线缺失。
-- 本任务只新增说明文档；没有运行 Cargo 或代码测试。交付结构检查要求文档存在，且恰好包含任务指定的十一个二级标题。

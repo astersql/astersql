@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-base` crate，由 `pkg/planner/core/base/lib.rs` 中的 `mod task_base; pub use task_base::*;` 纳入并重导出。它是物理优化任务和 MPP 片段出口的抽象边界：本文件只定义 `Task`、`MPPSink` 与 `INVALID_TASK`，不定义具体物理算子或优化算法。这一分层遵循 `pkg/planner/core/base/doc.go` 的包契约：基础接口应保持抽象、不依赖具体 core 实现，新方法追加到末尾以便实现者对齐。
-
-crate 边界由 `pkg/planner/core/base/Cargo.toml` 确认：本文件直接用到的外部抽象来自 `property`（MPP 分区类型/列）、`kv`（MPP 调度任务）和 `vardef`（Exchange 压缩模式）；`crate::PhysicalPlan`、`crate::ContextRef` 与 `crate::Error` 则由同 crate 的 `plan_base.rs`/`lib.rs` 提供或重导出。
+这一分层遵循 `pkg/planner/core/base/doc.go` 的包契约：基础接口应保持抽象、不依赖具体 core 实现，新方法追加到末尾以便实现者对齐。
 
 ## 核心职责
 
@@ -63,13 +61,13 @@ MPP fragment 调度链是另一条直接流程：`pkg/planner/core/operator/phys
 
 ## 与 Go 版本的对应关系
 
-`pkg/planner/core/base/task_base.go` 是直接对照文件。Go `Task` 的 `Count`/`Copy`/`Plan`/`Invalid`/`ConvertToRootTask`/`MemoryUsage`/`AppendWarning` 与 Rust 前七个方法一一对应，`Box<dyn Task>` 代替 Go 接口值，`ContextRef` 代替 `PlanContext`，`crate::Error` 代替 `error`。Rust 额外加入了三个 MPP 分区方法和 `plan_mut`；它们并非当前 Go base `Task` 接口的对应成员，而是 Rust 物理算子接线所需的局部扩展。
+Rust 额外加入了三个 MPP 分区方法和 `plan_mut`；它们并非当前 Go base `Task` 接口的对应成员，而是 Rust 物理算子接线所需的局部扩展。
 
-Go `InvalidTask` 由 `pkg/planner/core/core_init.go` 赋值为空 `physicalop.RootTask`，并在 `find_best_task.go`、`exhaust_physical_plans.go` 等路径广泛作为哨兵返回。Rust `INVALID_TASK` 仍是未接线槽位，Rust 优化路径主要通过 `Task::invalid()` 和 `Option`/`Result` 表达候选失败，不应声称该全局单例已完成移植。
+Rust `INVALID_TASK` 仍是未接线槽位，Rust 优化路径主要通过 `Task::invalid()` 和 `Option`/`Result` 表达候选失败，不应声称该全局单例已完成移植。
 
-Go `MPPSink` 的五个专有方法在 Rust 中全部保留，并同样继承/约束于 `PhysicalPlan`。差异是 Go 使用 `[]*kv.MPPTask`，Rust 使用值语义的 `Vec<kv::MPPTask>` 和借用切片 `&[kv::MPPTask]`；顺序、整体替换和追加契约保持一致。
+差异是 Go 使用 `[]*kv.MPPTask`，Rust 使用值语义的 `Vec<kv::MPPTask>` 和借用切片 `&[kv::MPPTask]`；顺序、整体替换和追加契约保持一致。
 
-实现层尚未与 Go 完全同形：Go `physicalop/task_base.go` 显式由 `RootTask`、`MppTask`、`CopTask` 实现 base `Task`；当前 Rust 搜索只找到 `physicalop/task.rs::RootTask` 实现本 base trait，Cop 状态由辅助结构处理，MPP 元数据被收纳到 `RootTask` 中。这是当前代码事实，不代表 Go 三种具体任务的所有语义已完整移植。
+实现层尚未与 Go 完全同形：Go `physicalop/task_base.go` 显式由 `RootTask`、`MppTask`、`CopTask` 实现 base `Task`；当前 Rust 搜索只找到 `physicalop/task.rs::RootTask` 实现本 base trait，Cop 状态由辅助结构处理，MPP 元数据被收纳到 `RootTask` 中。
 
 ## 扩展指南
 
@@ -78,13 +76,3 @@ Go `MPPSink` 的五个专有方法在 Rust 中全部保留，并同样继承/约
 - 扩展 `MPPSink` 时，同步修改 `PhysicalExchangeSender` 的 trait impl、`Fragment` 调度路径和 `physical_exchange_sender_aster_unit_test.rs`；保留任务顺序、set 替换/append 追加以及 clone 不携带已调度任务的现有契约。
 - 若要启用 `INVALID_TASK`，不应直接增加零散 `unsafe` 读写；应先确定安全的一次性初始化与共享模型，补上独立 Rust 回归测试，并核对 Go `core_init.go` 和所有哨兵比较场景。
 - 与本抽象直接相关的测试应保持在独立文件：Task 实现回归放在 `pkg/planner/core/operator/physicalop/task_test.rs` 或专用的 `*_test.rs`，MPPSink 契约放在 `physical_exchange_sender_aster_unit_test.rs`，fragment 共享/内存行为放在 `fragment_test.rs`；不把测试嵌入本生产文件。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/base/task_base.rs`，人工核对 `Task`、`INVALID_TASK`、`MPPSink` 全部声明、默认方法体与公开性。
-- 模块/crate 证据：`pkg/planner/core/base/lib.rs`、`pkg/planner/core/base/Cargo.toml`、`pkg/planner/core/base/doc.go`、`pkg/planner/core/base/plan_base.rs`。
-- RustCodeGraph 证据：`status` 报告 11,467 个已索引文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/core/base` 确认本包 14 个已索引文件；文件限定的 `node Task --file pkg/planner/core/base/task_base.rs` 定位到第 26–68 行的 11 方法 trait。`explore` 和通用名称查询出现大量同名 `Task`，故本文对具体调用边只采用文件限定结果与下述源码搜索，不将噪声结果当成证据。
-- 实现/调用证据：`pkg/planner/core/operator/physicalop/task.rs`、`physical_exchange_sender.rs`、`fragment.rs`、`base_physical_plan.rs`、`physical_apply.rs`、`physical_projection.rs`、`pkg/planner/core/optimizer_runtime.rs`。`rg` 查询确认本 base `Task` 的生产 impl 为 `RootTask`、`MPPSink` 的生产 impl 为 `PhysicalExchangeSender`，并确认 Rust `INVALID_TASK` 无其他引用。
-- Go 对照证据：`pkg/planner/core/base/task_base.go`、`pkg/planner/core/core_init.go`、`pkg/planner/core/operator/physicalop/task_base.go`、`pkg/planner/core/operator/physicalop/fragment.go`。
-- 独立测试证据：同目录的 `base_test.rs` 未直接测试本文件；直接相关的实现层测试是 `pkg/planner/core/operator/physicalop/task_test.rs`、`physical_exchange_sender_aster_unit_test.rs` 和 `fragment_test.rs`。其中 ExchangeSender 测试验证 trait 设置/追加顺序，fragment 测试验证 sink 类型擦除、内存委托与 `Arc` 共享，Task 测试验证 Cop 辅助状态到 Root 计划的部分过渡行为。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令校验本文件存在且恰有 11 个固定二级标题，并使用 `git diff --check` 检查文档差异。

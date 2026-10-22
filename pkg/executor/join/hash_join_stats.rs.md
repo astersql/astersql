@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-join` crate，由 `pkg/executor/join/lib.rs` 以 `pub mod hash_join_stats` 暴露。它位于 Hash Join 执行链的观测层：`hash_join_v1.rs` 和 `hash_join_v2.rs` 执行 build、probe 与 spill，本文对应的类型保存耗时、冲突、并发度和落盘统计，并通过 `Display` 生成与 Go 版运行时统计相容的诊断文本。
-
-文件第 16～422 行是块注释中的旧迁移草稿，不参与编译；实际 Rust 实现从 `use std::sync::atomic::{AtomicI64, Ordering}` 开始。理解或修改行为时应以 `HashJoinRuntimeStats`、`HashJoinRuntimeStatsV2` 等编译态符号为准，不能把注释中的 Go 风格伪代码视为已接线实现。
-
-`pkg/executor/join/Cargo.toml` 声明该 crate 的入口为 `lib.rs`，普通依赖只有执行器内部接口和 `astersql-util-execdetails`；本文件自身只直接使用标准库的 `Duration`、`AtomicI64` 与格式化能力，没有 I/O、网络或存储依赖。
+用两个 `Display` 实现生成 `EXPLAIN ANALYZE` 风格的文本；v2 还根据 `is_hash_join_ga` 选择详细或兼容格式。
 
 ## 核心职责
 
@@ -78,13 +74,9 @@ RustCodeGraph 将目标文件标记为被 `hash_join_v1.rs`、`hash_join_v2.rs`�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/join/hash_join_stats.go`。Rust 的两个格式化 helper、v1/v2 结构、`set_max_value`、reset、逐轮 reset、clone、merge 和字符串字段顺序都以该文件为主要语义来源。`pkg/executor/join/join_stats_test.go::TestHashJoinRuntimeStats` 的期望字符串也被 Rust 测试复现。
-
-主要类型映射为：Go `hashJoinRuntimeStats` ↔ Rust `HashJoinRuntimeStats`，Go `hashStatistic` ↔ Rust `HashStatistic`，Go `spillStats` ↔ Rust `SpillStats`，Go `hashJoinRuntimeStatsV2` ↔ Rust `HashJoinRuntimeStatsV2`。Go 的 `int64` 纳秒计数在 Rust 中多数提升为 `Duration`，需要并发更新的最大 worker 值仍保留为原子纳秒。
-
 当前迁移并非完全等价接线：Rust `SpillStats` 额外包含 `spilled_partition_num`、`spilled_bytes`、`restored_bytes`，`HashJoinV2Exec::collect_spill_stats()` 只填这三个字段；`Display` 却读取 Go 对齐的 `round` 和四个 `*_per_round` 字段。因此生产执行器能够采集 Rust 自有 spill 数据，但除非其他调用方显式填充 Go 对齐字段，字符串不会出现完整 spill 段。另一个差异是 Rust 用 `saturating_sub` 和纳秒钳制避免 Go 整数式计算可能产生的异常表示。
 
-Go v2 `Clone()` 同样没有复制 `workerFetchAndProbe`、`spill` 和 `isHashJoinGA`；Rust 测试明确固定了这一选择性 clone 语义。Go `Merge()` 也不合并这些字段，Rust 保持相同边界。
+Go v2 `Clone()` 同样没有复制 `workerFetchAndProbe`、`spill` 和 `isHashJoinGA`；Rust 测试明确固定了这一选择性 clone 语义。
 
 ## 扩展指南
 
@@ -95,12 +87,3 @@ Go v2 `Clone()` 同样没有复制 `workerFetchAndProbe`、`spill` 和 `isHashJo
 若要补全 v2 spill 展示，最可能的接入点是 `HashJoinV2Exec::collect_spill_stats()`：需要明确如何从 `HashJoinSpillHelper` 映射到 `round`、`partition_num` 和每轮四组 Go 字段，并验证 restore 多轮的分母语义。不要简单把 Rust 自有三组向量改名，因为其含义与 Go 的 build row table/hash table 分类并不一一对应。
 
 若要让这些类型进入统一 RuntimeStats 收集链，应先核对 `astersql-util-execdetails` 的 trait、类型编号和注册所有权，避免仅凭本地 `TYPE` 常量假定已经实现全局接口。性能上应避免在热路径频繁构造展示字符串；并发上新增共享计数必须延续 worker 私有汇总或明确的同步策略。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`files --filter pkg/executor/join` 确认目标、Go 对照和独立测试均已索引；`node --file pkg/executor/join/hash_join_stats.rs` 读取实际实现；`query` 定位 `HashJoinRuntimeStats`、`HashJoinRuntimeStatsV2`、`set_max_value`、`write_spilled_partition_num_stats`。精确 `callers` 查询没有产生可用输出，因此调用边以源码搜索补证。
-- 生产源码：`pkg/executor/join/hash_join_stats.rs`、`hash_join_v1.rs`、`hash_join_v2.rs`、`lib.rs`。
-- crate 边界：`pkg/executor/join/Cargo.toml`。
-- Go 对照：`pkg/executor/join/hash_join_stats.go`、`hash_join_v1.go`、`hash_join_v2.go`、`hash_table_v1.go`。
-- 独立测试：`pkg/executor/join/hash_join_stats_test.rs` 覆盖 v1/v2 文本、选择性 clone/merge、逐轮 reset 和 spill helper；`pkg/executor/join/join_stats_test.rs` 覆盖 v1 clone/merge、v2 max 与不合并 spill 的边界；`pkg/executor/join/join_stats_test.go` 提供 Go v1 基准期望。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定 11 个二级标题的结构命令和人工事实复核作为验收。

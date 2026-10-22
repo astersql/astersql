@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-aggfuncs` crate 中的聚合/窗口函数“选择层”。crate 入口 `pkg/executor/aggfuncs/lib.rs` 以 `pub mod builder` 暴露它；`pkg/executor/aggfuncs/Cargo.toml` 则声明该 crate 对应 Go 包 `pkg/executor/aggfuncs`。它把轻量描述符 `AggFuncDesc` 转换为 `BuiltAggFunc`：后者记录应使用哪个 `AggImplementation`、结果列序号以及少量已解析的构建参数。
-
-它不是完整的表达式描述符转换器，也不直接为所有分支构造 `Box<dyn AggFunc>`。当前 Rust 生产代码中可确认的下游包括 `aggfuncs.rs` 的 `BuiltAggFunc::spill_function`（为部分实现绑定 spill 状态/序列化器）和 `func_max_min_count.rs` 的 `BuiltAggFunc::instantiate_count_extrema`（实例化 MAX_COUNT/MIN_COUNT）。源码搜索未发现普通执行器直接调用本文件公开的 `build` 或 `build_window_function`；这两个入口的直接调用目前集中在 `builder_test.rs` 和 `func_max_min_count_test.rs`。因此“供哈希/流式聚合/窗口执行器选择实现”是该层的设计职责，而不是已经完整接入所有 Rust 执行路径的证明。
+把轻量描述符 `AggFuncDesc` 转换为 `BuiltAggFunc`：后者记录应使用哪个 `AggImplementation`、结果列序号以及少量已解析的构建参数。
 
 ## 核心职责
 
@@ -76,7 +74,7 @@ RustCodeGraph 将 `builder.rs` 标为被 `aggfuncs.rs`、`builder_test.rs`、`fu
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/aggfuncs/builder.go`。Rust `build` 对应 Go `Build` 的函数名分派，Rust `build_window_function` 对应 Go `BuildWindowFunctions`；各私有 `build_*` 基本沿用 Go 的阶段、DISTINCT 和类型选择。COUNT、SUM、AVG、FIRST_ROW、MAX/MIN、GROUP_CONCAT、方差/标准差、JSON、近似计数/百分位以及 LEAD/LAG 的关键分支均能在 Go 同名 helper 中找到依据。
+Rust `build` 对应 Go `Build` 的函数名分派，Rust `build_window_function` 对应 Go `BuildWindowFunctions`；各私有 `build_*` 基本沿用 Go 的阶段、DISTINCT 和类型选择。
 
 两者的结构差异很重要：Go 工厂接收真实 `expression`/`aggregation.AggFuncDesc` 和 `exprctx.ExprContext`，立即返回具体 `AggFunc` 对象；Rust 文件定义了独立的简化描述符并返回 `AggImplementation` 元数据，只有部分实现另有实例化或 spill 绑定。Go 窗口 RANK/CUME_DIST/PERCENT_RANK 接收 `orderByCols` 并创建 row comparer，Rust `build_window_function` 没有该参数，因此这里只能记录实现种类，不能证明排序比较器已经构造。
 
@@ -93,12 +91,3 @@ RustCodeGraph 将 `builder.rs` 标为被 `aggfuncs.rs`、`builder_test.rs`、`fu
 5. 在独立测试 `pkg/executor/aggfuncs/builder_test.rs` 增加分派、非法模式、缺参、类型边界测试；具体算法测试仍放在相应 `*_test.rs`，不得嵌入生产源文件。同步核对 `builder.go` 及相关 Go 测试，尤其是部分聚合阶段和转换失败语义。
 
 兼容性风险集中在阶段映射、字段物理类型、unsigned/Float32、collation、DISTINCT 状态格式和默认值转换；性能风险集中在误选高精度、滑动窗口或 multi-argument DISTINCT 实现。修改时还应检查 spill 是否支持新变体，否则内存执行可能可用而落盘恢复失败。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/executor/aggfuncs` 确认目标、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file pkg/executor/aggfuncs/builder.rs`：完整读取 832 行，核对所有公开/私有符号、枚举分支、常量转换与返回边界；`query build_window_function` 和 `query build_count` 确认入口及测试符号。
-- RustCodeGraph `node` 读取 `pkg/executor/aggfuncs/lib.rs`、`aggfuncs.rs`、`func_max_min_count.rs`、`builder_test.rs` 和 `builder.go`；Cargo 原文读取 `pkg/executor/aggfuncs/Cargo.toml`。目标目录不存在 `doc.go`。
-- 源码调用搜索：`rg` 核对 `build_window_function`、`BuiltAggFunc`、`AggImplementation` 的 Rust 引用，确认公开入口的直接测试调用和两处生产消费/桥接，并确认未发现普通执行器的直接入口调用。
-- `builder_test.rs` 的六组测试证实 COUNT 阶段/DISTINCT、GROUP_CONCAT 元数据、LEAD/LAG 参数及转换失败保留、JSON/百分位拒绝分支、MAX_COUNT/MIN_COUNT 普通/滑动/reject_rows 行为。
-- 本任务仅生成文档，未运行 Cargo。已运行任务指定的 11 章节结构命令（退出码 0），并人工复核本文区分了设计职责、当前接线事实与验证限制。

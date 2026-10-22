@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 Cargo 包 `astersql-store-mockstore-unistore-metrics` 的指标实现文件。包入口 `pkg/store/mockstore/unistore/metrics/lib.rs` 以 `#[path = "metrics.rs"]` 将它装入私有 `implementation` 模块，再用 `pub use implementation::*` 对外导出全部公开项。`Cargo.toml` 表明该包只有 `prometheus = "0.14"` 一个直接依赖，并通过 `package.metadata.porting.go-package` 对应 Go 包 `pkg/store/mockstore/unistore/metrics`。
-
-它位于 mockstore 的 UniStore 存储路径，而不是 TiKV 客户端或全局 `pkg/metrics` 的通用指标定义中。其职责边界是定义并注册 UniStore Raft 写路径与锁等待相关的 Histogram；它不采集时间、不驱动 Raft，也不提供 HTTP 暴露端点。
+其职责边界是定义并注册 UniStore Raft 写路径与锁等待相关的 Histogram；它不采集时间、不驱动 Raft，也不提供 HTTP 暴露端点。
 
 ## 核心职责
 
@@ -83,14 +81,11 @@ Histogram 保存累计桶计数、样本数与样本和；本文件没有重置�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/metrics/metrics.go`。Rust 保留了十个导出变量名、指标 name、统一 namespace/subsystem、注册顺序和指数桶参数，独立迁移测试也逐项验证生成后的 Prometheus 全名及首末桶边界。
-
 主要差异如下：
 
 - Go 的 namespace 来自 `string(config.StoreTypeUniStore)`；Rust 写死 `"unistore"`。当前值对齐，但未来若配置常量改名，Rust 不会自动同步。
 - Go `HistogramOpts` 未填写 Help；Rust 客户端不接受空 help，因此 Rust 统一增加固定说明。这是客户端约束适配，不改变指标名和桶。
 - Go 全局变量在包初始化时立即创建 Histogram；Rust 使用 `LazyLock`，直到首次注册或访问才创建。
-- Go `prometheus.MustRegister` 与 Rust 的 `register(...).expect(...)` 都在注册失败时 panic。
 - Go `metricsutil.initMetrics()` 在 UniStore 配置下直接调用注册函数；Rust 同一条件外加 `Once`，使正常应用入口可重复进入而不会重复注册。
 - 全仓 Go 生产引用同样只找到 `LatchWait` 的一个观测点；其他九项当前只有定义和注册。Rust 连 `LatchWait` 观测也尚未迁移，因此指标暴露后可能存在但无样本。
 
@@ -103,16 +98,3 @@ Histogram 保存累计桶计数、样本数与样本和；本文件没有重置�
 修改既有桶、namespace、subsystem 或 name 会改变监控时间序列，可能造成看板/告警不兼容和旧新序列断裂。增加标签会提升基数与内存成本；增加桶会线性增加每条序列的计数器数量。注册顺序虽不影响 Prometheus 语义，但应保持与 Go 和测试清单一致，便于审计。
 
 若要改变重复注册行为，应优先审视应用级 `REGISTER_UNISTORE_METRICS` 与默认 registry 生命周期，不能只吞掉本文件的注册错误；否则可能掩盖同名不同描述符的冲突。任何新行为都应添加独立回归测试，至少验证完整指标名、桶/标签、重复初始化策略以及真实观测后 gather 的样本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件；目标目录列出 `lib.rs`、`metrics.go`、`metrics.rs` 和 `migration_aster_unit_test.rs`。
-- RustCodeGraph `node --file pkg/store/mockstore/unistore/metrics/metrics.rs`：核对目标文件 97 行、常量、工厂、十个静态 Histogram、注册辅助函数及公开入口；索引报告该文件被迁移测试使用。
-- RustCodeGraph 对精确 `RegisterMetrics`、`new_histogram` 的 `query/callers/callees`：确认符号候选，但没有可用静态调用边；因此未把缺失边解释为“不存在调用”。
-- `pkg/store/mockstore/unistore/metrics/Cargo.toml` 与 `lib.rs`：核对 crate 名、唯一直接依赖、Go 包映射、实现模块装载和公开再导出。
-- `pkg/util/metricsutil/common.rs` 及其 Go 对照 `common.go`：核对应用注册链、UniStore 配置分支和 Rust `Once` 差异。
-- `pkg/store/mockstore/unistore/metrics/metrics.go`：逐项核对名称、桶参数和 MustRegister 顺序。
-- `pkg/store/mockstore/unistore/metrics/migration_aster_unit_test.rs`：核对独立测试覆盖的十个全名、桶数及首末边界。
-- `pkg/store/mockstore/unistore/tikv/region.go` 与 `region.rs`：核对 Go `LatchWait` 的真实观测区间及 Rust 对应流程尚未观测的事实。
-- 全仓 `rg` 引用检查：Rust 生产代码只找到应用注册入口，没有十个静态量的观测调用；Go 生产代码只找到 `region.go` 对 `LatchWait` 的观测。
-- 本任务按计划为纯文档分析，未运行 Cargo。最终结构检查要求本文恰好包含规定的十一个二级标题。

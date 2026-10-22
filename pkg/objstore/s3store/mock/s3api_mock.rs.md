@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[源文件 `s3api_mock.rs`](./s3api_mock.rs) 是独立 crate `astersql-objstore-s3store-mock` 的主要实现文件，由同目录 `lib.rs` 声明为 `s3api_mock` 子模块并整体重导出。`Cargo.toml` 表明该 crate 只直接依赖 `aws-sdk-s3 = "1"` 和 `mockall = "0.13"`：前者提供真实 S3 操作的输入/输出类型，后者生成可编程的 mock 实现。
-
-它的直接用途是对齐 Go 生成文件 `s3api_mock.go` 的方法集和期望录制体验，并由独立 Rust 测试 `migration_aster_unit_test.rs` 验证。它不是 `pkg/objstore/s3store/interface.rs` 中生产 trait `S3API` 的实现：两者名称相似，但本文件定义的是大写 Go 风格方法的 `S3Api`，而生产 trait 使用 snake_case 方法、`storeapi::Context`、`RequestOptions` 和 `anyhow::Result`。因此，当前 Rust 生产 `Client`/`Store` 请求链不会注入这个 `MockS3API`。
+通过 `mockall::mock!` 生成 `MockS3API` 及其 `expect_<Method>` 期望 API，再用 `NewMockS3API`、`EXPECT`、`ISGOMOCK` 保留 GoMock 命名兼容层。
 
 ## 核心职责
 
@@ -65,9 +63,9 @@ Input 的必填字段约束由 AWS SDK builder 在构建时处理，本 trait �
 
 ## 与 Go 版本的对应关系
 
-Go 的契约源是 `pkg/objstore/s3store/interface.go::S3API`，生成 mock 是同目录 `s3api_mock.go`。Rust `S3Api` 按相同顺序和名称覆盖 14 个操作，没有删减分片上传、批量删除、ListObjects v1 或对象锁查询。Rust `mock_covers_complete_go_method_set` 对除 Get/Put 之外的每个方法都有直接调用，Get/Put 由前两个测试覆盖。
+Rust `S3Api` 按相同顺序和名称覆盖 14 个操作，没有删减分片上传、批量删除、ListObjects v1 或对象锁查询。
 
-映射关系为：Go `context.Context` → Rust 最小 `Context`；Go `*s3.XInput` → Rust `&XInput`；Go `...func(*s3.Options)` → Rust `&[OptionFn]`；Go `(*s3.XOutput, error)` → Rust `Result<XOutput, S3Error>`；Go `gomock.Controller` + 独立 recorder → mockall 生成的 mock 内部期望系统。`NewMockS3API` 因此不接受 controller，`EXPECT` 返回 `self`的可变引用，`ISGOMOCK` 也不返回 Go 的空 struct。
+映射关系为：Go `context.Context` → Rust 最小 `Context`；Go `*s3.XInput` → Rust `&XInput`；Go `...func(*s3.Options)` → Rust `&[OptionFn]`；Go `(*s3.XOutput, error)` → Rust `Result<XOutput, S3Error>`；Go `gomock.Controller` + 独立 recorder → mockall 生成的 mock 内部期望系统。
 
 这是“方法集与测试体验对齐”，不是完整语义等价：Rust `Context` 不支持 Go context 的取消/deadline/value，`S3Options` 也只建模了 `force_path_style`。Go 的 `main_test.go`/`s3_test.go` 展示生成 mock 能注入实际 `S3Storage`；当前 Rust 对应 mock 未实现生产 `interface.rs::S3API`，所以不具备同样的注入位置。
 
@@ -79,12 +77,3 @@ Go 的契约源是 `pkg/objstore/s3store/interface.go::S3API`，生成 mock 是�
 - 若目标是让 Rust 生产 `Client`/`Store` 测试使用此 mock，需显式解决它与 `interface.rs::S3API` 的 trait、context、options、命名和错误类型差异；这是新的接线设计，不是在本文件内加一个方法即可完成。兼容风险包括同名 trait 混淆、同步/异步边界、output 空值语义与生产错误信息丢失。
 - 并发场景需求应先通过 mockall 的具体线程安全契约验证，必要时再为 `S3Api` 增加 `Send + Sync` 超约束；不要由 `OptionFn: Send + Sync` 间接推导整个 mock 的并发安全性。
 - 性能方面，每个 `OptionFn` 克隆仅克隆 `Arc`，但 SDK Input/Output 的构建和按值返回仍有成本。该 mock 应留在测试路径，不应成为生产请求的转发层。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件，目标文件可由 `node --file pkg/objstore/s3store/mock/s3api_mock.rs` 完整读取。
-- RustCodeGraph `query S3Api --kind trait`、`query NewMockS3API --kind function`、`query OptionFn --kind struct` 定位到本文件的主要符号，同时显示 `interface.rs::S3API` 是另一个 trait。对 `NewMockS3API`、`AbortMultipartUpload` 等运行 `callers`/`callees` 未返回边，因此未把宏生成边当作已验证图证据。
-- 源码：`pkg/objstore/s3store/mock/s3api_mock.rs`（类型、trait、mock 宏、兼容函数）；`mock/lib.rs`（模块声明与重导出）；`s3store/lib.rs`（上层模块装配）；`mock/Cargo.toml`（crate 边界与依赖）。
-- Go 对照：`pkg/objstore/s3store/interface.go`（14 个生产接口方法）；`mock/s3api_mock.go`（MockGen 生成的 mock、recorder、构造函数和期望方法）；`main_test.go` 与 `s3_test.go`（Go mock 的实际注入和期望使用）。
-- Rust 测试：`pkg/objstore/s3store/mock/migration_aster_unit_test.rs` 的三个独立测试覆盖参数传递、输出、错误、调用次数和完整 Go 方法集。全仓 `rg` 未发现这些本文件特有符号的其他 Rust 消费者。
-- 按任务约束，本次是纯文档分析，不运行 Cargo。结构验证使用任务文件指定的 `test -f` 与 11 个固定标题计数命令。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate（见 `pkg/planner/core/Cargo.toml`），是规划器第二版代价模型的集中实现。它同时服务两套计划表示：文件前半部的 `GetCanonicalPlanCostVer2` 面向 `base::PhysicalPlan` trait object 和真实物理算子层次；后半部的 `GetPlanCostVer2`/`GetPlanCost` 面向 `crate::task::PlanNode` 兼容树。两套路径都以 CPU、内存、磁盘、网络和请求等资源为成本依据，但使用的 `CostVer2` 类型不同：canonical 路径使用 `costusage_dependency::CostVer2`，兼容路径定义本文件自己的 `CostVer2`。
-
-真实物理计划路径在 `pkg/planner/core/optimizer_runtime.rs` 中通过 `physicalop::InstallPlanCostVer2Router(GetCanonicalPlanCostVer2)` 安装；`pkg/planner/core/operator/physicalop/lib.rs` 为具体算子实现 `PhysicalPlan::get_plan_cost_ver2` 时优先调用该路由。任务候选的选择点位于 `pkg/planner/core/operator/physicalop/base_physical_plan.rs`：读取 `TiDBCostModelVersion`，版本为 2 时取 v2 的标量总成本。兼容 `PlanNode` 路径由 `pkg/planner/core/find_best_task.rs::getTaskPlanCost` 调用本文件 `GetPlanCost`。
-
-crate 根 `pkg/planner/core/lib.rs` 以 `pub mod plan_cost_ver2` 暴露该模块；同目录没有 `doc.go`，包级 Go 语义依据来自 `pkg/planner/core/plan_cost_ver2.go`。
+提供兼容 `PlanNode` 的完整 v2 资源分量、基础公式与 v1/v2 分派。
 
 ## 核心职责
 
@@ -92,11 +88,9 @@ Go/Rust 浮点计算都可能产生很大有限值；canonical 路径对非法�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/plan_cost_ver2.go`。Go 的 `GetPlanCost/getPlanCost` 依据 session `CostModelVersion` 分派，并在 cost-trace explain 时设置 trace flag；各 `getPlanCostVer24Physical*` 函数按物理算子保存/复用成本。Rust canonical 路径把这些分散的 Go 算子公式集中到运行时类型分派中，并通过 physicalop 全局路由接入真实算子。
-
 已核对的等价意图包括：扫描使用 `rows * log2(rowSize) * factor`；列/常量复杂度为 0.01，顶层标量函数为 1；reader 合并存储子成本、网络与并发；TiKV/TiFlash 使用不同 CPU/内存/扫描/网络因子；TiFlash 表扫有启动与延迟物化项；IndexLookup/IndexJoin 有双读、批量与请求成本；HashAgg CPU 可按并发分摊而特定内存项不分摊；FullOuterJoin 对 build 未匹配行增加尾扫；cost trace 的组合形状在可观察处保持 Go 顺序与括号。
 
-Rust 不是机械逐函数翻译：`GetCanonicalPlanCostVer2` 用显式工作栈取代 Go 递归，以支持很深的 Q64 类物理树；Rust 对环给出明确错误。后半部 `PlanNode` 兼容模型则是另一套本地表示及简化因子表，不等同于 Go 真实物理计划对象，不能用其单元测试单独证明 canonical 全算子语义。Go 的算子缓存字段与 recalculate flag 主要由 Rust physicalop/`costusage` 接线承担，不应误认为全在本文件后半部实现。
+Rust 不是机械逐函数翻译：`GetCanonicalPlanCostVer2` 用显式工作栈取代 Go 递归，以支持很深的 Q64 类物理树；Rust 对环给出明确错误。后半部 `PlanNode` 兼容模型则是另一套本地表示及简化因子表，不等同于 Go 真实物理计划对象，不能用其单元测试单独证明 canonical 全算子语义。
 
 ## 扩展指南
 
@@ -107,12 +101,3 @@ Rust 不是机械逐函数翻译：`GetCanonicalPlanCostVer2` 用显式工作栈
 扩展兼容 `PlanNode` 时，在 `GetPlanCostVer2` 增加 `PlanKind` 分支，并尽量复用基础公式；若增加资源维度，必须同步 `CostVer2::{GetCost,div}`、`AddAssign`、trace 及 hook 消费者。修改 `SetGenPlanCostTrace` 或回调时要保持独立测试串行隔离全局状态。
 
 主要风险是成本数值或 trace 字符串的细小变化改变候选计划、跨引擎选择或 golden 输出；其次是把本应仅分摊 CPU 的成本整体除以并发、重复乘 IndexJoin 内侧基数、用声明 `flen` 代替统计行宽，以及破坏 explicit-worklist 的子请求/环检测不变量。此类修改必须同时比较 Rust 与 Go 的公式和边界测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`node --file pkg/planner/core/plan_cost_ver2.rs` 读取了 1–2637 行；精确 `callers/callees` 查询用于核对 `GetCanonicalPlanCostVer2` 与 `GetPlanCost`。宽泛 `explore` 因符号重名返回噪声，未将其推断作为结论。
-- Rust 源与接线：`pkg/planner/core/plan_cost_ver2.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/find_best_task.rs`、`pkg/planner/core/optimizer_runtime.rs`、`pkg/planner/core/operator/physicalop/lib.rs`、`pkg/planner/core/operator/physicalop/base_physical_plan.rs`。
-- crate 边界：`pkg/planner/core/Cargo.toml`；确认 crate 名、库根、依赖与 `nextgen` feature。目标目录不存在 `doc.go`。
-- 独立 Rust 测试：`pkg/planner/core/plan_cost_ver2_test.rs`，覆盖扫描公式/trace、资源分量求和、因子单调性、TiFlash penalty、range 精确累加、HashAgg 内存并发、函数计数、排序/哈希与 IndexJoin seeking 边界；`pkg/planner/core/main_test.rs` 含 canonical 直接测试。
-- Go 对照：`pkg/planner/core/plan_cost_ver2.go` 与 `pkg/planner/core/plan_cost_ver2_test.go`；另参考 `pkg/planner/core/casetest/fulljoin/full_join_test.go` 的 v2 full outer join 测试。
-- 本任务仅新增说明文档，未运行 Cargo 或代码测试；完成判据为上述事实交叉核对、人工审阅以及任务指定的 11 章节结构验证。

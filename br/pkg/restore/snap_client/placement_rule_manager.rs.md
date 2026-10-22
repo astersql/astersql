@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-pkg-restore-snap-client` library crate；crate 入口 `br/pkg/restore/snap_client/lib.rs` 以 `placement_rule_manager` 模块装载并公开重导出这里的 API。它位于快照恢复的数据发送链路之前：`SnapClient::RestoreTables`（`tikv_sender.rs:276-342`）创建管理器、调用 `SetPlacementRule`，执行切分与 SST 恢复，最后调用 `ResetPlacementRules`。
-
-这里实现的是恢复期间的 PD placement 规则生命周期，不负责表范围切分、SST 下载/摄取或校验和。依赖由 `br/pkg/restore/snap_client/stubs.rs` 中的本地 `StoreMeta`、`SplitClient`、`Context` 等抽象提供；`Cargo.toml` 也明确该 crate 当前采用本地 traits/stubs，而不是直接依赖 kvproto/grpcio。因此它已经接入本 crate 的 Rust 恢复流程，但客户端边界仍是迁移期的本地抽象。
+`NewPlacementRuleManager` 在离线恢复或没有 restore store 时返回空操作实现；在线且存在 restore store 时要求调用方提供 `SplitClient`，并构造在线管理器。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/restore/snap_client/placement_rule_manager.go`，Rust 保留了相同的接口分层、标签常量、表/分区 ID 收集、默认规则克隆语义、`Index=100`、`Override=true`、`in` 标签约束、规则 ID、范围编码、全 peer 检查、轮询等待和聚合删除失败。
-
 可见差异包括：
 
 - Go 工厂接收 PD client、PD HTTP client 与 TLS 配置并内部构造 `split.NewClient`；Rust 工厂接收 `StoreMeta` 和可选的 `Arc<dyn SplitClient>`，符合当前本地 stub 依赖边界。
@@ -94,7 +90,7 @@
 - Rust 使用 `wrapping_add(1)` 明确表达 Go 的整数环绕；相应边界测试是 Rust 额外的迁移保护。
 - Rust `RestoreTables` 的生产调用边已存在，但 `Cargo.toml` 注释表明该 crate 在 arm64 darwin 等环境仍以本地 traits/stubs 替代真实 kv/domain/kvproto/grpcio。文档不能据此声称已验证真实 PD 网络交互。
 
-Go 测试 `placement_rule_manager_test.go` 验证离线、在线无 restore store 和在线完整生命周期；Rust 同名独立测试复刻这些场景，并额外验证未就绪重试和最大 ID 环绕。`parity_test.rs::go_rust_public_contract_matches` 还检查离线接口、store 标签筛选与规则 ID。
+Go 测试 `placement_rule_manager_test.go` 验证离线、在线无 restore store 和在线完整生命周期；Rust 同名独立测试复刻这些场景，并额外验证未就绪重试和最大 ID 环绕。
 
 ## 扩展指南
 
@@ -105,13 +101,3 @@ Go 测试 `placement_rule_manager_test.go` 验证离线、在线无 restore stor
 - 强化清理可靠性时，需要同时审视 `SetPlacementRule` 部分成功的回滚、`RestoreTables` 在设置失败时的清理，以及 reset 错误当前仅记录告警的策略；这会跨到 `tikv_sender.rs`，不应只在本文件局部声称解决。
 - 新增管理器状态时应注意 trait 仅要求 `Send`，当前调用为串行可变访问；若要并发调用，需要明确同步策略而不是直接共享 `restoreTables`。
 - 所有行为变化都应与 `placement_rule_manager.go` 保持迁移语义一致，并更新独立的 `placement_rule_manager_test.rs`；真实 PD/TiKV 行为仍需在具备相应客户端的更高层验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/restore/snap_client` 定位本模块、Go 对照与测试；`node --file br/pkg/restore/snap_client/placement_rule_manager.rs --offset 1 --limit 400` 读取目标文件全部 262 行；`node` 还核对了 `tikv_sender.rs:250-364`、`stubs.rs:1590-1699`、`stubs.rs:2040-2139` 与 `stubs.rs:2240-2298` 的直接调用和依赖实现。`query NewPlacementRuleManager`、`query GetAllTiKVStoresWithRetry` 用于消除 Go/Rust 同名符号歧义；批量 callers/callees 查询无有效输出后，以精确源码节点和下述文本检索补证。
-- Rust 源与入口：`br/pkg/restore/snap_client/placement_rule_manager.rs`、`lib.rs`、`tikv_sender.rs`、`stubs.rs`。
-- crate 边界：`br/pkg/restore/snap_client/Cargo.toml`。
-- Rust 独立测试：`br/pkg/restore/snap_client/placement_rule_manager_test.rs`、`parity_test.rs`。
-- Go 对照：`br/pkg/restore/snap_client/placement_rule_manager.go`、`placement_rule_manager_test.go`、`tikv_sender.go`。
-- 文本调用核验：`rg -n "NewPlacementRuleManager|SetPlacementRule|ResetPlacementRules|setupPlacementRules|waitPlacementSchedule|checkRegions|checkRange|getRuleID|restoreLabel(Key|Value)" br --glob '*.rs' --glob '*.go'`，确认 Rust 生产入口与测试调用，以及 Go 的对应链路。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务指定命令验证本文档存在且恰有 11 个固定二级章节，并人工复核唯一产物、源码链接与未验证边界。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`domain.rs` 是 `astersql-domain` crate 的实例级运行时核心，而不是模块装配文件。`pkg/domain/lib.rs` 将这里的 `Domain`、`DomainConfig`、`DomainError`、`DomainStatsContext` 与 `SysProcesses` 重新导出；上层会话工厂据此创建每个 keyspace 的长期共享 `Arc<Domain>`。典型入口见 `pkg/session/runtime/session_factory.rs`：构造 `Domain::new_with_storage_handle`，安装 schema/DDL 协作者，再调用 `Domain::init`；`pkg/session/runtime/session.rs` 和 `pkg/testkit/mockstore.rs` 也直接创建并初始化它。
-
-该文件处在存储与 SQL 会话之间：下接 `StorageHandle`、`InfoSchemaLoader`、统计 KV/AutoID、DDL 元数据服务，上接 session、planner、executor、server 和测试工具。`pkg/domain/Cargo.toml` 将其归入 `astersql-domain`，并声明 `astersql-infoschema`、`astersql-ddl`、`astersql-statistics-*`、`astersql-meta-*`、`astersql-kv`、cross-keyspace/server-info、resource-group 和 inference 等直接依赖。
+承载实例级辅助状态：慢查询、全局配置和权限事件、系统变量刷新、实例计划缓存、资源组/RU/runaway、系统进程、server-id 与连接 ID、跨 keyspace 运行时，以及 inference/TTL/MLog worker。
 
 ## 核心职责
 
@@ -79,11 +77,9 @@ DDL/统计复合变更包含补偿与故障注入点，扩展时必须维持“�
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/domain/domain.go` 的 `Domain`、`NewDomain*`、`Init`、`Start`、`Reload`、`Close`、`InfoSchema`、统计循环和 `SysProcesses` 是主要语义来源。两版都把 Domain 作为“每 store/实例一个”的全局容器，区分 Init（DML 可用）与 Start（DDL/后台服务可用），维护 InfoSchema、DDL、统计、slow query、server-id/连接以及关闭顺序。
+Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、channel、WaitGroup、etcd session 和大量后台 loop；Rust 当前以 trait 注入、原子状态、命名线程、内存事件队列及规范 KV 服务表达已移植路径。Go 的系统 session pool 由 Domain 直接拥有，Rust 则由 session 层注册 `AutoAnalyzeExecutor` 等边界，因此不能把 Go 的所有 loop 宣称为 Rust 已完整实现。
 
-Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、channel、WaitGroup、etcd session 和大量后台 loop；Rust 当前以 trait 注入、原子状态、命名线程、内存事件队列及规范 KV 服务表达已移植路径。Go `Reload` 委托 `isSyncer.Reload`，Rust `reload` 直接经 `InfoSchemaLoader` 加载并做版本保护与 AutoID reconcile。Go 的系统 session pool 由 Domain 直接拥有，Rust 则由 session 层注册 `AutoAnalyzeExecutor` 等边界，因此不能把 Go 的所有 loop 宣称为 Rust 已完整实现。
-
-测试对应关系也不同：`pkg/domain/domain_test.go` 覆盖 Go 的 info、panic 恢复、TTL/external workload、sysvar loop 和 ANALYZE 识别；Rust 的 `pkg/domain/domain_test.rs` 目前只直接覆盖 `is_analyze_table_sql`。更广的 Rust 生命周期、持久化 DDL、跨 keyspace、统计初始化和补偿行为在独立的 `pkg/domain/canonical_domain_test.rs` 以及 session/executor 测试文件中验证。
+测试对应关系也不同：`pkg/domain/domain_test.go` 覆盖 Go 的 info、panic 恢复、TTL/external workload、sysvar loop 和 ANALYZE 识别；Rust 的 `pkg/domain/domain_test.rs` 目前只直接覆盖 `is_analyze_table_sql`。
 
 ## 扩展指南
 
@@ -93,11 +89,3 @@ Rust 版不是 Go 文件的逐字段机械镜像：Go 使用 context/cancel、ch
 - 修改 keyspace、server-id 或连接 ID 时必须维持租约唯一性、generation 防 ABA、低 48 位掩码和 `0` 表示无 server-id 的约定。
 - 新测试必须放在独立 `*_test.rs` 文件。文件内基础单元行为可扩展 `pkg/domain/domain_test.rs`；持久化 schema/DDL/生命周期应扩展 `pkg/domain/canonical_domain_test.rs`；跨 session 的实际接线应放在 `pkg/session/**_test.rs`。不要把测试模块内嵌回 `domain.rs`。
 - 兼容风险主要是 Go 行为差异和持久化格式；性能风险主要是扩大锁临界区、在周期线程执行阻塞 I/O，以及无界增长目录历史/事件队列。改动前应重新核对同路径 Go 符号和真实上游调用者。
-
-## 验证依据
-
-本次增量以 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的 `pkg/domain/domain.rs` 差异及目标 blob `0e67fb16fec6b5b3d528a315c14a0400c6f22d12` 为准，通过 `git diff ad0a6f4..2c944fb -- pkg/domain/domain.rs` 和 `git show 2c944fb:pkg/domain/domain.rs` 核对；不把当前 HEAD 或未提交 Rust 变更写入说明。
-
-模块/Cargo 接线以目标提交所属 crate 的 `lib.rs`、`Cargo.toml` 为依据。相关独立测试为 `pkg/domain/diagnostic_test.rs`，Go 对照为 `pkg/domain/domain.go`。测试是静态证据，并未运行；新增行为以本篇“冻结增量”段落所列函数与分支为核对入口。
-
-RustCodeGraph `status` 当前包含 Rust，但索引不是冻结提交快照，图查询仅辅助导航，不作为上述调用关系的版本证据。诊断状态契约另核对 `pkg/config/diagnosticmode/doc.go`。Ready 文档验证检查 13 篇的 11 章节、空白、差异和路径；依计划不运行 Cargo，不验证运行时、真实 etcd/TiKV 或 TLS 网络行为。

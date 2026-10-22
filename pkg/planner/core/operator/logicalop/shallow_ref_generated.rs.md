@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core-operator-logicalop` crate；`pkg/planner/core/operator/logicalop/lib.rs` 以私有模块 `mod shallow_ref_generated` 装入它，而其中的固有 `impl` 方法会随 `LogicalJoin`、`LogicalProjection`、`LogicalAggregation`、`LogicalSort` 四个公开类型一同对调用方可见。它位于逻辑计划构造和优化规则之间：规则可以先复制算子本体，再只改条件、表达式、物理属性候选或排序项，避免直接污染 memo/原计划中的节点。
-
-文件名表明它是生成代码的 Rust 落地版本，但当前 Rust 文件没有生成器产物常见的 `DO NOT EDIT` 声明；同仓库 Rust 生成器 `pkg/planner/core/generator/shallow_ref/shallow_ref_generator.rs` 实际生成并校验的是 Go 文件 `shallow_ref_generated.go`。因此修改 Rust 侧字段时，不能假定重新运行该生成器会自动更新本文件。
+这组 API 不执行优化、不遍历孩子、不重新计算 Schema/统计信息，也不检查副本是否已完成重新接线。
 
 ## 核心职责
 
@@ -83,14 +81,12 @@ RustCodeGraph 对目标文件报告 15 个节点，但没有建立这些固有�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/logicalop/shallow_ref_generated.go`。双方都覆盖 LogicalJoin、LogicalProjection、LogicalAggregation、LogicalSort，并为 Go 标签 `shallow-ref:"true"` 标记的切片提供字段级复制入口。Rust 的 `Vec` 对应 Go slice，`Vec<Vec<Column>>` 对应 Go `PossiblePropertiesInfo.Orders` 的二维切片复制。
-
 需要特别注意两项差异：
 
 1. Go 的算子级方法执行 `shallow := *op`，会保留整个结构的所有字段，包括嵌入基类和没有 `shallow-ref` 标签的字段；Rust 方法只列举业务字段，并默认化基类/Schema 生产者。Rust 调用方因此承担明确的重新接线责任。
 2. Go 字段级方法复制 slice 容器但保留指针/接口元素；Rust `Expression` 是 `Box<dyn Expression>`，其 `Clone` 调用 `CloneExpr()`，通常比 Go 的元素指针复制更强。`FullNames` 则通过 `Arc` 保持与 Go 指针元素近似的浅共享语义。
 
-Go 生成器由结构标签和反射驱动；Rust 生成器显式描述同一组 Go 字段，并在 `pkg/planner/core/generator/shallow_ref/shallow_ref_test.rs::TestHash64Equals` 中重生成、比对 `shallow_ref_generated.go`。该测试不生成或逐字校验本 Rust 文件，所以 Go/Rust 字段漂移仍需人工或新增独立测试防护。
+Go 生成器由结构标签和反射驱动；Rust 生成器显式描述同一组 Go 字段，并在 `pkg/planner/core/generator/shallow_ref/shallow_ref_test.rs::TestHash64Equals` 中重生成、比对 `shallow_ref_generated.go`。
 
 ## 扩展指南
 
@@ -99,12 +95,3 @@ Go 生成器由结构标签和反射驱动；Rust 生成器显式描述同一组
 若字段是规则将就地修改的 `Vec`/映射，应同步提供明确的字段级复制入口，并写独立测试证明修改副本不影响原对象。测试应放在同目录独立 `*_test.rs` 文件中，优先扩展 `logical_generated_aster_unit_test.rs`；Aggregation 的三项入口、Sort 的两项入口，以及 Join 其余条件入口目前缺少直接 Rust 回归覆盖，修改相关逻辑时应补齐。若改变 Go 对齐字段，还需同步审查 `shallow_ref_generated.go`、Go 结构标签、Rust 生成器元数据和 `shallow_ref_test.rs`。
 
 兼容风险主要是漏复制新字段或错误复制派生状态；正确性风险是产生带旧 Schema/新表达式或缺失上下文的半接线节点；性能风险是热路径中无条件深克隆表达式和嵌套向量。扩展时应保留“副本局部可改、原节点不受污染”的核心测试，并用实际规则调用证明重新接线完整。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件被索引为 131 行、15 个符号。读取了目标文件全貌，并查询了 `LogicalJoin`、`LogicalProjection`、`LogicalAggregation`、`LogicalSort`、`ExprBox`、`NameSlice` 及生成器源码。
-- 源码与入口：`pkg/planner/core/operator/logicalop/shallow_ref_generated.rs`、`lib.rs`、`logical_join.rs`、`logical_projection.rs`、`logical_aggregation.rs`、`logical_sort.rs`。
-- crate 边界：`pkg/planner/core/operator/logicalop/Cargo.toml`。
-- Go 对照与生成依据：`pkg/planner/core/operator/logicalop/shallow_ref_generated.go`、`pkg/planner/core/generator/shallow_ref/shallow_ref_generator.rs`、`pkg/planner/core/generator/shallow_ref/shallow_ref_test.rs`。
-- 调用与测试：`pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_simple_apply.rs`、`pkg/planner/cascades/old/transformation_rules.rs`、`pkg/planner/core/operator/logicalop/logical_generated_aster_unit_test.rs`、`pkg/planner/core/operator/logicalop/logicalop_test/logical_operator_test.rs`。
-- RustCodeGraph 未解析出目标固有方法的调用边，相关调用者由 `rg` 精确符号搜索补证；未运行 Cargo，符合本纯文档任务约束。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` library crate；crate 边界由 [`Cargo.toml`](./Cargo.toml) 的 `[lib] path = "lib.rs"` 定义，`lib.rs` 以 `#[path = "precheck_impl.rs"] mod precheck_impl` 装入并 `pub use precheck_impl::*`。它是 Lightning 导入前检查的具体规则层：相邻的 [`precheck.rs`](./precheck.rs) 负责准备配置、源数据元信息、目标端访问器、checkpoint DB、PD 地址获取器和目标 DB，再由 `PrecheckItemBuilder::BuildPrecheckItem` 按 `CheckItemID` 分发到本文件的构造函数。
-
-本文件不是完整 Go 实现的等价移植，而是源码模块注释所称的 slim port。它公开 14 类 `precheck::Checker` 实现及辅助函数，返回 `Box<dyn precheck::Checker>`，供 builder 统一调度。直接运行时行为应以本文件为准；同路径 [`precheck_impl.go`](./precheck_impl.go) 是语义目标和差异依据，不能把 Go 中尚未移植的检查能力视为 Rust 当前能力。
+Lightning 导入前检查的具体规则层：相邻的 [`precheck.rs`](./precheck.rs) 负责准备配置、源数据元信息、目标端访问器、checkpoint DB、PD 地址获取器和目标 DB，再由 `PrecheckItemBuilder::BuildPrecheckItem` 按 `CheckItemID` 分发到本文件的构造函数。
 
 ## 核心职责
 
@@ -90,10 +88,8 @@ RustCodeGraph 的精确查询确认 Rust `NewClusterResourceCheckItem` 位于第
 
 ## 与 Go 版本的对应关系
 
-Rust 保留了 Go 文件的 checker 名称、构造入口、`CheckItemID`、大体严重级别和核心跳过方向，独立测试 [`precheck_impl_test.rs`](./precheck_impl_test.rs) 也按 Go suite 的检查项组织。但当前是明确的 slim port，关键差异包括：
+但当前是明确的 slim port，关键差异包括：
 
-- 集群容量未区分 TiKV/TiFlash、未读取 task manager 汇总状态；empty-region/region-distribution 未过滤非 Up/TiFlash store，也未按源表数动态调阈值。
-- 存储权限仅判空；本地磁盘仅比较路径字符串；临时 KV 目录不读取磁盘容量、磁盘 quota 或估算数据量，压缩文件也不会把严重级别降为 `Warn`。
 - checkpoint 仅判断句柄存在；schema 不做逐表列、默认值、extend/ignore column、首行与 checkpoint 跳过检查；CSV header 不采样源文件。因此 Rust 的 `checkFieldCompatibility` 和 `hasDefault` 只是极简兼容辅助函数，尚未接入 Go 的完整算法。
 - 空表检查是串行的，不读取 checkpoint 来跳过已有进度；`Option<bool>::None` 被忽略。Go 使用按 `RegionConcurrency` 限制的 errgroup/channel，并排序失败表名。
 - CDC/PiTR Rust 使用 `streamhelper::GetCDCPiTRStatus` 的单一布尔结果，并在 TiDB backend 返回 `None`；Go 分别查询 PiTR tasks 与 CDC changefeeds，非 local 返回显式通过结果且支持 instruction 文案/测试注入 client。
@@ -111,12 +107,3 @@ Rust 保留了 Go 文件的 checker 名称、构造入口、`CheckItemID`、大�
 5. 补齐 CDC/PiTR 或 metaservice 时，保持 keyspace、TLS 三元组、`MetadataRuntime.pd_factory` 注入、取消检查和 client 关闭；新增错误路径必须验证资源也会释放。
 6. 更改阈值、backend 适用性或配置路径比较时，同步更新 Rust 独立测试，并对照 Go `TestPrecheckImplSuite` 中同名场景；兼容风险主要是以前被跳过/通过的任务变为阻塞，性能风险主要来自远端逐表请求、源文件采样和集群元数据查询。
 7. 若开始使用目前未读字段（`dbMetas`、`cpdb`、getter），应优先复用现有结构而非改公开构造签名；这能减少 builder 和外部调用面的迁移破坏。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、目标文件已索引为 Rust 文件并识别 74 个符号；`files --filter lightning/pkg/importer/precheck_impl.rs` 命中唯一目标。
-- RustCodeGraph `node --file lightning/pkg/importer/precheck_impl.rs --offset 1 --limit 500` 与 `--offset 500 --limit 500`：完整读取 898 行生产源码，并确认索引报告的直接使用文件；`query NewClusterResourceCheckItem --kind function --json`、`query NewCDCPITRCheckItem --kind function --json`、`query dialEtcdWithCfg --kind function --json` 用于消除 Rust/Go及仓库同名符号歧义。`callers/callees` 精确查询曾执行，但本地 CLI 在 30 秒窗口内未返回，因此调用关系以已索引文件节点和调用点源码复核。
-- 调用链与 crate 边界：[`precheck.rs`](./precheck.rs) 的 `PrecheckItemBuilder::BuildPrecheckItem`、[`lib.rs`](./lib.rs) 的模块声明/再导出、[`Cargo.toml`](./Cargo.toml) 的 library 与依赖声明，以及 [`import.rs`](./import.rs) 对 `dialEtcdWithCfg` 的直接调用。
-- 当前 Rust 边界测试：[`precheck_impl_test.rs`](./precheck_impl_test.rs) 覆盖容量、版本、empty region、region 分布、存储路径、大文件、本地目录、checkpoint、schema、CSV header、空表、CDC/PiTR 和 PD/TiDB 输入形状；测试明确标注多项 slim 限制。
-- Go 对照：[`precheck_impl.go`](./precheck_impl.go) 的同名构造函数/`Check`/辅助函数，以及 [`precheck_impl_test.go`](./precheck_impl_test.go) 的 `TestPrecheckImplSuite` 和 14 组同名场景。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前另以固定标题命令验证本文恰有 11 个规定章节，并人工检查所有“已支持”陈述均限定为目标 Rust 当前源码事实。

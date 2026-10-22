@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate，是内置表达式向量化求值的基础辅助模块。它提供两类能力：可并发复用的临时 `chunk::Column` 缓冲池，以及当内置函数没有专用整列算法时，将 `builtinFunc` 的逐行 `evalInt` / `evalString` 接口适配为整列结果的回退函数。源码由 `pkg/expression/lib.rs:281-282` 以私有模块 `builtin_vectorized_kernel` 装配；crate 根仅在 `pkg/expression/lib.rs:366` 公开再导出 `GetColumn` 和 `PutColumn`，其余符号目前保持 crate 内可见。
-
-`pkg/expression/Cargo.toml` 将该目录定义为 `astersql-expression`，入口为 `lib.rs` 且关闭自动测试发现。文件直接使用的列、类型和 MySQL 类型分别经 crate 根映射到 `astersql-util-chunk`、`astersql-types` 和 `astersql-parser-mysql`；没有由本文件单独控制的 Cargo feature 或条件编译项。
+提供两类能力：可并发复用的临时 `chunk::Column` 缓冲池，以及当内置函数没有专用整列算法时，将 `builtinFunc` 的逐行 `evalInt` / `evalString` 接口适配为整列结果的回退函数。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 对精确 Rust 定义的查询结果为：`vecEvalIntByRows`、`ve
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/builtin_vectorized.go`，Rust 保留了同名接口、构造器、全局分配器、内存计量常量以及整数/字符串逐行算法：先初始化结果列，按行调用标量函数，保存 NULL，并在首个错误处返回。`GetColumn` 在两种语言中都忽略求值类型和容量。
-
 关键实现差异如下：
 
 - Go `localColumnPool` 嵌入无锁 `sync.Pool`，运行时可以清除缓存；Rust 使用 `Mutex<Vec<Box<Column>>>`，缓存持久且加锁，借出顺序为 LIFO。
@@ -91,7 +87,7 @@ RustCodeGraph 对精确 Rust 定义的查询结果为：`vecEvalIntByRows`、`ve
 - Go 接口和返回对象由 GC 管理；Rust 用 `Box` 所有权表达借还，归还后不能再访问原对象。
 - Go 生产代码 `pkg/expression/builtin_time_vec.go` 有多个 `vecEvalIntByRows` / `vecEvalStringByRows` 回退调用，而当前 Rust 代码搜索没有生产调用者。因此算法已移植并有测试，但 Rust 主链接线仍未由本文件证据确认。
 
-Go 测试 `pkg/expression/builtin_vectorized_test.go` 覆盖更广的所有求值类型、selection、并行性能和向量化判断；Rust 独立测试聚焦本文件实际提供的整数/字符串回退、错误/NULL 以及列池借还。不能把 Go 的其他类型测试视为本 Rust 文件已经实现相应回退的证据。
+Go 测试 `pkg/expression/builtin_vectorized_test.go` 覆盖更广的所有求值类型、selection、并行性能和向量化判断；Rust 独立测试聚焦本文件实际提供的整数/字符串回退、错误/NULL 以及列池借还。
 
 ## 扩展指南
 
@@ -101,13 +97,3 @@ Go 测试 `pkg/expression/builtin_vectorized_test.go` 覆盖更广的所有求�
 - 若将缓冲池接入新的生产路径，应使用能保证提前返回也归还的局部守卫或明确清理结构，避免错误分支永久移出缓冲。还应评估互斥竞争、峰值列容量长期驻留以及 `MemoryUsage` 低估问题。
 - 若修改池结构或计量语义，同步更新 `emptyLocalColumnPoolSize` / `MemoryUsage` 的契约，并与 Go 的 `unsafe.Sizeof(localColumnPool{})` 行为比较。
 - 测试必须继续放在独立的 `pkg/expression/builtin_vectorized_test.rs`，不要内嵌到生产文件。至少覆盖空输入、selection、NULL、首行/中间行错误、复用前旧内容、并发借还和锁中毒策略；涉及生产接线时还应在对应内置函数的独立 `*_test.rs` 中验证实际分派路径。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/builtin_vectorized.rs`（完整 148 行），核对全部 trait、结构、静态对象、常量、函数和 impl；文件无条件编译项。
-- 模块与 crate：`pkg/expression/lib.rs:281-282,366,633-634`；`pkg/expression/Cargo.toml` 的 `[package]`、`[lib]`、依赖和 `autotests = false`。
-- Rust 测试：`pkg/expression/builtin_vectorized_test.rs:322-447`，覆盖值与 NULL、首错停止、局部池指针复用、并发借还和全局池往返。
-- Go 对照：`pkg/expression/builtin_vectorized.go`；Go 测试 `pkg/expression/builtin_vectorized_test.go`；Go 生产调用点 `pkg/expression/builtin_time_vec.go:359,943,1226,1253,1895`。
-- 下游定义：`pkg/expression/builtin_core.rs:32,74,82` 的 `builtinFunc`；`pkg/util/chunk/column.rs:282,603,638` 的 `CopyConstruct`、`ResizeInt64`、`ReserveString`。
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go；精确 `query` 找到本文件与 Go 对应符号；带 `--file pkg/expression/builtin_vectorized.rs` 的 `callers` 对 `vecEvalIntByRows`、`vecEvalStringByRows`、`GetColumn`、`PutColumn` 均返回空数组，`callees vecEvalIntByRows` 返回 `write_i64`。仓库 `rg` 复核 Rust 侧引用只存在于 `lib.rs` 和独立测试。
-- 本任务为纯文档分析，按计划不运行 Cargo；完成前以指定命令验证恰有 11 个固定二级章节，并人工复核所有“已接线/已支持”陈述均有上述源码或调用证据。

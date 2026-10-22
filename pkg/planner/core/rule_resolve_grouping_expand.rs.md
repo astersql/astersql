@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate，由 [`lib.rs`](lib.rs) 以 `pub mod rule_resolve_grouping_expand` 对外暴露。它移植 Go `ResolveExpand` 的核心意图：在逻辑优化末尾为 `ROLLUP`、`CUBE` 或 `GROUPING SETS` 产生的 Expand 节点补齐逐层投影。这里使用的是 [`rule_aggregation_elimination.rs`](rule_aggregation_elimination.rs) 中的精简 `LogicalPlan` 枚举，而不是完整运行时的 `logicalop::LogicalPlan` trait 对象。
-
-需要区分两条 Rust 路径：本文件的 `ResolveExpand::Optimize -> genExpand` 是可执行、可独立测试的移植模型；当前完整逻辑优化主链在 [`optimizer_runtime.rs`](optimizer_runtime.rs) 的 `LogicalRule::ResolveExpand` 分支调用 `resolve_expand_descendants`，再对真实 `logicalop::LogicalExpand` 调用 `GenLevelProjections`。RustCodeGraph 对本文件的直接上游只找到 [`rule_resolve_grouping_expand_test.rs`](rule_resolve_grouping_expand_test.rs)，因此没有证据表明本文件的 `ResolveExpand` 已直接注册进完整运行时规则表。
+规则只解决 Expand 层级投影生成，不构造 Expand、不改写 `GROUPING()`、不执行聚合，也不把逻辑 Expand 物理化。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@ schema 类型访问使用 `get(...).cloned()`，schema 过短不会 panic，而�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`rule_resolve_grouping_expand.go`](rule_resolve_grouping_expand.go)。两端的规则名均为 `resolve_expand`，都先递归子树、在所有必要逻辑优化（特别是列裁剪）完成后生成层级投影，并且 `Optimize` 都固定报告 `planChanged = false`。Go 优化器在 [`optimizer.go`](optimizer.go) 中注册 `&ResolveExpand{}`，规则 flag 由 [`rule/logical_rules.go`](rule/logical_rules.go) 定义；Rust 完整规则顺序则由 `optimizer_runtime.rs::LOGICAL_RULES` 对齐。
+两端的规则名均为 `resolve_expand`，都先递归子树、在所有必要逻辑优化（特别是列裁剪）完成后生成层级投影，并且 `Optimize` 都固定报告 `planChanged = false`。Go 优化器在 [`optimizer.go`](optimizer.go) 中注册 `&ResolveExpand{}`，规则 flag 由 [`rule/logical_rules.go`](rule/logical_rules.go) 定义；Rust 完整规则顺序则由 `optimizer_runtime.rs::LOGICAL_RULES` 对齐。
 
 语义对应上，Rust 精简实现保留了 Go `LogicalExpand::GenLevelProjections` 的关键形状：当前层缺席的分组列置 NULL；普通列透传；每层追加 GID；内容重复的 grouping sets 额外追加按层序号生成的 GPos。Go 真实实现还维护 `DistinctSize`、`RollupGroupingIDs`、`RollupID2GIDS`，支持 `GroupingMode_ModeBitAnd` 与 `ModeNumericSet`，并创建带真实 `FieldType` 的表达式常量；本文件只用列下标、`u64` 位掩码和 `Expression.name` 表示这些信息，未覆盖上述完整元数据和 NumericSet 分支。
 
-另一个可见差异是 Go `GenLevelProjections` 直接向 `LevelExprs` 追加，而本文件先清空 `level_projections`。因此本文件的重复调用具有重算语义；不能据此推断 Go 方法重复调用也会自动去重。当前完整 Rust 主链调用的是移植后的真实 `LogicalExpand::GenLevelProjections`，相关行为由 [`optimizer_logical_entry_aster_unit_test.rs`](optimizer_logical_entry_aster_unit_test.rs) 覆盖。
+另一个可见差异是 Go `GenLevelProjections` 直接向 `LevelExprs` 追加，而本文件先清空 `level_projections`。
 
 ## 扩展指南
 
@@ -80,14 +78,3 @@ schema 类型访问使用 `get(...).cloned()`，schema 过短不会 panic，而�
 - 改动 GID 位序、重复集合判定或 GPos 生成会影响 `GROUPING()` 语义和相同 grouping set 的可区分性；至少覆盖空集合、唯一集合、重复集合、集合内乱序/重复列、非分组列透传和超过 64 位的边界。
 - 改动 schema 布局时，应把目前隐式的“GID 位于 child 列之后、重复集合时 GPos 再后一位”变成显式校验或同步调整索引；否则类型可能静默变成 `None`。
 - 性能优化应保留确定性：可以减少每层 `HashSet` 或规范化分配，但不能改变外层 level 顺序、BTreeSet 确定的位序或子树后序处理。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/planner/core/rule_resolve_grouping_expand.rs`：读取目标文件 167 行全貌；`node rule_resolve_grouping_expand.rs::ResolveExpand` 确认公开入口及测试导入；`node rule_resolve_grouping_expand.rs::genExpand` 确认 `Optimize -> genExpand`、`Expression` 构造和递归分支。
-- RustCodeGraph `node rule_aggregation_elimination.rs::LogicalPlan` 与 `node task.rs::Expression`：核对精简 IR 的各变体、Expand 字段以及表达式字段。
-- crate/装配证据：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)。目标包不存在 `doc.go`，因此没有额外包契约可读。
-- Go 对照：[`rule_resolve_grouping_expand.go`](rule_resolve_grouping_expand.go)、[`operator/logicalop/logical_expand.go`](operator/logicalop/logical_expand.go)、[`optimizer.go`](optimizer.go)、[`rule/logical_rules.go`](rule/logical_rules.go)。
-- Rust 主链证据：[`optimizer_runtime.rs`](optimizer_runtime.rs) 的 `LOGICAL_RULES`、`LogicalRule::ResolveExpand` 分支与 `resolve_expand_descendants`。
-- 独立 Rust 测试：[`rule_resolve_grouping_expand_test.rs`](rule_resolve_grouping_expand_test.rs) 覆盖空 grouping sets、唯一集合的 NULL/GID 与重复集合的 GPos；[`optimizer_logical_entry_aster_unit_test.rs`](optimizer_logical_entry_aster_unit_test.rs) 覆盖完整逻辑优化入口生成真实 `LogicalExpand.LevelExprs`。Go `logical_plans_test.go` 证明 builder 会准备 `currentBlockExpand`、默认位与模式，但检索范围内未发现直接单测 `GenLevelProjections` 全部分支。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前以任务指定命令校验恰有 11 个固定二级章节，并人工复核主链边界、Go/Rust 差异和扩展风险。

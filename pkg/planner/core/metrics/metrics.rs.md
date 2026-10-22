@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是独立 crate `astersql-planner-core-metrics` 的实现文件，由同目录 `lib.rs` 以 `planner_core_metrics` 模块导出；`Cargo.toml` 的 `package.metadata.porting.go-package` 将其明确对应到 Go 包 `pkg/planner/core/metrics`。它位于规划器与 Prometheus 指标设施之间，负责定义规划器 core 所需的指标向量、预绑定固定 `type` 标签的句柄，以及供调用方选择句柄的公开函数。
-
-该文件本身不执行 SQL 规划，也不决定缓存是否命中。业务路径先完成统计估计或计划缓存判断，再通过这里提供的 `Counter`、`Gauge`、`Histogram` 句柄记录结果。Rust 侧统一指标初始化链在 `pkg/util/metricsutil/common.rs::initMetrics` 中调用 `plannercore::InitMetricsVars`；当前可确认的生产计数路径是 `pkg/session/runtime/dispatch.rs` 在 prepared plan-cache 命中后调用 `GetPlanCacheHitCounter(false).inc()`。
+位于规划器与 Prometheus 指标设施之间，负责定义规划器 core 所需的指标向量、预绑定固定 `type` 标签的句柄，以及供调用方选择句柄的公开函数。
 
 ## 核心职责
 
@@ -98,14 +96,14 @@ Go 侧业务接线更完整：`plan_cache.go` 使用 hit/miss/lookup/clone，`pl
 
 ## 与 Go 版本的对应关系
 
-Rust `InitMetricsVars` 与 `pkg/planner/core/metrics/metrics.go::InitMetricsVars` 的 15 个绑定及顺序一致；8 个公开访问器的布尔分支也逐一对应。主要实现差异是：
+主要实现差异是：
 
 - Go 从共享 `pkg/metrics` 取得父级向量并把具体句柄赋给包级变量；Rust 在本文件内以 `LazyLock` 定义底层向量和具体句柄。
 - Go 返回 `prometheus.Observer` 接口用于耗时观测；Rust 返回具体 `Histogram` handle。
 - Go 包 `init()` 自动调用初始化；Rust 提供 `init()`，同时由 `pkg/util/metricsutil/common.rs` 明确调用 `InitMetricsVars`。Rust 模块加载本身不会像 Go 包初始化那样自动执行普通函数。
 - Rust handle 访问器通过 `clone()` 返回共享句柄；Go 接口值直接返回已绑定对象。两者在累计同一时间序列这一语义上由迁移测试核对。
 
-Go 生产路径对这些 API 的使用范围大于当前 Rust 路径。尤其伪统计计数、miss、unsupported、instance/session Gauge 以及 lookup/clone Histogram 虽已实现并测试，仍应以实际 Rust 调用搜索为准判断迁移完成度。`pkg/planner/core/stats/stats.rs` 的注释保留了 Go 的伪统计递增位置，但不是可执行 Rust 逻辑。
+Go 生产路径对这些 API 的使用范围大于当前 Rust 路径。`pkg/planner/core/stats/stats.rs` 的注释保留了 Go 的伪统计递增位置，但不是可执行 Rust 逻辑。
 
 ## 扩展指南
 
@@ -119,12 +117,3 @@ Go 生产路径对这些 API 的使用范围大于当前 Rust 路径。尤其伪
 6. 搜索 Go 调用点和 Rust 对应实现，分别证明 API 对齐与运行时接线，不以 Cargo 依赖或注释代替调用证据。
 
 兼容风险集中在指标全名、标签键/值（尤其前导空格）、布尔分支方向和 histogram buckets；性能风险集中在热路径动态绑定标签、重复构造向量或增加高基数标签；正确性风险集中在 Gauge 增减不平衡、错误单位及把 miss/hit 写入错误类别。新增独立 Rust 源文件或测试时还应遵守仓库 Bazel 元数据规则，但仅修改本说明文档不触发代码构建。
-
-## 验证依据
-
-- 源码与模块边界：`pkg/planner/core/metrics/metrics.rs`（全部定义）、`pkg/planner/core/metrics/lib.rs`（模块导出和独立测试接线）、`pkg/planner/core/metrics/Cargo.toml`（crate 名、Prometheus 0.13.4 依赖、Go 包映射）。目标目录没有 `doc.go`。
-- Go 对照：`pkg/planner/core/metrics/metrics.go`；调用意图还由 `pkg/planner/core/plan_cache.go`、`plan_cache_lru.go` 和 `plan_cacheable_checker.go` 核验。
-- Rust 运行时证据：`pkg/util/metricsutil/common.rs::initMetrics` 的统一初始化调用；`pkg/session/runtime/dispatch.rs` 的 prepared hit 递增；`pkg/planner/core/stats/stats.rs` 中尚未执行的 Go 逻辑注释用于界定迁移缺口。
-- 独立测试：`pkg/planner/core/metrics/migration_aster_unit_test.rs` 验证全部标签选择、前导空格、共享 Counter 状态和 Histogram 样本；`pkg/planner/core/tests/pointget/point_get_plan_test.rs` 验证 SQL prepared plan-cache 命中增量。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 4 个已索引文件；`node --file pkg/planner/core/metrics/metrics.rs` 返回完整 225 行和使用文件；`query` 定位 `InitMetricsVars`、`GetPlanCacheHitCounter`、`GetPlanCacheLookupDuration`；`explore` 给出 `init -> InitMetricsVars`、测试/point-get 调用边。精确 `callers/callees` 对同名符号存在歧义，因此调用范围又以仓库 `rg` 结果交叉核验。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另以任务指定命令验证目标文档存在且恰有 11 个固定二级标题，并人工检查每项运行时状态陈述均区分源码事实、Go 对照与未接线部分。

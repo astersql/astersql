@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/ddl/create_table.rs` 位于 `astersql-ddl` crate，负责把解析器生成的 `ast::CreateTableStmt`、`ast::ColumnDef`、分区和索引表达式转换成 `astersql_meta_model` 中的 `TableInfo`、`ColumnInfo`、`IndexInfo`、`PartitionInfo` 等内存元数据。crate 根模块 `pkg/ddl/lib.rs` 将 `BuildTableInfoFromAST`、`BuildTableInfoWithStmt`、`BuildColumnInfoFromAST`、`BuildPartitionInfo`、`MaterializeExpressionIndexColumns`、`BuildPartialIndexCondition` 和 `expression_text` 重新导出，因此调用者通常通过 `astersql_ddl::*` 使用它们，而不是直接访问私有模块。
-
-它处在“SQL AST 已经解析完成、DDL Job 尚未持久化”这一段：例如 `pkg/session/runtime/ddl.rs` 用它构建建表、加列、加索引和重分区所需元数据，随后才由 DDL 执行层提交作业。真正把表写入 meta、设置 schema diff、发送 notifier、注册 TTL 并推进 Job 的代码在 `pkg/ddl/persistent_create_table.rs`；本文件本身不分配最终 TableID/PartitionID，不写系统表，也不推进 schema state。
-
-从 DDL 生命周期看，这里是 Job 创建前的纯构建/拒绝关口，而不是 metadata-only 快路径：产出的 `TableInfo` 会被后续 owner/worker 驱动的持久化流程消费。文件内创建的列、索引和约束初始为 `StatePublic`，但该事实只是新表整体一次发布的元数据形态，不代表本文件执行了 schema version 同步。
+将列定义转成 `ColumnInfo`：补齐长度/小数位、字符集/排序规则和 flags，处理默认值、注释、生成列表达式及依赖（`build_column`、`column_default`、`set_no_default_value_flag`）。
 
 ## 核心职责
 
@@ -92,7 +88,7 @@ RustCodeGraph 的文件节点报告本文件被 `pkg/ddl/lib.rs`、`pkg/ddl/pers
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/ddl/create_table.go`。Rust `BuildTableInfoFromAST` 对应 Go 同名函数；二者均以默认 utf8mb4 进入 `buildTableInfoWithCheck`，并按 `BuildTableInfoWithStmt` → 语句相关校验 → 通用校验的顺序返回未分配最终 ID 的 `TableInfo`。Rust 的 `build_column` 对应 Go 建表/加列共用的 `columnDefToCol` 思路，`set_no_default_value_flag`、`set_table_auto_random_bits`、约束命名和 clustered-index 判定也按 Go 规则移植。
+Rust `BuildTableInfoFromAST` 对应 Go 同名函数；二者均以默认 utf8mb4 进入 `buildTableInfoWithCheck`，并按 `BuildTableInfoWithStmt` → 语句相关校验 → 通用校验的顺序返回未分配最终 ID 的 `TableInfo`。Rust 的 `build_column` 对应 Go 建表/加列共用的 `columnDefToCol` 思路，`set_no_default_value_flag`、`set_table_auto_random_bits`、约束命名和 clustered-index 判定也按 Go 规则移植。
 
 目前可确认的差异与迁移边界如下：
 
@@ -100,8 +96,6 @@ RustCodeGraph 的文件节点报告本文件被 `pkg/ddl/lib.rs`、`pkg/ddl/pers
 - Go `buildTableInfoWithCheck` 接收 `kv.Storage`，其 `checkTableInfoValidExtra` 还执行更完整的 storage/partition/TTL/columnar 相关验证；Rust 包装器没有 storage 参数，末端校验子集较窄。
 - Go 的更高层 `BuildTableInfo`/执行器可处理 LIKE 等需要 infoschema/source table 的路径；Rust 本入口把 LIKE/AS SELECT 明确留给上层。
 - Rust 已直接支持向量、倒排、FULLTEXT、部分索引和多值索引元数据，但每项是否覆盖 Go 的所有错误码、表达式求值和 feature gate 仍应以对应测试与调用层为准，不能仅凭字段存在认定完全移植。
-
-相关 Go 回归证据分布在 `pkg/ddl/db_table_test.go`、`pkg/ddl/db_integration_test.go`、`pkg/ddl/index_modify_test.go`、`pkg/ddl/storage_class_test.go` 和 `pkg/ddl/split_region_test.go`，覆盖 TableInfo 构建、生成列/表达式索引、向量/倒排索引、storage class、分区与 split 行为。
 
 ## 扩展指南
 
@@ -114,13 +108,3 @@ RustCodeGraph 的文件节点报告本文件被 `pkg/ddl/lib.rs`、`pkg/ddl/pers
 - 若扩展涉及真正持久化、回滚或 schema state，请在 `persistent_create_table.rs`/worker 路径实现，不要把事务或 owner 逻辑塞进本 AST 构建器。
 
 兼容性风险主要来自 Go 错误优先级、错误码/消息、默认 charset/collation、隐藏列命名和元数据字段序义；性能风险主要是对每个约束重复遍历大表达式或大列集合。安全扩展应先对照 Go 增量，再新增独立 Rust 回归，最后验证 session/ALTER 调用者仍走统一辅助。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本地索引包含 11,467 文件、307,296 节点和 1,848,419 边；`node --file pkg/ddl/create_table.rs` 返回完整 2,462 行文件节点及 7 个文件级使用者；`query BuildTableInfoFromAST`、`query BuildTableInfoWithStmt` 同时定位 Rust 与 Go 定义。`callers`/`callees` 在本次会话中超时且无结果，故跨文件调用边另由下列源码引用核对。
-- 生产源码：`pkg/ddl/create_table.rs`（全部模块级符号和主流程）、`pkg/ddl/lib.rs`（模块声明及公开再导出）、`pkg/session/runtime/ddl.rs`、`pkg/session/ddl_tables.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/mview_ddl.rs`、`pkg/session/fts_runtime.rs`、`pkg/importsdk/file_scanner.rs`、`pkg/ddl/persistent_create_table.rs`、`pkg/ddl/persistent_actions.rs`。
-- crate 边界：`pkg/ddl/Cargo.toml`，package 为 `astersql-ddl`、lib 入口为 `lib.rs`，并声明 parser/AST/charset、meta model/metabuild、expression、table validation、deploy mode 和 session vardef 等直接依赖。
-- Go 对照：`pkg/ddl/create_table.go` 中 `BuildTableInfoFromAST`、`buildTableInfoWithCheck`、`checkTableInfoValidWithStmt`、`checkTableInfoValidExtra`、`BuildTableInfoWithStmt` 和 `setTableAutoRandomBits`；调用侧还核对 `pkg/ddl/executor.go`、`pkg/ddl/materialized_view.go` 与 `pkg/testkit/ddlhelper/helper.go`。
-- Rust 独立测试：`pkg/ddl/create_table_test.rs`（clustered shard 错误、shard 上限、TTL 子选项依赖）；`pkg/ddl/create_table_aster_unit_test.rs`（列/索引/生成列/CHECK/FK、默认 flags、charset/collation、TTL、分区、表达式索引、AUTO_RANDOM、storage class）；`pkg/ddl/create_table_validation_aster_unit_test.rs`（默认值、fsp、限定生成列、CAST、embedding）；`pkg/ddl/primary_key_handle_test.rs`（聚簇主键）；`pkg/ddl/tests/multivaluedindex/multi_valued_index_test.rs`（多值索引）。
-- Go 测试参考：`pkg/ddl/db_table_test.go`、`pkg/ddl/db_integration_test.go`、`pkg/ddl/index_modify_test.go`、`pkg/ddl/storage_class_test.go`、`pkg/ddl/storage_class_partition_test.go`、`pkg/ddl/split_region_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证只检查文件存在、固定章节数量、引用和 diff 范围。

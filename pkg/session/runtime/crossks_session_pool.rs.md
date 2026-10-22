@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的 `runtime` 模块中，由 `pkg/session/runtime.rs` 公开为 `crossks_session_pool`。它不是通用连接池，而是目标 keyspace 生产运行时中的系统 SQL 会话适配层：`CrossKSProductionRuntimeFactory::create_runtime` 在打开目标存储并构造目标 `Domain` 后创建一个 `CrossKSSessionPool`，再把同一个池交给跨 keyspace DDL 后端、DDL owner、jobsubmit 适配器和 DDL 系统表管理器（`pkg/session/runtime/crossks_runtime.rs`）。
-
-该文件属于 `pkg/session/Cargo.toml` 声明的 `astersql-session` crate。直接依赖包括 `astersql-domain` 的 `Domain`、`astersql-domain-crossks` 的池生命周期接口、`astersql-ddl-jobsubmit` 与 `astersql-ddl-systable` 的会话接口，以及 `astersql-util-codec` 和本模块的 `ConcreteSession`、`kv`。Cargo 中没有为本文件单独设置 feature；跨 keyspace 总体可用性由上层运行时和内核模式决定。
+`CrossKSJobSessionPool` 把租约适配成 `jobsubmit::SessionPool` / `jobsubmit::Session`，提供事务、BDR 角色、全局 ID 锁与分配等 DDL 提交语义。
 
 ## 核心职责
 
@@ -82,13 +80,11 @@ SQL 阶段中，`CrossKSSessionLease::query` 创建一次性同步回复通道�
 
 ## 与 Go 版本的对应关系
 
-Go 的对应装配位于 `pkg/domain/crossks/cross_ks.go::Manager.createSessionManager`。Go 使用容量为 `crossKSSessPoolSize`（5）的 `util.NewSessionPool`，通过目标 keyspace session factory 创建资源，并将同一个池适配为 DDL session pool 和 system-table manager；Rust 的 `CROSS_KEYSPACE_SESSION_POOL_SIZE`、`CrossKSSessionPool`、`CrossKSJobSessionPool` 和 `CrossKSSystemTablePool`保持了这一固定容量和多消费者共享关系。
+Go 使用容量为 `crossKSSessPoolSize`（5）的 `util.NewSessionPool`，通过目标 keyspace session factory 创建资源，并将同一个池适配为 DDL session pool 和 system-table manager；Rust 的 `CROSS_KEYSPACE_SESSION_POOL_SIZE`、`CrossKSSessionPool`、`CrossKSJobSessionPool` 和 `CrossKSSystemTablePool`保持了这一固定容量和多消费者共享关系。
 
 两者的资源模型并非逐行同构。Go 池通过 factory 获取资源，并用创建、归还、销毁回调维护 coordinator 中的内部会话登记，还在归还时断言事务无效；Rust 本文件预先启动固定 worker，每个 worker 持有持久 `ConcreteSession`，以租约索引和消息通道维持线程亲和。本文件没有 Go 那组 coordinator 回调，也没有归还时的显式事务有效性断言；这些差异应视为当前实现事实，而不能从 Go 行为推断 Rust 已隐式具备。
 
 DDL 元数据语义对应 Go `pkg/ddl/jobsubmit/submit.go`：`NextGlobalID` 是 meta key，必须直接悲观锁定而不能用表行 `SELECT ... FOR UPDATE`；Rust 的 `LockGlobalId` 同样设置 `SnapshotTS` 后调用 `LockKeys`，`GenerateGlobalIds` 通过 meta key 增量分配连续 ID。Go `lockGlobalIDKey` 会针对写冲突循环获取新版本并退避，而本文件只执行一次 `LockKeys`；若重试由上层承担，需以 jobsubmit 调用链验证，不能把 Go 的内部无限重试直接归于本函数。
-
-Rust 独立回归 `pkg/session/runtime/crossks_session_pool_test.rs` 的测试名带 `go_merge_43`，验证了迁移目标中的会话持久性与关闭、缺失 BDR 角色为 `none`、正的事务开始时间、版本/锁/快照/连续全局 ID，以及空 DDL job 表上的 flashback 与最小 job ID 行为。Go 的跨 keyspace 综合测试还覆盖“只允许系统表”等更广运行时约束，那些约束不由本文件单独实现。
 
 ## 扩展指南
 
@@ -98,11 +94,3 @@ Rust 独立回归 `pkg/session/runtime/crossks_session_pool_test.rs` 的测试�
 - 修改系统表行转换时应核对 `pkg/ddl/systable/manager.rs::Row` 的 `bytes` / `int64` 解码约定。当前“能解析为 i64 就转换为 Int”的启发式可能影响数字样式的字节列，扩展类型时需增加精确列类型证据和测试。
 - 若要强化脏事务清理，应先对齐 Go 池归还断言和 `jobsubmit` 的所有错误路径，再决定在 `Drop`、`put` 或 worker 中处理；析构不能返回错误，因此需要可观测的失败策略。
 - 若新增外部依赖或 feature，需同步 `pkg/session/Cargo.toml`；普通逻辑修改还应遵守仓库要求，把 Rust 测试留在独立测试文件中。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共索引 11,467 个文件、307,296 个节点、1,848,419 条边；使用 `node --file` 完整读取 `pkg/session/runtime/crossks_session_pool.rs`，并读取直接装配/调用文件 `crossks_runtime.rs`、`crossks_owner.rs`、`crossks_job_submit.rs`，以及接口文件 `pkg/domain/crossks/cross_ks.rs`、`pkg/ddl/jobsubmit/types.rs`、`pkg/ddl/systable/manager.rs`。
-- 主要调用证据：`CrossKSProductionRuntimeFactory::create_runtime` 创建池并装配 system-table manager、job submitter、owner 和跨 keyspace `SessionManager`；`CrossKSDdlOwner` 与 `CrossKSProductionDdlBackend` 直接借用租约；两个适配池分别满足 jobsubmit 和 systable trait。
-- crate 与模块证据：`pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime.rs`；目标包下未发现 `doc.go`，因此没有额外的包级 Go 契约文件可读。
-- Go 对照：`pkg/domain/crossks/cross_ks.go::createSessionManager` / `SessionManager.close`，以及 `pkg/ddl/jobsubmit/submit.go::lockGlobalIDKey`。
-- 测试证据：`pkg/session/runtime/crossks_session_pool_test.rs` 的三个独立测试覆盖池复用与关闭、jobsubmit 元数据/全局 ID 路径、系统表/flashback/min-job-ID 路径。本任务按计划为纯文档分析，未运行 Cargo，也未把测试嵌入生产源文件。

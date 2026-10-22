@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util` crate。crate 清单 `pkg/util/Cargo.toml` 将库入口设为 `pkg/util/lib.rs`，入口通过 `pub mod id_generator;` 公开本模块，因此外部依赖该 crate 的 Rust 代码可以用 `astersql_util::id_generator::IDGenerator` 访问生成器；入口没有在 crate 根重导出该类型。
-
-它是一个只维护进程内整数状态的通用工具，不访问数据库、存储或网络。全仓 Rust 引用搜索目前只找到独立测试 `pkg/util/cpu_posix_1_aster_unit_test.rs`，未找到业务主链调用。Go 对应实现则由 planner 的 Runtime Filter 生成流程使用；这说明 Rust 文件已经移植并公开，但尚不能据此认定 Rust planner 已接入本实现。
+该类型只保证单个实例上的调用序列；它不提供全局唯一性、持久化、随机性、跨进程协调或并发同步。
 
 ## 核心职责
 
@@ -56,7 +54,7 @@ RustCodeGraph 确认 `IDGenerator` 和 `GetNextID` 定义，但精确 callers/ca
 
 ## 与 Go 版本的对应关系
 
-直接对照文件 `pkg/util/id_generator.go` 定义同名结构和方法：Go 的私有 `nextID int` 对应 Rust 的 `pub nextID: isize`，两者都先保存当前值、再递增、最后返回旧值。Rust 用显式 `wrapping_add` 固化整数边界回绕；Go 使用 `g.nextID++`。两边的整数宽度都与目标架构相关。
+直接对照文件 `pkg/util/id_generator.go` 定义同名结构和方法：Go 的私有 `nextID int` 对应 Rust 的 `pub nextID: isize`，两者都先保存当前值、再递增、最后返回旧值。Rust 用显式 `wrapping_add` 固化整数边界回绕；Go 使用 `g.nextID++`。
 
 可见性是当前的重要差异：Go 字段仅包内可见，Rust 字段对所有模块公开，因而 Rust 外部调用者能任意设定下一值。Go 生产调用存在于 planner Runtime Filter 链，而 Rust 全仓目前仅见测试调用；Rust planner 的同名用途由 `pkg/planner/core/operator/physicalop/physical_plan_misc.rs::RuntimeFilterIDGenerator` 自行实现，不能视为本类型的调用者。
 
@@ -69,17 +67,3 @@ Go 同目录未发现 `id_generator_test.go` 或直接针对该类型的测试�
 测试必须继续与生产源文件分离。优先在 `pkg/util` 下建立或扩展独立 `*_test.rs`，并由 `lib.rs` 的 `#[cfg(test)]` 模块接入；至少覆盖默认值、连续调用、自定义起点、最大值回绕和克隆分叉。若把本生成器接入 Rust Runtime Filter，还需在 planner 的独立测试中验证一次生成多种 filter 类型时 ID 顺序与唯一性，并检查是否应替换而不是并存于现有 `RuntimeFilterIDGenerator`。
 
 若新增并发或耗尽错误语义，API、调用方和测试必须一起迁移；不能用“编译通过”代替行为验证，也不应把测试逻辑内嵌进 `id_generator.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标仓库已初始化。
-- RustCodeGraph `node --file pkg/util/id_generator.rs --offset 1 --limit 260`：读取目标文件完整 40 行，确认 `IDGenerator`、`nextID` 和 `GetNextID` 的实现。
-- RustCodeGraph `query IDGenerator --json`、`query GetNextID --json`：确认 Rust/Go 对应符号以及 Rust planner 中独立的 Runtime Filter 生成器；精确 `callers/callees` 未返回目标方法的可用业务边。
-- `pkg/util/Cargo.toml`、`pkg/util/lib.rs`：确认 `astersql-util` crate 边界、库入口、公开模块以及独立测试装配。
-- `pkg/util/cpu_posix_1_aster_unit_test.rs`：确认默认递增和 `isize` 最大值回绕的 Rust 测试证据。
-- `pkg/util/id_generator.go`：确认 Go 的字段、后缀自增顺序和返回类型语义。
-- `pkg/planner/core/optimizer.go`、`pkg/planner/core/operator/physicalop/physical_plan_misc.go`：确认 Go Runtime Filter 的实例创建与生产调用边。
-- `pkg/planner/core/operator/physicalop/physical_plan_misc.rs`：确认 Rust planner 使用独立生成器，而非本文件类型。
-- 全仓 `rg` 引用搜索：Rust 侧除模块声明和独立测试外未发现 `pkg/util::id_generator::IDGenerator` 的业务使用；`pkg/util` 下未发现直接 Go 测试。
-
-人工复核结论：该文件存在是为了提供与 Go `pkg/util.IDGenerator` 对齐的轻量后缀自增工具；运行时仅执行一次读取、显式回绕加一和返回；安全扩展必须保护调用顺序与边界语义，并在独立测试中覆盖状态转换和实际接线。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dumpformat-csvfile` crate 的公共配置契约层：定义二进制字段的文本表示方式 `BinaryFormat`、一行 CSV 的分隔/包围/转义配置 `Config`，并从父 crate `astersql-dumpformat` 重新导出列分类 `FieldKind`。crate 根 `pkg/dumpformat/csvfile/lib.rs` 通过 `pub use csvfile::*` 再导出这些符号，因此调用方通常直接写 `astersql_dumpformat_csvfile::{Config, BinaryFormat, FieldKind}`，不需要访问内部模块路径。
-
-它不负责执行 CSV 编码或 I/O。直接消费这些定义的是同 crate 的 `csv.rs::append_field` 和 `writer.rs::Writer`；应用侧的已接线入口见 `dumpling/export/writer_util.rs::writeCSVFile`，该函数把 Dumpling 的导出配置转换成本文件的类型，再逐行写入对象存储 writer。
+用 `Config` 聚合 CSV framing 所需的六项调用方自定义参数：字段分隔符、字段包围符、转义符、行终止符、NULL 文本和二进制格式。
 
 ## 核心职责
 
@@ -69,12 +67,7 @@ RustCodeGraph 对目标文件给出的文件级引用包括 `dumpling/export/wri
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dumpformat/csvfile/csvfile.go`。Rust 与 Go 保持以下一一对应：
-
-- Go `BinaryFormatUTF8/HEX/Base64` 对应 Rust `UTF8/HEX/Base64`，声明顺序一致；两侧默认/零值语义均为 UTF8。
 - Go `Config` 的六个公开字段对应 Rust 的六个公开字段，字符串 framing 参数在 Rust 中改用 `Vec<u8>`，NULL 值两侧都是字节容器。
-- 两侧 writer 都不应用配置默认值，字段分类均来自共享 dumpformat 的 Number/String/Bytes 三类。
-- `csv_test.go` 与 `csv_test.rs` 对齐验证反斜杠转义、包围符倍增、NULL/类型分支、HEX、Base64、空行、无包围符模式、表头、文件大小和行宽错误。
 
 已观察到的 Rust 特有证据是：`Config` 由值移入泛型 `Writer<W>`，并额外暴露借用输入的 `write_borrowed` 以避免 Dumpling 每行复制扫描值；Go 使用 `*Config`、`io.Writer` 和 `[]sql.RawBytes`。这属于所有权与接口形态差异，当前输出语义由成对测试保持一致。
 
@@ -87,14 +80,3 @@ RustCodeGraph 对目标文件给出的文件级引用包括 `dumpling/export/wri
 - Rust 单元测试应继续放在独立的 `pkg/dumpformat/csvfile/csv_test.rs`，不要嵌入本生产文件；应用接线变化还应补充 Dumpling 侧独立测试，尤其是方言到二进制格式的映射与文件轮转边界。
 
 兼容风险主要来自公共枚举/结构字段变化和默认值变化；正确性风险集中在多字节 framing 与转义优先级；性能风险集中在为每行/字段新增分配或编码中间字符串（当前 Base64 已返回 `String`，其他路径直接追加到复用 buffer）。
-
-## 验证依据
-
-- 目标源码：`pkg/dumpformat/csvfile/csvfile.rs`（`FieldKind` 再导出、`BinaryFormat`、`Config`）。
-- crate 与模块边界：`pkg/dumpformat/csvfile/Cargo.toml`、`pkg/dumpformat/csvfile/lib.rs`。
-- 直接实现：`pkg/dumpformat/csvfile/csv.rs::{append_field, append_escaped, base64_encode}`、`pkg/dumpformat/csvfile/writer.rs::Writer`。
-- 生产调用链：`dumpling/export/writer_util.rs::{columnKinds, writeCSVFile, WriteInsertInCsv}`。
-- Go 对照：`pkg/dumpformat/csvfile/csvfile.go`、`csv.go`、`writer.go`。
-- 独立测试：`pkg/dumpformat/csvfile/csv_test.rs` 与 `csv_test.go`；跨 crate 公共契约另见 `dumpling/export/parity_test.rs`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/dumpformat/csvfile` 确认目标模块九个已索引文件；目标文件节点确认 33 行和文件级使用者；精确文件查询确认 `append_field <- {write_borrowed, write_header}`，并以 `writer_util.rs` 的构造源码消除全仓库同名 `Config` 的歧义。
-- 结构验收使用任务规定的命令，确认目标文档存在且固定二级标题恰好为 11 个；本任务是纯文档分析，按计划不运行 Cargo。

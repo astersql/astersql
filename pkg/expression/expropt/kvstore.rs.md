@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression-expropt` crate，是表达式“可选求值属性”机制中 KV Store 属性的专用适配层。模块入口 `pkg/expression/expropt/lib.rs` 以 `mod kvstore` 装入本文件并通过 `pub use kvstore::*` 对外再导出。它位于会话上下文与需要存储句柄的表达式之间：`pkg/expression/sessionexpr/sessionctx.rs` 在构造求值上下文时注册 `KVStorePropProvider<C::Store>`，Reader 再按 `exprctx::OptPropKVStore` 从上下文取回句柄。
-
-本文件本身不读写键值、不发起 TiKV RPC，也没有事务逻辑；它只声明依赖键、保存一个取句柄的闭包，并完成按键和具体 Rust 类型的安全取回。当前全仓 Rust 引用搜索未发现生产代码调用 `get_kv_store`，除注册点外，显式读取均在独立测试中；Go 对照代码则已有内置时间函数和 MVCC 信息函数消费该属性。
+`OptionalEvalPropProvider` 实现把该 Provider 固定绑定到 `exprctx::OptPropKVStore`，并通过 `as_any` 支持后续具体类型向下转换。
 
 ## 核心职责
 
@@ -84,9 +82,6 @@ Provider 和具体类型都要求 `Send + Sync + 'static`，闭包 trait object 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/expression/expropt/kvstore.go`：
-
-- Go `type KVStorePropProvider func() kv.Storage` 对应 Rust 的泛型结构体加装箱闭包。两者都延迟取得 Store；Rust 用 `Arc<T>` 明确共享所有权，并用 `T` 保留具体类型。
 - Go `Desc` 与 Rust `Desc` 都返回 `exprctx.OptPropKVStore.Desc()`。
 - Go `KVStorePropReader{}` 与 Rust 单元结构体均无状态；两者所需属性集合都只有 `OptPropKVStore`。
 - Go `GetKVStore` 与 Rust `get_kv_store` 都先通过公共 helper 取 Provider，再调用它。Go 返回接口 `kv.Storage`，Rust 返回 `Arc<T>`；Go 用运行时接口断言，Rust 公共 helper 用 `Any` 向下转换。
@@ -102,15 +97,3 @@ Provider 和具体类型都要求 `Send + Sync + 'static`，闭包 trait object 
 - 若增加新的可选属性，不应复用 `OptPropKVStore`；应在 `exprctx` 描述表、计数、注册表和相应 Provider/Reader 中建立新键，并验证位集合布局。
 - 测试必须继续放在独立文件。KV Store 适配层修改至少同步 `pkg/expression/expropt/optional_test.rs`；会话接线修改同步 `pkg/expression/sessionexpr/migration_aster_unit_test.rs`；Go 对齐语义变化还应核对 `pkg/expression/expropt/optional_test.go`。重点覆盖缺失 Provider、错误具体类型、对象身份、重复调用语义，以及闭包捕获资源的生命周期。
 - 兼容风险主要是属性键/描述不一致与泛型类型不匹配；性能风险主要是每次读取的动态查找、`Any` 向下转换、闭包调用及 `Arc` 原子引用计数。当前逻辑没有 Store I/O，不能把下游 I/O 成本归因于本文件。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/expropt/kvstore.rs`，核对 `KVStorePropProvider`、`new`、`call`、`OptionalEvalPropProvider` 实现、`KVStorePropReader`、`required_optional_eval_props`、`get_kv_store` 的完整定义。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/expression/expropt` 确认 Rust/Go 对照文件与独立测试均已索引；`explore "pkg/expression/expropt/kvstore.rs KVStorePropProvider KVStorePropReader get_kv_store"` 和 `node KVStorePropProvider` 核对源定义及已识别引用。
-- 模块与公共契约：`pkg/expression/expropt/lib.rs`、`pkg/expression/expropt/optional.rs`、`pkg/expression/exprctx/optional.rs`。
-- crate 清单：`pkg/expression/expropt/Cargo.toml`。
-- Rust 生产接线：`pkg/expression/sessionexpr/sessionctx.rs` 第 410—413 行附近。
-- Rust 独立测试：`pkg/expression/expropt/optional_test.rs::verify_kv_store`、`pkg/expression/expropt/migration_aster_unit_test.rs::registry_and_missing_reader_paths_match_go`、`infoschema_and_kv_readers_choose_and_preserve_provider_objects`，以及 `pkg/expression/sessionexpr/migration_aster_unit_test.rs` 的完整会话属性读取验证。
-- Go 对照与测试：`pkg/expression/expropt/kvstore.go`、`pkg/expression/expropt/optional_test.go`；生产消费证据为 `pkg/expression/builtin_time.go::builtinTiDBBoundedStalenessSig` 和 `pkg/expression/builtin_info.go::builtinTiDBMVCCInfoSig`。
-- 全仓引用核验：`rg -n "get_kv_store|KVStorePropProvider|KVStorePropReader|OptPropKVStore" --glob '*.rs' --glob '*.go'`，用于补足 RustCodeGraph 对泛型方法调用边的索引限制。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认本文恰有十一个固定二级章节，并人工复核没有把 Go 生产调用误写成 Rust 已接线事实。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-domain-crossks` crate 的跨 Keyspace 运行时生命周期核心。crate 入口 `pkg/domain/crossks/lib.rs` 将本模块公开再导出；`pkg/domain/crossks/Cargo.toml` 则把它放在 `pkg/domain/crossks` 的独立 crate 中，并声明其直接依赖包括 KV、元数据、DDL job submit、InfoSchema 同步、session manager 和 domain server-info。
-
-在完整应用中，生产装配器 `pkg/session/runtime/session_factory.rs::KeyspaceSessionFactory::install_on_domain` 调用 `new_manager_with_server_info_provider`，启动 `Manager::start_idle_gc`，再把 Manager 安装到 `pkg/domain/domain.rs::Domain`。跨 Keyspace 分布式任务由 `pkg/session/runtime/modify_column_dist_backfill.rs::TaskRuntimeBinding::acquire` 取得 `RuntimeHandle`；`Domain::close` 会先取出并关闭该 Manager，再清理自身 server-info。文件因此位于“服务 Domain → 目标 Keyspace runtime → Store/系统会话池/DDL 客户端”这条资源所有权链的中间层。
+`Manager::sweep_idle_runtimes`、`start_idle_gc` 和 `run_system_keyspace_gc_loop` 负责定时驱逐无持有者且超过 30 分钟的运行时；默认扫描周期为 60 秒。
 
 ## 核心职责
 
@@ -84,13 +82,13 @@ GC worker 只持 Manager 的 `Weak`，不会单独延长 Manager 生命周期；
 
 ## 与 Go 版本的对应关系
 
-Rust 主体逐项对应 `pkg/domain/crossks/cross_ks.go`：`Manager/runtimes`、`runtimeEntry`、`GetOrCreate/Acquire/release/sweepIdleRuntimes/Close`、`runtimeHandle` 和 `SessionManager` 的责任保持一致，三个容量/超时常量数值也一致。Rust 用 trait 注入 Store、pool、InfoCache、lifecycle 和 factory，将 Go `createSessionManager` 内的大量具体构造移到 `pkg/session/runtime/session_factory.rs` 等装配层；这不是删减生命周期，而是把具体实现放在 crate 边界之外。
+Rust 用 trait 注入 Store、pool、InfoCache、lifecycle 和 factory，将 Go `createSessionManager` 内的大量具体构造移到 `pkg/session/runtime/session_factory.rs` 等装配层；这不是删减生命周期，而是把具体实现放在 crate 边界之外。
 
-锁策略有实现差异：Go 先用读锁快速 `get`，未命中后再取写锁；Rust `get_or_create` 直接取得单个 `Mutex`。二者都保证同一 Keyspace 单实例，但 Rust 在热点读取上的并发度较低。Go 的 `runtimeHandle` 保存 `runtimeEntry` 指针并用 `sync.Once`，Rust 保存 `Arc<SessionManager>`、Manager 的 `Weak` 和 `AtomicBool`，提供等价的幂等释放及更明确的 RAII Drop。
+锁策略有实现差异：Go 先用读锁快速 `get`，未命中后再取写锁；Rust `get_or_create` 直接取得单个 `Mutex`。Go 的 `runtimeHandle` 保存 `runtimeEntry` 指针并用 `sync.Once`，Rust 保存 `Arc<SessionManager>`、Manager 的 `Weak` 和 `AtomicBool`，提供等价的幂等释放及更明确的 RAII Drop。
 
-Go 的完整 `createSessionManager` 同时启动 InfoSchema sync、MDL check、min-job-ID refresh 等循环；Rust 本文件只定义通用 `Lifecycle` 与 server-info worker，具体 runtime 工厂在 `pkg/session/runtime/session_factory.rs` 中创建这些组件并把 `RuntimeLifetime` 等生命周期对象交给 `SessionManager`。因此不能仅阅读本文件就断言某一生产工厂启用了哪些后台循环。
+Go 的完整 `createSessionManager` 同时启动 InfoSchema sync、MDL check、min-job-ID refresh 等循环；Rust 本文件只定义通用 `Lifecycle` 与 server-info worker，具体 runtime 工厂在 `pkg/session/runtime/session_factory.rs` 中创建这些组件并把 `RuntimeLifetime` 等生命周期对象交给 `SessionManager`。
 
-Go `validateTargetKS` 未显式拒绝空 Keyspace或 closed Manager，而 Rust 增加了这两个防线。Rust 还提供 `start_idle_gc` 的 Manager 自有线程，并保留基于 `Cancellation` 的 `run_system_keyspace_gc_loop`；Go 只有 context/ticker 形式的 `RunSystemKSGCLoop`。Go close 会等待其 `WaitGroup` 后关闭 schema syncer、etcd 和 Store；Rust通过逆序 `Lifecycle::close`、`RegisteredServerInfo::stop` 与 Store 所有权策略表达对应顺序。
+Go `validateTargetKS` 未显式拒绝空 Keyspace或 closed Manager，而 Rust 增加了这两个防线。Rust 还提供 `start_idle_gc` 的 Manager 自有线程，并保留基于 `Cancellation` 的 `run_system_keyspace_gc_loop`；Go 只有 context/ticker 形式的 `RunSystemKSGCLoop`。
 
 对应测试为 `pkg/domain/crossks/cross_ks_test.go`、`cross_ks_internal_test.go` 和 `export_test.go`；Rust 独立测试位于同目录的 `cross_ks_test.rs`、`cross_ks_internal_test.rs`、`export_test.rs`，没有把测试嵌入生产文件。
 
@@ -103,13 +101,3 @@ Go `validateTargetKS` 未显式拒绝空 Keyspace或 closed Manager，而 Rust �
 - 修改 `SessionManager::close` 时维持幂等和当前资源顺序；特别评估 SYSTEM Store 是否共享、后台组件是否仍依赖 pool/etcd、错误是否需要从目前的 best-effort 策略升级为可观察结果。
 - 修改公开类型或依赖时同步检查 `lib.rs` 再导出、`Cargo.toml`、`pkg/session/runtime/session_factory.rs`、`crossks_runtime.rs` 和 `modify_column_dist_backfill.rs`。锁粒度变化需评估首次建 runtime 的串行成本、关闭回调重入和高并发 holder 性能。
 - 测试继续放在同目录的独立 `*_test.rs` 文件；本仓库约定不把 Rust 测试模块内嵌到生产源文件。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/domain/crossks` 列出本 crate 的 Rust/Go 实现和独立测试；`node --file pkg/domain/crossks/cross_ks.rs` 完整读取 758 行并报告该文件被 10 个文件使用。
-- 目标源码：`pkg/domain/crossks/cross_ks.rs`，重点核对 `RegisteredRuntimeFactory::create`、`Manager::{get_or_create,acquire,release,sweep_idle_runtimes,start_idle_gc,close}`、`RuntimeHandle::{release,drop}`、`SessionManager::{set_server_info_syncer,close}`。
-- crate 与装配：`pkg/domain/crossks/Cargo.toml`、`pkg/domain/crossks/lib.rs`、`pkg/session/runtime/session_factory.rs::KeyspaceSessionFactory::install_on_domain`、`pkg/session/runtime/crossks_runtime.rs::CrossKSRuntimeFactory::install_on_domain`。
-- 上游使用与关闭：`pkg/domain/domain.rs::{install_cross_ks_manager,cross_ks_manager,close}`、`pkg/session/runtime/modify_column_dist_backfill.rs::TaskRuntimeBinding::acquire` 及其 SYSTEM `get_or_create` 兼容路径。
-- Go 对照：`pkg/domain/crossks/cross_ks.go` 的 `Manager`、`Acquire`、`createSessionManager`、`RunSystemKSGCLoop`、`sweepIdleRuntimes`、`runtimeHandle` 和 `SessionManager.close`；另核对 `cross_ks_test.go`、`cross_ks_internal_test.go`、`export_test.go` 的测试面清单。
-- Rust 测试：`pkg/domain/crossks/cross_ks_internal_test.rs` 验证参数拒绝、并发 holder、空闲驱逐、锁外关闭、重建、Manager close 与 GC cancellation；`cross_ks_test.rs` 验证虚拟 server-info 注册/回滚/清理顺序、classic/current KS 拒绝、runtime 复用与 DDL 委托；`export_test.rs` 验证 `get/close_ks`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前运行任务规定的 11 章节结构命令，并人工复核本文没有把测试桩、Go 预期或外层工厂行为误写成本文件自身实现。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util` crate 的 Windows 进程 CPU 占用采样实现。模块由 [`pkg/util/lib.rs`](lib.rs) 中的 `pub mod cpu_windows` 公开挂载；核心采样函数 `GetCPUPercentage` 受 `#[cfg(windows)]` 约束，非 Windows 构建只会保留不依赖系统 API 的 FILETIME 换算辅助函数。crate 边界由 [`pkg/util/Cargo.toml`](Cargo.toml) 定义，Windows 目标通过 `windows-sys` 的 `Win32_Foundation` 与 `Win32_System_Threading` feature 取得所需 FFI。
-
-RustCodeGraph 对 `GetCPUPercentage` 的精确查询定位到本文件第 41 行，但未报告仓库内 Rust 生产调用者。因此当前可确认的位置是“通用工具 crate 中公开的 Windows 平台能力”，不能据此声称它已经接入某条 SQL 请求或监控主链。
+`filetime_ticks_to_unix_nanos`：把 Windows `FILETIME` 的 100 纳秒 tick 从 Windows epoch 转换为 Unix epoch 纳秒，并刻意使用 `i64` 环绕运算对齐 Go `syscall.Filetime.Nanoseconds`。
 
 ## 核心职责
 
@@ -67,9 +65,6 @@ RustCodeGraph 对 `GetCPUPercentage` 的精确查询定位到本文件第 41 行
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/util/cpu_windows.go`](cpu_windows.go)：
-
-- 两者都保存 `lastInspectUnixNano` 与 `lastCPUUsageTime` 两个全局基线，计算公式和更新顺序一致。
 - Go 用 `syscall.Rusage` 承载四个 `FILETIME`，Rust 直接声明四个 `windows_sys::FILETIME`；两者都只把 user 与 kernel 用于 CPU 累计值。
 - Go 的 `syscall.Filetime.Nanoseconds()` 隐含 Windows-to-Unix epoch 换算；Rust 将该语义显式抽到 `filetime_ticks_to_unix_nanos`，并用 wrapping 运算复刻 `int64` 溢出行为。
 - Go 对 `syscall.GetCurrentProcess()` 的错误单独返回 0；Rust 使用的 `windows-sys::GetCurrentProcess()` 签名不返回 `Result`，只有 `GetProcessTimes == 0` 的失败分支。
@@ -86,14 +81,3 @@ Go 同目录没有 `cpu_windows_test.go`；当前直接回归证据来自独立 
 - 若要增加可诊断错误，需决定是否改变当前返回 `0.0` 的公开兼容契约，并评估调用方能否接受 `Result` 或额外指标；当前仓库内没有可证明的 Rust 生产调用边，接线前仍应重新查询。
 - 若要加入调度或指标上报，应在消费层实现，本文件维持“读取当前进程累计值并计算相邻差”的平台适配职责。
 - Windows API、feature 或版本变化必须同步 [`pkg/util/Cargo.toml`](Cargo.toml) 的 target-specific 依赖；公开模块边界变化则同步 [`pkg/util/lib.rs`](lib.rs)。
-
-## 验证依据
-
-- 源码：[`pkg/util/cpu_windows.rs`](cpu_windows.rs)，核对常量、两个原子状态、`GetCPUPercentage`、`filetime_ticks_to_unix_nanos`、`now_unix_nano` 及全部 `cfg(windows)` 边界。
-- 模块与测试入口：[`pkg/util/lib.rs`](lib.rs)，核对公开模块和独立测试模块挂载。
-- crate 配置：[`pkg/util/Cargo.toml`](Cargo.toml)，核对 `astersql-util`、`autotests = false` 以及 Windows 专用 `windows-sys` feature。
-- Go 对照：[`pkg/util/cpu_windows.go`](cpu_windows.go)，核对采样公式、状态更新、系统调用和错误返回；同时参考 [`pkg/util/cpu_posix.go`](cpu_posix.go) 与 [`pkg/util/cpu_posix.rs`](cpu_posix.rs) 确认同名 API 的平台分工。
-- 独立测试：[`pkg/util/cpu_windows_test.rs`](cpu_windows_test.rs)，核对 FILETIME epoch 和 100 纳秒单位转换断言。
-- RustCodeGraph：`status` 显示索引含本仓库 Rust/Go 文件；`query GetCPUPercentage --kind function` 定位 Windows Rust、Windows Go 及 POSIX 同名实现；`query filetime_ticks_to_unix_nanos --kind function` 唯一定位本文件；文件节点显示 `pkg/util/cpu_windows_test.rs` 使用本文件；调用边查询未给出 Rust 生产调用者。
-- 文本搜索：对 `pkg/util` 搜索 `mod cpu_windows`、`cpu_windows_test` 与 `GetCPUPercentage(`，确认模块/测试挂载和仓库内可见定义，不将 TopSQL 等其他 CPU 统计概念误认为本函数调用。
-- 本任务是纯文档分析，按任务约束不运行 Cargo；最终以 11 个固定二级标题的结构检查和人工事实复核作为交付验证。

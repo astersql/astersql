@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现行式 `AVG` 聚合器 `avgFunction`，属于 Cargo crate `astersql-expression-aggregation`。crate 入口 `pkg/expression/aggregation/lib.rs` 以 `mod avg` 纳入模块并通过 `pub use avg::*` 导出实现；`pkg/expression/aggregation/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认了这一边界。它不是执行器中的向量化 AVG 实现，而是实现 `aggregation.rs` 定义的 `Aggregation` trait，服务于按行更新的聚合路径以及 mock TiKV/PB 聚合构造路径。
-
-两个直接工厂会创建该类型：`AggFuncDesc::GetAggFunc` 在描述符名称为 `ast::AggFuncAvg` 时装箱 `avgFunction`（`descriptor.rs:296-306`）；`NewDistAggFunc` 在 PB 类型为 `tipb::ExprType::Avg` 时创建它并保留 PB 聚合模式（`aggregation.rs:31-75`）。因此本文件位于“聚合描述符或 PB 表达式 → 具体 `Aggregation` 实现 → 按行维护状态 → 输出部分或最终结果”的运行链中。
+复用通用聚合器的求和、DISTINCT 与上下文管理能力，不在本文件重复实现：原始输入委托 `aggFunction::updateSum`，上下文创建和重置委托 `aggFunction::{CreateContext, ResetContext}`。
 
 ## 核心职责
 
@@ -90,12 +88,7 @@ Cargo 直接依赖由 crate 统一声明；本文件实际使用的表达式、c
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/aggregation/avg.go`。Rust 基本逐段保留 Go 的结构与模式分支：
-
 - Go `avgFunction` 嵌入 `aggFunction`；Rust 使用具名字段 `aggFunction`。
-- 两边 `updateAvg` 都先求局部 sum，NULL 时忽略该行，再累计 sum，最后求局部 count 并加到计数。
-- 两边 `Update` 对四种有效模式的路由一致，并都对 `DedupMode` panic。
-- 两边部分结果顺序都是 `[count, sum]`；Float64 直接相除；Decimal 使用相同除法精度增量、返回类型 scale、`MaxDecimalScale` 上限和 `ModeHalfUp`。
 
 可见差异与迁移事实：
 
@@ -113,16 +106,3 @@ Cargo 直接依赖由 crate 统一声明；本文件实际使用的表达式、c
 - 修改 Decimal 输出时，要同时核对 `GetDivPrecisionIncrement`、返回类型 scale、`MaxDecimalScale` 和 `ModeHalfUp`，并决定是否继续保持 Go 的“记录错误后返回结果”语义。把当前忽略错误改成传播错误会改变 `Aggregation::GetResult` 无 Result 返回值的接口，不能局部完成。
 - 测试必须放在独立文件而非 `avg.rs`：AVG 通用/Final/DISTINCT 场景同步 `aggregation_aster_unit_test.rs` 及转发测试 `aggregation_test.rs`，精细边界同步 `avg_test.rs`；若声称 Go 等价，还需对照 `aggregation_test.go` 和 `avg.go`。
 - 性能风险主要在每行表达式求值、Datum clone、Decimal 除法以及 DISTINCT 检查；不要在 `Update` 热路径引入额外分配。正确性风险集中在 NULL、零 count、部分结果顺序、Decimal scale/舍入和计数溢出；兼容性风险集中在 Go 的错误记录副作用与 PB 两阶段协议。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/expression/aggregation/avg.rs`（全部 117 行；`avgFunction`、`updateAvg`、`Aggregation` 实现）。
-- crate 与模块边界：`pkg/expression/aggregation/Cargo.toml`、`pkg/expression/aggregation/lib.rs`。
-- 工厂与共享状态/逻辑：`pkg/expression/aggregation/aggregation.rs`、`pkg/expression/aggregation/descriptor.rs`、`pkg/expression/aggregation/sum.rs`。
-- Go 对照：`pkg/expression/aggregation/avg.go`、`pkg/expression/aggregation/aggregation_test.go::{TestAvg, TestAvgFinalMode}`。
-- Rust 独立测试：`pkg/expression/aggregation/avg_test.rs`、`pkg/expression/aggregation/aggregation_test.rs`、`pkg/expression/aggregation/aggregation_aster_unit_test.rs::{avg_and_sum_match_go_weighted_input_and_distinct_cases, avg_final_mode_combines_partial_count_and_sum}`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；文件查询确认 `avg.rs` 含 10 个符号；`node avgFunction` 给出 `NewDistAggFunc` 与 `GetAggFunc` 两条实例化入边；两个共享 Rust 测试的 node/trail 给出对 `avg.rs::{Update, GetResult, GetPartialResult, CreateContext}` 的直接调用边；`node updateSum` 和 `node AggEvaluateContext` 核对共享下游逻辑与状态字段。
-
-任务为纯文档分析，按计划未运行 Cargo。结构完整性由任务指定的 11 标题检查命令验证；内容人工复核重点是文件存在理由、两阶段执行协议、安全扩展入口以及 Go/Rust 差异均有上述源码或调用边支撑。

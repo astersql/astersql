@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`mockid.rs`](mockid.rs) 是 workspace 成员 crate `astersql-br-pkg-mock-mockid` 的实现文件，crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，并由 [`lib.rs`](lib.rs) 以 `pub mod mockid` 纳入、再通过 `pub use mockid::*` 平铺导出。它对齐 Go 包 [`mockid.go`](mockid.go)，为测试或脱离真实元数据服务的流程提供最小 ID 分配器，不接入 PD、TSO、存储或租约。
-
-当前 Rust 接线需要明确区分：根 [`Cargo.toml`](../../../../Cargo.toml) 只将该 crate 列为 workspace 成员；全库 Rust 引用搜索未发现其他 crate 依赖它。`br/cmd/br/debug.rs` 中的 `mockid::NewIDAllocator` 实际解析到 `br/cmd/br/stubs.rs` 内的同名本地模块，不是本文件。因此，本实现当前已验证的 Rust 调用面是本 crate 的独立对等测试 [`parity_test.rs`](parity_test.rs)，不应把 Go 主链或 BR 本地桩的用途误记为已接入此 crate。
+用 `IDAllocator::Alloc()` 实现线程安全的“先加一、再返回”语义，包括 `u64::MAX -> 0` 的 Go 无符号整数回绕行为。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@ Go 的已知业务用法见 `br/cmd/br/debug.go`：为表、索引和分区生�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `IDAllocator` 、`NewIDAllocator`、`Alloc` 和 `Rebase` 逐一对应 [`mockid.go`](mockid.go) 中的同名符号。关键一致点是：初始 base 为 0，`Alloc` 原子加一并返回新值，无符号溢出按模 $2^{64}$ 回绕，两个方法均不返回实际错误，`Rebase` 为空操作。
-
 已验证的形式差异包括：
 
 - Go 字段是 `uint64`，并在方法中对其执行 `atomic.AddUint64`；Rust 直接将字段定义为 `AtomicU64`。
@@ -90,12 +86,3 @@ Go 同目录未发现独立 `mockid_test.go`；Rust 对等覆盖集中在独立�
 - 若引入可失败的下游资源，`Infallible` 必须替换为具体错误类型，并在独立测试文件中覆盖错误传播和资源释放；不要把测试内嵌到 `mockid.rs`。
 - 若目标是将这个 crate 接入 Rust BR 调试主链，需在消费 crate 的 Cargo manifest 中增加对 `astersql-br-pkg-mock-mockid` 的依赖，替换 `br/cmd/br/stubs.rs` 中的同名实现，并对 `Alloc` 的不同返回形状做必要的局部接线。这是未完成的后续工作，不是当前状态。
 - 性能变更需关注 `SeqCst` 的竞争成本，但不应未经并发契约证明就放宽内存序。兼容风险集中在 Go/Rust 返回形状、回绕行为和命名形状。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件；`files --filter br/pkg/mock/mockid` 列出 `lib.rs`、`mockid.rs`、`mockid.go` 和 `parity_test.rs`。
-- RustCodeGraph `explore "br/pkg/mock/mockid/mockid.rs MockID NewMockID NewMockIDGenerator"`：返回目标源码、Go 对照、crate 入口和独立测试，并确认 `new_id_allocator_with_base` 由 `alloc_wraps_after_u64_max_like_go_atomic_add` 调用。
-- RustCodeGraph `query IDAllocator --kind struct --limit 20` 与 `query NewIDAllocator --kind function --limit 20`：确认目标 Go/Rust 符号，同时暴露 `br/cmd/br/stubs.rs` 的同名实现，因此后续以文件限定搜索排除歧义。
-- 逐文件阅读：[`mockid.rs`](mockid.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`mockid.go`](mockid.go)、[`parity_test.rs`](parity_test.rs)、`br/cmd/br/debug.go`、`br/cmd/br/debug.rs` 和 `br/cmd/br/stubs.rs`。同目录没有 `doc.go` 或 Go 独立测试文件。
-- `rg` 核对：全库 Cargo manifest 中只有根 workspace 成员列表和本 crate 自身出现包名；Rust 限定搜索显示目标公开符号只被 `lib.rs` 再导出、被 `parity_test.rs` 调用。
-- 结构验证要求：文档必须存在，且上述十一个固定二级标题各出现一次。本任务是纯文档分析，按计划不运行 Cargo。

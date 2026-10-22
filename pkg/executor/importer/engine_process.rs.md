@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-importer` crate 中“单个导入 chunk 到本地 Lightning 引擎”的编排层。模块由 `pkg/executor/importer/lib.rs` 声明并公开再导出；crate 边界与直接依赖见 `pkg/executor/importer/Cargo.toml`。它位于表级导入编排与逐行解析/编码/投递之间：上游 `TableImporter::ImportSelectedRows` 在打开 data/index engine 后调用 `ProcessChunk`（`pkg/executor/importer/table_import.rs`），本文件取得 writer、编码器和输入源，再把实际处理交给 `BaseChunkProcessor::Process`（`pkg/executor/importer/chunk_process.rs`）。
-
-该文件不是引擎导入、Region 切分或 parser/KV 编码算法的实现位置。它只为一次 chunk 选择处理路径并建立资源所有权；engine 的最终关闭、导入及清理由上层 `TableImporter` 继续完成。
+用 `TableImporterRuntime` 抽象表元数据、keyspace、KV 编码器、文件 parser 和查询结果 channel；生产实现位于 `impl TableImporterRuntime for TableImporter`。
 
 ## 核心职责
 
@@ -72,8 +70,6 @@ writer 的所有权从 `OpenedEngine::LocalWriter` 移到 processor 的 `DataDel
 
 ## 与 Go 版本的对应关系
 
-同路径 `engine_process.go` 提供基准语义：两版都先判断 auto row ID 是否有序，分别打开 data/index writer，然后按文件或查询源构造 chunk processor，最后执行 `Process`；两版都让处理错误优先于延迟清理错误。Go 的 `TestProcessChunkWith`（`importer_testkit_test.go`）验证文件源会跳过首行并生成 checksum，查询源会消费多个 query chunk、生成连续 row ID 并得到一致 checksum。
-
 Rust 为便于复用和测试，把 Go 的具体 `*Chunk`/`*TableImporter` 参数拆成 `ImportChunk` 与 `TableImporterRuntime` trait，并把默认日志入口与显式日志入口分开。Go 的 `ProcessChunk` 直接接收 logger，Rust `ProcessChunk` 使用全局 logger，`ProcessChunkAndLogger` 才接收调用方 logger。Rust 的 `DataSourceType` 是封闭 enum，Go 则以整数别名和 switch 表达。
 
 资源语义基本对齐但可观察性不同：Go defer 关闭 writer、parser 和 encoder，并对关闭错误记 warning；Rust processor 对 encoder/writer 做无条件清理但忽略关闭错误，parser 由其 Rust 所有权/reader 生命周期释放，本文件没有对应的 close-warning。Rust 独立测试只直接覆盖 writer 清理；因此不能据现有测试声称 parser 关闭告警完全等价。Go 将 `diskQuotaLock` 显式传给 processor；当前 Rust 构造函数没有该参数，磁盘配额检查在 `TableImporter` 的独立后台流程中实现，这是结构差异而非本文件内的锁。
@@ -85,12 +81,3 @@ Rust 为便于复用和测试，把 Go 的具体 `*Chunk`/`*TableImporter` 参�
 - 增加 chunk 元数据时，扩展 `ImportChunk`，同步 `impl ImportChunk for Chunk` 以及 `TableImporterRuntime::{GetKVEncoder, GetParser}` 中的适配复制。若字段影响日志大小，保留 Parquet offset 不是字节这一不变量，并扩展 `table_import_test.rs` 的 `GetSize` 用例。
 - 改动资源关闭或错误优先级时，应在 `engine_process_test.rs` 增加 parser/encoder/writer 分别于“创建失败、处理失败、关闭失败”的回归矩阵；测试逻辑保持在独立测试文件，不内嵌到生产源。兼容风险在于改变首要返回错误，性能风险在于提前/重复 flush 或遗漏 close。
 - 修改 checksum/collector 传递时，同时审查 `BaseChunkProcessor::Process`、`ChunkEncoder::accept_offset/send_batch` 和 Go `TestProcessChunkWith` 的 checksum/row ID 断言；失败 chunk 不得合并共享 checksum。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认项目索引可用且含 11,467 个文件；`node --file pkg/executor/importer/engine_process.rs` 成功读取目标文件全貌；对 `ImportChunk`、`TableImporterRuntime`、四个处理入口的 `query`，以及对四个入口的 `callers`/`callees` 查询用于核对符号和调用边。图未返回 Rust caller 时，使用 `table_import.rs` 中的真实调用点补证；图把同名 `L` 归到无关文件，因此日志器归属以目标源码和 Cargo 依赖为准。
-- Rust 源与装配：`pkg/executor/importer/engine_process.rs`、`chunk_process.rs`、`table_import.rs`、`import.rs`、`lib.rs`；分别核对编排、处理器生命周期、生产适配/上游入口、封闭数据源 enum 和公开再导出。
-- crate 声明：`pkg/executor/importer/Cargo.toml`，核对 crate 名、lib 根及本文件使用的直接依赖。
-- Go 对照：`pkg/executor/importer/engine_process.go` 与 `pkg/executor/importer/importer_testkit_test.go::TestProcessChunkWith`，核对两条数据源路径、checksum、row ID 和 defer 清理意图。
-- Rust 测试：`pkg/executor/importer/engine_process_test.rs` 覆盖处理失败仍关闭两个 writer、close 错误非致命；`pkg/executor/importer/table_import_test.rs::chunk_size_uses_file_bytes_for_parquet_and_offsets_for_other_sources` 覆盖 `GetSize` 的格式边界。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核唯一新增产物、源码路径和未验证边界。

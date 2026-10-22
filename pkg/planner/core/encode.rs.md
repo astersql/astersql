@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate。crate 根 `pkg/planner/core/lib.rs` 以私有模块 `mod encode` 装入它，再用 `pub use encode::*` 重导出公开符号，因此调用方从 `astersql_planner_core` 直接使用编码和归一化 API。`pkg/planner/core/Cargo.toml` 指定库入口为 `lib.rs`、关闭自动测试发现，并将 Go 对照包标为 `pkg/planner/core`；本文件直接使用的外部依赖只有 `sha2 = "0.10"`。
-
-它位于物理计划生成之后、计划展示或摘要消费之前：输入是 `PlanNode`，或已经由 `FlattenPhysicalPlan` 转成的 `FlatPhysicalPlan`；输出是制表符分隔的文本计划，或者归一化文本及其 SHA-256 摘要。已确认的生产消费点是 `pkg/executor/adapter_slow_log.rs::session_plan_digest`，其调用 `NormalizeFlatPlan`，把摘要转换成 parser digest，缓存进 statement context，供慢日志记录计划摘要。
+`EncodePlan` / `EncodeFlatPlan` 生成包含层级、节点 ID、角色标签、算子类型、估算行数、执行位置和算子信息的逐行文本。
 
 ## 核心职责
 
@@ -78,11 +76,11 @@ RustCodeGraph 对这些符号的查询能定位 Rust/Go 同名定义，文件节
 
 ## 与 Go 版本的对应关系
 
-Go 对照位于 `pkg/planner/core/encode.go`。两边共同保留的意图包括：空主树和 Execute 路径不收集普通编码；普通路径覆盖 Main、CTE 和标量子查询；归一化只取 SELECT 主树；写计划跳过 DML 包装；归一化摘要使用 SHA-256。Go `pkg/planner/core/plan_test.go` 还以旧树路径和新扁平路径相互对照，并测试相同/不同 SQL 的摘要关系。
+Go `pkg/planner/core/plan_test.go` 还以旧树路径和新扁平路径相互对照，并测试相同/不同 SQL 的摘要关系。
 
 当前 Rust 并非 Go 编码器的字节级复刻：Go 调用 `plancodec.EncodePlanNode` 后压缩输出，包含运行时执行、内存和磁盘信息，并对反转驱动侧、CTE 定义等做专门处理；Rust 输出可读的 TSV 文本，不压缩，也没有 Go 的 `sync.Pool`、failpoint、运行时统计编码或 `plancodec` 协议。Go 归一化使用 `TP(...)`、task type 编码和 `ExplainNormalizedInfo()`，Rust 则使用 `PlanKind::name()`、简单 store 名和同一算子名作为 info。Rust 的 `getSelectPlan` 不处理 Go 的 `Explain` 包装，DML 子计划也以第一个 child 表示，而非 Go 的具体物理类型字段。
 
-因此，现有 Rust 测试证明的是当前 Rust 模型内部的两条路径一致和若干 Go 语义意图对齐；它们没有证明 Rust 输出可由 Go `plancodec.DecodePlan` 解码，也没有证明跨语言 digest 完全相同。迁移时必须保留这一区分。
+因此，现有 Rust 测试证明的是当前 Rust 模型内部的两条路径一致和若干 Go 语义意图对齐；它们没有证明 Rust 输出可由 Go `plancodec.DecodePlan` 解码，也没有证明跨语言 digest 完全相同。
 
 ## 扩展指南
 
@@ -92,13 +90,3 @@ Go 对照位于 `pkg/planner/core/encode.go`。两边共同保留的意图包括
 - 若要继续追平 Go，应按可验证的小步引入 `plancodec` 兼容编码、运行时字段、CTE/驱动侧次序和 Explain 包装语义，并以 Go `pkg/planner/core/plan_test.go` 的解码及摘要用例作为对照。不能仅改摘要算法或表面格式就宣称协议兼容。
 - 若归一化未来纳入 CTE 或标量子查询，必须评估慢日志、statement context 缓存和 plan digest 稳定性，并更新当前明确验证“忽略二者”的 `normalize_flat_plan_only_uses_the_select_tree_like_go`。
 - 性能修改应保留单次线性遍历和容量预分配；当前 `PlanDigest::String` 每字节执行一次格式化，若优化需用等价的固定宽度小写十六进制测试锁定行为。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/encode.rs`，核对了全部 161 行及所有结构、函数、impl；文件无条件编译项。
-- 类型与扁平化：`pkg/planner/core/flat_plan.rs` 的 `FlatPlanTree`、`FlatPhysicalPlan`、`GetSelectPlan`、`FlatOperator`、`FlattenPhysicalPlan`；`pkg/planner/core/common_plans.rs` 的 `StoreType`、`PlanKind::name`、`PlanNode`、`IsPhysical`。
-- crate 边界：`pkg/planner/core/Cargo.toml` 和 `pkg/planner/core/lib.rs`；后者声明并重导出 `encode`，同时以 `#[cfg(test)] mod encode_test`、`mod plan_test` 装载独立测试。
-- Rust 测试：`pkg/planner/core/encode_test.rs` 验证 DML 包装和仅 SELECT 主树归一化；`pkg/planner/core/plan_test.rs` 验证树/扁平编码一致、摘要忽略 ID/行数/详情、不同算子摘要不同及空输入边界；`pkg/sessionctx/variable/tests/slowlog/slow_log_test.rs` 验证摘要进入慢日志字段。
-- Go 对照：`pkg/planner/core/encode.go` 与 `pkg/planner/core/plan_test.go`，用于确认原始压缩协议、归一化字段、对象池、DML/Explain 处理及旧/新路径一致性测试意图。
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file pkg/planner/core/encode.rs` 返回完整源码及 22 个使用文件；`query EncodePlan`、`query NormalizeFlatPlan`、`query NormalizePlan` 定位了 Rust 与 Go 同名定义；图的精确跨语言 callers/callees 有歧义，故上游边再以 `rg` 精确核验。
-- 本任务是纯文档分析，依计划未运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题。

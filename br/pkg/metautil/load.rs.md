@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`load.rs` 属于 `astersql-br-pkg-metautil` library crate。crate 根 `br/pkg/metautil/lib.rs` 通过 `pub mod load` 挂载它，并以 `pub use load::*` 再导出公开符号；`br/pkg/metautil/Cargo.toml` 的 `[package.metadata.porting]` 则把该 crate 对应到 Go 包 `br/pkg/metautil`。本文件位于备份元数据读取和恢复/检查消费之间：输入是已经构造好的 `MetaReader`，输出是按数据库原始名称聚合的 `HashMap<String, Database>`。
-
-当前 Rust 接线需要与 Go 主链分开描述。RustCodeGraph 的文件关系只列出 `br/pkg/metautil/load_test.rs` 直接使用本文件，仓库内 Rust 搜索也未发现 `LoadBackupTables` 的生产调用；因此它是已经实现并由 crate 公开的移植 API，但尚不能据此断言 Rust 恢复命令已经走到该实现。Go 版本的直接生产入口包括 `br/pkg/restore/snap_client/client.go` 的 `SnapClient.LoadSchemaIfNeededAndInitClient`，以及 `br/cmd/br/debug.go` 的 checksum 和 backupmeta 校验命令。
+位于备份元数据读取和恢复/检查消费之间：输入是已经构造好的 `MetaReader`，输出是按数据库原始名称聚合的 `HashMap<String, Database>`。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@ Go 主链则更完整：`SnapClient.LoadSchemaIfNeededAndInitClient` 调用 `met
 
 ## 与 Go 版本的对应关系
 
-`br/pkg/metautil/load.go` 是直接对照源。结构和语义对应关系如下：
-
 - Go `Database.Info *model.DBInfo` / `Tables []*Table` 对应 Rust 拥有值的 `DBInfo` / `Vec<Table>`；Rust 消除了 `Database.Info` 自身为 nil 的状态，但保留 `Table.Info: Option<_>`。
 - Go 的私有 `reusedByPITR bool` 与 Rust 普通 `bool` 对齐；Rust setter 因借用规则要求 `&mut self`。
 - Go `GetTable` 返回 `*Table` 或 nil；Rust 返回 `Option<&Table>`。两者都按原始表名匹配，Rust 通过 `expect` 保持遇到 nil table info 时失败的行为。
@@ -90,7 +86,7 @@ Go 主链则更完整：`SnapClient.LoadSchemaIfNeededAndInitClient` 调用 `met
 - Go 用 `table.DB.Name.String()` 作键，Rust使用 `table.DB.Name.O`；现有 Rust 测试也用 `.O` 查找，体现当前移植约定。
 - Go 错误在生产 goroutine和接收点调用 `errors.Trace`；Rust 在 `ReadSchemasFiles` 返回后把原错误送入通道，在接收点调用 `trace_err`。
 
-Rust 测试 `test_load_backup_meta` 和 `test_load_backup_meta_partition_table` 对照 Go 同名测试，验证普通表/分区表的 SST 归属；三个 `benchmark_load_backup_meta_*` 把 Go benchmark 的 64、1024、10240 表规模收敛为单次功能冒烟。文件归属判断本身是 `metafile.rs` 的行为，本文件负责把其输出收集成库映射。
+Rust 测试 `test_load_backup_meta` 和 `test_load_backup_meta_partition_table` 对照 Go 同名测试，验证普通表/分区表的 SST 归属；三个 `benchmark_load_backup_meta_*` 把 Go benchmark 的 64、1024、10240 表规模收敛为单次功能冒烟。
 
 ## 扩展指南
 
@@ -101,14 +97,3 @@ Rust 测试 `test_load_backup_meta` 和 `test_load_backup_meta_partition_table` 
 - 若要严格传播后台 panic，处理 `handle.join()` 的错误并定义新的 `SharedError`；同时覆盖“读线程 panic、已有部分结果、无 errTx 消息”的回归测试。
 - 若要加入背压，可把无界 `mpsc::channel` 改为有界机制，但需验证 `ReadSchemasFiles` 回调、取消和 join 不形成互相等待。性能测试应继续放在独立 `load_test.rs`，不要把测试逻辑嵌入生产源文件。
 - Rust 生产接线时，应从恢复初始化或 debug 命令的真实入口引入 crate 导出的 `LoadBackupTables`，并避免与 `snap_client/stubs.rs` 的同名 `Database` 混用；接线属于调用方任务，不应在本文件文档任务中假定已经完成。
-
-## 验证依据
-
-本说明基于以下本地证据人工复核：
-
-- RustCodeGraph `status`：索引包含 7032 个 Rust 文件；`files --filter br/pkg/metautil` 确认目标、Go 对照和独立测试均已索引。
-- RustCodeGraph `node --file br/pkg/metautil/load.rs --offset 1 --limit 260`：读取完整 150 行目标文件，并得到“used by 1 file: br/pkg/metautil/load_test.rs”。
-- RustCodeGraph `query LoadBackupTables/GetTable/SetReusedByPITR/IsReusedByPITR/ReadSchemasFiles --json`：核对 Rust/Go 同名符号、签名和定义位置。
-- RustCodeGraph `node` 读取 `br/pkg/metautil/metafile.rs:350-777`、`br/pkg/metautil/load_test.rs:1-422`、`br/pkg/restore/snap_client/client.rs:880-979` 与 `stubs.rs:1190-1259`：核对读取流水线、测试边界以及 canonical/stub 类型差异。精确 `callers`/`callees` 查询在本地 30 秒窗口内超时且无输出，因此没有把它误判为“无调用边”，而是用已索引文件关系和 `rg` 补证。
-- 直接读取 `br/pkg/metautil/Cargo.toml`、`lib.rs`、`load.go`、`load_test.go`、`metafile.go`，并搜索 `br/**/*.rs` 与 `br/**/*.go` 的调用点：核对 crate 边界、公开再导出、Go 生产入口和 Rust 当前接线。目标目录不存在 `doc.go`，因此没有可额外读取的包契约文件。
-- 任务为纯文档分析，按计划未运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题，并确认唯一生产物是 `br/pkg/metautil/load.rs.md`。

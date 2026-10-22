@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-table-tables` crate；模块入口 `pkg/table/tables/lib.rs` 以 `pub mod index` 对外公开它。它为 Rust 表实现提供一组自包含的二级索引元数据、索引键值编码、部分索引谓词和 DDL 临时索引状态辅助。当前最直接的运行时使用者是同 crate 的 `TableCommon`：`pkg/table/tables/tables.rs::TableCommon::new` 构造 `Index`，`writable_indices` 过滤可写索引，`build_index_entries` 与 `remove_index_entries` 判断部分索引条件并生成键。
-
-这不是 Go `pkg/table/tables/index.go` 的完整等价移植。Go 文件实现 `table.Index` 的事务写入、删除、唯一键冲突检查、多值索引、全局索引和 tablecodec 编码等完整 KV 路径；本 Rust 文件只提供当前内存表路径所需的较小模型和辅助函数。文档下文将“Rust 当前事实”与“Go 对照目标”分开描述。
+Go 文件实现 `table.Index` 的事务写入、删除、唯一键冲突检查、多值索引、全局索引和 tablecodec 编码等完整 KV 路径；本 Rust 文件只提供当前内存表路径所需的较小模型和辅助函数。
 
 ## 核心职责
 
@@ -72,7 +70,6 @@
 - `gen_index_key/gen_index_value` 对应 Go 同名方法的职责，但 Go 委托 `tablecodec`，覆盖真实 TiDB 编码、global/partition handle、changing field type、错误上下文和复用缓冲；Rust 的文本前缀与私有 tag 编码不能宣称与 TiDB 持久化格式兼容。
 - `matches_partial_condition` 对应 Go `MeetPartialCondition/MeetPartialConditionWithChunk`：二者都让 NULL 为 false、捕获 panic并传播求值错误。Go 测试还覆盖 clustered index、PK handle、隐式 rowid 及真实 SQL DML；Rust 的 `index_test.rs` 覆盖回调语义，`pkg/testkit/go_merge_49_partial_index_test.rs` 额外验证真实 planner 编译、NULL 和大小写不敏感排序规则。
 - `gen_temp_index_key_by_state` 对应 Go `GenTempIdxKeyByState` 的状态矩阵。Go 用 `tablecodec.IndexKey2TempIndexKey` 就地转换真实索引键；Rust 简单在原键前加 `TEMP_INDEX_PREFIX`。
-- `is_index_writable` 与 Go `IsIndexWritable` 状态判断一致；`dedup_index_columns` 与 Go `DedupIndexColumns` 一样按 offset 去重并保留首次出现顺序。
 - Go 文件中事务 `Create/Delete/Exist`、多值索引展开、临时索引 value 合并和重复 handle 查询等大段逻辑，在本 Rust 文件中不存在；扩展时应明确逐项移植，而不能把公开辅助函数视为这些能力已完成。
 
 ## 扩展指南
@@ -83,12 +80,3 @@
 - 新增 `IndexError` 变体时，应更新 `TableCommon::new/build_index_entries/remove_index_entries` 的映射，避免把真实求值错误误报成列偏移错误。
 - 测试逻辑应继续放在独立的 `pkg/table/tables/index_test.rs`，不要内嵌回生产文件；需要验证完整 SQL/表达式编译时使用现有 `pkg/testkit/go_merge_49_partial_index_test.rs` 表面。
 - 兼容性风险集中在键字节格式、handle 放置、collation 与临时索引状态；性能风险集中在每次键/value 分配、Datum 转换和 mutex 行池竞争。任何这些修改都应与 Go `pkg/table/tables/index.go` 的对应路径逐项核对。
-
-## 验证依据
-
-- 源码：`pkg/table/tables/index.rs`（全部 481 行），以及直接入口 `pkg/table/tables/lib.rs`、`pkg/table/tables/tables.rs`。
-- crate：`pkg/table/tables/Cargo.toml`，确认 crate 名、默认 `expression-runtime` feature、可选 expression 依赖和 Go package 映射。
-- RustCodeGraph：索引状态显示 11,467 个文件、307,296 个节点；查询/节点检查覆盖 `need_restored_data`、`Index::new`、`gen_index_key`、`gen_index_value`、`meet_partial_condition*`、`matches_partial_condition`、`gen_temp_index_key_by_state`、`is_index_writable`、`dedup_index_columns` 与 `encode_datum`。对图中同名误配使用文件和签名复核。
-- Rust 测试：`pkg/table/tables/index_test.rs` 覆盖 offset 去重、可写状态、restored data、构造越界、空/缺 feature 条件、distinct/NULL/handle、值数量、value 布局、NULL/错误求值、collation 与临时键状态；`pkg/testkit/go_merge_49_partial_index_test.rs` 覆盖真实表达式编译与 collation。
-- Go 对照：`pkg/table/tables/index.go`；Go 测试 `pkg/table/tables/index_test.go` 的 `TestMeetPartialCondition`、`TestPartialIndexDML*`、`TestDedupIndexColumns4Test` 及临时索引相关用例用于界定完整语义与 Rust 当前缺口。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前以任务给定命令验证目标文件存在且恰有 11 个固定二级章节，并人工复核所有“当前已接线”陈述均能追溯到上述源码或调用边。

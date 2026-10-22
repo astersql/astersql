@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-importinto` crate 的表级导入检查点实现。crate 入口 `lightning/pkg/importinto/lib.rs` 以 `mod checkpoint` 装入并公开重导出本文件；`lightning/pkg/importinto/Cargo.toml` 将该 crate 标为 Go 包 `lightning/pkg/importinto` 的 Rust library 移植，未声明 feature 开关。
-
-它位于 IMPORT INTO 后端的恢复链路中心：`importer.rs::NewImporter` 在没有注入自定义管理器时调用 `NewCheckpointManager`，随后立即调用 `Initialize`；`job_orchestrator.rs` 在提交表任务前读取旧检查点并在提交成功后记录 `Running`；`job_monitor.rs` 把任务最终结果写成 `Finished` 或 `Failed`；`precheck.rs::CheckpointCheckItem::Check` 和 `importer.rs::initGroupKey` 通过 `GetCheckpoints` 检查旧失败任务并恢复同一批任务的 group key。
-
-本文件只保存“每张表对应哪个 IMPORT INTO job、处于什么状态”这一层信息。engine/chunk 检查点属于接口兼容面，三个实现的 `DumpEngines`、`DumpChunks` 在当前代码中都不产生内容。
+为文件后端提供内存索引、JSON 加载/保存、错误检查点重置/销毁及 CSV 导出。
 
 ## 核心职责
 
@@ -112,10 +108,6 @@ MySQL 实现依赖 `sql::DB` 自身的共享能力，没有本地状态锁。`De
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `lightning/pkg/importinto/checkpoint.go`，契约测试分别是 `checkpoint_test.go` 与 `checkpoint_test.rs`。Rust 保留 Go 的公开命名和接口形状，并以 `Arc<dyn CheckpointManager>` 对应 Go interface，以 `RwLock<HashMap<...>>` 对应 Go 的 `sync.RWMutex + map`。
-
-主要一致点：四个状态的整数值和字符串、JSON 字段、三种后端选择、file 全量重写、MySQL 表结构/upsert、`all` 批处理、错误恢复/销毁规则、engine/chunk dump no-op、MySQL close 均与 Go 同名实现对应。Rust 独立测试覆盖了 Go 测试的 file/noop/mysql/status 场景。
-
 需要注意的表达差异：
 
 - Go 可以构造 `CheckpointStatus(999)`；Rust 安全枚举不能，因此用 `string_i32(999)` 验证 `"unknown"`，而反序列化未知值回退 `Pending`。
@@ -135,13 +127,3 @@ MySQL 实现依赖 `sql::DB` 自身的共享能力，没有本地状态锁。`De
 - 修改 CSV：以 Go `encoding/csv` 为兼容标准，扩展 `checkpoint_test.rs::test_file_checkpoint_manager_dump_tables_uses_go_csv_escaping`；不要依赖 HashMap 行序。
 
 相关独立 Rust 测试应继续放在 `lightning/pkg/importinto/checkpoint_test.rs`；跨文件入口/工厂语义可同步检查 `parity_test.rs` 和 `importer_test.rs`。本任务不建议把测试放回 `checkpoint.rs`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 文件、307,296 节点；`files --filter lightning/pkg/importinto` 确认目标源、Go 对照和独立测试均已索引；`query NewCheckpointManager/FileCheckpointManager/MySQLCheckpointManager` 定位 Rust 与 Go 同名符号；`node --file lightning/pkg/importinto/checkpoint.rs` 核对完整定义和文件关系。精确 `callers` 查询未在等待窗口内返回，调用边随后用局部源码搜索复核。
-- 生产源码：`lightning/pkg/importinto/checkpoint.rs`、`lib.rs`、`importer.rs`、`job_orchestrator.rs`、`job_monitor.rs`、`precheck.rs`。
-- crate 边界：`lightning/pkg/importinto/Cargo.toml`。
-- Go 对照：`lightning/pkg/importinto/checkpoint.go`。
-- 测试证据：`lightning/pkg/importinto/checkpoint_test.rs`、`checkpoint_test.go`；另以 `parity_test.rs` 和 `importer_test.rs` 的调用点确认工厂与 importer 接线。
-- 人工复核结论：本文件存在是为了把 IMPORT INTO 的表任务状态从并发编排逻辑中抽象出来，并提供可恢复的 noop/file/MySQL 后端；安全扩展的关键是同时维护状态编码、存储 schema、错误分类、事务/锁生命周期和 Go 对照测试。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文件存在且恰好包含 11 个固定二级章节。

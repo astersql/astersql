@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 Unicode Collation Algorithm（UCA）4.0.0 的 Default Unicode Collation Element Table（DUCET）Rust 生成产物，数据来源在文件头标为 Unicode 官方 `allkeys-4.0.0.txt`。它位于 `astersql-util-collate-ucadata` crate；该 crate 由 [`Cargo.toml`](Cargo.toml) 定义、以 [`lib.rs`](lib.rs) 为入口，并从 `unicode_ci_data_generated` 模块公开再导出本文件的符号。上层 `astersql-util-collate` 同时通过 `#[path = "ucadata/lib.rs"]` 将该模块装入自身，因此 [`unicode_0400_ci_impl.rs`](../unicode_0400_ci_impl.rs) 可以用 `crate::ucadata` 访问表。
-
-文件声明为生成代码（`Code generated ... DO NOT EDIT`）。数据或布局变更应进入 [`generator/main.rs`](generator/main.rs) 的解析、计算或 Rust 模板渲染流程，然后重新生成本文件，不能手改 65,536 项数据。目标文件没有 feature gate 或其他条件编译项；其独立测试才由 `ucadata/lib.rs` 中的 `#[cfg(test)]` 装配。
+提供安全的 `map_table_weight` 和 `long_rune_weight` 查询方法：前者把越界变成 `None`，后者把 Go `map` 查询语义移植为对有序切片的二分查找。
 
 ## 核心职责
 
@@ -73,13 +71,11 @@ RustCodeGraph 对目标文件给出的直接使用文件只有两个：
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`unicode_ci_data_generated.go`](unicode_ci_data_generated.go)。两边都公开 `DUCET0400Table`，都含 `[65536]uint64` 主表和相同的 22 组长权重数据；代表条目如 `0x321D` 与末项 `0xFDFB` 数值一致。Rust 使用 `UcaDataTable<65536>` 命名类型替代 Go 匿名结构体，用 `&'static [(u32, [u64; 2])]` 替代 Go `map[rune][2]uint64`。
+Rust 使用 `UcaDataTable<65536>` 命名类型替代 Go 匿名结构体，用 `&'static [(u32, [u64; 2])]` 替代 Go `map[rune][2]uint64`。
 
 这一容器差异带来两点可见语义：Go map 缺键会给出零值，Rust `long_rune_weight` 明确返回 `None`；Go map 无顺序要求，Rust 为支持二分查找要求切片按键排序。生成器同时对 Go 和 Rust 输出先排序，使生成文本稳定，而 Rust 独立测试额外验证严格递增。
 
-生产消费逻辑与 [`unicode_0400_ci_impl.go`](../unicode_0400_ci_impl.go) 对齐：非 BMP 返回 `0xFFFD`，BMP 先读主表，哨兵时读取两段长权重，通配符遇长权重时要求原 rune 相同。Rust 版本把 Go 的 map 索引改成返回 `Option` 的查询并在应当存在的生产路径使用 `expect`，从而把生成数据不一致暴露为明确失败。
-
-Go 的 [`unicode_ci_data_test.go`](unicode_ci_data_test.go) 对生成表和旧表逐项比较，并检查长权重唯一性；Rust 的 `unicode_ci_data_test.rs` 保留这些测试意图，`unicode_ci_data_generated_3_aster_unit_test.rs` 进一步覆盖方法边界、已知权重和排序不变量。
+Rust 版本把 Go 的 map 索引改成返回 `Option` 的查询并在应当存在的生产路径使用 `expect`，从而把生成数据不一致暴露为明确失败。
 
 ## 扩展指南
 
@@ -88,14 +84,3 @@ Go 的 [`unicode_ci_data_test.go`](unicode_ci_data_test.go) 对生成表和旧�
 - 若改变 `LongRuneMap` 的存储结构或查找算法，必须保持“确定性生成、唯一键、查不到返回 `None`”的外部契约；继续使用二分查找时，生成器排序和严格递增测试不可删除。
 - 测试应继续放在独立文件，不能内嵌到这个生成源文件。表内容对照更新在 `unicode_ci_data_test.rs` 与 `unicode_ci_data_original_test.rs`；查询 API、边界和排序回归更新在 `unicode_ci_data_generated_3_aster_unit_test.rs`；生成器渲染/目标选择回归更新在 `generator/migration_aster_unit_test.rs`。
 - 性能敏感修改应分别观察主表直接索引热路径、哨兵后二分查找路径和静态数据体积。兼容性审查需特别检查排序结果是否仍与 Go collation 权重和历史持久化/比较行为一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标目录的索引列出了本文件、模块入口、生成器、Go 对照和独立测试。
-- `rustcodegraph node --file pkg/util/collate/ucadata/unicode_ci_data_generated.rs`：确认文件共 65,607 行，定义 `UcaDataTable`、两个查询方法、`DUCET0400Table<65536>`，以及文件末尾 22 项有序长表。
-- `rustcodegraph node`/`query`：确认 `map_table_weight` 的直接测试调用者，以及 `long_rune_weight` 的生产调用者 `GetWeight` 和测试调用者；目标文件的文件级使用方为 `unicode_0400_ci_impl.rs` 与 `unicode_ci_data_generated_3_aster_unit_test.rs`。单独的 `callers` 命令在本地索引上长时间无输出，故调用边以 `node` 返回的 Trail 和精确源码上下文交叉核对。
-- [`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs) 与工作区根 `Cargo.toml`：确认 crate 名称、入口、公开再导出、无 crate 级运行时依赖，以及工作区/门面注册关系；目标包附近没有 `doc.go`。
-- [`generator/main.rs`](generator/main.rs)：确认 Unicode 4.0.0 表长、名称、数据 URL、隐式权重计算、长表排序、Rust 模板渲染和格式化写入流程。
-- [`unicode_ci_data_generated.go`](unicode_ci_data_generated.go) 与 [`unicode_0400_ci_impl.go`](../unicode_0400_ci_impl.go)：确认 Go 数据布局、代表长表值和生产查询/回退/通配符语义。
-- [`unicode_ci_data_generated_3_aster_unit_test.rs`](unicode_ci_data_generated_3_aster_unit_test.rs)、[`unicode_ci_data_test.rs`](unicode_ci_data_test.rs)、[`unicode_ci_data_original_test.rs`](unicode_ci_data_original_test.rs) 及 Go `unicode_ci_data_test.go`：确认主表长度与边界、已知权重、长表查找、严格递增、权重唯一以及新旧表逐项一致的测试意图。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文恰好包含 11 个固定二级章节，并人工检查所有运行时结论均可回指上述符号或文件。

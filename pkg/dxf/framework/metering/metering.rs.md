@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-metering` crate 的 Meter 状态机实现。crate 入口 `pkg/dxf/framework/metering/lib.rs` 通过 `include!("metering.rs")` 将它置于 `metering` 模块，并在 crate 根重新导出公共 API；相邻的 `data.rs` 负责累计快照到 `MeterItem` 的增量计算，`recorder.rs` 负责单任务原子计数。
-
-在 DXF 中，它位于任务执行与计量后端之间：任务侧按 `TaskBase.ID` 获取共享 `Recorder`，后台 Meter 定期抓取累计值、计算相对上次快照的增量并交给 `MeteringWriter`。仓库当前 Rust 生产调用证据只有 `pkg/dxf/framework/taskexecutor/execute/interface.rs` 的 `FrameworkInfo::new` 调用 `metering::RegisterRecorder`；未检索到 Rust 生产代码安装全局 Meter、启动循环、注销 recorder 或实现真实 SDK writer，因此完整后台上报链目前仍是边界抽象与测试覆盖状态，不能视为已完成接线。
-
-`pkg/dxf/framework/metering/Cargo.toml` 声明 crate 默认无 feature，`nextgen` feature 映射到 `kerneltype/nextgen`。直接依赖包括 `proto`、`dxfmetric`、`kerneltype`、`recording`、`anyhow`、`log` 和 `uuid`；它没有依赖已发布的 Rust metering SDK。
+通过 `MeteringWriter` 和 `WriterFactory` 隔离后端实现，并在写失败时增加 `EventMeterWriteFailed` 指标。
 
 ## 核心职责
 
@@ -88,9 +84,7 @@ Go 生产主链提供对照证据：`pkg/domain/domain.go` 创建并安装 Meter
 
 ## 与 Go 版本的对应关系
 
-主要行为直接对应 `pkg/dxf/framework/metering/metering.go`：相同的 10 秒写超时、`dxf` category、10 次重试上限、5 秒重试间隔和 1 分钟默认 flush；相同的 task ID 复用、延迟注销、失败仍推进快照、原时间戳重试、周期对齐、取消后最终 flush 与关闭行为。
-
-Rust 为 Go 的 `context.Context` 提供同步 `Context`，为 `atomic.Pointer[Meter]` 提供 `OnceLock<RwLock<Option<Arc<Meter>>>>`，为 `map[string]any` 提供受限的 `MeterItem/MeterValue`。Go 的两个 goroutine 在 Rust 中实现为调用线程执行 flush、另建一个 retry 线程。Go 的 `retryData` 独立锁在 Rust 中合并进 `MeterState` 单锁。
+Go 的两个 goroutine 在 Rust 中实现为调用线程执行 flush、另建一个 retry 线程。
 
 存在明确差异与未迁移项：Go `NewMeter` 直接构造对象存储 provider 和 PingCAP metering SDK writer，Rust 仅声明 `WriterFactory`/`MeteringWriter`，没有生产适配器；Go 通过 `pkg/domain/domain.go` 完成安装和启动，Rust 没有对应生产调用；Go 的 failpoint `forceTSAtMinuteBoundary`、`meteringFinalFlush` 未出现在 Rust 实现中；Go 有 logger 字段与更丰富结构化日志，Rust 使用全局 `log` 宏；Rust `Close` 不需要处理空 writer，因为其类型不是 `Option`。
 
@@ -104,14 +98,3 @@ Rust 为 Go 的 `context.Context` 提供同步 `Context`，为 `atomic.Pointer[M
 - 修改 recorder 注销逻辑时，必须保留“快照存在且等于当前值才删除”和“重新注册清除注销标志”，否则可能漏报并发产生的最后增量。
 - writer 实现必须尊重 `Context::deadline/is_cancelled`，并明确 `close` 是否幂等、是否允许与写入并发；否则 10 秒超时与安全退出只停留在接口约定。
 - 相关测试必须继续放在独立文件：核心状态机测试在 `pkg/dxf/framework/metering/metering_test.rs`，迁移对照在 `migration_aster_unit_test.rs`，不要把测试内嵌回生产文件。兼容风险主要是 Go 载荷字段/时间戳与 Classic no-op 语义；性能风险主要是全局状态锁竞争、周期内 recorder 数量以及重试积压。
-
-## 验证依据
-
-- RustCodeGraph 状态：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录列出 `metering.rs`、`data.rs`、`recorder.rs`、Rust/Go 测试与 Go 对照文件。
-- RustCodeGraph 源码节点：`pkg/dxf/framework/metering/metering.rs`（634 行、47 个符号）；核对了 `Context`、全局 API、`MeterState`、`Meter`、flush/retry/close 全流程。
-- RustCodeGraph/文本调用证据：`pkg/dxf/framework/taskexecutor/execute/interface.rs::FrameworkInfo::new -> metering::RegisterRecorder`；目标 Rust 生产树未发现其他完整生命周期调用。
-- crate 与模块证据：`pkg/dxf/framework/metering/Cargo.toml`、`pkg/dxf/framework/metering/lib.rs`；DXF 包定位参考 `pkg/dxf/framework/doc.go`。
-- 相邻实现证据：`pkg/dxf/framework/metering/data.rs` 的增量与载荷模型，`pkg/dxf/framework/metering/recorder.rs` 的原子累计与快照。
-- Go 对照与生产入口：`pkg/dxf/framework/metering/metering.go`、`pkg/domain/domain.go`、`pkg/dxf/framework/taskexecutor/execute/interface.go`、`pkg/dxf/framework/taskexecutor/task_executor.go`、`pkg/dxf/framework/handle/handle.go`。
-- 测试证据：`pkg/dxf/framework/metering/metering_test.rs`、`migration_aster_unit_test.rs`，并以 `metering_test.go` 的九组测试核对测试意图。测试明确覆盖配置禁用/覆盖、Classic no-op、注销竞态、增量与空 flush、失败快照、部分重试成功与上限丢弃、取消关闭、本地文件读回。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终仅执行固定十一章节的结构检查并人工复核上述事实边界。

@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo 包 `astersql-util-topsql-reporter-mock`。包入口 [lib.rs](lib.rs) 将构建期生成的 `tipb` protobuf/tonic 类型和 `server` 模块公开；[Cargo.toml](Cargo.toml) 声明 `tonic`、`tokio`、`tokio-stream`、`prost` 等依赖，并用 `package.metadata.porting.go-package` 指向 Go 包 `pkg/util/topsql/reporter/mock`。
-
-在完整链路中，reporter 或 single-target data sink 作为 gRPC 客户端，把 TopSQL 记录、TopRU 记录及 SQL/Plan 元数据发往 `StartMockAgentServer` 返回的回环地址；测试再通过 `mockAgentServer` 的查询接口观察接收结果。上层使用证据包括 [single_target_3_aster_unit_test.rs](../single_target_3_aster_unit_test.rs) 的地址切换测试和 [topsql_test.rs](../../topsql_test.rs) 的 reporter 端到端测试。
-
-本文件没有条件编译项；测试装配由 [lib.rs](lib.rs) 中的 `#[cfg(test)]` 完成。同目录不存在 `doc.go`，包级行为以源文件、Cargo 声明和测试为准。
+刻意提供“可制造慢下游”的测试能力：`HangFromNow` 修改时间窗，四个 RPC 在每次读取下一条流消息之前都执行 `State::mayHang`。
 
 ## 核心职责
 
@@ -101,13 +97,6 @@ RustCodeGraph 已索引本文件并列出 27 个符号；对 `StartMockAgentServ
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 [server.go](server.go)。主要一致点如下：
-
-- 都绑定 `127.0.0.1:0`，注册 `TopSQLAgent`，后台启动 gRPC 服务，并向测试暴露实际地址。
-- 四个 RPC 都在每次接收前执行 Hang 检查；记录按完整流形成批次，SQL/Plan meta 按 digest 覆盖写入。
-- `WaitCollectCnt*` 和 `Get*ByDigestBlocking` 都采用 1 ms 轮询与有界超时；`GetLatest*` 都清空全部已存批次但只返回最后一批。
-- SQL meta 返回完整消息；Plan meta 只保存规范化文本；`GetTotalSQLMetas` 返回当前 map 内容的快照。
-
 实现层差异如下：
 
 - Go 将所有业务数据放在嵌入式单一 `sync.Mutex` 下，Hang 时间使用两个 `atomic.Pointer[time.Time]`；Rust 为 Hang 使用 `RwLock`，为四类数据使用独立 `Mutex`。
@@ -124,13 +113,3 @@ RustCodeGraph 已索引本文件并列出 27 个符号；对 `StartMockAgentServ
 - 修改 Hang 时，应维持“不跨 await 持同步锁”的不变量，并在多线程 Tokio 测试中验证窗口边界、并发流和停止期间行为。
 - 若需要可靠确认停止完成，应在 `mockAgentServer` 中保存后台 `JoinHandle` 并设计异步 stop/join API；这会改变现有同步 `Stop` 接口和 Go 对齐关系，需要同步全部调用者。
 - 性能风险主要来自每条 meta 都获取一次标准互斥锁、同步等待接口的 1 ms 轮询，以及无界记录/meta 容器。该服务定位为测试 mock；若扩大到压力测试，应先定义容量、背压和清理策略。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/topsql/reporter/mock` 确认 `server.rs`、Go 对照、crate 入口和独立测试均已索引。
-- RustCodeGraph `node --file pkg/util/topsql/reporter/mock/server.rs --offset 1 --limit 500`：读取了目标文件全部 359 行及其 27 个符号。
-- RustCodeGraph 精确 `query`：核对了 `StartMockAgentServer`、`GetLatestRecords`、`HangFromNow`、`report_top_sql_records` 的 Rust/Go 候选和签名；精确 `callers`/`callees` 未返回 Rust 图边，此限制已在“依赖与调用关系”中披露。
-- 已读实现/配置：[Cargo.toml](Cargo.toml)、[lib.rs](lib.rs)、[server.go](server.go)。`Cargo.toml` 不在 RustCodeGraph 的 Rust/Go 索引范围内，按计划直接读取。
-- 已读 Rust 测试：[migration_aster_unit_test.rs](migration_aster_unit_test.rs)、[single_target_3_aster_unit_test.rs](../single_target_3_aster_unit_test.rs)、[topsql_test.rs](../../topsql_test.rs)。它们分别证明四流收集与 Hang、单目标地址切换、完整 reporter 发送链。
-- 已读 Go 测试：[single_target_test.go](../single_target_test.go)；并通过 `rg` 确认 [topsql_test.go](../../topsql_test.go) 对启动、地址、等待、批次和 digest 查询接口的使用。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试。最终结构以任务规定的 11 个固定二级标题命令验证。

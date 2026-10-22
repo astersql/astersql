@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`caching_sha2.rs`](caching_sha2.rs) 属于 `astersql-parser-auth` crate；[`Cargo.toml`](Cargo.toml) 以同目录的 `lib.rs` 为 crate 根，并依赖 `rand`、`sha2` 以及认证插件常量所在的 `astersql-parser-mysql`。`lib.rs` 将它公开为 `caching_sha2`，同时在兼容迁移代码的 `parser::auth::caching_sha2` 路径下再导出。
-
-该文件实现 `caching_sha2_password` 与 `tidb_sm3_password` 共用的“存储认证字符串”生成和校验，不负责 MySQL 握手、权限查找或会话认证。当前可确认的生产接线是 [`pkg/executor/utils.rs`](../../executor/utils.rs) 中 `encodedPassword`：创建或修改用户且输入为明文时，两个内置插件都会调用 `NewHashPassword`。仓库内对 `CheckHashingPassword` 的 Rust 引用目前只出现在独立测试中，因而不能据此声称 Rust 运行时认证校验已经接入。
+用 `Sha256Hash` 或相邻 [`tidb_sm3.rs`](tidb_sm3.rs) 的 `Sm3Hash` 提供固定 32 字节摘要，再由 `hashCrypt` 执行同一套 SHA-crypt 混合流程。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@ RustCodeGraph 的跨文件 callers 查询没有返回结果，但其文件关系
 
 ## 与 Go 版本的对应关系
 
-[`caching_sha2.go`](caching_sha2.go) 是逐步对照基准：常量、crypt-base64 字母表、A/B/DP/DS 构造、轮次混合条件、摘要字节置换、`$A$` 格式以及 SHA-256/SM3 插件分派均保持一致。Rust 使用函数指针 `fn(&[u8]) -> Vec<u8>` 对应 Go 的 `func([]byte) []byte`，并用 `Vec<u8>` 对应 `bytes.Buffer`。
+Rust 使用函数指针 `fn(&[u8]) -> Vec<u8>` 对应 Go 的 `func([]byte) []byte`，并用 `Vec<u8>` 对应 `bytes.Buffer`。
 
-需要注意的语言层映射包括：Rust 用 `wrapping_mul` 模拟 Go `int64` 二补码乘法，再尝试转为 `usize`；转换失败按零轮处理。Go 对过短盐切片同样会 panic。Go 忽略 `rand.Read` 返回的错误，Rust 也没有把随机源错误加入返回类型。Rust 的未知插件行为仍是生成空串或校验为 false。
-
-[`caching_sha2_test.rs`](caching_sha2_test.rs) 对照 [`caching_sha2_test.go`](caching_sha2_test.go)，共享 `foobar` 固定向量，覆盖正确/错误口令、分段错误、摘要类型错误、非法轮数和随机盐往返。[`tidb_sm3_test.rs`](tidb_sm3_test.rs) 与 Go 的 `tidb_sm3_test.go` 复用同一核心路径验证 SM3 分支；综合迁移测试还明确断言未知插件生成空串。
+需要注意的语言层映射包括：Rust 用 `wrapping_mul` 模拟 Go `int64` 二补码乘法，再尝试转为 `usize`；转换失败按零轮处理。Go 忽略 `rand.Read` 返回的错误，Rust 也没有把随机源错误加入返回类型。Rust 的未知插件行为仍是生成空串或校验为 false。
 
 ## 扩展指南
 
@@ -95,12 +91,3 @@ RustCodeGraph 的跨文件 callers 查询没有返回结果，但其文件关系
 修改轮数编码、盐长度或摘要排列时，必须同时评估已存储认证字符串兼容性，并同步 Go 对照和独立测试。错误处理增强（例如拒绝短盐、零轮或过大轮数）应首先在 [`caching_sha2_test.rs`](caching_sha2_test.rs) 添加对应回归用例；SM3 共用解析逻辑，因此还应同步 [`tidb_sm3_test.rs`](tidb_sm3_test.rs)。测试逻辑应继续保留在独立测试文件，不嵌入生产源文件。
 
 性能修改应重点观察口令长度平方级的 DP 缓冲区和每轮 `buf_c` 分配，任何优化都必须用固定 Go 向量证明输出逐字节不变。若要在生产认证校验链接入 `CheckHashingPassword`，应从实际认证服务入口单独完成接线与端到端测试，不能仅凭本模块单元测试推断已经可用。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/parser/auth` 确认目标、Go 对照与独立测试均在索引内；`node --file pkg/parser/auth/caching_sha2.rs` 读取完整 239 行及 6 个符号；`callers/callees` 确认内部调用边，并暴露跨文件 callers 未覆盖的限制。
-- 源码与 crate 边界：[`caching_sha2.rs`](caching_sha2.rs)、[`tidb_sm3.rs`](tidb_sm3.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)。
-- 生产调用证据：[`pkg/executor/utils.rs`](../../executor/utils.rs) 的 `encodedPassword`。
-- Go 对照：[`caching_sha2.go`](caching_sha2.go)、[`caching_sha2_test.go`](caching_sha2_test.go) 和 `tidb_sm3_test.go`。
-- Rust 测试证据：[`caching_sha2_test.rs`](caching_sha2_test.rs)、[`tidb_sm3_test.rs`](tidb_sm3_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务指定的 11 章节结构命令，并人工检查所有行为结论均可回到上述符号、调用点或测试。

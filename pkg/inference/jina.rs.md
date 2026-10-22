@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`jina.rs` 是 `astersql-inference` crate 中的 Jina AI 嵌入服务适配器。模块由 [`pkg/inference/lib.rs`](lib.rs) 公开为 `astersql_inference::jina`；应用启动时，`pkg/domain/domain.rs` 的 `Domain::init_inference_providers` 构造 `JinaEmbedder`，并以提供商名 `jina_ai` 注册到 Domain 持有的 `EmbedFn`。因此 SQL 侧使用 `jina_ai/<model>` 时，上层批处理器最终会通过 `Embedder` trait 进入本文件。
-
-crate 边界由 [`pkg/inference/Cargo.toml`](Cargo.toml) 定义，crate 名为 `astersql-inference`，库入口是 `lib.rs`。本文件直接使用 `reqwest`、`serde_json` 和标准库同步原语；HTTP 生命周期、错误脱敏和响应大小限制由同 crate 的 `base.rs` 统一实现，Base64 向量解码复用 `openai.rs` 的公共内部函数。
+`Embedder` 实现校验输入，合并固定请求字段与调用者选项，发送 JSON POST，并把 Jina 的成功/失败响应转换为统一结果或 `ProviderError`。
 
 ## 核心职责
 
@@ -91,7 +89,7 @@ RustCodeGraph 对 `execute_json_embedding_call` 的调用边明确指回 `jina.r
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/inference/embedding/jina/jina.go`、`protocol.go` 和 `jina_test.go`。Rust 保留了 Go 的关键语义：默认完整端点、空文本短路、空模型错误、拒绝 `return_multivector=true`、固定字段覆盖 options、Bearer 鉴权、401 专用提示、`detail` 错误消息、响应大小限制，以及按 index 解码 Base64 `f32` 向量。
+Rust 保留了 Go 的关键语义：默认完整端点、空文本短路、空模型错误、拒绝 `return_multivector=true`、固定字段覆盖 options、Bearer 鉴权、401 专用提示、`detail` 错误消息、响应大小限制，以及按 index 解码 Base64 `f32` 向量。
 
 结构差异如下：
 
@@ -111,13 +109,3 @@ RustCodeGraph 对 `execute_json_embedding_call` 的调用边明确指回 `jina.r
 - 若生产需要可配置 base URL，接线应落在 `Domain::init_inference_providers` 的 getter 和对应全局变量定义；本文件已支持动态 getter，不应另建缓存。
 
 兼容风险主要是 provider/model 命名、请求 JSON 优先级和错误文本被 SQL 用户依赖；性能风险主要来自额外序列化、响应体大小及共享执行器每次创建 runtime。任何扩展都应同时检查批处理层的等长结果契约、取消语义和 16,383 维上限。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点；目标 `pkg/inference/jina.rs` 共 117 行、13 个索引符号。
-- 读取的 Rust 生产路径：`pkg/inference/jina.rs`、`pkg/inference/lib.rs`、`pkg/inference/embed_fn.rs`、`pkg/inference/base.rs`、`pkg/inference/openai.rs`、`pkg/domain/domain.rs::init_inference_providers`。
-- 读取的 crate 配置：`pkg/inference/Cargo.toml`。
-- 读取的独立 Rust 测试：`pkg/inference/jina_test.rs`。关键用例为 `go_merge_43_jina_provider_posts_base64_and_rejects_multivector`、`go_merge_43_jina_provider_reports_error_detail`、`jina_shared_contract_preserves_limits_validation_and_causes`、`jina_protocol_restores_indices_and_rejects_missing_dense_embeddings`、`jina_endpoints_validate_configuration_and_keep_default_protocol_routes`。
-- 读取的 Go 对照：`pkg/inference/embedding/jina/jina.go`、`protocol.go`、`jina_test.go`；对照覆盖请求、协议、索引校验、鉴权、端点和共享 provider contract。
-- RustCodeGraph 关键边：`Domain::start -> Domain::init_inference_providers -> JinaEmbedder::new`（注册名 `jina_ai`）；`EmbedFn::run_batch -> Embedder` provider 调用；`JinaEmbedder::create_embeddings_with_context -> base::execute_json_embedding_call`；`jina.rs::decode_embeddings -> openai::decode_indexed_base64_embeddings`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证本文恰有 11 个固定二级章节，并人工检查没有把上层批处理能力误写成本文件内部实现。

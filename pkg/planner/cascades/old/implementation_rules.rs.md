@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cascades-old` crate，是旧版 Cascades 优化器从 memo 中的逻辑 `GroupExpr` 生成物理 `Implementation` 候选的规则层。crate 入口 `pkg/planner/cascades/old/lib.rs` 将本模块声明为 `implementation_rules` 并公开再导出；`pkg/planner/cascades/old/optimize.rs` 的 `Optimizer` 持有本文件构造的规则表。
-
-源码入口：[implementation_rules.rs](./implementation_rules.rs)。
-
-它处在“逻辑等价式探索”之后、“递归实现孩子并比较代价”之前。直接调用链是：`Optimizer::NewOptimizer` 调用 `defaultImplementationMap`；`Optimizer::GetImplementationRules` 按逻辑算子的 `Operand` 取规则；`Optimizer::implGroupExpr` 依次调用 `ImplementationRule::Match` 和 `ImplementationRule::OnImplement`；`Optimizer::implGroup` 再依据候选声明的孩子物理属性递归找实现、调用代价接口、附加孩子并缓存最优实现。因而本文件负责候选生成和物理属性传播，不负责 memo 探索、全局最优搜索或最终索引解析。
-
-`pkg/planner/cascades/old/Cargo.toml` 的 `[package.metadata.porting]` 把 crate 对应到 Go 包 `pkg/planner/cascades/old`；直接语义对照文件是同目录 `implementation_rules.go`。
+大多数逻辑算子只有一个实现；`TopN` 同时尝试真实 `PhysicalTopN` 和“孩子提供顺序时退化成 `PhysicalLimit`”；`Join` 依次尝试左建表 HashJoin、右建表 HashJoin、MergeJoin。
 
 ## 核心职责
 
@@ -94,8 +88,6 @@ RustCodeGraph 将 `implementation_rules.rs` 的文件级直接使用者识别为
 
 ## 与 Go 版本的对应关系
 
-Rust `ImplementationRule`、`defaultImplementationMap` 和全部规则类型逐项对应 `pkg/planner/cascades/old/implementation_rules.go`；Operand 覆盖及 TopN/Join 内部候选顺序一致。主要语义也保持一致：属性先匹配、`OnImplement` 设置孩子属性、统计按 `ExpectedCnt` 缩放、临时表成本因子特殊处理、Join build side 分流、Window 下推完整排序。
-
 Rust 为适配所有权、动态类型和拆分后的 crate 边界增加了明确层次：
 
 - Go 直接使用指针、类型断言和 group 字段；Rust 用 `Rc<RefCell<_>>`、`Weak`、`Any::downcast_ref` 以及返回 `PlannerError` 的 helper。
@@ -103,7 +95,6 @@ Rust 为适配所有权、动态类型和拆分后的 crate 边界增加了明�
 - Rust 从 `StatsInfo` 的类型擦除字段恢复 `HistColl`，再调用 cardinality crate；Go 对照版本直接使用 `TblColHists`。这是数据表示差异，不改变 reader/scan 需要统计信息的意图。
 - Go `ImplMergeJoin` 调用可返回多个方案的 `physicalop.GetMergeJoin`；当前 Rust 代码由一个 `GetMergeJoin` 结果自行构造孩子排序属性，最终只产生一个候选。文档只能确认当前 Rust 行为，不能声称已覆盖 Go helper 可能枚举的全部方案；扩展 MergeJoin 时应重点核对这一差异。
 - Go `ImplApply` 调用 planner core 的 `GetHashJoin`；Rust 在本文件提供同名适配构造函数。Rust 当前构造路径应继续与 Go 的 join condition、inner side 和 hint/属性语义对照，不能因 helper 已能返回物理节点就视为完全等价。
-- Rust 独立测试 `implementation_rules_test.rs` 补充了 Go 代码隐含的 `FullOuterJoin -> nil, nil` 语义。相关端到端成本搜索由 `optimize_test.rs::test_impl_group_zero_cost` 间接覆盖；Go 同目录没有独立 `implementation_rules_test.go`，相邻 `optimize_test.go` 是优化主流程的对照测试面。
 
 ## 扩展指南
 
@@ -113,13 +104,3 @@ Rust 为适配所有权、动态类型和拆分后的 crate 边界增加了明�
 - 修改 scan/reader 或成本模型时，在 `PlanAdapter` 相应 trait impl 接入；核对普通表/临时表、唯一/非唯一索引、顺序/逆序、range 数、直方图缺失、系统变量未设置或无法解析、并发度为 unset/非正数等分支。成本改变会影响全局计划选择，应补成本及计划选择测试，而不只测试 `OnImplement` 返回非空。
 - 扩展 Join 时必须逐一列举所有 `JoinType`、inner child 与 build side，保持 `getImplForHashJoin` 的 outer expected-count 缩放；MergeJoin 还需验证左右键顺序、父属性来源和多个候选枚举。`FullOuterJoin` 目前明确无右建表候选，改变时需同步独立回归。
 - 保持 Go 增量对齐原则：先对照 `implementation_rules.go` 的同名规则和相邻 `optimize.go` 调用链，只移植必要语义；Rust 测试继续与生产文件分离。若修改 Rust 源码，应遵循仓库要求保留 PingCAP 许可与顶部 `// Copyright 2026 AsterSQL.`，并在完成后运行 `cargo fmt --all`；本说明任务本身不修改源码也不运行 Cargo。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/cascades/old/implementation_rules.rs`。RustCodeGraph 索引显示 1337 行、127 个符号；已读取全文件，核对 helper、成本适配器、规则表、20 个规则结构体及全部 `Match`/`OnImplement` 分支。
-- 生产入口：`pkg/planner/cascades/old/optimize.rs` 中 `Optimizer::NewOptimizer`（调用 `defaultImplementationMap`）、`GetImplementationRules`、`onPhaseImplementation`、`implGroup`、`implGroupExpr`；其中 `implGroupExpr` 明确执行 `Match -> OnImplement`，`implGroup` 明确递归孩子、计算成本、挂接和缓存。
-- crate 边界：`pkg/planner/cascades/old/lib.rs` 声明并再导出 `implementation_rules`，以 `#[cfg(test)] mod implementation_rules_test` 挂载独立测试；`pkg/planner/cascades/old/Cargo.toml` 声明 crate 名、Go 包映射以及 planner/memo/property/implementation/statistics/session 依赖。
-- Go 对照：`pkg/planner/cascades/old/implementation_rules.go` 全文件，核对接口、默认映射、每个规则的属性匹配、候选顺序、统计/schema 和孩子属性传播；相邻 `optimize.go` 由 RustCodeGraph 查询确认具有对应的 `GetImplementationRules`、`implGroup`、`implGroupExpr` 符号。
-- 测试证据：`pkg/planner/cascades/old/implementation_rules_test.rs::build_right_rejects_full_outer_join` 验证 FullOuterJoin 返回空候选且不报错；`pkg/planner/cascades/old/optimize_test.rs::test_impl_group_zero_cost` 验证实现搜索在成本上限过低时返回 `None`，`test_fill_group_stats` 验证实现阶段所需统计的递归填充。Go 同路径未发现 `implementation_rules_test.go`，相关 Go 主流程测试位于 `optimize_test.go`。
-- RustCodeGraph 查询：运行了 `status`、`files --filter pkg/planner/cascades/old`、对目标文件/Go 对照/入口/测试的 `node --file`、以及 `query defaultImplementationMap`、`query ImplementationRule`、`query implGroup`、`query GetImplementationRules`、`query getImplForHashJoin`、`query build_right_rejects_full_outer_join`。索引状态为 11467 个文件、307296 个节点、1848419 条边；`callers/callees` 对常见方法名未返回可消歧的边，因此调用关系以精确源码符号和显式导入复核，没有据此臆测。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核唯一生产物、源码链接、当前行为与未验证差异。

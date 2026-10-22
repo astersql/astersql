@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-session` crate 的 `runtime` 模块，由 `pkg/session/runtime.rs` 以公开模块 `pub mod system_session` 导出。它不是一个单纯的连接池实现，而是把会话运行时的 `ConcreteSession` 接到多个 DDL 侧抽象上的适配层：底层使用 `astersql_session_syssession::AdvancedSessionPool` 保存线程绑定的系统会话，上层暴露 `astersql_ddl_session::Pool`、job submit、system table、MDL、delete-range 和 durable job worker 所需接口。
-
-直接装配入口是 `pkg/session/runtime/session_factory.rs`：`KeyspaceSessionFactory::prepare` 和 `prepare_normal_schema_runtime` 都通过 `SystemSessionPool::new_with_validator` 创建池，并用 `SystemSessionCallbacks` 将借出的会话注册到 schema coordinator。普通 DDL 服务由 `pkg/session/runtime/normal_ddl_service.rs` 持有同一个池；提交路径 `normal_ddl_submit.rs`、跨 keyspace 运行时和多项 DDL 测试也从这里借用会话。
-
-`pkg/session/Cargo.toml` 将本 crate 声明为 `astersql-session`，并直接依赖 `astersql-session-syssession`、`astersql-ddl-session`、`astersql-ddl-jobsubmit`、`astersql-ddl-systable`、`astersql-infoschema-issyncer`、`astersql-domain-crossks`、`astersql-kv`、`astersql-meta`、`astersql-tablecodec` 等。本文件因此处在 session、DDL、元数据和 KV 四个子系统的边界上。
+以 `ConcreteSystemContext` 把线程绑定的 `ConcreteSession` 实现为 syssession 的 `SessionContext`，统一内部 SQL执行、参数绑定、事务回滚和连接状态重置。
 
 ## 核心职责
 
@@ -116,11 +112,8 @@ RustCodeGraph 对 `acquire_with_cancellation` 确认其构造 `SystemSessionLeas
 ## 与 Go 版本的对应关系
 
 - `pkg/session/syssession/pool.go` 的 `AdvancedSessionPool` 是底层池语义来源：空池即新建、容量只限制 idle cache、Put 时检查 avoid-reuse/pending transaction/reset、Close 后拒绝 Get。Rust `SystemSessionPool::new_with_validator` 固定容量 5，并复用已移植的 syssession crate 实现这些规则。
-- `pkg/ddl/session/session_pool.go` 的 `Pool.Get/Put/Destroy/Close` 是 DDL 包装语义来源：Get 设置 autocommit/restricted SQL 并注册 internal session；Put 要求无有效事务、rollback 后归还并注销；Destroy 丢弃不可复用资源；Close 幂等。Rust 分别由 `ConcreteSystemContext::on_became_owner`、`SystemResources`、lease `Drop` 和 callbacks 落实。
 - Go 使用 session context 和 `infosync.StoreInternalSession/DeleteInternalSession`；Rust 不直接写全局 infosync，而是把 stable ID 与 `transaction_mdl` 交给 `session_factory.rs` 的 coordinator callbacks。这是实现形态差异，但借用期间可见、归还/销毁后删除的生命周期一致。
-- `jobsubmit::Session` 的 pessimistic transaction、BDR role、global ID key lock/allocate 与 Go DDL submit 路径对齐；`meta_key` 使用 `m` prefix、名字和 `s` field 编码构造 metadata key。`read_bdr_role_and_start_ts` 若已有事务则保持 affinity，否则使用可重试的新 metadata transaction。
 - `ConcreteJobExecutionContext` 后半部分不是 Go 单一文件的逐行翻译，而是将 Go DDL worker 分散在 add-index、materialized view、table resource、analyze 和 delete-range 路径中的 session/domain side effects 汇聚到 Rust trait。源码注释明确标出的 Go 对照包括 `addIndexTxnWorker.BackfillData/fetchRowColVals` 和 `deriveMaterializedScheduleNextUnixSecondsForDDL`。
-- 已确认的 Rust 对齐测试是 `pkg/session/tests/system_session.rs`：覆盖归还回滚、metadata/global ID 事务、容量/取消/关闭、jobsubmit 与 systable 共池、callbacks/不可复用错误和 MDL SQL barrier。Go 基准测试包括 `pkg/session/syssession/pool_test.go` 与 `pkg/ddl/session/session_pool_test.go`。
 
 ## 扩展指南
 
@@ -132,14 +125,3 @@ RustCodeGraph 对 `acquire_with_cancellation` 确认其构造 `SystemSessionLeas
 - 新增 pool 共享缓存必须明确 owner epoch 是否使其失效、由谁关闭、是否允许跨 session 复用，并放入 `MViewBuildContexts` 或独立受控资源，而不是静态可变状态。
 - 测试应放在独立文件。池/事务/回调行为优先扩展 `pkg/session/tests/system_session.rs`；普通 DDL 作业扩展同目录 `normal_ddl_*_test.rs`、`lifecycle_test.rs` 或 `durable_scheduler_test.rs`；回填还应同步 `pkg/ddl/tests/partition/reorg_partition_test.rs` 等最接近行为的测试。不要把测试内嵌进本生产文件；现有末尾 `#[cfg(test)]` 仅通过 `#[path]` 引用独立测试文件。
 - 兼容风险主要是 Go 池生命周期、job retry 分类和 DDL transaction ownership；正确性风险集中在脏事务复用、MDL 注册泄漏、唯一索引冲突与物化视图状态恢复；性能风险集中在 pool lock 范围、每行编码/表达式求值、批次内存和不必要的新 session/线程。
-
-## 验证依据
-
-- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别通过 `git diff ad0a6f4..2c944fb -- pkg/session/runtime/system_session.rs` 与 `git show 2c944fb:pkg/session/runtime/system_session.rs` 核对增量和源码 blob。本文新增行为以目标提交为准，不纳入工作区或后续 Rust 修改。
-- 增量复核：冻结 `pkg/ddl/table_mode.rs` 的失败分支读取 must-rollback 标志；`persistent_create_materialized_view.rs`、`persistent_create_materialized_view_log.rs`、`persistent_masking_actions.rs` 设置标志。context 每次初始化为 false，未运行 worker 回滚测试。
-- Rust 源与装配文件：`pkg/session/runtime/system_session.rs`、`pkg/session/runtime.rs`、`pkg/session/lib.rs`、`pkg/session/runtime/session_factory.rs`、`pkg/session/runtime/normal_ddl_service.rs`、`pkg/session/runtime/normal_ddl_submit.rs`。
-- crate 边界：`pkg/session/Cargo.toml` 的 package、feature、porting metadata、直接依赖与 dev-dependencies。
-- Rust 测试：`pkg/session/tests/system_session.rs`；另通过引用搜索确认 `runtime/lifecycle_test.rs`、`runtime/durable_scheduler_test.rs`、`runtime/normal_ddl_test.rs`、物化视图专项测试、`pkg/ddl/tests/partition/reorg_partition_test.rs` 等覆盖实际消费者和后半部作业逻辑。
-- Go 对照：`pkg/session/syssession/pool.go`、`pkg/session/syssession/pool_test.go`、`pkg/ddl/session/session_pool.go`、`pkg/ddl/session/session_pool_test.go`，以及 `pkg/domain/domain.go` 中 system session pool 的创建/关闭/访问位置。
-- 接线依据为冻结提交的 Cargo manifest、lib/runtime 模块声明及直接调用点；目标 session、variable、vardef 目录没有 doc.go。RustCodeGraph status 当前覆盖 Rust，但图不是冻结提交视图，故本次增量不以图推断生产调用链。
-- Ready 文档等价验证：11 个二级章节、Markdown 本地链接和 git diff --check；tidb-verify-profile 技能缺失。仅同步说明，按计划未运行 Cargo、make lint 或代码测试，测试引用仅作为静态证据。

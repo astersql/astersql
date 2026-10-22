@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-expression` crate；`pkg/expression/Cargo.toml` 将 crate 根设为 `lib.rs`，而 `pkg/expression/lib.rs` 通过 `#[path = "builtin_time_vec_generated.rs"] mod builtin_time_vec_generated_kernel;` 将它作为私有模块编入。文件头说明它对应 Go 生成文件 `pkg/expression/builtin_time_vec_generated.go`，集中承载 `ADDTIME`、`SUBTIME` 和 `TIMEDIFF` 的列式求值移植。
-
-目前它是一个自包含的 Rust 移植内核，而不是表达式主框架的完整接线：它自行定义 `Chunk`、`Column`、`Expression`、`BuiltinBase` 和各签名结构体。仓库搜索未发现生产 Rust 模块直接导入或构造这些签名；直接 Rust 调用位于独立测试 `builtin_time_vec_generated_28_aster_unit_test.rs` 和 `builtin_time_vec_generated_test.rs`。相对地，Go 的 `builtin_time.go` 会在函数类构建阶段按参数类型选择同名签名，`builtin_time_vec_generated.go` 再提供实际向量化方法。`distsql_builtin.rs` 中的同名构造器只是 Go 接线配方字符串，不是对本模块的 Rust 调用。
+文件头说明它对应 Go 生成文件 `pkg/expression/builtin_time_vec_generated.go`，集中承载 `ADDTIME`、`SUBTIME` 和 `TIMEDIFF` 的列式求值移植。
 
 ## 核心职责
 
@@ -76,11 +74,9 @@ Rust 实现每次调用拥有输入借用和新输出向量，没有 Go 版本 `
 
 ## 与 Go 版本的对应关系
 
-签名集合和入口名与 `builtin_time_vec_generated.go` 一一对应，核心语义也保留：整列求值、NULL 合并、零时间处理、字符串时长判别、date 转 datetime、TIMEDIFF 同类相减、恒 NULL 签名，以及所有签名返回 `vectorized() == true`。
-
 实现形态存在明确差异：Go 使用真实 `chunk.Chunk`/`chunk.Column`、`baseBuiltinFunc` 和 buffer allocator，并由函数类及 protobuf 接线进入生产表达式系统；Rust 文件使用本地简化门面、`Vec<Option<_>>` 和 `LiteralExpression`，目前没有生产构造者。Go 以 `terror.ErrorEqual` 区分可警告的截断错误；Rust 加减路径用本地分支选择警告或传播。Go 的列长度由 Chunk API 和索引循环隐含保证，Rust 额外用 `validate_column_rows` 显式拒绝不匹配列。
 
-测试对应关系也分层存在：Go 的 `builtin_time_vec_generated_test.go` 是生成 case/benchmark；Rust 同名测试文件大量保存这些 case 的迁移草稿，但两个同名 `#[test]` 会调用 `run_generated_time_vector_parity_suite()` 执行真实内核回归。真正精炼的行为断言在 `builtin_time_vec_generated_28_aster_unit_test.rs`，覆盖 NULL/零值、解析警告、binary 短路、字符串分流、恒 NULL、TIMEDIFF 同类约束及全部 vectorized 标志。
+测试对应关系也分层存在：Go 的 `builtin_time_vec_generated_test.go` 是生成 case/benchmark；Rust 同名测试文件大量保存这些 case 的迁移草稿，但两个同名 `#[test]` 会调用 `run_generated_time_vector_parity_suite()` 执行真实内核回归。
 
 ## 扩展指南
 
@@ -91,11 +87,3 @@ Rust 实现每次调用拥有输入借用和新输出向量，没有 Go 版本 `
 测试逻辑必须保持在独立文件中。行为回归应扩展 `builtin_time_vec_generated_28_aster_unit_test.rs`；生成 case/Go 同名入口或短列契约变化应同步 `builtin_time_vec_generated_test.rs`，并核对 Go 测试 `builtin_time_vec_generated_test.go`。若未来接入真实 Rust 表达式主链，还需用生产 `Expression`/Chunk 类型替代本地门面，并新增从函数构建、签名选择到列式执行的独立集成测试；仅让本文件单测通过不足以证明主链接线完成。
 
 性能风险主要来自每次调用分配输出和参数列、每行字符串正则/解析以及共享警告锁；兼容风险集中在 MySQL 字符串分类、FSP、零时间、错误降级和 TIMEDIFF 范围。任何优化都应保留列长校验和逐行 NULL 语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示目标在索引中；`files --filter pkg/expression/builtin_time_vec_generated.rs` 报告该文件含 113 个符号；按文件分段读取覆盖 1–1375 行；`query eval_datetime_duration --kind function` 定位到第 466 行；`callees eval_datetime_duration` 验证其对 `NumRows`、列访问器、参数求值助手和 `time_op` 的调用。对宏生成签名执行查询/调用者检查时未得到 Rust 展开调用边，因此使用下列直接源码和测试补证。
-- 源与 crate：`pkg/expression/builtin_time_vec_generated.rs`、`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`。
-- Rust 入口/测试：`pkg/expression/builtin_time_vec_generated_28_aster_unit_test.rs`、`pkg/expression/builtin_time_vec_generated_test.rs`；仓库级搜索还核对了 `builtin_threadsafe_generated.rs` 和 `distsql_builtin.rs` 中同名元数据的性质。
-- Go 对照：`pkg/expression/builtin_time_vec_generated.go`、`pkg/expression/builtin_time.go`、`pkg/expression/builtin_time_vec_generated_test.go`、`pkg/expression/generator/time_vec.go`。
-- 人工复核结论：该文件存在是为了移植三类时间内建函数的生成式列执行矩阵；运行方式是“具体签名薄入口 → 类型组合助手 → 参数整列求值/长度校验 → 逐行运算 → typed Column”；安全扩展点及必须同步的独立测试如上一节所列。当前接线限制已明确标记，未将 Go 生产链或生成配方误认作 Rust 生产调用。

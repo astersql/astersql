@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-schemacmp` crate 的格代数基础层。crate 入口 `pkg/util/schemacmp/lib.rs` 将本模块私有装配后公开再导出其 API；`Cargo.toml` 指定 `lib.rs` 为库入口，并通过 `meta-model`、`parser-types`、`tidb-types` 获得 MySQL 类型常量和字段类型模型。它不直接处理 SQL 请求，而是为 `type.rs` 的列类型格和 `table.rs` 的表结构格提供统一的 `Compare`、`Join`、动态装箱和组合容器。
-
-直接应用链为：`table.rs::Encode/EncodeWithOptions` 将 `TableInfo` 编码成由本文件元素组成的 `Tuple`，`Table::Compare` 和 `Table::Join` 再委托给根格元素；`type.rs::Type` 则用 `FieldTp`、`Int`、`Bool`、`Byte`、`Maybe`、`Singleton`、`StringList` 组成九维字段类型元组。因而本文件定义的是 schema 兼容性判断和合并的代数语义，而不是表模型本身。
+提供组合格：逐维组合的 `Tuple`、加入空值底元素的 `maybe`、按前缀包含比较的 `StringList`，以及把业务自定义字符串键 map 接入格运算的 `latticeMap`。
 
 ## 核心职责
 
@@ -70,9 +68,7 @@ RustCodeGraph 对 `lattice.rs` 的文件节点记录了同 crate 使用关系；
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项移植 `pkg/util/schemacmp/lattice.go`：`Lattice`、所有错误常量、Singleton/EqualitySingleton、BitSet、数值格、FieldTp、Tuple、Maybe、StringList、LatticeMap 及 Map 的比较和 join 分支保持同构。`pkg/util/schemacmp/lattice_test.go::TestCompatibilities` 与 Rust `lattice_test.rs::test_compatibilities` 验证同一案例矩阵，包括反向比较取反、双向 join 相等，以及 join 不小于任一输入。
-
-语言适配差异主要是：Go 用 interface/nil 和类型断言，Rust 用 `Box<dyn Lattice>`、`Option` 与 `Any` 向下转型；Go 的 `any` 由 `AnyValue` 模拟；Go map 的动态实现由对象安全的 `LatticeMap` trait 封装。Rust 的 `EqualitySingleton` 是泛型具体类型包装，仍要求 `Clone + PartialEq` 以支持装箱复制与错误参数，而实际相等判断调用 `Equality::Equals`。错误显示文本手工覆盖已知模板，并非通用 Go `fmt` 模板解释器。当前 `fieldTp` 的整数/BLOB 顺序与 Go 一致，且两边都明确只支持这些特殊可比族。
+语言适配差异主要是：Go 用 interface/nil 和类型断言，Rust 用 `Box<dyn Lattice>`、`Option` 与 `Any` 向下转型；Go 的 `any` 由 `AnyValue` 模拟；Go map 的动态实现由对象安全的 `LatticeMap` trait 封装。错误显示文本手工覆盖已知模板，并非通用 Go `fmt` 模板解释器。当前 `fieldTp` 的整数/BLOB 顺序与 Go 一致，且两边都明确只支持这些特殊可比族。
 
 ## 扩展指南
 
@@ -81,11 +77,3 @@ Rust 文件逐项移植 `pkg/util/schemacmp/lattice.go`：`Lattice`、所有错�
 - 新增组合维度时，优先复用 `Tuple`；必须保持两侧维数和固定下标一致，并在上层编码、解码和错误定位中同步更新。若维度可能缺失，应明确选择 `Maybe`，不要用裸 `AnyValue::nil` 参与格运算。
 - 新增 map 实现时，重点定义 `CompareWithNil`、`JoinWithNil`、`ShouldDeleteIncompatibleJoin` 三者的一致语义，并保证 `New` 返回相同具体类型、`Insert/Get/ForEach` 的值类型与 `Unwrap` 契约相符。列/索引语义不同，不能机械复用删除策略。
 - 测试逻辑应继续放在同目录独立测试文件 `pkg/util/schemacmp/lattice_test.rs`，不要嵌入生产源文件；若修改 Go 对照语义，还应同步 `lattice_test.go`。兼容风险集中在错误类别/上下文、动态解包类型及空值表示；性能风险集中在 trait-object 克隆、每次 tuple/map join 的新分配和 map 键字符串复制。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/util/schemacmp` 确认目标、Go 对照及测试均已索引；按文件节点读取了 `lattice.rs` 全部 932 行、`lattice_test.rs` 全部 482 行、`type.rs` 全部 318 行和 `table.rs` 全部 599 行。
-- 主要符号查询：`query FieldTp --kind function` 定位 Rust `lattice.rs:608` 与 Go `lattice.go:328`；`query CombineCompareResult --kind function` 定位 Rust `lattice.rs:687` 与 Go `lattice.go:539`；`query Lattice --kind trait` 定位 Rust trait 与 Go interface。精确 callers/callees 未为这些动态 trait 路径产生静态边，故调用点用已索引相邻源码交叉核验。
-- crate 与入口：`pkg/util/schemacmp/Cargo.toml`、`pkg/util/schemacmp/lib.rs`；直接 Rust 调用证据：`pkg/util/schemacmp/type.rs`、`pkg/util/schemacmp/table.rs`。
-- Go 对照：`pkg/util/schemacmp/lattice.go` 全部 814 行；测试证据：`pkg/util/schemacmp/lattice_test.rs` 与 `pkg/util/schemacmp/lattice_test.go::TestCompatibilities`。测试覆盖 Bool、两类 singleton、BitSet、数值格、Tuple、Maybe、StringList、Map，以及整数/BLOB `FieldTp` 的顺序和错误分支。
-- 本任务仅新增说明文档，按计划不运行 Cargo；交付前使用任务指定命令确认文件存在且恰含 11 个固定二级标题，并人工核对未把动态调用图缺失写成已验证的静态边。

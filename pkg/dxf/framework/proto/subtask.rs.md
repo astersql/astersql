@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-dxf-framework-proto`。`pkg/dxf/framework/proto/lib.rs` 以 `pub mod subtask` 声明模块，并通过 `pub use subtask::*` 将其公开协议类型提升到 crate 根；`pkg/dxf/framework/proto/Cargo.toml` 则把 Go 对照包登记为 `pkg/dxf/framework/proto`。文件直接依赖相邻模块的 `Step`、`TaskType`，以及标准库原子整数、时间和解引用 trait；`bytesize::KIB` 仅用于资源摘要格式化。
-
-在 DXF 主链中，它同时定义两组共享模型：一组是调度器、存储层和执行器交换的子任务状态/载荷；另一组是执行器用来描述和无锁核算 CPU、内存配额的 `Allocatable` 与 `StepResource`。包级契约 `pkg/dxf/framework/doc.go` 说明，一个 task 的 step 顺序执行、每个 step 的多个 subtask 可跨节点并行，而同一任务的 subtask 不会在同一节点并发运行；本文件把这套抽象落为协议数据，但不负责持久化、调度或执行。
+定义六个子任务状态常量及字符串适配，保持数据库/Go 线值稳定。
 
 ## 核心职责
 
@@ -74,8 +72,6 @@ RustCodeGraph 的关键边包括：
 
 ## 与 Go 版本的对应关系
 
-权威对照为 `pkg/dxf/framework/proto/subtask.go`，状态常量、字段集合、字符串输出、完成态集合、CAS 分配算法和每核内存算法均逐项对齐。独立测试 `subtask_test.go` 与 `subtask_test.rs` 都覆盖六状态终态判断、容量边界及并发分配归零；Rust 测试另外锁定整数回绕和 `docker/go-units.BytesSize` 的显示细节。
-
 已确认的语言差异与迁移边界如下：
 
 - Go `SubtaskState` 是独立的 `string` 类型，Rust 是 `&'static str` 别名并用扩展 trait 模拟 `String`；Rust 的类型隔离更弱且不能自然承载运行时拥有的字符串。
@@ -94,13 +90,3 @@ RustCodeGraph 的关键边包括：
 资源扩展应优先接入 `Allocatable::{Alloc,Free}` 和 `StepResource`，并保持 Go 的边界语义，或明确进行跨语言一致的破坏性修正。若要增加负数/溢出保护、RAII permit 或弱化内存序，必须先补并发、异常退出和边界测试，并评估所有 `ResourceModified` 消费者。测试逻辑继续放在 `pkg/dxf/framework/proto/subtask_test.rs`，不要内嵌到生产文件；Go 对应测试为 `subtask_test.go`。
 
 兼容性风险集中在状态线值、日志字符串和时间哨兵；正确性风险集中在新增终态遗漏、meta 只读/回写约定、整数回绕及资源泄漏；性能风险集中在 `SeqCst` 热点竞争和大 meta 被误放入基础视图。当前实现的 CAS 自旋适合短临界操作，但高争用下应以基准和真实调用证据再决定优化。
-
-## 验证依据
-
-- 包级与 crate 边界：`pkg/dxf/framework/doc.go`、`pkg/dxf/framework/proto/Cargo.toml`、`pkg/dxf/framework/proto/lib.rs`。
-- RustCodeGraph 索引：项目状态显示 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/dxf/framework/proto` 覆盖目标、Go 对照与独立测试。
-- RustCodeGraph 源码/符号：完整读取 `subtask.rs` 326 行；查询 `Subtask`、`SubtaskBase`、`NewSubtask`、`NewAllocatable`、`Alloc`、`Free`、`StepResource`、`MemoryPerCore`、`IsDone` 及其图中调用/构造轨迹。
-- 生产使用证据：`pkg/dxf/importinto/task_executor.rs` 的多个 `ResourceModified`、`pkg/session/runtime/import_file.rs::execute_import_file`、`pkg/session/runtime/modify_column_dist_backfill.rs::subtask`。
-- Go 对照：`pkg/dxf/framework/proto/subtask.go`；Go 独立测试：`pkg/dxf/framework/proto/subtask_test.go`。
-- Rust 独立测试：`pkg/dxf/framework/proto/subtask_test.rs`，覆盖六状态判断、容量上限、并发 CAS、整数回绕和内存格式；`pkg/dxf/framework/proto/lib.rs` 通过 `#[path = "subtask_test.rs"]` 在测试配置下装配它。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付检查仅执行指定的 11 章节结构命令，并人工复核文档能回答文件存在原因、运行流程和安全扩展入口。

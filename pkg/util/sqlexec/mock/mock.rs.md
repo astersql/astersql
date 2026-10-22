@@ -2,15 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-util-sqlexec-mock`，crate 根在
-`pkg/util/sqlexec/mock/lib.rs`。`lib.rs` 以私有模块 `mock` 装载本文件，再通过
-`pub use mock::*` 将其中的公开项导出；工作区门面随后在 `pkg/lib.rs` 的
-`util::sqlexec::mock` 下再次导出该 crate。
-
-它位于受限 SQL 执行接口与测试替身之间：父 crate
-`pkg/util/sqlexec/restricted_sql_executor.rs` 定义 `RestrictedSQLExecutor`，相邻的
-`restricted_sql_executor_mock.rs` 实现该 trait 的严格 mock，而本文件只提供识别该
-mock 的上下文键 `RestrictedSQLExecutorKey`。它不解析或执行 SQL，也不保存期望队列。
+`restricted_sql_executor_mock.rs` 实现该 trait 的严格 mock，而本文件只提供识别该。
 
 ## 核心职责
 
@@ -109,23 +101,11 @@ Rust context 容器，需要由容器定义值的所有权、并发和清理规�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件 `pkg/util/sqlexec/mock/mock.go` 同样只定义空结构体
-`RestrictedSQLExecutorKey`，并以值接收者的 `String() string` 返回完全相同的固定
-文本。Rust 版本的 unit struct 对应 Go 的空结构体；`&self` 不改变其值语义，而
+Rust 版本的 unit struct 对应 Go 的空结构体；`&self` 不改变其值语义，而
 `&'static str` 避免了为固定文本创建拥有所有权的 `String`。
 
 Rust 额外派生了比较、哈希、复制、调试和默认构造 trait，并额外实现 `Display`，以
-补足 Rust 通用格式化能力。迁移测试
-`pkg/util/sqlexec/mock/migration_aster_unit_test.rs::restricted_sql_executor_key_has_the_go_context_identity`
-同时断言 `String()` 与 `to_string()` 的结果。
-
-Go 的真实使用证据为：
-
-- `pkg/statistics/handle/autoanalyze/autoanalyze_test.go::WrapAsSCtx` 和
-  `pkg/statistics/handle/lockstats/unlock_stats_test.go::wrapAsSCtx` 用此键向 session
-  context 写入 mock。
-- `pkg/statistics/handle/util/util.go::ExecRowsWithCtx` 仅在 `intest.InTest` 时读取该键，
-  命中后调用 mock 的 `ExecRestrictedSQL`，否则调用 session 的真实受限执行器。
+补足 Rust 通用格式化能力。
 
 Rust 当前不存在上述 session context 读写实现的源码调用点，因此这里只完成了键
 身份及格式化语义的移植，生产接线状态与 Go 不等价。
@@ -148,26 +128,3 @@ Rust 当前不存在上述 session context 读写实现的源码调用点，因�
 兼容风险集中在跨语言键名和上下文查找失败；性能风险很低，因为当前路径只有零大小
 值和静态字符串。未来上下文接线的性能取决于容器查找与 mock 存储方式，不由本文件
 决定。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 7,032 个 Rust 文件；`files --filter
-  pkg/util/sqlexec/mock` 确认本 crate 的 Rust/Go 文件集合；`node --file
-  pkg/util/sqlexec/mock/mock.rs --offset 1 --limit 240` 读取全部 39 行；`query
-  RestrictedSQLExecutorKey --json` 定位 Rust/Go 两个定义；对 Rust 限定符执行
-  `callers`、`callees`、`impact --depth 2` 均无符号边输出。
-- Rust 源码：`pkg/util/sqlexec/mock/mock.rs`（目标实现）、
-  `pkg/util/sqlexec/mock/lib.rs`（模块装配、再导出和显式测试模块）、
-  `pkg/util/sqlexec/mock/restricted_sql_executor_mock.rs`（真实 mock 状态与 trait 实现）、
-  `pkg/util/sqlexec/restricted_sql_executor.rs`（被替换接口）。
-- 清单与门面：`pkg/util/sqlexec/mock/Cargo.toml`、`pkg/util/sqlexec/Cargo.toml`、根
-  `Cargo.toml`、`pkg/lib.rs`；它们确认 crate 依赖、工作区注册与公开导出路径。
-- Rust 独立测试：`pkg/util/sqlexec/mock/migration_aster_unit_test.rs`，其中
-  `restricted_sql_executor_key_has_the_go_context_identity` 覆盖固定身份和
-  `Display`；同文件其他测试属于相邻执行器 mock，不是本键的内部行为。
-- Go 对照与调用者：`pkg/util/sqlexec/mock/mock.go`、
-  `pkg/statistics/handle/util/util.go`、
-  `pkg/statistics/handle/autoanalyze/autoanalyze_test.go`、
-  `pkg/statistics/handle/lockstats/unlock_stats_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定十一个二级标题的结构命令验证
-  文档形态，并人工复核所有“当前已支持”陈述均有上述源码或索引证据。

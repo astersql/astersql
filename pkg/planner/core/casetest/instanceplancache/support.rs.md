@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-planner-core-casetest-instanceplancache` crate 的共享测试支撑层。crate 入口 `pkg/planner/core/casetest/instanceplancache/lib.rs` 仅在 `cfg(test)` 下通过 `#[path = "support.rs"] mod support` 挂载它，因此它不进入正常的 planner 运行时，也不实现实例级计划缓存本身。它服务于同目录的 `builtin_func_test.rs`、`concurrency_test.rs`、`concurrency_tpcc_test.rs`、`dml_test.rs`、`main_test.rs` 和 `others_test.rs`，把测试环境、SQL 调用及随机数据生成的重复接线集中起来。
-
-crate 边界由 `pkg/planner/core/casetest/instanceplancache/Cargo.toml` 确定：该 crate 的库入口为 `lib.rs`，`astersql-testkit` 是 dev-dependency；`astersql-domain`、`astersql-parser-auth`、`astersql-planner-core` 和 `astersql-session-sessmgr` 也是测试依赖。本文件直接使用的外部接口来自 `astersql-testkit`。
+这些职责只负责测试编排。
 
 ## 核心职责
 
@@ -80,11 +78,7 @@ SQL 路径保持刻意简单：不需要结果的语句进入 `exec -> TestKit::
 
 ## 与 Go 版本的对应关系
 
-Go 同路径不存在单独的 `support.go`；本文件提取的是散布在多个 `*_test.go` 中的重复模式。`builtin_func_test.go` 展示 `testkit.CreateMockStore(t)`、主 `testkit.NewTestKit(t, store)`、goroutine 内再次 `NewTestKit`、`MustExec`、`MustQuery(...).Check(testkit.Rows(...))` 和 `rand.Intn` 的原始组合；`concurrency_test.go` 同样创建十个共享 store 的 TestKit。Rust 的 `Harness`、`exec/query`、`rows` 和 `rand::intn` 分别承担这些角色。
-
 关键差异是 Rust 测试运行器可并行调度独立 `#[test]`，而 Go 文件没有调用 `t.Parallel()`，包内这些顶层测试默认不并行。因此 Rust 增加 `TEST_LOCK` 来保持 Go 的用例级串行隔离。Rust 随机数实现还用固定种子和原子 CAS 取代 Go 包级 `math/rand`，以便并发调用不会产生 Rust 数据竞争且算法可复核；它只要求范围和工作负载形状对齐，不承诺生成与 Go 完全相同的数列。
-
-`CreateMockStoreAndDomain` 比 Go 用例直接调用的 `CreateMockStore(t)` 显式返回 Domain，但 `Harness::new` 只保留 store 和 TestKit。SQL 的 Must 失败语义与 Go TestKit 的“测试立即失败”意图一致，在 Rust 中具体表现为 panic。
 
 ## 扩展指南
 
@@ -95,13 +89,3 @@ Go 同路径不存在单独的 `support.go`；本文件提取的是散布在多�
 修改随机算法时必须同步核对 `main_test.rs`、`concurrency_test.rs`、`concurrency_tpcc_test.rs`、`dml_test.rs` 和 `builtin_func_test.rs` 的所有上界均为正，并保持 Go 测试的选择范围；不要依赖并发线程获得固定子序列。修改 `Harness` 的 store/session 生命周期或串行策略时，应同步检查上述六个 Rust 测试文件及对应六个 Go `*_test.go`，特别关注全局变量污染、跨会话缓存共享和线程结束后 guard 才释放的不变量。
 
 该仓库要求 Rust 测试逻辑放在独立测试文件中；因此针对 support 行为的新回归检查应放入同目录独立的 `*_test.rs` 并从 `lib.rs` 在 `cfg(test)` 下挂载，不能内嵌到 `support.rs`。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/casetest/instanceplancache/support.rs`，核对了 `rand::STATE/intn`、`Harness`、`TEST_LOCK`、`Harness::{new,session}`、`exec`、`query`、`exec_many` 与 `rows` 的完整实现。
-- crate 与模块边界：`pkg/planner/core/casetest/instanceplancache/Cargo.toml` 和 `lib.rs`，确认 dev-dependency、`cfg(test)` 挂载方式及六个测试模块。
-- Rust 直接调用证据：同目录六个 `*_test.rs` 的 `use super::support` 与调用点；精确搜索显示 `exec_many` 和 `.session()` 当前无调用点。
-- 下游实现：`pkg/testkit/testkit.rs` 的 `TestKit`、`Exec/Query/MustExec/MustQuery`，以及 `pkg/testkit/mockstore.rs` 的 `CreateMockStoreAndDomain`。
-- Go 对照：同目录 `builtin_func_test.go`、`concurrency_test.go`、`concurrency_tpcc_test.go`、`dml_test.go`、`main_test.go`、`others_test.go`；这些文件提供共享 store、多 TestKit、Must SQL、Rows 与 `rand.Intn` 的直接语义证据，并且未发现 `t.Parallel()`。
-- RustCodeGraph：`status` 确认索引包含目标仓库；`query Harness/intn/exec/query/exec_many/rows` 定位到本文件符号。`explore`、文件 `node` 及调用边命令未返回可用内容，因此调用关系由精确源码引用搜索补证，没有据此推断未验证的运行时边。
-- 本任务是纯文档分析，未运行 Cargo 或代码测试；验收使用任务指定的十一章节结构检查，并人工复核文档没有把测试支撑层描述为生产缓存实现。

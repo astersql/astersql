@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-serverstate` crate，是 DDL 子系统感知“集群正常运行/升级中”全局状态的协议与协调存储实现。crate 入口 `pkg/ddl/serverstate/lib.rs` 同时导出本文件和 `mem_syncer.rs`；`pkg/ddl/serverstate/Cargo.toml` 声明其 Go 对照包为 `pkg/ddl/serverstate`，当前唯一常规 Rust 依赖是同级 `astersql-ddl-schemaver`，用于公共 etcd 客户端、会话和可取消上下文。
-
-它不负责执行 DDL job、schema state transition 或 backfill。它提供的状态会被普通 DDL 调度策略读取：`pkg/session/runtime/normal_ddl_service.rs` 的 `UpgradeState::sync` 消费 watch、刷新状态并发布 owner operation，`pkg/ddl/normal_policy.rs` 的 `NormalDdlJobPolicy::runnable` 据升级快照决定暂停或恢复普通 DDL。跨 keyspace 会话创建路径则在 `pkg/session/runtime/session_factory.rs` 用 `EtcdSyncer::with_client` 同步读取状态，并把缓存通过 `JobSubmitServerState` 提供给 job submit。
+用 `EtcdSyncer` 在同一套缓存、重试和解码逻辑之下支持两种后端：`StateStore` 进程内后端用于确定性测试，`astersql_ddl_schemaver::EtcdClient` 后端用于实际协调服务接线。
 
 ## 核心职责
 
@@ -85,13 +83,11 @@ RustCodeGraph 将 `syncer.rs` 标为被 `pkg/ddl/normal_policy.rs`、`pkg/ddl/sc
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ddl/serverstate/syncer.go`，测试是 `pkg/ddl/serverstate/syncer_test.go`。Rust 保留了 Go 的 `Syncer` 六方法契约、状态常量、`StateInfo` JSON 载荷、三次读写重试、一秒单次超时、读失败后 200ms 等待、零值默认态、多值报错，以及“收到 watch 后显式 Get 才刷新本地缓存”的核心语义。
-
-Rust 的 `EtcdSyncer` 比 Go `etcdSyncer` 多一层 `StateBackend`，使相同状态机可对接内存测试存储或 `astersql-ddl-schemaver::EtcdClient`。`with_client` 还支持跨 keyspace 的无 session、无 watch 直接读写；对应 Rust 测试以一个在 `NewSession`/`Watch` 时 panic 的边界客户端证明该路径。
+Rust 保留了 Go 的 `Syncer` 六方法契约、状态常量、`StateInfo` JSON 载荷、三次读写重试、一秒单次超时、读失败后 200ms 等待、零值默认态、多值报错，以及“收到 watch 后显式 Get 才刷新本地缓存”的核心语义。
 
 JSON 方面，Go 直接使用 `encoding/json`；Rust 以 `JsonCursor` 实现任务所需子集，并用独立测试覆盖 Unicode 代理对、大小写字段名、null 和未知字段合法性。扩展协议字段时必须继续与 Go 解码行为对照，不能假定手写解析器天然覆盖 `encoding/json` 的所有边界。
 
-当前差异包括：Go 在初始化、读取和写入路径记录 metrics，并用 DDL logger 记录失败/非法值；Rust 文件没有对应指标或结构化日志。Go 直接持有 `clientv3.Client`、`concurrency.Session` 与 `util.Watcher`；Rust 经 schemaver transport 抽象。Go 写入调用 `util.PutKVToEtcd`，Rust 本地明确使用 30ms 重试间隔。Go 状态缓存是原子指针，Rust 是 `RwLock<Arc<StateInfo>>`。
+当前差异包括：Go 在初始化、读取和写入路径记录 metrics，并用 DDL logger 记录失败/非法值；Rust 文件没有对应指标或结构化日志。Go 直接持有 `clientv3.Client`、`concurrency.Session` 与 `util.Watcher`；Rust 经 schemaver transport 抽象。Go 写入调用 `util.PutKVToEtcd`，Rust 本地明确使用 30ms 重试间隔。
 
 ## 扩展指南
 
@@ -104,12 +100,3 @@ JSON 方面，Go 直接使用 `encoding/json`；Rust 以 `JsonCursor` 实现任�
 修改 watch 时，应保持“事件提示刷新、缓存由 get 更新”的不变量，明确 cloned `WatchChannel` 的竞争消费语义，并验证 rewatch 会终止旧订阅、drop 不取消调用者 context、compact/error 会让上层有机会重订阅。生产接线的回归点包括 `UpgradeState::sync`、`NormalDdlJobPolicy` 和跨 keyspace `session_factory`。
 
 若补齐 Go 已有的 metrics/logger，应通过 crate 依赖正式接线；`Cargo.toml` 中位于 `cfg(any())` 的 logutil/util/metrics 依赖当前永不启用，不能把它们视为现有运行时能力。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引含 11,467 个文件；`node --file pkg/ddl/serverstate/syncer.rs` 分段读取了 1–911 行，核对全部常量、类型、trait、impl、线程和 Drop；`files --filter pkg/ddl/serverstate` 核对模块文件集合；`explore` 给出 `get_global_state`、`update_global_state` 等调用影响以及相关测试。精确 trait `callers/callees` 查询无文本输出，因此未将其当作唯一证据。
-- 源码与 crate：`pkg/ddl/serverstate/syncer.rs`、`pkg/ddl/serverstate/lib.rs`、`pkg/ddl/serverstate/Cargo.toml`。
-- Rust 生产调用：`pkg/session/runtime/normal_ddl_service.rs`（watch/rewatch/get 与 owner 快照）、`pkg/session/runtime/session_factory.rs`（公共客户端和跨 keyspace 直接读取）、`pkg/session/runtime/system_session.rs`（jobsubmit 缓存适配）、`pkg/ddl/normal_policy.rs`（升级期 admission）。
-- 独立 Rust 测试：`pkg/ddl/serverstate/syncer_test.rs` 覆盖内存同步器、watch/缓存不变量、JSON 兼容、无 lease/watch 的跨 keyspace 读取、公共客户端初始化/rewatch/drop。
-- Go 对照：`pkg/ddl/serverstate/syncer.go` 和 `pkg/ddl/serverstate/syncer_test.go`，用于核对接口、重试、缓存刷新和真实单节点 etcd watch 语义。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求目标文件存在，且固定的 11 个二级标题各出现一次；交付前另以该命令的退出码确认。

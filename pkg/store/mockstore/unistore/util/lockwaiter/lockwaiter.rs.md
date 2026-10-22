@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 unistore mock storage 的悲观锁等待队列。它以冲突键的 `keyHash` 为分组单位，让等待锁的事务在“锁释放、死锁通知或等待超时”三种终止条件之间竞争，并把结果编码为 `WaitResult`。crate 入口 `pkg/store/mockstore/unistore/util/lockwaiter/lib.rs` 公开 `lockwaiter` 模块并再导出本文件的 API；`Cargo.toml` 将它定义为 `astersql-store-mockstore-unistore-util-lockwaiter`，直接依赖 `crossbeam-channel` 和相邻的 `unistore_config`。
-
-workspace 根 `Cargo.toml` 以 `facade_store_mockstore_unistore_util_lockwaiter` 引入该 crate，`pkg/lib.rs` 再把它放进兼容 facade。`pkg/store/mockstore/unistore/tikv/Cargo.toml` 仅在 Windows target 依赖该 crate；代码搜索未发现 tikv Rust 生产实现调用 `NewManager`、`NewWaiter`、`WakeUp` 或 `WakeUpForDeadlock`。因此当前可确认的是“crate 已装配并有独立测试”，不能宣称 Rust unistore 请求链已经接入它。完整业务位置可由同路径 Go 实现验证：`tikv/mvcc.go` 在遇到悲观锁冲突时登记等待者，`tikv/server.go` 等待并解释结果，提交/回滚路径负责唤醒，`tikv/deadlock.go` 把死锁结果送回管理器。
+完整业务位置可由同路径 Go 实现验证：`tikv/mvcc.go` 在遇到悲观锁冲突时登记等待者，`tikv/server.go` 等待并解释结果，提交/回滚路径负责唤醒，`tikv/deadlock.go` 把死锁结果送回管理器。
 
 ## 核心职责
 
@@ -69,7 +67,7 @@ Go 的已接线调用链提供功能意图证据：`tikv/mvcc.go::handleCheckPes
 
 ## 与 Go 版本的对应关系
 
-Rust 基本逐项对应 `lockwaiter.go`：`Manager`/`queue`/`Waiter`/`WaitResult` 类型、容量 32 的通知通道、按 `startTS` 选择最老 waiter、先解锁再通知、延迟唤醒仍留队、清理时 drain，以及按事务与键精确死锁唤醒均保持相同意图。Rust 把 Go `Waiter` 上的 `CommitTs`、`wakeupDelayed` 和 timer 状态改为 `Wait` 调用内局部变量与 `recv_timeout`，避免共享可变字段；Go 的指针身份删除对应 Rust 的 `Arc::ptr_eq`。
+Rust 把 Go `Waiter` 上的 `CommitTs`、`wakeupDelayed` 和 timer 状态改为 `Wait` 调用内局部变量与 `recv_timeout`，避免共享可变字段；Go 的指针身份删除对应 Rust 的 `Arc::ptr_eq`。
 
 可观察差异包括：Rust manager 按值返回而非指针；死锁 protobuf 被缩成两个本地结构且缺少 `WaitChain`；Rust 将 channel 断开视为超时；Rust 对负延迟取 0；Rust 普通发送明确使用 `try_send`，对应 Go 的非阻塞 `select/default`；死锁发送在两端都是阻塞式。Rust `WakeUp` 保留但不使用 `txn`，Go 只用它记录日志，因此唤醒选择语义一致但 Rust 少了日志可观测性。Go `Waiter` 维护 `time.Timer`，Rust 每轮用绝对 deadline 计算剩余时间；二者都只在延迟窗口早于原 deadline 时缩短等待。
 
@@ -83,12 +81,3 @@ Rust 基本逐项对应 `lockwaiter.go`：`Manager`/`queue`/`Waiter`/`WaitResult
 - 若改变通知可靠性或 channel 容量，必须同时审查 `WakeUp` 的丢弃策略、`WakeUpForDeadlock` 的阻塞风险和 `CleanUp`/`DrainCh` 竞态；资源释放测试应覆盖未读 payload。
 - 若扩大死锁匹配条件，修改 `WakeUpForDeadlock` 并增加同键多个事务、错误 `WaitForTxn`、无匹配响应的测试。现有契约只按 `Txn + KeyHash` 匹配，不应在没有兼容性评估时悄然改变。
 - Rust 测试继续放在相邻独立 `*_test.rs` 文件，不要内嵌到生产文件；本文件仅保留 `#[path = "lockwaiter_test.rs"] mod lockwaiter_test` 挂接。任何 Rust 生产修改完成后还需按仓库规则执行 `cargo fmt --all`，本次纯文档任务不触发该步骤。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/store/mockstore/unistore/util/lockwaiter` 返回本目录 8 个 Go/Rust 文件；`node --file .../lockwaiter.rs --offset 1 --limit 400` 读取 348 行及 18 个符号；对 `NewWaiter`、`WakeUp`、`Wait`、`WakeUpForDeadlock` 执行 `callers/callees` 未得到跨 crate 调用边。
-- 实现与装配：`pkg/store/mockstore/unistore/util/lockwaiter/lockwaiter.rs`、`lib.rs`、`Cargo.toml`，workspace 根 `Cargo.toml`，`pkg/lib.rs`，以及 `pkg/store/mockstore/unistore/tikv/Cargo.toml`。
-- Rust 独立测试：`lockwaiter_test.rs`、`migration_aster_unit_test.rs`、`main_test.rs`，分别覆盖基础/并发、迁移边界和资源生命周期。
-- Go 对照：`lockwaiter.go`、`lockwaiter_test.go`；运行链证据来自 `pkg/store/mockstore/unistore/tikv/mvcc.go`、`server.go`、`deadlock.go`。
-- 普通搜索证据：Rust 生产代码未发现上述 lockwaiter API 的调用，只有 facade 再导出、Windows 条件依赖和测试调用；因此文档将 Rust 生产接线明确标为尚未验证/当前未发现，而不把 Go 主链冒充 Rust 现状。
-- 本任务只创建说明文档，未运行 Cargo。交付前以任务指定命令验证目标文件存在且恰有 11 个固定二级标题，并人工复核源文件、调用边、Go 对照和测试证据可追溯。

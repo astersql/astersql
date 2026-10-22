@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-objstore-ossstore` crate，crate 根 `pkg/objstore/ossstore/lib.rs` 通过 `mod retry; pub use retry::*;` 将其公开符号再导出。它位于 OSS SDK 错误与仓库通用对象存储重试抽象之间：一方面识别 `ali_oss_rs`、`reqwest`、`std::io` 和 OSS 服务错误，另一方面实现 `s3like::StandardRetryer`，提供统一的最大尝试次数、退避和实例元数据错误识别。
-
-当前 Rust 运行路径中，`pkg/objstore/ossstore/interface.rs` 的 `AliyunOssApi::execute` 直接构造 `OssRetryer::default()`，在每次 OSS 操作失败后调用本文件的分类和退避逻辑。文件末尾的 `new_retryer()` 能把策略包装为 `s3like::Retryer`，但仓库 Rust 调用点搜索只找到它的定义，尚未发现生产调用者；不能把 Go 版本在 Store 构造阶段的 SDK 注入方式视为 Rust 已接线事实。
+位于 OSS SDK 错误与仓库通用对象存储重试抽象之间：一方面识别 `ali_oss_rs`、`reqwest`、`std::io` 和 OSS 服务错误，另一方面实现 `s3like::StandardRetryer`，提供统一的最大尝试次数、退避和实例元数据错误识别。
 
 ## 核心职责
 
@@ -89,9 +87,9 @@ HTTP 可重试集合包括所有 5xx、401 Unauthorized、408 Request Timeout �
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件为 `pkg/objstore/ossstore/retry.go`。两版共同保持 `maxAttempts = 20`、1 秒基础延迟、32 秒最大退避、无操作令牌回调，以及通过 `100.100.100.200` 识别 ECS 元数据错误。Go `retryer` 嵌入阿里云官方 `ossretry.Retryer`，标准错误分类与抖动由 SDK 提供；Rust 因使用不同 SDK/适配层，在本文件中显式复刻了结构化错误分类、IO 错误分类、字符串兼容表和 full-jitter 计算。
+Go `retryer` 嵌入阿里云官方 `ossretry.Retryer`，标准错误分类与抖动由 SDK 提供；Rust 因使用不同 SDK/适配层，在本文件中显式复刻了结构化错误分类、IO 错误分类、字符串兼容表和 full-jitter 计算。
 
-Go `NewOSSStorage` 在 `pkg/objstore/ossstore/store.go` 中调用 `oss.NewConfig().WithRetryer(newRetryer())`，因此通用 `s3like.Retryer` 被注入官方 OSS SDK。Rust `pkg/objstore/ossstore/store.rs` 不调用 `new_retryer()`；实际重试由 `AliyunOssApi::execute` 自己驱动并直接使用 `OssRetryer`。这意味着两版目标语义相近，但接线层次和外层 `s3like::Retryer` 特化规则的覆盖范围并不完全相同。
+Rust `pkg/objstore/ossstore/store.rs` 不调用 `new_retryer()`；实际重试由 `AliyunOssApi::execute` 自己驱动并直接使用 `OssRetryer`。这意味着两版目标语义相近，但接线层次和外层 `s3like::Retryer` 特化规则的覆盖范围并不完全相同。
 
 Go 的 `IsInstanceMetadataError(nil)` 明确返回 false；Rust 不接受空错误。Go SDK 的确切内部错误集合属于外部依赖实现，本分析只依据 Rust 当前显式规则和仓库测试，不声称两套第三方 SDK 的所有边缘错误都完全等价。
 
@@ -104,12 +102,3 @@ Go 的 `IsInstanceMetadataError(nil)` 明确返回 false；Rust 不接受空错�
 - 若要让 Rust Store 全面使用 `new_retryer()`，必须先决定由 SDK、`AliyunOssApi::execute` 还是二者之一负责重试，防止双层重试使最坏请求次数相乘；同时验证元数据错误和 connection-refused 在外层包装后的分类变化。
 - 若引入真正的重试配额，应在 `GetInitialToken`、`GetRetryToken` 和 `ReleaseToken` 生命周期中成套实现，并增加并发测试验证额度获取、失败归还和取消路径，而不是只修改空回调。
 - 修改公开字段或 `StandardRetryer` 实现会影响 crate 外调用者，需保留 `Send + Sync`、返回 `anyhow::Result` 和最大尝试次数“包含首次”的契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/objstore/ossstore` 列出目标模块；`query` 精确定位 `retry.rs::OssRetryer`、`retry.rs::new_retryer`、`retry.rs::random_unit_interval` 和 `retry.rs::is_retryable_status`；`node --file pkg/objstore/ossstore/retry.rs --offset 1 --limit 260` 展示完整 205 行源文件。批量 `callers/callees` 命令在 30 秒内未返回结果，因此调用关系另以直接源码搜索核实，未把超时当作图证据。
-- 生产源码：`pkg/objstore/ossstore/retry.rs`（全部符号与实现）、`pkg/objstore/ossstore/lib.rs`（模块声明和再导出）、`pkg/objstore/ossstore/interface.rs::AliyunOssApi::execute`（实际 Rust 调用链）、`pkg/objstore/s3like/retry.rs`（trait、包装器和外层特化规则）、`pkg/objstore/ossstore/store.rs`（确认当前 Rust Store 未注入 `new_retryer`）。目标目录没有 `doc.go`，因此无额外包契约文件可读。
-- crate 边界：`pkg/objstore/ossstore/Cargo.toml`。
-- Go 对照：`pkg/objstore/ossstore/retry.go` 与 `pkg/objstore/ossstore/store.go::NewOSSStorage`。
-- 独立 Rust 测试：`pkg/objstore/ossstore/retry_test.rs::wrapped_connection_error_text_remains_retryable_like_go_sdk`、`pkg/objstore/ossstore/migration_aster_unit_test.rs::retry_logger_and_store_helpers_match_go`、`standard_retry_classification_matches_aliyun_sdk`。本任务按计划为纯文档分析，未运行 Cargo；这些测试仅作为既有行为证据读取。
-- 人工复核结论：本文件存在是为了把 OSS/HTTP/IO 错误统一成 `s3like::StandardRetryer` 策略；当前执行由 `AliyunOssApi::execute` 驱动；安全扩展必须同步独立测试，并特别防止直接策略与通用包装器或 SDK 形成双层重试。

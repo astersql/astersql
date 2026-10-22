@@ -2,22 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-executor-mppcoordmanager` crate 的核心业务类型。crate 入口
-[`lib.rs`](lib.rs) 公开 `mpp_coordinator_manager` 模块并重新导出全部符号；
-[`Cargo.toml`](Cargo.toml) 用 `package.metadata.porting.go-package` 将它对应到 Go 包
-`pkg/executor/mppcoordmanager`。它在概念上位于 MPP 查询执行器与 TiFlash 任务状态上报之间：用
 `(MppQueryId, gather_id)` 唯一标识一次 gather 的协调器，并负责注册、查找、注销和超时回收。
-
-当前 Rust 接线并不完整。进程启动与关闭分别从
-[`cmd/tidb-server/main.rs`](../../../cmd/tidb-server/main.rs) 的
-`createStoreDDLOwnerMgrAndDomain`、`closeDDLOwnerMgrDomainAndStorage` 调用全局
-`InstanceMPPCoordinatorManager.Run/Stop`；[`pkg/server/server.rs`](../../server/server.rs) 的
-`Server::run` 会写入 SQL 监听地址。另一方面，Rust 的
-[`executor_with_retry.rs`](../internal/mpp/executor_with_retry.rs) 当前定义了另一个同名
-`MppCoordinatorManager` 和另一套 `CoordinatorUniqueId`，`RpcServer` 也仅持有注入的
-`Arc<dyn MppCoordinator>`。仓库生产 Rust 调用搜索没有发现目标文件的 `register`、
-`unregister` 或 `report_status` 与这两条链的适配。因此，本文件目前是“生命周期和服务地址已接线，
-协调器状态路由实现已存在但尚未接入生产 Rust 主链”的移植状态，不能把 Go 版完整接线当成 Rust 现状。
 
 ## 核心职责
 
@@ -146,17 +131,9 @@ Acquire/Release 或 AcqRel 排序，适合作为并发快照，但多个指标�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是
-[`mpp_coordinator_manager.go`](mpp_coordinator_manager.go)，核心映射如下：
-
-- Go `sync.Mutex + map` 对应 Rust `Mutex<ManagerState> + HashMap`；Go
-  `context.CancelFunc + WaitGroup + goroutine + ticker` 对应 Rust
-  `mpsc::Sender + JoinHandle + thread::spawn + recv_timeout`。
 - Go `kv.MPPQueryID`、`kv.MppCoordinator` 和 kvproto 请求/响应在 Rust 目标文件中被本地
   `MppQueryId`、`MppCoordinator`、`ReportTaskStatusRequest/Response` 复刻，尚未与 Rust
   `astersql-kv`/RPC 类型统一。这是接口迁移差异，不应误认为零成本类型别名。
-- 注册冲突文本、缺协调器文本、四字段键、锁外上报、只清理已关闭超时协调器以及
-  `uint64` 截止时间回绕都保持 Go 语义。
 - Go 超时清理逐项增加 Prometheus overtime 指标并记录 error 日志；Rust 用原子计数批量增加，
   不记录被删除 ID。Go 上报回调失败记录 warning；Rust 只返回错误响应。
 - Rust 额外把 `run`、`stop` 做成可重复调用，并通过 `Drop` 自动停止；Go 的 `Run` 每次都会建立
@@ -184,30 +161,3 @@ Go 对照文件是
 6. 测试继续放在独立文件，不要内嵌到生产源。除现有清理测试外，建议在接线任务中增加重复注册、
    并发注销与上报、回调错误版本透传、未关闭超时不删除、线程重启，以及生产 RPC 到同一注册表的
    集成测试。兼容风险主要是 ID/协议类型转换；性能风险主要是清理时持锁调用 `is_closed` 和全表扫描。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；
-  `files --filter pkg/executor/mppcoordmanager` 确认目标 Rust、Go 对照及两套测试均已索引。
-- RustCodeGraph `node --file pkg/executor/mppcoordmanager/mpp_coordinator_manager.rs`：核对全部
-  474 行、类型、方法、锁范围、原子顺序、后台线程和别名。
-- RustCodeGraph `query MppCoordinatorManager`、`query InstanceMPPCoordinatorManager`、
-  `query report_status`，以及对 `run`、`report_status`、`setupMPPCoordinator` 的 callers/callees
-  查询：确认同名类型、已知入口和图中未解析的部分。
-- RustCodeGraph 读取
-  `cmd/tidb-server/main.rs::createStoreDDLOwnerMgrAndDomain`/
-  `closeDDLOwnerMgrDomainAndStorage`、`pkg/server/server.rs::Server::run`、
-  `pkg/server/rpc_server.rs::RpcServer::report_mpp_task_status` 和
-  `pkg/executor/internal/mpp/executor_with_retry.rs::setupMPPCoordinator`；随后因调用图不能消歧
-  `LazyLock` 静态引用，用精确 `rg` 搜索补充当前 Rust 生产调用集合。
-- 直接读取 `pkg/executor/mppcoordmanager/Cargo.toml`，核对 crate 名、入口、Go 包元数据和依赖；
-  RustCodeGraph 读取同目录 `lib.rs`，核对公开再导出与独立测试模块。
-- Go 语义依据：`mpp_coordinator_manager.go` 和
-  `mpp_coordinator_manager_test.go::TestDetectAndDelete`。
-- Rust 边界依据：`mpp_coordinator_manager_test.rs::test_detect_and_delete`、
-  `detect_and_delete_wraps_query_deadline_like_go`，以及
-  `pkg/executor/test/tiflashtest/tiflash_test.rs` 中
-  `mpp_manager_reports_missing_coordinator_with_request_version`、
-  `mpp_manager_run_stop_is_idempotent_and_sets_lifetime`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证本文恰有 11 个固定二级章节，
-  并人工复核所有“已接线/未接线”结论均有上述源码或调用搜索支持。

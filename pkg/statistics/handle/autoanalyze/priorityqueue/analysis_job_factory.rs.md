@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-statistics-handle-autoanalyze-priorityqueue`，由同目录 `lib.rs` 以私有模块 `analysis_job_factory` 装配并通过 `pub use analysis_job_factory::*` 重导出。它是 Go 文件 `analysis_job_factory.go` 的 Rust 移植：把会话要求、自动分析阈值、当前 TSO、表/分区统计和索引元信息转换成三种实现 `AnalysisJob` trait 的候选作业，并提供分区统计筛选和每日执行时间窗口判断。
-
-当前接线状态必须与设计职责区分：RustCodeGraph 对 `NewAnalysisJobFactory` 和三个 `Create*AnalysisJob` 的调用者查询只找到本文件自身及 `analysis_job_factory_test.rs`；同 crate 的 Rust `queue.rs` 没有直接引用这些符号。因此这些 API 在 Rust 侧已有可测试实现和 crate 级重导出，但尚未像 Go `queue.go` 那样接入生产队列构建链。
+Go 文件 `analysis_job_factory.go` 的 Rust 移植：把会话要求、自动分析阈值、当前 TSO、表/分区统计和索引元信息转换成三种实现 `AnalysisJob` trait 的候选作业，并提供分区统计筛选和每日执行时间窗口判断。
 
 ## 核心职责
 
@@ -63,7 +61,7 @@ Go 源码显式注明工厂非线程安全；Rust 类型当前字段本身可共
 
 ## 与 Go 版本的对应关系
 
-三类创建流程、未分析默认值、严格阈值比较、分析行数优先分母、索引过滤、动态分区平均指标、物理分区统计过滤和跨午夜时间窗口均逐项对应 `analysis_job_factory.go`。Rust 用局部 DTO 替代 Go 的 `sessionctx.Context`、`model.TableInfo` 和 `statistics.Table`，用 `PartitionStatsProvider` 替代 `statstypes.StatsHandle`，并用 `Box<dyn AnalysisJob>` 替代 Go 接口值。
+Rust 用局部 DTO 替代 Go 的 `sessionctx.Context`、`model.TableInfo` 和 `statistics.Table`，用 `PartitionStatsProvider` 替代 `statstypes.StatsHandle`，并用 `Box<dyn AnalysisJob>` 替代 Go 接口值。
 
 已知适配差异包括：Rust 以 `UNIX_EPOCH` 表示 Go `time.Time{}` 零值；`AnalysisDuration` 保留 Go 有符号和溢出行为；Rust 的版本匹配直接检查 `pseudo` 与 `stats_version`，对应 Go `statistics.AnalyzeVersionMatchesForTableStats`；Rust 的 `is_special_global` 已由输入模型预计算，对应 Go `util.IsSpecialGlobalIndex`。最重要的迁移状态差异是 Rust 生产 `queue.rs` 尚未复用本工厂，而 Go `queue.go` 已在扫描和增量路径接线；扩展时不能假定两侧生产调用覆盖相同。
 
@@ -72,11 +70,3 @@ Go 源码显式注明工厂非线程安全；Rust 类型当前字段本身可共
 新增作业判定字段时，先扩展对应输入 DTO，再在三类 `Create*` 中决定该字段是资格门槛、入队原因还是仅作业元数据；同步修改独立的 `analysis_job_factory_test.rs`，不要把测试写进本源文件。新增索引过滤条件应同时审查 `CheckIndexesNeedAnalyze` 和 `CheckNewlyAddedIndexesNeedAnalyzeForPartitionedTable`，并与 Go `model.IndexInfo`/`util.IsSpecialGlobalIndex` 语义核对，避免非分区与分区行为漂移。
 
 修改指标算法时还需检查 `calculator.rs` 和三个具体作业构造器的消费假设。特别注意阈值是严格大于、动态指标只对入选分区取平均、规模使用全局列数，以及有符号时长的饱和与求和溢出语义；这些会直接影响优先级排序和 Go/Rust兼容性。要完成生产迁移，应在 Rust `queue.rs` 的全量构建、DML 增量、重建/重试路径分别接入并增加队列级独立回归测试，而不是仅增加工厂单测。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`node --file ...analysis_job_factory.rs` 阅读了完整 470 行；`query AnalysisJobFactory`、`query NewAnalysisJobFactory` 与精确 `explore` 核对了符号、内部调用链及 Rust/Go 上游差异。
-- Rust 源与模块边界：`analysis_job_factory.rs`、`lib.rs`、`Cargo.toml`；具体作业构造器位于 `non_partitioned_table_analysis_job.rs`、`static_partitioned_table_analysis_job.rs`、`dynamic_partitioned_table_analysis_job.rs`，公共 trait 和时长位于 `job.rs`。
-- Go 对照：`analysis_job_factory.go`；生产调用位置由 `queue.go` 中 `NewAnalysisJobFactory`、三个 `Create*AnalysisJob` 和 `GetPartitionStats` 的引用核对。
-- 独立 Rust 测试：`analysis_job_factory_test.rs` 覆盖阈值上下界与零分母、分析版本、三类具体作业字段、索引过滤、分区平均、provider 过滤、普通/跨午夜/分钟精度窗口、负时长和 Go 式溢出。Go 对照测试 `analysis_job_factory_test.go` 覆盖对应主要场景。
-- 本任务为纯文档分析，按计划未运行 Cargo；交付结构校验要求目标文件存在且恰有本文这 11 个固定二级标题。

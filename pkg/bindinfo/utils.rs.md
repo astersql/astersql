@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`utils.rs` 是 `astersql-bindinfo` crate 的共享工具与适配边界。模块由 [lib.rs](lib.rs) 以私有 `mod utils` 装配后通过 `pub use utils::*` 重新导出，因此本文件中的 `pub` 项是 crate 对外 API。它不负责绑定匹配本身，而是在绑定缓存、持久化存储、SQL 执行上下文和 Hint 解析之间提供公共数据类型与薄封装。
-
-该 crate 的边界由 [Cargo.toml](Cargo.toml) 定义：库入口是 `lib.rs`，直接依赖 `astersql-parser`、`astersql-util-hint`、`astersql-util-parser`、`serde` 和 `serde_json`，并以 `package.metadata.porting.go-package = "pkg/bindinfo"` 标明 Go 对照包。本文件自身直接使用 crate 内的 `Binding`、`BindingTime`、`Statement`、`prepareHints` 等符号，以及标准库的 `Arc`、`Duration` 和 serde 派生。
+通过 `readBindingsFromStorage`、`newBindingFromStorage`、`validateAndPrepareBinding` 和 `getBindingPlanDigest` 连接存储行、内存绑定、Hint 准备与计划摘要适配器。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [utils.go](utils.go)，相关端到端 Go 测试是 [tests/bind_usage_info_test.go](tests/bind_usage_info_test.go)。主要保持项如下：会话成功归还/失败销毁；可选悲观事务；按语句类型注入 Hint；使用时间写回节流；`using` 到 `enabled` 的兼容转换；计划摘要失败时采用 best-effort 空结果。
-
 主要差异如下：
 
 - Go 直接依赖 `sessionctx.Context`、内部 SQL executor 和 `mysql.bind_info`；Rust 把持久化及 SQL/计划能力抽象成 trait，以便在 SQL/session 栈未完全移植时使用适配器。
@@ -102,12 +98,3 @@
 支持新的 SQL 形态或改变 Hint 注入位置时，优先修改 `GenerateBindingSQL`/`keyword_position`，并在独立的 [utils_test.rs](utils_test.rs) 增加嵌套查询、注释/字符串、无 SELECT INSERT、EXPLAIN 和不支持语句回归；同时核对 `RestoreDBForBinding` 的规范输出。轻量关键字扫描器若无法可靠覆盖新语法，应接入 parser/AST，而不是继续叠加脆弱字符串替换。
 
 增强绑定读取或校验时，要先决定责任属于 `BindingStore::read_bindings_since` 还是 `readBindingsFromStorage` 上层，避免重复执行 Go 的伪记录过滤或 Hint 准备。接入 `getBindingPlanDigest` 时，必须记录空串降级的可观测性；需要区分失败时应改成 `Result<String>`，并同步调用方与测试。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/bindinfo` 确认目标、crate 入口和测试均已索引。
-- RustCodeGraph 源码读取：`node --file pkg/bindinfo/utils.rs --offset 1 --limit 500` 覆盖目标文件全部 405 行；`node --file pkg/bindinfo/lib.rs` 核对模块装配与公开重导出。
-- RustCodeGraph 符号/边：`node GenerateBindingSQL`、`node updateBindingUsageInfoToStorage`、`node shouldUpdateBinding`、`node newBindingFromStorage`、`node getBindingPlanDigest`、`node validateAndPrepareBinding`、`node addLockForBinds`、`node saveBindingUsage`；确认关键内部边包括 `GenerateBindingSQL → keyword_position`、`updateBindingUsageInfoToStorage → updateBindingUsageInfoToStorageInternal → shouldUpdateBinding/saveBindingUsage`、`saveBindingUsage → BindingStore::save_usage`、`getBindingPlanDigest → BindingSqlContext::plan_digest`。
-- 直接读取：[Cargo.toml](Cargo.toml)、[lib.rs](lib.rs)、[binding.rs](binding.rs)、[binding_cache.rs](binding_cache.rs)、[binding_operator.rs](binding_operator.rs)、[utils.go](utils.go)、[utils_test.rs](utils_test.rs)、[main_test.rs](main_test.rs)、[tests/bind_usage_info_test.rs](tests/bind_usage_info_test.rs)、[tests/bind_usage_info_test.go](tests/bind_usage_info_test.go)。
-- 测试证据：[utils_test.rs](utils_test.rs) 验证 BEGIN 失败销毁会话、按最后保存时间节流、存储字段兼容转换及多种语句的 Hint 注入；[tests/bind_usage_info_test.rs](tests/bind_usage_info_test.rs) 验证过期才写、无新使用不重复写以及单批失败不推进任何 `LastSavedAt`；[main_test.rs](main_test.rs) 验证默认库恢复与 Hint 注入。Go 测试提供真实系统表、批次和开关行为的对照，但不是 Rust 运行证据。
-- 本任务按计划仅做静态事实与结构验证，未运行 Cargo、Rust 测试或 Go 测试。

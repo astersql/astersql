@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件通过本目录 `lib.rs` 的私有模块 `parser` 挂载，并公开再导出 `parse_rules`。它属于上一级 `Cargo.toml` 定义的 `astersql-br-pkg-restore`，不是独立 crate。本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
 
 ## 核心职责
 
@@ -32,14 +32,6 @@
 
 纯内存同步解析，无线程、锁、I/O 或外部资源。每条规格转成字符向量，解析结果拥有自己的字符串；调用结束后解析器释放。
 
-## 与 Go 版本的对应关系
-
-对应同目录 `parser.go` 的 `ParseRules`/`specParser`。语法、反引号转义和名称长度意图一致；Go 使用 UTF-8 字节位置并显式检查非法 UTF-8，Rust 使用字符位置且字符串本身保证 UTF-8。Go 对象使用 `ast.CIStr`，Rust 用普通字符串，大小写匹配由 router 处理。
-
 ## 扩展指南
 
 扩展语法时同时核对 Go 解析器和路由 canonical 表达，避免引号或分隔符产生歧义。测试继续放独立文件；当前 Rust 相关用例位于 `br/pkg/task/restore_name_route_test.rs`，覆盖引号、优先级、非法规则与指纹。
-
-## 验证依据
-
-本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 已读取本文件完整 blob、`router.rs`、本目录 `lib.rs`、上级 `lib.rs`/`Cargo.toml`、同名 Go 文件和 `router_test.go`；本目录及任务目标包未发现 `doc.go`。Rust 证据为 `restore_name_route_test.rs` 的 `name_route_parses_routes_with_table_precedence`、`name_route_canonicalizes_quoted_identifiers_and_fingerprint`、`name_route_rejects_invalid_and_conflicting_rules`。RustCodeGraph status 当前包含 Rust，但冻结事实以 git blob/引用检索核验。纯文档验证，不运行 Cargo，测试仅作静态证据。

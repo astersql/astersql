@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-logutil` crate 的自定义测试进程适配器，只在 `#[cfg(test)]` 下参与编译。`pkg/util/logutil/lib.rs` 关闭默认测试 harness（`Cargo.toml` 的 `[lib] harness = false`），包含构建脚本生成的测试注册表，并由自定义 `main()` 调用 `test_main::run(registered_tests())`。因此它位于“收集相邻 `*_test.rs` 测试”与“启动整个 crate 测试进程”之间，不参与日志工具的生产运行路径。
-
-当前实现与文件头注释所描述的完整目标并不一致：`run` 目前只执行公共测试初始化，没有执行传入的测试列表，也没有调用本文件已经实现的平台线程枚举函数。文档以下均以这一当前源码事实为准，而把完整 TestMain 行为标为待接线能力。
+三个互斥的 `extra_threads()` 实现为 Linux、macOS 和 Windows 提供进程原生线程快照，并排除运行调用的当前/主线程。
 
 ## 核心职责
 
@@ -71,8 +69,6 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照入口是 `pkg/util/logutil/main_test.go::TestMain`：先调用 `testsetup.SetupForCommonTest()`，再构造四个 `goleak.IgnoreTopFunction`，最后调用 `goleak.VerifyTestMain(m, opts...)`。该调用负责执行 `testing.M` 并在套件结束时验证 goroutine 泄漏。
-
 Rust 已对齐公共日志初始化，并准备了跨平台“原生线程而非 goroutine”枚举。这四个 Go 忽略项分别属于 glog、rules_go、httprc 和 lumberjack 的 Go-only worker，当前 crate 没有同名 Rust worker；Rust 源码也没有按名称忽略或记录基线线程。
 
 关键差异是 Rust 的 runner 与泄漏检查尚未接线：`tests` 未被执行，`extra_threads` 未被调用，而 Go `VerifyTestMain` 已同时执行套件和完成泄漏检查。`pkg/util/logutil/main_test.rs` 中 `testmain_rejects_invalid_level_before_running_tests`、`testmain_detects_detached_threads`、`testmain_accepts_joined_and_finishing_threads`、`testmain_preserves_test_failure`、`testmain_initializes_all_go_log_levels` 描述了期望的移植语义；在当前 `run` 下，除初始化相关分支外，这些测试意图不能成立。
@@ -91,14 +87,3 @@ Rust 已对齐公共日志初始化，并准备了跨平台“原生线程而非
 - 新平台必须新增独立 `extra_threads` 实现及测试，不能移除现有 `compile_error!` 后静默放行。
 
 兼容性风险主要是自定义 harness 的命令行/退出码是否与 Cargo 预期一致；正确性风险是竞态导致误报、遗漏外部 native worker 或覆盖测试失败；性能风险较低，但过长轮询会直接增加每次 crate 测试耗时。
-
-## 验证依据
-
-- 目标源码：`pkg/util/logutil/test_main.rs`；确认 `run` 当前只有一次初始化调用，三个 `extra_threads` 由平台 `cfg` 互斥选择，其他平台使用 `compile_error!`。
-- crate 接线：`pkg/util/logutil/lib.rs`；确认测试配置包含生成注册表、声明 `mod test_main`，并由自定义 `main()` 调用 `test_main::run(registered_tests())`。
-- 构建与依赖：`pkg/util/logutil/build.rs`、`pkg/util/logutil/Cargo.toml`；确认 Trial 的生成方式、`harness = false` 及平台 dev-dependency 边界。
-- Rust 测试意图：`pkg/util/logutil/main_test.rs`；确认初始化、失败保留、泄漏、join/收尾线程和日志级别用例。该文件是期望行为证据，不是当前生产接线已完成的证据。
-- Go 对照：`pkg/util/logutil/main_test.go`、`pkg/testkit/testsetup/bridge.go`；确认 `SetupForCommonTest` 与 `goleak.VerifyTestMain` 的调用顺序及四个 Go-only 忽略项。
-- Rust 公共初始化：`pkg/testkit/testsetup/bridge.rs`、`pkg/testkit/testsetup/bridge_test.rs`；确认合法/非法日志级别、全局 logger 状态及 `warning` 别名。
-- RustCodeGraph：索引状态为 11,467 个文件；目标目录列出 23 个已索引源码文件。对目标文件的 `node --file` 显示 150 行和全部 12 个符号；精确 `callers/callees` 没有发现 `extra_threads` 调用边。使用 `rg` 补查未返回的边后，仅发现 `lib.rs` 调用 `test_main::run`，没有 `extra_threads` 调用或 `libtest_mimic::run`。
-- 人工复核结论：本文件存在于自定义测试 harness 边界，当前能完成日志初始化与提供未接线的跨平台线程枚举；安全扩展必须把 Trial 执行、状态传播和有界泄漏检查接入 `run`，并继续将测试放在同目录独立测试文件中。

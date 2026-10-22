@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-expression` crate（`pkg/expression/Cargo.toml` 的 `[lib] path = "lib.rs"`），由 `pkg/expression/lib.rs` 以 `builtin_vec_kernel` 私有模块装入。它承载 TiDB `VECTOR FLOAT32` 的八个标量内置函数签名：`VEC_DIMS`、四种双向量度量、`VEC_L2_NORM`、`VEC_FROM_TEXT` 和 `VEC_AS_TEXT`。这里的“向量”是数据库的浮点向量值，不是按列执行机制；对应的按列方法定义在 `pkg/expression/builtin_vec_vec.rs`。
-
-本文件已经实现函数类、签名对象和逐行求值，但普通 SQL 名称到这些专用函数类的 Rust 接线尚不完整：`pkg/expression/builtin.rs` 的 `BUILTIN_SPECS` 虽列出八个 `vec_*` 名称，`CORE_BUILTIN_FACTORIES` 却没有相应工厂，仓库也没有向量函数调用 `registerBuiltinFactory` 的证据。因此不能仅凭名称表断言普通 Rust SQL 构造链已经可用。另一方面，tipb 方向已有名称映射和签名配方（`pkg/expression/pb_to_expr_runtime.rs`、`pkg/expression/distsql_builtin.rs`），但配方表本身也不等同于本文件函数类已接入全局工厂。
+八个签名实现实际逐行语义：维度、L1/L2 距离、负内积、余弦距离、L2 范数，以及文本和向量之间的转换。
 
 ## 核心职责
 
@@ -78,7 +76,7 @@ RustCodeGraph 的文件节点报告本文件被 11 个文件使用，但本次 `
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/expression/builtin_vec.go` 和生成的 `pkg/expression/builtin_vec_vec.go`。Rust 保留了 Go 的八个函数类/签名、参数与返回求值类型、NULL 传播、NaN→NULL、维度错误、文本解析/格式化和 tipb 码；`VEC_FROM_TEXT` 在两端都没有启用下推码。Rust 用两个宏消除 Go 中重复的 `Clone`、trait 方法和函数类构造代码，并以 `vectorDistance` 合并四份标量距离流程。
+Rust 保留了 Go 的八个函数类/签名、参数与返回求值类型、NULL 传播、NaN→NULL、维度错误、文本解析/格式化和 tipb 码；`VEC_FROM_TEXT` 在两端都没有启用下推码。Rust 用两个宏消除 Go 中重复的 `Clone`、trait 方法和函数类构造代码，并以 `vectorDistance` 合并四份标量距离流程。
 
 实现层面的差异是：Go 的 `newBaseBuiltinFuncWithTp` 同时处理完整类型推导和缓冲区分配器，Rust 的 `buildVectorBase` 只按 `EvalType` 插 CAST，并使用 `RegistryBuiltinBase`；Go 的向量化代码从 `bufAllocator` 借还临时列，Rust 相邻文件当前直接创建局部 `Column`。两者的可观察 NULL/NaN/错误语义由 Rust 测试对齐，但资源复用与性能结构并非逐行等价。
 
@@ -94,13 +92,3 @@ Go `builtin.go` 把八个具体类直接放入全局 `funcs` map；Rust `builtin
 4. 若支持下推，同步 tipb 枚举、`pb_to_expr_runtime.rs` 映射和 `distsql_builtin.rs` 构造逻辑；不能只设置一个整数码。若不支持，应像 `VEC_FROM_TEXT` 一样显式保持 `0` 并记录边界。
 5. 同步独立测试 `builtin_vec_vec_31_aster_unit_test.rs` 与入口清单 `builtin_vec_vec_test.rs`；Go 语义变化时还应对照 `builtin_vec.go`、`builtin_vec_vec.go`、`builtin_vec_vec_test.go`。
 6. 兼容性风险集中在隐式 CAST、字符集/排序规则、NULL/NaN、向量维度错误和下推码一致性；性能风险集中在每行分配、重复解析文本、缺少临时列复用及距离计算热路径。
-
-## 验证依据
-
-- 源码全量阅读：`pkg/expression/builtin_vec.rs`（416 行）；相邻按列实现：`pkg/expression/builtin_vec_vec.rs`。
-- crate/模块证据：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`；该包没有 `doc.go`，因此无可读取的包级 Go 契约文件。
-- 注册与调用证据：`pkg/expression/builtin.rs` 的 `FunctionClassRegistry`、`CORE_BUILTIN_FACTORIES`、`BUILTIN_SPECS`；`pkg/expression/pb_to_expr_runtime.rs`；`pkg/expression/distsql_builtin.rs`；`pkg/expression/vs_helper.rs`；`pkg/expression/builtin_threadsafe_generated.rs`。
-- Go 对照：`pkg/expression/builtin_vec.go`、`pkg/expression/builtin_vec_vec.go`、`pkg/expression/builtin_vec_vec_test.go`。
-- Rust 独立测试：`pkg/expression/builtin_vec_vec_31_aster_unit_test.rs`、`pkg/expression/builtin_vec_vec_test.rs`、`pkg/expression/scalar_function_37_aster_unit_test.rs`。测试覆盖明确数值、NULL、余弦 NaN、维度不匹配、非法文本、文本往返、参数数量与下推码；本任务按计划不运行 Cargo。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件且目标文件有 46 个符号；`files --filter` 命中目标；`node --file ... --offset 1 --limit 500` 读取完整文件并报告 11 个引用文件；`query` 精确命中 `vectorDistance`、`buildVectorBase`、`builtinVecDimsSig`。`callers vectorDistance` 连续等待 60 秒无输出后终止，调用边改由上述源码引用复核。
-- 结构检查使用任务规定命令，要求目标存在且固定二级标题恰好为 11 个；人工复核重点是区分“求值实现存在”“tipb 配方存在”和“普通全局工厂已接线”三种不同事实。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-domain` crate；crate 根由 [`pkg/domain/Cargo.toml`](Cargo.toml) 的 `[lib] path = "lib.rs"` 指定，[`pkg/domain/lib.rs`](lib.rs) 以 `pub mod schema_checker` 对外暴露本模块。它位于 SQL 会话与存储提交之间：会话根据事务起始 InfoSchema 版本和写入表集合构造检查器，存储层取得提交时间戳后调用检查器，避免事务在不兼容的 schema 变化后提交。
-
-当前有效实现位于 [`schema_checker.rs`](schema_checker.rs) 第 120—250 行。第 23—119 行是整段注释掉的早期迁移草稿，不参与编译、符号导出或运行流程，阅读和扩展时不能把其中的 Go 风格 API 当成现有 Rust API。
+这些职责集中在 `SchemaChecker::check_by_schema_version`；构造、适配真实 validator、挂载事务选项和实际提交均由其他模块完成。
 
 ## 核心职责
 
@@ -81,8 +79,6 @@ RustCodeGraph 显示 `check` 调用 `check_by_schema_version`，后者调用 tra
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`pkg/domain/schema_checker.go`](schema_checker.go)。两版核心决策一致：默认间隔 500ms、默认 10 次；将事务时间戳、schema 版本、相关表和 delta 标志传给 validator；Success 放行、Fail 记录 `changed` 并报 schema changed、Unknown 每次睡眠，耗尽后记录 `outdated` 并报 expired。
-
 主要 API/表示差异为：
 
 - Go 通过嵌入 `validatorapi.Validator` 实现接口复用；Rust 用 `Arc<dyn SchemaValidator>` 显式组合并要求线程安全。
@@ -102,12 +98,3 @@ Go 测试 [`pkg/domain/schema_checker_test.go`](schema_checker_test.go) 还用�
 - 修改相关变更表示时，需要同步 `SharedValidator` 的 `phy_tbl_ids`/`action_types` 转换，并确认调用方是否需要保留原始 action 数值而非字符串。
 - 修改指标时应保持 `changed`、`outdated` 标签兼容，检查 collector 初始化时序，并尽量将 `unsafe static mut` 访问收敛到 metrics crate 的安全 API。
 - 性能评审应关注重试总等待时间、提交线程阻塞和大表 ID 集合；表 ID 的排序去重目前发生在 session 层，本文件不应暗中重复处理或改变顺序。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；目标文件识别出 20 个符号。通过 `node --file pkg/domain/schema_checker.rs` 阅读全部 250 行，并用 `query SchemaChecker`、`query SchemaValidator`、`callees SchemaChecker::check_by_schema_version` 核对符号与内部调用边。
-- 生产调用证据：`pkg/session/runtime/control.rs:1060`—`1100` 构造并挂载事务检查器；`pkg/session/runtime/schema_validation.rs:8`—`50` 适配 validator 和错误；`pkg/store/driver/kv_adapter.rs:1326`—`1365` 在真实提交路径注册 client-rust lease checker；`pkg/store/mockstore/mockstorage/canonical_storage.rs:632`—`691` 在 mock 提交路径执行同一事务选项。
-- crate 证据：`pkg/domain/Cargo.toml` 确认 crate 名、`lib.rs` 入口以及 `astersql-metrics` 路径依赖；`pkg/domain/lib.rs` 确认公开模块和独立 `schema_checker_test` 测试模块。
-- Go 对照证据：`pkg/domain/schema_checker.go` 的 `NewSchemaChecker`、`Check`、`CheckBySchemaVer`、两项 atomic 重试参数和指标标签。
-- Rust 测试证据：`pkg/domain/schema_checker_test.rs` 的四个测试分别验证保存版本及全部参数透传、Unknown 后重试并返回变更详情、最后一次 Unknown 后仍退避、零重试不调用 validator。Go 测试 `pkg/domain/schema_checker_test.go` 补充真实 isvalidator 的表变更与 lease 行为证据。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的 `rg` 命令验证恰有 11 个固定二级章节，并人工复查所有“已支持”陈述都有上述源码、调用边、Cargo 或测试依据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的 `runtime` 模块，由 `pkg/session/runtime.rs` 公开为 `crossks_schema`。它位于跨 keyspace DDL 运行时与目标 keyspace 的 etcd/`Domain` 之间：`CrossKSProductionRuntimeFactory::create_runtime` 在创建目标 keyspace 的 `Domain` 后构造并启动这里的 schema 同步器，同时构造并首次刷新 server-state 同步器（`pkg/session/runtime/crossks_runtime.rs`）。
-
-文件只实现跨 keyspace 运行时所需的两段协调逻辑，不是通用 DDL schema 同步器的完整 Rust 移植：`CrossKSSchemaSyncer` 发布、观察和等待 schema 版本；`CrossKSStateSyncer` 读取并缓存集群是否处于升级状态。crate 边界与直接依赖由 `pkg/session/Cargo.toml` 中的 `astersql-domain`、`astersql-domain-crossks`、`astersql-domain-serverinfo`、`astersql-ddl-jobsubmit` 和 `serde_json` 声明确认；`nextgen` feature 没有条件编译本文件中的行为。
+`CrossKSStateSyncer::refresh` 从 `/tidb/server/global_state` 读取 JSON，仅当 `state == "upgrading"` 时设置升级标志；其 `ServerState::is_upgrading` 实现供持久化 DDL 提交逻辑读取。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ RustCodeGraph 将目标文件索引为 28 个符号，并标出它被 `pkg/sessi
 
 ## 与 Go 版本的对应关系
 
-Go 的主要对应实现位于 `pkg/ddl/schemaver/syncer.go` 和 `pkg/ddl/serverstate/syncer.go`，跨 keyspace 装配位于 `pkg/domain/crossks/cross_ks.go`、提交前刷新位于 `pkg/domain/crossks/ddl_submit.go`。Rust 使用的三个 etcd 路径与 `pkg/ddl/util/util.go` 的 `DDLGlobalSchemaVersion`、`DDLAllSchemaVersions`、`ServerGlobalState` 完全一致；`publish_global` 对应 Go `OwnerUpdateGlobalVersion` 加 `UpdateSelfVersion`，等待条件对应 `WaitVersionSynced` 的“节点版本不小于最新版本”，`refresh`/`is_upgrading` 对应 `GetGlobalState`/`IsUpgradingState`。
+Rust 使用的三个 etcd 路径与 `pkg/ddl/util/util.go` 的 `DDLGlobalSchemaVersion`、`DDLAllSchemaVersions`、`ServerGlobalState` 完全一致；`publish_global` 对应 Go `OwnerUpdateGlobalVersion` 加 `UpdateSelfVersion`，等待条件对应 `WaitVersionSynced` 的“节点版本不小于最新版本”，`refresh`/`is_upgrading` 对应 `GetGlobalState`/`IsUpgradingState`。
 
-当前 Rust 是跨 keyspace 所需子集，不应描述为 Go `Syncer` 的完整等价实现。Go schema syncer具有 watch channel、session Done/Restart、重试、指标、MDL 按 job 版本、server-info syncer 与同步摘要；Rust 用固定周期轮询全局键，并按 server-info 集合直接扫描通用版本前缀。Go state syncer具有 watch/rewatch、状态更新和带超时重试的读取；跨 keyspace Go 装配刻意只调用 `GetGlobalState` 来播种缓存，Rust 同样在创建时和提交前同步刷新，但只暴露 `ServerState::is_upgrading`。这些差异是当前移植边界，不是文档推断的未来承诺。
+Go schema syncer具有 watch channel、session Done/Restart、重试、指标、MDL 按 job 版本、server-info syncer 与同步摘要；Rust 用固定周期轮询全局键，并按 server-info 集合直接扫描通用版本前缀。Go state syncer具有 watch/rewatch、状态更新和带超时重试的读取；跨 keyspace Go 装配刻意只调用 `GetGlobalState` 来播种缓存，Rust 同样在创建时和提交前同步刷新，但只暴露 `ServerState::is_upgrading`。这些差异是当前移植边界，不是文档推断的未来承诺。
 
-Rust 独立测试 `pkg/session/runtime/crossks_schema_test.rs::go_merge_43_crossks_schema_and_state_use_target_etcd` 覆盖初始实例键、全局键、缺失/补齐 follower 版本、两种 state 和关闭清理。Go 的 `pkg/ddl/schemaver/syncer_test.go::TestSyncerSimple` 覆盖全局/自身版本及等待，`pkg/ddl/serverstate/syncer_test.go::TestStateSyncerSimple` 覆盖状态同步；它们用于核对协议意图，但不能替代 Rust 行为证据。
+Go 的 `pkg/ddl/schemaver/syncer_test.go::TestSyncerSimple` 覆盖全局/自身版本及等待，`pkg/ddl/serverstate/syncer_test.go::TestStateSyncerSimple` 覆盖状态同步；它们用于核对协议意图，但不能替代 Rust 行为证据。
 
 ## 扩展指南
 
@@ -83,11 +81,3 @@ Rust 独立测试 `pkg/session/runtime/crossks_schema_test.rs::go_merge_43_cross
 若扩展全局状态格式，应修改 `CrossKSStateSyncer::refresh` 的解析和 `ServerState` 消费契约，并核对 Go `StateInfo` 的 JSON 兼容性。不能在解析失败时无声覆盖旧缓存；如需 fail-closed/fail-open 策略，应由提交链显式决定。若新增公开方法或状态，保持生产逻辑在本文件、测试逻辑在独立的 `pkg/session/runtime/crossks_schema_test.rs`，不要把 Rust 单元测试嵌入源文件。
 
 必要测试至少覆盖：启动中各阶段失败后的资源回收；取消和超时；server-info 缺项、坏版本和版本超前；reload 失败与后续恢复；重复关闭；无状态、坏 JSON 与未知状态；并发 `refresh`/`is_upgrading`。若行为需要与 Go 完整同步器靠拢，还应明确 MDL/job 版本、重试/指标和 watch 断线恢复是否在本任务范围内，避免只复制接口而遗漏语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter pkg/session/runtime/crossks_schema.rs` 命中目标；`node --file ... --offset 1 --limit 400` 读取 243 行和 28 个符号；`query` 精确确认 `CrossKSSchemaSyncer`、`CrossKSStateSyncer`、`publish_global`、`wait_all_versions_with_cancel` 的路径与签名。
-- 生产源码：`pkg/session/runtime/crossks_schema.rs`；直接装配/调用点 `pkg/session/runtime.rs`、`pkg/session/runtime/crossks_runtime.rs`、`pkg/session/runtime/crossks_owner.rs`、`pkg/domain/crossks/ddl_submit.rs`。
-- crate 与依赖：`pkg/session/Cargo.toml`，package 为 `astersql-session`，相关依赖与 `serde_json` 均为直接依赖。
-- Rust 测试：`pkg/session/runtime/crossks_schema_test.rs`。Go 对照：`pkg/ddl/util/util.go`、`pkg/ddl/schemaver/syncer.go`、`pkg/ddl/schemaver/syncer_test.go`、`pkg/ddl/serverstate/syncer.go`、`pkg/ddl/serverstate/syncer_test.go`、`pkg/domain/crossks/cross_ks.go`、`pkg/domain/crossks/ddl_submit.go`。
-- 本任务是只读行为分析加 Markdown 文档，不运行 Cargo。交付前使用任务指定的结构命令确认文件存在且固定二级标题恰好为 11 个，并人工复核文档分别回答文件为何存在、如何运行和如何安全扩展。

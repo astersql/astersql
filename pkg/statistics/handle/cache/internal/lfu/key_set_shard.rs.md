@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 LFU 统计缓存内部的分片二级键集合。crate 入口 `pkg/statistics/handle/cache/internal/lfu/lib.rs` 将它声明为私有模块 `mod key_set_shard`，因此文件中的 `pub` 类型和方法只服务于该 crate 的实现与测试，并不是 crate 对外再导出的公共 API。直接使用者是 `lfu_cache.rs` 的 `SharedState::resultKeySet`；主缓存未命中、条目被拒绝或淘汰时，该集合继续保存表统计对象或降级后的“壳表”。
-
-crate 由 `pkg/statistics/handle/cache/internal/lfu/Cargo.toml` 定义，包名为 `astersql-statistics-handle-cache-internal-lfu`。本文件自身只直接使用标准库的 `Arc`、同 crate 的 `key_set::keySet`，以及 `astersql-statistics` 依赖提供的 `statistics::Table`。
+为 `lfu_cache.rs` 提供主缓存之外的完整键视图：`LFU::Get` 回落查询它，`LFU::Values` 和 `LFU::Len` 从它枚举，删除与清空路径也同步更新它。
 
 ## 核心职责
 
@@ -82,11 +80,9 @@ RustCodeGraph 能确认目标文件的符号集合、`key_set_shard_test.rs`/`lf
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/statistics/handle/cache/internal/lfu/key_set_shard.go`。常量、数组布局、构造、单键路由以及 `Get/AddKeyValue/Remove/Keys/Len/Clear` 的职责逐项对应：两端均以 `key % 256` 选择分片，均逐分片汇总键和长度，且均逐分片清空。
+主要语言映射如下：Go 的 `*statistics.Table` 对应 Rust 的 `Arc<Table>`；Go 的 `(*Table, bool)` 对应 Rust 的 `Option<Arc<Table>>`；Go 构造函数返回指针，Rust 返回拥有值并由 `SharedState` 持有；Go 每个 `keySet` 显式初始化 `map` 和 `sync.RWMutex`，Rust 通过 `Default` 初始化 `RwLock<HashMap<...>>`。
 
-主要语言映射如下：Go 的 `*statistics.Table` 对应 Rust 的 `Arc<Table>`；Go 的 `(*Table, bool)` 对应 Rust 的 `Option<Arc<Table>>`；Go 构造函数返回指针，Rust 返回拥有值并由 `SharedState` 持有；Go 每个 `keySet` 显式初始化 `map` 和 `sync.RWMutex`，Rust 通过 `Default` 初始化 `RwLock<HashMap<...>>`。Go `Remove` 也忽略底层内存成本返回值。
-
-两端对负键都不会提供正常结果，但触发机制不同：Go 的负余数直接作为数组下标 panic，Rust 先将负余数转换为 `usize`，再因越界索引 panic。Go 侧当前没有专门的 `keySetShard` 单元测试；Rust 独立测试补充了该兼容边界。并发与缓存集成语义主要由两端各自的 `lfu_cache_test` 覆盖。
+两端对负键都不会提供正常结果，但触发机制不同：Go 的负余数直接作为数组下标 panic，Rust 先将负余数转换为 `usize`，再因越界索引 panic。Go 侧当前没有专门的 `keySetShard` 单元测试；Rust 独立测试补充了该兼容边界。
 
 ## 扩展指南
 
@@ -95,15 +91,3 @@ Go 对照文件是 `pkg/statistics/handle/cache/internal/lfu/key_set_shard.go`�
 - 新增全量操作时，需要明确是一致快照还是弱一致遍历。若要求全局原子性，必须设计固定加锁顺序并评估一次持有 256 把锁的死锁与延迟风险，不能默认复用当前逐分片模式。
 - 改动返回值或内存成本语义时，要同步检查 `lfu_cache.rs::{Put, Del, Values, Len, Close, Clear}` 及 `SharedState::{retainEvictedShell, dropMemory}`，避免二级集合状态与成本指标脱节。
 - 测试必须保留在独立文件：直接边界测试同步更新 `key_set_shard_test.rs`，缓存生命周期和并发行为同步更新 `lfu_cache_test.rs`；Go 语义发生变化时还应同步 `key_set_shard.go` 与 `lfu_cache_test.go`。重点回归非负边界（0、255、256）、同分片冲突键、覆盖/删除不存在键、并发清空，以及负键 panic。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；目标目录列出 `key_set_shard.rs`、`key_set.rs`、`lfu_cache.rs` 及对应 Go/测试文件。
-- RustCodeGraph `node --file pkg/statistics/handle/cache/internal/lfu/key_set_shard.rs`：核对 93 行目标源码、14 个符号，以及测试文件使用关系。
-- RustCodeGraph `query KeySetShard` / `query key_set_shard` 与 callers/callees 查询：核对 Rust/Go 对照符号、`shardIndex -> keySetCnt` 引用；同时发现同名方法消歧限制，未将含混图结果作为调用结论。
-- `pkg/statistics/handle/cache/internal/lfu/key_set.rs`：核对每分片的 `RwLock<HashMap<i64, Arc<Table>>>`、锁范围、`Arc` 克隆和 `Remove` 成本返回值。
-- `pkg/statistics/handle/cache/internal/lfu/lfu_cache.rs`：核对 `SharedState` 持有关系及 `NewLFU/Get/Put/Del/Values/Len/Close/Clear`、淘汰壳表路径的直接调用。
-- `pkg/statistics/handle/cache/internal/lfu/Cargo.toml` 与 `lib.rs`：核对 crate 边界、依赖、私有模块声明和独立测试模块接线。
-- `pkg/statistics/handle/cache/internal/lfu/key_set_shard.go` 与 `key_set.go`：核对 Go 的分片布局、取模、锁、返回值和批量操作语义。
-- `pkg/statistics/handle/cache/internal/lfu/key_set_shard_test.rs`：核对负键 panic；`lfu_cache_test.rs` 的 `TestLFUPutTooBig`、`TestCacheLen`、`TestLFUCachePutGetWithManyConcurrency`、`TestLFUCachePutGetWithManyConcurrency2`：核对回落可见性、长度与并发完整性。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以任务指定命令确认目标文件存在且恰有 11 个固定二级章节。

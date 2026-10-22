@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-registry` crate 的 restore 任务心跳实现，对应 Go 文件 [`heartbeat.go`](heartbeat.go)。crate 入口 [`lib.rs`](lib.rs) 通过 `pub mod heartbeat` 装载它，并以 `pub use heartbeat::*` 将公开符号平铺到 crate 根。该 crate 的 [`Cargo.toml`](Cargo.toml) 把库入口指定为 `lib.rs`，`package.metadata.porting.go-package` 指向 `br/pkg/registry`，且没有外部 Cargo 依赖；SQL 会话、上下文和错误等边界均来自 crate 内的 `stubs`。
-
-它位于 restore registry 元数据链路中：单次心跳把任务行的 `last_heartbeat_time` 更新为当前 Unix 秒；`HeartbeatManager` 在独立线程中重复该动作。它只提供可观测的活跃时间，不负责判定或清理卡住任务。过期判断与状态转移位于 [`registration.rs`](registration.rs) 的 `is_task_stale`、`transition_stale_task_to_paused` 等路径。
-
-当前 Rust 接线止于同 crate 的 `Registry::UpdateHeartbeat`、`Registry::StartHeartbeatManager` 和测试。对 Rust 源的精确引用搜索未发现任务层生产调用；相对地，Go 版本由 `br/pkg/task/stream.go:2580` 的 `RegisterRestoreIfNeeded` 调用 `StartHeartbeatManager`。因此不能把 Go 的完整生产接线误写成 Rust 当前已接线事实。
+`HeartbeatManager` 保存专用 heartbeat session、上下文、任务 ID、刷新间隔、停止发送端和线程句柄；`Start` 负责启动，`Stop`/`Drop` 负责收束。
 
 ## 核心职责
 
@@ -95,18 +91,10 @@ worker 独占 session 的互斥锁后执行 SQL，因此同一个 heartbeat sess
 
 ## 与 Go 版本的对应关系
 
-共同语义：默认间隔均为 60 秒；构造器只配置、不启动；启动后立即写一次；周期写错误不终止循环；停止等待后台执行单元退出；SQL 更新相同库表、字段和 ID 条件；心跳用于状态洞察而非清理任务。
-
-主要实现映射：
-
 - Go 的 `Registry.UpdateHeartbeat` 方法被拆成 Rust 的底层 `update_heartbeat` 与 [`registration.rs`](registration.rs) 的 `Registry::UpdateHeartbeat` 包装，以便 manager 直接持有专用 session。
-- Go `goroutine + time.Ticker + stopCh/doneCh` 对应 Rust `thread + Instant deadline + mpsc + JoinHandle`。
 - Go manager 持 `*Registry` 并在 `Start(ctx)` 接收 context；Rust manager 持 `Arc<Mutex<Box<dyn Session>>>` 与克隆后的 `Context`，所以 `Start()` 无参数。
 - Go 记录成功、失败、context 结束和停止日志；Rust 当前忽略 worker 内写错误，未提供这些日志。
 - Go `Stop` 直接关闭 `stopCh`，按其代码约束只应调用一次且需在 worker 启动后调用；Rust `Stop` 对未启动和重复调用安全，`Drop` 还会自动停止。
-- Rust 明确实现慢写后的单次追赶，与 Go ticker 容量为一的可观察行为对齐；独立测试专门保护这一点。
-
-测试证据来自 Rust 独立文件：[`heartbeat_test.rs`](heartbeat_test.rs) 验证 ticker 在初始写之前建立且慢写后立即消费一个已到期 tick；[`parity_test.rs`](parity_test.rs) 的 `heartbeat_manager_constructor_does_not_start_worker` 验证构造/`Stop` 不写、`Start` 后立即写，`go_rust_public_contract_matches` 验证 SQL 常量、单次副作用与 registry 启停。目录中没有对应的 Go `heartbeat_test.go`，Go 语义依据是生产 [`heartbeat.go`](heartbeat.go) 与 `registration.go`/`br/pkg/task/stream.go` 调用链。
 
 ## 扩展指南
 
@@ -117,12 +105,3 @@ worker 独占 session 的互斥锁后执行 SQL，因此同一个 heartbeat sess
 - 若替换 session 类型或减少锁粒度，必须保持同一 session 不被并发调用，并验证 `Stop` 返回后不再发生写入。特别关注阻塞 SQL 导致无限 join 的兼容与运维风险。
 - 若完成 Rust 生产接线，入口应沿 `Registry::StartHeartbeatManager` 接入对应 Rust restore/stream 注册成功路径，并让 `Close`、暂停和注销路径继续成对停止；目前不能只凭 Go 接线宣称 Rust 已运行该 worker。
 - 兼容风险主要是 Go/Rust ticker 行为、错误吞吐策略和取消时序漂移；性能风险主要是心跳频率、每个 manager 一个线程以及 session 锁覆盖整个 SQL 调用。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；目标目录列出 `heartbeat.rs`、`registration.rs`、`stubs.rs`、`lib.rs` 及两个独立测试文件。
-- RustCodeGraph 读取与查询：`node --file br/pkg/registry/heartbeat.rs`；`query HeartbeatManager`、`query update_heartbeat`、`query NewHeartbeatManager`、`query StartHeartbeatManager`、`query StopHeartbeatManager`；精确 explore 核实 `unix_now`、`render_sql`、`update_heartbeat`、构造器、`Start`、`Stop`/`drop` 与 registration 包装关系。
-- 已读 Rust 直接证据：[`heartbeat.rs`](heartbeat.rs)、[`lib.rs`](lib.rs)、[`registration.rs`](registration.rs)、[`heartbeat_test.rs`](heartbeat_test.rs)、[`parity_test.rs`](parity_test.rs)。
-- 已读边界/对照证据：[`Cargo.toml`](Cargo.toml)、[`heartbeat.go`](heartbeat.go)、`br/pkg/registry/registration.go`，以及精确引用搜索得到的 `br/pkg/task/stream.go:2580` Go 生产入口。
-- 人工复核结论：文档区分了已实现逻辑、Rust 当前接线与 Go 生产接线；说明了 SQL 数据流、固定速率调度、失败策略、锁/线程/通道生命周期、测试位置和安全扩展点，未把桩接口或 Go 路径描述为 Rust 已完成的生产能力。
-- 本任务是纯文档分析，按任务约束不运行 Cargo；最终以任务指定命令验证文档存在且固定章节恰为 11 个。

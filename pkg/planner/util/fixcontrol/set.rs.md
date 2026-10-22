@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`set.rs` 是 `astersql-planner-util-fixcontrol` crate 中的 fix-control 文本解析器。crate 根在 [`lib.rs`](./lib.rs) 中以 `pub mod set` 声明本模块，并用 `pub use set::*` 将唯一公开函数 `ParseToMap` 重导出到 crate 根。[`Cargo.toml`](./Cargo.toml) 将该 crate 定义为不发布的 workspace 库，Go 包对应路径是 `pkg/planner/util/fixcontrol`，本文件的唯一外部依赖是 `anyhow`。
-
-在完整应用中，它把 `tidb_opt_fix_control` 风格的会话变量文本转成优化器可查询的 `HashMap<u64, String>`。直接生产使用证据包括 [`pkg/sessionctx/variable/sysvar_builtins.rs`](../../../sessionctx/variable/sysvar_builtins.rs) 中的系统变量校验回调，以及 [`pkg/planner/core/operator/physicalop/index_join_probe.rs`](../../core/operator/physicalop/index_join_probe.rs) 中的 `fix_map`。它只负责解析和生成重复赋值警告，不决定具体 fix 编号的含义；后者由同 crate 的 [`get.rs`](./get.rs) 常量与类型化读取 API 承担。
+解析优化器 fix control 设置并生成重复赋值警告。
 
 ## 核心职责
 
@@ -68,8 +66,6 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照是 [`set.go`](./set.go) 的 `ParseToMap`。Rust 版保留了其函数名、`u64 -> string` map、警告文本、后值覆盖、同值不告警、两种引号、引号内逗号、空白处理、末尾逗号、空值以及错误时不交付部分结果的语义。`fixcontrol_test.rs` 回放 Go `fix_control_suite` 中的成功与失败样例，`testdata/fix_control_suite_{in,out}.json` 是 SQL 层期望的原始证据。
-
 表达差异是：Go 返回 `(map, warnings, error)`，Rust 将成功数据放入 `anyhow::Result` 的 `Ok((map, warnings))`；Go `strconv.ParseUint` 错误和 Rust `ParseIntError` 的完整文本不同，Rust 测试因而校验错误类别而不是强行复制 Go 字串。Go 用字节下标处理 ASCII 引号/分隔符，Rust 用 `chars().next()` 识别开头引号并用 `len_utf8()` 计算其字节长度；对当前只允许的 ASCII `'`/`"` 而言结果等价。
 
 上层接线尚非完全等价：Go `sysvar.go` 的 session setter 会把 `newMap` 写入 `SessionVars.OptimizerFixControl`，而当前 Rust `sysvar_builtins.rs` 中对应回调只做校验和警告转发。这一差异属于调用者接线，不是 `set.rs::ParseToMap` 本身的解析差异。
@@ -81,13 +77,3 @@
 - 改变错误或警告文本会影响 SQL `SHOW WARNINGS`、Go testdata 和上层错误匹配；应同步更新独立测试 [`fixcontrol_test.rs`](./fixcontrol_test.rs) 和 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)，并核对 Go [`fixcontrol_test.go`](./fixcontrol_test.go) 及 `testdata/`。不要把 Rust 测试嵌入 `set.rs`。
 - 改变返回类型或重复键策略时，需同时审查 `sysvar_builtins.rs` 对警告/错误的处理和 `index_join_probe.rs::fix_map` 的降级策略。若要完善 session map 接线，应在上层 setter 修复并增加会话级回归，不应让纯解析函数直接持有会话。
 - 性能优化时保留单调游标和线性扫描特性；可评估按条目数预留 map/vector 容量，但应以实际输入规模基准为依据，避免为通常很短的会话变量增加复杂度。
-
-## 验证依据
-
-- 目标源码：[`set.rs`](./set.rs) 全文；公开符号只有 `ParseToMap`。
-- crate 边界：[`lib.rs`](./lib.rs) 的模块声明/重导出，以及 [`Cargo.toml`](./Cargo.toml) 的 `astersql-planner-util-fixcontrol` 包名、`anyhow` 依赖和 Go 包映射。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/planner/util/fixcontrol` 列出目标包 11 个已索引文件；`query ParseToMap --kind function` 定位 Go/Rust 两个实现；`node pkg/planner/util/fixcontrol/set.rs::ParseToMap` 核对完整函数；`callers` 识别三个 `fixcontrol_test.rs` 测试；`callees` 无仓库内函数边。
-- 生产调用补充核对：`rg` 定位并逐段阅读 [`pkg/sessionctx/variable/sysvar_builtins.rs`](../../../sessionctx/variable/sysvar_builtins.rs) 和 [`pkg/planner/core/operator/physicalop/index_join_probe.rs`](../../core/operator/physicalop/index_join_probe.rs)；其 Cargo manifest 均声明了 fixcontrol crate 依赖。
-- Go 对照：[`set.go`](./set.go)、[`fixcontrol_test.go`](./fixcontrol_test.go)、`testdata/fix_control_suite_in.json` 和 `testdata/fix_control_suite_out.json`；上层 setter 对照为 `pkg/sessionctx/variable/sysvar.go`。
-- Rust 独立测试：[`fixcontrol_test.rs`](./fixcontrol_test.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 和 [`main_test.rs`](./main_test.rs)。测试覆盖成功输入、空值、引号内逗号、重复键覆盖/警告、非法 key、缺冒号、未闭合引号与调用隔离。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证应确认本文件存在且恰好包含任务规定的 11 个二级标题。

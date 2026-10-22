@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate；crate 入口 `pkg/metrics/lib.rs` 以公开模块 `pub mod ru_v2` 暴露它，`pkg/metrics/Cargo.toml` 则声明该 crate 的库入口是 `lib.rs`，并直接依赖 `astersql-metrics-common` 与 `prometheus = "0.14"`。它是 RU v2（Request Unit 第二版）监控指标的定义与写入边界：负责构造 Prometheus counter、保存可供其他 crate 使用的句柄，并把已经算出的 RU 结果归入总量、SQL 类型和执行引擎维度；它不负责采集语句执行证据、计算 RU、注册 collector，也不访问 TiKV。
-
-正常启动链为 `pkg/metrics/metrics.rs::InitMetrics` → `ru_v2::InitRUV2Metrics`，之后 `metrics.rs::RegisterMetrics` 注册 `RUV2Total`、`RUV2TTLTotal`、`RUV2BySQLType`、`RUV2ByEngine`、`RUV2Unit` 和 `RUV2Statements`。运行期主要写入者是 `pkg/executor/statement_ru_result.rs::StatementRUContextSink`；DDL 完成路径还会从 `pkg/ddl/job_worker.rs::transit_persisted_job_step` 写入 DDL RU。
+提供 12 个 raw-unit 标签常量，使上游报告逻辑对 CPU、扫描字节、网络字节、写入键/字节等单位使用稳定字符串契约。
 
 ## 核心职责
 
@@ -68,7 +66,7 @@ collector 是进程生命周期对象，不持有数据库连接、事务、任�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/metrics/ru_v2.go`。Rust 保留了 Go 的全部 12 个 unit 常量、六个指标族、namespace/subsystem、metric name、help 文本、label 次序、SQL 类型集合、未知 SQL 类型归入 `other` 的规则，以及 `AddRUV2Results` 的五路累加顺序。`pkg/metrics/metrics_internal_test.go::TestRUV2MetricDefinitions` 与 Rust 的 `pkg/metrics/metrics_internal_test.rs::{go_merge_6_ru_results_use_go_label_and_engine_contract, ru_metric_definitions_preserve_labels_values_and_registration, go_merge_6_ru_metric_definitions}` 共同提供名称、标签和值的对照证据。
+Rust 保留了 Go 的全部 12 个 unit 常量、六个指标族、namespace/subsystem、metric name、help 文本、label 次序、SQL 类型集合、未知 SQL 类型归入 `other` 的规则，以及 `AddRUV2Results` 的五路累加顺序。
 
 表示层差异是 Go 全局变量直接持有 collector，Rust 以 `Option` 表达初始化前状态并通过 `expect` 暴露误用；Go 由 package `init` 生命周期保障，Rust 的总入口以 `Once`、`AtomicBool`、错误槽和互斥锁补足并发初始化边界。Rust 文件还提供 `AddDDLJobRU`，而所读的同路径 Go 文件没有同名辅助函数；Rust 调用点显示它将已同步 DDL job 的 RU 计入总量、`ddl` 与 `tikv`，相关 Rust 独立测试验证三者同步增加。该差异应视为 Rust 当前已接线行为，而不是从 Go 同路径文件推导出的语义。
 
@@ -80,13 +78,3 @@ collector 是进程生命周期对象，不持有数据库连接、事务、任�
 - 修改 metric name、help 或 label 名称/顺序属于监控兼容性变更，会影响 PromQL、Grafana 与告警；应同步检查 `pkg/metrics/grafana/`、`pkg/metrics/nextgengrafana/` 和 `pkg/metrics/alertmanager/` 中的引用，并保留现有名称的迁移策略。
 - 若调整初始化模型，优先消除或封装 `static mut`，但必须同时审查 `metrics.rs::{InitMetrics,RegisterMetrics,PACKAGE_INIT_LOCK}` 与所有跨 crate 直接静态访问。Rust 单元测试应继续放在独立的 `*_test.rs` 文件，不应内嵌到 `ru_v2.rs`。
 - `counter_vec` 当前未使用；删除或启用前先确认它的 `LblType` 单标签形状确实符合新指标，不能误用于现有 `sql_type`、`engine` 或多维指标。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file pkg/metrics/ru_v2.rs` 完整读取 213 行源码。
-- RustCodeGraph 调用证据：`InitRUV2Metrics` 的 Rust 使用点包括 `metrics.rs::InitMetrics` 及执行器/会话测试；`AddRUV2Results` 的调用边指向 `statement_ru_result.rs::StatementRUContextSink::results`；`AddDDLJobRU` 的调用边指向 `job_worker.rs::transit_persisted_job_step`。由于常见符号的宽泛 `explore` 结果噪声较高，最终调用集合又以限定 `*.rs` 的精确引用搜索复核。
-- 已读生产文件：`pkg/metrics/ru_v2.rs`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`、`pkg/executor/statement_ru_result.rs`、`pkg/ddl/job_worker.rs`。
-- 已读边界与 Go 对照：`pkg/metrics/Cargo.toml`、`pkg/metrics/ru_v2.go`、`pkg/metrics/metrics.go`、`pkg/executor/statement_ru_result.go`。
-- 已读独立测试：`pkg/metrics/metrics_internal_test.rs`；并通过引用搜索定位 `pkg/executor/statement_ru_plan_walk_test.rs`、`pkg/session/runtime/scan_adapter_runtime_test.rs`、`pkg/session/tests/paging_rpc.rs` 等调用链测试，以及 Go 的 `pkg/metrics/metrics_internal_test.go`、`pkg/executor/statement_ru_result_test.go`、`pkg/executor/statement_ru_reporting_test.go`。
-- 人工复核结论：本文件存在的原因是集中维护 RU v2 的 Prometheus schema 与低开销写入句柄；实际 RU 计算在执行器/DDL 上游完成；安全扩展必须同步 label 契约、预绑定分派、Go 对照和独立测试。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付结构验证命令及结果记录在最终报告中。

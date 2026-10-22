@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 Rust crate `astersql-br-pkg-glue` 的核心抽象门面，对应 Go 文件 [`br/pkg/glue/glue.go`](./glue.go)。[`br/pkg/glue/lib.rs`](./lib.rs) 以 `#[path = "glue.rs"]` 注册模块并用 `pub use glue::*` 从 crate 根重新导出其公开项，因此下游通常通过 `astersql_br_pkg_glue::{Glue, Session, Progress, ...}` 使用，而不需要知道本文件名。
-
-它处在 BR 业务逻辑与具体 TiDB/TiKV 运行时之间：上游恢复、连接和任务代码依赖这里的 trait；[`br/pkg/gluetidb/glue.rs`](../gluetidb/glue.rs) 与 [`br/pkg/gluetikv/glue.rs`](../gluetikv/glue.rs) 分别提供 TiDB CLI 与纯 TiKV 实现。当前文件有意不接入完整 `kv`、`domain`、`sessionctx` 等重型 crate，而以本地占位类型保存 API 形状；这意味着它是迁移期接口层，不是完整数据库能力的实现层。
+处在 BR 业务逻辑与具体 TiDB/TiKV 运行时之间：上游恢复、连接和任务代码依赖这里的 trait；[`br/pkg/gluetidb/glue.rs`](../gluetidb/glue.rs) 与 [`br/pkg/gluetikv/glue.rs`](../gluetikv/glue.rs) 分别提供 TiDB CLI 与纯 TiKV 实现。
 
 ## 核心职责
 
@@ -74,11 +72,11 @@ Go 注释要求 `Progress::Inc`/`IncBy` 可从任意 goroutine 调用；Rust tra
 
 ## 与 Go 版本的对应关系
 
-Rust 公开 trait 基本逐项对应 `glue.go` 的 `Glue`、`Session`、`BatchCreateTableSession` 和 `Progress` 接口；`ClientCLP`/`ClientSql` 数值、`WithProgress` 的 defer-close 语义及主要方法名称均保持 Go 风格。Rust 的 `CloseOnDrop` 对应 Go `defer p.Close()`，并额外由测试明确覆盖 panic unwind。
+Rust 的 `CloseOnDrop` 对应 Go `defer p.Close()`，并额外由测试明确覆盖 panic unwind。
 
 为适应 Rust 所有权和当前移植状态，存在以下差异：Go 的具体 `kv.Storage`、`domain.Domain`、model/DDL/sessionctx 类型被本地 trait、空结构、别名或 `Any` 句柄代替；可变 Session 方法使用 `&mut self`；可变参数转为 slice/vector；Go option 函数转为 `Box<dyn FnOnce() + Send>`；接口值转为 `Box`/`Arc` trait object。Rust 的 `Glue::AsConsoleGlue` 是 Go 侧类型断言的显式替代，Go `Glue` 接口中没有该方法。
 
-尤其不能把签名相似理解为完整能力已落地：文件头注释明确重型依赖仍由未来/下游接线；例如纯 TiKV Rust 实现用占位对象保存非 SQL 路径的接口形状。扩展或替换这些类型时必须同时检查两个具体 Glue 实现和调用方，而不能只改本文件。
+尤其不能把签名相似理解为完整能力已落地：文件头注释明确重型依赖仍由未来/下游接线；例如纯 TiKV Rust 实现用占位对象保存非 SQL 路径的接口形状。
 
 ## 扩展指南
 
@@ -87,12 +85,3 @@ Rust 公开 trait 基本逐项对应 `glue.go` 的 `Glue`、`Session`、`BatchCr
 改变生命周期语义时优先扩展 `WithProgress` 一类集中式守卫，并在独立测试文件增加成功、错误和 unwind/提前退出覆盖；不要把测试写入 `glue.rs`。改变 `Context` 时要说明新的同步保证，不能依赖 `Relaxed` 取消位传递其他数据可见性。替换占位类型为真实 crate 类型前，需要评估当前文件头记录的 arm64/grpc 构建边界以及所有 Cargo 依赖，避免把重型依赖无意传播给整个 BR 工具链。
 
 需要同步关注的测试包括 [`br/pkg/glue/parity_test.rs`](./parity_test.rs)（公开契约、进度生命周期、常量和独立 trait）、[`br/pkg/gluetidb/glue_test.rs`](../gluetidb/glue_test.rs) 与 [`br/pkg/gluetidb/parity_test.rs`](../gluetidb/parity_test.rs)（TiDB 实现）、[`br/pkg/gluetikv/glue_test.rs`](../gluetikv/glue_test.rs) 与 [`br/pkg/gluetikv/parity_test.rs`](../gluetikv/parity_test.rs)（TiKV 实现），以及使用该 crate 的连接/恢复任务测试。主要兼容风险是 trait 破坏性变更和 Go 语义漂移；性能风险主要来自把轻量占位替换成重型依赖，或在高频进度/取消路径引入锁和额外分配。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/glue` 找到本 crate 的 Rust/Go 实现和独立测试。
-- RustCodeGraph `node --file br/pkg/glue/glue.rs --offset 1 --limit 400`：读取目标文件全部 283 行，并报告 11 个使用文件；用于核对所有类型、trait、默认方法和 `WithProgress` 实现。
-- RustCodeGraph `query Glue --kind trait`、`query Session --kind trait`、`query GetDomain --kind function`、`query OwnsStorage --kind function`：核对抽象及 TiDB/TiKV 实现候选。
-- RustCodeGraph `node WithProgress`：确认 Rust 实现的调用轨迹为 `StartProgress` 及 `CloseOnDrop` 构造。限定文件的通用 `callers/callees` 查询未返回额外可用输出，因此上游以 crate 引用搜索核验，未臆造静态调用边。
-- 已阅读路径：`br/pkg/glue/glue.rs`、`br/pkg/glue/Cargo.toml`、`br/pkg/glue/lib.rs`、`br/pkg/glue/glue.go`、`br/pkg/glue/parity_test.rs`、`br/pkg/gluetidb/glue.rs`、`br/pkg/gluetikv/glue.rs`；并以 `rg` 核对 `astersql-br-pkg-glue` 的 Cargo 使用方和 `astersql_br_pkg_glue` 的 Rust 引用。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构检查要求本文恰好包含上述 11 个固定二级标题。

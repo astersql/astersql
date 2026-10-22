@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pg_result.rs` 属于 `astersql-server` crate，由 `pkg/server/lib.rs` 以 `pub mod pg_result` 装配。它位于共享 SQL 执行结果与 PostgreSQL 前端协议之间：上游接收 `pkg/server/conn.rs` 定义的 `QueryResult`、`ColumnInfo`、`NativeType` 和 `Value`，下游生成 PostgreSQL 消息体，并由 `pkg/server/pg_conn.rs::write_message` 写入 `TcpStream`。
-
-该文件同时承担三类边界工作：对少量 PostgreSQL 客户端探测 SQL 做安全适配、在执行前识别并限制简单查询命令、把引擎原生结果元数据和值编码成 PostgreSQL RowDescription/DataRow/CommandComplete。它不执行 SQL，不管理会话，也不负责消息长度外层 framing。`pkg/server/Cargo.toml` 表明它属于 `astersql-server`；本文件直接使用该 crate 已声明的 `astersql-parser`、`astersql-parser-ast`、`astersql-parser-mysql` 和 `chrono`。
+`encode_formats` 先在内存中完成整个响应的校验和编码，再依次产生 `T`（RowDescription）、`D`（DataRow）和 `C`（CommandComplete）；`write_result` 仅负责把已编码消息交给 socket 写层。
 
 ## 核心职责
 
@@ -83,8 +81,6 @@ SQL 适配/门禁使用 `Result<_, (&'static str, String)>`，让调用层直接
 
 ## 与 Go 版本的对应关系
 
-`pkg/server/Cargo.toml` 的 porting 元数据把 crate 对齐到 Go `pkg/server`，但仓库搜索未发现 `pkg/server/pg_result.go`，也未发现 Go 侧 `current_catalog`、`pg_postmaster_start_time`、PG RowDescription/DataRow 或 PG wire 调用链。现有 Go `pkg/server` 主要是 TiDB/MySQL 协议实现，因此本文件是 Rust 服务端新增的 PostgreSQL 边界能力，不是某个同路径 Go 文件的逐函数复刻。
-
 可对齐的共享语义来自 Rust `pkg/server/conn.rs` 对 Go server/session 结果的移植：`QueryResult`、`ColumnInfo`、`Value` 和 `SessionState.affected_rows` 仍承载规范执行结果；本文件只做 PG 表达。它刻意不改变 MySQL fallback，例如 `pg_types_test.rs::native_metadata_bridge_preserves_boolean_and_mysql_columns` 证明布尔差异保存在 `NativeType` 标志，而共享 MySQL 列和值保持不变。
 
 因此后续 Go/Rust 对齐时，应把本文件视为协议适配层：执行、事务和影响行数必须继续来自共享引擎；不能为了 PostgreSQL 兼容在此实现第二套 SQL 语义，也不能把目录专用 230..=241 类型码泄漏到 Go/MySQL 路径。
@@ -97,11 +93,3 @@ SQL 适配/门禁使用 `Result<_, (&'static str, String)>`，让调用层直接
 - 新增查询适配：优先使用 AST 节点及源码 offset；若是 parser 前的特殊探测，必须像 `startup_time_query` 一样逐 token 验证边界，并在 `pg_query_test.rs` 覆盖字符串、注释、相似标识符、大小写、空白和尾随语句。
 - 改动编码顺序或流式输出：必须保留“编码错误不会先发送 RowDescription”的不变量，并验证 socket 写失败、portal 重放和 response lifecycle。性能优化应先测量整结果缓冲的峰值，再设计有等价原子性的分段方案。
 - PostgreSQL binary 时间与数组格式涉及 epoch、网络序、维度下界和 NULL 标志，兼容风险高；应使用真实客户端集成面 `pg_client_integration_test.rs` 或现有 `pg_extended_test.rs` 补回归，而不是把测试嵌入生产文件。
-
-## 验证依据
-
-- 源与装配：`pkg/server/pg_result.rs`（完整 645 行）、`pkg/server/lib.rs`（模块声明）、`pkg/server/Cargo.toml`（crate 边界与 parser/chrono 依赖）、`pkg/server/conn.rs`（输入类型与 lifecycle）、`pkg/server/pg_conn.rs` 和 `pkg/server/pg_extended.rs`（简单/扩展协议调用链）。目标包不存在 `pkg/server/doc.go`。
-- RustCodeGraph：`status` 显示本仓库索引包含 Rust/Go 文件；`node --file pkg/server/pg_result.rs` 读取完整源码；精确 `query` 定位 `adapt_session_query`、`adapt_query`、`pg_type` 等符号；`callees encode_formats` 确认内部类型/值编码调用。caller 查询未给出边，已用精确源码引用补证。
-- Rust 测试：`pkg/server/pg_query_test.rs` 覆盖 current_catalog 与启动探测的 SQL 边界、不可表达结果、空/多语句与 REPLACE；`pkg/server/pg_types_test.rs` 覆盖原生类型桥、unsigned/bytea/时间拒绝、元数据缺失、目录 char/acl、binary 数值/时间/vector 与格式错误；`pkg/server/pg_extended_test.rs` 覆盖目录数组 OID、文本/二进制数组和空结果元数据；`pkg/server/pg_datagrip_test.rs` 覆盖实际目录查询产生的 OID/vector/char/acl 行为。另有 `pkg/server/pg_client_integration_test.rs` 作为真实客户端协议面。
-- Go 对照：对仓库 Go 源搜索 `current_catalog`、`pg_postmaster_start_time`、PostgreSQL/pgwire 及 RowDescription/DataRow，未发现本文件同路径或等价 PG 结果编码实现；只发现与该协议层无直接对应的通用 PostgreSQL 文字引用。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工复核唯一生产物、路径与上述证据一致。

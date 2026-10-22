@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-metrics` crate 的 statement-summary 指标子模块。crate 由 `pkg/metrics/Cargo.toml` 定义，入口 `pkg/metrics/lib.rs` 以 `pub mod stmtsummary` 暴露本模块；因此其中的常量、三个指标向量和两个公开函数都可供同一工作区的 Rust crate 使用。
-
-它位于指标生命周期的“声明与更新”层，而不负责生成语句摘要本身。`pkg/metrics/metrics.rs::InitMetrics` 调用 `InitStmtSummaryMetrics` 构造指标，随后同文件的指标注册列表注册三个 collector。语句摘要的聚合、LRU 和持久化逻辑不在本文件：Go v1 位于 `pkg/util/stmtsummary/statement_summary.go`，Go v2 位于 `pkg/util/stmtsummary/v2/`。
-
-当前 Rust 接线范围需要特别说明：仓库搜索只找到 `pkg/metrics/metrics.rs` 对初始化和注册的生产引用，以及 `pkg/metrics/metrics_2_aster_unit_test.rs`、`pkg/metrics/metrics_internal_test.rs` 对更新 API 的测试引用；未找到 Rust 版 statement-summary 生产者调用 `SetStmtSummaryWindowMetrics` 或递增 `StmtSummaryEvictedLogCounter`。所以 Rust crate 已提供并注册真实 Prometheus collector，但业务上报链尚不能仅由本文件证明已经迁入 Rust。
+在 `SetStmtSummaryWindowMetrics` 中同时更新一类实现的记录数与淘汰数；对常见的 v1/v2 标签复用缓存句柄，避免每次重新做标签查找。
 
 ## 核心职责
 
@@ -95,17 +91,14 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/metrics/stmtsummary.go` 是逐符号的直接对照：四个标签常量、三个指标向量、初始化函数、窗口更新函数、四个缓存槽位和一把 mutex 均有 Rust 对应物。指标 namespace、subsystem、name、help 和标签顺序保持一致，`pkg/metrics/metrics_internal_test.go::TestStmtSummaryMetricLabels` 与 Rust 同名语义测试也使用相同的 0→v1→v2→淘汰结果断言。
-
 实现形态上的差异包括：
 
 - Go 的全局指针零值映射为 Rust 的 `Option<...>`，因此 Rust 在使用点显式 `unwrap`。
-- Go 的四个独立缓存变量合并进 `StmtSummaryWindowMetrics`，仍由一把 mutex 保护。
 - Go Gauge 接口值复制对应 Rust Gauge 句柄 `clone`，两者都引用共享底层序列。
 - Go 未知类型的私有函数返回两个 `nil`；Rust 标为 `unreachable!`，因为公开入口已分流未知类型。
 - Rust 对可变全局访问显式标注 `unsafe`，而 Go 依靠包初始化约定和 mutex 表达生命周期。
 
-需要避免误读源码第 27 行的旧注释：“不会注册或上报 Prometheus 指标”与当前直接证据不一致。兼容构造器已经委托真实 `prometheus` crate，`metrics.rs` 也实际注册这些 collector，Rust 测试可读回写入值。可确认的限制不是“指标为空壳”，而是仓库中尚未找到 Rust statement-summary 业务生产者接线。
+可确认的限制不是“指标为空壳”，而是仓库中尚未找到 Rust statement-summary 业务生产者接线。
 
 ## 扩展指南
 
@@ -115,12 +108,3 @@
 - 新增淘汰结果时应使用固定结果常量，并在事件实际完成或确定丢弃的位置递增 Counter，不能在排队前预先计数。
 - 测试应继续放在独立文件。指标声明/标签/缓存行为优先扩展 `pkg/metrics/metrics_internal_test.rs`；全局初始化与注册覆盖可扩展 `pkg/metrics/metrics_2_aster_unit_test.rs`。若迁移 v1/v2 业务调用，还需在对应独立 Rust statement-summary 测试中覆盖窗口轮换、LRU 淘汰、异步日志成功/丢弃以及并发更新。
 - 主要风险是全局初始化顺序、重复注册、`static mut` 并发访问、标签维数不匹配和高基数。任何把安全 API 包在这些函数外层的改造，都应把“初始化一次且早于读写”编码为类型或同步约束，而不是只隐藏 `unsafe`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/metrics` 确认目标文件、Go 对照与测试位置；`node --file pkg/metrics/stmtsummary.rs --offset 1 --limit 240` 读取完整 164 行并报告使用者为 `metrics.rs`、`metrics_2_aster_unit_test.rs`、`metrics_internal_test.rs`；`query` 确认 Rust/Go 两套 `InitStmtSummaryMetrics`、`SetStmtSummaryWindowMetrics`、`getStmtSummaryWindowMetricsLocked`。精确 callers/callees 未返回函数级边，未把空结果臆测成“无调用”。
-- 源码与配置：`pkg/metrics/stmtsummary.rs`、`pkg/metrics/Cargo.toml`、`pkg/metrics/lib.rs`、`pkg/metrics/metrics.rs`、`pkg/metrics/bindinfo.rs`、`pkg/metrics/common/wrapper.rs`。
-- Go 对照与真实生产者：`pkg/metrics/stmtsummary.go`、`pkg/util/stmtsummary/statement_summary.go::updateMetricsLocked`、`pkg/util/stmtsummary/v2/stmtsummary.go::{updateMetrics,onEvict}`、`pkg/util/stmtsummary/v2/logger.go::logEvicted`。
-- 独立测试：`pkg/metrics/metrics_internal_test.rs::test_stmt_summary_metric_labels`、`pkg/metrics/metrics_2_aster_unit_test.rs` 的全局指标初始化断言，以及 Go 对照 `pkg/metrics/metrics_internal_test.go::TestStmtSummaryMetricLabels`。仓库没有 `stmtsummary_test.rs` 同名测试文件。
-- 人工复核结论：本文件存在是为了集中声明、初始化、注册并高效更新 statement-summary 可观测指标；运行时先初始化和注册，再由生产者按窗口设置 Gauge、按淘汰结果累加 Counter；安全扩展必须维护标签契约、缓存与向量同步、初始化先行以及有界标签集合。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前另执行任务指定的 11 章节结构检查，并检查变更范围只含本说明文档与任务文件清理。

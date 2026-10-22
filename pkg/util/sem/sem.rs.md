@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/util/sem/sem.rs` 是 `astersql-util-sem` crate 的 SEM v1（Security Enhanced Mode，安全增强模式）实现文件。crate 入口 `pkg/util/sem/lib.rs` 以私有 `mod sem` 装载本文件，再用 `pub use sem::*` 公开这里的八个函数；因此调用方看到的是 crate 根 API，而不是 `sem` 子模块。
-
-该文件负责保存 v1 的进程级启用状态，并提供固定规则来判定需要隐藏的 schema、表、状态变量、系统变量以及不能由 `SUPER` 兜底的动态权限。它不负责从 SQL 或配置解析 SEM，也不会主动把隐藏规则施加到查询结果上；实际调用方先检查 `IsEnabled`，再在规划、表达式、权限和兼容层路径中使用各个判定函数。`pkg/util/sem/compat/sem.rs` 是 v1/v2 的统一门面，也是多数上层 Rust 模块依赖的入口。
+这些函数本身不检查 SEM 是否启用，调用方必须负责启用态门控。
 
 ## 核心职责
 
@@ -79,11 +77,11 @@ RustCodeGraph 对 `equal_fold_ascii -> unicode_simple_fold_to_ascii` 和 `IsInvi
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/sem/sem.go`。Rust 保留了 Go 的公开函数集合、常量顺序、四组隐藏规则、原子 `int32` 开关、系统变量副作用、启用日志、主机名恢复条件和 `RESTRICTED_` 的“长度至少 12”约束。
+Rust 保留了 Go 的公开函数集合、常量顺序、四组隐藏规则、原子 `int32` 开关、系统变量副作用、启用日志、主机名恢复条件和 `RESTRICTED_` 的“长度至少 12”约束。
 
 主要语言映射为：Go `atomic.StoreInt32/LoadInt32` 对应 Rust `AtomicI32` 的 `SeqCst` 操作；Go `switch` 名单对应 Rust 数组 `.contains()`；Go `os.Hostname` 的成功分支对应 `hostname::get()`；Go `strings.EqualFold` 由两个私有 helper 局部实现，而不是简单 ASCII 忽略大小写。Rust 的 `SetSysVar(...).expect(...)` 显式处理依赖 API 的 `Result`，Go 调用没有可见返回值。
 
-`pkg/util/sem/sem_test.go` 与 `sem_test.rs` 覆盖相同的基础黑名单和权限前缀语义；Rust 测试额外覆盖 long-s 和 dotless-i，确保 helper 与 Go simple folding 对齐。`pkg/util/sem/migration_aster_unit_test.rs` 进一步覆盖启用/关闭副作用、日志、默认/真实主机名、全部名单、大小写约定以及裸 `RESTRICTED_` 边界。
+`pkg/util/sem/sem_test.go` 与 `sem_test.rs` 覆盖相同的基础黑名单和权限前缀语义；Rust 测试额外覆盖 long-s 和 dotless-i，确保 helper 与 Go simple folding 对齐。
 
 ## 扩展指南
 
@@ -92,12 +90,3 @@ RustCodeGraph 对 `equal_fold_ascii -> unicode_simple_fold_to_ascii` 和 `IsInvi
 若扩展 schema 比较，不应直接用 Unicode 大小写转换替代 `equal_fold_ascii`，因为完整大小写映射与 Go simple folding 不同。若目标不再是 ASCII 常量，需要先证明 helper 的适用范围或替换为完整且等价的 simple-fold 实现，并增加非 ASCII 回归用例。
 
 若扩展开关生命周期，应注意 `Enable`/`Disable` 的多步更新目前不是事务；增加可并发动态切换可能需要显式序列化和失败恢复。新增系统变量副作用还要确保变量在调用前注册。兼容性方面，应检查 `pkg/util/sem/compat/sem.rs` 的 v1/v2 互斥与转发；性能方面，当前名单均很小，线性查找成本有限，但大幅增长时应评估静态集合结构而不能擅自改变大小写语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含本仓库；`files --filter pkg/util/sem` 确认目标、入口、测试和 v1/v2/compat 文件；`node --file pkg/util/sem/sem.rs --offset 1 --limit 400` 读取全部 276 行；`query` 核对八个公开函数和两个私有 helper；`callers`/`callees` 核对内部调用边。常见符号的跨语言同名结果不够精确，跨 crate 调用改用精确文本搜索复核。
-- 源码与边界：`pkg/util/sem/sem.rs`、`pkg/util/sem/lib.rs`、`pkg/util/sem/Cargo.toml`、根 `Cargo.toml`。
-- Go 对照：`pkg/util/sem/sem.go`、`pkg/util/sem/sem_test.go`。
-- Rust 测试：`pkg/util/sem/sem_test.rs`、`pkg/util/sem/migration_aster_unit_test.rs`、`pkg/util/sem/main_test.rs`；兼容调用证据来自 `pkg/util/sem/compat/sem.rs` 及其 `Cargo.toml`。
-- 生产调用点：`pkg/expression/extension.rs`、`pkg/planner/core/expression_rewriter.rs`、`pkg/planner/core/planbuilder.rs`、`pkg/privilege/privileges/privileges.rs`、`pkg/privilege/privileges/cache.rs`。
-- 本任务为纯文档分析，按计划未运行 Cargo。结构验证要求本文恰好包含上述 11 个固定二级标题。

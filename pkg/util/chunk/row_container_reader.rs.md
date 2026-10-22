@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-chunk` crate，是 `RowContainer` 与逐行游标消费方之间的异步读取适配层。crate 入口 `pkg/util/chunk/lib.rs` 以公开模块 `row_container_reader` 暴露它；`pkg/util/chunk/Cargo.toml` 声明的直接实现依赖是 `crossbeam-channel = "0.5"`，其余核心类型 `Row`、`ChunkError` 来自 crate 根。
-
-它对应 Go 文件 `pkg/util/chunk/row_container_reader.go`，目标是把按 Chunk 保存的行容器转成只前进的逐行读取接口。Rust 当前已有完整实现、`RowContainer` 数据源适配和服务端游标消费接口，但仓库检索显示 `NewRowContainerReader` 的 Rust 调用者只有 `pkg/util/chunk/iterator_3_aster_unit_test.rs`；尚未发现与 Go `pkg/server/conn_stmt.go:442-448` 等价的 Rust 生产构造接线。因此它目前是“实现和下游接口已具备、生产创建主链尚未验证接通”，不能表述为 Rust 服务端游标已经实际使用该 worker。
+`RowContainerReader` 定义只前进游标协议：`Next`、`Current`、`End`、`Error`、`Close`（`pkg/util/chunk/row_container_reader.rs:27-38`）。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ unsafe 边界集中在 `unsafe impl Send for SendRow`。维护者必须持续保
 
 ## 与 Go 版本的对应关系
 
-两版的公共协议、构造时预取首行、按 Chunk/行顺序输出、首块行数两倍的缓冲策略、错误在迭代结束后查询，以及显式关闭 worker 的总体语义一致。对应关系为：Go `context.Context/cancel + WaitGroup + chan Row` 对应 Rust `cancel channel + JoinHandle + Receiver<SendRow>`；Go `err error` 对应 Rust `Arc<Mutex<Option<ChunkError>>>`。
-
 关键差异如下：
 
 - Go worker 每个 Chunk 调用一次 `rc.GetChunk`，确认完整 Chunk 读取成功后再逐行发送；Rust 把这一要求抽象为 `RowsOfChunk`，`RowContainer` 实现通过逐行 `GetRow` 收集 `Vec<Row>`。二者都在发送前形成完整的块级行集合，但底层取数路径不同。
@@ -106,15 +102,3 @@ unsafe 边界集中在 `unsafe impl Send for SendRow`。维护者必须持续保
 - 若把它接入 Rust 服务端生产主链，应以 Go `pkg/server/conn_stmt.go:425-455` 为行为对照，复用现有 `WrapWithRowContainerCursor`，并新增服务端级测试证明 reader 的创建、错误传递与关闭责任。
 - 建议扩展独立 Rust 测试 `pkg/util/chunk/iterator_3_aster_unit_test.rs`，覆盖空 source、提前关闭、重复关闭、Drop 回收、首块为空、worker panic/错误可见性；并参照 `pkg/util/chunk/row_container_test.go:338-441` 增加 spill 前后与并发 spill 行为。测试逻辑应继续放在独立测试文件，不能内嵌到生产源文件。
 - 性能风险集中在每 Chunk 先分配 `Vec<Row>`、channel 容量与逐行同步发送；兼容风险集中在首行预取、默认 `Row` 哨兵和错误查询时机；正确性风险集中在 unsafe 跨线程行视图及 source 的并发变更。
-
-## 验证依据
-
-本说明核对了以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；目标文件已索引为 20 个符号。
-- RustCodeGraph `files --filter pkg/util/chunk/row_container_reader.rs`、`explore` 与 `node --file ... --offset 1 --limit 320`：确认目标源码全貌、符号定义，以及文件级使用边 `pkg/util/chunk/row_container.rs`、`pkg/server/internal/resultset/cursor.rs`。
-- 源与 crate 边界：`pkg/util/chunk/row_container_reader.rs`、`pkg/util/chunk/row_container.rs:150-344`、`pkg/util/chunk/lib.rs:123-138`、`pkg/util/chunk/Cargo.toml`。
-- Rust 上游与测试：`pkg/server/internal/resultset/cursor.rs:58-112`、`pkg/util/chunk/iterator_3_aster_unit_test.rs:221-272`；精确 Rust 引用检索未发现其他 `NewRowContainerReader` 调用。
-- Go 对照与真实测试：`pkg/util/chunk/row_container_reader.go`、`pkg/util/chunk/row_container_test.go:338-441`、`pkg/server/conn_stmt.go:425-455`。
-
-人工复核结论：本文件存在是为了把按块存储的 `RowContainer` 转成可取消、带背压且能传播读取错误的逐行流；运行核心是“后台按块取行、channel 逐行交付、前台维护当前行、关闭时取消并 join”；安全扩展必须同时维护首行预取协议、错误与结束的区分、worker 回收和 `SendRow` 的 unsafe 生命周期不变量。任务要求的结构校验命令应在文档落盘后单独执行并以退出码为最终结构证据。

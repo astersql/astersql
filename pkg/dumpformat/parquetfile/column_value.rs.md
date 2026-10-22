@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpformat-parquetfile` crate，处在 SQL 文本协议原始字节与 Parquet 类型化列缓冲之间。crate 根模块 `pkg/dumpformat/parquetfile/lib.rs` 公开 `column_value` 模块并重新导出 `ColumnValue`；类型元数据来自相邻的 `column_type.rs`，目标缓冲来自 `column_buffer.rs`。
-
-写出主链中，`pkg/dumpformat/parquetfile/writer.rs::ParquetWriter::parse_column_value` 调用 `parse_raw_column_value`，随后 `ParquetWriter::append_parsed` 用 `account_column_value_memory_bytes` 记账并以 `append_column_value` 写入按物理类型拆分的缓冲。`dumpling/export/writer_util.rs::write_parquet_group` 也直接调用解析入口，再自行将 `ColumnValue` 分派给 Arrow Parquet column writer。读取侧 `pkg/dumpformat/parquetfile/parser.rs::EstimateParquetReaderMemory` 复用内存估算函数计算已物化列值的成本。
-
-`Cargo.toml` 将该目录定义为独立库 crate，直接依赖带固定 tag 的 AsterSQL `arrow-rs/parquet`；但本文件自身只使用 crate 内部类型和标准库。文件没有条件编译项，也不持有真正的 Parquet writer。
+`account_column_value_memory_bytes` 为写入阈值和读取估算提供近似内存成本；`write_column_batch` 则从类型化缓冲重建一批 `ColumnValue`。
 
 ## 核心职责
 
@@ -93,13 +89,9 @@ RustCodeGraph 索引将本文件识别为 26 个符号，并显示它被 `writer
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dumpformat/parquetfile/column_value.go`，Rust 测试还与 `column_value_conversion_test.go` 的边界用例逐项呼应。
-
-- `parse_raw_column_value` 对应 Go `parseRawColumnValue`：物理类型分派、可空非法时间转 NULL、字节 clone、DECIMAL 窄化和定宽校验基本一致。
 - Rust 的日期时间辅助复现 Go `time.Parse(time.DateTime, s)` 所需的无时区“as-if UTC”数值语义；Rust明确验证日历并截取到微秒，再按目标单位换算。
 - `parse_decimal_to_scaled_integer` 对应 Go `parseDecimalToScaledInteger` 的乘 `10^scale` 后向零取整；差异是 Rust 使用 `i128` 而 Go 使用任意精度 `big.Rat`/`big.Int`。
 - `to_fixed_len_two_complement` 对应 Go 同名函数；Rust利用 `i128::to_be_bytes()`，因此宽度上限为 16，Go 可处理更宽的大整数。
-- `append_column_value` 将 Go 的运行时类型断言改为显式枚举匹配，错配返回 `Error` 而不是 panic。
 - 内存估算保持“头部 + 数据长度”形状，但 Rust使用 `size_of::<Vec<u8>>()`，Go使用 slice header；它们是各自运行时的近似成本，并不承诺数值跨语言完全相同。
 - Go `writeColumnBatch` 接收 `file.ColumnChunkWriter` 并实际调用 `WriteBatch`；Rust `write_column_batch` 只把 `ColumnBuffer` 重建为枚举向量。真实 Rust Parquet 写出在 `writer.rs` 和 `dumpling/export/writer_util.rs` 中另行分派，这是当前迁移结构上的显著差异。
 - 四个 CamelCase Rust 函数只是 Go 命名兼容别名，不增加行为。
@@ -113,12 +105,3 @@ RustCodeGraph 索引将本文件识别为 26 个符号，并显示它被 `writer
 扩展 TIMESTAMP 格式或单位时，应集中修改 `parse_datetime_micros` 与 `parse_raw_column_value` 的单位换算，同时保留 `adjusted_to_utc=false` 的本地语义约定、可空非法时间降级和溢出检查。新增日期边界、闰年、fraction、Millis/Micros/Nanos 用例，并与 Go `time.Parse` 结果核对。
 
 若要让 `write_column_batch` 真正承担 Arrow 写入，需改变其签名并迁移/复用现有生产分派，同时明确 definition levels、column writer close 和错误上下文；当前函数名容易产生误解，不应在未接线前宣称等价于 Go。任何修改还应检查逐列失败后部分缓冲保留这一现有兼容行为及性能影响。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/dumpformat/parquetfile` 找到本文件及相邻实现/测试；`node --file .../column_value.rs` 读取 632 行源码并列出被 16 个文件使用；`query` 定位了核心函数及测试符号。`callers`/`callees` 命令未返回可用明细，因此调用边又以精确仓库搜索和源码位置核验，未据此猜测。
-- 实现与 crate 边界：`pkg/dumpformat/parquetfile/column_value.rs`、`column_buffer.rs`、`column_type.rs`、`lib.rs`、`Cargo.toml`。
-- 生产调用证据：`pkg/dumpformat/parquetfile/writer.rs` 的 `parse_column_value`/`append_parsed`，`dumpling/export/writer_util.rs::write_parquet_group`，`pkg/dumpformat/parquetfile/parser.rs::EstimateParquetReaderMemory`。
-- Go 对照：`pkg/dumpformat/parquetfile/column_value.go`、`writer.go`、`column_value_conversion_test.go`。
-- Rust 独立测试：`column_value_test.rs`、`column_value_conversion_test.rs`、`writer_behavior_test.rs`、`writer_test_helpers_test.rs`、`parser_test.rs`；覆盖空白 DECIMAL、截断、二补码边界、所有支持物理类型、字节所有权、非法/可空时间、Int96、内存估算及缓冲分派。
-- 本任务是只读分析加文档，不运行 Cargo；完成条件采用任务文件指定的 11 章节结构检查，并人工核对本文没有把未接线的 `write_column_batch` 描述为真实 Parquet 写出。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`network_backend.rs`](network_backend.rs) 是 `astersql-store-copr` crate 中的标准 TiKV DAG 网络后端。它弥补 `tikv-client = 0.4.2` 没有公开的 Coprocessor transport：向 PD 查询 Region、leader、Store 和 keyspace 元数据，通过 `tikvpb.Tikv` gRPC 发送 unary、server-streaming 和 store-batch Coprocessor RPC，再把 protobuf 响应还原为 crate 内部的 `CopProtocolResponse`。模块由 `pkg/store/copr/lib.rs` 公开并重导出，crate 边界由 `pkg/store/copr/Cargo.toml` 的 `[lib] path = "lib.rs"` 确认。
-
-生产接线在 `pkg/store/driver/tikv_driver.rs` 的 TiKV store 打开流程：它用 PD 地址、TLS、keyspace 和超时构建 `NetworkConfig`，注入 `OfficialTransactionLockResolver`，调用 `NetworkBackend::connect`，然后以 `Arc<dyn StoreBackend>` 交给 `Store::new`。因此本文件处在 Rust SQL 执行端 Coprocessor 迭代器与 PD/TiKV RPC 之间，不是 TiKV 事务客户端、TSO 或 SafePoint 的实现。
+`NetworkBackend` 组合可注入的 `RegionMetadataTransport`、`StandardCoprocessorTransport` 和 `TransactionLockResolver`，同时实现 `RegionCacheBackend` 与 `StoreBackend`。
 
 ## 核心职责
 
@@ -69,13 +67,13 @@ grpcio server stream 在同步 API 上用 `block_on(StreamExt::next)` 拉取；�
 
 ## 与 Go 版本的对应关系
 
-本文件没有同名 Go 文件；它把 Go `pkg/store/copr/coprocessor.go` 依赖的 client-go 能力拆成 Rust 可注入边界。Go `BuildCopIterator`/`buildCopTasks` 通过 client-go RegionCache 构建任务，Rust 对应链是 `coprocessor.rs` + `store.rs` + 本文件的 `RegionMetadataTransport`/`GrpcRegionMetadataTransport`。Go 的 request context 由 client-go 组装，Rust 在 `protobuf_request` 中显式镜像 priority、isolation、replica/stale read、resource group、lock hints、paging 和 store-batch 字段。
+本文件没有同名 Go 文件；它把 Go `pkg/store/copr/coprocessor.go` 依赖的 client-go 能力拆成 Rust 可注入边界。Go 的 request context 由 client-go 组装，Rust 在 `protobuf_request` 中显式镜像 priority、isolation、replica/stale read、resource group、lock hints、paging 和 store-batch 字段。
 
-Go `copIteratorWorker.handleLockErr` 对 `shared_lock_infos` 展开为多个 `txnlock.Lock`，然后用 `ResolveLocksWithOpts` 一次解析；Rust `NetworkBackend::resolve_lock` 保持这一语义，且 `TransactionLock` 保留 Go resolver 需要的完整字段。API V2 下，Rust `KeyCodec::decode_lock_info` 在交给 client-rust resolver 前递归剔除 keyspace 物理前缀，对应 client-go 的 keyspace truncate 边界。
+Go `copIteratorWorker.handleLockErr` 对 `shared_lock_infos` 展开为多个 `txnlock.Lock`，然后用 `ResolveLocksWithOpts` 一次解析；Rust `NetworkBackend::resolve_lock` 保持这一语义，且 `TransactionLock` 保留 Go resolver 需要的完整字段。
 
-Go `handleCopResponse` 依赖 Region error、lock、other error、bucket version、batch child 和 exec details 做局部重建与统计；Rust `pb_response` 不在 transport 层执行这些策略，而是完整保留证据给 `coprocessor.rs`。`response_read_bytes_v2` 在 NextGen kernel 下使用 `max(total_versions_size, processed_versions_size)`，否则用 processed size，这一口径有 `network_backend_runaway_test.rs` 的 Go 对齐回归。
+Go `handleCopResponse` 依赖 Region error、lock、other error、bucket version、batch child 和 exec details 做局部重建与统计；Rust `pb_response` 不在 transport 层执行这些策略，而是完整保留证据给 `coprocessor.rs`。
 
-差异和未完成面必须保持显式：Go/client-go 有更完整的 Region 缓存、store liveness、TiFlash/MPP/topology 和 SafePoint 能力；本文件刻意不建第二份 Region 缓存，`is_store_alive` 仅检查地址非空，MPP 不可用，多个 TiFlash 枚举方法返回空，`check_visibility` 不做实际检查。这些是已验证的当前代码事实，不是已支持功能。
+差异和未完成面必须保持显式：Go/client-go 有更完整的 Region 缓存、store liveness、TiFlash/MPP/topology 和 SafePoint 能力；本文件刻意不建第二份 Region 缓存，`is_store_alive` 仅检查地址非空，MPP 不可用，多个 TiFlash 枚举方法返回空，`check_visibility` 不做实际检查。
 
 ## 扩展指南
 
@@ -85,12 +83,3 @@ Go `handleCopResponse` 依赖 Region error、lock、other error、bucket version
 - 如要引入真正的 Region 缓存，必须先重新审查“只有上层 `RegionCache`”的不变量；不应直接往 `GrpcRegionMetadataTransport` 添加第二份状态。否则 invalidate、bucket version、leader 更换与并发任务会出现两套真相。
 - 实现 MPP/TiFlash/topology 或 visibility 不是局部删除默认错误即可：需要扩展 `StoreBackend`/`RegionCacheBackend`、网络客户端和生命周期，并与 Go/client-go 实际行为对齐。在未具备完整语义前，应保持现有显式“unavailable”边界，不能用空成功响应伪装支持。
 - 修改关闭、client cache 或 stream 时，要保持 `close_client` 幂等、关闭后禁止新 client、`close_address` 的局部性、stream `Drop` 取消和 attempt permit 的 RPC 粒度。并发风险集中在 mutex poison/panic、持锁时间和 close/send 竞态；性能风险集中在每次任务的 PD 重查、`block_on` 流读取和大 batch 响应聚合。
-
-## 验证依据
-
-- RustCodeGraph 状态：本仓库索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。查询 `NetworkBackend network_backend coprocessor` 确认 `NetworkBackend` 在本文件 343 行、`NetworkConfig` 在 64 行、`NetworkPdKeyspaceClient` 在 115 行、`NetworkRegionBackend` 在 741 行，并展示 `send_coprocessor` -> `coprocessor.rs::send` -> `build_cop_iterator` 的调用链。
-- RustCodeGraph 源码证据：通过 `node --file pkg/store/copr/network_backend.rs` 分段阅读 1–2023 行，核对了 transport trait、`NetworkBackend` 两个 trait impl、`KeyCodec`、PD RPC、TiKV RPC、stream Drop 和 `pb_response`；通过 `node --file pkg/store/driver/tikv_driver.rs --offset 570 --limit 85` 确认生产构造与 `Store::new` 接线。
-- crate/模块证据：`pkg/store/copr/Cargo.toml` 确认 crate、`tikv-client`、`grpcio`、`kvproto`、`protobuf`、futures、Tokio、failpoint 和 kernel-type 依赖；`pkg/store/copr/lib.rs` 确认 `network_backend` 公开重导出及独立 `network_backend_test.rs` 挂载；`pkg/store/copr/store.rs` 与 `coprocessor.rs` 确认 backend -> Store -> worker 的调用和锁处理位置。
-- Go 对照：`pkg/store/copr/coprocessor.go` 的 `BuildCopIterator`、`handleCopResponse`、`handleLockErr` 和 bucket-version 处理，用于核对任务路由、Region/lock/batch 错误和 shared-lock 展开语义。仓库中不存在同名 `network_backend.go`，因此未声称逐函数对应。
-- 测试证据：`pkg/store/copr/network_backend_test.rs` 验证串行 batch timeout、attempt permit 释放、Region 重定位/失效、stream close、普通与 shared lock、V1/V2 memcomparable/keyspace 边界、三副本超时后默认超时回退与 `ReadStats`；`pkg/store/copr/network_backend_runaway_test.rs` 验证新旧 exec details、batch child processed keys 和 kernel-specific read bytes。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付时使用任务指定的结构检查，要求文件存在且上述固定二级标题恰好 11 个；未做网络集成试验，真实 PD/TiKV/TLS 可用性不在本次验证范围。

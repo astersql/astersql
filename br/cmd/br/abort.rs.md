@@ -4,7 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-br-cmd-br` crate 的 BR 命令行装配层。crate 由 [`Cargo.toml`](./Cargo.toml) 定义，库入口 [`lib.rs`](./lib.rs) 通过 `pub mod abort` 暴露本模块，二进制入口 [`main.rs`](./main.rs) 再把 `NewAbortCommand()` 注册为 `br` 的一级子命令。它对应 Go 文件 [`abort.go`](./abort.go)，负责建立 `br abort restore {full,db,table,point}` 命令树、初始化公共环境、解析恢复配置并将请求交给任务层；恢复任务注册表与 checkpoint 的实际处理不在本文件内。
+对应 Go 文件 [`abort.go`](./abort.go)，负责建立 `br abort restore {full,db,table,point}` 命令树、初始化公共环境、解析恢复配置并将请求交给任务层；恢复任务注册表与 checkpoint 的实际处理不在本文件内。
 
 ## 核心职责
 
@@ -71,9 +71,9 @@
 
 ## 与 Go 版本的对应关系
 
-CLI 装配部分逐项对应 [`abort.go`](./abort.go)：顶层/中间层命令名与文案一致，四个叶子使用同一组任务常量和 flag 定义，full/point 的 filter stream 布尔值分别为 `false`/`true`，前置初始化顺序和解析失败时打开 usage 的行为也一致。Rust 的 `with_tracing` 封装对应 Go 的 `TracerStartSpan`/`defer TracerFinishSpan`，`effective_task_flags` 则补偿当前本地 `Command` 桩没有完整 cobra 父链 flag 视图的问题。
+Rust 的 `with_tracing` 封装对应 Go 的 `TracerStartSpan`/`defer TracerFinishSpan`，`effective_task_flags` 则补偿当前本地 `Command` 桩没有完整 cobra 父链 flag 视图的问题。
 
-真正的业务实现目前不对齐：Go `br/pkg/task/restore.go::RunRestoreAbort` 会规范化 operation context，建立可取消 context 和 manager，解析 upstream cluster ID/start TS，创建 restore registry，原子查找并删除匹配的暂停任务，设置 restore ID，初始化 storage/table checkpoint managers 并清理 checkpoint；未找到任务时会记录日志后成功返回。Rust 同名函数当前没有这些步骤，也没有相应错误分支。故本文只能确认 CLI 契约与分派已移植，不能确认 Go abort 的实际效果已移植。
+Rust 同名函数当前没有这些步骤，也没有相应错误分支。
 
 ## 扩展指南
 
@@ -82,11 +82,3 @@ CLI 装配部分逐项对应 [`abort.go`](./abort.go)：顶层/中间层命令�
 - 调整 flags 时，要区分 abort persistent flags 与叶子 local flags，并验证 `effective_task_flags` 的 `KNOWN_FLAG_NAMES` 能传递新增 flag；point 专属字段还须同步 `DefineStreamRestoreFlags` 与 `ParseStreamRestoreFlags`。
 - 完成真实 abort 能力应优先补齐 `br/pkg/task/restore.rs::RunRestoreAbort`，按 Go 顺序保留 operation context、registry 原子删除、无匹配任务幂等成功、checkpoint 初始化的 best-effort 警告以及最终清理语义，并在 `br/pkg/task/restore_test.rs` 或新的同目录独立 `*_test.rs` 中覆盖。不要把这类业务逻辑塞回 CLI 文件。
 - 若缩短 glue 锁持有时间或改变 tracing 生命周期，需要先确认任务层借用边界，并为成功、解析错误、任务错误和 panic/清理行为增加独立测试；兼容风险主要是脚本可见的命令树/usage，正确性风险主要是误删 registry 项或漏清 checkpoint，性能风险主要是持锁期间的远程 I/O。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、7,032 个 Rust 文件；目标 `br/cmd/br/abort.rs` 已索引，共识别 8 个符号。
-- RustCodeGraph 读取与查询：`node --file br/cmd/br/abort.rs`；查询 `NewAbortCommand`、`runAbortRestoreCommand`、`RunRestoreAbort`、`IsStreamRestore`、`effective_task_flags`、`with_tracing`；调用图确认四个叶子进入公共执行函数，并定位任务层同名 Rust/Go 实现。
-- 已核对源码/配置：[`abort.rs`](./abort.rs)、[`Cargo.toml`](./Cargo.toml)、[`lib.rs`](./lib.rs)、[`main.rs`](./main.rs)、[`cmd.rs`](./cmd.rs)、[`stubs.rs`](./stubs.rs)、[`abort.go`](./abort.go)、`br/pkg/task/restore.rs` 与 `br/pkg/task/restore.go`。
-- 已核对测试：[`parity_test.rs`](./parity_test.rs) 只覆盖命令树与默认过滤器相关公共契约；仓库搜索未发现直接执行 abort 叶子或覆盖 `RunRestoreAbort` 业务效果的 Rust/Go 测试。本文因此明确标注执行语义的未覆盖和 Rust 任务层缺口。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文存在且恰好包含 11 个固定二级章节，并人工复核源码链接、符号名、调用边与 Go/Rust 差异。

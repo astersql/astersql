@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl` crate；模块由 [`pkg/ddl/lib.rs`](lib.rs) 以 `pub mod backfilling_dist_executor` 公开。它位于 DDL reorg 的分布式回填边界，负责定义任务/子任务元数据协议、过大子任务元数据的外置读写规则、回填阶段枚举，以及一个轻量的阶段选择门面。它不负责 DDL job 的持久化、schema state 推进、Region 扫描或索引 KV 的实际生成/导入。
-
-从完整链路看，DDL job 仍是上层生命周期和恢复单位；[`LitBackfillScheduler`](backfilling_dist_scheduler.rs) 根据任务元数据规划阶段和 `BackfillSubTaskMeta`，具体工作分别由 `backfilling_read_index.rs`、`backfilling_merge_sort.rs`、`backfilling_import_cloud.rs`、`backfilling_merge_temp.rs` 承担。本文件的 [`BackfillDistExecutor`](backfilling_dist_executor.rs) 当前只返回阶段枚举来表示选择结果，并未像 Go 的 `backfillDistExecutor` 那样实现 DXF `TaskExecutor`、构造真实 `StepExecutor` 或持有 DDL/runtime/session 资源，因此应视为仍在迁移中的协议与门面层。
+位于 DDL reorg 的分布式回填边界，负责定义任务/子任务元数据协议、过大子任务元数据的外置读写规则、回填阶段枚举，以及一个轻量的阶段选择门面。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph 对 `BackfillDistExecutor`、`decode_backfill_subtask_meta`、`wri
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/ddl/backfilling_dist_executor.go`](backfilling_dist_executor.go)。已对齐的语义包括：任务/子任务元数据的大体字段；全局排序大字段外置；外部载荷不递归携带自身路径；旧单索引 `SortedKVMeta` 向行范围和 `MetaGroups` 的兼容补齐；四个可执行 backfill 阶段；索引信息缺失不可重试；子任务幂等。
-
 重要差异如下：
 
 - Go 使用 JSON 和 `globalsort.BaseExternalMeta` 的标签驱动拆分；Rust 使用私有的 `ABFM\x01` 二进制格式。两者不是字节级互操作协议。
@@ -101,13 +97,3 @@ RustCodeGraph 对 `BackfillDistExecutor`、`decode_backfill_subtask_meta`、`wri
 - 扩展错误类型时，分别确定永久错误、瞬态错误和环境错误，补齐 Go 的 `common.IsRetryableError`/`isRetryableError` 语义；尤其保护“索引元数据缺失”和“确认磁盘不足”等不可重试分支。
 - 测试继续放在独立的 [`backfilling_dist_executor_test.rs`](backfilling_dist_executor_test.rs)，覆盖协议版本、截断/UTF-8、无 storage 的外部指针、写失败后的部分状态、旧版兼容、新字段往返和阶段/重试矩阵；涉及真实阶段接线时同步相邻 step executor 测试，不把测试内嵌到生产文件。
 - 兼容性风险集中在持久化元数据布局和 Go/Rust 差异；性能风险集中在大列表克隆、无上限长度前缀导致的内存分配，以及 `available_index_ids.contains` 的线性查找。优化时须先保留现有协议和错误行为。
-
-## 验证依据
-
-- 完整阅读：[`pkg/ddl/backfilling_dist_executor.rs`](backfilling_dist_executor.rs)、[`pkg/ddl/Cargo.toml`](Cargo.toml)、[`pkg/ddl/lib.rs`](lib.rs)、[`pkg/ddl/doc.go`](doc.go)。
-- Go 对照：[`pkg/ddl/backfilling_dist_executor.go`](backfilling_dist_executor.go)；重试边界补证来自 [`pkg/ddl/backfilling_test.go`](backfilling_test.go) 的 `TestBackfillRetryableErrors`。
-- Rust 独立测试：[`pkg/ddl/backfilling_dist_executor_test.rs`](backfilling_dist_executor_test.rs) 验证内外元数据往返、外部载荷不自引用以及当前重试分类；[`pkg/ddl/backfilling_test.rs`](backfilling_test.rs) 还覆盖初始化后的阶段选择。
-- 直接调用/数据流证据：[`pkg/ddl/backfilling_dist_scheduler.rs`](backfilling_dist_scheduler.rs) 的 `LitBackfillScheduler`、`try_generate_plan_for_physical_table`、`plan_global_sort_ingest`；[`pkg/ddl/backfilling_merge_sort.rs`](backfilling_merge_sort.rs) 的 `MergeSortStepExecutor::run_subtask`。
-- 冻结版本证据：以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ddl/backfilling_dist_executor.rs` 审计增量，并以 `git show 2c944fb:路径` / `git grep ... 2c944fb -- ...` 核对源码、独立测试及 Go 对照。RustCodeGraph `status` 当前包含 Rust，但索引不是冻结快照，故不用于证明目标提交行为；未采用工作区未提交 Rust 内容。
-- 人工边界复核：当前文件是协议与轻量门面，不是完整 DXF executor；未把 DDL 设计文档概览或 Go 行为当作已接入 Rust 的事实。
-- 本任务仅更新说明文档，不修改运行时代码；按任务约束不运行 Cargo。结构验证应确认文件存在且恰有上述 11 个固定二级标题。

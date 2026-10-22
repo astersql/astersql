@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`context.rs`](context.rs) 是独立 library crate `astersql-br-pkg-operation` 的主体实现。根工作区 [`Cargo.toml`](../../../Cargo.toml) 将 `br/pkg/operation` 列为 member；本目录的 [`Cargo.toml`](Cargo.toml) 以 [`lib.rs`](lib.rs) 为 crate 根，`lib.rs` 通过 `#[path = "context.rs"] pub mod context` 挂载本文件并用 `pub use context::*` 再导出全部公开符号。Cargo metadata 将它标记为 Go 包 `br/pkg/operation` 的 Rust 移植，唯一外部依赖是启用 `v4` feature 的 `uuid`。
-
-它定义一次 BR 命令的运行身份、启动时刻和运维 hint，并能把这些状态转换成外部存储锁所需的元数据。需要注意当前接线边界：仓库 Cargo 清单搜索没有发现其他 crate 对 `astersql-br-pkg-operation` 的依赖，Rust 生产目录也没有直接调用本 crate 的 `NewContext`；[`br/pkg/restore/log_client/client.rs`](../restore/log_client/client.rs) 使用的是该 crate 自己 [`stubs.rs`](../restore/log_client/stubs.rs) 内的 `operation` 模块，不是本文件。因此这里是可独立测试的真实移植实现，但现有 Rust BR 主链尚不能据此认定已经接入它。
+定义一次 BR 命令的运行身份、启动时刻和运维 hint，并能把这些状态转换成外部存储锁所需的元数据。
 
 ## 核心职责
 
@@ -92,7 +90,7 @@ RustCodeGraph 文件节点报告 `context.rs` 有 30 个符号并“被 15 个�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`context.go`](context.go)，测试意图来自 [`context_test.go`](context_test.go)。公开业务形状基本一一对应：`Context`、`HintField`、四个锁资源常量、`NewContext`、`HintFields`、`SetHintField`、初始化判断、线性索引、`LockMeta` 和 hint 拼接都保留同样的分支顺序、日志消息与字段语义。Rust 独立测试把 Go 的主要用例移植到 [`context_test.rs`](context_test.rs)，[`parity_test.rs`](parity_test.rs) 另行检查覆盖、删除、空 key、LockMeta 和空资源契约。
+Rust 独立测试把 Go 的主要用例移植到 [`context_test.rs`](context_test.rs)，[`parity_test.rs`](parity_test.rs) 另行检查覆盖、删除、空 key、LockMeta 和空资源契约。
 
 已验证差异如下：
 
@@ -112,12 +110,3 @@ RustCodeGraph 文件节点报告 `context.rs` 有 30 个符号并“被 15 个�
 - 若把测试日志设施移到 `#[cfg(test)]`，需要同步调整 crate 的公开 API 和所有测试导入；若改用正式日志 facade，则要保留线程隔离、嵌套 guard 恢复、生产输出以及 Go 消息/字段名契约。
 - 若希望 `NewContext` 的 `Result` 有实际意义，应明确 UUID/hostname/日志中哪些失败向上传播，并与 Go 错误语义对齐；不要只在 Rust 侧随意新增失败条件。
 - 性能优化应以 hint 数量证据为基础。若改为 map，需要额外保存稳定顺序，并验证克隆快照与锁 hint 输出不漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter br/pkg/operation` 列出 Rust/Go 实现、独立测试和 crate 根；`node --file br/pkg/operation/context.rs` 分段读取全部 439 行并确认 30 个符号。`query NewContext` 同时定位 Rust/Go 对照；精确 `callers`/`callees` 未返回边，故未据此宣称生产接线。
-- Rust 源与 crate 边界：[`context.rs`](context.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml) 以及根 [`Cargo.toml`](../../../Cargo.toml)。本目录没有 `doc.go`。
-- 接线复核：仓库范围搜索 `astersql-br-pkg-operation`/`astersql_br_pkg_operation`、`NewContext`、`SetHintField` 和 `LockMeta`；并读取 [`br/pkg/restore/log_client/client.rs`](../restore/log_client/client.rs)、[`stubs.rs`](../restore/log_client/stubs.rs) 与其测试辅助，确认它们当前使用本地 stub 而非本 crate。
-- Go 对照：[`context.go`](context.go) 及引入该行为的提交 `807326b066`，核对 UUID 错误、hostname、zap 字段、切片 clone、LockMeta 校验和 `strconv.Quote`。
-- 测试证据：[`context_test.rs`](context_test.rs) 覆盖初始化、hint 全部分支、clone/快照独立性、锁元数据、Go 零时间与 epoch、quote、生产日志和 OS hostname；[`parity_test.rs`](parity_test.rs) 覆盖公开契约；[`context_test.go`](context_test.go) 是原始 Go 测试意图。
-- 本任务只新增说明文档，按计划不运行 Cargo。交付前执行任务指定的 11 标题结构检查，并人工复核链接、真实接线边界和 Go/Rust 差异。

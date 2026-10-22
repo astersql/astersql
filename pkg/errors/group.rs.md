@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`group.rs` 是 `astersql-errors` crate 的多原因错误抽象与遍历实现。该 crate 由 [`pkg/errors/Cargo.toml`](Cargo.toml) 定义，库入口是 [`pkg/errors/mod.rs`](mod.rs)；入口将本文件的 `ErrorGroup`、`Errors`、`WalkDeep` 全部公开再导出。它位于单因错误链工具 [`pkg/errors/wrap.rs`](wrap.rs) 与多错误构造器 [`pkg/errors/join.rs`](join.rs) 之间：`wrap.rs::Unwrap` 提供纵向 cause 边，`join.rs::JoinError` 实现本文件的横向组边。
-
-本文件不负责创建具体错误文本、捕获栈或启动并发任务。它解决的是错误已经形成后，如何统一表示“一项操作包含多个独立失败”，以及如何以确定顺序遍历混合的 cause 链和错误组。固定 Go 来源是 `github.com/pingcap/errors` 提交 `306e305bcf41` 的 `group.go`；仓库当前没有同路径 Go 文件，Rust 对等性清单在 [`pkg/errors/tests/api_parity_test.rs`](tests/api_parity_test.rs) 中固定了该来源提交。
+位于单因错误链工具 [`pkg/errors/wrap.rs`](wrap.rs) 与多错误构造器 [`pkg/errors/join.rs`](join.rs) 之间：`wrap.rs::Unwrap` 提供纵向 cause 边，`join.rs::JoinError` 实现本文件的横向组边。
 
 ## 核心职责
 
@@ -78,10 +76,6 @@ RustCodeGraph 的目标文件节点记录了 `tests/api_parity_test.rs`、`tests
 
 ## 与 Go 版本的对应关系
 
-固定来源 `pingcap/errors@306e305bcf41/group.go` 同样定义 `ErrorGroup.Errors() []error`、一层展开函数 `Errors` 和深度遍历 `WalkDeep`。两版的关键语义一致：普通错误被包装成单元素集合；遍历先访问当前节点，再递归 `Unwrap` 的单因链，最后按序递归组子项；访问器返回 `true` 会结束全局遍历。
-
-Rust 的类型映射有四点需要注意：
-
 1. Go 用运行时接口断言识别任意 `ErrorGroup`；Rust 必须通过 `SharedError::new_group` 显式缓存 group trait 对象。仅用 `SharedError::new` 包装一个实现了 `ErrorGroup` 的类型不会被本文件识别为组。
 2. Go 的 `error`/`nil` 映射为 Rust 的 `SharedError`/`Option<SharedError>`；所以 `WalkDeep(None, ...)` 对应 Go 的 nil 分支，而 `Errors` 没有空输入形态。
 3. Go 返回 `[]error`，Rust 返回 `Vec<SharedError>` 并克隆共享句柄；这保留了拥有权安全和输入顺序。
@@ -96,14 +90,3 @@ Rust 的类型映射有四点需要注意：
 修改遍历策略时，最可能改动 `WalkDeep::walk`，必须保持并明确评估三项兼容合同：当前节点是否先于后代、cause 是否先于 group、短路是否跨递归层传播。同步扩展独立测试 [`pkg/errors/tests/group_join_test.rs`](tests/group_join_test.rs)，不要把测试嵌入生产文件；若影响 `Find`，还要同步 [`pkg/errors/tests/wrap_test.rs`](tests/wrap_test.rs)。公开面变化需更新 [`pkg/errors/tests/api_parity_test.rs`](tests/api_parity_test.rs)。
 
 性能上，应警惕每层 `Errors()` 的向量分配和句柄克隆，以及递归深度。若未来需要无分配迭代或环检测，这会改变 trait 返回类型或遍历复杂度，不能作为局部优化偷偷引入；应同时核对 Go 兼容需求、所有实现者和调用方。错误顺序影响 `HandleError` 的首个返回项、gRPC 状态选择和退避判定，不能随意排序或去重。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/errors/group.rs`：读取目标文件完整 62 行并确认 6 个符号；文件使用者包含 `tests/api_parity_test.rs`、`tests/group_join_test.rs`、`wrap.rs` 等。
-- RustCodeGraph `query ErrorGroup`、`query error_group` 与 `node WalkDeep`：确认 trait、`SharedError::error_group` 和 `WalkDeep` 的精确位置；`WalkDeep` 调用轨迹包含两个独立测试入口。
-- RustCodeGraph 文件节点：核对 `pkg/errors/core.rs::SharedError::{new_group,error_group}`、`pkg/errors/wrap.rs::{Unwrap,Find}`、`pkg/errors/join.rs::{JoinError,Join}`、`pkg/errctx/context.rs::Context::HandleError`、`br/pkg/conn/conn.rs::status_code`、`br/pkg/utils/backoff.rs::BackoffStrategyImpl::NextBackoff`。
-- crate 边界：读取 `pkg/errors/Cargo.toml` 和 `pkg/errors/mod.rs`，确认库入口、再导出和依赖；该目录没有 `doc.go`。
-- Rust 测试：读取 `pkg/errors/tests/group_join_test.rs`、`pkg/errors/tests/api_parity_test.rs` 与 `pkg/errors/tests/wrap_test.rs` 的相关用例，覆盖 trait 可实现性、普通/组错误展开、空输入、嵌套遍历顺序、短路和 `Find` 的组搜索。
-- Go 对照：仓库搜索未发现 `pkg/errors/group.go`；核对官方 `pingcap/errors` 固定提交 `306e305bcf41` 的 [`group.go`](https://github.com/pingcap/errors/blob/306e305bcf41/group.go)，并由本仓库 `api_parity_test.rs` 的固定来源声明交叉确认。
-- 结构验证按任务要求执行：目标文档存在，且固定二级标题恰好 11 个。纯文档任务未运行 Cargo。

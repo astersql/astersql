@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-config` crate（`pkg/lightning/config/Cargo.toml`），定义 Lightning 配置层统一使用的字节容量值类型 `ByteSize`。crate 入口 `pkg/lightning/config/lib.rs` 通过 `pub mod bytesize` 声明模块并以 `pub use bytesize::*` 再导出该类型；因此同 crate 的配置结构和外部依赖方都可从 crate 根访问它。
-
-它位于“配置文本/TOML/JSON”与“运行时字节数”之间：`pkg/lightning/config/config.rs` 用 `ByteSize` 表示 Mydumper 的读取/批次/Region 大小和 TiKV Importer 的发送批次、磁盘配额、缓存、限速等字段；`pkg/lightning/config/toml_codec.rs` 的 `load_config_from_toml` 经 `apply_mydumper`、`apply_importer` 调用 `ByteSize::from_toml_value`，将用户配置写入这些字段。本文件只负责容量值的表示和编解码，不负责默认值选择、字段间校验或实际资源分配。
+为不同配置入口提供适配：`FromStr`/`unmarshal_text` 处理文本，`from_toml_value` 和 `Deserialize` 处理 TOML/Serde 值，`unmarshal_json` 复刻 Go 的数字专用 JSON 解码路径，`Serialize`/`marshal_json` 输出裸整数。
 
 ## 核心职责
 
@@ -80,9 +78,9 @@ RustCodeGraph 索引将本文件标为被 6 个文件使用，并明确列出 `b
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/config/bytesize.go`。Go 的 `type ByteSize int64` 对应 Rust 的 `ByteSize(pub i64)`；Go `UnmarshalText` 调用 `github.com/docker/go-units.RAMInBytes`，Rust 则在 `parse_ram_bytes` 内复刻其常见 RAM 后缀、1024 进制、空白和错误语义。Go `UnmarshalJSON` 先解码到 `int64`，Rust 的同名方法也用 `serde_json::from_slice::<i64>` 保持数字专用行为。
+Go 的 `type ByteSize int64` 对应 Rust 的 `ByteSize(pub i64)`；Go `UnmarshalText` 调用 `github.com/docker/go-units.RAMInBytes`，Rust 则在 `parse_ram_bytes` 内复刻其常见 RAM 后缀、1024 进制、空白和错误语义。Go `UnmarshalJSON` 先解码到 `int64`，Rust 的同名方法也用 `serde_json::from_slice::<i64>` 保持数字专用行为。
 
-Rust 比 Go 文件承担更多适配工作：它实现 `FromStr`、`Display`、`From<i64>`、Serde `Serialize`/`Deserialize`，并提供 `from_toml_value` 连接 Rust 自定义 TOML 装载器。Go 依靠 BurntSushi/toml 自动调用 `encoding.TextUnmarshaler`；Rust 手工分派 `toml::Value`，以复现整数、下划线整数、浮点截断、科学计数、布尔/日期/容器错误等行为。
+Go 依靠 BurntSushi/toml 自动调用 `encoding.TextUnmarshaler`；Rust 手工分派 `toml::Value`，以复现整数、下划线整数、浮点截断、科学计数、布尔/日期/容器错误等行为。
 
 `pkg/lightning/config/bytesize_test.rs` 移植了 Go `bytesize_test.go` 的 TOML 解码和 TOML/JSON 数字编码用例，并额外覆盖 Go `RAMInBytes` 的空白及非法后缀行为。当前证据表明这些测试意图一致；Rust 对通用 Serde map 的固定日期错误以及显式方法与 Serde JSON 的入口差异属于 Rust 适配细节，不能从 Go 类型本身推导为通用协议。
 
@@ -93,11 +91,3 @@ Rust 比 Go 文件承担更多适配工作：它实现 `FromStr`、`Display`、`
 - 调整 JSON 语义时，应先决定目标是显式 `unmarshal_json` 的 Go 兼容接口，还是 Serde `Deserialize`。若要求两者统一，需要补充字符串、浮点、超界整数和负数的独立测试，并评估既有调用者兼容性。
 - 新增 `ByteSize` 配置字段时，类型字段应放在 `config.rs`，默认值放在相应默认构造/`const.rs`，TOML 键接线放在 `toml_codec.rs` 的所属 `apply_*` 函数；再在 `toml_codec_test.rs` 或 `config_test.rs` 验证字段确实被加载，而不是只验证解析器。
 - 若要强化“永不为负”的类型不变量，需要封装公开元组字段并审计所有直接构造点；这会影响常量、默认值和外部 API，属于兼容性变更。若只优化性能，应优先保持无分配的数字路径，并注意当前字符串路径仅为后缀小写化分配内存。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引含 7,032 个 Rust 文件；`files --filter pkg/lightning/config` 确认 `bytesize.rs`、模块入口、Go 对照和独立测试均已索引；`node --file pkg/lightning/config/bytesize.rs --offset 1 --limit 260` 读取完整 260 行源码并报告 6 个使用文件；`query ByteSize --limit 30`、`query from_toml_value --kind function --limit 30`、`query parse_ram_bytes --kind function --limit 10` 确认符号位置。`callers`/`callees` 查询在 30 秒窗口内未返回，未据此推断未验证的图边。
-- 源码：`pkg/lightning/config/bytesize.rs`（类型、方法、trait 实现、visitor 和私有解析器）；`pkg/lightning/config/lib.rs`（模块声明、再导出、独立测试接线）；`pkg/lightning/config/config.rs`（`ConfigError`、容量字段和默认值）；`pkg/lightning/config/const.rs`（容量常量）；`pkg/lightning/config/toml_codec.rs`（`load_config_from_toml`、`apply_mydumper`、`apply_importer` 直接调用点）。目标目录不存在 `doc.go`。
-- crate 边界：`pkg/lightning/config/Cargo.toml`（crate 名、`lib.rs` 入口、Go 包映射以及 `serde`、`serde_json`、`toml`、`regex` 依赖）。
-- 语义对照与测试：`pkg/lightning/config/bytesize.go`、`pkg/lightning/config/bytesize_test.go`、`pkg/lightning/config/bytesize_test.rs`、`pkg/lightning/config/toml_codec_test.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付验证只检查目标文档存在且恰有 11 个规定的二级标题，并人工复核上述源码与调用点。

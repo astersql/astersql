@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-dumpling-export` library crate。`dumpling/export/Cargo.toml` 将 `lib.rs` 指定为 crate 根，而 `dumpling/export/lib.rs` 通过 `include!("block_allow_list.rs")` 将本文件并入与 Go `dumpling/export` 包相近的单包符号空间。因此，文件中的三个 `pub fn` 实际成为 crate 根的公开函数，而不是独立 Rust 子模块的成员。
-
-它位于 Dumpling 导出准备阶段的“候选对象裁剪”位置：数据库列表从服务端取回后由 `prepareDumpingDatabases` 调用 `filterDatabases`；表清单来自显式配置或数据库枚举后，由 `prepareTableListToDumpInner` 调用 `filterTables`。此外，锁表一致性流程会在发现已不存在的表后直接调用 `filterTablesFunc`，从待导出集合中再次排除这些表（`dumpling/export/consistency.rs::consistency_lock_setup`）。
+`filterTablesFunc` 按调用方提供的表匹配函数重建 `Config.Tables`，同时实现 `DumpEmptyDatabase` 的空库保留规则。
 
 ## 核心职责
 
@@ -98,14 +96,9 @@ RustCodeGraph 给出的直接上游边为：
 
 ## 与 Go 版本的对应关系
 
-`dumpling/export/block_allow_list.go` 具有同名的三个函数，控制流与 Rust 版本逐项对应：数据库按 `MatchSchema` 分流，默认表入口委托 `filterTablesFunc`，核心函数按回调重建表集合，并在允许导出空库且 schema 命中时插入空列表。`dumpling/export/block_allow_list_test.go` 的两个测试场景也由独立 Rust 文件 `dumpling/export/block_allow_list_test.rs` 对应移植：
-
-- `TestFilterTables` / `test_filter_tables` 验证全匹配、只允许 `xxx` schema，以及最终仅剩 `xxx.yyy`。
-- `TestFilterDatabaseWithNoTable` / `test_filter_database_with_no_table` 验证空库在 schema 不匹配、schema 匹配和关闭 `DumpEmptyDatabase` 三种组合下的结果。
-
 结构上的主要 Rust 适配是：Go 的 `DatabaseTables` 保存 `[]*TableInfo`，Rust 保存拥有所有权的 `Vec<TableInfo>`；Go 可直接遍历 map 并写入另一个 map，Rust 为避开同时借用 `conf` 的限制先克隆输入快照；Go 传入普通函数值，Rust 用泛型 `Fn(&str, &str) -> bool`；Go 日志用 `zap.Strings` 记录数据库切片，Rust 当前将数据库名以逗号连接后写入单个字符串字段。最后一点可能造成日志字段表现差异，但不改变筛选结果。
 
-Rust 的 `filterTables` 还有 `dumpling/export/parity_test.rs::contract_normal` 作为补充契约锚点，确认 `db.*` 规则保留 `db` 并排除 `other`。当前代码并非桩或未接线门面：RustCodeGraph 已找到生产调用者 `prepareDumpingDatabases`、`prepareTableListToDumpInner` 和 `consistency_lock_setup`。
+当前代码并非桩或未接线门面：RustCodeGraph 已找到生产调用者 `prepareDumpingDatabases`、`prepareTableListToDumpInner` 和 `consistency_lock_setup`。
 
 ## 扩展指南
 
@@ -114,16 +107,3 @@ Rust 的 `filterTables` 还有 `dumpling/export/parity_test.rs::contract_normal`
 修改时应保持以下兼容约束：数据库和单库内表的保留顺序、完整 `TableInfo` 元数据、`DumpEmptyDatabase` 双条件、忽略项日志仅在非空时产生，以及过滤完成后原子式替换 `conf.Tables`。若希望降低全量克隆成本，需要重新设计所有权转移（例如暂时取出 `conf.Tables`），并验证回调及空库判断仍能安全读取配置；这是性能优化，不应以改变 Go 可观察行为为代价。
 
 测试应放在独立文件 `dumpling/export/block_allow_list_test.rs`，不要内嵌到生产源文件。新增普通过滤行为时同步 Go 对照 `dumpling/export/block_allow_list_test.go` 的测试意图；涉及 crate 公共契约时可补充 `dumpling/export/parity_test.rs`；涉及锁表后动态排除时还应扩展独立的 `dumpling/export/consistency_test.rs`。重点风险是规则优先级或大小写兼容、空库被误留/误删、表元数据丢失，以及大规模候选集的克隆峰值。
-
-## 验证依据
-
-本说明基于以下可复核证据：
-
-- RustCodeGraph 索引状态：仓库索引包含 7,032 个 Rust 文件；`node --file dumpling/export/block_allow_list.rs` 读取到完整 82 行实现及被 `consistency.rs`、`dump.rs`、`parity_test.rs`、`prepare.rs` 使用的信息。
-- RustCodeGraph 符号查询：`query filterDatabases`、`query filterTables`、`query filterTablesFunc` 均同时定位到 Go/Rust 定义；`node`/`explore` 给出 `prepareDumpingDatabases -> filterDatabases`、`prepareTableListToDumpInner -> filterTables`、`filterTables -> filterTablesFunc`、`consistency_lock_setup -> filterTablesFunc` 和 `contract_normal -> filterTables` 调用边。
-- Rust 实现与入口：`dumpling/export/block_allow_list.rs`、`dumpling/export/lib.rs`、`dumpling/export/prepare.rs`、`dumpling/export/dump.rs`、`dumpling/export/consistency.rs`、`dumpling/export/config.rs`。
-- crate 与过滤器边界：`dumpling/export/Cargo.toml`、`pkg/util/table-filter/table_filter.rs`。
-- 独立测试：`dumpling/export/block_allow_list_test.rs` 与 `dumpling/export/parity_test.rs`。
-- Go 对照：`dumpling/export/block_allow_list.go` 与 `dumpling/export/block_allow_list_test.go`。
-
-任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `rg` 命令验证本文恰含十一个固定二级章节，并人工核对上述符号、调用边、边界条件和扩展位置均有直接源码依据。

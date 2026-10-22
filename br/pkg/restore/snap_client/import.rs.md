@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-restore-snap-client` crate 的快照 SST 导入实现。crate 入口 `br/pkg/restore/snap_client/lib.rs` 以 `pub mod import` 装载它并通过 `pub use import::*` 暴露其公开 API；`br/pkg/restore/snap_client/Cargo.toml` 表明该 crate 是 Go 包 `br/pkg/restore/snap_client` 的 Rust 移植单元，依赖恢复公共边界 `astersql-br-pkg-restore`、BR 工具和错误 crate，而 PD、TiKV、kvproto/gRPC 能力目前通过本 crate 的 `stubs` trait/数据结构抽象。
-
-上游装配点是 `br/pkg/restore/snap_client/client.rs::SnapClient::initClients`：它根据备份类型选择 `KvMode`，准备 Raw 范围、MultiIngest 和 peer-retry 能力探测回调，再调用 `NewSnapFileImporter`。文件尾部的 `SnapshotFileImporter` 把具体实现适配为 `astersql_br_pkg_restore::{FileImporter, BalancedFileImporter}`；因此 `br/pkg/restore/restorer.rs` 中的 `SimpleRestorer`、`BatchRestorer` 和 `MultiTablesRestorer` 可以经统一 trait 调用 `Import`、`Close` 与 `PauseForBackpressure`。
+定义导入模式 `KvMode` 和键改写模式 `RewriteMode`，决定扫描范围如何编码，以及构造 SST 元数据时如何处理 Region 边界和 rewrite prefix。
 
 ## 核心职责
 
@@ -81,18 +79,13 @@ PD 扫描使用 `pdReqTokens`，其容量来自 `scanConcurrency`；值为零时
 
 ## 与 Go 版本的对应关系
 
-Rust 的枚举值、令牌池/背压、options/构造器、限速 TTL、能力探测、模式键范围、SST meta 范围、Import 前后回调、summary、下载重试 UUID 稳定性及 FileImporter 适配方向与 `br/pkg/restore/snap_client/import.go` 对齐。`br/pkg/restore/snap_client/import_test.rs` 也对应 Go `import_test.go` 的键范围、meta、非法并发、Raw/TiDB 导入、PD 扫描流控、batch/latest-MVCC 和 retry 场景。
-
-但当前 Rust 是较窄的本地 trait/stub 移植，不能视为 Go 文件的完整等价实现。直接核对 Go 源码可见以下重要差距：
+但当前 Rust 是较窄的本地 trait/stub 移植，不能视为 Go 文件的完整等价实现。
 
 - Go `Import` 用 ImportSST backoff 重试完整的 scan/download/ingest，并按能力选择 Region worker pool；Rust只在单个下载 RPC 层重试，Region 顺序处理。
 - Go `download` 对 Raw/Txn、TiDBCompacted latest-MVCC、TiDBCompacted merge 和普通 TiDB 分派到四套实现；Rust统一 `buildDownloadRequest` 后仅按两个能力布尔值选择 RPC，没有 Go `downloadRawKVSST` 的 Raw API 细节。
-- Go batch download 会按 CF/文件组聚合 `Ssts`、验证 rewrite rule 一致性、根据响应 range 重写结果 meta、处理空 range，并行向 peer 请求；Rust当前逐文件请求并直接保留请求前 meta。
 - Go `buildDownloadRequest` 还设置时间范围过滤、Keyspace request type 和 resource/request-source context；Rust request 没有这些接线。
 - Go 对解密 SST 错误会去掉 cipher 重试；Rust没有 `isDecryptSstErr` 降级。
 - Go ingest 处理 NotLeader、EpochNotMatch、KeyNotInRegion 等 Region error 并可更新 leader；Rust只做一次 `MultiIngest`，把响应消息包装为普通错误。
-
-这些差距是扩展和后续移植的风险清单，不应通过改变文档措辞掩盖，也不属于本次纯文档任务要修复的范围。
 
 ## 扩展指南
 
@@ -103,12 +96,3 @@ Rust 的枚举值、令牌池/背压、options/构造器、限速 TTL、能力�
 - 新增回调时要定义失败时的补偿语义。当前延迟回调不是失败路径 cleanup；如果改为资源 guard，需与 Go 的执行顺序对齐并增加“前置成功、导入失败、延迟回调是否运行”的测试。
 - 修改 `getSSTMetaFromFile` 或键模式时，要同步检查空结束键、Keyspace Region 解码、CF 名推断、prefix 上界和 start/end 不变量；对应 Rust 测试应继续放在 `import_test.rs`，并与 Go `import_test.go` 的断言逐项比较。
 - 若把本 crate 从 stubs 接到真实 TiKV/PD 客户端，需要同步审视 `Cargo.toml` 的依赖策略、request context 字段和实际异步运行时；当前测试只验证内存桩控制流，不能替代真实集群兼容与性能验证。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引可用；`files --filter br/pkg/restore/snap_client` 确认目标源、独立测试和相邻模块；`node --file br/pkg/restore/snap_client/import.rs --offset 1/500/970` 阅读全部 996 行；`explore "SnapFileImporter Import paginateScanRegion downloadSST ingestSST ..."` 核对构造、Import、能力探测、客户端调用及测试调用边。
-- 生产 Rust：`br/pkg/restore/snap_client/import.rs`（本文件全部符号）、`br/pkg/restore/snap_client/lib.rs`（模块装载/重导出）、`br/pkg/restore/snap_client/client.rs::initClients`（构造与能力探测接线）、`br/pkg/restore/restorer.rs::{FileImporter,BalancedFileImporter,SimpleRestorer,BatchRestorer,MultiTablesRestorer}`（上游调用、背压、checkpoint 与进度边界）。
-- crate 边界：`br/pkg/restore/snap_client/Cargo.toml` 的 package metadata、path dependencies 和“local traits/stubs only”说明。
-- Go 对照：`br/pkg/restore/snap_client/import.go` 的 `getKeyRangeByMode`、`Import`、`getSSTMetaFromFile`、`download`、`downloadWithOptionalPeerRetry`、`buildDownloadRequest`、batch/latest/raw/single download、`ingest`/`ingestSSTs`；`br/pkg/restore/snap_client/import_test.go` 的对应测试清单。
-- Rust 测试：`br/pkg/restore/snap_client/import_test.rs` 中键范围/meta、零并发、Close、离线 Store、Raw/TiDB 导入、PD 流控、batch/latest-MVCC、同 UUID retry、探测降级、适配器和父 context 取消用例。
-- 本任务是只读分析加 Markdown 产物，按计划不运行 Cargo；结构验证要求目标文件存在且恰有十一个固定二级标题。

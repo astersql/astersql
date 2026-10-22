@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-dxf-framework-taskexecutor-execute` crate 的主体实现，经同目录 `lib.rs` 的 `pub use interface::*` 对外导出。它对齐 Go 包 `pkg/dxf/framework/taskexecutor/execute`，定义业务步骤执行器契约、运行时摘要、指标收集接口，以及由框架注入的 step、资源、计量和 checkpoint 信息。
-
-这里的 `execute::StepExecutor` 是 IMPORT INTO 等业务步骤使用的应用侧接口；仓库另有 `pkg/dxf/framework/taskexecutor/interface.rs` 中供节点任务循环使用的同名 trait。`pkg/dxf/importinto/task_executor.rs` 等适配代码把前者包装到后者的生命周期中，不能仅凭同名认为两者是同一个接口。
-
-crate 边界由 `pkg/dxf/framework/taskexecutor/execute/Cargo.toml` 给出：运行时依赖 `anyhow`、`metering`、`proto`、`recording` 和 `tokio-util`，`http` 仅用于测试；`package.metadata.porting.go-package` 明确指向同路径 Go 包。
+`StepExecutor` 规定一个 task step 的 `Init`、逐 subtask 的 `RunSubtask`、摘要读取/重置、`Cleanup`、任务元数据变更和资源变更回调，并要求实现者同时提供 `StepExecFrameworkInfo`。
 
 ## 核心职责
 
@@ -90,10 +86,7 @@ checkpoint 更新值以 `Any` 传递，类型契约由生产者与消费者共�
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `StepExecutor`、常量、`Progress`、`SubtaskSummary`、collector 和框架信息访问器逐项对齐 `interface.go`。主要有以下语言适配：
-
 - Go 用嵌入 `StepExecFrameworkInfo` 和反射字段名完成注入；Rust 用 supertrait 加 `SetFrameworkInfo(FrameworkInfo)` 显式注入，因此 `stepExecFrameworkInfoName` 只保留命名对照，不参与运行时反射。
-- Go `context.Context` 映射为 `CancellationToken`；当前覆盖取消传播，不承诺 deadline/value 全语义。
 - Go `atomic.Pointer[StepResource]` 映射为 `RwLock<Option<Arc<StepResource>>>`；Go accessor 返回指针，Rust accessor 返回可选共享所有权。
 - Go 原子字段映射为标准库原子类型，Rust 使用 `SeqCst`。Go `Progresses` 切片和 Rust `Vec` 都只保留最近五点。
 - Rust 额外处理零 duration、`SystemTime::checked_sub` 下溢、逆序时长和调试构建整数溢出；正常输入下的速度结果由两边相同表驱动用例验证。
@@ -113,13 +106,3 @@ Rust 的 `StepExecutor`、常量、`Progress`、`SubtaskSummary`、collector 和
 新增框架状态时，优先扩展 `FrameworkInfo` 与 `StepExecFrameworkInfo` accessor，再由 `SetFrameworkInfo` 一次性注入；评估共享所有权、锁粒度、旧资源快照存活和回调 `Send + Sync + 'static` 约束。checkpoint 值若增加新类型，应在调用层给出可验证的类型约定，避免裸 `Any` 失配。
 
 兼容风险主要是 Go/Rust 接口漂移和持久化摘要字段漂移；性能风险主要是热路径使用 `SeqCst`、频繁克隆 `Arc`，或扩大 `Progresses` 导致每次速度计算线性增长。当前窗口固定为 5，计算成本有界。
-
-## 验证依据
-
-- 源码全貌：`pkg/dxf/framework/taskexecutor/execute/interface.rs`（328 行），核对全部 trait、类型、常量、impl、公开函数及无条件编译项。
-- crate/模块：`pkg/dxf/framework/taskexecutor/execute/Cargo.toml`、`pkg/dxf/framework/taskexecutor/execute/lib.rs`。
-- Go 对照：`pkg/dxf/framework/taskexecutor/execute/interface.go`、`pkg/dxf/framework/taskexecutor/execute/interface_test.go`。
-- Rust 独立测试：`pkg/dxf/framework/taskexecutor/execute/interface_test.rs`、`pkg/dxf/framework/taskexecutor/execute/migration_aster_unit_test.rs`。
-- 直接生产证据：`pkg/dxf/framework/taskexecutor/task_executor.rs` 的 executor 生命周期、摘要循环与参数变更回调；`pkg/dxf/importinto/task_executor.rs`、`subtask_executor.rs`、`conflict_resolution.rs` 的 trait 实现和注入；`pkg/dxf/importinto/job.rs` 的速度消费。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点和 1,848,419 条边；`files --filter pkg/dxf/framework/taskexecutor/execute` 确认六个 Go/Rust 源与测试文件；文件限定 `node` 读取目标 1–328 行；`explore` 确认 `SetFrameworkInfo`、`RealtimeSummary`、`GetSpeedInTimeRange`、`MergeObjStoreRequests` 的直接调用/测试边。
-- 人工复核结论：本文件存在是为了稳定业务 step 执行契约并承载可持久化实时摘要；实际运行由外层节点 executor 编排，安全扩展必须同步 Go 对照、所有实现、mock、独立测试和序列化消费者。

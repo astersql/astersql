@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`decoder.rs` 是 `astersql-util-rowcodec` crate 的新格式行值解码实现。它不是独立 Rust 模块，而是由 [`lib.rs`](lib.rs) 的 `rowcodec_impl` 通过 `include!("decoder.rs")` 与 [`common.rs`](common.rs)、[`row.rs`](row.rs)、[`encoder.rs`](encoder.rs) 合并，再由 crate 根和 `rowcodec` 命名空间公开。因此，本文件可直接使用同一实现模块中的 `row`、`decodeInt`、`decodeUint` 和旧 Datum flag。
-
-它位于持久化 rowcodec 字节与三种上层表示之间：`DatumMapDecoder` 生成按列 ID 索引的 `Datum` map，`ChunkDecoder` 向列式 `chunk::Chunk` 追加一行，`BytesDecoder` 则把新格式列片段恢复为旧式 `flag + payload` Datum 字节。Rust 当前可确认的直接生产调用位于 `pkg/tablecodec/tablecodec.rs`：`DecodeRowWithMapNew` 使用 map 路径，`decodeRestoredValues` 与 `decodeRestoredValuesV5` 使用 bytes 路径；`ChunkDecoder` 在本 crate 的独立测试与基准中有接线，但搜索未发现其他 Rust 生产调用者，不能据 Go 调用面推断 Rust 已全部接线。
+处理特殊列与兼容分支，包括 `ExtraCommitTSID`、`ExtraRowChecksumID`、虚拟生成列、整数/复合 handle、需要 restored data 的字段、decimal scale、timestamp 时区及空 enum 容错。
 
 ## 核心职责
 
@@ -93,20 +91,14 @@ RustCodeGraph 的文件节点报告 `decoder.rs` 被 `pkg/tablecodec/tablecodec.
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`decoder.go`](decoder.go)，测试对照是 [`rowcodec_test.go`](rowcodec_test.go) 与 [`rowcodec_test.rs`](rowcodec_test.rs)。三类解码器、列元数据、分支顺序、类型矩阵、handle 仅在 value 缺列时使用、NULL/默认值优先级、decimal half-up、空 enum 容错、旧 Datum flag 映射和未知类型策略总体逐项对应。
-
 已确认的 Rust 表达或行为差异包括：
 
 - Go 解码器通过匿名嵌入 `row`/`decoder` 暴露方法；Rust 显式持有字段并写转发方法。Go 构造函数返回指针，Rust 返回拥有所有权的值。
 - Go `ColInfo::Ft` 是指针且理论上可为 nil；Rust 是值类型，消除了该空指针状态，但构造时会发生 clone/移动。
 - Go 的 nil map、nil handle、nil 回调用语言 nil 表示；Rust 分别使用 `Option<HashMap<...>>`、`Option<&dyn Handle>` 和 `Option<Box<dyn Fn...>>`。
 - Go `SetString(string(colData), collate)` 以字节构造 string；Rust 使用 `SetBytesAsString(colData.to_vec(), ...)`，保留任意字节的能力取决于 Rust Datum 的具体实现，不能简单等同于 UTF-8 `String`。
-- Datum map 的 nil 时区在 Rust 回退 UTC；chunk 的 nil 时区才保持“不转换”。Go map 路径不做 nil 检查，chunk 路径做 nil 检查。
 - Go JSON 的 `Value` 借用 `colData[1:]` 所对应 slice；Rust复制到 `Vec`。Go handle/cache 可复用传入 slice 容量；Rust会复制。
-- Go `tryAppendHandleColumn` 也把复合 handle 解码错误转成 `false`；Rust保持该语义。两边整数 handle 路径都依赖非空 `handleColIDs`。
 - Rust 当前直接生产调用面小于 Go：Go 搜索结果显示 DDL、DistSQL、executor 等多个包调用 rowcodec decoder；Rust 证据只确认 tablecodec 的 map/bytes 路径，`ChunkDecoder` 的应用主链接线尚未由本任务验证。
-
-测试一一覆盖了主要契约：`TestDecodeRowWithHandle` 验证三条路径补 handle；`TestTypesNewRowCodec` 验证类型矩阵；`TestNilAndDefault` 验证缺列、NULL 和默认值；`TestVarintCompatibility` 验证旧整数编码；`TestCodecUtil` 验证 `ColumnIsNull`；`TestEncodeDecodeRowWithChecksum` 验证 checksum 读取；`TestDecodeWithCommitTS` 验证特殊提交时间列。Go 同名测试提供移植意图对照。
 
 ## 扩展指南
 
@@ -119,11 +111,3 @@ RustCodeGraph 的文件节点报告 `decoder.rs` 被 `pkg/tablecodec/tablecodec.
 性能优化应关注 bytes 路径的局部 row 与结果分配、`cacheBytes` 克隆、JSON/string 复制和逐列查找；但不得通过借用外部缓冲破坏 Datum/chunk 的所有权或生命周期。协议兼容风险集中在 type flag、varint/compact bytes、timestamp 时区、decimal rounding 和 vector/JSON payload；任何变化都应使用 Go 固定夹具或跨语言字节结果证明。
 
 Rust 当前 `ChunkDecoder` 缺少已确认的生产主链调用；若后续接线，应从实际上游列元数据、默认值闭包、时区、handle 与 chunk schema 一起验证，而不是把测试 helper 当作完整应用入口。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/rowcodec` 找到 19 个 Rust/Go 文件；`node --file pkg/util/rowcodec/decoder.rs` 读取完整 738 行，并报告五个关联文件；精确 `query` 核对 `ChunkDecoder`、`DecodeToDatumMap`、`DecodeToChunk`、`DecodeToBytes*`、`fieldType2Flag`。`callers/callees` 对 include 内 Rust 方法未在限定时间内返回，故调用边以精确 `rg` 补证并在本文明确限制。
-- Rust 源码与 crate 边界：[`decoder.rs`](decoder.rs)、[`row.rs`](row.rs)、[`common.rs`](common.rs)、[`encoder.rs`](encoder.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)，以及 `pkg/tablecodec/tablecodec.rs`、`pkg/store/driver/txn/error.rs` 的直接调用/构造位置。
-- Go 对照：[`decoder.go`](decoder.go) 完整实现与 [`rowcodec_test.go`](rowcodec_test.go) 的同名回归测试。
-- Rust 独立测试：[`rowcodec_test.rs`](rowcodec_test.rs) 的 `TestEncodeLargeSmallReuseBug`、`TestDecodeRowWithHandle`、`TestTypesNewRowCodec`、`TestNilAndDefault`、`TestVarintCompatibility`、`TestCodecUtil`、`Test65535Bug`、`TestEncodeDecodeRowWithChecksum`、`TestDecodeWithCommitTS`；[`common_1_aster_unit_test.rs`](common_1_aster_unit_test.rs) 的 Datum map 往返和旧 flag 映射；[`bench_test.rs`](bench_test.rs) 的 chunk 解码基准路径。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前运行任务指定的 11 章节结构命令，并人工检查本文只描述有源码、图查询、Cargo、Go 或独立测试支撑的当前事实。

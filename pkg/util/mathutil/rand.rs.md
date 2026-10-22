@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-util-mathutil` crate 中的 MySQL 兼容伪随机数生成器。模块本身在 [`lib.rs`](./lib.rs) 中以私有 `mod rand` 挂载，但 `MysqlRng`、`NewWithSeed` 和 `NewWithTime` 被 crate 根公开再导出，因此表达式等上层 crate 不需要感知内部模块路径。crate 边界、默认 `formal-crate` feature 以及 Go 包映射 `pkg/util/mathutil` 由 [`Cargo.toml`](./Cargo.toml) 声明；本文件没有条件编译项，也没有额外第三方依赖。
-
-它不是通用密码学随机源。它存在的目的，是用确定性的双种子递推复现 Go/MySQL 的 `RAND()` 数值序列，并提供读取、恢复种子的接口，使随机状态可以随表达式或会话上下文继续传递。
+存在的目的，是用确定性的双种子递推复现 Go/MySQL 的 `RAND()` 数值序列，并提供读取、恢复种子的接口，使随机状态可以随表达式或会话上下文继续传递。
 
 ## 核心职责
 
@@ -80,11 +78,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`rand.go`](./rand.go)，对应测试为 [`rand_test.go`](./rand_test.go)。Rust 保留了 Go 的 `maxRandValue`、两个初始化公式、`Gen` 更新顺序、四个状态访问器和大写 API 名称。Go 使用 `*sync.Mutex` 加两个独立字段；Rust 将 `(seed1, seed2)` 一并置于 `Mutex` 中，保护范围等价且更直接表达共同不变量。Go 返回 `*MysqlRng`，Rust 返回 `Box<MysqlRng>`；上层需要共享时显式转换成 `Arc`。
+Go 使用 `*sync.Mutex` 加两个独立字段；Rust 将 `(seed1, seed2)` 一并置于 `Mutex` 中，保护范围等价且更直接表达共同不变量。Go 返回 `*MysqlRng`，Rust 返回 `Box<MysqlRng>`；上层需要共享时显式转换成 `Arc`。
 
-溢出兼容是移植重点：Rust 构造和递推显式使用 wrapping 算术，再按 Go 相同位置转换为 `u32`、取模。Rust [`rand_test.rs`](./rand_test.rs) 与 Go 测试共享种子 `0`、`1`、`-1`、`i64::MAX` 的前两个输出黄金值，也共享手工恢复 `10_000_000`/`1_000_000` 后的三个输出和最终双种子。Rust 还在 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 重复核对迁移语义。
+溢出兼容是移植重点：Rust 构造和递推显式使用 wrapping 算术，再按 Go 相同位置转换为 `u32`、取模。
 
-时间异常处理形式略有差异：Go 的 `time.Now().UnixNano()` 直接给出有符号纳秒数；Rust 根据 `duration_since(UNIX_EPOCH)` 的成功或失败显式构造正、负值。两边都不保证时间种子的唯一性。
+时间异常处理形式略有差异：Go 的 `time.Now().UnixNano()` 直接给出有符号纳秒数；Rust 根据 `duration_since(UNIX_EPOCH)` 的成功或失败显式构造正、负值。
 
 ## 扩展指南
 
@@ -94,11 +92,3 @@
 - 改变返回所有权（`Box`/`Arc`）会影响表达式上下文、`MysqlRand` 和 `MathBase` 的共享方式，需检查上述直接调用点，而不是只修改本 crate。
 - 性能优化应保持“一次 `Gen` 一次锁”的状态原子性。该锁位于向量化 `RAND()` 的逐行热路径；若改为批量生成，需要验证输出顺序与逐次调用完全一致，并增加并发及批量等价测试。
 - 新增密码学或统计性质不同的 RNG 应建立独立类型，不应复用 `MysqlRng` 名义或悄然替换其兼容算法。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 `pkg/util/mathutil/rand.rs`；`explore` 与 `node --file pkg/util/mathutil/rand.rs` 核对文件的常量、类型、函数和方法；`query MysqlRng`、`query NewWithSeed`、`query NewWithTime` 定位 Rust/Go 定义及表达式上下文关联。精确 `callers` 查询在等待约 90 秒后未返回并被中止，因此调用边另用限定 Rust 搜索及 RustCodeGraph 对上游文件的 `node --file` 结果交叉核验，未把不完整 callers 输出当作证据。
-- 生产源码：[`rand.rs`](./rand.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)、[`builtin_math.rs`](../../expression/builtin_math.rs)、[`builtin_math_vec.rs`](../../expression/builtin_math_vec.rs)、[`legacy_vectorized_runtime.rs`](../../expression/legacy_vectorized_runtime.rs)、[`exprstatic/exprctx.rs`](../../expression/exprstatic/exprctx.rs)。
-- Go 对照：[`rand.go`](./rand.go)。
-- 独立测试：[`rand_test.rs`](./rand_test.rs)、[`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)、[`rand_test.go`](./rand_test.go)。这些测试证明固定种子序列、负数与最大种子回绕、输出范围、时间种子基本差异以及双种子恢复结果；它们没有证明密码学安全、时间种子绝对唯一，也没有覆盖锁中毒或成对 getter/setter 的并发原子性。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证只检查固定章节结构、路径和人工事实一致性。

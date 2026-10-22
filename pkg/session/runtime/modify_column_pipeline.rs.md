@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate 的私有运行时模块：`pkg/session/runtime.rs` 以 `mod modify_column_pipeline;` 装配它，未向 crate 外公开。它不是 DDL 调度器，而是 `modify_column_dist_backfill.rs` 中 `ReadIndex::run_pipeline` 使用的本地执行流水线，把一个分布式 DDL read-index 子任务拆成“扫描并编码记录”和“写入本地 SST / 云端排序文件”两个并行阶段。
-
-该路径位于持久化 DDL job 的 reorg/backfill 阶段。上游 `ReadIndex::run_pipeline` 负责把子任务键范围切成连续的 region 范围、保存 checkpoint、汇总结果并在全局排序模式下发布外部元数据；本文件只负责范围内的批处理、背压、工作者伸缩和停机。`pkg/session/Cargo.toml` 将该代码归入 `astersql-session`，其直接使用的工作区依赖包括 `astersql-ddl`、`astersql-kv`、`astersql-meta-model`、`astersql-ingestor-simplesst`、`astersql-resourcemanager-pool-workerpool`，并使用 `uuid` 与 `serde_json`。
+上游 `ReadIndex::run_pipeline` 负责把子任务键范围切成连续的 region 范围、保存 checkpoint、汇总结果并在全局排序模式下发布外部元数据；本文件只负责范围内的批处理、背压、工作者伸缩和停机。
 
 ## 核心职责
 
@@ -71,12 +69,8 @@
 
 ## 与 Go 版本的对应关系
 
-Go 对照不是同路径单文件，而分散在 `pkg/ddl/backfilling_operators.go`、`pkg/ddl/backfilling_read_index.go` 与 `pkg/ddl/backfilling_txn_executor.go`：
-
 - Rust `Reader` 对应 Go `tableScanWorker` / `TableScanOperator`；两者都从 session pool/会话上下文扫描表范围，使用 `scanRecordExec` failpoint，并按 reorg batch 配置产生下游记录。Rust 将扫描结果编码成拥有所有权的 KV，且显式用短事务 `BEGIN`/`ROLLBACK`。
-- Rust `Writer` 的 cloud 分支对应 Go `WriteExternalStoreOperator` 创建的每索引 simple-SST writers；本地分支对应 Go `IndexIngestOperator` / `indexIngestWorker`。Rust 当前用 `import_lock` 强制本地唯一检查与物理导入不可交错，这是其会话/KV 适配层下的必要局部接线。
 - Rust `Pipeline::tune` 对应 Go `readIndexStepExecutor.ResourceModified`：两者都用 `expectedIngestWorkerCnt`/`expected_ingest_worker_count` 按 CPU、平均行宽和 global-sort 标记计算两级并发，再等待式调整 worker pool。
-- Rust `finish` 的有序排空对应 Go `executeAndClosePipeline` 的成功关闭意图；Rust `PipelineGuard` + `shutdown` 对应 Go `currPipe` 生命周期和 defer 清理的失败路径。
 - Go `expectedIngestWorkerCnt` 与 Rust 实现的比例表、未知行宽逻辑和 global-sort 等并发语义一致；`pkg/ddl/backfilling_txn_executor_test.go` 与 `pkg/ddl/backfilling_txn_executor_test.rs::test_expected_ingest_worker_count` 提供对照用例。
 
 当前 Rust 文件不是逐行复刻 Go operator 类型：它把 `ConcreteSession` 适配、拥有所有权的编码批次、物理导入取消令牌和 cloud summary 合并集中在一个较窄的 session-runtime 流水线中。应以可观察语义与上游 checkpoint 约束对齐为准，不应把类型名差异解释为功能缺失。
@@ -89,13 +83,3 @@ Go 对照不是同路径单文件，而分散在 `pkg/ddl/backfilling_operators.
 - 修改并发算法应优先改 `expected_ingest_worker_count` 及其独立测试 `pkg/ddl/backfilling_txn_executor_test.rs`，同时核对 Go `expectedIngestWorkerCnt` 与 `backfilling_txn_executor_test.go`，避免 Rust/Go 资源调度漂移。
 - 修改关闭顺序或取消传播时，需要覆盖成功 `finish`、提前错误触发 `PipelineGuard::drop`、显式 framework cancel、blocked write limiter 和重复 stop。现有直接证据包括 `normal_ddl_masking_policy_test.rs` 的在线缩容场景，以及 `import_sst_test.rs::read_index_cancel_stops_existing_physical_write_limiter` 的取消唤醒场景。
 - 性能风险主要来自扩大通道、缩短/移除本地导入锁或错误调整读写比例；兼容风险主要来自 checkpoint 在未 durable 前推进、cloud summary 未完全 close 即发布、或 SQL mode/resource group 丢失。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示项目索引含目标文件；`files --filter pkg/session/runtime` 列出该文件；`node --file pkg/session/runtime/modify_column_pipeline.rs --offset 1 --limit 400` 与尾段查询读取完整 426 行，并给出 37 个符号及使用文件。精确 `callers` 查询未产生边输出，因此调用边由源码引用补证，未据此臆造间接调用者。
-- 目标与装配：`pkg/session/runtime/modify_column_pipeline.rs`、`pkg/session/runtime.rs`、`pkg/session/Cargo.toml`。
-- 直接入口与生命周期：`pkg/session/runtime/modify_column_dist_backfill.rs` 中 `ReadIndex::run_pipeline`、`PipelineGuard::drop`、`ResourceModified`、`closed_pipeline_workers_for_test`。
-- 下游实现：`pkg/session/runtime/system_session.rs` 中 `IndexBackfillRecords`、`generate_index_backfill_records`、`write_index_backfill_records`；`pkg/ddl/backfilling_txn_executor.rs::expected_ingest_worker_count`。
-- Go 对照：`pkg/ddl/backfilling_operators.go` 的 `tableScanWorker`、`indexIngestWorker` 与外部 writer operator；`pkg/ddl/backfilling_read_index.go` 的 pipeline 执行、关闭和资源调整；`pkg/ddl/backfilling_txn_executor.go::expectedIngestWorkerCnt`。
-- 测试证据：`pkg/session/runtime/normal_ddl_masking_policy_test.rs` 验证真实 modify-column 扫描期间缩容关闭 worker；`pkg/session/runtime/import_sst_test.rs` 验证 framework 取消唤醒现有物理写限速器；`pkg/ddl/backfilling_txn_executor_test.rs` 与 Go `pkg/ddl/backfilling_txn_executor_test.go` 验证并发计算。未发现与目标文件同名的独立测试文件。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终以固定标题结构检查、路径/符号复核和 diff 自审作为验证。

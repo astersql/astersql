@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-util-syncutil` crate 的普通同步锁后端，对应 Go 的 `pkg/util/syncutil/mutex_sync.go`。crate 入口 `pkg/util/syncutil/lib.rs` 始终声明 `mutex_sync` 和 `mutex_deadlock` 两个模块；未启用 Cargo feature `deadlock` 时，入口以 `pub use mutex_sync::*` 将本文件的公开项提升为 crate API。启用该 feature 时，对外改为导出 `mutex_deadlock`，本模块仍会被编译为公开子模块，但不再是 crate 根的默认锁表面。
-
-`pkg/util/syncutil/Cargo.toml` 指定库入口为 `lib.rs`，只依赖启用了 `deadlock_detection` 能力的 `parking_lot 0.12`。本文件本身不启动检测逻辑；它代表默认、无检测的构建变体。
+公开常量 `EnableDeadlock = false`，让调用方能识别当前默认变体不提供死锁检测。
 
 ## 核心职责
 
@@ -74,10 +72,6 @@ Cargo 清单显示 `pkg/executor`、`pkg/session`、`pkg/server`、`pkg/domain`�
 
 ## 与 Go 版本的对应关系
 
-Go 文件 `pkg/util/syncutil/mutex_sync.go` 受 `//go:build !deadlock` 控制，定义 `EnableDeadlock = false`，并分别以嵌入 `sync.Mutex`、`sync.RWMutex` 的 struct 暴露 `Mutex` 与 `RWMutex`。Rust 侧由 `lib.rs` 的 Cargo feature 条件导出承担等价的构建选择，由 `parking_lot` 类型再导出承担普通锁能力。
-
-保持一致的语义包括：普通变体能力标志为 false、互斥更新串行化、多读者共享且写者互斥，以及持锁执行路径异常退出后锁仍可继续使用。上述内容分别由 `build_variants_expose_the_go_enable_deadlock_values`、`mutex_serializes_parallel_updates`、`rwmutex_allows_readers_and_blocks_a_writer` 和 `mutex_remains_usable_after_a_holder_panics_like_go` 覆盖。
-
 需要注意的表达差异是：Go 类型是嵌入标准库锁的具名 wrapper，具有可用零值和显式解锁方法；Rust 类型是 `parking_lot` 泛型类型的直接再导出，通过 `new/default` 初始化并由 guard 自动解锁。Rust 的 `RWMutex` 只是公开重命名，底层真实类型名仍是 `RwLock`。Go 同路径没有独立 `mutex_sync_test.go`；Rust 的对齐测试集中在同目录独立文件 `migration_aster_unit_test.rs`，没有嵌入生产源文件。
 
 ## 扩展指南
@@ -87,11 +81,3 @@ Go 文件 `pkg/util/syncutil/mutex_sync.go` 受 `//go:build !deadlock` 控制，
 - 若要增加检测、日志、超时或锁顺序跟踪，应放入检测变体或明确的新包装层，不能让默认变体的 `false` 能力标志与实际行为矛盾。
 - 新增或修改并发语义时，应在独立的 `pkg/util/syncutil/migration_aster_unit_test.rs` 中补测试，不要把测试逻辑写进 `mutex_sync.rs`。至少覆盖互斥结果、读写排斥、panic 后可用性以及两个 feature 表面的兼容性。
 - 兼容风险主要是下游公开类型变化、Go/Rust 初始化与解锁模型差异；性能风险主要来自新增包装、统计或扩大临界区。修改公开导出前应检查全部 `astersql-util-syncutil` Cargo 消费者和 `syncutil::Mutex`/`RWMutex` 引用。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录列出 `lib.rs`、两个锁变体、Go 对照与独立迁移测试。
-- RustCodeGraph `node --file pkg/util/syncutil/mutex_sync.rs`：核对完整 31 行源码及三个公开项；`query EnableDeadlock`/`callers` 也暴露了 re-export 反向边未解析的索引限制。
-- RustCodeGraph `node`：阅读 `pkg/util/syncutil/lib.rs`、`mutex_sync.go`、`migration_aster_unit_test.rs` 及直接消费点 `apply_cache.rs`、`storage.rs`、`oom_test.rs`、`tidb_library_test.rs`。
-- 配置与引用搜索：阅读 `pkg/util/syncutil/Cargo.toml`，并以 `rg` 核对 `astersql-util-syncutil`、`astersql_util_syncutil`、`EnableDeadlock`、`syncutil::Mutex` 和 `RWMutex` 的 Cargo/源码引用。
-- 测试证据：`pkg/util/syncutil/migration_aster_unit_test.rs` 是目标模块的独立 Rust 测试文件；Go 同路径无专用 `mutex_sync_test.go`，其原始实现 `mutex_sync.go` 是语义对照依据。本纯文档任务按计划未运行 Cargo。

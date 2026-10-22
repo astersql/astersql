@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-store-driver-txn` crate；crate 入口 `pkg/store/driver/txn/lib.rs` 以 `mod txn_driver` 装配它并通过 `pub use txn_driver::*` 导出其公开符号。`pkg/store/driver/txn/Cargo.toml` 将该 crate 对应到 Go 包 `pkg/store/driver/txn`，直接依赖 canonical `astersql-kv`、表键编解码 crate `astersql-tablecodec`，以及带固定 tag `v0.4.2-aster.13` 的 `tikv-client`。
-
-文件同时承担两种边界职责。第一种是生产 `pkg/store/driver/kv_adapter.rs` 实际使用的 client-rust 公共辅助层：`ClientTransactionMode`、`map_client_error` 和 `canonical_value`。第二种是 `tikvTxn`，它用共享 `BTreeMap`、`tikvSnapshot` 和 `memBuffer` 表达 TiDB 事务适配语义；当前仓库中它的直接构造调用集中在独立测试 `pkg/store/driver/txn_test.rs`，而真实 TiKV 网络事务由 `kv_adapter.rs` 的 `ClientTransaction` 持有 `tikv_client::Transaction` 执行。因而不能把这里的 `tikvTxn::commit_inner` 描述成真实 TiKV 2PC 网络实现。
+`tikvTxn` 组合脏写缓冲与不可变快照，实现缓冲优先的点查/批量查、正反向联合扫描、语句级检查点、事务选项缓存、提交、重复键错误美化和公平锁状态适配。
 
 ## 核心职责
 
@@ -73,10 +71,6 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/store/driver/txn/txn_driver.go` 的 `tikvTxn` 包装真实 `*tikv.KVTxn`，Rust 的同名结构则组合内存 storage/snapshot/memBuffer，因此 Rust 复刻了接口行为和分支，但不是底层实现的一一替换。真实 client-rust 网络事务位于 `pkg/store/driver/kv_adapter.rs::ClientTransaction`。
-
-主要对齐点包括：缓冲优先读取、空值视为不存在、缓冲与快照的联合扫描、表信息双 id 缓存、重复键错误美化、`LockedWithConflict` 到写冲突、选项下推/缓存、公平锁适配及 untouched index 过滤。`TxnOption` 枚举逐项覆盖了 Go `SetOption` 的 switch 分支，包含 size limits、session id、后台生命周期和 prewrite 遇锁策略。
-
 主要差异包括：Go 构造器接收真实 `*tikv.KVTxn` 并安装 `TiDBKVFilter`，Rust `NewTiKVTxn` 接收共享 map；Go `Commit` 委托 client-go 2PC，Rust `commit_inner` 直接刷内存 map；Go 的 committer 检查主要在 `intest` 下启用且 `SetOption` 触发断言，Rust 始终使用原子标志并返回错误；Go `SetVars` 接受 `*tikv.Variables`，Rust 当前仅保存 `String`；Go 扫描在 union iterator 构造失败时显式关闭 dirty 和 snapshot，Rust 当前未显式做该分支清理；Go 的 `KVFilter` 会下推，Rust 对应选项目前为空操作。
 
 独立 Rust 测试覆盖也不等同于 Go 测试布局：`pkg/store/driver/txn_test.rs` 验证点查、批量查、commit-ts、缓冲覆盖/删除、拦截器错误及正反向扫描；`pkg/store/driver/txn/txn_driver_test.rs` 验证 `CacheTableInfo(None)` 清除陈旧项；`driver_test.rs` 验证 client-rust 模式、普通错误/写冲突映射和 canonical 未命中值。未见对本文件提交、大小限制、锁冲突、公平锁或 filter 分支的直接 Rust 单元测试。
@@ -89,16 +83,3 @@
 - 修改错误映射时，应覆盖嵌套 `KeyError`、`MultipleKeyErrors`、`PessimisticLockError` 和无冲突普通错误；保留 canonical 错误码和 reason 是兼容性重点。
 - 修改 untouched 判断或重复键解码时，应以 `astersql-tablecodec` 的编码规则和 Go `tablecodec.IsUntouchedIndexKValue` 为基准；风险集中在唯一索引兼容、错误文案以及误过滤写入。
 - 性能敏感点是扫描合并、批量查回落、提交时克隆/遍历全部缓冲项，以及持有 storage 写锁的持续时间；扩展时避免在锁内加入慢回调或网络操作。
-
-## 验证依据
-
-- 冻结增量仅移除旧 `ExtractedErrors` match 分支；目标客户端接口使用 `MultipleKeyErrors`，其递归提取和悲观锁包装行为保留，不表示删除多错误处理。`driver_test.rs::client_prewrite_conflict_retains_canonical_error_code_and_reason` 构造 `MultipleKeyErrors([KeyError(WriteConflict)])` 并断言 canonical `ErrWriteConflict` 及 `SelfRolledBack` reason；真实网络事务仍由 `kv_adapter.rs` 接线。
-
-本次同步范围为 `ad0a6f4..2c944fb`，以下行为按目标提交复核；测试仅作静态证据，未执行。
-
-- 源码与模块：`pkg/store/driver/txn/txn_driver.rs`、`pkg/store/driver/txn/lib.rs`、`pkg/store/driver/txn/Cargo.toml`。
-- 版本依据：逐文件读取 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- <源文件>` 与 `git show 2c944fbcbfb2c904cc8cbddafe17954138bd8867:<路径>`。模块、Cargo、测试与 Go 对照同样取自该冻结提交，不采用工作区后续修改。RustCodeGraph `status` 当前含 Rust 索引，但不能证明冻结版本，增量结论以目标 blob 为准；目标包未见 `doc.go`。
-- 生产接线：`pkg/store/driver/kv_adapter.rs` 的 import、`ClientSnapshot::new`、`begin_transaction`、扫描与点查路径，证明三项 client-rust 辅助 API 的实际使用，并定位真实网络事务实现。
-- Go 对照：`pkg/store/driver/txn/txn_driver.go`，逐项核对构造、读写、扫描、选项、错误、公平锁、flush 和 filter。
-- 独立测试：`pkg/store/driver/txn/txn_driver_test.rs`、`pkg/store/driver/txn/driver_test.rs`、`pkg/store/driver/txn_test.rs`。这些测试分别提供缓存清除、client-rust 映射，以及本地事务读/批量读/扫描行为证据。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终只执行任务指定的 11 章节结构检查，并人工复核文档没有把内存适配器描述成真实 TiKV 2PC。

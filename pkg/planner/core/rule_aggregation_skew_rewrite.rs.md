@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；crate 根在 `pkg/planner/core/lib.rs` 中以 `pub mod rule_aggregation_skew_rewrite` 公开该模块，并在测试配置下加载独立文件 `rule_aggregation_skew_rewrite_test.rs`。它把 Go 文件 `pkg/planner/core/rule_aggregation_skew_rewrite.go` 的倾斜 DISTINCT 聚合规则移植到 `rule_aggregation_elimination.rs` 定义的简化 `LogicalPlan`/`LogicalAggregation` 模型上，主要用于可独立验证的规则语义。
-
-需要区分“公开模块”和“生产优化主链”：仓库当前真实逻辑优化调度由 `pkg/planner/core/optimizer_runtime.rs` 的 `LOGICAL_RULES`、`LOGICAL_RULE_FLAGS` 与 `rewrite_skew_distinct_aggregation_descendants` 完成，使用的是 `logicalop::LogicalPlanRef`。代码搜索仅发现本文件被 `rule_aggregation_skew_rewrite_test.rs` 直接使用；因此不能把本文件的 `SkewDistinctAggRewriter::Optimize` 描述成当前 SQL 优化器直接调用的入口。
+把 Go 文件 `pkg/planner/core/rule_aggregation_skew_rewrite.go` 的倾斜 DISTINCT 聚合规则移植到 `rule_aggregation_elimination.rs` 定义的简化 `LogicalPlan`/`LogicalAggregation` 模型上，主要用于可独立验证的规则语义。
 
 ## 核心职责
 
@@ -67,9 +65,7 @@ RustCodeGraph 将 `SkewDistinctAggRewriter`、`isQualifiedAgg`、`synthetic_colu
 
 ## 与 Go 版本的对应关系
 
-核心意图与 Go `rule_aggregation_skew_rewrite.go` 一致：至少一个分组项、恰好一个 DISTINCT 聚合、聚合白名单、Bottom 追加 DISTINCT 键、Bottom/Top 两级聚合、普通 COUNT 以 Bottom COUNT + Top SUM 合并并恢复输出类型、缺失分组列以 `FirstRow` 补出，以及同名规则标识。
-
-本 Rust 文件是简化模型上的语义移植，并非逐类型复刻。Go 使用 `logicalop.LogicalAggregation`、真实 schema、session 列 ID、表达式构造器及可能失败的 `NewAggFuncDesc`/cast；本文件使用字符串化表达式、局部列号和克隆的原 schema。Go 的 DISTINCT 参数收集发生在资格检查之前，但随后只接受单参数；本文件直接要求唯一 DISTINCT 函数的参数数为 1。Go 会复制 `PreferAggType`/`PreferAggToCop` 等物理偏好，本简化类型没有对应字段。
+本 Rust 文件是简化模型上的语义移植，并非逐类型复刻。Go 会复制 `PreferAggType`/`PreferAggToCop` 等物理偏好，本简化类型没有对应字段。
 
 此外，当前真实 Rust 优化实现位于 `optimizer_runtime.rs`，它会去重已存在于 Bottom 分组中的 DISTINCT 参数，而本文件及其独立测试保留 Go 文件的无条件追加行为；真实实现也直接使用生产表达式/schema 类型。维护者修改语义时应同时核对这三处（Go、简化移植、真实 Rust 调度实现），不能仅凭本文件推断线上行为。
 
@@ -81,13 +77,3 @@ RustCodeGraph 将 `SkewDistinctAggRewriter`、`isQualifiedAgg`、`synthetic_colu
 - 若要把本类型接入真实优化主链，必须先替换简化 `LogicalPlan`、字符串 cast、本地列 ID 和复用原 schema 的做法，并处理生产上下文中的错误、输出名、偏好属性及规则 flag；更安全的方向是保持 `optimizer_runtime.rs` 为唯一生产实现，让本文件继续承担隔离语义测试或最终消除重复实现。
 - Rust 测试继续放在独立的 `rule_aggregation_skew_rewrite_test.rs`，不要内嵌到生产文件；SQL 级常量回归位于 `issuetest/panicrisk_tier2_test.rs`，真实调度结构回归位于 `optimizer_logical_entry_aster_unit_test.rs`。
 - 性能风险主要来自增加一层聚合和可能的投影；正确性风险集中在聚合可分解性、NULL/常量语义、类型转换、列 ID 冲突和 schema 映射；兼容性风险则是与 Go 行为或生产 Rust 实现发生漂移。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`node --file pkg/planner/core/rule_aggregation_skew_rewrite.rs` 展示完整 257 行源码并报告测试文件使用关系；`query` 确认 `SkewDistinctAggRewriter`、`isQualifiedAgg`、`synthetic_column` 的路径与签名。精确 `callers`/`callees` 查询没有返回额外调用边，因此又以模块声明和仓库调用点搜索核验接线，未据此臆造生产调用关系。
-- 生产源码：`pkg/planner/core/rule_aggregation_skew_rewrite.rs`；简化数据类型来源：`pkg/planner/core/rule_aggregation_elimination.rs`、`pkg/planner/core/task.rs`。
-- crate 与模块边界：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`。
-- Go 对照及注册：`pkg/planner/core/rule_aggregation_skew_rewrite.go`、`pkg/planner/core/optimizer.go`。
-- 真实 Rust 优化接线：`pkg/planner/core/optimizer_runtime.rs` 中 `LogicalRule::SkewDistinctAgg`、`LOGICAL_RULES`、`LOGICAL_RULE_FLAGS`、规则分派与 `rewrite_skew_distinct_aggregation_descendants`。
-- 独立 Rust 单元测试：`pkg/planner/core/rule_aggregation_skew_rewrite_test.rs`，覆盖资格判定、重复分组项、COUNT 投影和 changed 标志；集成式调度测试：`pkg/planner/core/optimizer_logical_entry_aster_unit_test.rs`；常量参数 Rust/Go 回归：`pkg/planner/core/issuetest/panicrisk_tier2_test.rs` 与 `.go`。
-- 本任务为纯文档分析，依计划未运行 Cargo；最终结构检查应确认本文恰有规定的十一个二级标题。

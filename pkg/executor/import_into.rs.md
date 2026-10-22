@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`import_into.rs` 位于 `astersql-executor` crate，模块由 [`pkg/executor/lib.rs`](lib.rs) 的 `pub mod import_into` 公开。它把 `IMPORT INTO` 的顶层控制流移植成一个以 `ImportIntoRuntime` 为依赖注入边界的泛型 Rust 执行器：本文件决定校验、准备、任务提交、等待、结果回填和取消的先后顺序，具体会话、存储、导入器和分布式任务操作则交给运行时实现。
-
-当前接线状态需要与“已存在 Rust 源码”区分：仓库搜索只找到 [`tests/realtikvtest/importintotest/job_runtime.rs`](../../tests/realtikvtest/importintotest/job_runtime.rs) 实现 `ImportIntoRuntime`，并在那里构造 `ImportIntoExec` 与 `ImportIntoActionExec`；未在 `pkg/executor` 的 Rust 生产构建器中找到对应构造调用。因此它是公开且可由测试集成的 Rust 编排层，但不能仅据此断言 Rust 服务器主链已经使用它。生产语义的直接对照仍是 [`pkg/executor/import_into.go`](import_into.go)。
+`ImportIntoExec::Next` 实现文件导入的总编排：建立导入计划、校验赋值、建立控制器、选择同步或异步准备、用隔离会话做前置检查、初始化 TiKV 配置、提交任务、按 detached 状态决定是否等待，最后回填作业信息。
 
 ## 核心职责
 
@@ -92,12 +90,8 @@ crate 边界由 [`pkg/executor/Cargo.toml`](Cargo.toml) 确认：库入口是 `l
 
 - Go 类型直接嵌入 `exec.BaseExecutor` 并调用具体包；Rust 以 `ImportIntoRuntime` 关联类型和方法抽象全部外部状态，因此这里只能证明编排顺序，具体实现质量必须另查运行时。
 - Go `Next` 为上下文标注 internal source type，并在新会话间继承 materialized-view maintenance 标志；Rust trait 没有单独暴露这两个动作，只能由较粗粒度的运行时钩子内部实现，当前测试运行时对此多为简化实现。
-- Go `importFromSelect` 在函数开头也设置 `dataFilled = true`，尽管旧注释曾说“不需要”；Rust与实际赋值行为保持一致，并把完整并发管线压缩到一个运行时方法。
 - Go `cancelAndWaitImportJob` 的 DXF 探测与 dangling-job 竞态兜底不在 Rust 本文件中；Rust 通过 `cancel_and_wait_import_job` 委托，相关存储实现与 nextgen 测试位于 `import_into_storage.rs` 和 `import_into_test.rs`。
 - Rust `ImportIntoAction` 已建模为枚举，但 `Next` 目前没有分派枚举值；Go 用 `ast.ImportIntoActionTp` 保存动作，同样由当前构造路径限定为 CANCEL。
-- Go 新增的 `inheritMViewMaintenanceFlag` 及其回归测试没有在本文件形成细粒度 Rust API。若生产接线要求完全对齐，应在运行时实现或 trait 契约中明确验证，而不能假设自动继承。
-
-测试对照方面，[`pkg/executor/import_into_test.go`](import_into_test.go) 的 `TestImportIntoValidateColAssignmentsWithEncodeCtx` 给出支持/拒绝矩阵与精确错误文本；Rust 独立测试 [`pkg/executor/import_into_test.rs`](import_into_test.rs) 覆盖递归子函数、赋值下标、错误文本、非标量不递归以及 `uncompress(compress(@raw))`。后者带 `nextgen` 的取消测试主要验证 `import_into_storage.rs`，不是本文件薄委托自身的单元逻辑。
 
 ## 扩展指南
 
@@ -108,11 +102,3 @@ crate 边界由 [`pkg/executor/Cargo.toml`](Cargo.toml) 确认：库入口是 `l
 - 新增作业动作时，必须扩展 `ImportIntoAction` 并在 `ImportIntoActionExec::Next` 显式分派；同时定义各动作的权限、合法状态和错误，并添加独立 Rust 测试，不能继续无条件调用取消函数。
 - 调整取消流程时，应同时审查 `import_into_storage.rs` 及 nextgen 竞态测试，保持“任务存在时取消并等待、确认为未找到时才尝试 pending 作业兜底、探测失败不触碰作业、状态已变化则拒绝取消”的安全边界。
 - 测试逻辑应继续放在独立的 `pkg/executor/import_into_test.rs` 或适当集成测试文件，不要嵌回生产源文件。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示本仓库索引包含 `pkg/executor/import_into.rs`；`node --file pkg/executor/import_into.rs --offset 1 --limit 500` 读取了完整 439 行，并标出测试文件引用；`query` 区分了 Go/Rust 同名的 `ImportIntoExec`、`newImportIntoExec`、`ValidateImportIntoColAssignmentsWithEncodeCtx`、`cancelAndWaitImportJob`；`callees` 核对了 `Next`、校验、提交、等待、结果回填和动作取消的内部边。callers 对同名 Go/Rust 符号没有可靠消歧，所以上游结论另以仓库引用搜索核验。
-- Rust 源与装配：[`pkg/executor/import_into.rs`](import_into.rs)、[`pkg/executor/lib.rs`](lib.rs)、[`pkg/executor/Cargo.toml`](Cargo.toml)。Cargo 确认 crate 名、库入口、`nextgen` feature 与相关依赖；模块入口确认生产模块公开和独立测试模块装配。
-- Rust 调用与测试：[`tests/realtikvtest/importintotest/job_runtime.rs`](../../tests/realtikvtest/importintotest/job_runtime.rs) 提供当前可检索到的 `ImportIntoRuntime` 实现及主/取消执行器调用；[`pkg/executor/import_into_test.rs`](import_into_test.rs) 提供表达式边界与 nextgen 取消竞态证据；[`pkg/executor/import_into_storage.rs`](import_into_storage.rs) 是取消存储语义的真实 Rust 实现位置。
-- Go 对照：[`pkg/executor/import_into.go`](import_into.go) 核对完整生产编排和资源生命周期；[`pkg/executor/import_into_test.go`](import_into_test.go) 核对赋值校验矩阵、maintenance flag 和预检查边界。
-- 人工复核结论：本文区分了本文件直接实现、trait 契约委托、独立存储模块实现和 Go 生产实现；未把 Cargo 依赖清单或 Rust 测试适配器描述为已经接入的 Rust 生产服务器路径。

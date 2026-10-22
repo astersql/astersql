@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于独立 crate `astersql-br-pkg-streamhelper-spans`；crate 入口是同目录的 [`lib.rs`](lib.rs)，其通过 `#[path = "sorted.rs"]` 声明本模块并将公开符号扁平再导出。该 crate 在 [`Cargo.toml`](Cargo.toml) 中声明为库，移植元数据指向 Go 包 `br/pkg/streamhelper/spans`，上层 `astersql-br-pkg-streamhelper` 再以路径依赖接入它。
-
-它实现按键起点排序的“区间 + 进度值”主树，是流式备份 checkpoint 数据结构的底层。应用主链中的直接证据是 `br/pkg/streamhelper/advancer.rs::SetTask`：任务范围为空时使用 `Full()`，否则使用显式范围，随后调用 `Sorted(NewFullWith(&init, 0))` 初始化 checkpoint 树。值序二级索引由同目录 `value_sorted.rs` 包装，本文件只负责键序覆盖和合并。
+值序二级索引由同目录 `value_sorted.rs` 包装，本文件只负责键序覆盖和合并。
 
 ## 核心职责
 
@@ -100,13 +98,10 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`sorted.go`](sorted.go)。主要映射为：Go `btree.BTree` 对应 Rust `BTreeMap`，`btree.Item.Less` 对应 `Valued::Less`，`DescendLessOrEqual`/`AscendGreaterOrEqual` 对应 Rust 的 floor 范围查询和向右 range 扫描，`ReplaceOrInsert` 对应 `insert`。
-
-算法结构与 Go 保持一致：`join` 取最大值；`Merge` 先收集重叠段；`mergeWithOverlap` 删除旧段、切左右余量、合并重叠体并粘连同值相邻段；`overlapped` 先检查可能跨入起点的前驱。`sorted_test.rs` 的 `test_basic` 与 `test_sub_range` 复刻 Go [`sorted_test.go`](sorted_test.go) 的核心用例，覆盖覆盖写、较小值不回退、无限端点、子窗口裁剪和空洞隔离。
+`sorted_test.rs` 的 `test_basic` 与 `test_sub_range` 复刻 Go [`sorted_test.go`](sorted_test.go) 的核心用例，覆盖覆盖写、较小值不回退、无限端点、子窗口裁剪和空洞隔离。
 
 可见差异包括：
 
-- Go `Span` 是 `kv.KeyRange` 类型别名；Rust 在本文件定义等价字段的自有结构。
 - Go `Valued` 实现 `String()` 供格式化；当前 Rust 只派生 `Debug`，没有同名字符串方法。
 - Go 树用运行时类型断言取出 `btree.Item`；Rust `BTreeMap` 在编译期固定键和值类型。
 - Rust 的 `Traverse` 克隆节点后传值；Go 也按值断言出 `Valued`，但切片字段仍共享底层数组，而 Rust 的 `Vec<u8>` 克隆是深复制。
@@ -120,17 +115,3 @@
 - 保持 Rust 测试与源文件分离。合并行为用例应加入 [`sorted_test.rs`](sorted_test.rs)，公共 Go/Rust 契约加入 [`parity_test.rs`](parity_test.rs)；如更改 Go 对应语义，还应对照 [`sorted_test.go`](sorted_test.go)。
 - 增加区间表示或批量 API 时，应测试：空树、全键空间、有限/无限右端、仅端点相接、跨多个旧段、较小值合并、子范围空洞、回调早停，以及相邻同值段能否粘连。
 - 性能改动应关注受影响段数、边界 `Vec<u8>` 克隆和碎片数量，不能只验证最终最小值；主树和值序索引必须在每次操作后保持一致。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- Rust 源码：[`sorted.rs`](sorted.rs) 中的 `join`、`Span`、`Valued`、`ValuedFull`、`NewFullWith`、`Merge`、`Traverse`、`mergeWithOverlap`、`overlapped`。
-- crate 边界：[`Cargo.toml`](Cargo.toml) 与 [`lib.rs`](lib.rs)；上层路径依赖见 `br/pkg/streamhelper/Cargo.toml`。
-- 下游工具与索引：[`utils.rs`](utils.rs) 和 [`value_sorted.rs`](value_sorted.rs)。
-- 应用入口：`br/pkg/streamhelper/advancer.rs::SetTask`、`WithCheckpoints`。
-- Go 对照：[`sorted.go`](sorted.go) 与 [`sorted_test.go`](sorted_test.go)。
-- 独立 Rust 测试：[`sorted_test.rs`](sorted_test.rs) 的 `test_basic`、`test_sub_range`，以及 [`parity_test.rs`](parity_test.rs) 的公开契约与早停检查。
-- RustCodeGraph：索引状态为 7032 个 Rust 文件；查询确认 `SetTask -> NewFullWith -> Sorted/Traverse` 主链，以及 `ValueSortedFull::MergeAll -> overlapped/mergeWithOverlap` 的索引维护关系。
-
-本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认本文恰好包含任务要求的十一个二级章节。

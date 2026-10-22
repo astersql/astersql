@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-format-textrow`，crate 根在 [`pkg/format/textrow/lib.rs`](./lib.rs)，并由该入口私有声明 `result_encoder` 模块后公开再导出全部符号。crate 的依赖和 Go 迁移来源记录在 [`pkg/format/textrow/Cargo.toml`](./Cargo.toml)：字符集实现来自 `astersql-parser-charset`，MySQL 类型与 collation 常量来自 `astersql-parser-mysql`，日志来自 `astersql-util-logutil`；`package.metadata.porting.go-package` 指向同目录 Go 包。
-
-它处在 MySQL 结果集序列化的“字符集策略”层，而不负责协议帧本身。相邻的 [`textrow.rs`](./textrow.rs) 将 `chunk::Row` 的单列值格式化为文本，并对字符串类值调用这里的 `UpdateDataEncoding` 与 `EncodeData`。更上游的 [`pkg/server/internal/column/column.rs`](../../server/internal/column/column.rs) 在列定义包中调用 `EncodeMeta`、`ColumnCharsetID`、`IsStringColumnType`，在文本行和二进制行输出中复用 `ResultEncoder`；长度编码、NULL 标志和协议包布局均由服务端列模块负责，而不是本文件的职责。
+根据会话变量 `@@character_set_results` 建立稳定的结果字符集编码器，供元数据和普通字符串结果使用（`ResultEncoder::NewResultEncoder`）。
 
 ## 核心职责
 
@@ -76,11 +74,11 @@ Cargo 接线方面，workspace 根 `Cargo.toml` 包含 `pkg/format/textrow` 成�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`result_encoder.go`](./result_encoder.go)。Rust 保留了 Go 的字段角色和公开行为：会话编码与列编码分离；构造时缓存 `isBinary`/`isNull`；未知 charset ID 只告警；metadata 总走结果字符集；data 在 null/binary/列 binary 时走列字符集；列定义 charset 改写规则和字符串类型集合一致；转换错误只记录日志并返回可用输出。
+Rust 保留了 Go 的字段角色和公开行为：会话编码与列编码分离；构造时缓存 `isBinary`/`isNull`；未知 charset ID 只告警；metadata 总走结果字符集；data 在 null/binary/列 binary 时走列字符集；列定义 charset 改写规则和字符串类型集合一致；转换错误只记录日志并返回可用输出。
 
-所有权实现存在必要差异。Go 使用 `*bytes.Buffer` 和复用 `[]byte`，`Encode*` 返回值可能由内部缓冲支撑，因此注释要求立即消费；Rust 方法返回独立 `Vec<u8>`，`buffer`/`scratch` 用 `Option` 表示 `Clean` 状态。Go 的 `Clean` 后注释要求不再复用编码器，而 Rust 的 `encode_with` 显式回退到临时 `Vec`，并由迁移测试验证仍能工作。Rust 的 `recycle_scratch` 会按输出长度重新分配并复制保存内容，这是安全的所有权适配，不应被误解为与 Go 完全相同的切片别名模型。
+所有权实现存在必要差异。Go 使用 `*bytes.Buffer` 和复用 `[]byte`，`Encode*` 返回值可能由内部缓冲支撑，因此注释要求立即消费；Rust 方法返回独立 `Vec<u8>`，`buffer`/`scratch` 用 `Option` 表示 `Clean` 状态。Go 的 `Clean` 后注释要求不再复用编码器，而 Rust 的 `encode_with` 显式回退到临时 `Vec`，并由迁移测试验证仍能工作。
 
-Go 测试 [`result_encoder_test.go`](./result_encoder_test.go) 与 Rust 测试 [`result_encoder_test.rs`](./result_encoder_test.rs) 一一覆盖 UTF-8 noop、中文“一”到 GBK 字节 `d2 bb`、binary 透传，以及字符串类型集合和 Longlong 反例。Rust 额外的 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 覆盖 `EncodeData` 的结果/列字符集切换、binary collation、`ColumnCharsetID` 三个关键分支和 `Clean` 后编码；[`textrow_test.rs`](./textrow_test.rs) 则通过 `FormatValueText` 验证 GBK 字符串的集成路径。
+Rust 额外的 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs) 覆盖 `EncodeData` 的结果/列字符集切换、binary collation、`ColumnCharsetID` 三个关键分支和 `Clean` 后编码；[`textrow_test.rs`](./textrow_test.rs) 则通过 `FormatValueText` 验证 GBK 字符串的集成路径。
 
 ## 扩展指南
 
@@ -89,12 +87,3 @@ Go 测试 [`result_encoder_test.go`](./result_encoder_test.go) 与 Rust 测试 [
 修改字符集优先级时，应分别覆盖 `character_set_results` 为普通字符集、空值和 binary，以及列为普通/binary collation 的组合；同时核对 `ColumnCharsetID` 的声明值与 `EncodeData` 的真实字节保持一致。修改 `Clean`、buffer 或 scratch 时，需要保留“释放后不 panic、不恢复长期复用状态”的当前契约，并关注大行导致的峰值内存、每字段分配和复制成本。
 
 若需要严格错误报告，建议新增返回 `Result` 的显式入口并逐层接线，而不是改变 `EncodeMeta`/`EncodeData` 的尽力输出行为。若添加共享或并发使用方式，需要先定义列状态的隔离边界；当前 `data_encoding` 是逐列可变状态，直接在多个并发编码流之间共享会产生语义冲突，即使通过锁绕过借用限制也不安全。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录 10 个文件；`files --filter pkg/format/textrow` 确认目标、crate 入口、Go 对照和独立测试均已索引；`node --file pkg/format/textrow/result_encoder.rs` 读取完整 191 行并报告 13 个符号、由 `textrow.rs` 使用。
-- RustCodeGraph 精确查询：`query ResultEncoder`、`query EncodeData`、`query ColumnCharsetID`、`query UpdateDataEncoding`、`query IsStringColumnType` 确认 Rust/Go 同名符号及测试；对 Rust 方法执行 `callers/callees` 未返回边，因而又用精确引用搜索并阅读 `textrow.rs` 与 `pkg/server/internal/column/column.rs` 补齐调用证据。
-- 已读 Rust 路径：`pkg/format/textrow/result_encoder.rs`、`lib.rs`、`textrow.rs`、`result_encoder_test.rs`、`migration_aster_unit_test.rs`、`textrow_test.rs`，以及上游 `pkg/server/internal/column/column.rs` 的元数据、文本行和二进制行相关区段。
-- 已读配置与 Go 路径：`pkg/format/textrow/Cargo.toml`、workspace `Cargo.toml` 中相关成员/依赖、`pkg/server/Cargo.toml`、`pkg/server/internal/column/Cargo.toml`、`pkg/format/textrow/result_encoder.go`、`result_encoder_test.go`、`textrow.go`。
-- 关键可复核行为：GBK metadata 编码为 `d2 bb`；binary metadata 透传；binary 列的数据绕过结果字符集；非字符串和 binary 列的声明 charset 不被改写；`Clean` 后 Rust 编码仍可工作；Longlong 不属于字符串列类型。
-- 本任务是纯文档分析，按计划未运行 Cargo。最终仅运行任务指定的 11 章节结构检查，并人工核对本文没有把协议 framing、并发保证或未出现的严格错误传播归于本文件。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-cardinality` crate（见 `pkg/planner/cardinality/Cargo.toml`），提供基数估算子系统共享的指数退避数值组合器。模块在 `pkg/planner/cardinality/lib.rs` 中以私有模块 `mod exponential` 装配，再通过 `pub use exponential::*` 将两个公开符号提升到 crate 根。它不负责收集统计信息或决定排序方向，只对调用方准备好的浮点序列做组合和边界裁剪。
-
-RustCodeGraph 将本文件识别为两个符号，并指出生产使用文件为 `pkg/planner/cardinality/ndv.rs` 与 `pkg/planner/cardinality/row_count_index.rs`。因此它位于“单列统计值已经取得”与“列组 NDV / 多列索引选择率形成最终估计”之间，而不是 SQL 规划入口本身。
+最终结果按调用方提供的 `lowerBound` 和 `upperBound` 裁剪，因此同一算法可服务于大于等于 1 的 NDV 和通常位于 `[0, 1]` 的选择率。
 
 ## 核心职责
 
@@ -67,7 +65,7 @@ RustCodeGraph 将本文件识别为两个符号，并指出生产使用文件为
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/planner/cardinality/exponential.go`。Rust 保留了 Go 的公开名称、四列上限、空/单值分支、连续开平方实现、乘积顺序和最终裁剪顺序。参数从 Go 的 `[]float64` 映射为 Rust 的只读 `&[f64]`，`min(MaxExponentialBackoffCols, l)` 映射为常量方法 `.min(sortedValues.len())`，没有算法简化。
+Rust 保留了 Go 的公开名称、四列上限、空/单值分支、连续开平方实现、乘积顺序和最终裁剪顺序。参数从 Go 的 `[]float64` 映射为 Rust 的只读 `&[f64]`，`min(MaxExponentialBackoffCols, l)` 映射为常量方法 `.min(sortedValues.len())`，没有算法简化。
 
 Rust 测试 `pkg/planner/cardinality/exponential_test.rs::test_apply_exponential_backoff` 与 Go 测试 `pkg/planner/cardinality/exponential_test.go::TestApplyExponentialBackoff` 使用同组案例：一至五个 NDV、一至四个选择率、上下界裁剪和空输入。Rust 额外通过独立测试文件接入 `lib.rs` 的 `#[cfg(test)] #[path = "exponential_test.rs"]`，遵守生产逻辑与测试分文件的仓库约定。
 
@@ -80,12 +78,3 @@ Rust 测试 `pkg/planner/cardinality/exponential_test.rs::test_apply_exponential
 - 支持不同排序/权重策略时，建议由调用方显式选择或新增清晰命名的入口，不要在本函数内部猜测 NDV 与选择率语义。
 - 回归测试应继续放在独立的 `pkg/planner/cardinality/exponential_test.rs`，并同步 Go 的 `exponential_test.go`；修改常量还应覆盖 `row_count_index_test.rs` 和相关 NDV 测试，因为调用者的边界与估值都会变化。
 - 性能风险主要来自把固定四列上限改为无界遍历或高成本幂运算；兼容风险来自改变浮点运算顺序，因为估算结果及容差可能发生可观察变化。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认本仓库索引包含目标；`files --filter pkg/planner/cardinality` 确认源、Go 对照和独立测试；`node --file pkg/planner/cardinality/exponential.rs --offset 1 --limit 240` 返回完整 53 行源码、两个符号及 `ndv.rs`/`row_count_index.rs` 使用关系；`query ApplyExponentialBackoff --kind function --json` 区分 Rust、Go 与 Go 测试符号。精确 `callers` 查询在 30 秒内未返回，调用边改由下列源码检索核实。
-- Rust 源与装配：`pkg/planner/cardinality/exponential.rs`、`pkg/planner/cardinality/lib.rs`、`pkg/planner/cardinality/Cargo.toml`。
-- 直接调用证据：`pkg/planner/cardinality/ndv.rs::estimateNDVWithExponentialBackoff`、`pkg/planner/cardinality/row_count_index.rs::expBackoffEstimation`；同一常量的关联逻辑见 `AdjustRowCountForAppendedHandleColumns`。
-- Go 对照：`pkg/planner/cardinality/exponential.go`、`ndv.go`、`row_count_index.go`。
-- 测试证据：`pkg/planner/cardinality/exponential_test.rs` 与 `pkg/planner/cardinality/exponential_test.go`。本任务是纯文档分析，按计划不运行 Cargo。
-- 结构验收使用任务指定命令，要求目标文件存在且恰有上述 11 个固定二级标题。

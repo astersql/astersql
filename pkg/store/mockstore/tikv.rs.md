@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tikv.rs` 是 `astersql-store-mockstore` crate 中 MockTiKV 后端的薄入口。crate 根在 [`pkg/store/mockstore/lib.rs`](lib.rs)，其中以 `pub mod tikv` 暴露本模块；crate 边界和直接依赖由 [`pkg/store/mockstore/Cargo.toml`](Cargo.toml) 定义。这个文件不实现 KV、MVCC、PD 或 RPC 协议，而是把已经汇总好的 `MockOptions` 交给 [`crate::unistore::build_embedded`](unistore.rs)，并用 `StoreType::MockTiKv` 保留调用方可观察的后端身份。
-
-上游工厂 [`NewMockStore`](mockstore.rs) 在 `config.store_type == StoreType::MockTiKv` 时调用 `new_mock_tikv_store`。常见入口是 [`MockTiKVDriver::open`](mockstore.rs)：它解析 `mocktikv://` URI，填入路径、后端类型及全局事务本地闩配置，然后进入 `NewMockStore`。因此，本文件处于“测试存储选项已解析”与“共享嵌入式协议服务开始构建”之间。
+这里刻意没有复制 [`build_embedded`](unistore.rs) 的集群创建、keyspace 转换、inspector/hijacker 调用和 `MockStorage` 组装逻辑。
 
 ## 核心职责
 
@@ -79,14 +77,12 @@ Cargo 层面，`astersql-store-mockstore` 直接依赖 `astersql-config` 和路�
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 [`pkg/store/mockstore/tikv.go`](tikv.go)。两版入口都接收 mock 选项并返回测试存储，也都要求集群 inspector、client/PD hijacker、事务本地闩、附加 TiKV 选项和当前 keyspace 最终进入构建结果，但实现形态不同：
+两版入口都接收 mock 选项并返回测试存储，也都要求集群 inspector、client/PD hijacker、事务本地闩、附加 TiKV 选项和当前 keyspace 最终进入构建结果，但实现形态不同：
 
-- Go `newMockTikvStore` 直接调用 `testutils.NewMockTiKV` 创建 client/cluster/PD client，再调用 `tikv.NewTestTiKVStore` 和 `mockstorage.NewMockStorage`。
-- Rust `new_mock_tikv_store` 不逐项复刻上述 client-go 装配，而是以 `StoreType::MockTiKv` 调用与 Rust `new_unistore` 共用的 `build_embedded`。因此“MockTiKV 身份”得以保留，但底层实际是工作区规范的进程内协议服务。
 - Go 函数会用 `errors.Trace` 包装首次创建错误；Rust 的对应错误文本转换位于共享构建器，入口本身直接返回其 `StoreError`。
 - Go 只有未导出的 camelCase 入口；Rust 同时提供规范 snake_case 公共函数和 Go 风格公共别名，以兼顾 Rust 调用和迁移期命名兼容。
 
-Go [`tikv_test.go`](tikv_test.go) 与 Rust [`tikv_test.rs`](tikv_test.rs) 都通过 driver 验证全局 latch 开关和 URI 错误。Rust 测试没有直接断言两个入口别名等价，也没有在此文件单独测试 inspector/hijacker/keyspace；这些行为由共享工厂及其独立测试承担。
+Rust 测试没有直接断言两个入口别名等价，也没有在此文件单独测试 inspector/hijacker/keyspace；这些行为由共享工厂及其独立测试承担。
 
 ## 扩展指南
 
@@ -100,14 +96,3 @@ Go [`tikv_test.go`](tikv_test.go) 与 Rust [`tikv_test.rs`](tikv_test.rs) 都通
 - 若增加异步任务或额外资源，必须定义失败回滚和 `MockStorage::close` 的对称清理路径。
 
 测试逻辑应放在独立的 [`pkg/store/mockstore/tikv_test.rs`](tikv_test.rs)，不要嵌入生产文件。入口分派或通用选项变化还应同步检查 [`mockstore_test.rs`](mockstore_test.rs)；Go 语义变化则对照 `tikv.go`、`tikv_test.go`。高风险点是与 Go 测试后端语义不一致、回调调用顺序变化、资源泄漏和把 MockTiKV 特有逻辑意外施加到 EmbedUnistore；本入口本身只增加一次函数转发，当前没有额外性能成本。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，目标 `pkg/store/mockstore/tikv.rs` 已索引并报告 3 个符号。
-- RustCodeGraph `node pkg/store/mockstore/tikv.rs::new_mock_tikv_store`：确认调用 `unistore.rs::build_embedded`，调用者为 `mockstore.rs::NewMockStore` 和 `tikv.rs::newMockTikvStore`。
-- RustCodeGraph `node pkg/store/mockstore/tikv.rs::newMockTikvStore`：确认别名只调用 `new_mock_tikv_store`。
-- RustCodeGraph `node pkg/store/mockstore/unistore.rs::build_embedded`：确认其调用者包括 `new_mock_tikv_store` 与 `new_unistore`，并核对 keyspace 转换、嵌入式创建、回调顺序和 `MockStorage` 字段来源。
-- 已读取生产路径：`pkg/store/mockstore/tikv.rs`、`lib.rs`、`Cargo.toml`、`mockstore.rs`、`unistore.rs`、`unistore/Cargo.toml`。
-- 已读取 Go 对照：`pkg/store/mockstore/tikv.go`、`mockstore.go`、`unistore.go`。
-- 已读取独立测试：`pkg/store/mockstore/tikv_test.rs`、`tikv_test.go`、`mockstore_test.rs`。
-- 本任务只新增说明文档；按计划不运行 Cargo。交付前使用任务指定命令验证恰有 11 个固定二级章节，并用限定范围的 diff 人工复核链接、符号名和无越界修改。

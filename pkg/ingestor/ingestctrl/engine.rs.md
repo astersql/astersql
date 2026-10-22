@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate；crate 根在 `pkg/ingestor/ingestctrl/lib.rs`，由其中的 `pub mod engine` 暴露。`Cargo.toml` 用 `[lib] path = "lib.rs"` 确认 crate 边界，并以 `package.metadata.porting.go-package = "pkg/ingestor/ingestctrl"` 指明 Go 对照包。
-
-它实现本地导入控制面的核心内存 Engine：接收有序或待排序的 KV，维护导入互斥状态、键范围、Region 分裂键、重复数据与导入统计，并向 `engine_mgr.rs`、`local.rs` 和 `import_pipeline.rs` 提供具体能力。当前 Rust 实现的实际存储是 `RwLock<BTreeMap<Vec<u8>, Vec<u8>>>`，不是 Go `engine.go` 使用的 Pebble DB/SST 后台管线；因此这里是可运行的内存实现和迁移边界，而不是 Go 文件全部磁盘语义的等价复刻。
+实现本地导入控制面的核心内存 Engine：接收有序或待排序的 KV，维护导入互斥状态、键范围、Region 分裂键、重复数据与导入统计，并向 `engine_mgr.rs`、`local.rs` 和 `import_pipeline.rs` 提供具体能力。
 
 ## 核心职责
 
@@ -84,7 +82,6 @@
 
 `engine.go` 是语义来源，但两者当前并非完整等价：
 
-- 名称与状态位、`engineMeta` 统计、范围属性编码/差分、首末 key、`nextKey`、导入统计和清理后缀基本一一对应。
 - Go `Engine` 持有 Pebble DB、SST 目录、writer 注册表、context/cancel、channel、wait group、后台 compaction/ingest、key adapter、重复检测 DB 和 logger；Rust `Engine` 以进程内 `BTreeMap` 和同步克隆替代这些组件，没有 WAL、SST table properties、后台 goroutine/channel 或崩溃恢复。
 - Go `finishWrite(ctx)` 会 flush 所有 writer、关闭 SST channel、等待后台任务并返回 `OnceError`；Rust `finishWrite()` 只切换关闭状态并返回 `first_error`。
 - Go `GetRegionSplitKeys` 从 Pebble SST property 聚合 `sizeProperties` 后调用范围切分逻辑；Rust 直接遍历内存 KV 并按阈值切段。Rust 中范围属性工具保留了 Go 算法，但当前没有接入 `GetRegionSplitKeys`。
@@ -100,12 +97,3 @@
 - 若接入 `RangePropertiesCollector`，必须保持大端 wire 格式与 meta-key 过滤兼容，并为截断输入、多个 property 集合的相同 key 合并、阈值为零和累计溢出增加独立 Rust 测试；不要把测试嵌入生产文件。
 - 若追求 Go Pebble/SST 等价，应在任务范围内逐项移植磁盘、flush、后台错误传播和恢复语义，不能把现有 `BTreeMap` 行为描述成已具备持久化能力。新增外部 Rust 依赖还必须遵守仓库关于独立上游仓库、tag 和可复现 Git 依赖的规则。
 - 性能风险集中在全量克隆 (`snapshot`/`newKVIter`)、自旋独占锁和按 KV 逐次 `Put`；兼容风险集中在范围边界、统计口径、关闭竞态和 Go/Rust 错误语义。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引可用，包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ingestor/ingestctrl` 列出目标及同目录 Go/Rust 文件。
-- RustCodeGraph `node --file pkg/ingestor/ingestctrl/engine.rs --offset 1 --limit 500` 与 `--offset 500 --limit 200`：读取目标全部 639 行，并报告直接使用者包括 `engine_mgr.rs`、`engine_test.rs`、`import_pipeline.rs`、`local.rs`、`local_test.rs` 等 6 个文件。
-- RustCodeGraph `query GetRegionSplitKeys --json` 定位本文件第 476 行实现及 `engine_mgr.rs`/`import_pipeline.rs` 的同名接口；`query RangePropertiesCollector --json` 对齐 Go `engine.go` 第 406 行与 Rust 第 129 行。对精确 Rust 方法运行 `callers`/`callees` 未返回边，因此调用关系又由上述直接使用文件的源码搜索核实，未把缺失图边当作不存在调用。
-- 已读源码/配置：`pkg/ingestor/ingestctrl/{engine.rs,Cargo.toml,lib.rs,engine_mgr.rs,local.rs,import_pipeline.rs,iterator.rs}`；Go 对照为 `engine.go`；独立测试为 `engine_test.rs`、`engine_test.go` 和 `local_test.rs` 中 `nextKey`/范围属性相关段落。
-- `engine_test.rs` 的可执行测试覆盖 import 状态大小视图、非忽略读锁等待、关闭后写入错误、范围扫描、迭代数据独立性、默认最小批大小和复用源 buffer 后 key 所有权；`local_test.rs` 的可执行 `next_key_advances_integer_record_keys_and_handles_overflow` 覆盖整数 handle 与溢出。其余仅保留 Go 步骤的注释占位不能作为 Rust 行为通过证据，本文未据此声称已验证。
-- 本任务只新增说明文档，按计划不运行 Cargo；交付时执行任务规定的 11 章节结构命令，并人工复核唯一生产物、源码链接、事实边界和 Go/Rust 差异。

@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`pkg/session/txnmanager.rs` 位于 `astersql-session` crate；`pkg/session/Cargo.toml` 以 `lib.rs` 为 crate 根，`pkg/session/lib.rs` 通过 `pub mod txnmanager;` 公开该模块，并在 `#[cfg(test)]` 下把独立测试文件 `pkg/session/txnmanager_test.rs` 接入。
-
-该文件实现一套会话级事务管理门面：`TxnManager` 持有当前 `TxnContextProvider`，根据新事务请求选择 provider，并把时间戳、快照、语句生命周期、错误建议和提交前设置等操作转发给 provider。它同时维护慢事务事件时间线。
-
-需要特别注意当前接线状态：Rust 的跨 crate 公共事务接口定义在 `pkg/sessiontxn/interface.rs::TxnManager`，而本文件的同名结构体没有实现该 trait；仓库文本搜索也没有发现生产 Rust 代码构造此结构体，直接构造和调用目前集中在 `pkg/session/txnmanager_test.rs`。因此，本文件是对 Go `pkg/session/txnmanager.go` 的局部移植和可测试实现，不能仅凭模块公开性断言它已经成为 Rust SQL 会话主链使用的事务管理器。
+这些职责分别由 `TxnManager`、`TxnContextProvider`、`TxnManagerSession` 和 `TxnProviderFactory` 分层承担：管理器控制顺序和状态，provider 实现事务语义，会话接口提供配置及观测能力，工厂负责构造具体 provider。
 
 ## 核心职责
 
@@ -90,8 +86,6 @@ provider 生命周期为“创建/取出预置值 -> 初始化 -> 安装 -> 多�
 
 ## 与 Go 版本的对应关系
 
-主要结构与 `pkg/session/txnmanager.go` 对应：两者都持有会话、当前语句、当前 provider、两槽乐观复用概念以及慢事务事件；进入事务都遵循“选 provider、初始化失败回滚、显式 BEGIN 设置 in-txn、记录 enter 事件”的顺序；语句钩子和慢事务日志也保持相同主干语义。
-
 当前 Rust 版本存在明确差异：
 
 - Go `getTxnManager` 从 `SessionVars.TxnManager` 读取并缓存每会话单例；Rust `getTxnManager` 每次新建对象。
@@ -113,16 +107,3 @@ Go 测试提供完整产品语义参照，但不能视作此 Rust 文件已经�
 若调整事件或慢事务观测，优先修改 `recordEvent`、`resetEvents`、`OnStmtStart` 和 `OnTxnEnd`，并同步验证事件顺序、脱敏内容、阈值 0/边界值以及 provider 缺失时不产生虚假 commit/rollback 事件。性能上应注意事件字符串分配和无上限增长；兼容性上应保持 Go 日志字段及事件顺序可比。
 
 若修改 provider 生命周期，应特别检查初始化失败、工厂失败、旧 provider 替换和 `OnTxnEnd` 丢弃四条路径。若要实现 Go 的双 provider 复用，需要让槽位与 provider 实例所有权具有可验证关系，并覆盖连续事务不复用仍活动实例的测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/txnmanager.rs` 确认目标文件已索引且含 101 个符号。
-- RustCodeGraph `node --file pkg/session/txnmanager.rs --offset 1/261`：读取目标文件全部 487 行，核对类型、trait、方法、分支和状态字段。
-- RustCodeGraph `query TxnManager`、`query EnterNewTxnType`、`node/callers/callees TxnManager::EnterNewTxn`：确认同名 Go/Rust 接口并发现目标 impl 方法的精确图节点缺失；因此用 `rg` 补查直接 Rust 调用。
-- `pkg/session/Cargo.toml`：确认 crate 名为 `astersql-session`、crate 根是 `lib.rs`、`nextgen` feature 与本文件无条件编译，以及 `astersql-parser`、`astersql-sessiontxn*` 的本地依赖声明。
-- `pkg/session/lib.rs`：确认 `pub mod txnmanager` 和独立 `#[cfg(test)] mod txnmanager_test`。
-- `pkg/session/txnmanager_test.rs`：核对缺 provider 不记录提交/回滚事件、SQL 使用脱敏规范化、provider 返回空 info schema 不回落三个 Rust 回归测试。
-- `pkg/session/txnmanager.go`：逐项核对 Go 的 provider 选择、双实例复用、进入/语句/结束流程、trace、慢日志和提交前设置。
-- `pkg/sessiontxn/interface.rs`：确认当前 Rust 公共 `TxnManager` trait、`TxnManagerContext`、`GetTxnManager`、`NewTxn` 与 `NewTxnInStmt` 的真实边界。
-- `pkg/sessiontxn/txn_manager_test.go`：核对 Go 对 Default、WithBeginStmt、BeforeStmt、WithReplaceProvider、stale read、隔离模式、快照和临时表拦截的预期覆盖。
-- 文档结论仅基于静态结构与上述测试源码；遵照任务要求未运行 Cargo，也未把 Go 测试通过情况当作 Rust 运行证据。

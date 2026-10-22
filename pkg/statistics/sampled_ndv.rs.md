@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-statistics` crate 的 sampled FM Sketch 扩展，由 `pkg/statistics/lib.rs` 私有装配并重导出公开接口；crate 和 tipb/protobuf 依赖见 `pkg/statistics/Cargo.toml`。它在 FM 保留哈希之外携带行数和 singleton/repeated 信息，使用 GEE 估算总体非 NULL NDV，并提供持久化封装。
-
-`row_sampler.rs::baseCollector::FromProto` 按采样计数字段存在性调用内部构造；`fmsketch.rs::NDV/EncodeFMSketch/DecodeFMSketch` 分流到本文件。公开构造器用于跨 crate 接线和测试，不等于完整 Rust executor ANALYZE 已接入远端 sampled 响应。
+在 FM 保留哈希之外携带行数和 singleton/repeated 信息，使用 GEE 估算总体非 NULL NDV，并提供持久化封装。
 
 ## 核心职责
 
@@ -59,20 +57,10 @@ marker 0 是无效 protobuf tag，使旧的普通草图解码器拒绝 sampled �
 
 ## 与 Go 版本的对应关系
 
-直接对应 `pkg/statistics/sampled_ndv.go`：计数含义、samples=0 保护、d/f1 上限、GEE 公式、非 NULL 行数上限以及 `[0,1]` envelope 与 payload 校验保持相同意图。
-
-Go `Sampled` 和 `NotNullRows` 支持 nil 接收者，分别返回 false/0；Rust 方法要求实际实例，无 nil 接收者。Rust 额外提供两个公开构造包装供其他 crate 和测试使用，内部 counts 仍为 crate 可见。两端 map/protobuf 输出顺序都不保证稳定，兼容核验应比较解码后的计数和集合。
+Go `Sampled` 和 `NotNullRows` 支持 nil 接收者，分别返回 false/0；Rust 方法要求实际实例，无 nil 接收者。Rust 额外提供两个公开构造包装供其他 crate 和测试使用，内部 counts 仍为 crate 可见。
 
 ## 扩展指南
 
 修改估计时保留样本数包含 NULL 的合同、d/f1 上限和总体非 NULL 上限；对照 Go 原测试并在独立 `fmsketch_test.rs` 扩展用例。修改 wire format 时同时核查外层 marker 分流、版本拒绝和普通格式兼容，覆盖短头、缺字段、额外 sketch/NULL 项及双向持久化恢复。
 
 不同采样率的分区合并使用 `PartitionNDVMerger` 的每分区 scale，不应只累计 counts 后套用单个比例。唯一键 schema 保证通过 `SampleCollector.Unique` 在构建阶段覆盖估计，不修改本模块公式。
-
-## 验证依据
-
-完整读取冻结新增文件 146 行、`sampled_ndv.go`、`fmsketch.rs`、`row_sampler.rs`、`partition_ndv.rs`、`lib.rs` 与 `Cargo.toml`。`fmsketch_test.rs::sampled_ndv_merges_hash_multiplicity_and_row_counts` 覆盖计数/重复标志合并、零样本、全 NULL、字段存在性和 Unique 覆盖；`global_stats_sampled_ndv` 覆盖 `[0,1]` 往返、旧 protobuf 拒绝、错误版本及五类字段缺失/额外 payload。没有单独的 `sampled_ndv_test.rs`，这些均为静态测试证据。
-
-本文以冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准：通过 `git diff ad0a6f4..2c944fb -- pkg/statistics/sampled_ndv.rs` 审计增量，并用 `git show 2c944fb:路径` 读取目标源码、模块入口、Cargo、测试及 Go 对照。RustCodeGraph `status` 当前含 Rust，但图反映工作区而非冻结提交，未用它证明冻结版本调用关系；关系通过 `git grep 2c944fb` 和对应 blob 交叉核实。`pkg/statistics/doc.go` 不存在。
-
-纯文档 Ready 等价验证：七篇说明均检查固定 11 个二级标题、路径与空白，执行任务指定的结构命令和 `git diff --check`。`.agents/skills/tidb-verify-profile` 缺失；按计划不运行 Cargo、构建或代码测试，测试仅作静态证据，不声称运行通过。

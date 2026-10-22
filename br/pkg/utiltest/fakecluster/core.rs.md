@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`core.rs`](core.rs) 是 `astersql-br-pkg-utiltest-fakecluster` library crate 的核心实现文件。crate 入口 [`lib.rs`](lib.rs) 以 `pub mod core` 加载它并扁平再导出其公开符号；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 指向 `br/pkg/utiltest/fakecluster`，表明它是同目录 Go 测试夹具的 Rust 移植，而不是真实 TiKV、PD 或 gRPC 服务。
-
-它位于 BR 测试支撑链上：上层 [`../crr/pd_sim_service.rs`](../crr/pd_sim_service.rs) 把 `Cluster` 适配成 streamhelper 的 `TiKVClusterMeta`、`LogBackupService`，并把 `Store` 包装成 `LogBackupClient`；[`../crr/pd_sim.rs`](../crr/pd_sim.rs) 的 `flushStore` 直接调用 `Cluster::ApplyCheckpointToStore`。因此本文件存在的目的，是在内存中提供可控的 store/region 拓扑、checkpoint、flush 订阅、TSO 与 GC safepoint，使 CRR/streamhelper 测试不依赖真实集群。
-
-该文件没有条件编译项。测试由 [`lib.rs`](lib.rs) 中的 `#[cfg(test)]` 分别装入 [`core_test.rs`](core_test.rs) 和 [`parity_test.rs`](parity_test.rs)，测试逻辑没有内嵌在生产源文件中。
+提供 streamhelper 所需查询：`RegionScan`、`Stores`、`GetLogBackupClient`、`GetLastFlushTSOfRegion` 暴露 region/store/checkpoint 视图和可注入错误。
 
 ## 核心职责
 
@@ -85,13 +81,11 @@ RustCodeGraph 的文件级索引显示 `core.rs` 有 99 个符号，并给出 64
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`core.go`](core.go)。公开类型和方法集合基本逐项对应：`FlushSimulator`、`Region`、`trivialFlushStream`、`Store`、`RegionState`、`Cluster` 以及构造、扫描、拓扑、checkpoint、flush、TSO、GC 和 task event 方法均保留 Go 名称和主要分支顺序。
-
 Rust 为安全共享做了机械映射：Go 指针变为 `Arc`，map/slice 变为 `Mutex<HashMap/Vec>`，原子 checkpoint 扩展到更多并发标量；protobuf、gRPC、TiDB codec/oracle 类型由本地 stubs 模拟。`Store` 的 Go 公共字段 `SupportsSub`/`BootstrapAt` 在 Rust 被收进私有 `StoreClientState`，通过只读方法暴露；hook 通过 setter 注入。接口形态不同，但测试可观察语义保持一致。
 
 以下 Go 边界被有意保留：分裂后两侧 epoch 同步增加且 flush 状态清零；初始 region 最多复制到前三个 store；scatter 固定选三个 store，数量不足时 panic；region scan 按起点排序并提前结束；GC safepoint 不回退；取消订阅移除 subscriber；unknown store/region 在 Go 会解引用 nil 的路径，Rust 以明确 `expect` 达到同样的失败效果。
 
-Rust 侧当前存在适配边界而非真实生产能力：gRPC metadata/message 方法是空实现，错误是本地 `Error`/`StatusError`，锁解析等更高层能力不在本文件实现。不能仅凭方法名宣称它已兼容真实 TiKV RPC。
+Rust 侧当前存在适配边界而非真实生产能力：gRPC metadata/message 方法是空实现，错误是本地 `Error`/`StatusError`，锁解析等更高层能力不在本文件实现。
 
 ## 扩展指南
 
@@ -101,12 +95,3 @@ Rust 侧当前存在适配边界而非真实生产能力：gRPC metadata/message
 - 修改 checkpoint 校验时，保留“先验证全部 region、后统一写入”的原子外观，并检查 `CurrentTS` 只前进不回退。修改 TSO/GC 时必须在 `Cluster::mu` 范围内维护跨字段不变量。
 - 新增或改变行为时同步更新独立测试文件，而不是在 `core.rs` 内嵌测试：公共契约与 Go 对等场景放入 [`parity_test.rs`](parity_test.rs)，针对 panic/回归的聚焦用例放入 [`core_test.rs`](core_test.rs)。同时检查 Go [`core.go`](core.go) 的对应逻辑，避免 Rust 单方面简化。
 - 兼容风险主要是上层 trait 适配、错误文案/分类及 Go 对等；性能风险主要是全局/集合 mutex、顺序一致性原子和每订阅一个线程。该 crate 面向测试，确定性和语义对齐优先于吞吐，但不应在持锁区加入不可控阻塞。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认当前索引包含 7032 个 Rust 文件；`files --filter br/pkg/utiltest/fakecluster` 确认 `core.rs`、`core_test.rs`、`parity_test.rs`、`lib.rs`、`stubs.rs` 与 Go 对照均被索引；`node --file br/pkg/utiltest/fakecluster/core.rs` 分段读取 1465 行实现；`query NewBasicCluster`、`query ApplyCheckpointToStore` 同时定位 Rust 与 Go 符号；对精确 callers/callees 的查询未产出可用 method 边，因此以直接源码引用补证。
-- 源码与 crate：完整核对 [`core.rs`](core.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs) 与 [`stubs.rs`](stubs.rs) 的类型引用和边界；目标目录不存在 `doc.go`。
-- Go 对照：读取 [`core.go`](core.go) 的全部类型/函数清单，并逐段核对建簇、region/store、扫描、flush 订阅、checkpoint、TSO、GC、拓扑和错误分支。
-- 上游直接证据：读取 [`../crr/pd_sim_service.rs`](../crr/pd_sim_service.rs) 的 trait 适配与 Store client 包装，以及 [`../crr/pd_sim.rs`](../crr/pd_sim.rs) 的 `flushStore -> ApplyCheckpointToStore` 调用。
-- 独立测试：[`core_test.rs`](core_test.rs) 验证未知 store/region 的 panic 对等；[`parity_test.rs`](parity_test.rs) 验证构造/分裂、checkpoint/flush、TSO、扫描边界、GC 回退、缺失对象、legacy/订阅错误、取消清理、事件广播，以及 store 少于三个时 scatter panic。
-- 本任务是纯文档分析，按任务约束不运行 Cargo。交付前以任务文件规定的命令验证目标文档存在且恰有十一个固定二级章节，并人工复查重要陈述均可追溯到上述符号或路径。

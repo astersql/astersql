@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`collation.rs` 是 `astersql-expression` crate 的表达式字符集、排序规则（collation）、强制转换优先级（coercibility）和字符覆盖范围（repertoire）规则中心。`pkg/expression/lib.rs` 以 `#[path = "collation.rs"] mod expression_collation` 装入本文件，并通过 `pub use expression_collation::*` 再导出其中的公开 API；`pkg/expression/Cargo.toml` 则确认 crate 名为 `astersql-expression`、库入口为 `lib.rs`，且移植对照包是 Go `pkg/expression`。
-
-它位于表达式“构建和类型推导”阶段，而不是字符串比较的执行内核：上游的 planner bridge、扩展函数、`GROUP_CONCAT` 类型推导和列替换安全检查收集表达式元数据，调用 `CheckAndDeriveCollationFromExprs`；本文件选出结果字符集/排序规则或拒绝非法混用；下游再把 `ExprCollation` 写回返回 `FieldType`。真正按 collation 比较或生成 sort key 的实现来自 `astersql-util-collate`，本文件只通过 crate 根的 `collate` 再导出使用其中的二进制规则转换。
-
-当前 Rust 接线需要特别区分两层：公开的 `CheckAndDeriveCollationFromExprs` 已有真实生产调用；本文件私有的 `deriveCollation` 保留 Go 按函数名选参和覆盖返回元数据的完整分派，但精确引用搜索未发现本文件外的 Rust 调用者。`pkg/expression/builtin.rs` 与 `distsql_builtin.rs` 各自还有同名局部函数，不能因名称相同而把它们视作调用了本文件的私有实现。
+定义 MySQL 兼容的七级 `Coercibility`、`ASCII`/`EXTENDED`/`UNICODE` repertoire 位图，以及用于列替换安全判定的 collation 严格性表。
 
 ## 核心职责
 
@@ -84,7 +80,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `ExprCollation`、`collationInfo`、`CollationInfo`、coercibility/repertoire 常量、严格性表、默认推导函数、`deriveCollation`、`CheckAndDeriveCollationFromExprs`、`safeConvert`、`inferCollation` 和错误格式化顺序均可在 `pkg/expression/collation.go` 找到直接对应。原子 coercibility 对齐 Go `sync/atomic`，`coerInit` 对齐 `go.uber.org/atomic.Bool`；Rust 统一使用标准库 `AtomicI32`/`AtomicBool` 和顺序一致内存序。
+原子 coercibility 对齐 Go `sync/atomic`，`coerInit` 对齐 `go.uber.org/atomic.Bool`；Rust 统一使用标准库 `AtomicI32`/`AtomicBool` 和顺序一致内存序。
 
 主要实现差异如下：
 
@@ -92,9 +88,8 @@ Rust 的 `ExprCollation`、`collationInfo`、`CollationInfo`、coercibility/repe
 - Go `Equals` 接受 `*collationInfo` 和值形式；Rust `Any::downcast_ref` 只匹配具体 `collationInfo` 值的动态类型，文档注释所称“值或引用”不应理解为任意引用层级都可 downcast。
 - Go illegal-mix 使用 collate 包的专用错误模板；Rust目前构造普通 expression `Error` 文本。消息内容对齐，但错误身份未证明等价。
 - Rust 的 `deriveCollation` 保留 Go 函数分派，但当前目标文件中未确认生产调用；实际 Rust builtin 构造还存在其他文件内的同名推导函数。因此它是已实现但尚不能据此证明接入主链的对照逻辑。
-- `InferCollationMetadata([])` 固定 utf8mb4；表达式版和 Go `inferCollation()` 使用 `GetDefaultCharsetAndCollate()`。如果未来默认值可变化，需要决定纯元数据入口是否也应接收上下文。
 
-`pkg/expression/collation_test.rs` 对照 Go `collation_test.go`，真正执行了 hash/equals、部分元数据推导和 compare-string 断言；大量 `TestDeriveCollation` Go case 仍以注释保存，并转调 `collation_aster_unit_test::run_collation_parity_suite`。`collation_33_aster_unit_test.rs` 进一步覆盖聚合矩阵；测试证据应区分“实际 Rust 断言”和“仅保留的 Go 注释”。
+`collation_33_aster_unit_test.rs` 进一步覆盖聚合矩阵；测试证据应区分“实际 Rust 断言”和“仅保留的 Go 注释”。
 
 ## 扩展指南
 
@@ -105,13 +100,3 @@ Rust 的 `ExprCollation`、`collationInfo`、`CollationInfo`、coercibility/repe
 修改聚合算法时，应保持左右折叠顺序、binary 优先、显式冲突、ASCII/Unicode/utf8mb4 选择和 `unknownCS` 延迟失败语义；同时更新纯值入口与表达式入口，避免两套算法分叉。回归测试放在独立测试文件，不放回 `collation.rs`：核心表驱动用例更新 `pkg/expression/collation_test.rs` 和 Go `collation_test.go` 对照意图，细粒度矩阵更新 `collation_33_aster_unit_test.rs`；常量实际编码失败、JSON/BIT 规范化和 illegal-mix 文本需要走表达式版入口。
 
 并发扩展必须维持构建期写、执行期读的生命周期。若新增复合可变状态，不能仅给其中一个字段加原子量就宣称整体一致；同时要更新 `Clone`、`Hash64`、`Equals` 和 cache snapshot 逻辑。性能上，`safeConvert` 可能对常量执行求值和编码扫描，新增调用点应留在构建/规划阶段，避免进入逐行执行热路径。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/expression/collation.rs` 分四段读取了全部 863 行，并报告该文件被 21 个文件使用。
-- RustCodeGraph `explore "pkg/expression/collation.rs collation functions callers callees"`：定位了 `CheckAndDeriveCollationFromExprs` 的 Rust 调用者，包括 `util.rs::ColumnSubstituteImpl`、`planner_bridge.rs::InferType4ControlFuncsVariadic`、`extension.rs::getFunction`、`aggregation/base_func.rs::typeInfer4GroupConcat`，并确认其调用 `inferCollation`、`safeConvert`、`fixStringTypeForMaxLength`、`illegalMixCollationErr`。单独的 `callers` 命令在本地索引查询中无输出且长时间未完成，已中止，未把它当作否定证据。
-- 精确源码调用边：用 RustCodeGraph `node --file` 读取了 `pkg/expression/aggregation/base_func.rs`、`planner_bridge.rs`、`extension.rs`、`util.rs`、`core_impl.rs` 的相关片段；用引用搜索区分了本文件私有 `deriveCollation` 与 `builtin.rs`、`distsql_builtin.rs` 的同名实现。
-- crate/装配：读取 `pkg/expression/Cargo.toml` 和 `pkg/expression/lib.rs`，核对包名、库入口、path 依赖、Go porting metadata、模块装入与公开再导出；目标包不存在 `pkg/expression/doc.go`。
-- Go 对照：读取 `pkg/expression/collation.go` 的类型、常量、函数分派、聚合、安全转换和错误路径；读取 `pkg/expression/collation_test.go` 的 `TestCollationHashEquals`、`TestInferCollation`、`TestDeriveCollation`、`TestCompareString` 测试矩阵。
-- Rust 测试：用 RustCodeGraph 完整读取 `pkg/expression/collation_test.rs`，确认实际执行的 hash/equals、元数据聚合、空输入和字符串比较断言，以及仍以 Go 注释保留的分派矩阵；RustCodeGraph 调用边与引用搜索还定位了 `collation_33_aster_unit_test.rs`、`explicit_collation_test.rs` 和 `scalar_function_test.rs` 的相关覆盖。
-- 本任务只新增说明文档，按计划未运行 Cargo。人工复核已覆盖“文件为何存在、当前如何接线、核心算法如何运行、失败边界、并发状态以及安全扩展位置”；交付时另运行固定十一章节的结构验证和文档变更范围检查。

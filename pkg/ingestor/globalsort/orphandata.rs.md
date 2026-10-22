@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-[`orphandata.rs`](orphandata.rs) 是 `astersql-ingestor-globalsort` 的孤儿对象统计模块，由 [`lib.rs`](lib.rs) 的 `pub mod orphandata` 导出，依赖见 [`Cargo.toml`](Cargo.toml)。包级职责见 [`../doc.go`](../doc.go)：全局排序使用外部存储保存中间数据。本文件在无活动 DXF 生产者时扫描并发布遗留对象大小，实际 owner 调用已接入 scheduler manager。
+遍历对象存储并排除受独立保留策略管理的前缀，累计对象数和非负字节数。
 
 ## 核心职责
 
@@ -54,8 +54,6 @@ trigger 在调用线程同步运行，没有定时器、后台 worker、互斥�
 
 ## 与 Go 版本的对应关系
 
-Go 对应 [`orphandata/monitor.go`](orphandata/monitor.go) 的 Monitor、Trigger、Reset、scanOrphanData 与 isRetainedObjectPath；同样采用双检查、前缀排除、十条样本和非负字节累计。Go 明确说明 ABA 窗口，并在失败、丢弃结果和成功时写诊断日志。
-
 Rust 没有 Go Config 的 Logger 或 nil checker/getter 默认值；必需依赖由类型约束表达，测试工厂可显式注入。Go 使用 defer Close，Rust 在扫描调用后显式 Close。Rust 返回公开 ScanStats 和扫描函数，trigger 仍只发布大小。Go owner 从 cleanTaskLoop 的首次与定时清理驱动；Rust 用 manager start/tick，不能将 Go 的独立 goroutine、ticker 和取消生命周期描述为 Rust 已实现能力。
 
 ## 扩展指南
@@ -63,11 +61,3 @@ Rust 没有 Go Config 的 Logger 或 nil checker/getter 默认值；必需依赖
 扩展保留命名空间时同步 manager 的 retained_prefixes 配置和独立测试，避免将有专属保留策略的冲突文件算入孤儿。改变生产者判断时保留终态清理完成前仍视为活动的约束。
 
 若增加删除或自动回收，需要独立的所有权与竞态协议，不能复用当前两次查询作为安全证明。若增加后台扫描或更强取消，需定义 owner 失效后的发布规则及 reset 与在途 trigger 的同步。新增测试继续放在独立 orphandata_test.rs；失败保留旧值、第二门丢弃和资源关闭均应覆盖。
-
-## 验证依据
-
-- 冻结新增文件：`git diff ad0a6f4..2c944fb -- pkg/ingestor/globalsort/orphandata.rs` 与 `git show 2c944fb:pkg/ingestor/globalsort/orphandata.rs`。不读取未提交变更来扩充行为。
-- 接线：目标提交的 globalsort lib.rs/Cargo.toml、scheduler scheduler_manager.rs/interface.rs/storage_adapter.rs，以及 pkg/ingestor/doc.go、pkg/dxf/framework/doc.go 包级契约。
-- Rust 独立测试：`orphan_scan_counts_bytes_samples_and_retains_conflict_rows` 验证统计与样本上限；`orphan_monitor_uses_two_active_producer_gates` 验证两次查询；`orphan_monitor_keeps_old_value_when_a_producer_appears_after_scan` 验证第二门丢弃；`orphan_monitor_first_gate_skips_storage_and_reset_removes_series` 验证第一门和 reset。
-- manager 独立 `scheduler_manager_nokit_test.rs::orphan_monitor_runs_with_scheduler_cleanup_and_resets_on_stop` 验证驱动接线；Go 对照为 orphandata/monitor.go、monitor_test.go、scan_test.go 与 scheduler_manager.go。这些测试为源码证据，本轮未执行。
-- Ready 等价文档检查为七文件存在性、各 11 节、相对链接、空白和 git diff --check。RustCodeGraph 当前索引不代表冻结版本，事实依据为 Git blob；未运行 Cargo/Go 或真实对象存储测试。

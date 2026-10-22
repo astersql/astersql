@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 AsterSQL Rust 类型系统中的 `VECTOR(FLOAT32)` 基础值对象：构造、维度校验、元素视图、文本转换和小端线格式编解码。它并不是由顶层 `pkg/types/lib.rs` 直接声明；真实装配路径是 `pkg/types/internal/vector/lib.rs` 以 `#[path = "../../vector.rs"] mod vector` 纳入 `astersql-types-vector` 子 crate，再由 `pkg/types/lib.rs` 以 `pub use types_vector as vector` 暴露为 `astersql_types::vector`。该子 crate 的边界和依赖由 `pkg/types/internal/vector/Cargo.toml` 定义，顶层 `pkg/types/Cargo.toml` 通过路径依赖 `types-vector` 接入。
-
-它处于 SQL 向量值的公共表示层：上游包括会话 DDL/DML、表达式求值、Datum、chunk、row codec、通用 codec、序列化和聚合 spill；相邻的 `pkg/types/vector_functions.rs` 在同一个 `VectorFloat32` 上补充距离、算术和比较方法。本文件本身不实现向量距离或索引算法。
+实现 AsterSQL Rust 类型系统中的 `VECTOR(FLOAT32)` 基础值对象：构造、维度校验、元素视图、文本转换和小端线格式编解码。
 
 ## 核心职责
 
@@ -80,7 +78,7 @@ RustCodeGraph 的文件节点报告目标文件被 13 个已索引文件直接�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/types/vector.go`，回归测试是 `pkg/types/vector_test.go`。两版保持相同的 4 字节小端维度头、`4*N` 元素区、16,383 维上限、NaN/Inf/范围错误、字符串格式、截断显示、前缀消费以及主要错误文本。Rust 的 `pkg/types/vector_test.rs` 复刻 Go 的端序、零向量、解析、Datum、比较和序列化场景；`pkg/types/truncate_12_aster_unit_test.rs` 还覆盖维度边界、格式化、独立克隆、溢出长度和含 NaN 线数据。
+Rust 的 `pkg/types/vector_test.rs` 复刻 Go 的端序、零向量、解析、Datum、比较和序列化场景；`pkg/types/truncate_12_aster_unit_test.rs` 还覆盖维度边界、格式化、独立克隆、溢出长度和含 NaN 线数据。
 
 实现差异如下：
 
@@ -100,12 +98,3 @@ RustCodeGraph 的文件节点报告目标文件被 13 个已索引文件直接�
 测试应保持独立文件，不嵌入生产源码。基础行为优先更新 `pkg/types/vector_test.rs`，Go 对照同步核验 `pkg/types/vector_test.go`；子 crate 实际 Cargo test target `pkg/types/truncate_12_aster_unit_test.rs` 应覆盖公开 API、维度边界、畸形线数据、格式化和克隆不变量。距离或逐元素运算属于 `pkg/types/vector_functions.rs` 及其相应独立测试，不应塞入本文件。
 
 兼容性风险集中在线格式、浮点格式化和错误分类；性能风险集中在大向量分配/复制、文本解析中间 `Vec<f64>`，以及名为 ZeroCopy 的反序列化实际逐 word 复制。任何 unsafe 视图修改都应继续维持 `u32/f32` 尺寸和对齐证明。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引覆盖 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/types/vector.rs --offset 1 --limit 500` 返回目标文件完整 1–287 行，并报告 13 个直接使用文件；`query` 分别确认 `CreateVectorFloat32`、`ParseVectorFloat32`、`ZeroCopyDeserializeVectorFloat32`、`PeekBytesAsVectorFloat32`、`CheckDimsFitColumn`、`ZeroCopySerialize` 的 Rust/Go 定义候选。精确自然语言 `explore` 与同名 `callers/callees` 未产出可消歧边，因此调用关系以仓库精确符号搜索补证。
-- 生产源码与装配：`pkg/types/vector.rs`、`pkg/types/internal/vector/lib.rs`、`pkg/types/internal/vector/Cargo.toml`、`pkg/types/lib.rs`、`pkg/types/Cargo.toml`、`pkg/types/vector_functions.rs`。
-- Go 对照：`pkg/types/vector.go`。
-- 独立测试：`pkg/types/vector_test.rs`、`pkg/types/vector_test.go`、`pkg/types/truncate_12_aster_unit_test.rs`。
-- 直接调用证据：`pkg/session/runtime/{ddl,dml,relational_scan,relational_value,system_query}.rs`、`pkg/expression/{builtin_vec,builtin_vec_vec,builtin_inference,pb_to_expr_runtime,expr_to_pb}.rs`、`pkg/types/datum.rs`、`pkg/util/chunk/{column,mutrow}.rs`、`pkg/util/rowcodec/{encoder,decoder}.rs`、`pkg/util/codec/codec.rs`、`pkg/executor/aggfuncs/spill_serialize_helper.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前以任务指定命令验证文档存在且恰有 11 个固定二级标题，并人工复核没有把 `vector_functions.rs` 的能力误归为本文件。

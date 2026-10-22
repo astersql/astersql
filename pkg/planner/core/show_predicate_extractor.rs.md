@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate，负责把 `SHOW ... LIKE ...` 或 `DESCRIBE ... <column>` 中可在 SHOW 结果生成阶段使用的字段条件提取为精确值或通配模式。crate 根在 `pkg/planner/core/lib.rs` 中以私有模块 `mod show_predicate_extractor` 声明它，再用 `pub use show_predicate_extractor::*` 对外重导出其公开符号。`pkg/planner/core/Cargo.toml` 表明它直接依赖 parser AST（通过 crate 根再导出）、`astersql-expression` 的 collation API 和 `astersql-util-stringutil` 的 LIKE 模式编译 API；本功能不受 `nextgen` feature 条件编译控制。
-
-当前 Rust 接线状态必须与 Go 主链区分：RustCodeGraph 在目标源文件上只找到 `pkg/planner/core/show_predicate_extractor_test.rs` 的使用；Rust `pkg/planner/core/logical_plan_builder_runtime.rs::build_show_runtime` 当前也没有调用 `newShowBaseExtractor`。因此这是“已移植、已单测，但尚未接入 Rust SHOW 生产规划链”的实现，不应把 Go `planbuilder.go` 的已接线状态当成 Rust 现状。
+`ExplainInfo` 把提取结果格式化为计划说明；`Field` 和 `FieldPatternLike` 分别为潜在上层消费者提供精确值与已编译通配器。
 
 ## 核心职责
 
@@ -80,8 +78,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `ShowBaseExtractor`、五个 key 常量及四个操作方法直接对应 `pkg/planner/core/show_predicate_extractor.go`。核心分支保持一致：优先 LIKE，Value 根据 `IsExactMatch` 分成精确/通配状态，ColumnName 模式拒绝，没有 Pattern 时处理 DESCRIBE 列；EXPLAIN key 表与输出顺序也一致。`pkg/planner/core/show_predicate_extractor_test.rs` 的三个测试明确覆盖这些移植契约。
-
 需要注意的 Rust 形态差异：
 
 - Go 通过嵌入 `ast.ShowStmt` 暴露其字段，Rust 使用显式公开字段 `ShowStmt`。
@@ -89,8 +85,6 @@ Rust `ShowBaseExtractor`、五个 key 常量及四个操作方法直接对应 `p
 - Go `Field()` 返回字符串值，Rust 也返回拥有的 `String`，但通过克隆生成；Go 的 nil wildcard 在 Rust 中是 `None`。
 - Rust 对空 `Escape` 显式回退到反斜杠；Go AST 字段是单字节，直接传给 `CompilePattern`。
 - Go 的生产 `planbuilder.go` 已为多种 SHOW 和部分统计 SHOW 构造提取器；Rust `build_show_runtime` 当前只构造 `LogicalShow`、处理 `WHERE` 和添加投影，未调用本文件。
-
-以 `rg` 搜索 `pkg/planner/core/*_test.go` 未找到直接针对 `ShowBaseExtractor` 的 Go 单元测试；本文档对 Go 行为的依据是 Go 实现本身及 `planbuilder.go` 的生产调用点，不宣称有未找到的 Go 专项测试覆盖。
 
 ## 扩展指南
 
@@ -102,13 +96,3 @@ Rust `ShowBaseExtractor`、五个 key 常量及四个操作方法直接对应 `p
 - 性能调整应关注 `Field()` 的克隆和 `FieldPatternLike()` 的重复分配/编译，但必须保留 collator 选择、模式所有权和线程安全契约；没有基准数据时不建议引入缓存。
 
 Rust 测试必须继续放在独立的 `pkg/planner/core/show_predicate_extractor_test.rs`，不应嵌入生产源文件。
-
-## 验证依据
-
-- 目标实现：`pkg/planner/core/show_predicate_extractor.rs`，通读了 119 行全文，确认常量、结构体、构造函数、四个 inherent method 以及无条件编译项。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/planner/core/show_predicate_extractor.rs --offset 1 --limit 500` 返回完整源文件；`query ShowPredicateExtractor`、`query newShowBaseExtractor`、`node newShowBaseExtractor`、`node ShowStmt`、`node CompilePattern`、`node IsExactMatch` 和 `node GetCollatorByID` 用于核对符号、定义与下游语义。
-- 调用边：RustCodeGraph `node newShowBaseExtractor` 列出三个 Rust 测试调用者；搜索 Rust 生产文件没有发现其他 `newShowBaseExtractor`/`ShowBaseExtractor` 用法。Go 生产边则由 `pkg/planner/core/planbuilder.go` 中的三处 `newShowBaseExtractor` 构造点验证。
-- crate 与装配：`pkg/planner/core/Cargo.toml` 验证 crate 名、`autotests = false`、依赖与 feature；`pkg/planner/core/lib.rs` 验证模块声明、独立测试挂载和公开重导出。
-- Go 对照：`pkg/planner/core/show_predicate_extractor.go` 验证字段、分支、EXPLAIN 格式和 wildcard 编译；`pkg/planner/core/planbuilder.go` 验证 Go 主链的构造与挂载。
-- Rust 上下游：`pkg/parser/ast/lib.rs::ShowStmt`、`pkg/util/stringutil/string_util.rs::{CompilePattern, IsExactMatch}`、`pkg/util/collate/collate.rs::GetCollatorByID`、`pkg/planner/core/logical_plan_builder_runtime.rs::build_show_runtime`、`pkg/planner/core/operator/logicalop/logical_show.rs` 和 `pkg/planner/core/operator/physicalop/physical_show.rs` 用于验证 AST、模式编译、collation 选择、当前未接线状态及接口差异。
-- 独立 Rust 测试：`pkg/planner/core/show_predicate_extractor_test.rs` 验证精确值小写化、通配模式与匹配结果、Column 模式拒绝、DESCRIBE 列提取、七种 EXPLAIN key 及空状态。本任务按计划不运行 Cargo，因此只把测试源码作为行为证据，不声称本轮实际执行了测试。

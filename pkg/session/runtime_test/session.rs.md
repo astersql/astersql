@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-session` crate 的会话运行时集成测试分片，源码见 [`session.rs`](./session.rs)。它不属于生产编译路径：`pkg/session/lib.rs` 只在 `#[cfg(test)]` 下加载 `runtime_test.rs`，后者再以 `#[path = "runtime_test/session.rs"] mod session;` 引入本文件。文件通过 `use super::*` 复用父测试模块中的 `runtime()`、`concrete_session()`、`ConcreteSession`、`CanonicalSessionFactory`、日志类型以及 `Arc`、`HashMap`、`SystemTime` 等测试设施。
-
-因此，这个文件存在的目的不是提供可调用 API，而是从 SQL 和协议可观察面验证 `pkg/session/runtime/session.rs` 等生产实现。当前共有 17 个私有 `#[test]` 函数、一个私有测试替身 `StaticSessionManager`，以及它对 `InfoSchemaCoordinator`、`Manager` 两个 trait 的实现；没有模块级常量、公开函数、条件编译项或可供其他模块复用的生产类型。
+SQL 生命周期：解析、预编译、参数执行、提交、回滚、结果集读取与关闭形成闭环，并验证生产 `ConcreteRecordSet` 和协议状态不依赖测试 trait。
 
 ## 核心职责
 
@@ -93,12 +91,6 @@ RustCodeGraph 能定位本文件及上述生产类型，但对这些 `#[test]` �
 
 本文件是多个 Go 回归面的集中 Rust 对照，并非逐行复刻单一 `session_test.go`：
 
-- `pkg/session/test/temporarytabletest/temporary_table_test.go::TestSchemaCheckerTempTable` 是临时表 schema 变更不阻塞提交的直接依据；Rust 用例同时补充了无关普通表与相关普通表对照。
-- `pkg/statistics/handle/syncload/stats_syncload_test.go` 中的同步加载测试提供完成、超时和结果通道竞争语义；Rust 用例从会话适配器接入真实 Domain queue。
-- `pkg/server/handler/optimizor/plan_replayer_test.go::TestPlanReplayerLoadWithSemicolonInColumnComment` 对应 replay ZIP 往返和列注释分号保真。
-- `pkg/planner/core/hint_test.go` 的 `TestWriteSlowLogHint` 对应普通 SQL 不强制记录、带 hint SQL 强制写慢日志；Rust 还检查多语句 binding 的逐语句匹配与标志复位。
-- `pkg/executor/test/showtest/show_test.go::TestCollation` 核对 `SHOW COLLATION` 字段类型；Go 的 session/server processlist 测试提供用户过滤、FULL 信息和元数据行为依据。
-- `pkg/util/sem/compat/sem_integration_test.go::TestRestrictedSQL` 直接对应普通用户/`RESTRICTED_SQL_ADMIN`、`ALTER RESOURCE GROUP` 以及 Classic/NextGen external ID 分支。
 - Go 中 prepared statement、事务、系统变量、Connector/J 初始化、`mysql.user` 和工厂/Domain 行为分散在 session、executor 与 server 测试中；本文件以具体 Rust runtime 的端到端断言统一覆盖，不应据此声称所有 Go 测试分支均已迁移。
 
 重要差异是 Rust 测试直接调用 `ConcreteSession` 及测试入口，Go 多数通过 `testkit` 或 server/DB 接口；两者要求保持用户可观察结果一致，但生命周期与测试装配不必同形。
@@ -115,11 +107,3 @@ RustCodeGraph 能定位本文件及上述生产类型，但对这些 `#[test]` �
 - 新增 processlist 字段时需同步 `StaticSessionManager`、结果列元数据和有/无 PROCESS 权限两条路径；trait 增加必需方法时，此测试替身也必须同步。
 
 兼容性风险集中在 SQL 错误文本、MySQL 元数据和 Connector/J 探测变量；性能风险集中在统计 worker、plan replay I/O 以及测试内重复 bootstrap。纯断言扩展不应改变生产性能，但过宽的端到端场景会拉长 crate 测试时间。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件；`files --filter pkg/session/runtime_test` 定位七个测试分片；`node --file pkg/session/runtime_test/session.rs --offset 1/501` 阅读本文件 1–1048 行；`query` 确认 `StaticSessionManager`、`ConcreteSession`、`CanonicalSessionFactory`、`SessionStatsSyncLoadAdapter` 以及代表性测试函数的位置。对代表性测试执行 `callers`/`callees` 返回空数组，故没有把缺失的静态边写成事实。
-- Rust 源与装配：`pkg/session/lib.rs` 的 `#[cfg(test)]` 引入、`pkg/session/runtime_test.rs` 的路径模块与父级 helper、`pkg/session/runtime/session.rs` 的 `ConcreteSession`/`ConcreteSessionInner`/`CanonicalSessionFactory`、`pkg/session/runtime/planning.rs` 的统计适配器和 worker 生命周期。
-- crate 边界：`pkg/session/Cargo.toml` 的 `[lib] path = "lib.rs"`、`nextgen` feature、会话/Domain/planner/statistics/SEM/extstore 依赖及 `rustls` dev-dependency。
-- Go 对照与相关测试：`pkg/session/test/temporarytabletest/temporary_table_test.go`、`pkg/statistics/handle/syncload/stats_syncload_test.go`、`pkg/server/handler/optimizor/plan_replayer_test.go`、`pkg/planner/core/hint_test.go`、`pkg/executor/test/showtest/show_test.go`、`pkg/util/sem/compat/sem_integration_test.go`。
-- 人工复核：文档明确回答了该文件为何存在、测试如何进入生产会话链、共享/隔离和资源清理不变量、Go 对照位置，以及安全扩展时应修改的测试面。任务为纯文档分析，按计划未运行 Cargo。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-lightning-pkg-errormanager` crate 的主体实现，crate 边界由同目录的 `Cargo.toml` 定义，`lib.rs` 先导出 `stubs.rs` 提供的迁移期外围类型，再以 `pub use errormanager::*` 暴露本文件 API。它对应 Go 包 `lightning/pkg/errormanager` 的 `errormanager.go`，在 Lightning 导入链中负责把可容忍的数据错误和唯一键冲突转换为三类结果：原子计数、任务信息库中的明细表、面向用户的摘要。
-
-当前 Rust 接线并不等于 Go 生产链已经全部移植完成。RustCodeGraph 显示本文件被 `lightning/pkg/importer/import.rs`、`lightning/pkg/errormanager/parity_test.rs` 和 `lightning/cmd/tidb-lightning-ctl/stubs.rs` 使用；其中 `import.rs` 的 `Controller.errorMgr` 会构造 `ErrorManager`，`outputErrorSummary` 会调用 `Output()`，但本仓库 Rust 生产代码中没有找到 `RecordTypeError`、两类 `Record*ConflictError`、`RecordDuplicate*` 或 `ReplaceConflictKeys` 的直接调用。它们的行为目前主要由独立 Rust 测试保护。因此，本文件是真实实现而非纯门面，但 SQL、KV、表编码、worker pool 等下游仍是同 crate `stubs.rs` 所定义的迁移边界。
+对应 Go 包 `lightning/pkg/errormanager` 的 `errormanager.go`，在 Lightning 导入链中负责把可容忍的数据错误和唯一键冲突转换为三类结果：原子计数、任务信息库中的明细表、面向用户的摘要。
 
 ## 核心职责
 
@@ -90,11 +88,11 @@
 
 ## 与 Go 版本的对应关系
 
-`errormanager.rs` 的公开常量、`ErrorManager` 主要字段、构造开关、DDL/INSERT 模板、阈值扣减、三阶段 replace 算法和摘要顺序都直接对应 `errormanager.go`。`errormanager_test.rs` 对应 `errormanager_test.go`，`resolveconflict_test.rs` 对应 `resolveconflict_test.go`；`parity_test.rs` 额外把 Rust 公共契约分为 normal、boundary、error、resource cleanup 四组检查。
+`errormanager_test.rs` 对应 `errormanager_test.go`，`resolveconflict_test.rs` 对应 `resolveconflict_test.go`；`parity_test.rs` 额外把 Rust 公共契约分为 normal、boundary、error、resource cleanup 四组检查。
 
-需要注意的 Rust 适配点：Go 的 `*sql.DB == nil` 变成 `Option<sql::DB>`；Go 的 goroutine/channel/errgroup 区间调度被 `WorkerPool::RunDynamic` 表达；Go 的 `nil []byte` 与空 slice 差异由 `Option<Vec<u8>>` 显式承载；Go 编码器在 Rust 迁移阶段由带 `encode_map` 的桩实现替代。Rust `Output` 通过本地 `pretty_table::render` 复刻 Go `go-pretty` 输出，相关测试对完整 ANSI 表格字符串做断言。
+需要注意的 Rust 适配点：Go 的 `*sql.DB == nil` 变成 `Option<sql::DB>`；Go 的 goroutine/channel/errgroup 区间调度被 `WorkerPool::RunDynamic` 表达；Go 的 `nil []byte` 与空 slice 差异由 `Option<Vec<u8>>` 显式承载；Go 编码器在 Rust 迁移阶段由带 `encode_map` 的桩实现替代。
 
-测试证据显示 Rust 还特意保护了两个 Go 细节：下游最新行存在但值为空时，不得删除属于该行的索引；下一组行读取返回 `ErrNotFound` 时，沿用前一组 `mustKeepKvPairs`。此外，非聚簇整数/字符串主键、唯一索引、多输家、已提前删除索引以及清理循环都由独立 replace 测试覆盖。当前 crate 的 `[dependencies]` 为空且依赖均由 `stubs.rs` 本地提供，说明其运行边界仍是迁移期模拟环境，不应宣称已等同连接真实 TiDB/TiKV 的 Go 包。
+测试证据显示 Rust 还特意保护了两个 Go 细节：下游最新行存在但值为空时，不得删除属于该行的索引；下一组行读取返回 `ErrNotFound` 时，沿用前一组 `mustKeepKvPairs`。当前 crate 的 `[dependencies]` 为空且依赖均由 `stubs.rs` 本地提供，说明其运行边界仍是迁移期模拟环境，不应宣称已等同连接真实 TiDB/TiKV 的 Go 包。
 
 ## 扩展指南
 
@@ -105,13 +103,3 @@
 - 若将 `stubs.rs` 替换为 canonical crate，实现必须保持 `ErrNotFound` 分类、row key/row data 解码、非聚簇主键补 handle、编码器 KV 集合和 SQL 参数顺序；性能上重点关注每行重编码、逐 KV 最新值查询及 1000 行分页带来的读放大。
 - 若扩展多实例运行，当前进程内原子计数不足以提供全局阈值，需先定义跨实例一致性协议；不能只把原子类型换成锁就声称解决。
 - 生产接线新增调用者时，应同时验证 importer 是否调用 `Init`、所有记录入口和 `LogErrorDetails`，并避免继续使用独立内存 DB 桥接后却宣称错误明细已写入任务数据库。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7032 个 Rust 文件；`files --filter lightning/pkg/errormanager` 确认目标、Go 对照和独立测试集合；`node --file lightning/pkg/errormanager/errormanager.rs` 分段核对全部 1312 行；`explore` 给出本文件被 importer、parity test 和控制端桩使用，以及 `recordDuplicate`、计数/摘要方法的内部调用边。对重名严重的 `New`/`Output`，最终以上述文件限定结果和源码调用点为准。
-- crate/入口：`lightning/pkg/errormanager/Cargo.toml`、`lightning/pkg/errormanager/lib.rs`、`lightning/pkg/errormanager/stubs.rs`；该包没有 `doc.go`。
-- Rust 上游：`lightning/pkg/importer/Cargo.toml` 和 `lightning/pkg/importer/import.rs`（`Controller.errorMgr`、`NewImportControllerWithPauser`、`outputErrorSummary`）。
-- Go 对照：`lightning/pkg/errormanager/errormanager.go`，核对构造、建表、记录、replace、计数与输出语义。
-- Rust 测试：`lightning/pkg/errormanager/errormanager_test.rs`（初始化、两类基本 replace、空值与缺失值、摘要）、`resolveconflict_test.rs`（非聚簇整数/字符串主键和唯一索引）、`parity_test.rs`（公共契约、阈值、一次写入、资源清理）。
-- Go 测试：`lightning/pkg/errormanager/errormanager_test.go`、`resolveconflict_test.go`，用于核对原测试意图和 case 形状。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的结构命令确认文档存在且恰有 11 个固定二级标题，并人工检查本文明确区分当前 Rust 接线、stub 边界和 Go 完整语义。

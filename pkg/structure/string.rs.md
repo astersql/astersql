@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件为 `astersql-structure` crate 中 `TxStructure` 的 String 数据结构实现。`pkg/structure/lib.rs` 通过私有模块 `string_impl` 的 `include!("string.rs")` 装配它；方法实现附着在公开的 `TxStructure` 上，所以调用者使用 `TxStructure::{Set, Get, GetInt64, Inc, Iterate, Clear}`，无需也不能直接引用 `string_impl`。
-
-crate 边界由 `pkg/structure/Cargo.toml` 定义：它直接依赖 `astersql-kv`、`astersql-util-codec` 和 `astersql-util-dbterror`。根 workspace 及 `pkg/lib.rs` 的 `facade_structure` 会导出该 crate，`pkg/tablecodec/Cargo.toml` 也依赖并在 `pkg/tablecodec/lib.rs::structure` 中重导出它。不过，对 `NewStructure` 和这些方法的 Rust 调用搜索目前只确认了本 crate 内测试；没有确认 crate 外生产 Rust 路径实际构造 `TxStructure` 并调用本文件 API。因此，本文件是已实现且已测试的迁移基础能力，但不能据此声称它已经接入完整 Rust SQL 运行主链。
+不保存独立元数据，也不实现过期时间、比较并交换或跨键事务规则；读写能力、事务性和持久化均由构造 `TxStructure` 时注入的 `kv::Retriever`/`kv::RetrieverMutator` 决定。
 
 ## 核心职责
 
@@ -81,7 +79,7 @@ String 没有像 List/Hash 那样的独立元数据键；一个业务键对应�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/structure/string.go`，六个方法名称、业务顺序和缺失键语义一一对应。`pkg/structure/structure_test.go::TestString` 与 Rust 的 `migration_aster_unit_test.rs::string_round_trip_iteration_and_snapshot_errors_match_go` 覆盖相同主流程：Set、区间 Iterate、Get、Inc、GetInt64、Clear，以及只读快照写失败。
+`pkg/structure/structure_test.go::TestString` 与 Rust 的 `migration_aster_unit_test.rs::string_round_trip_iteration_and_snapshot_errors_match_go` 覆盖相同主流程：Set、区间 Iterate、Get、Inc、GetInt64、Clear，以及只读快照写失败。
 
 已确认的表示层差异如下：
 
@@ -91,7 +89,7 @@ String 没有像 List/Hash 那样的独立元数据键；一个业务键对应�
 - Go `Inc` 调用 `kv.IncInt64` 后再次归一化 not-found；Rust 下游 `kv::IncInt64` 已在缺失时写入 `step`，所以直接返回结果。Rust 下游以 `wrapping_add` 明确溢出回绕语义。
 - Rust `Iterate` 显式保证 `Close()` 在循环结果之后执行；当前 Go 实现没有显式关闭调用。两者均为编码后的半开区间扫描，且在回调错误时立即停止。
 
-Rust 的 `pkg/structure/structure_test.rs::TestStringIntegerAndMissingValues` 额外覆盖缺失 `GetInt64 == 0`、缺失键增量初始化及负步长。Go 侧 `pkg/kv/utils_test.go::TestIncInt64` 和 Rust 侧 `pkg/kv/utils_test.rs::test_inc_int64` 为委托的整数逻辑提供更细边界证据。
+Rust 的 `pkg/structure/structure_test.rs::TestStringIntegerAndMissingValues` 额外覆盖缺失 `GetInt64 == 0`、缺失键增量初始化及负步长。
 
 ## 扩展指南
 
@@ -101,12 +99,3 @@ Rust 的 `pkg/structure/structure_test.rs::TestStringIntegerAndMissingValues` �
 - 修改键布局时需同时审查 `pkg/structure/type.rs`、Go 的 `pkg/structure/type.go` 以及 List/Hash 与同前缀扫描的排序兼容性；已有数据的键格式属于持久化兼容边界。
 - 测试逻辑应放在独立文件，而不是嵌入 `string.rs`。主行为优先扩展 `pkg/structure/migration_aster_unit_test.rs` 或 `pkg/structure/structure_test.rs`；底层整数行为扩展 `pkg/kv/utils_test.rs`，并同步核对相应 Go 测试。
 - 若将该 API 接入新的生产 Rust 子系统，应增加该调用链的独立集成测试，并核实所用后端对 Delete-not-found、空值、迭代器关闭和并发 Inc 的真实保证，不能以当前 `MemoryStore` 替代生产契约。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/structure` 确认 Rust/Go 对照文件及独立测试；`node --file pkg/structure/string.rs` 读取目标 95 行并报告 7 个符号；`query EncodeStringDataKey`、`query DecodeStringDataKey` 定位 `pkg/structure/type.rs`；`callees GetInt64` 确认目标定义调用 `string.rs::Get`；`node IncInt64` 核对 Rust/Go 下游实现。
-- 生产源码与配置：`pkg/structure/string.rs`、`pkg/structure/type.rs`、`pkg/structure/structure.rs`、`pkg/structure/lib.rs`、`pkg/structure/Cargo.toml`、`pkg/kv/utils.rs`、根 `Cargo.toml`、`pkg/lib.rs`、`pkg/tablecodec/Cargo.toml`、`pkg/tablecodec/lib.rs`。
-- Go 对照：`pkg/structure/string.go`、`pkg/structure/type.go`、`pkg/kv/utils.go`。
-- 独立测试：`pkg/structure/main_test.rs`、`pkg/structure/migration_aster_unit_test.rs`、`pkg/structure/structure_test.rs`、`pkg/structure/structure_test.go`、`pkg/kv/utils_test.rs`、`pkg/kv/utils_test.go`。
-- 调用检索：对 `NewStructure`、`TxStructure` 及六个方法进行路径限定 `rg`，只确认本 crate Rust 测试中的构造与调用；因此文档明确保留“未确认 crate 外生产调用”的限制。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工复核文件定位、运行流程、安全扩展点及未经验证边界。

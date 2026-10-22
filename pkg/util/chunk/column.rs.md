@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[对应 Rust 源文件](./column.rs)实现 `astersql-util-chunk` crate 的单列内存容器 `Column`。它不是独立模块入口：`pkg/util/chunk/internal/group1/lib.rs` 的 `column_impl` 通过 `include!("../../column.rs")` 纳入实现，再由 `pkg/util/chunk/lib.rs` 重导出。上层 `Chunk` 把多个 `Column` 组成批式行集，`Row` 则以行号加列号调用这里的类型读取器，因此它位于 SQL 向量化执行、表达式计算和 Chunk 编解码所共用的内存表示底层。
-
-crate 边界由 `pkg/util/chunk/Cargo.toml` 定义，包名为 `astersql-util-chunk`。本文件直接依赖 crate 内暴露的 `types` 类型族及 `getFixedLen`、`VarElemLen` 等同组符号；随机破坏测试数据的 `DestroyDataForTest` 使用 Cargo 中重命名为 `rand_crate` 的 `rand` 依赖（由 crate 根再次导出）。
+为整数、浮点、时间、Duration、Decimal、字符串、字节、JSON、向量、Enum 和 Set 提供追加及读取 API，并维持物理字节布局与 Go 实现兼容。
 
 ## 核心职责
 
@@ -70,7 +68,7 @@ RustCodeGraph 的文件查询显示 `column.rs` 被 76 个文件使用；由于 
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/chunk/column.go`，Rust 保留了主要名称、分支和布局：8 字节变长容量估值、0/1 bitmap 语义、固定/变长构造、NULL 占位、selection 重建、NULL 合并、64 位 offsets 以及类型追加/读取均逐项对应。`pkg/util/chunk/Cargo.toml` 的 `package.metadata.porting.go-package = "pkg/util/chunk"` 也明确记录了移植来源。
+直接对照文件是 `pkg/util/chunk/column.go`，Rust 保留了主要名称、分支和布局：8 字节变长容量估值、0/1 bitmap 语义、固定/变长构造、NULL 占位、selection 重建、NULL 合并、64 位 offsets 以及类型追加/读取均逐项对应。
 
 Rust 用安全切片和 `to_ne_bytes`/`from_ne_bytes` 替代 Go 的 `unsafe.Pointer` 视图；因此 `Int64s`、`Float64s` 等返回复制出的 `Vec`，修改返回值不会像 Go 切片那样回写列。Rust 还增加 `reference_id` 来表达 Go 指针相等，并以 `Box<Column>`/`Option<Box<Column>>` 表达可选目标。Decimal 在 Rust 中显式编码字段，Time 当前只编码 `coreTime.0`；这些布局必须继续与 `types` 的尺寸常量一致。
 
@@ -83,10 +81,3 @@ Rust 用安全切片和 `to_ne_bytes`/`from_ne_bytes` 替代 Go 的 `unsafe.Poin
 修改 bitmap 算法时必须覆盖非 8 倍数长度、跨字节追加、尾部冗余位清零、NULL 与非 NULL 批量区间。修改重建逻辑时应同时覆盖定长/变长、NULL 行、非升序和重复 selection、复用目标后继续追加。相应 Rust 测试应放在独立的 `pkg/util/chunk/column_test.rs`（codec 交互放 `codec_2_aster_unit_test.rs`），不要内嵌进生产文件；同时对照 `column_test.go` 保持 Go 的行为边界。
 
 兼容性风险主要在本机字节序、Decimal/Time 物理布局、NULL 槽残留负载、`SetRaw` 等长约束和 Rust 批量 getter 的复制语义。性能风险主要在频繁重分配、无谓复制以及 selection 压缩时的重叠移动；扩展前应优先复用现有收尾、reserve 和 reconstruct 路径，而不是建立第二套状态更新逻辑。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、索引时间戳 `1791342965170`；`files --filter pkg/util/chunk` 确认 Rust/Go 源和独立测试；`node --file pkg/util/chunk/column.rs --offset ...` 分段读取全部 1,070 行并报告该文件被 76 个文件使用；精确 callers 命令未返回可辨识边，因此以直接源码入口交叉验证，未采用宽泛同名结果。
-- 已读生产与装配文件：`pkg/util/chunk/column.rs`、`pkg/util/chunk/Cargo.toml`、`pkg/util/chunk/lib.rs`、`pkg/util/chunk/internal/group1/lib.rs`、`pkg/util/chunk/chunk.rs`、`pkg/util/chunk/row.rs`；目标包不存在 `doc.go`。
-- 已读对照与测试：`pkg/util/chunk/column.go`、`pkg/util/chunk/column_test.rs`、`pkg/util/chunk/column_test.go`、`pkg/util/chunk/codec_2_aster_unit_test.rs`。Rust 测试中的 8 个测试函数分别覆盖 bitmap、resize/null 区间、reserve/raw、两类重建、深拷贝、类型往返、NULL 合并和 Reset。
-- 本任务是纯文档分析，按计划不运行 Cargo 或代码测试。交付前使用任务文件指定命令确认目标存在且恰有 11 个固定二级章节，并人工复核每个重要行为都能回指上述符号或文件。

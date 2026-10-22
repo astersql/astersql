@@ -2,13 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-sqlescape` crate 的实际实现文件，负责把带有 `%?`、`%n`、`%%` 占位符的 SQL 模板渲染为 SQL 文本。crate 入口 `pkg/util/sqlescape/lib.rs` 通过 `pub mod utils` 挂载本模块，并以 `pub use utils::*` 再导出公开项；根 façade `pkg/lib.rs` 的 `util::sqlescape` 又转发该 crate。因此它是通用 SQL 文本拼装工具，不负责解析、规划或执行 SQL。
-
-`pkg/util/sqlescape/Cargo.toml` 声明 crate 名为 `astersql-util-sqlescape`，运行时依赖只有 `chrono`（构造和格式化 Go 对应的时间值）与 `ryu`（浮点数最短往返格式化），移植元数据明确对应 Go 包 `pkg/util/sqlescape`。当前检索到的直接生产使用包括：
-
-- `pkg/session/starter_bootstrap_file.rs::render_starter_bootstrap_sql` 调用 `EscapeString` 转义 starter bootstrap 模板中的 keyspace；
-- `pkg/statistics/handle/autoanalyze/exec/exec.rs::escape_analyze_sql` 把字符串参数包装成 `SqlArg::String` 后调用 `EscapeSQL`，供自动分析 SQL 和告警文本使用；
-- 其他 crate 也在 Cargo 清单中声明该依赖，而公开 API 还经根 façade 暴露；是否实际调用应以各调用文件为准，不能仅由清单依赖推断。
+`escapeSQL` 按字节扫描模板，识别 `%?`（值参数）、`%n`（标识符）和 `%%`（字面量百分号），维持与 Go 实现相同的参数消费顺序。
 
 ## 核心职责
 
@@ -92,7 +86,7 @@ RustCodeGraph 对目标内部 callees 给出了有效边，但对公开符号的
 
 ## 与 Go 版本的对应关系
 
-Rust 文件按 `pkg/util/sqlescape/utils.go` 逐分支移植：占位符扫描、反斜杠字符表、标识符反引号翻倍、参数序号、nil/空 byte slice 区别、时间格式、切片输出、额外参数丢弃、未知格式符保留以及 Must panic 文案均有直接对应。`pkg/util/sqlescape/utils_test.rs` 复刻 Go `utils_test.go` 的 reserveBuffer、特殊字节和 42 组 EscapeSQL 用例，并让私有核心、字符串接口和 writer 接口接受同一组断言。
+Rust 文件按 `pkg/util/sqlescape/utils.go` 逐分支移植：占位符扫描、反斜杠字符表、标识符反引号翻倍、参数序号、nil/空 byte slice 区别、时间格式、切片输出、额外参数丢弃、未知格式符保留以及 Must panic 文案均有直接对应。
 
 语言差异主要有：
 
@@ -113,12 +107,3 @@ Rust 文件按 `pkg/util/sqlescape/utils.go` 逐分支移植：占位符扫描�
 修改浮点或时间格式时，应优先添加与 Go `strconv.AppendFloat` / `time.AppendFormat` 的对照向量，特别覆盖阈值指数、负零、非有限值、微秒截断和零时间。修改缓冲策略时应保留前缀、实际长度和最坏情况容量性质，并警惕整数溢出与大分配。
 
 若要增强 writer 正确性（例如处理短写），应先确认是否允许偏离 Go 的单次 `Write` 行为，再在独立测试中加入自定义短写/报错 writer。任何安全相关扩展都不能宣称此工具能理解 SQL 上下文；推荐继续要求调用方把占位符置于正确、未预加引号的位置。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录包含 `lib.rs`、`utils.rs`、两份 Rust 测试/迁移测试及 Go 对照文件。
-- RustCodeGraph `node --file pkg/util/sqlescape/utils.rs`：读取完整 646 行，确认所有公开/私有符号、分支、错误与注释。
-- RustCodeGraph `query escapeSQL/EscapeSQL/MustEscapeSQL`：确认 Go/Rust 同名定义及位置；`callees escapeSQL`、`callees appendSQLArg`：确认模板扫描到参数分派、转义与数值 helper 的内部调用边。
-- RustCodeGraph `node`：读取 `pkg/util/sqlescape/lib.rs`、`utils_test.rs`、`utils.go`、`utils_test.go`、`migration_aster_unit_test.rs`，并读取 `pkg/session/starter_bootstrap_file.rs`、`pkg/statistics/handle/autoanalyze/exec/exec.rs`、`pkg/lib.rs`、`pkg/session/test/session_test.rs` 的直接调用片段。
-- 配置证据：`pkg/util/sqlescape/Cargo.toml` 的 crate、依赖和 Go 移植元数据；根 `Cargo.toml` workspace/facade 声明及调用 crate 的 Cargo 清单由 `rg` 核对。
-- 测试证据：Rust `utils_test.rs` 验证缓冲扩容、特殊字节、42 组模板/类型/错误路径、Must panic 与 `EscapeString`；Go `utils_test.go` 提供原始契约；Rust `migration_aster_unit_test.rs` 补充浮点、组合类型与 wrapper 契约。本任务遵循纯文档要求，未运行 Cargo，也未声称通过运行时测试。

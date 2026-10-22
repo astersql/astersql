@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-expression` crate 中 ILIKE 的标量匹配内核，源文件为 [`pkg/expression/builtin_ilike.rs`](builtin_ilike.rs)。`pkg/expression/lib.rs` 通过 `#[path = "builtin_ilike.rs"] mod builtin_ilike_kernel` 将它挂载为 crate 内部模块；SQL 函数的参数构建、注册、TiPB 签名和通用 `builtinFunc` 接口仍在 `pkg/expression/builtin.rs` 中完成。
-
-这意味着本文件不是独立的 SQL 函数工厂，而是被 `CoreBuiltinKind::Ilike` 持有的可执行状态。`pkg/expression/builtin.rs` 将 `ilike` 注册为三参函数，把前两个参数转成字符串、第三个参数转成整数，推导排序规则后构造 `IlikeSig`，并将下推签名设为 `tipb::ScalarFuncSig::IlikeSig`。
+实现 ILIKE 的三值 SQL 语义：`value`、`pattern` 或 `escape` 任一为 NULL 时返回 NULL，否则返回 `0` 或 `1`（`IlikeSig::eval_int`）。
 
 ## 核心职责
 
@@ -79,17 +77,7 @@ value 和 pattern 在每次匹配时都被拷贝为字节向量再就地做 ASCI
 
 ## 与 Go 版本的对应关系
 
-Go 对照文件是 `pkg/expression/builtin_ilike.go`：`ilikeFunctionClass.getFunction` 对应 Rust 正式注册/工厂逻辑，`builtinIlikeSig` 对应 `IlikeSig`，`builtinIlikeSig.evalInt` 对应 `IlikeSig::eval_int` 及其下游辅助函数。两者的共同语义是：
-
-- 三参中任意 NULL 传播为 SQL NULL。
-- value 使用 `LowerOneString`；pattern 在字母 escape 时使用 `LowerOneStringExcludeEscapeChar`。
-- collation 先经 `ConvertAndGetBinCollation` 转成二进制对应项，再用其 `WildcardPattern`。
-- pattern 与 escape 均为 context 常量时缓存编译结果，否则每次编译。
-- escape 最终按单字节传入 pattern 编译器。
-
 结构上有两个可见差异。第一，Go 将参数表、返回类型、collator 和 protobuf 签名嵌入 `baseBuiltinFunc`，Rust 将这部分留在 `CoreBuiltin` 与工厂，本文件只保留匹配内核。第二，Go 用 `builtinFuncCache` 按求值上下文延迟初始化；Rust 明确记录 source/escape，以 `RwLock<Option<CachedPattern>>` 支持共享与替换，并在 `Clone` 时丢弃缓存。
-
-`pkg/expression/builtin_ilike_test.rs` 的主用例表直接对齐 `pkg/expression/builtin_ilike_test.go::TestIlike`，包括 general_ci、unicode_ci、bin、中文、`ü`、`ß`、`_`、`%` 和字母 escape。Rust 测试还通过 `canonical_ilike_factory_preserves_escape_null_and_clone` 补充检查正式工厂、NULL 与克隆路径。
 
 ## 扩展指南
 
@@ -99,13 +87,3 @@ Go 对照文件是 `pkg/expression/builtin_ilike.go`：`ilikeFunctionClass.getFu
 - 新增可失败分支时，在 `ExpressionError` 中添加有语义的变体，让 `eval_int`/`matches`/`compile_pattern` 逐层传播，并确认 `CoreBuiltin::evalInt` 的通用错误映射保留足够上下文。
 - 测试逻辑不应内嵌进本文件。标量与工厂回归放在 `pkg/expression/builtin_ilike_test.rs`；向量 NULL/参数形状放在 `pkg/expression/builtin_ilike_vec_test.rs`；缓存、克隆与标量/向量综合契约现也在 `pkg/expression/builtin_ilike_vec_12_aster_unit_test.rs` 中有直接覆盖。Go 语义变更时还应对照 `pkg/expression/builtin_ilike_test.go`。
 - 性能风险主要来自每行字符串分配/折叠、pattern 重复编译和锁竞争；正确性风险主要来自 Unicode/collation、escape 与 NULL 语义；兼容性风险还包括 TiPB `IlikeSig` 下推结果必须与本地求值一致。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `node --file pkg/expression/builtin_ilike.rs` 核对了全部 234 行源码与 `ExpressionError`、`CachedPattern`、`IlikeSig`、`eval_int`、`matches`、`cached_pattern`、`compile_pattern`、`normalize_ilike` 的定义。
-- RustCodeGraph `explore`/`node` 确认了关键边：`eval_int → matches`，`matches → normalize_ilike/cached_pattern/compile_pattern`，以及 `pkg/expression/builtin.rs::CoreBuiltin::evalInt → IlikeSig::eval_int`。`callers/callees` 的精确名称查询未返回额外文本，因此本文档没有据此声称更广的静态调用者。
-- `pkg/expression/lib.rs` 证明了模块挂载和独立测试挂载；`pkg/expression/Cargo.toml` 证明 crate 名称、`lib.rs` 入口、`collate-dependency`、`stringutil-dependency` 和 `thiserror` 依赖。目录中没有 `pkg/expression/doc.go`，因此未能从包级 `doc.go` 获得额外契约。
-- `pkg/expression/builtin.rs` 的工厂、注册表、元数表、collation 推导、TiPB 签名和 `CoreBuiltin::evalInt` 证明了本文件在完整应用中的接线。
-- Go 对照：`pkg/expression/builtin_ilike.go` 与 `pkg/expression/builtin_ilike_test.go`。Rust 相关独立测试：`pkg/expression/builtin_ilike_test.rs`、`pkg/expression/builtin_ilike_vec_test.rs` 和 `pkg/expression/builtin_ilike_vec_12_aster_unit_test.rs`。这些证据覆盖了排序规则、ASCII/非 ASCII、escape、NULL、常量/列向量路径、缓存和克隆。
-- 本任务仅产生文档，按计划不运行 Cargo；结构验证要求目标文件存在且恰好包含十一个固定二级标题。

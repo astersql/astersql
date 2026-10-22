@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-session` crate（见 `pkg/session/Cargo.toml`），由 `pkg/session/runtime.rs` 以私有模块 `mlog_purge` 装配。它位于物化视图日志（Materialized View Log，MLog）的消费端：`runtime/mlog.rs` 在基础表 DML 时写入日志，本文件依据所有相关物化视图已经安全读取到的 TSO 清除旧日志，并维护 `mysql.tidb_mlog_purge_info` 与 `mysql.tidb_mlog_purge_hist`。
-
-入口有两条。用户执行 `PURGE MATERIALIZED VIEW LOG` 或 `CANCEL MATERIALIZED VIEW ...` 后，`ConcreteSession::execute_statement` 在 `runtime/dispatch.rs:2050-2062` 分派到本文件的方法；后台入口由 `runtime/session.rs:1085` 在会话工厂初始化时调用 `start_domain_mlog_purge_worker`，周期性执行到期任务。`runtime.rs:67-68` 另外在 crate 内重导出底层批删除函数和单次 tick，供 DML/runtime 测试及局部接线使用。
-
-本文件没有 feature gate。文件尾通过 `#[path = "mlog_purge_test.rs"] mod tests` 把测试保持在独立文件，符合生产逻辑与测试分离的仓库约定。`pkg/session` 下不存在可供本任务读取的 `doc.go`。
+管理后台调度：`run_mlog_purge_tick` 查找到期 MLog，恢复基础表与 schema 后复用同一清理主流程；`start_domain_mlog_purge_worker` 把 tick 注册为 Domain 拥有的周期工作线程。
 
 ## 核心职责
 
@@ -102,16 +98,11 @@ crate 依赖由 `pkg/session/Cargo.toml` 明确声明：KV/表 key 来自 `aster
 
 ## 与 Go 版本的对应关系
 
-主要对照是 `pkg/executor/mlog_purge.go`，其核心由提交 `21f9ba4ee2 executor, planner: support materialized view log purge (#71118)` 引入；`pkg/session/session.go` 仅包含语句校验接线，不是清理实现。Rust 对应关系如下：
-
 - Go `PurgeMaterializedViewLogExec.executePurgeMaterializedViewLog` 对应 Rust `ConcreteSession::execute_purge_materialized_view_log`；两者都校验权限、使用 purge-info NOWAIT 锁、以 StartTS 建 job ID、计算依赖视图最小 TSO、使用历史 cutoff、防 checkpoint 倒退、分批删除并写 success/failed 历史。
-- Go `mlogPurgeThrottlePlan` / pending stats / row-ID range 与 Rust 同名语义结构对应；常量 30 秒、200ms、8,000、16 段和 590 秒预算一致。`mlog_purge_test.rs` 的测试名带 `go_merge_49`，直接验证这批移植的速率预算、配置批量上限及线性/分片范围。
 - Go 通过 TiFlash/SQL 统计和带 `_tidb_commit_ts`、`_tidb_rowid` 条件的 DELETE 执行；Rust 直接在 KV snapshot 上读取 commit ts 并删除编码 row key。因此 Rust 保留相同 fence 与范围意图，但执行层、计划选择和错误形态并不逐行等同。
 - Go 用 `startMVTaskMonitor` 独立监测取消/心跳，并能利用 context 取消睡眠/执行；Rust 在清理循环和分段睡眠中同步轮询历史表。Rust 当前没有 Go 的 maintenance session memory quota、isolation read engine、TiFlash thread 配置应用/恢复，也没有相同 failpoint 集合。
 - Go 在成功后设置 affected rows 和 SQL message；当前 Rust 编排器只维护本地 `purged`、统计元数据与历史，没有在此文件写回语句 affected rows/message。扩展或兼容性评估不得假定这些用户可见细节已完全对齐。
 - Go 的 checkpoint UPDATE 带单调条件，Rust 依靠持有 purge-info 行锁及 cutoff fence 后直接赋值；在现有锁生命周期内目标相同，但若未来缩短锁范围，必须重新加入存储层单调保护。
-
-Go 测试 `pkg/executor/test/materializedviewlog/materialized_view_purge_test.go` 提供更广契约，包括无库、权限、显式事务、NOWAIT 冲突、批删除、范围条件、checkpoint/cutoff 短路、部分失败、取消/心跳、历史重试、统计行数和自动调度。它们是移植语义参考，不等于这些分支都已由 Rust 测试直接覆盖。
 
 ## 扩展指南
 
@@ -121,14 +112,3 @@ Go 测试 `pkg/executor/test/materializedviewlog/materialized_view_purge_test.go
 - 修改历史或取消协议时，同时核对 `tidb_mlog_purge_hist` schema、`finalize_purge_history`、三个取消检查位置及权限目标解析。兼容性风险是 running 行永久残留、已提交任务被错误标 failed、或请求者绕过 `OPERATE VIEW`。
 - 修改后台调度时，保留 Domain 单例 worker、Weak 生命周期和关闭检测；若要并行处理到期 MLog，需要明确并发上限、逐任务错误隔离以及同一 MLog 的 NOWAIT 行锁行为。
 - 追求 Go 完整兼容时，应逐项对照 `pkg/executor/mlog_purge.go` 及其测试，而不是简化为“最终日志被删掉”。特别关注 maintenance session vars、context 取消、affected rows/message、历史字段条件和 Go 的内部/外部 SQL差异。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；本文件被识别为 73 个符号。
-- RustCodeGraph 源码读取：`node --file pkg/session/runtime/mlog_purge.rs` 覆盖 1-992 行；`node --file pkg/session/runtime/mlog_purge_test.rs` 覆盖 1-53 行。
-- RustCodeGraph 精确查询：`query` 定位 `purge_mlog_snapshot_batch`、`execute_purge_materialized_view_log`、`execute_cancel_materialized_view_job`、`run_mlog_purge_tick`、`start_domain_mlog_purge_worker`、`pending_mlog_rows`、`mlog_purge_row_id_ranges`；`callees` 验证 tick 调用 purge 主流程、worker 调用 tick、批删除门面调用游标实现，以及主流程对 SQL helper、权限检查和批删除的依赖。
-- RustCodeGraph `node start_mlog_purge_worker`：核对 `pkg/domain/domain.rs:5757-5795` 的单例原子标志、命名线程、stop flag、park interval 和 worker handle 生命周期。
-- 已读 Rust/Cargo 路径：`pkg/session/runtime.rs`、`pkg/session/runtime/dispatch.rs:2035-2063`、`pkg/session/runtime/session.rs:1060-1091`、`pkg/session/Cargo.toml`、`pkg/session/runtime/mlog_purge_test.rs`、`pkg/session/dml_runtime_test.rs`。
-- 已读 Go 对照/测试：`pkg/executor/mlog_purge.go`、`pkg/executor/test/materializedviewlog/materialized_view_purge_test.go`；并以 `rg` 确认 parser/planner/executor 构建链和系统表引用。Go 测试明确覆盖 NOWAIT 冲突、批删除、row ID 范围、checkpoint/cutoff、失败历史、节流回退、统计更新和自动 next time。
-- Rust 独立测试证据：`go_merge_49_adaptive_purge_respects_rate_budget_and_batch_limit`、`go_merge_49_adaptive_purge_splits_linear_and_sharded_row_ids`；集成式 runtime 测试证据包括 `go_merge_49_mlog_purge_batch_respects_commit_fence`、`go_merge_49_scheduled_mlog_purge_uses_auto_history` 及取消权限场景。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前只执行任务指定的 11 章节结构验证，并人工复核文档覆盖“为何存在、如何运行、如何安全扩展”。

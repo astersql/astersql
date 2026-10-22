@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-format` crate 的核心实现，对应 Go 包 `pkg/util/format`。crate 入口 `pkg/util/format/lib.rs` 通过 `pub mod format` 和 `pub use format::*` 导出本文件 API；根 crate 又在 `pkg/lib.rs` 的 `util::format` 门面中再导出 `facade_util_format::*`。因此调用方既可以直接依赖 `astersql-util-format`，也可以经根门面访问。
-
-文件提供三类通用文本处理能力：带 `%i`/`%u` 控制命令的缩进格式化、按嵌套层级压平换行、以及 SQL 展示文本需要的字符转义。它不负责 SQL 解析或执行，只把格式串、显示参数与任意 `std::io::Write` 连接起来。`pkg/util/format/Cargo.toml` 没有声明第三方依赖或 feature；`[package.metadata.porting]` 明确把它映射到 Go 包 `pkg/util/format`。
+`write_go_style` 实现当前迁移所需的 Go `fmt.Fprintf` 子集，在控制命令处理完成后解析 `%d`、`%s`、`%v`、`%x`、`%X`、`%f` 和 `%%`，再对标志、宽度和精度做有限处理。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ formatter 被丢弃时没有显式 flush 或关闭逻辑；需要 flush 的 writ
 
 ## 与 Go 版本的对应关系
 
-整体结构直接复刻 `pkg/util/format/format.go`：四状态常量、`Formatter` 接口、`indentFormatter` 字段、`%i/%u` 状态机、由相同状态派生的 flat 行为，以及 `OutputFormat` 的五项替换表均有一一对应实现。`format_test.rs::test_format_matches_go_output` 和 `migration_aster_unit_test.rs::migration_matches_go_indent_flatten_and_escape_behavior` 使用 Go 示例的期望输出验证基本对齐；跨调用状态由 `test_format_keeps_state_across_calls` 覆盖。
-
 主要实现差异在普通 printf 格式化边界。Go 版把控制命令展开后的字符串直接交给标准库 `fmt.Fprintf`，支持完整的 Go 格式系统和 `any` 参数；Rust 版用 `write_go_style` 自行实现已迁移调用所需的子集，并把参数抽象为 `Display`。Rust 独有测试进一步覆盖整数精度、带进制前缀零填充、浮点精度和字符串左对齐，但这些证据只证明已列明的子集，不能推出与 Go `fmt` 全面等价。
 
 Go 的 `flatFormatter` 是基于 `indentFormatter` 的新定义类型并通过指针转换复用实现；Rust 用一元组 `flatFormatter<W>(indentFormatter<W>)` 表达相同状态共享。Go 的 `TestMain` 安装全局测试环境和 goroutine 泄漏检查；Rust `main_test.rs` 说明该无依赖 crate 没有对等全局 setup，并改为验证直接 `Write` 转发。
@@ -97,12 +93,3 @@ Go 的 `flatFormatter` 是基于 `indentFormatter` 的新定义类型并通过�
 - 若要支持完整 Go `fmt`，应先明确动态类型模型和错误格式输出契约。继续向 `Display` 字符串上叠加推断会有类型歧义，并可能引入兼容性与性能风险。
 - 性能敏感改动应关注每次调用的完整中间缓冲、每参数 `to_string` 分配和宽度填充；同时必须保留当前“一次底层 write”和短写返回语义，除非有明确的兼容性决策。
 - Rust 源码修改后应按仓库规则同步修改独立测试并运行 `cargo fmt --all`；本次任务仅新增分析文档，没有修改源码或运行 Cargo。
-
-## 验证依据
-
-- Rust 实现：`pkg/util/format/format.rs`，重点符号为 `Formatter`、`IndentFormatter`、`indentFormatter::format`、`write_go_style`、`parse_format_spec`、`format_argument`、`FlatFormatter`、`OutputFormat`。
-- crate 与门面：`pkg/util/format/Cargo.toml`、`pkg/util/format/lib.rs`、工作区根 `Cargo.toml` 的 `facade_util_format`、`pkg/lib.rs` 的 `util::format`、`pkg/lib_test.rs::independent_util_modules_are_wired`。
-- Rust 独立测试：`pkg/util/format/format_test.rs`、`pkg/util/format/main_test.rs`、`pkg/util/format/migration_aster_unit_test.rs`。
-- Go 对照：`pkg/util/format/format.go`、`pkg/util/format/format_test.go`、`pkg/util/format/main_test.go`；Go 生产调用样本为 `pkg/executor/show.go`、`pkg/ddl/partition.go`、`pkg/lightning/common/util.go`、`pkg/parser/types/field_type.go`。
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/util/format` 确认实现与测试集合；`node --file pkg/util/format/format.rs` 和三个 Rust 测试文件用于读取符号及源码；对三个公开构造/函数执行 `query` 与 `callers`，未得到本 Rust 实现的已解析上游调用边；`callees write_go_style` 确认其调用 `parse_format_spec`、`format_argument` 和 writer，`callees format_argument` 确认其调用整数精度、十六进制及宽度辅助函数。
-- 人工边界复核：确认文档只把测试覆盖的格式子集描述为已支持，明确负缩进和完整 Go `fmt` 等价性均不在已验证范围；未运行 Cargo，符合本纯文档任务约束。

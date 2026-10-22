@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-objstore-recording` crate 的核心实现，提供对象存储访问统计的内存计数器。crate 入口 [`lib.rs`](lib.rs) 公开 `recording` 模块并再导出本文件的全部公开类型；[`Cargo.toml`](Cargo.toml) 表明该 crate 只直接依赖 `http = "1"`，并以 `pkg/objstore/recording` 为 Go 移植来源。
-
-它不执行对象存储 I/O，也不负责上报指标，而是位于 I/O 实现与计量消费者之间：S3/OSS 接口调用 `AccessStats::rec_request`，reader/writer 调用 `rec_read`、`rec_write`，上层计量组件读取或合并累计值。源码入口见 [`recording.rs`](recording.rs)。
+提供 `merge`，把另一份统计的当前逐字段快照累加到接收者。
 
 ## 核心职责
 
@@ -70,18 +68,13 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`recording.go`](recording.go)，结构与行为保持一一对应：`Requests`、`Traffic`、`AccessStats` 对应同名 Go 类型；Rust `Display` 对应 Go `String`；Rust `merge`、`rec_request`、`rec_read`、`rec_write` 对应 Go `Merge`、`RecRequest`、`RecRead`、`RecWrite`。HTTP 分类以及三层文本格式保持一致。
-
 主要语言映射差异如下：
 
 - Go 使用 `atomic.Uint64`，Rust 使用 `AtomicU64` 且明确选择 `Ordering::Relaxed`。
 - Go 允许 nil 方法接收者；Rust 无 nil 引用，静态记录函数通过 `Option<&AccessStats>` 显式模拟该 no-op 语义。
-- Go 的 nil `*http.Request` 映射为 `Option<&http::Request<T>>`，正文泛型不影响方法分类。
 - Go 字段名导出为 `Get/Put/Read/Write`；Rust 使用公开的 snake_case 字段。
 - Go `RecRead`/`RecWrite` 接收 `int` 再转 `uint64`；Rust 接收 `usize`，正常 I/O 返回值可直接传入，并避免负数输入。
 - Rust 额外提供 `Requests::snapshot`，供安全读取二元计数；它仍不承诺跨字段一致性。
-
-[`recording_test.go`](recording_test.go) 与 [`recording_test.rs`](recording_test.rs) 都验证 nil 请求、GET/HEAD、PUT/POST 和 DELETE 忽略规则；Rust 的迁移补充测试进一步覆盖 nil 统计对象、合并、格式化和并发累加。
 
 ## 扩展指南
 
@@ -91,13 +84,3 @@
 - 若改为记录失败次数、重试次数或按操作标签分类，应在真正知道结果的 I/O 层触发；本文件只接收事实，不应引入对象存储 SDK 或重试策略依赖。
 - 保持可选统计的 no-op 特性，可避免未启用计量的调用路径分叉。新增入口应继续接受安全借用，且不得把请求或统计引用保存到调用之后。
 - 性能风险主要来自热路径上的额外原子操作和潜在缓存行竞争；兼容风险包括文本格式、公开字段、HTTP 分类和重复合并语义变化。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录查询识别 `recording.rs` 的 14 个符号及其 Rust/Go 测试和对照文件。
-- RustCodeGraph `node --file pkg/objstore/recording/recording.rs`：核对完整 171 行实现；文件关系报告 26 个 Rust 使用者。
-- RustCodeGraph 精确查询：确认 `AccessStats` 结构及 `rec_request`、`rec_read`、`rec_write` 定义位置；精确 callers 查询未返回细粒度结果，因而用定向源码引用搜索核对上述直接调用边。
-- 已读实现与边界文件：[`recording.rs`](recording.rs)、[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、[`recording.go`](recording.go)。目标目录没有 `doc.go`，包级 Rust 装配契约由 `lib.rs` 提供。
-- 已读独立测试：[`recording_test.rs`](recording_test.rs)、[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)、[`recording_test.go`](recording_test.go)。本任务是纯文档分析，按计划未运行 Cargo。
-- 已读直接调用证据：[`../s3store/interface.rs`](../s3store/interface.rs)、[`../ossstore/interface.rs`](../ossstore/interface.rs)、[`../objectio/writer.rs`](../objectio/writer.rs)、[`../s3like/io.rs`](../s3like/io.rs)、[`../../dxf/framework/metering/recorder.rs`](../../dxf/framework/metering/recorder.rs)。
-- 文档结构以任务指定命令验证，要求目标存在且恰有 11 个固定二级标题；交付前另行检查仅产生指定文档和任务文件删除。

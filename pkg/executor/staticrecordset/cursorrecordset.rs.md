@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor-staticrecordset` crate，是静态结果集与会话游标句柄之间的生命周期适配层。crate 入口 `pkg/executor/staticrecordset/lib.rs` 将 `cursorrecordset` 声明为公开模块并重新导出其符号；`pkg/executor/staticrecordset/Cargo.toml` 通过 `package.metadata.porting.go-package` 将该 crate 对应到 Go 包 `pkg/executor/staticrecordset`。
-
-它位于 SQL 执行结果向会话/协议层交付的边界：底层 `RecordSet` 负责字段、按 chunk 拉取和执行器关闭，游标句柄负责会话侧游标资源。包装后的对象仍以 `Box<dyn RecordSet>` 暴露，因此调用者不需要知道结果集是否绑定游标。
-
-当前 Rust 仓库中 `WrapRecordSetWithCursor` 的直接使用仅出现在独立测试 `cursorrecordset_test.rs` 和 `integration_test.rs`，没有发现生产 Rust 调用点。已接入的完整生产主链仍可在 Go 版本 `pkg/session/session.go::execStmtResult.TryDetach` 中看到：成功分离结果集后创建 cursor，再调用同名包装函数。因而本文不会把 Go 的生产接线误写成 Rust 已完成接线。
+位于 SQL 执行结果向会话/协议层交付的边界：底层 `RecordSet` 负责字段、按 chunk 拉取和执行器关闭，游标句柄负责会话侧游标资源。
 
 ## 核心职责
 
@@ -84,8 +80,6 @@ Go 集成测试 `TestCursorWillBeClosed` 验证关闭 detached record set 后 cu
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐项复刻 `pkg/executor/staticrecordset/cursorrecordset.go`：私有 `cursorRecordSet` 同样持有 cursor 和 record set；`Fields`、`Next`、`NewChunk` 均直接转发；`Close` 都先关 cursor 再返回底层关闭错误；`WrapRecordSetWithCursor` 都返回统一 `RecordSet` 接口。
-
 类型层面的差异主要来自语言：Go 使用 `cursor.Handle`、`sqlexec.RecordSet` 接口和 `context.Context`，Rust 在本 crate 定义最小 `CursorHandle` trait，并使用 `Box<dyn RecordSet>`、`&RecordContext` 与 `&mut Chunk`。Go 的 `GetExecutor4Test` 通过类型断言调用额外接口，底层不支持时同样会 panic；Rust 用 `Option` 加 `expect` 明确表达该前置条件。
 
 Go 文件用编译期断言 `var _ sqlexec.RecordSet = &cursorRecordSet{}` 检查接口实现；Rust 的 `impl RecordSet for cursorRecordSet` 已由类型系统直接检查。Go 生产入口已经接到 `session.go::execStmtResult.TryDetach`，Rust 侧目前只有测试调用，因此实现语义对齐不代表应用主链接线已经对齐。
@@ -98,14 +92,3 @@ Go 文件用编译期断言 `var _ sqlexec.RecordSet = &cursorRecordSet{}` 检�
 - 若增加自动析构关闭，需评估 `Drop` 无法返回错误、panic 安全以及显式 `Close` 后重复调用的影响；性能上还要避免在 `Fields`/`Next` 热路径引入复制、锁或额外分配。
 - 若将其接入 Rust 会话主链，应以 Go 的 `execStmtResult.TryDetach` 为行为基线，覆盖成功返回、`finishStmt` 失败后的双资源清理、cursor 对最小 `StartTS` 的约束，并确认 crate 依赖方向不会形成环。
 - `GetExecutor4Test` 只用于测试诊断；扩展生产能力时不要借此绕过 `RecordSet` 抽象。若改动其 panic 契约，需同步 `cursorrecordset_test.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件，目标文件在索引中。
-- RustCodeGraph `files --filter pkg/executor/staticrecordset`：确认同目录 Rust/Go 源、测试和模块入口。
-- RustCodeGraph `node --file pkg/executor/staticrecordset/cursorrecordset.rs --offset 1 --limit 260`：读取全部 74 行，核对 `CursorHandle`、`cursorRecordSet`、六个 trait/构造方法及无条件编译事实。
-- RustCodeGraph `query CursorRecordSet --limit 20 --json`：核对 Rust/Go 同名类型及方法；对 `WrapRecordSetWithCursor`、`Close`、`Next` 执行精确 callers/callees 查询，未获得符号级调用边。
-- RustCodeGraph `node`：读取 `cursorrecordset_test.rs`、`integration_test.rs`、`recordset.rs`，核对测试钩子 panic、转发、关闭顺序、错误传播以及底层 `RecordSet` 契约。
-- 文件核验：`pkg/executor/staticrecordset/Cargo.toml`、`lib.rs`、`cursorrecordset.go`、`integration_test.go`、`pkg/session/session.go`；目标包不存在 `doc.go`。
-- 文本搜索：Rust 中构造函数只有三处测试调用；Go 中生产调用位于 `pkg/session/session.go:3245`。这支持“Rust 尚无生产接线”的限制说明。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前另运行任务指定的 11 章节结构检查，并人工复核唯一新增产物、源码链接、事实与推断边界。

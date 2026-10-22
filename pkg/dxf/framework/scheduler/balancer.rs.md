@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现 DXF（Distributed eXecution Framework）调度器中的子任务负载均衡器。它不创建任务，也不执行子任务，而是在一次均衡周期内读取各任务的活跃子任务，结合节点作用域、任务自定义的可用实例、节点槽位容量和 `max_node_count`，决定哪些子任务需要改写 `exec_id`。模块由 `pkg/dxf/framework/scheduler/lib.rs` 公开为 `balancer` 并整体再导出。
-
-生产侧有两条已确认入口：`SchedulerManager::balance`（`scheduler_manager.rs:358`）持有 manager 内部的 `Mutex<Balancer>` 后调用 `Balancer::balance`；分布式 `MODIFY COLUMN` 的运行循环则在 `pkg/session/runtime/modify_column_dist_backfill.rs:1111-1136` 直接构造 `Balancer`，并在每轮 `schedule_once` 后调用它。当前 `SchedulerManager::tick`（`scheduler_manager.rs:211`）本身不调用 `balance`，因此不能把 Go 文件中的独立定时均衡循环描述成 Rust manager 已自动接线的行为。
-
-crate 边界由 `pkg/dxf/framework/scheduler/Cargo.toml` 定义，包名是 `astersql-dxf-framework-scheduler`，库入口为 `lib.rs`。本文件直接只使用本 crate 的 `interface`、`nodes`、`slots` API 和标准库集合/`Arc`；任务、子任务等协议类型经 crate 根从 `astersql-dxf-framework-proto` 再导出。Cargo 未为本模块声明独立 feature。
+不创建任务，也不执行子任务，而是在一次均衡周期内读取各任务的活跃子任务，结合节点作用域、任务自定义的可用实例、节点槽位容量和 `max_node_count`，决定哪些子任务需要改写 `exec_id`。
 
 ## 核心职责
 
@@ -95,17 +91,11 @@ RustCodeGraph 将 `balance_subtasks -> filter_nodes_with_enough_slots / filter_n
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/dxf/framework/scheduler/balancer.go`，核心映射如下：
-
-- Go `balancer` / `newBalancer` 对应 Rust `Balancer` / `Balancer::new`；`currUsedSlots` 对应 `current_used_slots`。
-- Go `balance`、`balanceSubtasks`、`doBalanceSubtasks` 的逻辑在 Rust 中合并为 `balance` 和 `balance_subtasks`。Rust 直接通过 `Scheduler::extension().eligible_instances` 加 scope 交集实现 Go `getEligibleNodes` 的效果。
-- Go `filterNodesByMaxNodeCnt` 对应 Rust `filter_nodes_by_max_node_count`，Rust 另保留同名 Go 风格兼容包装 `filterNodesByMaxNodeCnt`。
-- Go `doBalanceSubtasks` 内的平均数、余数、running 前置、pending 尾部抽取、失效节点整体迁移和最终写回，对应 Rust 私有函数 `rebalance_pending_subtasks` 加外层持久化逻辑。
 - Go `updateUsedNodes` 对应 Rust `update_used_nodes`，两者都按节点去重后每任务只记一次 `required_slots`。
 
-已确认的结构差异是：Go 文件内含 `balanceCheckInterval`、`balanceLoop`、context、logger 和 `mockNoEnoughSlots` failpoint；Rust 文件不包含这些机制。Go 顶层 `balance` 遇到单任务错误时记录 warning 并结束本轮且不返回错误，Rust `balance` 返回 `Result` 给调用者。Rust 的错误可见性更强，但外层是否记录、重试或终止由调用方决定。
+已确认的结构差异是：Go 文件内含 `balanceCheckInterval`、`balanceLoop`、context、logger 和 `mockNoEnoughSlots` failpoint；Rust 文件不包含这些机制。Go 顶层 `balance` 遇到单任务错误时记录 warning 并结束本轮且不返回错误，Rust `balance` 返回 `Result` 给调用者。
 
-测试覆盖也不完全等量。Go `balancer_test.go` 有更大的表驱动集合，并显式覆盖 eligible-instance 错误、无实例、task-manager 读写失败、扩缩容组合和槽位记账；Rust `balancer_test.rs` 覆盖失效节点迁移、多任务槽位优先级、稳定的 max-node 筛选、无子任务、余数分布、合格节点 running 不移动等核心路径，但未逐项复刻 Go 的全部错误注入用例。文档不能据此声称所有 Go 测试分支都已在 Rust 独立测试中覆盖。
+测试覆盖也不完全等量。Go `balancer_test.go` 有更大的表驱动集合，并显式覆盖 eligible-instance 错误、无实例、task-manager 读写失败、扩缩容组合和槽位记账；Rust `balancer_test.rs` 覆盖失效节点迁移、多任务槽位优先级、稳定的 max-node 筛选、无子任务、余数分布、合格节点 running 不移动等核心路径，但未逐项复刻 Go 的全部错误注入用例。
 
 ## 扩展指南
 
@@ -117,13 +107,3 @@ RustCodeGraph 将 `balance_subtasks -> filter_nodes_with_enough_slots / filter_n
 - 测试必须继续放在独立的 `pkg/dxf/framework/scheduler/balancer_test.rs`，不要内嵌进生产文件。应至少同步对照 `balancer_test.go` 的相关场景；涉及完整 manager 或运行循环接线时，再选择 `scheduler_manager_*_test.rs` 或分布式 MODIFY 的上层测试面。
 
 主要兼容风险是节点选择顺序和 Go 语义漂移；正确性风险集中在 running 状态、余数分配及错误后账本一致性；性能风险集中在每轮克隆全部 active `SubtaskBase`、建立多个 `HashMap`/`HashSet` 和稳定排序，复杂度大致为每任务 O(S + N log N)，其中 S 为活跃子任务数、N 为候选节点数。
-
-## 验证依据
-
-- RustCodeGraph 状态：项目索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；目标目录可见 `balancer.rs`、`balancer_test.rs`、`scheduler_manager.rs`、`nodes.rs`、`slots.rs` 等文件。
-- RustCodeGraph 源码/符号查询：`node --file pkg/dxf/framework/scheduler/balancer.rs --offset 1 --limit 260`；`query balance --kind function --json --limit 50`；`node balancer.rs::balance`、`balance_subtasks`、`filter_nodes_by_max_node_count`、`rebalance_pending_subtasks`；`node scheduler_manager.rs::balance`、`tick`；`node nodes.rs::filter_by_scope`、`slots.rs::filter_nodes_with_enough_slots`、`interface.rs::Param`、`interface.rs::Scheduler`。
-- 直接读取的 crate/模块证据：`pkg/dxf/framework/scheduler/Cargo.toml`、`pkg/dxf/framework/scheduler/lib.rs`。
-- Go 对照与测试证据：`pkg/dxf/framework/scheduler/balancer.go`、`pkg/dxf/framework/scheduler/balancer_test.go`。
-- Rust 独立测试证据：`pkg/dxf/framework/scheduler/balancer_test.rs`，包含 `test_balance_one_task`、`test_balance_multiple_tasks`、`test_balancer_update_used_nodes`、`test_balance_matches_go_table_driven_edge_cases`。
-- 生产接线证据：`pkg/dxf/framework/scheduler/scheduler_manager.rs:123-148,358-362` 与 `pkg/session/runtime/modify_column_dist_backfill.rs:1096-1137`。
-- 本任务为纯文档分析，按计划不运行 Cargo；验收只执行任务指定的 11 章节结构检查，并人工核对本文未把 Go 独有的 timer/logger/context/failpoint 描述成 Rust 当前能力。

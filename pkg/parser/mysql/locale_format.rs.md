@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本说明对应[源码 `locale_format.rs`](locale_format.rs)。该文件属于 `astersql-parser-mysql` crate。crate 入口 `pkg/parser/mysql/lib.rs` 以公开模块 `locale_format` 暴露它；`pkg/parser/mysql/Cargo.toml` 指定该 crate 的库入口为 `lib.rs`，并为这里的 Unicode 数字分类引入 `unicode-general-category = "1.1.0"`。它位于 SQL 表达式求值和 MySQL locale 规则表之间：`pkg/expression/builtin_string_vec.rs` 的 `format_value` 为 `FORMAT` 与 `FORMAT_WITH_LOCALE` 准备数值、精度和 locale，再调用本文件的 `FormatByLocale` 完成分组与小数点替换。
-
-这是进程内的纯字符串格式化模块，不读取操作系统 locale、不访问网络或存储，也不负责数值舍入。上游 `format_value` 已经把实数或 decimal 转成指定精度的字符串；本文件按 locale 对该字符串进行展示格式化。
+用 `formatStyleMap` 定义八种格式风格，用 `localeToStyleMap` 把小写 locale 名称映射到风格 ID。
 
 ## 核心职责
 
@@ -84,7 +82,7 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/parser/mysql/locale_format.go`。Rust 保留了 Go 的 `LocaleFormatStyle` 三字段、八种 style ID、完整 locale 表、未知 locale 默认回退、标准/印度分组以及 `FormatByLocale` 的 `(string, bool, error)` 语义形状。现有 Rust 测试和 `error_3_aster_unit_test.rs` 的断言体现了移植目标，而不是另行简化的算法。
+Rust 保留了 Go 的 `LocaleFormatStyle` 三字段、八种 style ID、完整 locale 表、未知 locale 默认回退、标准/印度分组以及 `FormatByLocale` 的 `(string, bool, error)` 语义形状。现有 Rust 测试和 `error_3_aster_unit_test.rs` 的断言体现了移植目标，而不是另行简化的算法。
 
 已确认的实现差异与风险：
 
@@ -105,14 +103,3 @@
 - 性能优化可把两张表改成一次初始化的只读数据，但要用基准或分配证据证明收益，并确保没有引入可变全局状态。
 - 测试必须放在独立文件，优先扩充 `pkg/parser/mysql/locale_format_test.rs`；跨模块 SQL 表达式行为则扩充相邻的 `pkg/expression/builtin_string_vec_*_test.rs`。不要把测试内嵌进本生产源文件。
 - 任何 Unicode 支持扩展都应先添加能暴露 UTF-8 边界的回归用例，例如多位阿拉伯数字参与标准/印度分组和非零精度截断，并明确与 Go 字节语义的取舍。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；本次查询覆盖目标 Rust 文件及 Go 对照。
-- RustCodeGraph `explore "pkg/parser/mysql/locale_format.rs locale_format FormatWithLocale"`：确认公开入口、内部格式函数、表达式层调用方及两处 Rust 测试使用方。
-- RustCodeGraph `query` / `node`：读取并核对 `LocaleFormatStyle`、`GetLocaleFormatStyle`、`FormatByLocale`、`formatWithStyle`、两种 grouping 函数，以及 `pkg/expression/builtin_string_vec.rs::eval_row` / `format_value` 的调用现场。
-- RustCodeGraph `callees FormatByLocale`：确认 Rust 与 Go 两个版本都调用各自的 `GetLocaleFormatStyle` 和 `formatWithStyle`；`callees formatWithStyle` 确认 Rust 版本调用两种分组函数。`callers` 命令在当前索引上超时，因此调用方以同一次 `explore` 的 blast radius 和已索引调用现场交叉确认。
-- 读取的边界与配置文件：`pkg/parser/mysql/lib.rs`、`pkg/parser/mysql/Cargo.toml`。
-- 读取的直接实现与对照：`pkg/parser/mysql/locale_format.rs`、`pkg/parser/mysql/locale_format.go`。
-- 读取的独立测试：`pkg/parser/mysql/locale_format_test.rs`；RustCodeGraph 另确认 `pkg/parser/mysql/error_3_aster_unit_test.rs::locale_formatting_matches_go_grouping_and_fallbacks` 的覆盖范围。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，计划明确禁止运行 Cargo；结构验证及最终差异检查作为本任务的本地交付证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`tools/tazel/ast.rs` 属于 `astersql-tools-tazel` crate。该 crate 在 `tools/tazel/Cargo.toml` 中声明为同时提供库和 `astersql-tools-tazel` 二进制的工具 crate，且没有 Rust 外部依赖；`tools/tazel/lib.rs` 以 `pub mod ast` 暴露本文件。它不是 SQL 运行时的一部分，而是 `tazel` 修改 Bazel `go_test` 规则之前的预扫描阶段：统计每个目录内符合 Go 测试入口命名规则的顶层函数数，供 `tools/tazel/main.rs::patch_go_test_file` 决定 `shard_count`。
-
-完整入口链是 `tools/tazel/lib.rs::entry` → `tools/tazel/main.rs::main` → `run_from`。`run_from` 先调用本文件的 `initCount` 和 `walk_from`，再遍历 `BUILD.bazel`；因此计数表在 BUILD 规则补丁发生前已准备好。RustCodeGraph 将本文件识别为 21 个符号，并标出直接使用它的 `tools/tazel/ast_test.rs` 与 `tools/tazel/parity_test.rs`。
+该结果最终由 `main.rs::patch_go_test_file` 读取：数量大于 1 时生成分片数，数量等于 1 时删除旧 `shard_count`，没有目录记录时不改该属性。
 
 ## 核心职责
 
@@ -83,16 +81,10 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `tools/tazel/ast.go`，入口消费方是 `tools/tazel/main.go`。
-
-- Go `testMap map[string]uint32` 对应 Rust `OnceLock<Mutex<HashMap<String, u32>>>`；Go 通过重新分配 map 初始化，Rust 通过清空已初始化的单例保持重复运行能力。
 - Go `filepath.Walk(".", ...)` 对应 Rust `walk()`；Rust 额外提供 `walk_from`，让测试和 `run_from` 可注入根目录。
-- Go `filepath.Abs` 对应 Rust `fs::canonicalize`。两者都为目录计数提供绝对路径键，但 `canonicalize` 还要求目标存在并解析路径组件。
 - Go `parser.ParseFile(..., parser.AllErrors)` 直接产生 AST 并遍历 `f.Decls`；Rust 先用同属 Go 工具链的 `gofmt -e` 完成语法验证，再用 `go_tokens` 抽取声明所需 token。Rust 因此不复制完整 Go AST，但保留合法语法、忽略注释/字面量、排除方法和 `TestMain` 的统计结果。
 - Go 的 `walk` 在失败时 `log.Fatal`，Rust `walk_from` panic；二者都在工具主流程中终止执行，但错误呈现和库调用可恢复性不同。
 - Rust 新增 `test_count_for` 作为受控读取接口；Go `main.go` 直接访问同包变量。Rust `main.rs` 用该接口维持模块边界。
-
-现有对齐证据集中在 `tools/tazel/parity_test.rs`：`contract_normal_paths` 断言两个顶层测试被计为 2，而 `TestMain` 和接收者方法被排除；`scan_uses_go_syntax_instead_of_matching_comment_text` 断言注释中的伪声明不计数；`contract_boundary` 和 `contract_resource_cleanup` 分别覆盖单测试计数与全局表重置。`tools/tazel/ast_test.rs::scan_rejects_go_syntax_errors` 进一步锁定非法函数体必须失败的 Go parser 契约。
 
 ## 扩展指南
 
@@ -101,12 +93,3 @@
 若要改变目录键或路径规范化，必须同时检查 `scan` 与 `main.rs::patch_go_test_file`，确保 Go 文件和 `BUILD.bazel` 仍生成完全相同的父目录键；并在临时目录中做端到端 `run_from` 验证。若要让扫描错误可恢复，应从 `walk_from` 的签名和 `main.rs::run_from` 的错误映射一起设计，避免只在内部吞错后生成不完整分片信息。
 
 并行化扫描前必须把“一轮统计”的状态从全局单例隔离出来，或至少为清空至消费的完整阶段提供事务边界；仅依赖现有 `Mutex` 不足以防止不同扫描轮次互相清空。性能优化可优先评估减少每文件 `gofmt` 进程开销和避免保存全部 token，但必须保留 Go 完整语法错误契约及注释/字面量过滤。引入 Rust Go-parser 依赖还会改变当前空依赖的 Cargo 边界，需要单独审查可复现性和 Go/Rust 语义一致性。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标目录可见 `ast.rs` 的 21 个符号；`files --filter tools/tazel` 列出 Go/Rust 对照和测试；`node --file tools/tazel/ast.rs --offset 1 --limit 260` 返回本文件完整 243 行并标记使用者 `ast_test.rs`、`parity_test.rs`；`query` 定位 `initCount`、`addTestMap`、`walk_from`、`go_tokens`、`validate_go_syntax`；`callees walk_from` 给出 `walk_from` → `walk_dir`。对通用名 `scan` 的全局图查询存在重名噪声，因此其精确上下游以目标文件节点和入口源码交叉验证。
-- 生产源码：`tools/tazel/ast.rs`（目标实现）、`tools/tazel/lib.rs`（模块公开与 crate 入口）、`tools/tazel/main.rs`（`run_from` 上游和 `patch_go_test_file` 消费点）。
-- crate 边界：`tools/tazel/Cargo.toml`，确认库/二进制入口、`go-package = "tools/tazel"`、`kind = "binary"` 及无 Rust 外部依赖。
-- Go 对照：`tools/tazel/ast.go`（原统计算法）和 `tools/tazel/main.go`（计数消费及分片上限流程）。
-- 独立 Rust 测试：`tools/tazel/ast_test.rs`（非法 Go 语法）与 `tools/tazel/parity_test.rs`（正常、边界、错误、资源清理和完整入口对齐）。同目录没有单独的 Go `ast_test.go`；Go 语义依据来自生产实现，Rust 回归依据来自上述独立测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前另运行任务规定的 11 节结构检查，并人工检查只新增本文档、不修改生产源码、Cargo、Go 文件或只读 `plan.md`。

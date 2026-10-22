@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-table-tblsession` crate，是会话状态与通用表变更接口之间的适配层。crate 入口 `pkg/table/tblsession/lib.rs` 将本文件作为私有 `table` 模块加载，再用 `pub use table::*` 导出其 API；仓库总门面 `pkg/lib.rs` 又通过 `table::tblsession` 暴露该 crate。`pkg/table/tblsession/Cargo.toml` 表明它的生产依赖只有同级 `astersql-table-tblctx`，表达式上下文、元数据、行编码、语句上下文和会话变量类型均由该依赖经 `lib.rs` 再导出。
-
-该文件不执行 SQL，也不拥有表存储实现。它把调用方提供的 `SessionContext` 包装成 `tblctx::MutateContext`、`tblctx::AllocatorContext` 及四个可选支持接口，使表的增删改路径能通过统一 trait 读取会话配置、复用写语句缓冲，并更新事务内统计、缓存表和临时表状态。对应的 Go 实现是 `pkg/table/tblsession/table.go`。
+不执行 SQL，也不拥有表存储实现。
 
 ## 核心职责
 
@@ -72,9 +70,7 @@ RustCodeGraph 对 `pkg/table/tblsession/table.rs` 建立了 46 个符号，并�
 
 ## 与 Go 版本的对应关系
 
-`pkg/table/tblsession/table.go` 的 `MutateContext` 嵌入 `sessionctx.Context` 并直接通过 `vars()` 访问 `SessionVars`；Rust 为避免依赖完整 session 子系统，改为泛型 `MutateContext<C>` 与窄 `SessionContext` trait。Go 的 `TxnCtx` 两个相关 map 在 Rust 中被收束为本地 `TransactionContext`，缓存 handle 从 Go `any` 对应到 `Box<dyn Any + Send + Sync>`。
-
-主要行为保持一致：构造时取得写语句缓冲；全局临时表可替换 allocator；缺失事务上下文时三个可选支持关闭；统计增量累加；缓存 handle 不覆盖；临时表置 modified 并创建 handler；交换分区检查读取最新 infoschema；reserved allocator 缺失时仅测试构建断言而生产安全返回。
+`pkg/table/tblsession/table.go` 的 `MutateContext` 嵌入 `sessionctx.Context` 并直接通过 `vars()` 访问 `SessionVars`；Rust 为避免依赖完整 session 子系统，改为泛型 `MutateContext<C>` 与窄 `SessionContext` trait。
 
 需要注意两处表达差异。第一，Go `GetRowEncodingConfig` 返回 session 持有的 `RowEncoder` 指针，而 Rust 根据布尔值新建 `rowcodec::Encoder`，因此 Rust 文档和扩展代码不应假设对象身份共享，只能依赖配置值。第二，Go 的 session/transaction map 是既有完整类型，Rust 当前只建模本 crate 需要的子集，不能把它当成完整事务上下文。`pkg/table/tblsession/table_test.go` 是 Go 行为的权威回归参考；Rust `table_test.rs` 仅保存参考伪代码字符串，而真正执行等价断言的是 `migration_aster_unit_test.rs`。
 
@@ -85,11 +81,3 @@ RustCodeGraph 对 `pkg/table/tblsession/table.rs` 建立了 46 个符号，并�
 扩展事务写入时，修改 `TransactionContext` 及对应 support impl，并保持“能力探测与可变获取一致”的不变量。扩展缓存 handle 时要保留首次插入语义，除非 Go 同步改变；扩展临时表时要保持 clone 共享 modified/大小状态，并明确 handler 所拥有数据源的生命周期。任何编码配置变化都应核对 restricted SQL、row encoder 与 checksum 三者组合，避免只覆盖开关为真的主路径。
 
 测试应放在独立文件，不嵌入 `table.rs`。可执行 Rust 回归优先扩展 `pkg/table/tblsession/migration_aster_unit_test.rs`，并由 `lib.rs` 的测试模块加载；若 Go 行为改变，还应同步检查 `pkg/table/tblsession/table_test.go`。`pkg/table/tblsession/table_test.rs` 当前只做参考文本存在性检查，不能替代行为测试。兼容性风险集中在 trait 方法增加会要求所有实现者补方法；性能风险集中在每次 `GetRowEncodingConfig` 新建 encoder、缓存 handle 的堆分配和临时表 clone 是否保持轻量共享。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点，目标 `table.rs` 被索引为 46 个符号；使用 `files --filter pkg/table/tblsession`、`explore 'pkg/table/tblsession/table.rs symbols responsibilities callers callees'`、`node --file pkg/table/tblsession/table.rs --offset 1 --limit 500`，以及对 `NewMutateContext`、`MutateContext`、`TemporaryTableHandler`、`NewMutateBuffers` 的查询核对符号和直接边。精确 callers/callees 未产生额外明细，故生产主链接线明确标为未验证。
-- 源码与 crate：完整阅读 `pkg/table/tblsession/table.rs`、`pkg/table/tblsession/lib.rs`、`pkg/table/tblsession/Cargo.toml`，并核对 `pkg/lib.rs` 的门面导出。
-- Go 对照：完整阅读 `pkg/table/tblsession/table.go` 与 `pkg/table/tblsession/table_test.go`，逐项核对构造、字段转发、allocator、统计、缓存表、临时表、交换分区和缺失 allocator 行为。
-- Rust 测试：阅读 `pkg/table/tblsession/table_test.rs` 和 `pkg/table/tblsession/migration_aster_unit_test.rs`。后者的三个可执行测试覆盖字段/allocator 路径、可选支持与累加/不覆盖语义、临时表 handler 状态，以及缺失资源的安全返回。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构以任务指定命令验证，人工复核重点是：当前接线限制未被写成“已支持”，测试参考文本未被误称为完整行为回归，所有扩展建议仍把测试放在独立文件。

@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-`task.rs` 属于 `astersql-planner-core` crate；crate 根在 [`lib.rs`](./lib.rs) 中以 `pub mod task` 公开该模块，清单 [`Cargo.toml`](./Cargo.toml) 指定库入口为 `lib.rs`、默认 feature 为空，并用 `package.metadata.porting.go-package = "pkg/planner/core"` 标明 Go 对照包。该文件位于“选出物理计划之后、形成可执行任务之前”的接线层：它用较轻量的 `PlanNode` 表示计划树，用 `Task` 表示 Root、Cop、MPP 三种执行落点，并把物理算子附着到子任务。
-
-当前 Rust 仓库同时存在更完整、基于 trait object 的物理算子任务体系（例如 `operator/physicalop/task.rs` 及各物理算子的 `Attach2Task`）。本文件不是那套类型的别名，而是 `find_best_task.rs` 中简化候选计划路径实际使用的独立模型：`mockPhysicalPlan4Test::Attach2Task` 以及 `find_best_task.rs` 的多处搜索路径直接调用本文件的 `attach2Task`。因此阅读时不能把 Go `task.go` 的全部能力默认视为这里已经实现。
+定义执行位置与计划载体：`StoreType`、`TaskType`、`PlanKind`、`PlanNode`、`Task` 以及表达式、字段类型、统计信息和警告等辅助结构。
 
 ## 核心职责
 
@@ -78,13 +76,9 @@ MPP 在这里是计划的执行形态，不表示本模块直接启动并行工�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`task.go`](./task.go)。Rust 保留了主要函数族和命名，包括 `attachPlan2Task`、UnionScan/Join/Limit/TopN/Agg/Window/CTE/Sequence 附着、`needConvert`/`negotiateCommonType`、重函数 TopN 优化，以及 MPP 行大小和 seek 代价辅助函数。
-
-已对齐的关键语义包括：UnionScan 把 Projection 保持在最外层；Limit/TopN 下推时局部 count 使用 `offset + count`；字符串公共类型无需转换，Decimal 以 9/18/38/65 精度区间判断 TiFlash 表示；重函数 TopN 通过 Projection 物化排序表达式；二元任务汇总警告；MPP 分区类型改变后取消细粒度 shuffle。
-
 Rust 并非逐对象完整复刻。Go 使用 `base.PhysicalPlan`、`base.Task` 和 `physicalop` 的具体类型，带 session context、直方图、fix control、failpoint、索引路径、schema/column ID、partition property 及更完整代价公式；Rust 本文件用 `PlanNode`、字符串表达式名、标签和简化统计替代。若 Go 后续分支、hint、warning 或 schema 修复在 Rust 中没有对应字段，应记录为移植差异，不能通过删除 Go 分支或弱化断言来“对齐”。
 
-测试对应关系：Go `task_test.go::TestPhysicalUnionScanAttach2Task` 验证重排不破坏原计划；Rust `task_test.rs` 进一步验证三种形状、缺 child 返回 Invalid、warnings/index_join 保留以及类型转换边界。Go `task_heavy_function_optimize_test.go::TestGetPushedDownTopNHeavyFunctionNotFirstByItem` 与 Rust `task_heavy_function_optimize_test.rs::pushed_down_topn_handles_heavy_function_after_first_by_item` 都覆盖重函数不是首个排序项时的物化和列下标改写。
+测试对应关系：Go `task_test.go::TestPhysicalUnionScanAttach2Task` 验证重排不破坏原计划；Rust `task_test.rs` 进一步验证三种形状、缺 child 返回 Invalid、warnings/index_join 保留以及类型转换边界。
 
 ## 扩展指南
 
@@ -95,13 +89,3 @@ Rust 并非逐对象完整复刻。Go 使用 `base.PhysicalPlan`、`base.Task` �
 - 改变 Limit/TopN 计数时统一使用饱和加法，并覆盖 `u64::MAX`、offset 非零、虚拟列、不可下推表达式以及 Cop/MPP/Root 三种输入。
 - 测试逻辑继续放在独立文件：核心附着/类型边界写入 `task_test.rs`，重函数物化写入 `task_heavy_function_optimize_test.rs`；对应 Go 语义分别核对 `task_test.go` 与 `task_heavy_function_optimize_test.go`。若新增跨优化器调用，还应扩展 `find_best_task_test.rs` 或最接近的独立规则测试，而不要在 `task.rs` 内嵌 `#[cfg(test)]` 模块。
 - 兼容性风险集中在计划形状、schema 列下标、分区键类型、warning 传播和 Root/Cop/MPP 落点；性能风险集中在不必要的 Root 回退、深克隆、重复重函数求值以及错误的网络/行大小估算。
-
-## 验证依据
-
-- 源码全貌：`pkg/planner/core/task.rs`；符号清单包含 7 个主要数据类型族、`Task` 实现、公共附着分发器及全部专用函数，文件内没有 `#[cfg]` 项。
-- crate 与模块入口：`pkg/planner/core/Cargo.toml`、`pkg/planner/core/lib.rs`；后者公开 `pub mod task`，并以独立模块挂载 `task_test.rs` 和 `task_heavy_function_optimize_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`query` 精确定位 `task.rs::attachPlan2Task`、`attach2Task4PhysicalTopN`、`convertPartitionKeysIfNeed4PhysicalHashJoin`、`tryReturnDistanceFromIndex`；调用图确认 `find_best_task.rs::Attach2Task → task.rs::attach2Task` 以及分发器到各专用附着函数的边。由于 `task`/`Task` 重名很多，歧义结果用源码位置和 `rg` 交叉核验。
-- 上游源码：`pkg/planner/core/find_best_task.rs`，其候选计划流程和 `mockPhysicalPlan4Test::Attach2Task` 直接调用 `attach2Task`。
-- Go 对照：`pkg/planner/core/task.go`；测试对照：`pkg/planner/core/task_test.go`、`pkg/planner/core/task_heavy_function_optimize_test.go`。
-- Rust 独立测试：`pkg/planner/core/task_test.rs`、`pkg/planner/core/task_heavy_function_optimize_test.rs`；测试挂载位置为 `pkg/planner/core/lib.rs`。
-- 本任务只生成说明文档，按计划不运行 Cargo。交付前执行任务文件给定的结构命令，要求目标存在且固定二级标题恰好为 11 个；同时人工复核本文能回答文件为何存在、主流程如何工作、与 Go 的差距以及安全扩展位置。

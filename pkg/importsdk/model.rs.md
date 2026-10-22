@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`model.rs` 是 `astersql-importsdk` crate 的纯数据模型层。私有模块 `model` 在 [`pkg/importsdk/lib.rs`](lib.rs) 中声明，并通过 `pub use model::*` 把本文件的公开类型重新导出为 crate API。它位于“扫描导入源文件 → 生成 `IMPORT INTO` SQL → 提交并观察导入作业”的共享边界：`file_scanner.rs` 产生表与大小元数据，`sql_generator.rs` 读取表元数据和选项，`job_manager.rs` 从 SQL 查询结果构造作业/组状态。
-
-本文件只有六个公开结构体和 `JobStatus` 的四个状态判断方法；没有 I/O、SQL 执行、全局变量、条件编译项、trait 或异步任务。crate 边界由 [`pkg/importsdk/Cargo.toml`](Cargo.toml) 定义；本文件直接使用 crate 内的 `CSVConfig`、`astersql-lightning-mydump` 的文件格式枚举和 `chrono` 的无时区日期时间。
+用 `ImportOptions` 作为 SQL 生成器的强类型输入，集中表达通用、CSV、云存储、作业组和执行控制选项。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/importsdk/model.go`](model.go)。六个结构体、字段顺序/语义和四个 `JobStatus` 方法逐项移植；Rust 额外派生 `Clone`、`Debug`，并为前四种可自然零值化的结构派生 `Default`。
+六个结构体、字段顺序/语义和四个 `JobStatus` 方法逐项移植；Rust 额外派生 `Clone`、`Debug`，并为前四种可自然零值化的结构派生 `Default`。
 
-主要类型映射如下：Go `string` → Rust `String`，`[]DataFileMeta`/`[]TableDataSizeEstimate` → `Vec<_>`，`int64` → `i64`，`int` → `isize`，`*config.CSVConfig` → `Option<Box<CSVConfig>>`，`time.Time` → `chrono::NaiveDateTime`。Go 方法使用 `*JobStatus` 接收者，Rust 使用不可变 `&self`；两者均不改变对象。Rust 的 `IsCompleted` 与 Go 一样复用 `IsFinished`、`IsFailed`、`IsCancelled`，不是重新复制字符串条件。
+Go 方法使用 `*JobStatus` 接收者，Rust 使用不可变 `&self`；两者均不改变对象。Rust 的 `IsCompleted` 与 Go 一样复用 `IsFinished`、`IsFailed`、`IsCancelled`，不是重新复制字符串条件。
 
-语义差异集中在类型表达：`NaiveDateTime` 不含 Go `time.Time` 可携带的位置/单调时间信息；可空 CSV 配置显式表示为 `Option`；Rust 的默认构造和克隆能力是移植层便利接口。`model_test.rs::job_completion_states_match_go_table` 完整镜像 Go `model_test.go::TestJobStatus` 的 finished、failed、cancelled、running、pending、unknown 六行真值表。
+语义差异集中在类型表达：`NaiveDateTime` 不含 Go `time.Time` 可携带的位置/单调时间信息；可空 CSV 配置显式表示为 `Option`；Rust 的默认构造和克隆能力是移植层便利接口。
 
 ## 扩展指南
 
@@ -84,11 +82,3 @@
 - 新增终结状态时必须同时修改 Go/Rust 的状态判断、`model_test.go` 与 `model_test.rs` 真值表，并审查 `job_monitor.rs` 的分类/报错和 `job_orchestrator.rs` 的取消/checkpoint 分支；否则新状态会被当作 pending 或再次取消。
 - 新增大量字段或在高频路径传递模型时评估 `Clone` 成本；优先传 `&TableMeta`/`&JobStatus`，只有需要独立生命周期时才克隆。
 - 测试逻辑继续放在独立的 `pkg/importsdk/model_test.rs`，不要内嵌回生产源文件；Go 对照测试保持在 `model_test.go`。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/importsdk` 确认 Rust/Go 源和独立测试；`node --file pkg/importsdk/model.rs` 核对本文件 176 行、12 个符号及直接使用关系。
-- RustCodeGraph 精确查询/调用证据：`query TableMeta/DataFileMeta/ImportOptions/JobStatus/GroupStatus/ImportDataSizeEstimate/TableDataSizeEstimate`；`query IsCompleted`；`callees JobStatus::IsCompleted` 显示 Rust `IsCompleted` 调用三个具体判断；聚焦 `explore` 显示 `scanJobStatus` 构造状态以及 Lightning 监控、提交、取消路径的消费者。
-- 已读 Rust 路径：`pkg/importsdk/model.rs`、`lib.rs`、`file_scanner.rs`、`job_manager.rs`、`sql_generator.rs`、`sdk.rs`、`model_test.rs`，以及直接业务消费者 `lightning/pkg/importinto/job_submitter.rs`、`job_monitor.rs`、`job_orchestrator.rs`。
-- 已读配置/Go 路径：`pkg/importsdk/Cargo.toml`、`pkg/importsdk/model.go`、`pkg/importsdk/model_test.go`。目标包不存在 `doc.go`；crate 契约由 `lib.rs` 与 Cargo metadata 的 `go-package = "pkg/importsdk"` 共同给出。
-- 结构验证使用任务指定命令，要求本文档存在且恰好出现十一个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。

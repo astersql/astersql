@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-stmtsummary-v2` crate 中“单条语句摘要”的数据与聚合层。crate 根在 [`lib.rs`](./lib.rs) 中以私有 `mod record` 装载它，再用 `pub use record::*` 对外暴露；[`Cargo.toml`](./Cargo.toml) 说明它依赖 `task-stmtsummary` 的 `StmtExecInfo` 输入、`task-stmtctx` 的语句上下文，以及 `task-execdetails` 的 Coprocessor、2PC、RU 和 TiKV 执行细节。
-
-它位于一次 SQL 执行和摘要窗口之间：会话侧 [`scan_adapter_runtime.rs`](../../../session/runtime/scan_adapter_runtime.rs) 组装 `StmtExecInfo`，先调用 `SelectRUDetailsForStatementSummary` 选择 RU 口径，再调用 v2 摘要入口；[`stmtsummary.rs`](./stmtsummary.rs) 的 `StmtSummary::Add` 按 digest（可选附加用户）定位窗口记录，新键调用 `NewStmtRecord`，随后每次都调用 `StmtRecord::Add`。窗口驱逐时，`stmtEvicted::add` 通过 `StmtRecord::Merge` 合并成 `other`/`otherForPersist`。
+`StmtRecord` 保存一组同键语句的身份、首样本和聚合指标，包括延迟、Cop/TiKV 扫描、IA 远程段读取、2PC、内存/磁盘、重试、CPU、RU、网络流量、计划缓存和存储引擎标记。
 
 ## 核心职责
 
@@ -88,14 +86,13 @@ RustCodeGraph 的 `status` 显示索引覆盖本文件及同目录 Rust/Go 文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`record.go`](./record.go)，基准测试是 [`record_test.go`](./record_test.go)。Rust 保留了 Go 的核心两阶段协议：“`NewStmtRecord` 保存基本信息，然后必须 `Add` 才计入统计”；表名小写与空表跳过、plan digest 回退、计划超限占位、sum/max/min、Cop 最慢地址、2PC 锁内退避、RU/CPU/流量和驱逐 `Merge` 均按相同结构移植。
+Rust 保留了 Go 的核心两阶段协议：“`NewStmtRecord` 保存基本信息，然后必须 `Add` 才计入统计”；表名小写与空表跳过、plan digest 回退、计划超限占位、sum/max/min、Cop 最慢地址、2PC 锁内退避、RU/CPU/流量和驱逐 `Merge` 均按相同结构移植。
 
 实现形态上的差异包括：
 
 - Go 的可变全局 `MaxEncodedPlanSizeInBytes` 和 `GlobalStmtSummary.MaxSQLLength()` 在 Rust 中变为原子全局值，并由 `StmtSummary::SetMaxSQLLength` 显式同步。
 - Go `formatSQL` 直接按字节切片；Rust 为保持有效 `String`，在多字节 UTF-8 边界向前回退。这是安全性差异，但长度后缀仍记录原始字节数。
 - Go 复用 `plancodec` 的两种 discard 常量；Rust 文本占位为本地常量，二进制占位按同一 protobuf/Snappy/Base64 语义即时生成。
-- Go 通过嵌入的 `StmtRUSummary` 和 `StmtNetworkTrafficSummary` 聚合；Rust 展开为具体字段并逐项更新。
 - `SelectRUDetailsForStatementSummary` 是 Rust 会话接线使用的适配函数：v2 总 RU 完成时按读写拆到 RRU/WRU，未完成时保留原始值。其语义由 Rust 独立测试与会话调用点验证，不能仅从 `record.go` 推导。
 - Rust 额外用 `durationNanosSerde` 固定 IA 等待时间的 JSON 纳秒表示，并拒绝负值；`record_test.rs` 验证字段名不会退化成 Serde 自动拆分出的错误形式。
 
@@ -108,12 +105,3 @@ RustCodeGraph 的 `status` 显示索引覆盖本文件及同目录 Rust/Go 文�
 测试应继续放在独立文件，不嵌入 `record.rs`：Go 对照回归在 [`record_test.go`](./record_test.go)，主要 Rust 移植回归在 [`record_test.rs`](./record_test.rs)，更完整的 Cop/2PC/流量/截断/驱逐覆盖在 [`record_2_aster_unit_test.rs`](./record_2_aster_unit_test.rs)。字段若暴露为表列，还应同步 [`column_test.rs`](./column_test.rs)；若影响持久化读取，则同步 reader/logger 相关独立测试。
 
 兼容与性能风险集中在：高频 `Add` 路径增加锁或分配；漏合并造成驱逐统计偏小；错误的 max/min 初值；跨窗口 JSON 格式漂移；首样本无限增长；以及在持有窗口/commit 锁时做昂贵工作。扩展应优先复用现有宏和一次性首样本策略，并用不同大小、空 `Option`、多用户和多记录 merge 夹具验证。
-
-## 验证依据
-
-- RustCodeGraph：`status`（索引 11467 文件，目标目录 Rust/Go 文件均被索引）、`files --filter pkg/util/stmtsummary/v2`、目标文件 `node --file` 全文、`record_test.rs`/`record_2_aster_unit_test.rs`/`stmtsummary.rs`/会话适配器的定点 `node --file`；`query NewStmtRecord` 和 `query SelectRUDetailsForStatementSummary` 确认 Rust/Go 精确符号。通用 callers/callees 对重名方法未给出可用边，因此调用边另以限定路径搜索确认。
-- 生产源码：[`record.rs`](./record.rs)、[`stmtsummary.rs`](./stmtsummary.rs)、[`lib.rs`](./lib.rs)、[`scan_adapter_runtime.rs`](../../../session/runtime/scan_adapter_runtime.rs)。
-- crate 与依赖：[`Cargo.toml`](./Cargo.toml)，确认 crate 名、lib 入口、`autotests = false`、测试装配和 base64/serde/snap/三个内部 task crate 依赖。
-- Go 对照：[`record.go`](./record.go) 与 [`record_test.go`](./record_test.go)，核对构造/Add/Merge、空表、SQL 截断、IA/RU/CPU 和日志字段语义。
-- Rust 独立测试：[`record_test.rs`](./record_test.rs) 覆盖 JSON 键、空表、IA、核心聚合、RU 版本；[`record_2_aster_unit_test.rs`](./record_2_aster_unit_test.rs) 覆盖完整 Cop/2PC/流量、计划与 SQL 上限以及 LRU 驱逐；[`tests/table_test.rs`](./tests/table_test.rs) 还从表读取路径使用 RU 选择函数。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收以任务指定命令检查目标文件存在且恰有 11 个固定二级标题，并人工复核只新增本说明、未修改 Rust/Go/Cargo/`plan.md`。

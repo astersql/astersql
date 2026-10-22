@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-importsdk` crate（`pkg/importsdk/Cargo.toml`），实现从扫描结果 [`TableMeta`](model.rs) 和调用方提供的 [`ImportOptions`](model.rs) 生成 TiDB `IMPORT INTO` SQL 的能力。crate 根 `pkg/importsdk/lib.rs` 声明并公开重导出 `sql_generator`；统一门面 `ImportSDK` 在 `pkg/importsdk/sdk.rs` 中持有 `Box<dyn SQLGenerator + Send + Sync>`，由 `NewImportSDK` 调用 `NewSQLGenerator` 完成装配。
-
-它处于“发现数据文件”与“提交导入作业”之间：上游扫描器提供库名、表名和唯一通配路径；本文件把这些元数据和导入选项序列化为 SQL 字符串；作业提交本身由 `JobManager` 负责，本文件不执行 SQL、访问数据库或访问对象存储。
+通过 `SQLGenerator` trait 定义可替换、可 mock 的 SQL 生成接口，并用无状态的 `sqlGenerator` 提供默认实现。
 
 ## 核心职责
 
@@ -70,11 +68,11 @@ URL 解析失败不是错误：只有满足 `isValidRelativeURL` 的相对引用
 
 ## 与 Go 版本的对应关系
 
-Rust `SQLGenerator`、`sqlGenerator`、`NewSQLGenerator`、`GenerateImportSQL`、`buildOptions`、`buildCSVOptions`、`escapeIdentifier` 和 `escapeString` 分别对应 `pkg/importsdk/sql_generator.go` 的同名接口、实现与辅助函数。SQL 片段顺序、默认字段省略规则、CSV 的小写格式门槛、转义次序和多个 NULL 标记错误均保持一致；`pkg/importsdk/sql_generator_test.rs` 逐表复刻 Go `TestGenerateImportSQL` 的输入和期望。
+SQL 片段顺序、默认字段省略规则、CSV 的小写格式门槛、转义次序和多个 NULL 标记错误均保持一致；`pkg/importsdk/sql_generator_test.rs` 逐表复刻 Go `TestGenerateImportSQL` 的输入和期望。
 
 Rust 有两个为语言/API 适配增加的点：`GenerateImportSQLParts` 把 `Result` 暴露为 Go 风格二元返回；`isValidRelativeURL` 在 `url::Url::parse` 失败时模拟 Go `net/url.Parse` 的相对引用接受范围。Rust 测试额外包含“带 query/fragment 的相对路径追加参数”用例，Go 当前表驱动测试没有该用例，但逻辑对应 Go 标准库行为。
 
-两侧都在 URL 解析错误时静默保留原路径，也都只转义选定的 SQL 字符串字段。Rust 的错误是 `astersql_errors::SharedError`，由 `LazyLock` 哨兵克隆得到；Go 直接返回包级 `error`。这些是类型系统和运行库层面的表达差异，不改变成功 SQL 或错误文案契约。
+Rust 的错误是 `astersql_errors::SharedError`，由 `LazyLock` 哨兵克隆得到；Go 直接返回包级 `error`。这些是类型系统和运行库层面的表达差异，不改变成功 SQL 或错误文案契约。
 
 ## 扩展指南
 
@@ -83,12 +81,3 @@ Rust 有两个为语言/API 适配增加的点：`GenerateImportSQLParts` 把 `R
 - 修改 URL 参数行为时，应同时覆盖绝对 URL、已有/空 query、fragment、相对引用、scheme-relative 引用、非法 `%`、控制字符及首段冒号；尤其要对照 Go `net/url.Parse`，避免 `url` crate 行为差异造成跨语言输出漂移。
 - 修改转义策略前应区分标识符、SQL 字符串和已编码 URL query 三种语境，并评估兼容性：给当前未转义字段新增转义可能改变合法历史输入的字面结果，但保持现状又要求调用方提供可信值。
 - 测试逻辑继续放在独立的 `pkg/importsdk/sql_generator_test.rs`，不要内嵌到生产源文件；扫描到 SQL 的集成约束位于 `file_scanner_test.rs`。默认实现可替换性还可通过 `pkg/importsdk/mock/sdk_mock.rs` 的 `MockSQLGenerator` 验证。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标 `pkg/importsdk/sql_generator.rs` 已索引为 13 个符号。通过 `files`、`node --file`、`query SqlGenerator` 及各精确符号 `node` 查询核对了定义、源码与调用 trail。
-- 生产代码：`pkg/importsdk/sql_generator.rs`（完整 256 行）、`pkg/importsdk/sdk.rs`（构造与委托）、`pkg/importsdk/model.rs`（`TableMeta`/`ImportOptions`）、`pkg/importsdk/config.rs`（`CSVConfig`）、`pkg/importsdk/error.rs`（哨兵错误）、`pkg/importsdk/lib.rs`（模块和重导出）。
-- crate 边界：`pkg/importsdk/Cargo.toml` 的 package 名为 `astersql-importsdk`，`[lib]` 指向 `lib.rs`，并声明本文件直接使用的 `astersql-errors` 与 `url = "2"`。
-- Go 对照：`pkg/importsdk/sql_generator.go`；相关 Go 测试：`pkg/importsdk/sql_generator_test.go`。两侧主表用例覆盖基础 SQL、资源参数、全部通用选项、CSV 选项、云存储 URI、错误、转义和标识符。
-- Rust 独立测试：`pkg/importsdk/sql_generator_test.rs`；直接集成证据：`pkg/importsdk/file_scanner_test.rs::file_scanner_preserves_storage_scheme_in_import_sql`；可替换实现证据：`pkg/importsdk/mock/sdk_mock.rs::MockSQLGenerator`。
-- 本任务是只新增说明文档的静态分析，没有运行 Cargo。最终结构检查要求本文恰好包含本计划规定的 11 个二级标题；对内容还人工复核了定位、主流程、调用边、错误、生命周期、Go 对照和扩展入口。

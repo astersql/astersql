@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-br-pkg-metautil` crate 的备份元数据核心实现，由 [`br/pkg/metautil/lib.rs`](lib.rs) 以 `pub mod metafile` 挂载并在 crate 根再导出。它位于 BR 的备份写入与恢复读取之间：写端把文件、schema 和 DDL 组织成 `BackupMeta` 的 v1 内嵌布局或 v2 索引分片布局；读端反向遍历这些布局，恢复为表级 `Table` 数据；兼容性入口还在恢复解析后阻止旧程序静默忽略新 protobuf 语义。
-
-crate 边界由 [`br/pkg/metautil/Cargo.toml`](Cargo.toml) 定义。该 crate 直接依赖 BR 错误、日志、汇总、加密工具，以及 meta model、对象存储接口、通用工具和加密实现；`brpb`、`CipherInfo`、`JSONTable`、`DecodeTableID` 等当前来自同 crate 的 [`stubs.rs`](stubs.rs)，这是 Cargo 注释所述的 darwin arm64 精简依赖方案，而不是完整 kvproto 直接依赖。
+用字节级 protobuf wire 扫描检查顶层和嵌套未知字段，并结合 `backup_schema_version` 执行向后兼容保护。
 
 ## 核心职责
 
@@ -97,8 +95,6 @@ RustCodeGraph 的文件节点报告 `metafile.rs` 被 45 个文件使用，并�
 
 ## 与 Go 版本的对应关系
 
-对应实现是 [`br/pkg/metautil/metafile.go`](metafile.go)，符号和主要数据流近似一一对应：常量、`Table`、`MetaReader`、函数式选项、`AppendOp`、`sizedMetaFile`、`MetaWriter`、v1/v2 flush、DDL 合并和归档/校验统计均保持同名或等价命名。Rust 独立测试 [`metafile_test.rs`](metafile_test.rs) 明确对照 [`metafile_test.go`](metafile_test.go)，另有 [`parity_test.rs`](parity_test.rs) 检查公开常量、SHA-256、明文和非法 cipher 契约。
-
 需要注意的实现差异：
 
 - Go 使用真实 protobuf 反射构造未知字段信息；Rust 用 `ProtobufMessageKind` 和 `protobuf_field_map` 手工登记字段号与嵌套类型。行为目标一致，但 Rust 在 protobuf 演进时多一个必须人工同步的维护点。
@@ -117,12 +113,3 @@ RustCodeGraph 的文件节点报告 `metafile.rs` 被 45 个文件使用，并�
 - 调整分片阈值或大小计算时，同步验证“恰好等于限制不 flush、严格超过才 flush”、明文索引 size、密文累计 size、stats `size_enc` 和最终 `backup_size`。
 - 优化树遍历时可考虑与 Go 一样设置并发上限，但须保持叶子完整性校验、错误短路与输出语义，并新增宽树、取消和多级树测试。
 - `mergeDDLs`、`random_iv` 和 physical table ID 当前以 panic 表达部分边界；若改为可恢复错误，需要同时调整公开签名、上游错误传播和 Go 对齐判断，不能仅在 Rust 中静默吞错。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 7032 个 Rust 文件；`files --filter br/pkg/metautil` 列出目标、Go 对照和独立测试；`node --file br/pkg/metautil/metafile.rs` 分段读取了全部 1973 行，并报告该文件被 45 个文件使用。`query NewMetaWriter`、`query CheckBackupMetaCompatibilityFromBytes` 同时定位到 Rust/Go 实现和对应 Go 测试；精确 `callers` 查询超时，调用边随后由直接搜索复核。
-- 源与边界：[`br/pkg/metautil/metafile.rs`](metafile.rs)、[`br/pkg/metautil/Cargo.toml`](Cargo.toml)、[`br/pkg/metautil/lib.rs`](lib.rs)。该目录没有 `doc.go`，包职责以 crate 根文档、Cargo metadata 和代码为准。
-- 直接调用证据：[`br/pkg/metautil/load.rs`](load.rs)、[`br/pkg/backup/schema.rs`](../backup/schema.rs)、[`br/pkg/restore/log_client/id_map.rs`](../restore/log_client/id_map.rs)。
-- Go 对照：[`br/pkg/metautil/metafile.go`](metafile.go)，重点核对兼容性、加密、叶子遍历、schema 批读取和 `MetaWriter` 的同名实现。
-- 测试证据：[`br/pkg/metautil/metafile_test.rs`](metafile_test.rs) 覆盖空/叶/错误校验和/多级索引树、全部 cipher 类型、分片边界、schema 版本和多层未知字段；[`br/pkg/metautil/parity_test.rs`](parity_test.rs) 覆盖公开契约；[`br/pkg/metautil/metafile_test.go`](metafile_test.go) 提供对应 Go 意图。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前仅执行固定 11 章节结构检查、链接/路径检查和 diff 自审。

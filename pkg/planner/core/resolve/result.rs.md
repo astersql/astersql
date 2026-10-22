@@ -4,11 +4,7 @@
 
 ## 文件定位
 
-`result.rs` 位于 `astersql-planner-core-resolve` crate 中，定义名称解析结果中的列绑定元数据 `ResultField`。crate 入口 [`lib.rs`](lib.rs) 通过 `pub mod result` 声明模块，并以 `pub use result::ResultField` 从 crate 根重新导出该类型；因此调用方通常使用 `astersql_planner_core_resolve::ResultField`，无需经过 `result` 子模块。
-
-该 crate 的 [`Cargo.toml`](Cargo.toml) 将库入口设为 `lib.rs`，直接依赖 `astersql-parser-ast` 和 `astersql-meta-model`。前者提供大小写不敏感标识符 `ast::CIStr`，后者经 `lib.rs::model` 重新导出 `ColumnInfo`、`TableInfo` 和 `DBInfo`。Cargo 元数据把对应 Go 包标为 `pkg/planner/core/resolve`，移植追踪项为 `task-432`，没有为本文件声明 feature 开关。
-
-当前 Rust 文件是一个纯数据模型文件：除导入外仅有一个公开结构体，无常量、trait、函数、`impl` 或条件编译项。它既不执行名称查找，也不负责生成协议列；它保存这些阶段之间需要传递的绑定结果。
+用 `column` 和 `table` 保存解析后关联的列、表元数据；二者均为可选值，以便表示表达式列或没有原始表信息的结果列（`ResultField`）。
 
 ## 核心职责
 
@@ -99,16 +95,10 @@ RustCodeGraph 显示 crate 根 `lib.rs` 公开重导出该类型，并显示目�
 
 ## 与 Go 版本的对应关系
 
-对应文件为 [`result.go`](result.go)，两侧字段一一映射：
-
 | Go | Rust | 差异 |
 | --- | --- | --- |
-| `Column *model.ColumnInfo` | `column: Option<Rc<model::ColumnInfo>>` | `nil` 映射为 `None`；非空指针映射为共享所有权 `Rc`。 |
-| `ColumnAsName ast.CIStr` | `column_as_name: ast::CIStr` | 仅命名风格不同。 |
-| `EmptyOrgName bool` | `empty_org_name: bool` | 语义一致。 |
-| `Table *model.TableInfo` | `table: Option<Rc<model::TableInfo>>` | `nil` 映射为 `None`。 |
-| `TableAsName ast.CIStr` | `table_as_name: ast::CIStr` | 语义一致。 |
-| `DBName ast.CIStr` | `db_name: ast::CIStr` | 语义一致。 |
+| `Column *model.ColumnInfo` | `column: Option<Rc<model::ColumnInfo>>` | `nil` 映射为 `None`；非空指针映射为共享所有权 `Rc`。|
+| `ColumnAsName ast.CIStr` | `column_as_name: ast::CIStr` | 仅命名风格不同。
 
 Rust 额外派生了 `Clone` 和 `Default`，但没有复刻 Go 文件的长篇类型注释所描述的完整运行时绑定过程。字段层面的迁移由 `migration_aster_unit_test.rs` 验证；协议层语义由 Rust 的 `ConvertColumnInfo` 测试和 Go 的 `pkg/server/driver_tidb_test.go::TestConvertColumnInfo`、`pkg/server/conn_test.go::TestEmptyOrgName` 交叉核对。
 
@@ -126,17 +116,3 @@ Rust 额外派生了 `Clone` 和 `Default`，但没有复刻 Go 文件的长篇�
 6. 若改变 `empty_org_name` 或别名规则，除 Rust 单元测试外还应核对 Go `TestEmptyOrgName` 所代表的线协议兼容行为。此类变化可能影响客户端显示、ORM 字段映射和旧客户端兼容性。
 
 性能风险主要来自把目前的共享元数据改为深复制，或在每列协议转换中增加昂贵计算；兼容性风险集中在列名、原始列名、库表名和字段类型的线协议表示；正确性风险集中在允许 `column = None` 流入要求非空的协议转换路径。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标目录列出 `lib.rs`、`resolve.rs`、`result.rs`、对应 Go 文件和独立测试。
-- RustCodeGraph `node --file pkg/planner/core/resolve/result.rs`：确认文件共 42 行，唯一生产符号为 `ResultField`，并显示 `pkg/server/runtime.rs` 使用该文件。
-- RustCodeGraph `query/node ResultField`：确认 Rust/Go 同名结构及字段，并给出 `protocol_result_column` 的实例化边；同名查询结果已按路径消歧。
-- RustCodeGraph 对 `lib.rs`、`protocol_result_column`、`ConvertColumnInfo`、`TidbResultSet::Columns` 和 `ConcreteResultField` 的源码节点：确认公开导出、协议转换调用链、非空列前置条件、结果缓存以及线程边界。
-- 源与配置：`pkg/planner/core/resolve/result.rs`、`lib.rs`、`Cargo.toml`、`result.go`。
-- Rust 测试：`pkg/planner/core/resolve/migration_aster_unit_test.rs::result_field_preserves_binding_metadata_and_empty_org_name`；`pkg/server/driver_tidb_test.rs::canonical_convert_column_info_preserves_mysql_display_width_rules`；`pkg/server/internal/column/migration_aster_unit_test.rs::{convert_column_info_matches_go_length_decimal_and_alias_rules, convert_column_info_covers_decimal_unknown_charset_and_unspecified_flen, convert_column_length_keeps_go_uint32_wrapping_semantics}`。
-- Go 对照测试：`pkg/server/driver_tidb_test.go::TestConvertColumnInfo` 和 `pkg/server/conn_test.go::TestEmptyOrgName`。
-
-本任务是纯文档分析，按计划不运行 Cargo 或代码测试。完成前应以任务给定的结构命令确认文件存在且恰有十一个固定二级标题，并人工检查所有当前接线结论均有上述符号或路径支撑。

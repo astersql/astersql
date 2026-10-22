@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core-operator-physicalop` crate，是 Rust 物理计划层的公共基座和“逻辑计划 → 物理任务”规范路由中心。crate 根文件 `pkg/planner/core/operator/physicalop/lib.rs` 以 `mod base_physical_plan` 装载它，并通过 `pub use base_physical_plan::*` 向 planner core、executor 和 DDL 等上层重新导出公开接口。
-
-它处在物理优化主链的中段：`pkg/planner/core/optimizer_runtime.rs::physical_optimize_without_post` 安装 `CanonicalFindBestTaskRouter`，清空本线程缓存，然后经 `FindBestTask` 进入本文件；本文件枚举物理候选、递归优化孩子、挂接成 `Task` 并按代价选优。优化器后处理还直接调用这里的 `FlattenNestedMPPReadersBelowRoot`、`PopulateIndexJoinInnerPlans` 以及多组 `Align*PlanIDs` 函数，整理最终执行树。
-
-因此它不只是 Go 同名文件的机械翻译。前约 780 行承接 `base_physical_plan.go` 的公共能力；其余大部分 Rust 代码集中承载规范路由、MPP/IndexJoin 挂接、访问路径选择和 Go 可观察 PlanID 对齐。实际算子结构仍分别定义在同 crate 的 `physical_*.rs` 中。
+以 `BasePhysicalPlan` 保存所有物理算子共享的上下文、孩子、孩子所需属性、统计、Schema、代价缓存、探测父节点和 TiFlash shuffle 信息，并实现 `base::Plan`、`base::PhysicalPlan`。
 
 ## 核心职责
 
@@ -108,9 +104,7 @@ crate 边界由 `pkg/planner/core/operator/physicalop/Cargo.toml` 定义。直�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/operator/physicalop/base_physical_plan.go`，Cargo 的 `[package.metadata.porting].go-package` 也指向同一 Go 包。
-
-共同语义包括：`AddExtraPhysTblIDColumn`、`CollectPlanStatsVersion`、`SafeClone`、`BasePhysicalPlan` 的孩子/成本/统计/probe 逻辑、IndexJoin 属性准入、`GetStatsInfo` 和 `FindBestTask` 的逻辑到物理入口。Rust 独立测试 `base_physical_plan_test.rs` 已锁定两项关键对应：v2 成本只有显式 Recalculate 才重算；IndexLookup 统计版本只采用 index side。
+Rust 独立测试 `base_physical_plan_test.rs` 已锁定两项关键对应：v2 成本只有显式 Recalculate 才重算；IndexLookup 统计版本只采用 index side。
 
 重要实现差异如下：
 
@@ -131,17 +125,3 @@ crate 边界由 `pkg/planner/core/operator/physicalop/Cargo.toml` 定义。直�
 - 修改统计收集或 probe 缩放时，同步更新 `base_physical_plan_test.rs`；修改 cost 缓存时同时覆盖普通、TRACE 和 `COST_FLAG_RECALCULATE`。
 - 性能风险主要是候选爆炸、重复深克隆和递归树扫描。新增候选/后处理前应确认缓存命中粒度，并避免在每个候选上重复遍历整棵树。
 - 兼容风险集中在 EXPLAIN ID、隐藏列身份、TiKV/TiFlash 任务边界与 Go 输出。所有新逻辑应先从 Go 对应实现或现有 Rust 测试取得证据；没有证据的预期行为应标为未验证。
-
-## 验证依据
-
-本说明依据以下本地事实完成，未运行 Cargo（任务明确为纯文档分析）：
-
-- RustCodeGraph 状态：索引可用，覆盖 7,032 个 Rust 文件；`files --filter pkg/planner/core/operator/physicalop` 确认目标、Go 对照和测试均在索引内。
-- RustCodeGraph 源码读取：`node --file pkg/planner/core/operator/physicalop/base_physical_plan.rs` 核对了公共基座（1–999）、规范路由（1640 起）、候选完成/IndexJoin 接线（2800 起）、MPP/Root 挂接（3460 起）和枚举分派（9250 起）。
-- RustCodeGraph 符号查询：唯一定位了 `CanonicalFindBestTaskRouter:1658`、`InstallFindBestTaskRouter:764`、`PopulateIndexJoinInnerPlans:3182`、`FlattenNestedMPPReadersBelowRoot:3530`；`FindBestTask`/`ExhaustPhysicalPlans` 的同名结果同时显示 Go、旧 core 路径与本文件实现，文档据文件路径消歧。
-- `rustcodegraph callers CanonicalFindBestTaskRouter` 在 60 秒内无输出并被中止；随后只用精确 `rg` 补齐直接调用点，确认生产入口位于 `pkg/planner/core/optimizer_runtime.rs`。
-- 已读路径：目标 Rust 源、`pkg/planner/core/operator/physicalop/Cargo.toml`、`lib.rs`、Go 对照 `base_physical_plan.go`、独立测试 `base_physical_plan_test.rs`，以及直接关联的 router/MPP/聚合测试文件与 `optimizer_runtime.rs` 调用区段。
-- 测试证据：`base_physical_plan_test.rs` 覆盖成本缓存和 IndexLookup 统计版本；`logical_plan_route_aster_unit_test.rs` 覆盖 router 安装；`canonical_router_aster_unit_test.rs` 覆盖候选枚举、DataSource、MPP reader、IndexJoin 和 PlanID；`physical_hash_agg_aster_unit_test.rs` 与 `mpp_join_hash_cols_aster_unit_test.rs` 覆盖聚合分区/列 ID 提交和 join hash keys。
-- 包契约：阅读了最近的 `pkg/planner/core/base/doc.go`；其中要求公共接口保持抽象、避免依赖具体实现和循环依赖，与本文件通过 router/trait 建立的依赖倒置一致。
-
-结构验收以任务指定命令为准；人工复核项为：恰好 11 个固定二级标题、所有路径和符号可在仓库定位、未把测试建议写入生产 Rust 文件、未宣称运行时测试已执行。

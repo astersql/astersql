@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-gc` crate 中按 keyspace 隔离的 GC 屏障实现。crate 入口 `br/pkg/gc/lib.rs` 将它声明为 `manager_keyspace` 模块，但没有直接重导出其具体类型；外部调用方通常通过 `manager::NewManager` 获得 `Arc<dyn Manager>`。`NewManager` 只在 `keyspace_id != NullspaceID` 时构造这里的 `keyspaceManager`，而 `NullspaceID` 走 `manager_global.rs` 的旧全局 service safepoint API。
-
-`br/pkg/gc/Cargo.toml` 将该目录定义为库 crate（`[lib] path = "lib.rs"`），移植元数据指向 Go 包 `br/pkg/gc`。目标文件自身只依赖标准库以及同 crate 的 `manager`、`safepoint` 模块；Cargo 中唯一生产依赖 `astersql-br-pkg-errors` 由 crate 的其他模块使用，不是本文件的直接依赖。
+后几项分别由 PD、上游调用方和 `safepoint.rs`/任务编排负责。
 
 ## 核心职责
 
@@ -87,8 +85,6 @@ RustCodeGraph 的文件视图确认 `manager.rs` 由 RealTiKV keyspace runtime �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/gc/manager_keyspace.go`。结构字段、构造时绑定 `GCStatesClient`、`GetGCState().GCSafePoint`、`TTL <= 0` 转删除、`BackupTS - 1`、两个探针名、信号内容以及设置探针后的 3 秒等待均保持一致。Rust 的 `Arc<dyn ...>` 对应 Go 接口值，`SharedError + Trace` 对应 Go 的 `errors.Trace`。
-
 可见差异主要是语言与适配层差异：
 
 - Go 把 TTL 秒数转换为 `time.Duration` 后传给 PD；Rust 的本地 `GCStatesClient` trait 直接接收 `i64` 秒数。
@@ -114,20 +110,3 @@ RustCodeGraph 的文件视图确认 `manager.rs` 由 RealTiKV keyspace runtime �
 - Go 回归基线 `br/pkg/gc/manager_test.go` 与 `tests/realtikvtest/brietest/gc_keyspace_test.go`。
 
 新增字段或探针还应评估：`Arc` 共享下的线程安全、同步文件 I/O/睡眠对调用延迟的影响、PD API 版本兼容、错误是否仍保留根因，以及 checkpoint 失败时上游是否应保留 barrier。不要在这里复制 keeper 或备份清理逻辑。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件，目标文件在索引内。
-- RustCodeGraph `files --filter br/pkg/gc`：确认目标、模块入口、Go 对照与独立测试文件集合。
-- RustCodeGraph `node --file br/pkg/gc/manager_keyspace.rs --offset 1 --limit 400`：核对本文件完整 140 行及全部 7 个索引符号。
-- RustCodeGraph 对 `KeyspaceManager`、`newKeyspaceManager` 的查询，以及 `manager.rs`/`lib.rs` 文件节点：核对工厂分派、trait 定义和模块导出关系。宽泛 `explore` 因跨语言同名符号产生噪声，未将模糊匹配作为独立事实依据。
-- `br/pkg/gc/Cargo.toml`：核对 crate 名、库入口、Go 包移植元数据和依赖边界。
-- `br/pkg/gc/manager_keyspace.go`：逐项核对 Go 实现语义。
-- `br/pkg/gc/manager_test.rs`、`br/pkg/gc/parity_test.rs`、`br/pkg/gc/mock_test.rs`：核对作用域隔离、时间戳、TTL 删除、缺失项删除和错误传播。
-- `tests/realtikvtest/brietest/gc_keyspace_test.rs`、`tests/realtikvtest/brietest/gc_keyspace_runtime.rs`：核对真实 keyspace manager 注入、PD RPC、探针内容、global 路径未触发和备份结束删除 barrier。
-- `br/pkg/task/backup.rs`：核对 keeper 设置与清理守卫删除的上游生命周期。
-- `rg` 对 `NewManager`、`SetGCBarrier`、`DeleteGCBarrier` 和两个探针名的仓库检索：确认直接引用及相关测试位置。
-
-本任务只新增说明文档，没有修改或执行 Rust/Go 代码。按任务约束不运行 Cargo；结构检查用于确认目标文件存在且恰有规定的 11 个二级章节，人工复核用于排除把测试适配行为误写为一般生产保证。

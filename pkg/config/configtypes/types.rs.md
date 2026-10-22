@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-config-configtypes` crate 的配置标量实现，源码为 [`types.rs`](types.rs)。它把配置文件中常见的“容量”和“时长”表示为 Rust 可计算的整数，同时保留 Go TiDB 配置所使用的人类可读 JSON/TOML 文本格式。crate 入口 [`lib.rs`](lib.rs) 通过 `pub mod types` 声明模块并用 `pub use types::*` 重导出其公开项；仓库总门面 `pkg/lib.rs` 又在 `config::configtypes` 下重导出该 crate。
-
-它位于配置解析边界，而不是配置加载器本身：本文件只实现值级的解析、格式化及 JSON 字符串包装，不读取文件、不保存全局配置，也不直接实现 Serde trait。上层在 `pkg/config/config.rs` 的 `starter_byte_size` 模块和 `pkg/store/pdtypes/api.rs` 的 `byte_size_json`、`duration_option_json` 模块中把这些自由函数接入派生的 Serde 数据结构。
+用公开别名 `ByteSize = u64` 表示字节数，并在二进制容量单位文本与整数之间转换。
 
 ## 核心职责
 
@@ -83,11 +81,9 @@ RustCodeGraph 的 callee 查询确认八个公开入口只分别下沉到 `forma
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/config/configtypes/types.go`，独立回归是 `types_test.go`。Rust `ByteSize` 对应 Go 的具名 `uint64` 类型，但 Rust 当前使用类型别名，因此没有方法；原 Go 的 `MarshalJSON`、`MarshalText`、`UnmarshalJSON`、`UnmarshalText` 被保留为带类型名前缀的自由函数。Go 通过 `docker/go-units.BytesSize` 和 `RAMInBytes` 完成容量转换，Rust 用 `format_byte_size`、`parse_byte_size` 本地复现关键语法和精度。
+Rust `ByteSize` 对应 Go 的具名 `uint64` 类型，但 Rust 当前使用类型别名，因此没有方法；原 Go 的 `MarshalJSON`、`MarshalText`、`UnmarshalJSON`、`UnmarshalText` 被保留为带类型名前缀的自由函数。Go 通过 `docker/go-units.BytesSize` 和 `RAMInBytes` 完成容量转换，Rust 用 `format_byte_size`、`parse_byte_size` 本地复现关键语法和精度。
 
-Rust `Duration` 的 `i64` 纳秒字段对应 Go 结构体中嵌入的 `time.Duration`。Go 依赖 `time.ParseDuration` 与 `Duration.String()`；Rust 的 `parse_duration`、`format_duration` 显式复现复合单位、小数、负数、零值、微秒符号和 `i64::MIN` 边界。Rust 结构体派生了比较、复制和默认 trait，但没有直接实现 Serde；上层使用适配模块调用自由函数。
-
-`types_test.go` 与 `types_test.rs` 都覆盖 JSON 的 `1MiB`、TOML 的 `512KiB`、JSON 的 `1h2m3s` 和 TOML 的 `2m3s` 往返。Rust 侧还补充了 Go 兼容细节：四位有效数字、`KB` 二进制语义、非法容量不改接收者、不接受日/完整英文单位和空格、复合小数时长，以及 Text 时长失败清零。`migration_aster_unit_test.rs` 进一步覆盖负数、`us` 输入规范化为 `µs`、裸 `0` 与整小时格式。
+Go 依赖 `time.ParseDuration` 与 `Duration.String()`；Rust 的 `parse_duration`、`format_duration` 显式复现复合单位、小数、负数、零值、微秒符号和 `i64::MIN` 边界。Rust 结构体派生了比较、复制和默认 trait，但没有直接实现 Serde；上层使用适配模块调用自由函数。
 
 ## 扩展指南
 
@@ -98,13 +94,3 @@ Rust `Duration` 的 `i64` 纳秒字段对应 Go 结构体中嵌入的 `time.Dura
 若希望这些类型直接参与 Serde 派生，需要谨慎处理 Rust 孤儿规则和 `ByteSize` 只是 `u64` 别名的事实；现有安全扩展方式是在使用方建立 `#[serde(with = "...")]` 适配模块，如 `starter_byte_size`、`byte_size_json` 和 `duration_option_json`。改变公开函数签名或别名/结构体形态会影响这些适配器及 crate 根重导出，属于兼容性变更。
 
 性能风险主要在配置解析时的临时分配和逐字符扫描，通常不在请求热路径；不要为了消除分配而牺牲 JSON 转义正确性或 Go 格式兼容。正确性风险集中在浮点有效数字、溢出、微秒 Unicode 和失败副作用。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目包含 11,467 个文件、307,296 个节点；`files --filter pkg/config/configtypes` 确认目标模块已索引，`node --file pkg/config/configtypes/types.rs` 读取了全部 356 行并列出 17 个符号。
-- RustCodeGraph 调用查询：对 `ByteSize_MarshalJSON`、`ByteSize_MarshalText`、`ByteSize_UnmarshalJSON`、`ByteSize_UnmarshalText`、`Duration_MarshalJSON`、`Duration_UnmarshalJSON`、`Duration_UnmarshalText`、`Duration_MarshalText` 分别执行 `callers`/`callees`；callee 结果分别指向四个私有解析/格式化函数。
-- crate 与装配证据：`pkg/config/configtypes/Cargo.toml`、`pkg/config/configtypes/lib.rs`、`pkg/lib.rs`。
-- 生产调用证据：`pkg/config/config.rs` 的 `starter_byte_size`，`pkg/store/pdtypes/api.rs` 的 `byte_size_json` 与 `duration_option_json`，`pkg/store/pdtypes/lib.rs` 的类型重导出。
-- Go 对照：`pkg/config/configtypes/types.go`、`pkg/config/configtypes/types_test.go`。
-- Rust 独立测试证据：`pkg/config/configtypes/types_test.rs`、`pkg/config/configtypes/migration_aster_unit_test.rs`；测试与生产逻辑保持分文件。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定的 11 章节检查命令；具体退出码记录在任务交付信息中。

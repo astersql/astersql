@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-store-mockstore-mockcopr` crate 的 RPC 适配层：它把 mockstore 调用方看到的单次 Coprocessor 和 BatchCop 接口，接到同 crate 的 `coprHandler` 上，并负责 BatchCop 流的首包预取、超时租约和后台监控线程。模块由 `lib.rs` 的 `mod rpc_copr` 纳入，并通过 `pub use rpc_copr::*` 对 crate 使用者公开。
-
-它服务于内存 mock Coprocessor，而不是网络 gRPC 服务端。默认构造函数 `NewCoprRPCHandler` 使用 `MemoryReader`；需要注入自定义存储视图时使用 `NewCoprRPCHandlerWithReader`。当前仓库中的直接 Rust 使用证据主要在独立测试：`rpc_copr_test.rs` 验证 BatchCop Region 错误协议，`executor_test.rs` 构造默认处理器以对齐 Go mock TiKV 测试入口。RustCodeGraph 将本文件识别为含 38 个符号的生产文件，并显示它被 7 个文件引用，但精确 `callers` 查询未给出可用调用边，因此不能据此声称它已接入真实 TiDB 请求主链。
-
-crate 边界由 `pkg/store/mockstore/mockcopr/Cargo.toml` 确定：库入口是 `lib.rs`，Go 对照包是 `pkg/store/mockstore/mockcopr`。清单中的大量 AsterSQL 依赖均为 optional；本文件本身只使用标准库并依赖同 crate 的 `copr_handler` 类型。
+`CoprRPCHandler` 定义流式旧接口、单次 `CmdCop`、`BatchCop` 和关闭协议；`coprRPCHandler` 给出默认实现。
 
 ## 核心职责
 
@@ -93,10 +89,6 @@ Region 错误的 BatchCop 路径不进入 `coprHandler`，也不注册后台租�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/mockcopr/rpc_copr.go`。两版保留了同一高层协议：默认构造器创建容量 1024 的租约通道和后台超时任务；旧 `HandleCopStream` panic；CmdCop 先检查 Region 上下文再派发；BatchCop 在正常流上安装超时、预取首包；Region 错误以流响应而非外层 RPC 错误返回；`Close` 通知后台任务退出。
-
-Rust 为适配当前移植状态做了以下结构性变化：
-
 - Go 使用 client-go 的 `testutils.RPCSession`、protobuf 请求/响应和 `tikvrpc.Lease`；Rust 在本 crate 定义 `RPCSession`、请求响应模型、`Lease` 与流包装。
 - Go `HandleCmdCop` 按数值请求类型 switch，未知类型 panic；Rust 的 `RequestPayload` 枚举把 DAG、Analyze、Checksum 限定为封闭集合，由 `coprHandler::handle_request` 分发。
 - Go BatchCop 派生 `context.WithCancel`，把 cancel 函数装入 lease，出错时取消上下文；Rust 没有上下文对象，lease 仅设置原子标志。因此 Rust 超时不能取消下游计算，只会令之后的包装层 `Recv` 报错。
@@ -116,16 +108,3 @@ Rust 为适配当前移植状态做了以下结构性变化：
 - 若让构造器内的 `self.session` 成为实际默认会话，需要先决定 trait 方法是否仍接受外部 `session`，避免两个读取器来源产生含糊行为。
 - 不要恢复内嵌测试。仓库约束要求 Rust 源逻辑与测试分文件；本模块测试应继续放在 `rpc_copr_test.rs`，并由 `lib.rs` 的 `#[cfg(test)] #[path = "rpc_copr_test.rs"]` 接线。
 - 保持 Go 兼容时应同步核对 `rpc_copr.go`，特别关注 Region 错误属于响应而非外层错误、BatchCop 首包预取和旧 CopStream panic 这三个外部可见契约。性能敏感修改还应核对是否继续全量预计算响应。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录列表显示 `rpc_copr.rs`、`rpc_copr.go`、`rpc_copr_test.rs` 等均已索引。
-- RustCodeGraph `node --file pkg/store/mockstore/mockcopr/rpc_copr.rs --offset 1 --limit 500`：读取目标文件完整 304 行，核对 38 个符号、公开 API、超时循环和文件级引用关系。
-- RustCodeGraph `query HandleBatchCop`、`query NewCoprRPCHandler`、`query check_stream_timeout_loop`：核对 Rust/Go 对应符号及位置；对 `HandleBatchCop`、trait 转发和下游 `handleBatchCopRequest` 执行的精确 `callers/callees` 查询未返回边，因此调用关系又由模块入口和直接引用搜索补证。
-- RustCodeGraph `node` 读取 `pkg/store/mockstore/mockcopr/copr_handler.rs` 第 520 至 653 行：核对 `Response`、`BatchRequest`、`BatchResponse`、`coprHandler`、`handleBatchCopRequest`、`handle_request`、`drainRowsFromExecutor` 与 `mockBatchCopDataClient::Recv`。
-- RustCodeGraph `node` 读取 `pkg/store/mockstore/mockcopr/lib.rs`：核对模块声明、公开再导出和独立测试接线；该目录不存在 `doc.go`。
-- `pkg/store/mockstore/mockcopr/Cargo.toml`：核对 crate 名、`lib.rs` 入口、Go 包元数据及 optional/dev 依赖边界。
-- `pkg/store/mockstore/mockcopr/rpc_copr.go`：逐段核对构造、三类 RPC 方法、Go context/lease 取消和关闭语义。
-- `pkg/store/mockstore/mockcopr/rpc_copr_test.rs`：核对 Region 错误在首包及后续 `Recv` 中重复返回、外层调用成功以及零超时字段。
-- `pkg/store/mockstore/mockcopr/executor_test.rs` 第 105 至 149 行：核对 `NewCoprRPCHandler` 的现有测试侧构造入口；该测试没有直接验证本文件的 RPC 数据路径。
-- 未运行 Cargo 或代码测试：任务是纯文档分析，任务计划明确禁止运行 Cargo。交付结构通过任务指定的 11 章节命令验证；行为结论来自上述源码、图查询、Go 对照和独立测试的静态核验。

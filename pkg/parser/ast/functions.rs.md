@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`functions.rs` 是 `astersql-parser-ast` crate 中的函数相关辅助模块，由 [`lib.rs`](lib.rs) 通过 `#[path = "functions.rs"] pub mod functions` 挂载，并把一部分函数名常量重导出到 crate 根。所属 crate 的边界由 [`Cargo.toml`](Cargo.toml) 声明：library 入口是 `lib.rs`，crate 名为 `astersql-parser-ast`，其包级迁移元数据对应 Go 的 `pkg/parser/ast`。
-
-该文件对照 [`functions.go`](functions.go) 保留函数名常量、普通/聚合/窗口/类型转换函数的 SQL 还原规则，以及 TRIM 方向、时间单位和 `GET_FORMAT` 选择器等辅助表示。但它当前是一套基于 SQL 字符串的轻量模型：`Expr` 只保存 `sql: String`，`Visitor` 也不是 crate 根的 `Node`/`Visitor` 协议。不应把它与 [`lib.rs`](lib.rs) 内完整主 AST 的同名概念视为同一类型。
+`TimeUnitType::duration` 只把固定长度的单位转为 `std::time::Duration`，拒绝日历单位和组合单位；其他小型枚举/表达式负责稳定的 SQL 关键字文本。
 
 ## 核心职责
 
@@ -71,7 +69,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的函数名常量、`FuncCallExpr.Restore/customRestore/Format/Accept`、`JSONSumCrc32Expr`、`FuncCastExpr`、`TrimDirectionType`、`DateArithType`、`AggregateFuncExpr`、`WindowFuncExpr`、`TimeUnitType.Duration`、`TimeUnitExpr` 和 `GetFormatSelectorExpr` 都有 [`functions.go`](functions.go) 中的直接对照。Rust 测试 [`functions_test.rs`](functions_test.rs) 按 Go [`functions_test.go`](functions_test.go) 用例驱动真实 Rust `restore()` API，覆盖特殊函数、CAST、聚合、窗口、generic schema 和错误路径。
+Rust 测试 [`functions_test.rs`](functions_test.rs) 按 Go [`functions_test.go`](functions_test.go) 用例驱动真实 Rust `restore()` API，覆盖特殊函数、CAST、聚合、窗口、generic schema 和错误路径。
 
 目前不完全对等的地方必须在扩展时考虑：
 
@@ -90,11 +88,3 @@ Rust 的函数名常量、`FuncCallExpr.Restore/customRestore/Format/Accept`、`
 - 扩展聚合或窗口节点时，要明确 `order_by`/`spec` 是否仍然可以作为不透明文本；如需 visitor 重写它们，应与 crate 根主 AST 统一结构，而不是在文本上做二次解析。
 - 每个行为变更应优先扩展独立的 [`functions_test.rs`](functions_test.rs)；涉及 flag 或 `sql_restore.rs` 桥接时再同步对应独立测试，不要把测试内嵌进 `functions.rs`。
 - 兼容性风险主要来自标识符引用、关键字大小写、参数空格、运算符优先级和 Go 的有意容错语义；性能风险集中在多次 `String` 克隆、`format!` 和中间 `Vec<String>` 分配，但任何优化都必须先保留精确还原结果。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：`rustcodegraph status` 报告 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/parser/ast` 列出 `functions.rs`/`functions_test.rs`/`functions.go` 等直接证据。
-- RustCodeGraph 文件/符号证据：`node --file pkg/parser/ast/functions.rs --offset 1 --limit 500` 与 `--offset 500 --limit 500` 覆盖全部 934 行；`query FuncCallExpr/AggregateFuncExpr/WindowFuncExpr/TimeUnitType` 同时定位 Rust 与 Go 对照符号。精确 callers/callees 查询本次超时或错解析，因此不把其作为具体调用边证据。
-- 已读 Rust 路径：[`functions.rs`](functions.rs)、[`lib.rs`](lib.rs)、[`sql_restore.rs`](sql_restore.rs)、[`functions_test.rs`](functions_test.rs)、[`flag_5_aster_unit_test.rs`](flag_5_aster_unit_test.rs)。当前目录不存在 `doc.go`，因此没有额外包约定可读。
-- 已读 crate/对照路径：[`Cargo.toml`](Cargo.toml)、[`functions.go`](functions.go)、[`functions_test.go`](functions_test.go)。Rust 与 Go 的关键还原分支、visitor 范围、时间单位错误和测试意图均以这些文件交叉核对。
-- 文档不宣称 Cargo 验证：任务明确为纯文档分析且禁止运行 Cargo。交付结构通过任务指定的 `test -f` 与 11 个固定二级标题计数命令验证。

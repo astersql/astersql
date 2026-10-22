@@ -4,9 +4,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-server-internal-resultset` crate。crate 根模块 `pkg/server/internal/resultset/lib.rs` 将本文件的公开项全部再导出；`pkg/server/internal/resultset/Cargo.toml` 的 `package.metadata.porting.go-package` 指向同路径 Go 包，表明它是 `pkg/server/internal/resultset/cursor.go` 的 Rust 移植。它位于服务端结果集和逐行游标协议之间：底层 `ResultSet` 按 chunk 产出记录，本文件把它适配成 `RowIterator`，供服务端游标按行执行 `Current`、`Next`、`End`、`Error` 和 `Close`。
-
-当前 Rust 生产入口见 `pkg/server/protocol_result.rs::WorkerResult::cursor`：第一次需要逐行访问时用 `WrapWithLazyCursor` 包装普通结果集；`WorkerResults::operate` 随后把 `Operation::Current`、`Operation::Advance`、`Operation::Close` 和 `Operation::FetchReturned` 映射到游标或结果集方法。`WrapWithRowContainerCursor` 也是公开 API，但仓库 Rust 生产代码中未检索到该函数的调用者；它目前是给已经物化到 `RowContainerReader` 的结果提供相同接口的适配入口。
+`FetchNotifier` 描述 fetch 返回后的通知形状；本文件没有为其提供实现或直接调用者。
 
 ## 核心职责
 
@@ -90,8 +88,6 @@ chunk 被 `LazyRowIterator` 独占并跨 fetch 复用；没有后台任务、通
 
 ## 与 Go 版本的对应关系
 
-`pkg/server/internal/resultset/cursor.go` 是逐项对照来源。Rust 保留了 Go 的两类包装器、`RowIterator`/`CursorResultSet` 接口、lazy 状态字段、首次 `Current -> Next`、chunk 耗尽时 refill、空 chunk 表示 EOF、错误旁路查询以及 `Close` 委托。
-
 主要语言映射和差异如下：
 
 - Go 通过匿名嵌入 `ResultSet` 自动转发方法；Rust 用 `impl_result_set_forwarder!` 显式覆盖全部 `ResultSet` 方法。新增 `ResultSet` 方法时必须同步宏，否则两个包装器会在编译期缺失实现。
@@ -111,12 +107,3 @@ Go 测试 `pkg/server/tests/commontest/cursor_test.go::TestLazyRowIterator` 与 
 - 若要支持跨线程持有游标，不能只给某个类型增加 `Send`：需要整体重审 `Rc<RefCell<_>>`、动态 trait 边界、协议线程模型和 chunk 行视图生命周期。直接替换为锁还会引入重入、阻塞和性能风险。
 - 若要缓存或异步保存 `chunk::Row`，应先转成拥有自身数据的表示；当前 lazy chunk 会复用，长期持有行视图有数据失效风险。
 - 保持 Go 行为对齐：生产修改应同时核对 `cursor.go`、Go `TestLazyRowIterator` 和 prepared-statement cursor 测试。兼容风险集中在首次 `Current` 的副作用、EOF/错误区分、关闭次数和 fetch/RU 通知；性能风险集中在 chunk 分配、refill 频率与不必要的行复制。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/server/internal/resultset` 确认 `cursor.rs`、`cursor.go`、crate 入口和独立测试均已索引；`node --file pkg/server/internal/resultset/cursor.rs` 阅读了 1–275 行全部实现；`query` 确认 `CursorResultSet`、`WrapWithLazyCursor`、`WrapWithRowContainerCursor`、`LazyRowIterator` 的 Rust/Go 定义。精确 callers 查询为空这一索引限制已用直接文本引用补证，没有据此虚构调用边。
-- 源码与入口：`pkg/server/internal/resultset/cursor.rs`、`pkg/server/internal/resultset/resultset.rs`、`pkg/server/internal/resultset/lib.rs`、`pkg/server/protocol_result.rs`。
-- crate 边界：`pkg/server/internal/resultset/Cargo.toml`，确认 crate 名、根文件、Go 包映射和直接依赖；未声明 feature。
-- Go 对照：`pkg/server/internal/resultset/cursor.go`、`pkg/server/tests/commontest/cursor_test.go::TestLazyRowIterator`、`pkg/server/conn_stmt_test.go` 的 prepared-statement cursor 片段。
-- Rust 测试：`pkg/server/internal/resultset/resultset_aster_unit_test.rs::lazy_cursor_iterates_across_real_chunks_and_closes_result_set`；`pkg/server/tests/commontest/cursor_test.rs::lazy_cursor_fetches_across_real_chunk_boundaries`。前者验证多批次与一次关闭，后者验证四种 chunk 配置、首次/重复 `Current`、顺序、EOF、无错误和关闭。未运行 Cargo，符合本任务的纯文档约束。
-- 结构验证使用任务指定命令，要求目标文件存在且恰有 11 个固定二级标题；交付前另行人工复核所有关键结论均可回指以上符号或文件，并确认没有建议把 Rust 测试写入生产源文件。

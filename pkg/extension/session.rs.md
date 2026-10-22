@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`session.rs` 是 `astersql-extension` crate 的会话级扩展边界：它把扩展清单（`Manifest`）里声明的连接事件处理器、语句事件处理器和认证插件整理成每个会话可持有的 `SessionExtensions`。crate 根 `pkg/extension/lib.rs` 通过 `pub mod session` 与 `pub use session::*` 对外暴露本文件的公开符号；`pkg/extension/extensions.rs` 的 `Extensions::NewSessionExtensions` 是构造入口，并转调本文件的 `newSessionExtensions`。
-
-该文件不负责建立网络连接、执行 SQL、解析语句或验证认证插件。它只定义事件数据契约、收集回调并同步广播。Go 生产链的对应入口位于 `pkg/server/extension.go`、`pkg/server/conn.go` 等文件；在当前 Rust 源码中，检索到的直接使用主要是 `pkg/extension/event_listener_test.rs`、`pkg/extension/auth_1_aster_unit_test.rs` 和会话 API 的类型接线。`pkg/server/extension.rs` 目前定义了另一套服务端事件接口，未发现其调用本文件的分发函数，因此不能据此声称 Rust 服务端已经完成同等生产接线。
+用 `SessionHandler` 表示单个扩展为一个会话提供的可选连接/语句回调。
 
 ## 核心职责
 
@@ -98,14 +96,7 @@ RustCodeGraph 对目标文件识别出 31 个符号，文件引用摘要显示�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/extension/session.go`。主要映射为：Go 的指针/接口可空值在 Rust 中改为 `Option` 或借用，Go 函数值改为 `Arc<dyn Fn + Send + Sync>`，Go slice/map 改为 `Vec`/`HashMap`，Go 的 nil receiver 语义由包级 `Option<&SessionExtensions>` 适配函数承接。
-
-行为保持点：
-
-- 两组枚举的数值顺序与 Go `iota` 完全一致；`event_discriminants_match_go_iota_order` 有显式回归断言。
-- 回调按 Manifest 顺序收集并按同序同步调用；`statement_events_fan_out_in_order_and_preserve_go_record_fields` 与 `connection_events_fan_out_in_order_and_none_is_no_op` 验证此约束。
-- `authPlugins` 每遇到非 nil/`Some` 切片就重建，因此最终只保留最后一个此类 Manifest 的插件；Rust 测试明确验证该语义。
-- `StmtEventInfo` 保留 Go 接口的字段集合和 prepared statement 特殊视图，Rust 以 `Option<&dyn ast::Node>` 等签名表达 nil。
+主要映射为：Go 的指针/接口可空值在 Rust 中改为 `Option` 或借用，Go 函数值改为 `Arc<dyn Fn + Send + Sync>`，Go slice/map 改为 `Vec`/`HashMap`，Go 的 nil receiver 语义由包级 `Option<&SessionExtensions>` 适配函数承接。
 
 需要注意的表达差异：Go 的 `newSessionExtensions` 返回指针，Rust 返回值类型；Go 方法可以直接在 nil receiver 上调用，Rust 必须经过包级适配函数。Rust 回调还额外施加 `Send + Sync`，便于跨线程共享。当前 Rust 服务端的 `pkg/server/extension.rs` 并非本文件的直接等价调用方，因此 Go 文件中已经存在的连接/语句生产链只能作为目标语义证据，不能当作 Rust 已完成接线的证据。
 
@@ -122,13 +113,3 @@ Go 测试 `pkg/extension/event_listener_test.go`、`pkg/server/conn_test.go` 和
 - 若要宣称 Rust 服务端完成接线，应新增并验证真实调用方，而不是仅依赖扩展 crate 单测；需要覆盖连接各阶段、成功/失败语句、prepared statement、无监听器快速路径和监听器 panic/延迟策略。
 
 兼容风险主要是枚举 ABI 数值、事件字段可空性、监听器顺序和认证映射覆盖规则；性能风险主要是每次事件的同步多播及 `StmtEventInfo` 按值返回集合/字符串带来的分配；正确性风险主要是监听器 panic 中断后续监听器，以及服务端事件类型与本模块尚未证实接线造成的两套契约漂移。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含目标文件；`files --filter pkg/extension/session.rs` 报告该文件 31 个符号；`node --file pkg/extension/session.rs --offset 1 --limit 500` 读取完整 203 行源码；`query` 核对 `newSessionExtensions`、`SessionExtensions`、`OnConnectionEvent`、`GetAuthPlugin` 的 Go/Rust 候选。
-- RustCodeGraph 调用分析：对精确符号执行 `callers`/`callees` 未返回可用边；随后使用 `explore "pkg/extension/manifest.rs sessionHandlerFactory WithSessionHandlerFactory"` 获得工厂与相关测试的 blast radius，并用引用搜索补齐边界。这一限制意味着“未发现生产调用”是静态证据范围内的结论，不等于动态运行时绝无调用。
-- 已读 Rust 源码/配置：`pkg/extension/session.rs`、`pkg/extension/lib.rs`、`pkg/extension/extensions.rs`、`pkg/extension/manifest.rs`、`pkg/extension/Cargo.toml`、`pkg/session/sessionapi/session.rs`。
-- 已读 Rust 测试：`pkg/extension/event_listener_test.rs`、`pkg/extension/auth_1_aster_unit_test.rs`；另通过引用搜索定位 `pkg/session/sessionapi/session_test.rs` 等类型接线测试。
-- 已读 Go 对照：`pkg/extension/session.go`；通过引用搜索核对 `pkg/server/extension.go`、`pkg/server/conn.go`、`pkg/extension/event_listener_test.go`、`pkg/server/conn_test.go`、`pkg/server/tests/commontest/tidb_test.go` 的生产/测试入口。
-- 已核对的关键边：`Extensions::NewSessionExtensions` → `newSessionExtensions`；`WithSessionHandlerFactory` → `Manifest::sessionHandlerFactory` → `SessionHandler`；`newSessionExtensions` → `SessionExtensions::{connectionEventFuncs, stmtEventFuncs, authPlugins}`；包级分发函数 → 同名实例方法。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证要求目标文档存在，且恰好包含本文的 11 个固定二级标题。

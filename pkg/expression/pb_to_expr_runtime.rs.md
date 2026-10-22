@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-[`pb_to_expr_runtime.rs`](./pb_to_expr_runtime.rs) 是 `astersql-expression` crate 中把 TiPB 线载表达式还原为本地形式化表达式树的运行时边界。crate 根在 [`lib.rs`](./lib.rs) 中以 `#[path = "pb_to_expr_runtime.rs"]` 挂载该文件，并公开再导出 `PBToExprs`、`PBToExpr`、`FieldTypeFromPB`、`PbTypeToFieldType` 和 `PBSignatureFunctionName`；因此调用方不需要知道私有模块名。
-
-这个方向与表达式下推的序列化方向相反：输入是 `tipb::Expr`、`tipb::FieldType` 以及列类型数组，输出是实现本 crate 表达式接口的 `ExprBox`（实际节点为 `Column`、`Constant` 或 `ScalarFunction`）。它处在 TiDB/TiKV、TiFlash 共享协议与 SQL 表达式运行时之间，不负责执行表达式，也不负责决定哪些表达式可以下推。
-
-[`Cargo.toml`](./Cargo.toml) 将当前目录定义为 `astersql-expression` crate；本文件直接依赖的协议、时间和 protobuf 能力分别来自 `tipb`（启用 `protobuf-codec`）、`chrono-tz` 和 `protobuf`。同一 manifest 还把 [`pb_to_expr_runtime_test.rs`](./pb_to_expr_runtime_test.rs) 注册为独立测试目标，符合测试与生产源码分离的仓库约定。
+`PBToExprs` 保持输入顺序批量转换表达式，并在任一元素失败时立即返回错误。
 
 ## 核心职责
 
@@ -91,13 +87,11 @@ Cargo 边界证据来自 [`Cargo.toml`](./Cargo.toml)：`tipb` 固定到明确 r
 
 ## 与 Go 版本的对应关系
 
-直接 Go 对照是 [`distsql_builtin.go`](./distsql_builtin.go) 中的 `PBToExprs`、`PBToExpr`、`convertTime`、`decodeValueList`、各字面量转换器，以及文件前部的 `PbTypeToFieldType`。两版共同保持：按输入顺序转换；列引用从载荷取 offset 和字段类型；字面量恢复成 `Constant`；`TIMESTAMP` 从 UTC 转到会话位置；空 ValueList 返回假；普通孩子递归；字段类型复制完整元数据。
-
 Rust 版本把 Go 的多个 `convert*` 辅助函数内联进 `PBToExpr` 分支，并用 `Result`、安全整数转换和 `.get(index)` 把负数/越界列偏移变成显式错误。Go 的标量函数通过 `newDistSQLFunctionBySig(ctx, expr.Sig, ...)` 直接按枚举分派；当前 Rust 路径先把签名 Debug 名映射为 AST 名称，再调用 `NewFunctionBase`。因此 `PBSignatureFunctionName` 及其覆盖完整性是 Rust 特有的迁移桥梁。
 
-非空 ValueList 也存在实现表达差异：Go 的 `decodeValueList` 构造未显式携带 `RetType` 的常量，Rust 对每个 Datum 调用 `InferParamTypeFromDatum`。两者意图都是把列表扁平加入标量参数；修改时应以现有测试和实际求值类型语义为准，不能仅机械复制结构。
+非空 ValueList 也存在实现表达差异：Go 的 `decodeValueList` 构造未显式携带 `RetType` 的常量，Rust 对每个 Datum 调用 `InferParamTypeFromDatum`。
 
-Go 测试 [`distsql_builtin_test.go`](./distsql_builtin_test.go) 的 `TestPBToExpr` 验证残缺 Datum/ValueList 错误和空列表边界，`TestEval` 覆盖解码后实际求值，`TestPBToExprWithNewCollation` 覆盖新旧排序规则编号。Rust 独立测试聚焦当前正式运行时 API，并额外把所有 639 个非 `Unspecified` 协议签名作为映射完整性不变量。
+Rust 独立测试聚焦当前正式运行时 API，并额外把所有 639 个非 `Unspecified` 协议签名作为映射完整性不变量。
 
 ## 扩展指南
 
@@ -108,13 +102,3 @@ Go 测试 [`distsql_builtin_test.go`](./distsql_builtin_test.go) 的 `TestPBToEx
 修改字段类型转换时需同步核对 Go `PbTypeToFieldType`、`FieldTypeFromPB` 的其他使用点和排序规则转换；类型码、flag、flen、decimal、charset、collation、elems 任一遗漏都可能改变求值或比较语义。修改时间分支时要同时覆盖 UTC 与非 UTC `TIMESTAMP`，并避免把 `DATE`/`DATETIME` 当作时区瞬时值转换。
 
 性能敏感改动应关注递归深度、协议字节复制、ValueList 展开时的额外分配及签名表线性查找。若改成索引表或生成代码，仍需维持静态返回生命周期、匹配优先级和未知签名返回 `None` 的契约。兼容性风险主要来自协议 enum 增长、函数别名大小写/拼写变体和排序规则编号变化。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标 [`pb_to_expr_runtime.rs`](./pb_to_expr_runtime.rs) 已索引并识别 13 个符号。
-- RustCodeGraph `files --filter pkg/expression/pb_to_expr_runtime.rs` 与 `node --file ...`：确认文件全长 778 行、模块符号和 `used by` 文件；分段读取覆盖 1–778 行。
-- RustCodeGraph `query PBToExpr`、`query PBToExprs`、`query PbTypeToFieldType`、`query PBSignatureFunctionName`：确认目标定义、签名以及 Go/并行 Rust 同名候选；带 `--file` 的 `callers/callees PBToExpr` 确认批量调用、递归调用和下游解码/类型/上下文依赖。图结果存在跨语言同名噪声，本文只采用与目标文件或直接源码一致的边。
-- 源码装配与 crate 边界：[`lib.rs`](./lib.rs) 的模块挂载/再导出；[`Cargo.toml`](./Cargo.toml) 的 package、依赖和独立测试目标。
-- Go 对照：[`distsql_builtin.go`](./distsql_builtin.go) 的 `PBToExprs`、`PBToExpr`、`convert*`、`decodeValueList`；[`distsql_builtin_test.go`](./distsql_builtin_test.go) 的 `TestPBToExpr`、`TestEval`、`TestPBToExprWithNewCollation`。
-- Rust 测试：[`pb_to_expr_runtime_test.rs`](./pb_to_expr_runtime_test.rs) 的字段/字面量、列/列表/标量、639 个签名、前缀优先级、残缺载荷与越界列测试；`builtin_registry_aster_unit_test.rs` 还抽查多类签名到 AST 名称的映射。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构验证要求文档存在且固定二级标题恰好为 11 个；最终还需人工检查唯一产物、链接、源码事实和 diff。

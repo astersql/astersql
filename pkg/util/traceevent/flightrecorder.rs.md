@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-traceevent` crate。crate 入口 `pkg/util/traceevent/lib.rs` 将它声明为 `flightrecorder` 子模块并公开重导出；`pkg/util/traceevent/Cargo.toml` 表明该 crate 直接依赖 `rand`、`serde`、`serde_json` 和 `log`，其中本文件直接使用前三者中的 `rand` 与 `serde`，事件日志输出则委托给同 crate 的 `traceevent::log_event`。
-
-它实现的是“按条件保留一次会话追踪”的飞行记录器：`traceevent.rs::trace_event` 在类别启用且 recorder 模式开启时，把事件同时写入进程级 `RingBufferSink` 和 `Context` 中可选的会话级 `Trace`；本文件负责保存后者的事件、累计 dump 触发位、按配置决定 flush 或 discard，并把保留的事件送入同步通道或日志。不要把本文件的 `Trace`/`HttpFlightRecorder` 与 `traceevent.rs::flight_recorder()` 返回的进程级环形缓冲混为一谈。
-
-Rust 生产接线目前是部分迁移状态。`pkg/sessionctx/variable/sysvar_builtins.rs::SetTraceEventConfig` 通过全局变量 `tidb_trace_event` 启停日志记录器，`traceevent.rs::{is_enabled,get_enabled_categories}` 和 `adapter.rs::handle_trace_control_extractor` 读取它；仓库内 Rust 生产源码尚未找到 `check_flight_recorder_dump_trigger`、`start_http_flight_recorder` 或 `Trace::discard_or_flush` 的调用，相关完整链路主要由 `pkg/util/traceevent/test/integration_test.rs` 验证。对应 Go 版本则已在 session、executor、store、server 和 DDL 等生产路径接线。
+实现的是“按条件保留一次会话追踪”的飞行记录器：`traceevent.rs::trace_event` 在类别启用且 recorder 模式开启时，把事件同时写入进程级 `RingBufferSink` 和 `Context` 中可选的会话级 `Trace`；本文件负责保存后者的事件、累计 dump 触发位、按配置决定 flush 或 discard，并把保留的事件送入同步通道或日志。
 
 ## 核心职责
 
@@ -96,9 +92,8 @@ HTTP/channel 导出采用 `try_send`，通道满或断开时错误被有意忽�
 - Go 的 channel 是 `chan<- []Event`；Rust 是 `SyncSender<Vec<Event>>`，两者发送都采用非阻塞分支并丢弃失败。
 - Go `Trace.events = nil` 释放大批次；Rust `Vec::new()` 达到同一目的。小批次分别用切片归零和 `Vec::clear` 复用容量。
 - Go `CheckFlightRecorderDumpTrigger` 从通用 tracing context 取 sink 并做类型断言；Rust `Context::sink` 在类型层面只返回 `Arc<Trace>`。
-- Go 的 `truthTableForAnd` 对单一左项有专门快捷分支；Rust 统一执行等价的笛卡尔积，语义相同。
 
-移植接线尚未完全对齐。Go 生产调用点包括 `pkg/session/session.go` 的采样、用户命令和查询失败触发，`pkg/executor/adapter.go` 的慢查询/plan digest，`pkg/store/copr/coprocessor.go` 的 Region 错误，`pkg/store/driver/tikv_driver.go` 的 dev_debug，以及 `pkg/server/http_status.go` 的 HTTP recorder。Rust 搜索只确认了全局变量到日志 recorder、类别过滤和 adapter 控制标志的生产接线；文档不把 Go 调用点推断为 Rust 已支持。
+移植接线尚未完全对齐。Rust 搜索只确认了全局变量到日志 recorder、类别过滤和 adapter 控制标志的生产接线；文档不把 Go 调用点推断为 Rust 已支持。
 
 ## 扩展指南
 
@@ -111,14 +106,3 @@ HTTP/channel 导出采用 `try_send`，通道满或断开时错误被有意忽�
 修改 flush 生命周期时必须保留“锁内克隆、锁外输出”的数据竞争防护，同时决定读锁到写锁之间的并发新事件应归入当前批还是下一批。若要求无丢失批次，宜在锁内原子地 swap 出完整 `TraceState`，而不是直接延长输出期间的锁持有时间。
 
 测试必须放在独立文件，不内嵌到生产源。配置/真值表变化同步 `pkg/util/traceevent/flightrecorder_test.rs`；并发类别控制同步 `adapter_test.rs`；start、触发、flush、sampling 与通道行为同步 `test/integration_test.rs`。涉及移植语义时还应对照并按需要更新 `flightrecorder_test.go` 和 Go 集成测试，但不能用 Go 已覆盖替代 Rust 独立测试。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/traceevent` 确认目标源、独立测试、Go 对照和模块入口均已索引。
-- RustCodeGraph `node --file pkg/util/traceevent/flightrecorder.rs`：读取 1–535 行，核对全部常量、配置类型、编译算法、全局生命周期、输出和 Go 风格别名。
-- RustCodeGraph `query check_flight_recorder_dump_trigger --kind function`：唯一定位到本文件第 494 行。`callers`/`callees` 在 60 秒内没有返回并被终止，调用关系随后用精确源码引用搜索补证。
-- RustCodeGraph 节点：`pkg/util/traceevent/traceevent.rs`（`Event`、`Context`、`Sink`、类别解析、事件分流和 trace id）、`adapter.rs`（`IMMEDIATE_LOG` 判定）、`pkg/sessionctx/variable/sysvar_builtins.rs`（`tidb_trace_event` 生产入口）。
-- crate/module：`pkg/util/traceevent/Cargo.toml`、`pkg/util/traceevent/lib.rs`；目标目录不存在 `doc.go`，因此没有可额外读取的 Go package contract 文件。
-- Rust 测试：`pkg/util/traceevent/flightrecorder_test.rs` 验证合法/非法编译、类别解析和 AND/OR 真值表；`adapter_test.rs` 验证类别控制与并发访问；`test/integration_test.rs::test_flight_recorder` 验证类别过滤、sampling=5 的 10 次中 2 次命中、用户命令、可疑事件、channel 输出与结算。
-- Go 对照：`pkg/util/traceevent/flightrecorder.go` 全文及 `flightrecorder_test.go`；全仓精确引用搜索用于确认 Go 生产调用面和 Rust 当前接线边界。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；最终以固定 11 章节结构命令和人工事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`config.rs`](config.rs) 是 `astersql-ttl-ttlworker` crate 的配置值模块，由同目录 [`lib.rs`](lib.rs) 以 `pub mod config` 对外公开。它只依赖标准库的 `std::time::Duration`，集中保存 TTL worker 的调度周期、内部 SQL 超时、作业寿命和扫描拆分下限，并提供两个计算入口：`IntervalOverrides` 的有效间隔 getter，以及 `scan_split_count`。
-
-crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-ttl-ttlworker`、库入口为 `lib.rs`。当前 Rust 生产链中可确认的跨 crate 调用是 `pkg/session/runtime/ttl_metadata.rs::split_ttl_scan_ranges` 调用 `astersql_ttl_ttlworker::config::scan_split_count`，再把结果交给 TTL 表的主键或索引范围拆分逻辑。对全仓 Rust 引用的核查表明，`IntervalOverrides` 目前只被本 crate 的独立测试引用；不能据此宣称这些 override 已经接入 Rust Job/Task Manager 的生产循环。
+只依赖标准库的 `std::time::Duration`，集中保存 TTL worker 的调度周期、内部 SQL 超时、作业寿命和扫描拆分下限，并提供两个计算入口：`IntervalOverrides` 的有效间隔 getter，以及 `scan_split_count`。
 
 ## 核心职责
 
@@ -71,11 +69,9 @@ crate 边界由 [`Cargo.toml`](Cargo.toml) 定义，包名为 `astersql-ttl-ttlw
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`config.go`](config.go)。13 个 Rust 常量与 Go 的默认值一致：10 秒 Job Manager 周期、两个 2 分钟缓存周期、30 秒内部 SQL 超时与扩缩容周期、64 个扫描拆分下限、6 小时 job 超时、1 分钟 Task Manager/心跳周期、10 分钟 GC、1 秒 timer 同步、5 秒 check-task、2 秒已触发 job 检查。
+Rust 将相同选择语义集中到 `IntervalOverrides` 的 11 个字段和 getter 中。两者在默认值和显式覆盖值上由 `config_test.rs` 对齐，但机制不同：Go 从进程级 failpoint 动态取值，Rust 由调用方持有并传入一个普通结构；而当前仓库尚未显示 Rust 生产循环持有该结构。因此，“默认/覆盖计算已移植”是已验证事实，“运行时 failpoint 能影响 Rust worker”则未得到证据。
 
-Go 用 11 个 `get*Interval` 函数包裹 failpoint：注入存在时返回注入的纳秒 `Duration`，否则返回默认值。Rust 将相同选择语义集中到 `IntervalOverrides` 的 11 个字段和 getter 中。两者在默认值和显式覆盖值上由 `config_test.rs` 对齐，但机制不同：Go 从进程级 failpoint 动态取值，Rust 由调用方持有并传入一个普通结构；而当前仓库尚未显示 Rust 生产循环持有该结构。因此，“默认/覆盖计算已移植”是已验证事实，“运行时 failpoint 能影响 Rust worker”则未得到证据。
-
-Go `getScanSplitCnt(store kv.Storage)` 自行做类型断言，并从 TiKV RegionCache 统计 TiKV store；Rust `scan_split_count` 将环境探测拆到上游，只接收 `is_tikv` 和 store 数。二者的计算规则相同，但 Rust 正确性也依赖上游传参能准确表达存储类型与 store 数量。`pkg/session/runtime/ttl_metadata.rs` 当前以 `store_count.is_some()` 表示 TiKV，并以 `None -> 0` 传入计数。
+Go `getScanSplitCnt(store kv.Storage)` 自行做类型断言，并从 TiKV RegionCache 统计 TiKV store；Rust `scan_split_count` 将环境探测拆到上游，只接收 `is_tikv` 和 store 数。
 
 ## 扩展指南
 
@@ -84,12 +80,3 @@ Go `getScanSplitCnt(store kv.Storage)` 自行做类型断言，并从 TiKV Regio
 将 override 接入生产循环时，最可能的修改点不是本文件，而是实际创建 ticker/超时的 Rust Job/Task Manager 或 session runtime。接线前应决定配置对象的所有权、是否支持运行时热更新、零间隔是否合法以及 worker 停止时如何释放计时资源，并增加对应模块的独立测试。不能用本文件现有 getter 测试代替生产接线测试。
 
 修改 `scan_split_count` 时，应同步检查 `pkg/session/runtime/ttl_metadata.rs::split_ttl_scan_ranges`、Rust `config_test.rs::scan_split_count_matches_go_store_count_boundaries` 和 Go `job_manager_test.go::TestSplitCnt`。提高拆分数可能增加并发任务、调度与元数据开销，降低拆分数可能造成单个范围过大或热点；还需验证非 TiKV、未知计数、64 边界和超大 store 数。若改变存储探测语义，应在上游完成，而不是让这个纯函数重新依赖具体 storage 类型。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、索引中 `pkg/ttl/ttlworker/config.rs` 有 14 个符号；`files --filter pkg/ttl/ttlworker` 确认源码、Go 对照和独立测试位置；精确 `explore`/`query` 确认全部 getter 的测试调用以及 `scan_split_count` 到 `pkg/session/runtime/ttl_metadata.rs::split_ttl_scan_ranges` 的生产调用边。
-- 源码：[`config.rs`](config.rs)（全部常量、`IntervalOverrides` 与 `scan_split_count`）；[`lib.rs`](lib.rs)（公开模块和独立测试装配）；`pkg/session/runtime/ttl_metadata.rs`（实际拆分调用）；`pkg/session/Cargo.toml`（反向路径依赖）。
-- crate 声明：[`Cargo.toml`](Cargo.toml)（包名、库入口、端口元数据和依赖边界）。
-- Go 对照：[`config.go`](config.go)（常量、failpoint getter、RegionCache store 计数）；[`job_manager_test.go`](job_manager_test.go) 的 `TestSplitCnt`；`job_manager_integration_test.go` 的调度加速 failpoint 设置与清理。
-- Rust 测试：[`config_test.rs`](config_test.rs) 的 `interval_defaults_and_overrides_match_go_getters`、`scan_split_count_matches_go_store_count_boundaries`；[`timer_test.rs`](timer_test.rs) 的 `interval_defaults_match_go_failpoint_fallbacks`。
-- 按任务约束未运行 Cargo 或代码测试；本次验证限于索引调用图、直接源码/清单/测试对照和文档结构检查。

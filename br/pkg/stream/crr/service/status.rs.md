@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-stream-crr-service` crate 的运行状态层。crate 入口 `br/pkg/stream/crr/service/lib.rs` 以 `pub mod status` 挂载并再导出本模块；`Cargo.toml` 声明它是对应 Go 包 `br/pkg/stream/crr/service` 的 library crate，并直接依赖 `astersql-br-pkg-stream-crr-internal-checkpoint`。它位于 checkpoint calculator 与服务可观测面之间：向下接收 `CheckpointEvent`/`PersistentState`，向上为 `Service::Status`、`/livez`、`/readyz`、`/status` 和 Prometheus 指标提供一致快照。
-
-该文件不是单纯数据定义。它同时承担状态机、线程安全快照、calculator `Observer` 适配、Go 兼容 JSON 编码及 RFC3339Nano 时间编码。服务循环本身在 `service.rs`，HTTP 路由在 `http.rs`，指标 collector 在 `metrics.rs`；本文件只维护这些消费者共同读取的状态事实。
+每次构造或写状态后调用 `observe_status_metrics`，使指标与锁内快照来自同一次状态变更。
 
 ## 核心职责
 
@@ -77,13 +75,11 @@ crate 边界由 `br/pkg/stream/crr/service/Cargo.toml` 确认：除标准库外�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `br/pkg/stream/crr/service/status.go`。Rust 的 `StatusStatistic`/`StatusSnapshot`、四态常量、`start`、`stop`、`set_persistent_state`、`clear_failure`、`begin_round`、`apply_event`、`snapshot_copy`、observer 和统计投影逐项对应 Go 实现；Rust 保留了 Go 风格公开命名以维持迁移 API。
-
-主要语言差异有三项。第一，Go 的 `*statusStore` 加 `sync.RWMutex` 被映射为可克隆的 `Arc<RwLock<StatusStoreInner>>`，并将 observer 与 store 一次性成对构造。第二，Go `map == nil` 的事件语义由 Rust 的 `SyncedByStoreSet` 补偿。第三，Go 依赖 `encoding/json` 和 `time.Time.MarshalJSON`，Rust 用手写编码器复现字段标签、`omitempty`、排序、HTML 转义、零时间、epoch 前时间和年份范围。
+主要语言差异有三项。第三，Go 依赖 `encoding/json` 和 `time.Time.MarshalJSON`，Rust 用手写编码器复现字段标签、`omitempty`、排序、HTML 转义、零时间、epoch 前时间和年份范围。
 
 Go 的 `newStatusObserver` 是单独构造步骤；Rust `new_status_store` 直接返回二元组。Go 失败日志使用结构化 `log.Error`/`zap.Error`，Rust 当前使用 `eprintln!`，日志后端并不等价，但状态字段与迁移测试验证的行为一致。Rust 额外公开 `encode_status_snapshot`，供无 serde 依赖的 HTTP 层复用。
 
-Go 测试 `service_test.go` 验证端点、统计深拷贝、失败时保留 alive store、显式规划 0 store 和稳定状态文件名；Rust 的 `service_test.rs`/`parity_test.rs` 对应这些行为，并额外覆盖空 store 进度清理、签名整数、指标注册。`status_test.rs` 专门覆盖 map 排序、epoch 前时间和超出 Go RFC3339 年份范围的错误。
+Go 测试 `service_test.go` 验证端点、统计深拷贝、失败时保留 alive store、显式规划 0 store 和稳定状态文件名；Rust 的 `service_test.rs`/`parity_test.rs` 对应这些行为，并额外覆盖空 store 进度清理、签名整数、指标注册。
 
 ## 扩展指南
 
@@ -95,13 +91,3 @@ Go 测试 `service_test.go` 验证端点、统计深拷贝、失败时保留 ali
 - 测试逻辑应继续放在独立文件：JSON 边界放 `status_test.rs`，服务/端点状态流放 `service_test.rs`，Go/Rust 公共契约放 `parity_test.rs`；不要把测试嵌入 `status.rs`。
 
 兼容性风险主要是外部 JSON/指标/状态路径契约；正确性风险集中于失败恢复和零值携带语义；性能风险集中于高频事件下的写锁、整份 map clone 和锁内指标更新。扩展前应先判断字段是否真的需要每个事件刷新。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 7,032 个 Rust 文件；`files --filter br/pkg/stream/crr/service/status.rs` 找到目标文件，`node --file ...` 读取了完整 653 行源码。
-- RustCodeGraph 符号证据：`query StatusStore` 定位 Rust `StatusStore`/`StatusStoreInner`/`StatusObserver` 和 Go `statusStore`；`query CheckpointEvent`、`query Observer --kind trait`、`query FileStatistic` 定位 `br/pkg/stream/crr/internal/checkpoint/calculator.rs` 的事件、trait 和统计定义。精确 `callers encode_status_snapshot` 查询在本地挂起，调用边改由局部源码搜索核验，未据此推断未知调用者。
-- 已读生产文件：`br/pkg/stream/crr/service/status.rs`、`lib.rs`、`service.rs`、`http.rs`、`metrics.rs`、`Cargo.toml`，以及直接依赖 `br/pkg/stream/crr/internal/checkpoint/calculator.rs`。
-- 已读 Go 对照：`br/pkg/stream/crr/service/status.go`、`service.go`、`http.go` 和 `service_test.go` 的相关段落。
-- 已读 Rust 测试：`br/pkg/stream/crr/service/status_test.rs`、`service_test.rs`、`parity_test.rs` 的状态与 JSON 相关用例。
-- 关键调用边以源码核验：`Service::New -> new_status_store`；`Service::Run -> start`；`run_once -> BeginCalculationRound`；calculator/服务错误 `-> OnCheckpointEvent -> apply_event`；`Service::Status -> snapshot_copy`；HTTP status handler `-> encode_status_snapshot`；`RunStopGuard::drop -> stop`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构验证，并检查 Git 提交只包含本文件。

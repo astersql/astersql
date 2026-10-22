@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于内嵌 UniStore mock TiKV crate `astersql-store-mockstore-unistore-tikv` 中；crate 入口 `pkg/store/mockstore/unistore/tikv/lib.rs` 以 `pub mod inner_server` 暴露它。它不是网络服务实现，而是把“本地数据库资源如何被外层 mock TiKV 服务持有和关闭”抽象成生命周期边界，并保留与 Go `InnerServer` 相同的启动、Raft 和快照接口形状。真正的请求处理、MVCC、Region 与 RPC 聚合位于相邻的 `server.rs`、`mvcc.rs` 和 `region.rs`。
-
-`pkg/store/mockstore/unistore/tikv/Cargo.toml` 将 `lib.rs` 声明为库入口，并用 `package.metadata.porting.go-package` 指向同路径 Go 包。目标文件本身只依赖标准库 `Arc`，没有条件编译项；Cargo 中大部分内部依赖位于 Windows 目标依赖块，不应据此推断本文件直接调用了这些 crate。
+`StandAloneInnerServer<B>` 用共享所有权保存资源包，并实现 standalone 模式：`setup`、`start`、`raft`、`batch_raft`、`snapshot` 均为空操作，`stop` 是唯一产生资源状态变化的方法。
 
 ## 核心职责
 
@@ -70,15 +68,11 @@ RustCodeGraph 确认目标文件包含 20 个索引符号，并从 `server.rs` �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/tikv/inner_server.go`：
-
-- Rust `InnerServer` 对应 Go `InnerServer`；Rust `StandAloneInnerServer` 对应 Go 拼写为 `StandAlongInnerServer` 的结构体。
-- 两侧构造器都只保存数据库 bundle；Raft、BatchRaft、Snapshot、Setup 和 Start 在 standalone 实现中均为空操作/成功返回。
 - Go `Stop` 调用 `is.bundle.DB.Close()`；Rust 通过 `DatabaseBundle::close` 间接完成相同资源关闭，避免把本 crate 绑定到外层具体 DB 类型。
 - Go trait 方法携带 `pd.Client` 或具体 gRPC stream，Rust 当前方法不带参数。这是接口表面上的迁移差异，也说明 Rust 的 Raft/快照入口目前只是占位。
 - Go 没有 `is_started`；Rust 测试用固定 `false` 显式记录“Start 不维护状态”的兼容语义。
 
-外层流程也相符：Go `pkg/store/mockstore/unistore/server/server.go::setupStandAlongInnerServer` 按 Setup → 建 store/设置 deadlock leader → Start → 启动死锁检测 → 构造 Server 的顺序组装；Rust 对应函数保持相同步骤意图。Go `tikv/server.go::Stop` 会等待引用计数清零并记录各关闭错误，Rust 外层使用原子幂等门并返回 inner-server 关闭错误，错误处理细节并非完全等价。
+Go `tikv/server.go::Stop` 会等待引用计数清零并记录各关闭错误，Rust 外层使用原子幂等门并返回 inner-server 关闭错误，错误处理细节并非完全等价。
 
 ## 扩展指南
 
@@ -87,12 +81,3 @@ RustCodeGraph 确认目标文件包含 20 个索引符号，并从 `server.rs` �
 - 若要替换字符串错误，应同步 trait、外层 `Server` 和组装函数的错误映射，避免丢失底层关闭原因。
 - 新增或改变本文件行为时，应更新独立文件 `pkg/store/mockstore/unistore/tikv/inner_server_test.rs`；涉及外层停止幂等与转发时，还应同步 `main_test.rs`/`server_test.rs`，不要把测试嵌入生产源文件。
 - 保持 `DatabaseBundle` 作为抽象边界可减少 crate 耦合；引入具体 `EngineBundle` 依赖前应先验证 Cargo 目标依赖和跨平台构建影响。
-
-## 验证依据
-
-- 源与模块边界：`pkg/store/mockstore/unistore/tikv/inner_server.rs`、`lib.rs`、`Cargo.toml`。
-- Rust 上游与下游：`pkg/store/mockstore/unistore/server/server.rs::EngineBundle::close`、`setup_stand_alone_inner_server`；`pkg/store/mockstore/unistore/tikv/server.rs::Server::{new,stop,raft,batch_raft,snapshot}`。
-- Rust 独立测试：`inner_server_test.rs::start_matches_go_noop_and_stop_closes_bundle` 验证启动不改变状态、停止恰调用一次 close，以及三个占位入口成功；`main_test.rs::standalone_server_stop_is_idempotent_and_closes_resources` 验证外层幂等和资源关闭链；`server_test.rs::test_server` 验证 trait object 的实际装配方式。
-- Go 对照：`pkg/store/mockstore/unistore/tikv/inner_server.go`、`tikv/server.go::{NewServer,Stop,Raft,BatchRaft,Snapshot}`、`pkg/store/mockstore/unistore/server/server.go::setupStandAlongInnerServer`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/store/mockstore/unistore/tikv/inner_server.rs` 定位目标；`node --file ...inner_server.rs` 读取全部 77 行和 20 个符号；`query InnerServer`/`query DatabaseBundle` 定位 Rust trait、方法及 Go 对照；对 `server.rs`、外层 `server/server.rs` 和测试文件使用精确文件节点验证调用与生命周期。
-- 未运行 Cargo：任务是纯文档分析，计划明确排除 Cargo。结构检查用于确认目标文件存在且恰有规定的 11 个二级章节；人工复核确认没有把空操作描述为已实现的 Raft/快照功能。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate，由 `pkg/planner/core/lib.rs` 以私有模块 `mod initialize` 编译，再通过 `pub use initialize::*` 对外重导出其公开项。它位于计划数据结构与规划器上下文之间：`LoadData` 和 `ImportInto` 定义在 `pkg/planner/core/common_plans.rs`，而计划 ID 分配边界 `PlanContext::alloc_plan_id` 定义在 `pkg/planner/core/base/plan_base.rs`。
-
-`pkg/planner/core/Cargo.toml` 声明本 crate 的库根为 `lib.rs`，并将 `astersql-planner-core-base` 以 `base-dependency` 引入。本文件不受 `nextgen` feature 或其他条件编译项控制。
+当前 Rust 生产构建链的 `PlanBuilder::buildLoadData` 与 `PlanBuilder::buildImportInto` 返回 `BuiltPlan::Command`，未构造这里的 `LoadData` / `ImportInto`；因此本文件的 API 已实现且有单元测试，但不应被描述为已接入当前生产语句构建主链。
 
 ## 核心职责
 
@@ -56,13 +54,10 @@ ID 分配的并发语义完全由 `PlanContext` 实现保证。独立测试中�
 
 ## 与 Go 版本的对应关系
 
-Go 直接对照文件是 `pkg/planner/core/initialize.go`。Go 的 `LoadData.Init` 和 `ImportInto.Init` 同样按值接收器工作，通过 `baseimpl.NewBasePlan(ctx, <type>, 0)` 创建基础计划，再返回新值指针。Rust 版保留了上下文、类型、ID 和零偏移四个核心语义；`InitializedPlan::new` 对应 `baseimpl.NewBasePlan` 中这部分的初始化。
-
 差异主要有四点：
 
 - Go 计划结构嵌入 `physicalop.SimpleSchemaProducer`，Rust 的这两个结构仅持有 `Option<InitializedPlan>` 和简化业务字段，不是完整物理算子移植。
 - Go 的类型值来自 `plancodec.TypeLoadData` / `TypeImportInto`，Rust 目前使用等值的字面量；若编码常量变更，两处需同步核对。
-- Go `NewBasePlan` 通过会话变量 `PlanID.Add(1)` 取 ID，Rust 把策略抽象为 `PlanContext::alloc_plan_id`。
 - Go 同文件还初始化 `Analyze` 和 `ScalarSubqueryEvalCtx`。Rust `initialize.rs` 未移植 `Analyze::Init`；标量子查询由 `pkg/planner/core/scalar_subq_expression.rs` 的 `ScalarSubqueryEvalCtx::New` 构造，因为 Rust 构造时还必须同时提供物理子计划、请求上下文和信息模式。
 
 没有找到专门验证这两个 Go `Init` 的独立 Go 测试；Rust 回归契约由 `pkg/planner/core/initialize_test.rs` 单独承载。
@@ -74,13 +69,3 @@ Go 直接对照文件是 `pkg/planner/core/initialize.go`。Go 的 `LoadData.Ini
 - 若要允许可变查询块偏移或类型，优先修改 `InitializedPlan::new` 的调用约定并与 Go `plancodec` 契约对齐，同时扩展 `initialize_test.rs`。
 - 若要改变未初始化行为，必须明确选择保持 panic、返回 `Option` 或返回 `Result`，并检查所有访问器调用点。这是 API 兼容性变更，不是内部重构。
 - 性能上的主要风险是重复 `Init` 造成无意义的 ID 消耗，或将静态类型字符串替换为频繁分配的动态字符串。正确性风险则是类型名与 Go / EXPLAIN 编码不一致，或在跨查询共享了错误的 `ContextRef`。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引可用，共 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/planner/core/initialize.rs` 确认目标已索引。
-- RustCodeGraph `node --file pkg/planner/core/initialize.rs --offset 1 --limit 500`：读取了全部 158 行，验证结构体、trait 实现、构造器、两个 `Init` 和访问器实现。
-- RustCodeGraph 精确 `query`：确认目标文件的 20 个符号；对 `LoadData::Init` 的符号 ID 运行 `callers` 和 `callees` 均得到 `[]`，随后以 `rg` 复核重名方法的真实调用面。
-- Rust 源码与边界：`pkg/planner/core/common_plans.rs`、`pkg/planner/core/base/plan_base.rs`、`pkg/planner/core/lib.rs`、`pkg/planner/core/planbuilder.rs`、`pkg/planner/core/scalar_subq_expression.rs`。
-- crate 声明：`pkg/planner/core/Cargo.toml`，确认 crate 名、库根、`base-dependency` 路径、feature 边界和 Go 包对照元数据。
-- Go 对照：`pkg/planner/core/initialize.go`、`pkg/planner/core/common_plans.go`、`pkg/planner/core/operator/baseimpl/plan.go`，分别核对初始化入口、完整计划结构和 `NewBasePlan` 语义。
-- 独立 Rust 测试：`pkg/planner/core/initialize_test.rs` 用起始值为 40 的原子 ID 分配器验证两次初始化依次得到 41 和 42，并验证类型、零偏移和 `Arc` 指针同一性。按任务约束未运行 Cargo，因此这里记录的是测试源码证据，不是本次执行结果。

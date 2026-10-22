@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-util-schemacmp` crate（见 `pkg/util/schemacmp/Cargo.toml`），由 `lib.rs` 以 `mod r#type; pub use r#type::*;` 纳入并公开。它位于表级 schema 格实现的列类型层：`table.rs::encodeColumnInfoToLattice` 调用 `Type`，把 `model::ColumnInfo.FieldType` 包装成实现 `Lattice` 的 `typ`，随后表的 `Compare`/`Join` 间接使用这里的列类型比较和合并规则。
-
-crate 通过工作区依赖 `meta-model`、`parser-types` 和 `tidb-types` 获得表元数据、MySQL 类型/字符集定义以及 `FieldType` builder；工作区根 `Cargo.toml` 将该 crate 登记为 `facade_util_schemacmp`，`pkg/lib.rs` 再通过 facade 公开。当前检索到的直接生产调用集中在同 crate 的 `table.rs`，外部 Rust 使用点主要通过表级 `Encode`/`Table` API，而不是直接操作 `typ`。
+为表级缺失列处理提供 flag 调整和标准默认值；为表级索引重建提供键 flag 回写。
 
 ## 核心职责
 
@@ -98,13 +96,11 @@ RustCodeGraph 对 `encodeFieldTypeToLattice`、`Type`、`setFlagForMissingColumn
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/schemacmp/type.go`，测试对照是 `type_test.go` 与 Rust 的 `type_test.rs`、`type_2_aster_unit_test.rs`。
-
-核心语义保持一致：九维 tuple 顺序、反键 flag 顺序、DECIMAL 单点维、默认值 `Maybe`、charset/collation 与 ENUM/SET 规则、标准默认值，以及无键 `AUTO_INCREMENT` 错误文本均来自 Go 实现。Rust `type_test.rs::test_type_compare_join` 复刻 Go 的表驱动用例，并额外检查 join 交换性和上界性质；`type_2_aster_unit_test.rs` 补充编解码各维、`utf8mb3` 规范化、缺失列 flag、默认值与错误分支。
+Rust `type_test.rs::test_type_compare_join` 复刻 Go 的表驱动用例，并额外检查 join 交换性和上界性质；`type_2_aster_unit_test.rs` 补充编解码各维、`utf8mb3` 规范化、缺失列 flag、默认值与错误分支。
 
 实现表示存在有意差异：Go 的 `typ` 内嵌并长期保存 `Tuple`，Rust 的 `typ` 保存规范化 `FieldType`，在每次 `Compare`/`Join` 时重新编码；因此 Rust 另有 `decodeFieldTypeFromLattice(..., elems_present)` 维护 `Option<Vec<String>>` 存在性。Go 的 `getStandardDefaultValue` 返回 `any`，Rust 保留 `Box<dyn Any>` 兼容接口，并新增 `getStandardDefaultModelValue` 将值适配为 `model::DefaultValue`，供 Rust `ColumnInfo` 使用。
 
-Rust 的 `setFlagForMissingColumn` 直接修改 `FieldType.flag`；Go 版本直接替换 tuple 的反键和默认值维。两者的外部结果都清除键 flag、移除 `NoDefaultValueFlag` 并返回修改前是否无默认值，现有补充测试对此做了断言。
+Rust 的 `setFlagForMissingColumn` 直接修改 `FieldType.flag`；Go 版本直接替换 tuple 的反键和默认值维。
 
 ## 扩展指南
 
@@ -115,13 +111,3 @@ Rust 的 `setFlagForMissingColumn` 直接修改 `FieldType.flag`；Go 版本直�
 - 修改 ENUM/SET join 时要保留元素前缀规则以及 `None`/`Some(empty)` 状态；新增空 ENUM 支持前，应先消除默认值路径的 panic。
 - 性能优化若缓存 tuple，应测量表级大量列比较场景，并确保 `setFlagForMissingColumn`/`setAntiKeyFlags` 后缓存不会失效或与 `field_type` 分叉。
 - 兼容风险集中在恢复后的 `FieldType` flag、charset/collation、默认值字节表示和错误文本；这些字段会影响 schema 比较结果及下游 SQL 恢复，不能仅用编译通过代替行为验证。
-
-## 验证依据
-
-- 目标源码：`pkg/util/schemacmp/type.rs`，核对全部常量、函数、`typ` 及 `Lattice` 实现；文件当前无条件编译分支。
-- crate 边界与入口：`pkg/util/schemacmp/Cargo.toml`、`pkg/util/schemacmp/lib.rs`、工作区根 `Cargo.toml`、`pkg/lib.rs`。
-- 直接生产调用：`pkg/util/schemacmp/table.rs` 的 `encodeColumnInfoToLattice`、`ColumnMap::{CompareWithNil,JoinWithNil}`、`Table::Join`。
-- Go 对照：`pkg/util/schemacmp/type.go`；Go 测试：`pkg/util/schemacmp/type_test.go`。
-- Rust 独立测试：`pkg/util/schemacmp/type_test.rs` 与 `pkg/util/schemacmp/type_2_aster_unit_test.rs`；前者覆盖 round-trip 和 Compare/Join 表格，后者覆盖迁移补充边界。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/util/schemacmp/type.rs --offset 1 --limit 500` 返回完整 318 行；精确 `query` 找到 Rust/Go 同名定义；`callers`/`callees` 对选定私有函数和方法无输出，故直接边由精确引用检索补证。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定命令验证恰有十一个固定二级标题，并人工检查所有关键结论均可回溯到上述源码、调用点或测试。

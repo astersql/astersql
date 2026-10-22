@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate（见 `pkg/executor/Cargo.toml` 的 `[package] name = "astersql-executor"`），由 `pkg/executor/lib.rs` 通过 `pub mod set_config;` 暴露。它承载 Rust 版 `SET CONFIG` 的具体行为：把一项配置变更规范化并编码为 JSON，再根据集群节点类型向 status HTTP 端点下发。
-
-需要区分“模块可用”和“生产执行链已经直接采用本实现”。`pkg/executor/builder.rs::buildSetConfig` 当前只把计划交给注入的 `BuilderDependencies::build_executor(ExecutorKind::SetConfig, ...)`；全仓 Rust 搜索未发现该依赖分支直接构造 `set_config::SetConfigExec`，而 `SetConfigExec` 的明确实例化位于 `pkg/executor/set_test.rs`。因此，本文件已有可测试的完整局部实现，但从通用 builder 到该具体类型的生产接线在当前仓库证据中未验证。
+需要区分“模块可用”和“生产执行链已经直接采用本实现”。
 
 ## 核心职责
 
@@ -83,10 +81,6 @@ RustCodeGraph 的 `node SetConfigExec` 给出了测试导入和两个测试实�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/set_config.go`，主要流程基本逐段对应：
-
-- Rust `SetConfigExec` 对应 Go `SetConfigExec`；`Open` 同样规范化类型/实例/配置名、处理 TiFlash 前缀并预生成 JSON，`Next` 同样发现和过滤节点后按 PD/TiKV/TiFlash 路由。
-- Rust `SetConfigBackend` 合并了 Go 版从 session context、`infoschema.GetClusterServerInfo`、`util.InternalHTTPClient` 和 statement context warning 获得的能力，使本文件无需依赖完整会话对象。
 - Go 的计划字段是 `*core.SetConfig`，值仍是 `expression.Expression`，`ConvertConfigItem2JSON` 在 `Open` 中执行表达式求值；Rust 的 `SetConfigPlan` 和 `ConfigValue` 已是局部类型，因此表达式求值属于上游责任。
 - Go 用 `http.NewRequest`、响应 body 读取和 `defer resp.Body.Close()` 管理 HTTP 生命周期；Rust 后端直接返回响应摘要，资源释放责任移到后端实现。
 - Go `isValidInstance` 用 `net.SplitHostPort` 验证 host/port 结构，再只解析 host；Rust 手动拆分并解析 host，明确拒绝裸 IPv6，但没有验证端口数字格式。
@@ -94,7 +88,7 @@ RustCodeGraph 的 `node SetConfigExec` 给出了测试导入和两个测试实�
 - Go 对求值产生的 NULL 使用 `"can't set config to null"`，对空表达式使用 `"cannot set config to null"`；Rust 的单一 `ConfigValue::Null` 只返回后者，因此错误文案粒度略有差异。
 - Go builder 的 `buildSetConfig` 明确构造 `&SetConfigExec{...}`；Rust builder 当前只分发 `ExecutorKind::SetConfig`，没有直接构造本文件类型的可见证据。这是当前移植接线差异，不能从局部测试推断已经等价接入生产链。
 
-Go 测试 `pkg/executor/set_test.go::TestSetClusterConfig` 覆盖类型拒绝、DNS/实例查找、TiFlash 前缀、按类型/实例过滤、请求错误降级和 400 响应体；`TestSetClusterConfigJSONData` 覆盖字符串、布尔、整数、浮点、十进制、NULL 和不支持类型。Rust 对应测试位于独立文件 `pkg/executor/set_test.rs` 与 `pkg/executor/set_config_test.rs`，覆盖核心主路径，但 Go 测试的全部边界尚未在 Rust 中逐项复刻。
+Rust 对应测试位于独立文件 `pkg/executor/set_test.rs` 与 `pkg/executor/set_config_test.rs`，覆盖核心主路径，但 Go 测试的全部边界尚未在 Rust 中逐项复刻。
 
 ## 扩展指南
 
@@ -104,13 +98,3 @@ Go 测试 `pkg/executor/set_test.go::TestSetClusterConfig` 覆盖类型拒绝、
 - 若要完成生产接线，应从 `pkg/executor/builder.rs` 的 `ExecutorKind::SetConfig` 处理边界追踪 `BuilderDependencies` 的具体实现，确认如何把 planner 的 `PlanData` 转成 `SetConfigPlan`、提供生产 `SetConfigBackend` 并适配通用 `Executor` trait。当前证据不足以建议仅在 `buildSetConfig` 中直接替换类型。
 - 若希望并行下发、重试或原子化，必须先定义部分成功、warning 顺序、幂等性和超时契约；这会改变现有逐节点同步语义及 Go 兼容性，应增加多节点故障测试和性能评估。
 - 修改后应保持测试文件独立，并优先扩充 `pkg/executor/set_test.rs` 和 `pkg/executor/set_config_test.rs`；涉及生产接线时还需增加从 builder 到实际执行器的集成证据。
-
-## 验证依据
-
-- 源实现：`pkg/executor/set_config.rs`，核对了两个测试键、六个数据/状态类型（含 trait）、`SetConfigExec` 的三个方法及两个辅助函数。
-- crate 与模块边界：`pkg/executor/Cargo.toml`（crate 名、`astersql-util-chunk` 路径依赖）和 `pkg/executor/lib.rs`（`pub mod set_config`、独立测试模块）。目标包不存在 `doc.go`，没有可补充读取的包级 Go 契约。
-- Rust 上游与调用证据：`pkg/executor/builder.rs::{build, buildSetConfig, build_leaf}`、`ExecutorKind::SetConfig`；全仓 Rust 搜索只发现 builder 的种类分发和测试对具体 `SetConfigExec` 的构造。
-- Rust 测试：`pkg/executor/set_test.rs::{ConfigBackend, test_set_cluster_config, test_set_cluster_config_json_data}`；`pkg/executor/set_config_test.rs::unbracketed_ipv6_instance_is_invalid`。
-- Go 对照：`pkg/executor/set_config.go::{SetConfigExec.Open, SetConfigExec.Next, SetConfigExec.doRequest, isValidInstance, ConvertConfigItem2JSON}`、`pkg/executor/builder.go::buildSetConfig`、`pkg/executor/set_test.go::{TestSetClusterConfig, TestSetClusterConfigJSONData}`。
-- RustCodeGraph：`status` 显示索引可用；`query SetConfigExec --kind struct` 与 `node SetConfigExec` 定位 Rust 定义，并显示 `set_test.rs` 的导入及两个测试实例化边；`query ConvertConfigItem2JSON --kind function` 定位 Rust/Go 定义。`files --filter pkg/executor/set_config` 返回空，故未把缺失的 callers/callees 结果当作“无调用”证明，而以全仓 `rg` 交叉核验。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务规定的命令验证文档存在且恰含 11 个固定二级章节，并人工复查每项关键行为均能回溯到上述源码、测试或模块证据。

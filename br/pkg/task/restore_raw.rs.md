@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-该文件属于 Cargo crate `astersql-br-pkg-task`（见 `br/pkg/task/Cargo.toml`），是 BR 任务层的 RawKV 恢复编排实现，与 Go 文件 `br/pkg/task/restore_raw.go` 对照。`br/pkg/task/lib.rs` 通过 `#[path = "restore_raw.rs"] pub mod restore_raw` 挂载模块，并以 `pub use restore_raw::*` 对外平铺导出其公开 API。
-
-应用入口位于 `br/cmd/br/restore.rs::runRestoreRawCommand`：命令层构造 `RestoreRawConfig`、解析参数并在 tracing 包装中以 `TikvGlue` 调用 `RunRestoreRaw`。因此本文件位于“CLI 参数与环境准备”和“实际 PD/import 客户端生命周期”之间：它负责选择备份文件、计算进度与恢复参数，真实导入由 `Glue::GetRestoreLifecycle` 返回的 `restore_lifecycle::RestoreLifecycle` 完成。
-
-当前 Rust 实现已经接入命令路径和真实 restorer 抽象，但并非逐语句复制 Go 的完整客户端初始化流程。尤其是默认 `RestoreStorage` 路径会构造一份内存 `BackupMeta`；生产级外部存储与 PD/import 客户端必须由嵌入方的 storage/lifecycle 绑定提供，不能仅凭本文件断言已完成真实集群端到端恢复。
+因此本文件位于“CLI 参数与环境准备”和“实际 PD/import 客户端生命周期”之间：它负责选择备份文件、计算进度与恢复参数，真实导入由 `Glue::GetRestoreLifecycle` 返回的 `restore_lifecycle::RestoreLifecycle` 完成。
 
 ## 核心职责
 
@@ -94,7 +90,7 @@
 
 ## 与 Go 版本的对应关系
 
-结构上，Rust 的 `RestoreRawConfig`、flag 默认值、解析顺序、配置归一化、Raw/事务模式检查、文件归档大小、范围合并、进度总量、导入完成后成功标记以及 `getEndKeys` 均对应 `br/pkg/task/restore_raw.go`。Rust 独立测试固定了范围过滤、CF 过滤、边界相交、模式错误和部分覆盖错误；lifecycle 测试固定了 real restorer 消费与 mode/scheduler 生命周期。
+Rust 独立测试固定了范围过滤、CF 过滤、边界相交、模式错误和部分覆盖错误；lifecycle 测试固定了 real restorer 消费与 mode/scheduler 生命周期。
 
 关键差异必须保留在架构理解中：
 
@@ -118,10 +114,3 @@
 若补齐真实外部 storage、动态 TiKV region 配置或 SplitPoints，应在 `RunRestoreRaw` 与 lifecycle/glue 的职责边界上接线，不应把网络客户端塞回测试 stub；需要同步 `br/cmd/br/restore.rs` 的生产 glue、`restore_lifecycle.rs` 及相应独立测试。特别要验证失败时 progress、manager、importer、mode switcher 与 scheduler 均能恢复。
 
 兼容性风险主要是 Go/Rust 区间边界和错误分类漂移；正确性风险是 lifecycle 准备文件与元数据选择不一致；性能风险来自文件全量复制/排序、过度拆分及并发设置。任何生产行为变更都应继续保留 `ValidateFiles` 这道防丢文件检查。
-
-## 验证依据
-
-- 本次增量冻结为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件执行 `git diff ad0a6f4 2c944fb -- <源码路径>`，并以 `git show 2c944fb:<路径>` 的源码、同名 Go、Cargo.toml 和 lib.rs 为依据，不采用未提交 Rust 内容。
-- RustCodeGraph 当前 status 包含 Rust，但索引不是冻结提交的事实快照，因此调用边界以冻结 blob 和 `git grep ... 2c944fb -- '*.rs'` 为准；本次检查目标包均没有 doc.go。
-- 独立测试与边界证据：`br/pkg/task/restore_raw_test.rs` 及 `restore_name_route_test.rs::name_route_raw_restore_rejects_inherited_rename_flag`；拒绝条件与同名 Go ParseFromFlags 对照。
-- Ready 文档验证：8 篇各有固定 11 个二级章节；对本任务路径运行 `git diff --check`。仅文档同步，不运行 Cargo、Go 测试或运行时集群验证；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，使用任务指定文档检查作为 Ready 等价证据。

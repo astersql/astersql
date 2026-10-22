@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-parser-charset` crate 的通用编码抽象与分派层。`pkg/parser/charset/Cargo.toml` 将 `lib.rs` 声明为 crate 入口；`lib.rs` 通过 `pub mod encoding` 纳入本文件，并再导出 `FindEncoding`、`CountValidBytes*` 和公开 `Op*` 组合。因此它位于 SQL 解析器、表达式和 datum 逻辑与各具体字符集实现之间：上游按名称获取统一的 `EncodingRef`，下游再由 UTF-8、GBK、GB18030、Latin1、ASCII 或 binary 实现执行实际校验与转换（依据：`encoding.rs::Encoding`、`encoding.rs::FindEncoding`、`lib.rs:208-230`）。
+提供合法前缀统计和各编码实现共享的错误收尾、非法字符处置与 UTF-8 分块辅助（`CountValidBytes*`、`finish_transform`、`invalid_action`、`utf8_chunk`）。
 
 ## 核心职责
 
@@ -64,11 +64,11 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/parser/charset/encoding.go` 是主要对照。Rust 保留了七种字符集的查找集合、未知名回退 binary、UTF-8-as-noop 优化、`Encoding` 方法集、`EncodingTp` 顺序、`Op` 比特布局和通过 `Foreach` 计算合法前缀的流程。Rust 以 `match` 取代 Go `encodingMap`，但 `IsSupportedEncoding` 与 `FindEncoding` 的外部结果保持一致。
+Rust 保留了七种字符集的查找集合、未知名回退 binary、UTF-8-as-noop 优化、`Encoding` 方法集、`EncodingTp` 顺序、`Op` 比特布局和通过 `Foreach` 计算合法前缀的流程。Rust 以 `match` 取代 Go `encodingMap`，但 `IsSupportedEncoding` 与 `FindEncoding` 的外部结果保持一致。
 
-语言层差异包括：Go `Transform` 接收 `*bytes.Buffer` 并允许返回源切片别名，Rust 接收 `&mut Vec<u8>` 且总是返回自有 `Vec<u8>`；Go 的普通 `error` 在 Rust 中变为可查询部分输出的 `EncodingError`；Go `MbLen(string)` 在 Rust trait 中接收 `&[u8]`。此外，Rust 本文件内直接放置 binary/ASCII 实现，Go 将它们分在 `encoding_bin.go` 和 `encoding_ascii.go`。
+语言层差异包括：Go `Transform` 接收 `*bytes.Buffer` 并允许返回源切片别名，Rust 接收 `&mut Vec<u8>` 且总是返回自有 `Vec<u8>`；Go 的普通 `error` 在 Rust 中变为可查询部分输出的 `EncodingError`；Go `MbLen(string)` 在 Rust trait 中接收 `&[u8]`。
 
-`pkg/parser/charset/encoding_test.rs` 对齐 Go `encoding_test.go` 的 GBK/GB18030 往返、非法输入替换和多字符集校验，并额外锁定 Rust 的 `dest` 快路行为和 ASCII 错误分块语义。`encoding_gb18030_2_aster_unit_test.rs::test_encoding_lookup_and_fallback` 覆盖空串/未知名回退和 UTF-8-as-noop。
+`pkg/parser/charset/encoding_test.rs` 对齐 Go `encoding_test.go` 的 GBK/GB18030 往返、非法输入替换和多字符集校验，并额外锁定 Rust 的 `dest` 快路行为和 ASCII 错误分块语义。
 
 ## 扩展指南
 
@@ -77,12 +77,3 @@
 - 修改 ASCII 时，必须保留 Go 的 Peek 错误分组，并更新 `pkg/parser/charset/encoding_test.rs`；修改具体编码则优先更新同目录的 `encoding_<name>_test.rs`。Rust 源与测试不要放在同一文件。
 - 更改查找回退或 `utf8`/`utf8mb4` 映射前，检查 `pkg/parser/lexer.rs`、`pkg/parser/yy_parser.rs`、`pkg/parser/ast/base.rs`、`pkg/expression/builtin_convert_charset.rs`、`pkg/types/datum.rs` 的上游假设；这类改动可直接改变 SQL 文本解析、节点文本和显式字符集转换结果。
 - 性能风险主要在额外分配/复制、字符分块颗粒和 UTF-8 校验。只有上游已保证 UTF-8 合法时才应使用 `FindEncodingTakeUTF8AsNoop`；否则会将非法输入当作 binary 透传。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：`rustcodegraph status` 报告 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/parser/charset` 确认目标、Go 对照和独立测试均在索引中。
-- 符号与源码查询：`query FindEncoding --kind function`、`query Encoding --kind trait`、`query CountValidBytes --kind function`、`query finish_transform`、`query invalid_action`、`query utf8_chunk`；`node --file pkg/parser/charset/encoding.rs` 覆盖全文 1-385 行。
-- 调用关系查询：`explore "pkg/parser/charset/encoding.rs symbols callers callees encoding"` 返回 `FindEncoding` 的 parser/expression/types 使用面；对 `FindEncoding`、`CountValidBytes`、`finish_transform`、`invalid_action`、`utf8_chunk` 的精确 `callers`/`callees --json` 在当前索引中返回空数组，已用 `rg` 的直接调用点补齐且未把空边解读为无使用。
-- 已读文件：`pkg/parser/charset/encoding.rs`、`pkg/parser/charset/Cargo.toml`、`pkg/parser/charset/lib.rs`、`pkg/parser/charset/encoding.go`、`pkg/parser/charset/encoding_test.rs`、`pkg/parser/charset/encoding_test.go`；还以直接搜索核对了 `pkg/parser/lexer.rs`、`pkg/parser/yy_parser.rs`、`pkg/parser/ast/base.rs`、`pkg/expression/builtin_convert_charset.rs`、`pkg/expression/collation.rs`、`pkg/types/datum.rs` 的调用点。
-- 测试证据：`encoding_test.rs::{test_encoding,test_encoding_validate,test_ascii_foreach_uses_utf8_peek_width,test_noop_transform_preserves_destination_buffer,test_encoding_gb18030}` 与 Go `encoding_test.go::{TestEncoding,TestEncodingValidate,TestEncodingGB18030}` 对齐主要语义；查找回退还由 `encoding_gb18030_2_aster_unit_test.rs::test_encoding_lookup_and_fallback` 覆盖。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务指定的 `test -f` 与固定十一章节 `rg -c` 命令验证文档结构。

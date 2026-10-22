@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ingestor-ingestctrl` crate。`pkg/ingestor/ingestctrl/Cargo.toml` 将 `lib.rs` 指定为 crate 入口，`pkg/ingestor/ingestctrl/lib.rs` 通过 `pub mod local_unix` 对外公开此模块。它是 local backend 创建前的 Unix 进程资源门禁：读取 `RLIMIT_NOFILE`，并在当前 soft limit 不足时尝试提升，避免并发写 SST 和打开 Engine 文件时过早耗尽文件描述符。
-
-直接 Rust 生产接线是 `pkg/ingestor/ingestctrl/local.rs::NewLocalBackend`：配置调整后，它以 `config.max_open_files` 调用 `VerifyRLimit`，成功后才创建 `EngineManager`。`GetSystemRLimit` 是公开查询 API，但全仓 Rust 搜索未发现当前生产调用者；Go 版 Lightning 仍使用对应 API 计算每表最大打开文件数。
+不计算业务侧所需的文件数，也不打开、关闭或管理 SST/Engine 文件；上游必须先给出估算值。
 
 ## 核心职责
 
@@ -80,15 +78,10 @@ RustCodeGraph 对精确 `callers/callees` 查询未返回这组 FFI/同名符号
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/ingestor/ingestctrl/local_unix.go`。Rust `maxRLimit`、`GetSystemRLimit` 和 `VerifyRLimit` 保留了 Go 同名符号与主要分支：截断过大请求、首次读取、充足时短路、提升过低 hard limit、设置 soft limit、复读验证，以及失效时给出 `ulimit -n` 建议。
-
 实现机制存在三个可见差异：
 
 1. Go 使用 `syscall.Rlimit`/`syscall.Getrlimit`/`syscall.Setrlimit`；Rust 自行定义 `#[repr(C)] RawRLimit` 并声明 C ABI。
-2. Go 通过 `GetRlimitValue` 和 `SetRlimitError` failpoint 操纵生产函数；Rust 把算法抽成闭包注入的 `verify_rlimit_with`，由 `local_unix_test.rs` 以确定性 fake 覆盖相同边界。
 3. Go 成功提升后记录 old/new rlimit 日志；当前 Rust 成功路径不记日志。这是可观测性差异，不改变返回值判定。
-
-Go 上游 `lightning/pkg/server/lightning.go::checkSystemRequirement` 按数据规模、MemCache 和并发度估算需要的 fd 并调用 `VerifyRLimit`；`lightning/pkg/importer/import.go` 调用 `GetSystemRLimit` 推导每表 `maxOpenFiles`。当前本 Rust crate 的直接生产接线是 `NewLocalBackend` 使用已有 `config.max_open_files`，`GetSystemRLimit` 则无 Rust 生产调用者；因此文档不声称两边上游装配已完全一致。
 
 ## 扩展指南
 
@@ -99,13 +92,3 @@ Go 上游 `lightning/pkg/server/lightning.go::checkSystemRequirement` 按数据�
 - 若要让 Rust Lightning 直接使用本 crate，需改造它当前的 `stubs.rs` 边界与 Cargo 接线；不应仅因同名 `VerifyRLimit` 就假定已连通。
 
 兼容性风险主要是错误类别/文本与 Go 语义漂移，正确性风险主要是 FFI ABI、平台常量和并发修改资源限制，性能开销仅为常数次系统调用，通常低于后续 Engine/SST 工作。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边，目标目录与目标文件已索引。
-- RustCodeGraph `files --filter pkg/ingestor/ingestctrl` 与 `node --file pkg/ingestor/ingestctrl/local_unix.rs`：核对 102 行完整源码、条件编译项、FFI 声明和两个使用文件。
-- RustCodeGraph `query GetSystemRLimit` / `query VerifyRLimit` / `query verify_rlimit_with`：核对同名 Go/Rust/Windows 符号与唯一内部核心函数。精确 `callers/callees` 未返回边，文档已明确保留该限制，没有把缺失图边写成已验证事实。
-- RustCodeGraph 文件节点：`pkg/ingestor/ingestctrl/local_unix_test.rs`、`pkg/ingestor/ingestctrl/lib.rs`、`pkg/ingestor/ingestctrl/local.rs`、`pkg/ingestor/ingestctrl/local_unix_generic.rs`。
-- crate 边界：`pkg/ingestor/ingestctrl/Cargo.toml`；Go 对照：`pkg/ingestor/ingestctrl/local_unix.go`、`lightning/pkg/server/lightning.go`、`lightning/pkg/importer/import.go`。
-- Rust 独立测试 `pkg/ingestor/ingestctrl/local_unix_test.rs` 覆盖：设置失败不复读、限制已足够时短路、请求截断并提高 hard limit、保留已足够的 hard limit、复读错误传播、设置未生效时的手工修复提示。
-- 人工复核结论：该文件存在是为了在 local backend 打开大量 Engine/SST 文件前建立进程级 fd 容量门禁；运行时最多执行两次读取和一次写入；安全扩展必须同步审查 FFI/平台语义、`NewLocalBackend` 调用链、Go 对照和独立 Rust 测试。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-br-pkg-encryption` crate 的核心实现，负责把备份文件携带的加密元数据转换为实际解密动作。crate 入口 `br/pkg/encryption/lib.rs` 以 `pub use manager::*` 重导出这里的公开类型和函数；`br/pkg/encryption/Cargo.toml` 表明它直接依赖主密钥适配 crate `astersql-br-pkg-encryption-master-key` 和 AES-CTR 工具 crate `astersql-util-encrypt`。
-
-它位于“从外部存储读取备份字节”与“具体密钥后端/AES 解密”之间。当前可见的生产接线在 `br/pkg/stream/stream_mgr.rs`：`MetadataHelper::ReadFileWithEncryption` 校验密文 checksum 后，通过持有的 `EncryptionManager` 调用 `Manager::Decrypt`，再对明文做解压；`MetadataHelper::Close` 转发 `Manager::Close`。因此本文件不负责文件 I/O、checksum 或压缩，只负责选择密钥来源并解密字节。
+`NewManager` 在旧式明文 data key 配置和主密钥保护的 data key 配置之间选择一种管理器状态；两者都未启用时返回 `Ok(None)`。
 
 ## 核心职责
 
@@ -101,7 +99,7 @@ RustCodeGraph 对 `manager.rs` 的文件级使用者还列出 `br/pkg/stream/str
 
 ## 与 Go 版本的对应关系
 
-Rust `manager.rs` 直接对照 `br/pkg/encryption/manager.go`：`Manager` 的三项状态、`NewManager` 的分支优先级、两种文件模式、只选第一个加密 data key、错误上下文以及关闭主密钥后端的意图均保持一致。`br/pkg/encryption/parity_test.rs` 还以公开契约测试固定了 nil 配置、无有效加密返回空、真实 AES-128-CTR 向量、空主密钥列表、未知 cipher 与 unset mode 等行为。
+Rust `manager.rs` 直接对照 `br/pkg/encryption/manager.go`：`Manager` 的三项状态、`NewManager` 的分支优先级、两种文件模式、只选第一个加密 data key、错误上下文以及关闭主密钥后端的意图均保持一致。
 
 需要注意的实现差异：
 
@@ -121,15 +119,3 @@ Rust `manager.rs` 直接对照 `br/pkg/encryption/manager.go`：`Manager` 的三
 - 若改变错误类型，应保留三层可辨识上下文：主密钥解包、明文 data key 内容解密、解包后的 data key 内容解密，并同步对等测试的断言。
 - 若增加自动资源管理，可考虑受控的 `Drop`，但必须先验证各 backend 重复关闭的幂等性以及显式 `Close` 后再次析构的行为。
 - 测试仍应放在独立文件：公开契约与本文件分支放在 `br/pkg/encryption/parity_test.rs`；主密钥后端细节放在 `br/pkg/encryption/master_key/*_test.rs`；上游读取顺序和锁/关闭接线放在 `br/pkg/stream/stream_mgr_test.rs`。不要把测试模块内嵌回 `manager.rs`。
-
-## 验证依据
-
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，其中 Rust 7,032 个；本次查询基于现有 SQLite 索引。
-- RustCodeGraph `node --file br/pkg/encryption/manager.rs`：核对了文件全部 174 行、公开符号、内部字段和分支。
-- RustCodeGraph `explore`、`query NewManager`、`callers`/`callees`：确认 `NewManager -> IsEffectiveEncryptionMethod`、`Manager::Decrypt -> DecryptContent` 等边，并暴露了同名 `Manager`/`NewManager` 的歧义；歧义项随后用精确路径文本检索排除。
-- crate 与入口：`br/pkg/encryption/Cargo.toml`、`br/pkg/encryption/lib.rs`、根 `Cargo.toml`。
-- 直接下游：`br/pkg/encryption/master_key/multi_master_key_backend.rs`、`br/pkg/encryption/master_key/master_key.rs`、`br/pkg/utils/encryption.rs`、`pkg/util/encrypt`（由 Cargo 路径依赖确认）。
-- 直接上游：`br/pkg/stream/stream_mgr.rs`，重点核对 `MetadataHelper::with_encryption_manager`、`ReadFileWithEncryption` 和 `Close`。
-- Go 对照：`br/pkg/encryption/manager.go`、`br/pkg/utils/encryption.go`、`br/pkg/encryption/master_key/multi_master_key_backend.go`。
-- 独立测试：`br/pkg/encryption/parity_test.rs`；相关上游顺序测试位于 `br/pkg/stream/stream_mgr_test.rs`。主密钥具体实现另由 `br/pkg/encryption/master_key/*_test.rs` 覆盖。
-- 人工复核结论：本文能够回答文件存在原因、构造和解密路径、状态不变量、上游接线、错误与资源边界，以及扩展时需同步的实现和独立测试位置；未把名称歧义造成的测试引用误报为本文件生产调用。

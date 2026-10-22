@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-server-handler-optimizor`，由同目录 `lib.rs` 以 `pub mod optimize_trace` 暴露。它是 Optimize Trace 下载端点的参数适配层：把 HTTP 路由中的文件名、Optimizer Trace 目录、本机地址和 status 端口整理成 `DownloadFileRequest`，再交给抽象运行时执行下载。文件本身不读取文件、不访问集群拓扑，也不直接写 HTTP 响应。
-
-在 Go 应用中，对应路由是 `/optimize_trace/dump/{filename}`（`pkg/server/http_status.go`），并由 `pkg/server/handler/optimizor/optimize_trace.go` 的 handler 调用共用下载逻辑。当前 Rust 应用层尚未完成同等接线：`pkg/server/http_status.rs` 仍将该路由注册为 `HandlerKind::Optimizer` 的 unavailable 占位，因此不能把本文件的存在理解为 Rust status server 已经对外提供 Optimize Trace 下载。
+刻意把环境相关行为放在 trait 后面，便于独立测试请求组装；真正的本地文件读取、跨 TiDB 节点转发、ZIP 响应头和 404 处理不在本文件中实现。
 
 ## 核心职责
 
@@ -68,9 +66,9 @@ RustCodeGraph 将目标文件列为被 `optimize_trace_test.rs` 和 `plan_replay
 
 ## 与 Go 版本的对应关系
 
-Rust `OptimizeTraceHandler` 对应 Go 同名结构，但当前只保留 `address` 和 `statusPort`；Go 结构还持有 `*infosync.InfoSyncer`，供共用下载器发现其他 TiDB 节点。Rust 构造函数因此也少一个 `infoGetter` 参数。
+Rust `OptimizeTraceHandler` 对应 Go 同名结构，但当前只保留 `address` 和 `statusPort`；Go 结构还持有 `*infosync.InfoSyncer`，供共用下载器发现其他 TiDB 节点。
 
-两端 `ServeHTTP` 的组装字段基本一一对应：Go 的 `domain.GetOptimizerTraceDirName()` 对应 `optimizer_trace_directory()`，`util.InternalHTTPSchema()` 对应 `internal_http_scheme()`，`filepath.Join(..., name)` 对应 `join_clean`，URL 路径和附件名保持相同。Rust 用 `DownloadFileRequest` 与 trait 隔离 HTTP/存储细节，而 Go 直接构造 `downloadFileHandler` 并调用 `handleDownloadFile`。
+Rust 用 `DownloadFileRequest` 与 trait 隔离 HTTP/存储细节，而 Go 直接构造 `downloadFileHandler` 并调用 `handleDownloadFile`。
 
 Go 共用下载器已经实现外部存储查询、本地流式返回、跨节点转发、404、日志和响应头；Rust 目标文件只委托 `download_file`。相邻 Rust `plan_replayer.rs` 有一套内存化的同类算法，但目标文件和 status 路由尚未把它接起来。因此迁移状态是“请求组装和路径兼容逻辑已有独立实现与测试，应用级下载链尚未接线”。
 
@@ -82,14 +80,3 @@ Go 共用下载器已经实现外部存储查询、本地流式返回、跨节�
 - 修改请求字段时应同步 `DownloadFileRequest`、`OptimizeTraceRuntime::download_file` 的实现者以及 Go 对照字段，并检查转发 URL 是否仍使用原始路由名。
 - 修改失败策略时应为 `download_file` 返回错误的场景增加独立测试，确认 `write_error` 的调用次数和是否允许继续写响应。
 - Rust 单元测试继续保留在同目录独立 `*_test.rs` 文件，由 `lib.rs` 的 `#[cfg(test)] mod optimize_trace_test` 装配，不要内嵌到生产文件。
-
-## 验证依据
-
-- 生产源码：`pkg/server/handler/optimizor/optimize_trace.rs`，核对了 1 个请求结构、1 个 runtime trait、1 个 handler、构造函数、方法入口、包级转发函数和私有路径函数。
-- Crate 边界：`pkg/server/handler/optimizor/Cargo.toml` 与 `lib.rs`，确认包名、模块公开方式、测试模块装配及无本模块 feature 条件。
-- RustCodeGraph：`status` 显示索引可用；`files --filter pkg/server/handler/optimizor` 确认目标、Go 对照和独立测试都已索引；文件级 `node` 显示源码全貌及关联文件；精确 `query OptimizeTrace` / `query OptimizeTracer` 确认主要符号候选；`callers/callees` 未发现目标 handler 的生产调用边，随后用仓库引用搜索核实未接线事实。
-- Rust 测试：`pkg/server/handler/optimizor/optimize_trace_test.rs::filepath_join_keeps_directory_for_rooted_route_name`，验证根路径形式的路由名在 `file_path` 中仍位于配置目录下，同时原始名字和双斜杠 URL 被保留。
-- 相邻下载测试：`pkg/server/handler/optimizor/plan_replayer_test.rs::shared_download_handler_only_rewrites_plan_replayer_capture_files`，证明 Optimize Trace 类型的请求不应触发 Plan Replayer capture 内容改写；其他相邻用例提供转发 URL、404、IPv6 和响应写失败语义的参考，但不等于目标 handler 已接入这些能力。
-- Go 对照：`pkg/server/handler/optimizor/optimize_trace.go`、`plan_replayer.go::handleDownloadFile`、`pkg/server/http_handler.go::newOptimizeTraceHandler` 和 `pkg/server/http_status.go`，核对字段映射、共享下载流程和真实路由入口。
-- Rust 应用入口：`pkg/server/http_status.rs`，确认 `/optimize_trace/dump/{filename}` 当前注册为 Optimizer unavailable 占位；`pkg/server/http_handler.rs::new_optimize_trace_handler` 是另一轻量数据结构的构造函数，并未调用本文件的 handler。
-- 本任务是纯文档分析，按计划不运行 Cargo；结构验证另行执行并记录退出状态。

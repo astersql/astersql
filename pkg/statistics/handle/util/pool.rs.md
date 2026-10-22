@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文说明的源文件是 [`pool.rs`](pool.rs)。它属于 `astersql-statistics-handle-util` crate；crate 入口 `pkg/statistics/handle/util/lib.rs` 以 `pub mod pool` 声明模块并通过 `pub use pool::*` 重导出其公开 API。该 crate 的清单 `pkg/statistics/handle/util/Cargo.toml` 指明 Go 对照包为 `pkg/statistics/handle/util`，而本文件直接对应同目录的 `pool.go`。
-
-它提供统计子系统使用的两类资源抽象：可复用线程的 `GoroutinePool`，以及把该线程池和 `SessionPool` 聚合起来的 `Pool`/`StatsPool`。Rust 接口层 `pkg/statistics/handle/types/interfaces.rs` 会继续重导出 `Pool`，使其成为 `StatsHandle` 的组成契约；但截至本次检查，RustCodeGraph 和仓库搜索没有找到 `new_pool`、`g_pool`、`s_pool` 或该 `GoroutinePool::submit` 的非测试 Rust 调用者。因此当前 Rust 文件已经实现并导出资源池能力，却尚未像 Go `NewHandle` 那样接入生产构造链，不能把 Go 侧的运行时使用情况视作 Rust 侧已接线。
+提供统计子系统使用的两类资源抽象：可复用线程的 `GoroutinePool`，以及把该线程池和 `SessionPool` 聚合起来的 `Pool`/`StatsPool`。
 
 ## 核心职责
 
@@ -87,12 +85,3 @@ Rust `Pool` 对应 Go `Pool` 接口，`StatsPool` 对应未导出的 Go `pool`�
 - 新增等待关闭、任务错误收集或 panic 隔离时，不能把 join 放进当前 `close` 而不评估阻塞风险；现有测试要求 `close` 快速返回。可考虑新增独立方法而不是改变 `close` 契约。
 - 调整 worker 计数时，应分别维护 `workers`（存活线程）和 `idle_workers`（取得保留名额），并为任务 panic、超时与关闭竞态增加确定性的独立测试。Rust 单元测试继续放在 `pool_test.rs`，不要内嵌进生产文件。
 - 若改变 `Pool` trait 或 `SessionPool` 类型，应同步检查 `pkg/statistics/handle/types/interfaces.rs` 的重导出及 `interfaces_test.rs::public_traits_accept_the_real_dependency_contracts` 的组合约束。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`files --filter pkg/statistics/handle/util` 确认目标、Go 对照和测试均已索引；`node --file pkg/statistics/handle/util/pool.rs` 读取完整 201 行实现；`query GoroutinePool`、`query StatsPool`、`query new_pool`、`query submit` 定位主要符号；`callers`/`callees` 针对 `pool.rs::submit`、`pool.rs::new_pool`、`pool.rs::g_pool`、`pool.rs::s_pool` 未返回生产调用边。
-- Rust 源与模块边界：`pkg/statistics/handle/util/pool.rs`、`pkg/statistics/handle/util/lib.rs`、`pkg/statistics/handle/util/util.rs::SessionPool`、`pkg/statistics/handle/types/interfaces.rs`、`pkg/statistics/handle/types/interfaces_test.rs`。
-- crate 声明：`pkg/statistics/handle/util/Cargo.toml`，确认包名、`lib.rs` 入口、Go 包映射和依赖边界；本文件的并发实现只使用标准库及同 crate 类型。
-- Rust 独立测试：`pkg/statistics/handle/util/pool_test.rs` 的三个测试分别覆盖空闲容量语义、非阻塞关闭/关闭后忽略任务、零超时 worker 复用。
-- Go 对照与调用证据：`pkg/statistics/handle/util/pool.go`、`pkg/statistics/handle/handle.go::NewHandle`、`pkg/statistics/handle/storage/stats_read_writer.go::LoadStatsFromJSONConcurrently`，以及仓库搜索得到的 `SPool`/`GPool` 调用点。
-- 本任务为纯文档分析，按计划未运行 Cargo。交付前执行任务规定的 11 章节结构命令，并人工复核当前事实与 Go 目标链的界限。

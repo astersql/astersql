@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-restore-utils`。包入口 [`lib.rs`](./lib.rs) 以 `pub mod merge` 挂载本模块，再通过 `pub use merge::*` 扁平导出其公共 API；[`Cargo.toml`](./Cargo.toml) 将该包标为 Go 包 `br/pkg/restore/utils` 的 Rust 移植，并声明对 `astersql-br-pkg-errors`、`astersql-br-pkg-rtree` 和 `astersql-errors` 的直接依赖。
-
-它处在 BR 快照恢复的“备份 SST 元数据 → 可用于 Region 切分/散布的有序范围”转换位置：把同一原始键区间的 write/default CF 文件组成一个逻辑范围，先应用目标表键重写，再让 rtree 按大小和键数阈值合并相邻小范围。这样做的业务目的可由 Go 版本 [`merge.go`](./merge.go) 的函数注释核对：减少大量小 Region 恢复时的 split/scatter 开销。
-
-当前 Rust 接线需要与设计归属分开看待。仓库文本调用搜索表明，此文件的 `MergeAndRewriteFileRanges` 目前由本 crate 的 [`merge_test.rs`](./merge_test.rs) 和 [`parity_test.rs`](./parity_test.rs) 直接调用；Rust [`../snap_client/tikv_sender.rs`](../snap_client/tikv_sender.rs) 虽有同名调用，但从其 `crate::stubs` 导入，实际落到 [`../snap_client/stubs.rs`](../snap_client/stubs.rs) 的同名副本，而不是本文件。Go 生产链则由 [`../snap_client/tikv_sender.go`](../snap_client/tikv_sender.go)、`br/pkg/task/restore_raw.go` 和 `br/pkg/task/restore_txn.go` 调用本路径的 Go 实现。因此，本文件是 canonical restore-utils Rust API，但尚不能据现有调用证据声称已接入 Rust 快照恢复生产链。
+处在 BR 快照恢复的“备份 SST 元数据 → 可用于 Region 切分/散布的有序范围”转换位置：把同一原始键区间的 write/default CF 文件组成一个逻辑范围，先应用目标表键重写，再让 rtree 按大小和键数阈值合并相邻小范围。
 
 ## 核心职责
 
@@ -97,10 +93,9 @@ Rust [`merge.rs`](./merge.rs) 与 Go [`merge.go`](./merge.go) 在公开数据模
 - Go 输入是 `[]*backuppb.File`，返回 `[]rtree.RangeStats`、`*MergeRangesStat` 和 `error`；Rust 消费 `Vec<backuppb::File>`，返回元组值和 `SharedError`。
 - Rust 需要 `to_rtree_files` 把本 crate 的 stub 文件类型投影为 rtree 文件类型；Go 两层直接共享 kvproto 文件指针。
 - Go 通过 `bytes.Equal` 比较键并用字符串键建 map；Rust 用 `Vec<u8>` 的值相等和哈希实现相同语义。
-- Rust 在合并后范围数为零时把平均值设为零，避免 Go 版本潜在的除零路径。
 - Rust 的整数统计固定为 `i32`，Go 的 `int` 宽度取决于平台；极大输入下边界并不完全相同。
 
-测试对照也保持独立文件：[`merge_test.rs`](./merge_test.rs) 镜像 [`merge_test.go`](./merge_test.go) 的空输入、阈值边界、同表合并、跨表/跨索引隔离、乱序输入、RawKV default-only、未知 CF 和规模路径。Rust 规模测试只保留 100/1k/10k 的单次执行，没有移植 Go 50k/100k benchmark；这属于测试形态/覆盖规模差异，不应据此宣称生产性能已经等价。`parity_test.rs` 另提供空、非法 CF、正常 write 的门面级冒烟覆盖。
+Rust 规模测试只保留 100/1k/10k 的单次执行，没有移植 Go 50k/100k benchmark；这属于测试形态/覆盖规模差异，不应据此宣称生产性能已经等价。
 
 ## 扩展指南
 
@@ -110,12 +105,3 @@ Rust [`merge.rs`](./merge.rs) 与 Go [`merge.go`](./merge.go) 在公开数据模
 - 改变相邻范围能否合并或阈值边界时，应修改 `astersql-br-pkg-rtree` 的 `NeedsMerge`/`MergedRanges` 并同步其独立测试；本文件只传递 `rangeSize`、`rangeCount` 和阈值。跨表、跨索引以及“恰好等于阈值”的用例是兼容关键点。
 - 若把 Rust 快照恢复生产链切换到本 canonical crate，应先移除或收敛 `snap_client/stubs.rs` 的同名副本，在 `snap_client/Cargo.toml` 增加明确依赖，并核对两边的 `backuppb::File`、`RewriteRules`、`RangeStats` 类型是否同源。仅替换 import 名称不足以证明接线完成。
 - 优化复制或整数类型时，风险分别是所有权生命周期变化、文件列表顺序/内容变化以及统计溢出语义变化。至少同步 `merge_test.rs`、`parity_test.rs`，并在生产接线后补充 `snap_client` 侧调用测试。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter br/pkg/restore/utils` 列出本目录 17 个索引文件；`node --file br/pkg/restore/utils/merge.rs --offset 1 --limit 400` 读取目标文件 195 行并报告 5 个符号；`query MergeAndRewriteFileRanges --kind function --json` 区分了 Go 实现、本文件实现和 `snap_client/stubs.rs` 同名实现。精确 `callers/callees` 未产生可用输出，因此调用边用下述源码搜索补齐，没有把缺失图边当成事实。
-- 目标与模块：[`merge.rs`](./merge.rs)、[`lib.rs`](./lib.rs)、[`Cargo.toml`](./Cargo.toml)。
-- 下游实现：[`rewrite_rule.rs`](./rewrite_rule.rs) 的 `RewriteRange`；`br/pkg/rtree/rtree.rs` 的 `RangeStatsTree::InsertRange`、`RangeStatsTree::MergedRanges` 与 `NeedsMerge`；`br/pkg/rtree/Cargo.toml`。
-- Rust 调用/接线：[`merge_test.rs`](./merge_test.rs)、[`parity_test.rs`](./parity_test.rs)、[`../snap_client/tikv_sender.rs`](../snap_client/tikv_sender.rs)、[`../snap_client/stubs.rs`](../snap_client/stubs.rs) 和 [`../snap_client/Cargo.toml`](../snap_client/Cargo.toml)。
-- Go 对照与调用：[`merge.go`](./merge.go)、[`merge_test.go`](./merge_test.go)、[`../snap_client/tikv_sender.go`](../snap_client/tikv_sender.go)、`br/pkg/task/restore_raw.go`、`br/pkg/task/restore_txn.go`。
-- 人工复核结论：本文能够回答文件存在目的、从分组到重写再到有序合并的运行过程、错误/不变量、当前 Rust 未接入生产发送链的限制，以及扩展时应修改的符号和独立测试位置。任务是纯文档分析，按计划不运行 Cargo。

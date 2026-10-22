@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate：`pkg/executor/Cargo.toml` 将库入口设为 `lib.rs`，`pkg/executor/lib.rs` 通过 `pub mod statement_ru_reporting` 公开本模块，并在 `#[cfg(test)]` 下装配独立测试 `statement_ru_reporting_test.rs`。模块位于 RU v2 语句核算链的“归属与发布”层：它不遍历物理计划，也不读取运行时统计，而是接收已经汇总的 `StmtUnits`/`StatementRUComputeUnits`，按 TiDB、TiKV、TiFlash 三个引擎计算 RU 归属，并把 full 模式的有界明细交给发布 sink。
-
-直接上游是 `pkg/executor/statement_ru_result.rs` 与 `pkg/executor/statement_ru_plan_walk.rs`。前者的 `StatementRUCalculator::finalize` 调用 `statement_ru_engine_result`、追加 TiFlash 倍率并冻结 `StatementRUFullReport`；`publish_statement_ru_finalized_snapshot` 再调用 `publish_statement_ru_full_metrics`。后者在计划证据遍历和 EXPLAIN 累计中调用 `statement_ru_tiflash_ru`，并使用 `STATEMENT_RU_TIFLASH_MULTIPLIER`。因此本文件是“证据采集”与“最终指标/资源组发布”之间的纯数值边界。
+用 `StatementRUEngine`、`StatementRUOperator` 和固定二维数组保存 full 模式的引擎/算子原始单位，避免保存计划节点、SQL、表名或索引名。
 
 ## 核心职责
 
@@ -77,13 +75,11 @@
 
 ## 与 Go 版本的对应关系
 
-主要数据结构与公式直接对应 `pkg/executor/statement_ru_reporting.go`：Rust 的 engine/operator 枚举、compute/result/full-report、`add`、`add_operator`、`statement_ru_engine_result`、`statement_ru_tiflash_ru`、`add_statement_units` 和 full metrics 发布，分别对应 Go 的同名 camelCase 类型/方法。Rust 测试名中的 `go_merge_195`/`go_merge_197` 也明确固定了这些移植语义。
+Rust 测试名中的 `go_merge_195`/`go_merge_197` 也明确固定了这些移植语义。
 
-已对齐的关键行为包括：非 TiFlash scan/net 归 TiKV；TiFlash 工作完整留在 TiFlash；TiDB 的 join output 与 TiKV 的 scan/net 扣除 TiFlash 部分；frontend/write/KV-write 只记到规定引擎/类别；full report 跳过 unseen 与零值指标；成功原因使用 calibration state；unsupported/ineligible 为 skipped，其余失败原因是 failed。
+Rust 与 Go 的边界划分并非逐函数一比一。Go 文件还包含 `statementRUOperatorForPlan`、`statementRUFailed`、`statementRUTerminalFailure`、`publishStatementRUFailureSafely`；Rust 将物理计划到 operator 的映射放在 `statement_ru_plan_walk.rs`，把终止判定和安全发布放在 `statement_ru_result.rs`/调用路径。Go `publishStatementRUFullMetrics` 直接写全局 Prometheus 指标且接收非可选 report；Rust 通过 sink 解耦，并显式在 `None` 时返回。
 
-Rust 与 Go 的边界划分并非逐函数一比一。Go 文件还包含 `statementRUOperatorForPlan`、`statementRUFailed`、`statementRUTerminalFailure`、`publishStatementRUFailureSafely`；Rust 将物理计划到 operator 的映射放在 `statement_ru_plan_walk.rs`，把终止判定和安全发布放在 `statement_ru_result.rs`/调用路径。Go `publishStatementRUFullMetrics` 直接写全局 Prometheus 指标且接收非可选 report；Rust 通过 sink 解耦，并显式在 `None` 时返回。Rust 的 public 类型/函数也比 Go 包内私有符号更开放，扩展时需把它们视为 crate API。
-
-独立测试对应关系：Rust `statement_ru_reporting_test.rs` 覆盖引擎公式、TiFlash 独立归属、远端单位拆分、失败标签以及全部 11 种 unit 标签；Rust `statement_ru_result_test.rs` 与 `statement_ru_plan_walk_test.rs` 覆盖 finalize、倍率、冻结报告和调用链。Go `statement_ru_reporting_test.go`/`statement_ru_result_test.go` 额外覆盖 full/result 模式、冻结后 live evidence 变化、指标隔离、失败矩阵和 Prometheus 实际序列。
+Go `statement_ru_reporting_test.go`/`statement_ru_result_test.go` 额外覆盖 full/result 模式、冻结后 live evidence 变化、指标隔离、失败矩阵和 Prometheus 实际序列。
 
 ## 扩展指南
 
@@ -93,12 +89,3 @@ Rust 与 Go 的边界划分并非逐函数一比一。Go 文件还包含 `statem
 - 修改 TiFlash 计费时，区分“原始 TiFlash RU 公式”和“实验倍率”两个层次；同时检查 `StatementRUCalculator::finalize` 与 `statement_ru_plan_walk.rs` 的 EXPLAIN premium，避免重复或遗漏倍率。
 - 修改失败分类时，同步 `label()`/`status()`、adapter/plan-walk/result 的构造点，以及 Rust `go_merge_195_failure_status_matches_go_metric_labels` 和 Go failure matrix。
 - 测试继续放在独立的 `pkg/executor/statement_ru_reporting_test.rs`、`statement_ru_result_test.rs` 或 `statement_ru_plan_walk_test.rs`，不要内嵌到生产源文件。兼容风险集中在指标标签和计费归属，正确性风险集中在重复计数、负差值与倍率重复应用，性能风险主要是 full 模式固定报告的 clone 和逐非零 unit 的 sink 调用。
-
-## 验证依据
-
-- Rust 源与装配：`pkg/executor/statement_ru_reporting.rs`、`pkg/executor/lib.rs:23-30`、`pkg/executor/Cargo.toml`（package `astersql-executor`、库入口 `lib.rs`、路径依赖 `astersql-resourcegroup`）。目标包未发现 `doc.go`。
-- Rust 直接调用链：`pkg/executor/statement_ru_result.rs:118-178,386-497`；`pkg/executor/statement_ru_plan_walk.rs:835-932,1318-1325`；失败原因的 adapter 使用点位于 `pkg/executor/adapter.rs:967-1029`。
-- RustCodeGraph：`status` 显示索引含 11,467 文件、307,296 节点、1,848,419 边；`query/node/callers/callees` 核实 `StatementRUFullReport`、`statement_ru_engine_result`、`statement_ru_tiflash_ru`、`publish_statement_ru_full_metrics`、`StatementRUFailureReason`。图明确给出 `statement_ru_engine_result -> statement_ru_tiflash_ru`、计划遍历与 engine result 对 TiFlash 函数的调用，以及 `publish_statement_ru_finalized_snapshot -> publish_statement_ru_full_metrics -> sink.unit/sink.statement`。按路径执行 `files --filter` 未命中，因此文件全貌与未被图识别的方法调用用源码和 `rg` 补证。
-- Rust 测试：`pkg/executor/statement_ru_reporting_test.rs`；相关链路测试 `pkg/executor/statement_ru_result_test.rs`、`pkg/executor/statement_ru_plan_walk_test.rs`。这些测试分别固定公式/标签、finalize/发布和计划证据行为。
-- Go 对照：`pkg/executor/statement_ru_reporting.go`、`pkg/executor/statement_ru_reporting_test.go`、`pkg/executor/statement_ru_result.go`、`pkg/executor/statement_ru_result_test.go`、`pkg/executor/statement_ru_plan_walk.go`。
-- 本任务只新增说明文档，按计划不运行 Cargo。结构验证确认目标文件存在且恰好包含规定的 11 个二级标题；人工复核覆盖了文件存在原因、运行流程、安全扩展点、当前边界与 Go/Rust 差异。

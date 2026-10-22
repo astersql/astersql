@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-br-pkg-restore-ingestrec`。包边界由同目录 `Cargo.toml` 定义，库入口是 `lib.rs`；`lib.rs` 以 `#[path = "foreign_key.rs"]` 挂载本模块，并通过 `pub use foreign_key::*` 将公开符号扁平再导出。该 crate 当前只声明直接依赖 `astersql-errors`，表、索引、外键和 InfoSchema 接口均来自同 crate 的 `model_stub.rs`，而不是直接链接完整 TiDB 元数据与 InfoSchema crate。
-
-它位于 BR ingest 索引恢复链中：`ingest_recorder.rs` 的 `IngestRecorder::UpdateIndexInfo` 在把 DDL job 中的索引 ID 补全为最新表结构时，同时调用这里的外键收集与过滤逻辑。最终保留下来的 `ForeignKeyRecord` 由 `IngestRecorder::IterateForeignKeys` 输出，供修复索引前先处理相关外键约束。文件不是门面或生成代码，包含实际的记录、过滤和合并逻辑；模块门面是同目录 `lib.rs`。
+`ForeignKeyRecordManager::Merge` 将各表剩余记录按“子库、子表、外键名”三元组去重汇总，得到恢复阶段需要处理的全局集合。
 
 ## 核心职责
 
@@ -86,18 +84,13 @@ RustCodeGraph 将 `NewForeignKeyRecordManagerForTables -> newForeignKeyRecordKey
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/restore/ingestrec/foreign_key.go`，主要算法、分支顺序和 key 组成保持一致：两侧都先处理表自身 FK，再处理 referred FK；都跳过单列 PK-handle 特例；都通过子表和 `ChildFKName.O` 还原完整 FK；都分别以 `Cols` 和 `RefCols` 做索引覆盖过滤；全局合并均以后写覆盖同键。
-
 实现层差异如下：
 
-- Go 管理器持有 `map[ForeignKeyRecordKey]*ForeignKeyRecord`，Rust 持有拥有所有权的值并在构造、合并时克隆。
 - Go `ForeignKeyRecord` 匿名嵌入 `model.FKInfo`，Rust 使用显式 `FKInfo` 字段。
 - Go 构造器返回指针，Rust 返回值；Rust 同时保留 `ForeignKeyRecordManager::New` 和包级 `NewForeignKeyRecordManager` 两个入口。
 - Go `TableByName` 接收 `context.Context`，Rust 本地 `InfoSchema` trait 的 `TableByName` 不接收上下文，因此参数命名为 `_ctx` 且当前未使用。
 - Go 用 `maps.Copy` 合并、循环 `delete` 过滤；Rust分别用 `HashMap::insert` 和 `retain` 表达相同行为。
 - 当前 Rust crate 依赖 `model_stub.rs` 的本地模型边界。测试以手工 `TableInfo`/`MockIS` 复现 Go testkit 建表结果，而 Go 测试使用真实测试 schema 与 InfoSchema。
-
-`foreign_key_test.rs` 对齐 Go 的 `TestForeignKeyRecordManager`、`TestForeignKeyRecordManagerForPK1` 和 `TestForeignKeyRecordManagerForPK2`，并保留普通父子表、单侧/双侧索引移除、部分索引和 PK handle 的断言意图。
 
 ## 扩展指南
 
@@ -110,15 +103,3 @@ RustCodeGraph 将 `NewForeignKeyRecordManagerForTables -> newForeignKeyRecordKey
 - 把 `_ctx` 接入真实调用或替换本地 stub：需要同步更新 `InfoSchema` trait、所有实现和调用测试，并评估取消/超时错误如何传播。
 
 兼容性风险主要在 key 大小写、静默忽略不一致摘要、PK-handle 跳过条件和部分索引安全判定；这些变化会直接改变恢复前被删除的外键集合。性能风险集中在按 referred 摘要逐次 `TableByName`、扫描子表全部外键，以及跨表合并的克隆成本。任何优化都应维持集合语义，不应依赖 `HashMap` 顺序。
-
-## 验证依据
-
-事实来源与检查记录：
-
-- RustCodeGraph `status`：索引包含 7,032 个 Rust 文件；`files --filter br/pkg/restore/ingestrec` 确认目标源、模块入口、Go 对照及独立测试均已索引。
-- RustCodeGraph `node --file br/pkg/restore/ingestrec/foreign_key.rs --offset 1 --limit 260`：读取目标文件完整 174 行，并确认 11 个符号及被其他文件使用的文件级关系。
-- RustCodeGraph `query`：核对 `NewForeignKeyRecordManager`、`NewForeignKeyRecordManagerForTables`、`RemoveForeignKeys`、`Merge`、`newForeignKeyRecordKey`、`InfoSchema`、`IsIndexPrefixCoveredForForeignKey`、`FindColumnInfo`、`HasPriKeyFlag`、`FKInfo` 与 `ReferredFKInfo` 的定义位置。
-- RustCodeGraph `callees NewForeignKeyRecordManagerForTables`：确认 Rust 入口调用同文件 `newForeignKeyRecordKey`。`callers` 未返回跨方法调用边，因此以精确源码检索补证 `ingest_recorder.rs::IngestRecorder::UpdateIndexInfo` 的三条上游调用。
-- 已读生产与边界文件：`br/pkg/restore/ingestrec/foreign_key.rs`、`Cargo.toml`、`lib.rs`、`model_stub.rs` 中相关符号、`ingest_recorder.rs`。
-- 已读对照与测试：`foreign_key.go`、`foreign_key_test.go`、`foreign_key_test.rs`，并检索 `ingest_recorder_test.rs`、`parity_test.rs`、`export_test.rs` 的直接使用点。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收使用任务指定命令，验证文件存在且恰好包含上述 11 个固定二级标题。

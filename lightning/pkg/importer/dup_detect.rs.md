@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-lightning-pkg-importer` library crate；crate 入口 `lightning/pkg/importer/lib.rs` 以 `mod dup_detect` 装配并通过 `pub use dup_detect::*` 再导出其符号。它处在 Lightning 单表导入的预去重阶段：`lightning/pkg/importer/table_import.rs` 的 `TableImporter::preDeduplicate` 构造 `dupDetector`，再调用 `dupDetector::run`。本文件不负责把最终 KV 导入 TiKV，而是重新读取 checkpoint 中的数据 chunk，编码出可能受唯一约束影响的 KV，找出重复项，并按冲突策略报错或生成“应忽略行”记录。
-
-`lightning/pkg/importer/Cargo.toml` 表明该 crate 对齐 Go package `lightning/pkg/importer`，直接依赖 checkpoint crate `astersql-lightning-pkg-checkpoints`；解析、编码、重复检测、外排、日志和表模型接口则由 crate 内模块提供。当前 Rust 上游仅搜索到 `TableImporter::preDeduplicate` 这一处生产构造入口；该方法本身未在 Rust 生产代码中搜索到调用点，因此本文只确认该局部接线，不推断完整 Rust 导入主链已经启用。
+`dupDetector::run` 建立临时磁盘 sorter 和 `duplicate::Detector`，先收集全部待检查键，再按 `Conflict.Strategy` 执行重复检测，并记录重复数量。
 
 ## 核心职责
 
@@ -84,7 +82,7 @@ RustCodeGraph 的精确文件读取确认源码 1–466 行；符号查询同时
 
 ## 与 Go 版本的对应关系
 
-`lightning/pkg/importer/dup_detect.go` 是逐函数对照来源，主要结构一致：`run` 建 detector、`addKeys` 重放 chunk、两种 handler 分别报错/记录旧行、`simplifyTable` 缩减唯一约束相关结构、`decodeIndexID` 区分 handle 与 index。`dup_detect_test.go` 的 `TestErrorOnDup`、`TestReplaceOnDup`、`TestSimplifyTable` 在 Rust `dup_detect_test.rs` 中均有对应测试；Rust 额外测试了负 engine 跳过和数据 engine 错误路径。
+`dup_detect_test.go` 的 `TestErrorOnDup`、`TestReplaceOnDup`、`TestSimplifyTable` 在 Rust `dup_detect_test.rs` 中均有对应测试；Rust 额外测试了负 engine 跳过和数据 engine 错误路径。
 
 已确认的差异包括：
 
@@ -103,13 +101,3 @@ RustCodeGraph 的精确文件读取确认源码 1–466 行；符号查询同时
 - 调整错误诊断时应同步 `ERR_DUPLICATE_KEY_MSG`、`ErrDuplicateKey`、`errorOnDup` 和 `TableImporter::preDeduplicate` 的消费逻辑，并用独立测试固定 RFC code、index ID 与 RowID 参数形状。
 - 修正资源生命周期时，优先让检测 sorter 在所有退出路径清理，并验证主错误与 close/cleanup 错误的优先级；同时检查 KeyAdder 在预创建后尚未启动 worker就发生错误时的释放行为。
 - 性能风险集中在全量重放输入、KV 展开、磁盘排序、预创建全部 KeyAdder、batch barrier 和 clone（sysvars、extend values、RowID）上；兼容风险集中在 key 编码、列 permutation、保留最后一行策略和规范化错误形状上。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、307,296 个节点；`node --file lightning/pkg/importer/dup_detect.rs --offset 1 --limit 500` 完整读取 466 行；`query` 精确定位 Rust/Go 的 `dupDetector`、`makeDupHandlerConstructor`、`simplifyTable`、`decodeIndexID`；`explore` 给出 `addKeysByChunk` 调用 `simplifyTable` 的图证据。部分精确 callers/callees 未产生完整输出，已用下列源码搜索补证。
-- 生产源码：`lightning/pkg/importer/dup_detect.rs`、`lightning/pkg/importer/table_import.rs`、`lightning/pkg/importer/lib.rs`。
-- crate 边界：`lightning/pkg/importer/Cargo.toml`。
-- Go 对照：`lightning/pkg/importer/dup_detect.go`、`lightning/pkg/importer/table_import.go`。
-- 独立测试：`lightning/pkg/importer/dup_detect_test.rs`、`lightning/pkg/importer/dup_detect_test.go`；另以 `lightning/pkg/importer/parity_test.rs` 的 decode、simplify 和 handler 构造引用作为补充调用证据。
-- 仓库搜索：确认 Rust `TableImporter::preDeduplicate` 构造并调用 `dupDetector::run`，以及模块由 `lib.rs` 装配；未发现 Rust 生产代码继续调用 `preDeduplicate`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核所有结论均指向上述符号/文件，未把 Go 主链接线或 stub 测试推断为 Rust 已完整支持。

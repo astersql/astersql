@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-trxevents` crate 的业务实现文件，定义事务运行期事件的类型标签、动态载荷信封和回调类型。crate 入口 `pkg/util/trxevents/lib.rs` 通过 `pub mod trx_events` 声明模块，并以 `pub use trx_events::*` 对外重导出本文件 API；根 facade `pkg/lib.rs` 的 `util::trxevents` 又重导出该 crate。它是 Go 文件 `pkg/util/trxevents/trx_events.go` 的 Rust 迁移版，当前只定义 `CopMeetLock` 一种事件。
+用 `TransactionEvent` 将私有类型标签与 `Any` 动态载荷捆绑，避免调用方直接构造标签与载荷不匹配的信封。
 
 ## 核心职责
 
@@ -58,26 +58,14 @@ Go 完整主链的直接证据为：`pkg/distsql/distsql.go:75-89` 创建回调�
 
 ## 与 Go 版本的对应关系
 
-`pkg/util/trxevents/trx_events.go` 是逐项对照源：Go `EventType = int` 对应 Rust `isize`，`iota` 首值对应常量 `0`，`*kvrpcpb.LockInfo` 对应 `Option<Box<ProtoLockInfo>>`，`any` 对应 `Option<Box<dyn Any>>`，`func(TransactionEvent)` 对应 `Box<dyn Fn(TransactionEvent)>`。公开符号保留 Go 命名，并由 `pkg/util/trxevents/lib.rs` 的 lint 允许项容纳非 Rust 风格的大小写。
-
 有三处语义差异需显式保留在评审视野内：
 
 1. Go 的 `e.inner.(*CopMeetLock)` 在标签与实际非空类型不匹配时 panic，Rust `downcast_ref` 返回 `None`。
 2. Go 函数值可为 `nil`，Rust `EventCallback` 本身不可空；可空性必须由上层 `Option` 表达。
 3. Go 回调可在其他 goroutine 执行，而当前 Rust trait object 没有 `Send`/`Sync` 保证。
 
-`pkg/util/trxevents/migration_aster_unit_test.rs` 是 Rust 的独立测试文件，覆盖常量编号、`LockInfo` 字段保留、typed nil 语义和回调执行。同目录没有 Go 专用测试；Go 上游使用与传递证据位于 `pkg/distsql/distsql.go`、`pkg/kv/kv.go` 和 `pkg/store/copr/coprocessor.go`。
-
 ## 扩展指南
 
 新增事件种类时，应在本文件成组增加“唯一稳定标签 + 具体载荷结构 + 包装函数 + 取出方法”，不要对已发布标签重排编号。构造路径应继续集中在本模块，以保证 `eventType` 与 `Any` 载荷一致；若改为 enum，需同时评估 Go 公开 API 对齐和现有调用方迁移成本。
 
 相关测试应放在独立的 `pkg/util/trxevents/migration_aster_unit_test.rs`，不要内嵌进本生产文件。至少需覆盖新标签值、正确载荷往返、非匹配 getter、空载荷和回调传递。若把该 crate 接入 Rust distsql/KV/coprocessor 主链，还应替换 `pkg/kv/lib.rs` 的同名桩并在相应独立测试中验证遇锁时的生产、转发、消费顺序及跨线程边界。主要兼容风险是标签号变动、typed nil 差异和 Go/Rust 下转失败行为不同；性能风险是每个事件的堆分配与动态分发。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/util/trxevents` 确认该目录的 Rust/Go 源和独立测试。
-- RustCodeGraph `node --file pkg/util/trxevents/trx_events.rs` 核对了全部 94 行实现；`query` 确认 Rust/Go 的 `WrapCopMeetLock`、`GetCopMeetLock`、`TransactionEvent` 和 `CopMeetLock` 对应符号。`callers`/`callees` 未为两个 Rust 方法返回调用边，因此又用 `rg` 核查未覆盖的引用。
-- 已读源码：`pkg/util/trxevents/trx_events.rs`、`pkg/util/trxevents/lib.rs`、`pkg/util/trxevents/trx_events.go`、`pkg/util/trxevents/migration_aster_unit_test.rs`、`pkg/distsql/distsql.go:60-94`、`pkg/store/copr/coprocessor.go:2665-2699`、`pkg/kv/kv.go:350-370`、`pkg/kv/kv.rs:295-314`、`pkg/kv/lib.rs:345-358` 和 `pkg/lib.rs:2160-2174`。
-- 已读配置：`pkg/util/trxevents/Cargo.toml`、根 `Cargo.toml`、`pkg/distsql/Cargo.toml` 与 `pkg/store/copr/Cargo.toml`，用于核对 crate 成员、facade 别名、直接/可选依赖和 kvproto tag。
-- 行为证据来自独立 Rust 测试中的四项用例：`cop_meet_lock_event_type_matches_go_iota`、`wrap_cop_meet_lock_preserves_the_lock_payload`、`wrap_nil_cop_meet_lock_returns_nil_like_go_typed_nil` 和 `event_callback_receives_the_wrapped_event`。按任务约束未运行 Cargo；本文档不声称已通过代码编译或测试。

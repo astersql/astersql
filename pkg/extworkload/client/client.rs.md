@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现 `astersql-extworkload-client` crate 的外部工作负载控制器 gRPC 客户端。crate 入口 `pkg/extworkload/client/lib.rs` 通过 `pub mod client` 和 `pub use client::*` 再导出这里的公共 API；`pkg/extworkload/client/Cargo.toml` 将库入口指定为 `lib.rs`，并用 `build.rs` 从 `pkg/extworkload/proto/externalworkload.proto` 生成 tonic 消息、客户端桩和测试所需的服务端桩。
-
-在生产调用链中，`pkg/extworkload/real_client.rs::RealController::connect` 把上层同步配置转换为本文件的 `Option`，创建 Tokio runtime 后调用 `New`；`RealController` 的各方法再通过 `Runtime::block_on` 调用本文件的异步 `Client`。更上层的 `pkg/extworkload/manager.rs` 负责请求超时、指标标签和工作负载语义，本文件只负责 RPC 编码、发送和响应归一化。
+更上层的 `pkg/extworkload/manager.rs` 负责请求超时、指标标签和工作负载语义，本文件只负责 RPC 编码、发送和响应归一化。
 
 ## 核心职责
 
@@ -88,7 +86,7 @@ tonic `Channel` 在 `New` 中惰性创建，首次 RPC 才真正连接。`grpcCl
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/extworkload/client/client.go`，公共配置字段、四组接口、十个 RPC、请求头和请求字段保持一一对应。Rust 用 trait 组合对应 Go 嵌入接口；用 `Box<dyn Client>` 对应 Go interface；用 `ClientError::ControllerPaused` 对应可由 `errors.Is` 匹配的 `ErrControllerPaused`。
+Rust 用 trait 组合对应 Go 嵌入接口；用 `Box<dyn Client>` 对应 Go interface；用 `ClientError::ControllerPaused` 对应可由 `errors.Is` 匹配的 `ErrControllerPaused`。
 
 关键实现差异如下：
 
@@ -97,8 +95,6 @@ tonic `Channel` 在 `New` 中惰性创建，首次 RPC 才真正连接。`grpcCl
 - Go 的 unary interceptor 签名可以访问方法、请求、响应、连接和 invoker；本文件的 `UnaryClientInterceptor` 只操作 `Request<()>` metadata，能力范围更窄，但声明顺序一致。
 - Go `mapResponse` 通过运行时栈 `callerRPCName()` 获取方法名；Rust 各 RPC 显式把稳定方法名传给 `mapTonicResponse`，避免依赖栈检查。
 - Rust `normalizeAddr` 对带 scheme 地址显式移除 userinfo，并保留显式默认端口；其目标是复现 Go `url.URL.Host` 的 authority 行为。
-
-`pkg/extworkload/client/client_test.rs` 与 `migration_aster_unit_test.rs` 使用内存 tonic server 验证全部请求字段、公共 header、拦截次数、暂停/未知错误、地址（包括 IPv6）和空响应。`client_test.go` 覆盖相同的 Go 行为基线。
 
 ## 扩展指南
 
@@ -111,13 +107,3 @@ tonic `Channel` 在 `New` 中惰性创建，首次 RPC 才真正连接。`grpcCl
 5. 同步扩展独立测试 `pkg/extworkload/client/client_test.rs` 和迁移对齐测试 `migration_aster_unit_test.rs`，并核对 `client_test.go` 或新增的 Go 测试。Rust 测试应继续留在独立文件，不内嵌回生产源文件。
 
 修改连接行为时重点评估：是否仍保持非阻塞构造、TLS scheme 是否与配置一致、显式默认端口/IPv6/userinfo 是否与 Go 一致、关闭是否幂等、拦截器顺序是否变化。修改错误类型时需保留调用方区分 `ControllerPaused` 的能力；修改 `Context` 时需评估 `RealController` 的同步桥接和取消语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引含 11,467 个文件；`files --filter pkg/extworkload/client` 列出目标 Rust/Go/测试文件；`node --file pkg/extworkload/client/client.rs --offset 1 --limit 500` 读取完整 500 行并报告 55 个符号；`query normalizeAddr`、`query mapResponse`、`query mapTonicResponse` 区分 Go/Rust定义；`callees` 输出确认 `mapTonicResponse → mapResponse`。
-- 目标实现：`pkg/extworkload/client/client.rs`，重点核对 `Option`、`Context`、四个 trait、`ChainInterceptor`、`New`、`normalizeAddr`、`grpcClient` 各 impl、`mapTonicResponse` 与 `mapResponse`。
-- crate/生成边界：`pkg/extworkload/client/Cargo.toml`、`pkg/extworkload/client/lib.rs`、`pkg/extworkload/client/build.rs`、`pkg/extworkload/proto/externalworkload.proto`（由 build 脚本路径确认）。
-- 生产调用链：`pkg/extworkload/real_client.rs::RealController` 和 `pkg/extworkload/manager.rs` 的转发方法；文本检索确认 `RealController` 直接依赖该 crate，并为全部 RPC 建立同步桥接。
-- Go 对照：`pkg/extworkload/client/client.go`，核对接口、连接、地址规范化、header、请求字段和响应映射顺序。
-- 独立测试：`pkg/extworkload/client/client_test.rs`、`pkg/extworkload/client/migration_aster_unit_test.rs`、`pkg/extworkload/client/client_test.go`，核对全量 RPC 往返、拦截器、错误映射、配置校验、IPv6 和空响应分支。
-- 本任务只新增文档，按计划不运行 Cargo。交付前以任务给定命令验证本文恰有十一个固定二级标题，并人工复查未把测试写入生产文件、未声称构造时已连通远端、未把上层指标/超时策略误写成本文件职责。

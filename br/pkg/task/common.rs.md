@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`common.rs` 是 `astersql-br-pkg-task` crate 的公共任务配置与基础设施适配层。crate 根 `br/pkg/task/lib.rs` 以 `pub mod common` 挂载它；`br/pkg/task/Cargo.toml` 将该 crate 定义为 `br/pkg/task` Go 包的 Rust 移植库，并直接依赖 `astersql-metaservice`、恢复、GC、连接、流与 checkpoint 等 BR 子 crate。
-
-它位于命令行与具体备份/恢复任务之间：`br/cmd/br/main.rs` 经命令层 `DefineCommonFlags` 注册公共参数，`backup.rs`、`restore.rs`、`stream.rs`、`backup_raw.rs`、`backup_txn.rs` 等再调用 `Config::ParseFromFlags`、`NewMgr`、`GetStorage` 或 `ReadBackupMeta`。文件不负责完整业务编排；其中一些外部边界仍是迁移期实现，尤其 `NewMgr` 返回 `MemMgr`、`GetStorage` 返回新的 `MemStorage`、`LogArguments` 为空操作，不能视为 Go 版真实集群和对象存储能力的等价实现。
+为任务编排提供管理器、存储、backupmeta、keepalive、控制台输出、进度文件和 namespaced etcd 客户端等公共边界。
 
 ## 核心职责
 
@@ -82,8 +80,6 @@ RustCodeGraph `status` 显示索引覆盖本文件，并报告它被 10 个文�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `br/pkg/task/common.go`，测试对照为 `br/pkg/task/common_test.go` 与 `br/pkg/task/common_test.rs`。Rust 已保持 flag 名/default、过滤优先级、限速溢出、PD URL/TLS 互斥、operation context、密钥二选一与长度、master-key URL、日志脱敏等主要配置语义。
-
 关键差异必须保留在架构认知中：
 
 - Go `NewMgr` 调用 `conn.NewMgr` 建立真实管理器；Rust 返回 `MemMgr`。
@@ -103,12 +99,3 @@ RustCodeGraph `status` 显示索引覆盖本文件，并报告它被 10 个文�
 - 将迁移桩升级为生产实现时，最可能修改 `NewMgr`、`GetStorage`、`ReadBackupMeta`、`LogArguments` 与 `progressFileWriterRoutine`；必须逐项恢复 Go 中的连接/关闭、GCS 回退、解密、protobuf/兼容性校验、日志和取消语义，而不是仅替换返回类型。
 - 修改元服务连接时通过 `dialEtcdWithCfgAndFactory` 保留工厂注入点，并同步 `br/pkg/task/meta_service_group_test.rs`；修改 EBS 进度语义时同步 `backup_ebs.rs`、`restore_ebs_meta.rs` 及其独立测试。
 - Rust 单元测试继续放在 `common_test.rs`、`parity_test.rs` 或对应调用模块测试中，不要内嵌回 `common.rs`；本文件底部现有 `meta_service_group_test.rs` 条件模块只是独立测试文件的挂载点。
-
-## 验证依据
-
-- 源码与模块边界：`br/pkg/task/common.rs`、`br/pkg/task/lib.rs`、`br/pkg/task/Cargo.toml`。
-- Rust 上游调用点：`br/cmd/br/main.rs`、`br/cmd/br/cmd.rs`、`br/cmd/br/debug.rs`、`br/pkg/task/backup.rs`、`backup_raw.rs`、`backup_txn.rs`、`restore.rs`、`restore_raw.rs`、`restore_txn.rs`、`stream.rs`、`backup_ebs.rs`、`restore_ebs_meta.rs`。
-- Rust 独立测试：`br/pkg/task/common_test.rs`（operation context、PD URL、cipher、默认配置、master-key）、`br/pkg/task/parity_test.rs`（脱敏、管理器与配置边界）、`br/pkg/task/meta_service_group_test.rs`（元服务分组/工厂路径）、`br/pkg/task/stream_test.rs`（`storageOpts`）。
-- Go 对照：`br/pkg/task/common.go`、`br/pkg/task/common_test.go`；重点核对 `Config.ParseFromFlags`、`NewMgr`、`GetStorage`、`ReadBackupMeta`、`flagToZapField`、`normalizePDURL` 和 `progressFileWriterRoutine`。
-- RustCodeGraph：运行 `status` 确认索引含 7032 个 Rust 文件；运行 `files --filter br/pkg/task` 确认目标及相邻文件；运行 `node --file br/pkg/task/common.rs --offset 1 --limit 1200` 阅读完整 960 行源码；运行 `explore`/`query` 定位主要符号及同名 Go/Rust 定义。调用边歧义处另以 `rg` 精确搜索 Rust 引用进行复核。
-- 交付验证：按任务要求检查目标文件存在，且固定十一个二级标题各出现一次；本任务只新增说明文档，不运行 Cargo。

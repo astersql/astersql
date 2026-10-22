@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-ddl-ingest` crate，由 [`pkg/ddl/ingest/lib.rs`](lib.rs) 以公开模块 `pub mod util` 装配。它对应 Go 文件 [`pkg/ddl/ingest/util.go`](util.go)，目标是在 DDL add-index 的 ingest/快速回填路径遇到“底层发现重复键”错误时，把底层错误提升为携带冲突键值、索引名和表名的 `KeyExists` 错误。
-
-这一转换位于失败语义的边界，不负责 DDL job、schema state、checkpoint 或本地引擎生命周期。完整应用中的 Go 路径会从 `pkg/ddl/backfilling_operators.go`、`pkg/ddl/backfilling_import_cloud.go`、`pkg/ddl/backfilling_merge_sort.go`、`pkg/ddl/index.go` 和 `pkg/ddl/ingest/backend.go` 调用 `ingest.TryConvertToKeyExistsErr`，使不可重试的重复键错误可继续进入 add-index 回滚处理。当前 RustCodeGraph 对 Rust 符号 `util.rs::try_convert_to_key_exists_err` 只找到 `pkg/ddl/ingest/util_test.rs` 中的调用，没有生产调用边，因此 Rust 文件目前是已导出的移植单元，而不是已验证接入 Rust DDL 主链的实现。
+不解码索引键、不生成用户可见的重复值文本，也不处理 keyspace 前缀。
 
 ## 核心职责
 
@@ -82,9 +80,7 @@ Go 生产链的下游是 `pkg/ddl/util/util.go::GenKeyExistsErr`；Rust 仓库�
 
 ## 与 Go 版本的对应关系
 
-Rust `try_convert_to_key_exists_err` 对应 Go `TryConvertToKeyExistsErr`，主要分支保持一致：先取根因，再检查重复键错误身份，再要求两个参数且均为字节，任何不匹配均返回原错误。`root_cause` 对应 `errors.Cause`；使用未限定 schema 的 `table_info.name` 与 Go `GenKeyExistsErr` 形成 `table.index` 时采用 `tblInfo.Name` 的契约一致。
-
-但当前迁移不是完整类型/行为复刻：
+Rust `try_convert_to_key_exists_err` 对应 Go `TryConvertToKeyExistsErr`，主要分支保持一致：先取根因，再检查重复键错误身份，再要求两个参数且均为字节，任何不匹配均返回原错误。
 
 - Go 接受真实的 `error`、`*terror.Error`、`model.IndexInfo` 和 `model.TableInfo`；Rust 使用本文件自定义的最小枚举与元信息结构。
 - Go 通过 `common.ErrFoundDuplicateKeys.ID()` 判断身份；Rust 使用硬编码 `1001`，而 Rust Lightning 公共错误当前以 RFC code 表达。
@@ -101,14 +97,3 @@ Rust `try_convert_to_key_exists_err` 对应 Go `TryConvertToKeyExistsErr`，主�
 - 修改包装语义时，应增加多层包装、非匹配根因及外层信息保留测试；若成功结果需要保留错误链，应明确改变当前“成功即丢弃包装层”的契约。
 - 修改表/索引命名时，应与 Go `pkg/ddl/util/util.go::GenKeyExistsErr` 同步，特别避免误把 schema 加入目前只要求 `table.index` 的名称。
 - 性能方面，接线到高频冲突路径前应关注成功分支对 key/value 的深拷贝；正确性风险高于常规吞吐风险，因为错误类型会影响 DDL 是否回滚以及最终返回给用户的信息。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目共索引 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/ddl/ingest` 能找到目标、模块入口与独立测试。
-- RustCodeGraph 源码/符号查询：`node --file pkg/ddl/ingest/util.rs --offset 1 --limit 260`、`query try_convert_to_key_exists_err --kind function --json`、`node try_convert_to_key_exists_err`、`node root_cause`。
-- RustCodeGraph 调用查询：`callers 'util.rs::try_convert_to_key_exists_err' --json` 只返回 `pkg/ddl/ingest/util_test.rs` 的两个直接调用；`callees` 确认 `root_cause` 及构造/引用边，并人工排除了通用同名 `clone`、`len` 的误解析。
-- 已读 Rust 文件：`pkg/ddl/ingest/util.rs`、`pkg/ddl/ingest/lib.rs`、`pkg/ddl/ingest/util_test.rs`、`pkg/ddl/util/util.rs`、`pkg/lightning/common/errors.rs`。
-- 已读配置：`pkg/ddl/ingest/Cargo.toml`；确认 crate 名、library 入口、依赖和条件依赖，本文件自身无条件编译项。
-- 已读 Go 对照：`pkg/ddl/ingest/util.go`、`pkg/ddl/util/util.go`、`pkg/lightning/common/errors.go`；并用 `rg` 核对 Go 生产调用点及 Rust 当前没有生产调用点。
-- 已读 DDL 上下文：`docs/agents/ddl/README.md`、`docs/agents/ddl/03-reorg-backfill.md`、`docs/agents/ddl/06-add-index.md`；应用位置结论仍以代码和调用搜索为准。
-- 测试证据来自独立文件 `pkg/ddl/ingest/util_test.rs`：覆盖标准转换、包装根因、错误 ID/参数数量/参数类型的透传，以及表名不含 schema。按任务范围未运行 Cargo，本文档没有把测试文件当生产实现。

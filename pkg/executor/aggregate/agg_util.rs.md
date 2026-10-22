@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-executor-aggregate` crate 的公共聚合数据模型与基础算法层，由模块入口 `pkg/executor/aggregate/lib.rs` 以 `pub mod agg_util` 暴露。它位于执行层的 Hash/Stream 聚合公共路径：partial worker 用它生成分组键并更新中间态，final worker 合并中间态并生成结果，spill 层保存和恢复同一套中间态。
-
-文件前半部（第 18—339 行）是被块注释包围的 Go 移植记录，不参与 Rust 编译；实际 Rust 实现从 `use std::time::Duration` 开始。当前可执行实现是一套进程内的简化值模型，并不是 Go `aggfuncs.PartialResult`、表达式求值、SQL 类型系统和 `execdetails.RuntimeStats` 接口的完整替代品。
-
-`pkg/executor/aggregate/Cargo.toml` 将该目录声明为 `astersql-executor-aggregate`，入口是 `lib.rs`。本文件自身的可执行部分只直接使用 Rust 标准库；其类型会被同 crate 的 spill 代码以及 Hash/Stream 执行器使用，后者再依赖 `astersql-executor-aggfuncs`、`astersql-util-execdetails` 和 `astersql-util-serialization` 等 crate。
+用 `AggState` 保存单个聚合函数的 partial/final 状态，提供逐行 `update`、跨 worker `merge`、最终 `result` 与内存估算 `memory_usage`。
 
 ## 核心职责
 
@@ -90,15 +86,13 @@ RustCodeGraph 的 `callers/callees` 精确边查询在当前本地索引上超�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/executor/aggregate/agg_util.go`。Rust 文件顶部保留了 Go 文件的大部分控制流作为注释，但真实实现只覆盖其中一部分职责，并采用不同抽象：
+Rust 文件顶部保留了 Go 文件的大部分控制流作为注释，但真实实现只覆盖其中一部分职责，并采用不同抽象：
 
 - Go `GetGroupKey` 对整个 `chunk.Chunk` 向量化求值表达式，通过 SQL 类型、时区和错误上下文调用 `codec.HashGroupKey`，并专门处理 ENUM 与 DECIMAL；Rust `get_group_key` 只对单行的列下标编码简化 `Value`，没有表达式、时区、collation、SQL mode、ENUM/DECIMAL 或 warning/error context。
 - Go 使用 `aggfuncs.PartialResult` 与完整聚合函数体系；Rust 在本文件内实现五种 `AggKind` 和统一 `AggState`。因此二者职责相似但数据模型并非一一同构。
 - Go 提供 partial result/group key 的 `sync.Pool`、容量上限回收、group key 内存统计、Open panic 清理与 hash-agg panic 转错；Rust 可执行部分均未实现这些能力。
 - Go `HashAggRuntimeStats` 实现 `String`、`Clone`、`Merge`、`Tp`，含 concurrency/wall-time 与 worker max/p95；Rust 仅依赖派生 `Clone`，保留 worker 样本与 spill 次数并提供 `merge`，未实现 Go runtime stats 接口或字符串输出。
 - Go 的 spill action 选择、随机 failpoint 和 worker 时间更新函数只存在于 Rust 注释中；Rust spill 触发、序列化和恢复实现在相邻执行器与 `agg_spill.rs`。
-
-已验证的共同语义包括：聚合中间态按 partial/final 阶段合并、独立 worker 统计样本在 merge 时追加，以及 group key 用于把等值分组送往同一聚合状态。未验证且不可宣称等价的部分包括完整 SQL 类型语义、表达式错误处理、Go 的并发恢复机制和 runtime stats 展示协议。
 
 ## 扩展指南
 
@@ -108,12 +102,3 @@ RustCodeGraph 的 `callers/callees` 精确边查询在当前本地索引上超�
 - 改动 DISTINCT 时必须覆盖单 worker 去重、多个 partial state 的重叠 merge、同一组增长触发 spill及恢复；`agg_spill_test.rs::distinct_growth_in_one_group_spills_and_merges_overlapping_workers` 是最近的回归入口。
 - 改动运行时统计时应保持“追加独立样本”的不变量，并同步 `aggregate_test.rs::test_hash_agg_runtime_stat`。若接入 Go 风格 String/Tp/atomic wall time，应在 `astersql-util-execdetails` 的真实接口上实现并添加独立测试，不能把顶部注释视作接口实现。
 - 性能风险集中在每行重新分配 group key、DISTINCT 的 BTreeMap 插入与克隆、跨类型比较的字符串格式化，以及统计 merge 的样本复制；兼容风险集中在键编码、数值精度、NULL/FIRST 和 SQL 类型排序语义。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/executor/aggregate/agg_util.rs` 确认目标文件含 36 个符号；`node --file ... --offset ...` 阅读了全部 636 行；`query` 确认 `AggKind`、`Aggregation`、`AggState`、`get_group_key`、`AggWorkerStat`、`HashAggRuntimeStats` 的定义与候选。两次带文件限定的 `callers/callees` 查询超时，未将其当作完成证据。
-- 源码与模块边界：`pkg/executor/aggregate/agg_util.rs`、`pkg/executor/aggregate/lib.rs`、`pkg/executor/aggregate/Cargo.toml`。目标目录不存在 `doc.go`，因此无额外 Go package contract 可读。
-- 生产调用点：`agg_hash_partial_worker.rs::update_partial_result`、`agg_hash_final_worker.rs::{merge_input,generate_result}`、`agg_hash_executor.rs::{open,execute}`、`agg_stream_executor.rs::consume_groups`、`agg_spill.rs::SpillEntry`。
-- Go 对照：`pkg/executor/aggregate/agg_util.go`，核对了 buffer pool、`GetGroupKey`、runtime stats、spill action、failpoint 与 worker 计时函数。
-- Rust 独立测试：`pkg/executor/test/aggregate/aggregate_test.rs::{test_hash_agg_runtime_stat,test_sum_int_distinct,test_random_panic_consume}`；`pkg/executor/aggregate/agg_spill_test.rs::{aggregate_spill_partitions_and_restores_real_states,hash_aggregate_matches_grouped_results_and_chunking,hash_aggregate_empty_input_returns_default_group,stream_aggregate_preserves_sorted_group_boundaries,distinct_growth_in_one_group_spills_and_merges_overlapping_workers}`。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构检查，并人工复核所有“已实现”结论均来自可执行 Rust 代码而非注释占位。

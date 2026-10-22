@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-privilege-privileges` crate；crate 入口 `pkg/privilege/privileges/lib.rs` 以私有模块 `mod user_attributes_filter` 装配它，再通过 `pub use user_attributes_filter::*` 导出 `UserAttrFilter` 与 `NewUserAttrFilter`。它位于权限缓存与 INFORMATION_SCHEMA 行生成之间，专门实现 MySQL 8.0.22+ 的 `INFORMATION_SCHEMA.USER_ATTRIBUTES` 行可见性规则，不负责读取 `mysql.user.user_attributes`、解析属性 JSON 或构造结果行。
-
-当前 Rust 生产入口是 `pkg/executor/infoschema_reader.rs::setDataForUserAttributes`：执行器先取得候选行、当前登录身份、活动角色和 `UserPrivileges`，构造本文件的过滤器，再对每个 `(user, host)` 调用 `Visible`。因此，本文件回答的是“某一账号行能否被当前查看者看到”，而不是“属性内容如何展示”。
+`SkipWithGrant()`、缺少权限管理器或空查看者身份采用兼容性宽松回退，直接生成 `All` 过滤器。
 
 ## 核心职责
 
@@ -77,8 +75,6 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 文件逐分支移植 `pkg/privilege/privileges/user_attributes_filter.go`：三种模式、权限检查顺序、本人优先、SYSTEM_USER 排除及宽松回退均一致。Go 集成测试 `pkg/privilege/privileges/privileges_test.go::TestInfoSchemaUserAttributes` 证明了最终 SQL 行集合：普通用户和仅 SUPER 用户只见本人，具有 `mysql.user` SELECT 的用户见全部，只有 CREATE USER 的用户看不到 SYSTEM_USER 账号。
-
 实现形态有以下差异：
 
 - Go 公开 `UserAttrFilter` interface，并以私有 `userAttrFilter` 指针实现；Rust 直接公开具体 struct。
@@ -96,13 +92,3 @@ Rust 单元测试位于独立文件 `pkg/privilege/privileges/user_attributes_fi
 - 若改变 `mysql.user` 所需权限粒度，应检查 `RequestVerification` 的数据库/表参数是否仍准确；尤其不能把 `mysql.user` 权限误写成任意 `mysql.*` 规则，尽管库级授权可能由 cache 方法自然覆盖表请求。
 - 若改变快照策略，应评估扫描一致性与克隆成本，且需同步检查 `Handle::Get` 的锁生命周期及执行器一次扫描只构造一个过滤器的假设。
 - 回归测试优先扩展 `user_attributes_filter_test.rs` 的直接模式/host/回退用例，并扩展 `infoschema_reader_internal_test.rs` 验证最终行集合。用户可见 SQL 兼容性还应对齐 Go 的 `TestInfoSchemaUserAttributes`；Rust 测试仍应保持在独立测试文件中。
-
-## 验证依据
-
-- 生产源：`pkg/privilege/privileges/user_attributes_filter.rs`，核对 `AttrVisMode`、`UserAttrFilter`、`NewUserAttrFilter`、`Visible` 的全部分支。
-- crate 边界：`pkg/privilege/privileges/lib.rs` 与 `Cargo.toml`，确认模块重导出、库入口、依赖及无 feature 门控。
-- RustCodeGraph：`query UserAttrFilter`、`query NewUserAttrFilter`、`node NewUserAttrFilter`、`node RequestVerification`、`node RequestDynamicVerification`、`node matchUser`；索引识别出 Rust/Go 对照符号和 cache 下游，但 `files --filter pkg/privilege/privileges/user_attributes_filter` 未返回路径，故生产跨 crate 调用再以 `rg` 核验。
-- Rust 上游与下游：`pkg/executor/infoschema_reader.rs::setDataForUserAttributes`、`pkg/privilege/privileges/cache.rs::{Handle::Get, MySQLPrivilege::matchUser, MySQLPrivilege::RequestVerification, MySQLPrivilege::RequestDynamicVerification, baseRecord::match}`。
-- Rust 测试：`pkg/privilege/privileges/user_attributes_filter_test.rs`；执行器集成边界：`pkg/executor/infoschema_reader_internal_test.rs`。
-- Go 对照与测试：`pkg/privilege/privileges/user_attributes_filter.go`、`pkg/executor/infoschema_reader.go::setDataForUserAttributes`、`pkg/privilege/privileges/privileges_test.go::TestInfoSchemaUserAttributes`。
-- 本任务按计划为纯文档分析，未运行 Cargo；交付前使用任务规定的命令验证本文恰有十一个固定二级章节，并人工复核本文件只陈述上述代码与测试可支持的行为。

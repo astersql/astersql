@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`reorg.rs` 属于 `astersql-ddl` crate，并由 `pkg/ddl/lib.rs` 以 `pub mod reorg` 公开。它不是 DDL 状态机入口，而是在线 DDL 进入数据重组阶段后使用的状态与工具层：一部分保存并发回填的运行时计数、告警和进度，另一部分通过 `mysql.tidb_ddl_reorg` 保存可恢复的扫描游标。其生产调用目前集中在 `pkg/ddl/job_worker.rs` 的事务型索引回填，以及 `pkg/ddl/partition.rs` 的分区索引回填参数传递。
-
-本文件同时保留若干与 Go `pkg/ddl/reorg.go` 对齐的辅助 API。仓库内精确调用搜索表明，`ReorgHandler`、`table_max_handle`、`table_range`、`encode_temporary_index_range`、`split_keys_for_temporary_index_ranges` 和 `update_backfill_progress` 尚无非测试 Rust 调用者；它们不能被视为完整 DDL reorg 主链已经接线的证据。`pkg/ddl/job_worker.rs` 还定义了另一个 `ReorgContext`，用于简化的 job 状态机，两者是不同类型，不应混用。
+`ReorgExpressionContext`、`ReorgRowEncodingConfig` 与 `ReorgTableMutateContext` 提供回填求值和行编码所需的精简上下文；构造时从 `astersql-sessionctx-vardef` 读取 DDL reorg 行格式。
 
 ## 核心职责
 
@@ -84,13 +82,13 @@ owner 恢复流程由 `PersistentReorgHandler::restore` 转入 `restore_reorg`�
 
 ## 与 Go 版本的对应关系
 
-Rust `ReorgContext` 对应 Go `reorgCtx` 的 row count、warning merge 和 max progress 子集；Go 版本还包含 snapshot version、RU、完成通道等更完整状态。Rust 用 `AtomicU64` 保存 `f64` 位模式，Go 使用原子浮点封装，两者的最大进度 CAS 意图一致。
+Rust 用 `AtomicU64` 保存 `f64` 位模式，Go 使用原子浮点封装，两者的最大进度 CAS 意图一致。
 
-Rust `new_reorg_expression_context` 与 `new_reorg_table_mutate_context` 是 Go 同名逻辑的精简移植。Go 会构造完整 expr context、错误级别、SQL mode flag、时区、随机 RowID shard generator 和 mutate buffers；Rust 只保存本文件消费/测试的字段，因此不是完整 `table.MutateContext` 替代品。
+Go 会构造完整 expr context、错误级别、SQL mode flag、时区、随机 RowID shard generator 和 mutate buffers；Rust 只保存本文件消费/测试的字段，因此不是完整 `table.MutateContext` 替代品。
 
-Rust `ReorgInfo` 对应 Go `reorgInfo` 的 job/range/physical table/element 子集。Go 还持有完整 `Job`、job context、DB info、first 标记与动态系统表配置。Rust 的范围/最大 handle 函数也只是纯函数近似，未移植 Go 中通过 storage、snapshot 和 table scan 获取边界的完整行为。
+Rust 的范围/最大 handle 函数也只是纯函数近似，未移植 Go 中通过 storage、snapshot 和 table scan 获取边界的完整行为。
 
-`PersistentReorgHandler` 对应 Go `reorgHandler` 与其 `InitDDLReorgHandle`、`GetDDLReorgHandle`、更新和清理函数。旧版范围兼容规则一致：Go 对 version 0 使用 `endKey.Next()`，Rust 对字节 key 追加 `0`。Rust 初始化的 reorg checkpoint JSON、缺行时清零 snapshot、独立检查点事务和终态清理，均围绕同一 `mysql.tidb_ddl_reorg` 协议。
+旧版范围兼容规则一致：Go 对 version 0 使用 `endKey.Next()`，Rust 对字节 key 追加 `0`。
 
 Go `isReorgRunnable` 还检查 worker/context cancellation，并允许 distributed reorg 跳过 owner 检查；Rust `is_reorg_runnable` 是四个布尔输入的纯策略函数，当前只在测试使用。Go `updateBackfillProgress` 读取统计估值、维持最大值并写 metrics；Rust 函数只计算比例，`merging_temporary_index` 暂未影响标签或指标。
 
@@ -102,12 +100,3 @@ Go `isReorgRunnable` 还检查 worker/context cancellation，并允许 distribut
 - 扩展 SQL mode、时区或 mutate context 时，应以 Go 的完整 flags/err-level 语义为基准，先补 `backfilling_test.rs` 和 `column_type_change_test.rs`，避免把当前精简结构误当完整会话上下文。
 - 若要把 `table_range`、`table_max_handle`、进度或 runnable helper 接入生产，先核对 Go 中 storage scan、pseudo statistics、dist-reorg owner 例外和 metrics 标签，不能直接以当前纯函数替换完整逻辑。
 - 并发字段新增时优先明确原子顺序或锁的所有权；warning 错误类型若结构化，应同步修改 merge key、持久/Job warning 转换和 poison/error 策略。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/ddl/reorg.rs` 确认目标文件已索引；`node --file pkg/ddl/reorg.rs --offset 1 --limit 420` 与 `--offset 421 --limit 220` 读取完整 586 行及 63 个符号。限定符 `callers/callees` 未产生可用边，因此用精确 `rg` 补足调用证据。
-- 已读源码/装配：`pkg/ddl/reorg.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/partition.rs`、`pkg/ddl/Cargo.toml`。
-- 已读契约：`pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`；后者仅作为导航，本文结论均回查源码和测试。
-- Go 对照：`pkg/ddl/reorg.go` 的 `reorgCtx`、mutate context、`updateBackfillProgress`、`isReorgRunnable`、`reorgInfo`、`reorgHandler` 和 `adjustEndKeyAcrossVersion`；`pkg/ddl/reorg_test.go` 验证最大进度的串行与并发行为。
-- Rust 测试：`pkg/ddl/reorg_test.rs` 验证进度单调性、warning 合并、元素过滤、临时索引编码和合并阶段比例；`pkg/ddl/ddl_test.rs`、`pkg/ddl/tests/partition/reorg_partition_test.rs` 验证检查点错误、缺失持久句柄、恢复与分区场景；`backfilling_test.rs`、`column_type_change_test.rs` 覆盖表达式、mutate context 和 runnable 分支。
-- 人工复核结论：该文件存在的原因是统一 reorg 的运行时统计、范围/元素描述和可恢复 SQL 检查点；真实运行路径由 worker/action 驱动；安全扩展必须维持 Go 协议、半开区间、owner 生命周期和提交后发布检查点的不变量。

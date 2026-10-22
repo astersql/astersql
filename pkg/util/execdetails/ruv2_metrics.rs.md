@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-本文件实现语句级 RUv2 指标容器中仍被当前语句 RU 计算使用的最小数据面：是否绕过计量，以及 TiKV Coprocessor 响应字节数。源码注释明确说明旧 RU v2 模型已移除，目前仅保留这两项能力（[`ruv2_metrics.rs`](./ruv2_metrics.rs) 第 16–18 行）。
-
-它并非由根 `pkg/util/execdetails/lib.rs` 直接声明为同级模块，而是被 `pkg/util/execdetails/internal/ruv2/lib.rs` 的私有 `ruv2_metrics` 模块用 `include!("../../ruv2_metrics.rs")` 纳入 `astersql-util-execdetails-ruv2` 子 crate，再由该子 crate `pub use ruv2_metrics::*` 导出。最外层 `astersql-util-execdetails` crate 依赖这个子 crate，并在公开的 `ruv2_metrics` 模块中再次整体重导出。因此应用侧实际使用的路径是 `astersql_util_execdetails::ruv2_metrics::*`。
-
-该模块处于“原始 RU 明细 → 语句级快照 → 语句 RU 计算”的中间层：`tikvutil::RUDetails` 暂存 RPC 收集的原始 `kvrpcpb::Ruv2`，本文件将其中的 `coprocessor_response_bytes` 排空并累加到 `RUV2Metrics`，执行器随后把该累计值当作网络字节证据。直接证据见 `pkg/executor/adapter.rs` 的 `finalizeStatementRUV2Metrics`、`pkg/executor/statement_ru_plan_walk.rs` 的 `TiKVCoprocessorResponseBytes` 读取，以及 `pkg/server/internal/resultset/resultset.rs` 的游标增量同步。
+用 `RUV2MetricsFromContext` 提供 Go API 同名的上下文查询门面，优先尝试 `StmtExecDetails`，再回退到独立上下文键。
 
 ## 核心职责
 
@@ -96,8 +92,6 @@ RustCodeGraph 对本文件识别出 15 个符号；其 callee 图确认 `SyncRUV
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/util/execdetails/ruv2_metrics.go`。两版保留一致的公共意图：上下文中查找指标、从原始 RUv2 只汇入 Coprocessor 响应字节、从 `RUDetails` 排空增量、支持旁路以及直接增减/读取字节数。
-
 主要差异如下：
 
 - Go 的 `NewRUV2Metrics` 返回指针，Rust 返回值；Rust 上层需要共享时再包 `Arc`。
@@ -121,16 +115,3 @@ RustCodeGraph 对本文件识别出 15 个符号；其 callee 图确认 `SyncRUV
 测试不得内嵌到本生产文件。优先扩展独立文件 `pkg/util/execdetails/go_merge_20_test.rs`（原始字段筛选、None、旁路、零值、负增量和 drain-once）及 `pkg/util/execdetails/execdetails_test.rs`（聚合 crate 公开 API）；涉及真实上游时同步扩展 `pkg/server/internal/resultset/resultset_aster_unit_test.rs`、`pkg/server/conn_test.rs` 或 `pkg/executor/statement_ru_plan_walk_test.rs` 中的对应路径。
 
 兼容性风险集中在公开名称和返回/共享语义；正确性风险集中在旁路与 drain 的先后顺序、重复累计、类型转换和溢出；性能风险集中在热路径原子操作、增加额外锁，以及为稀疏字段改变当前内嵌布局。若要修复上下文门面，应先统一两个内部 crate 的类型与所有权边界，而不是直接让本文件依赖另一套同名桩或复制逻辑。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/util/execdetails/ruv2_metrics.rs`，完整 109 行；列出 1 个键类型、1 个静态键、3 个模块级函数、1 个结构体、`Default`/`Clone` 及 4 个公开方法。
-- 模块与 Cargo：`pkg/util/execdetails/internal/ruv2/lib.rs`（`include!`、`RUDetails`、Context/StmtExecDetails 桩）、`pkg/util/execdetails/internal/ruv2/Cargo.toml`、`pkg/util/execdetails/lib.rs`、`pkg/util/execdetails/Cargo.toml`。
-- RustCodeGraph：索引状态为 11,467 个文件、307,296 个节点、1,848,419 条边；`node --file` 确认目标源码和六个使用文件摘要；`query` 确认核心符号及 Go 同名符号；`callees` 确认同步、更新与旁路调用边。其 `callers` 未返回明细，因此上游引用由精确 `rg` 补证。
-- Rust 上游：`pkg/executor/adapter.rs`、`pkg/executor/statement_ru_plan_walk.rs`、`pkg/server/internal/resultset/resultset.rs`、`pkg/distsql/context/lib.rs`。
-- Rust 独立测试：`pkg/util/execdetails/go_merge_20_test.rs`、`pkg/util/execdetails/execdetails_test.rs`、`pkg/util/execdetails/util_3_aster_unit_test.rs`、`pkg/server/internal/resultset/resultset_aster_unit_test.rs`、`pkg/server/conn_test.rs`、`pkg/executor/statement_ru_plan_walk_test.rs`。其中前两者直接覆盖本文件的筛选、空输入、旁路、负增量和重复 drain；context 测试覆盖的是独立 util crate 的同名实现，不能直接证明本文件桩门面的行为。
-- Go 对照与调用：`pkg/util/execdetails/ruv2_metrics.go`、`pkg/util/execdetails/util.go`、`pkg/server/internal/resultset/resultset.go`、`pkg/executor/adapter.go`、`pkg/executor/statement_ru_plan_walk.go`；相关边界还见 `pkg/server/conn_stmt_test.go`。
-
-人工复核结论：该文件存在是为了在废弃旧 RU v2 计量模型后，继续为当前 statement-RU 和游标 delta 路径保留最小、并发安全的 Coprocessor 响应字节快照；安全扩展必须同时维护原始 RUDetails 累计/排空、语句级原子快照、Go 对照、消费方与独立测试，并明确当前上下文 API 的子 crate 桩限制。

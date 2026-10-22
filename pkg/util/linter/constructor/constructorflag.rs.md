@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo crate `astersql-util-linter-constructor`；crate 根是同目录的 `lib.rs`，它以 `pub mod constructorflag` 声明模块并通过 `pub use constructorflag::*` 再导出本文件的公开项。工作区根 `Cargo.toml` 又以 `facade_util_linter_constructor` 引用该 crate，`pkg/lib.rs` 将其并入 `pkg::util::linter::constructor` 门面。因此，`Constructor` 是构造函数约束工具的标记类型边界，而不是 SQL 执行、规划或存储运行链上的对象。
-
-当前 Rust 文件只实现标记类型本身。RustCodeGraph 对 `pkg/util/linter/constructor/constructorflag.rs` 的结果是“used by 0 files”，仓库搜索也未找到生产 Rust 代码构造或嵌入该类型；实际投入使用的约束仍位于 Go 的 `build/linter/constructor/analyzer.go`。仓库不再保留对应的 Rust analyzer 镜像，因此不能据此声称 Rust lint 已接线。
+自身不保存构造函数名称，也不检查任何构造行为；Go 版本中的允许函数列表来自宿主结构体字段上的 ``ctor:"..."`` tag，由 analyzer 读取。
 
 ## 核心职责
 
@@ -56,7 +54,7 @@ Go 侧的直接消费者是 `build/linter/constructor/analyzer.go::getConstructo
 
 ## 与 Go 版本的对应关系
 
-Go 对照 `pkg/util/linter/constructor/constructorflag.go` 仅定义 `type Constructor struct{}`，以空白字段嵌入宿主结构体，并在该字段上放置 `ctor` tag。Rust 的 `pub struct Constructor {}` 保留了空结构体和零运行时状态；派生 trait 是为 Rust 值语义提供的便利，不是 Go 源文件中的额外业务状态。
+Rust 的 `pub struct Constructor {}` 保留了空结构体和零运行时状态；派生 trait 是为 Rust 值语义提供的便利，不是 Go 源文件中的额外业务状态。
 
 两者目前并非完整功能等价：Go 能在字段 tag 中声明白名单，且 `build/linter/constructor/analyzer.go` 已通过 Go 类型信息和 AST 对复合字面量、`new(T)`、非指针 `var T` 及隐式嵌入零值构造执行检查；Rust 没有直接字段 tag，也没有对应 analyzer。Go 测试 `build/linter/constructor/analyzer_test.go` 用 `analysistest.Run` 验证诊断 fixture，并用反射验证标记包路径；Rust 的独立测试只验证空标记的值/布局语义。
 
@@ -65,12 +63,3 @@ Go 对照 `pkg/util/linter/constructor/constructorflag.go` 仅定义 `type Const
 若只扩展标记值的 Rust trait，应优先修改 `Constructor` 的 derive 列表，并在独立文件 `pkg/util/linter/constructor/migration_aster_unit_test.rs` 增补对应编译期或运行期断言；不要把测试内嵌回生产源文件。增加字段会破坏零大小和“所有值等价”的既有契约，必须同步评估 `size_of`、`Copy`、默认值以及 Go 空结构体兼容性。
 
 若目标是让 Rust 真正执行构造器白名单约束，不能仅修改本文件：需要先为 Go `ctor` tag 设计明确的 Rust 元数据表示，再选择 Rust 原生工具并接入实际构建链。当前仓库明确不提供这套 Rust analyzer。
-
-## 验证依据
-
-- 源文件：`pkg/util/linter/constructor/constructorflag.rs`，确认唯一符号、可见性、派生 trait、注释所述迁移限制及无条件编译项。
-- crate 边界：`pkg/util/linter/constructor/Cargo.toml`、`pkg/util/linter/constructor/lib.rs`、根 `Cargo.toml`、`pkg/lib.rs`，确认 crate 名、入口、再导出和工作区 facade；该 crate 没有声明依赖或 feature。
-- RustCodeGraph：`status` 显示索引含目标文件；`files --filter pkg/util/linter/constructor` 列出 Go/Rust 源与独立测试；`node --file ...constructorflag.rs` 显示完整 37 行源码并报告 `used by 0 files`；`query Constructor --kind struct` 定位四个对照定义；`callers Constructor` 无调用边，`callees Constructor` 报告无下游调用；针对 `getConstructorList` 等符号的探索确认 analyzer 处理链。
-- Go 对照与真实宿主：`pkg/util/linter/constructor/constructorflag.go`、`build/linter/constructor/analyzer.go`、`pkg/sessionctx/stmtctx/stmtctx.go`、`pkg/executor/internal/exec/executor.go`。
-- 测试与迁移证据：`pkg/util/linter/constructor/migration_aster_unit_test.rs`、`build/linter/constructor/analyzer_test.go`、`build/linter/constructor/testdata/src/t/construct.go`。
-- 本次清理 Rust nogo 镜像后运行根 crate 单元测试，确认该独立标记类型仍由自身 crate 和 facade 正常提供。

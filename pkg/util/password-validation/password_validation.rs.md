@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件是 `astersql-util-password-validation` crate 的密码策略实现文件。crate 入口 [`lib.rs`](lib.rs) 将它声明为私有模块后完整再导出其公开 API；工作区根 [`pkg/lib.rs`](../../lib.rs) 又通过 `util::password_validation` 门面再导出该 crate。它读取会话所连接的全局系统变量，按照 LOW、MEDIUM、STRONG 三层策略校验明文密码，但不负责保存、散列或验证密码哈希。
-
-目前 Rust 侧的接线仍是分层的：[`pkg/executor/simple.rs`](../../executor/simple.rs) 在 `CREATE USER`、`ALTER USER` 和 `SET PASSWORD` 路径调用 `SimpleBackend::validate_password`，但仓库内生产代码没有发现该 trait 方法到本文件 `ValidatePassword` 的直接实现或调用；本文件可确认的 Rust 调用者是同 crate 的两个独立测试模块。因此它是已经实现并由测试覆盖、也已被 executor 声明为 Cargo 依赖的策略库，而不是已经证实贯通 Rust SQL 执行主链的实现。
+`PasswordValidationSession` 和 `PasswordValidationContext` 将策略逻辑与完整会话所有权解耦，同时为真实 `variable::SessionVars` 提供适配。
 
 ## 核心职责
 
@@ -85,7 +83,7 @@ Go 主链的直接证据位于 [`pkg/executor/simple.go`](../../executor/simple.
 
 关键语义对应如下：Go `len([]rune(pwd))` 对应 Rust `pwd.chars().count()`；Go `unicode.IsUpper/IsLower` 对应 `char::is_uppercase/is_lowercase`；Go `unicode.IsDigit` 在本移植中由 Unicode General Category 的 `DecimalNumber` 表达；Go 的 `bytes.Contains` 与逐字节反序对应 Rust 字节窗口和 `Vec<u8>`；Go `ErrNotValidPassword.GenWithStackByArgs` 对应 `invalid_password` 生成的稳定 code/message，但 Rust 不构造 Go 风格堆栈。
 
-[`password_validation_test.go`](password_validation_test.go) 提供原始字典、用户名、LOW、MEDIUM 和三层总流程用例。Rust [`password_validation_test.rs`](password_validation_test.rs) 复刻这些用例并验证真实 `SessionVars` 适配；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 另覆盖字节长度窗口、Unicode 标量与类别、变量读取顺序、错误码 1819 和未知变量错误形态。
+Rust [`password_validation_test.rs`](password_validation_test.rs) 复刻这些用例并验证真实 `SessionVars` 适配；[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 另覆盖字节长度窗口、Unicode 标量与类别、变量读取顺序、错误码 1819 和未知变量错误形态。
 
 迁移差异仍需注意：Go 生产执行器直接调用 Go 实现；Rust 执行器当前只暴露后端校验接口，尚未找到调用本实现的生产后端。另一个细节是 Go `strconv.ParseInt(..., 10, 64)` 的错误文本由 Rust 手工映射为相同风格，而不是相同错误类型。
 
@@ -96,12 +94,3 @@ Go 主链的直接证据位于 [`pkg/executor/simple.go`](../../executor/simple.
 涉及字符规则时必须先明确单位：用户名当前是大小写敏感 UTF-8 字节子串，字典长度是字节、匹配前做 Unicode 小写，LOW 是 Unicode 标量，MEDIUM 是 Unicode 属性。改变任何一项都可能与 Go、MySQL/TiDB 行为及已有密码策略配置不兼容。字典算法若改为预编译或缓存，还需定义配置失效、并发同步和内存上限；当前实现没有这些生命周期问题。
 
 测试应同步放在 [`password_validation_test.rs`](password_validation_test.rs)；若是迁移边界、错误形态或 Go 差异，也应更新 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 以及 Go 对照测试。若目标是让 Rust SQL 主链实际使用本实现，还必须为 `SimpleBackend::validate_password` 增加明确的生产适配，并分别验证 `CREATE USER`、`ALTER USER`、`SET PASSWORD` 的启用开关、认证插件限制和错误传播；仅保留 executor 的 Cargo 依赖不能证明接线完成。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`files --filter pkg/util/password-validation` 找到本 crate 的 `lib.rs`、本实现、两个 Rust 测试及 Go 对照文件。
-- RustCodeGraph 源码与符号：`node --file pkg/util/password-validation/password_validation.rs --offset 1 --limit 400` 覆盖本文件 342 行；`query` 定位 `ValidatePassword`、四个策略函数、`parse_global_count` 和 `invalid_password`；`callees ValidatePassword` 确认总入口到各策略函数及错误构造器的调用边，LOW/MEDIUM 的查询确认到 `parse_global_count` 的边。
-- crate 与门面：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs)、工作区根 [`Cargo.toml`](../../../Cargo.toml) 和 [`pkg/lib.rs`](../../lib.rs)。
-- Rust 上游与接线核验：[`pkg/executor/Cargo.toml`](../../executor/Cargo.toml) 声明本 crate 依赖；[`pkg/executor/simple.rs`](../../executor/simple.rs) 的 `SimpleBackend::validate_password` 及三个账户操作调用点；全仓 Rust 检索未发现生产代码直接调用本文件 `ValidatePassword`。
-- Go 对照与主链：[`password_validation.go`](password_validation.go)、[`password_validation_test.go`](password_validation_test.go) 和 [`pkg/executor/simple.go`](../../executor/simple.go) 的三个直接调用点。
-- Rust 独立测试：[`password_validation_test.rs`](password_validation_test.rs) 与 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)。本任务依照计划只做文档分析，未运行 Cargo 或测试二进制；测试文件用于行为证据读取。

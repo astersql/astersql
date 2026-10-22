@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-executor` crate；crate 由 `pkg/executor/Cargo.toml` 定义，并在 `pkg/executor/lib.rs` 以 `pub mod mem_reader` 公开。它承载 UnionScan 的内存侧读取算法：把当前事务尚未提交的 KV 变更与临时表或缓存快照合并，再按表扫、索引扫、IndexLookUp 或 IndexMerge 的形态产出逻辑行。这里的“内存表读取”是事务写缓冲读取，不是 `pkg/executor/memtable_reader.rs` 所处理的 `information_schema` 集群虚拟表。
-
-RustCodeGraph 对四个公开构造器的调用分析只发现本文件内部调用和 `pkg/executor/mem_reader_test.rs` 的测试调用；未发现生产 Rust 执行器调用。因此当前文件是已经公开并可独立测试的移植模块，但尚无证据证明它已接入 Rust SQL 执行主链。Go 的实际执行接线仍位于同路径 `pkg/executor/mem_reader.go`，由 `UnionScanExec` 及其子读取器提供真实会话、事务和表达式上下文。
+Go 的实际执行接线仍位于同路径 `pkg/executor/mem_reader.go`，由 `UnionScanExec` 及其子读取器提供真实会话、事务和表达式上下文。
 
 ## 核心职责
 
@@ -84,13 +82,11 @@ Go 版本的注释明确要求 `memRowsIter.Close` 释放其持有的 snapshot�
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/mem_reader.go` 是逐名对应来源：`memIndexReader`、`memTableReader`、`txnMemBufferIter`、`memIndexLookUpReader`、`memIndexMergeReader`、三种行迭代器及辅助函数在 Rust 中均有对应物。主算法保持一致：降序反转范围；额外排序时物化；事务写覆盖临时/缓存快照；删除标记跳过；全局索引按分区过滤；IndexLookUp 先索引后回表；IndexMerge 按句柄交/并集后回表。
+主算法保持一致：降序反转范围；额外排序时物化；事务写覆盖临时/缓存快照；删除标记跳过；全局索引按分区过滤；IndexLookUp 先索引后回表；IndexMerge 按句柄交/并集后回表。
 
 Rust 将 Go 的具体 TiDB 类型压缩为本地模型和 `MemReaderBackend`，并用字符串表示条件。这使算法可单测，但尚未包含 Go 的 `context.Context`、tracing、会话时区与 SQL mode、真实 `expression.Expression`、新旧 rowcodec 双路径、chunk 复用、事务激活及底层 iterator 生命周期。Go 对 Common Handle 的补列只在 value 缺失时从句柄恢复，并考虑前缀聚簇索引；Rust `getRowData` 也先保留 `decode_row` 已有值，再仅对缺列调用 `decode_common_handle_column`，保留了这一关键顺序。
 
 Go 使用 `kv.HandleMap` 支持 TiDB 句柄相等性，Rust 依赖 `Handle` 派生的 `Ord`；接入真实编码前必须验证两者对 Common/Partition Handle 的等价关系。Go 的 `transaction.NewUnionIter` 是流式合并，Rust `union_range` 用 `BTreeMap` 物化单范围；行为目标相同，但资源和性能特征不同。
-
-独立 Rust 测试 `pkg/executor/mem_reader_test.rs::common_handle_fills_each_primary_key_column_from_its_encoded_component` 验证普通及分区包装 Common Handle 会按列序恢复两个主键分量。Go 的端到端覆盖主要位于 `pkg/executor/union_scan_test.go::TestUnionScanForMemBufferReader`，并包含降序表扫、索引扫和 IndexLookUp benchmark；分区与 IndexMerge 还有 `pkg/executor/partition_table_test.go` 等执行测试。它们证明 Go 行为意图，不等同于 Rust 接线测试。
 
 ## 扩展指南
 
@@ -101,12 +97,3 @@ Go 使用 `kv.HandleMap` 支持 TiDB 句柄相等性，Rust 依赖 `Handle` 派�
 改变快照来源或覆盖规则时优先修改 `getSnapIter`/`union_range`，并补齐“临时优先缓存、事务覆盖快照、事务空值删除遮蔽旧值、正反向次序、多范围跨段”的测试。若改成流式合并，需要同时设计错误返回与可靠关闭，避免当前 `Valid` 延迟错误协议造成越界访问。
 
 性能修改应分别测量流式路径、额外排序路径、IndexLookUp 回表和 IndexMerge 句柄物化；不得把 Go 的复用缓冲优化当作 Rust 已实现。兼容性风险集中在编码/时区/SQL mode、Common Handle 前缀恢复、无符号主键、全局索引分区 ID 和重复句柄交集计数。
-
-## 验证依据
-
-- 目标源码：`pkg/executor/mem_reader.rs`（RustCodeGraph 显示 1314 行、116 个符号），逐段核对类型、构造器、读取流程、合并迭代器、错误和关闭实现。
-- crate 与模块：`pkg/executor/Cargo.toml` 的 `[package]`、`[lib]`、`[features]`、`[package.metadata.porting]`；`pkg/executor/lib.rs:142-144` 的生产模块与独立测试模块声明。目标包不存在 `pkg/executor/doc.go`。
-- RustCodeGraph：`status` 显示索引包含 11467 文件、307296 节点、1848419 条边；`files --filter pkg/executor/mem_reader.rs` 确认目标文件；`node --file` 覆盖全部 1-1314 行；`explore` 确认构造器调用边及当前无生产 Rust 调用者。
-- Rust 测试：`pkg/executor/mem_reader_test.rs`，验证 Common Handle 多主键分量及分区包装的透明解码。
-- Go 对照：`pkg/executor/mem_reader.go`，核对同名类型/函数、UnionScan 会话接线、KV 合并、解码、条件、排序与生命周期；`pkg/executor/union_scan_test.go` 和 `pkg/executor/partition_table_test.go` 提供端到端行为与分区场景证据。
-- 本任务为纯文档分析，按计划不运行 Cargo；最终结构检查要求本文恰好具有规定的 11 个二级章节。

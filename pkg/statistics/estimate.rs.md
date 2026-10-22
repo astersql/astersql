@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-statistics` crate 的采样统计构建路径，负责把样本中的不同值数量（NDV）和 singleton 数量外推为全表 NDV。模块由 [`pkg/statistics/lib.rs`](lib.rs) 通过 `mod estimate` 装配，并以 `pub use estimate::*` 重导出其中可见符号；crate 与 Go 包 `pkg/statistics` 的对应关系记录在 [`pkg/statistics/Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 中。
-
-它不是独立的统计收集入口。生产调用位于 [`pkg/statistics/cmsketch.rs`](cmsketch.rs)：`NewCMSketchAndTopN` 先从样本构造 `topNHelper`，再调用本文件的 `calculateEstimateNDV`，其结果继续参与 CMSketch 默认频数和 TopN 的构建。对应 Go 实现在 [`pkg/statistics/estimate.go`](estimate.go)，而辅助结构在 Go 中定义于 [`pkg/statistics/cmsketch.go`](cmsketch.go)。
+对应 Go 实现在 [`pkg/statistics/estimate.go`](estimate.go)，而辅助结构在 Go 中定义于 [`pkg/statistics/cmsketch.go`](cmsketch.go)。
 
 ## 核心职责
 
@@ -66,9 +64,7 @@
 
 ## 与 Go 版本的对应关系
 
-[`pkg/statistics/estimate.go`](estimate.go) 与 Rust 文件在两个函数的分支、GEE 公式、加 `0.5` 舍入、样本 NDV 下界和全表行数上界上逐项对应。Rust 的 `dataCnt` 对应 Go 中 `histogram.go` 的同名结构，`topNHelper` 对应 Go 中 `cmsketch.go` 的同名结构；Rust 为便于模块可见性将这两个辅助结构放到了 `estimate.rs`，并由 `cmsketch.rs` 导入。
-
-Go 的 `calculateEstimateNDV` 由 `cmsketch.go::NewCMSketchAndTopN` 调用，Rust 保持相同接线。Go 的 `TestEstimateNDVByGEE` 位于 [`pkg/statistics/cmsketch_test.go`](cmsketch_test.go)，Rust 对应测试独立放在 `estimate_test.rs`，符合源码与测试分文件的仓库约定；`statistics_aster_unit_test.rs` 另有范围性质的补充检查。
+Go 的 `calculateEstimateNDV` 由 `cmsketch.go::NewCMSketchAndTopN` 调用，Rust 保持相同接线。
 
 已确认的差异包括：Rust 对非法零值始终 panic，而 Go 在非 `intest` 构建可走防御性返回；Rust `newTopNHelper` 对同频数据始终用编码字节作次级排序，Go 仅在 `StabilizeV1AnalyzeTopN` failpoint 下强化该顺序。后一差异发生在上游 helper 构造，不改变本文件公式，但可能影响 TopN 项目的顺序，不应归因于 GEE。
 
@@ -80,11 +76,3 @@ Go 的 `calculateEstimateNDV` 由 `cmsketch.go::NewCMSketchAndTopN` 调用，Rus
 - 若需要把非法输入改为可恢复错误，API、所有调用点和 Go 兼容语义都会变化；应显式设计 `Result`/错误类型，而不是仅删除断言。
 - 性能上该文件的公式为常数时间；`sorted.len()` 不遍历数据。不要为估算器引入对 `sorted` 或 `data` 的重复扫描，样本计频和排序已由上游完成。
 - 兼容性复核应关注 NDV 对 `calculateDefaultVal` 分母以及 TopN/CMSketch 频数放大的连锁影响，而不能只验证公式返回值。
-
-## 验证依据
-
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`explore "pkg/statistics/estimate.rs ..."` 读取目标文件及符号；`query calculateEstimateNDV` 确认 Go/Rust 同名定义；`callees` 确认 Rust `calculateEstimateNDV → EstimateNDVByGEE`，且 GEE 无项目内下游调用。
-- 源码与装配：[`pkg/statistics/estimate.rs`](estimate.rs)、[`pkg/statistics/lib.rs`](lib.rs)、[`pkg/statistics/cmsketch.rs`](cmsketch.rs)、[`pkg/statistics/Cargo.toml`](Cargo.toml)。
-- Go 对照：[`pkg/statistics/estimate.go`](estimate.go)、[`pkg/statistics/cmsketch.go`](cmsketch.go)、[`pkg/statistics/histogram.go`](histogram.go)。
-- 测试证据：[`pkg/statistics/estimate_test.rs`](estimate_test.rs) 覆盖公式结果、四舍五入/上下界、三个 panic 前置条件以及两个特殊分支；[`pkg/statistics/statistics_aster_unit_test.rs`](statistics_aster_unit_test.rs) 补充估计范围；[`pkg/statistics/cmsketch_test.go`](cmsketch_test.go) 是 Go 公式与非法输入的对照测试。
-- 按任务约束，本次为纯文档分析，未运行 Cargo 或代码测试；完成判据使用任务指定的 11 节结构检查，并人工复核文件定位、运行链、边界和扩展点均有上述源码证据。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-该文件是 `astersql-store-mockstore-unistore-tikv` crate 中的内存 MVCC 核心。模块由同目录 `lib.rs` 以 `pub mod mvcc` 暴露，`server.rs` 的 `Server` 持有 `Arc<MvccStore>`，把 KV RPC 风格的读写、事务状态、锁解析、GC 和调试查询转发到这里。它服务于进程内 mock TiKV，不是持久化 TiKV 引擎。
-
-crate 边界由 `pkg/store/mockstore/unistore/tikv/Cargo.toml` 定义：库入口是 `lib.rs`，移植元数据指向 Go 包 `pkg/store/mockstore/unistore/tikv`。当前顶层 crate 的直接通用依赖只有启用 failpoint feature 的 `fail`；Windows 目标还声明 client、cophandler、lockstore、独立 `tikv/mvcc` 子 crate等依赖。本文对象是顶层 `tikv/mvcc.rs`，不要与 `pkg/store/mockstore/unistore/tikv/mvcc/mvcc.rs` 混淆。
+维护 `latest_ts`、GC safe point 和关闭标志，并提供调试用完整 MVCC 查询与范围删除。
 
 ## 核心职责
 
@@ -73,11 +71,9 @@ Put/Insert 的值最终存入 `Write.value`。超过 64 字节时，普通 2PC �
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/store/mockstore/unistore/tikv/mvcc.go`。两版共享 MVCCStore 概念及 PessimisticLock、Prewrite、Commit、Rollback、CheckTxnStatus、CheckSecondaryLocks、Cleanup、ScanLock、ResolveLock、Get/BatchGet/Scan、UpdateSafePoint、MvccGetByKey/StartTs 和 DeleteFileInRange 等协议意图。Rust 测试中的注释明确以 Go 的 WriteBatch、CheckNotExists、主键 MAX_SYSTEM_TS 读和 async-commit 分支为对齐依据。
-
 实现载体并不等价：Go 版把已提交版本放在 Badger，把锁放在 lockstore，通过 dbWriter/WriteBatch 持久化，并结合 requestCtx、Region latch、lock waiter、deadlock detector、PD safe point 更新循环与 compaction filter；Rust 顶层文件把三类状态全部存入单个内存 `BTreeMap`，协议上下文被压缩为方法参数，等待/唤醒、死锁探测、磁盘错误、Region 边界和崩溃恢复由其他模块承担或尚未模拟。
 
-可见的语义差异还包括：Go safe point 只递增，Rust 可被降低；Go 扫描支持 isolation level、committed locks、sample step、commit-ts 返回和内部键边界，Rust 只实现 resolved locks、方向/limit/key-only；Go `DeleteFileInRange` 删除 Badger 的数据/default 两个编码区间，Rust 直接移除内存键状态；Go GC 依靠 Badger 压缩过滤，Rust `gc` 立即遍历并保留一个可见锚点。扩展时必须先判断需求是补 mock 协议语义，还是不应在此内存模型复制的真实存储能力。
+可见的语义差异还包括：Go safe point 只递增，Rust 可被降低；Go 扫描支持 isolation level、committed locks、sample step、commit-ts 返回和内部键边界，Rust 只实现 resolved locks、方向/limit/key-only；Go `DeleteFileInRange` 删除 Badger 的数据/default 两个编码区间，Rust 直接移除内存键状态；Go GC 依靠 Badger 压缩过滤，Rust `gc` 立即遍历并保留一个可见锚点。
 
 ## 扩展指南
 
@@ -87,12 +83,3 @@ Put/Insert 的值最终存入 `Write.value`。超过 64 字节时，普通 2PC �
 - 修改时间戳/GC 时重点验证 safe point 单调性、等于水位的读、锚点版本、Delete/Lock/Rollback 与 default 值清理。若要对齐 Go，应优先修正 `SafePoint::update_ts` 的单调递增契约，而不是加入与 Badger 无关的表面 API。
 - 增加并发能力前应明确锁粒度和 Server Region latch 的组合顺序，防止锁序反转；若拆分全局 `RwLock`，批量原子性和跨键 `resolve_lock` 需要新的事务化机制。
 - RPC 形态或返回字段改变时同步更新 `server.rs` 的转换/接线以及 `rpc.rs` 调用面；持久化、lock waiter、deadlock detector 或 Region 语义应优先落在对应现有模块，而不是塞入此单文件内存状态机。
-
-## 验证依据
-
-- RustCodeGraph `status`：项目索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/store/mockstore/unistore/tikv/mvcc.rs` 将目标识别为含 93 个符号的 Rust 文件。
-- RustCodeGraph `node --file ... --offset ...` 分段读取了 `mvcc.rs` 全部 1,187 行、`mvcc_test.rs` 的有效测试区（900-1275）、`server.rs` 的 Server/MVCC 接线区，以及 Go `mvcc.go` 的存储、事务、读扫描和 safe-point/GC 相关区段。
-- 对 `MvccStore::prewrite` 等 impl 方法执行精确 `callers`/`callees` 未返回边，宽泛 `explore` 又被仓库同名符号污染；因此调用关系另由 `rg` 的精确方法调用点与 `server.rs` 源码交叉核实。确认的直接边包括 `Server::kv_prewrite -> MvccStore::prewrite`、`Server::kv_commit -> commit`、`Server::kv_gc -> update_safe_point/gc`。
-- crate/模块证据：`pkg/store/mockstore/unistore/tikv/Cargo.toml` 与 `pkg/store/mockstore/unistore/tikv/lib.rs`。Go 对照：`pkg/store/mockstore/unistore/tikv/mvcc.go`。
-- 独立 Rust 测试 `pkg/store/mockstore/unistore/tikv/mvcc_test.rs` 覆盖快照可见性、回滚幂等、1PC、事务状态/TTL、CheckNotExists、MAX_SYSTEM_TS 主键读、悲观锁读与批次原子性、async commit、主键不匹配、长值/Delete、心跳、扫描、safe-point 拒绝、GC 锚点、ResolveLock，以及 Commit/Rollback 后序失败不产生部分修改。Go 回归背景位于同路径 `mvcc_test.go`。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付结构命令验证目标文档存在且固定二级标题恰好为 11 个，并人工复核本文能够回答文件为何存在、运行主链和安全扩展位置。

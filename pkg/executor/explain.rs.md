@@ -2,11 +2,7 @@
 
 ## 文件定位
 
-`explain.rs` 属于 `astersql-executor` crate，由 `pkg/executor/lib.rs` 的 `pub mod explain;` 对外公开。它提供 EXPLAIN 的执行期能力：普通 EXPLAIN 把已有计划渲染为行，EXPLAIN ANALYZE 先排空被分析的子执行器再渲染运行时统计，EXPLAIN FOR CONNECTION 先校验连接可见性再渲染目标会话的计划。源文件还包含 ANALYZE 期间的可选内存诊断循环。
-
-crate 边界见 `pkg/executor/Cargo.toml`：直接使用 `astersql-errors`、`astersql-util-chunk`和 `astersql-util-execdetails`，外键触发器边界来自同 crate 的 `crate::foreign_key`。该文件没有条件编译项，`nextgen` feature 也不改变这一模块。
-
-当前 Rust 生产代码中未搜索到 `ExplainExec`、`ExplainForConnection` 或两个 `getAnalyzeExec*` 方法的外部调用，也未见 `ExplainExec` 实现 `adapter.rs` 使用的 `ExecExecutor` trait；它们目前是公开但尚未证明已接入 Rust SQL 主链的能力。`pkg/executor/explain_test.rs` 通过 TestKit 验证 SQL 输出，但没有直接构造本文件的类型，因而不能单独作为生产接线证据。
+提供 EXPLAIN 的执行期能力：普通 EXPLAIN 把已有计划渲染为行，EXPLAIN ANALYZE 先排空被分析的子执行器再渲染运行时统计，EXPLAIN FOR CONNECTION 先校验连接可见性再渲染目标会话的计划。
 
 ## 核心职责
 
@@ -75,8 +71,6 @@ ANALYZE 流程将 panic 转为普通错误，仍保证 Close。Next 错误优先
 
 ## 与 Go 版本的对应关系
 
-Rust `ExplainExec::{Open,Close,Next,executeAnalyzeExec,generateExplainInfo,getAnalyzeExecToExecutedNoDelay,getAnalyzeExecWithForeignKeyTrigger}` 对应 `pkg/executor/explain.go` 的同名类型/方法。共同语义包括：仅 Analyze 转发 Open；首次 Next 惰性生成行并按 chunk 分页；排空直到空 chunk；执行后渲染；Next 和 Close 错误合并；空 schema DML 可走 no-delay 路径；外键触发器可向上层透出。`pkg/executor/explain_unit_test.rs` 还专门固定了 Go 测试中的 Next panic 后仍 Close 契约。
-
 两者的重要差异是：
 
 - Go `ExplainExec` 内嵌 `BaseExecutor` 并持有具体 `core.Explain`/`exec.Executor`；Rust 通过 `ExplainPlan`、`ExplainAnalyzeExecutor`、`ExplainRuntime` 和 `ExplainContext` 抽象这些能力，目前未发现完整生产适配器。
@@ -93,12 +87,3 @@ Rust `ExplainExec::{Open,Close,Next,executeAnalyzeExec,generateExplainInfo,getAn
 - 扩展 RU 时，保持“子执行器 Close 完成后再快照”的时序，并在 runtime 实现和独立测试中明确 pending 计数排空、RU 版本、重复渲染与 stale stats 清理策略。Go `pkg/executor/explain_unit_test.go` 的 RU 用例是对照依据，不代表 Rust 已自动获得这些行为。
 - 扩展 EXPLAIN FOR CONNECTION 时，在 `ExplainForConnectionProvider` 实现中对接存活进程快照和类型化权限错误，保持“先查找、再鉴权、后渲染”。在 `pkg/executor/explainfor_test.rs` 同步覆盖未知连接、非属主、特权用户、空计划与缓存计划。
 - 修改内存诊断时，保持停止可唤醒、线程可 join、超阈值运算不溢出，并在独立的 `*_test.rs` 中用伪 diagnostics 验证 30/40 GiB 边界、profile 失败、负配置和 Stop 竞态。写 profile 的生产适配器还应明确由谁创建 `record` 目录和清理旧文件。
-
-## 验证依据
-
-- Rust 源码：`pkg/executor/explain.rs` 全文 581 行，通过 RustCodeGraph `node --file` 分段阅读；主要符号用 `query ExplainExec`、`query executeAnalyzeExec`、`query ExplainForConnection`、`query MemoryDebugModeHandler`、`query getAnalyzeExecToExecutedNoDelay` 和 `query getAnalyzeExecWithForeignKeyTrigger` 核对。
-- 调用图：运行 RustCodeGraph `explore "pkg/executor/explain.rs ExplainExec ExplainAnalyzeExec execution flow callers callees"` 和针对 `adapter.rs` 的 explore；图确认本文件内 `Next → generateExplainInfo → executeAnalyzeExec`、`executeAnalyzeExec → analyze Next/Close` 等边，但精确 `callers/callees` 命令未返回详细记录。随后用全库 Rust 精确搜索核对，未发现测试之外的本类型调用或 trait 接线。
-- crate/模块：`pkg/executor/Cargo.toml` 确认 `astersql-executor` 与直接 crate 依赖；`pkg/executor/lib.rs` 确认公开模块和三份独立测试的注册。目标包下不存在 `doc.go`。
-- Rust 测试：`pkg/executor/explain_unit_test.rs` 证明 Open/Next/Close 次数、chunk 分页、单次渲染、错误顺序与 panic 后 Close；`pkg/executor/explainfor_test.rs` 证明属主/特权/未知连接且拒绝时不渲染；`pkg/executor/explain_test.rs` 证明统计估算输出与 TiDB_JSON 嵌套/转义，但它对本文件没有直接类型引用。
-- Go 对照：`pkg/executor/explain.go` 核对主生命周期、RU 注册、no-delay DML、外键与内存诊断；`pkg/executor/explain_unit_test.go` 核对 panic/Close 及 RU 边界；`pkg/executor/explainfor_test.go` 作为完整 EXPLAIN FOR CONNECTION 会话行为的对照。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` + `rg -c` 命令检查固定章节，并人工检查只新增本文档且未修改 `plan.md`。

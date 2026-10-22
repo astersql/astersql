@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`trace.rs` 属于 `astersql-planner-cardinality` crate，是基数估算过程中记录“本语句实际触碰了哪些未完整加载统计”的辅助模块。crate 根 `pkg/planner/cardinality/lib.rs` 以私有 `mod trace` 装配该文件，再通过 `pub use trace::*` 导出其公开符号；因此调用者仍从 cardinality crate 的统一命名空间使用它。
-
-它不计算基数，也不触发统计加载。它位于“估算代码取得列/索引统计”与“`StatementContext` 保存诊断状态”之间：`row_count_column.rs`、`row_count_index.rs` 和 `selectivity.rs` 在读取统计时调用 `recordUsedItemStatsStatus`，后者把非完整加载状态按 `(table_id, item_id, is_index)` 记录到语句上下文。文件头注释把用途限定为用户查询规划期间的诊断记账；函数本身没有另行判断语句类型，是否处于用户查询路径由调用点保证。
+用 `UsedStatsItem<'a>` 显式表达“列或索引”以及各自“对象存在或缺失”四种状态，替代 Go `any` 加类型断言的动态分派。
 
 ## 核心职责
 
@@ -78,13 +76,9 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的早退规则、列/索引区分、FullLoad 过滤以及 `unInitialized`/`missing`/实际加载状态三类结果，直接对应 `pkg/planner/cardinality/trace.go::recordUsedItemStatsStatus`。`UsedStatsItem` 的 `Option<&Column/Index>` 精确保留了 Go 中“动态类型是 `*Column` 或 `*Index`，但指针可为 nil”的四种有效输入。
+当前实现也存在必须如实保留的接线差异。
 
-当前实现也存在必须如实保留的接线差异。Go 函数会调用 `GetUsedStatsInfo(true)`，并在表记录不存在时通过 `statsutil.GetTblInfoForUsedStatsByPhysicalID` 创建带名称和表信息的 `UsedStatsInfoForTable`；随后状态直接写进该表记录的 `ColumnStatsLoadStatus` 或 `IndexStatsLoadStatus`。Rust 函数使用 `GetUsedStatsInfo(false)`，不创建表记录、不解析表元数据，而是将状态写入 `StatementContext::plannerUsedStatsLoadStatus` 独立映射。它只在表记录已经由其他路径附着时借用其中的 `ColAndIdxStatus` 判断是否已分析。
-
-这个差异意味着当前 Rust 代码已覆盖状态判定和语句级可观察性，但不能由本函数单独保证 Go 版本的表名、`TblInfo` 及表内状态映射都被建立。`pkg/planner/core/stats/stats.rs` 中 Go 风格的 `LoadTableStats` 接线仍主要保留在注释块，进一步佐证不应把完整 Go 表级记录流程宣称为已迁移。
-
-测试语义也有对应关系：`trace_test.rs` 验证已分析但缺失得到 `unInitialized`、未分析缺失得到 `missing`、非正 ID 被忽略，以及 FullLoad 不写而 AllEvicted 被记录；`pkg/planner/core/main_test.rs` 另从实际 `DeriveStats` 路径验证缺失列状态可被语句上下文观察。Go 同目录没有独立 `trace_test.go`，相关集成意图可在 `selectivity_test.go` 的真实 session 场景中找到。
+这个差异意味着当前 Rust 代码已覆盖状态判定和语句级可观察性，但不能由本函数单独保证 Go 版本的表名、`TblInfo` 及表内状态映射都被建立。
 
 ## 扩展指南
 
@@ -95,13 +89,3 @@ Rust 的早退规则、列/索引区分、FullLoad 过滤以及 `unInitialized`/
 若要补齐 Go 的表级记录语义，接入点应围绕 `GetUsedStatsInfo`、表信息解析和 `UsedStatsInfoForTable`，并先确认与当前独立 `plannerUsedStatsLoadStatus` 映射的单一事实来源，避免双写漂移。该改动跨越本文件与 planner core/stmtctx，不应在纯局部重构中顺手完成。
 
 测试必须继续放在独立的 `pkg/planner/cardinality/trace_test.rs`，不要内嵌到生产文件。新增分支至少覆盖 Column/Index、Some/None、FullLoad/非 FullLoad、存在性缓存的直接值与 `Box` 形态，以及重复键覆盖。涉及实际规划链时同步扩展 `pkg/planner/core/main_test.rs` 或对应 cardinality 调用者的独立测试。主要兼容风险是状态字符串或键语义变化影响诊断输出；主要性能风险是在热估算路径增加额外锁、克隆或表元数据查询。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：项目已索引 11,467 个文件；`node --file pkg/planner/cardinality/trace.rs` 返回完整 96 行源码及该文件被 cardinality 相关文件使用的索引信息。
-- RustCodeGraph 符号查询：`query recordUsedItemStatsStatus --kind function` 定位 Rust 与 Go 同名实现，`query UsedStatsItem` 定位枚举及两个成员。对 Rust 函数执行 `callers`/`callees` 未返回静态边，因此按技能规则用定向源码搜索补齐调用关系。
-- RustCodeGraph 源码证据：读取了 `row_count_column.rs::GetRowCountByColumnRanges`、`row_count_index.rs::GetRowCountByIndexRanges`、`selectivity.rs` 的缺失列分支、`stmtctx.rs::{RecordUsedStatsLoadStatus, GetUsedStatsInfo, UsedStatsInfoForTable}`、`table.rs::ColAndIdxExistenceMap::HasAnalyzed` 和 `histogram.rs::StatsLoadedStatus::{IsFullLoad, StatusToString}`。
-- crate 与装配证据：读取 `pkg/planner/cardinality/Cargo.toml` 和 `pkg/planner/cardinality/lib.rs`，确认依赖别名、模块始终装配、公开再导出以及测试文件的独立 `#[cfg(test)]` 声明。
-- Go 对照：读取 `pkg/planner/cardinality/trace.go`，并用定向搜索核对 `row_count_column.go`、`row_count_index.go`、`selectivity.go` 的对应调用点；读取 `pkg/planner/core/stats/stats.rs` 的迁移注释以限定表级 UsedStats 接线现状。
-- 测试证据：读取 `pkg/planner/cardinality/trace_test.rs`，并核对 `pkg/planner/core/main_test.rs` 的实际规划链状态断言及 `pkg/testkit/mockstore.rs` 的状态读取接口。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证本文档存在且恰好包含 11 个固定二级章节，并人工检查没有修改 Rust、Go、Cargo 或只读 `plan.md`。

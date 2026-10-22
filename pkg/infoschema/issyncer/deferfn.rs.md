@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-infoschema-issyncer` crate；crate 入口是同目录的 `lib.rs`，其中以 `mod deferfn;` 装入模块并通过 `pub use deferfn::*;` 重新导出。文件只依赖标准库的 `std::sync::Mutex` 与单调时钟 `std::time::Instant`，没有使用 `Cargo.toml` 中列出的其他内部或外部 crate。
-
-它实现一个由调用者主动轮询的延迟回调队列。当前 Rust 应用接线中，`syncer.rs::newSyncer` 创建共享的 `Arc<DeferFn>`，`Syncer::SyncLoop` 周期性调用 `check`。但是 `loader.rs::newLoader` 的 `_deferFn` 参数当前未被保存，生产 Rust 代码也没有调用 `add`；所以现状是“调度器和轮询端存在、测试覆盖其行为，但 Go 的 InfoSchema V1/V2 切换延迟释放入队链尚未接通”，不能把它描述成已经完成生产清理。
+`deferFn::len` 与 `deferFn::is_empty` 提供只读队列状态，主要用于测试和诊断。
 
 ## 核心职责
 
@@ -61,7 +59,7 @@
 
 ## 与 Go 版本的对应关系
 
-Rust 的 `deferFnRecord` 对应 `deferfn.go::deferFnRecord`，`records` 对应 Go 的 `data`，`callback` 对应 `fn`；`add`、`check` 的追加、严格到期判断、原序保留和锁内执行语义保持一致。Go 使用 `now.After(record.fire)`，Rust 使用 `record.fire < now`，两者都排除相等时刻。
+Go 使用 `now.After(record.fire)`，Rust 使用 `record.fire < now`，两者都排除相等时刻。
 
 Rust 用 `Box<dyn FnOnce() + Send>` 表达一次性回调，并要求捕获值为 `'static`；Go 的 `func()` 可直接闭包引用测试栈变量。因此 Rust 测试用 `Arc<AtomicBool>` 代替 Go 测试中的局部 `bool`。Rust 额外提供 `len`、`is_empty` 及公开别名 `DeferFn`，因为私有 `records` 不能像同包 Go 测试那样直接读取。
 
@@ -74,13 +72,3 @@ Rust 用 `Box<dyn FnOnce() + Send>` 表达一次性回调，并要求捕获值�
 - 若要支持取消、按触发时间高效选择或大量记录，应新增明确的数据结构/API，而不是把当前 `Vec` 的插入顺序误当成按时间排序。性能改变需要覆盖相同触发时刻、乱序登记和大队列。
 - 任何逻辑改动都应更新独立文件 `deferfn_test.rs`，不要把测试内嵌回生产源文件；至少覆盖严格相等边界、回调顺序、并发登记、锁持有以及 panic 策略。若补生产接线，还应在 Loader/Syncer 的独立测试中证明真实回调从入队到周期消费的完整链路。
 - 不应让回调重入同一个 `DeferFn`，除非实现同时改为显式支持重入并定义 panic 后的恢复/记录保留策略。
-
-## 验证依据
-
-- RustCodeGraph：`query DeferFn` / `query deferFn` 定位 `deferFn`、`deferFnRecord`、`add`、`check`、`len`、`is_empty`、Go 对照及测试；`explore "pkg/infoschema/issyncer/deferfn.rs DeferFn"` 返回目标源码、Go 源码和两侧测试，并显示 Rust 测试调用关系。
-- Rust 源与装配：`pkg/infoschema/issyncer/deferfn.rs`、`pkg/infoschema/issyncer/lib.rs`、`pkg/infoschema/issyncer/syncer.rs`、`pkg/infoschema/issyncer/loader.rs`。
-- crate 边界：`pkg/infoschema/issyncer/Cargo.toml`，包名为 `astersql-infoschema-issyncer`，`[lib] path = "lib.rs"`。
-- Rust 独立测试：`pkg/infoschema/issyncer/deferfn_test.rs`，覆盖短/长延迟筛选、剩余数量、并发登记、`Sync` 性质以及回调期间持锁。
-- Go 对照：`pkg/infoschema/issyncer/deferfn.go`、`deferfn_test.go`、`loader.go`、`syncer.go`，分别验证队列算法、原始测试意图、V1/V2 切换登记和周期消费。
-- 仓库检索：对 `pkg/infoschema/issyncer` 中 `DeferFn`、`deferFn`、`add`、`check` 的引用核对，确认当前 Rust 生产代码只有构造/传递/消费，没有生产登记调用。
-

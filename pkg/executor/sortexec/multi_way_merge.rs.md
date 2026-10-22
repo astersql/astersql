@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-executor-sortexec` crate 的排序结果合并层。crate 入口 `pkg/executor/sortexec/lib.rs` 以 `pub mod multi_way_merge` 导出该模块；`pkg/executor/sortexec/Cargo.toml` 将 crate 根指定为 `lib.rs`，并用 `package.metadata.porting.go-package = "pkg/executor/sortexec"` 标明其 Go 对照包。
-
-它不负责从 SQL 计划构造执行器，也不定义排序键语义；上游 `sort.rs`、`parallel_sort_worker.rs`、`parallel_sort_spill_helper.rs` 和 `topn.rs` 先生成若干各自有序的分区或 run，再由这里把它们合成一条全局有序行序列。行、比较器、错误和磁盘 run 分别复用 `sort_util.rs` 的 `Row`、`RowComparator`、`SortError`/`Result` 与 `DiskRun`。
+提供逐行 `next` 和全量 `collect` 两种消费方式。
 
 ## 核心职责
 
@@ -84,8 +82,6 @@ RustCodeGraph 的泛名查询会混入仓库其他 `init`/`next`/`Merge` 符号�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件为 `pkg/executor/sortexec/multi_way_merge.go`。两版都具有 `multiWayMergeSource`、`memorySource`、`diskSource`、`sortPartitionSource`、`multiWayMerger` 和 `newMultiWayMerger`，核心算法都是“每分区一个候选的最小堆 + 弹出后从原分区补行”。Rust 的 `Option<Row>` 对应 Go 的空 `chunk.Row` 耗尽标记，`Result` 对应 Go 的 `(row, error)`。
-
 主要实现差异如下：
 
 - Go 用 `container/heap` 和 `multiWayMergeImpl` 实现 `Less/Len/Push/Pop/Swap`；Rust 把上浮、下沉直接实现在 `push`/`pop` 中。
@@ -105,12 +101,3 @@ RustCodeGraph 的泛名查询会混入仓库其他 `init`/`next`/`Merge` 符号�
 - 改变排序语义：比较规则归属 `sort_util.rs::RowComparator`/`compare_rows`，本文件只维护堆序。任何 NULL、ASC/DESC 或跨类型次序变更，应同步排序工具测试和 Sort/TopN 端到端测试。
 - 引入并行预取：当前 `&mut self` 同步协议没有背压或取消接口。若增加线程/任务/通道，需要定义 source 所有权、错误后的候选保留、取消、join 与内存记账，不能只在 `next` 内启动脱管任务。
 - 性能风险：增大分区数会提高 `log k` 比较成本；`collect` 和当前 `diskSource` 会物化大量行。优化时必须同时验证顺序、错误语义和内存生命周期，不能以只通过空输入或零测试替代行为证据。
-
-## 验证依据
-
-- RustCodeGraph：`status` 显示索引包含本仓库 Rust/Go 文件；`node --file pkg/executor/sortexec/multi_way_merge.rs --offset 1 --limit 500` 覆盖目标文件 238 行；针对 `newMultiWayMerger` 的 explore/caller 结果确认 `fetchUnparallel`、`multiWayMerge`、`mergeRuns`、`mergeAll`、`fetchTopN` 和回归测试调用边。
-- 生产源码：`pkg/executor/sortexec/multi_way_merge.rs`、`lib.rs`、`sort_util.rs`、`sort_partition.rs`、`sort.rs`、`parallel_sort_worker.rs`、`parallel_sort_spill_helper.rs`、`topn.rs`。
-- crate 配置：`pkg/executor/sortexec/Cargo.toml`，用于确认 crate 名称、根文件、Go 包映射和依赖边界；依赖表位于 `cfg(windows)` 目标段，本文件本身没有条件编译标记。
-- Go 对照：`pkg/executor/sortexec/multi_way_merge.go`，用于核对三类 source、heap 协议、后继读取顺序及磁盘游标差异。仓库同目录未找到直接点名 `multiWayMerger` 的 Go `*_test.go`；Go 行为依据来自实现本身及其 Sort/TopN 调用点。
-- 独立 Rust 测试：`pkg/executor/sortexec/multi_way_merge_test.rs`，覆盖后继读取首次失败后堆顶仍可返回；`lib.rs` 通过 `#[cfg(test)] mod multi_way_merge_test` 接入该测试，符合测试与生产源码分离约束。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 个固定章节结构检查，并人工复核本文件没有把 Go 的增量磁盘 IO 描述成当前 Rust 已支持能力。

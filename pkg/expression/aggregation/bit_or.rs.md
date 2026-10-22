@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件实现行式聚合框架中的 SQL `BIT_OR` 运行时聚合器。crate `astersql-expression-aggregation` 由 `pkg/expression/aggregation/Cargo.toml` 定义，入口 `pkg/expression/aggregation/lib.rs` 通过 `mod bit_or` 编译本模块并以 `pub use bit_or::*` 重导出其符号。
-
-`bitOrFunction` 实现 `pkg/expression/aggregation/aggregation.rs` 中的 `Aggregation` trait。它有两条直接构造路径：常规表达式描述符由 `AggFuncDesc::GetAggFunc` 在名称为 `ast::AggFuncBitOr` 时实例化；下推的 tipb 聚合表达式由 `NewDistAggFunc` 在 `tipb::ExprType::AggBitOr` 分支实例化。因此本文件负责的是逐行求值和状态归并，不负责 SQL 解析、返回类型推导、PB 编解码或物理执行器调度。
+对每一行求值第一个参数，忽略 `NULL`，把非 `u64` Datum 按语句类型上下文转换为 `i64` 后再按位解释为 `u64`，最后与累计状态执行按位或（`bitOrFunction::Update`）。
 
 ## 核心职责
 
@@ -72,9 +70,9 @@
 
 ## 与 Go 版本的对应关系
 
-同路径 `pkg/expression/aggregation/bit_or.go` 是直接语义基线。Rust 与 Go 都：嵌入/持有公共 `aggFunction`；从参数 0 求值；跳过 NULL；对 `KindUint64` 直接取值，否则经 `ToInt64(sc.TypeCtx())` 转换；以 `uint64` 做按位或；空集与 Reset 后为 0；部分结果只包含最终值。
+Rust 与 Go 都：嵌入/持有公共 `aggFunction`；从参数 0 求值；跳过 NULL；对 `KindUint64` 直接取值，否则经 `ToInt64(sc.TypeCtx())` 转换；以 `uint64` 做按位或；空集与 Reset 后为 0；部分结果只包含最终值。
 
-结构上的差异主要来自语言所有权：Go 返回 `*AggEvaluateContext` 并直接返回其中的 Datum，Rust 的 `CreateContext` 按值返回状态，`GetResult` 显式 clone Datum，求值上下文使用 `Arc<dyn EvalContext>`。Go 的 `ResetContext` 只替换 `Ctx` 并设置值；Rust 先调用公共 `aggFunction::ResetContext`，因此还会清理计数、缓冲、首行标志并按需重建 DISTINCT checker，再设置 0。对于本聚合直接使用的字段，两者结果一致；Rust 的公共清理更全面。
+结构上的差异主要来自语言所有权：Go 返回 `*AggEvaluateContext` 并直接返回其中的 Datum，Rust 的 `CreateContext` 按值返回状态，`GetResult` 显式 clone Datum，求值上下文使用 `Arc<dyn EvalContext>`。Go 的 `ResetContext` 只替换 `Ctx` 并设置值；Rust 先调用公共 `aggFunction::ResetContext`，因此还会清理计数、缓冲、首行标志并按需重建 DISTINCT checker，再设置 0。
 
 测试对应关系：Go 的 `pkg/expression/aggregation/aggregation_test.go::TestBitOr` 覆盖空值 0、输入 `1/NULL/1/3/2` 的累计结果、部分结果、Reset 和 Decimal 转换；Rust 的 `pkg/expression/aggregation/aggregation_aster_unit_test.rs::bit_aggregates_preserve_empty_values_nulls_and_reset` 用共享表驱动用例覆盖相同性质，并由 `aggregation_test.rs::TestBitOr` 调用。当前没有同名 `bit_or_test.rs`，测试逻辑仍保持在独立测试文件中，没有内嵌进生产源文件。
 
@@ -85,14 +83,3 @@
 - 若新增 BIT_OR 专属测试，遵守仓库规则放在独立测试文件并在 `lib.rs` 的 `#[cfg(test)]` 模块区接线；不要把测试写入 `bit_or.rs`。现有共享测试优先扩展，避免重复脚手架。
 - 兼容风险集中在 MySQL/Go 一致的类型转换、负数的位模式、空输入非 NULL 语义和 Partial/Final 合并格式。性能敏感点是每行表达式求值和非 `u64` 转换；不要在热路径引入额外分配。`GetPartialResult` 当前固有地分配一元素 Vec，修改其布局会影响分布式聚合协议。
 - 不应仅在本文件加入 DISTINCT 处理而不审查描述符合法性与 Go 行为，因为当前实现虽然公共上下文可能持有 checker，更新路径并未使用它。
-
-## 验证依据
-
-- 目标源码：`pkg/expression/aggregation/bit_or.rs`，逐项核对 `bitOrFunction` 及 `Aggregation` 的五个方法。
-- crate 与模块边界：`pkg/expression/aggregation/Cargo.toml`、`pkg/expression/aggregation/lib.rs`。
-- 运行时契约与 PB 构造：`pkg/expression/aggregation/aggregation.rs` 中的 `Aggregation`、`AggEvaluateContext`、`aggFunction::{CreateContext, ResetContext}` 和 `NewDistAggFunc`。
-- 常规构造及外围语义：`pkg/expression/aggregation/descriptor.rs` 中的 `AggFuncDesc::GetAggFunc`、`EvalNullValueInOuterJoin`、`evalNullValueInOuterJoin4BitOr`、`UpdateNotNullFlag4RetType`。
-- Go 对照：`pkg/expression/aggregation/bit_or.go`；Go 回归：`pkg/expression/aggregation/aggregation_test.go::TestBitOr`。
-- Rust 回归：`pkg/expression/aggregation/aggregation_aster_unit_test.rs::bit_aggregates_preserve_empty_values_nulls_and_reset`，以及接线文件 `pkg/expression/aggregation/aggregation_test.rs`。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`query bitOrFunction` 同时定位 Go/Rust 类型及 Go 方法；`explore`/文件节点确认 Rust `GetPartialResult → GetResult`、构造入口、公共上下文方法和上述测试调用关系。常见方法名存在大量同名节点，因此结论以目标文件节点和路径限定的调用证据为准。
-- 本任务只新增文档，按计划不运行 Cargo；最终使用任务规定的 11 章节结构命令验证。

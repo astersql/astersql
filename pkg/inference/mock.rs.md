@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-`pkg/inference/mock.rs` 属于 Cargo crate `astersql-inference`（见 `pkg/inference/Cargo.toml`），实现一个供推理运行时和 SQL 测试使用的确定性 embedding provider。模块由 `pkg/inference/lib.rs` 公开为 `pub mod mock`，其中的 `MockEmbedder` 又在 crate 根通过 `pub use mock::MockEmbedder` 再导出，因此调用方可以直接写 `astersql_inference::MockEmbedder`。
-
-它不是线上远程模型客户端：文件不发起网络请求，也不保存服务配置，而是把每段输入文本当作 JSON 浮点向量解析。它的作用是让 `EmbedFn` 的批处理、缓存、取消以及上层 `EMBED_TEXT()` SQL 路径能在没有外部服务的情况下得到可重复结果。RustCodeGraph 显示该文件直接被 `pkg/inference/lib.rs`、`pkg/inference/embed_fn_test.rs`、`pkg/expression/builtin_inference_test.rs` 和 `pkg/session/runtime/inference_test.rs` 使用。
+`MockEmbedder::create_embeddings` 实现 `Embedder` provider 边界，只接受模型名 `json`，逐个把 `texts` 解码成 `Vec<f32>`。
 
 ## 核心职责
 
@@ -66,11 +64,11 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照为 `pkg/inference/embedding/mock/mock.go` 的 `Embedder.CreateEmbeddings`。两版都只接受 `json` 模型，只允许 `plus`/`delay`，将输入 JSON 解码为 `float32` 向量，应用偏移量，并通过延迟路径模拟可取消的远程调用。Go 的 `NewMockEmbedder` 返回无状态 `*Embedder`；Rust 直接构造零大小值 `MockEmbedder`，没有单独构造函数。
+Go 的 `NewMockEmbedder` 返回无状态 `*Embedder`；Rust 直接构造零大小值 `MockEmbedder`，没有单独构造函数。
 
-Rust 的 `parse_go_delay` 显式复刻 Go `time.ParseDuration` 在本测试面所需的语法和 int64 纳秒边界，因为标准库 `Duration` 的语法与负值模型不同。Go 用 `time.NewTimer(dur)` 和 `select { timer.C, ctx.Done() }`；Rust 将非正 duration 归零，并仅在提供 `delay` 时检查 `AtomicBool`。`pkg/inference/embed_fn_test.rs` 对复合单位、微秒拼写、符号、边界溢出和取消结果提供了移植证据。
+Rust 的 `parse_go_delay` 显式复刻 Go `time.ParseDuration` 在本测试面所需的语法和 int64 纳秒边界，因为标准库 `Duration` 的语法与负值模型不同。Go 用 `time.NewTimer(dur)` 和 `select { timer.C, ctx.Done() }`；Rust 将非正 duration 归零，并仅在提供 `delay` 时检查 `AtomicBool`。
 
-Rust 还显式以 `Option<Vec<Option<f64>>>` 保留 Go `encoding/json` 对 JSON `null` 的测试语义，并在 `f64 -> f32` 后检查有限性，从而拒绝 Go 解码到 `float32` 时也无法表示的巨大数值。错误字符串不要求逐字复制 Go 的动态类型格式，但错误类别和触发顺序保持对应。
+Rust 还显式以 `Option<Vec<Option<f64>>>` 保留 Go `encoding/json` 对 JSON `null` 的测试语义，并在 `f64 -> f32` 后检查有限性，从而拒绝 Go 解码到 `float32` 时也无法表示的巨大数值。
 
 ## 扩展指南
 
@@ -79,13 +77,3 @@ Rust 还显式以 `Option<Vec<Option<f64>>>` 保留 Go `encoding/json` 对 JSON 
 扩展 duration 语法应修改私有 `parse_go_delay`，并在独立的 `pkg/inference/embed_fn_test.rs` 增补有效、无效、溢出和取消用例；不要把测试内嵌到 `mock.rs`。改变 JSON/null/浮点转换语义时，还应同步检查 Go 对照 `pkg/inference/embedding/mock/mock.go`，并更新表达式测试 `pkg/expression/builtin_inference_test.rs`；若行为通过 SQL 可见，再更新 `pkg/session/runtime/inference_test.rs` 的 `nextgen` 场景。
 
 性能上，`delay` 会占用同步工作线程，新增长时间或高频模拟行为需评估批次阻塞；兼容性上，不应把无 `delay` 时的取消检查“顺手”提前，因为现有测试把它视为 Go 对齐契约。任何新增错误都应保持先验证模型/option、后处理输入的当前顺序，以免改变调用方观察到的首个错误。
-
-## 验证依据
-
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/inference` 确认目标及相关 Rust/Go 文件均已索引。
-- RustCodeGraph 源码与符号查询：`node --file pkg/inference/mock.rs`、`query MockEmbedder --kind struct`、`query parse_go_delay --kind function`、`node mock.rs::MockEmbedder`；确认公开类型、trait 实现、私有解析器和四个直接使用文件。
-- 调用链证据：`pkg/inference/embed_fn.rs` 中的 `Embedder` trait、`EmbedFn::embed_with_context_values` 与 `run_batch`；后者在分块后调用 `create_embeddings_with_values` 并校验结果数量。
-- crate 边界：`pkg/inference/Cargo.toml` 与 `pkg/inference/lib.rs`；确认 crate 名、`serde_json` 依赖、模块公开性和根级再导出。目标目录没有 `doc.go`。
-- Go 对照：`pkg/inference/embedding/mock/mock.go`；上层 Go 行为参考 `pkg/inference/sqlembed_test.go::TestEmbedFnProvidersAndErrors`。
-- Rust 独立测试：`pkg/inference/embed_fn_test.rs` 中 `go_merge_43_mock_provider_validates_model_options_and_applies_offset`、`mock_json_null_is_an_empty_vector`、`mock_provider_rejects_invalid_inputs_and_handles_duration_boundaries`、`mock_duration_parse_observes_signed_nanosecond_limits`、`mock_without_delay_does_not_check_context_like_go_provider`、`mock_json_null_elements_decode_as_zero_and_float_overflow_fails`。
-- 上层接线测试：`pkg/expression/builtin_inference_test.rs` 和 `pkg/session/runtime/inference_test.rs`。本任务为纯文档分析，按计划不运行 Cargo；最终以固定十一章节结构命令和人工事实复核验收。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-[`common.rs`](./common.rs) 属于 `astersql-br-pkg-kms` library crate；[`Cargo.toml`](./Cargo.toml) 把 crate 根指定为 [`lib.rs`](./lib.rs)，后者以 `pub mod common` 装载本文件，并通过 `pub use common::*` 把全部公开项提升到 crate 根。`package.metadata.porting.go-package = "br/pkg/kms"` 明确表明它是同路径 [`common.go`](./common.go) 的 Rust 移植。
-
-本文件位于 KMS 厂商实现与上层主密钥后端之间：它不访问 AWS/GCP，也不执行加解密，而是为“被 KMS 包装的密文数据密钥”和“已解包的明文数据密钥”提供不同类型，并集中约束算法标签和密钥长度。RustCodeGraph 将其识别为 10 个符号，并记录 `br/pkg/encryption/master_key/kms_backend.rs`、`mem_backend.rs` 与 `br/pkg/kms/parity_test.rs` 等消费者。
+位于 KMS 厂商实现与上层主密钥后端之间：它不访问 AWS/GCP，也不执行加解密，而是为“被 KMS 包装的密文数据密钥”和“已解包的明文数据密钥”提供不同类型，并集中约束算法标签和密钥长度。
 
 ## 核心职责
 
@@ -77,11 +75,9 @@ RustCodeGraph 的 `explore` 输出确认 `NewEncryptedKey` 的生产消费者是
 
 ## 与 Go 版本的对应关系
 
-[`common.go`](./common.go) 是直接语义基准。两端都拒绝空 `EncryptedKey`，按字节比较密文 key；`CryptographyTypePlain`/`CryptographyTypeAesGcm256` 分别为 0/1；AES-GCM-256 目标长度为 32，Plain 与未知类型为 0；`NewPlainKey` 只在目标长度非零时精确校验，并提供算法标签与字节访问。
-
 实现差异主要来自语言所有权：Go 的 `EncryptedKey` 是 `[]byte` 别名且构造器返回原 slice，Rust 用拥有 `Vec<u8>` 的元组结构；Go 返回 `*PlainKey`，Rust 按值返回 `PlainKey`；Go `Key()` 返回 `[]byte`，Rust 返回不能修改的 `&[u8]`。Go 的 `Equal` 参数是 `*EncryptedKey`，可因 nil 指针使用不当而 panic；Rust 要求有效引用。Go 用 `pingcap/errors`，Rust 使用 `String`，但现有错误文本保持一致。
 
-Go 目录没有独立 `common_test.go`。Rust 的直接契约集中在 `parity_test.rs::common_key_errors_and_plain_key_boundaries_match_go`、`unknown_cryptography_type_matches_go_default_branch` 与 `go_rust_public_contract_matches`；上层 `encryption/master_key/kms_backend_test.rs` 验证相同密文 key 命中缓存、不同 key 再调 Provider，`mem_backend_test.rs::test_new_mem_aes_gcm_backend` 验证 32 字节成功、16 字节失败。
+Rust 的直接契约集中在 `parity_test.rs::common_key_errors_and_plain_key_boundaries_match_go`、`unknown_cryptography_type_matches_go_default_branch` 与 `go_rust_public_contract_matches`；上层 `encryption/master_key/kms_backend_test.rs` 验证相同密文 key 命中缓存、不同 key 再调 Provider，`mem_backend_test.rs::test_new_mem_aes_gcm_backend` 验证 32 字节成功、16 字节失败。
 
 ## 扩展指南
 
@@ -90,11 +86,3 @@ Go 目录没有独立 `common_test.go`。Rust 的直接契约集中在 `parity_t
 - 强化不变量时，可考虑收窄 `EncryptedKey.0`、`PlainKey.tag/key` 与 `CryptographyType.0` 的可见性并增加安全访问器；这属于公开 API 兼容变化，必须先盘点 `lib.rs` 重导出的下游 crate。
 - 若加入敏感内存清零或调试脱敏，应同时处理 `Clone`、`Debug`、错误路径、缓存替换和 Provider 返回缓冲区，避免只清零最终包装值却遗留副本。
 - 性能方面，成功构造应保持移动 `Vec`、`Key()` 保持零拷贝；`Equal` 是 O(n) 字节比较，并在 KMS 缓存锁内执行，未来若密文 key 可能很大，应评估锁持有时间，但不能用有碰撞风险的非认证摘要替代正确判等。
-
-## 验证依据
-
-事实核验读取了：`br/pkg/kms/common.rs`、`common.go`、`Cargo.toml`、`lib.rs`、`parity_test.rs`、`kms.rs`，以及直接消费端 `br/pkg/encryption/master_key/kms_backend.rs`、`kms_backend.go`、`kms_backend_test.rs`、`mem_backend.rs`、`mem_backend.go`、`mem_backend_test.rs`。目标包不存在 `doc.go`，同目录也不存在独立 `common_test.rs`/`common_test.go`。
-
-RustCodeGraph 证据包括：`status`（索引含 7032 个 Rust 文件）、`files --filter br/pkg/kms`、`node --file br/pkg/kms/common.rs`、`explore "br/pkg/kms/common.rs main symbols callers callees role in KMS"`，以及 `NewEncryptedKey`、`NewPlainKey`、`TargetKeySize` 等查询。图给出了文件级消费者和关键调用者；精确限定符号的 `callers/callees` 无输出，故以 `rg` 的直接引用结果补足并在文中限定证据范围。
-
-独立 Rust 测试所固定的行为包括：空密文报错、密文按字节相等、AES-GCM-256 的 32 字节成功与错误长度失败、Plain 不限长、未知算法沿 Go 默认分支不限长、访问器返回原标签/字节，以及上层缓存对相同/不同密文 key 的分流。按任务约束这是纯文档分析，未运行 Cargo 或代码测试；交付只执行任务指定的 11 章节结构检查、文档差异检查和人工事实复核。

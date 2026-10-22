@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件位于 `astersql-planner-core` crate，模块由 `pkg/planner/core/lib.rs` 以 `pub mod rule_semi_join_rewrite` 对外公开。它实现一套建立在 `rule_join_reorder.rs::JoinPlan`/`JoinNode` 简化计划模型上的半连接改写规则：把满足条件的 `Semi` Join 变为“右侧按等值连接键去重的 Aggregation + Inner Join + 恢复外表输出的 Projection”。
-
-当前接线必须分两层理解：`SemiJoinRewriter` 被 `rule_semi_join_rewrite_test.rs` 和 `casetest/rule/rule_outer_to_semi_join_test.rs` 直接调用，但 Rust 生产逻辑优化流水线 `optimizer_runtime.rs::logical_optimize_in_place` 对 `LogicalRule::SemiJoinRewrite` 的分派实际调用的是同文件内的 `semi_join_rewrite_descendants`，没有调用本文件的 `SemiJoinRewriter`。因此，本文件是公开且可测试的简化规则实现，并非当前真实 `LogicalPlanRef` 生产执行路径。
+当前节点仅在 `JoinType::Semi` 且 `other_conditions.is_empty()` 时改写；其他 Join 类型或带其它连接条件的半连接保留原结构，但其后代仍会被处理。
 
 ## 核心职责
 
@@ -69,9 +67,7 @@ RustCodeGraph 的文件反向关系显示，本文件由以下两个测试使用
 
 ## 与 Go 版本的对应关系
 
-Go 入口位于同目录 `rule_semi_join_rewrite.go`：`Optimize` 同样递归并故意让 `planChanged` 保持 `false`，`Name` 同样返回 `semi_join_rewrite`，`recursivePlan` 同样先处理孩子再调用 Join 的改写逻辑。真正的 Go 结构变换在 `operator/logicalop/logical_join.go::LogicalJoin.SemiJoinRewrite`。
-
-共同的核心语义是：以内表等值键分组并用聚合去重，转为 Inner Join，再投影外表 schema；连接算法偏好被带入新 Join。Go 版本还具备本简化文件没有表达的约束和行为：跳过 CTE；只响应 hint 或 `tidb_opt_enable_sem_join_rewrite`；拒绝 Apply、LeftOuterSemiJoin、left/other conditions；把 right conditions 物化为 Aggregation 下方的 Selection；为每个分组键建立 `first_row` 聚合描述；维护 session context、query block、输出名、key info 和 hint 警告。
+Go 版本还具备本简化文件没有表达的约束和行为：跳过 CTE；只响应 hint 或 `tidb_opt_enable_sem_join_rewrite`；拒绝 Apply、LeftOuterSemiJoin、left/other conditions；把 right conditions 物化为 Aggregation 下方的 Selection；为每个分组键建立 `first_row` 聚合描述；维护 session context、query block、输出名、key info 和 hint 警告。
 
 当前生产 Rust 的 `optimizer_runtime.rs::semi_join_rewrite_descendants` 更接近上述 Go 完整语义，并额外尝试把可物化的 `OtherConditions` 提升为等值条件、规范化左右连接键顺序，同时给新 Inner Join 设置 `FromSemiJoinRewrite = true`。因此，修改本文件不会自动改变生产 SQL 优化行为；若目标是行为对齐，必须判断改动属于简化测试模型、生产 `LogicalPlanRef` 路径，还是两者都需要同步。
 
@@ -83,13 +79,3 @@ Go 入口位于同目录 `rule_semi_join_rewrite.go`：`Optimize` 同样递归�
 - 若改变输出结构，必须保持半连接基数与 schema：内表重复行不能放大结果，Projection 的列及顺序必须等于原外表 schema，并检查 `id`、`row_count`、`preferred_method` 是否仍按约定传播。
 - 若希望此类型进入生产优化器，不能只注册名称；需处理 `JoinPlan` 与 `LogicalPlanRef` 两套模型的关系，并避免与 `optimizer_runtime.rs::semi_join_rewrite_descendants` 形成双重改写。更现实的做法是先确定唯一实现边界，再同步 Go 的 hint、条件分类、CTE/Apply、错误和统计语义。
 - 兼容性风险集中在 NULL/重复行语义、非列等值表达式、LeftOuter/Anti Semi 类型、hint 警告和 schema 列序；性能风险集中在新增 Aggregation 的代价与错误的行数估计。相关 SQL 行为测试可参考 Go 的 `casetest/physicalplantest/physical_plan_test.go` 与 `casetest/rule/rule_outer_to_semi_join_test.go`，但本文件的直接回归应放在对应独立 Rust 测试文件中。
-
-## 验证依据
-
-- 目标源码：`pkg/planner/core/rule_semi_join_rewrite.rs`，RustCodeGraph `node --file` 核对了 153 行完整实现及其两个使用文件。
-- 类型与模块：`pkg/planner/core/rule_join_reorder.rs` 的 `Result`、`JoinEdge`、`JoinNode`、`JoinPlan`；`pkg/planner/core/task.rs` 的 `JoinType`、`Expression`；`pkg/planner/core/lib.rs` 的公开模块及显式测试模块声明。
-- crate 边界：`pkg/planner/core/Cargo.toml` 的 package、lib、feature、dependency、dev-dependency 和 `go-package = "pkg/planner/core"` 声明。
-- 直接 Rust 测试：`pkg/planner/core/rule_semi_join_rewrite_test.rs::semi_join_rewrite_matches_go_plan_shape_and_change_contract`、`inapplicable_parent_still_recurses_into_children`；`pkg/planner/core/casetest/rule/rule_outer_to_semi_join_test.rs::semi_join_rewrite_builds_grouped_inner_join`。
-- Go 对照：`pkg/planner/core/rule_semi_join_rewrite.go::{Optimize, Name, recursivePlan}` 与 `pkg/planner/core/operator/logicalop/logical_join.go::LogicalJoin.SemiJoinRewrite`。
-- 生产 Rust 对照：`pkg/planner/core/optimizer_runtime.rs::{LOGICAL_RULES, logical_optimize_in_place, semi_join_rewrite_descendants}`；它证明生产规则顺序和真实分派，也证明本文件当前不是该分派的调用目标。
-- 结构验证采用任务指定命令，要求文档存在且固定二级章节计数恰为 11；本任务是纯文档分析，按计划不运行 Cargo。

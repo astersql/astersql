@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 将该 crate 定义为库 `astersql-planner-core`（入口为 `lib.rs`，并关闭自动测试发现），`pkg/planner/core/lib.rs:168` 以私有模块 `plan_cache_rebuild` 装入本文件，再由 `lib.rs:231` 将其中公开项重新导出。
-
-它位于计划缓存命中后的“按当前参数重新检查访问范围”边界，但当前 Rust 版本只操作 `common_plans.rs` 中的轻量 `PlanNode`/`PlanKind`，还没有接入 Rust 侧真实缓存命中主链。仓库内 Rust 引用搜索只找到模块装配和 `plan_cache_rebuild_test.rs` 的直接单元测试；实际应用调用仍是 Go 的 `plan_cache.go:adjustCachedPlan` 调用 Go `RebuildPlan4CachedPlan`。因此，本文件应视为已公开、可单测的迁移实现，而不能描述成已替代 Go 生产路径。
+需要特别注意当前实现边界：`rebuildRange` 没有根据新参数重新计算范围。
 
 ## 核心职责
 
@@ -82,15 +80,13 @@ Rust 上游目前仅有 `pkg/planner/core/plan_cache_rebuild_test.rs` 直接调�
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/planner/core/plan_cache_rebuild.go`。名称和总体意图对应，但当前实现覆盖面差异显著：
+名称和总体意图对应，但当前实现覆盖面差异显著：
 
 - Go `RebuildPlan4CachedPlan` 在前后检查 `StmtCtx.UseCache()`，失败时追加 warning；Rust 只把 `Result` 转成 `bool`。
 - Go `rebuildRange` 针对 IndexJoin、Table/Index Scan、Reader、PointGet、BatchPointGet、IndexMerge 和带 SelectPlan 的 DML 分派，并调用 ranger/类型转换逻辑真正重建和写回范围；Rust 只识别轻量 `IndexScan` 与 `IndexMergeReader`，且不改变范围。
 - Go 对 IndexMerge 只递归每组 partial plan 的首节点，并明确跳过 table plans；Rust 递归全部 `partial_plans` 元素，同时也不处理 `table_plan`。两侧数据模型并非一一同构。
 - Go `isSafeRange` 检查 `ranger.DetachRangeResult` 与结构化 `ranger.Ranges`；Rust 保留相同的四类判定，但以字符串数组近似范围，并以元素计数近似访问条件完整性。
 - Go 重建刻意不施加 range 内存上限，避免参数变长导致 fallback 后读取额外行；`integration_test.go:TestPlanCacheForIndexRangeFallback` 和 `TestPlanCacheForIndexJoinRangeFallback` 验证这一点。Rust 文件没有 ranger 或内存限制参数，当前无法表达或验证该语义。
-
-因此扩展时应以 Go 文件的实际分支和测试意图为迁移基准，不应把现有 Rust 代码当作完整等价实现。
 
 ## 扩展指南
 
@@ -105,16 +101,3 @@ Rust 上游目前仅有 `pkg/planner/core/plan_cache_rebuild_test.rs` 直接调�
 - Go 行为对齐时同步核对 `pkg/planner/core/integration_test.go` 中两个 range fallback 测试和 `pkg/planner/core/plan_cache_rebuild.go` 的全部计划类型分支。
 
 主要风险是错误接受退化范围造成结果错误（正确性），缓存开关/warning/分区与类型转换差异造成 Go/Rust 行为不兼容（兼容性），以及对每次命中重新构造大范围、克隆字符串或重复遍历造成延迟和内存增加（性能）。
-
-## 验证依据
-
-本说明基于以下直接证据：
-
-- 生产源码：`pkg/planner/core/plan_cache_rebuild.rs` 全文；类型来源 `pkg/planner/core/common_plans.rs`；模块装配与测试挂载 `pkg/planner/core/lib.rs`。
-- crate 边界：`pkg/planner/core/Cargo.toml`，包括库入口、`autotests = false`、feature 与 `go-package = "pkg/planner/core"` 移植元数据。
-- Rust 独立测试：`pkg/planner/core/plan_cache_rebuild_test.rs`，验证空 range 失败、Limit 不参与范围算术、IndexMerge partial plan 递归，以及 `isSafeRange` 的残留条件/条件丢失/full 退化门禁。另读 `pkg/planner/core/casetest/plancache/plan_cache_rebuild_test.rs` 并确认它覆盖的是点查计划克隆，不是本文件入口。
-- Go 对照与调用链：`pkg/planner/core/plan_cache_rebuild.go`、`pkg/planner/core/plan_cache.go:adjustCachedPlan`；相关 Go 测试为 `pkg/planner/core/integration_test.go:TestPlanCacheForIndexRangeFallback` 与 `TestPlanCacheForIndexJoinRangeFallback`。
-- RustCodeGraph：`status` 显示索引可用；`query RebuildPlan4CachedPlan/rebuildRange/isSafeRange` 定位 Go/Rust 同名定义；`node RebuildPlan4CachedPlan` 确认 Rust 入口到 `rebuildRange` 的调用边；`query/node PlanNode/PlanKind` 消除了多个同名类型的歧义。`files --filter pkg/planner/core/plan_cache_rebuild` 未返回路径，且部分 callers/callees 查询没有给出额外边，因此用 `rg` 的全仓 Rust 引用结果补充确认当前无生产调用者。
-- 人工复核结论：文件存在是为了承载缓存计划范围重建的 Rust 迁移边界；当前运行方式是对轻量树递归做安全检查；安全扩展必须接入真实参数/ranger/计划类型并保持独立测试与 Go 安全不变量，而不能宣称当前已具备完整 Go 行为。
-
-按任务约束，本次是纯文档分析，未运行 Cargo 或代码测试；最终结构验证单独执行并记录退出状态。

@@ -2,9 +2,7 @@
 
 ## 文件定位
 
-本文件属于 Cargo 包 `astersql-lightning-backend-kv`（`pkg/lightning/backend/kv/Cargo.toml`），由 `lib.rs` 的 `mod kv2sql` 纳入并通过 `pub use kv2sql::*` 导出。它位于 Lightning KV 编码后端的反向路径：把 TiDB/TiKV 的记录键、索引键和行值恢复为 SQL 行视图，并从恢复后的行重新生成应存在的索引键。
-
-当前 Rust 生产接线见 `pkg/dxf/importinto/conflict_resolution.rs`：`NewImporterConflictCodecWithOptions` 构造 `TableKVDecoder`，`ImporterConflictCodec::DecodeRow` 再调用 `DecodeRawRowData` 恢复冲突记录。其余公开方法目前主要由同 crate 的独立测试覆盖；不能据此推断所有 Go 调用场景均已迁移。
+用 `IterRawIndexKeys` 重算生成列，按表的索引定义重建索引键，供冲突校验或清理逻辑逐个消费。
 
 ## 核心职责
 
@@ -82,17 +80,14 @@ RustCodeGraph 对 `NewTableKVDecoder` 给出的 Rust 下游边包括 `NewSession
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 `pkg/lightning/backend/kv/kv2sql.go`，测试对照是 `kv2sql_test.go`。
-
 - Rust `TableKVDecoder` 对应 Go 同名类型；`TableDefinition` 是对 Go `table.Table` 所需信息的简化持有形式，Rust `Session` 对应 Go `*Session`。
-- Handle 解码、原始行恢复、错误注释文本、跳过 Common Handle 聚簇主键索引、生成列后重建索引等主流程保持一致。
 - Go 构造器会按 `tbl.UseNewCollate()` 设置新排序规则，并用可能失败的 `CollectGeneratedColumns`；Rust 构造器调用 `CollectGeneratedColumnsFromTable`，没有对应的排序规则开关，收集过程本身不返回错误。
 - Go 生成列求值前会把生成列槽位设为该类型最小值，并使用完整表达式上下文；Rust 直接使用简化的 `GeneratedExpression::{Copy, Add, Constant}` 依次覆写目标列。
 - Go 使用 `index.FetchValues` 与 `GenIndexKVIter`，允许一个索引产生多个键并复用缓冲；Rust 按列下标直接取值并用 `GenIndexKey` 每个索引只产生一个键。
 - Go `types.DatumsToString(row, true)` 支持完整 TiDB datum 格式；Rust 是本地格式化器，覆盖当前 `encode::Datum` 变体，但二进制展示为有损 UTF-8，且自行执行 2048 字节截断。
 - Rust 额外显式返回 `BTreeMap`，保证列 ID 的迭代顺序；Go 返回普通 `map[int64]types.Datum`，无顺序保证。
 
-因此，本文件是有真实生产接线的移植实现，但并非 Go 完整表/表达式/索引能力的逐项等价替代。扩展支持时应以 Go 行为和 canonical `tablecodec` 格式为兼容基准。
+因此，本文件是有真实生产接线的移植实现，但并非 Go 完整表/表达式/索引能力的逐项等价替代。
 
 ## 扩展指南
 
@@ -103,13 +98,3 @@ RustCodeGraph 对 `NewTableKVDecoder` 给出的 Rust 下游边包括 `NewSession
 - 改动 `TableDefinition` 的列 ID 表示时，必须同步审查 `field_types` 的 `index + 1`、默认值零基下标和索引列零基下标，避免静默错列。
 - 改诊断输出需同步 `decode_raw_row_data_as_str_*` 测试，并评估日志兼容、敏感值暴露、二进制可逆性和超长 UTF-8 截断行为。
 - 性能热点是每个索引重复构造 canonical `TableInfo`、转换 datum 和分配键；若缓存元数据或复用缓冲，必须保证回调借用生命周期不变，并用等价键结果验证优化。
-
-## 验证依据
-
-- 生产源码：`pkg/lightning/backend/kv/kv2sql.rs`；相邻模块入口与 crate 声明：`pkg/lightning/backend/kv/lib.rs`、`pkg/lightning/backend/kv/Cargo.toml`。
-- 直接依赖实现：`pkg/lightning/backend/kv/base.rs`、`canonical.rs`、`session.rs`。
-- Rust 独立测试：`pkg/lightning/backend/kv/kv2sql_test.rs`；额外闭环测试：`pkg/lightning/backend/kv/sql2kv_test.rs`。
-- Go 对照：`pkg/lightning/backend/kv/kv2sql.go`、`pkg/lightning/backend/kv/kv2sql_test.go`。
-- 生产调用证据：`pkg/dxf/importinto/conflict_resolution.rs::NewImporterConflictCodecWithOptions` 与 `ImporterConflictCodec::DecodeRow`。
-- RustCodeGraph：`status` 显示索引包含目标 Rust/Go 文件；对 `TableKVDecoder`、`NewTableKVDecoder`、`DecodeRawRowData`、`IterRawIndexKeys`、两个 Handle 解码方法及格式化函数执行了 `query`，并对构造、行解码和索引键迭代执行了 `callers`/`callees`。由于图对部分自由函数调用存在漏边，调用关系同时以源码和 `rg` 交叉核对。
-- 结构验收以任务指定命令验证本文件存在且恰好包含十一个固定二级标题；本任务是纯文档分析，按计划不运行 Cargo。
