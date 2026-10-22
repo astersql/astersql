@@ -443,6 +443,16 @@ pub trait ShowRuntimeContext: Send + Sync {
     fn ImportJobs(&self, request: &ShowRequest) -> ShowResult<Vec<ImportJobInfo>>;
     fn ImportRuntime(&self, job_id: i64) -> ShowResult<Option<ImportRuntimeInfo>>;
     fn DistributionJobs(&self, request: &ShowRequest) -> ShowResult<Vec<DistributionJob>>;
+    /// Current store keyspace, None only outside keyspace mode.
+    fn DistributionKeyspaceID(&self) -> Option<u32>;
+    fn DistributionCodec(&self) -> astersql_store_helper::Codec;
+    /// Resolve the requested table using the current session's InfoSchema.
+    fn DistributionTable(
+        &self,
+        request: &ShowRequest,
+    ) -> ShowResult<crate::distribute::DistributionTable>;
+    /// Query PD with already encoded region bounds and no engine filter.
+    fn RegionDistributions(&self, start: &[u8], end: &[u8]) -> ShowResult<Vec<RegionDistribution>>;
     fn RunWithSystemSession(
         &self,
         action: &mut dyn FnMut(&dyn ShowRuntimeContext) -> ShowResult,
@@ -1019,7 +1029,42 @@ impl ShowExec {
 
     /// SHOW TABLE DISTRIBUTIONS。
     pub fn fetchShowDistributions(&mut self) -> ShowResult {
-        self.fetchOperation(ShowOperation::Distributions)
+        let request = self.request();
+        let table = self.runtime.DistributionTable(&request)?;
+        let names = request
+            .table
+            .as_ref()
+            .map_or(&[][..], |table| table.partition_names.as_slice());
+        let physical_tables = if table.partitions.is_empty() {
+            if !names.is_empty() {
+                return Err(errors::New("PARTITION clause on non partitioned table"));
+            }
+            vec![(table.table_name.to_lowercase(), table.table_id)]
+        } else if names.is_empty() {
+            table
+                .partitions
+                .iter()
+                .map(|(name, id)| (name.to_lowercase(), *id))
+                .collect()
+        } else {
+            let mut tables = Vec::with_capacity(names.len());
+            for name in names {
+                let (_, id) = table
+                    .partitions
+                    .iter()
+                    .find(|(partition, _)| partition.to_lowercase() == name.to_lowercase())
+                    .ok_or_else(|| errors::New(format!("unknown partition {name}")))?;
+                tables.push((name.to_lowercase(), *id));
+            }
+            tables
+        };
+        let codec = self.runtime.DistributionCodec();
+        for (name, id) in physical_tables {
+            let (start, end) = crate::distribute::distributionRegionRange(&codec, id, id);
+            let distributions = self.runtime.RegionDistributions(&start, &end)?;
+            self.fillDistributionsToChunk(&name, &distributions);
+        }
+        Ok(())
     }
 
     /// SHOW TABLE REGIONS：按表或索引取 Region 并附调度信息。
@@ -1123,6 +1168,7 @@ impl ShowExec {
         let request = self.request();
         let mut jobs = self.runtime.DistributionJobs(&request)?;
         jobs.sort_unstable_by_key(|job| job.job_id);
+        let keyspace_id = self.runtime.DistributionKeyspaceID();
         for job in jobs {
             if request
                 .distribution_job_id
@@ -1130,7 +1176,19 @@ impl ShowExec {
             {
                 continue;
             }
-            self.result_mut().push(fillDistributionJobToChunk(&job)?);
+            let alias = match keyspace_id {
+                Some(id) => {
+                    let (alias, visible) =
+                        crate::distribute::trimDistributionAliasKeyspace(&job.alias, id);
+                    if !visible {
+                        continue;
+                    }
+                    alias
+                }
+                None => &job.alias,
+            };
+            self.result_mut()
+                .push(fillDistributionJobAliasToChunk(&job, alias)?);
         }
         Ok(())
     }
@@ -1503,7 +1561,14 @@ mod import_groups_test;
 
 /// 将分布作业编码为结果行；alias 须为 schema.table.partition 三段。
 pub fn fillDistributionJobToChunk(job: &DistributionJob) -> ShowResult<Vec<ShowValue>> {
-    let alias = job.alias.split('.').collect::<Vec<_>>();
+    fillDistributionJobAliasToChunk(job, &job.alias)
+}
+
+fn fillDistributionJobAliasToChunk(
+    job: &DistributionJob,
+    alias: &str,
+) -> ShowResult<Vec<ShowValue>> {
+    let alias = alias.split('.').collect::<Vec<_>>();
     if alias.len() != 3 {
         return Err(errors::New(format!("alias:{} is invalid", job.alias)));
     }
@@ -1688,3 +1753,7 @@ fn formatDuration(duration: Duration) -> String {
 fn escapeIdentifier(identifier: &str) -> String {
     identifier.replace('`', "``")
 }
+
+#[cfg(test)]
+#[path = "show/distribution_jobs_test.rs"]
+mod distribution_jobs_test;

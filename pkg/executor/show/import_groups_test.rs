@@ -62,6 +62,21 @@ impl ShowRuntimeContext for GroupRuntime {
     fn DistributionJobs(&self, _: &ShowRequest) -> ShowResult<Vec<DistributionJob>> {
         unreachable!()
     }
+    fn DistributionKeyspaceID(&self) -> Option<u32> {
+        unreachable!()
+    }
+    fn DistributionCodec(&self) -> astersql_store_helper::Codec {
+        unreachable!()
+    }
+    fn DistributionTable(
+        &self,
+        _: &ShowRequest,
+    ) -> ShowResult<crate::distribute::DistributionTable> {
+        unreachable!()
+    }
+    fn RegionDistributions(&self, _: &[u8], _: &[u8]) -> ShowResult<Vec<RegionDistribution>> {
+        unreachable!()
+    }
     fn RunWithSystemSession(
         &self,
         action: &mut dyn FnMut(&dyn ShowRuntimeContext) -> ShowResult,

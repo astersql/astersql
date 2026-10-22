@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use astersql_store_helper::Codec;
 use astersql_util_chunk::Chunk;
 
 /// PD 侧用于范围再平衡的调度器名称，与 Go 常量保持一致。
@@ -66,8 +67,11 @@ pub trait DistributionBackend {
     type Context;
     type Error;
 
-    /// 将连续物理表 id 区间编码为调度器用的键范围。
-    fn key_range(&self, first_physical_id: i64, last_physical_id: i64) -> DistributionKeyRange;
+    /// Current store codec; range encoding must use the store's API version.
+    fn store_codec(&self) -> Codec;
+    /// Numeric store keyspace ID, or None when GetKeyspace is empty.
+    /// Keyspace zero is valid and must remain Some(0).
+    fn keyspace_id(&self) -> Option<u32>;
     /// 指定分区名不存在时返回错误。
     fn missing_partition(&self, name: &str) -> Self::Error;
     /// 向 PD 创建/更新 scheduler 配置（触发分布作业）。
@@ -207,10 +211,14 @@ impl<B: DistributionBackend> DistributeTableExec<B> {
         } else {
             format!("partition({})", self.partition_names.join(","))
         };
-        format!(
+        let alias = format!(
             "{}.{}.{}",
             self.table.database_name, self.table.table_name, partition
-        )
+        );
+        match self.backend.keyspace_id() {
+            Some(id) => format!("{id}:{alias}"),
+            None => alias,
+        }
     }
 
     /// 根据分区选择物理表 id，合并连续 id 为更少的 key range。
@@ -239,6 +247,7 @@ impl<B: DistributionBackend> DistributeTableExec<B> {
         physical_ids.sort_unstable();
 
         // 将连续物理 id 合并为一段 range，减少调度器入参段数。
+        let codec = self.backend.store_codec();
         let mut ranges = Vec::new();
         let mut index = 0;
         while index < physical_ids.len() {
@@ -248,7 +257,11 @@ impl<B: DistributionBackend> DistributeTableExec<B> {
                 index += 1;
                 last = physical_ids[index];
             }
-            ranges.push(self.backend.key_range(first, last));
+            let (start, end) = distributionRegionRange(&codec, first, last);
+            ranges.push(DistributionKeyRange {
+                start_key: escapeDistributionKey(&start),
+                end_key: escapeDistributionKey(&end),
+            });
             index += 1;
         }
         Ok(ranges)
@@ -271,5 +284,44 @@ impl<B: DistributionBackend> CancelDistributionJobExec<B> {
         self.done = true;
         self.backend
             .cancel_scheduler_job(ctx, schedulerName, self.job_id)
+    }
+}
+
+/// Encode table bounds through the store codec, including its keyspace prefix.
+pub(crate) fn distributionRegionRange(codec: &Codec, first: i64, last: i64) -> (Vec<u8>, Vec<u8>) {
+    codec.EncodeRegionRange(
+        &astersql_tablecodec::GenTablePrefix(first).0,
+        &astersql_tablecodec::GenTablePrefix(last + 1).0,
+    )
+}
+
+/// Go url.QueryEscape operates on arbitrary binary region keys, not UTF-8 text.
+fn escapeDistributionKey(key: &[u8]) -> String {
+    let mut escaped = String::new();
+    for &byte in key {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                escaped.push(byte as char)
+            }
+            b' ' => escaped.push('+'),
+            _ => escaped.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    escaped
+}
+
+/// Preserve legacy aliases unless the first colon follows a decimal uint32.
+/// A colon keeps the three dot-separated alias components older TiDB expects.
+pub fn trimDistributionAliasKeyspace(alias: &str, keyspace_id: u32) -> (&str, bool) {
+    let Some((prefix, rest)) = alias.split_once(':') else {
+        return (alias, true);
+    };
+    // Rust accepts a leading '+', whereas Go strconv.ParseUint rejects it.
+    if prefix.is_empty() || !prefix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return (alias, true);
+    }
+    match prefix.parse::<u32>() {
+        Ok(id) => (rest, id == keyspace_id),
+        Err(_) => (alias, true),
     }
 }

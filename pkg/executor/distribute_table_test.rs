@@ -27,6 +27,7 @@ use std::time::Duration;
 
 #[derive(Default)]
 struct MockDistributeBackend {
+    keyspace_id: Option<u32>,
     scheduler_responses: VecDeque<Result<Vec<SchedulerJob>, String>>,
     created: Vec<(String, BTreeMap<String, String>)>,
     waits: Vec<Duration>,
@@ -38,11 +39,15 @@ impl DistributionBackend for MockDistributeBackend {
     type Context = ();
     type Error = String;
 
-    fn key_range(&self, first_physical_id: i64, last_physical_id: i64) -> DistributionKeyRange {
-        DistributionKeyRange {
-            start_key: format!("table-{first_physical_id}"),
-            end_key: format!("table-{}", last_physical_id + 1),
+    fn store_codec(&self) -> astersql_store_helper::Codec {
+        match self.keyspace_id {
+            Some(id) => astersql_store_helper::Codec::v2(id).unwrap(),
+            None => astersql_store_helper::Codec::v1(),
         }
+    }
+
+    fn keyspace_id(&self) -> Option<u32> {
+        self.keyspace_id
     }
 
     fn missing_partition(&self, name: &str) -> Self::Error {
@@ -131,12 +136,12 @@ fn key_ranges_merge_contiguous_ids_and_validate_partition_names() {
         all_partitions.key_ranges,
         vec![
             DistributionKeyRange {
-                start_key: "table-10".into(),
-                end_key: "table-12".into(),
+                start_key: v1_key(10),
+                end_key: v1_key(12),
             },
             DistributionKeyRange {
-                start_key: "table-13".into(),
-                end_key: "table-14".into(),
+                start_key: v1_key(13),
+                end_key: v1_key(14),
             },
         ]
     );
@@ -158,8 +163,8 @@ fn key_ranges_merge_contiguous_ids_and_validate_partition_names() {
     assert_eq!(
         plain.getKeyRanges().unwrap(),
         vec![DistributionKeyRange {
-            start_key: "table-9".into(),
-            end_key: "table-10".into(),
+            start_key: v1_key(9),
+            end_key: v1_key(10),
         }]
     );
 }
@@ -222,8 +227,8 @@ fn distribute_retries_scheduler_visibility_and_emits_largest_active_job() {
     assert_eq!(input["engine"], "tikv");
     assert_eq!(input["rule"], "leader-scatter");
     assert_eq!(input["timeout"], "30m");
-    assert_eq!(input["start-key"], "table-10,table-13");
-    assert_eq!(input["end-key"], "table-11,table-14");
+    assert_eq!(input["start-key"], format!("{},{}", v1_key(10), v1_key(13)));
+    assert_eq!(input["end-key"], format!("{},{}", v1_key(11), v1_key(14)));
 
     exec.Next(&mut (), output.as_mut()).unwrap();
     assert_eq!(output.NumRows(), 0);
@@ -251,4 +256,90 @@ fn cancel_distribution_job_propagates_errors_and_runs_once_after_success() {
     succeeded.Next(&mut ()).unwrap();
     succeeded.Next(&mut ()).unwrap();
     assert_eq!(succeeded.backend.cancelled, vec![7]);
+}
+
+#[test]
+fn distribute_table_keyspace_alias_is_submitted_and_matches_only_own_jobs() {
+    for id in [0, 2, 0x00ff_ffff] {
+        let mut exec = executor(vec!["p1", "p0"]);
+        exec.backend.keyspace_id = Some(id);
+        exec.Open(()).unwrap();
+        let alias = format!("{id}:test.orders.partition(p0,p1)");
+        assert_eq!(exec.getAlias(), alias);
+        assert_eq!(alias.split('.').count(), 3);
+        exec.distributeTable(&mut ()).unwrap();
+        assert_eq!(exec.backend.created[0].1["alias"], alias);
+        exec.backend.scheduler_responses.push_back(Ok(vec![
+            SchedulerJob {
+                alias,
+                engine: "tikv".into(),
+                rule: "leader-scatter".into(),
+                status: "pending".into(),
+                job_id: 3.0,
+            },
+            SchedulerJob {
+                alias: "test.orders.partition(p0,p1)".into(),
+                engine: "tikv".into(),
+                rule: "leader-scatter".into(),
+                status: "pending".into(),
+                job_id: 99.0,
+            },
+        ]));
+        assert_eq!(exec.getSchedulerJob(&mut ()), (true, 3.0));
+    }
+}
+
+#[test]
+fn distribute_table_keyspace_ranges_merge_and_cover_plain_tables() {
+    let mut exec = executor(Vec::new());
+    exec.backend.keyspace_id = Some(2);
+    exec.Open(()).unwrap();
+    // Independent API V2 wire expectation: x + uint24(2), then the table
+    // prefix, then memcomparable groups, finally Go URL query escaping.
+    assert_eq!(
+        exec.key_ranges[0].start_key,
+        "x%00%00%02t%80%00%00%FF%00%00%00%00%0A%00%00%00%FC"
+    );
+    assert_eq!(
+        exec.key_ranges[0].end_key,
+        "x%00%00%02t%80%00%00%FF%00%00%00%00%0C%00%00%00%FC"
+    );
+    assert_eq!(exec.key_ranges.len(), 2);
+    exec.table.partitions.clear();
+    exec.Open(()).unwrap();
+    assert_eq!(exec.key_ranges.len(), 1);
+    assert_eq!(
+        exec.key_ranges[0].start_key,
+        "x%00%00%02t%80%00%00%FF%00%00%00%00%09%00%00%00%FC"
+    );
+}
+
+fn v1_key(id: u8) -> String {
+    format!("t%80%00%00%00%00%00%00%FF%{id:02X}%00%00%00%00%00%00%00%F8")
+}
+
+#[test]
+fn distribution_job_trim_alias_matches_go_uint32_parsing() {
+    use crate::distribute::trimDistributionAliasKeyspace;
+    for (alias, expected, visible) in [
+        ("2:test.t.", "test.t.", true),
+        ("3:test.t.", "test.t.", false),
+        ("02:test.t.", "test.t.", true),
+        ("test.t.", "test.t.", true),
+        ("bad:test.t.", "bad:test.t.", true),
+        (":test.t.", ":test.t.", true),
+        ("+2:test.t.", "+2:test.t.", true),
+        ("-2:test.t.", "-2:test.t.", true),
+        (" 2:test.t.", " 2:test.t.", true),
+        ("4294967296:test.t.", "4294967296:test.t.", true),
+        ("2:test:t.t.", "test:t.t.", true),
+        ("2:", "", true),
+        ("4294967295:test.t.", "test.t.", false),
+    ] {
+        assert_eq!(trimDistributionAliasKeyspace(alias, 2), (expected, visible));
+    }
+    assert_eq!(
+        trimDistributionAliasKeyspace("0:test.t.", 0),
+        ("test.t.", true)
+    );
 }
