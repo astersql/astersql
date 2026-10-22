@@ -8,9 +8,9 @@
 
 ## 核心职责
 
-该文件为词法扫描器、Hint 词法适配器和主解析器提供同一套 `名称 -> i32 编号` 契约。当前文件仅包含一个 `#[allow(non_upper_case_globals)] mod token`，模块内有 943 个 `pub const`，没有函数、trait、类型、条件编译或可变静态数据。
+该文件为词法扫描器、Hint 词法适配器和主解析器提供同一套 `名称 -> i32 编号` 契约。当前文件仅包含一个 `#[allow(non_upper_case_globals)] mod token`，模块内有 945 个 `pub const`，没有函数、trait、类型、条件编译或可变静态数据。
 
-常量分为两类：21 个单字节标点 token 直接使用 ASCII 数值，例如 `literal_21 = 33`（`!`）、`literal_28 = 40`（`(`）和 `literal_7e = 126`（`~`）；其余 922 个命名 token 连续占用 `57346..=58267`，从 `identifier` 到 `builtinMinCount`。这张表只定义身份，不负责扫描、关键字判定、语法移进/归约或 AST 构造；这些行为分别位于 `lexer.rs`、`keywords.rs`、`hintparserimpl.rs`、`yy_parser.rs`、`parser.rs` 和生成的 `main_tables.rs`。
+常量分为两类：21 个单字节标点 token 直接使用 ASCII 数值，例如 `literal_21 = 33`（`!`）、`literal_28 = 40`（`(`）和 `literal_7e = 126`（`~`）；其余 924 个命名 token 连续占用 `57346..=58269`，从 `identifier` 到 `returnKwd`。这张表只定义身份，不负责扫描、关键字判定、语法移进/归约或 AST 构造；这些行为分别位于 `lexer.rs`、`keywords.rs`、`hintparserimpl.rs`、`yy_parser.rs`、`parser.rs` 和生成的 `main_tables.rs`。
 
 ## 主要符号
 
@@ -20,7 +20,7 @@
 - `singleAtIdentifier`、`doubleAtIdentifier`、`hintComment`：用户变量、系统变量和优化器 Hint 的词法边界；`lexer.rs::startWithAt` 与 Hint 解析路径直接消费这些编号。
 - `add`、`selectKwd`、`tableKwd` 等关键字 token：由关键字表和复合关键字逻辑返回，并作为主解析表的终结符。
 - `lowerThanSelectOpt`、`higherThanParenthese`、`neg` 等优先级标记：来自主语法的 precedence 声明，主要用于生成解析表和解决冲突，不代表输入中可直接扫描出的文本。
-- `builtinMaxCount`、`builtinMinCount`：当前命名 token 区间的末端；它们与前面的内建函数、运算符和优先级 token 一样，由语法声明决定编号。
+- `builtinMaxCount = 58266`、`builtinMinCount = 58267`：原有末端编号保持不变；本次追加 `result = 58268`、`returnKwd = 58269`，分别对应 `RESULT`、`RETURN`，由 grammar 声明决定。
 
 生成侧的关键符号是 `parsergen/generate.rs::generate_outputs` 和私有 `render_token_module`：前者从主语法构建 `GeneratedParser`，后者依次遍历 `GeneratedParser::tokens`，通过 `rust_identifier` 处理 Rust 关键字（例如生成 `r#as`、`r#in`、`r#match`、`r#use` 和 `r#async`），并以 `i32` 渲染这个模块。
 
@@ -36,7 +36,7 @@
 
 本文件的数据全部是编译期 `i32` 常量，不持有输入文本、当前位置、错误列表、解析栈或全局可变状态，也没有初始化顺序问题。标点 token 与 lexer 直接返回的字节值共享数值域；命名 token 使用高值区间，`0` 则由扫描/解析约定作为 EOF，未在这里重复声明。
 
-编号是跨生成产物的不变量，而不是可独立重排的枚举序号。当前 `lexer_tokens.rs` 与 `generated/main_tables.rs` 各含 943 个 token 常量；前者用 `i32` 服务 lexer，后者用 `isize` 服务解析表。名称和值必须同步，否则 lexer 返回的 token 会被解析表解释为另一个终结符。生成顺序由 `GeneratedParser::tokens` 决定，文件自身没有查重或范围检查逻辑；语法解析和 parsergen 构建阶段承担输入验证，提交产物则由防漂移测试校验。
+编号是跨生成产物的不变量，而不是可独立重排的枚举序号。当前 `lexer_tokens.rs` 与 `generated/main_tables.rs` 各含 945 个 token 常量；前者用 `i32` 服务 lexer，后者用 `isize` 服务解析表。名称和值必须同步，否则 lexer 返回的 token 会被解析表解释为另一个终结符。生成顺序由 `GeneratedParser::tokens` 决定，文件自身没有查重或范围检查逻辑；语法解析和 parsergen 构建阶段承担输入验证，提交产物则由防漂移测试校验。
 
 ## 依赖与调用关系
 
@@ -44,9 +44,11 @@
 
 消费链为 `lib.rs::parser_impl::lexer_support -> include!(lexer_tokens.rs) -> lexer.rs / hintparserimpl.rs / misc.rs`，并通过 `Scanner` 间接向 `yy_parser.rs` 和主解析表提供 token。典型直接引用包括 `lexer.rs::Lex` 对 `token::identifier`、`token::invalid`、`token::asof`、`token::pipesAsOr` 的比较或返回，`lexer.rs::startWithAt` 对变量 token 的分类，`hintparserimpl.rs` 对 `identifier`、`stringLit`、`intLit` 的 Hint 映射，以及 `yy_parser.rs` 对字面量/标识符 token 的 AST 深度判断。
 
-RustCodeGraph 状态检查显示索引包含 11,467 个文件，目标文件被识别为 944 个图符号（文件节点加 943 个常量）；精确查询能定位 `lexer_tokens.rs::literal_21` 和 `lexer_tokens.rs::identifier`。常量不是函数调用，图的 callers/callees 不足以表达 `include!` 展开后的引用关系，因此上述消费边以 `lib.rs` 的静态包含和 `rg` 找到的直接 `token::...` 引用为准。
+冻结版本的模块入口与直接引用用于核实调用关系；工作区图索引不用于推断目标提交的行为。
 
 ## 错误处理与边界
+
+本次新增的两个 token 支撑 `RECOMMEND INDEX RETURN RESULT FOR stringLit`，同时在 `main.astergram` 的 `UnReservedKeyword` 中登记，所以 `select return, result from result` 仍可解析。编号表本身不决定关键字是否保留，也不执行推荐索引。
 
 该文件没有可执行分支和 `Result`，自身不会产生或传播错误。词法错误通过 `token::invalid` 进入上层：例如 `lexer.rs::convert2Connection` 在严格模式且字符集转换失败时可返回 `invalid`，`Scanner::Lex` 在括号深度更新失败时返回 `token::invalid`；错误对象和 warning 状态由 `Scanner` 管理，不在常量表中管理。
 
@@ -76,11 +78,13 @@ Go 对照来源是 `pkg/parser/parser.y`、其生成产物 `pkg/parser/parser.go
 
 ## 验证依据
 
-- 源码全貌：`pkg/parser/generated/lexer_tokens.rs` 共 949 行；除版权/生成标记和 `#[allow(non_upper_case_globals)] mod token` 外，仅有 943 个 `pub const`。首末命名常量及数值范围由文件直接核对。
+- 本次同步固定依据 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异与目标提交 blob；不采用工作区 Rust 源码或后续提交。只读审计与文档校验不表示 Rust 测试已执行。
+
+- 源码全貌：`pkg/parser/generated/lexer_tokens.rs` 共 951 行；除版权/生成标记和 `#[allow(non_upper_case_globals)] mod token` 外，仅有 945 个 `pub const`。首末命名常量及数值范围由文件直接核对。
 - 生成依据：`pkg/parser/grammar/main.astergram` 的 `%token`/precedence 声明；`pkg/parser/parsergen/generate.rs::{generate_outputs, render_token_module, rust_identifier, write_generated_outputs, check_generated_outputs}`；`pkg/parser/parsergen/render.rs::GeneratedParser`。
 - crate 与入口：`pkg/parser/Cargo.toml`、`pkg/parser/lib.rs`、`pkg/parser/generate.rs`；目标包没有 `doc.go`，因此包边界以这些 Rust 入口和 manifest 为准。
 - 调用证据：`pkg/parser/lexer.rs::{Scanner::Lex, getNextToken, getNextTwoTokens, startWithAt, scanIdentifier}`、`pkg/parser/hintparserimpl.rs`、`pkg/parser/yy_parser.rs`，以及 `lib.rs` 的静态 `include!`。
 - 测试证据：`pkg/parser/parser_generated_sources_aster_unit_test.rs` 验证提交产物被静态包含；`pkg/parser/parser_no_legacy_dependency_aster_unit_test.rs` 验证无 build script/旧动态生成依赖；`pkg/parser/parsergen/generate_aster_unit_test.rs` 验证确定生成、缺失/陈旧检测及已提交产物一致；`pkg/parser/parsergen/render_test.rs` 验证标点名称转合法 Rust 标识符；`pkg/parser/lexer_5_aster_unit_test.rs` 与 `pkg/parser/misc_2_aster_unit_test.rs` 验证实际 token 行为。
 - Go 对照：`pkg/parser/parser.y`、`pkg/parser/parser.go`、`pkg/parser/lexer.go`。数值差异已抽样核对，故文档未宣称跨语言编号 ABI 一致。
-- RustCodeGraph：`status` 确认索引可用；`files --filter pkg/parser/generated` 确认目标在图中且有 944 个符号；`query literal_21 --kind constant`、`query identifier --kind constant` 定位目标常量。图对生成常量的 callers/callees 解析未提供可靠引用边，相关关系改由静态包含与直接源码引用验证并在本文明确限制。
+- RustCodeGraph：本次 `status` 显示 11,527 个文件且包含 Rust；该索引对应工作区。本次同步采用冻结 blob 作为事实依据，没有执行旧说明中记录的图节点/调用边查询。
 - 本任务是纯文档分析，按计划不运行 Cargo；交付前使用任务规定的标题计数命令验证恰有 11 个固定二级章节，并人工复核未把生成表描述成运行时生成或把 Go 数值当作 Rust 真值。

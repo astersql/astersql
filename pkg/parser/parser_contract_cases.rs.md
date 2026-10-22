@@ -37,9 +37,11 @@ crate 边界由 `pkg/parser/Cargo.toml` 确定：包名为 `astersql-parser`，�
 
 专用途径补充了通用检查：`parser_test.rs::test_traffic_stmt` 对 25 个 Traffic 用例使用 `ParseOneStmt`，向下转型为 `parser_ast::TrafficStmt`，检查 Capture/Replay 的目录，并用 `restore_traffic` 比较精确恢复文本；`test_simple`、`test_table_sample` 和 `test_signed_int64_out_of_range` 则消费 `parser_contract_strings`，分别检查关键字可解析、TABLESAMPLE 补充语法可解析以及错误消息包含 `out of range`。
 
-`parser_contract_cases_test.rs::go_contract_tables_are_not_reduced_to_smoke_cases` 不解析 SQL，而是守护三个关键数据集的形状：RecommendIndex 为 12 项、Traffic 为 25 项，并精确比对 4 条越界整数输入。
+`parser_contract_cases_test.rs::go_contract_tables_are_not_reduced_to_smoke_cases` 不解析 SQL，而是守护三个关键数据集的形状：RecommendIndex 为 22 项、Traffic 为 25 项，并精确比对 4 条越界整数输入。
 
 ## 数据与状态
+
+本次 RecommendIndex 表从 12 项扩展为 22 项：新增三条 `RETURN RESULT FOR` 成功用例（普通 SQL、带选项、空字符串），六条拒绝用例（缺少 FOR/SQL、误写 RETURN/RESULTS、反引号关键字和未加引号的 SQL），以及 `select return, result from result` 的非保留词回归。空字符串仍是合法 stringLit；缺少 stringLit 则应失败。
 
 所有 SQL 和恢复文本均为 `&'static str`，数据编译进测试二进制且运行期间不可变。文件没有全局可变状态、缓存、环境变量或配置读取。
 
@@ -58,7 +60,7 @@ crate 边界由 `pkg/parser/Cargo.toml` 确定：包名为 `astersql-parser`，�
 
 下游依赖只有标准库数据结构和切片操作；本文件不直接调用解析器。真正的语法处理位于 `parser::New`、`Parser::Parse`、`Parser::ParseOneStmt` 以及 `parser-ast` 节点实现中，它们由 `parser_test.rs` 调用。因此修改本文件会改变测试覆盖和预期，不会改变发布库的解析行为。
 
-RustCodeGraph 的名称查询识别出 `accepts`、`rejects`、`parser_contract_cases`、`parser_contract_strings` 和独立回归测试；文件过滤与调用方查询未给出可用调用边，所以调用关系又以 `rg` 和模块/测试源码直接核验。没有证据表明生产模块调用这些函数。
+冻结版本的模块入口与直接引用用于核实调用关系；工作区图索引不用于推断目标提交的行为。
 
 ## 错误处理与边界
 
@@ -80,7 +82,7 @@ RustCodeGraph 的名称查询识别出 `accepts`、`rejects`、`parser_contract_
 
 当前对应程度并不统一：
 
-- `TestRecommendIndex` 的 12 条输入与 Go 表数量及输入一致；Rust 通用运行器对这些条目主要验证解析与顶层 AST 类型等价，而 Go `RunTest` 还比较规范恢复结果。
+- `TestRecommendIndex` 的 22 条输入与冻结 Go 表数量及输入一致；Rust 通用运行器对这些条目主要验证解析与顶层 AST 类型等价，而 Go `RunTest` 还比较规范恢复结果。
 - `TestTrafficStmt` 的 25 个正反例及恢复字符串与 Go 表直接对应；Rust 的专项测试也检查 `TrafficStmt` 类型、目录和恢复文本，是本文件中最完整的对齐组之一。
 - `TestSignedInt64OutOfRange.cases` 保留 Go 的 4 条输入，Rust 消费者与 Go 一样要求越界错误语义。
 - `TestSimple.reservedKws` 和 `unreservedKws` 目前分别只有 3 个代表词，而 Go 列表包含大量关键字；`TestTableSample.cases` 也只是 Go 补充表达式列表的子集。
@@ -102,10 +104,14 @@ RustCodeGraph 的名称查询识别出 `accepts`、`rejects`、`parser_contract_
 
 ## 验证依据
 
+- 增量专项：冻结 `parser_test.go::TestRecommendIndex` 与 Rust 22 项表逐项对照；`parser_contract_cases_test.rs` 已将护栏改为 22；`parser_test.rs::recommend_index_return_result_ast_is_read_only` 另检查 Action、SQL、选项数和只读分类。表运行器本身仍不比较完整 AST 或通用规范 Restore。
+
+- 本次同步固定依据 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异与目标提交 blob；不采用工作区 Rust 源码或后续提交。只读审计与文档校验不表示 Rust 测试已执行。
+
 - 源文件：`pkg/parser/parser_contract_cases.rs`；核对 `ParserContractCase`、两个构造函数、两个公开查询函数、全部匹配分支及 panic 边界。
 - crate 与装配：`pkg/parser/Cargo.toml`、`pkg/parser/lib.rs`；确认 `astersql-parser` 边界、Go 包元数据以及该模块仅受 `#[cfg(test)]` 装配。
 - Rust 消费者：`pkg/parser/parser_test.rs`；核对通用运行器、生成测试宏、模式开关、Traffic 专项恢复、关键字/TABLESAMPLE 字符串消费和越界错误检查。
-- 独立 Rust 测试：`pkg/parser/parser_contract_cases_test.rs`；核对 12/25 项数量护栏与 4 条越界输入的精确列表。
+- 独立 Rust 测试：`pkg/parser/parser_contract_cases_test.rs`；核对 22/25 项数量护栏与 4 条越界输入的精确列表。
 - Go 对照：`pkg/parser/parser_test.go::{TestSimple,TestRecommendIndex,TestTableSample,TestSignedInt64OutOfRange,TestTrafficStmt}`，并抽查同文件其他同名表测试；确认完整对齐组和代表性子集之间的差异。
-- RustCodeGraph：`status` 显示索引有效；`query parser_contract_cases --kind function` 和 `query parser_contract_strings --kind function` 找到本文件符号及独立回归测试。`files --filter pkg/parser/parser_contract_cases` 未返回文件、调用方命令未提供可用边，因此调用边以模块声明和 `rg` 结果补证，没有把缺失图边当作不存在调用的唯一依据。
+- RustCodeGraph：本次 `status` 显示 11,527 个文件且包含 Rust；该索引对应工作区。本次同步采用冻结 blob 作为事实依据，没有执行旧说明中记录的图节点/调用边查询。
 - 本任务是纯文档分析，按任务约束未运行 Cargo；最终结构检查应确认目标文件存在且固定二级标题恰好为 11 个。

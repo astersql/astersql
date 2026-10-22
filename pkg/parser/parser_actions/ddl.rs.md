@@ -8,7 +8,7 @@
 
 ## 核心职责
 
-- 为 596 个需要显式语义动作的 DDL 产生式建立稳定 `RuleId -> DdlRule` 映射，避免依赖会随语法重排而变化的数字 rule number。
+- 为 597 个需要显式语义动作的 DDL 产生式建立稳定 `RuleId -> DdlRule` 映射，避免依赖会随语法重排而变化的数字 rule number。
 - 把规约右部 `Rhs` 中的 `ident` / `expr` / `item` / `statement` 动态语义值组装到 `Context.output`，覆盖 ALTER/CREATE/DROP/RENAME/TRUNCATE/RECOVER/FLASHBACK/SPLIT/DISTRIBUTE，以及列、索引、外键、表选项、分区、视图和 placement policy 等子结构。
 - 在构造 AST 前执行 Go 规则中的局部语义校验，包括数值/长度、重复选项、分区定义、MariaDB/MySQL 兼容开关和严格 DOUBLE 类型等边界；错误通过 `yyLexer` 记录，必要时用 `Err(1)` 终止解析。
 - 保持语法所有权与执行一致：`owns` 和 `apply` 共用 `identify`，因此被声称所有的 rule 一定有对应 action。
@@ -24,6 +24,8 @@
 文件没有公开 `pub` API、trait、struct、模块常量、static 或条件编译项；对父模块可见的只有 `pub(super)` 的 `owns` 和 `apply`。
 
 ## 执行流程
+
+本次新增 `ViewCheckOptionAlt04`，映射稳定 ID `viewcheckoption_with_check_option--2f0b08df560596bb`；`WITH CHECK OPTION` 与显式 `WITH CASCADED CHECK OPTION` 共用分支，输出 `ViewCheckOption::Cascaded`。`WITH LOCAL CHECK OPTION` 仍输出 `Local`。这与 Go `parser.y::ViewCheckOption` 的默认 CASCADED 语义一致；`main.astergram` 和生成表负责接受语法，本文件负责枚举语义值，不能只改其中一层。
 
 1. [`parser_runtime.rs`](../parser_runtime.rs) 在 LR 规约时从 `RULE_IDS_BY_REDUCTION` 取得稳定 `RuleId`，计算 RHS 切片，创建默认 `yySymType` 和 `Context`，调用 `parser_actions::apply`。
 2. [`parser_actions/mod.rs`](./mod.rs) 按 action 分片询问 `owns`；`ddl::owns(rule_id)` 为真时调用 `ddl::apply(...).expect("owned DDL rule has an action")`。`identify` 共用保证这个 `expect` 的前提。
@@ -43,7 +45,7 @@
 - 规则来源：[`grammar/main.astergram`](../grammar/main.astergram) 定义 Rust 产生式和 `@action`；生成的 `RULE_IDS_BY_REDUCTION` 为 `identify` 提供运行时 RuleId。
 - AST 依赖：`use super::super::*` 带入 `parser_ast`、`RuleId`、`yySymType`、语义辅助函数和 MySQL 错误定义；`use super::{Context, Rhs}` 带入 action 边界。主要下游类型是 `AlterTableSpec/Stmt`、`CreateTableStmt`、`ColumnDef/Option`、`Constraint/ReferenceDef`、`IndexOption/CreateIndexStmt`、`PartitionOptions/Definition`、`CreateViewStmt` 以及各种 Drop/Recover/Flashback/Placement 节点。
 - crate 边界：[`Cargo.toml`](../Cargo.toml) 的 `[lib] path = "lib.rs"`；`parser-ast` 是本地路径依赖，同时使用 `parser-mysql`、`parser-types`、`parser-terror`、`parser-charset` 等 parser 子 crate。本文件自身没有 feature gate。
-- RustCodeGraph 对该文件建立了 603 个符号，可精确读取 `pkg/parser/parser_actions/ddl.rs::apply_rule`。索引的文件级关系另指向 `query.rs` 和 `remaining_aster_unit_test.rs`；主运行时调用边以上述 `mod.rs`/`parser_runtime.rs` 源码为准。
+冻结版本的模块入口与直接引用用于核实调用关系；工作区图索引不用于推断目标提交的行为。
 
 ## 错误处理与边界
 
@@ -73,8 +75,12 @@ Go 对照的真实位置不是同路径 `.go` 文件，而是 [`pkg/parser/parse
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示工程已索引 11,467 个文件；`files --filter pkg/parser/parser_actions/ddl.rs` 确认目标文件已索引；`node --file ... --offset 1 --limit 260` 读取枚举开头；`query apply_rule --kind function` 找到本文件定义；`node pkg/parser/parser_actions/ddl.rs::apply_rule` 用完整限定名消除同名 action 歧义。限定 `callers` 查询在本机持续无输出，因此调用边另由 `parser_actions/mod.rs` 与 `parser_runtime.rs` 直接核实。
+- 增量回归证据：冻结 `parser_test.rs::view_check_option` 覆盖普通 SELECT、括号 SELECT、UNION、UNION ALL 四种 view，检查 `CheckOption == Cascaded` 且 SELECT 原文不含 CHECK OPTION；残缺 `WITH CHECK` 与混合 `CASCADED LOCAL` 应拒绝。Go `parser.y` 明确省略限定词等于 CASCADED。仅审阅，未运行。
+
+- 本次同步固定依据 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异与目标提交 blob；不采用工作区 Rust 源码或后续提交。只读审计与文档校验不表示 Rust 测试已执行。
+
+- RustCodeGraph：本次 `status` 显示 11,527 个文件且包含 Rust；该索引对应工作区。本次同步采用冻结 blob 作为事实依据，没有执行旧说明中记录的图节点/调用边查询。
 - 源码/边界：已读 [`ddl.rs`](./ddl.rs) 的全局符号、`identify` 末端、`owns`/`apply`、`apply_rule` 分支索引、错误与 parser-state 使用点；已读 [`Cargo.toml`](../Cargo.toml)、[`lib.rs`](../lib.rs)、[`parser_actions/mod.rs`](./mod.rs) 和 [`parser_runtime.rs`](../parser_runtime.rs)。
 - Go/语法对照：已查看 [`parser.y`](../parser.y) 的 ALTER TABLE、placement 等相关产生式，并对照 [`grammar/main.astergram`](../grammar/main.astergram) 的 Rust action 标记；`parser.go` 中的同文本 `FOLLOWERS must be positive` 进一步证明生成 Go 路径保留该语义。
-- 测试：[`ddl_aster_unit_test.rs`](./ddl_aster_unit_test.rs) 验证 596 条 DDL RuleId 的精确所有权及无 numeric fallback；[`remaining_aster_unit_test.rs`](./remaining_aster_unit_test.rs) 验证每个 action rule 恰有一个所有者；[`parser_3_aster_unit_test.rs`](../parser_3_aster_unit_test.rs) 覆盖 CREATE/DROP/TRUNCATE TABLE、ALTER TABLE、CREATE/DROP INDEX、RENAME/RECOVER/FLASHBACK/SPLIT、分区和 placement policy 等 SQL -> AST 路径；[`parser_semantic_support_test.rs`](../parser_semantic_support_test.rs) 验证分区错误码等语义边界。
+- 测试：[`ddl_aster_unit_test.rs`](./ddl_aster_unit_test.rs) 检查 DDL RuleId 的精确所有权及无 numeric fallback；冻结源码已有 597 条规则，而该测试仍断言 596，存在旧 inventory 计数漂移；[`remaining_aster_unit_test.rs`](./remaining_aster_unit_test.rs) 验证每个 action rule 恰有一个所有者；[`parser_3_aster_unit_test.rs`](../parser_3_aster_unit_test.rs) 覆盖 CREATE/DROP/TRUNCATE TABLE、ALTER TABLE、CREATE/DROP INDEX、RENAME/RECOVER/FLASHBACK/SPLIT、分区和 placement policy 等 SQL -> AST 路径；[`parser_semantic_support_test.rs`](../parser_semantic_support_test.rs) 验证分区错误码等语义边界。
 - 本任务是纯文档分析，按计划不运行 Cargo。交付时使用固定 11 章节命令做结构验证，并人工复核本文能回答文件的存在原因、运行主链与安全扩展点。

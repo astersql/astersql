@@ -9,7 +9,7 @@ crate 边界由 `pkg/parser/Cargo.toml` 确认：当前库名为 `astersql-parse
 ## 核心职责
 
 1. `identify` 将生成器提供的稳定字符串规则 ID 映射为私有 `AdminRule` 枚举，隔离易变化的 LR 数字规约号。
-2. `owns` 向统一分派器声明本文件是否拥有某条语义动作；`remaining_aster_unit_test.rs::all_action_rules_have_one_owner` 固定验证本模块拥有 551 条规则且每条需要动作的规约恰有一个 owner。
+2. `owns` 向统一分派器声明本文件是否拥有某条语义动作；`remaining_aster_unit_test.rs::all_action_rules_have_one_owner` 验证每条需要动作的规约恰有一个 owner；冻结源码实际拥有 553 条规则，而测试仍保留 551 的旧断言，存在计数漂移。
 3. `apply` 在识别成功后调用 `apply_rule`；未知规则返回 `None`，由上层继续选择其他 action 模块。
 4. `apply_rule` 从 RHS 语义槽读取标识符、表达式、表名、列表和选项，构造最终 statement AST 或供更高层规约继续消费的 `out.item` 中间值。
 5. 在只能结合多个子项判断的地方执行语义校验，例如重复资源组选项、重复 Query Watch 选项、Go 风格 duration、互斥 masking-policy 修饰符以及权限/角色类型错配，并把错误写入 lexer。
@@ -18,7 +18,7 @@ crate 边界由 `pkg/parser/Cargo.toml` 确认：当前库名为 `astersql-parse
 
 ## 主要符号
 
-- `AdminRule`：私有、可排序的 551 变体枚举；每个 `*AltNN` 对应 `parser.y` 中一个具体产生式备选。排序能力也被少量连续变体分支用于归类，但规则身份的权威来源仍是 `identify` 的显式映射。
+- `AdminRule`：私有、可排序的 553 变体枚举；每个 `*AltNN` 对应 `parser.y` 中一个具体产生式备选。排序能力也被少量连续变体分支用于归类，但规则身份的权威来源仍是 `identify` 的显式映射。
 - `identify(rule_id: RuleId) -> Option<AdminRule>`：精确匹配稳定 ID。任何新增或变更 grammar action 若没有同步此表，都不会归本模块处理。
 - `owns(rule_id: RuleId) -> bool`：仅检查 `identify` 是否成功，不读取或修改解析状态。
 - `apply(rule_id, rhs, context) -> Option<Result<bool, isize>>`：模块边界入口。`None` 表示非本模块规则；`Some(Ok(true))` 表示已完成规约；`Some(Ok(false))` 表示规则已识别但所需动态语义值缺失或类型不符；`Some(Err(1))` 表示已向 lexer 追加错误并要求解析器以状态 1 终止。
@@ -38,6 +38,8 @@ crate 边界由 `pkg/parser/Cargo.toml` 确认：当前库名为 `astersql-parse
 
 ## 数据与状态
 
+本次 `AnalyzeOptionAlt12` 识别 `DEFAULT NDVRATE`，与其他 DEFAULT 分支共用构造逻辑，写入 `AnalyzeOpt { Type: NDVRate, Value: None }`；数值 NDVRATE 的表达式路径仍独立。`RecommendIndexStmtReturnResult` 与 RUN/SET 共用选项提取，构造 `Action = RecommendIndexActionReturn`、`SQL = RHS 倒数第二槽的 ident`、`Options = 最后一槽的选项列表`。SHOW/APPLY/IGNORE/RUN/SET 也改用 AST 动作常量，不能把 RETURN 归为 RUN。此处仅生成 AST，不调用推荐索引算法。
+
 数据在 `yySymType` 中逐层传递。终结符文本通常位于 `ident`，表达式位于 `expr`，动态类型中间值位于 `item: Option<Box<dyn Any...>>`，完整 statement 位于 `statement`。`apply_rule` 通过 `downcast_ref::<T>()` 读取并通常克隆值；在可转移所有权的路径使用 `take()`/`downcast::<T>()`，例如扩展已有 BRIE statement，从而避免要求所有 AST 节点可克隆。
 
 列表的次序保持输入次序。资源组选项、动态校准选项、Query Watch 选项在追加时按 option type 去重；runaway 选项允许多个 `Rule` 条件，但 action/watch 等非 Rule 类别不得重复。空 optional 规则通常写入 `None`、空向量、空字符串或显式默认枚举，这些值要与 Go grammar 中的 `nil`、空 slice 或零值语义对应。
@@ -56,7 +58,7 @@ crate 边界由 `pkg/parser/Cargo.toml` 确认：当前库名为 `astersql-parse
 - `validate_go_duration` 与 `parser_duration::ParseDuration`：分别核对 Go 兼容 duration 和动态校准 duration。
 - `semantic_value_text`、`getUint64FromNUM`、`RoleOrPrivSemantic` 等解析器内部辅助项：完成动态语义值到 AST 字段的转换。
 
-RustCodeGraph 可检索到 `AdminRule` 与 `apply_rule`，并确认统一分派调用点在 `parser_actions/mod.rs`；针对该 5762 行 action 文件的 `explore` 与按文件 `node` 本次未返回正文，因此具体分支依据以目标源码、模块入口和测试交叉核对。
+冻结版本的模块入口与直接引用用于核实调用关系；工作区图索引不用于推断目标提交的行为。
 
 ## 错误处理与边界
 
@@ -101,10 +103,14 @@ Go `parser_test.go::TestAdminStmt` 提供兼容样例与失败样例；Rust 的 
 
 ## 验证依据
 
-- 目标源码：`pkg/parser/parser_actions/admin.rs`；确认唯一模块级类型 `AdminRule`，以及 `identify`、`owns`、`apply`、`apply_rule` 四个函数；枚举和稳定映射包含 551 个 action 规则。
+- 增量行为证据：冻结 `parser.y` 的 `"DEFAULT" "NDVRATE"` 和 `"RECOMMEND" "INDEX" "RETURN" "RESULT" "FOR"` 动作与 `main.astergram` 对照；`parser_test.rs::recommend_index_return_result_ast_is_read_only` 检查 return action、SQL、选项数和只读分类，`analyze_default_ndvrate` 检查 NDVRate、空 Value 和 Restore。仅审阅，未运行。
+
+- 本次同步固定依据 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异与目标提交 blob；不采用工作区 Rust 源码或后续提交。只读审计与文档校验不表示 Rust 测试已执行。
+
+- 目标源码：`pkg/parser/parser_actions/admin.rs`；确认唯一模块级类型 `AdminRule`，以及 `identify`、`owns`、`apply`、`apply_rule` 四个函数；枚举和稳定映射包含 553 个 action 规则。
 - 主链：`pkg/parser/parser_runtime.rs` 的 reduction 调用与默认 `$1` 移动；`pkg/parser/parser_actions/mod.rs` 的分片分派、`Context` 和 `has_semantic_action`。
 - crate：`pkg/parser/Cargo.toml` 的 `astersql-parser` 库、`parser-ast` 与 `parser-duration` 本地依赖。
 - Rust 测试：`pkg/parser/parser_actions/remaining_aster_unit_test.rs`（唯一 owner、admin_count=551、禁止数字回退），`pkg/parser/parser_runtime_aster_unit_test.rs`（稳定 RuleId 分派），`pkg/parser/parser_3_aster_unit_test.rs`（ADMIN 具体字段及资源组、Query Watch、Refresh Stats、Plan Replayer、Traffic 等完整性），`pkg/parser/yy_parser_4_aster_unit_test.rs`（公开 parser 的 TiDB 管理语法接受范围与非法输入）。
 - Go 对照：`pkg/parser/parser.y` 的 `ResourceGroupOptionList`、`AdminStmtLimitOpt`/`AdminStmt`、`PlanReplayerStmt`、`AddQueryWatchStmt`/`DropQueryWatchStmt`；`pkg/parser/parser_test.go::TestAdminStmt` 及资源组、Plan Replayer 用例。
-- RustCodeGraph：`status` 显示目标在有效本地索引中；`files --filter pkg/parser/parser_actions/admin.rs` 确认 557 个索引符号；`query AdminRule --kind enum` 定位第 21 行，`query apply_rule --kind function` 定位第 1784 行。该文件的 `explore`/`node --file` 没有返回正文，调用关系因此又以源码入口和测试做了直接复核。
-- 本任务为纯文档分析，依照计划未运行 Cargo；交付前使用任务指定命令验证目标存在且恰有 11 个固定二级章节，并人工复查只新增本说明文件（任务文件按完成协议删除）。
+- RustCodeGraph：本次 `status` 显示 11,527 个文件且包含 Rust；该索引对应工作区。本次同步采用冻结 blob 作为事实依据，没有执行旧说明中记录的图节点/调用边查询。
+- 本任务为纯文档分析，依照计划未运行 Cargo；交付前使用任务指定命令验证目标存在且恰有 11 个固定二级章节，并人工复查仅更新任务拥有的说明文件（任务文件按完成协议删除）。
