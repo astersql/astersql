@@ -46,6 +46,8 @@ DML 使用平行流程：顶层调用 `try_capture_plan`，其 select child 仍�
 
 ## 数据与状态
 
+`CachedUpdate` 新增私有 `is_multi_table: bool`，capture 从 `Update.IsMultiTable` 取值，restore 原样写回；它保存 UPDATE 的单表/多表语义身份，不是缓存 key 或 session 身份。该字段与 assignments、SelectPlan 一起往返，不改变外键拒绝条件或上下文重绑定。冻结测试 `cache_snapshot_test.rs` 的 DML 往返显式设置并断言 `IsMultiTable = true`。
+
 快照以拥有数据为主：字符串、向量、range、表/索引/列元数据和 datum 被 clone；表达式相关对象变成独立的 cached 表示；递归节点用 `Box<CachedPlan>` 或 `Vec<CachedPlan>` 表示。不可变且设计为跨线程共享的对象继续使用引用计数句柄，例如向量检索的 `Arc<VectorFloat32>`、字段名的 `Arc<FieldName>` 与统计直方图句柄。
 
 必须保持的关键不变量包括：
@@ -113,6 +115,8 @@ DML 使用平行流程：顶层调用 `try_capture_plan`，其 select child 仍�
 主要风险是漏复制会影响执行或 explain 的字段、错误共享 session-bound 数据、遗漏递归 child、恢复派生字段不完整，以及 Rust 支持矩阵与 Go 生成清单漂移。范围/range、表达式、统计和 reader flatten 状态还可能带来内存与性能变化，应优先复用现有 cached 表示而不是引入整棵原计划克隆。
 
 ## 验证依据
+
+本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/operator/physicalop/cache_snapshot.rs` 并读取 `git show 2c944fb:pkg/planner/core/operator/physicalop/cache_snapshot.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
 
 - RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`query CacheSnapshot` 定位 `CacheSnapshotError`、`CachedPlan` 相关 capture；`node --file pkg/planner/core/operator/physicalop/cache_snapshot.rs` 分段核对了 1–2516 行的类型、分派和双向转换。方法 ID 的 `callers/callees` 查询出现名称误匹配且 callers 为空，因此按技能规则用文本搜索补足调用边，未采用错误图结果。
 - 主链证据：`pkg/session/runtime/planning.rs` 的缓存未命中分支调用 `CachedPlan::try_capture`，命中分支调用 `CachedPlan::restore`；`pkg/planner/core/plan_cache_utils.rs::PlanCacheValue` 持有快照，`NewPlanCacheValue` 接收快照。

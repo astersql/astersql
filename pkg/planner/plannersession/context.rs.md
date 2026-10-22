@@ -4,16 +4,16 @@
 
 `context.rs` 是 Cargo crate `astersql-planner-plannersession` 的唯一业务实现文件，由同目录 `lib.rs` 以 `mod context; pub use context::*;` 全量导出。该 crate 在根 `Cargo.toml` 以 `facade_planner_plannersession` 注册，并被 `pkg/session/Cargo.toml` 直接依赖；其职责是保存会话级规划扩展状态，而不是执行具体的优化规则。
 
-当前 Rust 接线需要分成两层理解：`pkg/session/contextimpl.rs::newPlanContextImpl` 会构造本文件的 `PlanCtxExtended`，`pkg/session/contextimpl_test.rs` 也直接验证了这条路径；但生产规划上下文 `pkg/session/runtime/planning.rs` 当前直接实现 `astersql_planner_planctx::PlanContext`，没有持有或委托给本文件的 `PlanCtxExtended`。因此，本文件已经是可编译、可测试的会话扩展组件，却尚不能等同于 Rust 生产规划主链的唯一实现。
+当前 Rust 接线需要分成两层理解：`pkg/session/contextimpl.rs::newPlanContextImpl` 会构造本文件的 `PlanCtxExtended`，`pkg/session/contextimpl_test.rs` 也直接验证了这条路径；但生产规划上下文 `pkg/session/runtime/planning.rs` 当前实现 core/base 的对象安全 `PlanContext` 适配接口，没有持有或委托给本文件的 `PlanCtxExtended`。因此，本文件已经是可编译、可测试的会话扩展组件，却尚不能等同于 Rust 生产规划主链的唯一实现。
 
 同目录没有 `doc.go`，因此没有额外的包级行为契约需要合并。文件没有模块级常量、类型别名、枚举或条件编译项；公开项通过 `lib.rs` 直接暴露。
 
 ## 核心职责
 
-本文件集中提供三组能力：
+本文件集中提供会话扩展能力：
 
 1. 用 `NullRejectCheckExprContext` 包装普通 `ExprContext`，通过 `IsInNullRejectCheck()` 标识表达式正处在 null-reject 分析路径。
-2. 用 `PlanCtxExtended` 保存构造时的会话引用、固定的 null-reject 表达式上下文，以及一次规划期间使用的只读用户变量名集合。
+2. 用 `PlanCtxExtended` 保存构造时的会话引用、固定的 null-reject 表达式上下文，以及一次规划期间使用的只读用户变量名集合和可选 mlog commit-ts 估算窗口。
 3. 通过 `SessionContext` 将事务预热委托回具体会话，并用 `PlannerSessionError` 作为该窄接口的错误类型。
 
 这些职责对应 Go 文件 `pkg/planner/plannersession/context.go` 的 `PlanCtxExtended`，但 Rust 当前为了保持 crate 自包含，在本文件内定义了自己的 `ExprContext`、`SessionContext`、null-reject 包装器和错误类型。它们不是 `pkg/expression/exprctx/context.rs` 与 `pkg/planner/planctx/context.rs` 中生产 trait 的类型别名。
@@ -29,11 +29,13 @@
 - `NewPlanCtxExtended(sctx)`：公开构造函数。它先读取一次 `sctx.GetExprCtx()`，再创建固定的 null-reject 包装器；只读变量状态初始为 `None`。
 - `PlanCtxExtended::GetNullRejectCheckExprCtx()`：返回已缓存包装器的借用；debug 构建中会校验当前会话表达式上下文仍与构造时的同一 `Arc` 分配相等。
 - `PlanCtxExtended::AdviseTxnWarmup()`：原样返回 `sctx.AdviseTxnWarmup()` 的结果。
-- `SetReadonlyUserVarMap`、`GetReadonlyUserVarMap`、`Reset`：分别替换整个集合、借用查看集合、清空为 `None`。键类型为 `String`，值为单位类型 `()`，因此该映射实际表达集合语义。
+- `SetReadonlyUserVarMap`、`GetReadonlyUserVarMap`、`Reset`：分别替换整个集合、借用查看集合、清空为 `None`（Reset 同时清空窗口）。键类型为 `String`，值为单位类型 `()`，因此该映射实际表达集合语义。
 
 公开 API 保留了 Go 风格的大写命名；`lib.rs` 通过 `#![allow(dead_code, non_snake_case, non_upper_case_globals)]` 接受这些迁移期命名。
 
 ## 执行流程
+
+`mlogCommitTSEstimation` 构造为 None，`Reset` 连同 readonlyUserVars 一起清空。可选窗口 trait 的 getter 借用当前窗口；`WithMLogCommitTSEstimation` 先用 `Option::replace` 保存原窗口并安装新值，再调用一次 callback，最后无论返回 Ok 或 Err 都恢复原值并原样返回 Result，支持正常返回路径上的嵌套作用域。窗口为值拷贝，不共享可变指针。
 
 构造流程由 `pkg/session/contextimpl.rs::newPlanContextImpl` 发起：调用者传入 `Arc<dyn SessionContext>`，该函数克隆 `Arc` 后调用 `NewPlanCtxExtended`。构造函数调用一次 `SessionContext::GetExprCtx`，交给 `WithNullRejectCheck`，最终把会话、包装器和空的只读变量状态组合成 `PlanCtxExtended`。RustCodeGraph 的直接调用边为 `newPlanContextImpl -> NewPlanCtxExtended -> {GetExprCtx, WithNullRejectCheck}`。
 
@@ -53,7 +55,7 @@
 
 ## 依赖与调用关系
 
-本文件的实际编译依赖只有标准库的 `HashMap`、`fmt` 和 `Arc`。`pkg/planner/plannersession/Cargo.toml` 将 Go 对应包涉及的 expression、planctx、sessionctx、sessiontxn 与 intest crate 全部放在 `[target.'cfg(any())'.dependencies]` 下；`cfg(any())` 恒为假，所以这些条目只记录迁移边界，不进入当前构建。这也解释了本文件为何定义本地 trait 和包装器。
+本文件的实际编译依赖包括标准库的 `HashMap`、`fmt`、`Arc` 和已启用的 `astersql-planner-planctx`。`pkg/planner/plannersession/Cargo.toml` 将 expression、sessionctx、sessiontxn 与 intest crate 放在 `[target.'cfg(any())'.dependencies]` 下；`cfg(any())` 恒为假，所以这些条目只记录迁移边界，不进入当前构建。这也解释了本文件为何定义本地 trait 和包装器。
 
 已确认的 Rust 上游只有生产文件 `pkg/session/contextimpl.rs::newPlanContextImpl`；RustCodeGraph 对 `NewPlanCtxExtended` 返回这一条直接 caller。该 `planContextImpl` 保存原会话和扩展对象，测试位于 `pkg/session/contextimpl_test.rs`。根 workspace 与 `pkg/session/Cargo.toml` 提供 crate 级接线。
 
@@ -63,7 +65,9 @@
 
 ## 错误处理与边界
 
-只有事务预热路径返回显式错误。`PlanCtxExtended::AdviseTxnWarmup` 不包装、不吞掉错误，测试调用者使用 `unwrap()` 只验证成功分支；当前独立 Rust 测试没有覆盖 `PlannerSessionError` 的失败透传、`Display` 或相等性。
+窗口 callback 若 panic，控制流不会执行方法末尾的恢复赋值；本实现没有 RAII guard 或 catch_unwind。因此不能承诺 panic 时恢复原窗口。Go 使用 defer，panic 展开仍会恢复，这一差异必须保留。借用规则要求 scoped 修改取得 `&mut self`，本文件没有并发安装窗口的锁。冻结提交未发现该 scoped API 的独立 Rust 直接测试或生产调用点，现有 contextimpl 测试也不覆盖该窗口。
+
+事务预热路径返回 `PlannerSessionError`；窗口作用域方法另外透传 callback 的 `GoError`。`PlanCtxExtended::AdviseTxnWarmup` 不包装、不吞掉错误，测试调用者使用 `unwrap()` 只验证成功分支；当前独立 Rust 测试没有覆盖 `PlannerSessionError` 的失败透传、`Display` 或相等性。
 
 `GetNullRejectCheckExprCtx` 的一致性检查使用 `debug_assert!`：debug 构建发现 `Arc` 身份改变会 panic，release 构建完全省略检查并继续返回旧的缓存包装器。因此它是开发期不变量检查，不是可恢复的生产错误处理。该检查只比较分配身份，不比较内部状态。
 
@@ -81,14 +85,16 @@
 
 ## 与 Go 版本的对应关系
 
-Rust `PlanCtxExtended` 的三个字段与 `pkg/planner/plannersession/context.go::PlanCtxExtended` 一一对应：会话、构造时固定的 null-reject 上下文、只读用户变量集合。构造、getter/setter 和 `Reset` 的总体意图也一致；Go 的 `nil map` 对应 Rust 的 `None`，Go `map[string]struct{}` 对应 Rust `HashMap<String, ()>`。
+第四字段是新增的 mlog commit-ts 窗口，两端 Reset 均清空它。Rust 已通过真实 planctx 依赖实现 `MLogCommitTSEstimationContext`，但没有因此实现完整 `planctx::PlanContext`；生产主链和本地 ExprContext 类型边界仍须分别确认。Go 的 callback 无返回载荷且通过 defer 恢复，Rust 支持返回 T，但只保证正常 Result 返回后的恢复。
+
+Rust `PlanCtxExtended` 的四个字段与 `pkg/planner/plannersession/context.go::PlanCtxExtended` 一一对应：会话、构造时固定的 null-reject 上下文、只读用户变量集合与 mlog 估算窗口。构造、getter/setter 和 `Reset` 的总体意图也一致；Go 的 `nil map` 对应 Rust 的 `None`，Go `map[string]struct{}` 对应 Rust `HashMap<String, ()>`。
 
 存在四个必须保留的差异：
 
-1. Go 直接使用 `sessionctx.Context`、`exprctx.NullRejectCheckExprContext`、`planctx.PlanContext` 与 `sessiontxn.GetTxnManager`；Rust 当前使用本文件内的窄 trait、包装器与错误，Cargo 中对应 crate 依赖均被 `cfg(any())` 禁用。
+1. Go 直接使用 `sessionctx.Context`、`exprctx.NullRejectCheckExprContext`、`planctx.PlanContext` 与 `sessiontxn.GetTxnManager`；Rust 当前使用本文件内的窄 trait、包装器与错误，除已启用 planctx 外，对应 crate 依赖被 `cfg(any())` 禁用。
 2. Go `AdviseTxnWarmup` 明确执行 `sessiontxn.GetTxnManager(ctx.sctx).AdviseWarmup()`；Rust 把整个动作抽象为 `SessionContext::AdviseTxnWarmup`，因此事务管理器查找必须由 trait 实现者完成。现有测试只提供计数器实现。
 3. Go 的 `intest.AssertFunc` 属于测试/断言设施；Rust 使用 `debug_assert!(Arc::ptr_eq(...))`。二者都维护“构造后表达式上下文身份不变”的意图，但启用条件和失败表现不完全相同。
-4. Go 的 `PlanCtxExtended` 通过嵌入参与 `planctx.PlanContext` 的编译期接口检查；Rust 本文件没有实现 `astersql_planner_planctx::PlanContext`，而且本地 `ExprContext` 类型与生产 expression trait 不兼容。Rust 生产 `runtime/planning.rs` 目前另行直接实现生产 trait。
+4. Go 的 `PlanCtxExtended` 通过嵌入参与 `planctx.PlanContext` 的编译期接口检查；Rust 本文件没有实现 `astersql_planner_planctx::PlanContext`，而且本地 `ExprContext` 类型与生产 expression trait 不兼容。Rust 生产 `runtime/planning.rs` 目前另行实现 core/base 的对象安全适配 trait。
 
 Go 主链证据包括：`pkg/planner/core/preprocess.go::Preprocess` 设置只读变量集合，`pkg/expression/sessionexpr/sessionctx.go::ExprContext.IsReadonlyUserVar` 读取集合，`pkg/planner/optimize.go` 在绑定处理后调用 `AdviseTxnWarmup`，`pkg/planner/util/null_misc.go` 使用 null-reject 上下文。不能据这些 Go caller 推断 Rust 对应路径已经接通。
 
@@ -103,6 +109,8 @@ Go 主链证据包括：`pkg/planner/core/preprocess.go::Preprocess` 设置只�
 兼容风险主要来自公开 Go 风格符号和状态语义变化；正确性风险来自缓存表达式上下文与会话当前上下文不一致；性能风险较低，当前操作主要是 `Arc` 克隆和 `HashMap` 所有权移动，但频繁复制整个只读变量集合或在热路径增加锁会改变成本。任何接线修改还需防止形成 planner、expression、session 之间的 Cargo 循环依赖。
 
 ## 验证依据
+
+本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/plannersession/context.rs` 并读取 `git show 2c944fb:pkg/planner/plannersession/context.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
 
 事实核验使用了本地 RustCodeGraph 索引（11467 个文件、307296 个节点、1848419 条边），读取并查询了 `pkg/planner/plannersession/context.rs` 的完整 141 行、主要符号，以及 `NewPlanCtxExtended`、`GetNullRejectCheckExprCtx`、`AdviseTxnWarmup` 等调用关系。关键图证据是 `pkg/session/contextimpl.rs::newPlanContextImpl` 为 `NewPlanCtxExtended` 的直接调用者，构造函数直接调用 `WithNullRejectCheck` 和 `SessionContext::GetExprCtx`；图中未发现 `GetNullRejectCheckExprCtx` 的生产 caller。
 

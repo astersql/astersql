@@ -9,7 +9,7 @@
 ## 核心职责
 
 - 以字符串缓存键分桶：`InstancePlanCacheState::items` 是 `HashMap<String, Vec<InstancePlanCacheEntry>>`，同一键下允许保存参数类型不兼容的多份计划。
-- 以 `CheckTypesCompatibility4PC` 判断桶内计划是否可复用。空参数类型列表视为兼容；非空时还检查数量、类型、字符集、排序规则、整数 unsigned 标志以及 decimal 精度/小数位。
+- 以 `PlanCacheValue::MatchesParamTypes` 判断桶内计划是否可复用。空参数类型列表视为兼容；非空时还检查数量、类型、字符集、排序规则、整数 unsigned 标志以及 decimal 精度/小数位。
 - 在 `Put` 时拒绝超过硬内存上限的条目，也拒绝同一键下已有参数类型兼容项的重复插入。
 - 在 `Get` 命中时刷新单调访问序号，在 `Evict(false)` 时按最久未使用顺序释放估算数量的条目，使占用趋近软上限；`Evict(true)` 清空所有条目。
 - 维护可查询的计划数、估算内存占用和软/硬上限，并通过 `Arc<PlanCacheValue>` 把只读计划值安全地交给并发调用者。
@@ -33,7 +33,7 @@
 prepared SELECT 的主链可由 `pkg/session/runtime/planning.rs` 复核：
 
 1. `ConcreteSession::PlanPreparedKVPhysical` 用 `NewPlanCacheKey` 构造计划缓存键，并把键字节编码成十六进制 `instance_key`；同时从执行参数推导 `FieldType` 列表。
-2. 它调用 `InstancePlanCache::Get(&instance_key, &parameter_types)`。命中时，本文件先锁住整个状态，定位字符串键对应的桶，再调用 `CheckTypesCompatibility4PC` 顺序寻找第一份兼容计划。成功后递增 `use_clock`、刷新条目 `last_used`，并克隆 `Arc` 返回。
+2. 它调用 `InstancePlanCache::Get(&instance_key, &parameter_types)`。命中时，本文件先锁住整个状态，定位字符串键对应的桶，再调用 `PlanCacheValue::MatchesParamTypes` 顺序寻找第一份兼容计划。成功后递增 `use_clock`、刷新条目 `last_used`，并克隆 `Arc` 返回。
 3. 上层从命中的 `PlanCacheValue::Plan` 恢复物理计划；未命中时正常构建和优化计划，并由 `CachedPlan::try_capture` 生成拥有型快照。
 4. 执行结束时，`FinishPreparedKVPhysicalPlan` 对命中值更新运行时统计；若本次是未命中且计划可缓存，则调用本文件的 `Put`。`Put` 在锁外先把值转为 `Arc` 并取得已缓存的内存估算，随后持锁原子地完成限制/重复检查和结构更新。
 5. 内存仲裁不能满足编译配额时，`pkg/session/runtime/control.rs::clear_memory_sensitive_plan_cache` 调用 `Evict(true)` 清空实例缓存，并同时清理其他会话计划状态。
@@ -41,6 +41,8 @@ prepared SELECT 的主链可由 `pkg/session/runtime/planning.rs` 复核：
 部分淘汰流程是：读取软限制；占用低于软限制则直接返回；以 `memory / plans` 计算平均条目大小，以向上取整的 `(memory - soft) / average` 得出目标条数；收集所有 `(last_used, Arc)` 并排序；用 `Arc::ptr_eq` 在各桶中移除选中的对象；最后删除空桶并同步扣减 `memory`、`plans`。这是“按平均大小估算条数”，不保证不同大小条目淘汰后精确落到软限制以下。
 
 ## 数据与状态
+
+`Get` 与 `Put` 的同键桶匹配统一调用缓存值的 `MatchesParamTypes`：先执行通用 `CheckTypesCompatibility4PC`，再对该值记录的 COALESCE DECIMAL 参数位置要求精度与小数位完全相等。因此原来可被宽 DECIMAL 桶覆盖的参数，现在可能形成独立桶；未标记位置保持原兼容规则。此增量不修改字符串 key、锁、容量或淘汰算法。
 
 缓存键的业务组成由上游 `NewPlanCacheKey` 决定，本文件只把它当作不透明 `String`。同键的 `Vec` 是参数类型桶：兼容性而非 `FieldType` 的逐字段完全相等决定命中和重复。`Get` 返回桶中第一个兼容项，所以若兼容关系未来变得非等价或多个不兼容插入项后来同时兼容，插入顺序会影响选择结果。
 
@@ -58,7 +60,7 @@ prepared SELECT 的主链可由 `pkg/session/runtime/planning.rs` 复核：
 - `std::sync::{Arc, Mutex, MutexGuard}`：共享计划所有权和缓存状态串行化。
 - `std::sync::atomic::{AtomicI64, Ordering}`：限制的并发读写；读取使用 Acquire，写入使用 Release。
 - `crate::PlanCacheValue`：缓存载荷与内存估算来源。
-- `crate::CheckTypesCompatibility4PC`：`Get`/`Put` 的参数类型复用规则。
+- `PlanCacheValue::MatchesParamTypes`：`Get`/`Put` 的参数类型复用规则。
 - `types-dependency`：公开 `Get` 签名中的 `metadata::FieldType`，对应 `Cargo.toml` 的本地 `astersql-types` 依赖。
 
 直接上游中，`pkg/planner/core/lib.rs` 负责模块导出；`pkg/session/runtime.rs::runtime_instance_plan_cache` 负责按 Domain 构造和共享；`pkg/session/runtime/planning.rs` 的 prepared KV 规划/收尾路径调用 `Get` 和 `Put`；`pkg/session/runtime/control.rs::clear_memory_sensitive_plan_cache` 调用 `Evict(true)`。RustCodeGraph 对 `NewInstancePlanCache` 还记录了四个本文件独立测试调用者，对 `Evict` 记录了生产调用者 `clear_memory_sensitive_plan_cache`。`All`、`MemUsage`、`Size`、`GetLimits`、`SetLimits` 当前主要由单元测试直接覆盖；不要仅因公开导出就假设它们均有生产调用。
@@ -90,6 +92,8 @@ LRU 使用 `u64` 单调逻辑时钟而非墙钟，避免同一系统时钟 tick 
 
 ## 与 Go 版本的对应关系
 
+冻结 Go 容器通过 `PlanCacheValue.matchesParamTypes` 选择桶，Rust 本次改为对应值方法，保持查找与写入去重/替换采用同一规则。`pkg/planner/core/casetest/plancache/plan_cache_suite_test.rs::coalesce_plan_cache_update` 分别验证 LRU 和实例缓存中三种 DECIMAL 签名独立驻留、逐个命中，以及未标记值仍允许宽度兼容；这是容器行为证据，不代表 SQL 主链已自动采集标记。
+
 直接对照文件是 `pkg/planner/core/plan_cache_instance.go`，独立测试分别是 `pkg/planner/core/plan_cache_instance_test.go` 与 `pkg/planner/core/plan_cache_instance_test.rs`。两版保留的核心语义包括：按字符串键分组、同键按参数类型兼容性选计划、硬限制拒绝写入、重复兼容计划不重复插入、软限制触发近似 LRU 淘汰、全部清空、内存/数量计数以及可动态设置限制。
 
 实现并非机械同构：
@@ -104,7 +108,7 @@ Rust 独立测试覆盖基本命中、硬限制、重复拒绝、确定性 LRU�
 
 ## 扩展指南
 
-- 修改键或参数复用规则时，优先改上游键生成或 `CheckTypesCompatibility4PC`，并同步检查 `Get` 与 `Put`，避免命中规则和去重规则分叉。至少扩展 `pkg/planner/core/plan_cache_instance_test.rs`；参数类型细节还应扩展 `pkg/planner/core/plan_cache_utils_aster_unit_test.rs` 或 `pkg/planner/core/tests/prepare/prepare_test.rs`。
+- 修改键或参数复用规则时，优先改上游键生成或 `PlanCacheValue::MatchesParamTypes`，并同步检查 `Get` 与 `Put`，避免命中规则和去重规则分叉。至少扩展 `pkg/planner/core/plan_cache_instance_test.rs`；参数类型细节还应扩展 `pkg/planner/core/plan_cache_utils_aster_unit_test.rs` 或 `pkg/planner/core/tests/prepare/prepare_test.rs`。
 - 新增删除单键、返回拒绝原因、淘汰详情或指标时，应在 `InstancePlanCache` 的公开 API 上明确语义，并核对 `pkg/sessionctx/context.rs` 的 trait 是否需要统一；不要只改 Go 风格名称而留下两套不兼容接口。
 - 调整内存核算时，应同时核对 `PlanCacheValue::MemoryUsage` 与本文件计数更新。若把键、桶或容器开销计入，插入和淘汰必须使用同一公式，测试不要假定传入的 `plan_memory_usage` 就是条目总占用。
 - 改变淘汰算法时，应保持“最近访问受保护”“全部淘汰后 Size/MemUsage 为零”“外部 `Arc` 不被强制失效”三个行为，并增加不同条目大小、软限制等于当前占用、限制动态降低以及访问时钟并列/饱和的独立测试。
@@ -112,6 +116,8 @@ Rust 独立测试覆盖基本命中、硬限制、重复拒绝、确定性 LRU�
 - 若为性能将实现改回细粒度锁或 lock-free 结构，必须保持计数与桶的并发不变量，并用独立 Rust 测试覆盖重复并发插入、读写与淘汰交叠、限制并发更新；不能把测试逻辑内嵌到本生产文件。
 
 ## 验证依据
+
+本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/plan_cache_instance.rs` 并读取 `git show 2c944fb:pkg/planner/core/plan_cache_instance.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
 
 本说明基于以下直接证据：
 
@@ -121,7 +127,7 @@ Rust 独立测试覆盖基本命中、硬限制、重复拒绝、确定性 LRU�
 - RustCodeGraph 对限定符号 `pkg/planner/core/plan_cache_instance.rs::Get`、`::Put`、`::Evict` 的查询：确认 `Get -> state`、`Put -> state/touch`，以及生产调用边 `clear_memory_sensitive_plan_cache -> Evict`。对 `Get`/`Put` 的生产调用由 `pkg/session/runtime/planning.rs` 直接源码核对补足。
 - `pkg/planner/core/Cargo.toml` 与 `pkg/planner/core/lib.rs`：核对 crate 入口、`types-dependency`、模块声明、公开再导出和独立测试装配。
 - `pkg/session/runtime.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/planning.rs`、`pkg/session/runtime/control.rs`：核对按 Domain 共享、session 持有、prepared 计划命中/写入和内存压力清空主链。
-- `pkg/planner/core/plan_cache_utils.rs`：核对 `PlanCacheValue`、`MemoryUsage` 和 `CheckTypesCompatibility4PC` 的真实语义。
+- `pkg/planner/core/plan_cache_utils.rs`：核对 `PlanCacheValue`、`MemoryUsage` 和 `PlanCacheValue::MatchesParamTypes` 的真实语义。
 - `pkg/planner/core/plan_cache_instance.go`、`pkg/planner/core/plan_cache_instance_test.go`、`pkg/planner/core/plan_cache_instance_test.rs`：核对 Go/Rust 实现差异、容量与匹配边界、淘汰行为和并发测试意图。
 
 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` 加固定标题计数命令验证文档存在且恰有 11 个规定二级章节，并人工检查未把未验证的配置接线写成已支持事实。

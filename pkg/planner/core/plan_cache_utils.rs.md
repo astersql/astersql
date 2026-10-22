@@ -2,9 +2,9 @@
 
 ## 文件定位
 
-本文件属于 `astersql-planner-core` crate；模块由 `pkg/planner/core/lib.rs` 声明并整体再导出。它位于 PREPARE/EXECUTE 与优化器缓存实现之间，集中承载计划缓存的共享数据模型和纯算法：PREPARE 元数据生成、缓存键构造、缓存值统计、参数类型匹配、Point Get 安全判定和参数类型解析。实际会话接线位于 `pkg/session/runtime/planning.rs`：该文件调用 `NewPlanCacheKey` 与 `NewPlanCacheValue`，而会话级/实例级容器分别由 `plan_cache_lru.rs`、`plan_cache_instance.rs` 使用这里的 `PlanCacheValue` 和 `CheckTypesCompatibility4PC`。
+本文件属于 `astersql-planner-core` crate；模块由 `pkg/planner/core/lib.rs` 声明并整体再导出。它位于 PREPARE/EXECUTE 与优化器缓存实现之间，集中承载计划缓存的共享数据模型和纯算法：PREPARE 元数据生成、缓存键构造、缓存值统计、参数类型匹配、Point Get 安全判定和参数类型解析。实际会话接线位于 `pkg/session/runtime/planning.rs`：该文件调用 `NewPlanCacheKey` 与 `NewPlanCacheValue`，而会话级/实例级容器分别由 `plan_cache_lru.rs`、`plan_cache_instance.rs` 使用这里的 `PlanCacheValue` 和 `PlanCacheValue::MatchesParamTypes`。
 
-`pkg/planner/core/Cargo.toml` 将此目录定义为 `astersql-planner-core`，并直接依赖 `astersql-bindinfo`、`sha2`、planner base/physical operator、expression、types、hint、resolve 等 crate；`default` feature 为空，`nextgen` 只向配置依赖透传，本文件没有条件编译的生产分支，只有 `NewPlanCacheValueForTest` 带 `#[cfg(test)]`。
+`pkg/planner/core/Cargo.toml` 将此目录定义为 `astersql-planner-core`，并直接依赖 `astersql-bindinfo`、`sha2`、planner base/physical operator、expression、types、hint、resolve 等 crate；`default` feature 为空，`nextgen` 只向配置依赖透传，本文件没有条件编译的生产分支，`NewPlanCacheValueForTest` 现为 `#[doc(hidden)] pub fn`，用于跨 crate 测试构造，不受 `#[cfg(test)]` 限制。
 
 ## 核心职责
 
@@ -15,6 +15,9 @@
 5. 提供缓存复用的正确性门槛：`CheckTypesCompatibility4PC` 检查参数类型，`IsSafePointGetPath4PlanCache*` 检查 Point/Batch Point Get 的访问条件形状，`FullTextPreparedCacheability` 拒绝依赖实时 TiFlash/事务状态的 FTS 计划。
 
 ## 主要符号
+
+- `PlanCachePrepareInput::exact_decimal_marker_offsets` 保存已准入的非预处理 COALESCE 赋值内 marker 的源码偏移；`PlanCacheStmt::ExactDecimalParamOffsets` 返回排序后参数下标。两者不能混用。
+- `PlanCacheValue::{SetExactDecimalParamOffsets, MatchesParamTypes}` 保存并执行精确 DECIMAL 匹配；setter 清零原子内存估值，下一次计量重新计算，标记向量容量计入 `MemoryUsage`。
 
 - `PlanCacheParamMarker` / `ExtractAndSortParamMarkers`：按 SQL 源码偏移稳定排序参数标记，重写 `order`，并清除旧 datum/执行态。`GeneratePlanCacheStmtWithAST` 对非 prepared 参数化保留已有值，这是与通用辅助函数不同的有意分支。
 - `PlanCacheStmt<ColumnInfo, Executor, FastPlan>`：PREPARE 模板；公开字段保存 AST、resolve/权限/digest/binding 等信息，私有字段保存 LIMIT、子查询、统计相关表与 MDL 表。`SetDBNameAndTbls` 接收拥有型 `Vec`，使 EXECUTE 刷新表对象时不污染缓存模板。
@@ -29,11 +32,13 @@
 
 ## 执行流程
 
+新增标记流程位于 `Preprocess` 成功后：markers 先按 source offset 排序；非 prepared 路径将输入偏移映射为排序后的参数 index，prepared 路径始终保存空列表。随后标记写入 statement，并由 `NewPlanCacheValue` clone 到缓存值。`MatchesParamTypes` 先执行一般类型兼容；没有标记或 actual 为空时直接通过；否则每个标记 index 必须在两边存在，且缓存类型是 DECIMAL 时 Flen/Decimal 必须完全相同。它不重新解析 AST，也不改变 cache key。
+
 PREPARE 流程由 `GeneratePlanCacheStmtWithAST` 明确排序：先拒绝带参数的 DDL、不支持的语句种类和超过 `u16::MAX` 的参数；再调用 `Preprocess`；随后按 offset 排序参数并编号，binary PREPARE 清除旧值而 non-prepared 参数化保留已经求出的值；在 `Build` 可能改写 AST 之前捕获原始 binding 归一化键；构建计划；结合 prepared/non-prepared 开关、AST 可缓存性、强制缓存修复开关和静态分区裁剪计算缓存资格并产生告警；最后组装 `PlanCacheStmt`、收集 LIMIT/表/MDL 元数据并执行权限校验。任一步骤报错都直接返回，不产生成功条目。
 
 执行缓存查找时，上游从 `PlanCacheStmt` 与会话状态构造 `PlanCacheKeyContext`，调用 `NewPlanCacheKey`。键构造先检查语句文本和 schema version，再执行子查询/参数化 LIMIT 资格检查；之后按固定顺序编码用户、主机、数据库、SQL、schema/表修订、裁剪模式、隔离级别相关 schema、SQL mode、时区、隔离读引擎、select limit、binding、字符集/排序规则、只读限制、黑名单版本、外键开关等。参数化 LIMIT/OFFSET 单独编码且不得超过 10,000；可选统计版本和去重排序后的 dirty table ID 随后加入，末尾加入事务/autocommit/锁模式标志。
 
-计划产生后，`NewPlanCacheValue` 复制展示信息、输出列、参数类型和 hints，保存 `CachedPlan`，计算优化器环境哈希，并立即调用 `MemoryUsage` 固化内存估算。`plan_cache_lru.rs` 和 `plan_cache_instance.rs` 在同一 key 下以 `CheckTypesCompatibility4PC` 选择或拒绝参数类型 bucket；命中后的执行统计通过 `UpdateRuntimeInfo` 原子累加。
+计划产生后，`NewPlanCacheValue` 复制展示信息、输出列、参数类型和 hints，保存 `CachedPlan`，计算优化器环境哈希，并立即调用 `MemoryUsage` 固化内存估算。`plan_cache_lru.rs` 和 `plan_cache_instance.rs` 在同一 key 下以 `PlanCacheValue::MatchesParamTypes` 选择或拒绝参数类型 bucket；命中后的执行统计通过 `UpdateRuntimeInfo` 原子累加。
 
 ## 数据与状态
 
@@ -45,7 +50,7 @@ PREPARE 流程由 `GeneratePlanCacheStmtWithAST` 明确排序：先拒绝带参�
 
 ## 依赖与调用关系
 
-上游直接证据包括：`pkg/session/runtime/planning.rs` 调用 `NewPlanCacheKey` 和 `NewPlanCacheValue`；`pkg/session/fts_runtime.rs` 调用 `FullTextPreparedCacheability`；`pkg/planner/core/plan_cache_lru.rs` 与 `plan_cache_instance.rs` 调用 `CheckTypesCompatibility4PC` 并持有 `PlanCacheValue`；`pkg/planner/core/logical_plan_builder_runtime.rs`、`operator/logicalop/logical_datasource.rs`、`optimizer_runtime.rs` 也在 RustCodeGraph 的文件使用者集合中。
+上游直接证据包括：`pkg/session/runtime/planning.rs` 调用 `NewPlanCacheKey` 和 `NewPlanCacheValue`；`pkg/session/fts_runtime.rs` 调用 `FullTextPreparedCacheability`；`pkg/planner/core/plan_cache_lru.rs` 与 `plan_cache_instance.rs` 调用 `PlanCacheValue::MatchesParamTypes` 并持有 `PlanCacheValue`；`pkg/planner/core/logical_plan_builder_runtime.rs`、`operator/logicalop/logical_datasource.rs`、`optimizer_runtime.rs` 也在 RustCodeGraph 的文件使用者集合中。
 
 下游方面，binding 归一化依赖 `astersql_bindinfo::{NormalizeStmtForBinding, CollectTableNames}`；键摘要依赖 `sha2::Sha256`；计划、列名、访问路径、表达式和类型分别来自 planner base/physicalop、planner util、expression 与 types crate；`resolve_dependency::ResultField` 构成 prepare 去重条目输出字段。文件不直接操作缓存容器、网络、磁盘或事务，而是以值对象、trait 与纯判定函数向这些层提供边界。
 
@@ -65,6 +70,8 @@ FTS 检查目前只递归覆盖 WHERE、投影字段和 ORDER BY 中的 function
 
 ## 与 Go 版本的对应关系
 
+冻结 Go 同样提取 COALESCE markers 并在排序后保存 exactDecimalParamOffsets，值方法叠加精确 DECIMAL 判断。Rust 用显式输入偏移向量替代 Go visitor 内部收集，且越界 index 返回 false；Go 直接索引切片。冻结 `plan_cache_suite_test.rs::coalesce_plan_cache_update` 覆盖两类容器中的精确匹配与未标记宽松匹配，但搜索未发现生产 Rust 调用 COALESCE marker 采集 helper，不能据数据结构断言端到端 UPDATE 已接通。
+
 直接对照 `pkg/planner/core/plan_cache_utils.go`：Rust 保留 `MaxCacheableLimitCount`、`PreparedPlanCacheMaxMemory`、`GeneratePlanCacheStmtWithAST`、`NewPlanCacheKey`、`PlanCacheValue`、`GetPreparedStmt`、类型兼容规则、安全 Point Get 四场景和 `parseParamTypes` 的核心顺序与判定。缓存键同样纳入 schema/table 版本、会话优化环境、binding、统计版本、dirty tables 与事务状态；计划值同样以键和参数类型计算 SHA-256 环境摘要并缓存内存估算。
 
 Rust 的边界适配并非行为简化：Go 从 session/domain 动态读取状态，Rust 通过 `PlanCacheKeyContext` 显式传入不可变快照；Go 的 `any` Point Get 槽位改为三个泛型参数；Go 的 session/infoschema/build 操作改由 `PlanCachePrepareRuntime` trait 注入；Go 的 `base.Plan` 改为拥有型 `CachedPlan`，使实例缓存跨线程共享更明确。Go 通过 AST visitor 收集 LIMIT/表信息，Rust 当前由调用者填充 `PlanCachePrepareInput`，因此调用方必须保持同等收集完整性。
@@ -80,6 +87,8 @@ Rust 的边界适配并非行为简化：Go 从 session/domain 动态读取状�
 新增 `PlanCacheValue` 元数据时要同步 `NewPlanCacheValue` 和 `MemoryUsage`，保持构造后只读；新增可变统计应采用原子字段并定义一致的快照语义。测试逻辑不得放回生产文件：优先扩展同目录的 `plan_cache_utils_test.rs` 或 `plan_cache_utils_aster_unit_test.rs`；跨路径行为可扩展 `tests/prepare/prepare_test.rs`、`casetest/plancache/*`，容器行为则扩展 `plan_cache_lru_test.rs` / `plan_cache_instance_test.rs`。
 
 ## 验证依据
+
+本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/plan_cache_utils.rs` 并读取 `git show 2c944fb:pkg/planner/core/plan_cache_utils.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
 
 - RustCodeGraph：索引状态为 11,467 files / 307,296 nodes / 1,848,419 edges；目标文件已索引为 1,302 行、112 个符号，并显示被 11 个文件使用。执行过 `files`、`explore`、`query`、`node`、`callers`、`callees`，重点核对 `NewPlanCacheKey*`、`PlanCacheValue`、`NewPlanCacheValue`、`CheckTypesCompatibility4PC` 及目标文件全段源码。
 - 源与装配：`pkg/planner/core/plan_cache_utils.rs`；`pkg/planner/core/lib.rs` 的 `mod plan_cache_utils`、`pub use plan_cache_utils::*` 以及两个独立测试模块声明；`pkg/planner/core/Cargo.toml` 的 crate、feature 与依赖声明。

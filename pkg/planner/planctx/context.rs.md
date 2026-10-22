@@ -18,6 +18,9 @@ Rust 主规划链还存在一个更窄、可作为 trait object 保存的适配�
 
 ## 主要符号
 
+- `MLogCommitTSEstimation`：可 Clone/Copy、默认零值的保留窗口数据，含 `MLogTableID: i64`、`RetainedLowerTSO: u64`、`RetainedUpperTSO: u64`。本类型不检查上下界顺序。
+- `MLogCommitTSEstimationContext`：独立可选 trait，通过 getter 返回 `Option<&MLogCommitTSEstimation>`，通过泛型 `WithMLogCommitTSEstimation<T, F>` 接收 `FnOnce(&mut Self) -> Result<T, GoError>`。它没有成为 `PlanContext` 的 supertrait，不强制普通 planner context 支持 mview，也未给空 mock 增加状态。
+
 - `pub type GoError = Box<dyn Error + Send + Sync>`：用于 `Txn` 与 `AdviseTxnWarmup` 的跨模块错误边界；错误值可在线程间转移和共享。
 - `BuildContextRef = Arc<dyn exprctx::BuildContext>`：共享表达式构建上下文。类型本身未额外声明 `Send + Sync`，不可仅凭 `Arc` 推断可跨线程使用。
 - `ClientRef = Arc<dyn kv::Client + Send + Sync>` 与 `WarnAppenderRef = Arc<dyn contextutil::WarnAppender + Send + Sync>`：可共享的客户端和警告追加器；字段再由 `Option` 表达 Go 接口的 nil。
@@ -48,6 +51,8 @@ Rust 主规划链还存在一个更窄、可作为 trait object 保存的适配�
 
 ## 依赖与调用关系
 
+冻结 Rust 中 `pkg/planner/plannersession/context.rs::PlanCtxExtended` 实现窗口 trait；`pkg/planner/core/stats.rs` 消费窗口值进行估算，`pkg/planner/core/casetest/mview/mv_refresh_test.rs` 构造窗口验证相关统计。全仓冻结 Rust 搜索未发现 scoped 方法的生产调用点，故能力定义和组件实现不能等同 FAST refresh 主链已安装窗口。Go `pkg/planner/core/mview_refresh_builder.go` 和 `pkg/planner/mview/stats.go` 则有对应 trait 使用点。
+
 上游方面，`pkg/planner/planctx/lib.rs` 导出本文件。`pkg/planner/cardinality/lib.rs::CardinalityContext` 为统计估算另建对象安全子集，并为实现本文件 `PlanContext` 的类型提供 blanket implementation；cardinality 源文件中的本地 `planctx::PlanContext` 实际是该子集的再导出，不能误认成本文件同名 trait。`pkg/util/ranger/types.rs` 则对满足本文件 `planctx::PlanContext + Send + Sync` 的类型提供 `RangeRebuildContext` blanket implementation。大量 planner、executor 和 session Cargo manifest 直接依赖 `astersql-planner-planctx`，说明该 crate 是公共边界而非内部细节。
 
 当前 Rust 应用主链还通过 `pkg/planner/core/base/plan_base.rs::PlanContext` 这一适配层消费本文件类型。`pkg/session/runtime/planning.rs::SessionPlanContext` 提供 `GetSessionVars`、`GetExprCtx`、`GetRangerCtx`、`GetNullRejectCheckExprCtx`、`GetBuildPBCtx` 和线程安全的内建函数计数；物理算子持有 `ContextRef`，再经这些 getter 读取会话能力。这个适配关系必须与“本文件的完整 Go 对齐接口”区分，不能把两套同名 trait 当作同一符号。
@@ -72,6 +77,8 @@ trait getter 多数返回引用，调用方必须遵循实现对象生命周期�
 
 ## 与 Go 版本的对应关系
 
+Go 可选窗口接口使用指针和 `func() error`，Rust 使用按值窗口、可借用 getter 及泛型返回值 T 的闭包；Rust callback 显式取得 `&mut Self`。接口本身不实现保存/恢复、并发同步或 panic 清理，这些取决于实现者；新增泛型 trait 不适合直接当作普通 dyn trait 使用。
+
 直接对照文件是 `pkg/planner/planctx/context.go`。Rust 保留了 `Common`、`PlanContext`、`EmptyPlanContextExtended`、`BuildPBContext` 以及方法/字段的 Go 命名和主要语义；`Detach` 都是“复制结构体并只替换 ExprCtx”。`pkg/planner/planctx/context_test.go::TestContextDetach` 与 Rust `context_test.rs::test_context_detach` 都验证新外壳、标量字段相等以及 ExprCtx/Client/warning handler 的接口身份语义；Rust `migration_aster_unit_test.rs` 进一步用两个不同表达式上下文验证替换确实发生，并验证空扩展的 no-op 行为。
 
 主要语言映射差异如下：Go interface 映射为 Rust trait object；可能为 nil 的接口字段映射为 `Option<Arc<...>>`；map 映射为 `HashMap<String, ()>`；`iter.Seq` 映射为 `dyn Iterator<Item = TableItemID>`；Go `error` 映射为线程安全的 boxed dynamic error；结构体指针返回映射为引用或 `Box`。Rust 的 InfoSchema context/error 使用关联类型显式化，导致完整 `PlanContext` 不适合直接作为未指定关联类型的通用 trait object，这也是 core/base 另设窄接口的依据。
@@ -89,6 +96,8 @@ Go `BuildPBContext` 注释说明 pushdown 字段暂时不能直接嵌入 `expres
 性能上，getter 应继续只借用或克隆 `Arc`，避免在规划热路径深拷贝表达式上下文、InfoSchema 或 client；`UpdateColStatsUsage` 应保留流式消费。兼容性上要重点验证 nil/`None`、pending transaction、临时表 InfoSchema 可见性和 `Detach` 后的共享身份。
 
 ## 验证依据
+
+本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/planctx/context.rs` 并读取 `git show 2c944fb:pkg/planner/planctx/context.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
 
 - RustCodeGraph：`status` 确认索引包含 11,467 个文件；`files --filter pkg/planner/planctx` 确认目标、Go 对照、两个独立 Rust 测试和 crate 根均已索引；`node --file pkg/planner/planctx/context.rs` 读取完整 204 行并报告 35 个符号、107 个使用文件；`query`/`explore` 核对 `Common`、`PlanContext`、`BuildPBContext`、`EmptyPlanContextExtended` 与计划上下文使用面。通用名称的 callers/callees 查询无精确输出且 explore 命中歧义，随后用精确文本搜索补足直接引用。
 - 生产源码：`pkg/planner/planctx/context.rs`、`pkg/planner/planctx/lib.rs`、`pkg/planner/core/base/plan_base.rs`、`pkg/planner/cardinality/lib.rs`、`pkg/session/runtime/planning.rs`、`pkg/planner/util/misc.rs`；抽样物理计划访问见 `pkg/planner/core/operator/physicalop/physical_projection.rs`。

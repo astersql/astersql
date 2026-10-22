@@ -2,7 +2,7 @@
 
 ## 文件定位
 
-该文件属于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 将 crate 根指定为 `lib.rs`；`pkg/planner/core/lib.rs` 以私有模块 `mod plan_cacheable_checker;` 装配本文件，再通过 `pub use plan_cacheable_checker::*;` 重导出其公开函数。因此模块名不对外公开，但四个判定入口可从 crate 根调用。
+该文件属于 `astersql-planner-core` crate。`pkg/planner/core/Cargo.toml` 将 crate 根指定为 `lib.rs`；`pkg/planner/core/lib.rs` 以私有模块 `mod plan_cacheable_checker;` 装配本文件，再通过 `pub use plan_cacheable_checker::*;` 重导出其公开函数。因此模块名不对外公开，但基础判定入口与 COALESCE 辅助项可从 crate 根调用。
 
 它位于计划缓存决策边界：一组函数检查简化 AST 能否缓存，另一组函数检查简化物理计划树能否缓存。仓库内已发现的 Rust 直接调用者均为测试（`pkg/planner/core/plan_cacheable_checker_test.rs` 和 `pkg/planner/core/casetest/plancache/plan_cacheable_checker_test.rs`）；没有发现生产 Rust 文件直接调用这些入口。故当前可确认的事实是“crate 已导出并验证这些检查器”，不能据此断言它们已接入 Rust SQL 请求主链。
 
@@ -12,9 +12,13 @@
 - `NonPreparedPlanCacheableWithCtx`：递归统计 `AstNode::Value` 常量数；超过调用方提供的上限时拒绝，否则复用默认禁止子查询的 AST 检查。
 - `isPlanCacheable`：按固定优先级检查计划总内存、带参数的 `Dual`、TiFlash `TableReader`、`Apply`、Shuffle 类算子，然后深度优先检查子计划；首个失败向上传播。
 
-该实现刻意只覆盖 `pkg/planner/core/util.rs::AstNode` 与 `pkg/planner/core/common_plans.rs::PlanNode` 所能表达的简化语义，不读取会话、InfoSchema、表元数据或真实 parser AST。
+该实现刻意只覆盖 `pkg/planner/core/util.rs::AstNode` 与 `pkg/planner/core/common_plans.rs::PlanNode` 所能表达的简化语义，基础入口不读取会话或 InfoSchema；新增 COALESCE 辅助入口读取真实 parser AST，并接受调用者提供的列类型元数据。
 
 ## 主要符号
+
+- `CoalesceColumnType { name, field_type }`：构造时将列名转为 ASCII 小写，按 AST 的 `Name.L` 匹配，未处理表/schema 限定歧义。
+- `SupportedCoalesceAssignment`：只接受整数族或 DECIMAL 目标列；每层必须是双参 COALESCE，首参是 Int64/Uint64/Decimal 字面量或递归 COALESCE，次参是同类型列或递归 COALESCE。同类型要求 type、Flen、Decimal、charset、collation 和 NotNull/Unsigned/Zerofill 标志一致；字符串、浮点、NULL、未知列均不通过。
+- `CoalesceParamMarkerOffsets`：在函数树内收集 COALESCE 深度大于零的 ParamMarker source offset，排序去重返回。它可遍历其他函数参数，但不是完整任意 ExprKind visitor，也不负责先判断 assignment 是否合格。
 
 - `pub fn Cacheable(node: &AstNode) -> bool`：便捷入口，等价于 `CacheableWithCtx(node, false, true).0`；它隐藏拒绝原因，默认不允许子查询，并视参数化 Limit 开关为开启。
 - `pub fn CacheableWithCtx(node: &AstNode, subquery: bool, param_limit: bool) -> (bool, String)`：AST 主入口。顶层只接受 `Select`、`Insert`、`Update`、`Delete`；`param_limit == false` 时无条件返回 `parameterized limit disabled`。内部函数 `visit` 递归检查节点并返回静态原因。
@@ -23,7 +27,7 @@
 - `walk(n: &AstNode, c: &mut usize)`：局部全树遍历函数，覆盖与 `visit` 相同的容器形态；它只计数，不提前短路。
 - `pub fn isPlanCacheable(plan: &PlanNode, param_num: usize, max_size: i64) -> (bool, String)`：计划树入口。`max_size > 0` 时才启用大小限制；计划内存严格大于上限才拒绝。
 
-本文件无模块级常量、类型、trait、`impl` 或条件编译项；四个模块级函数均为公开 API，两个递归辅助函数仅在各自函数体内可见。
+基础四入口之外，本文件还公开 `CoalesceColumnType` 与两个 COALESCE helper；列类型构造器和私有递归/匹配辅助函数支持这些入口，没有条件编译分支。
 
 ## 执行流程
 
@@ -52,11 +56,13 @@ Non-Prepared 路径先通过 `walk` 统计全部 `Value` 节点，再比较 `max
 
 ## 依赖与调用关系
 
+冻结提交中的两个新增 helper 仅由 `pkg/planner/core/casetest/plancache/plan_cache_suite_test.rs::coalesce_plan_cache_update` 直接调用，未发现生产 Rust 调用点。其 shape 检查与原有简化 `NonPreparedPlanCacheableWithCtx` 并列，并未自动增强后者。Go 的 `supportedCoalesceAssignment` 则嵌入真实 NonPrepared checker、结合单表与 schema 检查；Rust helper 依赖调用者保证这些前提，不能称为完整 Go checker 移植。
+
 直接源码依赖全部来自当前 crate 根：`AstNode` 定义于 `pkg/planner/core/util.rs`；`PlanKind`、`PlanNode`、`StoreType` 定义于 `pkg/planner/core/common_plans.rs`。计划大小判断下调用 `PlanNode::MemoryUsage()`，它累计节点自身、全部子树以及 `access_object`、`operator_info` 的长度。
 
 内部调用边为：`Cacheable -> CacheableWithCtx -> visit`；`NonPreparedPlanCacheableWithCtx -> walk`，未超限后再调用 `CacheableWithCtx`；`isPlanCacheable` 对自身递归。RustCodeGraph 精确查询确认了四个模块级函数与两个局部函数；调用边命令未返回额外生产调用者，`rg` 的 Rust 调用点复核只找到本文件自调用及两处独立测试文件。
 
-`Cargo.toml` 声明 crate 名为 `astersql-planner-core`，没有为本模块设置专属 feature；`nextgen` feature 只转发到配置依赖，源文件中也没有 `cfg` 分支。本文件本身未直接引用 Cargo 外部依赖。
+`Cargo.toml` 声明 crate 名为 `astersql-planner-core`，没有为本模块设置专属 feature；`nextgen` feature 只转发到配置依赖，源文件中也没有 `cfg` 分支。新增 helper 通过 crate 的 `ast` 使用 parser AST，并直接使用 `types_dependency` 的 FieldType/mysql 元数据。
 
 ## 错误处理与边界
 
@@ -67,7 +73,7 @@ Non-Prepared 路径先通过 `walk` 统计全部 `Value` 节点，再比较 `max
 - `CacheableWithCtx` 的错误文案提到 `SET`，但顶层白名单实际上不包含 `AstNode::Set`；嵌套的全局 `SET` 才能命中特定原因。
 - `param_limit` 是抽象布尔门控，并未检查 AST 中是否真的存在参数化 Limit。
 - `visit` 对 `Insert`、`Update`、`Delete` 视为叶节点；简化枚举也没有表达真实语句的完整子树。
-- Non-Prepared 路径只计算常量数量，没有检查常量类型、系统表、函数、列类型、Hint、锁、视图等 Go 路径的条件。
+- Non-Prepared 路径只计算常量数量，基础入口没有检查常量类型、系统表、函数、列类型、Hint、锁、视图等 Go 路径的条件；新增独立 COALESCE helper 提供局部类型校验，但未接入这个基础入口。
 - 计划检查没有读取每个计划节点可能携带的独立不可缓存原因，也未覆盖 MemTable、IndexMerge/MVI、IndexMerge 全扫和 DML SelectPlan 解包等 Go 规则。
 - 深层退化树会消耗递归栈；源码没有显式深度限制。
 
@@ -84,7 +90,7 @@ Non-Prepared 路径先通过 `walk` 统计全部 `Value` 节点，再比较 `max
 - Rust `Cacheable` / `CacheableWithCtx` 对应 Go 同名测试辅助入口及 `IsASTCacheable` 的基础意图，但签名以简化 `AstNode` 和两个布尔量替代 `PlanContext`、`InfoSchema` 与完整 parser AST。
 - 两端共有的语义包括顶层 DML/SELECT 白名单、子查询开关、全局 `SET` 拒绝、参数数量保护，以及部分物理计划拒绝原因。
 - Go AST 检查还处理 SetOpr、Insert/In-list 参数上限、用户变量、不可缓存函数、Order/Group/Limit 参数、窗口 frame、CTE 作用域与表元数据；Rust 当前未移植这些结构和规则。
-- Go `NonPreparedPlanCacheableWithCtx` 有语句快速检查、DML/锁/Hint 限制、表名抽取、列类型和常量类型校验、系统 schema、指标计数及 `sync.Pool`；Rust 当前只做 `Value` 数量与基础 AST 检查。
+- Go `NonPreparedPlanCacheableWithCtx` 有语句快速检查、DML/锁/Hint 限制、表名抽取、列类型和常量类型校验、系统 schema、指标计数及 `sync.Pool`；Rust 基础入口当前只做 `Value` 数量与基础 AST 检查，COALESCE helper 独立提供局部赋值检查。
 - Rust `isPlanCacheable` 将 Go `isPlanCacheable` 与 `isPhysicalPlanCacheable` 的少量规则合并到一个 `PlanNode` 递归函数，保留大小、Dual、TiFlash、Apply、Shuffle 检查；Go 还受会话开关、节点自带原因和多种 reader/index-merge 结构影响。
 
 测试对应关系：`pkg/planner/core/casetest/plancache/plan_cacheable_checker_test.rs` 明确以 Go `TestCacheable`、`TestNonPreparedPlanCacheable` 和 `isPhysicalPlanCacheable` 为对齐目标，覆盖当前 Rust 子集；`pkg/planner/core/plan_cacheable_checker_test.rs` 额外聚焦 TiFlash TableReader。Go 的广泛行为由 `pkg/planner/core/casetest/plancache/plan_cacheable_checker_test.go` 等测试覆盖，但不能视为 Rust 已实现证据。
@@ -101,6 +107,10 @@ Non-Prepared 路径先通过 `walk` 统计全部 `Value` 节点，再比较 `max
 测试逻辑必须继续放在独立文件：同 crate 单元测试更新 `pkg/planner/core/plan_cacheable_checker_test.rs`，完整计划缓存案例更新 `pkg/planner/core/casetest/plancache/plan_cacheable_checker_test.rs`；涉及 Go 对齐时同时核对 `pkg/planner/core/casetest/plancache/plan_cacheable_checker_test.go`。新增规则应覆盖成功边界、恰好等于阈值、超过阈值、嵌套子节点传播以及原因字符串。主要风险是 Rust/Go 规则漂移、错误原因兼容性变化、漏遍历新 AST/计划容器，以及重复 `MemoryUsage` 带来的大树性能开销。
 
 ## 验证依据
+
+新增冻结测试 `plan_cache_suite_test.rs::coalesce_plan_cache_update` 检查嵌套整数/DECIMAL 赋值、字符串/列精度/scale/unsigned/整数类型/nullable 不匹配、缺少列元数据，以及 marker 排序去重；它同时覆盖容器匹配，未执行这些测试。
+
+本次增量同步的唯一源码基准为 `2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件审计 `git diff ad0a6f4..2c944fb -- pkg/planner/core/plan_cacheable_checker.rs` 并读取 `git show 2c944fb:pkg/planner/core/plan_cacheable_checker.rs` 全文。接线、Go 对照和测试也使用该提交 blob，不把工作区后续变化写入。RustCodeGraph 当前已包含 Rust；`status` 与 `explore` 只辅助定位，同名符号混合或缺失调用边不作为生产接线证据。下列旧索引统计与查询为原文历史依据，本次结论以冻结 blob 为准。
 
 - 源码：`pkg/planner/core/plan_cacheable_checker.rs`，确认四个公开入口、两个局部递归函数、分支顺序和原因字符串。
 - 模型与装配：`pkg/planner/core/util.rs::AstNode`、`pkg/planner/core/common_plans.rs::{StoreType, PlanKind, PlanNode, PlanNode::MemoryUsage}`、`pkg/planner/core/lib.rs` 的模块声明与重导出。
