@@ -259,6 +259,8 @@ PG 专属或 MySQL 专属场景中，另一方言对象用 `status: 不适用` �
 
 [引号与大小写规则](#引号与大小写规则)以 [pg_name.rs](../pkg/server/pg_name.rs) 的名称扫描/改写与 [expressions.rs](../pkg/parser/ast/expressions.rs) 的名称载体为入口；独立测试为 pg_name_test.rs、pg_query_test.rs，仅作静态证据。
 
+[限定名称解析规则](#限定名称解析规则)以 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::relation` / `validate_relations` 与 [ast/dml.rs](../pkg/parser/ast/dml.rs) 为入口，实际共享 TableName 另核对 [ast/lib.rs](../pkg/parser/ast/lib.rs)；独立证据入口为 pg_name_test.rs、pg_query_test.rs。
+
 ### 目标行为
 
 #### 方言身份传递
@@ -475,6 +477,31 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 
 官方依据（2026-10-23 查阅）：PostgreSQL **18** §4.1.1 [标识符](https://www.postgresql.org/docs/18/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS)、§4.1.2 与 §4.1.5 定义名称、字符串、注释边界；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 提供 42601、42P01、42703 和 0A000 分类；§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P。MySQL **8.4** §11.2 [对象名称](https://dev.mysql.com/doc/refman/8.4/en/identifiers.html) 和 §11.2.3 [名称大小写](https://dev.mysql.com/doc/refman/8.4/en/identifier-case-sensitivity.html) 仅为自身目标依据。U& 引号、编码、名称长度/截断与非 ASCII 折叠的完整契约另需专项官方取证及参考端验证，不由 Rust to_lowercase 推导。18.6 仅沿用来源目标，没有该补丁版本或本地数据库实测结论。
 
+#### 限定名称解析规则
+
+本块对应源工作流 2 步骤 3 的关系名与列/别名限定责任，承接[引号与大小写规则](#引号与大小写规则)。静态证据基于提交 `c05789991a5462588cd20c8c9dedace2f233014f`：已核对 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::relation` / `scope`、`rewrite`、`adapt` 与 `validate_relations`。relation 按点号收集关系分段：单段非 CTE 名在 public 不在路径时返回 42P01；public.t 与当前库 db.public.t 可进入改写，其他 schema、其他库及更多段返回 0A000；无当前数据库时返回 3D000。限定 public 不受 has_public 布尔值限制。adapt 先以空数据库探测，再按需读取 SELECT DATABASE() 并重写：首遍允许三段库名只是探测，不能脱离第二遍当前库检查解释为允许跨库。最终将关系跨度替换为后端当前库和表名，不表示 public 已成为完整 PG schema。
+
+validate_relations 对成功解析的共享 AST 遍历 TableName，拒绝非空且与当前库 lowercase 不同的 Schema（0A000）；解析失败时返回 Ok，后续命令门禁仍须拒绝错误，不能把此 guard 当完整语法/权限检查或保证所有节点可见。指定 [ast/dml.rs](../pkg/parser/ast/dml.rs) 的 `TableName::new` / `restore` 仅有 schema/name 两级及 MySQL 引用还原；实际 guard 使用 [ast/lib.rs](../pkg/parser/ast/lib.rs) 的 `TableName`（Schema、Name），均不能单独承载 PG 数据库/schema/关系三层、逐段引号与原跨度。scope 只在关系位置调用 relation，a.id 不因此成为 schema.table；列与别名绑定仍需共享解析和绑定层的专项证据，不能由改写成功推定。
+
+已读 [pg_name_test.rs](../pkg/server/pg_name_test.rs) 的 `pg_introspection_names_token_scopes`：t、public.u、db.public.v 的混合 FROM/JOIN、双引号 a.id 及 DML 关系改写；`pg_introspection_names_rejection_boundaries`：other.public.t、other.t、db.private.t、public.t.extra、空当前库和路径无 public 的拒绝断言。二者只调用 rewrite，不覆盖 adapt 的数据库读取或 AST guard。已读 [pg_query_test.rs](../pkg/server/pg_query_test.rs) 的 `postgres_create_table_simple_query`，public 的混合大小写建表落到 test 库是局部意图，不是跨库拒绝、别名或完整 schema 的证明；本轮均未运行。目标包 `pkg/server/doc.go`、`pkg/parser/doc.go`、`pkg/parser/ast/doc.go` 不存在。
+
+目标按语法上下文区分关系限定与表达式限定，保留有序分段、每段 quoted/解码名称及原 SQL 跨度。关系一段交给当前数据库内的名称搜索，两段为显式 schema/关系，三段为数据库/schema/关系且数据库必须匹配连接数据库；不得删掉 foreign 前缀后落到同名本地表，也不得用后端 database 名直接接受为 PG schema。resolver 在执行前完成隔离、对象绑定及权限交接；即便跨库用户有后端权限也不能放开 PG 跨库访问。非 public schema 的目标绑定依赖工作流 6 的目录模型，尚未开放时以明确能力门禁 0A000 拒绝，不静默回退 public。CTE 遮蔽由下一块定义；search_path 的完整搜索、状态执行分别由后续名称块和工作流 5 定义，本块只固定查找责任，不展开实现。
+
+下列为待新增 `NAME-QUALIFIED` 用例族，均无当前运行证据。PG 夹具为连接数据库 db、public.t(id=1)、路径包含 public、具备必要权限且无同名 CTE；other 数据库中的同名表取 id=2 以检测误读。成功目标 SQLSTATE 不适用（成功）、无错误位置；结果列类型/元数据按第 1 章另行采集。MySQL 8.4 使用独立夹具和自身权限，默认数据库 db 的 t(id=1)、数据库 public 的 t(id=2)，不能把 PG 的 public 自动映射过去。
+
+| 输入/正反例 | 当前静态边界 | PG 目标与诊断责任 | MySQL 自身目标与诊断责任 |
+| --- | --- | --- | --- |
+| 正例 `SELECT id FROM t` | public 可搜索且当前库非空时改写到后端 db.t；无 public 时 rewrite 返回 42P01。 | 给定夹具返回 1；未限定名由 resolver 搜索，不硬编码总是 public；路径不含可见 t 时目标 42P01，完整路径规则另块定义。 | 绑定默认库 db.t，目标 1；不读取 PG search_path。 |
+| 正例 `SELECT id FROM public.t` | 显式 public 可在 public=false 时改写 db.t；数据库为空返回 3D000。 | 绑定当前库显式 public.t，目标 1，不受 public 是否列入路径影响；对象不存在目标 42P01。 | public 是数据库限定，按独立夹具返回 2；无该库/表或无权限时独立采集自身诊断，不套 PG schema 语义。 |
+| 正例 `SELECT id FROM db.public.t` | db 匹配当前库时改写 db.t；不是三个后端名称层次。 | db 必须是连接数据库，目标同 public.t 返回 1。数据库身份在绑定前核对，不能依文本删前缀通过。 | 三段 FROM 关系名是自身语法负例；MySQL 的三段列名 db.t.id 是另一上下文。错误码/位置待参考端采集。 |
+| 跨库反例 `SELECT id FROM other.public.t`；另对比 `SELECT id FROM other.t` | 在当前库 db 下均拒绝 0A000。 | 前者拒绝，目标 0A000，不读 other 或本地同名表；后者是当前库 schema other 的关系，不是跨库语法：无该关系目标 42P01，合法但未开放的 schema 按能力门禁 0A000，不伪称 PG 禁止该 schema。 | 前者是三段关系名语法负例；other.t 可作为自身跨库正例，预建且授权时读取 other 库 t，结果与权限独立验收，不受 PG 门禁影响。 |
+| 列/别名正例 `SELECT a.id FROM public.t AS a`；反例 `SELECT t.id FROM public.t AS a`；缺列 `SELECT a.missing FROM public.t AS a` | relation 只改 FROM 表；token_scopes 有别名保留意图，无列绑定断言。 | 正例返回 1；显式别名后原表名不再可引用，第二条目标 42P01；第三条目标 42703。binder 按查询作用域处理别名与列，不把 a 当 schema 去跨库查表。 | 用 `FROM db.t AS a` 作自身正例返回 1；原名/缺列负例按自身规则拒绝，诊断独立采集，不套 PG SQLSTATE。 |
+| 形态反例 `SELECT * FROM public.`；多段负例 `SELECT * FROM db.public.t.extra` | 尾点缺名称返回 42601；多段关系返回 0A000。 | 不丢空段或截断多余段；前者目标 42601，后者精确 PG 诊断须参考端取证，不能由适配层 0A000 推定。 | 分别按自身关系语法拒绝；多段列引用与关系引用分开，精确错误码/位置待参考端取证。 |
+
+错误责任：parser 负责分段合法性及上下文，resolver/binder 负责数据库隔离、可见关系/别名/列与权限，工作流 7 传递原诊断。所有拒绝必须在读写目标关系前完成，不能借转换后 AST 绕过检查。P 若提供须映射回原 SQL、从 1 起按字符计数；限定名长度变化、逐段引号和错误前中文均纳入待新增位置断言，不能使用改写后的字节偏移。上述目标 SQLSTATE 的精确触发、P 是否提供及数值、错误优先级、简单 Q/扩展 Parse 一致性和双方言交错连接隔离均待运行取证；无当前数据库的 3D000 是现适配边界，连接建立/切库契约由工作流 5、7 另证，不伪造 PG 同场景对照。
+
+官方依据（2026-10-23 查阅）：PostgreSQL **18** §5.10.1 [Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-CREATE) 定义 schema.table 与只允许当前数据库的 database.schema.table；§5.10.3 将未限定关系交给搜索路径。§7.2.1.2 [表和列别名](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-TABLE-ALIASES) 定义别名替代原关系名；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 给出 0A000、42601、42P01、42703 分类，具体错误位置仍需参考端补证。§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P；MySQL **8.4** §11.2.2 [Identifier Qualifiers](https://dev.mysql.com/doc/refman/8.4/en/identifier-qualifiers.html) 区分关系的 database.table 与列的 database.table.column。18.6 仅为来源目标，本轮没有该补丁版本或本地数据库实测。
+
 ### 范围外
 
 [方言身份传递](#方言身份传递)本轮不实现方言类型、解析原型、共享 AST、缓存接线或运行测试平台；不扩建 resolver、planner、表达式子系统。六类语法、引号/大小写、限定名、CTE 及 schema/search_path 名称规则由后续文档块定义；会话设置执行归工作流 5，目录实现归工作流 6，错误传输与恢复协作工作流 7。现有文本适配只作为有界入口证据，不承担通用 SQL 翻译方案，也不据其推断完整 PG 支持。
@@ -492,6 +519,8 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 [行构造语法边界](#行构造语法边界)不实现 parser/AST、复合类型、行比较、NULL 求值或协议编码，不补建关系分组解析；类型与转换交工作流 3，比较/NULL 交工作流 3、4，元数据和错误响应交工作流 7。
 
 [引号与大小写规则](#引号与大小写规则)不实现词法器、名称绑定、存储大小写映射或错误位置接线，不扩建目录、CTE 或 search_path；后端名称区分能力作为独立缺口交接，不以文本改写代替。
+
+[限定名称解析规则](#限定名称解析规则)不实现 parser/AST、名称绑定、权限、跨库访问或完整 schema 模型；CTE/search_path 交后续块，会话状态和目录实现分别归工作流 5、6，协议诊断归工作流 7。
 
 ### 验收
 
@@ -511,6 +540,8 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 
 [引号与大小写规则](#引号与大小写规则)的文档验收为：foo、Foo、"Foo"、"a""b"、未闭合/空引号及字符串/注释均有双方言正反例、前提和诊断责任；词法键与后端存储、原始与转换位置区分明确。现有适配和测试不能证明完整名称解析，运行能力全部未验证。
 
+[限定名称解析规则](#限定名称解析规则)的文档验收为：t、public.t、db.public.t、other.public.t 和 a.id 均区分当前改写/拒绝与 PG/MySQL 目标；别名隐藏、缺列、残缺/多段名有诊断责任及缺证说明；隔离检查不被文本降级绕过。所有运行行为仍未验证，测试阅读不构成通过。
+
 ### 后续细分
 
 [方言身份传递](#方言身份传递)后续先做连接身份拥有权及关闭/重连边界的局部取证，再分别拆简单查询与扩展查询的身份承接、共享解析/名称绑定/规划/表达式上下文的必要局部接线及隔离回归；实施前确认实际落点，不将本责任链自动扩张为完整子系统重建。各任务明确单一交接点、所需状态、现有可复用实现和验收断言；DIALECT-IDENTITY 三类场景是待新增验收入口，不是既有测试或已登记通过的能力。
@@ -528,6 +559,8 @@ PG 目标位置为 INSERT 的数据源及可选 ON CONFLICT 之后，UPDATE 的 
 [行构造语法边界](#行构造语法边界)后续先比较共享 Row 载体与受控 PG 入口保留显式性、嵌套和原 SQL 跨度的最小接线，再分别拆行/分组/子查询树形、名称扫描交互、错误位置及双方言隔离断言。沿独立测试布局取证，不递归扩建表达式或关系子系统；行类型与 NULL/比较按工作流 3、4 单独细分。
 
 [引号与大小写规则](#引号与大小写规则)后续先取证共享名称载体的 quoted/拼写/跨度保真，再分别拆折叠与精确绑定、双引号转义及词法保护、位置映射和双方言隔离；后端同名异大小写的可区分性单独评估，禁止递归补建存储或目录子系统。
+
+[限定名称解析规则](#限定名称解析规则)后续先取证关系分段与列限定的上下文保真及当前数据库身份，再分别拆关系限定/跨库拒绝、列与别名作用域、原 SQL 位置和双方言隔离断言；沿现有独立测试补 adapt/guard 的必要覆盖，不扩建目录或权限子系统。
 
 ## 3. 共享类型与转换契约
 
