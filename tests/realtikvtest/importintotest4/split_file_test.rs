@@ -198,6 +198,63 @@ fn check_split_file(session: &ConcreteSession, real_tikv: bool) {
     actual.sort();
     assert_eq!(actual, all_data);
 
+    // Unit-bearing sizes must produce the same engines and chunks as bytes.
+    for (unit, bytes) in [("100gib", "107374182400"), ("1kib", "1024")] {
+        let mut layouts = Vec::new();
+        for size in [unit, bytes] {
+            session.execute("truncate table t").unwrap();
+            let result = query(
+                session,
+                &format!(
+                    "import into t from '{source}' with split_file, lines_terminated_by='\\n', __max_engine_size='{size}'"
+                ),
+            );
+            assert_eq!(result[0][1], "500");
+            let task = manager
+                .GetTaskByKeyWithHistory(
+                    (),
+                    astersql_dxf_importinto::TaskKey(result[0][0].parse().unwrap()),
+                )
+                .unwrap();
+            let meta = astersql_dxf_importinto::TaskMeta::Unmarshal(&task.Meta).unwrap();
+            let mut layout = meta
+                .ChunkMap
+                .iter()
+                .flat_map(|(engine, chunks)| {
+                    chunks
+                        .iter()
+                        .map(move |chunk| (*engine, chunk.Offset, chunk.EndOffset))
+                })
+                .collect::<Vec<_>>();
+            layout.sort();
+            assert!(!layout.is_empty());
+            layouts.push(layout);
+            let mut actual = query(session, "select * from t")
+                .iter()
+                .map(|row| row.join(" "))
+                .collect::<Vec<_>>();
+            actual.sort();
+            assert_eq!(actual, all_data);
+        }
+        assert_eq!(layouts[0], layouts[1], "capacity: {unit} versus {bytes}");
+    }
+    session.execute("truncate table t").unwrap();
+    let jobs_sql =
+        format!("select count(*) from mysql.tidb_import_jobs where table_schema='{database}'");
+    let jobs_before = query(session, &jobs_sql);
+    for size in ["-1", "-1gib", "100wat", "NaN", "inf"] {
+        assert!(
+            session
+                .execute(&format!(
+                    "import into t from '{source}' with split_file, __max_engine_size='{size}'"
+                ))
+                .is_err(),
+            "invalid capacity: {size}"
+        );
+        assert_eq!(query(session, &jobs_sql), jobs_before);
+        assert!(query(session, "select * from t").is_empty());
+    }
+
     session.execute("truncate table t").unwrap();
     query(
         &session,

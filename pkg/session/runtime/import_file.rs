@@ -140,7 +140,11 @@ impl ConcreteSession {
                 "fields_enclosed_by" => csv.fields_enclosed_by = required()?,
                 "fields_escaped_by" => csv.fields_escaped_by = required()?,
                 "skip_rows" => skip = required()?.parse().map_err(error)?,
-                "__max_engine_size" => engine_size = required()?.parse().map_err(error)?,
+                "__max_engine_size" => {
+                    let size: astersql_lightning_config::ByteSize =
+                        required()?.parse().map_err(error)?;
+                    engine_size = size.0 as f64;
+                }
                 other => return Err(error(format!("unsupported file import option {other}"))),
             }
         }

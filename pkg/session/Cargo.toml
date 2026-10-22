@@ -39,6 +39,7 @@ astersql-ddl-session = { path = "../ddl/session" }
 "astersql-ttl-cache" = { package = "astersql-ttl-cache", path = "../ttl/cache" }
 "astersql-parser-duration" = { package = "astersql-parser-duration", path = "../parser/duration" }
 astersql-dxf-framework-taskexecutor-execute = { path = "../dxf/framework/taskexecutor/execute" }
+astersql-lightning-config = { path = "../lightning/config" }
 astersql-lightning-verification = { path = "../lightning/verification" }
 astersql-lightning-backend = { path = "../lightning/backend" }
 astersql-lightning-backend-encode = { path = "../lightning/backend/encode" }

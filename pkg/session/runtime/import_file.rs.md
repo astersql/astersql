@@ -77,7 +77,11 @@ data/index engine 的正常生命周期为 `OpenEngine -> ProcessChunk* -> Close
 
 Rust 复用了相同概念：Go `LoadDataController.PopulateChunks` 同样把目标列数、`SplitFile`、region/engine 大小和 CSV 配置交给 `mydump.MakeTableRegions`；Go 测试同样要求 500 行文件切成 3 个 subtask、`skip_rows = 1` 正确、CRLF 切分后索引一致。
 
-已确认差异包括：Rust 只支持精确单文件 CSV，固定单线程并在当前调用内执行全部 subtask；Go 的计划和 scheduler 支持更多数据源、选项、节点与清理阶段。Go `import.go` 明确限制 split-file 时 `skip_rows <= 1`，本文件在选项校验阶段采用相同上限；Rust `split_file_with_canonical_kv` 回归覆盖默认 0、显式 1 的正常结果，以及 2 返回选项错误且不新增 job、不写入目标表。Rust 的 `__max_engine_size` 直接解析为 `f64`，Go 则按 `ByteSize.UnmarshalText` 解析。后续追求完整兼容时，这些差异必须通过独立行为任务与回归测试处理，本说明不修改现状。
+已确认差异包括：Rust 只支持精确单文件 CSV，固定单线程并在当前调用内执行全部 subtask；Go 的计划和 scheduler 支持更多数据源、选项、节点与清理阶段。Go `import.go` 明确限制 split-file 时 `skip_rows <= 1`，本文件在选项校验阶段采用相同上限；Rust `split_file_with_canonical_kv` 回归覆盖默认 0、显式 1 的正常结果，以及 2 返回选项错误且不新增 job、不写入目标表。
+
+Rust 的 `__max_engine_size` 复用 `astersql_lightning_config::ByteSize` 文本解析，再转换成切分器需要的 `f64` 字节数，对齐 Go `ByteSize.UnmarshalText` 的容量单位规则。`split_file_with_canonical_kv` 比较 `100gib`/`107374182400`、`1kib`/`1024` 的 engine/chunk 布局及完整导入数据，并验证负数、非法后缀与非有限数在创建 job 前拒绝。现有 split-file 路径仍要求容量为正数，零值合同不在本次单位解析修复范围。
+
+其余兼容性差异应通过独立行为任务与回归测试处理。
 
 ## 扩展指南
 

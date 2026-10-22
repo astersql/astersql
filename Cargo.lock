@@ -8622,6 +8622,7 @@ dependencies = [
  "astersql-lightning-backend",
  "astersql-lightning-backend-encode",
  "astersql-lightning-backend-kv",
+ "astersql-lightning-config",
  "astersql-lightning-mydump",
  "astersql-lightning-verification",
  "astersql-meta",
