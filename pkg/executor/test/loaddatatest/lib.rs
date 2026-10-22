@@ -2,14 +2,14 @@
 
 //! Executable LOAD DATA semantics used by the port of `loaddatatest`.
 //!
-//! The full SQL executor is not a dependency of this test-only crate yet.  The
-//! model below deliberately keeps the observable parts of TiDB's LOAD DATA
+//! Initialization is tested through the real parser/planner/importer in
+//! `tests/load_data_init_param.rs`. The model below keeps the remaining LOAD DATA
 //! contract in one place: CSV dialect handling, NULL rules, row filtering,
 //! column mapping, duplicate handling, conversion warnings, partition routing,
 //! and the package-level runtime settings from `TestMain`.
 //!
 //! 本模块为 `loaddatatest` 的 Rust 迁移测试集中维护一套可执行的 LOAD DATA
-//! 语义模型。它不依赖完整 SQL 执行器，而是覆盖测试可观察到的字段/行解析、
+//! 语义模型。初始化测试调用真实组件，其余测试覆盖字段/行解析、
 //! NULL 判定、列映射、重复键处理、数值转换和 `TestMain` 全局配置。
 
 #![allow(dead_code)]
@@ -20,26 +20,18 @@ use std::fmt;
 /// Go 测试会断言的 LOAD DATA 错误类别；显示文本保持与原错误契约一致。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LoadDataError {
-    EmptyPath,
-    MustSpecifyEnclosed,
     EmptyLineTerminator,
     OverlappingTerminators,
-    ReaderNil,
     WrongFormatConfig,
-    ServerFile,
     InvalidAutoRandom,
 }
 
 impl fmt::Display for LoadDataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Self::EmptyPath => "The value of INFILE must not be empty when LOAD DATA from LOCAL",
-            Self::MustSpecifyEnclosed => "must specify FIELDS [OPTIONALLY] ENCLOSED BY",
             Self::EmptyLineTerminator => "LINES TERMINATED BY is empty",
             Self::OverlappingTerminators => "must not be prefix of each other",
-            Self::ReaderNil => "reader is nil",
             Self::WrongFormatConfig => "wrong format configuration",
-            Self::ServerFile => "[executor:8154]Don't support load data from tidb-server's disk.",
             Self::InvalidAutoRandom => "invalid explicit value for AUTO_RANDOM column",
         };
         f.write_str(message)
@@ -379,39 +371,6 @@ impl LoadDataLifecycle {
                 .iter()
                 .position(|event| *event == LoadDataEvent::Commit)
     }
-}
-
-/// Validate the LOAD DATA options exercised by `TestLoadDataInitParam`.
-/// 按 `TestLoadDataInitParam` 覆盖的顺序校验选项，并保留测试 helper 未安装 reader 的终态错误。
-pub fn validate_load_data_options(
-    path: &str,
-    local: bool,
-    format: Option<&str>,
-    config: &LoadDataConfig,
-) -> Result<(), LoadDataError> {
-    if local && path.is_empty() {
-        return Err(LoadDataError::EmptyPath);
-    }
-    if !local {
-        return Err(LoadDataError::ServerFile);
-    }
-    if matches!(format, Some("sql file" | "delimited data")) {
-        return Err(LoadDataError::ReaderNil);
-    }
-    if config.fields_enclosed_by.is_none() && config.null_value_opt_enclosed {
-        return Err(LoadDataError::MustSpecifyEnclosed);
-    }
-    if config.lines_terminated_by.is_empty() {
-        return Err(LoadDataError::EmptyLineTerminator);
-    }
-    if config.fields_terminated_by.is_empty() {
-        return Err(LoadDataError::WrongFormatConfig);
-    }
-    config.validate()?;
-    // The Go helper intentionally has no reader builder installed for these
-    // option-only checks, so every otherwise valid request reaches this error.
-    // Go helper 在这些纯选项检查中刻意不安装 reader builder，因此合法配置最终也返回 ReaderNil。
-    Err(LoadDataError::ReaderNil)
 }
 
 /// Shared unsigned BIGINT conversion behavior used by the overflow cases.

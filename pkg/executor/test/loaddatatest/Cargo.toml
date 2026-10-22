@@ -12,6 +12,18 @@ go-package = "pkg/executor/test/loaddatatest"
 legacy-tasks = ["task-1346"]
 
 [dev-dependencies]
+astersql-executor-importer = { path = "../../importer" }
+astersql-parser = { path = "../../../parser" }
+astersql-parser-ast = { path = "../../../parser/ast" }
+astersql-parser-mysql = { path = "../../../parser/mysql" }
+astersql-planner-core = { path = "../../../planner/core" }
+astersql-planner-core-operator-physicalop = { path = "../../../planner/core/operator/physicalop" }
+astersql-meta-model = { path = "../../../meta/model" }
+astersql-table = { path = "../../../table" }
+astersql-types = { path = "../../../types" }
+astersql-lightning-backend-encode = { path = "../../../lightning/backend/encode" }
+astersql-lightning-mydump = { path = "../../../lightning/mydump" }
+astersql-objstore-storeapi = { path = "../../../objstore/storeapi" }
 astersql-domain = { path = "../../../domain" }
 astersql-kv = { path = "../../../kv" }
 astersql-store-mockstore-mockstorage = { path = "../../../store/mockstore/mockstorage" }

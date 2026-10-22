@@ -15,82 +15,13 @@
 
 //! Rust counterparts of the scenarios in `load_data_test.go`.
 //!
-//! 本模块以轻量模型复现 Go 版 LOAD DATA 回归场景，验证格式选项、字段解码、
-//! 列映射、重复键处理以及事务生命周期等可观察语义，不依赖完整 SQL 执行器。
+//! 初始化测试位于 `tests/load_data_init_param.rs`，调用真实 parser、planner 和
+//! importer/controller。本模块保留其余场景的现有轻量模型。
 
 use crate::{
     LoadDataConfig, LoadDataError, LoadDataEvent, LoadDataLifecycle, apply_replace, map_columns,
-    parse_load_data, parse_unsigned_bigint, validate_load_data_options,
+    parse_load_data, parse_unsigned_bigint,
 };
-
-#[test]
-fn test_load_data_init_param() {
-    // 按执行器的校验顺序覆盖互斥格式选项；合法选项最终仍因测试未安装 reader 而失败。
-    let defaults = LoadDataConfig::default();
-    assert_eq!(defaults.null_def, vec![r"\N"]);
-    assert_eq!(
-        validate_load_data_options("", true, None, &defaults),
-        Err(LoadDataError::EmptyPath)
-    );
-    assert_eq!(
-        validate_load_data_options(
-            "/a",
-            true,
-            None,
-            &LoadDataConfig {
-                null_value_opt_enclosed: true,
-                ..defaults.clone()
-            }
-        ),
-        Err(LoadDataError::MustSpecifyEnclosed)
-    );
-    assert_eq!(
-        validate_load_data_options(
-            "/a",
-            true,
-            None,
-            &LoadDataConfig {
-                lines_terminated_by: String::new(),
-                ..defaults.clone()
-            }
-        ),
-        Err(LoadDataError::EmptyLineTerminator)
-    );
-    assert_eq!(
-        validate_load_data_options(
-            "/a",
-            true,
-            None,
-            &LoadDataConfig {
-                fields_terminated_by: "a".into(),
-                lines_terminated_by: "a".into(),
-                ..defaults.clone()
-            }
-        ),
-        Err(LoadDataError::OverlappingTerminators)
-    );
-    assert_eq!(
-        validate_load_data_options("/a", true, None, &defaults),
-        Err(LoadDataError::ReaderNil)
-    );
-    assert_eq!(
-        validate_load_data_options("/a", true, Some("sql file"), &defaults),
-        Err(LoadDataError::ReaderNil)
-    );
-    assert_eq!(
-        validate_load_data_options(
-            "/a",
-            true,
-            Some("delimited data"),
-            &defaults.clone().terminated_by("a"),
-        ),
-        Err(LoadDataError::ReaderNil)
-    );
-    assert_eq!(
-        defaults.clone().null_by(["a", r"\N"]).null_def,
-        vec!["a", r"\N"]
-    );
-}
 
 #[test]
 fn test_load_data() {
