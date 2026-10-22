@@ -462,6 +462,7 @@ pub struct Conn {
     pub scripted: Arc<Mutex<HashMap<String, VecDeque<Vec<Vec<Option<Vec<u8>>>>>>>>,
     pub columns: Arc<Mutex<HashMap<String, Vec<String>>>>,
     pub exec_log: Arc<Mutex<Vec<String>>>,
+    pub query_log: Arc<Mutex<Vec<String>>>,
     pub fail_query: Arc<Mutex<Option<Error>>>,
     pub fail_queue: Arc<Mutex<VecDeque<Error>>>,
     pub ping_err: Arc<Mutex<Option<Error>>>,
@@ -540,6 +541,7 @@ impl Conn {
     }
     // 执行 Query：先检查失败注入，再 lookup 构造 Rows。
     pub fn QueryContext(&self, query: &str) -> Result<Rows> {
+        self.query_log.lock().unwrap().push(query.to_string());
         if let Some(err) = self.take_fail() {
             return Err(err);
         }
@@ -634,6 +636,7 @@ impl DB {
             scripted: self.scripted.clone(),
             columns: self.columns.clone(),
             exec_log: Arc::new(Mutex::new(Vec::new())),
+            query_log: Arc::new(Mutex::new(Vec::new())),
             fail_query: self.fail_query.clone(),
             fail_queue: self.fail_queue.clone(),
             ping_err: Arc::new(Mutex::new(None)),

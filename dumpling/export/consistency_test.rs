@@ -217,24 +217,82 @@ fn test_consistency_controller_error() {
 
 #[test]
 fn test_consistency_lock_tidb_check() {
-    // TiDB lock consistency 还依赖 `tidb_enable_table_lock`，这里验证关闭时的报错。
     let tctx = tcontext::Background().WithLogger(app_logger());
-    let db = DB::new();
-    let conn = db.Conn().unwrap();
-    conn.seed_query(
-        "SELECT @@tidb_enable_table_lock",
-        vec!["@@tidb_enable_table_lock".into()],
-        vec![vec![Some(b"0".to_vec())]],
-    );
+    // Match Go's current-server configuration, not a cluster's first SHOW CONFIG row.
+    const QUERY: &str = "SELECT @@tidb_config;";
+    for (config, expected_error) in [
+        (
+            Some(r#"{"enable-table-lock":false}"#),
+            Some("enable-table-lock=true"),
+        ),
+        (Some(r#"{"enable-table-lock":true}"#), None),
+        (Some(r#"{}"#), Some("enable-table-lock=true")),
+        (
+            Some(r#"{"enable-table-lock":null}"#),
+            Some("enable-table-lock=true"),
+        ),
+        (None, Some("no rows")),
+        (Some("invalid json"), Some("invalid TiDB config")),
+        (
+            Some(r#"{"enable-table-lock":"true"}"#),
+            Some("invalid TiDB config"),
+        ),
+    ] {
+        let db = DB::new();
+        let conn = db.Conn().unwrap();
+        conn.seed_query(
+            QUERY,
+            vec!["@@tidb_config".into()],
+            config
+                .map(|s| vec![vec![Some(s.as_bytes().to_vec())]])
+                .unwrap_or_default(),
+        );
+        let mut conf = default_config_for_test();
+        conf.ServerInfo.ServerType = ServerType::ServerTypeTiDB;
+        conf.Consistency = ConsistencyTypeLock.to_string();
+        conf.Tables.AppendTables("db", &["t".into()], &[1]);
+        let mut ctrl = ConsistencyLockDumpingTables {
+            conn: Some(conn.clone()),
+            empty_lock_sql: false,
+            specified_tables: conf.SpecifiedTables,
+            server_type: conf.ServerInfo.ServerType,
+            conf,
+        };
+        let result = ctrl.Setup(&tctx);
+        assert_eq!(
+            *conn.query_log.lock().unwrap(),
+            vec![QUERY],
+            "config: {config:?}"
+        );
+        assert!(conn.scripted.lock().unwrap()[QUERY].is_empty());
+        if let Some(message) = expected_error {
+            assert!(
+                result.unwrap_err().msg.contains(message),
+                "config: {config:?}"
+            );
+            assert!(conn.exec_log.lock().unwrap().is_empty());
+        } else {
+            result.unwrap();
+            ctrl.TearDown().unwrap();
+            assert_eq!(
+                *conn.exec_log.lock().unwrap(),
+                vec!["LOCK TABLES `db`.`t` READ", "UNLOCK TABLES"]
+            );
+        }
+    }
+    // Query failures must retain their cause rather than become a disabled-lock error.
+    let conn = Conn::new();
+    conn.push_fail(errors_new("unknown tidb_config"));
     let mut conf = default_config_for_test();
     conf.ServerInfo.ServerType = ServerType::ServerTypeTiDB;
-    conf.Consistency = ConsistencyTypeLock.to_string();
-    let mut tables = NewDatabaseTables();
-    tables.AppendTables("db", &["t".into()], &[1]);
-    conf.Tables = tables;
-    let mut ctrl = NewConsistencyController(&conf, &db).unwrap();
-    let err = ctrl.Setup(&tctx).unwrap_err();
-    // 错误文案允许存在轻微差异，但必须明确提到 table lock 配置问题。
-    // 这样既保留实现弹性，又不会放过真正的语义回归。
-    assert!(err.msg.contains("enable-table-lock") || err.msg.contains("table lock"));
+    let mut ctrl = ConsistencyLockDumpingTables {
+        conn: Some(conn.clone()),
+        empty_lock_sql: false,
+        specified_tables: false,
+        server_type: ServerType::ServerTypeTiDB,
+        conf,
+    };
+    assert_eq!(ctrl.Setup(&tctx).unwrap_err().msg, "unknown tidb_config");
+    assert_eq!(*conn.query_log.lock().unwrap(), vec![QUERY]);
+    assert!(conn.exec_log.lock().unwrap().is_empty());
 }

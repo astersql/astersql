@@ -843,20 +843,30 @@ pub fn CheckTiDBWithTiKV(db: &DB) -> Result<bool> {
     Ok(false)
 }
 
-/// SHOW CONFIG enable-table-lock 是否为 true/1。
+/// Read the current TiDB server's JSON configuration, as Go getTiDBConfig does.
 pub fn CheckTiDBEnableTableLock(db: &Conn) -> Result<bool> {
-    let mut rows = db.QueryContext("SHOW CONFIG WHERE name='enable-table-lock'")?;
-    if rows.Next() {
-        let cols = rows.Columns()?.len().max(1);
-        let mut dest = vec![RawBytes(None); cols];
-        rows.Scan(&mut dest)?;
-        rows.Close()?;
-        // SHOW CONFIG 值列。
-        let val = String::from_utf8_lossy(dest.last().and_then(|d| d.as_opt()).unwrap_or(b""));
-        return Ok(val == "true" || val == "1");
+    let mut rows = db.QueryContext("SELECT @@tidb_config;")?;
+    let config_bytes = if rows.Next() {
+        let mut dest = [RawBytes(None)];
+        rows.Scan(&mut dest).map(|_| dest[0].as_opt().unwrap_or(b"").to_vec())
+    } else {
+        Err(rows.Err().unwrap_or_else(|| errors_new("sql: no rows in result set")))
+    };
+    // QueryRow closes its rows even when Scan fails; retain that lifecycle here.
+    let close_result = rows.Close();
+    let config_bytes = config_bytes?;
+    close_result?;
+    let config: serde_json::Value = serde_json::from_slice(&config_bytes)
+        .map_err(|err| errors_new(format!("invalid TiDB config: {err}")))?;
+    if !config.is_object() && !config.is_null() {
+        return Err(errors_new("invalid TiDB config: expected an object"));
     }
-    rows.Close()?;
-    Ok(false)
+    match config.get("enable-table-lock") {
+        Some(serde_json::Value::Bool(enabled)) => Ok(*enabled),
+        // Go unmarshals missing/null boolean fields to the zero value.
+        None | Some(serde_json::Value::Null) => Ok(false),
+        _ => Err(errors_new("invalid TiDB config: enable-table-lock must be a boolean")),
+    }
 }
 
 /// 按 avg_row_length 估算单文件行数（目标 128MiB，上限 1e6）。

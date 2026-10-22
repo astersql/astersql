@@ -108,7 +108,7 @@ flush 与非空 lock 的资源顺序是“取得专用连接 -> 加锁 -> 导出
 - Go `TearDown` 与 `PingContext` 接收 `context.Context`；Rust 版本没有 context 参数。Rust `Setup` 仍接收 Dumpling context，并显式在重试轮次检查 `Done()`。
 - Go 控制器保存 `*Config`，1146 后 `filterTablesFunc` 直接修改调用方配置；Rust 保存克隆配置，所以过滤结果当前不会自动回写 `Dumper.self.conf`。这是影响后续实际导出表集合的语义差异。
 - Go 使用 `utils.WithRetry` 并让闭包与 backoffer 共享 `blockList`；Rust 用显式循环，block list 归 backoffer 所有。Rust 调用 `NextBackoff` 后忽略其 `Duration`，当前 1146 路径恰好返回零等待。
-- Go `errTiDBDisableTableLock` 是稳定错误实例，并在所示版本中通过 `SELECT @@tidb_config` 解析配置；Rust 是错误工厂，当前 helper 查询 `SHOW CONFIG WHERE name='enable-table-lock'`。Rust 测试夹具使用 `SELECT @@tidb_enable_table_lock` seed，但实现查询与该 seed 并不一致，测试桩未匹配时的行为需要在未来迁移核验中关注。
+- Go `errTiDBDisableTableLock` 是稳定错误实例；Rust 是错误工厂。两版表锁开关检测均读取当前连接的 `SELECT @@tidb_config;` JSON 配置，而非取集群 `SHOW CONFIG` 的首行。独立测试 `test_consistency_lock_tidb_check` 断言确切查询、seed 消费、true 时 LOCK/UNLOCK、false 或缺少字段时拒绝，并区分查询失败、空结果和非法 JSON。
 - Go 的 `ConsistencyLockDumpingTables` 只有连接、配置指针和空 SQL 标志；Rust 还保存 `specified_tables`、`server_type`，但当前 setup 使用 `conf` 中的对应字段。
 - Go `TearDown` 通过 defer 保证关闭并置空；Rust 用 `Option::take` 获得同样的重复调用幂等形状。两版都忽略关闭错误并优先返回解锁结果。
 - Go `snapshotFieldIndex` 是包内常量；Rust 将其公开，但当前没有观察到 Rust 使用者。
@@ -119,6 +119,6 @@ flush 与非空 lock 的资源顺序是“取得专用连接 -> 加锁 -> 导出
 - 修改锁表策略时，主要接入点是 `consistency_lock_setup`。同时核对 `sql.rs::buildLockTablesSQL`、`retry.rs::lockTablesBackoffer` 和 `block_allow_list.rs::filterTablesFunc`，覆盖基表/视图混合、零基表、1146 多次收敛、显式表预算、取消、不可解析错误和非 1146 错误。
 - 若要真正对齐 Go 的缺失表过滤，需设计控制器如何把收敛后的 `Config.Tables` 反馈给 `Dumper`，不能只继续断言 `ctrl.conf`。应新增从 `Dumper::Dump` 到任务生成的集成级回归，证明消失表不会随后仍被导出；还要评估 `Arc<Config>` 的替换时机和并发读者。
 - 修改资源管理时，应为工厂错误、none/snapshot 临时连接、setup 半途失败、unlock 失败以及重复 teardown 增加可观察关闭断言。若引入 `Drop`，必须避免与显式 teardown 双重解锁。
-- 修改 TiDB 开关检测时，要统一 `CheckTiDBEnableTableLock` 实际 SQL、Rust 测试 seed 和 Go 对照语义，并分别覆盖“查询失败”“无行”“false/0”“true/1”。
+- 修改 TiDB 开关检测时，要统一 `CheckTiDBEnableTableLock` 实际 SQL、Rust 测试 seed 和 Go 对照语义，并分别覆盖查询失败、无行、JSON 布尔 false/true、缺少字段和非法配置。
 - 修改 trait 签名或线程使用方式时，评估 `Send`/`Sync`、context 传播和锁连接的线程亲和性。不要仅为跨线程共享加 `Sync`，除非 `Conn` 和所有实现状态都满足真实并发安全要求。
 - 正确性风险集中在锁覆盖区间、错误后资源释放和配置副本回写；兼容风险集中在公开 Go 风格名称、错误文本及 SQL；性能风险主要是锁持有时间和大表集合反复重建 SQL/配置，而不是本文件内的 CPU 并行度。

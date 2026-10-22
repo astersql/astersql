@@ -42,6 +42,8 @@
 
 ### 一致性、锁与 TiDB 辅助函数
 
+- `CheckTiDBEnableTableLock`：与 Go `getTiDBConfig` 一样查询 `SELECT @@tidb_config;`，解析当前连接的 JSON 配置 `enable-table-lock` 布尔值；字段缺失或 null 时为 false，查询失败、无行和非法配置返回错误。`SHOW CONFIG` 读取集群配置，不能用其首行代替当前服务器配置。独立控制器回归同时断言查询日志和锁 SQL。
+
 - `SetCharset`/`RestoreCharset`：向字符串写入保存、切换和恢复会话 charset/collation 的 SQL。
 - `buildLockTablesSQL`、`FlushTableWithReadLock`、`UnlockTables`：只锁未被 block-list 排除的基表；空集合返回空字符串，执行函数把驱动错误原样向上传播。
 - `ShowMasterStatus`：MySQL 8.4 及以后改用 `SHOW BINARY LOG STATUS`，其他情况使用 `SHOW MASTER STATUS`。
@@ -137,4 +139,4 @@
 - 要接入并发 chunk 导出，应在 `dump.rs` 建立从版本/分区判断、采样或 region 查询、边界解码、`buildWhereClauses` 到任务发送的完整链，并移植 Go `concurrentDumpTable`/`sendConcurrentDumpTiDBTasks` 的回退与取消语义；不能只让现有 helper 通过编译。
 - 要补齐快照一致性，应同时定义连接建立失败的关闭规则、事务提交/回滚、未知系统变量兼容和锁释放责任，并在独立连接/一致性测试中验证错误路径。
 - 修改 Go 对齐逻辑前先比较 `sql.go` 以及 `dump.go` 中直接相关函数；仅对齐目标 Go commit 的增量和必要接线，把无关的既有移植缺口记录为范围外，不借机扩建子系统。
-- 若新增 Rust 源码行为，依仓库协议同步独立测试、运行 `cargo fmt --all` 并使用适用验证流程；本说明任务只新增文档，没有改变源码或测试。
+- 若新增 Rust 源码行为，依仓库协议同步独立测试、运行 `cargo fmt --all` 并使用适用验证流程；表锁配置检查的回归位于 `consistency_test.rs::test_consistency_lock_tidb_check`，经控制器 Setup 路径验证。

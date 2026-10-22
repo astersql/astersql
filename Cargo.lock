@@ -2871,6 +2871,7 @@ dependencies = [
  "astersql-util-table-filter",
  "parquet",
  "regex",
+ "serde_json",
  "toml",
 ]
 
