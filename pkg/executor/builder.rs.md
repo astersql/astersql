@@ -14,6 +14,10 @@
 - 把环境相关操作隔离在 `ExecutorBuilderDependencies`。快照获取、事务时间戳、表解析、分区裁剪、DDL 系统会话、具体算子创建、CTE 存储、缓存表、索引连接 inner reader 等均通过该 trait 注入。
 - 承担公共的构建辅助逻辑，包括索引列与 handle 列映射、下推列裁剪、快照选项、Analyze 采样率、Index Join 范围、动态分区、资源失败清理和读表合法性校验。
 
+本次冻结增量增加 `MViewCompleteDeltaApplyPlanData`、`MViewDeltaMergePlanData`（均继承 `UnaryPlanData` 并提供 `target_table_id`）和对应 `Plan` 分支。`buildMViewCompleteDeltaApply` / `buildMViewDeltaMerge` 先调用 `build_required_child`，再分别委托 `build_mview_complete_delta_apply_executor` / `build_mview_delta_merge_executor`，最后通过 `finish` 保存工厂错误。这里没有具体表写入实现，也没有新增显式的 `updateForUpdateTS` 调用；事务准备由具体适配负责。模块导出和工厂端口不证明 `mview_complete_delta_apply::apply` 已接入 SQL 主链。
+
+`UpdatePlanData::is_multi_table` 使工厂能够读取多表更新标志；冻结的 `buildUpdate` 仍把整个 plan 交给依赖，没有自行使用此标志或创建 `UpdateRowTracker`。
+
 ## 主要符号
 
 - `Executor` / `ExecutorBox`：`Executor` 是 `ExecExecutor` 的空扩展 trait，因 blanket impl，任何真实 adapter executor 都能装箱。`builder_contract_test.rs` 验证装箱后仍具有 `Open`、typed `Chunk`、`Next` 和 `Close` 生命周期，而非标记桩。
@@ -37,6 +41,8 @@
 6. Index Join 先构建 outer executor，再创建固定 snapshot 的 `DataReaderBuilder`。inner worker 按 `DataReaderPlanKind` 构建 TableReader、IndexReader、IndexLookupReader、UnionScan、Projection 或 HashJoin；范围可按分区分组、编码、排序，并受 `Tracker` 计量。
 7. CTE 通过 `loadOrStoreCTEStorages` 双检共享 storage；`OnceLock` 保证 seed/recursive producer 只初始化一次。递归 child 或 producer 创建失败时清空 storage，防止后续读到半初始化状态。
 8. typed 路径从 `build_typed_physical_plan` 对 concrete physical type 做 downcast。扫描使用 binding 创建 lazy KV executor，一元节点递归包 selection/projection/limit，Hash Join 构建左右子树，HashAgg 构建聚合器；不在明确支持集合中的节点立即返回错误，不以空 executor 或简化语义代替。
+
+Analyze 的增量也在本文件：`AnalyzeColumnsTaskData` 新增 `configured_ndv_rate`、`configured_sample_count`、`display_name`，`AnalyzeSamplingConfig` 新增 `ndv_rate: Option<f64>`。`buildAnalyzeSamplingPushdown` 从 stats-meta/base count 取非负行数；PD 近似计数超过其五倍时采用近似值。`chooseNDVRateForTest` 在 threshold 为 0、配置 rate ≥ 1 或行数 ≤ threshold 时返回 `None`（全量 NDV）；否则使用显式正 rate，或 `max(0.05, threshold / rows)`，再提升到显式 sample count 对应的比例或 histogram sample rate。提升时调用 `append_analyze_note`；`chooseNDVRate` 复用同一纯选择器，`statsCountFarBehindPD` 统一五倍判定。配置选择与存储实际采样分别属于 builder 与下游任务的职责。
 
 ## 数据与状态
 
@@ -101,8 +107,8 @@ Rust 保留 Go 的关键顺序约束，例如先递归构建 child 再构建父 
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、307,296 个节点；`files --filter pkg/executor/builder.rs` 确认目标文件已索引并含 1,384 个符号；`query executorBuilder`、`query ExecutorBuilder`、`node executorBuilder`、`node ExecutorBuilderDependencies` 和分段 `node --file pkg/executor/builder.rs` 用于核对主类型、依赖端口、分发、reader、CTE 与 typed 路径。自然语言 `explore` 和部分大范围 callers/callees 查询在 30 秒窗口内未返回，未将其当作调用边证据。
-- Rust 源与装配：`pkg/executor/builder.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`。
-- Go 对照：`pkg/executor/builder.go`，重点核对 `executorBuilder`、`newExecutorBuilder`、`withStmtCtxLock`、`MockExecutorBuilder.Build`、`executorBuilder.build` 及同名 `buildXxx` 方法列表。
-- Rust 独立测试：`pkg/executor/builder_contract_test.rs`（真实 typed chunk 生命周期）；`pkg/executor/builder_index_join_cleanup_test.rs`（Index Join child 与 CTE 失败清理）；`typed_kv_scan_test.rs`、`typed_point_get_test.rs`、`typed_selection_test.rs`、`typed_projection_test.rs`、`typed_limit_test.rs`、`typed_index_reader_test.rs`、`typed_index_lookup_test.rs`、`typed_hash_join_test.rs`、`typed_hash_agg_test.rs`（canonical typed 构建、惰性、分页、锁键、取消和关闭）。这些测试由 `pkg/executor/lib.rs` 以独立 test module 接线。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求文档存在，且恰有“文件定位”到“验证依据”的 11 个固定二级标题；事实复核同时人工确认本文回答了文件存在原因、两条运行路径、状态/资源边界和安全扩展位置。
+- 冻结依据：逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/executor/builder.rs`，并读取 `git show 2c944fb:pkg/executor/builder.rs`；本文增量仅反映 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或后续提交行为。
+- 装配依据：冻结提交的 `pkg/executor/lib.rs` 与 `pkg/executor/Cargo.toml`；该包无 `doc.go`。RustCodeGraph `status` 与 `query UpdateRowTracker --limit 3` 确认当前索引含 Rust，但当前索引不能证明冻结历史，故历史行为与引用以 `git show` / `git grep 2c944fb` 为准。
+- 增量审计包括物化视图两个 plan-data trait、`Plan` 分支与依赖工厂，`UpdatePlanData::is_multi_table`，以及 Analyze NDV 配置与采样选择。对照冻结 `builder.go`、`builder_contract_test.rs` 和 `builder_index_join_cleanup_test.rs`；后两者支持原有 executor 生命周期与失败清理，不构成新增物化视图工厂的执行验证。
+- `git grep 2c944fb` 核对 delta apply 的实际使用仅在独立测试，不能从 builder 的抽象分支推定到生产执行器的桥接。
+- 交付使用 Ready 文档等价检查：五篇说明各有 11 个二级章节，检查文档差异和行尾空白，并人工复核生产接线、事务及资源边界。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`；按任务限定未运行 Cargo、Go 或 SQL 集成测试，所列测试仅作为静态证据。

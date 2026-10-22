@@ -17,14 +17,18 @@
 ## 主要符号
 
 - `UpdateDupKeyCheckMode::{Lazy, InPlace}`：分别表示延迟至提交/加锁阶段检查与写行时立即检查。枚举是 `Copy + Eq`，可安全作为每行写回策略值传递。
-- `UpdateRuntime`：核心 trait。`Context`、`Request`、`Row`、`Schema`、`ForeignKeyCheck`、`ForeignKeyCascade`、`Error` 七个关联类型隔离具体实现；35 个方法（源码第 44–115 行）覆盖行合成、写回、状态、统计、子执行器和外键接口。trait 没有默认实现，运行时必须显式提供所有行为。
+- `UpdateRuntime`：核心 trait。`Context`、`Request`、`Row`、`Schema`、`ForeignKeyCheck`、`ForeignKeyCascade`、`Error` 七个关联类型隔离具体实现；方法覆盖行合成、写回、状态、统计、子执行器和外键接口。trait 没有默认实现，运行时必须显式提供所有行为。
 - `UpdateExec<R> { pub runtime: R }`：唯一状态就是注入的运行时。`prepare`、`mergeNonGenerated`、`mergeGenerated`、`exec`、`updateRows`、`fastComposeNewRow`、`composeNewRow`、`setMessage`、`collectRuntimeStatsEnabled`、`GetFKChecks`、`GetFKCascades` 都是薄委托；`Open`、`Next`、`Close` 和 `HasFKCascades` 含本文件自己的分支/顺序语义。
 - `unmatchedOuterRow(handle_is_null)`：原样返回布尔值。Go 版会从 `TblColPosInfo.HandleCols` 找到第一 handle 列并检查 datum 是否 NULL，Rust 调用方必须先完成这一步。
 - `handleUpdateError(runtime, row_index, error)`：把行号与错误传给 `UpdateRuntime::handle_update_error`。具体的数据过长、溢出、时间戳转换等映射不在本文件实现。
 - `UpdateRuntimeStats { fetch, compose, check_and_update }`：三个阶段的累计耗时；`String` 固定输出 `fetch:{:?}, compose:{:?}, check-and-update:{:?}`，`Clone` 生成快照，`Merge` 逐字段相加，`Tp` 返回静态名称 `UpdateRuntimeStats`。
 - `optimizeDupKeyCheckForUpdate(pessimistic, pipelined, ignore)`：纯决策函数，优先级为 pipelined → `Lazy`，否则 ignore → `InPlace`，否则 pessimistic → `Lazy`，最后 optimistic → `InPlace`。
 
-文件没有模块级常量、条件编译项或额外 `impl`；`#![allow(non_snake_case)]` 是为了保留与 Go 方法名相近的公开接口。
+文件没有模块级常量或条件编译项；`#![allow(non_snake_case)]` 是为了保留与 Go 方法名相近的公开接口。
+
+新增的行身份 API 为 `UpdateRowKey<H>`、`PartitionRowLocation`、`partitionRowKey`、`PreparedUpdateRow<H>` 与 `UpdateRowTracker<H, R>`。非分区/聚簇表使用 `Handle`；非聚簇分区的多表 UPDATE 使用 `{ physical_id, handle }`，避免 EXCHANGE PARTITION 后相同 `_tidb_rowid` 跨分区碰撞；单表非聚簇分区返回 `None`，不追踪。`LookupFailed` 保留普通 handle，让实际写路径负责报错或 IGNORE，不在 helper 中吞掉实际写错误。
+
+`UpdateRowTracker::prepare` 从 `table_start -> row_key -> changed` 映射读取旧状态：未出现的键 `matches=true`，已记录键 `matches=false`；无 handle 或无追踪键时返回 `changed=false, matches=true`。`record_updated` 只记录存在的键，并返回是否首次插入。另一个 `table_id -> row_key -> R` 映射通过 `merged_row` / `set_merged_row` 共享普通列与生成列的合并值，插入会替换旧值。追踪器自身不定位分区、不执行更新，不内嵌于 `UpdateExec`；runtime 仍须显式使用并管理每条语句的生命周期。
 
 ## 执行流程
 
@@ -37,7 +41,7 @@
 
 ## 数据与状态
 
-`UpdateExec` 本身不复制状态，只拥有可变的 `runtime`。drained、赋值是否全为常量、求值缓冲、内存计数、首次匹配行数、外键集合等全部由 runtime 持有并通过 trait 方法访问。这一设计便于测试控制顺序，但也意味着本文件不能独立保证 Go 版的以下状态不变量：同一 `(table alias, handle)` 只更新一次、多表更新的 merged row 缓存、分区表 handle 去重、matched/changed/matches 数组一致性以及内存增减配平。
+`UpdateExec` 本身不复制状态，只拥有可变的 `runtime`。drained、赋值是否全为常量、求值缓冲、内存计数、首次匹配行数、外键集合等全部由 runtime 持有并通过 trait 方法访问。这一设计便于测试控制顺序，但也意味着本文件不能独立保证 Go 版的以下状态不变量：同一 `(table alias, handle)` 只更新一次、多表更新的 merged row 缓存、生产 runtime 是否使用分区行追踪器、matched/changed/matches 数组一致性以及内存增减配平。
 
 可由本文件直接保证的不变量是：一次成功 `Open` 后 drained 被清零；一次成功的首个 `Next` 后 drained 为 true；同一轮后续 `Next` 不再次更新或重复记账；`record_write_cpu_work` 只接收成功 `update_rows` 返回的首次匹配行数；`Close` 即使遇到 child close 错误也会请求 runtime 清零内存。
 
@@ -45,9 +49,9 @@
 
 ## 依赖与调用关系
 
-文件的唯一直接标准库依赖是 `std::time::Duration`。它没有直接引用 `Cargo.toml` 中大量 executor 依赖；session、expression、kv、table、chunk、memory、foreign-key 等能力均由 `UpdateRuntime` 的关联类型和方法间接提供。crate feature `nextgen` 只转发到 `astersql-dxf-importinto/nextgen`，本文件没有 `cfg(feature = ...)` 分支。
+文件直接使用标准库 `HashMap`、`Hash` 与 `Duration`。它没有直接引用 `Cargo.toml` 中大量 executor 依赖；session、expression、kv、table、chunk、memory、foreign-key 等能力均由 `UpdateRuntime` 的关联类型和方法间接提供。crate feature `nextgen` 只转发到 `astersql-dxf-importinto/nextgen`，本文件没有 `cfg(feature = ...)` 分支。
 
-上游方面，`lib.rs` 公开 `update` 模块，`update_test.rs` 直接导入并实例化 `UpdateExec<WriteRuntime>`。RustCodeGraph 的 `query` 能分别定位 Rust/Go 的 `UpdateExec`、`UpdateRuntime` 和 `optimizeDupKeyCheckForUpdate`，但 `callers` 对 Rust `UpdateExec`、`unmatchedOuterRow`、策略函数与统计类型未返回生产调用边；因此生产接线为“未验证”。文件级图把 `select.rs` 标为使用者，但在针对符号的仓库搜索中未发现这些 API 的直接引用，不把这条粗粒度关系解释为运行时调用。
+上游方面，`lib.rs` 公开 `update` 模块，`update_test.rs` 直接导入并实例化 `UpdateExec<WriteRuntime>`；新增追踪器只在 `multi_table_update_partition_test.rs` 被调用。冻结树引用证据未显示生产 runtime 实例化该执行器或追踪器，因此不能将 Go 主链或模块导出解释为 Rust 生产接线。
 
 下游调用都表现为 trait dispatch：`Open` → 统计复位/状态/缓冲/child open；`Next` → request reset/状态查询/批量更新/CPU 记账；`Close` → 消息/统计/child close/内存复位；行级委托 → prepare/merge/compose/write/error hooks；外键查询 → runtime 返回的引用向量。Go 真实下游则包括 `exec.Next`、事务 snapshot/options、`updateRecord`、表写入、外键检查/级联、statement context 和 memory tracker，这些只能作为迁移对照，不能当成 Rust 已接线证据。
 
@@ -65,7 +69,7 @@
 
 生命周期以 `Open → 一个有效 Next → 若干空 Next → Close` 为主。`Open` 每轮重置写统计和 drained；非常量赋值才分配/初始化求值缓冲。`Close` 负责消息与统计收尾、关闭 child，并无条件请求清零内存。外键检查/级联以借用引用组成的临时 `Vec` 返回，引用生命周期绑定到 `&self`；本文件不拥有或启动外键任务。统计合并适合由外部在 worker 完成后串行归并，但 `UpdateRuntimeStats` 自身不提供并发同步。
 
-Go 版额外管理 chunk 内存计费、handle/merged-row 缓存、事务 snapshot 统计和 `MayFlush`；Rust 文件没有对应资源对象。新增并行 worker 或流水线 runtime 时，需要在 runtime 中证明统计合并、写顺序、重复键检查和 close 清理在并发下仍成立。
+Go 版额外管理 chunk 内存计费、handle/merged-row 缓存、事务 snapshot 统计和 `MayFlush`；Rust 已有独立的行追踪映射，但没有对应的事务、chunk 与内存 tracker 资源对象。新增并行 worker 或流水线 runtime 时，需要在 runtime 中证明统计合并、写顺序、重复键检查和 close 清理在并发下仍成立。
 
 ## 与 Go 版本的对应关系
 
@@ -80,7 +84,7 @@ Rust 名称刻意对齐 Go `UpdateExec` 的 `prepare`、`mergeNonGenerated`、`m
 - Go `updateRuntimeStats` 合并 snapshot 与 allocator 统计并返回整数类型标识；Rust 统计的是 fetch/compose/check-and-update 三段耗时，`Tp` 返回字符串。两者结构和语义并不等价。
 - Go `Open` 创建并挂接 memory tracker，按需创建 write stats；当前 Rust `Open` 还负责 drained 与求值缓冲复位，但具体分配和挂接都由 runtime 完成。Go `Next` 把总记录数写入 statement context，Rust 只用 matched rows 做 write CPU 记账。
 
-Go 独立测试 [`pkg/executor/update_test.go`](update_test.go) 验证悲观事务主键延迟重复键、未变化键锁、UPDATE IGNORE 重试后重复键、ON UPDATE 与生成列索引一致性；这些是完整 Go 执行器的行为证据，不等同于 Rust 单测覆盖。Rust 独立测试只覆盖纯策略/统计和 Open/Next 的一次记账语义。
+Go 独立测试 [`pkg/executor/update_test.go`](update_test.go) 验证悲观事务主键延迟重复键、未变化键锁、UPDATE IGNORE 重试后重复键、ON UPDATE 与生成列索引一致性；这些是完整 Go 执行器的行为证据，不等同于 Rust 单测覆盖。Rust 独立测试覆盖纯策略/统计、Open/Next 的一次记账语义以及独立的分区行身份追踪；后者未验证真实 SQL runtime。
 
 ## 扩展指南
 
@@ -92,8 +96,8 @@ Go 独立测试 [`pkg/executor/update_test.go`](update_test.go) 验证悲观事�
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；据此读取 `pkg/executor/update.rs` 全 323 行，并确认文件级使用者为 `pkg/executor/select.rs` 与 `pkg/executor/update_test.rs`。
-- RustCodeGraph `query UpdateExec --kind struct`、`query UpdateRuntime --kind trait`、`query optimizeDupKeyCheckForUpdate --kind function`：定位 Rust/Go 同名符号；对关键 Rust 符号执行 `callers` 未得到生产级调用边，因此本文将真实生产接线标记为未验证。
-- 已读生产与装配文件：[`pkg/executor/update.rs`](update.rs)、[`pkg/executor/update.go`](update.go)、[`pkg/executor/Cargo.toml`](Cargo.toml)、[`pkg/executor/lib.rs`](lib.rs)。Cargo 元数据确认 crate 名为 `astersql-executor`、Go 包映射为 `pkg/executor`，且本文件无专属 feature。
-- 已读独立测试：[`pkg/executor/update_test.rs`](update_test.rs) 覆盖五组重复键决策、outer-row 布尔边界、统计 clone/merge/string，以及 Open 后首次 Next 只记账一次；[`pkg/executor/update_test.go`](update_test.go) 提供完整 Go 事务/锁/生成列语义；`pkg/executor/test/oomtest/oom_test.rs` 与 `.go` 是内存行为的相关回归入口。
-- 人工复核结论：本文区分了 trait 承诺与已接线实现，未把 Go 行为或粗粒度文件关系写成 Rust 已支持事实；所有扩展建议均指向独立测试文件。
+- 冻结依据：逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/executor/update.rs`，并读取 `git show 2c944fb:pkg/executor/update.rs`；本文增量仅反映 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或后续提交行为。
+- 装配依据：冻结提交的 `pkg/executor/lib.rs` 与 `pkg/executor/Cargo.toml`；该包无 `doc.go`。RustCodeGraph `status` 与 `query UpdateRowTracker --limit 3` 确认当前索引含 Rust，但当前索引不能证明冻结历史，故历史行为与引用以 `git show` / `git grep 2c944fb` 为准。
+- 冻结的 `update.go::partitionRowKey`、`prepare` 与合并路径是身份语义对照。Go 自行定位分区（忽略别名的 PARTITION 限制），Rust 接收已计算的 `PartitionRowLocation`，不能据此宣称已移植分区定位。
+- `update_test.rs` 覆盖策略、统计、首次 Next 记账；`multi_table_update_partition_test.rs::multi_table_update_partition_tracks_physical_row_identity` 静态覆盖同 rowid 不同物理分区独立追踪、重复匹配、merged row 隔离、单表不追踪、lookup 失败与外连接无 handle。`lib.rs` 独立挂载两者；`git grep 2c944fb` 仅在该分区测试找到追踪器调用。
+- 交付使用 Ready 文档等价检查：五篇说明各有 11 个二级章节，检查文档差异和行尾空白，并人工复核生产接线、事务及资源边界。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`；按任务限定未运行 Cargo、Go 或 SQL 集成测试，所列测试仅作为静态证据。

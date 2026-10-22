@@ -4,13 +4,13 @@
 
 [源文件](./delete.rs)位于 `astersql-executor` crate，crate 根为 `pkg/executor/lib.rs`，并由其中的 `pub mod delete;` 公开为 DELETE 执行模块。`pkg/executor/Cargo.toml` 的 `[lib] path = "lib.rs"` 和 `[package.metadata.porting] go-package = "pkg/executor"` 表明它属于 Go `pkg/executor` 的 Rust 移植范围。
 
-当前实现是一个以 `DeleteRuntime` trait 隔离具体执行环境的泛型 DELETE 算法内核：它描述如何从子执行器按 chunk 拉取候选行、选择单表或多表路径、删除记录、处理外键以及维护统计和内存账本。仓库搜索只发现 `pkg/executor/delete_test.rs` 中的 `TestRuntime` 实现 `DeleteRuntime`，没有生产运行时实现或生产代码构造 `DeleteExec<R>`；因此本文件目前可由单元测试验证，但尚无证据表明它已接入 Rust SQL 请求主链。Go 生产路径仍由 `pkg/executor/delete.go` 的具体 `DeleteExec` 承担。
+当前实现是一个以 `DeleteRuntime` trait 隔离具体执行环境的泛型 DELETE 算法内核：它描述如何从子执行器按 chunk 拉取候选行、选择单表或多表路径、删除记录、处理外键以及维护统计和内存账本。仓库搜索只发现 `pkg/executor/delete_test.rs` 中的 `TestRuntime` 和 `multi_table_delete_partition_test.rs` 的 `PartitionDeleteRuntime` 实现 `DeleteRuntime`，没有生产运行时实现或生产代码构造 `DeleteExec<R>`；因此本文件目前可由单元测试验证，但尚无证据表明它已接入 Rust SQL 请求主链。Go 生产路径仍由 `pkg/executor/delete.go` 的具体 `DeleteExec` 承担。
 
 ## 核心职责
 
 - `DeleteExec::Next` 重置输出请求，并依据 `DeleteRuntime::is_multi_table` 在单表和多表 DELETE 算法间分派。
 - `deleteSingleTableByChunk` 流式消费子执行器 chunk，记录写入 CPU 工作量和 chunk 内存，可按配置分批提交事务；每行经过单表投影、`DELETE IGNORE` 外键预检、handle 构建后进入统一删除路径。
-- `deleteMultiTablesByChunk` 先将连接结果按“表 ID + handle”收集到 `TableRowMap`，跳过外连接未匹配行并去重，再由 `removeRowsInTblRowMap` 删除。
+- `deleteMultiTablesByChunk` 先将连接结果按“表 ID + 物理行身份”收集到 `TableRowMap`，跳过外连接未匹配行并去重，再由 `removeRowsInTblRowMap` 删除。
 - `removeRow` 规定单行副作用顺序：先删存储记录，再执行外键检查/级联，成功后增加 affected rows。
 - `Open`、`Close` 和运行时 trait 共同管理子执行器、写入统计、事务刷新和内存账本的生命周期。
 - `GetFKChecks`、`GetFKCascades`、`HasFKCascades` 暴露外键触发器信息，供未来的具体运行时或上层执行框架使用。
@@ -20,11 +20,13 @@
 - `DeleteChunk<D> { rows, memory_usage }`：一次子执行器拉取的行集合及其内存估算。算法只依赖这两个字段，不绑定具体 chunk 库。
 - `TableColumnPosition { table_id, start, end }`：多表连接行中某个目标表的半开列区间 `[start, end)`；同时用于定位 handle 和提取待删行数据。
 - `HandleInfoPair<D> { handle_values, position_index }`：保存去重后某个 handle 对应的行值，以及其 `TableColumnPosition` 下标。
-- `TableRowMap<H, D>`：两层 `HashMap`，外层键为表 ID，内层键为 handle。它是多表 DELETE 的去重边界。
+- `TableRowMap<H, D>`：两层 `HashMap`，外层键为表 ID，内层键为 runtime 生成的物理行身份（类型仍为 `Handle`）。它是多表 DELETE 的去重边界。
 - `DeleteRuntime`：包含上下文、请求、datum、handle、外键对象和错误六类关联类型，并定义子树拉取、handle 构建、事务切换、内存/统计、记录删除、FK 与开关子执行器等运行时操作。`Datum: Clone` 用于保存多表行切片，`Handle: Clone + Eq + Hash` 用于哈希去重。
 - `DeleteExec<R: DeleteRuntime>`：只持有 `runtime: R` 的公开泛型执行器；算法方法均在该类型的 impl 中。
 - `onRemoveRowForFK`：公开的 FK 收尾函数；非 IGNORE 模式先执行 delete checks，随后无条件执行 delete cascades。
 - 文件没有模块级常量、条件编译项或异步函数；`#![allow(non_snake_case)]` 用于保留 `Next`、`Open`、`Close` 等 Go 风格方法名。
+
+`DeleteRuntime::physical_row_identity` 是新增的可失败 hook，接收 table ID、列位置、连接行和原 handle；默认返回 clone。非聚簇分区适配必须覆盖它以包含物理分区 ID，并覆盖 `remove_record_handle` 在实际删除前恢复原 handle；后者默认也只是 clone。身份解析失败会从 `composeTblRowMap` 传播，未进入删除。去重键的额外内存按物理身份计算；本文件不自行查找分区，也不保证默认实现可处理跨分区相同 rowid。
 
 ## 执行流程
 
@@ -40,9 +42,9 @@
    7. 每个非空 chunk 处理完调用 `may_flush_transaction`。
 4. 多表路径 `deleteMultiTablesByChunk`：
    1. 取得所有 `multi_table_positions`，逐 chunk 维护同样的 chunk 内存借记/归还与事务 `may_flush_transaction`。
-   2. `composeTblRowMap` 遍历每个表位置。`unmatched_outer_row` 为真时跳过；否则构造 handle，并把 `[start, end)` 行切片写入该表的 handle 映射。
-   3. 同一表、同一 handle 再次出现会覆盖旧的 `handle_values`，但不会再次增加行和 handle 的估算内存；因此保留最新连接行的列值，同时保证一行只删除一次。
-   4. 收集结束后，`removeRowsInTblRowMap` 遍历去重结果。它先记录每个候选 handle 的写入 CPU 工作量，再执行 IGNORE 预检，最后调用 `removeRow`。
+   2. `composeTblRowMap` 遍历每个表位置。`unmatched_outer_row` 为真时跳过；否则构造 handle，再调用 `physical_row_identity` 生成去重键，把 `[start, end)` 行切片写入该表的物理身份映射。
+   3. 同一表、同一物理行身份再次出现会覆盖旧的 `handle_values`，但不会再次增加行和 handle 的估算内存；因此保留最新连接行的列值，同时保证一行只删除一次。
+   4. 收集结束后，`removeRowsInTblRowMap` 遍历去重结果。它先记录每个候选 handle 的写入 CPU 工作量，再执行 IGNORE 预检，最后经 `remove_record_handle` 去除仅用于去重的分区包装，再调用 `removeRow`。
 5. `removeRow` 调用 `remove_record`，随后调用 `onRemoveRowForFK`，两者均成功才 `add_affected_rows(1)`。
 6. 上层调用 `Close` 时先保存 `close_child` 的结果，再无条件 `reset_memory_usage`，最后返回子执行器关闭结果；即使关闭失败，内存账本仍被复位。
 
@@ -52,9 +54,9 @@
 
 `DeleteExec` 自身不缓存行、计数器或事务对象，全部长期状态均由 `runtime` 持有。单次调用中的局部状态包括：单表路径的 `row_count` 与 `previous_chunk_memory`，以及多表路径的 `positions`、`table_rows` 和 `previous_chunk_memory`。
 
-单表处理是 chunk 流式的，除当前 chunk 和单行投影外不累积所有结果。多表处理必须先收集全部唯一目标行再删除，空间复杂度随不同 `(table_id, handle)` 数量增长。`TableRowMap` 基于 `HashMap`，遍历/删除顺序没有稳定保证；正确性不能依赖表或 handle 的处理顺序。
+单表处理是 chunk 流式的，除当前 chunk 和单行投影外不累积所有结果。多表处理必须先收集全部唯一目标行再删除，空间复杂度随不同 `(table_id, physical_row_identity)` 数量增长。`TableRowMap` 基于 `HashMap`，遍历/删除顺序没有稳定保证；正确性不能依赖表或 handle 的处理顺序。
 
-内存账本分为两类：chunk 内存通过“下一轮开始先扣上一块、再加当前块”的方式跟踪；多表去重映射仅在新 handle 首次出现时累计 `estimated_row_memory(joined_row) + handle_extra_memory(handle)`。映射内存不会在局部流程中逐项扣除，而由 `Close::reset_memory_usage` 清零整个执行器账本。测试中的期望序列 `vec![0, 10, -10, 20, -20]` 和多表内存增量验证了这一约定。
+内存账本分为两类：chunk 内存通过“下一轮开始先扣上一块、再加当前块”的方式跟踪；多表去重映射仅在新 handle 首次出现时累计 `estimated_row_memory(joined_row) + handle_extra_memory(physical_identity)`。映射内存不会在局部流程中逐项扣除，而由 `Close::reset_memory_usage` 清零整个执行器账本。测试中的期望序列 `vec![0, 10, -10, 20, -20]` 和多表内存增量验证了这一约定。
 
 affected rows 只在存储删除和 FK 收尾都成功后增加。写入 CPU 统计则按“尝试处理的候选行”记账，包含随后被 IGNORE 跳过的行；这是与 affected rows 不同的指标语义。
 
@@ -114,18 +116,17 @@ Rust 的方法布局和主要分支对应 `pkg/executor/delete.go`：`Next`、`d
 新增或修改 DELETE 行为时，应首先判断责任位于算法还是环境适配：
 
 - 修改单表逐行策略、batch 时机或 IGNORE 分支，接入 `deleteSingleTableByChunk`，并在 `pkg/executor/delete_test.rs` 增加独立测试，至少断言删除集合、提交/新事务次数、CPU 统计、affected rows 和内存增减序列。
-- 修改多表去重、外连接处理或行布局，接入 `composeTblRowMap` / `removeRowsInTblRowMap`。必须保持 `(table_id, handle)` 唯一性，明确重复 handle 是保留最新值还是首值，并测试多个表、重复行、未匹配外连接及非法位置边界。
+- 修改多表去重、外连接处理或行布局，接入 `composeTblRowMap` / `removeRowsInTblRowMap`。必须保持 `(table_id, physical_row_identity)` 唯一性，明确重复 handle 是保留最新值还是首值，并测试多个表、重复行、未匹配外连接及非法位置边界。
 - 新增存储删除或 FK 副作用，应接入 `removeRow` / `onRemoveRowForFK`，保持“删除记录 -> FK -> affected rows”的成功顺序；同时覆盖 IGNORE 与非 IGNORE、check/cascade 失败及事务回滚责任。
-- 增加运行时能力时扩展 `DeleteRuntime`，并同步所有实现。当前仓库只有 `TestRuntime`，未来生产适配应放在生产源文件，不要把实现塞入 `delete.rs` 的内嵌测试；测试继续放在同目录独立的 `delete_test.rs`。
+- 增加运行时能力时扩展 `DeleteRuntime`，并同步所有实现。冻结版本只发现测试 runtime，未来生产适配应放在生产源文件，不要把实现塞入 `delete.rs` 的内嵌测试；测试继续放在同目录独立的 `delete_test.rs`。
 - 若接入真实 Rust executor 主链，需要新增生产 `DeleteRuntime` 适配和构造点，并用调用图确认上游 builder/Executor 接线；还应补真实 session/KV 集成测试，尤其覆盖 Go `TestDeleteLockKey` 和 `TestDeleteIgnoreWithFK` 的锁、告警、回滚与多表行为。
 
 兼容性风险集中在 handle 构造与行切片、IGNORE/FK 副作用顺序、batch 的事务边界和多表无序遍历；性能风险集中在多表 DELETE 全量物化、重复 clone、HashMap 容量及内存估算偏差。任何优化都不应以零测试或仅编译成功替代上述行为证据。
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示本仓库已索引 11,467 个文件；`node --file pkg/executor/delete.rs --offset 1 --limit 500` 返回完整 348 行源码及“used by 1 file: `pkg/executor/delete_test.rs`”；`query` 确认 `DeleteExec`、`DeleteRuntime`、`DeleteChunk`、`TableColumnPosition`、`HandleInfoPair`、`TableRowMap`、`deleteSingleTableByChunk`、`deleteMultiTablesByChunk`、`composeTblRowMap`、`removeRowsInTblRowMap`、`removeRow`、`doBatchDelete` 和 `onRemoveRowForFK`。`callers/callees` 查询在当前索引上超时，故外部接线结论改由模块与仓库引用搜索核对，并明确标为未生产接线。
-- Rust 源与装配：`pkg/executor/delete.rs`、`pkg/executor/lib.rs`、`pkg/executor/Cargo.toml`。`lib.rs` 公开 `delete` 模块并以 `#[path = "delete_test.rs"]` 注册独立测试；Cargo 确认 crate 名、根文件、Go 包映射与 crate 边界。
-- Rust 测试：`pkg/executor/delete_test.rs`。四个测试分别覆盖单表 batch/IGNORE/统计/内存、Open 统计重置、多表去重/外连接/最新值、FK 与 Close 错误清理。
-- Go 对照：`pkg/executor/delete.go`、`pkg/executor/delete_test.go`。源码核对实际生产 executor 语义；`TestDeleteLockKey` 与 `TestDeleteIgnoreWithFK` 提供悲观锁和真实 FK/告警/batch 行为证据。
-- 仓库引用搜索：`rg` 只在 `pkg/executor/delete_test.rs` 找到 `impl DeleteRuntime` 和 Rust `DeleteExec` 构造，因此文档没有声称存在未找到的生产适配。
-- 本任务为纯文档分析，按任务约束未运行 Cargo 或代码测试；交付验证仅执行固定 11 章节结构检查和文档差异自审。
+- 冻结依据：逐文件比较 `git diff ad0a6f4..2c944fb -- pkg/executor/delete.rs`，并读取 `git show 2c944fb:pkg/executor/delete.rs`；本文增量仅反映 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或后续提交行为。
+- 装配依据：冻结提交的 `pkg/executor/lib.rs` 与 `pkg/executor/Cargo.toml`；该包无 `doc.go`。RustCodeGraph `status` 与 `query UpdateRowTracker --limit 3` 确认当前索引含 Rust，但当前索引不能证明冻结历史，故历史行为与引用以 `git show` / `git grep 2c944fb` 为准。
+- Go 对照为冻结 `delete.go`：非聚簇分区表用 `kv.NewPartitionHandle` 去重，写入前剥离包装；Rust 的两个 runtime hook 承接同一边界，但默认只 clone handle，不自动提供分区语义。
+- `delete_test.rs` 覆盖 batch/IGNORE/FK、统计、内存与生命周期；新增 `multi_table_delete_partition_test.rs::multi_table_delete_partition_keeps_same_rowid_from_each_partition` 覆盖两个分区相同 rowid、各自重复输入只删除一次，以及写入端收到原始 handle、affected rows 为 2。测试采用整数编码模拟物理身份，不是真实分区表集成测试。
+- 交付使用 Ready 文档等价检查：五篇说明各有 11 个二级章节，检查文档差异和行尾空白，并人工复核生产接线、事务及资源边界。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`；按任务限定未运行 Cargo、Go 或 SQL 集成测试，所列测试仅作为静态证据。
