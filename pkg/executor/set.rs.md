@@ -32,7 +32,7 @@
 1. `Next` 先调用 `request.reset()`；若 `done` 已为真立即成功返回，否则先将 `done` 设为真，再按原顺序遍历 `vars`。这意味着首次执行中途失败后，同一执行器不能通过再次调用 `Next` 重试。
 2. 名称等于 `SetVariableNames::set_names` 或 `set_charset` 时进入 `setCharset`。`DEFAULT` 使用默认字符集；否则先求表达式，再从 `extend_value` 取得可选 collation。
 3. 非系统变量先把名称折叠为小写。表达式结果为 `Null` 时调用 `unset_user_variable`；否则依次写值和字段类型。
-4. 系统变量进入 `setSysVariable`：先查定义；`Removed` 直接成功，`Unknown` 由后端构造错误。随后验证变量要求的所有动态权限；SEM 未启用时，错误消息按 Go 兼容语义显示为 `SUPER or <privilege>`。SEM v2 只读变量额外要求 `RESTRICTED_VARIABLES_ADMIN`。
+4. 系统变量进入 `setSysVariable`：先查定义；`Removed` 直接成功，`Unknown` 由后端构造错误。随后仅在 `privilege_manager_available()` 为 true 时验证变量要求的所有动态权限；SEM 未启用时，错误消息按 Go 兼容语义显示为 `SUPER or <privilege>`。已绑定权限管理器的 SEM v2 只读变量额外要求 `RESTRICTED_VARIABLES_ADMIN`。
 5. noop 变量在 noop 功能未启用时只告警、不拒绝。具有 INSTANCE 作用域的变量在 legacy 模式且调用方未显式 GLOBAL 时，会被改写为 INSTANCE 并产生迁移警告。
 6. GLOBAL/INSTANCE 分支通过 `getVarValue(..., Some(system_variable))` 求值，然后写入对应持久化范围。写成功后生成展示值：云存储 URI 调用 `redact_url`，非空 embedding API key 固定显示 `******`；该展示值用于审计与日志。若变量是 `service_scope`，最后读取后端规范化值并初始化任务管理器。
 7. SESSION 分支先通过 `getVarValue(..., None)` 求值，再在事务内禁止修改一次性隔离级别、`txn_read_ts`，以及 stale transaction 的 `tidb_snapshot`。写入前保存旧快照时间戳；写入后若新时间戳非零且发生变化，则验证 read-ts，`tidb_snapshot` 还额外验证 GC safe point。
@@ -57,6 +57,8 @@
 Go 对照的上游主链更完整：Go builder 产生 `SetExecutor`，通用 Executor 驱动其 `Next`；Go `set.go` 直接调用 SessionVars、权限、plugin audit、Domain 和临时表包装。Rust 文件把这些调用折叠为后端 trait，但当前代码搜索未证明生产适配器已经完成接线。
 
 ## 错误处理与边界
+
+内部会话没有权限管理器时，跳过 required dynamic privileges 循环及 SEM v2 的 `RESTRICTED_VARIABLES_ADMIN` 校验；变量查找、作用域、值求值和写入等其余检查仍执行。普通会话绑定管理器后仍保持原有拒绝边界。这是 `SetBackend::privilege_manager_available` 的明确契约，对应 Go 的非 nil privilege manager 门禁。
 
 所有后端可失败操作以 `Result<_, B::Error>` 逐层传播，文件不包装错误上下文。主要拒绝条件包括：表达式求值/字符串化失败、未知系统变量、动态权限不足、SEM v2 只读限制、GLOBAL/INSTANCE 持久化或审计失败、事务中修改受保护特性、快照时间戳或 GC 校验失败、InfoSchema 加载失败、未知字符集/排序规则以及 collation 与 charset 不匹配。
 
@@ -93,8 +95,8 @@ Rust 独立测试名称与 Go 测试意图基本对应：用户变量、字符�
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：11467 个文件、307296 个节点、1848419 条边；查询并读取了 `SetExecutor`、`setSysVariable`、`setCharset`、`getVarValue`、两个 `loadSnapshotInfoSchemaIfNeeded` 以及 `pkg/executor/set.rs` 全部 619 行。
-- RustCodeGraph 调用证据：`SetExecutor` 的 Rust 实例化者仅见 `pkg/executor/set_test.rs::execute` 与 `test_validate_set_var`；`setSysVariable` 的下游包括权限、三类变量写入、审计/日志、快照验证和四个本地辅助函数；自由函数快照加载的下游包括 schema 获取、临时表附着和会话安装。
-- crate 与模块证据：[`pkg/executor/Cargo.toml`](./Cargo.toml) 的 package 名为 `astersql-executor`、`lib.path = "lib.rs"`、本文件无 feature gate，并声明 `astersql-sessionctx-variable`；[`pkg/executor/lib.rs`](./lib.rs) 公开 `set`，并以独立 `set_test.rs` 作为测试模块。目标包不存在 `pkg/executor/doc.go`。
-- 对照证据：完整核对 [`pkg/executor/set.go`](./set.go) 的 `SetExecutor` 主流程，并核对 [`pkg/executor/set_test.rs`](./set_test.rs) 的测试后端和相关测试；Go 测试入口来自 [`pkg/executor/set_test.go`](./set_test.go) 与 [`pkg/executor/set_internal_test.go`](./set_internal_test.go)。
-- 人工复核结论：本文区分了已公开/已测试的 Rust 执行核心与未找到的生产后端接线，列明了顺序副作用、快照局部回滚、一次性状态、敏感值边界及 Go 独有的 GC lifetime 通知，不以预期架构替代当前代码事实。
+- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/executor/set.rs`，不把工作区后续变化作为行为依据。
+- `pkg/executor/set_test.rs::sem_v2_internal_session_without_privilege_manager` 覆盖内部会话写受限 session/global 变量及普通会话的两类权限拒绝；Go 对照 `pkg/executor/set.go`。
+- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
+- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
+- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

@@ -27,6 +27,8 @@
 
 ## 执行流程
 
+`builtinRoundWithFracIntSig::vecEvalInt` 依次求值数值列和 fraction 列并合并 NULL。fraction 类型为 unsigned 时直接保留原数值列（包括 NULL），不能把 u64 的 i64 位模式误判为负小数位。否则逐个非 NULL 行调用 `builtin_math_kernel::round_with_frac_int(value, digits, first_arg_unsigned)`，与标量共享数值算法。有符号溢出映射为 `EvalError::BigIntOverflow(expression)`，其他错误（含无符号溢出）转为 `EvalError::Message`；中途失败前已写行不会回滚。这一共享只证明局部标量/向量算法一致，不能替代正式 SQL 主链接线验证。
+
 1. 调用方以 `Vec<ExprRef>` 构造某个签名；普通构造走 `MathBase::new`，测试或确定性 RAND 可用 `builtinRandSig::with_seed`，DECIMAL 精度相关签名可用 `with_ret_decimal`。
 2. `vecEval*` 让参数表达式先填充 `Column`。一元函数通常直接复用 `result`；二元或三元函数为后续参数创建临时 `Column`。
 3. 固定宽度多参数函数调用 `result.MergeNulls`，将各参数 NULL 位逐行做逻辑或；字符串 CONV 则在循环中检查三个输入列并调用 `AppendNull`。
@@ -64,7 +66,7 @@
 - 子表达式求值失败、DECIMAL 运算失败会立即经 `?` 返回，当前批次后续行不再处理；已经写入的前序结果不会回滚。
 - 对数参数 `<= 0` 时追加 `"invalid argument for logarithm"` 并置 NULL；双参数 LOG 还拒绝底数 1。SQRT 负数、ACOS/ASIN 超出 `[-1, 1]` 只置 NULL，不追加告警。
 - EXP 结果为 Inf/NaN、POW 结果非有限、COT 的正切恰为零时返回 `EvalError::DoubleOverflow`。`ABS(i64::MIN)` 返回 `EvalError::BigIntOverflow`。
-- `round_float` 采用 ties-to-even，而 DECIMAL ROUND 使用 `ModeHalfUp`；两者是有意的类型语义差异。`builtinRoundWithFracIntSig` 先转 `f64` 再转回 `i64`，极大整数存在浮点精度风险，扩展测试应覆盖边界。
+- `round_float` 采用 ties-to-even，而 DECIMAL ROUND 使用 `ModeHalfUp`；两者是有意的类型语义差异。`builtinRoundWithFracIntSig` 复用精确整数 kernel，不经过 `f64`，并传播溢出错误。
 - 整数 TRUNCATE 仅对负小数位工作；小数位参数类型为 unsigned 时整个批次直接保持原值。`i64::MIN` 小数位直接清零；有符号值截断 19 位及以上、无符号值截断 20 位及以上也清零，从而避免 `10^n` 溢出。
 - CONV 只接受绝对值为 2..=36 的源/目标进制；基数为 `i64::MIN`、越界基数返回 NULL。空合法前缀返回字符串 `"0"`；解析出的 `u64` 溢出返回 BIGINT 错误。负源基数启用有符号限幅，负目标基数要求带符号输出，否则按 64 位补码格式化。
 - CONV 的合法前缀按字节迭代并把字节转为 `char` 检查进制数字，因此非 ASCII 输入不被当作合法数字；`format_radix` 固定输出大写 A-Z。
@@ -93,9 +95,8 @@
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/builtin_math_vec.rs` 确认目标文件已索引；`node --file ...` 读取到目标文件 1..961 行及 68 个符号；`explore`/`query` 核对了 `unary_real`、各 `vecEval*`、`builtinConvSig`、`decimal_to_int` 以及 Go 同名符号和测试调用关系。
-- Rust 源与装配：`pkg/expression/builtin_math_vec.rs`、`pkg/expression/legacy_vectorized_runtime.rs`、`pkg/expression/builtin_math.rs`、`pkg/expression/lib.rs`、`pkg/expression/pb_to_expr_runtime.rs`、`pkg/util/mathutil/rand.rs`。
-- crate 配置：`pkg/expression/Cargo.toml`，确认 crate 名、`lib.rs` 入口以及 `crc32fast`、`mathutil`、`types-dependency` 依赖；该包没有 `pkg/expression/doc.go` 可供补充包契约。
-- Go 对照：`pkg/expression/builtin_math_vec.go`，逐段核对签名、NULL、告警、溢出、DECIMAL、RAND 与 CONV 行为。
-- 独立 Rust 测试：`pkg/expression/builtin_math_vec_test.rs` 覆盖 LOG/NULL/NaN、ROUND/TRUNCATE、ABS 溢出、CRC32/PI/SIGN/RAND；`pkg/expression/builtin_like_vec_15_aster_unit_test.rs` 进一步覆盖 ATAN2、POW/COT 溢出、DECIMAL CEIL/FLOOR、整数 TRUNCATE、种子 RAND 和禁用向量标志的 CONV。
-- 本任务是纯文档分析，按任务约束未运行 Cargo；最终结构验证要求目标文件存在且固定二级标题恰为 11 个。
+- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/builtin_math_vec.rs`，不把工作区后续变化作为行为依据。
+- `pkg/expression/builtin_math_vec_test.rs::test_vectorized_builtin_math_round_truncate_and_overflow` 覆盖正负半值、大整数、NULL、unsigned 值、unsigned fraction 原值返回与 signed 溢出；Go 对照 `pkg/expression/builtin_math_vec.go`。
+- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
+- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
+- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

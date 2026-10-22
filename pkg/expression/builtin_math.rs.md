@@ -29,6 +29,8 @@
 
 ## 执行流程
 
+`round_with_frac_int(value, fraction, unsigned) -> MathResult<i64>` 使用 `U64_POW10`（10^0..10^19）和余数精确舍入，半值远离零。`fraction >= 0` 原值返回，`fraction < -19` 返回 0；否则按有/无符号位模式求绝对量，checked_add 后再校验 signed 正负界限。`i64::MIN` 的绝对量用 `unsigned_abs`，不会先取负溢出。unsigned 输入/输出通过 i64 位模式承载。超出范围产生带 `round(value, fraction)` 文本的 BIGINT 或 BIGINT UNSIGNED 1690 错误；例如 25/-25 按 -1 位得到 30/-30，超过 f64 精度的大整数仍保持精确。该函数不接收 fraction 的 unsigned 元数据，该门禁由调用层处理。
+
 构建数学表达式时，调用方应先把参数字段信息整理为 `FieldTypeMeta`，再由对应的 `*_signature` 选出 `ScalarFuncSignature`。例如 DECIMAL 的 FLOOR/CEIL 会计算 `flen - decimal`：整数部分超过 `MAX_INT_WIDTH - 2` 时保留 DECIMAL，否则返回整数签名；ROUND/TRUNCATE 的返回小数位由 `calculate_decimal_for_round_and_truncate` 根据结果类型和第二参数的常量性决定。当前仓库尚未找到把这些 Rust 签名选择器接入生产 builder 的直接调用边，所以这是该文件定义的预期局部流程，而非已验证的端到端生产链。
 
 求值阶段按签名进入对应分型函数。整数的恒等路径直接返回；可能溢出的路径使用 `checked_abs`、`checked_pow` 或有限性检查。DECIMAL 路径创建独立结果值并调用 `MyDecimal::Round`、`DecimalAdd` 或 `DecimalSub`。对数先检查定义域，再用 `MathOutcome` 返回值和告警。CONV 先规范化正负进制、检查范围，截取合法前缀，解析成 `u64`，按有符号模式饱和/补码处理，最后用目标进制的大写字符输出。TRUNCATE 的整数路径对负小数位计算 `10^n` 后执行“先除后乘”，指数过大或 `i64::MIN` 小数位直接归零。
@@ -49,7 +51,7 @@ CONV 的中间表示是 `u64`。负输入通过 `wrapping_neg` 保留二进制�
 - 外部/工作区依赖：`mathutil::{MysqlRng, NewWithSeed}` 提供 MySQL 兼容 RNG；`types_dependency::decimal::mydecimal` 提供 `MyDecimal`、舍入模式和加减/构造函数；`types_dependency::field::{Round, Truncate}` 提供浮点 ROUND/TRUNCATE；`crc32fast::hash` 计算 CRC32。Cargo 清单直接声明 `crc32fast = "1"`、工作区路径依赖 `astersql-util-mathutil` 和 `astersql-types`。
 - 模块入口：`pkg/expression/lib.rs` 私有挂载 `builtin_math_kernel` 与 `builtin_math_vec_kernel`；测试模块 `builtin_math` 再导出标量实现，`builtin_math_test.rs` 通过 `use crate::builtin_math::*` 使用它。
 - 内部调用边：RustCodeGraph 确认 Rust `conv` 调用 `get_valid_prefix`、`parse_radix_u64`、`format_radix_u64`；`ceil_decimal` 调用 DECIMAL 加法与 `NewDecFromInt`。源码还直接表明 `floor_int_to_decimal` 复用 `ceil_int_to_decimal`，`round_decimal` 复用 `round_with_frac_decimal`，便捷 `log*` 复用相应 `eval_log*`。
-- 上游边界：RustCodeGraph 的 `callers` 对关键签名选择器和 `conv` 未给出本文件测试之外的生产调用，仓库级 `rg` 同样未发现外部 Rust 调用；因此生产上游当前记为“未接线或未验证”，不能虚构为执行器已调用。
+- 上游边界：RustCodeGraph 的 `callers` 对关键签名选择器和 `conv` 未给出本文件测试之外的生产调用，仓库级 `rg` 同样未发现外部 Rust 调用；这些查询不能证明正式 SQL 主链接线；冻结增量中 `builtin_math_vec.rs` 已直接调用 `round_with_frac_int`，属于遗留向量 kernel 内部复用。
 
 ## 错误处理与边界
 
@@ -58,7 +60,7 @@ CONV 的中间表示是 `u64`。负输入通过 `wrapping_neg` 保留二进制�
 - LOG/LOG2/LOG10 的非正输入、双参数 LOG 的非法底数（非正或 1）及非法真数返回 NULL 并生成告警。便捷 `log*` 会丢失告警，若调用层需要语句告警必须使用 `eval_log*`。
 - SQRT 负数、ACOS/ASIN 超出 `[-1, 1]` 返回 NULL；NaN 不满足这些有序比较，因而继续产生 NaN，测试明确覆盖该行为。
 - CONV 的基数必须在 2 到 36；非法基数返回 `Ok(None)`，没有合法数字前缀则返回字符串 `"0"`。解析超过 `u64` 时返回 BIGINT UNSIGNED 溢出，而负基数的有符号解释会先在 `i64` 边界饱和。
-- ROUND/TRUNCATE 的小数位先钳制到下游可接受范围；整数 TRUNCATE 对无法表示的 `10^n` 返回 0。`round_with_frac_int` 经 `f64` 中转，超大整数的精度风险应与 Go 行为一起评估，不能擅自改成不同算法。
+- REAL ROUND/TRUNCATE 的小数位先钳制到下游可接受范围；整数 TRUNCATE 对无法表示的 `10^n` 返回 0。整数 ROUND 使用精确整数算法，溢出返回错误。
 
 ## 并发与资源生命周期
 
@@ -72,7 +74,7 @@ Go `pkg/expression/builtin_math.go` 是语义对照源，包含 `builtinAbs*Sig`
 
 独立 Rust 测试 `pkg/expression/builtin_math_test.rs` 核对了 Go 语义的关键边界：`i64::MIN` ABS 溢出、正负 CEIL/FLOOR、负小数位 ROUND/TRUNCATE、对数/根号/反三角定义域、固定种子随机序列、POW/EXP/COT 溢出、CONV 的正负进制、UTF-8 CRC32、NaN 传播和签名选择。Go 的完整测试面还包括 `pkg/expression/builtin_math_test.go`；Rust 的向量语义由 `builtin_math_vec.rs` 及 `builtin_math_vec_test.rs` 覆盖，不应把标量测试视为向量接线证据。
 
-已观察到的结构差异是：Go 文件中的签名类型直接参与 Go 表达式框架，而本 Rust 文件当前只有测试再导出，未找到生产调用者。因此“局部函数与 Go 逻辑对齐”已有源码和测试证据，“已替代 Go 生产路径”则没有证据，保持未验证。
+已观察到的结构差异是：Go 文件中的签名类型直接参与 Go 表达式框架，而本 Rust 文件的签名选择器尚无已验证的生产 builder 接线，但 `round_with_frac_int` 已被遗留向量 kernel 直接复用。因此“局部函数与 Go 逻辑对齐”已有源码和测试证据，“已替代 Go 生产路径”仍没有证据，保持未验证。
 
 ## 扩展指南
 
@@ -84,10 +86,8 @@ Go `pkg/expression/builtin_math.go` 是语义对照源，包含 `builtinAbs*Sig`
 
 ## 验证依据
 
-- 完整读取：`pkg/expression/builtin_math.rs`（949 行），确认常量、类型、公开/私有函数及无条件编译项；文件本身没有内嵌测试模块。
-- crate 与模块证据：`pkg/expression/Cargo.toml`、`pkg/expression/lib.rs`；确认 crate 名、依赖、私有模块挂载、测试再导出与独立测试注册。包目录没有 `doc.go`，因此无可读取的 Go 包契约文件。
-- Go 对照：`pkg/expression/builtin_math.go` 及 `pkg/expression/builtin_math_test.go`；按签名族核对类型专用实现与测试面。
-- Rust 测试：`pkg/expression/builtin_math_test.rs`；核对 ABS/ROUND/CEIL/FLOOR、定义域、RAND、溢出、CONV/CRC32、三角函数、TRUNCATE 和签名选择的断言。向量边界参考 `pkg/expression/builtin_math_vec.rs` 与 `builtin_math_vec_test.rs`，但未把它们当作本文件的生产调用证据。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/expression/builtin_math.rs --offset 1 --limit 500` 与 `--offset 500 --limit 500` 覆盖全文件；`callees conv`、`callees ceil_decimal` 验证关键下游边；关键 `callers` 查询无生产上游结果。
-- 直接搜索：对 `builtin_math::`、各 `*_signature`、`eval_log`、`conv_binary_literal` 等进行仓库级 Rust 搜索，排除本源文件和直接测试后无结果，据此把生产接线状态明确标为未验证，而不是推测已支持。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务给定命令检查目标存在且恰有 11 个固定二级章节，并人工复核唯一新增生产物为本说明文件。
+- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/builtin_math.rs`，不把工作区后续变化作为行为依据。
+- `pkg/expression/builtin_math_test.rs::round_integer_with_fraction_preserves_exact_values` 覆盖正负半值、超 f64 精度整数、unsigned 位模式、极端 fraction、i64/u64 溢出及 1690 文本；Go 对照 `pkg/expression/builtin_math.go::roundIntWithFrac` 和 `builtinRoundWithFracIntSig::evalInt`。
+- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
+- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
+- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

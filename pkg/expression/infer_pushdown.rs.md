@@ -33,6 +33,8 @@
 
 ## 执行流程
 
+冻结增量将 `unaryminus` 加入 `TIFLASH_FUNCTIONS`，允许通过函数能力门禁；正式 PB 签名由 `builtin.rs::formal_registry` 按 Int/Decimal/Real 选择。白名单扩展不会绕过 TiFlash 返回类型、Unspecified 签名、黑名单、参数递归或 metadata 可序列化检查。
+
 1. 调用者构造 `PushDownContext` 并选择 `StoreType`。若需要批量分类，进入 `push_down_exprs_with_extra_info`；它按输入次序逐个调用 `can_expr_push_down`，分别追加到 `pushed` 和 `remained`，所以两组内部都保持原相对顺序。
 2. 对 TiFlash，`can_expr_push_down` 首先查看节点返回类型：默认拒绝 ENUM、BIT、SET、GEOMETRY、Unspecified 以及非法精度/小数位的 DECIMAL。只有上层标量函数允许 ENUM 时，ENUM 节点能越过此门禁。
 3. 节点分派中，常量直接通过；列取决于 `Column.encodable`；`Unsupported` 直接失败；标量函数继续执行签名与能力检查。
@@ -113,10 +115,8 @@ RustCodeGraph 的无文件限定 `explore` 还同时返回了 Go 同名符号；
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、目标文件已索引且含 41 个符号；`explore 'pkg/expression/infer_pushdown.rs StoreType PushDownContext can_expr_push_down can_func_be_pushed replace_pushdown_blacklist'` 给出核心调用边和上下游候选；`query can_expr_push_down --kind function` 唯一命中本文件第 211 行；`node --file ...` 分段读取了目标 Rust 文件、Go 对照、独立测试及 `lib.rs` 装配。精确 callers/callees 查询因本地命令超过 30 秒窗口未返回，未将其当作额外完成证据。
-- 源码与装配：`pkg/expression/infer_pushdown.rs`、`pkg/expression/fts_to_like.rs`、`pkg/expression/lib.rs:66-79,344-345,689-691`。
-- crate 边界：`pkg/expression/Cargo.toml`（包名 `astersql-expression`，`lib.rs` 入口，`autotests = false`，并声明该 expression crate 的完整依赖边界）；本文件自身仅使用标准库及同 crate 类型。
-- Go 对照：`pkg/expression/infer_pushdown.go:40-598`，覆盖全局状态、能力表、递归判定、上下文、批量接口与存储位掩码。
-- Rust 测试：`pkg/expression/infer_pushdown_test.rs`；`pkg/expression/fts_to_like_36_aster_unit_test.rs:338-411`；`pkg/expression/fts_to_like_test.rs:233-251`；`pkg/expression/aggregation/window_func_test.rs`；`pkg/planner/core/integration_test.rs:1559-1588,3021-3044`。
-- 直接接线：`pkg/planner/core/operator/physicalop/physical_projection.rs:148-161`、`pkg/expression/expr_to_pb.rs:303-310`、`pkg/executor/reload_expr_pushdown_blacklist.rs`。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令验证目标文档恰好具有 11 个固定二级章节，并人工复核本文没有把 Go 的完整 PB 转换器、缓存失效消费端或黑名单加载运行时误写成本文件现有实现。
+- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/infer_pushdown.rs`，不把工作区后续变化作为行为依据。
+- `pkg/expression/expr_to_pb_test.rs` 验证 unaryminus 的 TiFlash 下推判定及正式表达式的 UnaryMinusInt 编码；`pkg/expression/infer_pushdown_test.rs` 为相邻能力/类型门禁证据。Go 对照 `pkg/expression/infer_pushdown.go`。
+- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
+- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
+- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

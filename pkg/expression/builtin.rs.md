@@ -64,6 +64,8 @@ crate 边界由 `pkg/expression/Cargo.toml` 定义：包名为 `astersql-express
 
 ## 依赖与调用关系
 
+`formal_registry` 的 PB 签名选择为 `CoreBuiltinKind::UnaryMinus(ETInt)` 返回 `UnaryMinusInt`、`ETDecimal` 返回 `UnaryMinusDecimal`，其余类型返回 `UnaryMinusReal`。这是正式表达式到 PB 的类型化编码接线；TiFlash 能力判断还必须通过 `infer_pushdown.rs` 的白名单、类型、黑名单和参数检查。
+
 - 装配入口：`pkg/expression/lib.rs` 装入 `builtin.rs`，再导出 `formal_registry::{funcs, extensionFuncs, functionClass, registerBuiltinFactory, BuildCastFunction, ...}`；这是正式应用链的直接证据。
 - 同包下游：各 `builtin_*.rs`、`core_support.rs`、`distsql_builtin.rs` 和表达式测试使用这些基类或正式注册 API。RustCodeGraph 将 `pkg/expression/builtin.rs` 标记为被 54 个文件使用，并能定位 `newBaseBuiltinFunc`、`builtinFuncCache`、`EvalBool`、`registerBuiltinFactory`、`FunctionClassRegistry`、`BuildCastFunction` 等定义。
 - 工厂下游：生成线程安全策略来自 `builtin_threadsafe_generated_kernel`；特殊 planner 内置函数通过 `planner_bridge_kernel`；JSON 路径解析使用 `types_dependency::json_path` 与 `json_binary`。
@@ -120,9 +122,8 @@ RustCodeGraph 对重名符号的调用边分辨有限：例如 `BuildCastFunctio
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/expression/builtin.rs` 确认目标文件已索引、含 1,269 个符号并被 54 个文件使用。
-- RustCodeGraph：对 `newBaseBuiltinFunc`、`adjustNullFlagForReturnType`、`builtinFuncCache`、`EvalBool`、`registerBuiltinFactory`、`FunctionClassRegistry`、`BuildCastFunction`、`IsFunctionSupported` 的 `query` 定位了 Rust/Go 对照定义；`node --file` 分段核对了表达式 trait、构造器、缓存、正式注册表和动态构造器源码。
-- 装配与 crate：读取 `pkg/expression/lib.rs` 中 `expression_builtin` 模块及 `formal_registry` 再导出，读取 `pkg/expression/Cargo.toml` 的库入口、依赖和 porting metadata。目标包没有 `pkg/expression/doc.go`。
-- Go 对照：读取 `pkg/expression/builtin.go`，核对 `baseBuiltinFunc`、构造器、函数类、静态函数表、展示名和缓存；读取 `pkg/expression/builtin_test.go` 的显示名、锁函数和缓存测试意图。
-- Rust 测试：读取 `pkg/expression/builtin_test.rs` 的 `test_display_name`、`test_builtin_func_cache_concurrency`、`test_builtin_func_cache`，以及 `pkg/expression/builtin_32_aster_unit_test.rs` 对注册表、构造/Cast、NULL 规则、缓存、向量化过滤的独立回归。另由引用搜索确认生成签名校验覆盖在 `builtin_threadsafe_generated_26_aster_unit_test.rs`，正式注册 parity suite 位于 `builtin_registry_aster_unit_test.rs`。
-- 本任务是纯文档分析，按计划不运行 Cargo，也不以编译结果替代结构与源码证据。交付结构检查要求本文恰有“文件定位”至“验证依据”十一节；文档内容由上述源码、图查询、Cargo、Go 对照和测试路径人工复核。
+- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/expression/builtin.rs`，不把工作区后续变化作为行为依据。
+- `pkg/expression/expr_to_pb_test.rs` 构造正式 UnaryMinus 表达式并断言 `UnaryMinusInt` PB 编码；Decimal/Real 映射由冻结源码直接确认，没有将 Int 测试视为三类型全部运行证据。Go 对照 `pkg/expression/builtin_op.go`。
+- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
+- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
+- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。

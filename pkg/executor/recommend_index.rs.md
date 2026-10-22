@@ -4,12 +4,12 @@
 
 本文件属于根工作区中的 `astersql-executor` crate。`pkg/executor/Cargo.toml` 以 `lib.rs` 为库入口，并直接依赖 `astersql-util-chunk`；`pkg/executor/lib.rs` 通过 `pub mod recommend_index` 公开本模块。文件实现 `RECOMMEND INDEX` 结果集执行阶段的 Rust 语义：将动作分派给索引顾问，并把顾问结果编码进 `Chunk`。
 
-当前接线状态需要特别区分：RustCodeGraph 能索引本文件的类型与函数，但对 `RecommendIndexExec::Next`、`showOptions` 的 callers/callees 查询均返回空；全仓库 Rust 搜索也只找到 `lib.rs` 的模块声明，未找到构造 `RecommendIndexExec`、实现 `IndexAdvisor` 或调用 `Next` 的 Rust 代码。因此它是已公开、可复用的执行逻辑骨架，尚不能视为已接入 Rust SQL 执行器主链。完整的生产接线仍可在 Go 的 `pkg/executor/builder.go::buildRecommendIndex` 与 `pkg/executor/recommend_index.go` 中看到。
+冻结版本以 `lib.rs` 导出本模块，并由 `recommend_index_test.rs` 实例化执行器及测试顾问；尚无已验证的 Rust SQL builder 到此入口的生产接线。Go 的完整调用链见 `pkg/executor/builder.go::buildRecommendIndex` 与 `recommend_index.go`。
 
 ## 核心职责
 
-- `RecommendIndexExec::Next` 保证一次性执行：每次先清空输出 `Chunk`，首次调用根据 `action` 执行 `set`、`show` 或 `run`，后续调用直接返回成功且不再产生行。
-- `set` 把 `options` 交给顾问持久化；`show` 输出选项名称、当前值和说明；`run` 拆分可选 SQL 文本、请求顾问生成建议，并输出八列推荐信息。
+- `RecommendIndexExec::Next` 保证一次性执行：每次先清空输出 `Chunk`，首次调用根据 `action` 执行 `set`、`show`、`run` 或 `return`，后续调用直接返回成功且不再产生行。
+- `set` 把 `options` 交给顾问持久化；`show` 输出选项名称、当前值和说明；`run`/`return` 拆分可选 SQL 文本、请求顾问生成建议，并输出八列推荐信息。
 - `IndexAdvisor` 将会话上下文、选项存取、推荐算法和错误构造从执行器中抽象出去，使本文件不依赖某个具体索引顾问实现。
 - `RecommendIndexResult` 是顾问到执行器的行级传输对象；执行器只负责列映射和生成 `CREATE INDEX` 文本，不负责候选索引搜索、代价估算或结果持久化。
 
@@ -27,7 +27,7 @@
 - `RecommendIndexExec::Next<C>`：主入口，保留 Go 命名以配合 `#![allow(non_snake_case)]`。
 - `RecommendIndexExec::showOptions`：`show` 的内部流程，但因声明为 `pub`，crate 外也可直接调用。
 
-文件没有模块级常量、枚举、条件编译项或本地 trait 实现。
+文件导入 parser AST 的四个动作常量，没有自定义模块级常量、枚举、条件编译项或本地 trait 实现。
 
 ## 执行流程
 
@@ -35,9 +35,9 @@
 
 1. 无条件调用 `req.Reset()`，因此调用者传入的旧行会先被清除；即使执行器已经完成也同样如此。
 2. 若 `done` 已为 `true`，立即返回 `Ok(())`。首次调用则先把 `done` 设为 `true`，再执行任何可能失败的操作，所以错误之后也不会自动重试。
-3. 按动作分派：`set` 调用 `set_options` 后直接返回；`show` 调用 `showOptions` 后直接返回；`run` 继续；其他字符串通过 `unsupported_action` 返回错误。动作匹配区分大小写。
-4. `run` 仅在 `sql` 非空时按 ASCII 分号切分，每段用 `str::trim` 去除首尾空白并丢弃空段。非空原文若最终没有有效片段（例如 `";;;"` 或纯空白）则调用 `empty_sqls`。原文恰为 `""` 时则把空向量交给顾问，表示由顾问决定工作负载来源；这与 Go 行为一致。
-5. 调用 `advise_indexes(ctx, &mut context, sqls, &options)`。请求上下文 `ctx` 按值传入，顾问上下文被可变借用，选项只读借用。
+3. 按动作分派：`set` 调用 `set_options` 后直接返回；`show` 调用 `showOptions` 后直接返回；`run` 继续并设置 `persist = true`；`return` 继续并设置 `persist = false`；其他字符串通过 `unsupported_action` 返回错误。动作匹配区分大小写。
+4. `run`/`return` 仅在 `sql` 非空时按 ASCII 分号切分，每段用 `str::trim` 去除首尾空白并丢弃空段。非空原文若最终没有有效片段（例如 `";;;"` 或纯空白）则调用 `empty_sqls`。原文恰为 `""` 时则把空向量交给顾问，表示由顾问决定工作负载来源；这与 Go 行为一致。
+5. 调用 `advise_indexes(ctx, &mut context, sqls, &options, persist)`。请求上下文 `ctx` 按值传入，顾问上下文被可变借用，选项只读借用。
 6. 遍历所有返回结果，将索引列用逗号连接，依次向列 0..7 追加数据库、表、索引名、列列表、规模、原因、JSON 和 `CREATE INDEX {name} ON {table}({columns});`。
 7. 所有推荐行写完后才返回顾问同时给出的 `Result`。因此错误和部分结果可以共存；调用层不能假设 `Err` 意味着 `Chunk` 为空。
 
@@ -81,7 +81,9 @@
 
 ## 与 Go 版本的对应关系
 
-`pkg/executor/recommend_index.go` 是逐项语义基准：两者都先重置结果、用 `done` 保证只执行一次、支持 `set/show/run`、按分号拆分 SQL、过滤空片段、先写顾问结果再返回顾问错误，并生成相同形状的八列表格与 `CREATE INDEX` 文本。`advise_id` 在两个版本中都未被读取。
+冻结版本中 `RecommendIndexActionReturn` 对应 `RETURN RESULT`，与 `run` 共享分析、SQL 拆分和写行流程，但传给顾问的 `persist` 为 false；Go 对应 `AdviseIndexesWithoutPersist`，`run` 对应 `AdviseIndexes`。默认动作的选择属于 parser，上述执行器不把空动作默认为 return；持久化是否真正被抑制仍依赖具体顾问遵守此契约。
+
+`pkg/executor/recommend_index.go` 是逐项语义基准：两者都先重置结果、用 `done` 保证只执行一次、支持 `set/show/run/return`、按分号拆分 SQL、过滤空片段、先写顾问结果再返回顾问错误，并生成相同形状的八列表格与 `CREATE INDEX` 文本。`advise_id` 在两个版本中都未被读取。
 
 Rust 为解除具体包耦合做了三处抽象：Go 的 `exec.BaseExecutor`/`sessionctx` 被 `A::Context` 代替；`ast.RecommendIndexOption` 被 `A::Option` 代替；`indexadvisor` 包函数被 `IndexAdvisor` trait 代替。因此 Rust 类型本身尚未实现 Go 的 `exec.Executor` 接口等价物，也没有 Go builder 的 Rust 对应接线。
 
@@ -100,11 +102,8 @@ Rust 为解除具体包耦合做了三处抽象：Go 的 `exec.BaseExecutor`/`se
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标文件被识别为含 12 个符号的 Rust 文件。
-- RustCodeGraph `node --file pkg/executor/recommend_index.rs --offset 1 --limit 260`：核对了文件全部 152 行、三个公开核心类型/trait、两个执行方法及各分支。
-- RustCodeGraph `query RecommendIndexExec`、`query IndexAdvisor`、`query RecommendIndexResult`、`query showOptions`：确认 Rust/Go 同名符号与精确位置。
-- RustCodeGraph 对 `pkg/executor/recommend_index.rs:80:function:Next` 和 `:140:function:showOptions` 的 callers/callees 查询均为空；随后以 `rg` 搜索 Rust 引用，确认除 `pkg/executor/lib.rs` 模块声明外没有调用或实现证据。
-- 已读 crate 与模块证据：`pkg/executor/Cargo.toml`、`pkg/executor/lib.rs`。目标包当前未发现 `doc.go`。
-- 已读 Go 对照与接线：`pkg/executor/recommend_index.go`、`pkg/executor/builder.go::buildRecommendIndex`。
-- 已读测试证据：`pkg/planner/indexadvisor/indexadvisor_test.go`、`pkg/planner/indexadvisor/indexadvisor_sql_test.rs`、`pkg/planner/indexadvisor/options_test.rs`；另以 `rg` 确认 `pkg/executor` 下没有同名 Rust 独立测试。
-- 本任务为纯文档分析，按计划不运行 Cargo。结构验证要求是目标文件存在且恰好包含规定的十一个二级标题；验证结果在任务交付时记录。
+- 本次依据冻结范围 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867` 的逐文件差异及 `git show 2c944fb:pkg/executor/recommend_index.rs`，不把工作区后续变化作为行为依据。
+- `pkg/executor/recommend_index_test.rs::recommend_index_return_result_does_not_persist` 记录 return=false、run=true；Go 对照 `pkg/executor/recommend_index.go`。
+- crate/module 边界参考对应 `Cargo.toml` 和 `lib.rs`；executor/expression 均没有 `doc.go`。
+- 本次 RustCodeGraph `status` 显示含 Rust 索引，但索引不代表冻结提交；以上行为以冻结 blob 为准，旧说明的图节点统计和历史行号不作为本次验证证据。
+- Ready 文档验证：检查本任务七篇文档各有 11 个二级章节及 `git diff --check`，另人工审查增量语义和接线边界。按计划不运行 Cargo；上述测试是源码证据，未声称本轮执行通过。
