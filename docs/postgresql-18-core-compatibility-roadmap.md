@@ -263,6 +263,8 @@ PG 专属或 MySQL 专属场景中，另一方言对象用 `status: 不适用` �
 
 [公共表表达式遮蔽规则](#公共表表达式遮蔽规则)以 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::scope` / `relation` 为入口；[ast/dml.rs](../pkg/parser/ast/dml.rs) 为指定导航，实际 CTE 载体在 [ast/lib.rs](../pkg/parser/ast/lib.rs) 的 `WithClause` / `CommonTableExpression`。独立测试入口为 pg_name_test.rs、parser_test.rs，仅静态阅读。
 
+[模式搜索路径解析契约](#模式搜索路径解析契约)以 [pg_session.rs](../pkg/server/pg_session.rs) 的路径访问器、[pg_name.rs](../pkg/server/pg_name.rs) 的关系门禁和 [pg_catalog.rs](../pkg/server/pg_catalog.rs) 的目录遮蔽接线为入口；独立测试入口为 pg_session_test.rs、pg_query_test.rs，仅静态阅读。
+
 ### 目标行为
 
 #### 方言身份传递
@@ -531,6 +533,33 @@ PG 的 RECURSIVE 还允许无环前向引用，不等于每个 CTE 都自递归�
 
 官方依据（2026-10-23 查阅）：PostgreSQL **18** [SELECT 的 WITH/FROM](https://www.postgresql.org/docs/18/sql-select.html#SQL-WITH) 定义普通/递归 WITH 的同级引用顺序、真实表被遮蔽及显式 schema 绕过；§7.8 [WITH Queries](https://www.postgresql.org/docs/18/queries-with.html) 定义单查询作用域及递归项结构。嵌套同名按这些作用域规则制定上述目标，仍需参考端验证具体输入；[18 分支 parse_cte.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/parser/parse_cte.c) 是重复名与递归诊断的后续取证入口，分支可变，不作固定补丁实测证据。[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 给出 42P01/42712/0A000 分类，§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P。MySQL **8.4** §15.2.20 [WITH](https://dev.mysql.com/doc/refman/8.4/en/with.html) 定义查询块搜索、同级仅向前序引用及自递归关键字要求。18.6 仍仅为来源指定目标，没有本轮补丁版本、AsterSQL、PG 或 MySQL 的实测结果。
 
+#### 模式搜索路径解析契约
+
+本块对应源工作流 2 步骤 3 的 schema/search_path 责任，承接[引号与大小写规则](#引号与大小写规则)、[限定名称解析规则](#限定名称解析规则)及[公共表表达式遮蔽规则](#公共表表达式遮蔽规则)。静态证据基于提交 `d0e11420ba7c3e452418375ce494b5769bae811f`：已读 [pg_session.rs](../pkg/server/pg_session.rs) 的 `PgSession::has_public` / `schema` / `public_precedes_catalog` / `execute` 与 `SessionQuery::parse`。当前默认路径仅 public；has_public 只判断成员，schema 只取原始列表首项，public_precedes_catalog 仅在 public 与 pg_catalog 都显式出现且 public 在前时为真。parse 只接受这两个名称、无重复列表及空字符串路径，其他 schema（包括 missing）、重复项返回 0A000；这不是 PostgreSQL 完整路径模型，也没有证明首项是存在且有 USAGE 的有效 schema。
+
+[pg_name.rs](../pkg/server/pg_name.rs) 的 `Resolver::relation` / `adapt` 将未限定非 CTE 关系交给 has_public 门禁；public 缺席返回 42P01，显式 public.t 绕过该门禁并改写到当前后端库，非 public/跨库拒绝沿前块契约。[pg_catalog.rs](../pkg/server/pg_catalog.rs) 的 `CatalogQuery::parse_session_with_types` 在 public_precedes_catalog 为真时，通过当前库快照检查隐式目录关系是否被同名用户表遮蔽，再交给有界目录解析；`current_schema` 字段取自 session.schema()。目录行生成中 pg_namespace 仅映射当前库为 public，并提供 pg_catalog，不因路径排除而删除目录行。上述接线不是任意 schema 的 resolver，也不能由路径成员推导对象存在或用户可见。
+
+独立测试只阅读、未执行：[pg_session_test.rs](../pkg/server/pg_session_test.rs) 的 `pg_introspection_namespace_parser_boundaries` 覆盖有界 SET/RESET/SHOW 接受与缺失 schema、重复名拒绝；[pg_query_test.rs](../pkg/server/pg_query_test.rs) 的 `pg_introspection_namespace_session_state` 有两连接不同路径、空路径 current_schema 为 NULL、隐式 catalog 可查询、RESET 和 Parse 后 SET 的 current_schema 断言；`pg_introspection_names_live_tables` 有路径仅 pg_catalog 时未限定用户表 42P01、显式 public 表仍读取的断言。未据此声称同名 catalog 完整优先级、权限过滤或缓存重绑定已通过。`pkg/server/doc.go` 不存在，本块源码和测试阅读均不替代当前运行证据。
+
+目标由工作流 5 拥有连接私有的路径设置、SHOW、RESET、SET LOCAL 及事务恢复；本块只定义 resolver 消费状态的责任，不指定新类型或方法。交接信息须能区分原始设置与有效有序 schema、连接数据库/角色、名称身份与对象类别，并关联工作流 6 提供的真实对象、schema 存在性及权限可见性；不能用 has_public 或首项字符串取代目录查询。未限定关系先按前块查可见 CTE，再按有效关系搜索路径查首个匹配对象；显式 schema.t 绕过 CTE 和路径成员筛选，仍须执行目录存在性、权限及当前数据库隔离检查，失败不能静默回落 public。
+
+PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列出则遵从所在位置。空显式路径不禁用隐式 catalog，普通 public 表不能因此可见；存在临时 schema 时，关系/类型还须按 PG 的临时 schema 优先级处理，不能将关系顺序直接用于函数/运算符。不存在或无 USAGE 的路径项按官方规则忽略，特殊项 "$user" 按当前用户解析；这些完整规则是工作流 5、6 的后续依赖，当前入口不支持任意 schema、用户路径或临时 schema 的部分须显式登记门禁 0A000，不能误称 PG 要求拒绝。对象创建默认 schema、函数/运算符重载及临时对象实现不在本块展开。current_schema 的目标是首个有效显式 schema（没有则 SQL NULL），不能因隐式 pg_catalog 总可搜索便返回 pg_catalog；SHOW 原值、有效路径及目录可见对象分别验收。
+
+以下为待新增验收入口，所有运行行为均“未验证”。夹具：同一 PG 数据库仅有 public.t(id) 一行 1，未建临时对象，角色具有所需 USAGE/SELECT；目录同名场景另建 public.pg_namespace(nspname) 一行 'user_marker'，参考端 pg_catalog.pg_namespace 含 pg_catalog 行。MySQL 独立默认库 db 中准备 t(id)=1，仅按自身名称规则对照，不使用 PG 设置。
+
+| 场景与正反例 | PG 目标结果与当前边界 | MySQL 适用性与目标 | SQLSTATE、定位及交接 |
+| --- | --- | --- | --- |
+| public 在路径：`SET search_path TO public` 后 `SELECT id FROM t`；反例改为不存在的 missing_t | 返回 1；隐式 catalog 仍先搜索。missing_t 目标 42P01，不能以路径含 public 作为存在证明。 | `SELECT id FROM t` 在 db 返回 1；PG SET 不适用。缺表按自身诊断取证。 | 成功不适用；缺表由 resolver 诊断原关系名，工作流 6 负责对象存在性。 |
+| public 不在路径：`SET search_path TO pg_catalog` 后分别 `SELECT id FROM t`、`SELECT id FROM public.t` | 前者目标 42P01；后者仍返回 1。当前有对应有界测试意图，显式名不受路径成员限制不等于免权限检查。 | t 仍绑定默认库；对应显式写法为 db.t。public.t 在 MySQL 是数据库限定，不能直接当 PG schema 对照。 | resolver 对未找到的 t 定位，显式名按前块权限/目录交接；不得转而读取其他数据库。 |
+| catalog 同名与顺序：分别设置 public、pg_catalog, public、public, pg_catalog，执行 `SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'`；再显式查 pg_catalog.pg_namespace 与 public.pg_namespace | 前两种隐式查询返回 pg_catalog 行；第三种绑定用户表返回零行。显式 catalog 查询总返回该行；显式 public 查询在此谓词下零行。顺序控制的是对象绑定，不能靠 UNION 两个对象模拟。 | PG 路径和目录 SQL 不适用；旁路 `SELECT id FROM db.t` 始终返回 1，不受 PG 连接设置影响。 | 各成功项 SQLSTATE/位置不适用；同名夹具、绑定身份、列元数据及隐式/显式一致性由工作流 6 协作验收，当前未验证。 |
+| 空路径：`SET search_path TO ''` 后查询 t、public.t、pg_catalog.pg_namespace，以及 `SELECT current_schema()` | t 目标 42P01；public.t 返回 1；显式 catalog 可查，隐式 pg_namespace 也仍绑定 catalog；current_schema 目标 SQL NULL。空路径不等于禁用所有对象。 | PG SET/current_schema/catalog 不适用；旁路查询 db.t 返回 1。 | 缺表归 resolver；空路径设置和内省值归工作流 5，目录对象归工作流 6；其余成功无错误位置。 |
+| 两 PG 会话 A=public、B=pg_catalog，交错查询 t/public.t，随后仅 A 改为空路径；MySQL M 同时查 db.t | 初始 A 的 t 返回 1，B 的 t 为 42P01，两者 public.t 都返回 1；A 改路径后仅 A 的未限定查找改变，B 状态保持。简单 Q 与扩展查询分别采证。 | M 始终返回 1；不向 M 注入 PG SET 语句并忽略错误。 | 工作流 5 拥有状态隔离，resolver 消费所属连接的有效状态；不能从 current_schema 的两连接测试推广为全链路绑定隔离。 |
+| 能力边界反例：`SET search_path TO missing, public`、`SET search_path TO "$user", public` | PG 参考端按存在性/USAGE 展开或忽略相应项；当前入口返回 0A000，作为有界能力差异登记，不作为 PG 语法错误或未来成功证据。 | PG 路径语句不适用，MySQL 自身默认库逻辑独立。 | 本轮不猜造任意角色/权限组合结果；需工作流 5、6 的夹具和参考端证据后细分开放条件。 |
+
+诊断责任分开：路径设置语法与拒绝归工作流 5，名称无匹配的 42P01 归 resolver，目录/权限诊断归工作流 6，错误传输归工作流 7。0A000 为当前有界能力门禁，不能替代 PG 合法输入的完整目标。P 如提供须指向原 SQL，从 1 起按字符计数；双引号、错误前中文和改写跨度均待独立取证，不从后端改写文本计算。Parse/Bind/Execute 间改变路径时，既有 current_schema 断言不能决定关系绑定时点、重新分析及缓存失效规则；须后续与工作流 5 单独取证再定义，不承诺所有已准备语句固定或立即重绑定。类型、OID、NULL 元数据、精确诊断位置及参考端结果均须按第 1 章补证。
+
+官方依据（2026-10-23 查阅）：PostgreSQL **18** §5.10.3/5.10.5 [Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html) 说明路径和系统目录；§19.11.1 [search_path](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-SEARCH-PATH) 给出隐式/显式 catalog、有效路径、临时 schema 及用户项规则；§9.27.1 [Session Information Functions](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-SESSION) 定义 current_schema/current_schemas。[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 给出 42P01/0A000 分类，§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P。MySQL **8.4** §11.2.2 [Identifier Qualifiers](https://dev.mysql.com/doc/refman/8.4/en/identifier-qualifiers.html) 支持上述默认库/数据库限定对照。18.6 仅为来源指定目标，本轮未运行该补丁版本、AsterSQL、PG 或 MySQL，不将大版本规则当作补丁实测。
+
 ### 范围外
 
 [方言身份传递](#方言身份传递)本轮不实现方言类型、解析原型、共享 AST、缓存接线或运行测试平台；不扩建 resolver、planner、表达式子系统。六类语法、引号/大小写、限定名、CTE 及 schema/search_path 名称规则由后续文档块定义；会话设置执行归工作流 5，目录实现归工作流 6，错误传输与恢复协作工作流 7。现有文本适配只作为有界入口证据，不承担通用 SQL 翻译方案，也不据其推断完整 PG 支持。
@@ -552,6 +581,8 @@ PG 的 RECURSIVE 还允许无环前向引用，不等于每个 CTE 都自递归�
 [限定名称解析规则](#限定名称解析规则)不实现 parser/AST、名称绑定、权限、跨库访问或完整 schema 模型；CTE/search_path 交后续块，会话状态和目录实现分别归工作流 5、6，协议诊断归工作流 7。
 
 [公共表表达式遮蔽规则](#公共表表达式遮蔽规则)不实现解析/绑定、递归执行、物化或优化，不扩建目录及 search_path；只固定名称可见性与入口门禁责任，执行协作工作流 5、目录协作工作流 6、诊断协作工作流 7。
+
+[模式搜索路径解析契约](#模式搜索路径解析契约)不实现路径状态、RESET、事务恢复、目录对象或权限可见性；工作流 5、6 分别主责。只约束 resolver 消费顺序、隐式 catalog、空路径和限定名的交接，不承诺任意 schema 已可用。
 
 ### 验收
 
@@ -575,6 +606,8 @@ PG 的 RECURSIVE 还允许无环前向引用，不等于每个 CTE 都自递归�
 
 [公共表表达式遮蔽规则](#公共表表达式遮蔽规则)的文档验收为：基本 WITH、嵌套同名、public.t、定义顺序/前向、自引用及递归结构反例均有双方言目标；作用域生命周期、当前 RECURSIVE 拒绝和未验证项明确。当前测试仅为静态证据，所有解析、绑定、结果及诊断行为均未实测。
 
+[模式搜索路径解析契约](#模式搜索路径解析契约)的文档验收为：public 在/不在路径、显式 public.t、catalog 同名及顺序、空路径、两 PG 会话和 MySQL 旁路均有目标及诊断责任；原始/有效路径、当前布尔门禁与完整目标区分清楚。全部运行行为仍未验证，状态/目录阅读不升级为绑定或兼容通过。
+
 ### 后续细分
 
 [方言身份传递](#方言身份传递)后续先做连接身份拥有权及关闭/重连边界的局部取证，再分别拆简单查询与扩展查询的身份承接、共享解析/名称绑定/规划/表达式上下文的必要局部接线及隔离回归；实施前确认实际落点，不将本责任链自动扩张为完整子系统重建。各任务明确单一交接点、所需状态、现有可复用实现和验收断言；DIALECT-IDENTITY 三类场景是待新增验收入口，不是既有测试或已登记通过的能力。
@@ -596,6 +629,8 @@ PG 的 RECURSIVE 还允许无环前向引用，不等于每个 CTE 都自递归�
 [限定名称解析规则](#限定名称解析规则)后续先取证关系分段与列限定的上下文保真及当前数据库身份，再分别拆关系限定/跨库拒绝、列与别名作用域、原 SQL 位置和双方言隔离断言；沿现有独立测试补 adapt/guard 的必要覆盖，不扩建目录或权限子系统。
 
 [公共表表达式遮蔽规则](#公共表表达式遮蔽规则)后续先核对顺序/嵌套/名称身份与跨度的保真，再分别拆普通 CTE 绑定与显式表绕过、前向及重复名诊断、查询块退出/跨语句与双方言隔离断言；递归入口依赖图与门禁另拆，不借名称任务补齐递归执行或物化子系统。
+
+[模式搜索路径解析契约](#模式搜索路径解析契约)后续先核对状态到 resolver 的有效路径交接，再拆 public/显式限定、catalog 同名顺序与空路径、两会话及双方言隔离的独立验收；关系绑定时点与缓存失效先做参考端取证。任意 schema、权限、临时项及用户项分别交工作流 5、6 细分，不递归补建目录或会话子系统。
 
 ## 3. 共享类型与转换契约
 
