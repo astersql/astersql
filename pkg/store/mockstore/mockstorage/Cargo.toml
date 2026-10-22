@@ -12,8 +12,13 @@ go-package = "pkg/store/mockstore/mockstorage"
 legacy-tasks = ["task-819"]
 
 [dependencies]
+fs2 = "0.4"
+serde_json = "1"
 astersql-store-mockstore-unistore = { path = "../unistore" }
 "astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(any())'.dependencies]
 "astersql-store-copr" = { package = "astersql-store-copr", path = "../../copr" }

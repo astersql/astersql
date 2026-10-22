@@ -1799,6 +1799,7 @@ dependencies = [
  "astersql-util-metricsutil",
  "astersql-util-signal",
  "rpprof",
+ "tempfile",
  "tikv-client",
 ]
 
@@ -10252,6 +10253,9 @@ dependencies = [
  "astersql-store-driver-txn",
  "astersql-store-helper",
  "astersql-store-mockstore-unistore",
+ "fs2",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -12517,6 +12521,7 @@ dependencies = [
 name = "astersql-util-printer"
 version = "0.1.0"
 dependencies = [
+ "astersql-config",
  "astersql-testkit-testsetup",
  "rustc_version_runtime",
  "semver",

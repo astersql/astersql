@@ -796,6 +796,35 @@ impl crate::starter_bootstrap_file::StarterPrivilegeResetMetadata for StarterSto
 }
 
 impl CanonicalSessionFactory {
+    /// Open the local server store at its configured path, preserving the same
+    /// canonical bootstrap and diagnostic validation used by the TiKV factory.
+    pub fn from_local_store(path: &std::path::Path) -> SessionResult<Self> {
+        if path.as_os_str().is_empty() {
+            return Err(SessionError::new(
+                "local diagnostic storage requires a persistent path",
+            ));
+        }
+        let diagnostic = astersql_config::diagnosticmode::Enabled();
+        let store = astersql_store_mockstore_mockstorage::KVStore::OpenPersistent(path, diagnostic)
+            .map_err(|e| session_error("open local canonical storage", e))?;
+        let storage = Arc::try_unwrap(
+            astersql_store_mockstore_mockstorage::NewMockStorage(store, None)
+                .map_err(|e| session_error("adapt local canonical storage", e))?,
+        )
+        .map_err(|_| SessionError::new("local canonical storage retained an unexpected owner"))?;
+        let factory = Self::from_storage(storage, DomainConfig::default())?;
+        let result = if diagnostic {
+            crate::diagnostic::bootstrap_session_impl_diagnostic(Arc::clone(&factory.domain))
+        } else {
+            BootstrapCanonicalDomain(Arc::clone(&factory.domain))
+        };
+        if let Err(error) = result {
+            factory.domain.close();
+            return Err(error);
+        }
+        Ok(factory)
+    }
+
     /// Load an already bootstrapped target keyspace without registering a
     /// primary server or modifying that keyspace's schema during construction.
     pub(crate) fn from_crossks_tikv_store(store: astersql_store::TikvStore) -> SessionResult<Self> {
@@ -2736,9 +2765,21 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
     astersql_sessionctx_variable::register_builtin_sysvars();
     let quote_sql = |value: &str| value.replace('\'', "''");
     if !was_bootstrapped {
+        // Persist root's Go doDMLWorks grants so a diagnostic restart can
+        // load privileges without repairing mysql.user or bypassing checks.
         session.execute(
-            "INSERT IGNORE INTO mysql.user (Host, User, authentication_string, plugin) \
-             VALUES ('%', 'root', '', 'mysql_native_password')",
+            "INSERT IGNORE INTO mysql.user (Host, User, authentication_string, plugin, \
+             Select_priv, Insert_priv, Update_priv, Delete_priv, Create_priv, \
+             Drop_priv, Process_priv, Grant_priv, References_priv, Alter_priv, \
+             Show_db_priv, Super_priv, Create_tmp_table_priv, Lock_tables_priv, Execute_priv, \
+             Create_view_priv, Show_view_priv, Operate_view_priv, Create_routine_priv, Alter_routine_priv, \
+             Index_priv, Create_user_priv, Event_priv, Repl_slave_priv, Repl_client_priv, \
+             Trigger_priv, Create_role_priv, Drop_role_priv, Shutdown_priv, Reload_priv, \
+             FILE_priv, Config_priv, Create_Tablespace_Priv) \
+             VALUES ('%', 'root', '', 'mysql_native_password', \
+             'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', \
+             'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', \
+             'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y')",
         )?;
     }
     let privilege_handle = runtime_privilege_handle(&domain);

@@ -160,7 +160,9 @@ fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
         ConnError::MalformedPacket(_) => (1835, b"HY000"),
         ConnError::Session(message) => {
             let lower = message.to_ascii_lowercase();
-            if lower.contains("[executor:8173]") {
+            if lower.ends_with("running in read-only mode") {
+                (1836, b"HY000")
+            } else if lower.contains("[executor:8173]") {
                 (8173, b"HY000")
             } else if lower.contains("[executor:8175]") {
                 (8175, b"HY000")
@@ -2308,7 +2310,12 @@ impl ClientConn {
             packet.push(b'#');
             packet.extend_from_slice(sql_state);
         }
-        packet.extend_from_slice(error.to_string().as_bytes());
+        if code == 1836 {
+            // TiDB sends the standard MySQL message without its internal class prefix.
+            packet.extend_from_slice(b"Running in read-only mode");
+        } else {
+            packet.extend_from_slice(error.to_string().as_bytes());
+        }
         self.writePacket(&packet)?;
         self.flush()
     }

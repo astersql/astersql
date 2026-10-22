@@ -9,6 +9,9 @@
 
 mod canonical_storage;
 mod embedded_rpc;
+mod persistent;
+#[cfg(test)]
+mod persistent_test;
 mod storage;
 pub use embedded_rpc::EmbeddedRpcStore;
 

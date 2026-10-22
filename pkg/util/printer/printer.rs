@@ -100,6 +100,7 @@ pub fn PrintTiDBInfo() {
                 go_version = %build_version(),
                 race_enabled = israce::RaceEnabled,
                 check_table_before_drop,
+                "Diagnostic Mode" = astersql_config::diagnosticmode::Enabled(),
                 component_version = %componentVersion,
                 deploy_mode = %deploy_mode,
                 kernel_type = %kernel_type,
@@ -115,6 +116,7 @@ pub fn PrintTiDBInfo() {
                 go_version = %build_version(),
                 race_enabled = israce::RaceEnabled,
                 check_table_before_drop,
+                "Diagnostic Mode" = astersql_config::diagnosticmode::Enabled(),
                 component_version = %componentVersion,
                 deploy_mode = %deploy_mode,
                 kernel_type = %kernel_type,
@@ -132,6 +134,7 @@ pub fn PrintTiDBInfo() {
             go_version = %build_version(),
             race_enabled = israce::RaceEnabled,
             check_table_before_drop,
+            "Diagnostic Mode" = astersql_config::diagnosticmode::Enabled(),
             kernel_type = %kernel_type,
             "Welcome to TiDB."
         );
@@ -145,6 +148,7 @@ pub fn PrintTiDBInfo() {
             go_version = %build_version(),
             race_enabled = israce::RaceEnabled,
             check_table_before_drop,
+            "Diagnostic Mode" = astersql_config::diagnosticmode::Enabled(),
             kernel_type = %kernel_type,
             enterprise_extension_commit_hash = %enterprise_hash,
             "Welcome to TiDB."

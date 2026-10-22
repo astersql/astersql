@@ -428,8 +428,7 @@ fn canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153() {
     connection.Close().unwrap();
 }
 
-#[test]
-fn ttl_import_precheck_error_is_encoded_as_8173() {
+fn assert_session_error_packet(message: &str, expected_code: u16, fragment: &str) {
     use std::io::{Read, Write};
     use std::sync::Arc;
 
@@ -506,7 +505,6 @@ fn ttl_import_precheck_error_is_encoded_as_8173() {
         .unwrap();
     peer.set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
-    let message = "[executor:8173]PreCheck failed: target table has TTL enabled, please disable TTL before IMPORT INTO";
     connection
         .writeError(&ConnError::Session(message.into()))
         .unwrap();
@@ -521,11 +519,32 @@ fn ttl_import_precheck_error_is_encoded_as_8173() {
         }
     };
     assert_eq!(packet[0], 0xff);
-    assert_eq!(u16::from_le_bytes(packet[1..3].try_into().unwrap()), 8173);
-    assert_eq!(&packet[4..9], b"HY000");
-    assert!(
-        String::from_utf8_lossy(&packet[9..])
-            .contains("target table has TTL enabled, please disable TTL before IMPORT INTO")
+    assert_eq!(
+        u16::from_le_bytes(packet[1..3].try_into().unwrap()),
+        expected_code
     );
+    assert_eq!(&packet[4..9], b"HY000");
+    assert!(String::from_utf8_lossy(&packet[9..]).contains(fragment));
+    if expected_code == 1836 {
+        assert_eq!(&packet[9..], fragment.as_bytes());
+    }
     connection.Close().unwrap();
+}
+
+#[test]
+fn ttl_import_precheck_error_is_encoded_as_8173() {
+    assert_session_error_packet(
+        "[executor:8173]PreCheck failed: target table has TTL enabled, please disable TTL before IMPORT INTO",
+        8173,
+        "target table has TTL enabled, please disable TTL before IMPORT INTO",
+    );
+}
+
+#[test]
+fn diagnostic_mode_error_is_encoded_as_1836() {
+    assert_session_error_packet(
+        "[planner:1836]Running in read-only mode",
+        1836,
+        "Running in read-only mode",
+    );
 }

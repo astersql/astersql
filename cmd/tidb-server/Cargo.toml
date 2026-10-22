@@ -40,3 +40,4 @@ astersql-util-metricsutil = { path = "../../pkg/util/metricsutil" }
 rpprof = { git = "https://github.com/mingley/pprof-rs", tag = "v0.18.1" }
 
 [dev-dependencies]
+tempfile = "3"

@@ -1547,7 +1547,12 @@ pub mod printer {
     }
     pub fn PrintTiDBInfo() {
         record_event("printer.PrintTiDBInfo");
-        log_info("TiDB stub info");
+        let message = format!(
+            "Welcome to TiDB. Diagnostic Mode={}",
+            astersql_config::diagnosticmode::Enabled()
+        );
+        eprintln!("INFO:{message}");
+        log_info(&message);
     }
 }
 

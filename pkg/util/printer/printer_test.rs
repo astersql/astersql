@@ -85,6 +85,7 @@ fn test_print_tidb_info() {
     deploymode::set_for_test("premium");
     PrintTiDBInfo();
     assert!(logs_contain("Welcome to TiDB."));
+    assert!(logs_contain("Diagnostic Mode=false"));
     if kerneltype::IsNextGen() {
         let expected =
             mysql::NormalizeTiDBReleaseVersionForNextGen(unsafe { mysql::TiDBReleaseVersion });
@@ -94,4 +95,32 @@ fn test_print_tidb_info() {
         assert!(!logs_contain("component_version="));
         assert!(!logs_contain("deploy_mode="));
     }
+}
+
+#[traced_test]
+#[test]
+#[serial]
+fn print_tidb_info_reports_enabled_diagnostic_mode() {
+    const CHILD: &str = "ASTERSQL_PRINTER_DIAGNOSTIC_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "printer_test::print_tidb_info_reports_enabled_diagnostic_mode",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    astersql_config::diagnosticmode::Initialize(true).unwrap();
+    PrintTiDBInfo();
+    assert!(logs_contain("Diagnostic Mode=true"));
 }

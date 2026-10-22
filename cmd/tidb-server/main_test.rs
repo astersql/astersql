@@ -1113,3 +1113,119 @@ fn starter_fallback_override_requires_explicit_flag_and_starter_mode() {
     assert!(cfg.StarterParams.EnableRGFallback);
     stubs::reset_all_for_test();
 }
+
+#[test]
+fn diagnostic_mode_cli_parses_default_and_explicit_values() {
+    let _guard = stubs::test_guard();
+    for (args, expected) in [
+        (vec!["tidb-server"], false),
+        (vec!["tidb-server", "--diagnostic-mode"], true),
+        (vec!["tidb-server", "--diagnostic-mode=true"], true),
+        (vec!["tidb-server", "--diagnostic-mode=false"], false),
+    ] {
+        let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let flags = initFlagSetWithArgs(&args);
+        assert_eq!(flags.LookupBool("diagnostic-mode"), expected);
+    }
+}
+
+/// Run mode transitions in a fresh process, as production Initialize is immutable.
+#[test]
+fn diagnostic_mode_reopens_real_metadata_and_restricts_workers_and_sql() {
+    const CHILD: &str = "ASTERSQL_DIAGNOSTIC_STARTUP_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "main_test::diagnostic_mode_reopens_real_metadata_and_restricts_workers_and_sql",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use astersql_session::runtime::{CanonicalSessionFactory, ConcreteSession};
+    use astersql_session::testutil::TestSession;
+    let dir = tempfile::tempdir().unwrap();
+    let normal = CanonicalSessionFactory::from_local_store(dir.path()).unwrap();
+    let session = ConcreteSession::new(Arc::clone(normal.domain()));
+    session
+        .execute("create table test.diagnostic_restart (a int)")
+        .unwrap();
+    session
+        .execute("insert into test.diagnostic_restart values (42)")
+        .unwrap();
+    normal.domain().close();
+    drop(session);
+    drop(normal);
+    let wal = dir.path().join("canonical-kv.wal");
+    let before = std::fs::read(&wal).unwrap();
+    // The public CLI path must initialize mode before any Domain is created.
+    assert_eq!(
+        crate::entry::run_main(&[
+            "tidb-server".into(),
+            "--diagnostic-mode".into(),
+            "-V".into()
+        ]),
+        exitCodeOK
+    );
+    assert!(astersql_config::diagnosticmode::Enabled());
+    stubs::clear_events();
+    registerStores().unwrap();
+    let (storage, legacy_domain) = createStoreDDLOwnerMgrAndDomain("").unwrap();
+    let events = stubs::take_events();
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.contains("MPP") || event.starts_with("ddl.StartOwnerManager")),
+        "{events:?}"
+    );
+    legacy_domain.Close();
+    storage.Close().unwrap();
+    let diagnostic = CanonicalSessionFactory::from_local_store(dir.path()).unwrap();
+    assert_eq!(
+        diagnostic.domain().background_worker_names(),
+        vec!["schema-reload"]
+    );
+    assert!(
+        diagnostic
+            .domain()
+            .table_by_name("test", "diagnostic_restart")
+            .is_ok()
+    );
+    assert!(diagnostic.domain().ddl().is_none());
+    let mut session = ConcreteSession::new(Arc::clone(diagnostic.domain()));
+    session.SetAuthenticatedUser("root".into(), true);
+    session.execute("select count(*) from mysql.user").unwrap();
+    session
+        .execute("select count(*) from information_schema.tables")
+        .unwrap();
+    for sql in [
+        "select 1",
+        "select * from test.diagnostic_restart",
+        "insert into test.diagnostic_restart values (99)",
+        "set global tidb_enable_metadata_lock = OFF",
+    ] {
+        let error = session
+            .execute(sql)
+            .err()
+            .unwrap_or_else(|| panic!("unexpected success: {sql}"));
+        assert!(
+            error.to_string().contains("Running in read-only mode"),
+            "{sql}: {error}"
+        );
+    }
+    diagnostic.domain().close();
+    assert_eq!(
+        std::fs::read(wal).unwrap(),
+        before,
+        "diagnostic startup and queries must not write storage"
+    );
+}

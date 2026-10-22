@@ -263,6 +263,7 @@ struct KVStoreInner {
     copr_failure: Mutex<Option<String>>,
     uuid: String,
     embedded_rpc: Option<Arc<crate::EmbeddedRpcStore>>,
+    journal: Option<crate::persistent::Journal>,
 }
 
 #[derive(Clone)]
@@ -290,6 +291,7 @@ impl KVStore {
                 copr_failure: Mutex::new(None),
                 uuid: format!("mock-kv-{id}"),
                 embedded_rpc: None,
+                journal: None,
             }),
         }
     }
@@ -308,6 +310,33 @@ impl KVStore {
     /// physical time while remaining strictly monotonic.
     pub fn NewMemoryWithWallClockTSO() -> Self {
         Self::new_with_clock(Arc::new(MemoryPdClient::default()), true)
+    }
+
+    /// Open the local server's durable canonical MVCC store. Diagnostic opens
+    /// only replay existing transactions and cannot append to the journal.
+    pub fn OpenPersistent(path: &std::path::Path, read_only: bool) -> Result<Self> {
+        let (journal, records) = crate::persistent::Journal::open(path, read_only)?;
+        let mut store = Self::NewMemoryWithWallClockTSO();
+        let inner = Arc::get_mut(&mut store.inner).expect("new store has one owner");
+        let data = inner.data.get_mut().expect("new store data lock");
+        for (ts, writes) in records {
+            for (key, value) in writes {
+                let versions = data.entry(key).or_default();
+                match versions.binary_search_by_key(&ts, |entry| entry.commit_ts) {
+                    Ok(index) => versions[index].value = value,
+                    Err(index) => versions.insert(
+                        index,
+                        VersionedValue {
+                            commit_ts: ts,
+                            value,
+                        },
+                    ),
+                }
+            }
+            inner.current_ts.fetch_max(ts, Ordering::AcqRel);
+        }
+        inner.journal = Some(journal);
+        Ok(store)
     }
 
     /// Copy the committed MVCC state into an independent in-memory store.
@@ -478,6 +507,9 @@ impl KVStore {
     pub fn Close(&self) -> Result<()> {
         if !self.inner.closed.swap(true, Ordering::AcqRel) {
             self.inner.close_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(journal) = &self.inner.journal {
+                journal.close();
+            }
             if let Some(rpc) = self.EmbeddedRpc() {
                 rpc.close()?;
             }
@@ -609,6 +641,15 @@ impl KVStore {
             ));
         }
         let mut data = self.inner.data.write().expect("kv data lock poisoned");
+        if let Some(journal) = &self.inner.journal {
+            journal.append(
+                commit_ts,
+                pairs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Some(v.clone())))
+                    .collect(),
+            )?;
+        }
         for (key, value) in pairs {
             let versions = data.entry(key).or_default();
             match versions.binary_search_by_key(&commit_ts, |entry| entry.commit_ts) {
@@ -663,6 +704,12 @@ impl KVStore {
         {
             return Err(MockStorageError::WriteConflict);
         }
+        if let Some(journal) = &self.inner.journal {
+            journal.append(
+                commit_ts,
+                writes.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            )?;
+        }
         self.inner.current_ts.fetch_max(commit_ts, Ordering::AcqRel);
         for (key, value) in writes {
             data.entry(key)
@@ -689,6 +736,12 @@ impl KVStore {
             return Err(MockStorageError::WriteConflict);
         }
         let commit_ts = self.allocate_timestamp();
+        if let Some(journal) = &self.inner.journal {
+            journal.append(
+                commit_ts,
+                writes.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            )?;
+        }
         for (key, value) in writes {
             data.entry(key)
                 .or_default()

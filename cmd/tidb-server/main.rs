@@ -61,6 +61,7 @@ pub const nmVersion: &str = "V";
 pub const nmConfig: &str = "config";
 pub const nmConfigCheck: &str = "config-check";
 pub const nmConfigStrict: &str = "config-strict";
+pub const nmDiagnosticMode: &str = "diagnostic-mode";
 pub const nmStore: &str = "store";
 pub const nmStorePath: &str = "path";
 pub const nmHost: &str = "host";
@@ -128,6 +129,7 @@ pub struct FlagValues {
     pub configPath: String,
     pub configCheck: bool,
     pub configStrict: bool,
+    pub diagnosticMode: bool,
     // 基础网络、存储与插件参数。
     pub store: String,
     pub storePath: String,
@@ -192,6 +194,7 @@ impl Default for FlagValues {
             configPath: String::new(),
             configCheck: false,
             configStrict: false,
+            diagnosticMode: false,
             store: config::StoreTypeUniStore.into(),
             storePath: "/tmp/tidb".into(),
             host: "0.0.0.0".into(),
@@ -312,6 +315,13 @@ pub fn initFlagSetWithArgs(argv: &[String]) -> flag::FlagSet {
         nmConfigStrict,
         false,
         "enforce config file validity",
+    );
+
+    let _ = flagBoolean(
+        &mut fset,
+        nmDiagnosticMode,
+        false,
+        "enable process-wide diagnostic mode",
     );
 
     // 基础网络/存储/DDL 参数决定 server 对外监听和 schema lease 等核心行为。
@@ -490,6 +500,7 @@ pub fn initFlagSetWithArgs(argv: &[String]) -> flag::FlagSet {
     fv.configPath = fset.LookupString(nmConfig);
     fv.configCheck = fset.LookupBool(nmConfigCheck);
     fv.configStrict = fset.LookupBool(nmConfigStrict);
+    fv.diagnosticMode = fset.LookupBool(nmDiagnosticMode);
     fv.store = fset.LookupString(nmStore);
     fv.storePath = fset.LookupString(nmStorePath);
     fv.host = fset.LookupString(nmHost);
@@ -643,6 +654,10 @@ pub fn run_main_inner(argv: &[String], exit_process: bool) -> i32 {
         fv.configStrict,
         overrideConfig,
         &fset,
+    );
+    stubs::must_nil_result(
+        astersql_config::diagnosticmode::Initialize(fv.diagnosticMode)
+            .map_err(|error| Error::new(error.to_string())),
     );
     if kerneltype::IsNextGen() {
         // deploy mode 一旦写入，全局 helper 就会按 nextgen/starter/classic 语义分支。
@@ -1059,9 +1074,11 @@ pub fn createStoreDDLOwnerMgrAndDomain(
         }
     }
     // 这些后台组件需要在 session bootstrap 前就处于可用状态。
-    copr::GlobalMPPFailedStoreProber.Run();
-    mppcoordmanager::InstanceMPPCoordinatorManager.Run();
-    ddl::StartOwnerManager((), &storage)?;
+    if !astersql_config::diagnosticmode::Enabled() {
+        copr::GlobalMPPFailedStoreProber.Run();
+        mppcoordmanager::InstanceMPPCoordinatorManager.Run();
+        ddl::StartOwnerManager((), &storage)?;
+    }
     // BootstrapSession 会装配 infoschema、系统库和会话级元信息入口。
     let dom = session::BootstrapSession(&storage)?;
     Ok((storage, dom))
@@ -1884,17 +1901,25 @@ pub fn createServer(storage: &kv::Storage, dom: &domain::Domain) -> server::Serv
             log::Fatal(&format!("failed to get canonical TiKV storage: {err}"));
         }
         Err(_) => {
-            // Local UniStore/MockTiKV registry handles do not expose the
-            // client-rust TiKV type. The canonical SQL runtime therefore owns
-            // an in-process transactional mock store, matching the local
-            // development mode without opening a second external client.
-            let (domain, _) = match CreateAnalyzeSession() {
-                Ok(session) => session,
-                Err(err) => {
-                    closeDDLOwnerMgrDomainAndStorage(storage, dom);
-                    log::Fatal(&format!(
-                        "failed to initialize local canonical Domain: {err}"
-                    ));
+            let domain = if cfg.Store == config::StoreTypeUniStore
+                && (!cfg.Path.is_empty() || astersql_config::diagnosticmode::Enabled())
+            {
+                match CanonicalSessionFactory::from_local_store(std::path::Path::new(&cfg.Path)) {
+                    Ok(factory) => Arc::clone(factory.domain()),
+                    Err(error) => {
+                        closeDDLOwnerMgrDomainAndStorage(storage, dom);
+                        log::Fatal(&format!(
+                            "failed to initialize local canonical Domain: {error}"
+                        ));
+                    }
+                }
+            } else {
+                match CreateAnalyzeSession() {
+                    Ok((domain, _)) => domain,
+                    Err(error) => {
+                        closeDDLOwnerMgrDomainAndStorage(storage, dom);
+                        log::Fatal(&format!("failed to initialize mock Domain: {error}"));
+                    }
                 }
             };
             let driver = Arc::new(ConcreteSessionDriver::from_initialized_domain(
@@ -1904,11 +1929,21 @@ pub fn createServer(storage: &kv::Storage, dom: &domain::Domain) -> server::Serv
             (domain, driver)
         }
     };
-    if let Err(error) = start_domain_ttl_job_manager(&canonical_domain) {
-        closeDDLOwnerMgrDomainAndStorage(storage, dom);
-        log::Fatal(&format!(
-            "failed to start canonical TTL job manager: {error}"
-        ));
+    if !astersql_config::diagnosticmode::Enabled() {
+        if let Err(error) = start_domain_ttl_job_manager(&canonical_domain) {
+            closeDDLOwnerMgrDomainAndStorage(storage, dom);
+            log::Fatal(&format!(
+                "failed to start canonical TTL job manager: {error}"
+            ));
+        }
+    }
+    if astersql_config::diagnosticmode::Enabled() {
+        let message = format!(
+            "diagnostic metadata workers: {:?}",
+            canonical_domain.background_worker_names()
+        );
+        eprintln!("INFO:{message}");
+        log::Info(&message);
     }
     let svr = match assembleCanonicalServer(canonical_config, canonical_domain, session_driver) {
         Ok(server) => server,
