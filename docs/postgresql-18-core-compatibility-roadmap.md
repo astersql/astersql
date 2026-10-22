@@ -243,6 +243,8 @@ PG 专属或 MySQL 专属场景中，另一方言对象用 `status: 不适用` �
 
 ### 模块
 
+[解析承载方案决策](#解析承载方案决策)比较共享 AST 扩展与独立受控 PG 解析入口；取证入口为 yy_parser.rs、parser.y、ast/expressions.rs、ast/dml.rs、ast/lib.rs、[optimize.rs](../pkg/planner/optimize.rs) 与 pg_extended.rs，独立测试入口为 yy_parser_test.rs、pg_extended_test.rs。只核对必要局部交接。
+
 [方言身份传递](#方言身份传递)负责连接到共享内核的身份边界。实际源码入口为 [pg_conn.rs](../pkg/server/pg_conn.rs) 的 `PgService::start` / `negotiate`、[pg_extended.rs](../pkg/server/pg_extended.rs) 的 `Extended::new` / `handle` / `process`、[pg_session.rs](../pkg/server/pg_session.rs) 的 `PgSession` / `SessionQuery::parse`，以及 [conn.rs](../pkg/server/conn.rs) 的 `ClientConn::dispatch`、`SessionDriver::open_ctx` 和 `TiDBContext`。另核对 [driver.rs](../pkg/server/driver.rs) 的 `IDriver::OpenCtx`：它是另一层生命周期抽象，不能冒充 PG 当前调用的 `SessionDriver`。本块不指定尚未取证的内核类型或接口名。
 
 [类型转换语法边界](#类型转换语法边界)的调研入口为 [yy_parser.rs](../pkg/parser/yy_parser.rs)、[expressions.rs](../pkg/parser/ast/expressions.rs) 和上述扩展查询入口；实际共享表达式转换载体另定位到 [ast/lib.rs](../pkg/parser/ast/lib.rs) 的 `ExprKind::Cast`。只核对本块必要的 AST 与参数接线，不展开类型执行子系统。
@@ -560,7 +562,45 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 官方依据（2026-10-23 查阅）：PostgreSQL **18** §5.10.3/5.10.5 [Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html) 说明路径和系统目录；§19.11.1 [search_path](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-SEARCH-PATH) 给出隐式/显式 catalog、有效路径、临时 schema 及用户项规则；§9.27.1 [Session Information Functions](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-SESSION) 定义 current_schema/current_schemas。[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 给出 42P01/0A000 分类，§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 定义 P。MySQL **8.4** §11.2.2 [Identifier Qualifiers](https://dev.mysql.com/doc/refman/8.4/en/identifier-qualifiers.html) 支持上述默认库/数据库限定对照。18.6 仅为来源指定目标，本轮未运行该补丁版本、AsterSQL、PG 或 MySQL，不将大版本规则当作补丁实测。
 
+#### 解析承载方案决策
+
+本块对应源工作流 2 步骤 4，汇总此前六类语法和名称规则，决策为：**先做最小语法原型，再选择最终接入方式**。目前只确定共享规范执行内核、连接私有方言身份、原 SQL 保真及显式能力门禁；不认定共享 AST 扩展或独立受控 PG parser 已胜出。候选 B 的“独立”仅指词法/语法入口和必要的语法表示，不包含第二套 resolver、优化器、执行器或存储。现有文本适配保留为有界过渡，不作为第三条通用翻译路线。
+
+证据基于提交 `a2d37b4477ba9feb4492d32c780a38b2560f64ff`，本轮仅阅读源码和独立测试。已核对 [yy_parser.rs](../pkg/parser/yy_parser.rs) 的 `Parser::ParseSQL` / `ParseOneStmt` / `yySetOffset`：Scanner/goyacc 决定接受和诊断，入口返回共享 Node，单语句入口检查数量，偏移写入不等于完整字符跨度映射。[parser.y](../pkg/parser/parser.y) 有 Go 语义动作的 `IlikeOrNotOp`、`ReturningClause`、`OnDuplicateKeyUpdate` 及 RowExpr 分支，不能作为 Rust PG 接线证明。[expressions.rs](../pkg/parser/ast/expressions.rs) 的 `PatternLikeOrIlikeExpr` 以 u8 保存 escape，`RowExpr` 只列 values；[dml.rs](../pkg/parser/ast/dml.rs) 是基础类型入口，其 `TableName`/恢复逻辑不能代替 PG 分段引号身份。实际共享 [ast/lib.rs](../pkg/parser/ast/lib.rs) 的 `ExprKind::Cast` 使用 FieldType，`InsertStmt` 有 OnDuplicate 赋值列表和 Returning 投影，却不足以表达 PG 冲突目标及两类谓词；候选扩展仍须逐消费者取证。
+
+[optimize.rs](../pkg/planner/optimize.rs) 的 `Optimize`、`OptimizeAstNode`、`OptimizeAstNodeNoCache` 接收 `resolve::NodeW` 及共享会话/InfoSchema；Optimize 区分 EXECUTE 与普通缓存路径。这是共享规划边界证据，不证明任意新 PG 语法可直接交给它，更不能通过绕开正常入口跳过只读准入、缓存或成功后效应。[pg_extended.rs](../pkg/server/pg_extended.rs) 的 `Extended::process` 对普通 Parse 依次执行名称/SQL 适配、`markers`、结果适配并调用 `prepare_statement`，会话/目录分支另行处理；普通参数 OID 缺省/为零时仍返回 0A000。这里没有已取证的接收 PG AST 的准备接口。`markers` 的重复/乱序参数映射也不是原查询诊断映射。
+
+独立测试已读 [yy_parser_test.rs](../pkg/parser/yy_parser_test.rs) 的 `failure_returns_warnings_and_parser_reuse_clears_them`、`hint_uses_live_scanner_mode_and_position`（警告生命周期、scanner mode/位置），以及 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs) 的 `marker_mapping_preserves_literals_comments_and_index_order`、`canonical_prepare_parameter_syntax_probe`（词法保护、参数顺序及共享准备入口的语法边界断言意图）。它们没有覆盖本块两条路线的端到端保真，且本轮未执行。`pkg/parser/doc.go`、`pkg/parser/ast/doc.go`、`pkg/planner/doc.go`、`pkg/server/doc.go` 不存在；不把模块说明或历史通过记录当作当前行为证据。
+
+| 比较维度 | 候选 A：扩展共享 AST / 现有解析链 | 候选 B：独立受控 PG 解析入口，再交共享内核 |
+| --- | --- | --- |
+| 接线成本 | 可复用 ParseSQL、Node 与既有访问链；仍需连接方言接入、Rust 规约动作及缺失字段，不能只改 parser.y。 | 需新增有限 PG 词法/语法及保真转换，并取证共享准备入口如何接收节点；当前 prepare_statement 只见 SQL，接口成本未知。 |
+| 共享内核复用 | 载体较近，但每个新增字段仍须穿过 visitor、resolver、planner、Describe；字段存在不等于消费者支持。 | 必须转换到共享表示及正常规划入口；无法表达的语义先明确拒绝，不能建 PG 专用执行内核绕过。 |
+| MySQL 回归面 | 修改共享词法、优先级、SQL mode 或 AST 恢复可能影响现有入口；ILIKE/RETURNING 已有扩展候选，须先记录真实 MySQL 基线，不能直接删去。 | 独立入口可隔离语法接受面，但共享表示/消费者与缓存仍可能回归；必须验证交错连接和重连，不能据入口独立即宣称隔离。 |
+| 源码跨度/错误定位 | yySetOffset 是起点，仍需补原拼写、quoted、逐节点跨度和改写映射；现有 near/line 不能冒充 PG P。 | 可从原 SQL 记录跨度，但转换及内核诊断必须回溯原查询；字节与字符位置、多字节前缀及 EOF 都要验证。 |
+| 参数绑定 | 复用现有准备路径需保留 `$n` 身份和出现顺序，不能让每个 `?` 变成独立 PG 参数；OID 推断仍为缺口。 | PG 参数节点可保留编号，但转换/准备元数据须证明重复绑定一致；不能用参数值拼 SQL 或暗中沿用文本替换。 |
+| 维护成本 | 一套主要语法链，但双方言分支与字段语义须持续回归；受共享语法限制的成本尚未测量。 | 增加语法与转换层的双向维护、版本跟踪及拒绝集合；必须逐能力登记，不能把外部 parser 的接受范围当成支持集合。 |
+
+六类语法的最小保真清单沿用对应小节，不重定语义：`::` 保留转换链、目标名/修饰及参数；ILIKE 保留操作类别、NOT、ESCAPE 出现性/表达式和优先级；RETURNING 保留三类 DML 的有序投影/别名及 Describe 交接；ON CONFLICT 保留省略/推断/约束目标、两种动作、两类谓词及 excluded 绑定；ARRAY 保留构造类别、维度嵌套与空列表；ROW 保留显式性、字段顺序/嵌套并区分分组和子查询。另须携带标识符分段、原拼写/引号、CTE 定义顺序和查询块作用域，供 resolver 消费；schema/search_path 的状态执行归工作流 5、目录可见性归工作流 6。不得把这些信息提前压成 MySQL SQL 后再声称仍然保真。
+
+后续原型是待新建的独立任务，限定同一组原始 SQL、连接身份、编码、显式参数 OID 与参数编号作为输入，两候选使用相同用例清单。候选接口只描述数据交接，不命名新 API：A 从带连接身份的解析入口产生扩展共享节点；B 从受控 PG 入口产生保真语法表示，再转换为共享节点。两者均输出原 SQL/节点跨度、参数身份、诊断及共享消费者交接结果。先取证节点到 `resolve::NodeW` 和准备元数据的必要局部接线，不能假定现有 prepare_statement 接收 AST；本轮不实现此原型，也不生成接口定义。
+
+下表是原型最小输入集，完整行为用例仍引用前面小节，所有树形、绑定、SQLSTATE 与位置均未实测。成功的语法项 SQLSTATE 为“不适用（成功）”，不代表可执行；涉及数据修改的输入只解析/描述，不发出写入。
+
+| 输入、正反例 | PG 目标及责任 | MySQL 对照及证据边界 |
+| --- | --- | --- |
+| `SELECT ($2)::int4, ($1)::int4, ($2)::int4`，参数显式 int4；反例 `SELECT 1::` | 正例有三个独立转换节点及编号序列 2/1/2；反例目标 42601，parser 定位原输入末尾，工作流 7 传输 P。精确 P 待参考端采集。 | `::` 是隔离负例；自身正例用三个 CAST(? AS SIGNED)，绑定顺序 2/1/2。MySQL 精确诊断码/位置仍待取证。 |
+| `SELECT 'Ab' ILIKE 'a%' ESCAPE '!'`；`SELECT ':: $1 ILIKE' /* $2 */` | 前者保留谓词与显式 ESCAPE；后者只有字符串和注释，不制造参数或转换。匹配值/locale 交工作流 4，成功无错误位置。 | 前者是目标隔离负例，但现有共享扩展基线须先核实；后者为自身字符串正例。不能用 LIKE 替换证明 PG 语义。 |
+| `INSERT INTO t(id) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING id`；反例尾部只有 RETURNING | 保留冲突目标、动作及投影；缺投影目标 42601，定位 EOF。绑定需后续 t 夹具，写入/返回行交工作流 5；合法未开放路径目标先于副作用拒绝 0A000。 | PG 子句为目标负例；自身 INSERT/ON DUPLICATE KEY UPDATE 用例单独验收，不认为动作等价。本地拒绝码/位置仍缺证。 |
+| `SELECT ARRAY[1,2], ROW(1,2), (1)`；反例 `SELECT ROW(1,` | 区分数组、两字段行与标量分组；未闭合输入目标 42601，精确末尾位置待采集。数组/record 类型及编码不由原型补齐。 | ARRAY 构造不作为自身正例；ROW/分组按自身合法上下文检查，不能要求 MySQL 返回 PG 复合值。精确诊断待双方参考取证。 |
+
+以上诊断输入再加入合法多字节字符串/注释前缀、带引号分段名和嵌套 WITH，核对跨度及作用域保真，不扩写执行功能。原型成功标准是：两路线分别给出这些输入的树形/拒绝、原 SQL 字符定位、参数映射及共享消费者最小交接证据，并记录修改面、不能承载字段和维护代价；双方言基线、并发连接身份及缓存隔离须有独立证据。可暂以明确门禁拒绝未开放合法语法，但拒绝本身不能算该语法交接成功。若必须丢信息、通用文本替换、用全局可变方言开关、执行写入获取 Describe 或补建第二套执行内核，该路线淘汰；若只是消费者尚未支持，应记录共同缺口和下一项局部取证，不能凭两路线均未编译/零测试选胜者。证据仍不足时保持未决，明确缺少哪个输入/交接结果，不递归补建子系统；原型完成后单独评审承载决策，再按能力细分实现。
+
+官方依据（2026-10-23 查阅）：PostgreSQL **18** §4.2 [Value Expressions](https://www.postgresql.org/docs/18/sql-expressions.html) 的参数、转换、数组与行分类，以及 [INSERT](https://www.postgresql.org/docs/18/sql-insert.html) 的冲突/返回子句；协议 §54.2.3 [Extended Query](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY) 区分 Parse、Bind 与 Execute，§54.8 [错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html) 规定 P 为原查询从 1 起的字符位置；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 区分 42601 与 0A000。其他语法及 MySQL 规则沿用前面各块的官方来源和缺证说明。18.6 仅为来源指定目标，本轮没有该补丁版本或真实数据库的运行证据。
+
 ### 范围外
+
+[解析承载方案决策](#解析承载方案决策)本轮不写原型、API、parser/AST 或执行代码，不增加依赖、平台、数据库环境或性能基准；会话、类型、目录、协议及执行实现继续由相应工作流独立细分。
 
 [方言身份传递](#方言身份传递)本轮不实现方言类型、解析原型、共享 AST、缓存接线或运行测试平台；不扩建 resolver、planner、表达式子系统。六类语法、引号/大小写、限定名、CTE 及 schema/search_path 名称规则由后续文档块定义；会话设置执行归工作流 5，目录实现归工作流 6，错误传输与恢复协作工作流 7。现有文本适配只作为有界入口证据，不承担通用 SQL 翻译方案，也不据其推断完整 PG 支持。
 
@@ -586,6 +626,8 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 ### 验收
 
+[解析承载方案决策](#解析承载方案决策)的文档验收为：六个比较维度均有源码依据及缺证限制，六类语法信息齐全；已选择先做最小原型，输入、候选数据交接、成功/淘汰标准和后续任务边界明确。PG/MySQL 正反例、SQLSTATE/原 SQL 定位责任与未验证状态分开记录；不以候选节点存在或静态测试阅读声称方案已可用。
+
 [方言身份传递](#方言身份传递)的文档通过条件：六段责任链均区分实际入口、状态拥有者/生命周期、目标与缺口；简单/扩展查询身份一致；PG/MySQL 同时连接及两 PG 连接交错场景可单独拆分，负例、错误责任与证据状态明确；局部测试阅读不升级为全链路支持。当前仅文档契约交付；parser 内部接线、共享名称绑定、规划/缓存、表达式上下文、错误位置及真实双方言隔离行为全部未验证，实施后须按第 1 章采集有效证据。
 
 [类型转换语法边界](#类型转换语法边界)的文档验收为：上述输入形态、优先级/嵌套、参数位置、缺类型反例及词法保护均有双方言目标、诊断责任和证据状态；AST 候选与保真缺口明确。现有测试阅读不替代新增树形/位置断言及实际双方言对照，所有行为仍未验证。
@@ -609,6 +651,8 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 [模式搜索路径解析契约](#模式搜索路径解析契约)的文档验收为：public 在/不在路径、显式 public.t、catalog 同名及顺序、空路径、两 PG 会话和 MySQL 旁路均有目标及诊断责任；原始/有效路径、当前布尔门禁与完整目标区分清楚。全部运行行为仍未验证，状态/目录阅读不升级为绑定或兼容通过。
 
 ### 后续细分
+
+[解析承载方案决策](#解析承载方案决策)后续先单独拆两候选最小原型取证和决策复审，再按语法保真、共享准备/规划接线、原 SQL 诊断、参数身份及双方言隔离分别细分；每项限定输入与消费者边界。共同类型/执行/目录缺口另行交接，禁止借原型一次补齐全部 PG parser。
 
 [方言身份传递](#方言身份传递)后续先做连接身份拥有权及关闭/重连边界的局部取证，再分别拆简单查询与扩展查询的身份承接、共享解析/名称绑定/规划/表达式上下文的必要局部接线及隔离回归；实施前确认实际落点，不将本责任链自动扩张为完整子系统重建。各任务明确单一交接点、所需状态、现有可复用实现和验收断言；DIALECT-IDENTITY 三类场景是待新增验收入口，不是既有测试或已登记通过的能力。
 
