@@ -95,6 +95,44 @@ fn test_parse_aws_kms_config() {
             expect_error: false,
         },
         Case {
+            name: "Duplicate REGION keeps first value",
+            input: "aws-kms:///key-id?REGION=us-east-1&REGION=bad",
+            expected: Some(MasterKey {
+                Backend: Some(MasterKeyBackend::Kms(MasterKeyKms {
+                    Vendor: "aws".into(),
+                    KeyId: "key-id".into(),
+                    Region: "us-east-1".into(),
+                    ..Default::default()
+                })),
+            }),
+            expect_error: false,
+        },
+        Case {
+            name: "Empty first REGION remains missing",
+            input: "aws-kms:///key-id?REGION=&REGION=us-east-1",
+            expected: None,
+            expect_error: true,
+        },
+        Case {
+            name: "REGION keys are case sensitive",
+            input: "aws-kms:///key-id?REGION=us-east-1&region=bad",
+            expected: Some(MasterKey {
+                Backend: Some(MasterKeyBackend::Kms(MasterKeyKms {
+                    Vendor: "aws".into(),
+                    KeyId: "key-id".into(),
+                    Region: "us-east-1".into(),
+                    ..Default::default()
+                })),
+            }),
+            expect_error: false,
+        },
+        Case {
+            name: "Lowercase region is not REGION",
+            input: "aws-kms:///key-id?region=us-east-1",
+            expected: None,
+            expect_error: true,
+        },
+        Case {
             name: "Missing key ID",
             // path 为空不符合 `/([^/]+)`。
             input: "aws-kms:///?AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE&AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY&REGION=us-west-2",

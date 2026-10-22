@@ -92,6 +92,17 @@ pub fn parseLocalDiskConfig(u: &Url) -> Result<MasterKey> {
     })
 }
 
+// Match Go url.Values.Get: keep the first value, including an empty one.
+fn first_query_values(u: &Url) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    for (key, value) in u.query_pairs() {
+        values
+            .entry(key.into_owned())
+            .or_insert_with(|| value.into_owned());
+    }
+    values
+}
+
 /// AWS：强制 REGION；AK/SK 必须成对出现，或全部省略（走默认链）。
 pub fn parseAwsKmsConfig(u: &Url) -> Result<MasterKey> {
     let matches = AWS_REGEX
@@ -99,10 +110,7 @@ pub fn parseAwsKmsConfig(u: &Url) -> Result<MasterKey> {
         .ok_or_else(|| Error::new("invalid AWS KMS key ID format"))?;
     let keyID = matches.get(1).map(|m| m.as_str()).unwrap_or_default();
 
-    let q: HashMap<String, String> = u
-        .query_pairs()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
+    let q = first_query_values(u);
     let region = q.get(AWSRegion).map(|s| s.as_str()).unwrap_or_default();
     let accessKey = q
         .get(AWSAccessKeyId)
@@ -146,10 +154,7 @@ pub fn parseAzureKmsConfig(u: &Url) -> Result<MasterKey> {
         .captures(u.path())
         .ok_or_else(|| Error::new("invalid Azure KMS path format"))?;
     let keyID = matches.get(1).map(|m| m.as_str()).unwrap_or_default();
-    let q: HashMap<String, String> = u
-        .query_pairs()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
+    let q = first_query_values(u);
 
     let azureKms = AzureKms {
         TenantId: q.get(AzureTenantID).cloned().unwrap_or_default(),
@@ -185,10 +190,7 @@ pub fn parseGcpKmsConfig(u: &Url) -> Result<MasterKey> {
     let location = matches.get(2).map(|m| m.as_str()).unwrap_or_default();
     let keyRing = matches.get(3).map(|m| m.as_str()).unwrap_or_default();
     let keyName = matches.get(4).map(|m| m.as_str()).unwrap_or_default();
-    let q: HashMap<String, String> = u
-        .query_pairs()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
+    let q = first_query_values(u);
 
     let credential = q
         .get(GCPCredentials)

@@ -50,7 +50,7 @@
 
 ## 数据与状态
 
-输入状态只有借用的 `&str` 或 `&Url`，输出是拥有自身字符串的 `MasterKey`。解析器把 query pair 收集为局部 `HashMap<String, String>`，再克隆所需值；函数返回后不保留对输入 URL 的借用。
+输入状态只有借用的 `&str` 或 `&Url`，输出是拥有自身字符串的 `MasterKey`。三个云解析器通过 `first_query_values` 按 URL 中的顺序把 query pair 收集为局部 `HashMap<String, String>`，同名键只在首次出现时写入（包括空值），再克隆所需值；函数返回后不保留对输入 URL 的借用。
 
 输出后端具有以下不变量：
 
@@ -89,7 +89,7 @@ RustCodeGraph 索引状态为 11,467 个文件、307,296 个节点、1,848,419 �
 - AWS 拒绝空 key ID、多段 path、缺 region，以及只提供 AK/SK 之一；允许省略整对显式凭据，并允许空 endpoint。
 - Azure 拒绝空 path 或四个 query 值中任何空值，但不验证 vault URL 的格式、租户/客户端标识格式或 key path 的段数。
 - GCP 拒绝非固定层级 path 或空 credential；各资源段只能是非空且不含 `/` 的字符串，但这里不进一步验证厂商命名规则。
-- URL query 会经过 `url` crate 的解码。由于实现先收集为 `HashMap`，重复 query 键以最后出现的值为准；Go 对照使用 `url.Values.Get`，取同名键的第一个值。这是当前 Rust/Go 在重复键输入上的已确认差异，测试尚未覆盖，扩展兼容性时应先决定是否需要对齐。
+- URL query 会经过 `url` crate 的解码。`first_query_values` 使用 `entry(...).or_insert_with(...)` 保留同名键的首值，与 Go `url.Values.Get` 对齐；键名仍区分大小写。AWS 独立回归测试覆盖重复 `REGION`、空首值和大小写精确匹配。
 - 所有校验均为失败即返回；没有部分成功结果。上游循环若后续 key 失败，`self.MasterKeyConfig` 已可能含有先前成功项，但整个方法返回 `Err`，调用者不应在错误后继续使用该配置对象。
 
 ## 并发与资源生命周期
@@ -107,7 +107,7 @@ Rust 保留了 Go 的四个 scheme、厂商与 query 常量、三条正则、分
 - Go AWS 允许凭据全部省略以交给环境/默认链，Rust 用 `AwsKms: None` 保留该语义。
 - Rust `encryption_test.rs` 逐项复刻 Go 的四组表驱动用例：local 成功/带 host 失败，AWS 完整凭据/缺 key ID/凭据不成对，Azure 四参数齐全/缺 secret，GCP 标准资源/错误 path/缺 credential。
 
-已知差异与未覆盖点：Rust 函数及常量因 crate 导出策略为 `pub`，而 Go 小写函数仅包内可见；Rust URL 解析库与 Go `net/url` 对畸形 URL 的接受范围未被穷举验证；重复 query 键的首值/末值语义不同。独立 Rust 测试不直接覆盖总入口的 URL 解析和所有 scheme 分发，只有 `parity_test.rs` 覆盖 AWS 总入口及 unknown scheme；local/Azure/GCP 的总入口分发仍缺直接断言。
+已知差异与未覆盖点：Rust 函数及常量因 crate 导出策略为 `pub`，而 Go 小写函数仅包内可见；Rust URL 解析库与 Go `net/url` 对畸形 URL 的接受范围未被穷举验证。重复 query 键现已统一取首值（包括空值），AWS 回归测试直接覆盖该行为。独立 Rust 测试不直接覆盖总入口的 URL 解析和所有 scheme 分发，只有 `parity_test.rs` 覆盖 AWS 总入口及 unknown scheme；local/Azure/GCP 的总入口分发仍缺直接断言。
 
 ## 扩展指南
 
@@ -117,7 +117,7 @@ Rust 保留了 Go 的四个 scheme、厂商与 query 常量、三条正则、分
 
 - 兼容性：scheme、query 键、path 正则和错误行为属于 CLI 配置契约；收紧规则可能拒绝已有配置，放宽规则可能把错误推迟到真实 KMS 调用。
 - 安全性：新增凭据字段必须避免出现在错误和日志中，并检查 `common.rs` 的 flag 脱敏是否覆盖；不要把完整原始 URL放进诊断。
-- 行为对齐：优先同步 Go 的校验顺序和默认凭据语义；若要修复重复 query 键等差异，应新增明确的 Go/Rust 边界用例。
+- 行为对齐：优先同步 Go 的校验顺序和默认凭据语义；query 收集应继续保留同名键首值及大小写精确匹配，并维护对应的边界用例。
 - 性能：静态格式校验宜继续使用一次编译的 `LazyLock<Regex>`；不要在每次解析中重复编译正则，也不要在此层引入网络探测。
 
 最可能的修改点是 `validateAndParseMasterKeyString`、对应 `parse*Config`、常量/正则定义及 `stubs.rs` 数据结构。若变更多 key 聚合、明文 key 互斥或包装算法，应改 `Config::parseAndValidateMasterKeyInfo` 及其独立测试，而不是把这些职责塞入本文件。
