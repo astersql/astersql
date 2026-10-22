@@ -4,7 +4,7 @@
 
 本文件是 `astersql-util-logutil` crate 的核心日志实现。crate 入口 `pkg/util/logutil/lib.rs` 将它公开为 `log` 模块，并把专用的 General Log 与慢查询 logger 分别放在 `general_logger.rs`、`slow_query_logger.rs`。`pkg/util/logutil/Cargo.toml` 的 `[package.metadata.porting]` 明确把该 crate 对应到 Go 包 `pkg/util/logutil`。
 
-它位于应用级日志调用与具体输出目标之间：`cmd/tidb-server/main.rs:1810` 和 `br/cmd/br/cmd.rs:302` 通过 `InitLogger` 建立进程全局 logger；session、server、DDL、statistics 等模块随后通过 `BgLogger`/`background_logger`、`general_logger` 或采样工厂写日志。RustCodeGraph 将该文件标为被 257 个文件使用，因此这里的级别、字段、全局替换和锁语义属于跨子系统公共契约。
+它位于应用级日志调用与具体输出目标之间：`cmd/tidb-server/main.rs` 和 `br/cmd/br/cmd.rs` 通过 `InitLogger` 建立进程全局 logger；session、server、DDL、statistics 等模块随后通过 `BgLogger`/`background_logger`、`general_logger` 或采样工厂写日志。这里的级别、字段、全局替换和锁语义属于跨子系统公共契约。
 
 ## 核心职责
 
@@ -17,6 +17,8 @@
 本文件当前不是完整的 `pingcap/log`/zap 复刻：文件滚动参数只被保存，实际输出使用 `OpenOptions` 追加写；`format`、`disable_timestamp`、`disable_error_verbose` 没有参与编码选择；`gzip` 仅通过配置校验而未在本文件中实现压缩。
 
 ## 主要符号
+
+- `LOG_TIMEOUT_ACTION_PANIC = "panic"`、`LOG_TIMEOUT_ACTION_DISCARD = "discard"`：新增超时动作名称。`LogConfig` 新增 `timeout: i64`（秒）与 `timeout_action: String`；显式 `Default` 设置 `timeout = 0`、动作为 `panic`，其余字段仍为空/零值。`LogConfig::new` 经 `..Self::default()` 继承这两个默认值。
 
 - `FileLogConfig` 保存文件名、大小、天数、备份数和压缩名；`new_file_log_config`/`NewFileLogConfig` 只设置 `max_size`。`EmptyFileLogConfig` 是全空配置。
 - `LogConfig::new`/`NewLogConfig` 组装主日志与慢查询、General 专用路径；`with_options` 依次运行函数指针形式的配置修改器。
@@ -58,6 +60,10 @@
 
 ## 错误处理与边界
 
+超时动作目前只是配置模型：冻结 `Logger::log`、`init_logger` 未读取 `timeout` 或 `timeout_action`，没有写入/同步超时计时，也没有超时后 panic/discard 分支或动作值校验。不能把常量名称描述成已经生效的策略。
+
+本文件没有通用日志脱敏：`proxy_fields_from` 原样保留非空代理字符串，`Fields::fmt` 格式化字段，`log_env_variables` 将代理字段送给后台 logger。调用者必须在传入敏感 URL/字段前完成脱敏；本次增量并未增加脱敏能力。
+
 可恢复配置错误以 `Result<_, String>` 返回：未知日志级别、非 `gzip` 压缩名，以及专用 logger 工厂返回的错误都会阻止全局替换。`initialize_loggers` 在所有 logger 均构造成功后才写全局状态，因此前序失败不会留下部分更新。
 
 锁中毒使用 `expect`，会 panic；这适用于 sink、级别、采样器、全局状态和 trace 容器。文件打开、普通写入和慢日志 `write_all` 的错误则被静默忽略，`Logger::log` 不向调用者报告落盘失败。文件 sink 的 `entries()` 返回空数组，不能用于判断实际文件中是否有记录。
@@ -74,6 +80,8 @@
 
 ## 与 Go 版本的对应关系
 
+Go `LogConfig` 嵌入外部 `pingcap/log.Config` 并在 `InitLogger` 交给该库；Rust 显式增加超时字段和动作常量。当前本地写入实现没有接入相应策略，不能据外部 Go 类型推断 Rust 已具备同等超时或脱敏行为。
+
 直接对照文件是 `pkg/util/logutil/log.go`，测试对照是 `pkg/util/logutil/log_test.go`。常量、`FileLogConfig`/`LogConfig`、初始化/替换/设级别、背景与 error-verbose logger、trace 字段、代理记录、事件/标签和采样工厂均保留了相同概念与多数 Go 风格别名。
 
 关键差异如下：Go 版本把 `pingcap/log`、zap core、滚动 writer、gRPC logger、TiKV context key、`context.Context`、runtime trace 和 OpenTracing 连接起来；Rust 版本用自有 `Logger`、`LogContext`、`TraceSpan` 和内存/简单文件 sink 表达最小可用语义，`grpc_debug` 目前只是状态标志。Go `ReplaceLogger` 会序列化配置并记录替换消息，Rust 直接复用初始化逻辑。Go 的 error-verbose logger 会按格式与 `DisableErrorVerbose` 构建专用 core，Rust 当前只是 background 克隆；Rust 的 `sample_err_verbose_logger_factory` 也使用传入 logger，而不自行选择全局 error-verbose logger。
@@ -81,6 +89,8 @@
 Go zap sampler 文档注释指出同类日志计数有实现上限；Rust `HashMap` 没有 4096 种消息上限或后续每 N 条放行逻辑，只放行每窗口前 `first` 条。Go 的代理解析委托 `httpproxy.FromEnvironment`；Rust 显式实现大写优先和小写回退。扩展时应以这些当前差异为事实，不能仅因 API 同名就假定行为完全等价。
 
 ## 扩展指南
+
+- 接入超时策略时需扩展独立测试，验证默认 0 秒、两种动作、非法配置和实际阻塞写入；当前 `log_test.rs` 没有这些超时回归。若增加 URL 脱敏，应增加断言秘密不出现在产物中的测试，不能以本次文档模式扫描替代运行时验证。
 
 - 增加输出格式、滚动或压缩时，从 `init_logger`、`Sink` 和 `Logger::log` 接入，并明确 `FileLogConfig` 每个字段的实际语义；同时在独立的 `pkg/util/logutil/log_test.rs` 增加文件生命周期和失败路径测试，不要把测试嵌入源文件。
 - 增加结构化字段类型时，同步修改 `LogField::key`、`Fields::fmt`、慢日志 `SlowLogEncoder` 及相关消费者；特别检查数组转义和字段顺序。
@@ -91,8 +101,8 @@ Go zap sampler 文档注释指出同类日志计数有实现上限；Rust `HashM
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件；`files --filter pkg/util/logutil` 确认本 crate 的 Rust/Go 源与独立测试；`node --file pkg/util/logutil/log.rs --offset 1 --limit 500` 及 `--offset 490 --limit 320` 读取完整 748 行并列出“used by 257 files”；`query initialize_loggers --kind function` 定位到第 451 行。针对 `initialize_loggers`、`background_logger`、`sample_logger_factory` 的 callers/callees 查询未返回静态边，因此用精确 `rg` 补充跨 crate 调用证据。
-- 已读实现与边界文件：`pkg/util/logutil/log.rs`、`pkg/util/logutil/lib.rs`、`pkg/util/logutil/Cargo.toml`、`pkg/util/logutil/general_logger.rs` 和 `pkg/util/logutil/slow_query_logger.rs` 的直接调用关系。
-- 已读对照与测试：`pkg/util/logutil/log.go`、`pkg/util/logutil/log_test.go`、`pkg/util/logutil/log_test.rs`。Rust 测试覆盖 trace 字段筛选、上下文字段、级别修改、专用/共享文件、压缩名校验、非空 `GRPC_DEBUG`、全局替换、代理组合、采样上限和字符串数组格式。
-- 上游证据：`cmd/tidb-server/main.rs:1810`、`br/cmd/br/cmd.rs:302`、`pkg/ddl/logutil/logutil.rs:72`、`pkg/statistics/handle/initstats/load_stats_page.rs:66`、`pkg/session/runtime/dispatch.rs` 的直接引用。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定的 `test -f` 加 11 个固定二级标题计数命令，并人工复核本说明没有把 Go 能力误写成 Rust 已支持能力。
+- 冻结 `log.rs` 全文及 `lib.rs`、`Cargo.toml` 核对模型、写入和装配；`LogConfig::default/new` 证明默认动作，`Logger::log` 与 `init_logger` 证明超时字段尚未消费。
+- 冻结 `proxy_fields_from`、`log_env_variables` 和 `Fields::fmt` 证明没有通用脱敏。`log_test.rs` 覆盖文件/共享 logger、级别、trace、代理和采样，但没有超时执行或秘密脱敏测试；Go 对照为 `log.go`、`log_test.go`。
+- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/logutil/log.rs` 审计增量，并以 `git show 2c944fb:pkg/util/logutil/log.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
+- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
+- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

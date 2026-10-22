@@ -30,7 +30,7 @@
 
 `convertRuneUnicodeCI0900` 有三条分支：
 
-1. 若码点严格大于 `map_table4.len()`，按 `high = raw >> 15`、`low = ((raw & 0x7fff) | 0x8000) << 16` 构造 `(high + 0xfbc0 + low, 0)`，为表外字符生成确定性隐式权重。
+1. 若码点大于或等于 `map_table4.len()`，按 `high = raw >> 15`、`low = ((raw & 0x7fff) | 0x8000) << 16` 构造 `(high + 0xfbc0 + low, 0)`，为表外字符生成确定性隐式权重。
 2. 否则读取 `map_table4[raw]`；若值不等于 `ucadata::LongRune8`，返回 `(first, 0)`。
 3. 若命中 `LongRune8`，按码点对有序 `long_rune_map` 做二分查找并返回保存的两段权重。
 
@@ -52,13 +52,13 @@ LIKE/通配符主链为：`unicode0900AICICollator::Pattern` → `unicode0900Imp
 - 下游算法：`crate::stringutil::CompilePatternInner` 编译 wildcard token，`DoMatchCustomized` 执行回溯/通配符匹配；本文件只注入字符等价闭包。
 - crate 依赖：本文件自身仅使用同 crate 模块，不直接使用 `Cargo.toml` 中的 `dbterror`、`encoding_rs` 或 `parser_charset`。`full_collate` 是工厂是否能选到本实现的编译期开关，而不是本文件内部条件编译项。
 
-RustCodeGraph 对目标文件识别出 10 个符号，并给出 `unicode_0900_ai_ci_generated.rs` 这一直接使用文件；精确 `callers`/`callees` 查询未返回边，因此上述更细调用关系由目标源码、生成文件与模块入口交叉核验，而没有把缺失的图边当成已验证事实。
+调用关系由冻结目标源码、生成层与模块入口核验，不依赖索引的使用者计数推断。
 
 ## 错误处理与边界
 
 这些 API 不返回 `Result`。正常查表、预处理和 pattern 匹配均为确定性内存计算；显式失败路径是长权重哨兵不满足生成数据不变量时，`binary_search_by_key(...).expect("LongRune8 sentinel must have generated weights")` 会 panic。修改生成表时必须保持每个 `LongRune8` 码点在 `long_rune_map` 中恰有对应项，且该切片继续按 key 排序，否则二分查找会失败。
 
-表外判断忠实保留 Go 的严格 `>`：当 `raw > map_table4.len()` 时才走隐式权重。于是 `raw == map_table4.len()` 会继续执行数组索引；对当前长度 183,969 而言，该等号边界不是有效下标并会 panic。Go 对照文件也是 `int(r) > len(...)` 后以 `MapTable4[r]` 取值，Rust 沿用了这一行为。任何修正都可能改变 Go/Rust 对齐，应同时增加独立回归测试并先确认上游预期，不能只在文档任务中推断修改。
+表外判断现为 `raw >= map_table4.len()`，与冻结 Go 一致。有效表下标止于 `len - 1`；`raw == len` 已走隐式权重，不再索引越界。此次增量只把旧 `>` 改为 `>=`，没有改变既有表内权重、长权重查找或表外公式。
 
 输入类型 `char` 保证是 Unicode scalar value，因此本函数不处理代理项或非法 UTF-8。原始字节的非法 UTF-8 行为由生成 collator 的 `CompareBytes`/`KeyBytes` 处理，不属于本文件。`Preprocess` 会分配一个新 `String`，即使内容不变；这是当前生成 API 的所有权边界。
 
@@ -86,13 +86,13 @@ pattern 两端都复用各自语言的 `CompilePatternInner` 和 `DoMatchCustomi
 - 增加或改变长权重时，必须同步 `map_table4` 的 `LongRune8` 哨兵和有序 `long_rune_map`，并扩展独立测试 `ucadata/unicode_0900_ai_ci_data_test.rs` 或 `unicode_0900_ai_ci_data_generated_2_aster_unit_test.rs`，覆盖存在性、排序、非零首段及代表值。
 - 改变 PAD/预处理语义时修改 `unicode0900Impl::Preprocess`，同时验证生成层的 `Compare`、`Key` 和 `ImmutableKey`；现有 `general_ci_2_aster_unit_test.rs` 中 0900 测试明确要求尾空格保留。
 - 改变 wildcard 语义时保持测试逻辑在独立 `*_test.rs` 文件中，扩展 `general_ci_2_aster_unit_test.rs` 的 0900 pattern 场景，并与 Go `unicode_0900_ai_ci_impl.go`/相关 Go 测试核对 escape、`%`、`_` 和双段权重行为。
-- 若调整表边界或 panic 策略，应为 `raw == map_table4.len()`、首个表外码点、普通短权重和 `LongRune8` 路径补独立回归测试；这属于 Go 可观察行为兼容点，不能只做 Rust 侧“安全化”。
+- 若调整表边界或 panic 策略，应保留 `unicode_0900_boundary_test.rs` 的等号边界回归，并为 `raw == map_table4.len()`、首个表外码点、普通短权重和 `LongRune8` 路径补独立回归测试；冻结 Go 同样采用 `>=`，应继续保持边界行为一致。
 - 性能上该路径位于逐字符比较、key 和 LIKE 热循环。避免引入每字符分配或动态查找；生成文件说明内联会影响 20%–50% 性能。任何结构变化都应评估 `GetWeight` 的内联与长权重二分查找成本。
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 11,467 个文件并覆盖目标；`files --filter pkg/util/collate` 找到目标及关联生成/测试文件；`node --file pkg/util/collate/unicode_0900_ai_ci_impl.rs` 读取了完整 112 行源码并报告直接使用者 `unicode_0900_ai_ci_generated.rs`；`query` 找到 `unicode0900Impl`、`convertRuneUnicodeCI0900`、`unicode0900AICIPattern` 与 `GetWeight`。精确 `callers`/`callees` 无输出，故未据此虚构调用边。
-- 源码与边界：`pkg/util/collate/unicode_0900_ai_ci_impl.rs`；trait、工厂与 feature 路由：`pkg/util/collate/collate.rs`；模块重导出：`pkg/util/collate/lib.rs`；生成调用层：`pkg/util/collate/unicode_0900_ai_ci_generated.rs`；crate/feature：`pkg/util/collate/Cargo.toml`。
-- Go 对照：`pkg/util/collate/unicode_0900_ai_ci_impl.go`、`pkg/util/collate/unicode_0900_ai_ci_generated.go`、`pkg/util/collate/collate.go` 与 `pkg/util/collate/collate_test.go`。
-- Rust 独立测试：`pkg/util/collate/general_ci_2_aster_unit_test.rs`、`pkg/util/collate/collate_test.rs`、`pkg/util/collate/ucadata/unicode_0900_ai_ci_data_test.rs`、`pkg/util/collate/ucadata/unicode_0900_ai_ci_data_generated_2_aster_unit_test.rs`；对应 Go 数据测试为 `pkg/util/collate/ucadata/unicode_0900_ai_ci_data_test.go`。
-- 本任务是纯文档分析，依计划未运行 Cargo。交付前使用任务指定命令验证文档存在且恰含 11 个固定二级章节，并人工复核唯一生产物、引用路径与源码事实。
+- 冻结完整实现 `unicode_0900_ai_ci_impl.rs` 与 Go `unicode_0900_ai_ci_impl.go` 均使用 `>=`；`lib.rs`、`Cargo.toml`、`collate.rs`、`unicode_0900_ai_ci_generated.rs` 核对模块、feature 与生成层调用。
+- 新增独立回归 `unicode_0900_boundary_test.rs::unicode_0900_boundary_rune_uses_implicit_weight` 检查 `len - 1`、`len`、`len + 1`，断言等号隐式权重、Key、Compare 顺序与 pattern 自匹配。已有 ucadata 数据测试、`general_ci_2_aster_unit_test.rs` 保留长权重与 NO PAD 对照意图。
+- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/collate/unicode_0900_ai_ci_impl.rs` 审计增量，并以 `git show 2c944fb:pkg/util/collate/unicode_0900_ai_ci_impl.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
+- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
+- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

@@ -16,6 +16,9 @@
 
 ## 主要符号
 
+- `isJSONPathWhiteSpace`：只识别空格与 ASCII TAB 到 CR（U+0009..U+000D）。
+- `isJSONPathLetter`、`isJSONPathDigit`、`isUnicodeCombiningMark`、`isUnicodeConnectorPunctuation`：为未引号 key 与 `quoteJSONString` 共用的标识符校验提供分类。连接标点集合为 U+005F、203F、2040、2054、FE33、FE34、FE4D..FE4F、FF3F。
+
 - `jsonPathArrayIndex = isize`：非负数表示从数组头部计数；负数编码相对末尾的位置，`-1` 表示 `last`，`-n-1` 表示 `last-n`。`JsonPathArrayIndexExt::getIndexFromStart` 结合元素数量解析实际下标，`String` 负责规范化输出。
 - `jsonPathArraySelection::{Asterisk, Index, Range}`：数组选择的三种互斥形态；`getIndexRange` 产生闭区间，并把超过数组末尾的结束位置截到 `elem_count - 1`。起点可能仍越界，调用者需用 `start <= end` 判断是否命中，这与 Go 接口约定一致。
 - `jsonPathLeg`：用 `typ` 区分键、数组选择和 `**`；数组 payload 放在 `arraySelection`，键 payload 放在 `dotKey`。它只在本文件内部可见。
@@ -26,6 +29,8 @@
 - `ParseJSONPathExpr`：本文件唯一的公开解析入口；先查缓存，再调用私有 `parseJSONPathExpr`，仅在成功时写缓存。
 
 ## 执行流程
+
+增量修正数组游标：读完 `last` 后先保存位置；后续空白没有接 `-` 时回到 `last` 末尾，让外层识别 ` to ` 或 `]`。匹配 `to` 后必须还有 ASCII 空白，否则立即失败。因此 `$[last to last]`、`$[last\tto last]`、`$[last ]` 合法，`$[last to]`、`$[1 to]` 和 `$[1 tox]` 非法。
 
 1. 调用者把字符串交给 `ParseJSONPathExpr`。函数以原始字符串（包括空白差异）作为缓存键，通过 `path_cache().get` 查询；命中时取得表达式克隆并返回。
 2. 未命中时，`parseJSONPathExpr` 把输入按 Unicode 标量收集到 `jsonPathStream.pathExpr`。它先跳过空白并强制读取 `$`，随后预留 16 个 leg 的容量。
@@ -55,11 +60,13 @@
 
 ## 错误处理与边界
 
+路径跳空白、范围分隔和未引号 key 扫描统一使用 ASCII 空白。U+0085/U+00A0 不再被当作分隔符：出现在根前会使解析失败；在 key 内可按分类成为键的一部分，如 `a<U+00A0>b`。U+3000 也不是空白，但低字节分类不能接受它；引号键仍按 JSON 字符串解码。
+
 - 根字符缺失或不是 `$` 时固定报告位置 1；leg 解析失败报告当前 `jsonPathStream.pos`；末尾为 `**` 时报告输入末端位置。位置按 Rust `char` 序列计数，而不是 UTF-8 字节偏移。
 - `tryReadIndexNumber` 只接收 ASCII 数字，且数值不能超过 `u32::MAX`；失败会恢复游标。测试验证 `4294967295` 合法、`4294967296` 非法。
 - 范围关键字要求分隔空白，故 `[1 to 3]` 合法而 `[1to3]` 非法；同号范围必须有序，异号范围留待获得数组长度后解释。
 - 单个 `*` 只能出现在成员或数组语法中；裸路径 leg 的递归下降必须是 `**`，不得是 `***`、不得位于表达式结尾。
-- 未加引号键按 Go 的逐 UTF-8 字节分类行为移植：Latin-1 字母、`$`、`_` 和非首位数字可接受，因此 `µ` 可用；西里尔字符等必须加引号。这里不是完整 Unicode ECMAScript IdentifierName 实现。
+- 未加引号键按 Unicode 标量遍历，再按码点低 8 位模拟 MySQL ctype：ASCII 字母或低字节 0x80..=0xfe 可作字母，但 U+0300..U+036F 组合符不算字母；`$`/`_` 也可起始。非首位额外允许该组合符块、低字节 ASCII 数字和指定连接标点。它不是完整 Unicode ECMAScript IdentifierName 分类：`α`、西里尔 `с` 可用，`б` 首位被拒绝而 `aб` 可用，`ÿ` 和 `Ā` 也被拒绝。
 - `decodePathMemberKey` 特意模拟 Go 对 UTF-16 代理项的行为：合法高低代理对解码为对应字符；某些错误的双代理组合归一化为 U+FFFD；孤立代理仍是错误。测试覆盖了这些分支以及尾部反斜杠的错误位置。
 - `read`、`popOneLeg`、`popOneLastLeg` 内部使用直接索引；它们依赖调用前置条件，不能对耗尽流或空 legs 调用。未知 leg 类型和缺失数组 payload 在 `String` 中被视为内部不变量破坏并触发 `unreachable!`。
 - 缓存互斥锁中毒时，`lock` 选择 `into_inner()` 继续使用已有状态，不把中毒传播给解析调用者。
@@ -78,7 +85,7 @@ Rust 的 leg 类型码、三个 flag、负数形式的 `last-n` 编码、范围�
 
 实现形态上的差异包括：Go 用接口承载三种数组选择，Rust 用 enum；Go 缓存基于 `kvcache.SimpleLRUCache` 和显式 `sync.Mutex`，Rust在本文件中用 `HashMap + VecDeque + Mutex + OnceLock`；Go 的 `ErrInvalidJSONPath` 属于包级错误体系，Rust用独立 `JSONPathError`。Rust `String` 始终是合法 UTF-8，因此 Go `quoteJSONString` 针对非法 UTF-8/RuneError 的修复分支没有对应需求。
 
-Rust 额外测试明确锁定了移植细节：Unicode 转义后的未引号键校验、错误位置、u32 边界、UTF-16 代理项替换、缓存防御性复制和并发访问。当前 Rust 的 `isEcmascriptIdentifier` 有意保留 Go 对 UTF-8 字节逐个转 rune 的现有行为，而不是“修正”为更宽泛的 Unicode 规则；若 Go 后续改变，Rust与测试应同步更新。
+Rust 额外测试明确锁定了移植细节：Unicode 转义后的未引号键校验、错误位置、u32 边界、UTF-16 代理项替换、缓存防御性复制和并发访问。冻结 Rust 与 Go 都按码点低字节分类，并使用 U+0300..U+036F 和连接标点规则；不再采用旧的逐 UTF-8 字节判定。
 
 ## 扩展指南
 
@@ -92,9 +99,8 @@ Rust 额外测试明确锁定了移植细节：Unicode 转义后的未引号键�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引包含 7,032 个 Rust 文件；`node --file pkg/types/json_path_expr.rs --offset 1 --limit 500` 与 `--offset 501 --limit 500` 读取了目标文件全部 899 行；`query ParseJSONPathExpr --kind function --limit 20 --json` 区分了本文件、Go 文件及 `internal/json_functions` 的同名符号；`explore "pkg/types/json_path_expr.rs JSONPathExpression PathLeg parse_json_path_expr contains_any_asterisk extract_json"` 给出了 `ParseJSONPathExpr`、flags、push/pop、缓存和 JSON 二进制调用关系。
-- 源码与装配：`pkg/types/json_path_expr.rs`、`pkg/types/internal/json_path/lib.rs`、`pkg/types/internal/json_path/Cargo.toml`、`pkg/types/Cargo.toml`、`pkg/types/lib.rs`。
-- 直接调用证据：`pkg/expression/Cargo.toml`、`pkg/expression/builtin.rs`；同名但独立实现的边界证据：`pkg/types/internal/json_functions/lib.rs`、`pkg/expression/builtin_json.rs`、`pkg/expression/builtin_json_vec.rs`。
-- Rust 测试：`pkg/types/json_path_expr_test.rs`、`pkg/types/json_path_expr_8_aster_unit_test.rs`；邻接集成证据：`pkg/types/migration_aster_unit_test.rs`。
-- Go 对照：`pkg/types/json_path_expr.go`、`pkg/types/json_path_expr_test.go`。
-- 本任务是纯文档分析，依任务约束未运行 Cargo。最终使用任务指定的 `test -f` 与 11 个固定标题计数命令做结构验证，并人工复核本文能回答文件为何存在、解析如何运行、状态/错误/并发边界以及安全扩展位置。
+- 冻结源码、装配与依赖：`json_path_expr.rs`、`internal/json_path/lib.rs`、`internal/json_path/Cargo.toml`、`pkg/types/lib.rs` 与 `pkg/expression/builtin.rs`；同名 `internal/json_functions` 不等同于本实现。
+- 冻结独立测试 `json_path_expr_test.rs`：`TestValidatePathExpr` 覆盖 ASCII 空白、last/to 游标和 Unicode key；`TestQuoteStringAndPathKeyRoundTrip` 覆盖组合符及引号往返；`test_path_boundaries_and_state` 覆盖 u32 上下界和非 ASCII 空白。Go 对照为 `json_path_expr.go` 与 `json_path_expr_test.go`。
+- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/types/json_path_expr.rs` 审计增量，并以 `git show 2c944fb:pkg/types/json_path_expr.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
+- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
+- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

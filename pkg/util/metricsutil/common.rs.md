@@ -4,7 +4,7 @@
 
 `common.rs` 是 `astersql-util-metricsutil` crate 的指标注册与 Keyspace 常量标签实现。crate 入口 `pkg/util/metricsutil/lib.rs` 以 `pub use common::*` 对外重导出本文件的公开 API；`pkg/util/metricsutil/Cargo.toml` 将 Go 对照包声明为 `pkg/util/metricsutil`，并列出配置、PD/Store 以及各子系统 metrics crate 依赖。
 
-它实现两类入口：`RegisterMetrics` 面向普通 TiDB 进程，`RegisterMetricsForBR` 面向 BR 并在需要时向 PD 查询 Keyspace ID。但当前 Rust 进程接线尚未使用这两个真实入口：`cmd/tidb-server/main.rs:707` 解析到 `cmd/tidb-server/stubs.rs:2448` 的同名模块，`br/cmd/br/backup.rs:46` 和 `br/cmd/br/restore.rs:46` 解析到 `br/cmd/br/stubs.rs:799` 的空实现。全仓 Rust 直接搜索 `astersql_util_metricsutil::` 只发现 session 使用同 crate 的 `GetDBNames`，未发现本文件注册 API 的生产调用者。因此本文件是已实现、有独立测试的真实能力，不应误解为已接入 Rust TiDB/BR 主链。
+它实现普通 `RegisterMetrics` 与 BR 的 `RegisterMetricsForBR`。冻结 TiDB/BR 启动仍通过各自 `stubs.rs`，尚未调用本文件完整注册流程；但 TiDB stub 在 Starter 模式已转发 `EnableKeyspaceIDGatherer`，并在存储初始化后把 codec 的数字 ID 经 `SetKeyspaceID` 转发到本实现。应区分完整注册未接线与采集标签局部接线，不能再笼统称为全部空实现。
 
 ## 核心职责
 
@@ -15,20 +15,28 @@
 
 ## 主要符号
 
-- 常量 `componentName` / `keyspaceIDLabel` / `pdTimeout` / `defaultMaxRetries` / `retryInterval`：分别是 PD 调用方标识、`keyspace_id` 标签键、10 秒建连超时、30 次最大尝试和 500ms 基础退避（`common.rs:47-56`）。
-- `TlsConfig::{IsEnabled, ToPDSecurityOption}`：仅 `ca_path` 非空时认为 TLS 已启用，并克隆三个证书路径为本地 `SecurityOption`（`common.rs:58-80`）。
-- `KeyspaceMeta`：本模块只保留 PD Keyspace 元数据中注册标签所需的 `u32 id`（`common.rs:90-94`）。
-- `PdErrorKind` / `MetricsUtilError`：将 PD 错误收敛为 `NotBootstrapped`、`KeyspaceNotExist`、`Unexpected` 三类；前两类由私有 `retryable` 判定为可重试，错误的 `Display` 仅输出 `message`（`common.rs:96-138`）。
-- `PdClient` / `PdClientFactory`：都要求 `Send + Sync`。前者提供同步 `LoadKeyspace` 与显式 `Close`，后者接收 component、PD 地址、TLS、超时和 `init_metrics` 选项以创建 trait object（`common.rs:140-156`）。
-- `ProductionPdClientFactory` / `ProductionPdClient`：把 `NetworkPdKeyspaceClient` 包在 `Mutex<Option<_>>` 中；生产工厂调用 `NetworkPdKeyspaceClient::connect`，并用 `map_pd_keyspace_error` 保持错误分类（`common.rs:162-228`）。
-- `SetPdClientFactory` / `pdClientFactory`：读写 `OnceLock<RwLock<Option<Arc<dyn PdClientFactory>>>>`；槽位为 `None` 时每次返回新的生产工厂（`common.rs:230-245`）。
-- `RegisterMetrics`：NextGen 内核先从全局配置写入 `keyspace_name`，然后进入通用注册流程（`common.rs:247-254`）。
-- `RegisterMetricsForBR`：空 Keyspace 直接注册；否则可先写 `keyspace_name`，再建立 PD 客户端、查 ID、写 `keyspace_id`、注册，最后关闭客户端（`common.rs:256-282`）。
-- `initParentMetricsCollectors` / `initMetrics`：前者补齐 Rust 拆 crate 后的父 collector，包括两段 `unsafe` 初始化；后者按固定顺序绑定子模块变量，并用 `Once` 保证 UniStore 指标只注册一次（`common.rs:284-341`）。
-- `registerMetrics`、`cloneConstLabels`、`setKeyspaceIDConstLabel`、`setConstLabels`：构成标签读取、合并、ID 写入和最终批量设置链（`common.rs:343-379`）。
-- `getKeyspaceMeta` / `getKeyspaceMetaWithRetry`：前者固化生产重试参数和 `std::thread::sleep`，后者注入尝试次数、基础退避与 sleep 函数供测试验证（`common.rs:381-418`）。
+- `EnableKeyspaceIDGatherer` 委托 `metricscommon` 启用采集时注入，不重新注册 collector。
+- `SetKeyspaceID(u32)` 委托 `SetGatheredKeyspaceID`，影响后续采集快照，不修改此前生成的快照。
+- `GatherMetricsWithKeyspaceID(families, Option<u32>)` 是直接转发的纯快照辅助函数，供测试或非默认 registry 使用。
+
+- 常量 `componentName` / `keyspaceIDLabel` / `pdTimeout` / `defaultMaxRetries` / `retryInterval`：分别是 PD 调用方标识、`keyspace_id` 标签键、10 秒建连超时、30 次最大尝试和 500ms 基础退避（`common.rs`）。
+- `TlsConfig::{IsEnabled, ToPDSecurityOption}`：仅 `ca_path` 非空时认为 TLS 已启用，并克隆三个证书路径为本地 `SecurityOption`（`common.rs`）。
+- `KeyspaceMeta`：本模块只保留 PD Keyspace 元数据中注册标签所需的 `u32 id`（`common.rs`）。
+- `PdErrorKind` / `MetricsUtilError`：将 PD 错误收敛为 `NotBootstrapped`、`KeyspaceNotExist`、`Unexpected` 三类；前两类由私有 `retryable` 判定为可重试，错误的 `Display` 仅输出 `message`（`common.rs`）。
+- `PdClient` / `PdClientFactory`：都要求 `Send + Sync`。前者提供同步 `LoadKeyspace` 与显式 `Close`，后者接收 component、PD 地址、TLS、超时和 `init_metrics` 选项以创建 trait object（`common.rs`）。
+- `ProductionPdClientFactory` / `ProductionPdClient`：把 `NetworkPdKeyspaceClient` 包在 `Mutex<Option<_>>` 中；生产工厂调用 `NetworkPdKeyspaceClient::connect`，并用 `map_pd_keyspace_error` 保持错误分类（`common.rs`）。
+- `SetPdClientFactory` / `pdClientFactory`：读写 `OnceLock<RwLock<Option<Arc<dyn PdClientFactory>>>>`；槽位为 `None` 时每次返回新的生产工厂（`common.rs`）。
+- `RegisterMetrics`：NextGen 内核先从全局配置写入 `keyspace_name`，然后进入通用注册流程（`common.rs`）。
+- `RegisterMetricsForBR`：诊断模式先安装共享 RPC guard，再在空 Keyspace 时直接注册；否则可先写 `keyspace_name`，再建立 PD 客户端、查 ID、写 `keyspace_id`、注册，最后关闭客户端（`common.rs`）。
+- `initParentMetricsCollectors` / `initMetrics`：前者补齐 Rust 拆 crate 后的父 collector，包括两段 `unsafe` 初始化；后者按固定顺序绑定子模块变量，并用 `Once` 保证 UniStore 指标只注册一次（`common.rs`）。
+- `registerMetrics`、`cloneConstLabels`、`setKeyspaceIDConstLabel`、`setConstLabels`：构成标签读取、合并、ID 写入和最终批量设置链（`common.rs`）。
+- `getKeyspaceMeta` / `getKeyspaceMetaWithRetry`：前者固化生产重试参数和 `std::thread::sleep`，后者注入尝试次数、基础退避与 sleep 函数供测试验证（`common.rs`）。
 
 ## 执行流程
+
+新增两个分支：`RegisterMetricsForBR` 先在 diagnostic 模式调用 `astersql_metaservice::EnsureDiagnosticRpcGuard`，再进入重试/空 keyspace 分支，因此守卫安装早于该入口的 PD 建连；`registerMetrics` 在 `initMetrics()?` 成功后，仅 Starter 调用 `EnableKeyspaceIDGatherer`。
+
+采集委托实现位于 `pkg/metrics/common/wrapper.rs`：遍历每个 family 的每个 sample，仅缺失时补 `keyspace_id`；未知 ID 写空字符串、已知 ID 写十进制；已有值保留且不重复插入。补标签后排序名称，已有标签的 sample 直接跳过。这能覆盖启用前已注册和后续注册的 collector，不依赖创建时常量标签。
 
 `RegisterMetrics` 的流程是：
 
@@ -40,10 +48,10 @@
 
 `RegisterMetricsForBR` 的流程是：
 
-1. Keyspace 名为空时不连 PD，直接执行通用注册。
+1. 诊断模式先安装共享 RPC guard；随后 Keyspace 名为空时不连 PD，直接执行通用注册。
 2. 非空时，NextGen 模式先写 `keyspace_name`；只有 `tls.IsEnabled()` 为真才复制 TLS 配置，否则传空 `SecurityOption`。
 3. 工厂以 component `tidb-metrics-util`、调用方 PD 地址、10 秒超时和 `init_metrics = false` 创建客户端。创建失败立即返回，没有可关闭的客户端。
-4. `getKeyspaceMeta` 最多尝试 30 次。第 `attempt` 次可重试失败后睡眠 `500ms * attempt`，成功立即返回，`Unexpected` 立即失败。
+4. `getKeyspaceMetaWithRetry` 按入口参数最多尝试 30 次。第 `attempt` 次可重试失败后睡眠 `500ms * attempt`，成功立即返回，`Unexpected` 立即失败。
 5. 成功时写入十进制 `keyspace_id` 并注册指标。无论 Keyspace 查询/后续注册成功还是失败，已创建的客户端都在返回前执行 `Close`。
 
 ## 数据与状态
@@ -60,7 +68,7 @@
 
 - `pkg/util/metricsutil/lib.rs` 声明私有 `common` 模块并重导出全部公开符号。
 - `pkg/util/metricsutil/common_test.rs` 是 `lib.rs` 通过 `#[cfg(test)] #[path = "common_test.rs"]` 接入的独立测试模块，直接使用公开符号及 crate 内可见的 `registerMetrics`/`getKeyspaceMetaWithRetry`。
-- RustCodeGraph `node --file` 报告本文件“used by 26 files”，但精确 `callers/callees` 查询未返回边明细。经 Rust 直接搜索复核，真实 TiDB/BR 启动文件使用的是本地 stub，本文件的注册 API 目前没有已确认的生产 Rust 调用者。
+- 冻结源码复核完整注册仍由本地 stub 承接，但 `cmd/tidb-server/stubs.rs` 已调用本文件的 Enable/Set 两个标签 API。
 - Go 主链已接线：`cmd/tidb-server/main.go:465` 调用 `metricsutil.RegisterMetrics`，`br/cmd/br/backup.go:31` 与 `br/cmd/br/restore.go:36` 调用 `RegisterMetricsForBR`。这些是迁移意图的对照证据，不是 Rust 已接线证据。
 
 下游关系：
@@ -84,6 +92,8 @@
 
 ## 并发与资源生命周期
 
+采集开关在 `metricscommon` 中以 AtomicBool 发布，ID 为 `OnceLock<RwLock<Option<String>>>`；每次 Gather 读取 ID 快照后处理传入向量，更新 ID 影响下一次读取。纯 helper 不读这些全局量；启用不会重注册 collector。此机制与本文件常量标签的读改写合并是两种不同路径。
+
 - `PdClient` 和 `PdClientFactory` 的 `Send + Sync` 边界允许工厂与客户端 trait object 跨线程共享。生产客户端用 `Mutex` 串行化 `LoadKeyspace` 与 `Close`，因此两者不会同时访问底层 Option。
 - 工厂槽位由 `OnceLock` 延迟创建、`RwLock` 区分频繁读与测试写、`Arc` 延长已取出工厂的生命期。修改全局工厂不会撤回已被其他线程 clone 的 `Arc`。
 - 指标常量标签采用“读出副本—本地合并—整体写回”。本文件未在读改写整个周期持有统一锁，因此多线程并发修改时的原子合并保证未被本文件证明。当前测试使用 `TEST_LOCK` 串行化会修改全局配置、标签和工厂的用例。
@@ -91,6 +101,8 @@
 - UniStore 注册的 `Once` 是进程级生命周期；PD 客户端则是单次 BR 注册调用的局部资源，查询结束即关闭。
 
 ## 与 Go 版本的对应关系
+
+诊断模式 Go 向 PD 客户端附加 `diagclient.PDClientOption()`；Rust 则先装共享 RPC guard。Rust 注释说明此 metrics 客户端涉及 GetMembers/LoadKeyspace 白名单，但完整 BR 启动仍走 stub，不能据函数内部守卫声称所有 BR 注册已受该入口保护。
 
 Rust `common.rs` 以 `pkg/util/metricsutil/common.go` 为直接对照，保留了主要分支和顺序：NextGen 的 `keyspace_name`、BR 的空 Keyspace 快速路径、TLS 选项、PD 超时与禁用 PD 自身 metrics、特定错误重试、`keyspace_id` 注入、observability 标签合并、子系统 `InitMetricsVars` 顺序以及 UniStore 条件注册。
 
@@ -100,9 +112,9 @@ Rust `common.rs` 以 `pkg/util/metricsutil/common.go` 为直接对照，保留�
 - Go `defer pdCli.Close()` 在建客户端后立即安排关闭；Rust 在组合 `Result` 后显式 `Close` 再返回。对当前普通成功/错误路径语义一致，但 panic 安全性不同。
 - Go `maps.Copy` 与 Rust `HashMap::extend` 都是后来的 observability 标签覆盖同键基础标签。Go map 迭代顺序不定；Rust 在展平前按键排序，多了确定性。
 - Go 通过 `metrics.InitMetrics()` 和 `metrics.RegisterMetrics()` 初始化中央 collector。Rust 注释说明 metrics 已拆分到 owner crates，因此用 `initParentMetricsCollectors` 逐个初始化本地父 collector，并为 RCCheckTS counter 手工补齐一次性构造。
-- Go 注册代码已被 TiDB 和 BR 入口调用；Rust 这两条主链当前仍是 stub。这是当前迁移状态的重要差异。
+- Go 的 Starter gatherer 包装 `prometheus.DefaultGatherer`；Rust 通过 `metricscommon::GatherMetrics` 处理采集快照，并由 TiDB stub 局部转发启用与 ID 设置。两条完整注册主链仍使用 stub，BR stub 依旧恒返回成功。
 
-Go `common_test.go` 只覆盖 observability 标签合并与 `keyspace_id` 保留。Rust `common_test.rs` 除对齐该用例外，还覆盖 TLS 启用判定、生产工厂存在性、PD 建连参数、两类可重试错误、非预期错误立即返回、建连失败、客户端关闭及退避序列。
+Go `common_test.go` 包含 observability 标签合并和 gatherer 相关回归；Rust 新增快照采集标签测试。Rust `common_test.rs` 除对齐该用例外，还覆盖 TLS 启用判定、生产工厂存在性、PD 建连参数、两类可重试错误、非预期错误立即返回、建连失败、客户端关闭及退避序列。
 
 ## 扩展指南
 
@@ -116,10 +128,9 @@ Go `common_test.go` 只覆盖 observability 标签合并与 `keyspace_id` 保留
 
 ## 验证依据
 
-- 目标源码：`pkg/util/metricsutil/common.rs:1-418`，通读并核对了常量、类型、trait、生产 PD 适配、标签合并、指标初始化及重试全流程。
-- crate 边界：`pkg/util/metricsutil/lib.rs:1-21` 证明模块声明、重导出与独立测试接线；`pkg/util/metricsutil/Cargo.toml:1-38` 证明 crate 名、Go 包对照元数据和依赖边界。
-- RustCodeGraph：`status` 报告索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/metricsutil` 确认该目录 9 个已索引 Go/Rust 文件；`node --file pkg/util/metricsutil/common.rs --offset 1 --limit 500` 返回全部 418 行、56 个符号及文件级“used by 26 files”。`query` 分别唯一定位了 Rust `getKeyspaceMetaWithRetry`，并将 Rust/Go/stub 中的同名 `RegisterMetricsForBR` 区分开。精确 ID 的 `callers/callees` 命令未输出边明细，因此本文不把文件级引用数当作具体调用边。
-- Go 对照：`pkg/util/metricsutil/common.go:1-167` 核对了注册顺序、PD 选项、重试分类和标签合并；`pkg/util/metricsutil/common_test.go:25-53` 证明 Go 现有标签回归意图。
-- Rust 测试：`pkg/util/metricsutil/common_test.rs:135-327` 覆盖标签合并与重复注册、TLS CA 判定、生产工厂错误、PD 选项、可重试与非预期错误、建连错误、客户端关闭及线性退避。本任务按计划不运行 Cargo，因此这些是源码证据而非本次新执行的测试结果。
-- 接线复核：`cmd/tidb-server/main.rs:707` + `cmd/tidb-server/stubs.rs:2442-2454`、`br/cmd/br/{backup.rs:46,restore.rs:46}` + `br/cmd/br/stubs.rs:799-808` 证明 Rust 主链尚使用 stub；`cmd/tidb-server/main.go:465`、`br/cmd/br/backup.go:31`、`br/cmd/br/restore.go:36` 证明 Go 主链的真实调用。
-- 结构验证命令为 `test -f pkg/util/metricsutil/common.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' pkg/util/metricsutil/common.rs.md)" -eq 11`；交付前应得到退出码 0。
+- 冻结实现、依赖和装配：`common.rs`、`Cargo.toml`、`lib.rs`，以及 `pkg/metrics/common/wrapper.rs` 的开关、ID 和采集 helper。
+- 冻结 `cmd/tidb-server/main.rs` 存储初始化后的 `metricsutil::SetKeyspaceID(codec.GetKeyspaceID())` 与 `stubs.rs::metricsutil` 证明局部转发；BR `backup.rs`/`restore.rs` 仍指向 `br/cmd/br/stubs.rs` 空注册。
+- 独立 `common_test.rs::test_keyspace_id_labels_every_gathered_metric_and_preserves_existing_values` 覆盖早/晚注册、未知 ID 空值、已有 43 保留、新值 42、无重复标签、排序与四线程 gather；原有 PD 工厂、重试、TLS、关闭测试继续作为边界证据。Go 对照为 `common.go`、`common_test.go`。
+- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/metricsutil/common.rs` 审计增量，并以 `git show 2c944fb:pkg/util/metricsutil/common.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
+- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
+- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

@@ -9,7 +9,7 @@
 ## 核心职责
 
 1. 用 `VersionInfo { version, git_hash }` 表示完整构建身份。版本字符串相同但 Git hash 不同仍视为不同构建。
-2. 在 `version_infos_consistent` 中比较本机身份与所有真实 TiDB 服务；跳过 `ServerInfo::assumed == true` 的合成条目，但拒绝空列表、空服务信息和“只有 assumed 条目”的不可判定状态。
+2. 在 `version_infos_consistent` 中比较本机身份与所有真实 TiDB 服务；跳过 `ServerInfo::assumed == true` 的合成条目及 `disable_rpc == true` 的节点，但拒绝空列表、空服务信息和“过滤后没有可参与节点”的不可判定状态。
 3. 在 `JobVersionChecker::check` 中把比较结果区分为三种语义：一致时 `AllowIndexScan`，明确不一致时 `BlockJob`，无法可靠取得或比较信息时 `FallbackToPrimaryKey`。
 4. 缓存最近一次决策：普通结果 10 秒，阻塞结果 60 秒。较长的阻塞缓存降低滚动升级期间反复查询和反复尝试提交的频率。
 
@@ -18,7 +18,7 @@
 ## 主要符号
 
 - `VersionInfo`：公开值类型，字段 `version: String` 与 `git_hash: String` 共同构成精确构建身份；派生 `Clone/Debug/Eq/PartialEq`，比较不解析版本字符串。
-- `ServerInfo`：公开包装类型，包含 `version: VersionInfo` 与 `assumed: bool`。`assumed` 标识不应参与真实节点计数和一致性判断的合成服务条目。
+- `ServerInfo`：公开包装类型，包含 `version: VersionInfo`、`assumed: bool` 与 `disable_rpc: bool`。`assumed` 标识不应参与真实节点计数和一致性判断的合成服务条目。
 - `JobVersionCheckResult`：公开三态枚举。默认值是 `FallbackToPrimaryKey`，保证新建 checker 在没有成功检查前采用兼容路径。
 - `version_infos_consistent(current, servers) -> Result<bool, String>`：公开纯函数。`Ok(true)` 表示至少有一台真实服务且全部完整身份相同；`Ok(false)` 只表示发现明确版本不一致；`Err` 表示输入不足或损坏，不能形成可靠结论。
 - `JobVersionChecker`：公开、非线程安全的有状态检查器；私有字段 `last_check_seconds` 和 `last_result` 构成缓存。
@@ -33,7 +33,7 @@
 1. 根据上一结果选择缓存周期：`BlockJob` 为 60 秒，其他结果为 10 秒。
 2. 若 `last_check_seconds` 存在，且 `now_seconds.saturating_sub(last) < interval`，直接返回 `last_result`。`saturating_sub` 使时钟倒退或调用者传入更小时间时不会发生无符号下溢；这种情况会得到差值 0，从而继续命中缓存。
 3. 缓存失效后同时检查本机与全集群输入。只有 `(Ok(Some(local)), Ok(all))` 进入版本比较；本机查询错误、本机信息为空或全集群查询错误都回退到 `FallbackToPrimaryKey`。
-4. `version_infos_consistent` 先拒绝空列表，然后逐项处理：`None` 立即返回带服务 ID 的错误；`assumed` 条目被跳过；真实条目计数并与 `current` 做完整结构相等比较。首次明确不一致即返回 `Ok(false)`；遍历后若真实条目数为零则报错，否则返回 `Ok(true)`。
+4. `version_infos_consistent` 先拒绝空列表，然后逐项处理：`None` 立即返回带服务 ID 的错误；`assumed || disable_rpc` 条目被跳过；真实条目计数并与 `current` 做完整结构相等比较。首次明确不一致即返回 `Ok(false)`；遍历后若真实条目数为零则报错，否则返回 `Ok(true)`。
 5. 比较结果映射为 `AllowIndexScan`、`BlockJob` 或 `FallbackToPrimaryKey`，随后无条件更新缓存时间和结果。
 6. 上游依据三态继续：`JobManager::submit_job` 在允许时选择 TTL 索引、回退时不选索引、阻塞时返回错误；`split_ttl_scan_ranges` 也分别生成索引范围、继续主键范围或返回相同的混合版本错误。
 
@@ -59,11 +59,13 @@
 
 ## 错误处理与边界
 
-`version_infos_consistent` 把三类不可判定输入作为 `Err(String)`：服务列表为空；任一服务 ID 对应 `None`；过滤 assumed 条目后没有真实服务。错误文本分别明确空列表、具体空服务 ID或没有真实服务。
+新增 `disable_rpc` 过滤发生在 `Option` 解包之后：禁用 RPC 的异版本节点不阻塞 TTL 索引扫描；`None` 仍立即报错。若所有条目都被过滤，仍为不可判定并回退主键扫描，不会把空有效集合当作一致。
+
+`version_infos_consistent` 把三类不可判定输入作为 `Err(String)`：服务列表为空；任一服务 ID 对应 `None`；过滤 assumed/disable_rpc 条目后没有真实服务。错误文本分别明确空列表、具体空服务 ID或没有真实服务。
 
 明确的完整构建身份不一致不是函数错误，而是 `Ok(false)`；`check` 将其升级为 `BlockJob`。相反，服务发现错误、本机信息为空或一致性函数报错都被收敛为 `FallbackToPrimaryKey`，原始错误不会由本模块保留或返回。日志责任留在较外层；Rust 版本的 `check` 本身不记录日志。
 
-边界不变量包括：至少一个真实节点才可能得到 `Ok(true)`；assumed 节点永远不能单独证明一致；首个真实不一致即可短路；时间间隔使用严格小于，恰好达到 10 或 60 秒时会重新检查；极端时钟倒退会因饱和减法继续使用缓存，直到输入时间重新追上缓存时间。
+边界不变量包括：至少一个真实节点才可能得到 `Ok(true)`；assumed 和禁用 RPC 节点永远不能单独证明一致；首个真实不一致即可短路；时间间隔使用严格小于，恰好达到 10 或 60 秒时会重新检查；极端时钟倒退会因饱和减法继续使用缓存，直到输入时间重新追上缓存时间。
 
 ## 并发与资源生命周期
 
@@ -75,7 +77,9 @@
 
 ## 与 Go 版本的对应关系
 
-直接对照文件是 [`pkg/ttl/ttlworker/job_version_checker.go`](job_version_checker.go)，相关测试是 [`job_version_checker_test.go`](job_version_checker_test.go)。Rust 保留了 Go 的核心语义：完整 `VersionInfo` 比较、忽略 assumed 条目、空/空指针输入报错、未知状态回退主键扫描、已知混合构建阻塞，以及普通 10 秒/阻塞 1 分钟缓存。
+冻结 Go 的 `tiDBServerVersionInfosConsistent` 同样以 `info.IsAssumed() || info.IsDisableRPC()` 排除节点。Rust 增量增加字段和相同过滤，缓存与三态映射未变。
+
+直接对照文件是 [`pkg/ttl/ttlworker/job_version_checker.go`](job_version_checker.go)，相关测试是 [`job_version_checker_test.go`](job_version_checker_test.go)。Rust 保留了 Go 的核心语义：完整 `VersionInfo` 比较、忽略 assumed 和禁用 RPC 条目、空/空指针输入报错、未知状态回退主键扫描、已知混合构建阻塞，以及普通 10 秒/阻塞 1 分钟缓存。
 
 主要结构差异如下：
 
@@ -83,13 +87,13 @@
 - Go 将缓存拆为 `cachedResult` 与 `cacheResult`；Rust 内联于 `check`。
 - Go 的 server map 在 Rust 中表示为带 ID 的向量，Go 的 nil 指针对应 Rust 的 `Option<ServerInfo>`。
 - Go checker 的注释要求不可并发使用；Rust 同样不内置同步，但 `ttl_metadata.rs` 的全局复用点显式包裹 `Mutex`。
-- Go 能从 server model 读取 `IsAssumed()`；当前 Rust infosync 转换路径说明其 API 只返回已注册真实节点，因此写入 `assumed: false`。类型仍保留该字段，以维持比较函数语义和测试覆盖。
+- Go 能从 server model 读取 `IsAssumed()`；当前 Rust infosync 转换路径说明其 API 只返回已注册真实节点，因此写入 `assumed: false`，同时由 `info.DisableRPC` 透传 `disable_rpc`。类型仍保留 assumed 字段，以维持比较函数语义和测试覆盖。
 
 [`job_version_checker_test.rs`](job_version_checker_test.rs) 验证了完整构建比较、忽略 assumed、空列表报错、已知不一致阻塞 60 秒、到期后未知状态回退，以及随后一致时允许索引扫描。Go 测试还覆盖版本字符串/哈希的更多组合、nil 远端、only-assumed、查询失败调用次数与缓存刷新；这些是 Rust 后续补充测试时应保持的对照基线。
 
 ## 扩展指南
 
-- 若改变允许索引扫描的版本规则，应优先修改 `VersionInfo` 与 `version_infos_consistent`，并同步独立测试 `job_version_checker_test.rs`；同时核对 Go 的 `tiDBServerVersionInfosConsistent`，避免只比较版本字符串或错误接受 assumed-only 集群。
+- 若改变允许索引扫描的版本规则，应优先修改 `VersionInfo` 与 `version_infos_consistent`，并同步独立测试 `job_version_checker_test.rs`；同时核对 Go 的 `tiDBServerVersionInfosConsistent`，避免只比较版本字符串或错误接受过滤后无有效节点的集群。
 - 若调整缓存策略，应把 10/60 秒提取为具名常量或配置，并新增严格边界、时钟倒退、失败缓存及状态切换测试。阻塞缓存变短会增加滚动升级期查询负载，变长会推迟升级收敛后的 TTL 作业恢复。
 - 若增加决策状态，必须同步两个穷尽匹配点：`JobManager::submit_job` 与 `split_ttl_scan_ranges`。遗漏任一路径会造成作业记录和实际范围生成策略不一致。
 - 若让 checker 自行执行 infosync，应保留可注入测试边界，避免在共享 mutex 内做 I/O，并明确日志、超时与快照一致性责任；当前调用者注入模式更适合单元测试。
@@ -97,10 +101,8 @@
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含本仓库 Rust/Go 文件；`node --file pkg/ttl/ttlworker/job_version_checker.rs` 读取了 101 行完整源文件，并报告使用者包括 `job_manager.rs`、`ttl_metadata.rs`、集成测试与单元测试。
-- RustCodeGraph `node job_version_checker.rs::JobVersionChecker`：确认结构体位于第 66 行，导入关系来自 `job_manager.rs` 与 `job_version_checker_test.rs`。精确 `callers/callees` 查询未返回方法级边，故调用点再由下列直接源码交叉核验。
-- 生产源码：[`job_version_checker.rs`](job_version_checker.rs)、[`job_manager.rs`](job_manager.rs)、[`lib.rs`](lib.rs)、[`ttl_metadata.rs`](../../session/runtime/ttl_metadata.rs)。
-- crate 与移植边界：[`Cargo.toml`](Cargo.toml)。
-- Go 对照与测试：[`job_version_checker.go`](job_version_checker.go)、[`job_version_checker_test.go`](job_version_checker_test.go)。
-- Rust 独立测试：[`job_version_checker_test.rs`](job_version_checker_test.rs)；另检查了 [`job_manager_integration_test.rs`](job_manager_integration_test.rs) 的相关导入上下文。
-- 本任务仅新增说明文档，不改变运行时代码；按计划不运行 Cargo。交付前使用任务指定命令检查目标文件存在且恰有 11 个固定二级章节，并人工复核调用边、三态语义、缓存边界和 Go 对照。
+- 冻结实现与接线：`job_version_checker.rs`、`lib.rs`、`Cargo.toml`、`job_manager.rs` 和 `pkg/session/runtime/ttl_metadata.rs`。后者 `ttl_server_info` 从 infosync 透传 `DisableRPC`。
+- 冻结独立测试：`job_version_checker_test.rs` 的异版本禁用 RPC 节点不影响一致性判断；`pkg/session/runtime/ttl_metadata_test.rs` 覆盖转换标志。Go 对照为 `job_version_checker.go`、`job_version_checker_test.go`。
+- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/ttl/ttlworker/job_version_checker.rs` 审计增量，并以 `git show 2c944fb:pkg/ttl/ttlworker/job_version_checker.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
+- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
+- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。

@@ -20,6 +20,8 @@
 
 ## 主要符号
 
+- `Tracker::ReplaceBytesUsedForCleanup(bytes)`：以目标用量减当前值形成差额，调用私有 `consume(delta, false)`；普通 `Consume` 始终调用 `consume(bs, true)`，`ReplaceBytesUsed` 仍走普通强制检查路径。
+
 - `Tracker`：核心状态对象。`parent: AtomicPtr<Tracker>` 保存父指针；`bytesConsumed`、`bytesReleased` 和 `maxConsumed` 保存当前、GC-aware 暂存释放量和峰值；`bytesLimit` 一次性保护 hard/soft 配额对；`mu.children` 按 label 保存普通子节点；两个 `actionMu` 分别保护硬限和软限动作链。
 - `ActionOnExceed` / `LogOnExceed`：超限动作协议及默认实现。协议要求 `Send`，提供动作、fallback 所有权转移、优先级和完成状态；`LogOnExceed` 第一次只标记 acted，之后转入 fallback。
 - `InitTracker`、`NewTracker`、`NewGlobalTracker`：公开构造入口。普通 tracker 默认安装 `LogOnExceed`；global tracker 设置 `isGlobal`，其设计是不维护 children 以减小锁竞争。
@@ -35,6 +37,8 @@
 - `memArbitrator`、`TrackerArbitrateHelper`、`ReversalRes`（仅 `mem-arbitrator`）：仲裁状态机、向仲裁核心汇报的 helper，以及用显式 `Release` 或 `Drop` 自动撤销的 reversal 守卫。
 
 ## 执行流程
+
+清理专用路径仍沿父链更新消费量、峰值、预算已用计数和指标调用，并在未启用全局仲裁时更新 Top1 候选；随后在 `!enforce` 处返回，跳过 session killer、硬限和软限动作。仲裁开启时正向差额仍记入 small/big used，但 `enforce == false` 阻止 `intoBigBudget`/`growBigBudget` 发起新预留；负差额照常减账。
 
 普通调用链如下：上层用 `NewTracker(label, limit)` 创建节点，按需要设置 `IsRootTrackerOfSess`、`SessionID`、`Killer` 和超限动作，再用 `AttachTo(parent)` 建树。挂接时先从旧父移除，加入新父 `children[label]`，发布父指针，并把子节点当前 `BytesConsumed` 补记到新父链；`Detach` 做相反操作。
 
@@ -72,9 +76,11 @@ crate 内下游依赖包括：`crate::global_arbitrator::UsingGlobalMemArbitrati
 - `pkg/util/chunk/list.rs`、`row_container.rs`：为 chunk/list/row container 创建 tracker，并在追加、删除、落盘转换时消费或归还内存。
 - `pkg/util/memoryusagealarm/memoryusagealarm.rs`：读取进程内存限制，并使用本文件的 `FormatBytes` 展示峰值。
 
-RustCodeGraph 能索引目标文件和函数节点，但本次对 impl 方法执行 `callers/callees` 未返回 Rust 调用边，因此上述跨文件边由精确 Rust 源码搜索复核；这不影响目标文件内部流程证据。
+RustCodeGraph 辅助定位到清理记账的两个独立 tracker 测试及 session txn 测试；图结果只作为导航，冻结源码才是行为依据。
 
 ## 错误处理与边界
+
+清理入口用于对齐已分配内存，不是给后续分配豁免配额。它保留挂起的 kill 信号，不清除取消状态；后续普通正向消费恢复 killer 与额度检查，零差额仍立即返回。它只抑制明确的强制执行分支，不保证对中毒锁、裸指针失效或内部断言的任何 panic 都免疫，也不改变树的生命周期义务。
 
 大多数 API 不返回 `Result`：内存超限通过动作链或 session killer 表达；`Consume`/`HandleKillSignal` 收到 killer 错误时直接 `panic!`。`AttachToGlobalTracker` 目标不是 global tracker、或 `DetachFromGlobalTracker` 的父不是 global tracker时也会 panic，相关边界由 `TestGlobalTracker` 覆盖。
 
@@ -96,6 +102,8 @@ RustCodeGraph 能索引目标文件和函数节点，但本次对 impl 方法执
 
 ## 与 Go 版本的对应关系
 
+冻结 Go 同样新增 `ReplaceBytesUsedForCleanup` 并拆出 `consume(bytes, enforce)`，保留记账而延后 kill/动作与预算增长；Rust 用布尔参数保持相同局部策略。该入口已在独立 tracker 测试及 session txn 回归中使用，不能仅据 API 存在就推断所有 Rust 语句清理入口都已切换。
+
 结构和命名有意贴近 `pkg/util/memory/tracker.go`：Go 的 `Tracker`、`InitTracker`、`NewTracker`、树操作、`Consume`、动作链、格式化、label、进程级全局量和 `memArbitrator` 在 Rust 中均有直接对应。`tracker_test.rs` 也按 Go 测试名称覆盖 SetLabel、Consume/Release、OOM action、Attach/Detach/Replace、ToString、峰值、global tracker 和 FormatBytes；`tracker_4_aster_unit_test.rs` 追加树统计、并发记账与仲裁清理回归。
 
 需要特别注意的迁移差异：
@@ -109,6 +117,8 @@ RustCodeGraph 能索引目标文件和函数节点，但本次对 impl 方法执
 
 ## 扩展指南
 
+扩展清理逻辑需同时保留普通路径强制检查与清理路径差额传播，并分别检查默认 feature 与 `mem-arbitrator` 下的 used 记账及后续预算恢复；不要用清除 kill 信号或跳过祖先计数来绕开取消。
+
 新增内存归属时，在 label 常量区增加稳定且不冲突的负值，并在真实使用点通过 `NewTracker`/`AttachTo` 接入；如需 metrics，再同步扩展 `MetricsTypes` 及真实 metrics 后端。测试应放在独立文件 `tracker_test.rs` 或 `tracker_4_aster_unit_test.rs`，不要嵌入生产源文件，并覆盖树传播、detach 后回滚和稳定输出。
 
 新增超限策略应实现 `ActionOnExceed`，明确优先级、一次性/重复触发语义和 fallback 所有权；通过 `FallbackOldAndSetNewAction` 或 soft-limit 版本安装。必须测试相同/不同优先级顺序、finished 链头跳过、链中解绑，以及 hard/soft 同时达到时的行为。
@@ -121,9 +131,8 @@ RustCodeGraph 能索引目标文件和函数节点，但本次对 impl 方法执
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/util/memory` 显示 `tracker.rs` 有 209 个符号。
-- RustCodeGraph `node --file pkg/util/memory/tracker.rs`：分段读取完整 1,829 行，核对构造、动作链、树操作、Consume/Release、格式化、标签和 feature 条件代码。
-- RustCodeGraph `query`：确认 `NewTracker`、`NewGlobalTracker`、`InitTracker`、`reArrangeFallback`、`BytesToString`、`FormatBytes`、`MetricsTypes`、`InitMemArbitratorWithSharedKiller` 的真实节点与签名；`callers/callees` 对目标 impl 方法未产出可用 Rust 边，随后用精确 `rg` 补证上游调用点。
-- crate 与模块证据：`pkg/util/memory/Cargo.toml`、`pkg/util/memory/lib.rs`；无 `doc.go` 可读。
-- Go 对照证据：`pkg/util/memory/tracker.go`、`pkg/util/memory/tracker_test.go`，重点核对树累计、软硬限、GC-aware finalizer、global tracker 和仲裁状态。
-- Rust 测试证据：`pkg/util/memory/tracker_test.rs`、`pkg/util/memory/tracker_4_aster_unit_test.rs`；覆盖并发消费、动作链、结构变更、格式化及 feature 仲裁生命周期。本任务按计划是纯文档分析，未运行 Cargo 或代码测试。
+- 冻结 `tracker.rs` 的 `Consume/consume`、`ReplaceBytesUsed/ReplaceBytesUsedForCleanup`、`lib.rs` 与 `Cargo.toml` 核对差额传播、feature 和装配；Go 对照 `tracker.go` 使用相同 enforce 分界。
+- 独立 `tracker_test.rs::replace_bytes_used_for_cleanup_preserves_kill_and_resumes_enforcement` 验证 leaf/root=200、动作不触发、kill 保留及后续普通消费 panic；feature 测试 `replace_bytes_used_for_cleanup_defers_arbitrator_growth` 验证越过 small limit 仍不转 big，清除 kill 后普通消费才转 big。邻接 `pkg/session/test/txn/txn_test.rs` 有语句清理记账回归；本次不运行这些测试。
+- 本次以 `git diff ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867 -- pkg/util/memory/tracker.rs` 审计增量，并以 `git show 2c944fb:pkg/util/memory/tracker.rs` 的冻结 blob 为准，不把当前工作区变化写入说明。
+- RustCodeGraph `status` 确认当前索引含 Rust；`explore` 用于辅助定位 JSON path、清理记账和指标委托关系。索引不是冻结版本证据，本文行为与接线均按目标提交交叉核验。
+- 本任务仅更新说明文档；使用 Ready 等价的 11 章节、空白、秘密模式和引用检查。仓库缺少 `.agents/skills/tidb-verify-profile/SKILL.md`，按计划不运行 Cargo，测试覆盖仅为冻结测试源码证据，不代表本次执行通过。
