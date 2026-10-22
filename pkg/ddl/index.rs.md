@@ -36,11 +36,15 @@
 
 ## 执行流程
 
+`global_index_handle_equal(global, physical_id, indexed, current)` 在 global 且 current 尚不是 `PartitionHandle` 时，用 physical ID 和 `current.Copy()` 构造分区 handle 后比较；已有分区 handle 原样保留，非 global 直接 `indexed.Equal(current)`。这避免不同分区的相同内部 handle 被当成同一行。冻结版本的精确引用仅见独立分区测试，不能据此声称事务回填已调用该 helper。
+
+`init_for_reorg_indexes` 在 URI/hook 之后、选择后端之前增加 NextGen 门禁：仅当 `IsNextGen() && ingest_initialized() && IsFastReorg && !UseCloudStorage` 同时成立时，返回 `ErrNotSupportedYet`（`add index or modify column with local sort`）。无 ingest 环境的 txn-merge 回退及非 fast 的 txn 回填仍允许；cloud 使用还要求 `IsDistReorg`，仅 URI 非空不足以绕过限制。该检查先于磁盘预检、后端选择和 telemetry；已有 ReorgTp 也不能绕过它。
+
 FULLTEXT 快速路径如下：`pkg/session/fts_runtime.rs::alter_table` 识别 `ALTER TABLE ... ADD FULLTEXT`，调用 `BuildCanonicalFullTextIndex`；函数依次检查约束种类与部署模式、键列形态、列存在性与字符串类型、索引名和 parser，随后递增 `MaxIndexID`、构造 Public `IndexInfo`、修改列 flag 并写入 `Indices`。任一校验失败都在写元数据前返回；ID 分配发生在全部校验之后。
 
 简化索引构造路径为 `build_index_info → build_index_info_for_deploy_mode → build_index_columns → check_index_column/get_index_column_length → validate_special_index → allocate_index_id → add_index_column_flag → table.indices.push`。主键先检查非 STORED generated column 和 invisible 冲突；GLOBAL 仅在 `table.partitioned` 时生效。删除路径反向执行：定位并移除索引，递减列引用，然后删除该索引涉及的隐藏列，最后按列名重算剩余索引的 offset。
 
-真实 reorg 初始化路径为 `persistent_actions::initialize_reorg_indexes → index::init_for_reorg_indexes`。空索引列表立即返回且不接触环境；否则先加载 URI，并以“URI 非空且 `IsDistReorg`”设置 `UseCloudStorage`，调用 hook 后进入 `pick_job_backfill_type`。已有非 None 类型绝不改变；非 fast reorg 选 Txn；fast 且 ingest 环境可用选 Ingest（仅非 cloud 时做磁盘预检）；否则选 TxnMerge。Txn/TxnMerge 遇到 partial index 返回错误；需要 merge process 的类型增加 telemetry 并把每个真实索引置为 `BackfillStateRunning`。
+真实 reorg 初始化路径为 `persistent_actions::initialize_reorg_indexes → index::init_for_reorg_indexes`。空索引列表立即返回且不接触环境；否则先加载 URI，并以“URI 非空且 `IsDistReorg`”设置 `UseCloudStorage`，调用 hook 后先检查 NextGen 本地排序限制，再进入 `pick_job_backfill_type`。已有非 None 类型绝不改变；非 fast reorg 选 Txn；fast 且 ingest 环境可用选 Ingest（仅非 cloud 时做磁盘预检）；否则选 TxnMerge。Txn/TxnMerge 遇到 partial index 返回错误；需要 merge process 的类型增加 telemetry 并把每个真实索引置为 `BackfillStateRunning`。
 
 分区 reorg 的生产调用在 `pkg/ddl/partition.rs`：一个物理分区完成后调用 `next_recreated_index_partition_id`。若当前 ID 位于 `AddingDefinitions`，继续该数组；否则转到 canonical definitions 并跳过 `DroppingDefinitions`，返回 0 表示结束。
 
@@ -114,10 +118,7 @@ reorg 生命周期边界由 `ReorgIndexEnvironment` 显式分离：URI 加载和
 
 ## 验证依据
 
-- 源码：`pkg/ddl/index.rs`（1,239 行），逐段核对全部公开/私有函数、类型、trait、常量与再导出；文件无条件编译项。
-- crate 与模块：`pkg/ddl/Cargo.toml` 的 package/lib/dependencies/porting metadata；`pkg/ddl/lib.rs` 的 `pub mod index` 与独立 `mod index_test`。
-- 上游/下游：`pkg/session/fts_runtime.rs::alter_table`、`pkg/ddl/persistent_actions.rs::initialize_reorg_indexes`、`pkg/ddl/partition.rs` 的 recreated-index 调用。
-- RustCodeGraph：`status` 显示索引包含 11,467 文件、307,296 节点和 1,848,419 边；`files --filter pkg/ddl/index.rs` 显示目标文件 127 个符号；`query` 定位 `BuildCanonicalFullTextIndex`、`build_index_info`、`init_for_reorg_indexes`、`resolve_cloud_storage_uri_after_owner_failover`、`remove_index_info`、`pick_job_backfill_type`；`node` 验证关键源码、`init_for_reorg_indexes ← initialize_reorg_indexes` 以及其内部调用边。通用 `callers build_index_info` 查询长时间无输出后中止，因此其使用点另以仓库搜索核验，未据此推断不存在调用者。
-- Rust 测试：`pkg/ddl/index_test.rs` 覆盖 decimal/时间长度、列存最小长度、generated PK、ANALYZE、重试阈值、列比较、任务键、并发、大小写重命名、特殊索引、partial condition 和隐藏列 offset；`pkg/ddl/backfilling_test.rs` 覆盖 cloud/磁盘顺序、已启动类型、fallback、空列表与 partial-index 错误；`pkg/ddl/index_nokit_test.rs` 覆盖 owner failover URI；`pkg/ddl/tests/partition/global_index_version_test.rs` 覆盖真实全局索引版本；`pkg/ddl/ddl_test.rs` 覆盖分区推进。另以 `db_change_test.rs`、`db_integration_test.rs` 核对简化元数据集成用法。
-- Go 对照：`pkg/ddl/index.go` 的 `buildIndexColumns`、`getIndexColumnLength`、`setGlobalIndexVersion`、`BuildIndexInfo`、`initForReorgIndexes`、`pickBackfillType`、`isRetryableJobError`、`TaskKeyBuilder`、`adjustConcurrency`、分区推进、repair/modify-column/partial-index 辅助；相关 Go 测试包括 `pkg/ddl/backfilling_test.go`、`ddl_test.go`、`db_integration_test.go`、`index_modify_test.go` 和 `index_nokit_test.go`。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验证应确认目标文件存在且恰有十一个规定的二级标题；人工复核重点是两套元数据模型、真实生产调用与尚未移植的 Go worker 逻辑均被明确区分。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/index.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
+- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
+- 冻结 `pkg/ddl/tests/partition/global_index_version_test.rs::global_index_handle_equality_includes_the_backfill_partition` 覆盖不同分区、同分区、已有分区 handle 和非 global 分支；精确 `git grep` 仅发现该 helper 的定义和测试使用。Go 对照 `pkg/ddl/index.go::checkHandleExists`、`initForReorgIndexes`。NextGen 四条件门禁以两端源码人工复核，未声称执行运行时回归。
+- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。

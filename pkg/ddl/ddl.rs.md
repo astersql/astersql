@@ -59,7 +59,7 @@
 
 ## 依赖与调用关系
 
-直接下游依赖很少：标准库 `BTreeMap`/`BTreeSet` 负责有序状态，`std::sync::mpsc` 负责结果通知；crate 内仅依赖 `options::{OptionFn, Options, apply_options}`。`Options` 可携带 store、etcd、info cache、lease、schema loader 等配置，但本文件只有 `start` 读取 `store.is_some()`，其他字段由别的模块负责。
+直接下游依赖很少：标准库 `BTreeMap`/`BTreeSet` 负责有序状态，`std::sync::mpsc` 负责结果通知；crate 内依赖 `options::{OptionFn, Options, apply_options}`，并通过 `astersql_config::diagnosticmode` 检查诊断状态和返回 MDL 错误。`Options` 可携带 store、etcd、info cache、lease、schema loader 等配置，但本文件只有 `start` 读取 `store.is_some()`，其他字段由别的模块负责。
 
 已确认的 Rust 生产侧关系：
 
@@ -72,7 +72,9 @@
 
 ## 错误处理与边界
 
-- 所有业务错误都用 `String`，没有结构化错误类型或错误链；调用方若要按类别处理，只能依赖当前文本，不宜在新代码中扩大这种耦合。
+`switch_metadata_lock` 现在返回 `Result<bool, DiagnosticModeError>`：先检查 `diagnosticmode::Enabled()`，诊断实例返回克隆的 `ErrDDLNotAllowed`，不修改开关；普通实例更新开关并以 `Ok(changed)` 返回是否变化。这是诊断模式限制，不是 SEM 权限检查；`start`、`enable_ddl`、`disable_ddl` 未因此增加诊断门禁。
+
+- 除 MDL 切换返回结构化 `DiagnosticModeError` 外，其余业务错误使用 `String`，没有结构化错误链；调用方若要按类别处理，只能依赖当前文本，不宜在新代码中扩大这种耦合。
 - `start` 仅检查 store 是否存在；重复启动成功，`stop` 仅清 `started`，既不禁用 `enabled`，也不清任务或等待资源退出。
 - `JobWrapper::notify_result` 忽略接收端已断开的发送错误；这是通知已无人等待时的有意吞弃。`wait_result` 在发送端全部关闭且未收到值时返回固定错误 `DDL result channel closed`。
 - `submit_job` 在停止或禁用时统一返回 `DDL is not running`；重复 ID 返回包含 ID 的错误。
@@ -96,7 +98,7 @@
 - Rust `Job` 是 Go `model.Job` 的聚焦子集；动作枚举、错误、参数、binlog/history info、多 schema 信息等大量字段不在此处。
 - Rust `JobWrapper` 对照 Go 同名类型，但 Go 保存 `model.JobArgs` 和一组结果通道，可向合并 Job 的多个等待者广播 job ID/merged/error；Rust 只向单个接收端发送 `Result<(), String>`。
 - Rust `UnsyncedJobTracker` 对照 Go `unSyncedJobTracker`，但 Go 用 `RWMutex` 保护 map，并在 once map 超过容量时重置；Rust 本类型既不线程安全也不设容量。`job_scheduler.rs` 的另一跟踪器更接近这部分 Go 行为。
-- Rust `switch_metadata_lock` 只是更新布尔值并报告是否变化；Go `SwitchMDL` 会检查运行中 Job、写全局变量和持久化元数据，且可能返回 session/KV 错误。
+- Rust `switch_metadata_lock` 先拒绝诊断模式，否则更新布尔值并以 `Ok(changed)` 报告变化；Go `SwitchMDL` 同样先拒绝诊断模式，之后会检查运行中 Job、写全局变量和持久化元数据，且可能返回 session/KV 错误。
 - Rust `process_jobs`/`process_jobs_transactionally` 对照 Go `CancelJobs`、`PauseJobs`、`ResumeJobs` 与底层 `processJobs` 的逐 Job 结果和事务提交语义。Rust 测试覆盖提交失败回滚，但没有 SQL 系统表查询、并发冲突重试和真正事务。
 - Rust `all_jobs` 对应 Go “运行中后历史”的遍历意图，但它只读取内存集合；Go `GetAllDDLJobs`/`IterAllDDLJobs` 查询 job 表并继续遍历持久化历史。
 - `recover_snapshot_ts` 精确对齐 Go `GetRecoverSnapshotTS` 的 `RealStartTS` 优先规则。候选过滤保留 DROP/TRUNCATE、GC 安全点和短路意图，但 Go 还从快照 InfoSchema 取表、区分可忽略错误，并允许回调返回错误。
@@ -113,16 +115,7 @@
 
 ## 验证依据
 
-本说明基于以下直接证据，未运行 Cargo（任务明确为纯文档分析）：
-
-- RustCodeGraph `status`：索引覆盖 7,032 个 Rust 文件，目标文件可读取。
-- RustCodeGraph `node --file pkg/ddl/ddl.rs --offset 1 --limit 220` 与 `--offset 221 --limit 245`：核对目标文件全部 466 行、符号、字段、分支和文件使用概览。
-- RustCodeGraph `query 'Ddl::submit_job'`、`query process_jobs_transactionally`、`query drop_or_truncate_table_info_from_jobs`、`query 'JobWrapper::wait_result'`：核对主要符号；其中通用名称查询会混入 Go/其他模块同名项，`process_jobs_transactionally` 未被索引查询命中。
-- RustCodeGraph `node` 读取 `pkg/ddl/job_submitter.rs`、`pkg/ddl/job_scheduler.rs`、`pkg/ddl/job_worker.rs`：确认 `Job`/`JobState` 的生产使用及提交、调度、执行职责分布。精确 `callers/callees` 查询在本环境超过 30 秒仍无输出，已终止并用限定范围的源码搜索补证。
-- 读取 `pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、`pkg/ddl/options.rs`：确认 crate、模块导出、移植元数据和直接配置依赖。
-- 读取 `pkg/ddl/doc.go` 与 `docs/agents/ddl/README.md`：确认 DDL 的 schema 同步不变量及 job-based、owner-driven 总体约束；结论均再由 Rust 源码核对。
-- 读取 Go 对照 `pkg/ddl/ddl.go`：核对 StartMode、配置、JobWrapper、tracker、NewDDL/Start/Stop、SwitchMDL、管理命令、全量遍历和恢复快照逻辑。
-- 读取 Rust 测试 `pkg/ddl/ddl_test.rs`、`pkg/ddl/cancel_test.rs`、`pkg/ddl/tests/adminpause/pause_negative_test.rs`、`pkg/ddl/tests/adminpause/pause_resume_test.rs`，并搜索 `pkg/ddl/db_change_test.rs`：确认恢复时间戳/GC/短路、批处理顺序、状态转换、系统暂停权限、提交失败回滚、创建配置和完成归档契约。
-- 用限定非测试文件的 `rg` 搜索主要类型与函数：确认 `Job`/`JobState` 被生产模块复用，同时当前 `Ddl`、本文件 `JobWrapper` 和恢复帮助函数没有非测试调用点。
-
-人工复核结论：该文件存在的直接价值是提供共享 Job 模型与一组可测试的 Go 对齐语义；当前执行方式是串行内存状态转换和独立纯函数扫描；安全扩展必须同步检查真实 submitter/scheduler/worker，并保持独立测试与 Go 兼容边界。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/ddl.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
+- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
+- 冻结 `pkg/ddl/ddl_test.rs::diagnostic_mode_disallows_switch_mdl` 检查诊断错误与开关；Go 对照 `pkg/ddl/ddl.go::SwitchMDL`。测试为源码审阅，未运行。
+- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。

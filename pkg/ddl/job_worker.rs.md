@@ -34,12 +34,16 @@
 - `TransactionOperation` / `ExecutionOperation`：`Send + 'static` boxed closure，分别让调用方在真实 KV transaction 或 `JobExecutionContext` 中执行一段操作并返回序列化字节。
 - `JobExecutionContext`：action resource trait。多数方法有失败型默认实现；`restore_reorg` 是例外，它通过 `query(..., "get_handle")` 调用 `reorg::restore_reorg`。正常实现为 `ConcreteJobExecutionContext`。
 - `JobLease`：`owner_epoch/is_owner/is_cancelled`。正常服务的 `Lease` 将其连接到 owner manager 与 scheduler cancellation；epoch 防止同一进程失主再获主后旧任务恢复提交。
-- `DurableJobExecutor` / `DurableJobStep`：executor 的 `runnable/recover/step/wait_synced` 合同，以及 step 返回的 `schema_version`、`update_raw_args`、`removed`。`removed=true` 表示终态已在本事务删除 queue row、写入 history，worker 不得重建该 row。
+- `DurableJobExecutor` / `DurableJobStep`：executor 的 `runnable/recover/step/wait_synced` 合同，以及 step 返回的 `schema_version`、`update_raw_args`、`removed`、`must_rollback_transaction`。`removed=true` 表示终态已在本事务删除 queue row、写入 history，worker 不得重建该 row。
 - `JobWorker::transit_persisted_job_step`：durable 核心事务边界。
 - `JobWorker::run_transactional_index_backfill`：txn reorg backend；不是完整 ADD INDEX handler。
 - `IndexReorgInitialization` / `initialize_persisted_index_reorg`：共享 reorg 初始化 adapter 与入口。
 
 ## 执行流程
+
+当 executor 返回 `DurableJobStep.must_rollback_transaction = true`，worker 在 action 后先 `rollback`、重新 `begin`，再次读取 `mysql.tidb_ddl_job.job_meta` 并与同一 `expected_bytes` 比较。缺行或字节变化立即放弃；成功则把本次返回的 `schema_version` 置零，再执行 lease 检查、RU 处理、job 更新与 commit。不会在新事务重跑 action，也不会在这里清零 `job.last_schema_version`。
+
+`JobExecutionContext` 新增 `mark_must_rollback_transaction_on_error` 与查询方法，默认分别为空操作和 false。实际 `ConcreteJobExecutionContext` 保存标记；`table_mode.rs::NormalDdlExecutor` 只在 action 返回 Err 时把标记传给 step 结果，并保存 job 错误/计数。因此标记本身不会让成功动作回滚；自定义上下文若沿用默认实现，也没有整事务回滚保障。该路径对齐 Go `mustRollbackTxnOnError` 在内部 SQL 释放 statement buffer 后丢弃全部元数据变更、重开事务并重查 job 的语义，包括已经处于回滚阶段的失败。
 
 生产主链如下：
 
@@ -143,11 +147,8 @@ RustCodeGraph 的文件查询显示 `job_worker.rs` 已索引 100 个符号；�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示仓库索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/ddl/job_worker.rs` 命中目标且报告 100 个符号。使用 `node --file ... --offset/--limit` 阅读了完整 922 行；对 `JobWorker`、`DurableJobSession`、`JobExecutionContext`、`JobLease`、`DurableJobExecutor`、`transit_persisted_job_step`、`run_transactional_index_backfill`、`initialize_persisted_index_reorg` 及 helper 执行了精确 `query`。`callers` 命令在本地索引上长时间无结果后终止，故调用边以 `query` 和直接引用搜索交叉验证，没有把该未完成查询当作证据。
-- 目标源码：`pkg/ddl/job_worker.rs`，完整核对 922 行，包括所有 enum、struct、trait、type alias、函数和四个 `impl JobWorker`；无 `cfg` 条目。
-- crate/模块：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`、`pkg/ddl/doc.go`。
-- 生产上游与 adapter：`pkg/ddl/job_scheduler.rs` 的 `schedule_persisted`，`pkg/session/runtime/normal_ddl_service.rs` 的 owner 线程与 `Lease`，`pkg/session/runtime/system_session.rs` 的 `SystemSessionLease`/`ConcreteJobExecutionContext`。
-- 下游状态与同步：`pkg/ddl/table_mode.rs` 的 `NormalDdlExecutor`，`pkg/ddl/delete_range.rs` 的 `persistent_job_need_gc`，`pkg/ddl/reorg.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/schema_version.rs`。
-- Go 对照：`pkg/ddl/job_worker.go` 的 `JobNeedGC`、`accountJobRU`、`transitOneJobStep`、`countForError`、`runOneJobStep`、`updateGlobalVersionAndWaitSynced`、`buildPlacementAffects`；`pkg/ddl/job_worker_test.go` 的 RU 与 `TestJobNeedGC` 场景。
-- Rust 测试：完整阅读 `pkg/ddl/job_worker_test.rs`；并通过直接引用定位 `pkg/session/runtime/normal_ddl_test.rs`、`normal_ddl_index_reorg_initialization_test.rs`、`durable_scheduler_test.rs` 等真实 session 覆盖面。本任务按计划为纯文档分析，未运行 Cargo。
-- 人工复核结论：本文区分了轻量与生产路径，描述了 owner fencing、job row 乐观校验、事务/回填 checkpoint、schema wait 边界、RU 与失败恢复，并明确列出未完整对齐 Go 的 helper 和安全扩展入口，没有把默认报错能力或阶段性入口写成“已完整支持”。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/job_worker.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
+- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
+- 冻结 `pkg/ddl/table_mode.rs`、`pkg/session/runtime/system_session.rs` 核对标记传播；Go 对照 `pkg/ddl/job_worker.go::transitOneJobStep` 的整事务重开分支，以及 `mview_worker.go`/`table.go` 对应动作。
+- 冻结 `pkg/ddl/tests/materializedview/materialized_view_create_test.rs` 的 `mview_cleanup_rollback_discards_metadata_and_retries_schema_version`、`mview_cleanup_rollback_notification_failure_is_atomic`、`mview_cleanup_rollback_rechecks_job_meta_after_reopen` 使用模拟 executor/session 验证丢弃元数据、两次读取、零返回版本及并发修改拒绝；不是本文件动作的端到端 SQL 覆盖，未运行。
+- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。

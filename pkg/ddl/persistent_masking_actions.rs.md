@@ -75,6 +75,8 @@ schema version 由 `TransactionMutator::gen_schema_version` 生成。DROP 通过
 
 ## 错误处理与边界
 
+DROP 到达 `SchemaState::None` 时，删除物化视图 refresh info 或物化视图日志 purge info 之前新增整事务错误回滚标记。标记之后的系统 SQL、通知或其他传播错误由外层 executor/worker 触发整事务 rollback、重开事务并重新检查 job bytes，随后保存作业错误并返回零 schema version。refresh alert 的忽略错误仍为 best-effort，不会单独触发该路径；本增量没有为 RENAME、TRUNCATE 或普通策略维护统一增加标记，也不保证 PD/TTL 等外部资源可回滚。
+
 函数统一返回 `Result<_, String>`。job 参数无效、库表不存在、目标名称冲突、不合法 schema state、FK/物化视图约束、外部资源更新以及序列化错误都会向 worker 传播；若错误意味着当前 job 不可继续，多处分支同时把 `job.state` 设为 `Cancelled`。系统表不存在的精确消息会在 `read_policies` 中改写为 `[schema:1146]...`，DROP 最终清理再保留错误码前缀并增加目标 table ID 上下文。
 
 并非所有清理失败都阻断 job：物化视图 refresh alert 删除、TiFlash drop 清理和 affinity 删除被显式忽略或仅在下层记录；其余关键更新通常传播错误。`drop_policies_on_table`、rename/truncate 策略更新与 Go 一致，缺少 `mysql.tidb_masking_policy` 时应失败，而不是当作无策略成功；Go 的 `TestMaskingPolicyOperationsRequireSysTable` 固定了这一边界。
@@ -112,8 +114,8 @@ Go 对照不是单一同名文件，而是 `pkg/ddl/table.go` 与 `pkg/ddl/maski
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示目标仓库已索引；`files --filter pkg/ddl/persistent_masking_actions.rs` 命中该文件并报告 37 个符号；`node --file ... --offset 1/500` 读取 760 行全貌并显示由 `pkg/ddl/persistent_actions.rs` 使用。
-- RustCodeGraph 调用查询：`policies_on_table/policies_on_column -> read_policies`；`drop_table -> async_notify_event, drop_policies_on_table, update_materialized_view_dependencies`；`rename_tables -> update_policy_names, txn_delete_table`；`truncate_table -> policies_on_table, check_materialized_view, async_notify_event`，以及各 `JobExecutionContext` 资源回调。图对上游 caller 未返回边，因此又由已索引源码 `persistent_actions.rs` 的明确分派和相邻 Rust 源直接核验。
-- 已读 Rust 路径：`pkg/ddl/persistent_masking_actions.rs`、`pkg/ddl/persistent_actions.rs`、`pkg/ddl/persistent_drop_column.rs`、`pkg/ddl/persistent_modify_column.rs`、`pkg/ddl/job_worker.rs`、`pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml`。
-- 已读 Go/测试路径：`pkg/ddl/table.go`、`pkg/ddl/masking_policy.go`、`pkg/ddl/masking_policy_internal_test.go`、`pkg/ddl/masking_policy_test.go`；另用仓库搜索确认 Rust `*_test.rs` 中没有本模块的直接持久化动作测试。
-- 本任务只新增说明文档，未运行 Cargo 或代码测试；最终以固定 11 章节结构命令和人工事实复核验收。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/persistent_masking_actions.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
+- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
+- 冻结 `pkg/ddl/table_mode.rs`、`pkg/session/runtime/system_session.rs` 核对标记传播；Go 对照 `pkg/ddl/job_worker.go::transitOneJobStep` 的整事务重开分支，以及 `mview_worker.go`/`table.go` 对应动作。
+- 冻结 `pkg/ddl/tests/materializedview/materialized_view_create_test.rs` 的 `mview_cleanup_rollback_discards_metadata_and_retries_schema_version`、`mview_cleanup_rollback_notification_failure_is_atomic`、`mview_cleanup_rollback_rechecks_job_meta_after_reopen` 使用模拟 executor/session 验证丢弃元数据、两次读取、零返回版本及并发修改拒绝；不是本文件动作的端到端 SQL 覆盖，未运行。
+- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。

@@ -67,6 +67,8 @@ DDL 预检问题的当前答案是：它是可持久化、可重试的 job-based
 
 ## 错误处理与边界
 
+创建 purge upsert 前和 rollback purge delete 前均新增 `mark_must_rollback_transaction_on_error()`。若标记之后的操作传播错误，真实 executor/worker 需要丢弃整事务并重开事务重查 job，再保存错误状态，返回零 schema version；不仅回滚当前 statement stage。回滚路径仍忽略缺失 purge 表的错误，忽略后成功不会单凭标记触发事务回滚。该行为依赖上下文覆盖默认空实现。
+
 会取消 Job 的错误包括：args 解码/JSON 转换失败、缺少日志元数据、零基表 ID、数据库或基表不存在、基表对象类型不合格、分区表、不处于 `Public`、或基表已有 MLog。错误文本尽量沿用 Go/MySQL 类别：1049 数据库不存在、1146 表不存在、1050 表已存在、`ErrWrongObject`、`ErrGeneralUnsupportedDDL`、`ErrInvalidDDLState` 和 `ErrInvalidDDLJob`。
 
 purge 表缺失是特殊边界：创建已可能写入日志表和基表关系，因此不能只取消 Job，而是显式进入 `Rollingback`；下一次执行由 `rollback` 撤销元数据。回滚删除 purge 行时相同缺失错误被忽略，因为目标状态已经满足。其他 query 或元数据错误不被吞掉，返回给外层 worker；本文件本身不决定它们最终是重试、持久化错误还是终止。
@@ -99,9 +101,8 @@ Rust 将 Go 的若干辅助逻辑收拢到边界接口或元数据层：Go `upse
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引含 11,467 个文件、307,296 个节点和 1,848,419 条边；`node --file pkg/ddl/persistent_create_materialized_view_log.rs` 读取完整 240 行源码；`query` 确认 `step`、`rollback`、`decode` 的签名。通用名的 `callers/callees` 查询产生跨仓库重名噪声，因此直接调用边进一步用精确源码引用核验。
-- Rust 入口与下游：`pkg/ddl/persistent_actions.rs`（action 85 分派）、`pkg/ddl/job_worker.rs`（`JobExecutionContext`）、`pkg/ddl/persistent_create_table.rs`（创建与保存 args）、`pkg/ddl/persistent_actions.rs`（notifier）、`pkg/meta/reader.rs`（删除 auto-ID 与 MLog schema diff）、`pkg/meta/model/job.rs`（多表 Job 完成）。
-- crate 与模块：`pkg/ddl/Cargo.toml`、`pkg/ddl/lib.rs`。
-- Go 对照：`pkg/ddl/mview_worker.go::onCreateMaterializedViewLog`、`rollbackCreateMaterializedViewLog`、purge upsert/delete helpers；`pkg/ddl/job_worker.go` 的 action 分派；`pkg/ddl/schema_version.go::SetSchemaDiffForCreateTable`。
-- 测试证据：`pkg/ddl/ddl_test.go::TestBuildCreateMaterializedViewLogPurgeInfoUpsertSQL` 验证三种 purge SQL 形态；`pkg/ddl/tests/materializedviewlog/materialized_view_create_test.go::TestCreateMaterializedViewLogPurgeInfoFailureRollback` 验证缺系统表会删除日志表、purge 行并恢复基表；`pkg/ddl/job_submitter_test.go::TestCreateMaterializedViewLogJobTableIDs` 验证 Job 涉及的表 ID；`pkg/ddl/mview_worker_test.go` 覆盖相关 MLog 关系清理。仓库搜索未发现直接调用本 Rust `step` 的独立 Rust 测试。
-- 本任务是纯文档分析，按任务约束未运行 Cargo。结构验证要求目标文档恰有本文的十一个固定二级标题；最终交付前另行执行并记录退出码。
+- 冻结范围：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 与 `git show 2c944fb:pkg/ddl/persistent_create_materialized_view_log.rs` 核对增量及上下文，未把工作区 Rust 变化作为新增事实。
+- 已读取 DDL 契约 `pkg/ddl/doc.go`、`docs/agents/ddl/README.md`；模块与依赖以冻结版本 `pkg/ddl/lib.rs`、`pkg/ddl/Cargo.toml` 为准。RustCodeGraph `status` 当前包含 Rust；索引不保证冻结快照，故增量事实直接使用 Git blob，不沿用历史图节点计数作为本次证据。
+- 冻结 `pkg/ddl/table_mode.rs`、`pkg/session/runtime/system_session.rs` 核对标记传播；Go 对照 `pkg/ddl/job_worker.go::transitOneJobStep` 的整事务重开分支，以及 `mview_worker.go`/`table.go` 对应动作。
+- 冻结 `pkg/ddl/tests/materializedview/materialized_view_create_test.rs` 的 `mview_cleanup_rollback_discards_metadata_and_retries_schema_version`、`mview_cleanup_rollback_notification_failure_is_atomic`、`mview_cleanup_rollback_rechecks_job_meta_after_reopen` 使用模拟 executor/session 验证丢弃元数据、两次读取、零返回版本及并发修改拒绝；不是本文件动作的端到端 SQL 覆盖，未运行。
+- Ready 文档验证：固定 11 个二级章节、`git diff --check` 和人工核对新增符号/路径；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务指定命令执行等价文档检查。本任务未修改 Rust/Go/Cargo，未运行 Cargo、Go 测试或构建。
