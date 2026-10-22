@@ -413,11 +413,19 @@ impl PlanCache {
     }
 }
 
-#[derive(Clone, Debug)]
-/// server_id 租约：持有唯一实例 ID 及其过期时间。
+/// A server ID is attached to its own etcd session; standalone Domains keep
+/// the existing local lease when no cluster client is installed.
 struct ServerIdLease {
     id: u64,
     expires_at: Instant,
+    session: Option<(Arc<dyn astersql_domain_serverinfo::EtcdClient>, i64)>,
+}
+
+impl ServerIdLease {
+    fn is_live(&self) -> bool {
+        // The connected client keeps the session alive independently of callers.
+        self.session.is_some() || self.expires_at > Instant::now()
+    }
 }
 
 #[derive(Clone)]
@@ -5385,7 +5393,7 @@ impl Domain {
                 .lock()
                 .expect("server id lock poisoned")
                 .as_ref()
-                .filter(|lease| lease.expires_at > Instant::now())
+                .filter(|lease| lease.is_live())
                 .map(|lease| lease.id)
                 .unwrap_or(0)
         });
@@ -6338,45 +6346,138 @@ impl Domain {
         proposed: impl Fn(u32) -> u64,
         in_use: impl Fn(u64) -> bool,
     ) -> Result<u64, DomainError> {
+        // Copy the cluster client before taking the ID lock: Marshal's getter
+        // takes that lock while holding the syncer lock in the opposite path.
+        let client = self.server_info_syncer().and_then(|syncer| {
+            syncer
+                .lock()
+                .expect("server info syncer lock poisoned")
+                .etcdCli
+                .clone()
+        });
         let mut lease = self.server_id.lock().expect("server id lock poisoned");
         if let Some(existing) = lease.as_mut() {
-            if existing.expires_at > Instant::now() {
+            if existing.is_live() {
+                if let Some((client, session)) = &existing.session {
+                    client
+                        .Put(
+                            &astersql_domain_serverinfo::Context::Background(),
+                            &format!("/tidb/server_id/{}", existing.id),
+                            b"0".to_vec(),
+                            Some(*session),
+                        )
+                        .map_err(|error| {
+                            DomainError::Worker(format!("refresh server ID: {error}"))
+                        })?;
+                }
                 existing.expires_at = Instant::now() + self.config.server_id_ttl;
                 return Ok(existing.id);
             }
         }
-        for conflict in 0..1_000 {
-            let id = proposed(conflict);
-            if id == 0 {
-                continue;
+        let context = astersql_domain_serverinfo::Context::Background();
+        let session = match client {
+            Some(client) => {
+                let ttl = self
+                    .config
+                    .server_id_ttl
+                    .as_secs()
+                    .clamp(1, i32::MAX as u64) as i32;
+                let id = client.GrantLease(&context, ttl).map_err(|error| {
+                    DomainError::Worker(format!("grant server ID session: {error}"))
+                })?;
+                Some((client, id))
             }
-            if !in_use(id) {
+            None => None,
+        };
+        let result = (|| {
+            for conflict in 0..1_000 {
+                let id = proposed(conflict);
+                if id == 0 || in_use(id) {
+                    continue;
+                }
+                if let Some((client, session)) = &session {
+                    if !client
+                        .CompareAndPut(
+                            &context,
+                            &format!("/tidb/server_id/{id}"),
+                            None,
+                            b"0".to_vec(),
+                            *session,
+                        )
+                        .map_err(|error| {
+                            DomainError::Worker(format!("acquire server ID: {error}"))
+                        })?
+                    {
+                        continue;
+                    }
+                }
+                return Ok(id);
+            }
+            Err(DomainError::ServerIdExhausted)
+        })();
+        match result {
+            Ok(id) => {
                 *lease = Some(ServerIdLease {
                     id,
                     expires_at: Instant::now() + self.config.server_id_ttl,
+                    session,
                 });
-                return Ok(id);
+                Ok(id)
+            }
+            Err(error) => {
+                if let Some((client, session)) = session {
+                    if let Err(cleanup) = client.RevokeLease(&context, session) {
+                        return Err(DomainError::Worker(format!(
+                            "{error}; revoke unused server ID session: {cleanup}"
+                        )));
+                    }
+                }
+                Err(error)
             }
         }
-        Err(DomainError::ServerIdExhausted)
     }
 
-    /// 续期 server_id 租约。
+    /// Refresh the actual lease-bound key, matching Go refreshServerIDTTL.
     pub fn refresh_server_id_ttl(&self) -> Result<(), DomainError> {
         let mut lease = self.server_id.lock().expect("server id lock poisoned");
         let Some(lease) = lease.as_mut() else {
             return Err(DomainError::ServerIdConflict);
         };
+        if let Some((client, session)) = &lease.session {
+            client
+                .Put(
+                    &astersql_domain_serverinfo::Context::Background(),
+                    &format!("/tidb/server_id/{}", lease.id),
+                    b"0".to_vec(),
+                    Some(*session),
+                )
+                .map_err(|error| DomainError::Worker(format!("refresh server ID: {error}")))?;
+        }
         lease.expires_at = Instant::now() + self.config.server_id_ttl;
         Ok(())
     }
-    /// 释放 server_id。
+    /// Clear the getter before closing the session and removing its keys.
     pub fn release_server_id(&self) -> Option<u64> {
-        self.server_id
+        let lease = self
+            .server_id
             .lock()
             .expect("server id lock poisoned")
-            .take()
-            .map(|lease| lease.id)
+            .take()?;
+        if let Some((client, session)) = lease.session {
+            if let Err(error) =
+                client.RevokeLease(&astersql_domain_serverinfo::Context::Background(), session)
+            {
+                astersql_util_logutil::log::BgLogger().log(
+                    astersql_util_logutil::log::LogLevel::Error,
+                    "release server ID failed",
+                    vec![astersql_util_logutil::log::LogField::String(
+                        "error".into(),
+                        error.to_string(),
+                    )],
+                );
+            }
+        }
+        Some(lease.id)
     }
     /// 当前 server_id（无则 0）。
     pub fn server_id(&self) -> u64 {
@@ -6384,7 +6485,7 @@ impl Domain {
             .lock()
             .expect("server id lock poisoned")
             .as_ref()
-            .filter(|lease| lease.expires_at > Instant::now())
+            .filter(|lease| lease.is_live())
             .map(|lease| lease.id)
             .unwrap_or(0)
     }
@@ -6394,7 +6495,7 @@ impl Domain {
             .lock()
             .expect("server id lock poisoned")
             .as_ref()
-            .is_some_and(|lease| lease.expires_at <= Instant::now())
+            .is_some_and(|lease| !lease.is_live())
     }
 
     /// 分配下一个连接 ID。

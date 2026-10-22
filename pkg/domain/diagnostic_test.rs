@@ -99,3 +99,192 @@ fn start_diagnostic_bypasses_ddl_and_starts_only_metadata_readers() {
 
     domain.close();
 }
+
+/// Go TestDiagnosticServerID: real sessions remain available in diagnostic mode.
+#[test]
+#[ignore = "requires isolated etcd fixture in ASTERSQL_TEST_ETCD_ENDPOINT; run with --include-ignored --test-threads=1"]
+fn diagnostic_server_id_real_etcd_lifecycle() {
+    use astersql_domain_serverinfo::{Context, EtcdClient, RealEtcdClient, SyncerOption};
+
+    struct RestoreMode(Option<Box<dyn FnOnce()>>);
+    impl Drop for RestoreMode {
+        fn drop(&mut self) {
+            self.0.take().unwrap()();
+        }
+    }
+    let previous = astersql_util_intest::InTest.swap(true, Ordering::SeqCst);
+    struct RestoreIntest(bool);
+    impl Drop for RestoreIntest {
+        fn drop(&mut self) {
+            astersql_util_intest::InTest.store(self.0, Ordering::SeqCst);
+        }
+    }
+    let _intest = RestoreIntest(previous);
+    let _mode = RestoreMode(Some(Box::new(astersql_config::diagnosticmode::SetForTest(
+        true,
+    ))));
+    let endpoint = std::env::var("ASTERSQL_TEST_ETCD_ENDPOINT").expect("isolated etcd endpoint");
+    let context = Context::Background();
+    for bits32 in [false, true] {
+        let client = Arc::new(
+            RealEtcdClient::connect(vec![endpoint.clone()], None)
+                .unwrap()
+                .with_namespace(format!(
+                    "/diagnostic-id-test/{}/{bits32}",
+                    std::process::id()
+                )),
+        );
+        let first = Domain::new(
+            TestStorage::new(),
+            Arc::new(DiagnosticSchemaLoader),
+            DomainConfig {
+                server_id_ttl: Duration::from_secs(3),
+                ..DomainConfig::default()
+            },
+        );
+        let second = Domain::new(
+            TestStorage::new(),
+            Arc::new(DiagnosticSchemaLoader),
+            DomainConfig {
+                server_id_ttl: Duration::from_secs(3),
+                ..DomainConfig::default()
+            },
+        );
+        for (domain, name) in [(&first, "first"), (&second, "second")] {
+            domain
+                .install_server_info_syncer(
+                    name.into(),
+                    client.clone(),
+                    &[SyncerOption::WithoutStatusEndpointClaim],
+                )
+                .unwrap();
+        }
+        // Domain accepts a proposal function; use the Go 32/64-bit ID ranges.
+        let base = if bits32 { 1 } else { 1 << 11 };
+        let first_id = first
+            .acquire_server_id(|attempt| base + u64::from(attempt), |_| false)
+            .unwrap();
+        assert_ne!(first_id, 0);
+        let key = format!("/tidb/server_id/{first_id}");
+        let kv = client.Get(&context, &key, false).unwrap();
+        assert_eq!(
+            kv.len(),
+            1,
+            "server ID must have a real etcd key (32bits={bits32})"
+        );
+        assert_eq!(kv[0].value, b"0");
+        let lease = kv[0]
+            .lease
+            .expect("server ID key must be attached to a session");
+        let second_id = second
+            .acquire_server_id(|attempt| base + u64::from(attempt), |_| false)
+            .unwrap();
+        assert_ne!(
+            first_id, second_id,
+            "etcd must arbitrate conflicting proposals"
+        );
+        // Wait beyond the original TTL: the real session must keep both keys alive.
+        std::thread::sleep(Duration::from_secs(4));
+        assert_eq!(
+            client.Get(&context, &key, false).unwrap()[0].lease,
+            Some(lease)
+        );
+        assert_eq!(first.server_id(), first_id);
+        // Refresh must recreate the actual lease-bound key, not just update Instant.
+        client.Delete(&context, &key).unwrap();
+        first.refresh_server_id_ttl().unwrap();
+        assert_eq!(
+            client.Get(&context, &key, false).unwrap()[0].lease,
+            Some(lease)
+        );
+        let syncer = first.server_info_syncer().unwrap();
+        let syncer = syncer.lock().unwrap();
+        syncer.StoreServerInfo(context.clone()).unwrap();
+        assert!(
+            client
+                .Get(&context, "/tidb/server/info/", true)
+                .unwrap()
+                .is_empty()
+        );
+        let getter = syncer
+            .GetLocalServerInfo()
+            .StaticInfo
+            .ServerIDGetter
+            .unwrap();
+        assert_eq!(getter(), first_id);
+        drop(syncer);
+        assert_eq!(first.release_server_id(), Some(first_id));
+        assert!(client.Get(&context, &key, false).unwrap().is_empty());
+        assert!(
+            client
+                .Put(&context, &key, b"0".to_vec(), Some(lease))
+                .is_err(),
+            "released lease must no longer accept keys"
+        );
+        assert_eq!(first.server_id(), 0);
+        assert_eq!(getter(), 0);
+        second.release_server_id();
+        first.close();
+        second.close();
+        assert!(
+            client
+                .Get(&context, "/tidb/server_id/", true)
+                .unwrap()
+                .is_empty()
+        );
+        eprintln!(
+            "32bits={bits32}: unique IDs {first_id}/{second_id}, real lease {lease}, refresh/release and empty server-info verified"
+        );
+    }
+    drop(_mode);
+    let _normal = RestoreMode(Some(Box::new(astersql_config::diagnosticmode::SetForTest(
+        false,
+    ))));
+    let client = Arc::new(
+        RealEtcdClient::connect(vec![endpoint], None)
+            .unwrap()
+            .with_namespace(format!("/diagnostic-id-test/{}/normal", std::process::id())),
+    );
+    let normal = Domain::new(
+        TestStorage::new(),
+        Arc::new(DiagnosticSchemaLoader),
+        DomainConfig::default(),
+    );
+    normal
+        .install_server_info_syncer(
+            "normal".into(),
+            client.clone(),
+            &[SyncerOption::WithoutStatusEndpointClaim],
+        )
+        .unwrap();
+    let id = normal.acquire_server_id(|_| 7, |_| false).unwrap();
+    normal
+        .server_info_syncer()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .StoreServerInfo(context.clone())
+        .unwrap();
+    let info = client
+        .Get(&context, "/tidb/server/info/normal", false)
+        .unwrap();
+    assert_eq!(info.len(), 1, "normal mode still registers server-info");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&info[0].value).unwrap()["server_id"],
+        id
+    );
+    normal.close();
+    assert!(
+        client
+            .Get(&context, "/tidb/server/", true)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        client
+            .Get(&context, "/tidb/server_id/", true)
+            .unwrap()
+            .is_empty()
+    );
+    eprintln!("normal mode: server-info registration and Domain close cleanup verified");
+}
