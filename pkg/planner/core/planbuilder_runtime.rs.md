@@ -32,6 +32,8 @@
 
 ## 执行流程
 
+冻结增量：填充 `physicalop::Update` 时，`IsMultiTable` 取 `statement.TableRefs.as_ref().is_some_and(|tables| tables.TableRefs.Right.is_some())`，随后设置 output names 并 `ResolveIndices`。判断依据是 AST 顶层表引用是否有右侧，避免把多表语法误作单表更新；与轻量 builder 的 `is_multi_table` label 属于不同计划表示。
+
 1. 调用者以 `NewPlanBuilder` 获得 `PendingPlanBuilder`，可覆盖结果集 builder 或注入 DataSource provider，然后调用 `Init(ctx, info_schema, hint_processor)`。`Init` 暂存原 `PlannerSelectBlockAsName`，按 hint 处理器的最大 SELECT offset 建立新数组，并从 session variables 读取 semi-join rewrite 与 no-decorrelate 开关。
 2. `PlanBuilder::Build` 从 `resolve::NodeW` 取出 `NodeRef`并进入 `BuildNodeRef`。`NodeRef::with_node` 保证在 AST 尚未被消耗时借用节点；已消耗则返回明确错误。
 3. `BuildNodeRef` 按 AST 具体类型分派 INSERT、DELETE、UPDATE、EXPLAIN，并包装为 `BuiltRuntimePlan::NonLogical`；其他节点调用 `BuildBorrowedResultSetNode`并包装为 `Logical`。
@@ -59,8 +61,6 @@
 - 表与列元数据：`infoschema::InfoSchema`、`TableInfo2SchemaAndNames`、`DataSourceProvider::Populate`。
 - 表达式与计划：`expression_rewriter::rewrite`、`rewriteInsertOnDuplicateUpdate`、`logicalop::{DataSource, LogicalProjection, LogicalTableDual}`、`physicalop::{Insert, Update, Delete, PointGetPlan, BatchPointGetPlan}`。
 - 优化和规则：`DoOptimize`、`optimizer_runtime::DoOptimizeForUpdate`、`rule::FLAG_PRUNE_COLUMNS`、`rule::FLAG_ELIMINATE_PROJECTION`。
-
-RustCodeGraph 索引能找到 `planbuilder_runtime.rs::NewPlanBuilder`、`PlanBuilder` 和 `RuntimeExplain`的定义，也把 `pkg/planner/optimize.rs::buildPlan` 识别为独立函数；但 `files --filter pkg/planner/core/planbuilder_runtime` 未返回文件，带路径的 callers/callees 查询未产生边输出。因此上述跨文件调用边又以调用点直接检索复核，不把缺失的图边当作“无调用者”。
 
 ## 错误处理与边界
 
@@ -105,17 +105,9 @@ Rust 直接回归 `pkg/planner/core/planbuilder_runtime_test.rs::init_uses_the_s
 
 ## 验证依据
 
-源码与配置证据：
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
 
-- `pkg/planner/core/planbuilder_runtime.rs`：完整阅读 1–1871 行，核对全部模块级类型、trait、常量、impl 和函数；文件无 `cfg` 分支。
-- `pkg/planner/core/lib.rs`：确认模块声明、测试文件独立声明和 `pub use planbuilder_runtime::*`。
-- `pkg/planner/core/Cargo.toml`：确认 crate 名、`lib.rs` 入口、`nextgen` feature 以及 base/expression/hint/infoschema/logicalop/physicalop/resolve/rule 等直接依赖；本文件没有自身 feature gate。
-- `pkg/planner/optimize.rs`：确认 `buildPlan -> NewPlanBuilder/Init -> Build`、`BuiltRuntimePlan` 分派、权限表信息写入和逻辑计划后续优化。
-- `pkg/planner/core/logical_plan_builder_runtime.rs`：确认默认结果集 builder、借用 AST 构建入口、CTE 环境和 reset 配合点。
-- `pkg/executor/statement_ru_result.rs`、`pkg/executor/statement_ru_plan_walk.rs`、`pkg/executor/compiler.rs`、`pkg/planner/core/flat_plan.rs`：确认 Runtime plan 在执行和扁平化阶段的真实消费者。
-
-RustCodeGraph 证据：`status` 报告索引可用（11467 文件、307296 节点、1848419 边）；`query NewPlanBuilder --kind function` 找到 Go、旧 Rust `planbuilder.rs` 和本文件三个定义；`node NewPlanBuilder` 返回本文件 756–759 行源码；`query RuntimeExplain --kind struct` 定位到本文件 137 行；`query PlanBuilder --kind struct` 定位到 577 行；`query buildPlan --kind function` 定位到 `pkg/planner/optimize.rs:1509`。`files --filter` 和带路径 callers/callees 未返回目标边，所以调用点另用直接源码搜索核验。
-
-测试证据：`pkg/planner/core/planbuilder_runtime_test.rs` 验证 Init 从 session 传递 no-decorrelate；`real_result_set_builder_aster_unit_test.rs` 验证 parser AST 的 SELECT 构建、真实表解析和 provider 调用；`integration_test.rs::test_insert_select_planbuilder_runtime`、`test_explain_analyze_dml2`、`test_explain_analyze_dml_commit`、`test_nested_virtual_generated_column_update` 覆盖关键 DML/EXPLAIN 路径；`logical_plans_test.rs::unique_key_and_delete_fixtures_are_typed_and_reach_real_planner_paths` 覆盖 DELETE 真实路径；`flat_plan_test.rs` 覆盖 Runtime EXPLAIN/ANALYZE 的后续消费。Go 对照读取了 `planbuilder.go`、`logical_plan_builder.go`、`planbuilder_test.go`、`logical_plans_test.go` 和 `integration_test.go`。
-
-本任务是纯文档分析，按计划不运行 Cargo 或 Go 测试；验收依赖结构检查与上述静态事实复核。
+- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/planbuilder_runtime.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
+- 核对 `buildUpdate` 的物理计划填充；`logical_plans_test.rs` 直接断言 `update.IsMultiTable`，涵盖 SQL 到 runtime plan。Go 对照 `logical_plan_builder.go` 的 UPDATE 构建。
+- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
+- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。

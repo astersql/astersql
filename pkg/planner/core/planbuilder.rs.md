@@ -10,8 +10,10 @@
 
 ## 核心职责
 
+冻结增量增加 `Statement::RefreshMaterializedView` 和内部 `RefreshMaterializedViewImplement`。前者调用 `BuildRefreshMaterializedView` 后记录 `OperateView` 权限，DRY RUN/PROFILE 另记录 `ShowView`；后者把 Fast/CompleteDeltaApply 转成 `BuiltPlan::MViewDeltaMerge`/`MViewCompleteDeltaApply`。这证明 typed 入口已分派，不能代替真实 parser/runtime 入口与 executor adapter 的完整接线证据。
+
 1. **语句分派**：`PlanBuilder::Build` 对 `Statement` 的全部变体进行穷尽匹配，将 SELECT、EXECUTE、SET、绑定、ADMIN、ANALYZE、SHOW、INSERT、数据导入、统计命令、DDL、TRACE/EXPLAIN 等路由到专用构建函数。
-2. **构建 typed 计划**：以 `BuiltPlan::{Logical, Execute, Set, Binding, Prepare, Admin, Analyze, Show, Insert, Ddl, RenameTables, Explain, Trace, Command}` 表达规划结果；SHOW/ADMIN 辅助函数同时给出结果集 `Schema`。
+2. **构建 typed 计划**：以 `BuiltPlan::{Logical, Execute, Set, Binding, Prepare, Admin, Analyze, Show, Insert, Ddl, RenameTables, Explain, Trace, Command, RefreshMaterializedView, MViewDeltaMerge, MViewCompleteDeltaApply}` 表达规划结果；SHOW/ADMIN 辅助函数同时给出结果集 `Schema`。
 3. **维护构建期状态**：在 `PlanBuilder` 中积累权限 `visitInfo`、优化标志、当前子句、查询块偏移、handle 列作用域、外层 CTE、锁定读标志、告警及全文/谓词匹配标记；`ResetForReuse` 清除一次构建留下的可变状态。
 4. **落实边界规则**：校验 INSERT 列和值、生成列、索引/分区名、ANALYZE 选项、DDL job 参数、绑定 SQL、IMPORT INTO 列赋值与 NextGen SEM 存储 URI。
 5. **生成访问与统计元数据**：构造/筛选 TiKV、TiFlash、索引访问路径；计算 handle 列、物理分区 ID、ANALYZE 列集合、持久化选项合并与 index/column tasks。
@@ -52,6 +54,8 @@
 
 ## 数据与状态
 
+ANALYZE 新增 `NDVRate`，同 SampleRate 以 `f64::to_bits` 存入 `u64` map，默认值为 -1.0 的 bits。显式校验用 `rate <= 0.0 || rate > 1.0`（没有额外 `is_finite` 检查），因此不能把该实现描述为拒绝所有非有限值。NDVRATE 小于正的 SAMPLERATE 时错误；显式 NDVRATE 小于 1 且 `AnalyzeSampledNDVThreshold.Load() == 0` 时，`buildAnalyze` 在合并保存值之前拒绝。此门禁只检查 explicit map，不应声称保存选项也经相同门禁。
+
 `PlanBuilder` 是单次或串行复用的可变状态对象：
 
 - `visitInfo` 是构建期间追加的权限需求，不在 `Build` 入口自动清空；跨语句复用必须显式 `ResetForReuse`。
@@ -63,8 +67,6 @@
 - `calcOnceMap` 缓存一次谓词列计算结果；第一次 `get_or_calculate` 执行闭包，之后返回缓存集合的克隆。
 
 ## 依赖与调用关系
-
-RustCodeGraph 已索引 `planbuilder.rs`，查询 `buildImportInto` 能定位本文件 `PlanBuilder::buildImportInto`（第 1133 行）及 Go 对应实现（`planbuilder.go` 第 4820 行）；图的 `callers`/`callees` 对该 Rust 符号未返回边，因此以下直接边以源码分派为准：
 
 - 上游：`PlanBuilder::Build` 是 typed 总入口，直接调用 `buildExecute`、`buildAnalyze`、`buildInsert`、`buildImportInto`、`buildDDL`、`buildExplain` 等。`pkg/planner/core/planbuilder_test.rs` 直接构造 `Statement` 并调用该入口。
 - 完整 SQL 上游：独立测试通过 `crate::main_test::{exercise_statement_for_test, logical_optimize_default_for_test}` 验证 parser-backed SELECT、聚合、子查询和 CTE；这说明完整 SQL 主链不只经过本文件的精简 `Statement::Select`。
@@ -119,9 +121,9 @@ RustCodeGraph 已索引 `planbuilder.rs`，查询 `buildImportInto` 能定位本
 
 ## 验证依据
 
-- 源码全貌：`pkg/planner/core/planbuilder.rs`（3150 行）；检查了类型、常量、`PlanBuilder` 全部入口、访问路径、ANALYZE、schema、权限、导入 URI 和 DDL job 辅助逻辑。
-- crate 与模块：`pkg/planner/core/Cargo.toml`（crate 名、`nextgen` feature、依赖和 Go porting metadata）；`pkg/planner/core/lib.rs`（`pub mod planbuilder`、独立 `planbuilder_test.rs` 装配）。
-- Rust 测试：`pkg/planner/core/planbuilder_test.rs`，覆盖 SHOW/Slow schema、大小写精确索引选择、ANALYZE 默认与边界、SHOW/ANALYZE/ADMIN 构建、权限与 IMPORT、RENAME 权限、DDL 参数、Premium/Starter SEM、parser-backed SELECT/聚合/子查询/CTE，以及 DEFAULT reset。
-- Go 对照：`pkg/planner/core/planbuilder.go` 的 `PlanBuilder`、`NewPlanBuilder`、`ResetForReuse`、`Build`、`getPossibleAccessPaths`、`handleAnalyzeOptions`、`buildAnalyze*`、`buildInsert`、`buildImportInto`、`checkNextGenS3PathWithSem`；`pkg/planner/core/planbuilder_test.go` 的相应边界测试。
-- RustCodeGraph：`status` 显示索引包含 11,467 files / 307,296 nodes / 1,848,419 edges；`query buildImportInto --json` 同时命中 Rust `planbuilder.rs:1133` 和 Go `planbuilder.go:4820`。对该 Rust 符号执行 `callers`/`callees` 未返回边，因此调用关系以 `PlanBuilder::Build` 源码和测试直接调用复核，未虚构图边。
-- 本任务是纯文档分析，按计划不运行 Cargo。验收使用任务指定的 11 个固定二级标题结构命令，并人工检查本地链接、符号名称、已实现/未接线边界及独立测试位置。
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
+
+- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/planbuilder.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
+- REFRESH 分派及权限由 `casetest/mview/mv_refresh_test.rs::test_planbuilder_dispatches_mview_refresh` 提供静态测试证据；NDVRATE 以 `handleAnalyzeOptions`、`buildAnalyze`、`AnalyzeOptionDefault` 的冻结实现为准；相邻独立测试为 `planbuilder_test.rs`，Go 对照 `planbuilder.go`。
+- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
+- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。

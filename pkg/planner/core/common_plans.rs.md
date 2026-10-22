@@ -8,6 +8,8 @@
 
 ## 核心职责
 
+冻结增量新增物化视图计划模型：`MViewAggKind` 支持 CountStar/Count/Sum/Min/Max，`MViewAggInfo` 保存 MV 输出偏移、参数可空性和 merge source 依赖偏移。`MViewDeltaMerge` 承载 FAST 数据源及可选 MIN/MAX 全量重算 lookup，`MViewCompleteDeltaApply` 承载 COMPLETE DELTA APPLY 的操作列、当前/重算行像及 handle 映射；公开 REFRESH、DRY RUN、PROFILE 各有值对象。
+
 1. 用 `JoinType`、`StoreType` 和 `PlanKind` 描述计划节点类别、Join 语义以及执行落点；`PlanKind::name` 给 EXPLAIN/字符串化提供稳定显示名，并特别区分普通 `UnionAll` 与 `PartitionUnionAll`。
 2. 用递归的 `PlanNode` 保存子树、估算行数与代价、访问对象、运行时行数、内存/磁盘信息、probe 次数和 build side；`New` 建立一致默认值，`MemoryUsage` 递归估算计划树占用，`IsPhysical` 排除当前模型中仅有的逻辑 `DataSource` 与 `Join`。
 3. 为 SHOW、DDL 管理、PREPARE/EXECUTE、SQL Binding、ANALYZE、LOAD DATA/IMPORT INTO、统计、Region、DDL 和 SELECT INTO 等语句保存构建阶段需要的参数。`schema_plan!`、`table_index_plan!`、`ddl_jobs_plan!` 和 `path_plan!` 仅消除重复结构声明，不引入运行时分派。
@@ -31,6 +33,8 @@
 - `IsAutoCommitTxn`、`IsPointGetWithPKOrUniqueKeyByAutoCommit`：快速路径守卫。点查函数支持单 range 的 `IndexScan`、名为 `PointGet`/`BatchPointGet` 的 `Generic`，以及一层层递归穿透 `Projection`/`Lock` 的首个子节点。
 
 ## 执行流程
+
+物化视图的两个 `IntoPlanNode` 先计算 `ExplainInfo`，再生成新增的 `PlanKind::MViewDeltaMerge` 或 `MViewCompleteDeltaApply`。前者把 source 与可选 full-update source 放入 children，后者只有 source；其余 executor-facing 字段没有整体存入通用节点，转换后不能仅凭 `PlanNode` 还原完整执行元数据。FAST 展示 aggregate dependencies 和可选 `full_update:index_lookup`，COMPLETE 展示两侧 marker/group key/handle/行像偏移。
 
 计划主链从构建或反序列化开始。`pb_to_plan.rs::PBPlanBuilder::build_executor` 和其他 planner 文件调用 `PlanNode::New` 产生节点，随后填充 store、代价和展示字段；`plan.rs` 根据 `PlanKind::Window`、`StreamAgg`、`MergeJoin` 等形态包入 Shuffle sender/receiver；`flat_plan.rs::FlattenPhysicalPlan` 遍历 `PlanNode.children`，根据 Join、Reader、CTE 等种类生成展示所需的扁平森林。`PlanNode` 因此是构建、局部优化和 EXPLAIN 之间的公共数据面，而不是完整优化器 trait 层的替代品。
 
@@ -60,9 +64,9 @@
 - `pkg/executor/explain_test.rs` 直接从 crate 公共 API 使用 `ExplainInfoForEncode` 与 `JSONToString`，证明 JSON 契约跨越 planner/executor 边界。
 - `parser_ast_dependency` 提供 `FieldsClause` 与 `LinesClause`；`CIString`、`InitializedPlan`、扁平计划类型与 EXPLAIN 格式化函数均通过 crate 根导入。本文件未直接创建线程、访问存储或执行 SQL。
 
-RustCodeGraph 索引确认目标文件含 138 个符号并被至少六个文件使用；精确 `callers` 查询在本次环境中未完成，因此上述调用边由索引的文件使用关系与逐符号 `rg` 结果交叉验证，不把未返回的图边作为已证实事实。
-
 ## 错误处理与边界
+
+物化视图 `ExplainInfo` 返回字符串且不检查布局。COMPLETE 直接用 marker/group-key 偏移索引两侧映射，错误元数据可 panic；调用方须先完成布局校验。`DataReaderSnapshot { ts }` 只是时间戳值，并不取得真实存储快照。这里的 REFRESH 结构也不执行权限判定或刷新事务。
 
 `Explain::RenderResult` 是主要可失败入口：没有目标计划返回 `Err("explain target plan is missing")`；扁平化返回空则返回 `Err("cannot flatten an empty plan")`。格式化函数本身在当前签名中不返回错误。相反，`GetExplainAnalyzeRowsForPlan` 丢弃 `RenderResult` 的错误并返回当前 `Rows` 克隆，调用者若需要区分“成功但零行”和“渲染失败”应直接调用 `RenderResult`。
 
@@ -101,9 +105,9 @@ Rust `ExplainRUResult` 及 `SetRUResult` 保留 Go 的 occurrence ownership 与�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引覆盖 7,032 个 Rust 文件；`files --filter pkg/planner/core/common_plans.rs` 确认目标文件被索引；`node --file ... --symbols-only` 列出本文件 138 个符号；分段 `node --file ... --offset/--limit` 读取了全部 911 行。`query` 分别定位 `PlanNode`、`NewLineFieldsInfo`、`JSONToString`、`RenderResult` 与点查函数。`callers NewLineFieldsInfo --file ...` 在 60 秒无输出后中止，调用边改由精确源码搜索补证。
-- 源与边界：完整读取 `pkg/planner/core/common_plans.rs`；读取 `pkg/planner/core/lib.rs` 的模块声明、公开再导出和测试装配；读取 `pkg/planner/core/Cargo.toml` 的 crate 根、feature、依赖与 porting 元数据。目标包不存在 `doc.go`。
-- 调用关系：检查 `pb_to_plan.rs`、`plan.rs`、`flat_plan.rs`、`encode.rs`、`hint_utils.rs`、`telemetry.rs`、`stringer.rs`、`fts_plan_builder.rs` 和 `pkg/executor/explain_test.rs` 中对目标符号的直接引用。
-- Go 对照：读取 `pkg/planner/core/common_plans.go` 中 LineFields、JSON、Explain/RU 与 point-get 实现，并读取 `pkg/planner/core/common_plans_test.go` 的对应测试；确认完整 Go EXPLAIN/point-get 能力超出当前 Rust 实现。
-- Rust 测试：完整读取 `pkg/planner/core/common_plans_test.rs`，并读取 `pkg/planner/core/tests/pointget/point_get_plan_test.rs` 的直接点查用例。测试覆盖默认/覆盖字段格式、JSON 编码、RU 路由、occurrence ownership 与旧值清除；本任务按计划只做文档分析，没有运行 Cargo。
-- 人工复核：本文明确回答了文件存在目的、计划/EXPLAIN 主流程、拥有状态、失败边界、Go 迁移差异以及安全扩展入口，且未把字符串占位或简化判定描述为完整 Go 能力。
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
+
+- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/common_plans.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
+- 新增模型对照 `mview_refresh_builder.rs` 和独立 `casetest/mview/mv_refresh_test.rs` 的依赖偏移、snapshot、ExplainInfo/树转换测试；Go 对照 `common_plans.go`、`mview_refresh_builder.go`。
+- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
+- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。

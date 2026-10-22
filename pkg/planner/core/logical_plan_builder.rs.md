@@ -28,6 +28,8 @@
 
 ## 执行流程
 
+冻结增量：`buildUpdate` 在构建输入前用 `matches!(&update.source, ResultSet::Join(_))` 判定多表来源，并在 UPDATE 节点 labels 写入 `is_multi_table`（1.0/0.0）。这是轻量模型的来源形状标记，不能据此推断已完成运行时多表更新执行；真实 AST 路径另见 `planbuilder_runtime.rs`。
+
 `buildSelect` 的固定顺序是：先由 `buildWith` 登记并构建 CTE；`buildTableRefs` 将 FROM 交给 `buildResultSetNode`，缺省时生成单行 `TableDual`；随后依次处理 WHERE、聚合/GROUP BY、投影、DISTINCT、HAVING、窗口、ORDER BY、LIMIT；最后由 `tryToBuildSequence` 把物化 CTE 存储节点放在查询计划之前。该顺序解释了测试中 `Projection -> HashAgg -> Limit -> Projection -> Selection -> IndexScan` 等由根到叶的计划形状。
 
 `buildResultSetNode` 对基表调用 `buildDataSource`，对 JOIN 递归构建左右输入，对子查询递归调用 `buildSelect`，对集合运算调用 `buildSetOpr`，对 VALUES 以行数标注 `TableDual`，对 CTE 调用 `tryBuildCTE`。`buildJoin` 在右侧含 LATERAL 时改走 `buildLateralJoin`/`Apply`；普通 JOIN 合并 schema、估算行数，再处理 NATURAL 或 USING 等值条件。
@@ -47,8 +49,6 @@
 ## 依赖与调用关系
 
 直接 Rust 依赖只有同 crate 的 `planbuilder`（`PlanBuilder`、错误、权限、表/值/CTE 状态）和 `task`（表达式、类型、计划节点、统计与存储类型），外加标准库 `HashMap`/`HashSet`。更宽的 planner crate 依赖由 `Cargo.toml` 声明，包括 parser AST、expression、logicalop/physicalop、statistics、property、rule、infoschema、table、kv 和 session context；本文件本身没有直接引用这些外部 crate 名称。
-
-RustCodeGraph 对 `buildSelect` 给出的本文件内部下游边包括 `buildWith`、`buildTableRefs`、`buildSelection`、`extractAggFuncsInSelectFields`、`buildAggregation`、`buildProjection`、`buildDistinct`、`resolveHavingAndOrderBy`、`resolveWindowFunction`、`buildWindowFunctions`、`buildSort`、`buildLimit` 和 `tryToBuildSequence`。源码中的递归上游包括 `buildResultSetNode`、`buildSetOpr`、视图构建、CTE 构建/合并；仓库文本搜索还确认 `integration_test.rs` 直接调用 `buildSelect`、`buildResultSetNode`、`buildUpdate` 与 `buildDelete`。
 
 完整应用主链另由 `planbuilder_runtime.rs` 接收真实语句并调用运行时 `buildUpdate`/`buildDelete` 等实现；本骨架模块虽为 `pub`，却不是该真实 AST 调用边的替代品。新增行为若面向服务器 SQL，必须同时定位 `logical_plan_builder_runtime.rs`/`planbuilder_runtime.rs` 和 Go 实现，不能只修改本文件后宣称运行时已支持。
 
@@ -88,9 +88,9 @@ Rust 骨架保持了 Go 的高层顺序和若干可观察规则：窗口继承�
 
 ## 验证依据
 
-- 源码全量阅读：`pkg/planner/core/logical_plan_builder.rs`（2699 行）；构建器状态与错误类型：`pkg/planner/core/planbuilder.rs`；轻量计划模型：`pkg/planner/core/task.rs`。
-- crate 边界：`pkg/planner/core/Cargo.toml`（包名、依赖、`nextgen` feature、Go porting 元数据）与 `pkg/planner/core/lib.rs`（公开骨架模块、私有运行时模块及测试挂载）。目标包没有顶层 `pkg/planner/core/doc.go`；检索到的 `base/doc.go` 属于子目录 `base`，不作为本模块契约替代品。
-- RustCodeGraph：`status` 显示索引含 11467 文件、307296 节点、1848419 边；`node --file ... --offset 1 --limit 400` 核对文件开头、类型和首批实现；`query PlanBuilder` 定位 `planbuilder.rs:568`；`query buildSelect` 与 `callees buildSelect` 核对本文件 `buildSelect` 及其 13 条主要下游边；`query buildResultSetNode` 定位 Go 同名入口，图对本骨架部分外部 caller 覆盖有限，故按技能规则用仓库文本搜索补充直接测试调用证据。
-- Go 对照：`pkg/planner/core/logical_plan_builder.go` 与 `pkg/planner/core/planbuilder.go`；同名函数位置通过 `rg '^func ...'` 核对。Go 测试参考 `pkg/planner/core/logical_plan_builder_test.go`、`pkg/planner/core/planbuilder_test.go` 和 `pkg/planner/core/casetest/logicalplan/logical_plan_builder_test.go`。
-- Rust 测试：`pkg/planner/core/logical_plan_builder_test.rs`（窗口继承/比较/frame）；`logical_plan_builder_subquery_join_aster_unit_test.rs`（Apply schema 与标志）；`logical_plan_builder_lateral_with_aster_unit_test.rs`（正式运行时 LATERAL/递归 CTE）；`logical_plan_builder_runtime_test.rs` 与 `logical_plan_builder_runtime_aster_unit_test.rs`（集合运算、LIMIT、DISTINCT）；`integration_test.rs`（typed SELECT/UNION/UPDATE/DELETE、索引选择、HAVING 等直接骨架调用）。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前执行任务规定的章节结构命令，并人工复核：恰有 11 个固定二级标题、没有把骨架实现表述为完整运行时、所有扩展建议指向独立测试文件。
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准，增量范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；不纳入工作区后续源码。
+
+- 通过 `git diff ad0a6f4..2c944fb -- pkg/planner/core/logical_plan_builder.rs` 审计本次增量；以目标提交源码和相邻模块装配核对语义。core 包无 `doc.go`。
+- 核对 `buildUpdate` 的输入形状、标签赋值和相邻 `planbuilder_runtime.rs` 的不同计划表示；Go 对照 `logical_plan_builder.go`，独立测试入口为 `integration_test.rs`、`logical_plan_builder_test.rs`。没有把 runtime 用例当成轻量标签的直接测试。
+- RustCodeGraph `status` 已确认索引包含 Rust，但索引属于当前工作区而非冻结 blob；本次增量事实采用 Git 源码证据，不以图推定冻结调用边。
+- Ready 文档等价校验：固定 11 章、空白和 diff 检查以及相对链接检查；`.agents/skills/tidb-verify-profile` 不存在。按纯文档计划不运行 Cargo、Go 测试或 lint，不声称静态阅读的测试已经执行。
