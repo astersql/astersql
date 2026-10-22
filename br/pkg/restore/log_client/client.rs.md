@@ -2,6 +2,8 @@
 
 ## 文件定位
 
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
+
 该文件是 `astersql-br-pkg-restore-log-client` library crate 的核心编排层。crate 根 [`lib.rs`](lib.rs) 以 `pub mod client` 挂载它，并通过 `pub use client::*` 将其公开 API 扁平再导出；[`Cargo.toml`](Cargo.toml) 的 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/restore/log_client`。它服务于 BR 的日志恢复/PiTR 链路，把 PD、外部存储、日志文件管理、MetaKV 处理、日志文件导入、压缩 SST 恢复、检查点和内部 SQL session 汇总到 `LogClient`。
 
 生产调用已经接入两条明确主链：[`br/pkg/task/stream.rs`](../../task/stream.rs) 在启用检查点时调用 `LogClient::LoadOrCreateCheckpointMetadataForLogRestore`；[`br/pkg/task/restore_lifecycle.rs`](../../task/restore_lifecycle.rs) 的 `RestoreCompactedSST` 依次调用 `InitSSTFileRestorer` 和 `RestoreSSTFileSets`。MetaKV 子链则由 [`batch_meta_processor.rs`](batch_meta_processor.rs) 调用 `SeparateAndSortFilesByCF`、`LoadAndProcessMetaKVFilesInBatch`、`RestoreBatchMetaKVFiles` 等入口。
@@ -20,6 +22,8 @@
 
 ## 主要符号
 
+增量接口：`SaveIdMapWithFailPoints` 新增 `routeFingerprint` 并转发保存；`GetBaseIDMapAndMerge` 新增 `loadSavedIDMap`、`hasFullBackupStorageConfig`、`currentRouteFingerprint`；`LoadOrCreateCheckpointMetadataForLogRestore` 新增路由指纹参数。
+
 - 常量：`MetaKVBatchSize = 64 MiB` 控制 MetaKV 聚合上限；`maxSplitKeysOnce = 10240`、`maxReadMetaKVFilesConcurrency = 128`、`rawKVBatchCount = 64`、`defaultRepairIndexSessionCount = 10` 保留 Go 数值；`operationHintRestoreID = "restore_id"` 是 operation metadata 的 hint 键。本文件中部分常量只作为对外兼容面，未在该文件的当前流程消费。
 - `LogRestoreManager { fileImporter, workerPool }`：日志文件导入器及并发工作池。`NewLogRestoreManager` 创建工作池；与 Go 不同，检查点 manager 参数尚未接线，也没有 checkpoint runner 字段。
 - `SstRestoreManager { closed, storeCount, replicaCount, workerPoolSize, restorer }`：压缩 SST 恢复状态。`restorer` 在 `InitSSTFileRestorer` 后才可用；`Close` 委托 `SstRestorer::Close` 并把 `closed` 置真。
@@ -34,6 +38,10 @@
 - 边界/辅助 API：`CleanUpKVFiles`、`PreSplitRegions`、`PutRawKvWithRetry`、`liveTiKVStoreCount`、`maxReplicaFromReplicateConfig`，以及仅供测试的 `TEST_NewLogClient*`。
 
 ## 执行流程
+
+基础映射选择必须区分：续跑 `loadSavedIDMap=true` 时只读 `self.restoreTS` 的当前任务；否则没有 full-backup 配置才读参数 restoredTS 的唯一前序任务；有 full-backup 配置则不在此加载。续跑映射缺失立即报错；存在元数据时先严格比较 `PitrIdMapRouteFingerprint`，再调用 TiFlash 校验及 MergeBaseDBReplace。没有元数据且没有 full-backup 配置也报错。
+
+日志检查点已存在时先比较 `RouteFingerprint`，不一致立即拒绝复用；首次创建写入当前指纹，随后仍保持 GC/jobs/snapshot 配置恢复逻辑。
 
 典型日志恢复初始化与执行的局部流程如下：
 
@@ -61,6 +69,8 @@ DML apply 流程：
 
 ## 数据与状态
 
+路由指纹属于持久兼容身份：ID map 和日志 checkpoint 分别保存并校验，空旧指纹与非空新规则不兼容。配置层无 Rename 时返回空指纹；不能默认把规则变更当成安全续跑。
+
 - `LogClient` 是有状态的分阶段对象，而非不可变配置。`Option` 字段表示尚未初始化的资源；`InstallLogFileManager`、`InitSSTFileRestorer` 和 `RestoreSSTFileSets` 会针对关键缺失状态返回错误，但并非所有方法都验证完整初始化顺序。
 - `currentTS` 是 MetaKV rewrite/checkpoint 中的 rewrite TS，禁止为 0；`restoreTS` 是目标恢复时间，既可由 setter 写入，也会被 `InstallLogFileManager` 覆盖。`upstreamClusterID` 与 `restoreID` 分别用于检查点/ID map 和任务隔离。
 - `SetRestoreID` 与 `SetOperationContext` 都会调用 `setOperationContextRestoreID`：非零 ID 写入十进制字符串，0 则写入空字符串，避免 operation context 遗留旧任务标识。
@@ -72,8 +82,6 @@ DML apply 流程：
 - SST 统计用 `wrapping_add` 计算单次日志展示总量，而长期字段使用 `AtomicU64::fetch_add(Relaxed)`；极端溢出会回绕，不会报错。
 
 ## 依赖与调用关系
-
-RustCodeGraph 将该文件标记为被 `br/pkg/task/restore_lifecycle.rs`、`br/pkg/task/stream.rs`、`import_retry.rs` 及相关测试使用。由于索引的 `callers` 子命令未返回这些方法级上游，源码精确检索补充确认了以下生产边：
 
 - `br/pkg/task/stream.rs` → `LogClient::LoadOrCreateCheckpointMetadataForLogRestore`：日志恢复启动时保存或复用全局 TiKV 配置。
 - `br/pkg/task/restore_lifecycle.rs::RestoreCompactedSST` → `InitSSTFileRestorer` → `RestoreSSTFileSets`：压缩 SST 的生命周期编排。
@@ -94,6 +102,8 @@ RustCodeGraph 将该文件标记为被 `br/pkg/task/restore_lifecycle.rs`、`br/
 Cargo 直接依赖包括 `astersql-br-pkg-stream`、`utils`、`restore`、`checkpoint`、`restore-split`、`restore-utils`、`utils-iter` 和 `astersql-errors`，另有 `serde_json` 用于 PD replicate config。manifest 明确说明当前 arm64 Darwin 路径避免直接引入 kv/domain/kvproto/grpcio，优先使用 slim path dependencies 与本地 stubs；不能据此文档声称已接通 Go 的全部真实外部客户端。
 
 ## 错误处理与边界
+
+新增拒绝场景包括当前任务映射缺失、前序映射歧义/旧无归属文件、ID map 指纹不一致及日志 checkpoint 指纹不一致。映射不存在与存在空 DbMaps 不等价。TiFlash 校验仍为恒成功边界桩；加入指纹并未补齐该行为。
 
 - `Init` 会传播 session 创建错误；PD `GetClusterID` 在当前 trait 中直接返回值。若 session 已写入而后续步骤扩展为可失败，需考虑半初始化清理。
 - `InstallLogFileManager` 在 `storage=None` 时返回 `"storage unset"`；创建 manager 的错误原样传播。`PreSplitRegions` 在 manager 未安装时返回 `"log file manager not installed"`。
@@ -121,6 +131,8 @@ Cargo 直接依赖包括 `astersql-br-pkg-stream`、`utils`、`restore`、`check
 资源规模方面，MetaKV batch 按文件 `Length` 加残留条目估算限制在约 64 MiB，但实际 processor 内存还取决于读取实现；apply 聚合由调用方传入的 count/size 双阈值控制。SST worker pool 固定为 `7186 * store_count`，是显著的资源参数，变更必须与 Go 行为及下游 worker pool 实现共同评估。
 
 ## 与 Go 版本的对应关系
+
+冻结增量新增 owner/路由兼容保护；基础映射的布尔参数分支与 None 语义必须按 Rust 实码解释，不能从 Go 主链推断已有生产调用。
 
 直接对照文件为 [`client.go`](client.go)，测试意图来自 [`client_test.go`](client_test.go)。主要一致点与差异如下：
 
@@ -150,6 +162,8 @@ Rust 独立测试 [`client_test.rs`](client_test.rs) 覆盖 operation hint、GC 
 - 所有 Rust 行为修复都应与 `client.go`/`client_test.go` 的对应增量保持一致，并同步同目录独立 Rust 测试；不能通过删减逻辑或只保留成功桩来让测试通过。
 
 ## 验证依据
+
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 本次对上述新增参数、GetBaseIDMapAndMerge 全分支、checkpoint 指纹比较和保存进行了冻结 blob 复核；`git grep 2c944fb` 确认 `stream.rs` 传入配置指纹。RustCodeGraph 本次仅检查索引状态，调用关系由冻结 git grep 核对。未执行 Cargo。
 
 - RustCodeGraph `status`：索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter br/pkg/restore/log_client` 确认目标、Go 对照、模块和测试均被索引。
 - RustCodeGraph `node --file br/pkg/restore/log_client/client.rs --offset ...`：分段读取 1,103 行目标源码，核对 6 个常量、4 个主要状态类型、构造/setter、生命周期、MetaKV、apply、checkpoint 和 SST 流程。

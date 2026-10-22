@@ -2,6 +2,8 @@
 
 ## 文件定位
 
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。
+
 该文件属于 `astersql-br-pkg-restore-snap-client` library crate；crate 入口 `br/pkg/restore/snap_client/lib.rs` 以 `pub mod systable_restore` 装载它，并通过 `pub use systable_restore::*` 扁平重导出公开符号。`Cargo.toml` 的 `package.metadata.porting.go-package` 指向 Go 包 `br/pkg/restore/snap_client`，且依赖说明明确当前 Rust 端在 arm64 Darwin 使用本地 trait/stub，而不是直接连接 `kv/domain/kvproto/grpcio`。
 
 在恢复主链中，本文件是“系统表特殊规则与表替换辅助层”，不是完整的快照恢复控制器。直接生产调用位于 `pipeline_items.rs`：`SnapClient::replaceTables` 用 `TemporaryTableChecker` 筛选临时表，随后依次调用 `updateStatsTableSchema`、`GenerateMoveRenamedTableSQLPair`/`moveRenamedTable` 和 `notifyUpdateAllUsersPrivilege`；`updateTemporaryUserTable` 调用 `removeUserResourceGroup`。`client.rs` 的 `SnapClient` 则持有恢复配置及数据库、Domain 等可注入资源。
@@ -16,6 +18,8 @@
 
 ## 主要符号
 
+新增 `BuildSystemTableReplaceColumns` 和 `BuildSystemTableReplaceSQL`：前者生成目标列与 SELECT 表达式，后者用 EncloseName/EncloseDBAndTable 生成带显式列清单的 REPLACE INTO ... SELECT ...。私有 CompatibleMissingBackupSystemTableColumn 集中定义允许的缺列和必需源列。
+
 - `sysUserTableName`：`mysql.user` 的统一名字常量，被兼容性检查、资源组清理及流水线逻辑复用。
 - `set_of`、`nested`：把静态字符串切片转换为嵌套 `HashMap<String, HashMap<String, ()>>`；它们只是集合构造器，不保存全局状态。
 - `stats_tables`、`renameable_sys_tables`、`plan_replayer_tables`、`unrecoverable_table`、`unrecoverable_schema`：策略集合的构造函数。`isStatsTable`、`isRenameableSysTable`、`isPlanReplayerTables` 和 `isUnrecoverableTable` 是相应查询入口。
@@ -27,9 +31,11 @@
 - `TemporaryTableChecker`、`NewTemporaryTableChecker`、`CheckTemporaryTables`：组合两个物理装载开关并返回剥离临时前缀后的原 schema 名。
 - `GenerateMoveRenamedTableSQLPair`：生成批量表交换 SQL。参数名沿用 Go，但实际既可接收统计表也可接收 `replaceTables` 收集到的所有可替换表。
 - `removeUserResourceGroup`：执行 `JSON_REMOVE(User_attributes, '$.resource_group')`；仅把旧版本缺少 `User_attributes` 列视为可降级警告。
-- `CheckSysTableCompatibility`：对输入的上下游 `TableInfo` 切片逐表检查列名、列数和 collation，返回 `Ok(true)` 表示可物理装载，`Ok(false)` 表示逻辑兼容但必须退回非物理路径。
+- `CheckSysTableCompatibility`：对输入的上下游 `TableInfo` 切片逐表检查列名、字段类型和 collation，返回 `Ok(true)` 表示可物理装载，`Ok(false)` 表示逻辑兼容但必须退回非物理路径。
 
 ## 执行流程
+
+配置化补值包含 mysql.user.operate_view_priv：要求源含 super_priv，表达式为 IF(`Super_priv` = 'Y', 'Y', 'N')；mysql.db.operate_view_priv 填 'N'；mysql.bind_info.last_used_date 填 NULL。构造列清单按下游列顺序，公共列引用源列，允许的缺列填表达式，其他缺列略过；备份有而下游没有的列或结果无可用列报错。列清单生成器本身不替代 CheckSysTableCompatibility。
 
 生产路径可由 `pipeline_items.rs::SnapClient::replaceTables` 复核：
 
@@ -40,7 +46,7 @@
 5. `moveRenamedTable` 调用 `GenerateMoveRenamedTableSQLPair`，对每张表生成“正式表 -> 删除备份名”和“临时表 -> 正式表”两项，并作为一条 `RENAME TABLE` 交给数据库执行。
 6. `notifyUpdateAllUsersPrivilege` 检查是否替换了任一 `mysql` 权限表；命中后只调用一次 notifier，并立即结束扫描。
 
-兼容性路径独立于上述替换函数：`CheckSysTableCompatibility` 为每张上游表按小写表名寻找下游表；普通表要求列数相等且每个下游列在上游存在，`mysql.user` 允许目标端新增列但把 `can_load` 降为 `false`，反向缺列仍报错。每对列的 collation 必须相等，或在启用 `collation_check` 时满足 `utf8mb4_bin -> utf8mb4_general_ci` 且列属于三张权限表的白名单；即使允许该迁移，返回值仍为 `false`，从而阻止物理装载。
+兼容性路径先跳过非 renameable 的系统表，为其余上游表按小写名称找下游。下游缺失的备份列只在配置的补值例外或 mysql.user 未识别新列时允许，并降为非物理装载；备份存在而下游没有的列一律拒绝。匹配列调用 IsTypeCompatible 同时判断字段类型与 collation；允许的 collation 白名单迁移仍返回 false，阻止物理装载。
 
 ## 数据与状态
 
@@ -52,21 +58,21 @@
 
 ## 依赖与调用关系
 
+冻结引用检索显示 BuildSystemTableReplaceColumns/SQL 仅由独立 systable_restore_test.rs 消费；未发现实际系统表执行路径调用，因此 SQL 生成不能写成完整 RestoreSystemSchemas 已实现。
+
 - 上游装配：`lib.rs -> systable_restore`，并把公开 API 重导出到 crate 根。
 - 生产调用：`pipeline_items.rs::replaceTables -> TemporaryTableChecker::CheckTemporaryTables -> GetDBNameIf* -> is*Table`；随后调用 `updateStatsTableSchema`、`GenerateMoveRenamedTableSQLPair`、`notifyUpdateAllUsersPrivilege`。`pipeline_items.rs::updateTemporaryUserTable -> removeUserResourceGroup`。
 - 测试/兼容出口：`export_test.rs` 重导出 `NewTemporaryTableChecker`、`NotifyUpdateAllUsersPrivilege`；`systable_restore_test.rs` 与 `parity_test.rs` 直接验证分类、SQL 生成和兼容性行为。
 - 下游本地依赖：`stubs.rs` 提供 `Error`/`Result`、临时库名前缀操作、系统 schema 常量、日志、`model::TableInfo` 及错误类别；`systable_schema_update.rs::update_stats_meta_schema_function_map` 决定哪些统计表需要 schema 修正。
 - crate 边界：`Cargo.toml` 声明本 crate 依赖 BR utils/errors/restore 以及 serde/sha2；本文件没有直接使用外部异步运行时或网络客户端。
 
-RustCodeGraph 的文件边显示目标文件直接被 `systable_restore_test.rs` 使用；精确文本引用还确认生产调用集中在 `pipeline_items.rs`。宽泛 `callers/callees` 命令在本仓库索引上超时，因此调用边由已索引文件节点和引用搜索交叉验证。
-
 ## 错误处理与边界
 
 - `updateStatsTableSchema` 对下游表查询、临时上游表查询和更新函数错误分别追加含 schema/table 的上下文后立即返回；未注册更新函数不是错误，而是显式跳过。
 - `notifyUpdateAllUsersPrivilege` 在 notifier 失败时记录人工执行 `FLUSH PRIVILEGES` 的警告，并包装为 `berrors::ErrUnknown`；没有权限表或 schema 不是 `mysql` 时无副作用成功返回。
 - `removeUserResourceGroup` 依赖错误消息子串识别旧版本缺列。只有精确包含 `Unknown column 'User_attributes' in 'field list'` 才降级为警告，其余执行错误原样传播；这与 Go 源码中的 FIXME 一样脆弱，修改驱动错误文本时需同步验证。
-- `CheckSysTableCompatibility` 对缺表、普通表列数不等、列缺失或不允许的 collation 组合返回错误。`mysql.user` 的特殊规则是不要求列数相等：目标新增列导致 `Ok(false)`，备份存在而目标缺失的列仍失败。
-- Rust 版本的兼容性检查只比较列名和 `Collate`，没有 Go 版 `utils.IsTypeCompatible` 的字段类型检查；调用者不得据此宣称与 Go 的完整兼容性判定等价。
+- `CheckSysTableCompatibility` 对缺表、不兼容字段类型、未获许可的缺列或 collation 组合返回 ErrRestoreIncompatibleSys；允许补值/跳过的列导致 Ok(false)。列数不等本身不再是独立判据。
+- Rust 现在克隆 FieldType、写入 ColumnInfo.Collate 后调用 utils::misc::IsTypeCompatible；列级类型检查已实现，但不等于权限行计数验证已接线。
 - Rust 文件未实现 Go 同文件中的 `RestoreSystemSchemas`、`restoreSystemSchema`、逐表 `REPLACE INTO`/`RENAME`、临时库清理及权限表行级重复检测执行路径。这些能力不能从 SQL 常量存在推断为已接线。
 
 ## 并发与资源生命周期
@@ -81,7 +87,7 @@ RustCodeGraph 的文件边显示目标文件直接被 `systable_restore_test.rs`
 
 当前迁移不是一比一完整复刻：
 
-- Go `CheckSysTableCompatibility` 从 Domain 和备份元数据中筛选权限表，并同时调用 `IsTypeCompatible` 检查类型与 collation；Rust 接收已准备好的上下游 `TableInfo` 切片且只检查 collation。
+- Go `CheckSysTableCompatibility` 从 Domain 和备份元数据中筛选权限表，并同时调用 `IsTypeCompatible` 检查类型与 collation；Rust 接收已准备好的上下游 `TableInfo` 切片，也执行类型/collation 检查。
 - Go `checkPrivilegeTableRowsCollateCompatibility` 校验列集合后执行两条受限 SQL，用计数差识别在目标 collation 下折叠的重复权限行；Rust 仅保留 SQL/列集合和列级白名单，没有对应执行方法。
 - Go 在同文件中实现完整 `RestoreSystemSchemas`、逐表合并、特殊表跳过、后处理和临时库清理；Rust 的运行接线集中在简化的 `pipeline_items.rs::replaceTables`，目标文件本身没有这些入口。
 - Rust 用本地 `InfoSchema` trait、同步闭包和 stub `model` 降低依赖；Go 直接使用 `domain.Domain`、真实 InfoSchema、session 和 context。
@@ -93,15 +99,10 @@ RustCodeGraph 的文件边显示目标文件直接被 `systable_restore_test.rs`
 - 新增/删除系统表分类时，同时更新对应集合函数、Go 同路径集合以及 `systable_restore_test.rs`；若影响流水线物理装载，还要检查 `pipeline_items_test.rs`。不可恢复表应注明包含集群局部 ID、TSO 或运行态数据等原因。
 - 新增统计 schema 迁移时，在 `systable_schema_update.rs::update_stats_meta_schema_function_map` 注册处理器，并为正式/临时表查询失败和生成 SQL补独立测试；不要把测试逻辑内嵌进生产文件。
 - 扩大 collation 例外前必须同时评估列级兼容和行级唯一性。当前 Rust 没有执行 Go 的计数 SQL，若移植该能力，应通过可注入 restricted-SQL executor 实现，并覆盖空结果、执行错误、计数不等和带重音/大小写冲突。
-- 修改 `CheckSysTableCompatibility` 时优先补齐 Go 的类型兼容语义，而不是继续简化；回归测试至少覆盖字段类型、普通表列数、`mysql.user` 双向缺列及 `can_load=false` 的降级含义。
+- 修改 `CheckSysTableCompatibility` 时保持现有类型兼容语义和配置化补列；回归测试覆盖字段类型、mysql.user 双向缺列、补值依赖缺失及 can_load=false 的降级含义。
 - 调整重命名逻辑时关注标识符 quoting、空集合、多表顺序、目标备份名冲突和执行失败后的恢复策略。若需要确定性 SQL，应先改用排序后的键序列并同步 Go/测试，而不是依赖 `HashMap` 迭代顺序。
 - 修改错误分类或旧版本容错时避免继续依赖错误字符串；若引入结构化错误，需保持“仅缺 `User_attributes` 可忽略”的兼容边界。
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 7,032 个 Rust 文件；`files --filter br/pkg/restore/snap_client` 确认目标、Go 对照及独立测试均被索引；`explore` 给出目标符号、测试调用和 Go `RestoreSystemSchemas -> restoreSystemSchema` 调用边；`node --file` 完整读取目标 595 行、Rust 测试 394 行，并读取 `pipeline_items.rs` 的直接生产调用段。
-- Rust 源与装配：`br/pkg/restore/snap_client/systable_restore.rs`、`lib.rs`、`pipeline_items.rs`、`client.rs`、`systable_schema_update.rs`（由目标导入与调用确认）。
-- crate 配置：`br/pkg/restore/snap_client/Cargo.toml`，确认 library 入口、Go 包映射、依赖和本地 stub 边界。
-- Rust 测试：`br/pkg/restore/snap_client/systable_restore_test.rs`；另由引用搜索确认 `pipeline_items_test.rs` 和 `parity_test.rs` 覆盖相关接线/跨语言奇偶性。
-- Go 对照：`br/pkg/restore/snap_client/systable_restore.go`、`systable_restore_test.go`，用于核对集合、完整系统表恢复流程、类型/列/collation 兼容规则及权限行冲突检查。
-- 本任务是纯文档分析，按计划不运行 Cargo；交付验证仅执行任务指定的 11 章节结构命令，并人工检查上述事实边界、调用顺序和未移植能力均有直接代码依据。
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准；增量比较为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`，不采用工作区或索引中的后续代码。 完整 blob 为 754 行；本次复核 IsTypeCompatible 调用、缺列白名单、SQL 构造及引用。独立测试 `system_table_compatibility_only_allows_configured_missing_columns`、`system_table_replace_columns_match_go_compatibility_expressions` 覆盖补列依赖、表达式与反向缺列。调用关系由冻结 git grep 核对；未运行 Cargo。
