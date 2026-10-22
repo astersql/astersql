@@ -135,6 +135,13 @@ impl Dumper {
 
         let mut consistency = NewConsistencyController(&self.conf, &db)?;
         consistency.Setup(&self.tctx)?;
+        if let Some(tables) = consistency.DumpingTables() {
+            // Go shares *Config with the controller; publish its 1146-filtered set
+            // before table counts, column projection, and task generation read it.
+            let mut conf = self.conf.clone_for_mutate();
+            conf.Tables = tables.clone();
+            self.conf = Arc::new(conf);
+        }
         let result = (|| {
             let conn = createConnWithConsistency(&db, repeatable_read)?;
             let mut metadata = newGlobalMetadata(

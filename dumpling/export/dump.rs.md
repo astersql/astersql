@@ -41,7 +41,7 @@
 
 1. CLI 调用 `NewDumper`。配置格式和 generated-column 选项在任何外部资源打开前完成校验；随后创建带取消函数的背景 context 和共享统计对象。
 2. `runSteps` 严格按 `initLogger → createExternalStore → startHTTPService → openSQLDB → detectServerInfo → resolveAutoConsistency → validateResolveAutoConsistency → tidbResolveKeyspaceMetaForGC → tidbSetPDClientForGC → setSessionParam` 执行。`auto` 对 TiDB 解析成 `snapshot`，对 MySQL/MariaDB 解析成 `flush`，其他类型解析成 `none`。
-3. `Dump` 先检查 column-filter 与 SQL 等选项组合，注册 metrics，并从 `db` 取得连接池。lock consistency 必须先列出表，以便一致性控制器建立锁定范围；其他模式在 `ConsistencyController::Setup` 后列出表。
+3. `Dump` 先检查 column-filter 与 SQL 等选项组合，注册 metrics，并从 `db` 取得连接池。lock consistency 必须先列出表，以便一致性控制器建立锁定范围；其他模式在 `ConsistencyController::Setup` 后列出表。锁模式 setup 成功后通过 `DumpingTables` 将 1146 收敛后的表集写回新的配置快照，后续表数统计、列投影与任务生成统一读取该集合。
 4. 主闭包创建 metadata 连接，记录开始时间和全局元数据。记录全局元数据失败仅 warning，不终止导出；表清单、列投影或后续写出失败则向上传播。
 5. `prepareTableListToDumpInner` 在非 SQL、非显式表路径枚举数据库与对象，并应用表过滤。`totalTables` 随后以 `SeqCst` 写入。
 6. 有 column filter 且不是 SQL 模式时，`prepareColumnProjection` 预先缓存每张表的源列/选中列。若过滤影响 schema，则先建立所有 base-table 的投影 schema，再做外键父表校验，避免 `HashMap` 遍历顺序导致父表被误判为外部表。

@@ -1572,3 +1572,109 @@ fn generated_columns_csv_data_changes_while_schema_is_unchanged() {
     }
     assert!(schemas.iter().all(|schema| schema == &schemas[0]));
 }
+
+#[test]
+fn lock_retry_filters_dump_tables() {
+    // Arm the existing SQL mock after discovery, immediately before LOCK TABLES.
+    // The filter accepts every table; only the database boundary returns 1146.
+    struct DropAfterDiscovery {
+        db: DB,
+        armed: std::sync::atomic::AtomicBool,
+    }
+    impl Filter for DropAfterDiscovery {
+        fn MatchSchema(&self, _: &str) -> bool {
+            true
+        }
+        fn MatchTable(&self, _: &str, table: &str) -> bool {
+            if table == "missing" && !self.armed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.db
+                    .fail_queue
+                    .lock()
+                    .unwrap()
+                    .push_back(Error::with_mysql(MySQLError {
+                        Number: ErrNoSuchTable,
+                        Message: "Table 'db.missing' doesn't exist".into(),
+                    }));
+            }
+            true
+        }
+    }
+
+    for retain_table in [true, false] {
+        let mut conf = default_config_for_test();
+        conf.Consistency = ConsistencyTypeLock.into();
+        conf.ServerInfo.ServerType = ServerType::ServerTypeMySQL;
+        conf.NoData = true;
+        let db = DB::new();
+        conf.TableFilter = Arc::new(DropAfterDiscovery {
+            db: db.clone(),
+            armed: std::sync::atomic::AtomicBool::new(false),
+        });
+        db.seed_query(
+            "SHOW DATABASES",
+            vec!["Database".into()],
+            vec![vec![Some(b"db".to_vec())]],
+        );
+        let mut tables = vec![vec![
+            Some(b"missing".to_vec()),
+            Some(b"BASE TABLE".to_vec()),
+            Some(b"1".to_vec()),
+        ]];
+        if retain_table {
+            tables.push(vec![
+                Some(b"kept".to_vec()),
+                Some(b"BASE TABLE".to_vec()),
+                Some(b"1".to_vec()),
+            ]);
+        }
+        db.seed_query(
+            "SELECT TABLE_NAME,TABLE_TYPE,AVG_ROW_LENGTH FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='db'",
+            vec!["TABLE_NAME".into(), "TABLE_TYPE".into(), "AVG_ROW_LENGTH".into()],
+            tables,
+        );
+        db.seed_query(
+            "SHOW CREATE DATABASE `db`",
+            vec!["Create Database".into()],
+            vec![vec![Some(b"CREATE DATABASE db".to_vec())]],
+        );
+        // Seed both schemas so the old path reaches the output assertion.
+        for table in ["kept", "missing"] {
+            db.seed_query(
+                &format!("SHOW COLUMNS FROM `db`.`{table}`"),
+                vec!["FIELD".into(), "EXTRA".into()],
+                vec![],
+            );
+            db.seed_query(
+                &format!("SHOW CREATE TABLE `db`.`{table}`"),
+                vec!["Create Table".into()],
+                vec![vec![Some(
+                    format!("CREATE TABLE {table}(id INT)").into_bytes(),
+                )]],
+            );
+        }
+        let storage = Arc::new(MemStorage::new("lock-retry"));
+        let mut dumper = make_dumper(conf);
+        dumper.db = Some(db.clone());
+        dumper.ext_storage = Some(storage.clone());
+        dumper.Dump().unwrap();
+        assert!(
+            db.fail_queue.lock().unwrap().is_empty(),
+            "1146 must be consumed"
+        );
+        assert!(
+            storage.ReadFile("db.missing-schema.sql").is_err(),
+            "1146-filtered table must not be exported"
+        );
+        if retain_table {
+            assert!(
+                storage.ReadFile("db.kept-schema.sql").is_ok(),
+                "remaining table must still be exported"
+            );
+        }
+        assert_eq!(
+            dumper.totalTables.load(std::sync::atomic::Ordering::SeqCst),
+            i64::from(retain_table)
+        );
+        dumper.Close().unwrap();
+    }
+}

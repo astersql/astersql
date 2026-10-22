@@ -27,6 +27,11 @@ pub trait ConsistencyController: Send {
     fn Setup(&mut self, tctx: &tcontext::Context) -> Result<()>;
     fn TearDown(&mut self) -> Result<()>;
     fn PingContext(&self) -> Result<()>;
+
+    // Only table-lock consistency can narrow the discovered export set during setup.
+    fn DumpingTables(&self) -> Option<&DatabaseTables> {
+        None
+    }
 }
 
 pub fn NewConsistencyController(
@@ -181,6 +186,10 @@ pub fn consistency_lock_setup(
 }
 
 impl ConsistencyController for ConsistencyLockDumpingTables {
+    fn DumpingTables(&self) -> Option<&DatabaseTables> {
+        Some(&self.conf.Tables)
+    }
+
     fn Setup(&mut self, tctx: &tcontext::Context) -> Result<()> {
         // setup 过程会修改 conf，因此先复制一份可变配置副本。
         let mut conf = self.conf.clone_for_mutate();
