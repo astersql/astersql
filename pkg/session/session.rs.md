@@ -1,10 +1,12 @@
 # `pkg/session/session.rs`
 
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准。
+
 ## 文件定位
 
 本文件属于 `astersql-session` crate；crate 根 `pkg/session/lib.rs` 通过 `pub mod session` 暴露它。它不是 SQL 解析或执行器本身，而是一个精简的会话核心模型：集中定义语句结果摘要、事务抽象、运行时适配边界、表锁状态以及提交、回滚和关闭时的生命周期动作。
 
-当前 Rust 实现只有 377 行，并未复刻同路径 `pkg/session/session.go` 的完整 `session`。仓库内对本文件 `session::doCommit`、`RollbackTxn` 和 `Close` 的直接调用证据集中在 `pkg/session/session_test.rs` 的 `session_parity` 测试模块；生产模块可经公开模块和公开类型使用，但代码搜索没有发现这些核心方法已接入完整 SQL 请求主链。因此应把它视为可执行、有测试的局部迁移边界，而不是 Go 会话层的等价替代。
+当前 Rust 实现并未复刻同路径 `pkg/session/session.go` 的完整 `session`。仓库内对本文件 `session::doCommit`、`RollbackTxn` 和 `Close` 的直接调用证据集中在 `pkg/session/session_test.rs` 的 `session_parity` 测试模块；生产模块可经公开模块和公开类型使用，但代码搜索没有发现这些核心方法已接入完整 SQL 请求主链。因此应把它视为可执行、有测试的局部迁移边界，而不是 Go 会话层的等价替代。
 
 ## 核心职责
 
@@ -38,12 +40,14 @@
 4. 可写事务通过只读保护后，`doCommit` 调用 `SessionRuntime::SetOptionsBeforeCommit`；成功才进入 `commitTxnWithTemporaryData`，最终由运行时决定如何提交事务和合并临时表数据。
 5. `RollbackTxn` 仅在事务有效时调用事务回滚，但无论事务是否有效、回滚是否成功，都会随后执行 `cleanRetryInfo`。返回值保留原回滚结果。
 6. `cleanRetryInfo` 在启用预编译计划缓存时，逐个调用 `DeletePreparedPlan`，之后总是清空 `DroppedPreparedStmtIDs`。
-7. `Close` 忽略 `RollbackTxn` 的错误，继续按顺序关闭游标跟踪器和会话变量资源。这一顺序由 `close_rolls_back_before_releasing_session_resources` 回归测试固定。
+7. `Close` 忽略 `RollbackTxn` 的错误，继续按顺序关闭游标跟踪器和会话变量资源，最后以 Release 顺序将 advisory lock owner 缓存清零。资源关闭顺序由 `close_rolls_back_before_releasing_session_resources` 固定；owner 重置由独立 owner 回归测试验证。
 8. 缓存表租约助手的 `start` 拒绝已停止实例，调用运行时批量续租，并要求返回租约数与表数完全一致；`commitTSCheck` 仅当提交时间戳严格小于每个租约时返回真；`stop` 只通知运行时一次。
 
 ## 数据与状态
 
-`session` 自身没有内部锁。`runtime` 和 `ddlOwnerManager` 用 `Arc` 共享且 trait 要求 `Send + Sync`；事务用 `Box` 独占且只要求 `Send`。`values: HashMap<String, Box<dyn Any + Send + Sync>>` 提供类型擦除的会话附加值，但本文件没有访问方法；`currentCtx`、`processInfo` 和 `crossKS` 也仅作为状态字段保存。
+`getAdvisoryLockOwner(&self)` 首先以 Acquire 读取 `advisoryLockOwnerID`。缓存为零时，有 processInfo 且 ConnectionID 非零则使用连接 ID，否则从进程级原子分配器生成 `2^32 + (序号 + 1) * 2` 的偶数 ID；以 AcqRel compare-exchange 安装，竞争失败者返回已安装值。首次分配后即使补充 processInfo 或修改连接 ID 也保持 owner 不变，直到 `Close` 清零。此 ID 是进程内身份，不是持久化或集群唯一身份。
+
+`session` 仅对 advisory lock owner 使用原子状态；其他字段没有内部锁。`runtime` 和 `ddlOwnerManager` 用 `Arc` 共享且 trait 要求 `Send + Sync`；事务用 `Box` 独占且只要求 `Send`。`values: HashMap<String, Box<dyn Any + Send + Sync>>` 提供类型擦除的会话附加值，但本文件没有访问方法；`currentCtx`、`processInfo` 和 `crossKS` 也仅作为状态字段保存。
 
 `SessionVars` 是按值嵌入的快照式状态。`LastInsertID` 的不变量是优先返回非零 `StmtCtx.LastInsertID`，否则回退到 `InsertID`。`TxnInfo` 通过事务 trait 获取，并在 `StartTS == 0` 时过滤为 `None`。`GetAllTableLocks` 从 `HashMap` 克隆快照，返回顺序不稳定，调用者不能依赖顺序。
 
@@ -51,9 +55,9 @@
 
 ## 依赖与调用关系
 
-直接标准库依赖只有 `Any`、`HashMap` 和 `Arc`；错误统一使用 crate 根的 `SessionError` / `SessionResult`。虽然 `pkg/session/Cargo.toml` 声明了庞大的会话、规划、执行、存储和元数据依赖集合，本文件没有直接导入这些具体 crate，而是通过 `SessionTransaction`、`SessionRuntime` 和 `DDLOwnerManager` 做依赖倒置。
+直接标准库依赖包括 `Any`、`HashMap`、`Arc`、`AtomicU64` 和 `Ordering`；错误统一使用 crate 根的 `SessionError` / `SessionResult`。虽然 `pkg/session/Cargo.toml` 声明了庞大的会话、规划、执行、存储和元数据依赖集合，本文件没有直接导入这些具体 crate，而是通过 `SessionTransaction`、`SessionRuntime` 和 `DDLOwnerManager` 做依赖倒置。
 
-上游边界是 `pkg/session/lib.rs` 的 `pub mod session`。RustCodeGraph 将 `pkg/session/session.rs` 标为被大量文件依赖的公开模块，但针对核心方法的精确调用查询没有返回生产调用边；普通代码搜索确认 `doCommit`、本文件的 `RollbackTxn` 和 `Close` 目前由 `pkg/session/session_test.rs` 直接驱动。另一个 `pkg/session/txnmanager.rs` 也有 `RollbackTxn` 调用，但接收者是其自身的 session 抽象，不能据名称相同推断为本文件类型。
+上游边界是 `pkg/session/lib.rs` 的 `pub mod session`。冻结测试与符号搜索显示 `doCommit`、本文件的 `RollbackTxn` 和 `Close` 目前由 `pkg/session/session_test.rs` 直接驱动。另一个 `pkg/session/txnmanager.rs` 也有 `RollbackTxn` 调用，但接收者是其自身的 session 抽象，不能据名称相同推断为本文件类型。
 
 下游调用边可由方法体直接核验：`doCommit -> SessionTransaction::{Valid, IsReadOnly}`、`doCommit -> SessionRuntime::{SetOptionsBeforeCommit, CommitTxnWithTemporaryData}`；`RollbackTxn -> SessionTransaction::{Valid, Rollback}` 及 `cleanRetryInfo -> SessionRuntime::DeletePreparedPlan`；`Close -> RollbackTxn -> SessionRuntime::{CloseCursorTracker, CloseSessionVars}`；租约助手调用 `RenewCachedTableLeases` 和 `StopCachedTableLeaseRenewal`。
 
@@ -73,9 +77,11 @@ trait 约束允许 runtime 与 DDL Owner 管理器跨线程共享，事务对象
 
 Rust 租约实现不直接创建线程或通道；并发续租被封装在 `SessionRuntime` 中。`cachedTableRenewLease::stop` 通过 `stopped` 保证幂等，但没有 RAII 兜底。Go 对照的 `start` 为每张表启动 goroutine、通过 channel 等待初次锁定，`stop` 关闭退出 channel；Rust 仅保留了等价的运行时协议和提交时间戳判定，没有在此文件复刻任务管理细节。
 
-关闭顺序是“尝试回滚—关闭游标跟踪器—关闭会话变量资源”。测试覆盖了成功回滚时三项各执行一次；回滚失败后后两项仍执行的意图可由 `Close` 忽略结果的代码直接确认，但现有测试未构造失败回滚分支。
+关闭顺序是“尝试回滚—关闭游标跟踪器—关闭会话变量资源—清零 advisory lock owner”。测试覆盖了成功回滚时三项各执行一次；回滚失败后后两项仍执行的意图可由 `Close` 忽略结果的代码直接确认，但现有测试未构造失败回滚分支。
 
 ## 与 Go 版本的对应关系
+
+新增 owner 逻辑对应 Go `session.go::getAdvisoryLockOwner` 的首次缓存、process ID 优先、进程内偶数 fallback 与 CAS。Rust 以可选 processInfo 和 SessionVars.ConnectionID 表达 Go ShowProcess().ID；这只是本地核心模型，不能据此推断 canonical 会话复用本结构。
 
 同路径 `pkg/session/session.go` 是语义基准。Rust 的 `StmtHistory::{Add, Count}`、表锁增删查、`Status`、`LastInsertID`、`LastMessage`、`AffectedRows` 以及客户端/连接/命令/压缩字段 setter 保留了 Go 方法的基本形状；`AddTableLock` 同样跳过 `TableLockReadOnly`。
 
@@ -87,6 +93,7 @@ Rust `TxnInfo` 仅过滤零 `StartTS`；Go 在锁下复制快照，并可附加�
 
 ## 扩展指南
 
+- 修改 owner 分配时保持首次缓存稳定及 Close 后重置；同步 `session_test.rs` 的 `advisory_lock_without_process_info_keeps_stable_owner` 和 `advisory_lock_uses_process_info_owner`。后者验证可见连接 ID，前者验证内部偶数 ID、后补进程信息仍稳定及 Close 后重取连接 ID。原子缓存不提供整个会话并发可变访问保证，也不在本文件自动释放实际命名锁。
 - 新增提交规则时优先修改 `session::doCommit`；若需要访问具体存储或计划缓存能力，应向 `SessionRuntime` 增加明确、不可缺省的方法，并在 `pkg/session/session_test.rs` 的 `TestRuntime` 中实现和断言调用顺序。
 - 扩展事务状态应同步 `SessionTransaction`/`TxnInfo`，避免把具体 KV 事务类型塞入 `session`。若新增 `TxnInfo` 字段，要测试 `StartTS == 0` 仍被过滤以及返回快照不泄露可变内部状态。
 - 扩展重试清理需同时检查 Go `cleanRetryInfo` 的 `Retrying` 和 prepared-statement 语义。目前 Rust 逻辑是明显的子集，不能仅增加字段而不补相同行为和独立测试。
@@ -96,8 +103,8 @@ Rust `TxnInfo` 仅过滤零 `StartTS`；Go 在锁下复制快照，并可附加�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件和 4,415 个 Go 文件；`files --filter pkg/session` 确认目标及相邻模块已索引；`node --file pkg/session/session.rs --offset 1 --limit 260` 与后续 261--377 行读取了完整目标文件。对 `doCommit` 的 `query --json` 区分出 Go 方法和 `session.rs::doCommit`；精确 callers/callees 查询未返回可用调用边，因此用方法体和限定 Rust 搜索补证，未把同名方法混为一谈。
-- crate 与模块：`pkg/session/Cargo.toml` 证明包名为 `astersql-session`、库入口为 `lib.rs`、唯一 feature `nextgen` 不在本文件条件编译；`pkg/session/lib.rs` 的 `pub mod session` 证明公开模块边界。本目录未找到 `doc.go`，因此没有额外包级契约可读。
-- Rust 测试：`pkg/session/session_test.rs` 的 `session_parity` 模块实现测试事务/runtime，并验证受限只读拒绝且不提交、回滚清理 `[7, 9]` 计划缓存 ID、关闭先回滚再关闭游标和变量资源。`pkg/session/test/common/common_test.rs::test_table_info_meta` 提供 `AffectedRows`/`LastInsertID` 的 SQL 行为对照，但其测试基础设施是否已接到本文件 `session` 未由调用图证实。
-- Go 对照：`pkg/session/session.go` 180--420 行用于语句历史、会话字段、表锁和结果访问器；505--790 行用于事务信息、提交、缓存表租约和临时表数据；1025--1052 行用于回滚；3504--3555 行用于关闭资源。文档只把 Rust 中真实保留的子集标为已实现。
-- 未运行 Cargo：本任务是纯文档分析，计划明确规定 Cargo 共享槽位不适用。交付前仅执行任务指定的文件存在与 11 个固定二级章节结构校验，并人工检查未把 Go 独有行为写成 Rust 已支持。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/session.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
+- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
+- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
+- `session_test.rs` 的 session_parity 测试覆盖只读提交拒绝、重试清理、Close 顺序与两个 advisory owner 路径；owner 分配、CAS 和清零顺序由冻结方法体复核。

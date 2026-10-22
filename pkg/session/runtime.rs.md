@@ -1,5 +1,7 @@
 # `pkg/session/runtime.rs` 逻辑说明
 
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准。
+
 ## 文件定位
 
 `pkg/session/runtime.rs` 是 `astersql-session` crate 的具体会话运行时模块根。`pkg/session/lib.rs` 以 `pub mod runtime` 暴露它；`pkg/session/Cargo.toml` 指定 crate 入口为 `lib.rs`、Go 移植归属为 `pkg/session`，并定义 `nextgen` feature。该文件不是单一执行器，而同时承担三种角色：声明并汇聚 `runtime/*` 子模块、重导出 `ConcreteSession` 等对外入口、为这些子模块提供进程级/Domain 级共享状态和通用辅助函数。
@@ -19,6 +21,7 @@
 
 ## 主要符号
 
+- `pub(crate) use session::ValidateDiagnosticBootstrap`：本次冻结范围在该文件的唯一增量，把 `runtime/session.rs` 的校验函数向 crate 内重导出，供 `diagnostic.rs` 调用；没有新增对外公开 API。校验正数 KV bootstrap version、SQL bootstrapped 状态及 SQL/KV 版本相等，不要求版本达到当前 320，也不写入版本。
 - 模块和重导出：`pub use session::{ConcreteSession, RuntimeDomain, ...}` 是主要公共门面；`planning::PlannedKVResult`、`typed_adapter_bridge::{OwnedKVSnapshotSource, SessionBoundAdapterOwner, TypedScanSpec}`、`statistics::*Guard` 也是外部可见契约。`dispatch`、`dml`、`query`、`transaction` 等私有导入供整个 runtime 模块树共享。
 - `runtime_instance_plan_cache` / `RUNTIME_INSTANCE_PLAN_CACHES`：以 `runtime_domain_id` 为键保存 `Weak<InstancePlanCache>`；`runtime/session.rs::ConcreteSession::new` 为同一 Domain 的会话取得共享实例缓存，最后一个强引用释放后可自然重建。
 - `runtime_read_only_mode_enabled`、`runtime_read_only_mode_error`：在最终写边界读取进程级 restricted/super read-only 变量，并保持 Go/TiDB 的 planner 错误类别。
@@ -113,9 +116,8 @@ DDL 协调变更应保持“同 schema 冲突串行、独立表可并行、任�
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/session/runtime.rs` 确认目标已索引且含 193 个符号；用 `node --file ... --offset/--limit` 阅读 1,819 行全文件；查询 `runtime_domain_id`、`begin_runtime_ddl_job`、`parse_with_sql_mode`、`RegisterRuntimeTopology`、`runtime_instance_plan_cache` 并检查 callers/callees。图确认本文件被 `pkg/server/runtime.rs`、多个 runtime 子模块和测试使用；callers 命令未返回完整上游文本，因此按技能要求用限定 `rg` 补齐上述直接调用边。
-- crate/模块证据：`pkg/session/Cargo.toml`、`pkg/session/lib.rs`；目标包不存在 `pkg/session/doc.go`。
-- 直接 Rust 运行时证据：`pkg/session/runtime.rs`、`pkg/session/runtime/session.rs`、`pkg/session/runtime/dispatch.rs`、`pkg/session/runtime/ddl.rs`、`pkg/session/runtime/recovery.rs`、`pkg/session/runtime/dxf_session.rs`、`pkg/session/runtime/transaction.rs`、`pkg/testkit/mockstore.rs`。
-- 独立 Rust 测试：`pkg/session/runtime_test.rs` 及其 `runtime_test/*` 子模块；另有 `pkg/session/runtime/ddl_test.rs`、`runtime/lifecycle_test.rs`、`runtime/scan_adapter_runtime_test.rs` 等与生产模块分离的专项测试。
-- Go 对照：`pkg/session/session.go`（`Execute`、`Parse`、`ExecuteStmt`、`PrepareStmt`、`ExecutePreparedStmt`、`CommitTxn`、`RollbackTxn`、`Close`、session 创建/bootstrap）、`pkg/session/sessionapi/session.go`、`pkg/session/session_test.go`。仓库没有同名 `runtime.go`，因此本文只陈述经调用链验证的行为对应关系。
-- 人工复核结论：该文件存在的核心原因是为具体 Rust 会话模块树提供公共门面、Domain 隔离状态和跨路径生命周期不变量；实际 SQL 语义仍由各 `runtime/*` 子模块执行。安全扩展应优先修改职责所属子模块，并同时维护独立测试、Domain 生命周期、并发资源释放和 Go 行为证据。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/runtime.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
+- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
+- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
+- 本文件 diff 仅增加 ValidateDiagnosticBootstrap 的 crate 内重导出；`dml_runtime_test.rs::start_diagnostic_preserves_persisted_bootstrap_versions` 验证旧版本诊断启动不推进版本。

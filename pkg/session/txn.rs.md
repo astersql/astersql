@@ -1,5 +1,7 @@
 # `pkg/session/txn.rs` 逻辑说明
 
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准。
+
 ## 文件定位
 
 `pkg/session/txn.rs` 属于 `astersql-session` crate；crate 根在 `pkg/session/lib.rs` 通过 `pub mod txn` 公开本模块，manifest 为 `pkg/session/Cargo.toml`。它提供一个会话侧事务兼容层：用 `LazyTxn` 包装抽象的 `TransactionBackend`，在底层事务尚未取得时保存 `TransactionFuture`，并集中处理语句级 staging、提交/回滚、悲观锁、公平加锁和事务摘要。
@@ -58,6 +60,8 @@
 
 ## 数据与状态
 
+`LazyTxn::inStmtBufCleanup` 默认 false，仅在非 pipelined 的 `CleanupStage` 同步调用期间置 true。进入前保存旧值，利用 `catch_unwind(AssertUnwindSafe(...))` 在正常返回或 panic 时恢复旧值；panic 恢复后继续 `resume_unwind`，并非吞掉取消或清理异常。panic 时后面的 Len/EntriesCount 更新和 stage 失效不会执行。无有效 stage 或 pipelined 路径不进入此标记区间。
+
 `LazyTxn` 的结构性不变量是：invalid 时后端和 future 均为空；pending 时仅 future 存在；valid 时后端有效且 future 为空。`Valid` 不仅检查后端存在及后端自身 `Valid()`，还明确要求 `txnFuture.is_none()`。`changeToPending`、`changePendingToValid` 和 `changeToInvalid` 是维护该不变量的主要入口。
 
 `stagingHandle` 以 `InvalidStagingHandle` 表示没有活跃 stage。`countHint` 仅在句柄有效时计算 `Len - initCnt`，并用 `saturating_sub` 防止后端条目数下降造成下溢。pipelined 后端不会调用 `Stage`，因此通常保持无效句柄，`countHint` 和 `KeysNeedToLock` 返回空结果；这与 `HasDirtyContent` 对 pipelined 后端直接返回 false 的约束一致。
@@ -76,7 +80,7 @@
 - `pkg/session/session.rs` 的 `session` 持有 `Box<dyn SessionTransaction>`；`doCommit`、`RollbackTxn`、`TxnInfo` 通过该 trait 工作。`LazyTxn` 的 trait 实现使其类型上可进入这条链，但当前仓库没有找到生产构造点。
 - `pkg/session/session_test.rs` 与 `pkg/session/test/tidb_test.rs` 直接调用 `KeyNeedToLock`；`pkg/session/txn_test.rs` 直接调用自动自增 mock 标志函数。
 
-下游调用全部落在 trait 后端：staging 方法负责写缓冲，`Commit`/`Rollback` 负责持久化终结，`LockKeys` 和公平加锁方法负责悲观事务锁流程，表缓存及 option 方法只是透明委托。RustCodeGraph 的文件节点报告 `pkg/session/txn.rs` 被 56 个索引文件使用，但精确 `callers`/`callees` 查询没有返回符号边；因此本文对具体 Rust 调用者以仓库文本搜索结果为准，不把文件级“used by”误写成函数级调用。
+下游调用全部落在 trait 后端：staging 方法负责写缓冲，`Commit`/`Rollback` 负责持久化终结，`LockKeys` 和公平加锁方法负责悲观事务锁流程，表缓存及 option 方法只是透明委托。具体 Rust 调用者应以冻结接线和方法体为准，不把工作区图的文件级依赖误写成冻结函数级调用。
 
 ## 错误处理与边界
 
@@ -97,6 +101,8 @@ future 的所有权在 `changePendingToValid` 中通过 `take()` 一次性消费
 `Rollback` 在释放后端前安装 no-op 内存钩子，避免后续回滚通知触及已失效的会话内存跟踪对象。锁状态恢复是同步的：`LockKeysFunc` 等待后端调用返回后恢复，而 Go 版本通过传给 `LockKeysFunc` 的回调在实际锁动作完成时恢复；若后端的 Rust `LockKeys` 语义未来变为异步，这个生命周期差异必须重新处理。
 
 ## 与 Go 版本的对应关系
+
+冻结增量对应 Go `txn.go::cleanupStmtBuf` 的保存旧标记、置 true、defer 恢复；Rust 用 catch/resume unwind 表达恢复。Go `session.go` 的内存 hook 检查该标记以完成清理记账后再传播取消。Rust 标记的存在不等于完整 hook 已接线：`test/txn/txn_test.rs::statement_cleanup_memory_reconciliation_ignores_pending_cancellation` 直接验证 tracker 的 cleanup API 更新 4096 字节且保留 kill signal，随后普通 Consume 仍触发取消，不能将其说成本类型标记的端到端测试。
 
 主要对照文件是 `pkg/session/txn.go`。Rust 保留了 `LazyTxn` 三态、语句 staging、digest 上限、提交/回滚、公平加锁、锁键筛选、future、脏内容判断和语句钩子的总体形状，但不是逐字段完整实现。
 
@@ -123,8 +129,8 @@ future 的所有权在 `changePendingToValid` 中通过 `take()` 一次性消费
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/session/txn.rs` 确认目标文件已索引；两次 `node --file pkg/session/txn.rs` 读取了 1-751 行及其 115 个符号，并报告文件级 56 个使用方。`query` 分别定位了 Rust/Go 的 `LazyTxn`、`KeyNeedToLock`、`StmtCommit`、`StmtRollback`、`HasDirtyContent`。精确 `callers`/`callees` 未返回结果，故未用其推断函数级边。
-- 已读生产源与装配：`pkg/session/txn.rs`、`pkg/session/lib.rs`、`pkg/session/session.rs`、`pkg/session/Cargo.toml`、`pkg/session/txninfo/txn_info.rs`。目标包不存在 `pkg/session/doc.go`。
-- 已读 Go 对照与 Go 测试：`pkg/session/txn.go`、`pkg/session/test/txn/txn_test.go`；另通过符号搜索定位 `pkg/session/test/tidb_test.go::TestKeysNeedLock`。
-- 已读 Rust 独立测试：`pkg/session/txn_test.rs`；并核对 `pkg/session/session_test.rs::canonical_key_lock_decision_covers_transactional_branches`、`pkg/session/test/tidb_test.rs::keys_need_lock_matches_go_branch_matrix`。这些测试分别覆盖 mock 标志的非消费读取和锁判定分支；当前未发现 `LazyTxn` 状态机、staging、提交回滚或公平加锁的直接 Rust 单元测试。
-- 仓库文本搜索确认了具体跨文件引用，并确认生产代码没有直接构造 `LazyTxn` 或调用本文件的语句钩子函数。本文未运行 Cargo，符合本任务“纯文档分析、不运行 Cargo”的限制。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/txn.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
+- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
+- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
+- 对照冻结 `txn.go::cleanupStmtBuf`、`session.go` 的内存 hook，以及 `test/txn/txn_test.rs::statement_cleanup_memory_reconciliation_ignores_pending_cancellation`；后者验证 cleanup tracker API，并非 LazyTxn 标记的端到端验证。

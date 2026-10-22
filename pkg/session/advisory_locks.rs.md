@@ -1,16 +1,18 @@
 # `pkg/session/advisory_locks.rs`
 
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准。
+
 ## 文件定位
 
 该文件位于 `astersql-session` crate。`pkg/session/Cargo.toml` 将 crate 根指定为 `pkg/session/lib.rs`，而 `lib.rs` 通过 `pub mod advisory_locks;` 公开本模块。模块只直接使用 crate 根的 `SessionError` 和 `SessionResult`，没有直接引入 Cargo 外部依赖，也没有条件编译分支。
 
-它实现的是一把“会话级命名咨询锁”的底层事务对象：用一条永不提交的悲观事务持有 `mysql.advisory_locks` 表中某个锁名对应的行锁，并用回滚释放。当前 Rust 仓库中，`advisoryLock`、`AdvisorySession` 和本文件的包级封装函数都没有文件外生产引用，`AdvisorySession` 也没有实现者；因此该模块目前是已导出但尚未接入 Rust 会话主链的移植实现，不能据此宣称 Rust SQL 会话已经通过本模块持锁。
+它实现的是一把“会话级命名咨询锁”的底层事务对象：用一条永不提交的悲观事务持有 `mysql.advisory_locks` 表中某个锁名对应的行锁，并用回滚释放。当前 Rust 仓库中，`advisoryLock`、`AdvisorySession` 和本文件的包级封装函数都没有文件外生产引用，生产 `AdvisorySession` 适配器未在本模块接线；因此该模块目前是已导出但尚未接入 Rust 会话主链的移植实现，不能据此宣称 Rust SQL 会话已经通过本模块持锁。
 
 ## 核心职责
 
 - `AdvisorySession` 把底层会话所需的四项能力抽象出来：执行无参数、整型参数、字符串参数的内部 SQL，以及记录关闭阶段的错误。
 - `advisoryLock` 保存单个锁的执行上下文、专用内部会话、一次性清理回调、引用计数和所有者会话标识。
-- `advisoryLock::GetLock` 依次设置等待超时、开启悲观事务、向系统表插入锁名；成功后让引用计数加一，插入失败时主动关闭资源。
+- `advisoryLock::GetLock` 依次设置等待超时、开启悲观事务、向系统表插入锁名；成功后让引用计数加一，设置超时、BEGIN 或插入失败时均主动关闭资源。
 - `advisoryLock::IsUsedLock` 用一秒锁等待执行同样的插入探测，并保证探测事务最终回滚。
 - `IncrReferences`、`DecrReferences`、`ReferenceCount` 和 `Close` 支持上层会话按 MySQL 的可重入命名锁语义管理同名锁。
 
@@ -26,15 +28,15 @@
 - `advisoryLock::Close`：尝试执行 `ROLLBACK`；失败只调用 `LogCloseError`，随后仍通过 `Option::take` 至多执行一次 `clean`。
 - `advisoryLock::GetLock`：真实获取路径。仅当三条内部 SQL全部成功时增加 `reference_count`。
 - `advisoryLock::IsUsedLock`：探测路径。返回插入尝试的原始结果，但无论设置超时、开启事务还是插入在哪一步结束，都会调用 `Close`。
-- 文件末尾六个同名自由函数：分别薄封装上述方法，为 Go 风格包级调用保留入口；当前没有文件外调用者。
+- 文件末尾六个同名自由函数：分别薄封装上述方法，为 Go 风格包级调用保留入口；冻结搜索中的文件外使用包括 `session_test.rs` 的失败清理测试；未证明生产接线。
 
 ## 执行流程
 
 获取锁的流程由 `advisoryLock::GetLock(lock_name, timeout)` 驱动：
 
 1. 把 `ctx.source` 改为 `InternalTxnOthers`。
-2. 通过 `ExecuteInternalWithInt` 执行 `SET innodb_lock_wait_timeout = %?`。失败直接返回，此分支不会在本文件内调用 `Close`。
-3. 执行 `BEGIN PESSIMISTIC`。失败同样直接返回，也不会在本文件内调用 `Close`。
+2. 通过 `ExecuteInternalWithInt` 执行 `SET innodb_lock_wait_timeout = %?`。失败先调用 `Close`，再返回原错误。
+3. 执行 `BEGIN PESSIMISTIC`。失败同样先调用 `Close`，再返回原错误。
 4. 通过字符串绑定执行 `INSERT INTO mysql.advisory_locks (lock_name) VALUES (%?)`。插入成功意味着悲观事务持有对应行锁；对象保留会话与事务，不提交。
 5. 插入失败时调用 `Close` 回滚并运行清理回调，然后原样返回插入错误；成功时把 `reference_count` 加一并返回 `Ok(())`。
 
@@ -60,15 +62,15 @@
 
 - Go 主链为表达式内置函数调用会话的 `GetAdvisoryLock` / `IsUsedAdvisoryLock` / `ReleaseAdvisoryLock` / `ReleaseAllAdvisoryLocks`，会话再创建或操作 `advisoryLock`（`pkg/session/session.go:2069-2146`）。会话关闭也会调用 `ReleaseAllAdvisoryLocks`（`pkg/session/session.go:3510-3522`）。
 - Rust 表达式层定义了另一个 `AdvisoryLockContext` 接口以及可选属性提供者（`pkg/expression/expropt/advisory_lock.rs`），但代码搜索未发现生产环境中的 session 实现，也未发现它调用本文件。
-- RustCodeGraph 对目标文件识别出 21 个符号；文件内调用边包括 `GetLock -> ExecuteInternalWithInt/ExecuteInternalWithString/ExecuteInternal/Close`、`IsUsedLock -> ExecuteInternal/ExecuteInternalWithString/Close`、`Close -> ExecuteInternal/LogCloseError`，以及六个自由函数到对应方法的转发。
-- RustCodeGraph 的同名符号结果会混入 Go 实现和其他 crate 的 `GetLock`，因此文件外关系又用全仓 Rust 精确引用搜索复核；除 `pkg/session/lib.rs` 的模块声明外没有目标类型或 trait 的生产引用。
+- 冻结方法体可确认的文件内调用边包括 `GetLock -> ExecuteInternalWithInt/ExecuteInternalWithString/ExecuteInternal/Close`、`IsUsedLock -> ExecuteInternal/ExecuteInternalWithString/Close`、`Close -> ExecuteInternal/LogCloseError`，以及六个自由函数到对应方法的转发。
+- 冻结搜索须区分 Go/Rust 同名符号，以及独立测试构造和生产调用；`session_test.rs` 的 trait 假实现不能作为生产适配器证据。
 
 下游只有 `AdvisorySession` 方法和 crate 根的 `SessionResult`/`SessionError`。SQL 字符串依赖数据库存在 `mysql.advisory_locks(lock_name)` 以及悲观事务、`innodb_lock_wait_timeout` 的语义，但这些设施不由本文件声明或创建。
 
 ## 错误处理与边界
 
 - 三种内部 SQL 执行错误都通过 `SessionResult` 原样传播；本文件不区分锁等待超时、死锁、系统表缺失或会话执行失败。
-- `GetLock` 只在插入失败时主动 `Close`。设置超时或 `BEGIN PESSIMISTIC` 失败时直接返回，是否需要清理专用会话取决于尚未接入的上层；这是扩展接线时必须验证的资源边界，不能假定 trait 实现会自动清理。
+- `GetLock` 在设置超时、`BEGIN PESSIMISTIC` 和插入的任一错误路径均主动 `Close`，然后返回原始错误；ROLLBACK 错误仅记录，清理回调仍执行。
 - `IsUsedLock` 会在所有闭包返回路径后调用 `Close`，但关闭失败只记录日志，不替换探测结果。因此可能出现“探测返回成功、回滚失败已记录”的组合。
 - `Close` 保证即使 `ROLLBACK` 失败仍执行 `clean`，避免日志错误阻断资源归还；反过来，`clean` 是无返回值回调，无法向上报告清理失败。
 - 引用计数没有防御性检查。调用者若在零时继续 `DecrReferences` 会得到负数；Debug 构建中整数溢出会 panic，Release 构建行为取决于编译溢出设置。正常不变量应由上层“仅对已持有锁释放”维护。
@@ -92,10 +94,10 @@
 - Go 的 `clean` 必定存在且每次 `Close` 都调用；Rust 使用 `Option<FnOnce>`，清理最多执行一次。
 - Go 用 `terror.Log(err)` 记录回滚错误；Rust 委托 `AdvisorySession::LogCloseError`。
 - Go 的 SQL 参数统一由可变参数 `ExecuteInternal` 传入；Rust 按无参数、整数、字符串拆成三个方法。
-- Go `GetLock` 与 Rust 一样只在插入失败时显式关闭；前两步失败不关闭。Rust 没有额外修正这一行为。
+- 冻结版本 Go 与 Rust 的 `GetLock` 均在 SET、BEGIN 和 INSERT 的失败路径关闭资源。
 - Go 上层 `session.go` 已实现按名称缓存、同名引用累加、所有者查询、单锁与全部释放、会话关闭清理和迁移限制；Rust 本文件及当前生产搜索没有这些接线。
 
-Go 集成测试 `pkg/expression/integration_test/integration_test.go` 覆盖参数数量、超时、非法名称、大小写、引用计数、批量释放及跨会话竞争。Rust 的 `pkg/expression/integration_test/integration_part2_aster_unit_test.rs::TestGetLock` 移植了这些 SQL 场景，但它不是本文件的独立单元测试；当前未找到直接构造 `advisoryLock` 并验证 SQL 顺序、失败清理或回滚日志的 Rust 测试。
+Go 集成测试 `pkg/expression/integration_test/integration_test.go` 覆盖参数数量、超时、非法名称、大小写、引用计数、批量释放及跨会话竞争。Rust 的 `pkg/expression/integration_test/integration_part2_aster_unit_test.rs::TestGetLock` 移植了这些 SQL 场景，但它不是本文件的独立单元测试；`pkg/session/session_test.rs::advisory_lock_setup_failure_releases_session` 直接构造 `advisoryLock`，注入 SET/BEGIN 失败并验证清理回调与末次 SQL 为 ROLLBACK；这不构成完整生产适配器或回滚日志分支的验证。
 
 ## 扩展指南
 
@@ -112,11 +114,8 @@ Go 集成测试 `pkg/expression/integration_test/integration_test.go` 覆盖参�
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件，目标文件已收录；`files --filter pkg/session/advisory_locks.rs` 报告该文件含 21 个符号。
-- RustCodeGraph `explore "pkg/session/advisory_locks.rs"`：读取了目标文件完整源码并得到文件内调用流；另用 `query advisoryLock --kind struct` 和 `query AdvisorySession --kind trait` 区分了 Go/Rust 同名类型。
-- 直接读取：`pkg/session/advisory_locks.rs`、`pkg/session/lib.rs`、`pkg/session/Cargo.toml`、`pkg/session/doc.go`。
-- Go 对照：`pkg/session/advisory_locks.go`；上层生命周期与调用者：`pkg/session/session.go:2069-2146`、`pkg/session/session.go:3510-3522`、`pkg/session/session.go:4988-4996`、`pkg/session/session.go:5749-5752`。
-- Rust 接口与测试：`pkg/expression/expropt/advisory_lock.rs`、`pkg/expression/builtin_miscellaneous_18_aster_unit_test.rs::advisory_locks_preserve_normalization_limits_and_error_mapping`、`pkg/expression/integration_test/integration_part2_aster_unit_test.rs::TestGetLock`。
-- Go 行为测试：`pkg/expression/integration_test/integration_test.go` 的 GET_LOCK/RELEASE_LOCK 测试段。
-- 全仓 Rust 精确引用搜索仅命中目标文件自身及 `pkg/session/lib.rs` 的模块声明；生产环境中的 `AdvisoryLockContext` 实现搜索也未发现 session 适配器。由此确认“模块已导出、事务对象尚未接入主链”，而不是把表达式测试误判为直接覆盖。
-- 本任务为纯文档分析，按计划不运行 Cargo；交付前使用任务给定命令验证目标文档恰有十一个固定二级标题，并人工复核未把未接线能力描述为已支持。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/advisory_locks.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
+- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
+- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
+- `session_test.rs::advisory_lock_setup_failure_releases_session` 注入 SET/BEGIN 失败，验证清理回调及 ROLLBACK；Go `advisory_locks.go::GetLock` 同样覆盖三阶段失败清理。生产 trait 适配接线未由该测试证明。

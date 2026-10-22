@@ -2,6 +2,8 @@
 
 源文件：[`upgrade_run.rs`](./upgrade_run.rs)。本文只描述当前 Rust 代码及其直接接线，不把 Go 已有而 Rust 尚未接入的完整升级链当成 Rust 现状。
 
+本文以冻结提交 `2c944fbcbfb2c904cc8cbddafe17954138bd8867` 为准。
+
 ## 文件定位
 
 本文件属于 `astersql-session` crate；`pkg/session/Cargo.toml` 以 `lib.rs` 为 crate 根，`lib.rs` 公开声明 `pub mod upgrade_run`。它位于已 bootstrap 集群再次启动时的版本迁移边界，包含三组职责：抽象完整升级循环的 `UpgradeRuntime`/`upgrade`，规划历史系统变量回填的 `BootstrapVariableUpgradeRuntime`/`upgrade_bootstrap_variables`，以及规划 v282 bind digest 刷新的数据类型与 `plan_binding_digest_refresh`。
@@ -11,7 +13,7 @@
 ## 核心职责
 
 - `upgrade` 按持久化 bootstrap 版本选择升级步骤，协调 MDL v99 前后钩子、版本写回、提交竞争后的二次确认。
-- `upgrade_bootstrap_variables` 把 v54、v59、v68、v80、v81、v97、v105、v135、v215、v255、v279、v281、v283、v284、v317 中与持久化变量有关的迁移压缩为可注入存储接口；各分支均以 `from < versionN` 为门槛，且“缺失时插入”分支保留用户已有值。
+- `upgrade_bootstrap_variables` 把 v54、v59、v68、v80、v81、v97、v105、v135、v215、v255、v279、v281、v283、v284、v317、v318、v319 中与持久化变量有关的迁移压缩为可注入存储接口；各分支均以 `from < versionN` 为门槛，且“缺失时插入”分支保留用户已有值。
 - `plan_binding_digest_refresh` 将 v282 的 bind 归一化、非法 digest 清理、重复项淘汰和有效项更新拆成无数据库副作用的确定性规划；实际 SQL 写入由 `runtime/session.rs::refresh_canonical_binding_digests` 完成。
 - `InitMDLVariableForUpgrade` 和 `printClusterState` 分别封装升级前 MDL 状态初始化、支持 HTTP 升级状态版本之后的集群状态检查。
 
@@ -31,6 +33,8 @@
 文件没有模块级常量、条件编译项或内部 `impl`；所有核心类型、trait 和函数均为 `pub`。`#![allow(dead_code, non_snake_case)]` 同时容纳当前未接线入口和 Go 风格符号名。
 
 ## 执行流程
+
+新增分支在 v317 之后依次执行：`from < version318` 时以 `insert_global_if_missing` 写入 `TiDBOptRangeMaxCount` 的默认字符串；`from < version319` 时先 `add_analyze_options_ndv_rate()`，成功后再缺失插入 `TiDBAnalyzeSampledNDVThreshold` 默认值。冻结测试固定 range 默认 1000、sampled NDV 阈值 0，保留已有 0/2000 或 12。canonical trait 实现执行 `ALTER TABLE mysql.analyze_options ADD COLUMN IF NOT EXISTS ndv_rate DOUBLE NOT NULL DEFAULT -1`，因此 trait 已含 DDL 能力，函数不再仅处理变量。任一操作失败立即返回，不自行回滚之前已完成的版本步骤。v320 restore registry schema 不在本函数中迁移。
 
 `upgrade` 的顺序是：先由 `InitMDLVariableForUpgrade` 读取 MDL 并设置进程内开关；再读取旧版本 `from` 和目标版本 `target`；若 `from >= target` 立即成功返回。否则按版本阈值检查集群升级状态；原 MDL 值为 NULL 时先运行 v99 before；遍历 `upgrade_functions()`，只执行 `item.version > from` 的步骤；必要时运行 v99 after；写入目标 bootstrap 版本并提交。若提交失败，休眠一秒后重读版本：其他节点已写到 `target` 或更高即视为成功，否则返回原提交错误。
 
@@ -52,7 +56,7 @@ crate 边界由 `pkg/session/Cargo.toml` 的 `name = "astersql-session"`、`[lib
 
 已核实的生产调用链为 `runtime/session.rs` 的 canonical bootstrap 流程 → `upgrade_canonical_domain` → `upgrade_bootstrap_variables`；旧版本小于 v282 时还会进入 `refresh_canonical_binding_digests` → `plan_binding_digest_refresh` → `astersql_bindinfo::NormalizeStmtForBinding`，随后由 session 执行对应 SQL。`bootstrap.rs::bootstrap` 定义的另一条抽象链是已 bootstrap → `BootstrapRuntime::upgrade`，但仓库搜索没有把该 trait 方法静态连到本文件 `upgrade` 的证据。
 
-RustCodeGraph 已索引 `upgrade_bootstrap_variables`、`plan_binding_digest_refresh`、`InitMDLVariableForUpgrade`、`printClusterState`；其宽泛 `explore` 未生成有效静态路径，精确 callers/callees 查询超时，因此上述生产调用边以本地符号搜索和相邻源码复核，不声称图中不存在动态或 trait 分派边。
+上述生产调用边以冻结 `runtime/session.rs` 方法体与符号搜索为依据；工作区图索引不代表该冻结提交，也不能以缺少静态边否定动态或 trait 分派。
 
 ## 错误处理与边界
 
@@ -80,6 +84,8 @@ v282 Rust 规划复现 Go 的 builtin 排除、重新归一化、非法 plan dig
 
 ## 扩展指南
 
+`BootstrapVariableUpgradeRuntime::add_analyze_options_ndv_rate` 是必需方法，扩展实现必须保留幂等增列和先列后变量的次序；独立测试 `range_count_threshold_upgrade_backfills_default_without_overwriting`、`sampled_ndv_upgrade_adds_column_and_defaults_upgraded_clusters_to_disabled` 覆盖 317/318/319 版本边界及保值行为。
+
 新增变量型版本迁移时，应先在 `upgrade_def.rs` 定义/确认版本常量，再在 `upgrade_bootstrap_variables` 添加严格的 `from < version` 分支，并选择与 Go 相同的“缺失插入、条件改写、强制 upsert 或事务迁移”接口；同步扩展独立的 `upgrade_backfill_test.rs`，不要把测试嵌入本源文件。若迁移超出当前 trait 能力，优先增加表达原子语义的方法，而不是把 SQL 字符串泄漏进规划函数。
 
 扩展完整升级循环时，应为 `UpgradeRuntime` 提供真实生产实现或明确接入 canonical bootstrap，并为 `upgrade` 增加早退、步骤筛选、v99 顺序、步骤错误、提交竞争成功/失败的独立测试；当前 `upgrade_run_test.rs` 只覆盖 MDL 初始化。步骤表必须保持升序，否则 `upgrade` 不会自行排序。
@@ -88,9 +94,8 @@ v282 Rust 规划复现 Go 的 builtin 排除、重新归一化、非法 plan dig
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含目标仓库；`node --file pkg/session/upgrade_run.rs` 读取了 1–293 行；`query` 唯一定位 `upgrade_bootstrap_variables` 和 `plan_binding_digest_refresh`，并同时定位 Rust/Go 的 `InitMDLVariableForUpgrade`、`printClusterState`。精确调用边命令超时，未将其作为否定证据。
-- Rust 源与接线：`pkg/session/upgrade_run.rs`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、`pkg/session/bootstrap.rs`、`pkg/session/upgrade_def.rs`。
-- crate 声明：`pkg/session/Cargo.toml`。
-- 独立 Rust 测试：`pkg/session/upgrade_run_test.rs` 验证 MDL 读取失败仍禁用及 true/false/NULL 映射；`pkg/session/upgrade_backfill_test.rs` 验证 v279/v281/v283/v284/v317 的门槛、幂等/保值和 v282 动作顺序、非法与重复处理。
-- Go 对照：`pkg/session/upgrade_run.go`、`pkg/session/upgrade_def.go`、`pkg/session/upgrade_backfill_test.go`、`pkg/session/test/bootstraptest/bootstrap_upgrade_test.go`。后者特别提供 v284 事务提交、未提交可见性与回滚证据。
-- 人工复核结论：本文件存在是为了把升级控制流和可测试的迁移规划从具体 session/SQL 中解耦；安全扩展必须维持版本门槛、幂等写语义、v282 输入排序与动作顺序，并在独立测试中覆盖。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；以 `git diff` 定位本文件增量，以 `git show 2c944fb:pkg/session/upgrade_run.rs` 和相邻接线/测试 blob 复核。未以工作区未提交 Rust 变化作为事实来源。
+- 接线与对照：冻结的 `pkg/session/Cargo.toml`、`pkg/session/lib.rs`、`pkg/session/runtime/session.rs`、同名 Go 文件；`pkg/session/doc.go` 不存在。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结提交；本次行为与调用边以冻结 blob 为准，不继承旧文档中的历史图统计或调用覆盖结论。
+- 纯文档 Ready 等价检查：目标八篇的 11 个二级章节、局部链接、尾随空白及 `git diff --check`。仓库 Ready skill 路径缺失，按计划用文档检查；不运行 Cargo、Go 测试或构建，测试证据为源码审阅。
+- `upgrade_backfill_test.rs` 中 range-count 与 sampled-NDV 用例验证默认值、保值与版本边界；`runtime/session.rs::CanonicalBootstrapVariableRuntime` 实现 ndv_rate 幂等 DDL；Go `upgrade_def.go::upgradeToVer318/319` 提供对应语义。v320 与完整升级循环不由这两个变量测试证明。
