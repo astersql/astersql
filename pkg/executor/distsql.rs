@@ -198,6 +198,16 @@ pub fn closeAll(objects: &mut [&mut dyn Closeable]) -> Result<(), DistSqlError> 
     first.map_or(Ok(()), Err)
 }
 
+/// Map each handle to all positions in the original index scan. Build this
+/// before deduplicating table requests so MVI validation cannot lose entries.
+pub fn indexHandleOffsets<H: Ord + Clone>(handles: &[H]) -> BTreeMap<H, Vec<usize>> {
+    let mut offsets = BTreeMap::<H, Vec<usize>>::new();
+    for (offset, handle) in handles.iter().enumerate() {
+        offsets.entry(handle.clone()).or_default().push(offset);
+    }
+    offsets
+}
+
 #[derive(Clone, Debug, Default)]
 /// IndexLookUp 流水线中的一个回表任务（handles → 表行）。
 pub struct lookupTableTask {
@@ -205,6 +215,8 @@ pub struct lookupTableTask {
     pub handles: Vec<Handle>,
     pub rows: Vec<Row>,
     pub index_rows: Vec<Row>,
+    /// Original index-row offsets; ADMIN CHECK retains every MVI occurrence.
+    pub index_order: BTreeMap<Handle, Vec<usize>>,
     pub row_idx: Vec<usize>,
     pub error: Option<DistSqlError>,
     pub build_done_time: Option<Instant>,
@@ -566,6 +578,7 @@ impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
         let cancelled = Arc::clone(&self.cancelled);
         let stats = Arc::clone(&self.stats);
         let adaptive_limit_controller = self.adaptive_limit_controller.clone();
+        let check_index_value = self.check_index_value.is_some();
         let index_error_tx = result_tx.clone();
         // index worker：扫索引抽 handle，按批 dispatch 到 table_tx。
         self.index_join = Some(thread::spawn(move || {
@@ -578,6 +591,7 @@ impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
                 common_handle: common,
                 partition_mode: partition,
                 keep_order: keep,
+                check_index_value,
                 pushed_limit: limit,
                 batch_size: init_batch_size.max(1),
                 max_batch_size: 1024,
@@ -899,6 +913,7 @@ pub struct indexWorker<B: DistSqlBackend> {
     pub common_handle: bool,
     pub partition_mode: bool,
     pub keep_order: bool,
+    pub check_index_value: bool,
     pub pushed_limit: Option<Limit>,
     pub batch_size: usize,
     pub max_batch_size: usize,
@@ -1094,11 +1109,39 @@ impl<B: DistSqlBackend> indexWorker<B> {
         handles: Vec<Handle>,
         index_rows: Vec<Row>,
     ) -> lookupTableTask {
-        let row_idx = (0..handles.len()).collect();
+        let mut index_order = if self.check_index_value {
+            indexHandleOffsets(&handles)
+        } else {
+            BTreeMap::new()
+        };
+        let mut handles = handles;
+        if self.check_index_value {
+            // Stable deduplication after collecting original offsets. Keep-order
+            // still uses the first original offset, never the compacted index.
+            let mut seen = BTreeSet::new();
+            handles.retain(|handle| seen.insert(handle.clone()));
+        } else if self.keep_order {
+            // Normal lookups store one original position, as in Go indexOrder.
+            for (offset, handle) in handles.iter().enumerate() {
+                index_order.insert(handle.clone(), vec![offset]);
+            }
+        }
+        let row_idx = handles
+            .iter()
+            .enumerate()
+            .map(|(offset, handle)| {
+                index_order
+                    .get(handle)
+                    .and_then(|offsets| offsets.first())
+                    .copied()
+                    .unwrap_or(offset)
+            })
+            .collect();
         lookupTableTask {
             id: task_id,
             handles,
             index_rows,
+            index_order,
             row_idx,
             ..Default::default()
         }
@@ -1202,9 +1245,9 @@ pub struct tableWorker<B: DistSqlBackend> {
     pub stats: Arc<Mutex<IndexLookUpRunTimeStats>>,
 }
 impl<B: DistSqlBackend> tableWorker<B> {
-    /// 校验索引行与表行数量/checksum；不一致时 report 缺失 handles。
+    /// 按 handle 校验全部原始索引行；不一致时 report 缺失 handles。
     pub fn compareData(&self, task: &lookupTableTask, rows: &[Row]) -> Result<(), DistSqlError> {
-        if task.index_rows.len() != rows.len() {
+        if task.handles.len() != rows.len() {
             let mut obtained = rows
                 .iter()
                 .map(|row| {
@@ -1223,14 +1266,45 @@ impl<B: DistSqlBackend> tableWorker<B> {
             });
         }
         if self.check_index_value {
-            for (index, row) in rows.iter().enumerate() {
-                if self.backend.checksum(row)? != self.backend.checksum(&task.index_rows[index])? {
-                    return Err(DistSqlError::Inconsistent {
-                        expected: task.handles.len(),
-                        obtained: rows.len(),
-                        missing: Vec::new(),
-                    });
+            let mut remaining = task.index_order.clone();
+            let mut checked_offsets = BTreeSet::new();
+            for row in rows {
+                let handle = self
+                    .backend
+                    .row_handle(row, &self.handle_idx, self.common_handle)?;
+                let offsets = remaining.remove(&handle).ok_or_else(|| {
+                    DistSqlError::InvalidPlan(
+                        "table row has no unique index handle mapping".to_owned(),
+                    )
+                })?;
+                if offsets.is_empty() {
+                    return Err(DistSqlError::InvalidPlan(
+                        "empty index-row offsets".to_owned(),
+                    ));
                 }
+                let checksum = self.backend.checksum(row)?;
+                for offset in offsets {
+                    let index_row = task.index_rows.get(offset).ok_or_else(|| {
+                        DistSqlError::InvalidPlan("index-row offset is out of bounds".to_owned())
+                    })?;
+                    if !checked_offsets.insert(offset) {
+                        return Err(DistSqlError::InvalidPlan(
+                            "repeated index-row offset".to_owned(),
+                        ));
+                    }
+                    if checksum != self.backend.checksum(index_row)? {
+                        return Err(DistSqlError::Inconsistent {
+                            expected: task.handles.len(),
+                            obtained: rows.len(),
+                            missing: Vec::new(),
+                        });
+                    }
+                }
+            }
+            if !remaining.is_empty() || checked_offsets.len() != task.index_rows.len() {
+                return Err(DistSqlError::InvalidPlan(
+                    "unmapped index rows or table handles".to_owned(),
+                ));
             }
         }
         Ok(())
@@ -1238,9 +1312,16 @@ impl<B: DistSqlBackend> tableWorker<B> {
     /// 回表、可选校验、keep_order 排序，并检查弱一致下的行数差异。
     pub fn executeTask(&mut self, task: &mut lookupTableTask) -> Result<(), DistSqlError> {
         let started = Instant::now();
+        let mut request_handles = task.handles.clone();
+        request_handles.sort();
+        let mut request = self.request.clone();
+        request.ranges = self.backend.table_ranges(self.table_id, &request_handles)?;
+        request
+            .ranges
+            .sort_by(|left, right| left.start.cmp(&right.start));
         let mut rows = self
             .backend
-            .table_scan(self.table_id, &task.handles, &self.request)?;
+            .table_scan(self.table_id, &request_handles, &request)?;
         if self.check_index_value {
             self.compareData(task, &rows)?;
         }
@@ -1248,7 +1329,13 @@ impl<B: DistSqlBackend> tableWorker<B> {
         if self.keep_order {
             let mut order = BTreeMap::new();
             for (index, handle) in task.handles.iter().enumerate() {
-                order.entry(handle.clone()).or_insert(index);
+                let offset = task
+                    .index_order
+                    .get(handle)
+                    .and_then(|offsets| offsets.first())
+                    .copied()
+                    .unwrap_or(index);
+                order.entry(handle.clone()).or_insert(offset);
             }
             rows.sort_by_key(|row| {
                 self.backend

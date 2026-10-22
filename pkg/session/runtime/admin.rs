@@ -66,11 +66,186 @@ impl ConcreteSession {
                     "[executor:8273]Validation of partial indexes requires tidb_enable_fast_table_check=ON",
                 ));
             }
-        }
-        if statement.tables.is_empty() {
-            return Ok(());
+            for index in info.Indices.iter().filter(|index| {
+                index.MVIndex
+                    && (statement.statement_type == ast::AdminStmtType::CheckTable
+                        || index.Name.L.eq_ignore_ascii_case(&statement.index))
+            }) {
+                self.check_multi_valued_index(&info, index)?;
+            }
         }
         Ok(())
+    }
+
+    /// Check each physical MVI entry against the row at the same snapshot.
+    /// The offsets refer to the original index scan, before deduplicating the
+    /// record keys used for table reads.
+    fn check_multi_valued_index(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        index: &astersql_meta_model::IndexInfo,
+    ) -> SessionResult<()> {
+        use astersql_executor::distsql::indexHandleOffsets;
+        use astersql_util_logutil_consistency::{ConsistencyError, ConsistencyErrorKind};
+        let flags = self.dml_type_flags();
+        let error = |handle: &str, reason: &str, with_column: bool| {
+            SessionError::new(
+                ConsistencyError {
+                    Kind: if with_column {
+                        ConsistencyErrorKind::AdminCheckWithColumnInfo
+                    } else {
+                        ConsistencyErrorKind::AdminCheck
+                    },
+                    Code: if with_column { 8134 } else { 8223 },
+                    Args: if with_column {
+                        vec![
+                            table.Name.O.clone(),
+                            index.Name.O.clone(),
+                            index
+                                .Columns
+                                .first()
+                                .map(|column| column.Name.O.clone())
+                                .unwrap_or_default(),
+                            handle.to_owned(),
+                            "index entry".to_owned(),
+                            "table values".to_owned(),
+                            reason.to_owned(),
+                        ]
+                    } else {
+                        vec![
+                            table.Name.O.clone(),
+                            index.Name.O.clone(),
+                            handle.to_owned(),
+                            "index entry".to_owned(),
+                            reason.to_owned(),
+                        ]
+                    },
+                    RedactMode: self.state.borrow().redact_log.clone(),
+                }
+                .to_string(),
+            )
+        };
+        self.domain.storage().with_storage(|store| {
+            let state = self.state.borrow();
+            let read_ts = state
+                .snapshot_read_ts
+                .or(state.transaction_stale_read_ts)
+                .or(state.session_stale_read_ts);
+            drop(state);
+            let version = match read_ts {
+                Some(ts) => kv::NewVersion(ts),
+                None => store
+                    .CurrentVersion("global")
+                    .map_err(|e| session_error("get ADMIN CHECK snapshot", e))?,
+            };
+            let snapshot = store.GetSnapshot(version);
+            let physical_ids = if index.Global {
+                vec![table.ID]
+            } else {
+                table
+                    .GetPartitionInfo()
+                    .filter(|p| !p.Definitions.is_empty())
+                    .map(|p| p.Definitions.iter().map(|d| d.ID).collect())
+                    .unwrap_or_else(|| vec![table.ID])
+            };
+            let mut index_rows = Vec::new();
+            let mut record_keys = Vec::new();
+            for physical_id in physical_ids {
+                let (start, end) =
+                    astersql_tablecodec::GetTableIndexKeyRange(physical_id, index.ID);
+                let mut iterator = snapshot
+                    .Iter(kv::Key(start), Some(kv::Key(end)))
+                    .map_err(|e| session_error("scan ADMIN CHECK index", e))?;
+                let result = (|| {
+                    while iterator.Valid() {
+                        let key = iterator.Key();
+                        let value = iterator.Value();
+                        let handle = astersql_tablecodec::DecodeIndexHandle(
+                            key.0.clone(),
+                            value.clone(),
+                            index.Columns.len(),
+                        )
+                        .map_err(|e| session_error("decode ADMIN CHECK handle", e))?
+                        .ok_or_else(|| error("", "index entry has no handle", false))?;
+                        let (id, handle) = if let Some(partition) =
+                            handle.as_any().downcast_ref::<kv::PartitionHandle>()
+                        {
+                            (partition.PartitionID, partition.Handle.Copy())
+                        } else {
+                            (physical_id, handle)
+                        };
+                        record_keys.push(astersql_tablecodec::EncodeRowKeyWithHandle(id, handle).0);
+                        index_rows.push((key.0, value));
+                        iterator
+                            .Next()
+                            .map_err(|e| session_error("advance ADMIN CHECK index", e))?;
+                    }
+                    Ok::<_, SessionError>(())
+                })();
+                iterator.Close();
+                result?;
+            }
+            let fields = table
+                .Columns
+                .iter()
+                .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+                .collect::<HashMap<_, _>>();
+            // Sorted, unique record keys produce one point lookup per handle.
+            // Compare every original offset, including entries after the last
+            // valid MVI element; never stop after the first matching element.
+            for (record_key, offsets) in indexHandleOffsets(&record_keys) {
+                let (_, handle) = astersql_tablecodec::DecodeRecordKey(
+                    astersql_tablecodec::kv::Key(record_key.clone()),
+                )
+                .map_err(|e| session_error("decode ADMIN CHECK record key", e))?;
+                let value = snapshot
+                    .Get(&kv::Context::default(), kv::Key(record_key), &[])
+                    .map_err(|e| {
+                        if kv::IsErrNotFound(&e) {
+                            error(&handle.String(), "record is missing", false)
+                        } else {
+                            session_error("read ADMIN CHECK record", e)
+                        }
+                    })?;
+                let (_, row) = super::relational_scan::decode_relational_row_value(
+                    table,
+                    &fields,
+                    handle.as_ref(),
+                    &value.Value,
+                )?;
+                let expected = relational_index_value_rows(table, index, &row, flags)?
+                    .into_iter()
+                    .map(|values| {
+                        encode_relational_index_value_row(table, index, &row, flags, values)
+                            .map(|(key, value)| (key.0, value))
+                    })
+                    .collect::<SessionResult<BTreeMap<_, _>>>()?;
+                for offset in offsets {
+                    let (key, value) = &index_rows[offset];
+                    if expected.get(key) != Some(value) {
+                        return Err(error(&handle.String(), "inconsistent index value", true));
+                    }
+                }
+            }
+            // The reverse check catches missing index entries and rows with no
+            // surviving MVI entries. Both directions use the same snapshot.
+            for (_, row) in super::relational_scan::scan_relational_rows(snapshot.as_ref(), table)?
+            {
+                for values in relational_index_value_rows(table, index, &row, flags)? {
+                    let (key, expected) =
+                        encode_relational_index_value_row(table, index, &row, flags, values)?;
+                    match snapshot.Get(&kv::Context::default(), key, &[]) {
+                        Ok(value) if value.Value == expected => {}
+                        Ok(_) => return Err(error("", "inconsistent index value", true)),
+                        Err(e) if kv::IsErrNotFound(&e) => {
+                            return Err(error("", "index entry is missing", false));
+                        }
+                        Err(e) => return Err(session_error("read ADMIN CHECK index", e)),
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Execute ADMIN RECOVER/CLEANUP INDEX over the relational KV path.

@@ -338,3 +338,117 @@ fn partial_multi_valued_indexes_reject_admin_checks() {
         }
     }
 }
+
+/// Keep the valid MVI rows in place and insert corruption for the same handle
+/// between valid values and after its final value, as in Go commit 434d3b2.
+#[test]
+fn multi_valued_index_admin_checks_all_entries_in_real_kv() {
+    use astersql_kv as kv;
+    use astersql_tablecodec as codec;
+    let _restore = RestoreOnDrop::new(astersql_config::restore_func());
+    astersql_config::update_global(|conf| conf.experimental.allows_expression_index = true);
+    let (store, domain) = CreateMockStoreAndDomain();
+    let mut tk = NewTestKit(store);
+    tk.MustExec("use test", vec![]);
+    tk.MustExec(
+        "create table mvi_all(pk int primary key, a json, index idx((cast(a as signed array))))",
+        vec![],
+    );
+    tk.MustExec("insert into mvi_all values (0, '[0,2,4]'), (1, '[1,2,3]'), (2, '[2,3,4]'), (3, '[3,4,5]'), (4, '[4,5,6]')", vec![]);
+    tk.MustExec("set tidb_index_lookup_size = 100", vec![]);
+    tk.MustExec("set tidb_max_chunk_size = 100", vec![]);
+    let (_, table) = domain.stats_table("test", "mvi_all").unwrap();
+    let mut index = table.Indices[0].clone();
+    index.MVIndex = false;
+    tk.MustExec("admin check table mvi_all", vec![]);
+    for value in [1, 5] {
+        let (key, _) = codec::GenIndexKeyBorrowed(
+            codec::codec::NewEncoder(false),
+            Some(codec::time::UTC),
+            &table,
+            &index,
+            table.ID,
+            vec![astersql_types::datum::NewIntDatum(value)],
+            Some(&codec::kv::IntHandle(0)),
+            None,
+        )
+        .unwrap();
+        let key = kv::Key(key);
+        let mut txn = domain
+            .storage()
+            .with_storage(|store| store.Begin(&[]))
+            .unwrap();
+        txn.Set(key.clone(), vec![b'0']).unwrap();
+        txn.Commit(&kv::Context::default()).unwrap();
+        for sql in ["admin check table mvi_all", "admin check index mvi_all idx"] {
+            let error = tk.ExecToErr(sql).to_string();
+            assert!(
+                error.contains("[executor:8134]") && error.contains("inconsisten"),
+                "{error}"
+            );
+        }
+        let mut txn = domain
+            .storage()
+            .with_storage(|store| store.Begin(&[]))
+            .unwrap();
+        txn.Delete(key).unwrap();
+        txn.Commit(&kv::Context::default()).unwrap();
+        tk.MustExec("admin check table mvi_all", vec![]);
+    }
+    tk.MustExec("set tidb_index_lookup_size = 3", vec![]);
+    tk.MustExec("set tidb_max_chunk_size = 3", vec![]);
+    // Removing a valid MVI entry must fail too; RECOVER restores the same
+    // concrete index KV used by the checker.
+    let (key, _) = codec::GenIndexKeyBorrowed(
+        codec::codec::NewEncoder(false),
+        Some(codec::time::UTC),
+        &table,
+        &index,
+        table.ID,
+        vec![astersql_types::datum::NewIntDatum(0)],
+        Some(&codec::kv::IntHandle(0)),
+        None,
+    )
+    .unwrap();
+    let mut txn = domain
+        .storage()
+        .with_storage(|store| store.Begin(&[]))
+        .unwrap();
+    txn.Delete(kv::Key(key)).unwrap();
+    txn.Commit(&kv::Context::default()).unwrap();
+    assert!(
+        tk.ExecToErr("admin check table mvi_all")
+            .to_string()
+            .contains("[admin:8223]")
+    );
+    tk.MustQuery("admin recover index mvi_all idx", vec![])
+        .Check(Rows(&["1 5"]));
+    tk.MustExec("admin check table mvi_all", vec![]);
+    // Go also inserts value 9 for absent handle 9. Check and then clean this
+    // dangling index entry using the same real storage path.
+    let (key, _) = codec::GenIndexKeyBorrowed(
+        codec::codec::NewEncoder(false),
+        Some(codec::time::UTC),
+        &table,
+        &index,
+        table.ID,
+        vec![astersql_types::datum::NewIntDatum(9)],
+        Some(&codec::kv::IntHandle(9)),
+        None,
+    )
+    .unwrap();
+    let mut txn = domain
+        .storage()
+        .with_storage(|store| store.Begin(&[]))
+        .unwrap();
+    txn.Set(kv::Key(key), vec![b'0']).unwrap();
+    txn.Commit(&kv::Context::default()).unwrap();
+    assert!(
+        tk.ExecToErr("admin check table mvi_all")
+            .to_string()
+            .contains("[admin:8223]")
+    );
+    tk.MustQuery("admin cleanup index mvi_all idx", vec![])
+        .Check(Rows(&["1"]));
+    tk.MustExec("admin check table mvi_all", vec![]);
+}
