@@ -91,6 +91,119 @@ PostgreSQL **18.6** 是来源计划指定的目标基线；本轮未核实该补
 
 证据缺失、版本不明、零测试或缺少适用断言的条目，相关当前结论统一标“未验证”，注明缺口；历史记录继续保留其历史身份。新证据只能支撑明确覆盖的契约，经核对来源、运行记录和断言后再更新对应当前证据，不得自动升级支持状态，也不得覆盖既有记录的限制。本轮只建立这些规则，不变更已有支持结论。
 
+#### 差分用例清单
+
+清单使用 JSON 对象描述单个用例，以 `case_id` 关联能力矩阵中的 `capability_id`。`case_id` 在整个清单内唯一，`capability_id` 引用唯一的能力契约，允许多个用例覆盖同一能力；两者均不随文件排列、执行顺序或重试变化。双方言不同契约分别建用例，通过 `related_case_ids` 关联。以下沿用矩阵的说明性能力 ID，不登记新的支持能力。
+
+本轮选择文档内 JSON 示例：仅用 Markdown 表格无法直接作为结构化运行输入；独立 JSON Schema 会引入额外文件、维护和实现约束，因此留待运行器任务决定。这里仅定义格式契约，没有新增清单文件、校验器、执行器或 CI。
+
+| 字段 | 含义与约束 |
+| --- | --- |
+| `format_version`、`case_id`、`capability_id`、`related_case_ids` | 格式版本与稳定关联；关联列表可为空，表示没有关联用例。格式演进不能重用旧 ID 表示另一契约。 |
+| `dialects.pg`、`dialects.mysql` | 两个方言分别声明适用状态和原因。适用项各自记录 `sql`、`setup_sql`（准备）、`cleanup_sql`（清理）、`parameters`、`session`、`expected`。SQL 可不同，但须说明映射和覆盖边界；不能直接把 PG SQL 发送给 MySQL 并忽略错误。 |
+| `parameters` | 按绑定位置记录参数值、逻辑类型、方言类型及文本/二进制格式；PG OID、MySQL 类型标志分别记录。参数值使用下述带标签的值表示。无参数用空数组；需要但尚未知的类型填“待定义”，不能执行时猜测。 |
+| `session`、`setup_sql`、`cleanup_sql` | 分方言明确编码、时区、会话参数、连接/协议模式、初始数据和事务条件；准备/清理数组按顺序执行，空数组表示无需 SQL 操作。清理失败、准备失败及会话不满足须进入运行记录，不能算有效通过。 |
+| `expected` | 目标依据、成功或预期拒绝、结果值及顺序、类型与元数据、SQLSTATE、会话/事务状态与副作用断言。`output`、`sqlstate`、`state_and_effects` 分别承载结果、错误及状态/副作用断言；`output` 沿用观测结果的行、列及顺序结构。目标未细化时标“待定义”；真实参考端的观测结果独立存放，禁止用目标值填充观测值。 |
+| `comparison` | 每方言 AsterSQL 与对应真实参考端分别比较；规定行顺序、重复行、列顺序和规范化。无 ORDER BY 时若契约不要求行序可按多重集合比较，仍保留重复行及原始输出；列序和类型不得顺便忽略。每个排除项需说明理由和限制，未知规则标“待定义”。 |
+| `observations` | 分别保存 `aster_pg`、`reference_pg`、`aster_mysql`、`reference_mysql` 的实际版本、客户端信息、输出、SQLSTATE、状态及副作用和证据引用。每个必需观测缺失时显式标“未采集”，不允许以空数组冒充零行成功。 |
+| `evidence_refs`、`verdict` | 引用上一节证据记录的稳定 ID 或可定位产物（附提交 SHA），并能追溯日期、环境、完整命令及退出码、有效/跳过/失败数量、原始输出和限制。`verdict` 仅在全部适用断言及证据齐全后可记通过；否则记“未验证”或实际失败，缺证不能通过。 |
+
+输入及采集后的每个结果单元用 `{"kind":"value","value":"1"}` 表示非 NULL 值，用 `{"kind":"sql_null"}` 表示 SQL NULL；具体类型由参数或结果列元数据提供。字符串 `"NULL"`、空字符串、零行和 SQL NULL 必须区分。JSON 的裸 `null` 不用作缺证或 SQL NULL。采集前整个字段用 `{"status":"未采集"}`，目标字段未细化用 `{"status":"待定义"}`，不适用用 `{"status":"不适用","reason":"具体原因"}`；这些状态均不等于空的真实结果。
+
+`observations` 中每个采集完成的对象至少包含 `status`、`version`（实际服务端精确版本及 AsterSQL 构建/提交）、`client`（客户端/驱动及依赖版本、协议模式）、`output`、`sqlstate`、`state_and_effects`、`evidence_refs`。`output` 内含 `rows`（行数组，单元按上述标签编码）、`columns`（按列序记录列名、类型、可空性及 PG OID/MySQL 类型标志等元数据）和 `row_order`；命令无结果集需明确说明原因。成功的 `sqlstate` 记“不适用（成功）”，错误时保留实际码和原始错误输出。实际状态、副作用和客户端信息同样不得由预期推断。版本字段中另记录计划基线及参考端实际版本，二者不同需说明对结论的限制；不能把握手报告版本当作构建版本。
+
+下面是唯一的格式示例，SQL 和参数只是待执行输入。PG/MySQL SQL 分别使用自身的参数占位符；示例限定正整数输入，尚不覆盖 NULL 输入或其他重载。两个方言均需采集 AsterSQL 与真实参考端，所有真实对照值、类型、SQLSTATE 和版本尚未采集，目标断言也须在后续实施前细化，不构成有效用例或支持证据。PostgreSQL 18.6 仅沿用来源计划的目标，本轮未核实其发布状态。
+
+```json
+{
+  "format_version": "1",
+  "case_id": "example.abs-pos.bound-int",
+  "capability_id": "示例 ABS-POS",
+  "related_case_ids": [],
+  "mapping": "分别绑定正整数 1；仅覆盖此输入，不推广到其他重载",
+  "dialects": {
+    "pg": {
+      "status": "适用",
+      "sql": "SELECT abs($1) AS v",
+      "setup_sql": [],
+      "cleanup_sql": [],
+      "parameters": [
+        {
+          "position": 1,
+          "logical_type": "有符号 32 位整数",
+          "dialect_type": "int4",
+          "protocol_type": {"status": "待定义"},
+          "format": "text",
+          "value": {"kind": "value", "value": "1"}
+        }
+      ],
+      "session": {
+        "encoding": "UTF-8",
+        "timezone": "UTC",
+        "protocol": "扩展查询",
+        "initial_state": "独立空闲会话，无需表数据",
+        "settings": {"status": "待定义"}
+      },
+      "expected": {
+        "outcome": "成功",
+        "basis": "能力矩阵示例 ABS-POS；官方行为来源待补齐",
+        "output": {"status": "待定义"},
+        "sqlstate": {"status": "待定义"},
+        "state_and_effects": {"status": "待定义"}
+      }
+    },
+    "mysql": {
+      "status": "适用",
+      "sql": "SELECT abs(?) AS v",
+      "setup_sql": [],
+      "cleanup_sql": [],
+      "parameters": [
+        {
+          "position": 1,
+          "logical_type": "有符号 32 位整数",
+          "dialect_type": {"status": "待定义"},
+          "protocol_type": {"status": "待定义"},
+          "format": "binary",
+          "value": {"kind": "value", "value": "1"}
+        }
+      ],
+      "session": {
+        "encoding": "UTF-8",
+        "timezone": "UTC",
+        "protocol": "预处理语句",
+        "initial_state": "独立空闲会话，无需表数据",
+        "settings": {"status": "待定义"}
+      },
+      "expected": {
+        "outcome": "成功",
+        "basis": "能力矩阵示例 ABS-POS；参考端行为依据待补齐",
+        "output": {"status": "待定义"},
+        "sqlstate": {"status": "待定义"},
+        "state_and_effects": {"status": "待定义"}
+      }
+    }
+  },
+  "comparison": {
+    "pairs": [["aster_pg", "reference_pg"], ["aster_mysql", "reference_mysql"]],
+    "row_order": "按返回顺序逐行比较",
+    "column_order": "按返回顺序逐列比较",
+    "normalization": [],
+    "excluded_assertions": []
+  },
+  "observations": {
+    "aster_pg": {"status": "未采集"},
+    "reference_pg": {"status": "未采集"},
+    "aster_mysql": {"status": "未采集"},
+    "reference_mysql": {"status": "未采集"}
+  },
+  "planned_reference_versions": {"pg": "18.6（来源计划目标，未核实）", "mysql": "待定义"},
+  "evidence_refs": {"status": "未采集"},
+  "verdict": {"status": "未验证", "reason": "目标及参数协议类型待细化，尚无任何真实对照记录"}
+}
+```
+
+PG 专属或 MySQL 专属场景中，另一方言对象用 `status: 不适用` 并记录原因；这是覆盖边界，不能计为该方言通过。明确不支持项使用 `expected.outcome: 预期拒绝`，记录拒绝目标 SQLSTATE、状态恢复及无副作用要求；目标码未知时标“待定义”。若参考端允许操作，保留其真实成功结果，并将比较方式明确为 AsterSQL 的拒绝契约验收，不能强求成功与拒绝相等，也不能忽略任一错误。普通成功用例遇到“不支持”错误是失败或阻塞证据，不能临时转成预期拒绝使其通过。类型、元数据或其他适用断言未采集时仍为未验证，只有完整符合拒绝契约的当前证据才能支持“拒绝边界已验收”，不代表功能已支持。
+
 ### 范围外
 
 本节供后续任务说明本工作流的交付边界；核心非目标统一以“范围与非目标”小节为准，避免重复维护不同范围。
