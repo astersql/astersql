@@ -67,3 +67,63 @@ fn decimal_index_cursor_preserves_declared_precision_and_scale() {
         }
     }
 }
+
+#[test]
+fn reorg_global_index_copy_mutations_stop_at_delete_only() {
+    use astersql_meta_model::{
+        ColumnInfo, IndexColumn, IndexInfo, PartitionInfo, SchemaState as S, TableInfo,
+    };
+    let mut column = ColumnInfo::default();
+    column.ID = 1;
+    column.Name = astersql_parser_ast::NewCIStr("b");
+    column.SetType(astersql_parser_mysql::r#type::TypeLonglong);
+    let row = std::collections::HashMap::from([
+        ("b".to_owned(), Some("10".to_owned())),
+        ("_tidb_rowid".to_owned(), Some("1".to_owned())),
+    ]);
+    for unique in [false, true] {
+        for version in [0, astersql_meta_model::GlobalIndexVersionV1] {
+            for state in [S::WriteOnly, S::DeleteOnly] {
+                let mut pi = PartitionInfo::default();
+                pi.DDLChangedIndex.insert(7, true);
+                let table = TableInfo {
+                    ID: 100,
+                    Columns: vec![column.clone()],
+                    Partition: Some(pi),
+                    Indices: vec![IndexInfo {
+                        ID: 7,
+                        Name: astersql_parser_ast::NewCIStr("same_name"),
+                        Global: true,
+                        Unique: unique,
+                        GlobalIndexVersion: version,
+                        State: state,
+                        Columns: vec![IndexColumn {
+                            Name: column.Name.clone(),
+                            Length: -1,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                let inserted = super::row_codec::relational_index_mutations(
+                    &table,
+                    None,
+                    Some(&row),
+                    astersql_types::Flags::default(),
+                )
+                .unwrap();
+                assert_eq!(inserted.len(), usize::from(state == S::WriteOnly));
+                let deleted = super::row_codec::relational_index_mutations(
+                    &table,
+                    Some(&row),
+                    None,
+                    astersql_types::Flags::default(),
+                )
+                .unwrap();
+                assert_eq!(deleted.len(), 1);
+                assert!(deleted[0].1.is_none());
+            }
+        }
+    }
+}

@@ -140,3 +140,40 @@ fn mysql_tidb_insert_uses_session_transaction_and_preserves_duplicate_semantics(
     assert!(rows(&check).is_some());
     domain.close();
 }
+
+#[test]
+fn reorg_global_admin_check_rejects_missing_scalar_index_entries() {
+    let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    session
+        .execute("create database if not exists test")
+        .unwrap();
+    session.execute("use test").unwrap();
+    session.execute("create table global_check(a int, b int, key idx(b) global) partition by range(a) (partition p0 values less than (10), partition pmax values less than (maxvalue))").unwrap();
+    session
+        .execute("insert into global_check values(1,10),(11,20)")
+        .unwrap();
+    session.execute("admin check table global_check").unwrap();
+    let table = domain.table_by_name("test", "global_check").unwrap();
+    domain.storage_handle().with_storage(|storage| {
+        let (start, end) =
+            astersql_tablecodec::GetTableIndexKeyRange(table.ID, table.Indices[0].ID);
+        let snapshot = storage.GetSnapshot(storage.CurrentVersion("global").unwrap());
+        let mut it = snapshot
+            .Iter(astersql_kv::Key(start), Some(astersql_kv::Key(end)))
+            .unwrap();
+        assert!(it.Valid());
+        let key = it.Key();
+        it.Close();
+        let mut tx = storage.Begin(&[]).unwrap();
+        tx.Delete(key).unwrap();
+        tx.Commit(&astersql_kv::Context::default()).unwrap();
+    });
+    let error = session
+        .execute("admin check table global_check")
+        .err()
+        .expect("missing global entry must be detected");
+    assert!(
+        error.to_string().contains("index entry is missing"),
+        "{error}"
+    );
+}

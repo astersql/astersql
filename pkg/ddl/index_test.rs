@@ -229,3 +229,37 @@ fn removing_hidden_columns_repairs_remaining_index_offsets() {
     assert_eq!(table.columns.len(), 1);
     assert_eq!(table.indices[0].columns[0].offset, 0);
 }
+
+#[test]
+fn hidden_column_survives_same_name_index_copy_until_last_consumer() {
+    let mut hidden = column(ColumnType::Int);
+    hidden.hidden = true;
+    hidden.index_flags = 2;
+    let original = IndexInfo {
+        id: 1,
+        name: "expr".into(),
+        columns: vec![IndexColumn {
+            name: "c".into(),
+            offset: 0,
+            length: None,
+        }],
+        ..Default::default()
+    };
+    let mut copy = original.clone();
+    copy.id = 2;
+    let mut table = TableInfo {
+        columns: vec![hidden],
+        indices: vec![original, copy],
+        ..Default::default()
+    };
+    remove_index_info(&mut table, "expr").unwrap();
+    assert_eq!(
+        table.columns.len(),
+        1,
+        "copy still consumes the hidden column"
+    );
+    assert_eq!(table.columns[0].index_flags, 1);
+    assert_eq!(table.indices[0].columns[0].offset, 0);
+    remove_index_info(&mut table, "expr").unwrap();
+    assert!(table.columns.is_empty());
+}

@@ -72,6 +72,7 @@ impl DurableJobExecutor for Initial {
             schema_version: j.last_schema_version,
             update_raw_args: false,
             removed: false,
+            must_rollback_transaction: false,
         })
     }
 }

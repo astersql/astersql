@@ -647,3 +647,40 @@ pub(super) fn update_labels(
     }))
     .map_err(|e| e.to_string())
 }
+
+/// Go rollbackLikeDropPartition removes adding-partition labels before
+/// publishing the restored table. Placement bundles are rebuilt by the action.
+pub(super) fn rollback_partition_labels(
+    domain: &Domain,
+    schema: &str,
+    table: &TableInfo,
+    names: &[String],
+) -> Result<(), String> {
+    use astersql_domain_infosync::{self as infosync, label};
+    let keyspace = domain
+        .storage_handle()
+        .with_storage(|s| s.DDLKeyspaceID())
+        .map_err(|e| e.to_string())?;
+    let codec = if keyspace == u32::MAX {
+        label::tikv::NewCodecV1()
+    } else {
+        label::tikv::NewCodecV2(keyspace).map_err(|e| e.to_string())?
+    };
+    let delete = names
+        .iter()
+        .map(|name| {
+            label::NewRuleID(
+                codec.clone(),
+                schema.into(),
+                table.Name.L.clone(),
+                name.clone(),
+            )
+        })
+        .collect();
+    infosync::UpdateLabelRules(Some(&infosync::LabelRulePatch {
+        DeleteRules: delete,
+        SetRules: Vec::new(),
+    }))
+    .map_err(|e| e.to_string())?;
+    update_labels(domain, schema, &table.Name.L, schema, table, false)
+}

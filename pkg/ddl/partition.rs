@@ -1287,3 +1287,163 @@ pub fn backfill_non_touched_partition_indexes(
     *reorg = next;
     Ok(reorg.physical_table_id == 0)
 }
+
+/// Resume cancellation of a persisted reorganization/partitioning job. Each
+/// returned version is committed with both table metadata and the durable job.
+pub fn rollback_persisted_partition(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &mut astersql_meta_model::group_3::Job,
+) -> Result<i64, String> {
+    use astersql_meta_model::SchemaState as S;
+    use astersql_meta_model::group_2::{JobArgsCompat, TableIDIndexID, TablePartitionArgs};
+    use astersql_meta_model::group_3::JobState;
+    if !matches!(job.state, JobState::Cancelling | JobState::Rollingback) {
+        return Err("partition rollback requires a cancelling or rolling-back job".into());
+    }
+    // Go refuses cancellation once destruction of old indexes has started.
+    if job.state == JobState::Cancelling && job.schema_state == S::Public {
+        job.state = JobState::Running;
+        return Ok(0);
+    }
+    let mut raw: serde_json::Value =
+        serde_json::from_slice(&job.raw_args).map_err(|e| e.to_string())?;
+    if (job.version == astersql_meta_model::group_3::JobVersion::V1 && raw.get(0).is_none())
+        || (job.version != astersql_meta_model::group_3::JobVersion::V1 && !raw.is_object())
+    {
+        return Err("invalid partition rollback arguments".into());
+    }
+    let part_info = if job.version == astersql_meta_model::group_3::JobVersion::V1 {
+        raw.get(1)
+    } else {
+        raw.get("part_info")
+    };
+    let part_info: astersql_meta_model::PartitionInfo = part_info
+        .filter(|v| !v.is_null())
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let mut args = TablePartitionArgs::default();
+    let names = if job.version == astersql_meta_model::group_3::JobVersion::V1 {
+        raw.get(0)
+    } else {
+        raw.get("part_names")
+    };
+    args.PartNames = names
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let converting = job.state == JobState::Cancelling;
+    let mut version = 0;
+    let mut finished = None;
+    let mut bundles = Vec::new();
+    context.with_transaction(&mut |txn| {
+        let mut meta = astersql_meta::TransactionMutator::new(txn);
+        let mut table = crate::persistent_actions::public_table(&meta, job)?;
+        if converting && job.schema_state == S::None {
+            job.state = JobState::Cancelled;
+            return Ok(Vec::new());
+        }
+        if converting {
+            args.PartNames = table
+                .Partition
+                .as_ref()
+                .ok_or("partition metadata missing")?
+                .AddingDefinitions
+                .iter()
+                .map(|d| d.Name.L.clone())
+                .collect();
+            crate::rollingback::convert_partition_metadata_to_rollback(&mut table, job)?;
+            job.error = Some("[ddl:8214]Cancelled DDL job".into());
+            job.error_count += 1;
+            // Preserve complete incoming PartInfo, including NewTableID and
+            // partition expressions absent from the legacy argument adapter.
+            if job.version == astersql_meta_model::group_3::JobVersion::V1 {
+                raw[0] = serde_json::json!(args.PartNames);
+            } else {
+                raw["part_names"] = serde_json::json!(args.PartNames);
+            }
+            job.raw_args = serde_json::to_vec(&raw).map_err(|e| e.to_string())?;
+            job.args.clear();
+        } else {
+            let mut stop_writes = false;
+            for index in &mut table.Indices {
+                if index.State == S::WriteOnly {
+                    index.State = S::DeleteOnly;
+                    stop_writes = true;
+                }
+            }
+            if !stop_writes {
+                let pi = table
+                    .Partition
+                    .as_mut()
+                    .ok_or("partition metadata missing")?;
+                pi.DroppingDefinitions.clear();
+                args.OldPhysicalTblIDs = pi.AddingDefinitions.iter().map(|d| d.ID).collect();
+                pi.AddingDefinitions.clear();
+                if part_info.Type != astersql_meta_model::ast::PartitionTypeNone
+                    && part_info.NewTableID != 0
+                {
+                    args.OldPhysicalTblIDs.push(part_info.NewTableID);
+                }
+                let remove_partition = part_info.Type
+                    != astersql_meta_model::ast::PartitionTypeNone
+                    && (pi.Type == astersql_meta_model::ast::PartitionTypeNone
+                        || pi.DDLType == astersql_meta_model::ast::PartitionTypeNone);
+                let removed: Vec<_> = table
+                    .Indices
+                    .iter()
+                    .filter(|i| i.State == S::DeleteOnly)
+                    .cloned()
+                    .collect();
+                for index in removed {
+                    crate::index::drop_model_index_column_flag(&mut table, &index);
+                    crate::index::remove_model_dependent_hidden_columns(&mut table, &index);
+                    table.Indices.retain(|i| i.ID != index.ID);
+                    if index.Global {
+                        args.OldGlobalIndexes.push(TableIDIndexID {
+                            TableID: table.ID,
+                            IndexID: index.ID,
+                        });
+                    }
+                }
+                if remove_partition {
+                    table.Partition = None;
+                } else if let Some(pi) = &mut table.Partition {
+                    pi.ClearReorgIntermediateInfo();
+                }
+                let projected = serde_json::from_value(
+                    serde_json::to_value(&table).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                bundles = astersql_ddl_placement::NewFullTableBundles(
+                    &crate::persistent_create_table::Policies(&meta),
+                    &projected,
+                )
+                .map_err(|e| e.to_string())?;
+                finished = Some(table.clone());
+            }
+        }
+        version = meta.gen_schema_version()?;
+        meta.set_table_schema_diff(job, version)?;
+        meta.update_table(job.schema_id, &mut table)?;
+        Ok(Vec::new())
+    })?;
+    if let Some(table) = finished {
+        // External side effects are retryable. Do not mark the job terminal
+        // until they succeed; the normal worker rolls the metadata stage back
+        // if PD rejects label or placement updates.
+        context.rollback_partition_labels(&job.schema_name, &table, &args.PartNames)?;
+        context.put_create_table_bundles(&bundles)?;
+        job.finish_table_job(
+            JobState::RollbackDone,
+            S::None,
+            version,
+            std::sync::Arc::new(table),
+        );
+        job.FillFinishedArgs(args);
+        job.encode(true).map_err(|e| e.to_string())?;
+    }
+    Ok(version)
+}

@@ -67,7 +67,7 @@ impl ConcreteSession {
                 ));
             }
             for index in info.Indices.iter().filter(|index| {
-                index.MVIndex
+                (index.MVIndex || (index.Global && index.State == astersql_meta_model::StatePublic))
                     && (statement.statement_type == ast::AdminStmtType::CheckTable
                         || index.Name.L.eq_ignore_ascii_case(&statement.index))
             }) {
@@ -77,7 +77,7 @@ impl ConcreteSession {
         Ok(())
     }
 
-    /// Check each physical MVI entry against the row at the same snapshot.
+    /// Check each physical index entry against the row at the same snapshot.
     /// The offsets refer to the original index scan, before deduplicating the
     /// record keys used for table reads.
     fn check_multi_valued_index(

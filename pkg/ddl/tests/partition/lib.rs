@@ -31,3 +31,6 @@ mod multi_domain_part3_aster_unit_test;
 mod placement_test;
 #[cfg(test)]
 mod reorg_partition_test;
+
+#[cfg(test)]
+mod reorg_partition_leftover_index_test;

@@ -801,13 +801,26 @@ pub(super) fn encode_relational_index_value_row(
     let table = effective.as_ref();
     let handle = relational_row_handle(table, row, flags)?;
     let physical_table_id = ConcreteSession::row_physical_id(table, row);
+    let handle: Box<dyn astersql_tablecodec::kv::Handle> =
+        if index.Global && index.GlobalIndexVersion >= astersql_meta_model::GlobalIndexVersionV1 {
+            Box::new(astersql_tablecodec::kv::NewPartitionHandle(
+                physical_table_id,
+                handle,
+            ))
+        } else {
+            handle
+        };
     let indexed_values_for_value = indexed_values.clone();
     let (key, distinct) = astersql_tablecodec::GenIndexKeyBorrowed(
         astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         table,
         index,
-        physical_table_id,
+        if index.Global {
+            table.ID
+        } else {
+            physical_table_id
+        },
         indexed_values,
         Some(handle.as_ref()),
         None,
@@ -827,7 +840,7 @@ pub(super) fn encode_relational_index_value_row(
         false,
         indexed_values_for_value,
         handle.as_ref(),
-        0,
+        if index.Global { physical_table_id } else { 0 },
         Vec::new(),
         None,
     )
@@ -843,7 +856,7 @@ pub(super) fn encode_relational_index_entries(
     let mut entries = Vec::new();
     for index in table.Indices.iter().filter(|index| {
         (index.State == astersql_meta_model::StatePublic
-            || ((index.IsChanging() || index.IsRemoving())
+            || ((index.IsChanging() || index.IsRemoving() || table.Partition.as_ref().is_some_and(|p| p.DDLChangedIndex.contains_key(&index.ID)))
                 && matches!(
                     index.State,
                     astersql_meta_model::SchemaState::DeleteOnly
@@ -855,7 +868,6 @@ pub(super) fn encode_relational_index_entries(
             // so DML and partition reorganization must maintain it just like
             // every other secondary index.
             && (!index.Primary || !table.HasClusteredIndex())
-            && !index.Global
     }) {
         if !index.ConditionExprString.is_empty() {
             let condition = crate::dml_runtime::ParseGeneratedExpr(&index.ConditionExprString)?;
@@ -887,7 +899,6 @@ pub(super) fn encode_relational_unique_index_entries(
         index.Unique
             && index.State == astersql_meta_model::StatePublic
             && (!index.Primary || !table.HasClusteredIndex())
-            && !index.Global
     }) {
         if !index.ConditionExprString.is_empty() {
             let condition = crate::dml_runtime::ParseGeneratedExpr(&index.ConditionExprString)?;

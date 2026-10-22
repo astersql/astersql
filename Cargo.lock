@@ -2407,6 +2407,7 @@ dependencies = [
  "astersql-util-codec",
  "astersql-util-dbterror",
  "astersql-util-logutil",
+ "serde_json",
 ]
 
 [[package]]

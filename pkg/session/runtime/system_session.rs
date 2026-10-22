@@ -1326,6 +1326,14 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
             delete_old,
         )
     }
+    fn rollback_partition_labels(
+        &mut self,
+        schema: &str,
+        table: &astersql_meta_model::TableInfo,
+        names: &[String],
+    ) -> Result<(), String> {
+        create_table_resources::rollback_partition_labels(&self.0.domain, schema, table, names)
+    }
     fn delete_drop_table_ttl(&mut self, table: i64) -> Result<(), String> {
         if let Some(manager) = self.0.domain.external_workload_manager() {
             manager

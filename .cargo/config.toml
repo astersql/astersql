@@ -10,7 +10,8 @@ git-fetch-with-cli = true
 
 [build]
 target-dir = "target-dir"
-build-dir = "target"
+# Keep intermediate artifacts with target-dir so CARGO_TARGET_DIR isolates
+# concurrent tasks as well as final artifacts.
 
 # Keep Go-compatible translated names and helper surfaces warning-clean while the
 # Rust port is still being completed. This intentionally avoids `-A warnings` so

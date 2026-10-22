@@ -61,6 +61,15 @@ pub fn step(
     context: &mut dyn crate::job_worker::JobExecutionContext,
     job: &mut Job,
 ) -> Result<i64, String> {
+    if matches!(
+        job.tp,
+        astersql_meta_model::group_3::ACTION_REORGANIZE_PARTITION
+            | astersql_meta_model::group_3::ACTION_ALTER_TABLE_PARTITIONING
+            | astersql_meta_model::group_3::ACTION_REMOVE_PARTITIONING
+    ) && matches!(job.state, JobState::Cancelling | JobState::Rollingback)
+    {
+        return crate::partition::rollback_persisted_partition(context, job);
+    }
     if job.tp == 60 {
         return crate::persistent_create_table::batch_step(context, job);
     }

@@ -197,3 +197,23 @@ Tests (good starting points):
 - `AddingDefinitions` / `DroppingDefinitions` and `Partition.DDLState` are part of multi-version correctness; don’t clear them too early.
 - `doPartitionReorgWork` forces transactional reorg (`ReorgTypeTxn`); don’t assume fast-reorg/ingest behavior.
 - PD side effects (placement/labels/TiFlash) must be ordered so rollback/retry remains safe and idempotent.
+
+## Rust partition cancellation boundary
+
+The Rust normal durable worker accepts cancelling/rolling-back reorganize,
+ALTER PARTITIONING and REMOVE PARTITIONING jobs. Cancellation persists original
+partition metadata and restores old indexes to public; new index copies that
+have taken writes become write only. A separate committed schema version moves
+write-only copies to delete only before a later step removes them and records
+finished physical/index IDs for delete-range GC. Same-name copies are identified
+by index ID, and expression hidden columns remain while another index uses the
+same offset. Owner recovery uses the persisted job and table metadata, without
+an in-memory rollback phase flag. Final cleanup removes adding-partition label
+rules and rebuilds surviving placement bundles before marking the job terminal.
+
+The ordinary Rust SQL REORGANIZE entry still uses synchronous metadata replacement
+and row relocation. The durable cancellation path does not imply a complete
+forward online partition reorganization state machine or automatic migration of
+that SQL entrypoint. Tests that seed an in-flight durable job exercise cancellation
+and owner recovery, rather than forward scheduling or concurrent partition double
+writes.

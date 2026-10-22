@@ -337,3 +337,50 @@ pub fn record_rollback_conversion_error(job: &mut RollbackJob, limit: usize) {
         job.state = JobState::Cancelled;
     }
 }
+
+/// Restore original metadata and retain every replacement index until writes
+/// have stopped for a synchronized schema version (Go 13544e9).
+pub(crate) fn convert_partition_metadata_to_rollback(
+    table: &mut astersql_meta_model::TableInfo,
+    job: &mut astersql_meta_model::group_3::Job,
+) -> Result<(), String> {
+    use astersql_meta_model::SchemaState as S;
+    let pi = table
+        .Partition
+        .as_mut()
+        .ok_or("partition rollback metadata missing")?;
+    for index in &mut table.Indices {
+        match pi.DDLChangedIndex.get(&index.ID) {
+            Some(true) if index.State != S::DeleteOnly => index.State = S::WriteOnly,
+            Some(false) if pi.DDLState == S::DeleteReorganization => index.State = S::Public,
+            _ => {}
+        }
+    }
+    if pi.DDLState == S::DeleteReorganization {
+        if job.tp == astersql_meta_model::group_3::ACTION_REORGANIZE_PARTITION {
+            let original = pi
+                .OriginalPartitionIDsOrder
+                .iter()
+                .map(|id| {
+                    pi.Definitions
+                        .iter()
+                        .chain(&pi.DroppingDefinitions)
+                        .find(|d| d.ID == *id)
+                        .cloned()
+                        .ok_or_else(|| format!("original partition {id} missing"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            pi.Definitions = original;
+        } else {
+            std::mem::swap(&mut pi.Type, &mut pi.DDLType);
+            std::mem::swap(&mut pi.Expr, &mut pi.DDLExpr);
+            std::mem::swap(&mut pi.Columns, &mut pi.DDLColumns);
+            pi.Definitions = pi.DroppingDefinitions.clone();
+        }
+        pi.Num = pi.Definitions.len() as u64;
+        job.schema_state = S::WriteReorganization;
+        pi.DDLState = S::WriteReorganization;
+    }
+    job.state = astersql_meta_model::group_3::JobState::Rollingback;
+    Ok(())
+}

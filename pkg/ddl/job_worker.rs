@@ -379,6 +379,14 @@ pub trait JobExecutionContext {
     ) -> Result<(), String> {
         Err("DDL table label resources unavailable".into())
     }
+    fn rollback_partition_labels(
+        &mut self,
+        _: &str,
+        _: &astersql_meta_model::TableInfo,
+        _: &[String],
+    ) -> Result<(), String> {
+        Err("partition rollback label resources unavailable".into())
+    }
     fn delete_drop_table_ttl(&mut self, _: i64) -> Result<(), String> {
         Err("drop-table TTL resource unavailable".into())
     }

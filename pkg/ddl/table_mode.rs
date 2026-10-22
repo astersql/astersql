@@ -187,7 +187,15 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
         job: &mut astersql_meta_model::group_3::Job,
     ) -> Result<crate::job_worker::DurableJobStep, String> {
         use astersql_meta_model::group_3::JobState;
-        if !crate::persistent_actions::handler_available(job.tp)
+        let partition_rollback =
+            matches!(
+                job.tp,
+                astersql_meta_model::group_3::ACTION_REORGANIZE_PARTITION
+                    | astersql_meta_model::group_3::ACTION_ALTER_TABLE_PARTITIONING
+                    | astersql_meta_model::group_3::ACTION_REMOVE_PARTITIONING
+            ) && matches!(job.state, JobState::Cancelling | JobState::Rollingback);
+        if !partition_rollback
+            && !crate::persistent_actions::handler_available(job.tp)
             && !matches!(
                 job.state,
                 JobState::Done | JobState::Synced | JobState::Cancelled | JobState::RollbackDone
@@ -217,7 +225,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                 must_rollback_transaction: false,
             });
         }
-        if job.state == JobState::Cancelling {
+        if job.state == JobState::Cancelling && !partition_rollback {
             if job.tp == astersql_meta_model::group_3::ACTION_CREATE_MATERIALIZED_VIEW
                 && job.schema_state == astersql_meta_model::SchemaState::WriteReorganization
             {
@@ -265,7 +273,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                 Ok(Vec::new())
             })?;
             let stage = stage.ok_or("DDL transaction did not stage its action")?;
-            if current.state != JobState::Rollingback {
+            if current.state != JobState::Rollingback && !partition_rollback {
                 current.state = JobState::Running;
             }
             let action = crate::persistent_actions::step(context, &mut current);

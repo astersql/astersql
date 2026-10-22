@@ -2016,6 +2016,7 @@ impl DurableJobExecutor for ContextExecutor {
             schema_version: job.last_schema_version,
             update_raw_args: false,
             removed: false,
+            must_rollback_transaction: false,
         })
     }
 }

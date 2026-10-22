@@ -733,11 +733,21 @@ pub fn add_index_column_flag(table: &mut TableInfo, index: &IndexInfo) {
         table.columns[column.offset].index_flags += 1;
     }
 }
-/// 为索引引用的各列减少索引引用计数（饱和减，避免下溢）。
+/// 根据剩余索引 ID 重新计算引用，保留同名重组副本的列标志。
 pub fn drop_index_column_flag(table: &mut TableInfo, index: &IndexInfo) {
     for column in &index.columns {
-        table.columns[column.offset].index_flags =
-            table.columns[column.offset].index_flags.saturating_sub(1);
+        table.columns[column.offset].index_flags = table
+            .indices
+            .iter()
+            .filter(|other| other.id != index.id)
+            .map(|other| {
+                other
+                    .columns
+                    .iter()
+                    .filter(|used| used.offset == column.offset)
+                    .count()
+            })
+            .sum();
     }
 }
 
@@ -819,6 +829,15 @@ pub fn remove_dependent_hidden_columns(table: &mut TableInfo, index: &IndexInfo)
     let hidden_names: BTreeSet<String> = index
         .columns
         .iter()
+        .filter(|column| {
+            !table.indices.iter().any(|other| {
+                other.id != index.id
+                    && other
+                        .columns
+                        .iter()
+                        .any(|used| used.offset == column.offset)
+            })
+        })
         .filter_map(|column| table.columns.get(column.offset))
         .filter(|column| column.hidden)
         .map(|column| column.name.to_lowercase())
@@ -1279,3 +1298,83 @@ pub use astersql_ddl_ingest::env::{
     init_global_lightning_env, initialized_disk_root, replace_global_lightning_env_for_test,
 };
 pub use astersql_dxf_framework_handle::resolve_cloud_storage_uri;
+
+/// Go DropIndexColumnFlag: index IDs distinguish same-name partition copies.
+pub fn drop_model_index_column_flag(
+    table: &mut astersql_meta_model::TableInfo,
+    index: &astersql_meta_model::IndexInfo,
+) {
+    use astersql_parser_mysql::r#type::{MultipleKeyFlag, PriKeyFlag, UniqueKeyFlag};
+    if index.Columns.is_empty() {
+        return;
+    }
+    if index.Primary {
+        for c in &index.Columns {
+            table.Columns[c.Offset as usize].DelFlag(PriKeyFlag);
+        }
+    } else {
+        let flag = if index.Unique && index.Columns.len() == 1 {
+            UniqueKeyFlag
+        } else {
+            MultipleKeyFlag
+        };
+        table.Columns[index.Columns[0].Offset as usize].DelFlag(flag);
+    }
+    for other in table.Indices.iter().filter(|other| {
+        other.ID != index.ID
+            && other
+                .Columns
+                .first()
+                .is_some_and(|c| c.Name.L == index.Columns[0].Name.L)
+    }) {
+        if other.Primary {
+            for c in &other.Columns {
+                table.Columns[c.Offset as usize].AddFlag(PriKeyFlag);
+            }
+        } else {
+            let flag = if other.Unique && other.Columns.len() == 1 {
+                UniqueKeyFlag
+            } else {
+                MultipleKeyFlag
+            };
+            table.Columns[other.Columns[0].Offset as usize].AddFlag(flag);
+        }
+    }
+}
+
+/// Remove only unshared expression columns; repair offsets after compaction.
+pub fn remove_model_dependent_hidden_columns(
+    table: &mut astersql_meta_model::TableInfo,
+    index: &astersql_meta_model::IndexInfo,
+) {
+    let removed: BTreeSet<usize> = index
+        .Columns
+        .iter()
+        .map(|c| c.Offset as usize)
+        .filter(|offset| {
+            table.Columns[*offset].Hidden
+                && !table.Indices.iter().any(|other| {
+                    other.ID != index.ID
+                        && other.Columns.iter().any(|c| c.Offset as usize == *offset)
+                })
+        })
+        .collect();
+    let mut offset = 0;
+    table.Columns.retain_mut(|column| {
+        let old = offset;
+        offset += 1;
+        if removed.contains(&old) {
+            return false;
+        }
+        column.Offset = (old - removed.range(..old).count()) as isize;
+        true
+    });
+    for other in &mut table.Indices {
+        if other.ID == index.ID {
+            continue;
+        }
+        for column in &mut other.Columns {
+            column.Offset -= removed.range(..column.Offset as usize).count() as isize;
+        }
+    }
+}
