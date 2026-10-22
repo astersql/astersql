@@ -29,6 +29,7 @@
 - `PartitionStatisticLoadTask`：一项分区 JSON 导入任务；`JSONTable: Option<Box<JSONTable>>` 保留 Go `*JSONTable` 可为 nil 的语义，`PhysicalID` 标识表或分区。
 - `PersistFunc<'a>`：`PersistStatsBySnapshot` 使用的回调 trait object，接收执行上下文、可空 JSON 和物理 ID，并要求 `Send + Sync`。
 - `MetaUpdate`：统计 meta 批量写入的单项，包含 `PhysicalID`、`Count` 和 `ModifyCount`。
+- `StatsReadWriter::SaveColOrIdxStatsToStorage`：在 `top_n` 后新增 `fm_sketch: Option<&FMSketch>`，借用真实 statistics 草图，随后仍是 `stats_version`、`update_analyze_time` 和 `source`；`None` 对应 Go nil。该声明没有编码或保存逻辑。
 - `StatsReadWriter`：定义存储读取、ANALYZE/meta 写入、JSON 导入导出、历史快照回退结果以及并发分区导入的完整存储边界。
 - `NeededItemTask` 与 `StatsSyncLoad`：前者携带截止时间、结果 sender、加载项和重试次数；后者声明请求发送、语句级等待、队列追加和 worker 单步处理。
 - `GlobalStatsInfo`、`AnalyzeOptions` 与 `StatsGlobal`：描述列/索引直方图 ID、统计版本和 ANALYZE 选项，并声明分区统计合并到全局统计的入口。
@@ -45,6 +46,8 @@
 4. 同步加载路径由 `SendLoadRequests` 把 `StatsLoadItem` 关联到语句上下文，worker 使用 `AppendNeededItem` / `HandleOneTask` 处理队列，调用方再通过 `SyncWaitStatsLoad` 等待结果或错误。
 5. schema 变化通过 `DDL::DDLEventCh` 进入 handle，`HandleDDLEvent` 接受执行上下文、session context 和 `SchemaChangeEvent` 更新相关统计；具体事件分支不在本文件实现。
 6. 分区表 ANALYZE 完成后，`StatsGlobal::MergePartitionStats2GlobalStatsByTableID` 根据 `GlobalStatsInfo` 和 `AnalyzeOptions` 合并全局统计。
+
+新增 FM 参数只表达同步调用期间的共享借用，不转移所有权，也不承诺内部持久化成功。`storage::ColumnStats.fm_sketch` 仍是编码字节，和这里的真实 `FMSketch` 不能直接互换；需要具体适配层承担编码与错误转换，不能从签名变更推断统一 handle 已接线。
 
 RustCodeGraph 对精确的 `StatsHandle`、`LoadStatsFromJSONConcurrently`、`SendLoadRequests` 和 `HandleDDLEvent` trait 声明未返回静态 callers/callees。这与 trait 仅声明签名且动态分派、当前实现接线分散的事实一致，不能据此宣称这些流程已经由统一 `StatsHandle` 实现贯通。直接文本证据显示 `pkg/statistics/handle/cache/statscache.rs` 消费本 crate 的 `StatsHandle`/`StatsCache`，`pkg/statistics/handle/syncload/stats_syncload.rs` 则实现同名局部接口和对应加载流程。
 
@@ -94,6 +97,7 @@ crate 边界由 `pkg/statistics/handle/types/Cargo.toml` 明确：DDL 事件来�
 
 Rust 文件按 `interfaces.go` 的能力分组和方法名进行直接移植，并保留非 snake case 名称（由 `lib.rs` 的 `#![allow(non_snake_case)]` 放行）。主要语义映射如下：
 
+- Go `StatsReadWriter.SaveColOrIdxStatsToStorage` 的 `fms *statistics.FMSketch` 对应新增的 `Option<&FMSketch>`，两侧位置均在 TopN 和 statsVersion 之间。
 - Go 的 `*T`/可能为 nil 的返回值映射为 Rust 的 `Option<T>` 或 `Option<Arc<T>>`；共享统计表从裸指针变为 `Arc<Table>`。
 - Go 的 `context.Context` 分别映射到 util sqlexec 的 `ExecutionContext` 或 statistics handle util 的 `StatsExecutionContext` 重导出；它们不是同一类型，扩展时需依照现有签名选择。
 - Go 的 variadic 参数映射为切片，如 `tableIDs ...int64` 对应 `&[i64]`，`metaUpdates ...MetaUpdate` 对应 `&[MetaUpdate]`。
@@ -117,11 +121,8 @@ Go 文件的行为注释仍提供若干 Rust 声明未展开的契约，例如 G
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；`interfaces.rs` 被识别为 457 行、126 个符号，并显示被 47 个文件使用。
-- RustCodeGraph 源码查询：读取了 `pkg/statistics/handle/types/interfaces.rs` 全部 1–457 行，以及独立测试 `interfaces_test.rs` 全部 1–171 行。
-- RustCodeGraph 精确符号查询：`StatsHandle` 命中 `interfaces.rs::StatsHandle`；`LoadStatsFromJSONConcurrently`、`SendLoadRequests`、`HandleDDLEvent` 分别命中本文件对应 trait method。对这些声明运行 callers/callees 未得到静态调用边，因此本文未虚构动态分派关系。
-- crate 与模块证据：读取 `pkg/statistics/handle/types/Cargo.toml` 和 `lib.rs`，确认依赖、Go 包映射、公开再导出和独立测试模块。
-- Go 对照证据：通过 RustCodeGraph 读取 `pkg/statistics/handle/types/interfaces.go` 全部 1–537 行，逐组核对接口、nil、variadic、channel、JSON tag 和 best-effort 方法语义。
-- 调用与迁移状态证据：用 `rg` 检查本 crate 的 Cargo consumers、`stats_types::StatsCache` 实现、`stats_types::StatsHandle` 使用处、同名局部 trait，以及关键方法在 statistics、domain、executor 和 BR 范围内的直接引用。
-- 独立测试证据：`interfaces_test.rs` 覆盖默认版本推进、锁表 DTO、全局合并 DTO、真实依赖类型、supertrait、任意 error、执行上下文、同步加载签名、nil JSON callback 和 JSON 字段名。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构检查要求本文恰好包含上述 11 个固定二级标题。
+- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
+- 冻结 `interfaces.rs`、`interfaces.go`、types crate `Cargo.toml`/`lib.rs`：核对真实 FMSketch 依赖、参数顺序、Option 借用和接口重导出。
+- 对照冻结 storage `save.rs`/`stats_read_writer.rs` 的字节模型，以及 `interfaces_test.rs` 的既有接口测试位置；本次签名增量本身不构成运行链路验证。
+- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。

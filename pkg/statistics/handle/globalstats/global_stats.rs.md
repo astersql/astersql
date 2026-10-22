@@ -22,7 +22,8 @@
 - `PartitionStats`：一个分区的快照，包含诊断用 `name`、表级 `count`/`modify_count` 和按项下标排列的 `items`。
 - `PartitionItemStats`：一个列或索引项的 `Histogram`、`CmSketch`、`TopN`、`FmSketch` 以及 `analyzed` 标记。
 - `GlobalStats`：结果容器。四类组件都按调用方提供的 `item_count` 对齐；缺失项保留为 `None`，诊断放入 `missing_partition_stats`。
-- `MergeOptions`：控制 TopN 容量、直方图桶数、统计版本、并发度和缺失统计策略。该类型只保存已经解析后的值，不读取会话变量。
+- `MergeOptions`：控制 TopN 容量、直方图桶数、统计版本、并发度和缺失统计策略。另含 `schema: Option<GlobalStatsSchema>` 和按项对齐的 `items: Vec<GlobalStatsItem>`；只保存已解析值，不读取会话变量。因包含向量，已由 `Clone + Copy` 改为仅 `Clone`。
+- `GlobalStatsSchema`、`GlobalStatsIndex`、`GlobalStatsItem`：分别携带列 ID/索引元数据、唯一性判定条件和当前项身份。`is_local_unique` 仅接受 public、非 global、单列、无前缀和条件的 unique/primary 索引；列项按 column offset 找列 ID，索引项按索引 ID 匹配。
 - `PartitionStatsProvider::partitions(table_id)`：上游数据源边界，返回完整分区快照或字符串错误。
 - `GlobalStatsWriter::save(table_id, item_index, stats)`：逐项写回边界；实现者负责真实事务、KV 和日志语义。
 - `check_cancelled`、`missing_item_error`：内部辅助函数，分别生成稳定的 `query interrupted` 错误和带分区名、项下标的缺失诊断。
@@ -40,9 +41,9 @@
 3. 遍历每个分区：再次检查取消，先把分区的 `count` 与 `modify_count` 各累加一次，再逐项读取 `partition.items[index]`；短于 `item_count` 的输入等价于该项缺失。
 4. 若项不存在或 `analyzed == false`，产生 `partition stats missing`。无跳过策略时立即返回；跳过模式记录诊断并禁止该分区项进入合并。
 5. 独立检查列统计是否为空：当分区 `count > 0` 且该项不存在，或直方图桶为空且 TopN 总数为零时，产生 `partition column stats missing`。此检查不与上一步互斥，因此同一未分析、空内容项可产生两条诊断，这与 Go 的独立判断顺序一致。
-6. 对每个存在有效输入的项，先合并所有 FM Sketch 和 CM Sketch。FM 的 NDV 最终限制为不超过全表 `output.count`。
+6. 对每个存在有效输入的项，先合并所有 FM Sketch 和 CM Sketch。所有有效输入都含 `FmSketch.detailed` 时，另克隆完整草图并交给 `PartitionNDVMerger`。NDV 优先取本地唯一项的分区 histogram NDV 之和，否则取完整草图合并估计；非本地唯一项只要任一详细草图缺失，就回退到旧 `FmSketch::merge` 的最大 NDV。三条路径都限制为不超过 `output.count`。
 7. 克隆各分区直方图和 TopN。`concurrency < 2` 或 `version == 1` 时走串行 TopN 合并；否则计算 `clamp(top_ns.len() / concurrency, 1, 256)` 的批大小并走并发合并。
-8. 以首个直方图 ID 创建全局直方图，保持分区来源顺序拼接 buckets，并按键累加 `exact_counts`；TopN 合并淘汰值也回灌到 `exact_counts`。
+8. 完整草图合并处于 sampled 模式且不是本地唯一项时，再把 NDV 限制到观测非空行数：逐分区取最后一桶累计 count 加 TopN 总数，两者之和为零则用详细草图 `NotNullRows()`，最后求和。计算使用原始 `items`，不是 TopN 扣数后的直方图副本。随后以首个直方图 ID 创建全局直方图，保持分区来源顺序拼接 buckets，并按键累加 `exact_counts`；TopN 合并淘汰值也回灌到 `exact_counts`。
 9. 当 `bucket_count > 0` 且桶数超限时从尾部截断；随后把每个桶的 NDV 清零，只在直方图顶层保存全局 NDV。结果保存 histogram、CMS、TopN，FM 槽明确置为 `None`，因为其信息已经转入直方图 NDV。
 10. 所有项完成后返回 `GlobalStats`；没有有效输入的项保持四个结果槽为空。
 
@@ -68,10 +69,10 @@
 
 - provider 与 writer 是依赖反转边界，本文件不知道具体缓存、InfoSchema 或存储实现。
 - 统计组件 `Histogram`、`CmSketch`、`TopN`、`FmSketch` 由 crate 根再导入。
-- 串行 TopN 路径调用 `merge_partition_top_n`；并发路径调用 `merge_global_top_n_by_concurrency`，具体拆批与工作线程逻辑分别位于相邻的 `topn.rs`、`merge_worker.rs`。
+- 串行 TopN 路径调用 `merge_partition_top_n`；并发路径调用 `merge_global_top_n_by_concurrency`，具体拆批与工作器逻辑分别位于相邻的 `topn.rs`、`merge_worker.rs`。
 - 并发路径接收同一个 `AtomicBool`，使下游 TopN 合并也能参与协作取消。
 
-Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入口是 `lib.rs`。当前源文件本身只直接使用标准库原子类型和 crate 内统计结构；Cargo 中 InfoSchema、sessionctx、storage、types 等迁移依赖均在 `cfg(any())` 下，不应当作运行时已启用依赖。
+Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入口是 `lib.rs`。当前源文件还通过正常 `[dependencies]` 使用 `astersql-statistics::PartitionNDVMerger`；Cargo 中 InfoSchema、sessionctx、storage、types 等迁移依赖均在 `cfg(any())` 下，不应当作运行时已启用依赖。
 
 ## 错误处理与边界
 
@@ -79,6 +80,7 @@ Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入�
 - 默认 `skip_missing == false` 时，遇到第一条缺失统计即停止；开启时累积诊断并继续处理其他分区和项。
 - 对有数据分区，空直方图加空 TopN 被视为列统计缺失；零行分区不会仅因二者为空触发该类错误，但仍可能因未分析触发普通缺失。
 - `items.is_empty()` 的统计项跳过合并，避免读取 `items[0]`；结果对应位置保持 `None`。
+- `schema` 或项身份缺失时不启用本地唯一性分支；列 offset 直接索引 `schema.columns`，无效 offset 会 panic，调用方必须保证元数据一致。NDV 求和及行数相加没有额外溢出保护。
 - NDV 被限制在全局行数以内；直方图 bucket NDV 统一清零。
 - `bucket_count == 0` 表示不执行截断，而不是产生零个桶。
 - `write_global_stats` 的“继续写、返回最后错误”与 Go `WriteGlobalStatsToStorage` 的循环行为一致；它不提供原子提交或回滚，调用方必须接受部分成功。
@@ -86,7 +88,7 @@ Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入�
 
 ## 并发与资源生命周期
 
-本文件本身不创建线程、锁、通道、事务或异步任务。`concurrency` 只决定委托给哪个 TopN 合并函数以及并发批大小；真正的并发实现位于相邻模块。同步函数在栈上拥有工作向量，返回或报错时由 Rust 自动释放。
+本文件本身不创建线程、锁、通道、事务或异步任务。`concurrency` 只决定委托给哪个 TopN 合并函数以及并发批大小；相邻 `topn.rs` 实际逐批顺序执行，没有创建并发线程。同步函数在栈上拥有工作向量，返回或报错时由 Rust 自动释放。
 
 `AtomicBool` 由调用方拥有并以共享引用传入。读取使用 `Ordering::Acquire`，检查点位于 provider 调用前、每个分区开始时、每个统计项合并开始时，并继续传给 TopN 合并函数；因此它是协作式而非抢占式取消，单个 provider 调用或一次组件合并进行中不会被本函数强制中断。
 
@@ -105,9 +107,13 @@ Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入�
 
 未完全对应之处必须保留：Go 从 `TableInfo`/InfoSchema/StatsHandle 解析分区和 hist ID，跳过虚拟生成列，支持外部缓存，生成带表、列或索引名的类型化错误，读取会话默认参数，记录日志和 warning，并把统计版本及历史来源写入 KV。Rust provider 直接返回已解析的扁平快照，诊断只有分区名与项下标；writer 也没有 Go 持久化参数。Go 使用 `MergePartTopNAndHistToGlobal` 的完整直方图边界语义，而 Rust 当前模型明确不携带边界，只保留输入顺序并截断。
 
+冻结 Go 同样使用 `PartitionNDVMerger`、本地唯一性求和与 sampled 上限，但 Go 从 schema 实体识别唯一性，且 sampled 上限基于合并后的 TopN/直方图与 `missedNotNull`。Rust 使用显式元数据和合并前分区观测值；有行但空 TopN/桶的项仍可能在缺失检查时被拒绝或跳过，因此 `NotNullRows()` 回退不能证明所有 Go 空样本路径已贯通。Go 写回明确传 nil FMSketch，Rust 输出 FM 槽也保持 `None`。
+
 测试语义来源包括 Go `global_stats_test.go`/`global_stats_internal_test.go` 中的同步与异步展示、错误注入、健康度、NDV、DDL、问题 #24349、空直方图及路径一致性场景；Rust 独立测试把其中可由当前模型表达的计数、缺失、取消、串并行一致性、TopN/精确计数和最后写错误行为固化下来，但不能证明上述未接线的生产能力已经迁移。
 
 ## 扩展指南
+
+- 修改 NDV 分支时同步覆盖完整/混合草图、本地与 global unique、单列/前缀/条件/public 元数据、sampled 上限和空样本的缺失过滤边界；保留兼容旧 `ndv` 输入的回退。
 
 - 新增统计组件时，应同时扩展 `PartitionItemStats`、`GlobalStats` 的对齐向量、初始化与逐项合并，并在 `global_stats_internal_test.rs` 增加至少一个多分区聚合用例；不能把测试嵌入生产源文件。
 - 改变缺失判断时，优先修改 `missing_item_error` 与 `merge_partition_stats_to_global` 的两个独立判断，并同步 `global_stats_internal_test.rs::global_stats_merge_reports_missing_partition_column_stats`、`global_stats_test.rs::skip_missing_reports_unanalyzed_and_empty_item_like_go` 和 Go 对照测试。注意跳过模式允许同一项产生两条诊断。
@@ -119,11 +125,8 @@ Cargo 边界由 `pkg/statistics/handle/globalstats/Cargo.toml` 定义，库入�
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；目标目录中的 Rust/Go 源和测试均已索引。
-- RustCodeGraph `files --filter pkg/statistics/handle/globalstats`：确认目标文件、`lib.rs`、同步/异步实现、TopN/worker 与独立测试的模块范围。
-- RustCodeGraph `node --file pkg/statistics/handle/globalstats/global_stats.rs`：核对 255 行源码中的常量、5 个公开数据/trait 类型、2 个内部 helper 和 2 个公开函数及全部控制流。
-- RustCodeGraph `explore`、`query merge_partition_stats_to_global`、`query write_global_stats`：确认同步入口由 `global_stats_async.rs::merge` 和独立 Rust 测试调用；写回入口由内部测试直接验证。代码图没有给出 Rust SQL 主链的生产调用边。
-- 已读 Rust 文件：`pkg/statistics/handle/globalstats/lib.rs`、`global_stats_async.rs`、`global_stats_test.rs`、`global_stats_internal_test.rs`；目标目录没有 `doc.go`。
-- 已读 Cargo：`pkg/statistics/handle/globalstats/Cargo.toml`、`pkg/statistics/handle/Cargo.toml` 和根 `Cargo.toml` 的对应依赖段，确认 crate 入口、facade 成员和 `cfg(any())` 迁移边界。
-- 已读 Go 对照：`pkg/statistics/handle/globalstats/global_stats.go`、`global_stats_test.go`、`global_stats_internal_test.go`，核对生产入口、blocking 合并、写回循环与主要回归场景。
-- 人工事实复核：文档区分了当前 Rust 事实与 Go 完整能力，未把测试覆盖或 facade 注册误写为生产主链接线。
+- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
+- 冻结 `global_stats.rs`、`Cargo.toml`、`lib.rs`、`topn.rs` 和 Go `global_stats.go`：核对 NDV 三分支、sampled 非空行上限、唯一索引条件、FM 输出清空与顺序 worker 边界。
+- 冻结 `global_stats_test.rs::global_stats_sampled_ndv` 断言 NDV 为 7；`schema_unique_ndv_sums_local_partition_ndvs_but_not_global_unique_ndvs` 断言本地唯一项为 8、global unique 为 4，并覆盖异步包装复用。仅阅读测试，未执行。
+- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。

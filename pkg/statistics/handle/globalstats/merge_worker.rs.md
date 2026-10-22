@@ -29,7 +29,7 @@
 - `TopNMeta { encoded, count }`：一个 TopN 候选值及其无符号频次。
 - `TopN { values }`：分区 TopN 容器。`total_count` 汇总频次；`contains` 线性判断某编码值是否已由该分区 TopN 覆盖。
 - `CmSketch::merge`：按编码键相加计数。它不参与 `run_task`，而由上层全局统计合并复用。
-- `FmSketch::merge`：用较大 NDV 合并估计值。它同样是本文件提供给上层的统计基元，不参与工作器循环。
+- `FmSketch { ndv, detailed }`：`detailed: Option<astersql_statistics::FMSketch>` 保存完整 hash、mask 与采样信息；`from_detailed` 用 `sketch.NDV()` 初始化兼容估计字段并取得草图所有权。`merge` 仍只取较大 NDV，不合并或更新 `detailed`。它同样是本文件提供给上层的统计基元，不参与工作器循环。
 - `StatsWrapper { histograms, top_ns }`：按分区下标对齐的直方图和 TopN 列表。`run_task` 假定两者可用相同 `part` 下标访问。
 - `TopNMergeTask { start, end }`：工作范围 `[start, end)`。
 - `TopNMergeResponse { error }`：成功时为默认值 `error: None`；失败时保存固定错误文本。
@@ -37,7 +37,7 @@
 - `TopNStatsMergeWorker::run_task(task, version)`：核心入口；校验任务范围、累计 TopN、补取并移除直方图频次。
 - `TopNStatsMergeWorker::result(self)`：消费工作器并转移 `counter` 所有权，供上层选择最终 TopN。
 
-除标准库导入外，文件没有条件编译项、trait 或模块级常量。所有上述结构和方法都是 `pub`；字段也公开，调用者可以自行构造测试或合并输入。
+除标准库及字段/构造器引用的 `astersql_statistics::FMSketch` 外，文件没有条件编译项、trait 或模块级常量。所有上述结构和方法都是 `pub`；字段也公开，调用者可以自行构造测试或合并输入。
 
 ## 执行流程
 
@@ -68,11 +68,13 @@
 
 直方图修改是消费式的：`remove_value` 从 `exact_counts` 删除键。成功返回后，调用者看到的 `wrapper.histograms` 已不再包含被提升为全局 TopN 候选的精确值。`topn.rs` 会把修改后的直方图克隆回调用方切片；未进入最终 TopN 的候选则作为 overflow 由更上层写回合并直方图。
 
+`FmSketch` 的详细草图随结构一起克隆或释放；上层只有在每个有效分区都提供详细草图时才调用 `PartitionNDVMerger`，不能以 `FmSketch::merge` 代替完整 sampled 合并。
+
 `Bucket`、`Histogram.id/ndv/buckets`、`CmSketch` 和 `FmSketch` 是为上层合并提供的状态，但本工作器只操作 `top_ns`、`exact_counts`、`counter` 和 `cancelled`。
 
 ## 依赖与调用关系
 
-直接依赖均来自标准库：
+工作器循环的直接依赖来自标准库，完整 FM 输入另依赖 statistics crate：
 
 - `std::collections::HashMap`：保存精确频次、Sketch 计数与工作器累计表。
 - `std::sync::atomic::{AtomicBool, Ordering}`：读取协作取消信号。
@@ -94,7 +96,7 @@ TopNStatsMergeWorker::run_task
   └─ Histogram::remove_value
 ```
 
-`Cargo.toml` 将该目录定义为独立库 crate，`lib.rs` 是 crate 根。其大量业务依赖位于 `[target.'cfg(any())'.dependencies]`，该配置恒假，因而本文件当前实际只依赖标准库；普通 `[dev-dependencies]` 仅列出 `astersql-planner-core`。RustCodeGraph 对 `run_task` 的精确 callers/callees 查询未返回边，因此上述调用关系以同 crate 源码中的显式调用为准。
+`Cargo.toml` 将该目录定义为独立库 crate，`lib.rs` 是 crate 根。其大量业务依赖位于 `[target.'cfg(any())'.dependencies]`，该配置恒假，但普通 `[dependencies]` 已启用 `astersql-statistics`，供 `FmSketch.detailed` 和 `from_detailed` 使用；普通 `[dev-dependencies]` 仅列出 `astersql-planner-core`。RustCodeGraph 对 `run_task` 的精确 callers/callees 查询未返回边，因此上述调用关系以同 crate 源码中的显式调用为准。
 
 当前 Go 主链的直接入口证据是 `global_stats.go` 与 `global_stats_async.go` 对 `statistics.MergePartTopNAndHistToGlobal` 的调用；它们不调用本文件或本 crate 的 `TopNStatsMergeWorker`。
 
@@ -168,17 +170,8 @@ TopNStatsMergeWorker::run_task
 
 ## 验证依据
 
-本说明使用以下直接证据：
-
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边。
-- RustCodeGraph `files --filter pkg/statistics/handle/globalstats`：确认目标文件、模块入口、`topn.rs`、`global_stats.rs` 与独立测试文件均在索引中。
-- RustCodeGraph `node --file pkg/statistics/handle/globalstats/merge_worker.rs`：读取目标文件 1–168 行，确认全部 18 个符号及实现。
-- RustCodeGraph `node --file .../topn.rs` 与 `node --file .../global_stats.rs`：确认 `run_task` 的两条直接调用路径及更上层合并分支。
-- RustCodeGraph 对目标 `run_task`/`TopNStatsMergeWorker` 的精确 `callers`、`callees` 查询：未返回静态边；调用关系随后由上述源文件显式调用补证。
-- [`Cargo.toml`](./Cargo.toml) 与 [`lib.rs`](./lib.rs)：确认 crate 名称、恒假目标依赖、模块声明和公共再导出。
-- [`topn_test.rs`](./topn_test.rs)：确认重复键累加、无直方图、有直方图补数/删除、长度不匹配、取消、编码排序与 `n == 0` 等边界。
-- 当前 Go [`global_stats.go`](./global_stats.go) 和 [`global_stats_async.go`](./global_stats_async.go)：确认生产入口已转用 `statistics.MergePartTopNAndHistToGlobal`。
-- `git show a17d9ca122^:pkg/statistics/handle/globalstats/merge_worker.go` 与同版本 `topn.go`：确认历史 Go 工作器的字段、锁、通道和循环语义。
-- `pkg/statistics/merge_global.rs` 与当前 `pkg/statistics/histogram.go`：确认当前 Rust/Go 生产算法的真实位置。
-
-本任务只生成说明文档，未运行 Cargo 或代码测试。结构验证要求目标文件存在，且上述十一个固定二级标题各出现一次。
+- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
+- 冻结 `merge_worker.rs`、`global_stats.rs`、`topn.rs`、crate `Cargo.toml`/`lib.rs`：核对完整草图构造、max-only 兼容合并、独占借用、取消、逐批传递 counter 和正常 statistics 依赖。
+- 冻结 `global_stats_test.rs::global_stats_sampled_ndv` 使用 `from_detailed`，`topn.rs` 显式调用 `run_task`；Go `global_stats.go` 使用组合 TopN/直方图算法，不能把该历史模型当作当前 Go 全量实现。
+- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。

@@ -23,9 +23,9 @@
 - `save_buckets(...)`：私有函数。将 `Histogram::buckets` 的累计 `count` 转成相对前一桶的增量，连同边界、重复数和桶内 NDV 写入 `mysql.stats_buckets`。
 - `save_column_or_index_stats_at_version(...)`：私有核心函数。参数决定版本、统计格式版本以及是否保存 CMSketch/FMSketch、是否更新 `column_stats_usage`。
 - `save_analyze_result_to_storage(...) -> Result<u64, Error>`：公开主入口。`0` 是有业务含义的返回值，表示过期 v2 ANALYZE 被跳过，或已有 meta 的 MV/全局索引辅助 ANALYZE 不应触发表级历史 meta 记录。
-- `save_column_or_index_stats(...)`：公开单对象覆盖入口；自行取 `start_ts`，v2 不保存 CMSketch，也总是清理但不重新插入 FMSketch，不更新时间戳。
+- `save_column_or_index_stats(...)`：公开单对象覆盖入口；自行取 `start_ts`，v2 不保存 CMSketch，先清理旧 FMSketch，再在载荷存在时插入新值，不更新时间戳。
 - `save_meta_to_storage(...)`：公开单表 meta 更新入口，调用者显式提供版本、计数和修改计数。
-- `insert_column_stats_to_kv(...)`：公开列统计写入入口；与上一入口相同地复用核心函数，但固定 `is_index=false`。
+- `insert_column_stats_to_kv(...)`：公开列统计写入入口；复用核心函数，但固定 `is_index=false` 且关闭 FM 保存，所以只删除旧 FM 行。整表导入也关闭 FM 保存；不能将单对象入口的新语义推及这些入口。
 - `insert_table_stats_to_kv(...)`：公开整表写入入口；先写 meta，再遍历 `TableStats::columns` 和 `indices`。索引版本取 `max(table.version, index.histogram.last_update_version)`。
 
 文件中没有 trait、struct、impl、宏或条件编译项；五个公开函数通过 crate 根重导出，三个私有函数封装 SQL 细节。
@@ -56,6 +56,8 @@
 - v2 路径将 `cm_sketch` 写为 SQL `NULL`；非 v2 是否写 CMSketch由 `save_cmsketch` 参数控制。
 - 每次保存都会先删除旧 FMSketch；只有 `save_fm_sketch=true` 且载荷存在时才重新插入，防止陈旧草图继续可见。
 
+单对象保存固定传 `save_fm_sketch=true`、`update_analyze_time=false`；`ColumnStats.fm_sketch: Option<Vec<u8>>` 是已编码的不透明字节。`Some` 载荷写入 `mysql.stats_fm_sketch(table_id,is_index,hist_id,value)`，`None` 只删除旧行。`read.rs::fm_sketch_from_storage` 通过 `select hex(value)` 与 `decode_hex` 恢复字节，本文件不编码/解码 `statistics::FMSketch` 协议，不能据此保证任意字节载荷有效。
+
 本文件自身不保存内存全局状态。所有可观察状态都在数据库或测试 `SqlStore` 的语句记录中；字节载荷通过 `sql_bytes` 生成 `x'...'`，数值直接格式化进内部 SQL。
 
 ## 依赖与调用关系
@@ -67,7 +69,7 @@
 - 上游：`StatsReadWriter::save_analyze_result` → `save_analyze_result_to_storage`；它还会在保存耗时超过半个 lease 时推进 meta 版本，并在非零版本时记录历史 meta。
 - 内部：`save_analyze_result_to_storage`、`save_column_or_index_stats`、`insert_column_stats_to_kv`、`insert_table_stats_to_kv` → `save_column_or_index_stats_at_version`。
 - 内部：`save_column_or_index_stats_at_version` → `save_top_n`、`save_buckets`、`SqlStore::execute`、`sql_bytes`。
-- 测试：`save_test.rs` 直接覆盖 MV/全局索引返回零版本及单列保存清理 FMSketch；`stats_read_writer_test.rs` 覆盖 ANALYZE 的直方图、FMSketch和分析时间 SQL。
+- 测试：`save_test.rs` 直接覆盖 MV/全局索引返回零版本及单列保存替换 FMSketch；`stats_read_writer_test.rs` 覆盖 ANALYZE 的直方图、FMSketch和分析时间 SQL。
 
 `pkg/statistics/handle/storage/Cargo.toml` 确认该目录本身是 crate 边界，`lib.rs` 是 crate 入口。manifest 的常规 `[dependencies]` 为空；所列旧 TiDB 子 crate 依赖全部处于 `target.'cfg(any())'`，该条件永假，说明当前实现刻意通过本地轻量抽象自包含。父 crate `astersql-statistics-handle` 以正常 path dependency 引用本 crate。
 
@@ -95,7 +97,7 @@ ANALYZE 写入的生命周期是“取得 start_ts → 锁定/读取 meta → �
 - Go 从 Datum 转换桶边界为 Blob；Rust 的 `Histogram` 已持有编码后的 `Vec<u8>`，因此只负责十六进制字面量编码。
 - Go 只在分区统计的 ANALYZE 路径保存 FMSketch（`needDumpFMS`）；Rust ANALYZE 当前固定传 `save_fm_sketch=true`，没有表 ID 类型信息可复现该判断。这是已确认的语义差异。
 - Go 会跳过 nil 的普通虚拟列直方图；Rust 的 `columns` 只包含具体 `ColumnStats`，没有 nil/虚拟列分支。
-- Go `SaveColOrIdxStatsToStorage` 还能按 `count` 参数更新 meta 并返回版本；Rust `save_column_or_index_stats` 只写列/索引明细且返回 `()`。
+- Go 单对象保存先 `EncodeFMSketch(fms)` 再删除/插入；Rust 已恢复可选 FM 字节载荷的替换语义，但把编码责任留给调用方。Go `SaveColOrIdxStatsToStorage` 还能按 `count` 参数更新 meta 并返回版本；Rust `save_column_or_index_stats` 只写列/索引明细且返回 `()`。
 - Go `SaveMetaToStorage` 批量 UPSERT 多个 `MetaUpdate` 并可选择是否刷新 `last_stats_histograms_version`；Rust `save_meta_to_storage` 是单表 UPDATE，版本由调用者传入。
 - Go `InsertColStats2KV` 为新增列根据默认值建立占位直方图/桶；Rust `insert_column_stats_to_kv` 保存一份已经构造好的完整 `ColumnStats`，不是同一 DDL 语义。
 - Go `InsertTableStats2KV` 基于 schema 创建零值占位行并返回 start TS；Rust 同名语义入口导入已有 `TableStats` 内容。Rust 搜索也未发现它们接入 Go 对应的 DDL 调用链。
@@ -113,9 +115,8 @@ ANALYZE 写入的生命周期是“取得 start_ts → 锁定/读取 meta → �
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引覆盖 11,467 个文件，目标目录的 `save.rs`、`save_test.rs`、`stats_read_writer.rs`、`stats_read_writer_test.rs`、`save.go` 均已索引。
-- RustCodeGraph `node --file pkg/statistics/handle/storage/save.rs --offset 1 --limit 400`：核对完整 344 行源文件、全部常量和八个函数，以及该文件被三个相邻 Rust 文件使用。
-- RustCodeGraph `node`：读取 `pkg/statistics/handle/storage/lib.rs`、`stats_read_writer.rs`、`save_test.rs`、`stats_read_writer_test.rs` 和完整 `save.go`，核对模块导出、数据结构、生产入口、测试断言与 Go 分支。
-- 精确符号查询 `query save_analyze_result_to_storage`、`query save_column_or_index_stats_at_version`、`query insert_table_stats_to_kv`、`query save_meta_to_storage`，并用仓库 `rg` 消除同名 Go/Rust符号歧义，确认当前可见调用点。
-- Cargo 边界：`pkg/statistics/handle/storage/Cargo.toml`、`pkg/statistics/handle/Cargo.toml`、`pkg/statistics/Cargo.toml`；确认独立 crate、父 crate path dependency 及永假迁移依赖区。
-- 人工复核范围：文档只陈述可由上述源码、调用点、manifest 和测试验证的当前行为；没有把 Go 已接线能力或事务原子性推断为 Rust 现状。
+- 冻结范围为 `ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；分别用 `git diff` 审计本文件增量，并以 `git show 2c944fb:源码路径` 核对目标版本，不引用工作区后续变化。
+- RustCodeGraph `status` 当前包含 Rust，但索引描述工作区而非冻结 blob；本次源码事实使用 Git blob 直接读取，图不作为冻结版本调用关系证据。目标包未发现 `doc.go`。
+- 冻结 `save.rs`、`stats_read_writer.rs`、`read.rs`、`save_test.rs`：核对字节载荷、删除/插入顺序、读取 hex 还原及各入口 FM 开关。`standalone_column_save_replaces_stale_fm_sketch` 断言旧行删除与新值 `x'ab'` 插入；仅阅读，未执行。
+- 冻结 Go `save.go::SaveColOrIdxStatsToStorage`：对照真实草图编码、可选保存及事务/计数接口差异。
+- 人工复核合并输入所有权、错误传播、FM 保存/加载格式与 Go 差异。Ready 等价文档校验：四篇各 11 个二级章节、相对链接存在、`git diff --check`；`.agents/skills/tidb-verify-profile` 缺失，按计划不运行 Cargo、代码测试或 lint。
