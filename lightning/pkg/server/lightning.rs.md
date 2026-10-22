@@ -87,6 +87,8 @@ RustCodeGraph `files --filter lightning/pkg/server` 确认 Rust/Go 源与独立�
 
 ## 错误处理与边界
 
+`Lightning::initDataSource` 的目录探测用 ListCount=1，并让回调返回预期的 `Stop Iter` 哨兵；只有 WalkDir 正常结束且没有条目时，才生成 `ErrEmptySourceDir`。该错误的 SourceDir 参数现经 `astersql_objstore::parse::RedactURL` 处理；遇到其他 walk 错误仍走原有 `NormalizeOrWrapLazy` 分支。脱敏只改变诊断字符串，不改变打开存储、目录遍历或 importer 的生命周期。
+
 启动期错误较强：`initEnv` 失败导致进程退出，TLS 构造失败走 fatal。任务期错误通过 crate 的 `Result<_, Error>` 传播，`run` 在所有结果上执行 cancel、共享状态清理、结束广播和 metrics 注销；`lightning_serial_test.rs::test_run` 明确断言数据源、未知 backend、未知 checkpoint driver 和坏 checkpoint 路径失败后 `cancel/importer` 均为空。
 
 数据源探测把空目录映射为 `ErrEmptySourceDir`，其他遍历问题归一化或包装为 `ErrStorageUnknown`。`checkSystemRequirement` 只对 local backend 生效，按最大 `TableConcurrency` 个表的总大小、writer memory cache、range concurrency 和 region concurrency 估算文件描述符；`checkSchemaConflict` 只在 checkpoint 开启且 driver 为 MySQL 时检查保留 checkpoint 表名。
@@ -109,6 +111,8 @@ HTTP server 和 `SIGUSR1` 启动路径使用 `thread::spawn`；任务本身由�
 
 ## 与 Go 版本的对应关系
 
+空目录错误与 Go `lightning.go` 对齐，使用 `objstore.RedactURL` 对应的共享 Rust helper；server crate 通过 Cargo 的 `astersql-objstore` 依赖接入，不能据这处错误替换推断整个存储替身已成为真实远程实现。
+
 Rust 的 `Lightning`、`initEnv/New`、`GoServe/goServe`、`RunServer`、`RunOnceWithOptions/run`、`initDataSource`、`initDBAndKeyspace`、`Stop/Status/Metrics`、任务 HTTP handlers、进度/loglevel handlers、两个检查函数、`SwitchMode`、`LightningImporter/newImporter` 均可在 `lightning.go` 找到同名或直接对应实现。主流程顺序、HTTP 路径、状态码、队列动作、open-files 估算公式和 checkpoint schema 错误分类均以 Go 为语义基准。
 
 当前差异/迁移限制包括：Rust 的 HTTP 访问包装只记录 method、URL、status，没有 Go `loggingResponseWriter` 的非 gzip body 摘要；Rust `SIGUSR1` 分支没有复用完整 mux；Rust 的 failpoint 注入为空闭包，没有恢复 Go 的动态测试值语义；Rust TaskID 来自 UUID 截断，而 Go 使用 `crypto/rand.Int`；Rust adapters 对 DB/storage/checkpoint/pauser 的传递仍有内存替身和丢失字段；import-into pause/resume 明确不支持；Go 的 `CleanupMetas` 和证书 helper 不在本文件。这些差异都应在声称“完全对齐”前单独处理。
@@ -129,9 +133,7 @@ Rust 的 `Lightning`、`initEnv/New`、`GoServe/goServe`、`RunServer`、`RunOnc
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件，目标目录 24 个文件；`files --filter lightning/pkg/server` 确认目标 Rust/Go/测试文件均已索引；`node --file lightning/pkg/server/lightning.rs --offset ...` 阅读目标文件；`node --file ... --symbols-only` 核对模块级常量、类型、函数、trait 与 impl。精确 `callers/callees --file` 查询未返回方法边，已用源码调用点补证。
-- 生产源码：完整阅读 `lightning/pkg/server/lightning.rs`；读取 `lightning/pkg/server/lib.rs` 确认模块再导出与平台选择；读取 `lightning/pkg/server/Cargo.toml` 确认 crate 边界和四个直接业务 crate 依赖；读取 `lightning/cmd/tidb-lightning/main.rs` 与 `lightning/cmd/tidb-lightning-ctl/main.rs` 确认上游入口。
-- Go 对照：阅读 `lightning/pkg/server/lightning.go` 的对应符号与核心流程，并用符号清单确认 Rust 当前缺少的 Go helper。
-- Rust 测试：阅读 `lightning/pkg/server/lightning_test.rs`、`lightning_serial_test.rs`、`lightning_server_serial_test.rs`、`parity_test.rs`；它们分别证明 HttpState 刷新、失败清理/资源检查、真实 TCP 控制面、Go 公共合同与 gzip/资源副作用。
-- Go 测试：核对 `lightning/pkg/server/lightning_serial_test.go` 和 `lightning_server_serial_test.go` 的对应测试入口，包括 `TestInitEnv`、`TestRun`、`TestCheckSystemRequirement`、`TestCheckSchemaConflict`、`TestRunServer`、`TestGetDeleteTask`、`TestHTTPAPIOutsideServerMode`。
-- 本任务是纯文档分析，按计划未运行 Cargo。结构验收使用任务指定命令，要求目标文件存在且恰好包含 11 个固定二级章节。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`Lightning` 的数据源初始化、WalkDir 哨兵和空目录错误；Go `lightning.go` 对应错误使用 RedactURL。相邻 `lightning_test.rs` 为既有服务测试背景，未据其宣称新增脱敏场景已运行。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

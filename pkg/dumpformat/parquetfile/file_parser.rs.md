@@ -39,7 +39,7 @@
 
 每次 `read_row` 先检查 `closed`。当前组耗尽时清空列、递增组号；文件末尾返回 `"EOF"`，否则重建下一组。然后依次调用所有 `Column::next`，只有整行全部成功后才递增 `group_read`、`read_rows` 和 `row_id`。`Column::next` 在本列缓存为空时按批读取：definition level 为 0 生成 `Datum::Null`；非 NULL 值按物理类型分派到 `type_converter`；INT96 先按小端字节重建微秒值，再按解析时区补偿 UTC offset。缓存中若保存了转换错误，该错误只在对应行被弹出时暴露，而不会提前破坏更早的 NULL 行。
 
-导入链路调用 `ImportParser::ReadRow`：先递增最后一行的 row ID 并清零长度，再读内部行、计算估算长度，从 `row_pool` 取或新建缓冲，把内部值转换为 mydump 值。整数保留为 `I64`；无符号数、浮点、decimal、duration 和时间格式化为字节串；DATE 输出 `YYYY-MM-DD`，其他时间输出到微秒。成功后替换 `last.row`。调用者通过 `LastRow` 取得克隆，并可用 `RecycleRow` 把其中的向量放回池。
+导入链路调用 `ImportParser::ReadRow`：先递增最后一行的 row ID 并清零长度，再读内部行、计算估算长度并检查共享行上限，从 `row_pool` 取或新建缓冲，把内部值转换为 mydump 值。整数保留为 `I64`；无符号数、浮点、decimal、duration 和时间格式化为字节串；DATE 输出 `YYYY-MM-DD`，其他时间输出到微秒。成功后替换 `last.row`。调用者通过 `LastRow` 取得克隆，并可用 `RecycleRow` 把其中的向量放回池。
 
 ## 数据与状态
 
@@ -71,6 +71,8 @@ RustCodeGraph 索引将本文件识别为 44 个符号，并显示其被 `parser
 
 ## 错误处理与边界
 
+`ImportParser::ReadRow` 对已解码的行调用 `datum_row_size`，若大于 `parser::MAX_ROW_SIZE.load(Ordering::Relaxed)`，返回 `MydumpError::Configuration(parsedef::ERR_ROW_TOO_LARGE.into())`；等于上限可通过。检查发生在赋值 `last.length`、取行池和 mydump 值转换之前，但底层 FileParser 已消费该行，外层 row_id 也已递增且 length 已清零；错误不会回退 reader 或清除旧 `last.row`。限制是解码后大小估算，不是 Parquet 压缩页字节数，也不阻止解码前分配。
+
 构造阶段会拒绝无效时区、嵌套/重复字段、不支持的 converted/logical type、logical/physical 不匹配、无效 column chunk 范围、SourceReader 范围配置失败以及 Spark rebase lookup 创建失败。parquet-rs 和 IO 类错误通常由局部 `error` 转成字符串包装的 crate `Error`，因此调用者不应依赖底层具体错误类型。
 
 读取阶段的关键边界是：已关闭返回 `"parser is closed"`；文件或 row group 结束最终返回精确 `"EOF"`；parquet 声称有 record 却缺少物理 value 时返回 `"missing parquet column value"`；INT96 时区换算越界和 mydump 时间格式化越界返回 `"timestamp out of range"`。`set_batch_size(0)` 被拒绝。`adjust_memory_estimate` 使用 checked arithmetic，并拒绝下溢、上溢或负结果。
@@ -88,6 +90,8 @@ RustCodeGraph 索引将本文件识别为 44 个符号，并显示其被 `parser
 整文件预加载时，`adjust_memory_estimate` 仅调整计费，不迁移或复制缓冲：从既有峰值扣除构造时记录的第一 row-group 预加载值，再加入 `SourceReader::buffer_bytes`。`tests/whole_file_preload.rs::whole_buffer_replaces_row_group_charge_without_changing_decoder_estimate` 验证其避免双重计费；`tests/page_streaming_peak.rs::importer_decoder_streams_large_pages_with_one_row_batches_and_bounded_peak` 验证大页在一行批次下仍保持受限峰值。
 
 ## 与 Go 版本的对应关系
+
+新增检查承接 Go `parser.go::ReadRow` 的 `rowSize > maxRowSize` 和共享 `ErrRowTooLarge` 意图；Rust 以原子上限和 Configuration 变体表达，Go 使用共享 error 值。`parser_test.rs::parquet_parser_too_large_row` 通过真实 Parquet 文件和 ImportParser 验证拒绝意图。
 
 直接对照文件是 `pkg/dumpformat/parquetfile/parser.go`。Rust 的 `FileParser` 对应 Go `Parser` 的 schema 校验、row-group 推进、列批读、行数/进度、Spark rebase 和预加载内存语义；Rust `ImportParser` 则把这些能力适配回 Go 侧 `parsedef.Parser`/mydump 风格接口。
 
@@ -115,9 +119,7 @@ RustCodeGraph 索引将本文件识别为 44 个符号，并显示其被 `parser
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含本文件；`files --filter pkg/dumpformat/parquetfile` 确认目标及相邻 Rust/Go/测试文件；`node --file pkg/dumpformat/parquetfile/file_parser.rs --offset 1 --limit 500` 与 `--offset 480 --limit 160` 读取完整 588 行；`query FileParser`、`query ImportParser`、`query normalized_logical_type`、`query validate_parquet_logical_type` 核对核心符号和 importer 入口。通用 `explore` 返回大量同名噪声，未将其不相关 blast-radius 结果作为结论。
-- 源码与声明：`pkg/dumpformat/parquetfile/file_parser.rs`、`lib.rs`、`Cargo.toml`、`parser.rs`、`source_reader.rs`、`reader_wrapper.rs`、`type_converter.rs`、`spark_rebase.rs`。
-- 生产调用：`lightning/pkg/importer/chunk_process.rs`、`lightning/pkg/importer/get_pre_info.rs`、`pkg/executor/importer/import.rs`。
-- Go 对照：`pkg/dumpformat/parquetfile/parser.go`，重点是 `Parser`、`Init`、`buildRowGroupParser`、`getBuilder`、`moveToNextRowGroup`、`readSingleRow`、`SetPos`、`ScannedPos`、`Close`、`ReadRow`、`NewParser`、`preloadBufferBytes` 与 `EstimateParquetReaderMemory`；行为测试来源为 `pkg/dumpformat/parquetfile/parser_test.go`。
-- Rust 独立测试：`pkg/dumpformat/parquetfile/parser_test.rs` 覆盖字典跨批、跨 row group、检查点/进度、logical type、NULL、decimal、时间和 Spark rebase；`pkg/dumpformat/parquetfile/tests/whole_file_preload.rs` 覆盖读取策略、真实值/EOF、内存估算及关闭；`pkg/dumpformat/parquetfile/tests/page_streaming_peak.rs` 覆盖大页流式解码峰值。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付结构检查要求本文恰好包含上述 11 个固定二级标题。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`ImportParser::ReadRow` 的消耗、估值、超限与行池次序；`parser_test.rs::parquet_parser_too_large_row` 真实 Parquet 测试；Go `parser.go::ReadRow` 及 `parser_test.go` 超限用例。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

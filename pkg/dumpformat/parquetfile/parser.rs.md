@@ -23,6 +23,8 @@
 
 ## 主要符号
 
+`MAX_ROW_SIZE: AtomicU64` 是公开共享上限，初始化为 `astersql_config::MAX_TXN_ENTRY_SIZE_LIMIT`。模型解析器和 `file_parser.rs::ImportParser` 都以 Relaxed 读取；Cargo 已声明 `astersql-config` 与 `astersql-dumpformat-parsedef` 依赖。
+
 - `DEFAULT_BUFFER_SIZE: usize = 64 * 1024`：对应 Go 的云存储小跨度 skip buffer 默认值。当前本文件的可执行路径没有直接使用它，保留为模块级兼容常量。
 - `READ_BATCH_SIZE: usize = 128`：默认列批读取规模。`file_parser.rs::FileParser` 将它写入实例的 `batch_size`；`EstimateParquetReaderMemory` 也用它估算每列 level 缓冲。
 - `ConvertedType`：旧式 converted/logical type 摘要。`Parser::new` 明确拒绝 `List`、`Map`、`MapKeyValue`、`Interval` 和 `NA`；`type_converter.rs` 与 `file_parser.rs` 还会复用该枚举。
@@ -51,7 +53,7 @@
 2. `Parser::new` 遍历 `file.columns`，遇到不支持的容器/特殊 converted type 立即报错；随后将列名做 `to_ascii_lowercase`，用 `ParquetFile::num_rows` 记录总行数，并把 group/row 游标置零。
 3. 调用 `read_row` 时，方法先将 `last_row.row_id` 加一并清零旧长度，然后调用 `read_single_row`。
 4. `read_single_row` 先拒绝已关闭解析器和已越过最后 row group 的状态；当前 group 恰好读完时只前进一个 group，再从该 group 获取当前行。
-5. 行列数必须与 schema 列数相同，否则返回带实际列数和 schema 列数的错误。成功后推进 `current_row` 与 `total_read_rows`，计算行大小并返回新 `ParsedRow`。
+5. 行列数必须与 schema 列数相同，否则返回带实际列数和 schema 列数的错误。成功后推进 `current_row` 与 `total_read_rows`，计算行大小，与共享行上限比较后返回新 `ParsedRow`。
 6. `read_row` 把预先递增的逻辑行号写入返回行并更新 `last_row`。
 
 这里有一个由测试固定的细节：一次读取最多跨过一个 row group。若下一个 group 为空，本次调用会因取不到行而返回 `EOF`；再次调用才会继续推进到再下一个 group。`parser_test.rs::parquet_parser_moves_across_multiple_row_groups` 明确验证了这一 Go 对齐行为，同时也验证失败读取仍已递增逻辑 `row_id`。
@@ -104,6 +106,8 @@ RustCodeGraph 对目标文件的文件级索引显示它被 `file_parser.rs`、`
 
 ## 错误处理与边界
 
+`Parser::read_single_row` 先推进 `current_row`、`total_read_rows`，再估算 row size；严格大于 `MAX_ROW_SIZE` 时返回 `Error(ERR_ROW_TOO_LARGE.into())`。等于上限可通过，0 并非禁用开关。`read_row` 在调用前已递增 last row_id、清零 length，超限不会回退这些状态，不能直接重试并期待重新读取同一行。此检查针对已物化行，不提供读取前内存上限。
+
 - `Parser::new` 只按 `ConvertedType` 拒绝 `List`、`Map`、`MapKeyValue`、`Interval`、`NA`。完整的逻辑类型与物理编码适配性校验属于 `file_parser.rs::normalized_logical_type`，不能把简化构造器视为真实文件的全部 schema 验证。
 - `read_single_row` 对关闭状态返回 `parser is closed`；耗尽 group 列表、当前/空 group 无行时返回字符串 `EOF`。crate 的统一 `Error` 没有结构化错误类别。
 - 读取到行后会检查 `row.len() == file.columns.len()`，防止 schema 与物化行错位。该错误发生前不推进物理计数。
@@ -125,6 +129,8 @@ RustCodeGraph 对目标文件的文件级索引显示它被 `file_parser.rs`、`
 真实资源生命周期由下游完成：`open_file_reader` 返回拥有 source 的 `SerializedFileReader`；`FileParser` 持有 reader 与 `SourceReader`，其 `close` 清空列 reader、关闭 source 并标记关闭。`tests/whole_file_preload.rs::real_rows_and_eof_match_across_whole_group_and_column_strategies` 验证关闭后继续读会报 closed，并覆盖 whole-file、row-group 与 column streaming 策略。`tests/page_streaming_peak.rs::large_plain_page_reads_values_and_eof_with_bounded_peak` 验证大 plain page 在 page streaming 下保持有界峰值。
 
 ## 与 Go 版本的对应关系
+
+Go 使用 `maxRowSize = tidbconfig.MaxTxnEntrySizeLimit` 与 `parsedef.ErrRowTooLarge`；Rust 模型和真实适配器共享原子上限及错误文本，但分别用 crate `Error` 和 mydump `Configuration` 表达。真实适配器的超限测试不等于模型 `Parser` 分支已执行验证；本任务只核对源码与测试意图。
 
 直接对照文件为 `pkg/dumpformat/parquetfile/parser.go`。
 
@@ -156,15 +162,7 @@ RustCodeGraph 对目标文件的文件级索引显示它被 `file_parser.rs`、`
 
 ## 验证依据
 
-本说明基于以下直接证据：
-
-- 目标源码：`pkg/dumpformat/parquetfile/parser.rs`，RustCodeGraph `node --file` 完整读取 1—1217 行；确认第 857 行之前为注释草稿，之后为编译实现。
-- crate 边界：`pkg/dumpformat/parquetfile/Cargo.toml`、`pkg/dumpformat/parquetfile/lib.rs`；确认模块公开方式、直接依赖和 Parquet fork tag。
-- Go 对照：`pkg/dumpformat/parquetfile/parser.go`；核对常量、schema 校验、row group 状态机、定位/进度、采样、allocator 与内存估算。
-- Rust 独立测试：`pkg/dumpformat/parquetfile/parser_test.rs`；核对列名、读取/EOF、跨 group、定位、unsupported 类型、采样、allocator、内存估算与 scanned position。
-- 真实解码入口：`pkg/dumpformat/parquetfile/file_parser.rs`；核对 `FileParser::new_with_location -> parser::open_file_reader`、schema 校验、row group 状态与 `ImportParser` 适配。
-- 真实 reader 测试：`pkg/dumpformat/parquetfile/tests/page_streaming_peak.rs`、`pkg/dumpformat/parquetfile/tests/whole_file_preload.rs`；核对 page streaming、大页峰值、预读策略、EOF 与关闭生命周期。
-- 其他直接生产调用：`lightning/pkg/importer/get_pre_info.rs` 对 `open_file_reader` 的元数据读取调用。
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/dumpformat/parquetfile` 确认目标与相关 Rust/Go 文件均在索引内；对 `NewParser`、`read_single_row`、`open_file_reader`、`SampleStatisticsFromParquet`、`EstimateParquetReaderMemory` 做了精确 query，并对 Rust qualified symbol 执行 callers/callees。图未返回这些符号的完整调用边，因此又用上述直接源码引用补证。
-
-人工复核结论：本文能够区分注释草稿、内存兼容模型和真实逐页导入入口；说明了文件存在目的、主要状态机、错误/生命周期边界、Go 差异及安全扩展位置，没有把未编译草稿写成当前已支持行为。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`MAX_ROW_SIZE`、`estimate_row_size`、`Parser::read_single_row/read_row`；`parser_test.rs::parquet_parser_too_large_row` 覆盖真实 ImportParser，模型分支以源码核对；Go `parser.go` 的 maxRowSize/ReadRow。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

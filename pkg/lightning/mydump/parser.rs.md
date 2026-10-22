@@ -27,7 +27,7 @@ SQL 的词法扫描不在本文件内实现：`ChunkParser::ReadRow` 下沉到 `
 - `Row { row, row_id, length }`：最近一次成功解析的行。`row_id` 在识别到行左括号时递增；`length` 是本次 `ReadRow` 消费到行右括号为止的 token 原始字节长度之和。
 - `Chunk { offset, end_offset, real_offset, prev_row_id_max, row_id_max, columns }`：连续导入片段。行号可分配范围语义为 `(prev_row_id_max, row_id_max]`；本实现生成普通 SQL/CSV 分片时令 `real_offset == offset`。
 - `EscapeFlavor::{None, MySql, MySqlWithNull}`：反斜杠转义策略。`NewChunkParser` 当前只选择 `None` 或 `MySql`；`MySqlWithNull` 在本文件没有构造点。
-- `BlockParser`：持有 `PooledReader`、未消费 `buf`、块容量模板 `block_buf`、EOF 标记、列名、最后一行、逻辑偏移和 `row_pool`。`beginRowLenCheck`/`endRowLenCheck` 及其字段在当前 Rust 模块中没有调用者，应视为为接口/迁移保留的状态，而不是活跃流程。
+- `BlockParser`：持有 `PooledReader`、未消费 `buf`、块容量模板 `block_buf`、EOF 标记、列名、最后一行、逻辑偏移和 `row_pool`。`ReadRow` 现通过 `beginRowLenCheck`/`endRowLenCheck` 驱动行长检查，`max_row_size` 由构造器传入。
 - `makeBlockParser` / `make_block_parser`：构造基础解析器；后者是 snake_case 转发别名。
 - `Parser` trait：公开 `Pos`、`SetPos`、`ScannedPos`、`Close`、`ReadRow`、`LastRow`、`RecycleRow`、列名和行号操作。与 Go 接口不同，Rust trait 不含 `SetLogger`；日志器只能通过具体 `BlockParser` 或本文件的同名转发函数设置。
 - `ChunkParser` / `NewChunkParser`：SQL VALUES 解析器及构造器。`no_backslash_escapes=true` 时选择 `EscapeFlavor::None`，否则采用 MySQL 反斜杠转义。
@@ -39,6 +39,8 @@ SQL 的词法扫描不在本文件内实现：`ChunkParser::ReadRow` 下沉到 `
 - `acquireDatumSlice`、`logSyntaxError`、`readBlock`、`SetLogger`、`String`、`unescape`：为 Go 风格调用或兼容命名暴露的轻量入口。
 
 ## 执行流程
+
+`makeBlockParser` 与 snake_case 别名新增 `max_row_size` 参数。`NewChunkParser` 在创建时 Relaxed 读取 `LargestEntryLimit`，以 saturating_mul(2) 并钳制到 i64::MAX 形成 SQL 源文本上限；以后修改全局值不会改变已建解析器。`ReadRow` 先 begin，调用 `read_row_checked`，再 end 并返回结果，覆盖正常错误/EOF 的检查开关清理，不是 panic guard。
 
 ### 构造与补充缓冲
 
@@ -69,12 +71,12 @@ SQL 的词法扫描不在本文件内实现：`ChunkParser::ReadRow` 下沉到 `
 ## 数据与状态
 
 - `BlockParser::pos` 是已经由词法器消费的逻辑字节位置，不等同于底层 reader 的预读位置。`ScannedPos` 返回底层流位置，可能领先于 `Pos`；该区别用于进度和检查点。
-- `buf` 保存已读取但尚未被词法器消费的字节。`block_buf` 的长度决定单次读取上限，但 Rust `read_block` 当前每次按该长度重新分配临时向量，并未直接复用 `block_buf` 的存储。
+- `buf` 保存已读取但尚未被词法器消费的字节。`block_buf` 的长度决定单次读取上限，但 Rust `read_block` 直接复用 `block_buf` 读取，再将有效切片追加到 `buf`。
 - `is_last_chunk` 只有在一次 `read` 返回 0 时才置真。短读本身不代表 EOF，后续词法需要更多字节时会再次读取。
 - `columns` 是最近 INSERT 的小写列名快照；开始识别下一条带表名 INSERT 时清空。`ReadChunks` 在生成每个片段时复制该状态。
 - `last_row` 是解析器持有的最近成功行。`LastRow` 返回深拷贝；调用方在不再需要行时可调用 `RecycleRow`，把其中的 `Vec<Datum>` 清空后放回 `row_pool`。
 - `row_pool` 是解析器实例私有的 LIFO 向量池，空池时分配容量 16；它不跨解析器共享，也没有内部同步。
-- `row_start_pos` 与 `check_row_len` 可由公开方法设置，但当前词法和行组装流程没有读取它们。不能据此声称 Rust 已实现 Go 端任何额外行长检查行为。
+- `row_start_pos` 在每次 ReadRow 开始时记下逻辑位置，`check_row_len` 控制 read_block 的累计源文本大小检查；成功或 Result 错误返回后均关闭检查。
 - `parse_based` 对奇数位十六进制文本左补零；二进制文本从低位反向聚合为字节再反转。非法十六进制由 `hex::decode` 报错；二进制合法字符范围主要由上游词法器保证。
 
 ## 依赖与调用关系
@@ -99,6 +101,8 @@ RustCodeGraph 对精确符号的结果显示：`NewChunkParser` 的 Rust 调用�
 
 ## 错误处理与边界
 
+`read_block` 追加有效字节并处理 BOM 后，以 `pos.saturating_sub(row_start_pos).saturating_add(buf.len() as i64)` 检查累计量。仅在 max_row_size > 0、check_row_len 为 true 且累计量严格超限时返回 `Configuration(ERR_ROW_TOO_LARGE)`；这是补块时的源文本约束，可能包含当前缓冲的预读内容，并非对每个 Datum 的精确编码大小检测。超限时已读字节仍留在 buf，不回滚底层流。
+
 - I/O 错误通过 `From<std::io::Error>` 转成 `MydumpError::Io`。`SetPos` 对“seek 成功但实际位置不同”也显式返回 `Io`。
 - 正常输入耗尽用 `Error::Eof` 表示；`ReadChunks` 以此结束并保留尾片，`ReadUntil` 以此提前成功。二者都传播非 EOF 错误，`parser_test.rs::read_chunks_propagates_syntax_errors` 专门约束这一点。
 - token 与当前状态不匹配时，`unexpected_token` 报告 token、原始内容、逻辑偏移和期望类别。词法器自身失败时会记录最多 256 字节的缓冲前缀，再返回 `Syntax`。
@@ -122,6 +126,8 @@ RustCodeGraph 对精确符号的结果显示：`NewChunkParser` 的 Rust 调用�
 
 ## 与 Go 版本的对应关系
 
+新增上限参数、begin/end 检查和 SQL 两倍源文本额度对应 Go 的 maxRowSize 与 sqlRowTextLenRatio 意图。Rust 用饱和算术防止放大溢出；`chunk_parser_too_large_row` 接受文本大于单倍但小于双倍额度的 hex 值，拒绝超过双倍的字符串。CSV 使用相邻解析器自己的额度接线，不能将 SQL 倍率推广到全部格式。
+
 直接对照文件是 `pkg/lightning/mydump/parser.go`，行为测试为 `pkg/lightning/mydump/parser_test.go`；Rust 独立测试是 `pkg/lightning/mydump/parser_test.rs`，没有把测试内嵌在生产源文件中。
 
 保持一致的主要语义：
@@ -137,7 +143,7 @@ RustCodeGraph 对精确符号的结果显示：`NewChunkParser` 的 Rust 调用�
 - Go 正整数先用 `ParseUint`，可保存完整 `uint64`；Rust `Datum` 只有 `I64`，超过 `i64::MAX` 的正整数会退化为 `Bytes`。Rust 测试只覆盖远超 64 位整数的回退，未证明 `i64::MAX+1..=u64::MAX` 与 Go 等价。
 - Go `OpenReader` 只负责按压缩配置打开并返回流，解析器类型由更高层选择；Rust 同名函数会整文件读入内存并直接选择 CSV/SQL parser。两者 API 和内存生命周期并非逐句移植。
 - Go `Parser` 包含 `SetLogger`，Rust trait 不包含；Rust 仅给具体 `BlockParser` 暴露设置入口。
-- Go `readBlock` 使用 `ReadFull`、复用缓冲，并区分截断压缩流的 `ErrUnexpectedEOF`；Rust `read_block` 使用普通 `read`、每次新建临时向量，并以零字节读取确认 EOF。Rust 的压缩错误是否等价取决于 `Storage::open` 返回的 reader，当前 `parser_test.rs` 未覆盖截断压缩流。
+- Go `readBlock` 使用 `ReadFull`、复用缓冲，并区分截断压缩流的 `ErrUnexpectedEOF`；Rust `read_block` 使用普通 `read`、复用块缓冲，并以零字节读取确认 EOF。Rust 的压缩错误是否等价取决于 `Storage::open` 返回的 reader，当前 `parser_test.rs` 未覆盖截断压缩流。
 - Go 保存 metrics、logger 上下文以及 `remainBuf`/`appendBuf`；Rust 只有简化的 logger 和 `Vec<u8>` 追加缓冲，没有同等 metrics 观测。
 - Go 的 `Chunk` 生成逻辑默认不写 `RealOffset` 和列名（零值/空值），Rust `ReadChunks` 显式令 `real_offset=offset` 并复制 `Columns()`。这是当前 Rust 行为，调用方不能假定 Go 零值语义。
 - Go 使用 TiDB `types.Datum` 与 collation 信息；Rust 用本地精简 `Datum`，文本只保存字节，没有 Go Datum 的无符号整数和类型元数据。
@@ -151,16 +157,13 @@ RustCodeGraph 对精确符号的结果显示：`NewChunkParser` 的 Rust 调用�
 - 改变转义规则时，同时检查 `unescapeString`、`decode_text`、`EscapeFlavor` 的构造点，以及 `parser_test.rs::TestUnescapeBytePairs`、`TestUnescapeDelimiterBeforeEscape`。反引号目前强制 `EscapeFlavor::None`，不应被普通字符串模式意外覆盖。
 - 改变分片策略时修改 `ReadChunks`，并保持相邻 `end_offset == offset`、相邻行号边界衔接、只在完整行边界切分及错误不被 EOF 吞掉等不变量；同步 `parser_test.rs::TestReadChunks` 和错误传播测试。若调整 `real_offset`/`columns`，还需检查 region/导入侧消费者。
 - 扩展新 `SourceType` 时在 `OpenReader` 增加明确分支，并评估是否允许 `read_to_end`。Parquet 等随机访问或大文件格式更适合独立 parser/opener，不应无意复制整个对象。
-- 优化内存时，优先评估 `read_block` 的临时分配、`buf.drain(..end)` 的前移成本、`LastRow` 深拷贝和 `OpenReader` 整文件加载；任何优化都必须保留跨块 token、逻辑偏移和 BOM 语义。
+- 优化内存时，优先评估 `buf` 的追加容量、`buf.drain(..end)` 的前移成本、`LastRow` 深拷贝和 `OpenReader` 整文件加载；任何优化都必须保留跨块 token、逻辑偏移和 BOM 语义。
 - 增加进度/检查点功能时，明确区分 `Pos` 与 `ScannedPos`，并在 seek 后清理所有可能保存旧字节或旧 EOF 的状态。负偏移校验也应放在 `SetPos` 边界。
 - 测试继续放在同目录独立文件 `parser_test.rs` 或生成词法器测试文件中，不要放回 `parser.rs`。若目标是与 Go 对齐，应先扩展当前 Rust 测试到对应 Go 场景，再修改实现。
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件；目标文件可通过 `node --file pkg/lightning/mydump/parser.rs` 完整读取。文件关系显示其被 `pkg/importsdk/file_scanner.rs`、`pkg/executor/importer/table_import.rs`、`pkg/lightning/mydump/parser_test.rs` 和 `pkg/dumpformat/parquetfile/parser_test.rs` 使用。
-- RustCodeGraph 符号查询：`NewChunkParser`、`ReadChunks`、`OpenReader`、`unescapeString` 均同时定位到 Rust 与 Go 同路径实现；精确 explore 显示 Rust `NewChunkParser <- OpenReader/parser_test::parser`、`ReadChunks <- parser_test/别名`、`ReadUntil <- parser_test/别名`、`OpenReader <- pkg/importsdk/file_scanner.rs::NewParser`。
-- 已读 Rust 生产路径：`pkg/lightning/mydump/parser.rs`、`lib.rs`、`parser_generated.rs`、`common.rs`、`reader.rs`、`pkg/importsdk/file_scanner.rs`，并检查 `pkg/executor/importer/table_import.rs` 对公开解析接口的引用。
-- 已读 crate 声明：`pkg/lightning/mydump/Cargo.toml`，确认 crate 名、`lib.rs` 入口、`hex` 等依赖及 `go-package = "pkg/lightning/mydump"` 的移植元数据。
-- 已读 Go 对照：`pkg/lightning/mydump/parser.go` 的基础状态、读取/转义、`ReadRow`、`ReadChunks`、`ReadUntil`、`OpenReader`；已读 Go 测试 `pkg/lightning/mydump/parser_test.go` 的逐行、偏移、列名、分片、嵌套语法和错误场景。
-- 已读 Rust 独立测试：`pkg/lightning/mydump/parser_test.rs` 全文，确认多块大小、值映射、列状态、错误传播、提前 EOF、对象语义和转义边界。
-- 本任务是纯文档分析，按计划不运行 Cargo。结构验收要求本文恰好包含任务指定的 11 个二级标题；最终交付前以任务文件给定命令验证。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`BlockParser` 构造/缓冲、`row_len_exceeds_limit`、`NewChunkParser` 与 ReadRow 包装；`parser_test.rs::chunk_parser_too_large_row` 和 Go `parser.go`/`parser_test.go`；LargestEntryLimit/共享常量的 lib.rs 接线。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

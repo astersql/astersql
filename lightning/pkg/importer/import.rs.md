@@ -84,6 +84,8 @@ RustCodeGraph 对 Go/Rust 同名符号会返回两组节点，例如 `NewImportC
 
 ## 错误处理与边界
 
+`verifyCheckpoint` 在 requirements 开启且原始 `Mydumper.SourceDir != taskCp.SourceDir` 时，分别调用 `astersql_objstore::parse::RedactURL` 后才构造错误。如果两个脱敏结果相同，在 checkpoint 一侧追加 ` (only the redacted parameters differ)`，保留“仅凭据等被遮盖参数不同”的诊断。比较仍针对原始字符串，脱敏相同不会绕过拒绝；配置/checkpoint 都不被修改。此规则不构成对本文件所有错误字段（如 checkpoint DSN）的统一脱敏声明。
+
 - `Run` 使用 `?` 保留第一个阶段错误，仍将该错误转换为 progress error 并执行结束广播、错误汇总；它不在内部调用 `Close`，资源释放由上层 `LegacyImporter::Run` 保证。
 - `NewImportControllerWithPauser` 中 `param.DB` 缺失时使用内存 DB 创建并行 meta builder；error manager 则只有在 DB 存在时创建。当前构造器没有复刻 Go 版打开/读取/验证 checkpoint、TLS/PD/backend 初始化失败回滚等完整路径。
 - `preCheckRequirements` 对大多数错误 fail-fast；`checkClusterRegion` 是例外，其结果被 `.ok()` 丢弃。模板失败以 `FailedMsg()` 合成普通错误。
@@ -104,6 +106,8 @@ RustCodeGraph 对 Go/Rust 同名符号会返回两组节点，例如 `NewImportC
 - Go 版 checkpoint listener 有 channel 与 wait group，磁盘配额检查有 goroutine、RWMutex 和周期重试；当前 Rust 对应逻辑没有异步生命周期，文档和新增功能不得假定这些机制已移植。
 
 ## 与 Go 版本的对应关系
+
+本次 source-dir 错误与 Go `verifyCheckpoint` 同样先比较原值、再脱敏展示，并在遮盖后相等时追加提示；Rust `import_test.rs::test_verify_checkpoint_redacts_source_dir` 对凭据不出现和提示保留提供静态回归证据。
 
 `lightning/pkg/importer/import.go` 是直接语义来源，Rust 保留了大量 Go 风格符号名和主流程顺序。已对齐的可观察行为包括：全局 pauser 注入；backend/requirements 分支；错误按表汇总；checkpoint backend/版本/源目录/sorted-KV 兼容检查；route extractor 产生扩展列；`filterColumns` 对 header、ignore、hidden 和 extend 列的组合规则；TLS 字段写入全局配置；server 端构造、运行、关闭的生命周期。
 
@@ -132,10 +136,7 @@ RustCodeGraph 对 Go/Rust 同名符号会返回两组节点，例如 `NewImportC
 
 ## 验证依据
 
-- RustCodeGraph 状态：项目索引存在且可用，包含 11467 个文件、307296 个节点、1848419 条边；`files --filter lightning/pkg/importer` 确认目标、Go 对照和独立测试均已索引。
-- RustCodeGraph 源码读取：完整读取 `lightning/pkg/importer/import.rs` 第 1–1207 行；读取生产入口 `lightning/pkg/server/lightning.rs` 第 1438–1657 行；读取 Rust 测试 `lightning/pkg/importer/import_test.rs` 和 Go 对照测试 `import_test.go` 的相关测试。
-- RustCodeGraph 符号查询：核对 `NewImportController`、`NewImportControllerWithPauser`、`importTables`、`preCheckRequirements`、`enforceDiskQuota`、`verifyCheckpoint`、`addExtendDataForCheckpoint`、`filterColumns` 的 Go/Rust 节点。精确 Rust `callers/callees` 查询未返回边，故调用关系另以已索引文件的使用者信息和源码引用搜索交叉核对。
-- 配置与模块证据：读取 `lightning/pkg/importer/Cargo.toml` 和 `lightning/pkg/importer/lib.rs`，确认 crate 类型、模块导出、workspace/path/Git 依赖及测试模块边界；目标包没有 `doc.go`。
-- Go 对照：读取 `lightning/pkg/importer/import.go` 中 Controller/ControllerParam、构造器、schema/checkpoint、importTables、扩展列、压缩、磁盘配额、预检、列过滤和 TLS 全局配置对应段落。
-- 测试证据：`lightning/pkg/importer/import_test.rs` 覆盖错误汇总、checkpoint 条件、预检短路、扩展列、列过滤、全局配置；`chunk_process_test.rs`、`table_import_test.rs`、`parity_test.rs` 和 `meta_service_group_test.rs` 提供直接调用证据；Go 侧 `import_test.go` 提供原测试意图。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定 shell 命令验证本文档存在且恰有 11 个固定二级标题，并人工复核所有“已实现/未实现”判断均对应上述源码证据。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`verifyCheckpoint` 原始目录比较及脱敏诊断；`import_test.rs::test_verify_checkpoint_redacts_source_dir` 与 Go `import.go`/`import_test.go` 的等文案提示。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

@@ -44,6 +44,8 @@
 
 ## 数据与状态
 
+`progressView` 同时克隆 `tidb_keyspace_name` 并复制 `tidb_keyspace_id`、`tidb_use_keyspace_gc`。这三个值是建立视图时的普通快照，后续主 Dumper 的字段修改不会同步；`pd_client` 仍为 None，因此进度线程不会因保存元数据而拥有或关闭 PD 资源，也没有新增 GC 网络操作。
+
 `DumpStatus` 是一次采样的不可变语义快照，而实时数据源分散在 `Dumper` 中：`metrics.rs::metrics` 的 gauge/counter 保存已完成大小、行数、表数和估算总行数；`AtomicI64 totalTables` 保存准备阶段统计出的基础表总数；`metrics.totalChunks`、`completedChunks` 和 `progressReady` 是进度条专用的原子状态。所有这些原子读写在本路径使用 `Ordering::SeqCst`。
 
 `progressReady == false` 表示 chunk 分母尚未知，不等同于 0%：此时 `Progress` 保持空字符串，`ProgressPercent` 保持 `None`，JSON 中两个字段均省略。ready 后，零 chunk 明确表示没有上游数据并作为完成处理；`completedChunks > totalChunks` 被视为可能的计数竞态，输出仍限制在 100%。源码未对负 chunk 计数做额外约束；安全扩展时应保持生产者只做非负计数的不变量。
@@ -78,6 +80,8 @@ HTTP 服务只持有 `status` 的 `Arc`，不会延长数据库或存储句柄�
 
 ## 与 Go 版本的对应关系
 
+本次增量用于跟随 Rust `Dumper` 新增的 keyspace 状态，保持后台视图构造完整；Go 的 goroutine/接收者模型没有这个独立 Rust 值视图构造要求，不能据字段复制推导额外的 Go GC 生命周期行为。
+
 直接对照文件是 [`status.go`](status.go)，Rust 保留了 `statusRefreshTick`、`logProgressTick`、`DumpStatus`、`GetStatus`、`RefreshStatus`、`calculateTableCount`、`SpeedRecorder`、`NewSpeedRecorder` 和 `GetSpeed` 的命名与核心分支。两端都在启动时刷新、取消退出时刷新；正常每 5 秒采样，每 2 分钟记录日志；`EnableLogProgress` 将日志缩短到 1 秒并先刷新；进度未知时省略进度字段，零 chunk 为完成，超过 100% 时钳制并告警。
 
 实现机制存在语言差异：Go 用 `atomic.Pointer[DumpStatus]` 发布快照，并在 `GetStatus` 中复制结构体及百分比指针；Rust 用 `Arc<Mutex<DumpStatus>>` 加 `Clone`。Go 的 `SpeedRecorder` 自带 `sync.Mutex`，Rust 将无锁字段结构包在 `Dumper.speedRecorder: Arc<Mutex<SpeedRecorder>>` 中。Go `startLogProgress` 返回闭包并通过 `WaitGroupWrapper` 等待，Rust 返回带 `Drop` 的 `LogProgressGuard`。Go 用 `time.Ticker/select`，Rust 用 `Instant` 截止点、短睡眠和上下文轮询模拟相同生命周期。
@@ -97,8 +101,7 @@ Rust 还包含服务自身需要的私有 `toJSON`；Go 依赖 `encoding/json` �
 
 ## 验证依据
 
-- RustCodeGraph：`status` 检查确认索引含 11467 个文件、其中 Rust 7032 个；`node --file dumpling/export/status.rs` 覆盖目标文件全部 314 行，并报告直接使用文件为 `dump.rs`、`dump_test.rs`、`http_handler.rs`、`prepare_test.rs`；`query` 定位了 `startLogProgress`、`RefreshStatus`、`GetStatus`、`calculateTableCount`、`NewSpeedRecorder`、`GetSpeed`；`explore` 给出 Rust 调用流 `startLogProgress → runLogProgress → runLogProgressWithTicks → RefreshStatus` 和生产 `calculateTableCount` 调用位置。
-- 源码与 crate：已读 [`status.rs`](status.rs)、[`lib.rs`](lib.rs)、[`Cargo.toml`](Cargo.toml)、[`dump.rs`](dump.rs)、[`metrics.rs`](metrics.rs)、[`http_handler.rs`](http_handler.rs) 以及 `prepare.rs` 中 `DatabaseTables`/`TableType` 的定义与使用点。
-- Go 对照：已读 [`status.go`](status.go)、[`status_test.go`](status_test.go) 和 [`http_handler.go`](http_handler.go)，核对快照、周期刷新、failpoint、最终发布、进度边界、速率及 HTTP JSON 语义。
-- Rust 独立测试：[`status_test.rs`](status_test.rs) 覆盖指标刷新与缓存隔离、快照独立、进度 optional/钳制、可重复 stop、刷新/日志采样窗口、生产 5 秒周期、failpoint 和速率；[`http_handler_test.rs`](http_handler_test.rs) 覆盖缓存状态 JSON 与并发轮询不改变速度；[`dump_test.rs`](dump_test.rs) 的 `dump_publishes_final_nonempty_sql_export_status` 覆盖主流程结束后的非空最终状态。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前以任务指定 shell 命令验证目标文件存在且恰含 11 个固定二级章节，并人工复核文档只描述有上述源码、图查询或测试支撑的行为。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`progressView` 的完整构造与 `startLogProgress`/guard stop；独立 `status_test.rs` 及 `status.go` 用于状态/生命周期背景，字段复制行为直接由冻结源码证明。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

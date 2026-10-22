@@ -21,11 +21,13 @@
 
 ## 主要符号
 
+`ServerInfoUnknown` 现在显式令 `NextGen = false`。`PDAddr` 与 `--pd` 的帮助文案明确 premium keyspace 集群可省略 PD 地址；省略时禁用自动 GC pause，实际分支由 `dump.rs` 初始化步骤处理。
+
 - `CSVDialect` / `BinaryFormat` / `DialectBinaryFormatMap`：公开枚举与映射函数。默认方言对应 UTF-8，Snowflake/Redshift 对应 HEX，BigQuery 对应 Base64；枚举使用 `#[repr(i32)]` 保持稳定的整数判别值。
 - `Security`：公开 TLS 材料容器；`Default` 把路径和字节全部置空。与 Go 不同，它没有保存已构造的 `tls.Config`。
 - `Config`：核心公开结构体。重要字段组包括连接认证（`Host`、`Port`、`User`、`Password`、`Security`）、范围选择（`Databases`、`Tables`、`TableFilter`、`Where`、`SQL`、`Partitions`、`columnFilter`）、输出（`FileType`、CSV 参数、`OutputFileTemplate`、`Rows`、`FileSize`、压缩和 Parquet 参数）以及运行时共享对象（`Logger`、Prometheus factory/registry、`ExtStorage`、`IOTotalBytes`）。`columnFilter`、`columnProjection` 保持 crate 内可见语义，由同一 crate 的配置/导出流程消费。
 - `DefaultConfig() -> Config`：以 `127.0.0.1:3306`、`root`、4 线程、自动一致性、SQL 文本默认推导、默认 CSV 字符、1 MiB Parquet 页和默认 row-group 限制等值建立基线；同时创建全表过滤器、默认输出模板和 Prometheus 对象。
-- `Config::String`：只输出 Host、Port、User、Consistency、FileType 的 JSON 形摘要，不是完整序列化；密码等字段不会进入结果。
+- `Config::String`：输出 Host、Port、User、Consistency、FileType、脱敏后的 OutputDirPath 与 BackendOptions 的 JSON 形摘要，不是完整序列化；密码等字段不会进入结果。
 - `Config::GetDriverConfig`：把连接相关字段投影到 `MysqlConfig`，空 `Net` 回落为 `tcp`，但不尝试连接。
 - `Config::createExternalStorage`：若 `ExtStorage` 已存在则克隆 `Arc` 复用，否则用 `OutputDirPath` 创建并缓存 `MemStorage`。
 - `Config::clone_for_mutate`：手工复制绝大多数字段，共享 `Arc` 型依赖和原子计数器；刻意把 `BackendOptions`、`StatusAddr`、`Labels` 恢复为默认/空状态。
@@ -63,7 +65,7 @@
 
 `UnspecifiedSize == 0` 同时表示 rows/filesize 未指定并关闭相应 split 条件。`DefaultStatementSize == 1_000_000` 是 INSERT 目标大小；`defaultTaskChannelCapacity == 128`、`defaultDumpGCSafePointTTL == 300` 秒和 `dumplingServiceSafePointPrefix == "dumpling"` 供导出执行/GC 协调路径使用。`LooseCollationCompatible` 与 `StrictCollationCompatible` 是排序规则兼容模式的字符串契约。
 
-配置中的密码和证书字节属于敏感状态，但 Rust 的 `Config::String` 只输出五个摘要字段。另一方面，`Config` 未实现自动脱敏序列化；新增日志代码不应直接调试打印整个对象。
+配置中的密码和证书字节属于敏感状态，但 Rust 的 `Config::String` 对 OutputDirPath 调用 `astersql_objstore::parse::RedactURL`，对 BackendOptions 调用 `Redacted()` 后再格式化摘要。另一方面，`Config` 未实现自动脱敏序列化；新增日志代码不应直接调试打印整个对象。
 
 `FlagSet.changed` 的意义不同于最终值：它区分“用户显式设置了某个值”和“沿用默认值”。模板的 split 安全校验正是只在用户改变 `output-filename-template` 时触发。`normalizePartitions` 返回新向量，不修改输入；去重用临时 `HashMap`，输出顺序由首次出现顺序决定。
 
@@ -76,6 +78,8 @@
 - 图查询限制：索引对 `config.rs` 的 basename/同名 Go 符号存在少量跨语言误匹配，因而调用结论以带 `--file dumpling/export/config.rs` 的查询、文件级 “used by” 结果及真实 `dump.rs` 源码交叉确认，未采用明显属于 `br/`、`pkg/ddl` 等路径的噪声边。
 
 ## 错误处理与边界
+
+摘要脱敏不修改原配置；`Config::String` 的格式化字符串与 BackendOptions 的 Debug 输出不能视为可往返的严格 JSON。脱敏保证针对输出目录和 backend options，不代表可直接打印整个配置对象。
 
 所有可能失败的解析/校验使用 crate 的 `Result`/`Error`，一般在发现首个错误时返回：
 
@@ -113,7 +117,7 @@
 - Go 使用完整 `pflag.FlagSet`；Rust `FlagSet` 是测试子集。Rust 源码明确未在 `ParseFromFlags` 展开 `read-timeout`、`params`、TLS bytes 和 backend options；Go 会解析 duration、把 session param key 小写化，并调用 `BackendOptions.ParseFromFlags`。
 - Go 在非 case-sensitive 模式下给 table filter 包 `filter.CaseInsensitive`；Rust 当前把 case-sensitive 传给列过滤解析，但没有在本函数中为 `TableFilter` 增加等价包装。
 - Go 无单位 filesize 会打印迁移警告，Rust 不打印。Go `timestampDirName` 使用 RFC3339 格式，Rust 返回 epoch 秒文本。
-- Go 的 `Config.String` 走 JSON marshal（并依赖字段标签隐藏敏感项）；Rust 只生成五字段摘要。两者都不应被理解为完整配置往返序列化。
+- Go 的 `Config.String` 走 JSON marshal（并依赖字段标签隐藏敏感项）；Rust 生成含脱敏路径和 backend options 的精简摘要，backend options 使用 Debug 格式。两者都不应被理解为完整配置往返序列化。
 
 因此，扩展 Rust 时应优先保持已有对齐行为，但不能为了表面一致而跳过仍缺失的真实依赖或用无验证桩声称支持。
 
@@ -130,9 +134,7 @@
 
 ## 验证依据
 
-- RustCodeGraph 状态：索引包含 11,467 个文件、7,032 个 Rust 文件；目标 `dumpling/export/config.rs` 已索引，共 990 行/72 个符号，文件级反向引用包括 `dump.rs`、`dump_test.rs`、`prepare_test.rs`。
-- 已执行的图查询：目标文件 `node --file` 全文；`query DefaultConfig/ParseFromFlags/adjustFileFormat/validateIncludeGeneratedColumns/createExternalStorage`；对 `DefaultConfig`、`adjustFileFormat`、`validateIncludeGeneratedColumns` 执行 `callers`/`callees` 并用 `--file` 消歧。关键可信边为 `dump.rs::NewDumper -> adjustFileFormat/validateIncludeGeneratedColumns`、`DefaultConfig -> filter_parse/DefaultOutputFileTemplate/NewDefaultFactory/NewDefaultRegistry`。
-- 已读 Rust 生产路径：[`config.rs`](./config.rs)、[`lib.rs`](./lib.rs)、[`dump.rs`](./dump.rs) 的 `NewDumper`、`createExternalStore` 与 `buildColumnProjection`，以及 [`Cargo.toml`](./Cargo.toml)。本目录没有 `doc.go`，故无额外 package contract 可读。
-- 已读 Rust 独立测试：[`config_test.rs`](./config_test.rs) 全文；[`prepare_test.rs`](./prepare_test.rs) 的生成列校验与“资源打开前失败”用例；[`dump_test.rs`](./dump_test.rs) 的生成列 CSV 数据/模式用例。测试位于独立文件，由 `lib.rs` 的 `#[cfg(test)]` 模块声明挂载，符合生产逻辑与测试分离要求。
-- 已读 Go 对照：[`config.go`](./config.go) 的枚举/结构体、`DefaultConfig`、`ParseFromFlags`、`ParseFileSize`、`ParseTableFilter`、`createExternalStorage`、`buildTLSConfig`、`adjustFileFormat`、`validateIncludeGeneratedColumns`；[`config_test.go`](./config_test.go) 的存储、版本、表清单、session params、列过滤、Parquet、CSV 方言、模板和生成列用例。
-- 人工复核结论：本文区分了已接线行为与当前桩/简化边界，说明了文件存在原因、从 flag 到 `NewDumper` 的运行顺序、共享状态与资源生命周期，以及安全扩展时应修改的符号和独立测试位置；未运行 Cargo，符合纯文档任务约束。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`Config::String`、`ServerInfoUnknown`、PD 字段及 flags；`config_test.rs::test_config_string_redacts_credentials` 检查输出不含凭据且原值保留。Go 对照 `config.go::String`。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

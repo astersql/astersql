@@ -20,6 +20,8 @@
 
 ## 主要符号
 
+`ERR_ROW_TOO_LARGE: &str` 提供固定文本 `size of row cannot exceed the max value of txn-entry-size-limit`。它是错误消息契约，不是可比较的 Rust error 对象，也不保存数值上限或执行检查。
+
 - `pub use types_crate::datum::Datum`：公开再导出 `astersql-types` 的 Datum。`Row::Row` 和 `MarshalLogArray` 都使用这一确切类型；它不是本文件新定义的包装器。
 - `pub trait ArrayEncoder`：日志数组编码器的最小接口。唯一方法为 `fn AppendString(&mut self, value: &str)`；方法名刻意保留 Go 风格，因此文件使用 `#![allow(non_snake_case)]`。
 - `pub struct Row`：共享行容器，派生 `Clone` 与 `Default`，但未派生 `Debug`、相等比较或序列化 trait。
@@ -28,7 +30,7 @@
 - `Row::Length: isize`：行内容的估算长度。使用平台指针宽度，对齐 64 位目标上 Go `int` 的范围；它不是由 `MarshalLogArray` 计算的精确序列化字节数。
 - `Row::MarshalLogArray(&self, &mut dyn ArrayEncoder) -> Result<(), Infallible>`：唯一方法。它只读借用行、可变借用编码器，逐元素调用 `Datum::String()` 和 `AppendString`，最后返回 `Ok(())`。
 
-文件没有模块级常量、枚举、条件编译项、异步函数或私有辅助函数。测试条件编译位于 `lib.rs`，而不是本生产文件。
+除 `ERR_ROW_TOO_LARGE` 外，文件没有其他模块级常量、枚举、条件编译项、异步函数或私有辅助函数。测试条件编译位于 `lib.rs`，而不是本生产文件。
 
 ## 执行流程
 
@@ -56,6 +58,8 @@
 
 ## 依赖与调用关系
 
+共享错误已进入生产解析路径：Parquet 的模型 `parser.rs` 与真实 `file_parser.rs` 在超限时引用；`pkg/lightning/mydump/lib.rs` 再导出该常量供 SQL/CSV 构造 Configuration 错误。这与上文 Row 类型仍未接入热路径的结论分别成立。
+
 公共暴露链为：
 
 `types_crate::datum::Datum` → `def.rs` 再导出及 `Row` 字段 → `parsedef/lib.rs` 再导出 → 根 `pkg/lib.rs::dumpformat::parsedef` 门面。
@@ -64,13 +68,13 @@
 
 `Row::MarshalLogArray` → `Datum::String` → `ArrayEncoder::AppendString`。
 
-RustCodeGraph 的精确文件节点确认 `def.rs` 有 5 个索引符号，并把 `AppendString` 标为 `MarshalLogArray` 的被调用项。由于仓库中存在多个 `Row`、`ArrayEncoder` 和 `MarshalLogArray` 同名符号，宽泛 `callers/callees` 查询混入了无关模块；调用关系因此用目标文件节点、唯一实现体和真实导入点交叉核验。
+调用关系以冻结源码中的实现体与真实导入点核对；通用 Row/ArrayEncoder 同名图节点不能证明本文件的生产消费。
 
 依赖/消费边界如下：
 
 - 本 crate 唯一直接 Cargo 依赖是 `astersql-types`，用于 Datum。
 - 根 workspace 与 `pkg/lib.rs` 提供公共门面再导出。
-- Parquet 与 executor importer 的 Cargo manifest 声明依赖本 crate，但当前活跃 `.rs` 文件未直接引用其公共项。
+- Parquet 与 executor importer 的 Cargo manifest 声明依赖本 crate，其中 Parquet 活跃解析器直接引用共享错误常量，而行容器仍未在该路径使用。
 - `pkg/dumpformat/parquetfile/parser.rs` 的注释迁移稿展示了预期的 `parsedef::Row` 接线；当前可执行实现则改用 `ParsedRow` 或 Lightning mydump 的 `Row`，所以不能把这段注释当作调用者。
 - 当前直接行为验证者是 [`migration_aster_unit_test.rs`](./migration_aster_unit_test.rs)，它实现 `RecordingEncoder` 并调用 `Row::MarshalLogArray`。
 
@@ -99,6 +103,8 @@ RustCodeGraph 的精确文件节点确认 `def.rs` 有 5 个索引符号，并�
 
 ## 与 Go 版本的对应关系
 
+Go `def.go::ErrRowTooLarge` 是 `errors.NewNoStackError` 生成的共享错误值；Rust 使用等文案字符串，由各解析器包装成自身错误类型。不能以相同文本推断 Rust 具备 Go error identity 或 errors.Is 语义。
+
 直接对照文件是 [`def.go`](./def.go)。字段逐项对应：Go `RowID int64` ↔ Rust `i64`，Go `Row []types.Datum` ↔ Rust `Vec<Datum>`，Go `Length int` ↔ Rust `isize`。两边的日志方法都按列遍历，调用 Datum 的 `String`，再调用数组编码器的 `AppendString`，最后成功返回。
 
 Rust 为保持对照特意保留 `RowID`、`Row`、`Length`、`MarshalLogArray` 与 `AppendString` 的 Go 式名称，并通过文件级 lint allowance 接受它们。语义差异主要是语言边界：
@@ -120,9 +126,7 @@ Rust 为保持对照特意保留 `RowID`、`Row`、`Length`、`MarshalLogArray` 
 
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引包含 11,467 个文件、7,032 个 Rust 文件；`files --filter pkg/dumpformat/parsedef` 定位 `def.rs`、Go 对照、crate 入口与独立测试；`node --file pkg/dumpformat/parsedef/def.rs` 读取全部 62 行并确认 5 个索引符号；`query MarshalLogArray`、`query ArrayEncoder`、`query Row --kind struct` 用于发现并消歧同名符号；文件节点给出的直接内部边为 `MarshalLogArray` 调用 `AppendString`。
-- 目标与 crate 边界：`pkg/dumpformat/parsedef/def.rs`、`lib.rs`、`Cargo.toml`、根 `Cargo.toml`、`pkg/lib.rs`。
-- Go 对照与真实 Go 消费：`pkg/dumpformat/parsedef/def.go`、`pkg/dumpformat/parquetfile/parser.go::{ReadRow, LastRow, RecycleRow, SetRowID}`、`parser_test.go` 的行号和值断言。
-- Rust 接线现状：`pkg/dumpformat/parquetfile/Cargo.toml`、`pkg/executor/importer/Cargo.toml`、`pkg/dumpformat/parquetfile/parser.rs::{ParsedRow, Parser}`、`file_parser.rs::ImportParser`。源码搜索确认活跃 Rust 实现没有直接引用 `astersql_dumpformat_parsedef`；`parser.rs` 中的 `parsedef::Row` 仅存在于注释迁移稿。
-- 独立 Rust 测试：`pkg/dumpformat/parsedef/migration_aster_unit_test.rs` 覆盖默认值与克隆、按序日志输出、空行和 64 位 `Length`。本任务是纯文档分析，按计划未运行 Cargo；这些测试被阅读作为既有行为证据，没有声称本轮重新执行通过。
-- 人工复核重点：公共再导出、三字段状态、不可失败的日志调用链、当前 Rust 消费缺口、Go/Rust clone 与整数宽度差异、独立测试位置，以及本文件不拥有解析、并发或资源管理逻辑的边界。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`ERR_ROW_TOO_LARGE` 与 lib.rs 再导出；`def.go::ErrRowTooLarge`、Parquet 与 mydump 消费点；`migration_aster_unit_test.rs` 是既有 Row/日志契约测试，不是新增常量检查的运行证据。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

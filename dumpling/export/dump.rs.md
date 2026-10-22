@@ -22,16 +22,16 @@
 ## 主要符号
 
 - `Dumper`：一次导出会话的状态聚合体。`tctx`/`cancel` 管取消与日志，`conf: Arc<Config>` 保存配置快照，`db`、`ext_storage`、`http`、`pd_client` 是外部句柄，`metrics`、`speedRecorder`、`status`、`totalTables` 保存共享统计。
-- `NewDumper(Config) -> Result<Dumper>`：公开构造入口。先执行 `buildTLSConfig`、`validateSpecifiedSQL`、`adjustFileFormat`、`validateIncludeGeneratedColumns`，再通过 `runSteps` 顺序运行八个初始化步骤；任一步骤的 `Err` 都立即终止。
+- `NewDumper(Config) -> Result<Dumper>`：公开构造入口。先执行 `buildTLSConfig`、`validateSpecifiedSQL`、`adjustFileFormat`、`validateIncludeGeneratedColumns`，再通过 `runSteps` 顺序运行十个初始化步骤；任一步骤的 `Err` 都立即终止。
 - `Dumper::{L, Close, Dump}`：分别暴露 logger、幂等式回收资源、执行完整导出。`Close` 通过 `Option::take` 防止同一句柄被重复关闭。
 - `Dumper::{dumpDatabases, dumpWholeTableDirectly, dumpSQL, newTaskTableData}`：任务生产 API。普通对象生成 metadata/data 任务；`--sql` 生成名为 `result` 的匿名表和单个数据 chunk。
 - `canRebuildConn`：编码 consistency 与 `TransactionalConsistency` 的连接重建矩阵。
-- `runSteps` 及 `initLogger`、`createExternalStore`、`startHTTPService`、`openSQLDB`、`detectServerInfo`、`resolveAutoConsistency`、`validateResolveAutoConsistency`、`setSessionParam`：构造阶段的顺序步骤。`startHTTPService` 将非法地址视为致命错误，但端口占用等启动错误只记录 warning。
+- `runSteps` 及 `initLogger`、`createExternalStore`、`startHTTPService`、`openSQLDB`、`detectServerInfo`、`resolveAutoConsistency`、`validateResolveAutoConsistency`、`tidbResolveKeyspaceMetaForGC`、`tidbSetPDClientForGC`、`setSessionParam`：构造阶段的顺序步骤。`startHTTPService` 将非法地址视为致命错误，但端口占用等启动错误只记录 warning。
 - `setDefaultSessionParams`：TiDB、含 TiKV 且版本不低于 6.2.0 时，用 `entry(...).or_insert("ON")` 默认打开 `tidb_enable_paging`，不覆盖用户值。
 - `getListTableTypeByConf`、`prepareTableListToDump`/`prepareTableListToDumpInner`：选择表枚举方法并更新 `Config.Tables`。SQL 模式直接返回；显式表模式只调用 `filterTables`；普通模式枚举数据库及允许的 base/view/sequence 后再过滤。
 - `dumpTableMeta`、`getColumnTypes`：构造 `tableMeta`。它优先复用缓存的 `columnProjection`，按对象类型读取 CREATE SQL，并对 TiDB 尝试探测隐式 row ID；该探测失败被忽略。
 - `adjustDatabaseCollation`、`adjustTableCollation`：保留的排序规则兼容钩子；当前无论模式如何都原样返回 SQL，不能据此宣称已实现 Go 的 collation 重写。
-- `PDSecurityOption`、`firstNonEmpty`、`pdSecurityOptionForGC`、`parseClusterSSLFlags`、`tidbResolveKeyspaceMetaForGC`：GC/PD 配置辅助。证书路径优先使用 `ClusterSSL*`，否则回落到通用 `Security`；后两项目前分别是透传和轻量探测/mock client 路径。
+- `PDSecurityOption`、`firstNonEmpty`、`pdSecurityOptionForGC`、`parseClusterSSLFlags`、`tidbResolveKeyspaceMetaForGC`：GC/PD 配置辅助。证书路径优先使用 `ClusterSSL*`，否则回落到通用 `Security`；`parseClusterSSLFlags` 仍透传；keyspace 解析和客户端选择已经进入构造主链。
 - `updateServiceSafePoint`、`updateKeyspaceGCBarrier`、`runGCProtectionUpdater`：以唯一 ID 更新 service safepoint 或 keyspace barrier。保护时间戳为 `snapshot_ts.saturating_sub(1)` 的等价分支，取消时执行清理。
 - `columnProjection`：缓存原始列类型、选中列类型、SELECT 字段和可选投影 schema SQL。
 - `prepareColumnProjection`、`buildColumnProjection`：按库表生成投影；需要输出 schema 且确实过滤列时，通过 `schema_projection` 解析/恢复 CREATE TABLE，并在所有 schema 建立后统一校验外键父表。
@@ -39,8 +39,12 @@
 
 ## 执行流程
 
+`tidbResolveKeyspaceMetaForGC` 对 TiDB 查询 `SELECT KEYSPACE_NAME, KEYSPACE_ID FROM information_schema.KEYSPACE_META;`，读取第一行并 Scan、Close，非空 keyspace 名要求 ID 非空且可解析为 u32。非 TiDB 带 `--pd`、classical 空名带 `--pd` 都失败。元数据查询/扫描/关闭失败时，显式 PD 或 `ServerInfo.NextGen` 使错误致命；其他情况下记日志后继续。无 DB 的错误位于该宽容分支之前，始终传播。
+
+`tidbSetPDClientForGC` 先重置 use 标志；非 TiDB 或空 keyspace 名直接跳过。keyspace 集群未传 PD 时清空 client、警告并成功；传入值则按逗号切分、trim、去空，全部为空时报错，否则创建 `PdClient::new_keyspace(endpoints, name)` 并置标志为 true。
+
 1. CLI 调用 `NewDumper`。配置格式和 generated-column 选项在任何外部资源打开前完成校验；随后创建带取消函数的背景 context 和共享统计对象。
-2. `runSteps` 严格按 `initLogger → createExternalStore → startHTTPService → openSQLDB → detectServerInfo → resolveAutoConsistency → validateResolveAutoConsistency → setSessionParam` 执行。`auto` 对 TiDB 解析成 `snapshot`，对 MySQL/MariaDB 解析成 `flush`，其他类型解析成 `none`。
+2. `runSteps` 严格按 `initLogger → createExternalStore → startHTTPService → openSQLDB → detectServerInfo → resolveAutoConsistency → validateResolveAutoConsistency → tidbResolveKeyspaceMetaForGC → tidbSetPDClientForGC → setSessionParam` 执行。`auto` 对 TiDB 解析成 `snapshot`，对 MySQL/MariaDB 解析成 `flush`，其他类型解析成 `none`。
 3. `Dump` 先检查 column-filter 与 SQL 等选项组合，注册 metrics，并从 `db` 取得连接池。lock consistency 必须先列出表，以便一致性控制器建立锁定范围；其他模式在 `ConsistencyController::Setup` 后列出表。
 4. 主闭包创建 metadata 连接，记录开始时间和全局元数据。记录全局元数据失败仅 warning，不终止导出；表清单、列投影或后续写出失败则向上传播。
 5. `prepareTableListToDumpInner` 在非 SQL、非显式表路径枚举数据库与对象，并应用表过滤。`totalTables` 随后以 `SeqCst` 写入。
@@ -50,6 +54,8 @@
 9. 无论主闭包成功与否，`ConsistencyController::TearDown` 都会执行；其错误仅 warning，函数最终返回主闭包结果。CLI 再无条件调用 `Close`。
 
 ## 数据与状态
+
+`Dumper` 新增 `tidb_keyspace_name: String`、`tidb_keyspace_id: u32`、`tidb_use_keyspace_gc: bool`，初始为空、0、false。`progressView` 复制这三个值，但不共享 PD 句柄；标志为 true 只证明初始化选择了 keyspace GC，不证明真实 GC 续租服务已经启动。
 
 `Config` 以 `Arc` 共享，但初始化和准备阶段需要修改时使用 `clone_for_mutate()` 生成副本，再整体替换 `Dumper.conf`。这避免了内部可变引用跨 writer/回调共享，也意味着持有旧 `Arc<Config>` 的局部变量只看到替换前快照；例如 `dumpDatabases` 开始时明确克隆当前配置。
 
@@ -82,6 +88,8 @@
 
 ## 错误处理与边界
 
+元数据成功路径显式调用 `rows.Close()?`；Next/Scan 提前失败不会执行这条显式 Close，不能将其描述为所有路径都显式释放。初始化 `runSteps` 失败通过 `?` 返回，未在此处增加统一的 `Dumper::Close` 回滚；正常会话仍由 Close 依次取消、停 HTTP、关 PD、关 DB、注销指标。
+
 - 构造前配置校验、初始化步骤、表清单、column projection、任务生产和 writer 处理使用 `Result` 与 `?` 快速失败。
 - `Dump` 在 `db` 或 `ext_storage` 未初始化时分别返回 `db not open`、`no storage`，而不是 panic；但 `detectServerInfo` 对 `d.db` 使用 `unwrap`，其安全性依赖 `runSteps` 中 `openSQLDB` 固定先执行这一不变量。
 - 全局元数据读取失败、HTTP 非非法地址的启动失败、TiDB 隐式 row ID 探测失败和 consistency teardown 失败属于降级/最佳努力路径；其中前两者与 teardown 会记录 warning，row ID 探测失败只退化成 `false`。
@@ -108,7 +116,7 @@ GC 保护函数本身是阻塞循环，预期由调用方放入后台线程/任�
 
 已确认的主要差异如下：
 
-- Go `NewDumper` 还串联 `tidbSetPDClientForGC`、`tidbGetSnapshot`、`tidbStartGCSavepointUpdateService`；Rust 构造步骤没有这些接线，`tidbResolveKeyspaceMetaForGC` 也只是查询后确保 mock client 存在。
+- Rust `NewDumper` 已串联 keyspace 元数据解析与 `tidbSetPDClientForGC`，但尚未接入 Go 的 `tidbGetSnapshot`、`tidbStartGCSavepointUpdateService`。Rust PD 选择没有 Go 的最低版本守卫和 classical 集群 PD 发现，`stubs.rs::PdClient::new_keyspace` 仅保存 endpoints/API context，不建立真实 PD 连接。
 - Go 的 `resolveAutoConsistency` 会实际探测 MySQL `FLUSH TABLE WITH READ LOCK` 权限并回退为 lock；Rust 仅按 server type 改字符串。
 - Go `validateResolveAutoConsistency` 只检查 snapshot 参数与 consistency 的组合；Rust还直接拒绝非 TiDB 的 snapshot consistency。
 - Go `prepareTableListToDump` 针对 TiDB、sequence 能力和显式表分别选择/更新元数据；Rust 使用较简单的 consistency 选择，并在 `SpecifiedTables` 分支只过滤既有表。
@@ -131,12 +139,7 @@ GC 保护函数本身是阻塞循环，预期由调用方放入后台线程/任�
 
 ## 验证依据
 
-事实核对使用了以下直接材料：
-
-- Rust 源码：`dumpling/export/dump.rs`（1074 行，RustCodeGraph 报告 55 个符号）、`lib.rs`、`Cargo.toml`、`dumpling/cmd/dumpling/main.rs`。
-- Rust 独立测试：`dump_test.rs`（关闭幂等、PD 配置、GC 重试/取消、表元信息、consistency 矩阵、session 参数、column projection、最终 SQL 导出状态等）与 `prepare_test.rs`（初始化/配置相关路径）；`lib.rs` 证明测试作为独立模块接入，符合测试不与源文件混放的仓库约束。
-- Go 对照：`dump.go` 与 `dump_test.go`。重点逐段对照了 `NewDumper`、`Dump`、projection、表清单、metadata、GC updater 和 session 参数，而非仅依赖同名符号。
-- RustCodeGraph：`status` 显示索引包含 7032 个 Rust 文件；`files --filter dumpling/export` 确认目标及相邻文件；`node --file dumpling/export/dump.rs --offset 1 --limit 1200` 读取目标全貌；`query Dumper --kind struct` 确认 Go/Rust 同名候选；`callees 'Dumper::Dump'` 暴露同名消歧问题并提供相邻依赖候选。无文件限定的 `callers NewDumper` 在 30 秒内没有返回，因此上游 Rust 边改由精确路径搜索验证。
-- 精确调用证据：`dumpling/cmd/dumpling/main.rs:64` 构造，`:149` 执行；`dump_test.rs` 直接覆盖 GC、metadata、projection 和 `Dump`；`prepare_test.rs` 直接覆盖 `NewDumper` 错误路径。
-
-本任务是纯文档分析，未运行 Cargo。交付结构检查要求本文恰有“文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据”十一个二级标题；链接均指向仓库内真实文件。人工复核结论是：本文能回答该文件为何存在、主链如何运行、哪些行为仍是简化实现，以及扩展时应改动和同步验证的入口。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`NewDumper`、两个 keyspace 初始化函数、Close，以及 `stubs.rs::PdClient::new_keyspace`；`dump_test.rs::test_tidb_resolve_keyspace_meta_for_gc` 与 `test_resolve_keyspace_meta_gc_api_choice`；Go `dump.go`/`dump_test.go` 对照 strict/fallback、PD 可选及端点错误。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

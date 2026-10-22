@@ -9,7 +9,7 @@
 ## 核心职责
 
 - `IsRetryableError` 提供总入口，处理空错误、组合错误和普通错误。组合错误必须非空且每个子错误都可重试，整体才可重试。
-- `isSingleRetryableError` 按稳定的优先级识别 URL、包装根因、明确错误种类、网络 syscall、MySQL/TiDB 编号、TiKV/PD 错误 ID、HTTP 状态、gRPC 状态，最后才使用错误消息子串兜底。
+- `isSingleRetryableError` 按稳定的优先级识别 URL、包装根因、OSS 凭证超时、明确错误种类、网络 syscall、MySQL/TiDB 编号、TiKV/PD 错误 ID、HTTP 状态、gRPC 状态，最后才使用错误消息子串兜底。
 - `ErrWriteTooSlow` 构造一个专用 `CommonError`，把“gRPC 写入长期阻塞”转换为显式可重试种类。
 - 本文件不执行重试，也不改变错误；它读取 `CommonError` 的 `Kind`、`Message`、`Code`、`StatusCode`、`RpcCode` 和 `Causes` 字段并返回判断结果。
 
@@ -32,6 +32,7 @@
 2. 若顶层 `Kind` 为 `multi`，要求 `Causes` 非空，并对每个直接子错误调用 `isSingleRetryableError`；任何一个不可重试都会短路为 `false`。
 3. 单错误分类首先处理顶层 `url`，避免先解包而丢失 URL 语义。URL 无内因和 EOF 内因视为网络传输瞬态问题；显式 HTTP request canceled 不重试。
 4. 非 URL 错误沿每层第一个 cause 走到根因，随后按以下顺序分类：
+   - 首先用 OSS helper 检查根因消息；命中则立即可重试，然后才检查 kind/code 等规则。
    - `cancelled`、`eof`、`no-rows` 明确不可重试；连接、超时、temporary 和 write-too-slow 等 kind 明确可重试。
    - `dns`、`net`、`addr`、`op` 只有在 cause 树中存在三类可重试 syscall kind 时才可重试。
    - 若存在 MySQL/TiDB `Code`，只接受固定白名单；其他编号立即为不可重试，不再落入后续规则。
@@ -41,7 +42,7 @@
    - 前述结构化分类均未命中时，才执行大小写不敏感的消息片段匹配。
 5. 上层 `util.rs::Retry` 收到 `true` 后保存该错误并继续循环；它最多执行 `defaultMaxRetry`（当前为 3）次，并在后续尝试前休眠。分类器自身不休眠。
 
-分类顺序是兼容性契约。例如一旦 `Code` 存在但不在白名单，函数直接返回 `false`，不会再让错误 ID、HTTP、gRPC 或消息兜底覆盖这个结果。
+分类顺序是兼容性契约。例如在未命中前置 OSS 消息规则时，一旦 `Code` 存在但不在白名单，函数直接返回 `false`，不会再让错误 ID、HTTP、gRPC 或消息兜底覆盖这个结果。
 
 ## 数据与状态
 
@@ -54,12 +55,14 @@
 - 上游模块装配：`lib.rs` 声明 `mod retry` 并再导出 `retry::*`；独立测试通过 crate 根导入 `ErrWriteTooSlow` 和 `IsRetryableError`。
 - 生产上游：`util.rs::Retry` 在 action 返回错误、且 `is_not_found` 未命中后调用 `IsRetryableError`。not-found 的提前停止规则属于 `util.rs`，不是本文件的分类规则。
 - 内部调用边：RustCodeGraph 确认 `IsRetryableError -> isSingleRetryableError`；后者调用 `isRetryableURLInnerError`、`has_retryable_syscall_cause`、`isRetryableFromErrorMessage`，并引用 `retryableErrorIDs`。
-- 下游数据类型：唯一 Rust 导入是 crate 内的 `CommonError`；本文件不直接依赖 Cargo 中的外部 crate。`Cargo.toml` 表明整个 common crate 仅有 `astersql-lightning-log`、`libc` 生产依赖和 `serial_test` 开发依赖，但这些依赖均未被 `retry.rs` 直接使用。
+- 下游数据类型：除 crate 内 `CommonError` 外，本文件直接调用 `astersql-objstore-ossstore` 的 `IsTransientNoCredentialsError`；Cargo 新增了对应生产依赖。log/libc 和 serial_test 仍分别属于其他生产路径与开发依赖。
 - 图验证限制：RustCodeGraph 能解析内部调用边和文件级使用关系，但对本文件公开函数的 `callers` 查询为空；生产调用点因此额外由 `rg` 在 `pkg/lightning/**/*.rs` 中核验，当前只发现 `util.rs::Retry`。
 
 ## 错误处理与边界
 
-- `None`、取消、裸 EOF、无行结果均不可重试；URL 包装中的 EOF 则特意可重试。这一差异依赖 URL 特例先于根因解包。
+新增 OSS 规则位于根因解包之后、明确 kind 判断之前：helper 将 Message 转 ASCII 小写，要求同时包含 ECS 元数据 IP `100.100.100.200` 与 `context deadline exceeded` 或 `i/o timeout`。普通默认凭证缺失不命中。它是提前返回规则，命中时优先于 cancelled/eof/no-rows 或未知 Code；顶层 URL 仍先走原有 URL 特例。该分类器只作布尔判断，不调用元数据服务或获取凭证。
+
+- `None` 不可重试；取消、裸 EOF、无行结果在未命中前置 OSS 消息规则时不可重试；URL 包装中的 EOF 则特意可重试。这一差异依赖 URL 特例先于根因解包。
 - 空 `multi` 返回 `false`，避免空集合的 `all` 结果被误当作可重试；非空组合必须所有直接子项都可重试。
 - URL 取消判断使用区分大小写的消息包含匹配；字符串 `net/http: request canceled` 同时覆盖更长的 `...while waiting for connection` 形式。
 - `dns`、`net`、`addr`、`op` 不因自身种类自动重试，必须能在 cause 树中找到指定 syscall kind。递归没有显式深度限制，并假定 `CommonError` 的值拥有关系不会形成引用环。
@@ -74,6 +77,8 @@
 等待和重试生命周期由 `util.rs::Retry` 管理：闭包按顺序执行，失败后保留最后一个 `CommonError`，生产构建中后续尝试前等待 3 秒（测试配置为 10 毫秒），成功立即返回，重试耗尽或遇到永久错误则包装目的文本后返回最后错误。本文件不拥有该错误，也不控制休眠或取消。
 
 ## 与 Go 版本的对应关系
+
+Go `retry.go::isSingleRetryableError` 同样在 Cause 解包后、sentinel 分类前调用 `ossstore.IsTransientNoCredentialsError`。Rust helper 接收扁平 Message，测试用 ECS timeout 与本地配置文件缺失作正反例，避免把所有 credential-chain 错误都判为瞬态。
 
 直接对照文件是 [`pkg/lightning/common/retry.go`](retry.go)，Rust 保留了 Go 的主要分类层次：消息片段列表、TiKV/PD 错误 ID、write-too-slow sentinel、URL 内因、网络/系统调用、MySQL/TiDB 编号、HTTP 状态、gRPC code、组合错误的全员可重试规则。Rust 独立测试 [`retry_test.rs`](retry_test.rs) 与 Go 测试 [`retry_test.go`](retry_test.go) 覆盖相同的主要正反例。
 
@@ -98,10 +103,7 @@
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；目标文件查询显示 `retry.rs` 共 159 行，并被 `retry_test.rs`、`util.rs` 使用。
-- RustCodeGraph 源码与符号查询：`node --file pkg/lightning/common/retry.rs`；`query IsRetryableError`、`query isSingleRetryableError`、`query ErrWriteTooSlow`、`query isRetryableURLInnerError`。
-- RustCodeGraph 调用查询：`callees IsRetryableError --file pkg/lightning/common/retry.rs` 确认进入 `isSingleRetryableError`；`callees isSingleRetryableError --file ...` 确认三个辅助函数和错误 ID 表依赖。对应 `callers` 查询为空，文件级使用和生产消费点由后续检索补证。
-- 已读实现与边界文件：`pkg/lightning/common/retry.rs`、`errors.rs` 中的 `CommonError` 定义、`lib.rs` 模块装配、`util.rs::Retry`、`Cargo.toml`。
-- 已读对照与测试：`pkg/lightning/common/retry.go`、`retry_test.rs`、`retry_test.go`。测试覆盖 URL 无内因/EOF/取消、timeout 与 syscall、HTTP 400/404/500、KV 与 driver ID、MySQL 编号、gRPC code 和 `Unknown` 特例、普通错误、组合错误及消息片段。
-- 生产引用补查：`rg` 检索 `pkg/lightning/**/*.rs` 中的主要符号，除定义和独立测试外只发现 `util.rs` 导入 `IsRetryableError` 并在 `Retry` 中调用。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终结构以任务指定命令校验恰有十一个固定二级章节，并人工复核不存在测试内嵌建议、整段源码复制或超出直接证据的支持声明。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`isSingleRetryableError` 分类顺序、`retry_test.rs` ECS timeout/本地配置缺失正反例、Go `retry.go`；helper 实现在 `pkg/objstore/ossstore/store.rs::IsTransientNoCredentialsError`，仅需 IP 与超时文案共同命中。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。

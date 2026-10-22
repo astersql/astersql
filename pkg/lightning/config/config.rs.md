@@ -42,7 +42,7 @@ RustCodeGraph 的文件节点将本文件识别为 1766 行、134 个符号，�
 
 ### 内部辅助
 
-`adjust_routes`、`ensure_insecure_tls`、`parse_sql_mode`、`validate_pd_addrs`、`fetch_tidb_settings`、`parse_go_duration`、`table_filter_matches`、`redact_url`、`json_escape` 和 `cpu_count` 都是内部实现。`parse_toml_document`、`unquote`、`parse_bool`、`parse_i32` 以 `pub(crate)` 暴露给同 crate 的轻量解析辅助；当前完整 TOML 加载实际由 `toml_codec::load_config_from_toml` 完成。
+`adjust_routes`、`ensure_insecure_tls`、`parse_sql_mode`、`validate_pd_addrs`、`fetch_tidb_settings`、`parse_go_duration`、`table_filter_matches`、`json_escape` 和 `cpu_count` 都是内部实现。`parse_toml_document`、`unquote`、`parse_bool`、`parse_i32` 以 `pub(crate)` 暴露给同 crate 的轻量解析辅助；当前完整 TOML 加载实际由 `toml_codec::load_config_from_toml` 完成。
 
 ## 执行流程
 
@@ -90,9 +90,11 @@ Config::adjust_with_settings
   -> Conflict::adjust
 ```
 
-外部库使用可由 `Cargo.toml` 与源码交叉确认：`url` 处理数据源 URL 和敏感查询参数，`serde_json` 解析 `/settings` body，`toml` 由相邻 `toml_codec.rs` 使用，`astersql-util-cpu` 提供可用 CPU 数；`std::net::TcpStream` 和 `std::fs` 提供同步网络/文件系统边界。`serde` 是 crate 的配置编解码依赖，但本文件自身没有 derive `Serialize`/`Deserialize`。
+外部库使用可由 `Cargo.toml` 与源码交叉确认：`url` 处理数据源 URL，`astersql-objstore` 提供共享 URL 脱敏，`serde_json` 解析 `/settings` body，`toml` 由相邻 `toml_codec.rs` 使用，`astersql-util-cpu` 提供可用 CPU 数；`std::net::TcpStream` 和 `std::fs` 提供同步网络/文件系统边界。`serde` 是 crate 的配置编解码依赖，但本文件自身没有 derive `Serialize`/`Deserialize`。
 
 ## 错误处理与边界
+
+`Config::redact` 已移除本地 `redact_url` 实现，改调 `astersql_objstore::parse::RedactURL` 后生成摘要并恢复原始 source_dir。`MydumperRuntime::adjust` 的源目录越界错误，以及 `adjust_file_path` 的不支持 scheme、路径不存在、绝对路径转换失败错误，也对 source_dir 使用该共享函数。这里只说明这些显式替换点，不承诺整个错误链或其他输入字段自动脱敏。
 
 - `Invalid` 表示语义非法，`Parse` 表示枚举、字符集、时长或 TOML 文本无法解析，`Io` 包装标准 I/O；绝大多数调整路径使用 `?` 原样向 `Config::adjust_with_settings` 传播。
 - `fetch_tidb_settings` 使用最小 HTTP/1.0 请求，仅接受状态行包含 `200`、存在 header/body 分隔符且 body 是 JSON；port 缺失时得到 `0`，path 缺失时得到空串，再由后续校验拒绝。读取/写入超时设置失败被有意忽略，但连接和传输错误会转换成带手工填写提示的 `Invalid`。
@@ -111,6 +113,8 @@ Config::adjust_with_settings
 `fetch_tidb_settings` 的 `TcpStream` 为函数局部资源，设置 5 秒读写超时，返回或报错时由 RAII 关闭。路径检查只持有短生命周期 `Metadata`/`Path` 借用，不保持文件句柄。TLS 配置保存在 `Security` 中，没有在本文件建立连接。`redact` 的临时改写不是 panic guard：当前 `string` 不返回错误也不 panic 于正常格式化路径，但若未来在两次赋值之间加入可能 panic 的逻辑，应改成不会遗失原值的 guard 设计。
 
 ## 与 Go 版本的对应关系
+
+本次改动与 Go 的 `objstore.RedactURL` 使用方式对齐，避免本地简化 scheme/敏感参数表与共享策略漂移。共享 Rust helper 还处理 userinfo、无效 URL 占位与未知 scheme 查询删除；配置仍保留原始连接值，路径解析与校验条件没有因展示脱敏而放宽。
 
 主要依据是同目录 [`config.go`](./config.go) 和 [`config_test.go`](./config_test.go)。Rust 保留了 Go 的配置段、backend 常量、默认值和 `Adjust` 次序，尤其是 importer → app → mydumper → post-restore → TiDB → checkpoint → routes → conflict；Rust 测试也逐项复刻了 PD 发现、TLS、CSV、冲突、时长、checkpoint 和后端默认值场景。
 
@@ -140,8 +144,7 @@ Config::adjust_with_settings
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引含 11467 个文件、307296 个节点、1848419 条边；`files --filter pkg/lightning/config/config.rs` 确认目标被索引；`node --file ...` 分段读取了完整 1766 行并报告 134 个符号及 11 个使用文件。`query` 准确定位了本文件的 `new_config`、`get_ignore_columns`、`parse_charset` 和各个 `adjust`。`callers/callees` 命令连续超时且未返回边列表，因此调用关系又以源文件和精确文本搜索复核，没有把缺失的图结果推测成事实。
-- 已读生产文件：`pkg/lightning/config/config.rs`、`pkg/lightning/config/lib.rs`、`pkg/lightning/config/toml_codec.rs`、`pkg/lightning/config/Cargo.toml`、根 `Cargo.toml` 的 facade 声明及 `pkg/lib.rs` 的再导出位置。
-- Go 对照：`pkg/lightning/config/config.go` 的 `DBStore.adjust`、`Config`、`CSVConfig.adjust`、`MydumperRuntime.adjust`、`TikvImporter.adjust`、`Checkpoint.adjust`、`Security.BuildTLSConfig`、`Duration`、`ParseCharset`、`Conflict.adjust`、`NewConfig`、`LoadFromGlobal`、`LoadFromTOML`、`Config.Adjust`；并检索了同目录 `config_test.go`。
-- Rust 独立测试：[`config_test.rs`](./config_test.rs) 的 PD/port 发现与免联网分支、strict-format、backend、路径、TLS、CSV、Duration、默认并发、TOML、checkpoint、字符集、conflict、block size 和 URL 脱敏测试；[`toml_codec_test.rs`](./toml_codec_test.rs) 验证 TOML 委托入口。
-- 人工复核结论：本文件存在是为了把 Lightning 的外部配置转换成后端可执行的不变量；安全扩展点集中在配置结构、`new_config`、TOML codec、固定 adjust 链和独立测试，且当前网络/TLS、route、SQL mode、duration 与 Go 仍有明确实现差异。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；逐文件 `git diff` 定位增量，`git show 2c944fb:路径` 核对实现与关联证据，不采用工作区或后续提交的 Rust 行为。
+- 本次人工复核：`Config::redact`、MydumperRuntime 的路由/路径错误、移除本地 helper；`config_test.rs::test_adjust_file_router_redacts_source_dir`、`test_adjust_file_path_redacts_source_dir`、`test_redact_config`；Go `config.go` 对应 Redact/Adjust 错误输出。
+- 装配依据：冻结版本同目录 `Cargo.toml` 与 `lib.rs`；目标包均未找到 `doc.go`。RustCodeGraph status 当前报告 11,527 文件、7,018 Rust 文件，但索引未绑定冻结提交，本次行为及调用结论以提交 blob 为准。
+- Ready 文档验证：十一章节结构、相对 Markdown 链接存在性和任务限定 `git diff --check`；仅同步说明，未运行 Cargo、Go 测试或 make lint，不以静态测试阅读替代运行证据。
