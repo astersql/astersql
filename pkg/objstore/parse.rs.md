@@ -30,6 +30,10 @@
 - `GCSBackendOptions::apply`、`AzblobBackendOptions::apply`：分别处理凭证文件，以及 Azure 客户密钥的环境变量回退、Base64 和 SHA-256 派生。
 - `FormatBackendURL`/`format_backend_url`：按后端反向构造 URL，并通过 `url::Url::set_path` 编码空格等 path 字符。
 
+- `InvalidURLPlaceholder`：无法安全解析时固定返回 `(invalid storage URL)`。
+- `RedactURL(&str) -> String`：无 `://` 且无 `?` 的字符串原样保留；authority 百分号转义非法或 URL 解析失败时返回占位符；移除 userinfo，已知存储 scheme 委托 AST query 脱敏，未知 scheme 丢弃全部 query。
+- `BackendOptions::Redacted()`：克隆后将非空 S3 AK/SK/token、Azure account key/SAS/encryption key 替换为 `xxxxxx`，并对 S3/GCS/Azure endpoint 调用 `RedactURL`；空字段仍为空且不修改原对象。
+
 ## 执行流程
 
 典型 `ParseBackend(raw, options)` 流程如下：
@@ -48,11 +52,13 @@
 
 反向流程 `FormatBackendURL` 只选取后端身份、bucket 和 prefix：S3 根据 provider 恢复成 `s3`/`oss`/`ks3`，GCS 与 Azure 使用规范 scheme，本地、noop、memstore、HDFS 使用各自约定。认证参数不会进入返回字符串。
 
+`ParseRawURL` 先保留原有加号保护，再检查 authority 非法百分号转义。遇到 userinfo 后 host 为空（authority 以 `@` 结束），显式重建无 host 的 `ParsedURL`，让后续云 backend 分派报告缺 bucket；其他 URL 解析失败统一转换成不含原 URL 的固定错误。`require_bucket` 现在经 `RedactURL` 格式化错误，避免 userinfo 随错误泄露。
+
 ## 数据与状态
 
 本文件没有全局可变状态。解析的主要状态是函数栈上的 owned `String`、`Vec<(String, String)>` 和后端枚举；调用者给出的 `&BackendOptions` 只读，当前后端 options 会被克隆后再让 URL query 覆盖。`ExtractQueryParameters` 唯一显式修改调用者对象的入口是其 `&mut ParsedURL` 和 `&mut T` 参数：它填充局部 options 并清空 URL query。
 
-敏感配置可存在于 `S3.access_key`、`S3.secret_access_key`、`S3.session_token`、Azure shared key/SAS/customer key 以及 GCS `credentials_blob`。`FormatBackendURL` 刻意不序列化这些字段；bucket 缺失错误通过 `parser_ast::misc::redact_url` 脱敏。`ParsedURL.original` 用于区分显式空 authority 与无 authority 的形式，但自身并不公开。
+敏感配置可存在于 `S3.access_key`、`S3.secret_access_key`、`S3.session_token`、Azure shared key/SAS/customer key 以及 GCS `credentials_blob`。`FormatBackendURL` 刻意不序列化这些字段；bucket 缺失错误通过 `RedactURL` 脱敏。`ParsedURL.original` 用于区分显式空 authority 与无 authority 的形式，但自身并不公开。
 
 Azure 客户密钥的优先级是 `AzblobBackendOptions.encryption_key` 高于环境变量 `AZURE_ENCRYPTION_KEY`。非空密钥会被 Base64 编码，同时对原始密钥字节计算 SHA-256 后再 Base64 编码；两者一起存入 `AzureCustomerKey`。GCS 凭证文件在解析阶段被完整读入内存。
 
@@ -70,7 +76,7 @@ Azure 客户密钥的优先级是 `AzblobBackendOptions.encryption_key` 高于�
 主要下游依赖：
 
 - `url::Url` 负责非本地路径的 URI 语法、query 解码和格式化编码。
-- `parser_ast::misc::redact_url` 负责错误消息中的云认证参数脱敏。
+- `RedactURL` 负责 URL 输出边界，并委托 `parser_ast::misc::redact_url` 处理已知 scheme 的云认证参数。
 - `std::env::current_dir` 与 `std::path` 实现本地绝对路径和词法清理；`std::fs::read_to_string` 读取 GCS 凭证。
 - `sha2::Sha256` 与 `base64` 派生 Azure customer-provided key 所需字段。
 - `anyhow::Result` 统一传播 URL、当前目录、文件读取和配置校验错误。
@@ -87,6 +93,8 @@ RustCodeGraph 对 `pkg/objstore/parse.rs` 报告 53 个符号，并指出 6 个�
 - `decode_url_path` 对合法 `%XX` 解码；非法或不完整转义按原字节保留，非 UTF-8 结果使用替换字符。这是当前实现边界，扩展时不能假定 path 始终可无损往返任意字节。
 - `format_backend_url` 对非空 path 使用 `expect`，其不变量是内部固定 scheme 与解析所得/配置所得 host 能形成 URL；若未来允许不可构成 URL 的 host，此处会 panic。
 - `IsS3Like` 当前只认可 `s3` 和 `oss`，不包含虽走同一解析分支的 `ks3`；调用方若需要“所有 S3 兼容 scheme”，必须先确认是否应改变该兼容契约。
+
+脱敏是明确的输出边界，不会清空真实后端配置；已知 scheme 的 query 掩码集合由 AST 决定，未知 scheme 才丢弃全部 query。`Redacted` 只处理源码列出的字段和 endpoint，不递归过滤任意字符串或外部凭据文件内容，也不保证错误链中原始 provider 消息安全。纯路径原样返回，因此不要把它当成任意文本秘密扫描器。
 
 ## 并发与资源生命周期
 
@@ -107,6 +115,8 @@ RustCodeGraph 对 `pkg/objstore/parse.rs` 报告 53 个符号，并指出 6 个�
 - Rust 为贴近 Go 额外实现了含端口 authority 保留、`filepath.Abs` 风格的词法清理、显式空 authority 重建以及 endpoint 必须含 `://` 的检查；对应边界由 Rust 测试直接固定。
 - 错误类型不同：Go 主要以 `ErrStorageInvalidConfig` 注解错误，Rust 使用 `anyhow` 文本错误并在上层按需转换。因此调用方不应依赖 Rust 侧的结构化错误身份。
 
+Go `parse.go` 同样增加安全的 `RedactURL` 与选项副本 `Redacted`。Rust 额外校验 authority 转义、映射固定解析错误，并保留 userinfo 空 host 后续缺 bucket 的 Go 错误阶段；不要回退成暴露原始 url parse error。
+
 ## 扩展指南
 
 - 新增 scheme：在 `StorageBackend` 增加数据分支（如需要），同步更新 `kind`、`parseBackend`、`FormatBackendURL`，并检查 `pkg/objstore/storage.rs::New` 的实例化分派。还要审查云 URI 白名单，例如 `pkg/executor/importer/precheck.rs::validate_global_sort_uri`。
@@ -117,10 +127,11 @@ RustCodeGraph 对 `pkg/objstore/parse.rs` 报告 53 个符号，并指出 6 个�
 - 测试必须继续放在独立的 `pkg/objstore/parse_test.rs`，不要内嵌进生产源文件；涉及 Go 对齐时同步对照 `pkg/objstore/parse_test.go`。若变更影响真正的打开行为，再补 `storage_test.rs` 或具体 provider 的独立测试。
 - 兼容风险主要是既有 URI 解析结果、错误脱敏和默认 path-style；性能风险主要来自解析阶段同步读取大 GCS 凭证文件及反复克隆 options，但当前配置规模很小，不能在无基准证据时引入全局缓存或共享状态。
 
+增加敏感字段或 scheme 时同时核对 `Redacted`、AST query 掩码和所有错误格式化位置，扩展独立 `parse_test.rs` 中 malformed URL、userinfo、未知 scheme 与原选项不变的断言。
+
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、307,296 个节点；`files --filter pkg/objstore` 确认目标及 Go/Rust 测试均已索引；`node --file pkg/objstore/parse.rs --offset 1 --limit 500` 与后续 offset 499 查询覆盖源码 1–642 行和 53 个符号；`query` 确认 `ParseBackend`、`ParseRawURL`、`FormatBackendURL`、`ExtractQueryParameters` 的 Rust/Go 定义。精确 `callers/callees --file pkg/objstore/parse.rs` 无输出，因此调用边由 `rg` 补证。
-- 已阅读生产与边界文件：`pkg/objstore/parse.rs`、`pkg/objstore/Cargo.toml`、`pkg/objstore/lib.rs`、`pkg/objstore/storage.rs`、`pkg/objstore/helper.rs`、`pkg/executor/importer/precheck.rs`、`pkg/planner/extstore/extstore.rs`。
-- 已阅读对照与测试：`pkg/objstore/parse.go`、`pkg/objstore/parse_test.rs`、`pkg/objstore/parse_test.go`；并通过源码搜索确认其他直接调用位置。
-- 测试证据覆盖：各 scheme 与不支持 scheme、缺 bucket 脱敏、query 覆盖且不回写 options、GCS 凭证文件、S3 profile 与 AK/SK 配对、force-path-style、含 `+` 密钥、含端口 host、本地相对路径清理、格式化不携带秘密。
-- 本任务是纯文档分析，按计划未运行 Cargo。交付前执行任务指定的 11 章节结构命令，并人工复核文档只描述由上述符号、调用点和测试支持的当前事实。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/objstore/parse.rs` 定位增量、`git show 2c944fb:pkg/objstore/parse.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：`pkg/objstore/lib.rs` / `Cargo.toml` 和 Go `parse.go`；独立 `parse_test.rs` 中 `test_backend_options_redacted`、`test_redact_url`、`test_parse_raw_url_error_does_not_leak_url`、`test_parse_backend_missing_bucket_does_not_leak_userinfo` 与 `missing_bucket_errors_redact_cloud_credentials` 提供副本、错误及 userinfo 安全边界断言。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

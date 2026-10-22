@@ -24,26 +24,32 @@
 - `ReqsignCredentialsProvider::new(&str, &str) -> Result<Self>`：创建多线程 Tokio runtime、reqsign `Context` 和 `DefaultCredentialProvider`。仅当 `role_arn` 非空时附加 `AssumeRoleCredentialProvider`；`external_id` 也仅在该分支且非空时生效，角色会话名固定为 `tidb-ossstore`。
 - `ReqsignCredentialsProvider::get_credentials`：在自有 runtime 上 `block_on` reqsign 查询；把 reqsign 的 `None` 转为明确错误，把缺失的 security token 转为空字符串，并标记 `provider_name = "reqsign_default"`。
 - `CredentialRefresher::new(Arc<dyn CredentialsProvider>) -> Self`：创建未初始化的刷新器；快照为空、停止标志为 `false`、worker 为空。
-- `CredentialRefresher::refresh_once(&self) -> Result<()>`：先调用底层 provider，成功后把新值包装为 `Arc` 并通过 `ArcSwapOption::store` 一次性替换整份快照。
+- `CredentialRefresher::refresh_once(&self) -> Result<()>`：先通过可取消重试获取 provider 凭据，成功后把新值包装为 `Arc` 并通过 `ArcSwapOption::store` 一次性替换整份快照。
 - `CredentialRefresher::start_refresh(&Arc<Self>) -> Result<()>`：使用五秒默认间隔委托给 `start_refresh_with_interval`。
 - `CredentialRefresher::start_refresh_with_interval(&Arc<Self>, Duration) -> Result<()>`：同步刷新一次，然后在 worker 锁保护下幂等地创建至多一个后台线程。
 - `CredentialRefresher::close(&self)`：设置停止标志、唤醒条件变量、取走并 join worker；无 worker 时可安全重复调用。
 - `impl CredentialsProvider for CredentialRefresher`：用 `load_full` 取得当前不可变快照并复制返回；初始化前返回 `credentials not initialized`。
 - `impl Drop for CredentialRefresher`：析构时调用 `close`，确保仍存在的 worker 不会脱离对象生命周期。
 
+- `fetch_credentials` / `fetch_credentials_with_policy`：最多 30 次尝试，仅暂态 ECS metadata 超时进入两秒间隔重试；后者可注入次数和间隔供确定性测试，次数为 0 会 assert。
+- `refresh_once_with_context(&storeapi::Context)`：使用可取消重试获取整快照；`refresh_once` 以默认 Context 委托。
+- `wait_for_retry`：使用 `Instant` deadline 和至多 10 ms 的 sleep 检查取消；不向 provider 单次调用传递该 Context。
+
 ## 执行流程
 
 动态凭证在应用中的主流程如下：
 
 1. `store.rs::NewOSSStorage` 在未同时提供 `AccessKey` 和 `SecretAccessKey` 时调用 `ReqsignCredentialsProvider::new(RoleArn, ExternalId)`。
-2. 它以该 provider 创建 `CredentialRefresher`，并先调用 `refresh_once`；失败会被加上 `failed to get initial OSS credentials` 上下文并终止存储构造。
+2. 它以该 provider 创建 `CredentialRefresher`，并先调用 `refresh_once_with_context(ctx)`；失败会被加上 `failed to get initial OSS credentials` 上下文并终止存储构造。
 3. 刷新器本身作为 `Arc<dyn CredentialsProvider>` 传给探测 region 和正式/预签名两个 `AliyunOssApi`。`set_backend_credentials` 在需要向 TiKV 转发凭证时也读取同一快照。
 4. `AliyunOssApi::client` 在每次创建 SDK client 时调用 `get_credentials`，因此后续请求能够观察到最新发布的整份 AK/SK/token。
 5. bucket region 探测和权限检查成功后，`NewOSSStorage` 调用 `start_refresh`。该方法会再同步刷新一次，然后创建后台线程；线程用条件变量等待五秒或关闭通知，超时后调用 `refresh_once`。
 6. 周期刷新失败只记录 `failed to refresh OSS credentials` 警告，线程继续运行，读者仍取得上一次成功快照。
-7. `OSSStore::Close` 调用 `CredentialRefresher::close`；若调用者遗漏显式关闭，最后一个刷新器所有者析构时仍由 `Drop` 执行相同清理。
+7. `OSSStore::Close` 调用 `CredentialRefresher::close`；worker 持有自身 Arc，运行中不能依赖仅丢弃外层对象触发 Drop，必须显式关闭。
 
 静态凭证路径不创建刷新器：`NewOSSStorage` 直接构造 `StaticCredentialsProvider`，所有 API 调用读取同一个克隆值，`OSSStore::credential_refresher` 为 `None`。
+
+重试判定将完整 anyhow 错误链格式化为文本，交给 `store.rs::IsTransientNoCredentialsError`。成功立即返回，永久错误或第 30 次失败返回原错误；只有仍可重试的第 5、10、15、20、25 次失败记录 warning，再等待两秒。最多 29 次等待约 58 秒，另加 provider 调用耗时，不是严格一分钟总 deadline。
 
 ## 数据与状态
 
@@ -82,6 +88,8 @@
 - worker 内的 provider panic 会导致线程退出；`close` 在 join 发现 panic 时记录警告。它不把该异常返回给关闭调用者。
 - `close` 没有返回值，不能报告清理失败；其保证是发出停止通知并同步等待现有 worker 结束。
 
+取消只在重试等待内经 `context.check()` 生效；即使 Context 已取消，provider 首次返回成功仍可成功发布。provider 的阻塞网络请求不能被这层强制中断。重试 warning 和后台刷新 warning 都直接格式化底层错误，本层没有调用 URL/配置脱敏器，不能保证任意 provider 错误不含秘密；上层错误与日志仍须使用安全字段及脱敏入口。
+
 ## 并发与资源生命周期
 
 读路径不取得 worker 控制锁：`ArcSwapOption::load_full` 原子加载一个 `Arc<ProviderCredentials>`，随后复制其值。写路径只有 `refresh_once` 的整快照 store；生产运行时由初始化线程或唯一 worker 调用。`CredentialsProvider: Send + Sync` 是跨线程共享的类型约束，但 trait 本身并不替任意自定义 provider 串行化并发调用；当前生产启动流程在 worker 建立前完成同步调用。
@@ -89,6 +97,8 @@
 worker 持有 `Arc<CredentialRefresher>`，所以仅丢弃外层 `OSSStore` 并不会在 worker 自持引用尚存时自然触发刷新器 `Drop`；正常生命周期必须通过 `OSSStore::Close` 发出停止信号，使线程退出并释放其 `Arc`。显式 `close` 后，worker handle 被取走并 join，随后最后一个外部引用析构时的 `Drop::close` 成为空操作。
 
 条件变量让关闭不必等待完整刷新间隔：`close` 将布尔值设为 `true` 并 `notify_all`，`wait_timeout_while` 被唤醒后立即退出。若 provider 的一次 `get_credentials` 已经在执行，当前实现没有向 reqsign 调用传递取消信号；`close` 会在 join 中等待该调用返回。`ReqsignCredentialsProvider` 自有 Tokio runtime，其析构随 provider 生命周期发生。
+
+初次 `NewOSSStorage` 刷新传入构造 Context；周期刷新和 `start_refresh` 中的同步刷新使用默认 Context，`close` 的停止标志不会取消正在进行的重试等待或 provider 调用，因此 join 可能等待整个重试周期及网络耗时。
 
 ## 与 Go 版本的对应关系
 
@@ -99,7 +109,9 @@ worker 持有 `Arc<CredentialRefresher>`，所以仅丢弃外层 `OSSStore` 并�
 - Go 用 `context.WithCancel`、`WaitGroupWrapper` 和 goroutine 管理退出；Rust 用停止布尔值、`Condvar` 和 `JoinHandle`。Rust 额外实现 `Drop`，但生产上仍依赖 `OSSStore::Close` 打破 worker 持有的 `Arc` 生命周期环。
 - Go 文件只包装 Alibaba SDK 的 `providers.CredentialsProvider`；Rust 文件还定义统一 trait、静态 provider 与 reqsign 默认链适配器，这是 Rust OSS 接线所需的额外职责。
 - Go 测试借助 `testing/synctest` 推进虚拟时间并验证较长运行后的刷新；Rust 测试注入原子计数 provider 与五毫秒测试间隔，验证未初始化错误、整快照字段一致、至少多次刷新以及 `close` 后计数冻结。
-- Rust 测试目前没有直接覆盖 `StaticCredentialsProvider`、reqsign/AssumeRole 配置、重复启动、provider 返回错误、锁 poison 或 worker panic；这些不能从现有测试推断为已验证行为。
+- Rust 测试目前没有直接覆盖 `StaticCredentialsProvider`、reqsign/AssumeRole 配置、重复启动、后台 provider 错误恢复、锁 poison 或 worker panic；这些不能从现有测试推断为已验证行为。
+
+Go `credential.go::fetchCredentials` 同样使用 30 次、两秒、每五次告警及暂态错误分类；Go 等待使用自身可取消 context，Rust 用 Context 轮询。Go 刷新器保存取消 context，而 Rust 默认周期刷新没有接到 close 的停止信号，这是当前生命周期差异。
 
 ## 扩展指南
 
@@ -108,13 +120,13 @@ worker 持有 `Arc<CredentialRefresher>`，所以仅丢弃外层 `OSSStore` 并�
 - 调整刷新策略时，应保留“首次成功后再对外使用”“失败保留旧值”“单 worker”“关闭可及时唤醒并 join”四个不变量，并增加重复 `start_refresh_with_interval`、失败恢复和 close/refresh 交错测试。过短间隔会放大网络、STS 配额与日志压力。
 - 若要让关闭可取消正在进行的 reqsign 网络请求，需要把取消语义贯穿 provider trait、reqsign context 和 worker，而不只是缩短条件变量等待；这会改变公开 trait，应评估所有实现及 mock。
 - 若调整 AssumeRole 参数，应在 `ReqsignCredentialsProvider::new` 修改 builder 接线，并验证空/非空 `role_arn`、`external_id` 组合以及会话名兼容性。涉及真实云端行为的部分当前本地单元测试没有覆盖。
-- 任何安全相关日志都不应输出 AK、SK 或 token；当前日志只包含错误文本。新增错误上下文时需继续避免泄露凭证内容。
+- 任何安全相关日志都不应输出 AK、SK 或 token；当前日志直接包含错误文本，该文本仍可能携带敏感内容，需在调用边界审查或脱敏。
+
+新增凭据来源或重试分类应同时维护成功恢复、永久错误不重试、次数耗尽及取消用例；安全审查须检查错误链内容，不能把“不主动打印凭证字段”当成完整脱敏保证。
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目索引包含 `pkg/objstore/ossstore/credential.rs`（231 行、18 个符号）；`node --file` 核对了本文件全貌，`query` 确认 `CredentialRefresher`、`StaticCredentialsProvider`、`ReqsignCredentialsProvider`、`CredentialsProvider` 及其在 `store.rs`、测试和 Go 对照中的候选。
-- RustCodeGraph `node build_api` 与 `node set_backend_credentials`：确认二者均位于 `store.rs`、由 `NewOSSStorage` 调用；前者向 `AliyunOssApi::new` 传 provider，后者通过 `get_credentials` 转发当前快照。
-- 生产源码：`pkg/objstore/ossstore/credential.rs`、`store.rs::NewOSSStorage`/`OSSStore::Close`/`build_api`/`set_backend_credentials`、`interface.rs::AliyunOssApi::client`、模块入口 `lib.rs`。
-- crate 配置：`pkg/objstore/ossstore/Cargo.toml`，核对 crate 名、`lib.rs` 入口、`autotests = false`、Tokio runtime feature 和 reqsign/arc-swap/anyhow/log 依赖；测试由 `lib.rs` 的 `#[cfg(test)] include!` 显式接入。
-- Go 语义对照：`pkg/objstore/ossstore/credential.go`；Go 回归测试：`credential_test.go::TestCredentialRefresher`。
-- Rust 回归测试：`pkg/objstore/ossstore/credential_test.rs::test_credential_refresher`，覆盖未初始化、手动刷新、周期整快照更新与关闭后停止。依据任务约束，本次是纯文档分析，未运行 Cargo 或单元测试。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/objstore/ossstore/credential.rs` 定位增量、`git show 2c944fb:pkg/objstore/ossstore/credential.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`store.rs` 及 Go `credential.go::fetchCredentials`；独立 `credential_test.rs::fetch_credentials_retries_only_transient_ecs_metadata_failures` 使用注入间隔，覆盖暂态恢复、永久错误、30 次耗尽和取消；`transient_no_credentials_error_requires_ecs_metadata_timeout` 固定分类信号。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

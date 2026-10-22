@@ -53,6 +53,8 @@
 
 `BootstrapSystemTableDefinitions` 的顺序是稳定审查线索，但测试将它转换为集合比较，因此运行正确性主要依赖名称/DDL 一一对应与无重复，而不是切片顺序。固定表 ID 不在本文件内；新增表时必须同时核对 `pkg/meta/metadef/system.rs` 及消费方的表目录。
 
+本次增量补充两项持久 schema 契约：`CreateAnalyzeOptionsTable` 增加 `ndv_rate DOUBLE NOT NULL DEFAULT -1`；`CreateTiDBRestoreRegistryTable` 增加 `source_filter_strings`、`route_strings`（均为 `MEDIUMTEXT NOT NULL DEFAULT ''`）和 `route_hash VARCHAR(64) NOT NULL DEFAULT ''`，并将唯一键改为 `unique_registration_params_v2`，在 `filter_hash` 后纳入 `route_hash`。路由不同的恢复登记因而可被唯一键区分；本文件只提供新建 DDL，不执行既有表迁移。
+
 ## 依赖与调用关系
 
 上游消费关系经 RustCodeGraph 文件节点和代码搜索确认：索引直接报告 `pkg/meta/metadef/system_test.rs`、`pkg/session/runtime/session.rs`、`pkg/session/test/bootstraptest/boot_test.rs` 使用本文件；仓库搜索还定位到经 crate 重导出使用常量的 `pkg/session/ddl_tables.rs`、`pkg/session/bootstrap.rs`、`pkg/session/test/meta/session_test.rs` 和 `pkg/session/mysql_sys_schema_compat_test.rs`。
@@ -108,12 +110,11 @@ Go 侧 `pkg/session/bootstrap.go` 直接调用 `CreateSchemaUnusedIndexesView`�
 
 主要风险是磁盘 schema/升级兼容、BR 对权限表的读取兼容、重复 bootstrap 的幂等性和新增索引带来的写入/存储成本。修改字段顺序或删除兼容表前需要检查旧集群升级与 Go 路径，不能只验证新集群建表。
 
+核对恢复登记冲突时须连同过滤条件和路由 hash 一起比较，不能继续按旧 `unique_registration_params` 推断唯一性；NDV 采样选项的持久化使用方和升级补列属于调用方职责。
+
 ## 验证依据
 
-- RustCodeGraph：`status` 确认索引含 11,467 个文件；`files --filter pkg/meta/metadef/system_tables_def.rs` 确认目标已索引；`node --file ... --offset/--limit` 读取完整 1,360 行并报告三个直接使用文件；对 `BootstrapSystemTableDefinitions`、`SystemTableDefinition`、`SysSchemaSupportedObjects` 做了精确 `query`，并尝试 `callers/callees`。自然语言 `explore` 在 30 秒内未返回，常量级 callers/callees 也未解析出定义节点，故用文件级引用和 `rg` 补证。
-- 源与边界：`pkg/meta/metadef/system_tables_def.rs`、`pkg/meta/metadef/lib.rs`、`pkg/meta/metadef/Cargo.toml`、`pkg/meta/metadef/system.rs`。
-- Rust 调用链：`pkg/session/runtime/session.rs::BootstrapCanonicalDomain`、`ensure_canonical_ddl_system_tables`，以及 `pkg/session/ddl_tables.rs::create_tables`、`InitDDLTables`。
-- Go 对照：`pkg/meta/metadef/system_tables_def.go`、`pkg/session/bootstrap.go`、`pkg/session/session.go`。
-- 独立测试：`pkg/meta/metadef/system_test.rs::go_merge_12_system_ids_and_sql`；`pkg/session/test/bootstraptest/boot_test.rs::bootstrap_schema_catalog_uses_every_authoritative_system_table_definition_once` 及物化视图 rebootstrap 测试；`pkg/session/mysql_sys_schema_compat_test.rs::sys_schema_and_routine_catalog_respect_compatibility_manifest`；`pkg/session/test/meta/session_test.rs` 的 DDL 表定义/固定 ID 断言。
-- 静态清点：源码包含 78 个 `pub const`、2 个 `pub struct`，其中 `BootstrapSystemTableDefinitions` 含 53 项；未发现函数、trait、impl 或条件编译项。
-- 本任务是纯文档分析，按计划不运行 Cargo；验收使用任务指定的 11 章节结构检查，并人工复核所有路径、符号和边界陈述。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/meta/metadef/system_tables_def.rs` 定位增量、`git show 2c944fb:pkg/meta/metadef/system_tables_def.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：同目录 `lib.rs`、`Cargo.toml` 和 Go `system_tables_def.go`；变更直接核对 `CreateAnalyzeOptionsTable`、`CreateTiDBRestoreRegistryTable`。独立 `system_test.rs` 是原有系统表验证入口，未发现针对本次新增列的专用断言，不把既有表测试当成本增量运行证据。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

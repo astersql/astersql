@@ -4,7 +4,7 @@
 
 `pkg/metaservice/etcd.rs` 是 `astersql-metaservice` crate 的 PD 成员发现与服务 URL 适配层。crate 根模块 `pkg/metaservice/lib.rs` 公开 `etcd` 模块并重新导出其符号，因此调用方可直接使用 `astersql_metaservice::Context`、`parse_url` 等接口。该文件不创建真实 PD/etcd 连接：PD 查询由调用方实现的 `PdClient` 完成，etcd 对象也只通过 `EtcdClient` trait object 保存；实际 keyspace/meta-service-group 拨号流程位于相邻的 `dial.rs`，分组配置解析位于 `metamanager.rs`。
 
-所属 crate 由 `pkg/metaservice/Cargo.toml` 定义，名称为 `astersql-metaservice`。本文件直接依赖标准库同步原语，以及 `astersql-util` 提供的 `service_url::ParseServiceURL`；错误类型和 `ServiceClient` 接口来自 `metamanager.rs`。
+所属 crate 由 `pkg/metaservice/Cargo.toml` 定义，名称为 `astersql-metaservice`。本文件依赖 client-rust 拦截器、proto、tonic 和诊断配置，并使用标准库同步原语，以及 `astersql-util` 提供的 `service_url::ParseServiceURL`；错误类型和 `ServiceClient` 接口来自 `metamanager.rs`。
 
 ## 核心职责
 
@@ -15,6 +15,8 @@
 5. 用 `parse_url` 统一解析可拨号的 HTTP、HTTPS 与 Unix-family 服务 URL，并提供 Go 命名兼容别名。
 
 本文件不负责 keyspace 元数据加载、meta service group 选择、etcd namespace 设置或网络客户端关闭；这些能力不能从本文件的 `Client`/`EtcdClient` 抽象推断为“已支持”。
+
+新增 `DiagnosticRpcGuard` 在诊断模式按明确白名单过滤 PD/TiKV RPC；这与 etcd 对象持有、成员发现和退避是独立职责，不表示 etcd 标记 trait 自身具有 RPC 拦截能力。
 
 ## 主要符号
 
@@ -30,9 +32,12 @@
 - `get_pd_addrs` / `GetPDAddrs`：成员发现与地址抽取的主流程；兼容参数名 `with_schema` 实际语义是“是否保留 scheme”。
 - `parse_url` / `ParseURL`：把服务 URL 拆成 `(scheme_prefix, address)`；错误被映射为 `MetaServiceError::ServiceUrl`。
 
+- `DiagnosticRpcGuard: RpcInterceptor`：`pd_allowed` 按完整方法路径匹配，`kv_allowed` 对 `Any` 请求作 protobuf 类型判断；未知请求默认拒绝。
+- `EnsureDiagnosticRpcGuard()`：以 `OnceLock<InterceptorGuard>` 保存进程级注册句柄，调用 client-rust 的 `rpc_interceptor::register`。
+
 ## 执行流程
 
-构造流程如下：调用方把可选的 etcd 与 PD 对象包装为 `Arc` 后交给 `new_client`；若两者都为 `None`，立即返回 `None`。否则 `Client` 原样保存引用计数对象。`new_etcd_meta_service_client` 及两个 Go 风格构造名都不增加额外逻辑。
+构造流程如下：调用方把可选的 etcd 与 PD 对象包装为 `Arc` 后交给 `new_client`；诊断 guard 安装检查后，若两者都为 `None`，返回 `None`。否则 `Client` 原样保存引用计数对象。`new_etcd_meta_service_client` 及两个 Go 风格构造名都不增加额外逻辑。
 
 查询 PD 地址时，`Client` 的 `ServiceClient` 实现先要求 `pd_client` 存在，再调用 `get_pd_addrs(ctx, pd_client, with_scheme)`。主循环每轮按以下顺序运行：
 
@@ -43,6 +48,8 @@
 5. 查询失败时再次检查取消；若累计休眠预算已耗尽，返回 `Pd("region unavailable")`。否则等待当前延迟，将延迟计入预算，并令下一次延迟翻倍但不超过 500 ms。
 
 `parse_url` 不经过 PD 查询：它直接复用统一服务 URL 解析器，并返回规范化的 scheme 前缀和地址部分。生产代码 `lightning/pkg/importer/import.rs::importTables` 用它剥离配置中 PD URL 的 scheme，再拼装 TiKV 驱动参数。
+
+`new_client` 首先检查诊断模式并安装 guard，然后才检查两种客户端是否均为空；因此返回 `None` 也可能已完成全局注册。guard 每次调用重新读取 `diagnosticmode::Enabled()`：普通模式直接放行，诊断模式只放行白名单。PD 白名单除成员、store、region、keyspace、配置读取外，还明确包含 TSO、Watch、QueryRegion 与 health check，不能简化为按 RPC 名称是否以 Get 开头判断。KV 允许 Get/BatchGet/Scan、Raw 读取、coprocessor、MVCC/锁信息、TiFlash 系统表、MPP IsAlive 等指定类型；Prewrite、ResolveLock 和未知类型被拒绝。
 
 ## 数据与状态
 
@@ -58,9 +65,11 @@
 - 已确认的生产调用：`lightning/pkg/importer/import.rs::importTables` 调用 `astersql_metaservice::parse_url`；Lightning 的 `precheck_impl.rs`、`import.rs` 和 `stubs.rs` 使用 `Context::with_cancellation_checker` 把上层 Go 风格上下文取消接入 Rust 流程。其他 BR/session 调用也使用 crate 再导出的 `Context`，但不应据此推断它们都直接调用本文件的地址发现函数。
 - 下游解析：`get_pd_addrs` 和 `parse_url` 都调用 `astersql_util::service_url::ParseServiceURL`，由统一解析器决定合法 scheme、主机端口和 Unix socket 语义。
 - 抽象回调：`get_pd_addrs` 调用动态分派的 `PdClient::get_all_members`；本文件不知道具体 SDK、RPC 或 mock 实现。
-- Cargo 边界：`pkg/metaservice/Cargo.toml` 声明 `astersql-util`、`etcd-client`、`tokio` 和带固定 tag 的 `tikv-client` 等依赖；本文件本身不直接调用后三者，具体拨号逻辑由 crate 内其他模块使用。
+- Cargo 边界：`pkg/metaservice/Cargo.toml` 声明 `astersql-util`、`etcd-client`、`tokio` 和带固定 tag 的 `tikv-client` 等依赖；本文件使用 client-rust 拦截器与 proto；etcd/Tokio 具体拨号逻辑由 crate 内其他模块使用。
 
 RustCodeGraph 的文件关系显示 `pkg/metaservice/etcd.rs` 被多个 BR、Lightning 与 metaservice 文件引用；精确符号搜索进一步确认当前最直接的跨 crate 生产入口是 `parse_url` 和 `Context`。不能把 Go 版本的 51 个引用等同于 Rust 版本已完成相同接线。
+
+guard 直接使用 `tikv_client::rpc_interceptor`、其 proto 类型和 `tonic::Status`，模式开关来自 `astersql-config`。冻结版本的 `pkg/store/driver/tikv_driver.rs` 与 `pkg/util/metricsutil/common.rs` 也在建连前调用 `EnsureDiagnosticRpcGuard`；这是实际生产接线，不只靠本模块构造函数安装。
 
 ## 错误处理与边界
 
@@ -71,6 +80,8 @@ RustCodeGraph 的文件关系显示 `pkg/metaservice/etcd.rs` 被多个 BR、Lig
 - `parse_url` 与成员解析共享解析器，但前者会返回解析错误，后者选择跳过坏项。测试证明 HTTP(S) 必须含可拨号端口，IPv6 必须使用方括号；Unix/Unixs 地址保留 scheme，HTTP URL 的路径会被拒绝。
 - `GET_ALL_MEMBERS_BACKOFF_MS` 是累计休眠阈值检查，不是严格墙钟 deadline；最后一次 sleep 可使累计值超过 5000 ms，下一次失败才返回耗尽错误。
 
+拦截失败返回 `tikv_client::Error::GrpcAPI`，状态码为 `PermissionDenied`；PD 错误带方法名，KV 错误为固定文本，不格式化请求内容。`before` 不修改传入 timeout；它不取消已经发出的请求，也不代替成员发现的退避/取消逻辑。
+
 ## 并发与资源生命周期
 
 `Context`、`PdClient` 和 `EtcdClient` 都满足跨线程共享要求；两个客户端 trait 要求 `Send + Sync`，`Context` 的共享状态由 `Mutex` 保护。`cancel()` 在持锁写入后通知所有等待者，因此同一上下文的多个退避循环都可被唤醒。
@@ -78,6 +89,8 @@ RustCodeGraph 的文件关系显示 `pkg/metaservice/etcd.rs` 被多个 BR、Lig
 本文件不启动异步任务或后台线程。带外部检查器的等待发生在当前线程并进行最多 10 ms 粒度的短睡眠；无检查器时当前线程阻塞在条件变量。每次 `get_pd_addrs` 调用维护独立退避状态，多个调用之间不共享预算或结果。
 
 `Client` 持有的两个 `Arc` 决定底层对象生命周期；`keyspace_etcd_client` 只返回借用。该模块没有 `Drop` 实现，也不会调用 PD/etcd 的 `close`，资源关闭责任仍在具体对象及其拥有者。扩展时不得在这里擅自关闭调用方传入的客户端。
+
+注册句柄由静态 `OnceLock` 长期保留，多次调用不会重复安装或在构造函数返回时撤销。拦截器覆盖上游 client-rust 同步 ClientRuntime 与异步发送路径；其完整网络行为仍需上游与集成验证。
 
 ## 与 Go 版本的对应关系
 
@@ -92,6 +105,8 @@ RustCodeGraph 的文件关系显示 `pkg/metaservice/etcd.rs` 被多个 BR、Lig
 
 测试对照也存在范围差异：Go `etcd_test.go` 使用真实嵌入式 etcd 集群验证具体客户端，而 Rust `etcd_test.rs` 使用 trait mock 和占位 `EtcdClient`，验证的是本文件边界，不证明真实 etcd 网络互操作。
 
+诊断防护沿用 Go 的 PD/KV 允许清单意图；Rust 通过 client-rust 统一拦截接口接线，不能把 Go gRPC/client-go 拦截器的具体装配方式照搬为 Rust 事实。
+
 ## 扩展指南
 
 - 新增地址输出策略时，优先扩展 `get_pd_addrs` 或底层 `astersql-util` 服务 URL 解析器，并同步 `pkg/metaservice/etcd_test.rs` 与 `migration_aster_unit_test.rs`；必须保留 Unix-family scheme、坏 URL 跳过和全坏时失败等现有契约。
@@ -102,13 +117,11 @@ RustCodeGraph 的文件关系显示 `pkg/metaservice/etcd.rs` 被多个 BR、Lig
 - 测试逻辑必须继续放在独立的 `pkg/metaservice/etcd_test.rs` 或迁移测试文件中，不要内嵌回生产源文件；若涉及真实拨号，则应扩展 `dial_test.rs` 或相应集成测试，而不是用桩声称端到端可用。
 - 兼容风险主要是地址格式、错误文案/变体和重试时延；性能风险主要是同步 RPC、每次重新发现成员以及外部取消检查器的轮询。修改前应同时核对 Go `pkg/metaservice/etcd.go` 与其测试。
 
+新增诊断允许项须同步审查 PD 方法路径或 KV proto 类型，并在独立 `diagnostic_rpc_test.rs` 增加允许和拒绝断言；保留未知请求拒绝及普通模式放行。
+
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件，其中 Rust 7,032 个；目标目录的 `files --filter pkg/metaservice` 结果包含 `etcd.rs`、Rust/Go 测试、`lib.rs`、`dial.rs` 与 `metamanager.rs`。
-- RustCodeGraph 文件节点：`node --file pkg/metaservice/etcd.rs --offset 1 --limit 500` 读取完整 297 行实现并列出 35 个符号；另读取 `etcd_test.rs`、`etcd.go`、`etcd_test.go`、`metamanager.rs`、`migration_aster_unit_test.rs` 和 Lightning 生产调用片段。
-- RustCodeGraph 的 `callers` 查询在目标符号上未返回并持续等待，因此没有把它当作“无调用者”的证据；改用索引文件关系与 `rg` 精确符号引用补齐调用事实。
-- crate 与模块证据：`pkg/metaservice/Cargo.toml`、`pkg/metaservice/lib.rs`。
-- Rust 测试证据：`pkg/metaservice/etcd_test.rs` 覆盖 PD-only、空构造、etcd 引用保存、无可用 URL、18 次失败调用对应的 Go 退避预算，以及 URL 矩阵；`pkg/metaservice/migration_aster_unit_test.rs` 额外覆盖一次失败后成功、非法 URL 跳过、Unix/Unixs scheme 保留和路径拒绝。
-- Go 对照证据：`pkg/metaservice/etcd.go` 与 `pkg/metaservice/etcd_test.go`，用于核对构造、成员发现、backoff、URL 解析和 Rust 尚未置于本文件的拨号职责。
-- 生产调用证据：`lightning/pkg/importer/import.rs::importTables` 对 `astersql_metaservice::parse_url` 的直接调用，以及对 `Context::with_cancellation_checker` 的精确引用搜索。
-- 本任务是纯文档分析，按计划不运行 Cargo；最终只执行章节数量结构检查并人工复核上述事实链。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/metaservice/etcd.rs` 定位增量、`git show 2c944fb:pkg/metaservice/etcd.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：`pkg/metaservice/lib.rs` / `Cargo.toml`、Go `etcd.go`；独立 `diagnostic_rpc_test.rs::diagnostic_rpc_guards_match_go_allowlists` 覆盖普通放行、PD 允许清单、KV 类型、未知请求和 PermissionDenied。生产 guard 调用见 `pkg/store/driver/tikv_driver.rs`、`pkg/util/metricsutil/common.rs`。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

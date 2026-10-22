@@ -38,6 +38,8 @@ crate 清单 `pkg/resourcegroup/runaway/Cargo.toml` 指定 `lib.rs` 为入口，
 - `Stop` / `stopped`：Release 写、Acquire 读停止标志；当前没有其他方法据此拒绝工作。
 - `checkpointGaugeValue`：将微秒时间戳转为毫秒浮点，0 保持 0。
 
+- `ManagerInner::in_normal_mode: bool` 与 `Manager::inNormalMode()`：构造时记录 `!diagnosticmode::Enabled()` 并只读返回，clone 共享同一快照；不是动态模式开关或 worker 句柄。
+
 ## 执行流程
 
 查询执行主链如下：
@@ -66,6 +68,8 @@ watch 同步流程如下：
 三个记录队列分别保存：`runaway_records`（查询审计）、`quarantine_records`（待插入 watch）、`stale_records`（待清理的过期/冲突持久化 watch）。它们不是 channel，也没有内部消费者。每个队列最多 1024 条，`drain*` 返回调用瞬间已排队的完整批次；调用之后到达的新记录进入新 `Vec`。
 
 `syncer` 包含新增和 done 两个 reader 的 checkpoint/upper-bound 状态，必须在同一把 mutex 下推进。`stopped` 只是一个跨线程可见标志；当前 `queue`、同步和存储 API 都不检查它，Drop 也不会自动 Stop。
+
+`in_normal_mode` 在 manager 建立时固定，之后切换全局诊断开关不会修改它；`checker.rs` 中的 `Manager::DeriveChecker` 每次读取实时开关，两者职责不同。本文件仍不启动后台维护循环，也不凭此 bool 自动拒绝手工 API、队列操作或同步。
 
 ## 依赖与调用关系
 
@@ -122,7 +126,9 @@ RustCodeGraph 对目标文件的 `node --file` 给出了 38 个符号和完整�
 - Go `AddRunawayWatch` 在事务中 INSERT 并用带退避的 `SELECT LAST_INSERT_ID()` 获取 ID；Rust 直接 Execute 后轮询执行器属性，没有事务或延迟。Go Remove 与 Rust Remove 都在 syncer 锁下点查并转入 done；Rust 的底层事务 helper 对 commit 错误保持 Go 的实际返回语义。
 - Go `Stop` 停止 TTL cache；Rust只置位。`MaxWaitDurationMillis` 也只是数值对应，单位通过名称表达为毫秒。
 
-Rust 独立回归 `manager_test.rs::duplicate_and_manual_watch_replacement_match_go` 专门固定了重复 ID、手工相同 ID 和手工不同 ID 替换的 Go 语义。`checker_test.rs` 覆盖 watch 动作、切组校验、规则超限后 runaway/quarantine 排队和并发阈值状态；Go `checker_test.go::TestActiveGroupCounterOrdering` 还覆盖 counter 正反顺序及并发加减，而 Rust 目标测试目前没有等量的 manager counter 并发用例。
+Rust 独立回归 `manager_test.rs::duplicate_and_manual_watch_replacement_match_go` 专门固定了重复 ID、手工相同 ID 和手工不同 ID 替换的 Go 语义。`checker_test.rs` 覆盖 watch 动作、切组校验、规则超限后 runaway/quarantine 排队和并发阈值状态；Go `checker_test.go::TestActiveGroupCounterOrdering` 还覆盖 counter 正反顺序及并发加减，而 Rust `checker_test.rs::active_group_counter_ordering_and_concurrency_match_go` 也覆盖 counter 顺序与并发。
+
+Go `manager.go` 的 `inNormalMode` 用于记录构造时是否启动维护并在 Stop 时决定 TTL cache 停止；Rust 保留该构造快照并提供访问器，但没有因此增加 Go 后台循环或 ttlcache。`Stop` 仍只置停止标志。
 
 ## 扩展指南
 
@@ -135,13 +141,11 @@ Rust 独立回归 `manager_test.rs::duplicate_and_manual_watch_replacement_match
 - 改动同步窗口时同步审查 `syncer.rs::scan`、`WATCH_SYNC_OVERLAP_MICROS` 和 `syncer_test.rs`，保持窗口边界、满批推进、防活锁及并发 done 不扰动新增游标的约束。
 - 对外增加状态或指标时优先提供只读快照，避免暴露 mutex guard；队列丢弃、watch 容量拒绝和锁中毒目前不可观测，是最值得补的运维信号。
 
+后续接入后台服务时应区分构造快照、当前诊断开关、实际 worker 状态及 stopped，不应仅凭 `inNormalMode()` 返回 true 就断言已有后台消费者。
+
 ## 验证依据
 
-- RustCodeGraph 索引状态：项目索引包含 11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/resourcegroup/runaway` 列出目标源、Go 对照、五个 Rust 独立测试文件及相邻实现。
-- 目标源码：RustCodeGraph `node --file pkg/resourcegroup/runaway/manager.rs --offset 1 --limit 260` 与 `--offset 253 --limit 220`，覆盖全部 422 行及 38 个目标符号。
-- 符号/调用查询：`query NewRunawayManager`、`query UpdateNewAndDoneWatch`、`query markQuarantine`、`query AddRunawayWatch` 精确区分 Rust/Go 定义；`callees manager.rs::markQuarantine` 得到 `manager.rs::addWatchList`。图的 Rust callers 结果为空或不完整，随后以精确 `rg` 补查调用点，此限制已纳入结论。
-- Rust 直接证据：`pkg/resourcegroup/runaway/lib.rs`、`checker.rs`、`record.rs`、`syncer.rs`、`flusher.rs`、`manager_test.rs`、`checker_test.rs`、`syncer_test.rs`，以及应用接线 `pkg/domain/domain.rs`、`pkg/domain/runaway.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`。
-- Go 对照：`pkg/resourcegroup/runaway/manager.go`、`record.go`、`checker_test.go`。其中 `manager.go` 给出构造、两个后台循环、watch 替换/同步/停止语义，`record.go` 给出手工 Add/Remove 事务与 ID 获取路径。
-- crate 边界：`pkg/resourcegroup/runaway/Cargo.toml` 的 package、lib path、porting metadata 和 target 条件依赖。
-- 接线范围补查：`rg` 只发现 `NewRunawayManager` 的 Rust 实际构造位于独立测试，Domain 的生产结构提供 manager 绑定槽位，session 生产代码消费已绑定 manager；`UpdateNewAndDoneWatch`、drain、手工增删暂无 Rust 生产调用，querywatch 中对应代码仍为注释。
-- 本任务为纯文档分析，按计划不运行 Cargo。交付前执行任务指定的 11 章节结构命令，并检查 git diff 仅包含本文档和任务文件删除。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/resourcegroup/runaway/manager.rs` 定位增量、`git show 2c944fb:pkg/resourcegroup/runaway/manager.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`checker.rs` 和 Go `manager.go` 的构造/Stop；独立 `manager_test.rs::diagnostic_mode_suppresses_runaway_manager_work` 断言普通构造 true、诊断构造 false、已有普通 manager 在诊断模式无法派生，以及 Stop 标志。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

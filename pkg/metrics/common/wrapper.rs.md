@@ -16,6 +16,8 @@
 
 这些职责分别由 `SetConstLabels`、`GetConstLabels`/`GetMergedConstLabels`、八个 `New*` 工厂以及 `NewDesc` 承担；当前实现是有真实调用者的兼容包装层，不是桩或仅装配模块。
 
+采集阶段还可为早期创建及第三方 collector 的样本补齐 `keyspace_id`，不依赖构造期常量标签是否已经配置。该补齐只修改传入的采集快照。
+
 ## 主要符号
 
 - `pub type Labels = HashMap<String, String>`：与 Prometheus 常量标签的拥有型键值映射相适配。
@@ -33,6 +35,11 @@
 
 文件使用 `#![allow(non_snake_case)]` 保留 Go 风格公开名称，降低迁移调用点的命名差异。
 
+- `EnableKeyspaceIDGatherer()`：Release 写入单向启用标志；初始为关闭。
+- `SetGatheredKeyspaceID(u32)`：将已解析数字 ID 保存为字符串，使用独立 `OnceLock<RwLock<Option<String>>>`。
+- `GatherMetricsWithKeyspaceID(families, Option<u32>)`：纯快照转换；缺失 ID 时补空字符串，已有同名标签保持原值；新增后按标签名排序。
+- `GatherMetrics(families)`：Acquire 读取启用状态，未启用原样返回；启用后读取 ID 并委托纯转换函数。
+
 ## 执行流程
 
 常规启动/注册链如下：
@@ -45,6 +52,8 @@
 
 描述符路径略有不同：`pkg/dxf/framework/dxfmetric/collector.rs::descriptor` 调用 `NewDesc`，后者经 `GetMergedConstLabels` 保留例如测试生成的 `server_id`，同时让包级同名标签拥有更高优先级，最后调用 `Desc::new`。
 
+Starter 启动由 `pkg/util/metricsutil/common.rs::RegisterMetrics` 或 server 启动适配调用启用入口，storage 解析出数字 ID 后通过 `SetKeyspaceID` 更新。HTTP 导出 `pkg/metrics/metrics.rs::GatherText` 在编码前调用 `GatherMetrics`。已有 `keyspace_id` 的样本直接跳过，不覆盖其值，也不重新排序它原有的标签；缺标签样本新增标签后排序。
+
 ## 数据与状态
 
 唯一持久状态是 `CONST_LABELS` 中的 `Labels`。其初始值为空；`SetConstLabels(&[])` 会清空，而不是保持旧值。每次写入都构造一张新表后在写锁内替换，因此读者看到的是替换前或替换后的完整映射，不会看到逐项更新的中间状态。
@@ -52,6 +61,8 @@
 `GetConstLabels` 总是克隆，调用者修改返回值不会改变全局状态。`GetMergedConstLabels` 消耗输入映射：输入非空时复用其分配并以全局快照扩展；输入为空时返回全局快照本身。两条路径都把结果所有权交给调用者。
 
 工厂保存的是构造瞬间的标签副本。可变标签名则只在构造调用期间借用，Prometheus collector 完成自身描述符构造后不依赖传入的 `String` 切片生命周期。Histogram 的 bucket 配置、指标名、namespace、subsystem 和 help 均原样交给底层库；包装层只改常量标签。
+
+采集期开关、采集期 ID 与 `CONST_LABELS` 是三份独立状态。更新采集期 ID 不重建 collector，不改变描述符或 registry，下一次快照才观察新值。没有提供关闭开关的公开 API。
 
 ## 依赖与调用关系
 
@@ -84,6 +95,8 @@ RustCodeGraph 对该文件给出的直接使用文件包括 `pkg/dxf/framework/d
 
 测试会改写同一全局状态，所以 `wrapper_test.rs` 与 `migration_aster_unit_test.rs` 使用 `CONST_LABELS_TEST_LOCK` 串行化，并用 `ConstLabelsGuard::drop` 恢复进入测试前的快照。这个互斥锁只约束遵守该约定的测试，不参与生产同步。
 
+ID 读写锁中毒时通过 `into_inner()` 恢复；一次采集先读取一个 ID，再用于整批样本。转换成本随样本数增长，并对新增标签的样本排序；没有后台线程或网络请求。
+
 ## 与 Go 版本的对应关系
 
 直接对照文件是 [`wrapper.go`](wrapper.go)，独立 Go 回归是 [`wrapper_test.go`](wrapper_test.go)。Rust 保留了 Go 的公开函数名、偶数键值对约束、键转小写、全局标签覆盖输入标签、普通工厂替换 ConstLabels 以及 `NewDesc` 合并标签的总体行为。
@@ -98,6 +111,8 @@ RustCodeGraph 对该文件给出的直接使用文件包括 `pkg/dxf/framework/d
 
 [`wrapper_test.rs`](wrapper_test.rs) 逐项复刻 Go 的 `TestGetMergedConstLabels`。[`migration_aster_unit_test.rs`](migration_aster_unit_test.rs) 进一步覆盖 Go 对齐所需的小写化、panic 文本、各 collector 的标签注入、Histogram/Summary 观测和描述符合并。
 
+构造期包装继续对照 `wrapper.go`；新增采集期入口承担 Starter gather-time 标签补齐，不能从 Go 的构造器或全局常量标签机制推断 Rust 已有第三方 collector 的标签会被重建。
+
 ## 扩展指南
 
 - 新增 collector 工厂时，应沿用“先取得 `GetConstLabels` 快照、再构造底层 collector”的结构，并把测试放入独立的 `wrapper_test.rs` 或 `migration_aster_unit_test.rs`，不要把测试嵌入生产文件。
@@ -108,12 +123,11 @@ RustCodeGraph 对该文件给出的直接使用文件包括 `pkg/dxf/framework/d
 - 保持锁临界区短小。不要在持有 `CONST_LABELS` 锁时注册 collector、访问网络或调用可重入的外部回调。
 - 普通工厂目前用 `expect` 表达“指标定义是静态且必须有效”的不变量；若新增运行时定义入口，应考虑返回 `Result`，并让调用方提供可诊断上下文。
 
+调整采集期标签时同时核对 `GatherText` 和 metricsutil 包装，保留已有标签优先与空 ID 语义；独立 `pkg/util/metricsutil/common_test.rs` 已提供提前注册、后注册、排序、旧标签及并发采集用例。
+
 ## 验证依据
 
-- 目标源码：[`wrapper.rs`](wrapper.rs)，核对了 13 个索引符号、所有公开签名、内部锁访问、标签覆盖和构造逻辑。
-- crate 边界：[`lib.rs`](lib.rs) 与 [`Cargo.toml`](Cargo.toml)，确认模块再导出、独立测试装配、唯一直接外部依赖及 Go 包映射。
-- Go 对照：[`wrapper.go`](wrapper.go) 与 [`wrapper_test.go`](wrapper_test.go)，确认命名、覆盖优先级、键规范化、构造器与测试意图。
-- Rust 测试：[`wrapper_test.rs`](wrapper_test.rs) 和 [`migration_aster_unit_test.rs`](migration_aster_unit_test.rs)，确认空输入、并集、冲突覆盖、小写化、奇数参数 panic、所有 collector 注入、Summary 降级和 Desc 合并。
-- 上游证据：`pkg/util/metricsutil/common.rs` 的标签设置/注册链、`pkg/dxf/framework/dxfmetric/collector.rs::descriptor`、`pkg/metrics/executor.rs` 的 Summary 调用，以及 `pkg/metrics/bindinfo.rs` 的迁移适配层。
-- RustCodeGraph：运行了索引状态与文件查询、目标文件 `explore`/`node`、主要符号 `query`，并对 `GetConstLabels`、`SetConstLabels`、`NewSummaryVec`、`NewDesc` 执行 `callers`/`callees`；精确 callers 未覆盖的再导出调用点用限定目录的 `rg` 补充。
-- 本任务是只读代码分析与文档新增；按计划不运行 Cargo。最终结构检查要求本文恰有十一个规定的二级标题。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/metrics/common/wrapper.rs` 定位增量、`git show 2c944fb:pkg/metrics/common/wrapper.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml` 和 Go `wrapper.go`；`pkg/util/metricsutil/common.rs` 转发 enable/set/gather，独立 `common_test.rs` 覆盖缺 ID、保留原标签、新增样本、标签排序和并发采集；`pkg/metrics/metrics.rs::GatherText` 为导出接线。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

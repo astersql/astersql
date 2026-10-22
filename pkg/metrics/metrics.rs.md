@@ -36,17 +36,21 @@
 - `is_internal_channelz_target` / `is_internal_channelz_socket`：过滤 collector 自己的 `bufnet` 通道与无 remote 的内部 socket。
 - `collect_channelz_snapshots_for_test`、`GRPC_CHANNELZ_TEST_LOCK`、`cleanup_grpc_channelz_collector_for_test`、`with_grpc_channelz_collector_locked`：仅测试或以测试辅助为目的的接口；测试逻辑仍位于独立测试文件中。
 
+`RegisterMetrics` 还直接克隆并注册 `crate::globalsort::GlobalSortOrphanDataSize`，其 `LazyLock` 无需 Option 解包。`GatherText` 使用 `metricscommon::GatherMetrics` 对 registry 快照施加采集期标签规则。
+
 ## 执行流程
 
 初始化流程从 `InitMetrics` 开始。`Once::call_once` 只让第一个调用者执行闭包；闭包严格按源文件顺序调用 bindinfo、DDL、DistSQL、domain、executor、GC、日志备份、meta、owner、RawKV、资源管理、server、session、RU v2、SLI、stats、telemetry、TopSQL、TTL、外部工作负载、语句摘要、DXF、ingestor、资源组、global sort、InfoSchema、memory、timer 和 BR 初始化。其中 `InitTelemetryMetrics()?` 是当前序列中显式传播 `prometheus::Error` 的步骤。成功时以 `SeqCst` 写入完成标志；失败时把错误转为字符串存入互斥量。所有调用者随后读取同一结果，失败不会自动重试。
 
-注册流程要求初始化已经完成。`RegisterMetrics` 先注册 `PanicCounter`、`MemoryUsage`，再由 `register_options!` 依序取出大量 `static mut Option` collector。任何未初始化项都会触发 `expect("InitMetrics must run before RegisterMetrics")`；注册重名等 Prometheus 错误通过 `?` 返回。列表完成后，它调用 `register_external_metrics(default_registry)`、`tikv_client_metrics::RegisterMetrics(default_registry)`，最后调用 `setup_channelz_collector`。
+注册流程要求初始化已经完成。`RegisterMetrics` 先注册 `PanicCounter`、`MemoryUsage` 与孤儿数据 gauge，再由 `register_options!` 依序取出大量 `static mut Option` collector。任何未初始化项都会触发 `expect("InitMetrics must run before RegisterMetrics")`；注册重名等 Prometheus 错误通过 `?` 返回。列表完成后，它调用 `register_external_metrics(default_registry)`、`tikv_client_metrics::RegisterMetrics(default_registry)`，最后调用 `setup_channelz_collector`。
 
 channelz 安装先判断 `cfg!(test)` 或 `astersql_util_intest::InTest`，测试环境直接成功返回。生产环境锁住单例；若还没有 collector，则通过 `ChannelzCollector::new()` 创建。创建失败按 Go 的 best-effort 语义吞掉并返回 `Ok(())`；创建成功且尚未注册时才注册并置 `registered = true`。重复调用不会重复创建或注册。
 
 简化模式切换先锁住 `MODE`，相同目标状态立即返回。切到简化模式时，逐项注销 session/server/SLI/domain/owner 的选定指标、`MemoryUsage` 和 `tikv_client_metrics::unused_collectors()`；注销结果被忽略。切回完整模式时按同一集合逐项注册，首个错误立即返回。状态值在实际注册/注销之前更新，因此恢复过程若中途失败，`MODE` 已是 `false`，再次以 `false` 调用会被幂等分支跳过，这是扩展或修复时必须保留意识的现有边界。
 
-导出流程由 `GatherText` 调用 `prometheus::gather()` 取得默认 registry 快照，再由 `TextEncoder` 写入字节缓冲区；编码错误向上返回。`pkg/server/http_status.rs::metrics_response` 将成功结果作为 HTTP 200 body，并设置 content type；失败则返回 HTTP 500 文本。
+导出流程由 `GatherText` 调用 `prometheus::gather()` 取得默认 registry 快照，经 common 采集期标签转换后，再由 `TextEncoder` 写入字节缓冲区；编码错误向上返回。`pkg/server/http_status.rs::metrics_response` 将成功结果作为 HTTP 200 body，并设置 content type；失败则返回 HTTP 500 文本。
+
+注册顺序在 `PanicCounter`、`MemoryUsage` 之后、`register_options!` 之前插入孤儿数据 gauge；注册错误仍以 `?` 传播且不回滚。导出顺序是 `prometheus::gather()` → `metricscommon::GatherMetrics` → `TextEncoder::encode`。Starter 启用后，缺少 `keyspace_id` 的早期和第三方样本也会补标签；已有标签保留，尚未解析 ID 时补空值。
 
 ## 数据与状态
 
@@ -66,6 +70,8 @@ channelz 安装先判断 `cfg!(test)` 或 `astersql_util_intest::InTest`，测�
 
 下游方面，`InitMetrics` 调用本 crate 几乎全部指标子模块，以及 `astersql-dxf-framework-dxfmetric`、`astersql-ingestor-ingestmetric`、`astersql-timer-metrics`。`RegisterMetrics` 依赖 `prometheus` 默认 registry、上述外部 crate、`tikv_client_metrics` 和 `channelz`。`GatherText` 依赖 `prometheus::gather` 与 `TextEncoder`。channelz 的测试/生产环境判断依赖 `astersql-util-intest`。
 
+新增依赖为 crate 再导出的 `metricscommon` 包装；启用和更新采集期 ID 的责任在 `pkg/util/metricsutil/common.rs` 及 server/storage 接线，不由 `GatherText` 自行读取 PD 或配置。
+
 ## 错误处理与边界
 
 - collector 构造中的静态描述符错误使用 `expect`，因为名称和标签被视为编译期固定配置；若配置非法，会在首次访问时 panic。
@@ -77,6 +83,8 @@ channelz 安装先判断 `cfg!(test)` 或 `astersql_util_intest::InTest`，测�
 - `setup_channelz_collector` 在测试环境完全跳过；创建失败被视为非致命，注册失败则向上传播。注册成功后重复调用幂等。
 - `is_internal_channelz_target` 只匹配两个精确字符串；`is_internal_channelz_socket` 只在 remote 缺失且 remote name 为空时判定为内部 socket。
 - `GatherText` 只采集默认 registry。注册在自定义 `Registry` 的 collector 不会出现在该 HTTP 输出中。
+
+采集期转换只修改已取得的样本，不改变 collector 描述符或注册状态；未启用时原样返回。自定义 registry 若需要同样标签，必须显式调用对应 Gather helper。
 
 ## 并发与资源生命周期
 
@@ -98,6 +106,8 @@ Go 简化模式恢复注册时记录错误并中断，函数无返回值；Rust 
 
 Go channelz 状态显式拥有 bufconn listener、gRPC server 和 client connection，并在清理时逐项关闭；Rust 把这些细节封装进 `channelz.rs::ChannelzCollector`，本文件只管理 collector/registered。两边都跳过测试环境、复用单例、过滤自身 bufnet 通道和无 remote socket，并将初始化失败视为 best-effort。Go 会记录 warning，Rust 当前只丢弃该错误，没有日志输出。
 
+孤儿 gauge 的集中注册对应 Go `metrics.go::RegisterMetrics`；Rust text 导出额外显式经过 common gather 包装，不能仅依据 Go 注册列表推断这一后处理行为。
+
 ## 扩展指南
 
 新增包级指标时，先在所属独立模块定义并初始化 collector，再根据 Go 行为决定是否加入 `RegisterMetrics` 的 `register_options!` 列表。若指标属于 DXF/ingestor/timer 一类外部 owner，应修改 `register_external_metrics`，避免复制 collector 定义。所有新行为测试应放在独立的 `metrics_test.rs`、`metrics_internal_test.rs` 或新建独立测试文件，不要嵌入 `metrics.rs`。
@@ -112,9 +122,7 @@ Go channelz 状态显式拥有 bufconn listener、gRPC server 和 client connect
 
 ## 验证依据
 
-- RustCodeGraph：`status` 显示索引包含 11,467 个文件、目标目录中的 `metrics.rs` 有 58 个符号；`node --file pkg/metrics/metrics.rs` 完整读取 1–631 行并报告目标被 17 个文件使用；精确 `query` 确认 `InitMetrics`、`RegisterMetrics`、`ToggleSimplifiedMode`、`GatherText`、`setup_channelz_collector` 的目标符号。`callers/callees` 对这些内部 ID 未输出可用边，因此调用者部分以精确 `rg` 和入口源码补证，未把空结果解释为“无调用者”。
-- 源码与 crate 边界：`pkg/metrics/metrics.rs`、`pkg/metrics/lib.rs`、`pkg/metrics/Cargo.toml`。
-- Rust 直接入口证据：`cmd/tidb-server/main.rs`、`pkg/util/metricsutil/common.rs`、`pkg/server/http_status.rs`。
-- Go 对照：`pkg/metrics/metrics.go`，覆盖初始化/注册顺序、简化模式列表、channelz 生命周期和过滤条件。
-- 独立 Rust 测试：`pkg/metrics/metrics_test.rs` 验证初始化注册与可采集指标；`pkg/metrics/metrics_internal_test.rs` 验证 `RetLabel`、外部 collector、channelz 单例/测试跳过/快照和 TiKV 简化 collector；`pkg/metrics/metrics_2_aster_unit_test.rs` 验证初始化成功边界与 channelz 内部目标判断。
-- 本任务为纯文档分析，按计划不运行 Cargo；结构检查用于确认文件存在且恰好包含规定的十一个二级章节。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/metrics/metrics.rs` 定位增量、`git show 2c944fb:pkg/metrics/metrics.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、Go `metrics.go`；`pkg/metrics/common/wrapper.rs` 为采集期转换，`pkg/server/http_status.rs` 为 GatherText 消费入口；既有 `metrics_test.rs` 覆盖统一注册，`pkg/util/metricsutil/common_test.rs` 覆盖纯 gather 及并发标签，不据此声称已运行 HTTP 集成。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

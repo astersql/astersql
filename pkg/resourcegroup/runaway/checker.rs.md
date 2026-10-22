@@ -55,6 +55,8 @@ Cop 请求与响应流程：
 6. 阈值优先级固定为 deadline、读写 RU 之和、累计 processed keys。命中后尝试单次标记；只有动作是 Kill 才返回新的 `QueryInterrupted`，其余动作保留调用者传入的原错误，等待后续请求阶段应用。
 7. Cop 迭代一轮结束时，下游调用 `ResetTotalProcessedKeys`；并发 worker 也可以通过 `CheckAction` 观察 watch 优先、规则次之的当前动作。
 
+`Manager::DeriveChecker` 现在首先读取当前 `diagnosticmode::Enabled()`；诊断模式直接返回 `None`，发生在资源组目录查询、digest 门控和 Checker 构造之前，避免规则执行或向未启动维护服务的队列入队。此处每次派生读取实时开关，不读取 manager 的构造时模式快照。
+
 ## 数据与状态
 
 `Checker` 中的查询身份包括资源组名、原始 SQL、SQL digest 和 plan digest。原始 SQL 用于 Exact watch，SQL digest 用于 Similar watch，plan digest 用于 Plan watch；执行前匹配会依次尝试三者，而自动写 quarantine 时只按 `settings.watch.kind` 选择一个标识。
@@ -90,6 +92,8 @@ RustCodeGraph 将 `checker.rs` 列为被 `pkg/session/runtime/scan_adapter_runti
 - Manager 的审计/quarantine 队列是有界、非阻塞式的；CAS 成功只证明本 `Checker` 已标记，不保证记录最终持久化。
 - `NewChecker` 的时间换算饱和处理溢出；但 `nowMicros` 和 RU 浮点转整数仍受各自表示范围/转换规则约束。
 
+诊断门控只作用于 `DeriveChecker`，不等于禁止显式 `Checker::NewChecker` 或 manager 公开 API。此前已取得的 Checker 也不会在该分支被销毁；不要由派生提前返回推断全局停机。
+
 ## 并发与资源生命周期
 
 生产路径先以独占 `&mut Checker` 完成 watch 检查，再创建 `Arc<Checker>`，因此普通的 `marked_by_query_watch_rule`/`watch_action` 不与执行中 worker 并发写。后续并发入口都只接收 `&self`：processed keys 以 `fetch_add(Ordering::AcqRel)` 累加，重置以 `store(Ordering::Release)` 清零，规则标记以 `compare_exchange(false, true, AcqRel, Acquire)` 竞争唯一写记录者。
@@ -115,6 +119,8 @@ RustCodeGraph 将 `checker.rs` 列为被 `pkg/session/runtime/scan_adapter_runti
 
 Rust `checker_test.rs` 明确覆盖：阈值优先级和两次 5 keys 累加至 10、watch Kill/CoolDown/SwitchGroup、无效目标组、原错误保留与 Kill 覆盖、quarantine 内容、convict 类型、派生提前返回、轮询 Kill 只首次标记，以及并发 reset/check。Go 测试额外直接固定 nil receiver 安全和 50 个 goroutine 下 CAS 仅入队一次；Rust 的 CAS 语义由实现和单条记录断言覆盖，但目前没有等量的多线程 CAS 压测。
 
+诊断模式提前跳过 runaway 派生与 Go 保持同一意图；其余阈值、watch 动作和一次标记状态继续使用既有实现。独立 `manager_test.rs::diagnostic_mode_suppresses_runaway_manager_work` 还验证普通模式构造的 manager 在开关切到诊断后也不再派生。
+
 ## 扩展指南
 
 - 新增阈值类型时，应同时修改 `Checker` 字段、`NewChecker` 快照、`exceedsThresholds` 的明确优先级、原因格式和 `CheckThresholds` 输入；在独立 `checker_test.rs` 增加恰好等于阈值、低于阈值、与其他阈值同时命中的用例，并对照 Go 同名实现。
@@ -128,10 +134,7 @@ Rust `checker_test.rs` 明确覆盖：阈值优先级和两次 5 keys 累加至 
 
 ## 验证依据
 
-- RustCodeGraph 索引状态：11,467 个文件、307,296 个节点、1,848,419 条边；`files --filter pkg/resourcegroup/runaway` 确认目标、Go 对照、crate 入口和独立测试均已索引。
-- 目标源码：`rustcodegraph node --file pkg/resourcegroup/runaway/checker.rs --offset 1 --limit 1200` 覆盖全部 424 行；`query` 精确确认 `NewChecker`、`DeriveChecker`、`BeforeExecutor`、`BeforeCopRequest`、`CheckAction`、`CheckRuleKillAction`、`CheckThresholds`、`exceedsThresholds`、两类 mark 方法和 reset 的 Rust/Go 定义。
-- 调用图：`rustcodegraph explore "pkg/resourcegroup/runaway/checker.rs RunawayChecker check_threshold mark_candidate identify action switch_group"` 给出 Session、KV、Store/Cop 入口及内部 Manager 调用。精确 `callers` 对 Rust 关联函数未产出完整结果，随后使用 `rg -n` 限定 Rust 文件并以 RustCodeGraph `node --file` 阅读实际调用点，避免把索引缺边当作无调用。
-- Rust 直接证据：`pkg/resourcegroup/runaway/lib.rs`、`manager.rs`、`checker_test.rs`、`pkg/session/runtime/scan_adapter_runtime.rs`、`typed_runaway_checker.rs`、`pkg/store/driver/runaway_adapter.rs`、`pkg/resourcegroup/checker.rs` 和 `pkg/store/copr/coprocessor.rs`。
-- Go 对照证据：`pkg/resourcegroup/runaway/checker.go` 与 `checker_test.go`，覆盖构造、动作优先级、阈值/错误、nil receiver、CAS、并发 reset 和 convict 选择。
-- crate 边界：`pkg/resourcegroup/runaway/Cargo.toml` 的 package、lib path、Go porting metadata 及条件依赖；目标包不存在 `doc.go`，包级 Rust 说明来自 `lib.rs`。
-- 本任务只新增本文档，不修改运行时代码，按计划不运行 Cargo。交付验证使用任务指定的 11 章节结构命令，并人工复核文档回答了文件存在目的、运行主链、安全扩展点和当前未接线边界。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/resourcegroup/runaway/checker.rs` 定位增量、`git show 2c944fb:pkg/resourcegroup/runaway/checker.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`manager.rs` 和 Go `checker.go`；独立 `manager_test.rs::diagnostic_mode_suppresses_runaway_manager_work` 验证实时诊断模式派生门控，`checker_test.rs` 保留阈值/watch/并发回归入口。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。

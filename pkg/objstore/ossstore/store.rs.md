@@ -36,6 +36,8 @@
 - `new_oss_store_for_test`：仅在 `cfg(test)` 下再包装成 `OSSStore`，不带刷新器。
 - `trimOSSRegionID`、`canUseInternalEndpoint`：保留 Go 命名风格的公开别名，逻辑委托给 snake_case 实现。
 
+- `IsTransientNoCredentialsError(Option<&str>) -> bool`：转 ASCII 小写后要求同时含 ECS metadata IP `100.100.100.200` 和 `context deadline exceeded` 或 `i/o timeout`；None、缺配置、connection refused、其他地址超时均不匹配。该公开分类函数不执行重试。
+
 ## 执行流程
 
 `NewOSSStorage` 的顺序具有资源和安全含义：
@@ -43,7 +45,7 @@
 1. `prepare_backend` 克隆 `backend` 为局部 `qs`。因此 prefix 规范化等构造期修改不会污染调用方；只有凭证转发函数有意修改原 backend。
 2. `ForcePathStyle` 为真时记录“不支持”警告，但不立即失败，也不改变后续 virtual-hosted 请求路径。
 3. 若 AK 与 SK 同时非空，创建 `StaticCredentialsProvider` 并且不创建刷新器；只提供其中一个字段不会进入静态分支，而会走默认链。
-4. 默认链分支以 `RoleArn`、`ExternalId` 创建 `ReqsignCredentialsProvider`，包装成 `CredentialRefresher`，先 `refresh_once`，确保后续读取的是已初始化快照。
+4. 默认链分支以 `RoleArn`、`ExternalId` 创建 `ReqsignCredentialsProvider`，包装成 `CredentialRefresher`，先 `refresh_once_with_context(ctx)`，确保后续读取的是已初始化快照。
 5. `set_backend_credentials` 按 `opts.SendCredentials` 回填当前快照或清空调用方 backend 的敏感字段。构造用的局部 `qs` 已在此之前克隆，仍保留本次客户端所需配置。
 6. 再读取当前凭证快照，根据 `provider_name` 决定是否查询 ECS 元数据地域。非 ECS 来源不会发起元数据 HTTP 请求。
 7. 使用输入 Region，或为空时使用杭州默认值，构造公网 `location_api`；调用 `bucket_location(ctx, Bucket)` 得到真实地域并去掉 `oss-` 前缀。
@@ -53,6 +55,8 @@
 11. 动态凭证场景启动周期刷新，最后由 `s3like::NewStorage` 构造通用对象存储并返回 `OSSStore`。
 
 测试构造流程更短：`new_oss_storage_for_test` 不解析凭证、不探测地域、不检查权限、不启动刷新线程，只建立 bucket/prefix、注入 `API` 并交给 `s3like::NewStorage`。它适合验证对象操作适配，不是生产构造等价物。
+
+动态凭据初始化改用 `refresher.refresh_once_with_context(ctx)`，在 `failed to get initial OSS credentials` 上下文中传播最终失败或等待取消；真正的次数、等待和告警逻辑位于 `credential.rs`，不属于 OSS 对象请求重试。静态凭据分支不经过此初始化重试。
 
 ## 数据与状态
 
@@ -90,11 +94,13 @@
 - `prepare_backend` 当前不可失败，但保留 `Result`；不要把这一现状解释为未来永远无校验。
 - 本文件没有把 context 传给 ECS 元数据 reqwest 请求；取消语义主要由 `bucket_location` 与后续 API 的 `storeapi::Context` 承担。Go `TestSendCredentialsIsSupported` 验证已取消 context 下凭证仍先完成转发，再由后续调用返回取消错误；Rust 没有对应的真实构造测试证据。
 
+暂态分类只基于字符串信号，不会自动把所有 reqsign 网络超时视为可重试，也不脱敏底层错误。凭据重试日志直接带错误链；使用 `objstore::RedactURL` / `BackendOptions::Redacted` 的责任仍在输出 URL/配置的调用方，不能宣称本构造入口已统一过滤秘密。
+
 ## 并发与资源生命周期
 
 静态凭证路径不创建线程，`OSSStore::Close` 只关闭底层 `s3like::Storage`。动态路径先同步取得一次凭证，权限检查通过后才调用 `start_refresh`，避免在构造中途较早启动后台资源。成功返回后，`OSSStore` 持有 `Arc<CredentialRefresher>`，API 也通过 trait object 共享同一刷新器快照。
 
-`credential.rs` 显示默认刷新间隔为 5 秒，启动函数保证最多一个工作线程；线程等待 Condvar、周期调用 `refresh_once`，刷新失败只记录警告并保留上一份快照。`OSSStore::Close` 设置停止标志、唤醒并 join 线程；`CredentialRefresher::Drop` 也调用 `close`，提供遗漏显式关闭时的兜底。`close` 可重复调用，因为 worker handle 通过 `take()` 只 join 一次。
+`credential.rs` 显示默认刷新间隔为 5 秒，启动函数保证最多一个工作线程；线程等待 Condvar、周期调用 `refresh_once_with_context(ctx)`，刷新失败只记录警告并保留上一份快照。`OSSStore::Close` 设置停止标志、唤醒并 join 线程；`CredentialRefresher::Drop` 也调用 `close`，提供遗漏显式关闭时的兜底。`close` 可重复调用，因为 worker handle 通过 `take()` 只 join 一次。
 
 本文件的 `metadata_region` 和 `AliyunOssApi` 构造接口是阻塞式的；创建过程应视为可能执行网络 I/O 的同步操作。`AccessStats`、provider 和 API 都以 `Arc` 共享。测试辅助 `MemoryOssApi` 用 `Mutex` 保护对象表和 multipart 会话，并以 `AtomicUsize` 生成 upload id，证明经 `s3like::Storage` 的多分片/遍历行为可以在并发安全的 API 实现上运行；这不是对真实 SDK 并发上限的性能证明。
 
@@ -107,6 +113,8 @@ Rust `OSSStore`、`URI`、`Close`、`NewOSSStorage`、`set_backend_credentials`�
 另一个差异是 Go `NewOSSStorage` 直接从默认 provider 返回的 `ProviderName` 判断 ECS 来源；Rust `ReqsignCredentialsProvider::get_credentials` 在 `credential.rs` 当前将 `provider_name` 写为 `reqsign_default`。因此仅凭当前直接源码，动态 reqsign 路径是否能触发 `metadata_region` 的 ECS 分支存在迁移差异：条件函数本身已实现，但 provider 名传播未体现 Go 的串联 provider 名。扩展或修复时应先确认 reqsign 是否另有来源信息，不能假设自动内网选择已与 Go 完全对齐。
 
 Go `TestStore` 和 `TestInternalEndpoint` 依赖真实 OSS 凭证且正常 CI 中跳过；Rust `store_test.rs` 用 `MemoryOssApi` 覆盖通用读写、范围读、批量删除、multipart、复制和分页遍历，但同样没有真实 OSS 构造测试。因此 Rust 的对象适配行为有确定性证据，真实凭证链、地域探测和 endpoint 联网兼容性仍主要由源码对照支持。
+
+新增分类器对应 Go `store.go::IsTransientNoCredentialsError`：Go 接收 error，Rust 接收可选错误文本，二者使用相同 ECS 地址与两种超时短语。Rust 初始化传入 Context，后续 start_refresh 的默认 Context 与 Go 取消生命周期仍有差异。
 
 ## 扩展指南
 
@@ -121,11 +129,7 @@ Go `TestStore` 和 `TestInternalEndpoint` 依赖真实 OSS 凭证且正常 CI �
 
 ## 验证依据
 
-- RustCodeGraph `status`：索引包含 11,467 个文件、307,296 个节点和 1,848,419 条边；`files --filter pkg/objstore/ossstore` 确认目标源、Go 对照、模块入口和测试均已索引。
-- RustCodeGraph `node --file pkg/objstore/ossstore/store.rs --offset 1 --limit 500`：读取目标文件全部 294 行并核对 23 个符号；文件级结果报告 `used by pkg/importsdk/file_scanner.rs`。
-- RustCodeGraph `query NewOSSStorage --kind function`、`query build_api --kind function`、`query set_backend_credentials --kind function`：消歧到本文件的生产入口和两个关键辅助函数。对精确符号运行 `callers/callees` 未返回边，因此调用关系以源码、模块导出和文本引用补证，并在正文标明限制。
-- 已读生产与配置路径：`pkg/objstore/ossstore/store.rs`、`pkg/objstore/ossstore/Cargo.toml`、`pkg/objstore/ossstore/lib.rs`、`pkg/objstore/ossstore/credential.rs`、`pkg/objstore/ossstore/client.rs`、`pkg/objstore/storage.rs`、根 `Cargo.toml`。
-- 已读 Go 对照与测试：`pkg/objstore/ossstore/store.go`、`pkg/objstore/ossstore/store_test.go`。已读 Rust 独立测试：`pkg/objstore/ossstore/store_test.rs`、`pkg/objstore/ossstore/migration_aster_unit_test.rs` 的地域/endpoint 断言区段。
-- `rg` 直接引用检查确认 Rust 生产源码没有 `NewOSSStorage` 调用点，相关公开辅助符号主要由本 crate 的独立测试覆盖；Go 的 `pkg/objstore/storage.go` 存在明确工厂调用。
-- Rust 测试证据：`uri_preserves_oss_scheme_and_normalizes_prefix`；`test_store` 的读写、范围读、删除、multipart、复制和 WalkDir；`test_internal_endpoint`；`test_can_use_internal_endpoint`；`test_set_backend_credentials`。Go 测试补充真实服务的地域、权限、取消和 AccessRecording 语义，但真实凭证测试默认跳过。
-- 本任务是纯文档分析，按计划不运行 Cargo。交付前使用任务指定命令确认文件存在且恰有 11 个固定二级标题，并人工复核所有“已支持”表述均能追溯到上述符号或测试。
+- 冻结依据：`ad0a6f48804e48373cc79c5f53f0072daf99ceb9..2c944fbcbfb2c904cc8cbddafe17954138bd8867`；用 `git diff ad0a6f4..2c944fb -- pkg/objstore/ossstore/store.rs` 定位增量、`git show 2c944fb:pkg/objstore/ossstore/store.rs` 核对源码。本文不包含目标提交之后的源码变化。
+- RustCodeGraph `status` 显示当前索引含 Rust，但索引未固定到目标提交；冻结源码、测试和接线使用 `git show` / `git grep ... 2c944fb` 核对，不以当前图调用关系证明历史版本。
+- 增量交叉证据：同目录 `lib.rs` / `Cargo.toml`、`credential.rs` 和 Go `store.go::IsTransientNoCredentialsError`；独立 `credential_test.rs` 覆盖 None、缺配置、connection refused 与两种 ECS 超时。`store_test.rs` 的 mock 存储操作不证明真实 ECS metadata 或 OSS 联网。
+- 本次只作静态文档同步；未运行 Cargo、单元测试或真实服务。Ready 文档验证执行 11 章节计数、限定文件 `git diff --check` 与秘密文本扫描；仓库 `.agents/skills/tidb-verify-profile` 缺失，按任务验证计划提供等价文档证据。
