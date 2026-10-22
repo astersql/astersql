@@ -24,7 +24,7 @@ fn source_matches(pattern: &str, source: &str) -> bool {
         next[0] = byte == b'*' && previous[0];
         for (index, value) in source.bytes().enumerate() {
             next[index + 1] = if byte == b'*' {
-                previous[index + 1] || next[index]
+                previous[index + 1] || (value != b'/' && next[index])
             } else {
                 byte == value && previous[index]
             };

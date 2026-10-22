@@ -62,6 +62,7 @@ fn canonical_compressed_csv_and_sql_preserve_rows_and_skip_per_file() {
         }
     }
     storage.insert("gs://mixed/a.csv", b"1,a\n2,b");
+    storage.insert("gs://mixed/sub/nested.csv", b"5,nested\n6,nested");
     let mut buffer = new_buffer(64, CompressType::Gzip);
     buffer.write_all(b"3,c\n4,d").unwrap();
     buffer.close().unwrap();
@@ -74,6 +75,27 @@ fn canonical_compressed_csv_and_sql_preserve_rows_and_skip_per_file() {
     assert_eq!(
         rows(&session, "select * from t order by i"),
         vec![vec!["2", "b"], vec!["4", "d"]]
+    );
+    storage.insert("gs://mixed/query.csv?version=1", b"7,query");
+    storage.insert("gs://mixed/query.csv?version=2", b"8,other");
+    storage.insert("gs://mixed/sub/nested.csv?version=1", b"9,nested");
+    session.execute("truncate table t").unwrap();
+    rows(
+        &session,
+        "import into t from 'gs://mixed/*?version=1' with thread=1",
+    );
+    assert_eq!(
+        rows(&session, "select * from t order by i"),
+        vec![vec!["7", "query"]]
+    );
+    session.execute("truncate table t").unwrap();
+    rows(
+        &session,
+        "import into t from 'gs://mixed/sub/*?version=1' with thread=1",
+    );
+    assert_eq!(
+        rows(&session, "select * from t order by i"),
+        vec![vec!["9", "nested"]]
     );
 }
 

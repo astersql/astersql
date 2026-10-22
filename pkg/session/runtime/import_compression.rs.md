@@ -15,7 +15,7 @@
 ## 主要符号
 
 - `fn import_error(error: impl Display) -> SessionError`：统一把底层显示文本包装为当前 session 运行时的错误类型。它不保留具体底层错误类型，只保留字符串。
-- `fn source_matches(pattern: &str, source: &str) -> bool`：私有字节级动态规划匹配器。它把第一个 `?` 之前视为路径、之后视为查询串；查询串必须完全相等，路径中的 `*` 可匹配任意长度字节序列，其他字节必须逐字相等。算法使用两个长度为 `source.len() + 1` 的布尔向量，空间复杂度为 `O(|source|)`，时间复杂度为 `O(|pattern| * |source|)`。
+- `fn source_matches(pattern: &str, source: &str) -> bool`：私有字节级动态规划匹配器。它把第一个 `?` 之前视为路径、之后视为查询串；查询串必须完全相等，路径中的 `*` 可匹配任意长度的不含 `/` 的字节序列，目录分隔符必须由模式中的 `/` 显式匹配，其他字节必须逐字相等。算法使用两个长度为 `source.len() + 1` 的布尔向量，空间复杂度为 `O(|source|)`，时间复杂度为 `O(|pattern| * |source|)`。
 - `pub(super) fn ConcreteSession::execute_import_compression(&self, statement: &ast::ImportIntoStmt) -> SessionResult<ConcreteRecordSet>`：模块内可见的唯一入口。它读取会话当前数据库、运行时表元数据和注入存储，最终构造 `ast::InsertStmt` 复用正常 DML 写路径。
 - `#[cfg(test)] #[path = "import_compression_test.rs"] mod tests`：测试逻辑放在独立文件 `pkg/session/runtime/import_compression_test.rs`，没有与生产实现混写。
 
@@ -36,7 +36,7 @@
 
 `execute_import_compression` 本身不持有跨调用状态。持久输入边界是 `ConcreteSession.import_files: RefCell<ImportFiles>` 中的 `storage`，该句柄在函数开始阶段被克隆，借用随即结束；目标 schema 来自会话当前数据库或语句显式 schema，目标列数来自 `resolve_runtime_table` 的运行时表元数据。
 
-每次调用创建一个 `dump::CsvConfig`、匹配文件列表、单文件解压缓冲区和跨文件的 `lists`。文件按路径排序，因此输入拼接顺序确定；但最终 SQL 表中的可观察顺序仍应由查询的 `ORDER BY` 决定。`skip_rows` 是全局配置、逐文件局部计数，测试 `canonical_compressed_csv_and_sql_preserve_rows_and_skip_per_file` 明确验证每个匹配文件各跳过一行。
+每次调用创建一个 `dump::CsvConfig`、匹配文件列表、单文件解压缓冲区和跨文件的 `lists`。文件按路径排序，因此输入拼接顺序确定；但最终 SQL 表中的可观察顺序仍应由查询的 `ORDER BY` 决定。`skip_rows` 是全局配置、逐文件局部计数，测试 `canonical_compressed_csv_and_sql_preserve_rows_and_skip_per_file` 明确验证每个匹配文件各跳过一行，同时验证 `gs://mixed/*` 忽略子目录文件、query 必须相等，以及显式子目录模式仍可导入。
 
 所有行先转成 AST 值并累计，之后才进入一次 `execute_insert`。因此在解压、解析、字段数检查或 UTF-8 转换阶段失败时，本函数尚未写入目标表；独立测试 `canonical_corrupt_file_keeps_table_empty` 验证“先读到一个有效文件、后遇到损坏 gzip”仍保持空表。进入 `execute_insert` 后的事务性和键冲突行为由正常 DML 路径负责，不由本文件另行定义。
 
@@ -72,7 +72,7 @@
 
 ## 与 Go 版本的对应关系
 
-本 Rust 文件保留的共同语义包括：默认 CSV 字段配置来源于 mydump；支持 CSV 和 SQL；压缩类型从文件扩展名推导；支持通配文件集合；`skip_rows` 非负且按文件生效；`thread` 必须为正；字段映射形态受到限制。
+本 Rust 文件保留的共同语义包括：默认 CSV 字段配置来源于 mydump；支持 CSV 和 SQL；压缩类型从文件扩展名推导；支持通配文件集合，且 `*` 不跨目录，与 Go `WalkDir(SkipSubDir: true)` 和 `filepath.Match` 的目录边界一致；`skip_rows` 非负且按文件生效；`thread` 必须为正；字段映射形态受到限制。
 
 需要明确的差异是：Go 版本支持更完整的选项验证、格式与存储规划、压缩大小估算、并行处理、任务调度和分布式写入；Go 通配路径使用转义后的 `filepath.Match`，而本文件只有 `*`；本 Rust 分支把文件和行全部缓存在内存，且 `thread` 不控制并发。
 
