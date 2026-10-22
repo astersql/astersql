@@ -195,3 +195,31 @@ fn go_merge_8_cross_az_and_invalid_units() {
         None
     );
 }
+
+#[test]
+fn join_output_rows_candidate_weight_and_invalid_sentinel() {
+    let weights = StmtWeights {
+        join_output_row: 7.0,
+        ..Default::default()
+    };
+    let candidates = StmtUnits {
+        join_output_rows: 6.0,
+        ..Default::default()
+    };
+    let output = StmtUnits {
+        join_output_rows: 1.0,
+        ..Default::default()
+    };
+    assert_eq!(
+        calculate(candidates, weights).unwrap().total_ru
+            - calculate(output, weights).unwrap().total_ru,
+        35.0
+    );
+    assert!(
+        !StmtUnits {
+            join_output_rows: -1.0,
+            ..Default::default()
+        }
+        .valid()
+    );
+}

@@ -1683,6 +1683,7 @@ pub struct HashJoinV1Exec {
     full_outer_build_filter: Vec<Predicate>,
     full_outer_probe_filter: Vec<Predicate>,
     full_outer_rejected_build_rows: Vec<Row>,
+    executed: bool,
     hash_state_stats: Option<HashStateRuntimeStats>,
     runtime_stats_coll: Option<Arc<Mutex<RuntimeStatsColl>>>,
     plan_id: i32,
@@ -1716,6 +1717,7 @@ impl HashJoinV1Exec {
             full_outer_build_filter: Vec::new(),
             full_outer_probe_filter: Vec::new(),
             full_outer_rejected_build_rows: Vec::new(),
+            executed: false,
             hash_state_stats: None,
             runtime_stats_coll: None,
             plan_id: 0,
@@ -1764,6 +1766,7 @@ impl HashJoinV1Exec {
             full_outer_build_filter: build_filter,
             full_outer_probe_filter: probe_filter,
             full_outer_rejected_build_rows: Vec::new(),
+            executed: false,
             hash_state_stats: None,
             runtime_stats_coll: None,
             plan_id: 0,
@@ -1776,6 +1779,13 @@ impl HashJoinV1Exec {
         runtime_stats_coll: Arc<Mutex<RuntimeStatsColl>>,
     ) -> Self {
         self.plan_id = plan_id;
+        if let Some(joiner) = self.full_outer_build_joiner.take() {
+            self.full_outer_build_joiner =
+                Some(joiner.with_runtime_stats(plan_id, runtime_stats_coll.clone()));
+        }
+        self.joiner = self
+            .joiner
+            .with_runtime_stats(plan_id, runtime_stats_coll.clone());
         self.runtime_stats_coll = Some(runtime_stats_coll);
         self
     }
@@ -1803,6 +1813,11 @@ impl HashJoinV1Exec {
     pub fn open(&mut self) -> Result<(), String> {
         if self.state == ExecutorState::Open {
             return Ok(());
+        }
+        self.executed = false;
+        self.joiner.reset_joined_rows();
+        if let Some(joiner) = &mut self.full_outer_build_joiner {
+            joiner.reset_joined_rows();
         }
         self.context.base.reset();
         self.output.clear();
@@ -1916,8 +1931,9 @@ impl HashJoinV1Exec {
         if self.state == ExecutorState::Closed {
             return Err("hash join is closed".into());
         }
-        if self.output.is_empty() && self.cursor == 0 {
+        if !self.executed {
             self.produce_all()?;
+            self.executed = true;
         }
         if self.cursor >= self.output.len() {
             self.state = ExecutorState::Exhausted;
@@ -1945,6 +1961,10 @@ impl HashJoinV1Exec {
     }
     /// 关闭并释放资源。
     pub fn close(&mut self) {
+        self.joiner.register_joined_rows();
+        if let Some(joiner) = &mut self.full_outer_build_joiner {
+            joiner.register_joined_rows();
+        }
         if let (Some(collection), Some(stats)) =
             (&self.runtime_stats_coll, self.hash_state_stats.take())
         {

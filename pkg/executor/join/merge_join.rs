@@ -19,6 +19,8 @@
 use crate::index_lookup_join::{compare_row, extract_key};
 use crate::joiner::{Joiner, NaajType, Row};
 use crate::row_table_builder::Value;
+use astersql_util_execdetails::execdetails::RuntimeStatsColl;
+use std::sync::{Arc, Mutex};
 
 /// Merge Join 一侧输入表：已按 join key 有序的行集，支持按等值分组迭代。
 #[derive(Clone, Debug, Default)]
@@ -129,10 +131,21 @@ pub struct MergeJoinExec {
     output: Vec<Row>,
     cursor: usize,
     opened: bool,
+    executed: bool,
     closed: bool,
 }
 
 impl MergeJoinExec {
+    /// Bind worker candidate evidence to this statement and plan ID.
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        collection: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.joiner = self.joiner.with_runtime_stats(plan_id, collection);
+        self
+    }
+
     /// 构造执行器；两侧 join key 列数必须一致。
     pub fn new(
         outer_table: MergeJoinTable,
@@ -149,14 +162,15 @@ impl MergeJoinExec {
             output: Vec::new(),
             cursor: 0,
             opened: false,
+            executed: false,
             closed: false,
         })
     }
     /// 打开执行器并初始化两侧表游标。
     pub fn open(&mut self) -> Result<(), String> {
-        if self.closed {
-            return Err("cannot reopen closed merge join".into());
-        }
+        self.joiner.reset_joined_rows();
+        self.executed = false;
+        self.closed = false;
         self.outer_table.init();
         self.inner_table.init();
         self.output.clear();
@@ -232,11 +246,15 @@ impl MergeJoinExec {
     }
     /// 拉取最多 `required_rows` 行结果；首次调用时触发完整归并。
     pub fn next(&mut self, required_rows: usize) -> Result<Vec<Row>, String> {
+        if self.closed {
+            return Err("join is closed; call open before reuse".into());
+        }
         if !self.opened {
             self.open()?;
         }
-        if self.output.is_empty() && self.cursor == 0 {
+        if !self.executed {
             self.execute()?;
+            self.executed = true;
         }
         if self.cursor >= self.output.len() || required_rows == 0 {
             return Ok(Vec::new());
@@ -248,6 +266,7 @@ impl MergeJoinExec {
     }
     /// 关闭两侧输入并清空缓冲。
     pub fn close(&mut self) {
+        self.joiner.register_joined_rows();
         self.outer_table.finish();
         self.inner_table.finish();
         self.output.clear();

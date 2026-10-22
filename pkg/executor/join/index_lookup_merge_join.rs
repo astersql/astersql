@@ -24,6 +24,8 @@ use crate::index_lookup_join::{
 };
 use crate::joiner::{Joiner, NaajType, Row};
 use crate::row_table_builder::Value;
+use astersql_util_execdetails::execdetails::RuntimeStatsColl;
+use std::sync::{Arc, Mutex};
 
 /// 一批外表行的 merge-join 任务：含 lookup 内容、内表行与输出。
 #[derive(Clone, Debug, Default)]
@@ -267,8 +269,19 @@ pub struct IndexLookUpMergeJoin {
     cursor: usize,
     /// 是否已 open。
     opened: bool,
+    executed: bool,
 }
 impl IndexLookUpMergeJoin {
+    /// Bind worker candidate evidence to this statement and plan ID.
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        collection: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.joiner = self.joiner.with_runtime_stats(plan_id, collection);
+        self
+    }
+
     /// 构造执行器（默认对外表按 key 排序）。
     pub fn new(
         outer_rows: Vec<Row>,
@@ -321,10 +334,13 @@ impl IndexLookUpMergeJoin {
             output: Vec::new(),
             cursor: 0,
             opened: false,
+            executed: false,
         })
     }
     /// 打开执行器并清空输出缓冲。
     pub fn open(&mut self) -> Result<(), String> {
+        self.joiner.reset_joined_rows();
+        self.executed = false;
         self.output.clear();
         self.cursor = 0;
         self.outer_worker.reset();
@@ -350,8 +366,9 @@ impl IndexLookUpMergeJoin {
         if !self.opened {
             self.open()?;
         }
-        if self.output.is_empty() && self.cursor == 0 {
+        if !self.executed {
             self.execute()?;
+            self.executed = true;
         }
         if self.cursor >= self.output.len() || required_rows == 0 {
             return Ok(IndexMergeJoinResult::default());
@@ -363,6 +380,7 @@ impl IndexLookUpMergeJoin {
     }
     /// 关闭执行器。
     pub fn close(&mut self) {
+        self.joiner.register_joined_rows();
         self.output.clear();
         self.cursor = 0;
         self.outer_worker.reset();

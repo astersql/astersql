@@ -219,3 +219,24 @@ fn full_outer_join_supports_right_side_build_and_spill() {
     assert!(executor.IsSpillTriggered());
     assert!(executor.DiskBytes() > 0);
 }
+
+#[test]
+fn joined_rows_full_outer_excludes_null_extensions_for_both_build_sides() {
+    use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
+    use std::sync::Mutex;
+    for left in [false, true] {
+        let coll = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+        let mut e = full_outer_executor(
+            left,
+            vec![vec![vec![Value::Int(1)], vec![Value::Int(2)]]],
+            vec![vec![vec![Value::Int(1)], vec![Value::Int(3)]]],
+            vec![Arc::new(|_| Ok(Some(false)))],
+            vec![],
+            vec![],
+        )
+        .with_runtime_stats(7, coll.clone());
+        assert_eq!(e.execute_all().unwrap().len(), 4);
+        e.close();
+        assert_eq!(coll.lock().unwrap().GetRootJoinedRows(7), Some(1));
+    }
+}

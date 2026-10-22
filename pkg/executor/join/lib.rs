@@ -152,3 +152,6 @@ mod semi_join_probe_test;
 #[cfg(test)]
 /// Tagged pointer 单元测试。
 mod tagged_ptr_test;
+
+#[cfg(test)]
+mod joined_rows_test;

@@ -29,6 +29,9 @@ pub struct StmtUnits {
     pub cross_az_net_bytes: f64,
     pub frontend_compile_bytes: f64,
     pub hash_state_rows: f64,
+    /// Root joins: candidate pairs before residual filtering; MPP: reported output
+    /// until TiFlash supplies candidate evidence. Excludes null-extension rows
+    /// and candidates skipped by semi-join short circuit at the root.
     pub join_output_rows: f64,
 }
 

@@ -1726,6 +1726,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                         root_rows: Default::default(),
                         write_cpu_work: None,
                         analyze_scan_bytes: None,
+                        joined_rows: None,
                         hash_state_rows: None,
                         cop_rows: Default::default(),
                         scan: Some(scan),

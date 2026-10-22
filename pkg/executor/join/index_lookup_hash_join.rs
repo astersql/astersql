@@ -638,7 +638,9 @@ use crate::index_lookup_join::{
     IndexJoinExecutorBuilder, IndexJoinLookupContent, encode_key, extract_key,
 };
 use crate::joiner::{JoinType, Joiner, NaajType, Row};
+use astersql_util_execdetails::execdetails::RuntimeStatsColl;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// 保序模式下每个 inner worker 同时持有的结果 chunk 资源数。
 pub const NUM_RESULT_CHUNKS_HELD: usize = 4;
@@ -761,6 +763,7 @@ impl IndexHashJoinInnerWorker<'_> {
 
 /// Index Nested Loop Hash Join 执行器主体。
 pub struct IndexNestedLoopHashJoin {
+    initial_batch_size: usize,
     outer_worker: IndexHashJoinOuterWorker,
     builder: Box<dyn IndexJoinExecutorBuilder>,
     inner_key_columns: Vec<usize>,
@@ -770,10 +773,21 @@ pub struct IndexNestedLoopHashJoin {
     output: Vec<Row>,
     cursor: usize,
     opened: bool,
+    executed: bool,
     closed: bool,
 }
 
 impl IndexNestedLoopHashJoin {
+    /// Bind worker candidate evidence to this statement and plan ID.
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        collection: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.joiner = self.joiner.with_runtime_stats(plan_id, collection);
+        self
+    }
+
     /// 构造执行器；内外 key 列数必须一致。
     pub fn new(
         outer_rows: Vec<Row>,
@@ -788,6 +802,7 @@ impl IndexNestedLoopHashJoin {
             return Err("index hash join key count mismatch".into());
         }
         Ok(Self {
+            initial_batch_size,
             outer_worker: IndexHashJoinOuterWorker::new(
                 outer_rows,
                 outer_key_columns,
@@ -800,6 +815,7 @@ impl IndexNestedLoopHashJoin {
             output: Vec::new(),
             cursor: 0,
             opened: false,
+            executed: false,
             closed: false,
         })
     }
@@ -813,9 +829,11 @@ impl IndexNestedLoopHashJoin {
     }
     /// 打开执行器并重置输出游标。
     pub fn open(&mut self) -> Result<(), String> {
-        if self.closed {
-            return Err("cannot reopen closed index hash join".into());
-        }
+        self.joiner.reset_joined_rows();
+        self.executed = false;
+        self.closed = false;
+        self.outer_worker.cursor = 0;
+        self.outer_worker.batch_size = self.initial_batch_size;
         self.output.clear();
         self.cursor = 0;
         self.opened = true;
@@ -882,14 +900,18 @@ impl IndexNestedLoopHashJoin {
     }
     /// 惰性执行后按 required_rows 切分输出。
     pub fn next(&mut self, required_rows: usize) -> Result<IndexHashJoinResult, String> {
+        if self.closed {
+            return Err("join is closed; call open before reuse".into());
+        }
         if !self.opened {
             self.open()?;
         }
         if required_rows == 0 {
             return Ok(IndexHashJoinResult::default());
         }
-        if self.output.is_empty() && self.cursor == 0 {
+        if !self.executed {
             self.execute()?;
+            self.executed = true;
         }
         if self.cursor >= self.output.len() {
             return Ok(IndexHashJoinResult::default());
@@ -901,6 +923,7 @@ impl IndexNestedLoopHashJoin {
     }
     /// 关闭执行器并释放输出缓冲。
     pub fn close(&mut self) {
+        self.joiner.register_joined_rows();
         self.output.clear();
         self.closed = true;
         self.opened = false;

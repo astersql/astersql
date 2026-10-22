@@ -298,7 +298,7 @@ fn add_statement_ru_hash_state_rows(units: &mut StmtUnits, rows: f64) -> bool {
 /// Go support matrix: root joins and MPP HashJoin; FullOuter is unsupported.
 fn statement_ru_join_contract_for_plan(
     plan: &dyn astersql_planner_core_base::Plan,
-) -> Option<(usize, bool)> {
+) -> Option<(usize, usize, bool)> {
     use astersql_planner_core_operator_physicalop as op;
     let origin = plan.as_any();
     let (base, keys, hash) = if let Some(join) = origin.downcast_ref::<op::PhysicalHashJoin>() {
@@ -335,7 +335,8 @@ fn statement_ru_join_contract_for_plan(
         return None;
     }
     Some((
-        keys + base.LeftConditions.len() + base.RightConditions.len() + base.OtherConditions.len(),
+        keys + base.LeftConditions.len() + base.RightConditions.len(),
+        base.OtherConditions.len(),
         hash,
     ))
 }
@@ -388,13 +389,29 @@ pub(crate) fn collect_statement_ru_join_units(
     if children.len() != 2 {
         return Invalid;
     }
-    let Some((count, hash)) = statement_ru_join_contract_for_plan(operator.Origin) else {
+    let Some((input_count, other_count, hash)) =
+        statement_ru_join_contract_for_plan(operator.Origin)
+    else {
         return Unsupported;
     };
     let mut delta = StmtUnits::default();
     let input = children[0].output_rows as f64 + children[1].output_rows as f64;
-    if !add_statement_ru_cpu_work(&mut delta, input * count as f64)
-        || !add_statement_ru_join_output_rows(&mut delta, output_rows as f64)
+    // Root evidence counts pairs actually processed before residual evaluation.
+    // TiFlash still reports output only, so MPP retains input-based residual work.
+    let joined_rows = if operator.IsRoot {
+        stats.and_then(|stats| stats.joined_rows).unwrap_or(0)
+    } else {
+        output_rows
+    };
+    let other_rows = if operator.IsRoot {
+        joined_rows as f64
+    } else {
+        input
+    };
+    if !add_statement_ru_cpu_work(
+        &mut delta,
+        input * input_count as f64 + other_rows * other_count as f64,
+    ) || !add_statement_ru_join_output_rows(&mut delta, joined_rows as f64)
     {
         return Invalid;
     }
@@ -534,6 +551,7 @@ pub struct StatementRUPlanEvidence {
     pub root_rows: astersql_util_execdetails::execdetails::RootRowsSnapshot,
     pub write_cpu_work: Option<f64>,
     pub analyze_scan_bytes: Option<f64>,
+    pub joined_rows: Option<i64>,
     pub hash_state_rows: Option<astersql_util_execdetails::execdetails::HashStateRowsSnapshot>,
     pub cop_rows: astersql_util_execdetails::execdetails::CopRowsSnapshot,
     pub scan: Option<astersql_util_execdetails::execdetails::util::ScanDetail>,
@@ -587,6 +605,7 @@ pub fn snapshot_statement_ru_runtime_evidence(
                         root_rows: collector.GetRootRowsSnapshot(plan_id),
                         write_cpu_work: collector.GetRootWriteCPUWork(plan_id),
                         analyze_scan_bytes: collector.GetAnalyzeScanBytes(plan_id),
+                        joined_rows: collector.GetRootJoinedRows(plan_id),
                         hash_state_rows: collector.GetRootHashStateRowsSnapshot(plan_id),
                         cop_rows: collector.GetCopRowsSnapshot(plan_id),
                         scan: collector.GetObservedCopScanDetail(plan_id),

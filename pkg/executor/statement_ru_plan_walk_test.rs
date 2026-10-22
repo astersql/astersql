@@ -1553,6 +1553,10 @@ fn go_merge_187_join_aggregation() {
     let hash_stats = astersql_util_execdetails::execdetails::HashStateRuntimeStats::default();
     hash_stats.AddRows(7);
     stats.RegisterStatsShared(ids[0], Box::new(hash_stats));
+    stats.RegisterStatsShared(
+        ids[0],
+        Box::new(astersql_util_execdetails::execdetails::JoinedRowsRuntimeStats { Rows: 17 }),
+    );
     let evidence = snapshot_statement_ru_runtime_evidence(Some(&stats), &ids, None, None, None);
     let mut calculator = StatementRUCalculator::new(StatementRUCalculationSetup::default());
     assert_eq!(
@@ -1561,7 +1565,7 @@ fn go_merge_187_join_aggregation() {
     );
     assert_eq!(calculator.units.cpu_work, 13.0);
     assert_eq!(calculator.units.hash_state_rows, 7.0);
-    assert_eq!(calculator.units.join_output_rows, 3.0);
+    assert_eq!(calculator.units.join_output_rows, 17.0);
 }
 
 fn ru_join_context() -> base::ContextRef {
@@ -1692,6 +1696,10 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
         record_statement_ru_root_rows(&mut stats, ids[0], 3);
         record_statement_ru_root_rows(&mut stats, ids[1], 8);
         record_statement_ru_root_rows(&mut stats, ids[2], 5);
+        stats.RegisterStats(
+            ids[0],
+            Box::new(astersql_util_execdetails::execdetails::JoinedRowsRuntimeStats { Rows: 17 }),
+        );
         let mut evidence =
             snapshot_statement_ru_runtime_evidence(Some(&stats), &ids, None, None, None);
         evidence.plans[0].hash_state_rows = Some(completed_statement_ru_hash_state_rows(7));
@@ -1705,8 +1713,8 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
             "{}",
             plan.tp(&[])
         );
-        assert_eq!(calculator.units.cpu_work, 13.0 * slots);
-        assert_eq!(calculator.units.join_output_rows, 3.0);
+        assert_eq!(calculator.units.cpu_work, 13.0 * (slots - 3.0) + 17.0 * 3.0);
+        assert_eq!(calculator.units.join_output_rows, 17.0);
         assert_eq!(
             calculator.units.hash_state_rows,
             if hash { 7.0 } else { 0.0 }
@@ -1738,6 +1746,8 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
             Complete
         );
         assert_eq!(calc.units.hash_state_rows, 0.0);
+        assert_eq!(calc.units.join_output_rows, 0.0);
+        assert_eq!(calc.units.cpu_work, 13.0 * (slots - 3.0));
         let mut bad = evidence.plans[0].clone();
         bad.hash_state_rows.as_mut().unwrap().Rows = -1;
         let mut calc = fresh();
@@ -1759,6 +1769,21 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
             collect_statement_ru_join_units(&tree[0], &huge, 3, None, false, &mut calc),
             Invalid
         );
+        let mut overflow = evidence.plans[0].clone();
+        overflow.joined_rows = Some(-1);
+        let mut invalid = fresh();
+        assert_eq!(
+            collect_statement_ru_join_units(
+                &tree[0],
+                &children,
+                3,
+                Some(&overflow),
+                false,
+                &mut invalid
+            ),
+            Invalid
+        );
+        assert_eq!(invalid.units, StmtUnits::default());
         tree[0].IsRoot = false;
         tree[0].StoreType = astersql_kv::StoreType::TiKV;
         tree[0].ReqType = physicalop::ReadReqType::Cop;
@@ -1782,6 +1807,8 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
             if hash { Complete } else { Unsupported }
         );
         assert_eq!(calc.units.hash_state_rows, if hash { 28.0 } else { 0.0 });
+        assert_eq!(calc.units.join_output_rows, if hash { 3.0 } else { 0.0 });
+        assert_eq!(calc.units.cpu_work, if hash { 13.0 * slots } else { 0.0 });
         mpp.tiflash.as_mut().unwrap().Invalid = true;
         assert_eq!(
             collect_statement_ru_join_units(&tree[0], &children, 3, Some(&mpp), true, &mut fresh(),),
@@ -1880,7 +1907,7 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
         );
         assert_eq!(
             calc.units.cpu_work,
-            if name == "IndexHashJoin" { 169.0 } else { 0.0 }
+            if name == "IndexHashJoin" { 130.0 } else { 0.0 }
         );
     }
 }
@@ -3530,4 +3557,73 @@ fn statement_ru_reader_terminal_freezes_scan_and_transport_once() {
         &snapshot,
         stmt.StatementCtx.statement_ru_finalized.as_ref().unwrap()
     ));
+}
+
+#[test]
+fn statement_ru_join_candidates_flow_from_executor_through_runtime_snapshot() {
+    use crate::statement_ru_plan_walk::*;
+    use astersql_executor_join::hash_join_v1::{HashJoinCtxV1, HashJoinV1Exec};
+    use astersql_executor_join::joiner::{JoinType, Joiner};
+    use astersql_executor_join::row_table_builder::Value;
+    use std::sync::Mutex;
+    let ctx = ru_join_context();
+    let mut physical =
+        physicalop::NewPhysicalHashJoin(ru_join_base(ctx.clone(), "HashJoin"), 1, false);
+    base::PhysicalPlan::set_children(
+        &mut physical,
+        vec![
+            Box::new(physicalop::PhysicalTableDual::New(ctx.clone(), 1)),
+            Box::new(physicalop::PhysicalTableDual::New(ctx, 1)),
+        ],
+    );
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(&physical).unwrap();
+    let ids: Vec<_> = tree.iter().map(|op| op.Origin.id()).collect();
+    let coll = Arc::new(Mutex::new(
+        astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None),
+    ));
+    let joiner = Joiner::new(
+        JoinType::Inner,
+        false,
+        vec![],
+        vec![Arc::new(|_| Ok(Some(false)))],
+        None,
+        false,
+        2,
+    )
+    .unwrap();
+    let context = HashJoinCtxV1 {
+        base: Default::default(),
+        join_type: JoinType::Inner,
+        build_key_indices: vec![0],
+        probe_key_indices: vec![0],
+        null_aware: false,
+        build_side_is_outer: false,
+        concurrency: 2,
+        max_chunk_size: 2,
+    };
+    let mut exec = HashJoinV1Exec::new(
+        context,
+        joiner,
+        vec![vec![vec![Value::Int(1)]; 3]],
+        vec![vec![vec![Value::Int(1)]; 2]],
+    )
+    .unwrap()
+    .with_runtime_stats(ids[0], coll.clone());
+    assert!(exec.execute_all().unwrap().is_empty());
+    exec.close();
+    let mut stats = coll.lock().unwrap();
+    record_statement_ru_root_rows(&mut stats, ids[0], 0);
+    record_statement_ru_root_rows(&mut stats, ids[1], 2);
+    record_statement_ru_root_rows(&mut stats, ids[2], 3);
+    let evidence = snapshot_statement_ru_runtime_evidence(Some(&stats), &ids, None, None, None);
+    drop(stats);
+    assert_eq!(evidence.plans[0].joined_rows, Some(6));
+    let mut calculator = StatementRUCalculator::new(Default::default());
+    assert_eq!(
+        calculate_statement_ru_plan(&tree, 0, &evidence, &mut calculator).state,
+        StatementRUOperatorState::Complete
+    );
+    assert_eq!(calculator.units.join_output_rows, 6.0);
+    // ru_join_base has 3 input expressions and 3 residual conditions.
+    assert_eq!(calculator.units.cpu_work, 5.0 * 3.0 + 6.0 * 3.0);
 }

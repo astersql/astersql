@@ -918,3 +918,36 @@ fn test_ruv2_metrics_bypass_skips_raw_and_direct_updates() {
     metrics.AddTiKVCoprocessorResponseBytes(13);
     assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 0);
 }
+
+#[test]
+fn joined_rows_clone_merge_overflow_and_collection() {
+    use exec::RuntimeStats;
+    let mut stats = exec::JoinedRowsRuntimeStats::default();
+    assert_eq!(stats.String(), "");
+    assert_eq!(stats.Tp(), exec::TpJoinedRowsRuntimeStats);
+    stats.AddRows(7);
+    let copy = stats.CloneBox();
+    stats.AddRows(5);
+    assert_eq!(
+        copy.as_any()
+            .downcast_ref::<exec::JoinedRowsRuntimeStats>()
+            .unwrap()
+            .Rows,
+        7
+    );
+    let mut coll = exec::NewRuntimeStatsColl(None);
+    assert_eq!(coll.GetRootJoinedRows(9), None);
+    coll.RegisterStats(9, Box::new(exec::JoinedRowsRuntimeStats::default()));
+    assert_eq!(coll.GetRootJoinedRows(9), Some(0));
+    coll.RegisterStats(9, copy);
+    coll.RegisterStats(9, Box::new(stats));
+    assert_eq!(coll.GetRootJoinedRows(9), Some(19));
+    coll.RegisterStats(9, Box::new(exec::JoinedRowsRuntimeStats { Rows: i64::MAX }));
+    assert_eq!(coll.GetRootJoinedRows(9), Some(-1));
+    coll.RegisterStats(9, Box::new(exec::JoinedRowsRuntimeStats { Rows: 1 }));
+    assert_eq!(coll.GetRootJoinedRows(9), Some(-1));
+    let mut invalid = exec::JoinedRowsRuntimeStats::default();
+    invalid.AddRows(-2);
+    invalid.AddRows(1);
+    assert_eq!(invalid.Rows, -1);
+}

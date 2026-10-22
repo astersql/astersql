@@ -21,8 +21,9 @@
 
 use crate::joiner::{Joiner, NaajType, Predicate, Row};
 use crate::row_table_builder::Value;
+use astersql_util_execdetails::execdetails::RuntimeStatsColl;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use astersql_executor_internal_exec::adaptive_limit_controller::{
@@ -266,6 +267,16 @@ pub struct IndexLookUpJoin {
 }
 
 impl IndexLookUpJoin {
+    /// Bind worker candidate evidence to this statement and plan ID.
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        collection: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.joiner = self.joiner.with_runtime_stats(plan_id, collection);
+        self
+    }
+
     /// 创建执行器并初始化外表 worker。
     pub fn new(
         outer_context: OuterCtx,
@@ -293,6 +304,7 @@ impl IndexLookUpJoin {
     }
     /// 打开执行器：重置 worker 与输出缓冲。
     pub fn open(&mut self) -> Result<(), String> {
+        self.joiner.reset_joined_rows();
         self.worker.reset();
         self.output.clear();
         self.cursor = 0;
@@ -366,6 +378,7 @@ impl IndexLookUpJoin {
     }
     /// 关闭执行器并释放当前执行状态；保留输入以允许再次 open。
     pub fn close(&mut self) {
+        self.joiner.register_joined_rows();
         if let Some(controller) = &self.adaptive_limit_controller {
             self.stats.adaptive_limit_snapshot = Some(controller.Snapshot());
         }

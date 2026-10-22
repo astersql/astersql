@@ -88,6 +88,43 @@ pub const TpExplainRURuntimeStats: i32 = 20;
 pub const TpHashStateRuntimeStats: i32 = 21;
 pub const TpWriteRuntimeStats: i32 = 22;
 
+pub const TpJoinedRowsRuntimeStats: i32 = 23;
+
+/// Candidate pairs before residual filtering. Worker-owned until publication;
+/// excludes null-extension rows and candidates skipped by semi joins.
+#[derive(Clone, Debug, Default)]
+pub struct JoinedRowsRuntimeStats {
+    pub Rows: i64,
+}
+impl JoinedRowsRuntimeStats {
+    pub fn AddRows(&mut self, rows: i64) {
+        self.Rows = if self.Rows < 0 || rows < 0 {
+            -1
+        } else {
+            self.Rows.checked_add(rows).unwrap_or(-1)
+        };
+    }
+}
+impl RuntimeStats for JoinedRowsRuntimeStats {
+    fn String(&self) -> String {
+        String::new()
+    }
+    fn Tp(&self) -> i32 {
+        TpJoinedRowsRuntimeStats
+    }
+    fn CloneBox(&self) -> Box<dyn RuntimeStats> {
+        Box::new(self.clone())
+    }
+    fn Merge(&mut self, other: &dyn RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            self.AddRows(other.Rows);
+        }
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 #[derive(Default)]
 pub struct WriteRuntimeStats {
     pub CPUWork: f64,
@@ -962,6 +999,19 @@ impl RuntimeStatsColl {
                 stat.as_any()
                     .downcast_ref::<WriteRuntimeStats>()
                     .map(|stat| stat.CPUWork)
+            })
+    }
+
+    /// None distinguishes missing evidence from an observed zero.
+    pub fn GetRootJoinedRows(&self, planID: i32) -> Option<i64> {
+        let empty = RootRuntimeStats::default();
+        self.shared_group_stats(planID, self.rootStats.get(&planID).unwrap_or(&empty))
+            .groupRss
+            .iter()
+            .find_map(|stat| {
+                stat.as_any()
+                    .downcast_ref::<JoinedRowsRuntimeStats>()
+                    .map(|stat| stat.Rows)
             })
     }
 

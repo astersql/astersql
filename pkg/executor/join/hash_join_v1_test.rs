@@ -199,3 +199,54 @@ fn nested_loop_apply_open_discards_cached_inner_results_like_go() {
     assert_eq!(apply.cache_info.hits, 0);
     assert_eq!(apply.cache_info.misses, 1);
 }
+
+#[test]
+fn joined_rows_hash_v1_residual_reopen_and_error() {
+    use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
+    use std::sync::Mutex;
+    for kind in [
+        JoinType::Inner,
+        JoinType::LeftOuter,
+        JoinType::RightOuter,
+        JoinType::Semi,
+        JoinType::AntiSemi,
+        JoinType::LeftOuterSemi,
+        JoinType::AntiLeftOuterSemi,
+    ] {
+        let mut config = info(
+            kind,
+            vec![row(&[1, 10]), row(&[1, 11])],
+            vec![row(&[1]), row(&[2])],
+        );
+        config.conditions = vec![Arc::new(|_| Ok(Some(false)))];
+        let coll = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+        let mut executor = build_hash_join_v1_exec(&config)
+            .unwrap()
+            .with_runtime_stats(71, coll.clone());
+        for expected in [2, 4] {
+            executor.open().unwrap();
+            executor.execute_all().unwrap();
+            assert!(executor.next().unwrap().rows.is_empty());
+            executor.close();
+            executor.close();
+            assert_eq!(
+                coll.lock().unwrap().GetRootJoinedRows(71),
+                Some(expected),
+                "{kind:?}"
+            );
+        }
+    }
+    let mut config = info(
+        JoinType::Inner,
+        vec![row(&[1, 10]), row(&[1, 11])],
+        vec![row(&[1])],
+    );
+    config.conditions = vec![Arc::new(|_| Err("residual error".into()))];
+    let coll = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+    let mut executor = build_hash_join_v1_exec(&config)
+        .unwrap()
+        .with_runtime_stats(71, coll.clone());
+    assert!(executor.execute_all().is_err());
+    executor.close();
+    assert_eq!(coll.lock().unwrap().GetRootJoinedRows(71), Some(1));
+}

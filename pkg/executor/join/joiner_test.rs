@@ -257,3 +257,168 @@ fn false_condition_overrides_earlier_null() {
         .unwrap();
     assert!(!result.has_null);
 }
+
+#[test]
+fn joined_rows_counts_residual_candidates_and_semi_short_circuit() {
+    use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
+    use std::sync::{Arc, Mutex};
+    for kind in [
+        JoinType::Inner,
+        JoinType::LeftOuter,
+        JoinType::RightOuter,
+        JoinType::Semi,
+        JoinType::AntiSemi,
+        JoinType::LeftOuterSemi,
+        JoinType::AntiLeftOuterSemi,
+    ] {
+        for right in [false, true] {
+            let coll = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+            let mut joiner = Joiner::new(
+                kind,
+                right,
+                vec![Value::Null],
+                vec![Arc::new(|row| Ok(Some(row.contains(&Value::Int(2)))))],
+                Some([vec![], vec![]]),
+                false,
+                2,
+            )
+            .unwrap()
+            .with_runtime_stats(9, coll.clone());
+            joiner.reset_joined_rows();
+            let mut output = Vec::new();
+            joiner
+                .try_to_match_inners(
+                    &vec![],
+                    &[
+                        vec![Value::Int(1)],
+                        vec![Value::Int(2)],
+                        vec![Value::Int(3)],
+                    ],
+                    &mut output,
+                    NaajType::Unknown,
+                )
+                .unwrap();
+            joiner.on_miss_match(false, &vec![], &mut output);
+            joiner.register_joined_rows();
+            let semi = matches!(
+                kind,
+                JoinType::Semi
+                    | JoinType::AntiSemi
+                    | JoinType::LeftOuterSemi
+                    | JoinType::AntiLeftOuterSemi
+            );
+            assert_eq!(
+                coll.lock().unwrap().GetRootJoinedRows(9),
+                Some(if semi { 2 } else { 3 })
+            );
+        }
+    }
+}
+
+#[test]
+fn joined_rows_survives_residual_error_panic_and_worker_clone() {
+    use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
+    use std::sync::{Arc, Mutex};
+    for panic in [false, true] {
+        let coll = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+        let mut joiner = Joiner::new(
+            JoinType::Inner,
+            false,
+            vec![],
+            vec![Arc::new(move |_| {
+                if panic {
+                    panic!("residual panic")
+                }
+                Err("residual error".into())
+            })],
+            None,
+            false,
+            2,
+        )
+        .unwrap()
+        .with_runtime_stats(9, coll.clone());
+        joiner.reset_joined_rows();
+        let worker = joiner.clone();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            worker.try_to_match_inners(
+                &vec![],
+                &[vec![], vec![]],
+                &mut Vec::new(),
+                NaajType::Unknown,
+            )
+        }));
+        if panic {
+            assert!(outcome.is_err());
+        } else {
+            assert!(outcome.unwrap().is_err());
+        }
+        joiner.register_joined_rows();
+        joiner.register_joined_rows();
+        assert_eq!(coll.lock().unwrap().GetRootJoinedRows(9), Some(1));
+    }
+}
+
+#[test]
+fn joined_rows_null_aware_anti_joins_count_only_checked_pairs() {
+    use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
+    use std::sync::Mutex;
+    for kind in [JoinType::AntiSemi, JoinType::AntiLeftOuterSemi] {
+        for naaj in [
+            NaajType::LeftHasNullRightNotNull,
+            NaajType::LeftHasNullRightHasNull,
+            NaajType::LeftNotNullRightNotNull,
+            NaajType::LeftNotNullRightHasNull,
+        ] {
+            let coll = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+            let mut j = Joiner::new(kind, false, vec![], vec![], None, true, 2)
+                .unwrap()
+                .with_runtime_stats(7, coll.clone());
+            j.reset_joined_rows();
+            j.try_to_match_inners(&vec![], &[vec![], vec![], vec![]], &mut Vec::new(), naaj)
+                .unwrap();
+            j.register_joined_rows();
+            assert_eq!(coll.lock().unwrap().GetRootJoinedRows(7), Some(1));
+        }
+    }
+}
+
+#[test]
+fn joined_rows_partial_residual_failure_counts_inners_and_outers() {
+    use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
+    use std::sync::Mutex;
+    for outer_build in [false, true] {
+        let coll = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+        let mut j = Joiner::new(
+            JoinType::Inner,
+            false,
+            vec![],
+            vec![Arc::new(|row| {
+                if row.contains(&Value::Int(2)) {
+                    Err("second candidate failed".into())
+                } else {
+                    Ok(Some(false))
+                }
+            })],
+            None,
+            false,
+            2,
+        )
+        .unwrap()
+        .with_runtime_stats(7, coll.clone());
+        j.reset_joined_rows();
+        let candidates = vec![row(&[1]), row(&[2]), row(&[3])];
+        if outer_build {
+            assert!(
+                j.try_to_match_outers(&candidates, &vec![], &mut Vec::new())
+                    .is_err()
+            );
+        } else {
+            assert!(
+                j.try_to_match_inners(&vec![], &candidates, &mut Vec::new(), NaajType::Unknown)
+                    .is_err()
+            );
+        }
+        j.register_joined_rows();
+        assert_eq!(coll.lock().unwrap().GetRootJoinedRows(7), Some(2));
+    }
+}

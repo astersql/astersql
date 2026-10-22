@@ -1323,9 +1323,69 @@ pub enum NaajType {
     LeftNotNullRightHasNull,
 }
 
+use astersql_util_execdetails::execdetails::{JoinedRowsRuntimeStats, RuntimeStatsColl};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+/// Each clone starts a fresh worker counter. Drop publishes on early returns
+/// and unwinding; the hot path never locks the runtime collector.
+#[derive(Default)]
+struct JoinRowCounter {
+    rows: AtomicI64,
+    destination: Option<(i32, Arc<Mutex<RuntimeStatsColl>>)>,
+    active: bool,
+}
+impl Clone for JoinRowCounter {
+    fn clone(&self) -> Self {
+        Self {
+            rows: AtomicI64::new(0),
+            destination: self.destination.clone(),
+            active: self.active,
+        }
+    }
+}
+impl JoinRowCounter {
+    fn add(&self) {
+        if self.active {
+            let _ = self
+                .rows
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |rows| {
+                    Some(if rows < 0 {
+                        -1
+                    } else {
+                        rows.checked_add(1).unwrap_or(-1)
+                    })
+                });
+        }
+    }
+    fn register(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        if let Some((id, collection)) = &self.destination {
+            collection
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .RegisterStats(
+                    *id,
+                    Box::new(JoinedRowsRuntimeStats {
+                        Rows: self.rows.load(Ordering::Relaxed),
+                    }),
+                );
+        }
+    }
+}
+impl Drop for JoinRowCounter {
+    fn drop(&mut self) {
+        self.register();
+    }
+}
+
 /// 按连接类型与条件生成结果行的执行器。
 #[derive(Clone)]
 pub struct Joiner {
+    joined_rows: JoinRowCounter,
     join_type: JoinType,
     null_aware: bool,
     outer_is_right: bool,
@@ -1364,6 +1424,7 @@ impl Joiner {
             .map(|used| (Some(used[0].clone()), Some(used[1].clone())))
             .unwrap_or((None, None));
         Ok(Self {
+            joined_rows: JoinRowCounter::default(),
             join_type,
             null_aware,
             outer_is_right,
@@ -1373,6 +1434,23 @@ impl Joiner {
             right_used,
         })
     }
+    /// Bind statement evidence; Open starts a new local counter.
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        collection: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.joined_rows.destination = Some((plan_id, collection));
+        self
+    }
+    pub fn reset_joined_rows(&mut self) {
+        self.joined_rows.rows.store(0, Ordering::Relaxed);
+        self.joined_rows.active = self.joined_rows.destination.is_some();
+    }
+    pub fn register_joined_rows(&mut self) {
+        self.joined_rows.register();
+    }
+
     /// 返回当前连接类型。
     pub fn join_type(&self) -> JoinType {
         self.join_type
@@ -1404,6 +1482,7 @@ impl Joiner {
         }
         let mut result = MatchResult::default();
         for inner in inners {
+            self.joined_rows.add();
             result.consumed += 1;
             let joined = self.join_rows(inner, outer);
             let (matched, is_null) = self.evaluate(&joined)?;
@@ -1466,6 +1545,7 @@ impl Joiner {
         }
         let mut statuses = Vec::new();
         for outer in outers {
+            self.joined_rows.add();
             let joined = self.join_rows(inner, outer);
             let (matched, is_null) = self.evaluate(&joined)?;
             statuses.push(if matched {

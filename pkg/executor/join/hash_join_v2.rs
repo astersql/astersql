@@ -2039,6 +2039,9 @@ impl HashJoinV2Exec {
         runtime_stats_coll: Arc<Mutex<RuntimeStatsColl>>,
     ) -> Self {
         self.plan_id = plan_id;
+        self.joiner = self
+            .joiner
+            .with_runtime_stats(plan_id, runtime_stats_coll.clone());
         self.runtime_stats_coll = Some(runtime_stats_coll);
         self
     }
@@ -2048,6 +2051,7 @@ impl HashJoinV2Exec {
     }
     /// 打开并启动构建与探测流水线。
     pub fn open(&mut self) -> Result<(), String> {
+        self.joiner.reset_joined_rows();
         self.context.base.reset();
         self.context.setup_partition_info();
         self.probe_fetcher.reset();
@@ -2302,6 +2306,7 @@ impl HashJoinV2Exec {
     }
     /// 关闭执行器。
     pub fn close(&mut self) {
+        self.joiner.register_joined_rows();
         if let (Some(collection), Some(stats)) =
             (&self.runtime_stats_coll, self.hash_state_stats.take())
         {
