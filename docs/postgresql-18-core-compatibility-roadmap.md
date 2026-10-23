@@ -1696,6 +1696,18 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [count_test.rs](../pkg/expression/aggregation/count_test.rs)：`dedup_mode_does_not_produce_a_count`；[avg_test.rs](../pkg/expression/aggregation/avg_test.rs)：`zero_count_float_partial_state_matches_go_ieee_division` / `zero_count_decimal_partial_state_matches_go_logged_error_result` | COUNT 仅断言 DedupMode 不计数；AVG 人工构造非 NULL sum/零 count，分别预期 infinity/非 NULL 零 decimal，不能用来证明正常空输入的 PG NULL 行为。独立测试由 aggregation/lib.rs 挂载，均未运行。 |
 | [typed_hash_agg_test.rs](../pkg/executor/typed_hash_agg_test.rs)：`typed_hash_agg_groups_across_input_pages_and_pages_output`、`typed_hash_agg_scalar_empty_input_emits_count_zero` | 经 BuildTypedPhysicalPlan 构造真实 scan/HashAgg，断言跨输入页两组 count 为 2/1、空全局输入一行 count=0；executor/lib.rs 挂载。未覆盖本块 PG FILTER、排序、numeric 元数据或协议，不能据此升级 SQL 支持。 |
 
+#### 窗口函数调用契约
+
+静态基线 `b2dccdbd5272b1f34baf75a7d002e6e1868a240f`（2026-10-23）；批次 1–13 连续提交及累计五节正文已核对，前置文档依赖满足。RustCodeGraph status/explore/query/定点 node 用于源码导航，模块挂载用 rg 补查；`pkg/expression/doc.go`、`pkg/expression/aggregation/doc.go`、`pkg/executor/doc.go`、`pkg/executor/windows/doc.go`、`pkg/executor/aggfuncs/doc.go` 均不存在。以下是静态源码与断言意图，未执行测试。
+
+| 实际入口/符号 | 责任与证据限制 |
+| --- | --- |
+| [window_func.rs](../pkg/expression/aggregation/window_func.rs)：`NewWindowFuncDesc`、`NeedFrame`、`UseDefaultFrame` | 描述符内嵌 baseFuncDesc，按 MySQL 字段规则推断返回/可空性；LEAD/LAG 检查非 NULL 无符号常量 offset。NO_FRAME 列出排名/偏移函数，row_number 的内部 CURRENT ROW 帧是优化约定，不能当作 PG SQL 默认帧。描述符不承载完整分区/排序/帧语义。 |
+| [builder.rs](../pkg/executor/aggfuncs/builder.rs)：`build_window_function`、`build_lead_lag` | 选择 Rank/RowNumber/LastValue/Lead/Lag 实现描述，offset/default 读取常量；其存在不证明 PG 每行动态 offset/default、多态签名或物理计划桥接。 |
+| [windows/builder.rs](../pkg/executor/windows/builder.rs)：`PhysicalWindowPlan`、`build`；[window.rs](../pkg/executor/windows/window.rs)：`FrameType`、`FrameBound`、`WindowFunction`、`RowNumber`、`Lag` | 物理计划接收预建 WindowFunction、分区/排序列及可选帧，选择缓冲/流水线路径；None 是整分区，不负责解析 PG 默认帧。帧枚举只有 Rows/Range，边界 num 为 u64；RANGE offset 经 f64 数值比较，OrderBy 仅有列号/降序、sql_cmp 将 NULL 排最小，无完整 PG collation/NULLS 配置证据。RowNumber 返回 UInt，Lag 接收 usize offset/固定 default；不能据容器推断 PG int8 类型或动态 offset 可用。 |
+| [window_func_test.rs](../pkg/expression/aggregation/window_func_test.rs)：`window_pushdown_honors_tiflash_specific_scalar_blacklist` | 只断言 TiFlash scalar 黑名单拒绝下推，不是帧语义测试；由 aggregation/lib.rs 挂载。 |
+| [window_sql_test.rs](../pkg/executor/windows/window_sql_test.rs)：`go_test_window_functions_covers_partition_rows_and_range_frames`、`go_test_window_functions_data_reference_preserves_lag_across_chunks`、`go_test_sliding_window_functions_covers_asymmetric_and_empty_frames`、`go_test_issue_45964_and_46050_preserves_empty_frame_nullability` | 直接 build/run_executor，断言分区重置、ROWS/RANGE 升降序、跨块 LAG、空帧 SUM=NULL/COUNT=0/行号递增；windows/lib.rs 挂载。文件名含 sql 不表示解析或协议测试，未提供 PG rank/lead/last_value、GROUPS、默认帧或 wire 实测证据。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1956,6 +1968,23 @@ FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.21 聚合函数](https://www.postgresql.org/docs/18/functions-aggregate.html)定义三种代表的输入、返回、NULL 及 partial-mode 能力；[§4.2.7 聚合表达式](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-AGGREGATES)定义星号、DISTINCT、FILTER 与聚合内排序；[§36.12 状态/最终化与 partial aggregation](https://www.postgresql.org/docs/18/xaggr.html)区分输入/状态/结果类型及 combine 责任。协议、类型和错误字段沿本章模板及第 3 章。以上不是 18.6 的运行证据，精确补丁版本与参考端仍未核实。
 
+#### 窗口函数调用契约
+
+沿首块全部模板字段，本块仅选 row_number/rank、lag/lead、last_value；规范实现候选 `window.position/v1`、`window.partition-offset/v1`、`window.frame-last/v1` 是文档身份，未批准共享或别名。窗口保留每个输入行，不能改成普通聚合的一组一行，亦不能由标量工厂逐行独立求值。
+
+| 模板字段 | 方言目标、来源与当前缺口 |
+| --- | --- |
+| 名称/可见性/重载/cast | PG 内建 row_number()/rank()→int8；lag/lead(value anyelement [,offset int4])→anyelement，三参数 (value anycompatible,offset int4,default anycompatible)→共同 anycompatible（手册合并展示，目录区分实际重载）；last_value(anyelement)→同输入类型。PG 名称及 pg_catalog 限定名按前块 resolver；MySQL 同名按自身规则独立选择，不能套 PG 多态类型。仅消费第 3 章 I 转换资格；本块值域固定 int4，混型多态全域不扩写，实际两入口接线未验证。 |
+| 分区/排序/peer | PARTITION BY 独立重置状态，省略则所有输入为一个分区；同序 peer 仅按窗口 ORDER BY 全部键的相等语义判定，外层 ORDER BY 只排序输出。PG 默认 ASC NULLS LAST、DESC NULLS FIRST；显式 NULLS 与文本 collation 归第 3 章比较身份。row_number 对 peer 内分配不保证固定，rank 同 peer 同值且跳号；需确定位置时给窗口追加唯一键，但不可因此改变 rank 的 peer 夹具。 |
+| 默认/显式帧 | PG 默认 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW，终点包含当前最后 peer；无 ORDER BY 时全分区均为 peer，默认覆盖全分区。ROWS 按物理行，RANGE 按排序值，GROUPS 按 peer 组；RANGE offset 要且仅要一个排序键，offset 类型随键（时间键用 interval）。ROWS/GROUPS offset 非 NULL 非负整数，GROUPS 要求排序。边界截在分区内；合法反向距离可形成空帧，不等于空分区。 |
+| 求值/NULL/offset | row_number/rank 按分区位置、不受帧限制；lag/lead 按分区位置取前/后行、不受帧限制，offset/default 相对当前行求值，省略为 1/typed NULL。offset=0 取当前值，NULL offset 返回同型 NULL，负 offset 反转方向（PG 源码）；越界才取 default，目标行值为 NULL 不触发 default。last_value 取帧末行值，空帧或末值 NULL→同型 NULL；均 RESPECT NULLS，PG 18 未实现 IGNORE NULLS。不能套 strict 标量的“任一 NULL 即不调用”捷径。 |
+| 确定性/上下文/副作用 | 对固定分区、全序输入与表达式上下文给出目标结果；无全序时不冻结 peer 内位置，无 ORDER BY 不承诺位置次序。不将有 OVER 的调用折叠成标量常量或跨分区缓存；offset/default 表达式保留自身 volatility/错误规则，不承诺副作用调用次数。本块整数夹具不依时区，文本排序/时间 RANGE 另依 collation/时区身份；优化器属性与上下文隔离未验证。 |
+| 返回/wire | PG 排名结果 int8，OID/typlen/typmod=20/8/-1、非 NULL；本块 int4 lag/lead/last_value 为 23/4/-1、逻辑可空，default 类型先参与分析，不能由实际 NULL/零行换型。列名显式别名、表达式表/属性号 0，Q/statement/portal、text/binary 与 NULL 长度 -1 沿首块。MySQL 自身整数/值类型及 code/flags/charset/length/decimals 待参考采集；UInt 容器不能决定 PG wire。 |
+| 下推/拒绝/错误 | 不批准下推或跨方言共享。GROUPS、EXCLUDE、带类型 RANGE offset 等未实现形式须在能力门禁显式拒绝，不能丢弃/改 ROWS 或全分区；这表示实现缺口，不表示 PG 拒绝合法 SQL。非法负/NULL 帧 offset、非法起止类别组合、缺 OVER、IGNORE NULLS 均须拒绝；精确 SQLSTATE/消息/位置及阶段待参考采集，不把内部 Ok(None) 当 SQL 错误证据。按首块采 S/V/C/M、适用 D/H/P 和分析/规划/执行阶段，MySQL 保留自身错误/警告；成功无错误。 |
+| 关联/验收/证据 | 关联 WIN-CALL 五组及上述三实现候选、静态基线；源码/独立断言意图已读，真实 SQL 工厂→物理执行→server 桥接、两协议与参考端运行证据均缺，有效运行用例 0。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.22 窗口函数](https://www.postgresql.org/docs/18/functions-window.html)定义签名与 NULL/帧责任；[§4.2.8 窗口调用](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-WINDOW-FUNCTIONS)定义帧模式、边界与限制；[§7.2.5 窗口处理](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-WINDOW)定义处理阶段与排序责任。固定 **REL_18_0** [windowfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/windowfuncs.c) 的 window_row_number/window_rank/leadlag_common/window_last_value 支持位置、NULL/负 offset 和空帧边界，[pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)核对窗口种类及多态签名；NULL 默认排序沿第 3 章。18.6 仍仅为来源指定目标，18 手册/18.0 源码不构成该补丁版本差分证据。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -2009,6 +2038,10 @@ FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的�
 #### 普通聚合调用契约
 
 不实现 FILTER 载体、排序器、PG numeric 或新的聚合执行器，不修复两条现有聚合路径的精度/溢出差异，不扩展完整聚合库、分布式状态序列化或测试平台；窗口 frame/逆转移、WITHIN GROUP 的 direct arguments、有序集合及 SRF 留给独立调用模型。现有 MySQL/Go 行为继续保留，不用 PG 规则重写；共享、局部/最终和下推缺证分别交后续聚焦工作，不阻塞本块文档交付。
+
+#### 窗口函数调用契约
+
+不实现窗口解析器、PG 物理计划桥接、排序器、GROUPS/EXCLUDE、动态 offset/default、完整多态类型或 codec，不修复当前 MySQL 描述符/执行器差异。不扩展全部排名/窗口聚合、逆转移、磁盘溢写、分布式执行及测试设施；有序集合和 SRF 交后块，目录/协议生命周期分别交工作流 6/7。只定义能力拒绝边界，不以缺基础设施阻塞文档交付。
 
 ### 验收
 
@@ -2192,6 +2225,20 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 局部/最终与下推另需计划/状态证据：将 1、1、2 分在不同局部分区（夹带空分区），核对全局 DISTINCT count=2、sum=3、avg=1.5；将 [1] 与 [2,3,4] 分开，AVG 最终=2.5，不能平均 1 与 3 得 2。比较单阶段及合法合并的值/NULL/类型/错误，验证 FILTER 各自独立及排序信息保留，浮点另外记录次序/舍入差异；未获此证据不批准共享或下推。当前五组及此门禁有效运行用例均为 0，结构检查不表示功能通过。
 
+#### 窗口函数调用契约
+
+以下 WIN-CALL 五组为**待新增、未运行**目标。每项分别比较 AsterSQL PG/参考 PG、AsterSQL MySQL/自身参考端；五种名称均目标可见，PG 再核限定名。PG 使用下面定型 VALUES；MySQL 以等值 CAST(... AS SIGNED) 的 SELECT/UNION ALL 派生表替换，投影/窗口使用自身合法语法。固定 UTF-8、无用户函数遮蔽；外层 ORDER BY id（分组例按 p,id）确定展示，合法项无错误。类型/NULL/wire 沿本块模板。
+
+| 场景 | PG 输入与预期 | MySQL 自身入口及证据限制 |
+| --- | --- | --- |
+| WIN-CALL-PEER：同序/分区 | t=`(VALUES(1,1,10::int4),(1,2,10::int4),(1,3,20::int4),(2,4,10::int4)) t(p,id,x)`；投影 p,id、`row_number() OVER(PARTITION BY p ORDER BY x,id)` AS n、`rank() OVER(PARTITION BY p ORDER BY x)` AS r→(1,1,1,1),(1,2,2,1),(1,3,3,3),(2,4,1,1)，n/r 为 int8。另 row_number 只 ORDER BY x 时前两行编号集合为 {1,2}，不绑定 id。 | 等值 SIGNED 派生表与同窗口目标相同值、分区重置，排名为自身整数元数据待采；不从该值相同批准跨方言类型共享。 |
+| WIN-CALL-FRAME：默认/显式 | t=`(VALUES(1,10::int4),(2,10::int4),(3,20::int4)) t(id,x)`；`last_value(x) OVER(ORDER BY x)`→[10,10,20]；显式相同 RANGE→同值；`OVER(ORDER BY x,id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)`→[20,20,20]；`OVER()`→每行取无序分区末值，不能固定为 20。另 `OVER(ORDER BY x GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING)`→[20,20,20]，`RANGE BETWEEN CURRENT ROW AND 5 FOLLOWING`→[10,10,20]，`ROWS BETWEEN CURRENT ROW AND CURRENT ROW`→当前 x。last_value 均 int4。 | 默认和显式 ROWS/RANGE 同输入按自身参考验证值目标；GROUPS 不要求 MySQL 可见，记录其自身拒绝，不能强行改写。AsterSQL PG 若 GROUPS/EXCLUDE 等未实现须返回明确能力错误，不得标该成功目标通过；另同 t 的 last_value(x) OVER(ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW)→[NULL,10,10]/int4；采 PG 合法结果/本地能力拒绝证据，精确诊断待采。 |
+| WIN-CALL-EMPTY-SINGLE：空/单行 | 对 `(SELECT 7::int4 AS x WHERE false) t` 投影 `row_number() OVER(),rank() OVER(),lag(x) OVER(),lead(x) OVER(),last_value(x) OVER()`→零行，类型(int8,int8,int4,int4,int4)。改为单行 7→(1,1,NULL,NULL,7)；单行 last_value(x) 的 `ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING`→NULL/int4，行仍存在。 | 等值 SIGNED 空/单行表，同五投影值/NULL/行数目标；空帧 last_value→NULL/自身值类型，列定义在零行仍存在。当前测试仅空帧聚合和 row_number 意图，不是 last_value 证据。 |
+| WIN-CALL-OFFSET：分区越界/动态 | t=`(VALUES(1,10::int4,1),(2,20::int4,2),(3,30::int4,0)) t(id,x,o)`，均 OVER(ORDER BY id)：lag(x)→[NULL,10,20]，lead(x)→[20,30,NULL]；lag(x,9,-1) 与 lead(x,9,-1)→[-1,-1,-1]；lag(x,0)→[10,20,30]；lag(x,o,id::int4)→[1,2,30]；lead(x,NULL::int4,-1)→全 NULL；lag(x,-1)→[20,30,NULL]。均 int4。另给 lag/lead 显式当前行 ROWS 帧，结果仍按整分区位置取值。 | 常量 0/1/9 与默认值夹具按自身合法调用验证相同值目标；动态、负及 NULL offset 不套 PG，单独采自身接受/拒绝和错误字段，当前未采。Rust 无符号常量限制不能当 PG 目标。 |
+| WIN-CALL-NULL：值 NULL/排序 NULL | t=`(VALUES(1,10::int4),(2,NULL::int4),(3,30::int4)) t(id,x)`，OVER(ORDER BY id)：lag(x,1,-1)→[-1,10,NULL]，lead(x,1,-1)→[NULL,30,-1]，last_value(x)→[10,NULL,30]；last_value(x) 配全分区 ROWS→[30,30,30]。再按 x ASC NULLS LAST 求 rank→id 次序 [1,3,2]，DESC NULLS FIRST→[3,1,2]。IGNORE NULLS 调用拒绝，无成功值，确切诊断待采。 | 值 NULL 的同窗口目标同值、不得用 default 替换存在的 NULL；默认排序不同，使用自身合法 `ORDER BY (x IS NULL),x` 对照 PG ASC NULLS LAST 的排名值，不能据改写证明 PG NULLS 语法已支持；自身默认排序/错误另采。 |
+
+每组成功/NULL/零行均须覆盖 PG Q 和 Parse/statement Describe/Bind/portal Describe/Execute；参数化 x/offset 用固定 `$1::int4`，text/binary 参数×结果四组合，重绑 NULL 不换描述，Execute 不重发 RowDescription；MySQL Query/Prepare/Execute 记录自身列定义/NULL bitmap。两 PG 连接与 MySQL 交错运行，核对分区状态及方言隔离；缓冲/流水线、跨 Chunk 的同夹具须值/NULL/类型一致。拒绝例独立执行 `SELECT row_number()`，以及单行 7 上 last_value(x) 的 `ROWS BETWEEN CURRENT ROW AND 1 PRECEDING`、`ROWS BETWEEN -1 PRECEDING AND CURRENT ROW`、`ROWS BETWEEN NULL::int4 PRECEDING AND CURRENT ROW`，均无成功值；分别记录缺 OVER、非法帧边界/offset、未实现帧形式的实际阶段和错误，不把缺工厂/codec 失败当合规拒绝。五组当前运行数均 0，描述符与测试源码不代替 SQL/协议证据。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2271,6 +2318,12 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 后续仅交接三个窄边界：已选 aggregate 签名/固定返回身份到描述符；每聚合 FILTER、DISTINCT、排序到每组 transition/finalize；最终结果身份到 server 两协议描述。依赖第 2 章语法与名称、第 3 章类型/I 转换及前块 resolver，优先复用现有聚合链并先证明两条执行路径等价。局部/最终与下推须另过上述状态合并门禁；窗口、有序集合和 SRF 分别交后块，不提前生成代码任务。
 
 来源映射：蓝图任务步骤 4 的 aggregate 独立调用模型由模块链及状态表覆盖；步骤 3 全部模板字段由本块差异表填写。无行全局、全 NULL、分组、重复/FILTER、数值返回分别映射 AGG-CALL-EMPTY/NULL/GROUP/DISTINCT-FILTER/NUMERIC，聚合内排序及局部/最终另有正反例和补证要求。人工审阅与首块三层身份、第 3 章固定类型及前块不默认共享的规则一致，未改第 1–3 章或其他正文。correctness/兼容性仅为文档目标，运行未验证，性能无结论。
+
+#### 窗口函数调用契约
+
+后续只交接三处窄边界：已选窗口签名/固定返回身份与分区排序/帧描述到物理计划；排名/偏移整分区访问与 last_value 帧访问到既有缓冲/流水线内核；结果到 server 两入口描述。依赖第 2 章语法/名称、第 3 章类型/比较/codec 和前块 resolver；先验证代表场景及未实现形式门禁，再单独处理 GROUPS/EXCLUDE、动态 offset 等缺口，不补建完整执行子系统，不提前生成代码任务。
+
+来源映射：蓝图步骤 4 的 window 独立调用模型由模块链及分区/帧责任覆盖，步骤 3 全模板字段由差异表承接；同序 peer、默认/显式 ROWS/RANGE/GROUPS、空/单行、越界 offset、NULL 分别定位 WIN-CALL-PEER/FRAME/EMPTY-SINGLE/OFFSET/NULL。每组均含输入、值/NULL/类型或错误、两入口目标及证据缺口。人工审阅与首块三层身份、第 3 章固定类型、普通聚合一组一行边界一致，保留全部前序正文；correctness/兼容性仅为文档目标，运行未验证，性能无结论。
 
 ## 5. SQL会话与事务语义
 
