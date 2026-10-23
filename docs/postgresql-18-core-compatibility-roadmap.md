@@ -752,6 +752,12 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 已读独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::unsigned_binary_and_unsupported_types 的 00 ff 5c→17/文本 `\x00ff5c`、pg_binary_native_results 的 00 ff 原字节结果，以及 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::text_parameters_are_typed_and_reject_loss 的 `\x00ff` 成功/`\xabc` is_err。测试全部未运行，不证明完整往返、全字节域、精确错误或 typed NULL 元数据。
 
+[日期类型契约](#日期类型契约)取证基线为 `aa462efc89`（批次 7 已提交）。按仓库 RustCodeGraph 读取 [time.rs](../pkg/types/time.rs)::ParseDate/ParseTimeFromNum：复用 MySQL TypeDate、fsp=0，整数零可构造零日期；[core_time.rs](../pkg/types/core_time.rs)::CoreTime/getYear/setYear 为 u64 压缩字段，年份提取为 u16，写入受掩码约束，不是 PG 有符号日序或扩展年份的保真证据。两个目标包均无 doc.go。
+
+入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/temporal 对 1082 用 chrono `%Y-%m-%d`，限制年份 1..9999，再转 MySQL tp=10 的年月日小端参数；无效日期当前统一 22007，超引擎年份为 0A000；binary_parameter 没有 1082 分支，非 NULL 返回 0A000，NULL 提前为 tp=6。[pg_result.rs](../pkg/server/pg_result.rs)::pg_type 将 10/14 映射 1082/4；value_text 仅粗查年非零、月 1..12、日 1..31，不能排除 2023-02-29 或 04-31；value_binary 再用 chrono 验证并输出相对 2000-01-01 的 i32 网络序日数，存在两格式校验差异。encode_formats/Extended::process 的 Describe 一致性检查不能替代日期身份、typed NULL 和错误分类取证。
+
+独立 [time_test.rs](../pkg/types/time_test.rs) 的 ParseDate 实际断言（约 374–400 行）含短年份、特殊分隔符和 2011-02-30 拒绝，Go fixture 字符串本身不算执行断言；[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::text_parameters_are_typed_and_reject_loss 含 2024-02-29 接受、2026-02-29 拒绝但未断言 SQLSTATE；[pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values 有 2026-09-30→1082/text，pg_binary_native_results 有 1999-12-31→-1 日及逐类型 NULL 输出断言。以上全部未运行，不能证明 PG 全域、两方向往返或准备元数据连续性。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -899,6 +905,25 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 
 转换边界：bytea 同型转换保留全部字节与 typed NULL；bytea 的文本输出表示和字符解码是不同契约，不能隐式使用有损 UTF-8 或把 text 直接改标 bytea。text↔bytea 的显式/赋值/隐式资格交本章转换块核对 PG cast；未开放路径明确 0A000，不借 MySQL HEX/整数转换猜测兼容。字节比较与运算交工作流 4，不能复用去前导零的 BinaryLiteral::Compare 推断等价。
 
+#### 日期类型契约
+
+日期是独立 date 身份，无时刻、时区或小数秒精度；目标采用前推 Gregorian 日历。官方 [PostgreSQL 18 §8.5、§8.5.1.1、§8.5.1.4、§8.5.2](https://www.postgresql.org/docs/18/datatype-datetime.html) 支持日历、输入/输出及特殊词目标：基线固定 UTF-8、DateStyle=ISO,YMD，普通输出 YYYY-MM-DD，BC 保留 BC 后缀；MDY/DMY 的 `1/8/1999` 分别为 1 月 8 日/8 月 1 日，不能套 MySQL 短年/分隔符规则。`epoch` 为 1970-01-01；now/today/yesterday/tomorrow 在读取时解析为普通日期，依赖事务时间和会话时区，不能误作每次执行重新计算的动态 date。±infinity 是独立非有限值，非 NULL、非最大/最小有限日；allballs 仅 time，不能作为 date 成功输入。
+
+精确有限域按官方 18 分支 [timestamp.h](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/datatype/timestamp.h)::IS_VALID_DATE/POSTGRES_EPOCH_JDATE：日序 -2451545..2145031948（含端点），对应 Julian day 0 至 5874897-12-31；下端按前推 Gregorian 为 4714-11-24 BC，区别于手册表中概略年份 4713 BC。BC/AD 无外部年份 0，内部天文年不能直接以 0000 文本输出。[date.h](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/utils/date.h)::DateADT/DATEVAL_NOBEGIN/DATEVAL_NOEND 定义 i32 及 -2147483648/+2147483647 两个特殊哨兵；其余超有限域整数必须拒绝，不能全部当日期。
+
+二进制按官方 18 分支 [date.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/date.c)::date_in/date_out/date_recv/date_send：四字节有符号网络序、单位日、基准 2000-01-01，零即该日，-1 为 1999-12-31，+1 为 2000-01-02；不是 Unix 秒、微秒或 MySQL 年月日结构。两特殊哨兵分别对应文本 -infinity/infinity。该链接为读取于 2026-10-23 的可变 REL_18_STABLE，提供 18 分支格式证据，未锁定 18.6 构建或运行参考端；实施时须记录实际参考提交。
+
+| 方向 | 类型、值域、NULL 与 wire 目标 | 错误和现状差距 |
+| --- | --- | --- |
+| text 参数→规范 date | 已定型 OID 1082 按 PG 日历/DateStyle 解码；日期身份跨桥接保留，不能只变字符串或 MySQL 宽松日期。NULL 长度 -1，无载荷且仍为 date；空串是非法非 NULL。 | 非日期词/空串 22007；非法月日、零日期和有限范围越界 22008；非法编码/NUL 22021。当前 chrono 单格式及 1..9999 不能证明完整 PG 输入。 |
+| binary 参数→规范 date | 四字节解日序及哨兵，域内与对应 text 相同值、日精度；NULL 同上，不进入长度检查。 | 当前非 NULL 完全未开放。不足四字节目标 08P01，额外字节 22P03，合法四字节但越日期域 22008；帧截断另为 08P01。不能把空载荷当零日。 |
+| 规范 date→text 结果 | 列 OID/typlen/typmod=1082/4/-1；输出随已固定 DateStyle，有限日期/BC/特殊值可回读。SQL NULL 长度 -1，不输出空串或特殊词。 | 当前粗校验漏非法月日，不能原样透传。MySQL 0000-00-00、2024-00-01、2024-01-00 及非法实际日显式拒绝；内部值不合法目标 22008，不静默归一化。 |
+| 规范 date→binary 结果 | 同一列身份 1082/4/-1，四字节日序或特殊哨兵；与文本结果表达同一日期，NULL 仅 -1 长度。 | chrono 和现有 MySQL 表示不能证明 BC、超 9999 或非有限值保真；禁止截断、wrap、借用零日期或降为 text OID。 |
+
+错误分类依据官方 18 分支 [datetime.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/datetime.c)::ValidateDate/DateTimeParseError 与 [附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)；协议长度分类沿本章共同契约，消息边界由工作流 7 负责。当前结果编码使用 io::Error，扩展执行可统一包装 0A000，尚不能证明精确 SQLSTATE。PG 合法扩展年份/非有限值若共享表示暂不能承载，过渡拒绝须明确 0A000 并登记兼容缺口；这不等于完成 PG 全域目标，也不能错误报告用户输入超 PG 范围。
+
+类型推导以声明 DATE、typed literal/cast 或参数上下文定型为 date；普通字符串外观不能决定 OID，未知参数交本章映射/转换块。无 date(p) 小数精度，typmod=-1，不把 MySQL fsp/显示宽度充作 PG typmod。显式 text↔date 按日期输入/输出契约；date↔timestamp/timestamptz 的资格与时间/时区转换交对应类型及转换块，不能按天乘微秒自动推导隐式转换。MySQL 既有宽松解析、零日期及 sql_mode 告警独立保留；从 MySQL 结果桥接 PG 时逐值检查合法性，拒绝不改变原 MySQL 行为。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -914,6 +939,8 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 [文本类型契约](#文本类型契约)不实现生产表示、cast、codec 或 MySQL 行为修改；比较、排序、collation 算法、LIKE/正则交工作流 4，编码会话状态交 5，目录专用类型交 6，协议分帧/错误恢复交 7，双方言客户端差分交 8。此处仅交接语义，不扩建子系统。
 
 [字节类型契约](#字节类型契约)不实现生产表示、cast、codec，不改 MySQL BIT/HEX 或 Go 原行为。字面量解析归工作流 2，函数/比较归 4，bytea_output 状态归 5，帧长度/错误恢复归 7，客户端差分归 8；large object/lo、bytea 数组和扩展生态不在本块范围。
+
+[日期类型契约](#日期类型契约)不实现生产表示、转换或 codec；日期字面量语法归工作流 2，日期算术/比较归 4，DateStyle、事务时间和 TimeZone 状态归 5，消息恢复归 7，客户端差分归 8。date 数组和其他时间族在各自块承接，不为扩展年份缺口扩建存储或执行子系统。
 
 ### 验收
 
@@ -996,6 +1023,18 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 | BYTEA-METADATA | 相同 abc 载荷的 text/bytea 分别 25/17；参数描述 17，statement/portal Describe 与 Execute 均 17/-1/-1；零行、首行/全 NULL、重复 Execute、格式切换不改型。构造 metadata 与 Value::Bytes 冲突时提前拒绝，不按首行猜类型。 | 局部 OID/输出断言不能证明 charset 桥接、typed NULL 或准备全链，未验证。 |
 | BYTEA-LENGTH | binary 任何合法帧长度按实际字节解释；帧声明与实际长度不符拒绝 08P01。资源上限/hex 膨胀处须检查失败，不能溢出或截断；记录实际限制后做大载荷边界差分。 | length 的 i32 转换错误入口不能证明存储/输出极限或 wire 错误码，未验证。 |
 
+[日期类型契约](#日期类型契约)以下 DATE 入口均为**待新增**，全部运行行为**未验证**。成功项 SQLSTATE 不适用；按第 1 章记录具体参考版本、DateStyle、TimeZone、事务时间、两格式原字节、类型、NULL 与错误。每个合法值覆盖 text/binary 参数→规范值→text/binary 结果四种组合；特殊词先变规范日期再比较，不要求保留输入拼写。
+
+| 能力 ID / 场景 | 可观察目标与反例 | 已读证据与缺口 |
+| --- | --- | --- |
+| DATE-CALENDAR | 2024-02-29、2000-02-29 成功；2023-02-29、1900-02-29、2024-04-31、月 00/13、日 00/32 拒绝 22008。构造内部 2023-02-29，text/binary 均拒绝，不能格式选择改变合法性。 | 当前只有一对闰日参数 is_ok/is_err，结果粗校验有差距，精确错误未验证。 |
+| DATE-EPOCH | 1999-12-31、2000-01-01、2000-01-02 对应 ff ff ff ff、00 00 00 00、00 00 00 01；1970-01-01 为 -10957 日。四组合值和字节一致，改变 TimeZone 不移动已存日期。 | 仅 -1 日结果局部断言，参数 binary 未开放，完整往返未验证。 |
+| DATE-RANGE | 日序 -2451545/2145031948 及相应文本成功，外侧各一天拒绝 22008；1 BC 与 1 AD 跨界无外部零年，10000-01-01 合法并保留。表示不足明确 0A000 且记缺口，不能把合法 PG 值裁到 9999。 | 共享 u64 字段和 chrono 路径不证明全域；边界和 BC 未验证。 |
+| DATE-ZERO | 输入 0000-00-00、0000-01-01、2024-00-01、2024-01-00 拒绝 22008；桥接 MySQL 零/非法日期两种结果格式均拒绝，不映射 epoch、infinity 或 NULL。MySQL 单独在固定 sql_mode 下保持原错误/告警行为。 | 当前结果仅零/粗范围检查，双方言隔离和 SQLSTATE 未验证。 |
+| DATE-SPECIAL-STYLE | -infinity/infinity 两格式分别往返 80 00 00 00/7f ff ff ff，非 NULL；epoch→1970-01-01。固定事务与时区核对 now/today/昨日/明日及 Prepare 后读取时机；allballs、空串、garbage 拒绝 22007。ISO 基线及 MDY/DMY 歧义输入按官方值，输出回读同日。 | 现有日期入口未覆盖非有限/相对词/DateStyle，均未验证。 |
+| DATE-NULL-METADATA | typed NULL 参数、NULL::date、首行/全 NULL、零行及重复 Execute；参数描述 1082，statement/portal Describe 与 Execute 1082/4/-1，结果格式切换不改身份；NULL 长度 -1，不能混同 binary 0 日或空串。 | 有局部 NULL 输出意图，参数 tp=6 连续性及准备全链未验证。 |
+| DATE-INVALID-BINARY | 非 NULL 0/3 字节不足拒绝 08P01，5 字节额外拒绝 22P03；四字节 -2451546/2145031949 拒绝 22008，两个哨兵接受；帧声明与实长不符拒绝 08P01。text 非法 UTF-8/NUL 拒绝 22021。 | date binary 参数当前 0A000，长度/域/恢复及精确 SQLSTATE 均未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1017,6 +1056,10 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 [字节类型契约](#字节类型契约)候选边界：内部表示先核对 bytes、binary charset、OID 17 及 typed NULL 跨桥接保真；cast 依赖该身份与方言资格；参数 codec 依赖已定型 OID，补 hex 空白/escape 并隔离 raw binary；结果 codec 依赖同一列身份和 bytea_output 配置，保持可逆及 Describe/Execute 一致。这里只给边界与依赖，不生成实现任务。
 
 字节块来源覆盖：来源步骤 2 由值域/映射及四方向表覆盖；步骤 3 由转换边界段覆盖，完整资格交转换块；步骤 4 由 BYTEA 六项验收覆盖。与前块 text 禁止 NUL、bytea 允许 NUL 及第 1/2 章语法/证据分层一致，无需改其他章节；无功能、兼容性或性能实测。
+
+[日期类型契约](#日期类型契约)候选边界：内部表示先核对 date 身份、有限日序、BC/扩展年份/非有限值及 typed NULL 的保真缺口；cast 依赖该身份和方言上下文，不复用 MySQL 宽松解析作为 PG 规则；参数 codec 依赖确定 OID、DateStyle 与特殊词解析时机；结果 codec 依赖相同规范值与稳定列元数据，两格式共享完整日历校验。这里只描述边界和依赖，不生成可执行实现任务。
+
+日期块来源覆盖：来源步骤 2 的 date 族由日历/值域及四方向表覆盖；步骤 3 的零日期、不等价边界和转换交接由拒绝路径与 DATE-ZERO/RANGE 覆盖；步骤 4 的格式、NULL、非法输入及元数据由 DATE 七项验收覆盖。与第 1/2 章及前七块无须改写的冲突；精确下端采用官方源码日序而非概略年份表，后续实施须锁定参考版本复核。无功能、性能或参考端实测。
 
 ## 4. 方言函数与运算符契约
 
