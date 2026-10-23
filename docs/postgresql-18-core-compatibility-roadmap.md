@@ -728,6 +728,8 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 本块静态取证基线为 `69ef39f91a781a4147568622943d719c95e3f7cd`，日期 2026-10-23。已阅读上述符号及独立测试 `pkg/server/pg_types_test.rs` 的 `common_type_oids_and_values`、`native_metadata_bridge_preserves_boolean_and_mysql_columns`、`unsigned_binary_and_unsupported_types`、`missing_original_metadata_is_explicitly_unsupported`、`catalog_char_and_acl_wire_types`、`pg_binary_native_results`，以及 `pkg/types/field_type_test.rs::TestFieldType` 的宽度、精度和 flags 断言。前者覆盖意图包括同值异类型、unsigned 最大值、bytea、JSON/零日期/duration 拒绝及缺元数据；目录 char/ACL 断言不能证明通用数组支持。目标包没有 `doc.go`。全部测试未运行，源码阅读不是当前功能通过证据。
 
+[布尔类型契约](#布尔类型契约)沿用上述桥接，补充取证 `pkg/types/datum.rs` 的 Kind 标签和 `Datum::ToBool`（MySQL 风格真值转换，不能直接作为 PG 隐式转换），以及 `pg_extended.rs::parameter` / `binary_parameter` / `Extended::process`、`pg_result.rs::pg_type` / `value_text` / `value_binary`。静态基线为 `9b3d77f784`（2026-10-23），目标包无 `doc.go`；独立测试 `pg_types_test.rs::common_type_oids_and_values` 断言 TRUE/FALSE 的 OID 16 与 t/f，`native_metadata_bridge_preserves_boolean_and_mysql_columns` 断言同值整数与布尔的 flags 区别，`pg_binary_native_results` 含 false→00；`pg_extended_test.rs::text_parameters_are_typed_and_reject_loss` 只含 true 成功和 unknown 拒绝的布尔参数断言；`pkg/types/datum_test.rs::test_to_bool` 是共享真值转换意图，不证明 PG 转换规则。以上测试均未运行。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -770,9 +772,27 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 
 官方依据（2026-10-23 查阅）：PostgreSQL **18** §54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 的 Parse、Bind、ParameterDescription、RowDescription、DataRow 支持方向、格式与 NULL 约束；§52.64 [pg_type](https://www.postgresql.org/docs/18/catalog-pg-type.html) 支持 typlen/类型身份含义。OID/typlen 数值核对官方 **REL_18_0** [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)；typmod 核对同 tag 的 [numeric.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/numeric.c) 与 [varchar.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/varchar.c)。§8.1 [Numeric Types](https://www.postgresql.org/docs/18/datatype-numeric.html)、§8.5 [Date/Time Types](https://www.postgresql.org/docs/18/datatype-datetime.html)、§8.14 [JSON Types](https://www.postgresql.org/docs/18/datatype-json.html) 分别支持位宽/精度、时间域区别、JSON 身份区别；[第 8 章](https://www.postgresql.org/docs/18/datatype.html)作为其他族取证索引，非完整 codec 依据。18.6 仍是来源目标；未运行该补丁参考端，REL_18_0 源码不能代替其运行证据。
 
+#### 布尔类型契约
+
+规范 bool 的非 NULL 值域只有 true/false，SQL NULL 表示未知且保留 bool 身份；不存在精度、scale 或长度修饰符（不适用）。布尔列、TRUE/FALSE 字面量与已定型参数都必须保留此身份，不能由整数 0/1、TINYINT 名称或 MySQL Boolean flag 单独推定 PostgreSQL 列语义。现有 Datum 无独立 bool Kind，出口用 IsBooleanFlag 选 OID 16；这只是承载手段，尚未证明声明列和参数的完整身份生命周期。
+
+| 方向 | 目标身份、值与 NULL | 输入输出、错误及 wire | 现状与差距 |
+| --- | --- | --- | --- |
+| 字面量/列/参数推导 → 规范 bool | TRUE/FALSE 直接定型 bool；NULL::boolean、布尔目标列中的 NULL 保留类型；未知字符串仅在 bool 上下文按 bool 输入解析。Parse OID 16 或 SQL 布尔目标确定参数，OID 0 按上下文推断，无法推断为 42P18。 | ParameterDescription 为 16；结果 OID/typlen/typmod 为 16/1/-1。零行、首行 NULL、后续 NULL 均不改变描述。裸 NULL 不能无条件定型 bool。 | Extended::process 当前对缺参数推导拒绝；parameter 非 NULL bool 转 tp=1，NULL 转 tp=6，不能据此认定仍携带 bool。声明列持久化、Prepare/Execute 保真未验证；第 2 章提供语法/目标身份，本章定型。 |
+| PG text 参数/显式文本输入 → bool | 合法表示包括 true/false、yes/no、on/off、1/0，忽略大小写与两端空白；允许唯一前缀如 t、tr、n、of，o 不唯一应拒绝。SQL NULL 用长度 -1，空串不是 NULL。 | 非法文本如空串、o、2、truth、unknown 为 22P02；非法编码目标 22021。以 OID 16 解释，不能先走数值真值转换。 | parameter 当前仅接受大小写不敏感的 t/true/1、f/false/0，未 trim；其他合法拼写缺失。现有测试不覆盖完整词集或有类型 NULL。 |
+| PG binary 参数 → bool | 非 NULL 载荷恰好一字节，00 为 false，01–ff 均为 true；这是已声明 OID 16 的接收规则，不授权整数隐式转 bool。NULL 不消费载荷并保留类型。 | boolrecv 接收后规范化；空载荷目标 08P01，多字节剩余数据目标 22P03；长度 -1 为 NULL，其他负长度和不完整 Bind 归工作流 7。单字节没有非法“值”；把 02/ff 当非法值会偏离 PG。 | binary_parameter 当前只收 00/01，其他值/长度均 22P03；目录专用 catalog_binary_parameter 也有限制，不能推为通用支持。上述差距只记录，未修代码。 |
+| 规范 bool → PG text/binary 结果 | 非 NULL text 为 t/f，binary 为 00/01；NULL DataRow 长度 -1、无载荷。先校验身份和值域，非法引擎值如带 bool 身份的整数 2 应拒绝，不能掩盖成 true。 | Describe 与执行结果同为 16/1/-1，格式码依 Bind，格式不改 OID。缺类型/非法内部值走明确错误路径（内部不变量目标 XX000），不静默降级 text；SQLSTATE 传输由工作流 7 承接。 | pg_type 使用 B，value_text 只收 1/true/0/false，value_binary 复用文本校验后发单字节；出口 io::Error 不能证明 XX000 已正确传输。完整 bool 列、NULL 与 Describe 一致性未验证。 |
+| MySQL 输入/输出 ↔ 共享承载 | 保留原 code/flags、数值域与真值规则；MySQL Boolean flag、逻辑 bool 与整数三者分别记录。PG 布尔类型信息不能把 MySQL TINYINT 全域缩成 bool。 | 沿自身 wire 契约，无 PG OID/SQLSTATE（不适用）；共享 NULL 不改列定义。 | Datum::ToBool 可处理非零数等，保留其 Go/MySQL 契约；不能把它直接接为 PG 隐式转换。现有同列同值测试只证明桥接断言意图，双方言运行回归未验证。 |
+
+转换边界先按方言与上下文决策再复用共享实现：PG 不允许整数直接充当 WHERE 条件（例如 WHERE 1 目标 42804），整数赋给 boolean 列也不能自动走真值转换（类型不匹配目标 42804）。显式 int4→bool 则合法，0→false、非零（含 -1、2）→true；bool→int4 为 false→0、true→1，结果 OID 23。不得把该显式规则泛化为任意整数类型、隐式重载或赋值转换。显式 text→bool 按输入规则，bool→text 的 SQL cast 输出 true/false（OID 25），区别于 bool wire text 的 t/f；有类型 NULL 的这些转换返回目标类型 NULL。其他来源类型的 cast 由后续转换块逐项取证，不套 MySQL 宽松转换；运算符重载及三值逻辑运算归工作流 4。
+
+官方依据（2026-10-23）：PostgreSQL **18** §8.6 [Boolean Type](https://www.postgresql.org/docs/18/datatype-boolean.html) 支持词集、唯一前缀、空白/大小写、字面量与 NULL 推导及 t/f 输出。精确 codec 核对官方 **REL_18_0** [bool.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/bool.c) 的 boolin/boolrecv/boolsend/booltext；长度错误分别核对 [pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c) 的 pq_getmsgbyte 与 [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/tcop/postgres.c) 的 exec_bind_message 剩余载荷检查。显式转换资格核对同 tag [pg_cast.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_cast.dat) 的 int4/bool castcontext=e，值规则核对 [int.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c) 的 int4_bool/bool_int4；无隐式/赋值转换的拒绝目标是据此推导，尚未运行参考端。wire NULL 与描述字段沿用前块 §54.7 依据；18.6 补丁参考端仍未验证。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
+
+[布尔类型契约](#布尔类型契约)不实现存储或类型系统，不改 Go/MySQL 真值行为；不扩展为 bool 数组、完整 cast 矩阵、运算符/聚合或协议状态机。声明解析、运算、消息恢复分别交工作流 2、4、7；本块只固定类型与 codec 的可观察交接。
 
 ### 验收
 
@@ -790,11 +810,25 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 
 文档完成条件是五个公共小节均能关联本块，上述方向/类型族及五项必需边界（同值异类型、空结果、全 NULL、unsigned、未知类型）无缺项，当前事实、目标和缺证分开。文档结构通过不等于 Describe/Execute、codec、cast、SQLSTATE、双方言隔离或性能通过；本轮没有当前客户端、差分记录或有效运行用例数。
 
+[布尔类型契约](#布尔类型契约)验收入口以下均为**待新增**，不是已执行用例；当前运行证据全部为“未验证”，成功项 SQLSTATE 不适用。每项同时采集 AsterSQL 与精确 PG 参考版本、值/NULL、类型、格式和错误；错误恢复交工作流 7，不能以 io::Error 或测试名称代替 wire 错误断言。
+
+| 能力 ID / 场景 | 可观察目标与反例 | 已读证据与缺口 |
+| --- | --- | --- |
+| BOOL-IDENTITY | SELECT TRUE,FALSE,NULL::boolean；声明 bool 列含 true/false/NULL，并并列 int4 值 1/0/NULL；bool 16/1/-1，整数 23/4/-1，不能同值改型。 | common_type_oids_and_values 与 bridge 测试只覆盖部分字面量；声明列/typed NULL 待新增，未验证。 |
+| BOOL-TEXT | OID 16 参数逐测完整合法词、前缀、大小写和空白；空串、o、2、truth、unknown 拒绝 22P02，非法编码 22021；输出固定 t/f。 | text_parameters_are_typed_and_reject_loss 仅 true/unknown；其余待新增，未验证。 |
+| BOOL-BINARY | OID 16 载荷 00/01/02/ff 依次 false/true/true/true，结果规范化 00/01；长度 0 为 08P01，长度 2 为 22P03。非法二进制“值”反例是拒绝 02/ff 的错误实现；带 bool 身份的内部值 2 则应拒绝。 | pg_binary_native_results 只含 false 输出；输入边界及内部非法值拒绝待新增，未验证。 |
+| BOOL-NULL-DESCRIBE | OID 16 的 text/binary NULL 参数、首行/全 NULL 及零行 bool 结果；ParameterDescription 为 16，statement/portal Describe 与 Execute 列身份始终 16/1/-1；NULL 长度 -1，空载荷独立拒绝。 | 参数 tp=6 与准备/执行桥接尚缺身份连续性证据；待新增，未验证。 |
+| BOOL-CAST | 0::int4::boolean=false，2/-1::int4 显式转为 true；TRUE::int4=1，FALSE::int4=0；TRUE::text='true'；NULL 转换保留目标身份；WHERE 1 与整数赋 bool 列拒绝 42804。 | Datum::ToBool/test_to_bool 是 MySQL 意图，不能证明 PG；完整显式/隐式及双方言隔离待新增，未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
 
 来源步骤覆盖：来源任务步骤 1 的“规范类型↔MySQL/PG 映射、推导、参数/结果、NULL”由两个方向表与共同约束覆盖；本编号任务要求的方案比较由保真缺口决策覆盖；验收五边界由 TYPE-MAP-IDENTITY/EMPTY/NULL/UNSIGNED/UNKNOWN 覆盖。来源步骤 2–4 的逐族完整语义、cast 与精确 codec 留在本章其余编号文档块，本块映射索引不替代那些交付。第 1 章证据规则与第 2 章类型/数组语法交接保持只读，未发现需要改写前序契约的冲突。
+
+[布尔类型契约](#布尔类型契约)候选边界为：内部表示先验证 bool 身份能随字面量、声明列、有类型 NULL 和参数跨 Prepare/Execute 保留；cast 依赖该身份并区分显式、赋值与隐式上下文；参数 codec 依赖已定型 OID，补齐文本词集与二进制接收域；结果 codec 依赖同一列身份并保持 Describe/Execute 一致。这里只描述候选边界与依赖，不生成可执行实现任务。
+
+布尔块来源覆盖：来源步骤 2 的 bool 族由方向表覆盖；步骤 3 的 bool 显式/隐式边界由转换段及 BOOL-CAST 覆盖；步骤 4 的 text/binary、NULL、非法输入、元数据一致性由 BOOL-TEXT/BINARY/NULL-DESCRIBE 覆盖。与前块的“不能自动将非零整数视为 bool”一致，显式 int4 cast 和 OID 16 单字节接收是有来源的限定场景；未发现需改动第 1/2 章或来源任务的冲突。
 
 ## 4. 方言函数与运算符契约
 
