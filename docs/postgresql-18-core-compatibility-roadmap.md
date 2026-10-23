@@ -3699,6 +3699,19 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 工厂接线与一次执行快照沿首块，独立测试由 [lib.rs](../pkg/server/lib.rs) 注册。测试保存的SQL自称 frozen JDBC，未核验驱动版本及上游原始SQL，不当作真实JDBC/DataGrip验收。
 
+#### 对象注释与描述契约
+
+承接来源步骤1、2，能力 `CAT-COMMENT/pg`，沿首块证据模板。批次12提交 `434724ad84`、批次11 `4dceaaab81` 与累计批次1–10的提交及五节正文已核对（提交链见前块）；第1–5章证据、名称、类型、函数工厂与会话契约继续适用。以下为2026-10-24在 `434724ad84` 使用RustCodeGraph status/explore/定点node的静态证据，未运行测试；server/model均无doc.go。
+
+| 实际入口/符号 | 当前来源、接线与限制 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows / native_metadata_rows | pg_description读取一次Execution快照的当前库SchemaTableInfos及model_meta，只取StatePublic对象。表取TableInfo.Comment，实际序列优先SequenceInfo.Comment；列取ColumnInfo.Comment及Offset+1，索引取IndexInfo.Comment及index_oid。非空字符串才产生行，classoid固定1259，表/序列/索引objsubid=0。隐藏列未另行排除，Offset不证明PG稳定属性槽位。缺完整模型拒绝。pg_shdescription当前空集。 |
+| [table.rs](../pkg/meta/model/table.rs)::TableInfo；[column.rs](../pkg/meta/model/column.rs)::ColumnInfo；[db.rs](../pkg/meta/model/db.rs)::DBInfo；[infoschema.rs](../pkg/infoschema/infoschema.rs)::TableInfo | 前两者有Comment字符串，DBInfo没有数据库注释字段。精简缓存不含注释，须从model_meta取得完整模型；数据库名称或表注释不能充当共享描述。 |
+| pg_catalog.rs::description_column / CatalogQuery::expr_type | objoid/classoid当前code8即int8/OID20，objsubid=int4/23，description=text/25。obj_description、col_description、shobj_description均未进入目录函数白名单，识别的目录表达式绑定拒绝0A000；不能据此推断普通SQL工厂同名函数可用。 |
+| [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_database_description_semantics / pg_introspection_joins_live | 含无注释夹具零行、LEFT JOIN保行NULL、当前int8描述、Parse后数据库删建、共享描述无objsubid拒绝与恢复、多JOIN断言意图。没有由此证明真实注释写入、Unicode、权限或注释函数已通过。[lib.rs](../pkg/server/lib.rs)注册独立测试，本轮只读。 |
+
+简单/扩展查询工厂、snapshot、OID检查与编码沿首块。数据库目录块中的pg_description空集证据是其历史基线，本轮native_metadata_rows已有非空来源；在此记录差异，不改其他块。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3916,6 +3929,24 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方出处于 **2026-10-24** 查阅，版本为 **PostgreSQL 18**：[pg_proc](https://www.postgresql.org/docs/18/catalog-pg-proc.html) 规定签名及字段语义；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html) 规定函数声明反解、权限与可见性；客户端官方 [psql 18](https://www.postgresql.org/docs/18/app-psql.html) 提供 `\df` 及 `-E` 隐藏SQL采集入口。下列SQL是人工契约探针，不称客户端生成；精确18.6构建、驱动版本和真实客户端运行均未取证。
 
+#### 对象注释与描述契约
+
+沿首块逐字段证据模板；当前证据仅为上节静态源码与测试意图。同一数值OID跨目录不代表同一对象，JOIN必须同时限制对象类别。限定目录查询不按search_path删除行，名称解析沿第2/5章。
+
+| 需求→字段/查询 | 真实来源与关联 | PG目标类型/OID、缺失策略→验收 |
+| --- | --- | --- |
+| pg_description.objoid | table_oid(model.ID)，索引为index_oid(表ID,索引ID)；列仍是所属表OID | oid/26、typlen4，与本库pg_class.oid一致；不用列ID作objoid。缺身份输出前0A000。COM-ROWS/KEY。 |
+| classoid | 当前关系注释为1259，即pg_class系统关系OID，不是namespace | oid/26、4，关联pg_class系统目录行。函数/类型/namespace描述分别需要pg_proc/pg_type/pg_namespace身份与真实注释来源；当前缺来源不造行，请求写入则副作用前0A000。COM-KEY。 |
+| objsubid | 表/索引/序列为0，列关联pg_attribute.(attrelid,attnum)；当前Offset+1 | int4/23、4；目标沿列目录稳定槽位，不可重排后配错注释。无持久槽位来源时相关DDL前或既有不明状态读取时0A000。共享描述无此列。COM-LIFE。 |
+| description | 完整模型Comment，序列/索引用其真实字段 | text/25、-1；真实行非NULL，保留Unicode、引号、换行及反斜杠。无注释为零行，LEFT JOIN才扩为SQL NULL。PG COMMENT空串与NULL均删除，不能制造空字符串描述行；原生空String映射无行，不声称能恢复其历史来源。COM-TEXT/EMPTY。 |
+| pg_shdescription.objoid/classoid/description | 数据库身份沿数据库目录、classoid=1262；当前DBInfo无Comment持久来源 | oid/26、oid/26、text/25；无注释数据库合法零行，LEFT JOIN保行NULL。数据库COMMENT缺来源时副作用前0A000，不能假成功再返空。角色/表空间各缺真实身份与注释来源，无对象时不造行，各自未支持写入0A000。COM-SHARED。 |
+| obj_description(oid,name)、col_description(oid,int4) | 前者按objoid/catalog对应classoid且objsubid=0；后者classoid=1259且匹配列号，共享同一快照 | 参数OID26/19、26/23→text/25；无描述或NULL输入返回SQL NULL，不能用obj_description取列注释。当前未注册目录函数在绑定阶段0A000，不把缺实现当无注释。弃用单参数obj_description(oid)未支持时绑定0A000，若开放须保留跨目录歧义限制。COM-FUNC。 |
+| shobj_description(oid,name) | pg_shdescription按objoid及catalog对应classoid定位，不读本库pg_description | 参数26/19→text/25；无注释为NULL。当前未接线绑定0A000；无共享持久来源不承诺非空数据库描述。COM-SHARED/FUNC。 |
+
+以上输出typmod=-1，oid/int4宽4，text变长；来源关系/属性号、text/binary与零行Describe沿第3/7章。注释读取与对象SELECT/schema USAGE分开：PG18允许已连接用户读取本库对象注释，共享注释在任何数据库可读；无表SELECT不应隐藏注释。名称解析可能先因USAGE不足失败，数字OID探针不据此删描述。COMMENT写入要求owner或适用管理权限，权限不足目标42501且无变化；当前owner/ACL来源和运行证据不足，不能虚报已实现。
+
+官方目标（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_description](https://www.postgresql.org/docs/18/catalog-pg-description.html)、[pg_shdescription](https://www.postgresql.org/docs/18/catalog-pg-shdescription.html)定义字段与共享范围；[注释函数9.27.6](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-COMMENT)定义签名和无注释NULL；[COMMENT](https://www.postgresql.org/docs/18/sql-comment.html)定义空串删除与读写权限；[psql 18](https://www.postgresql.org/docs/18/app-psql.html)提供描述命令与-E查询采集入口。类型OID沿第3章已核来源。以下SQL均为人工契约探针，未采集特定psql/JDBC/DataGrip/ORM版本的真实生成SQL；18.6精确构建及运行行为未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3971,6 +4002,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 函数目录与注册边界
 
 不实现CREATE FUNCTION/PROCEDURE、扩展加载、过程语言、聚合/窗口/集合返回执行器或ACL子系统；不扩大全局函数注册表，不修改第4章。pg_proc字段空缺、类型不符和缺普通SQL链是后续实施输入，本任务不修代码；不以目录三个原语代表完整内建函数全集。
+
+#### 对象注释与描述契约
+
+不实现COMMENT解析/持久化、目录函数、角色体系或属性槽位，不补其他对象描述生态。缺数据库、角色、表空间来源逐项沿上节门禁，不能以全空目录掩盖表/列已有来源。真实客户端抓取、18.6参考构建与协议执行留后续实施。
 
 ### 验收
 
@@ -4395,6 +4430,56 @@ SELECT unsupported_user_function(oid) FROM pg_catalog.pg_proc WHERE pronamespace
 
 真实客户端验收另采集 `psql -E` 执行 `\df pg_catalog.pg_get_function_*` 的版本、SQL及描述，并与人工探针分开；JDBC/DataGrip/ORM的原始查询来源尚缺，不从仓库测试注释推定官方生成行为。
 
+#### 对象注释与描述契约
+
+以下COM-*均为**待新增/待运行**，不修改现有测试。前提：PG会话、UTF-8、autocommit、search_path=public、standard_conforming_strings=on，owner可建表与COMMENT、目录可读。维护库owner先执行 `CREATE DATABASE comment_db; CREATE DATABASE comment_other;`，连接comment_db；各COM用例从独立干净夹具执行，使用专用数据库comment_db和comment_other，初始无同名对象；准备 `CREATE TABLE public.comment_contract (a integer, b text);`。无参数SQL参数=[]、Q文本结果；参数查询以Parse/Bind/Describe/Execute/Sync各跑text/binary，用户OID由真实目录查询取得。未实现能力按上节0A000门禁验收，不跳过后声称通过。
+
+```sql
+-- COM-ROWS / KEY：owner准备
+COMMENT ON TABLE public.comment_contract IS '表 é ''引号''';
+COMMENT ON COLUMN public.comment_contract.b IS '列 中文';
+SELECT c.oid,a.attnum FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid
+WHERE n.nspname='public' AND c.relname='comment_contract' AND a.attname='b';
+-- $1=上式真实表OID(26)，不是手填用户对象常量
+SELECT objoid,classoid,objsubid,description FROM pg_catalog.pg_description
+WHERE objoid=$1 AND classoid=1259 ORDER BY objsubid;
+-- $1=表OID(26)，$2=上述attnum转int4(23)，$3='pg_class'(name/19)
+SELECT pg_catalog.obj_description($1,$3),pg_catalog.col_description($1,$2);
+-- COM-SHARED：owner
+COMMENT ON DATABASE comment_db IS '库 中文';
+SELECT d.oid,s.classoid,s.description FROM pg_catalog.pg_database d
+LEFT JOIN pg_catalog.pg_shdescription s ON s.objoid=d.oid AND s.classoid=1262
+WHERE d.datname='comment_db';
+-- $1=上式数据库OID(26)，$2='pg_database'(name/19)
+SELECT pg_catalog.shobj_description($1,$2);
+```
+
+| 验收ID | 行/类型、真实变化及拒绝边界 |
+| --- | --- |
+| COM-ROWS/KEY/FUNC | 取键查询唯一行(oid/26,int2/21)；描述查询恰两行：(真实表OID,1259,0,表注释)、(同OID,1259,真实b列号,列注释)，类型26/26/23/25；函数一行两列text/25，与内容逐字相同，obj_description不取列注释。当前函数未接线应绑定0A000，不返NULL伪装实现。 |
+| COM-TEXT | owner执行下面多行COMMENT，再重跑描述/函数探针，目标逐字节保留真实换行、引号、反斜杠、中文、é和emoji；以 `SELECT description FROM pg_catalog.pg_description WHERE objoid=$1 AND classoid=1259 AND objsubid=0 AND description=$2;` 绑定表OID(26)与完全相同UTF-8内容(25)，目标一行原文text/25；比较text/binary，不折叠Unicode。 |
+| COM-EMPTY | `COMMENT ON COLUMN public.comment_contract.b IS '';` 后重跑描述探针仅剩表行、col_description为NULL；重设列注释后再 `COMMENT ON COLUMN public.comment_contract.b IS NULL;` 结果相同。`COMMENT ON TABLE public.comment_contract IS NULL;` 后执行下面LEFT JOIN，仍一行(comment_contract,NULL)，证明无注释与空串输入删除一致、NULL扩展不是实体注释。 |
+| COM-LIFE | 恢复表/列注释；`ALTER TABLE public.comment_contract RENAME COLUMN b TO renamed;` 后取键查询把attname改成renamed，OID/属性号/注释不变。`ALTER TABLE public.comment_contract DROP COLUMN a;` 后幸存列号不变，不能重排错配；缺槽位沿列契约DDL门禁。保存旧OID后 `DROP TABLE public.comment_contract;`，旧OID描述零行、obj_description为NULL；同名重建无继承注释。 |
+| COM-SHARED | 共享查询一行(真实数据库OID,1262,'库 中文')、类型26/26/25，函数text/25同值；从comment_other连接重跑仍可读共享描述，本库pg_description不产生数据库描述。当前缺共享来源时COMMENT副作用前0A000；无注释数据库LEFT JOIN为一行NULL不能证明共享写入。角色/表空间各缺来源写入同样门禁。 |
+| COM-ACCESS | owner在有注释表上 `CREATE ROLE comment_reader LOGIN; REVOKE ALL ON TABLE public.comment_contract FROM PUBLIC;`，`GRANT CONNECT ON DATABASE comment_db TO comment_reader; GRANT SELECT ON pg_catalog.pg_class,pg_catalog.pg_namespace,pg_catalog.pg_attribute,pg_catalog.pg_description,pg_catalog.pg_shdescription TO comment_reader;`，由reader用上述数字OID探针读取，目标仍可见。reader执行 `COMMENT ON TABLE public.comment_contract IS 'forbidden';` 目标42501，owner重读未变。无真实角色授权来源报告门禁，不能冒充权限通过；名称USAGE限制与数字OID读取分开。 |
+| COM-SNAPSHOT | owner先Parse描述查询，另一连接提交替换注释，再Bind/首次Execute见新值；已执行portal分段读取不混代际。在comment_other建同名不同注释表，重跑本库查询不得混入其他库描述；事务边界沿第5章能力门槛，不据此声称支持事务型COMMENT。 |
+| COM-REJECT | `SELECT objsubid FROM pg_catalog.pg_shdescription;` 目标绑定0A000；`SELECT description FROM pg_catalog.pg_description WHERE objoid=$1 AND classoid=1259 AND objsubid=0;` 绑定已删除对象旧OID(26)目标零行，Describe仍text/25。缺完整模型/codec须成功行前拒绝，不能以空集替代实现缺失。 |
+
+```sql
+-- COM-TEXT：字面量内是真实换行
+COMMENT ON TABLE public.comment_contract IS '第二行
+中文 é 😀 ''引号'' \';
+-- COM-EMPTY：owner清除表注释后，无参数[]
+SELECT c.relname,d.description FROM pg_catalog.pg_class c
+LEFT JOIN pg_catalog.pg_description d
+ON d.objoid=c.oid AND d.classoid=1259 AND d.objsubid=0
+WHERE c.relname='comment_contract';
+```
+
+清理：owner分别连接两库DROP TABLE IF EXISTS public.comment_contract，移除reader权限依赖后DROP ROLE comment_reader，再切回维护库DROP DATABASE comment_db及comment_other。所有对象仅在本用例专用环境创建。成功SQLSTATE不适用；0A000/42501为待验收目标，完整参考错误字段与18.6行为未采集。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4462,6 +4547,10 @@ SELECT unsupported_user_function(oid) FROM pg_catalog.pg_proc WHERE pronamespace
 #### 函数目录与注册边界
 
 后续独立实施按“签名事实与pg_type/namespace/OID关联及Describe类型”“目录白名单与普通SQL注册证据对照”“真实owner/ACL及权限/可见性”“客户端函数列表与反解采集”拆分，每块沿第4章共享注册链补独立回归，禁止用静态目录新增行替代普通SQL实现。用户函数生命周期与ACL夹具只在相应能力开放时执行，本块不提前建设完整子系统。
+
+#### 对象注释与描述契约
+
+按同源块另拆：①表/列/索引/序列注释映射与oid描述，联动稳定列槽位；②obj_description/col_description目录绑定和普通SQL工厂，复用真实来源；③数据库共享注释持久来源、shobj_description及跨库验证；④空串删除、Unicode、权限和元数据更新独立测试。每块先补待新增测试，记录真实客户端版本与SQL；角色及表空间分别设来源门槛，禁止递归扩建。本轮文档完成不表示功能完成。
 
 ## 7. 线协议认证与数据通道
 
