@@ -3567,6 +3567,19 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 
 最近独立测试 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants 含真实 domain 数据库创建、OID 对照、datname text/OID25、bigint/OID20、零行描述、未知列 0A000 与 Parse 后首次 Execute 取新目录的断言；catalog_database_description_semantics 含空共享描述、LEFT JOIN 保行、f/t/NULL owner、不同启动数据库的 current_database/current_catalog 及 Parse 后删建数据库意图。它们由 [lib.rs](../pkg/server/lib.rs) 的 cfg(test) mod pg_catalog_test 注册，使用手写 wire 夹具；没有无 CONNECT 角色或真实 owner 的本轮运行证据。Q/扩展工厂分派、单次执行快照和有界求值复用前块，不另建目录执行器。
 
+#### 命名空间目录映射
+
+承接来源任务步骤 1、2，能力 `CAT-NAMESPACE/pg`。批次 2 的五节数据库目录正文及提交 `b7ff2288b8`、批次 1 的 `946e9b2c20` 和其累计第 1–5 章交付已核对，依赖满足。以下为 2026-10-24 在 `b7ff2288b8` 经 RustCodeGraph status、explore、query、定点 node 得到的静态证据；`pkg/server/doc.go` 不存在，未运行测试。
+
+| 实际路径/符号 | 当前事实与证据边界 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::provider_rows / namespace_row | pg_namespace 从共享快照 AllSchemas() 中按 lower 名匹配 `SELECT DATABASE()` 的当前原生库，仅返回固定 pg_catalog（OID 11）及该库映射的 public；未找到当前库时仅剩 pg_catalog。不会枚举其他原生库为本库 schema，也没有用户 schema、information_schema、临时 namespace 的通用映射。namespace_row 的 owner 槽 5 为 NULL。 |
+| 同文件 CatalogQuery::column / column_catalog_field | oid 使用 OID_TYPE；nspname 使用 code253，当前为 text/OID25；nspowner 使用 code8，为 bigint/OID20。nspacl 无字段绑定，落入 unsupported catalog column 的 0A000；不能把“未绑定”写成已返回 NULL ACL。xmin 的可空 bigint 适配不代表 PG 系统列语义，本块不扩充。 |
+| [pg_oid.rs](../pkg/server/pg_oid.rs)::namespace_oid、[pg_catalog.rs](../pkg/server/pg_catalog.rs)::namespace_oid / class_row | public OID 为当前原生库持久 schema.id 的有界映射，0/越界拒绝；pg_class.relnamespace 使用同一入口。namespace 行 OID、pg_namespace 系统关系 OID 2615、数据库行 OID 分别带目录类别，不能以数值相等推断同一对象。用户 schema 尚无独立持久身份来源，不能用名称 hash 或 AllSchemas 的位置补造。 |
+| [pg_session.rs](../pkg/server/pg_session.rs)::PgSession::{schema,public_precedes_catalog,execute} / SessionQuery::parse | schema 只取 path 首项，path 当前仅接受 public、pg_catalog 或空列表；任意用户 schema 返回 0A000。改变 path 影响名称选择，不改变 provider 的 schema 行集合。当前数据库仍属于共享连接，不能通过 SET search_path 切库。 |
+
+简单 Q、扩展 Parse/Describe/Bind/Execute、ConcreteTiDBContext::schema_snapshot 的工厂接线和单次执行快照复用“目录执行链与证据模板”，本块不新增第二套元数据。[lib.rs](../pkg/server/lib.rs) 注册独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_relations_live：真实 domain 夹具检查当前库表的 relnamespace、其他库 hidden 不出现，以及 public 行上的 regclass/遮蔽查询；这不是任意用户 schema 或权限证明。[pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes 检查 namespace/table/index 范围、无效 ID 与碰撞；不证明重启后的实际持久性。两者只读、均未运行，本轮有效运行数 0。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3604,6 +3617,23 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方依据（版本 PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_database](https://www.postgresql.org/docs/18/catalog-pg-database.html)用于五个原字段的类型/含义与共享范围；[数据库层级](https://www.postgresql.org/docs/18/manage-ag-overview.html)用于库/schema/连接边界；[权限](https://www.postgresql.org/docs/18/ddl-priv.html)用于 CONNECT 与目录读取分离；[ALTER DATABASE](https://www.postgresql.org/docs/18/sql-alterdatabase.html)用于连接开关与模板属性变更；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)用于 owner 名称和当前库函数身份；[pg_shdescription](https://www.postgresql.org/docs/18/catalog-pg-shdescription.html)用于复合对象键与可选描述。[psql 18 手册](https://www.postgresql.org/docs/18/app-psql.html)的数据库列表入口与 -E，以及官方 [REL_18_STABLE describe.c::listAllDbs](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)说明 psql 列表还需求 encoding、locale、ACL 等；这条可变分支源码不代表精确客户端二进制，本块六列表 SQL 也不是 psql 完整列表查询。精确 PostgreSQL 18.6 构建、客户端版本及运行行为均未取证，不能由手册推定已通过。
 
+#### 命名空间目录映射
+
+完整目标区分 PG database 与库内 schema：当前原生 database→public 是受限桥接，不能把同服务的其他原生数据库列成本连接的 schema。一个 PG database 内须可存在 public、pg_catalog 和多个真实用户 schema；不同 database 可各有同名 schema，同一 database 的同名 namespace 不重复。系统和临时 namespace 仅在有对应真实语义时映射；完整枚举缺项必须登记能力缺口，不能宣称固定两行已完整兼容。
+
+目录 SELECT 权限与 schema 的 USAGE/CREATE 分开；以下字段查询前提为角色具备 pg_namespace SELECT。无 USAGE 不应自动删除目录行，search_path 排除也不删除行；对象访问与有效路径过滤复用第 2/5 章。所有行都以当前数据库身份及 namespace 身份定位；pg_class.relnamespace、pg_type.typnamespace、pg_proc.pronamespace 后续须关联同一 pg_namespace.oid，不以字符串 public 或连接用户替代身份。
+
+| 需求→字段 | 真实来源/关联键与当前证据 | PG 目标类型、NULL/不支持策略→验收 |
+| --- | --- | --- |
+| 身份→n.oid | 当前 public 来自上述 schema.id→pg_oid::namespace_oid，pg_catalog 为内建 11；目标须另有库内用户 schema 持久 ID。引用键为 pg_namespace.oid，跨库观察须带 database 上下文。 | oid/OID26、typlen4、非 NULL；同对象跨连接、改名稳定，删除后不得残留旧关联。无快照、缺当前库或超出映射范围在成功行输出前门禁 0A000，不以仅 pg_catalog、零行或 OID0 冒充成功。用户 OID 不要求两端数值相等，也不要求跨 PG database 数值全局唯一。NS-BASE/JOIN/FRESH/DB。 |
+| 名称→n.nspname | 当前仅写固定 pg_catalog/public，非原生库名称；用户 schema 目标来自真实 namespace 名称及其所属库，不由 search_path 构造。 | name/OID19、非 NULL；标准 NAMEDATALEN=64 时 typlen64，构建值待采。引号大小写复用第 2/5 章。缺 name codec 时输出前 0A000，不能把当前 text/25 当目标已满足；不存在名称筛选才合法零行。NS-BASE/EMPTY/FRESH/DB。 |
+| 所有者→n.nspowner | namespace_row 当前 NULL/code8；没有真实 schema owner→pg_authid.oid 来源，当前登录名、mysql.user 或原生 database ID 都不能替代。 | oid/OID26、4、非 NULL，关联真实角色。含本字段的查询缺 owner 来源须在输出前 0A000，不能固定超级用户或合法化当前 NULL；oid/name 的独立查询不因 owner 缺口而隐藏行。NS-OWNER。 |
+| 授权→n.nspacl | 当前未绑定；未来须来自同一 schema 的持久 grantor/grantee/USAGE/CREATE/grant-option 事实及角色 OID，按 namespace OID 关联。 | aclitem[]/OID1034、typlen -1，可 NULL；仅真实默认授权状态可用 SQL NULL，显式空 ACL 与默认 NULL 不等价。缺 ACL 事实或文本 codec 的投影输出前 0A000，禁止伪造空数组/NULL/全员授权。数组元素 aclitem/OID1033，二进制能力另证，不能由其他数组 codec 推断。NS-ACL。 |
+
+原字段 typmod 均 -1；列序、可空性、格式、来源关系 OID/属性号与完整 Describe 按第 3/7 章逐列采集，当前未取得完整 wire 描述。门禁 0A000 是产品未开放能力的目标：静态可知缺字段/codec 可在 Parse 拒绝，动态缺事实至迟首次 Execute/Q 输出成功行之前拒绝；记录实际阶段和原始错误，不冒称 PG 参考端也应拒绝。
+
+依据（PostgreSQL **18**，访问 **2026-10-24**）：[pg_namespace](https://www.postgresql.org/docs/18/catalog-pg-namespace.html)用于四字段及 owner 关联；[Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html)用于库内命名空间和权限/路径边界；[Privileges](https://www.postgresql.org/docs/18/ddl-priv.html)用于 ACL 默认 NULL 与显式授权语义；官方 [REL_18_STABLE pg_type.dat](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/catalog/pg_type.dat)用于 name/oid/aclitem[] 类型身份。[psql 18 手册](https://www.postgresql.org/docs/18/app-psql.html)定义 `\dn[S+]` 与 `-E` 采集入口；官方 [describe.c::listSchemas](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)显示名称/owner、verbose ACL/描述、系统对象过滤需求。源码分支可变，未固定客户端二进制；本块 SQL 均为人工探针，不是声称采集到的 psql 原始查询。精确 18.6 构建、真实客户端及其生成 SQL 均未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3615,6 +3645,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 数据库目录映射
 
 只定义数据库枚举、五个字段及 DATABASES_SQL 的附属投影，不实现 owner/角色子系统、数据库模板复制、禁用连接开关、ACL、encoding/locale、完整 psql 列表或 DataGrip/JDBC/ORM 兼容，也不修生产代码。psql::listAllDbs 的额外字段是后续需求，不能因当前有限字段就宣称 psql 数据库列表完整可用。不得伪造 postgres/template0/template1、PG 内部 owner 或注释；原生系统库如何分类必须后续取证后明确，不直接作为可连接 PG 库承诺。未知/不存在数据库的目录筛选零行、缺失必需事实的能力拒绝、连接阶段找不到库是三类情形，不用一个空列表遮掩；连接诊断细节由第 7 章实采。
+
+#### 命名空间目录映射
+
+本块仅定义 pg_namespace 四字段、库/schema 层次、关联及验收，不实现用户 schema、角色/ACL 子系统、事务 DDL、临时 schema、系统函数注册或完整 psql/JDBC/DataGrip/ORM 流程。information_schema 的视图字段留标准模式块；它作为 namespace 的真实身份仍是完整列表目标的依赖，不能凭空补一行就宣称其对象可用。psql 的描述和可能附带的 publication 查询留客户端块取证。schema 列表与有效搜索路径、目录可读与对象可用分别验证；不得用类型正确的空集掩盖真实存在的用户 schema，也不得把当前 NULL owner、缺失 ACL 字段宣称兼容。
 
 ### 验收
 
@@ -3696,6 +3730,35 @@ DB-REJECT 完整 SQL `SELECT N.unknown FROM pg_catalog.pg_database N`：产品�
 
 清理时先关闭可能连接待删库的连接与 portal，控制连接保持在独立管理库；恢复 b 的两个策略，再按夹具实际创建记录单条 `DROP DATABASE cat_db_fresh`、`DROP DATABASE cat_db_b`、`DROP DATABASE cat_db_a`（已删除者不重复），回收授权及自建角色。任一前提、变更、类型、权限或清理不满足须保留诊断与未验证项，不缩为只验行数。
 
+#### 命名空间目录映射
+
+能力 `CAT-NAMESPACE/pg` 的下列 `catalog.namespace.*` 用例均为**待新增、未运行**。AsterSQL 与 PG 各由管理员准备可丢弃数据库 ns_doc_a/ns_doc_b；A、B 连接 a，C 连接 b，UTF-8，默认 public，初态 I。本组管理员为夹具专用超级用户，拥有两库 CREATE、schema/角色管理能力；另有互无角色继承的 ns_owner、ns_reader，reader 有两库 CONNECT、pg_namespace/pg_class SELECT。角色/库由夹具创建和回收，不在 SQL 内嵌凭证。所有语句逐条发送，除以下注明扩展参数外均参数 []、Q、文本结果；不在显式事务内准备 DDL。
+
+完整人工基础探针 QN：
+
+```sql
+SELECT n.oid AS oid, n.nspname AS nspname
+FROM pg_catalog.pg_namespace AS n
+WHERE n.nspname IN ('public', 'pg_catalog', 'ns_user', 'ns_private', 'ns_renamed')
+ORDER BY n.nspname;
+```
+
+| 用例、字段需求与完整输入/顺序 | 目标、当前限制和副作用检查 |
+| --- | --- |
+| NS-BASE：仅 public/pg_catalog 初态，A/B/C 各 QN；A `SET search_path TO pg_catalog`、QN、`SET search_path TO ''`、QN、`SELECT current_schema()`；B QN；A `RESET search_path` | QN 各恰两行 pg_catalog/public，oid/name 均非 NULL，列类型26/19；A 路径切换不改变行/OID，空路径 current_schema 为 SQL NULL。同库 A/B 的对应 OID 相等，跨库 public 只比较本端身份关系，不能硬编码 PG public OID。当前名称为 text/25 是已知差距；当前库缺失不得把仅系统行当通过。 |
+| NS-EMPTY：A `SELECT n.oid,n.nspname FROM pg_catalog.pg_namespace n WHERE n.nspname='ns_missing'`；另查 `SELECT n.oid,n.nspname FROM pg_catalog.pg_namespace n WHERE n.nspname='public' LIMIT 0` | 均零行，保留两列26/19描述，目标 SELECT 0/I；与无法取得真实元数据而拒绝区分。 |
+| NS-FRESH：a 管理员 `CREATE SCHEMA ns_user AUTHORIZATION ns_owner`；A/B QN；随后 `ALTER SCHEMA ns_user RENAME TO ns_renamed`；A/B QN；`DROP SCHEMA ns_renamed`；A/B QN；再次 `CREATE SCHEMA ns_user AUTHORIZATION ns_owner` 后 QN | 行数2→3→3→2→3，改名保留该对象 OID，旧名称消失；删除后旧关联不可残留，重建重新取真实身份。无无关 schema 或库变化。当前没有库内用户 schema 来源，门禁须在改变元数据前拒绝并保留原两行；它是能力限制，不能标为该目标通过。 |
+| NS-DB：a/b 管理员分别 `CREATE SCHEMA ns_user AUTHORIZATION ns_owner`；A/B/C QN；只在 a `ALTER SCHEMA ns_user RENAME TO ns_renamed`；A/B/C QN | 两库各有自己的 public/ns_user，无同库重复 namespace；a 改名仅 A/B 变化，C 的 ns_user/OID 不变。不把原生库 ns_doc_b 作为 a 的 schema。当前仅 public 桥接不足以通过，本组与 FRESH 独立重置夹具。 |
+| NS-JOIN：a `CREATE SCHEMA ns_user AUTHORIZATION ns_owner` 后 `CREATE TABLE public.ns_same(id integer)`、`CREATE TABLE ns_user.ns_same(id integer)`；A `SELECT n.oid AS namespace_oid,n.nspname,c.relname,c.relnamespace FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid WHERE c.relname='ns_same' ORDER BY n.nspname` | 两行 public/ns_user，每行 namespace_oid=relnamespace，namespace OID 不同，关联来自本端真实对象；列类型26/19/19/26。两 schema 中同名表不合并，不误连另一库。同名 schema 跨库允许；另在本组已有 ns_user 后重复 `CREATE SCHEMA ns_user AUTHORIZATION ns_owner` 应失败，QN/OID不变，具体 PG 诊断实采。当前无 ns_user 支持，不能用两个原生 database 的表模拟成功。 |
+| NS-OWNER：a `CREATE SCHEMA ns_user AUTHORIZATION ns_owner`；A 与 reader 各 `SELECT n.oid,n.nspowner FROM pg_catalog.pg_namespace n WHERE n.nspname='ns_user'`；管理员 `ALTER SCHEMA ns_user OWNER TO ns_reader` 后重复查询 | 两列26/26，owner 非 NULL，关联真实角色 OID；转移前后 namespace OID 不变，两个读者观察同一 owner 变化。缺 owner 来源时当前 NULL/int8 不能过关，应按目标门禁；不运行时不猜角色 OID。 |
+| NS-ACL：a `CREATE SCHEMA ns_private AUTHORIZATION ns_owner`；管理员 `REVOKE ALL ON SCHEMA ns_private FROM PUBLIC`、`REVOKE ALL ON SCHEMA ns_private FROM ns_reader`、`CREATE TABLE ns_private.ns_secret(id integer)`、`INSERT INTO ns_private.ns_secret VALUES (7)`、`GRANT SELECT ON ns_private.ns_secret TO ns_reader`；reader QN 及 `SELECT n.nspacl FROM pg_catalog.pg_namespace n WHERE n.nspname='ns_private'`，再 `SELECT id FROM ns_private.ns_secret`；管理员 `GRANT USAGE ON SCHEMA ns_private TO ns_reader`，reader 重复两条 SELECT；管理员 `REVOKE USAGE ON SCHEMA ns_private FROM ns_reader` 后再重复 | 无 USAGE 时 reader 仍可枚举 ns_private 和读取 ACL（字段类型1034），但读表须权限拒绝，非零行成功；授予后读表恰 [(7)]，撤销后再拒绝，schema 行/OID不变、ACL反映实际授权、表数据仍7。不要逐字符硬编码 ACL 顺序；解析 grantee/grantor、USAGE/CREATE 与授权选项，分别记录 SQL NULL/空数组。独立重置后管理员 `CREATE SCHEMA ns_private AUTHORIZATION ns_owner`，在无 ALTER DEFAULT PRIVILEGES 的夹具中 reader 运行同一 ACL 投影，目标 SQL NULL；不能把上述 REVOKE 后状态当默认 NULL。当前 ACL 未绑定，返回0A000属限制，不能用 NULL 通过。 |
+
+所有用户 schema 组互相独立重置，只有前一步成功才进入后续 SQL；任一能力门禁后先记录失败，再在 I 下重查 QN、当前库与路径，确认无半建对象/库泄漏；T/E 中按第 5 章先 ROLLBACK，扩展先 Sync。清理先关闭 portal/statement、ROLLBACK/RESET；管理员只清理本组实际创建的对象，完整清理 SQL 为 `DROP TABLE public.ns_same`、`DROP TABLE ns_user.ns_same`、`DROP TABLE ns_private.ns_secret`，再按存在性执行 `DROP SCHEMA ns_user`、`DROP SCHEMA ns_renamed`、`DROP SCHEMA ns_private`（不用 CASCADE 掩盖残留）；关闭 A/B/C/reader 后由夹具删除两库及专用角色。
+
+扩展复验 NS-BASE/EMPTY 使用完整 SQL `SELECT n.oid,n.nspname FROM pg_catalog.pg_namespace n WHERE n.nspname=$1::text ORDER BY n.oid`，Parse 参数 OID [25]，Bind 单个文本 UTF-8 public（另例 ns_missing），参数格式0、结果格式[0,0]，Describe statement/portal、Execute max_rows=0、Sync；预期一行/零行、两列26/19。NS-FRESH 另在 CREATE 前 Parse QN（参数[]），CREATE 后新 portal 首次 Execute 需见新增行；改名/删除后各新 Bind/Execute 同 statement 复验，不用旧 portal 缓存充当新快照。重复 NS-OWNER/ACL 的无参数投影分别收集26/26及1034描述；二进制只在 codec 能力已确认后另验，ACL 不因请求格式1而假定支持。
+
+逐例记录数据库/角色、完整版本/构建、原始 SQL/参数、行/NULL、列序与 OID/typlen/typmod/可空性/格式/来源属性、命令标签、错误原文/SQLSTATE/阶段/位置及 I/T/E。未知 wire/诊断保留待采，成功 SQLSTATE 不适用。客户端需求对应 psql `\dn`（name/owner）及 `\dn+`（ACL/描述），后续用该版本 `-E` 抓取实际查询和附属请求；本人工 SQL 不替代该流程，18.6 精确行为、真实 psql/JDBC/DataGrip/ORM 结果均未验证。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -3709,6 +3772,12 @@ DB-REJECT 完整 SQL `SELECT N.unknown FROM pg_catalog.pg_database N`：产品�
 后续实施按字段来源拆窄块：先确认原生库可映射集合与稳定身份及 name codec，再补持久 owner/角色关联，最后按真实客户端需求补模板/连接策略；共享描述、安全关联及权限函数交各自块，psql 额外字段和真实版本查询交客户端块。本轮没有新建测试文件或实现任务，不修复这些缺口。
 
 覆盖审阅：数据库名/OID、owner、模板、连接开关分别关联 DB-BASE/EMPTY/FRESH、DB-OWNER、DB-POLICY；六列 DATABASES_SQL 关联 DB-LIST，未知列和恢复关联 DB-REJECT。正确性风险是错误身份/关联或伪造 owner/策略，兼容性风险是 name→text、datdba→int8、TiDB database 与 PG schema 混同及将可枚举当可连接；性能未测。Ready 文档检查沿任务的五节/锚点、路径存在、前后契约、来源覆盖与 diff 审阅执行；验证技能缺失如前块所述，不运行 Cargo/Go、代码 lint 或真实客户端，不将文档完成升级为功能支持。
+
+#### 命名空间目录映射
+
+后续实施按窄块分别补：当前库 public/内建 namespace 的身份及 name codec；用户 schema 的真实持久来源和所属库键；owner/ACL 字段及角色关联（衔接角色权限块）；同名表 relnamespace 关联（衔接关系身份块）；目录新鲜度/跨连接隔离（衔接更新块）。普通名称解析及有效 search_path 继续遵守第 2/5 章，不能把本块列行能力当解析器已支持多 schema。
+
+覆盖审阅：四字段逐项关联 NS-BASE/EMPTY、NS-OWNER、NS-ACL，OID 外键关联 NS-JOIN，元数据变化和同名 schema/跨库分别关联 NS-FRESH/DB；无权限 schema 保行与拒绝读表分别验。正确性风险是库/schema 层次或 OID 外键错误、伪造所有者/ACL；兼容性风险是 name/owner 类型不符、缺用户 schema 和误把路径过滤当目录过滤；性能未测。本轮仅文档，Ready 采用五节锚点、路径存在、来源覆盖、前后契约与 diff 审阅替代缺失的验证技能；不运行 Cargo/Go、代码 lint 或客户端，不以文档交付宣称功能已实现。
 
 ## 7. 线协议认证与数据通道
 
