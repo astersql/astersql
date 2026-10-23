@@ -3726,6 +3726,19 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 目录Q/扩展分派、单次Execution快照、OID和wire沿首块；关系、数据库、namespace、类型、函数owner/ACL字段沿对应块，只在此定义共同安全事实来源，避免另一套角色或授权存储。
 
+#### 可见性与名称遮蔽契约
+
+承接来源步骤2、4，能力 `CAT-VISIBILITY/pg`。批次14提交 `9263b10237`，累计13–1为 `39300031ef`、`434724ad84`、`4dceaaab81`、`3ac33b4c83`、`0e0f892cc2`、`52f558f71f`、`84fb929330`、`1807f7800b`、`af67d135cf`、`7ade409a9d`、`9bd191c612`、`b7ff2288b8`、`946e9b2c20`，对应五节正文已核对，依赖满足。以下为2026-10-24静态阅读，未执行测试；`pkg/server/doc.go`不存在。
+
+| 实际来源/符号 | 现状与责任 |
+| --- | --- |
+| [pg_session.rs](../pkg/server/pg_session.rs)::PgSession::{public_precedes_catalog,has_public,schema} / SessionQuery::parse | 默认public；省略pg_catalog时视为目录优先，显式public在目录前才返回true。只接受public/pg_catalog及空路径，schema取首项，未按真实存在性/USAGE计算有效路径。状态生命周期沿第5章。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::parse_session_with_types / evaluate | 前置public时从当前库schema_snapshot取同名用户表，交[pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)::implicit_relations / parse_shadowed避免隐式目录截获；显式pg_catalog仍走目录。evaluate与类型白名单无pg_table/type/function_is_visible分支，不能用现有pg_class行当可见性实现。 |
+| [pg_oid.rs](../pkg/server/pg_oid.rs)::name_parts / resolve_with_path / display | name_parts保存引号大小写；resolve按public_first选用户关系或SYSTEM_RELATIONS，关联table_oid/index_oid。只传布尔而非完整路径，未传has_public，故不能证明路径排除public后的regclass一致性；display没有路径参数，不能保证遮蔽时输出限定名。 |
+| [pg_name.rs](../pkg/server/pg_name.rs)::Resolver::relation / adapt；[pg_extended.rs](../pkg/server/pg_extended.rs)::process | 普通关系适配使用has_public，显式public改到当前原生库；Parse分别选择SessionQuery、CatalogQuery或普通适配。目录白名单、普通函数注册与名称绑定是不同入口，工厂与共享快照沿首块，不另建执行器。 |
+
+独立测试只读：[pg_session_test.rs](../pkg/server/pg_session_test.rs)::pg_introspection_namespace_parser_boundaries；[pg_query_test.rs](../pkg/server/pg_query_test.rs)::pg_introspection_namespace_session_state（两连接、空路径、Parse后SET）；[pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes（身份范围）；[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::pg_introspection_oid_live_casts（1259、2205/26描述、名称错误、真实索引）。这些意图未证明权限/遮蔽全链路，本轮运行数0。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3985,6 +3998,19 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方目标出处（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_user](https://www.postgresql.org/docs/18/view-pg-user.html)、[pg_roles](https://www.postgresql.org/docs/18/view-pg-roles.html)、[pg_auth_members](https://www.postgresql.org/docs/18/catalog-pg-auth-members.html)支持字段、脱敏和共享身份；[权限模型](https://www.postgresql.org/docs/18/ddl-priv.html)支持owner及ACL区别；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)支持会话身份及查询签名。官方 [REL_18_STABLE acl.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/acl.c)作为权限函数重载、NULL/不存在OID及错误分支后续逐例核对来源。客户端官方 [psql 18](https://www.postgresql.org/docs/18/app-psql.html)及 [describe.c::describeRoles](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)给出角色列表字段；该可变分支不是精确客户端构建。JDBC、DataGrip、ORM的精确版本/官方生成SQL尚未采集，由批次23–25补证；本块人工探针不能冒称客户端SQL。精确18.6构建及运行行为仍未取证。
 
+#### 可见性与名称遮蔽契约
+
+引用第2章“引号与大小写规则”“模式搜索路径解析契约”和第5章“模式与搜索路径契约”；有效路径由当前连接、当前库真实namespace、当前角色USAGE及隐式目录/临时namespace决定，不能用SHOW原字符串替代。省略pg_catalog时它优先于显式用户schema；显式列出时服从该位置。临时关系搜索顺序沿第2/5章，临时schema不参与函数/操作符搜索。路径不可见不等于目录行删除，也不等于对象无SELECT/EXECUTE权限。
+
+| 需求/字段与查询 | 来源、关联键、PG类型/OID | 目标及缺口策略 |
+| --- | --- | --- |
+| pg_table_is_visible(oid)；关系列表 | 当前库真实关系ID→pg_class.oid，relnamespace→pg_namespace.oid，relname保留PG名称身份；输入oid/26，输出bool/16、长度1、typmod−1 | 同名关系按有效路径只选首个，覆盖表/视图/索引/序列等关系；与未限定regclass及普通绑定一致。当前缺函数实现，绑定能力门禁0A000，不能常量true/空集代替。权限独立沿角色块。 |
+| pg_type_is_visible(oid)、pg_function_is_visible(oid) | pg_type.oid/typnamespace/typname；pg_proc.oid/pronamespace/proname/proargtypes，类型OID关联pg_type；输入26→输出16 | 类型按同名遮蔽；函数按名称与输入参数类型签名遮蔽，重载不按名字全部隐藏。真实来源与普通注册沿类型/函数块；缺注册或来源时明确0A000，不伪造用户类型/函数。 |
+| regclass输入/显示与关系查询 | 同一快照及OID映射；regclass/2205、oid/26均4字节，转text/25长度−1；名称列name/19沿关系块 | 显式schema不受路径成员限制但仍检查schema USAGE；隐式名选择可见关系，显示必须可重新解析回同OID，必要时限定/引用。NULL传播，未知OID/无效名称的诊断先参考取证，不能把不存在与不支持混淆。 |
+| 显式目录与权限 | pg_catalog.pg_class/pg_namespace真实提供器，关联键与字段类型沿已有块；权限源沿角色块 | public前置只影响未限定同名关系；无表SELECT仍可能名称可见，但普通读取必须权限拒绝；无schema USAGE从有效路径排除。Describe无副作用，Execute按第5章时点重读。 |
+
+官方目标依据（PostgreSQL **18**，2026-10-24访问）：[§9.27.3](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-VISIBILITY)提供可见性签名及对象类别；[schema规则](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-PATH)及[OID别名](https://www.postgresql.org/docs/18/datatype-oid.html)提供路径与regclass依据。客户端官方[psql REL_18_STABLE describe.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/bin/psql/describe.c)的describeTableDetails、类型/函数列表分别使用上述三类可见性条件；分支可变，此处不是固定18.6构建或完整客户端SQL采集。[PG18 namespace.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/catalog/namespace.c)的SQL包装器对不存在OID返回NULL；其可见性检查可使用较新的目录状态，不能机械要求与MVCC扫描行始终同一快照，DDL并发须保留该差异。下列SQL为人工探针，不冒称DataGrip/JDBC/ORM原始查询；18.6精确行为仍未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4048,6 +4074,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 角色权限与所有权契约
 
 不实现PG认证、角色DDL、授权引擎、owner持久化、RLS、SECURITY DEFINER或完整ACL运算；不把原生MySQL角色语义自动等价为PG语义。不运行Cargo/Go、实际客户端或差分平台，不修改第1–5章及其他块；本块只定义所需安全事实及缺失门禁。其他对象目录、名称可见性与客户端完整流程沿各自块。
+
+#### 可见性与名称遮蔽契约
+
+本轮只定义可见性/名称遮蔽契约，不实现用户schema、权限系统、临时对象、函数注册或prepared失效基础设施。pg_operator/opclass/opfamily、collation/conversion、统计对象及全文检索的可见性函数仍属后续对象块：未开放时绑定0A000，禁止恒真占位；不因官方存在这些函数就声称完整支持。第2/5章拥有解析与会话事务规则，本块消费其契约；真实客户端完整查询、wire错误字段与性能交第7/8章取证。
 
 ### 验收
 
@@ -4559,6 +4589,31 @@ GRANT SELECT (id) ON catalog_acl.t TO catalog_reader;
 
 最小权限连接、不同host映射、无权限对象、名称不存在、OID不存在、NULL及授权变化分别留证；表列SELECT不代表schema USAGE或登录CONNECT，改变权限不能替换会话认证。原生入口若仍仅允许bootstrap root，记录能力门禁和未运行多角色测试，禁止用root结果替代。准备SQL由专用管理员连接运行，清理需先RESET ROLE，再删除catalog_acl对象/schema，最后删除四个夹具角色；只清理本夹具。本轮未执行任何SQL。
 
+#### 可见性与名称遮蔽契约
+
+以下VIS-*均为**待新增/待运行**人工用例。本轮没有SQL、客户端或18.6参考运行。前提：隔离当前库、UTF8、autocommit、owner、目录SELECT/函数EXECUTE；每条DDL独立发送并提交。Q参数[]、文本结果；用户OID按本端映射，不比较跨端数值。分别准备 `CREATE TABLE public.pg_class (marker integer);`、`INSERT INTO public.pg_class VALUES (71);`。先以显式目录查询保存U=public.pg_class真实OID、C=pg_catalog.pg_class的OID（PG为1259）：
+
+```sql
+SELECT n.nspname,c.oid,c.relname,pg_catalog.pg_table_is_visible(c.oid) AS visible
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+WHERE c.relname='pg_class' ORDER BY n.nspname;
+```
+
+BASE描述为name19/oid26/name19/bool16，长度64/4/64/1（name标准构建），typmod均−1。所有测试同时核对真实模型ID、目录行、普通查询与regclass，而非仅布尔。
+
+| 用例/完整输入 | 期望与拒绝/权限前提 |
+| --- | --- |
+| VIS-PATH | 依次 `SET search_path TO public;`、`SET search_path TO public,pg_catalog;`、`SET search_path TO pg_catalog,public;`，每次运行BASE及 `SELECT 'pg_class'::regclass::oid,'public.pg_class'::regclass::oid,'pg_catalog.pg_class'::regclass::oid;`。BASE始终2行，可见性依次(C真/U假)、(C假/U真)、(C真/U假)；三列oid26依次(C,U,C)、(U,U,C)、(C,U,C)。中间路径 `SELECT marker FROM pg_class;` 恰71/int4；`SELECT oid FROM pg_catalog.pg_class WHERE oid=1259;` 始终1259/26。不得把用户表误送目录绑定。 |
+| VIS-EMPTY/QUOTE | `SET search_path TO '';` 后BASE仍2行且C真/U假；`SELECT 'pg_class'::regclass::oid;` 得C，`SELECT 'public.pg_class'::regclass::oid;` 得U；`SELECT marker FROM pg_class;` 解析到目录并在列绑定拒绝。独立创建 `CREATE TABLE public."PG_Class" (marker integer); INSERT INTO public."PG_Class" VALUES (72);`，path=public,pg_catalog时 `SELECT marker FROM "PG_Class";` 得72；`SELECT '"PG_Class"'::regclass::oid,'pg_class'::regclass::oid;` 得其真实OID与U；大写引号名不得与小写合并，缺名称存储能力须DDL前0A000。 |
+| VIS-DISPLAY/ARG | 对BASE两行运行 `SELECT c.oid,c.oid::regclass::text FROM pg_catalog.pg_class c WHERE c.relname='pg_class' ORDER BY c.oid;`；两列26/25，分别按三种PATH设置将输出文本重新作为regclass参数解析必须回原OID，被遮蔽项须含schema。`SELECT pg_catalog.pg_table_is_visible(NULL::oid);` 一行NULL/bool16；`SELECT pg_catalog.pg_table_is_visible(0::oid);` 目标一行NULL/bool16，依据PG18 namespace.c缺对象分支；当前未实测。错误参数数量 `SELECT pg_catalog.pg_table_is_visible();` 在绑定拒绝，无伪结果行；缺函数实现的0A000须单列为能力缺口。 |
+| VIS-TYPE/FUNC | `SELECT pg_catalog.pg_type_is_visible(t.oid) FROM pg_catalog.pg_type t WHERE t.oid=23;` 在路径public时一行true/bool16；`SELECT p.oid,pg_catalog.pg_function_is_visible(p.oid) FROM pg_catalog.pg_proc p WHERE p.proname='pg_table_is_visible';` 内建签名对应一行26/16且true。后续用户重载夹具沿函数目录PROC-03，用两个schema同名同参/不同参分别验证按签名遮蔽；当前无用户注册来源时先拒绝DDL，不把缺夹具当通过。 |
+| VIS-ACCESS | 角色创建/真实认证沿角色块。owner授予reader目录读取及public USAGE，撤销public.pg_class的SELECT；reader设path=public,pg_catalog，BASE U仍true，`SELECT marker FROM pg_class;` 权限拒绝且无71。另建schema vis_hidden、表vis_hidden.t并授reader表SELECT但无schema USAGE，reader设path=vis_hidden,public；`SELECT pg_catalog.pg_table_is_visible(c.oid) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='vis_hidden' AND c.relname='t';` 一行false，显式 `SELECT * FROM vis_hidden.t;` 权限拒绝。精确诊断参考采集，缺权限源不能冒充通过。 |
+| VIS-LIFE/CONNECTION | A保持public,pg_catalog、B保持pg_catalog,public，交错PATH/BASE，分别见U/C；A RESET不得改变B，重连不继承A。owner `ALTER TABLE public.pg_class RENAME TO vis_renamed;` 后U身份不变，BASE只剩C/true；`SELECT 'pg_class'::regclass::oid;` 两连接均C，新名解析U。DROP重建后旧U不能指向新对象。准备BASE后改path/DDL再Bind/Execute，核对第2/5章绑定时点、元数据刷新及连接隔离，不能仅靠current_schema测试推导。 |
+
+扩展参数探针完整SQL `SELECT pg_catalog.pg_table_is_visible($1);`，Parse参数OID[26]，Bind分别[U]、[C]、[NULL]，输入text格式[0]，结果各跑text[0]/binary[1]；Describe bool16/长度1/typmod−1，NULL仍有描述。每次记录当时路径、真实角色和快照，Parse/Describe不得改变路径或元数据；错误后Sync/ROLLBACK按第5/7章恢复。psql18后续以 `psql -E` 分别运行 `\d`、`\dt public.*`、`\dT`、`\df` 保存版本、真实SQL与结果，限定/未限定pattern分别检查；其结果均未采。
+
+清理使用实际已创建名：owner `DROP TABLE public.pg_class;`（改名组改为vis_renamed）、`DROP TABLE public."PG_Class";`、`DROP TABLE vis_hidden.t; DROP SCHEMA vis_hidden;`；关闭statement/portal并RESET路径，角色按权限块清理。缺schema/引号/函数时保留门禁证据和未运行项，不跳过后报成功。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4634,6 +4689,12 @@ GRANT SELECT (id) ON catalog_acl.t TO catalog_reader;
 #### 角色权限与所有权契约
 
 后续按单一事实链拆分：①原生user/host到稳定PG角色身份及脱敏pg_user/pg_roles；②会话授权角色/有效角色与成员边；③单类对象持久owner及pg_get_userbyid；④单类ACL与对应has_*查询、grant option及授权失效。每项分别遵循第3/4/5章类型、正式注册、会话和第7章协议门禁，不扩成完整授权子系统。批次23–25补各客户端确切SQL/版本/参数；本块待新增验收不得登记为当前实测。
+
+#### 可见性与名称遮蔽契约
+
+后续窄任务依次补真实有效路径消费与三类可见性函数、regclass输入/显示一致性、目录截获与普通绑定分流、权限及两连接/DDL回归；扩充现有同目录独立测试，不将测试写进生产文件，不补完整子系统。需求映射：路径/关系身份→VIS-PATH/EMPTY；引号→QUOTE；OID显示/类型/参数→DISPLAY/ARG/TYPE/FUNC；授权独立→ACCESS；更新与隔离→LIFE/CONNECTION。
+
+Ready按纯文档范围检查五节/锚点、路径存在、前后契约及diff；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，采用任务指定替代检查，未执行其内容。正确性风险为目录误截获、错误OID和路径/角色快照混用；兼容性风险为引号合并、可见性与授权混淆、regclass显示或绑定时点差异；性能未测。本块完成只代表契约交付，所有新增验收及18.6/客户端运行仍待实施。
 
 ## 7. 线协议认证与数据通道
 
