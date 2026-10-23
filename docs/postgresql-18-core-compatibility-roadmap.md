@@ -2588,6 +2588,14 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 本轮以上测试均未运行，实际运行用例数 0；当前有界实现、既有测试意图、以下完整目标和未来运行证据分别记录，不宣称功能验收通过。
 
+#### 引号与大小写执行契约
+
+承接来源步骤 2 的引号/大小写与步骤 4 的实际副作用、恢复和 MySQL 共存，能力 ID 为 `SESSION-NAME-CASE/pg`，复用第 2 章[引号与大小写规则](#引号与大小写规则)、[限定名称解析规则](#限定名称解析规则)及本章路径块，不重新设计 lexer。批次 7 提交 `39f6e32b84ff1c323099507d6d75cc7512179210` 及累计批次 1–6 的五节正文已复核，依赖满足；总计划与来源任务只读。
+
+2026-10-23 通过 RustCodeGraph 读取 [pg_name.rs](../pkg/server/pg_name.rs) 的 `Token`、`source_tokens`、`Resolver::relation`、`rewrite`、`adapt`、`validate_relations`：未引号 token.name 转小写，双引号名称解码且保真；关系位置按分段改写当前原生库，双引号转为后端反引号，未编辑文本原样保留。`adapt` 读共享 `SELECT DATABASE()` 后二次改写，`validate_relations` 只校验共享 AST 暴露的 TableName.Schema.L 是否越库，不提供关系/列/别名的 PG 精确身份绑定证明。该链仍复用共享 TiDBContext；没有第二套 PG 存储或执行器。
+
+已完整读独立 [pg_name_test.rs](../pkg/server/pg_name_test.rs)::`pg_introspection_names_token_scopes`（public/当前库限定、引用名称与字符串/注释保护的改写断言）、`pg_introspection_names_rejection_boundaries`（跨库、非 public、空/未闭合引号拒绝）及 [pg_session_test.rs](../pkg/server/pg_session_test.rs)::`pg_introspection_namespace_parser_boundaries`（有界路径解析及引用 PUBLIC 拒绝）。这些测试没有以不同对象值证明 t/"T"、同名大小写列或别名绑定正确；本轮未执行，运行用例数 0。`pkg/server/doc.go` 不存在；模块说明和协议第一阶段的历史支持叙述不是本轮运行证据。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2694,6 +2702,16 @@ RECURSIVE、无环前向引用、工作表终止/去重/资源释放、SEARCH/CY
 
 依据为 PostgreSQL **18 主版本**官方 [search_path 参数](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-SEARCH-PATH)（原始/有效路径、权限与隐式目录）、[Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-PATH)（对象选择）、[SET](https://www.postgresql.org/docs/18/sql-set.html)（连接与事务作用域）、[RESET](https://www.postgresql.org/docs/18/sql-reset.html)（配置默认及回滚），访问日期均为 **2026-10-23**。它们支持目标规则，不能证明 AsterSQL 或计划指定 18.6 的精确运行诊断；本轮未核实 18.6 发行/运行行为。
 
+#### 引号与大小写执行契约
+
+PG 未引号 t、T 与引用 "t" 选择同一小写名称；"T" 为精确大写名称。该身份必须从第 2 章解析保真传到关系/列/别名绑定、真实目录与共享执行，不得在后端统一 lower 后误命中。public.t、PUBLIC.T、"public"."t" 同指当前连接库中 public 的 t，public."T" 只指精确大写对象；"PUBLIC" 与 public 不等价，现有限 public 门禁须显式保留。引号内点号是名称字符：public."a.b" 是一个关系名，不是 a schema 的 b；单引号字符串中的 public.T 不触发解析对象或路径变更。表别名建立后隐藏原表引用，未引用别名也折叠，引用别名精确匹配；输出别名还须在结果列名中保真，不用相同值掩盖列名差异。
+
+共享内核及目录的大小写规则、lowercase 键、表名配置可能无法表示同 schema 的 t/"T" 或同表 c/"C"。在真实存储、目录与执行身份贯通前，应在创建/绑定或写入前明确能力拒绝，记录限制及实际阶段，不能静默覆盖、合并、回落或读写另一对象。产品门禁目标 0A000，不代表 PostgreSQL 对该合法输入也拒绝；本轮不选命名编码或改造方案。MySQL 连接继续按自身 sql_mode、名称类别、lower_case_table_names 与平台行为执行，禁止为 PG 修改全局设置、共享折叠键或 MySQL 模式。
+
+两段 public 限定仍受当前连接库隔离；三段当前库.public.t 与跨库须区分：PG18 允许写当前数据库前缀，拒绝其他数据库。当前适配也仅放行当前库三段形式，不能把任意 MySQL 库限定当 PG schema。精确诊断待参考采集，不从内部字符串推断 SQLSTATE/位置。
+
+官方依据（访问 **2026-10-23**，适用 **PostgreSQL 18 主版本**）：[§4.1.1 标识符](https://www.postgresql.org/docs/18/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS)支持折叠、引号和特殊字符；[§5.10.1 schema 限定](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-CREATE)支持当前库前缀及跨库限制；[§7.2.1.2 表与列别名](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-TABLE-ALIASES)支持别名隐藏原名。验收值为这些规则的文档推导，不是运行结果；18.6 仍是来源目标，未核实精确补丁行为。MySQL 自身比较按 [8.4 名称大小写](https://dev.mysql.com/doc/refman/8.4/en/identifier-case-sensitivity.html)及第 2 章模式边界，不能从 PG 规则推断其结果。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2723,6 +2741,10 @@ RECURSIVE、无环前向引用、工作表终止/去重/资源释放、SEARCH/CY
 #### 模式与搜索路径契约
 
 本块仅补连接路径与对象可见性文档；不实现多 schema、角色/权限、临时对象、用户函数/重载、ALTER ROLE/DATABASE 配置、set_config 或目录系统。真实 schema/OID 与权限由工作流 6 提供；普通 prepared 名称绑定、重分析与缓存时点交本章预处理专项，不能把 current_schema 标量的 Execute 测试外推为所有关系重绑定。savepoint、函数局部设置、事务型建表及完整事务状态机交各专项；不以路径生命周期要求扩写共享引擎。本轮不运行数据库、差分平台、Cargo/Go 或 DDL 原型，不改其他章节与来源任务。
+
+#### 引号与大小写执行契约
+
+只补实际对象选择契约；不实现 parser、名称映射、大小写敏感目录/存储改造、多 schema、权限、用户函数或完整 Unicode/名称截断规则，不改全局配置。路径生命周期复用前块；prepared 重分析/缓存时点归下一专项，本块扩展查询均新建 statement/portal。事务型 DDL、sequence/identity、跨库引擎与 MySQL 模式实现不在范围；不运行数据库、差分平台、Cargo/Go 或原型，不改第 1–4、6–8 章。
 
 ### 验收
 
@@ -2920,6 +2942,27 @@ MySQL 共存 `session.search-path.mysql.<query|prepared>` 为 `SESSION-SEARCH-PA
 
 当前各端原始 observations 未采集、verdict 未验证、有效运行数 0；文档验收仅确认输入、目标/门禁、副作用与恢复完整。目录展示与真实对象解析分开，身份/权限依赖工作流 6，18.6 精确兼容仍待实证。
 
+#### 引号与大小写执行契约
+
+以下全部是**待新增、未运行**用例，`session.name-case.pg.<名称>.<query|extended>` 关联 `SESSION-NAME-CASE/pg`。PG W/O 同一全新独立测试库，UTF-8、UTC、search_path=public、初始 I，具备夹具权限，无临时对象。事务外逐条建立 `CREATE TABLE public.t (id integer PRIMARY KEY,c integer,"C" integer)`、`INSERT INTO public.t VALUES (1,10,11)`、`CREATE TABLE public."T" (id integer PRIMARY KEY,c integer)`、`INSERT INTO public."T" VALUES (2,20)`、`CREATE TABLE public."a.b" (id integer PRIMARY KEY)`、`INSERT INTO public."a.b" VALUES (3)`。若任一创建因大小写冲突或表示能力拒绝，记录准备阶段门槛失败及未建对象，不伪称成功覆盖。只含 public、没有大写 PUBLIC schema；另有已存在独立数据库 other_db，访问拒绝用例不得读取它。
+
+副作用查询 S 为 W/O 各逐条 `SELECT id,c,"C" FROM public.t ORDER BY id`、`SELECT id,c FROM public."T" ORDER BY id`、`SELECT id FROM public."a.b" ORDER BY id`，基线分别 [(1,10,11)]、[(2,20)]、[(3)]。每例独立重置夹具，开始/恢复后双方 S，禁止靠目录名称或改写 SQL 通过。所有命令逐条发送；Q 与扩展两变体均用无参数、新建 statement/portal，Describe 不执行写入，Execute 取完后 Sync，错误后先 Sync 再按事务状态恢复。
+
+| 名称与完整输入 | 目标值、对象及拒绝/恢复 |
+| --- | --- |
+| relation：分别 `SELECT id FROM t`、`SELECT id FROM T`、`SELECT id FROM "t"`、`SELECT id FROM public.t`、`SELECT id FROM PUBLIC.T`、`SELECT id FROM "public"."t"`；另执行 `SELECT id FROM "T"`、`SELECT id FROM public."T"` | 前六条均只返回 1，后两条只返回 2；S 不变。另建仅 public.t 的独立夹具（同 t 定义/初值，不建其余两表），`SELECT id FROM "T"` 必须缺表，不能回落为 1；I 下失败后 `SELECT id FROM t` 立即返回 1，随后清理该夹具。 |
+| column：`SELECT c,C,"c","C" FROM public.t`；独立负例 `SELECT "cC" FROM public.t` | 正例一行 (10,10,10,11)，列名依次 c,c,c,C；负例缺列，I 下下一条 `SELECT c FROM public.t` 返回 10。S 不变，不能把全部列统一到 c。 |
+| alias：`SELECT A.c FROM public.t AS A`；`SELECT "A".c AS "V" FROM public.t AS "A"`；反例 `SELECT a.c FROM public.t AS "A"`、`SELECT t.c FROM public.t AS "A"`；输出别名对照 `SELECT c AS V,c AS "V" FROM public.t` | 前两条均返回 10，第二条列名 V；反例不可回落原表/别名，应名称绑定失败，精确码/位置待采。最后一条 (10,10)，列名 v,V。每个 I 反例后重跑第一条成功，S 不变。 |
+| dot/literal：`SELECT id FROM public."a.b"`；`SELECT 'public.T', '"T"', 'a.b' FROM public.t /* public."T" */`；`SELECT id FROM other_db.public.t`；`SELECT id FROM "PUBLIC".t` | 首条 3；第二条一行原字符串 public.T、"T"、a.b，不能命中大写表。跨库拒绝，当前产品门禁 0A000；引用 PUBLIC 在本夹具不存在，PG 诊断待采，当前有界 schema 门禁 0A000 与 PG 不等价。I 中每个错误后首条仍返回 3，S 不变。当前库三段另将 W startup 的实际数据库名按 PG 标识符引号转义填入 `SELECT id FROM <当前库>.public.t`，期望 1；记录替换后的完整输入，不能发送占位符。 |
+| write/rollback：W `BEGIN`、`UPDATE public."T" SET c=21 WHERE id=2`、S、`ROLLBACK`、S；独立 COMMIT 变体重建夹具重跑，将 ROLLBACK 替换为 COMMIT | 写后 W 仅大写表为 (2,21)，小写表/点号表不变；O 提交前始终基线。ROLLBACK 后双方全基线；COMMIT 后双方仅大写表为 (2,21)，证明真实对象写入及持久可见性。 |
+| failed：W `BEGIN`、`UPDATE public."T" SET c=21 WHERE id=2`、`SELECT "cC" FROM public.t`、`SELECT c FROM public."T"`、Sync（仅扩展）、`ROLLBACK`、S；O 在各阶段 S | 首错后 E，后续 SELECT 被失败门禁拒绝，Sync 后仍 E；ROLLBACK 后 I/全基线，O 始终基线。首错缺列及后续失败门禁的精确字段、阶段与参考码待采，不将本轮零运行写成通过。 |
+
+另在各独立 I 夹具执行词法负例 `SELECT id FROM public.""`、`SELECT id FROM public."broken`，拒绝后 `SELECT id FROM public.t` 应仍返回 1，S 不变；空/未闭合引号不能进入写入。成功 SQLSTATE 不适用。各例记录行值/NULL、列顺序与名字、OID/typlen/typmod、来源字段/格式、标签/影响行数、错误 SQLSTATE/message/position 及 I/T/E；整数目标 int4（23/4/-1）、text 格式，字符串按第 3 章 text 身份采证，其余精确字段不猜测。错误定位复用第 2 章原查询字符跨度规则。预期与原始 observations 分列，当前 observations 未采集、verdict 未验证、有效运行用例数 0。
+
+MySQL 共存 `session.name-case.mysql.<query|prepared>` 关联 `SESSION-NAME-CASE/mysql`：M/N 同 Server 的独立测试库、autocommit=1，保存 `SELECT DATABASE()`、`SELECT @@sql_mode`、`SELECT @@lower_case_table_names` 及平台/版本。事务外逐条 `CREATE TABLE name_case_mysql (id INT PRIMARY KEY,c INT)`、`INSERT INTO name_case_mysql VALUES (1,30)`，保存 Query `SELECT c,C FROM name_case_mysql` 的 (30,30) 与 Prepare `SELECT c FROM name_case_mysql WHERE id=?`/Execute 整数 1 的 30 及元数据。M BEGIN、`UPDATE name_case_mysql SET c=31 WHERE id=1`，M/N 查询分别 31/30；交错全部 PG 读取、写入和拒绝恢复后，重复 MySQL Query/prepared、库/模式/配置查询，结果按自身事务持续，M ROLLBACK 后双方 30。双引号模式独立变体先在 M 保存 `SET @name_case_saved_mode=@@SESSION.sql_mode`，分别执行 `SET SESSION sql_mode=''` 与 `SET SESSION sql_mode='ANSI_QUOTES'`（每次均交错 PG 操作及检查 N），各模式下执行 `SELECT "c" FROM name_case_mysql`，目标分别字符串 c 与列值 30（该变体从回滚后的初态开始）；每次变体后 `SET SESSION sql_mode=@name_case_saved_mode` 恢复并核对原始模式，N 不变。采集 MySQL 自身列类型/flags/charset、警告和错误，不套 PG 精确名称规则；准备/配置不可用就登记门槛，不能改全局设置使其通过。
+
+清理先各连接 ROLLBACK、关闭存在的 statements/portals/prepared，恢复 M 原 sql_mode；再在 I 下逐条 DROP TABLE public."a.b"、DROP TABLE public."T"、DROP TABLE public.t，MySQL DROP TABLE name_case_mysql，关闭连接；只清理实际建立的对象。来源步骤 2 → relation/column/alias/dot，步骤 4 → S、write/failed 与 MySQL 共存。正确性风险为误绑定/合并和错误前副作用，兼容性风险为后端大小写配置、列名及诊断差异，性能未测、无结论。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -2963,6 +3006,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 后续先细分路径原值/有效顺序与两连接隔离，再细分 SET/RESET 的事务提交/回滚恢复，最后单列 LOCAL 能力门槛与失败事务门禁，优先扩展 pg_session_test.rs、pg_name_test.rs、pg_query_test.rs 的独立测试。复用现有共享会话与实际元数据，不另建 PG 引擎或用字符串首项替代对象解析；先补两种协议的状态/值/副作用证据再开放能力。
 
 来源步骤 2 的 schema/path 由 isolation/order/empty/missing 与生命周期用例承接，步骤 4 由 failed/local 门禁与 MySQL 共存承接。工作流 2 接有效路径的名称绑定，工作流 3/4 接类型/函数身份，工作流 6 提供 schema/权限/目录一致性，工作流 7 接协议状态，工作流 1/8 接参考采证；prepared 重绑定和事务型 DDL 各归专项。本轮只完成契约文档：正确性、兼容性未运行验证，性能无结论，不生成或执行代码实现任务。
+
+#### 引号与大小写执行契约
+
+后续仅拆三处窄交接：第 2 章精确名称身份传给共享 resolver；真实目录/存储身份与关系、列、别名的执行选择一致；两入口的结果列名及失败恢复证据。先以本块不同标记值证明读写对象与回滚，再决定最小命名适配及能力门禁方案，禁止直接放宽文本改写作为完成标准；优先扩展现有同目录独立测试，不在生产 Rust 文件内放测试。
+
+工作流 2 负责词法保真及原位置，3/4 负责结果类型/表达式，6 负责真实目录、精确对象身份与权限，7 负责 Q/扩展错误与元数据，1/8 负责双参考端采证；路径复用前块、prepared 状态变化交下一专项，底层表示不足列为独立依赖。文档完成仅关闭来源步骤 2 的本题契约缺口，不表示 AsterSQL 已实现 PG18 或精确 18.6 兼容；本轮不生成/执行代码任务。
 
 ## 6. 系统目录与内省契约
 
