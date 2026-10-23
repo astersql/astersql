@@ -1671,6 +1671,19 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [builtin_info.rs](../pkg/expression/builtin_info.rs)：`tidb_version`；[builtin_info_test.rs](../pkg/expression/builtin_info_test.rs)：`expression_metadata_and_version_helpers_return_go_fields`；[builtin_info.go](../pkg/expression/builtin_info.go)：`tidbVersionFunctionClass.getFunction` / `builtinTiDBVersionSig.evalString` | 实际存在的 TiDB 管理/构建内省函数 TIDB_VERSION()，Rust 与 Go 都取 printer.GetTiDBInfo；独立断言仅非空。Go 为 ETString、flen 按信息长度、返回非 NULL；不把 PG version() 或握手版本代入该值。 |
 | [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`invoke_factory`；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl` | 四名称规格为 2/2、2/2、2/不限、0/0；已读核心表包含 ifnull/json_extract，未见 date_format/tidb_version，动态注册未全面排除。正式调用仍为名称查类→参数检查→工厂→getRetTp→ScalarFunction/折叠；缺工厂明确报 implementation is not linked。存在 helper/规格不证明 SQL 可用，更不证明 PG 隐藏。 |
 
+#### 运算符调用契约
+
+本块基线 `66cac76435e4b8313f42e18ed8a60e3301ee6685`（2026-10-23）；已核对批次 1–11 的连续提交和对应五节正文，最近交付为 MySQL 专属函数隔离。`pkg/expression/doc.go`、`pkg/parser/doc.go` 与 `pkg/server/doc.go` 不存在。使用 RustCodeGraph status、explore、query、定点 node 读取真实源码，图未定位名称字面量时用 rg 补充；以下全为静态事实及断言意图，未执行测试。
+
+| 真实入口/符号 | 责任与限制 |
+| --- | --- |
+| [builtin_arithmetic.rs](../pkg/expression/builtin_arithmetic.rs)：`ArithmeticExpr::build` / `eval`、`ArithmeticOp`、`Signature`、`EvalContext` | 局部 owned Expression 内核将 Divide 分到 Real/Decimal，将 IntDivide 分到整数/Decimal 整除；NULL 传播，除零按上下文报错或警告。不能因 IntDivide 算法存在便声称 PG `/` 的 int4 签名已接入。 |
+| [builtin_compare.rs](../pkg/expression/builtin_compare.rs)：`compare_datums`、`Op::NullEq`；[builtin_op.rs](../pkg/expression/builtin_op.rs)：`logical_or`、`unary_minus_int` | 局部比较先处理 Error，再处理 NULL：NullEq 两空为 true、一空为 false，普通比较为 NULL；一元负号检查 signed/unsigned 溢出。MySQL 真值规则与 i64 容器不证明 PG boolean 或 int4 身份。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`CORE_BUILTIN_FACTORIES`、`invoke_factory`、`CoreBuiltinKind::Arithmetic` / `Compare`、`eval_boolean` / `evalReal`；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl` | 正式链为名称表 → getFunction → 工厂 → RetType → ScalarFunction 求值；div、intdiv、unaryminus、nulleq 有核心工厂。正式 div 选 Real 或 Decimal，nulleq 求值处理两空；已读正式 REAL 除零直接返回 NULL，不等同局部内核警告策略。两条路径分别取证，不能把局部断言当正式链或 PG resolver 证据。 |
+| [lib.rs](../pkg/expression/lib.rs)、[builtin_arithmetic_test.rs](../pkg/expression/builtin_arithmetic_test.rs)、[builtin_arithmetic_2_aster_unit_test.rs](../pkg/expression/builtin_arithmetic_2_aster_unit_test.rs) | crate 挂载算术内核及独立测试入口，入口再挂 go_parity；`divide_preserves_division_by_zero_policy_overflow_and_decimal_scale` 断言除零 NULL/警告、错误模式和 1/8 的 scale 4，`integer_division_handles_four_signedness_pairs_and_minimum_overflow` 断言 -7 DIV 2 为 -3 和 i64 最小值除 -1 溢出；均非 PG SQL 证据。 |
+| [builtin_op_test.rs](../pkg/expression/builtin_op_test.rs)、[builtin_compare_test.rs](../pkg/expression/builtin_compare_test.rs)、[builtin_compare_7_aster_unit_test.rs](../pkg/expression/builtin_compare_7_aster_unit_test.rs) | 前者 `unary_minus_covers_signed_unsigned_decimal_and_overflow`、`logical_operators_cover_mysql_three_valued_logic_and_short_circuit` 覆盖局部负号/逻辑；比较入口挂载的 `all_comparison_operators_match_null_and_unsigned_semantics` 覆盖两空、一空、等值和 unsigned 比较。未证明 PG IS NOT DISTINCT FROM 分析/求值或 wire 返回 boolean。 |
+| [lexer.rs](../pkg/parser/lexer.rs)：`HasPipesAsConcatMode` 分支 | 未启用 PIPES_AS_CONCAT 时将 pipes token 转成 pipesAsOr；说明 MySQL `\|\|` 受 sql_mode 影响，不能从内部 concat 名称推断两入口同义。PG 语法接线和优先级归第 2 章，本块不修改解析器。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1887,6 +1900,24 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.18 条件表达式](https://www.postgresql.org/docs/18/functions-conditional.html)仅把 IFNULL 作为其他数据库的相似能力，并说明 COALESCE 不是普通函数；[§9.16 JSON](https://www.postgresql.org/docs/18/functions-json.html)区分 SQL NULL/JSON null，列出的 json_extract_path 与 jsonpath 不授权 MySQL JSON_EXTRACT 别名。[§10.3 函数解析](https://www.postgresql.org/docs/18/typeconv-func.html)支持先筛可见候选，[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)定义 42883 为 undefined_function。这里的 MySQL 语义来自本地 Go，PG 隔离来自设计契约；18 大版本手册不能代替 18.6 实测。
 
+#### 运算符调用契约
+
+继承“三层身份与契约模板”，调用模型独立记录为运算符/比较谓词：规范算法身份、方言运算符签名和 wire 结果身份仍分三层。PG 候选身份至少含 namespace、符号、一元前缀或二元中缀及左右输入类型；一元缺左操作数是结构信息，不是传入 SQL NULL。结果类型来自已选签名，不参与反向选重载；内部 div/intdiv/nulleq/concat 名称不能自动成为 PG SQL 别名。`IS [NOT] DISTINCT FROM` 是特殊比较谓词，需按底层 `=` 的比较资格绑定并专门处理 NULL，不伪装成用户可查找的同名普通函数或运算符对象。
+
+PG 运算符候选按第 2 章可见环境筛选：限定 `OPERATOR(pg_catalog./)` 只取指定 schema，未限定符号取可见同名/同元数候选；同输入签名按路径去重，不同输入签名平等考虑。先精确匹配；二元一侧 unknown 时在此步骤先假设其与已知侧同型，一元 unknown 无此捷径。其后按第 3 章 I 转换资格、精确位置数、类别优选、unknown 的 string 类偏好和已知同型约束逐步筛选，不套普通函数的 variadic/default 规则或 UNION 共同类型规则。无匹配目标 42883、歧义 42725；domain/完整多态等未开放载体保留能力门禁，不能借本块构建完整类型系统。Parse/Prepare 定型后，Bind 换值、NULL 或格式不得重选运算符。
+
+| 首块模板字段 | 本块实例填写及证据缺口 |
+| --- | --- |
+| 关联、分类、模型、规范实现 ID | 关联下方 OP-CALL 四族。文档候选 `operator.integral.divide.checked/v1`、`operator.numeric.divide/v1`、`operator.text.concat.strict/v1`、`predicate.int.null-safe-equal/v1` 为待新增实现身份；二元比较的有限 int4 值域可作共享候选，不批准跨方言别名。MySQL `/` 与 PG 整数 `/` 为同符号异义；三个代表行为均未有两入口运行证据。 |
+| 名称/可见性、元数、输入、cast | `/`、文本 `\|\|` 为二元，`-` 为一元前缀；签名和限定名见正文/验收表，均限定内建无同名用户/扩展遮蔽。算术只取 int4/int4、numeric/numeric 两签名；文本取 text/text，不将 anynonarray 混合拼接泛化为本块支持；NULL 安全比较限定 int4 对。无批准别名，unknown 与 typed NULL 按上述规则参加分析，不由空值绕过非法类型。 |
+| NULL、求值条件 | PG 两个除法重载与 text/text 拼接 strict，合法 typed NULL 返回同型 NULL；NULL::int4 / 0::int4 不进入非空除零算法。NULL 安全谓词非 strict，结果永不为 NULL；普通 `=` 为对照。strict 不承诺子表达式求值顺序或避免规划期常量错误，不以 `(1/0)` 包在其他 NULL 表达式下作必然免错断言。 |
+| collation、时区、会话 | 固定 UTF-8、内建可见、PG search_path 和 MySQL sql_mode 逐次记录；数字运算及 int4 比较不涉及 collation/时区。text/text 只拼接原字符，不按排序规则改变字符，结果 collation 派生消费第 3 章，字符集/collation 冲突须另取证，不能宣称任意 collation 已兼容。MySQL `\|\|` 分别固定 PIPES_AS_CONCAT 关/开，不能让该配置影响 PG。 |
+| 确定性、折叠、副作用、下推 | 已定型内建 int4 除法与 textcat 按官方 REL_18_0 默认属性为 immutable/strict；其余实例仅限定固定输入身份的纯值目标，不批准新增优化属性。SELECT 无数据副作用；可折叠常量的值错误可发生于规划，参数错误亦须记录真实阶段。不新增下推许可，类型、NULL、错误及会话差异未证明等价前不下推；无性能结论。 |
+| 返回类型、值域、wire | 下表列值/NULL/类型；int4 域与溢出不扩宽沿第 3 章，一元负最小值及最小值除 -1 目标 22003。PG 结果 OID/typlen：int4 23/4、numeric 1700/-1、text 25/-1、bool 16/1，表达式 typmod -1，列名 v、表/属性号 0；text/binary 按第 3/7 章，不由返回行推型。MySQL 沿自身 DECIMAL/BIGINT/字符串及布尔整数表达式元数据，精确 code/flags/charset/length/decimals 待参考采集；不输出 PG OID。 |
+| 错误、验收、状态 | 除零 22012、域溢出 22003，无匹配/歧义见上；成功 SQLSTATE/错误字段不适用，拒绝无成功载荷。沿首块记录 S/V/C/M 与适用 D/H/P，精确消息/P 和分析/折叠/执行阶段未采集；MySQL 警告/错误按自身参考，不能把合法 PG 未实现伪装成 PG 无匹配。只完成静态取证和契约，双方言运行有效用例数为 0。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§10.2 运算符解析](https://www.postgresql.org/docs/18/typeconv-oper.html)与[pg_operator](https://www.postgresql.org/docs/18/catalog-pg-operator.html)支持候选/元数及输入、结果、实现函数身份分离；[§9.3 数学运算](https://www.postgresql.org/docs/18/functions-math.html)定义整数向零截断及非整数除法，[§9.4 字符串运算](https://www.postgresql.org/docs/18/functions-string.html)定义 text 拼接，[§9.2 比较谓词](https://www.postgresql.org/docs/18/functions-comparison.html)定义 NULL 安全比较。固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat) 的 int4div/textcat 与 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h) 的 strict/immutable 默认值支持对应属性；[int.c::int4div](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c)支持除零/最小值除 -1，[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持错误分类。18 大版本手册与 18.0 静态源码不等于 18.6 差分证据，本轮没有参考端运行结果。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1932,6 +1963,10 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 #### MySQL专属函数隔离
 
 不盘点全部 MySQL/TiDB 管理函数，不修复 DATE_FORMAT/TIDB_VERSION 工厂或测试缺口，不改 Go 语义，不补建 JSON、时区、权限或管理子系统。不新增 COALESCE/to_char/PG JSON 别名，不把其他函数或扩展生态纳入隔离实现；本块不修改代码、协议或下推。
+
+#### 运算符调用契约
+
+不实现 PG operator resolver、表达式工厂、cast、codec、目录或测试设施，不改 Go/MySQL 算法及 sql_mode。只取整数/非整数除法、文本拼接和 int4 NULL 安全比较；数组/range 运算符登记为后续独立族，不能借 `||` 同符号或 lower/upper 已注册推定支持。其他数值/文本混合重载、完整算术库、行/复合比较、用户自定义运算符及扩展生态不在本块。语法优先级和谓词节点归第 2 章，算术值域/规范类型归第 3 章，系统目录/协议生命周期归工作流 6/7；不运行 Cargo、数据库或差分平台。
 
 ### 验收
 
@@ -2086,6 +2121,19 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 四组分别重复 PG 未限定名与 pg_catalog 限定名；PG Q 和扩展 Parse 均须在分析阶段拒绝且无成功 RowDescription/DataRow，记录错误实际字段/阶段，不能拿缺工厂错误充作 42883。MySQL 对成功/NULL 采 Query、Prepare/Execute、参数值/NULL 重绑、零行列定义，逐列核对 code/flags/charset/length/decimals、载荷与警告。两个 PG 连接与一个 MySQL 连接交错重复调用，验证名称/工厂缓存不串方言；MySQL 原错误与 Go/TiDB 参考逐条核对。PG 未限定名仅在夹具排除同名用户函数时要求拒绝，不扩大为禁止用户定义函数。全部四组有效运行用例数为 0，当前仅完成契约证据与场景覆盖。
 
+#### 运算符调用契约
+
+以下四组为待新增、未运行目标，各表达式独立 `SELECT <表达式> AS v`；PG 使用显式类型，MySQL 使用自身 CAST，禁止给 MySQL 输入 `::` 后将语法拒绝当语义对照。两入口各自与对应参考端核对，不要求同符号得到同值。无同名用户/扩展遮蔽，固定 UTF-8，记录 MySQL sql_mode（除零组固定普通 SELECT、非严格模式及 ERROR_FOR_DIVISION_BY_ZERO 开启）、div_precision_increment=4 和字符环境。
+
+| 场景 | PG 入口目标：输入、值/NULL、类型、错误 | MySQL 入口目标：可见性及自身行为 |
+| --- | --- | --- |
+| OP-CALL-DIV：整数/非整数 | `5::int4 / 2::int4`→2，`(-5)::int4 / 2::int4`→-2，均非 NULL/int4；`5::numeric / 2::numeric`→精确 2.5/numeric，不固定文本尾零；`NULL::int4 / 2::int4`→SQL NULL/int4。补一元 `-(5::int4)`→-5/int4、`-('-2147483648'::int4)`→22003，区分一元/二元。`('-2147483648'::int4) / (-1)::int4`→22003，无成功值。 | `CAST(5 AS SIGNED) / CAST(2 AS SIGNED)`→2.5000/自身 DECIMAL，负数版本→-2.5000；`CAST(5 AS SIGNED) DIV CAST(2 AS SIGNED)`→2/BIGINT，负数版本→-2；`CAST(5 AS DECIMAL(2,0)) / CAST(2 AS DECIMAL(2,0))`→2.5000/DECIMAL。typed NULL 除以 2→SQL NULL/相应类型；一元 `-CAST(5 AS SIGNED)`→-5/自身 signed 整数。以上均可见，成功无错误，不把 PG int4 结果宽度写入 MySQL。 |
+| OP-CALL-ZERO：除零 | `1::int4 / 0::int4` 与 `1::numeric / 0::numeric`→22012，无成功值/NULL；`NULL::int4 / 0::int4`→SQL NULL/int4。常量折叠可提前失败；参数版 `$1::int4 / $2::int4` 用 1/0 验证执行错误，用 NULL/0 验证同型 NULL。 | 普通 SELECT 的 `CAST(1 AS SIGNED)/CAST(0 AS SIGNED)` 和 `CAST(1 AS SIGNED) DIV CAST(0 AS SIGNED)`→SQL NULL，分别保持 DECIMAL/BIGINT，收集除零警告；NULL 左参→NULL。警告精确码/SQLSTATE/消息及正式链传播仍待 Go/参考端采集，不拿局部 error_ctx 的错误证明 SQL 模式已接通；DML 严格模式不在本组。 |
+| OP-CALL-CONCAT：文本拼接与 NULL | `'a'::text \|\| 'b'::text`→非 NULL 'ab'/text；`'a'::text \|\| NULL::text` 和 `NULL::text \|\| 'b'::text`→SQL NULL/text；`''::text \|\| 'b'::text`→'b'。合法 text/text 无错误，不能用 concat 函数的 NULL 行为代替 `\|\|`。 | PIPES_AS_CONCAT 关闭时 `1 \|\| 0`→1、`NULL \|\| 0`→SQL NULL/自身整数；开启时 `CAST('a' AS CHAR) \|\| CAST('b' AS CHAR)`→'ab'/自身字符串，单侧 CAST(NULL AS CHAR)→SQL NULL/字符串。结果/警告按模式分别核对，PG 不继承 MySQL 开关；不能把关闭模式下的逻辑 OR 误作文本拼接支持。 |
+| OP-CALL-NULLSAFE：NULL 安全比较 | int4 对分别 `NULL IS NOT DISTINCT FROM NULL`→true，`NULL IS NOT DISTINCT FROM 1`→false，`1 IS NOT DISTINCT FROM 1`→true，`1 IS NOT DISTINCT FROM 2`→false（两侧均加 ::int4）；对应 IS DISTINCT FROM 逐项取反，均非 NULL/bool。对照 `NULL::int4 = 1::int4`→SQL NULL/bool；合法输入无错误。 | 使用同值的 CAST(... AS SIGNED) 与 `<=>`，两空/一空/等值/异值→1/0/1/0，均非 NULL/自身布尔整数表达式；普通 `=` 一空→SQL NULL。PG 不批准 `<=>` 内建别名，`1::int4 <=> 1::int4` 在无用户定义夹具下目标 42883，无成功行；不能把 nulleq 名称注册作为 PG 谓词接线证明。 |
+
+PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / `OPERATOR(pg_catalog.||)`，NULL 安全谓词无 OPERATOR 同名形式，不适用该检查。四组成功/NULL 在 Q 与扩展 Parse/Bind/Describe/Execute 核对值、OID/typlen/typmod、文本/二进制格式，参数重绑与零行描述不改型；MySQL 核对 Query、Prepare/Execute、参数 NULL 重绑及零行列定义。错误可能在分析、折叠或执行阶段，分别保留原字段，不能强制所有错误都在 Parse；PG 参数版补执行与恢复证据。交错 PG/MySQL 连接与 MySQL 两种 pipes 模式，确认缓存保留方言/会话签名。元数据及诊断尚未采集，四组有效运行用例数均为 0，文档结构通过不能升级为功能通过。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2153,6 +2201,12 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 后续仅交接现有候选过滤→四名称 MySQL 签名/工厂→原求值/返回元数据三个窄边界；依赖前块 resolver、任务 4 等价门槛、第 3 章类型和工作流 7 的双协议描述。实施前重新核实动态工厂及四组独立测试，缺工厂和精确列定义单独追踪；不递归补全时间/JSON/管理系统，本轮不生成代码任务。
 
 来源映射：蓝图步骤 2 第四类由四个规范实现候选与 FUNC-MY-IFNULL/DATE/JSON/ADMIN 承接；步骤 3 的名称、可见性、重载/cast、NULL、collation/时区、确定性、返回/wire、下推、错误由本块统一模板各行覆盖。每类至少一组 MySQL 成功与 PG 拒绝、NULL 适用性/类型/错误保持均有明确目标或缺口；跨方言开放只引用任务 4 的证据门槛。correctness/兼容性为未实测目标，性能无结论；文档完成不表示函数支持通过。
+
+#### 运算符调用契约
+
+后续仅交接三个窄边界：整数/numeric `/` 的签名、值域与除零策略；text/text `||` 的 strict 拼接及模式隔离；int4 NULL 安全谓词的比较绑定与 bool 返回身份。各边界先核实 PG 语法节点 → 已选签名 → 正式工厂/求值链 → server 元数据，再决定能否复用局部算法，不另建一套求值器，不预先生成实现任务。
+
+依赖第 2 章语法/名称环境、第 3 章类型及 cast、工作流 6 的运算符身份和 7/8 的协议/参考端证据；数组/range 运算符另族定义输入形状、重载与 NULL 后再验收。工厂或类型基础缺口登记为实现阶段依赖，不扩大本轮文档任务，也不阻塞已完成的文档交付；普通聚合沿下一块独立调用模型继续。
 
 ## 5. SQL会话与事务语义
 
