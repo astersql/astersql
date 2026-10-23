@@ -3786,6 +3786,17 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 | [pg_query_test.rs](../pkg/server/pg_query_test.rs)::tablespace_catalog_empty_relation | 手写wire夹具断言SELECT 0、两种投影及未知关系42P01/恢复，但spcname/owner/ACL/options期待25/20/25/25，不能作为PG类型正确的通过证据。[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants含LIMIT 0及未知列当前0A000，目标未知列42703须另验。均只读未运行。 |
 | 仓库客户端模板 | [1869280143.sql](../pkg/server/testdata/pg_datagrip/1869280143.sql)请求FDW表/server/options；[1869280148.sql](../pkg/server/testdata/pg_datagrip/1869280148.sql)请求collation；[1869280149.sql](../pkg/server/testdata/pg_datagrip/1869280149.sql)、[1869280150.sql](../pkg/server/testdata/pg_datagrip/1869280150.sql)请求opclass/family；[1869280155.sql](../pkg/server/testdata/pg_datagrip/1869280155.sql)请求policy表达式；[1869280156.sql](../pkg/server/testdata/pg_datagrip/1869280156.sql)按classoid关联trigger/rewrite等注释。模板中的?是夹具占位，不宣称服务接受?参数；具体DataGrip版本和实际发出SQL未采集。 |
 
+#### 目录求值与普通查询边界
+
+承接来源步骤4，能力CAT-ROUTE/pg。已核对批次1–19的五节正文及连续提交`946e9b2c20`至`137d5d2894`；第1–5章依赖沿首块，前置文档交付满足。2026-10-24通过RustCodeGraph status与定点node核对源码；pkg/server/doc.go不存在，以下均为静态证据，测试运行数0。
+
+| 实际入口 | 当前事实及证据边界 |
+| --- | --- |
+| [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)::parse_shadowed、implicit_positions、Parser::query_inner/select/expr_inner | token关系引用分类，字符串/注释不是目录归属；未命中返回None。命中后只接有界只读SELECT，非目录relation不能混入；CTE有词法作用域。JOIN有INNER/LEFT/CROSS/NATURAL分支，ON绑定；不据此宣称RIGHT/FULL/USING或任意LATERAL支持。支持标量/IN子查询、有限数组展开及array_agg语法，不等于通用子查询/聚合。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::parse_session_with_types、bind、Execution::comparison/materialize | 会话path及共享schema_snapshot决定遮蔽，parameters/bind先确定类型；Execution共享单次快照、provider/CTE缓存、取消与累计预算。目录白名单函数不代表第4章普通函数工厂已注册。 |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process/handle；[pg_conn.rs](../pkg/server/pg_conn.rs)连接循环 | Parse先SessionQuery再CatalogQuery，None才经pg_name/pg_sql进入共享prepare；目录metadata独立生成。Q经with_query选择目录execute或共享execute_query；扩展失败丢弃至Sync，并记录会话错误。Describe不能靠运行抽样补类型。 |
+| 独立测试意图 | [pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::catalog_projection_syntax_and_boundaries、catalog_binding_has_explicit_support、pg_introspection_joins_parameter_nodes、pg_introspection_cte_nesting_limits、pg_introspection_cte_column_bound、catalog_datagrip_scalar_and_lateral_bounds覆盖分类/绑定/边界；pg_introspection_oid_live_casts含wire OID描述与真实DDL身份变化意图。[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync提供扩展协议夹具。只读未执行，测试存在不证明当前通过。 |
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4136,6 +4147,24 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方依据：PostgreSQL **18**，访问 **2026-10-24**：[tablespace](https://www.postgresql.org/docs/18/catalog-pg-tablespace.html)、[wrapper](https://www.postgresql.org/docs/18/catalog-pg-foreign-data-wrapper.html)、[server](https://www.postgresql.org/docs/18/catalog-pg-foreign-server.html)、[foreign table](https://www.postgresql.org/docs/18/catalog-pg-foreign-table.html)、[policy](https://www.postgresql.org/docs/18/catalog-pg-policy.html)、[trigger](https://www.postgresql.org/docs/18/catalog-pg-trigger.html)、[rewrite](https://www.postgresql.org/docs/18/catalog-pg-rewrite.html)、[collation](https://www.postgresql.org/docs/18/catalog-pg-collation.html)、[opfamily](https://www.postgresql.org/docs/18/catalog-pg-opfamily.html)、[opclass](https://www.postgresql.org/docs/18/catalog-pg-opclass.html)、[amop](https://www.postgresql.org/docs/18/catalog-pg-amop.html)、[amproc](https://www.postgresql.org/docs/18/catalog-pg-amproc.html)给出字段/关联/NULL语义；[错误码](https://www.postgresql.org/docs/18/errcodes-appendix.html)给出上述SQLSTATE名称。客户端官方依据为[psql 18](https://www.postgresql.org/docs/18/app-psql.html)的-E/echo-hidden及目录命令，后续采集`\db`、`\dFd`、`\dFs`、`\dO`、`\d public.abs_t`；本轮未运行，未声称这些命令生成下节SQL。DataGrip模板版本及官方查询出处仍未采集。精确18.6参考构建和行为未取证。
 
+#### 目录求值与普通查询边界
+
+复用首块字段模板、第2章名称/CTE遮蔽、第3章固定类型/codec、第4章函数工厂及第5章事务/同步契约。以下是目标，现有适配器的有界支持不提升为完整PG SQL承诺。
+
+| 需求→输出字段/关联键 | 来源、类型、权限、目标与拒绝策略 |
+| --- | --- |
+| ROUTE-JOIN→c.oid、n.nspname；c.relnamespace=n.oid | 共享infoschema/model的真实表/库身份经pg_oid，类型oid/26、name/19；目录枚举及schema可见性沿关系/命名空间/权限块。INNER按键匹配，LEFT空右边保留左行及带类型NULL，不造对象；多库身份不能混接。→J。 |
+| ROUTE-CTE/SUB→x.oid、标量c.oid、array_agg(c.oid) | 同一Execute目录快照，CTE输出继承oid/26，标量零行NULL、超过一行须拒绝；oid数组为oid[]/1028，不能用text替代，空输入聚合目标NULL而非伪空数组。CTE无持久对象OID，权限沿源关系，不因包一层绕过。数组codec未实现则输出前0A000。→C/S/A。 |
+| ROUTE-PARAM→$1::oid筛选c.oid | 参数为协议输入，不生成元数据事实；ParameterDescription=26，结果c.oid=26，NULL仍固定类型。Parse确定类型、Bind校验数量/格式/值，Execute用绑定值过滤真实目录；Q含未绑定参数不得回退共享SQL。→P。 |
+| ROUTE-MIX→c.oid、u.id | c来自目录；u.id来自真实用户表，按第3章声明类型，不能猜测OID或假装目录provider。含目录和普通关系的整条查询在接入共享planner完整支持前0A000；静态可判定在Q分析/扩展Parse，动态至迟首次Execute成功行输出前。拒绝涵盖JOIN、逗号FROM、CTE及子查询，不拆成两次执行或返回部分成功。→M。 |
+| ROUTE-ORDINARY→u.id、字面量 | 无真实目录依赖的查询走共享名称解析/优化/执行链；字符串或注释中的目录字样不接管，CTE及本地同名对象沿第2/5章遮蔽。系统函数只按注册与类型契约接线，未知/未实现能力显式拒绝，不能以目录缓存代替用户数据。→O。 |
+
+当前硬界：每个SELECT最多8个JOIN、查询嵌套8层、全查询16个CTE、每CTE最多24列；UNION列表最多16个附加arm（不把它误写成总共16个SELECT）；表达式深度64、谓词预算128、CASE分支32。累计物化上限16384行、comparison计数上限100000由Execution共享于CTE/子查询；它不是最终返回行数或所有CPU操作计数，LIMIT 1不能保证不触限。comparison/materialize检查取消，不能由检查点推导响应时延。当前越限返回ConnError::Session，不在本块虚报已测SQLSTATE。
+
+目标保留显式、可诊断的有界限制：解析边界0A000，执行资源越限采用明确资源错误（目标54000，实际映射待实现取证），取消目标57014；禁止截断成功、缓存部分行或取消后重试到普通引擎。上限是本地安全策略，无PG标准数值依据；调整须依真实客户端探针、规模/内存/取消基准另立门槛。通用GROUP BY/HAVING、任意聚合、递归/写入CTE、相关子查询及未开放数组形态先拒绝；必要探针逐项接线，共享内核承担通用执行，不能把此evaluator扩成第二套执行器。
+
+官方依据：PostgreSQL **18**，访问 **2026-10-24**：[表表达式](https://www.postgresql.org/docs/18/queries-table-expressions.html)定义JOIN/子查询关系，[WITH](https://www.postgresql.org/docs/18/queries-with.html)定义CTE作用域与求值，[协议流程](https://www.postgresql.org/docs/18/protocol-flow.html)定义Parse/Bind/Describe/Execute、Sync与取消；类型及错误码沿第3章和前块官方依据。[psql 18手册](https://www.postgresql.org/docs/18/app-psql.html)的-E/echo-hidden用于后续采集真实目录SQL，不证明下节人工SQL由客户端生成。精确18.6构建与运行行为未取证，客户端版本/SQL仍未采集。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4219,6 +4248,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 无原生对象的响应策略
 
 不实现provider、类型codec、FDW/RLS/触发器/规则/排序规则/访问方法，不补完整子系统；pg_operator/pg_aggregate、继承与分区沿各自函数/关系契约，不用本块统一空集覆盖其缺口。不采集真实客户端或运行Cargo/Go、18.6差分。当前空provider与目标必需对象冲突只在本块登记，不重写前序契约或降低目标。
+
+#### 目录求值与普通查询边界
+
+不实现路由器、provider、共享planner桥接、普通聚合/递归/写入执行器或codec；不将目录局部函数白名单当全局函数注册。不扩大其他目录字段、跨连接更新及客户端兼容范围（分别交既有块、批次21–25）。资源数值不是性能承诺；本轮不运行Cargo/Go、真实客户端或PG参考实例。
 
 ### 验收
 
@@ -4906,6 +4939,28 @@ ABS-LIFE/REQUIRED：逐条`CREATE VIEW public.abs_v AS SELECT id FROM public.abs
 
 ABS-ACL：管理员逐条`CREATE ROLE abs_reader;`、`GRANT USAGE ON SCHEMA public TO abs_reader;`、`GRANT SELECT ON public.abs_t TO abs_reader;`，以真实有效角色abs_reader与owner分别执行EMPTY/NULL；有目录读取权限且对象真实无行时同样空，管理员逐条`REVOKE SELECT ON pg_catalog.pg_tablespace FROM PUBLIC;`、`REVOKE SELECT ON pg_catalog.pg_tablespace FROM abs_reader;`后，abs_reader执行EMPTY首条应42501（独立隔离库，结束由管理员`GRANT SELECT ON pg_catalog.pg_tablespace TO PUBLIC;`恢复），不能伪空；对象使用权限不足不自动抹去公开目录。角色/授权能力未开放则门禁0A000，不以root代测。每个错误后Q执行`SELECT 1;`，扩展路径先Sync再SELECT 1，恢复沿第5/7章。清理仅成功创建项：`DROP VIEW public.abs_v;`、`DROP TABLE public.abs_c;`、`DROP TABLE public.abs_t;`（重命名后改用`DROP TABLE public.abs_renamed;`），随后`REVOKE USAGE ON SCHEMA public FROM abs_reader;`、`DROP ROLE abs_reader;`；服务器/策略/空间若意外创建须先记录失败并按官方对象依赖清理，不能据目录空假定无副作用。精确诊断文本、typlen/typmod、真实客户端SQL与18.6输出仍待采集。
 
+#### 目录求值与普通查询边界
+
+以下均为**人工契约探针，待新增独立测试、待运行**。默认参数[]、Q文本结果；扩展对照使用Parse→Describe(statement)→Bind→Describe(portal)→Execute→Sync，结果格式分别0/1。每个输出列需采OID/typlen/typmod/来源属性与NULL，沿第3章；未实现二进制编码须显式拒绝，不能伪造通过。角色为真实表owner，拥有schema USAGE及表SELECT；另以无该权限角色重复，预期依本章权限块判断，不能统一伪空。数据库固定、search_path=public,pg_catalog，初态I。
+
+准备（目标夹具，未执行）：`CREATE TABLE public.route_t(id integer); INSERT INTO public.route_t VALUES (7);`。先保存真实table_oid与namespace_oid作为关联基准，不硬编码跨端OID。清理：`DROP TABLE public.route_t;`。
+
+| ID | 完整SQL及参数 | 期望与拒绝阶段 |
+| --- | --- | --- |
+| J | `SELECT c.oid,n.nspname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE c.relname='route_t' AND n.nspname='public'`；[] | 恰一行(真实table_oid,public)，OID26/19；LEFT JOIN空右关系变体沿前块类型NULL契约。 |
+| C | `WITH x AS (SELECT oid FROM pg_catalog.pg_class WHERE relname='route_t') SELECT oid FROM x`；[] | 隔离夹具无同名关系时一行table_oid、26；重复引用同一CTE不得因消费耗尽丢行。 |
+| S | `SELECT (SELECT oid FROM pg_catalog.pg_class WHERE relname='route_t') AS id FROM pg_catalog.pg_namespace WHERE nspname='public'`；[] | 一行table_oid、26；将内层过滤改为`relname='route_missing'`得一行NULL/26；再创建同名异schema关系使内层多行，Execute前无成功行，目标21000。相关子查询未开放在Parse拒绝0A000，不能忽略外层引用。 |
+| A | `SELECT array_agg(oid ORDER BY oid) AS ids FROM pg_catalog.pg_class WHERE relname='route_t'`；[] | 一行含真实table_oid的oid[]/1028；过滤改为route_missing时NULL/1028。`SELECT count(*) FROM pg_catalog.pg_class GROUP BY relnamespace`未开放在分析阶段0A000；不得以0或空集模拟聚合。 |
+| P | `SELECT c.oid FROM pg_catalog.pg_class c WHERE c.oid=$1::oid` | 扩展Parse参数[26]，Bind文本十进制真实table_oid或二进制网络序4字节，结果一行26；NULL参数结果零行但描述26。非数字文本在Bind拒绝22P02；Q同SQL无绑定拒绝。 |
+| M | `SELECT c.oid,u.id FROM pg_catalog.pg_class c JOIN public.route_t u ON true WHERE c.relname='route_t'`；[] | 未接共享planner时Q分析/Parse拒绝0A000；逗号变体`SELECT c.oid,u.id FROM pg_catalog.pg_class c,public.route_t u`及`WITH u AS (SELECT id FROM public.route_t) SELECT c.oid FROM pg_catalog.pg_class c JOIN u ON true`同样拒绝，不回退后端重试。 |
+| O | `SELECT id FROM public.route_t WHERE id=7`；`SELECT 'from pg_catalog.pg_class' AS literal`；[] | 普通共享SQL分别一行7/int4/23和字面量/text/25；`SELECT id FROM public.route_t /* from pg_catalog.pg_class */`仍共享执行。CTE名pg_class遮蔽探针沿第2/5章，不按词串接管。 |
+
+数组展开补充探针：`SELECT ARRAY(SELECT unnest FROM unnest(c.conkey)) AS keys FROM pg_catalog.pg_constraint c WHERE c.conrelid=$1::oid ORDER BY c.oid`，Parse参数[26]、Bind为真实约束所属表OID。字段conkey来源及可见性沿约束块，元素int2/21、数组int2[]/1005；无约束时零行，有约束时按真实列序，不编造空键。局部数组语法/codec未开放时分析或编码前0A000，待新增带真实主键夹具验证，不以当前测试存在宣称支持。混合子查询拒绝探针：`SELECT c.oid FROM pg_catalog.pg_class c WHERE c.oid IN (SELECT id FROM public.route_t)`，参数[]，未接共享planner在Q分析/Parse拒绝0A000。
+
+真实变更：保存J/P描述，`ALTER TABLE public.route_t RENAME TO route_renamed;`后新Execute用J的过滤改为route_renamed仍关联原table_oid，旧名称过滤零行且列类型不变；同一Execute快照内不得混用前后身份。重命名后清理改`DROP TABLE public.route_renamed;`，后续J零行。跨连接可见时点交批次21，不在此宣称验证。
+
+预算/取消夹具待新增：按源码上限生成8/9个JOIN、16/17个CTE、24/25列CTE、8/9层查询的成对输入，保存生成后的完整SQL；边界内须验证真实结果，超界Parse错误。共享schema夹具逐步增加真实关系至累计物化超过16384行，及目录CROSS JOIN达到100000/100001次comparison，记录实际计数，不以最终LIMIT行数作证明。Execute越限不能返回部分成功；活跃执行期间发CancelRequest，原连接收到57014才算取消命中；空闲取消不得影响下一条。资源/取消错误后Sync回I、`SELECT 1`可用；显式BEGIN内错误后Sync仍E，ROLLBACK后再查询恢复，沿第5章。耗时/内存、预算边界实际可达性、精确错误映射均待取证。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -5007,6 +5062,10 @@ Ready文档适用检查使用五节锚点、全部本块路径存在性、前置
 后续按ABS-SPACE/FDW/POLICY/TRIGGER/REWRITE/COLL/OP单独实施，先补固定字段/类型与绑定错误，再接真实事实和独立测试；默认对象/必需依赖不借用空集实现。验收ID覆盖策略表全部行，客户端模板需补确切版本/官方来源或实采，18.6需绑定构建。
 
 Ready文档范围采用五节锚点、前置提交/正文、全部本块路径存在性、字段→来源→策略→验收及diff检查；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，报告替代检查。正确性风险为把缺模型当无对象、NULL或误吞绑定错误；兼容性风险为默认对象缺失、零行描述错误及FK/视图内省缺口；性能未测。本轮只完成文档契约，不表示功能实现。建议下一批20继续有界目录求值契约。
+
+#### 目录求值与普通查询边界
+
+后续仅按必要探针拆为：分类/混合关系拒绝及遮蔽；JOIN与单次快照；CTE/子查询/有限数组类型；参数描述与codec；共享预算/取消及错误恢复。每项另建实施计划和独立回归，记录真实客户端完整SQL及版本后才扩白名单；通用SQL能力走共享内核。批次21接目录更新与连接隔离，本块只交路由/类型/资源边界，不吞并其实现。
 
 ## 7. 线协议认证与数据通道
 
