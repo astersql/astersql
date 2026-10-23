@@ -1597,6 +1597,19 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [builtin_compare_test.rs](../pkg/expression/builtin_compare_test.rs)：`greatest_and_least_preserve_go_evaluation_order_before_null`；[builtin_compare_7_aster_unit_test.rs](../pkg/expression/builtin_compare_7_aster_unit_test.rs)：`greatest_and_least_preserve_null_and_temporal_string_rules` | 真断言意图覆盖整数极值、ci 字符比较、NULL、Error 顺序和日期/字符串；均直接调用局部函数，无 PG 正式入口证明。 |
 | [builtin_string.go](../pkg/expression/builtin_string.go)：`concatFunctionClass.getFunction` / `builtinConcatSig.evalString`；[builtin_compare.go](../pkg/expression/builtin_compare.go)：`resolveType4Extremum` / `greatestFunctionClass.getFunction`；[builtin_compare_test.go](../pkg/expression/builtin_compare_test.go)：`TestGreatestLeastFunc` | MySQL/TiDB 原契约依据：CONCAT 转 ETString 并保留长度/packet 限制；极值按聚合类型和时态模式构造，Go 测试含字符串/整数混型预期。这里只读，不运行 Go、不修改原语义。 |
 
+#### 时间截断与提取
+
+本块静态基线为 `af99cc260d`（2026-10-23）；已核对批次 1–5 的提交及正文，累计依赖满足。`pkg/expression/doc.go`、`pkg/server/doc.go` 不存在。使用 RustCodeGraph status、explore、query、定点 node 阅读以下真实源码与独立测试；图未定位名称字面量时以 rg 补查，不以说明文件或注册名称证明支持，全部测试均未运行。
+
+| 入口/符号 | 实际责任与证据限制 |
+| --- | --- |
+| [builtin_time.rs](../pkg/expression/builtin_time.rs)：`extract` | 局部 kernel 输入 NaiveDateTime、返回 i64；SECOND 只取整数秒，MICROSECOND 只取秒内小数，另有 MySQL YEAR_MONTH 等复合单位。不能承接 PG SECOND 的小数、MICROSECONDS 的整秒加小数、numeric/float8 身份、timestamptz 或 interval 三分量。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`extract_factory`、`CORE_BUILTIN_FACTORIES`、`CoreBuiltinKind::Extract`、`ExtractMode` | 正式 extract 已注册为两个参数，构造按单位及第二参数 EvalType 选择 Datetime/Duration/DatetimeFromString、插入 MySQL cast，返回 ETInt；evalInt 传播 NULL 并委托 `types_dependency::time::ExtractDatetimeNum/ExtractDurationNum`。不是调用上述局部 kernel 的证据；已查本文件未见 date_trunc/date_part 字面量，不能据此排除其他动态接线或宣称完整系统必失败。 |
+| [scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`、`NewFunctionBase`；[lib.rs](../pkg/expression/lib.rs) | 正式构造经类工厂取得 RetType 包装 ScalarFunction，标准入口可折叠、Base 不折叠；crate 挂载时间 kernel、公共时间测试及独立注册表测试。应复用此链并在方言签名处分流，不以 MySQL ETInt 覆盖 PG 返回身份。 |
+| [builtin_time_test.rs](../pkg/expression/builtin_time_test.rs)：`test_convert_tz`；[builtin_time_30_aster_unit_test.rs](../pkg/expression/builtin_time_30_aster_unit_test.rs)：`timezone_conversion_honors_named_and_fixed_offsets`、`run_time_parity_suite` | 前者调用 suite 并实际断言微秒跨日转换、Amsterdam 秋季重叠及春季缺口；后者断言固定/命名时区及非法区名。保留 Go 注释不是新增断言，这些 MySQL 转换断言也不是 PG date_trunc 或 DST 日桶证据。 |
+| [builtin_registry_aster_unit_test.rs](../pkg/expression/builtin_registry_aster_unit_test.rs)：`extract_factory_matches_go_temporal_dispatch_and_pb_signatures` | 通过 NewFunctionBase/EvalInt 断言 YEAR→2020、HOUR→12、DAY_SECOND→260304，并检查三个 TiPB 分支；只有 MySQL 正式工厂局部断言意图，不能证明 PG numeric、时区、SQL 语法或协议。 |
+| [pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values` | Q 路径断言 DATETIME→1114、DECIMAL→1700 等 OID/文本；没有本块 date_part→701、timestamptz→1184、interval→1186 的函数结果或 binary/typed NULL 专项证据。协议出口责任沿第 3 章，不能用已有类型字面量断言替代函数全链验收。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1710,6 +1723,24 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 官方依据（2026-10-23 查阅，版本 PostgreSQL **18**）：[§9.4 字符串函数](https://www.postgresql.org/docs/18/functions-string.html)定义 concat 文本输出和忽略 NULL；[§9.18.4 条件表达式](https://www.postgresql.org/docs/18/functions-conditional.html#FUNCTIONS-GREATEST-LEAST)定义极值的特殊调用、NULL 与共同类型；[§10.5 类型选择](https://www.postgresql.org/docs/18/typeconv-union-case.html)支撑混型/全 unknown 推导；[§23.2 collation](https://www.postgresql.org/docs/18/collation.html)支撑 C 排序与派生。固定 **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)核对 concat 的 any 可变参数、text、非 strict/stable；[gram.y](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/parser/gram.y)的 GREATEST/LEAST expr_list 产生 MinMaxExpr，支持单参数和空列表语法拒绝的目标推导。错误分类沿首块附录 A；这些均非 18.6 补丁版本实测。
 
+#### 时间截断与提取
+
+本块引用首块统一模板；PG 核心专属的是 date_trunc/date_part 及 PG 的提取语义，EXTRACT 语法在 MySQL 入口也可见但必须分流。EXTRACT 的 AST/字段语法交第 2 章，timestamp/timestamptz/interval 身份及 codec 交第 3 章，本块只规定已定型表达式的语义交接，不批准把 PG EXTRACT 别名到现有整数工厂。
+
+| 模板字段 | 方言目标、依据与当前缺口 |
+| --- | --- |
+| 关联、分类、模型、实现 ID | 待新增能力族 FUNC-TEMP、标量。文档规范候选 `scalar.pg.temporal.truncate/{timestamp,timestamptz,interval}/v1` 与 `scalar.pg.temporal.field/{timestamp,timestamptz,interval}/{numeric,float8}/v1` 分开保留返回策略；不是现有 API。date_part/EXTRACT 可候选共享字段算法，精度和身份仍独立，未批准共享实现。 |
+| 名称/别名、可见性 | PG 普通调用 date_trunc/date_part 支持 pg_catalog 限定及第 2 章名称环境；EXTRACT(field FROM source) 使用语法交接。MySQL 不开放 date_trunc/date_part，保留自身 EXTRACT；隔离为 AsterSQL 设计门禁，MySQL 参考端名称拒绝细节未采。无新增跨方言别名。 |
+| 重载、cast | date_trunc(text,timestamp)→timestamp、(text,timestamptz)→timestamptz、(text,timestamptz,text zone)→timestamptz、(text,interval)→interval；三参显式区域属于 timestamptz 签名，timestamp/interval 本身没有带 zone 的截断重载。date_part(text,T)→float8、EXTRACT 对应已定型 T→numeric，T 为本块三种类型。参数先按前块及第 3 章 I 资格选择，不靠值猜类型；显式 timestamp→timestamptz 转换的时区依赖必须保留。date/time 自动转换遵循官方规则但不是本块代表验收域，不扩展到 timetz。 |
+| 单位、值域与精度 | timestamp 截断支持 microseconds、milliseconds、second、minute、hour、day、week、month、quarter、year、decade、century、millennium，低位清零，日/月必要时置 1，week 从 ISO 周一开始；interval 按分量截断，不支持 week。SECOND 提取包含小数，MICROSECONDS 包含完整秒乘一百万；interval 的 month 是年内余月、day 是日分量，不能将月固定折秒后再提字段。date_part 浮点可能损精度，EXTRACT 以 numeric 保留微秒；截断不是四舍五入。非有限值沿第 3 章保留：合法截断保留 infinity；提取单调字段返回对应 infinity，其他合法字段为 NULL，不能误作 strict 导致的 NULL；具体扩展域需后续聚焦补证。 |
+| NULL 与求值 | 本块各签名 strict，任一已定型实参 NULL→其固定返回类型的 SQL NULL；三参 zone=NULL 也为 NULL，不调用非 NULL 内核。NULL 不绕过签名/语法分析；不保证其他实参的分析或折叠错误被跳过。依据 pg_proc.dat 与 pg_proc.h 默认属性，当前全链未验证。 |
+| collation、时区、会话 | 不做用户文本排序，collation 对时间计算不适用，字段名按 PG 单位解码而非 locale 比较；固定 UTF-8、DateStyle=ISO,YMD、IntervalStyle=postgres，记录 TimeZone、tzdata 与输入 p。timestamp/interval 按原字段，timestamptz 默认用会话区域；三参截断用指定区域求瞬时，结果显示仍用会话区域。提取 timestamptz 的 HOUR/timezone 等依会话区域，epoch 是绝对瞬时秒数；timestamp epoch 是忽略时区/DST 的名义秒数，二者不能互换。 |
+| 确定性、折叠、副作用 | REL_18_0：两参 timestamptz 截断、timestamptz 提取为 stable；显式 zone 的三参截断、timestamp/interval 截断及提取为 immutable。无数据副作用；折叠与计划缓存须保持这些属性及区域配置边界，不从 kernel 无状态推断全部 immutable。当前缓存/折叠隔离未验证。 |
+| 返回、wire 与修饰符 | 按签名固定结果，未额外 cast 的本块表达式目标 OID/typlen/typmod：timestamp 1114/8/-1、timestamptz 1184/8/-1、interval 1186/16/-1、date_part float8 701/8/-1、EXTRACT numeric 1700/-1/-1。不能由输入 p 或截断单位重造输出 typmod，numeric 的显示 scale 不等于 typmod。列名 AS v、来源表/属性号 0、格式与 NULL 长度 -1 沿首块；MySQL EXTRACT 走自身整数/复合单位和列定义，精确 flags/length/decimals 待参考采集。所有本块函数 wire 仍缺运行证据。 |
+| 下推、错误与证据 | 默认不批准 PG 下推；现有 ExtractDatetime/Duration 的 TiPB 分支不证明 PG 精度/时区等价。未知字段目标 22023，已识别但类型不支持如 interval 的 week 截断、timestamp 的 timezone 提取目标 0A000；无匹配签名 42883，时区错误与输入/范围错误分开采集。错误 S/V/C/M、适用 D/H/P、阶段按首块，精确消息/位置和本地映射未验证。下方五族均为目标/静态意图，无功能或性能通过证据。 |
+
+官方来源（2026-10-23 查阅，PostgreSQL **18**）：[§9.9.1 EXTRACT/date_part](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-EXTRACT)分别明确 numeric 与 double precision 返回、字段及精度区别；[§9.9.2 date_trunc](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-TRUNC)定义类型、单位和区域行为。精确重载、返回和 volatility 核对官方固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)，strict/immutable 缺省核对 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)；单位适用性、错误及字段算法核对 [timestamp.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/timestamp.c) 的 timestamp_trunc、timestamptz_trunc_internal、interval_trunc、timestamp_part_common、timestamptz_part_common。OID/长度核对 [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)，typmod/格式沿第 3 章。以下 DST 数值为按区域规则推导的验收目标，尚无参考端采样；18.6 仍仅是来源指定目标，18 手册及 18.0 静态源码不能记作该补丁版本运行证据。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1731,6 +1762,10 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 #### 同名异义分流
 
 本块不实现函数、不修补缺工厂、不补建 PG 特殊表达式/类型系统/协议或测试平台，不穷举可变数组、时态、JSON、locale/输出函数；不变更 MySQL 原 NULL、混型、参数和 packet 行为。这些域需分别补证，不从当前代表用例批准全函数共享。
+
+#### 时间截断与提取
+
+只定义三种时间源的截断/字段提取代表契约，不实现工厂、字段解码、时间身份、tzdata 服务、会话生命周期、AST、codec、下推或差分平台；不扩写 date_bin、格式化、日历运算及完整 date/time/timetz 函数库。第 2/3 章及注册/重载前块既有缺口分别交接，不因本块需要而补建；不运行 Cargo、数据库或构建/代码 lint。
 
 ### 验收
 
@@ -1803,6 +1838,20 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 成功项覆盖 PG simple Q 与 Parse/statement Describe/Bind/portal Describe/Execute 的 text/binary，并使用显式 cast 的参数重绑普通值/NULL，参数与结果身份在分析固定；零行或全 NULL 仍有类型描述。MySQL 覆盖 Query/Prepare/Execute 及自身列定义、警告/会话设置。交错两个 PG 连接和一个 MySQL 连接，以相同名称、不同 NULL/参数策略验证缓存与可见性隔离；不能修改进程全局注册模拟连接方言。拒绝项采实际阶段和完整错误字段，无伪成功行；缺工厂沿注册块单列工程缺口，不能冒充参考端语义错误。四组仅有官方目标/静态证据，未批准任何共享别名、下推或功能支持。
 
+#### 时间截断与提取
+
+以下 FUNC-TEMP 五组全部为**待新增、未运行**用例。PG 名称/签名目标可见，合法项成功无错误、单列 AS v；除明确 NULL 项外均非 NULL，结果类型/wire 使用本块模板。每条独立比较参考 PG 与 AsterSQL PG，MySQL 旁路对其自身参考端，不要求跨方言同型。固定构建、编码、p、时区与 tzdata，不能把这些文档预期记成差分结果。
+
+| 五组场景 | PG 输入与目标值/NULL/类型/错误 | MySQL 入口与证据等级 |
+| --- | --- | --- |
+| FUNC-TEMP-DAY：跨日与精度 | `SELECT date_trunc('day',TIMESTAMP '2024-01-02 00:00:00.123456') AS v`→2024-01-02 00:00:00/timestamp；换前日 23:59:59.999999→2024-01-01 00:00:00；`date_trunc('week',TIMESTAMP '2021-01-01 12:00:00')`→2020-12-28 00:00:00。`date_trunc('milliseconds',TIMESTAMP '2024-01-02 00:00:40.123456')`→00:00:40.123（日期不变）。对该原输入 `EXTRACT(SECOND FROM ...)`→40.123456/numeric，`date_part('second',...)`→40.123456/float8（按 float8 正确舍入及编码核对）；`EXTRACT(MICROSECONDS FROM ...)`→40123456/numeric。 | `SELECT EXTRACT(SECOND FROM CAST('2024-01-02 00:00:40.123456' AS DATETIME(6))) AS v` 保留自身整数 40 目标；MICROSECOND 版本目标 123456，不能套 PG 整秒累计单位。MySQL 精确列定义及两入口未采；静态正式工厂为整数分支，不能证明上述 SQL 通过。 |
+| FUNC-TEMP-ZONE：时区变化 | `SELECT date_trunc('day',TIMESTAMPTZ '2024-01-02 01:30:00+00') AS v` 在 UTC→2024-01-02 00:00:00+00，在 America/New_York→2024-01-01 00:00:00-05（05:00Z），均 timestamptz。固定 UTC 显示，三参 zone='America/New_York'→2024-01-01 05:00:00+00。同一输入 `EXTRACT(HOUR FROM ...)` 在两会话分别 1/20、numeric，date_part('hour',...) 同值/float8；timestamp '2024-01-02 01:30:00' 的 day 截断在两区域均 2024-01-02 00:00:00/timestamp，不能添造瞬时。 | PG 两名称在 MySQL 隐藏；以 `SELECT date_trunc('day',CAST('2024-01-02 01:30:00' AS DATETIME)) AS v`、同参数 date_part 验证名称拒绝（错误码/消息待采）。合法旁路 `EXTRACT(HOUR FROM CAST('2024-01-02 01:30:00' AS DATETIME))`→1/自身整数目标，不复制 PG timestamptz。区域转换独立断言仅静态意图。 |
+| FUNC-TEMP-DST：DST 边界 | TimeZone=UTC，`SELECT date_trunc('day',TIMESTAMPTZ '2024-03-10 12:00:00+00','America/New_York') AS v`→2024-03-10 05:00:00+00，次日同时间输入→2024-03-11 04:00:00+00，相邻桶相差 23h；秋季 2024-11-03 / 11-04 12:00+00 分别→11-03 04:00Z / 11-04 05:00Z，相差 25h，均 timestamptz。TimeZone=America/New_York，显式瞬时 2024-11-03 05:30Z / 06:30Z 的 HOUR 提取均 1/numeric，timezone 分别 -14400/-18000；date_part 同字段同数值/float8。避免模糊墙钟输入掩盖偏移差异。 | 继续拒绝 PG 专属名称；MySQL 自身 `EXTRACT(HOUR FROM CAST('2024-11-03 01:30:00' AS DATETIME))`→1/整数目标，不声称其保存两个瞬时。已有 Amsterdam 缺口/重叠转换断言不等于 PG 截断。DST 数值为规则推导，参考端、tzdata 与双方言运行证据均待采。 |
+| FUNC-TEMP-INTERVAL：interval 字段 | `SELECT date_trunc('hour',INTERVAL '2 years 3 months 4 days 05:06:07.123456') AS v`→月分量 27、日 4、时间 05:00:00/interval。对原输入依次 `EXTRACT(YEAR/MONTH/DAY/HOUR/SECOND FROM ...)`（每字段单独一条 SQL）→2/3/4/5/7.123456、numeric；date_part 对应文本字段→同数值/float8。`EXTRACT(MINUTE FROM INTERVAL '80 minutes')`→20/numeric；`date_trunc('hour',INTERVAL '-1 day -02:03:04')`→日 -1、时间 -02:00:00/interval，不能按总秒数向负无穷取整或把月折 30 天。 | 不发送 PG interval 语法；`SELECT EXTRACT(HOUR FROM CAST('27:06:07' AS TIME)) AS v`→27/自身整数目标，保留 MySQL 长 duration，不能充当 interval 日/月字段证据。正式工厂 Duration 分支只有局部意图，SQL/元数据待采。 |
+| FUNC-TEMP-NULL-INVALID：NULL/非法单位 | 对每个 T=timestamp/timestamptz/interval，`SELECT date_trunc('day',NULL::T) AS v`→NULL/T；`date_part('day',NULL::T)`→NULL/float8；`EXTRACT(DAY FROM NULL::T)`→NULL/numeric。`date_trunc(NULL::text,TIMESTAMP '2024-01-01')`→NULL/timestamp，`date_trunc('day',TIMESTAMPTZ '2024-01-01 00:00:00+00',NULL::text)`→NULL/timestamptz。非 NULL 有效源上 date_trunc/date_part 的字段换 'aster_bad_unit'→22023；`EXTRACT('aster_bad_unit' FROM TIMESTAMP '2024-01-01')`→22023；`date_trunc('week',INTERVAL '1 month')`、`EXTRACT(TIMEZONE FROM TIMESTAMP '2024-01-01')` 及 date_part('timezone',同 timestamp)→0A000。错误无成功行/NULL 载荷；NULL 与非法字段混合不作为错误阶段的唯一证据。 | `SELECT EXTRACT(DAY FROM CAST(NULL AS DATETIME)) AS v`→NULL/自身整数目标，不能变成 PG numeric。非法单位在 MySQL 依自身语法/签名拒绝，错误阶段、码/SQLSTATE 与警告待采，不能照搬 PG 22023。NULL 正式求值分支已静态读到，typed NULL 与双方言协议未验证。 |
+
+所有 PG 成功项覆盖 simple Q 与 Parse/statement Describe/Bind/portal Describe/Execute、text/binary 参数到 text/binary 结果；源参数使用显式 cast 的 $1::T 重绑值/NULL；date_trunc/date_part 的字段参数可用 $2::text、三参 zone 参数可用 $3::text，EXTRACT 的字段保留在语法树中而不以 Bind 替换，分析固定 T 和返回身份，Bind 不换重载。statement Describe 和 portal Describe 的格式差异沿首块，Execute 不重发 RowDescription；NULL 或零行仍有固定类型描述。时区变化用两个 PG 连接交错，并在同一已准备语句执行前改变 TimeZone，区分 stable 执行上下文与三参指定区域；显式区域结果瞬时不变但文本显示随会话变化。MySQL Query/Prepare/Execute 独立采 code/flags/charset/length/decimals、sql_mode 与时区，验证 PG 名称隐藏及 EXTRACT 不被全局注册切换污染。错误采分析/折叠/执行实际阶段和完整错误字段；缺 codec/工厂记工程缺口，不冒充参考端语义拒绝。五组及官方/源码证据不批准别名、下推或功能支持。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -1834,6 +1883,12 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 后续仅交接 concat 的方言 NULL/输出策略到正式构造链、极值特殊表达式的共同类型/NULL/参数边界、已定型比较/拼接可复用域及两入口描述证据；依赖前块名称隔离、第 3 章类型/I 资格和 server 元数据，不扩展为函数库或执行器重建，不生成代码任务。
 
 来源映射：蓝图步骤 2 第二类由 concat/greatest/least 分流理由和独立语义 ID 覆盖，步骤 3 全字段由本块模板差异表覆盖；NULL、混型、字符串排序、参数个数分别映射 FUNC-SPLIT-NULL/MIXED/COLLATION/ARITY，两入口各有输入、值/NULL/类型或拒绝目标及缺口。与前块“不因同名/局部实现批准共享”、PG 特殊表达式边界和第 3 章固定身份一致，前序正文未修改。文档正确性/兼容性目标尚未实测，性能无结论。
+
+#### 时间截断与提取
+
+后续仅交接已定型三种源到截断/字段内核、numeric/float8 返回策略到正式工厂、会话/显式区域上下文到日历计算、固定结果身份到 server 的四个窄边界；依赖第 2 章语法、前块注册/重载、第 3 章类型/codec 和工作流 5 的会话区域。先补本块五组及两入口证据，再考虑共享算法与下推；不生成代码任务，不递归补齐时间库或协议设施。
+
+来源映射：蓝图步骤 2 的 PG 核心 date_trunc/date_part 由本块重载表及 FUNC-TEMP 覆盖，步骤 3 全部模板字段由本块差异表承接；跨日、区域、DST、interval、NULL/非法单位分别定位 DAY/ZONE/DST/INTERVAL/NULL-INVALID。date_part 与 EXTRACT 返回类型分别有 §9.9.1 和 pg_proc.dat 证据，精度/两入口可见性/错误及 wire 缺口均明确。人工审阅与第 2 章 EXTRACT 语法、第 3 章三种身份和前块“不凭同名批准别名”一致，未重写前序正文。correctness/兼容性仅为文档目标，运行行为未验证，性能无结论。
 
 ## 5. SQL会话与事务语义
 
