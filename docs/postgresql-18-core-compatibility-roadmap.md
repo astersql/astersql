@@ -800,6 +800,10 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 已读独立 [builtin_cast_test.rs](../pkg/expression/builtin_cast_test.rs) 的挂载入口及 [builtin_cast_4_aster_unit_test.rs](../pkg/expression/builtin_cast_4_aster_unit_test.rs)::cast_numeric_matrix_matches_go_rounding_and_unsigned_rules、decimal_cast_rounds_and_clamps_to_declared_precision、json_conversion_preserves_parse_flag_and_typed_array_semantics：分别断言负数转unsigned告警、科学计数法前缀截断、decimal溢出钳制和JSON数组转换。[convert_test.rs](../pkg/types/convert_test.rs)::test_str_to_num 明确断言忽略截断时“11xx”→11、告警模式空串→0；这些是需保留的Go/MySQL意图，不是PG证据。[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 已读目录专用Parse/Bind/Describe局部断言，不能据此推导通用参数推断或转换矩阵覆盖。pkg/expression、pkg/types、pkg/server均无doc.go；所有测试只读未运行，PG转换资格、共同类型和SQLSTATE均未验证。
 
+[准备描述执行元数据契约](#准备描述执行元数据契约)静态基线为 `d42b55c369`（批次17已提交）。通过 RustCodeGraph 已读 [conn.rs](../pkg/server/conn.rs)::PreparedMetadata/QueryResult、[pg_extended.rs](../pkg/server/pg_extended.rs)::Statement/Portal/Extended::process/description/description_formats，以及 [pg_result.rs](../pkg/server/pg_result.rs)::encode_formats；pkg/server/doc.go 不存在。PreparedMetadata 只有参数数量而无推定参数类型；PG Statement 另存 oids/mapping。普通 Parse 对 OID 0 或未提供的类型返回0A000；目录专用推断不能证明通用参数表达式已支持。Bind 保存独立列、native_types、description及formats；Describe 不调用执行闭包；Execute 编码后比对准备描述，不一致返回0A000，并移除内部生成的RowDescription后发结果行。无参数且执行缺native_types时有按列数回填准备元数据的限定分支，不代表参数化投影可同样回填。encode_formats核对类型数量及行宽，但统一typmod=-1、来源表/属性为0，仍缺完整规范身份及修饰符保真。
+
+已读独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 中目录零行两种Describe、显式23参数、多值/NULL重绑定、重复乱序参数和缺OID拒绝断言；[pg_types_test.rs](../pkg/server/pg_types_test.rs)::missing_original_metadata_is_explicitly_unsupported、unsigned_binary_and_unsupported_types、pg_binary_native_results 分别提供缺原类型、数量冲突及局部binary/NULL断言意图。测试均未运行；现有片段未证明通用参数化表达式、全部typmod、DDL后类型变化或无查询探测的全链验收。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -1144,6 +1148,22 @@ unknown字面量、未定型NULL、Parse未指定OID参数是不同来源，必�
 
 官方依据（2026-10-23查阅）：PostgreSQL **18** [§10.1](https://www.postgresql.org/docs/18/typeconv-overview.html)支持unknown与上下文分类，[§10.4](https://www.postgresql.org/docs/18/typeconv-query.html)支持赋值和typmod，[§10.5](https://www.postgresql.org/docs/18/typeconv-union-case.html)支持共同类型顺序，[PREPARE](https://www.postgresql.org/docs/18/sql-prepare.html)支持参数上下文推定；[§52.10 pg_cast](https://www.postgresql.org/docs/18/catalog-pg-cast.html)定义E/A/I层级和目录非穷举性。具体方向以 **REL_18_0** [pg_cast.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_cast.dat)的numeric、bool、string、datetime、json条目为静态依据；通用I/O与数组资格已核对[parse_coerce.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/parser/parse_coerce.c)::find_coercion_pathway的字符串I/O与元素递归分支。[§8.1](https://www.postgresql.org/docs/18/datatype-numeric.html)支持数值范围/舍入，[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持错误分类。18.6是来源指定参考目标，本轮未运行该版本或本地SQL；以上均为文档目标，非功能通过声明。
 
+#### 准备描述执行元数据契约
+
+本块承接各类型族及[显式隐式转换契约](#显式隐式转换契约)，固定规范身份→参数/结果描述→codec的责任。Prepare在此指共享准备入口及分析阶段；SQL PREPARE不是wire Parse消息，不能据名称相同推定两种入口均可用。声明类型、参数约束和表达式分析决定类型，不用首行、NULL、值大小或MySQL列名猜测。值域、精度、舍入、时区和数组形状继承对应族；本块不新增值域。typlen是类型固定长度或负的变长标记，不是当前载荷字节数；typmod是类型专用修饰符，不是OID或格式码。
+
+| 方向/阶段 | 类型、NULL、值域与wire目标 | 现状差距及拒绝责任 |
+| --- | --- | --- |
+| Parse/Prepare→定型 | 显式非0参数OID作为输入约束；省略或0交分析按上下文推断。相同$n的所有出现约束须一致，参数按编号描述，不能按出现次数重复。结果列数/顺序/名称、OID、typlen、typmod由分析结果确定。无值阶段NULL载荷不适用，typed NULL表达式仍有身份。 | 普通路径目前要求显式OID且桥接只暴露参数数量。目标不能推断时拒绝42P18，约束冲突按实际语义诊断；合法但尚未开放的推断明确0A000，不伪称参考端也拒绝。不得执行原查询或样本查询取得类型。 |
+| statement Describe→客户端 | ParameterDescription仅含参数数量及OID，无参数typlen/typmod/格式字段；随后RowDescription含结果列数及每列身份/typlen/typmod，格式恒0。无返回行的命令给NoData；返回零行的SELECT仍有描述。值/载荷/值域检查不适用，因为没有绑定值。 | 当前description复用零行QueryResult编码；固定-1不证明声明精度保真。缺类型须显式拒绝，不能伪造text或NoData。 |
+| Bind→portal | 参数数量匹配定型参数；输入格式0/1独立于结果格式。NULL长度-1无载荷，按已定型身份保留，不改OID；非NULL按该族值域及codec校验。参数格式数量0/1/N，结果格式数量0/1/列数，0项默认text，1项广播，否则逐项。绑定值只改变值或计划选择。 | tp=6提前返回不能证明typed NULL跨层保真；无支持的binary codec明确拒绝0A000，非法text/binary分别按族22P02/22P03等，数量/格式码错误08P01；不退回text。 |
+| portal Describe→客户端 | 只返回RowDescription或NoData，不返回ParameterDescription；身份/列数与statement一致，格式按该portal Bind选择，可逐列混合。typlen/typmod不随格式改变；NULL和值域不参与描述推断。 | Portal已有独立快照；须证明两个portal格式互不污染，不能把statement的0格式原样当binary描述。 |
+| Execute→结果codec | 按portal固定类型/列数编码各行，NULL两格式均-1，零行仍保持已知描述。扩展Execute本身不再发送RowDescription；对照portal Describe与实际载荷，不要求不存在的Execute描述包。重复Execute消费同一portal进度；新Bind才提供另一组值。 | 当前编码后比对描述提供局部保护，仍须证明缺类型、行宽、OID、typlen、typmod变化在发送任何DataRow前拒绝。无参数回填只能使用可信准备身份，不能遮蔽真实类型变化；参数化投影必须有明确身份连续性。 |
+
+合法换Bind值、首行/全NULL、零行、text/binary、值相关计划选择均不得改变类型身份。DDL或解析环境变化可能触发重新分析；固定结果的准备语句若结果类型/typmod/列数变化应拒绝0A000，不能静默替换已描述形状；重规划本身不保证出错，也不能承诺永远不重绑定名称。对象已不存在等情况按实际诊断，不统一包装成元数据变化。缺规范类型属于AsterSQL能力拒绝0A000，不是PG对合法SQL的预期错误；具体报错阶段须参考端采集。工作流7拥有消息顺序、错误传递、Sync恢复与portal生命周期，工作流5/6拥有事务/目录失效；本块只固定类型连续性及拒绝边界。MySQL Prepare及原Go行为独立保留，不能把PG OID直接当MySQL类型标志。
+
+官方依据（2026-10-23查阅）：PostgreSQL **18** §54.2.3 [Extended Query](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY) 支持Parse/Bind/两种Describe与Execute的分责；§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 的Parse、Bind、ParameterDescription、RowDescription、DataRow支持上述字段、格式数量及NULL长度。推断失败以 **REL_18_0** [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/tcop/postgres.c)::pg_analyze_and_rewrite_varparams为依据；固定结果变化拒绝以同tag [plancache.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/cache/plancache.c)::RevalidateCachedQuery为依据。手册与源码定义目标，18.6仍是来源指定基线，没有该补丁版本或本地协议实测。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -1179,6 +1199,8 @@ unknown字面量、未定型NULL、Parse未指定OID参数是不同来源，必�
 [基础数组契约](#基础数组契约)不实现生产表示、cast或codec，不扩展自定义/复合/domain数组、下标/切片、比较/运算、索引、聚合或完整存储子系统；目录vector和ACL编码保留独立责任，不推广为普通数组。构造语法归工作流2，运算归4，array_nulls/编码状态归5，目录身份归6，消息及恢复归7，真实客户端差分归8。只定义本章类型与codec交接，不修改Go/MySQL行为。
 
 [显式隐式转换契约](#显式隐式转换契约)只交付上述基础族转换资格与责任；完整重载、domain/用户定义cast、扩展类型、函数/算术、存储、优化器及协议状态机均不实现。bytea与整数等PG18新增局部转换不因本块列出而开放；不补建全量cast目录，不修改其他章节或Go行为。
+
+[准备描述执行元数据契约](#准备描述执行元数据契约)不实现准备器、参数推断、缓存失效、codec或协议状态机，不扩建planner/执行器；SQL PREPARE/EXECUTE语法、事务及目录变更实现分别交工作流2、5、6，消息/恢复交工作流7。不将元数据验证推广为无副作用执行或完整缓存兼容。
 
 ### 验收
 
@@ -1380,6 +1402,18 @@ unknown字面量、未定型NULL、Parse未指定OID参数是不同来源，必�
 | CAST-FAMILY-METADATA | 固定UTC/Shanghai比较timestamp↔timestamptz；json→jsonb规范化再返json不得恢复原文；int4[]→int8[]保留非1下界、shape及元素NULL，结果1016/元素20；text→UUID合法与非法按UUID块；bytea→text按bytea输出。 | 前序族验收关联；元数据在空行/全NULL/重绑定及text/binary均一致，全部未验证。 |
 | CAST-LENGTH-BRIDGE | `'abcd'::varchar(2)`→ab；向varchar(2)列直接赋值'abcd'拒绝22001。unsigned最大值提升numeric保真；MySQL零日期/负或超24小时duration不得冒充PG日期/time，无依据桥接0A000。 | 沿文本、整数与时间块；双方言隔离及无部分写入均未验证。 |
 
+[准备描述执行元数据契约](#准备描述执行元数据契约)以下META入口全部为**待新增、未验证**。按第1章锁定PG精确构建、客户端、编码、会话/目录前提，采集Parse OID、两种Describe原包、Bind格式/值和Execute载荷及SQLSTATE；成功SQLSTATE不适用。MySQL按自身Prepare协议独立回归，不比较OID相等。
+
+| 场景 | 可观察目标与负例 | 当前证据状态 |
+| --- | --- | --- |
+| META-EMPTY-NULL | `SELECT NULL::int4 AS v WHERE false`零行、`SELECT NULL::int4 AS v`全NULL，以及预建int4列首行NULL后接1；两Describe均23/4/-1/一列，Execute零行或NULL=-1，首行不定型。 | 目录零行有静态断言；通用三场景全链未验证。 |
+| META-PARAM | `SELECT $1::int4 AS v`分别用无OID、[0]、[23] Parse，目标参数23、结果23/4/-1；`SELECT $1 IS NULL`无OID目标42P18。额外显式text参数经合法cast时参数25与结果23须分别记录，不能强制相等。 | 普通未指定OID当前0A000；显式23表谓词有静态意图，参数化投影未验证。 |
+| META-REBIND | 同一int4语句依次新Bind 1、2、NULL及两种参数格式；描述不变、值分别对应；重复/乱序$n按编号绑定。域外int4拒绝22003，不能升级结果OID。 | 重绑定/乱序有局部静态断言，表达式/范围/typed NULL连续性未验证。 |
+| META-FORMAT | 同一两列int4/text语句创建text、binary及混合portal；statement格式全0，各portal格式与Bind匹配，OID/typlen/typmod/列数相同。切换portal及重复Execute不串格式；错误格式数量/码拒绝08P01。 | binary局部载荷断言不覆盖完整portal隔离，未验证。 |
+| META-TYPMOD | `SELECT NULL::numeric(8,2), NULL::varchar(3), NULL::timestamp(3)`及非NULL/零行变体；OID1700/1043/1114，typlen -1/-1/8，typmod分别为前序族规定的编码，statement/portal一致。 | encode_formats固定-1为已知差距，未验证。 |
+| META-MISSING-CHANGE | 注入缺native_types、数量不符、执行行宽不符及准备/执行OID或typmod冲突，均应在DataRow前明确拒绝；预建单列int4表后Parse `SELECT *`，ALTER增加列再新Bind，固定结果变化目标0A000；另独立夹具改int4为int8同样拒绝。重新Parse可建立新描述。 | 缺元数据/数量静态断言及描述比对代码已读；变化与DDL全链未验证，不保证DDL自身已支持。 |
+| META-NO-PROBE | 用执行调用计数或受控有副作用函数夹具观测Parse及两种Describe：执行原查询次数0，无数据副作用；只有Execute触发一次，分批重复Execute不重新求值。分析/规划合法的常量折叠不等于执行查询探测。 | Describe不调用执行闭包为静态证据，计数/副作用及准备内部链未验证；夹具为待新增，不引用现有函数名。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1439,6 +1473,10 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 基础数组块来源覆盖：步骤2由元素/数组身份、值域和五方向表覆盖；步骤3由ARRAY-SHAPE/LOWER/ELEMENT-CAST覆盖维度、下界及转换，精度/时区继承元素族；步骤4由四格式组合及EMPTY-NULL/TEXT-ESCAPE/TEXT-INVALID/WIRE-TYPE/WIRE-LENGTH覆盖元数据、NULL与非法输入。与第1章证据规则、第2章数组树形/定型交接和前序各标量族一致，无需改其他章节；数组开放逐族取证，不以本块文档完成声称功能可用。
 
 [显式隐式转换契约](#显式隐式转换契约)候选边界：内部表示先承接各族身份、typmod、unknown来源及typed NULL；cast依赖该身份和连接方言，先决策E/A/I、共同类型与参数约束，再复用等价值转换；参数codec依赖分析得到的稳定OID，结果codec依赖目标表达式身份及固定描述。这里只交接候选边界与依赖，不生成实现任务。来源步骤3的显式/隐式、精度溢出、时区、数组维度/下界及MySQL不等价边界由方向矩阵与CAST八组覆盖；步骤4相关NULL、格式和准备/执行描述交批次18承接生命周期。与第1章证据规则、第2章语法及前16块一致，无需改写其他章节；功能、性能、18.6参考端与MySQL回归未实测。
+
+[准备描述执行元数据契约](#准备描述执行元数据契约)仅给候选边界：内部表示承接前序各族身份/typmod与typed NULL，并核定准备描述的可信来源；cast依赖定型信息，负责参数约束和结果身份；参数codec依赖稳定参数OID与逐参数格式；结果codec依赖固定结果描述及portal格式。生命周期/失效协作工作流5–7，不生成可执行任务或重建共享子系统。
+
+准备描述执行块来源覆盖：步骤1由五阶段方向表覆盖规范类型、参数/结果及NULL分离；步骤4由META七组覆盖格式、NULL、值域/非法输入与Prepare/Describe/Execute一致性。与第1章证据规则、第2章参数语法及前17块一致，未发现需修改其他章节或来源的冲突；文档完成不表示功能实现，所有运行行为、性能及18.6/MySQL参考端均未实测。
 
 ## 4. 方言函数与运算符契约
 
