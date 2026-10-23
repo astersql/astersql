@@ -3739,6 +3739,19 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 独立测试只读：[pg_session_test.rs](../pkg/server/pg_session_test.rs)::pg_introspection_namespace_parser_boundaries；[pg_query_test.rs](../pkg/server/pg_query_test.rs)::pg_introspection_namespace_session_state（两连接、空路径、Parse后SET）；[pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes（身份范围）；[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::pg_introspection_oid_live_casts（1259、2205/26描述、名称错误、真实索引）。这些意图未证明权限/遮蔽全链路，本轮运行数0。
 
+#### 标准模式表视图映射
+
+承接来源步骤1、2，能力 `CAT-IS-TABLE-VIEW/pg`，沿用首块字段与证据模板。批次15提交 `784fca1216` 的五节可见性正文、批次1–14连续交付（`946e9b2c20` 至 `9263b10237`）及第1–5章交接已核对，依赖满足。以下为2026-10-24在该基线经RustCodeGraph status/explore/query/定点node核对的静态证据；未运行SQL或测试。server、infoschema、executor、meta/model目标目录的doc.go均不存在。
+
+| 实际入口 | 当前事实及限制 |
+| --- | --- |
+| [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)::is_catalog_relation / parse_shadowed；[pg_name.rs](../pkg/server/pg_name.rs)::Resolver::relation | 目录识别依据pg_catalog及已知pg关系，不含information_schema.schemata/tables/views；普通关系适配仅接受当前库public，显式information_schema落入非public关系0A000门禁。不能据原生SQL能访问标准模式宣称PG路由已支持；混合pg_catalog JOIN也不证明标准视图已绑定。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows / class_rows | provider没有这三个PG标准视图分支；pg_namespace只有pg_catalog及当前原生库映射的public，class_rows枚举当前库SchemaTableInfos的StatePublic对象，View/Sequence/partition区分v/S/p，不做本块所需角色过滤。复用首块Q/扩展工厂、共享schema_snapshot、单次执行快照与pg_oid，不新建目录存储或执行器。 |
+| [infoschema.rs](../pkg/infoschema/infoschema.rs)::SchemaTableInfos；[table.rs](../pkg/meta/model/table.rs)::ViewInfo | 原生库、表名与持久ID、State/View/Sequence等来自共享模型；ViewInfo提供SelectStmt、CheckOption、Definer/Security，但Definer不是已证实的PG owner，SelectStmt不是已验证的PG定义。一个原生库映射当前PG database下public，不将AllSchemas每项变成本库schema。 |
+| [infoschema_reader.rs](../pkg/executor/infoschema_reader.rs)::setDataFromSchemata / setDataFromViews | 原生入口委托replace_rows(DataRequest)，不是PG目录provider。旁读同名Go方法可见原生catalog常量、字符集/排序规则和MySQL授权字段，与PG列集及视图定义owner过滤不同；不据Go方法推断Rust运行结果。 |
+
+最近独立测试：[pg_query_test.rs](../pkg/server/pg_query_test.rs)的真实目录/事务夹具在原生会话读取information_schema.tidb_trx，并明确PG只暴露public/pg_catalog；[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_functions_live仅在原生会话查询routines；catalog_projection_variants有真实domain、PG描述及投影意图。这些均不覆盖本块三个视图。独立模块由[lib.rs](../pkg/server/lib.rs)注册，本轮只读、实际运行数0，不将测试存在写为通过。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4011,6 +4024,24 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方目标依据（PostgreSQL **18**，2026-10-24访问）：[§9.27.3](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-VISIBILITY)提供可见性签名及对象类别；[schema规则](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-PATH)及[OID别名](https://www.postgresql.org/docs/18/datatype-oid.html)提供路径与regclass依据。客户端官方[psql REL_18_STABLE describe.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/bin/psql/describe.c)的describeTableDetails、类型/函数列表分别使用上述三类可见性条件；分支可变，此处不是固定18.6构建或完整客户端SQL采集。[PG18 namespace.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/catalog/namespace.c)的SQL包装器对不存在OID返回NULL；其可见性检查可使用较新的目录状态，不能机械要求与MVCC扫描行始终同一快照，DDL并发须保留该差异。下列SQL为人工探针，不冒称DataGrip/JDBC/ORM原始查询；18.6精确行为仍未取证。
 
+#### 标准模式表视图映射
+
+范围限定三个标准视图，引用数据库、namespace、关系、视图定义、角色权限和可见性公共契约。对象内部键为(当前database身份,namespace身份,关系持久ID/OID)，对外用(catalog,schema,name)连接；三个标准视图不凭空增加oid列。名称改动保持内部身份；不能只用table_name跨schema连接。
+
+| 需求→字段 | 来源与关联 | PG目标类型、权限及缺失策略→验收 |
+| --- | --- | --- |
+| IS-SCHEMA→schemata.catalog_name/schema_name/schema_owner | 当前共享连接database；同一pg_namespace名称及真实nspowner→角色名，不用原生库名充schema、不用登录名充owner | 均sql_identifier域（底层name/19）；只列本库owner角色可用或有CREATE/USAGE的schema，空schema有授权仍列。缺owner/ACL来源输出前0A000，不以NULL或全量枚举替代。IS-BASE/ACL/EMPTY。 |
+| IS-SCHEMA-NULL→default_character_set_catalog/schema/name、sql_path | PG不提供的标准特性，非原生charset/collation字段 | 前三sql_identifier，sql_path为character_data；四列为有类型SQL NULL，此处NULL有官方依据，不是缺事实占位。IS-COLS。 |
+| IS-REL→tables.table_catalog/table_schema/table_name；views同三列 | 当前database、共享namespace、同一pg_class关系模型；同库schema+name对应唯一关系 | sql_identifier域，值非NULL；tables与views按owner可用角色、表权限或任一列权限过滤，不能套pg_table_is_visible的路径遮蔽过滤，也不能要求额外schema USAGE才列关系。排除其他会话临时schema；路径改变不应删除已授权对象行。IS-BASE/ACL/DB。 |
+| IS-KIND→tables.table_type | 同一真实relkind及会话临时身份，tables只含r/p/v/f，views仅v | character_data域（底层varchar/1043）；r/p→BASE TABLE、v→VIEW、f→FOREIGN，当前会话临时对象优先LOCAL TEMPORARY。序列、索引、物化视图不列入；原生分区p仍须关系块语义门槛。不支持的种类在创建前拒绝，不能伪造成BASE TABLE。IS-BASE/KIND。 |
+| IS-TABLE-EXTRA→self_referencing_column_name、reference_generation、commit_action；user_defined_type_catalog/schema/name；is_typed/is_insertable_into | 前三为PG未提供特性；typed table关联真实reloftype→类型namespace，普通表无typed来源应确认为非typed；可插入性来自关系类别/真实可更新分析 | self_referencing及三项user_defined_type为sql_identifier，其余前两项文本为character_data；前三NULL，非typed表三项类型名NULL且is_typed=NO。两个is_*为yes_or_no域（底层varchar/1043），基表可插入YES，视图须真实分析，不能按当前调用者INSERT权限推导。缺typed/可更新事实的相关投影输出前0A000。IS-COLS/FLAGS。 |
+| IS-DEF→views.view_definition | 同一关系OID的PG定义重建，复用视图定义块及pg_get_viewdef，不直接返回原生SelectStmt | character_data域；行可见且当前enabled角色拥有该视图时给语义等价PG SELECT，否则SQL NULL。无owner/角色闭包来源拒绝；已确认非owner才允许权限NULL；owner可读却缺重建能力时0A000，不假NULL。IS-DEF/ACL/LIFE。 |
+| IS-VIEW-FLAGS→check_option、is_updatable/is_insertable_into、is_trigger_updatable/is_trigger_deletable/is_trigger_insertable_into | CheckOption的真实等价映射、可更新分析及对应INSTEAD OF触发器事实 | check_option为character_data，NONE/LOCAL/CASCADED；五个is_*为yes_or_no，YES/NO而非bool16。无触发器须先证实对象确无此类触发器才报NO；原生固定NO不是能力证明。缺分析/trigger事实只拒绝相关投影，不伪造所有视图只读。IS-FLAGS。 |
+
+类型域的OID不是硬编码跨构建常量：sql_identifier/character_data/yes_or_no来自本库真实pg_type域身份；底层分别19/1043/1043。按第3章核对域目录及Describe解域后的wire类型（预期19/1043/1043）、name标准长度64、varchar长度−1及typmod（含yes_or_no长度约束），实际RowDescription与域typmod须参考构建采集，不能把域OID、wire OID、列来源OID混同。零行、NULL行仍必须完整描述；缺类型/codec在Parse可判定时拒绝，动态缺授权/定义事实至迟Q或首次Execute成功行输出前0A000。此为产品门禁，不冒称参考PG也应拒绝。
+
+官方依据（PostgreSQL **18**，访问 **2026-10-24**）：[schemata](https://www.postgresql.org/docs/18/infoschema-schemata.html)、[tables](https://www.postgresql.org/docs/18/infoschema-tables.html)、[views](https://www.postgresql.org/docs/18/infoschema-views.html)、[标准模式类型](https://www.postgresql.org/docs/18/infoschema-datatypes.html)定义列与语义；[REL_18_STABLE information_schema.sql](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/catalog/information_schema.sql)核对域底层、逐视图过滤、列权限、临时schema及标志分析，该分支可变。客户端入口依据[psql18手册](https://www.postgresql.org/docs/18/app-psql.html)的SQL与-E，以及[pgJDBC官方Statement/PreparedStatement说明](https://jdbc.postgresql.org/documentation/query/)；后者页面无固定驱动版本，不证明DatabaseMetaData生成过下列SQL。人工探针与客户端实际查询分开，精确18.6构建、DataGrip/ORM查询均未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4078,6 +4109,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 可见性与名称遮蔽契约
 
 本轮只定义可见性/名称遮蔽契约，不实现用户schema、权限系统、临时对象、函数注册或prepared失效基础设施。pg_operator/opclass/opfamily、collation/conversion、统计对象及全文检索的可见性函数仍属后续对象块：未开放时绑定0A000，禁止恒真占位；不因官方存在这些函数就声称完整支持。第2/5章拥有解析与会话事务规则，本块消费其契约；真实客户端完整查询、wire错误字段与性能交第7/8章取证。
+
+#### 标准模式表视图映射
+
+不实现information_schema路由、用户schema、域codec、授权存储、可更新视图、触发器或typed table；不把其他标准视图（columns/constraints/privileges等）吞入本块。原生MySQL标准模式与PG标准模式须按方言隔离，不能全局重命名原生schema/catalog字段。本块只定义目标、拒绝门槛及后续验收，不声称真实客户端或18.6已通过。
 
 ### 验收
 
@@ -4614,6 +4649,43 @@ BASE描述为name19/oid26/name19/bool16，长度64/4/64/1（name标准构建）�
 
 清理使用实际已创建名：owner `DROP TABLE public.pg_class;`（改名组改为vis_renamed）、`DROP TABLE public."PG_Class";`、`DROP TABLE vis_hidden.t; DROP SCHEMA vis_hidden;`；关闭statement/portal并RESET路径，角色按权限块清理。缺schema/引号/函数时保留门禁证据和未运行项，不跳过后报成功。
 
+#### 标准模式表视图映射
+
+以下IS-*均为**待新增/待运行**人工契约探针，Q参数[]、文本结果；本轮未执行。前提为隔离当前库D、UTF8、autocommit、owner，具有目录SELECT。各用例独立重置基线；reader无owner角色成员资格、无PUBLIC或其他角色继承的表/列权限。每条DDL独立发送提交：`CREATE TABLE public.is_map_t (id integer);`、`CREATE VIEW public.is_map_v AS SELECT id FROM public.is_map_t;`。缺视图/权限/schema能力按公共门禁记录，不跳过后宣称运行通过。
+
+```sql
+-- IS-BASE-S
+SELECT catalog_name,schema_name,schema_owner
+FROM information_schema.schemata WHERE schema_name='public';
+-- IS-BASE-T
+SELECT table_catalog,table_schema,table_name,table_type
+FROM information_schema.tables WHERE table_schema='public'
+AND table_name IN ('is_map_t','is_map_v') ORDER BY table_name;
+-- IS-BASE-V
+SELECT table_catalog,table_schema,table_name,view_definition
+FROM information_schema.views WHERE table_schema='public' AND table_name='is_map_v';
+-- IS-BASE-C：同一对象对照，不能由名称独立造行
+SELECT n.nspname,c.oid,c.relname,c.relkind FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname='public' AND c.relname IN ('is_map_t','is_map_v') ORDER BY c.relname;
+```
+
+BASE-S恰(D,public,真实owner)；BASE-T恰(D,public,is_map_t,BASE TABLE)、(D,public,is_map_v,VIEW)；BASE-V一行且owner定义重建等价SELECT。BASE-C同两对象真实OID、r/v；跨端用户OID不比较数值。描述S为19/19/19，T为19/19/19/1043，V为19/19/19/1043，C为19/26/19/18；域与完整wire元数据按目标类型段采集。
+
+| 用例与完整输入/操作 | 预期及必要前提 |
+| --- | --- |
+| IS-COLS | `SELECT default_character_set_catalog,default_character_set_schema,default_character_set_name,sql_path FROM information_schema.schemata WHERE schema_name='public';` 一行四NULL，类型19/19/19/1043。`SELECT self_referencing_column_name,reference_generation,user_defined_type_catalog,user_defined_type_schema,user_defined_type_name,is_insertable_into,is_typed,commit_action FROM information_schema.tables WHERE table_schema='public' AND table_name='is_map_t';` 一行(NULL,NULL,NULL,NULL,NULL,YES,NO,NULL)，类型19/1043/19/19/19/1043/1043/1043。 |
+| IS-FLAGS | `SELECT check_option,is_updatable,is_insertable_into,is_trigger_updatable,is_trigger_deletable,is_trigger_insertable_into FROM information_schema.views WHERE table_schema='public' AND table_name='is_map_v';` PG目标为(NONE,YES,YES,NO,NO,NO)，六列1043，简单单表视图具备PG自动更新条件且无trigger；若本端缺可更新分析必须输出前门禁，不把NO作为通过。独立 `CREATE VIEW public.is_map_checked AS SELECT id FROM public.is_map_t WHERE id>0 WITH LOCAL CHECK OPTION;` 后同查询将名称换is_map_checked，check_option=LOCAL；缺DDL语义在副作用前拒绝。 |
+| IS-ACL/DEF | 按角色权限块建立实际reader认证，owner `GRANT USAGE ON SCHEMA public TO is_reader; GRANT SELECT ON public.is_map_v TO is_reader;`（逐条发送）；reader BASE-V一行但definition=NULL，BASE-T只含v，BASE-C仍可枚举t。`REVOKE SELECT ON public.is_map_v FROM is_reader;` 后reader BASE-V零行，owner仍一行。只授 `GRANT SELECT(id) ON public.is_map_t TO is_reader;` 后reader BASE-T含t，覆盖列授权；授schema USAGE不自动暴露未授权表。schema枚举、关系行过滤和定义NULL分别验证。 |
+| IS-EMPTY | 在无用户对象的隔离新库E连接查询 `SELECT table_name FROM information_schema.tables WHERE table_schema='public';` 及 `SELECT table_name FROM information_schema.views WHERE table_schema='public';` 均零行但描述19；BASE-S仍列有权限的public。全库查询仍可含系统对象，不能断言整个tables为空。有用户schema能力后 `CREATE SCHEMA is_empty;` 并授reader USAGE，`SELECT schema_name FROM information_schema.schemata WHERE schema_name='is_empty';` 一行，即使其中无表。 |
+| IS-DB/PATH | 另一库B创建同名is_map_t（通过B连接），D的BASE仅D对象；A/B交错执行不泄漏。`SET search_path TO pg_catalog;` 后显式BASE结果不变。具备用户schema后建is_other.is_map_t再运行 `SELECT table_schema,table_name FROM information_schema.tables WHERE table_name='is_map_t' ORDER BY table_schema;` owner得is_other/public两行，以schema区分，不能名称去重。 |
+| IS-LIFE | 保存BASE-C的U/V；`ALTER TABLE public.is_map_t RENAME TO is_map_renamed;` 后BASE-T只剩v，`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name='is_map_renamed';` 一行19，BASE-C用新名仍U。BASE-V定义须反映真实依赖重命名；无绑定来源门禁。删视图、删改名表、重建同名表后旧U不得指新对象，跨连接下次快照刷新；复用关系生命周期而非另建ID。 |
+| IS-KIND | 具备对应真实能力后独立创建 `CREATE SEQUENCE public.is_map_s;`、`CREATE INDEX is_map_i ON public.is_map_t(id);`；`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('is_map_s','is_map_i');` 零行、描述19；实际分区父表映射BASE TABLE。临时表、外表、物化视图由对应实施夹具补充（待新增），未开放种类在DDL前门禁，不用虚构行通过。 |
+
+扩展探针：`SELECT table_catalog,table_schema,table_name,table_type FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2;`，Parse参数OID[25,25]、Bind[public,is_map_t]，参数text[0]，结果text[0]/binary[1]分别验证一行；换第二参数missing得零行、NULL得零行，描述保持19/19/19/1043。Parse后另连接改名再首次Execute按第5章绑定/快照规则核对，不缓存Parse时目录行。`SELECT unknown_field FROM information_schema.tables;` 缺字段在绑定拒绝；已识别不支持的混合目录JOIN须明确门禁，不能落原生MySQL返回异义列。错误后Sync/ROLLBACK按第5/7章恢复。
+
+客户端后续用psql18直接执行BASE并保存版本、SQL及描述；-E采集其元命令只作对照，不声称元命令使用标准视图。pgJDBC固定版本后经Statement/PreparedStatement运行同一探针，保存ResultSetMetaData、NULL/零行及prepareThreshold前后格式；DataGrip/ORM若使用本视图必须另采真实SQL，当前未验证。清理按实际创建名DROP视图/表/序列/schema及角色，先撤授权，关闭portal并RESET路径；不因夹具未开放而伪造结果。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4695,6 +4767,10 @@ BASE描述为name19/oid26/name19/bool16，长度64/4/64/1（name标准构建）�
 后续窄任务依次补真实有效路径消费与三类可见性函数、regclass输入/显示一致性、目录截获与普通绑定分流、权限及两连接/DDL回归；扩充现有同目录独立测试，不将测试写进生产文件，不补完整子系统。需求映射：路径/关系身份→VIS-PATH/EMPTY；引号→QUOTE；OID显示/类型/参数→DISPLAY/ARG/TYPE/FUNC；授权独立→ACCESS；更新与隔离→LIFE/CONNECTION。
 
 Ready按纯文档范围检查五节/锚点、路径存在、前后契约及diff；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，采用任务指定替代检查，未执行其内容。正确性风险为目录误截获、错误OID和路径/角色快照混用；兼容性风险为引号合并、可见性与授权混淆、regclass显示或绑定时点差异；性能未测。本块完成只代表契约交付，所有新增验收及18.6/客户端运行仍待实施。
+
+#### 标准模式表视图映射
+
+后续分为：三个视图的方言路由与类型描述；共享模型到catalog/schema/关系字段及pg_class对照；真实角色过滤与owner定义脱敏；可更新/触发器/typed字段门槛；IS-*独立回归及固定客户端采集。每项实施另建计划，沿共享快照、OID及现有执行链；无来源字段明确拒绝，不递归补齐所有information_schema。当前仅完成文档契约，功能、性能及精确18.6行为仍待实施/实测。
 
 ## 7. 线协议认证与数据通道
 
