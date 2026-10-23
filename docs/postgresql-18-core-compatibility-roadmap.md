@@ -3556,6 +3556,17 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 
 独立测试在 [lib.rs](../pkg/server/lib.rs) 用 cfg(test) 注册：[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::catalog_select_structure 覆盖目录 AST，catalog_projection_syntax_and_boundaries / catalog_binding_has_explicit_support 覆盖有界语法、字段及函数拒绝；[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants 含真实 domain 夹具、投影/类型/零行/错误恢复与 Parse 后元数据改变的断言意图。测试中客户端为手写 wire 夹具，不能由此推断某个 DataGrip 版本实际发过该 SQL。本轮均未运行。
 
+#### 数据库目录映射
+
+承接来源任务步骤 1、2，能力 ID `CAT-DATABASE/pg`，沿用前块证据模板。批次 1 的五节正文及提交 `946e9b2c206d913b73762990b551753fed204449` 已复核；累计第 1–5 章契约和该块所列交付提交存在，不由任务文件是否删除判断完成。以下为 2026-10-24 在该 SHA 使用 RustCodeGraph status、query、定点 node 阅读的静态证据，未运行测试；`pkg/server/doc.go` 不存在。
+
+- [pg_catalog.rs](../pkg/server/pg_catalog.rs)::DATABASES_SQL 是仓库保存的数据库列表探针，输出 id/name/description/is_template/allow_connections/owner，当前库优先；模块注释称 DataGrip probes，但未采集 DataGrip 精确版本或官方生成 SQL，不能标为客户端实采。
+- 同文件 CatalogQuery::execute 读取共享 schema_snapshot 与 `SELECT DATABASE()`；provider_rows 的 pg_database 分支直接枚举 snapshot.AllSchemas()，取 schema.id 与 schema.name.original，不按连接权限过滤，也未按 PG 可连接数据库种类筛选。原生系统 schema 是否应成为 PG 数据库仍是分类缺口，不能把原生全量列表宣称 PG 全量支持。[runtime.rs](../pkg/server/runtime.rs)::ConcreteTiDBContext::schema_snapshot 返回 domain.info_schema()，无第二套元数据存储。
+- provider_rows 用 [pg_oid.rs](../pkg/server/pg_oid.rs)::namespace_oid(schema.id) 作为数据库行 OID；public namespace 也从当前原生数据库同一 ID 映射。它是受限映射，不证明 PG database/schema 是同一层；不同目录内 OID 相同本身也不表示对象相同。身份键须携带目录类别，pg_database 的系统关系 OID 1262 与用户数据库的行 OID 分开。
+- CatalogQuery::column 将 oid 设 OID_TYPE，datname 为原生文本 code253，datdba 为 code8；provider_rows 的 datdba 为 SQL NULL，两个 bool 为固定 false/true。evaluate 的 pg_get_userbyid 无论输入均返回 NULL，current_database/current_catalog 返回上述共享当前库字符串。pg_shdescription provider 当前为空。
+
+最近独立测试 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants 含真实 domain 数据库创建、OID 对照、datname text/OID25、bigint/OID20、零行描述、未知列 0A000 与 Parse 后首次 Execute 取新目录的断言；catalog_database_description_semantics 含空共享描述、LEFT JOIN 保行、f/t/NULL owner、不同启动数据库的 current_database/current_catalog 及 Parse 后删建数据库意图。它们由 [lib.rs](../pkg/server/lib.rs) 的 cfg(test) mod pg_catalog_test 注册，使用手写 wire 夹具；没有无 CONNECT 角色或真实 owner 的本轮运行证据。Q/扩展工厂分派、单次执行快照和有界求值复用前块，不另建目录执行器。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3575,6 +3586,24 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 
 目标依据（PostgreSQL 18，访问日期均 2026-10-23）：[系统目录](https://www.postgresql.org/docs/18/catalogs.html) 定义元数据角色；[pg_namespace](https://www.postgresql.org/docs/18/catalog-pg-namespace.html) 定义 namespace 字段及关联；[schema 与 search_path](https://www.postgresql.org/docs/18/ddl-schemas.html) 区分数据库、schema、名称查找和权限；[官方 REL_18_STABLE pg_type.dat](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/catalog/pg_type.dat) 用于核对类型身份，该分支可变，不是 18.6 构建证据。[psql 18 手册](https://www.postgresql.org/docs/18/app-psql.html) 的 -E/echo-hidden 是后续采集内省 SQL 的官方入口，不提供本示例的客户端查询归属。精确客户端版本和生成 SQL 仍须实采，JDBC/DataGrip/ORM 的实际查询留各自窄块取证。
 
+#### 数据库目录映射
+
+PG database 是连接所属数据库，schema 是库内命名空间；TiDB database/schema 的原生同义层仅作为当前数据库及其 public 的受限来源，不把所有原生库映射到同一 PG 库的 schema。目标 pg_database 枚举同一服务数据库集合，限定关系查询不受 search_path 遮蔽；改变 path 不改变列表或当前库，换库按第 5/7 章重新连接。目录 SELECT、CONNECT、认证/连接限制分别判断；datallowconn 不是当前角色权限位。下表各字段目录读取权限均为夹具显式具备 pg_database SELECT；拒绝 CONNECT 不应消除其目录行。
+
+| 需求→字段/输出表达式 | 真实来源、关联键与当前证据 | PG 目标类型/值及缺失策略→验收 |
+| --- | --- | --- |
+| 数据库身份→N.oid；列表 id=N.oid::bigint | snapshot.AllSchemas() 的 schema.id 经 namespace_oid；pg_database.oid 为数据库身份键，描述需 (objoid=该键,classoid=1262)。现有 oid/OID26，强转 id 为 bigint/OID20。 | 原字段 oid/26、typlen4；id int8/20、8，非 NULL。两端用户 OID 不要求相等，各端同对象跨连接稳定。无快照/ID 越界应执行阶段拒绝 0A000，不造 0/顺序号或省略行；当前具体错误字段未实采。DB-BASE/FRESH。 |
+| 名称→N.datname；列表 name | 同一对象 schema.name.original；当前 code253 描述为 text/25，测试有该断言，不是目标 name 类型。名称身份复用第 2 章，不能用展示小写覆盖带引号名称。 | name/19、非 NULL，标准 NAMEDATALEN=64 时 typlen64，参考构建仍需采证；缺 name codec 在输出前门禁 0A000，不静默降 text。DB-BASE/EMPTY。 |
+| 所有者→N.datdba；列表 pg_get_userbyid(N.datdba) AS owner | 当前 slot5 为 NULL、code8→int8/20，局部函数也返回 NULL；没有真实 database owner 或 pg_authid.oid 关联来源。连接用户/mysql.user 不等于对象 owner。 | datdba oid/26、4、非 NULL，真实角色身份关联 pg_authid.oid；owner name/19，同库 owner 跨角色读取一致。未来需真实持久 owner 事实；缺失时含该字段/表达式的查询在结果输出前拒绝 0A000，不能将当前 NULL 当 PG 合法 owner，也不连带隐藏已有 oid/name 行。DB-OWNER。 |
+| 模板属性→N.datistemplate；列表 is_template | 当前固定 false，无模板复制权限/生命周期元数据。 | bool/16、1、非 NULL。明确仅普通非模板数据库的受限集合可为 false；无模板功能不得虚构 template0/template1。请求模板身份/功能且无事实时在执行前门禁 0A000，不能给伪模板行；已有模板必须取真实值。DB-BASE/POLICY。 |
+| 全局连接开关→N.datallowconn；列表 allow_connections | 当前固定 true，无 PG 每库允许连接开关来源，也无角色过滤。 | bool/16、1、非 NULL；仅在产品明示所有已映射普通库无禁用开关的受限契约下为 true。支持 ALTER 后须来自持久策略；不能用 has_database_privilege 的值替代，无可信策略来源且请求完整语义时输出前 0A000。DB-POLICY。 |
+| 列表附属描述→D.description | 当前 pg_shdescription 空集，LEFT JOIN 保留数据库行、描述 NULL；完整共享对象键还含 classoid，原 DATABASES_SQL 仅按 objoid 关联，未来有其他共享对象描述时可能误连。 | text/25、-1，可 NULL；确无数据库注释功能时可保留类型正确空描述关系及 NULL，若已有注释须取事实，不能以空集掩盖。本块只验无注释初态及键约束，描述功能/安全 JOIN 补齐交后续窄块。DB-LIST。 |
+| 当前库排序→CASE/current_database() | 当前来自同一共享连接 SELECT DATABASE()，不来自列表首行；现有局部函数为 text/25。 | current_database()/current_catalog 目标 name/19，非 NULL；当前库必须有对应真实数据库行，CASE 首组只该库，其余按 OID。不得在当前库缺失时随意挑首库；连接身份不可取得时输出前 0A000。DB-LIST。 |
+
+以上 typmod 目标均 -1；bool 文本 t/f、OID 二进制四字节、int8 八字节、NULL 长度 -1 与 name codec 复用第 3 章；来源表/属性号、结果格式、完整 Describe 复用第 3/7 章并逐列采证，当前完整描述仍缺证。0A000 均为产品缺能力门禁目标，Q 在任何成功行输出前、扩展至迟首次 Execute 输出前拒绝；静态已可知的未开放字段/codec 可提前 Parse 拒绝，必须记录实际阶段，不能伪称 PG 参考端也如此。
+
+官方依据（版本 PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_database](https://www.postgresql.org/docs/18/catalog-pg-database.html)用于五个原字段的类型/含义与共享范围；[数据库层级](https://www.postgresql.org/docs/18/manage-ag-overview.html)用于库/schema/连接边界；[权限](https://www.postgresql.org/docs/18/ddl-priv.html)用于 CONNECT 与目录读取分离；[ALTER DATABASE](https://www.postgresql.org/docs/18/sql-alterdatabase.html)用于连接开关与模板属性变更；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)用于 owner 名称和当前库函数身份；[pg_shdescription](https://www.postgresql.org/docs/18/catalog-pg-shdescription.html)用于复合对象键与可选描述。[psql 18 手册](https://www.postgresql.org/docs/18/app-psql.html)的数据库列表入口与 -E，以及官方 [REL_18_STABLE describe.c::listAllDbs](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)说明 psql 列表还需求 encoding、locale、ACL 等；这条可变分支源码不代表精确客户端二进制，本块六列表 SQL 也不是 psql 完整列表查询。精确 PostgreSQL 18.6 构建、客户端版本及运行行为均未取证，不能由手册推定已通过。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3582,6 +3611,10 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 本块不补全部目录对象/字段、information_schema、ACL/定义函数、客户端矩阵或求值语法，不实现多 schema、目录缓存失效、事务型 DDL、系统函数注册或通用数组 codec；后续块按本模板承接。目标覆盖仍需逐项填满，不能因当前 provider 有限而缩减客户端需求。不得将 PG 目录直接写入、完整系统目录或扩展加载列为本轮承诺；不运行 Cargo、真实服务、客户端或差分平台。
 
 当前 namespace provider 只输出 pg_catalog 和映射当前原生数据库的 public；不能将本地所有数据库冒充 PG 同一数据库内的 schema。字段缺事实不能一概空集；下列示例的必需 oid/name 不允许 SQL NULL 或空集替代，未来 owner/ACL 需独立真实来源，不在本块伪造。目录按名称列出对象不等于该角色拥有 USAGE/CREATE，search_path 查找结果也不等于目录行过滤规则。
+
+#### 数据库目录映射
+
+只定义数据库枚举、五个字段及 DATABASES_SQL 的附属投影，不实现 owner/角色子系统、数据库模板复制、禁用连接开关、ACL、encoding/locale、完整 psql 列表或 DataGrip/JDBC/ORM 兼容，也不修生产代码。psql::listAllDbs 的额外字段是后续需求，不能因当前有限字段就宣称 psql 数据库列表完整可用。不得伪造 postgres/template0/template1、PG 内部 owner 或注释；原生系统库如何分类必须后续取证后明确，不直接作为可连接 PG 库承诺。未知/不存在数据库的目录筛选零行、缺失必需事实的能力拒绝、连接阶段找不到库是三类情形，不用一个空列表遮掩；连接诊断细节由第 7 章实采。
 
 ### 验收
 
@@ -3622,6 +3655,47 @@ reject 完整 SQL `SELECT n.unknown FROM pg_catalog.pg_namespace AS n`，参数 
 
 人工覆盖审阅：需求→oid/name 真实来源与关联→目标类型/行→base 描述/取值、fresh 元数据变化/隔离、reject 阶段/恢复均有落点；当前静态差距明确保留。文档验证不包含任何当前行为通过结论，有效运行用例数 0。
 
+#### 数据库目录映射
+
+以下 `catalog.database.*` 用例全部**待新增、未运行**，有效运行用例数 0。完整值/描述/错误字段按前块模板记录；SQL 为人工契约探针，只有 DB-LIST 原文来自仓库 DATABASES_SQL，真实客户端生成 SQL 及精确版本未采集。PG/AsterSQL 各用自己的可丢弃数据库集合、UTF-8、初始 I、参数 []、Q 文本结果，角色 cat_reader 有目录 SELECT；库 cat_db_a、cat_db_b 为普通非模板且允许连接，分别由已存在的真实角色 cat_owner 拥有，cat_reader 仅能连接 a。控制角色有创建/删库/改库/授权权限，所有管理 SQL 单条自动提交执行，禁止在事务内建删库。夹具必须核实这些前提；AsterSQL 缺任一前提记能力缺口，不把近似 MySQL 授权当 PG 测试通过。
+
+DB-BASE 完整 SQL：
+
+```sql
+SELECT N.oid, N.datname, N.datdba, N.datistemplate, N.datallowconn
+FROM pg_catalog.pg_database AS N
+WHERE N.datname IN ('cat_db_a', 'cat_db_b')
+ORDER BY N.datname;
+```
+
+目标两行 `(O_a,'cat_db_a',R_owner,f,t)`、`(O_b,'cat_db_b',R_owner,f,t)`，类型依次 oid/26、name/19、oid/26、bool/16、bool/16，均非 NULL。所有 O/R 为本端真实身份，不硬编码 PG 默认 OID。cat_reader 从 a 读取仍见 b，b 的 datallowconn 仍为 t；尝试新连接 b 因 CONNECT 权限拒绝，不允许用目录 false 代替。参考端准备与清理 SQL 为控制角色依次 `CREATE DATABASE cat_db_a OWNER cat_owner`、`CREATE DATABASE cat_db_b OWNER cat_owner`、`REVOKE CONNECT ON DATABASE cat_db_b FROM PUBLIC`、`REVOKE CONNECT ON DATABASE cat_db_b FROM cat_reader`、`GRANT CONNECT ON DATABASE cat_db_a TO cat_reader`，夹具保证 reader 非 owner/超级用户且无继承 CONNECT。角色创建与凭据由安全夹具管理，不写入查询记录。读取权限不足另存参考诊断，不记作字段缺失。
+
+DB-LIST 使用以下 DATABASES_SQL 原文（参数 []），在 a 与另一个允许连 b 的 owner 连接分别执行：
+
+```sql
+select N.oid::bigint as id,
+       datname as name, D.description, datistemplate as is_template,
+       datallowconn as allow_connections,
+       pg_catalog.pg_get_userbyid(N.datdba) as "owner"
+from pg_catalog.pg_database N
+left join pg_catalog.pg_shdescription D on N.oid = D.objoid
+order by case when datname = pg_catalog.current_database() then -1::bigint else N.oid::bigint end
+```
+
+仅在夹具确认无数据库注释且没有造成 objoid 误连的其他共享对象描述时，目标每个真实数据库恰一行；首行为连接当前库，余行 OID 升序，列类型依次 int8/20、name/19、text/25、bool/16、bool/16、name/19，description 为 NULL，普通库 f/t，owner 为真实角色名称。其他 PG 自带库保留其真实事实，不要求全表只有 a/b，也不要求两端全表同名；以夹具创建库子集逐项比较。原 SQL 缺 classoid 限定须登记安全关联缺口，不能因当前描述空集认定通用 JOIN 正确；后续描述块另测不同共享对象 OID 冲突。缺真实 owner 时此列表目标拒绝 0A000，不以 NULL owner 成功替代。
+
+DB-OWNER 额外完整 SQL `SELECT N.datdba, pg_catalog.pg_get_userbyid(N.datdba) AS owner FROM pg_catalog.pg_database N WHERE N.datname = 'cat_db_a'`；目标 `(R_owner,'cat_owner')`，oid/26、name/19。owner/reader 两连接所得一致，改变登录角色不能改变对象 owner；当前 NULL/int8 与 NULL/text 是静态差距。未知角色 OID 的函数行为交权限/系统函数块，不把现有返回 NULL 的测试当真实 owner 支持。
+
+DB-EMPTY 完整 SQL `SELECT N.oid, N.datname, N.datdba, N.datistemplate, N.datallowconn FROM pg_catalog.pg_database N WHERE N.datname = 'cat_db_absent'`，夹具保证不存在该库；零行但保持 BASE 五列类型、SELECT 0、末尾 I。另开新连接到 cat_db_absent 应启动阶段拒绝，不产生成功目录行；精确诊断/SQLSTATE 未采，交第 7 章取证。DB-BASE/LIST/EMPTY 的扩展复验均用各自完整 SQL：Parse 命名语句、参数 OID []；Bind 命名 portal、参数 []、文本结果；Describe statement/portal；Execute 全量、Sync。列序、类型、值与各自 Q 相同，零行也固定描述；name/owner 缺能力的拒绝不得记作成功描述。
+
+DB-FRESH 完整 SQL `SELECT N.oid, N.datname FROM pg_catalog.pg_database N WHERE N.datname = 'cat_db_fresh' ORDER BY N.oid`，两列 oid/26、name/19。连接 A 先 Parse/Bind/Describe 但未 Execute；管理连接 B 单条 `CREATE DATABASE cat_db_fresh` 后完成至 I，A 首次 Execute/Sync 目标一行新 OID/名称；A/B 的新查询 OID 相同且重复稳定。B 单条 `DROP DATABASE cat_db_fresh` 后两端新查询零行、描述不变；其他既有库 OID 不变。对已执行 portal 的续取不要求重建快照。改变 A 的 `SET search_path TO pg_catalog` 后同一限定查询及当前库身份不变；B 路径不随 A 改变。当前 schema_snapshot 来源和已有测试意图提供静态依据，不证明上述两连接目标已运行。
+
+DB-POLICY：在 B 以管理角色执行 `ALTER DATABASE cat_db_b ALLOW_CONNECTIONS false`，A 重新执行 BASE 目标 b 的 datallowconn=f、datistemplate=f，reader 与 owner 均不得新连 b；恢复 `ALTER DATABASE cat_db_b ALLOW_CONNECTIONS true` 后 b=t，reader 仍因缺 CONNECT 被拒绝。另执行 `ALTER DATABASE cat_db_b IS_TEMPLATE true`，BASE 目标仅 b 的 datistemplate=t；恢复 `ALTER DATABASE cat_db_b IS_TEMPLATE false`，不创建 template0/template1。产品若未开放上述策略/模板语义，在变更执行前 0A000、无元数据变化，保持相应 PG 完整目标未验证；普通库受限 false/true 不能算策略变更已支持。
+
+DB-REJECT 完整 SQL `SELECT N.unknown FROM pg_catalog.pg_database N`：产品当前有界字段绑定目标 0A000、无行无副作用；Q 分类/绑定拒绝，扩展 Parse 拒绝后 Sync，再 `SELECT 1 AS ok` 应返回 1/I。PG 参考端未知字段诊断单独采证，不要求相同 0A000。权限/连接及产品能力门禁均记录 S/V/C/M、适用 D/H/P、确切阶段和原 SQL，未实采不杜撰错误文本。
+
+清理时先关闭可能连接待删库的连接与 portal，控制连接保持在独立管理库；恢复 b 的两个策略，再按夹具实际创建记录单条 `DROP DATABASE cat_db_fresh`、`DROP DATABASE cat_db_b`、`DROP DATABASE cat_db_a`（已删除者不重复），回收授权及自建角色。任一前提、变更、类型、权限或清理不满足须保留诊断与未验证项，不缩为只验行数。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -3629,6 +3703,12 @@ reject 完整 SQL `SELECT n.unknown FROM pg_catalog.pg_namespace AS n`，参数 
 后续 25 块串行在上述五个三级标题下追加各自同名四级块，复用第 1 章身份及本模板；每个窄块只认领单一目录对象、同源字段组或一个客户端流程。先由 namespace 块补真实 schema/owner/ACL 来源及字段类型，再由对应对象块填关联键/定义/权限，求值和客户端块分别补有界拒绝与实际查询证据。本示例是后续验收输入，未新建或执行测试。
 
 第 2/5 章交接名称/会话及 DDL 门禁，第 3 章交固定类型及 codec，第 4 章交正式函数身份，第 7 章补完整 wire、恢复和生命周期，第 8 章补真实客户端及 MySQL 自身基线。不得因为本块文档完成升级支持状态。正确性风险是伪造身份/来源或缓存旧事实；兼容性风险是 name→text、错误阶段及 schema/database 混同；性能未测。有界限制只记录当前事实，后续负载另立验证。Ready 文档检查采用任务指定结构、路径、前后契约及 diff 审阅；仓库验证技能缺失，无代码检查或功能实测结论。
+
+#### 数据库目录映射
+
+后续实施按字段来源拆窄块：先确认原生库可映射集合与稳定身份及 name codec，再补持久 owner/角色关联，最后按真实客户端需求补模板/连接策略；共享描述、安全关联及权限函数交各自块，psql 额外字段和真实版本查询交客户端块。本轮没有新建测试文件或实现任务，不修复这些缺口。
+
+覆盖审阅：数据库名/OID、owner、模板、连接开关分别关联 DB-BASE/EMPTY/FRESH、DB-OWNER、DB-POLICY；六列 DATABASES_SQL 关联 DB-LIST，未知列和恢复关联 DB-REJECT。正确性风险是错误身份/关联或伪造 owner/策略，兼容性风险是 name→text、datdba→int8、TiDB database 与 PG schema 混同及将可枚举当可连接；性能未测。Ready 文档检查沿任务的五节/锚点、路径存在、前后契约、来源覆盖与 diff 审阅执行；验证技能缺失如前块所述，不运行 Cargo/Go、代码 lint 或真实客户端，不将文档完成升级为功能支持。
 
 ## 7. 线协议认证与数据通道
 
