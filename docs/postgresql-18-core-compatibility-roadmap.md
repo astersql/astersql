@@ -1572,6 +1572,18 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [builtin_cast.rs](../pkg/expression/builtin_cast.rs)：`FieldKind` / `FieldType`、`BuildCastFunctionWithCheck`；[builtin_cast_4_aster_unit_test.rs](../pkg/expression/builtin_cast_4_aster_unit_test.rs)：`null_and_identity_casts_are_preserved` | 局部模型在构建时保存目标类型、可空性和 in_union；测试断言 NULL 转换保留可空性、求值仍 NULL、同 Int 包装恒等。该 API 与正式 trait Expression 入口分别取证，不能自动等同或据此宣称 PG 隐式资格已接线。 |
 | [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)：`parse_bind_execute_sync` | 断言目录 Q 与 portal Describe/Execute 一致、零行仍有描述、显式 OID 的重复参数按编号绑定；省略 OID 的普通 `WHERE id = $1` 明确断言 0A000。仅有断言意图，没有本轮运行证据，也没有本块五组 PG 重载全链证据。 |
 
+#### 等价共享与别名门槛
+
+本块取证基线 `e128b200ac2d251b79f73eaad8a4f7bc9ef19c69`（2026-10-23）；批次 1–3 的提交及正文已核对，`pkg/expression/doc.go` 不存在。RustCodeGraph status、explore、query、定点 node 用于定位源码和独立测试，图未提供名称字面量位置时以 rg 补充。全部为静态阅读，未运行行为验证。
+
+| 真实入口/符号 | 事实与证据限制 |
+| --- | --- |
+| [builtin_compare.rs](../pkg/expression/builtin_compare.rs)：`coalesce`、`aggregate_compare_type`、`cast_datum` | 对已物化 Datum 列表推导聚合类型，再扫描首个非 NULL，遇 Error 传播、选中后转换。Datum::Error 哨兵可表达短路意图，不证明 SQL 子表达式延迟求值、PG 分析期类型选择或 typed NULL 元数据。 |
+| [builtin_control.rs](../pkg/expression/builtin_control.rs)：`infer_type_for_control`、`derive_charset` | 全 Null 类型得到 Null/binary，其他参数按本地 EvalType、flags、flen/decimal 及字符属性聚合；字符串分支可继承首个非 binary 参数 collation。这些 MySQL 局部规则不能代替 PG unknown→text、共同类型或显式 collation 冲突规则。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`invoke_factory`；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`；[lib.rs](../pkg/expression/lib.rs) | COALESCE 规格为 1..无限参数；已读核心工厂表无 coalesce/nullif，缺工厂会拒绝。动态注册未全面排除，不能断言所有生产调用必失败。正式构造先查类、推导 NULL（NULLIF 属例外）、调用工厂并取得 RetType，随后可折叠；crate 挂载 compare/control kernel 和独立测试。未证明 PG 特殊表达式或 NULLIF 重写已贯通。 |
+| [builtin_compare_test.rs](../pkg/expression/builtin_compare_test.rs)、[builtin_compare_7_aster_unit_test.rs](../pkg/expression/builtin_compare_7_aster_unit_test.rs)：`coalesce_matches_go_first_non_null_and_error_order`、`string_comparison_uses_build_context_collation_snapshot` | 前者断言 NULL/1→1、全 NULL→NULL、首个非 NULL 后 Error 被跳过、前置 Error 传播；后者通过正式 NewFunctionBase/EvalInt 检查 EQ 的构建上下文字符比较。后者不是 NULLIF 或 PG collation 全链证据。 |
+| [builtin_control_test.rs](../pkg/expression/builtin_control_test.rs)：`if_and_ifnull_cover_truth_conversion_short_circuit_and_null`、`control_type_inference_keeps_width_flags_and_string_fixups` | 验证意图为 IF/IFNULL 未达 Error、全 NULL、类型 flags 与宽度；不能由 IFNULL 局部断言批准 COALESCE 别名，更没有 NULLIF 比较/提升的独立 SQL 证据。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1648,6 +1660,25 @@ unknown 字符串、未定型 NULL 和未指定 OID 的参数分别保留来源�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§10.3 Functions](https://www.postgresql.org/docs/18/typeconv-func.html) 给出上述签名选择顺序、variadic/default 规则及 substr unknown 例；[§9.3 数学函数](https://www.postgresql.org/docs/18/functions-math.html)支持 ABS 输入/返回同族；[PREPARE](https://www.postgresql.org/docs/18/sql-prepare.html)支持参数由上下文定型；[§54.2.3 扩展查询](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY)与[§54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)支持分析、绑定、描述与执行分责；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对 42883/42725/42P18/42P08 分类。上述文档规则和受控候选推导是目标依据；未采集 18.6 参考端，不能记为补丁版本差分通过。
 
+#### 等价共享与别名门槛
+
+COALESCE 与 NULLIF 都只是**等价共享候选**，本块无批准项。批准单位是已解析参数类型向量、结果身份及适用输入域，不是函数名；COALESCE 还记录参数数目、顺序和共同类型，NULLIF 记录选中 `=` 的左右签名及其转换。即使复用算法，也分别保留方言名称、类型选择和 wire 映射。PG COALESCE 是特殊条件表达式，不按普通函数重载查找，不能将前块普通函数排序或 `pg_catalog.coalesce(...)` 当作等价入口，也不接受显式 VARIADIC 数组；NULLIF 的比较资格按运算符规则消费，不能硬套 COALESCE 的共同类型。
+
+逐签名批准必须具备：双方言自身参考端和 AsterSQL 正式 SQL 入口的值/NULL、共同类型或比较提升、返回宽度/精度、求值顺序与错误时点、collation、wire、折叠/缓存及适用下推证据；记录完整版本、会话环境和命令。字段缺证保持“目标/待证”，不等价则保留方言分流。批准某个 int4/int4 域不授权 int8、numeric、text、unknown、其他参数数目或别名；IFNULL 的两个参数与 COALESCE 的相似算法不足以在 PG 公开 IFNULL。
+
+以下实例引用“三层身份与契约模板”的全部字段，不适用和缺口明确如下。
+
+| 模板字段 | 本块约束与状态 |
+| --- | --- |
+| 能力/用例、分类、调用模型、规范实现 ID | FUNC-EQUIV 五族，分类为第一类候选；标量结果条件表达式。候选语义 ID `conditional.first-non-null/v1`、`conditional.null-if-equal/v1` 为文档身份，非已注册符号。共享必须保留惰性子表达式边界；不能以预先计算全部参数的普通调用 ABI 代替。 |
+| 名称、别名、方言可见性、重载、cast | 两入口目标开放自身 COALESCE/NULLIF 拼写，无新增别名；PG COALESCE 按共同类型、NULLIF 按 `=` 及其第一操作数提升，MySQL 保持自身转换/返回规则，不能套 PG OID。unknown、typed NULL 和参数分别消费第 3 章，不按运行值选型。MySQL 精确混型签名/元数据待参考端核对。 |
+| NULL、求值顺序、返回身份 | COALESCE 左到右至首个非 NULL，全 NULL 返回分析固定类型的 NULL；非 strict，不能遇任意 NULL 就返回。NULLIF 相等返回 NULL，否则返回隐含比较后的第一参数；NULLIF(1,2.2) 的 PG 结果是 numeric，不能固定原始 int4。任一比较参数 NULL 时不构成 true；NULLIF(NULL,1)→NULL、NULLIF(1,NULL)→1，均 int4。具体输入见验收表。 |
+| collation、时区、会话 | 数值例无时区/collation 运算；text 例显式固定 PG UTF-8/C 与 MySQL utf8mb4_bin，并采集 provider/版本及结果 collation。COALESCE 不比较文本仍须推导输出 collation，NULLIF 比较须消费所选 `=` 的 collation；不能以首个返回字符串决定规则。时间类型不在本块域内。名称/方言隔离沿前块。 |
+| 确定性、折叠、副作用、下推 | 条件结构不一概标 immutable/strict，属性继承实际子表达式及比较操作符。验收 SELECT 无数据写入；以行变量避免把运行期短路测试退化成常量折叠，另采规划期拒绝。没有批准重排、重复求值、跨方言下推或新增折叠优化；volatile/副作用子表达式的完整开放仍须独立证据。 |
+| wire、错误与证据 | PG 成功一列 v，表/属性号 0，示例 typmod -1；int4 为 23/4/-1、text 为 25/-1/-1、numeric 为 1700/-1/-1，NULL 长度 -1。格式/Describe 沿首块；逻辑可空性另记。错误记录 S/V/C/M 与适用 D/H/P、分析/规划/执行时点，完整消息/P 待采；MySQL code/flags/charset/length/decimals、错误/警告均待自身参考采集。无运行或性能证据。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.18 条件表达式](https://www.postgresql.org/docs/18/functions-conditional.html)给出 COALESCE 短路、共同结果类型及 NULLIF 的隐含比较/返回提升；[§10.5 共同类型](https://www.postgresql.org/docs/18/typeconv-union-case.html)用于 COALESCE 的 unknown 与已定型输入选择；[§23.2 collation](https://www.postgresql.org/docs/18/collation.html)规定显式冲突、输出派生及 C 排序。常量折叠与运行顺序边界另据 [§4.2.14 表达式求值规则](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-EXPRESS-EVAL)，错误分类沿本章[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)来源。表中推导均为待验收目标；未采集 18.6 参考端，不声称补丁版本差分通过。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1661,6 +1692,10 @@ unknown 字符串、未定型 NULL 和未指定 OID 的参数分别保留来源�
 #### 重载与隐式转换选择
 
 本块不实现候选排序器、转换矩阵、参数推断、UDF、默认/多态函数或完整类型系统，不补工厂、不改共享 NULL 推导，也不生成生产代码/测试。只交接第 3 章既有资格的消费方式；运算符的专门候选规则、各函数族值语义及协议状态机归后续块和工作流 7。受控歧义夹具只要求未来解析器测试注入候选，不要求新增 SQL CREATE FUNCTION 生态。
+
+#### 等价共享与别名门槛
+
+只定义两种条件表达式的逐签名批准规则和五组用例，不实现工厂、NULLIF 重写、类型/collation 解析器、惰性 ABI、协议或下推，不补齐当前缺工厂，不盘点其他函数。域/数组/时间/用户自定义 `=` 的完整支持及 volatile 子表达式生态不在本块代表域内，不能因未覆盖而扩大本轮实现。不会运行 Cargo、数据库或差分平台。
 
 ### 验收
 
@@ -1706,6 +1741,20 @@ unknown 字符串、未定型 NULL 和未指定 OID 的参数分别保留来源�
 
 成功项的 Prepare/Describe 与 Execute 类型必须一致：显式参数 OID 与上下文兼容时保留其源身份，未知参数由分析固定；statement Describe 返回 ParameterDescription 与结果类型，portal Describe 只改变格式字段，Execute 按固定身份编码且不额外发送 RowDescription。新 Bind 换值/NULL、text/binary 不改变签名或结果描述，失败项不能发送伪成功描述/数据；binary 缺 codec 须如实登记能力缺口。MySQL Prepare/Execute 按其参数约束与元数据独立核对，不能套 PG OID。夹具 AMBIG 只验解析选择/拒绝，不宣称执行成功；可变参数与默认参数的未来聚焦解析验收还须覆盖展开/显式数组、同签名优先及默认歧义，不能以五组内建例证明这些能力已实现。
 
+#### 等价共享与别名门槛
+
+以下 FUNC-EQUIV 五组均为**待新增、未运行**的对照；每条分别比较 PG/AsterSQL PG 与 MySQL/AsterSQL MySQL，不要求两种参考端类型相等。两入口的 COALESCE/NULLIF 均要求在自身语法中可见，PG IFNULL 仍按前块拒绝。成功均单列 v、无错误，NULL 与类型独立检查；错误项无成功行或 NULL 载荷。
+
+| 场景族 | PG 输入及目标值/NULL/类型/错误 | MySQL 自身输入及目标/缺口 |
+| --- | --- | --- |
+| FUNC-EQUIV-VALUE：普通值 | `SELECT COALESCE(NULL::int4,7::int4,9::int4) AS v`→7；`SELECT NULLIF(7::int4,7::int4) AS v`→NULL；第二参数换 9→7，均 int4。另 `NULLIF(7::int4,NULL::int4)`→7，`NULLIF(NULL::int4,7::int4)`→NULL，均 int4。 | 对应使用 `CAST(... AS SIGNED)`（NULL 同样显式 cast），目标值依次 7/NULL/7/7/NULL，目标 BIGINT；精确 flags、可空性/元数据由参考端补证。不能直接发送 PG ::int4。 |
+| FUNC-EQUIV-ALL-NULL：全 NULL | `SELECT COALESCE(NULL::int4,NULL::int4) AS v` 与 `SELECT NULLIF(NULL::int4,NULL::int4) AS v`→SQL NULL/int4；另 `SELECT COALESCE(NULL,NULL) AS v`→SQL NULL/text，不能按本地 Null/binary 默认值回退。 | 两个 typed SIGNED 版本→SQL NULL/BIGINT 目标；未定型 `SELECT COALESCE(NULL,NULL) AS v` 保留其自身 NULL 类型/列定义，确切 MySQL wire 待采，不能强定 PG text。 |
+| FUNC-EQUIV-MIXED：混合类型 | `SELECT COALESCE(NULL::int4,2.2::numeric) AS v`→2.2/numeric；`SELECT NULLIF(1::int4,2.2::numeric) AS v`→1/numeric，体现比较后首参数提升。`SELECT COALESCE(1::int4,'x'::text) AS v` 即使首项非 NULL 也应在分析拒绝，目标 42804，无值。 | `SELECT COALESCE(CAST(NULL AS SIGNED),CAST(2.2 AS DECIMAL(2,1))) AS v`→2.2/DECIMAL 目标；`SELECT NULLIF(CAST(1 AS SIGNED),CAST(2.2 AS DECIMAL(2,1))) AS v`→1，第一参数整数返回身份作为待参考核实目标；精度/scale/wire 缺证。`COALESCE(CAST(1 AS SIGNED),CAST('x' AS CHAR))` 保留 MySQL 自身混型规则，预计取首值但类型待采，不套 PG 42804；本组不批准共享。 |
+| FUNC-EQUIV-UNREACHED-ERROR：未选分支与必需比较 | 待新增普通关系夹具 `contract_equiv_input(a int4,z int4)` 含一行 (7,0)，无将 z 固化为常量的约束：`SELECT COALESCE(a,10/z) AS v FROM contract_equiv_input`→7/int4，无除零错误；改 a 为 NULL 后应为 22012。`SELECT NULLIF(a,10/z) AS v FROM contract_equiv_input` 在 a=7 时也须计算比较所需右参，目标 22012。分析错误仍不能被短路；常量 `1/0` 不作为运行期跳过的唯一证据，实际失败阶段须采集。 | 自身普通关系夹具采用 BIGINT 列，COALESCE(a,10/z) 在 (7,0) 应跳过后参并取 7，结果类型由自身 `/` 与聚合规则决定，非自动 BIGINT。a=NULL 及 NULLIF 右参的除零值/警告/错误须固定 sql_mode 按参考端采集，不承诺与 PG 22012 同义。另沿已读局部 Datum::Error 夹具覆盖未达/必达错误，但局部通过不能代替 SQL 证据。 |
+| FUNC-EQUIV-COLLATION：字符串比较与结果属性 | `SELECT COALESCE(NULL::text,'A'::text COLLATE "C") AS v`→非 NULL 'A'/text，输出 C；`SELECT NULLIF('A'::text COLLATE "C",'a'::text COLLATE "C") AS v`→非 NULL 'A'/text；把第二值换 'A'→NULL/text。负例 `SELECT COALESCE('A'::text COLLATE "C",'a'::text COLLATE "POSIX") AS v` 显式冲突目标 42P21，不能因为首项非 NULL 忽略分析错误。 | `SELECT COALESCE(CAST(NULL AS CHAR CHARACTER SET utf8mb4),_utf8mb4'A' COLLATE utf8mb4_bin) AS v`→'A'/字符串、utf8mb4_bin；`SELECT NULLIF(_utf8mb4'A' COLLATE utf8mb4_bin,_utf8mb4'a' COLLATE utf8mb4_bin) AS v`→'A'，第二值换 'A'→NULL。不把 PG C/POSIX 名称发给 MySQL；本地比较上下文快照断言不能证明上述 SQL/输出 collation，精确 wire 和冲突诊断仍待采。 |
+
+每个成功项覆盖 PG Q 与 Parse/statement Describe/Bind/portal Describe/Execute、text/binary；以带显式 cast 的参数重绑值/NULL，类型与 collation 必须由分析固定，不能随选中分支变化。全 NULL 仍有固定描述；结果逻辑可空性单独登记。MySQL 覆盖 Query/Prepare 及自身列定义，采集当前 sql_mode/字符设置和警告；两个 PG 连接与 MySQL 连接交错验证名称、类型和缓存隔离。所有行均只有官方规则或局部静态断言意图，没有两入口运行证据，因此本轮**批准共享/别名数量为 0**。结构检查不能升级任一场景为功能通过。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -1725,6 +1774,12 @@ unknown 字符串、未定型 NULL 和未指定 OID 的参数分别保留来源�
 后续实现只交接三个窄边界：接收第 2 章可见集合及第 3 章类型/I 资格的候选选择；已选签名到正式工厂及合法 coercion 的局部接线；参数/结果身份在 Prepare/Describe/Execute 的连续证据。缺工厂、完整类型系统、UDF/多态、目录和协议设施分别追踪，不借本块补齐。可变/default 的完整开放须先补载体与聚焦解析证据，本轮不生成实现任务。
 
 来源映射：蓝图步骤 1 的方言签名层与步骤 3 的重载/cast/NULL/返回和 wire 字段，由本块目标段、模板差异表及 FUNC-RES 五组覆盖；精确签名、unknown、NULL、无匹配、歧义逐行有输入与类型/错误目标，其他模板字段明确不适用或缺口。前两批已交付的名称门禁、首块 strict/类型身份与第 3 章 E/A/I、unknown 参数及固定描述保持一致。结构、引用和差异审阅仅证明文档交付；正确性/兼容性目标未实测，没有性能结论，不升级任何功能支持状态。
+
+#### 等价共享与别名门槛
+
+后续只交接 COALESCE 共同类型到惰性正式调用、NULLIF 比较签名到返回身份、text 输出 collation 和两入口证据四个窄边界，依赖第 3 章及前块名称/转换资格。先补代表签名证据再讨论别名或下推；缺工厂、类型系统与协议设施分别追踪，不在本块补建，不提前生成代码任务。
+
+来源映射：蓝图步骤 2 第一类由两候选和逐签名批准门槛覆盖；步骤 3 的名称/可见性、重载/cast、NULL、collation/时区、确定性、返回、wire、下推和错误均映射模板差异表及 FUNC-EQUIV 五组。普通值、全 NULL、混型、未达错误、collation 分别定位 VALUE/ALL-NULL/MIXED/UNREACHED-ERROR/COLLATION；每组含两入口输入与目标或明确缺口。人工审阅已确认与前块“不默认批准别名”、第 3 章定型和固定描述一致。本轮仅文档完成，正确性/兼容性仍为未实测目标，性能无结论。
 
 ## 5. SQL会话与事务语义
 
