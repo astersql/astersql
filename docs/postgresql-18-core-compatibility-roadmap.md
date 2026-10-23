@@ -2492,6 +2492,77 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 ## 5. SQL会话与事务语义
 
+### 模块
+
+#### 会话执行链与契约模板
+
+本块承接来源任务 `.plans/2026-10-22-postgresql18-核心兼容蓝图/5-SQL会话与事务语义.md` 步骤 1–4 的公共执行与证据边界。批次 1 的前置正文已复核：第 1 章提供能力/用例身份与证据格式，第 2 章提供连接方言及语法边界，第 3 章提供固定类型/转换契约，第 4 章提供函数契约及章节收口。来源批次 4 编号文件仍标“未开始”，但第 4 章五节及收口正文已存在，对应交付提交 `00a70c3f5a`；本块按实际正文满足文档依赖，不更新来源任务状态，不据此宣称实现完成。
+
+以下为 2026-10-23 在基线 `9b3f6534d6b4cd328b63fcdee8aaeb774b78088d` 通过 RustCodeGraph 读取的真实符号和分派链，仅是静态证据。`pkg/server/doc.go` 不存在；模块说明和 [协议第一阶段](postgresql-protocol-first-phase.md) 的历史运行记录不代替本轮证据。
+
+| 层与路径 | 实际符号、分派与证据边界 |
+| --- | --- |
+| PG 连接与共享会话 | [pg_conn.rs](../pkg/server/pg_conn.rs) 的连接协商路径调用 [conn.rs](../pkg/server/conn.rs)::SessionDriver::open_ctx，认证后选择 database，每连接创建一个 Extended。真实驱动 [runtime.rs](../pkg/server/runtime.rs)::ConcreteSessionDriver::open_ctx 返回 ConcreteTiDBContext，启动 run_session_worker，构造共享 ConcreteSession；线程名称含 mysql 不代表 PG 使用另一套引擎。 |
+| 简单 Query（Q） | 同一 pg_conn.rs 循环先交 Extended::handle；Q 正常落回简单路径，清理未命名对象。先识别 SessionQuery::parse，再识别 CatalogQuery::parse_session；普通语句依次经 pg_name::adapt、pg_sql::adapt_with_context、pg_result::adapt_session_query/command，事务门禁后由 PgService::with_query 调 TiDBContext::execute_query(sql, false, …)。结果交 pg_result::write_result，末尾由 PgSession::transaction_status 提供 ReadyForQuery 状态。不能把此有界适配称作完整 PG SQL 执行支持。 |
+| 扩展执行 | [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process 的 Parse 同样分出会话/目录查询；普通 SQL 适配后由 markers 将 $n 映射至共享参数位置，再调用 prepare_statement。Bind 解码值并保存 portal；首次 Execute 的普通路径经 pg_conn.rs 提供的闭包、with_query 到 execute_prepared_statement。portal 缓存已编码结果，后续 Execute 继续发送；这不证明执行器按需流式求值或重复副作用正确。 |
+| 本地会话与目录分支 | [pg_session.rs](../pkg/server/pg_session.rs)::PgSession 保存 path、failed_transaction；SessionQuery::parse/metadata/execute 对 SHOW/SET/RESET search_path、受限 current_schema/current_database 提供专用路径。Database 分支仍委托共享 execute_query("SELECT DATABASE()")。目录查询由 CatalogQuery 执行并读取共享元数据；它们不是通用应用 DML 的替代执行器。 |
+| canonical 实际接线 | conn.rs 的 TiDBContext 定义 execute_query、prepare_statement、execute_prepared_statement、in_transaction 等接口；runtime.rs 的 ConcreteTiDBContext 将前三者分别送入 SessionRequest::Execute/Prepare/ExecutePrepared。run_session_worker 在同一 ConcreteSession 上调用 execute_on_session、prepare_protocol_statement、execute_prepared_on_session。此处核实到共享会话桥接，不推断优化器/存储内部的全部 PG 契约。 |
+| 两种失败状态 | PgSession::check_transaction_command/record_error/record_success 结合共享 in_transaction 管理 I/T/E；当前门禁位于简单 Query 与扩展 Parse。Extended::failed 则控制扩展消息丢弃，handle 收到 Sync 后仅清该标志，再读取事务状态。不能据此认定已准备 portal 在事务状态变化后的 Execute 全面满足门禁；后续须单独验证。 |
+
+已读独立测试 [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback 的断言意图包括简单/扩展重复键错误、25P02 门禁、Sync 后仍 E、ROLLBACK 后零行及事务内 DDL 拒绝；prepared_dml_commit_and_rollback 覆盖两连接的未提交不可见、提交后可见、回滚及断连回滚的行数断言。另读 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 的协议握手与 current_catalog 路径片段。现有行数断言不能替代下方完整值/类型断言；这些测试本轮均未执行，有效运行用例数为 0。
+
+### 目标行为
+
+#### 会话执行链与契约模板
+
+Q 与扩展 Execute 应到达同一所属连接的规范会话，使用相同的名称、类型、函数与事务契约；局部会话查询必须服从适用的事务门禁。共享执行、返回 CommandComplete、Parse 成功或内省 SELECT 成功都不是副作用正确的充分证据。保留第 1 章四种分类；能力用稳定 `SESSION-…/pg`、关联 `SESSION-…/mysql`，用例用唯一 `session.…`，两方言经 related_case_ids 关联，不能将场景族名直接当单个测试通过记录。
+
+| 必填字段 | 本章统一记录规则 |
+| --- | --- |
+| 身份及归属 | capability_id、case_id、related_case_ids、分类、所属工作流与协作方；稳定 ID 是文档契约身份，不预设 Rust API。 |
+| 输入及前置数据 | 方言 SQL/消息顺序、参数位置/值/类型/OID/格式、两端各自 setup_sql、cleanup_sql；连接/数据库、编码/时区、事务初始状态、autocommit、隔离级别、会话设置及并发观察时点，禁止隐含准备。 |
+| 目标与当前状态 | 分列官方目标、AsterSQL 允许的暂时限制、源码现状、独立测试断言意图与实际运行 observations；当前证据缺失写“未验证”，不将未实现自动归为明确不支持。 |
+| 返回类型与行 | 成功结果列序/列名、逻辑类型、可空性、PG OID/typlen/typmod/格式或 MySQL 类型标志、值/SQL NULL/零行、排序及重复行；无结果集写原因。CommandComplete 标签与影响行数另存，不冒充返回行。类型转换和 NULL 表示沿第 3、1 章。 |
+| 副作用 | 每步写入前后本连接、另一连接的完整 SELECT 输入与预期数据；提交/回滚/拒绝/断连后检查对象与数据是否变化。解析或响应成功不替代持久化、可见性及回滚证明。 |
+| 错误 | 成功写“不适用（成功）”；拒绝写来源、发生阶段、SQLSTATE 及 S/V/C/M、适用 D/H/P，精确消息/位置未采就明示。AsterSQL 能力限制与参考 PG 错误分开，MySQL 自身 code/SQLSTATE/警告另存，禁止从错误文本猜码。 |
+| 失败后可继续性 | 错误后流水线丢弃状态、ReadyForQuery I/T/E、仍允许/禁止的操作、Sync 与 SQL 恢复命令的顺序、恢复后 SELECT 和副作用；无显式事务与 BEGIN 内分别记录，不从前者推断后者。 |
+| MySQL 对照 | 原 MySQL Query、Prepare/Execute、sql_mode、数据库/事务语义及元数据各对自己的参考端；PG 专属语法不用 MySQL 近似语法代替，产品限制不用 PG 参考成功伪造等价通过。 |
+| 证据及后续依赖 | 沿第 1 章 format_version、dialects、comparison、observations、evidence_refs、verdict 格式；绑定源码 SHA/符号/独立测试、官方版本/URL/访问日，运行时补精确构建/参考端版本、完整命令/退出码、有效用例数与原始输出位置。列明未取证项、依赖及能力开放门槛；空白或裸 null 不是缺证标记。 |
+
+责任边界：第 2 章负责所属连接方言、PG 语法/AST、占位符及原 SQL 诊断位置；第 3 章负责分析时固定类型、转换资格与协议类型身份；第 4 章负责函数/运算符名称、签名与求值。第 5 章只组合应用语句的行、副作用、会话与事务状态；工作流 6 提供真实对象、名称与目录事实，不用虚构 OID/XID/WAL 补缺；工作流 7 提供消息格式、Describe/codec、取消与连接生命周期，将本章语义状态编码到 wire。第 8 章消费双方言共存证据。后续接线继续共享存储、优化器与执行器。
+
+本块官方依据均于 **2026-10-23** 访问，适用 **PostgreSQL 18 大版本手册**：[§54.2.2–3 Query/扩展消息流程](https://www.postgresql.org/docs/18/protocol-flow.html)用于区分处理阶段、Describe 与同步恢复；BEGIN 内的 Sync 不结束显式事务。隐式事务在 Sync 边界的行为须另验，不能由当前连接标志推定。[§3.4 Transactions](https://www.postgresql.org/docs/18/tutorial-transactions.html)用于提交可见性、回滚及失败恢复目标；savepoint 恢复另交后续细分。[INSERT](https://www.postgresql.org/docs/18/sql-insert.html)用于实际写入与 RETURNING 行区分，返回行专项由后块定义。[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对 23505、25P02、0A000 的名称；其中 AsterSQL 的事务内 DDL 0A000 是产品限制，不能外推为 PG 对普通 CREATE TABLE 的规范拒绝。**18.6** 仍仅为来源指定目标，未核实该补丁发布或采集其参考运行结果，以上链接不能证明精确补丁行为。
+
+### 范围外
+
+#### 会话执行链与契约模板
+
+本块只建立五节框架、执行地图、模板及其代表验收入口，不实现或修复生产/测试代码，不运行 Cargo/Go、数据库、差分平台或 DDL 原型，不改第 1–4、6–8 章及来源计划。RETURNING、ON CONFLICT、CTE、schema/search_path、prepared 状态时点、sequence/identity、正常/失败事务与 Sync 的完整规则由后块逐项补充。事务型 DDL 必须先证明共享引擎能满足原子性与回滚；当前拒绝保留，不能用响应标签模拟支持。此处不批准多语句、完整 savepoint、隔离级别组合或无 BEGIN 的扩展流水线事务等价性，也不借未测边界扩大本轮范围。
+
+### 验收
+
+#### 会话执行链与契约模板
+
+以下是**待新增用例定义，全部未运行**，用于检验模板能表达 DML 写入和事务拒绝，不是实现支持清单。每个变体/消息模式分别分配 case_id；全部使用 UTF-8、UTC、独立无业务数据的测试数据库和空闲连接，无额外客户端隐式 BEGIN。观察连接每次 SELECT 使用新的自动提交语句，记录实际隔离级别，不能用旧快照制造可见性结论。PG 使用 public，MySQL 使用自身当前数据库；准备/清理均在事务外逐条发送 SQL，不组合成一个 Q。
+
+| 能力与用例 | 完整输入、初始状态与目标 | 副作用、恢复和取证缺口 |
+| --- | --- | --- |
+| SESSION-DML-WRITE/pg；session.dml-write.pg.simple-commit、session.dml-write.pg.extended-commit、session.dml-write.pg.extended-rollback；分类为有界共享语义候选 | PG 写连接 W 与观察连接 O 同库、I；准备 `CREATE TABLE public.session_chain_doc (id integer PRIMARY KEY)`，初始 `SELECT id FROM public.session_chain_doc ORDER BY id` 为零行。提交变体 W 逐条 `BEGIN`、`INSERT INTO public.session_chain_doc VALUES (1)`、`COMMIT`；扩展变体在 BEGIN 前 Parse 命名 s：`INSERT INTO public.session_chain_doc VALUES ($1)`、OID [23]，再 Q BEGIN、Bind 新 portal p、text 参数 1、无结果格式要求，Execute p(max_rows=0)，Sync，最后 Q COMMIT；回滚变体独立重建空表，值换 2 并以 Q ROLLBACK 结束。 | INSERT 无结果列/返回行（未指定 RETURNING），标签与影响行数单列采集；W 提交前 SELECT 是 [1] 或 [2]，O 是零行；提交后 W/O 均 [1]，回滚后 W/O 均零行。SELECT 列 id 为非 NULL int4、OID 23/typlen 4/typmod -1、text；BEGIN 后 T，显式事务内 Sync 后 T，COMMIT/ROLLBACK 后 I。成功 SQLSTATE 不适用。清理先确保 W ROLLBACK，再关闭 s/p（若仍存在）、事务外 `DROP TABLE public.session_chain_doc`、关 W/O；精确标签/元数据实测待采，现有 prepared_dml_commit_and_rollback 仅提供部分行数断言意图。 |
+| SESSION-TX-DDL-GATE/pg；session.tx-ddl-gate.pg.simple、session.tx-ddl-gate.pg.extended；分类为明确不支持（AsterSQL 当前限制） | 独立空库 W/O 为 I，事务外准备 `CREATE TABLE public.session_gate_doc (id integer PRIMARY KEY)`，确认 `SELECT id FROM public.session_gate_doc ORDER BY id` 零行；W Q BEGIN、Q `INSERT INTO public.session_gate_doc VALUES (7)`，再发 `CREATE TABLE public.session_gate_new (id integer)`；简单变体用 Q，扩展变体在 T 时发 Parse 命名 blocked，参数 OID 数为 0，再发 Sync。 | AsterSQL 限制目标 0A000、无成功行/对象，状态 E；随后 Q `SELECT 1 AS v` 目标 25P02/E；扩展错误后先 Sync，仍 E，再发该 Q，不能将被丢弃的 Q 算门禁证据。W ROLLBACK 后 I、Q `SELECT 1 AS v` 一行非 NULL 1/int4（23/4/-1）；W/O 对原表 SELECT 均零行，`SELECT id FROM public.session_gate_new` 应对象不存在且无成功数据，精确诊断/字段待参考及产品采集。清理确保 ROLLBACK、事务外 `DROP TABLE IF EXISTS public.session_gate_new` 与 `DROP TABLE public.session_gate_doc`，关连接。参考 PG 普通 CREATE TABLE 事务行为另采，不能要求它报此产品限制；DDL 能力原型未过不解除门禁。 |
+| SESSION-COEXIST/mysql；session.coexist.mysql.query、session.coexist.mysql.prepared，关联上述 PG case_id；分类为 MySQL 专属入口保留契约 | 同一 AsterSQL Server 上另开 MySQL M/N，使用独立测试数据库，先在 M/N 各执行 `SET autocommit=1`，记录 sql_mode、autocommit 及实际隔离级别，先采 Query `SELECT 1 AS v` 与 M 的 Prepare `SELECT ? AS v`、Execute 参数整数 1（驱动类型及 binary 格式记录原值）。准备 `CREATE TABLE session_mysql_doc (id INT PRIMARY KEY)`；M 逐条 `BEGIN`、`INSERT INTO session_mysql_doc VALUES (9)`，N `SELECT id FROM session_mysql_doc ORDER BY id`，M `COMMIT`，N 重查。PG W 在 M 事务期间交错执行上方拒绝与恢复。 | N 提交前零行、提交后一行 [9]；PG 的失败/ROLLBACK 不结束 M 事务、不改 M 的模式/当前库、参数或数据。PG 前后重跑 M 的 Query 与原 prepared Execute（1，再换 SQL NULL），逐项对照自身 Go/TiDB/MySQL 参考及此前基线，保留值/NULL、类型标志/charset/length/decimals、code/SQLSTATE/警告；精确元数据未采不臆造为 PG int4。清理 M `ROLLBACK`、关闭 prepared、事务外 `DROP TABLE session_mysql_doc`、关 M/N。此用例不在 MySQL 发送 PG DDL/RETURNING 近似语句，也不推断 MySQL 失败事务与 PG 等价。 |
+
+拒绝用例还须记录写入前后及恢复后的实际数据，若对象不存在查询自身触发错误，应在事务外独立执行并记录其可继续性，不能污染主用例。PG 两种模式分别采消息、错误字段与状态；没有结果集的命令其列类型不适用，失败也不生成伪造 RowDescription。需要 RETURNING 的 DML 返回类型由后续专项补证，不能用上表无返回行的 INSERT 代表已覆盖。原始运行 observations 四端均为“未采集”，verdict 为“未验证”；参考版本、命令/退出码及有效断言数在真实运行时补齐，当前有效运行数 0。
+
+人工文档验收：五节各有本块同名内容；来源步骤 1 的 DML 公共接入对应 SESSION-DML-WRITE，步骤 2 的名称/会话边界对应模块地图与跨工作流责任，步骤 3 的状态/Sync/DDL 门槛对应 SESSION-TX-DDL-GATE，步骤 4 的副作用、恢复与 MySQL 共存对应三组用例和模板。专项 SQL 细节继续分块，未声称完成来源整个工作流。正确性风险是专用分支或已准备 portal 可能未满足完整状态门禁；兼容性风险是产品限制/类型/错误与参考端不一致；均待实施取证。性能未测试，无吞吐、延迟或流式执行结论。
+
+### 后续细分
+
+#### 会话执行链与契约模板
+
+按当前计划串行补充各窄契约块，并在这五个三级标题下追加自己的同名四级小节，保留本块和已交付正文。先以第 2–4 章契约定义每项 DML/CTE 的共享执行接入，再逐项交接名称、prepared、序列和事务状态；它们的目标验收应复用本模板及第 1 章证据记录，不重建第二套 ID/运行结论格式。
+
+本块留下的后续验证入口均为**待新增**用例定义，不表示新增了测试文件：补齐完整值/元数据及两连接副作用断言；验证 Parse 后事务状态变化再 Execute、错误阶段及 Sync 恢复；分别采产品拒绝和 PG 参考行为；交错 MySQL 原 Query/Prepare/Execute。工作流 6 补真实目录/对象证据，工作流 7 补精确 wire 和生命周期证据；事务型 DDL 另立局部可行性原型，未通过前保留拒绝，不在本轮建设完整子系统。文档检查可完成本块，以上运行缺口不能据此升级为功能支持。
+
 ## 6. 系统目录与内省契约
 
 ## 7. 线协议认证与数据通道
