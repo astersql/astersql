@@ -3822,6 +3822,19 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 libpq 现有目录测试包含 DataGrip 来源查询、非空关系、类型正确空集、错误恢复及 prepared 建/删表闭环；其中 `live_catalog` 的 relname 描述断言为 text/25。它没有完整覆盖 psql 表描述、空用户库、真实非 owner 权限。JDBC 的 run_jdbc 与 DataGrip 查询归后续各自客户端块，不扩大本块范围。
 
+#### 驱动元数据内省流程
+
+承接来源步骤 1、4，能力 CAT-JDBC/pg。批次 22 提交 `868b3b138c`、累计批次 1–21 的五节契约（`946e9b2c20` 至 `600fac8b1e`）及第 1–5 章已有正文已核对，依赖是文档交付，不表示实现完成。2026-10-24 在 `868b3b138c` 基线经 RustCodeGraph status、explore 和定点 node 读取以下入口；`pkg/server/doc.go` 与 `.agents/skills/tidb-verify-profile/SKILL.md` 不存在，采用 Ready 文档替代检查。本轮测试运行数为 0。
+
+| 实际入口/独立测试 | 当前证据与边界 |
+| --- | --- |
+| [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::pg_introspection_clients / run_clients / run_jdbc / JDBC_WORKFLOW | 真实 domain → ConcreteSessionDriver::new_for_test(InsecureRootOnly) → Server::set_connection_runtime/run；run_jdbc 读取 PG_JDBC_LIBRARIES，默认路径含 42.7.13、42.7.3，PG_JAVA 选择 Java。路径名不能证明实际 JAR 版本。工作流仅 getMetaData().getDriverVersion，以及手写 Statement/PreparedStatement、DataGrip 冻结 SQL、OID/NULL、DDL 刷新及错误恢复；没有本块七个 DatabaseMetaData 调用。本轮未启动 Java 或服务。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::parse_session_with_types / bind / validate / metadata / execute | 首块的共享 schema_snapshot / infoschema/model 来源及 OID 映射继续适用；validate 限定关系/函数，不能从已有 DataGrip 查询推断驱动的窗口、集合返回、复合字段、正则、权限函数已覆盖。不能为一个驱动新增第二套目录事实。 |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process；[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync | Parse/Bind/Describe/Execute 工厂及参数、portal 编码沿首块和第 3/7 章；独立测试是手写 wire 夹具，不能证明驱动生成 SQL。 |
+| [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants | 使用真实 domain、PgService::start 和手写 wire，断言投影、NULL、描述及数据库真实身份；与上述扩展测试均只读取，未运行。 |
+
+请求来源锁定为官方 pgJDBC **REL42.7.8** 的 PgDatabaseMetaData.java（下节链接），与本地测试默认 JAR 候选分开。本块有该版本源码证据，没有本轮该版本驱动运行证据；后续若改用其他版本，必须重新采集请求及版本分支。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4221,6 +4234,24 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 
 官方目标依据（版本 PostgreSQL 18，访问 2026-10-24）：[psql 手册](https://www.postgresql.org/docs/18/app-psql.html)用于元命令及 -E；[libpq 执行和结果接口](https://www.postgresql.org/docs/18/libpq-exec.html)用于参数、描述、NULL 与结果状态；[官方 REL_18_STABLE describe.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)仅为生成查询的后续定位入口，可变分支不等于已锁定客户端构建。字段类型和目录关联的官方依据复用数据库/关系/列块。本轮无精确 psql/libpq 补丁版本及 PostgreSQL 18.6 参考构建，18.6 精确行为保持未取证。
 
+#### 驱动元数据内省流程
+
+沿首块模板，每次调用必须分别登记服务器返回列和驱动合成 ResultSet，二者的列名、PG 类型/OID及 NULL 可不同；JDBC Types.INTEGER=4 等代码是数据，不能充当 RowDescription 的类型 OID。下表的字段组引用本章数据库、命名空间、关系、列、类型、索引、约束、默认表达式、注释、权限与可见性块中的逐字段事实源及拒绝规则；同组每个字段仍须在后续实采清单逐项展开。
+
+| 调用/必要请求结构（源码证据，非实跑 SQL） | 字段来源、关联键及服务器 PG 类型/OID | 目标、权限/可见性与缺口策略 |
+| --- | --- | --- |
+| getSchemas | pg_namespace.nspname 为 name/19；current_database() 为 name/19。namespace_oid 关联真实库/schema；临时 schema 排除条件涉及 current_schemas(true)、下标及 replace | 按 TABLE_SCHEM 排序，pattern 是 LIKE；hideUnprivilegedObjects 开启时需真实 has_schema_privilege。无临时对象不造行；不能因缺正则/函数而返回所有 schema 或空集。 |
+| getTables | c.relnamespace=n.oid；d.objoid=c.oid、objsubid=0、classoid=pg_class 身份；数据库/schema/关系名称 name/19，CASE TABLE_TYPE、注释、常量投影 text/25；关系 relkind 原字段为 char/18 | 表类型由真实 relkind/schema 分类，types 数组筛选；TABLE_TYPE、TABLE_SCHEM、TABLE_NAME 排序。无注释是 NULL，驱动 SQL 中空字串常量保留为空字串；权限筛选沿真实 ACL，不能造 owner。 |
+| getColumns | a.attrelid=c.oid、a.atttypid=t.oid；def.(adrelid,adnum)=(a.attrelid,a.attnum)，注释关联沿源码；名称 name/19，atttypid/typbasetype oid/26，attnotnull bool/16，atttypmod/typtypmod int4/23，attlen int2/21，row_number 结果 int8/20，nullif(identity/generated,'')为 char/18、定义/注释 text/25，typtype char/18 | 先过滤 schema/table、正 attnum 与未删除槽位，再窗口编号，最后过滤 column pattern；按 schema/table/编号排序。类型精度、默认、非空、自增/生成列来自真实声明，不能由行值或名称猜测；domain/identity 未实现按已有块拒绝。 |
+| getPrimaryKeys | ct.oid=a.attrelid=i.indrelid，ci.oid=i.indexrelid，ct.relnamespace=n.oid；i.indisprimary bool/16，indkey int2vector/22，indnkeyatts int2/21；_pg_expandarray 输出 n int4/23、x int2/21；名称 name/19 | schema/table 为精确等号，展开索引键序并排除 INCLUDE；按 table_name、pk_name、key_seq 排序。PK_NAME 是索引 ci.relname，不能改用臆造约束名。真实无主键才零行；复合字段/集合函数不支持需明确拒绝。 |
+| getImportedKeys | conrelid/confrelid → 两侧 class，conkey/confkey int2[]/1005 同序下标 → 两侧 attribute；conindid → 被引用索引；generate_series 位置 int4/23；两端名称 name/19，规则/deferrability CASE int4/23；confupdtype/confdeltype char/18、condeferrable/condeferred bool/16 | 精确 schema/table；按被引用 schema/table、约束名、序号排序。前置 getMaxIndexKeys 查询 pg_settings.setting text/25，值来自真实能力。没有 FK 才零行，存在但未映射不能假空集；更新/删除与延迟规则沿约束块。 |
+| getIndexInfo | ct.oid=i.indrelid，ci.oid=i.indexrelid，ci.relam=am.oid；indisunique/indisclustered bool/16，amname name/19，indoption int2[]/1005；展开 n int4/23；reltuples float4/700、relpages int4/23；pg_get_indexdef / pg_get_expr / 注释 text/25 | unique=true 只取唯一索引；按 NON_UNIQUE、TYPE、INDEX_NAME、ORDINAL_POSITION 排序。approximate 在此版本方法未改变 SQL；不能据此承诺精确统计。无统计真实来源按索引块策略拒绝所需投影，禁止造 cardinality/pages；不适用 predicate 的 NULL 与缺实现分开。 |
+| getTypeInfo | t.typnamespace=n.oid，typrelid → class.oid；typname name/19、t.oid oid/26，typrelid oid/26；排除 toast 和普通表复合行类型，权限选项可能追加 has_type_privilege | 真实内建类型来自第 3 章/类型块；驱动 TypeInfoCache 还可触发额外类型查询并合成 serial 等行，不能将其当服务器新增 OID；按 JDBC DATA_TYPE 排序。所需类型不能全空，缺类型映射/缓存请求须登记分析或执行拒绝。 |
+
+官方来源（访问 2026-10-24）：[pgJDBC REL42.7.8 PgDatabaseMetaData.java](https://github.com/pgjdbc/pgjdbc/blob/REL42.7.8/pgjdbc/src/main/java/org/postgresql/jdbc/PgDatabaseMetaData.java) 的同名方法、getImportedExportedKeys/getMaxIndexKeys 与 Field/tuple 定义用于版本化请求及驱动转换；[同 tag TypeInfoCache.java](https://github.com/pgjdbc/pgjdbc/blob/REL42.7.8/pgjdbc/src/main/java/org/postgresql/jdbc/TypeInfoCache.java) 为附加类型请求/映射入口；[PostgreSQL 18 系统目录](https://www.postgresql.org/docs/18/catalogs.html)为字段目标入口；[pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html) 与[会话信息函数](https://www.postgresql.org/docs/18/functions-info.html) 用于列属性及 current_database/current_schemas 类型复核，其他具体字段依据沿本章对应对象块。源码审阅发现的版本分支/客户端实现差异以该 tag 为准，不等于已验证 PostgreSQL 18.6。
+
+完整服务器生成 SQL、Parse 参数 OID/格式、结果格式、所有初始化及 TypeInfoCache 补充 SQL **尚未线端取证**。下节给完整 Java 方法输入及一条源码可还原请求；其余请求以上述官方方法为精确定位，禁止将此表或手写同形 SQL 标为实际驱动日志。每个投影的 typlen/typmod/表 OID/属性号及实际 NULL 描述待参考端逐列采集；服务器字段目标沿对应字段块，驱动合成结果沿本 tag 的 Field/tuple 定义。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4316,6 +4347,10 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 #### 命令行客户端内省流程
 
 本块仅定义 psql/libpq 最小真实目录流程与证据交接，不实现命令行驱动、完整 psql 元命令、客户端全部版本兼容或通用目录执行器。认证/TLS/取消/协议帧归第 7 章，真实运行与产物归第 8 章；JDBC/DataGrip/ORM 各自取证。不得为运行探针补建权限、类型或目录子系统；现有缺口作为后续实施输入。
+
+#### 驱动元数据内省流程
+
+不实现 JDBC 目录适配、正则/窗口/集合返回/复合字段求值、类型缓存或权限子系统，不升级或移植驱动，不运行 Java/Cargo/Go 或 DataGrip UI。不把本地 JDBC 手写 SQL 流程扩写成 DatabaseMetaData 已通过；真实驱动执行与两端差分产物交第 8 章。18.6 精确构建、线端 SQL 和 OID 未采不阻塞本块文档交付，但持续作为实现验收门槛。
 
 ### 验收
 
@@ -5078,6 +5113,53 @@ SELECT a.attrelid,a.attnum,a.attname,a.atttypid,a.atttypmod,a.attnotnull FROM pg
 
 第 8 章运行时必须把每条 psql 实采 SQL 的每个投影补齐首块字段映射，记录实际客户端版本、libpq 加载路径/版本、两端构建、命令/退出码和有效用例数。当前缺失这些产物是明确的后续取证项，不能将文档验收完成写成客户端功能通过。
 
+#### 驱动元数据内省流程
+
+以下全部为**待新增/待运行**验收；不是本轮测试结果。两端使用专用数据库 jdbc_catalog、UTF8、search_path=public,pg_catalog、空闲 I、autocommit=true；owner 有 CONNECT、schema USAGE/CREATE 和目录读取权限。锁定 REL42.7.8 对应 JAR，保存散列、getDriverVersion、Java 版本、服务完整构建与选项；prepareThreshold=1，hideUnprivilegedObjects=false，再独立连接以 true 重跑权限用例。实际 wire 参数类型、格式与后台版本分支须抓取，不能由 Java String 猜为 varchar/1043。
+
+夹具每条单独执行，DDL 不能嵌入事务绕过第 5 章门槛：
+
+```sql
+CREATE TABLE public.jdbc_parent (b integer NOT NULL, a integer NOT NULL, CONSTRAINT jdbc_parent_pk PRIMARY KEY (b,a));
+CREATE TABLE public.jdbc_probe (id integer PRIMARY KEY, b integer, a integer, label varchar(7) DEFAULT 'x', CONSTRAINT jdbc_probe_fk FOREIGN KEY (b,a) REFERENCES public.jdbc_parent (b,a) ON UPDATE CASCADE ON DELETE SET NULL);
+CREATE INDEX jdbc_probe_label_idx ON public.jdbc_probe (label);
+```
+
+FK 若当前建表能力拒绝，记录建表阶段的真实错误；不能去掉 FK 后把 importedKeys 验收记为通过。先建父后子，清理先 DROP TABLE IF EXISTS public.jdbc_probe 再 jdbc_parent；管理连接待客户端断开后删专用库。注释/权限夹具沿相应块，均待新增。
+
+完整调用输入（c 为上述连接，md=c.getMetaData()；返回 ResultSet 必须全部消费并关闭）：
+
+```java
+md.getSchemas("jdbc_catalog", "public");
+md.getTables("jdbc_catalog", "public", "jdbc_probe", new String[]{"TABLE"});
+md.getColumns("jdbc_catalog", "public", "jdbc_probe", "%");
+md.getPrimaryKeys("jdbc_catalog", "public", "jdbc_parent");
+md.getImportedKeys("jdbc_catalog", "public", "jdbc_probe");
+md.getIndexInfo("jdbc_catalog", "public", "jdbc_probe", false, false);
+md.getTypeInfo();
+```
+
+getSchemas 在关闭权限过滤、catalog 匹配时可由源码还原如下完整请求；? 是驱动 PreparedStatement 占位符，Java 参数位置 1 为 String public，不是抓取后的 $1/OID/格式记录：
+
+```sql
+SELECT nspname AS "TABLE_SCHEM", current_database() AS "TABLE_CATALOG" FROM pg_catalog.pg_namespace WHERE nspname <> 'pg_toast' AND (nspname !~ '^pg_temp_' OR nspname = (pg_catalog.current_schemas(true))[1]) AND (nspname !~ '^pg_toast_temp_' OR nspname = replace((pg_catalog.current_schemas(true))[1], 'pg_temp_', 'pg_toast_temp_')) AND nspname LIKE ? ORDER BY "TABLE_SCHEM"
+```
+
+其他六个调用的源码参数序列分别为 [public,jdbc_probe]、[public,jdbc_probe,%]、[public,jdbc_parent]、[public,jdbc_probe]、[public,jdbc_probe]、[]；types/unique 为生成 SQL 条件而非绑定值。ImportedKeys 的最大索引键数探针参数 []，类型缓存附加请求未采。driver getCatalog/启动请求也需纳入原始日志，不能只采主查询。
+
+| ID/调用 | 行/字段与 NULL 验收、类型及变化 |
+| --- | --- |
+| JDBC-SCHEMAS/TABLES | schemas 应含 (public,jdbc_catalog)，tables 对夹具唯一 TABLE 行；校验两列/十列的名称顺序及所有投影，数据库/schema/名称、TABLE_TYPE、REMARKS、TYPE_CAT/TYPE_SCHEM/TYPE_NAME/SELF_REFERENCING_COL_NAME/REF_GENERATION 分别追溯上表。无注释 REMARKS=NULL；上述 SQL 的末五项是空字串。保存服务器 name/19 与驱动 ResultSet 描述，不能一律改成 text/25。 |
+| JDBC-COLUMNS | 24 列按 tag Field 顺序逐项比较：TABLE_CAT/SCHEM/NAME、COLUMN_NAME、DATA_TYPE、TYPE_NAME、COLUMN_SIZE、BUFFER_LENGTH、DECIMAL_DIGITS、NUM_PREC_RADIX、NULLABLE、REMARKS、COLUMN_DEF、SQL_DATA_TYPE、SQL_DATETIME_SUB、CHAR_OCTET_LENGTH、ORDINAL_POSITION、IS_NULLABLE、SCOPE_CATALOG/SCHEMA/TABLE、SOURCE_DATA_TYPE、IS_AUTOINCREMENT、IS_GENERATEDCOLUMN。label 目标 JDBC VARCHAR=12、varchar、size=7、ordinal=4、nullable=1/YES、自增/生成均 NO，默认由真实表达式反解且两端规范比较；id 的 INTEGER=4、int4、ordinal=1、nullable=0/NO。BUFFER_LENGTH、未使用 SQL 类型字段、scope、无 domain 的 SOURCE_DATA_TYPE 为 NULL，REMARKS 无注释为 NULL；驱动本 tag CHAR_OCTET_LENGTH 复制 COLUMN_SIZE，不能自行换成编码字节数。合成描述 varchar/1043；DATA_TYPE/SOURCE_DATA_TYPE int2/21；其余计数等按 Field 为 int4/23，BUFFER_LENGTH/CHAR_OCTET_LENGTH 实为 varchar/1043。这些与服务器 attnum int8/20 分开验收。 |
+| JDBC-PK/FK | PK 两行 b、a，KEY_SEQ=1、2，PK_NAME 用真实引用索引名，非按字母重排；六输出列均逐项核对。FK 十四列：两侧 CAT/SCHEM/NAME/COLUMN_NAME、KEY_SEQ、UPDATE_RULE、DELETE_RULE、FK_NAME、PK_NAME、DEFERRABILITY；两行 (b,b,1)、(a,a,2)，CASCADE=0、SET_NULL=2、NOT_DEFERRABLE=7，FK_NAME=jdbc_probe_fk。名称与索引名来自真实对象，不硬编码 AsterSQL 的 PRIMARY 代替参考端命名；差异须记录。服务器名称 name/19、KEY_SEQ/CASE int4/23，与 catalog 不匹配时驱动自造空结果中的 Field 类型分别取证。 |
+| JDBC-INDEX | 十四列含标准十三列及本 tag 的 REMARKS：TABLE_CAT/SCHEM/NAME、NON_UNIQUE、INDEX_QUALIFIER、INDEX_NAME、TYPE、ORDINAL_POSITION、COLUMN_NAME、ASC_OR_DESC、CARDINALITY、PAGES、FILTER_CONDITION、REMARKS。应找到真实主索引及 jdbc_probe_label_idx，label 索引 NON_UNIQUE=true、位置1、COLUMN_NAME=label；unique=true 不含该非唯一索引，approximate=true 与 false 都取证。INDEX_QUALIFIER=NULL，普通无 predicate 的 FILTER_CONDITION=NULL、无注释 REMARKS=NULL；ASC_OR_DESC 只按真实 AM/option 判断。服务器名称 name/19、布尔16、TYPE/展开序号 int4/23、CARDINALITY float4/700、PAGES int4/23、定义文本25；不能照驱动 catalog 不匹配空结果的 INT8 Field 伪造 wire 类型。统计数值以参考现场和真实来源为准，不预设0。 |
+| JDBC-TYPES | 18 合成列逐项采集：TYPE_NAME、DATA_TYPE、PRECISION、LITERAL_PREFIX/SUFFIX、CREATE_PARAMS、NULLABLE、CASE_SENSITIVE、SEARCHABLE、UNSIGNED_ATTRIBUTE、FIXED_PREC_SCALE、AUTO_INCREMENT、LOCAL_TYPE_NAME、MINIMUM_SCALE/MAXIMUM_SCALE、SQL_DATA_TYPE、SQL_DATETIME_SUB、NUM_PREC_RADIX。基础类型必须含 int4→INTEGER/4、varchar→VARCHAR/12，与规范类型表一致；serial 是驱动合成且无新增服务器 OID。合成文本 varchar/1043、标志 bool/16、DATA_TYPE/NULLABLE/SEARCHABLE/scale int2/21、precision/未用 SQL 类型字段/radix int4/23；CREATE_PARAMS/LOCAL_TYPE_NAME/未用 SQL 字段 NULL，引用符对不需引用类型 NULL。服务器仅 typname/name19、oid26 与补充查询字段另采，不能拿 JDBC DATA_TYPE 替代 t.oid。 |
+| JDBC-PARAMETERS | 七项基线之外，各方法有 nullable 参数处分别测试 null、空字串、不同 catalog；getTypeInfo 无参数。pattern 参数 null 表示不加 LIKE，空字串不是 null；%/_ 是模式，转义取 getSearchStringEscape 并记录。PK/FK/index schema/table 是精确名称，含%不应被当通配符。types=null 与空数组、TABLE/VIEW、unique 两值、approximate 两值均采。catalog 不匹配可由驱动本地造零行，不得登记服务器空集；本 tag 的 getSchemas 空结果字段与非空路径存在差异，须保留实际描述而非补造统一顺序。 |
+| JDBC-LIVE/CASE/PRIVILEGE | 建表前→建表后→ALTER TABLE public.jdbc_probe ADD COLUMN extra integer→删子表→重建的七项相关结果刷新；新元数据调用不能留旧 OID/列/约束。每步 autocommit，A/B 连接可见性及新 portal 沿目录更新块。带引号混合大小写及含下划线名称沿第 2/5 章，分别精确/模式查询。真实非 owner 的无 CONNECT、无 schema USAGE、无表 SELECT 夹具沿权限块；分别比较 hideUnprivilegedObjects 两值，不把无 SELECT 一概视为目录零行，不把 bootstrap root 测试当授权覆盖。 |
+| JDBC-REJECTION/RECOVERY | 目标合法七调用均应成功；若必要目录/函数/表达式未实现，按目录求值块在分析/绑定或执行记录明确 0A000 能力拒绝、具体 SQL 与阶段，再 SELECT 1 验证恢复；真实缺关系用42P01，权限错误按42501契约。不能由本轮未运行推断实际 SQLSTATE 或错误文本，也不能吞错误返回空 ResultSet。 |
+
+第 8 章后续实跑需保存每条原始 SQL/逐参数值类型格式、列描述与有效行数、getObject/getString/wasNull、getColumnType/getColumnTypeName、调用/异常栈及退出码，逐列回填首块模板（包含连接数据库/角色/path及列的表 OID/属性号）。无参考 PostgreSQL 18.6 构建、REL42.7.8 实际 JAR 或完整补充查询记录时，相应精确行为写未取证，不报告客户端通过。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -5193,6 +5275,10 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### 命令行客户端内省流程
 
 按 CLI-LIBPQ 的行/描述及参数闭环、CLI-PSQL 的固定版本 -E 查询采集、CLI-EMPTY/PRIVILEGE 的空库与权限各拆独立实施/取证任务；测试及 probe.sql 均待新增。复用现有 pg_client_integration_test.rs 的真实 domain 接线并保持测试与生产文件分离，不在本任务扩写代码。第 7 章承接 wire 描述/错误恢复，第 8 章运行冻结查询、DDL 前后列表/描述/删表重查并保存证据。运行揭示的字段、类型或权限缺口回交对应窄块，不扩大本块为完整客户端兼容工程。
+
+#### 驱动元数据内省流程
+
+后续分别建立“schemas/tables 请求采证”“columns 与类型缓存请求”“复合主外键展开”“index 与真实统计”“typeInfo 与驱动合成字段”窄任务，每项复用本章公共字段契约，先固定 REL42.7.8 两端实采 SQL/参数与全部描述，再限定最小实现及独立测试。Java DatabaseMetaData 验收入口、JAR 散列、启动/清理、差分运行及证据归档交第 8 章；所有新测试/日志产物均待新增，不在本任务创建。
 
 ## 7. 线协议认证与数据通道
 
