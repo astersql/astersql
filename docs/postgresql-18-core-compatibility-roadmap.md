@@ -2673,6 +2673,19 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 上述测试本轮均未运行，有效运行用例数0。[协议第一阶段](postgresql-protocol-first-phase.md)为历史边界参考，不是本轮支持证据。
 
+#### 事务型建表能力门槛
+
+本块承接来源任务步骤 3–4 的事务型 DDL 原型与底层限制，能力 `SESSION-TX-DDL/pg` 为 PG 专属目标，关联 `SESSION-TX-DDL/mysql` 的原生共存契约。批次 14 提交 `e8b9292494`、13 的 `bd8f486b17`、12 的 `7da3761700` 及累计 1–11 顺序提交与五节正文已核对，依赖满足。复用第 2 章名称/语法、第 3 章固定描述、第 4 章表达式及前块 I/T/E、失败恢复和 Sync；继续共享 TiDBContext、规范会话、元数据与存储，不另建 PG 引擎。
+
+2026-10-23 在上述批次 14 基线上经 RustCodeGraph 定点读取以下静态证据；先读 [DDL 入口](agents/ddl/README.md) 和 [doc.go](../pkg/ddl/doc.go)，server、session、executor 无包级 doc.go。运行测试数为 0；[协议第一阶段](postgresql-protocol-first-phase.md) 是历史说明，不能提升本块的证据等级。
+
+| 路径与实际符号 | 现状、断言意图与边界 |
+| --- | --- |
+| [pg_session.rs](../pkg/server/pg_session.rs)::PgSession::check_transaction_command、record_error、record_success、transaction_status | 共享 context.in_transaction 为真时，失败态先拒绝除 ROLLBACK 外的命令为 25P02；正常态对 CREATE TABLE、DROP TABLE、CREATE DATABASE、DROP DATABASE、ALTER TABLE、TRUNCATE TABLE 六类命令返回产品限制 0A000。record_error 在活跃事务设置失败标志，状态由共享事务和该标志组成 I/T/E；不是 PG 对所有 DDL 的规则。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)::command | DropTableStmt.IsView 单独映射 DROP VIEW，不在上述六类集合；其他未知命令可能先在 command 被拒绝。DROP VIEW 只能列为门禁覆盖/事务副作用调查缺口，不能因未列而声明可事务；同理不得推断 CREATE VIEW、索引、序列等命令支持。 |
+| [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback、prepared_dml_commit_and_rollback | 前者断言 BEGIN 后 CREATE TABLE 返回 0A000、ReadyForQuery E，再 ROLLBACK→I；另有 DML 错误、25P02 和恢复断言。后者断言两连接 prepared DML 的提交可见、回滚与关闭后不多行。没有六类 DDL 的完整副作用矩阵、事务建表成功或元数据原子性断言；本轮只读未运行。 |
+| [ddl.rs](../pkg/executor/ddl.rs)::DDLExec::Next、DdlRuntime；[runtime/ddl.rs](../pkg/session/runtime/ddl.rs)::ConcreteSession | 前者先 new_transaction_in_statement，再 dispatchDDL，成功后 refresh_transaction_infoschema、leave_transaction；后者承载 DDL 元数据与 job 操作。泛型执行器的存在及局部 runtime 阅读不证明 PG 工厂完整接线或 DDL 能加入用户事务。DDL 入口所述 job/owner、schema version/sync、MDL 与持久化均是后续原型须逐项实证的依赖，不能把 DDL job 自身回滚当用户事务回滚。 |
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2881,6 +2894,22 @@ Parse语法/分析错误、Bind参数转换错误、Execute执行错误分开记
 
 官方依据于 **2026-10-23** 访问，适用 **PostgreSQL 18大版本**：[§54.2.3扩展查询及§54.2.4流水线](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY)用于丢弃至Sync、隐式事务边界和显式块保留；同页[§54.2.8取消](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-CANCELING-REQUESTS)用于取消结果须从原连接观察；[§54.7 ReadyForQuery](https://www.postgresql.org/docs/18/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-READYFORQUERY)用于I/T/E；[附录A错误码](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对23505、25P02、42601、22P02、57014的条件名称（页面表格标注18.6，仅作代码名称依据）。以上是规范目标，未运行PG参考端；来源指定18.6的补丁发布、精确诊断和运行行为未核实。
 
+#### 事务型建表能力门槛
+
+事务型建表先做独立、局部可行性验证，目标限于普通持久表 `CREATE TABLE → INSERT → ROLLBACK`。同连接应读到自己未提交的表与行；另一连接不得看到未提交对象/行；回滚后双方目录、名称解析和数据都无该表，已有表的先行写入也撤销，以检测隐式提交。提交分支须使对象、列/主键及数据在同一用户事务边界对外可见。只看到 CREATE TABLE 标签、内省伪行或事后补偿 DROP，均不证明原子性。
+
+| 方案 | 权衡与决定 |
+| --- | --- |
+| 在 PG 边界保留显式事务 DDL 拒绝 | 阻止进入已知不适配的事务路径，能力有限；仍须证明拒绝发生在副作用前、不提交前缀写入，并覆盖简单/扩展入口。当前保留。 |
+| 在共享会话/DDL/存储做有界原子性原型 | 可验证目标，但依赖同事务元数据可见性、schema version/目录失效、锁与数据提交/回滚协调。先拿最小探针证据，确认底层能提供，再另立实施计划；本轮只写规格。 |
+| 改 CommandComplete 或回滚后补偿删除 | 标签不改变提交边界，补偿无法撤回其他连接已见状态，且可在删除前失败；不采用为事务型 DDL 实现或证据。 |
+
+PG 自身限制与产品门禁分开：[CREATE DATABASE](https://www.postgresql.org/docs/18/sql-createdatabase.html) 和 [DROP DATABASE](https://www.postgresql.org/docs/18/sql-dropdatabase.html) 的 Notes 明确禁止事务块内执行，DROP 还禁止删除当前连接库；这些不是表级事务型 DDL 待开放能力。[CREATE INDEX](https://www.postgresql.org/docs/18/sql-createindex.html#SQL-CREATEINDEX-CONCURRENTLY) 区分普通建索引可在事务块内与 CONCURRENTLY 禁止事务块，不能把所有 DDL 一概类推。普通 [CREATE TABLE](https://www.postgresql.org/docs/18/sql-createtable.html)、[DROP TABLE](https://www.postgresql.org/docs/18/sql-droptable.html) 结合 [§3.4 Transactions](https://www.postgresql.org/docs/18/tutorial-transactions.html) 的原子性/中间状态隔离作为表级目标依据；DROP/ALTER/TRUNCATE 各自仍需专项证据，不由建表原型开放。
+
+官方版本均为 **PostgreSQL 18**，访问日期 **2026-10-23**；这里规定目标，不声称已实测，也未证明 18.6 精确补丁行为/诊断。[§13.1 MVCC](https://www.postgresql.org/docs/18/mvcc-intro.html)、[§67.1 Transactions and Identifiers](https://www.postgresql.org/docs/18/transaction-id.html)、[§28.3 WAL](https://www.postgresql.org/docs/18/wal-intro.html) 分别定义快照、事务标识与日志恢复概念。不得用 TSO、连接计数或响应标签伪造 PG XID/xmin、快照可见性、WAL/LSN 或崩溃恢复；真实来源缺失须按第 1/3/6 章的字段能力明确拒绝或允许时返回有类型 SQL NULL，不能用固定值伪装。通过可观察原子性也不等于复制 PG 内部存储格式。
+
+准入要求：固定两端版本/共享存储模式、真实 PG 工厂链、双连接目录观察及超时采证方法、事务前缀哨兵和独立测试入口，先取得当前拒绝基线；缺任何一项记录缺证。退出分为：全部最小探针与失败清理/共存取证通过，只允许提议该普通建表子集的后续实施；出现提前提交、泄露或残留则原型不通过、保留拒绝并记录底层限制；因目录/环境/观察无法取证则结论未知、保留拒绝并交具体缺证项。原型通过亦须后续真实实现及 Ready 证据后才能调整门禁，不能顺带解禁六类 DDL。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2938,6 +2967,10 @@ Parse语法/分析错误、Bind参数转换错误、Execute执行错误分开记
 #### 协议同步与事务恢复边界
 
 不实现Sync提交/回滚接线、事务门禁或取消，不搭建协议状态机、驱动流水线、数据库/差分平台；不将当前Sync无事务调用直接定为运行缺陷。COPY、特殊DDL的提前提交、多个同步段/COMMIT交错、保存点、输出阶段或提交时失败、网络中断与取消提交竞态另取窄证据，不能套用本块普通DML断言。完整wire消息、错误优先级、Close/portal/statement生命周期及取消密钥归工作流7，真实目录归6，双方言客户端归8；本轮不改第1–4及6–8章。
+
+#### 事务型建表能力门槛
+
+本轮不运行或实现原型，不改 Rust/Go、DDL job/owner、parser、存储、目录或协议，不调用 Cargo/Go/数据库实验；只交付文档。普通建表探针不覆盖完整事务 DDL、临时/UNLOGGED 表、CREATE TABLE AS、分区、外键/触发器、序列/identity、savepoint、并发同名 DDL、跨库、集群故障或崩溃持久性。CREATE/DROP DATABASE 等 PG 本身禁用项另保留限制；DROP VIEW 等未列门禁路径仅调查，不能凭空判为支持或确定缺陷。缺共享元数据原子性时列为独立可行性限制，不递归补建完整 DDL 或第二引擎，不用 MySQL DDL 近似语法证明 PG 等价；不修改前序块、第 1–4/6–8 章及来源计划。
 
 ### 验收
 
@@ -3310,6 +3343,26 @@ rollback-success、commit-exit、outside-error 的 Q 模式每条SQL一个消息
 
 共存 `session.txn.sync.mysql.coexist`（待新增、未运行）：同Server独立MySQL M/N，记录sql_mode、transaction_isolation，SET autocommit=1；事务外 `CREATE TABLE tx_sync_mysql (id INT PRIMARY KEY,value INT NOT NULL)`、`INSERT INTO tx_sync_mysql VALUES (1,10),(2,20)`。OM=`SELECT id,value FROM tx_sync_mysql ORDER BY id`。M START TRANSACTION、UPDATE tx_sync_mysql SET value=21 WHERE id=2，M OM=[(1,10),(2,21)]、N OM=S0；保持M事务，PG独立表执行explicit-error和implicit-error，M/N再次OM保持各自值、SELECT 1=1。M ROLLBACK后两者S0；再M START TRANSACTION、INSERT INTO tx_sync_mysql VALUES (5,50)、COMMIT，N OM=[(1,10),(2,20),(5,50)]。记录MySQL自身OK/ERR、状态位/类型标志及真实MySQL或既有原生基线，不向MySQL发送Sync或套用PG失败策略；M/N先ROLLBACK再事务外DROP TABLE tx_sync_mysql。
 
+#### 事务型建表能力门槛
+
+下列 `session.txddl.pg.*` 为**待新增、未运行**的用例规格，关联 `SESSION-TX-DDL/pg`；当前产品门禁基线与未来原型成功目标分开采证。A/B 为同一全新隔离测试库的 PG 两连接，UTF-8、UTC、search_path=public、初始 I、具夹具权限、无其他写入者；参考端 READ COMMITTED，产品端记录实际隔离/存储与差异。每例独立在事务外逐条执行 `CREATE TABLE public.txddl_sentinel (id integer PRIMARY KEY,v integer NOT NULL)`、`INSERT INTO public.txddl_sentinel VALUES (1,10)`；保证 public.txddl_probe 不存在。S=`SELECT id,v FROM public.txddl_sentinel ORDER BY id`，初始双方 [(1,10)]。D=`SELECT n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='txddl_probe'`，初始双方零行。P=`SELECT id,v FROM public.txddl_probe ORDER BY id`；未建/回滚后 P 应缺关系而非成功零行，精确诊断待参考采集。
+
+每条 SQL 单独发送 Q 并收 ReadyForQuery；另独立用同 SQL 的命名 Parse/Bind（无参数、text 结果）、Execute(max_rows=0)、Sync 重跑；任何 Parse/Bind 早拒绝也要记录真实阶段，不能只因未 Execute 而省略副作用检查。扩展错误先 Sync 恢复消息处理；显式 E 仍须 ROLLBACK。目录 D 失败或提供器不支持不能改成固定行，应登记缺证，不把内省缺口当表不存在。
+
+| 用例与完整操作顺序（每例独立初态） | 目标、副作用与恢复 |
+| --- | --- |
+| rollback：A `BEGIN`、`UPDATE public.txddl_sentinel SET v=11 WHERE id=1`、`CREATE TABLE public.txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)`、`INSERT INTO public.txddl_probe VALUES (1,20)`；每步 A/B 采 S/D，插入后 A 采 P；A `ROLLBACK` 后双方采 S/D/P | 参考/未来原型：建表后 A D 一行 public/txddl_probe/r，插入后 A P=[(1,20)]、A S=[(1,11)]；B S 初值、D 零行。回滚后双方 S 初值、D 零行、P 缺关系；A I，SELECT 1=1。同名表在事务外可重新建/删，证明无名称残留。当前产品应在 CREATE 返回0A000/E，跳过其后的INSERT，按 reject 恢复；不能将产品拒绝当原型成功。 |
+| commit：同 rollback 前缀至插入后，以 A `COMMIT` 替换 ROLLBACK；双方再 S/D/P | 提交前观察同上；提交后 A/B S=[(1,11)]、D一行、P=[(1,20)]，A I。目录列/主键再用 `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='txddl_probe' ORDER BY ordinal_position`、`SELECT constraint_type FROM information_schema.table_constraints WHERE table_schema='public' AND table_name='txddl_probe' ORDER BY constraint_type` 采真实结果，目标 id/v 为 integer、均 NOT NULL，单一PRIMARY KEY；精确类型/元数据按第3/6章采证。当前门禁下此成功分支不可执行，记未验证。 |
+| reject：A BEGIN、UPDATE哨兵为11，分别独立发送 `CREATE TABLE public.txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)`、`DROP TABLE public.txddl_sentinel`、`ALTER TABLE public.txddl_sentinel ADD COLUMN extra integer`、`TRUNCATE TABLE public.txddl_sentinel` 四轮；各轮首错后 A `SELECT 1`、`COMMIT`，B S/D，再 A ROLLBACK，双方 S/D | 产品当前限制目标首错0A000/E，之后25P02/E，不隐式提交、不得建表/删表/加列/清空。ROLLBACK→I、S初值、D零行，双方 `SELECT id,v FROM public.txddl_sentinel ORDER BY id` 成功且 `SELECT extra FROM public.txddl_sentinel` 缺列（精确诊断待采）；A SELECT 1成功。PG 对这些合法表级命令应按各自行为执行并可回滚，不能以产品0A000冒充参考预期；该四轮是限制基线，不开放完整四类能力。 |
+| write-failure：仅参考/未来原型，A `BEGIN`、`UPDATE public.txddl_sentinel SET v=11 WHERE id=1`、`CREATE TABLE public.txddl_probe (id integer PRIMARY KEY,v integer NOT NULL)`、`INSERT INTO public.txddl_probe VALUES (1,20)`，再 `INSERT INTO public.txddl_probe VALUES (1,30)` | 目标重复键失败，SQLSTATE目标23505、E；Sync不退出显式E，后续SELECT 1目标25P02。B始终S初值、D零行；A ROLLBACK后双方S初值、D零行、P缺关系，再SELECT 1成功并可同名建表。记录DDL已完成而用户事务失败的清理，不以DDL job自身回滚替代；当前产品在CREATE早拒绝则单列未覆盖此失败点。 |
+| database-restrict：A连接夹具库，另有事务外预建的空库 txddl_drop_db 且无连接；txddl_create_db不存在。每轮 A BEGIN、UPDATE哨兵为11，分别 `CREATE DATABASE txddl_create_db` 或 `DROP DATABASE txddl_drop_db`；首错后Sync（扩展组）、ROLLBACK | PG自身禁止事务块，产品六类门禁目标0A000/E；PG精确码/消息/阶段待参考采证，不套产品码。双方 `SELECT datname FROM pg_catalog.pg_database WHERE datname IN ('txddl_create_db','txddl_drop_db') ORDER BY datname` 始终仅txddl_drop_db，回滚后S初值、A SELECT 1成功；夹具库不能作为DROP目标。 |
+
+rollback/commit/write-failure 每次目录观察必须在对应阶段完成后再继续下一步；B 若做直接 P 名称解析或访问而阻塞，须用独立观察轮次、受控超时/取消并记录等待与锁时序，不要求所有访问立即报缺关系，不让观察查询拖住 A 的 COMMIT/ROLLBACK。未提交时绝不能成功读到对象/数据；目录查询是否阻塞与精确结果也要两端采集，无法建立可靠观察则结论未知。A 失败态不强行读目录，改由 B 观察及 A 恢复后核实。错误后清理先 Sync（若需要）再 ROLLBACK→I；事务外按存在性查询结果逐条 DROP TABLE public.txddl_probe、DROP TABLE public.txddl_sentinel；从非目标库的管理连接 DROP DATABASE txddl_drop_db，若失败残留 txddl_create_db 则先存证再删除。删除是测试清理，不能算原子性证据。
+
+故障清理另列原型必备缺证项：在提交前、已提交确认前、会话关闭/取消与DDL元数据发布边界设可控故障点（测试能力**待新增**，不假定接口已存在），以rollback同一输入和S/D/P验证无泄露/残留；提交确认不确定时记录真实事务结局，不声称自动回滚。成功CREATE/INSERT/control无结果列，标签/影响行数单存；S/P整数列、D及目录元数据、所有错误S/V/C/M及适用D/H/P、I/T/E/阶段/取消时序按公共模板采证，精确OID/typmod/对象身份与PG18.6诊断未采，不编数值。崩溃恢复须另有持久存储证据，本轮原型规格不代替。
+
+共存 `session.txddl.mysql.coexist`（待新增、未运行），关联 `SESSION-TX-DDL/mysql`：同Server独立MySQL库，M/N记录sql_mode、隔离与数据库，SET autocommit=1；事务外 `CREATE TABLE txddl_mysql (id INT PRIMARY KEY,v INT NOT NULL)`、`INSERT INTO txddl_mysql VALUES (1,10)`。M START TRANSACTION、`UPDATE txddl_mysql SET v=12 WHERE id=1`，M `SELECT id,v FROM txddl_mysql ORDER BY id`=[(1,12)]、N同查询=[(1,10)]；交错PG reject/恢复后重复双方读取，结果不变。M ROLLBACK后双方[(1,10)]；M `START TRANSACTION`、`INSERT INTO txddl_mysql VALUES (2,20)`、`COMMIT` 后N读[(1,10),(2,20)]。原MySQL Query及 Prepare `SELECT v FROM txddl_mysql WHERE id=?`/Execute整数1分别核对值、类型/flags及状态位，不能套PG门禁。另用独立轮次，重建同结构txddl_mysql且仅有(1,10)，M `START TRANSACTION`、`UPDATE txddl_mysql SET v=13 WHERE id=1`、`CREATE TABLE txddl_mysql_ddl (id INT PRIMARY KEY)`、ROLLBACK，采双方数据/元数据并与真实MySQL或既有原生基线比较其隐式提交行为；这里不要求PG式回滚，也不预报实测结论。M/N回滚到空闲后事务外DROP两个MySQL表，记录恢复基线。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -3395,6 +3448,14 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 1. 先扩充现有独立pg_extended_test.rs与pg_transaction_test.rs的显式/隐式成功和错误段完整值断言，再确定共享会话最小提交/撤销接线；无BEGIN段的原子性不可从单条自动提交测试推导，不补建第二套事务引擎。
 2. 分别取得Parse、Bind、Execute与有效取消的阶段/副作用证据，单列提前绑定portal与Q/扩展交叉门禁；工作流7负责受控取消屏障、消息顺序、对象生命周期及致命错误边界，避免将框架搭建塞入本题文档。
 3. 来源步骤3由两种Sync序列与I/T/E分层承接，步骤4由前缀撤销、恢复新写和MySQL共存承接；批次13提供失败态出口，15接事务型DDL门槛，工作流1/8采参考与共存证据。正确性风险为部分写入提前提交、Sync误清显式E或旧portal绕门禁；兼容性风险为隐式边界、错误阶段及取消生命周期差异；性能未测，无结论。本块完成仅指文档，未证明PG18.6支持，不生成或执行代码任务。
+
+#### 事务型建表能力门槛
+
+来源步骤 3 的事务型 DDL 与不可伪造内部身份由最小rollback/commit探针、准入退出和MVCC/XID/WAL规则承接；步骤 4 的底层限制、成功/副作用、失败继续性和MySQL共存由reject/write-failure/database-restrict及共存用例承接。五节本块文档完成不表示可事务化。
+
+后续仅交接普通建表的共享元数据/数据提交边界、双连接目录与名称可见性、错误/关闭后的资源清理三个窄调查面；先为真实工厂与独立测试补证，再另立遵循PLANS.md的原型实施计划。通过只可建议该子集实施，不通过写明底层限制，无法取证列具体环境/目录/故障屏障缺口；三种结局均不得自动删除当前门禁。DROP/ALTER/TRUNCATE及未列门禁命令逐项调查，数据库自身禁用项保留，完整DDL/存储子系统不纳入该原型。
+
+工作流6承接真实对象/目录失效，7承接精确wire与关闭/取消屏障，1/8承接版本参考与MySQL共存；批次16汇总第5章交接，不把本块当运行通过。正确性风险是前缀隐式提交、对象先发布或回滚残留，兼容性风险是把产品拒绝与PG自身限制混同、目录与锁时序差异；均未运行验证。性能未测试，无吞吐、延迟、锁等待开销或扩展性结论。
 
 
 ## 6. 系统目录与内省契约
