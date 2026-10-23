@@ -3645,6 +3645,20 @@ Q与扩展Parse/Describe/Bind/Execute工厂、共享快照、结果编码沿“�
 
 Q/扩展Parse→Describe→Bind→Execute工厂、共享ConcreteTiDBContext快照与结果编码沿“目录执行链与证据模板”；表/索引身份沿关系及索引块、属性号沿列块，不新建执行器。[lib.rs](../pkg/server/lib.rs)独立注册 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_constraints_live：真实domain夹具覆盖p/u、复合FK、父索引关联、1005/1028/18描述、删除FK后prepared重执行刷新及NULL/未知反解意图；无CHECK/延迟/验证状态的成功断言。独立 [pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::pg_datagrip_structure读取 [1869280154.sql](../pkg/server/testdata/pg_datagrip/1869280154.sql)，断言唯一键{2,1}、索引关联、排除操作符NULL和展开空数组。模板18列及SQL是仓库证据，没有DataGrip版本/驱动/实际采集来源，不冒称官方客户端生成查询或本轮通过。
 
+#### 默认表达式目录契约
+
+承接来源任务步骤 1、2，能力 `CAT-DEFAULT/pg`。批次 8 约束块提交 `52f558f71f`、累计批次 7–1 的 `84fb929330` / `1807f7800b` / `af67d135cf` / `7ade409a9d` / `9bd191c612` / `b7ff2288b8` / `946e9b2c20` 的五节正文及第 1–5 章交接已核对，依赖满足。以下是 2026-10-24 在 `52f558f71f` 经 RustCodeGraph status/explore/定点 node 与补充源码阅读得到的静态证据；server、meta/model 均无 doc.go，测试运行数 0。
+
+| 实际路径/符号 | 当前事实与缺口 |
+| --- | --- |
+| [column.rs](../pkg/meta/model/column.rs)::ColumnInfo / GetDefaultValue | 当前 DefaultValue 与 OriginDefaultValue 分开；前者配合 DefaultValueBit 返回当前值，后者不能用于 ALTER 后反解。DefaultIsExpr 区分表达式字符串，GeneratedExprString/GeneratedStored 保存原生生成表达式及存储方式，Dependences 是名称集合。Option 的 None 本身不能证明显式 DEFAULT NULL 与无 DEFAULT 可区别；没有 PG 表达式树或默认对象独立持久 OID。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::column_default | 生成表达式非空先拒绝；None 返回无默认。布尔只收 0/1/false/true，数值经有限 f64 检查后保留文本；bytea、非 UTF-8、非有限浮点、零日期拒绝。表达式仅允许 CURRENT_TIMESTAMP 与精度 0–6（包括原生引号精度归一），其余 DefaultIsExpr 拒绝；不能由白名单推定时区/事务时间语义等价。其他常量按类型名加引号和 cast，只转义单引号，反斜线与客户端编码仍需验证。 |
+| 同文件 column_catalog_rows / column_catalog_field | 从当前库共享快照取公开表/列，按 column.Offset+1 形成 adnum，column.ID 用于模型身份校验；adrelid 沿 table_oid。仅 Some(default) 生成三槽行：adrelid/adnum/`relid:SQL片段`；adbin 当前是 text/25，目标 pg_node_tree/194 尚缺；没有 oid 字段绑定。pg_attribute.atthasdef 同取 default.is_some，attgenerated 为空。过滤前构造整库列行，其他表不支持的默认表达式也可能令查询拒绝，不能保证 WHERE 可隔离坏模型。 |
+| 同文件 expr_type / evaluate | pg_get_expr 只绑定二参数（文本、数值），NULL 任一参数返回 NULL；非 NULL 以冒号拆 owner，匹配 relation 后返回后缀，未解析 PG nodeToString，也未校验伪造树。三参数 pretty 签名未接。无 Vars 常量配 relation=0 的 PG 用法当前仍因 owner 不符拒绝。 |
+| [pg_sql.rs](../pkg/server/pg_sql.rs)::column_suffix | ALTER COLUMN 重建后缀保留当前默认值，拒绝生成列；DefaultIsExpr 或 CURRENT_TIMESTAMP 前缀字符串可直接进入原生 DDL。这是普通 SQL 适配，不能替代 PG 默认定义反解的语义验证。 |
+
+Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据模板”；OID/attnum 沿关系与列块，不另建执行器。[lib.rs](../pkg/server/lib.rs) 独立注册 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live，含真实 domain 的属性 LEFT JOIN 默认定义、常量/时间默认、零行描述、NULL 输入、假表达式拒绝及 ALTER 后重读意图；pg_introspection_dependencies_live 包含序列引用默认值拒绝。这些是手写 wire 测试，均未运行，不是客户端采集或功能通过证明。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3796,6 +3810,22 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 固定宽度目标：oid/26与xid/28为4、name/19标准构建64、内部char/18及bool/16为1、int2/21为2，数组/pg_node_tree/text为−1，所有上述目录表达式typmod−1；内部零字节在DataRow是长度1的载荷，不与SQL NULL长度−1混同。所有字段text/binary Describe及载荷沿第3章验证，name/text、194/25及28/20差异须如实登记。真实目录无约束才允许类型正确空集；不支持字段在分析/绑定期拒绝，坏元数据或表达式无法保真在执行输出前拒绝；产品0A000不冒充PG对合法请求的拒绝。
 
+#### 默认表达式目录契约
+
+目标依据（PostgreSQL 18，访问 2026-10-24）：[pg_attrdef](https://www.postgresql.org/docs/18/catalog-pg-attrdef.html) 定义四字段及列关联；[pg_get_expr](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-CATALOG-TABLE) 定义二/三参数反解和无 Vars 时 relation=0；[默认值](https://www.postgresql.org/docs/18/ddl-default.html) 定义插入时求值；[生成列](https://www.postgresql.org/docs/18/ddl-generated-columns.html) 定义表达式限制和 STORED/VIRTUAL；[columns](https://www.postgresql.org/docs/18/infoschema-columns.html) 提供默认/生成字段及权限区别。仅作为大版本目标；18.6 参考构建、精确错误位置及运行结果未取证。
+
+| 需求→字段/调用 | 真实来源、关联及 PG 类型（typmod 均 −1） | 目标与不支持策略→验收 |
+| --- | --- | --- |
+| DEF-ID→oid | 独立默认对象持久身份，关联表 ID/稳定列 ID/对象生命周期；oid/26，4字节非NULL | 当前无来源，待建立且不可复用表OID或临时位置；不得 hash/填0/NULL。删除默认后对象消失，SET 新默认的对象身份变化须按参考构建取证→DEF-META。 |
+| DEF-KEY→adrelid/adnum | 当前表OID→pg_class.oid，Offset+1→同表pg_attribute.attnum；oid/26（4字节）、int2/21（2字节）非NULL | 必须与公开列同源，不能把列ID直接当属性号；真实有默认或生成表达式才有行，缺对象为空集→DEF-BASE/META。 |
+| DEF-TREE→adbin | 持久、已绑定的默认/生成定义及列/类型/函数依赖；pg_node_tree/194，变长非NULL | 是内部表达式表示，不能冒充普通SQL；当前私有relid前缀不是PG树。需要真实转换与codec，否则读取必需定义在成功行前0A000；不以NULL/空集掩盖→DEF-BASE/GENERATED。 |
+| DEF-DEPARSE→pg_get_expr(adbin,relation[,pretty]) | 同一表达式定义/依赖与关系上下文；参数194/26/[16]，返回text/25，变长可NULL | 非NULL树重建语义等价SQL，默认pretty=false；pretty仅格式变化；无Vars允许0，有列引用须正确上下文。NULL输入正常传播；非法树/缺上下文须拒绝，不回显任意文本。精确PG错误另采；产品暂不支持树转换时执行前0A000→DEF-BASE/ARG。 |
+| DEF-PROJECTION→atthasdef/attgenerated、column_default/generation_expression | 同一列定义；前两项bool/16、内部char/18；后两项information_schema.character_data域（底层varchar/1043，域OID须由参考构建取证） | 无默认、SQL NULL默认、文本'NULL'、常量、运行时函数、生成表达式分开。information_schema仅显示当前用户有权访问的列，生成列的column_default为NULL、generation_expression有定义；pg_catalog不套用该视图权限过滤。复用列块与后续information_schema块，不在此宣称视图已接线→DEF-BASE/GENERATED/ACCESS。 |
+
+安全翻译以已绑定类型与语义为前提：整数7、bool true、text的O'Reilly经正确引用/转义后可作为最小子集；CURRENT_TIMESTAMP须核实第3/4/5章时区、事务时间和精度，不能仅改拼写。原生 IFNULL、反引号标识符、未解析函数文本、无真实序列引用的nextval、未知编码/类型、零日期须拒绝或进入独立转换任务。显式 DEFAULT NULL 是否形成目录行须采参考构建的归一行为，不要求凭空制造对象；但客户端不能把无行/SQL NULL与文本常量'NULL'混淆，不能靠固定NULL替代必需定义。
+
+官方客户端证据：[psql REL_18_STABLE describe.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)::describeOneTableDetails 在列详情子查询按 adrelid/adnum/atthasdef 调三参数 pg_get_expr（pretty=true）。这证明查询形状需求，分支可变且未固定客户端构建；本块下方是人工探针，并非完整psql抓包。DataGrip/JDBC/ORM精确版本与SQL未采集。目录可读不授予表SELECT、函数EXECUTE或序列USAGE；内省不得执行默认函数或推进序列。search_path只影响合法名称反解，不能改变存储身份或跨库泄露。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3835,6 +3865,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 本块只写pg_constraint/pg_get_constraintdef契约，不实现约束DDL、延迟检查、历史数据验证、FK级联、CHECK绑定器、PG节点树或操作符/域/继承/分区/时态子系统，不改第2–5章，不运行Cargo或真实客户端。NOT NULL在PG18也有contype=n行，排除/触发器/域约束亦不能从“本块只取p/u/f/c”推断完整目录已覆盖；相应来源与拒绝门槛交后续窄任务，不删减PG目标。information_schema约束视图交批次18。
 
 现有独立唯一索引来源混同、CHECK令provider全库失败、缺验证/延迟标记及不完整父模型校验仅登记，不扩大为代码修复。既有坏对象被WHERE排除也不保证查询成功，有界求值块另验；既有不可反解对象不得偷偷丢行。副作用、即时/延迟执行、提交/回滚与失败恢复引用第5章，第7/8章承担wire和真实客户端运行，不用本轮文档验收宣称实现通过。
+
+#### 默认表达式目录契约
+
+只定义默认/生成表达式目录事实及反解契约；不实现表达式树、默认OID分配器、information_schema视图、生成列执行器、序列/identity、函数工厂或客户端适配。继承/分区默认覆盖、域默认与任意PG内部树的完整序列化另行细分；本块必需定义缺失须明确拒绝。当前整库扫描导致无关坏默认使查询失败是待实施缺口，本任务不扩展修复。
 
 ### 验收
 
@@ -4137,6 +4171,38 @@ SELECT c.confmatchtype,c.conislocal,c.coninhcount,c.conparentid,c.contypid,
 
 清理按实际建立顺序反向执行 `DROP TABLE IF EXISTS public.con_clone;`、`DROP TABLE IF EXISTS public.con_clone_parent;`、`DROP TABLE IF EXISTS public.con_child;`、`DROP TABLE IF EXISTS public.con_parent;`、`DROP TABLE IF EXISTS public.con_other;`、`DROP TABLE IF EXISTS public.con_defer;`、`DROP TABLE IF EXISTS public.con_validate;`、`DROP TABLE IF EXISTS public."Con Mixed";`，其他克隆以实际名字清除；失败事务先按第5章ROLLBACK，不用CASCADE隐藏依赖。关闭prepared/portal，RESET search_path。后续采集两端完整构建/角色/授权、模型及目录前后快照、SQL/Bind/Describe/行/错误与有效场景数；psql18用-E实采 `\d public.con_child`，DataGrip保存版本/驱动/真实SQL。产品功能、18.6及客户端结果均未运行。
 
+#### 默认表达式目录契约
+
+以下均为待新增/待运行人工契约探针，现有测试仅作意图入口。前提：UTF8、标准字符串开启、当前库test、path=public,pg_catalog，owner拥有建表/改表权限；Q参数[]、文本结果，扩展路径以同SQL执行Parse/Describe/Bind/Execute/Sync。DDL逐条执行，若产品缺能力须在副作用前0A000并确认无残留，记录目标未满足，不能把拒绝当完整成功。
+
+```sql
+CREATE TABLE public.def_probe (plain integer, n integer DEFAULT NULL,
+  literal text DEFAULT 'NULL', qty integer DEFAULT 7,
+  label text DEFAULT 'O''Reilly', flag boolean DEFAULT true);
+SELECT a.attnum,a.attname,a.atthasdef,d.oid,d.adrelid,d.adnum,d.adbin,
+       pg_catalog.pg_get_expr(d.adbin,d.adrelid) AS definition,
+       pg_catalog.pg_get_expr(d.adbin,d.adrelid,true) AS pretty
+FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d
+  ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+WHERE a.attrelid='public.def_probe'::regclass::oid AND a.attnum>0
+ORDER BY a.attnum;
+```
+
+将上式记为 BASE；列描述目标为21/19/16/26/26/21/194/25/25（attname目标name沿列块，当前text适配），typmod均−1。每个输出均由上表来源映射；LEFT JOIN缺默认时d.*与两个反解为SQL NULL。
+
+| 验收ID | 完整输入/参数与期望、关联事实 |
+| --- | --- |
+| DEF-BASE | BASE返回6列对应的6行；plain无默认，n按PG参考构建规范化结果记录，禁止未经实测固定其目录行数；literal/qty/label/flag必须有默认行，adnum分别3/4/5/6，adrelid为真实表OID，oid非零且互异，adbin非NULL；反解分别语义为文本NULL、整数7、文本O'Reilly、bool true，pretty语义相同。`INSERT INTO public.def_probe DEFAULT VALUES; SELECT plain,n,literal,qty,label,flag FROM public.def_probe;` 1行：NULL/NULL/文本NULL/7/O'Reilly/true。反解后在同类型独立克隆列上执行ALTER SET DEFAULT并插入，验证值相等，不能只比较字符串。 |
+| DEF-ARG | `SELECT pg_catalog.pg_get_expr(d.adbin,0,false) FROM pg_catalog.pg_attrdef d WHERE d.adrelid='public.def_probe'::regclass::oid AND d.adnum=4;` 1行text25且等价7，无Vars不能错误要求owner相等。`SELECT pg_catalog.pg_get_expr(NULL,0);` 1行NULL/text25；`SELECT pg_catalog.pg_get_expr('fake',0);` 产品在解析树/执行阶段拒绝且无行，精确PG SQLSTATE另采；`SELECT pg_catalog.pg_get_expr(NULL,0,false,0);` 分析/绑定阶段拒绝错误签名。 |
+| DEF-META | 先扩展Parse BASE，执行 `ALTER TABLE public.def_probe ALTER COLUMN qty SET DEFAULT 9;` 再首次Execute，应见9；重新绑定执行不可复用旧默认。随后 `ALTER TABLE public.def_probe ALTER COLUMN label DROP DEFAULT;`、`ALTER TABLE public.def_probe RENAME COLUMN qty TO quantity;`，BASE仍6行，label的d.*为NULL，quantity保留属性关联且定义9。`SELECT d.oid,d.adrelid,d.adnum,d.adbin FROM pg_catalog.pg_attrdef d WHERE d.adrelid=0;` 0行，描述26/26/21/194完整；drop/recreate表后旧表OID不得关联新默认。每步保存真实模型ID/列ID/offset；其他连接重读按第5章提交边界观察，已启动portal按快照契约处理。 |
+| DEF-GENERATED | 独立执行 `CREATE TABLE public.def_gen (x integer, y integer GENERATED ALWAYS AS (x+1) STORED);`，将BASE中的表名替换为def_gen；2行，x无定义，y有默认目录行且adnum=2，attgenerated另查 `SELECT attgenerated FROM pg_catalog.pg_attribute WHERE attrelid='public.def_gen'::regclass::oid AND attname='y';` 得s/char18。反解语义x+1；`INSERT INTO public.def_gen(x) VALUES (2); SELECT x,y FROM public.def_gen;` 得2/3。VIRTUAL用同结构新表def_virtual将STORED改VIRTUAL，目标标记v，缺真实语义则DDL前拒绝。`SELECT column_name,column_default,is_generated,generation_expression FROM information_schema.columns WHERE table_schema='public' AND table_name='def_gen' ORDER BY ordinal_position;` 2行，x为NULL/NEVER/NULL，y为NULL/ALWAYS/等价x+1，四列域类型按后续视图契约取证。 |
+| DEF-TIME/REJECT | 独立执行 `CREATE TABLE public.def_time (t timestamp with time zone DEFAULT CURRENT_TIMESTAMP);`，BASE替换表名仅1行，反解保留运行时函数，内省前后不得写表；在同一事务两次默认插入须符合第5章事务时间契约，不能在DDL时折叠时间。原生MySQL连接建立 `CREATE TABLE def_native (x INT, y INT GENERATED ALWAYS AS (IFNULL(x,0)) STORED);` 后PG查询BASE替换为def_native，应在行结果前0A000，不能返回原生文本/假NULL。若建立本身不支持，记录未建立及原因，不冒称已验证读取拒绝。 |
+| DEF-ACCESS | owner运行BASE；另角色def_reader无表授权时，按PG参考构建核对pg_catalog可读定义，而information_schema上述查询（表名替换def_probe）应0行。`GRANT SELECT ON public.def_probe TO def_reader;` 后视图列可见但仍无写权限；须用真实认证连接，禁止只改会话字符串模拟。另数据库同名表不能入当前库BASE。完整角色创建/认证与权限采集沿后续权限块，本轮未运行。 |
+
+DEF-BASE克隆的完整准备为 `CREATE TABLE public.def_clone (v text);`，取label反解结果作为唯一SQL表达式参数拼接 `ALTER TABLE public.def_clone ALTER COLUMN v SET DEFAULT `，执行后 `INSERT INTO public.def_clone DEFAULT VALUES; SELECT v FROM public.def_clone;` 应为O'Reilly，随后 `DROP TABLE public.def_clone;`；其他常量用同一流程按原列类型分别建克隆，不把返回文本交给未验证的通用执行入口。DEF-TIME的完整事务探针为 `BEGIN; INSERT INTO public.def_time DEFAULT VALUES; INSERT INTO public.def_time DEFAULT VALUES; SELECT t FROM public.def_time; ROLLBACK;`，两行非NULL且相等，反解查询本身不插入行；墙钟推进/跨事务时间另采。DEF-GENERATED另执行 `UPDATE public.def_gen SET x=4; SELECT x,y FROM public.def_gen;` 应为4/5，确保目录表达式与实际重新计算一致。
+
+清理按实际建立对象逐条执行 `DROP TABLE public.def_probe;`、`DROP TABLE public.def_gen;`、`DROP TABLE public.def_virtual;`、`DROP TABLE public.def_time;`，原生夹具在所属连接执行 `DROP TABLE def_native;`；权限夹具清理角色由其任务负责。psql后续以固定18.x客户端的 `psql -E` 执行 `\d+ public.def_probe` 保存完整SQL/版本/输出，不能把上述手写BASE称客户端验收通过。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4188,6 +4254,10 @@ SELECT c.confmatchtype,c.conislocal,c.coninhcount,c.conparentid,c.contypid,
 后续按事实组拆窄任务：①约束持久身份及普通唯一索引来源区分、虚拟主键去重，覆盖CON-BASE/IDENTITY；②有序属性关联、父支持索引选择与动作语义门槛，覆盖CON-ORDER/JOIN/ACTION；③CHECK规范表达式和保真反解、NULL/未知OID、名称刷新，覆盖CON-CHECK/DEF/UNKNOWN/LIFE/QUOTE；④真实执行/验证/延迟状态及辅助字段分别推进CON-STATE/VALIDATE/EXTRA。缺原生来源先记独立依赖，不吞并完整约束或操作符子系统。优先扩展现有独立pg_catalog_test.rs、pg_datagrip_test.rs，不把测试放生产文件。客户端模板与权限/隔离分别交CON-TEMPLATE/ACL/DB，沿后续专块采集。
 
 正确性风险为复合FK配对错误、父索引关联错误、唯一索引伪装约束、伪造验证状态与丢失条件的反解；兼容性风险为name/text、pg_node_tree/text、xmin身份、零字节/空格及PG18新增约束字段；性能未测，当前全库provider及fallback扫描可被无关对象阻断。Ready文档适用检查采用任务指定五节锚点、路径、依赖/前后契约、字段→验收覆盖及diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用上述替代检查。未运行Cargo/Go、代码lint、真实客户端或18.6差分。本轮仅完成文档契约，下一批为默认表达式目录契约。
+
+#### 默认表达式目录契约
+
+按单一事实组拆分：默认显式存在性与独立对象身份、常量与编码的安全反解、二/三参数pg_get_expr及真实树codec、STORED/VIRTUAL生成表达式与列依赖、DDL后prepared刷新与权限投影。每项复用共享infoschema/model和现有目录工厂，在独立测试文件补齐上述验收；CURRENT_TIMESTAMP/序列运行语义分别交第4/5章，不扩大本任务实现。完成证据必须包含真实行/描述、DDL前后模型身份及固定PG参考构建；18.6、psql/DataGrip/JDBC/ORM和binary codec当前均未运行。
 
 ## 7. 线协议认证与数据通道
 
