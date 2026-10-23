@@ -3686,6 +3686,19 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 工厂接线沿首块 pg_conn/pg_extended→CatalogQuery→ConcreteTiDBContext::schema_snapshot，无新增执行链。独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_dependencies_live 使用真实 domain 建序列和 AUTO_INCREMENT 表，断言默认序列引用创建拒绝、列拥有查询空集但保留 26/26/23 描述、命名空间 n 边非空及 26/23/18 类型、其他库隔离、NULL/未知 OID、0A000 拒绝、Parse 后删建更新；是测试意图，不是本轮通过。[pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::context/execute/pg_datagrip_tables 使用 CatalogQuery 手工夹具，未找到该文件的序列依赖专项测试。两文件由 [lib.rs](../pkg/server/lib.rs) 独立注册。依赖测试注释保存原 statement 1869279760，但未核验客户端原始日志/版本，不能把它升级为真实 DataGrip 本轮验收。
 
+#### 函数目录与注册边界
+
+承接来源步骤 1、2、4，能力 `CAT-PROC-REGISTRY/pg`。批次 11 的 `4dceaaab81` 与累计批次 1–10 的 `946e9b2c20`、`b7ff2288b8`、`9bd191c612`、`7ade409a9d`、`af67d135cf`、`1807f7800b`、`84fb929330`、`52f558f71f`、`0e0f892cc2`、`3ac33b4c83` 提交及五节正文均已核对。沿第 4 章三层身份、注册工厂、重载和必需系统函数契约；不将目录可查询升级为普通 SQL 可调用。2026-10-24 在 `4dceaaab81` 用 RustCodeGraph status/explore/定点 node 静态读取以下源码；server/expression 均无 doc.go，测试未运行。
+
+| 真实入口/符号 | 当前事实与证据限制 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::FUNCTION_INTROSPECTION / function_rows / provider_rows | 仅三个内省原语 pg_get_function_arguments/result/sqlbody，适配器对象 OID 为16000/16001/16002，namespace固定11、language固定12、参数向量固定26、返回25。不是 PostgreSQL 官方函数对象 OID，也不是共享 expression 注册表镜像；public 不虚造用户函数。 |
+| 同文件 column_catalog_field / expr_type / evaluate | proargtypes=OidVector、prorettype/pronamespace=oid，proacl 位于24，由执行行 resize 补NULL并绑定 AclArray；没有真实ACL来源。expr_type 按白名单及参数数量/数值类检查，evaluate 在静态表查OID，NULL输入返回NULL，未知OID拒绝，sqlbody为NULL。声明一个oid参数不等于当前验证已执行精确PG签名选择。 |
+| [pg_session.rs](../pkg/server/pg_session.rs)::public_precedes_catalog；[scalar_function.rs](../pkg/expression/scalar_function.rs)::newFunctionImpl；[builtin.rs](../pkg/expression/builtin.rs)::invoke_factory | 前者只比较会话路径顺序；普通标量构造查 funcs/extensionFuncs、调用类工厂并读取返回类型，缺工厂明确失败。以上没有证明目录静态表已接入普通SQL名称解析或按 namespace/精确参数OID选重载，责任沿第4章。 |
+| [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_functions_live；[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::catalog_select_structure / catalog_projection_syntax_and_boundaries | 前者以真实domain及手写wire验证三行internal函数、函数语言JOIN、NULL/未知OID/错误参数/未知名拒绝及恢复、来源SQL排除internal后空集、$1/OID26绑定。后者检查目录解析及边界，不能证明函数普通SQL可执行。均为读取断言意图，非本轮通过。 |
+
+工厂接线与一次执行快照沿首块，独立测试由 [lib.rs](../pkg/server/lib.rs) 注册。测试保存的SQL自称 frozen JDBC，未核验驱动版本及上游原始SQL，不当作真实JDBC/DataGrip验收。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3884,6 +3897,25 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方目标均于 **2026-10-24** 查阅，适用 **PostgreSQL 18**：[pg_sequence](https://www.postgresql.org/docs/18/catalog-pg-sequence.html) 对应参数字段；[pg_depend](https://www.postgresql.org/docs/18/catalog-pg-depend.html) 对应端点类型和依赖生命周期；[identity](https://www.postgresql.org/docs/18/ddl-identity-columns.html)、[CREATE SEQUENCE](https://www.postgresql.org/docs/18/sql-createsequence.html) 对应真实对象及 OWNED BY；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html) 对应 pg_get_serial_sequence 的关联及名称规则。官方 [REL_18_STABLE sequence.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/commands/sequence.c)::process_owned_by 的 for_identity 分流支持 i/a 推导，分支可变，不是18.6固定证据。[psql 18](https://www.postgresql.org/docs/18/app-psql.html) 定义 `\ds`、`\d` 与 `-E` 采集入口；下列 SQL 为人工契约探针，不声称 psql/JDBC/DataGrip/ORM 自动生成。精确18.6参考构建、客户端版本、生成SQL及运行行为均未取证。
 
+#### 函数目录与注册边界
+
+字段与查询沿首块证据模板、类型映射沿第3章；目录SELECT权限、schema USAGE、函数EXECUTE及名称可见性分别判断。以下为目标类型，零行也保留Describe；当前数据库及同一元数据代际内关联，不按search_path删除目录行。
+
+| 字段/查询 | 真实来源/关联键；目标 PG 类型及类型OID | 目标、不支持策略与验收 |
+| --- | --- | --- |
+| oid、proname、pronamespace | 方言签名对象身份、名称、所属namespace→pg_namespace.oid；oid/26、name/19、oid/26 | 内建身份受控稳定分配，用户对象须持久ID；签名键含namespace和输入类型序列，不能按名称合并重载。当前proname映射text/25及合成OID只是适配器现状，不冒充PG原值；PROC-01/03。 |
+| proargtypes、prorettype、provariadic | 同一签名输入参数/返回/可变参数元素→pg_type.oid；oidvector/30、oid/26、oid/26 | IN/INOUT/VARIADIC输入有序，OUT不计入身份；非可变为0。当前三个原语均26→25，不能从MySQL EvalType猜int4/int8重载；类型身份缺失时拒绝开放签名；PROC-01/03。 |
+| proargnames、proargmodes、proallargtypes、proargdefaults | 真实参数声明、模式、全部参数及已解析默认表达式；text[]/1009、内部char[]/1002、oid[]/1028、pg_node_tree/194 | 无名称/全IN/无OUT等情形按PG字段规则NULL；无默认NULL，不能复制SQL字符串冒充内部表达式。当前proargmodes使用TextArray、proargdefaults为text，且pronargs/int2/21、pronargdefaults/int2/21未绑定，均需补元数据后验收，未实现字段绑定期0A000；PROC-01。 |
+| prokind、proretset、provolatile、proisstrict、prosecdef、proleakproof、proparallel | 第4章实际执行类别、返回形态与实现语义；内部char/18、bool/16、内部char/18、bool/16、bool/16、bool/16、内部char/18 | 当前f/false/s/false/false/false/u仅为三个原语的声明；聚合需关联pg_aggregate，窗口/集合返回另沿第4章。不因展示行而允许折叠、并行或提权；PROC-02/03。 |
+| prolang、prosrc、proconfig | 实际语言接口→pg_language.oid、真实实现标识、函数配置；oid/26、text/25、text[]/1009 | 当前12/internal、实现名、NULL配置为适配器事实；内部原语无SQL body可返回NULL，不能为不存在用户例程伪造源码；PROC-02。 |
+| proowner、proacl | 真实角色身份→角色目录、同一函数ACL；oid/26、aclitem[]/1034 | 当前owner是NULL且绑定bigint/20，ACL只是补NULL，无角色或授权依据。PG中NULL ACL表示默认权限，不能解释为拒绝全部或授权全部；开放权限函数前需真实来源，无法证明授权时能力门禁拒绝，不编造owner/ACL；PROC-04。 |
+| procost、prorows、xmin | 真实代价、基数及MVCC版本；float4/700、float4/700、xid/28 | 当前分别NULL/0/NULL且均绑定bigint/20，不能宣称PG类型兼容；无代价或事务来源时记录缺口并拒绝依赖该语义的探针，不生成虚假事务号；PROC-01。 |
+| pg_get_function_arguments(oid)、pg_get_function_result(oid)、pg_get_function_sqlbody(oid) | 同一函数对象的完整声明/返回声明/SQL标准body；text/25 | 绑定、格式化与目录签名同源；当前只认三个适配器OID，未知OID走0A000是当前边界，不声称PG原生错误码。NULL与internal无SQL body分开验收；PROC-02。 |
+
+目录provider负责事实投影，目录有界求值器负责已绑定白名单表达式；普通SQL解析/重载/隐式转换、工厂与执行核归第4章，wire描述归第3/7章。每个宣称可调用的系统函数都须有普通SQL链证据；不能只向FUNCTION_INTROSPECTION加名字，也不能把全部MySQL funcs导出pg_proc。用户函数DDL尚未开放时，只允许对确实不存在的用户例程类型正确空集；真实已注册必需函数缺失不能靠全空集通过。
+
+官方出处于 **2026-10-24** 查阅，版本为 **PostgreSQL 18**：[pg_proc](https://www.postgresql.org/docs/18/catalog-pg-proc.html) 规定签名及字段语义；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html) 规定函数声明反解、权限与可见性；客户端官方 [psql 18](https://www.postgresql.org/docs/18/app-psql.html) 提供 `\df` 及 `-E` 隐藏SQL采集入口。下列SQL是人工契约探针，不称客户端生成；精确18.6构建、驱动版本和真实客户端运行均未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3935,6 +3967,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 序列身份与依赖契约
 
 不实现序列分配、identity DDL/DML、OWNED BY 存储、通用依赖图或权限系统；不将本块扩展到分区/扩展对象的全部依赖。不执行 Cargo、差分平台或真实客户端；第5章分配/回滚和第7章wire能力仍需各自验证。当前拥有边空集是明确元数据缺口，不代表 identity 已实现或所有 PG 依赖应为空。
+
+#### 函数目录与注册边界
+
+不实现CREATE FUNCTION/PROCEDURE、扩展加载、过程语言、聚合/窗口/集合返回执行器或ACL子系统；不扩大全局函数注册表，不修改第4章。pg_proc字段空缺、类型不符和缺普通SQL链是后续实施输入，本任务不修代码；不以目录三个原语代表完整内建函数全集。
 
 ### 验收
 
@@ -4323,6 +4359,42 @@ CREATE TABLE seqdep.ib (id bigint GENERATED BY DEFAULT AS IDENTITY);
 
 01–06需逐列登记源模型ID、关联键、描述、文本/二进制结果与观察记录；已有手写wire测试只覆盖部分现状，不代替上述目标。psql `-E` 下的 `\ds seqdep.*`、`\d seqdep.ia` 只作为待采集客户端入口，驱动/UI结果尚未验证。
 
+#### 函数目录与注册边界
+
+以下 `PROC-01`–`PROC-04` 均为**待新增/待运行**的后续验收，当前独立测试仅提供上述局部意图。公共前提：当前数据库、具备目录SELECT的角色、固定元数据代际；Q与Parse/Describe/Bind/Execute结果及类型一致，空集不丢描述。参数均显式给PG类型，不用MySQL类型代替。
+
+```sql
+-- PROC-01：静态适配器基线；不假定这些对象OID等于参考PG对象OID。
+SELECT oid,proname,pronamespace,proargtypes,prorettype,proacl
+FROM pg_catalog.pg_proc WHERE pronamespace=11 ORDER BY oid;
+-- 零行也保留26/19/26/30/26/1034的目标描述。
+SELECT oid,proname,pronamespace,proargtypes,prorettype,proacl
+FROM pg_catalog.pg_proc WHERE pronamespace=0;
+-- PROC-01补充字段：任一未绑定字段都应明确拒绝，不返回伪造值。
+SELECT proargnames,proargmodes,proallargtypes,proargdefaults,pronargs,
+       pronargdefaults,provariadic,prokind,proretset,provolatile,proisstrict,
+       prosecdef,proleakproof,proparallel,prolang,prosrc,proconfig,
+       proowner,procost,prorows,xmin
+FROM pg_catalog.pg_proc WHERE pronamespace=11 ORDER BY oid;
+-- PROC-02：三种反解共享对象身份；扩展协议$1参数OID=26。
+SELECT pg_catalog.pg_get_function_arguments(oid),
+       pg_catalog.pg_get_function_result(oid),
+       pg_catalog.pg_get_function_sqlbody(oid)
+FROM pg_catalog.pg_proc WHERE oid=$1;
+SELECT pg_catalog.pg_get_function_result(NULL::oid) FROM pg_catalog.pg_language;
+-- 绑定/能力门禁必须拒绝未知名，即使过滤结果为空。
+SELECT unsupported_user_function(oid) FROM pg_catalog.pg_proc WHERE pronamespace=0;
+```
+
+| 编号 | 期望及拒绝阶段；事实变化/权限前提 |
+| --- | --- |
+| PROC-01 | 当前适配器基线三行分别16000/16001/16002，三个名称、namespace11、输入向量26、返回25、ACL NULL；目标proname为name/19，当前text/25差异应被检出。另逐列查询上表其余字段，核对完整类型、数组NULL、参数数目与关联键；尚未绑定字段须绑定期0A000，不能以编译通过取代字段证据。内建声明不随无关建表变化。 |
+| PROC-02 | $1=16000/16001/16002时各一行，三个结果为“function_oid oid”/“text”/NULL，类型25/25/25；NULL参数过滤无行仍保留描述；直接NULL反解返回NULL。$1=0、4294967295以及错误实参数量沿当前适配器拒绝策略，记录分析/执行实际阶段和SQLSTATE，不猜PG错误。未知名在绑定阶段0A000，随后SELECT 1恢复。保留现有测试的语言JOIN与排除internal查询空集意图。 |
+| PROC-03 | 隔离参考库中由管理员建立 `CREATE SCHEMA cat_proc12; CREATE FUNCTION cat_proc12.f(integer) RETURNS integer LANGUAGE SQL AS 'SELECT $1'; CREATE FUNCTION cat_proc12.f(bigint) RETURNS bigint LANGUAGE SQL AS 'SELECT $1';`；按namespace查询必须两行不同稳定oid，proargtypes为23/20、prorettype为23/20。普通 `SELECT cat_proc12.f(1::integer),cat_proc12.f(1::bigint);` 得1/1且描述23/20。执行 `DROP FUNCTION cat_proc12.f(integer);` 后只余bigint行，再执行同一integer建函数语句不得错误复用旧对象引用；Parse后DDL、跨连接与search_path遮蔽沿第2/5章。当前用户函数DDL未开放时在DDL能力门禁0A000，不允许声称此用例通过；后续清理 `DROP SCHEMA cat_proc12 CASCADE;`。 |
+| PROC-04 | 在PROC-03夹具存在且真实角色/ACL开放后，由管理员 `CREATE ROLE cat_proc12_reader; GRANT USAGE ON SCHEMA cat_proc12 TO cat_proc12_reader; REVOKE EXECUTE ON FUNCTION cat_proc12.f(bigint) FROM PUBLIC;`；该角色目录行仍可枚举，但普通调用无EXECUTE应在授权阶段拒绝。管理员 `GRANT EXECUTE ON FUNCTION cat_proc12.f(bigint) TO cat_proc12_reader;` 后可调用，目录ACL同步；NULL默认ACL与显式ACL分开。查询 `SELECT pg_catalog.has_function_privilege('cat_proc12_reader','cat_proc12.f(bigint)','EXECUTE');` 前后false/true；`SELECT pg_catalog.pg_function_is_visible(oid) FROM pg_catalog.pg_proc WHERE pronamespace=$1;` 的$1取真实schema oid，随有效路径及同签名遮蔽变化，不随EXECUTE权限直接变化。无角色/ACL来源时能力门禁拒绝该流程，不伪造布尔值；清理schema后 `DROP ROLE cat_proc12_reader;`。 |
+
+真实客户端验收另采集 `psql -E` 执行 `\df pg_catalog.pg_get_function_*` 的版本、SQL及描述，并与人工探针分开；JDBC/DataGrip/ORM的原始查询来源尚缺，不从仓库测试注释推定官方生成行为。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4386,6 +4458,10 @@ CREATE TABLE seqdep.ib (id bigint GENERATED BY DEFAULT AS IDENTITY);
 #### 序列身份与依赖契约
 
 按单一事实组另建实施任务（均待新增）：①真实序列声明类型与参数/pg_class一致性；②持久列拥有引用及a/i生命周期、attidentity、pg_get_serial_sequence局部接线；③SEQDEP-01–06的独立测试与客户端采集。先解决事实来源再开放能力，复用共享infoschema、OID和第5章分配链，不从SQL字符串或AUTO_INCREMENT补造所有权。文档完成只说明目标和验收已定义，不代表这些实现或测试已完成。
+
+#### 函数目录与注册边界
+
+后续独立实施按“签名事实与pg_type/namespace/OID关联及Describe类型”“目录白名单与普通SQL注册证据对照”“真实owner/ACL及权限/可见性”“客户端函数列表与反解采集”拆分，每块沿第4章共享注册链补独立回归，禁止用静态目录新增行替代普通SQL实现。用户函数生命周期与ACL夹具只在相应能力开放时执行，本块不提前建设完整子系统。
 
 ## 7. 线协议认证与数据通道
 
