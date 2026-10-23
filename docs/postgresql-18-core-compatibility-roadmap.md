@@ -3764,6 +3764,17 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live含类型join、默认值、零行描述、ALTER/DROP/ADD和prepared重执行意图，并断言原生生成列拒绝及AUTO_INCREMENT的空attidentity。[pg_query_test.rs](../pkg/server/pg_query_test.rs)的PgCreateSimple夹具读 [RetrieveColumns.sql](../pkg/server/testdata/pg_datagrip/RetrieveColumns.sql)，验证15列PG声明经共享模型返回；该查询使用pg_catalog，不能证明标准columns视图或真实DataGrip运行。本轮均只读未执行。
 
+#### 标准模式约束映射
+
+承接来源步骤1、2，能力 `CAT-IS-CONSTRAINTS/pg`，沿首块证据模板及第1–5章名称、类型、函数、会话契约。已核对批次17提交 `01682dbdd6`、累计1–16提交（`946e9b2c20` 至 `c064d09bad`）与对应五节正文，依赖满足。2026-10-24在该基线用RustCodeGraph status/explore/query/定点node核对以下静态事实；server、infoschema、meta/model无doc.go，测试运行数0。
+
+| 实际来源/入口 | 现状与证据限制 |
+| --- | --- |
+| [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)::is_catalog_relation；[pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows | 四个information_schema视图尚未进入PG目录关系/provider；普通名称门禁沿标准模式表视图块。现有pg_constraint和pg_index共同进入index_constraint_rows，读取共享snapshot。Q/扩展工厂、Execution快照和wire沿首块，不能将原生MySQL标准视图视为PG接线。 |
+| pg_catalog.rs::index_constraint_rows | 从当前库SchemaTableInfos/model_meta取StatePublic普通表；索引Primary/Unique转p/u，有混同独立唯一索引与约束的缺口。FK取有序Cols/RefCols、RefSchema/RefTable及动作，按严格同序寻找父唯一索引；CHECK存在即拒绝，未提供PG18 NOT NULL约束身份、真实延迟/验证/执行状态及PG授权过滤。不能直接复制成标准视图成功结果。 |
+| [table.rs](../pkg/meta/model/table.rs)::FKInfo；[infoschema.rs](../pkg/infoschema/infoschema.rs)::InfoSchema | FKInfo有ID、Name、RefSchema、RefTable、Cols/RefCols、OnDelete/OnUpdate、State/Version；没有独立PG被引用约束身份与依赖边、MATCH/延迟字段。共享模型为候选事实源，PG OID、属性槽位、约束来源区分沿既有关系/约束块补证。 |
+| 独立测试 | [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_constraints_live读取真实domain的复合主键/FK、数组描述、动作和父索引JOIN，未覆盖这四个视图。[pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::context/execute/pg_datagrip_tables使用CatalogQuery及仓库SQL模板验证pg_catalog；不证明标准约束视图或真实DataGrip版本通过。测试注册沿[lib.rs](../pkg/server/lib.rs)，本轮只读。 |
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4075,6 +4086,25 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 缺静态字段/codec在Parse/绑定拒绝，动态元数据不充分至迟Q或首次Execute成功输出前0A000；这是产品门禁，不声称PG目标拒绝。不能用未知字段NULL掩盖未实现。官方目标依据：PostgreSQL **18** [columns](https://www.postgresql.org/docs/18/infoschema-columns.html)、[标准域](https://www.postgresql.org/docs/18/infoschema-datatypes.html)及 [REL_18_STABLE information_schema.sql](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/catalog/information_schema.sql)的columns视图/精度辅助函数，访问 **2026-10-24**；维护分支可变。客户端入口沿批次16的psql18与[pgJDBC官方查询说明](https://jdbc.postgresql.org/documentation/query/)（访问同日，无固定驱动版本）；本块SQL均为人工探针，不声称DatabaseMetaData、DataGrip或ORM生成过它们。精确18.6构建及运行行为仍未取证。
 
+#### 标准模式约束映射
+
+四视图共享当前database、同一已发布模型快照和真实PG约束身份；内部以约束OID及所属关系OID关联，不按名字猜测。标准输出没有OID，(constraint_catalog,schema,name)在PostgreSQL中仍可能同名跨表，table_constraints与key_column_usage须同时带(table_catalog,schema,name)关联；referential_constraints不含表名，不能在任意数据库中只凭三元名称安全回连。遇歧义必须以pg_constraint的conrelid/confrelid/conindid及真实依赖消歧，保留PG标准视图本身的行集，不能篡改约束名或擅自去重。权限事实沿角色块复用，但不能把pg_constraint的目录枚举可读等同于四视图的行可见。
+
+域简写沿标准列块：I=sql_identifier（底层name/19），C=character_data（varchar/1043），Y=yes_or_no（varchar/1043），N=cardinal_number（int4/23）。域OID从本库pg_type取，Describe解域及typmod沿第3章/标准模式表视图块采集；name标准长度64，varchar−1、int4为4，不能硬编码域OID或把名字输出text/25。零行及NULL仍有完整描述。下表列出四视图全部字段，每行继承上述身份/类型及当前尚未接线证据。
+
+| 需求→视图/字段（PG域） | 来源、关联、目标及不支持策略→验收 |
+| --- | --- |
+| ISCON-TC-ID→table_constraints.constraint_catalog/schema/name、table_catalog/schema/name（I） | 真实当前库、connamespace/conname、conrelid→pg_class/namespace；仅普通/分区表标准约束，排除触发器/排除约束及其他连接临时schema。独立唯一索引不冒充UNIQUE约束，域约束不套表身份。缺持久来源拒绝。BASE/CROSS/NAME。 |
+| ISCON-TC-STATE→constraint_type（C），is_deferrable、initially_deferred、enforced、nulls_distinct（Y） | c/n→CHECK，f→FOREIGN KEY，p→PRIMARY KEY，u→UNIQUE；PG18 NOT NULL亦有真实约束行。三个状态来自condeferrable/condeferred/conenforced，YES/NO不是bool。nulls_distinct仅u取支持索引indnullsnotdistinct的反值，其余SQL NULL；convalidated不等于enforced。缺源不能统一NO/YES，相关DDL副作用前拒绝、既有不可判定投影输出前拒绝。BASE/STATE。 |
+| ISCON-KCU→key_column_usage.constraint_catalog/schema/name、table_catalog/schema/name、column_name（I），ordinal_position、position_in_unique_constraint（N） | 仅p/u/f，按conkey展开，列以(conrelid,attnum)取名，排除删除列；ordinal从1起是约束键序而非表列位置。FK第n列取confkey[n]，在conindid父唯一索引indkey中求位置；可与n不同，非FK为NULL。不按列名字典序或直接复制attnum。缺稳定槽位/父索引来源拒绝。BASE/ORDER。 |
+| ISCON-RC→referential_constraints.constraint_catalog/schema/name、unique_constraint_catalog/schema/name（I），match_option、update_rule、delete_rule（C） | 每个真实f行；通过FK到父索引再到父p/u约束的真实依赖定位，父conrelid须等confrelid。若FK合法引用独立唯一索引而没有父p/u约束，unique三项应SQL NULL，不能伪造约束名或隐藏FK。MATCH s/f/p映为NONE/FULL/PARTIAL，动作a/r/c/n/d映为NO ACTION/RESTRICT/CASCADE/SET NULL/SET DEFAULT；元数据可表达不证明DDL执行支持PARTIAL等特性，缺源拒绝。BASE/INDEX/STATE。 |
+| ISCON-CCU→constraint_column_usage.table_catalog/schema/name、column_name、constraint_catalog/schema/name（I） | c取绑定表达式真实列依赖（去重，不解析字符串猜列）；n取conkey[1]；p/u取本表conkey；f取父表confrelid/confkey，约束schema/name仍是子约束。无ordinal，不可用CCU与KCU的列名或行序配对。常量CHECK无列依赖时确实零行，不代表无CHECK。缺CHECK依赖/NOT NULL身份拒绝相应能力，不填NULL列行。BASE/CHECK。 |
+| ISCON-ACL→四视图行过滤（不增加输出字段） | TC/RC：owner可用角色闭包，或表INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER，或任一列INSERT/UPDATE/REFERENCES；仅SELECT不足。KCU：owner或该列SELECT/INSERT/UPDATE/REFERENCES（含表授权），不因其他列可读就暴露整键。CCU：列所属表owner为当前可用角色；FK检查父表owner，SELECT/写授权均不替代owner。TC/KCU排除其他连接临时schema；RC/CCU按各自官方定义，不能机械复制过滤。列表不受search_path裁剪；未知授权事实拒绝而非伪空集。ACL/NAME。 |
+
+来源缺失、静态字段/codec缺失在Parse/绑定可判定时0A000；动态身份/依赖/授权缺失至迟Q或首次Execute成功行输出前0A000。此为产品能力门禁，不冒称PG合法请求也应拒绝；只有真实无对象/无可见行才可类型正确空集。四视图与pg_constraint在同一对象的身份、列序、动作和状态须一致，目录与标准视图行数可因权限或定义不同而不同。
+
+官方依据（PostgreSQL **18**，访问 **2026-10-24**）：[table_constraints](https://www.postgresql.org/docs/18/infoschema-table-constraints.html)、[key_column_usage](https://www.postgresql.org/docs/18/infoschema-key-column-usage.html)、[referential_constraints](https://www.postgresql.org/docs/18/infoschema-referential-constraints.html)、[constraint_column_usage](https://www.postgresql.org/docs/18/infoschema-constraint-column-usage.html)定义字段与各自可见性；固定[REL_18_0 information_schema.sql](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/catalog/information_schema.sql)核对父索引位置、真实依赖LEFT JOIN、PG18 NOT NULL、权限及临时schema过滤（源码推导）。客户端入口为[pgJDBC官方查询说明](https://jdbc.postgresql.org/documentation/query/)的Statement/PreparedStatement（页面无固定驱动版本）；下述SQL均为人工契约探针，不宣称DatabaseMetaData、DataGrip或ORM生成。精确18.6构建/运行行为仍未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4150,6 +4180,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 标准模式列映射
 
 仅定义columns的声明、默认、权限、identity/generated字段和验收，不实现标准视图路由、PG域存储、排序规则、列墓碑、授权、序列或生成列表达式；复用已有契约，未开放分支保留明确门禁。其他标准视图及完整客户端工作流留对应块，不扩大为实现任务；本轮无Cargo、构建、lint或客户端实测。
+
+#### 标准模式约束映射
+
+本块只定义四个标准约束视图字段、关联及验收，不实现provider、DDL、FK执行、延迟/验证、CHECK依赖图、授权存储或完整客户端流程。约束/索引/列持久身份与pg_depend缺口沿既有专块另拆实施，不递归补齐子系统；不改原生MySQL information_schema语义，不改第1–5章，不运行Cargo/Go或差分平台。
 
 ### 验收
 
@@ -4756,6 +4790,51 @@ BASE恰5行，catalog均D、schema均public、table均is_col_t；名字/顺序id
 
 psql18直接运行探针并保存版本/SQL/描述；固定pgJDBC版本用Statement及PreparedStatement（JDBC占位符?）运行等价参数查询，保存ResultSetMetaData、NULL/零行及prepareThreshold前后结果。本轮无客户端运行证据，现有RetrieveColumns夹具不能替代；18.6需独立构建身份。清理实际创建的视图、表、域和角色授权，关闭portal并RESET路径，各用例独立恢复基线。
 
+#### 标准模式约束映射
+
+以下ISCON-*均**待新增/待运行**，人工探针Q参数[]、文本结果；隔离库D、UTF8、owner、目录SELECT、autocommit，DDL逐条提交。未开放能力须副作用前0A000且无残留，不跳过后报通过。准备：
+
+```sql
+CREATE TABLE public.iscon_p (a integer, b integer, CONSTRAINT iscon_pk PRIMARY KEY(a,b));
+CREATE TABLE public.iscon_c (x integer, y integer, v integer,
+  CONSTRAINT iscon_fk FOREIGN KEY(x,y) REFERENCES public.iscon_p(b,a) ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT iscon_ck CHECK(v > 0));
+-- ISCON-BASE：下列每条均独立Q，参数[]
+SELECT constraint_catalog,constraint_schema,constraint_name,table_catalog,table_schema,table_name,constraint_type,is_deferrable,initially_deferred,enforced,nulls_distinct
+FROM information_schema.table_constraints WHERE table_schema='public' AND table_name IN ('iscon_p','iscon_c') ORDER BY table_name,constraint_name;
+SELECT constraint_catalog,constraint_schema,constraint_name,table_catalog,table_schema,table_name,column_name,ordinal_position,position_in_unique_constraint
+FROM information_schema.key_column_usage WHERE table_schema='public' AND table_name IN ('iscon_p','iscon_c') ORDER BY table_name,constraint_name,ordinal_position;
+SELECT constraint_catalog,constraint_schema,constraint_name,unique_constraint_catalog,unique_constraint_schema,unique_constraint_name,match_option,update_rule,delete_rule
+FROM information_schema.referential_constraints WHERE constraint_schema='public' AND constraint_name='iscon_fk';
+SELECT table_catalog,table_schema,table_name,column_name,constraint_catalog,constraint_schema,constraint_name
+FROM information_schema.constraint_column_usage WHERE constraint_schema='public' AND constraint_name IN ('iscon_pk','iscon_fk','iscon_ck') ORDER BY constraint_name,column_name;
+-- ISCON-JOIN：TC与KCU用约束加表身份，保留有序键
+SELECT t.table_schema,t.table_name,t.constraint_name,k.column_name,k.ordinal_position,k.position_in_unique_constraint
+FROM information_schema.table_constraints t JOIN information_schema.key_column_usage k
+ON t.constraint_catalog=k.constraint_catalog AND t.constraint_schema=k.constraint_schema AND t.constraint_name=k.constraint_name
+AND t.table_catalog=k.table_catalog AND t.table_schema=k.table_schema AND t.table_name=k.table_name
+WHERE t.table_schema='public' AND t.table_name='iscon_c' AND t.constraint_type='FOREIGN KEY' ORDER BY k.ordinal_position;
+-- ISCON-CROSS：保留身份而非仅凭约束名验证
+SELECT c.oid,c.conname,c.contype,c.conrelid,c.confrelid,c.conindid,c.conkey,c.confkey,c.condeferrable,c.condeferred,c.conenforced
+FROM pg_catalog.pg_constraint c WHERE c.conrelid IN ('public.iscon_p'::regclass::oid,'public.iscon_c'::regclass::oid) ORDER BY c.conrelid,c.oid;
+```
+
+BASE预期：catalog均D，约束/表schema均public。TC中iscon_pk/p为PRIMARY KEY、iscon_fk/c为FOREIGN KEY、iscon_ck/c为CHECK；这三行状态NO/NO/YES，nulls_distinct均NULL；父a/b的PG18 NOT NULL约束另有CHECK行（实际名称从真实目录取，不硬编码），不能断言TC总共3行。KCU恰4行：pk的a/b位置1/2、unique位置NULL；fk的x/y位置1/2、unique位置2/1。RC恰1行，父D/public/iscon_pk、NONE/RESTRICT/CASCADE。CCU过滤这三名后恰5行：pk的父a/b，fk也为父a/b，ck为子v。TC描述六个19后五个1043；KCU七个19后两个23；RC六个19后三个1043；CCU七个19。JOIN恰两行public/iscon_c/iscon_fk及x/1/2、y/2/1，描述19/19/19/19/23/23。CROSS描述26/19/18/26/26/26/1005/1005/16/16/16，OID只比较本端，conkey/confkey配对与父索引顺序、TC状态一致；全输出Describe、NULL、零行与文本/二进制编码沿第3章另采，不以值正确替代类型正确。
+
+各行独立恢复BASE夹具，不累积其他行的新增约束或重命名；所有替换仅改WHERE指定条件，保留原投影/排序。
+
+| 用例→完整变化/输入 | 期望/拒绝及权限前提 |
+| --- | --- |
+| ISCON-ORDER→复合逆序与参数 | 对BASE的KCU查询将table_name IN条件换为`table_name=$1`、table_schema换为`table_schema=$2`，Parse OID=[25,25]，Bind=['iscon_c','public']文本，Describe/Execute/Sync；两行fk x/y仍为1/2及2/1。复用同一prepared statement在DDL后重执行，不能捕获旧快照；严格同序父索引现状不降低此目标。 |
+| ISCON-INDEX→独立索引 | 独立夹具逐条`CREATE TABLE public.iscon_i (a integer,b integer);`、`CREATE UNIQUE INDEX iscon_ix ON public.iscon_i(a,b);`、`CREATE TABLE public.iscon_r (x integer,y integer,CONSTRAINT iscon_ifk FOREIGN KEY(x,y) REFERENCES public.iscon_i(a,b));`。BASE的RC改名称为iscon_ifk：一行，unique三项NULL、NONE/NO ACTION/NO ACTION；TC的表名过滤改iscon_i应0行，不造UNIQUE；KCU过滤iscon_r两行父索引位置1/2。 |
+| ISCON-CHECK→真实表达式依赖 | `ALTER TABLE public.iscon_c ADD CONSTRAINT iscon_const CHECK(1=1);`、`ALTER TABLE public.iscon_c ADD CONSTRAINT iscon_multi CHECK(v > x AND v > 0);` 后，BASE的CCU名称过滤改为这两名：const零行、multi恰x/v两行。TC两行CHECK，KCU无这两约束行。CHECK未开放则DDL前拒绝，不使用空集掩盖已存在表达式。 |
+| ISCON-STATE→UNIQUE与延迟 | 独立`CREATE TABLE public.iscon_u (a integer, b integer, CONSTRAINT iscon_ud UNIQUE(a), CONSTRAINT iscon_un UNIQUE NULLS NOT DISTINCT(b) DEFERRABLE INITIALLY DEFERRED);`。TC表名过滤改iscon_u：两行UNIQUE，ud状态NO/NO/YES/YES，un为YES/YES/YES/NO（末项nulls_distinct）；KCU均1/NULL。NOT VALID和enforced分离沿CON-VALIDATE，不能将convalidated=false映成enforced=NO。缺执行/状态来源在DDL前拒绝。 |
+| ISCON-NAME→同名不串联 | 逐条`CREATE SCHEMA iscon_s;`、`CREATE TABLE iscon_s.other (a integer,CONSTRAINT iscon_ck CHECK(a>0));`、`CREATE TABLE public.iscon_other (a integer,CONSTRAINT iscon_ck CHECK(a>0));`。TC查询去除BASE原WHERE，换为`WHERE constraint_name='iscon_ck'`；CCU同样只保留此WHERE，查询保留三对象（schema与table共同区分）；同public两个同名约束不能按三元名称合并。`SET search_path TO iscon_s,public;` 后限定查询行集不变；无法消歧的RC名称联接改用pg_constraint身份，不保证标准视图提供不存在的OID列。 |
+| ISCON-ACL→真实最小权限 | 管理员逐条`CREATE ROLE iscon_reader;`、`GRANT USAGE ON SCHEMA public TO iscon_reader;`、`GRANT SELECT(x) ON public.iscon_c TO iscon_reader;`，以真实有效角色reader运行四条BASE。TC/RC无子约束，KCU仅fk的x（位置1、unique位置2），CCU无父/子行。再`GRANT UPDATE(y) ON public.iscon_c TO iscon_reader;`，TC可见子CHECK/FK、RC可见fk，KCU见x/y，CCU仍无（reader不是父表owner）。管理员逐条`REVOKE SELECT(x) ON public.iscon_c FROM iscon_reader;`、`REVOKE UPDATE(y) ON public.iscon_c FROM iscon_reader;`后重新执行恢复空集；owner的BASE不变。角色激活/认证未开放时沿角色块门禁，不以root代测。 |
+| ISCON-LIFE→真实刷新/隔离 | 逐条`ALTER TABLE public.iscon_c RENAME COLUMN x TO xx;`、`ALTER TABLE public.iscon_p RENAME COLUMN b TO bb;`：KCU子xx/y序位不变、CCU父a/bb、RC父身份不变；`ALTER TABLE public.iscon_c DROP CONSTRAINT iscon_fk;` 后KCU/RC/CCU相应行消失、父pk保留；重建同名FK须新真实约束身份。第二连接在每次提交后重执行BASE及prepared版，另一数据库同名对象不能串入D。事务内可见性沿第5章，不能用autocommit测试宣称事务DDL通过。 |
+
+所有成功SQLSTATE不适用；产品能力拒绝为0A000，精确诊断文本/位置与18.6差分仍未采集。清理隔离夹具：管理员逐条`DROP TABLE public.iscon_r;`、`DROP TABLE public.iscon_i;`、`DROP TABLE public.iscon_c;`、`DROP TABLE public.iscon_p;`、`DROP TABLE public.iscon_u;`、`DROP TABLE public.iscon_other;`、`DROP TABLE iscon_s.other;`、`DROP SCHEMA iscon_s;`、`REVOKE USAGE ON SCHEMA public FROM iscon_reader;`、`DROP ROLE iscon_reader;`。只清理实际成功创建项，事务错误先沿第5章恢复。以上SQL/角色/DDL均是后续验收输入，本轮无运行通过记录。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4845,6 +4924,12 @@ Ready按纯文档范围检查五节/锚点、路径存在、前后契约及diff�
 #### 标准模式列映射
 
 后续按单一事实来源拆为：PG标准列provider/域描述与列级权限；声明类型/长度精度及域数组映射；默认/identity/generated来源和反解；DDL后位置/名称/默认刷新与双入口客户端探针。每项复用关系、列、类型、默认、权限和第5章契约，仅为待新增实施输入；不得在本块递归补建上述子系统，也不把文档验收当作运行通过。
+
+#### 标准模式约束映射
+
+后续按事实组另拆实施：四视图方言路由/域描述；持久约束身份与pg_constraint/pg_index/真实依赖关联；复合键展开及父索引逆序位置；CHECK/PG18 NOT NULL依赖；逐视图角色过滤与刷新隔离。扩展现有独立测试，ISCON-*均待新增/待运行，不补建完整标准模式或客户端。
+
+Ready文档适用检查使用五节锚点、全部本块路径存在性、前置提交/正文、字段→来源→目标→验收映射及diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用这些替代检查。正确性风险为同名约束误联、FK方向/序位错误与伪造父约束；兼容性风险为四种权限过滤、域wire描述及PG18 NOT NULL/enforced字段；性能未测，当前全库枚举不能推断可扩展性。本轮仅完成文档，不运行Cargo/Go、代码lint、真实客户端或18.6差分。下一批为批次19“无原生对象的响应策略”。
 
 ## 7. 线协议认证与数据通道
 
