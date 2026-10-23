@@ -1730,6 +1730,20 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [pg_catalog.rs](../pkg/server/pg_catalog.rs)：`CatalogQuery::project`、`reject_projection_unnest`、`unnest_projection` | 目录专用投影与 ARRAY 子查询有受限处理，后者仅接受 unnest 列及其 cast，嵌入普通表达式的 unnest 有明确 0A000 拒绝。此处是目录边界，不能推广到用户表 FROM/LATERAL 或普通 SELECT。 |
 | [pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)：`catalog_datagrip_scalar_and_lateral_bounds`；[pg_query_test.rs](../pkg/server/pg_query_test.rs)：`simple_query_roundtrip` | 前者断言 DataGrip 目录函数关系的 ordinality/列别名，并预期目录 CROSS JOIN generate_series(1,2) 报 0A000；后者断言 SELECT 1 的 TDCZ、值、OID 20、文本格式及 NULL/空串区别。均由 server/lib.rs 挂载；前者不是通用 SRF 通过，后者不是 int4 SRF 元数据证据。 |
 
+#### 章节验收与后续交接
+
+本块收口蓝图任务 4 的步骤 1–4 与交付要求，不新增函数实例或实现。批次 1–16 的提交依次为 `e4915aee92`、`83aea884a4`、`e128b200ac`、`6e15d36d64`、`af99cc260d`、`a485e8e82c`、`2168dce847`、`df3ca02b06`、`f120e9541b`、`e45ddcd620`、`66cac76435`、`9ee00a13fb`、`b2dccdbd52`、`e8670bc2ef`、`ab189d0855`、`430cbb8339`；每块在五个全局小节中均有正文，累计文档依赖满足。来源蓝图任务仍保留未开始，本次不替它变更状态。
+
+本块静态基线为 `430cbb8339`（2026-10-23）。`pkg/expression/doc.go`、`pkg/server/doc.go` 均不存在；通过 RustCodeGraph status/explore/定点 node 复核以下真实入口和独立测试，全部只读、未运行。
+
+| 入口与符号 | 本次复核事实及限制 |
+| --- | --- |
+| [builtin.rs](../pkg/expression/builtin.rs)：`FunctionClassRegistry::from_specs/get`、`invoke_factory`；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`、`NewFunctionBase` | 名称字符串映射类、规格初始化核心工厂、动态工厂缺失明确报错；正式构造保留工厂返回类型且有独立折叠策略。优先沿此链接线，不能由名称存在推出 PG 签名选择/方言过滤已实现，也不能未排除动态注册便宣称某函数必失败。 |
+| [infer_pushdown.rs](../pkg/expression/infer_pushdown.rs)：`can_func_be_pushed`、`can_expr_push_down`；[infer_pushdown_test.rs](../pkg/expression/infer_pushdown_test.rs)：`tiflash_rejects_signatures_not_explicitly_supported_by_go` | 当前检查存储能力、名称/签名黑名单、返回类型、PbCode、子树和元数据可序列化；独立测试负例含 RoundFuture/TruncateFuture/LeastDecimal/GreatestDecimal。这是既有门禁与断言意图，不是 PG 跨方言语义等价审批。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)：`pg_type`、`value_text/value_binary`、`encode_formats` | 从列/NativeType 推导 OID，当前 typmod 固定 -1，NULL 长度 -1，按 portal 格式编码；完整编码后才交付，不能从第一行值反推类型，也不证明各函数能产出正确 native 身份。 |
+| [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)：`parse_bind_execute_sync` | 实际断言覆盖目录 Q/Describe/Execute、零行描述、显式 OID 重复参数、绑定 NULL 及 Sync 恢复；普通省略 OID 参数负例预期 0A000。不能据此认定本章 PG 重载或函数结果 text/binary 已通过。 |
+| [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)：`pg_introspection_clients` → `run_clients` | 同一服务启动 MySQL/可选 PG 入口、运行 libpq/JDBC 工作流，再断言 MySQL 查询与 COM_PING；证明既有测试设计关注目录客户端和共存。源码中外部客户端成功断言不等于本轮运行记录，更不覆盖本章所有签名。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -2042,6 +2056,29 @@ FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.26](https://www.postgresql.org/docs/18/functions-srf.html)给出序列签名和方向/步长/NULL 规则；[§9.19](https://www.postgresql.org/docs/18/functions-array.html)定义 unnest 元素展开与多数组形态；[§7.2.1.4–5](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-TABLEFUNCTIONS)定义 FROM、关联函数与外连接；[§36.5.9](https://www.postgresql.org/docs/18/xfunc-sql.html#XFUNC-SQL-FUNCTIONS-RETURNING-SET)定义投影中的集合展开、同步补 NULL 及条件构造拒绝。目标值由这些规则推导，没有精确 18.6 参考实例或差分结果；wire 字段沿第 3 章与本章首块，不用大版本手册提升运行证据等级。
 
+#### 章节验收与后续交接
+
+下表是来源覆盖索引；块名均指本章同名四级标题，场景 ID 指“验收”中的具体输入/目标表，不能用标题命中代替逐字段审阅。
+
+| 来源要求 | 正文落点 | 验收落点 |
+| --- | --- | --- |
+| 步骤 1：规范实现、方言签名、协议返回三层；复用规范内核 | 三层身份与契约模板；注册工厂与方言可见性；重载与隐式转换选择 | FUNC-ID 四族、FUNC-REG 四族、FUNC-RES 五组，区分缺名/缺工厂/无匹配/歧义/同值异型 |
+| 步骤 2 第一类：等价共享及别名门槛 | 等价共享与别名门槛，COALESCE/NULLIF 特殊表达式不误套普通函数 | FUNC-EQUIV 五组，包含共同类型、未达错误与 collation；共享/别名批准仍为 0 |
+| 步骤 2 第二类：同名异义 | 同名异义分流，concat/greatest/least 的 NULL、类型与调用形式 | FUNC-SPLIT 四族，双方言独立输入及各自预期 |
+| 步骤 2 第三类：PG 核心专属 | 时间截断与提取、格式化函数契约、数组函数契约、范围函数契约、必需系统函数契约、集合返回函数契约 | FUNC-TEMP/FMT/ARR 各五组、FUNC-RNG 四组、FUNC-SYS 五组、SRF 五组；date_trunc/date_part/to_char/数组/range/generate_series/系统代表均落地 |
+| 步骤 2 第四类：MySQL/TiDB 专属 | MySQL专属函数隔离，IFNULL/DATE_FORMAT/JSON_EXTRACT/TIDB_VERSION | FUNC-MY 四组及 FUNC-REG-MYSQL-ONLY；自身成功/NULL/参数错误与 PG 名称拒绝分别取证 |
+| 步骤 3：全部模板字段及逐签名下推批准 | 首块统一模板及各块差异表；本块下方门禁 | 下方双入口维度矩阵；各场景未定义 wire/诊断精确值明确保留缺口 |
+| 步骤 4：六种调用模型、系统事实边界 | 标量链、运算符调用契约、普通聚合调用契约、窗口函数调用契约、有序集合聚合契约、集合返回函数契约；系统事实归 6 | FUNC-ID、OP-CALL 四组、AGG-CALL 五组、WIN-CALL 五组、ORDERED 四组、SRF 五组及各模型生命周期验收 |
+| 交付要求：模块/目标/范围外/验收/后续细分，先注册与重载再分族 | 本章五个全局小节及本块后续交接 | 17 块×五节结构核对、引用存在性、来源映射及人工差异审阅 |
+
+所有实例继续引用首块模板；本块是覆盖索引，不另造一个遗漏字段的函数实例。字段逐项审阅包括：关联/实现候选/场景/分类/调用模型；名称/别名/方言可见性；重载/隐式 cast；NULL/求值条件；collation/时区/会话；确定性/折叠/副作用；返回身份/值域/修饰符；wire/格式；下推/执行位置；错误字段/失败阶段；证据等级。整数 collation/时区不适用须保留纯整数原因，拒绝项成功值/NULL/结果列不适用须保留拒绝原因；MySQL 精确列字段、部分 PG 诊断/阶段、range 基础身份、非 C locale 等未知项仍是显式缺口，不能因文档完成填成默认值或运行通过。
+
+六种模型分别保留标量单值求值、运算符元数/签名与谓词、普通聚合每组 transition/final、窗口每输入行的分区/帧、有序集合 direct 参数与排序状态、SRF 零至多行及关联重扫。可共享算法或生命周期入口，不以统一标量注册抹平基数、状态、排序与错误时点。
+
+下推批准须以“方言＋已解析签名＋适用输入域＋目标存储/版本”为单位，先满足现有能力/黑名单/编码门禁，再有两入口及自身参考端的值、NULL、返回身份、cast、collation/时区、错误/警告与时点等价证据；补折叠/缓存/会话隔离和本地执行对照。普通聚合另证 DISTINCT/FILTER/排序、状态合并与最终类型，窗口另证分区/帧，SRF 另证基数/次序/重扫/取消；有序集合仍不批准局部分位数合并。缺任一必要证据保持未批准，不因 TiPB 或白名单存在放行；本轮新增下推批准为 0，无性能结论。
+
+本块官方复核（2026-10-23，PostgreSQL **18**）：[§10.3 函数解析](https://www.postgresql.org/docs/18/typeconv-func.html)核对名称环境/输入签名选择；[§4.2 表达式](https://www.postgresql.org/docs/18/sql-expressions.html)核对运算符、聚合、窗口及 WITHIN GROUP 不同调用形式；[§36.5.9 集合返回](https://www.postgresql.org/docs/18/xfunc-sql.html#XFUNC-SQL-FUNCTIONS-RETURNING-SET)核对集合行展开边界；[§54.7 协议消息](https://www.postgresql.org/docs/18/protocol-message-formats.html)核对类型、格式与 NULL 描述。这些只支持上述有限规则；具体函数语义沿各块官方引用，不从本块四页推广整个函数库。18.6 仍为来源指定目标，未核实该补丁版本参考实例或获得运行差分。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -2107,6 +2144,10 @@ hypothetical-set（rank、dense_rank、percent_rank、cume_dist 的 WITHIN GROUP
 #### 集合返回函数契约
 
 不实现 SRF AST/分析器、工厂/迭代器、LATERAL 计划、投影展开、数组类型/codec、协议 portal 或测试设施；不改目录特例、不扩大为完整函数库。时间/numeric 序列、多数组/复合记录输出、WITH ORDINALITY、多个及嵌套投影 SRF 留作独立扩展证据边界，不能在未实现时静默采用标量行为。类型/名称归第 2/3 章，目录事实和会话/协议生命周期归工作流 6、5/7；本块仅定义接口责任与代表目标。
+
+#### 章节验收与后续交接
+
+不实现函数、resolver、类型/codec、执行器、目录/权限或差分平台，不新增测试或实现任务文件。第 1–3 章与总计划只读；本章已明确的 range 基础契约、name/regtype、unknown 参数定型、缺工厂、完整多态、非 C locale 和扩展调用形态交后续依赖处理，不递归补建。文档验收不启动数据库、外部客户端、Cargo/Go 或下推性能测试，来源蓝图状态不自动改变。
 
 ### 验收
 
@@ -2331,6 +2372,22 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 人工审阅五组的输入、基数/值/NULL、固定类型、错误、两入口与证据层级映射。另以 `SELECT generate_series(1,2) AS a,generate_series(10,12) AS b` 定义多投影边界目标 (1,10)/(2,11)/(NULL,12)，禁止笛卡尔乘积或最短截断；CASE/COALESCE 内调用为分析错误采集边界。首批实现若未覆盖这些扩展形态须显式能力拒绝，不宣称完整投影支持。生命周期验收另采早停、取消、重扫与分段 Execute；当前文档检查不构成这些运行行为通过。
 
+#### 章节验收与后续交接
+
+以下为全章执行交接矩阵，均是**待执行行为目标**。具体 SQL、预期及场景 ID 复用前 16 块验收表，不复制易漂移的另一套 SQL；对每个可见成功签名逐格采证，对隐藏/非法调用单列拒绝记录。PG 与 MySQL 分别对自身参考端，不要求两种方言互相同型。
+
+| 验收维度 | PG 入口 | MySQL 入口 | 代表落点与当前状态 |
+| --- | --- | --- | --- |
+| 值与基数 | 值精确域、浮点舍入/格式；空全局聚合一行与 SRF 零行分开 | 自身数值/文本/JSON、行数及警告按模式核对 | FUNC-ID/SPLIT、AGG-CALL-EMPTY、SRF-DIRECTION；仅目标/静态取证 |
+| NULL | typed NULL、全 NULL、首行 NULL、空/NULL 数组及元素 NULL 不混同 | 自身 NULL bitmap/载荷，JSON null 不当 SQL NULL | FUNC-ID-ABS-TYPED-NULL、FUNC-ARR、FUNC-MY-JSON、SRF-ARRAY；未运行 |
+| 类型与转换 | 解析固定参数/返回身份、宽度/精度及 I 资格，Bind 换值不选签名 | 自身 SIGNED/DECIMAL/字符串/JSON 类型及转换规则 | FUNC-ID/RES、AGG-CALL-NUMERIC；精确 MySQL 修饰符仍缺证 |
+| wire 元数据 | Q、statement Describe、portal Describe；OID/typlen/typmod/列名/来源与格式，text/binary×适用参数格式，NULL/零行不改型 | Query、Prepare/Execute 自身 code/flags/charset/length/decimals、参数重绑及零行列定义 | 首块公共协议规则及各块协议段；当前编码源码/独立测试意图不是函数全链通过 |
+| 错误/警告 | 逐场景 SQLSTATE 与 S/V/C/M、适用 D/H/P，记录分析/折叠/执行阶段及恢复；缺工厂/codec 不冒充语义拒绝 | 原错误码/SQLSTATE/消息/警告及 sql_mode，不直接套 PG 诊断 | FUNC-ID-ABS-ERROR、FUNC-REG-UNLINKED、FUNC-RES-NO-MATCH/AMBIG、OP-CALL-ZERO、ORDERED-FRACTION、SRF-ZERO；未采字段明确缺口 |
+| 可见性与隔离 | 无同名遮蔽夹具下核对内建/限定名；两个 PG 会话交错名称、签名、状态与缓存 | 同时活动 MySQL 连接保留旧名称/工厂/模式；隐藏 PG 专属调用用合法 MySQL 语法验证 | FUNC-REG、FUNC-MY、FUNC-SYS-ISOLATION；不以全局注册切换模拟方言，未运行 |
+| 状态、优化与下推 | 聚合合并、窗口帧、ordered-set direct/排序、SRF 重扫/耗尽/暂停恢复；与本地执行逐签名对照 | 原执行路径和自身状态/优化契约保持，独立采证 | 六模型各自验收段＋本块门禁；新增共享/别名/下推批准均 0 |
+
+人工文档验收结论：前 16 块在五节中可定位，来源步骤 1–4、四类代表、全模板字段和六模型均有正文/验收落点；与第 1 章证据分级、第 2 章所属连接方言、第 3 章固定类型/E/A/I/Describe 规则一致，未修改前序正文。未来依赖缺口被明确交接，不作为本轮文档阻塞，也不视作已实现。结构/引用/差异检查及此人工覆盖审阅仅证明章节交付；correctness/兼容性为目标、运行有效用例 0、性能未验证。Ready 文档范围使用任务规定的可执行检查；仓库 `.agents/skills/tidb-verify-profile/SKILL.md` 缺失，未声称运行该技能或代码检查。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2424,6 +2481,14 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 #### 集合返回函数契约
 
 后续仅交接三个窄边界：第 2 章 AST/分析与前块 resolver 确定调用位置、关联依赖和第 3 章固定输出身份；复用执行器承载整数序列/单数组的零至多行迭代、重启/耗尽/取消，以及单 SRF 投影展开；server 按固定列描述输出并衔接 portal 暂停恢复。多 SRF 协调、时间序列重载与复杂输出各须独立契约/证据，不递归补建子系统、不把目录适配器当通用实现，本轮不生成代码任务。
+
+#### 章节验收与后续交接
+
+下一步先界定“可见集合→重载/I 资格→已选签名→正式工厂/固定返回身份”的最小接线与代表拒绝证据，沿现有规范内核，不重建 PG 求值器。随后按同契约族细分 ABS/条件表达式、同名分流、时间/格式化、数组/range、系统函数和 MySQL 隔离；每族只开放已补类型、wire 与错误证据的签名。range 基础契约、name/regtype 和参数定型等前置缺口先独立确认范围，不以补齐它们扩大任何一个函数任务。
+
+运算符、普通聚合、窗口、有序集合、SRF 各自拆窄调用模型任务，分别继承本章相应生命周期与基数断言，不纳入标量工厂补全清单。系统函数注册/求值归本章，会话事实与区域归 5，真实目录/权限事实归 6，协议/连接/取消归 7，双入口参考端采证归 1/8；实施前重新核实代码冲突、真实依赖与验证资源，不沿本轮串行文档批次直接并行编码。本轮只交接边界，不生成这些实现任务文件。
+
+本次完成仅指第 4 章文档覆盖与验收设计闭环；来源蓝图任务保持原状态供上层独立验收。所有精确参考版本、实际构建、命令/退出码、有效断言数、原始输出、未测项和缺证字段必须在后续行为交付时补齐，文档完成不升级功能支持矩阵。
 
 ## 5. SQL会话与事务语义
 
