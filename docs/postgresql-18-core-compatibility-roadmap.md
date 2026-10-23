@@ -1647,6 +1647,18 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`；[builtin_test.rs](../pkg/expression/builtin_test.rs)：`eval_builtin_func` | 正式构造取得类、调用 getFunction、读取 getRetTp 并包装 ScalarFunction，可按策略折叠；通用测试 helper 仍含迁移注释，不是 range 求值断言。应沿正式链接入已选签名，不新建 PG 求值器。 |
 | [pg_result.rs](../pkg/server/pg_result.rs)：`pg_type`、`value_text`、`value_binary`；[pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values` | 已读映射为普通标量及目录专用桥接，未见 range OID 分支；文本透传不能证明 range 规范值或 binary codec。测试断言普通标量 Q 的 OID/值，没有本块 range 构造、边界、扩展协议专项证据。 |
 
+#### 必需系统函数契约
+
+本块静态基线 `f120e9541b21982d5033d704ea44d368f348eb00`（2026-10-23）；批次 1–9 提交及五节正文齐全，累计依赖满足。`pkg/expression/doc.go`、`pkg/server/doc.go` 均不存在。经 RustCodeGraph status、explore、定点 node 阅读真实源码；图未覆盖的名称字面量与模块挂载用 rg 补查。以下仅静态源码及测试断言意图，未运行测试。
+
+| 实际入口/符号 | 已核实责任、客户端需求与限制 |
+| --- | --- |
+| [builtin_info.rs](../pkg/expression/builtin_info.rs)：`SessionInfo`、`database`、`connection_id`、`version`；[builtin_info_test.rs](../pkg/expression/builtin_info_test.rs)：`session_information_matches_go_values_and_missing_state_errors`、`expression_metadata_and_version_helpers_return_go_fields` | MySQL 局部 kernel：空 current_db→NULL，连接 u64 转 i64，版本取 MySQL ServerVersion；独立测试断言 test/空库、连接 1、版本非空。不是 PG 数据库身份、int4 backend PID 或 PG 版本返回身份的证据。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`registeredFunctionClass::getFunction` / `invoke_factory`；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`；[lib.rs](../pkg/expression/lib.rs) | 名称查类→参数检查→工厂→RetType→ScalarFunction/可选折叠的共享链应复用；crate 挂载 info kernel 和独立测试。规格含 database/connection_id/version，已读核心工厂表没有这三项，动态注册未全面排除；没有证明五个 PG 候选走正式标量工厂。 |
+| [pg_session.rs](../pkg/server/pg_session.rs)：`SessionQuery::parse` / `metadata`、`PgSession::schema` / `execute`；[pg_conn.rs](../pkg/server/pg_conn.rs) 的 Q 分支；[pg_extended.rs](../pkg/server/pg_extended.rs) 的 Parse/Execute 分支 | 专用语法只接受无 FROM 的单项 current_database()/current_schema() 及别名/pg_catalog 限定；Schema 读连接路径，Database 委托 SELECT DATABASE()；Q 与扩展查询调用 session.execute，扩展目录执行刷新 current_schema。此有界接线不是任意表达式或正式函数注册的替代品；启动 server_version 常量也不能证明 SQL version()。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)：`CatalogQuery::parse_session_with_types` / `expr_type` / `evaluate`；[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)：`catalog_select_structure`、`catalog_binding_has_explicit_support` | 当前库来自上下文、schema 来自连接快照；current_database/current_catalog 限 pg_database，current_schema 限 pg_namespace，类型分支暂用 code 253。测试解析真实目录探测形状，并断言 current_database() FROM pg_locks 被 0A000 拒绝；这只是当前门禁，PG 目标允许普通表达式调用。 |
+| [pg_query_test.rs](../pkg/server/pg_query_test.rs)：`pg_introspection_namespace_session_state`、`datagrip_catalog_live_metadata`、`namespace_catalog_live_metadata`；[pg_session_test.rs](../pkg/server/pg_session_test.rs)：`pg_introspection_namespace_parser_boundaries`；[pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs) 的 libpq 目录探测脚本 | DataGrip 目录排序包含 current_database/current_schema，libpq 脚本包含 current_schema 探测，故这两项是客户端证据最强的首批；独立测试还有两连接、空路径 NULL、RESET、Parse 后 SET 再 Execute 的断言意图。version 为握手/能力探测次序候选，现有 server_version 断言只覆盖启动参数；pg_backend_pid/pg_typeof 未找到同等客户端需求断言，列为身份与类型一致性候选，不虚构需求频率或运行通过。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1831,6 +1843,22 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 官方来源（2026-10-23 查阅，PostgreSQL **18**）：[§9.20 range 函数](https://www.postgresql.org/docs/18/functions-range.html)核对提取/empty，[§8.17.3–7 range 类型](https://www.postgresql.org/docs/18/rangetypes.html)核对构造、无界和离散规范化。固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)及[pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)核对精确签名、strict 和 immutable；[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)核对 OID/长度；[rangetypes.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/rangetypes.c)的 range_constructor2/3、range_lower/upper、range_parse_flags、range_serialize、int4range_canonical、range_send 核对 NULL、错误、规范化与 binary 布局。数值例是规则推导目标；18.6 仍为来源指定版本，未采该补丁版本参考端证据。
 
+#### 必需系统函数契约
+
+沿首块统一模板，本块定义五个普通标量候选，规范实现候选 ID 为 `scalar.pg.system.database/v1`、`schema/v1`、`version/v1`、`backend-pid/v1`、`typeof/v1`（后四项沿同一 `scalar.pg.system.` 前缀）；不是已注册 ID。优先级依据上表客户端探测静态证据，先数据库/schema，再版本、连接身份与类型内省；后面三项的具体客户端版本、调用频率和需求紧迫度未采，不能仅因候选名存在便升级支持。
+
+| 模板字段 | 本块目标、事实提供者及缺证边界 |
+| --- | --- |
+| 关联/分类/调用模型/名称/可见性 | 关联下方 FUNC-SYS 五组；五个 PG 签名和 pg_catalog 限定名沿第 2 章可见，current_schema 无括号形式由语法层承接。version 同名按方言分流；其余不向 MySQL 开 PG 别名，MySQL DATABASE()/VERSION()/CONNECTION_ID() 保留原契约。不批准跨方言共享别名。当前通用标量链未验证。 |
+| 重载/隐式 cast | current_database()→name、current_schema()→name、version()→text、pg_backend_pid()→int4；pg_typeof("any")→regtype，"any" 是接受实参类型的伪类型而非 wire 类型，不把输入都转 text，也不按物化值猜类型。显式 typed NULL 和 Parse 参数类型优先，unknown/参数 OID 0 沿前块解析规则单列；本组不承诺未取证的任意域/用户类型解析。 |
+| 值/NULL/事实责任 | 数据库身份由工作流 5/7 的所属连接提供；schema 由工作流 5 的有效显式路径与工作流 6 的对象存在/USAGE 事实共同决定，无有效项返回 SQL NULL。版本取真实构建/兼容性声明提供者，工作流 7 保持启动参数一致，不伪造参考 PG 构建串。PID 取工作流 7 的 backend 身份分配与取消注册表，不能强转 MySQL u64 或共享进程 PID。pg_typeof 取第 3 章分析后的参数类型身份，类型名/OID 映射归工作流 6；typed NULL 仍返回类型的非 NULL regtype，不走 strict NULL 传播。其余四项零参数，参数 strict 快捷不适用；正常连接数据库/版本/PID 非 NULL。 |
+| 权限/会话/collation/时区 | 固定 UTF-8；值不做时区换算或文本比较，collation 对本组值运算不适用，name/text 自身类型与字符属性仍保留。schema 必须忽略不存在或无 USAGE 的路径项，不能把路径字符串当可见对象事实；隐式 catalog 不自动成为 current_schema。角色/权限变化的有效路径刷新由 5/6 提供，不新增权限查询函数。PG 数据库在连接内固定，改库须重连，不借 MySQL USE 实现 PG 身份切换。当前仅 public/catalog 的路径模型不证明完整权限过滤。 |
+| 确定性/折叠/副作用/下推 | 固定 PG 目录五项均为 stable，无 SQL 数据写入；pg_typeof 非 strict，其余无实参。结果依连接、类型或服务器环境，不能按 immutable 跨会话缓存；准备语句不能冻结 current_schema 的后续 SET。内省不保证消除实参正常求值/错误；不得以 pg_typeof 重写吞掉表达式副作用。下推默认不批准，事实须在所属 SQL 会话读取，无性能结论。 |
+| 返回类型/wire/修饰符 | current_database/schema 为 name（OID 19，标准 NAMEDATALEN=64 的 typlen 64）；version 为 text（25/-1）；PID 为 int4（23/4）；pg_typeof 结果列为 regtype（2206/4），其值可为 int4 的 OID 23，不能把结果列 OID 写成 23。本组 typmod 目标 -1；name/regtype 身份与 text/oid 不可混同，第 3 章未承诺部分先补窄类型/codec 依赖。AS v、表达式表/属性号 0、NULL 长度 -1、描述格式与零行规则沿首块；name 二进制不发内部定长填充，regtype 二进制为 OID 载荷。MySQL 精确 code/flags/charset/length/decimals 待参考采集，不能从 PG OID 推导。 |
+| 错误/阶段/证据 | 合法调用无错误，错误字段不适用；如 current_database(1)、pg_typeof() 无匹配签名，PG 目标 42883，分析阶段拒绝且无成功行。无参数类型可确定时另采 resolver 错误，不猜 SQLSTATE；基础设施/工厂/codec 缺失记工程缺口，当前目录 0A000 不冒充 PG 语义。诊断沿首块记录 S/V/C/M、适用 D/H/P 和原 SQL 字符位置，精确消息/P/本地映射待采。全部运行未验证。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.27 系统信息](https://www.postgresql.org/docs/18/functions-info.html)定义五项返回语义；[§19.11.1 search_path](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-SEARCH-PATH)定义有效路径与权限过滤。固定 **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)核对签名、stable 及 pg_typeof 非 strict，[misc.c::pg_typeof](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/misc.c)核对从表达式类型取得 OID，[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)核对 name/int4/text/regtype 身份及长度；[§54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)核对描述与 BackendKeyData。标准 name 长度及 binary 布局另核对同 tag 的 [pg_config_manual.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/pg_config_manual.h)、[name.c::namesend](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/name.c) 和 [regproc.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/regproc.c)；本地 codec 未验证。18.6 仅为来源指定版本，没有该补丁版本差分结果。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1868,6 +1896,10 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 #### 范围函数契约
 
 本块不实现 range 表示、构造/求值、cast、codec 或测试设施，不修改第 3 章，不将基础类型缺口扩大为子系统建设。multirange、自定义 range、其他 range 族的完整验收、范围运算符/索引/聚合及扩展生态均在本块范围外；两入口已有 lower/upper 字符串契约另行保留。本轮不运行 Cargo/Go、数据库或差分平台。
+
+#### 必需系统函数契约
+
+不实现代码、工厂、OID 分配、任意目录行或权限系统；不补建完整系统函数库、角色生态、统计视图、版本伪装或取消协议。注册/求值只消费事实接口，目录对象/OID/权限事实归工作流 6，会话路径/角色归 5，连接启动/身份/取消归 7，类型身份归第 3 章。现有探测解析与 SQL 适配不是通用实现方案，禁止用 SQL 文本替换、固定 public/库名/进程号或参考 PG 版本串让探测通过；不把目录当前占位 NULL 当权限事实。
 
 ### 验收
 
@@ -1995,6 +2027,20 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 每组独立对照参考 PG/AsterSQL PG，成功项覆盖 Q 与 Parse/statement Describe/Bind/portal Describe/Execute；用 `$1::int4range`、`$1::numrange` 或定型端点/flags 参数，text/binary 参数×结果四组合，重复 Bind 普通值、empty、无界、SQL NULL 不换已选签名和 OID。全 NULL/零行仍有固定描述，Execute 不重发描述；构造 NULL 端点不按 strict 提前吞掉。MySQL Query/Prepare/Execute 用合法骨架检查隐藏名称及保留字符串签名，采自身 code/flags/charset/length/decimals、警告和错误；两个 PG 连接与一个 MySQL 连接交错验证缓存/可见性隔离。codec、表示或工厂缺失单列工程缺口，不能将其记作目标拒绝通过；当前有效运行用例为 0。
 
+#### 必需系统函数契约
+
+以下五组为**待新增、未运行**目标；每项表达式独立 `SELECT <表达式> AS v`，类型及 wire 按本块模板。固定无同名用户函数、有效数据库 db_a/db_b、UTF-8；成功项除显式 schema NULL 外非 NULL，成功 SQLSTATE 不适用。
+
+| 场景 | 输入及 PG 值/NULL/类型/错误目标 | 事实提供者、两入口与缺证边界 |
+| --- | --- | --- |
+| FUNC-SYS-SESSION：会话变化 | A/B 分别连接 db_a/db_b，current_database()→各库名/name；A 的 search_path 从 public 改 pg_catalog 再改空，current_schema() 依次 public、pg_catalog、SQL NULL/name，B 不变；RESET 回到夹具记录的默认值。Parse current_schema() 后 SET 再 Bind/Execute 应观察新值。 | 5/7 提供所属连接数据库与路径，6 提供有效 schema。MySQL DATABASE() 只反映自身库，PG SET 不改变它；同值不批准别名。现有局部测试只有 test 与 public/catalog/空路径，不证明双库、完整元数据或两入口隔离。 |
+| FUNC-SYS-VISIBILITY：权限与可见性 | 参考夹具建存在的 s_hidden（无 USAGE）、s_ok（有 USAGE），SET search_path TO missing,s_hidden,s_ok；current_schema()→s_ok/name。路径只剩 missing,s_hidden→SQL NULL/name；隐式 pg_catalog 仍可解析限定系统函数。授予/撤销 USAGE 后在下一语句重新验证有效结果。 | 6 提供真实存在/授权事实，5 按当前角色构造有效路径；不能从函数名或路径文本伪造。当前 AsterSQL 有界路径拒绝任意 schema 是工程缺口，非 PG 目标；GRANT/角色基础设施属外部依赖。MySQL 不公开 current_schema() PG 签名，错误码/SQLSTATE 待采，不能拿 PG SET 语法错误作名称隔离证据。 |
+| FUNC-SYS-TYPEOF：类型内省 | pg_typeof(1::int4)、pg_typeof(NULL::int4) 都返回 regtype 值 23，text 显示 integer；pg_typeof(NULL::text)→regtype 值 25，text 显示 text；均非 NULL，结果列 OID 恒为 2206。定型参数 `$1::int4` 重复 Bind 1/NULL 保持 integer；pg_typeof()→42883 无成功行。 | 第 3 章提供分析类型，6 提供真实类型目录与 regtype 显示，server 编码。MySQL 合法骨架 pg_typeof(1) 目标名称拒绝，自身诊断待采；不把内部 MySQL BIGINT 直接报告为 PG int4。typed NULL、参数、regtype codec 和完整工厂均无当前运行证据。 |
+| FUNC-SYS-IDENTITY：连接身份 | 同时活动的 PG A/B 重复 pg_backend_pid() 各得稳定、非 NULL、正 int4 且两者不同；各值须等于本连接 BackendKeyData 的 backend ID，独立取消只作用于对应连接。断开后不要求 ID 永不重用。version() 返回真实服务版本说明/text，与所声明能力和启动参数一致，不逐字等同参考 PG 的机器/编译器串。 | 7 提供 backend ID/生命周期/取消关联，构建信息提供者和 7 提供版本策略；第 4 章只定义求值。MySQL CONNECTION_ID()/VERSION() 保持自身值和类型，不能截断 u64 到 int4 或互相覆盖版本缓存。现有启动 server_version 测试不是 SQL version/PID 证据；本块只定义交接，不运行取消平台。 |
+| FUNC-SYS-ISOLATION：两入口隔离 | 交错 A/B 的 current_database/current_schema/pg_typeof/pg_backend_pid 与 MySQL M 的 DATABASE()/VERSION()/CONNECTION_ID()；PG version() 与 MySQL VERSION() 同名各选自身签名及返回元数据，重复准备/执行不得泄漏 A/B/M 状态。PG current_database(1)→42883，无成功行。 | 第 4 章选择签名与工厂，5/7 供连接事实，6 供目录；MySQL 中 current_database()/current_schema()/pg_backend_pid()/pg_typeof(1) 隐藏 PG 名称，分别用合法 MySQL 函数调用采自身拒绝，错误码/SQLSTATE 未采。PG DATABASE()/CONNECTION_ID() 不开放跨方言别名，名称无匹配目标 42883。没有双入口全链运行证据。 |
+
+每组成功项分别在参考 PG 和 AsterSQL PG 采 Q、Parse/statement Describe、Bind/portal Describe、Execute，text/binary 结果及适用的参数格式；无参函数不虚构参数载荷，typeof 参数覆盖 text/binary × 结果格式。schema=NULL 和零行仍保留 OID/typlen/typmod；Execute 不重发描述。name/regtype codec 或工厂缺失单列依赖，不能退回 text 冒充通过。MySQL Query/Prepare/Execute 单独记录值/NULL、自身列定义、错误和警告，两个 PG 连接与一个 MySQL 连接交错采样。现有源码及断言意图与官方目标分别记录，有效运行用例为 0。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2050,6 +2096,12 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 后续仅交接独立 range/subtype 身份及 empty/无界/开闭表示契约、已定型构造与规范化到正式标量链、固定 range/提取结果身份到 server codec 三个窄边界；第 3 章缺少通用 range 契约，须先补该前置文档与代表证据，不能由本块完成推断基础依赖已具备。先获得四组与两入口证据，再讨论共享/下推；本轮不生成代码任务。
 
 来源映射：蓝图步骤 2 的 PG 核心 range 由 lower/upper/isempty/构造及 FUNC-RNG 四组承接，步骤 3 全部字段由统一模板差异表覆盖；空范围与 NULL、无界端点、开闭界、离散规范化分别定位 EMPTY-NULL/UNBOUNDED/BOUNDS/CANON，每组有输入、值/NULL/类型/错误与两入口可见性和证据等级。人工审阅与第 3 章未承诺 range、前块按分析固定身份及逐签名门禁一致，未改前序正文；correctness/兼容性仅为文档目标，运行未验证，性能无结论。
+
+#### 必需系统函数契约
+
+后续仅按首批客户端探测补数据库/schema 的正式标量接线，先向工作流 5/6/7 明确事实接口、读取时点与不可用诊断；再为版本、backend 身份和 pg_typeof 补具体客户端需求、窄 name/regtype 身份/codec 与独立验收。函数求值不拥有目录表或身份生命周期，不借本块扩大目录/权限/协议实现。范围、优先级与通用工厂接线仍须实施阶段重新核实，本轮不生成代码任务。
+
+来源映射：来源步骤 2“PG 必需系统函数”由本块五候选和 FUNC-SYS 五组承接；步骤 4 的系统函数/目录责任由模块表、事实责任字段、范围外与上述接口交接承接。首块全部模板字段已逐项填写；权限过滤、类型内省、连接身份和两入口缺证均显式保留。文档完整性不表示 correctness/兼容性/性能已实测，未运行 AsterSQL/PG/MySQL 或 18.6 参考端。
 
 ## 5. SQL会话与事务语义
 
