@@ -2596,6 +2596,16 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 已完整读独立 [pg_name_test.rs](../pkg/server/pg_name_test.rs)::`pg_introspection_names_token_scopes`（public/当前库限定、引用名称与字符串/注释保护的改写断言）、`pg_introspection_names_rejection_boundaries`（跨库、非 public、空/未闭合引号拒绝）及 [pg_session_test.rs](../pkg/server/pg_session_test.rs)::`pg_introspection_namespace_parser_boundaries`（有界路径解析及引用 PUBLIC 拒绝）。这些测试没有以不同对象值证明 t/"T"、同名大小写列或别名绑定正确；本轮未执行，运行用例数 0。`pkg/server/doc.go` 不存在；模块说明和协议第一阶段的历史支持叙述不是本轮运行证据。
 
+#### 预处理执行时会话契约
+
+承接来源步骤 2 的 prepared 执行时状态及步骤 4 的隔离/恢复，能力 ID 为 `SESSION-PREPARED-STATE/pg`。批次 8 提交 `3ba468a243`、批次 7 `39f6e32b84` 及累计批次 1–6 的五节正文与提交链已核对，满足文档依赖；第 2 章名称、第 3 章固定类型、第 4 章函数身份契约继续适用，总计划及来源任务保持只读。
+
+2026-10-23 基于 `3ba468a243` 通过 RustCodeGraph 阅读 [pg_extended.rs](../pkg/server/pg_extended.rs)::Statement/Portal/Extended::process/handle：普通 Parse 在当时 PgSession 上调用 pg_name::adapt，再经 markers 和共享 prepare_statement 保存原生 handle、参数 OID/位置映射及准备元数据；Bind 解码值并复制列/类型与描述到 portal。Describe statement 返回已保存参数/列，Describe portal 返回其描述；首次 Execute 调共享 execute_prepared_statement，编码后与 portal 描述比较，不一致返回产品 0A000；之后 Execute 使用 messages/offset 缓存。此比较发生在执行后，不能据此证明写入前已完成固定结果类型检查，也未在该边界找到普通语句重新进行 PG 名称适配的证据；不据此断言共享引擎完全没有 DDL 失效处理。
+
+[pg_session.rs](../pkg/server/pg_session.rs)::PgSession::execute 的 Schema/Show 在执行时读本连接路径；[pg_conn.rs](../pkg/server/pg_conn.rs) 每连接创建 Extended，其扩展闭包将目录交 CatalogQuery::execute、普通 handle 交同一 TiDBContext。[pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery/Execution 承载目录解析与单次执行快照；目录 statement 不分配原生 prepared handle，重新读取目录行不等于普通关系/函数重新绑定，public_first 等解析状态也不能假定全部在 Execute 更新。
+
+已读独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 的 current_catalog、显式 int4 参数/两种 Describe、Parse 后建库可见和目录 statement Close 隔离片段；[pg_query_test.rs](../pkg/server/pg_query_test.rs)::pg_introspection_namespace_session_state 的两连接路径及 Parse 后 SET/current_schema 断言；[pg_dml_test.rs](../pkg/server/pg_dml_test.rs) 的 prepared CRUD、重复/乱序参数与非法 Bind 后 Sync 断言。均仅是测试意图，本轮未运行；它们不覆盖下面的普通 prepared 路径切换、跨连接 DDL 和固定结果类型全序列。`pkg/server/doc.go` 不存在，历史说明不作为本轮支持证据。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2712,6 +2722,21 @@ PG 未引号 t、T 与引用 "t" 选择同一小写名称；"T" 为精确大写�
 
 官方依据（访问 **2026-10-23**，适用 **PostgreSQL 18 主版本**）：[§4.1.1 标识符](https://www.postgresql.org/docs/18/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS)支持折叠、引号和特殊字符；[§5.10.1 schema 限定](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-CREATE)支持当前库前缀及跨库限制；[§7.2.1.2 表与列别名](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-TABLE-ALIASES)支持别名隐藏原名。验收值为这些规则的文档推导，不是运行结果；18.6 仍是来源目标，未核实精确补丁行为。MySQL 自身比较按 [8.4 名称大小写](https://dev.mysql.com/doc/refman/8.4/en/identifier-case-sensitivity.html)及第 2 章模式边界，不能从 PG 规则推断其结果。
 
+#### 预处理执行时会话契约
+
+以下为目标，观察对象身份、参数身份、列身份和运行时值分别记录，不能笼统称为“执行时绑定”。
+
+| 阶段 | 名称环境、参数与结果身份观察边界 |
+| --- | --- |
+| Parse | 对当时名称环境做语法分析、语义分析/重写，选择关系、列、函数及类型；不是只保存未分析文本。参数编号和声明/推断类型确定，参数值尚无；结果类型/列形状来自分析，不能取首行或执行写入来 Describe。当前普通路径需显式 OID 的限制仍单列。 |
+| Bind | 按该 statement 的参数身份解码本次值并选择结果格式，创建本连接 portal；PG 通常在此规划，需复核依赖失效及两次使用之间的 search_path 变化并按新环境重新分析。值变化不能改变参数类型或随意改变已准备结果类型；合法重绑定到另一对象也受固定结果类型约束。 |
+| Describe | statement 返回参数及结果描述（结果格式为 0），portal 返回该次绑定的列/格式；statement 的依赖重验证可能报错，不以“只 Describe”绕开失效检查。不能执行原语句采样；表 OID/属性号、列名与类型/typmod分别记录，固定类型不等于把物理对象 OID永久冻结。 |
+| Execute | 执行已绑定 portal 并求运行时值，如 current_schema()；不是每次把原 SQL 按最新路径重解析。已绑定 portal 与后续新 Bind 的语句使用须区分，暂停/续取不得重查目录或重复副作用。取数快照与名称/类型定型是两件事，跨连接 DDL 不承诺无视锁立即生效。 |
+
+两次使用间 search_path 改变、被依赖对象定义改变应触发相应重新分析/规划；删除后缺对象应失败，删除重建且输出兼容可绑定新对象，输出类型/列形状改变应拒绝并由客户端 Close/重新 Parse 获取新描述。固定参数类型不得静默随 DDL 改变。路径文本不变而更早 schema 新建同名表是特例：仅该动作不自动使原依赖失效，不保证马上切换，须有后续强制重新分析条件；显式限定名不因路径切换转向别的 schema。会话函数的当前值变化不能作为所有关系/函数都延迟绑定的证明。
+
+官方依据（2026-10-23 查阅，适用 PostgreSQL **18**）：[PREPARE](https://www.postgresql.org/docs/18/sql-prepare.html) 说明分析/重写、会话归属、DDL/路径变化及更早同名表特例；[§54.2.3 Extended Query](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY) 说明 Parse/Bind/Describe/Execute、参数身份、通常 Bind 规划及 portal 生命周期。固定结果类型另核官方 PG18 维护分支 [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/tcop/postgres.c) 的 exec_parse_message/CompleteCachedPlan(fixed_result=true) 和 [plancache.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/utils/cache/plancache.c) 的 RevalidateCachedQuery（参数类型保持、结果不兼容时 FEATURE_NOT_SUPPORTED）。该分支是源码依据，未固定为 18.6，也无精确补丁或参考端运行证据；精确报文、SQLSTATE、错误阶段与位置在下列用例采集，不能拿产品元数据不一致报错代替 PG 固定类型诊断。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2745,6 +2770,10 @@ PG 未引号 t、T 与引用 "t" 选择同一小写名称；"T" 为精确大写�
 #### 引号与大小写执行契约
 
 只补实际对象选择契约；不实现 parser、名称映射、大小写敏感目录/存储改造、多 schema、权限、用户函数或完整 Unicode/名称截断规则，不改全局配置。路径生命周期复用前块；prepared 重分析/缓存时点归下一专项，本块扩展查询均新建 statement/portal。事务型 DDL、sequence/identity、跨库引擎与 MySQL 模式实现不在范围；不运行数据库、差分平台、Cargo/Go 或原型，不改第 1–4、6–8 章。
+
+#### 预处理执行时会话契约
+
+本块不实现 prepared 缓存、失效广播、PG resolver、类型系统或 schema 子系统；不补 generic/custom plan 策略或性能基准，不开放事务型 DDL、任意多 schema、二进制格式及通用参数推断。SQL PREPARE/EXECUTE 仅作官方语义来源，本轮用例走扩展协议，不据此宣称产品支持 SQL PREPARE。事务恢复、Close/Sync/portal 精确生命周期沿专项和工作流 7；目录真实对象、权限与可见性归工作流 6。目录 Execute 重新取快照不承担原生 prepared handle 的失效证明。
 
 ### 验收
 
@@ -2963,6 +2992,33 @@ MySQL 共存 `session.name-case.mysql.<query|prepared>` 关联 `SESSION-NAME-CAS
 
 清理先各连接 ROLLBACK、关闭存在的 statements/portals/prepared，恢复 M 原 sql_mode；再在 I 下逐条 DROP TABLE public."a.b"、DROP TABLE public."T"、DROP TABLE public.t，MySQL DROP TABLE name_case_mysql，关闭连接；只清理实际建立的对象。来源步骤 2 → relation/column/alias/dot，步骤 4 → S、write/failed 与 MySQL 共存。正确性风险为误绑定/合并和错误前副作用，兼容性风险为后端大小写配置、列名及诊断差异，性能未测、无结论。
 
+#### 预处理执行时会话契约
+
+以下 `session.prepared-state.pg.<名称>` 全为**待新增、未运行**用例，关联 `SESSION-PREPARED-STATE/pg`。PG A/B/O 同一全新独立测试库、UTF-8、UTC、Read Committed、初始 I，有夹具权限，无其他并发写者。每例独立初始化，事务外逐条 `CREATE TABLE public.prep_doc (id integer PRIMARY KEY,v integer)`、`INSERT INTO public.prep_doc VALUES (1,10),(2,20)`；三连接 `SET search_path TO public`。S 为双方在可执行时 `SELECT id,v FROM public.prep_doc ORDER BY id`，初始 [(1,10),(2,20)]。改变对象的例以指定 DDL 后状态为基线，拒绝不得再修改它。
+
+P 表示 A 命名 Parse s、SQL `SELECT v FROM prep_doc WHERE id=$1`、OID [23]、Describe statement、Sync 至 I；E(x) 表示新 Bind portal p 到 s（text 参数 x、text 结果）、Describe portal、Execute(max_rows=0)、Sync 至 I，p 随事务结束销毁。每次改变环境前用 Sync 释放隐式事务/解析锁，另连接 DDL 必须等待完成再继续，不在活跃旧 portal 上强行 DROP。每次 E 前都采 Describe；参数恒 int4/OID23，基线一列 v 为 int4/23/typlen4/typmod -1，结果 x=1 为10、x=2为20，命令标签 SELECT 1。列名、顺序、来源表 OID/属性号、格式及可空性分别采证；不伪造 OID 数值。表内 NULL 不参与此夹具，参数 NULL 的独立 E(NULL) 应零行且类型不变。
+
+| 名称与完整环境变化/输入 | 目标对象、结果、元数据/拒绝及副作用 |
+| --- | --- |
+| stable：P；E(1)、E(2)、E(NULL)；B 同名 Parse s 为 `SELECT id FROM public.prep_doc WHERE id=$1`/OID23，再以自己新 portal 绑定1执行；A 再 E(1) | A 为10/20/零行/10，B 为1且列名 id、int4，statement/portal名字相同也互不引用。A/B Describe 各自稳定；S 不变，参数值不改列身份。 |
+| path-missing：P、E(1)；A `SET search_path TO pg_catalog`；E(1)；恢复 `SET search_path TO public` 后 E(1)；B S/SHOW | 变更后新使用须重新分析、缺 prep_doc 拒绝（缺关系目标42P01，精确阶段/报文待采）；恢复后10、v/int4。独立 qualified 变体 P 的 SQL 仅改 `FROM public.prep_doc`，路径切换后仍10。B 路径 public，S 不变。 |
+| path-switch：另建 `CREATE SCHEMA prep_alt`、`CREATE TABLE prep_alt.prep_doc (id integer PRIMARY KEY,v integer)`、`INSERT INTO prep_alt.prep_doc VALUES (1,90)`；P、E(1)；A `SET search_path TO prep_alt, public`；E(1)；`SET search_path TO public` 后再 E(1) | 对象 public→prep_alt→public，值10→90→10，v/int4不变、来源身份另采；S 仍初值，另查 `SELECT id,v FROM prep_alt.prep_doc ORDER BY id` 为[(1,90)]。产品当前非 public 门禁须记准备/设置限制及路径未变，不能计重绑定通过。 |
+| earlier-shadow：独立上述两 schema，但起初只有 public.prep_doc；A `SET search_path TO prep_alt, public`；P、E(1)；B 创建 prep_alt.prep_doc/插入(1,90)；A E(1)；再 A `SET search_path TO public`、E(1)、`SET search_path TO prep_alt, public`、E(1) | 仅创建早位同名表不自动切换，第一次仍10；显式路径变化触发重新分析后最终90。两表 S 各保持初值/90，v/int4稳定，来源身份随有效重绑定采证。该目标同样受多 schema 准备门槛限制。 |
+| drop-recreate：P、E(1)；B `DROP TABLE public.prep_doc`；A E(1)失败；B 逐条 `CREATE TABLE public.prep_doc (id integer PRIMARY KEY,v integer)`、`INSERT INTO public.prep_doc VALUES (1,70),(2,80)`；A E(1) | 缺对象失败且无数据输出；同结构重建后70、v/int4，必须对照新目录对象身份，不能用旧对象行或旧 portal 缓存代替。双方 S 最终[(1,70),(2,80)]，失败不额外写入；DDL 都已提交，不混入事务型 DDL。 |
+| ddl-shape：独立 P 的 SQL 改为 `SELECT * FROM public.prep_doc WHERE id=$1`，基线列[id,v]/int4,int4；E(1)；B `ALTER TABLE public.prep_doc ADD COLUMN extra integer`；A E(1) | 旧 statement 固定结果两列，重新分析出现三列应拒绝，精确错误字段/阶段待采。Close s、新 Parse 同SQL/OID23、Describe、E(1)应(1,10,NULL)，列[id,v,extra]/三int4；另查 `SELECT id,v,extra FROM public.prep_doc ORDER BY id` 为[(1,10,NULL),(2,20,NULL)]。独立显式投影 P 原SQL对照新增无关列仍10/v/int4；新增列本身不必让所有 statement 失败。 |
+| bound-path：P；A Q `BEGIN`；Bind p 值1、Describe portal；A Q `SET search_path TO pg_catalog`；Execute p、Sync；ROLLBACK；A E(1) | p 已绑定 public 对象，应10且v/int4；不能因后来的路径切换把已有portal当新Bind重新解析。Sync在显式事务中仍T；回滚/恢复public后新E仍10，S不变。相同独立 current_schema 变体：Parse `SELECT current_schema()`/无参数；SET后新Bind/Describe/Execute应pg_catalog，结果name类型身份按第3章/参考端采集，不能套产品当前text证明等价。 |
+| catalog-live：P的SQL改 `SELECT relname FROM pg_catalog.pg_class WHERE relname='prep_later'`/无参数；Describe、Sync，首轮新Bind/Execute零行；B `CREATE TABLE public.prep_later (id integer)`；A再新Bind/Describe/Execute；B `DROP TABLE public.prep_later`；A再新Bind/Execute | 目录行零→prep_later→零，列relname的name身份/元数据各阶段保持（产品当前目录映射另列差异），S不变。只证明目录新执行读取已提交变化；分段或重复Execute同portal不重新取快照，不能借此证明普通s失效。 |
+
+无参数用例的每轮均 Bind 新 portal（空参数、text结果）、Describe portal、Execute(max_rows=0)、Sync至I，才能在B执行下一条DDL。表中SHOW为 `SHOW search_path`；S在A/B/O能执行时以独立Q采集，不能在Bind/Execute之间插入会销毁未命名对象的查询。E(NULL)标签为SELECT 0，其他成功行数按实际结果记录，成功SQLSTATE不适用。
+
+上述失败在 I 下记录 ErrorResponse、Sync→I，再 `SELECT 1 AS ok` 及新合法 Bind/Execute应可继续。另以 path-missing 的合法 P 在 BEGIN 前准备、环境 pg_catalog 在 BEGIN 前设置；A BEGIN、`INSERT INTO public.prep_doc VALUES (9,99)`、新 Bind/Describe/Execute s 触发缺表失败，Sync 应 E，Q SELECT 1 目标25P02，ROLLBACK→I；SET public 后 E(1)恢复10，A/B/O 的 S 均原基线、无9。记录失败究竟发生于 Bind/Describe/Execute，不把 Parse 提前拒绝算作此用例通过。各读取用例 Parse/Describe 前后 S 相同，输出失败不能隐含已执行写入。拒绝不提供成功列数据；原描述、错误SQLSTATE/原文/P字段有无与位置、I/T/E和恢复后列描述逐项留原始证据。
+
+连接隔离负例另从 stable 结束 I 开始：B先Close自己的s并Sync；A保留s；B Bind到s必须失败，Sync后 `SELECT 1 AS ok` 继续。A BEGIN、Bind仅自己命名的p_a（s、值1），B Execute p_a也必须拒绝，B Sync/SELECT1恢复，A Execute p_a仍返回10/v/int4，A Sync后ROLLBACK。再B重新Parse s（stable中B的id查询/OID23）、Describe/Sync；A/B各BEGIN、各Bind同名p（自身s、值1）、Describe，A Close自己的s，B Execute p仍返回id=1/int4，A新Bind s拒绝并Sync→E；B Sync→T，分别ROLLBACK→I，再重建各自s。跨连接不得凭数值相同省略各自Describe/所有权证据；命名statement持续至Close/断连，portal仅当前事务有效，跨Sync/事务结束重用及未命名替换的精确序列交工作流7。
+
+MySQL共存 `session.prepared-state.mysql.<query|prepared>` 关联 `SESSION-PREPARED-STATE/mysql`：M/N同Server独立测试库，autocommit=1，记录sql_mode/隔离。事务外 `CREATE TABLE prep_mysql (id INT PRIMARY KEY,v INT)`、`INSERT INTO prep_mysql VALUES (1,30)`；保存Query `SELECT v FROM prep_mysql WHERE id=1`、MySQL Prepare `SELECT v FROM prep_mysql WHERE id=?`/Execute整数1的30及自身列类型/flags/charset/length/decimals。M BEGIN、`UPDATE prep_mysql SET v=31 WHERE id=1`，M两入口31/N Query30；交错PG路径切换、跨连接DDL、拒绝恢复与Close，重复原MySQL Query/prepared、`SELECT DATABASE()`和`SELECT @@sql_mode`应保持自身基线与事务可见性；M ROLLBACK后两连接30。PG search_path与固定类型诊断不套用到MySQL，MySQL自身DDL自动重准备策略另证。
+
+清理先全部ROLLBACK，恢复PG search_path public，关闭实际存在的portal/statement/MySQL prepared；事务外按实际创建情况逐条 `DROP TABLE public.prep_later`、`DROP TABLE prep_alt.prep_doc`、`DROP SCHEMA prep_alt`、`DROP TABLE public.prep_doc`，MySQL `DROP TABLE prep_mysql`，再关闭连接。来源步骤2映射四时点、path/drop/ddl/cross-connection，步骤4映射S、失败恢复/MySQL；本轮运行用例数0，无法从结构检查提升支持等级。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -3012,6 +3068,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 后续仅拆三处窄交接：第 2 章精确名称身份传给共享 resolver；真实目录/存储身份与关系、列、别名的执行选择一致；两入口的结果列名及失败恢复证据。先以本块不同标记值证明读写对象与回滚，再决定最小命名适配及能力门禁方案，禁止直接放宽文本改写作为完成标准；优先扩展现有同目录独立测试，不在生产 Rust 文件内放测试。
 
 工作流 2 负责词法保真及原位置，3/4 负责结果类型/表达式，6 负责真实目录、精确对象身份与权限，7 负责 Q/扩展错误与元数据，1/8 负责双参考端采证；路径复用前块、prepared 状态变化交下一专项，底层表示不足列为独立依赖。文档完成仅关闭来源步骤 2 的本题契约缺口，不表示 AsterSQL 已实现 PG18 或精确 18.6 兼容；本轮不生成/执行代码任务。
+
+#### 预处理执行时会话契约
+
+后续只交接三处窄边界：保留普通prepared的PG名称环境/原始参数身份供共享准备入口复核；依赖目录变更和路径变化时重新分析/拒绝并在副作用前校验固定结果类型；绑定portal与新Bind/新目录Execute分开管理。先验证stable/path-missing/qualified/drop-recreate/ddl-shape，再在多schema能力独立满足后验证path-switch/earlier-shadow，不为本题补建完整schema或缓存子系统。
+
+工作流2交语法/名称绑定，3/4交固定参数/结果及函数身份，6交真实目录对象、变更可见性和依赖失效事实，7交Describe重验证、精确诊断、portal所有权/锁与Sync生命周期；1/8承接参考采证和MySQL自身基线。正确性风险为错误对象/旧行、重复执行及副作用前检查缺失；兼容性风险为重解析时点、结果形状/来源身份和错误恢复差异；性能未测、无结论。本块完成只关闭契约文档缺口，不表示功能实现或18.6实测通过，本轮不生成代码实施任务。
 
 ## 6. 系统目录与内省契约
 
