@@ -1584,6 +1584,19 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [builtin_compare_test.rs](../pkg/expression/builtin_compare_test.rs)、[builtin_compare_7_aster_unit_test.rs](../pkg/expression/builtin_compare_7_aster_unit_test.rs)：`coalesce_matches_go_first_non_null_and_error_order`、`string_comparison_uses_build_context_collation_snapshot` | 前者断言 NULL/1→1、全 NULL→NULL、首个非 NULL 后 Error 被跳过、前置 Error 传播；后者通过正式 NewFunctionBase/EvalInt 检查 EQ 的构建上下文字符比较。后者不是 NULLIF 或 PG collation 全链证据。 |
 | [builtin_control_test.rs](../pkg/expression/builtin_control_test.rs)：`if_and_ifnull_cover_truth_conversion_short_circuit_and_null`、`control_type_inference_keeps_width_flags_and_string_fixups` | 验证意图为 IF/IFNULL 未达 Error、全 NULL、类型 flags 与宽度；不能由 IFNULL 局部断言批准 COALESCE 别名，更没有 NULLIF 比较/提升的独立 SQL 证据。 |
 
+#### 同名异义分流
+
+本块取证基线 `6e15d36d648129eaf2694da2e5d3edc9274f1ff3`（2026-10-23）；批次 1–4 的提交和正文已核对，累计依赖满足。`pkg/expression/doc.go` 不存在。使用 RustCodeGraph status/explore/定点 node 阅读源码，名称字面量和模块挂载位置以 rg 补充；只读静态证据，不运行测试。
+
+| 入口及真实符号 | 已读事实与限制 |
+| --- | --- |
+| [builtin_string.rs](../pkg/expression/builtin_string.rs)：`STRING_FUNCTION_SPECS`、`verifyStringFunctionArgs`、`concat` | CONCAT 规格为 1..无限；局部拼接接收已转换的可空字符串，任一 None 返回 None。不负责 PG 任意类型输出、共同元数据或正式 SQL 调用，不能直接充作 PG concat。 |
+| [builtin_compare.rs](../pkg/expression/builtin_compare.rs)：`greatest` / `least` → `extremum` → `aggregate_compare_type` / `cast_datum` / `compare_non_null` | 非空局部列表遇 NULL 即返回 NULL，NULL 前 Error 传播，后方 Error 跳过；比较消费本地 collation/时态模式。局部空列表拒绝但单参数可计算，不能以此覆盖正式规格的两参数下限，也不证明 PG 共同类型/忽略 NULL。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`invoke_factory`；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`；[lib.rs](../pkg/expression/lib.rs) | 规格 CONCAT 为 1..无限、GREATEST/LEAST 为 2..无限；已读核心工厂表无三者条目，动态注册未全面排除，不能断言所有生产调用失败。正式链仍是名称查类→参数检查→工厂→RetType→ScalarFunction/可选折叠→求值，缺工厂明确拒绝；crate 挂载局部实现及独立测试。未证明 PG 分流接线。 |
+| [builtin_string_test.rs](../pkg/expression/builtin_string_test.rs)：`TestConcat` → [builtin_string_25_aster_unit_test.rs](../pkg/expression/builtin_string_25_aster_unit_test.rs)：`run_string_parity_suite` / `numeric_rounding_repeat_and_concat_preserve_edge_cases` | 真断言为 a/空串/中→a中、a/None→None；保留的 Go 混型 case 注释不是 Rust 运行断言，不能证明数值转字符串或 SQL/协议全链。模块名经 lib.rs 的 path 属性映射，不能误引不存在的同名文件。 |
+| [builtin_compare_test.rs](../pkg/expression/builtin_compare_test.rs)：`greatest_and_least_preserve_go_evaluation_order_before_null`；[builtin_compare_7_aster_unit_test.rs](../pkg/expression/builtin_compare_7_aster_unit_test.rs)：`greatest_and_least_preserve_null_and_temporal_string_rules` | 真断言意图覆盖整数极值、ci 字符比较、NULL、Error 顺序和日期/字符串；均直接调用局部函数，无 PG 正式入口证明。 |
+| [builtin_string.go](../pkg/expression/builtin_string.go)：`concatFunctionClass.getFunction` / `builtinConcatSig.evalString`；[builtin_compare.go](../pkg/expression/builtin_compare.go)：`resolveType4Extremum` / `greatestFunctionClass.getFunction`；[builtin_compare_test.go](../pkg/expression/builtin_compare_test.go)：`TestGreatestLeastFunc` | MySQL/TiDB 原契约依据：CONCAT 转 ETString 并保留长度/packet 限制；极值按聚合类型和时态模式构造，Go 测试含字符串/整数混型预期。这里只读，不运行 Go、不修改原语义。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1679,6 +1692,24 @@ COALESCE 与 NULLIF 都只是**等价共享候选**，本块无批准项。批�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.18 条件表达式](https://www.postgresql.org/docs/18/functions-conditional.html)给出 COALESCE 短路、共同结果类型及 NULLIF 的隐含比较/返回提升；[§10.5 共同类型](https://www.postgresql.org/docs/18/typeconv-union-case.html)用于 COALESCE 的 unknown 与已定型输入选择；[§23.2 collation](https://www.postgresql.org/docs/18/collation.html)规定显式冲突、输出派生及 C 排序。常量折叠与运行顺序边界另据 [§4.2.14 表达式求值规则](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-EXPRESS-EVAL)，错误分类沿本章[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)来源。表中推导均为待验收目标；未采集 18.6 参考端，不声称补丁版本差分通过。
 
+#### 同名异义分流
+
+同名拼写不是共享签名。CONCAT 的 NULL 策略、类型到文本的转换、返回身份须按连接方言分别选择；GREATEST/LEAST 还要分开参数下限、共同类型及比较规则。可复用已定型非 NULL 字符串缓冲拼接、或已获等价证明的比较/极值步骤；NULL 策略、coercion、返回类型和错误必须留在各自方言契约边界，不能全局修改现有 MySQL kernel 来满足 PG。
+
+PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，不接受显式 VARIADIC 数组；普通函数候选排序不直接适用。PG concat 是普通可变参数函数，不能与同样跳过 NULL 的 MySQL CONCAT_WS 当别名，后者另有分隔符契约。以下实例引用首块全部模板字段，不批准任何新别名或下推。
+
+| 模板字段 | 本块方言目标、来源与当前缺口 |
+| --- | --- |
+| 关联、分类、调用模型、规范实现 ID | 第二类“同名异义”，关联 FUNC-SPLIT 四族。文档候选 `string.concat.skip-null/pg/v1` 与 `string.concat.propagate-null/mysql/v1`、`extremum.ignore-null/pg/v1` 与 `extremum.propagate-null/mysql/v1` 分离；最大/最小和参数类型向量另记。标量结果，PG 极值为特殊表达式；这些 ID 不是已注册 Rust API。 |
+| 名称、别名、可见性、重载、隐式 cast | 两入口均目标可见自身 concat/greatest/least；PG concat 可用 pg_catalog 限定名，极值用非限定特殊语法。PG concat 使用各参数类型的文本输出，不要求参数共同类型；极值依 §10.5 在分析期确定共同类型并只用第 3 章 I 资格。MySQL 保持 ETString/聚合类型及自身转换。unknown/typed NULL/参数不按运行值选型；完整可变数组边界另验，无新增别名。当前正式接线未验证。 |
+| NULL、求值条件、返回身份和值域 | PG concat 忽略 NULL，全 NULL 的普通调用返回非 NULL 空串/text；MySQL 任一 NULL 返回 NULL/自身字符串类型。PG 极值忽略 NULL，全 NULL 返回共同类型的 SQL NULL；MySQL 任一 NULL 传播。PG 比较需要所有非 NULL 候选，不承诺沿用 MySQL 遇 NULL 停止；错误顺序不从局部 Datum 哨兵推导 SQL 行为。PG 极值返回共同类型，不根据胜出值重新定型。依据官方规则及局部源码；全链未验证。 |
+| collation、时区、会话 | 拼接不排序，但结果字符属性须推导；极值按输入派生 collation 比较。文本域固定 PG UTF-8/C、MySQL utf8mb4_bin，并记录 provider/版本。数值/文本代表无时间运算，时区对本组不适用；不推广到其他类型的输出函数，PG concat 的任意类型输出可能依赖会话。MySQL packet/sql_mode/字符设置另采，不能套给 PG。 |
+| 确定性、折叠、副作用 | REL_18_0 的 concat 为非 strict、stable，不能按纯缓冲算法标为 immutable；极值结构继承子表达式/比较的属性，无独立 pg_proc volatility。验收 SELECT 无写入；不批准重排、重复求值或新增折叠规则。MySQL 保留原优化属性，完整 volatile/错误阶段需后续取证。 |
+| 返回修饰符、wire、错误 | 本组 PG text 为 25/-1/-1、int4 为 23/4/-1、numeric 为 1700/-1/-1（OID/typlen/typmod），列 v、表/属性号 0，NULL 长度 -1；逻辑可空性独立记录。MySQL 数值目标 BIGINT/DECIMAL，字符串保持自身列定义；code/flags/charset/length/decimals 与精确 precision/scale 待参考采集，不由 PG 类型倒推。错误采 S/V/C/M 和适用 D/H/P、实际阶段；成功无错误字段。目标码见验收，完整消息/P 未采集。 |
+| 下推、验收、证据状态 | 只允许未来逐签名/输入域证明等价后共享非 NULL 算法；TiPB 名称不能授权 PG NULL/coercion 下推。四族逐行核对两入口，当前只有静态源码、断言意图和官方目标，无参考端/AsterSQL 实测，无性能结论。 |
+
+官方依据（2026-10-23 查阅，版本 PostgreSQL **18**）：[§9.4 字符串函数](https://www.postgresql.org/docs/18/functions-string.html)定义 concat 文本输出和忽略 NULL；[§9.18.4 条件表达式](https://www.postgresql.org/docs/18/functions-conditional.html#FUNCTIONS-GREATEST-LEAST)定义极值的特殊调用、NULL 与共同类型；[§10.5 类型选择](https://www.postgresql.org/docs/18/typeconv-union-case.html)支撑混型/全 unknown 推导；[§23.2 collation](https://www.postgresql.org/docs/18/collation.html)支撑 C 排序与派生。固定 **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)核对 concat 的 any 可变参数、text、非 strict/stable；[gram.y](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/parser/gram.y)的 GREATEST/LEAST expr_list 产生 MinMaxExpr，支持单参数和空列表语法拒绝的目标推导。错误分类沿首块附录 A；这些均非 18.6 补丁版本实测。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1696,6 +1727,10 @@ COALESCE 与 NULLIF 都只是**等价共享候选**，本块无批准项。批�
 #### 等价共享与别名门槛
 
 只定义两种条件表达式的逐签名批准规则和五组用例，不实现工厂、NULLIF 重写、类型/collation 解析器、惰性 ABI、协议或下推，不补齐当前缺工厂，不盘点其他函数。域/数组/时间/用户自定义 `=` 的完整支持及 volatile 子表达式生态不在本块代表域内，不能因未覆盖而扩大本轮实现。不会运行 Cargo、数据库或差分平台。
+
+#### 同名异义分流
+
+本块不实现函数、不修补缺工厂、不补建 PG 特殊表达式/类型系统/协议或测试平台，不穷举可变数组、时态、JSON、locale/输出函数；不变更 MySQL 原 NULL、混型、参数和 packet 行为。这些域需分别补证，不从当前代表用例批准全函数共享。
 
 ### 验收
 
@@ -1755,6 +1790,19 @@ COALESCE 与 NULLIF 都只是**等价共享候选**，本块无批准项。批�
 
 每个成功项覆盖 PG Q 与 Parse/statement Describe/Bind/portal Describe/Execute、text/binary；以带显式 cast 的参数重绑值/NULL，类型与 collation 必须由分析固定，不能随选中分支变化。全 NULL 仍有固定描述；结果逻辑可空性单独登记。MySQL 覆盖 Query/Prepare 及自身列定义，采集当前 sql_mode/字符设置和警告；两个 PG 连接与 MySQL 连接交错验证名称、类型和缓存隔离。所有行均只有官方规则或局部静态断言意图，没有两入口运行证据，因此本轮**批准共享/别名数量为 0**。结构检查不能升级任一场景为功能通过。
 
+#### 同名异义分流
+
+下表 FUNC-SPLIT 四族均为**待新增、未运行**目标；每条独立比较参考 PG/AsterSQL PG 和参考 MySQL/AsterSQL MySQL。两入口名称均目标可见，参数/类型负例仍须在正确阶段拒绝；成功均单列 v、无错误，非 NULL 空串与 SQL NULL 分开断言，wire 使用本块模板。MySQL 的“字符串”指自身结果类型，精确元数据待补，不能当作 PG text。
+
+| 场景族 | PG 输入与值/NULL/类型/错误目标 | MySQL 自身输入与目标、证据边界 |
+| --- | --- | --- |
+| FUNC-SPLIT-NULL | `SELECT concat('a'::text,NULL::text,'b'::text) AS v`→非 NULL 'ab'/text；`concat(NULL::text,NULL::text)`→非 NULL 空串/text。`SELECT GREATEST(NULL::int4,7::int4) AS v` 与 LEAST 版本→7/int4；全换 NULL::int4→NULL/int4；另 `GREATEST(NULL,NULL)`→NULL/text。 | `SELECT CONCAT(CAST('a' AS CHAR),CAST(NULL AS CHAR),CAST('b' AS CHAR)) AS v`→NULL/字符串；全 NULL CHAR 同样 NULL。`SELECT GREATEST(CAST(NULL AS SIGNED),CAST(7 AS SIGNED)) AS v` 及 LEAST→NULL/BIGINT 目标，全 NULL SIGNED 同样 NULL。Rust 局部 NULL 断言只支持 MySQL 算法意图，不证明 SQL/typed NULL/wire。 |
+| FUNC-SPLIT-MIXED | `SELECT concat('v='::text,2::int4) AS v`→非 NULL 'v=2'/text；`SELECT GREATEST(2::int4,10.5::numeric) AS v`→10.5/numeric，LEAST→2/numeric。`SELECT GREATEST(2::int4,'10'::text) AS v` 及 LEAST→分析拒绝 42804，无值；typed text 不能被当作 unknown 数字串。 | `SELECT CONCAT(CAST('v=' AS CHAR),CAST(2 AS SIGNED)) AS v`→'v=2'/字符串；`SELECT GREATEST(CAST(2 AS SIGNED),CAST(10.5 AS DECIMAL(3,1))) AS v`→10.5/DECIMAL，LEAST→2/DECIMAL 目标。`SELECT GREATEST(CAST(2 AS SIGNED),CAST('10' AS CHAR)) AS v` 及 LEAST 的目标按自身字符串比较为 '2'/'10'，返回字符串；混型精确类型/precision/scale/wire 待采，Go 工厂/混型测试只有静态意图，不套 PG 拒绝。 |
+| FUNC-SPLIT-COLLATION | `SELECT GREATEST('Z'::text COLLATE "C",'a'::text COLLATE "C") AS v`→'a'/text，LEAST→'Z'/text，结果 collation C。`SELECT concat('Z'::text COLLATE "C",'a'::text COLLATE "C") AS v`→'Za'/text、C，证明拼接不排序。极值第二参数显式换 COLLATE "POSIX"→冲突拒绝目标 42P21，无值。 | `SELECT GREATEST(_utf8mb4'Z' COLLATE utf8mb4_bin,_utf8mb4'a' COLLATE utf8mb4_bin) AS v`→'a'/字符串，LEAST→'Z'；对应 CONCAT→'Za'，三者结果 collation 目标 utf8mb4_bin。固定 ASCII/相同显式规则，此域值可相同但不能由此批准全域等价；不把 C/POSIX 名称发到 MySQL。冲突诊断/精确 wire 由自身参考端补证。 |
+| FUNC-SPLIT-ARITY | `SELECT concat('x'::text) AS v`→'x'/text；`SELECT concat() AS v`→无匹配函数目标 42883。`SELECT GREATEST(7::int4) AS v` 与 LEAST→7/int4；`SELECT GREATEST() AS v` 与 LEAST→语法拒绝目标 42601，无值，不能套用普通函数 42883。 | `SELECT CONCAT(CAST('x' AS CHAR)) AS v`→'x'/字符串，`SELECT CONCAT() AS v` 拒绝参数个数；`SELECT GREATEST(CAST(7 AS SIGNED)) AS v` 和 LEAST 均拒绝，不能因局部 helper 接受单值而开放；两 SIGNED 参数 (7,9) 正例→9/7、BIGINT。零参数极值同样拒绝。MySQL 错误码/SQLSTATE/消息待参考采集，不复用 PG 42601/42883。 |
+
+成功项覆盖 PG simple Q 与 Parse/statement Describe/Bind/portal Describe/Execute 的 text/binary，并使用显式 cast 的参数重绑普通值/NULL，参数与结果身份在分析固定；零行或全 NULL 仍有类型描述。MySQL 覆盖 Query/Prepare/Execute 及自身列定义、警告/会话设置。交错两个 PG 连接和一个 MySQL 连接，以相同名称、不同 NULL/参数策略验证缓存与可见性隔离；不能修改进程全局注册模拟连接方言。拒绝项采实际阶段和完整错误字段，无伪成功行；缺工厂沿注册块单列工程缺口，不能冒充参考端语义错误。四组仅有官方目标/静态证据，未批准任何共享别名、下推或功能支持。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -1780,6 +1828,12 @@ COALESCE 与 NULLIF 都只是**等价共享候选**，本块无批准项。批�
 后续只交接 COALESCE 共同类型到惰性正式调用、NULLIF 比较签名到返回身份、text 输出 collation 和两入口证据四个窄边界，依赖第 3 章及前块名称/转换资格。先补代表签名证据再讨论别名或下推；缺工厂、类型系统与协议设施分别追踪，不在本块补建，不提前生成代码任务。
 
 来源映射：蓝图步骤 2 第一类由两候选和逐签名批准门槛覆盖；步骤 3 的名称/可见性、重载/cast、NULL、collation/时区、确定性、返回、wire、下推和错误均映射模板差异表及 FUNC-EQUIV 五组。普通值、全 NULL、混型、未达错误、collation 分别定位 VALUE/ALL-NULL/MIXED/UNREACHED-ERROR/COLLATION；每组含两入口输入与目标或明确缺口。人工审阅已确认与前块“不默认批准别名”、第 3 章定型和固定描述一致。本轮仅文档完成，正确性/兼容性仍为未实测目标，性能无结论。
+
+#### 同名异义分流
+
+后续仅交接 concat 的方言 NULL/输出策略到正式构造链、极值特殊表达式的共同类型/NULL/参数边界、已定型比较/拼接可复用域及两入口描述证据；依赖前块名称隔离、第 3 章类型/I 资格和 server 元数据，不扩展为函数库或执行器重建，不生成代码任务。
+
+来源映射：蓝图步骤 2 第二类由 concat/greatest/least 分流理由和独立语义 ID 覆盖，步骤 3 全字段由本块模板差异表覆盖；NULL、混型、字符串排序、参数个数分别映射 FUNC-SPLIT-NULL/MIXED/COLLATION/ARITY，两入口各有输入、值/NULL/类型或拒绝目标及缺口。与前块“不因同名/局部实现批准共享”、PG 特殊表达式边界和第 3 章固定身份一致，前序正文未修改。文档正确性/兼容性目标尚未实测，性能无结论。
 
 ## 5. SQL会话与事务语义
 
