@@ -1532,6 +1532,84 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 
 ## 4. 方言函数与运算符契约
 
+### 模块
+
+#### 三层身份与契约模板
+
+本块只建立本章公共记录规则及一个标量候选，承接第 1 章的能力 ID/证据分级、第 2 章的连接方言和名称环境、第 3 章的规范类型、E/A/I 转换资格与准备/执行描述。后续契约实例统一引用下方模板，再填写自身差异；不复制一份可能漂移的公共规则。本轮文档完成不表示函数已支持。
+
+静态取证基线为 `d98e9f395b83d26fc2a5bef0aecc232d3bc376c9`（2026-10-23），以下源码和独立测试均只阅读、未执行。两个目标包均无 `doc.go`；通过仓库 RustCodeGraph 索引定位真实源码，没有以 `.rs.md` 说明代替接线证据。
+
+| 入口与实际符号 | 已核实的责任与证据限制 |
+| --- | --- |
+| [builtin.rs](../pkg/expression/builtin.rs)：`formal_registry::FunctionClassRegistry`、`registeredFunctionClass::getFunction`、`invoke_factory`、`CORE_BUILTIN_FACTORIES`、`BUILTIN_SPECS` | 注册表键是名称字符串，类检查参数数量后调用工厂；有名称但无工厂时明确返回“complete implementation is not linked”。`abs` 在规格表中，已读核心工厂表无对应条目；本块未证明另有动态工厂接入，不据名称宣称可求值。该表也未证明 PG 按 namespace、参数类型及方言选重载。 |
+| [lib.rs](../pkg/expression/lib.rs)；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`、`NewFunction`、`ScalarFunction::EvalInt` / `EvalReal` / `EvalDecimal` | crate 挂载正式 builtin、scalar 和独立测试；构造沿 `funcs.get → getFunction → RetType`，标准构造可常量折叠，求值委托具体 builtin。此为应优先复用的标量链；没有证明 PG 身份、宽度和 typed NULL 已贯通。 |
+| [builtin_math.rs](../pkg/expression/builtin_math.rs)：`abs_signature`、`abs_int` / `abs_uint` / `abs_real` / `abs_decimal` | 按共享 EvalType/unsigned 区分局部算法，`abs_int` 检查 i64 最小值；不包含 PG int4 返回身份及 int4 最小值专属检查的完成证据，不能用 i64 容器自动实现 int4 重载。 |
+| [builtin_test.rs](../pkg/expression/builtin_test.rs)：`test_is_null_func`；[builtin_registry_aster_unit_test.rs](../pkg/expression/builtin_registry_aster_unit_test.rs)：`builtin_registry_matches_complete_go_function_table`；[builtin_math_test.rs](../pkg/expression/builtin_math_test.rs)：`abs_ceil_floor_and_round_cover_normal_boundary_and_overflow`；[builtin_math_16_aster_unit_test.rs](../pkg/expression/builtin_math_16_aster_unit_test.rs)：`abs_round_and_metadata_match_go_branches` | 公共测试委托注册表套件，不能将保留的 Go 注释当已执行断言；注册表测试主要核对名称，数学测试实际断言局部值、i64 溢出及 unsigned 签名意图，均不证明 PG SQL/协议全链。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)：`pg_type`、`encode_formats`、`value_text`、`value_binary`；[pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values`、`native_metadata_bridge_preserves_boolean_and_mysql_columns` | wire 归 server，按 ColumnInfo/NativeType 而非单元值选 OID，typmod 当前固定 -1，NULL 编码 -1；boolean 测试意图表明相同 MySQL 列和值仍需不同 native 身份。普通字面量测试预期 1 的 OID 为 20，并不是 PG int4 函数签名证据。 |
+| [builtin_math.go](../pkg/expression/builtin_math.go)：`absFunctionClass.getFunction`；[builtin_math_test.go](../pkg/expression/builtin_math_test.go)：`TestAbs` | MySQL/Go 原契约依据：Int/Decimal/Real 分派、unsigned 与返回精度信息，以及 nil、正负整数/浮点断言意图；不运行 Go 测试，不将其替换为 PG 宽度规则。 |
+
+### 目标行为
+
+#### 三层身份与契约模板
+
+三层分别回答“谁计算”“SQL 调用选哪个契约”“客户端看到何种类型”。规范实现 ID 是文档中的稳定算法/语义身份，需附适用输入域和版本；不是 SQL 名称、Rust 类型、TiPB 枚举值、PG 函数对象 OID 或返回类型 OID，也不预设新增 Rust API。同一算法可承接多个已证等价的方言签名；同名不等价签名必须独立分流，同值不等于同型。第 1 章的能力 ID 标识可验收契约，与实现 ID 分别追踪。
+
+| 层 | 标量候选贯通示例（目标，当前未验证） | 选择/拥有者与禁止推导 |
+| --- | --- | --- |
+| 规范实现 | 文档候选 `scalar.abs.signed.checked/v1`：已定型有符号整数的绝对值，按声明域检查结果；`abs_int` 仅为可复用的局部 i64 算法候选。 | 共享 expression 求值拥有算法；PG int4/int8 可候选共享值操作，但各自域检查和结果身份不可省略，尚未证明可直接复用。 |
+| 方言签名 | `FUNC-ID-ABS/int4/pg`：可见内建 `pg_catalog.abs(int4) → int4`；关联 `FUNC-ID-ABS/int8/pg` 与 `FUNC-ID-ABS/signed/mysql`，后者 SQL 名称 ABS、按 MySQL Int 规则返回 BIGINT。这些为待新增能力记录。 | 由所属连接方言及第 2 章名称环境筛选，再按参数类型和第 3 章隐式 cast 资格选择；不能仅按 `abs` 和参数数目选择。函数重载不由期望返回 OID 或 Bind 的值决定，完整候选排序交下一块。 |
+| 协议返回类型 | PG int4 结果为 OID 23、typlen 4、typmod -1；int8 为 20/8/-1。MySQL signed 结果走自身 BIGINT code 8/unsigned 标志未设置，其他长度/flags/decimals 需补参考证据。 | 第 3 章保留规范身份，server 分别生成 PG/MySQL 元数据及载荷。23/20 是结果类型 OID，不是 abs 函数对象 OID；返回 1、SQL NULL 或零行不能决定类型。 |
+
+下表既是本章统一模板，也是上述 signed ABS 候选的首个实例。后续每个实例必须填写“方言目标、证据来源、当前缺口”三项；不适用写原因，未知区分“待定义（目标缺口）”与“未验证（当前运行缺口）”，不留空、不用裸 null。公共状态与用例关联沿第 1 章，不建立第二套证据格式。
+
+| 必填字段 | signed ABS 候选填写、依据与缺口 |
+| --- | --- |
+| 关联、分类与调用模型 | 关联上表能力 ID、规范实现候选 ID、场景 ID 与基线 SHA；标量。正整数/域内绝对值是共享语义候选，开放等价范围前仍须双方言分别验收；不推广到全部数值族。来源为本块源码与第 1 章证据规则，当前运行未验证。 |
+| 名称/别名与方言可见性 | PG 的 abs 及 pg_catalog 限定名，MySQL 的 ABS 及自身大小写规则分别记录；没有批准额外跨方言别名。PG 限定名、search_path 与重载规则依据官方 §10.3、第 2 章；当前两入口可见性及函数名称接线未验证。 |
+| 重载与隐式 cast | 首例只接受已定型 int4/int8 的精确 PG 签名；MySQL signed 按原 Int 分支。unknown 字面量、未定型 NULL 与参数 OID 0 分开记录；候选转换只能消费第 3 章 I 资格，不能借结果 wire 扩宽放开 SQL 转换。完整歧义/候选排序本块待定义，交注册/重载块，不能套 UNION 共同类型算法。 |
+| NULL 与求值条件 | PG 两个重载为 strict：合法 typed NULL 返回同型 SQL NULL，不调用非 NULL 算法；无匹配签名不能由 NULL 绕过类型检查。依据 REL_18_0 的 pg_proc.dat 与 pg_proc.h 默认值。MySQL NULL 传播目标由 Go TestAbs 的 nil 断言支持；Rust 全链 typed NULL 仍未验证。 |
+| collation、时区与会话前提 | 对已定型整数的绝对值运算不适用 collation/时区（纯整数，不比较文本或处理时间）；转换或名称查找若依赖会话则另外列明，不能从算法无依赖推广为 resolver 无依赖。依据整数算法和第 2/3 章，跨连接隔离未验证。 |
+| 确定性、折叠与副作用 | PG 首例目标 immutable、无数据副作用，依据 pg_proc 默认属性及 int4abs；常量输入可在规划期求值报错，不能保证错误只在 Execute。MySQL 优化属性继续沿原契约；当前折叠、缓存及方言隔离未验证。其他函数须分别记录 stable/volatile 和状态依赖，不从同名或缓存策略猜测。 |
+| 返回类型、值域与修饰符 | PG int4→int4、int8→int8，结果域仍为各自 signed 域，负最小值取绝对值拒绝，NULL 不改型；MySQL Int 保持 BIGINT/unsigned 与 precision/scale 原规则。PG 依据 §9.3、REL_18_0 pg_proc.dat 与 int.c；MySQL 依据 Go 工厂。Rust PG 结果宽度保真未验证。 |
+| wire 元数据与格式 | PG 23/4/-1、20/8/-1，列名由 AS v 固定；表达式来源表/属性号为 0，格式依 Q/statement Describe/portal，NULL 无载荷且长度 -1。PG RowDescription 不含可空性位，逻辑可空性单独记，不能发明 wire 字段。MySQL 独立核对 code/flags/charset/length/decimals 及 NULL；除上表 code/unsigned 目标外其精确字段待定义，需对应客户端参考记录。当前两入口均未采集。 |
+| 下推与执行位置 | 默认不批准跨方言下推；须逐签名证明类型、NULL、值域/错误、collation/时区和结果元数据等价后才能批准。TiPB 签名存在、注册名存在或局部 abs_int 可用均不足；当前 PG ABS 下推等价证据未知、无性能结论。 |
+| 错误字段与失败阶段 | PG int4 负最小值目标 22003；零参数 abs() 无匹配签名目标 42883。成功时 SQLSTATE/错误字段不适用。错误记录 S/V/C/M 与适用 D/H/P 的实际存在性、原 SQL 字符位置及分析/折叠/求值阶段；P 和本地映射未验证。MySQL 错误码、SQLSTATE、消息/警告按自身契约采集，不直接复用 PG 字段。依据 int.c、附录 A、§54.8；本块不规定未取证的完整消息文本或位置数值。 |
+| 验收与证据状态 | 使用下方 FUNC-ID 用例族，关联源码、独立测试、官方来源及运行记录；静态源码/断言意图已定位，AsterSQL/PG/MySQL 实测均未采集。实现者须补实际构建、精确参考版本、完整命令/退出码、有效断言数量、原始输出；零用例不能升级支持。 |
+
+官方来源（2026-10-23 查阅，版本 PostgreSQL **18**）：[§9.3 数学函数](https://www.postgresql.org/docs/18/functions-math.html)支持 ABS 同族返回；[§10.3 函数类型解析](https://www.postgresql.org/docs/18/typeconv-func.html)支持名称/参数候选、精确匹配及隐式转换筛选；[§52.39 pg_proc](https://www.postgresql.org/docs/18/catalog-pg-proc.html)定义 strict/volatility。精确 int4/int8 签名和 strict/immutable 默认属性核对官方固定 tag **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat) 与 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)，结果 OID/typlen 核对同 tag [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)，int4 最小值溢出核对 [int.c::int4abs](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c)。[§54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)支持类型/格式/NULL 字段，[§54.8 错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html)与[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持诊断记录。以上定义目标；18.6 仍仅为来源指定基线，无该补丁版本运行证据，不将 18 大版本手册或 18.0 静态源码记为 18.6 差分通过。
+
+### 范围外
+
+#### 三层身份与契约模板
+
+本块不实现生产函数、注册接口、Rust 类型、类型系统、协议 codec、下推或测试运行器，不运行 Cargo、Go 测试、数据库或差分环境；不盘点函数库。四类函数的完整实例、别名开放与重载排序、运算符及 aggregate/window/ordered-set aggregate/SRF 的独立调用模型留给本章后续文档块，不用标量注册器代替其他调用模型。系统事实归工作流 6，会话/事务与消息生命周期归工作流 5/7；不重写第 1–3 章、不补建扩展加载生态。
+
+### 验收
+
+#### 三层身份与契约模板
+
+文档验收要求三层身份可从一个标量候选追踪、模板全部字段有来源或明确缺口、五个全局小节齐全。下表为**待新增**用例族和候选能力记录，沿第 1 章格式落地，本轮没有新增/执行测试。每行 PG、MySQL 分别核对 AsterSQL 入口与自身参考端；成功均一列 v、无副作用、SQLSTATE/错误位置不适用，NULL 项按逻辑可空性记录；拒绝项无成功值/NULL/结果载荷，不能作为函数成功用例。
+
+| 场景 ID 与区分目的 | PG 输入与目标 | MySQL 自身输入/可见性与目标 | 来源、缺口与证据等级 |
+| --- | --- | --- | --- |
+| FUNC-ID-ABS-SIGNATURE：同名不同签名 | 分别 `SELECT abs(CAST(-1 AS int4)) AS v`、`SELECT abs(CAST(-1 AS int8)) AS v`，均一行非 NULL 的 1；可见内建 abs，分别 23/4/-1、20/8/-1，不合并为同一签名。另查 pg_catalog.abs 的对应限定调用，目标同上。 | `SELECT ABS(CAST(-1 AS SIGNED)) AS v`，函数可见、返回非 NULL 的 1/BIGINT；PG int4/int8 语法不直接发送 MySQL。其自身 flags/length/decimals 按模板补证。 | PG 官方签名/类型目录；MySQL Go 工厂及 TestAbs。仅目标与静态来源，双方言名称/执行/元数据均未验证。 |
+| FUNC-ID-ABS-SAME-VALUE：同值不同返回类型 | 沿用上行两条 SQL，数值均 1 仍须分别保持 int4/int8；不得从值或 payload 文本“1”合并 OID。 | 独立比较上行 SIGNED 与 `SELECT ABS(CAST(-1 AS DECIMAL(8,0))) AS v`，均精确值 1，返回 BIGINT 与 DECIMAL 身份不同；返回精度/scale/wire 字段另采证，不要求与 PG OID 相等。 | PG pg_proc.dat、MySQL Go Int/Decimal 分支；Rust 数学测试只证局部意图，实际两入口未验证。 |
+| FUNC-ID-ABS-TYPED-NULL：NULL 不是未知身份 | `SELECT abs(CAST(NULL AS int4)) AS v` 与 int8 变体，均一行 SQL NULL，分别 23/4/-1、20/8/-1；扩展路径 `SELECT abs($1::int4) AS v`，Parse 参数 OID 23，绑定 -1/NULL/1 的三个新 portal，值为 1/NULL/1，结果描述始终 23/4/-1。 | `SELECT ABS(CAST(NULL AS SIGNED)) AS v`，函数可见、SQL NULL/BIGINT；MySQL Prepare `SELECT ABS(CAST(? AS SIGNED)) AS v` 独立重绑同组值，保持自身列定义。未定型 NULL、字符串 NULL 与空载荷不替代 typed NULL。 | strict 默认属性、Go nil 断言及第 3 章 META 契约；通用类型回退 text 不符合目标。两入口 NULL/准备/协议连续性均未验证。 |
+| FUNC-ID-ABS-ERROR：签名与域检查分开 | `SELECT abs('-2147483648'::int4) AS v` 目标 22003，无临时 int8 提升；`SELECT abs() AS v` 目标 42883，无匹配签名，不能因 abs 名称存在成功。错误字段沿模板，确切阶段/P 待取证。 | `SELECT ABS(CAST(-2147483648 AS SIGNED)) AS v` 在 BIGINT 域内目标 2147483648，不能套 PG int4 溢出；`SELECT ABS() AS v` 拒绝错误参数数目，MySQL 精确码/位置待参考采集，无成功结果。 | PG int4abs/签名及错误分类；MySQL Go Int 工厂和 i64 局部算法支持域内目标，精确诊断仍缺证。未做参考端实测，不将共享内核错误字符串充当 PG SQLSTATE。 |
+
+以上各成功场景 PG 同时定义简单 Q 和扩展 Parse/statement Describe/Bind/portal Describe/Execute 两路径；结果格式覆盖 text/binary，statement 格式 0、portal 按 Bind，OID/typlen/typmod 与 NULL 不随格式、重绑值或首行变化，Execute 只比对已描述类型与载荷，不要求它再发 RowDescription。另给首行 NULL 后接 1 的夹具 `SELECT abs(v) AS v FROM (VALUES (1,NULL::int4),(2,1::int4)) AS t(ord,v) ORDER BY ord`，目标两行 NULL/1；全 NULL 使用上表单行 typed NULL，零行使用 `SELECT abs(CAST(NULL AS int4)) AS v WHERE false`。三者描述仍 23/4/-1，行数分别为二/一/零。MySQL 使用自身 Query/Prepare、结果列定义和参数格式做对应检查，PG SQL/格式不直接套用。函数别名、两个 PG 会话及同时存在的 MySQL 连接需交错观测可见性与类型隔离；没有默认批准任何跨方言别名。此处均是未采集的验收目标，第 3 章类型/codec 与工作流 7 生命周期负责落实。
+
+人工交接检查须将值/NULL、类型、元数据、错误、可见性和证据等级逐格对应；存在待定义字段时，文档可交接但相应行为验收不可记通过。结构、路径与 diff 检查只能证明文档完整性，不证明 SQL 正确、兼容或性能。
+
+### 后续细分
+
+#### 三层身份与契约模板
+
+下一块先承接本模板，细化注册/重载的方言可见性、名称环境、候选排序、隐式 cast 与错误；依赖第 2 章身份/名称及第 3 章类型/转换/元数据，不递归修复缺失子系统。随后各函数族与独立调用模型只补自身实例和窄边界，引用本模板及对应官方来源；缺证项补证后再批准共享别名或下推。本块只给文档交接，不生成代码任务。
+
+来源映射：蓝图任务 4 步骤 1 的三层契约由身份表与标量候选贯通，步骤 3 的所有字段由统一模板覆盖；编号任务的同名不同签名、同值不同类型、typed NULL 分别由 FUNC-ID-ABS-SIGNATURE/SAME-VALUE/TYPED-NULL 覆盖，ERROR 补充域/签名拒绝。与前序章节的连接方言、E/A/I 资格和固定元数据规则一致，无需修改第 1–3 章。其余来源步骤和完整章节验收由后续文档任务承接，不随本块完成升级。
+
 ## 5. SQL会话与事务语义
 
 ## 6. 系统目录与内省契约
