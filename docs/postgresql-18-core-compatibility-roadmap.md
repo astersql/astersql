@@ -1623,6 +1623,19 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [builtin_string.rs](../pkg/expression/builtin_string.rs)：`formatByLocale`；[builtin_string_25_aster_unit_test.rs](../pkg/expression/builtin_string_25_aster_unit_test.rs)：`construction_metadata_char_format_load_and_weight_match_go` | FORMAT 是数值、decimals、可选 locale 的独立 MySQL 算法，未知 locale 回退 en_US 并报告识别标志；测试断言 en_US/de_DE 输出意图。不支持据此推断 PG D/G/L、模板语法或会话 locale。 |
 | [pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values` | Q 路径对 'hello'/NULL 断言 OID 25，对普通时间/数值有其他 OID 断言；没有 to_char 重载、模板、扩展协议和 binary 结果专项证据。 |
 
+#### 数组函数契约
+
+本块静态基线为 `2168dce847743526d87fa6f54e401c61f6b7f32c`（2026-10-23）。批次 1–7 的连续提交及五节正文已核对，前置完成任务文件已删除，无需恢复。`pkg/types`、`pkg/expression`、`pkg/server` 均无 `doc.go`。按 RustCodeGraph status/explore/定点 node 阅读以下真实源码和独立测试；图未定位名称字面量时以 rg 补充。全部是静态取证，测试未运行。
+
+| 入口/实际符号 | 已核实责任与证据限制 |
+| --- | --- |
+| [datum.rs](../pkg/types/datum.rs)：`Datum`、Kind 常量、`Clone` / `Copy` / `IsNull` | 统一盒含 Kind、字节、collation 及 Any 载荷；已读 Kind 集合未见通用 PG 数组标签，结构未直接承载元素身份、shape/lower 和元素 NULL 位图。JSON/VectorFloat32/Any 的存在不证明 PG 数组保真；不排除其他载体，记为表示交接缺口。 |
+| [datum_test.rs](../pkg/types/datum_test.rs)：`test_to_json`、`test_is_null`、`test_clone_datum` | 断言意图分别含 JSON 文本数组转换、标量 NULL、字节复制；没有据此证明 PG 空数组/两层 NULL、多维或下界。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`registeredFunctionClass::getFunction`、`invoke_factory` | 本文件未找到 array_length/cardinality/array_append 名称或核心工厂；json_array_append 是不同契约。常规链验参数数目后找工厂，已注册但缺工厂明确拒绝；未穷查动态扩展或其他 PG 路径，不能断言所有 SQL 必失败。 |
+| [scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl` | `funcs/extensionFuncs → getFunction → getRetTp → ScalarFunction`，标准构造可折叠。这是应复用的规范标量链，未证明 PG 多态元素定型、数组返回身份或函数可见性接入。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)：`CatalogColumnType::wire_type`、`pg_type`、`value_binary`、`encode_formats` | 目录专用 code 映射若干数组 OID，binary 分支调用 binary_array；元数据按类型而非值生成，NULL 长度 -1。这些目录桥接不能推广成任意 SQL 数组的参数、形状或函数结果能力。 |
+| [pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values`、`unsigned_binary_and_unsupported_types` | 前者仅断言普通标量 Q 结果；后者明确断言原生 JSON 即使为 NULL 也不得冒充 PG 目录数组。没有三函数、通用数组结果或扩展协议专项通过证据。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1773,6 +1786,23 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.8 格式化函数及表 9.26–9.31](https://www.postgresql.org/docs/18/functions-formatting.html)给出模板和示例；[§19.11.2 locale 设置](https://www.postgresql.org/docs/18/runtime-config-client.html#RUNTIME-CONFIG-CLIENT-FORMAT)定义配置前提。精确签名/stable 核对固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)，strict 缺省核对 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)。[formatting.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/formatting.c)的 timestamp_to_char、timestamptz_to_char、interval_to_char、NUMDesc_prepare 支持时间边界和错误；结果身份/协议沿已取证的第 3 章 text 契约。18.6 仍仅为来源指定目标，18 手册和 18.0 静态源码不构成该补丁版本差分记录。
 
+#### 数组函数契约
+
+以 array_length、cardinality、array_append 为 PG 核心专属的**普通标量函数**目标，不承诺全量数组库；三层模板沿首块，规范实现候选分别为 `scalar.array.dimension-length/v1`、`scalar.array.cardinality/v1`、`scalar.array.append-element/v1`，均为文档身份，尚无获准共享项。值表示、元素族/typmod、矩形 shape、下界、空数组与两层 NULL 继承第 3 章基础数组契约。维数不改变数组类型 OID；不将多维值建模为“数组的数组”。
+
+| 模板字段 | 本块方言目标、来源与缺口 |
+| --- | --- |
+| 关联/分类/调用模型、名称/别名/可见性 | FUNC-ARR 五组关联上述候选；PG 可见非限定名与 pg_catalog 限定名，MySQL 隐藏三个 PG 名称；无新增别名。普通标量一输入行对应一个结果，unnest 不适用本模型。依据官方签名和前块名称规则；本地正式接线未验证。 |
+| 重载、隐式 cast、元素定型 | `array_length(anyarray,int4)→int4`、`cardinality(anyarray)→int4`；`array_append(anycompatiblearray,anycompatible)→anycompatiblearray`。前两者消费已知数组元素身份；后者在分析时将数组元素与追加元素按第 3 章 I 资格定共同元素类型，再转换整数组及元素，返回该元素对应数组。多态伪类型不是 wire OID；unknown/typed NULL 不按运行值猜型。本块只实例化 int4[]，并用 int4[]+int8 检查提升，不补全多态系统；不兼容的定型类型对不可因 NULL 绕过。 |
+| NULL | array_length/cardinality strict：数组 SQL NULL 得 SQL NULL；array_length 的维号 NULL 也返回 NULL。array_append 非 strict：NULL 数组作为空数组，NULL 元素作为一个真实空位追加；空数组、数组 NULL、元素 NULL 不互换。依据固定 tag 目录/实现；当前未实测。 |
+| collation、时区、会话 | 对已定型数组的计数/形状和本块 int4/int8 追加不适用 collation/时区（不比较文本、不处理时刻）；元素输入、输出及 cast 仍沿第 3 章元素族设置。名称解析沿连接上下文，不能由纯算法推导全链无会话依赖；跨连接隔离未验证。 |
+| 确定性、折叠、副作用 | 三者目标 immutable，无 SQL 数据副作用，常量可规划期折叠；不能把内部原地优化理解为修改输入 SQL 值。本地折叠、缓存及错误阶段未验证。 |
+| 返回类型、值域与 wire | 两计数结果 int4，23/4/-1；append 本组 int4[] 为 1007/-1/-1，提升 int8[] 为 1016/-1/-1，分别依赖元素 23/20 与数组 OID 配对。AS v、来源表/属性号 0；NULL 或零行不改身份。shape/lower 属值而非 OID/typmod；binary 数组头的元素 OID、维长/下界、元素长度/NULL 及两格式输出沿第 3 章。RowDescription 无可空性位；逻辑可空性另记。当前返回身份/codec 贯通未知，MySQL 不暴露这些 PG 数组 OID。 |
+| 下推/执行位置 | 默认无下推或跨方言别名批准，须逐签名证明形状、NULL、cast、错误及元数据等价；现有 JSON append、目录 codec 均不足以批准。性能不适用本轮文档检查，无运行结论。 |
+| 错误、验收与证据 | 五组成功无错误；无效维号返回 NULL 是成功。多维 append 目标 22000，下界追加索引溢出 22003；不匹配名称/签名沿 resolver，精确混型诊断另采，不统一套某个错误码。错误采首块 S/V/C/M 与适用 D/H/P、原 SQL 位置和分析/折叠/执行阶段，无伪成功行。FUNC-ARR 均待新增、未运行；官方目标与源码/断言意图不能代替双方言当前记录。 |
+
+官方来源（2026-10-23 查阅）：PostgreSQL **18** [§9.19 数组函数](https://www.postgresql.org/docs/18/functions-array.html)定义代表函数，[§8.15 数组](https://www.postgresql.org/docs/18/arrays.html)支持形状/下界与 NULL，[§36.2.5 多态](https://www.postgresql.org/docs/18/extend-type-system.html#EXTEND-TYPES-POLYMORPHIC)支持分析期共同元素类型。固定 **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)与[pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)核对签名、strict/immutable；[arrayfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/arrayfuncs.c)::array_length/array_cardinality 核对维号与计数，[array_userfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/array_userfuncs.c)::fetch_array_arg_replace_nulls/array_append 核对 NULL、下界和错误分支。数值例为上述规则推导的待验收目标；18.6 仍为来源指定基线，未在该补丁版本实测。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1802,6 +1832,10 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 #### 格式化函数契约
 
 不实现 to_date/to_timestamp/to_number 解析器，不扩展完整模板函数库、locale 安装器或时区系统；不修复已读 MySQL 工厂/测试缺口、不建立新的求值器或测试平台。不批准 DATE_FORMAT/FORMAT 别名、PG 下推或全域性能结论；范围外缺口留给各自聚焦实现。
+
+#### 数组函数契约
+
+不实现数组表示、函数工厂、多态解析、cast/codec 或测试平台，不扩大为完整数组库。unnest 归集合返回模型，数组运算符归运算符任务；下标/切片、数组聚合、索引、自定义/复合/domain 元素不在本块。第 3 章拥有类型/形状与 codec，工作流 2/5/6/7/8 分别拥有语法、会话、目录、协议与客户端证据；不改 Go/MySQL JSON_ARRAY_APPEND 的原契约，不把缺口改写成 PG 语义拒绝。
 
 ### 验收
 
@@ -1902,6 +1936,20 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 每族另以合法 MySQL DATE_FORMAT 调用在 PG 入口验证名称拒绝 42883，以合法 PG to_char 调用在 MySQL 验证名称拒绝（自身错误码/SQLSTATE/消息待采），此为两入口可见性隔离目标。PG 成功项覆盖 Q 与 Parse/statement Describe/Bind/portal Describe/Execute，显式 `$1::T,$2::text` 绑定重绑值/NULL、text/binary 参数和结果，分析固定 T/text，Bind 不改重载；两个 Describe 的格式差异沿首块，Execute 不重发描述。零行/全 NULL 仍固定 text 身份。MySQL Query/Prepare/Execute 独立采列定义、警告、sql_mode 与字符设置。两 PG 连接和一 MySQL 连接交错执行；同一已准备语句在执行前变更 TimeZone/允许修改的 locale 配置，验证 stable 上下文及缓存隔离，并恢复配置。非 C locale 不可用须记录环境缺口，不能静默跳过后宣称全组通过。错误采实际阶段与完整字段，缺工厂/codec 单列工程缺口。当前有效运行用例数为 0，五族只是官方目标/静态意图，没有功能通过、别名或下推批准。
 
+#### 数组函数契约
+
+以下 FUNC-ARR 五组全部为**待新增、未运行**。表中 a 是输入替换记号，每个表达式独立使用 `SELECT <表达式> AS v`，不是新建变量/测试设施。除显式 SQL NULL 外结果非 NULL；合法项无错误，计数/追加类型与 wire 沿本块模板。MySQL 名称隔离使用其合法语法，避免 PG 数组语法先报错掩盖名称门禁。
+
+| 五组场景 | PG 输入及预期值/NULL/类型/错误 | MySQL 入口与证据限制 |
+| --- | --- | --- |
+| FUNC-ARR-EMPTY：空数组 | a=`ARRAY[]::int4[]`；`array_length(a,1)`→SQL NULL/int4；`cardinality(a)`→0/int4；`array_append(a,7::int4)`→{7}/int4[]、shape=[1]、lower=[1]。 | 每组三函数名均以 `SELECT array_length(JSON_ARRAY(),1) AS v`、`SELECT cardinality(JSON_ARRAY()) AS v`、`SELECT array_append(JSON_ARRAY(),7) AS v` 验证隐藏/拒绝，自身错误码/SQLSTATE/消息待采；不能用 JSON 空数组代表 PG 空数组。 |
+| FUNC-ARR-NULL-ARRAY：数组 SQL NULL | a=`NULL::int4[]`；`array_length(a,1)`、`cardinality(a)`→SQL NULL/int4；`array_length(ARRAY[1]::int4[],NULL::int4)`→SQL NULL/int4；`array_append(a,7::int4)`→{7}/int4[]；`array_append(a,NULL::int4)`→{NULL}/int4[]，后两者 shape=[1]、lower=[1]，不是外层 NULL。 | 三名称用同一合法参数骨架，将 JSON_ARRAY() 换成 NULL，仍拒绝，不能因 NULL 常量折叠绕过可见性；错误与元数据未采。 |
+| FUNC-ARR-NULL-ELEMENT：NULL 元素与定型 | a=`ARRAY[1,NULL]::int4[]`；`array_length(a,1)`→2/int4，`cardinality(a)`→2/int4；`array_append(a,NULL::int4)`→{1,NULL,NULL}/int4[]、shape=[3]/lower=[1]。`array_append(ARRAY[1]::int4[],2::int8)`→{1,2}/int8[]、元素 OID 20、结果 OID 1016，不能沿用输入 1007。 | 合法骨架改用 JSON_ARRAY(1,NULL)，仍拒绝 PG 名称；JSON null 与 SQL 元素 NULL 无等价批准，提升例不要求 MySQL 提供 PG 类型语法或 OID。 |
+| FUNC-ARR-MULTIDIM：多维长度 | a=`ARRAY[[1,2,3],[4,5,6]]::int4[]`；`array_length(a,1)`→2、维号 2→3、3/0/-1→SQL NULL，均 int4；`cardinality(a)`→6/int4；`array_append(a,7::int4)`→22000、无结果。形状 [2,3] 不把数组 OID 1007 改成另一“二维 OID”。 | 合法骨架改用 JSON_ARRAY(JSON_ARRAY(1,2,3),JSON_ARRAY(4,5,6))，三名仍拒绝；MySQL JSON 嵌套数组不作矩形 shape 或 PG 多维追加证据。 |
+| FUNC-ARR-LOWER：非默认下界 | a=`'[0:1]={10,20}'::int4[]`；`array_length(a,1)`→2/int4，`cardinality(a)`→2/int4，`array_append(a,30::int4)`→[0:2]={10,20,30}/int4[]、shape=[3]、lower=[0]。下界换 -2 的 `a='[-2:-1]={10,20}'::int4[]` 追加后→[-2:0]={10,20,30}。`array_append('[2147483647:2147483647]={1}'::int4[],2::int4)`→22003、无结果，不能环绕索引。 | 沿 EMPTY 的合法骨架验证名称隐藏；MySQL 无本块 PG 下界载体，不伪造等价输入/返回 OID。拒绝实际阶段与字段未采，不将未实现形状误判为参考端成功。 |
+
+每组分别对照 PG 参考端/AsterSQL PG；成功项覆盖 Q 与 Parse/statement Describe/Bind/portal Describe/Execute，显式 `$1::int4[]`、维号 `$2::int4` 或元素 `$2::int4`，提升例用 `$2::int8`。参数 text/binary × 结果 text/binary 四组合验证同一规范值、维度/下界/元素 NULL；重复 Bind 换值、空数组、数组 NULL 或 NULL 元素均不换已选签名/返回 OID。NULL 结果与零行仍有固定描述，两个 Describe 的格式差异沿首块，Execute 不重发描述；错误采实际阶段，不强制延迟到 Execute。MySQL 覆盖 Query/Prepare/Execute 的名称拒绝，并以既有合法 `SELECT 1 AS v` 作成功旁路，单独采自身列定义、警告和错误码/SQLSTATE，不引入新 JSON 函数验收。两个 PG 连接和一个 MySQL 连接交错验证可见性/缓存隔离。缺数组表示、codec、定型或工厂单列工程缺口，不当作参考 PG 目标错误；当前有效运行用例为 0，无功能通过证据。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -1945,6 +1993,12 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 后续仅交接已选源类型到时间/数值模板内核、locale/TimeZone 执行上下文、text 固定身份到正式工厂/server 三个窄边界；依赖前块 resolver、第 3 章类型/cast 和工作流 5 的会话生命周期。先补五族及双方言元数据证据，再讨论可复用组件；不递归补全 DATE_FORMAT、locale 或时间子系统，不生成代码任务。
 
 来源映射：蓝图步骤 2 的 PG 核心 to_char 与 MySQL DATE_FORMAT 隔离由本块名称和签名表覆盖；步骤 3 全部模板字段由差异表承接。任务的时间格式、数值格式、字面量/修饰符、NULL、locale/时区分别定位 FUNC-FMT-TIME/NUM/TEMPLATE/NULL/CONTEXT，均含两入口输入、预期或明确缺口；返回文本元数据及错误阶段有公共验收规则。与前块不默认批准别名、第 3 章 text/时间/数值身份及第 2 章连接方言一致。correctness/兼容性仍是未实测目标，性能无结论；只完成文档契约，不修改第 1–3 章或其他契约块。
+
+#### 数组函数契约
+
+后续只交接第 3 章规范数组到维长/基数求值、共同元素类型到单元素追加、固定返回数组身份到正式工厂/server 三个窄边界；依赖前块名称/resolver 与第 3 章元素 I 资格、shape/lower/NULL/codec。先补五组与双入口证据，再讨论共享或下推；不生成代码任务，不借此补全数组或类型子系统。
+
+来源映射：蓝图步骤 2 的 PG 核心数组代表由三签名及 FUNC-ARR 覆盖，步骤 3 的全部模板字段由本块差异表承接；空数组、数组 SQL NULL、NULL 元素、多维长度、非默认下界分别定位 EMPTY/NULL-ARRAY/NULL-ELEMENT/MULTIDIM/LOWER，含输入、值/NULL/类型/错误、两入口可见性和证据等级。元素提升及返回数组 OID 依赖落在 NULL-ELEMENT 与公共 wire 段。人工审阅与第 3 章基础数组两层 NULL/shape/lower、前块按分析固定身份和名称隔离一致，保留前序正文。correctness/兼容性仅为文档目标，运行未验证，性能无结论。
 
 ## 5. SQL会话与事务语义
 
