@@ -736,6 +736,10 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 cast 另见 [builtin_cast.rs](../pkg/expression/builtin_cast.rs) 的 to_decimal、parse_decimal、produce_decimal：使用 rust_decimal::Decimal，解析失败可经浮点回退，负 scale 被 max(0)，超域产生 warning 并裁剪；常量 MAX_DECIMAL_WIDTH=65 不能证明实际能精确承载 65 位。参数见 [pg_extended.rs](../pkg/server/pg_extended.rs) 的 parameter/binary_parameter；结果见 [pg_result.rs](../pkg/server/pg_result.rs) 的 pg_type、value_text、value_binary、encode_formats。独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs) 的 text_parameters_are_typed_and_reject_loss 仅含 12.340 接受及 12bad 拒绝意图；[pg_types_test.rs](../pkg/server/pg_types_test.rs) 有 DECIMAL(8,2)→OID 1700/text 12.34 断言及 U64 文本入口。均未运行，不证明 PG 大精度、typmod、特殊值或 binary 支持；上述三个包均无 doc.go。
 
+[浮点数值契约](#浮点数值契约)静态取证基线为 `cae627a7dc`（2026-10-23，批次 4 精确数值契约已交付）。`pkg/types/datum.rs::Datum` 的 GetFloat32/SetFloat32、GetFloat64/SetFloat64 分别保留 KindFloat32/KindFloat64；SetFloat32FromF64 可将未窄化 f64 写入 float32 标签，标签本身不能证明值已符合 float4 域。`pkg/types/convert.rs::format_float` 使用 ryu 最短格式并展开指数，不是 PG 输出格式的证据。PG 边界仍为 `pg_extended.rs::parameter/binary_parameter` 和 `pg_result.rs::pg_type/value_text/value_binary/encode_formats`：700/701 参数分别解析 f32/f64，再转共享参数小端编码；binary 输入从网络序转小端。结果 Value::Float 共用 f64，text 按 f64 输出，binary 先经文本再解析到目标宽度，尚无完整窄化溢出和 float4 文本定宽证据。
+
+已读独立测试 `pkg/server/pg_types_test.rs::pg_binary_native_results`，浮点部分含 float4 1.5、float8 正无穷及两者 SQL NULL 长度 -1 的 binary 输出断言；`common_type_oids_and_values` 没有浮点场景。另读 `pkg/server/pg_extended_test.rs::text_parameters_are_typed_and_reject_loss` 与 `pkg/types/convert_test.rs::test_convert_to_string`，后者有 1.6_f32/-0.6_f64 的共享输出意图，不能替代 PG 可逆文本验收。两个目标包无 doc.go；所有测试均未运行，未见上述断言覆盖完整浮点边界，不把静态路径或 OID 视为功能通过。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -836,6 +840,24 @@ numeric 与 decimal 是 PG 同一精确数值类型（OID 1700、typlen -1），
 
 官方依据（2026-10-23）：PostgreSQL **18** §8.1.2 [Arbitrary Precision Numbers](https://www.postgresql.org/docs/18/datatype-numeric.html#DATATYPE-NUMERIC-DECIMAL) 支持精度、scale、舍入和特殊值目标。精确布局、typmod、错误及转换以官方 **REL_18_0** [numeric.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/numeric.c) 的 make_numeric_typmod/numeric_typmod_scale、numerictypmodin、numeric_in/out、numeric_recv/send、apply_typmod/apply_typmod_special、numeric_int4 为据；NULL/描述与外层载荷沿前块 §54.7、pqformat.c/postgres.c 来源。以上是规范和源码阅读证据，非参考端实测；来源指定的 18.6 补丁仍未验证。
 
+#### 浮点数值契约
+
+real/float4 与 double precision/float8 是两个规范身份，目标分别为 IEEE 754 binary32/binary64（有效二进制精度 24/53 位），PG OID/typlen/typmod 分别 700/4/-1、701/8/-1。有限最大绝对值为 (2−2^-23)×2^127、(2−2^-52)×2^1023；最小正规正数为 2^-126、2^-1022，最小次正规正数为 2^-149、2^-1074。这些是二进制域边界，不以文档概述的十进制量级代替；近似类型不能承诺十进制精确计算。[PostgreSQL 18 §8.1.3](https://www.postgresql.org/docs/18/datatype-numeric.html#DATATYPE-FLOAT) 为位宽、精度、特殊值和溢出目标依据。
+
+推导消费工作流 2 的类型节点：real/float4 固定为 float4，double precision/float8 为 float8；float(p) 的 p 为二进制精度，1…24 选择 real、25…53 选择 double precision，无 p 选择 double precision。p=0 或 p=54 由声明解析拒绝 22023（REL_18_0 [gram.y::opt_float](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/parser/gram.y)），不把 MySQL FLOAT(M,D) 当 PG 声明。裸 `1.5`、`1e0` 按 PG 数值常量规则初始为 numeric，不能因带小数点或指数直接推导 float8；显式转换和上下文才能改变类型（[18 §4.1.2.6](https://www.postgresql.org/docs/18/sql-syntax-lexical.html#SQL-SYNTAX-CONSTANTS-NUMERIC)）。OID 0 参数按上下文定型，无法确定时目标 42P18；ParameterDescription 确定 OID，格式码不决定宽度。
+
+| 方向 | 值域、精度、NULL 与错误目标 | wire 身份、现状及差距 |
+| --- | --- | --- |
+| PG text 参数 → 规范浮点 | 按目标宽度直接解析十进制/指数，允许首尾空白及大小写不敏感 NaN、±Infinity/±Inf；拒绝空串、尾随垃圾为 22P02，编码错误 22021。有限文本溢出为无穷或非零下溢为零时 22003；可表示次正规数成功。float4 不先解析 float8 再窄化，以免二次舍入。 | OID 700/701 决定 f32/f64；长度 -1 为 typed SQL NULL，无载荷，空串不是 NULL。当前 Rust parse 的词法、超域分类与 PG 尚不等价，解析失败统一 22P02；NULL 参数仅 tp=6，身份连续性未验证。 |
+| PG binary 参数 → 规范浮点 | 载荷恰为 4/8 字节的 IEEE 位型，含次正规、±0、NaN、±∞；接收本身无十进制舍入，不能将无穷当有限超域拒绝。过短目标 08P01、额外字节 22P03，消息截断仍归工作流 7。 | 网络大端；外层 -1 为 NULL，0 长度非法。当前 binary_parameter 已有网络序转换，但短/长均映为 22P03；保留位宽、零符号与特殊值的全链证据未验证。 |
+| 规范浮点 → PG text 结果 | 先以规范身份校验并取得目标宽度的值；默认 extra_float_digits=1 时按该宽度输出可回读同值的最短十进制，不打印 f32 扩宽后的 f64 噪声。特殊值文本 NaN/Infinity/-Infinity，零符号须可观察；SQL NULL 长度 -1。 | 两格式均固定 700/4/-1 或 701/8/-1；当前 pg_type 有 4→700、5→701，value_text 共用 f64 to_string，不能证明 float4 或 PG 精确拼写。会话非默认 extra_float_digits 的状态/设置归工作流 5，不能将其有损文本仍标为无损往返。 |
+| 规范浮点 → PG binary 结果 | 按身份输出 4/8 字节网络序，有限值和 ±0 保持目标宽度位型；±∞保持符号，NaN 按 NaN 类别验收，不承诺 NaN payload/signaling 位跨文本或运算保存。NULL 无载荷。 | 当前 value_binary 经文本重解析，不能据 1.5 测试推断所有位型可逆；内部未窄化 float4 不得在出口静默变无穷/零，已开放域错误 22003，缺保真表示/codec 时明确 0A000，工作流 7 承接 SQLSTATE 传输。 |
+| float4 ↔ float8 / 数值 cast | float4→float8 有限值精确扩宽；float8→float4 按目标宽度舍入，有限溢出、非零变零拒绝 22003，次正规非零成功；原有无穷/NaN 合法传递。typed NULL 保留目标身份。浮点→整数先按参考平台 rint 舍入再检查域，NaN/无穷拒绝 22003；numeric 半值远离零规则不能套用。 | 目标 OID 由 cast 预先确定，不能按值动态提升。显式/赋值/隐式资格交本章转换块核定，算术/重载/round 归工作流 4；不把本表当完整隐式转换矩阵。MySQL 参数和结果维持自身 FLOAT/DOUBLE code、flags 与告警契约，不套 PG 错误；共享 f64 容器不是双方言等价证据。 |
+
+特殊值须区分 SQL NULL：NaN 是非 NULL 的浮点值，PG 比较语义中 NaN 等于 NaN 且大于其他值，±0 数值相等但 codec 验收分别检查符号；无穷、NaN、零的比较与算术由工作流 4 拥有。本块不要求文本往返保存 NaN payload；binary 直通是否保存其位型须另采证，不能将全部 NaN 位串判为非法。舍入验收记录参考端平台与模式，常见最近偶数规则须有具体半值断言，不能用统一 epsilon 淹没 float4/float8 差异。
+
+官方源码依据为 **REL_18_0** [float.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/float.c) 的 float4in_internal/float8in_internal、float4out/float8out、float4recv/send、float8recv/send、ftod/dtof、dtoi4：分别核对直接目标宽度解析、输入/范围错误、输出及窄化和整数转换；二次舍入反例取其注释 `7.038531e-26`。网络位型与不足读取见同 tag [pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c) 的 pq_sendfloat4/8、pq_getmsgfloat4/8、pq_copymsgbytes；额外载荷错误沿前块消息边界来源。输出配置以 PostgreSQL **18** [§19.11.2 extra_float_digits](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-EXTRA-FLOAT-DIGITS) 为据。查阅日期 2026-10-23；以上均为规范阅读，18.6 补丁和实际参考端行为仍未验证。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -845,6 +867,8 @@ numeric 与 decimal 是 PG 同一精确数值类型（OID 1700、typlen -1），
 [整数与无符号边界](#整数与无符号边界)不实现算术、cast 或 numeric codec，不扩写聚合、serial/identity、oid、数组及完整类型推断。工作流 2 提供声明/转换语法；4 拥有重载求值；7 拥有帧校验、错误响应和恢复；8 采集客户端与双方言证据。MySQL 原行为不因 PG 目标更改。
 
 [精确数值契约](#精确数值契约)不实现大数表示、cast 或 codec，不改 MySQL/Go 裁剪及告警行为；不扩大到算术/聚合、索引排序、numeric 数组或协议状态机。工作流 2 接声明语法，4 接数值运算与特殊值比较，7 接消息/错误响应及恢复，8 接客户端差分。
+
+[浮点数值契约](#浮点数值契约)不实现内部表示、cast、codec 或运算，不改 Go/MySQL 的浮点行为，不扩展浮点数组、索引、聚合或完整推导系统。类型语法归工作流 2，比较/算术归 4，输出会话配置归 5，消息错误与恢复归 7，真实客户端与双方言差分归 8。
 
 ### 验收
 
@@ -893,6 +917,18 @@ numeric 与 decimal 是 PG 同一精确数值类型（OID 1700、typlen -1），
 | NUM-BINARY | 12.340 的字段为 (2,0,0000,3;12,3400)，结果 scale=3；U64 最大值两格式无损。构造 (2,0,0000,2;12,3456) 接收为 12.34，不能误按普通 typmod 舍入为 12.35。负值、零、特殊 sign 分别往返；非法 digit=10000/sign/scale、短载荷/额外字节分别按方向表拒绝。 | 当前 numeric binary 无实现；MyDecimal TestToBinFromBin 是 MySQL 格式，不能替代此项，全部未验证。 |
 | NUM-NULL-METADATA | NULL::numeric(8,2)、typed NULL 参数、首行 NULL/全 NULL、空结果及多行不同值，均保持 1700/-1 与预定 typmod；numeric(8,2) typmod=524294，无约束/U64 为 -1。statement/portal Describe 与 Execute 身份一致，参数 OID=1700；负 scale typmod 往返不误读成正 scale。 | 既有 DECIMAL(8,2) 仅 text/OID 意图；typmod、NULL、Prepare 全链及双方言隔离未验证。 |
 
+[浮点数值契约](#浮点数值契约)以下能力入口均为**待新增**，全部运行行为为未验证；每项分别采集两宽度、两格式、类型身份、NULL 与 SQLSTATE，成功项 SQLSTATE 不适用。codec 有限值按目标宽度位型比较，零另比符号，NaN 比类别；文本同时核对 PG 默认拼写和回读，不用统一宽容误差替代。运算另定逐操作误差模型，不沿用 codec 放宽阈值。
+
+| 能力 ID / 场景 | 可观察目标与反例 | 已读证据与缺口 |
+| --- | --- | --- |
+| FLOAT-IDENTITY | 1.5::real 与 1.5::double precision 同值异型，分别 700/4/-1、701/8/-1；裸 1.5/1e0 为 numeric；float(1)/(24) 为 float4、float(25)/(53) 为 float8，float(0)/(54) 拒绝 22023。 | pg_type 有映射但无这些推导/Describe 全链断言；未验证。 |
+| FLOAT-ROUNDTRIP | ±1.5、0.1、16777217 text→float4 为 16777216，float8 保留 16777217；直接 float4 输入 7.038531e-26 对照官方结果，拒绝二次舍入。默认可逆文本→同宽解码位型一致，binary 长度/字节准确。 | pg_binary_native_results 仅 1.5_f32；完整 text/binary 往返、默认拼写未验证。 |
+| FLOAT-RANGE | 各宽度 ±最大有限、±最小正规及其相邻位型，±最小次正规（位型 00000001 / 0000000000000001 加符号）均成功；text 1e39→float4、1e309→float8 拒绝 22003；1e-100→float4、1e-400→float8 下溢为零拒绝。binary 对应无穷位型成功，不能按 text 溢出拒绝。 | 有网络序转换代码，无完整边界/错误断言，未验证。 |
+| FLOAT-SPECIAL-ZERO | 两宽度 text/binary 的 +0/-0 符号保留，float4 binary 00000000/80000000、float8 0000000000000000/8000000000000000；NaN/±Infinity/±Inf 文本输入，输出规范词，非 NULL。NaN 与自身相等、±0 相等的 SQL 比较由工作流 4 验收。 | 仅 float8 +∞ binary 输出意图；负无穷、NaN、带符号零和比较未验证；payload 保存无承诺。 |
+| FLOAT-INVALID | 空串、1x、NaNx 拒绝 22P02，非法编码 22021；float4 的 0/3/5 字节、float8 的 0/7/9 字节分别覆盖不足/额外错误；NULL 不走长度错误路径。 | 现有 binary 长度一律 22P03，与目标短载荷分类有差距；精确 wire 错误未验证。 |
+| FLOAT-CAST | float4→float8→float4 保留有限位型；float8 1e39 窄化溢出、1e-100 窄化变零均 22003；±2.5→int4 在最近偶数平台为 ±2，±3.5 为 ±4；NaN/∞转整数拒绝。 | 共享转换/格式化测试不能证明 PG cast 或双方言隔离，全部未验证；类型资格交转换块。 |
+| FLOAT-NULL-METADATA | 两宽度 typed NULL 参数、首行/全 NULL、空结果及跨边界多行；ParameterDescription 700/701、statement/portal Describe 与 Execute 的 OID/typlen/typmod 连续，NULL 长度 -1，格式变化不改类型。 | pg_binary_native_results 有两宽度 NULL 长度 -1 的局部输出意图；参数 NULL tp=6 与共用 f64 值盒仍不证明身份连续；完整客户端证据未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -906,6 +942,8 @@ numeric 与 decimal 是 PG 同一精确数值类型（OID 1700、typlen -1），
 [整数与无符号边界](#整数与无符号边界)候选边界：内部表示先验证声明宽度、signed/unsigned 与 typed NULL 跨 Prepare/Execute 保留；cast 依赖身份及方言上下文，独立核对窄化与负值；参数 codec 依赖已定型 OID，补输入语法及错误分类；结果 codec 依赖稳定结果元数据，U64 binary 另依赖 numeric 契约。本块不生成可执行实现任务。来源步骤 2 的整数族由值域表及方向表覆盖，步骤 3 的 unsigned/溢出由桥接及算术交接覆盖，步骤 4 的格式/NULL/非法输入/元数据由 INT-RANGE/UNSIGNED/CODEC/NULL-METADATA/CAST-ARITH 覆盖。未发现与前序布尔限定场景或第 1/2 章冲突；功能、参考端与性能均未实测。
 
 [精确数值契约](#精确数值契约)候选边界：先核定 MyDecimal 与 cast Decimal 可保真域及规范身份的 precision/scale/特殊值缺口，再决定内部表示；cast 依赖该表示和方言资格，保留 PG 舍入/错误及 MySQL 原行为分流；参数 codec 依赖已定型 OID 和上下文 typmod，结果 codec 依赖同一身份及稳定 Describe 元数据。这里只给边界与依赖，不生成可执行任务。来源步骤 2 的 numeric 族由身份与方向表覆盖，步骤 3 的精度溢出/cast 由 NUM-PRECISION/ROUND 覆盖，步骤 4 的格式、非法输入、NULL 与元数据由 NUM-TEXT-SPECIAL/BINARY/NULL-METADATA 覆盖；NUM-LARGE 承接前块 U64 与更大精度差距。未发现前块或第 1/2 章冲突；本轮无功能、性能及参考端实测。
+
+[浮点数值契约](#浮点数值契约)候选边界：内部表示先核对 KindFloat32、共享 f64 值盒与 NativeType 的定宽不变量及 typed NULL 保真；cast 依赖该不变量和方言上下文，分别核对舍入/范围与特殊值；参数 codec 依赖确定 OID，直接按目标宽度解析并分类错误；结果 codec 依赖同一列身份和输出配置，分别输出目标宽度文本及网络位型。这里只给边界和依赖，不生成实现任务。来源步骤 2 的浮点族由身份/方向表覆盖，步骤 3 的舍入和溢出由 FLOAT-RANGE/CAST 覆盖，步骤 4 的格式、NULL、非法输入和元数据由其余验收入口覆盖。与 numeric 的精确性和半值规则分开，与第 1/2 章术语及前序块无冲突；没有功能或性能实测。
 
 ## 4. 方言函数与运算符契约
 
