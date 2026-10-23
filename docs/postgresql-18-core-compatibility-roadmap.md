@@ -3594,6 +3594,19 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 
 最近独立测试 [pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes 覆盖系统 OID 唯一、正负/非法 ID、跨表同局部索引 ID 与映射无碰撞；[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_relations_live 覆盖真实 domain 的表/视图/序列/分区/索引分类、其他库隔离、Parse 后改名/删建刷新及 public.pg_class 遮蔽；[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::pg_introspection_oid_live_casts 覆盖26/2205描述、1259、最大 oid、名称错误与格式错误。由 [lib.rs](../pkg/server/lib.rs) 独立 cfg(test) 模块注册；它们是手写 wire 测试意图，未证明重启持久性、双连接稳定性、真实 psql 或权限结果。本轮有效运行数0。
 
+#### 列目录与声明类型
+
+承接来源任务步骤 1、2，能力 `CAT-ATTRIBUTE/pg`。批次 4 的关系身份五节正文及提交 `7ade409a9d`、累计批次 3/2/1 的 `9bd191c612` / `b7ff2288b8` / `946e9b2c20` 和第 1–5 章交接已复核，依赖满足。以下为 2026-10-24 在 `7ade409a9d` 经 RustCodeGraph status/explore/query/定点 node 阅读的静态证据；pkg/server 与 pkg/meta/model 均无 doc.go。本轮测试运行数 0。
+
+| 实际路径/符号 | 事实与限制 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::column_catalog_rows / column_catalog_field | provider 复用前块共享快照及当前原生库，枚举 SchemaTableInfos 的 ModelMeta；表须 StatePublic，跳过 Sequence；列须 StatePublic 且非 Hidden。attrelid=table_oid(model.ID)，attnum=Offset+1，验证正数、int2 范围、列 ID>0 及位置不重复。非当前库列不列入，没有角色过滤。缺完整 ModelMeta 报错。没有索引属性、固定系统目录属性及序列属性的完整行来源，不能由 pg_class 有行推断 pg_attribute 完整。 |
+| [column.rs](../pkg/meta/model/column.rs)::ColumnInfo | 持久 ID、Name.O、逻辑 Offset、State/Hidden、FieldType、GeneratedExprString/GeneratedStored、DefaultIsExpr/DefaultValue 是实际来源。结构未提供 PG 删除槽位/identity 模式及其序列关联；ID 不是 PG attnum。ChangingFieldType 是在线变更中间态，不可替代已发布声明。 |
+| pg_catalog.rs::native_column_type / column_default / format_column_type | FieldType 类型/flags/charset/Flen/Decimal 生成 OID及typmod；numeric 为4+(p<<16)+s（当前仅p=1..65、s=0..p），字符为n+4，时间精度为0..6。bool flag 或 tinyint(1) 的 Bool 默认值用于现有 bool 识别，是身份缺口而非目标规则。enum/set/array 拒绝。column_default 对非空 GeneratedExprString 拒绝；因此空 attgenerated 不证明生成列支持。identity 总为空，attisdropped 总false；原生DROP删除列并重新整理逻辑位置，无PG墓碑。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)::pg_type / encode_formats | 目录 attrelid/atttypid 描述26，attnum为21，attname当前25，atttypmod为23，attnotnull/attisdropped为16，attidentity/attgenerated为内部char/18。普通字符串结果仍映射25、普通结果typmod=-1，不能据目录1043/typmod值推断 SELECT/Describe 已保存声明。两条链路须按第3章对齐。 |
+
+Q/扩展 Parse、Describe、Bind、Execute 的工厂分派、单次快照和有界求值沿用“目录执行链与证据模板”。[lib.rs](../pkg/server/lib.rs) 注册独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live：真实 domain 夹具断言 int/decimal/varchar/date/datetime、类型关联、空集描述、DROP/ADD 后 Offset 与 ID 不同、ALTER 后类型/NOT NULL/默认值刷新、已有 prepared 重执行刷新；当前 DROP 后 added 为位置5，不是 PG 保留删除槽位的证据。[pg_types_test.rs](../pkg/server/pg_types_test.rs)::catalog_char_and_acl_wire_types 断言字符cast为bpchar/1042及ACL NULL描述，并非内部char/18成功证据，common_type_oids_and_values 验证普通类型出口。均只读未执行，手写 wire 夹具不能证明真实客户端运行。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3665,6 +3678,26 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 目标依据（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_class](https://www.postgresql.org/docs/18/catalog-pg-class.html)核对字段、关系种类与外键；[OID及其别名](https://www.postgresql.org/docs/18/datatype-oid.html)核对数字/符号、路径、引号及早绑定；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)核对 to_regclass 缺名为NULL。[官方 REL_18_STABLE pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/include/catalog/pg_type.dat)核对19/18/26/2205/194类型身份，该分支可变，不是18.6运行构建。[psql 18](https://www.postgresql.org/docs/18/app-psql.html)的关系列表/描述与 -E 是客户端采集入口；本块 SQL 为人工契约探针，未声称 psql/JDBC/DataGrip/ORM 生成过它们。18.6精确行为、错误字段与客户端版本均未取证；产品0A000门槛不能冒称参考端错误。
 
+#### 列目录与声明类型
+
+沿公共证据模板，目录读取前提为角色具备 pg_attribute/pg_class/pg_type SELECT；对象可使用、列级权限、search_path 可见性分开判断。无表SELECT不应隐藏其列元数据；限定 pg_catalog 查询不受同名本地对象遮蔽；当前数据库隔离沿前块。以下字段均非 SQL NULL；属性主键是 `(attrelid,attnum)`，内部持久列 ID 另存映射，不以名称/向量下标重建历史槽位。
+
+| 需求→字段 | 真实来源、关联与当前证据 | PG目标类型/值、缺失策略→验收 |
+| --- | --- | --- |
+| 所属关系→attrelid | model.ID→table_oid，与pg_class.oid同源；索引/系统/序列属性尚缺完整映射。 | oid/26、typlen4，关联恰一个本库pg_class行；不能造0。缺ID/快照或所请求关系种类的真实属性在成功行前0A000，不以空集伪装已覆盖。ATTR-BASE/KEY。 |
+| 列序→attnum | 当前Offset+1，只证明原生逻辑位置。持久列ID不能直接强转为int2。 | int2/21、2；普通列从1开始，改名保持号，删除后幸存列不重编号，新增不复用删除号。系统列负号须有真实PG语义，不能把Hidden列直接变负数。无持久槽位来源时相关DDL副作用前门禁0A000，既有无法解释的状态执行拒绝。ATTR-LIFE。 |
+| 列名→attname | 同一ColumnInfo.Name.O，当前text/25。 | name/19、标准构建typlen64；保留引号大小写。删除列名称为内部占位，验收不硬编码PG生成名称。缺name描述/codec输出前0A000，不静默降text。ATTR-BASE/LIFE。 |
+| 声明类型→atttypid | FieldType→native_column_type；关联pg_type.oid。当前varchar与普通结果text身份分叉。 | oid/26、4；数据值为第3章规范声明OID，如int4=23、varchar=1043、numeric=1700；非由首行/NULL/SELECT表达式推断。删除列为0且不能inner join要求其有pg_type行；普通列不得为0。缺规范身份或映射拒绝0A000，不伪装text。ATTR-TYPE/KEY。 |
+| 声明修饰符→atttypmod | 当前Flen/Decimal，仅在语义相符时可复用。不是字节显示宽度。 | int4/23、4；整数/text等无修饰为-1，varchar(n)/bpchar(n)=n+4，numeric按第3章带符号scale编码，时间显式p为p、未声明为-1。无约束numeric、负scale等不得强套MySQL界限；声明是否显式须真实保存。缺失时输出前0A000，不统一-1掩盖。ATTR-TYPE。 |
+| 非空→attnotnull | 当前HasNotNullFlag(FieldType.flags)，须绑定已发布约束状态。 | bool/16、1；反映真实列NOT NULL，identity隐含true；不能由样本无NULL或已有数据推断。约束有效性遵守PG18语义，未支持相应约束状态须门禁而非伪报false。ATTR-NULL/IDENTITY。 |
+| 删除标志→attisdropped | 当前固定false且删除行消失，无墓碑来源。 | bool/16、1；普通false，已删槽位true且atttypid=0；通常客户端筛attnum>0且NOT attisdropped。缺墓碑不能合成假行，相关生命周期按attnum门禁。ATTR-LIFE。 |
+| identity模式→attidentity | ColumnInfo无模式与所拥有序列身份；当前空值，AUTO_INCREMENT不是identity。 | 内部“char”/18、1；非identity为零字节语义（文本显示空串），ALWAYS=a、BY DEFAULT=d；来源须含模式、表/列/序列真实关联，引用第5章标识列契约。不明模式不填空串或NULL；相关声明副作用前0A000，既有缺来源对象查询输出前拒绝。ATTR-IDENTITY。 |
+| 生成列模式→attgenerated | GeneratedExprString + GeneratedStored可定位原生候选，但表达式PG等价性仍缺；当前候选提前拒绝。 | 内部“char”/18、1；普通零字节语义，stored=s、virtual=v；须真实表达式及相应读写行为才开放。MySQL表达式字符串不得直接冒充PG表达式；缺语义在DDL前或读取既有对象时0A000，不返回普通列。ATTR-GENERATED。 |
+
+以上输出字段自身typmod均-1，atttypmod列中的数值是所描述列的修饰符，两者不同；text/binary、零行Describe及来源关系/属性元数据按第3/7章采证。`format_type(atttypid,atttypmod)`目标输出text/25，来自同一声明身份；它只呈现类型，不还原NOT NULL、identity、generated或整个DDL。atthasdef/pg_attrdef表达式交默认表达式窄块，identity与普通默认值的区别沿第5章；本块不扩写表达式反解。
+
+官方目标依据（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html)用于字段、删除槽位、identity及生成模式；[字符类型](https://www.postgresql.org/docs/18/datatype-character.html)用于声明字符长度；[生成列](https://www.postgresql.org/docs/18/ddl-generated-columns.html)用于stored/virtual行为；[psql 18](https://www.postgresql.org/docs/18/app-psql.html)用于描述表及-E采集入口。类型数值/修饰符沿第3章已核官方REL_18_0 pg_type.dat、numeric.c、varchar.c，本轮另查[REL_18_STABLE varchar.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/utils/adt/varchar.c)与[numeric.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/utils/adt/numeric.c)核对编码。维护分支可变；18.6参考构建、错误协议字段及精确客户端版本未取证。下列SQL是人工契约探针，无psql/JDBC/DataGrip/ORM实采归属。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3684,6 +3717,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 关系身份与稳定标识
 
 不实现 OID 分配/代际库、持久 schema/owner/索引名称、完整分区/继承/TOAST/物化视图、序列运行状态、ACL或全 pg_class 字段；索引/列/约束/序列/角色的详细契约交各自后续块。保留范围内外键一致性要求，不以未实现为由删减目标。普通名称、类型/codec、函数注册、事务与 wire 继续由第2–5/7章负责。只列下述待新增/待运行验收，不修改 Rust、不运行 Cargo/Go、差分平台或真实客户端。
+
+#### 列目录与声明类型
+
+只定义列声明目录字段与生命周期，不实现持久PG属性槽位、identity序列、生成表达式、系统列、索引/序列属性及完整类型系统；不修改普通SELECT类型推导。pg_type全字段、默认表达式反解、ACL、information_schema.columns及真实客户端流程交对应窄块。上述缺口须登记门槛，不以空集或固定false宣称覆盖；本轮不修改生产代码、不运行Cargo或客户端。
 
 ### 验收
 
@@ -3816,6 +3853,39 @@ ORDER BY n.nspname;
 
 逐例采集公共模板要求的版本/构建、角色/库/path、原SQL/参数/格式、每列完整描述、行/命令标签/错误原文及阶段、I/T/E恢复；成功SQLSTATE不适用，错误精确字段未采保留缺证。reader不得拥有表、无继承角色或默认授权；C验证跨库隔离与A/B验证同库稳定分开。每组独立重置；失败后按第5章ROLLBACK/扩展Sync并重查QR确认无半建对象。清理关闭portal/statement、RESET search_path；管理员按实际存在性执行 `DROP VIEW public.rel_v`、`DROP TABLE public.rel_t`或`DROP TABLE public.rel_renamed`、`DROP SEQUENCE public.rel_s`、`DROP TABLE public."Rel Mixed"`、`DROP TABLE public.pg_class`、`DROP TABLE public.rel_other`；分区组先 `DROP TABLE public.rel_p0` 再 `DROP TABLE public.rel_p`，索引随所属表删除；各库分别清理后关闭连接，由夹具删除专用数据库/角色。不用CASCADE掩盖关联残留。客户端需求对应psql关系列表和描述，实际版本须用-E另采；本轮未运行客户端及18.6参考端。
 
+#### 列目录与声明类型
+
+以下 `ATTR-*` 全部为**后续待新增/待运行**，不是本轮结果。统一为同一测试库、UTF8、空闲事务、owner连接、search_path=public,pg_catalog；第二连接使用同库且具备上述目录SELECT、无对象SELECT的角色。准备/清理DDL由owner执行；所有输入为人工探针，客户端版本及18.6构建待采。Q参数[]、文本结果；扩展查询用下列参数版本，Parse OID=[26]，Bind值为本端关系OID的十进制文本、格式[0]，结果分别[0]/[1]，Describe statement/portal、Execute、Sync，不以Describe执行数据查询。
+
+```sql
+CREATE TABLE public.attr_contract (
+  id integer NOT NULL, label varchar(24), amount numeric(12,3),
+  obsolete integer, stamp timestamp(3) without time zone
+);
+SELECT a.attrelid,a.attnum,a.attname,a.atttypid,a.atttypmod,
+       a.attnotnull,a.attisdropped,a.attidentity,a.attgenerated
+FROM pg_catalog.pg_attribute a
+WHERE a.attrelid='public.attr_contract'::regclass::oid AND a.attnum>0
+ORDER BY a.attnum;
+-- 参数版完整SQL：
+SELECT a.attrelid,a.attnum,a.attname,a.atttypid,a.atttypmod,
+       a.attnotnull,a.attisdropped,a.attidentity,a.attgenerated
+FROM pg_catalog.pg_attribute a WHERE a.attrelid=$1 AND a.attnum>0
+ORDER BY a.attnum;
+```
+
+| 用例→需求 | 期望行/描述、真实变更及拒绝验收 |
+| --- | --- |
+| ATTR-BASE/KEY→所属关系/名字/类型 | 5行同一attrelid=本端pg_class.oid；位置1..5，名称依次id/label/amount/obsolete/stamp，OID依次23/1043/1700/23/1114，typmod依次-1/28/786439/-1/3；仅id的attnotnull=true；所有attisdropped=false、两个模式空串。输出描述依次26/21/19/26/23/16/16/18/18，长度4/2/64/4/4/1/1/1/1（name标准构建前提），字段自身typmod=-1。两端用户关系OID按身份关联，不比较固定数值。第二角色与path改变后限定查询行集合相同；另一库同名表不得泄漏。 |
+| ATTR-TYPE→修饰符/声明而非结果 | 执行 `ALTER TABLE public.attr_contract ALTER COLUMN label TYPE varchar(7);`、`ALTER TABLE public.attr_contract ALTER COLUMN amount TYPE numeric(8,2);` 后同一参数重执行，位置不变，typmod分别11/524294。另执行 `SELECT pg_catalog.format_type(1043,28),pg_catalog.format_type(1700,786439);`，参数[]，目标一行text/25两列，值character varying(24)、numeric(12,3)；当前无FROM形式的路由不由该目标探针推断已支持。无约束numeric/未声明时间精度/负scale按第3章另建声明夹具，不以原生默认精度冒充显式声明。缺保真元数据应在输出前0A000。 |
+| ATTR-NULL→非空变化 | `ALTER TABLE public.attr_contract ALTER COLUMN label SET NOT NULL;` 后仅label的attnotnull变true，随后 `ALTER TABLE public.attr_contract ALTER COLUMN label DROP NOT NULL;` 回false；当前表无数据避免填充争议。prepared重执行读新快照，Describe的输出列类型保持不变。 |
+| ATTR-LIFE→顺序/改名/删除/新增 | `ALTER TABLE public.attr_contract RENAME COLUMN label TO "Label";` 后位置2保留、大小写保留。`ALTER TABLE public.attr_contract DROP COLUMN obsolete;`、`ALTER TABLE public.attr_contract ADD COLUMN added varchar(7);` 后未过滤查询为6槽位：4为dropped=true/atttypid=0，不硬编码其内部名；stamp仍5、added为6。再执行 `SELECT a.attnum,a.attname FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.attr_contract'::regclass::oid AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum;`，参数[]，描述21/19，活列位置1/2/3/5/6。无持久槽位时DROP/ADD须在DDL副作用前0A000，不能以当前原生重排结果验收PG目标；既有重排状态输出前拒绝。 |
+| ATTR-IDENTITY→模式及真实关联 | owner执行 `CREATE TABLE public.attr_identity (a integer GENERATED ALWAYS AS IDENTITY,b bigint GENERATED BY DEFAULT AS IDENTITY,c integer);`，基准SQL将关系名替换为attr_identity；三行OID23/20/23，typmod均-1，attnotnull=true/true/false，attidentity=a/d/空串，attgenerated均空串。同一SQL关联第5章真实序列/生成验收，不能由AUTO_INCREMENT夹具替代。缺模式或关联时CREATE副作用前0A000、无残留表/序列；既有对象缺源在目录输出前拒绝。 |
+| ATTR-GENERATED→stored/virtual | `CREATE TABLE public.attr_generated (x integer,gs integer GENERATED ALWAYS AS (x+1) STORED,gv integer GENERATED ALWAYS AS (x+2) VIRTUAL);`，基准SQL替换关系名，三行OID23/typmod=-1，attgenerated=空串/s/v，attidentity均空串；表达式及读写行为另验，不仅查模式。缺其中一种语义则相应声明DDL副作用前0A000，无残留对象，不能改成普通列或另一生成模式。 |
+| ATTR-EMPTY/ERROR→描述与拒绝 | 参数版Bind值"0"/OID26应零行但保持上述完整描述；对真实无用户列关系，仅在确有该类对象时验证零行。缺ModelMeta、非法/重复Offset、缺类型、未支持生成列或所请求系统/索引属性分别记录实际执行拒绝阶段，产品目标0A000且无成功行；不能因WHERE只选某表就声称provider不枚举其他表。错误字段/文本待实采，协议恢复与事务恢复分开沿第5/7章。 |
+
+清理（owner，独立语句，参数[]）：`DROP TABLE IF EXISTS public.attr_generated;`、`DROP TABLE IF EXISTS public.attr_identity;`、`DROP TABLE IF EXISTS public.attr_contract;`。所有查询/DDL须保存参考端及产品端的完整版本、输入、行值、描述、错误、角色权限与前后快照；prepared在DDL前Parse/Describe，DDL提交后新Bind/Execute的刷新，与已启动portal缓存分开。本轮只有文档/源码审阅，不宣称以上查询已可执行；Ready文档检查通过不能替代行为验收。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -3841,6 +3911,14 @@ ORDER BY n.nspname;
 后续先独立补稳定身份/越界门槛与同库关系命名唯一性，再补 name/内部char及regclass路径往返、owner持久来源；按对应窄块接列/索引/序列外键与分区语义，不递归补齐子系统。覆盖映射：五个核心字段→REL-BASE/KEY/KIND/OWNER，持久原生ID/删除重建/双连接/重启→REL-LIFE，cast/未知数值/名称→REL-CAST/UNKNOWN/NAME，溢出→REL-RANGE；测试意图与目标验收不混为运行证据。
 
 正确性风险是ID重用、非public状态查找、重复局部索引名、错误外键或伪造owner；兼容性风险是text替代name/内部char、regclass显示不随path、物理分区与PG关系混同；性能未测。Ready文档适用检查采用五节锚点、来源/路径、前后契约与diff人工审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用任务指定替代检查。不运行代码lint、Cargo/Go或差分客户端，不将文档完成升级为功能支持。下一步按批次5处理列目录与声明类型。
+
+#### 列目录与声明类型
+
+按最小事实组拆实施：①持久列ID到PG属性槽位及DROP/ADD/改名映射，先证明ATTR-LIFE；②规范声明OID/typmod、name与内部char的两格式描述及普通结果一致性，覆盖ATTR-BASE/TYPE；③真实NOT NULL、identity模式/序列关联和生成表达式分别实施，覆盖ATTR-NULL/IDENTITY/GENERATED。索引/系统/序列属性依各对象真实模型再开窄任务，不吞并完整catalog。
+
+优先扩展现有独立pg_catalog_test.rs与pg_types_test.rs意图，不把Rust测试放进生产文件。每项后续实施需重新取源码/回归证据并遵循ExecPlan；本轮只交付本块文档，不代表功能已支持。pg_type/默认表达式/权限/元数据刷新及客户端采集沿后续批次接口，不能将其未实现反向阻塞本文档完成。
+
+正确性风险为属性号重排、声明身份丢失与错误模式占位；兼容性风险为name/内部char描述、删除槽位和生成语义差异；性能未实测。使用Ready文档适用检查（五节/锚点、来源路径、累计依赖、前后契约、diff），因`.agents/skills/tidb-verify-profile/SKILL.md`缺失采用任务指定替代检查。未运行Cargo/Go、代码lint、真实客户端或18.6差分；下一批为内建类型目录映射。
 
 ## 7. 线协议认证与数据通道
 
