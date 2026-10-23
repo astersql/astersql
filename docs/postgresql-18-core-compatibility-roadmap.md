@@ -1636,6 +1636,17 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [pg_result.rs](../pkg/server/pg_result.rs)：`CatalogColumnType::wire_type`、`pg_type`、`value_binary`、`encode_formats` | 目录专用 code 映射若干数组 OID，binary 分支调用 binary_array；元数据按类型而非值生成，NULL 长度 -1。这些目录桥接不能推广成任意 SQL 数组的参数、形状或函数结果能力。 |
 | [pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values`、`unsigned_binary_and_unsupported_types` | 前者仅断言普通标量 Q 结果；后者明确断言原生 JSON 即使为 NULL 也不得冒充 PG 目录数组。没有三函数、通用数组结果或扩展协议专项通过证据。 |
 
+#### 范围函数契约
+
+本块静态基线 `df3ca02b067f05466eec8eb01b020383e9f94fb9`（2026-10-23）；批次 1–8 的连续提交和五节正文均已核对，前置任务已删除。`pkg/types`、`pkg/expression`、`pkg/server` 无 doc.go。RustCodeGraph status/explore/query/定点 node 用于读取真实源码，图未提供名称字面量时以 rg 补充；以下只证明静态事实与断言意图。
+
+| 入口/实际符号 | 已读事实与限制 |
+| --- | --- |
+| [datum.rs](../pkg/types/datum.rs)：`Datum`、Kind 常量、`Clone` / `Copy`；[datum_test.rs](../pkg/types/datum_test.rs)：`test_datum` | 已读 Kind 无通用 PG range 标签；盒含字节和 Any，未直接承载 range/subtype 身份、empty、无界与开闭标志。测试检查整数/字符串/字节及 Any 存取，不证明 range 保真。第 3 章未承诺通用 range 表示，这是显式前置缺口，不能用两端点元组、JSON 或 Any 存在来判支持。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`FunctionClassRegistry::from_specs`、`invoke_factory` | lower/upper 有单参数名称规格，但已读核心工厂表无这两个工厂或 range 工厂；本文件未找到 isempty/int4range/numrange 名称。名称不能证明 range 重载；动态工厂缺失会明确拒绝，未穷查其他初始化路径，不能断言全部 SQL 必失败。 |
+| [scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`；[builtin_test.rs](../pkg/expression/builtin_test.rs)：`eval_builtin_func` | 正式构造取得类、调用 getFunction、读取 getRetTp 并包装 ScalarFunction，可按策略折叠；通用测试 helper 仍含迁移注释，不是 range 求值断言。应沿正式链接入已选签名，不新建 PG 求值器。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)：`pg_type`、`value_text`、`value_binary`；[pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values` | 已读映射为普通标量及目录专用桥接，未见 range OID 分支；文本透传不能证明 range 规范值或 binary codec。测试断言普通标量 Q 的 OID/值，没有本块 range 构造、边界、扩展协议专项证据。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1803,6 +1814,23 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 官方来源（2026-10-23 查阅）：PostgreSQL **18** [§9.19 数组函数](https://www.postgresql.org/docs/18/functions-array.html)定义代表函数，[§8.15 数组](https://www.postgresql.org/docs/18/arrays.html)支持形状/下界与 NULL，[§36.2.5 多态](https://www.postgresql.org/docs/18/extend-type-system.html#EXTEND-TYPES-POLYMORPHIC)支持分析期共同元素类型。固定 **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)与[pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)核对签名、strict/immutable；[arrayfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/arrayfuncs.c)::array_length/array_cardinality 核对维号与计数，[array_userfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/array_userfuncs.c)::fetch_array_arg_replace_nulls/array_append 核对 NULL、下界和错误分支。数值例为上述规则推导的待验收目标；18.6 仍为来源指定基线，未在该补丁版本实测。
 
+#### 范围函数契约
+
+沿首块统一模板，本块仅实例化 PG 核心专属普通标量 lower/upper/isempty 与 int4range 构造，以 numrange 作连续域对照；实现 ID 候选 `scalar.pg.range.bound/v1`、`scalar.pg.range.empty/v1`、`scalar.pg.range.construct/v1` 仅为文档身份。range 是单个 SQL 值，不是行集合或两个独立标量；multirange 不在本块。
+
+| 模板字段 | 本块目标、依据及缺口 |
+| --- | --- |
+| 关联/分类/名称/别名/可见性 | 待新增 FUNC-RNG 四组；PG 非限定名及 pg_catalog 限定名沿第 2 章名称环境可见。MySQL 隐藏 range 重载、isempty/int4range/numrange，保留 lower/upper 自身字符串调用；不得按名称全局屏蔽或把字符串大小写函数当边界函数。无共享别名批准，当前正式接线未验证。 |
+| 重载/隐式 cast/值域 | `lower(anyrange)→anyelement`、`upper(anyrange)→anyelement`、`isempty(anyrange)→boolean`；多态返回由分析时已知 range 的 subtype 决定，非 wire 伪类型。本组构造 `(int4,int4[,text])→int4range`、`(numeric,numeric[,text])→numrange` 是两个/三个参数的独立签名；两参默认 [)。unknown/参数 OID 0 及隐式转换沿 resolver 和第 3 章 I 资格，不根据值/NULL 猜 subtype。其他 range 族不在代表验收域内。 |
+| 表示与边界 | 必须分别保存 range/subtype 身份、整体 SQL NULL、empty、端点是否无界及开闭标志；端点值不是可存 SQL NULL 的成员槽。有限端点大小顺序必须合法。离散 int4range 规范化后再观察端点；连续 numrange 保留开闭方式，不能套整数步长。第 3 章没有该表示/codec 承诺，需先单独补齐窄类型契约才可实施函数。 |
+| NULL/求值 | lower/upper/isempty strict，range SQL NULL→相应已定型结果的 SQL NULL。empty 的 lower/upper 为 NULL、isempty 为 true；无界仅对应端点提取为 NULL，isempty 为 false。构造器非 strict，任一端点 NULL 表示该侧无界，两端 NULL 是全域；三参 flags=NULL 则错误，不是返回 NULL。NULL 不绕过签名分析或保证其他实参不折叠。 |
+| collation/时区/会话 | 本组 int4/numeric 不做文本排序或时刻换算，collation/TimeZone 对值运算不适用；固定 UTF-8，数值输入输出沿第 3 章。名称与类型选择仍依连接上下文；不推广到文本自定义 range 或 timestamptz 的会话显示。 |
+| 确定性/折叠/副作用 | 所列函数/构造签名按固定目录默认属性为 immutable，无 SQL 数据副作用；合法常量可以折叠，错误可在分析/折叠/执行出现，不强制延迟到 Execute。本地缓存、折叠与隔离未验证。 |
+| 返回/wire/修饰符 | 本组 lower/upper：int4 为 23/4/-1，numeric 为 1700/-1/-1；isempty 为 16/1/-1；构造为 int4range 3904/-1/-1 或 numrange 3906/-1/-1。依签名固定 OID/typlen/typmod，空/NULL/零行不改身份；AS v、表/属性号 0、NULL 长度 -1、Describe 格式沿首块，逻辑可空性另记。range 文本应输出规范边界或 empty；binary 为标志字节及存在的端点长度/子类型二进制载荷，不发送内部 varlena/OID 结构，也不透传文本字节冒充 binary。参数/结果 codec、身份连续性是未具备的依赖。 |
+| 下推/错误/证据 | 默认无下推批准；构造下界大于上界、NULL flags 目标 22000，非法 flags 目标 42601，int4 离散规范化端点溢出目标 22003；名称/签名无匹配沿前块 42883。采 S/V/C/M、适用 D/H/P 和实际阶段，无伪成功行；精确本地映射、消息/位置及 MySQL 错误待采。工程缺口不能冒充参考 PG 的语义错误；所有场景未运行。 |
+
+官方来源（2026-10-23 查阅，PostgreSQL **18**）：[§9.20 range 函数](https://www.postgresql.org/docs/18/functions-range.html)核对提取/empty，[§8.17.3–7 range 类型](https://www.postgresql.org/docs/18/rangetypes.html)核对构造、无界和离散规范化。固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)及[pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)核对精确签名、strict 和 immutable；[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)核对 OID/长度；[rangetypes.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/rangetypes.c)的 range_constructor2/3、range_lower/upper、range_parse_flags、range_serialize、int4range_canonical、range_send 核对 NULL、错误、规范化与 binary 布局。数值例是规则推导目标；18.6 仍为来源指定版本，未采该补丁版本参考端证据。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1836,6 +1864,10 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 #### 数组函数契约
 
 不实现数组表示、函数工厂、多态解析、cast/codec 或测试平台，不扩大为完整数组库。unnest 归集合返回模型，数组运算符归运算符任务；下标/切片、数组聚合、索引、自定义/复合/domain 元素不在本块。第 3 章拥有类型/形状与 codec，工作流 2/5/6/7/8 分别拥有语法、会话、目录、协议与客户端证据；不改 Go/MySQL JSON_ARRAY_APPEND 的原契约，不把缺口改写成 PG 语义拒绝。
+
+#### 范围函数契约
+
+本块不实现 range 表示、构造/求值、cast、codec 或测试设施，不修改第 3 章，不将基础类型缺口扩大为子系统建设。multirange、自定义 range、其他 range 族的完整验收、范围运算符/索引/聚合及扩展生态均在本块范围外；两入口已有 lower/upper 字符串契约另行保留。本轮不运行 Cargo/Go、数据库或差分平台。
 
 ### 验收
 
@@ -1950,6 +1982,19 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 每组分别对照 PG 参考端/AsterSQL PG；成功项覆盖 Q 与 Parse/statement Describe/Bind/portal Describe/Execute，显式 `$1::int4[]`、维号 `$2::int4` 或元素 `$2::int4`，提升例用 `$2::int8`。参数 text/binary × 结果 text/binary 四组合验证同一规范值、维度/下界/元素 NULL；重复 Bind 换值、空数组、数组 NULL 或 NULL 元素均不换已选签名/返回 OID。NULL 结果与零行仍有固定描述，两个 Describe 的格式差异沿首块，Execute 不重发描述；错误采实际阶段，不强制延迟到 Execute。MySQL 覆盖 Query/Prepare/Execute 的名称拒绝，并以既有合法 `SELECT 1 AS v` 作成功旁路，单独采自身列定义、警告和错误码/SQLSTATE，不引入新 JSON 函数验收。两个 PG 连接和一个 MySQL 连接交错验证可见性/缓存隔离。缺数组表示、codec、定型或工厂单列工程缺口，不当作参考 PG 目标错误；当前有效运行用例为 0，无功能通过证据。
 
+#### 范围函数契约
+
+以下四组均为**待新增、未运行**目标，每个表达式独立执行 `SELECT <表达式> AS v`。r 为表内输入替换记号，不是新增变量设施。PG 合法项可见且成功无错误，除显式 NULL 外为非 NULL；返回身份按本块模板，成功 SQLSTATE 不适用。
+
+| 场景 | PG 输入与值/NULL/类型/错误目标 | MySQL 入口及证据限制 |
+| --- | --- | --- |
+| FUNC-RNG-EMPTY-NULL：空与 NULL | r=`'empty'::int4range`：lower(r)/upper(r)→SQL NULL/int4，isempty(r)→true/bool；r=`NULL::int4range` 三者均 SQL NULL，类型分别 int4/int4/bool。`int4range(4,4)`→empty/int4range；`int4range(4,4,'[]')`→[4,5)，非空。 | 合法语法 `isempty(NULL)`、`int4range(4,4)` 目标名称拒绝，MySQL 自身错误码/SQLSTATE 待采；不能把 PG cast 语法错误当名称门禁证据。两侧无当前运行记录。 |
+| FUNC-RNG-UNBOUNDED：缺端点 | `int4range(NULL::int4,5)`→(,5)，lower→NULL/int4、upper→5/int4、isempty→false/bool；`int4range(2,NULL::int4)`→[2,)，lower→2、upper→NULL、isempty→false；`int4range(NULL::int4,NULL::int4,'[]')`→(,)，两提取 NULL、isempty=false。均为非 NULL range，缺侧自动排除边界，不是 subtype 的显式 infinity。 | `int4range(NULL,5)`/`numrange(NULL,5)` 仍隐藏；PG 无界域不映射为 MySQL 字符串 NULL 语义。成功旁路 `SELECT 1 AS v`→1/自身整数，精确列定义待采。 |
+| FUNC-RNG-BOUNDS：开闭与非法构造 | 对 flags 四值 [)、(]、[]、()，`numrange(1::numeric,3::numeric,flags)` 输出相应边界，lower=1、upper=3/numeric、isempty=false；`numrange(4::numeric,4::numeric,'[]')` 为单点非空，其余三种同端点为空。`int4range(5,2)`→22000；`int4range(1,3,NULL::text)`→22000；flags='bad'→42601，均无成功行。 | `lower('AbC')`→'abc'、`upper('AbC')`→'ABC'/自身字符串为保留目标；`numrange(1,3,'[]')` 隐藏。字符串大小写结果不证明 PG range 提取；MySQL 自身元数据/错误字段未采。 |
+| FUNC-RNG-CANON：离散规范化 | `int4range(1,4,'(]')`→[2,5)，lower=2、upper=5/int4；`int4range(2,5)` 得同一规范 range；`int4range(1,2,'()')`→empty。连续 `numrange(1::numeric,4::numeric,'(]')` 仍 (1,4]、提取 1/4/numeric。`int4range(1,2147483647,'[]')`→22003，不把溢出自动变无界或换 int8range。 | range 构造名称仍隐藏，lower/upper 的字符串签名保持可见；PG 专属输入不跨发到 MySQL 作同值对比。全部只具官方目标/静态入口证据。 |
+
+每组独立对照参考 PG/AsterSQL PG，成功项覆盖 Q 与 Parse/statement Describe/Bind/portal Describe/Execute；用 `$1::int4range`、`$1::numrange` 或定型端点/flags 参数，text/binary 参数×结果四组合，重复 Bind 普通值、empty、无界、SQL NULL 不换已选签名和 OID。全 NULL/零行仍有固定描述，Execute 不重发描述；构造 NULL 端点不按 strict 提前吞掉。MySQL Query/Prepare/Execute 用合法骨架检查隐藏名称及保留字符串签名，采自身 code/flags/charset/length/decimals、警告和错误；两个 PG 连接与一个 MySQL 连接交错验证缓存/可见性隔离。codec、表示或工厂缺失单列工程缺口，不能将其记作目标拒绝通过；当前有效运行用例为 0。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -1999,6 +2044,12 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 后续只交接第 3 章规范数组到维长/基数求值、共同元素类型到单元素追加、固定返回数组身份到正式工厂/server 三个窄边界；依赖前块名称/resolver 与第 3 章元素 I 资格、shape/lower/NULL/codec。先补五组与双入口证据，再讨论共享或下推；不生成代码任务，不借此补全数组或类型子系统。
 
 来源映射：蓝图步骤 2 的 PG 核心数组代表由三签名及 FUNC-ARR 覆盖，步骤 3 的全部模板字段由本块差异表承接；空数组、数组 SQL NULL、NULL 元素、多维长度、非默认下界分别定位 EMPTY/NULL-ARRAY/NULL-ELEMENT/MULTIDIM/LOWER，含输入、值/NULL/类型/错误、两入口可见性和证据等级。元素提升及返回数组 OID 依赖落在 NULL-ELEMENT 与公共 wire 段。人工审阅与第 3 章基础数组两层 NULL/shape/lower、前块按分析固定身份和名称隔离一致，保留前序正文。correctness/兼容性仅为文档目标，运行未验证，性能无结论。
+
+#### 范围函数契约
+
+后续仅交接独立 range/subtype 身份及 empty/无界/开闭表示契约、已定型构造与规范化到正式标量链、固定 range/提取结果身份到 server codec 三个窄边界；第 3 章缺少通用 range 契约，须先补该前置文档与代表证据，不能由本块完成推断基础依赖已具备。先获得四组与两入口证据，再讨论共享/下推；本轮不生成代码任务。
+
+来源映射：蓝图步骤 2 的 PG 核心 range 由 lower/upper/isempty/构造及 FUNC-RNG 四组承接，步骤 3 全部字段由统一模板差异表覆盖；空范围与 NULL、无界端点、开闭界、离散规范化分别定位 EMPTY-NULL/UNBOUNDED/BOUNDS/CANON，每组有输入、值/NULL/类型/错误与两入口可见性和证据等级。人工审阅与第 3 章未承诺 range、前块按分析固定身份及逐签名门禁一致，未改前序正文；correctness/兼容性仅为文档目标，运行未验证，性能无结论。
 
 ## 5. SQL会话与事务语义
 
