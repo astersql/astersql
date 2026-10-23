@@ -3607,6 +3607,20 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 
 Q/扩展 Parse、Describe、Bind、Execute 的工厂分派、单次快照和有界求值沿用“目录执行链与证据模板”。[lib.rs](../pkg/server/lib.rs) 注册独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live：真实 domain 夹具断言 int/decimal/varchar/date/datetime、类型关联、空集描述、DROP/ADD 后 Offset 与 ID 不同、ALTER 后类型/NOT NULL/默认值刷新、已有 prepared 重执行刷新；当前 DROP 后 added 为位置5，不是 PG 保留删除槽位的证据。[pg_types_test.rs](../pkg/server/pg_types_test.rs)::catalog_char_and_acl_wire_types 断言字符cast为bpchar/1042及ACL NULL描述，并非内部char/18成功证据，common_type_oids_and_values 验证普通类型出口。均只读未执行，手写 wire 夹具不能证明真实客户端运行。
 
+#### 内建类型目录映射
+
+承接来源步骤1、2，能力`CAT-TYPE/pg`。批次5的列目录五节正文和提交`af67d135cf181d87bcb3ba0a7240d2395b4742c0`、累计批次4/3/2/1的`7ade409a9d` / `9bd191c612` / `b7ff2288b8` / `946e9b2c20`及第1–5章交接已核对，依赖满足。以下为2026-10-24在该基线经RustCodeGraph status/explore/query/定点node阅读的静态证据；pkg/server/doc.go不存在，本轮测试运行数0。
+
+| 实际入口 | 当前事实及不能推导的能力 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::COLUMN_TYPES / column_catalog_rows | 固定18项：16/17/18/20/21/23/25/26/700/701/1009/1042/1043/1082/1083/1114/1700/114，保存OID、目录名、显示名、category；namespace固定11，typtype=b、typrelid/typbasetype/typndims=0、typtypmod=-1、typnotnull=false、typisdefined=true；typdefault/typowner/xmin为NULL，只有1009的typelem=25。之后仍遍历当前库公开模型并调用native_column_type校验，原生enum/set或不完整模型可令pg_type查询失败，不能由固定行表推断不依赖用户元数据。没有动态域、复合类型或枚举行。 |
+| 同文件 column_catalog_field / native_column_type | 已绑定oid/typnamespace/typelem等OID列；typname当前text/25，typtype/typcategory为内部char/18，typowner当前bigint/20；typarray、typlen、typdelim、typbyval等无绑定，查询时0A000，不能说已返回0或NULL。FieldType映射沿前块；code245声明映射json/114，而pg_result普通出口拒绝该code。 |
+| 同文件 format_column_type / evaluate | 格式化按同一COLUMN_TYPES查找；0返回“-”，表外OID返回“???”，NULL修饰符与-1在bpchar上分别为character/bpchar；字符、numeric带符号scale、time/timestamp有局部分支。这不能证明已识别全部PG有效OID、数组修饰符或域名；目录局部format_type与第4章普通SQL函数注册分开。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)::CatalogColumnType::wire_type / pg_type | 目录专用描述含int2[]1005、int4[]1007、int8[]1016、oid[]1028、text[]1009、int2vector22、oidvector30、regclass2205、aclitem[]1034；其中多数没有COLUMN_TYPES行。vector是独立目录类型，不能当普通一维数组。普通文本折为25、typmod未保真，沿第3章修复责任；目录行存在不保证参数、表达式或binary codec已开放。 |
+| [pg_oid.rs](../pkg/server/pg_oid.rs)::SYSTEM_RELATIONS / OID_TYPE | pg_type系统关系OID为1247，OID字段自身类型为26；int4类型行OID23是固定PG身份，不经过table_oid或namespace_oid用户对象区间计算。 |
+
+Q与扩展Parse/Describe/Bind/Execute工厂、共享快照、结果编码沿“目录执行链与证据模板”。[lib.rs](../pkg/server/lib.rs)以cfg(test)独立注册[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live（真实domain列→类型join、numeric格式化、RetrieveDataTypes排序非空、public类型空集）和[pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values、catalog_char_and_acl_wire_types（普通描述/值与bpchar1042、ACL数组1034描述意图）。前者模板来自[postgresql-protocol-first-phase.md](postgresql-protocol-first-phase.md)，不是已采集的某版DataGrip运行记录；没有typarray闭环或完整类型目录的本轮运行证据。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3698,6 +3712,24 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方目标依据（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html)用于字段、删除槽位、identity及生成模式；[字符类型](https://www.postgresql.org/docs/18/datatype-character.html)用于声明字符长度；[生成列](https://www.postgresql.org/docs/18/ddl-generated-columns.html)用于stored/virtual行为；[psql 18](https://www.postgresql.org/docs/18/app-psql.html)用于描述表及-E采集入口。类型数值/修饰符沿第3章已核官方REL_18_0 pg_type.dat、numeric.c、varchar.c，本轮另查[REL_18_STABLE varchar.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/utils/adt/varchar.c)与[numeric.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/utils/adt/numeric.c)核对编码。维护分支可变；18.6参考构建、错误协议字段及精确客户端版本未取证。下列SQL是人工契约探针，无psql/JDBC/DataGrip/ORM实采归属。
 
+#### 内建类型目录映射
+
+沿公共证据模板与第3章规范身份/typmod，目标为`pg_attribute.atttypid → pg_type.oid → format_type(atttypid,atttypmod)`使用同一身份。目录不是类型转换规则表：不在本块重定义coercion、隐式转换或codec。读取前提为目录SELECT；无用户表SELECT/无类型USAGE不应被误作内建类型目录隐藏规则，实际使用权限另验；限定pg_catalog不受public同名表遮蔽，未知/不可见名称与不存在OID分开。
+
+| 需求→字段/表达式 | 真实来源、关联键与当前证据 | PG目标类型/OID及值、缺失策略→验收 |
+| --- | --- | --- |
+| 身份→oid / typname / typnamespace | 固定内建注册身份，当前COLUMN_TYPES；namespace关联pg_namespace.oid=11。用户类型须另有持久对象来源。 | oid/26、name/19、oid/26，标准构建typlen4/64/4；名字为int4、varchar等目录名，不能以integer等显示别名替代。所有已暴露声明及目录描述OID必须有恰一类型行；缺注册或name codec输出前0A000，不补text假行。TYPE-BASE/CLOSURE。 |
+| 类别→typtype / typcategory / typisdefined | 当前固定b、表内category、true；目标取版本固定的类型定义。 | 内部char/18、内部char/18、bool/16，长度1/1/1；真实数组typtype仍b、category=A；vector不能仅凭typelem归类A。域d、复合c、枚举e等只在真实实现时开放，不能一概b。TYPE-BASE/ARRAY/DOMAIN。 |
+| 容器关联→typelem / typarray / typdelim | 当前仅text[]→text，typarray/typdelim未绑定；目标按PG内建注册表及真实容器语义。 | oid/26、oid/26、内部char/18，长度4/4/1；int4(23)→typarray1007，1007→typelem23；text25→1009→25，例中delimiter为逗号。0仅表示语义上无关联；typelem非0不充分证明普通数组，如vector及name均需单独核对。不得按OID算术推导配对。TYPE-ARRAY/JDBC。 |
+| 内部长度→typlen / typbyval | 当前未绑定；目标取PG参考构建定义，与自身引擎物理布局区分。 | int2/21、bool/16，长度2/1；int4为4，text/varchar/numeric及普通数组为-1，name标准构建64；typbyval依参考构建，不能从wire长度猜测。缺构建/注册证据先拒绝相关字段，不伪造-1。TYPE-BASE。 |
+| 域/复合约束→typrelid / typbasetype / typtypmod / typndims / typnotnull / typdefault | 当前0/0/-1/0/false/NULL仅适用这些内建非域行；无域约束或复合身份来源。 | oid26/oid26/int4 23/int4 23/bool16/text25，长度4/4/4/4/1/-1。非复合typrelid=0；非域basetype=0、typtypmod=-1、typndims=0、notnull=false，无类型默认值时default SQL NULL。列typmod不得写到共享类型行；域须保留自己的OID与真实基类型/约束，缺源在CREATE DOMAIN/TYPE副作用前0A000。TYPE-DOMAIN。 |
+| owner/ACL及其他客户端字段→typowner / typacl等 | 当前owner NULL且描述20；typacl绑定1034但固定行无真实ACL来源。无真实PG函数/排序规则/存储属性注册证据。 | owner目标oid26、非NULL且关联角色；ACL目标aclitem[]1034、可NULL仅表示真实默认权限。缺owner/ACL语义在字段取值前0A000，不把NULL当已完成权限模型。typinput/output/receive/send等regproc24、typcollation oid26及typalign/storage内部char18若被请求须逐项接真实注册/构建来源；不造函数OID、不统一0。权限及函数窄块后续补证。TYPE-ERROR。 |
+| 展示→format_type(oid,int4) | 同一类型身份+列声明typmod，当前format_column_type只覆盖表内子集。 | text/25、长度-1；NULL类型OID→SQL NULL，NULL修饰符与-1区别保留。目标“未知OID”只指参考目录确实不存在的OID：0→“-”、无效非0→“???”；PG有效但本端尚未映射如2950不得冒充未知，查询产品端须0A000门禁，或完成注册后返回uuid。名称引用/path沿第2/5章；不还原整列DDL。TYPE-FORMAT/UNKNOWN。 |
+
+上述字段自身typmod均-1，typtypmod字段值与输出描述typmod不同。最小闭环除第3章逐族标量外，还必须包括已在目录描述使用的name19、内部char18、oid26、regclass2205、数组及vector；这只是目录身份与字段事实要求，不自动开放通用参数、运算及DDL。没有用户类型且查询限定public时，类型正确空集合理；必需内建缺行不能以空集充数。JSON/JSONB、UUID、timestamptz、interval等依第3章逐族门槛，不能因固定OID可查就标记可用。
+
+官方依据（访问日期2026-10-24）：PostgreSQL **18** [pg_type](https://www.postgresql.org/docs/18/catalog-pg-type.html)定义字段、容器/域关联；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)定义format_type签名；固定OID/名称/配对取官方**REL_18_0** [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)，NULL/无效OID、bpchar及名称展示取同tag [format_type.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/format_type.c)。客户端必要typelem/typdelim字段由官方**pgjdbc REL42.7.8** [TypeInfoCache.java](https://raw.githubusercontent.com/pgjdbc/pgjdbc/REL42.7.8/pgjdbc/src/main/java/org/postgresql/jdbc/TypeInfoCache.java)::prepareGetArrayDelimiterStatement/prepareGetArrayElementOidStatement提供来源；不推定本轮运行了驱动。18.6仍是来源指定目标，无该补丁参考构建或精确运行取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3721,6 +3753,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 列目录与声明类型
 
 只定义列声明目录字段与生命周期，不实现持久PG属性槽位、identity序列、生成表达式、系统列、索引/序列属性及完整类型系统；不修改普通SELECT类型推导。pg_type全字段、默认表达式反解、ACL、information_schema.columns及真实客户端流程交对应窄块。上述缺口须登记门槛，不以空集或固定false宣称覆盖；本轮不修改生产代码、不运行Cargo或客户端。
+
+#### 内建类型目录映射
+
+不实现类型注册、通用数组/vector运算、域/复合/枚举/扩展类型系统，不补函数/角色/排序规则子系统，不修改第3章coercion或扩大到全量JDBC元数据流程。目录身份闭环、真实来源和明确拒绝仍属目标，不能通过删类型或降低目标范围获得文档验收。固定类型声明与普通结果身份分叉是既有缺口，后续按窄任务处理；本轮不改Rust、Cargo或测试。
 
 ### 验收
 
@@ -3886,6 +3922,42 @@ ORDER BY a.attnum;
 
 清理（owner，独立语句，参数[]）：`DROP TABLE IF EXISTS public.attr_generated;`、`DROP TABLE IF EXISTS public.attr_identity;`、`DROP TABLE IF EXISTS public.attr_contract;`。所有查询/DDL须保存参考端及产品端的完整版本、输入、行值、描述、错误、角色权限与前后快照；prepared在DDL前Parse/Describe，DDL提交后新Bind/Execute的刷新，与已启动portal缓存分开。本轮只有文档/源码审阅，不宣称以上查询已可执行；Ready文档检查通过不能替代行为验收。
 
+#### 内建类型目录映射
+
+以下`TYPE-*`均为**后续待新增/待运行**的人工契约探针；只有JDBC分隔符查询明确源于上述42.7.8官方源码，其产品端参数形式作如下适配。公共前提：同一测试库、UTF8、空闲事务、owner连接、search_path=public,pg_catalog、目录SELECT；第二连接同库具备目录SELECT但无用户表SELECT，权限实际授予证据须保留。Q参数[]、text结果；每段SQL逐条发送。扩展参数查询在DDL前Parse、Describe statement，Parse OID=[26]，Bind值为指定本端OID的十进制文本、格式[0]，分别结果格式[0]/[1]，Describe portal、Execute、Sync。所有输出比较列序、OID/typlen/typmod和text/binary值，零行仍保留描述；协议恢复沿第7章。
+
+```sql
+-- TYPE-BASE，Q参数[]；全量限定投影不能只比较非空。
+SELECT t.oid,t.typname,t.typnamespace,t.typtype,t.typcategory,
+       t.typelem,t.typarray,t.typdelim,t.typlen,t.typbyval,t.typisdefined
+FROM pg_catalog.pg_type t WHERE t.oid IN (23,25,1007,1009) ORDER BY t.oid;
+-- TYPE-ARRAY，扩展参数：先23，再25；反向查询依次1007、1009。
+SELECT t.oid,t.typname,t.typelem,t.typarray FROM pg_catalog.pg_type t WHERE t.oid=$1;
+-- TYPE-JDBC，源查询的JDBC ? 改为wire $1；绑定1007、1009。
+SELECT e.typdelim FROM pg_catalog.pg_type t,pg_catalog.pg_type e
+WHERE t.oid=$1 AND t.typelem=e.oid;
+-- TYPE-CLOSURE，准备DDL由owner执行；全部提交后查询。
+CREATE TABLE public.type_contract (i integer,v varchar(24),n numeric(12,3));
+SELECT a.attnum,a.atttypid,t.oid,t.typname,t.typnamespace,
+       pg_catalog.format_type(a.atttypid,a.atttypmod) AS declared_type
+FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON a.atttypid=t.oid
+WHERE a.attrelid='public.type_contract'::regclass::oid AND a.attnum>0
+  AND NOT a.attisdropped ORDER BY a.attnum;
+-- 同一完整参数查询用于TYPE-FORMAT/UNKNOWN，Parse OID=[26,23]。
+SELECT pg_catalog.format_type($1,$2) AS type_name;
+```
+
+| 用例→需求 | 期望行/描述、元数据变化及拒绝证据 |
+| --- | --- |
+| TYPE-BASE→身份/类别/长度 | 4行，OID23/25/1007/1009，name=int4/text/_int4/_text，namespace11；typtype均b、category=N/S/A/A、typelem=0/0/23/25、typarray=1007/1009/0/0、typdelim均逗号、typlen=4/-1/-1/-1、typbyval=true/false/false/false、defined均true。输出描述26/19/26/18/18/26/26/18/21/16/16，长度4/64/4/1/1/4/4/1/2/1/1（name标准构建前提）。第二角色同样可见；path改变后限定查询同值。当前缺字段/类型行是待实施缺口，不是本轮通过。 |
+| TYPE-ARRAY/JDBC→双向关联 | 参数23→一行(23,int4,0,1007)，25→(25,text,0,1009)，1007→(1007,_int4,23,0)，1009→(1009,_text,25,0)，描述26/19/26/26。JDBC探针两参数分别返回单个逗号、内部char18/长度1；这是元数据查询，不证明java.sql.Array已可收发。另以完整SQL `SELECT t.oid,t.typname,t.typelem,t.typcategory FROM pg_catalog.pg_type t WHERE t.oid IN (22,30) ORDER BY t.oid;`，Q参数[]，目标两行(22,int2vector,21,A)/(30,oidvector,26,A)，描述26/19/26/18；其独立OID及vector专用语义沿第3章，不当作1005/1028。 |
+| TYPE-CLOSURE→列往返/刷新 | 上述join精确3行，attnum1/2/3，atttypid=t.oid=23/1043/1700，name=int4/varchar/numeric，namespace11，展示integer/character varying(24)/numeric(12,3)；描述21/26/26/19/26/25，长度2/4/4/64/4/-1。用户关系OID按本端关联不硬比较。执行 `ALTER TABLE public.type_contract ALTER COLUMN v TYPE varchar(7);` 及 `ALTER TABLE public.type_contract ALTER COLUMN n TYPE numeric(8,2);`，提交后第二连接重查展示character varying(7)/numeric(8,2)，类型行OID不变。再执行 `ALTER TABLE public.type_contract ALTER COLUMN i TYPE bigint;` 后第一列atttypid=t.oid=20、name=int8、展示bigint，原内建int4行保留。已Parse目录查询的新Bind/Execute须刷新行值，输出形状不变；已启动portal缓存沿公共契约。不能由目录变化推断普通SELECT已保真。 |
+| TYPE-FORMAT→显示与typmod | 对上面format_type参数SQL，输入(23,-1)/(1043,28)/(1700,786439)/(1042,NULL)/(1042,-1)/(1007,-1)分别得integer / character varying(24) / numeric(12,3) / character / bpchar / integer[]；NULL用Bind长度-1、其余text，参数OID=[26,23]，均1行text25/长度-1/typmod-1。NULL类型OID应SQL NULL，不变成text名称。格式化不改变列/类型定义，numeric负scale等边界继承第3章，另采参考端精确结果。 |
+| TYPE-UNKNOWN/ERROR→未知与缺源 | format_type参数(0,-1)→“-”；`SELECT t.oid FROM pg_catalog.pg_type t WHERE t.oid=4294967295;`，Q参数[]，先在干净参考库确认该OID不存在，随后同一format_type参数(4294967295,-1)→“???”。有效内建(2950,-1)目标uuid，本端缺映射时输出前0A000，不得返回“???”；缺typarray/typlen/typdelim绑定在目录绑定阶段0A000。`SELECT t.typowner,t.typacl FROM pg_catalog.pg_type t WHERE t.oid=23;`，Q参数[]，目标描述26/1034、真实owner与ACL；缺源产品输出前0A000，不能将当前NULL视为正确权限数据。参数0查type参数SQL应零行且描述不变；所有错误保存真实阶段/协议字段，不编造18.6错误文本。 |
+| TYPE-DOMAIN→域及用户类型边界 | owner执行 `CREATE DOMAIN public.type_domain AS integer CHECK (VALUE>0);`；若开放后执行 `SELECT t.oid,t.typtype,t.typbasetype,t.typtypmod,t.typndims,t.typnotnull,t.typdefault FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typname='type_domain';`，Q参数[]，一行真实域OID/d/23/-1/0/false/NULL，描述26/18/26/23/23/16/25，域OID不得等于23；CHECK使用行为另归第3章。未实现时CREATE在副作用前0A000且无残留域，不造b类型行。没有任何用户类型的隔离库执行同一查询，允许类型正确空集；不能将空集当作已支持域。 |
+
+清理由owner逐条执行，参数[]：`DROP TABLE IF EXISTS public.type_contract;`、`DROP DOMAIN IF EXISTS public.type_domain;`（未开放DOMAIN语法时只检查无残留，不以清理失败替代创建诊断）。保存两端完整版本、角色授权、SQL/Bind、Describe、行值/错误、DDL前后快照与有效用例数；真实psql/JDBC/DataGrip/ORM运行及18.6精确差分仍待取证。本轮未执行任何上述SQL或Rust测试。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -3919,6 +3991,12 @@ ORDER BY a.attnum;
 优先扩展现有独立pg_catalog_test.rs与pg_types_test.rs意图，不把Rust测试放进生产文件。每项后续实施需重新取源码/回归证据并遵循ExecPlan；本轮只交付本块文档，不代表功能已支持。pg_type/默认表达式/权限/元数据刷新及客户端采集沿后续批次接口，不能将其未实现反向阻塞本文档完成。
 
 正确性风险为属性号重排、声明身份丢失与错误模式占位；兼容性风险为name/内部char描述、删除槽位和生成语义差异；性能未实测。使用Ready文档适用检查（五节/锚点、来源路径、累计依赖、前后契约、diff），因`.agents/skills/tidb-verify-profile/SKILL.md`缺失采用任务指定替代检查。未运行Cargo/Go、代码lint、真实客户端或18.6差分；下一批为内建类型目录映射。
+
+#### 内建类型目录映射
+
+后续按同源窄任务推进：①内建身份注册与已暴露OID闭环（含name/内部char、目录array/vector），实现TYPE-BASE/CLOSURE；②真实typelem/typarray/typdelim与vector区分，覆盖TYPE-ARRAY/JDBC；③format_type与同一声明typmod对齐、PG有效但未映射与不存在OID区分，覆盖TYPE-FORMAT/UNKNOWN；④域/复合身份、owner/ACL仅在各自真实模型具备后独立接线，未开放前覆盖TYPE-DOMAIN/ERROR拒绝。优先扩展现有独立pg_catalog_test.rs、pg_types_test.rs，不把测试写入生产文件，不因本块扩建整个类型系统。
+
+正确性风险是固定表缺项、列/目录/结果身份分叉及把有效OID误作未知；兼容性风险是name描述、数组关联、NULL修饰符及默认ACL；性能未实测，当前固定类型查询仍遍历用户模型。Ready文档适用检查采用任务指定五节/锚点、引用路径、依赖/前后契约及diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失。未运行Cargo/Go、代码lint、真实客户端或18.6差分；文档完成不表示类型功能实现完成，下一批为索引目录与定义反解。
 
 ## 7. 线协议认证与数据通道
 
