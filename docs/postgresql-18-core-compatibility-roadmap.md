@@ -1708,6 +1708,17 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [window_func_test.rs](../pkg/expression/aggregation/window_func_test.rs)：`window_pushdown_honors_tiflash_specific_scalar_blacklist` | 只断言 TiFlash scalar 黑名单拒绝下推，不是帧语义测试；由 aggregation/lib.rs 挂载。 |
 | [window_sql_test.rs](../pkg/executor/windows/window_sql_test.rs)：`go_test_window_functions_covers_partition_rows_and_range_frames`、`go_test_window_functions_data_reference_preserves_lag_across_chunks`、`go_test_sliding_window_functions_covers_asymmetric_and_empty_frames`、`go_test_issue_45964_and_46050_preserves_empty_frame_nullability` | 直接 build/run_executor，断言分区重置、ROWS/RANGE 升降序、跨块 LAG、空帧 SUM=NULL/COUNT=0/行号递增；windows/lib.rs 挂载。文件名含 sql 不表示解析或协议测试，未提供 PG rank/lead/last_value、GROUPS、默认帧或 wire 实测证据。 |
 
+#### 有序集合聚合契约
+
+静态基线 `e8670bc2ef6e20b03deef6d3cb825e33e42a412d`（2026-10-23）；批次 1–14 连续提交及对应五节正文已核对，累计前置文档依赖满足。使用 RustCodeGraph status/explore/定点 node 阅读真实入口，rg 补查模块挂载；`pkg/expression/aggregation/doc.go`、`pkg/executor/doc.go`、`pkg/executor/aggfuncs/doc.go` 均不存在。以下只有源码及独立断言意图，没有执行测试。
+
+| 实际入口/符号 | 责任与证据限制 |
+| --- | --- |
+| [descriptor.rs](../pkg/expression/aggregation/descriptor.rs)：`AggFuncDesc`、`NewAggFuncDesc`、`GetAggFunc` | Args/RetTp、Mode、HasDistinct、OrderByItems 为普通聚合描述；构造初始化空排序列表，未见区分 direct/aggregated arguments 的字段。GetAggFunc 按名称分派，未知名 panic；不能直接用其普通参数列表证明 PG WITHIN GROUP 接线。 |
+| [builder.rs](../pkg/executor/builder.rs)：`build_typed_physical_plan`；[typed_hash_agg.rs](../pkg/executor/typed_hash_agg.rs)：`update_row`、`evaluated_arguments`、`update_aggregate`、`finish_aggregate` | PhysicalHashAgg 将 AggFuncs/GroupByItems 交 TypedHashAgg，逐行计算 Args 后更新每组状态，最后输出结果。已读链没有 direct 参数的每组求值、WITHIN GROUP 排序输入或 percentile 插值分支，不据普通聚合复用点宣称支持。 |
+| [aggfuncs/builder.rs](../pkg/executor/aggfuncs/builder.rs)：`build`、`build_approx_percentile`；[func_percentile_test.rs](../pkg/executor/aggfuncs/func_percentile_test.rs)：`percentile_selects_one_based_ordinal_and_ignores_nulls`、`percentile_matches_go_boundaries_memory_and_reset_lifecycle` | 工厂选择 ApproxPercentile，第二参数取 i32 常量百分数；独立测试用 50 选中位样本、忽略 NULL、合并清空源，0 的 result 为 None。不是 PG 0–1 比例、连续插值或比例 0 取首值的证据，不批准直接别名。 |
+| [window_func_test.rs](../pkg/executor/aggfuncs/window_func_test.rs)：`test_window_functions`；[typed_hash_agg_test.rs](../pkg/executor/typed_hash_agg_test.rs)：`typed_hash_agg_honors_cancellation_before_consuming_child` | 前者直接断言 CUME_DIST、PERCENT_RANK、RANK 等窗口状态；后者经 BuildTypedPhysicalPlan 检查取消错误。分别由 aggfuncs/lib.rs、executor/lib.rs 挂载。两者均非有序集合聚合 SQL/协议证据；排名窗口不能替代 percentile 的聚合模型。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1985,6 +1996,24 @@ FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.22 窗口函数](https://www.postgresql.org/docs/18/functions-window.html)定义签名与 NULL/帧责任；[§4.2.8 窗口调用](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-WINDOW-FUNCTIONS)定义帧模式、边界与限制；[§7.2.5 窗口处理](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-WINDOW)定义处理阶段与排序责任。固定 **REL_18_0** [windowfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/windowfuncs.c) 的 window_row_number/window_rank/leadlag_common/window_last_value 支持位置、NULL/负 offset 和空帧边界，[pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)核对窗口种类及多态签名；NULL 默认排序沿第 3 章。18.6 仍仅为来源指定目标，18 手册/18.0 源码不构成该补丁版本差分证据。
 
+#### 有序集合聚合契约
+
+本块引用“三层身份与契约模板”，只以单比例 `percentile_cont`、`percentile_disc` 定义 ordered-set 模型。目标能力候选 `FUNC-ORDERED-CONT/pg`、`FUNC-ORDERED-DISC/pg`，规范实现候选分别为 `ordered.percentile.interpolate/v1` 与 `ordered.percentile.select/v1`；这些是文档身份，不是现有 API、函数对象 OID 或支持声明。
+
+| 模板字段 | 方言目标、依据与当前缺口 |
+| --- | --- |
+| 关联、分类、名称/别名及可见性 | PG 专属 ordered-set，名称为 percentile_cont/percentile_disc 及 pg_catalog 限定形式，依第 2 章环境选名；不开放 APPROX_PERCENTILE、普通聚合或窗口的跨模型别名。MySQL 入口不得经共享注册意外获得 PG 契约；其原有函数保留原规则，两入口可见性均未实测。 |
+| 重载、隐式 cast 与返回类型 | 单比例 direct 参数为 double precision；cont 的排序输入 double precision→double precision 或 interval→interval；disc 的排序输入为可排序 anyelement，结果保留解析时确定的具体输入类型。仅消费第 3 章 I 资格，不由最终值、NULL 或 wire 容器反推签名；代表验收固定 cont float8 与 disc int4。interval 与其他可排序类型须各自补类型/codec 证据后开放，不以 MySQL Duration 等价代替；当前重载接线未验证。 |
+| 调用载体与求值条件 | `percentile_cont(p) WITHIN GROUP (ORDER BY x ASC)`：p 是每组一次的 direct argument，x 是每输入行一次的聚合输入；p 引用本层变量须满足 GROUP BY 约束，不能把随行变化的比例偷偷取首行。ORDER BY 必需且参与签名、排序方向/比较语义；不能用普通聚合的可选排序或输入偶然有序代替。FILTER 只让谓词为 true 的行进入该聚合，false/NULL 不进入，不能改成全查询过滤。DISTINCT 与 OVER 不作为该调用的合法替代语法，非法形态须明确拒绝；当前 AST/分析/计划载体缺证。 |
+| NULL、空集合、比例与结果 | 两者排除排序输入 NULL，保留非 NULL 重复值的频数；全 NULL 或空的全局聚合输出一行同型 SQL NULL，有 GROUP BY 且无组时为零行。NULL::float8 比例返回同型 NULL，合法范围为闭区间 [0,1]，越界须报错，不截断、不钳制、不回退默认值。非法比例与空集合组合的精确报错阶段仍须参考采集，不能因空输入擅自跳过比例验证。 |
+| 排序、collation、时区及算法 | 有效样本排序后，disc 选第一个累计比例达到 p 的值（p=0 取首值）；cont 必要时对邻值插值，不能都实现成选样本。ASC/DESC 是调用契约；NULLS FIRST/LAST 不令被排除的 NULL 参与比例分母。代表数值不依赖 collation/时区；disc 文本等未来重载必须沿第 3 章比较/collation 资格，不能沿 MySQL 排序器默认规则猜测，interval 插值另核实。 |
+| 确定性、折叠、副作用与状态 | 已定类型/比例/比较语义的代表输入应有可重复结果，无用户数据写副作用；这是整组运算，不能按标量逐行折叠。每组状态只接收聚合输入和排序条件，finalize 消费 direct 参数并选值/插值，结束后释放状态；不得把 p 当逐行 transition 输入。PG 文档说明 final 可能改变排序状态，不能未经证明共享或继续追加；缓存/重复 final 的具体策略当前缺证。 |
+| wire 元数据与格式 | 沿第 3 章，由最终签名决定 PG float8 OID 701/typlen 8/typmod -1，disc int4 为 23/4/-1；interval 目标 1186/16/-1，codec 仍须单独证据。列别名统一 v，表达式来源表/属性号 0；NULL 长度 -1，零行也保留描述。核对 Q 与 Parse/Describe/Bind/Execute 的文本/二进制格式，不能暴露排序状态类型。MySQL 若拒绝调用则无成功结果列，错误沿其自身协议；当前两入口未采集。 |
+| 下推与执行位置 | PG 两个代表聚合 Partial Mode 均为 No；本契约不批准 Split 成局部分位数后合并，也不批准跨方言下推。可复用现有分组/取消/资源生命周期入口，但须独立证明排序状态、NULL、结果身份和错误等价；不要求复制 PG 内部实现，排序内存、溢写与优化性能当前未测。 |
+| 错误字段、阶段及证据 | 有效项成功无错误；非法比例目标为错误且无成功值，精确 SQLSTATE/主消息/位置及分析或 final 阶段待参考采集；NaN/Infinity、非法签名、缺 WITHIN GROUP、非分组 direct 变量、DISTINCT/OVER 分别记录参考错误，不能伪造码或让 panic 成协议行为。按第 1 章 S/V/C/M 与适用 D/H/P 记录，本块有效运行用例 0。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.21 表 9.64](https://www.postgresql.org/docs/18/functions-aggregate.html#FUNCTIONS-ORDEREDSET-TABLE)给出签名、NULL/比例及 partial-mode 规则；[§4.2.7](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-AGGREGATES)定义 WITHIN GROUP、direct 参数与 FILTER；[§36.12.3](https://www.postgresql.org/docs/18/xaggr.html#XAGGR-ORDERED-SET-AGGREGATES)说明 transition/final 的不同参数、排序状态与不能作为窗口调用。以上只支持大版本 18 目标，未建立精确 18.6 参考实例或差分结论；下列值是据规则推导的目标，不是数据库实测。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -2042,6 +2071,10 @@ FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的�
 #### 窗口函数调用契约
 
 不实现窗口解析器、PG 物理计划桥接、排序器、GROUPS/EXCLUDE、动态 offset/default、完整多态类型或 codec，不修复当前 MySQL 描述符/执行器差异。不扩展全部排名/窗口聚合、逆转移、磁盘溢写、分布式执行及测试设施；有序集合和 SRF 交后块，目录/协议生命周期分别交工作流 6/7。只定义能力拒绝边界，不以缺基础设施阻塞文档交付。
+
+#### 有序集合聚合契约
+
+hypothetical-set（rank、dense_rank、percent_rank、cume_dist 的 WITHIN GROUP 形式）单列范围外；同名窗口实现不证明其 hypothetical 行注入、direct/排序参数配对或状态可用。不实现 percentile 数组比例重载、mode、完整可排序类型库、PG 排序器/内存溢写、分布式 partial 状态、AST/协议代码或测试平台；不修复现有 APPROX_PERCENTILE 的 MySQL 行为。发现的类型/codec 缺口交对应边界，不递归补建子系统。
 
 ### 验收
 
@@ -2239,6 +2272,19 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 每组成功/NULL/零行均须覆盖 PG Q 和 Parse/statement Describe/Bind/portal Describe/Execute；参数化 x/offset 用固定 `$1::int4`，text/binary 参数×结果四组合，重绑 NULL 不换描述，Execute 不重发 RowDescription；MySQL Query/Prepare/Execute 记录自身列定义/NULL bitmap。两 PG 连接与 MySQL 交错运行，核对分区状态及方言隔离；缓冲/流水线、跨 Chunk 的同夹具须值/NULL/类型一致。拒绝例独立执行 `SELECT row_number()`，以及单行 7 上 last_value(x) 的 `ROWS BETWEEN CURRENT ROW AND 1 PRECEDING`、`ROWS BETWEEN -1 PRECEDING AND CURRENT ROW`、`ROWS BETWEEN NULL::int4 PRECEDING AND CURRENT ROW`，均无成功值；分别记录缺 OVER、非法帧边界/offset、未实现帧形式的实际阶段和错误，不把缺工厂/codec 失败当合规拒绝。五组当前运行数均 0，描述符与测试源码不代替 SQL/协议证据。
 
+#### 有序集合聚合契约
+
+下列四组是目标用例清单。统一 `WITH t(x) AS (VALUES (1::int4),(2::int4),(3::int4),(4::int4))`，分别执行 `SELECT percentile_disc(p::float8) WITHIN GROUP (ORDER BY x ASC) AS v FROM t` 与 `SELECT percentile_cont(p::float8) WITHIN GROUP (ORDER BY x::float8 ASC) AS v FROM t`；p 为用例占位符，执行时替换为表中比例字面量或已定型 $1，非未绑定列名。每项独立执行以免错误掩盖其他结果，固定 disc int4、cont float8，不借 unknown/cast 歧义改变被测签名。
+
+| 场景 ID/输入 | PG 目标值、NULL、类型或错误 | 两入口可见性与证据等级 |
+| --- | --- | --- |
+| ORDERED-MEDIAN：上述四值，p=0.5；再将 ORDER BY 改 DESC | ASC disc=2、cont=2.5；DESC disc=3、cont=2.5，各一行、非 NULL、类型分别 int4/float8。另用 ASC 和 FILTER (WHERE x<=2) 得 disc=1、cont=1.5，验证只筛选本聚合输入。 | PG 两条协议路径均应匹配；MySQL 入口拒绝该 PG 调用，原 APPROX_PERCENTILE 不受影响。官方规则推导目标＋本地静态证据，非 SQL 实测。 |
+| ORDERED-EMPTY：FROM t WHERE false；以及 t 改为两个 NULL::int4，p=0.5 | 两者均一行 SQL NULL，int4/float8 描述不变；附 `GROUP BY x` 的空输入应零行且仍可 Describe，不能造一个 NULL 组。 | PG 与 MySQL 隔离同上；NULL 载荷/零行元数据待双路径采集，没有运行通过证据。 |
+| ORDERED-NULL：t 为 NULL::int4、1、2、3、4、NULL；另测 p=NULL::float8 | p=0.5 的结果仍 disc=2、cont=2.5；NULLS FIRST/LAST 不改变该结果。typed NULL 比例两者为同型 NULL，不将排序输入 NULL 计入分母。 | PG 应成功，MySQL 不获得 PG 可见性；依据官方 NULL 规则，状态及 codec 未运行。 |
+| ORDERED-FRACTION：四值输入分别 p=0、1、-0.01、1.01 | ASC p=0 两者取 1，p=1 两者取 4，各保留 int4/float8；负值和大于 1 均错误、无成功值，精确错误字段/时机待参考采集。另列 NaN/Infinity、非法调用形态错误采集，不预填未核实的结果。 | PG 扩展协议以已定型 float8 参数 Bind 重测边界，防缓存省略校验；MySQL 不调用 PG 实现。只有目标与静态证据，错误及协议未实测。 |
+
+人工验收须同时核对 direct/排序输入载体、每组状态生命周期与上述输入/结果/类型/错误/可见性映射。PG Q 与扩展协议分别采值、NULL、OID/长度/typmod、格式与 ErrorResponse；MySQL 入口采自身错误码/SQLSTATE/消息并保留旧函数回归。当前文档结构/路径/差异检查通过只能证明文档交付，不提升 S/V/C/M 或 D/H/P，不表示有序集合聚合已经接线。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2324,6 +2370,10 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 后续只交接三处窄边界：已选窗口签名/固定返回身份与分区排序/帧描述到物理计划；排名/偏移整分区访问与 last_value 帧访问到既有缓冲/流水线内核；结果到 server 两入口描述。依赖第 2 章语法/名称、第 3 章类型/比较/codec 和前块 resolver；先验证代表场景及未实现形式门禁，再单独处理 GROUPS/EXCLUDE、动态 offset 等缺口，不补建完整执行子系统，不提前生成代码任务。
 
 来源映射：蓝图步骤 4 的 window 独立调用模型由模块链及分区/帧责任覆盖，步骤 3 全模板字段由差异表承接；同序 peer、默认/显式 ROWS/RANGE/GROUPS、空/单行、越界 offset、NULL 分别定位 WIN-CALL-PEER/FRAME/EMPTY-SINGLE/OFFSET/NULL。每组均含输入、值/NULL/类型或错误、两入口目标及证据缺口。人工审阅与首块三层身份、第 3 章固定类型、普通聚合一组一行边界一致，保留全部前序正文；correctness/兼容性仅为文档目标，运行未验证，性能无结论。
+
+#### 有序集合聚合契约
+
+后续只交接三处窄边界：第 2 章 AST/分析区分 WITHIN GROUP、direct 参数和排序输入，关联前块 resolver 与第 3 章类型；现有聚合入口承载每组排序状态、NULL 排除、比例校验及 final 选值/插值，不复用局部分位数合并；最终结果身份交 server 两协议描述与错误映射。依赖普通聚合的分组/资源生命周期，禁止经窗口 frame 接线。hypothetical-set 和数组比例重载须另定契约再排实施，本轮不生成代码任务。
 
 ## 5. SQL会话与事务语义
 
