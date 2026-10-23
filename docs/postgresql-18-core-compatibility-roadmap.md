@@ -2630,6 +2630,20 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 这些源码/测试仅供现状和后续复用判断，本轮均未运行，有效运行用例数 0；协议阶段的历史结果不升级为本轮支持证据。
 
+#### 事务提交与回滚契约
+
+承接来源任务步骤 3 的 BEGIN/COMMIT/ROLLBACK 和步骤 4 的副作用、恢复与 MySQL 共存；能力 `SESSION-TXN/pg` 与 `SESSION-TXN/mysql` 关联，正常 DML 提交/撤销分类为共享语义，PG 的 I/T/E、警告和失败门禁单独分类 PG 专属。批次 11 提交 `3922401fa4a2cbe397eba1b45aa64422714817ef` 及累计批次 1–10 连续提交和五节正文已核对，满足本块文档依赖。以下为 2026-10-23 的静态证据；server、session、session/runtime、sessiontxn 均无 doc.go。
+
+| 已读路径/符号 | 当前事实及证据限制 |
+| --- | --- |
+| [pg_session.rs](../pkg/server/pg_session.rs)::PgSession::transaction_status、check_transaction_command、record_error、record_success | 共享 context.in_transaction=false 时清失败标志并返回 I；共享事务开启时由连接私有 failed_transaction 区分 T/E。错误只在底层仍处于事务时置失败；当前 E 只放行 ROLLBACK，连 COMMIT 也返回 25P02。此为现状，不将这种 COMMIT 策略称为完整 PG 等价。 |
+| [runtime.rs](../pkg/server/runtime.rs)::ConcreteTiDBContext::in_transaction、run_session_worker、execute_on_session | in_transaction 读取共享状态位 0x0001；worker 创建 ConcreteSession，普通执行走 session.execute，prepared 走 execute_prepared_on_session。Shutdown 退出 worker；接线和状态位本身不是跨连接可见性、关闭清理完成或 PG 隔离模式的证明。 |
+| [session.rs](../pkg/session/session.rs)::session::doCommit、RollbackTxn、Close；[txnmanager.rs](../pkg/session/txnmanager.rs)::TxnContextProvider；[interface.rs](../pkg/sessiontxn/interface.rs)::TxnContextProvider | session 层提交委托 runtime，RollbackTxn 调有效事务的 Rollback，Close 调回滚并继续释放资源；provider 暴露语句读 TS、快照和语句提交/回滚钩子。这些抽象不能替代 ConcreteSession 实际分派和存储运行证据，不能从类型存在推定 PG RC/RR/Serializable 已接线。 |
+| 独立 [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::prepared_dml_commit_and_rollback | 真实 CreateAnalyzeSession、两 TCP 连接；prepared INSERT 在提交前观察零行、提交后一行、第二次 INSERT 回滚后仍一行、第三次 INSERT 后 Terminate/关闭仍一行。断言主要数 DataRow，未核对 UPDATE/DELETE 撤销后的完整值，亦不覆盖异常断网或崩溃持久性。 |
+| 同文件 ::failed_transaction_requires_rollback | 简单重复键后 E，SELECT/COMMIT 为 25P02；扩展重复键为 23505，Sync 仍 E，ROLLBACK 后 I 且零行；事务内 DDL 的 0A000 是产品限制。本块仅引用恢复交界，不吞并后续失败事务、Sync 或 DDL 契约。 |
+
+上述测试本轮未执行，有效运行用例数为 0；协议第一阶段的历史运行记录与模块说明不升级为当前支持证据。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2789,6 +2803,22 @@ PG 未引号 t、T 与引用 "t" 选择同一小写名称；"T" 为精确大写�
 
 官方依据均于 **2026-10-23** 查阅，适用 **PostgreSQL 18**：[§5.3 Identity Columns](https://www.postgresql.org/docs/18/ddl-identity-columns.html) 定义隐式序列、模式及约束；[INSERT](https://www.postgresql.org/docs/18/sql-insert.html) 定义两种覆盖、DEFAULT VALUES 与返回行；[§9.17](https://www.postgresql.org/docs/18/functions-sequence.html) 定义分配非回滚。[pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html)、[pg_attrdef](https://www.postgresql.org/docs/18/catalog-pg-attrdef.html)、[pg_depend](https://www.postgresql.org/docs/18/catalog-pg-depend.html) 和 [pg_get_serial_sequence](https://www.postgresql.org/docs/18/functions-info.html) 支持目录身份和表达式边界。i/a 另核官方 PG18 维护分支 [sequence.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/commands/sequence.c)::process_owned_by 的 for_identity 分流与表列引用；[parse_utilcmd.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/parser/parse_utilcmd.c)::transformColumnDefinition 把identity属性与raw_default分开并拒绝同时声明，[rewriteHandler.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/rewrite/rewriteHandler.c)::build_column_default 为identity构造带真实seqid/typeId的NextValueExpr，区别于atthasdef普通默认表达式路径，据此推导本夹具的默认目录目标。该分支和大版本手册未固定为 **18.6**；未核实精确补丁发布或采集参考实例，以下数值均为限定夹具推导目标。
 
+#### 事务提交与回滚契约
+
+BEGIN 后的正常 DML 属于同一所属连接的共享事务：A 能读取自己的写入，B 的独立新查询不能读取 A 未提交写入；COMMIT 成功结束后，B 的新快照能读取提交值；ROLLBACK 撤销该事务全部普通表行写入，恢复原值与删除行。不能只撤销最后一条语句，也不能把返回标签、影响行数或 T→I 当作副作用证明。两条最小序列和每步 I/T/E 见下方验收。B 始终 autocommit、每次查询取得新快照，避免把 B 已开启的旧快照误报为提交不可见；不据此推广为全部并发异常/隔离级别兼容。
+
+| 边界 | PG18 目标及本地能力门槛 |
+| --- | --- |
+| 隐式事务 | 无 BEGIN 的单条简单 Query 成功自动提交，失败则撤销该条写入并返回 I。扩展协议的隐式事务通常到 Sync 成功提交/失败回滚；同一简单 Query 的多语句隐式块不能拆成各自自动提交。本块基本用例逐条 Q 或每条 Execute 后 Sync；多语句 Q、无 Sync 的多次 Execute 原子性留后续协议专项，当前不可从 shared in_transaction 或单语句通过推定支持。 |
+| 重复 BEGIN | 已在正常事务内再 BEGIN，PG 发出警告且保持原事务，不能隐式提交原写入或创建嵌套事务。本地未验证，若共享引擎的再次 BEGIN 会结束旧事务，须在 PG 边界拒绝或适配，不能发布等价通过；精确拒绝策略待独立实施取证。 |
+| 事务外结束 | I 下普通 COMMIT/ROLLBACK 的 PG 目标为警告且无行副作用，随后仍 I；警告 SQLSTATE、S/V/M 与标签待参考采集，不猜诊断。AND CHAIN 不属于本块。 |
+| 断连 | 明确未发 COMMIT 的显式事务在正常 Terminate 或异常连接关闭被服务端识别后须回滚；B 以有界等待并确认会话清理完成后观察原值，不用任意 sleep 冒充清理屏障。若断连与 COMMIT/隐式提交执行竞态，客户端可能不知道结果，不能保证回滚；须另取提交结果和重试语义证据。 |
+| 失败后的出口 | 失败态不得继续提交部分写入；当前产品要求显式 ROLLBACK，Sync 仅同步流水线且显式事务仍 E。PG 参考端失败后 COMMIT 的实际响应、标签及数据结果另采，当前 25P02 策略不得写成参考端一致。后续批次细化失败态与协议恢复。 |
+
+状态分层遵循本章公共模板：共享 in_transaction 描述底层事务，PgSession.failed_transaction 描述 PG 失败语义，Extended.failed 描述协议丢弃流水线，三者不能互换；BEGIN 后即使尚未分配存储事务/TS，也应按显式 SQL 事务契约报告 T。TSO/StartTS 不等于 PG XID，不能拿 txid_current 或 tidb_trx 查询代替行可见性证明。仅为测试观察选择参考 PG 的 READ COMMITTED；本地须记录真实隔离配置，若不能设置或证明所需边界则登记能力缺口，禁止宣称未验证的 PG 默认隔离、RR、Serializable 或锁冲突语义。
+
+官方依据于 **2026-10-23** 访问，均适用 **PostgreSQL 18 大版本**：[§3.4 Transactions](https://www.postgresql.org/docs/18/tutorial-transactions.html)用于普通行写入的原子性与回滚；[BEGIN](https://www.postgresql.org/docs/18/sql-begin.html)用于自动提交、重复 BEGIN；[COMMIT](https://www.postgresql.org/docs/18/sql-commit.html)与[ROLLBACK](https://www.postgresql.org/docs/18/sql-rollback.html)用于结束事务和事务外警告；[§13.2 Transaction Isolation](https://www.postgresql.org/docs/18/transaction-iso.html)用于新快照观察与隔离限制；[§54.2 Message Flow](https://www.postgresql.org/docs/18/protocol-flow.html)用于隐式块/Sync 边界及 §54.2.9 断连清理和提交竞态；[§54.7 ReadyForQuery](https://www.postgresql.org/docs/18/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-READYFORQUERY)用于 I/T/E。来源指定 **18.6** 的精确补丁发布/行为未核实，无该版本实测；提交后崩溃持久性是后续存储验收条件，本轮无运行结论。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2834,6 +2864,10 @@ PG 未引号 t、T 与引用 "t" 选择同一小写名称；"T" 为精确大写�
 #### 标识列生成契约
 
 只补 identity 的插入、目录依赖与验收文档，不实现 parser、planner、执行器、元数据、测试或另一套 PG 引擎。CREATE TABLE 仅作为未来事务外夹具，不解除事务内 DDL 拒绝；ALTER identity、RESTART、DROP/级联、serial 完整语法、UPDATE identity、COPY、分区/继承、触发器、权限矩阵与 ON CONFLICT/写入 CTE 组合分别后续取证。序列并发、缓存/崩溃恢复沿前块，不因单连接 CACHE 1 数值例开放；本轮不运行数据库、差分平台、Cargo/Go、原型或性能实验，不改其他章节及来源计划。
+
+#### 事务提交与回滚契约
+
+不实现状态机、事务管理器或数据库实验；不承诺 SAVEPOINT/子事务、AND CHAIN、两阶段提交、全部隔离模式、锁/死锁/重试、取消竞态、提交结果不确定时的幂等策略、崩溃恢复或 WAL/XID 内部等价。序列取值和 identity 分配的非回滚语义沿前块，不将“全部撤销”扩大到序列；事务型 DDL 沿能力门槛保留产品拒绝。失败事务与 Sync 的完整状态转换分别交批次 13、14，DDL 能力门槛交批次 15；不修改 MySQL 既有事务规则。
 
 ### 验收
 
@@ -3140,6 +3174,33 @@ Q 与扩展路径各从新初态取证：扩展新建命名statement/portal、�
 
 共存用例 `session.identity.mysql.coexist` 关联 `SESSION-IDENTITY/mysql`，分类MySQL专属（待新增、未运行）：同一Server的M连接固定数据库、autocommit与sql_mode（记录完整值，排除NO_AUTO_VALUE_ON_ZERO），先 `CREATE TABLE identity_mysql (id BIGINT AUTO_INCREMENT PRIMARY KEY,note VARCHAR(30))`；`INSERT INTO identity_mysql(note) VALUES ('before')`，保存生成值x、`SELECT LAST_INSERT_ID()`及 `SELECT id,note FROM identity_mysql ORDER BY id`。PG A/B执行独立generate和always-reject组后，M的LAST_INSERT_ID仍x；M继续 `INSERT INTO identity_mysql(id,note) VALUES (900,'manual')`、`INSERT INTO identity_mysql(note) VALUES ('after')`、`INSERT INTO identity_mysql(id,note) VALUES (NULL,'null')`，逐次保存自增响应/最后值、真实行、类型标志、状态及对应MySQL/既有原生基线。第二次自动值与NULL分配的精确数值按自身基线取证，不能要求与PG的10/11相等或套用PG显式值不rebase策略。PG目录中该原生表的attidentity须为空，无虚构列拥有序列；M可继续SELECT 1，结束DROP TABLE identity_mysql。任何原生基线缺口单列，不以MySQL近似语法证明PG支持。
 
+#### 事务提交与回滚契约
+
+以下 `session.txn.pg.*` 均为**待新增、未运行**，关联 `SESSION-TXN/pg`；每例在独立夹具中开始。A/B 是同库全新 PG 连接，UTF-8、UTC、search_path=public、autocommit、初始 I，具有夹具所需权限，无其他写入者/触发器/序列。参考端 READ COMMITTED；产品端记录真实隔离设置及差异，不用不受支持的 SET 成功假设替代证据。A 在事务外逐条执行下列 setup，B 确认初态 S0 后才开始受测序列；DDL setup 不作为事务型 DDL 验收。
+
+```sql
+CREATE TABLE public.tx_contract (id integer PRIMARY KEY, value integer NOT NULL);
+INSERT INTO public.tx_contract VALUES (1,10),(2,20);
+```
+
+观察查询 O 为 `SELECT id,value FROM public.tx_contract ORDER BY id`，每次由指定连接独立发送，返回列 id/value、int4/OID23、非 NULL，文本格式；typlen/typmod、表/属性身份及精确 wire 元数据待采且沿第 3 章验收。S0=[(1,10),(2,20)]，S1=[(1,10),(2,20),(3,30)]，U=[(1,11),(2,20)]，D=[(1,11)]。以下表中的 A/B 行状态均指实际执行 O 的结果；B 每条 O 都是新的 autocommit 查询，末尾 I。A 的 O 不改变其所在事务的 T/I。
+
+| case_id 后缀 | 顺序输入、每步副作用观察及 ReadyForQuery 目标 |
+| --- | --- |
+| commit | A `BEGIN`→T，A/B O 均 S0；A `INSERT INTO public.tx_contract VALUES (3,30)`→T，A O=S1、B O=S0；A `COMMIT`→I，A/B O 均 S1；再开全新 C 执行 O=S1、I。提交前后保存完整行，不能仅数行或看 COMMIT 标签。 |
+| rollback | A `BEGIN`→T，A/B O=S0；A `UPDATE public.tx_contract SET value=11 WHERE id=1`→T，A O=U、B O=S0；A `DELETE FROM public.tx_contract WHERE id=2`→T，A O=D、B O=S0；A `ROLLBACK`→I，A/B O=S0；A `SELECT 1 AS ok`→1、I。必须同时恢复更新前值和被删除行。 |
+| implicit | 无 BEGIN，A `INSERT INTO public.tx_contract VALUES (3,30)`→I，A/B O=S1；A `INSERT INTO public.tx_contract VALUES (4,40),(1,99)` 触发唯一键失败，A→I、B O 仍 S1（id=4 不得残留），A `SELECT 1 AS ok`→1、I。23505 为唯一键目标，精确消息/阶段及本地原子性待采。 |
+| repeated-begin | A `BEGIN`→T；`INSERT INTO public.tx_contract VALUES (3,30)`→T，A O=S1、B O=S0；A再次 `BEGIN` 应警告、仍 T，A O=S1、B O=S0；A `ROLLBACK`→I，A/B O=S0。产品若拒绝则另存产品限制、恢复后 S0，不得当作参考目标通过。 |
+| outside-end | 初始 I，A依次 `COMMIT`、`ROLLBACK`，各命令应警告、I，每步 A/B O=S0；A再 `BEGIN`→T、`ROLLBACK`→I、`SELECT 1 AS ok`→1。警告内容与精确 SQLSTATE 待采，无成功结果集。 |
+| disconnect | A `BEGIN`→T；`UPDATE public.tx_contract SET value=11 WHERE id=1`→T；`DELETE FROM public.tx_contract WHERE id=2`→T；`INSERT INTO public.tx_contract VALUES (3,30)`→T；A O=[(1,11),(3,30)]、B O=S0；不发送 COMMIT，分别以 Terminate 与直接关闭 socket 的独立子例结束 A。确认服务端识别关闭及清理完成后，B O=S0，新 A2 O=S0、I，A2 `SELECT 1 AS ok`→1。已关闭 A 无 ReadyForQuery，超时记失败而非成功；网络失联检测时限待环境取证。 |
+| error-recover | A `BEGIN`→T；`UPDATE public.tx_contract SET value=11 WHERE id=1`→T；`INSERT INTO public.tx_contract VALUES (1,99)` 唯一键失败→E；B O=S0；当前产品 A `SELECT 1 AS ok` 和 `COMMIT` 均 25P02、E，不得产生新写入；扩展路径 Sync 后仍 E；A `ROLLBACK`→I，A/B O=S0，A `SELECT 1 AS ok`→1。PG参考端失败后COMMIT独立取证，不把产品策略作为PG预期；本行保留批次13/14的后续入口。 |
+
+每条成功控制命令和无 RETURNING 的写入无结果集；另存 BEGIN/COMMIT/ROLLBACK 及 INSERT/UPDATE/DELETE 的 CommandComplete、影响行数与通知，不用标签代替 O。成功 SQLSTATE 不适用；失败无成功返回行，按首块记录 S/V/C/M、适用 D/H/P、原 SQL 位置和发生阶段。错误/警告精确文本及阶段未采，不能从共享错误字符串补造参考结果。
+
+Q 路径逐条 SQL 一个消息；扩展复验每条 SQL 单独命名 Parse、Bind（零参数）、Execute（全量）、Sync，使用文本结果且在 Sync 收集表中目标 I/T/E；不得在 Execute 后期待立即有 ReadyForQuery。失败时先 Sync 同步再发 ROLLBACK；已准备 portal 在状态变化后 Execute 的门禁另交失败态任务。两路径各从新夹具开始，记录完整消息及 O 的值，不复用已提交的行。清理先将仍存活的 T/E 连接 ROLLBACK 至 I，确认断连清理完成，再事务外 `DROP TABLE public.tx_contract` 并关闭连接；出现未结束事务/残留写入须记失败。
+
+共存 `session.txn.mysql.coexist`（待新增、未运行）关联 `SESSION-TXN/mysql`，限定普通 DML 共享语义。M/N 为同一 Server 的独立 MySQL 连接，固定数据库，`SET autocommit=1`，记录真实 transaction_isolation 和完整 sql_mode；M事务外 `CREATE TABLE tx_contract_mysql (id INT PRIMARY KEY,value INT NOT NULL)`、`INSERT INTO tx_contract_mysql VALUES (1,10),(2,20)`，N确认初态S0。MySQL观察 OM=`SELECT id,value FROM tx_contract_mysql ORDER BY id`。M `START TRANSACTION`、`UPDATE tx_contract_mysql SET value=11 WHERE id=1`、`DELETE FROM tx_contract_mysql WHERE id=2`，M OM=D、N OM=S0；保持 M 事务期间 PG A/B 在另一张 tx_contract 上执行独立 commit 与 error-recover 组，M仍为D、N仍S0，M `ROLLBACK` 后两者S0。随后 M `START TRANSACTION`、`INSERT INTO tx_contract_mysql VALUES (3,30)`，M OM=S1、N OM=S0；M `COMMIT` 后 N OM=S1；M/N `SELECT 1 AS ok` 均1。保存 MySQL 自身 OK/ERR、状态位、列类型标志及参考 MySQL/既有原生基线，不套用 PG I/T/E、25P02 或重复 BEGIN 策略；失败组只在 PG 执行。最后 M/N先ROLLBACK再事务外DROP TABLE tx_contract_mysql。前置建表/事务能力不满足时登记缺口，不改写方言语法让测试通过。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -3207,6 +3268,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 后续按“ALWAYS/BY DEFAULT和DEFAULT行生成”“SYSTEM/USER覆盖及拒绝”“执行/RETURNING与非回滚分配”“真实目录/拥有生命周期”“扩展与MySQL共存”分别实施，先复用共享列模型、规范会话与写入路径，不在本轮递归补建依赖。每块开放前须取得上方实际行、副作用、恢复和元数据证据；缺目录或序列前置时记录能力限制。
 
 工作流2交语法/AST保真与拒绝位置，3交声明类型/NULL和结果身份，4交序列调用求值，6交identity属性、真实序列稳定引用、默认表达式与i拥有关系，7交准备阶段不分配、错误传递与Sync状态，1/8交参考端和双方言证据。正确性风险为错误回退计数器、重复分配、丢失行原子性及伪造默认引用；兼容性风险为把AUTO_INCREMENT/表达式生成列当identity、错误覆盖/NULL策略和错误诊断阶段；性能未测，无性能结论。本块完成仅表示文档契约交付，不表示identity功能或18.6差分通过。
+
+#### 事务提交与回滚契约
+
+1. 先在现有 pg_transaction_test.rs 的独立测试面补普通 Q 与 prepared 的完整值断言，以 commit、rollback、disconnect 的跨连接结果证明真实事务生命周期；共享引擎只补必要局部接线，不另建 PG 存储或执行器。
+2. 单独取证 implicit、repeated-begin、outside-end；重复 BEGIN 不得泄漏旧事务写入。隐式扩展批处理与提交结果不确定的竞态另建窄任务，当前缺证不扩大本轮文档范围。
+3. 将 error-recover 的共享事务/PG失败标志交批次13，Sync与显式/隐式事务界线交批次14，事务型DDL门槛交批次15；事务身份目录交工作流6，wire/连接清理屏障交7，MySQL共存回归交8。补丁18.6、崩溃持久性与隔离模式须有各自真实参考/存储证据后才能开放能力。
 
 ## 6. 系统目录与内省契约
 
