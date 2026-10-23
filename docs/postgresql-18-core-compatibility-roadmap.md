@@ -2542,6 +2542,20 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 已读独立 [insert_test.rs](../pkg/executor/insert_test.rs)::insert_duplicate_check_modes_follow_transaction_and_pipeline_rules、insert_ends_snapshot_stats_when_flush_fails、insert_logs_unique_index_pointing_to_missing_row：分别断言检查模式、flush 失败统计收尾和缺失旧行索引错误，不能证明 PG 更新值、语句回滚或并发。完整阅读 [pg_dml_test.rs](../pkg/server/pg_dml_test.rs)::prepared_crud_roundtrip，普通参数化 CRUD、坏 Bind 后 Sync 及 RETURNING Parse 拒绝均有断言，没有 ON CONFLICT 成功/失败用例。pkg/server、pkg/planner/core、pkg/executor 的 doc.go 均不存在。[协议第一阶段](postgresql-protocol-first-phase.md) 的历史记录仅供入口导航；本块不声称当前支持或正确门禁。
 
+#### 只读公共表表达式契约
+
+承接来源任务步骤 1 的 CTE 及步骤 4 的结果、副作用、失败恢复与 MySQL 共存，能力 `SESSION-CTE-READ/pg` 为 PG 专属契约；普通查询中可能共享的子集须另有双方证据。批次 1–4 的五节正文及提交 `d8c1ca891a`、`df9d9ebaeb`、`d6f469119b`、`63b628578b43fe13461bac6a1273dfc71caaee9a` 已核对，累计依赖满足。名称绑定直接继承第 2 章[公共表表达式遮蔽规则](#公共表表达式遮蔽规则)，不重设计 parser。
+
+以下为 **2026-10-23** 在 `63b628578b43fe13461bac6a1273dfc71caaee9a` 的 RustCodeGraph 静态阅读；server、session、planner/core 及其 tests/cte 均无包级 doc.go。本轮没有执行 SQL 或测试，实际运行用例数 0。
+
+| 已读源码/独立测试 | 接入责任与证据边界 |
+| --- | --- |
+| [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)：`Parser::query_inner`、`Select` / `Cte` | 目录专用树以 cte_id 区分引用，先解析定义体再登记名称，检测同层重名；只接受 SELECT/WITH 定义体，拒绝 RECURSIVE，限制总计 16 个 CTE。此受限内省语法不能作为应用表查询入口，也不证明通用 CTE 执行。 |
+| [pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)：`pg_introspection_cte_nesting_limits`、`pg_introspection_cte_column_bound` | 断言目录嵌套/17 个定义拒绝，以及 CTE 24 列可解析、25 列拒绝；普通目录投影不沿用同一列限额。只是解析/目录能力断言，不覆盖应用表值、事务或 PG 类型。 |
+| [pg_name.rs](../pkg/server/pg_name.rs)：`Resolver::scope`；[pg_name_test.rs](../pkg/server/pg_name_test.rs)：`pg_introspection_names_token_scopes`、`pg_introspection_names_rejection_boundaries` | scope 克隆外层集合，定义体扫描后登记 CTE；RECURSIVE 返回 0A000。测试断言 CTE/public 表改写区分、嵌套范围及递归拒绝，仅为名称适配意图。应用 SQL 继续沿本章公共 Query/扩展执行链到共享会话，不能转交目录模板模拟。 |
+| [logical_plan_builder.rs](../pkg/planner/core/logical_plan_builder.rs)：`buildWith`；[source.rs](../pkg/session/runtime/source.rs)：`execute_with_clause` | 前者逐项 buildCte；后者 push 作用域，按顺序求值并保存 CTE，列别名非空时要求数量与输出完全一致，body 执行后 pop。该局部实现值得复用，但其全量预求值及别名数检查不证明 PG 按需求值、部分列别名或完整类型身份；不能仅由模块并存推定所有 PG 查询均走该路径。 |
+| [cte_test.rs](../pkg/planner/core/tests/cte/cte_test.rs)：`TestCTEWithDifferentSchema` | 已读独立 Rust 测试：建立用户/授权、db_a 中含 CTE 的视图，在 db_b 下 EXPLAIN，断言 CTEFullScan/seed 计划。证明现有测试意图保留 MySQL 跨数据库视图环境，不证明 PG schema 或本块结果正确。 |
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2607,6 +2621,20 @@ RETURNING 只返回实际插入行，跳过行零返回、影响行数 0；混�
 
 官方依据于 **2026-10-23** 访问，适用 **PostgreSQL 18**：[INSERT / ON CONFLICT / Outputs](https://www.postgresql.org/docs/18/sql-insert.html) 定义行身份、动作条件、仲裁限制、确定性与返回计数；[隔离 §13.2](https://www.postgresql.org/docs/18/transaction-iso.html) 定义 Read Committed 并发可见性与较高隔离的重试边界。事务失败与 Sync 沿本章公共契约。MySQL 独立对照依据 **8.4** [ON DUPLICATE KEY UPDATE](https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html)：没有 PG 指定仲裁/动作 WHERE 的等价承诺，插入/更新/未改变值的 affected rows 口径不同，须记录 CLIENT_FOUND_ROWS。以上不是精确 **18.6** 参考构建或运行证据；本轮未核实该补丁行为与精确错误字段。
 
+#### 只读公共表表达式契约
+
+本块开放目标为**非递归、无写操作及无 volatile 调用的 SELECT CTE + 主 SELECT**；普通表达式、连接与排序沿第 2–4 章能力边界。CTE 是单条语句的命名行集，不创建持久对象或跨语句缓存。成功返回完整行、重复项与 SQL NULL，只有最终 ORDER BY 保证输出顺序。外层过滤不能丢失或串扰其他引用的行。
+
+未限定名优先绑定可见 CTE，显式 public 表名绕过 CTE；内层同名遮蔽退出后恢复。非 RECURSIVE 定义体可见先前同级与合法外层名称，不能提前绑定未来定义；自身同名引用仍可能绑定外层 CTE 或真实表。此处沿第 2 章规则检验**结果**，不把名字相同一概判作递归。重复定义、缺列、不可见关系应在适当分析阶段拒绝，不返回部分成功结果；精确诊断字段依参考端采集。
+
+输出列按定义体的定型结果继承，显式列名列表按位置覆盖前若干列名，未列名的尾列保留原名；列表比实际列多须失败。列重名本身不能一概当非法，引用产生歧义时另验。外层范围别名不能改变列类型，零行和全 NULL 也保留固定身份；Describe 不运行查询取样。PG OID/typlen/typmod、可空性和来源表/列字段依第 3 章固定元数据契约逐项采集，CTE 不分配伪造持久 OID。
+
+重复引用须产生同一语句语义下的行集，不能把第一个消费者的游标耗尽状态交给第二个。这里不承诺所有 SELECT 都无副作用：volatile 函数、sequence、行锁、错误表达式与未使用 CTE 的求值时点需要独立门槛；纯值正例不能证明调用次数正确。默认可折叠单引用、默认多引用共享求值、显式 MATERIALIZED / NOT MATERIALIZED 的优化与求值约束分别取证，不能仅凭结果相等宣称物化契约完成。未开放时明确能力拒绝（产品目标 0A000，当前入口阶段/诊断未验证），不得静默去掉关键字。
+
+RECURSIVE、无环前向引用、工作表终止/去重/资源释放、SEARCH/CYCLE 单独验收；现有 PG 入口递归拒绝保留，不由共享 Rust 递归入口存在推导支持。普通 SELECT CTE 的合法性不能授权写入 CTE 或主 DML。
+
+官方依据（**2026-10-23** 访问，适用 **PostgreSQL 18 大版本**）：[§7.8 WITH](https://www.postgresql.org/docs/18/queries-with.html) 的 SELECT、递归、物化分节定义行集与求值边界；[SELECT / WITH 与 FROM](https://www.postgresql.org/docs/18/sql-select.html) 定义定义顺序、列名及遮蔽；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对下方错误名对应码，不单独证明具体输入的诊断。官方 **REL_18_0** [parse_cte.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/parser/parse_cte.c) 的 transformWithClause / analyzeCTETargetList 补证同层重复名与部分列别名规则；这仍不是 18.6 运行证据。**18.6** 仍是来源指定目标，未建立该补丁参考实例或差分结果。下列结果为按规则推导的验收目标，非运行报告。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2624,6 +2652,10 @@ RETURNING 只返回实际插入行，跳过行零返回、影响行数 0；混�
 #### 冲突更新执行契约
 
 不实现 parser、planner、执行器、存储或测试，不移除任何门禁，不补建 PG 引擎。复用前块目标推断，表达式/部分索引、触发器/规则、分区键迁移、排斥/延迟约束、完整权限、sequence/identity、OLD/NEW、写入 CTE 均不由基本表正例开放。并发计划只规定证据，不运行平台、数据库、Cargo/Go 或性能实验；合法而未支持与 PG 本身非法形式分别记录，不从 MySQL 近似语法得出 PG 支持结论。
+
+#### 只读公共表表达式契约
+
+不实现或修改 parser、名称适配、planner、执行器、目录、协议及测试，不把目录 CTE 限额移植为应用 SQL 的兼容限制，不补建另一套 PG 引擎。写入 CTE、主 DML、volatile/序列副作用、行锁、递归与 SEARCH/CYCLE、显式物化的完整执行及优化/溢写成本均不由本块正例开放。共享路径的别名数、求值策略与 PG 可能存在差异，只登记后续取证边界，不在文档任务修复；不修改第 2 章名称规则或其他章节，不运行数据库、Cargo/Go、差分平台或性能实验。
 
 ### 验收
 
@@ -2755,6 +2787,27 @@ MySQL 共存 `session.conflict-update.mysql.<query|prepared>.<commit|rollback>`�
 
 全部清理先 ROLLBACK，Close 存在的 portal/statement/prepared，事务外分别 DROP TABLE public.upsert_doc、public.upsert_partial、upsert_mysql_doc，再关连接。来源步骤 1 映射行身份/更新条件/重复命中，步骤 4 映射 S、原子性/恢复及 MySQL 对照；本轮运行用例数 0。正确性风险为绑定、条件/基数检查与整语句原子性；兼容性风险为仲裁、隔离、拒绝阶段/诊断与返回计数；性能未测、无结论。
 
+#### 只读公共表表达式契约
+
+以下 `session.cte-read.pg.*` 均为**待新增、未运行**用例，关联 `SESSION-CTE-READ/pg`。PG W/O 同一独立测试库、UTF-8、UTC、search_path=public、初始 I，具备测试表权限。事务外逐条执行 `CREATE TABLE public.cte_read_doc (id integer PRIMARY KEY, v integer)` 与 `INSERT INTO public.cte_read_doc VALUES (1,10),(2,NULL)`；不存在真实 a/b/r 表。每组用前和用后 W/O 都执行副作用查询 S：`SELECT id,v FROM public.cte_read_doc ORDER BY id`，目标一直为 [(1,10),(2,NULL)]。成功 SQLSTATE 不适用；下列整数列固定 int4（OID 23/typlen 4/typmod -1）、text 格式，SQL NULL 单列记录，可空性与来源字段按参考采集，不由行值猜测。
+
+| 用例后缀及完整查询输入 | 目标值/列身份与覆盖 | 失败恢复/副作用补证 |
+| --- | --- | --- |
+| `chain`：`WITH a(k,val) AS (SELECT id,v FROM public.cte_read_doc), b AS (SELECT k,val FROM a WHERE k=2) SELECT k,val FROM b ORDER BY k` | [(2,SQL NULL)]，列 k/val 均 int4；证明先前 CTE 依赖及 NULL 传递。把 k=2 改 k=3 为独立零行变体，列描述保持。 | S 不变；后续独立 `SELECT k FROM a` 应关系不存在，证明语句结束无名称泄漏；该反例独立采错误恢复。 |
+| `repeat`：`WITH a AS (SELECT v FROM public.cte_read_doc UNION ALL SELECT v FROM public.cte_read_doc) SELECT l.v AS lv,r.v AS rv FROM a AS l CROSS JOIN a AS r ORDER BY lv NULLS LAST,rv NULLS LAST` | 共 16 行：(10,10)、(10,NULL)、(NULL,10)、(NULL,NULL) 各 4 行，列 lv/rv 均 int4；覆盖重复值、NULL 和独立消费者，不只核对行数。 | S 不变；不能由纯值结果证明物化策略或 volatile 调用次数。 |
+| `shadow`：`WITH cte_read_doc AS (SELECT 7 AS id) SELECT c.id AS local_id,t.id AS table_id FROM cte_read_doc AS c CROSS JOIN public.cte_read_doc AS t ORDER BY table_id`；`nested`：`WITH a AS (SELECT 1 AS v) SELECT a.v AS outer_v,x.v AS inner_v FROM a CROSS JOIN (WITH a AS (SELECT 2 AS v) SELECT v FROM a) AS x` | 前者 [(7,1),(7,2)]，后者 [(1,2)]；四个结果列均 int4，名称按各投影，证明显式表绕过及内外层身份隔离。 | 两条分别运行，S 不变；后续语句可再次查询真实表，不延续 CTE。 |
+| `partial-alias`：`WITH a(x) AS (SELECT id,v FROM public.cte_read_doc) SELECT x,v FROM a ORDER BY x` | [(1,10),(2,NULL)]，列 x/v 均 int4；别名列表仅重命名首列，不能因共享路径当前检查而改成失败目标。 | S 不变；现有源码全数量匹配检查只登记兼容性风险，当前 PG 实际分派及返回未验证。 |
+| `name-errors`（各独立查询）：`WITH a AS (SELECT v FROM b), b AS (SELECT 2 AS v) SELECT v FROM a`；`WITH a AS (SELECT 1 AS v) SELECT missing FROM a`；`WITH a AS (SELECT 1), a AS (SELECT 2) SELECT * FROM a` | 分别为不可见关系、缺列和同层重复名，目标 SQLSTATE 42P01 / 42703 / 42712；精确 S/V/M、D/H/P、位置及分析阶段待 PG 参考与产品采集，不从目录错误码推断应用错误。无成功行/成功标签。 | 各在 I 与 BEGIN 内独立运行下述失败恢复流程，逐次检查 S，不让前一次失败掩盖后项。 |
+| `recursive-gate`：`WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n<3) SELECT n FROM r ORDER BY n` | PG 参考目标 [1,2,3]，列 n/int4；AsterSQL 当前限制目标 0A000，源码 scope 已有门禁但本轮未实测。 | 无写入；两入口分别取拒绝阶段、无成功行、S 及失败恢复。不要求参考 PG 报产品限制。 |
+
+每条成功查询分别以简单 Q 与扩展 Parse/Bind/Describe/Execute/Sync 采集；零参数，text 结果。`chain` 再定义参数变体，把 `k=2` 换 `k=$1`，Parse 指定 OID [23]，新 Bind 值 2 和 3，分别应有 NULL 行/零行且类型不变。statement/portal Describe 遵守第 3 章，Describe 不执行原查询或样本查询，S 作为独立观察语句执行；执行结果、描述和 `SELECT n` 标签的实际 n 单列记录。重复 Execute 同一完成 portal 的行为沿工作流 7，不能重新求值成为额外查询成功证据。
+
+失败恢复：I 中各错误后，扩展先 Sync 再 Q `SELECT 1 AS ok`，目标 I/一行 1；简单 Q 后直接该查询。BEGIN 变体 W 先 `BEGIN`、`INSERT INTO public.cte_read_doc VALUES (3,30)`，再执行该错误输入，目标 E；扩展 Sync 后仍 E，随后 Q `SELECT 1 AS ok` 目标 25P02/E。O 的 S 仍初始两行；W `ROLLBACK` 后 I，再 Q `SELECT 1 AS ok` 成功，W/O 的 S 都恢复初始两行，证明预先写入也回滚。错误字段沿本章公共模板，实际运行 observations 与 verdict 均为“未验证”。
+
+MySQL 共存 `session.cte-read.mysql.coexist`（能力 `SESSION-CTE-READ/mysql`，独立 MySQL 契约）：同 Server 开 M/N、独立默认库、autocommit=1，记录 sql_mode/隔离级别；创建 `CREATE TABLE cte_mysql_doc (id INT PRIMARY KEY,v INT)`、`INSERT INTO cte_mysql_doc VALUES (1,10),(2,NULL)`。Query 与 Prepare/Execute 分别运行 `WITH a AS (SELECT id,v FROM cte_mysql_doc) SELECT id,v FROM a WHERE id=2 ORDER BY id`（目标 [(2,NULL)]）及参数版 `id=?`（整数 2、3 分别一行/零行）。M `BEGIN`、`INSERT INTO cte_mysql_doc VALUES (3,30)`，N 查询 `SELECT id,v FROM cte_mysql_doc ORDER BY id` 仍两行；交错 PG 拒绝/ROLLBACK 后 M `COMMIT`，N 应三行。PG 前后重跑 Query/新 Execute，MySQL 列类型/标志/NULL、code/SQLSTATE/警告各对自己的参考端与此前基线；不能要求其等于 PG OID 或让 MySQL 执行 public 限定/PG 物化语法作近似对照。当前所有 MySQL 结果同样未实测。
+
+清理各变体先确保 W/M `ROLLBACK`，关闭 statements/portals，再在事务外分别 `DROP TABLE public.cte_read_doc`、`DROP TABLE cte_mysql_doc`，关所有连接；夹具每组重置，M 提交的第三行不串入其他组。人工覆盖映射：来源步骤 1 对应 chain/repeat/shadow/partial-alias 的真实应用查询，步骤 4 对应 name-errors/recursive-gate、S、回滚与 MySQL 共存；目录专例只作静态证据。正确性风险为重复引用消费、作用域及清理；兼容性风险为 PG 部分列别名、诊断和类型身份；性能与物化/递归资源未测试，不提供性能结论。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -2780,6 +2833,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 后续沿保真冲突节点→真实仲裁元数据→共享旧行/候选行绑定与更新求值，分别建立普通更新、条件跳过、二次错误和重复命中独立测试；先扩充 pg_dml_test.rs 及同目录共享执行层测试，不只删除门禁或复制 MySQL 首冲突策略。本轮未创建测试文件或实现任务。并发/隔离证据另立窄验证，不为本块递归补全存储基础设施。
 
 第 2 章交目标/两类 WHERE/别名及参数保真，第 3/4 章交类型与表达式，第 6 章交真实唯一约束/索引身份，RETURNING 前块交实际行与描述，第 7 章交 Parse/Describe 无写入、Execute/Sync/错误字段与生命周期，事务专项交失败态/回滚，第 8 章消费 MySQL 共存结果。文档完成仅关闭本题契约缺口，未证明功能已实现、18.6 通过或性能达标。
+
+#### 只读公共表表达式契约
+
+后续沿共享会话的查询入口核实实际分派，先补非递归绑定与定型、部分列别名、重复消费者及同目录独立测试，再由 server 两协议测试证明值/NULL/零行、错误状态与回滚。名称归第 2 章，列身份/codec 归第 3 章及工作流 7，纯表达式资格归第 4 章，真实对象和权限归工作流 6。复用现有 Rust CTE 实现，不因局部差异递归补建子系统。
+
+递归与显式物化各另取 PG 参考和共享实现证据，覆盖调用次数、按需停止、取消/资源释放与优化约束后才能开放；volatile、sequence、写入 CTE 与主 DML 再单独组合。当前仅完成本块文档，未生成或执行代码任务，不升级任何支持状态。
 
 ## 6. 系统目录与内省契约
 
