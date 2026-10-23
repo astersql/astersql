@@ -774,6 +774,12 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 已读 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/binary_parameter/temporal 和 [pg_result.rs](../pkg/server/pg_result.rs)::pg_type/value_text/value_binary：非 NULL OID 1184 参数两格式均无分支，返回 0A000；NULL 提前返回 tp=6，不证明 typed NULL 保真；结果 code=7/12 均映射 1114，没有独立 1184 身份。独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::text_parameters_are_typed_and_reject_loss 仅断言 1114 六位成功、七位拒绝；[pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values/pg_binary_native_results 的 DATETIME→1114、-1 微秒及 NULL 不证明 timestamptz。Go [time_test.go](../pkg/types/time_test.go)::TestConvertTimeZone 断言 UTC/Shanghai 八小时转换及零值保留，仅为原 MySQL 行为对照。以上测试均未运行。
 
+[时间间隔契约](#时间间隔契约)静态基线为 `7ba687df06`（批次 11 已提交）。经 RustCodeGraph 核对 [time.rs](../pkg/types/time.rs)::Duration/ParseDurationValue/ExtractDurationValue：Duration 只存 i64 纳秒总量与 Fsp；ParseDurationValue 返回年/月/日/纳秒分量，但 ExtractDurationValue 将月按 30 天折入总量并应用 MySQL TIME 范围，不能保真承接 PG interval。[datum.rs](../pkg/types/datum.rs)::KindMysqlDuration 是 MySQL TIME 标签，没有由该标签证明的 PG interval 身份。[builtin_time.rs](../pkg/expression/builtin_time.rs) 使用 chrono Duration 与 MySQL TIME 微秒上限，也不证明日历间隔身份。目标三包均无 doc.go。
+
+[pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/binary_parameter 没有非 NULL OID 1186 分支，当前返回 0A000；NULL 提前转 tp=6 不证明 typed NULL 保真。[pg_result.rs](../pkg/server/pg_result.rs)::pg_type 将 code=11 映射为 1083/8，没有通用 interval 映射；不能把 MySQL TIME 的结果 OID 改成 1186 就声称支持。[time.go](../pkg/types/time.go)::ExtractDurationValue 也有 month*30 折算，这是 MySQL 对照，不是 PG 目标；本任务不修复或简化原 Go/Rust 行为。
+
+已读独立 [time_11_aster_unit_test.rs](../pkg/types/time_11_aster_unit_test.rs) 的实际断言：ParseDurationValue 保留 DAY_MICROSECOND 的 day=12，ExtractDurationValue(MONTH,1) 输出 720:00:00，DAY=-35 拒绝；duration_parse_arithmetic_and_format_match_go 将负两天三小时折为 -51 小时。[pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values 和 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 提供其他类型与协议入口，不能证明 1186 支持。所有测试均未运行，本块专项用例均待新增。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -997,6 +1003,23 @@ timestamptz 是 timestamp with time zone 的别名，身份表达瞬时，不保
 
 MySQL TIMESTAMP 的既有时区转换需要原类型、存取阶段、来源时区与 Fsp 证据；显示字符串不足以恢复瞬时。DATETIME 无瞬时身份，必须显式指定解释区域；缺信息桥接拒绝 0A000，零/非法日期拒绝 22008。反向桥接校验 MySQL 目标范围/Fsp 与会话转换，BC、扩展年份及非有限值不能保真时 0A000；不裁剪、补零或改成 NULL，不改变原 Go/MySQL 宽松解析、错误和告警。内部表示需补瞬时身份、完整微秒域/特殊值、p 和 typed NULL 保真，不能只增加 OID 表。TimeZone 状态存储、SET/事务生命周期及读入时机由工作流 5 提供确定上下文；本块不实现该状态。
 
+#### 时间间隔契约
+
+PG interval 是独立规范身份，目标保留 `(months:i32, days:i32, time_microseconds:i64)`，允许分量独立负号；年归月、小时归微秒，不能把整数月折为 30 天、把整数日折为 24 小时或将 24 小时自动进位为日。身份和分量必须跨参数、cast、结果保真，不能用比较相等代替分量相同。[PG 18 §8.5.4–8.5.5](https://www.postgresql.org/docs/18/datatype-datetime.html#DATATYPE-INTERVAL-INPUT) 支持单位文本、SQL/ISO 8601 输入及四种 IntervalStyle 输出；固定 postgres 基线，并分别核对 postgres_verbose、sql_standard、iso_8601。输入 `1.5 months` 的小数部分按官方规则归到日，不能由此推广到整数月一律折日；IntervalStyle 影响未独立标号的负字段解释，会话配置交工作流 5。
+
+精确布局以官方 **REL_18_0** 的 [datatype/timestamp.h](https://github.com/postgres/postgres/blob/REL_18_0/src/include/datatype/timestamp.h) 为基线：三个有符号分量，时间单位为微秒；不是 MySQL ±838 小时域。整数分量边界分别是 i32/i64 范围，三者全最小/全最大组合保留为 -infinity/infinity，其他组合不能误判非有限。文本解析、单位累加和精度收敛都须检查溢出；不能把表 8.9 的约 ±178000000 年当每种分量的统一上限。合法 PG 值若当前承载不足，显式 0A000 并登记缺口，不能截断或伪装 NULL。
+
+OID=1186、typlen=16 由 [REL_18_0 pg_type.dat](https://github.com/postgres/postgres/blob/REL_18_0/src/include/catalog/pg_type.dat) 定义；typmod 未声明=-1，有声明按 [utils/timestamp.h](https://github.com/postgres/postgres/blob/REL_18_0/src/include/utils/timestamp.h) 的 `(range & 0x7fff)<<16 | (p & 0xffff)`，不是裸 p。fields 接受 YEAR/MONTH/DAY/HOUR/MINUTE/SECOND 及官方组合，精度 p=0–6；fields 未指定为 full range，fields-only 保留 full precision。按 [REL_18_0 timestamp.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/timestamp.c) 的 intervaltypmodin/AdjustIntervalForTypmod 截去最小允许字段右侧的部分，保留更高字段；p 舍入微秒时间，半值远离零，不能以截断替代。负 p 错误 22023，p>6 告警 22023 后归 6。SQL 声明语法交工作流 2。
+
+| 方向 | 类型、值域/精度与 NULL | 编码、元数据、错误与差距 |
+| --- | --- | --- |
+| text 参数→规范值 | 明确 1186/目标 fields/p 后解析分量，按目标修饰符收敛；typed NULL 保留身份，不解析负一长度载荷。 | text 编码 UTF-8，无 NUL；非法语法 22007，区间解析溢出 22015，最终分量/typmod 舍入溢出按官方阶段 22008；非法编码/NUL 22021。现有 parameter 仅统一不支持，不证明这些分类。 |
+| binary 参数→规范值 | 非 NULL 恰 16 字节；网络序依次 i64 微秒、i32 日、i32 月，符号独立；应用目标 typmod，NULL 与零值分开。 | interval_recv/send 为布局依据；短载荷 08P01、多余字节 22P03，帧长度错误 08P01，特殊组合识别一致。当前 binary_parameter 无 1186。 |
+| 规范值→text 结果 | 根据 IntervalStyle 输出可回读文本，保留月/日维度、独立符号与微秒；NULL 长度 -1，不是空串或 0。 | Describe/Execute 恒为 1186/16/声明 typmod；输出格式不改类型，特殊值不是 NULL。现有 pg_type 无通用 interval 身份。 |
+| 规范值→binary 结果 | 同一三分量直接按 16 字节布局输出，不经秒数总量或显示文本；NULL 长度 -1，零间隔为 16 字节全零。 | 同一 OID/typlen/typmod，格式码 1；当前出口未实现。内部非法状态不得静默绕过验证；错误恢复交工作流 7。 |
+
+转换边界：显式 text↔interval 复用上述词法与输出契约；interval→同身份带 fields/p 的转换按声明收敛且传播 typed NULL。显式/赋值/隐式资格交本章转换块，不由 OID 推导任意数字、time、timestamp 可隐式互转。MySQL duration TIME 若显式桥接，仅在约定且可保真的 `(0,0,微秒)` 子域转换；反向要求月/日为零、时间精度与 MySQL 范围可承载，否则明确 0A000，不自动折算月/日。PG 合法性错误与暂缺桥接能力必须分开。日期加 interval、DST 与比较/justify 的运算实现归工作流 4；本块三分量不规定运算比较算法。以上规范来自 PG 18 文档及 REL_18_0 源码，不构成指定 18.6 的实测结论。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -1020,6 +1043,8 @@ MySQL TIMESTAMP 的既有时区转换需要原类型、存取阶段、来源时�
 [无时区时间戳契约](#无时区时间戳契约)不实现生产表示、cast、codec 或 MySQL 会话行为；timestamp 数组、完整时间运算和时区数据库不在本块。语法归工作流 2，算术/比较归 4，DateStyle/TimeZone/事务时间归 5，目录身份归 6，消息及错误恢复归 7，真实客户端差分归 8；timestamptz 独立承接，不能因 1114 映射扩大承诺。
 
 [带时区时间戳契约](#带时区时间戳契约)不实现生产表示、cast、codec、时区数据库或完整时间运算；数组另块承接。会话状态与配置生命周期归工作流 5，语法归 2、算术/比较归 4、目录归 6、消息/恢复归 7、真实差分归 8；不扩大为完整时区子系统。
+
+[时间间隔契约](#时间间隔契约)范围外：日期/时间戳加减 interval、比较、justify、age、extract 等函数/运算由工作流 4 承接；IntervalStyle 状态生命周期由工作流 5、SQL 声明解析由工作流 2、消息恢复由工作流 7 承接。本块只定义表示、转换及 codec 契约，不新增函数子系统，不改变 MySQL TIME 既有行为。
 
 ### 验收
 
@@ -1149,6 +1174,18 @@ MySQL TIMESTAMP 的既有时区转换需要原类型、存取阶段、来源时�
 | TZ-NULL-METADATA | NULL::timestamptz(3)、typed NULL参数、首行/全NULL/零行、多行及重复Execute，ParameterDescription=1184；statement/portal Describe与Execute保持1184/8/3，未声明-1；切换格式或时区不改身份。NULL长度-1区别于epoch八字节零。 | 当前tp6及1114映射不能证明，未验证。 |
 | TZ-INVALID | garbage/空串22007，2月30日及归一溢出22008，非法编码/NUL22021；binary 7/9字节分别08P01/22P03，帧错误08P01；未知区名按PG输入错误分类对照，不能回退本地默认时区。合法能力缺口0A000单独登记，非成功替代。 | 当前统一不支持不是完整错误分类；恢复由工作流7验收，未验证。 |
 
+[时间间隔契约](#时间间隔契约)以下 IV 场景均为**待新增、未验证**。固定 PG 构建、UTF-8、IntervalStyle、fields/p；合法输入覆盖 text/binary 参数到 text/binary 结果四组合，采集原字节、三分量、NULL、元数据和 SQLSTATE。成功 SQLSTATE 不适用；告警单记。text 回读按分量验收，不只按显示或比较结果判等。
+
+| 场景 | 可观察目标及反例 | 当前证据/责任 |
+| --- | --- | --- |
+| IV-COMPONENTS | `1 month`→(1,0,0)，`30 days`→(0,30,0)，`1 day`→(0,1,0)，`24 hours`→(0,0,86400000000)；四组合保持原维度。`1.5 months`→(1,15,0)，明确区别输入小数单位归整与存量整数月折算。 | 月→720小时的既有断言证明不能直接复用；PG 往返未验证。日期算术另交工作流4。 |
+| IV-SIGNS-STYLE | postgres 下 `-1 month +2 days -03:04:05.123456`→(-1,2,-11045123456)；纯负、零与四种输出样式回读保真。`-1 2:03:04` 在 postgres/sql_standard 分别按独立符号/统一负号核对。 | 仅 MySQL 单一总量负号测试，PG 混合符号与会话分流未验证。 |
+| IV-PRECISION-FIELDS | interval(3) 的 ±1.2345秒→±1.235秒；interval(0) 的 ±0.5秒→±1秒；p=0/6、七位小数微秒收敛与舍入进位按参考端。`1 day 2:03:04` HOUR TO MINUTE→(0,1,7380000000)，YEAR 对 `1 year 2 months`→12个月。负p拒绝22023、p=7告警后归6。 | 不以 MySQL Fsp 断言替代；PG 修饰符与精确元数据未验证。 |
+| IV-RANGE-SPECIAL | binary 独立月/日 i32 极值、时间 i64 极值与相邻值保真；三分量全最小/全最大专门往返 -infinity/infinity，非 NULL；其他混合极值保持有限。文本 `2147483648 months` 拒绝22015；单位累加/收敛溢出按阶段核对22015/22008，禁止绕回或饱和。 | 现有 MySQL TIME 小域不能证明 PG 全域；边界与错误阶段未验证。 |
+| IV-NULL-METADATA | NULL::interval(3)、typed NULL参数、首行/全NULL/零行、多行和重复Execute保持 ParameterDescription=1186；statement/portal Describe与Execute均1186/16/编码后的typmod，未声明-1。两格式NULL=-1；binary零间隔长度16全零，不能猜为text。 | 当前tp6提前返回不证明身份连续；准备全链未验证。 |
+| IV-INVALID | 空串/garbage→22007、非法UTF-8/NUL→22021；binary非NULL 0/15字节→08P01、17字节→22P03，帧声明/实长不符→08P01。错误后恢复由工作流7核验；不能用当前0A000冒充目标输入校验。 | 所有精确错误及真实客户端未验证。 |
+| IV-BRIDGE | MySQL -51小时仅在显式约定下桥接(0,0,-183600000000)；含月/日的反向桥接或超MySQL域均0A000，不能折日或截断；typed NULL保留目标身份。MySQL自身值/错误按原sql_mode另验收。 | 当前通用映射仍1083；桥接资格及双方言隔离未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1186,6 +1223,10 @@ MySQL TIMESTAMP 的既有时区转换需要原类型、存取阶段、来源时�
 [带时区时间戳契约](#带时区时间戳契约)候选边界：内部表示先核定独立瞬时身份、域/特殊值、p 与 typed NULL；cast 依赖规范身份和工作流 5 提供的区域上下文，区分墙钟解释与瞬时显示；参数 codec 依赖 OID 定型、SQL精度及解析时会话配置；结果 codec 依赖同一规范值、稳定 Describe 和显示区域，binary 不能经有损墙钟中转。这里只描述候选边界和依赖，不生成可执行实现任务。
 
 带时区时间戳块来源覆盖：步骤 2 由瞬时定义、元数据及四方向表覆盖；步骤 3 的精度/时区和MySQL不等价由 TZ-SESSION/DST/PRECISION-RANGE/CAST-BRIDGE 覆盖；步骤 4 由四格式组合、TZ-SAME-INSTANT/NULL-METADATA/INVALID 覆盖。与第1/2章及无时区块的身份、时区前提一致，无需改写来源或其他章节；没有功能、性能或18.6参考端实测。
+
+[时间间隔契约](#时间间隔契约)候选边界：内部表示先核定独立 interval 身份、三分量、非有限值、fields/p 与 typed NULL 保真；cast 依赖身份和方言资格，禁止用总秒数替代日历分量；参数 codec 依赖已定型 OID、SQL 修饰符和 IntervalStyle；结果 codec 依赖相同规范值与稳定 Describe 元数据，直接输出三分量。这里只描述边界和依赖，不生成可执行任务。
+
+时间间隔块来源覆盖：步骤2的interval族由身份、范围与四方向表覆盖；步骤3的精度/不等价转换由IV-PRECISION-FIELDS/RANGE-SPECIAL/BRIDGE覆盖；步骤4的格式、NULL、非法输入及元数据由IV-COMPONENTS/SIGNS-STYLE/NULL-METADATA/INVALID覆盖。与第1/2章及前序时间块无须改写的冲突；没有功能、性能或参考端实测。
 
 ## 4. 方言函数与运算符契约
 
