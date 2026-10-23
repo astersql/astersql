@@ -3580,6 +3580,20 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 
 简单 Q、扩展 Parse/Describe/Bind/Execute、ConcreteTiDBContext::schema_snapshot 的工厂接线和单次执行快照复用“目录执行链与证据模板”，本块不新增第二套元数据。[lib.rs](../pkg/server/lib.rs) 注册独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_relations_live：真实 domain 夹具检查当前库表的 relnamespace、其他库 hidden 不出现，以及 public 行上的 regclass/遮蔽查询；这不是任意用户 schema 或权限证明。[pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes 检查 namespace/table/index 范围、无效 ID 与碰撞；不证明重启后的实际持久性。两者只读、均未运行，本轮有效运行数 0。
 
+#### 关系身份与稳定标识
+
+承接来源任务步骤 1、2，能力 `CAT-RELATION/pg`；批次 3 提交 `9bd191c61203ab5ba493a4261a0a89f0f33eda93` 的命名空间五节正文、累计批次 2 的 `b7ff2288b8`、批次 1 的 `946e9b2c20` 及其第 1–5 章交接已核对，依赖满足。以下为 2026-10-24 在该基线经 RustCodeGraph status/explore/query/定点 node 核对的静态事实；`pkg/server/doc.go` 不存在，测试未运行。
+
+| 实际入口 | 事实来源与当前边界 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows / class_rows / class_row | 单次共享快照中，固定 SYSTEM_RELATIONS 先生成 namespace=11、kind=r 的目录关系；当前原生库经 AllSchemas 查到 schema，再枚举 SchemaTableInfos。仅 StatePublic model 入列，View→v、Sequence→S、GetPartitionInfo→p、其余→r；表/视图/序列用 model.ID，namespace 用 schema.id。原生物理分区未作为独立 PG 关系，不能据 p 宣称完整 PG 分区语义。没有按当前角色过滤关系行。 |
+| 同文件 catalog_indexes / column / column_catalog_field | 索引使用 (model.ID,index.ID)，StatePublic 才列行；当前按父表分区标记为 I/i。PKIsHandle 无显式主索引时按真实主键列构造 ID=-1、名称 PRIMARY 的适配身份，原生显式索引 ID<=0 则拒绝；这不是持久独立 PG 索引名称。oid/relnamespace 描述为26，relname/relkind 为 text/25，relowner 槽11为 NULL、int8/20。class_row 的其余占位值不证明对应完整语义。 |
+| [pg_oid.rs](../pkg/server/pg_oid.rs)::SYSTEM_RELATIONS / namespace_oid / table_oid / index_oid | 固定目录关系如 pg_class=1259、pg_namespace=2615、pg_database=1262；用户 namespace/table/index 分离区间，计算不分配新 ID。非零有符号 ID 编码为 2×abs(id)−(id<0)，namespace 加16384且小于0x40000000，table 加0x40000000且小于0x80000000；index 对两编码作 Cantor 配对再加0x80000000且严格小于 u32::MAX，检查中间和及结果。ID=0/越界报错，不截断或 hash。固定系统 OID 不套用原生编码。 |
+| 同文件 resolve_with_path / display；pg_catalog.rs::evaluate / project | cast 调 resolve_with_path，数字字符串可直接形成 u32，不要求存在；名称按引号保留/未引号折小写，仅支持当前库 public 与 pg_catalog，表优先于索引，重复索引名报歧义。public_first 控制局部遮蔽，display 无 path 参数，系统名直接返回、用户同系统名时加 public、未知 OID 返回数字。这不足以证明全部有效 search_path 下的往返。resolve 的候选过滤也未与 class_rows 的 StatePublic 全部对齐。 |
+| [pg_name.rs](../pkg/server/pg_name.rs)::Resolver::relation / scope | 普通 SQL 名称重写保留 token/CTE 作用域，public 映射当前原生库，最后由共享解析器、对象查找及授权负责；不是 regclass 目录局部解析器，二者一致性是目标。Q/扩展工厂、快照及结果编码沿用“目录执行链与证据模板”，不另建执行器。 |
+
+最近独立测试 [pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes 覆盖系统 OID 唯一、正负/非法 ID、跨表同局部索引 ID 与映射无碰撞；[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_relations_live 覆盖真实 domain 的表/视图/序列/分区/索引分类、其他库隔离、Parse 后改名/删建刷新及 public.pg_class 遮蔽；[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::pg_introspection_oid_live_casts 覆盖26/2205描述、1259、最大 oid、名称错误与格式错误。由 [lib.rs](../pkg/server/lib.rs) 独立 cfg(test) 模块注册；它们是手写 wire 测试意图，未证明重启持久性、双连接稳定性、真实 psql 或权限结果。本轮有效运行数0。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3634,6 +3648,23 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 依据（PostgreSQL **18**，访问 **2026-10-24**）：[pg_namespace](https://www.postgresql.org/docs/18/catalog-pg-namespace.html)用于四字段及 owner 关联；[Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html)用于库内命名空间和权限/路径边界；[Privileges](https://www.postgresql.org/docs/18/ddl-priv.html)用于 ACL 默认 NULL 与显式授权语义；官方 [REL_18_STABLE pg_type.dat](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/catalog/pg_type.dat)用于 name/oid/aclitem[] 类型身份。[psql 18 手册](https://www.postgresql.org/docs/18/app-psql.html)定义 `\dn[S+]` 与 `-E` 采集入口；官方 [describe.c::listSchemas](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)显示名称/owner、verbose ACL/描述、系统对象过滤需求。源码分支可变，未固定客户端二进制；本块 SQL 均为人工探针，不是声称采集到的 psql 原始查询。精确 18.6 构建、真实客户端及其生成 SQL 均未取证。
 
+#### 关系身份与稳定标识
+
+沿用公共证据模板，区分关系行的 OID、系统目录关系自身的 OID 和输出列的类型 OID。对象键至少带数据库、目录类别和对象 OID；OID 不是跨集群全局标识，参考端与 AsterSQL 的用户 OID 不要求数值相等。下表要求目录读取角色具备 SELECT on pg_class/pg_namespace；目录可枚举、search_path 可见、对象可使用分别判断，无对象 SELECT 不应通过省略目录行来伪装拒绝。
+
+| 需求→字段/表达式 | 真实来源、关联键与当前证据 | PG 目标类型/值、缺失策略→验收 |
+| --- | --- | --- |
+| 关系身份→c.oid | 表/视图/实际序列共用 table_oid(model.ID)；索引用 index_oid(父表ID,局部索引ID)，系统用 SYSTEM_RELATIONS。关联 pg_index.indrelid/indexrelid、pg_attribute.attrelid、pg_sequence.seqrelid 须指向同一 pg_class 行；这里只确定键，不接管其他目录字段。 | oid/26，typlen4，非 NULL；同一持久原生身份跨连接/服务重启/改名稳定，删除后旧行消失，同名新建使用新的持久身份/OID。原生 ID 保留是条件，不保证恢复导入或 ID 重用仍能区分；ID 重用须真实代际来源或门禁，不能承诺永不复用。缺快照/非法 ID/越界在任何成功行前拒绝0A000（产品目标），不丢行、取模或改顺序分配。REL-BASE/KEY/LIFE/RANGE。 |
+| 名称→c.relname | 同一 model.Name.O/index.Name.O 或固定目录名；现为text/25。局部索引名可在不同原生表重复，PRIMARY 也可能重复，当前不能宣称 PG namespace 内所有关系名唯一。 | name/19，非 NULL，标准构建typlen64；目标同一库/schema 内表、视图、序列、索引共享关系命名空间。需要持久 PG 可见索引名及双向映射，不能用运行顺序或静默后缀解决；未解决重名时在创建冲突前门禁，既有歧义查找明确拒绝、不任选一个。缺 name codec 输出前0A000。REL-BASE/NAME。 |
+| namespace外键→c.relnamespace | schema.id→namespace_oid，与前块 public 的 pg_namespace.oid 同源；系统关系固定11。 | oid/26，4，非 NULL；每行恰连本库一个真实 namespace，用户 schema 继承前块持久来源门槛；其他数据库不泄漏。限定目录查询不因 path 变化删行；缺真实 namespace 不造0。REL-BASE/KEY。 |
+| 类别→c.relkind | StatePublic 的 View/Sequence/partition/Indices；当前值文本描述25。自增列不产生序列关系。 | 内部 "char"/18，1，非 NULL；r/v/S/i/p/I 必须分别有真实语义。尤其 p/I 需分区父对象及索引语义，原生分区存在不足以证明 PG 分区契约；不将物理分区 ID 当独立关系。无真实 m/t/c/f 等对象时无对应行；若请求创建此对象而未支持，在 DDL 副作用前0A000，不造 r 行。REL-BASE/KIND。 |
+| 所有者→c.relowner | 当前 NULL/int8，缺持久 PG owner/pg_authid.oid 关联；不能从当前登录用户推造。 | oid/26，4，非 NULL，指向真实角色身份；ALTER OWNER 仅变 owner，不变关系 OID。无来源时请求该字段输出前0A000，不能把 NULL 或0当合法 owner。REL-OWNER。 |
+| 名称解析/显示→text::regclass、oid::regclass、::oid | 共享 snapshot/model 与上述映射；当前局部 resolve/display，无完整 path 输出语义；不据此宣称普通 SQL 已有函数/cast 注册。 | regclass/2205，4；::oid 为26/4，显式::text 为25/-1，NULL传播。名称输入遵守第2/5章大小写、有效 path/USAGE，显示需能在该会话重新解析到同一对象，必要时限定/引号。未知数字 OID 可保留且显示十进制，不能反向造 pg_class 行；缺失名称 cast 失败，to_regclass(text) 对未找到名称返回 SQL NULL，未注册函数应门禁0A000而非假成功。REL-CAST/NAME/UNKNOWN。 |
+
+上述 typmod 均-1，未强转的 name 与内部 "char" 不折成 text；文本/binary、来源表/属性号与零行 Describe 按第3/7章逐列采证。附属字段只登记当前值及门槛：xmin=NULL/int8（非 PG xid），reltablespace=0/oid、reloptions=NULL/text[]、relpersistence=p/内部char、relispartition=false/bool、relpartbound=NULL/text、relam=0/oid、relacl=NULL/aclitem[]；没有真实事务、存储、分区、ACL来源时不能把这些占位推为 PG 支持。请求其完整语义时输出前0A000；无显式选项/ACL的 NULL 仅在对应窄块证明语义成立后开放，relpartbound 目标 pg_node_tree/194而非text。其它未绑定字段沿公共拒绝契约。这里只要求不伪造，不在本块补齐 pg_class 全字段。
+
+目标依据（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_class](https://www.postgresql.org/docs/18/catalog-pg-class.html)核对字段、关系种类与外键；[OID及其别名](https://www.postgresql.org/docs/18/datatype-oid.html)核对数字/符号、路径、引号及早绑定；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)核对 to_regclass 缺名为NULL。[官方 REL_18_STABLE pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/include/catalog/pg_type.dat)核对19/18/26/2205/194类型身份，该分支可变，不是18.6运行构建。[psql 18](https://www.postgresql.org/docs/18/app-psql.html)的关系列表/描述与 -E 是客户端采集入口；本块 SQL 为人工契约探针，未声称 psql/JDBC/DataGrip/ORM 生成过它们。18.6精确行为、错误字段与客户端版本均未取证；产品0A000门槛不能冒称参考端错误。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3649,6 +3680,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 命名空间目录映射
 
 本块仅定义 pg_namespace 四字段、库/schema 层次、关联及验收，不实现用户 schema、角色/ACL 子系统、事务 DDL、临时 schema、系统函数注册或完整 psql/JDBC/DataGrip/ORM 流程。information_schema 的视图字段留标准模式块；它作为 namespace 的真实身份仍是完整列表目标的依赖，不能凭空补一行就宣称其对象可用。psql 的描述和可能附带的 publication 查询留客户端块取证。schema 列表与有效搜索路径、目录可读与对象可用分别验证；不得用类型正确的空集掩盖真实存在的用户 schema，也不得把当前 NULL owner、缺失 ACL 字段宣称兼容。
+
+#### 关系身份与稳定标识
+
+不实现 OID 分配/代际库、持久 schema/owner/索引名称、完整分区/继承/TOAST/物化视图、序列运行状态、ACL或全 pg_class 字段；索引/列/约束/序列/角色的详细契约交各自后续块。保留范围内外键一致性要求，不以未实现为由删减目标。普通名称、类型/codec、函数注册、事务与 wire 继续由第2–5/7章负责。只列下述待新增/待运行验收，不修改 Rust、不运行 Cargo/Go、差分平台或真实客户端。
 
 ### 验收
 
@@ -3759,6 +3794,28 @@ ORDER BY n.nspname;
 
 逐例记录数据库/角色、完整版本/构建、原始 SQL/参数、行/NULL、列序与 OID/typlen/typmod/可空性/格式/来源属性、命令标签、错误原文/SQLSTATE/阶段/位置及 I/T/E。未知 wire/诊断保留待采，成功 SQLSTATE 不适用。客户端需求对应 psql `\dn`（name/owner）及 `\dn+`（ACL/描述），后续用该版本 `-E` 抓取实际查询和附属请求；本人工 SQL 不替代该流程，18.6 精确行为、真实 psql/JDBC/DataGrip/ORM 结果均未验证。
 
+#### 关系身份与稳定标识
+
+以下全部为**待新增/待运行**人工契约用例，复用公共证据模板；已有测试仅供实现时扩展。独立夹具建两个空数据库 rel_doc_a/b、专用角色 rel_owner/rel_reader，管理员授予连接、public USAGE及目录 SELECT；A/B均连a、C连b，初始I，UTF-8、search_path=public（隐式pg_catalog优先），Q参数[]、结果文本。管理员在a执行 `CREATE TABLE public.rel_t(id integer)`、`CREATE INDEX rel_ix ON public.rel_t(id)`、`CREATE VIEW public.rel_v AS SELECT id FROM public.rel_t`、`CREATE SEQUENCE public.rel_s START WITH 10`；b独立执行同名四条。夹具初始化若门禁即记录该缺口，不继续虚构行。
+
+基础查询 QR 为 `SELECT c.oid,c.relname,c.relnamespace,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname IN ('rel_t','rel_ix','rel_v','rel_s','rel_renamed') ORDER BY c.relname`。四列目标26/19/26/18，typmod=-1、非NULL，typlen=4/64/4/1（name长度绑定构建）；所有下列查询沿用相同权限/格式，另述参数除外。
+
+| 验收 ID与完整操作 | 期望行、类型/变化或拒绝 |
+| --- | --- |
+| REL-BASE：A/B/C QR；A `SELECT c.oid,c.relnamespace FROM pg_catalog.pg_class c WHERE c.oid='pg_catalog.pg_class'::regclass::oid`；A `SELECT c.oid,c.relname,c.relnamespace,c.relkind FROM pg_catalog.pg_class c WHERE c.relname='rel_missing'`及 `SELECT c.oid,c.relname,c.relnamespace,c.relkind FROM pg_catalog.pg_class c WHERE c.relname='rel_t' LIMIT 0` | QR恰4行，名字/类别依次rel_ix/i、rel_s/S、rel_t/r、rel_v/v，各自外键命中本库public；A=B，同库无重复OID，C不混入a的事实（不要求跨数据库用户OID不同）。系统查询恰(1259,11)，两列26；两个空结果保留26/19/26/18描述、SELECT 0。 |
+| REL-KEY：A `SELECT i.indrelid,i.indexrelid,t.oid,x.oid FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class t ON t.oid=i.indrelid JOIN pg_catalog.pg_class x ON x.oid=i.indexrelid WHERE t.relname='rel_t' AND x.relname='rel_ix'`；`SELECT s.seqrelid,c.oid FROM pg_catalog.pg_sequence s JOIN pg_catalog.pg_class c ON c.oid=s.seqrelid WHERE c.relname='rel_s'`；`SELECT a.attrelid,c.oid FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid WHERE c.relname='rel_t' AND a.attname='id'` | 各1行，四列/两列均26，同端indrelid=t.oid、indexrelid=x.oid、seqrelid=c.oid、attrelid=c.oid；表OID≠索引OID。附属字段行为留对应窄块，不把 JOIN 成功当定义/序列功能已完备。 |
+| REL-LIFE：记录A/B QR中的表OID=T、索引OID=X；管理员 `ALTER TABLE public.rel_t RENAME TO rel_renamed`，A/B QR；`DROP VIEW public.rel_v`、`DROP TABLE public.rel_renamed`，A/B QR；`CREATE TABLE public.rel_t(id integer)`、`CREATE INDEX rel_ix ON public.rel_t(id)`，A/B QR；关闭连接并以同一持久数据重启服务、重连再QR | 改名保留T及X，旧表名消失；删除后T/X均无行且QR只剩序列；重建后QR3行，新表/索引OID均不同于T/X，序列OID不变；A/B每步一致，C每步QR仍原4行。重启不重新分配剩余身份；不能用内存domain重建替代持久服务重启。依第5章只验成功提交后可见，未开放DDL应在副作用前门禁。 |
+| REL-CAST：A `SELECT c.oid,'public.rel_t'::regclass::oid,c.oid::regclass,c.oid::regclass::text FROM pg_catalog.pg_class c WHERE c.relname='rel_t'` | 1行类型26/26/2205/25，前两值相等，后两显示在当前path下均可重新解析到该OID。持久表达式中的早绑定与运行时text查找分开交第4/5章，目录现有执行时查找不证明早绑定。 |
+| REL-NAME：独立重建基础四对象夹具后 `CREATE TABLE public."Rel Mixed"(id integer)`、`CREATE TABLE public.pg_class(marker integer)`；A依次 `SET search_path=public,pg_catalog`、`SELECT 'pg_class'::regclass::oid,'pg_catalog.pg_class'::regclass::oid,'public."Rel Mixed"'::regclass::oid`；再 `SET search_path=pg_catalog,public` 并重复SELECT；另在a建 `CREATE TABLE public.rel_other(id integer)`，尝试 `CREATE INDEX rel_ix ON public.rel_other(id)` | 两次SELECT类型26/26/26，第一次首列为用户pg_class的OID、第二列1259；第二次前两列均1259，带引号对象OID不变。重复rel_ix在同库同schema失败且无新索引；跨库同名允许由基础四对象夹具独立验收。已存在原生局部重名不得任选一项；碰撞及引号错误的精确参考诊断待采。 |
+| REL-UNKNOWN：独立空夹具确认 `SELECT c.oid FROM pg_catalog.pg_class c WHERE c.oid=4294967295::oid` 零行后，`SELECT '4294967295'::regclass,'4294967295'::regclass::oid,NULL::regclass`；`SELECT 'public.rel_missing'::regclass`；`SELECT pg_catalog.to_regclass('public.rel_missing')`；`SELECT '"unfinished'::regclass` | 数字探针1行(4294967295,4294967295,NULL)，列2205/26/2205，不新增目录行；缺名cast须错误，to_regclass为单行NULL/2205；坏引号须输入错误。现有独立测试断言意图为缺名42P01、坏输入22P02，精确参考端诊断/阶段待采，不能写已通过。未注册to_regclass时产品门禁0A000，不能作为NULL目标通过。 |
+| REL-OWNER：A与reader `SELECT c.oid,c.relowner FROM pg_catalog.pg_class c WHERE c.relname='rel_t'`；管理员 `ALTER TABLE public.rel_t OWNER TO rel_owner` 后重复；管理员 `REVOKE ALL ON TABLE public.rel_t FROM PUBLIC`、`REVOKE ALL ON TABLE public.rel_t FROM rel_reader`，reader再投影并 `SELECT id FROM public.rel_t` | owner查询1行26/26、真实owner非NULL，转移前后关系OID不变，两角色看到同一owner。无对象SELECT仍可读目录，但读表须权限错误而非空集成功；缺owner来源请求字段输出前0A000。角色/ACL细节及精确诊断交权限块。 |
+| REL-KIND：独立夹具 `CREATE TABLE public.rel_p(id integer) PARTITION BY RANGE(id)`、`CREATE TABLE public.rel_p0 PARTITION OF public.rel_p FOR VALUES FROM (0) TO (10)`、`CREATE INDEX rel_p_ix ON public.rel_p(id)`；`SELECT c.oid,c.relname,c.relkind FROM pg_catalog.pg_class c WHERE c.relname IN ('rel_p','rel_p0','rel_p_ix') ORDER BY c.relname` | 目标3行rel_p/p、rel_p0/r、rel_p_ix/I，类型26/19/18；需真实PG分区/索引模型支持。当前原生partition标记与物理分区未成独立关系构成缺口，应在不支持DDL的副作用前0A000，不能把当前p/I行当本组通过。 |
+| REL-RANGE：待扩展独立映射测试，对namespace/table分别输入0、i64::MIN/MAX，索引输入(0,1)、(1,i64::MAX)，并比较(42,1)/(43,1)/(42,-1)；独立元数据夹具注入越界ID后QR；另 `SELECT '4294967296'::oid` | 映射均显式失败、三个合法pair彼此不同且不碰系统OID；元数据越界为产品执行门禁0A000且零成功行，无截断/漏行/部分结果，精确wire诊断待采。oid字面量越界与元数据能力门槛分开，现有测试意图22003，参考端实测待补。 |
+
+扩展复验用 `SELECT c.oid,c.relname,c.relnamespace,c.relkind FROM pg_catalog.pg_class c WHERE c.relname=$1::text ORDER BY c.oid`，Parse参数OID[25]，Bind文本UTF-8 rel_t（另例rel_missing），参数格式0、结果格式[0,0,0,0]；Describe statement/portal、Execute max_rows=0、Sync，预期1/0行及26/19/26/18描述。REL-LIFE另在改名前Parse此SQL，改名/删除/重建后各用新portal Bind/Execute，参数分别rel_renamed、rel_renamed、rel_t，对照T/零行/新T；旧portal缓存不当作新快照。REL-CAST/UNKNOWN各用完整原SQL、参数[]复验2205/NULL/错误；binary仅在对应codec开放后另采，不能从文本通过推定。
+
+逐例采集公共模板要求的版本/构建、角色/库/path、原SQL/参数/格式、每列完整描述、行/命令标签/错误原文及阶段、I/T/E恢复；成功SQLSTATE不适用，错误精确字段未采保留缺证。reader不得拥有表、无继承角色或默认授权；C验证跨库隔离与A/B验证同库稳定分开。每组独立重置；失败后按第5章ROLLBACK/扩展Sync并重查QR确认无半建对象。清理关闭portal/statement、RESET search_path；管理员按实际存在性执行 `DROP VIEW public.rel_v`、`DROP TABLE public.rel_t`或`DROP TABLE public.rel_renamed`、`DROP SEQUENCE public.rel_s`、`DROP TABLE public."Rel Mixed"`、`DROP TABLE public.pg_class`、`DROP TABLE public.rel_other`；分区组先 `DROP TABLE public.rel_p0` 再 `DROP TABLE public.rel_p`，索引随所属表删除；各库分别清理后关闭连接，由夹具删除专用数据库/角色。不用CASCADE掩盖关联残留。客户端需求对应psql关系列表和描述，实际版本须用-E另采；本轮未运行客户端及18.6参考端。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -3778,6 +3835,12 @@ ORDER BY n.nspname;
 后续实施按窄块分别补：当前库 public/内建 namespace 的身份及 name codec；用户 schema 的真实持久来源和所属库键；owner/ACL 字段及角色关联（衔接角色权限块）；同名表 relnamespace 关联（衔接关系身份块）；目录新鲜度/跨连接隔离（衔接更新块）。普通名称解析及有效 search_path 继续遵守第 2/5 章，不能把本块列行能力当解析器已支持多 schema。
 
 覆盖审阅：四字段逐项关联 NS-BASE/EMPTY、NS-OWNER、NS-ACL，OID 外键关联 NS-JOIN，元数据变化和同名 schema/跨库分别关联 NS-FRESH/DB；无权限 schema 保行与拒绝读表分别验。正确性风险是库/schema 层次或 OID 外键错误、伪造所有者/ACL；兼容性风险是 name/owner 类型不符、缺用户 schema 和误把路径过滤当目录过滤；性能未测。本轮仅文档，Ready 采用五节锚点、路径存在、来源覆盖、前后契约与 diff 审阅替代缺失的验证技能；不运行 Cargo/Go、代码 lint 或客户端，不以文档交付宣称功能已实现。
+
+#### 关系身份与稳定标识
+
+后续先独立补稳定身份/越界门槛与同库关系命名唯一性，再补 name/内部char及regclass路径往返、owner持久来源；按对应窄块接列/索引/序列外键与分区语义，不递归补齐子系统。覆盖映射：五个核心字段→REL-BASE/KEY/KIND/OWNER，持久原生ID/删除重建/双连接/重启→REL-LIFE，cast/未知数值/名称→REL-CAST/UNKNOWN/NAME，溢出→REL-RANGE；测试意图与目标验收不混为运行证据。
+
+正确性风险是ID重用、非public状态查找、重复局部索引名、错误外键或伪造owner；兼容性风险是text替代name/内部char、regclass显示不随path、物理分区与PG关系混同；性能未测。Ready文档适用检查采用五节锚点、来源/路径、前后契约与diff人工审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用任务指定替代检查。不运行代码lint、Cargo/Go或差分客户端，不将文档完成升级为功能支持。下一步按批次5处理列目录与声明类型。
 
 ## 7. 线协议认证与数据通道
 
