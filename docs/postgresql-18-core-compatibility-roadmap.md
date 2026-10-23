@@ -3835,6 +3835,20 @@ libpq 现有目录测试包含 DataGrip 来源查询、非空关系、类型正�
 
 请求来源锁定为官方 pgJDBC **REL42.7.8** 的 PgDatabaseMetaData.java（下节链接），与本地测试默认 JAR 候选分开。本块有该版本源码证据，没有本轮该版本驱动运行证据；后续若改用其他版本，必须重新采集请求及版本分支。
 
+#### 图形客户端内省流程
+
+承接来源步骤 1、4，能力 `CAT-DATAGRIP/pg`。批次 23 提交 `0b4be09469` 的“驱动元数据内省流程”五节及 git 历史中批次 1–22 的逐块提交、累计正文已核对；第 1 章证据分级、第 2 章名称、第 3 章描述类型、第 4 章函数、第 5 章会话契约继续适用。依赖满足不代表功能通过。静态基线为上述提交，日期 2026-10-24，pkg/server/doc.go 不存在。
+
+使用仓库 skills/rustcodegraph/SKILL.md，status 确认本地索引，定点 node 核对 [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::execute 的 schema_snapshot、当前数据库及单次 Execution；provider_rows 的真实来源为共享 infoschema/model，namespace/table/index OID 经 pg_oid 统一。Q 经 pg_conn、扩展经 pg_extended 的既有工厂复用“目录执行链与证据模板”，不另建 DataGrip 专用目录。模板和独立测试以原文件读取补充核对：
+
+| 证据层/入口 | 已读事实及本轮限制 |
+| --- | --- |
+| 模板直接执行 | [pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::context/execute 由真实 domain、ConcreteSessionDriver 和 InsecureRootOnly 建上下文，直接 CatalogQuery::parse/execute；include_str! 引用 [testdata/pg_datagrip](../pkg/server/testdata/pg_datagrip) 中冻结 SQL，再将所有 ? 替成 namespace 十进制字面量。pg_datagrip_tables、pg_datagrip_column_lifecycle、pg_datagrip_postgres_column_lifecycle、pg_datagrip_structure、pg_datagrip_metadata、pg_datagrip_metadata_templates、pg_datagrip_ui_metadata_core 分别有表删改、列生命周期、索引/约束顺序、序列/注释、辅助空集及索引列断言。名字含 ui 仍是直接执行测试。 |
+| wire/外部库代发 | [pg_query_test.rs](../pkg/server/pg_query_test.rs) 以手写 socket 发送真实 CREATE TABLE 和 RetrieveColumns，检查 15 种列声明；[pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::run_clients 启动真实服务，LIBPQ_WORKFLOW 使用 PQexec/PQexecParams 代发数据库/schema与三个源码请求，含 OID26 的 text/binary、NULL/最大值及 Describe。DATAGRIP_VIEW_SOURCES_SQL/FUNCTION_SOURCES_SQL/RELATIONS_SQL 注释记录 DataGrip 2025.1.3、2026-10-03、session 1533977248；该注释是仓库来源线索，非本轮完整 build 或 UI 日志。 |
+| UI 入口 | run_clients 的 PG_DATAGRIP_UI_PORT/PG_DATAGRIP_UI_CONTROL 仅提供临时服务、dg_ui_structure 夹具及人工结束屏障；DATAGRIP_UI_READY 或控制文件存在不能证明 UI 展示正确。测试在 lib.rs 用独立 cfg(test) 模块注册；本轮没有运行 Rust、libpq、JDBC 或 DataGrip，有效运行数 0。 |
+
+官方依据（访问 2026-10-24）：[DataGrip Metadata and introspection，2026.2 Help](https://www.jetbrains.com/help/datagrip/introspection.html) 定义选择数据库/schema的内省范围及对象结构/源码用途；该在线手册不是 2025.1.3 的 SQL 版本证据。字段/定义目标依据 [PostgreSQL 18 系统目录](https://www.postgresql.org/docs/18/catalogs.html) 与 [18 系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)，另核对 [18 pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html) 的列号/维数类型与 [18 pg_shdescription](https://www.postgresql.org/docs/18/catalog-pg-shdescription.html) 的共享描述关联键；具体权限沿本章各对象块。18.6 精确参考构建和运行结果仍未取证。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4252,6 +4266,26 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 
 完整服务器生成 SQL、Parse 参数 OID/格式、结果格式、所有初始化及 TypeInfoCache 补充 SQL **尚未线端取证**。下节给完整 Java 方法输入及一条源码可还原请求；其余请求以上述官方方法为精确定位，禁止将此表或手写同形 SQL 标为实际驱动日志。每个投影的 typlen/typmod/表 OID/属性号及实际 NULL 描述待参考端逐列采集；服务器字段目标沿对应字段块，驱动合成结果沿本 tag 的 Field/tuple 定义。
 
+#### 图形客户端内省流程
+
+以数据库列表→选择数据库→schema列表→绑定本端 namespace OID→表/列/索引/约束/视图/序列为依赖链；不把其他原生库当当前库用户 schema。下表 SQL 标识均指既有文件的**完整原文**（保留注释、大小写、排序和投影），是可重放输入，不是缩写后拼出的“客户端 SQL”。目录字段的全量来源、ACL/可见性和不支持策略复用本章同名对象契约；下面逐组限定客户端连接点。类型为 PG18 目标，当前 name/内部 char→text、attnum→bigint、xmin→可空 bigint 等差异须单列，不能以现有 Value 盒证明 wire 等价。
+
+| 需求/完整 SQL 来源与参数 | 字段、关联键、PG目标类型/OID、真实来源和策略 |
+| --- | --- |
+| DG-DB：pg_catalog.rs::DATABASES_SQL；参数[] | id=database.oid::bigint20，name=datname/name19，description/owner=text25，is_template/allow_connections=bool16。共享数据库持久身份与属性，N.oid=D.objoid 关联共享描述；共享描述的目标关联还须限定真实 classoid（pg_shdescription 无 objsubid），原模板不擅改。当前枚举 AllSchemas、固定 f/t、owner/描述NULL，只是适配限制。CONNECT/数据库可见性沿数据库及权限块。 |
+| DG-SCHEMA：1869280138.sql；[] | id=namespace.oid::bigint20、state_number=xmin/xid28、name/name19、description/owner/text25。namespace真实身份、owner/注释；与关系 relnamespace 连接。当前仅 public/pg_catalog，xmin与owner/描述NULL。缺用户schema模型保留门槛，不伪造其他库schema或XID。 |
+| DG-TABLE：1869280142.sql；[N] | 15投影：table_kind/内部char18，table_name/name19，table_id/oid26，table_state_number/xid28，table_with_oids/bool16（SQL常量false），tablespace_id/oid26，options/text[]1009，persistence/内部char18，ancestors/successors/varchar1043（显式cast），is_partition/bool16，partition_key/partition_expression/text25，am_id/oid26，owner/text25。来源 pg_class 与 pg_inherits、真实表/分区模型及定义函数；关联 namespace、表OID和继承父子OID。无继承时两个聚合为NULL，不拿空继承隐藏必需分区语义；原生am/owner缺失沿对象块限制。 |
+| DG-COLUMN：RetrieveColumns.sql；[N] | 15投影按原序：table_id/oid26、column_position/int2 21、column_name/name19、column_state_number/xid28、type_mod/int4 23、dimensions_number/int2 21、type_spec/text25、type_id/oid26、mandatory/bool16、column_default_expression/text25、column_is_inherited/bool16、options/text[]1009、column_is_dropped/bool16、identity_kind/generated/内部char18。真实 ColumnInfo/FieldType、默认/生成表达式，键 (attrelid,attnum)=(adrelid,adnum) 和 atttypid；format_type/pg_get_expr沿类型/表达式块。无默认为NULL，identity不能由auto_increment冒充；已存在列不能因字段缺实现返回空集。 |
+| DG-INDEX：1869280153.sql；[N] | 12投影：table_id/oid26、table_kind/内部char18、index_name/name19、index_id/oid26、state_number/xid28、is_unique/is_primary/nulls_not_distinct/bool16、condition/text25、ancestors/varchar1043、tablespace_id/access_method_id/oid26。真实 IndexInfo及索引关系，indrelid→表、indexrelid→索引、indclass→opclass；无predicate/继承为NULL，当前opclass空导致access_method_id NULL，不代表真实PG索引可无必要依赖。 |
+| DG-INDEX-COL：RetrieveIndexColumns.sql；[N] | 13投影：index_id/oid26、col_idx/int8 20（ordinality）、in_key/bool16、column_position/column_options/int2 21、collation/oid26、collation_schema/collation_str/name19、opclass/oid26、opclass_schema/opclass_str/name19、expression/text25、can_order/bool16。真实索引列、key/include、排序、collation/opclass及AM能力；indkey/indoption等vector零基，k一基，conkey数组一基，不能混用。表达式索引依pg_get_indexdef，缺事实明确拒绝，不固定空表达式掩盖。 |
+| DG-CONSTRAINT：1869280154.sql；[N,N] | 18投影：table_id/oid26、table_kind/内部char18、con_id/int8 20、con_state_id/int8 20（xmin显式varchar→bigint）、con_name/name19、con_kind/内部char18、con_columns/int2[]1005、index_id/ref_table_id/oid26、is_deferrable/is_init_deferred/bool16、on_update/on_delete/内部char18、no_inherit/bool16、con_expression/text25、ref_columns/int2[]1005、excl_operators/int4[]1007（cast）、excl_operators_str/varchar[]1015。真实约束及主外键/索引/列身份；两个namespace参数独立绑定同N，复合列顺序不可重排。FK/CHECK/排斥或延迟语义缺失沿约束块拒绝，不把未接线对象算空集成功。 |
+| DG-VIEW：1869280158.sql；[N] | view_kind/内部char18、view_id/oid26、source_text/text25；pg_class→namespace，真实持久视图SELECT经pg_get_viewdef，不返回固定样例。原常量 DATAGRIP_VIEW_SOURCES_SQL 与文件对应，返回值需依实际夹具反解；物化视图未开放保留能力门槛。 |
+| DG-SEQ：1869280140.sql；[N]；DG-OWN：1869280160.sql；[N] | SEQ依序 state/xid28、id/oid26、name/name19、data_type/text25、start/inc/min/max/cache/int8 20、cycle/bool16、owner/text25；来源真实 SequenceInfo/pg_sequence，seqrelid=class.oid。OWN的dependent_id/owner_id为oid26、owner_subobject_id/int4 23，pg_depend两侧classid/refclassid及子列号连接真实拥有关系。独立序列OWN零行合理；serial/identity存在时不能以空pg_depend隐藏a/i边。 |
+
+所有 [N] 取本连接 `SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='public'` 的实际返回 OID，不能跨库复制数值。模板直接执行按现有 replace('?')；wire Q 仅将活动 ? 换十进制字面量、参数[]；扩展将活动 ? 顺序换 $1/$2，Parse OID [26] 或 [26,26]、Bind十进制文本[0]及网络序4字节[1]，结果格式分别[0]/[1]。不替换注释里的 :[*f_names]/#TXAGE。真实JDBC保留 ?，记录setObject/setLong等实际setter和驱动推断OID，不声称UI必用26。
+
+辅助依赖同样要保留完整查询：1869280136/0137为事务探针、0139为pg_user；0141/0143/0146–0152/0155–0157以及0144/0145为注释、外部对象、类型/例程等模板，沿pg_datagrip_metadata_templates和pg_datagrip_templates_sets的include_str逐项关联对象块，不能因核心八项完成而称全套内省通过。0159为函数源码（OID/text描述），与0158/0160构成libpq代发三请求。当前0137事务探针固定0，0136从原生事务ID取值不等同PG XID；缺owner/ACL/对象模型等沿既有契约保留差异；不得使用假XID触发增量刷新。目标权限按各目录及函数分开判断：目录行可见不等于有SELECT或能取定义，非owner不得统一过滤所有关系。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4351,6 +4385,10 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 #### 驱动元数据内省流程
 
 不实现 JDBC 目录适配、正则/窗口/集合返回/复合字段求值、类型缓存或权限子系统，不升级或移植驱动，不运行 Java/Cargo/Go 或 DataGrip UI。不把本地 JDBC 手写 SQL 流程扩写成 DatabaseMetaData 已通过；真实驱动执行与两端差分产物交第 8 章。18.6 精确构建、线端 SQL 和 OID 未采不阻塞本块文档交付，但持续作为实现验收门槛。
+
+#### 图形客户端内省流程
+
+本块只交付图形客户端需求映射与取证边界；不运行真实DataGrip、libpq/JDBC、Cargo/Go或差分平台，不实现目录字段、角色/ACL、schema、函数或GUI自动化，不修改原SQL模板。不能把DataGrip内置系统minicatalog、编辑器补全缓存、手工执行SQL或名字含ui的测试当真实服务端UI内省证据。官方在线2026.2帮助不补造2025.1.3完整build、JDBC版本或全部生成SQL；18.6精确参考行为未验证。字段缺口只回交本章对象窄任务，第7章承接协议，第8章承接实跑，不扩建完整客户端兼容子系统。
 
 ### 验收
 
@@ -5160,6 +5198,30 @@ SELECT nspname AS "TABLE_SCHEM", current_database() AS "TABLE_CATALOG" FROM pg_c
 
 第 8 章后续实跑需保存每条原始 SQL/逐参数值类型格式、列描述与有效行数、getObject/getString/wasNull、getColumnType/getColumnTypeName、调用/异常栈及退出码，逐列回填首块模板（包含连接数据库/角色/path及列的表 OID/属性号）。无参考 PostgreSQL 18.6 构建、REL42.7.8 实际 JAR 或完整补充查询记录时，相应精确行为写未取证，不报告客户端通过。
 
+#### 图形客户端内省流程
+
+以下DG-*均为**后续待新增/待运行**，本轮只审查文档。使用独立库D、UTF8、UTC、autocommit，owner有建表/索引/序列/视图权限和目录SELECT，A/B两连接同库，初始I、search_path=public,pg_catalog；另连接不同库同名对象验证隔离。PG参考构建和产品分开记录版本/OID，不比较动态OID数值相等。
+
+逐条准备完整人工SQL（不是冒称DataGrip生成）：
+
+```sql
+CREATE TABLE public.dg_doc (id integer PRIMARY KEY, note varchar(30) DEFAULT 'draft', CONSTRAINT dg_doc_u UNIQUE(note,id));
+CREATE INDEX dg_doc_note_idx ON public.dg_doc(note);
+CREATE VIEW public.dg_doc_v AS SELECT id,note FROM public.dg_doc;
+CREATE SEQUENCE public.dg_doc_s START WITH 7 INCREMENT BY 3 MINVALUE 1 MAXVALUE 100 CACHE 5 CYCLE;
+```
+
+DG-DB/SCHEMA先执行上方完整原文取得D和public的本端身份，再以表中参数约定依次执行TABLE/COLUMN/INDEX/INDEX-COL/CONSTRAINT/VIEW/SEQ/OWN；原始文件和常量的完整SQL及散列随记录保存，不能只保存本表标签。每项保存全部投影列序、行/NULL、OID/typlen/typmod、text/binary、来源属性号及命令标签，零行仍保留Describe。目标TABLE含dg_doc/r与dg_doc_v/v；COLUMN表的id位置1、note位置2、type_id分别23/1043，note type_spec为character varying(30)、默认来自真实表达式、mandatory=false；INDEX至少主/唯一/普通三索引，INDEX-COL的复合唯一顺序note,id→属性2,1、col_idx1,2；CONSTRAINT含真实p/u且指向各自index_id，不将普通索引造为约束；VIEW返回夹具SELECT定义；SEQ为7/3/1/100/5/true；独立序列OWN零行。表/视图/序列、索引、列关联须和同轮实际目录行闭环，名称及动态ID不硬编码。现有测试的NULL、text OID25、int8列号只作当前差异，不能降低目标。
+
+| 验收ID/变化与完整输入 | 目标/拒绝、权限和证据 |
+| --- | --- |
+| DG-PARAM/EMPTY | 上述各参数请求分别用有效N、NULL、4294967295，CONSTRAINT另测[N,NULL]/[NULL,N]；Q与扩展各采。NULL/不存在OID应零行且列描述不变。新建空库只应无用户对象，数据库/schema/必要内建身份不能一律空。合法但未支持表达式按求值块在分析/绑定或执行明确0A000，记录具体阶段；缺关系42P01，不能吞错误伪空。失败后Sync与SELECT 1恢复沿第7章，成功SQLSTATE不适用。 |
+| DG-LIVE | A在DDL前准备原模板，B逐条 `ALTER TABLE public.dg_doc ADD COLUMN extra integer;`、`ALTER TABLE public.dg_doc RENAME COLUMN note TO label;`；A/B每次新Bind/Execute与UI刷新，列位置/索引列/约束键必须更新，旧note消失、OID不伪换。再 `DROP VIEW public.dg_doc_v;`、`DROP TABLE public.dg_doc;`，所有表/列/索引/约束及视图源码行消失；`CREATE TABLE public.dg_doc (id integer);` 后新真实对象身份与单列，不能使用旧缓存；prepared/portal快照沿目录更新块。 |
+| DG-OWN/ACL | 拥有关系独立夹具 `CREATE TABLE public.dg_doc_identity (id bigint GENERATED ALWAYS AS IDENTITY);`；OWN须有真实i边、子列号1，SEQ与列identity闭环。未开放则创建前能力拒绝、无残留，不能把独立序列空集算identity通过。非owner夹具沿角色块建立真实认证及schema USAGE、表SELECT授予/撤销；保存操作SQL与实际权限，对比数据库/schema/表列表、定义及错误。bootstrap root不代替授权测试。 |
+| DG-UI | 固定真实DataGrip完整build、OS/JRE、PostgreSQL数据源类型、pgJDBC版本/JAR散列及连接设置（脱敏），在D选中public后执行完整刷新；保存Database Explorer数据库/schema/表列/索引约束/视图/序列截图，打开视图DDL和表定义，执行上述LIVE每步刷新后再截图。按请求序号保留database日志完整SQL、实际绑定值/类型/格式、时间/connection ID、错误及必要服务端日志，将截图对象和OID/字段结果对应。对象过滤器只改变显示，不当作内省范围；系统minicatalog和已有缓存须单列，重连/清缓存后再证。UI截图或日志任一缺失仅登记已验证层，不能宣称GUI兼容。 |
+
+DG-UI输出归第8章后续证据产物（待新增），模板直接执行、libpq代发、真实UI分别统计有效用例数；源注释DataGrip2025.1.3不是完整build证明，固定版本实采与当前冻结模板差异逐条保留。18.6须附精确构建，不能以server_version报告值代替。清理先关闭portal/statement、ROLLBACK至I，再按成功创建项逐条 `DROP VIEW IF EXISTS public.dg_doc_v;`、`DROP TABLE IF EXISTS public.dg_doc;`、`DROP TABLE IF EXISTS public.dg_doc_identity;`、`DROP SEQUENCE IF EXISTS public.dg_doc_s;`，撤销临时授权/角色、关闭连接及UI临时服务，恢复原设置。缺夹具能力记录准备门槛，不编造后续成功行。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -5279,6 +5341,10 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### 驱动元数据内省流程
 
 后续分别建立“schemas/tables 请求采证”“columns 与类型缓存请求”“复合主外键展开”“index 与真实统计”“typeInfo 与驱动合成字段”窄任务，每项复用本章公共字段契约，先固定 REL42.7.8 两端实采 SQL/参数与全部描述，再限定最小实现及独立测试。Java DatabaseMetaData 验收入口、JAR 散列、启动/清理、差分运行及证据归档交第 8 章；所有新测试/日志产物均待新增，不在本任务创建。
+
+#### 图形客户端内省流程
+
+后续按“冻结build及完整SQL/参数采集”“数据库/schema与刷新”“表列和复合索引/约束”“视图源码/独立序列/拥有关系”“真实角色与UI证据”拆窄任务；优先扩展现有独立pg_datagrip_test.rs、pg_query_test.rs、pg_client_integration_test.rs，不将测试放进生产文件。每项复用本章对象事实及类型/权限契约，所需代码另立计划；第8章运行模板、外部库代发与真实UI并分级归档。Ready文档范围用五节锚点、累计提交/正文、引用路径、逐字段/SQL→来源→策略→验收及diff审阅代替缺失的 .agents/skills/tidb-verify-profile/SKILL.md。正确性风险是参数顺序/关联身份和DDL旧缓存，兼容性风险是name/char/xid类型、缺ACL/拥有关系及客户端build变化；性能与全量内省成本未测。本块文档完成不表示功能或真实客户端通过，下一批25接其指定主题。
 
 ## 7. 线协议认证与数据通道
 
