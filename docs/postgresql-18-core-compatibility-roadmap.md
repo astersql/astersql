@@ -724,6 +724,8 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 ### 模块
 
+章节验收与后续交接以本章前18块为累计契约，依赖交付为 `f4cde1ed76`（准备描述执行元数据契约）。本轮复核 `pkg/server/pg_types_test.rs::common_type_oids_and_values`、`pkg/server/pg_extended_test.rs::text_parameters_are_typed_and_reject_loss` 以及 `pkg/server/pg_client_integration_test.rs::run_clients`：前两者分别有普通结果OID/值和部分参数成功/拒绝断言，后者启动真实客户端并检查MySQL隔离，不能外推全部类型差分覆盖。经RustCodeGraph读取，均未运行；pkg/server无doc.go。生产入口及各族独立测试沿前序模块段，不新增接口或测试文件。
+
 [规范类型与协议映射](#规范类型与协议映射)复用共享内核；`pkg/types/field_type.rs::FieldType` 是 parser 类型别名，`AggFieldType` 保留 MySQL 混合符号整数提升规则，不以 PG 目标改写 Go 既有语义。`pkg/server/conn.rs::NativeType` 的 code/flags/length/decimal、`QueryResult` 与 `PreparedMetadata` 承接原始类型；`runtime.rs` 的 Prepare 分支及 `result_metadata` 从结果字段提取这些信息，`protocol_result_column` 另产 MySQL 列描述。PG 出口为 `pg_result.rs::pg_type` / `encode_formats` / `value_text` / `value_binary`；入口为 `pg_extended.rs::parameter` / `binary_parameter`。这些是现有符号，不是新建接口。第 2 章交来的转换目标、参数编号、数组结构及名称身份须先定型；本块不替 parser 或 resolver 决定语法与绑定。
 
 本块静态取证基线为 `69ef39f91a781a4147568622943d719c95e3f7cd`，日期 2026-10-23。已阅读上述符号及独立测试 `pkg/server/pg_types_test.rs` 的 `common_type_oids_and_values`、`native_metadata_bridge_preserves_boolean_and_mysql_columns`、`unsigned_binary_and_unsupported_types`、`missing_original_metadata_is_explicitly_unsupported`、`catalog_char_and_acl_wire_types`、`pg_binary_native_results`，以及 `pkg/types/field_type_test.rs::TestFieldType` 的宽度、精度和 flags 断言。前者覆盖意图包括同值异类型、unsigned 最大值、bytea、JSON/零日期/duration 拒绝及缺元数据；目录 char/ACL 断言不能证明通用数组支持。目标包没有 `doc.go`。全部测试未运行，源码阅读不是当前功能通过证据。
@@ -1164,7 +1166,53 @@ unknown字面量、未定型NULL、Parse未指定OID参数是不同来源，必�
 
 官方依据（2026-10-23查阅）：PostgreSQL **18** §54.2.3 [Extended Query](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY) 支持Parse/Bind/两种Describe与Execute的分责；§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 的Parse、Bind、ParameterDescription、RowDescription、DataRow支持上述字段、格式数量及NULL长度。推断失败以 **REL_18_0** [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/tcop/postgres.c)::pg_analyze_and_rewrite_varparams为依据；固定结果变化拒绝以同tag [plancache.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/cache/plancache.c)::RevalidateCachedQuery为依据。手册与源码定义目标，18.6仍是来源指定基线，没有该补丁版本或本地协议实测。
 
+#### 章节验收与后续交接
+
+本块只收束文档。以下索引与各族方向表、验收条目共同组成完整矩阵，不以索引行代替其精确值域、精度、SQLSTATE或二进制格式。来源18.6仍是指定目标，未取得该精确构建的运行证据；所有能力当前为**未验证**，源码与独立测试只作静态入口。
+
+| 来源步骤 | 累计覆盖位置 | 收束条件 |
+| --- | --- | --- |
+| 1：双向映射、推导、NULL | 规范类型与协议映射；准备描述执行元数据契约 | 参数类型、规范身份、结果描述及MySQL标志分别核对，TYPE-MAP与META互相引用；OID映射不是支持证明。 |
+| 2：全部类型族 | 布尔至基础数组的15个类型族块（整数含三个宽度，文本含三种身份） | 逐族按下表展开四方向、边界及拒绝目标，目录专用类型不能替代通用类型。 |
+| 3：cast及不等价边界 | 显式隐式转换契约及各族桥接段 | CAST条目覆盖E/A/I、精度溢出、时区、数组维度/下界；unsigned、零日期、duration保留双方言差异。 |
+| 4：验收矩阵及生命周期 | 各族验收表、TYPE-MAP、META | 四方向与NULL/边界/非法输入均有目标、错误和描述断言；消息状态与恢复交工作流7。 |
+
+为每个下表类型建立能力ID `TYPE-ACCEPT/<族>/<IT|IB|OT|OB>/<VALUE|NULL|EDGE|INVALID>/pg`，这是**待新增登记约定**，不是既有测试名或当前通过记录。IT/IB为text/binary参数输入，OT/OB为text/binary结果输出。每格继承对应族列出的身份、值域/精度与错误；四方向均须记录参数OID或结果OID/typlen/typmod、实际格式、预期/实际值和SQLSTATE，不能留白。输入NULL固定外层-1且保留已定型身份；输出NULL同为-1，另跑首行NULL、全NULL和零行META场景。EDGE同时验上下端/特殊值；INVALID在输入测非法文本、长度、越域，在输出用受控非法内部值/缺身份夹具（待新增）验证拒绝，不能通过构造非法SQL冒充输出检查。无成功结果的拒绝场景，结果载荷和成功列元数据写“不适用（拒绝且无DataRow）”，仍断言拒绝前未发送成功结果。成功SQLSTATE写“不适用（成功）”。
+
+| 族与既有验收索引 | IT正例 / 反例 | IB目标 / 非法输入 | OT / OB目标与边界 | 当前静态入口与缺口 |
+| --- | --- | --- | --- | --- |
+| bool；BOOL | true→真 / unknown拒绝22P02 | 02→真 / 超长拒绝22P03 | t / 01；16/1/-1，false及NULL独立 | pg_types_test、pg_extended_test有局部断言；四方向全集未验证。 |
+| int2/int4/int8；INT | 1 / 各宽度上限+1拒绝22003 | 网络序定宽 / 短载荷按族长度错误 | 十进制 / 2、4、8字节；21/23/20及对应typlen，typmod=-1；负端与unsigned提升 | pg_types_test、pg_extended_test；宽度/unsigned binary及typed NULL缺证，未验证。 |
+| numeric；NUM | 12.340 / 12bad拒绝22P02 | base-10000格式 / 非法头或digit拒绝 | 精确保真文本 / numeric格式；1700/-1/族typmod；舍入、负scale、大精度及特殊值 | mydecimal_test、pg_types_test；共享Decimal域与PG目标不同，未验证。 |
+| float4/float8；FLOAT | 1.5 / 域外数值拒绝22003 | 4/8字节位型 / 错长度拒绝 | 目标宽度可逆文本 / 网络位型；700/701、4/8、-1；±0、无穷、NaN | pg_types_test局部binary断言；窄化及全边界未验证。 |
+| text/varchar/bpchar；TEXT | é / NUL或非法编码拒绝22021 | 编码字节 / 同一编码拒绝 | 编码文本 / 同一字节；25/1043/1042及声明typmod；空串、长度/尾空格与22001 | pg_types_test、pg_extended_test；声明身份与长度保真未验证。 |
+| bytea；BYTEA | hex 00ff / 奇数hex拒绝22P02 | 原始00ff / 帧截断拒绝08P01 | 选定bytea_output / 原始字节；17/-1/-1；空字节非NULL | pg_extended_test；escape与设置组合未验证。 |
+| date；DATE | 2024-02-29 / 2026-02-29拒绝22008 | 四字节日序 / 超日期域22008 | DateStyle文本 / 日序；1082/4/-1；BC、有限端点、±infinity，零日期拒绝 | pg_types_test、pg_extended_test；完整日历域及binary输入未验证。 |
+| time；TIME | 24:00:00 / 负duration拒绝 | 微秒日内域 / 越域拒绝 | 日内文本 / 微秒；1083/8/精度typmod；p舍入及24时边界 | pg_extended_test当前反而拒绝24时；完整目标未验证。 |
+| timestamp；TS | 含6位小数的墙钟 / 零日期拒绝 | 微秒墙钟 / 越域拒绝 | 无时区文本 / 微秒；1114/8/精度typmod；BC、特殊值、舍入 | pg_types_test、pg_extended_test；扩展域及精度连续性未验证。 |
+| timestamptz；TZ | 两种偏移同一瞬间 / 非法区域拒绝 | 瞬时微秒 / 越域拒绝 | 会话区域显示 / 同一瞬时；1184/8/精度typmod；DST、特殊值 | 前序TZ模块静态入口；通用瞬时表示与四方向未验证。 |
+| interval；IV | 1 month 1 day / 非法单位拒绝 | 微秒/日/月三分量 / 非法长度拒绝 | IntervalStyle文本 / 三分量；1186/16/fields与p typmod；混合符号、非有限及溢出 | 前序IV模块静态入口；不得折为总秒，四方向未验证。 |
+| uuid；UUID | 合法128位文本 / 非hex拒绝22P02 | 16字节 / 错长度拒绝 | 规范小写文本 / 原字节；2950/16/-1；全0及全ff，无数值精度 | 前序UUID模块静态入口；专属身份与通用codec未验证。 |
+| json；JSON | 保留重复键原文 / 非法语法拒绝22P02 | JSON文本字节 / 非法编码拒绝 | 原文 / 同一原文；114/-1/-1；JSON null与SQL NULL分开，大数原文保留 | 前序JSON模块静态入口；MySQL BinaryJSON不能证明原文保真，未验证。 |
+| jsonb；JSONB | 重复键取最后值 / 非法Unicode拒绝 | 版本1加文本 / 错版本拒绝 | 规范语义文本 / 版本1加文本；3802/-1/-1；numeric域和scale | 前序JSONB模块静态入口；精确值与版本codec未验证。 |
+| 基础数组；ARRAY | 非1下界矩形数组 / 参差拒绝22P02 | 维度/元素OID/逐元素载荷 / OID不符42804 | 带必要下界文本 / 维度头与元素codec；数组OID/-1/元素typmod；空、数组NULL、元素NULL分开 | 前序ARRAY模块及目录局部测试；通用shape/lower保真未验证。 |
+
+表中未重复的精确错误分支、有限端点和格式字段全部按对应族正文及验收表逐格继承，不能统一套22P02或22P03；合法但未开放的表示/codec明确0A000，不能改写PG目标为拒绝。类型族矩阵需要IT→OT、IT→OB、IB→OT、IB→OB四组合均验证同一规范值。转换另按CAST矩阵验E/A/I与typed NULL；Prepare/Describe/Execute按META七组验全链。数组逐元素族展开，标量通过不自动开放数组。MySQL关联ID用/mysql，独立保留原Go契约，不要求两端OID相等。
+
+本轮查阅官方PostgreSQL **18** [第8章](https://www.postgresql.org/docs/18/datatype.html)确认各族规范入口，[第10章](https://www.postgresql.org/docs/18/typeconv.html)确认转换上下文分责，[§54.7](https://www.postgresql.org/docs/18/protocol-message-formats.html)确认Bind、ParameterDescription、RowDescription、DataRow字段；精确值/二进制细节继续绑定前序块的具体小节及源码版本。本块不新增二进制规范断言，不把18手册当18.6实测。
+
+| 工作流 | 输入/输出交接与验收责任 |
+| --- | --- |
+| 2：方言身份与解析边界 | 输入连接方言、类型名称、cast/数组AST、$n编号；本章返回类型与转换约束，语法/名称拒绝仍归2。 |
+| 4：方言函数与运算符契约 | 接收类型、共同类型及cast资格；负责重载、运算、返回类型及算术错误，不由codec决定运算语义。 |
+| 5：SQL会话与事务语义 | 提供TimeZone、DateStyle、IntervalStyle、bytea_output、编码及事务时间；负责状态/失效，本章验配置下的值与元数据。 |
+| 6：系统目录与内省契约 | 提供类型/对象身份及修饰符、失效信息；目录特例不能证明通用族，目录查询形状归6。 |
+| 7：线协议认证与数据通道 | 接收已定型身份、参数/结果codec与SQLSTATE目标；负责帧、消息顺序、portal、错误传递和Sync恢复。 |
+| 8：客户端与双方言共存验收 | 接收以上能力ID及四方向/边界用例；锁定参考构建、客户端和配置，按第1章采集差分及MySQL独立回归证据。 |
+
 ### 范围外
+
+章节验收与后续交接不运行数据库或测试、不建立差分平台，不修改工作流2/4/5/6/7/8正文，不以文档验收承诺完整支持；未开放类型与扩展生态保持原范围。
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
 
@@ -1203,6 +1251,8 @@ unknown字面量、未定型NULL、Parse未指定OID参数是不同来源，必�
 [准备描述执行元数据契约](#准备描述执行元数据契约)不实现准备器、参数推断、缓存失效、codec或协议状态机，不扩建planner/执行器；SQL PREPARE/EXECUTE语法、事务及目录变更实现分别交工作流2、5、6，消息/恢复交工作流7。不将元数据验证推广为无副作用执行或完整缓存兼容。
 
 ### 验收
+
+章节验收与后续交接要求逐项核对来源四步、15族四方向及VALUE/NULL/EDGE/INVALID格，沿各族验收表填精确目标、正反例、SQLSTATE、元数据、静态入口与缺口；所有格当前运行状态为未验证。TYPE-ACCEPT登记后按第1章记录提交、精确版本、环境、完整命令/退出码、有效用例数、原始产物、预期与实际；无运行用例不得填通过。META补零行、全NULL、重绑定、混合格式、typmod、缺元数据与不执行探测。文档验收另核对五公共小节、本块唯一标题、引用存在、无占位和仅第3章差异；这些检查只证明文档完成。
 
 [规范类型与协议映射](#规范类型与协议映射)的以下能力 ID 为**待新增**验收入口，非既有测试或功能通过记录。每项按第 1 章记录方言、定型前提、输入、类型、NULL、wire 元数据、错误与当前证据；本轮全部运行行为为未验证。成功项 SQLSTATE 不适用；错误目标参照 PostgreSQL 18 [附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)，不以现有 io::Error 自动推导其正确传输。
 
@@ -1415,6 +1465,8 @@ unknown字面量、未定型NULL、Parse未指定OID参数是不同来源，必�
 | META-NO-PROBE | 用执行调用计数或受控有副作用函数夹具观测Parse及两种Describe：执行原查询次数0，无数据副作用；只有Execute触发一次，分批重复Execute不重新求值。分析/规划合法的常量折叠不等于执行查询探测。 | Describe不调用执行闭包为静态证据，计数/副作用及准备内部链未验证；夹具为待新增，不引用现有函数名。 |
 
 ### 后续细分
+
+章节验收与后续交接仅保留候选边界：内部表示先确认各族身份、值域、typmod及typed NULL；cast依赖表示与E/A/I上下文；参数codec依赖稳定参数OID、元素codec和会话前提；结果codec依赖相同规范值、固定结果描述及portal格式。按族重新核实依赖与占用后由用户决定实施划分，本轮不生成执行任务。后续推荐工作流4承接类型/转换契约，工作流8补真实运行证据；15族、转换和元数据的未验证状态不得随文档完成升级。未发现需修改其他章节的契约冲突。
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
 
