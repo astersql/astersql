@@ -2526,6 +2526,14 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 本轮没有执行上述测试，当前运行证据为“未验证”，有效运行用例数 0；历史协议第一阶段记录仅供导航。
 
+#### 冲突忽略执行契约
+
+承接来源步骤 1 的 ON CONFLICT / DO NOTHING 与步骤 4 的副作用、恢复及 MySQL 共存；引用第 2 章[冲突子句语法边界](#冲突子句语法边界)，不重做 parser。能力 `SESSION-CONFLICT-NOTHING/pg` 属 PG 专属。批次 1、2 的累计依赖已由现有五节正文及提交 `d8c1ca891a110e1f57279c111176789c70cccf59`、`df9d9ebaeb` 复核；本块基于后者静态取证（2026-10-23）。
+
+通过 RustCodeGraph 实际读取 [planbuilder.rs](../pkg/planner/core/planbuilder.rs)::PlanBuilder::buildInsert：构造 BuiltPlan::Insert 时复制 on_duplicate 与 replace；[insert.rs](../pkg/executor/insert.rs)::InsertRuntime 和 InsertExec::exec_inner：非空重复键赋值调用 batchUpdateDupRows，ignore_errors 分支调用 batch_check_and_insert，普通分支按 normal_duplicate_key_mode 写入；prefetchUniqueIndices 收集 handle/unique keys。这里是共享执行复用入口，不是 PG 冲突目标选择或错误过滤已接线的证明。
+
+已读独立 [insert_test.rs](../pkg/executor/insert_test.rs)::insert_duplicate_check_modes_follow_transaction_and_pipeline_rules、insert_ends_snapshot_stats_when_flush_fails、insert_logs_unique_index_pointing_to_missing_row：分别断言重复键检查时机、flush 失败后的统计收尾及不一致索引错误；这些不能代替真实 PG 冲突选择与不覆盖旧行的断言。完整阅读 [pg_dml_test.rs](../pkg/server/pg_dml_test.rs)::prepared_crud_roundtrip，覆盖参数化普通 CRUD、坏 Bind 后 Sync 和 RETURNING 的 Parse 拒绝，没有 ON CONFLICT 用例。`pkg/server/doc.go`、`pkg/planner/doc.go`、`pkg/planner/core/doc.go`、`pkg/executor/doc.go` 均不存在。源码阅读与测试意图分列，实际运行用例数为 0；当前接受/拒绝阶段及诊断未验证，不能仅从局部接口缺字段断言全链能力。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2558,6 +2566,23 @@ Q 与扩展 Execute 应到达同一所属连接的规范会话，使用相同的
 
 官方依据于 **2026-10-23** 查阅，适用 **PostgreSQL 18**：[§6.4](https://www.postgresql.org/docs/18/dml-returning.html)定义三类默认行镜像与输出投影；[INSERT](https://www.postgresql.org/docs/18/sql-insert.html)定义默认值、输出表达式及实际插入/更新行；[UPDATE](https://www.postgresql.org/docs/18/sql-update.html)定义新值、别名和包含值未改变行的计数；[DELETE](https://www.postgresql.org/docs/18/sql-delete.html)定义被删行和计数。[§54.7](https://www.postgresql.org/docs/18/protocol-message-formats.html)用于结果消息与 CommandComplete 分责，[§3.4](https://www.postgresql.org/docs/18/tutorial-transactions.html)用于回滚及可见性，[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)用于 0A000/25P02/22012 错误类别。以上为目标依据；虽当前附录页面提及 18.6，仍无该补丁版本的参考实例、发布核验或实测结果，不将大版本手册升级为精确补丁运行证据。
 
+#### 冲突忽略执行契约
+
+复用本章公共模板及 RETURNING 契约。DO NOTHING 对所选仲裁冲突跳过该候选行，不能更新、删除或覆盖已有行；无冲突行仍正常写入。目标选择必须来自真实唯一索引/约束元数据，禁止先 SELECT 再 INSERT 的竞态近似或 MySQL INSERT IGNORE 等价替换。
+
+| 目标形态 | PG 目标与产品开放条件 |
+| --- | --- |
+| 无目标 `ON CONFLICT DO NOTHING` | 处理所有可用仲裁约束/唯一索引的冲突；不是吞掉所有错误。 |
+| 列/表达式目标 `(id)` | 按第 2 章保真信息推断匹配的唯一索引；不是任意唯一键都可忽略。无匹配索引须报错，即使候选行本可无冲突写入。 |
+| `ON CONSTRAINT conflict_doc_pkey` | 名称绑定到本表真实可用约束，不将普通索引名冒充约束名。不存在或不可用须失败。 |
+| 部分索引 `(k) WHERE active` | 谓词用于索引推断，不是候选行过滤；匹配的非部分唯一索引也可能被推断。必须证明推断及索引适用行，否则该合法形态在写入前明确能力拒绝。 |
+
+只有适用的非延迟唯一/排斥仲裁冲突可由此动作处理；列推断针对唯一索引，非延迟排斥约束仅列为 DO NOTHING 的后续独立能力门槛，不从 DO UPDATE 支持与否类推。NOT NULL、CHECK、外键、类型转换、权限、表达式求值、存储及非仲裁唯一键错误均不得笼统降成警告。遇到多种同时违规不承诺固定检查顺序；验收用隔离单一错误的输入。尚未证明的合法目标要求 0A000 能力拒绝，实际门禁仍待取证；这与参考 PG 成功/自身错误分开。
+
+RETURNING 只返回实际插入行，跳过行零返回、影响行数 0；混合批次只计成功插入行。无 RETURNING 无结果集，有 RETURNING 即使零行也保持固定列描述，不能返回冲突旧行。成功不使事务进入 E；真实错误遵守本章失败事务与 Sync 边界。所谓“不写入”仅指跳过候选不产生目标表插入/覆盖，不承诺不求值、不加锁或所有副作用为零：sequence 的 nextval 可在冲突前消耗且不回滚。Read Committed 下并发提交可能使当前快照不可见的冲突行阻止插入；不能由快照 SELECT 无行推出必须插入。
+
+官方依据均于 **2026-10-23** 查阅，适用 **PostgreSQL 18**：[INSERT / ON CONFLICT / Outputs](https://www.postgresql.org/docs/18/sql-insert.html) 支持目标推断、仲裁限制、跳过及计数/返回规则；[约束 §5.5](https://www.postgresql.org/docs/18/ddl-constraints.html) 支持独立约束错误边界；[隔离 §13.2.1](https://www.postgresql.org/docs/18/transaction-iso.html) 支持并发快照边界；[序列 §9.17](https://www.postgresql.org/docs/18/functions-sequence.html) 支持 nextval 例外；[事务 §3.4](https://www.postgresql.org/docs/18/tutorial-transactions.html) 支持原子性/恢复；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 仅确定错误类别名称，不证明某条 SQL 的实测诊断。在线附录当日自述 18.6 错误码表，但没有本地 18.6 执行或版本固定差分证据，不升级为该补丁版本行为通过。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2567,6 +2592,10 @@ Q 与扩展 Execute 应到达同一所属连接的规范会话，使用相同的
 #### 返回子句执行契约
 
 本块不实现 parser、planner、执行器、codec 或测试，不解除现有 RETURNING 门禁，不建设第二套 PG 引擎。序列/identity 的分配、非事务计数器回退由后续专项负责；本块生成值示例使用确定的列 DEFAULT 表达式，不承诺序列值在 ROLLBACK 后复用。ON CONFLICT、写入 CTE、MERGE、触发器/规则、UPDATE FROM/DELETE USING、继承表及并发写冲突不由普通表夹具覆盖。PG 18 的 OLD/NEW 与 `RETURNING WITH (OLD AS o, NEW AS n)` 是合法规范形式，后续单独取证和开放；未支持时在写入前拒绝，不能假装是 PG 非法语法。权限检查与更广的表达式集合沿相关工作流，不能因本块列出简单算术就承诺任意 SELECT 投影已可执行。
+
+#### 冲突忽略执行契约
+
+不实现冲突 AST、解析改写、目录补建、执行器或存储修改；DO UPDATE、excluded、更新条件交下一块。RETURNING 的投影/元数据沿前块；sequence/identity、事务恢复与 wire 精确字段分别交对应任务。表达式索引、collation/opclass、延迟/排斥约束、分区、触发器/规则及并发索引维护不在首批基本唯一键用例的开放证明内；合法但未支持形式须保留写前拒绝边界，不能悄悄降级。本文不运行原型、数据库实验、Cargo/Go 构建或性能测试，不用解析成功、标签或 MySQL IGNORE 证明 PG 副作用正确。
 
 ### 验收
 
@@ -2610,6 +2639,47 @@ MySQL 共存能力 `SESSION-RETURNING/mysql` 分类为 MySQL 专属入口保留�
 
 人工验收映射：来源步骤 1 RETURNING → 五类正例的返回镜像/生成值/零行/多行；步骤 4 副作用与恢复 → 每例 S、独立提交变体、拒绝与表达式失败；双方言隔离 → MySQL Query/Prepare/Execute。当前所有 observations 为未采集、verdict 为未验证，wire 精确来源字段/错误位置、真实持久可见性及 18.6 差分均未取证。正确性风险在返回镜像、表达式失败后的原子性与重复执行；兼容性风险在类型/别名、计数及合法形式的拒绝阶段；性能未测，不作缓存、流式输出或吞吐结论。
 
+#### 冲突忽略执行契约
+
+以下均为**待新增**用例定义，非已执行测试。case_id 使用 `session.conflict-nothing.pg.<短名>.<simple|extended>.<commit|rollback>`；错误/门禁例用 `<simple|extended>.<idle|transaction>`，能力为 SESSION-CONFLICT-NOTHING/pg，related_case_ids 关联本块 MySQL 用例。沿公共模板记录 UTF-8、UTC、实际隔离级别、独立同库 W/O、初始 I、客户端自动提交与无并发写入/触发器/规则。每个用例独立事务外准备，Q 每次单语句：
+
+```sql
+CREATE TABLE public.conflict_doc (
+  id integer CONSTRAINT conflict_doc_pkey PRIMARY KEY,
+  email text CONSTRAINT conflict_doc_email_key UNIQUE,
+  v integer NOT NULL CHECK (v > 0)
+);
+INSERT INTO public.conflict_doc VALUES (1,'a',10),(2,'b',20);
+SELECT id,email,v FROM public.conflict_doc ORDER BY id;
+```
+
+最后一条简称 S，初始完整结果 B=[(1,'a',10),(2,'b',20)]。各成功例 W BEGIN 后执行表中完整 SQL（返回列均 id/email/v，int4/text/int4，text 格式；精确来源/typmod 等沿 RETURNING 契约采集），再 W/O 各 S。表中“写后”指 W；O 提交前始终 B。W ROLLBACK 后双方 S 均 B；独立重建并重跑 COMMIT 变体后双方 S 均为表中写后值。成功 SQLSTATE 不适用，BEGIN 后 T、Execute/Sync 后 T、事务结束 I。
+
+| 短名与完整 SQL（均以上述 B 起始） | 返回行；修改数/标签 | 写后 S |
+| --- | --- | --- |
+| existing：`INSERT INTO public.conflict_doc VALUES (1,'changed',99) ON CONFLICT (id) DO NOTHING RETURNING id,email,v` | 零行；0 / INSERT 0 0 | B，旧 email/v 不覆盖 |
+| fresh：`INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT (id) DO NOTHING RETURNING id,email,v` | (3,'c',30)；1 / INSERT 0 1 | B 加 (3,'c',30) |
+| all-keys：`INSERT INTO public.conflict_doc VALUES (3,'b',30) ON CONFLICT DO NOTHING RETURNING id,email,v` | 零行；0 / INSERT 0 0 | B，确证非主键也被选择 |
+| named：`INSERT INTO public.conflict_doc VALUES (3,'b',30) ON CONFLICT ON CONSTRAINT conflict_doc_email_key DO NOTHING RETURNING id,email,v` | 零行；0 / INSERT 0 0 | B |
+| mixed：`INSERT INTO public.conflict_doc VALUES (1,'changed',99),(3,'c',30) ON CONFLICT (id) DO NOTHING RETURNING id,email,v` | 仅 (3,'c',30)；1 / INSERT 0 1 | B 加 (3,'c',30) |
+
+各例另设不带 RETURNING 的独立变体（短名加 `-no-returning`），去掉末尾 RETURNING id,email,v，标签/最终行相同但无结果集，避免当前 RETURNING 限制遮蔽冲突契约。simple 发送 Q；extended 在 BEGIN 前 Parse s、Describe statement（无参数/OID），BEGIN 后 Bind 新 portal p（空参数、text 结果）、Describe portal、Execute(max_rows=0)、Sync；Parse/Describe 前后 S 均 B。fresh 的参数化独立例使用 `INSERT INTO public.conflict_doc VALUES ($1,$2,$3) ON CONFLICT (id) DO NOTHING RETURNING id,email,v`，OID [23,25,23]、text 值 [3,'c',30]。任何早期能力拒绝只能记限制，不能计成功验收。
+
+错误例每次重建 B，执行以下完整输入；默认无 RETURNING，错误无返回行/成功标签、修改数不记成功 0。SQLSTATE 的单例精确值、消息 S/V/C/M/D/H/P、发生阶段与位置均待参考端采集，不能从附录类别或文本推断已通过：
+
+- other-key：`INSERT INTO public.conflict_doc VALUES (3,'b',30) ON CONFLICT (id) DO NOTHING`，仅 email 唯一冲突，须失败；不能忽略成成功。
+- bad-target：`INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT (v) DO NOTHING`，v 无唯一索引，即使数据无冲突仍推断失败；bad-name：`INSERT INTO public.conflict_doc VALUES (3,'c',30) ON CONFLICT ON CONSTRAINT missing_constraint DO NOTHING`，名称失败。
+- not-null：`INSERT INTO public.conflict_doc VALUES (3,'c',NULL) ON CONFLICT DO NOTHING`；check：`INSERT INTO public.conflict_doc VALUES (3,'c',0) ON CONFLICT DO NOTHING`；expression：`INSERT INTO public.conflict_doc VALUES (3,'c',1/0) ON CONFLICT DO NOTHING`。各自唯一键无冲突，必须保留独立错误；不得降为警告或写入替代值。
+- atomic：`INSERT INTO public.conflict_doc VALUES (3,'c',30),(4,'b',40) ON CONFLICT (id) DO NOTHING`，第二行非目标唯一错误须撤销本语句第一行，最终 S 仍 B。
+
+idle 变体 I 中发送 Q 或 Parse/Bind/Execute（零参数、text），错误后扩展先 Sync，Ready I，双方 S 仍 B，SELECT 1 成功。transaction 变体 W BEGIN 后先 `INSERT INTO public.conflict_doc VALUES (9,'pending',90)`，再发错误输入；运行错误须到 Execute，不能把 Parse 拒绝计为执行错误通过。O 的 S 始终 B；出错后扩展 Sync 仍 E，W Q `SELECT 1` 目标 25P02/E，W ROLLBACK 后 I，W/O 的 S 均 B，pending 和语句中间写入均未残留，再 SELECT 1 成功。产品对尚未开放的合法输入单设 gate case，目标写前 0A000、按同样恢复及 S 检查，参考端则按成功表取证；当前是否正确门禁未验证。
+
+部分索引独立用例 `partial` 另在事务外建 `CREATE TABLE public.conflict_partial (id integer PRIMARY KEY,k integer,active boolean)`、`CREATE UNIQUE INDEX conflict_partial_active ON public.conflict_partial(k) WHERE active`，执行 `INSERT INTO public.conflict_partial VALUES (1,7,true)`。W BEGIN 后逐条执行 `INSERT INTO public.conflict_partial VALUES (2,7,true) ON CONFLICT (k) WHERE active DO NOTHING RETURNING id`（零行/INSERT 0 0）、`INSERT INTO public.conflict_partial VALUES (3,7,false) ON CONFLICT (k) WHERE active DO NOTHING RETURNING id`（返回 3/INSERT 0 1）；S 改 `SELECT id,k,active FROM public.conflict_partial ORDER BY id`，W 写后 [(1,7,true),(3,7,false)]、O 仍 [(1,7,true)]。分别提交后双方写后值、回滚后双方初始值。用无 RETURNING 变体隔离能力；独立重建后执行 `INSERT INTO public.conflict_partial VALUES (2,7,true) ON CONFLICT (k) DO NOTHING`，须推断失败、不写入，恢复同上。产品无部分索引能力时记录 setup/执行的明确限制，不以 setup 拒绝替代 PG 成功证明。
+
+MySQL 共存用例 `session.conflict-nothing.mysql.<query|prepared>`，能力 SESSION-CONFLICT-NOTHING/mysql，按自身 Go/TiDB/MySQL 基线验收，不将 INSERT IGNORE 当等价实现。M/N 同 Server 独立当前库，事务外 `CREATE TABLE conflict_mysql_doc (id INT PRIMARY KEY,email VARCHAR(30) UNIQUE,v INT NOT NULL)`、`INSERT INTO conflict_mysql_doc VALUES (1,'a',10),(2,'b',20)`，SET autocommit=1 并记录 sql_mode、隔离级别。M BEGIN，Query `INSERT IGNORE INTO conflict_mysql_doc VALUES (1,'changed',99),(3,'c',30)`；prepared 变体独立重建，Prepare `INSERT IGNORE INTO conflict_mysql_doc VALUES (?,?,?),(?,?,?)`，Bind/Execute 同六值及自身整数/字符串参数类型。M `SELECT id,email,v FROM conflict_mysql_doc ORDER BY id` 目标 B 加 (3,'c',30)，N 同查询仍 B；交错 PG 成功/失败恢复后重复双方查询及原 prepared SELECT `SELECT v FROM conflict_mysql_doc WHERE id=?`（1→10），元数据、模式、警告、affected rows 对自身基线采集，不套 PG 数字。ROLLBACK 后 M/N 均 B；独立提交变体 COMMIT 后均写后值。警告精确条目/错误码尚未采集。
+
+所有例清理先 ROLLBACK、Close 存在的 portal/statement/prepared，事务外 DROP 各自 conflict_doc/conflict_partial/conflict_mysql_doc，再关闭连接；避免在失败事务中 DROP。来源步骤 1→目标选择和成功表，步骤 4→S、提交/回滚、错误恢复和 MySQL 交错。observations 未采、verdict 未验证，运行用例 0；正确性风险为错误过滤、原子性、索引选择，兼容性风险为合法目标的拒绝阶段、诊断和零行返回元数据，性能未测。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -2623,6 +2693,12 @@ MySQL 共存能力 `SESSION-RETURNING/mysql` 分类为 MySQL 专属入口保留�
 后续实施任务先沿现有共享会话/执行链定位单次写入的行镜像与固定输出类型，再按 INSERT 默认值、UPDATE 新值、DELETE 旧值、零行/多行逐项开放；每项以本块独立测试定义及写后/提交/回滚证据为门槛。先扩充现有 [pg_dml_test.rs](../pkg/server/pg_dml_test.rs) 的非空表拒绝断言，再安排共享执行层对应独立测试；这些均为待新增测试意图，不表示本轮创建或执行了测试。不得只删除 command 门禁或改标签就宣布支持，也不预设新字段/API 或复制一套执行器。
 
 工作流 2 提供三类 AST/投影保真与合法拒绝位置，3/4 提供结果表达式定型/求值，6 提供真实列/默认值和来源元数据，7 验证 Describe 不写入、错误传递、portal 完成/重复 Execute 不重复写入及输出格式；事务专项复用本块回滚证据并补状态门禁。OLD/NEW、identity、ON CONFLICT 与写入 CTE 分别等专项完成再组合。文档完成只关闭本块契约缺口，不能升级任何当前功能支持状态。
+
+#### 冲突忽略执行契约
+
+后续先沿第 2 章保真节点与真实唯一约束元数据接入共享 planner/执行链，逐项建立无目标、列目标、命名约束的独立测试，再证明多唯一键的非目标错误和混合批次原子性；部分索引推断单独开放，不以全局 ignore_errors 开关替代仲裁。优先扩充 pg_dml_test.rs 与共享执行层同目录独立测试，本轮未新增代码或测试文件。
+
+RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负责 DO UPDATE；目录工作流 6 提供真实约束/索引身份，协议工作流 7 采集 Q/扩展错误、恢复与精确 wire 元数据，事务专项复核失败状态和回滚。并发、排斥/延迟约束及 sequence 消耗交各自窄任务取证，保留未支持门禁。文档完成不代表 PG 冲突忽略已实现、18.6 差分通过或性能达标。
 
 ## 6. 系统目录与内省契约
 
