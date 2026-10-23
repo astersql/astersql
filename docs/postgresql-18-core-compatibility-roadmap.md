@@ -3673,6 +3673,19 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 仓库 DATAGRIP_VIEW_SOURCES_SQL 注释标记 DataGrip 2025.1.3、2026-10-03 日志及 statement 1869279758；这属于仓库存档来源声明，本轮未核验原始日志或 UI，不能升级为当前客户端通过。官方客户端需求另见目标行为。
 
+#### 序列身份与依赖契约
+
+承接来源步骤 1、2，能力 `CAT-SEQUENCE-DEPEND/pg`。批次 10 的 `3ac33b4c83` 及累计批次 9–1 的 `0e0f892cc2`、`52f558f71f`、`84fb929330`、`1807f7800b`、`af67d135cf`、`7ade409a9d`、`9bd191c612`、`b7ff2288b8`、`946e9b2c20` 均有五节正文和提交，前置满足；第 1–5 章交接沿首块，特别引用第 5 章序列执行与标识列生成契约。以下为 2026-10-24 在 `3ac33b4c83` 经 RustCodeGraph status/explore/定点 node 核对的静态事实；server、meta/model 无 doc.go，测试未运行。
+
+| 路径/符号 | 当前事实与证据限制 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows / native_metadata_rows | pg_sequence 分支从本次共享 infoschema 快照当前原生库的 StatePublic TableInfo.Sequence 取参数；seqrelid=table_oid(ID)，seqtypid 固定 20，Cache=false 时 seqcache=1，否则 CacheValue；不调用序列分配。非序列无行，AUTO_INCREMENT 不新增序列行。 |
+| 同文件 sequence_dependency_rows / column / column_catalog_rows | pg_depend 仅投影真实序列到命名空间的 n 边，classid=1259、refclassid=2615、两个 subid=0；缺当前 schema 时空集，缺完整 model 时错误。objsubid 虽在内部行末，字段绑定仍为 int4；attidentity 当前为空。全文未找到 pg_get_serial_sequence 分支，不能宣称该函数已支持。 |
+| [table.rs](../pkg/meta/model/table.rs)::SequenceInfo；[column.rs](../pkg/meta/model/column.rs)::ColumnInfo | SequenceInfo 保存 Start/Increment/MinValue/MaxValue/Cache/CacheValue/Cycle/Comment，没有所属表列或声明序列类型；ColumnInfo 无 identity 模式及稳定序列引用。普通默认表达式也不能据文本构造已解析的序列依赖。 |
+| [pg_oid.rs](../pkg/server/pg_oid.rs)::SYSTEM_RELATIONS / table_oid / namespace_oid | 固定系统关系 pg_class=1259、pg_namespace=2615、pg_sequence=2224；真实对象 OID 使用持久 ID 的检查映射，序列行和依赖 objid 复用 pg_class 的 OID，范围溢出拒绝，不截断。 |
+
+工厂接线沿首块 pg_conn/pg_extended→CatalogQuery→ConcreteTiDBContext::schema_snapshot，无新增执行链。独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_dependencies_live 使用真实 domain 建序列和 AUTO_INCREMENT 表，断言默认序列引用创建拒绝、列拥有查询空集但保留 26/26/23 描述、命名空间 n 边非空及 26/23/18 类型、其他库隔离、NULL/未知 OID、0A000 拒绝、Parse 后删建更新；是测试意图，不是本轮通过。[pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::context/execute/pg_datagrip_tables 使用 CatalogQuery 手工夹具，未找到该文件的序列依赖专项测试。两文件由 [lib.rs](../pkg/server/lib.rs) 独立注册。依赖测试注释保存原 statement 1869279760，但未核验客户端原始日志/版本，不能把它升级为真实 DataGrip 本轮验收。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3854,6 +3867,23 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 定义是重建结果，不承诺原输入注释、空白、关键字大小写逐字回放；字符串内容和引号标识符语义必须保留。原生SELECT字符串只有经绑定、类型和方言验证后才可反解，不能对文本全局替换引号或按“ AS ”切割。内省不执行视图查询、不读取基表数据、不改变CHECK OPTION；其写入约束运行语义交后续实施，不能由定义出现推出已可用。权限须核对真实角色及目录读取权：pg_get_viewdef可读不授予基表SELECT，不能一律要求视图owner，也不能绕过已撤销的目录访问权限。
 
+#### 序列身份与依赖契约
+
+本块字段逐项沿首块模板登记，以下类型均为未强转的目标类型。OID 数据值与其 Describe 类型 OID 分开；所有行来自同一次快照、当前 PG 数据库，权限与 search_path 复用本章公共契约。目录读取不等于拥有序列 USAGE/SELECT/UPDATE；目录参数和依赖不应因无序列分配权限而被伪造为空，名称可见性也不等于目录可枚举性。跨库对象不泄漏，所有者角色/ACL 尚无来源，不从“列拥有”关系推造 relowner。
+
+| 字段/查询 | 真实来源与关联键；目标 PG 类型/OID | 目标与缺口策略；验收 |
+| --- | --- | --- |
+| pg_sequence.seqrelid、seqtypid | TableInfo.ID→pg_class.oid，实际声明类型→pg_type.oid；均 oid/26 | 只为真实 relkind=S 对象一行；类型 smallint/integer/bigint 对应 21/23/20，当前固定20只代表原生序列。缺声明类型不得猜测；SEQDEP-01。 |
+| seqstart、seqincrement、seqmin、seqmax、seqcache | SequenceInfo.Start/Increment/MinValue/MaxValue/Cache 与 CacheValue；均 int8/20 | 五项非NULL参数，禁用缓存有效大小1，不返回水位或 currval；SEQDEP-01/04。 |
+| seqcycle | SequenceInfo.Cycle；bool/16 | 非NULL，文本/二进制编码遵第3章，零行也须同描述；SEQDEP-01。 |
+| pg_depend.classid、objid、refclassid、refobjid | 真实依赖两端目录类别与持久对象 ID；均 oid/26 | 序列→schema 为 (1259,S,2615,N)；序列→拥有表列为 (1259,S,1259,T)，不是 pg_sequence 的关系OID2224。缺拥有来源时当前列拥有子查询可类型正确空集，但不得据此开放 identity；SEQDEP-02/03。 |
+| objsubid、refobjsubid、deptype | 真实依赖端点列号与种类；int4/23、int4/23、内部单字节 "char"/18 | 序列端0；schema端0/n；OWNED BY 表列端为稳定 attnum/a，identity 为 attnum/i。列号须跟 pg_attribute 一致，不能永久依赖可重排的数组位置；SEQDEP-02/05。 |
+| pg_attribute.attidentity；pg_get_serial_sequence(text,text) | 持久 identity 模式与同一拥有边；"char"/18；text/25 | 普通列空、ALWAYS=a、BY DEFAULT=d；函数按真实关联返回可解析限定名称，合法普通列无关联才NULL，不扫描 nextval 文本或拼默认名称。当前无来源/函数绑定时在绑定或能力门禁以0A000拒绝未开放能力，不能无条件NULL伪装成功；SEQDEP-03。 |
+
+显式独立 sequence、普通列的 nextval 默认值引用、serial/OWNED BY 和 identity 分开：默认引用本身不产生 a/i 拥有边；pg_attrdef 的正常引用依赖需来自已解析对象引用，沿默认表达式块，不在此虚构。identity 的 i 与 serial 的 a 依赖沿第5章；identity 不强造 pg_attrdef/nextval 默认文本。DDL 开放前必须具备模式、稳定关联及同一序列参数事实，AUTO_INCREMENT 继续保留原生身份。
+
+官方目标均于 **2026-10-24** 查阅，适用 **PostgreSQL 18**：[pg_sequence](https://www.postgresql.org/docs/18/catalog-pg-sequence.html) 对应参数字段；[pg_depend](https://www.postgresql.org/docs/18/catalog-pg-depend.html) 对应端点类型和依赖生命周期；[identity](https://www.postgresql.org/docs/18/ddl-identity-columns.html)、[CREATE SEQUENCE](https://www.postgresql.org/docs/18/sql-createsequence.html) 对应真实对象及 OWNED BY；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html) 对应 pg_get_serial_sequence 的关联及名称规则。官方 [REL_18_STABLE sequence.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/commands/sequence.c)::process_owned_by 的 for_identity 分流支持 i/a 推导，分支可变，不是18.6固定证据。[psql 18](https://www.postgresql.org/docs/18/app-psql.html) 定义 `\ds`、`\d` 与 `-E` 采集入口；下列 SQL 为人工契约探针，不声称 psql/JDBC/DataGrip/ORM 自动生成。精确18.6参考构建、客户端版本、生成SQL及运行行为均未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3901,6 +3931,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 视图定义内省契约
 
 不实现视图DDL、持久绑定树、名称重写、重启恢复、pg_views/information_schema.views、权限引擎或物化视图刷新。物化视图定义属于函数目标，当前缺真实接线须记录并拒绝，不把它当普通View伪造；CHECK OPTION执行、安全屏障/security_invoker与任意查询转换另建实施任务。不得为补这些缺口扩大本轮代码范围。
+
+#### 序列身份与依赖契约
+
+不实现序列分配、identity DDL/DML、OWNED BY 存储、通用依赖图或权限系统；不将本块扩展到分区/扩展对象的全部依赖。不执行 Cargo、差分平台或真实客户端；第5章分配/回滚和第7章wire能力仍需各自验证。当前拥有边空集是明确元数据缺口，不代表 identity 已实现或所有 PG 依赖应为空。
 
 ### 验收
 
@@ -4267,6 +4301,28 @@ WHERE n.nspname='public' AND c.relname='ViewAS';
 
 PATH、META与ACCESS使用独立重建夹具，避免改名污染BASE；VIEW-REJECT在META前创建。每次重建保存真实模型ID、ViewInfo.SelectStmt/Cols/CheckOption和目录输出。清理按实际对象执行 `SET search_path TO public,pg_catalog; DROP VIEW public.view_clone; DROP VIEW public."ViewAS";`（META后换RenamedAS）、`DROP VIEW public."as"; DROP VIEW public.view_cascade; DROP VIEW public.view_default_check; DROP TABLE public.view_base; DROP TABLE view_shadow.view_base; DROP SCHEMA view_shadow;`；原生view_native在删基表前由所属连接删除。后续固定psql 18.x以 `psql -E` 执行 `\d+ public."ViewAS"` 保存版本/完整查询/结果；DataGrip存档SQL与实际UI另采，均未在本轮运行。
 
+#### 序列身份与依赖契约
+
+以下 `SEQDEP-*` 均为**待新增/待运行**的后续验收输入，非本轮执行结果。统一 UTF8、autocommit I、owner 角色、独立空 schema `seqdep`，无并发分配或重置；Q 用参数 []、文本结果，扩展链用 Parse/Bind/Describe/Execute/Sync、注明参数 OID及文本格式。PG fixture 为：
+
+```sql
+CREATE SCHEMA seqdep;
+CREATE TABLE seqdep.t (id bigint, plain bigint);
+CREATE SEQUENCE seqdep.s AS bigint START WITH 7 INCREMENT BY 3
+  MINVALUE 1 MAXVALUE 100 CACHE 1 NO CYCLE OWNED BY seqdep.t.id;
+CREATE TABLE seqdep.ia (id integer GENERATED ALWAYS AS IDENTITY);
+CREATE TABLE seqdep.ib (id bigint GENERATED BY DEFAULT AS IDENTITY);
+```
+
+1. **SEQDEP-01 参数/零行**，Q：`SELECT seqrelid,seqtypid,seqstart,seqincrement,seqmin,seqmax,seqcache,seqcycle FROM pg_catalog.pg_sequence WHERE seqrelid='seqdep.s'::regclass::oid`；恰一行 `(S,20,7,3,1,100,1,false)`，Describe为26/26/20/20/20/20/20/16。S 是真实 pg_class.oid，不填固定样本OID。扩展把条件替为 `seqrelid=$1`，参数 `[S:oid/26]`；再绑 `[NULL:oid/26]`、未分配OID，零行描述不变。ia 所关联序列 seqtypid=23、ib=20，OID须与各自 pg_class 一致；原生 AUTO_INCREMENT 夹具沿已有独立测试确认 relkind=r、无伪序列行。
+2. **SEQDEP-02 依赖端点**，Q：`SELECT classid,objid,objsubid,refclassid,refobjid,refobjsubid,deptype FROM pg_catalog.pg_depend WHERE objid='seqdep.s'::regclass::oid ORDER BY refclassid,refobjid,refobjsubid`；至少核对 `(1259,S,0,2615,N,0,n)` 与 `(1259,S,0,1259,T,1,a)`，描述26/26/23/26/26/23/18；不以这两行排除PG其他真实依赖。N/T从pg_namespace/pg_class取，不靠数值巧合关联。重复查询加两端classid守卫关联表与序列，不能把命名空间n边当列拥有。
+3. **SEQDEP-03 identity/普通列**，Q：`SELECT attname,attidentity,atthasdef FROM pg_catalog.pg_attribute WHERE attrelid='seqdep.ia'::regclass::oid AND attnum>0 AND NOT attisdropped`；id 的模式a、atthasdef=false，ib对应d；类型沿列目录块（attname=name/19，模式18，布尔16）。`SELECT pg_catalog.pg_get_serial_sequence('seqdep.ia','id')` 返回text/25，解析该名称取得真实S_i，其列拥有边为 `(1259,S_i,0,1259,T_i,1,i)`；ib同理。`SELECT pg_catalog.pg_get_serial_sequence('seqdep.t','plain')` 返回NULL，id返回seqdep.s的可解析名称。函数扩展SQL `SELECT pg_catalog.pg_get_serial_sequence($1,$2)`，参数 `[$1='seqdep.t':text/25,$2='id':text/25]`；普通默认引用不代替拥有关系。当前缺来源时先能力拒绝，不期待现状成功。
+4. **SEQDEP-04 无分配副作用**，同连接先 `SELECT nextval('seqdep.s'::regclass)` 得7，再连续两次运行01/02及 `SELECT pg_catalog.pg_get_serial_sequence('seqdep.t','id')`，含扩展Parse/Describe/Execute及NULL零行探针；`SELECT currval('seqdep.s'::regclass)` 仍7，下一次nextval须10。另一条新连接在未nextval前做同样内省，currval仍未初始化（精确诊断待参考采集）。不能把读取SequenceInfo.Start等同当前值，内省内部禁调用nextval/setval或缓存分配。
+5. **SEQDEP-05 真实变更**，保存S/T后执行 `ALTER SEQUENCE seqdep.s OWNED BY NONE`，02的a边消失、n边保留、函数对t.id返回NULL；重新OWNED BY恢复。`ALTER SEQUENCE seqdep.s INCREMENT BY 4 CACHE 2` 后01参数更新；重命名表/列/序列须保留各真实OID及列关联而函数输出新名称。新Execute读取提交后的快照，已有portal行为沿首块；DROP再CREATE同名序列须换身份，旧OID不串入新边。identity列删除须同步移除内部序列及依赖；直接DROP内部序列拒绝，a依赖序列可单独删除。清理 `DROP SCHEMA seqdep CASCADE`，不得留下悬空边。
+6. **SEQDEP-06 安全/拒绝**，owner 创建 `seqdep_reader` 并仅授予schema USAGE，撤销序列全部权限，切换该角色：01/02的真实目录参数/依赖仍可查，但nextval拒绝；不由目录读取推断分配授权。另连接其他数据库不出现这些对象，search_path遮蔽不影响限定pg_catalog探针。`SELECT missing_field FROM pg_catalog.pg_depend`、`SELECT unsupported_dependency(objid) FROM pg_catalog.pg_depend`、`DELETE FROM pg_catalog.pg_depend` 在目录绑定/能力门禁拒绝，目标0A000；真实权限错误和DROP依赖错误的精确SQLSTATE/阶段须参考采集，不借用0A000。目录查询任何失败不得分配值，后续恢复沿第5章。
+
+01–06需逐列登记源模型ID、关联键、描述、文本/二进制结果与观察记录；已有手写wire测试只覆盖部分现状，不代替上述目标。psql `-E` 下的 `\ds seqdep.*`、`\d seqdep.ia` 只作为待采集客户端入口，驱动/UI结果尚未验证。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4326,6 +4382,10 @@ PATH、META与ACCESS使用独立重建夹具，避免改名污染BASE；VIEW-REJ
 #### 视图定义内省契约
 
 后续按单会话拆分：①持久ViewInfo到PG已绑定定义/Cols/CHECK OPTION的可靠来源与损坏拒绝；②OID/pretty/wrap与旧名称重载、schema安全反解和引号回归；③Parse后替换/重命名/跨连接目录更新；④固定psql/DataGrip流程及权限验证。分别复用关系、列、名称、函数注册和会话契约，pg_views/information_schema与物化视图定义接线单列缺口；本轮五节文档完成不表示功能实现完成。
+
+#### 序列身份与依赖契约
+
+按单一事实组另建实施任务（均待新增）：①真实序列声明类型与参数/pg_class一致性；②持久列拥有引用及a/i生命周期、attidentity、pg_get_serial_sequence局部接线；③SEQDEP-01–06的独立测试与客户端采集。先解决事实来源再开放能力，复用共享infoschema、OID和第5章分配链，不从SQL字符串或AUTO_INCREMENT补造所有权。文档完成只说明目标和验收已定义，不代表这些实现或测试已完成。
 
 ## 7. 线协议认证与数据通道
 
