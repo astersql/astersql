@@ -3538,6 +3538,98 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 
 ## 6. 系统目录与内省契约
 
+### 模块
+
+#### 目录执行链与证据模板
+
+本块承接来源工作流 6 步骤 1、4，只建立目录执行边界与后续字段取证格式。批次 1 的依赖按实际正文核对：第 1 章提供能力 ID 与证据分级，第 2 章提供方言/名称边界（收口提交 `baaf4ccc07`），第 3 章提供固定类型及 Describe 契约（`4385f9d762`），第 4 章提供函数身份、工厂及求值边界（`00a70c3f5a`），第 5 章提供会话、事务与目录交接（`9b426e8c14`）。这些是已交付的文档契约，不表示功能已实现；来源编号任务的未开始状态不代替正文及提交证据，本轮不更新其状态。
+
+以下为 2026-10-23 在源码基线 `9b426e8c14047d769b06a6d19f7e4d3a80517573` 经 RustCodeGraph status / 定点 node 阅读的静态证据；`pkg/server/doc.go` 不存在。本章不另建存储、优化器或通用执行器。
+
+| 层与实际入口 | 当前事实、共享边界与限制 |
+| --- | --- |
+| 分类与绑定 | [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)::parse / parse_shadowed 构造有界 Select/Expr；[pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::parse_session / parse_session_with_types 取得会话 schema/path，检查隐式目录名是否被本地对象遮蔽，再 parameters / bind。返回 None 才进入普通 SQL 路径；已识别目录查询的语法/绑定错误不能用空集掩盖。bind 是目录表达式绑定，与协议 Bind 区分。 |
+| 简单查询 | [pg_conn.rs](../pkg/server/pg_conn.rs) 的连接循环先尝试 SessionQuery，再 CatalogQuery::parse_session，经事务门禁与 PgService::with_query 调目录 execute；普通 SQL 经名称/语法适配调用共享 TiDBContext::execute_query。目录查询不是将完整 PG SQL 直接送给共享 planner。 |
+| 扩展查询 | [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process 在 Parse 调 parse_session_with_types 并固定 metadata/parameter_oids；Bind 解码并 bind_values，portal 持有目录结构和值；Describe 读取描述。首次 Execute 经 pg_conn 提供的闭包调目录 execute，再 encode_formats；portal 缓存消息供后续分段发送。目录 PreparedMetadata::statement_id 为 0，不分配共享后端 prepared 句柄。 |
+| 元数据与求值 | [conn.rs](../pkg/server/conn.rs)::TiDBContext::schema_snapshot 默认 None，真实 [runtime.rs](../pkg/server/runtime.rs)::ConcreteTiDBContext 实现返回 domain.info_schema()。CatalogQuery::execute 同时读取 SELECT DATABASE()，建立 Execution 的单次快照及 provider/CTE 缓存；execute_select 从该快照取值。有界求值现有上限为累计物化 16384 行、100000 次比较，带取消检查；这是当前实现约束，不是 PG 标准或性能承诺。 |
+| 身份与编码 | [pg_oid.rs](../pkg/server/pg_oid.rs)::namespace_oid / table_oid / index_oid 统一检查原生 ID 的 OID 映射范围。CatalogQuery::metadata 生成 ColumnInfo/NativeType，execute 返回 QueryResult；[pg_result.rs](../pkg/server/pg_result.rs)::pg_type / write_result / encode_formats 转为 PG 描述及行。普通 SQL 的名称解析归第 2/5 章，类型归第 3 章，系统函数正式注册归第 4 章，wire/portal 生命周期交第 7 章；目录局部函数白名单不证明普通 SQL 已注册同名函数。 |
+
+独立测试在 [lib.rs](../pkg/server/lib.rs) 用 cfg(test) 注册：[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::catalog_select_structure 覆盖目录 AST，catalog_projection_syntax_and_boundaries / catalog_binding_has_explicit_support 覆盖有界语法、字段及函数拒绝；[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants 含真实 domain 夹具、投影/类型/零行/错误恢复与 Parse 后元数据改变的断言意图。测试中客户端为手写 wire 夹具，不能由此推断某个 DataGrip 版本实际发过该 SQL。本轮均未运行。
+
+### 目标行为
+
+#### 目录执行链与证据模板
+
+每项需求沿用第 1 章能力/用例 ID、分类、observations 和 evidence_refs，再加以下目录字段；同一查询的每个输出表达式分别有字段行，不能只登记关系名。已有静态实现、已有测试意图、当前运行记录三类分开保存，前两者不可填入“当前通过”。
+
+| 必填项 | 内容与缺证规则 |
+| --- | --- |
+| 需求与客户端 | 能力/用例 ID、所属窄块、客户端及精确版本、驱动及版本、操作入口、官方出处及访问日期；人工 SQL 写“人工契约探针”，实际客户端生成 SQL 须附该版本抓取/官方源码，未抓取写未采集。 |
+| 完整输入 | 原 SQL、逐位置参数值/类型/OID及格式、Q 或 Parse/Bind/Describe/Execute/Sync、结果格式、数据库/角色/编码/path、初始事务状态、准备/清理 SQL。无参数明确 []。 |
+| 关系与字段 | 限定关系、别名、原字段/输出表达式和列序；关联键及其目标关系、对象身份与生命周期、NULL/零行含义。投影强转后的类型与原字段分列，不混淆数据中的对象 OID 和描述中的类型 OID。 |
+| 类型与安全 | 每列 PG 类型及 OID、可空性、typlen/typmod与适用来源表/属性元数据、文本/二进制编码；权限前提、目录读取与对象使用权限、search_path 可见性、跨连接/跨数据库边界。未知属性写具体缺口，不由样本值猜类型。 |
+| 真实事实来源 | 共享 infoschema/model/session 的实际路径/符号、原生对象 ID/版本及映射；没有来源逐项解释为空集、SQL NULL 或拒绝，不能造 owner、ACL、xmin、定义或序列值。SQL NULL 仅在目标语义允许时使用。 |
+| 当前证据 | 源码 SHA/符号、独立测试路径/用例与断言范围；运行时间、命令/退出码、构建、完整版本、产物与有效用例数另记。无本轮运行填未验证，不以存在测试充当通过。 |
+| 目标与不支持策略 | 目标值/行/类型、事实变化及隔离断言；缺来源/缺求值/缺 codec 分别登记拒绝阶段、目标 SQLSTATE 和副作用。成功 SQLSTATE 不适用；错误文本及具体协议字段未采则明示未采。 |
+| 验收与交接 | 一条需求关联字段来源、目标和下节验收 ID；列出名称/类型/函数/会话/wire 协作及未验证范围。18.6 精确结论必须绑定参考构建，大版本手册不能替代。 |
+
+目标依据（PostgreSQL 18，访问日期均 2026-10-23）：[系统目录](https://www.postgresql.org/docs/18/catalogs.html) 定义元数据角色；[pg_namespace](https://www.postgresql.org/docs/18/catalog-pg-namespace.html) 定义 namespace 字段及关联；[schema 与 search_path](https://www.postgresql.org/docs/18/ddl-schemas.html) 区分数据库、schema、名称查找和权限；[官方 REL_18_STABLE pg_type.dat](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/include/catalog/pg_type.dat) 用于核对类型身份，该分支可变，不是 18.6 构建证据。[psql 18 手册](https://www.postgresql.org/docs/18/app-psql.html) 的 -E/echo-hidden 是后续采集内省 SQL 的官方入口，不提供本示例的客户端查询归属。精确客户端版本和生成 SQL 仍须实采，JDBC/DataGrip/ORM 的实际查询留各自窄块取证。
+
+### 范围外
+
+#### 目录执行链与证据模板
+
+本块不补全部目录对象/字段、information_schema、ACL/定义函数、客户端矩阵或求值语法，不实现多 schema、目录缓存失效、事务型 DDL、系统函数注册或通用数组 codec；后续块按本模板承接。目标覆盖仍需逐项填满，不能因当前 provider 有限而缩减客户端需求。不得将 PG 目录直接写入、完整系统目录或扩展加载列为本轮承诺；不运行 Cargo、真实服务、客户端或差分平台。
+
+当前 namespace provider 只输出 pg_catalog 和映射当前原生数据库的 public；不能将本地所有数据库冒充 PG 同一数据库内的 schema。字段缺事实不能一概空集；下列示例的必需 oid/name 不允许 SQL NULL 或空集替代，未来 owner/ACL 需独立真实来源，不在本块伪造。目录按名称列出对象不等于该角色拥有 USAGE/CREATE，search_path 查找结果也不等于目录行过滤规则。
+
+### 验收
+
+#### 目录执行链与证据模板
+
+下面是模板的完整人工查询实例 `CAT-CHAIN-NAMESPACE/pg`（PG 专属），用例 `catalog.chain.namespace.base` / `.fresh` / `.reject` 均**待新增、未运行**；不是声称已抓取的 psql/DataGrip 查询。客户端目标为 psql 18.x，实际二进制/驱动精确版本未采集；扩展复验用 wire 夹具并记录其构建 SHA。AsterSQL 与真实 PG 各连接自己的可丢弃数据库，UTF-8、空闲 I，先执行 `SET search_path TO public` 并记录实际数据库/角色名；角色有 pg_namespace SELECT；fresh 另需当前库 CREATE、持有自己创建的 schema。库/角色由夹具管理，不在 SQL 中嵌入凭证。
+
+base 完整 SQL（参数 []，Q，文本结果）：
+
+```sql
+SELECT n.oid AS oid, n.nspname AS nspname
+FROM pg_catalog.pg_namespace AS n
+WHERE n.nspname = 'public'
+ORDER BY n.oid;
+```
+
+初态要求夹具存在且仅有一个名为 public 的 schema；目标恰好一行 `(O_public, 'public')`，两列均非 SQL NULL；O_public 为本端真实对象身份，不硬编码为 PG 默认值，也不要求两端用户对象 OID 数值相等。列序 oid/nspname；oid 类型 oid/OID26、typlen4，nspname 类型 name/OID19，name 长度随参考构建 NAMEDATALEN 采证；typmod、来源表 OID/属性号和完整描述按第 3/7 章采集，当前缺证不可跳过。成功 SQLSTATE 不适用，完成标签目标 SELECT 1、末尾 I。
+
+| 需求→输出字段 | 真实来源与关联键 | 当前静态证据 | PG 目标与缺失策略→验收 |
+| --- | --- | --- | --- |
+| namespace 身份→n.oid AS oid | pg_catalog.rs 的目录 provider 取 Execution.snapshot.AllSchemas() 中当前原生 database 的 schema.id，以 pg_oid::namespace_oid 映射 public；pg_catalog 的 11 是内建身份。目标关系键为 pg_namespace.oid，供 pg_class.relnamespace 等引用；本查询不执行 JOIN。 | CatalogQuery::column 为该字段使用 OID_TYPE，namespace_row 写 Signed 值；无运行证据。当前原生 database→public 映射仅是受限适配。 | oid/OID26，非 NULL、稳定且在有效范围；对象存在却无快照/合法身份时拒绝，目标执行阶段 0A000，无行无副作用，当前错误映射未实采；不得造 0 或空集。base/fresh 验证身份及更新。 |
+| namespace 名称→n.nspname AS nspname | 同一 provider 当前把上述原生对象命名为 public，非任意 PG schema 名称事实；目标应取真实 schema 名称，关联同一 oid，并保留第 2/5 章引号身份。 | column 使用原生文本 code253，pg_result::pg_type 映射 text/OID25；与目标 name/OID19 存在静态差距，不能声称类型通过。 | name/OID19，非 NULL，需真实身份和正确 codec；缺 codec 的开放前门禁目标 Describe/结果编码阶段 0A000，无成功行，Q 在输出前拒绝；不得暗中改成 text。base 及扩展 Describe 比较，零行也固定类型。 |
+
+扩展 base 另开新连接/夹具：命名 Parse `cat_ns_base` 使用同一 SQL、参数 OID []；Bind `cat_ns_portal` 参数 []、文本结果，分别 Describe statement/portal、首次 Execute 全量、Sync，目标描述与 Q 同型、相同行值、Sync 后 I。两种协议分别保留完整描述/行/命令/错误字段；不是只有连接成功或行数相等。fresh 使用同一两列查询，仅将 WHERE 字符串替换为 `'cat_contract_ns'`，完整输入为：
+
+```sql
+SELECT n.oid AS oid, n.nspname AS nspname
+FROM pg_catalog.pg_namespace AS n
+WHERE n.nspname = 'cat_contract_ns'
+ORDER BY n.oid;
+```
+
+fresh 初态确保该名不存在，A/B 独立连接同库同角色，各查零行且描述同型；A 先 Parse/Bind/Describe fresh 查询但不 Execute，B 单独 Q 执行 `CREATE SCHEMA cat_contract_ns` 并完成到 I，A 首次 Execute/Sync 目标看到一行 `(O_new, 'cat_contract_ns')`。随后 A/B 新查询均同一 O_new，重复读取不重分配；B `DROP SCHEMA cat_contract_ns` 后，两端新查询都零行且描述不变。已执行 portal 的续取生命周期另归第 7 章，不要求它刷新成新查询。另一数据库的独立连接执行同查询仍零行；另一 PG 连接改变 path 不得改变本查询的限定关系。目录行存在不证明 USAGE，对受限角色的对象访问与 ACL 留权限块另验。
+
+当前 provider 没有任意 schema 的上述来源，本例 fresh 为目标缺口，不能把 CREATE SCHEMA 改写成 CREATE DATABASE 来算通过；若能力门禁拒绝建 schema，保存真实拒绝阶段/诊断及两连接零行、无残留，并标 fresh 未验证而非成功更新。夹具未满足 SELECT/CREATE、独立数据库或类型门槛同样记录缺口。清理两连接先 Sync/ROLLBACK 至 I，再由所有者按需 `DROP SCHEMA cat_contract_ns`（仅在夹具确认已创建时），关闭语句/portal/连接并回收夹具；清理失败不可记通过。不在本块扩建 schema 子系统。
+
+reject 完整 SQL `SELECT n.unknown FROM pg_catalog.pg_namespace AS n`，参数 []，初始 I/目录 SELECT 权限；产品有界实现的目标为 Q 分类后的字段绑定拒绝、0A000、无行无元数据修改，随后 `SELECT 1 AS ok` 返回 1、I。扩展在 Parse 阶段拒绝，经 Sync 后再执行恢复查询。源码测试 catalog_binding_has_explicit_support 只覆盖同类 pg_database 未知列，此 namespace 变体须待新增；PG 参考端按自身未知列错误单列采证，不强求与产品 0A000 相同。错误 S/V/C/M 及适用 D/H/P、精确文本/位置仍未采。此拒绝目标不替代未来开放字段的 PG 名称错误契约。
+
+人工覆盖审阅：需求→oid/name 真实来源与关联→目标类型/行→base 描述/取值、fresh 元数据变化/隔离、reject 阶段/恢复均有落点；当前静态差距明确保留。文档验证不包含任何当前行为通过结论，有效运行用例数 0。
+
+### 后续细分
+
+#### 目录执行链与证据模板
+
+后续 25 块串行在上述五个三级标题下追加各自同名四级块，复用第 1 章身份及本模板；每个窄块只认领单一目录对象、同源字段组或一个客户端流程。先由 namespace 块补真实 schema/owner/ACL 来源及字段类型，再由对应对象块填关联键/定义/权限，求值和客户端块分别补有界拒绝与实际查询证据。本示例是后续验收输入，未新建或执行测试。
+
+第 2/5 章交接名称/会话及 DDL 门禁，第 3 章交固定类型及 codec，第 4 章交正式函数身份，第 7 章补完整 wire、恢复和生命周期，第 8 章补真实客户端及 MySQL 自身基线。不得因为本块文档完成升级支持状态。正确性风险是伪造身份/来源或缓存旧事实；兼容性风险是 name→text、错误阶段及 schema/database 混同；性能未测。有界限制只记录当前事实，后续负载另立验证。Ready 文档检查采用任务指定结构、路径、前后契约及 diff 审阅；仓库验证技能缺失，无代码检查或功能实测结论。
+
 ## 7. 线协议认证与数据通道
 
 ## 8. 客户端与双方言共存验收
