@@ -746,6 +746,12 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 已读独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values 的 hello→25/NULL 断言、catalog_char_and_acl_wire_types 的受控目录 1042 断言，以及 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 的 VARCHAR(30) 表入口。目录特例不证明普通 char 支持，上述片段不覆盖本块完整边界；所有测试未运行。
 
+[字节类型契约](#字节类型契约)静态基线为 `c559d9ad7b`（2026-10-23，批次 6 已提交）。通过 RustCodeGraph 读取 [binary_literal.rs](../pkg/types/binary_literal.rs)::BinaryLiteral/String/ToString/ToInt/Compare：Vec<u8> 能保存字节，但 ToString 使用 from_utf8_lossy，ToInt/Compare 去前导零，不能直接作为 bytea 保真转换或比较。独立 [binary_literal_test.rs](../pkg/types/binary_literal_test.rs)::test_binary_literal/test_parse_hex_str_table 是 MySQL BIT/HEX 意图（如 0x1 补零），不能证明 PG 输入语法。pkg/types、pkg/server 均无 doc.go。
+
+现状取证 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/binary_parameter：OID 17 text 先验证 UTF-8/NUL，再要求 `\x` 前缀及连续偶数 hex 数字；非 hex 返回 0A000，奇数长度/非法数字返回 22P02，不接受 PG 合法的字节对间空白或 escape 输入。解码后与 binary 原字节入口都转 tp=252；NULL 提前转 tp=6，身份连续性缺证。[pg_result.rs](../pkg/server/pg_result.rs)::pg_type/value_text/value_binary/bytea/encode_formats 只对 string/blob 家族且 ColumnInfo.charset=63 选 OID 17，NativeType 本身没有 charset；结果 text 固定小写 hex，binary 的 Value::Bytes 直接复制。Value::Text 回退不能证明任意 bytes 保真。
+
+已读独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::unsigned_binary_and_unsupported_types 的 00 ff 5c→17/文本 `\x00ff5c`、pg_binary_native_results 的 00 ff 原字节结果，以及 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::text_parameters_are_typed_and_reject_loss 的 `\x00ff` 成功/`\xabc` is_err。测试全部未运行，不证明完整往返、全字节域、精确错误或 typed NULL 元数据。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -878,6 +884,21 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 
 规范依据（查阅于 2026-10-23）：[PostgreSQL 18 §8.3 Character Types](https://www.postgresql.org/docs/18/datatype-character.html) 支持字符长度、补空格、赋值与 cast 差别、尾空格及 NUL 禁令；[REL_18_0 varchar.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/varchar.c) 的 anychar_typmodin、bpchar_input、bpcharrecv/bpcharsend、varchar/varcharrecv/varcharsend 支持 typmod 与文本载荷边界；[REL_18_0 varlena.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/varlena.c) 的 textrecv/textsend 支持无内部头的文本字节编码。[PG 18 §54.7 Bind/DataRow/RowDescription/ParameterDescription](https://www.postgresql.org/docs/18/protocol-message-formats.html) 支持 -1 NULL、字节长度及元数据字段；[PG 18 Appendix A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 支持 SQLSTATE 分类。固定源码标签是 18.0 取证，不等于已在目标 18.6 运行或证明补丁版全部一致。
 
+#### 字节类型契约
+
+规范 bytea 为有序原始字节序列，每字节 0–255，允许 NUL、非 UTF-8、前导/尾随零；长度按字节计，字符精度、scale、collation 不适用。复用引擎 bytes 与 binary charset 的 string/blob 家族时须保留 bytea 身份，不因值可打印就改为 text，不从 BLOB/BIT 名称推导 PG 等价。PG 参数 OID 17，结果 OID/typlen/typmod=17/-1/-1；MySQL 独立验收 type code、charset/flags、长度，保留 Go 原行为。资源上限须实际取证，不能从变长类型或 i32 帧长度承诺已支持近 1GB；超限明确拒绝，禁止截断。
+
+规范依据：[PostgreSQL 18 §8.4、8.4.1、8.4.2](https://www.postgresql.org/docs/18/datatype-binary.html) 支持字节域、hex/escape 语法与 bytea_output；[官方 REL_18_0 varlena.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/varlena.c) 的 byteain/byteaout 支持 escape 错误及输出，bytearecv/byteasend 支持 raw binary。核查日期 2026-10-23；源码固定为 18.0，文档为 18 主版本，不构成来源指定 18.6 的发布或运行验证。
+
+| 方向 | 目标值、NULL 与错误 | 当前差距与元数据 |
+| --- | --- | --- |
+| text 参数→bytes | Bind 实际字符的 hex 以 `\x` 开头，数字大小写皆可，字节对间可有空白，不能拆开一对；`\x` 为零字节。escape 接受普通字符、`\\` 为 5c、三位八进制 `\000`/`\377` 为 00/ff；空串也为零字节。非法数字/奇数半字节/非法 escape 拒绝 22P02；UTF-8 文本载荷非法编码/NUL 拒绝 22021，但解码后的 00/ff 合法。 | 当前 hex-only/无空白为兼容缺口，不能把合法输入被拒绝当作目标通过。NULL 长度 -1 不解析，仍保留 OID 17。SQL 字面量先经过工作流 2 的引号/反斜线解析，不能把 SQL 拼写直接当 Bind 字符。 |
+| binary 参数→bytes | 逐字节保留，无 hex/escape 解析、字符转码、字节序转换、varlena 头或终止 NUL；长度 0 合法，NULL 为 -1。任何字节组合本身都不是非法 binary bytea。 | binary_parameter 可直接复制，内核往返缺证；不能套固定宽度错误或以 22P03 拒绝任意字节。帧截断/长度不符由工作流 7 拒绝 08P01，资源限制另记。 |
+| bytes→text 结果 | 默认 bytea_output=hex：`\x` 加每字节两位小写数字，空序列输出两个字符 `\x`。escape 模式将反斜线输出两次、非打印字节输出三位八进制、打印 ASCII 原样；回读保留同一字节序列。 | 当前只输出 hex，escape 配置/输出缺证，会话状态归工作流 5。DataRow 长度按输出字节计（hex 为 2+2n），不含 C 结束符；SQL NULL 只写 -1，无载荷。 |
+| bytes→binary 结果 | n 个原始字节原样发送，含 NUL/ff；空序列长度 0，NULL 长度 -1。格式选择和 bytea_output 不改变类型或值。 | Value::Bytes 可复用；禁止经 BinaryLiteral::ToString、from_utf8_lossy、替换字符、去前导零或数值转换。Describe/Execute、零行、全 NULL 均保持 17/-1/-1；局部结果断言不证明全链。 |
+
+转换边界：bytea 同型转换保留全部字节与 typed NULL；bytea 的文本输出表示和字符解码是不同契约，不能隐式使用有损 UTF-8 或把 text 直接改标 bytea。text↔bytea 的显式/赋值/隐式资格交本章转换块核对 PG cast；未开放路径明确 0A000，不借 MySQL HEX/整数转换猜测兼容。字节比较与运算交工作流 4，不能复用去前导零的 BinaryLiteral::Compare 推断等价。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -891,6 +912,8 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 [浮点数值契约](#浮点数值契约)不实现内部表示、cast、codec 或运算，不改 Go/MySQL 的浮点行为，不扩展浮点数组、索引、聚合或完整推导系统。类型语法归工作流 2，比较/算术归 4，输出会话配置归 5，消息错误与恢复归 7，真实客户端与双方言差分归 8。
 
 [文本类型契约](#文本类型契约)不实现生产表示、cast、codec 或 MySQL 行为修改；比较、排序、collation 算法、LIKE/正则交工作流 4，编码会话状态交 5，目录专用类型交 6，协议分帧/错误恢复交 7，双方言客户端差分交 8。此处仅交接语义，不扩建子系统。
+
+[字节类型契约](#字节类型契约)不实现生产表示、cast、codec，不改 MySQL BIT/HEX 或 Go 原行为。字面量解析归工作流 2，函数/比较归 4，bytea_output 状态归 5，帧长度/错误恢复归 7，客户端差分归 8；large object/lo、bytea 数组和扩展生态不在本块范围。
 
 ### 验收
 
@@ -962,6 +985,17 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 | TEXT-INVALID | Bind 两格式的 61 00 62、FF、C3 28 拒绝 22021；不得输出替换字符。合法多字节不能被字节截断。结果方向用构造非法内部值的候选测试检查提前拒绝与错误传输。 | NUL 的合法性、非法 utf8mb4 的错误/告警独立采集，不套 PG 拒绝；当前 PG 输入校验和结果 NUL 校验有源码证据，运行未验证。 |
 | TEXT-METADATA | 声明 text/varchar(2)/char(2) 依次 25/1043/1042，typlen=-1，typmod=-1/6/6；无长度 varchar 为 1043/-1/-1，SQL char 为 1042/-1/5。检查无约束 bpchar、typed NULL、零行、重复 Execute 和两种结果格式，OID 不随值改变。 | 检查自身 type code、charset、flags、长度，不含 PG typmod。普通结果目前折 text，目录 1042 测试不能代替；全链路未验证。 |
 
+[字节类型契约](#字节类型契约)下列 BYTEA 入口均为**待新增**，运行行为全部**未验证**；成功 SQLSTATE 不适用。固定 PG 版本、UTF-8、bytea_output，采集两格式参数→规范值→两格式结果的原字节、NULL、类型与 SQLSTATE；MySQL 单独采集 binary 类型，不套 PG 语法。
+
+| 场景 | 可观察目标与反例 | 已读证据与缺口 |
+| --- | --- | --- |
+| BYTEA-EMPTY-NULL | text 空串/`\x` 与 binary 零长度均为零字节；默认 text 输出 `\x`，binary 长度 0。两格式 OID 17 NULL 参数/结果只写 -1，不变空串。 | 现有测试无完整 bytea 空/NULL 断言，未验证。 |
+| BYTEA-RAW | 00、ff、c3 28、00 00 01 00、00 ff 5c 逐个往返；完整 00–ff 的 256 字节序列两格式往返逐字节相等，长度 256，不出现 ef bf bd 替换或丢前导零。binary 输入 ASCII `\x00` 保留四字节 5c 78 30 30，不能解成 00。 | 现有结果仅 00 ff[/5c]，参数仅 hex 00 ff；全字节、非 UTF-8 与完整往返缺证。 |
+| BYTEA-HEX | `\xDEad`、`\xde ad`→de ad，输出 `\xdead`；`\x0`、`\xgg`、`\xa b` 拒绝 22P02。hex text 与对应 raw binary 参数结果相同。 | 当前合法空白不支持；奇数仅 is_err，无错误码，未验证。 |
+| BYTEA-ESCAPE | Bind 字符 abc→61 62 63、`\000\377\\`→00 ff 5c；`\400`、`\08`、`\q`、尾部单反斜线拒绝 22P02。hex/escape 输出均回读为原字节。text 原始 NUL/非法 UTF-8 拒绝 22021，binary 对应原字节接受。 | 当前非 hex 返回 0A000 为兼容缺口；escape 配置与输出、精确错误未验证。 |
+| BYTEA-METADATA | 相同 abc 载荷的 text/bytea 分别 25/17；参数描述 17，statement/portal Describe 与 Execute 均 17/-1/-1；零行、首行/全 NULL、重复 Execute、格式切换不改型。构造 metadata 与 Value::Bytes 冲突时提前拒绝，不按首行猜类型。 | 局部 OID/输出断言不能证明 charset 桥接、typed NULL 或准备全链，未验证。 |
+| BYTEA-LENGTH | binary 任何合法帧长度按实际字节解释；帧声明与实际长度不符拒绝 08P01。资源上限/hex 膨胀处须检查失败，不能溢出或截断；记录实际限制后做大载荷边界差分。 | length 的 i32 转换错误入口不能证明存储/输出极限或 wire 错误码，未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -979,6 +1013,10 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 [浮点数值契约](#浮点数值契约)候选边界：内部表示先核对 KindFloat32、共享 f64 值盒与 NativeType 的定宽不变量及 typed NULL 保真；cast 依赖该不变量和方言上下文，分别核对舍入/范围与特殊值；参数 codec 依赖确定 OID，直接按目标宽度解析并分类错误；结果 codec 依赖同一列身份和输出配置，分别输出目标宽度文本及网络位型。这里只给边界和依赖，不生成实现任务。来源步骤 2 的浮点族由身份/方向表覆盖，步骤 3 的舍入和溢出由 FLOAT-RANGE/CAST 覆盖，步骤 4 的格式、NULL、非法输入和元数据由其余验收入口覆盖。与 numeric 的精确性和半值规则分开，与第 1/2 章术语及前序块无冲突；没有功能或性能实测。
 
 [文本类型契约](#文本类型契约)候选边界与依赖为：内部表示先核对身份、声明字符长度、charset/collation 与 typed NULL 的连续性；cast 在该身份基础上区分显式截断、赋值拒绝和 char 去尾空格；参数 codec 依赖 OID 定型与 SQL 目标约束，分别校验编码/NULL；结果 codec 依赖同一列身份和编码状态，保持 OID/typmod 与补空格字节一致。这里只描述边界，不生成实现任务。来源步骤 2 由类型/方向表覆盖，步骤 3 由长度 coercion/cast 规则覆盖，步骤 4 由 TEXT 用例族覆盖；与第 1/2 章及前五块无契约冲突。无功能、兼容性或性能实测。
+
+[字节类型契约](#字节类型契约)候选边界：内部表示先核对 bytes、binary charset、OID 17 及 typed NULL 跨桥接保真；cast 依赖该身份与方言资格；参数 codec 依赖已定型 OID，补 hex 空白/escape 并隔离 raw binary；结果 codec 依赖同一列身份和 bytea_output 配置，保持可逆及 Describe/Execute 一致。这里只给边界与依赖，不生成实现任务。
+
+字节块来源覆盖：来源步骤 2 由值域/映射及四方向表覆盖；步骤 3 由转换边界段覆盖，完整资格交转换块；步骤 4 由 BYTEA 六项验收覆盖。与前块 text 禁止 NUL、bytea 允许 NUL 及第 1/2 章语法/证据分层一致，无需改其他章节；无功能、兼容性或性能实测。
 
 ## 4. 方言函数与运算符契约
 
