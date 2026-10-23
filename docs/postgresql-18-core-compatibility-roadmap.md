@@ -3775,6 +3775,17 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 | [table.rs](../pkg/meta/model/table.rs)::FKInfo；[infoschema.rs](../pkg/infoschema/infoschema.rs)::InfoSchema | FKInfo有ID、Name、RefSchema、RefTable、Cols/RefCols、OnDelete/OnUpdate、State/Version；没有独立PG被引用约束身份与依赖边、MATCH/延迟字段。共享模型为候选事实源，PG OID、属性槽位、约束来源区分沿既有关系/约束块补证。 |
 | 独立测试 | [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_constraints_live读取真实domain的复合主键/FK、数组描述、动作和父索引JOIN，未覆盖这四个视图。[pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::context/execute/pg_datagrip_tables使用CatalogQuery及仓库SQL模板验证pg_catalog；不证明标准约束视图或真实DataGrip版本通过。测试注册沿[lib.rs](../pkg/server/lib.rs)，本轮只读。 |
 
+#### 无原生对象的响应策略
+
+承接来源步骤3，能力CAT-ABSENT/pg，复用首块字段证据模板和第1–5章契约。已逐项核对批次1–18五节正文与连续提交`946e9b2c20`至`152374c1fe`，前置满足。2026-10-24用RustCodeGraph status/explore及定点node读取下列静态证据；pkg/server/doc.go不存在。本轮测试运行数0。
+
+| 实际来源 | 当前事实与限制 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows、column_catalog_field | tablespace、foreign_table/server、policy、trigger、rewrite、collation、opfamily/opclass/amop/amproc均返回Vec::new；不是PG参考库空集证据。foreign_data_wrapper尚无对应provider/字段映射，不能视为已知空关系。名称/owner多用253/8编码，部分字段缺失；零行仍可能描述错误。 |
+| [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)的目录分类/AST；CatalogQuery的metadata/bind/execute；[pg_result.rs](../pkg/server/pg_result.rs)::pg_type | Q、扩展工厂和单次快照沿首块；绑定应先于空行求值。253通常输出text/25，8输出int8/20，不等于name/19、oid/26；固定描述不可从零行推断。 |
+| [pg_query_test.rs](../pkg/server/pg_query_test.rs)::tablespace_catalog_empty_relation | 手写wire夹具断言SELECT 0、两种投影及未知关系42P01/恢复，但spcname/owner/ACL/options期待25/20/25/25，不能作为PG类型正确的通过证据。[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants含LIMIT 0及未知列当前0A000，目标未知列42703须另验。均只读未运行。 |
+| 仓库客户端模板 | [1869280143.sql](../pkg/server/testdata/pg_datagrip/1869280143.sql)请求FDW表/server/options；[1869280148.sql](../pkg/server/testdata/pg_datagrip/1869280148.sql)请求collation；[1869280149.sql](../pkg/server/testdata/pg_datagrip/1869280149.sql)、[1869280150.sql](../pkg/server/testdata/pg_datagrip/1869280150.sql)请求opclass/family；[1869280155.sql](../pkg/server/testdata/pg_datagrip/1869280155.sql)请求policy表达式；[1869280156.sql](../pkg/server/testdata/pg_datagrip/1869280156.sql)按classoid关联trigger/rewrite等注释。模板中的?是夹具占位，不宣称服务接受?参数；具体DataGrip版本和实际发出SQL未采集。 |
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4105,6 +4116,26 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方依据（PostgreSQL **18**，访问 **2026-10-24**）：[table_constraints](https://www.postgresql.org/docs/18/infoschema-table-constraints.html)、[key_column_usage](https://www.postgresql.org/docs/18/infoschema-key-column-usage.html)、[referential_constraints](https://www.postgresql.org/docs/18/infoschema-referential-constraints.html)、[constraint_column_usage](https://www.postgresql.org/docs/18/infoschema-constraint-column-usage.html)定义字段与各自可见性；固定[REL_18_0 information_schema.sql](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/catalog/information_schema.sql)核对父索引位置、真实依赖LEFT JOIN、PG18 NOT NULL、权限及临时schema过滤（源码推导）。客户端入口为[pgJDBC官方查询说明](https://jdbc.postgresql.org/documentation/query/)的Statement/PreparedStatement（页面无固定驱动版本）；下述SQL均为人工契约探针，不宣称DatabaseMetaData、DataGrip或ORM生成。精确18.6构建/运行行为仍未取证。
 
+#### 无原生对象的响应策略
+
+每项继承首块完整输入/字段/权限模板。下列字段是本块查询边界；未列PG字段仍须按官方完整关系定义绑定，不能因返回空行忽略未知列。基础类型统一：oid=26、name=19、bool=16、内部char=18、int2=21、int4=23、text=25、text[]=1009、oid[]=1028、aclitem[]=1034、pg_node_tree=194、xid=28；NULL和零行保留原类型，typmod/编码沿第3章。对象OID仅本端关联，不硬编码跨端值。目录枚举权限与对象使用权限分离，均基于真实有效角色；不能因缺授权模型返回伪空集。
+
+| 需求→字段/关联键 | 真实来源、目标策略与验收 |
+| --- | --- |
+| ABS-SPACE→pg_tablespace.oid/spcname/spcowner/spcacl/spcoptions | 类型26/19/26/1034/1009，owner→角色、关联pg_class.reltablespace。当前无原生PG存储空间事实；明确受限能力允许已知空关系，不捏造pg_default/pg_global或宿主路径。这与PG完整默认tablespace目录有差距，客户端不能依赖默认对象解析。CREATE TABLESPACE/对象显式TABLESPACE请求未开放时副作用前0A000。→EMPTY/DDL。 |
+| ABS-FDW→pg_foreign_data_wrapper.oid/fdwname/fdwowner/fdwhandler/fdwvalidator/fdwacl/fdwoptions | 26/19/26/26/26/1034/1009；handler/validator→pg_proc、owner→角色。当前无wrapper/provider，目标补已知类型关系后，在无已安装wrapper事实时空集；不能将未接线误作空集通过。→EMPTY/UNKNOWN。 |
+| ABS-SERVER→pg_foreign_server.oid/srvname/srvowner/srvfdw/srvtype/srvversion/srvacl/srvoptions；pg_foreign_table.ftrelid/ftserver/ftoptions | server类型26/19/26/26/25/25/1034/1009，table为26/26/1009；srvfdw→wrapper，ftrelid→pg_class，ftserver→server。无PG FDW对象才空集；原生普通表不得冒充foreign table；存在server时srvtype/version仅在未声明时NULL，ACL的NULL/空数组沿角色块，选项不能暴露秘密。→EMPTY/DDL。 |
+| ABS-POLICY→pg_policy.oid/polname/polrelid/polpermissive/polroles/polcmd/polqual/polwithcheck | 26/19/26/16/1028/18/194/194；relid→pg_class，roles→角色（PUBLIC语义沿角色块）。无policy且未启用RLS才可空；不能把已启用RLS但无策略的默认拒绝语义当无RLS。表达式NULL仅按真实未指定语义，非缺模型补NULL；CREATE POLICY/ENABLE ROW LEVEL SECURITY缺能力副作用前拒绝。→EMPTY/DDL。 |
+| ABS-TRIGGER→pg_trigger.oid/tgrelid/tgname/tgfoid/tgisinternal | 26/26/19/26/16，关联关系/函数。普通表确无触发器可空；有FK时PG内部约束触发器属于兼容缺口，不可用空集证明完整FK内省。缺真实身份/函数/执行语义时相关内省输出前0A000，不能编造触发器。→EMPTY/REQUIRED。 |
+| ABS-REWRITE→pg_rewrite.oid/ev_class/rulename/ev_type/ev_enabled/is_instead/ev_qual/ev_action | 26/26/19/18/18/16/194/194，ev_class→pg_class。无规则普通表可空；已暴露视图时不能把重写目录统一空，须有真实规则身份/定义或在相应查询输出前0A000，视图块的viewdef成功不替代规则契约。→EMPTY/REQUIRED。 |
+| ABS-COLL→pg_collation.oid/collname/collnamespace/collowner/collprovider/collisdeterministic/collencoding/collcollate/collctype/colllocale | 26/19/26/26/18/16/23/25/25/25，namespace/owner与声明类型、索引排序身份一致。PG必需内建排序规则不能因无MySQL映射全空；缺匹配的比较语义/locale/provider时请求该能力输出前0A000。libc以外collcollate/ctype可NULL，不能借此隐藏未知provider；MySQL collation ID不直接当PG OID。→REQUIRED/NULL。 |
+| ABS-OP→pg_opfamily.oid/opfname/opfmethod/opfowner/opfnamespace；pg_opclass.oid/opcname/opcmethod/opcintype/opckeytype/opcdefault/opcfamily/opcowner/opcnamespace | family类型26/19/26/26/26；class为26/19/26/26/26/16/26/26/26；method→pg_am、类型→pg_type、family→pg_opfamily、owner/namespace→相应目录。内建访问方法及已公开索引必需身份不能全空；不可把原生索引算法名伪装PG family。opckeytype=0仅目标规定的与输入同型含义，非NULL。→REQUIRED。 |
+| ABS-OPLINK→pg_amop.oid/amopfamily/amopstrategy/amopopr/amopsortfamily；pg_amproc.oid/amprocfamily/amprocnum/amproc/amproclefttype/amprocrighttype | amop类型26/26/21/26/26；amproc为26/26/21/26/26/26；关联family/operator/proc/type。只对明确不存在的自定义族查询可空；已声明内建族不能缺必要成员。xmin为系统xid/28，不把TSO/int8当PG事务身份，缺源请求xmin须0A000。→REQUIRED。 |
+
+已知对象无行可成功；可选属性确实不适用才SQL NULL；未实现关系/字段/codec或必需事实缺失用能力拒绝0A000（静态可判定在Parse/绑定，动态至迟Q/首次Execute成功行输出前）。真正不存在关系42P01、真正不存在列42703，权限拒绝42501，语法错误42601；合法PG列尚未实现属于0A000，不能误报不存在。失败阶段是产品设计目标，非本轮PG实测。LEFT JOIN空右关系保留左行并产生类型正确NULL，不等于制造一行全NULL的目录对象。
+
+官方依据：PostgreSQL **18**，访问 **2026-10-24**：[tablespace](https://www.postgresql.org/docs/18/catalog-pg-tablespace.html)、[wrapper](https://www.postgresql.org/docs/18/catalog-pg-foreign-data-wrapper.html)、[server](https://www.postgresql.org/docs/18/catalog-pg-foreign-server.html)、[foreign table](https://www.postgresql.org/docs/18/catalog-pg-foreign-table.html)、[policy](https://www.postgresql.org/docs/18/catalog-pg-policy.html)、[trigger](https://www.postgresql.org/docs/18/catalog-pg-trigger.html)、[rewrite](https://www.postgresql.org/docs/18/catalog-pg-rewrite.html)、[collation](https://www.postgresql.org/docs/18/catalog-pg-collation.html)、[opfamily](https://www.postgresql.org/docs/18/catalog-pg-opfamily.html)、[opclass](https://www.postgresql.org/docs/18/catalog-pg-opclass.html)、[amop](https://www.postgresql.org/docs/18/catalog-pg-amop.html)、[amproc](https://www.postgresql.org/docs/18/catalog-pg-amproc.html)给出字段/关联/NULL语义；[错误码](https://www.postgresql.org/docs/18/errcodes-appendix.html)给出上述SQLSTATE名称。客户端官方依据为[psql 18](https://www.postgresql.org/docs/18/app-psql.html)的-E/echo-hidden及目录命令，后续采集`\db`、`\dFd`、`\dFs`、`\dO`、`\d public.abs_t`；本轮未运行，未声称这些命令生成下节SQL。DataGrip模板版本及官方查询出处仍未采集。精确18.6参考构建和行为未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4184,6 +4215,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 标准模式约束映射
 
 本块只定义四个标准约束视图字段、关联及验收，不实现provider、DDL、FK执行、延迟/验证、CHECK依赖图、授权存储或完整客户端流程。约束/索引/列持久身份与pg_depend缺口沿既有专块另拆实施，不递归补齐子系统；不改原生MySQL information_schema语义，不改第1–5章，不运行Cargo/Go或差分平台。
+
+#### 无原生对象的响应策略
+
+不实现provider、类型codec、FDW/RLS/触发器/规则/排序规则/访问方法，不补完整子系统；pg_operator/pg_aggregate、继承与分区沿各自函数/关系契约，不用本块统一空集覆盖其缺口。不采集真实客户端或运行Cargo/Go、18.6差分。当前空provider与目标必需对象冲突只在本块登记，不重写前序契约或降低目标。
 
 ### 验收
 
@@ -4835,6 +4870,42 @@ BASE预期：catalog均D，约束/表schema均public。TC中iscon_pk/p为PRIMARY
 
 所有成功SQLSTATE不适用；产品能力拒绝为0A000，精确诊断文本/位置与18.6差分仍未采集。清理隔离夹具：管理员逐条`DROP TABLE public.iscon_r;`、`DROP TABLE public.iscon_i;`、`DROP TABLE public.iscon_c;`、`DROP TABLE public.iscon_p;`、`DROP TABLE public.iscon_u;`、`DROP TABLE public.iscon_other;`、`DROP TABLE iscon_s.other;`、`DROP SCHEMA iscon_s;`、`REVOKE USAGE ON SCHEMA public FROM iscon_reader;`、`DROP ROLE iscon_reader;`。只清理实际成功创建项，事务错误先沿第5章恢复。以上SQL/角色/DDL均是后续验收输入，本轮无运行通过记录。
 
+#### 无原生对象的响应策略
+
+以下ABS-*全部**待新增/待运行**，人工契约探针，不冒称客户端生成SQL。隔离库D、UTF8、owner且具目录SELECT、autocommit、文本Q参数[]；每条SELECT独立执行。EMPTY夹具逐条`CREATE TABLE public.abs_t (id integer);`、`INSERT INTO public.abs_t VALUES (1);`，无FDW/RLS/触发器/用户规则；FK/视图只在REQUIRED夹具加入。
+
+```sql
+-- ABS-EMPTY：每条零行但Describe分别保持目标字段表类型
+SELECT oid,spcname,spcowner,spcacl,spcoptions FROM pg_catalog.pg_tablespace ORDER BY oid;
+SELECT oid,fdwname,fdwowner,fdwhandler,fdwvalidator,fdwacl,fdwoptions FROM pg_catalog.pg_foreign_data_wrapper ORDER BY oid;
+SELECT oid,srvname,srvowner,srvfdw,srvtype,srvversion,srvacl,srvoptions FROM pg_catalog.pg_foreign_server ORDER BY oid;
+SELECT f.ftrelid,s.srvname,f.ftoptions FROM pg_catalog.pg_foreign_table f LEFT JOIN pg_catalog.pg_foreign_server s ON f.ftserver=s.oid ORDER BY f.ftrelid;
+SELECT p.oid,p.polname,p.polrelid,p.polpermissive,p.polroles,p.polcmd,p.polqual,p.polwithcheck FROM pg_catalog.pg_policy p JOIN pg_catalog.pg_class c ON p.polrelid=c.oid WHERE c.relname='abs_t';
+SELECT t.oid,t.tgrelid,t.tgname,t.tgfoid,t.tgisinternal FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON t.tgrelid=c.oid WHERE c.relname='abs_t';
+SELECT r.oid,r.ev_class,r.rulename,r.ev_type,r.ev_enabled,r.is_instead,r.ev_qual,r.ev_action FROM pg_catalog.pg_rewrite r JOIN pg_catalog.pg_class c ON r.ev_class=c.oid WHERE c.relname='abs_t';
+-- ABS-NULL：一条保留左表行；右侧两个NULL，类型19/19/1009
+SELECT c.relname,s.srvname,f.ftoptions FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_foreign_table f ON c.oid=f.ftrelid LEFT JOIN pg_catalog.pg_foreign_server s ON f.ftserver=s.oid WHERE c.relname='abs_t';
+-- ABS-UNKNOWN：分别42P01、42703，不可成功零行
+SELECT oid FROM pg_catalog.pg_missing_tablespace;
+SELECT missing_column FROM pg_catalog.pg_tablespace;
+-- ABS-REQUIRED：列类型依目标字段表，缺事实须0A000，不能成功伪空
+SELECT oid,collname,collnamespace,collowner,collprovider,collisdeterministic,collencoding,collcollate,collctype,colllocale FROM pg_catalog.pg_collation WHERE collname='default';
+SELECT oid,opfname,opfmethod,opfowner,opfnamespace FROM pg_catalog.pg_opfamily WHERE opfname='integer_ops';
+SELECT oid,opcname,opcmethod,opcintype,opckeytype,opcdefault,opcfamily,opcowner,opcnamespace FROM pg_catalog.pg_opclass WHERE opcname='int4_ops';
+SELECT a.oid,a.amopfamily,a.amopstrategy,a.amopopr,a.amopsortfamily FROM pg_catalog.pg_amop a JOIN pg_catalog.pg_opfamily f ON a.amopfamily=f.oid WHERE f.opfname='integer_ops';
+SELECT a.oid,a.amprocfamily,a.amprocnum,a.amproc,a.amproclefttype,a.amprocrighttype FROM pg_catalog.pg_amproc a JOIN pg_catalog.pg_opfamily f ON a.amprocfamily=f.oid WHERE f.opfname='integer_ops';
+```
+
+EMPTY仅证明受限无对象策略，不作为PG默认库全目录等价用例。REQUIRED的PG参考库应有default排序规则及内建整数族/类/成员；按method/namespace身份区分多行，不硬编码OID/跨端行号。当前目标实现若缺事实则拒绝，不能将拒绝计作该能力已支持。
+
+ABS-PARAM：将EMPTY的policy查询WHERE换为`WHERE c.relname=$1`，Parse类型[25]、Bind文本['abs_t']、Describe/Execute/Sync，预期零行且描述26/19/26/16/1028/18/194/194；同一prepared查询每次Execute重新取快照。文本/二进制结果各一次，NULL及零行不降低类型要求，未有codec时Parse/描述前0A000。
+
+ABS-DDL：owner分别提交`CREATE SERVER abs_srv FOREIGN DATA WRAPPER abs_missing;`、`CREATE POLICY abs_p ON public.abs_t USING (id>0);`、`ALTER TABLE public.abs_t ENABLE ROW LEVEL SECURITY;`、`CREATE TABLESPACE abs_sp LOCATION '/abs_contract_only';`。能力未开放须副作用前0A000（SERVER若已开放则未知wrapper按正常解析报错，不能成功）；重跑EMPTY及`SELECT id FROM public.abs_t;`仍无新对象、原行1不受影响。不实际创建宿主路径。RLS/FDW能力未来开放后用真实合法wrapper/角色夹具另立用例，不以这些拒绝探针验证完整功能。
+
+ABS-LIFE/REQUIRED：逐条`CREATE VIEW public.abs_v AS SELECT id FROM public.abs_t;`、`CREATE TABLE public.abs_c (id integer REFERENCES public.abs_t(id));`（独立恢复：先`DROP TABLE public.abs_t;`，再`CREATE TABLE public.abs_t (id integer PRIMARY KEY);`、`INSERT INTO public.abs_t VALUES (1);`，随后才执行VIEW/FK建表）。将EMPTY的rewrite过滤换abs_v，应有真实视图规则关联或0A000；trigger过滤换abs_c，应有与FK关联的真实内部对象或0A000，不能伪空。相关DDL未开放则副作用前拒绝并记能力缺口。分别`ALTER TABLE public.abs_t RENAME TO abs_renamed;`后按新名重查NULL/相关目录，真实对象关联不能丢失；`DROP VIEW public.abs_v;`、`DROP TABLE public.abs_c;`后关联行消失。第二连接每次提交后重执行，另库同名对象不能串入D。DDL事务语义沿第5章，不据此宣称事务DDL通过。
+
+ABS-ACL：管理员逐条`CREATE ROLE abs_reader;`、`GRANT USAGE ON SCHEMA public TO abs_reader;`、`GRANT SELECT ON public.abs_t TO abs_reader;`，以真实有效角色abs_reader与owner分别执行EMPTY/NULL；有目录读取权限且对象真实无行时同样空，管理员逐条`REVOKE SELECT ON pg_catalog.pg_tablespace FROM PUBLIC;`、`REVOKE SELECT ON pg_catalog.pg_tablespace FROM abs_reader;`后，abs_reader执行EMPTY首条应42501（独立隔离库，结束由管理员`GRANT SELECT ON pg_catalog.pg_tablespace TO PUBLIC;`恢复），不能伪空；对象使用权限不足不自动抹去公开目录。角色/授权能力未开放则门禁0A000，不以root代测。每个错误后Q执行`SELECT 1;`，扩展路径先Sync再SELECT 1，恢复沿第5/7章。清理仅成功创建项：`DROP VIEW public.abs_v;`、`DROP TABLE public.abs_c;`、`DROP TABLE public.abs_t;`（重命名后改用`DROP TABLE public.abs_renamed;`），随后`REVOKE USAGE ON SCHEMA public FROM abs_reader;`、`DROP ROLE abs_reader;`；服务器/策略/空间若意外创建须先记录失败并按官方对象依赖清理，不能据目录空假定无副作用。精确诊断文本、typlen/typmod、真实客户端SQL与18.6输出仍待采集。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4930,6 +5001,12 @@ Ready按纯文档范围检查五节/锚点、路径存在、前后契约及diff�
 后续按事实组另拆实施：四视图方言路由/域描述；持久约束身份与pg_constraint/pg_index/真实依赖关联；复合键展开及父索引逆序位置；CHECK/PG18 NOT NULL依赖；逐视图角色过滤与刷新隔离。扩展现有独立测试，ISCON-*均待新增/待运行，不补建完整标准模式或客户端。
 
 Ready文档适用检查使用五节锚点、全部本块路径存在性、前置提交/正文、字段→来源→目标→验收映射及diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用这些替代检查。正确性风险为同名约束误联、FK方向/序位错误与伪造父约束；兼容性风险为四种权限过滤、域wire描述及PG18 NOT NULL/enforced字段；性能未测，当前全库枚举不能推断可扩展性。本轮仅完成文档，不运行Cargo/Go、代码lint、真实客户端或18.6差分。下一批为批次19“无原生对象的响应策略”。
+
+#### 无原生对象的响应策略
+
+后续按ABS-SPACE/FDW/POLICY/TRIGGER/REWRITE/COLL/OP单独实施，先补固定字段/类型与绑定错误，再接真实事实和独立测试；默认对象/必需依赖不借用空集实现。验收ID覆盖策略表全部行，客户端模板需补确切版本/官方来源或实采，18.6需绑定构建。
+
+Ready文档范围采用五节锚点、前置提交/正文、全部本块路径存在性、字段→来源→策略→验收及diff检查；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，报告替代检查。正确性风险为把缺模型当无对象、NULL或误吞绑定错误；兼容性风险为默认对象缺失、零行描述错误及FK/视图内省缺口；性能未测。本轮只完成文档契约，不表示功能实现。建议下一批20继续有界目录求值契约。
 
 ## 7. 线协议认证与数据通道
 
