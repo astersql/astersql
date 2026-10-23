@@ -5487,4 +5487,63 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 ## 7. 线协议认证与数据通道
 
+### 模块
+
+#### TLS 证据与职责
+
+本章承接第 1 章能力/用例 ID 与证据分级、第 2 章连接方言、第 3 章 codec、第 5 章会话/事务及第 6 章真实身份/权限契约。本域只完成 TLS 文档契约；认证、其他消息与数据通道由后续任务补齐，五节存在不表示整章完成。来源批次 6 编号任务仍为未开始，但第 6 章五节、角色权限和章节交接正文及交付提交 `b74cdfd93843ac3fda4119562f6b4fb5cf93dd47` 已核验，满足文档前置条件，不代表功能通过，也不更改来源状态。
+
+以下为 2026-10-24 在基线 `b2742b5b30306c4617364ba7b0bdc537dbdcf819` 经 RustCodeGraph status、精确文件/符号读取所得静态事实；本轮有效运行用例数 0，当前 TLS、真实客户端、参考端和性能均**未验证**。`pkg/server/doc.go` 不存在。
+
+| 来源与符号 | 静态事实与限制 |
+| --- | --- |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::PgService::negotiate / read_initial | 初始报文包含长度字，read_initial 限 8–10000 字节后分配；8 字节 SSLRequest（80877103）/GSSENCRequest（80877104）各可探测一次，均回复单字节 N；同机制重复返回错误。不能将 N 当作 TLS 或 GSSAPI 身份认证支持。普通 StartupMessage 另由 parse_startup 检查。 |
+| 同文件 negotiate | 解析启动后，secure=true 在 open_ctx/认证前发送 FATAL、08004、TLS 不支持而要求安全传输的诊断并返回；这是当前代码映射，不是 PG 18.6 参考端诊断。开发认证请求为空 native credentials、tls_state=None；TLS 成功不应绕过真实认证、数据库选择及权限门禁。 |
+| 同文件 PgService::start / close | 当前裸 TcpStream 读写超时各 10 秒；worker 返回后关闭 context/socket、移除登记并释放连接 ID，停服中断 socket 并 join workers。这只是当前 TCP 生命周期，不证明未来 TLS 握手总期限、取消或 TLS 缓冲清理已实现。 |
+| [pg_protocol.rs](../pkg/server/pg_protocol.rs)::parse_startup / read_startup；[server.rs](../pkg/server/server.rs)::Server::start_postgres_accept | startup 解析和加密协商分层；server 向 PgService 传 RequireSecureTransportEnabled()。不能从 MySQL TLS 配置或共享监听管理推导 PG 已接 TLS。 |
+| 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs) | startup_negotiation_and_secure_mode_reject 在两种 secure 值下均断言 SSL/GSS 的 N 及最终 E，未断言 SQLSTATE、重复协商或 TLS。startup_auth_roundtrip / startup_protocol_30_roundtrip 断言开发 root 成功、intruder 28P01、3.2/3.0 密钥体长 36/8。startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients 断言已接受待启动/已认证连接停服 EOF；catalog_error_recovery_and_cleanup 断言停服资源计数归零。这些均未在本轮执行，不能替代 TLS 回归。 |
+| 独立 [pg_protocol_test.rs](../pkg/server/pg_protocol_test.rs) | startup_packet_bounds、startup_reader_bounds 检查版本、长度、截断及不多读下一包；startup_raw_tcp_client_v1_requests_32 是裸 TCP 3.2/3.0 读取意图，不覆盖 TLS 握手。 |
+
+### 目标行为
+
+#### TLS 与安全传输
+
+能力 `WIRE-TLS/pg` 属 PG 专属协商契约，依赖共享连接生命周期及第 6 章真实身份/权限事实。规范来源为官方 PostgreSQL **18 大版本**手册，访问日期 2026-10-24：[54.2.10 SSL 协商及 54.2.11 GSS 加密](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-SSL)、[54.7 SSLRequest 格式](https://www.postgresql.org/docs/18/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-SSLREQUEST)、[32.19 libpq 证书校验](https://www.postgresql.org/docs/18/libpq-ssl.html)、[18.9 服务端证书与客户端证书](https://www.postgresql.org/docs/18/ssl-tcp.html)。来源目标为 18.6，但本轮没有核验参考构建或采集精确诊断，不能声称实测该补丁版。
+
+| 契约 | 生产目标与交接 |
+| --- | --- |
+| 协商与状态 | SSLRequest 后仅回复一个 S（接受）或 N（拒绝）；S 后完成 TLS 握手，再在加密流内处理 StartupMessage 和认证/查询。客户端精确读取单字节，不将额外预读明文交为可信服务端数据；服务端不能在 S 后将握手字节当 startup。未启用 TLS 可回复 N；允许明文的开发策略与生产安全要求分开验收。 |
+| 安全传输与禁降级 | 要求安全传输时，直接明文 startup、N 后继续明文均在认证前拒绝并关闭；S 后握手失败、校验失败或超时均终止本连接，禁止退回明文或空凭据开发模式。客户端选择 require/verify-full 等禁止明文策略时，收到 N 必须结束，不能隐式重连明文。该客户端策略与服务端拒绝门禁分别取证。 |
+| 证书责任 | 服务端提供匹配私钥的服务端证书及必要中间链；客户端以显式信任根校验证书有效期/信任链，verify-full 另校验实际连接主机名，require 不能当作主机名验证证据。若另启用客户端证书校验，由服务端验证客户端链及既定身份映射；双向 TLS/证书登录不因本域完成自动开放。私钥、密码、认证材料不进入日志或错误，诊断只保留脱敏阶段信息。 |
+| 期限与传输失败 | 待实施时定义可测试的握手总期限和读写预算，防止逐字节拖延无限占用 worker；不在本域发明配置名或依赖。握手 EOF、截断、TLS alert、超时、停服中断均关闭并释放握手对象、缓冲、socket、连接 ID/登记及 worker。握手前不创建认证会话；若已创建上下文则按所有权关闭，已认证后断连的事务处理沿第 5 章。 |
+| 认证交接 | 仅握手成功后向认证域传递真实连接 TLS 状态及其可验证属性，不由 startup 参数自报安全；后续 SCRAM/通道绑定另立契约。TLS 不产生角色/owner/ACL，不绕过第 6 章身份、授权或数据库门禁；认证失败不能发送 AuthenticationOk/ReadyForQuery。 |
+
+直接以 TLS ClientHello 开始的连接是 PG 18 规范中的另一种入口，要求 ALPN 为 postgresql（见 54.2.10）。本域首批目标仅认领 SSLRequest 路径，直接 TLS 暂列明确拒绝边界，不能将 ClientHello 误解为可继续的明文 startup；未来开放须单独验收 ALPN 与重复加密请求，不从客户端默认值推定支持。
+
+### 范围外
+
+本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
+
+### 验收
+
+本域验收 ID 为 `WIRE-TLS-*`，全部为**待新增/待运行**。默认夹具为独立 PG 监听、固定客户端及 TLS 库版本、明确安全策略、可控 CA/服务端证书/连接主机名、正常时钟与干净资源基线；认证成功场景须由后续认证域提供真实授权角色，开发 root 仅用于隔离传输探针，不能代替生产认证。无 SQL 参数/结果类型或 OID（认证前传输场景不适用）；成功 SQLSTATE 不适用，TLS alert/EOF 不伪装 SQLSTATE。可发送 ErrorResponse 的完整 PG 帧阶段另采严重度、SQLSTATE、文本及关闭顺序；目前参考端精确诊断**未采集**，不把现代码 08004/08P01 固定为 PG 目标。
+
+| ID / 前提与输入 | 消息/连接目标 | 清理与未来独立测试入口 |
+| --- | --- | --- |
+| OK：可信未过期证书、主机名匹配，SSLRequest→S→握手→加密 startup | 3.0/3.2 分别成功；认证后所有消息经 TLS，凭据不在明文，认证前无就绪消息；加密内 SELECT 1 仅作通道探针，类型归第 3 章 | Terminate/断连后会话、TLS/socket/登记释放；待扩展 pg_conn_test.rs，真实 libpq verify-full 入口待新增并交第 8 章采证。 |
+| CERT：分别替换为过期证书、不受信 CA/缺必要中间链、主机名不匹配，verify-full | 客户端对应校验失败并关闭，服务端不进入认证/不回退；分别记录客户端校验阶段与服务端 EOF/alert，不能要求服务端判断自身证书主机名错误 | 每个子场景资源归基线，恢复合法证书后新连接可成功；待新增 pg_conn_test.rs TLS 证书夹具及独立客户端探针。 |
+| PLAIN：要求安全传输，直接 startup；另在不可提供 TLS 的监听发送 SSLRequest→N 后 startup | 两条路径认证前拒绝并关闭，无 AuthenticationOk/ReadyForQuery；客户端 require/verify-full 收 N 立即终止，另测禁止重试明文 | 无认证上下文/密钥登记残留，正常连接不受影响；待扩展 pg_conn_test.rs 的 secure-mode 独立断言。 |
+| FRAME：长度字/8 字节请求各处分段、截断、非法长度、重复 SSL 或重复 GSS；另 GSS→N→SSL | 合法分段仍可完成；非法/截断/同机制重复关闭，不悬挂。GSS 拒绝后首次 SSL 可进入 TLS；加密流内再次加密请求关闭，不能二次套 TLS | 超界在分配前拒绝，残帧不污染另一连接；待扩展 pg_protocol_test.rs framing 和 pg_conn_test.rs 协商状态测试，不以 parser 测试代替握手。 |
+| INTERRUPT：S 后断连、发送损坏握手；另缓慢发送使总期限耗尽 | 握手失败/超时关闭，不回明文诊断或继续 startup；另一条健康连接仍可用 | 在预定期限内释放握手缓冲/socket/ID，worker 可回收；待新增 pg_conn_test.rs 中受控期限/分段客户端测试。 |
+| STOP：已接受但等待 SSLRequest、S 后握手中、已认证 TLS 三条连接同时停服 | 关闭监听并中断三阶段等待，客户端观察关闭/传输错误，不能要求未完成握手一定得到 TLS close_notify；重复 close 幂等 | 停服后 worker join、socket/active/ID 回收，事务清理由第 5 章承担；待扩展 startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients 及资源计数断言。 |
+| REJECT：仅 GSS 加密/仅 GSS 身份策略、直接 ClientHello；另验证 GSS→N→正常 TLS | 未开放机制不误报支持，不认证成功；直接 TLS 有界关闭，合法替代 TLS 仍按 OK 验收 | 不残留 worker/会话，不影响其他监听；待新增 pg_conn_test.rs 拒绝探针，GSS 身份策略由认证域协作。 |
+
+后续运行记录按第 1 章保存能力/用例 ID、双方构建 SHA/精确版本、客户端与策略、证书夹具标识（不含私钥）、消息顺序、失败阶段、关闭与资源计数、命令/退出码及实际断言数。认证前取消以客户端断开/停服中断握手验收；CancelRequest 密钥与查询取消交后续域，不能用其代替握手清理。本轮只完成文档检查，上述所有行为仍未验证。
+
+### 后续细分
+
+TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
+
+需求映射：来源步骤 1 的 TLS 现状/目标→证据表及 OK/CERT；步骤 3 的 GSS 边界→REJECT；步骤 4 的安全身份与脱敏→认证交接及 PLAIN；传输失败/取消/清理→FRAME/INTERRUPT/STOP。Ready 文档适用检查为五节与稳定子标题、来源及相对链接、逐需求/轨迹覆盖和章节外字节不变；`.agents/skills/tidb-verify-profile/SKILL.md` 再查仍缺失，采用这些人工等效检查，不宣称执行了缺失技能。正确性风险为静态推断/遗漏状态，兼容性风险为误用开发认证、证书校验端或 18.6 诊断，性能与握手资源成本未测；均留待对应实施取证。本域文档完成不表示整章或生产 TLS 已实现。
+
 ## 8. 客户端与双方言共存验收
