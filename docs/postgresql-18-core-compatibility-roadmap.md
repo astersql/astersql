@@ -3849,6 +3849,18 @@ libpq 现有目录测试包含 DataGrip 来源查询、非空关系、类型正�
 
 官方依据（访问 2026-10-24）：[DataGrip Metadata and introspection，2026.2 Help](https://www.jetbrains.com/help/datagrip/introspection.html) 定义选择数据库/schema的内省范围及对象结构/源码用途；该在线手册不是 2025.1.3 的 SQL 版本证据。字段/定义目标依据 [PostgreSQL 18 系统目录](https://www.postgresql.org/docs/18/catalogs.html) 与 [18 系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)，另核对 [18 pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html) 的列号/维数类型与 [18 pg_shdescription](https://www.postgresql.org/docs/18/catalog-pg-shdescription.html) 的共享描述关联键；具体权限沿本章各对象块。18.6 精确参考构建和运行结果仍未取证。
 
+#### 对象关系映射内省流程
+
+承接来源步骤 1、4，能力 `CAT-ORM/pg`。批次 24 提交 `1397601dad` 的图形客户端五节及累计批次 1–23 正文/逐块提交已核对；第 1–5 章的证据、名称、类型、函数和会话契约继续适用，依赖满足只表示文档交付。静态基线为该提交，核对日期 2026-10-24。
+
+本轮使用 skills/rustcodegraph/SKILL.md 的 status、explore、query、node 核对源码与独立测试；pkg/server/doc.go 不存在。CatalogQuery::provider_rows（[pg_catalog.rs](../pkg/server/pg_catalog.rs)）从单次 schema_snapshot 取 class/column/index/constraint，分别调用 class_rows、column_catalog_rows、index_constraint_rows；pg_depend 调 sequence_dependency_rows，原生扩展对象部分为空集。共享模型入口为 [column.rs](../pkg/meta/model/column.rs)、[index.rs](../pkg/meta/model/index.rs)、[table.rs](../pkg/meta/model/table.rs)，模型存在不等于所有属性已接到 PG。简单/扩展工厂及编码复用“目录执行链与证据模板”，不建立 ORM 专用执行器。
+
+仓库候选证据是 [go.mod](../go.mod) 的 gorm.io/gorm v1.25.12、gorm.io/driver/mysql v1.5.7；[tidb_test.go](../pkg/server/tests/commontest/tidb_test.go)::TestVectorTypeGORM 使用 gorm_mysql.New、AutoMigrate、Create/First 检查向量字段。这是 MySQL 接入测试意图，不能推导 PostgreSQL 反射查询或支持。已搜索仓库依赖/锁文件、配置/脚本及 pkg/tests Go 入口，没有建立 PostgreSQL ORM 的框架/驱动固定版本与生成 SQL 证据；GORM 仅为待确认候选，SQLAlchemy、Django 等不据名称任意选定。
+
+独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live 使用真实 domain、PgService 和手写 Q 帧，检查列顺序、类型、默认值；其 name 当前描述为 text25，不能降低 PG name19 目标。[pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::run_clients 使用真实服务及 libpq/JDBC/psql 等入口，未提供 ORM 反射闭环。本轮均只读，Rust/Go/客户端有效运行数 0。
+
+官方依据（访问 2026-10-24）：[GORM 连接说明](https://gorm.io/docs/connecting_to_the_database.html) 区分 MySQL 和 PostgreSQL 驱动，[Migrator 接口](https://gorm.io/docs/migration.html) 列出 GetTables、ColumnTypes、HasConstraint、HasIndex；在线文档无固定版本，不能当作 v1.25.12 PostgreSQL 驱动的查询证据。[PostgreSQL 18 columns](https://www.postgresql.org/docs/18/infoschema-columns.html) 与 [key_column_usage](https://www.postgresql.org/docs/18/infoschema-key-column-usage.html) 支持字段语义/权限目标，其余类型及 OID 沿本章对象块和第 3 章。18.6 精确构建与运行行为未取证。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4286,6 +4298,21 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 
 辅助依赖同样要保留完整查询：1869280136/0137为事务探针、0139为pg_user；0141/0143/0146–0152/0155–0157以及0144/0145为注释、外部对象、类型/例程等模板，沿pg_datagrip_metadata_templates和pg_datagrip_templates_sets的include_str逐项关联对象块，不能因核心八项完成而称全套内省通过。0159为函数源码（OID/text描述），与0158/0160构成libpq代发三请求。当前0137事务探针固定0，0136从原生事务ID取值不等同PG XID；缺owner/ACL/对象模型等沿既有契约保留差异；不得使用假XID触发增量刷新。目标权限按各目录及函数分开判断：目录行可见不等于有SELECT或能取定义，非owner不得统一过滤所有关系。
 
+#### 对象关系映射内省流程
+
+反射闭环定义为“确定当前库/schema→枚举表→读取有序列与声明类型→主键/外键/索引→默认值/identity→构建只读对象描述→与真实 DDL 逐字段核对→DDL 后重新反射”。实际 ORM 的入口、调用顺序、完整 SQL 和参数均待固定 PostgreSQL 框架及驱动版本后采集；下表是需求分解，不冒充客户端已发出的 SQL。公共字段、OID 分配、权限和缺失策略引用同名对象块，避免另外定义不兼容语义。
+
+| 需求→字段/来源及关联键 | PG18 目标类型/OID、权限/策略与验收 |
+| --- | --- |
+| ORM-TABLE：pg_namespace.oid/nspname，pg_class.oid/relname/relnamespace/relkind；真实数据库及表身份，relnamespace→namespace.oid | oid26/name19/内部char18；只枚举当前库，目录可见性和 schema USAGE 分开，information_schema.tables 按其权限过滤。缺 schema 模型不将其他库伪装成 schema；验收 O1/O3。 |
+| ORM-COLUMN：pg_attribute.attrelid/attnum/attname/atttypid/atttypmod/attnotnull/attisdropped；真实 ColumnInfo/FieldType，atttypid→pg_type.oid | oid26/int2 21/name19/oid26/int4 23/bool16/bool16；format_type→text25，列序按真实属性号并排除 dropped/system 列，类型长度/精度沿第3章。information_schema.columns 需按当前用户列权限过滤，不借目录可读绕过；验收 O1/O3。 |
+| ORM-KEY：pg_constraint.oid/conname/contype/conrelid/confrelid/conkey/confkey/conindid；真实表约束及列/索引，外键两侧列按同一序号配对 | oid26/name19/内部char18/oid26/oid26/int2[]1005/int2[]1005/oid26；主键、唯一约束与普通唯一索引区分。standard key_column_usage 的键内顺序和 position_in_unique_constraint 沿标准模式约束块，不能仅按约束名跨 schema 连接。外键模型或接线不足须明确能力拒绝，不能成功零行漏键；验收 O2。 |
+| ORM-INDEX：pg_index.indexrelid/indrelid/indkey/indisunique/indisprimary，pg_class索引名，pg_get_indexdef→text25 | oid26/oid26/int2vector22/bool16/bool16、name19；真实 IndexInfo，indexrelid→索引class，indrelid→表，indkey→属性号。排序/include/predicate/表达式沿索引块；无法反解必须保留错误/不支持，不伪造普通列；验收 O2/O4。 |
+| ORM-DEFAULT：pg_attrdef.adrelid/adnum/adbin，pg_get_expr(adbin,adrelid)；键=(attrelid,attnum)，来源真实默认/生成表达式 | oid26/int2 21/pg_node_tree194，反解输出text25；无默认SQL NULL，有默认须真实反解，字符串默认与表达式不可混同，读取定义权限沿默认表达式块；验收 O1/O4。 |
+| ORM-IDENTITY：pg_attribute.attidentity，pg_depend.refobjid/refobjsubid/deptype及序列身份 | 内部char18、oid26/int4 23/内部char18；真实identity生成模式与拥有边，空串仅表示非identity，不能用auto_increment或nextval默认推断。缺语义来源在建夹具/能力阶段明确拒绝，不把NULL当已识别；验收 O2。 |
+
+现状是有界目录 provider 与手写/非 ORM 客户端测试意图，字段全量接线和实际 ORM 映射未验证。空库确无对象可类型正确零行；无默认可 NULL；存在但必需的约束/identity缺来源不得统一空集。合法但求值未开放按目录求值块在分析/绑定或执行返回目标 0A000，缺关系沿42P01；确切阶段和错误字段须后续实采，不能吞错误继续反射成功。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4389,6 +4416,10 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 #### 图形客户端内省流程
 
 本块只交付图形客户端需求映射与取证边界；不运行真实DataGrip、libpq/JDBC、Cargo/Go或差分平台，不实现目录字段、角色/ACL、schema、函数或GUI自动化，不修改原SQL模板。不能把DataGrip内置系统minicatalog、编辑器补全缓存、手工执行SQL或名字含ui的测试当真实服务端UI内省证据。官方在线2026.2帮助不补造2025.1.3完整build、JDBC版本或全部生成SQL；18.6精确参考行为未验证。字段缺口只回交本章对象窄任务，第7章承接协议，第8章承接实跑，不扩建完整客户端兼容子系统。
+
+#### 对象关系映射内省流程
+
+本块不实现 ORM、PostgreSQL 驱动、自动迁移、模型生成器、依赖升级或框架适配，不安装客户端、不运行现有 AutoMigrate，也不把它扩为迁移兼容验收。候选未确认时不承诺任一 ORM 生态兼容；索引/外键/identity、角色权限与用户schema的实现缺口交各对象块，不递归补建子系统。
 
 ### 验收
 
@@ -5222,6 +5253,41 @@ DG-DB/SCHEMA先执行上方完整原文取得D和public的本端身份，再以�
 
 DG-UI输出归第8章后续证据产物（待新增），模板直接执行、libpq代发、真实UI分别统计有效用例数；源注释DataGrip2025.1.3不是完整build证明，固定版本实采与当前冻结模板差异逐条保留。18.6须附精确构建，不能以server_version报告值代替。清理先关闭portal/statement、ROLLBACK至I，再按成功创建项逐条 `DROP VIEW IF EXISTS public.dg_doc_v;`、`DROP TABLE IF EXISTS public.dg_doc;`、`DROP TABLE IF EXISTS public.dg_doc_identity;`、`DROP SEQUENCE IF EXISTS public.dg_doc_s;`，撤销临时授权/角色、关闭连接及UI临时服务，恢复原设置。缺夹具能力记录准备门槛，不编造后续成功行。
 
+#### 对象关系映射内省流程
+
+以下 O1–O4 均为**后续待新增/待运行**的人工契约探针及实际 ORM 采集要求；本轮只验证文档。连接独立库D，UTF8、UTC、autocommit、初始I、search_path=public,pg_catalog，owner具有所需DDL和目录读取权限。先在参考PG和产品分别建夹具并保存实际DDL结果；未开放语法/外键/identity须记准备阶段拒绝及无残留，不能编造后续行。
+
+```sql
+CREATE TABLE public.orm_parent (a integer, b integer, PRIMARY KEY (b,a));
+CREATE TABLE public.orm_child (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, a integer NOT NULL, b integer, note varchar(30) DEFAULT 'draft', CONSTRAINT orm_fk FOREIGN KEY (b,a) REFERENCES public.orm_parent(b,a));
+CREATE INDEX orm_note_idx ON public.orm_child(note,a);
+```
+
+O1 的完整人工输入如下，参数[]，Q文本结果；后续扩展版本须保存完整转换SQL、Parse/Bind各参数OID/格式及Describe，不能只存探针标签：
+
+```sql
+SELECT c.oid, c.relname, c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='orm_child';
+SELECT a.attnum, a.attname, a.atttypid, a.atttypmod, a.attnotnull, a.attidentity, pg_catalog.format_type(a.atttypid,a.atttypmod) AS type_spec, pg_catalog.pg_get_expr(d.adbin,a.attrelid) AS default_expr FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE a.attrelid='public.orm_child'::regclass::oid AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum;
+```
+
+目标首查询有真实orm_child/r且oid26，第二查询按id/a/b/note列号1/2/3/4，类型OID20/23/23/1043，note声明character varying(30)、typmod34、默认反解保留'draft'语义；id/a非空，b/note可空，identity仅id='a'，其余空串。普通无默认为NULL，identity不强求伪造pg_attrdef默认。描述列类型依次int2/name/oid/int4/bool/内部char/text/text，OID21/19/26/23/16/18/25/25。保存typlen/typmod、行序、NULL和文本/二进制差异；现有name→text差异单列。
+
+O2 完整人工输入，均参数[]、Q文本结果：
+
+```sql
+SELECT conname, contype, conrelid, confrelid, conkey, confkey, conindid FROM pg_catalog.pg_constraint WHERE conrelid='public.orm_child'::regclass::oid ORDER BY conname;
+SELECT i.indexrelid, i.indrelid, i.indkey, i.indisunique, i.indisprimary, pg_catalog.pg_get_indexdef(i.indexrelid) AS definition FROM pg_catalog.pg_index i WHERE i.indrelid='public.orm_child'::regclass::oid ORDER BY i.indexrelid;
+```
+
+约束描述name19/内部char18/oid26/oid26/int2[]1005/int2[]1005/oid26；含主键[1]，orm_fk的conkey=[3,2]、confkey=[2,1]，指向真实orm_parent OID，主键conindid指向真实索引。索引描述oid26/oid26/int2vector22/bool16/bool16/text25；至少主键和orm_note_idx，后者indkey为4,2且非unique/primary，不是约束。identity序列和i拥有边用“序列身份与依赖契约”完整验收输入，绑定本轮表OID/子列号1；缺来源按该块能力拒绝。不能以主键成功覆盖外键/identity未验证。
+
+| 验收 | 完整操作、目标与采集要求 |
+| --- | --- |
+| O3 边界 | 空库重复O1首查询→零行且Describe不变；第二查询因不存在regclass应名称解析失败，不能要求空集。带引号夹具 `CREATE TABLE public."Orm.Mixed" ("Key.ID" integer PRIMARY KEY);`；将O1两个表名条件分别改为`c.relname='Orm.Mixed'`及`a.attrelid='public."Orm.Mixed"'::regclass::oid`保存完整请求，目标保留大小写/点号及属性1。非owner依角色权限块的真实角色/GRANT/REVOKE夹具，实采同探针及实际ORM请求；pg_catalog可见与information_schema权限过滤分别断言，无表权限不必然令pg_catalog零行，bootstrap root不是权限证据。 |
+| O4 刷新闭环 | A先反射；B顺序执行 `ALTER TABLE public.orm_child RENAME COLUMN note TO label;`、`ALTER TABLE public.orm_child ALTER COLUMN label SET DEFAULT 'ready';`；A每步以新执行重跑O1/O2，保持属性号4、类型和索引键4,2，默认改为真实ready语义、旧note消失。准备/portal缓存沿目录更新块。删除child再以 `CREATE TABLE public.orm_child (replacement integer);` 重建后仅新列/新对象身份，旧键/索引/identity不残留。 |
+
+实际 ORM 验收先确认框架、PG驱动与传输库精确版本/锁文件/散列；GORM候选从只读Migrator的GetTables/ColumnTypes/HasConstraint/HasIndex采集，接口是否存在及行为须核对所选固定版本源码。主外键、默认值、identity若该接口未返回，记录API能力缺口并选取有来源的只读入口，不能猜测字段。保存各调用完整SQL、参数值/类型/格式、数据库/角色/path、调用顺序、结果/错误、反射对象描述，将表/列/键/索引/默认/identity逐项与上述真实DDL及目录探针对照。每类未采即未验证；手工探针成功也不等于ORM通过。18.6附参考构建，产品独立记录版本，动态OID仅比关联不比数值相同。清理先ROLLBACK至I，按成功项依序DROP TABLE IF EXISTS public.orm_child、public.orm_parent、public."Orm.Mixed"（各独立SQL加分号），撤销临时授权/角色并关闭连接；重建前须先删除child。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -5345,6 +5411,10 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### 图形客户端内省流程
 
 后续按“冻结build及完整SQL/参数采集”“数据库/schema与刷新”“表列和复合索引/约束”“视图源码/独立序列/拥有关系”“真实角色与UI证据”拆窄任务；优先扩展现有独立pg_datagrip_test.rs、pg_query_test.rs、pg_client_integration_test.rs，不将测试放进生产文件。每项复用本章对象事实及类型/权限契约，所需代码另立计划；第8章运行模板、外部库代发与真实UI并分级归档。Ready文档范围用五节锚点、累计提交/正文、引用路径、逐字段/SQL→来源→策略→验收及diff审阅代替缺失的 .agents/skills/tidb-verify-profile/SKILL.md。正确性风险是参数顺序/关联身份和DDL旧缓存，兼容性风险是name/char/xid类型、缺ACL/拥有关系及客户端build变化；性能与全量内省成本未测。本块文档完成不表示功能或真实客户端通过，下一批25接其指定主题。
+
+#### 对象关系映射内省流程
+
+先确认 PostgreSQL ORM 候选与版本并采集只读反射请求（产物待新增，归第8章证据）；再按表/列、主外键、索引、默认/identity分别将实际请求挂接本章公共对象契约及O1–O4，不合并成全部框架实现任务。后续字段映射必须有真实模型来源和固定客户端源码/日志；本块只有文档完成证据，没有ORM运行结论。
 
 ## 7. 线协议认证与数据通道
 
