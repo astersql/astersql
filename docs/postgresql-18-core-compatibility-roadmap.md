@@ -722,6 +722,80 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 ## 3. 共享类型与转换契约
 
+### 模块
+
+[规范类型与协议映射](#规范类型与协议映射)复用共享内核；`pkg/types/field_type.rs::FieldType` 是 parser 类型别名，`AggFieldType` 保留 MySQL 混合符号整数提升规则，不以 PG 目标改写 Go 既有语义。`pkg/server/conn.rs::NativeType` 的 code/flags/length/decimal、`QueryResult` 与 `PreparedMetadata` 承接原始类型；`runtime.rs` 的 Prepare 分支及 `result_metadata` 从结果字段提取这些信息，`protocol_result_column` 另产 MySQL 列描述。PG 出口为 `pg_result.rs::pg_type` / `encode_formats` / `value_text` / `value_binary`；入口为 `pg_extended.rs::parameter` / `binary_parameter`。这些是现有符号，不是新建接口。第 2 章交来的转换目标、参数编号、数组结构及名称身份须先定型；本块不替 parser 或 resolver 决定语法与绑定。
+
+本块静态取证基线为 `69ef39f91a781a4147568622943d719c95e3f7cd`，日期 2026-10-23。已阅读上述符号及独立测试 `pkg/server/pg_types_test.rs` 的 `common_type_oids_and_values`、`native_metadata_bridge_preserves_boolean_and_mysql_columns`、`unsigned_binary_and_unsupported_types`、`missing_original_metadata_is_explicitly_unsupported`、`catalog_char_and_acl_wire_types`、`pg_binary_native_results`，以及 `pkg/types/field_type_test.rs::TestFieldType` 的宽度、精度和 flags 断言。前者覆盖意图包括同值异类型、unsigned 最大值、bytea、JSON/零日期/duration 拒绝及缺元数据；目录 char/ACL 断言不能证明通用数组支持。目标包没有 `doc.go`。全部测试未运行，源码阅读不是当前功能通过证据。
+
+### 目标行为
+
+#### 规范类型与协议映射
+
+本块建立方向契约，不把 MySQL 类型名、PG OID 和规范引擎类型视为同一身份。这里“规范类型”指执行与准备阶段保留的类型身份、修饰符和值域约束，并不声称现有 `NativeType` 已完整表达所有 PG 类型。值相同仍可属于 bool、int2、int4、int8 或 numeric；类型描述必须先于行内容确定。双向映射允许提升或拒绝，不承诺可逆。
+
+方向与共同约束如下；下表 NULL、错误和元数据规则适用于后续每个类型族。
+
+| 方向 | 类型身份、值域与精度 | NULL 与错误 | wire 元数据、现状与责任 |
+| --- | --- | --- | --- |
+| PG 参数 → 规范值 | 先按 Parse 声明 OID、SQL 目标和上下文推断确定参数身份，再按 Bind 格式解码；OID 0 表示尚未指定，不能当 text 或零值。保留参数序号与重复引用的同一身份，检查目标值域/精度。 | 参数长度 -1 是 SQL NULL，不解码值但仍校验类型；空载荷不是 NULL。类型无法确定须拒绝，非法文本/二进制与溢出分开。 | ParameterDescription 返回确定的 OID，Bind 格式 0/1 只决定编码，不决定类型；没有参数 typmod 字段，SQL 目标约束仍须保留。现有 parameter 将若干 OID 转成 BinaryParam，NULL 仅留下 tp=6；binary_parameter 支持集合更小。类型保真由本章主责，消息与恢复交工作流 7。 |
+| MySQL 参数 → 规范值 | 按自身参数类型及 unsigned 等标志解码；这些输入不是 PG OID。保留原 MySQL 域，不从 PG 反向猜测 unsigned 或 bool。 | SQL NULL 保留空值及独立类型信息；错误遵循 MySQL 原契约，不能套 PG SQLSTATE。 | conn/conn_stmt 的既有 MySQL 参数边界继续拥有 wire 解释；本块只约束共享桥接不得丢失信息，未验证全链参数保真。 |
+| 解析/推导 → 规范类型 | 消费第 2 章保留的类型名、修饰符、数组结构及上下文；共同类型和 cast 决策先按方言确定，再复用 FieldType 能保真的部分。 | 有类型 NULL 沿用声明；无类型字面量/参数依 PG 上下文解析，不能一律映射 code=6 的 text 回退。缺身份拒绝，不读首行补全。 | Prepare 与执行输出应携带同一类型契约；现有 PreparedMetadata 只有结果 NativeType 与 parameter_count，未证明参数身份和所有 PG 修饰符保真。类型推导属本章，运算重载协作工作流 4。 |
+| 规范类型/值 → PG 结果 | 先生成每列 OID、typlen、typmod，再编码每个值；同列不因数值大小、首行/后续行、NULL 或格式而改变类型。 | SQL NULL 的 DataRow 长度 -1、无载荷，仍有列类型；未知类型即使无行或全 NULL 也拒绝。值域不符不得截断、转 text 或改 OID 掩盖错误。 | pg_type 已按元数据选 OID；encode_formats 校验列/native 数量，当前 typmod 恒 -1，来源表/属性号为 0。本章给类型约束，工作流 7 负责 Describe/Execute 与错误传输及恢复。 |
+| 规范类型/值 → MySQL 结果 | 保持 MySQL code、flags、charset、length、decimals 的原契约；PG 类型无保真对应时须有显式转换或拒绝。 | NULL 不改变列定义；不因 PG 映射扩大或缩减 MySQL 原域。 | ColumnInfo 与现有 MySQL 编码继续拥有 wire 描述；PG OID/typlen 不写入 MySQL code/length。PG 专属类型的 MySQL 暴露策略未取证，不能默认为字符串。 |
+
+下表是**目标方向映射**，括号内为当前 PG 出口的局部事实；MySQL 一列为共享已有类型的承载约束，不宣称 PG 专属类型已有 MySQL 等价物。U 表示 UnsignedFlag，B 表示 IsBooleanFlag；字符集二进制身份须单独保留，不能用值是否可打印决定。每行 PG 三元组是 OID/typlen/typmod；typlen 是 PG 类型内部长度标识，既非实际 wire 载荷长度，也非 MySQL 显示宽度。无修饰符用 -1；有修饰符必须来自定型结果。
+
+| 规范身份/保真要求 | MySQL wire 方向（输入/输出） | PG 方向（输入身份 → 结果三元组） | 损失、拒绝与当前缺口 |
+| --- | --- | --- | --- |
+| boolean，独立于整数 0/1 | 保留内核 B；既有 MySQL 列可与整数相同，不强造 wire bool 身份 | bool 16 → 16/1/-1 | 仅凭 TINYINT 或值 1 不能判 bool；现有 pg_type 优先 B，参数 bool 到 tp=1 后的身份连续性未证明。 |
+| 有符号整数，精确位宽 | TINY=1、SHORT=2、LONG=3、INT24=9、LONGLONG=8，U 清除；不要把显示宽度当位数 | int2 21、int4 23、int8 20 → 分别 21/2/-1、23/4/-1、20/8/-1 | PG 域为有符号 16/32/64 位。现有 tiny→int2、short→int2、long/int24→int4、longlong→int8；PG 声明 int2 输入不能因值小变 tiny 身份。越界拒绝。 |
+| 无符号整数，完整原域 | 同上 code + U，值不能先窄化到 i64 | 无 PG unsigned 输入类型；共享结果 U8/U16/U24/U32/U64 → int2/int4/int4/int8/numeric | 对应结果 21/2/-1、23/4/-1、23/4/-1、20/8/-1、1700/-1/-1；最大 u64 必须精确保留 18446744073709551615。当前有 tiny/short/long/longlong 提升分支；不从结果 numeric 反推出 unsigned，反向须有声明及范围校验。 |
+| exact numeric，精度/有符号 scale | DECIMAL=0 或 NEWDECIMAL=246，length/decimal 只在语义相容时复用 | numeric 1700 → 1700/-1/定型 typmod；无约束为 -1 | 不经 f64；不能把 MySQL decimal 上限当 PG 上限。当前文本参数用 MyDecimal 校验，binary 参数未列入支持分支；结果 typmod 丢失。负 scale、特殊值与超出共享表示的域须独立取证，不能靠映射宣称覆盖。 |
+| float4 / float8，各自精度 | FLOAT=4 / DOUBLE=5，保留位宽 | 700 → 700/4/-1；701 → 701/8/-1 | 不能以当前值可表示为由降精度；NaN、无穷、负零及溢出按族契约取证。现有参数/结果有分支，不代表特殊值行为已验收。 |
+| text / varchar(n) / bpchar(n)，保留字符长度与身份 | VARCHAR=15、VAR_STRING=253、STRING=254 及文本 blob 家族，沿自身 charset/flags；PG char 不能等同内部目录 char | 25 → 25/-1/-1；1043、1042 → 各自 OID/-1/(n+4)，无约束 -1 | PG 长度为字符约束，不取 MySQL wire 字节宽度直接代入。当前普通文本出口折为 text；入口 25/1043/1042 同转 tp=253，声明身份/补空格语义未证明。非法编码和不允许的 NUL 拒绝。 |
+| bytea，原始字节 | 二进制 charset 与 blob/string 家族；不能与同载荷 text 合并 | 17 → 17/-1/-1 | 可含零字节；文本转义与 binary 载荷分开验收。现有参数文本只收 hex，binary 可收原字节；结果按 charset=63 选 bytea，此信息不在 NativeType 内，桥接仍依赖 ColumnInfo。 |
+| date，日历日期 | DATE=10 / NEWDATE=14，不能用零日期冒充 PG 日期 | 1082 → 1082/4/-1 | 共享范围之外及 MySQL 零日期须明确拒绝；现有结果有映射，参数 temporal 限制引擎日期域，不证明 PG 完整日期域或 infinity。 |
+| time，日内时间，秒小数精度 | TIME=11 的 duration 域须与日内时间区分，非无条件双向 | 1083 → 1083/8/p；未声明 p 为 -1 | p 为 0–6。负 duration、25:00:00 不能无损映射日内时间，拒绝或走显式转换；24:00 边界独立取证。当前 code 11 选 time，不证明域已相同。 |
+| timestamp，无时区墙钟时间 | DATETIME=12 / TIMESTAMP=7 不能仅凭名称判为 PG 瞬间 | 1114 → 1114/8/p；未声明 -1 | 当前 7/12 都映射 1114；精度、零日期及范围须校验，不能添造时区。MySQL TIMESTAMP 的会话处理不能证明 PG timestamp 等价。 |
+| timestamptz，瞬间身份 | 现有 MySQL code 无独立保真对应；须明确转换与会话前提，禁止自动借 7 | 1184 → 1184/8/p；未声明 -1 | 不要求保留原输入时区拼写，但必须保留瞬间，显示依会话时区；现有 NativeType 四字段及 pg_type 没有此身份分支。缺信息拒绝，不冒充 1114。 |
+| interval，月/日/时间分量 | 无直接 MySQL duration 等价；须显式转换或拒绝 | 1186 → 1186/16/字段掩码及 p 的类型修饰符；无约束 -1 | 月不折固定秒数；不能仅靠 TIME code 保真。当前通用出口未见分支；字段掩码/typmod 精确规则交 interval 块取官方源码证据，开放受限类型前必须补齐。 |
+| UUID，128 位身份 | 无专属既有 wire code；binary/text 仅可作显式转换的结果 | 2950 → 2950/16/-1 | 不从字符串形状或 16 字节反推 UUID；缺规范身份或非法输入拒绝。当前通用 pg_type 未见 UUID 分支。 |
+| JSON / JSONB，彼此独立身份 | JSON=245 不能证明同时保留两者语义；文本转换必须显式 | 114 → 114/-1/-1；3802 → 3802/-1/-1 | JSON 原文保真与 JSONB 规范化不可互换，JSON null 不是 SQL NULL；现有 code 245 出口明确拒绝，NULL 也不能绕过。参数/结果 codec 与范围交各族文档，不能用 text OID 假成功。 |
+| 基础数组，元素类型、维度、下界及元素 NULL | 无 MySQL 通用数组 wire 等价，不能把字符串花括号视为规范数组 | 由元素身份确定独立数组 OID（int4[] 示例 1007），typlen=-1；typmod 承接元素修饰，不代表维度 | 数组 NULL、空数组、含 NULL 元素分开；必须保留形状/下界，不从首元素猜类型。当前 CatalogColumnType 有目录专用数组/vector 与编码，不证明任意表达式/参数数组支持。其他族数组 OID 在各族开放前核对官方目录。 |
+
+numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale 低 11 位编码并加 4，scale 的符号扩展按 `numeric_typmod_scale`，不能直接套 MySQL decimal 字段。字符 typmod 的 n+4 来自 `anychar_typmodin`。时间族与 interval 的精确修饰符、特殊域及各族 binary 布局在相应文档块取证；本块不发明格式或将其标为现有实现。未知引擎 code、缺必要规范字段和仅有目录专用身份，目标为显式不支持路径；不静默降级 text，不通过读取首行“恢复”身份。
+
+方案比较：只扩展 pg_type/OID 表对整数提升等既有域可复用，但不能恢复已折叠的 bool 参数、varchar/bpchar、timestamptz、JSON/JSONB、数组身份与 typmod；已有 NativeType boolean 测试也表明相同 MySQL 列和值不足以判型。因此选择**复用 NativeType/FieldType 桥接并按必要保真缺口补充规范类型信息**，再由各 wire 适配。这里不命名新 API 或重建完整类型系统；后续先做独立静态/最小往返取证，确定字段、参数声明生命周期和共享消费者，缺证项不开放。方案不改变 MySQL 原有聚合、cast 和错误语义。
+
+官方依据（2026-10-23 查阅）：PostgreSQL **18** §54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 的 Parse、Bind、ParameterDescription、RowDescription、DataRow 支持方向、格式与 NULL 约束；§52.64 [pg_type](https://www.postgresql.org/docs/18/catalog-pg-type.html) 支持 typlen/类型身份含义。OID/typlen 数值核对官方 **REL_18_0** [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)；typmod 核对同 tag 的 [numeric.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/numeric.c) 与 [varchar.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/varchar.c)。§8.1 [Numeric Types](https://www.postgresql.org/docs/18/datatype-numeric.html)、§8.5 [Date/Time Types](https://www.postgresql.org/docs/18/datatype-datetime.html)、§8.14 [JSON Types](https://www.postgresql.org/docs/18/datatype-json.html) 分别支持位宽/精度、时间域区别、JSON 身份区别；[第 8 章](https://www.postgresql.org/docs/18/datatype.html)作为其他族取证索引，非完整 codec 依据。18.6 仍是来源目标；未运行该补丁参考端，REL_18_0 源码不能代替其运行证据。
+
+### 范围外
+
+[规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
+
+### 验收
+
+[规范类型与协议映射](#规范类型与协议映射)的以下能力 ID 为**待新增**验收入口，非既有测试或功能通过记录。每项按第 1 章记录方言、定型前提、输入、类型、NULL、wire 元数据、错误与当前证据；本轮全部运行行为为未验证。成功项 SQLSTATE 不适用；错误目标参照 PostgreSQL 18 [附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)，不以现有 io::Error 自动推导其正确传输。
+
+| 入口与场景 | 可观察目标与反例 | 当前证据状态/责任 |
+| --- | --- | --- |
+| TYPE-MAP-IDENTITY：同值不同类型 | PG 定型 `1::int2`、`1::int4`、`1::int8`、`1::numeric` 及 TRUE 保持各自 OID/typlen/typmod；text '1' 不变整数。两种格式的身份一致。 | 既有 boolean bridge 测试只断言 MySQL 同列同值及 B 差异；完整场景待新增、未验证。本章定型，工作流 7 描述。 |
+| TYPE-MAP-EMPTY：空结果 | `SELECT 1::int4 AS v WHERE false` 返回零行但列为 23/4/-1；Prepare/statement Describe 与 portal Describe/Execute 的类型相同，格式字段按实际模式分别验收，不能要求 text/binary 格式码相等。 | 待新增、未验证；缺元数据即使零行也拒绝，不依赖首行。 |
+| TYPE-MAP-NULL：全 NULL | `SELECT NULL::int4` 返回 23/4/-1、DataRow 长度 -1；typed NULL 参数在 Bind 前后仍保留 int4 身份；空 text/bytea 与 SQL NULL 区分；JSON null 独立。 | 既有 NULL JSON 拒绝断言不能证明此场景；待新增、未验证。不确定裸 NULL 类型先按 PG 上下文取证，不能沿当前 code 6 回退视为通过。 |
+| TYPE-MAP-UNSIGNED：提升 | 共享引擎/MySQL U16/U32/U64 边界，分别得到 int4/int8/numeric；u64 最大值不丢位，PG numeric 反向窄化须检查目标 unsigned 域。MySQL 描述仍保留 U。 | unsigned_binary_and_unsupported_types 有 u64 文本断言；Prepare、一致性、binary numeric 与反向边界待新增、未验证。PG 窄化溢出目标 22003，禁止截断或浮点提升。 |
+| TYPE-MAP-UNKNOWN：未知或缺类型 | 直接构造未知 code、native 数量不匹配及缺必要身份；分别覆盖有行、零行、全 NULL，均不得发成功描述或猜 text；未知 PG 类型入口拒绝，已知类型但未实现 codec 明确不支持。 | 既有 missing_original_metadata 测试覆盖缺类型的有行边界，JSON 非支持含 NULL 有断言；其余待新增、未验证。项目不支持路径目标 0A000，非宣称参考 PG 也拒绝该类型。 |
+| TYPE-MAP-DIRECTIONS：参数/推导/结果 | 每个已开放族跑 text/binary 参数→规范值→结果；OID 声明与上下文共同决定身份，OID 0 无法推断则拒绝，目标 42P18；反例为同载荷不同 OID、非法 text、错误 binary 长度及范围越界。 | 参数身份及 typmod 往返待新增、未验证；错误目标依原因分别 22P02、22P03、22003，字符编码 22021；具体日期等族细化错误另取证，不一律套 22P02。 |
+| TYPE-MAP-NONISOMORPHIC：不可逆域 | 零日期、负/超过一天的 duration、缺时区瞬间、JSON 身份折叠、空数组无元素身份、未知数组下界不得静默包装；有明确转换才能按转换目标返回。 | 既有测试有零日期和 25:00:00 拒绝意图；其余待新增、未验证；不支持范围目标 0A000，非法已支持域的输入按各族数据错误，MySQL 原行为单独对照。 |
+
+文档完成条件是五个公共小节均能关联本块，上述方向/类型族及五项必需边界（同值异类型、空结果、全 NULL、unsigned、未知类型）无缺项，当前事实、目标和缺证分开。文档结构通过不等于 Describe/Execute、codec、cast、SQLSTATE、双方言隔离或性能通过；本轮没有当前客户端、差分记录或有效运行用例数。
+
+### 后续细分
+
+[规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
+
+来源步骤覆盖：来源任务步骤 1 的“规范类型↔MySQL/PG 映射、推导、参数/结果、NULL”由两个方向表与共同约束覆盖；本编号任务要求的方案比较由保真缺口决策覆盖；验收五边界由 TYPE-MAP-IDENTITY/EMPTY/NULL/UNSIGNED/UNKNOWN 覆盖。来源步骤 2–4 的逐族完整语义、cast 与精确 codec 留在本章其余编号文档块，本块映射索引不替代那些交付。第 1 章证据规则与第 2 章类型/数组语法交接保持只读，未发现需要改写前序契约的冲突。
+
 ## 4. 方言函数与运算符契约
 
 ## 5. SQL会话与事务语义
