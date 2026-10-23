@@ -3797,6 +3797,19 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 | [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process/handle；[pg_conn.rs](../pkg/server/pg_conn.rs)连接循环 | Parse先SessionQuery再CatalogQuery，None才经pg_name/pg_sql进入共享prepare；目录metadata独立生成。Q经with_query选择目录execute或共享execute_query；扩展失败丢弃至Sync，并记录会话错误。Describe不能靠运行抽样补类型。 |
 | 独立测试意图 | [pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)::catalog_projection_syntax_and_boundaries、catalog_binding_has_explicit_support、pg_introspection_joins_parameter_nodes、pg_introspection_cte_nesting_limits、pg_introspection_cte_column_bound、catalog_datagrip_scalar_and_lateral_bounds覆盖分类/绑定/边界；pg_introspection_oid_live_casts含wire OID描述与真实DDL身份变化意图。[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync提供扩展协议夹具。只读未执行，测试存在不证明当前通过。 |
 
+#### 目录更新与连接隔离
+
+承接来源步骤4，能力CAT-REFRESH/pg。批次1–20的五节正文和连续提交946e9b2c20至7415cfbf46已核对；第1–5章依赖沿首块，前置文档交付满足。2026-10-24在7415cfbf46基线经RustCodeGraph status及定点node阅读，pkg/server/doc.go与pkg/infoschema/doc.go均不存在。以下为静态证据，独立测试运行数0。
+
+| 实际入口 | 当前事实与证据限制 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::execute / execute_select / execute_rows、Execution | execute先取得schema_snapshot，再由当前context执行SELECT DATABASE()，构造单次Execution；provider按关系名缓存，CTE按ID缓存，嵌套求值复用Execution。缓存每次execute重新建立。快照与数据库名分两步读取，尚不能据此证明并发删库/会话切换下原子一致，也不能推出事务历史目录快照。 |
+| [runtime.rs](../pkg/server/runtime.rs)::ConcreteTiDBContext::schema_snapshot；[infoschema.rs](../pkg/infoschema/infoschema.rs)::InfoSchema；[cache.rs](../pkg/infoschema/cache.rs)::SchemaRef | 真实context取domain.info_schema()；InfoSchema提供SchemaMetaVersion、SchemaByName、TableByName、SchemaTableInfos。共享版本缓存不是连接目录结果缓存，当前入口没有按用户事务时间戳选择快照的证据。当前库来自连接context，不能用AllSchemas第一项替代。 |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process | Parse保存目录结构和描述；首次Execute执行目录查询，portal.messages缓存编码结果，后续限行Execute续发已有消息。执行描述与portal.description不一致时在Execute返回0A000，消息尚未交给handle发送。新Bind/new portal与旧portal续读必须分别验收。当前schema会在首次Execute更新，不能据此推导所有名称绑定均重新解析。 |
+| [pg_oid.rs](../pkg/server/pg_oid.rs)::table_oid / namespace_oid | 持久原生ID映射沿关系身份块；rename保身份，drop/recreate不得用旧名称缓存冒充旧对象。跨库身份不能只靠同名匹配。 |
+
+独立测试只读未执行：[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants、catalog_database_description_semantics含Parse后建/删库；pg_introspection_relations_live含Parse后原生RENAME、新portal看DROP/CREATE；pg_introspection_columns_live含DROP/ADD、MODIFY后类型/非空/默认刷新及prepared重用意图。原生RENAME TABLE/MODIFY并非PG ALTER已支持的证明。[pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback断言事务内CREATE的0A000/E及ROLLBACK恢复；prepared_dml_commit_and_rollback只提供DML连接观察意图，不证明事务型DDL隔离。Q/扩展工厂连线沿首块，当前测试不涵盖下列全部竞争时序。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4165,6 +4178,22 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方依据：PostgreSQL **18**，访问 **2026-10-24**：[表表达式](https://www.postgresql.org/docs/18/queries-table-expressions.html)定义JOIN/子查询关系，[WITH](https://www.postgresql.org/docs/18/queries-with.html)定义CTE作用域与求值，[协议流程](https://www.postgresql.org/docs/18/protocol-flow.html)定义Parse/Bind/Describe/Execute、Sync与取消；类型及错误码沿第3章和前块官方依据。[psql 18手册](https://www.postgresql.org/docs/18/app-psql.html)的-E/echo-hidden用于后续采集真实目录SQL，不证明下节人工SQL由客户端生成。精确18.6构建与运行行为未取证，客户端版本/SQL仍未采集。
 
+#### 目录更新与连接隔离
+
+复用首块模板及关系/列/权限/可见性块，不重定义字段语义。CAT-REFRESH要求一个目录查询的所有provider、JOIN、CTE及定义函数来自同一已选目录版本；后续空闲态查询在DDL成功发布后取得新事实。共享已提交DDL应被同库连接看见，连接私有path、当前库、prepared/portal与权限上下文不得泄露。这里的单次目录一致性是产品目标，不声称PG所有内部目录访问均等同普通MVCC查询。
+
+| 字段/查询输出 | 真实来源、关联键、PG目标类型/OID | 权限/可见性、目标与缺口策略 |
+| --- | --- | --- |
+| R的c.oid、c.relname、c.relnamespace | 同一SchemaRef中TableInfo.id、库ID经pg_oid映射；namespace键关联pg_namespace.oid；oid/26、name/19、oid/26 | 同库具CONNECT、schema USAGE与目录读权限的owner夹具；不按path删除显式目录行。改名只变名称；删建换身份。当前name出口text/25差异沿关系块；无可靠身份拒绝，不能造OID。 |
+| C的a.attrelid、a.attnum、a.attname、a.atttypid、a.atttypmod、a.attnotnull | 同版TableInfo/ColumnInfo，attrelid关联c.oid，(attrelid,attnum)列键，类型关联pg_type.oid；依次oid/26、int2/21、name/19、oid/26、int4/23、bool/16 | 列位置/声明类型/typmod/删除槽位遵守列块，不能把持久列ID当attnum。普通可见列过滤attisdropped；drop槽位不复用目标需真实模型支持，当前Offset差异不能删验收。缺事实/codec按列块门禁，不用NULL或旧值掩盖。 |
+| D的current_database()；prepared R/C描述与数据 | 连接context的SELECT DATABASE()与Execution.database；name/19（当前text/25差异沿数据库块）；R/C固定投影类型由metadata/第3章提供 | 每连接启动库独立；库不存在/不可用须按数据库生命周期明确报错，不回退其他库。不能用快照缺失返回伪成功空集；具体诊断待采。描述固定不代表行固定，实际描述改变须重分析或明确拒绝。 |
+
+事务外DDL完成后，R/C须完整反映一次发布结果；多条DDL之间允许看到中间的已发布版本。并发查询可见完整旧版或完整新版，不能将新版表名拼上旧版列。已执行portal续读保持原结果；新portal重新执行获取适用新版本。prepared普通SELECT结果结构改变按第3/5章重新分析/失效门槛，不能默默发送与Describe不同的行；当前不一致拒绝只证明局部保护，精确PG诊断/发生于Bind还是Execute须参考端采证。
+
+事务型DDL未开放时严格沿第5章“事务型建表能力门槛”早拒绝、无发布/隐式提交；未来开放后须补本连接未提交可见、其他连接无脏读、COMMIT发布与ROLLBACK无残留，不将每次domain.info_schema()直接解释为已满足。长事务和REPEATABLE READ下的目录特殊可见性、锁等待单列参考取证，不承诺每次查询都无条件见最新。
+
+官方目标来源（PostgreSQL 18，访问2026-10-24）：[PREPARE](https://www.postgresql.org/docs/18/sql-prepare.html)用于DDL/path引发重新分析及会话私有prepared；[事务隔离](https://www.postgresql.org/docs/18/transaction-iso.html)用于已提交观察边界，不能替代目录特殊行为实测；[pg_class](https://www.postgresql.org/docs/18/catalog-pg-class.html)、[pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html)用于字段及关联；客户端官方[psql 18](https://www.postgresql.org/docs/18/app-psql.html)的-E用于后续抓取内省SQL。以下均为人工契约探针，不声称psql生成过；精确客户端版本、18.6参考构建及运行行为均未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4252,6 +4281,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 目录求值与普通查询边界
 
 不实现路由器、provider、共享planner桥接、普通聚合/递归/写入执行器或codec；不将目录局部函数白名单当全局函数注册。不扩大其他目录字段、跨连接更新及客户端兼容范围（分别交既有块、批次21–25）。资源数值不是性能承诺；本轮不运行Cargo/Go、真实客户端或PG参考实例。
+
+#### 目录更新与连接隔离
+
+本块不实现DDL、快照/锁/缓存失效，不修改provider或测试，不运行Cargo、Go或真实客户端。schema版本不作为PG新增目录字段对外暴露；不扩成全库对象生命周期或全部隔离级别支持。权限、OID、删除槽位及name codec缺口引用对应块，事务型DDL归第5章，wire/portal完整生命周期归第7章，客户端实际查询归后续客户端块。并发删库、角色撤权和临时对象需后续单独取证，不能由无连接缓存推出已安全。
 
 ### 验收
 
@@ -4961,6 +4994,34 @@ ABS-ACL：管理员逐条`CREATE ROLE abs_reader;`、`GRANT USAGE ON SCHEMA publ
 
 预算/取消夹具待新增：按源码上限生成8/9个JOIN、16/17个CTE、24/25列CTE、8/9层查询的成对输入，保存生成后的完整SQL；边界内须验证真实结果，超界Parse错误。共享schema夹具逐步增加真实关系至累计物化超过16384行，及目录CROSS JOIN达到100000/100001次comparison，记录实际计数，不以最终LIMIT行数作证明。Execute越限不能返回部分成功；活跃执行期间发CancelRequest，原连接收到57014才算取消命中；空闲取消不得影响下一条。资源/取消错误后Sync回I、`SELECT 1`可用；显式BEGIN内错误后Sync仍E，ROLLBACK后再查询恢复，沿第5章。耗时/内存、预算边界实际可达性、精确错误映射均待取证。
 
+#### 目录更新与连接隔离
+
+以下CAT-REFRESH用例均待新增/待运行，无红绿或客户端通过记录。两PG连接A/B以同一owner连接专用库cat_refresh，初始I、UTF8、默认隔离；具有CONNECT、public USAGE/CREATE及目录读取权限。管理连接事务外逐条 `CREATE DATABASE cat_refresh;`、`CREATE DATABASE cat_refresh_other;`；C连接后 `CREATE TABLE public.refresh_probe (other_id integer);`，随后保持空闲；实际库名记录startup。A/B设置search_path为public,pg_catalog，C相同。所有SQL参数[]、文本结果；扩展Parse参数OID[]、Bind值[]/格式[]，逐列描述记录type OID/typmod/NULL及实际对象OID，不预造OID数值。跨版本name/19与当前text/25差异显式登记。
+
+固定完整探针（人工编写，后续引用R/C/D均指以下原SQL）：
+
+```sql
+-- R：行类型依次 oid/26, name/19, oid/26
+SELECT c.oid,c.relname,c.relnamespace FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname IN ('refresh_probe','refresh_renamed') ORDER BY c.relname;
+-- C：行类型依次 oid/26, int2/21, name/19, oid/26, int4/23, bool/16
+SELECT a.attrelid,a.attnum,a.attname,a.atttypid,a.atttypmod,a.attnotnull FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON a.attrelid=c.oid JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relname IN ('refresh_probe','refresh_renamed') AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum;
+-- D：name/19
+SELECT current_database();
+```
+
+| ID及完整变化输入/顺序 | 目标观察与拒绝/恢复证据 |
+| --- | --- |
+| REF-CREATE：先A/B R/C均零行；A `CREATE TABLE public.refresh_probe (id integer NOT NULL, label varchar(7));`，成功完成后A/B各R/C | R一行(U,refresh_probe,N)；C为(U,1,id,23,-1,true)、(U,2,label,1043,11,false)。U/N现场记录，关联一致。C连接仍只见自己的other_id，D分别cat_refresh/cat_refresh_other；显式目录名不受另一连接path影响。创建若尚不支持，在写入前能力拒绝，登记差异，不改为原生SQL冒充PG通过。 |
+| REF-ALTER：A `ALTER TABLE public.refresh_probe RENAME TO refresh_renamed;`；再 `ALTER TABLE public.refresh_renamed ADD COLUMN extra integer;`；再 `ALTER TABLE public.refresh_renamed DROP COLUMN label;`；每条完成后A/B R/C | rename保持U/N、旧名消失；ADD后新增(U,3,extra,23,-1,false)；DROP后活列仅id/extra且extra仍attnum3，不复用label槽位。R始终一对象；C不混入其他库列。PG语法入口、attnum差异均必须登记，不以原生测试意图判成功。 |
+| REF-DROP：A `DROP TABLE public.refresh_renamed;` 后A/B R/C；再A `CREATE TABLE public.refresh_renamed (fresh bigint);` 后各R/C | DROP零行且保留完整描述；重建R新U2不等于U，C仅(U2,1,fresh,20,-1,false)。旧OID不能指向新对象。 |
+| REF-SNAPSHOT：独立重复REF-CREATE夹具；在一次B C求值的provider取值边界暂停，A完成rename/ADD，再继续B | 测试同步钩子待新增，不用sleep猜时序。B只能返回完整旧/新版本；同查询重复provider、CTE/子查询按求值块扩展同一屏障；下一次B R/C必见发布版。记录SchemaMetaVersion仅作内部证据，不填输出列。已绑定名称消失的错误也须完整拒绝，不能部分成功。 |
+| REF-PREPARE：A/B各Parse同名s=R，Describe statement、Sync；A完成REF-ALTER中rename；各Bind新portal p、Describe portal、Execute/Sync，再DROP后新Bind q/Execute | R描述保持三列固定类型；新执行依次见新名、零行。B Close自己的s不影响A；B Bind到不存在s须拒绝，Sync后SELECT 1 AS ok返回1/I，A仍可新Bind执行。精确缺statement诊断待采。已执行portal暂停续读另轮：B BEGIN、Bind p、Execute maxRows=1，A完成DDL，B续Execute只读首次结果，Sync后ROLLBACK；需至少两个匹配关系，该轮另预建 `CREATE TABLE public.refresh_renamed (id integer);`，A仅 `ALTER TABLE public.refresh_probe ADD COLUMN extra integer;`，避免rename碰撞，禁止把两个时刻混在同portal。 |
+| REF-META：独立初始夹具，B Parse m=`SELECT * FROM public.refresh_probe`、Describe/Sync；A `ALTER TABLE public.refresh_probe ADD COLUMN extra integer;`；B Bind p/Describe/Execute/Sync | 普通SQL结果结构改变须重分析或明确拒绝，按第3/5章门槛；若拒绝，记录Bind或Execute实际阶段，不能将旧两列Describe配新三列DataRow。当前Execute描述不一致目标0A000，PG精确码/阶段未采；新Parse m2后描述三列且可执行。非目录普通SELECT不声称走CatalogQuery。 |
+| REF-LOCAL：A `SET search_path TO pg_catalog;`，B保持public,pg_catalog，交错D/R/C及 `SHOW search_path;`；A断连重连原库，再C D/R/C | D始终各自启动库；显式R/C只按所属库取事实，B路径不变。A重连清除旧statement/portal，SHOW按启动默认而非旧A私值。角色权限负例复用角色权限块，不能从owner夹具推导无权限连接不会泄露。 |
+| REF-TX：独立初始无refresh_probe；A BEGIN后 `CREATE TABLE public.refresh_probe (id integer);`，B R/C，A Sync（扩展组）再ROLLBACK，双方R/C | 当前产品应0A000/E、无对象发布，B始终零行，ROLLBACK后A恢复I及SELECT 1成功。未来开放时改用第5章COMMIT/ROLLBACK/失败清理完整观察轮次；未提交A/B可见性与锁等待需独立采证，不用本轮当前拒绝代替成功事务证明。 |
+
+每轮从记录过的对象存在性恢复夹具，A/B/C先Sync（需要时）、ROLLBACK至I，由owner事务外删除实际存在的refresh_probe/refresh_renamed；断开目标库连接后管理连接删两专用库。临时加的第二关系同步清理。Q与扩展分别执行生命周期主链；拒绝记录S/V/C/M、适用D/H/P、原SQL、阶段和I/T/E，错误后SELECT 1恢复，未采精确错误文本/位置不填猜值。psql后续用-E抓取实际\d前后查询及版本，与上述人工探针分别保存，不以UI刷新成功代替字段/身份断言。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -5066,6 +5127,12 @@ Ready文档范围采用五节锚点、前置提交/正文、全部本块路径�
 #### 目录求值与普通查询边界
 
 后续仅按必要探针拆为：分类/混合关系拒绝及遮蔽；JOIN与单次快照；CTE/子查询/有限数组类型；参数描述与codec；共享预算/取消及错误恢复。每项另建实施计划和独立回归，记录真实客户端完整SQL及版本后才扩白名单；通用SQL能力走共享内核。批次21接目录更新与连接隔离，本块只交路由/类型/资源边界，不吞并其实现。
+
+#### 目录更新与连接隔离
+
+后续分别拆为单次快照/provider屏障回归、DDL发布后R/C刷新、prepared结构失效与portal续读、跨库/连接上下文隔离，再单列事务型DDL开放后的提交/回滚目录观察。每项另建窄实施计划，优先复用上述独立测试，新增同步钩子明确标为待新增；不补建另一目录引擎。
+
+Ready文档范围采用五节锚点、前置提交及正文、引用路径存在性、字段→来源→目标→验收和diff审阅；.agents/skills/tidb-verify-profile/SKILL.md缺失，采用替代检查。正确性风险为版本混合与旧身份复用，兼容性风险为name类型、列槽位及prepared错误阶段，性能/锁等待未测。本文完成仅表示契约交付，下一批22继续其指定主题。
 
 ## 7. 线协议认证与数据通道
 
