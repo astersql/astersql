@@ -2556,6 +2556,22 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 | [logical_plan_builder.rs](../pkg/planner/core/logical_plan_builder.rs)：`buildWith`；[source.rs](../pkg/session/runtime/source.rs)：`execute_with_clause` | 前者逐项 buildCte；后者 push 作用域，按顺序求值并保存 CTE，列别名非空时要求数量与输出完全一致，body 执行后 pop。该局部实现值得复用，但其全量预求值及别名数检查不证明 PG 按需求值、部分列别名或完整类型身份；不能仅由模块并存推定所有 PG 查询均走该路径。 |
 | [cte_test.rs](../pkg/planner/core/tests/cte/cte_test.rs)：`TestCTEWithDifferentSchema` | 已读独立 Rust 测试：建立用户/授权、db_a 中含 CTE 的视图，在 db_b 下 EXPLAIN，断言 CTEFullScan/seed 计划。证明现有测试意图保留 MySQL 跨数据库视图环境，不证明 PG schema 或本块结果正确。 |
 
+#### 写入公共表表达式契约
+
+承接来源任务步骤 1 的数据修改 CTE 与步骤 4 的副作用、恢复及 MySQL 共存，能力 `SESSION-CTE-WRITE/pg` 为 PG 专属。批次 5 提交 `aa91adacde` 及累计前置 `d8c1ca891a`、`df9d9ebaeb`、`d6f469119b`、`63b628578b` 的五节正文已核对，依赖满足。复用第 2 章 CTE 名称/语法边界、第 3 章固定列身份、第 4 章表达式资格与本章返回契约；普通应用写入仍经公共 Query/扩展入口到共享会话，不交给目录模板模拟。
+
+2026-10-23 基于 `aa91adacde` 经 RustCodeGraph 读取的静态证据如下；`pkg/server/doc.go`、`pkg/planner/core/doc.go`、`pkg/executor/doc.go` 不存在。此表不代表运行支持或完整缺陷诊断。
+
+| 路径与符号 | 当前证据与边界 |
+| --- | --- |
+| [pg_name.rs](../pkg/server/pg_name.rs)::Resolver::scope | 顺序扫描 WITH 定义体再登记名称，RECURSIVE 入口返回 0A000；只证明名称适配流程，不证明写入 CTE 可执行或共享快照。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)::command | 解析后只检查顶层 InsertStmt/UpdateStmt/DeleteStmt 的 Returning 并拒绝非空列表；不能把顶层检查推导为所有嵌套写入均在副作用前被拒绝。具体搬移输入能否到达此门禁、实际诊断仍未验证。 |
+| [logical_plan_builder.rs](../pkg/planner/core/logical_plan_builder.rs)::buildWith；[source.rs](../pkg/session/runtime/source.rs)::execute_with_clause | 前者按定义调用 buildCte；后者建立作用域、逐项经 execute_insert_select_node_with_outer 或递归入口求值/保存、执行 body 后清理。现有行集复用值得保留，但顺序物化不能证明 PG 写入间不可见性，也未建立 DELETE 返回行生产者与外层 INSERT 同属一个原子执行的证据。 |
+| [pg_dml_test.rs](../pkg/server/pg_dml_test.rs)::prepared_crud_roundtrip | 已读无返回值的 prepared DELETE 成功、三类顶层 RETURNING 在 Parse 拒绝及最终空表断言；没有本题 DELETE→INSERT 成功、嵌套拒绝或一侧失败回滚的断言。 |
+| [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::prepared_dml_commit_and_rollback | 已读 observer 行数及 ROLLBACK/断连回滚断言片段，可复用双连接测试形式，不能替代本题两个表的完整行值、同语句快照及原子性证据。 |
+
+以上独立测试本轮均未运行；有效运行用例数 0，当前支持为未验证，不以说明文件或历史协议记录升级结论。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2635,6 +2651,18 @@ RECURSIVE、无环前向引用、工作表终止/去重/资源释放、SEARCH/CY
 
 官方依据（**2026-10-23** 访问，适用 **PostgreSQL 18 大版本**）：[§7.8 WITH](https://www.postgresql.org/docs/18/queries-with.html) 的 SELECT、递归、物化分节定义行集与求值边界；[SELECT / WITH 与 FROM](https://www.postgresql.org/docs/18/sql-select.html) 定义定义顺序、列名及遮蔽；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对下方错误名对应码，不单独证明具体输入的诊断。官方 **REL_18_0** [parse_cte.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/parser/parse_cte.c) 的 transformWithClause / analyzeCTETargetList 补证同层重复名与部分列别名规则；这仍不是 18.6 运行证据。**18.6** 仍是来源指定目标，未建立该补丁参考实例或差分结果。下列结果为按规则推导的验收目标，非运行报告。
 
+#### 写入公共表表达式契约
+
+窄开放目标是顶层 `WITH moved AS (DELETE ... RETURNING ...) INSERT ... SELECT ... FROM moved RETURNING ...` 的普通表搬移：CTE 行集来自同一次 DELETE 的被删行投影，外层 INSERT 写入该行集，客户端只接收主语句的返回行。默认值、NULL、别名、列身份和零行描述复用返回契约；写后行必须再查询两表证明，不能把 DELETE 行计入主 INSERT 影响行数，不能靠重扫源表重建 moved。无外层 RETURNING 时不产生成功行集，仍须验证真实副作用。
+
+同语句的主语句及各 CTE 使用同一快照，兄弟写入的实际先后不构成承诺；普通表扫描看不到本语句其他写入分支的变化，变化只能由 RETURNING 行集传递。即使执行器采用顺序调度，也不能让后一分支直接读到前一分支的新表状态。写入 CTE 每次语句执行一次且执行到完成，不因未引用、零消费或多次引用而跳过、截断或重做；这与只读 CTE 的按需规则不同。主 SELECT/无 RETURNING 的合法组合可作为后续独立门槛，未开放时明确拒绝，不能当成 PG 非法形式。
+
+搬移必须作为一条原子语句接入共享事务：DELETE 或 INSERT 任一侧执行失败、表达式失败或取消，均不能留下部分持久表写入。隐式事务失败后两表保持原状；显式事务错误进入 E，Sync 不恢复事务，ROLLBACK 后两表及此前事务写入均恢复。成功返回值也不等于提交，COMMIT/ROLLBACK 和观察连接的证据分别采集。sequence、外部函数等非事务副作用不在“两表回滚”承诺内。
+
+写入 CTE 仅允许附着顶层语句；直接递归自引用的数据修改在 PG 本身不允许。递归只读 CTE 提供键集再驱动 DML 是另一种合法形式，不能与递归写入混称，当前仍保留 RECURSIVE 门禁。主语句/兄弟分支重复修改同一行不提供确定顺序或结果承诺，PG 也有不可预测边界，不为其编造“后写覆盖”目标。共享内核不能满足本块行集、快照或原子性时，整体在写入前拒绝（产品限制目标 0A000，当前阶段/诊断未测）；禁止丢弃 WITH、RETURNING 或只执行剩余 INSERT。
+
+官方依据（**2026-10-23** 访问，适用 **PostgreSQL 18 大版本**）：[§7.8.4](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-MODIFYING)定义顶层附着、RETURNING 通道、一次完成、同快照、递归及重复修改限制；[DELETE](https://www.postgresql.org/docs/18/sql-delete.html)和 [INSERT](https://www.postgresql.org/docs/18/sql-insert.html)定义实际删除/插入行及返回投影；[SELECT / WITH](https://www.postgresql.org/docs/18/sql-select.html)补充 WITH 组合边界；[§3.4](https://www.postgresql.org/docs/18/tutorial-transactions.html)支持单语句隐式事务及整体回滚；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对下方错误类别，不能单独证明具体 SQL 的诊断。虽然附录当前写有 18.6，仍未核验精确补丁发布、建立 18.6 实例或运行差分；下方均为按规范推导的目标。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2656,6 +2684,10 @@ RECURSIVE、无环前向引用、工作表终止/去重/资源释放、SEARCH/CY
 #### 只读公共表表达式契约
 
 不实现或修改 parser、名称适配、planner、执行器、目录、协议及测试，不把目录 CTE 限额移植为应用 SQL 的兼容限制，不补建另一套 PG 引擎。写入 CTE、主 DML、volatile/序列副作用、行锁、递归与 SEARCH/CYCLE、显式物化的完整执行及优化/溢写成本均不由本块正例开放。共享路径的别名数、求值策略与 PG 可能存在差异，只登记后续取证边界，不在文档任务修复；不修改第 2 章名称规则或其他章节，不运行数据库、Cargo/Go、差分平台或性能实验。
+
+#### 写入公共表表达式契约
+
+不实现 parser、planner、执行器、事务、协议或测试，不解除现有 RETURNING/递归门禁，不另建 PG 执行引擎。仅为普通表 DELETE→INSERT 搬移及必要拒绝/快照证据建立契约；MERGE、递归键集驱动写入、触发器/规则、分区/继承、ON CONFLICT 组合、sequence/identity 与权限完整矩阵另行取证。无 RETURNING、未消费及兄弟分支案例是语义门槛，不由主搬移正例自动开放；对同一行重复写入不规定确定性结果。共享内核未满足的快照/原子性列为开放限制，不在本任务递归补建子系统，不运行数据库、Cargo/Go、差分平台或性能实验。
 
 ### 验收
 
@@ -2808,6 +2840,29 @@ MySQL 共存 `session.cte-read.mysql.coexist`（能力 `SESSION-CTE-READ/mysql`�
 
 清理各变体先确保 W/M `ROLLBACK`，关闭 statements/portals，再在事务外分别 `DROP TABLE public.cte_read_doc`、`DROP TABLE cte_mysql_doc`，关所有连接；夹具每组重置，M 提交的第三行不串入其他组。人工覆盖映射：来源步骤 1 对应 chain/repeat/shadow/partial-alias 的真实应用查询，步骤 4 对应 name-errors/recursive-gate、S、回滚与 MySQL 共存；目录专例只作静态证据。正确性风险为重复引用消费、作用域及清理；兼容性风险为 PG 部分列别名、诊断和类型身份；性能与物化/递归资源未测试，不提供性能结论。
 
+#### 写入公共表表达式契约
+
+下列 `session.cte-write.pg.*` 均为**待新增、未运行**用例，关联 `SESSION-CTE-WRITE/pg`。PG W/O 连接同一独立测试库，UTF-8、UTC、search_path=public，初始 I，具备两表读写权限。事务外逐条创建 `CREATE TABLE public.cte_move_src (id integer PRIMARY KEY,v integer)`、`CREATE TABLE public.cte_move_dst (id integer PRIMARY KEY,v integer)`，无触发器、规则、序列或并发写者。每例独立重置 R：在 I 下逐条 `DELETE FROM public.cte_move_dst`、`DELETE FROM public.cte_move_src`、`INSERT INTO public.cte_move_src VALUES (1,10),(2,NULL),(3,30)`；O 在 autocommit/Read Committed 下每次新查询。副作用查询 S 为分别执行 `SELECT id,v FROM public.cte_move_src ORDER BY id` 和 `SELECT id,v FROM public.cte_move_dst ORDER BY id`；初始结果分别 [(1,10),(2,SQL NULL),(3,30)] 与 []。
+
+完整搬移输入 Q：`WITH moved AS (DELETE FROM public.cte_move_src WHERE id<=2 RETURNING id,v) INSERT INTO public.cte_move_dst(id,v) SELECT id,v FROM moved RETURNING id,v`。整数输出列 id/v 固定 int4（23/4/-1），text 格式，NULL 编码与元数据复用返回块；多行按含重复项的多重集比较，RETURNING 无隐含排序。每例记录值/NULL、列序/名称、OID/typlen/typmod、来源字段、标签/影响行数及 I/T/E；成功 SQLSTATE 不适用，错误还须采集 severity/message/position/detail/constraint 等适用字段，尚无精确参考采集结果。
+
+| 用例 / 完整输入或 Q 的明确变体 | 目标结果、快照与副作用证据 | 恢复/继续性 |
+| --- | --- | --- |
+| `move`：R 后 W 执行 Q | 返回 {(1,10),(2,SQL NULL)}，主标签 INSERT 0 2；W/O 的 S 都为源 [(3,30)]、目的 [(1,10),(2,SQL NULL)]，不能只比总行数。 | 成功 I；W `SELECT 1` 成功，再 S；结束 R。 |
+| `empty`：R 后 Q 的 `id<=2` 改为 `id<0` | 零行且同样两列描述，INSERT 0 0；W/O 的 S 均保持初始值。 | I；`SELECT 1` 后 R。 |
+| `rollback` / `commit`：R，W `BEGIN`，执行 Q，W/O 分别 S，再分别 `ROLLBACK` 或 `COMMIT`（两次独立试验） | Q 返回两行；提交前 W 见搬移后值、O 仍初始值。ROLLBACK 后双方均初始；COMMIT 后双方均搬移后值，两个表都采集。 | T→I 后 `SELECT 1` 和 S，结束 R；不以返回成功代替回滚证明。 |
+| `destination-fail`：R 后先 `INSERT INTO public.cte_move_dst VALUES (2,200)`，再 Q；隐式及显式 `BEGIN` 各独立一次，后者在 Q 前再 `INSERT INTO public.cte_move_src VALUES (9,90)` | 主 INSERT 唯一键失败，目标 23505；O 的 S 始终源初始、目的 [(2,200)]，不允许源丢 1/2 或目的多 1。显式失败期间不在 W 用 S 绕过门禁；回滚后双方 S 也须相同且无 9。输入先写 9 用来证明整个事务恢复。 | 隐式回 I，`SELECT 1` 成功；显式 E，`SELECT 1` 目标 25P02，Sync 后仍 E，ROLLBACK→I 后再 S/SELECT 1；结束 R。 |
+| `source-fail`：R；Q 的 CTE 返回列表改为 `RETURNING id,10/(id-2) AS v`，外层不变 | 源侧投影在 id=2 除零，目标 22012；不得假设扫描先后，W/O 的 S 最终均初始，既无源部分删除也无目的部分插入。不把可能提前收到的返回行当作成功。 | 隐式失败回 I 后 S/SELECT 1；另用 BEGIN 重跑，E、Sync、ROLLBACK→I 后 S；结束 R。 |
+| `snapshot`：R；`WITH moved AS (DELETE FROM public.cte_move_src WHERE id<=2 RETURNING id,v), seen AS (SELECT id,v FROM public.cte_move_src WHERE id<=2) INSERT INTO public.cte_move_dst SELECT seen.id,seen.v FROM seen JOIN moved ON seen.id=moved.id RETURNING id,v` | 返回两行且 S 为搬移后值；seen 必须读到被删前两行，moved 必须提供被删行。与 Q 对照，不能用执行顺序令 seen 变零行。此例仅证明这组可见性，不能覆盖所有隔离级别。 | I；S/SELECT 1 后 R。 |
+| `repeat-consumer`：R；`WITH moved AS (DELETE FROM public.cte_move_src WHERE id<=2 RETURNING id,v) INSERT INTO public.cte_move_dst SELECT a.id,a.v FROM moved AS a JOIN moved AS b ON a.id=b.id RETURNING id,v` | 返回两行、S 为搬移后值；第二引用不能重复 DELETE 或耗尽首引用行集。 | I；S/SELECT 1 后 R。 |
+| `unused` / `unreturned`（后续独立开放门槛）：R；分别 `WITH moved AS (DELETE FROM public.cte_move_src WHERE id<=2 RETURNING id,v) SELECT 7 AS marker` 与 `WITH moved AS (DELETE FROM public.cte_move_src WHERE id<=2) INSERT INTO public.cte_move_dst VALUES (4,40)` | PG 目标前者 [(7)]（int4），S 源 [(3,30)]、目的 []，即使无人读也完成 DELETE；后者主 INSERT 影响一行，S 源 [(3,30)]、目的 [(4,40)]。未开放时 AsterSQL 以整体能力拒绝验收，不能跳过 DELETE 后成功。 | 两项分别 R；成功 I，否则依下行拒绝恢复；各自 S/SELECT 1，结束 R。 |
+
+当前限制拒绝 `session.cte-write.pg.reject` 用非空夹具 R 的原始 Q 验证整体门禁，并用 `SELECT * FROM (WITH moved AS (DELETE FROM public.cte_move_src WHERE id<=2 RETURNING id,v) SELECT * FROM moved) AS x` 验证非顶层写入反例（PG 本身拒绝，精确 SQLSTATE/位置待参考端采集，不套用产品 0A000）。逐项在隐式与 BEGIN 场景运行，任一拒绝均要求 O 的 S 初始；隐式错误后 I、SELECT 1 成功，显式错误后 E、Sync 不恢复、ROLLBACK→I 后 W/O 的 S 初始。递归门禁输入另用 `WITH RECURSIVE keys AS (SELECT 1 AS id) DELETE FROM public.cte_move_src WHERE id IN (SELECT id FROM keys) RETURNING id,v`：PG 合法目标删除 (1,10)，AsterSQL 当前限制目标 0A000 且 S 不变；直接递归写入的非法结构和诊断另采，不伪造结果。各反例结束 R，最后在 I 下逐条 DROP 两表；不在显式事务内用 DDL 恢复夹具。
+
+Query 与扩展 Parse/Bind/Describe/Execute 分别覆盖 Q、零行及成对失败。参数版把 `id<=2` 换 `id<=$1`、OID 23/text 值 2 和 0 分两次新 Bind/Execute；Parse/Describe 前后 S 必须相同，元数据不取样写入。一次 portal 分段/重复 Execute 只发送该次结果、不重做搬移；新 Bind 的新语句执行须重新求值。扩展运行错误采集 ErrorResponse、Sync 后事务状态及上述恢复；尚未支持时记录拒绝阶段和无副作用，不能算成功搬移证据。快照门槛还须由共享执行层的独立测试/可观测执行记录证明各分支共用快照与一次生产；仅行值相同不证明调用次数或全部并发语义。
+
+MySQL 共存 `session.cte-write.mysql.coexist`（`SESSION-CTE-WRITE/mysql`，独立契约）：同 Server 的 M/N、独立默认库、autocommit=1，记录 sql_mode/隔离级别。逐条 `CREATE TABLE cte_move_mysql (id INT PRIMARY KEY,v INT)`、`INSERT INTO cte_move_mysql VALUES (1,10),(2,NULL)`；M 以 Query 执行 `SELECT id,v FROM cte_move_mysql ORDER BY id`，目标 [(1,10),(2,SQL NULL)]；Prepare/Execute 执行 `SELECT id,v FROM cte_move_mysql WHERE id=? ORDER BY id`（整数 2），目标 [(2,SQL NULL)]。M `BEGIN`、`UPDATE cte_move_mysql SET v=11 WHERE id=1`，N 新查询 `SELECT id,v FROM cte_move_mysql ORDER BY id` 仍 [(1,10),(2,NULL)]；交错 PG Q 成功或拒绝/恢复后 M `COMMIT`，N 见 [(1,11),(2,NULL)]。另从初值单独做同一 UPDATE 后 ROLLBACK，N 仍初值。PG 前后再查 Query/新 Execute，比较 MySQL 自己的值、类型/标志、code/SQLSTATE/警告与参考/此前基线，末尾 DROP 表。此例不让 MySQL 执行 PG 写入 CTE，不用两条 MySQL DML 模拟 PG 单语句原子性；所有结果未实测。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -2839,6 +2894,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 后续沿共享会话的查询入口核实实际分派，先补非递归绑定与定型、部分列别名、重复消费者及同目录独立测试，再由 server 两协议测试证明值/NULL/零行、错误状态与回滚。名称归第 2 章，列身份/codec 归第 3 章及工作流 7，纯表达式资格归第 4 章，真实对象和权限归工作流 6。复用现有 Rust CTE 实现，不因局部差异递归补建子系统。
 
 递归与显式物化各另取 PG 参考和共享实现证据，覆盖调用次数、按需停止、取消/资源释放与优化约束后才能开放；volatile、sequence、写入 CTE 与主 DML 再单独组合。当前仅完成本块文档，未生成或执行代码任务，不升级任何支持状态。
+
+#### 写入公共表表达式契约
+
+后续先保留 WITH/嵌套写入/RETURNING 的完整表示与分析拒绝，再把 DELETE 行集生产者和主 INSERT 接入同一共享语句事务；快照及原子性未获证时保留整体拒绝。复用现有 CTE 绑定和返回契约，按搬移成功/零行、两侧失败与回滚、同快照/重复消费者三组窄证据分别细分，优先扩充 pg_dml_test.rs 和共享执行层同目录独立测试，不新增第二套执行器。未消费/无返回、主 SELECT、兄弟重复写入边界和递归组合分别设门槛，不借主搬移补全通用子系统。
+
+来源步骤 1 的写入 CTE 由 Q 数据流及快照/次数规则承接，步骤 4 由成对失败、恢复及 MySQL 共存承接；名称与语法归工作流 2，固定类型归 3，表达式归 4，真实表/权限归 6，portal/错误与元数据归 7，双入口参考采证归 1/8，事务专项复用两表 COMMIT/ROLLBACK 证据。文档完成不表示功能开放；正确性及兼容性均未实测，性能无结论。本轮未生成或执行后续代码任务。
 
 ## 6. 系统目录与内省契约
 
