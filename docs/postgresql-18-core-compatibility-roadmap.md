@@ -2572,6 +2572,22 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 以上独立测试本轮均未运行；有效运行用例数 0，当前支持为未验证，不以说明文件或历史协议记录升级结论。
 
+#### 模式与搜索路径契约
+
+承接来源任务步骤 2 的 schema/search_path 与步骤 4 的隔离、失败恢复及 MySQL 共存，能力 `SESSION-SEARCH-PATH/pg` 为 PG 专属。批次 6 提交 `aef96fb4fe` 及累计前置 `d8c1ca891a`、`df9d9ebaeb`、`d6f469119b`、`63b628578b`、`aa91adacde` 的五节正文已核对，文档依赖满足。复用第 2 章[模式搜索路径解析契约](#模式搜索路径解析契约)，此块主责连接状态与事务生命周期；仍通过公共 PG 入口进入共享会话/执行链。
+
+2026-10-23 基于 `aef96fb4fe` 经 RustCodeGraph 阅读的静态证据如下；`pkg/server/doc.go` 不存在。说明文件及[协议第一阶段](postgresql-protocol-first-phase.md)的历史结果只作导航。
+
+| 路径与符号 | 现状与证据限制 |
+| --- | --- |
+| [pg_session.rs](../pkg/server/pg_session.rs)::PgSession::{default,execute,schema,has_public,public_precedes_catalog}、SessionQuery::parse | 默认仅 public；SET 克隆替换 path，SHOW 拼接原列表，schema 取列表首项；RESET 直接重建整个 PgSession。仅接受 public、pg_catalog、空字符串与无重复列表，missing/任意用户 schema 和重复项在此返回 0A000。未表示事务前值、LOCAL 覆盖或回滚恢复；RESET 同时重建 failed_transaction 的代码不能充当失败事务恢复证明。 |
+| [pg_name.rs](../pkg/server/pg_name.rs)::Resolver::relation、rewrite、adapt | 未限定非 CTE 关系仅消费 has_public；显式 public.t 改写当前原生库，adapt 通过共享 SELECT DATABASE() 取库，再校验关系；其他 schema/跨库拒绝。public 是当前库投影，不是原生 public 库；pg_catalog 是有界 PG 目录入口，不是任意原生库映射。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery::parse_session_with_types | 仅 public 显式先于 pg_catalog 时读真实当前库快照检查同名表遮蔽；current_schema 取 session.schema()。此处不是通用多 schema resolver，路径排除与目录行消失也不是一回事。 |
+| [pg_session_test.rs](../pkg/server/pg_session_test.rs)::pg_introspection_namespace_parser_boundaries；[pg_name_test.rs](../pkg/server/pg_name_test.rs)::pg_introspection_names_token_scopes、pg_introspection_names_rejection_boundaries | 已完整阅读独立测试：有界 SET/SHOW/RESET 解析、显式 public 绕过成员门禁、CTE 遮蔽及跨库/非 public 拒绝断言；不含事务路径恢复证明。 |
+| [pg_query_test.rs](../pkg/server/pg_query_test.rs)::pg_introspection_namespace_session_state、pg_introspection_names_live_tables | 已读双连接路径交错、空路径 current_schema NULL、隐式目录、RESET、Parse 后 SET 再读取 current_schema，以及真实表/当前库隔离的断言。现有测试意图不能证明任意 schema、权限、完整 catalog 遮蔽或普通 prepared 关系重绑定。 |
+
+本轮以上测试均未运行，实际运行用例数 0；当前有界实现、既有测试意图、以下完整目标和未来运行证据分别记录，不宣称功能验收通过。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2663,6 +2679,21 @@ RECURSIVE、无环前向引用、工作表终止/去重/资源释放、SEARCH/CY
 
 官方依据（**2026-10-23** 访问，适用 **PostgreSQL 18 大版本**）：[§7.8.4](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-MODIFYING)定义顶层附着、RETURNING 通道、一次完成、同快照、递归及重复修改限制；[DELETE](https://www.postgresql.org/docs/18/sql-delete.html)和 [INSERT](https://www.postgresql.org/docs/18/sql-insert.html)定义实际删除/插入行及返回投影；[SELECT / WITH](https://www.postgresql.org/docs/18/sql-select.html)补充 WITH 组合边界；[§3.4](https://www.postgresql.org/docs/18/tutorial-transactions.html)支持单语句隐式事务及整体回滚；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对下方错误类别，不能单独证明具体 SQL 的诊断。虽然附录当前写有 18.6，仍未核验精确补丁发布、建立 18.6 实例或运行差分；下方均为按规范推导的目标。
 
+#### 模式与搜索路径契约
+
+原始设置、有效有序路径和实际绑定对象必须分开：SHOW 返回设置文本；有效路径按存在性、USAGE、用户项等解析；未限定关系选有效路径中第一个匹配对象，显式 schema.t 独立检查存在性/权限，不因路径排除而不可见，也不能失败后回落其他库。current_schema 取首个有效显式 schema，无则 SQL NULL。目录展示不能替代真实对象读取、写入或权限证明。
+
+| 状态/操作 | PG18 目标与能力边界 |
+| --- | --- |
+| SET/SHOW/RESET | SET 及 SET SESSION 只影响当前连接；TO 与 = 等价。RESET/SET TO DEFAULT 恢复“本会话未发 SET 时”的配置值，不固定写死 public；隔离验收夹具将参考端默认显式配置为 public，同时另采原生默认差异（PG 通常为 `"$user", public`）。现有默认 public 是限制，不将其写成 PG 默认。 |
+| 空路径与顺序 | `SET search_path TO ''` 保留空原值，public 对象不再由未限定名可见；省略 pg_catalog 时隐式优先，显式列出则按位置搜索。空显式路径无默认用户建表位置，不能回落当前库；此处不授权事务型 DDL。 |
+| 缺失/用户 schema | 完整目标忽略不存在或无 USAGE 的路径项，不能把当前 missing→0A000 写成 PG 要求；`$user`、临时 schema 及任意用户 schema 需要工作流 6 的真实身份与权限后才开放，当前不承诺。关系/类型的临时项规则不直接套给函数/运算符。 |
+| 事务成功 | I 下 SET 形成会话值；BEGIN 内普通 SET/RESET 在 T 中立即可见，COMMIT 后保留；另一连接始终不受影响。 |
+| 事务失败与回滚 | BEGIN 前值须可恢复；BEGIN 内 SET/RESET 后 ROLLBACK 恢复事务前值。出错进入 E 后 SHOW/SET/RESET 不能绕过失败门禁或清 E；扩展 Sync 仅同步协议，ROLLBACK 后恢复旧路径并进入 I。精确诊断及错误发生阶段留给实际采证。 |
+| SET LOCAL | 目标仅在当前事务有效，COMMIT/ROLLBACK 均撤销 LOCAL；同事务先 SET 后 LOCAL，提交后恢复该 SET 值，回滚则回到事务前值。事务外 LOCAL 的 PG 目标是警告且无效果。当前 SessionQuery 没有 LOCAL/SESSION 分支，不能由返回 None 推断全入口的精确拒绝；不满足作用域恢复前须在副作用前明确门禁，拒绝诊断待采，不能当普通永久 SET 接受。 |
+
+依据为 PostgreSQL **18 主版本**官方 [search_path 参数](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-SEARCH-PATH)（原始/有效路径、权限与隐式目录）、[Schemas](https://www.postgresql.org/docs/18/ddl-schemas.html#DDL-SCHEMAS-PATH)（对象选择）、[SET](https://www.postgresql.org/docs/18/sql-set.html)（连接与事务作用域）、[RESET](https://www.postgresql.org/docs/18/sql-reset.html)（配置默认及回滚），访问日期均为 **2026-10-23**。它们支持目标规则，不能证明 AsterSQL 或计划指定 18.6 的精确运行诊断；本轮未核实 18.6 发行/运行行为。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2688,6 +2719,10 @@ RECURSIVE、无环前向引用、工作表终止/去重/资源释放、SEARCH/CY
 #### 写入公共表表达式契约
 
 不实现 parser、planner、执行器、事务、协议或测试，不解除现有 RETURNING/递归门禁，不另建 PG 执行引擎。仅为普通表 DELETE→INSERT 搬移及必要拒绝/快照证据建立契约；MERGE、递归键集驱动写入、触发器/规则、分区/继承、ON CONFLICT 组合、sequence/identity 与权限完整矩阵另行取证。无 RETURNING、未消费及兄弟分支案例是语义门槛，不由主搬移正例自动开放；对同一行重复写入不规定确定性结果。共享内核未满足的快照/原子性列为开放限制，不在本任务递归补建子系统，不运行数据库、Cargo/Go、差分平台或性能实验。
+
+#### 模式与搜索路径契约
+
+本块仅补连接路径与对象可见性文档；不实现多 schema、角色/权限、临时对象、用户函数/重载、ALTER ROLE/DATABASE 配置、set_config 或目录系统。真实 schema/OID 与权限由工作流 6 提供；普通 prepared 名称绑定、重分析与缓存时点交本章预处理专项，不能把 current_schema 标量的 Execute 测试外推为所有关系重绑定。savepoint、函数局部设置、事务型建表及完整事务状态机交各专项；不以路径生命周期要求扩写共享引擎。本轮不运行数据库、差分平台、Cargo/Go 或 DDL 原型，不改其他章节与来源任务。
 
 ### 验收
 
@@ -2863,6 +2898,28 @@ Query 与扩展 Parse/Bind/Describe/Execute 分别覆盖 Q、零行及成对失�
 
 MySQL 共存 `session.cte-write.mysql.coexist`（`SESSION-CTE-WRITE/mysql`，独立契约）：同 Server 的 M/N、独立默认库、autocommit=1，记录 sql_mode/隔离级别。逐条 `CREATE TABLE cte_move_mysql (id INT PRIMARY KEY,v INT)`、`INSERT INTO cte_move_mysql VALUES (1,10),(2,NULL)`；M 以 Query 执行 `SELECT id,v FROM cte_move_mysql ORDER BY id`，目标 [(1,10),(2,SQL NULL)]；Prepare/Execute 执行 `SELECT id,v FROM cte_move_mysql WHERE id=? ORDER BY id`（整数 2），目标 [(2,SQL NULL)]。M `BEGIN`、`UPDATE cte_move_mysql SET v=11 WHERE id=1`，N 新查询 `SELECT id,v FROM cte_move_mysql ORDER BY id` 仍 [(1,10),(2,NULL)]；交错 PG Q 成功或拒绝/恢复后 M `COMMIT`，N 见 [(1,11),(2,NULL)]。另从初值单独做同一 UPDATE 后 ROLLBACK，N 仍初值。PG 前后再查 Query/新 Execute，比较 MySQL 自己的值、类型/标志、code/SQLSTATE/警告与参考/此前基线，末尾 DROP 表。此例不让 MySQL 执行 PG 写入 CTE，不用两条 MySQL DML 模拟 PG 单语句原子性；所有结果未实测。
 
+#### 模式与搜索路径契约
+
+以下全部为**待新增、未运行**用例，关联 `SESSION-SEARCH-PATH/pg`，各行及变体独立 case_id `session.search-path.pg.<名称>.<query|extended>`。PG A/B 同一独立测试库、UTF-8、UTC、初始 I，无临时对象；参考端具备 public 的 USAGE/CREATE/SELECT/UPDATE 权限，将该夹具的默认路径配置为 public，另记录未覆盖配置时的真实默认。事务外逐条准备 `CREATE TABLE public.path_doc (id integer PRIMARY KEY,v integer)`、`INSERT INTO public.path_doc VALUES (1,10)`、`CREATE TABLE public.pg_namespace (nspname text)`、`INSERT INTO public.pg_namespace VALUES ('user_marker')`，没有 missing_t、missing schema 或 private schema。若 AsterSQL 在准备阶段拒绝，记录门槛失败，不将正文预期当运行结果。
+
+下表缩写均为确定 SQL：SHOW=`SHOW search_path`，RESET=`RESET search_path`，SET public/pg_catalog 分别为 `SET search_path TO public` / `SET search_path TO pg_catalog`，SET LOCAL public/pg_catalog 分别为 `SET LOCAL search_path TO public` / `SET LOCAL search_path TO pg_catalog`；未限定 SELECT 默认指 `SELECT id,v FROM path_doc ORDER BY id`（明确写 id 的行使用该行 SQL）。BEGIN/COMMIT/ROLLBACK 各独立发送，所有变体重新建立上述初始状态。每例开始 A/B 各 `SET search_path TO public`；副作用查询 S 是双方在允许执行时各 `SELECT id,v FROM public.path_doc ORDER BY id`，基线 [(1,10)]。目录身份查询 C 为 `SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname = 'pg_catalog'`，目标一行 pg_catalog；这里只比较稳定标记，不伪造 OID。清理先在 A/B 各 ROLLBACK、RESET search_path，再在 I 下逐条 DROP TABLE public.pg_namespace、DROP TABLE public.path_doc、关闭连接；若准备部分失败只删除实际创建的对象，不遗留路径/事务状态。
+
+| 名称与完整顺序输入（每条独立发送） | 目标结果、副作用和恢复 |
+| --- | --- |
+| isolation：A `SET search_path = pg_catalog`；B `SHOW search_path`、`SELECT id,v FROM path_doc ORDER BY id`；A `SHOW search_path`、`SELECT id,v FROM path_doc ORDER BY id`；A `SELECT id,v FROM public.path_doc ORDER BY id`；B 重复自身查询；A `RESET search_path`、`SHOW search_path`、未限定 SELECT | B 始终 public/[(1,10)]，A SHOW 为 pg_catalog，未限定缺表目标 42P01；I 中失败后显式 public 立即成功，RESET 后 public/未限定读取恢复。S 前后不变，另一连接无模式或库变化。 |
+| order：A 依次 SET 为 public、pg_catalog, public、public, pg_catalog，每次执行 `SELECT nspname FROM pg_namespace WHERE nspname = 'pg_catalog'`、C、`SELECT nspname FROM public.pg_namespace ORDER BY nspname`；每轮 B 同隐式查询及 SHOW | A 隐式前两轮一行 pg_catalog，第三轮零行；显式 C 始终一行，public 显式始终 user_marker。B 的 public 原值及隐式 catalog 选择不变；S 不变。证明首匹配对象选择，不能将两表合并模拟。 |
+| empty：A `SET search_path TO ''`、SHOW、`SELECT current_schema()`、C、`SELECT id FROM path_doc`、`SELECT id FROM public.path_doc`；B SHOW/未限定 SELECT；A RESET 并重查 | A 原值空串/schema SQL NULL，C 仍一行，未限定表目标 42P01，显式返回 1；B 始终 public/1；I 失败后可继续，RESET 后恢复未限定读取。S 不变。 |
+| missing/gate：各自独立 I，A `SELECT id FROM public.missing_t`；另例 A `SET search_path TO missing, public`、SHOW、未限定 SELECT；另例 A `SELECT id FROM private.path_doc`；每次 B SHOW/S | 缺表目标 42P01；完整 PG 目标接受 missing 设置并忽略无效项、仍读 1，当前有界门禁预期 0A000 且原路径不变，须记录为限制。private 在此不存在，PG 诊断从参考采集；当前非 public 门禁 0A000 与 PG 不等价。各 I 拒绝后 SHOW/SELECT 可继续，S 无变更；语法错另例 `SET search_path TO` 的位置/码实际采集。 |
+| commit/rollback：A SET public；BEGIN；SET pg_catalog；SHOW；COMMIT；SHOW；显式 S；再 SET public；BEGIN；SET pg_catalog；SHOW；ROLLBACK；SHOW；未限定 SELECT；各转换间 B SHOW/未限定 SELECT | 第一次提交后 pg_catalog 持续；第二次回滚恢复 public，未限定返回 [(1,10)]。两次事务中 B 均 public，S 不变。RESET 变体独立从 SET pg_catalog 开始，BEGIN、RESET、SHOW（夹具默认 public）、ROLLBACK、SHOW（pg_catalog）；另跑 COMMIT 变体结束为 public。 |
+| failed：A SET public；BEGIN；SET pg_catalog；`UPDATE public.path_doc SET v=11 WHERE id=1`；`SELECT id FROM public.missing_t`；依次尝试 SHOW、SET public、RESET；扩展模式发送 Sync 后再尝试 SHOW；ROLLBACK；SHOW；未限定 SELECT；B 在各阶段查 S/SHOW | 首错进入 E，后续设置/读取须被失败门禁拒绝（目标 25P02，原始字段待采），Sync 后仍 E；ROLLBACK 后 I/public/[(1,10)]。B 始终 public/[(1,10)]。E 中不运行会污染状态的 S，恢复后用 S 证明 v=11 未残留。 |
+| local：独立 A SET public；BEGIN；SET LOCAL search_path TO pg_catalog；SHOW；COMMIT 或 ROLLBACK；SHOW/未限定 SELECT；另例 BEGIN、SET pg_catalog、SET LOCAL public、SHOW、COMMIT、SHOW；再做同顺序 ROLLBACK 变体；另在 I 直接 SET LOCAL pg_catalog、SHOW；每步 B SHOW/S | 目标第一组事务内 pg_catalog、结束均 public；混合组事务内 public、提交后 pg_catalog、回滚后事务前 public（每个变体重置）；I 下 LOCAL 警告且仍 public。当前不能声明支持：若能力门禁触发，须先记拒绝、协议同步及 ROLLBACK，再查双方路径/S 不变，判为门禁证据而非成功目标通过。 |
+
+Q 与扩展 Parse/Bind/Describe/Execute 两组逐条取证；扩展每条采用新 statement/portal、无参数、全量 Execute 后 Sync，避免把缓存问题混入本题，失败后 Sync 再恢复。记录 SHOW 一列 search_path 的空串/非空串、current_schema 的 SQL NULL 与列身份、SELECT 整数/文本结果、列名、OID/typlen/typmod/格式/可空性、命令标签、错误原文/SQLSTATE/位置、警告及 I/T/E 序列，精确 wire 字段均待采，不能由原生 metadata 猜测。成功 SQLSTATE 不适用，SET/RESET 无结果列；失败阶段可在 Parse 或执行，保留实测阶段。
+
+MySQL 共存 `session.search-path.mysql.<query|prepared>` 为 `SESSION-SEARCH-PATH/mysql` 的自身入口保留契约，与上表关联。M/N 同 Server 独立当前库，`SET autocommit=1` 并记录 sql_mode/隔离级别；事务外 `CREATE TABLE path_mysql_doc (id INT PRIMARY KEY,v INT)`、`INSERT INTO path_mysql_doc VALUES (1,10)`。保存 Query `SELECT DATABASE()`、`SELECT id,v FROM path_mysql_doc ORDER BY id` 与 Prepare `SELECT v FROM path_mysql_doc WHERE id=?`/Execute 整数 1 的元数据和值；M BEGIN、`UPDATE path_mysql_doc SET v=11 WHERE id=1`，M 查询 11/N 查询 10，交错 PG A/B 的路径切换及失败恢复后重复原 Query/prepared 与模式/库检查，M ROLLBACK 后 M/N 均 [(1,10)]。值、类型标志/charset/length/decimals、警告及错误均对自身 Go/TiDB/MySQL 参考，不向 MySQL 发送 PG SET 来推断等价。清理 M ROLLBACK、关闭 prepared、事务外 DROP TABLE path_mysql_doc、关闭 M/N。
+
+当前各端原始 observations 未采集、verdict 未验证、有效运行数 0；文档验收仅确认输入、目标/门禁、副作用与恢复完整。目录展示与真实对象解析分开，身份/权限依赖工作流 6，18.6 精确兼容仍待实证。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -2900,6 +2957,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 后续先保留 WITH/嵌套写入/RETURNING 的完整表示与分析拒绝，再把 DELETE 行集生产者和主 INSERT 接入同一共享语句事务；快照及原子性未获证时保留整体拒绝。复用现有 CTE 绑定和返回契约，按搬移成功/零行、两侧失败与回滚、同快照/重复消费者三组窄证据分别细分，优先扩充 pg_dml_test.rs 和共享执行层同目录独立测试，不新增第二套执行器。未消费/无返回、主 SELECT、兄弟重复写入边界和递归组合分别设门槛，不借主搬移补全通用子系统。
 
 来源步骤 1 的写入 CTE 由 Q 数据流及快照/次数规则承接，步骤 4 由成对失败、恢复及 MySQL 共存承接；名称与语法归工作流 2，固定类型归 3，表达式归 4，真实表/权限归 6，portal/错误与元数据归 7，双入口参考采证归 1/8，事务专项复用两表 COMMIT/ROLLBACK 证据。文档完成不表示功能开放；正确性及兼容性均未实测，性能无结论。本轮未生成或执行后续代码任务。
+
+#### 模式与搜索路径契约
+
+后续先细分路径原值/有效顺序与两连接隔离，再细分 SET/RESET 的事务提交/回滚恢复，最后单列 LOCAL 能力门槛与失败事务门禁，优先扩展 pg_session_test.rs、pg_name_test.rs、pg_query_test.rs 的独立测试。复用现有共享会话与实际元数据，不另建 PG 引擎或用字符串首项替代对象解析；先补两种协议的状态/值/副作用证据再开放能力。
+
+来源步骤 2 的 schema/path 由 isolation/order/empty/missing 与生命周期用例承接，步骤 4 由 failed/local 门禁与 MySQL 共存承接。工作流 2 接有效路径的名称绑定，工作流 3/4 接类型/函数身份，工作流 6 提供 schema/权限/目录一致性，工作流 7 接协议状态，工作流 1/8 接参考采证；prepared 重绑定和事务型 DDL 各归专项。本轮只完成契约文档：正确性、兼容性未运行验证，性能无结论，不生成或执行代码实现任务。
 
 ## 6. 系统目录与内省契约
 
