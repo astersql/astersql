@@ -3861,6 +3861,15 @@ libpq 现有目录测试包含 DataGrip 来源查询、非空关系、类型正�
 
 官方依据（访问 2026-10-24）：[GORM 连接说明](https://gorm.io/docs/connecting_to_the_database.html) 区分 MySQL 和 PostgreSQL 驱动，[Migrator 接口](https://gorm.io/docs/migration.html) 列出 GetTables、ColumnTypes、HasConstraint、HasIndex；在线文档无固定版本，不能当作 v1.25.12 PostgreSQL 驱动的查询证据。[PostgreSQL 18 columns](https://www.postgresql.org/docs/18/infoschema-columns.html) 与 [key_column_usage](https://www.postgresql.org/docs/18/infoschema-key-column-usage.html) 支持字段语义/权限目标，其余类型及 OID 沿本章对象块和第 3 章。18.6 精确构建与运行行为未取证。
 
+#### 章节验收与后续交接
+
+本轮以提交 `e540afc96a` 为审查基线，核对批次1–25的五节正文及连续25条路线图交付历史（首项 `946e9b2c20`，末项 `e540afc96a`），批次25及累计前置文档依赖满足。第1章证据规则、第2章名称与路由、第3章声明类型与Describe、第4章函数工厂、第5章DDL/事务门禁继续有效；文档依赖完成不表示运行能力已实现。
+
+2026-10-24按RustCodeGraph status/explore/定点node复核 [pg_catalog.rs](../pkg/server/pg_catalog.rs)::CatalogQuery、provider_rows、目录绑定验证，简单查询由 [pg_conn.rs](../pkg/server/pg_conn.rs)::negotiate 调 parse_session，扩展查询由 [pg_extended.rs](../pkg/server/pg_extended.rs)::process 调 parse_session_with_types；解析白名单由 [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs) 承担，结果交 [pg_result.rs](../pkg/server/pg_result.rs)。共享snapshot/model仍是事实源，目录局部函数不自动成为普通SQL注册函数。pkg/server/doc.go不存在。
+
+独立测试只读复核： [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_relations_live断言真实domain身份、跨库过滤、Parse后改名/删建和public.pg_class遮蔽，但当前relname/relkind描述25不是目标name19/内部char18；[pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::pg_datagrip_function_acl_row_width断言proacl为NULL及JOIN行宽，不是授权语义证明；[pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::pg_introspection_clients→run_clients使用真实domain与双监听、InsecureRootOnly夹具，可作后续运行入口，不能证明真实角色或完整DataGrip UI/ORM通过。本轮测试运行数0。
+
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4313,6 +4322,25 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 
 现状是有界目录 provider 与手写/非 ORM 客户端测试意图，字段全量接线和实际 ORM 映射未验证。空库确无对象可类型正确零行；无默认可 NULL；存在但必需的约束/identity缺来源不得统一空集。合法但求值未开放按目录求值块在分析/绑定或执行返回目标 0A000，缺关系沿42P01；确切阶段和错误字段须后续实采，不能吞错误继续反射成功。
 
+#### 章节验收与后续交接
+
+本汇总不另定义字段，逐列来源、关联键、类型OID、权限和拒绝策略以本章首块模板及下列同名契约为准；所有客户端请求仍须绑定精确版本及采集记录。审查映射如下，各行同时引用该主题“验收”的完整输入及目标，不能将汇总行当作一条已运行用例。
+
+| 来源需求 | 字段/真实来源及身份核对 | 目标与验收落点 |
+| --- | --- | --- |
+| 步骤1：目录与客户端矩阵 | 命令行、驱动、图形、ORM四块分别引用对象字段；psql/libpq、pgJDBC、DataGrip及ORM版本和原始请求分开记录 | 各流程完整SQL/参数及CLI、JDBC、图形、O1–O4验收；未采请求保持未验证，不以手工探针替代客户端实采。 |
+| 步骤2：数据库/namespace/关系/列/类型 | AllSchemas、TableInfo.ID、ColumnInfo.Offset/FieldType、pg_oid及内建类型表；pg_class→namespace、attribute→class/type | 对应同名对象块逐列校验；数据OID26与name19、内部char18、int2 21/int4 23等描述OID分开；DROP槽位、typarray及name当前差异继续保留。 |
+| 步骤2：索引/约束/默认/视图 | IndexInfo、FKInfo、ColumnInfo默认、持久化View定义；索引复合身份、约束列序、(adrelid,adnum)关联 | 四个同名块验收；int2vector22与int2[]1005不同，pg_node_tree194与反解text25不同；存在但无法忠实反解须拒绝，不能NULL掩盖。 |
+| 步骤2：序列/函数/注释 | SequenceInfo及真实拥有边、函数注册事实、对象/列Comment；依赖对象及子列号 | 序列身份、函数目录、注释三块验收；独立序列不等于identity，目录局部pg_proc不等于全注册，未有owner/ACL不补造。 |
+| 步骤2：授权/可见性/标准视图 | 真实角色授权、当前库/path及共享模型；tables/views、columns、三类约束视图沿各自标准过滤 | 角色、可见性、标准模式三块验收；pg_catalog可读、对象使用权限和information_schema行过滤分开，root夹具不足以验收。 |
+| 步骤3：空集/NULL/拒绝 | 无原生对象块按每种对象与必需字段登记来源缺口 | 空库/确无对象可有类型空集；无默认等合法缺省可SQL NULL；必需事实缺失、未开放表达式/codec按所属块拒绝，不统一成功零行。 |
+| 步骤4：路由/更新/隔离 | CatalogQuery一次执行快照、普通名称Resolver及会话上下文 | 求值边界、目录更新两块验收；有界求值不吸收普通SQL，DDL发布后新执行刷新，portal/事务门禁及跨连接/跨库边界单列。 |
+
+本轮复查官方目标（访问2026-10-24）：[PostgreSQL 18系统目录](https://www.postgresql.org/docs/18/catalogs.html)限定目录元数据职责；[psql 18](https://www.postgresql.org/docs/18/app-psql.html)提供-E采集隐藏查询入口；[pgJDBC官方预处理说明](https://jdbc.postgresql.org/documentation/server-prepare/)供第7章核对准备语句与缓存边界，网页未固定驱动发布版，具体REL42.7.8请求仍沿驱动块固定源码及实采要求。DataGrip/ORM官方版本出处沿各自同名块，不由上述来源推出它们的SQL。所有18.6精确运行行为仍未取证，需参考构建及两端日志。
+
+第7章接收逐列PG类型/OID/typmod、参数OID/格式、空集Describe、NULL及错误阶段，落实Q与Parse/Bind/Describe/Execute/Sync、取消/恢复和缓存生命周期；缺codec不得伪造成功。第8章接收四类客户端的固定版本、完整请求、权限与DDL变化夹具，分别保存模板回放、库调用、真实UI/反射结果和双方言共存证据；连接成功不能代替目录语义通过。
+
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4420,6 +4448,11 @@ name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字�
 #### 对象关系映射内省流程
 
 本块不实现 ORM、PostgreSQL 驱动、自动迁移、模型生成器、依赖升级或框架适配，不安装客户端、不运行现有 AutoMigrate，也不把它扩为迁移兼容验收。候选未确认时不承诺任一 ORM 生态兼容；索引/外键/identity、角色权限与用户schema的实现缺口交各对象块，不递归补建子系统。
+
+#### 章节验收与后续交接
+
+本轮只验收第6章文档覆盖，不实现provider、权限系统、PG schema/identity、普通SQL函数注册、codec或差分运行器，不运行Cargo/Go、真实客户端或UI。第7、8章只接收上述交接条件，本轮不改其正文。既有name/char描述、列删除槽位、身份/ACL与标准视图来源缺口保留在对应窄块，禁止为章节验收统一空集或扩建完整catalog。
+
 
 ### 验收
 
@@ -5288,6 +5321,27 @@ SELECT i.indexrelid, i.indrelid, i.indkey, i.indisunique, i.indisprimary, pg_cat
 
 实际 ORM 验收先确认框架、PG驱动与传输库精确版本/锁文件/散列；GORM候选从只读Migrator的GetTables/ColumnTypes/HasConstraint/HasIndex采集，接口是否存在及行为须核对所选固定版本源码。主外键、默认值、identity若该接口未返回，记录API能力缺口并选取有来源的只读入口，不能猜测字段。保存各调用完整SQL、参数值/类型/格式、数据库/角色/path、调用顺序、结果/错误、反射对象描述，将表/列/键/索引/默认/identity逐项与上述真实DDL及目录探针对照。每类未采即未验证；手工探针成功也不等于ORM通过。18.6附参考构建，产品独立记录版本，动态OID仅比关联不比数值相同。清理先ROLLBACK至I，按成功项依序DROP TABLE IF EXISTS public.orm_child、public.orm_parent、public."Orm.Mixed"（各独立SQL加分号），撤销临时授权/角色并关闭连接；重建前须先删除child。
 
+#### 章节验收与后续交接
+
+章节交付门槛是来源步骤1–4均可通过上表追至对象字段和完整验收输入，五节各有25个前置主题及本汇总，引用路径存在、历史提交可定位、目标与静态现状不混同；此门槛仅验证文档。以下H1–H3均为后续待新增/待运行的人工契约探针，非客户端生成SQL。
+
+H1：独立库D、UTF8/UTC、owner有CREATE及目录读取权限、autocommit初始I、search_path=public,pg_catalog；参数[]、Q文本结果。逐条执行：
+
+```sql
+CREATE TABLE public.handoff_catalog (id integer NOT NULL, label varchar(12) DEFAULT 'draft');
+SELECT c.oid, c.relnamespace, c.relname, a.attnum, a.attname, a.atttypid, a.atttypmod, a.attnotnull FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid WHERE n.nspname='public' AND c.relname='handoff_catalog' AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum;
+ALTER TABLE public.handoff_catalog RENAME COLUMN label TO title;
+```
+
+建表成功才继续；受第5章语法/DDL门禁阻止时保存准备阶段错误及无残留，不编造目录行。查询目标两行，c.oid同为真实表OID、relnamespace同为public真实OID，relname=handoff_catalog；id=(1,id,23,-1,true)，label=(2,label,1043,16,false)。描述依次oid26/oid26/name19/int2 21/name19/oid26/int4 23/bool16；当前源码中的text25差异须独立失败记录。关联来源为TableInfo.ID、schema.id和ColumnInfo.Offset/FieldType，禁止硬编码动态OID数值。改名后连接A/B各以新执行重跑同一完整SELECT，第二列名title、属性号2和表OID不变；默认反解沿默认表达式块完整输入，不从此查询推出默认值已验收。
+
+H2：owner执行 `DROP TABLE public.handoff_catalog;` 后两连接重跑H1完整SELECT，目标零行且描述不变；再执行 `CREATE TABLE public.handoff_catalog (replacement bigint);`，重跑目标仅一行replacement、attnum1、类型20、typmod-1、attnotnull=false，新对象OID关联新模型，旧属性不残留。无残留不意味着允许复用旧身份。扩展协议重用statement、新portal以及旧portal续读采用“目录更新与连接隔离”完整输入和断言，沿第7章保存Describe/错误/ReadyForQuery，不以Q结果替代。
+
+H3：角色权限、遮蔽、无原生对象与四客户端分别执行本章对应同名验收，复用其完整创建角色/GRANT/REVOKE及path夹具；权限前提不满足时停在准备/授权门禁，不能使用root结果补齐。NULL与零行按字段策略逐项判定，必需约束/identity不得因没有来源而反射成功。第8章还需逐客户端记录DDL前后列表、字段及删除重查；版本、参数或请求未采则对应能力未验证。清理各成功夹具，独立执行 `DROP TABLE IF EXISTS public.handoff_catalog;`，按角色块撤销临时授权并关闭连接。
+
+验收汇总产物与H1–H3测试均待新增。每个结果沿首块模板和第1章保存构建、SQL/参数/描述、实际行或错误阶段、元数据版本、命令/退出码及有效用例数；本轮运行数0，不能填写当前通过。本章可交接不代表18.6、客户端兼容或性能验收完成。
+
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -5415,6 +5469,21 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### 对象关系映射内省流程
 
 先确认 PostgreSQL ORM 候选与版本并采集只读反射请求（产物待新增，归第8章证据）；再按表/列、主外键、索引、默认/identity分别将实际请求挂接本章公共对象契约及O1–O4，不合并成全部框架实现任务。后续字段映射必须有真实模型来源和固定客户端源码/日志；本块只有文档完成证据，没有ORM运行结论。
+
+#### 章节验收与后续交接
+
+后续先冻结一个请求/对象组的证据再立窄实施任务，每项在对应源码旁的独立测试中先取得实际失败，修复后验证；下表测试目标均待新增或待扩展、待运行，不创建生产代码。
+
+| 切口与文件 | 失败测试目标及依赖 |
+| --- | --- |
+| 单对象列身份/声明类型：pg_catalog.rs、pg_oid.rs；pg_catalog_test.rs | H1/H2及现有pg_introspection_columns_live按列验证name/char描述、属性生命周期与OID；依赖第2/3章身份类型和第5章DDL门禁，不一次修全目录。 |
+| 同源默认/索引/约束字段组：pg_catalog.rs；pg_catalog_test.rs | 分别复用默认、索引、约束块完整输入，先证明真实模型和关联键的一个失败；缺模型仅列独立依赖，不递归扩建子系统。 |
+| 一组权限过滤：pg_catalog.rs、pg_session.rs；pg_catalog_test.rs | 真实非owner角色的information_schema与pg_catalog差异；依赖已存在授权入口，root或NULL ACL不算通过。 |
+| 单条扩展查询：pg_extended.rs、pg_result.rs；pg_extended_test.rs、pg_types_test.rs | 第7章负责H1描述/参数格式与DDL后新portal，先选一个类型或一个错误恢复流程；依赖第3/5章，不吞并全部协议。 |
+| 单客户端流程：pg_client_integration_test.rs，模板可扩展pg_datagrip_test.rs | 第8章先冻结一个psql/libpq、JDBC、DataGrip或ORM流程并采集请求，再逐字段差分；独立保存UI/反射结果和MySQL共存，不能用模板回放替代真实客户端。 |
+
+各任务验收记录反向指向本章对象块及第1章能力/用例ID；官方版本或模型事实未齐先补证据。正确性风险集中于关联身份、NULL及DDL旧缓存，兼容性风险集中于name/char、权限和客户端版本，性能与大目录成本未测。推荐下一步按第7章承载契约和第8章单客户端采证分别细分，保留本章尚未运行的能力状态。
+
 
 ## 7. 线协议认证与数据通道
 
