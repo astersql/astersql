@@ -2511,6 +2511,21 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 已读独立测试 [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback 的断言意图包括简单/扩展重复键错误、25P02 门禁、Sync 后仍 E、ROLLBACK 后零行及事务内 DDL 拒绝；prepared_dml_commit_and_rollback 覆盖两连接的未提交不可见、提交后可见、回滚及断连回滚的行数断言。另读 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 的协议握手与 current_catalog 路径片段。现有行数断言不能替代下方完整值/类型断言；这些测试本轮均未执行，有效运行用例数为 0。
 
+#### 返回子句执行契约
+
+承接来源任务步骤 1 的 RETURNING，复用第 2 章[返回子句语法边界](#返回子句语法边界)、第 3 章[准备描述执行元数据契约](#准备描述执行元数据契约)及本章公共模板。本块分类为 PG 专属，能力 ID 为 `SESSION-RETURNING/pg`；共享执行接入不使其成为 MySQL 语义。批次 1 已交付 `d8c1ca891a110e1f57279c111176789c70cccf59`，其五节、前四章及累计前置交付已复核；不更改来源任务状态。
+
+2026-10-23 在上述 SHA 用 RustCodeGraph 读取的静态证据如下；`pkg/server/doc.go`、`pkg/executor/doc.go` 均不存在，模块说明不充当支持证据。
+
+| 路径与实际符号 | 源码现状、已有测试意图与限制 |
+| --- | --- |
+| [pg_result.rs](../pkg/server/pg_result.rs)::command | 在共享 AST 解析后检查 InsertStmt/UpdateStmt/DeleteStmt 的非空 Returning，均返回 0A000。合法 PG 形式若更早不能解析，其诊断与本门禁须分别取证，不能称全部形式都已正确拒绝。 |
+| 同文件 encode_formats、write_result | 有列时编码描述和数据，CommandComplete 的 INSERT/UPDATE/DELETE 数字来自 result.state.affected_rows，而非返回行长度。类型映射、零行描述与标签编码只是输出接线，不能证明执行器产生正确行或写入。 |
+| [pg_dml_test.rs](../pkg/server/pg_dml_test.rs)::prepared_crud_roundtrip | 读取完整测试：先做无 RETURNING 的参数化增查改删，再检查三类 RETURNING 在 Parse 阶段报 0A000、Sync 回 I，末尾 SELECT 无 DataRow。此时表在拒绝前已删除为空，不能证明 UPDATE/DELETE 对已有行无副作用，也没有成功返回行、生成值或回滚断言。 |
+| [insert.rs](../pkg/executor/insert.rs)::InsertRuntime；[update.rs](../pkg/executor/update.rs)::UpdateRowTracker；[delete.rs](../pkg/executor/delete.rs)::DeleteRuntime | 已读现有运行时、行跟踪与删除接口片段，作为后续共享写入路径的调研边界；不从接口存在推定 PG RETURNING 已接线，也不据本次局部阅读断言整个执行器缺失能力。 |
+
+本轮没有执行上述测试，当前运行证据为“未验证”，有效运行用例数 0；历史协议第一阶段记录仅供导航。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2533,11 +2548,25 @@ Q 与扩展 Execute 应到达同一所属连接的规范会话，使用相同的
 
 本块官方依据均于 **2026-10-23** 访问，适用 **PostgreSQL 18 大版本手册**：[§54.2.2–3 Query/扩展消息流程](https://www.postgresql.org/docs/18/protocol-flow.html)用于区分处理阶段、Describe 与同步恢复；BEGIN 内的 Sync 不结束显式事务。隐式事务在 Sync 边界的行为须另验，不能由当前连接标志推定。[§3.4 Transactions](https://www.postgresql.org/docs/18/tutorial-transactions.html)用于提交可见性、回滚及失败恢复目标；savepoint 恢复另交后续细分。[INSERT](https://www.postgresql.org/docs/18/sql-insert.html)用于实际写入与 RETURNING 行区分，返回行专项由后块定义。[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对 23505、25P02、0A000 的名称；其中 AsterSQL 的事务内 DDL 0A000 是产品限制，不能外推为 PG 对普通 CREATE TABLE 的规范拒绝。**18.6** 仍仅为来源指定目标，未核实该补丁发布或采集其参考运行结果，以上链接不能证明精确补丁行为。
 
+#### 返回子句执行契约
+
+三类语句必须从同一次真实写入取得返回行：INSERT 默认返回插入后含默认值的行，UPDATE 默认返回修改后的行，DELETE 默认返回删除前的行；每个范围内实际处理的目标行产生对应投影，零匹配仍有固定结果列但无 DataRow。不通过执行第二次写入、回查猜测旧值或改 CommandComplete 构造成功。返回的投影可以与存储值不同，影响行数与返回行数分别断言；普通夹具无规则/触发器，UPDATE 将值设为原值也应计入匹配更新，不能套用 MySQL changed-rows 口径。多行 RETURNING 无隐含顺序保证，以带主键的多重集比较，不能只比行数或排序后丢弃重复值。
+
+有序投影、星号展开、别名与引号沿第 2 章；目标表别名参与绑定，输出别名不能改存储列。类型由第 3 章的列与表达式分析确定，不能由首行、NULL、影响行数或标签推定。下方 id/v/算术投影为 int4（OID 23、typlen 4、typmod -1），note 为 text（OID 25、typlen -1、typmod -1），均用 text 格式；SQL NULL 以长度 -1 编码，与空字符串区分。SQL 可空值与协议 RowDescription 字段分开记录，不发明协议可空性位；直接列来源身份与表达式来源按第 3、6、7 章取证。Parse/Describe 不执行写入，statement/portal Describe 与 Execute 的类型及列序一致；Bind 换值或 typed NULL 不改变描述。
+
+先在副作用前拒绝尚未开放的合法形式（AsterSQL 限制目标 0A000），包括不能完整承载或求值的返回投影；不得删去 RETURNING 后提交写入。语法错误、绑定错误、运行时表达式错误分阶段记录，不能一律报语法错误；运行中失败须保证整条语句无部分持久写入，不能把错误前收到的 DataRow 当作提交证明。显式事务失败进入 E，Sync 仅恢复消息流水线，ROLLBACK 后才回 I；普通成功的返回行也须另证 COMMIT/ROLLBACK 副作用。
+
+官方依据于 **2026-10-23** 查阅，适用 **PostgreSQL 18**：[§6.4](https://www.postgresql.org/docs/18/dml-returning.html)定义三类默认行镜像与输出投影；[INSERT](https://www.postgresql.org/docs/18/sql-insert.html)定义默认值、输出表达式及实际插入/更新行；[UPDATE](https://www.postgresql.org/docs/18/sql-update.html)定义新值、别名和包含值未改变行的计数；[DELETE](https://www.postgresql.org/docs/18/sql-delete.html)定义被删行和计数。[§54.7](https://www.postgresql.org/docs/18/protocol-message-formats.html)用于结果消息与 CommandComplete 分责，[§3.4](https://www.postgresql.org/docs/18/tutorial-transactions.html)用于回滚及可见性，[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)用于 0A000/25P02/22012 错误类别。以上为目标依据；虽当前附录页面提及 18.6，仍无该补丁版本的参考实例、发布核验或实测结果，不将大版本手册升级为精确补丁运行证据。
+
 ### 范围外
 
 #### 会话执行链与契约模板
 
 本块只建立五节框架、执行地图、模板及其代表验收入口，不实现或修复生产/测试代码，不运行 Cargo/Go、数据库、差分平台或 DDL 原型，不改第 1–4、6–8 章及来源计划。RETURNING、ON CONFLICT、CTE、schema/search_path、prepared 状态时点、sequence/identity、正常/失败事务与 Sync 的完整规则由后块逐项补充。事务型 DDL 必须先证明共享引擎能满足原子性与回滚；当前拒绝保留，不能用响应标签模拟支持。此处不批准多语句、完整 savepoint、隔离级别组合或无 BEGIN 的扩展流水线事务等价性，也不借未测边界扩大本轮范围。
+
+#### 返回子句执行契约
+
+本块不实现 parser、planner、执行器、codec 或测试，不解除现有 RETURNING 门禁，不建设第二套 PG 引擎。序列/identity 的分配、非事务计数器回退由后续专项负责；本块生成值示例使用确定的列 DEFAULT 表达式，不承诺序列值在 ROLLBACK 后复用。ON CONFLICT、写入 CTE、MERGE、触发器/规则、UPDATE FROM/DELETE USING、继承表及并发写冲突不由普通表夹具覆盖。PG 18 的 OLD/NEW 与 `RETURNING WITH (OLD AS o, NEW AS n)` 是合法规范形式，后续单独取证和开放；未支持时在写入前拒绝，不能假装是 PG 非法语法。权限检查与更广的表达式集合沿相关工作流，不能因本块列出简单算术就承诺任意 SELECT 投影已可执行。
 
 ### 验收
 
@@ -2555,6 +2584,32 @@ Q 与扩展 Execute 应到达同一所属连接的规范会话，使用相同的
 
 人工文档验收：五节各有本块同名内容；来源步骤 1 的 DML 公共接入对应 SESSION-DML-WRITE，步骤 2 的名称/会话边界对应模块地图与跨工作流责任，步骤 3 的状态/Sync/DDL 门槛对应 SESSION-TX-DDL-GATE，步骤 4 的副作用、恢复与 MySQL 共存对应三组用例和模板。专项 SQL 细节继续分块，未声称完成来源整个工作流。正确性风险是专用分支或已准备 portal 可能未满足完整状态门禁；兼容性风险是产品限制/类型/错误与参考端不一致；均待实施取证。性能未测试，无吞吐、延迟或流式执行结论。
 
+#### 返回子句执行契约
+
+以下均为**待新增用例定义，未运行**，沿本章模板保存 observations/evidence_refs/verdict。用例前缀 `session.returning.pg.`；表中短名分别扩为 `.simple-rollback`、`.extended-rollback`、`.simple-commit`、`.extended-commit`，各为独立 case_id，能力均为 SESSION-RETURNING/pg。全部使用同库独立 W/O 两连接、UTF-8、UTC、初始 I、无触发器/规则及并发写入；记录实际隔离级别，O 每次 SELECT 为新自动提交语句。
+
+每例事务外逐条准备 `CREATE TABLE public.returning_doc (id integer PRIMARY KEY DEFAULT (40 + 2), v integer, note text)`，再执行各行初始 INSERT（无则不插入）。统一检查 SQL 为 `SELECT id, v, note FROM public.returning_doc ORDER BY id`，以下简称 S；在 W/O 上均先执行 S 核对初始状态。W 逐条 BEGIN、目标 DML、S；O 执行 S 仍为初始值。回滚变体 W ROLLBACK 后 W/O 各执行 S 均恢复初始值；提交变体独立重建同一初始状态并重跑，COMMIT 后 W/O 的 S 均为写后值。BEGIN 后 T，成功 Execute 后 Sync 仍 T，事务结束 I。清理每例先 W ROLLBACK、关闭仍存在的 portal/statement，再事务外 DROP TABLE public.returning_doc，关闭 W/O；每条 Q 只含一条语句。
+
+| 用例短名、完整目标 SQL 与初始输入 | 返回行/列及独立标签目标 | 写后 S；ROLLBACK 后 S（W/O 均检查） |
+| --- | --- | --- |
+| insert-default；初始空表；`INSERT INTO public.returning_doc (v, note) VALUES (7, NULL) RETURNING id AS generated_id, v, note` | 列 generated_id/v/note，一行 (42,7,SQL NULL)；INSERT 0 1。42 由 DEFAULT 求值得到，不是客户端回显。 | 写后 [(42,7,SQL NULL)]；回滚后空表。 |
+| update-new；初始 `INSERT INTO public.returning_doc VALUES (1,10,'before')`；`UPDATE public.returning_doc AS r SET v = v + 1, note = NULL WHERE id = 1 RETURNING r.id, r.v AS "After", r.note, r.v + 100 AS projected` | 列 id/After/note/projected，一行 (1,11,SQL NULL,111)；UPDATE 1。111 仅是返回表达式值，存储 v 为 11。 | 写后 [(1,11,SQL NULL)]；回滚后 [(1,10,'before')]。 |
+| delete-old；初始 `INSERT INTO public.returning_doc VALUES (1,10,'before')`；`DELETE FROM public.returning_doc AS r WHERE id = 1 RETURNING r.*` | 按表列序 id/v/note，一行 (1,10,'before')；DELETE 1。不能从删除后的空表补造旧行。 | 写后空表；回滚后 [(1,10,'before')]。 |
+| zero-match；初始 `INSERT INTO public.returning_doc VALUES (1,10,'before')`；`UPDATE public.returning_doc SET v = 99 WHERE id = 9 RETURNING id, v, note` | id/v/note 描述固定，零 DataRow；UPDATE 0。扩展 Describe 仍有列，不能给 NoData。 | 写后和回滚后均 [(1,10,'before')]。 |
+| multi-row；初始 `INSERT INTO public.returning_doc VALUES (1,10,NULL),(2,20,'b')`；`UPDATE public.returning_doc SET v = v + 1 RETURNING id, v, note` | 列 id/v/note，多重集 {(1,11,SQL NULL),(2,21,'b')}；UPDATE 2，无默认返回顺序。 | 写后 [(1,11,SQL NULL),(2,21,'b')]；回滚后 [(1,10,SQL NULL),(2,20,'b')]。 |
+
+简单变体使用表中 SQL。扩展变体在 BEGIN 前 Parse 命名 s、Describe statement；BEGIN 后 Bind 新 portal p（text 输入与结果格式）、Describe portal、Execute p(max_rows=0)、Sync，再做 S 与事务结束；Parse/两种 Describe 前后 W/O 的 S 均不得变化，输出类型按目标行为段逐列断言，成功 SQLSTATE 不适用。update-new 扩展变体改用完整 SQL `UPDATE public.returning_doc AS r SET v = v + $1, note = $2 WHERE id = 1 RETURNING r.id, r.v AS "After", r.note, r.v + $3 AS projected`，参数 OID [23,25,23]、值 [1,SQL NULL,100]、格式 [0,0,0]；其余例 OID/参数为空。另建 `session.returning.pg.update-same.extended-rollback`，同 update-new 初始值，执行 `UPDATE public.returning_doc SET v = v WHERE id = 1 RETURNING id, v`，目标行 (1,10)、UPDATE 1；写后及回滚后 S 均保持 (1,10,'before')，专门区分匹配计数和改值计数。
+
+拒绝与失败用例亦为待新增，分别设 `.simple`、`.extended` case_id；沿用表结构、S、连接与清理规则，初始 `INSERT INTO public.returning_doc VALUES (1,10,'before')`。简单变体在所述时点发送 Q；扩展变体在同一时点 Parse 命名 s（OID/参数为空），成功才继续 Bind p（空参数、text 结果）、Describe portal、Execute p(max_rows=0)，遇错即 Sync；运行时错误例须 Parse/Bind 成功后到 Execute，不能把 Parse 拒绝当成求值失败：
+
+- `session.returning.pg.gate-{insert,update,delete}`：分别发送 `INSERT INTO public.returning_doc VALUES (2,20,'blocked') RETURNING id`、`UPDATE public.returning_doc SET v = 99 WHERE id = 1 RETURNING v`、`DELETE FROM public.returning_doc WHERE id = 1 RETURNING id`。作为**现有产品限制**验收时目标 0A000、无成功标签/返回行；PG 参考端应成功，不能以参考端拒绝作为通过条件。I 中错误后（扩展先 Sync）仍 I，S 必须为 [(1,10,'before')]，再 `SELECT 1 AS ok` 成功。各自独立重建初始值，不能在空表上验证更新/删除保护。支持开放后这些输入转为成功目标，门禁用例迁移到仍未支持的合法形态。
+- `session.returning.pg.old-new-gate`：W BEGIN 后先 `INSERT INTO public.returning_doc VALUES (3,30,'pending')`，再发送合法 PG 输入 `UPDATE public.returning_doc SET v = 99 WHERE id = 1 RETURNING WITH (OLD AS o, NEW AS n) o.v, n.v`。尚未开放此形式时 AsterSQL 目标在写入前 0A000，无行/成功标签；当前更早解析是否满足此诊断仍未验证。O 的 S 仅 [(1,10,'before')]；错误后扩展先 Sync 仍 E，Q `SELECT 1 AS ok` 目标 25P02/E，W ROLLBACK 后 I，W/O 的 S 均仅初始行，确认 pending 也被撤销。PG 参考端目标返回 (10,99)，W 写后 S 为 [(1,99,'before'),(3,30,'pending')]，O 仍仅初始行；ROLLBACK 后 W/O 的 S 均仅初始行，不与产品限制混为同一结论。
+- `session.returning.pg.expression-error`：仅在基本 RETURNING 能力开放后运行，W BEGIN，执行 `UPDATE public.returning_doc SET v = 11 WHERE id = 1 RETURNING 10 / (v - 11) AS boom`；PG 目标运行时 22012、无成功 CommandComplete。O 的 S 保持初始值；扩展先 Sync 仍 E，下一 Q `SELECT 1 AS ok` 25P02，ROLLBACK 后 I，W/O 的 S 均 [(1,10,'before')]，再 SELECT 1 成功。另建独立无 BEGIN 变体，错误及 Sync 后 I，直接 S 仍初始值，证明语句原子性；实际错误发生阶段、消息 S/V/C/M/D/H/P 与是否已输出部分行均待参考/产品采集，尚处门禁阶段的 0A000 不能算此运行错误用例通过。
+
+MySQL 共存能力 `SESSION-RETURNING/mysql` 分类为 MySQL 专属入口保留契约，用例 `session.returning.mysql.{query,prepared}` 与上述 PG case_id 通过 related_case_ids 关联。在同一 Server 开 M/N，独立当前库，SET autocommit=1，记录 sql_mode/隔离级别；事务外 `CREATE TABLE returning_mysql_doc (id INT PRIMARY KEY, v INT, note TEXT)` 并插入 (1,10,'before')，先保存 Query `SELECT id,v,note FROM returning_mysql_doc ORDER BY id` 及 Prepare `SELECT v,note FROM returning_mysql_doc WHERE id = ?`、Execute 整数 1 的完整自身元数据/值。M BEGIN，Query `UPDATE returning_mysql_doc SET v = v + 1 WHERE id = 1`，M 查询值 11、N 查询仍 10；期间交错 PG 成功目标或门禁/失败恢复，再执行原 MySQL prepared（仍得 11/'before'）并核对模式、库和事务未变，M ROLLBACK 后 M/N 查询均 (1,10,'before')。独立重建后另做 MySQL prepared UPDATE 同 SQL 的 `WHERE id = ?`（参数 1），重复写后/回滚检查。PG 前后 MySQL 查询、类型标志/charset/length/decimals、错误/警告各对自身基线和 Go/TiDB/MySQL 参考，精确字段待采；不以 MySQL 近似 RETURNING 或 changed-rows 数字证明 PG 等价。清理 M ROLLBACK、关闭 prepared、事务外 DROP TABLE returning_mysql_doc、关闭 M/N。
+
+人工验收映射：来源步骤 1 RETURNING → 五类正例的返回镜像/生成值/零行/多行；步骤 4 副作用与恢复 → 每例 S、独立提交变体、拒绝与表达式失败；双方言隔离 → MySQL Query/Prepare/Execute。当前所有 observations 为未采集、verdict 为未验证，wire 精确来源字段/错误位置、真实持久可见性及 18.6 差分均未取证。正确性风险在返回镜像、表达式失败后的原子性与重复执行；兼容性风险在类型/别名、计数及合法形式的拒绝阶段；性能未测，不作缓存、流式输出或吞吐结论。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -2562,6 +2617,12 @@ Q 与扩展 Execute 应到达同一所属连接的规范会话，使用相同的
 按当前计划串行补充各窄契约块，并在这五个三级标题下追加自己的同名四级小节，保留本块和已交付正文。先以第 2–4 章契约定义每项 DML/CTE 的共享执行接入，再逐项交接名称、prepared、序列和事务状态；它们的目标验收应复用本模板及第 1 章证据记录，不重建第二套 ID/运行结论格式。
 
 本块留下的后续验证入口均为**待新增**用例定义，不表示新增了测试文件：补齐完整值/元数据及两连接副作用断言；验证 Parse 后事务状态变化再 Execute、错误阶段及 Sync 恢复；分别采产品拒绝和 PG 参考行为；交错 MySQL 原 Query/Prepare/Execute。工作流 6 补真实目录/对象证据，工作流 7 补精确 wire 和生命周期证据；事务型 DDL 另立局部可行性原型，未通过前保留拒绝，不在本轮建设完整子系统。文档检查可完成本块，以上运行缺口不能据此升级为功能支持。
+
+#### 返回子句执行契约
+
+后续实施任务先沿现有共享会话/执行链定位单次写入的行镜像与固定输出类型，再按 INSERT 默认值、UPDATE 新值、DELETE 旧值、零行/多行逐项开放；每项以本块独立测试定义及写后/提交/回滚证据为门槛。先扩充现有 [pg_dml_test.rs](../pkg/server/pg_dml_test.rs) 的非空表拒绝断言，再安排共享执行层对应独立测试；这些均为待新增测试意图，不表示本轮创建或执行了测试。不得只删除 command 门禁或改标签就宣布支持，也不预设新字段/API 或复制一套执行器。
+
+工作流 2 提供三类 AST/投影保真与合法拒绝位置，3/4 提供结果表达式定型/求值，6 提供真实列/默认值和来源元数据，7 验证 Describe 不写入、错误传递、portal 完成/重复 Execute 不重复写入及输出格式；事务专项复用本块回滚证据并补状态门禁。OLD/NEW、identity、ON CONFLICT 与写入 CTE 分别等专项完成再组合。文档完成只关闭本块契约缺口，不能升级任何当前功能支持状态。
 
 ## 6. 系统目录与内省契约
 
