@@ -1610,6 +1610,19 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [builtin_registry_aster_unit_test.rs](../pkg/expression/builtin_registry_aster_unit_test.rs)：`extract_factory_matches_go_temporal_dispatch_and_pb_signatures` | 通过 NewFunctionBase/EvalInt 断言 YEAR→2020、HOUR→12、DAY_SECOND→260304，并检查三个 TiPB 分支；只有 MySQL 正式工厂局部断言意图，不能证明 PG numeric、时区、SQL 语法或协议。 |
 | [pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values` | Q 路径断言 DATETIME→1114、DECIMAL→1700 等 OID/文本；没有本块 date_part→701、timestamptz→1184、interval→1186 的函数结果或 binary/typed NULL 专项证据。协议出口责任沿第 3 章，不能用已有类型字面量断言替代函数全链验收。 |
 
+#### 格式化函数契约
+
+本块静态基线为 `a485e8e82c0e977ae44600bee20982d421f20464`（2026-10-23），批次 1–6 提交与五个全局小节中的前序正文齐全，累计依赖满足。`pkg/expression/doc.go`、`pkg/server/doc.go` 不存在；经 RustCodeGraph status、explore、query、定点 node 阅读真实源码，图未覆盖名称字面量和模块路径映射时用 rg 补查。下列均为静态取证，测试未运行。
+
+| 入口/符号 | 已核实事实及证据限制 |
+| --- | --- |
+| [builtin_time.rs](../pkg/expression/builtin_time.rs)：`date_format` | NaiveDateTime 到 String 的 MySQL `%` 掩码内核，含英文月份/星期、微秒及 ISO 周字段；不携带 PG timestamp/timestamptz/interval 身份、数值模板、locale 或 NULL 上下文。不能机械替换模板后作为 to_char。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`registeredFunctionClass::getFunction`、`invoke_factory` | date_format 规格为 2 参数；已读核心工厂表无 date_format、to_char，本文件未找到 to_char 名称。常规类验证参数数目后取动态工厂，缺失时报 registered-but-not-linked；未排除其他初始化接线，不能据此断言所有 SQL 必失败。 |
+| [scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`；[lib.rs](../pkg/expression/lib.rs) | 正式构造依次查 funcs/extensionFuncs、调用 getFunction、取返回类型并包装 ScalarFunction，标准构造可折叠；应沿此链增加方言签名策略，不另建 PG 求值器。lib 将时间测试别名挂载到独立 30 号文件。 |
+| [builtin_time_test.rs](../pkg/expression/builtin_time_test.rs)：`test_date_format`、`builtin_date_format`；[builtin_time_30_aster_unit_test.rs](../pkg/expression/builtin_time_30_aster_unit_test.rs)：`run_time_parity_suite` | 前者实际只调用通用套件，原 Go DATE_FORMAT 的 NULL/模板断言与 helper 主体仍在注释；后者覆盖时间运算、TIME_FORMAT、时区等，不能当作 DATE_FORMAT 专项或 PG to_char 已执行证据。 |
+| [builtin_string.rs](../pkg/expression/builtin_string.rs)：`formatByLocale`；[builtin_string_25_aster_unit_test.rs](../pkg/expression/builtin_string_25_aster_unit_test.rs)：`construction_metadata_char_format_load_and_weight_match_go` | FORMAT 是数值、decimals、可选 locale 的独立 MySQL 算法，未知 locale 回退 en_US 并报告识别标志；测试断言 en_US/de_DE 输出意图。不支持据此推断 PG D/G/L、模板语法或会话 locale。 |
+| [pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values` | Q 路径对 'hello'/NULL 断言 OID 25，对普通时间/数值有其他 OID 断言；没有 to_char 重载、模板、扩展协议和 binary 结果专项证据。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1741,6 +1754,25 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 官方来源（2026-10-23 查阅，PostgreSQL **18**）：[§9.9.1 EXTRACT/date_part](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-EXTRACT)分别明确 numeric 与 double precision 返回、字段及精度区别；[§9.9.2 date_trunc](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-TRUNC)定义类型、单位和区域行为。精确重载、返回和 volatility 核对官方固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)，strict/immutable 缺省核对 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)；单位适用性、错误及字段算法核对 [timestamp.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/timestamp.c) 的 timestamp_trunc、timestamptz_trunc_internal、interval_trunc、timestamp_part_common、timestamptz_part_common。OID/长度核对 [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)，typmod/格式沿第 3 章。以下 DST 数值为按区域规则推导的验收目标，尚无参考端采样；18.6 仍仅是来源指定目标，18 手册及 18.0 静态源码不能记作该补丁版本运行证据。
 
+#### 格式化函数契约
+
+引用首块统一模板，to_char 是 PG 核心专属标量，DATE_FORMAT 是 MySQL 专属；共享日历/数字组件只能作为候选，不能开放跨方言别名。下列实现 ID 仅为文档身份，不预设新 API。
+
+| 模板字段 | 方言目标、依据及当前缺口 |
+| --- | --- |
+| 关联、分类、调用模型、实现 ID | 待新增 FUNC-FMT 五族；标量候选 `scalar.pg.format.temporal/v1` 与 `scalar.pg.format.numeric/v1`，按已选源类型保留各自语义；MySQL `scalar.mysql.date_format/v1` 独立。当前仅源码/断言意图与官方规则，无运行证据。 |
+| 名称/别名与可见性 | PG to_char/pg_catalog.to_char 遵循第 2 章名称环境，MySQL 隐藏；DATE_FORMAT 在 MySQL 保留，在 PG 隐藏。该隔离为 AsterSQL 设计门禁，不推断参考端自定义函数不存在；无新增别名。 |
+| 重载与隐式 cast | 精确签名 `(T,text)→text`，T 为 timestamp、timestamptz、interval、int4、int8、numeric、float4、float8。无直接 text 源重载；date/int2 等候选必须经前块 resolver 和第 3 章 I 资格，不能把 MySQL 字符串日期宽松转换搬过来。unknown/NULL/参数 OID 0 不由值猜重载；代表用例均显式定型。 |
+| 模板与修饰符 | 时间与数值模板各自解析，不能互换；代表 YYYY/MM/DD、HH24/MI/SS/US、ISO IYYY/IW、数值 9/0/小数/符号、字面量、FM/TH/TM 见下方验收。FM 对时间只修饰下一项；数值 FM 是数值格式模式，不能套时间规则。FX 的输入解析约束不属于本块，SP 未实现不得承诺。 |
+| NULL 与求值 | 所列重载均 strict，已定型任一参数 NULL→NULL/text；NULL 不绕过签名分析或保证其他实参不折叠。时间源空模板及非有限时间值返回 NULL 的额外边界来自 formatting.c，不能把此行为推广为所有数值空模板策略。 |
+| collation、locale/时区 | UTF-8；TM 月/日名称依 lc_time，D/G/S 依 lc_numeric，L 依 lc_monetary；固定标点模板 . 和 , 不随 locale 换字符。记录输入/输出 collation，第 3 章派生规则保留，不把排序 collation 等同 locale 设置。timestamptz 先按会话 TimeZone 映射墙钟和偏移，timestamp/interval 保留自身字段；记录 tzdata、OS locale 库与可用名称。 |
+| 确定性、折叠、副作用 | 官方目录将上述全部 to_char 重载标 stable，不能因某个纯数字模板看似固定便整体标 immutable。无数据副作用；准备语句跨执行的 locale/TimeZone 改变不得被旧结果缓存掩盖。折叠/缓存隔离未验证。 |
+| 返回、wire、修饰符 | 所有成功重载均 text，PG OID/typlen/typmod=25/-1/-1，不是 varchar(n)，模板长度/输入精度不生成 typmod。列名 AS v、表/属性号 0，text/binary 均为编码后的文本字节；空格/尾零不得 trim。NULL 长度 -1、零行描述和 statement/portal 格式沿首块，可空性单记；MySQL 字符串使用自身 code/flags/charset/length/decimals，精确字段待采。 |
+| 下推、错误与状态 | 无下推批准；日期百分号/FORMAT locale 内核不能证明 PG 等价。非法数值模板 V 与小数点组合→42601（formatting.c::NUMDesc_prepare），无匹配签名→42883；普通未知文本按字面量处理，不能一概报非法模板。错误采 S/V/C/M、适用 D/H/P 与分析/折叠/执行阶段；确切消息/位置、本地映射及 MySQL 自身警告/错误待采。 |
+| 验收/证据状态 | 下方五族分别记录两入口输入、值/NULL/类型/错误及可见性；全部待新增、未运行，缺参考端 18.6 实测，成功项 SQLSTATE 不适用。不得据文档结构或名称表升级支持。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.8 格式化函数及表 9.26–9.31](https://www.postgresql.org/docs/18/functions-formatting.html)给出模板和示例；[§19.11.2 locale 设置](https://www.postgresql.org/docs/18/runtime-config-client.html#RUNTIME-CONFIG-CLIENT-FORMAT)定义配置前提。精确签名/stable 核对固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)，strict 缺省核对 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)。[formatting.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/formatting.c)的 timestamp_to_char、timestamptz_to_char、interval_to_char、NUMDesc_prepare 支持时间边界和错误；结果身份/协议沿已取证的第 3 章 text 契约。18.6 仍仅为来源指定目标，18 手册和 18.0 静态源码不构成该补丁版本差分记录。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1766,6 +1798,10 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 #### 时间截断与提取
 
 只定义三种时间源的截断/字段提取代表契约，不实现工厂、字段解码、时间身份、tzdata 服务、会话生命周期、AST、codec、下推或差分平台；不扩写 date_bin、格式化、日历运算及完整 date/time/timetz 函数库。第 2/3 章及注册/重载前块既有缺口分别交接，不因本块需要而补建；不运行 Cargo、数据库或构建/代码 lint。
+
+#### 格式化函数契约
+
+不实现 to_date/to_timestamp/to_number 解析器，不扩展完整模板函数库、locale 安装器或时区系统；不修复已读 MySQL 工厂/测试缺口、不建立新的求值器或测试平台。不批准 DATE_FORMAT/FORMAT 别名、PG 下推或全域性能结论；范围外缺口留给各自聚焦实现。
 
 ### 验收
 
@@ -1852,6 +1888,20 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 所有 PG 成功项覆盖 simple Q 与 Parse/statement Describe/Bind/portal Describe/Execute、text/binary 参数到 text/binary 结果；源参数使用显式 cast 的 $1::T 重绑值/NULL；date_trunc/date_part 的字段参数可用 $2::text、三参 zone 参数可用 $3::text，EXTRACT 的字段保留在语法树中而不以 Bind 替换，分析固定 T 和返回身份，Bind 不换重载。statement Describe 和 portal Describe 的格式差异沿首块，Execute 不重发 RowDescription；NULL 或零行仍有固定类型描述。时区变化用两个 PG 连接交错，并在同一已准备语句执行前改变 TimeZone，区分 stable 执行上下文与三参指定区域；显式区域结果瞬时不变但文本显示随会话变化。MySQL Query/Prepare/Execute 独立采 code/flags/charset/length/decimals、sql_mode 与时区，验证 PG 名称隐藏及 EXTRACT 不被全局注册切换污染。错误采分析/折叠/执行实际阶段和完整错误字段；缺 codec/工厂记工程缺口，不冒充参考端语义拒绝。五组及官方/源码证据不批准别名、下推或功能支持。
 
+#### 格式化函数契约
+
+以下 FUNC-FMT 五组均为**待新增、未运行**目标，逐条分别对照参考 PG/AsterSQL PG 与参考 MySQL/AsterSQL MySQL。PG 成功项统一单列 AS v、text/25/-1/-1、无错误，除明确 NULL 项外非 NULL；结果空格和编码字节精确比较，不用 trim 或近似数值比较掩盖格式差异。固定 UTF-8，基线 lc_time/lc_numeric/lc_monetary=C、TimeZone=UTC。
+
+| 五组场景 | PG 输入与预期值/NULL/类型/错误 | MySQL 入口、自身旁路与证据限制 |
+| --- | --- | --- |
+| FUNC-FMT-TIME：时间格式 | `SELECT to_char(TIMESTAMP '2024-01-02 17:03:04.123456','YYYY-MM-DD HH24:MI:SS.US') AS v`→'2024-01-02 17:03:04.123456'；`to_char(TIMESTAMP '2021-01-01','IYYY-IW')`→'2020-53'；`to_char(INTERVAL '36 hours','HH24:MI:SS')`→'36:00:00'，不能按日内时间取模。 | to_char 在 MySQL 拒绝；合法旁路 `SELECT DATE_FORMAT(CAST('2024-01-02 17:03:04.123456' AS DATETIME(6)),'%Y-%m-%d %H:%i:%s.%f') AS v`→相同可见文本/自身字符串目标；不发送 PG interval 语法，不由本例批准别名，精确列定义未采。 |
+| FUNC-FMT-NUM：数值格式 | `SELECT to_char(148.5::numeric,'FM999.990') AS v`→'148.500'；`to_char(-485::int4,'999MI')`→'485-'；`to_char(12::int8,'FM000')`→'012'；分别以 `125.5::float4`、`125.5::float8` 和 'FM999.0'→'125.5'，不把浮点输入先转任意精度数值而抹去源身份。非法 `to_char(12::numeric,'99.9V99')`→42601，无成功行，阶段待采。 | to_char 均隐藏；合法独立数值旁路 `SELECT FORMAT(148.5,3,'en_US') AS v`→'148.500'/自身字符串目标。FORMAT 的 decimals/locale 参数不等同 PG 模板；PG V/小数点负例不发送给 FORMAT，MySQL 精确元数据/警告未采。 |
+| FUNC-FMT-TEMPLATE：字面量/修饰符 | `SELECT to_char(TIMESTAMP '2024-01-02','"Year="YYYY FMDD DDTH') AS v`→'Year=2024 2 02ND'，证明引号字面量、FM 仅下一时间项、TH；同源模板 '%Y'→'%4'，不能按 DATE_FORMAT %Y 输出 2024。`to_char(TIMESTAMP '2024-01-02','"YYYY"')`→'YYYY'。 | `SELECT DATE_FORMAT(CAST('2024-01-02' AS DATETIME),'%Y') AS v`→'2024'/自身字符串目标；同源模板 'YYYY'→'YYYY'。to_char 名称仍拒绝；反向 PG 调用 `DATE_FORMAT(TIMESTAMP '2024-01-02','%Y')` 目标 42883，禁止用模板翻译自动放开名称。 |
+| FUNC-FMT-NULL：NULL/额外时间边界 | 对每个已列 T，`SELECT to_char(NULL::T,'YYYY') AS v`→NULL/text；`to_char(12::numeric,NULL::text)`、`to_char(TIMESTAMP '2024-01-02',NULL::text)`→NULL/text。`to_char(TIMESTAMP '2024-01-02','')` 与 `to_char(TIMESTAMP 'infinity','YYYY')`→NULL/text，和非 NULL 空串区分。`to_char('abc'::text,'YYYY'::text)`→42883，无值。 | `SELECT DATE_FORMAT(CAST(NULL AS DATETIME),'%Y') AS v` 及 `DATE_FORMAT(CAST('2024-01-02' AS DATETIME),CAST(NULL AS CHAR))`→NULL/自身字符串目标；同有效日期空模板→非 NULL 空串目标。MySQL 不接受 PG infinity 字面量作同义输入；to_char 仍隐藏，错误字段与 wire 待采。 |
+| FUNC-FMT-CONTEXT：locale/时区 | `SELECT to_char(TIMESTAMPTZ '2024-01-02 01:30:00+00','YYYY-MM-DD HH24:MI TZH:TZM') AS v` 在 UTC→'2024-01-02 01:30 +00:00'，America/New_York→'2024-01-01 20:30 -05:00'；timestamp 同墙钟输入及同模板去掉 TZH:TZM 后两会话均 '2024-01-02 01:30'。C 下 `to_char(TIMESTAMP '2024-01-02','TMMonth')`→'January'，`to_char(1234.5::numeric,'FM9G999D0')`→'1,234.5'。另在参考端确认存在的德语 locale 下采同两条，目标为该 locale 的一月译名与分组/小数字符，精确 locale 名及字节待采；. / , 固定标点不随配置变。 | `SELECT DATE_FORMAT(CAST('2024-01-02 01:30:00' AS DATETIME),'%Y-%m-%d %H:%i') AS v`→'2024-01-02 01:30'/自身字符串目标，不能充当 timestamptz 瞬时/偏移证据；独立 `FORMAT(1234.5,1,'de_DE')`→'1.234,5' 目标，局部测试只证明算法意图。MySQL 自身字符/locale/时区配置与精确元数据另采，不把 PG lc_* 设置发给 MySQL。 |
+
+每族另以合法 MySQL DATE_FORMAT 调用在 PG 入口验证名称拒绝 42883，以合法 PG to_char 调用在 MySQL 验证名称拒绝（自身错误码/SQLSTATE/消息待采），此为两入口可见性隔离目标。PG 成功项覆盖 Q 与 Parse/statement Describe/Bind/portal Describe/Execute，显式 `$1::T,$2::text` 绑定重绑值/NULL、text/binary 参数和结果，分析固定 T/text，Bind 不改重载；两个 Describe 的格式差异沿首块，Execute 不重发描述。零行/全 NULL 仍固定 text 身份。MySQL Query/Prepare/Execute 独立采列定义、警告、sql_mode 与字符设置。两 PG 连接和一 MySQL 连接交错执行；同一已准备语句在执行前变更 TimeZone/允许修改的 locale 配置，验证 stable 上下文及缓存隔离，并恢复配置。非 C locale 不可用须记录环境缺口，不能静默跳过后宣称全组通过。错误采实际阶段与完整字段，缺工厂/codec 单列工程缺口。当前有效运行用例数为 0，五族只是官方目标/静态意图，没有功能通过、别名或下推批准。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -1889,6 +1939,12 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 后续仅交接已定型三种源到截断/字段内核、numeric/float8 返回策略到正式工厂、会话/显式区域上下文到日历计算、固定结果身份到 server 的四个窄边界；依赖第 2 章语法、前块注册/重载、第 3 章类型/codec 和工作流 5 的会话区域。先补本块五组及两入口证据，再考虑共享算法与下推；不生成代码任务，不递归补齐时间库或协议设施。
 
 来源映射：蓝图步骤 2 的 PG 核心 date_trunc/date_part 由本块重载表及 FUNC-TEMP 覆盖，步骤 3 全部模板字段由本块差异表承接；跨日、区域、DST、interval、NULL/非法单位分别定位 DAY/ZONE/DST/INTERVAL/NULL-INVALID。date_part 与 EXTRACT 返回类型分别有 §9.9.1 和 pg_proc.dat 证据，精度/两入口可见性/错误及 wire 缺口均明确。人工审阅与第 2 章 EXTRACT 语法、第 3 章三种身份和前块“不凭同名批准别名”一致，未重写前序正文。correctness/兼容性仅为文档目标，运行行为未验证，性能无结论。
+
+#### 格式化函数契约
+
+后续仅交接已选源类型到时间/数值模板内核、locale/TimeZone 执行上下文、text 固定身份到正式工厂/server 三个窄边界；依赖前块 resolver、第 3 章类型/cast 和工作流 5 的会话生命周期。先补五族及双方言元数据证据，再讨论可复用组件；不递归补全 DATE_FORMAT、locale 或时间子系统，不生成代码任务。
+
+来源映射：蓝图步骤 2 的 PG 核心 to_char 与 MySQL DATE_FORMAT 隔离由本块名称和签名表覆盖；步骤 3 全部模板字段由差异表承接。任务的时间格式、数值格式、字面量/修饰符、NULL、locale/时区分别定位 FUNC-FMT-TIME/NUM/TEMPLATE/NULL/CONTEXT，均含两入口输入、预期或明确缺口；返回文本元数据及错误阶段有公共验收规则。与前块不默认批准别名、第 3 章 text/时间/数值身份及第 2 章连接方言一致。correctness/兼容性仍是未实测目标，性能无结论；只完成文档契约，不修改第 1–3 章或其他契约块。
 
 ## 5. SQL会话与事务语义
 
