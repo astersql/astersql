@@ -730,6 +730,8 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 [布尔类型契约](#布尔类型契约)沿用上述桥接，补充取证 `pkg/types/datum.rs` 的 Kind 标签和 `Datum::ToBool`（MySQL 风格真值转换，不能直接作为 PG 隐式转换），以及 `pg_extended.rs::parameter` / `binary_parameter` / `Extended::process`、`pg_result.rs::pg_type` / `value_text` / `value_binary`。静态基线为 `9b3d77f784`（2026-10-23），目标包无 `doc.go`；独立测试 `pg_types_test.rs::common_type_oids_and_values` 断言 TRUE/FALSE 的 OID 16 与 t/f，`native_metadata_bridge_preserves_boolean_and_mysql_columns` 断言同值整数与布尔的 flags 区别，`pg_binary_native_results` 含 false→00；`pg_extended_test.rs::text_parameters_are_typed_and_reject_loss` 只含 true 成功和 unknown 拒绝的布尔参数断言；`pkg/types/datum_test.rs::test_to_bool` 是共享真值转换意图，不证明 PG 转换规则。以上测试均未运行。
 
+[整数与无符号边界](#整数与无符号边界)取证基线为 `01ce26d145`。实际读取 `pkg/server/pg_result.rs::pg_type/value_text/value_binary`、`pkg/server/pg_extended.rs::parameter/binary_parameter/Extended::process`、`pkg/types/datum.rs::KindInt64/KindUint64/Datum` 与 `pkg/types/convert.rs::IntegerUnsignedUpperBound/IntegerSignedUpperBound/IntegerSignedLowerBound/ConvertIntToInt/ConvertUintToInt/ConvertIntToUint`。两个包均无 doc.go。独立测试已读 `pkg/server/pg_types_test.rs::unsigned_binary_and_unsupported_types/pg_binary_native_results/common_type_oids_and_values`、`pkg/server/pg_extended_test.rs::text_parameters_are_typed_and_reject_loss` 和 `pkg/types/convert_test.rs::test_convert`；它们是断言意图，均未运行。Datum 区分 i64/u64 承载，但不能单靠值盒确定 int2/int4/int8 声明身份。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -788,11 +790,39 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 
 官方依据（2026-10-23）：PostgreSQL **18** §8.6 [Boolean Type](https://www.postgresql.org/docs/18/datatype-boolean.html) 支持词集、唯一前缀、空白/大小写、字面量与 NULL 推导及 t/f 输出。精确 codec 核对官方 **REL_18_0** [bool.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/bool.c) 的 boolin/boolrecv/boolsend/booltext；长度错误分别核对 [pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c) 的 pq_getmsgbyte 与 [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/tcop/postgres.c) 的 exec_bind_message 剩余载荷检查。显式转换资格核对同 tag [pg_cast.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_cast.dat) 的 int4/bool castcontext=e，值规则核对 [int.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c) 的 int4_bool/bool_int4；无隐式/赋值转换的拒绝目标是据此推导，尚未运行参考端。wire NULL 与描述字段沿用前块 §54.7 依据；18.6 补丁参考端仍未验证。
 
+#### 整数与无符号边界
+
+本块固定精确整数域；整数没有 scale，PG int2/int4/int8 无长度或精度 typmod（-1），十进制显示位数不是声明精度。共享承载必须同时保留声明宽度和 signed/unsigned，不能由当前值是否为正推断。PG 三种常规 SQL 整数均为有符号；目录 oid 的 unsigned 32 位编码不构成通用 unsigned 整数类型。以下为 MySQL 原整数域及 PG 出口目标（不含 Boolean flag 特例）：
+
+| MySQL 身份/code | signed 值域 | unsigned 值域 | 按声明域选择 PG OID/typlen/typmod |
+| --- | --- | --- | --- |
+| TINYINT/1 | -128…127 | 0…255 | 两者 int2：21/2/-1 |
+| SMALLINT/2 | -32768…32767 | 0…65535 | signed int2：21/2/-1；unsigned int4：23/4/-1 |
+| MEDIUMINT/9 | -8388608…8388607 | 0…16777215 | 两者 int4：23/4/-1 |
+| INT/3 | -2147483648…2147483647 | 0…4294967295 | signed int4：23/4/-1；unsigned int8：20/8/-1 |
+| BIGINT/8 | -9223372036854775808…9223372036854775807 | 0…18446744073709551615 | signed int8：20/8/-1；unsigned numeric：1700/-1/-1 |
+
+此表扩宽与 pg_type 当前分支一致，u64 目标选无约束 numeric，不擅自改为 numeric(20,0)。值域保真不等于来源类型可逆：PG int4 不能反推原 MySQL U16，PG numeric 不能反推 U64。反向必须有目标 FieldType/unsigned 身份；缺声明拒绝或保留原规范身份，不从 OID 猜源类型。MySQL 自身输出保留原 code/UnsignedFlag，不因 PG 扩宽改写 MySQL 列定义。
+
+| 方向 | 身份、精确值与 NULL | 错误、wire 及现状差距 |
+| --- | --- | --- |
+| PG 声明/上下文 → 规范整数及参数描述 | smallint/int2、integer/int/int4、bigint/int8 分别严格为上述 16/32/64 位 signed 全域。参数显式 OID 21/23/20 或上下文定型；OID 0 无法推断目标 42P18。NULL 保留声明宽度而非归 text。 | ParameterDescription 保持输入 OID；结果分别 21/2/-1、23/4/-1、20/8/-1。当前 process 对缺推导报 0A000；parameter(NULL) 为 tp=6，类型生命周期未验证。第 2 章交接类型语法，本章定型。 |
+| PG text 参数/显式文本转换 → 规范整数 | 按已定型 signed 域精确解析，覆盖正负号、首尾空白及 PG 整数输入语法；NULL 长度 -1，空串不是 NULL。整数字符串不得经 f64 中转或接受截断数字前缀。 | 合法整数越界为 22003，非法如空串、1x、1.5 为 22P02，非法字符编码 22021。现有 parameter 用 Rust parse i16/i32/i64，将范围错误也映射 22P02，未 trim，不能证明完整 PG 输入语法。PG 18 的进制前缀及下划线规则以 numutils.c 为准，后续补输入用例，不能只凭 Rust parse 推定等价。 |
+| PG binary 参数 → 规范整数 | OID 21/23/20 分别恰好 2/4/8 字节网络序、有符号二补码；每个合法长度的位模式都在该整数域内。长度 -1 为 typed NULL，无载荷。 | 接收器读不足目标 08P01；多余载荷目标 22P03，外层 Bind 帧损坏归工作流 7。当前 binary_parameter 将错误长度统一报 22P03，再转共享 little-endian 参数；不存在合法长度的“数值越界位模式”。 |
+| 规范整数/MySQL unsigned → PG text/binary 结果 | 先按声明域定型，再按上表整体扩宽；U64 即使值为 0 也保持 numeric。text 输出精确十进制整数；binary int2/int4/int8 按 2/4/8 字节网络序。NULL 为 DataRow 长度 -1。 | value_text 当前直接格式化整数，未按 OID 再检查整数范围；binary 用 parse 检查范围。u64::MAX 的 text/OID 已有断言意图，numeric binary 当前无分支，不能把十进制 ASCII 填进 numeric binary。开放该格式前依赖 numeric 块补齐 codec；未实现路径明确拒绝目标 0A000，禁止回退 float8 或伪装 int8。 |
+| PG/共享整数 → 显式窄化、目标 unsigned | 整数之间只在目标域内精确转换；负值转共享 unsigned 目标拒绝，超过 unsigned 上界同样拒绝；这是桥接契约，PG 没有可写作 ::unsigned 的常规整数类型。numeric→U64 仅在有限、无小数且域内的明确桥接路径接收；一般 numeric→PG integer 舍入规则留 numeric/cast 块，不把此桥接规则当 PG 通用 cast。typed NULL 转为目标类型 NULL。 | PG 路径域外目标 22003，不 wrap、饱和或返回截断成功。MySQL ConvertIntToUint 的 AllowNegativeToUnsigned、携带裁剪值的错误和 Context 策略保持原 Go/MySQL 行为，不直接当 PG 转换。共享错误到 SQLSTATE 尚未验证。 |
+
+算术和转换结果的身份必须在 Prepare/Describe 时由已选择的 PG 重载/目标类型确定，执行时不能因某一行溢出而临时提升 OID；例如 int4+int4 的 int4 溢出应 22003，而预先显式转 int8 后计算可得到 int8，不能直接套共享 MySQL 的 BIGINT 推导。`2147483647::int4 + 1::int4`、bigint 最大值加一及各 signed 最小值取负均应有溢出验收；NULL 结果保留同一结果类型。unsigned 来源的预定扩宽是上表的边界策略，不授权改变 PG 算术规则。运算符/聚合完整重载归工作流 4，本块只规定结果类型交接与溢出不改型；显式、赋值、隐式 cast 的资格按后续转换块确定，wire 扩宽不能自动成为 SQL 隐式 cast。
+
+官方依据（2026-10-23）：PostgreSQL **18** §8.1.1 [Integer Types](https://www.postgresql.org/docs/18/datatype-numeric.html#DATATYPE-INT) 定义三种 signed 域及越界错误；§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 定义 NULL、参数 OID 与列描述。精确输入和 codec 核对官方 **REL_18_0** [int.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c) 的 int2in/int4in、recv/send、int4pl、int2um/int4um，以及 [int8.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int8.c) 的 int8in/recv/send、int8pl/int8um 和整型窄化；[numutils.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/numutils.c) 的 pg_strtoint16_safe/32_safe/64_safe 区分语法和范围错误；[pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c) 与 [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/tcop/postgres.c) 的读取/剩余载荷检查支持二进制长度错误目标。错误名称见 PostgreSQL 18 [附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)。OID 沿前块 pg_type.dat 依据；MySQL 域来自本仓库上下界函数及 test_convert，不以 MySQL 类型名推导 PG 等价。18.6 仍仅为来源目标，未运行该补丁参考端。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
 
 [布尔类型契约](#布尔类型契约)不实现存储或类型系统，不改 Go/MySQL 真值行为；不扩展为 bool 数组、完整 cast 矩阵、运算符/聚合或协议状态机。声明解析、运算、消息恢复分别交工作流 2、4、7；本块只固定类型与 codec 的可观察交接。
+
+[整数与无符号边界](#整数与无符号边界)不实现算术、cast 或 numeric codec，不扩写聚合、serial/identity、oid、数组及完整类型推断。工作流 2 提供声明/转换语法；4 拥有重载求值；7 拥有帧校验、错误响应和恢复；8 采集客户端与双方言证据。MySQL 原行为不因 PG 目标更改。
 
 ### 验收
 
@@ -820,6 +850,16 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 | BOOL-NULL-DESCRIBE | OID 16 的 text/binary NULL 参数、首行/全 NULL 及零行 bool 结果；ParameterDescription 为 16，statement/portal Describe 与 Execute 列身份始终 16/1/-1；NULL 长度 -1，空载荷独立拒绝。 | 参数 tp=6 与准备/执行桥接尚缺身份连续性证据；待新增，未验证。 |
 | BOOL-CAST | 0::int4::boolean=false，2/-1::int4 显式转为 true；TRUE::int4=1，FALSE::int4=0；TRUE::text='true'；NULL 转换保留目标身份；WHERE 1 与整数赋 bool 列拒绝 42804。 | Datum::ToBool/test_to_bool 是 MySQL 意图，不能证明 PG；完整显式/隐式及双方言隔离待新增，未验证。 |
 
+[整数与无符号边界](#整数与无符号边界)以下入口均为**待新增**；所有运行行为未验证。成功项 SQLSTATE 不适用，失败须断言具体 SQLSTATE，不以 is_err 代替。
+
+| 能力 ID / 场景 | 可观察目标与反例 | 现有断言意图/缺口 |
+| --- | --- | --- |
+| INT-RANGE | PG int2/int4/int8 各 min/max 成功，min-1/max+1 的 text 参数及显式窄化拒绝 22003；空串/1x/1.5 拒绝 22P02；按官方输入语法补空白、符号、进制和下划线正反例。 | text_parameters_are_typed_and_reject_loss 仅 int4 最小值和上越界 is_err；其余及错误码未验证。 |
+| INT-UNSIGNED | 对表内每个 signed/unsigned 域测 min/max 与外侧一值；合法 U8/U16/U24/U32/U64 依次映射 int2/int4/int4/int8/numeric。U64 的 9223372036854775808 和 18446744073709551615 精确保留，18446744073709551616→U64 及 -1→各 unsigned 拒绝。 | test_convert 有各宽度上下界及部分裁剪错误值断言；unsigned_binary_and_unsupported_types 有最大 U64 text/OID 断言。桥接拒绝、全宽 wire 和双方言隔离未验证。 |
+| INT-CODEC | 每个 PG signed 宽度对 min/-1/0/1/max 做 text/binary 参数→结果，binary 长度/网络序准确；少/多一字节分别 08P01/22P03。U16/U32 扩宽两格式精确，U64 numeric 两格式精确或未开放 binary 时显式拒绝。 | pg_binary_native_results 有 i64::MIN、-2 int2、i32::MAX 输出断言；完整往返、长度错误及 numeric binary 未验证。 |
+| INT-NULL-METADATA | 每个 signed 类型、各 unsigned 提升后类型含 typed NULL 参数、首行 NULL、全 NULL、空结果、混合 min/max 行；ParameterDescription 输入身份及 statement/portal Describe/Execute 结果 OID/typlen/typmod 稳定，格式选择不改变类型。 | NULL 参数现仅 is_null 断言，不证明类型连续性；U64 的零值与最大值均须保持 1700/-1/-1，全部待新增、未验证。 |
+| INT-CAST-ARITH | 所有 signed 宽度间域内 cast 保值，窄化越界拒绝；负值转 unsigned 不 wrap。int4 最大值加一/各 signed 最小值取负拒绝 22003，先显式转足够宽类型后的可表示结果成功；NULL 不改结果类型，溢出不动态改 OID。 | 共享转换测试只证明 MySQL 意图；PG 重载、显隐式资格、错误码与元数据全链未验证，算术执行交工作流 4。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -829,6 +869,8 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 [布尔类型契约](#布尔类型契约)候选边界为：内部表示先验证 bool 身份能随字面量、声明列、有类型 NULL 和参数跨 Prepare/Execute 保留；cast 依赖该身份并区分显式、赋值与隐式上下文；参数 codec 依赖已定型 OID，补齐文本词集与二进制接收域；结果 codec 依赖同一列身份并保持 Describe/Execute 一致。这里只描述候选边界与依赖，不生成可执行实现任务。
 
 布尔块来源覆盖：来源步骤 2 的 bool 族由方向表覆盖；步骤 3 的 bool 显式/隐式边界由转换段及 BOOL-CAST 覆盖；步骤 4 的 text/binary、NULL、非法输入、元数据一致性由 BOOL-TEXT/BINARY/NULL-DESCRIBE 覆盖。与前块的“不能自动将非零整数视为 bool”一致，显式 int4 cast 和 OID 16 单字节接收是有来源的限定场景；未发现需改动第 1/2 章或来源任务的冲突。
+
+[整数与无符号边界](#整数与无符号边界)候选边界：内部表示先验证声明宽度、signed/unsigned 与 typed NULL 跨 Prepare/Execute 保留；cast 依赖身份及方言上下文，独立核对窄化与负值；参数 codec 依赖已定型 OID，补输入语法及错误分类；结果 codec 依赖稳定结果元数据，U64 binary 另依赖 numeric 契约。本块不生成可执行实现任务。来源步骤 2 的整数族由值域表及方向表覆盖，步骤 3 的 unsigned/溢出由桥接及算术交接覆盖，步骤 4 的格式/NULL/非法输入/元数据由 INT-RANGE/UNSIGNED/CODEC/NULL-METADATA/CAST-ARITH 覆盖。未发现与前序布尔限定场景或第 1/2 章冲突；功能、参考端与性能均未实测。
 
 ## 4. 方言函数与运算符契约
 
