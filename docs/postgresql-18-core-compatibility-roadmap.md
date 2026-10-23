@@ -1549,6 +1549,18 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [pg_result.rs](../pkg/server/pg_result.rs)：`pg_type`、`encode_formats`、`value_text`、`value_binary`；[pg_types_test.rs](../pkg/server/pg_types_test.rs)：`common_type_oids_and_values`、`native_metadata_bridge_preserves_boolean_and_mysql_columns` | wire 归 server，按 ColumnInfo/NativeType 而非单元值选 OID，typmod 当前固定 -1，NULL 编码 -1；boolean 测试意图表明相同 MySQL 列和值仍需不同 native 身份。普通字面量测试预期 1 的 OID 为 20，并不是 PG int4 函数签名证据。 |
 | [builtin_math.go](../pkg/expression/builtin_math.go)：`absFunctionClass.getFunction`；[builtin_math_test.go](../pkg/expression/builtin_math_test.go)：`TestAbs` | MySQL/Go 原契约依据：Int/Decimal/Real 分派、unsigned 与返回精度信息，以及 nil、正负整数/浮点断言意图；不运行 Go 测试，不将其替换为 PG 宽度规则。 |
 
+#### 注册工厂与方言可见性
+
+本块静态基线为 `e4915aee9239f58320be5691a5716d085e703519`（2026-10-23），已确认前块模板和第 1–3 章交付存在；`pkg/expression/doc.go` 不存在。按 RustCodeGraph 的 `status`、`explore`、定点 `node` 读取以下真实链路及独立测试，未执行测试，也未据注册规模推断支持。
+
+| 入口/符号 | 实际责任及证据边界 |
+| --- | --- |
+| [builtin.rs](../pkg/expression/builtin.rs)：`FunctionClassRegistry::from_specs` / `get`、`funcs`、`extensionFuncs` | 内建表由 `BUILTIN_SPECS` 建类，并把 `CORE_BUILTIN_FACTORIES` 注入工厂表；扩展表初始为空。键为字符串，已读结构没有方言、namespace 或参数类型组成的重载键，不能证明连接方言过滤已接入。 |
+| 同文件：`IsFunctionSupported`、`VerifyArgsWrapper`、`GetBuiltinList` | 前者仅查内建表；参数 wrapper 对不存在的类返回 Ok，假设调用者已查支持；列表合并内建/扩展并过滤展示名。这三种结果均不能独立证明签名合法、方言可见或可执行，扩展存在也不能由仅查内建的接口否定。 |
+| 同文件：`registeredFunctionClass::getFunction`、`invoke_factory`、`registerBuiltinFactory` | 常规注册类先验参数数目，再取工厂；`invoke_factory` 对 GROUPING/FTS 有 planner bridge 特例，其余查动态工厂表，缺失时返回 registered-but-not-linked 错误。规格中的 abs 不在核心工厂表；尚未排除其他初始化动态注册，故只能作为受控缺工厂夹具候选，不能宣称生产调用必失败。 |
+| [lib.rs](../pkg/expression/lib.rs)；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl`、`NewFunction`、`NewFunctionBase`、`ScalarFunction::Eval` / `EvalInt` / `EvalString` | crate 挂载并导出正式构造与求值器。常规构造先查 `funcs`，再查 `extensionFuncs`，未知名按 CurrentDB 返回 No database selected 或 FUNCTION … does not exist；之后调用类工厂、接收返回类型并包装 ScalarFunction。标准构造会折叠，Base 不折叠，求值按类型委托具体 builtin；特殊 CAST 等提前分支不能当普通函数候选解析器。 |
+| [builtin_test.rs](../pkg/expression/builtin_test.rs)：`test_is_null_func`；[builtin_registry_aster_unit_test.rs](../pkg/expression/builtin_registry_aster_unit_test.rs)：`builtin_registry_matches_complete_go_function_table`、`builtin_argument_ranges_match_go_unbounded_and_optional_rules`、`migrated_string_control_and_like_factories_match_go_runtime` | 公共入口委托独立注册表套件；后者分别断言名称存在/未知名、参数边界及未知名 wrapper 的 Ok、通过正式 NewFunctionBase 构造 IFNULL(NULL,'fallback') 并 EvalString 得到非 NULL fallback。名称计数与这些局部断言均不是 PG 可见性或双方言协议通过证据，本轮只读断言意图。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1579,11 +1591,39 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 
 官方来源（2026-10-23 查阅，版本 PostgreSQL **18**）：[§9.3 数学函数](https://www.postgresql.org/docs/18/functions-math.html)支持 ABS 同族返回；[§10.3 函数类型解析](https://www.postgresql.org/docs/18/typeconv-func.html)支持名称/参数候选、精确匹配及隐式转换筛选；[§52.39 pg_proc](https://www.postgresql.org/docs/18/catalog-pg-proc.html)定义 strict/volatility。精确 int4/int8 签名和 strict/immutable 默认属性核对官方固定 tag **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat) 与 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h)，结果 OID/typlen 核对同 tag [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)，int4 最小值溢出核对 [int.c::int4abs](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c)。[§54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)支持类型/格式/NULL 字段，[§54.8 错误字段](https://www.postgresql.org/docs/18/protocol-error-fields.html)与[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持诊断记录。以上定义目标；18.6 仍仅为来源指定基线，无该补丁版本运行证据，不将 18 大版本手册或 18.0 静态源码记为 18.6 差分通过。
 
+#### 注册工厂与方言可见性
+
+沿用“三层身份与契约模板”，本块只定义可见候选到正式工厂的责任顺序。所属连接方言和第 2 章名称环境必须先限制可见集合，PG 再依 schema/search_path、名称与参数候选选择签名，类型转换只消费第 3 章资格；不能先在进程全局表命中另一方言实现后再靠结果 OID 修补。限定名称不能绕过方言边界；同一实现可被双方言签名引用，但别名须有逐签名等价证据。`extensionFuncs` 是共享内核的扩展注册入口，不自动授权 PG 扩展加载、目录对象或跨方言公开。
+
+| 阶段 | 必须取得的证据；未满足时的边界 |
+| --- | --- |
+| 名称存在且可见 | 连接方言、原名称/限定名、名称环境和候选签名的记录；注册表存在只说明内部名称存在，隐藏名称不得泄露到 SQL 可见列表或落入另一方言候选。 |
+| 参数合法 | 可见签名的参数数目、声明类型和可用隐式 cast 证据；参数数目合法不等于重载唯一，NULL 也不绕过签名选择。完整排序、unknown/多态/可变参数和歧义由下一块细化。 |
+| 工厂接线 | 真实 crate 挂载、初始化顺序、类到具体工厂及返回类型传播；不能把注册列表、TiPB 签名或 `.rs.md` 当接线证据。已选签名缺工厂为实现缺口，不能改选另一方言或冒充未知名。 |
+| 可求值及可交付 | 正式构造和求值的值/NULL/错误断言，再加双方言 SQL/协议类型与元数据证据；局部算法或工厂成功不覆盖 SQL 入口。缓存、折叠和跨连接复用必须保留选定方言签名，不能以值或全局当前方言选实现。 |
+
+本块四个用例族引用首块全部必填字段，差异和缺口如下；均为待新增能力/用例，不是当前支持声明。
+
+| 模板字段 | 本块填写与限制 |
+| --- | --- |
+| 关联、分类、调用模型、实现 ID | 下方 FUNC-REG 四族均为标量名称/工厂门禁契约；date_trunc 为 PG 专属，IFNULL 为 MySQL 专属，UNKNOWN 为拒绝边界，UNLINKED 为工程缺口夹具。ABS 继承首块候选 ID；date_trunc/IFNULL 具体规范实现 ID 待函数族块定义，不以 SQL 名称代替。 |
+| 名称、别名、可见性、重载、cast | 以验收表明确的签名/方言为限，不批准 DATE_TRUNC 的 MySQL 别名、IFNULL 的 PG 别名或 COALESCE 改写；使用内建限定名验证 PG，不新增 resolver。测试库不含同名用户/扩展函数；精确重载、显式已定型参数优先，其他 cast/排序由下一块给证据。 |
+| NULL 与求值条件 | IFNULL 的一空取后值、全空返回同型 NULL；date_trunc typed NULL 的 strict 目标待函数族官方属性补证，本块不以此作为已定义成功断言。UNKNOWN/UNLINKED 无成功值或 NULL，NULL 参数不消除门禁。ABS NULL 沿首块；所有当前全链行为未验证。 |
+| collation、时区、会话 | 固定 UTF-8、PG search_path 含 pg_catalog、无同名用户函数；MySQL 选定测试库，记录 sql_mode、charset/collation。本例 timestamp without time zone 按字面时间截断，不依 TimeZone 转换；文本 IFNULL 沿 MySQL collation，精确派生规则待对应函数族取证。 |
+| 确定性、折叠、副作用、下推 | 本块不新增 volatility/折叠批准，具体优化属性待函数族块；纯常量可能在规划折叠，门禁必须先于使用隐藏实现。四族无数据副作用，UNLINKED 构造拒绝；不批准跨方言下推，工厂存在不提供等价证据，无性能结论。 |
+| 返回类型、wire、错误、证据 | 见下表，PG timestamp 的 OID/typlen 为 1114/8，typmod 目标 -1；MySQL 字符串精确 code/flags/charset/length/decimals 待参考采集，不能猜测。成功列名 v、表达式来源表/属性号为 0；拒绝没有成功列/载荷。PG 错误沿首块 S/V/C/M 与适用 D/H/P，精确消息/P/失败阶段和 MySQL 诊断仍待采集；各族当前为静态取证与文档目标，运行未验证。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§10.3 函数解析](https://www.postgresql.org/docs/18/typeconv-func.html)定义可见候选与精确/隐式转换匹配；[§9.9 日期时间函数](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-TRUNC)定义 date_trunc(text,timestamp) 的返回类型与截断行为；[§9.18 条件表达式](https://www.postgresql.org/docs/18/functions-conditional.html#FUNCTIONS-COALESCE-NVL-IFNULL)将 IFNULL 列为其他数据库的类似能力，并说明 COALESCE 并非普通函数，本块据此不把它作为开放 PG IFNULL 别名的依据。timestamp 的 OID/长度由官方 **REL_18_0** [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)核对；[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持 42883/0A000 分类。另一入口隐藏名称是 AsterSQL 的目标边界，不能只从 PG 手册推断 MySQL 支持集合。18 大版本手册和固定 18.0 源码均未提供本轮 18.6 运行差分证据。
+
 ### 范围外
 
 #### 三层身份与契约模板
 
 本块不实现生产函数、注册接口、Rust 类型、类型系统、协议 codec、下推或测试运行器，不运行 Cargo、Go 测试、数据库或差分环境；不盘点函数库。四类函数的完整实例、别名开放与重载排序、运算符及 aggregate/window/ordered-set aggregate/SRF 的独立调用模型留给本章后续文档块，不用标量注册器代替其他调用模型。系统事实归工作流 6，会话/事务与消息生命周期归工作流 5/7；不重写第 1–3 章、不补建扩展加载生态。
+
+#### 注册工厂与方言可见性
+
+本块不实现名称解析、方言注册 API、扩展管理或工厂补齐，不补齐 ABS 工厂，也不把共享字符串表改造成完整 pg_proc。PG/MySQL 函数族的全部参数语义、重载优先级、多态/variadic/default 参数、目录可见对象和协议状态机分别交后续块及工作流 6/7；不启动数据库、不运行 Cargo/Go 或新增测试平台。
 
 ### 验收
 
@@ -1602,6 +1642,19 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 
 人工交接检查须将值/NULL、类型、元数据、错误、可见性和证据等级逐格对应；存在待定义字段时，文档可交接但相应行为验收不可记通过。结构、路径与 diff 检查只能证明文档完整性，不证明 SQL 正确、兼容或性能。
 
+#### 注册工厂与方言可见性
+
+以下四族为待新增验收目标。双方言使用独立连接，参考端保持相同无用户/扩展同名函数的前提；每行分别比较 AsterSQL 与所属方言参考端。错误项无成功值、NULL、结果类型或元数据，不能以一行 NULL 充当拒绝。
+
+| 场景 ID | PG 入口输入、可见性与预期 | MySQL 入口输入、可见性与预期 | 来源与当前证据等级 |
+| --- | --- | --- | --- |
+| FUNC-REG-PG-ONLY | `SELECT pg_catalog.date_trunc('hour'::text, TIMESTAMP '2001-02-16 20:38:40') AS v`；可见，非 NULL 的 2001-02-16 20:00:00 / timestamp without time zone，1114/8/-1。非限定 date_trunc 同样可见。成功 SQLSTATE 不适用。 | `SELECT date_trunc('hour', CAST('2001-02-16 20:38:40' AS DATETIME)) AS v`；本目标集合不可见，在名称/签名解析拒绝，MySQL 精确错误码/SQLSTATE 待参考采集。用自身合法参数语法，避免 PG cast 语法错误掩盖函数门禁。 | PG 官方 §9.9/类型目录给语义目标；MySQL 隐藏为方言设计边界，参考端仍待核实；当前没有 PG 工厂或两入口通过证据。 |
+| FUNC-REG-MYSQL-ONLY | `SELECT ifnull(NULL::text, 'fallback'::text) AS v`；PG 目标不可见，42883；不得自动改写成 COALESCE 或泄露 MySQL 工厂。 | `SELECT IFNULL(CAST(NULL AS CHAR), CAST('fallback' AS CHAR)) AS v`；可见，非 NULL fallback/字符串；另以第二参数 `CAST(NULL AS CHAR)` 得 SQL NULL/字符串，类型描述不得由首行或空值改变；wire 精确字段待采集，成功 SQLSTATE 不适用。 | IFNULL 核心工厂条目及独立 `migrated_string_control_and_like_factories_match_go_runtime` 给局部构造/值断言意图；typed CHAR、全 NULL、PG 拒绝与两入口元数据未实测。 |
+| FUNC-REG-UNKNOWN | `SELECT astersql_contract_missing_fn_20261023(1::int4) AS v`；确认名称不在内建/用户/扩展候选，目标 42883，名称解析拒绝。 | `SELECT astersql_contract_missing_fn_20261023(CAST(1 AS SIGNED)) AS v`；同样不可见并拒绝；固定已选库，错误码/SQLSTATE/消息待参考采集。 | `newFunctionImpl` 的缺名分支及注册表测试负例是静态证据，不证明 PG SQLSTATE 已映射；两入口拒绝未实测。 |
+| FUNC-REG-UNLINKED | 受控夹具保留可见 `abs(int4)` 类并确保工厂缺失，`SELECT abs(1::int4) AS v`；名称/参数已选中仍拒绝，目标 0A000（AsterSQL 实现缺口设计），不得误报 42883 或返回 NULL。正常 PG 参考端应为非 NULL 1/int4，23/4/-1；拒绝与成功不能算差分等价。 | 独立夹具保留 ABS 类/缺工厂，`SELECT ABS(CAST(1 AS SIGNED)) AS v`；构造拒绝，MySQL 实现缺口码/SQLSTATE 待定义；正常参考端目标非 NULL 1/BIGINT，元数据沿首块补证。 | `invoke_factory` 缺工厂错误及 abs 规格/核心表差异是夹具依据；动态注册须在后续测试中隔离并恢复，不据当前表断言生产 abs 必失败。此为工程拒绝用例，不得登记为功能支持或普通 PG 等价通过。 |
+
+执行交接：PG 成功项覆盖 Q 与 Parse/Describe/Bind/Execute 的 text/binary 格式，返回描述依第 3 章固定；错误项分别采集名称/类型分析或构造失败阶段与协议 ErrorResponse，不臆定现有阶段。MySQL 覆盖 Query/Prepare 及其自身列定义。交错两个 PG 会话和一个 MySQL 连接，重用名称并重复准备/执行，验证可见性及缓存不串方言；进程全局注册变动不得用作切换连接方言。缺工厂夹具须隔离全局表，不能污染其他会话或测试。文档逐字段审阅通过只表示目标及缺口可交接，缺失诊断、typed NULL 或 wire 证据的行为仍未验收。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -1609,6 +1662,12 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 下一块先承接本模板，细化注册/重载的方言可见性、名称环境、候选排序、隐式 cast 与错误；依赖第 2 章身份/名称及第 3 章类型/转换/元数据，不递归修复缺失子系统。随后各函数族与独立调用模型只补自身实例和窄边界，引用本模板及对应官方来源；缺证项补证后再批准共享别名或下推。本块只给文档交接，不生成代码任务。
 
 来源映射：蓝图任务 4 步骤 1 的三层契约由身份表与标量候选贯通，步骤 3 的所有字段由统一模板覆盖；编号任务的同名不同签名、同值不同类型、typed NULL 分别由 FUNC-ID-ABS-SIGNATURE/SAME-VALUE/TYPED-NULL 覆盖，ERROR 补充域/签名拒绝。与前序章节的连接方言、E/A/I 资格和固定元数据规则一致，无需修改第 1–3 章。其余来源步骤和完整章节验收由后续文档任务承接，不随本块完成升级。
+
+#### 注册工厂与方言可见性
+
+下一块只细化已过滤候选中的重载、隐式 cast 与歧义，不重建名称解析器；函数族块再补 date_trunc/IFNULL 的规范实现 ID、NULL/优化属性与 wire 细节。后续实现先为现有正式构造链补最小方言接线及聚焦门禁证据，缺工厂问题单独追踪，不递归补齐函数库；系统目录事实仍交工作流 6，协议诊断交 7。
+
+来源映射：蓝图任务步骤 1 的方言选择层落在四阶段证据表；步骤 2 的 PG/MySQL 专属代表落在 FUNC-REG-PG-ONLY/MYSQL-ONLY；步骤 3 的可见性、别名及模板字段落在差异表与四族验收，UNKNOWN/UNLINKED 区分名称缺失和实现缺口。首块三层身份、NULL/元数据与第 2 章连接身份、第 3 章转换资格保持一致；本块未修改前序正文或升级任何运行状态。
 
 ## 5. SQL会话与事务语义
 
