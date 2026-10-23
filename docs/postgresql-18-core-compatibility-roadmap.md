@@ -740,6 +740,12 @@ cast 另见 [builtin_cast.rs](../pkg/expression/builtin_cast.rs) 的 to_decimal�
 
 已读独立测试 `pkg/server/pg_types_test.rs::pg_binary_native_results`，浮点部分含 float4 1.5、float8 正无穷及两者 SQL NULL 长度 -1 的 binary 输出断言；`common_type_oids_and_values` 没有浮点场景。另读 `pkg/server/pg_extended_test.rs::text_parameters_are_typed_and_reject_loss` 与 `pkg/types/convert_test.rs::test_convert_to_string`，后者有 1.6_f32/-0.6_f64 的共享输出意图，不能替代 PG 可逆文本验收。两个目标包无 doc.go；所有测试均未运行，未见上述断言覆盖完整浮点边界，不把静态路径或 OID 视为功能通过。
 
+[文本类型契约](#文本类型契约)静态基线为 `e3c4a89ce7`（批次 5 已交付）。已读 [field_type.rs](../pkg/types/field_type.rs) 的 InferParamTypeFromDatum/InferParamTypeFromUnderlyingValue：字符串推断补 MySQL charset/collation，可变长度设 UnspecifiedLength；[datum.rs](../pkg/types/datum.rs) 的 SetString/GetValue 保留 KindString 和 collation，SetBytes 另设 KindBytes。这些信息不能单独区分 PG text/varchar/bpchar 身份或声明长度。目标包 pkg/types、pkg/server 均无 doc.go。
+
+PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UTF-8/NUL，再将 25/1043/1042 同转 tp=253；binary_parameter 对三者复用 parameter。NULL 提前返回 tp=6，typed NULL 连续性缺证。出口 [pg_result.rs](../pkg/server/pg_result.rs)::pg_type 将普通非 binary 字符串映射为 25，charset=63 则为 bytea；value_text 拒绝 NUL，value_binary 的字符串分支发送文本字节，encode_formats 固定 typmod=-1。不能从此宣称已保留 varchar/char 长度、补空格或跨格式身份。
+
+已读独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values 的 hello→25/NULL 断言、catalog_char_and_acl_wire_types 的受控目录 1042 断言，以及 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 的 VARCHAR(30) 表入口。目录特例不证明普通 char 支持，上述片段不覆盖本块完整边界；所有测试未运行。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -858,6 +864,20 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 
 官方源码依据为 **REL_18_0** [float.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/float.c) 的 float4in_internal/float8in_internal、float4out/float8out、float4recv/send、float8recv/send、ftod/dtof、dtoi4：分别核对直接目标宽度解析、输入/范围错误、输出及窄化和整数转换；二次舍入反例取其注释 `7.038531e-26`。网络位型与不足读取见同 tag [pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c) 的 pq_sendfloat4/8、pq_getmsgfloat4/8、pq_copymsgbytes；额外载荷错误沿前块消息边界来源。输出配置以 PostgreSQL **18** [§19.11.2 extra_float_digits](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-EXTRA-FLOAT-DIGITS) 为据。查阅日期 2026-10-23；以上均为规范阅读，18.6 补丁和实际参考端行为仍未验证。
 
+#### 文本类型契约
+
+本块定义通用 text、varchar、SQL char（内部 bpchar），与目录单字节 `"char"` 区分。长度按字符计数，wire 长度按字节计数；UTF-8 下不按字素簇或视觉宽度截断，不自动 Unicode 规范化。数值精度/scale 不适用，约束是字符数 n。无长度 varchar 保持无约束身份，SQL char 省略长度按 1；无长度 bpchar 是独立的无约束、尾空格不显著形式，不能误套 char(1)。声明长度 n 的 PG 18 合法域为 1..10485760；不合法声明目标 22023，由工作流 2 保留类型语法并交本章校验。
+
+| 方向 | 值、NULL 与错误目标 | 身份、元数据及现状差距 |
+| --- | --- | --- |
+| PG text 参数 → 规范文本 | 按已确定 OID 完整解码；空载荷为空串，长度 -1 为 SQL NULL，无载荷；两者不得合并。UTF-8 基线拒绝 NUL、非法序列为 22021，不替换字符或截断至 NUL。 | 25/1043/1042 各自保留，OID 0 仍交定型，不猜 text。ParameterDescription 只有 OID，无 typmod 字段；SQL 目标的长度约束不能因此丢失。当前输入校验存在，身份/长度接线未证明。 |
+| PG binary 参数 → 规范文本 | 载荷是协商编码的文本字节，不带内部 varlena 头、不以 NUL 终止；空载荷合法，NULL 仍为 -1。与 text 参数同样验证编码/NUL，binary 不绕过长度约束。 | 格式 1 不改变类型，现有路径复用 parameter；并非任意 bytes/bytea。UTF-8 之外的协商和转码归工作流 5、7，未开放编码明确 0A000，不能假称已转码。 |
+| 规范文本 → PG text/binary 结果 | 两格式都输出已定型值的文本字节；char(n) 的补空格保留，varchar/text 的尾空格保留；NULL 长度 -1，非 NULL 空串为 0。非法内部编码/NUL 在发布结果前拒绝，目标 22021；缺身份/codec 的能力门禁为 0A000。 | text 为 25/-1/-1；varchar(n)、char(n) 为 1043、1042，typlen 均 -1，typmod=n+4；无约束 typmod=-1。Prepare/Describe/Execute、零行及全 NULL 均一致，不按首行猜。当前普通 text fallback、固定 -1 和 io::Error 尚不能证明身份与 SQLSTATE 传输。 |
+| 赋值/长度 coercion 与显式 cast | 向 varchar(n)/char(n) 赋值超长且超出部分含任何不是 U+0020 的字符时 22001；仅多出的 U+0020 可裁去。显式 cast 可截到 n 字符且不切断多字节编码。char(n) 短值补 U+0020，varchar 不补；char 转 text/varchar 去除尾部补空格，text/varchar 不通用 trim。typed NULL 保留目标身份。 | 目标 OID/typmod 由声明或表达式定型决定。隐式/赋值/显式资格交本章转换块，不由 codec 擅自截断；尚无 PG 长度 coercion 完整证据。通用字符值不承诺数值转换、排序或匹配算法。 |
+| MySQL 参数/结果 ↔ 共享值 | 保留其自身 charset、collation、声明长度、严格/非严格 sql_mode 与 CHAR 尾空格规则；字符长度和协议字节宽度分开。NUL、非法序列、截断的错误/告警按 MySQL 参考端单独验收，不强套 PG 22021/22001。 | 保留 VARCHAR/VAR_STRING/STRING code、flags、charset 与长度元数据，不将 PG OID 或 n+4 写回 MySQL。共享 KindString、名称相似或 charset=63 均不是双方言语义等价证据；不在本块重写既有 MySQL 路径。 |
+
+规范依据（查阅于 2026-10-23）：[PostgreSQL 18 §8.3 Character Types](https://www.postgresql.org/docs/18/datatype-character.html) 支持字符长度、补空格、赋值与 cast 差别、尾空格及 NUL 禁令；[REL_18_0 varchar.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/varchar.c) 的 anychar_typmodin、bpchar_input、bpcharrecv/bpcharsend、varchar/varcharrecv/varcharsend 支持 typmod 与文本载荷边界；[REL_18_0 varlena.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/varlena.c) 的 textrecv/textsend 支持无内部头的文本字节编码。[PG 18 §54.7 Bind/DataRow/RowDescription/ParameterDescription](https://www.postgresql.org/docs/18/protocol-message-formats.html) 支持 -1 NULL、字节长度及元数据字段；[PG 18 Appendix A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 支持 SQLSTATE 分类。固定源码标签是 18.0 取证，不等于已在目标 18.6 运行或证明补丁版全部一致。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -869,6 +889,8 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 [精确数值契约](#精确数值契约)不实现大数表示、cast 或 codec，不改 MySQL/Go 裁剪及告警行为；不扩大到算术/聚合、索引排序、numeric 数组或协议状态机。工作流 2 接声明语法，4 接数值运算与特殊值比较，7 接消息/错误响应及恢复，8 接客户端差分。
 
 [浮点数值契约](#浮点数值契约)不实现内部表示、cast、codec 或运算，不改 Go/MySQL 的浮点行为，不扩展浮点数组、索引、聚合或完整推导系统。类型语法归工作流 2，比较/算术归 4，输出会话配置归 5，消息错误与恢复归 7，真实客户端与双方言差分归 8。
+
+[文本类型契约](#文本类型契约)不实现生产表示、cast、codec 或 MySQL 行为修改；比较、排序、collation 算法、LIKE/正则交工作流 4，编码会话状态交 5，目录专用类型交 6，协议分帧/错误恢复交 7，双方言客户端差分交 8。此处仅交接语义，不扩建子系统。
 
 ### 验收
 
@@ -929,6 +951,17 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 | FLOAT-CAST | float4→float8→float4 保留有限位型；float8 1e39 窄化溢出、1e-100 窄化变零均 22003；±2.5→int4 在最近偶数平台为 ±2，±3.5 为 ±4；NaN/∞转整数拒绝。 | 共享转换/格式化测试不能证明 PG cast 或双方言隔离，全部未验证；类型资格交转换块。 |
 | FLOAT-NULL-METADATA | 两宽度 typed NULL 参数、首行/全 NULL、空结果及跨边界多行；ParameterDescription 700/701、statement/portal Describe 与 Execute 的 OID/typlen/typmod 连续，NULL 长度 -1，格式变化不改类型。 | pg_binary_native_results 有两宽度 NULL 长度 -1 的局部输出意图；参数 NULL tp=6 与共用 f64 值盒仍不证明身份连续；完整客户端证据未验证。 |
 
+[文本类型契约](#文本类型契约)以下 TEXT 用例族为待新增，按第 1 章登记两方言独立 case；所有运行行为**未验证**。PG 基线为 UTF-8，text/binary 参数和结果均检查，成功 SQLSTATE 不适用。MySQL 基线固定 utf8mb4、具体 collation、sql_mode 和 CHAR 取回模式，记录其独立错误码/SQLSTATE/告警，不从 PG 推导。现有 hello、NULL 和目录 char 断言仅为静态入口。
+
+| 场景 | PG 可观察目标 | MySQL 对照与证据状态 |
+| --- | --- | --- |
+| TEXT-EMPTY-NULL | text/varchar(2) 空串结果长度 0；char(2) 空串成为两个空格；三类 typed NULL 长度 -1，无载荷，元数据仍保留。 | 自身空串/NULL 分开，CHAR 取回的尾空格按已记录模式验收；完整三类型两格式缺证。 |
+| TEXT-MULTIBYTE | 中🙂 在 varchar(2) 成功，UTF-8 字符数 2、字节数 7；e 加 U+0301 是 2 字符，不能归一化当 1；char(3) 的中补两个空格，载荷 5 字节。 | utf8mb4 下字符限制与协议字节宽度分别断言，不复用 PG typmod；未验证。 |
+| TEXT-LENGTH-CAST | 对 varchar(2)/char(2) 赋值 ab 成功，abc 拒绝 22001，ab 加一个 ASCII 空格允许裁掉；ab 后加制表符拒绝。显式 cast abc 到两者得到 ab；char(3) 输入 a 输出 a 后跟两空格。n=0、10485761 声明拒绝 22023；n=1、10485760 声明接受，不代表极大载荷已测。 | 自身 VARCHAR/CHAR 长度边界分别在严格及非严格模式采集拒绝或截断/告警，禁止用 PG cast 规则替代；全部未验证。 |
+| TEXT-SPACES | text/varchar 的 a 后跟空格在两格式输出保留；char(3) 转 text/varchar 后为 a；char 比较忽略尾空格的责任交工作流 4，输出字节不先 trim。 | 分开验收 CHAR 取回和 VARCHAR 保留，以及 collation 的 PAD 属性；不能仅凭结果相同推断比较等价，未验证。 |
+| TEXT-INVALID | Bind 两格式的 61 00 62、FF、C3 28 拒绝 22021；不得输出替换字符。合法多字节不能被字节截断。结果方向用构造非法内部值的候选测试检查提前拒绝与错误传输。 | NUL 的合法性、非法 utf8mb4 的错误/告警独立采集，不套 PG 拒绝；当前 PG 输入校验和结果 NUL 校验有源码证据，运行未验证。 |
+| TEXT-METADATA | 声明 text/varchar(2)/char(2) 依次 25/1043/1042，typlen=-1，typmod=-1/6/6；无长度 varchar 为 1043/-1/-1，SQL char 为 1042/-1/5。检查无约束 bpchar、typed NULL、零行、重复 Execute 和两种结果格式，OID 不随值改变。 | 检查自身 type code、charset、flags、长度，不含 PG typmod。普通结果目前折 text，目录 1042 测试不能代替；全链路未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -944,6 +977,8 @@ real/float4 与 double precision/float8 是两个规范身份，目标分别为 
 [精确数值契约](#精确数值契约)候选边界：先核定 MyDecimal 与 cast Decimal 可保真域及规范身份的 precision/scale/特殊值缺口，再决定内部表示；cast 依赖该表示和方言资格，保留 PG 舍入/错误及 MySQL 原行为分流；参数 codec 依赖已定型 OID 和上下文 typmod，结果 codec 依赖同一身份及稳定 Describe 元数据。这里只给边界与依赖，不生成可执行任务。来源步骤 2 的 numeric 族由身份与方向表覆盖，步骤 3 的精度溢出/cast 由 NUM-PRECISION/ROUND 覆盖，步骤 4 的格式、非法输入、NULL 与元数据由 NUM-TEXT-SPECIAL/BINARY/NULL-METADATA 覆盖；NUM-LARGE 承接前块 U64 与更大精度差距。未发现前块或第 1/2 章冲突；本轮无功能、性能及参考端实测。
 
 [浮点数值契约](#浮点数值契约)候选边界：内部表示先核对 KindFloat32、共享 f64 值盒与 NativeType 的定宽不变量及 typed NULL 保真；cast 依赖该不变量和方言上下文，分别核对舍入/范围与特殊值；参数 codec 依赖确定 OID，直接按目标宽度解析并分类错误；结果 codec 依赖同一列身份和输出配置，分别输出目标宽度文本及网络位型。这里只给边界和依赖，不生成实现任务。来源步骤 2 的浮点族由身份/方向表覆盖，步骤 3 的舍入和溢出由 FLOAT-RANGE/CAST 覆盖，步骤 4 的格式、NULL、非法输入和元数据由其余验收入口覆盖。与 numeric 的精确性和半值规则分开，与第 1/2 章术语及前序块无冲突；没有功能或性能实测。
+
+[文本类型契约](#文本类型契约)候选边界与依赖为：内部表示先核对身份、声明字符长度、charset/collation 与 typed NULL 的连续性；cast 在该身份基础上区分显式截断、赋值拒绝和 char 去尾空格；参数 codec 依赖 OID 定型与 SQL 目标约束，分别校验编码/NULL；结果 codec 依赖同一列身份和编码状态，保持 OID/typmod 与补空格字节一致。这里只描述边界，不生成实现任务。来源步骤 2 由类型/方向表覆盖，步骤 3 由长度 coercion/cast 规则覆盖，步骤 4 由 TEXT 用例族覆盖；与第 1/2 章及前五块无契约冲突。无功能、兼容性或性能实测。
 
 ## 4. 方言函数与运算符契约
 
