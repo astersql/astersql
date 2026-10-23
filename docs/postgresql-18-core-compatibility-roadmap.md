@@ -1659,6 +1659,18 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [pg_catalog.rs](../pkg/server/pg_catalog.rs)：`CatalogQuery::parse_session_with_types` / `expr_type` / `evaluate`；[pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)：`catalog_select_structure`、`catalog_binding_has_explicit_support` | 当前库来自上下文、schema 来自连接快照；current_database/current_catalog 限 pg_database，current_schema 限 pg_namespace，类型分支暂用 code 253。测试解析真实目录探测形状，并断言 current_database() FROM pg_locks 被 0A000 拒绝；这只是当前门禁，PG 目标允许普通表达式调用。 |
 | [pg_query_test.rs](../pkg/server/pg_query_test.rs)：`pg_introspection_namespace_session_state`、`datagrip_catalog_live_metadata`、`namespace_catalog_live_metadata`；[pg_session_test.rs](../pkg/server/pg_session_test.rs)：`pg_introspection_namespace_parser_boundaries`；[pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs) 的 libpq 目录探测脚本 | DataGrip 目录排序包含 current_database/current_schema，libpq 脚本包含 current_schema 探测，故这两项是客户端证据最强的首批；独立测试还有两连接、空路径 NULL、RESET、Parse 后 SET 再 Execute 的断言意图。version 为握手/能力探测次序候选，现有 server_version 断言只覆盖启动参数；pg_backend_pid/pg_typeof 未找到同等客户端需求断言，列为身份与类型一致性候选，不虚构需求频率或运行通过。 |
 
+#### MySQL专属函数隔离
+
+静态基线 `e45ddcd620396699286faabecbc8f53e2525ca1d`（2026-10-23）；批次 1–10 的连续提交和五节累计正文已核对，依赖满足。`pkg/expression/doc.go` 不存在；使用 RustCodeGraph status/explore/定点 node，名称字面量用 rg 补查。以下是源码及独立断言意图，均未运行。
+
+| 实际入口/符号 | 已核实内容及证据边界 |
+| --- | --- |
+| [builtin_control.rs](../pkg/expression/builtin_control.rs)：`eval_if_null`；[builtin_control_test.rs](../pkg/expression/builtin_control_test.rs)：`if_and_ifnull_cover_truth_conversion_short_circuit_and_null` | 局部测试断言非空首参跳过 Error、NULL 回退及全 NULL；正式链另由 builtin.rs 的 ifnull_factory、CoreBuiltinKind::IfNull 和 InferType4ControlFuncs 构造/分型求值，不把局部 SqlValue helper 冒称实际工厂调用。 |
+| [builtin_time.rs](../pkg/expression/builtin_time.rs)：`date_format`；[builtin_time_test.rs](../pkg/expression/builtin_time_test.rs)：`test_date_format`；[builtin_time.go](../pkg/expression/builtin_time.go)：`dateFormatFunctionClass.getFunction` / `builtinDateFormatSig.evalString` | Rust helper 接受非 NULL NaiveDateTime 与掩码；测试入口委托通用套件，DATE_FORMAT 专项 NULL/模板断言仍为注释。Go 真实工厂按 datetime/string 转换、推导模板长度，求值保留 NULL 与非法/零日期的 sql_mode 处理；helper 不能证明全部已移植。 |
+| [builtin_json.rs](../pkg/expression/builtin_json.rs)：`json_extract`；[builtin_json_test.rs](../pkg/expression/builtin_json_test.rs)：`test_json_extract`；[builtin_json.go](../pkg/expression/builtin_json.go)：`jsonExtractFunctionClass` / `builtinJSONExtractSig.evalJSON` | helper 走 parsed_paths→BinaryJSON.Extract；独立测试断言多路径 [1,2]、缺失 None、非法路径 Err。Go 工厂验证类型并对文档/路径分别转换；Rust 正式 JsonExtract 分支同样逐参求值、解析路径、Extract，SQL NULL 与 JSON null 不能混为一谈。测试不证明协议或双方言门禁。 |
+| [builtin_info.rs](../pkg/expression/builtin_info.rs)：`tidb_version`；[builtin_info_test.rs](../pkg/expression/builtin_info_test.rs)：`expression_metadata_and_version_helpers_return_go_fields`；[builtin_info.go](../pkg/expression/builtin_info.go)：`tidbVersionFunctionClass.getFunction` / `builtinTiDBVersionSig.evalString` | 实际存在的 TiDB 管理/构建内省函数 TIDB_VERSION()，Rust 与 Go 都取 printer.GetTiDBInfo；独立断言仅非空。Go 为 ETString、flen 按信息长度、返回非 NULL；不把 PG version() 或握手版本代入该值。 |
+| [builtin.rs](../pkg/expression/builtin.rs)：`BUILTIN_SPECS`、`CORE_BUILTIN_FACTORIES`、`invoke_factory`；[scalar_function.rs](../pkg/expression/scalar_function.rs)：`newFunctionImpl` | 四名称规格为 2/2、2/2、2/不限、0/0；已读核心表包含 ifnull/json_extract，未见 date_format/tidb_version，动态注册未全面排除。正式调用仍为名称查类→参数检查→工厂→getRetTp→ScalarFunction/折叠；缺工厂明确报 implementation is not linked。存在 helper/规格不证明 SQL 可用，更不证明 PG 隐藏。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1859,6 +1871,22 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.27 系统信息](https://www.postgresql.org/docs/18/functions-info.html)定义五项返回语义；[§19.11.1 search_path](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-SEARCH-PATH)定义有效路径与权限过滤。固定 **REL_18_0** 的 [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat)核对签名、stable 及 pg_typeof 非 strict，[misc.c::pg_typeof](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/misc.c)核对从表达式类型取得 OID，[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)核对 name/int4/text/regtype 身份及长度；[§54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)核对描述与 BackendKeyData。标准 name 长度及 binary 布局另核对同 tag 的 [pg_config_manual.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/pg_config_manual.h)、[name.c::namesend](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/name.c) 和 [regproc.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/regproc.c)；本地 codec 未验证。18.6 仅为来源指定版本，没有该补丁版本差分结果。
 
+#### MySQL专属函数隔离
+
+沿首块统一模板，四个标量契约关联下方 FUNC-MY 四组，规范实现候选 ID 分别为 `scalar.mysql.ifnull/v1`、`scalar.mysql.date-format/v1`、`scalar.mysql.json-extract/v1`、`scalar.tidb.build-info/v1`；仅为文档身份，不声称已注册。MySQL/TiDB 原语义以本仓库 Go 工厂与求值为保留基线；PG 相似能力不构成改写依据。
+
+| 模板字段 | 四类目标、来源与缺证边界 |
+| --- | --- |
+| 名称/别名/可见性 | MySQL 入口保留 IFNULL、DATE_FORMAT、JSON_EXTRACT、TIDB_VERSION；PG 入口不公开这些内建名称，包括 pg_catalog 限定名。按第 2 章方言与名称环境先过滤候选，再选择工厂，NULL 或常量折叠不能绕过门禁。此为 AsterSQL 设计边界，不声称参考 PG 无法创建同名用户函数。无跨方言别名；开放例外只能逐签名满足“等价共享与别名门槛”（任务 4），不能直接挂 COALESCE、to_char、json_extract_path 或 version。 |
+| 重载/隐式 cast | IFNULL 固定两参，继承 Go 控制类型聚合、按结果求值类型转换及宽度/flags；不套 PG COALESCE 类型规则。DATE_FORMAT 两参按 MySQL datetime/string 转换。JSON_EXTRACT 至少两参，首参 JSON、其余字符串路径，遵循 Go 类型资格检查与转换。TIDB_VERSION 零参，不适用参数 cast。unknown/typed NULL 的 PG 调用也先拒绝名称，不能调用 MySQL cast 选出签名。 |
+| NULL/求值/错误 | IFNULL 首参非 NULL 不求值备用分支，首参 NULL 才取后值，全 NULL 为推导结果类型的 SQL NULL；已到达参数的错误正常传播。DATE_FORMAT 任一参数 NULL→SQL NULL，非法/零日期保持 Go sql_mode 下警告或错误，空模板是非 NULL 空串。JSON_EXTRACT 的 SQL NULL 文档或路径→SQL NULL、缺失→SQL NULL，存在 JSON null 是非 SQL NULL 的 JSON 值；非法 JSON/路径仍报自身错误。TIDB_VERSION 无参数 NULL 场景（零参），正常结果非 NULL，额外 NULL 参数是参数数目错误。 |
+| collation/时区/会话 | IFNULL 保留 MySQL 字符集、collation 派生与数值/时间修饰符；DATE_FORMAT 保留 MySQL 日期转换、会话时区及实际 locale 规则，不能换用 PG 模板或 lc_*。JSON 路径按自身语法，不借 PG jsonpath 或文本 collation 改义。TIDB_VERSION 读本服务构建信息，不依参数 collation/时区，返回字符串仍携自身字符属性。固定并记录 sql_mode、charset/collation、time_zone 和构建基线；精确派生与非默认环境运行证据未采。 |
+| 确定性/折叠/副作用 | 前三项仅在输入转换及所属会话上下文相同时才讨论复用/折叠，IFNULL 保留短路与错误时点；不从局部纯函数推断 SQL immutable。TIDB_VERSION 无数据写入，值属于服务构建上下文，不能用 PG version 值替换或跨不同构建缓存。精确 Go/Rust 折叠及缓存策略未完整取证，保持原策略，后续须补优化证据。 |
+| 返回类型/值域/修饰符/wire | IFNULL 按两参聚合结果，本文 CHAR 用例为 MySQL 字符串；DATE_FORMAT 为 MySQL 字符串及 Go 模板长度推导；JSON_EXTRACT 为 MySQL JSON（TypeJSON/code 245），不是 PG json/jsonb OID；TIDB_VERSION 为 MySQL 字符串、Go flen 为 GetTiDBInfo 字节长度。其余 code/flags/charset/length/decimals 精确值待参考采集，不能从 Rust String 猜协议类型。NULL、零行与重绑值不能改列类型。PG 名称拒绝无成功结果类型/RowDescription，不分配伪造 text/JSON OID。 |
+| 下推/错误字段/证据 | 不新增下推批准，不改变既有 MySQL 下推策略；已存 TiPB 签名不批准 PG 下推。MySQL 参数数目、转换、路径错误按自身 code/SQLSTATE/消息/警告和实际阶段采集，精确字段尚未采；PG 隐藏名称目标分析阶段 42883，无成功行，记录 S/V/C/M 与适用 D/H/P，精确位置/消息未采。缺工厂是工程缺口，不能当作门禁成功。成功错误字段不适用；当前全链有效运行用例为 0。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.18 条件表达式](https://www.postgresql.org/docs/18/functions-conditional.html)仅把 IFNULL 作为其他数据库的相似能力，并说明 COALESCE 不是普通函数；[§9.16 JSON](https://www.postgresql.org/docs/18/functions-json.html)区分 SQL NULL/JSON null，列出的 json_extract_path 与 jsonpath 不授权 MySQL JSON_EXTRACT 别名。[§10.3 函数解析](https://www.postgresql.org/docs/18/typeconv-func.html)支持先筛可见候选，[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)定义 42883 为 undefined_function。这里的 MySQL 语义来自本地 Go，PG 隔离来自设计契约；18 大版本手册不能代替 18.6 实测。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1900,6 +1928,10 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 #### 必需系统函数契约
 
 不实现代码、工厂、OID 分配、任意目录行或权限系统；不补建完整系统函数库、角色生态、统计视图、版本伪装或取消协议。注册/求值只消费事实接口，目录对象/OID/权限事实归工作流 6，会话路径/角色归 5，连接启动/身份/取消归 7，类型身份归第 3 章。现有探测解析与 SQL 适配不是通用实现方案，禁止用 SQL 文本替换、固定 public/库名/进程号或参考 PG 版本串让探测通过；不把目录当前占位 NULL 当权限事实。
+
+#### MySQL专属函数隔离
+
+不盘点全部 MySQL/TiDB 管理函数，不修复 DATE_FORMAT/TIDB_VERSION 工厂或测试缺口，不改 Go 语义，不补建 JSON、时区、权限或管理子系统。不新增 COALESCE/to_char/PG JSON 别名，不把其他函数或扩展生态纳入隔离实现；本块不修改代码、协议或下推。
 
 ### 验收
 
@@ -2041,6 +2073,19 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 
 每组成功项分别在参考 PG 和 AsterSQL PG 采 Q、Parse/statement Describe、Bind/portal Describe、Execute，text/binary 结果及适用的参数格式；无参函数不虚构参数载荷，typeof 参数覆盖 text/binary × 结果格式。schema=NULL 和零行仍保留 OID/typlen/typmod；Execute 不重发描述。name/regtype codec 或工厂缺失单列依赖，不能退回 text 冒充通过。MySQL Query/Prepare/Execute 单独记录值/NULL、自身列定义、错误和警告，两个 PG 连接与一个 MySQL 连接交错采样。现有源码及断言意图与官方目标分别记录，有效运行用例为 0。
 
+#### MySQL专属函数隔离
+
+以下四组为**待新增、未运行**的验收目标，各表达式独立 `SELECT <表达式> AS v`。MySQL 指 AsterSQL MySQL 入口及相应参考端；TIDB_VERSION 参考使用记录完整版本的 TiDB/本仓库 Go，普通 MySQL 无此专属函数不作成功参考。固定无同名用户/扩展函数、UTF-8、记录 MySQL 会话环境与构建信息；PG 用内建查找环境，不能用语法错误替代名称拒绝。
+
+| 场景 | MySQL 成功、NULL、类型与错误保持目标 | PG 可见性拒绝目标 |
+| --- | --- | --- |
+| FUNC-MY-IFNULL | `IFNULL(CAST(NULL AS CHAR),CAST('fallback' AS CHAR))`→非 NULL 'fallback'/自身字符串；两参均 CAST(NULL AS CHAR)→SQL NULL/同类字符串。`IFNULL(1,2)`→1/自身整数；一参数 `IFNULL(1)` 保留参数数目错误，无成功行。另以可控报错表达式作备用分支验证首参非空不求值，局部 Error 断言不替代 SQL 证据。精确 flags/宽度/错误字段待采。 | `ifnull(NULL::text,'fallback'::text)` 及全 typed NULL 版本→42883，无成功行；不得改写 COALESCE。 |
+| FUNC-MY-DATE | `DATE_FORMAT(CAST('2024-01-02 17:03:04' AS DATETIME),'%Y-%m-%d %H:%i:%s')`→非 NULL '2024-01-02 17:03:04'/自身字符串；日期或模板单独 typed NULL→SQL NULL/字符串；同有效日期空模板→非 NULL 空串。一参数 DATE_FORMAT('2024-01-02') 保留参数错误；零日期警告/错误按固定 sql_mode 对照 Go，精确诊断待采，不能因 PG 兼容改写。 | `date_format(TIMESTAMP '2024-01-02 17:03:04','%Y-%m-%d %H:%i:%s')` 及日期/模板 typed NULL→42883；不翻译为 to_char。 |
+| FUNC-MY-JSON | `JSON_EXTRACT('{"a":1,"b":2}','$.a','$.b')`→非 NULL JSON [1,2]；`JSON_EXTRACT('{"a":null}','$.a')`→JSON null（IS NULL 为 false）；同文档 '$.missing'、SQL NULL 文档或路径→SQL NULL，结果类型仍 JSON/code 245。`JSON_EXTRACT('{"a":1}','$InvalidPath')`→路径错误、无成功行；非法 JSON 文档另采自身转换错误，不吞为缺失/NULL，精确诊断待采。 | `json_extract('{"a":1}'::json,'$.a'::text)`、文档/路径 typed NULL 和非法路径版本均→名称无匹配 42883；不能先运行 MySQL 路径解析或返回 PG JSON 值。 |
+| FUNC-MY-ADMIN | `TIDB_VERSION()`→非 NULL 构建信息/自身字符串，内容等于同一服务构建的 GetTiDBInfo，不能固定参考 TiDB 品牌串冒充本构建；零参不适用 NULL 输入。`TIDB_VERSION(NULL)`→参数数目错误，无成功行；结果类型/flen 不由第一行推断，精确列定义/错误字段待采。 | `tidb_version()` 及 `tidb_version(NULL::text)`→42883，无成功行；不重写 PG version()，不泄露 MySQL 工厂。 |
+
+四组分别重复 PG 未限定名与 pg_catalog 限定名；PG Q 和扩展 Parse 均须在分析阶段拒绝且无成功 RowDescription/DataRow，记录错误实际字段/阶段，不能拿缺工厂错误充作 42883。MySQL 对成功/NULL 采 Query、Prepare/Execute、参数值/NULL 重绑、零行列定义，逐列核对 code/flags/charset/length/decimals、载荷与警告。两个 PG 连接与一个 MySQL 连接交错重复调用，验证名称/工厂缓存不串方言；MySQL 原错误与 Go/TiDB 参考逐条核对。PG 未限定名仅在夹具排除同名用户函数时要求拒绝，不扩大为禁止用户定义函数。全部四组有效运行用例数为 0，当前仅完成契约证据与场景覆盖。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2102,6 +2147,12 @@ PG GREATEST/LEAST 是特殊表达式，不是普通 pg_catalog 函数重载，�
 后续仅按首批客户端探测补数据库/schema 的正式标量接线，先向工作流 5/6/7 明确事实接口、读取时点与不可用诊断；再为版本、backend 身份和 pg_typeof 补具体客户端需求、窄 name/regtype 身份/codec 与独立验收。函数求值不拥有目录表或身份生命周期，不借本块扩大目录/权限/协议实现。范围、优先级与通用工厂接线仍须实施阶段重新核实，本轮不生成代码任务。
 
 来源映射：来源步骤 2“PG 必需系统函数”由本块五候选和 FUNC-SYS 五组承接；步骤 4 的系统函数/目录责任由模块表、事实责任字段、范围外与上述接口交接承接。首块全部模板字段已逐项填写；权限过滤、类型内省、连接身份和两入口缺证均显式保留。文档完整性不表示 correctness/兼容性/性能已实测，未运行 AsterSQL/PG/MySQL 或 18.6 参考端。
+
+#### MySQL专属函数隔离
+
+后续仅交接现有候选过滤→四名称 MySQL 签名/工厂→原求值/返回元数据三个窄边界；依赖前块 resolver、任务 4 等价门槛、第 3 章类型和工作流 7 的双协议描述。实施前重新核实动态工厂及四组独立测试，缺工厂和精确列定义单独追踪；不递归补全时间/JSON/管理系统，本轮不生成代码任务。
+
+来源映射：蓝图步骤 2 第四类由四个规范实现候选与 FUNC-MY-IFNULL/DATE/JSON/ADMIN 承接；步骤 3 的名称、可见性、重载/cast、NULL、collation/时区、确定性、返回/wire、下推、错误由本块统一模板各行覆盖。每类至少一组 MySQL 成功与 PG 拒绝、NULL 适用性/类型/错误保持均有明确目标或缺口；跨方言开放只引用任务 4 的证据门槛。correctness/兼容性为未实测目标，性能无结论；文档完成不表示函数支持通过。
 
 ## 5. SQL会话与事务语义
 
