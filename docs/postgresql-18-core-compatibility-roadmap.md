@@ -3621,6 +3621,17 @@ Q/扩展 Parse、Describe、Bind、Execute 的工厂分派、单次快照和有�
 
 Q与扩展Parse/Describe/Bind/Execute工厂、共享快照、结果编码沿“目录执行链与证据模板”。[lib.rs](../pkg/server/lib.rs)以cfg(test)独立注册[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live（真实domain列→类型join、numeric格式化、RetrieveDataTypes排序非空、public类型空集）和[pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values、catalog_char_and_acl_wire_types（普通描述/值与bpchar1042、ACL数组1034描述意图）。前者模板来自[postgresql-protocol-first-phase.md](postgresql-protocol-first-phase.md)，不是已采集的某版DataGrip运行记录；没有typarray闭环或完整类型目录的本轮运行证据。
 
+#### 索引目录与定义反解
+
+承接来源任务步骤1、2，能力ID `CAT-INDEX/pg`、`CAT-INDEXDEF/pg`，沿用首块证据模板。批次6交付 `1807f7800b7ffee693ea136a6ea2e9b472966035` 的内建类型五节正文，以及累计批次1–5提交 `946e9b2c206d913b73762990b551753fed204449`、`b7ff2288b8f97722c5c8ad3985cfdf56b06dae17`、`9bd191c61203ab5ba493a4261a0a89f0f33eda93`、`7ade409a9de6f53a3f60327bf24d2a5441907f46`、`af67d135cf181d87bcb3ba0a7240d2395b4742c0` 与正文已核对，满足本批次文档依赖；第2–5章的名称、声明类型、函数工厂及DDL门禁继续有效。以下为2026-10-24在该基线经RustCodeGraph status / explore / 定点node取得的静态证据；`pkg/server/doc.go`不存在，本轮没有运行测试。
+
+- [pg_catalog.rs](../pkg/server/pg_catalog.rs)::catalog_indexes 复制 TableInfo.Indices，拒绝原生索引ID≤0；若PKIsHandle且没有Primary索引，则查找public、非Hidden且有主键标记的列，以局部ID=-1、名PRIMARY、Unique/Primary=true补一行。该投影有真实整数句柄依据，不是可任意制造的索引；缺主键列则拒绝。现代码取首个匹配列，尚不能据此证明异常多主键标记可被正确诊断。
+- 同文件 index_constraint_rows 从执行快照的当前数据库 SchemaTableInfos 取 model_meta，跳过非public表、序列和视图，只枚举StatePublic索引。按IndexInfo.Columns顺序，以列名查public/非Hidden列，取Offset+1并校验IndexColumn.Offset一致及int2范围；不是按表列顺序重排。当前接受Tp=Invalid/Btree，拒绝空列、前缀、UseChangingType、多值、vector/inverted/fulltext及非空ConditionExprString；没有明确INCLUDE、PG排序/NULL顺序、opclass或表达式树的保真来源。
+- [index.rs](../pkg/meta/model/index.rs)::IndexInfo/IndexColumn 与 [table.rs](../pkg/meta/model/table.rs)::TableInfo 是事实入口。Unique/Primary/State/Tp/ConditionExprString等不能由显示字符串反推；Invisible、Global、BackfillState存在但当前provider未据此建立PG状态等价证明。[pg_oid.rs](../pkg/server/pg_oid.rs)::index_oid 对(表ID,局部索引ID)作有界映射；pg_class provider与regclass查找均复用catalog_indexes，因此虚拟主索引应贯通同一OID，越界拒绝沿关系身份块。
+- pg_index字段绑定见column；index_constraint_rows当前把indnatts=indnkeyatts、indnullsnotdistinct=false、indoption全0、indclass空vector、indcollation全0、indisvalid/indisready=true，indexprs/indpred为NULL。这些常量不能充当真实语义证据。pg_get_indexdef在expr_type接受单参数和三参数，evaluate复用provider或重新读取同快照，按OID查行21整定义/行22逐列名称；当前忽略pretty差异，未知OID及越界列返回NULL，整定义固定public/USING btree并对标识符双引号转义。有界目录白名单不证明普通SQL已通过第4章正式注册。
+
+独立测试在 [lib.rs](../pkg/server/lib.rs) 注册。[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_constraints_live 使用真实domain加原生DDL夹具，断言复合主键1 2、唯一列3、普通列2、定义、列号/越界NULL、向量OID22、PKIsHandle投影、引号、前缀拒绝与删除后空集；其prepared刷新直接断言的是外键约束，不能据此声称索引刷新已测。[pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::pg_datagrip_ui_metadata_core 读取 [RetrieveIndexColumns.sql](../pkg/server/testdata/pg_datagrip/RetrieveIndexColumns.sql)，断言(note,id)的顺序2/1及零基vector下标；该文件是仓库存量模板，未取得DataGrip精确版本、官方查询出处或客户端实采，不能标作UI通过。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3730,6 +3741,27 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方依据（访问日期2026-10-24）：PostgreSQL **18** [pg_type](https://www.postgresql.org/docs/18/catalog-pg-type.html)定义字段、容器/域关联；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)定义format_type签名；固定OID/名称/配对取官方**REL_18_0** [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)，NULL/无效OID、bpchar及名称展示取同tag [format_type.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/format_type.c)。客户端必要typelem/typdelim字段由官方**pgjdbc REL42.7.8** [TypeInfoCache.java](https://raw.githubusercontent.com/pgjdbc/pgjdbc/REL42.7.8/pgjdbc/src/main/java/org/postgresql/jdbc/TypeInfoCache.java)::prepareGetArrayDelimiterStatement/prepareGetArrayElementOidStatement提供来源；不推定本轮运行了驱动。18.6仍是来源指定目标，无该补丁参考构建或精确运行取证。
 
+#### 索引目录与定义反解
+
+以下为目标及缺口，非当前支持声明。官方依据（2026-10-24查阅，PostgreSQL **18**）：[pg_index](https://www.postgresql.org/docs/18/catalog-pg-index.html)、[pg_get_indexdef](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-CATALOG-TABLE)、[CREATE INDEX](https://www.postgresql.org/docs/18/sql-createindex.html)；固定 **REL_18_0** 的 [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)核对目录类型身份，[ruleutils.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/ruleutils.c)::pg_get_indexdef_worker 用于反解边界复核。客户端需求以 [psql 18](https://www.postgresql.org/docs/18/app-psql.html) 的 `\di`、`\d public.idx_contract` 与 `-E` 为官方入口；下方SQL均为人工契约探针，具体psql隐藏SQL另采。来源指定18.6的参考构建、精确错误字段及客户端执行均未取证。
+
+所有字段在同一当前库/快照按真实索引身份关联。目录SELECT权限与对象读权限分开：具有目录SELECT而无表SELECT的同库角色仍可见这些目录行及定义，不以search_path过滤；普通读表仍作权限检查。名称解析/可见性继承前块，第14/15块补权限与可见性函数；不得因权限未取证伪造owner或把应有索引清空。
+
+| 字段/查询→验收 | 真实来源与关联键 | PG类型/OID（typlen） | 目标、当前缺口与不支持策略 |
+| --- | --- | --- | --- |
+| indexrelid、indrelid→IDX-BASE/HANDLE/LIFE | 表持久ID、IndexInfo.ID或有证据的句柄-1；分别连pg_class.oid（索引/所属表） | oid/26（4）两列 | 两个外键与regclass一致；索引名字不作全局键，遵守关系块schema内关系名唯一性，不能把各表PRIMARY重名直接当PG合法命名。非法ID/碰撞/越界沿关系块拒绝，不能哈希或按枚举顺序编号。 |
+| indnatts、indnkeyatts→IDX-BASE/SHAPE | 有序键列及独立包含列元数据；与索引pg_class.relnatts闭环 | int2/21（2）两列 | 总列数/键数分别保真；当前都等于Columns.len只在无INCLUDE时可能成立，缺INCLUDE来源时不降为键列。 |
+| indisunique、indisprimary、indnullsnotdistinct→IDX-FLAGS/SHAPE | Unique、Primary、真实NULL唯一性策略；主键必须唯一 | bool/16（1）三列 | 当前前两项取模型、第三项固定false；仅经证明NULL互异语义才可false。NULLS NOT DISTINCT缺源应在DDL副作用前拒绝；既有不等价状态在输出前0A000。 |
+| indkey→IDX-ORDER/HANDLE | Columns顺序映射到所属表持久PG attnum，不能仅信当前Offset+1 | int2vector/22（-1） | 长度=indnatts，零基下标；键在包含列前，表达式槽为0。遵循列块DROP/ADD槽位契约；错误Offset/缺列/重复属性槽位输出前拒绝，不静默重排或丢列。 |
+| indoption→IDX-OPTIONS | 方法特定逐键排序/NULL顺序 | int2vector/22（-1） | 长度=indnkeyatts；btree默认ASC NULLS LAST才为0，DESC/NULLS FIRST必须保存真实位标记；缺源拒绝相关形态，不一律全0。 |
+| indclass、indcollation→IDX-AUX | 每个键的真实opclass/collation身份，分别连pg_opclass/pg_collation | oidvector/30（-1）两列 | 长度均=indnkeyatts；无collation语义的类型其collation可0，有排序规则则须真OID；opclass必须关联实际方法/类型。当前空indclass、全0collation不是完整契约，缺源请求在输出前0A000，不能用NULL/空vector掩盖。 |
+| indexprs、indpred→IDX-SHAPE | 表绑定的表达式树/谓词；表达式与indkey中0一一对应，谓词独立保留 | pg_node_tree/194（-1）两列 | 普通整列无谓词时SQL NULL合法；当前描述为text/25是缺口，不能以NULL值免除类型要求。复杂形态未实现则DDL副作用前或既有对象目录输出前0A000，不返回丢表达式的可执行定义。 |
+| indisvalid、indisready→IDX-STATE | 真实建索引/回填生命周期及读写可用语义 | bool/16（1）两列 | StatePublic仅为候选依据，不能直接等同PG两状态；当前固定true，须证明同步完成的普通索引后才开放。中间态不能假装有效，也不能仅靠空集宣称支持CONCURRENTLY。 |
+| indisexclusion、indimmediate、indisclustered、indcheckxmin、indislive、indisreplident→IDX-EXTRA | 排他/延迟约束、CLUSTER、版本可见性、删除生命周期、复制身份各自真实元数据 | bool/16（1）六列 | 当前未绑定；缺源字段请求在绑定/输出前0A000。禁用特性可建立经证明的固定策略，但不能无来源补false/true；特殊DDL未开放前拒绝，具体子系统交后续独立任务。 |
+| pg_get_indexdef(oid)及(oid,int4,bool)→IDX-DEF/QUOTE/UNKNOWN | 同一真实索引定义、方法/类型、schema与已转义标识符 | text/25（-1），参数26或26/23/16 | 列号0为整定义，1起为索引列序的片段；pretty只影响格式，不改变含义。保留唯一性、方法、排序、包含列、表达式和谓词；还原文本是重构结果，不保证原DDL字面相同。未知OID与NULL按参考契约返回NULL，对已存在索引，越界列按REL_18_0源码目标为空字符串（非NULL）；18.6精确运行另采。当前NULL返回是待修差异。 |
+
+所有字段自身typmod目标-1，text/binary及零行描述沿第3章；向量不能写成int2[]/oid[]，pg_node_tree不能写成text。仅当模型、目录辅助身份及方法行为均有等价证据时才输出可重建定义；Tp=Invalid不能无依据推断btree，Invisible/Global或本地前缀索引也不能默认为普通PG索引。若某形态不等价，产品目标0A000必须早于副作用/成功行；这是产品能力门槛，不伪称PostgreSQL对合法索引形态也拒绝。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3757,6 +3789,12 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 内建类型目录映射
 
 不实现类型注册、通用数组/vector运算、域/复合/枚举/扩展类型系统，不补函数/角色/排序规则子系统，不修改第3章coercion或扩大到全量JDBC元数据流程。目录身份闭环、真实来源和明确拒绝仍属目标，不能通过删类型或降低目标范围获得文档验收。固定类型声明与普通结果身份分叉是既有缺口，后续按窄任务处理；本轮不改Rust、Cargo或测试。
+
+#### 索引目录与定义反解
+
+本块只定义索引目录和反解的文档契约，不实现索引DDL、表达式索引、部分索引、INCLUDE、访问方法、opclass/collation注册或在线回填，不扩建执行器。约束反解/外键交批次8；真实默认表达式、权限、可见性、刷新、psql/JDBC/DataGrip流程交各自块。第2/3/5章及关系/属性块的缺口不在此改代码。
+
+合法复杂PG索引目标不删减：没有真实保真来源时，创建请求在副作用前0A000；原生侧已有前缀/非等价方法等对象在目录输出或反解前0A000，不隐藏为不存在或返回删去条件的CREATE INDEX。确实无索引的关系才允许类型正确空集；真实普通索引没有表达式/谓词才允许对应SQL NULL。provider当前会枚举当前库其他表，WHERE限定一个OID不保证隔离无关坏模型，此限制需在后续求值块独立验证；本轮不改变其行为。
 
 ### 验收
 
@@ -3958,6 +3996,53 @@ SELECT pg_catalog.format_type($1,$2) AS type_name;
 
 清理由owner逐条执行，参数[]：`DROP TABLE IF EXISTS public.type_contract;`、`DROP DOMAIN IF EXISTS public.type_domain;`（未开放DOMAIN语法时只检查无残留，不以清理失败替代创建诊断）。保存两端完整版本、角色授权、SQL/Bind、Describe、行值/错误、DDL前后快照与有效用例数；真实psql/JDBC/DataGrip/ORM运行及18.6精确差分仍待取证。本轮未执行任何上述SQL或Rust测试。
 
+#### 索引目录与定义反解
+
+以下 `IDX-*` 均为**后续待新增/待运行**，不是本轮运行结果。统一前提：隔离测试库、UTF8、空闲事务、owner、search_path=public,pg_catalog；第二连接同库、具目录SELECT与函数EXECUTE但无表SELECT，第三连接在另一库建同名表检查隔离。DDL逐条发送并提交；Q参数[]、文本结果，名称/OID按本端身份关联，不比较两端用户OID固定数值。除显式仓库模板外，查询为人工探针。
+
+```sql
+CREATE TABLE public.idx_contract (id integer, a integer, b integer, label text,
+  CONSTRAINT idx_contract_pk PRIMARY KEY (id));
+CREATE INDEX idx_contract_ba ON public.idx_contract (b,a);
+CREATE UNIQUE INDEX idx_contract_uq ON public.idx_contract (a);
+-- IDX-BASE：输出顺序由名字固定；参数[]。
+SELECT c.relname,i.indexrelid,i.indrelid,i.indnatts,i.indnkeyatts,
+       i.indisunique,i.indisprimary,i.indnullsnotdistinct,i.indkey,
+       i.indisvalid,i.indisready
+FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid
+WHERE i.indrelid='public.idx_contract'::regclass::oid ORDER BY c.relname;
+-- IDX-ORDER：Parse OID=[26]，Bind为本端idx_contract_ba的OID。
+SELECT i.indkey,i.indkey[0],i.indkey[1],i.indoption
+FROM pg_catalog.pg_index i WHERE i.indexrelid=$1;
+-- IDX-DEF：同一OID参数；IDX-UNKNOWN复用此完整SQL。
+SELECT pg_catalog.pg_get_indexdef($1),pg_catalog.pg_get_indexdef($1,0,false),
+       pg_catalog.pg_get_indexdef($1,1,true),pg_catalog.pg_get_indexdef($1,2,true),
+       pg_catalog.pg_get_indexdef($1,99,false),pg_catalog.pg_get_indexdef($1,-1,true);
+-- IDX-AUX/STATE：同一OID参数。
+SELECT i.indclass,i.indcollation,i.indexprs,i.indpred,i.indisvalid,i.indisready
+FROM pg_catalog.pg_index i WHERE i.indexrelid=$1;
+-- IDX-EXTRA：同一OID参数。
+SELECT i.indisexclusion,i.indimmediate,i.indisclustered,i.indcheckxmin,
+       i.indislive,i.indisreplident FROM pg_catalog.pg_index i WHERE i.indexrelid=$1;
+```
+
+参数查询在DDL前Parse/Describe statement，OID=[26]，Bind格式[0]、值为本端索引OID十进制文本，分别结果格式[0]/[1]，Describe portal/Execute/Sync。后续修改DDL后新Bind/Execute应读新快照；已启动portal缓存不据此要求中途改行。IDX-DEF无FROM查询是否进入当前目录路径需要单独验证，不能由FROM pg_index测试推断已支持。
+
+| 用例→需求 | 期望结果/真实变更或拒绝阶段 |
+| --- | --- |
+| IDX-BASE/FLAGS→普通/复合/主键 | 恰3行（ba、pk、uq按名字序），分别列数2/1/1、键数2/1/1、unique=false/true/true、primary=false/true/false、nullsnotdistinct均false、indkey为3 2 / 1 / 2，valid/ready均true（同步完成前提）。描述OID依次19/26/26/21/21/16/16/16/22/16/16，长度64/4/4/2/2/1/1/1/-1/1/1，typmod均-1。indrelid连所属表pg_class.oid，indexrelid连索引pg_class.oid，regclass按各自名称往返一致。第二角色结果相同但 `SELECT * FROM public.idx_contract;` 应权限拒绝；第三库不泄漏。另独立重置后执行 `INSERT INTO public.idx_contract(id,a) VALUES (1,NULL),(2,NULL);` 应成功，随后 `INSERT INTO public.idx_contract(id,a) VALUES (3,7);` 成功，再 `INSERT INTO public.idx_contract(id,a) VALUES (4,7);` 唯一性拒绝；实际SQLSTATE/字段另采，不只验布尔标志。 |
+| IDX-ORDER/OPTIONS→索引顺序 | 参数ba时1行向量3 2、两个下标3/2、indoption向量0 0，描述22/21/21/22。另独立夹具 `CREATE INDEX idx_contract_desc ON public.idx_contract (b DESC NULLS LAST,a ASC NULLS FIRST);`，目标indkey=3 2，btree indoption=1 2；若无排序保真来源，DDL副作用前0A000且无残留，不能接受后输出0 0。 |
+| IDX-DEF→整定义/逐列 | 参数ba返回1行6列text25/-1；前两列语义等价于 `CREATE INDEX idx_contract_ba ON public.idx_contract USING btree (b, a)`，第三/四列为b/a的合法引用片段，非表中第1/2列id/a。true/false格式保存原始参考文本后比较含义与必要引用；不规定所有标识符必须加引号。第5/6列目标均为空字符串（长度0、非NULL）：REL_18_0的worker在attrsOnly模式只追加匹配列，越界不匹配而返回空buffer，这是源码推导，尚无18.6实测；当前测试断言NULL与此不同，后续实施需同时修正代码和独立测试。输出的普通索引整定义须在隔离克隆夹具（同表列、无原索引名）重建，再查BASE/ORDER核对语义；不在原表上盲执行冲突定义。 |
+| IDX-HANDLE→虚拟主索引 | owner另建 `CREATE TABLE public.idx_handle (id integer PRIMARY KEY);`。产品须保存原生model的PKIsHandle、主键列和Indices快照，确实PKIsHandle=true且无显式Primary时，BASE将关系替换为idx_handle，目标恰1个unique/primary=true、indkey=1的索引，连pg_class及本端实际主索引名。不要用PG默认名断言产品当前PRIMARY名，命名规范沿关系身份块；缺模型证据不能标虚拟分支通过。PG端正常主键作为语义对照；不将整数句柄机制冒称PG存储机制。 |
+| IDX-AUX/STATE/EXTRA→真实辅助身份 | AUX描述30/30/194/194/16/16；ba的opclass向量长2且每项关联真实pg_opclass、方法/整数类型，collation向量0 0（整数键），表达式/谓词均SQL NULL，valid/ready=true。EXTRA描述六列bool16，普通同步夹具目标false/true/false/false/true/false；当前缺字段应明确0A000，不能补默认值过关。中间态模型以独立模型夹具保存State/BackfillState及真实读写可用状态，不把StatePublic单独当通过证据；线上DDL细节另任务。 |
+| IDX-QUOTE→引用完整性 | owner独立执行 `CREATE TABLE public."Idx Mixed" ("a""b" integer);`、`CREATE INDEX "ix""q" ON public."Idx Mixed" ("a""b");`；用完整SQL `SELECT pg_catalog.pg_get_indexdef(i.indexrelid),pg_catalog.pg_get_indexdef(i.indexrelid,1,true) FROM pg_catalog.pg_index i WHERE i.indrelid='public."Idx Mixed"'::regclass::oid;`，参数[]，目标1行两列text25，整定义保留三个名字与双引号转义，逐列片段为 `"a""b"`。改为 `SET search_path=pg_catalog;` 后限定关系查询仍找到对象且定义可正确定位public；清理前RESET。 |
+| IDX-LIFE→改名/删除/重建/刷新 | 保存ba OID并prepare上述参数查询。逐条 `ALTER INDEX public.idx_contract_ba RENAME TO idx_contract_ba_new;`、`ALTER TABLE public.idx_contract RENAME COLUMN b TO b_new;`，提交后新Bind/Execute：同一OID、indkey仍3 2，定义更新索引/列名；第二连接同步可见，BASE按新名定位。`DROP INDEX public.idx_contract_ba_new;` 后参数ORDER零行、描述不变，DEF一行NULL整定义；重建 `CREATE INDEX idx_contract_ba_new ON public.idx_contract (b_new,a);` 后新持久ID产生新OID，旧OID不得指向新对象。索引身份重启稳定性沿REL-LIFE另验证，不在本轮运行。 |
+| IDX-UNKNOWN/EMPTY→未知/零行 | 独立重置夹具，对ORDER参数0→零行且完整描述，DEF参数0或SQL NULL（Bind长度-1）→一行NULL值；不能因FROM无行而丢失该函数验收。无索引表 `CREATE TABLE public.idx_empty (n integer);`，BASE将关系替换为idx_empty应零行且描述完整。错误参数签名 `SELECT pg_catalog.pg_get_indexdef(0,1,true,0);` 产品绑定/分析拒绝，PG精确诊断另采，不从本地0A000反推PG SQLSTATE。 |
+| IDX-SHAPE→表达式/部分/包含/方法/NULL策略 | 每例独立重置idx_contract后逐条输入：`CREATE INDEX idx_expr ON public.idx_contract ((a+1));`、`CREATE INDEX idx_partial ON public.idx_contract (a) WHERE b>0;`、`CREATE INDEX idx_include ON public.idx_contract (a) INCLUDE (b);`、`CREATE INDEX idx_hash ON public.idx_contract USING hash (a);`、`CREATE UNIQUE INDEX idx_nulls ON public.idx_contract (a) NULLS NOT DISTINCT;`。PG参考端分别建立并查BASE/AUX/DEF：表达式indkey=0且indexprs非NULL；部分indpred非NULL；包含列indnatts=2/indnkeyatts=1/indkey=2 3；hash定义保留USING hash；NULL唯一索引标志true且重复NULL插入拒绝。产品缺等价来源/行为时每例DDL副作用前0A000，索引不残留；既有原生表达式、条件、前缀或非等价方法由独立模型/原生夹具注入后反解须在输出成功行前0A000，不生成简化btree定义。拒绝后重查BASE确认无半建对象。 |
+| IDX-TEMPLATE/ERROR→客户端需求/坏模型 | 仓库RetrieveIndexColumns.sql保持全文，仅将 `?` 换为wire `$1`，Parse OID=[26]、Bind本端public namespace OID；BASE三索引应展开4行，ba两行k=1/2、column_position=3/2、in_key=true；操作符类/排序规则辅助字段按真实目录关联，不能把当前NULL视为完整支持。模板13列目标OID依次26/20/16/21/21/26/19/19/26/19/19/25/16，typlen为4/8/1/2/2/4/64/64/4/64/64/-1/1（标准name构建），typmod均-1；逐列Describe与text/binary原始值仍须另采，未取证前不声称DataGrip通过。缺model_meta、异常句柄、多主键标记、非法Offset/ID、缺列或未知方法等逐项模型夹具应拒绝且无成功行；被WHERE排除的坏对象也单独取证，不预设provider下推。 |
+
+清理由owner按实际已创建对象执行：普通组 `DROP TABLE IF EXISTS public.idx_contract;`（若重置前曾改表名则使用实际名）、`DROP TABLE IF EXISTS public.idx_handle;`、`DROP TABLE IF EXISTS public.idx_empty;`、`DROP TABLE IF EXISTS public."Idx Mixed";`，所属索引随表清除；逐个复杂形态组重置并核查没有残留索引，不用CASCADE掩盖依赖。关闭prepared/portal、RESET search_path，错误恢复沿第5/7章；保存两端完整版本、角色授权、DDL前后模型/目录快照、SQL与Bind、Describe及行/错误。psql 18后续用 `-E` 实采 `\di public.idx_contract*` 和 `\d public.idx_contract`，真实DataGrip另采版本/驱动/SQL。所有产品、客户端及18.6参考运行仍待完成。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -3997,6 +4082,12 @@ SELECT pg_catalog.format_type($1,$2) AS type_name;
 后续按同源窄任务推进：①内建身份注册与已暴露OID闭环（含name/内部char、目录array/vector），实现TYPE-BASE/CLOSURE；②真实typelem/typarray/typdelim与vector区分，覆盖TYPE-ARRAY/JDBC；③format_type与同一声明typmod对齐、PG有效但未映射与不存在OID区分，覆盖TYPE-FORMAT/UNKNOWN；④域/复合身份、owner/ACL仅在各自真实模型具备后独立接线，未开放前覆盖TYPE-DOMAIN/ERROR拒绝。优先扩展现有独立pg_catalog_test.rs、pg_types_test.rs，不把测试写入生产文件，不因本块扩建整个类型系统。
 
 正确性风险是固定表缺项、列/目录/结果身份分叉及把有效OID误作未知；兼容性风险是name描述、数组关联、NULL修饰符及默认ACL；性能未实测，当前固定类型查询仍遍历用户模型。Ready文档适用检查采用任务指定五节/锚点、引用路径、依赖/前后契约及diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失。未运行Cargo/Go、代码lint、真实客户端或18.6差分；文档完成不表示类型功能实现完成，下一批为索引目录与定义反解。
+
+#### 索引目录与定义反解
+
+按事实来源拆窄实施任务：①持久表/局部索引身份、PKIsHandle不重复投影及schema命名，覆盖IDX-BASE/HANDLE/LIFE；②持久属性号与有序键、向量类型/下标，覆盖IDX-ORDER；③经方法等价证明的整定义、逐列及引用，覆盖IDX-DEF/QUOTE/UNKNOWN；④真实opclass/collation、状态和复杂形态门禁，分别覆盖IDX-AUX/STATE/EXTRA/SHAPE，缺依赖只列后续窄任务，不递归补完整索引系统。优先扩展现有独立pg_catalog_test.rs、pg_datagrip_test.rs，模板预期与客户端实采分开，覆盖IDX-TEMPLATE/ERROR。
+
+本轮仅文档交付。正确性风险为虚拟索引重复、列槽位重排、身份关联错误及丢失条件的可执行定义；兼容性风险为命名冲突、text替代pg_node_tree、空opclass、排序/NULL策略和越界返回差异；性能未测，现有provider全库枚举与函数fallback扫描需后续取证。Ready文档检查采用任务指定五节/锚点、路径、依赖与前后契约、覆盖表和diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用明确替代检查。不运行Cargo/Go、代码lint、真实客户端或18.6差分，下一批为约束目录与定义反解。
 
 ## 7. 线协议认证与数据通道
 
