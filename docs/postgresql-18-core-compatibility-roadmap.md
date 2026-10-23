@@ -764,6 +764,12 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 已读独立 [time_test.rs](../pkg/types/time_test.rs)::TestToNumber 的实际 ParseDuration 断言（含负值及小数舍入；go_cases 字符串不作为执行断言）；[pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values 的 12:34:56→1083/text、unsigned_binary_and_unsupported_types 的 25:00:00 拒绝、pg_binary_native_results 的 1 微秒→i64 网络序 1 与该类型 NULL 输出；[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::text_parameters_are_typed_and_reject_loss 明确断言 24:00:00 参数 is_err，不能沿用为 PG 目标。全部测试未运行，不证明完整往返、精度或准备元数据连续性。
 
+[无时区时间戳契约](#无时区时间戳契约)静态取证基线为 `c8f463e422`（2026-10-23，批次 9 已提交）。经 RustCodeGraph 读取 [time.rs](../pkg/types/time.rs) 的 TimeContext、CoreTime 位域、Time::ConvertTimeZone/String：共享值是 MySQL 日历字段、类型标签与 Fsp；ConvertTimeZone 显式按 from/to 转换字段，不能证明 PG 无时区身份。Go 对照 [time_test.go](../pkg/types/time_test.go)::TestConvertTimeZone 有 UTC/Asia/Shanghai 相差八小时及零值保留断言；这不是 PG timestamp 的规则或本轮实测。两个目标包均无 doc.go。
+
+入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/temporal/binary_parameter/Extended::process：1114 text 经 chrono 固定 `%Y-%m-%d %H:%M:%S%.f`，限年 1–9999、整微秒，转 MySQL tp=12；binary 非 NULL 1114 未开放（0A000），NULL 提前转 tp=6。出口 [pg_result.rs](../pkg/server/pg_result.rs)::pg_type/value_text/value_binary/encode_formats 将 code=7/12 都映射 1114/8，typmod 固定 -1；text 仅粗查年月日，binary 经 chrono 解析后取相对 2000-01-01 的微秒。MySQL TIMESTAMP 上游会话转换是否已执行须另取端到端证据，不从该映射推断等价。
+
+已读独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values 的 DATETIME→1114/text、pg_binary_native_results 的 1999-12-31 23:59:59.999999→网络序 i64 -1 及 NULL 长度 -1；[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::text_parameters_are_typed_and_reject_loss 含六位小数接受、七位拒绝，后者不能作为 PG 舍入目标。所有测试未运行，不证明两格式往返、特殊值、全范围、会话隔离或 Describe 连续性。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -947,6 +953,25 @@ time 单独使用即 time without time zone，保留日内身份，不携带日�
 
 MySQL 参数/结果仍按自身 TIME code=11、符号、Fsp、天数及 sql_mode 解释，不套 PG SQLSTATE，也不改 Go 原行为。共享 duration→PG time 仅在身份和精度可保真、值在日内域时显式桥接；负值 -00:00:01、25:00:00、838:59:59 均明确 0A000 拒绝，不取绝对值、不取模、不截断或自动提升 interval。反向 PG time→MySQL TIME 须有显式桥接并保留微秒/24:00，typed NULL 仍需原身份；没有 PG 类型身份时不能从同名 TIME 或字符串外观推导等价。PG time with time zone（timetz，OID 1266）不在来源枚举类型中，本块不新增其支持，定型/codec 请求须明确 0A000；普通 time 文本忽略合法偏移与支持 timetz 是两项不同契约。
 
+#### 无时区时间戳契约
+
+timestamp 单独使用即 timestamp without time zone，表达日期加墙上时间，不是 UTC 瞬间；类型由声明、typed literal/cast 或参数上下文决定，不能检查字符串偏移或列名后改成 timestamptz。官方行为依据为 [PostgreSQL 18 §8.5 表 8.9、§8.5.1.3–4、§8.5.2](https://www.postgresql.org/docs/18/datatype-datetime.html)（2026-10-23 查阅）：合法时区说明在已定型的无时区输入中被忽略，不移动日历字段；DateStyle 决定歧义输入与输出。固定 ISO 基线，输出日期和时分秒及必要小数，BC/AD 无外部零年；支持其他官方输入形式时须按配置差分，不能只删除后缀。
+
+精确表示依据锁定官方 **REL_18_0（18.0）** [timestamp.h](https://github.com/postgres/postgres/blob/REL_18_0/src/include/datatype/timestamp.h)::IS_VALID_TIMESTAMP/MIN_TIMESTAMP/END_TIMESTAMP：有限微秒域为 `[-211813488000000000, 9223371331200000000)`，基准 2000-01-01 00:00:00；下端为 Julian day 0（前推 Gregorian 4714-11-24 BC），上端最后微秒为 294276-12-31 23:59:59.999999。手册概略年份不代替精确日序；共享 MySQL 位域与 chrono 不能证明覆盖此域。i64 最小/最大另表示 -infinity/infinity，不是有限端点或 NULL。
+
+[同版本 timestamp.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/timestamp.c)::timestamp_in/out/recv/send、anytimestamp_typmod_check、AdjustTimestampForTypmod 定义文本和二进制边界：binary 恰八字节有符号网络序微秒，不是 Unix 秒、纳秒或 MySQL 日期结构；无声明 typmod=-1，timestamp(p) 为 p（0–6，不加 4）。声明负 p 拒绝 22023，超过 6 告警 22023 并收敛到 6；输入先归微秒，再按目标 p 舍入，typmod 半单位按相对 PG epoch 的正负向远离零舍入，不能对负值套正值取整或直接截断。超过六位输入按 PG 解析舍入，不沿用现有拒绝；进位可跨日/年。这些来源未证明 18.6 构建或本地功能通过，实施时需锁定参考构建。
+
+| 方向 | 类型、精度、NULL 与 wire 目标 | 错误与当前差距 |
+| --- | --- | --- |
+| text 参数→规范 timestamp | OID 1114，按 PG 日期时间及 DateStyle 解析，应用 SQL 目标 p；ParameterDescription 不携 typmod，SQL 约束仍需保留。NULL 长度 -1、无载荷仍有类型，空串不等于 NULL。 | 空串/garbage 为 22007；非法日历、零日期与超范围 22008；UTF-8/NUL 错误 22021。当前固定格式、年限及非整微秒拒绝不符合完整目标，temporal 的错误分类也未验证。 |
+| binary 参数→规范 timestamp | 八字节 i64 按有限域或两个特殊哨兵解释；应用 SQL 精度约束，与 text 同规范值；NULL 不走载荷长度/范围检查。 | 不足八字节 08P01，额外字节 22P03，帧声明不符 08P01；其余超有限域整数 22008。当前非 NULL 未开放。 |
+| 规范 timestamp→text 结果 | OID/typlen/typmod=1114/8/p 或 -1；输出可回读的墙上时间，保留 BC、扩展年份、微秒或 infinity；NULL 仅长度 -1。 | 完整校验日历和时间，非法内部值 22008；合法 PG 值无法保真承载时明确 0A000 并登记兼容缺口，禁止裁到 9999、epoch、NULL 或自动改 1184。当前粗查日期不足，io::Error 不证明 SQLSTATE。 |
+| 规范 timestamp→binary 结果 | 同一列身份及 typmod，八字节网络序微秒或特殊哨兵；NULL 无载荷，不编码为零（零是 PG epoch）。Describe 与 Execute 结果格式切换不改身份。 | 当前经文本再解析的 chrono 路径不证明全域、特殊值与舍入保真；不能以 text 能透传为 binary 可用证据。 |
+
+错误名参照 [PostgreSQL 18 附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)，长度与消息恢复沿共同契约交工作流 7。epoch 输入归 1970-01-01 00:00:00；infinity/-infinity 独立保存；now/today/tomorrow/yesterday 在读入时按事务时间及会话日期归具体值，Prepare 常量和 Bind 参数的读入时机分别验收。相对词、DateStyle 的状态归工作流 5；精确输入分类可对照官方 REL_18_0 [datetime.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/datetime.c)::DecodeDateTime/DateTimeParseError，不能将所有解析失败合为 22P02。
+
+MySQL DATETIME(code=12) 与 TIMESTAMP(code=7) 必须保留 NativeType、Fsp、sql_mode 和会话时区证据：前者按自身日历字段，后者在既有会话/存取转换后可能显示不同字段，不从显示值推断原始瞬间。MySQL→PG 仅在显式桥接策略和来源语义已定、值/精度可保真时输出 1114；缺少会话转换前提明确 0A000，零/非法日期两格式均 22008，不补时区、不暗转 1184。反向 PG→MySQL 显式桥接须校验目标类型范围、Fsp、零日期政策与 TIMESTAMP 会话转换；BC、扩展年份或非有限值无法承载时 0A000，不静默截断，也不修改原 Go/MySQL 错误与告警。显式 text↔timestamp 依上述输入/输出；date→timestamp 的午夜、timestamp→date 的去时间及与 timestamptz 互转的时区前提交转换块/下一类型块确定资格，不因共用数值单位允许隐式 cast。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -966,6 +991,8 @@ MySQL 参数/结果仍按自身 TIME code=11、符号、Fsp、天数及 sql_mode
 [日期类型契约](#日期类型契约)不实现生产表示、转换或 codec；日期字面量语法归工作流 2，日期算术/比较归 4，DateStyle、事务时间和 TimeZone 状态归 5，消息恢复归 7，客户端差分归 8。date 数组和其他时间族在各自块承接，不为扩展年份缺口扩建存储或执行子系统。
 
 [日内时间类型契约](#日内时间类型契约)不实现生产表示或 codec，不增加 timetz、time 数组及完整时区数据库能力。字面量/类型语法归工作流 2，算术/比较归 4，TimeZone 与事务时刻归 5，目录身份归 6，消息状态恢复归 7，客户端差分归 8；本块只交接类型与拒绝契约。
+
+[无时区时间戳契约](#无时区时间戳契约)不实现生产表示、cast、codec 或 MySQL 会话行为；timestamp 数组、完整时间运算和时区数据库不在本块。语法归工作流 2，算术/比较归 4，DateStyle/TimeZone/事务时间归 5，目录身份归 6，消息及错误恢复归 7，真实客户端差分归 8；timestamptz 独立承接，不能因 1114 映射扩大承诺。
 
 ### 验收
 
@@ -1071,6 +1098,18 @@ MySQL 参数/结果仍按自身 TIME code=11、符号、Fsp、天数及 sql_mode
 | TIME-NULL-METADATA | NULL::time(3)、typed NULL 参数、首行/全 NULL、零行、多行和重复 Execute 均保持 1083/8/3；无声明 typmod=-1，time(6) 为 6；参数描述 1083。两种结果格式与 statement/portal Describe 一致，NULL 长度 -1，零点长度 8 的 binary 全零。 | 有局部 binary NULL 输出；参数 tp=6 与固定 typmod=-1 不证明身份/修饰符连续，完整流程未验证。 |
 | TIME-INVALID | 空串/garbage→22007，非法 UTF-8/NUL→22021；binary 0/7 字节→08P01、9 字节→22P03，八字节 -1/86400000001/i64 极值→22008；帧实长不符→08P01。构造内部 12:60:00，text/binary 均拒绝，格式不改变合法性。 | 当前 binary 参数未开放、text 只查小时；所有精确错误和协议恢复未验证。 |
 
+[无时区时间戳契约](#无时区时间戳契约)以下 TS 用例均为**待新增**，运行行为全部**未验证**；成功 SQLSTATE 不适用，精度声明告警另记。按第 1 章固定参考构建、UTF-8、DateStyle、TimeZone、事务时间、p；合法值覆盖 text/binary 参数→text/binary 结果四组合，记录原字节、规范值、NULL、元数据及错误。MySQL 独立记录 code=7/12、Fsp、sql_mode、写入/读取时区和自身错误/告警。
+
+| 能力 ID / 场景 | 可观察目标及反例 | 静态证据及缺口 |
+| --- | --- | --- |
+| TS-EPOCH-FRACTION | 1999-12-31 23:59:59.999999、2000-01-01 00:00:00、同日 .000001 分别为 i64 -1/0/1 网络序；六位微秒逐位保留。输入 .1234567 归 .123457；timestamp(3) 的 .1234→.123、.1235→.124。epoch 两侧 ±500000 微秒收敛 p=0 为 ±1000000，不能按日历秒对负值舍错方向。 | 只有 -1 微秒结果及六位参数局部断言；现有七位拒绝与目标有差距，全部往返未验证。 |
+| TS-CALENDAR-PRECISION | 2024-02-29 合法；2023-02-29、1900-02-29、2024-04-31、月13、分钟60 拒绝 22008；2024-12-31 23:59:59.999999 到 p=0/3 进位 2025-01-01。p=0/6 接受，负 p 拒绝22023，p=7 告警22023归6。构造非法内部日期/时分秒，两格式同拒绝。 | text 粗查与 binary chrono 校验不等域；日期边界、精度及精确错误未验证。 |
+| TS-RANGE-ZERO | 精确有限上下端微秒成功，-211813488000000001、9223371331200000000 拒绝22008；BC/AD无年份0，10000年不裁剪。0000-00-00、0000-01-01、2024-00-01、2024-01-00 均22008；MySQL零/非法日期桥接两格式同拒绝。合法PG值承载不足须0A000并记缺口。 | 年1–9999限制与目标有差距；原date零值测试不证明timestamp零值，全域和桥接未验证。 |
+| TS-ZONE-IDENTITY | TIMESTAMP '2004-10-19 10:23:54+02' 仍为10:23:54/OID1114；已存2024-03-10 02:30:00在UTC、Asia/Shanghai、America/New_York切换后日历字段与binary不变，不能因DST缺口当瞬间纠正。MySQL分别用DATETIME/TIMESTAMP写后切换时区，记录自身结果与桥接前提，缺前提拒绝0A000。 | code7/12映射不足以证明会话隔离；列名含timezone或相同文本不构成1184证据，未验证。 |
+| TS-SPECIAL | -infinity/infinity 两格式分别往返i64最小/最大且非NULL；epoch→1970-01-01 00:00:00。固定事务核对now/today/昨日/明日，在Prepare常量与Bind参数各自读入时转换，不随后续Execute重新解释已存值。 | 当前无特殊值/相对词断言，未验证。 |
+| TS-NULL-METADATA | NULL::timestamp(3)、typed NULL参数、首行/全NULL、零行、多行及重复Execute，ParameterDescription=1114；statement/portal Describe与Execute均1114/8/3，无声明typmod=-1。两格式NULL长度-1，binary epoch长度8全零，空串拒绝；不由首行或格式改型。 | 有局部NULL结果意图；tp6与固定typmod=-1不足以证明身份连续，完整客户端流程未验证。 |
+| TS-INVALID-LENGTH | 空串/garbage→22007，非法UTF-8/NUL→22021；binary非NULL 0/7字节→08P01、9字节→22P03，八字节域外非哨兵→22008，帧实长不符→08P01；错误后恢复由工作流7验收。 | binary参数当前0A000，所有精确错误及恢复未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1100,6 +1139,10 @@ MySQL 参数/结果仍按自身 TIME code=11、符号、Fsp、天数及 sql_mode
 [日内时间类型契约](#日内时间类型契约)候选边界：内部表示先核对独立 time 身份、含 24:00 的微秒日内域、p 与 typed NULL，评估复用 Duration 是否能保真；cast 依赖方言身份并先拒绝负/长 duration，不自动提升；参数 codec 依赖定型 OID/SQL 约束，补 PG 文本与 binary 校验；结果 codec 依赖同一规范值和稳定元数据，共用完整值域检查。这里只描述候选边界与依赖，不生成可执行任务。
 
 日内时间块来源覆盖：步骤 2 的 time 族由四方向表覆盖；步骤 3 的 duration 不等价、精度及转换由 TIME-DURATION/PRECISION 覆盖；步骤 4 的格式、NULL、非法输入和 Describe/Execute 一致性由 TIME-DAY/TEXT-ZONE/NULL-METADATA/INVALID 覆盖。与第 1/2 章及日期块无须改写的冲突；timetz 保持来源范围外。无功能、性能或真实参考端实测。
+
+[无时区时间戳契约](#无时区时间戳契约)候选边界：内部表示先核对无时区身份、微秒有限域/特殊值、p 与 typed NULL 的保真，避免借 MySQL TIMESTAMP 标签发明瞬间；cast 依赖该身份并明确 MySQL 会话前提及 PG 转换资格；参数 codec 依赖已定型 OID、SQL p、DateStyle 和读入时机；结果 codec 依赖同一规范值及稳定 Describe 元数据，两格式共享完整值域校验。这里只给候选边界与依赖，不生成可执行实现任务。
+
+无时区时间戳块来源覆盖：步骤 2 的 timestamp 族由四方向表与有限域覆盖；步骤 3 的精度、零日期及不引入时区由 TS-EPOCH-FRACTION/CALENDAR-PRECISION/RANGE-ZERO/ZONE-IDENTITY 覆盖；步骤 4 的格式、NULL、非法输入、长度与 Describe/Execute 由 TS-SPECIAL/NULL-METADATA/INVALID-LENGTH 覆盖。与第 1/2 章及前序块无须改写的冲突，timestamptz 留下一块承接；无功能、性能或参考端实测。
 
 ## 4. 方言函数与运算符契约
 
