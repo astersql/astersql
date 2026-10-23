@@ -788,6 +788,10 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 独立 [json_binary_test.rs](../pkg/types/json_binary_test.rs)::TestBinaryJSONMarshalUnmarshal 仅断言规范文本往返，TestMarshalFloatInContainer 断言浮点格式化，TestParseBinaryFromString 检查空文档/尾随内容；未见这些用例断言 PG 原文、重复键或超numeric大数保留。[builtin_json.rs](../pkg/expression/builtin_json.rs)::json_null/argument_value/json_unquote 表明函数特定的SQL NULL→JSON null及解引号逻辑，不是通用cast依据。[pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/binary_parameter 无非NULL OID114分支，走0A000；[pg_result.rs](../pkg/server/pg_result.rs)::pg_type 无code245映射。[pg_types_test.rs](../pkg/server/pg_types_test.rs)::unsigned_binary_and_unsupported_types 断言JSON及NULL JSON结果拒绝。三个目标包无doc.go；所有测试均未运行，输入与输出证据均为静态阅读。
 
+[JSONB规范值契约](#JSONB规范值契约)静态基线为 `49bc0d486d`（批次14 JSON文本块已提交，2026-10-23）。经 RustCodeGraph 核对 [json_binary.rs](../pkg/types/json_binary.rs)::ParseBinaryJSONFromString/UnmarshalJSON/appendBinaryNumber/appendBinaryObject/from_serde_value：MySQL BinaryJSON 使用 i64/u64/f64、BTreeMap 和自有类型码/长度表，支持 Opaque/Time/Duration 扩展；它不是 PG jsonb 规范值或 wire。数字字符串最终可能转 f64，对象字典序也不能证明 PG 输出键序一致，深度100/键长限制不能直接作为PG目标限制。沿用原 Go/MySQL 语义，不为 PG 改写这些函数。
+
+独立 [json_binary_test.rs](../pkg/types/json_binary_test.rs)::TestBinaryJSONMarshalUnmarshal 已读断言嵌套、数组、null、浮点的 MySQL 规范文本往返，不证明重复键最后值、任意精度或PG binary版本兼容。[builtin_json.rs](../pkg/expression/builtin_json.rs)::json_null/argument_value 是函数特定 NULL 转换，不是通用 jsonb cast。[pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/binary_parameter 无非NULL OID3802分支；[pg_result.rs](../pkg/server/pg_result.rs)::pg_type 未提供code245映射，独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::unsigned_binary_and_unsupported_types 明确拒绝JSON及NULL JSON结果。三个目标包无doc.go；本轮仅静态阅读，未运行测试，以上均不能标作PG jsonb已支持。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -1063,6 +1067,24 @@ PG `json` 是独立规范身份，保存通过校验的原始JSON文本；不是
 
 官方依据（2026-10-23查阅）：PostgreSQL **18** §8.14 [JSON Types](https://www.postgresql.org/docs/18/datatype-json.html) 定义原文、重复键、Unicode输入与json/jsonb数字域差异；精确codec核对 **REL_18_0** [json.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/json.c) 的 json_in/json_out/json_recv/json_send，输入校验后存text、两格式发送文本；[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat) 确定114及变长。§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 支持格式、长度/NULL及描述字段，[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html) 支持22P02/22021/08P01/0A000分类；精确诊断与阶段仍需参考端采集。来源18.6目标保持不变，REL_18_0静态源码不是18.6实测。
 
+#### JSONB规范值契约
+
+PG `jsonb` 保留独立规范身份，OID3802、typlen=-1、typmod=-1；与OID114原文json、text、MySQL245分别定型。保存分解后的对象、数组、字符串、精确number、boolean和JSON null；不承诺原始空白、对象输入键序、重复键或数字原词法。嵌套各层重复键仅保留最后值，键按解码后的字符串识别；数组顺序和重复元素保留，标量不能强制包成数组。SQL NULL是外部缺值，JSON null是非NULL值；精度修饰符、时区、SQL数组维度/下界不适用此标量族。
+
+number沿PG numeric有限数值域精确保留，禁止借f64或受限MySQL decimal静默舍入；超出PG域应拒绝，PG域内暂不能保真则0A000，不能伪称成功。输出按numeric展开指数并保留小数尾零，例如`1.230e-5`输出`0.00001230`；相同数值的不同scale不代表必须输出同字节。NaN/Infinity不是合法JSON number。固定UTF-8时，Unicode转义解码，正确代理对合并；拒绝`\u0000`、孤立/错误代理对与非法编码。对象键顺序不是用户输入顺序；REL_18_0按UTF-8键字节长度再按字节排序，不能用BTreeMap字典序替代。对参考端输出的字节断言须绑定精确构建，不能将内部排序当成跨版本存储格式。
+
+| 方向 | 目标类型、值/NULL及wire契约 | 现状与拒绝边界 |
+| --- | --- | --- |
+| PG text参数→规范jsonb | OID3802按连接编码接收JSON文本，完整校验、精确数字解析及规范化；-1长度为SQL NULL，`null`为JSON null，空文档非法。 | parameter缺3802分支；未补齐身份与保真前0A000。 |
+| PG binary参数→规范jsonb | OID3802载荷为单字节版本01加JSON文本，无内部容器头；版本后仍做同等语义校验。SQL NULL=-1无版本字节。 | binary_parameter缺3802分支；禁止把MySQL BinaryJSON、PG磁盘布局或无版本json文本直接接受。 |
+| 规范jsonb→PG text结果 | 输出PG规范JSON文本；RowDescription保持3802/-1/-1，格式0；空集、首行NULL和全NULL均不改变身份。 | pg_type无通用JSON出口；禁止回落text OID25。 |
+| 规范jsonb→PG binary结果 | 同一元数据、格式1；载荷01加与text输出对应的JSON文本，长度含版本字节，SQL NULL=-1无载荷。 | 没有通用3802编码；不是直接输出内存字节或json的无前缀binary。 |
+| 显式cast与MySQL桥接 | text/json→jsonb重新校验、规范化；jsonb→text/json输出规范文本，无法恢复原始重复键、空白或键序；NULL保持SQL NULL。隐式转换资格由方言先决策，不能自动接受普通text。 | MySQL扩展类型及不能精确保真的数值必须显式拒绝0A000；不重解释已有Go/MySQL函数；cast资格交后续转换块。 |
+
+非法JSON目标22P02，数值越PG numeric域目标22003，无法表示的Unicode转义目标22P05，非法UTF-8/原始NUL按编码阶段22021；错误必须记录阶段。binary空载荷缺版本及外层帧截断按协议错误08P01验收；仅版本01而没有JSON是22P02，版本00/02/ff必须拒绝。未知版本在REL_18_0的jsonb_recv使用无显式errcode的elog(ERROR)，不能擅自统一成22P03；其诊断/SQLSTATE以精确参考构建采集为准。合法版本后尾随垃圾也必须拒绝，不能截取首个值。协议帧长度与恢复归工作流7；尚未支持的codec沿0A000拒绝，不把该临时错误当作最终PG非法输入诊断。
+
+官方依据（2026-10-23查阅）：PostgreSQL **18** §8.14/§8.14.1 [JSON Types](https://www.postgresql.org/docs/18/datatype-json.html) 支持重复键、数字、Unicode与输入输出目标；精确wire核对 **REL_18_0** [jsonb.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/jsonb.c)::jsonb_in/jsonb_recv/jsonb_out/jsonb_send，明确版本1加文本；[jsonb_util.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/jsonb_util.c)::lengthCompareJsonbString/lengthCompareJsonbPair/uniqueifyJsonbObject 支持键排序及最后值；[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)确定3802及变长。§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 支持格式、长度/NULL与描述字段；[pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c)::pq_getmsgint 支持缺版本读取的协议错误边界，[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持SQLSTATE分类。以上为静态规范依据，18.6仍是来源目标，未核实该版本实际运行行为。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -1092,6 +1114,8 @@ PG `json` 是独立规范身份，保存通过校验的原始JSON文本；不是
 [通用唯一标识契约](#通用唯一标识契约)范围外：UUID生成、版本提取、排序/索引及函数运算归工作流4，目录曝光归工作流6，解析归工作流2，消息恢复归工作流7；UUID数组交基础数组块。本块不新增生成器或更改Go/MySQL UUID函数语义。
 
 [JSON文本契约](#JSON文本契约)范围外：JSON操作、路径、构造/聚合、取值时重复键处理及Unicode解码归工作流4；jsonb规范化交下一块，数组交基础数组块。语法/定型接口归2，编码会话状态归5，目录身份归6，协议错误恢复归7，真实客户端差分归8。本块不实现生产代码、不改Go/MySQL函数、不新建可执行实现任务。
+
+[JSONB规范值契约](#JSONB规范值契约)范围外：运算符、比较/包含、路径、索引、聚合与扩展生态归工作流4或来源范围决策；本块不实现这些能力。JSON原文由前块负责，SQL数组由基础数组块负责；语法定型归2，编码会话配置归5，目录身份归6，协议恢复归7，客户端差分归8。不扩建生产子系统，不生成执行任务。
 
 ### 验收
 
@@ -1255,6 +1279,18 @@ PG `json` 是独立规范身份，保存通过校验的原始JSON文本；不是
 | JSON-TEXT-NULL-METADATA | typed NULL参数、NULL::json、首行/全NULL/零行/多行/重复Execute保持ParameterDescription114及结果114/-1/-1。SQL NULL两格式长度-1，JSON null长度4且字节6e756c6c，JSON字符串`"null"`带引号长度6；格式码切换不改身份。 | 已有NULL JSON拒绝断言不是支持证据，准备全链未验证。 |
 | JSON-TEXT-CAST-BRIDGE | text显式转json校验并保留；反向转text得到原文；不自动把普通text、MySQL245或jsonb冒充原文json。缺有证据桥接时0A000；MySQL独立按原Go契约验证。 | 转换资格及双方言回归未验证，不用输出字符串相同证明类型相同。 |
 
+[JSONB规范值契约](#JSONB规范值契约)以下JSONB场景全部**待新增、未验证**。合法值覆盖text/binary参数×text/binary结果四组合，记录精确PG构建、编码、参数OID/格式、结果OID/长度/typmod/格式、语义值及原始载荷；去掉binary的01前缀后应与同一值的text输出一致。错误记录阶段和SQLSTATE，成功SQLSTATE不适用。
+
+| 场景 | 可观察目标 | 证据状态 |
+| --- | --- | --- |
+| JSONB-DUP-ORDER | `{"aa":1,"b":2,"aa":3}`保留aa=3，固定REL_18_0输出`{"b": 2, "aa": 3}`；嵌套重复键、`"a"`与`"\u0061"`同键最后值；输入换序不改变规范对象。 | 已读MySQL往返测试未断言此PG键序/解码重复键；未验证。 |
+| JSONB-NUMBER | `18446744073709551617`及高精度小数无舍入；`1.230e-5`输出`0.00001230`，`1.00`保留小数尾零；超PG numeric域如`1e200000`拒绝22003，NaN/Infinity及非法数字22P02。PG域内不能承载时明确0A000。 | appendBinaryNumber走f64不足；未验证精度、scale及诊断。 |
+| JSONB-SCALAR-NEST | `{}`、`[]`、嵌套`[null,{"x":[true,"中",1]}]`及独立`1`、`"x"`、false、null均保持种类；`[2,1,2]`保持顺序和重复元素。 | TestBinaryJSONMarshalUnmarshal仅MySQL意图；PG往返未验证，深度资源边界需按参考端测，不能照搬100。 |
+| JSONB-UNICODE | `"中"`与`"\u4e2d"`输出同值，`"\uD83D\uDE00"`正确合并；`"\u0000"`及孤立代理对22P05；`"\uZZZZ"`22P02；非法UTF-8/原始NUL在编码阶段22021。 | PG类型输入比json文本严格；阶段/诊断均未实测。 |
+| JSONB-NULL-METADATA | SQL NULL长度-1，JSON null的text为`null`、binary为`01 6e 75 6c 6c`；空集/首行NULL/全NULL、重绑定均保持参数3802与结果3802/-1/-1，Describe/Execute一致，不变text。 | unsigned_binary_and_unsupported_types仅证明当前JSON结果拒绝；typed NULL未验证。 |
+| JSONB-WIRE-INVALID | binary长度0缺版本拒绝08P01；仅01无文档22P02；00/02/ff版本拒绝并采集参考SQLSTATE；01后非法/截断JSON、多根值、尾随垃圾22P02；声明长度超可用帧08P01。 | 当前无3802 codec；不能用0A000替代最终参考诊断，所有长度/版本场景未验证。 |
+| JSONB-CAST-BRIDGE | text/json显式转jsonb规范化；含json可保存但jsonb不能接受的转义/超域数字在转换时拒绝；反向json/text只得规范文本；MySQL opaque/time扩展不自动映射。 | 方言cast资格、MySQL不变回归和PG错误阶段未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1304,6 +1340,10 @@ UUID块来源覆盖：步骤2由规范身份及四方向表覆盖；步骤3的�
 [JSON文本契约](#JSON文本契约)候选边界：内部表示先验证独立json身份、原文载体与typed NULL连续性，保留现有MySQL BinaryJSON；cast依赖该身份及方言资格；参数codec依赖已定型114与编码上下文，校验但不重建；结果codec依赖同一原文和稳定Describe元数据，两格式直接输出文本。这里只描述边界和依赖，不生成实现任务。
 
 JSON文本块来源覆盖：步骤2的JSON族由原文身份与五方向表覆盖；步骤3的精度/不等价转换由JSON-TEXT-NUMBER/CAST-BRIDGE覆盖，时区与数组维度不适用于本标量族；步骤4由四格式组合及PRESERVE/SCALAR/UNICODE/INVALID/NULL-METADATA覆盖。与第1章证据规则、第2章语法交接和前序类型身份契约一致，无需改写其他章节；jsonb独立承接，不宣称功能、性能或18.6差分通过。
+
+[JSONB规范值契约](#JSONB规范值契约)候选边界：内部表示先确立独立jsonb身份、精确numeric及scale、解码字符串、对象去重和typed NULL；cast依赖该表示和方言转换资格，复用json原文校验入口时仍执行jsonb严格校验。参数codec依赖定型3802与编码上下文，binary先验版本再解析；结果codec依赖同一规范值、参考输出与稳定元数据，两格式共享输出语义。这里只描述边界及依赖，不创建代码任务。
+
+JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；步骤3由NUMBER/UNICODE/CAST-BRIDGE覆盖精度与非等价转换，时区及SQL数组维度不适用；步骤4由四格式组合及DUP-ORDER/SCALAR-NEST/NULL-METADATA/WIRE-INVALID覆盖。沿第1章证据规则、第2章语法交接及批次14原文责任，无跨块冲突；全部PG能力仍待实现取证，不宣称功能或性能通过。
 
 ## 4. 方言函数与运算符契约
 
