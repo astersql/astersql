@@ -732,6 +732,10 @@ PG 目标规则：省略 pg_catalog 时隐式优先于显式路径；显式列�
 
 [整数与无符号边界](#整数与无符号边界)取证基线为 `01ce26d145`。实际读取 `pkg/server/pg_result.rs::pg_type/value_text/value_binary`、`pkg/server/pg_extended.rs::parameter/binary_parameter/Extended::process`、`pkg/types/datum.rs::KindInt64/KindUint64/Datum` 与 `pkg/types/convert.rs::IntegerUnsignedUpperBound/IntegerSignedUpperBound/IntegerSignedLowerBound/ConvertIntToInt/ConvertUintToInt/ConvertIntToUint`。两个包均无 doc.go。独立测试已读 `pkg/server/pg_types_test.rs::unsigned_binary_and_unsupported_types/pg_binary_native_results/common_type_oids_and_values`、`pkg/server/pg_extended_test.rs::text_parameters_are_typed_and_reject_loss` 和 `pkg/types/convert_test.rs::test_convert`；它们是断言意图，均未运行。Datum 区分 i64/u64 承载，但不能单靠值盒确定 int2/int4/int8 声明身份。
 
+[精确数值契约](#精确数值契约)取证基线为 `7fe5fefab8`（本轮只改文档）：[mydecimal.rs](../pkg/types/mydecimal.rs) 的 MyDecimal、fit_unscaled、FromString、Round、ToBin/FromBin，与独立 [mydecimal_test.rs](../pkg/types/mydecimal_test.rs) 的 TestRoundWithHalfEven、TestRoundWithTruncate、TestToBinFromBin；HalfEven 名称实际调用 ModeHalfUp，不能按名字推定银行家舍入。MyDecimal 以 9 个 base-10^9 word 分别容纳整数和小数，容量按两部分各自向上取整占 word，不能简单承诺任意 81 位组合；BigInt 是运算中间量，不表示存储域无限。MAX_DECIMAL_SCALE=30 用于特定编码/运算限制，不是所有方法统一的 PG scale 上限。
+
+cast 另见 [builtin_cast.rs](../pkg/expression/builtin_cast.rs) 的 to_decimal、parse_decimal、produce_decimal：使用 rust_decimal::Decimal，解析失败可经浮点回退，负 scale 被 max(0)，超域产生 warning 并裁剪；常量 MAX_DECIMAL_WIDTH=65 不能证明实际能精确承载 65 位。参数见 [pg_extended.rs](../pkg/server/pg_extended.rs) 的 parameter/binary_parameter；结果见 [pg_result.rs](../pkg/server/pg_result.rs) 的 pg_type、value_text、value_binary、encode_formats。独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs) 的 text_parameters_are_typed_and_reject_loss 仅含 12.340 接受及 12bad 拒绝意图；[pg_types_test.rs](../pkg/server/pg_types_test.rs) 有 DECIMAL(8,2)→OID 1700/text 12.34 断言及 U64 文本入口。均未运行，不证明 PG 大精度、typmod、特殊值或 binary 支持；上述三个包均无 doc.go。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -816,6 +820,22 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 
 官方依据（2026-10-23）：PostgreSQL **18** §8.1.1 [Integer Types](https://www.postgresql.org/docs/18/datatype-numeric.html#DATATYPE-INT) 定义三种 signed 域及越界错误；§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 定义 NULL、参数 OID 与列描述。精确输入和 codec 核对官方 **REL_18_0** [int.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c) 的 int2in/int4in、recv/send、int4pl、int2um/int4um，以及 [int8.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int8.c) 的 int8in/recv/send、int8pl/int8um 和整型窄化；[numutils.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/numutils.c) 的 pg_strtoint16_safe/32_safe/64_safe 区分语法和范围错误；[pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c) 与 [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/tcop/postgres.c) 的读取/剩余载荷检查支持二进制长度错误目标。错误名称见 PostgreSQL 18 [附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)。OID 沿前块 pg_type.dat 依据；MySQL 域来自本仓库上下界函数及 test_convert，不以 MySQL 类型名推导 PG 等价。18.6 仍仅为来源目标，未运行该补丁参考端。
 
+#### 精确数值契约
+
+numeric 与 decimal 是 PG 同一精确数值类型（OID 1700、typlen -1），区别于 float4/float8。目标须保存有限精确值、显示 scale、声明 precision/有符号 scale 及特殊值身份；只扩充 OID 或透传字符串不足以证明支持。现有 MyDecimal 与 cast 的 Decimal 容量/错误策略不同，须先验证可保真子域，再决定规范表示补充；不得将 PG 域缩成 MySQL DECIMAL 或用 f64 中转。尚不能承载的合法 PG 域应明确报项目不支持 0A000，记录兼容缺口；PG 自身域外才是 22003，不能混淆。
+
+| 方向 | 值、类型、NULL 与精度目标 | 错误、wire 元数据及当前差距 |
+| --- | --- | --- |
+| PG 声明/推导 → 规范身份 | numeric(p,s) 的 p=1…1000，s=-1000…1000，可 s>p；numeric(p) 为 s=0；裸 numeric 不强制 scale，有限域上限为小数点前 131072 位、后 16383 位。NULL 保留目标 numeric 身份。 | 无约束 typmod=-1；有约束为 `((p<<16) | (s & 0x7ff))+4`，解码 s 须 11 位符号扩展。非法声明目标 22023。ParameterDescription 仅含 OID，不传 p/s；上下文及结果描述保存修饰符。现有结果一律 -1，不能伪称 constrained numeric。声明语法交工作流 2。 |
+| text 参数/文本显式转换 → numeric | OID 1700 下完整解析十进制与指数输入，允许规范所容许的符号/空白；空串、12bad 非法，不能接受数字前缀或回退零。无约束 12.340 保留显示 scale；有约束先舍入再检查整数域。NULL 长度 -1，无载荷；空载荷不是 NULL。 | 非法语法 22P02，非法字符编码 22021，数值范围/舍入后超域 22003。parameter 当前调用 FromString 后保留原字节，所有解析错误映为 22P02；不是完整 PG 输入/范围分类证据。 |
+| binary 参数 → numeric | 网络序 16 位字段依次为 ndigits（unsigned 计数）、weight（signed）、sign、dscale，后随 ndigits 个 base-10000 digit（0…9999）；有限值为符号乘各 digit×10000^(weight-i)。长度应为 8+2×ndigits；NULL 在外层长度 -1 表示。 | sign 为 0000/4000/C000/D000/F000（正/负/NaN/+∞/-∞），dscale 为 0…16383；它是显示 scale，不是带符号的声明 scale。接收有限数先截去 dscale 隐藏位，再应用 typmod 舍入/范围。非法 sign/digit/scale 22P03；读取不足 08P01，额外载荷 22P03（沿前块消息边界）。当前非 NULL 1700 无 binary 分支，报 0A000；NULL 能走公共分支不证明身份连续。 |
+| 规范 numeric/MySQL DECIMAL/U64 → PG text/binary 结果 | Decimal 原身份保留，U64 沿前块输出无约束 numeric；text 精确输出十进制及应保留的小数零，binary 转换 base-10^9 到 base-10000，不能发送 MyDecimal::ToBin 格式或 ASCII。两格式解码后的值与显示 scale 一致，不要求载荷相同。NULL 为 DataRow 长度 -1。 | OID 1700/typlen -1，typmod 随声明或表达式定型，text/binary 不改变类型；零行、全 NULL 同样 Describe。value_text 当前透传值文本，未校验 numeric 域；value_binary 无 1700；encode_formats 固定 typmod -1。未开放 codec 明确拒绝目标 0A000，不降为 float8/int8，io::Error 到 SQLSTATE 尚未验证。 |
+| numeric → 目标精度/整数/共享 DECIMAL | precision/scale coercion 的半值远离零；负 scale 在小数点左舍入，s>p 限制小数点后前导零。numeric→PG signed integer 先按整数舍入再检查对应域；整数→numeric 精确保值。typed NULL 转为目标类型 NULL。 | 正负超域均 22003，不裁剪、wrap 或仅警告成功；如 99.95/-99.95→numeric(3,1) 均因进位超域失败。截断只用于显式截断语义或 binary 接收 dscale 规则，不能代替 cast 舍入。共享 unsigned 的有限无小数桥接仍沿前块；MySQL warning/裁剪原行为独立保留。显式/赋值/隐式资格交本章转换块，运算重载交工作流 4。 |
+
+特殊值单列：目标规范身份须区分 NaN、Infinity、-Infinity 与 SQL NULL；NaN 可进入 constrained numeric，无穷只可进入无约束 numeric，进入有限精度声明目标 22003。输出 text 使用 NaN/Infinity/-Infinity，binary 使用上述专属 sign。MyDecimal 的符号与有限 word 布局没有特殊值标记；Value::Float 的特殊值输出分支或 Value::Text 透传不能证明 numeric 特殊值已可表示、转换或求值。支持前明确 0A000，禁止把它当普通字符串成功；特殊值比较/算术由工作流 4 承接。
+
+官方依据（2026-10-23）：PostgreSQL **18** §8.1.2 [Arbitrary Precision Numbers](https://www.postgresql.org/docs/18/datatype-numeric.html#DATATYPE-NUMERIC-DECIMAL) 支持精度、scale、舍入和特殊值目标。精确布局、typmod、错误及转换以官方 **REL_18_0** [numeric.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/numeric.c) 的 make_numeric_typmod/numeric_typmod_scale、numerictypmodin、numeric_in/out、numeric_recv/send、apply_typmod/apply_typmod_special、numeric_int4 为据；NULL/描述与外层载荷沿前块 §54.7、pqformat.c/postgres.c 来源。以上是规范和源码阅读证据，非参考端实测；来源指定的 18.6 补丁仍未验证。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -823,6 +843,8 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 [布尔类型契约](#布尔类型契约)不实现存储或类型系统，不改 Go/MySQL 真值行为；不扩展为 bool 数组、完整 cast 矩阵、运算符/聚合或协议状态机。声明解析、运算、消息恢复分别交工作流 2、4、7；本块只固定类型与 codec 的可观察交接。
 
 [整数与无符号边界](#整数与无符号边界)不实现算术、cast 或 numeric codec，不扩写聚合、serial/identity、oid、数组及完整类型推断。工作流 2 提供声明/转换语法；4 拥有重载求值；7 拥有帧校验、错误响应和恢复；8 采集客户端与双方言证据。MySQL 原行为不因 PG 目标更改。
+
+[精确数值契约](#精确数值契约)不实现大数表示、cast 或 codec，不改 MySQL/Go 裁剪及告警行为；不扩大到算术/聚合、索引排序、numeric 数组或协议状态机。工作流 2 接声明语法，4 接数值运算与特殊值比较，7 接消息/错误响应及恢复，8 接客户端差分。
 
 ### 验收
 
@@ -860,6 +882,17 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 | INT-NULL-METADATA | 每个 signed 类型、各 unsigned 提升后类型含 typed NULL 参数、首行 NULL、全 NULL、空结果、混合 min/max 行；ParameterDescription 输入身份及 statement/portal Describe/Execute 结果 OID/typlen/typmod 稳定，格式选择不改变类型。 | NULL 参数现仅 is_null 断言，不证明类型连续性；U64 的零值与最大值均须保持 1700/-1/-1，全部待新增、未验证。 |
 | INT-CAST-ARITH | 所有 signed 宽度间域内 cast 保值，窄化越界拒绝；负值转 unsigned 不 wrap。int4 最大值加一/各 signed 最小值取负拒绝 22003，先显式转足够宽类型后的可表示结果成功；NULL 不改结果类型，溢出不动态改 OID。 | 共享转换测试只证明 MySQL 意图；PG 重载、显隐式资格、错误码与元数据全链未验证，算术执行交工作流 4。 |
 
+[精确数值契约](#精确数值契约)以下入口均为**待新增**，所有运行行为未验证；每项分别采集 text/binary、值与 scale、OID/typlen/typmod、NULL 和 SQLSTATE，成功项 SQLSTATE 不适用。
+
+| 能力 ID / 场景 | 可观察目标和反例 | 已读证据与验证缺口 |
+| --- | --- | --- |
+| NUM-PRECISION | numeric(3,1)：±99.9 成功；±99.94 舍入为 ±99.9；±99.95 拒绝 22003。p=1/1000、s=-1000/1000 声明边界成功，p=0/1001、s=±1001 拒绝 22023；numeric(3,5) 的 .00999 成功，.009995 进位超域拒绝。 | MyDecimal 测试有 word 边界，不证明 PG 声明域；全部 PG 断言未验证。 |
+| NUM-ROUND | ±1.25→numeric(3,1) 为 ±1.3；±1.249 为 ±1.2；numeric(2,-3) 的 99499/-99499→99000/-99000，99500/-99500 拒绝 22003。±1.5→int4 为 ±2；整数上下界附近舍入后超域拒绝。 | TestRoundWithHalfEven 有正负半值/负 scale，TestRoundWithTruncate 有另一模式；均未运行，不证明 PG cast。 |
+| NUM-LARGE | 无约束 numeric 接收 18446744073709551615、82 位全 9 整数及 1000 位有限整数，保持精确；按 PG 实现极限验证小数点前 131072/131073 位和后 16383/16384 位的成功/22003。共享表示不足须明确 0A000 并记为兼容缺口。 | U64 仅文本断言；大精度表示、两格式往返、极限全部未验证，禁止 float8 回退。 |
+| NUM-TEXT-SPECIAL | 12.340、1.25e2 精确；空串、12bad、NaNx 拒绝 22P02；非法编码 22021。NaN 保持 numeric，±Infinity 在无约束成功、constrained 拒绝 22003；当前缺表示时明确 0A000。 | 参数已有 12.340/12bad 意图；其余未验证，字符串透传不能验收特殊值。 |
+| NUM-BINARY | 12.340 的字段为 (2,0,0000,3;12,3400)，结果 scale=3；U64 最大值两格式无损。构造 (2,0,0000,2;12,3456) 接收为 12.34，不能误按普通 typmod 舍入为 12.35。负值、零、特殊 sign 分别往返；非法 digit=10000/sign/scale、短载荷/额外字节分别按方向表拒绝。 | 当前 numeric binary 无实现；MyDecimal TestToBinFromBin 是 MySQL 格式，不能替代此项，全部未验证。 |
+| NUM-NULL-METADATA | NULL::numeric(8,2)、typed NULL 参数、首行 NULL/全 NULL、空结果及多行不同值，均保持 1700/-1 与预定 typmod；numeric(8,2) typmod=524294，无约束/U64 为 -1。statement/portal Describe 与 Execute 身份一致，参数 OID=1700；负 scale typmod 往返不误读成正 scale。 | 既有 DECIMAL(8,2) 仅 text/OID 意图；typmod、NULL、Prepare 全链及双方言隔离未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -871,6 +904,8 @@ numeric typmod 目标按官方 `make_numeric_typmod` 的精度高 16 位、scale
 布尔块来源覆盖：来源步骤 2 的 bool 族由方向表覆盖；步骤 3 的 bool 显式/隐式边界由转换段及 BOOL-CAST 覆盖；步骤 4 的 text/binary、NULL、非法输入、元数据一致性由 BOOL-TEXT/BINARY/NULL-DESCRIBE 覆盖。与前块的“不能自动将非零整数视为 bool”一致，显式 int4 cast 和 OID 16 单字节接收是有来源的限定场景；未发现需改动第 1/2 章或来源任务的冲突。
 
 [整数与无符号边界](#整数与无符号边界)候选边界：内部表示先验证声明宽度、signed/unsigned 与 typed NULL 跨 Prepare/Execute 保留；cast 依赖身份及方言上下文，独立核对窄化与负值；参数 codec 依赖已定型 OID，补输入语法及错误分类；结果 codec 依赖稳定结果元数据，U64 binary 另依赖 numeric 契约。本块不生成可执行实现任务。来源步骤 2 的整数族由值域表及方向表覆盖，步骤 3 的 unsigned/溢出由桥接及算术交接覆盖，步骤 4 的格式/NULL/非法输入/元数据由 INT-RANGE/UNSIGNED/CODEC/NULL-METADATA/CAST-ARITH 覆盖。未发现与前序布尔限定场景或第 1/2 章冲突；功能、参考端与性能均未实测。
+
+[精确数值契约](#精确数值契约)候选边界：先核定 MyDecimal 与 cast Decimal 可保真域及规范身份的 precision/scale/特殊值缺口，再决定内部表示；cast 依赖该表示和方言资格，保留 PG 舍入/错误及 MySQL 原行为分流；参数 codec 依赖已定型 OID 和上下文 typmod，结果 codec 依赖同一身份及稳定 Describe 元数据。这里只给边界与依赖，不生成可执行任务。来源步骤 2 的 numeric 族由身份与方向表覆盖，步骤 3 的精度溢出/cast 由 NUM-PRECISION/ROUND 覆盖，步骤 4 的格式、非法输入、NULL 与元数据由 NUM-TEXT-SPECIAL/BINARY/NULL-METADATA 覆盖；NUM-LARGE 承接前块 U64 与更大精度差距。未发现前块或第 1/2 章冲突；本轮无功能、性能及参考端实测。
 
 ## 4. 方言函数与运算符契约
 
