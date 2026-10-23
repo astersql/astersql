@@ -792,6 +792,10 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 独立 [json_binary_test.rs](../pkg/types/json_binary_test.rs)::TestBinaryJSONMarshalUnmarshal 已读断言嵌套、数组、null、浮点的 MySQL 规范文本往返，不证明重复键最后值、任意精度或PG binary版本兼容。[builtin_json.rs](../pkg/expression/builtin_json.rs)::json_null/argument_value 是函数特定 NULL 转换，不是通用 jsonb cast。[pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/binary_parameter 无非NULL OID3802分支；[pg_result.rs](../pkg/server/pg_result.rs)::pg_type 未提供code245映射，独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::unsigned_binary_and_unsupported_types 明确拒绝JSON及NULL JSON结果。三个目标包无doc.go；本轮仅静态阅读，未运行测试，以上均不能标作PG jsonb已支持。
 
+[基础数组契约](#基础数组契约)静态基线为 `021e3ceeab`（批次15已提交，2026-10-23）。经 RustCodeGraph 阅读 [datum.rs](../pkg/types/datum.rs)::Datum 及 Kind 常量：现有标量盒、KindInterface、MySQL JSON 和 float32 vector 不提供通用 PG 数组的元素身份、形状与下界契约，不能以任意载荷存在推导支持。[pg_result.rs](../pkg/server/pg_result.rs)::CatalogColumnType/wire_type/pg_type/value_text/value_binary/binary_array/encode_formats 有目录专用数组 OID；binary_array 从目录文本生成一维载荷，普通数组下界固定1，vector下界0，拒绝嵌套，不能承接任意下界或多维 SQL 值。value_text 对文本直接输出，不构成通用数组校验器。
+
+[pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process 的普通 Parse 白名单不含数组OID；parameter/binary_parameter 没有非NULL通用数组解码，NULL参数先转code6也不证明typed NULL身份保真。已读独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::pg_binary_native_results 的目录空int2数组（ndim=0、元素OID21）及int2vector（下界0）字节断言、catalog_char_and_acl_wire_types 的ACL NULL/OID断言；后者不是ACL非NULL二进制或普通数组支持证据。[pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes 只断言目录对象OID区间/唯一性，未覆盖元素/数组OID或SQL数组往返。目标包无doc.go；这些测试均未运行，本轮仅静态取证。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -1085,6 +1089,28 @@ number沿PG numeric有限数值域精确保留，禁止借f64或受限MySQL deci
 
 官方依据（2026-10-23查阅）：PostgreSQL **18** §8.14/§8.14.1 [JSON Types](https://www.postgresql.org/docs/18/datatype-json.html) 支持重复键、数字、Unicode与输入输出目标；精确wire核对 **REL_18_0** [jsonb.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/jsonb.c)::jsonb_in/jsonb_recv/jsonb_out/jsonb_send，明确版本1加文本；[jsonb_util.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/jsonb_util.c)::lengthCompareJsonbString/lengthCompareJsonbPair/uniqueifyJsonbObject 支持键排序及最后值；[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)确定3802及变长。§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 支持格式、长度/NULL与描述字段；[pqformat.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/libpq/pqformat.c)::pq_getmsgint 支持缺版本读取的协议错误边界，[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持SQLSTATE分类。以上为静态规范依据，18.6仍是来源目标，未核实该版本实际运行行为。
 
+#### 基础数组契约
+
+基础数组是带元素类型身份的矩形多维值，保存维数、各轴长度和有符号下界、按最后一维变化最快排序的元素及逐元素NULL标记；数组本身SQL NULL另存。`integer[]`与`integer[][]`同属int4数组类型，维数属于值，不形成不同OID，声明大小不充当运行时约束。基础范围采用前述内建标量族，逐族只有身份、输入输出与保真已获证后才开放其数组；不能因标量存在即承诺整个数组族。int4/数组OID为23/1007，text为25/1009，bool为16/1000，bytea为17/1001，int2为21/1005，int8为20/1016，json为114/199；其他族开放前核对官方目录，不能按OID加减推算。RowDescription使用数组OID、typlen=-1；本块无修饰例typmod=-1，有修饰元素按该族typmod传递，不编码维数。内部头的OID是**元素OID**，不能填数组OID。
+
+默认下界1；`[0:1][-2:-1]={{1,2},{3,4}}`保存shape=[2,2]、lower=[0,-2]，不能重排或改为从1起。空数组规范化为零维、零元素，text为`{}`、binary头ndim=0；不要求保留输入零长度轴的虚构下界。它仍有元素类型且不等于数组NULL或含NULL的非空数组。NULL数组无形状载荷；`{NULL}`是一元素非NULL数组。同一轴长度须一致，不能补NULL修复参差形状。REL_18_0最大维数6；维数、维长乘积、边界加法和分配大小须检查溢出，不能截断。有类型空数组不从首元素推断，裸空构造的定型交第2章和转换块。精度、舍入、时区和特殊值沿元素族契约，数组容器不额外降低精度；容器本身无数值精度/时区。
+
+| 方向 | 类型、值、NULL与元数据目标 | 现状差距与错误责任 |
+| --- | --- | --- |
+| PG text参数→规范数组 | 声明数组OID确定元素输入规则及typmod；花括号、可选`[l:u]...=`前缀共同确定矩形形状；外层长度-1是数组NULL。 | 普通Parse白名单无数组；不能绕为text/JSON成功。未补齐保真前0A000；输入词法/形状与元素错误分层报告。 |
+| PG binary参数→规范数组 | 按下述网络字节序头、维度和元素载荷读取；外层-1无头，内层-1仅对应元素NULL。数组OID决定期望元素OID。 | binary_parameter缺通用分支；目录接线不可当通用参数入口。非法头、类型与长度按下述分类拒绝。 |
+| 规范数组→PG text结果 | 由规范形状生成花括号和必要下界前缀，逐元素调用该族text输出再数组转义；格式0，稳定数组OID/-1/typmod。 | 现有value_text透传目录字符串不足；空集、首行NULL、全NULL均不得降为text25。 |
+| 规范数组→PG binary结果 | 同一规范值按维度/下界输出头并逐元素使用元素binary编码；格式1，元数据与text一致，数组NULL外层-1。 | binary_array仅目录一维/固定下界；不能先扁平为目录字符串再丢失形状、下界、元素NULL。 |
+| cast/推导与MySQL桥接 | 数组共同元素类型及隐式/显式资格先按PG决策；允许的逐元素cast保留形状、下界和NULL，失败不返回部分转换结果；元素精度/溢出沿前述类型族。 | text显式输入按目标数组解析；JSON数组、MySQL typed array/vector、目录vector不自动等价。缺保真明确0A000，Go/MySQL原行为不变；完整cast资格由后续转换块细化。 |
+
+文本codec固定UTF-8、`array_nulls=on`作为基本验收前提（其他会话配置先明示支持或拒绝，状态归工作流5）。未引用且未转义的NULL不区分大小写，表示元素NULL；`"NULL"`、转义形成的NULL字样是字符串，`""`是空字符串。含分隔符、花括号、双引号、反斜线、空白或NULL字样的元素输出须双引号包围，内部双引号/反斜线用反斜线转义；逐元素按类型的typdelim处理，基础例用逗号，不把所有PG类型都假定为逗号。SQL字符串字面量的词法转义与数组文本转义是两层：Bind载荷不再做SQL反转义。引号不闭合、残缺转义、缺元素、尾逗号、参差子数组及维度前缀不匹配拒绝22P02；元素非法文本/溢出分别沿元素族（如int4非法22P02、超域22003），非法UTF-8按编码阶段22021。完整ARRAY构造语法归工作流2，其非矩形错误阶段不能直接套用文本输入诊断。
+
+二进制codec使用网络字节序：Int32 ndim、Int32 flags（0或1）、UInt32 element_oid；随后每维Int32 length及Int32 lower；再按行主序为每个元素输出Int32 byte_length及该元素binary载荷。内层length=-1为NULL、0可为合法空变长元素，无元素分隔符、内存对齐填充或PG磁盘varlena头。输出flags反映是否含NULL；输入flags仅允许0/1，不能臆加“flags=0必须无NULL”的参考端拒绝条件。非空int4数组`{1,NULL}`的字段序列为`1,1,23; 2,1; 4,00000001; -1`；空int4数组为`0,0,23`，仍非零字节载荷。
+
+负ndim/非法flags目标22P03，超过6维54000；内建元素OID与期望不符42804；非法维长、维度乘积/下界溢出按参考端限制错误验收（REL_18_0 ArrayGetNItems/ArrayCheckBounds 的精确分支需采集）。元素长度<-1、声明元素长度大于剩余载荷或元素未消费完整目标22P03；不足以读取Int32头/长度的截断与外层Bind/DataRow帧不完整区分，协议读失败目标08P01，元素内部错误沿该族，不能一概归22P03。尾随垃圾须拒绝，精确阶段/码按参考构建采集；禁止忽略超出维长乘积的元素。尚未开放的合法族/codec以0A000拒绝，该临时门禁不能替代最终非法输入诊断。错误响应和Sync恢复交工作流7。
+
+官方依据（2026-10-23查阅）：PostgreSQL **18** §8.15.1/.2/.6 [Arrays](https://www.postgresql.org/docs/18/arrays.html) 支持类型/维数、形状、引用、NULL及下界规则；精确格式以 **REL_18_0** [arrayfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/arrayfuncs.c)::array_in/array_out/array_recv/ReadArrayBinary/array_send 固定空数组规范化、头字段、元素类型/长度和错误分支，[array.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/utils/array.h) 固定MAXDIM=6及行主序，[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)固定上述元素/数组OID配对。§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html)支持外层格式、NULL长度与描述元数据，[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持SQLSTATE名称。源码tag与大版本手册仅定义目标，18.6仍是来源指定基线，未在该补丁版本运行验证。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -1116,6 +1142,8 @@ number沿PG numeric有限数值域精确保留，禁止借f64或受限MySQL deci
 [JSON文本契约](#JSON文本契约)范围外：JSON操作、路径、构造/聚合、取值时重复键处理及Unicode解码归工作流4；jsonb规范化交下一块，数组交基础数组块。语法/定型接口归2，编码会话状态归5，目录身份归6，协议错误恢复归7，真实客户端差分归8。本块不实现生产代码、不改Go/MySQL函数、不新建可执行实现任务。
 
 [JSONB规范值契约](#JSONB规范值契约)范围外：运算符、比较/包含、路径、索引、聚合与扩展生态归工作流4或来源范围决策；本块不实现这些能力。JSON原文由前块负责，SQL数组由基础数组块负责；语法定型归2，编码会话配置归5，目录身份归6，协议恢复归7，客户端差分归8。不扩建生产子系统，不生成执行任务。
+
+[基础数组契约](#基础数组契约)不实现生产表示、cast或codec，不扩展自定义/复合/domain数组、下标/切片、比较/运算、索引、聚合或完整存储子系统；目录vector和ACL编码保留独立责任，不推广为普通数组。构造语法归工作流2，运算归4，array_nulls/编码状态归5，目录身份归6，消息及恢复归7，真实客户端差分归8。只定义本章类型与codec交接，不修改Go/MySQL行为。
 
 ### 验收
 
@@ -1291,6 +1319,19 @@ number沿PG numeric有限数值域精确保留，禁止借f64或受限MySQL deci
 | JSONB-WIRE-INVALID | binary长度0缺版本拒绝08P01；仅01无文档22P02；00/02/ff版本拒绝并采集参考SQLSTATE；01后非法/截断JSON、多根值、尾随垃圾22P02；声明长度超可用帧08P01。 | 当前无3802 codec；不能用0A000替代最终参考诊断，所有长度/版本场景未验证。 |
 | JSONB-CAST-BRIDGE | text/json显式转jsonb规范化；含json可保存但jsonb不能接受的转义/超域数字在转换时拒绝；反向json/text只得规范文本；MySQL opaque/time扩展不自动映射。 | 方言cast资格、MySQL不变回归和PG错误阶段未验证。 |
 
+[基础数组契约](#基础数组契约)以下ARRAY场景全部**待新增、未验证**；SQL构造须先满足第2章交接，codec可直接使用带数组OID的`SELECT $1 AS v`参数场景。每个合法值覆盖text/binary参数×text/binary结果四组合，记录精确参考构建、编码、array_nulls、原始载荷、参数及结果OID/typmod/格式、形状/下界/元素NULL。成功SQLSTATE为“不适用（成功）”；错误记录阶段、实际SQLSTATE和协议恢复，不能以目录测试替代。
+
+| 场景ID | 可观察目标与边界 | 当前证据状态 |
+| --- | --- | --- |
+| ARRAY-SHAPE | int4[] `{1,2}`保存一维[2]/下界[1]；`{{1,2},{3,4}}`保存二维[2,2]/[1,1]；顺序1,2,3,4，二者结果OID1007，维数不改变类型。 | 目录编码仅一维；普通SQL/参数四组合未验证。 |
+| ARRAY-LOWER | int4[] `[0:1][-2:-1]={{1,2},{3,4}}`四组合往返保留shape/lower；text仍带维度前缀，binary每维下界不改1。 | 现有binary_array固定下界不能作保真证据；未验证。 |
+| ARRAY-EMPTY-NULL | `{}`为非NULL零维空int4数组、OID1007、binary为12字节头0/0/23；NULL::integer[]外层-1；`{NULL}`为一维[1]、一个元素-1；三者不同。空集/首行NULL/全NULL及重绑定Describe/Execute均保持1007/-1/-1。 | pg_binary_native_results只断言目录空int2数组及NULL外层；通用typed NULL和稳定元数据未验证。 |
+| ARRAY-TEXT-ESCAPE | text[] `{"NULL",NULL,"","a,b","a\\b","a\"b","中"}`区分NULL字样、NULL元素、空串及转义；小写未引用null为NULL；引用/反斜线不丢失，不按逗号简单切割。 | 通用输入、输出引用及四组合未验证；固定array_nulls=on。 |
+| ARRAY-TEXT-INVALID | int4[] `{{1,2},{3}}`、`[0:2]={1,2}`、`{1,}`、未闭合引号/转义均22P02；`{x}`22P02、`{2147483648}`22003；不补NULL、不截断。 | 输入codec缺失；文本路径诊断未验证，ARRAY构造路径另采阶段。 |
+| ARRAY-WIRE-TYPE | 外层1007配头元素23成功；改头为内建25拒绝42804，即使空数组也校验元素身份；外层误报1009不得依值猜为int4[]。 | pg_oid_test只目录对象OID唯一性；数组OID配对及拒绝未验证。 |
+| ARRAY-WIRE-LENGTH | ndim=-1、flags=2、元素length=-2/超剩余/未消费完整拒绝22P03；缺头/长度字段按08P01边界；维长负值、乘积/下界溢出、7维54000、元素数不符和尾随垃圾分别记录参考诊断。flags=0且NULL元素单列参考接受性，输出应规范反映NULL。 | 未验证；不得让长度错误越过载荷边界，未采集码的分支不冒充通过。 |
+| ARRAY-ELEMENT-CAST | int4[]→int8[]在允许显式转换下保留shape/lower/NULL、结果1016且头20；超域/非法元素按元素契约失败，无部分结果；同值text[]不能保留1007冒充原身份。 | cast资格及元素精度/时区继承待转换块；PG往返与MySQL隔离回归未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1344,6 +1385,10 @@ JSON文本块来源覆盖：步骤2的JSON族由原文身份与五方向表覆�
 [JSONB规范值契约](#JSONB规范值契约)候选边界：内部表示先确立独立jsonb身份、精确numeric及scale、解码字符串、对象去重和typed NULL；cast依赖该表示和方言转换资格，复用json原文校验入口时仍执行jsonb严格校验。参数codec依赖定型3802与编码上下文，binary先验版本再解析；结果codec依赖同一规范值、参考输出与稳定元数据，两格式共享输出语义。这里只描述边界及依赖，不创建代码任务。
 
 JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；步骤3由NUMBER/UNICODE/CAST-BRIDGE覆盖精度与非等价转换，时区及SQL数组维度不适用；步骤4由四格式组合及DUP-ORDER/SCALAR-NEST/NULL-METADATA/WIRE-INVALID覆盖。沿第1章证据规则、第2章语法交接及批次14原文责任，无跨块冲突；全部PG能力仍待实现取证，不宣称功能或性能通过。
+
+[基础数组契约](#基础数组契约)候选边界：内部表示先保留元素身份/typmod、矩形shape、下界及两层NULL；cast依赖元素族与方言资格，逐元素转换不能丢形状。参数codec依赖定型数组OID、元素codec和会话编码，先校验头/边界再解码；结果codec依赖同一规范值、稳定元数据与元素输出，两格式共享shape/lower/NULL语义。目录binary_array仅作局部取证入口，不预设直接复用。这里只给候选边界与依赖，不生成可执行任务。
+
+基础数组块来源覆盖：步骤2由元素/数组身份、值域和五方向表覆盖；步骤3由ARRAY-SHAPE/LOWER/ELEMENT-CAST覆盖维度、下界及转换，精度/时区继承元素族；步骤4由四格式组合及EMPTY-NULL/TEXT-ESCAPE/TEXT-INVALID/WIRE-TYPE/WIRE-LENGTH覆盖元数据、NULL与非法输入。与第1章证据规则、第2章数组树形/定型交接和前序各标量族一致，无需改其他章节；数组开放逐族取证，不以本块文档完成声称功能可用。
 
 ## 4. 方言函数与运算符契约
 
