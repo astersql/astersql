@@ -3659,6 +3659,20 @@ Q/扩展Parse→Describe→Bind→Execute工厂、共享ConcreteTiDBContext快�
 
 Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据模板”；OID/attnum 沿关系与列块，不另建执行器。[lib.rs](../pkg/server/lib.rs) 独立注册 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live，含真实 domain 的属性 LEFT JOIN 默认定义、常量/时间默认、零行描述、NULL 输入、假表达式拒绝及 ALTER 后重读意图；pg_introspection_dependencies_live 包含序列引用默认值拒绝。这些是手写 wire 测试，均未运行，不是客户端采集或功能通过证明。
 
+#### 视图定义内省契约
+
+承接来源任务步骤 1、2，能力 `CAT-VIEWDEF/pg`。批次 9 提交 `0e0f892cc2` 与累计批次 8–1 的 `52f558f71f` / `84fb929330` / `1807f7800b` / `af67d135cf` / `7ade409a9d` / `9bd191c612` / `b7ff2288b8` / `946e9b2c20` 均有五节正文及提交证据，第 1–5 章交接沿首块，依赖满足。2026-10-24 在 `0e0f892cc2` 以 RustCodeGraph status/explore/定点 node 核对以下静态事实；server、meta/model 无 doc.go，本轮测试运行数 0。
+
+| 实际路径/符号 | 当前事实与边界 |
+| --- | --- |
+| [table.rs](../pkg/meta/model/table.rs)::TableInfo.View / ViewInfo | 持久模型保存 SelectStmt（serde view_select）、Cols、CheckOption、Definer、Security、Algorithm。SelectStmt 是字符串，没有 PG 已绑定查询树或依赖身份；Definer 不能直接冒充 PG owner OID。普通视图与 MaterializedView 是不同字段。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::expr_type / evaluate | 目录局部绑定支持数值/NULL 的单参数及数值/NULL、bool/NULL 的双参数，返回原生 code253→text/25；wrap_column/int4 与旧 text 名称签名尚未绑定。执行先传播任一 NULL，从共享快照当前原生库枚举 StatePublic 模型，用 table_oid(model.ID) 匹配；View 存在才提取定义，非视图和未知 OID 均 NULL。pretty 非NULL时未参与格式化；无角色过滤、无通用 PG 反解或物化视图分支。 |
+| [pg_name.rs](../pkg/server/pg_name.rs)::stored_view_select / source_tokens | 原生解析器要求恰一语句，SELECT/集合操作直接 trim；CREATE VIEW 用 native=true 的 token 字节区间找 VIEW 后非引号 AS，去尾分号及 LOCAL/CASCADED/省略模式的 CHECK OPTION。字符串/引号中的 AS 不当分隔，注释跳过但切片保留原文本；它不转换原生反引号、函数、schema 名和大小写。解析失败返回的 0A000 元组在 evaluate 被转为 ConnError::Session，不能直接断言 wire SQLSTATE 保留0A000。 |
+
+工厂接线复用首块：pg_conn 简单查询、pg_extended 扩展查询到 CatalogQuery，ConcreteTiDBContext::schema_snapshot 到同一 infoschema；本块不增加执行器。独立 [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::pg_introspection_clients_stored_view_source 含引号 AS、字符串 CHECK OPTION、注释、两种 CHECK OPTION、裸 SELECT 和非法/多语句拒绝断言；run_clients 含视图来源查询的 OID26 参数、NULL/未知 OID、错误 pretty 与 text25 描述意图。[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_relations_live 建真实视图并检查 relkind=v，不证明反解正确。[lib.rs](../pkg/server/lib.rs) 独立注册两文件，均未运行。
+
+仓库 DATAGRIP_VIEW_SOURCES_SQL 注释标记 DataGrip 2025.1.3、2026-10-03 日志及 statement 1869279758；这属于仓库存档来源声明，本轮未核验原始日志或 UI，不能升级为当前客户端通过。官方客户端需求另见目标行为。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3826,6 +3840,20 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方客户端证据：[psql REL_18_STABLE describe.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)::describeOneTableDetails 在列详情子查询按 adrelid/adnum/atthasdef 调三参数 pg_get_expr（pretty=true）。这证明查询形状需求，分支可变且未固定客户端构建；本块下方是人工探针，并非完整psql抓包。DataGrip/JDBC/ORM精确版本与SQL未采集。目录可读不授予表SELECT、函数EXECUTE或序列USAGE；内省不得执行默认函数或推进序列。search_path只影响合法名称反解，不能改变存储身份或跨库泄露。
 
+#### 视图定义内省契约
+
+目标依据（PostgreSQL 18，访问 2026-10-24）：[函数手册](https://www.postgresql.org/docs/18/functions-info.html) 定义 OID、pretty、wrap_column 与旧 text 名称签名及返回 SELECT；[CREATE VIEW](https://www.postgresql.org/docs/18/sql-createview.html) 定义创建、替换及 CHECK OPTION；[pg_views](https://www.postgresql.org/docs/18/view-pg-views.html) 定义名称、owner、重建定义字段。官方 [REL_18_STABLE ruleutils.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/ruleutils.c)::pg_get_viewdef_worker 无 SELECT 规则时返回 NULL，支持区分正常不存在与损坏定义；[psql describe.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)::describeOneTableDetails 在 verbose 视图/物化视图详情调 OID、true。分支可变，均非18.6构建证据；该补丁版本的精确行为、错误位置与运行结果未取证。
+
+| 需求→字段/调用 | 真实来源、关联键、PG类型（typmod −1） | 目标、不支持策略→验收 |
+| --- | --- | --- |
+| VIEW-ID→pg_class.oid/relnamespace/relname/relkind | 共享公开 TableInfo.ID→table_oid，所属schema→namespace_oid；分别oid/26、oid/26、name/19、内部char/18；非NULL | 沿关系/namespace块，与pg_attribute.attrelid同源；普通View为v，物化视图m须真实分类。名称不能hash造身份，重命名不改身份→VIEW-BASE/META。 |
+| VIEW-DEF→pg_get_viewdef(oid[,pretty]) | 同一持久视图定义、输出列Cols及已绑定对象/类型依赖；参数26/[16]，返回变长text/25可NULL | 返回语义等价的PG SELECT，省略CREATE头与CHECK OPTION；pretty=false默认，true只改可读格式。当前切片不足以证明可重建；缺可靠转换的已存在视图在成功行前0A000，不返回原生SQL、空串或假NULL→VIEW-BASE/LEX/REJECT。 |
+| VIEW-ARG→非视图、未知OID、NULL与其他签名 | 当前库稳定OID查找及函数重载元数据；输出text/25 | 普通表OID、无对象OID分别正常NULL；NULL输入传播。未知OID不能泄露其他库。OID+int4/23 wrap签名目标启用pretty；旧text/25名称按第2章绑定，缺支持在分析/绑定前0A000且不误选bool签名；错误参数拒绝而非隐式当true→VIEW-ARG。 |
+| VIEW-META→CHECK OPTION与schema限定 | ViewInfo.CheckOption、Security及真实依赖/Cols；定义仍text/25 | CHECK OPTION不属于返回SELECT，单独保存，不能从注释/字面量误删；模式限定按第2/5章及当前path安全输出，双引号保大小写，原生库名不冒充PG schema。重命名依赖后仍绑定同对象，无绑定来源不能保证时显式拒绝→VIEW-LEX/PATH/META。 |
+| VIEW-PROJECTION→pg_views.schemaname/viewname/viewowner/definition | 同一schema/关系/真实owner及定义；前三name/19，definition text/25 | 仅普通视图；当前provider未有本轮接线证据，owner映射缺口不能造字符串。该视图及information_schema.views留对应窄块实现，定义必须与函数一致；information_schema权限过滤不得直接套pg_catalog→VIEW-ACCESS。 |
+
+定义是重建结果，不承诺原输入注释、空白、关键字大小写逐字回放；字符串内容和引号标识符语义必须保留。原生SELECT字符串只有经绑定、类型和方言验证后才可反解，不能对文本全局替换引号或按“ AS ”切割。内省不执行视图查询、不读取基表数据、不改变CHECK OPTION；其写入约束运行语义交后续实施，不能由定义出现推出已可用。权限须核对真实角色及目录读取权：pg_get_viewdef可读不授予基表SELECT，不能一律要求视图owner，也不能绕过已撤销的目录访问权限。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3869,6 +3897,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 默认表达式目录契约
 
 只定义默认/生成表达式目录事实及反解契约；不实现表达式树、默认OID分配器、information_schema视图、生成列执行器、序列/identity、函数工厂或客户端适配。继承/分区默认覆盖、域默认与任意PG内部树的完整序列化另行细分；本块必需定义缺失须明确拒绝。当前整库扫描导致无关坏默认使查询失败是待实施缺口，本任务不扩展修复。
+
+#### 视图定义内省契约
+
+不实现视图DDL、持久绑定树、名称重写、重启恢复、pg_views/information_schema.views、权限引擎或物化视图刷新。物化视图定义属于函数目标，当前缺真实接线须记录并拒绝，不把它当普通View伪造；CHECK OPTION执行、安全屏障/security_invoker与任意查询转换另建实施任务。不得为补这些缺口扩大本轮代码范围。
 
 ### 验收
 
@@ -4203,6 +4235,38 @@ DEF-BASE克隆的完整准备为 `CREATE TABLE public.def_clone (v text);`，取
 
 清理按实际建立对象逐条执行 `DROP TABLE public.def_probe;`、`DROP TABLE public.def_gen;`、`DROP TABLE public.def_virtual;`、`DROP TABLE public.def_time;`，原生夹具在所属连接执行 `DROP TABLE def_native;`；权限夹具清理角色由其任务负责。psql后续以固定18.x客户端的 `psql -E` 执行 `\d+ public.def_probe` 保存完整SQL/版本/输出，不能把上述手写BASE称客户端验收通过。
 
+#### 视图定义内省契约
+
+以下是待新增/待运行的人工契约探针，非客户端抓包或测试通过。前提：UTF8、标准字符串开启、当前库test、path=public,pg_catalog，真实owner有建表/视图/改名权限，Q参数[]、文本结果；扩展同SQL经Parse/Describe/Bind/Execute/Sync，BASE改为 `WHERE c.oid=$1` 时唯一参数是所取视图OID、类型26，分别文本十进制与4字节网络序。缺DDL能力须在副作用前0A000、检查无残留并记录目标未满足。
+
+```sql
+CREATE TABLE public.view_base (id integer, label text);
+INSERT INTO public.view_base VALUES (1,'AS WITH LOCAL CHECK OPTION');
+CREATE VIEW public."ViewAS" ("ID", "Label") AS
+  /* AS ignored */ SELECT id AS "ID", label AS "Label"
+  FROM public.view_base WHERE id > 0 WITH LOCAL CHECK OPTION;
+SELECT c.oid,c.relnamespace,c.relname,c.relkind,
+       pg_catalog.pg_get_viewdef(c.oid) AS definition,
+       pg_catalog.pg_get_viewdef(c.oid,false) AS plain,
+       pg_catalog.pg_get_viewdef(c.oid,true) AS pretty
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid
+WHERE n.nspname='public' AND c.relname='ViewAS';
+```
+
+上式查询记BASE；一行，描述26/26/19/18/25/25/25（当前relname文本适配沿关系块），所有定义非NULL且语义相等；OID/namespace与真实模型一致，relkind=v，结果列仍ID/Label。输出不含CREATE外壳或尾CHECK OPTION，不要求保留注释。以下每项均关联上表来源，不能仅比较字符串命中。
+
+| 验收ID | 完整输入/参数、期望与元数据变化 |
+| --- | --- |
+| VIEW-BASE | 执行BASE，扩展参数版返回同一行；传NULL或已证实不存在的OID参数返回0行且Describe完整。取plain作为单一查询定义，构造 `CREATE VIEW public.view_clone AS ` 后追加返回文本，执行 `SELECT * FROM public."ViewAS"; SELECT * FROM public.view_clone;` 各为1行(1,字面量AS WITH LOCAL CHECK OPTION)，列名/类型一致。使用AST或解析后的语义检查，不以分号、空白完全相等验收。 |
+| VIEW-LEX | 逐条执行 `CREATE VIEW public."as" AS SELECT 'AS WITH CASCADED CHECK OPTION' AS "aS";`、`CREATE VIEW public.view_cascade AS SELECT id FROM public.view_base WHERE id>0 WITH CASCADED CHECK OPTION;`、`CREATE VIEW public.view_default_check AS SELECT id FROM public.view_base WHERE id>0 WITH CHECK OPTION;`；BASE的relname分别换as/view_cascade/view_default_check，每项1行，第一项重建执行得完整字面量及大小写aS，后两项定义只保留SELECT条件。存储级补测CREATE头列名含AS、注释在AS前后、尾分号、裸SELECT/集合操作、多语句及非SELECT；合法文本不误切，损坏模型在执行行前拒绝，不把存储损坏等同未知OID。 |
+| VIEW-ARG | `SELECT pg_catalog.pg_get_viewdef('public.view_base'::regclass::oid),pg_catalog.pg_get_viewdef(0::oid),pg_catalog.pg_get_viewdef(NULL::oid),pg_catalog.pg_get_viewdef('public."ViewAS"'::regclass::oid,NULL::boolean);` 一行四个NULL/text25，分别是非视图/未知/空OID/空pretty。`SELECT pg_catalog.pg_get_viewdef('public."ViewAS"'::regclass::oid,40);` 一行text25且等价BASE，换行目标另采；`SELECT pg_catalog.pg_get_viewdef('public."ViewAS"'::text,true);` 旧名称签名同定义。未支持签名须绑定阶段0A000并记为缺口；`SELECT pg_catalog.pg_get_viewdef(0::oid,true,false);` 错误数量绑定拒绝，精确PG SQLSTATE未采。 |
+| VIEW-META | 先Parse BASE，执行 `CREATE OR REPLACE VIEW public."ViewAS" ("ID","Label") AS SELECT id,label FROM public.view_base WHERE id>1 WITH LOCAL CHECK OPTION;` 后首次Execute见新条件；重新执行视图查询0行。`ALTER VIEW public."ViewAS" RENAME TO "RenamedAS";` 后用旧OID参数查询仍一行，relname改为RenamedAS且OID不变；旧名称BASE变0行。`ALTER TABLE public.view_base RENAME COLUMN label TO renamed_label;` 后定义引用新基列而视图列Label不变，执行不失效。删建视图后旧OID查函数NULL、新对象身份沿关系块；其他连接按第5章提交可见性重读，portal不任意混合快照。 |
+| VIEW-PATH | `CREATE SCHEMA view_shadow; CREATE TABLE view_shadow.view_base (id integer,label text); INSERT INTO view_shadow.view_base VALUES (99,'shadow'); SET search_path TO view_shadow,public,pg_catalog;` 在META前取ViewAS OID并以参数版BASE重读，重建定义必须限定真实public基表，执行仍得原(1,原label)，不能绑定shadow；改path不改变视图OID及定义依赖。缺用户schema/绑定能力须DDL前拒绝、记录未验证；不把public-only样例当遮蔽通过。 |
+| VIEW-REJECT | 在原生连接创建 `CREATE VIEW view_native AS SELECT IFNULL(label,'x') AS label FROM view_base;`，PG按真实OID调用定义函数。若无法证明IFNULL和引用转换等价，执行行前0A000且无部分行/写入；不得直接返回原生库限定或反引号SQL。无法建立夹具则记录原因。独立存储夹具把SelectStmt设为DROP或两条SELECT应拒绝；这些夹具待新增，不是当前可直接运行SQL。 |
+| VIEW-ACCESS | owner与真实低权角色分别执行BASE；按参考构建核对有目录读权限但无基表SELECT时定义仍可内省，`SELECT * FROM public."ViewAS";` 的授权结果单独验证。撤销相关目录读权限不得旁路；information_schema.views/pg_views完整投影留对应块，不能以owner固定NULL冒充来源。另一数据库同名视图须隔离，凭本库OID不得读出其他库定义。角色创建/认证与精确错误沿权限块取证。 |
+
+PATH、META与ACCESS使用独立重建夹具，避免改名污染BASE；VIEW-REJECT在META前创建。每次重建保存真实模型ID、ViewInfo.SelectStmt/Cols/CheckOption和目录输出。清理按实际对象执行 `SET search_path TO public,pg_catalog; DROP VIEW public.view_clone; DROP VIEW public."ViewAS";`（META后换RenamedAS）、`DROP VIEW public."as"; DROP VIEW public.view_cascade; DROP VIEW public.view_default_check; DROP TABLE public.view_base; DROP TABLE view_shadow.view_base; DROP SCHEMA view_shadow;`；原生view_native在删基表前由所属连接删除。后续固定psql 18.x以 `psql -E` 执行 `\d+ public."ViewAS"` 保存版本/完整查询/结果；DataGrip存档SQL与实际UI另采，均未在本轮运行。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4258,6 +4322,10 @@ DEF-BASE克隆的完整准备为 `CREATE TABLE public.def_clone (v text);`，取
 #### 默认表达式目录契约
 
 按单一事实组拆分：默认显式存在性与独立对象身份、常量与编码的安全反解、二/三参数pg_get_expr及真实树codec、STORED/VIRTUAL生成表达式与列依赖、DDL后prepared刷新与权限投影。每项复用共享infoschema/model和现有目录工厂，在独立测试文件补齐上述验收；CURRENT_TIMESTAMP/序列运行语义分别交第4/5章，不扩大本任务实现。完成证据必须包含真实行/描述、DDL前后模型身份及固定PG参考构建；18.6、psql/DataGrip/JDBC/ORM和binary codec当前均未运行。
+
+#### 视图定义内省契约
+
+后续按单会话拆分：①持久ViewInfo到PG已绑定定义/Cols/CHECK OPTION的可靠来源与损坏拒绝；②OID/pretty/wrap与旧名称重载、schema安全反解和引号回归；③Parse后替换/重命名/跨连接目录更新；④固定psql/DataGrip流程及权限验证。分别复用关系、列、名称、函数注册和会话契约，pg_views/information_schema与物化视图定义接线单列缺口；本轮五节文档完成不表示功能实现完成。
 
 ## 7. 线协议认证与数据通道
 
