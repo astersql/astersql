@@ -2658,6 +2658,21 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 已完整阅读独立 [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback：Q 重复键后 E，SELECT/COMMIT 为 25P02，ROLLBACK 后零行；扩展重复键 23505、Sync 后 E，新 Parse 被 25P02 拒绝。它不覆盖失败前准备的 portal 在失败后 Execute、除零、失败态 COMMIT 的 PG 参考响应或跨连接失败标志隔离。[pg_error_test.rs](../pkg/server/pg_error_test.rs)::sqlstate_unique_syntax_and_recovery 断言事务外唯一键/语法/多语句拒绝后 SELECT 1 的完整值；unknown_errors_are_not_misclassified 保留未知错误 XX000，不把任意字符串映射为已知诊断。测试意图、源码现状与运行证据分开；本轮均未运行，有效运行用例数 0。[协议第一阶段](postgresql-protocol-first-phase.md) 的历史运行记录不升级为本轮验证。
 
+#### 协议同步与事务恢复边界
+
+承接来源任务步骤3的“Sync与事务恢复的区分”和步骤4的失败后继续性，关联 `SESSION-TXN-FAILED/pg`，本题用例族为 `session.txn.sync.*`；协议同步为PG专属，真实事务仍由共享会话/执行/存储负责。前置批次13提交 `bd8f486b17858b702b105c7e939e4cb17a677c53` 及累计1–12的连续提交与五节正文已核对，满足文档依赖；任务文件删除不作为功能证据。以下为2026-10-23经RustCodeGraph读取的静态事实，`pkg/server/doc.go` 不存在。
+
+| 实际路径/符号 | 当前事实与证据边界 |
+| --- | --- |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::handle | failed且非Sync时直接丢弃，连Q也不分派；process错误置协议failed并调用PgSession::record_error。合法Sync清协议failed，底层无事务时清portals，随后读取transaction_status发ReadyForQuery。该分支无共享事务提交/回滚调用，不能证明无BEGIN流水线的整段原子性；也不能把清portal当作回滚。 |
+| 同文件 ::process 的 Parse、Bind、Execute | Parse调用事务门禁；Bind保存portal，Execute首次执行后缓存编码消息。Execute未重新调用事务门禁，提前绑定对象跨E执行和缓存续发均须单独取证；此为风险入口，不预判实际运行结果。 |
+| [pg_session.rs](../pkg/server/pg_session.rs)::transaction_status、record_error、record_success、check_transaction_command | 根据共享in_transaction及连接failed_transaction合成I/T/E；共享事务活动时record_error置失败，当前E只放行ROLLBACK。Sync不调用record_success。共享事务提前结束时局部标志被清，是否满足显式失败块仍须行副作用与状态联合证明。 |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::PgService连接循环 | 每连接仅一个Extended，其session同时供Q和扩展路径使用；Q在Extended放行后才调用共享execute_query，扩展闭包调用execute_prepared_statement。Terminate先于扩展分派处理；不能把致命连接错误列为可由Sync恢复。 |
+| 独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync | 已读成功Parse/Bind/Execute/Sync，以及缺OID的Parse拒绝0A000后发送Q DELETE被丢弃、Sync后表仍两行、后续布尔查询成功的断言。它不是PG参考语法错误用例，也不证明此前多条成功写入整段回滚。 |
+| 独立 [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback | 已读扩展重复键23505、Sync后E、新Parse被25P02拒绝及Q ROLLBACK后I/零行；缺Bind错误、取消、预绑定portal、无Sync多写与跨连接完整值断言。 |
+
+上述测试本轮均未运行，有效运行用例数0。[协议第一阶段](postgresql-protocol-first-phase.md)为历史边界参考，不是本轮支持证据。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2850,6 +2865,22 @@ BEGIN 后的正常 DML 属于同一所属连接的共享事务：A 能读取自�
 
 官方依据于 **2026-10-23** 查阅，适用 **PostgreSQL 18 大版本**：[§3.4 Transactions](https://www.postgresql.org/docs/18/tutorial-transactions.html)说明失败块与保存点恢复；[ROLLBACK](https://www.postgresql.org/docs/18/sql-rollback.html)定义完整撤销；[ROLLBACK TO SAVEPOINT](https://www.postgresql.org/docs/18/sql-rollback-to.html)定义局部撤销及保存点保留；[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html)对应 23505、22012、25P02；[§54.2 Message Flow](https://www.postgresql.org/docs/18/protocol-flow.html)区分显式事务和 Sync。COMMIT 在失败块中实际走回滚的目标补充取自 PostgreSQL 官方 **REL_18_STABLE** 源码 [xact.c::EndTransactionBlock](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/access/transam/xact.c) 的 TBLOCK_ABORT 分支及 false 返回、[utility.c::standard_ProcessUtility](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/tcop/utility.c) 的 CMDTAG_ROLLBACK 分支（此次读取同仓库 raw 内容）；这是按官方源码作出的静态目标判断，不是参考端运行结果或固定补丁源码。来源指定 **18.6** 的精确运行行为、消息字段与补丁发布状态本块未独立核实，不改前章基线声明。
 
+#### 协议同步与事务恢复边界
+
+分别记录协议“正常/丢弃至Sync”与SQL事务I/T/E，不用一个失败位表达二者。下列为普通表DML目标；Sync不是SQL回滚命令，但无BEGIN的扩展隐式事务须在同步边界取得提交/撤销证据。
+
+| 初态与序列 | 协议状态与SQL事务目标 |
+| --- | --- |
+| 显式事务内：BEGIN→成功写入→扩展Execute错误→后续消息→Sync→ReadyForQuery | BEGIN后T；首错使SQL进入E并开始丢弃。至Sync前的后续Parse/Bind/Execute及Q均不执行，无对应成功响应/副作用。Sync退出丢弃、返回ReadyForQuery(E)，不得提交早先写入或伪报T/I。 |
+| 显式事务外：I→扩展成功写入→同一未同步段Execute错误→后续消息→Sync→ReadyForQuery | 错误后丢弃至Sync；普通DML隐式段的成功前缀也须撤销，Sync后ReadyForQuery(I)，下一独立查询可执行，无需额外ROLLBACK。不能将每次Execute先自动提交再返回I称为通过。 |
+| 成功对照：无BEGIN的一段成功DML→Sync；显式T中成功DML→Sync | 前者在边界成功提交并I；后者保持T、对其他连接不可见，直到实际COMMIT。不能从CommandComplete推定已提交。 |
+
+显式E在Sync之后仍拒绝普通读写，Q与扩展Execute共享门禁；首错前绑定的portal也不能成为绕过失败状态的入口。完整ROLLBACK成功且真实撤销后才回I并可新建语句继续；失败态COMMIT的PG回滚目标与当前25P02产品限制沿用前块，保存点局部恢复不在本题展开。客户端应先Sync取回同步边界，再发恢复SQL；丢弃期间发送的ROLLBACK本身不会执行，Flush也不结束丢弃。只对可恢复扩展错误作此承诺，失去消息边界、连接关闭或致命错误交工作流7。
+
+Parse语法/分析错误、Bind参数转换错误、Execute执行错误分开记首错阶段；三者均需独立采事务内E、事务外I及前缀写入是否撤销，不能拿“Parse没有执行DML”推导整个事务无影响。取消属于正在执行命令的失败：只在已证明命中活动执行、原连接确实收到取消错误后进入相应恢复断言；发出CancelRequest或取消连接关闭不等于取消成功，空闲/过期取消不能污染下一命令。错误字段、取消身份/竞态、portal销毁及prepared存活规则交工作流7，本章只要求其不能泄漏行写入或绕过事务门禁，不发明新接口。
+
+官方依据于 **2026-10-23** 访问，适用 **PostgreSQL 18大版本**：[§54.2.3扩展查询及§54.2.4流水线](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY)用于丢弃至Sync、隐式事务边界和显式块保留；同页[§54.2.8取消](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-CANCELING-REQUESTS)用于取消结果须从原连接观察；[§54.7 ReadyForQuery](https://www.postgresql.org/docs/18/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-READYFORQUERY)用于I/T/E；[附录A错误码](https://www.postgresql.org/docs/18/errcodes-appendix.html)核对23505、25P02、42601、22P02、57014的条件名称（页面表格标注18.6，仅作代码名称依据）。以上是规范目标，未运行PG参考端；来源指定18.6的补丁发布、精确诊断和运行行为未核实。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2903,6 +2934,10 @@ BEGIN 后的正常 DML 属于同一所属连接的共享事务：A 能读取自�
 #### 失败事务恢复契约
 
 不实现失败状态机、补 Execute 门禁、改变现有 COMMIT 拒绝策略或运行数据库实验。SAVEPOINT、ROLLBACK TO、RELEASE、ABORT/WORK/TRANSACTION 等别名与变体、AND CHAIN、嵌套子事务及错误回滚的并发/取消竞态均是独立后续边界；不以放宽字符串门禁代替子事务能力。隐式事务批处理及完整 Sync 消息矩阵交批次14，事务型 DDL 交批次15；不建设第二套引擎、不伪造 PG XID/WAL、不改变 MySQL 原有语句错误和事务继续规则。
+
+#### 协议同步与事务恢复边界
+
+不实现Sync提交/回滚接线、事务门禁或取消，不搭建协议状态机、驱动流水线、数据库/差分平台；不将当前Sync无事务调用直接定为运行缺陷。COPY、特殊DDL的提前提交、多个同步段/COMMIT交错、保存点、输出阶段或提交时失败、网络中断与取消提交竞态另取窄证据，不能套用本块普通DML断言。完整wire消息、错误优先级、Close/portal/statement生命周期及取消密钥归工作流7，真实目录归6，双方言客户端归8；本轮不改第1–4及6–8章。
 
 ### 验收
 
@@ -3256,6 +3291,25 @@ rollback-success、commit-exit、outside-error 的 Q 模式每条SQL一个消息
 
 共存 `session.txn.failed.mysql.coexist`（待新增、未运行）关联 `SESSION-TXN-FAILED/mysql`，只证明PG失败策略不外溢。M/N为同一Server独立MySQL连接，记录真实sql_mode与transaction_isolation，`SET autocommit=1`；事务外 `CREATE TABLE tx_failed_mysql (id INT PRIMARY KEY,value INT NOT NULL)`、`INSERT INTO tx_failed_mysql VALUES (1,10),(2,20)`。OM=`SELECT id,value FROM tx_failed_mysql ORDER BY id`。M `START TRANSACTION`、`UPDATE tx_failed_mysql SET value=21 WHERE id=2`，M OM=[(1,10),(2,21)]、N OM=S0；此时PG A执行P、F、门禁拒绝、ROLLBACK整组，M再次OM仍自己的值、N仍S0，M SELECT 1=1；M ROLLBACK后M/N OM=S0。再M START TRANSACTION、INSERT INTO tx_failed_mysql VALUES (5,50)、COMMIT，N OM=[(1,10),(2,20),(5,50)]。保存MySQL自身OK/ERR、状态位、类型标志和既有原生/真实MySQL基线，不向M套PG25P02或假定MySQL遇同类错误会整事务失败。清理M/N先ROLLBACK，再事务外DROP TABLE tx_failed_mysql。
 
+#### 协议同步与事务恢复边界
+
+下列 `session.txn.sync.*` 均为**待新增、未运行**用例，复用第1章取证格式和前块能力ID，不表示新增测试文件。每组新建PG连接A/B，同库UTF-8、UTC、search_path=public、初始I；B自动提交且每次新快照。参考PG设READ COMMITTED，本地记录真实隔离配置。事务外准备 `CREATE TABLE public.tx_sync_contract (id INT PRIMARY KEY,value INT NOT NULL)`、`INSERT INTO public.tx_sync_contract VALUES (1,10),(2,20)`。O=`SELECT id,value FROM public.tx_sync_contract ORDER BY id`，S0=[(1,10),(2,20)]。
+
+消息记法PBX(sql)：新唯一命名statement与portal，Parse零OID/零参数、Bind文本结果、Execute max_rows=0，**不自动附Sync**；参数例外另注明。成功响应保留ParseComplete、BindComplete及CommandComplete/行值；只有Sync才期待扩展ReadyForQuery。等待Execute结果可用Flush取输出，Flush不作为事务或恢复边界。每组必须保存发送/接收次序与同步计数，不以超时推断消息被丢弃。
+
+| 用例与完整输入/初始状态 | 目标值、副作用与恢复 |
+| --- | --- |
+| explicit-error：A Q BEGIN→T；PBX(`UPDATE public.tx_sync_contract SET value=11 WHERE id=1`)，Sync→T；PBX(`INSERT INTO public.tx_sync_contract VALUES (1,99)`)触发重复键；随后PBX(`INSERT INTO public.tx_sync_contract VALUES (3,30)`)、Q `DELETE FROM public.tx_sync_contract`、Sync。 | 首错23505；后两条完全丢弃，无其成功响应。ReadyForQuery(E)，B O=S0。再A Q O→25P02/E；PBX(`INSERT INTO public.tx_sync_contract VALUES (4,40)`)、Sync→25P02/E，B O=S0。A Q ROLLBACK→I，A/B O=S0、SELECT 1 AS ok=1；再新PBX(`INSERT INTO public.tx_sync_contract VALUES (5,50)`)、Sync→I，两者O=[(1,10),(2,20),(5,50)]。 |
+| implicit-error：无BEGIN，A PBX(`UPDATE public.tx_sync_contract SET value=11 WHERE id=1`)，Flush收完成；同段PBX(`INSERT INTO public.tx_sync_contract VALUES (1,99)`)，后续PBX(`INSERT INTO public.tx_sync_contract VALUES (3,30)`)、Sync。 | 首错23505，后续写被跳过；Sync后I。A/B O=S0，证明成功前缀也撤销；A Q SELECT 1=1且I，不要求额外ROLLBACK。若UPDATE已永久提交即未满足目标，不能以I或错误恢复通过掩盖。 |
+| success-boundary：新夹具无BEGIN，A PBX(`UPDATE public.tx_sync_contract SET value=11 WHERE id=1`)、Flush读完成，B O；再PBX(`INSERT INTO public.tx_sync_contract VALUES (3,30)`)、Sync，A/B O。另新夹具先Q BEGIN，再执行相同两PBX/Sync及B O，最后Q ROLLBACK。 | 隐式组Sync前B S0，之后I且A/B O=[(1,11),(2,20),(3,30)]。显式组Sync后T、B仍S0，ROLLBACK后I且A/B S0。对比证明Sync对两类事务的不同作用。 |
+| parse/bind-errors：分别从显式BEGIN或无BEGIN起，先PBX(`UPDATE public.tx_sync_contract SET value=11 WHERE id=1`)、Flush读完成，无中间Sync。Parse轮发送 `SELECT FROM`；Bind轮先Parse `SELECT id FROM public.tx_sync_contract WHERE id=$1`、OID=[23]，再Bind文本参数 `bad`，不Execute。每轮再PBX(`INSERT INTO public.tx_sync_contract VALUES (3,30)`)、Sync。 | 参考目标Parse为42601，Bind为22P02；实际失败阶段及字段待采，不能把产品0A000当参考语法通过。后续写丢弃，显式组E、B S0，ROLLBACK后两者S0；隐式组I、两者S0且SELECT 1=1。失败不发生或发生在不同阶段须记录缺口，不跳过该轮。 |
+| prebound/mixed-entry：显式T中先PBX写id=1为11；Parse/Bind未执行读O与写 `INSERT INTO public.tx_sync_contract VALUES (4,40)` 两命名portal，Sync→T。分两轮首错：Q重复键，或新PBX重复键后Sync；再对原portal分别Execute、各Sync。 | 首错后两入口均E。原portal若仍可寻址，不得输出缓存成功行/写入，目标失败态拒绝25P02/E；若已因错误销毁，另存真实生命周期错误且不得宣称已覆盖门禁。B每步S0，最后Q ROLLBACK→I、A/B S0，再新建PBX SELECT 1、Sync成功且I。 |
+| cancel-boundary：显式/隐式各独立夹具先PBX更新id=1为11、Flush收完成；下一PBX为 `SELECT id,value FROM public.tx_sync_contract ORDER BY id`。后续实施测试须以受控执行屏障暂停该Execute，确认已活动再用本连接BackendKeyData发送CancelRequest；原连接确认取消错误后，发送PBX写id=3、Sync。 | 没有活动屏障或查询先完成时本轮不具备取消证据，不以idle cancel顶替。有效取消诊断目标57014，后续写跳过；显式E需ROLLBACK后S0，隐式I直接O=S0，两者SELECT 1成功。另在空闲I发送取消，随后新PBX SELECT 1、Sync应成功且I。屏障为待新增测试能力，不使用假定pg_sleep支持或新生产接口。 |
+
+每组另保存首错S/V/C/M与适用D/H/P、阶段、Q/扩展状态、命令标签、影响行数、完整DataRow及描述；O的id/value声明整数，精确OID/typmod/可空性与错误文本/位置待两端采集，控制命令无结果列。成功SQLSTATE不适用。清理所有存活T/E连接先Sync恢复消息处理，再ROLLBACK至I，事务外DROP TABLE public.tx_sync_contract；若连接已失效由工作流7的关闭屏障验证撤销，不假装Sync成功。
+
+共存 `session.txn.sync.mysql.coexist`（待新增、未运行）：同Server独立MySQL M/N，记录sql_mode、transaction_isolation，SET autocommit=1；事务外 `CREATE TABLE tx_sync_mysql (id INT PRIMARY KEY,value INT NOT NULL)`、`INSERT INTO tx_sync_mysql VALUES (1,10),(2,20)`。OM=`SELECT id,value FROM tx_sync_mysql ORDER BY id`。M START TRANSACTION、UPDATE tx_sync_mysql SET value=21 WHERE id=2，M OM=[(1,10),(2,21)]、N OM=S0；保持M事务，PG独立表执行explicit-error和implicit-error，M/N再次OM保持各自值、SELECT 1=1。M ROLLBACK后两者S0；再M START TRANSACTION、INSERT INTO tx_sync_mysql VALUES (5,50)、COMMIT，N OM=[(1,10),(2,20),(5,50)]。记录MySQL自身OK/ERR、状态位/类型标志及真实MySQL或既有原生基线，不向MySQL发送Sync或套用PG失败策略；M/N先ROLLBACK再事务外DROP TABLE tx_sync_mysql。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -3335,6 +3389,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 1. 沿现有独立 pg_transaction_test.rs 补首错、门禁、完整回滚及跨连接完整值断言，单独覆盖提前Parse/Bind后进入E再Execute；只补共享执行链必需局部接线，不递归扩建事务系统。
 2. 独立对齐失败态COMMIT：先采PG参考标签/状态/行值，再决定适配与测试迁移，保持实际回滚证据；另立保存点/ROLLBACK TO能力任务，验证E→T与局部保留，不复用完整ROLLBACK清标志逻辑冒充支持。
 3. 交批次14扩展流水线同步与显式/隐式边界，交批次15事务型DDL门槛；错误码精化交第3/4章相关类型/表达式契约，wire字段交工作流7，共存交8。未实测PG18.6、输出阶段失败、回滚失败/取消竞态、真实存储故障及性能，不从本块文档完成推定支持或性能结论。
+
+#### 协议同步与事务恢复边界
+
+1. 先扩充现有独立pg_extended_test.rs与pg_transaction_test.rs的显式/隐式成功和错误段完整值断言，再确定共享会话最小提交/撤销接线；无BEGIN段的原子性不可从单条自动提交测试推导，不补建第二套事务引擎。
+2. 分别取得Parse、Bind、Execute与有效取消的阶段/副作用证据，单列提前绑定portal与Q/扩展交叉门禁；工作流7负责受控取消屏障、消息顺序、对象生命周期及致命错误边界，避免将框架搭建塞入本题文档。
+3. 来源步骤3由两种Sync序列与I/T/E分层承接，步骤4由前缀撤销、恢复新写和MySQL共存承接；批次13提供失败态出口，15接事务型DDL门槛，工作流1/8采参考与共存证据。正确性风险为部分写入提前提交、Sync误清显式E或旧portal绕门禁；兼容性风险为隐式边界、错误阶段及取消生命周期差异；性能未测，无结论。本块完成仅指文档，未证明PG18.6支持，不生成或执行代码任务。
 
 
 ## 6. 系统目录与内省契约
