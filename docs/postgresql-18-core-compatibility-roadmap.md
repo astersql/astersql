@@ -3752,6 +3752,18 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 最近独立测试：[pg_query_test.rs](../pkg/server/pg_query_test.rs)的真实目录/事务夹具在原生会话读取information_schema.tidb_trx，并明确PG只暴露public/pg_catalog；[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_functions_live仅在原生会话查询routines；catalog_projection_variants有真实domain、PG描述及投影意图。这些均不覆盖本块三个视图。独立模块由[lib.rs](../pkg/server/lib.rs)注册，本轮只读、实际运行数0，不将测试存在写为通过。
 
+#### 标准模式列映射
+
+承接来源步骤1、2，能力 `CAT-IS-COLUMNS/pg`，复用首块证据模板。批次16五节正文及提交 `c064d09bad`、批次1–15连续提交（`946e9b2c20` 至 `784fca1216`）和第1–5章公共契约已核对，依赖满足。以下为2026-10-24在该基线经RustCodeGraph status/explore/query/定点node核对的静态证据；server、infoschema、meta/model目录无doc.go，测试运行数0。
+
+| 实际入口 | 当前事实与限制 |
+| --- | --- |
+| [pg_catalog_query.rs](../pkg/server/pg_catalog_query.rs)::is_catalog_relation；[pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows | 目录关系识别及provider没有information_schema.columns；继承标准模式表视图块的普通名称非public门禁。不能把原生MySQL标准模式列语义当作PG实现。Q/扩展工厂、共享schema_snapshot、单次执行快照与编码复用首块，不新建执行器。 |
+| pg_catalog.rs::column_catalog_rows / native_column_type / column_default | 当前库SchemaTableInfos→公开非Sequence模型→公开非Hidden列；位置Offset+1，关系table_oid，声明OID/typmod由FieldType生成。无角色列过滤，无删除槽位保留；默认反解有白名单、生成表达式拒绝，identity空，非PG身份来源。映射细节沿列目录、内建类型及默认表达式块；这些函数尚未接成标准视图。 |
+| [infoschema.rs](../pkg/infoschema/infoschema.rs)::InfoSchema；[column.rs](../pkg/meta/model/column.rs)::ColumnInfo | 共享模型提供Name、ID、Offset、State、Hidden、FieldType、DefaultValue/DefaultIsExpr、GeneratedExprString/GeneratedStored；当前默认与OriginDefaultValue不可互换。缺PG域、真实identity模式/序列关联、PG collation与完整可更新分析。原生AUTO_INCREMENT不能推导is_identity=YES。 |
+
+独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_columns_live含类型join、默认值、零行描述、ALTER/DROP/ADD和prepared重执行意图，并断言原生生成列拒绝及AUTO_INCREMENT的空attidentity。[pg_query_test.rs](../pkg/server/pg_query_test.rs)的PgCreateSimple夹具读 [RetrieveColumns.sql](../pkg/server/testdata/pg_datagrip/RetrieveColumns.sql)，验证15列PG声明经共享模型返回；该查询使用pg_catalog，不能证明标准columns视图或真实DataGrip运行。本轮均只读未执行。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4042,6 +4054,27 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方依据（PostgreSQL **18**，访问 **2026-10-24**）：[schemata](https://www.postgresql.org/docs/18/infoschema-schemata.html)、[tables](https://www.postgresql.org/docs/18/infoschema-tables.html)、[views](https://www.postgresql.org/docs/18/infoschema-views.html)、[标准模式类型](https://www.postgresql.org/docs/18/infoschema-datatypes.html)定义列与语义；[REL_18_STABLE information_schema.sql](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/catalog/information_schema.sql)核对域底层、逐视图过滤、列权限、临时schema及标志分析，该分支可变。客户端入口依据[psql18手册](https://www.postgresql.org/docs/18/app-psql.html)的SQL与-E，以及[pgJDBC官方Statement/PreparedStatement说明](https://jdbc.postgresql.org/documentation/query/)；后者页面无固定驱动版本，不证明DatabaseMetaData生成过下列SQL。人工探针与客户端实际查询分开，精确18.6构建、DataGrip/ORM查询均未取证。
 
+#### 标准模式列映射
+
+所有字段共用关系OID→pg_attribute的(attrelid,attnum)键，关联pg_class.relnamespace→pg_namespace、atttypid→pg_type；默认以(adrelid,adnum)关联pg_attrdef。行集限定当前PG database的普通表、分区表、视图、外表，排除系统列、删除列和其他连接临时schema；不得从pg_class全部种类机械复制。可见性取真实owner/可用角色闭包或本列SELECT/INSERT/UPDATE/REFERENCES有效权限（含表授权带来的列权限），不按search_path裁剪，不因拥有目录SELECT就暴露全部列。缺权限来源按公共门禁拒绝，不返回伪空集；表可见不等于每列可见。
+
+下表域简写I=sql_identifier、C=character_data、N=cardinal_number、Y=yes_or_no，来自information_schema真实域；底层及预期解域wire OID分别19/1043/23/1043。域OID须从本库类型目录取得，不硬编码；描述、typmod、NULL及零行沿第3章与标准模式表视图块采集，不能将字段值中的UDT OID混作输出字段OID。每行继承上述权限、关联键和当前尚未接线证据。
+
+| 需求→字段（PG域） | 事实来源→目标及不支持策略→验收 |
+| --- | --- |
+| ISC-ID→table_catalog/schema/name、column_name（I），ordinal_position（N），dtd_identifier（I） | 当前库身份、真实namespace/关系/列名、PG attnum；ordinal从1开始但删除后不压缩存活列位置；dtd只承诺表内类型描述符关联，不作为跨版本稳定ID。原生Offset重排缺口沿列目录块门禁。ISC-BASE/LIFE。 |
+| ISC-TYPE→data_type（C），udt_catalog/schema/name、domain_catalog/schema/name（I） | 声明类型身份与域基类型/namespace：内建类型给PG标准名（integer、character varying等），数组ARRAY，其他USER-DEFINED；UDT仍指实际底层类型（int4、varchar、_int4等），域三项只在域列非NULL。不能输出MySQL int/decimal/datetime作为PG身份；缺域/数组来源拒绝相关能力，不能假装text。ISC-BASE/TYPE。 |
+| ISC-NULL→is_nullable（Y） | 公开列NOT NULL或域NOT NULL得NO，其余YES，不从默认值、当前数据或客户端权限推断；与pg_attribute及域契约一致。域事实缺失不报YES。ISC-BASE/TYPE/LIFE。 |
+| ISC-LEN→character_maximum_length、character_octet_length（N） | PG声明typmod及当前库编码；字符/bit声明上限、字符字节上限分别计算，不适用为NULL。UTF8 varchar(7)为7/28；无界text最大字符长度NULL，但字节上限按参考源码，不误写成一律NULL。缺编码/类型事实拒绝。ISC-SIZE。 |
+| ISC-NUM→numeric_precision/radix/scale（N） | 规范OID及typmod；整数/float精度以二进制，numeric以十进制，非数值为NULL，float scale为NULL。不复用MySQL显示宽度；无约束numeric、负scale沿第3章并对参考构建取证，不用0填空。ISC-SIZE/TYPE。 |
+| ISC-TIME→datetime_precision（N）、interval_type（C）、interval_precision（N） | PG类型/typmod与interval字段范围；非时间NULL，date精度0，timestamp(3)为3；interval无字段限制时interval_type为NULL。interval_precision为PG不适用的类型化NULL；缺interval身份时拒绝相应能力。ISC-SIZE/TYPE。 |
+| ISC-DEFAULT→column_default（C） | 同一pg_attrdef与pg_get_expr语义重建；无默认为SQL NULL，显式DEFAULT NULL是否保留表达式由真实来源确认，不能凭Option None宣称等价；生成列表达式不进入此列。未知表达式拒绝，不能暴露原生SQL或relid前缀。ISC-BASE/DEF。 |
+| ISC-IDENTITY→is_identity（Y）、identity_generation/start/increment/maximum/minimum（C）、identity_cycle（Y） | attidentity及列到真实内部序列的i依赖和配置（不是last_value）；YES对应ALWAYS/BY DEFAULT，普通列NO且其余NULL。缺identity身份/关联拒绝，不以AUTO_INCREMENT填充；配置数值为文本。ISC-IDENTITY。 |
+| ISC-GEN→is_generated、generation_expression（C），is_updatable（Y） | attgenerated与绑定表达式反解得ALWAYS/表达式，否则NEVER/NULL；普通表列可更新YES，视图/外表须真实列级分析，不等于UPDATE授权。缺分析/表达式不能假NO/NULL。ISC-GEN。 |
+| ISC-EXTRA→character_set_catalog/schema/name、scope_catalog/schema/name（I）、maximum_cardinality（N）、is_self_referencing（Y）、collation_catalog/schema/name（I） | 字符集三项、scope三项、最大数组基数均为类型化NULL，self=NO；collation用真实PG身份，默认或不可排序类型三项NULL，显式非默认排序规则给实际库/schema/name。不能用MySQL charset/collation名替代；无法确认是否默认则拒绝该投影。ISC-EXTRA。 |
+
+缺静态字段/codec在Parse/绑定拒绝，动态元数据不充分至迟Q或首次Execute成功输出前0A000；这是产品门禁，不声称PG目标拒绝。不能用未知字段NULL掩盖未实现。官方目标依据：PostgreSQL **18** [columns](https://www.postgresql.org/docs/18/infoschema-columns.html)、[标准域](https://www.postgresql.org/docs/18/infoschema-datatypes.html)及 [REL_18_STABLE information_schema.sql](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/catalog/information_schema.sql)的columns视图/精度辅助函数，访问 **2026-10-24**；维护分支可变。客户端入口沿批次16的psql18与[pgJDBC官方查询说明](https://jdbc.postgresql.org/documentation/query/)（访问同日，无固定驱动版本）；本块SQL均为人工探针，不声称DatabaseMetaData、DataGrip或ORM生成过它们。精确18.6构建及运行行为仍未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4113,6 +4146,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 标准模式表视图映射
 
 不实现information_schema路由、用户schema、域codec、授权存储、可更新视图、触发器或typed table；不把其他标准视图（columns/constraints/privileges等）吞入本块。原生MySQL标准模式与PG标准模式须按方言隔离，不能全局重命名原生schema/catalog字段。本块只定义目标、拒绝门槛及后续验收，不声称真实客户端或18.6已通过。
+
+#### 标准模式列映射
+
+仅定义columns的声明、默认、权限、identity/generated字段和验收，不实现标准视图路由、PG域存储、排序规则、列墓碑、授权、序列或生成列表达式；复用已有契约，未开放分支保留明确门禁。其他标准视图及完整客户端工作流留对应块，不扩大为实现任务；本轮无Cargo、构建、lint或客户端实测。
 
 ### 验收
 
@@ -4686,6 +4723,39 @@ BASE-S恰(D,public,真实owner)；BASE-T恰(D,public,is_map_t,BASE TABLE)、(D,p
 
 客户端后续用psql18直接执行BASE并保存版本、SQL及描述；-E采集其元命令只作对照，不声称元命令使用标准视图。pgJDBC固定版本后经Statement/PreparedStatement运行同一探针，保存ResultSetMetaData、NULL/零行及prepareThreshold前后格式；DataGrip/ORM若使用本视图必须另采真实SQL，当前未验证。清理按实际创建名DROP视图/表/序列/schema及角色，先撤授权，关闭portal并RESET路径；不因夹具未开放而伪造结果。
 
+#### 标准模式列映射
+
+以下ISC-*全部为**待新增/待运行**人工探针，Q参数[]、文本结果，权限前提为隔离库D、UTF8、autocommit、owner及目录SELECT。DDL逐条提交，失败按第5章恢复；未开放DDL须副作用前拒绝并记录门槛，不能跳过后报通过。基线：
+
+```sql
+CREATE TABLE public.is_col_t (id integer NOT NULL, amount numeric(12,3) DEFAULT 1.250, label varchar(7) DEFAULT 'hello', stamp timestamp(3), plain integer);
+-- ISC-BASE
+SELECT table_catalog,table_schema,table_name,column_name,ordinal_position,is_nullable,data_type,udt_catalog,udt_schema,udt_name,column_default
+FROM information_schema.columns WHERE table_schema='public' AND table_name='is_col_t' ORDER BY ordinal_position;
+-- ISC-CROSS：在同一已提交模型版本核对
+SELECT a.attnum,a.attname,a.atttypid,a.atttypmod,a.attnotnull,pg_catalog.pg_get_expr(d.adbin,a.attrelid)
+FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+WHERE a.attrelid='public.is_col_t'::regclass::oid AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum;
+-- ISC-SIZE
+SELECT column_name,character_maximum_length,character_octet_length,numeric_precision,numeric_precision_radix,numeric_scale,datetime_precision
+FROM information_schema.columns WHERE table_schema='public' AND table_name='is_col_t' ORDER BY ordinal_position;
+```
+
+BASE恰5行，catalog均D、schema均public、table均is_col_t；名字/顺序id/amount/label/stamp/plain，位置1..5，可空NO/YES/YES/YES/YES；data_type依次integer/numeric/character varying/timestamp without time zone/integer，UDT为D/pg_catalog及int4/numeric/varchar/timestamp/int4。默认分别NULL、等价1.250、等价带类型hello常量、NULL、NULL，不比较反解空格。描述OID为19/19/19/19/23/1043/1043/19/19/19/1043。CROSS声明OID23/1700/1043/1114/23，名字、位置、nullable、默认须一致，用户关系OID不跨端硬比。SIZE除名字外六项：id/ plain=(NULL,NULL,32,2,0,NULL)，amount=(NULL,NULL,12,10,3,NULL)，label=(7,28,NULL,NULL,NULL,NULL)，stamp=(NULL,NULL,NULL,NULL,NULL,3)；描述19后六个23，不能以数值串text描述代替。
+
+| 用例及完整输入/变化 | 期望及拒绝门槛 |
+| --- | --- |
+| ISC-DEF/LIFE | 逐条 `ALTER TABLE public.is_col_t ALTER COLUMN amount SET DEFAULT 2.500;`、`ALTER TABLE public.is_col_t ALTER COLUMN label SET NOT NULL;` 后BASE相应默认/nullable刷新；`ALTER TABLE public.is_col_t ALTER COLUMN amount DROP DEFAULT;` 后NULL。独立 `ALTER TABLE public.is_col_t ALTER COLUMN plain SET DEFAULT NULL;` 后对照CROSS与参考表达式，不把无默认作为预设。`ALTER TABLE public.is_col_t DROP COLUMN label;`、`ALTER TABLE public.is_col_t ADD COLUMN added varchar(2);` 后BASE剩位置1/2/4/5/6、末列added，不能按原生Offset压缩；随后改名 `ALTER TABLE public.is_col_t RENAME COLUMN added TO renamed;` 位置仍6。原生位置保真缺口未修前门禁，不把当前压缩断言当PG目标。 |
+| ISC-ACL | reader按角色块真实认证、无owner继承/PUBLIC权限；owner `GRANT USAGE ON SCHEMA public TO is_reader;` 后reader BASE零行；`GRANT SELECT(id) ON public.is_col_t TO is_reader;` 后仅id一行，位置1；`REVOKE SELECT(id) ON public.is_col_t FROM is_reader;` 后零行；`GRANT SELECT ON public.is_col_t TO is_reader;` 后全部5列（此用例独立重置基线）。描述恒定；不能因tables可见而暴露未授权列。 |
+| ISC-IDENTITY | 独立 `CREATE TABLE public.is_col_i (id bigint GENERATED BY DEFAULT AS IDENTITY (START WITH 7 INCREMENT BY 2 MINVALUE 1 MAXVALUE 99 NO CYCLE), plain integer);`；`SELECT column_name,is_identity,identity_generation,identity_start,identity_increment,identity_minimum,identity_maximum,identity_cycle,column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='is_col_i' ORDER BY ordinal_position;` 得(id,YES,BY DEFAULT,7,2,1,99,NO,NULL)、(plain,NO,NULL,NULL,NULL,NULL,NULL,NULL,NULL)，19后八列1043。`ALTER TABLE public.is_col_i ALTER COLUMN id SET GENERATED ALWAYS;` 后ALWAYS。关联真实序列/依赖沿既有块核对；缺DDL能力副作用前拒绝。 |
+| ISC-GEN | 独立 `CREATE TABLE public.is_col_g (a integer, b integer GENERATED ALWAYS AS (a+1) STORED);`；`SELECT column_name,column_default,is_generated,generation_expression,is_updatable FROM information_schema.columns WHERE table_schema='public' AND table_name='is_col_g' ORDER BY ordinal_position;` 得(a,NULL,NEVER,NULL,YES)、(b,NULL,ALWAYS,语义等价a+1,YES)，19/1043/1043/1043/1043。`CREATE VIEW public.is_col_v AS SELECT a,a+1 AS calculated FROM public.is_col_g;` 后同查询改表名为is_col_v，is_updatable为YES/NO，不能套用调用者权限；缺绑定反解/视图分析门禁。 |
+| ISC-TYPE | 对应能力开放后逐条 `CREATE DOMAIN public.is_col_dom AS integer NOT NULL;`、`CREATE TABLE public.is_col_types (d public.is_col_dom, a integer[], dt date, f real);`；BASE换表名得data_type integer/ARRAY/date/real、UDT int4/_int4/date/float4，d可空NO。`SELECT column_name,domain_catalog,domain_schema,domain_name FROM information_schema.columns WHERE table_schema='public' AND table_name='is_col_types' ORDER BY ordinal_position;` 仅d域三项D/public/is_col_dom，其余NULL、四列19。SIZE换表名：dt精度0，f数值精度24/radix2/scale NULL；域精度来自底层。未开放域/数组在DDL门禁，不生成伪类型行。 |
+| ISC-EXTRA | `SELECT column_name,character_set_catalog,character_set_schema,character_set_name,scope_catalog,scope_schema,scope_name,maximum_cardinality,is_self_referencing,collation_catalog,collation_schema,collation_name,dtd_identifier,interval_type,interval_precision FROM information_schema.columns WHERE table_schema='public' AND table_name='is_col_t' ORDER BY ordinal_position;` 基线每行字符集/scope/最大基数/默认collation/interval两项NULL，self=NO，dtd非空且同表唯一；描述依次19、六个19、23、1043、四个19、1043、23。显式PG排序规则/interval夹具由既有类型实施补充（待新增），不能用原生名称猜测。 |
+
+扩展输入：`SELECT column_name,ordinal_position,is_nullable,data_type FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position;` Parse OID[25,25]，Bind[public,is_col_t]、参数text[0]，结果text[0]/binary[1]分别核对5行及描述19/23/1043/1043；第二参数missing或NULL均零行、描述不变。另一连接ALTER已提交后重新Bind/Execute刷新行，已打开portal沿第5章快照规则，不缓存Parse时目录行。另一库同名表、显式查询且search_path改pg_catalog均不泄漏/改变D的对象集。`SELECT unknown_field FROM information_schema.columns;` 绑定拒绝；Sync/ROLLBACK恢复沿公共契约。
+
+psql18直接运行探针并保存版本/SQL/描述；固定pgJDBC版本用Statement及PreparedStatement（JDBC占位符?）运行等价参数查询，保存ResultSetMetaData、NULL/零行及prepareThreshold前后结果。本轮无客户端运行证据，现有RetrieveColumns夹具不能替代；18.6需独立构建身份。清理实际创建的视图、表、域和角色授权，关闭portal并RESET路径，各用例独立恢复基线。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4771,6 +4841,10 @@ Ready按纯文档范围检查五节/锚点、路径存在、前后契约及diff�
 #### 标准模式表视图映射
 
 后续分为：三个视图的方言路由与类型描述；共享模型到catalog/schema/关系字段及pg_class对照；真实角色过滤与owner定义脱敏；可更新/触发器/typed字段门槛；IS-*独立回归及固定客户端采集。每项实施另建计划，沿共享快照、OID及现有执行链；无来源字段明确拒绝，不递归补齐所有information_schema。当前仅完成文档契约，功能、性能及精确18.6行为仍待实施/实测。
+
+#### 标准模式列映射
+
+后续按单一事实来源拆为：PG标准列provider/域描述与列级权限；声明类型/长度精度及域数组映射；默认/identity/generated来源和反解；DDL后位置/名称/默认刷新与双入口客户端探针。每项复用关系、列、类型、默认、权限和第5章契约，仅为待新增实施输入；不得在本块递归补建上述子系统，也不把文档验收当作运行通过。
 
 ## 7. 线协议认证与数据通道
 
