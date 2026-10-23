@@ -1684,6 +1684,18 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [builtin_op_test.rs](../pkg/expression/builtin_op_test.rs)、[builtin_compare_test.rs](../pkg/expression/builtin_compare_test.rs)、[builtin_compare_7_aster_unit_test.rs](../pkg/expression/builtin_compare_7_aster_unit_test.rs) | 前者 `unary_minus_covers_signed_unsigned_decimal_and_overflow`、`logical_operators_cover_mysql_three_valued_logic_and_short_circuit` 覆盖局部负号/逻辑；比较入口挂载的 `all_comparison_operators_match_null_and_unsigned_semantics` 覆盖两空、一空、等值和 unsigned 比较。未证明 PG IS NOT DISTINCT FROM 分析/求值或 wire 返回 boolean。 |
 | [lexer.rs](../pkg/parser/lexer.rs)：`HasPipesAsConcatMode` 分支 | 未启用 PIPES_AS_CONCAT 时将 pipes token 转成 pipesAsOr；说明 MySQL `\|\|` 受 sql_mode 影响，不能从内部 concat 名称推断两入口同义。PG 语法接线和优先级归第 2 章，本块不修改解析器。 |
 
+#### 普通聚合调用契约
+
+静态基线 `9ee00a13fb92aae94dc0dbc4fa9cce168dc03f99`（2026-10-23）；批次 1–12 的连续提交及五节累计正文已核对，前置文档依赖满足。`pkg/expression/doc.go`、`pkg/expression/aggregation/doc.go`、`pkg/executor/doc.go` 均不存在。使用 RustCodeGraph status/explore/query/定点 node 阅读源码，模块挂载和图未表达的字面量用 rg 补查。下表仅为源码及独立测试断言意图，未执行测试。
+
+| 实际入口/符号 | 已读责任与证据边界 |
+| --- | --- |
+| [descriptor.rs](../pkg/expression/aggregation/descriptor.rs)：`NewAggFuncDesc`、`AggFuncDesc::GetAggFunc` / `Split`；[base_func.rs](../pkg/expression/aggregation/base_func.rs)：`TypeInfer`、`typeInfer4Count` / `typeInfer4Sum` / `typeInfer4Avg` | 描述符含 Args/RetTp、Mode、HasDistinct、OrderByItems，未见 FILTER 字段；构造先推断类型，GetAggFunc 按名称构造 count/sum/avg，Split 为 AVG 生成 count/sum 两列的最终输入。现有类型规则为 MySQL COUNT longlong、整数 SUM/AVG decimal、浮点 double，不能证明 PG 重载或 FILTER 已接线。 |
+| [aggregation.rs](../pkg/expression/aggregation/aggregation.rs)：`Aggregation`、`AggEvaluateContext`、`aggFunction::CreateContext`；[count.rs](../pkg/expression/aggregation/count.rs)：`countFunction::Update` / `GetResult`；[sum.rs](../pkg/expression/aggregation/sum.rs)：`sumFunction`；[avg.rs](../pkg/expression/aggregation/avg.rs)：`avgFunction::Update` / `GetPartialResult` / `GetResult` | 每组 context 初值 Count=0、Value=NULL，可带 DISTINCT checker；COUNT 跳过 NULL、最终阶段累加局部计数；SUM 委托 updateSum，AVG 保存并合并 count/sum，decimal 最终化使用 MySQL div_precision_increment 与 scale。不是普通标量工厂逐行求值的替代形式，也不是 PG 精度/错误证据。 |
+| [builder.rs](../pkg/executor/builder.rs)：`BuildTypedPhysicalPlan`、`build_typed_physical_plan`；[typed_hash_agg.rs](../pkg/executor/typed_hash_agg.rs)：`TypedHashAgg::new` / `prepare` / `update_row`、`update_aggregate` / `finish_aggregate` | PhysicalHashAgg 传 AggFuncs、GroupByItems、context 给 TypedHashAgg；它另持每组 AggregateState，按编码 key 分组及去重，空输入仅无 GROUP BY 时补一个组；RetTp 生成 schema。已读更新路径未消费 OrderByItems，也未见逐聚合 FILTER；COUNT 使用 wrapping_add。此为可复用执行链入口，不证明 PG 分组相等、排序、溢出或两条聚合路径等价。 |
+| [count_test.rs](../pkg/expression/aggregation/count_test.rs)：`dedup_mode_does_not_produce_a_count`；[avg_test.rs](../pkg/expression/aggregation/avg_test.rs)：`zero_count_float_partial_state_matches_go_ieee_division` / `zero_count_decimal_partial_state_matches_go_logged_error_result` | COUNT 仅断言 DedupMode 不计数；AVG 人工构造非 NULL sum/零 count，分别预期 infinity/非 NULL 零 decimal，不能用来证明正常空输入的 PG NULL 行为。独立测试由 aggregation/lib.rs 挂载，均未运行。 |
+| [typed_hash_agg_test.rs](../pkg/executor/typed_hash_agg_test.rs)：`typed_hash_agg_groups_across_input_pages_and_pages_output`、`typed_hash_agg_scalar_empty_input_emits_count_zero` | 经 BuildTypedPhysicalPlan 构造真实 scan/HashAgg，断言跨输入页两组 count 为 2/1、空全局输入一行 count=0；executor/lib.rs 挂载。未覆盖本块 PG FILTER、排序、numeric 元数据或协议，不能据此升级 SQL 支持。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -1918,6 +1930,32 @@ PG 运算符候选按第 2 章可见环境筛选：限定 `OPERATOR(pg_catalog./
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§10.2 运算符解析](https://www.postgresql.org/docs/18/typeconv-oper.html)与[pg_operator](https://www.postgresql.org/docs/18/catalog-pg-operator.html)支持候选/元数及输入、结果、实现函数身份分离；[§9.3 数学运算](https://www.postgresql.org/docs/18/functions-math.html)定义整数向零截断及非整数除法，[§9.4 字符串运算](https://www.postgresql.org/docs/18/functions-string.html)定义 text 拼接，[§9.2 比较谓词](https://www.postgresql.org/docs/18/functions-comparison.html)定义 NULL 安全比较。固定 **REL_18_0** [pg_proc.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.dat) 的 int4div/textcat 与 [pg_proc.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_proc.h) 的 strict/immutable 默认值支持对应属性；[int.c::int4div](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/int.c)支持除零/最小值除 -1，[附录 A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持错误分类。18 大版本手册与 18.0 静态源码不等于 18.6 差分证据，本轮没有参考端运行结果。
 
+#### 普通聚合调用契约
+
+继承“三层身份与契约模板”，普通 aggregate 独立于 scalar/window/ordered-set/SRF：分析绑定可见聚合签名与固定结果身份，执行器为每个分组创建状态、逐行 transition、最后 finalize；server 只编码最终值。规范实现候选 `aggregate.count.nonnull/v1`、`aggregate.sum.typed/v1`、`aggregate.avg.sum-count/v1` 是文档身份，不是新增 API 或共享批准。输入、过渡状态和返回类型必须分别记录；下面的状态是所需逻辑信息，不要求复制 PG 内部布局。
+
+| PG 代表输入签名 | 逻辑过渡状态与最终结果目标 |
+| --- | --- |
+| count(*)、count(单个已定型标量) | 非负计数，初值 0；前者计输入行，后者仅计非 NULL。返回 int8，即使无行仍为非 NULL 0。星号是调用形式，不是 NULL 参数；多表达式 COUNT 不借 MySQL 多参规则开放。 |
+| sum(int2/int4)、sum(int8/numeric) | 保存是否见非 NULL 及精确和；前组返回 int8，后组返回 numeric。状态须足够保存目标结果及溢出信息，不按输入整数宽度截断；无有效输入返回同型 SQL NULL。 |
+| avg(int2/int4/int8/numeric) | 保存非 NULL 计数及足够精度的和，最终一次相除返回 numeric；不能平均各局部平均数，也不能继承 MySQL div_precision_increment 作为 PG 精度规则。无有效输入返回 numeric NULL，不进行除零。 |
+| sum(float4/float8)、avg(float4/float8) | 保存浮点累计所需信息和有效计数；SUM 分别返回 float4/float8，AVG 均返回 float8。不能因共享 f64 容器改写 SUM(float4) 身份；相加顺序、舍入及非有限值策略须另取运行证据，不承诺任意重排等价。 |
+
+FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的参数/去重/排序和状态更新，false/NULL 均排除；不等于整条查询 WHERE，不能删掉其他聚合或已有分组。DISTINCT 按已定型输入的相等/排序资格去重，不能把编码字节相等直接当 PG 等价；本组 count/sum/avg 忽略 NULL。聚合内 ORDER BY 负责 transition 输入次序，独立于最终结果行 ORDER BY；DISTINCT 与排序并用时，排序表达式只能引用 DISTINCT 参数列表。普通聚合可无排序，WITHIN GROUP 及 OVER 另块处理。空全局聚合仍产一行，空分组输入没有组/没有结果行；已形成的组即使 FILTER 全排除也须保留其 0/NULL 结果。
+
+| 首块模板字段 | 本块填写与缺口 |
+| --- | --- |
+| 关联/分类/名称/别名/可见性 | 关联 AGG-CALL 五组与上述规范候选；PG count/sum/avg 及 pg_catalog 限定名按第 2 章可见，MySQL COUNT/SUM/AVG 保留自身聚合调用。相同名称不批准跨方言别名、状态或最终化共享。两入口正式 PG 签名接线未验证。 |
+| 重载/隐式 cast | 只覆盖表列数值和 count 的单标量/星号；unknown、typed NULL 与参数 OID 0 沿前块 resolver 和第 3 章 I 资格，Bind 换值不选新签名。显式 text 不擅自转 numeric 以通过 sum；interval/money 等其他重载不在本代表验收域。 |
+| NULL/求值条件 | 按上述行级 NULL/无行/组规则；最终 aggregate 不能套标量 strict(NULL) 直接返回 NULL，count 必须返回 0。FILTER 排除行不执行该行 transition；常量子表达式仍可能提前折叠报错，不承诺 SQL 从左到右求值或规避所有规划期错误。 |
+| collation/时区/会话 | 本组数值和整数分组不涉及文本 collation 或时区算术，输入转换、名称解析仍消费连接环境；count 的通用文本 DISTINCT/分组须另证明 collation 等价，本轮不泛化。记录编码、MySQL sql_mode/div_precision_increment，PG 不继承后者。 |
+| 确定性/折叠/副作用 | 固定输入多重集和合法次序下的纯聚合目标，无数据写入；依赖行集合，不能因参数为常量当成单次标量折叠。浮点重排可能改变结果，不新增 immutable/parallel-safe、跨连接缓存或消除排序许可；具体优化属性未取证。 |
+| 返回/值域/修饰符/wire | 按上表固定身份：PG int8 20/8/-1、numeric 1700/-1/-1、float4 700/4/-1、float8 701/8/-1（OID/typlen/typmod，沿第 3 章）。输入 numeric(p,s) 不强行继承结果 typmod；NULL/无行不改描述，过渡状态不发给客户端。MySQL COUNT 为自身 BIGINT、精确数 SUM/AVG 为 DECIMAL、近似数为 DOUBLE；精确 flags/length/decimals/charset 待参考采集。 |
+| 局部/最终/共享/下推 | 默认不新增许可；分别证明状态初值、跨组隔离、合并与空局部、精度/溢出/错误时点及最终类型。AVG 合并 sum/count 后一次最终化；跨分区重复值不能只相加局部 DISTINCT 结果，ORDER BY/FILTER 不能丢失。PG 手册支持 partial mode 不证明 AsterSQL 的 Split、typed 路径或 TiPB 下推已等价。 |
+| 错误字段/阶段/证据 | 合法项成功无错误；无匹配 sum(text) 目标 42883。非法 DISTINCT/排序组合须拒绝，无成功行，精确 SQLSTATE/消息/位置待参考采集；计数及有界整数结果溢出不能 wrapping 或变 NULL，PG 数值越界沿第 3 章 22003。记录实际分析/折叠/transition/final 阶段及 S/V/C/M、适用 D/H/P；MySQL 保持原 code/SQLSTATE/警告，具体映射未采。有效运行用例 0。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.21 聚合函数](https://www.postgresql.org/docs/18/functions-aggregate.html)定义三种代表的输入、返回、NULL 及 partial-mode 能力；[§4.2.7 聚合表达式](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-AGGREGATES)定义星号、DISTINCT、FILTER 与聚合内排序；[§36.12 状态/最终化与 partial aggregation](https://www.postgresql.org/docs/18/xaggr.html)区分输入/状态/结果类型及 combine 责任。协议、类型和错误字段沿本章模板及第 3 章。以上不是 18.6 的运行证据，精确补丁版本与参考端仍未核实。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -1967,6 +2005,10 @@ PG 运算符候选按第 2 章可见环境筛选：限定 `OPERATOR(pg_catalog./
 #### 运算符调用契约
 
 不实现 PG operator resolver、表达式工厂、cast、codec、目录或测试设施，不改 Go/MySQL 算法及 sql_mode。只取整数/非整数除法、文本拼接和 int4 NULL 安全比较；数组/range 运算符登记为后续独立族，不能借 `||` 同符号或 lower/upper 已注册推定支持。其他数值/文本混合重载、完整算术库、行/复合比较、用户自定义运算符及扩展生态不在本块。语法优先级和谓词节点归第 2 章，算术值域/规范类型归第 3 章，系统目录/协议生命周期归工作流 6/7；不运行 Cargo、数据库或差分平台。
+
+#### 普通聚合调用契约
+
+不实现 FILTER 载体、排序器、PG numeric 或新的聚合执行器，不修复两条现有聚合路径的精度/溢出差异，不扩展完整聚合库、分布式状态序列化或测试平台；窗口 frame/逆转移、WITHIN GROUP 的 direct arguments、有序集合及 SRF 留给独立调用模型。现有 MySQL/Go 行为继续保留，不用 PG 规则重写；共享、局部/最终和下推缺证分别交后续聚焦工作，不阻塞本块文档交付。
 
 ### 验收
 
@@ -2134,6 +2176,22 @@ PG 运算符候选按第 2 章可见环境筛选：限定 `OPERATOR(pg_catalog./
 
 PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / `OPERATOR(pg_catalog.||)`，NULL 安全谓词无 OPERATOR 同名形式，不适用该检查。四组成功/NULL 在 Q 与扩展 Parse/Bind/Describe/Execute 核对值、OID/typlen/typmod、文本/二进制格式，参数重绑与零行描述不改型；MySQL 核对 Query、Prepare/Execute、参数 NULL 重绑及零行列定义。错误可能在分析、折叠或执行阶段，分别保留原字段，不能强制所有错误都在 Parse；PG 参数版补执行与恢复证据。交错 PG/MySQL 连接与 MySQL 两种 pipes 模式，确认缓存保留方言/会话签名。元数据及诊断尚未采集，四组有效运行用例数均为 0，文档结构通过不能升级为功能通过。
 
+#### 普通聚合调用契约
+
+以下 AGG-CALL 五组全部为**待新增、未运行**目标。每组分别比较 AsterSQL PG/参考 PG 与 AsterSQL MySQL/自身参考端，名称均目标可见；PG 另重复 pg_catalog 限定名。固定无同名用户/扩展遮蔽、UTF-8、MySQL div_precision_increment=4，合法项无错误，除显式 SQL NULL 外非 NULL。PG t 用表列出的定型 VALUES；MySQL 用等值 `SELECT CAST(... AS SIGNED/DECIMAL/DOUBLE) ... UNION ALL ...` 派生表，不发送 PG 的 ::/VALUES/FILTER 语法来冒充比较。
+
+| 场景 | PG 输入、值/NULL/类型及错误目标 | MySQL 自身入口目标与限制 |
+| --- | --- | --- |
+| AGG-CALL-EMPTY：无行全局 | `SELECT count(*) AS n,count(x) AS c,sum(x) AS s,avg(x) AS a FROM (SELECT 1::int4 AS x WHERE false) t`→一行 (0,0,NULL,NULL)，类型 (int8,int8,int8,numeric)。补 `GROUP BY x`→零行，四列类型仍固定。 | 等值空表 `(SELECT CAST(1 AS SIGNED) AS x WHERE 1=0) t` 运行同投影→一行 (0,0,NULL,NULL)，BIGINT/BIGINT/DECIMAL/DECIMAL；加 GROUP BY x→零行，保留列定义。 |
+| AGG-CALL-NULL：全 NULL | 对 `(VALUES(NULL::int4),(NULL::int4)) t(x)` 运行同四列投影→(2,0,NULL,NULL)，类型同 EMPTY；区别无行与两行全 NULL。 | `(SELECT CAST(NULL AS SIGNED) AS x UNION ALL SELECT CAST(NULL AS SIGNED)) t`→同值/NULL，自身 BIGINT/BIGINT/DECIMAL/DECIMAL；不把 0 行、NULL 和 decimal 零混同。 |
+| AGG-CALL-GROUP：分组与状态隔离 | 对 `(VALUES(1,1::int4),(1,3::int4),(2,NULL::int4)) t(g,x)`，`SELECT g,count(*),count(x),sum(x),avg(x) ... GROUP BY g ORDER BY g`→(1,2,2,4,2)、(2,1,0,NULL,NULL)，g 为 int4，其余同 EMPTY。每组加 `FILTER (WHERE false)`→各自 (g,0,0,NULL,NULL)，两组仍存在；NULL 分组键另补两行 NULL 键应同组。 | 等值 SIGNED 派生表，同无 FILTER 查询→相同值/NULL，g 为自身整数，其余自身类型。保留 NULL 键同组目标；FILTER 版本不要求 MySQL 可见，不把删除所有行的 WHERE 改写作等价证据。 |
+| AGG-CALL-DISTINCT-FILTER：重复/筛选/排序 | t=`(VALUES(1::int4,true),(1::int4,false),(2::int4,true),(NULL::int4,true),(9::int4,NULL::bool)) t(x,keep)`；普通四列投影→(5,4,13,3.25)。另独立查 `count(*) FILTER (WHERE keep),count(DISTINCT x) FILTER (WHERE keep),sum(DISTINCT x ORDER BY x DESC) FILTER (WHERE keep),avg(DISTINCT x) FILTER (WHERE keep)`→(3,2,3,1.5)，类型同 EMPTY。`sum(DISTINCT x ORDER BY keep)` 须拒绝，无成功行，精确诊断待采；普通数值结果相同不能单独证明排序器执行过，需局部有序输入轨迹证据。 | 等值 SIGNED x 与 1/0/NULL keep，普通四列→(5,4,13,3.25)/自身类型；不加 FILTER 的 `COUNT(DISTINCT x),SUM(DISTINCT x),AVG(DISTINCT x)`→(3,12,4)。用 `COUNT(CASE WHEN keep THEN 1 END),COUNT(DISTINCT CASE WHEN keep THEN x END),SUM(DISTINCT CASE WHEN keep THEN x END),AVG(DISTINCT CASE WHEN keep THEN x END)`→(3,2,3,1.5)，仅本夹具值对照，不批准通用 FILTER 改写或 MySQL 聚合内 ORDER BY。 |
+| AGG-CALL-NUMERIC：结果身份与错误 | 各 T∈int2/int4/int8/numeric/float4/float8，分别 `SELECT sum(x) AS s,avg(x) AS a FROM (VALUES(1::T),(2::T)) t(x)`→(3,1.5)；SUM 类型依次 int8/int8/numeric/numeric/float4/float8，AVG 前四 numeric、后两 float8。追加 `sum('x'::text)`→42883；sum(x) 对两个合法 '9223372036854775807'::int8→18446744073709551614/numeric，不得先按 i64 溢出。 | 分别 SIGNED、DECIMAL(10,2)、DOUBLE 的 1/2 派生表，SUM/AVG→3/1.5，前两自身 DECIMAL、后一 DOUBLE，精确文本尾零与 metadata 待采；SIGNED 的两个 9223372036854775807 求和保持自身 DECIMAL 域。PG sum(text) 拒绝不强加 MySQL，字符串转换/警告依自身参考端另采。 |
+
+每组 PG 成功/NULL/零行覆盖 Q 与 Parse/statement Describe/Bind/portal Describe/Execute；参数化输入用 `$1::int4` 等固定类型，text/binary 参数×结果四组合，非空/NULL 重绑不换 OID/typmod，Execute 不重发描述。count=0 与 SQL NULL 分开核对载荷，MySQL Query/Prepare/Execute 同样记录列定义和 NULL bitmap；错误独立记录真实阶段/字段，不能用缺工厂或 codec 失败当目标拒绝。两 PG 连接与 MySQL 交错调用，验证签名、状态及会话策略不串线。
+
+局部/最终与下推另需计划/状态证据：将 1、1、2 分在不同局部分区（夹带空分区），核对全局 DISTINCT count=2、sum=3、avg=1.5；将 [1] 与 [2,3,4] 分开，AVG 最终=2.5，不能平均 1 与 3 得 2。比较单阶段及合法合并的值/NULL/类型/错误，验证 FILTER 各自独立及排序信息保留，浮点另外记录次序/舍入差异；未获此证据不批准共享或下推。当前五组及此门禁有效运行用例均为 0，结构检查不表示功能通过。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2207,6 +2265,12 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 后续仅交接三个窄边界：整数/numeric `/` 的签名、值域与除零策略；text/text `||` 的 strict 拼接及模式隔离；int4 NULL 安全谓词的比较绑定与 bool 返回身份。各边界先核实 PG 语法节点 → 已选签名 → 正式工厂/求值链 → server 元数据，再决定能否复用局部算法，不另建一套求值器，不预先生成实现任务。
 
 依赖第 2 章语法/名称环境、第 3 章类型及 cast、工作流 6 的运算符身份和 7/8 的协议/参考端证据；数组/range 运算符另族定义输入形状、重载与 NULL 后再验收。工厂或类型基础缺口登记为实现阶段依赖，不扩大本轮文档任务，也不阻塞已完成的文档交付；普通聚合沿下一块独立调用模型继续。
+
+#### 普通聚合调用契约
+
+后续仅交接三个窄边界：已选 aggregate 签名/固定返回身份到描述符；每聚合 FILTER、DISTINCT、排序到每组 transition/finalize；最终结果身份到 server 两协议描述。依赖第 2 章语法与名称、第 3 章类型/I 转换及前块 resolver，优先复用现有聚合链并先证明两条执行路径等价。局部/最终与下推须另过上述状态合并门禁；窗口、有序集合和 SRF 分别交后块，不提前生成代码任务。
+
+来源映射：蓝图任务步骤 4 的 aggregate 独立调用模型由模块链及状态表覆盖；步骤 3 全部模板字段由本块差异表填写。无行全局、全 NULL、分组、重复/FILTER、数值返回分别映射 AGG-CALL-EMPTY/NULL/GROUP/DISTINCT-FILTER/NUMERIC，聚合内排序及局部/最终另有正反例和补证要求。人工审阅与首块三层身份、第 3 章固定类型及前块不默认共享的规则一致，未改第 1–3 章或其他正文。correctness/兼容性仅为文档目标，运行未验证，性能无结论。
 
 ## 5. SQL会话与事务语义
 
