@@ -1719,6 +1719,17 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 | [aggfuncs/builder.rs](../pkg/executor/aggfuncs/builder.rs)：`build`、`build_approx_percentile`；[func_percentile_test.rs](../pkg/executor/aggfuncs/func_percentile_test.rs)：`percentile_selects_one_based_ordinal_and_ignores_nulls`、`percentile_matches_go_boundaries_memory_and_reset_lifecycle` | 工厂选择 ApproxPercentile，第二参数取 i32 常量百分数；独立测试用 50 选中位样本、忽略 NULL、合并清空源，0 的 result 为 None。不是 PG 0–1 比例、连续插值或比例 0 取首值的证据，不批准直接别名。 |
 | [window_func_test.rs](../pkg/executor/aggfuncs/window_func_test.rs)：`test_window_functions`；[typed_hash_agg_test.rs](../pkg/executor/typed_hash_agg_test.rs)：`typed_hash_agg_honors_cancellation_before_consuming_child` | 前者直接断言 CUME_DIST、PERCENT_RANK、RANK 等窗口状态；后者经 BuildTypedPhysicalPlan 检查取消错误。分别由 aggfuncs/lib.rs、executor/lib.rs 挂载。两者均非有序集合聚合 SQL/协议证据；排名窗口不能替代 percentile 的聚合模型。 |
 
+#### 集合返回函数契约
+
+静态基线 `ab189d0855f92c0fa88a9960407bd2f155eb7563`（2026-10-23）；已核对批次 1–15 的连续文档提交及五节对应正文，累计前置依赖满足。通过 RustCodeGraph status/explore/query/定点 node 读取以下入口，模块挂载由 rg 补查；expression、executor、server 包均无 doc.go。源码和独立测试只证明静态接线及断言意图，本轮未执行测试。
+
+| 实际入口/符号 | 责任与证据限制 |
+| --- | --- |
+| [builtin.rs](../pkg/expression/builtin.rs)：`registeredFunctionClass::getFunction`、`invoke_factory` | 验证参数数目后返回单个 builtinFunc；沿前块标量链复用名称/类型能力，不据此宣称存在 SRF 的行生成接口。图查询 generate_series 无符号命中仅是检索结果，不是全仓不支持的证明。 |
+| [physical_plan_runtime.rs](../pkg/executor/physical_plan_runtime.rs)：`projection_columns`、`project_row`、`ExecutePhysicalPlan` | 已读投影只接受解析后的列索引，project_row 返回一个 Row，不能承载每调用零至多行、关联重启或多个 SRF 的协调耗尽；执行入口不是通用 SRF 接线证据。 |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)：`CatalogQuery::project`、`reject_projection_unnest`、`unnest_projection` | 目录专用投影与 ARRAY 子查询有受限处理，后者仅接受 unnest 列及其 cast，嵌入普通表达式的 unnest 有明确 0A000 拒绝。此处是目录边界，不能推广到用户表 FROM/LATERAL 或普通 SELECT。 |
+| [pg_catalog_query_test.rs](../pkg/server/pg_catalog_query_test.rs)：`catalog_datagrip_scalar_and_lateral_bounds`；[pg_query_test.rs](../pkg/server/pg_query_test.rs)：`simple_query_roundtrip` | 前者断言 DataGrip 目录函数关系的 ordinality/列别名，并预期目录 CROSS JOIN generate_series(1,2) 报 0A000；后者断言 SELECT 1 的 TDCZ、值、OID 20、文本格式及 NULL/空串区别。均由 server/lib.rs 挂载；前者不是通用 SRF 通过，后者不是 int4 SRF 元数据证据。 |
+
 ### 目标行为
 
 #### 三层身份与契约模板
@@ -2014,6 +2025,23 @@ FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的�
 
 官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.21 表 9.64](https://www.postgresql.org/docs/18/functions-aggregate.html#FUNCTIONS-ORDEREDSET-TABLE)给出签名、NULL/比例及 partial-mode 规则；[§4.2.7](https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-AGGREGATES)定义 WITHIN GROUP、direct 参数与 FILTER；[§36.12.3](https://www.postgresql.org/docs/18/xaggr.html#XAGGR-ORDERED-SET-AGGREGATES)说明 transition/final 的不同参数、排序状态与不能作为窗口调用。以上只支持大版本 18 目标，未建立精确 18.6 参考实例或差分结论；下列值是据规则推导的目标，不是数据库实测。
 
+#### 集合返回函数契约
+
+引用“三层身份与契约模板”，以 `generate_series` 整数序列和单数组 `unnest` 为首批候选，文档能力 ID 为 `FUNC-SRF-SERIES/pg`、`FUNC-SRF-UNNEST/pg`，规范实现候选为 `srf.series.integer/v1`、`srf.array.elements/v1`；不是现有 API 或已批准共享。每次调用返回零至多行，各行列结构在分析时确定，不能把集合塞入一个标量值或用一行 NULL 代替零行。
+
+| 模板字段 | 方言目标、依据及证据缺口 |
+| --- | --- |
+| 分类、名称/别名、可见性 | PG 专属 SRF，generate_series/unnest 及 pg_catalog 限定形式按第 2 章解析；MySQL 入口不得由共享注册意外获得此 PG 调用模型，已有 MySQL 行为保留。无跨方言别名批准，两入口隔离未实测。 |
+| 重载、隐式 cast、列数/返回身份 | generate_series(int4,int4[,int4])→setof int4、int8 同型重载→setof int8，省略步长为 1；单参数 unnest(anyarray)→setof anyelement，解析后固定具体元素类型。代表验收固定 int4/int4[]、一列 v；仅消费第 3 章 I 资格，不由首行或 NULL 推断类型。多数组 unnest 仅 FROM 合法，每数组贡献一列且短数组补 NULL；这是独立扩展边界，不把它当标量多参重载。 |
+| NULL、值域与错误 | 序列参数任一 typed NULL 产生零行；步长符号与区间方向相反产生零行，端点在步进能到达时包含，零步长须错误。unnest 的 NULL 数组及空数组产生零行，数组中的 NULL 元素产生一行 SQL NULL，按存储次序展开，重复元素保留。整数边界终止须避免加法回绕/无限循环；边界用例与 NULL/零步长混合的错误优先级待参考采集，不伪造结果。 |
+| 调用位置与关联语义 | FROM 中是行源；函数实参可引用左侧输入，LATERAL 关键字可省略。每个关联输入重新建立调用状态，CROSS JOIN 空集合消除外行，LEFT JOIN LATERAL … ON true 则保留外行并补 NULL。目标也包含 SELECT 投影中的单 SRF 展开：每外行耗尽后再处理下一外行，空集合不输出该外行；不是普通 project_row。多个投影 SRF 同步取第 n 项，短者补 NULL，行数取最长者；CASE/COALESCE 内的 SRF 须在分析阶段拒绝，不静默截成首值。多个/嵌套 SRF 的实施需独立证据后开放。 |
+| 生命周期、确定性、折叠与副作用 | 整数序列及已定型数组展开对固定输入可重复、无用户数据写副作用；不把所有时间重载据此定为 immutable。每调用持有游标/结束标记与固定输出描述，耗尽、重扫、取消、错误、提前 LIMIT 和关闭均须释放或重置；协议暂停后恢复不得丢行/重复或串到下一外行。可优化常量集合但不得按一个标量折叠，资源实现可复用既有执行器，不另建 PG 执行系统；以上均未运行。 |
+| collation、时区及独立重载 | 代表 int4 序列/数组展开不进行文本排序或时间计算，collation/时区不适用；unnest 保留元素及其类型身份，不借 MySQL 字符串重排。numeric 序列、timestamp+interval→timestamp、timestamptz+interval[+timezone]→timestamptz 仅列独立重载边界，后者涉及显式 timezone 或会话 TimeZone 与 DST；不得由整数候选推断时间重载已支持。 |
+| wire 元数据与格式 | 返回每个元素而非数组/游标状态；int4 为 OID 23/typlen 4/typmod -1，int8 为 20/8/-1，unnest int4[] 结果为 23/4/-1。AS v 固定列名，表达式来源表/属性号 0；零行仍可 Describe，NULL 载荷长度 -1，无 wire 可空性位。Q 与 Parse/Describe/Bind/Execute 分别核对文本/二进制、参数身份、实际行数及暂停恢复，MySQL 拒绝时无成功结果描述；当前两入口未采集。 |
+| 下推、错误字段与证据 | 默认不批准跨方言下推或用标量 TiPB 签名代替 SRF；须证明基数、顺序、NULL、溢出终止、关联重扫与取消等价。零步长目标错误、无成功值；非法签名/位置分别采集 S/V/C/M 与适用 D/H/P 和分析/执行阶段，精确 SQLSTATE、消息、位置未取参考证据，不把目录 0A000 当 PG 通用语义。正确性/兼容性仅为目标，无性能结论，有效运行用例 0。 |
+
+官方依据（2026-10-23 查阅，PostgreSQL **18**）：[§9.26](https://www.postgresql.org/docs/18/functions-srf.html)给出序列签名和方向/步长/NULL 规则；[§9.19](https://www.postgresql.org/docs/18/functions-array.html)定义 unnest 元素展开与多数组形态；[§7.2.1.4–5](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-TABLEFUNCTIONS)定义 FROM、关联函数与外连接；[§36.5.9](https://www.postgresql.org/docs/18/xfunc-sql.html#XFUNC-SQL-FUNCTIONS-RETURNING-SET)定义投影中的集合展开、同步补 NULL 及条件构造拒绝。目标值由这些规则推导，没有精确 18.6 参考实例或差分结果；wire 字段沿第 3 章与本章首块，不用大版本手册提升运行证据等级。
+
 ### 范围外
 
 #### 三层身份与契约模板
@@ -2075,6 +2103,10 @@ FILTER 是每个聚合自己的输入门禁，仅 true 的行进入该聚合的�
 #### 有序集合聚合契约
 
 hypothetical-set（rank、dense_rank、percent_rank、cume_dist 的 WITHIN GROUP 形式）单列范围外；同名窗口实现不证明其 hypothetical 行注入、direct/排序参数配对或状态可用。不实现 percentile 数组比例重载、mode、完整可排序类型库、PG 排序器/内存溢写、分布式 partial 状态、AST/协议代码或测试平台；不修复现有 APPROX_PERCENTILE 的 MySQL 行为。发现的类型/codec 缺口交对应边界，不递归补建子系统。
+
+#### 集合返回函数契约
+
+不实现 SRF AST/分析器、工厂/迭代器、LATERAL 计划、投影展开、数组类型/codec、协议 portal 或测试设施；不改目录特例、不扩大为完整函数库。时间/numeric 序列、多数组/复合记录输出、WITH ORDINALITY、多个及嵌套投影 SRF 留作独立扩展证据边界，不能在未实现时静默采用标量行为。类型/名称归第 2/3 章，目录事实和会话/协议生命周期归工作流 6、5/7；本块仅定义接口责任与代表目标。
 
 ### 验收
 
@@ -2285,6 +2317,20 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 人工验收须同时核对 direct/排序输入载体、每组状态生命周期与上述输入/结果/类型/错误/可见性映射。PG Q 与扩展协议分别采值、NULL、OID/长度/typmod、格式与 ErrorResponse；MySQL 入口采自身错误码/SQLSTATE/消息并保留旧函数回归。当前文档结构/路径/差异检查通过只能证明文档交付，不提升 S/V/C/M 或 D/H/P，不表示有序集合聚合已经接线。
 
+#### 集合返回函数契约
+
+下列五组是目标用例，不是已运行 SQL。除关联组外统一运行 `SELECT g.v FROM generate_series(a::int4,b::int4,h::int4) AS g(v)` 与 `SELECT generate_series(a::int4,b::int4,h::int4) AS v`；a/b/h 为执行前替换的表中参数占位符，unnest 组使用表列 SQL。结果序列表示生成次序；客户端比较若要求结果有序，应增加显式排序（需保留原展开顺序时另验 WITH ORDINALITY），不能依赖无 ORDER BY 的最终输出顺序。
+
+| 场景 ID/输入 | PG 目标值、NULL、列类型/错误 | 两入口可见性与证据等级 |
+| --- | --- | --- |
+| SRF-DIRECTION：a/b/h=(1,3,1)、(3,1,1)、(3,1,-1)、(1,3,-1)、(2,2,1) | 分别生成 1/2/3、零行、3/2/1、零行、单行 2；单列 int4，零行也保持描述，不能生成一行 NULL。 | PG FROM/投影及 Q/扩展协议均为目标；MySQL 拒绝此 PG SRF，保留旧函数。官方规则推导＋本地静态证据，未运行。 |
+| SRF-ZERO：a/b/h=(1,3,0) | 错误、无成功值，不循环、不改成默认步长；错误字段/时机待参考采集，不能以本地 panic 代替 ErrorResponse。 | PG 两位置、两协议采错误；MySQL 按自身协议采拒绝，不复用 PG 错误文本；未实测。 |
+| SRF-NULL：分别只把 a、b、h 换 NULL::int4，其余为 1/3/1 | 各零行、单列 int4 描述不变；typed NULL 不变成一个 NULL 结果值。扩展协议以已定型参数 Bind NULL 重测。 | PG 可见、MySQL 隔离同上；分析后身份、NULL 基数及 codec 未运行。 |
+| SRF-ARRAY：`SELECT u.v FROM unnest(ARRAY[2,NULL,2]::int4[]) AS u(v)`；另将数组换 ARRAY[]::int4[]、NULL::int4[]；投影对应 `SELECT unnest(…) AS v` | 三行 2/SQL NULL/2、零行、零行，均单列 int4；不得混淆 NULL 数组、空数组和 NULL 元素。重复值不去重。 | PG 两位置/两协议验证，MySQL 不获得 PG 数组 SRF；类型依赖第 3 章，本轮仅官方推导及静态证据。 |
+| SRF-CORRELATED：`WITH t(id,n) AS (VALUES (1::int4,2::int4),(2,0),(3,NULL::int4)) SELECT t.id,g.v FROM t CROSS JOIN LATERAL generate_series(1::int4,t.n,1::int4) AS g(v) ORDER BY t.id,g.v` | 两行 (1,1)/(1,2)，两列 int4；改 LEFT JOIN LATERAL 并加 ON true，应再有 (2,NULL)/(3,NULL)。改为投影 `SELECT t.id,generate_series(1::int4,t.n,1::int4) AS v FROM t` 应仅两行；验证每外行重置，空/NULL 不泄漏前一次状态。 | PG Q 与已定型扩展协议采集；MySQL 拒绝此 PG 调用形态。LEFT 的补 NULL 来自外连接，不改变函数自身零行语义；未实测。 |
+
+人工审阅五组的输入、基数/值/NULL、固定类型、错误、两入口与证据层级映射。另以 `SELECT generate_series(1,2) AS a,generate_series(10,12) AS b` 定义多投影边界目标 (1,10)/(2,11)/(NULL,12)，禁止笛卡尔乘积或最短截断；CASE/COALESCE 内调用为分析错误采集边界。首批实现若未覆盖这些扩展形态须显式能力拒绝，不宣称完整投影支持。生命周期验收另采早停、取消、重扫与分段 Execute；当前文档检查不构成这些运行行为通过。
+
 ### 后续细分
 
 #### 三层身份与契约模板
@@ -2374,6 +2420,10 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 #### 有序集合聚合契约
 
 后续只交接三处窄边界：第 2 章 AST/分析区分 WITHIN GROUP、direct 参数和排序输入，关联前块 resolver 与第 3 章类型；现有聚合入口承载每组排序状态、NULL 排除、比例校验及 final 选值/插值，不复用局部分位数合并；最终结果身份交 server 两协议描述与错误映射。依赖普通聚合的分组/资源生命周期，禁止经窗口 frame 接线。hypothetical-set 和数组比例重载须另定契约再排实施，本轮不生成代码任务。
+
+#### 集合返回函数契约
+
+后续仅交接三个窄边界：第 2 章 AST/分析与前块 resolver 确定调用位置、关联依赖和第 3 章固定输出身份；复用执行器承载整数序列/单数组的零至多行迭代、重启/耗尽/取消，以及单 SRF 投影展开；server 按固定列描述输出并衔接 portal 暂停恢复。多 SRF 协调、时间序列重载与复杂输出各须独立契约/证据，不递归补建子系统、不把目录适配器当通用实现，本轮不生成代码任务。
 
 ## 5. SQL会话与事务语义
 
