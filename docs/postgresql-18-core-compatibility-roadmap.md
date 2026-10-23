@@ -3810,6 +3810,18 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 独立测试只读未执行：[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants、catalog_database_description_semantics含Parse后建/删库；pg_introspection_relations_live含Parse后原生RENAME、新portal看DROP/CREATE；pg_introspection_columns_live含DROP/ADD、MODIFY后类型/非空/默认刷新及prepared重用意图。原生RENAME TABLE/MODIFY并非PG ALTER已支持的证明。[pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback断言事务内CREATE的0A000/E及ROLLBACK恢复；prepared_dml_commit_and_rollback只提供DML连接观察意图，不证明事务型DDL隔离。Q/扩展工厂连线沿首块，当前测试不涵盖下列全部竞争时序。
 
+#### 命令行客户端内省流程
+
+承接来源步骤 1、4，能力 CAT-CLI/pg。批次 21 的提交 `600fac8b1e` 与此前 `946e9b2c20` 至 `7415cfbf46` 的 20 个五节契约及第 1–5 章正文已核对，前置文档交付满足；不以来源任务仍写未开始或编号文件删除推断实现状态。2026-10-24 在 `600fac8b1e` 基线检查 RustCodeGraph status 并定点读取以下入口；pkg/server/doc.go 不存在。本轮独立测试运行数为 0。
+
+| 客户端/入口 | 静态接线及最近独立测试意图；不是运行记录 |
+| --- | --- |
+| libpq | [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::pg_introspection_clients → run_clients(true)，以 CreateAnalyzeSession 的 domain、ConcreteSessionDriver::new_for_test(InsecureRootOnly)、CanonicalConnectionDomain 接入 Server::set_connection_runtime/run，Python ctypes 加载外部 libpq 执行 LIBPQ_WORKFLOW。PG_LIBPQ_LIBRARY 可选库路径，PQlibVersion 只断言 >=180000，并未固定精确补丁；循环协议 3.0/3.2，PQexec/PQexecParams 检查行/NULL/列名/PQftype，PQprepare/PQdescribePrepared/PQexecPrepared 检查 Parse 前建表前后行变化。服务声明 18.0 (AsterSQL) 不是参考 PG 版本。 |
+| psql | 上述测试没有 Command::new(psql) 或反斜线元命令执行；不能把 libpq 或 DataGrip SQL 的通过断言当作 psql 的数据库列表、关系列表、表描述证据。精确 psql --version、-E 原始 SQL、输出与退出码均待采集。 |
+| 共享目录及 wire 夹具 | [pg_catalog.rs](../pkg/server/pg_catalog.rs)::DATABASES_SQL 是现有数据库探针原文，CatalogQuery 与 Q/扩展工厂沿首块；[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_projection_variants 经 PgService::start 和手写 query/columns 读取消息，不是真实 psql。[pg_oid.rs](../pkg/server/pg_oid.rs)::namespace_oid/table_oid/index_oid 从持久原生 ID 映射，不能按客户端返回行序分配 OID。 |
+
+libpq 现有目录测试包含 DataGrip 来源查询、非空关系、类型正确空集、错误恢复及 prepared 建/删表闭环；其中 `live_catalog` 的 relname 描述断言为 text/25。它没有完整覆盖 psql 表描述、空用户库、真实非 owner 权限。JDBC 的 run_jdbc 与 DataGrip 查询归后续各自客户端块，不扩大本块范围。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -4194,6 +4206,21 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方目标来源（PostgreSQL 18，访问2026-10-24）：[PREPARE](https://www.postgresql.org/docs/18/sql-prepare.html)用于DDL/path引发重新分析及会话私有prepared；[事务隔离](https://www.postgresql.org/docs/18/transaction-iso.html)用于已提交观察边界，不能替代目录特殊行为实测；[pg_class](https://www.postgresql.org/docs/18/catalog-pg-class.html)、[pg_attribute](https://www.postgresql.org/docs/18/catalog-pg-attribute.html)用于字段及关联；客户端官方[psql 18](https://www.postgresql.org/docs/18/app-psql.html)的-E用于后续抓取内省SQL。以下均为人工契约探针，不声称psql生成过；精确客户端版本、18.6参考构建及运行行为均未取证。
 
+#### 命令行客户端内省流程
+
+沿首块证据模板，客户端能力分成 CLI-PSQL 与 CLI-LIBPQ；连接成功仅证明启动链。所有查询必须分别登记完整 SQL、位置参数/格式、描述、行、权限和元数据变化，真实客户端生成 SQL 与下方人工探针分别保存。
+
+| 查询字段/需求 | 真实来源、关联键及 PG 目标类型/OID | 权限/可见性、当前证据、目标和不支持策略 |
+| --- | --- | --- |
+| L 的 oid、datname | infoschema 库 ID 经 namespace_oid；oid/26、name/19；oid 对应数据库身份，非列的类型 OID | 可连接专用库且可读目录的 owner；数据库行不按当前 search_path 隐藏，CONNECT 与目录可读性分开。数据库块定义 owner/ACL 等其他字段；现有 libpq DATABASES_SQL 将 oid 强转 bigint/20、名称为 text/25，不能混作本投影目标。缺身份不得造 0 或空集。 |
+| R 的 oid、nspname、relname、relkind | TableInfo.id 经 table_oid；relnamespace=n.oid，nspname 来自库/schema 映射；依次 oid/26、name/19、name/19、"char"/18 | 显式 public 的目录查询与 psql 无限定模式列表的 path 可见性分别验收；沿关系/命名空间/可见性块。现有 libpq 关系测试 oid/26，名称和 kind 为 text/25，是已知类型差异。未提供必要关系不得假空集。 |
+| C 的 attrelid、attnum、attname、atttypid、atttypmod、attnotnull | TableInfo/ColumnInfo 同版事实；attrelid=c.oid，(attrelid,attnum)列键，atttypid=pg_type.oid；依次 oid/26、int2/21、name/19、oid/26、int4/23、bool/16 | owner、schema USAGE、目录读权限；沿列块的声明类型/删除槽位/非空规则。不由行值推类型；空表仍有完整列描述。当前客户端测试未覆盖本 C 全投影，待新增，不能由关系测试推断。 |
+| psql \l、\dt public.cli_probe、\d public.cli_probe 的全部实际投影 | 官方客户端 describe.c 生成并按版本/服务版本分支，涉及库、关系、列、定义、注释、权限及格式函数；逐条 SQL/每列按首块登记到上述字段块及索引/约束/默认/注释/权限块 | 目前原始 SQL 未采，输出字段和 OID 未取证，不能用 L/R/C 冒充实际生成查询。必要投影/函数缺失时记录分析或 Execute 的能力拒绝 0A000 与恢复，不能全局返回空集换取命令完成；目标合法流程仍为成功。 |
+
+name/19、"char"/18 的描述和 codec 门槛引用第 3 章及本章相应字段块，typlen/typmod/表 OID/属性号逐列记录，不能只比较文本。权限缺失沿角色权限块，不伪造 owner/ACL；合法空用户库应没有用户关系但保留系统目录与描述，权限拒绝不能解释为库空。
+
+官方目标依据（版本 PostgreSQL 18，访问 2026-10-24）：[psql 手册](https://www.postgresql.org/docs/18/app-psql.html)用于元命令及 -E；[libpq 执行和结果接口](https://www.postgresql.org/docs/18/libpq-exec.html)用于参数、描述、NULL 与结果状态；[官方 REL_18_STABLE describe.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)仅为生成查询的后续定位入口，可变分支不等于已锁定客户端构建。字段类型和目录关联的官方依据复用数据库/关系/列块。本轮无精确 psql/libpq 补丁版本及 PostgreSQL 18.6 参考构建，18.6 精确行为保持未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4285,6 +4312,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 目录更新与连接隔离
 
 本块不实现DDL、快照/锁/缓存失效，不修改provider或测试，不运行Cargo、Go或真实客户端。schema版本不作为PG新增目录字段对外暴露；不扩成全库对象生命周期或全部隔离级别支持。权限、OID、删除槽位及name codec缺口引用对应块，事务型DDL归第5章，wire/portal完整生命周期归第7章，客户端实际查询归后续客户端块。并发删库、角色撤权和临时对象需后续单独取证，不能由无连接缓存推出已安全。
+
+#### 命令行客户端内省流程
+
+本块仅定义 psql/libpq 最小真实目录流程与证据交接，不实现命令行驱动、完整 psql 元命令、客户端全部版本兼容或通用目录执行器。认证/TLS/取消/协议帧归第 7 章，真实运行与产物归第 8 章；JDBC/DataGrip/ORM 各自取证。不得为运行探针补建权限、类型或目录子系统；现有缺口作为后续实施输入。
 
 ### 验收
 
@@ -5022,6 +5053,31 @@ SELECT current_database();
 
 每轮从记录过的对象存在性恢复夹具，A/B/C先Sync（需要时）、ROLLBACK至I，由owner事务外删除实际存在的refresh_probe/refresh_renamed；断开目标库连接后管理连接删两专用库。临时加的第二关系同步清理。Q与扩展分别执行生命周期主链；拒绝记录S/V/C/M、适用D/H/P、原SQL、阶段和I/T/E，错误后SELECT 1恢复，未采精确错误文本/位置不填猜值。psql后续用-E抓取实际\d前后查询及版本，与上述人工探针分别保存，不以UI刷新成功代替字段/身份断言。
 
+#### 命令行客户端内省流程
+
+以下均为待新增/待运行的验收，无本轮客户端输出。两端各准备专用数据库 cli_catalog，owner 具有 CONNECT、public USAGE/CREATE 和目录读取权限；初始无 cli_probe，UTF8、空闲 I、search_path=public,pg_catalog。管理连接事务外建库，DDL 每条单独执行；清理 DROP TABLE IF EXISTS public.cli_probe 后由管理连接 DROP DATABASE cli_catalog，先断开其他连接。不能多语句隐式事务绕过第 5 章 DDL 门槛。
+
+人工契约探针原 SQL（参数 []，文本结果；L/R/C 均不声称由 psql 生成）：
+
+```sql
+-- L
+SELECT oid,datname FROM pg_catalog.pg_database WHERE datname='cli_catalog';
+-- R
+SELECT c.oid,n.nspname,c.relname,c.relkind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='cli_probe';
+-- C
+SELECT a.attrelid,a.attnum,a.attname,a.atttypid,a.atttypmod,a.attnotnull FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='cli_probe' AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum;
+```
+
+| ID/输入流程 | 目标行、描述、拒绝及所需产物 |
+| --- | --- |
+| CLI-LIBPQ-LIVE | 使用 PQexec 依次 L/R/C，初始 L 一行(D,cli_catalog)、R/C 零行但有完整目标描述；D 现场记录。`CREATE TABLE public.cli_probe (id integer NOT NULL, label varchar(7));` 后 R 一行(U,public,cli_probe,r)，C 两行(U,1,id,23,-1,true)、(U,2,label,1043,11,false)。`DROP TABLE public.cli_probe;` 后 R/C 零行，L 不变；重建同表获得新 U2≠U，字段不留旧值。逐列 PQfname/PQftype/PQfsize/PQfmod/PQftable/PQftablecol/PQfformat，PQntuples/PQgetisnull/PQgetvalue 与原始状态另存，NULL 不等于空字符串。类型 OID 按目标表，不沿用现有 text/25 近似。 |
+| CLI-LIBPQ-PREPARED | 初始空表名时 PQprepare R、PQdescribePrepared，零参数 OID[]；建表后 PQexecPrepared（参数值/长度/格式[]，resultFormat=0），删表后再次执行。准备描述固定且行从零→一→零；C 同样执行。另用 `SELECT oid,relname FROM pg_catalog.pg_class WHERE oid=$1::oid;`，参数类型[26]，值[U]，分别文本十进制与四字节网络序 binary，结果文本；目标列 oid/26、name/19，一行(U,cli_probe)，NULL 参数零行，删表后旧 U 零行。新 portal 刷新与旧 portal 续读沿目录更新块，不能混用。 |
+| CLI-PSQL-LIVE | 固定精确 psql 二进制，以 `psql --version` 记录版本，再对两端分别 `psql -X -E -v ON_ERROR_STOP=1 -d '<conninfo>' -f '<probe.sql>'`。占位 conninfo 由第 8 章注入实际地址/角色/库且脱敏；probe.sql 是待新增临时产物。按行写入 `\l cli_catalog`、`\dt public.cli_probe`，随后建表 SQL，再 `\dt public.cli_probe`、`\d public.cli_probe`，随后删表 SQL和再次同两条元命令；每条 SQL 单独一行。建表前/删表后无目标表；建表后列表一对象，描述有 id integer NOT NULL、label character varying(7)，不得出现虚构 owner/默认/约束。保存 -E 输出中的每条原 SQL、顺序、stdout/stderr、退出码及服务版本；无匹配表的客户端消息/退出策略以参考端实采，不能预造。 |
+| CLI-EMPTY/PRIVILEGE | 真正空用户库仍运行 L/R/C 与 psql 列表/描述，系统行不能被误判成用户表。分别准备无库 CONNECT、可 CONNECT 但无 public USAGE、无表 SELECT 的非 owner 角色（角色/授权命令沿权限块夹具，待新增）。无 CONNECT 在连接阶段拒绝，目标 SQLSTATE 42501；有连接但对象使用受限时，目录行、无模式限定列表、显式描述与 `SELECT * FROM public.cli_probe;` 分别观察。无表 SELECT 不能抹掉可读目录事实，访问表拒绝目标 42501；具体元命令隐藏/显示与诊断阶段、SQLSTATE、消息待参考端采证，不把 intruder 启动失败测试当授权覆盖。 |
+| CLI-RECOVERY | libpq 查询 `SELECT oid FROM pg_catalog.pg_missing;` 目标 42P01，随后 `SELECT 1;` 得一行1；扩展路径记录错误、Sync 和 I 状态。psql ON_ERROR_STOP 脚本拒绝后的退出码与完整错误另存，恢复用新连接 `SELECT 1;`，不要求已终止脚本继续执行。BEGIN 内恢复沿第 5/7 章，不新增事务实现。 |
+
+第 8 章运行时必须把每条 psql 实采 SQL 的每个投影补齐首块字段映射，记录实际客户端版本、libpq 加载路径/版本、两端构建、命令/退出码和有效用例数。当前缺失这些产物是明确的后续取证项，不能将文档验收完成写成客户端功能通过。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -5133,6 +5189,10 @@ Ready文档范围采用五节锚点、前置提交/正文、全部本块路径�
 后续分别拆为单次快照/provider屏障回归、DDL发布后R/C刷新、prepared结构失效与portal续读、跨库/连接上下文隔离，再单列事务型DDL开放后的提交/回滚目录观察。每项另建窄实施计划，优先复用上述独立测试，新增同步钩子明确标为待新增；不补建另一目录引擎。
 
 Ready文档范围采用五节锚点、前置提交及正文、引用路径存在性、字段→来源→目标→验收和diff审阅；.agents/skills/tidb-verify-profile/SKILL.md缺失，采用替代检查。正确性风险为版本混合与旧身份复用，兼容性风险为name类型、列槽位及prepared错误阶段，性能/锁等待未测。本文完成仅表示契约交付，下一批22继续其指定主题。
+
+#### 命令行客户端内省流程
+
+按 CLI-LIBPQ 的行/描述及参数闭环、CLI-PSQL 的固定版本 -E 查询采集、CLI-EMPTY/PRIVILEGE 的空库与权限各拆独立实施/取证任务；测试及 probe.sql 均待新增。复用现有 pg_client_integration_test.rs 的真实 domain 接线并保持测试与生产文件分离，不在本任务扩写代码。第 7 章承接 wire 描述/错误恢复，第 8 章运行冻结查询、DDL 前后列表/描述/删表重查并保存证据。运行揭示的字段、类型或权限缺口回交对应窄块，不扩大本块为完整客户端兼容工程。
 
 ## 7. 线协议认证与数据通道
 
