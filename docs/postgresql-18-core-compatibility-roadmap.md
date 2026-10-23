@@ -3632,6 +3632,19 @@ Q与扩展Parse/Describe/Bind/Execute工厂、共享快照、结果编码沿“�
 
 独立测试在 [lib.rs](../pkg/server/lib.rs) 注册。[pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_constraints_live 使用真实domain加原生DDL夹具，断言复合主键1 2、唯一列3、普通列2、定义、列号/越界NULL、向量OID22、PKIsHandle投影、引号、前缀拒绝与删除后空集；其prepared刷新直接断言的是外键约束，不能据此声称索引刷新已测。[pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::pg_datagrip_ui_metadata_core 读取 [RetrieveIndexColumns.sql](../pkg/server/testdata/pg_datagrip/RetrieveIndexColumns.sql)，断言(note,id)的顺序2/1及零基vector下标；该文件是仓库存量模板，未取得DataGrip精确版本、官方查询出处或客户端实采，不能标作UI通过。
 
+#### 约束目录与定义反解
+
+承接来源步骤1、2，能力 `CAT-CONSTRAINT/pg`。批次7提交 `84fb929330` 的索引五节正文、累计批次6/5/4/3/2/1的 `1807f7800b` / `af67d135cf` / `7ade409a9d` / `9bd191c612` / `b7ff2288b8` / `946e9b2c20` 以及第1–5章交接正文和提交均已核对，依赖满足；不以任务文件消失判断完成。以下为2026-10-24在 `84fb929330` 经 RustCodeGraph status/explore/query/定点node 阅读的静态证据；pkg/server与pkg/meta/model均无doc.go。本轮测试运行数0。
+
+| 实际路径/符号 | 当前事实与证据边界 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows / index_constraint_rows | pg_constraint和pg_index共用当前原生库的共享快照，要求ModelMeta、StatePublic且非视图/序列。catalog_indexes包含PKIsHandle虚拟主索引；所有Primary或Unique索引均投影p/u约束，包括无法区分来源的独立唯一索引，约束oid直接复用index_oid，conindid为该索引。普通非唯一索引不生成约束，但在过滤前也被校验，坏索引可使约束查询失败。没有角色过滤。 |
+| 同文件 index_constraint_rows 的FK分支 | 公开ForeignKeys的ID须正数、Cols/RefCols等长非空、RefSchema须为当前原生库；按原生表名找父表，以列原名查公开非隐藏列，Offset+1形成两侧数组。按父索引列顺序寻找公开Unique索引，conindid指向父索引、confrelid指向父表。oid=index_oid(子表ID,−2×FK.ID)，与正索引及虚拟−1分开，仍受OID范围门禁；没有独立分配器。父模型发布状态与方法等价性未在此完整校验，不能推断任意合法PG引用索引选择均支持。 |
+| 同文件 column_catalog_field / expr_type / evaluate | conkey/confkey为int2[]/1005，conexclop为oid[]/1028，contype及动作码为内部char/18；conname当前text/25。conbin绑定text/25但行值NULL；xmin为可空int8/20适配，非真实PG事务标识。deferrable/deferred/noinherit固定false；convalidated、conenforced、confmatchtype等没有字段绑定。反解绑定一/二参数签名，读取同一provider或fallback扫描的slot21，pretty参数只求值不改变文本；NULL参数返回NULL、未找到OID返回NULL。这是目录局部白名单，不证明普通SELECT函数工厂已注册。 |
+| [table.rs](../pkg/meta/model/table.rs)::ConstraintInfo / FKInfo | CHECK有ID、Name、Table、ConstraintCols、Enforced、InColumn、ExprString、State；公开CHECK当前使index_constraint_rows直接0A000，不伪造PG树。FK有ID、Name、RefSchema/RefTable、Cols/RefCols、OnUpdate/OnDelete、State、Version。两个结构均无PG deferrable/deferred/validated标记；StatePublic与FK.Version不等于验证完成证据。CHECK的Enforced不能代替Validated；索引Unique也不能证明约束来源。 |
+
+Q/扩展Parse→Describe→Bind→Execute工厂、共享ConcreteTiDBContext快照与结果编码沿“目录执行链与证据模板”；表/索引身份沿关系及索引块、属性号沿列块，不新建执行器。[lib.rs](../pkg/server/lib.rs)独立注册 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_constraints_live：真实domain夹具覆盖p/u、复合FK、父索引关联、1005/1028/18描述、删除FK后prepared重执行刷新及NULL/未知反解意图；无CHECK/延迟/验证状态的成功断言。独立 [pg_datagrip_test.rs](../pkg/server/pg_datagrip_test.rs)::pg_datagrip_structure读取 [1869280154.sql](../pkg/server/testdata/pg_datagrip/1869280154.sql)，断言唯一键{2,1}、索引关联、排除操作符NULL和展开空数组。模板18列及SQL是仓库证据，没有DataGrip版本/驱动/实际采集来源，不冒称官方客户端生成查询或本轮通过。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3762,6 +3775,27 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 所有字段自身typmod目标-1，text/binary及零行描述沿第3章；向量不能写成int2[]/oid[]，pg_node_tree不能写成text。仅当模型、目录辅助身份及方法行为均有等价证据时才输出可重建定义；Tp=Invalid不能无依据推断btree，Invisible/Global或本地前缀索引也不能默认为普通PG索引。若某形态不等价，产品目标0A000必须早于副作用/成功行；这是产品能力门槛，不伪称PostgreSQL对合法索引形态也拒绝。
 
+#### 约束目录与定义反解
+
+以下为目标及缺证门槛，不是已支持清单。官方依据于2026-10-24查阅：PostgreSQL **18** [pg_constraint](https://www.postgresql.org/docs/18/catalog-pg-constraint.html)用于字段与关联、[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)用于反解签名；固定 **REL_18_0** 的 [pg_constraint.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_constraint.h)核对约束名在单关系内唯一和FK支持索引位于父表，[ruleutils.c::pg_get_constraintdef_worker](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/ruleutils.c)核对返回ADD CONSTRAINT之后的片段及未知OID→NULL（源码推导）。类型OID沿第3章并核对同tag [pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)；[CREATE TABLE](https://www.postgresql.org/docs/18/sql-createtable.html)、[ALTER TABLE](https://www.postgresql.org/docs/18/sql-altertable.html)用于约束和验证目标。[psql 18](https://www.postgresql.org/docs/18/app-psql.html)说明用-E取得\d真实查询；下方SQL除仓库模板外均为人工验收探针，未称为psql/DataGrip实采。**18.6精确构建/运行与诊断均未取证**，上述大版本手册及18.0源码不能替代。
+
+公共前提：同一当前库/namespace/角色上下文和单次元数据快照；系统关系pg_constraint的OID2606与用户约束行OID分开。字段名均按真实声明保留引用；约束名不跨表唯一，不能以conname单独作键。目录枚举与定义函数不自动按表SELECT权限删行；前提具目录SELECT、函数EXECUTE，普通表读取仍独立授权，角色/可见性按后续专块验证，search_path不得串库。
+
+| 字段/查询→需求 | 真实来源、关联键、PG目标类型/OID及缺失策略 |
+| --- | --- |
+| oid、conname、contype→CON-BASE/IDENTITY | 约束类别+持久表ID+持久约束ID；oid/26、name/19、内部char/18。p/u须有真实约束来源，不能将每个CREATE UNIQUE INDEX冒充u；当前索引复用OID是适配事实而非独立PG分配证明。CHECK.ID仍需独立无碰撞映射，不能占用FK/虚拟主键已用区间；名称hash/枚举序号禁止。无持久来源时拒绝该形态开放，不伪造行。 |
+| conrelid、connamespace→CON-BASE/JOIN | 当前真实表及所属namespace，均oid/26，关联pg_class.oid及pg_namespace.oid；本块表约束均非0，域不套表OID。模型缺失/身份溢出或关联丢失在输出成功行前拒绝。 |
+| conindid、confrelid→CON-JOIN | 均oid/26。p/u支持索引属于conrelid；f的conindid必须是confrelid上的真实引用唯一索引，不能用子表辅助索引；c无支持索引为0。非f的confrelid为0。复用索引块PKIsHandle门槛，不能重复投影。 |
+| conkey、confkey→CON-ORDER/CHECK | int2[]/1005（非int2vector/22），1起始数组，下标与键位置有序；由真实列身份关联本表/父表pg_attribute(attrelid,attnum)。FK逐对映射并保留声明顺序，不排序列名或ID；CHECK由表达式依赖解析与ConstraintCols核对，无列依赖的常量CHECK目标conkey为SQL NULL，依据REL_18_0 [pg_constraint.c::CreateConstraintEntry](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/catalog/pg_constraint.c)的零键分支（源码推导），不能拿NULL或空数组掩盖未知依赖。非FK的confkey为SQL NULL。Offset重排缺口沿列契约；缺列、隐藏/非公开列、长短不等或坏Offset拒绝。 |
+| confupdtype、confdeltype、confmatchtype→CON-ACTION | 内部char/18；f的动作a/r/c/n/d分别对应NO ACTION/RESTRICT/CASCADE/SET NULL/SET DEFAULT，match为s/f/p语义，非f动作及match为无适用码的内部char零字节，不能输出一个空格冒充PG零字节。当前原生OnUpdate/OnDelete整数映射0或4→a、1→r、2→c、3→n、5→d仅是静态实现，不证明执行效果等价；无match字段不得猜MATCH FULL或其NULL语义。开放简单默认match前也须来源与行为门槛。 |
+| condeferrable、condeferred、convalidated、conenforced→CON-STATE | 均bool/16。延迟及初始模式须持久事实，false仅适用于已明确限制NOT DEFERRABLE且实际即时执行的对象；NOT VALID和VALIDATE须有历史行扫描及后续写入检查证据。无原生延迟/验证标记，不能从StatePublic推true或全填false。CHECK.Enforced可作为执行开关候选，须与真实执行一致；p/u/f强制执行也须证明。无法保真时对相关建约束请求在副作用前0A000，既有原生不可判定状态在字段输出前0A000。 |
+| conbin、pg_get_constraintdef(oid[,boolean])→CON-CHECK/DEF/UNKNOWN | conbin为pg_node_tree/194，CHECK的真实绑定表达式经PG语义转换，非CHECK为SQL NULL；不能把ExprString原文贴成PG节点树。反解返回text/25、typmod−1，保留列顺序、引用对象、动作/匹配、延迟/验证/执行/继承等实际适用选项；返回约束片段而非完整ALTER TABLE，pretty只改格式。缺对象与strict NULL返回SQL NULL；有对象但无法保真必须0A000，不把CHECK或非等价对象隐藏成不存在。conbin无法提供PG树时明确拒绝此字段，不妨碍以后另行证明基于规范表达式的定义反解。 |
+| connoinherit、conislocal、coninhcount、conparentid、contypid→CON-EXTRA | bool16/bool16/int2-21/oid26/oid26；分别来自真实继承策略、本地来源、祖先计数、父分区约束身份、域类型身份。普通无继承表约束须按类别判定：普通CHECK默认noinherit=false，普通非分区FK为true（REL_18_0 [tablecmds.c::addFkConstraint](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/commands/tablecmds.c)源码推导）；其余四项在分类证明后才可true/0/0/0；当前仅noinherit固定false，其余未绑定。不支持对象必须拒绝，不能用该普通组常量覆盖域/继承/分区。 |
+| conexclop、conpfeqop、conppeqop、conffeqop、confdelsetcols、conperiod→CON-EXTRA | 前四项oid[]/1028关联真实pg_operator，分别为排除及FK三种比较方向；第五int2[]/1005为DELETE SET动作列子集，第六bool/16为时态约束标记。无适用对象可返回NULL数组、普通非时态false须有分类证据；FK比较操作符缺身份不能返回空数组充作成功。缺排除/时态/子集动作来源时在DDL前拒绝，既有对象相关输出前拒绝。 |
+| xmin、仓库18列模板→CON-TEMPLATE | xmin标准为xid/28，当前NULL int8不是该身份；禁止用TSO或计数伪造。无真实PG事务标识时，仅在模板允许可空状态提示且显式记录偏差时返回有类型NULL，完整PG xmin声明仍不开放。模板有两个namespace参数，需同时绑定本端public OID；NULL conexclop经array子查询可得{}，与原字段NULL不同。conbin表达式不适用时允许NULL，但CHECK必需定义不能以NULL掩盖。 |
+
+固定宽度目标：oid/26与xid/28为4、name/19标准构建64、内部char/18及bool/16为1、int2/21为2，数组/pg_node_tree/text为−1，所有上述目录表达式typmod−1；内部零字节在DataRow是长度1的载荷，不与SQL NULL长度−1混同。所有字段text/binary Describe及载荷沿第3章验证，name/text、194/25及28/20差异须如实登记。真实目录无约束才允许类型正确空集；不支持字段在分析/绑定期拒绝，坏元数据或表达式无法保真在执行输出前拒绝；产品0A000不冒充PG对合法请求的拒绝。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -3795,6 +3829,12 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 本块只定义索引目录和反解的文档契约，不实现索引DDL、表达式索引、部分索引、INCLUDE、访问方法、opclass/collation注册或在线回填，不扩建执行器。约束反解/外键交批次8；真实默认表达式、权限、可见性、刷新、psql/JDBC/DataGrip流程交各自块。第2/3/5章及关系/属性块的缺口不在此改代码。
 
 合法复杂PG索引目标不删减：没有真实保真来源时，创建请求在副作用前0A000；原生侧已有前缀/非等价方法等对象在目录输出或反解前0A000，不隐藏为不存在或返回删去条件的CREATE INDEX。确实无索引的关系才允许类型正确空集；真实普通索引没有表达式/谓词才允许对应SQL NULL。provider当前会枚举当前库其他表，WHERE限定一个OID不保证隔离无关坏模型，此限制需在后续求值块独立验证；本轮不改变其行为。
+
+#### 约束目录与定义反解
+
+本块只写pg_constraint/pg_get_constraintdef契约，不实现约束DDL、延迟检查、历史数据验证、FK级联、CHECK绑定器、PG节点树或操作符/域/继承/分区/时态子系统，不改第2–5章，不运行Cargo或真实客户端。NOT NULL在PG18也有contype=n行，排除/触发器/域约束亦不能从“本块只取p/u/f/c”推断完整目录已覆盖；相应来源与拒绝门槛交后续窄任务，不删减PG目标。information_schema约束视图交批次18。
+
+现有独立唯一索引来源混同、CHECK令provider全库失败、缺验证/延迟标记及不完整父模型校验仅登记，不扩大为代码修复。既有坏对象被WHERE排除也不保证查询成功，有界求值块另验；既有不可反解对象不得偷偷丢行。副作用、即时/延迟执行、提交/回滚与失败恢复引用第5章，第7/8章承担wire和真实客户端运行，不用本轮文档验收宣称实现通过。
 
 ### 验收
 
@@ -4043,6 +4083,60 @@ SELECT i.indisexclusion,i.indimmediate,i.indisclustered,i.indcheckxmin,
 
 清理由owner按实际已创建对象执行：普通组 `DROP TABLE IF EXISTS public.idx_contract;`（若重置前曾改表名则使用实际名）、`DROP TABLE IF EXISTS public.idx_handle;`、`DROP TABLE IF EXISTS public.idx_empty;`、`DROP TABLE IF EXISTS public."Idx Mixed";`，所属索引随表清除；逐个复杂形态组重置并核查没有残留索引，不用CASCADE掩盖依赖。关闭prepared/portal、RESET search_path，错误恢复沿第5/7章；保存两端完整版本、角色授权、DDL前后模型/目录快照、SQL与Bind、Describe及行/错误。psql 18后续用 `-E` 实采 `\di public.idx_contract*` 和 `\d public.idx_contract`，真实DataGrip另采版本/驱动/SQL。所有产品、客户端及18.6参考运行仍待完成。
 
+#### 约束目录与定义反解
+
+以下 `CON-*` 全为**后续待新增/待运行**，本轮没有执行SQL。统一前提：隔离库、UTF8、owner、空闲事务、search_path=public,pg_catalog；DDL逐条提交，不据此放开第5章显式事务DDL门禁。第二连接同库具目录SELECT及函数EXECUTE、无表SELECT；第三连接另一库有同名表。Q参数[]、文本结果；用户OID以本端关联比较，不跨端比较固定数值。完整PG18参考端允许下列语句，产品缺能力时保留相应0A000副作用前拒绝证据，不以缺口当成功实现。
+
+```sql
+CREATE TABLE public.con_parent (a integer, b integer, code integer,
+  CONSTRAINT con_pk PRIMARY KEY (a,b), CONSTRAINT con_uq UNIQUE (code));
+CREATE TABLE public.con_child (x integer, y integer, amount integer,
+  CONSTRAINT con_fk FOREIGN KEY (y,x) REFERENCES public.con_parent (a,b)
+    ON UPDATE RESTRICT ON DELETE CASCADE,
+  CONSTRAINT con_ck CHECK (amount > 0));
+-- CON-BASE：限定四类，PG18的主键NOT NULL约束另验，不能误计入4行。
+SELECT c.oid,c.conname,c.contype,c.conrelid,c.connamespace,c.conindid,
+       c.confrelid,c.conkey,c.confkey,c.confupdtype,c.confdeltype
+FROM pg_catalog.pg_constraint c
+WHERE c.conrelid IN ('public.con_parent'::regclass::oid,
+                    'public.con_child'::regclass::oid)
+  AND c.contype IN ('p','u','f','c') ORDER BY c.conname;
+-- CON-JOIN：Parse OID=[26]，Bind本端con_fk约束OID，不是索引OID。
+SELECT c.conrelid,c.confrelid,i.indrelid,c.conindid,i.indexrelid,c.conkey,c.confkey
+FROM pg_catalog.pg_constraint c JOIN pg_catalog.pg_index i ON c.conindid=i.indexrelid
+WHERE c.oid=$1;
+-- CON-DEF/UNKNOWN：Parse OID=[26]，每例换本端约束OID、0或NULL。
+SELECT pg_catalog.pg_get_constraintdef($1),
+       pg_catalog.pg_get_constraintdef($1,false),pg_catalog.pg_get_constraintdef($1,true);
+-- CON-STATE：同一OID参数，完整状态，当前缺字段不能宣称已返回false。
+SELECT c.condeferrable,c.condeferred,c.convalidated,c.conenforced
+FROM pg_catalog.pg_constraint c WHERE c.oid=$1;
+-- CON-CHECK：参数为con_ck OID。
+SELECT c.conkey,c.conbin,pg_catalog.pg_get_constraintdef(c.oid)
+FROM pg_catalog.pg_constraint c WHERE c.oid=$1;
+-- CON-EXTRA：参数为con_fk OID。
+SELECT c.confmatchtype,c.conislocal,c.coninhcount,c.conparentid,c.contypid,
+       c.conpfeqop,c.conppeqop,c.conffeqop,c.confdelsetcols,c.conperiod,
+       c.connoinherit,c.conexclop FROM pg_catalog.pg_constraint c WHERE c.oid=$1;
+```
+
+参数查询分别在DDL前Parse/Describe statement，OID=[26]；Bind格式[0]，值为本端OID十进制文本或NULL长度−1，结果格式[0]/[1]分别运行，Describe portal/Execute/Sync。无FROM的DEF须独立验证分派与一行结果，不能以FROM零行的测试替代。每次DDL提交后新Bind/Execute取新快照；已启动portal的缓存边界沿公共块。
+
+| 用例→字段/需求 | 预期行、真实变更与拒绝证据 |
+| --- | --- |
+| CON-BASE/ORDER→四类与顺序 | 恰4行，按名字ck/fk/pk/uq；contype=c/f/p/u，conkey分别{3}/{2,1}/{1,2}/{3}，仅FK的confkey={1,2}，其他为NULL。FK两侧数组下标1/2按y→a、x→b对应；描述依序26/19/18/26/26/26/26/1005/1005/18/18，长度4/64/1/4/4/4/4/−1/−1/1/1，typmod均−1。ck的conindid=0、非FK的confrelid=0；FK动作r/c，非FK动作零字节。当前有公开CHECK会拒绝，若产品建表前0A000则确认con_child无残留；p/u/f子集可用不带CHECK的同结构子夹具单独验证，不能称四类目标通过。 |
+| CON-JOIN/IDENTITY→身份闭环 | FK参数恰1行，i.indrelid=c.confrelid=父表OID，c.conrelid=子表OID，c.conindid=i.indexrelid=con_pk的支持索引OID；描述26/26/26/26/26/1005/1005。另执行 `CREATE UNIQUE INDEX con_standalone ON public.con_parent (b,a);`，BASE仍4行，不能多出u；同名约束可存在另一表，执行 `CREATE TABLE public.con_other (n integer CONSTRAINT con_ck CHECK (n>0));`，其约束OID独立，带conrelid定位不混淆。缺真实独立索引/约束来源时登记缺口，不按现有混同行为降低目标。 |
+| CON-DEF/CHECK→可重建定义 | DEF每OID一行3列text25/−1，p/u/c/f分别为语义等价于PRIMARY KEY (a,b)、UNIQUE (code)、CHECK (amount>0)、FOREIGN KEY (y,x) REFERENCES public.con_parent(a,b) ON UPDATE RESTRICT ON DELETE CASCADE的片段；引用可随有效path省略public，pretty仅格式差异。CHECK查询1行描述1005/194/25、conkey={3}、conbin非NULL且为真实树；先独立逐条建立克隆夹具 `CREATE TABLE public.con_clone_parent (a integer,b integer,code integer);`、`CREATE TABLE public.con_clone (x integer,y integer,amount integer);`，以DEF中p/u片段分别拼接 `ALTER TABLE public.con_clone_parent ADD CONSTRAINT con_clone_pk ` / `ALTER TABLE public.con_clone_parent ADD CONSTRAINT con_clone_uq ` 并执行。以f片段拼接 `ALTER TABLE public.con_clone ADD CONSTRAINT con_clone_fk `（仍引用原con_parent），再用 `ALTER TABLE public.con_clone ADD CONSTRAINT con_clone_ck ` 拼接已取得CHECK片段，实际执行后重查；逐条 `INSERT INTO public.con_clone(amount) VALUES (0);` 须拒绝、`INSERT INTO public.con_clone(amount) VALUES (NULL);` 与 `INSERT INTO public.con_clone(amount) VALUES (1);` 须成功（FK列均NULL）。用BASE将两表替换为con_clone_parent/con_clone，目标p/u/f/c共4行、FK仍关联原父表。不能只比较字符串。缺转换在成功行前0A000；不返回简化或NULL定义。 |
+| CON-UNKNOWN/EMPTY→缺对象与签名 | DEF绑定0、确定未分配的OID或NULL均1行3列NULL；对应 `SELECT c.oid,c.conkey FROM pg_catalog.pg_constraint c WHERE c.oid=$1;` 以未知OID绑定应0行，描述26/1005完整。`SELECT pg_catalog.pg_get_constraintdef(0,false,0);` 产品分析/绑定拒绝且无行，PG精确SQLSTATE与位置另采。现有CHECK/坏模型导致未知OID的fallback也报错需记录，不掩盖为正常缺对象行为。 |
+| CON-STATE/EXTRA→模式与真实验证 | 基础夹具STATE每约束false/false/true/true、描述四列16；只有即时执行且建约束已验证事实具备才可通过。EXTRA对FK为s/true/0/0/0、三个真实等号操作符数组（每个长度2且关联pg_operator）、NULL/false/true/NULL，描述18/16/21/26/26/1028/1028/1028/1005/16/16/1028。另独立夹具 `CREATE TABLE public.con_defer (v integer CONSTRAINT con_du UNIQUE DEFERRABLE INITIALLY DEFERRED);`，STATE目标true/true/true/true；PG参考 `BEGIN; INSERT INTO public.con_defer VALUES (1),(1); COMMIT;` 应在COMMIT拒绝。产品无延迟来源则DDL前0A000且无对象，不填false后允许创建。 |
+| CON-VALIDATE→未验证/强制执行区分 | 独立建 `CREATE TABLE public.con_validate (n integer);`，`INSERT INTO public.con_validate VALUES (-1);`，`ALTER TABLE public.con_validate ADD CONSTRAINT con_cv CHECK (n>0) NOT VALID;`，STATE目标false/false/false/true。新插入−2拒绝；`ALTER TABLE public.con_validate VALIDATE CONSTRAINT con_cv;` 因既有−1拒绝且状态仍false。`DELETE FROM public.con_validate WHERE n<0;` 后重试VALIDATE，目标validated=true，反解同步去除NOT VALID。每步保存真实行与状态；产品无验证状态时添加前0A000且既有−1保留、无约束残留。不得把CHECK.Enforced=false当NOT VALID。 |
+| CON-ACTION→执行与定义一致 | 基础夹具依次 `INSERT INTO public.con_parent VALUES (10,20,1);`、`INSERT INTO public.con_child VALUES (20,10,1);`，`UPDATE public.con_parent SET a=11 WHERE a=10 AND b=20;` 因RESTRICT拒绝、两表值不变；`DELETE FROM public.con_parent WHERE a=10 AND b=20;` 后父子均无对应行。用完整查询 `SELECT x,y,amount FROM public.con_child ORDER BY y,x;` 检查。NO ACTION、SET NULL、SET DEFAULT与MATCH FULL/部分列删除动作另以明确动作DDL逐个窄化，未有执行来源不能只靠码值宣布支持；第5章负责写入/提交/失败恢复，不在本块实现。 |
+| CON-LIFE/QUOTE→元数据更新 | 保存FK OID并prepare JOIN/DEF。逐条 `ALTER TABLE public.con_child RENAME CONSTRAINT con_fk TO con_fk_new;`、`ALTER TABLE public.con_child RENAME COLUMN y TO y_new;`、`ALTER TABLE public.con_parent RENAME COLUMN a TO a_new;`，新Bind/Execute的OID及{2,1}/{1,2}不变、名称/定义同步，第二连接可见；`ALTER TABLE public.con_child DROP CONSTRAINT con_fk_new;` 后旧OID JOIN零行、DEF一行NULL，重加 `ALTER TABLE public.con_child ADD CONSTRAINT con_fk_new FOREIGN KEY (y_new,x) REFERENCES public.con_parent(a_new,b) ON UPDATE RESTRICT ON DELETE CASCADE;` 得新OID。引号独立夹具 `CREATE TABLE public."Con Mixed" ("a""b" integer, CONSTRAINT "ck""q" CHECK ("a""b">0));`，以BASE将关系替换成该表、类型过滤仅c，目标1行，DEF保留列名转义；SET search_path=pg_catalog后仍能限定定位/重建，RESET清理。 |
+| CON-ACL/DB→权限与隔离 | 第二角色对BASE/DEF结果与owner一致，完整 `SELECT * FROM public.con_child;` 权限拒绝；具目录与函数授权不代表表SELECT。第三库同名关系不出现在本库BASE，OID关联不误跨库。没有角色/跨库当前运行证据，不能从provider未过滤直接推导授权正确。 |
+| CON-TEMPLATE/ERROR→客户端及坏模型 | 仓库1869280154.sql全文保留，仅将第1/2个?分别换$1/$2，Parse OID=[26,26]、Bind均为本端public namespace OID。基础四类行含p/u/f/c，排除操作符原字段NULL、展开{}；CHECK表达式必须真实反解，xmin状态提示缺证按上表记录，不能伪造事务ID。18列目标OID依序26/18/20/20/19/18/1005/26/26/16/16/18/18/16/25/1005/1007/1015（最后为varchar[]，数组转换沿第3章另验）；typmod均−1。无完整字段/codec时明确拒绝，不称DataGrip通过。缺模型、FK无父表/父唯一索引、列数不等、坏ID/Offset、非当前库引用、未公开父模型、未知动作逐项独立模型夹具，预期输出成功行前拒绝；WHERE排除坏对象另存证据，不假设下推。 |
+
+清理按实际建立顺序反向执行 `DROP TABLE IF EXISTS public.con_clone;`、`DROP TABLE IF EXISTS public.con_clone_parent;`、`DROP TABLE IF EXISTS public.con_child;`、`DROP TABLE IF EXISTS public.con_parent;`、`DROP TABLE IF EXISTS public.con_other;`、`DROP TABLE IF EXISTS public.con_defer;`、`DROP TABLE IF EXISTS public.con_validate;`、`DROP TABLE IF EXISTS public."Con Mixed";`，其他克隆以实际名字清除；失败事务先按第5章ROLLBACK，不用CASCADE隐藏依赖。关闭prepared/portal，RESET search_path。后续采集两端完整构建/角色/授权、模型及目录前后快照、SQL/Bind/Describe/行/错误与有效场景数；psql18用-E实采 `\d public.con_child`，DataGrip保存版本/驱动/真实SQL。产品功能、18.6及客户端结果均未运行。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4088,6 +4182,12 @@ SELECT i.indisexclusion,i.indimmediate,i.indisclustered,i.indcheckxmin,
 按事实来源拆窄实施任务：①持久表/局部索引身份、PKIsHandle不重复投影及schema命名，覆盖IDX-BASE/HANDLE/LIFE；②持久属性号与有序键、向量类型/下标，覆盖IDX-ORDER；③经方法等价证明的整定义、逐列及引用，覆盖IDX-DEF/QUOTE/UNKNOWN；④真实opclass/collation、状态和复杂形态门禁，分别覆盖IDX-AUX/STATE/EXTRA/SHAPE，缺依赖只列后续窄任务，不递归补完整索引系统。优先扩展现有独立pg_catalog_test.rs、pg_datagrip_test.rs，模板预期与客户端实采分开，覆盖IDX-TEMPLATE/ERROR。
 
 本轮仅文档交付。正确性风险为虚拟索引重复、列槽位重排、身份关联错误及丢失条件的可执行定义；兼容性风险为命名冲突、text替代pg_node_tree、空opclass、排序/NULL策略和越界返回差异；性能未测，现有provider全库枚举与函数fallback扫描需后续取证。Ready文档检查采用任务指定五节/锚点、路径、依赖与前后契约、覆盖表和diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用明确替代检查。不运行Cargo/Go、代码lint、真实客户端或18.6差分，下一批为约束目录与定义反解。
+
+#### 约束目录与定义反解
+
+后续按事实组拆窄任务：①约束持久身份及普通唯一索引来源区分、虚拟主键去重，覆盖CON-BASE/IDENTITY；②有序属性关联、父支持索引选择与动作语义门槛，覆盖CON-ORDER/JOIN/ACTION；③CHECK规范表达式和保真反解、NULL/未知OID、名称刷新，覆盖CON-CHECK/DEF/UNKNOWN/LIFE/QUOTE；④真实执行/验证/延迟状态及辅助字段分别推进CON-STATE/VALIDATE/EXTRA。缺原生来源先记独立依赖，不吞并完整约束或操作符子系统。优先扩展现有独立pg_catalog_test.rs、pg_datagrip_test.rs，不把测试放生产文件。客户端模板与权限/隔离分别交CON-TEMPLATE/ACL/DB，沿后续专块采集。
+
+正确性风险为复合FK配对错误、父索引关联错误、唯一索引伪装约束、伪造验证状态与丢失条件的反解；兼容性风险为name/text、pg_node_tree/text、xmin身份、零字节/空格及PG18新增约束字段；性能未测，当前全库provider及fallback扫描可被无关对象阻断。Ready文档适用检查采用任务指定五节锚点、路径、依赖/前后契约、字段→验收覆盖及diff审阅；`.agents/skills/tidb-verify-profile/SKILL.md`缺失，使用上述替代检查。未运行Cargo/Go、代码lint、真实客户端或18.6差分。本轮仅完成文档契约，下一批为默认表达式目录契约。
 
 ## 7. 线协议认证与数据通道
 
