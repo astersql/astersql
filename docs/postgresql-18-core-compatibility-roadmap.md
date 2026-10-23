@@ -780,6 +780,10 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 已读独立 [time_11_aster_unit_test.rs](../pkg/types/time_11_aster_unit_test.rs) 的实际断言：ParseDurationValue 保留 DAY_MICROSECOND 的 day=12，ExtractDurationValue(MONTH,1) 输出 720:00:00，DAY=-35 拒绝；duration_parse_arithmetic_and_format_match_go 将负两天三小时折为 -51 小时。[pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values 和 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 提供其他类型与协议入口，不能证明 1186 支持。所有测试均未运行，本块专项用例均待新增。
 
+[通用唯一标识契约](#通用唯一标识契约)静态基线为 `fda2b60876`（批次 12 已提交，2026-10-23）。经 RustCodeGraph 阅读 [datum.rs](../pkg/types/datum.rs)::Datum/Kind 常量，没有独立 UUID 标签；KindString/KindBytes 只证明通用载体。[field_type.rs](../pkg/types/field_type.rs)::InferParamTypeFromDatum/InferParamTypeFromUnderlyingValue/DefaultTypeForValue 按 MySQL 类型推导，String 为 TypeVarString、NULL 为 TypeNull，不从字符串外观保留 UUID 身份。目标包 pkg/types、pkg/server 均无 doc.go。
+
+[pg_extended.rs](../pkg/server/pg_extended.rs)::parameter/binary_parameter 没有非 NULL OID 2950 分支，分别走 0A000；NULL 提前返回 tp=6，不能证明 typed NULL 保真。[pg_result.rs](../pkg/server/pg_result.rs)::pg_type/value_text/value_binary 没有通用 UUID 映射及 binary 编码；字符串/二进制列现有映射为 text/bytea，不构成 UUID 支持。已读独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::text_parameters_are_typed_and_reject_loss（整数、bool、bytea、时间、decimal 与 NULL）及 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::common_type_oids_and_values/unsigned_binary_and_unsupported_types（常见类型、bytea 与拒绝路径），这些断言未覆盖 UUID，且本轮均未执行。不改变原 Go/MySQL 字符串及 bytes 行为。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -1020,6 +1024,23 @@ OID=1186、typlen=16 由 [REL_18_0 pg_type.dat](https://github.com/postgres/post
 
 转换边界：显式 text↔interval 复用上述词法与输出契约；interval→同身份带 fields/p 的转换按声明收敛且传播 typed NULL。显式/赋值/隐式资格交本章转换块，不由 OID 推导任意数字、time、timestamp 可隐式互转。MySQL duration TIME 若显式桥接，仅在约定且可保真的 `(0,0,微秒)` 子域转换；反向要求月/日为零、时间精度与 MySQL 范围可承载，否则明确 0A000，不自动折算月/日。PG 合法性错误与暂缺桥接能力必须分开。日期加 interval、DST 与比较/justify 的运算实现归工作流 4；本块三分量不规定运算比较算法。以上规范来自 PG 18 文档及 REL_18_0 源码，不构成指定 18.6 的实测结论。
 
+#### 通用唯一标识契约
+
+UUID 目标为独立规范类型身份与固定 16 字节值，覆盖全部 128 位组合，包括全零、全 ff 和任意 version/variant 位；不因生成器只产生某版本而缩小输入域。没有数值精度、scale、时区或舍入参数，typmod=-1。依据 [PG 18 §8.12 UUID Type](https://www.postgresql.org/docs/18/datatype-uuid.html) 及固定版本 [REL_18_0 uuid.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/utils/adt/uuid.c)::string_to_uuid/uuid_out/uuid_recv/uuid_send；以下为目标规范，未实测指定 18.6。
+
+文本接受大小写十六进制、可选的一对外层花括号、无连字符以及每四个十六进制字符组后可选连字符；必须恰好 32 个十六进制字符，连字符不得在末尾。标准例 `a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`、大写、`{a0eebc999c0b4ef8bb6d6bb9bd380a11}`、`a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11` 均归同一值。输出固定小写 8-4-4-4-12，去花括号；不保留输入拼写。空串、前后空白、URN 前缀、非法字符、奇数位、缺/多位、错位连字符及不配对花括号按 22P02 拒绝，不修剪、补位或截断。编码错误沿文本块的 22021 先行检查。
+
+| 方向 | 身份、值域、NULL 与可观察目标 | 元数据、错误与现状差距 |
+| --- | --- | --- |
+| text 参数→规范 UUID | 已定型 2950 才按上述词法解码；NULL 保持 UUID 身份，无载荷，不等于全零值。 | ParameterDescription=2950；非法文本22P02。当前非NULL无2950分支，能力未接通时明确0A000。 |
+| binary 参数→规范 UUID | 恰16字节，按规范文本从左到右每两位对应一字节；`00112233-4455-6677-8899-aabbccddeeff` 对应 `00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff`。不采用主机整数序或GUID混合端序，不加version校验。 | OID2950；短载荷08P01，多余载荷22P03，不能静默消费前16字节。当前binary_parameter缺分支。 |
+| 规范 UUID→text 结果 | 固定36个ASCII字节规范输出；NULL长度-1，非NULL全零仍输出完整UUID。 | RowDescription=2950/16/-1；文本格式码0，不得因显示字符串变成OID25。现有pg_type无法输出该身份。 |
+| 规范 UUID→binary 结果 | 原样输出16字节；NULL长度-1，不能发送空载荷或ASCII十六进制。 | RowDescription=2950/16/-1；格式码1，只变格式不改身份。现有value_binary无2950分支。 |
+
+OID/typlen 依据 [REL_18_0 pg_type.dat](https://github.com/postgres/postgres/blob/REL_18_0/src/include/catalog/pg_type.dat) 的 uuid 项。NULL、格式码和元数据字段依 [PG 18 §54.7 Bind/DataRow/ParameterDescription/RowDescription](https://www.postgresql.org/docs/18/protocol-message-formats.html)。短载荷与剩余字节诊断分别依据 [pqformat.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/libpq/pqformat.c)::pq_getmsgbytes 和 [postgres.c](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/tcop/postgres.c)::exec_bind_message；消息帧破损与Sync恢复交工作流7，不混同合法UUID值域错误。
+
+显式 text→uuid 使用上述输入规则，uuid→text 使用规范输出，两方向传播typed NULL；目标结果身份随cast目标变化。普通text/bytea、MySQL CHAR(36)/BINARY(16)不因长度或外观自动成为UUID；bytea不自动获得PG UUID cast资格，尚无有证据桥接时明确0A000。显式、赋值与隐式资格由本章转换块统一核定，禁止无条件复用MySQL字符串强制转换。声明列、显式UUID类型常量/转换以及已声明2950参数应保持身份；OID0参数只能在解析上下文真正定型后使用，不能扫描首个值猜类型。当前通用Parse缺省OID拒绝规则仍为现状；语法交工作流2，推导和PreparedMetadata连续性由本章接线，不能仅加codec声称完成。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -1045,6 +1066,8 @@ OID=1186、typlen=16 由 [REL_18_0 pg_type.dat](https://github.com/postgres/post
 [带时区时间戳契约](#带时区时间戳契约)不实现生产表示、cast、codec、时区数据库或完整时间运算；数组另块承接。会话状态与配置生命周期归工作流 5，语法归 2、算术/比较归 4、目录归 6、消息/恢复归 7、真实差分归 8；不扩大为完整时区子系统。
 
 [时间间隔契约](#时间间隔契约)范围外：日期/时间戳加减 interval、比较、justify、age、extract 等函数/运算由工作流 4 承接；IntervalStyle 状态生命周期由工作流 5、SQL 声明解析由工作流 2、消息恢复由工作流 7 承接。本块只定义表示、转换及 codec 契约，不新增函数子系统，不改变 MySQL TIME 既有行为。
+
+[通用唯一标识契约](#通用唯一标识契约)范围外：UUID生成、版本提取、排序/索引及函数运算归工作流4，目录曝光归工作流6，解析归工作流2，消息恢复归工作流7；UUID数组交基础数组块。本块不新增生成器或更改Go/MySQL UUID函数语义。
 
 ### 验收
 
@@ -1186,6 +1209,16 @@ OID=1186、typlen=16 由 [REL_18_0 pg_type.dat](https://github.com/postgres/post
 | IV-INVALID | 空串/garbage→22007、非法UTF-8/NUL→22021；binary非NULL 0/15字节→08P01、17字节→22P03，帧声明/实长不符→08P01。错误后恢复由工作流7核验；不能用当前0A000冒充目标输入校验。 | 所有精确错误及真实客户端未验证。 |
 | IV-BRIDGE | MySQL -51小时仅在显式约定下桥接(0,0,-183600000000)；含月/日的反向桥接或超MySQL域均0A000，不能折日或截断；typed NULL保留目标身份。MySQL自身值/错误按原sql_mode另验收。 | 当前通用映射仍1083；桥接资格及双方言隔离未验证。 |
 
+[通用唯一标识契约](#通用唯一标识契约)以下 UUID 场景均为**待新增、未验证**；固定PG精确构建及UTF-8，合法值覆盖text/binary参数到text/binary结果四组合，比较规范16字节、输出、NULL、元数据和错误。成功SQLSTATE不适用；不以字符串相等替代类型断言。
+
+| 场景 | 可观察验收目标 | 当前证据状态 |
+| --- | --- | --- |
+| UUID-TEXT | 标准、大写、无连字符、花括号及每四位连字符变体均得到同一16字节；输出统一小写36字节格式；显式text↔uuid往返保持值及目标类型。 | 官方uuid.c静态依据；独立测试未见上述断言，未运行。 |
+| UUID-BITS | 全零、全ff、首/尾字节01/80及00112233样本两格式往返；任意version/variant位均接受；无字节交换。 | 固定字节布局有源码依据，四组合全链未验证。 |
+| UUID-INVALID | 空串、31/33位、g字符、奇数位、错位/尾连字符、单侧花括号、URN、前后空白拒绝22P02；非法UTF-8走22021；binary长度0/15走08P01、17走22P03；不截断。 | 现有2950缺分支，目标诊断及协议恢复均未验证。 |
+| UUID-NULL-METADATA | typed NULL参数、NULL::uuid、首行/全NULL、零行、多行、重复Execute仍保持参数2950及结果2950/16/-1；两格式NULL长度-1，全零binary长度16。 | 现有tp6提前返回不能证明身份保真；Describe/Execute全链未验证。 |
+| UUID-INFERENCE-BRIDGE | 声明列/显式cast/2950定型结果一致；OID0从明确上下文定型，歧义拒绝沿推导契约；普通UUID外观text及16字节bytea保持自身身份，无依据桥接0A000。 | 现有MySQL推导与PG出口分离证据；目标推导、桥接及双方言回归未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1227,6 +1260,10 @@ OID=1186、typlen=16 由 [REL_18_0 pg_type.dat](https://github.com/postgres/post
 [时间间隔契约](#时间间隔契约)候选边界：内部表示先核定独立 interval 身份、三分量、非有限值、fields/p 与 typed NULL 保真；cast 依赖身份和方言资格，禁止用总秒数替代日历分量；参数 codec 依赖已定型 OID、SQL 修饰符和 IntervalStyle；结果 codec 依赖相同规范值与稳定 Describe 元数据，直接输出三分量。这里只描述边界和依赖，不生成可执行任务。
 
 时间间隔块来源覆盖：步骤2的interval族由身份、范围与四方向表覆盖；步骤3的精度/不等价转换由IV-PRECISION-FIELDS/RANGE-SPECIAL/BRIDGE覆盖；步骤4的格式、NULL、非法输入及元数据由IV-COMPONENTS/SIGNS-STYLE/NULL-METADATA/INVALID覆盖。与第1/2章及前序时间块无须改写的冲突；没有功能、性能或参考端实测。
+
+[通用唯一标识契约](#通用唯一标识契约)候选边界：内部表示先确定独立UUID身份、固定16字节和typed NULL；cast依赖此身份及统一方言资格；参数codec依赖已定型2950，分别实施词法解析与固定字节解码；结果codec依赖规范值和稳定Describe元数据，输出规范文本或原字节。这里只描述边界与依赖，不生成可执行任务。
+
+UUID块来源覆盖：步骤2由规范身份及四方向表覆盖；步骤3的显式转换与不等价桥接由UUID-TEXT/INFERENCE-BRIDGE覆盖（精度、溢出、时区不适用于固定128位类型）；步骤4由UUID-BITS/INVALID/NULL-METADATA和四组合往返覆盖。第1章证据等级、第2章语法交接及前序text/bytea身份规则保持一致，无需改写其他块。文档完成不代表UUID功能、性能或18.6差分通过。
 
 ## 4. 方言函数与运算符契约
 
