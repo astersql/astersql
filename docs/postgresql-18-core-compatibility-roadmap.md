@@ -3712,6 +3712,20 @@ Q/扩展工厂接线、单次共享快照及编码沿“目录执行链与证据
 
 简单/扩展查询工厂、snapshot、OID检查与编码沿首块。数据库目录块中的pg_description空集证据是其历史基线，本轮native_metadata_rows已有非空来源；在此记录差异，不改其他块。
 
+#### 角色权限与所有权契约
+
+承接来源步骤1–3，能力 `CAT-ROLE-ACL/pg`，沿首块证据模板。批次13提交 `39300031ef`、批次12 `434724ad84`、批次11 `4dceaaab81` 及累计批次1–10的连续提交与五节正文已复核；第1–5章的证据分级、名称、类型、函数工厂及会话契约继续适用。以下为2026-10-24在 `39300031ef` 经RustCodeGraph status/explore/定点node读取的静态证据；server及privilege目标目录没有doc.go，本轮没有运行测试。
+
+| 实际入口/符号 | 当前来源、接线与证据限制 |
+| --- | --- |
+| [pg_catalog.rs](../pkg/server/pg_catalog.rs)::provider_rows / CatalogQuery::column | pg_user执行共享 `SELECT User, Super_priv FROM mysql.user`，只产生usename和usesuper；按两值去重，未保留Host，不能证明同名不同host合并为一个PG角色安全。usename当前text/25，usesuper为bool/16；MySQL SUPER不是PG超级用户等价证据。pg_roles、pg_authid、pg_auth_members未提供角色关系适配。 |
+| 同文件expr_type / evaluate | current_user由TiDBContext::user_identity字符串在第一个@截断，当前text/25；不是有效PG角色切换的证明。pg_get_userbyid仅接受NULL或当前code8表达式，输出text/25且固定NULL；has_*_privilege与pg_has_role未进入此目录函数白名单。识别的目录表达式绑定缺能力拒绝，不能推断普通SQL工厂已注册。 |
+| [conn.rs](../pkg/server/conn.rs)::TiDBContext::authenticate；[runtime.rs](../pkg/server/runtime.rs)::ConcreteTiDBContext::authenticate / user_identity | 接口区分认证和用户身份；具体bootstrap认证只在InsecureRootOnly允许空认证数据的root/native-password，SecureUnsupported拒绝；成功发送SetAuthenticatedUser并标PROCESS。身份经SessionRequest::UserIdentity取得。该路径不能证明任意用户认证、PG角色授权或owner事实。协议认证目标交第7章。 |
+| [privilege.rs](../pkg/privilege/privilege.rs)::Manager | ConnectionVerification/MatchIdentity处理原生user/host；RequestVerification、RequestVerificationWithUser处理库/表/列静态权限；ActiveRoles与RequestDynamicVerification另有角色/动态权限入口。它们是复用候选，当前目录求值没有接入PG角色OID、PUBLIC、owner及PG权限映射的证据，不能把接口存在标成已完成接线。 |
+| 独立测试 | [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::catalog_database_description_semantics断言未知owner探针为NULL（现状，不是目标）；[pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)的namespace/database列表断言owner为NULL、tablespace为空。测试为仓库脚本/夹具，非DataGrip版本实采；[lib.rs](../pkg/server/lib.rs)注册测试。本轮未运行，没有最小权限角色、GRANT/REVOKE、owner切换或真实客户端结果。 |
+
+目录Q/扩展分派、单次Execution快照、OID和wire沿首块；关系、数据库、namespace、类型、函数owner/ACL字段沿对应块，只在此定义共同安全事实来源，避免另一套角色或授权存储。
+
 ### 目标行为
 
 #### 目录执行链与证据模板
@@ -3947,6 +3961,30 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 
 官方目标（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_description](https://www.postgresql.org/docs/18/catalog-pg-description.html)、[pg_shdescription](https://www.postgresql.org/docs/18/catalog-pg-shdescription.html)定义字段与共享范围；[注释函数9.27.6](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-INFO-COMMENT)定义签名和无注释NULL；[COMMENT](https://www.postgresql.org/docs/18/sql-comment.html)定义空串删除与读写权限；[psql 18](https://www.postgresql.org/docs/18/app-psql.html)提供描述命令与-E查询采集入口。类型OID沿第3章已核来源。以下SQL均为人工契约探针，未采集特定psql/JDBC/DataGrip/ORM版本的真实生成SQL；18.6精确构建及运行行为未取证。
 
+#### 角色权限与所有权契约
+
+认证身份（原生user/host）、session_user（会话授权角色）、current_user/current_role（有效权限角色）、对象owner和grantor/grantee必须分别建模。登录成功只证明认证路径成功；既不赋予全部对象权限，也不把连接用户补成历史对象owner。PG角色是集群共享身份，须有持久稳定OID与原生身份映射；同名不同Host、名称含@或引号的映射冲突必须显式拒绝，不能继续字符串截断。
+
+| 需求→字段/查询 | 真实来源/关联与当前证据 | PG目标类型、可见性及缺失策略→验收 |
+| --- | --- | --- |
+| 用户身份→pg_user.usename/usesysid | 当前mysql.user.User，不含Host/稳定角色ID；usesysid未接线 | name/19、oid/26，非NULL；角色键关联pg_roles.oid（底层pg_authid.oid），pg_user只含可登录角色。公开脱敏目录不要求调用者有mysql.user读取权；没有可信映射时输出前0A000，禁止伪造ID/漏掉真实角色。ROLE-ID |
+| 用户属性→usesuper/usecreatedb/userepl/usebypassrls | 当前仅Super_priv，其他无PG策略来源 | 均bool/16、非NULL；分别来自明确超级用户/建库/复制/绕过RLS策略。无功能只有明确产品策略确认为禁用才可false；SUPER不能直接提升为PG超级用户，无可信策略则该投影0A000。ROLE-ID/SAFE |
+| 用户保密与默认值→passwd/valuntil/useconfig | 当前未提供 | text/25固定脱敏星号，timestamptz/1184可NULL（确无到期），text[]/1009可NULL（确无默认设置）；不得从凭证哈希造展示数据。缺来源或codec拒绝该投影，不以NULL声称无到期。ROLE-SAFE |
+| 角色列表→pg_roles.oid/rolname/rolcanlogin | 当前无provider | oid/26、name/19、bool/16，非NULL；含NOLOGIN角色，与pg_user身份一致；角色存在性为公开目录语义，不能照搬对象权限过滤。缺角色层0A000而非成功空集。ROLE-ID |
+| psql角色属性→rolsuper/rolinherit/rolcreaterole/rolcreatedb/rolreplication/rolbypassrls；rolconnlimit/rolvaliduntil | 当前均无PG接线；不得由登录结果推断 | 六个bool/16，int4/23（-1无上限），timestamptz/1184（确无到期可NULL）；其余非NULL。每项来自真实策略、继承及资源限制；缺来源逐字段门禁0A000。ROLE-PSQL |
+| pg_roles.rolpassword/rolconfig | 当前无接线 | text/25脱敏星号、text[]/1009可NULL，公开安全投影；pg_authid和pg_shadow原始认证数据不是公开替代视图。未授权直接读取敏感目录目标42501，产品尚未开放目录时0A000且不泄露内容。ROLE-SAFE |
+| 成员关系→pg_auth_members.oid/roleid/member/grantor/admin_option/inherit_option/set_option | 原生Manager::ActiveRoles是候选，不证明PG成员边 | 前四列oid/26，后三列bool/16，非NULL；三个角色键关联pg_authid.oid，边OID独立；取真实成员授予事实，不用当前活动角色倒推全图。缺继承/SET/ADMIN边语义时0A000。ROLE-MEMBER |
+| session_user/current_user/current_role；pg_get_userbyid(oid) | 当前仅截断身份/固定NULL，正式注册沿第4章 | 均name/19；前三个非NULL，有效角色切换不改变session_user。owner查询由稳定角色OID反查，不能返回调用者名字；NULL参数返回NULL，未知OID的参考端fallback文字需参考构建采证，禁止当前固定NULL充当正确结果。ROLE-OWNER/NULL |
+| datdba/nspowner/relowner/typowner/proowner及相关owner显示 | 现有块记录无真实持久owner，部分描述为int8；不从mysql.user列表推断 | 原字段oid/26非NULL，反查name/19；按对象类别及原生ID关联真实owner，跨连接一致、ALTER OWNER后更新。缺来源只拒绝所需投影0A000，不造0、root或NULL。ROLE-OWNER |
+| datacl/nspacl/relacl/attacl/typacl/proacl；spcacl | 相关目录已有AclArray标记不证明存在真实授权事实；tablespace当前空关系 | aclitem[]/1034，元素aclitem/1033，来源包括grantor、grantee、权限及grant option；PUBLIC不是普通登录角色。NULL代表默认ACL，空数组代表显式无条目，二者不得互换；没有ACL模型时拒绝投影0A000，不能NULL掩盖。无原生tablespace沿对象块空集策略。ROLE-ACL |
+| has_table/schema/database/sequence/function/type/column/any_column_privilege；pg_has_role | 原生Manager请求验证可复用，但PG权限/对象/身份解析未接线 | bool/16、可因NULL参数或不存在OID为NULL；以下签名矩阵逐项取真实有效授权，不能按usesuper/认证成功返回true。缺能力0A000，不返回false冒充“无权限”。ROLE-PRIV/NULL |
+
+所有字段typmod=-1，name标准构建typlen64、oid/int4为4、bool为1、timestamptz为8、数组/text为-1；编码、来源属性描述与零行Describe沿第3章，不把text冒充name或aclitem[]。目录可读、对象USAGE/SELECT/CONNECT、search_path可见性是不同判断；本块不重复下一可见性块。安全目录内部取数应通过受控脱敏provider，禁止让公开pg_user查询直接暴露mysql.user原始列或绕过共享授权。
+
+客户端必需候选签名登记（均为待采集/待实施，不能声称某客户端已调用）：对上述八个has_*函数，用户参数可省略或为name/19、oid/26；对象为text/25或oid/26，末参数权限text/25。has_column另含列text/25或int2/21；has_any_column无列参数；pg_has_role的目标角色为text/25或oid/26。结果均bool/16。函数对象文本按完整重载签名解析；类型对象按类型身份解析。权限按对象种类校验，支持逗号任一匹配及grant option；pg_has_role区分MEMBER、USAGE、SET及ADMIN选项，不能只查活动列表。扩展参数OID/绑定与普通SQL函数注册沿第3/4章，目录白名单不能代替全局实现。客户端若需求has_language/tablespace/server/foreign_data_wrapper/largeobject/parameter_privilege，先登记具体SQL和对象来源；未提供对象模型的签名明确0A000，不假定全部允许。
+
+官方目标出处（PostgreSQL **18**，访问日期 **2026-10-24**）：[pg_user](https://www.postgresql.org/docs/18/view-pg-user.html)、[pg_roles](https://www.postgresql.org/docs/18/view-pg-roles.html)、[pg_auth_members](https://www.postgresql.org/docs/18/catalog-pg-auth-members.html)支持字段、脱敏和共享身份；[权限模型](https://www.postgresql.org/docs/18/ddl-priv.html)支持owner及ACL区别；[系统信息函数](https://www.postgresql.org/docs/18/functions-info.html)支持会话身份及查询签名。官方 [REL_18_STABLE acl.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/adt/acl.c)作为权限函数重载、NULL/不存在OID及错误分支后续逐例核对来源。客户端官方 [psql 18](https://www.postgresql.org/docs/18/app-psql.html)及 [describe.c::describeRoles](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/describe.c)给出角色列表字段；该可变分支不是精确客户端构建。JDBC、DataGrip、ORM的精确版本/官方生成SQL尚未采集，由批次23–25补证；本块人工探针不能冒称客户端SQL。精确18.6构建及运行行为仍未取证。
+
 ### 范围外
 
 #### 目录执行链与证据模板
@@ -4006,6 +4044,10 @@ PG database 是连接所属数据库，schema 是库内命名空间；TiDB datab
 #### 对象注释与描述契约
 
 不实现COMMENT解析/持久化、目录函数、角色体系或属性槽位，不补其他对象描述生态。缺数据库、角色、表空间来源逐项沿上节门禁，不能以全空目录掩盖表/列已有来源。真实客户端抓取、18.6参考构建与协议执行留后续实施。
+
+#### 角色权限与所有权契约
+
+不实现PG认证、角色DDL、授权引擎、owner持久化、RLS、SECURITY DEFINER或完整ACL运算；不把原生MySQL角色语义自动等价为PG语义。不运行Cargo/Go、实际客户端或差分平台，不修改第1–5章及其他块；本块只定义所需安全事实及缺失门禁。其他对象目录、名称可见性与客户端完整流程沿各自块。
 
 ### 验收
 
@@ -4480,6 +4522,43 @@ WHERE c.relname='comment_contract';
 
 清理：owner分别连接两库DROP TABLE IF EXISTS public.comment_contract，移除reader权限依赖后DROP ROLE comment_reader，再切回维护库DROP DATABASE comment_db及comment_other。所有对象仅在本用例专用环境创建。成功SQLSTATE不适用；0A000/42501为待验收目标，完整参考错误字段与18.6行为未采集。
 
+#### 角色权限与所有权契约
+
+以下均为人工契约探针、**待新增/待运行**，无当前通过结论。使用第1章证据格式，默认数据库catalog_role_db、UTF8、search_path=public、空闲事务、参数[]、Q文本结果；每条还需Parse/Bind/Describe/Execute/Sync文本及二进制重放并采集逐列OID/格式/NULL、错误阶段及恢复后的 `SELECT 1`。DDL/角色命令是未来参考端/目标夹具准备输入，当前缺能力须0A000，不能跳过夹具再报成功。
+
+管理员准备（待运行）：
+
+```sql
+CREATE ROLE catalog_owner LOGIN;
+CREATE ROLE catalog_reader LOGIN;
+CREATE ROLE catalog_none LOGIN;
+CREATE ROLE catalog_group NOLOGIN;
+CREATE SCHEMA catalog_acl AUTHORIZATION catalog_owner;
+CREATE TABLE catalog_acl.t (id integer, secret text);
+ALTER TABLE catalog_acl.t OWNER TO catalog_owner;
+CREATE SEQUENCE catalog_acl.s;
+ALTER SEQUENCE catalog_acl.s OWNER TO catalog_owner;
+REVOKE ALL ON SCHEMA catalog_acl FROM PUBLIC;
+REVOKE ALL ON TABLE catalog_acl.t FROM PUBLIC;
+REVOKE ALL ON SEQUENCE catalog_acl.s FROM PUBLIC;
+GRANT USAGE ON SCHEMA catalog_acl TO catalog_reader;
+GRANT SELECT (id) ON catalog_acl.t TO catalog_reader;
+```
+
+| 用例 | 完整查询/参数与权限前提 | 目标及元数据变化；缺能力策略 |
+| --- | --- | --- |
+| ROLE-ID | 任意已登录最小权限角色：`SELECT usename, usesysid, usesuper FROM pg_catalog.pg_user WHERE usename = 'catalog_reader'`；`SELECT oid, rolname, rolcanlogin FROM pg_catalog.pg_roles WHERE rolname IN ('catalog_reader','catalog_group') ORDER BY rolname` | 前者一行name/19、oid/26、bool/16且false；后者两行，group=false、reader=true，同名reader键一致，NOLOGIN不在pg_user。跨库/连接键稳定；同名不同Host及含@身份需独立冲突夹具，未定义映射时0A000。 |
+| ROLE-PSQL | `SELECT r.rolname,r.rolsuper,r.rolinherit,r.rolcreaterole,r.rolcreatedb,r.rolcanlogin,r.rolconnlimit,r.rolvaliduntil,r.rolreplication,r.rolbypassrls FROM pg_catalog.pg_roles r WHERE r.rolname='catalog_reader'` | psql官方字段子集的人工定值探针，不冒充完整生成SQL；一行name/19、五列bool/16、int4/23、timestamptz/1184、两列bool/16按列序描述，属性与显式准备策略一致；后续 `psql -E` 采集完整\du含过滤/排序及版本。未开放角色provider时0A000。 |
+| ROLE-OWNER | reader：`SELECT c.relowner, pg_catalog.pg_get_userbyid(c.relowner) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='catalog_acl' AND c.relname='t'` | 一行oid/26、name/19，owner为catalog_owner，不能为reader；管理员 `ALTER TABLE catalog_acl.t OWNER TO catalog_group` 后新执行显示group、原表OID不变；Parse前后及第二连接复查，不使用portal缓存代替新执行。缺持久owner拒绝0A000。 |
+| ROLE-PRIV | reader：`SELECT pg_catalog.has_table_privilege('catalog_reader','catalog_acl.t','SELECT'), pg_catalog.has_column_privilege('catalog_reader','catalog_acl.t','id','SELECT'), pg_catalog.has_column_privilege('catalog_reader','catalog_acl.t','secret','SELECT'), pg_catalog.has_any_column_privilege('catalog_reader','catalog_acl.t','SELECT')` | 四列bool/16，初态f,t,f,t；将四处显式用户参数均替换为catalog_none后全f，owner按真实owner权限判断。管理员 `GRANT SELECT ON catalog_acl.t TO catalog_reader` 后全t；`REVOKE SELECT ON catalog_acl.t FROM catalog_reader` 后回到f,t,f,t，列授权仍在。授权检查不能由目录行存在推断。 |
+| ROLE-PRIV其他对象 | reader：`SELECT pg_catalog.has_schema_privilege('catalog_acl','USAGE'), pg_catalog.has_database_privilege(current_database(),'CONNECT'), pg_catalog.has_sequence_privilege('catalog_acl.s','USAGE'), pg_catalog.has_function_privilege('pg_catalog.pg_get_userbyid(oid)','EXECUTE'), pg_catalog.has_type_privilege('pg_catalog.int4','USAGE')` | 五列bool/16；schema=t、sequence=f，database/function/type依夹具明确有效默认ACL取真值并采证，禁止硬编码。随后显式GRANT/REVOKE逐项翻转并记录PUBLIC默认授权影响；函数与类型缺真实权限来源0A000。 |
+| ROLE-MEMBER | 管理员 `GRANT catalog_group TO catalog_reader WITH INHERIT FALSE, SET TRUE`；reader：`SELECT session_user,current_user,current_role`；`SELECT pg_catalog.pg_has_role('catalog_group','MEMBER'),pg_catalog.pg_has_role('catalog_group','USAGE'),pg_catalog.pg_has_role('catalog_group','SET')`；再 `SET ROLE catalog_group` 并重查身份 | 初始三身份reader，成员结果t,f,t；SET后session_user仍reader、另两项group，RESET ROLE恢复。`SELECT roleid,member,grantor,admin_option,inherit_option,set_option FROM pg_catalog.pg_auth_members WHERE member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='catalog_reader')` 对应真实授予边，列类型oid/26三列、bool/16三列；无成员模型或子查询能力时明确0A000，不补假边。 |
+| ROLE-ACL | 管理员：`SELECT c.relacl FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='catalog_acl' AND c.relname='t'`；再 `GRANT SELECT ON catalog_acl.t TO catalog_reader WITH GRANT OPTION`、`REVOKE GRANT OPTION FOR SELECT ON catalog_acl.t FROM catalog_reader` | 一行aclitem[]/1034，grantor/grantee对应真实角色；配对 `SELECT pg_catalog.has_table_privilege('catalog_reader','catalog_acl.t','SELECT WITH GRANT OPTION')` 从t到f但普通SELECT保留。另以新表默认ACL、显式空ACL夹具核对NULL与空数组，PUBLIC授予单测不混入角色成员边；缺ACL来源/codec拒绝0A000。 |
+| ROLE-NULL | `SELECT pg_catalog.pg_get_userbyid(NULL::oid),pg_catalog.has_table_privilege(NULL::oid,'SELECT'),pg_catalog.has_schema_privilege(NULL::oid,'USAGE')`；扩展 `SELECT pg_catalog.has_table_privilege($1,$2)`，参数OID=[26,25]、值=[NULL,'SELECT'] | 三列name/19、bool/16、bool/16均NULL；参数化结果bool/16为NULL，不能返回t/f。再以参考端确认不存在的OID替代NULL（OID值由实际目录排除确认），权限查询目标NULL；未知userbyid的fallback文本以18参考构建补证，不能虚构成NULL。 |
+| ROLE-ERROR/SAFE | 前两条由具备schema USAGE的reader执行，后两条由none执行：`SELECT pg_catalog.has_table_privilege('catalog_acl.absent','SELECT')`；`SELECT pg_catalog.has_table_privilege('catalog_acl.t','BOGUS')`；`SELECT passwd FROM pg_catalog.pg_user WHERE usename='catalog_reader'`；`SELECT rolpassword FROM pg_catalog.pg_authid` | 已实现目标分别在对象解析阶段拒绝不存在关系（目标42P01）、权限字符串校验拒绝（目标22023）、只得脱敏星号、无授权敏感读取42501；错误顺序/文本与18.6精确字段待采。产品尚未提供能力时输出前0A000，不发成功行，不在日志/错误携带凭据、哈希或无权元数据。 |
+
+最小权限连接、不同host映射、无权限对象、名称不存在、OID不存在、NULL及授权变化分别留证；表列SELECT不代表schema USAGE或登录CONNECT，改变权限不能替换会话认证。原生入口若仍仅允许bootstrap root，记录能力门禁和未运行多角色测试，禁止用root结果替代。准备SQL由专用管理员连接运行，清理需先RESET ROLE，再删除catalog_acl对象/schema，最后删除四个夹具角色；只清理本夹具。本轮未执行任何SQL。
+
 ### 后续细分
 
 #### 目录执行链与证据模板
@@ -4551,6 +4630,10 @@ WHERE c.relname='comment_contract';
 #### 对象注释与描述契约
 
 按同源块另拆：①表/列/索引/序列注释映射与oid描述，联动稳定列槽位；②obj_description/col_description目录绑定和普通SQL工厂，复用真实来源；③数据库共享注释持久来源、shobj_description及跨库验证；④空串删除、Unicode、权限和元数据更新独立测试。每块先补待新增测试，记录真实客户端版本与SQL；角色及表空间分别设来源门槛，禁止递归扩建。本轮文档完成不表示功能完成。
+
+#### 角色权限与所有权契约
+
+后续按单一事实链拆分：①原生user/host到稳定PG角色身份及脱敏pg_user/pg_roles；②会话授权角色/有效角色与成员边；③单类对象持久owner及pg_get_userbyid；④单类ACL与对应has_*查询、grant option及授权失效。每项分别遵循第3/4/5章类型、正式注册、会话和第7章协议门禁，不扩成完整授权子系统。批次23–25补各客户端确切SQL/版本/参数；本块待新增验收不得登记为当前实测。
 
 ## 7. 线协议认证与数据通道
 
