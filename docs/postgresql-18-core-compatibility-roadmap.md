@@ -796,6 +796,10 @@ PG 入口 [pg_extended.rs](../pkg/server/pg_extended.rs)::parameter 先校验 UT
 
 [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process 的普通 Parse 白名单不含数组OID；parameter/binary_parameter 没有非NULL通用数组解码，NULL参数先转code6也不证明typed NULL身份保真。已读独立 [pg_types_test.rs](../pkg/server/pg_types_test.rs)::pg_binary_native_results 的目录空int2数组（ndim=0、元素OID21）及int2vector（下界0）字节断言、catalog_char_and_acl_wire_types 的ACL NULL/OID断言；后者不是ACL非NULL二进制或普通数组支持证据。[pg_oid_test.rs](../pkg/server/pg_oid_test.rs)::pg_introspection_oid_ranges_and_local_indexes 只断言目录对象OID区间/唯一性，未覆盖元素/数组OID或SQL数组往返。目标包无doc.go；这些测试均未运行，本轮仅静态取证。
 
+[显式隐式转换契约](#显式隐式转换契约)静态基线为 `1ecb906fd0`（批次16基础数组已交付，2026-10-23）。经 RustCodeGraph 阅读 [builtin_cast.rs](../pkg/expression/builtin_cast.rs)::BuildCastFunctionWithCheck/cast_value：目标元数据在构建时固定，输入 NULL 在求值时直接返回 NULL；数组检查为 MySQL JSON 到 typed array 的局部路径，不是 PG 数组转换。其 FieldKind、CastContext 和 in_union 不能代替 PG 类型身份及三种转换上下文。[datum.rs](../pkg/types/datum.rs)::ConvertTo 按 MySQL Type 分派且 NULL 直接返回默认 Datum；[convert.rs](../pkg/types/convert.rs)::handled_truncate/ConvertIntToInt/ConvertFloatToInt 使用 Context 截断策略及带裁剪值的错误，不能直接作 PG 错误后仍返回结果的依据。[pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process 在普通 Parse 将未指定 OID 补0后明确以0A000拒绝；Bind依据固定OID选择parameter/binary_parameter，格式码不参与SQL转换资格。
+
+已读独立 [builtin_cast_test.rs](../pkg/expression/builtin_cast_test.rs) 的挂载入口及 [builtin_cast_4_aster_unit_test.rs](../pkg/expression/builtin_cast_4_aster_unit_test.rs)::cast_numeric_matrix_matches_go_rounding_and_unsigned_rules、decimal_cast_rounds_and_clamps_to_declared_precision、json_conversion_preserves_parse_flag_and_typed_array_semantics：分别断言负数转unsigned告警、科学计数法前缀截断、decimal溢出钳制和JSON数组转换。[convert_test.rs](../pkg/types/convert_test.rs)::test_str_to_num 明确断言忽略截断时“11xx”→11、告警模式空串→0；这些是需保留的Go/MySQL意图，不是PG证据。[pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 已读目录专用Parse/Bind/Describe局部断言，不能据此推导通用参数推断或转换矩阵覆盖。pkg/expression、pkg/types、pkg/server均无doc.go；所有测试只读未运行，PG转换资格、共同类型和SQLSTATE均未验证。
+
 ### 目标行为
 
 #### 规范类型与协议映射
@@ -1111,6 +1115,35 @@ number沿PG numeric有限数值域精确保留，禁止借f64或受限MySQL deci
 
 官方依据（2026-10-23查阅）：PostgreSQL **18** §8.15.1/.2/.6 [Arrays](https://www.postgresql.org/docs/18/arrays.html) 支持类型/维数、形状、引用、NULL及下界规则；精确格式以 **REL_18_0** [arrayfuncs.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/utils/adt/arrayfuncs.c)::array_in/array_out/array_recv/ReadArrayBinary/array_send 固定空数组规范化、头字段、元素类型/长度和错误分支，[array.h](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/utils/array.h) 固定MAXDIM=6及行主序，[pg_type.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_type.dat)固定上述元素/数组OID配对。§54.7 [Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html)支持外层格式、NULL长度与描述元数据，[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持SQLSTATE名称。源码tag与大版本手册仅定义目标，18.6仍是来源指定基线，未在该补丁版本运行验证。
 
+#### 显式隐式转换契约
+
+本块承接前16个类型块及第2章转换语法，定义类型分析到值转换的交接。E为显式CAST/::；A为赋值（INSERT/UPDATE目标列）；I为表达式隐式coercion。资格满足I可用于I/A/E，A只用于A/E，E只用于E；同类型仍须执行目标typmod检查。存在路径不保证任意值成功，也不因两类型经text可达就自动串接转换。以下是基础族的有向矩阵，未列组合默认不开放，后续必须取证PG18的具体规则；合法但尚未实现的路径明确0A000，不能伪称参考PG拒绝。
+
+| 源→目标与方向 | E / A / I资格 | 值域、精度、NULL与错误 | 目标身份、wire及现状差距 |
+| --- | --- | --- | --- |
+| int2→int4→int8→numeric→float4→float8及该链前向内建数值对；反向对 | 前向E/A/I；反向E/A，禁止I | 目标域检查；近似浮点可能损精度，不能称无损提升；numeric/float转整数按各族舍入后查界；越界22003。 | 分别21/23/20/1700/700/701；typmod由结果表达式决定，不继承源修饰符；现有MySQL数值求值仅候选。 |
+| int4↔bool | 两向仅E | int4零→false、非零→true；bool→0/1；不推广到所有数值类型或条件真值。 | 23↔16；NULL仍是目标typed NULL；当前MySQL整型载体不证明bool身份。 |
+| text/varchar/bpchar内部互转及同类型长度约束 | 基础互转E/A/I；长度行为须区分上下文 | 显式超长截断与赋值超长22001沿文本块，bpchar补空格/去尾空格保留；不能用UTF-8字节截断代替字符规则。 | 25/1043/1042及目标typmod；二进制可coerce不等于长度约束免检。现有cast字符串规则未证PG等价。 |
+| 已定型text→bytea/整数/numeric/float/bool/date/time/timestamp/timestamptz/interval/UUID/json/jsonb/基础数组 | 输入输出通用规则允许E；禁止由此开放A/I | 调用目标输入语义，非法文本22P02或时间族22007/22008，超域按族；不得只取数值前缀。 | 目标OID/typmod沿各族；数组输入另保留shape/lower。UUID/jsonb/数组仍有表示与codec缺口。 |
+| 上述基础标量/数组→text/varchar/bpchar | 通用输出转字符串允许E/A；不因此开放I；具体目录条目优先 | 使用源类型输出规则，再施加目标字符约束；bytea按自身输出格式，不能把原字节当UTF-8。 | 25/1043/1042；非字符串原身份不能因值像字符串改变。当前结果文本输出不能自动当SQL cast。 |
+| date→timestamp、date→timestamptz、timestamp→timestamptz；逆向timestamp/timestamptz→date、timestamptz→timestamp | 前三条E/A/I；列出的逆向E/A | date补午夜；瞬时与墙钟转换使用会话TimeZone，丢时间/区域信息不承诺互逆；范围/特殊值沿时间块。 | 1082/1114/1184；目标p与typed NULL保留。MySQL零日期、隐含来源区域不能直接复用。 |
+| timestamp/timestamptz→time；time→interval；interval→time | 前者E/A；time→interval为E/A/I；逆向E/A | 提取日内时间，interval回time的日内归约按PG参考取证，不拿MySQL duration直接映射；精度沿族。 | 1083/1186；月份/天不能错误合并为总秒；现有Duration不是PG interval。 |
+| json↔jsonb | 两向E/A，禁止I | json→jsonb校验、规范化且可能失去原文；逆向只得规范文本；jsonb更严格数值/Unicode校验沿族。 | 114↔3802，SQL NULL不同于JSON null；现有BinaryJSON不是任一方向的充分证据。 |
+| T[]→U[]（本章已列基础族） | 由元素T→U在相同上下文的资格决定，不因容器可表示放宽 | 逐元素检查，保留维数、维长、下界及元素NULL；单元素失败拒绝整个值，无部分结果。 | 目标数组OID及其元素OID一起改变，typmod沿元素约束；现有JSON typed array不是PG数组。 |
+| bytea↔其他非字符串族、UUID↔bytea、任意未列跨族/MySQL桥接 | 本块不新增资格；不能由相同字节宽度或目录OID推导允许 | PostgreSQL18已有局部路径（如整数↔bytea）须单独取证后开放；MySQL unsigned可证提升到numeric，零日期/负或长TIME无等价路径则拒绝0A000。 | 禁止只换OID；缺合法路径时类型分析拒绝，缺实现时能力门禁。精度/时区不适用的固定字节族不人为添加舍入。 |
+
+矩阵各行共同NULL契约：先检查类型资格，再对合法严格转换传播SQL NULL；已定型的非法类型对不能因值为NULL绕过资格检查。unknown NULL可按上下文定型，typed NULL保持目标OID/typmod，不执行值解析；数组NULL、元素NULL、JSON null分别沿各族。本矩阵不是PG全量cast目录；pg_cast之外还有I/O、数组等通用规则，不能以目录无条目认定不存在。
+
+unknown字面量、未定型NULL、Parse未指定OID参数是不同来源，必须保留来源信息。字符串字面量初始unknown，`'1'::int4`直接调用int4输入；`'1'::text`已定型，不能继续当unknown隐式转数值。OID0只表示客户端未指定，Parse分析可由`$1::int4`或目标列确定23，不能读取Bind值猜测。重复$n是同一个参数身份；首次上下文推定类型后，后续引用检查一致性或插入合法coercion，禁止每次引用各自解码。显式OID先固定源类型，再检查上下文转换。无法确定类型目标42P18，不一致推断42P08，具体触发优先级/错误位置须参考端采集；与普通cast失败42846、共同类型/赋值不匹配42804及运算重载失败42883分责。
+
+共同类型推导适用于UNION/INTERSECT/EXCEPT逐列、CASE结果、VALUES列及ARRAY等构造；不能复用MySQL in_union开关代替规则。相同非unknown身份优先；全部unknown定为text，否则忽略unknown选择候选，不同类别拒绝；同类别从左向右依据单向隐式可转换性更新候选，优选类型可终止搜索，最后所有输入均须可隐式转候选。CASE历史顺序以ELSE作为首候选；嵌套UNION逐对解析，不能把全树一次提升。domain不属于本轮开放范围，遇到时能力门禁，不能冒充基础类型支持。运算符/函数重载的候选选择归工作流4，接收本块资格结果而非套用集合算法。
+
+方向责任：parser（工作流2）保留cast目标、参数编号及原位置；类型分析拥有E/A/I资格、共同类型及参数约束；常量折叠可在准备期触发非法值，不能保证所有转换错误延后Execute。Bind codec只按确定参数身份解码，格式0/1不改变SQL类型；求值转换负责目标值域、舍入后溢出与时区；结果codec按固定结果身份编码，不再推导cast。ParameterDescription返回推定参数OID，RowDescription返回分析结果OID/typmod；零行、全NULL、换Bind值以及两种输出格式均不得改变描述，详细生命周期交批次18。PG错误必须拒绝语句，不沿MySQL警告后继续返回裁剪值；MySQL原Go语义保持独立。错误响应/Sync恢复归工作流7；P若提供按原SQL字符位置，精确值及错误阶段均待差分。
+
+方案比较：直接复用共享转换器可减少实现，但现有截断、unsigned、decimal钳制和MySQL日期路径已有反例，不能证明PG资格与值语义等价。选择“连接方言与E/A/I先决策，再复用已证实等价的局部转换”；可候选复用NULL传播、合法定宽整数值操作等，但须把类型检查、PG范围错误与元数据连续性放在调用边界，逐项差分证明后采用。只补当前类型族必需信息，不重建类型系统，不改既有Go行为。
+
+官方依据（2026-10-23查阅）：PostgreSQL **18** [§10.1](https://www.postgresql.org/docs/18/typeconv-overview.html)支持unknown与上下文分类，[§10.4](https://www.postgresql.org/docs/18/typeconv-query.html)支持赋值和typmod，[§10.5](https://www.postgresql.org/docs/18/typeconv-union-case.html)支持共同类型顺序，[PREPARE](https://www.postgresql.org/docs/18/sql-prepare.html)支持参数上下文推定；[§52.10 pg_cast](https://www.postgresql.org/docs/18/catalog-pg-cast.html)定义E/A/I层级和目录非穷举性。具体方向以 **REL_18_0** [pg_cast.dat](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/include/catalog/pg_cast.dat)的numeric、bool、string、datetime、json条目为静态依据；通用I/O与数组资格已核对[parse_coerce.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/parser/parse_coerce.c)::find_coercion_pathway的字符串I/O与元素递归分支。[§8.1](https://www.postgresql.org/docs/18/datatype-numeric.html)支持数值范围/舍入，[附录A](https://www.postgresql.org/docs/18/errcodes-appendix.html)支持错误分类。18.6是来源指定参考目标，本轮未运行该版本或本地SQL；以上均为文档目标，非功能通过声明。
+
 ### 范围外
 
 [规范类型与协议映射](#规范类型与协议映射)只定义映射与交接，不实现生产代码、类型系统、完整 cast、codec、数据库环境或差分平台。逐族输入语法、舍入/时区、数组形状及精确二进制布局交本章后续文档块，不因列出 OID 提前承诺支持。parser/名称绑定归工作流 2；运算重载归 4；时区等会话状态归 5；目录类型身份归 6；消息状态机、格式选择、错误响应和恢复归 7；真实客户端与双方言共存证据归 8。扩展、自定义类型及目录专用类型向通用引擎推广均不在本块范围。
@@ -1144,6 +1177,8 @@ number沿PG numeric有限数值域精确保留，禁止借f64或受限MySQL deci
 [JSONB规范值契约](#JSONB规范值契约)范围外：运算符、比较/包含、路径、索引、聚合与扩展生态归工作流4或来源范围决策；本块不实现这些能力。JSON原文由前块负责，SQL数组由基础数组块负责；语法定型归2，编码会话配置归5，目录身份归6，协议恢复归7，客户端差分归8。不扩建生产子系统，不生成执行任务。
 
 [基础数组契约](#基础数组契约)不实现生产表示、cast或codec，不扩展自定义/复合/domain数组、下标/切片、比较/运算、索引、聚合或完整存储子系统；目录vector和ACL编码保留独立责任，不推广为普通数组。构造语法归工作流2，运算归4，array_nulls/编码状态归5，目录身份归6，消息及恢复归7，真实客户端差分归8。只定义本章类型与codec交接，不修改Go/MySQL行为。
+
+[显式隐式转换契约](#显式隐式转换契约)只交付上述基础族转换资格与责任；完整重载、domain/用户定义cast、扩展类型、函数/算术、存储、优化器及协议状态机均不实现。bytea与整数等PG18新增局部转换不因本块列出而开放；不补建全量cast目录，不修改其他章节或Go行为。
 
 ### 验收
 
@@ -1332,6 +1367,19 @@ number沿PG numeric有限数值域精确保留，禁止借f64或受限MySQL deci
 | ARRAY-WIRE-LENGTH | ndim=-1、flags=2、元素length=-2/超剩余/未消费完整拒绝22P03；缺头/长度字段按08P01边界；维长负值、乘积/下界溢出、7维54000、元素数不符和尾随垃圾分别记录参考诊断。flags=0且NULL元素单列参考接受性，输出应规范反映NULL。 | 未验证；不得让长度错误越过载荷边界，未采集码的分支不冒充通过。 |
 | ARRAY-ELEMENT-CAST | int4[]→int8[]在允许显式转换下保留shape/lower/NULL、结果1016且头20；超域/非法元素按元素契约失败，无部分结果；同值text[]不能保留1007冒充原身份。 | cast资格及元素精度/时区继承待转换块；PG往返与MySQL隔离回归未验证。 |
 
+[显式隐式转换契约](#显式隐式转换契约)待新增CAST用例族如下，全部PG/双方言运行均未验证。每条成功项须比对值、目标OID/typmod及NULL标志，拒绝项须比对SQLSTATE、阶段、是否有P和原位置；simple Q与扩展路径分别采集，不用测试名称或编译替代行为。
+
+| 用例 | 可观察目标与反例 | 证据状态 |
+| --- | --- | --- |
+| CAST-LEGAL-INVALID | `'12'::int4`→12/OID23；`'12x'::int4`拒绝22P02；`'2147483648'::int4`拒绝22003，无裁剪行。 | 现有test_str_to_num的前缀接受恰为非等价证据；PG未验证。 |
+| CAST-CONTEXT | `1::boolean`→true/16；`SELECT 1 WHERE 1`拒绝42804；int4列赋值boolean拒绝，显式true::int4→1。另int4→int2赋值合法但超域拒绝22003。 | E/A/I分离目标；MySQL独立验证原真值/告警，均未运行。 |
+| CAST-UNKNOWN-NULL | `SELECT NULL::int4`返回typed NULL/23；`SELECT '1' UNION SELECT 2`定为int4，而`SELECT '1'::text UNION SELECT 2`拒绝42804；单列全unknown NULL集合定为text/25。 | 源码NULL短路不能证明定型；未验证。 |
+| CAST-COMMON | `SELECT 1.2 UNION SELECT 1`为numeric/1700；`CASE WHEN true THEN 1 ELSE 2.2 END`为numeric；`VALUES (1),(2.2)`同列numeric；`SELECT NULL UNION SELECT NULL UNION SELECT 1`因左侧先定text而拒绝42804。 | 共同算法、逐对顺序、CASE候选及空结果描述均未验证。 |
+| CAST-PARAMETER | Parse省略OID的`SELECT $1::int4`推定23，Bind文本12/binary整数12/NULL均保持结果23；`SELECT $1 IS NULL`无上下文目标42P18。用INSERT到int4、text两列的`VALUES ($1,$1)`采集不一致推断42P08；显式OID25的`SELECT $1 + 1`拒绝重载42883，不能因绑定“1”改变资格。 | 当前普通Parse OID0为0A000；目标参数冲突优先级、位置及两格式均未验证。 |
+| CAST-ROUND-OVERFLOW | numeric `1.235::numeric(4,2)`→1.24，`99.995::numeric(4,2)`舍入后越界22003；`2.5::numeric::int4`→3、`(-2.5)::numeric::int4`→-3；float半值按浮点族单独采集，不能混用numeric规则。 | 现有decimal钳制为MySQL证据；PG舍入与溢出未验证。 |
+| CAST-FAMILY-METADATA | 固定UTC/Shanghai比较timestamp↔timestamptz；json→jsonb规范化再返json不得恢复原文；int4[]→int8[]保留非1下界、shape及元素NULL，结果1016/元素20；text→UUID合法与非法按UUID块；bytea→text按bytea输出。 | 前序族验收关联；元数据在空行/全NULL/重绑定及text/binary均一致，全部未验证。 |
+| CAST-LENGTH-BRIDGE | `'abcd'::varchar(2)`→ab；向varchar(2)列直接赋值'abcd'拒绝22001。unsigned最大值提升numeric保真；MySQL零日期/负或超24小时duration不得冒充PG日期/time，无依据桥接0A000。 | 沿文本、整数与时间块；双方言隔离及无部分写入均未验证。 |
+
 ### 后续细分
 
 [规范类型与协议映射](#规范类型与协议映射)仅给候选边界：先取证 FieldType/NativeType 能保留的身份、修饰符与参数生命周期，再决定最小内部表示补充；cast 候选依赖该身份并先分方言确定转换规则；参数 codec 候选依赖确定的参数类型及值域；结果 codec 候选依赖相同的准备/执行列类型契约。各族顺序服从本章后续文档，不生成可执行代码任务、不递归扩建共享内核。协议消息/恢复的实现由工作流 7 独立承接。
@@ -1389,6 +1437,8 @@ JSONB块来源覆盖：步骤2由独立身份、值域及五方向表覆盖；�
 [基础数组契约](#基础数组契约)候选边界：内部表示先保留元素身份/typmod、矩形shape、下界及两层NULL；cast依赖元素族与方言资格，逐元素转换不能丢形状。参数codec依赖定型数组OID、元素codec和会话编码，先校验头/边界再解码；结果codec依赖同一规范值、稳定元数据与元素输出，两格式共享shape/lower/NULL语义。目录binary_array仅作局部取证入口，不预设直接复用。这里只给候选边界与依赖，不生成可执行任务。
 
 基础数组块来源覆盖：步骤2由元素/数组身份、值域和五方向表覆盖；步骤3由ARRAY-SHAPE/LOWER/ELEMENT-CAST覆盖维度、下界及转换，精度/时区继承元素族；步骤4由四格式组合及EMPTY-NULL/TEXT-ESCAPE/TEXT-INVALID/WIRE-TYPE/WIRE-LENGTH覆盖元数据、NULL与非法输入。与第1章证据规则、第2章数组树形/定型交接和前序各标量族一致，无需改其他章节；数组开放逐族取证，不以本块文档完成声称功能可用。
+
+[显式隐式转换契约](#显式隐式转换契约)候选边界：内部表示先承接各族身份、typmod、unknown来源及typed NULL；cast依赖该身份和连接方言，先决策E/A/I、共同类型与参数约束，再复用等价值转换；参数codec依赖分析得到的稳定OID，结果codec依赖目标表达式身份及固定描述。这里只交接候选边界与依赖，不生成实现任务。来源步骤3的显式/隐式、精度溢出、时区、数组维度/下界及MySQL不等价边界由方向矩阵与CAST八组覆盖；步骤4相关NULL、格式和准备/执行描述交批次18承接生命周期。与第1章证据规则、第2章语法及前16块一致，无需改写其他章节；功能、性能、18.6参考端与MySQL回归未实测。
 
 ## 4. 方言函数与运算符契约
 
