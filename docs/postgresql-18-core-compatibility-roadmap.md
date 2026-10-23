@@ -2606,6 +2606,16 @@ PG `/` 和文本 `||` 同时核对未限定写法与 `OPERATOR(pg_catalog./)` / 
 
 已读独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync 的 current_catalog、显式 int4 参数/两种 Describe、Parse 后建库可见和目录 statement Close 隔离片段；[pg_query_test.rs](../pkg/server/pg_query_test.rs)::pg_introspection_namespace_session_state 的两连接路径及 Parse 后 SET/current_schema 断言；[pg_dml_test.rs](../pkg/server/pg_dml_test.rs) 的 prepared CRUD、重复/乱序参数与非法 Bind 后 Sync 断言。均仅是测试意图，本轮未运行；它们不覆盖下面的普通 prepared 路径切换、跨连接 DDL 和固定结果类型全序列。`pkg/server/doc.go` 不存在，历史说明不作为本轮支持证据。
 
+#### 序列执行契约
+
+承接来源步骤 2 的 sequence 及步骤 4 的副作用/恢复，能力 ID 为 `SESSION-SEQUENCE/pg`。批次 9 提交 `3fffa00db6` 及累计批次 1–8 的提交链、五节正文已核对，满足文档依赖；第 2 章名称、第 3 章 regclass/bigint、第 4 章函数身份继续适用。以下是 2026-10-23 基于该提交的 RustCodeGraph 静态阅读，不是运行证明。
+
+[pg_catalog.rs](../pkg/server/pg_catalog.rs)::native_metadata_rows 仅在真实 model.Sequence 存在时投影 pg_sequence 的起点、步长、边界、缓存和循环参数；目录行不执行 nextval/currval/setval。[autoid.rs](../pkg/meta/autoid/autoid.rs)::DefaultAllocator::alloc_seq_cache 在 IdStore 事务中分配序列缓存水位，rebase_seq 已满足水位时返回 already_satisfied；它不承载 PG setval 的 is_called 参数，不能以 rebase 等价实现 PG 任意回设。
+
+[数据库信息函数内核](../pkg/expression/builtin_info.rs)::SequenceService/next_val/last_val/set_val 是共享原生接口：next_val 按序列 ID 更新 SessionInfo.sequence_state，last_val(source) 无本连接值时返回 None；权限为原生 Insert/Select，set_val 无布尔参数且接收不可变 SessionInfo。这与 PG currval 未初始化报错、PG 权限和 setval 更新连接状态的目标不同，仅证明可复用入口，未证明 PG 签名注册、工厂接线、regclass 解析和事务非回滚已经完整通过。
+
+独立 [pg_catalog_test.rs](../pkg/server/pg_catalog_test.rs)::pg_introspection_dependencies_live 建真实序列和 AUTO_INCREMENT 表，断言后者不是序列、无 owned-by 列依赖，以及默认值序列引用被拒绝；[seq_autoid_test.rs](../pkg/meta/autoid/seq_autoid_test.rs)::test_sequence_autoid/test_concurrent_alloc_sequence 用 MemoryStore 检查缓存/循环与并发分配不重复。测试意图不覆盖 PG 应用 SQL、真实持久化、两连接 currval 或 ROLLBACK。本轮上述测试未运行，有效运行用例数为 0；server、expression、meta/autoid、executor 的 doc.go 均不存在。
+
 ### 目标行为
 
 #### 会话执行链与契约模板
@@ -2737,6 +2747,16 @@ PG 未引号 t、T 与引用 "t" 选择同一小写名称；"T" 为精确大写�
 
 官方依据（2026-10-23 查阅，适用 PostgreSQL **18**）：[PREPARE](https://www.postgresql.org/docs/18/sql-prepare.html) 说明分析/重写、会话归属、DDL/路径变化及更早同名表特例；[§54.2.3 Extended Query](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY) 说明 Parse/Bind/Describe/Execute、参数身份、通常 Bind 规划及 portal 生命周期。固定结果类型另核官方 PG18 维护分支 [postgres.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/tcop/postgres.c) 的 exec_parse_message/CompleteCachedPlan(fixed_result=true) 和 [plancache.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/src/backend/utils/cache/plancache.c) 的 RevalidateCachedQuery（参数类型保持、结果不兼容时 FEATURE_NOT_SUPPORTED）。该分支是源码依据，未固定为 18.6，也无精确补丁或参考端运行证据；精确报文、SQLSTATE、错误阶段与位置在下列用例采集，不能拿产品元数据不一致报错代替 PG 固定类型诊断。
 
+#### 序列执行契约
+
+以下为目标，真实序列与 AUTO_INCREMENT 分开登记。`nextval(regclass) → bigint` 原子分配；`currval(regclass) → bigint` 读本连接该序列最近值，未初始化应错误；`setval(regclass,bigint) → bigint` 与三参 true 形式都回报设定值并更新本连接 currval，随后 nextval 按步长推进；三参 false 使下一次 nextval 恰返回设定值，不改变本连接 currval（也不初始化它）。各连接私有最后值按真实对象身份隔离，其他连接 nextval/setval 不替换它；断开重连不继承。PG 无参 lastval 与原生带名称 last_val 也不能混同，本块不由此开放 lastval。
+
+持久序列水位/缓存分配与连接最后值是两种状态：成功 nextval 消耗和 setval 变更不随用户 ROLLBACK 撤销，用户表写入仍须回滚；setval 的共享状态对其他事务可见，但 CACHE>1 的已有预分配值可能继续使用。无重置、无 CYCLE 的并发分配不得重复；跨连接次序、间隙、提交次序均不能当唯一性证明，setval 回设和 CYCLE 允许重用历史数值。正常进程内跨事务可见性不证明崩溃持久性；未提交分配遇崩溃后的状态不可据此承诺，缓存水位也不是本连接 currval。
+
+权限目标分别为 nextval 的 USAGE 或 UPDATE、currval 的 USAGE 或 SELECT、setval 的 UPDATE。缺对象、对象非序列、无权限、首次 currval、越界及 NO CYCLE 耗尽须失败，不伪造值或退回 AUTO_INCREMENT。失败后的连接/事务门禁沿本章 I/T/E 与 Sync 契约；未开放的合法调用保留能力拒绝，诊断阶段与精确 SQLSTATE 待参考采集，不沿用原生 NULL 或权限映射。
+
+官方依据（2026-10-23 查阅，适用 PostgreSQL **18**）：[§9.17 序列函数](https://www.postgresql.org/docs/18/functions-sequence.html) 支持上述签名、权限、连接状态与非回滚边界；[CREATE SEQUENCE](https://www.postgresql.org/docs/18/sql-createsequence.html) 支持对象、CACHE/CYCLE、边界和缓存观察规则。它们是大版本规范，未取得精确 18.6 实例、补丁固定证据或差分结果，不能提升为 18.6 实测支持。下方数值是限定夹具下按规则推导的目标。
+
 ### 范围外
 
 #### 会话执行链与契约模板
@@ -2774,6 +2794,10 @@ PG 未引号 t、T 与引用 "t" 选择同一小写名称；"T" 为精确大写�
 #### 预处理执行时会话契约
 
 本块不实现 prepared 缓存、失效广播、PG resolver、类型系统或 schema 子系统；不补 generic/custom plan 策略或性能基准，不开放事务型 DDL、任意多 schema、二进制格式及通用参数推断。SQL PREPARE/EXECUTE 仅作官方语义来源，本轮用例走扩展协议，不据此宣称产品支持 SQL PREPARE。事务恢复、Close/Sync/portal 精确生命周期沿专项和工作流 7；目录真实对象、权限与可见性归工作流 6。目录 Execute 重新取快照不承担原生 prepared handle 的失效证明。
+
+#### 序列执行契约
+
+不实现序列函数、权限、regclass、分配器、存储或测试，不改原生 MySQL 行为，不补建另一套 PG 引擎。序列 DDL 只作为未来验收的事务外夹具前提，不借本块批准事务型 CREATE/ALTER/DROP SEQUENCE、RESTART 或解除现有门禁。默认值稳定引用、OWNED BY、serial/identity 及删除级联交目录工作流与 identity 后块；缓存失效、多节点/崩溃恢复和全类型/NULL/极值组合须另取证。本轮不运行数据库、差分平台、原型、Cargo/Go 或性能实验。
 
 ### 验收
 
@@ -3019,6 +3043,28 @@ MySQL共存 `session.prepared-state.mysql.<query|prepared>` 关联 `SESSION-PREP
 
 清理先全部ROLLBACK，恢复PG search_path public，关闭实际存在的portal/statement/MySQL prepared；事务外按实际创建情况逐条 `DROP TABLE public.prep_later`、`DROP TABLE prep_alt.prep_doc`、`DROP SCHEMA prep_alt`、`DROP TABLE public.prep_doc`，MySQL `DROP TABLE prep_mysql`，再关闭连接。来源步骤2映射四时点、path/drop/ddl/cross-connection，步骤4映射S、失败恢复/MySQL；本轮运行用例数0，无法从结构检查提升支持等级。
 
+#### 序列执行契约
+
+下列 `session.sequence.pg.*` 均为**待新增、未运行**，关联 `SESSION-SEQUENCE/pg`。A/B 为同库两条全新 PG 连接，UTF-8、UTC、search_path=public、autocommit、初始 I；管理员具备全部夹具权限。每例独立用事务外 DDL 创建 `CREATE SEQUENCE public.seq_contract AS bigint INCREMENT BY 1 MINVALUE 1 MAXVALUE 1000 START WITH 10 CACHE 1 NO CYCLE`，并创建空表 `CREATE TABLE public.seq_rows (id integer PRIMARY KEY,v bigint)`；不设置默认值、owned-by、触发器或其他取值者。每行中操作严格从左到右分条执行，函数调用统一 `SELECT 函数(...) AS v`，序列参数统一 `'public.seq_contract'::regclass`。下表为可读性省略 SELECT/AS v，采证时展开为完整 SQL。
+
+| 用例 | 完整操作顺序与预期值/副作用 | 恢复与继续性 |
+| --- | --- | --- |
+| first/cross | 新 A currval 失败；A nextval=10、currval=10；新 B currval 失败；B nextval=11；A currval 仍10、B currval=11；A nextval=12、B currval仍11。另并发无重设/CYCLE的 A/B各100次 nextval，收集200个值断言互异且范围内，不按网络返回顺序断言递增。 | 首次错误各自 I 下 `SELECT 1 AS ok`=1；并发取值前两连接 I，无其他取值者。A断开重连后currval失败；B最后值不受影响（并发轮次另记实际最后值）。 |
+| rollback | A `BEGIN`；nextval=10；`INSERT INTO public.seq_rows VALUES (1,10)`；`ROLLBACK`；A currval=10；B `SELECT id,v FROM public.seq_rows ORDER BY id`=[]；B nextval=11。 | A I→T→I；A/B `SELECT 1 AS ok`成功，表为空而序列已消耗，不能仅验标签。 |
+| set-true | 新 A setval(序列,40)=40、currval=40、nextval=41；setval(序列,50,true)=50、currval=50；B nextval=51；A currval仍50。 | 两种 true 形式分别取证，B currval=51；成功均 I。 |
+| set-false | 新 A setval(序列,60,false)=60，A currval仍未初始化而报错；B nextval=60、currval=60；A nextval=61；A setval(序列,70,false)=70，A currval仍61；B nextval=70；A currval仍61、B currval=70。 | currval错误后A I且SELECT 1成功；验证false既不初始化也不覆盖已有连接值。 |
+| set-rollback | A nextval=10；A `BEGIN`；setval(序列,80,true)=80；在A回滚前B nextval=81；A `ROLLBACK`；A currval=80；B nextval=82；B查seq_rows仍空。 | A回滚不撤销共享值或连接值，B在A事务未结束时的可见性单独记录，限定CACHE 1。 |
+| bounds | A nextval=10；setval(序列,0)与setval(序列,1001,false)逐条失败，之后A currval仍10、B nextval=11；再setval(序列,1000,true)=1000，nextval因NO CYCLE耗尽报错，A currval仍1000；setval(序列,999,false)=999，nextval=999。 | 每个I下失败后SELECT 1成功；再独立从夹具初态A `BEGIN`、nextval=10、`INSERT INTO public.seq_rows VALUES (1,10)`、setval(序列,0)失败，A进入E，SELECT 1须25P02；扩展Sync仍E，ROLLBACK→I，表空、A currval=10、B nextval=11。 |
+| missing/type/permission | 新A依次调用nextval('public.seq_missing'::regclass)、nextval('public.seq_rows'::regclass)，分别缺对象/非序列失败；B nextval=10证明未消耗有效序列。权限独立夹具预建非owner且无继承/公开授权的角色r；分别以无权限、仅USAGE、仅SELECT、仅UPDATE建立新连接，逐一调用nextval/currval/setval并记录目标权限规则。 | 缺对象与错误类型每次失败后SELECT 1成功；权限组由管理员先撤销全部序列权限、逐轮只授单项，UPDATE/USAGE组先nextval再currval；仅SELECT组首次currval应为未初始化错误，不能误报权限不足。缺生产身份/ACL能力时登记阻止开放，不用root成功冒充权限验证。 |
+
+权限轮次由管理员在 I 下执行 `REVOKE ALL ON SEQUENCE public.seq_contract FROM PUBLIC,r`，分别不授予或执行 `GRANT USAGE ON SEQUENCE public.seq_contract TO r`、`GRANT SELECT ON SEQUENCE public.seq_contract TO r`、`GRANT UPDATE ON SEQUENCE public.seq_contract TO r`（四个独立初态，不累计授权）。r另有数据库CONNECT与public的USAGE，不能为owner/superuser。各轮均执行 `SELECT nextval('public.seq_contract'::regclass) AS v`、`SELECT currval('public.seq_contract'::regclass) AS v`、`SELECT setval('public.seq_contract'::regclass,40) AS v`：无权限全部拒绝；仅USAGE为10、10、权限拒绝；仅SELECT为权限拒绝、未初始化错误、权限拒绝；仅UPDATE为10、权限拒绝、40。每次失败后r执行SELECT 1成功，管理员随后nextval预期分别10、11、10、41，证明拒绝未偷偷改变水位；角色登录配置由后续测试夹具提供，不能以当前开发root认证冒充。
+
+上表“序列”是 SQL 参数占位，必须替换为 `'public.seq_contract'::regclass`；first/cross、rollback 等均从独立夹具初态运行，bounds 的两个越界失败之间不取值。每例结束先对仍在 T/E 的连接 ROLLBACK，再在 I 下 DROP TABLE public.seq_rows、DROP SEQUENCE public.seq_contract；权限组额外撤销授权并删除测试角色。新例用新连接和新建对象，不能用 setval 冒充 currval 清空。对象缺失例的 seq_missing 必须初始不存在。
+
+Q 与扩展 Parse/Bind/Describe/Execute 各取一组；扩展使用新 statement/portal、无参数、全量Execute后Sync。Parse/Bind/Describe不得消耗或设置序列值，首次Execute仅一次副作用；精确诊断阶段待采，扩展错误先Sync，再按I/E决定继续或ROLLBACK。记录值、别名v、bigint/OID20与固定描述、命令标签、SQLSTATE/错误原文/位置、I/T/E及每次观察连接值，typlen/typmod/格式/可空性等精确wire字段待采。成功SQLSTATE不适用；本轮不伪造参考结果。准备/描述不取值也须以另一连接后续nextval证明，不能为观察而在受测连接多调一次改变状态。
+
+共存用例 `session.sequence.mysql.coexist` 关联 `SESSION-SEQUENCE/mysql`（待新增、未运行）：同一Server的MySQL M先执行 `CREATE TABLE seq_mysql (id BIGINT AUTO_INCREMENT PRIMARY KEY,v INT)`、`INSERT INTO seq_mysql(v) VALUES(1)`，保存返回自增值x并查 `SELECT id,v FROM seq_mysql ORDER BY id`；PG A/B跑独立first/cross后，M执行 `SELECT LAST_INSERT_ID()`仍x、`INSERT INTO seq_mysql(v) VALUES(2)`并查两行，按自身基线核对第二ID、类型/标志和状态。用M建真实原生序列 `CREATE SEQUENCE seq_native START WITH 5 NOCACHE`，分别 `SELECT NEXTVAL(seq_native)`=5、`SELECT LASTVAL(seq_native)`=5；PG另建seq_contract的setval不能改变它，再M NEXTVAL=6。PG不可用MySQL的LAST_INSERT_ID或AUTO_INCREMENT替代currval；不要求两方言自增ID连续或权限/错误相等。结束M删除seq_native/seq_mysql；若原生夹具也未通过，单列原生基线缺口。
+
 ### 后续细分
 
 #### 会话执行链与契约模板
@@ -3074,6 +3120,12 @@ RETURNING 前块提供固定投影与仅实际插入行的输出；下一块负�
 后续只交接三处窄边界：保留普通prepared的PG名称环境/原始参数身份供共享准备入口复核；依赖目录变更和路径变化时重新分析/拒绝并在副作用前校验固定结果类型；绑定portal与新Bind/新目录Execute分开管理。先验证stable/path-missing/qualified/drop-recreate/ddl-shape，再在多schema能力独立满足后验证path-switch/earlier-shadow，不为本题补建完整schema或缓存子系统。
 
 工作流2交语法/名称绑定，3/4交固定参数/结果及函数身份，6交真实目录对象、变更可见性和依赖失效事实，7交Describe重验证、精确诊断、portal所有权/锁与Sync生命周期；1/8承接参考采证和MySQL自身基线。正确性风险为错误对象/旧行、重复执行及副作用前检查缺失；兼容性风险为重解析时点、结果形状/来源身份和错误恢复差异；性能未测、无结论。本块完成只关闭契约文档缺口，不表示功能实现或18.6实测通过，本轮不生成代码实施任务。
+
+#### 序列执行契约
+
+仅交接三个窄入口：共享序列分配/持久水位与PG is_called、回设和缓存边界；按真实序列ID保存连接currval并处理断连/错误/ROLLBACK；PG函数签名、regclass解析和权限分流。先完成CACHE 1的first/cross、rollback、setval true/false、边界与恢复证据，再单独验证CACHE>1、崩溃与多节点，不能递归扩写存储系统。
+
+工作流2/3/4分别交语法名称、类型、函数注册，6交真实序列/默认值引用/owned-by，7交扩展阶段、副作用次数、诊断与Sync，1/8交参考采证及MySQL基线；identity后块复用本契约。正确性风险为回退序列水位、currval跨连接污染和重复求值；兼容性风险为原生权限、NULL/错误、setval回设及缓存差异；性能未测，无性能结论。本块只完成文档，不表示PG序列已支持或18.6差分通过。
 
 ## 6. 系统目录与内省契约
 
