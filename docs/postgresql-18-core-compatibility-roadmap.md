@@ -5558,6 +5558,20 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 本章拥有消息封装、长度/数量、格式选择、错误传递及恢复；[第 3 章规范映射](#规范类型与协议映射)、[准备描述执行元数据契约](#准备描述执行元数据契约)拥有类型身份、OID/typlen/typmod、codec 和失效时类型连续性，第 5/6 章拥有事务及目录事实。不得由载荷长度、首行或目录特例猜类型。
 
+#### COPY IN 证据与写入职责
+
+本域于 2026-10-24 在基线 `8dba64486aab523780dc77d7ce74128809ae9e45` 静态取证；批次 5 二进制交接正文及该提交、传递批次 1–4 的 `d30bc34cd9`、`e7d9bcbb2d`、`a692d03226`、`9b21e4b7a5` 与第 1–6 章相关契约均已核验，满足文档依赖。源码经 RustCodeGraph status 及精确文件/符号读取；以下是代码及断言意图，本轮有效运行用例 **0**，COPY、真实客户端、PG 18.6 和性能均**未验证**。
+
+| 实际来源/符号 | 当前证据与职责边界 |
+| --- | --- |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::PgService::negotiate | 消息先交 Extended::handle；Q 经名称/SQL适配、command 分类后调用共享 context.execute_query，扩展执行回调调用 context.execute_prepared_statement。没有 COPY 输入状态及分块写入入口；普通 QueryResult 成功回复不能代替持续接收/真实导入。关闭路径可作资源所有权入口，不证明 COPY 中断回滚。 |
+| [pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::handle / process | 只分派 P/B/D/E/C/S/H，Q 转交简单查询；d/c/f 不在白名单，置 failed 并发当前 0A000，随后等 Sync。这个普通拒绝路径不是 COPY 子协议；当前 Sync 清 failed 并回 Z 不能证明输入已提交/回滚。 |
+| [pg_sql.rs](../pkg/server/pg_sql.rs)::adapt_internal；[pg_result.rs](../pkg/server/pg_result.rs)::command | 前者只对 CREATE/ALTER 作专门适配，其他语句应用标识符改写；后者先调用共享 ParseSQL，已读命令类别无 COPY。解析错误与分类拒绝的实际阶段须未来逐路径采集，不能笼统承诺所有 COPY 当前固定诊断。禁止将原生 LOAD DATA/文本拼 INSERT 当作 PG COPY 等价实现。 |
+| 独立 [pg_dml_test.rs](../pkg/server/pg_dml_test.rs)::prepared_crud_roundtrip | 建真实表、混合文本/二进制/NULL 参数 INSERT，断言 INSERT 0 1，随后 SELECT 读出 1/one/NULL；证明测试意图含普通共享写入与回读，没有 CopyInResponse/CopyData/CopyDone/CopyFail 轨迹。 |
+| 独立 [pg_client_integration_test.rs](../pkg/server/pg_client_integration_test.rs)::pg_introspection_clients / run_clients（内嵌客户端脚本） | 普通 INSERT/UPDATE/SELECT、COMMIT/ROLLBACK、重复键失败及 I/T/E 断言可作未来客户端扩展位置；已读文件未提供 COPY 客户端调用。不能把普通 CRUD、idle cancel 或历史 libpq 记录算 COPY 已通过。 |
+
+协议层负责进入/退出输入状态、连续字节流、错误同步及取消所有权；SQL 方言层负责 COPY 语法、列/选项和真实名称解析；共享内核负责类型转换、约束、授权与事务写入。第 3 章拥有列身份/codec，第 5 章拥有 I/T/E 与原子性，第 6 章拥有对象/角色/权限事实；缺少必需接口先登记依赖，不能在协议层维护影子表或另建写入引擎。
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5652,6 +5666,30 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 规范来源：2026-10-24 查阅 PostgreSQL **18** [§54.7 Bind/ParameterDescription/RowDescription/DataRow](https://www.postgresql.org/docs/18/protocol-message-formats.html)、[§54.1.1/54.1.3 帧与格式](https://www.postgresql.org/docs/18/protocol-overview.html#PROTOCOL-FORMAT-CODES)及[§54.2.3 扩展查询](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY)。精确类型布局继续引用第3章各族的官方版本来源。18.6是来源指定目标，未确认/运行该补丁参考构建，精确错误文本/位置未采集，不凭静态代码填参考诊断。
 
+#### COPY IN 真实写入
+
+本节定义目标，尚未实现。规范查阅日期 2026-10-24，版本为 PostgreSQL **18**：[§54.2.6 COPY Operations](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-COPY) 定义子协议与恢复，[§54.7 Message Formats](https://www.postgresql.org/docs/18/protocol-message-formats.html) 定义 G/d/c/f/C 帧，[SQL COPY](https://www.postgresql.org/docs/18/sql-copy.html) 定义格式、选项、权限与写入语义。它们不构成精确 18.6 构建实测；参考端错误文本、位置和本域精确 SQLSTATE **未采集**，不猜诊断。
+
+| 阶段/路径 | 目标消息、共享行为及失败边界 |
+| --- | --- |
+| 启动 | Q `COPY public.wire_copy_in_probe (id,v,n) FROM STDIN WITH (FORMAT text)`，或 Parse/Bind/Execute 同一命令；先按真实身份检查库/schema/表及列 INSERT 权限、名称、类型、选项与事务门禁，再发送 CopyInResponse G。G 的长度包括自身长度字，不含tag；体为整体格式 Int8、列数 Int16及每列 Int16格式码，故 L=7+2N；text/CSV整体0且列码全0，binary整体1且当前列码全1。Bind结果格式不能改变 COPY 格式。未开放类型/选项须在可判定的最早阶段拒绝，不发虚假G。 |
+| 输入 | 零个或多个前端 CopyData d；L>=4，体没有隐含NUL，任意包边界不等于行/字段边界，空包不是EOF。解码器保留跨包UTF8、转义、引号及binary字段状态，把规范值交给同一授权会话的共享写入。不得逐包提交，不将输入拼成可执行SQL。活动 COPY 中 Flush/Sync 忽略，不提交、不结束输入、不回Z；其他非COPY消息按规范中止，Terminate/断连进入连接关闭清理。 |
+| 正常结束 | 前端 CopyDone c 必须空体、L=4；它只表示输入结束，仍需检查末行/尾部、转换/约束并完成写入。成功后服务端发 CommandComplete `COPY n`（NUL终止），n为实际导入行数，不是包数；COPY IN 不回服务端 CopyDone、RowDescription或DataRow。Q 路径回到简单查询处理，单命令最终一个Z；扩展路径回到Execute处理，须在COPY结束后接收有效Sync才回Z。显式T不因Sync提交；隐式同步段的提交/回滚沿第5章，不能凭C或I推断时点。 |
+| 输入失败 | 坏行/类型/约束失败或前端CopyFail f（NUL终止原因、非SQL）令本次COPY失败，ErrorResponse、无成功C，撤销本次未提交写入。Q丢弃该Q剩余语句并回Z；扩展丢弃后续命令直到Sync再回Z。失败后在途d/c/f丢弃，不能被当成新查询或恢复成功。COPY中已被忽略的早期Sync不能当失败后的恢复屏障，客户端须重新发送。 |
+| 事务与中断 | 显式BEGIN内成功COPY仅A可见，B新快照看不到，COMMIT后才共同可见；ROLLBACK不留行。默认 ON_ERROR stop：输入失败令显式事务E，Sync只恢复协议，须ROLLBACK后才能继续；无BEGIN失败同步完成后I且无本次行。活动取消、CopyDone前EOF/半包/停服均须验证已接收好行也不部分提交。CopyDone后与提交竞态的断连另记真实提交结果，禁止承诺网络失败能撤销已提交数据；数据不可见不等于物理空间零占用。 |
+
+三种格式分别登记，不以Bind二进制或一种格式成功替代另一种。选项只开放经过验收的组合；未开放的合法选项须明确能力拒绝并保留PG成功目标，不能静默忽略。
+
+| 格式 | 独立目标及未来可观察验收 |
+| --- | --- |
+| text | 默认TAB分列、`\N`为NULL，空字段是空文本；`\\N`是字面量反斜杠N。覆盖反斜杠、转义TAB/换行、定制DELIMITER/NULL、列数多/少、末行无换行和一致LF/CRLF；比较规范行而非原始字符串。按 ENCODING 或 client_encoding 转换，UTF8多字节可跨d，非法编码拒绝。text的`\.`结束标志与CopyDone分别取证，不能让客户端脚本的结束标记混入下一条SQL。 |
+| CSV | 默认逗号/双引号，未引用空字段为NULL、`""`为空文本；引号内逗号/CR/LF、双写引号、ESCAPE及HEADER/HEADER MATCH按各选项独立验证，包含跨包引号记录。PostgreSQL18 CSV数据的`\.`通常为普通内容，psql内联`\copy`/COPY脚本的结束规则单列，不能复用旧版CSV结束判断。FORCE_NULL/FORCE_NOT_NULL未开放则明确拒绝，不能偷换NULL。 |
+| binary | 独立文件流封装：11字节签名 `PGCOPY\n\377\r\n\0`、Int32 flags与Int32扩展长度及扩展区；固定部分按所列字段合计19字节。未知关键高位拒绝，未知兼容低位及可跳过扩展按规范；逐行Int16列数、每列Int32长度/载荷，-1为NULL、0为空，末尾Int16 -1。网络字节序，字段使用第3章该列真实类型的binary契约，文件本身不携带OID，不做text回退/跨类型猜测。签名、整数、字段及尾标可任意跨d；尾标不替代协议CopyDone。缺头、列数不符、非法字段长度、字段内截断及错类型载荷分别验失败/回滚；无尾标在完整行边界收到CopyDone的情况单列，不预设失败。 |
+
+binary结束边界补核官方固定tag **REL_18_0** [copyfromparse.c](https://raw.githubusercontent.com/postgres/postgres/REL_18_0/src/backend/commands/copyfromparse.c)::CopyFromBinaryOneRow/CopyGetInt16：行首读不到列数可作为协议级EOF结束，显式-1尾标后仍等待协议EOF并拒绝额外数据，因此不能把“缺尾标”一概判坏流。完整行后CopyDone、部分列数后CopyDone及字段内截断分别留独立参考端探针；该源码阅读不是18.6运行结果。
+
+真实写入还须逐列核验输入列顺序、遗漏列默认值、NOT NULL/唯一键及适用CHECK；默认值/identity/触发器能力沿第5章的独立门槛，不能因普通INSERT可执行就扩大COPY支持。序列消耗等非事务副作用单列，不把表行原子性扩大成“所有外部副作用撤销”。真实角色、schema USAGE及表/列INSERT权限沿第6章；不能因为开发root能导入就声明非owner授权正确。
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
@@ -5671,6 +5709,10 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### 二进制范围与类型边界
 
 本域不实现或重新规定类型codec、共享类型系统、通用数组/JSON子系统、SQL PREPARE或COPY二进制文件格式。Bind结果格式不等于COPY格式协商；目录数组/OID特例不得扩大为通用支持。第3章的PG合法值/格式目标保留，当前白名单只是未开放边界；第5/6章类型失效、事务与目录事实不可由wire缓存替代。
+
+#### COPY IN 范围与拒绝边界
+
+本域只写应用 `COPY FROM STDIN` 契约，不实现parser、状态机、导入接口、事务/权限子系统或客户端运行器。COPY OUT归下一批，取消密钥/背压/总字节/行大小/字段数/期限与连接预算归取消资源域，本域仅提出交接验收。服务器文件路径与PROGRAM（FROM/TO两个方向）均不在首批范围，即使角色有服务器文件/程序权限也应在文件打开/进程启动前明确能力拒绝、无副作用；客户端`\copy`通过STDIN传输与服务器文件访问分开。逻辑/物理复制和START_REPLICATION/CopyBoth拒绝沿启动域，不发W、不因应用COPY开放复制。FREEZE、WHERE、DEFAULT标志、ON_ERROR ignore/REJECT_LIMIT等高级选项及分区/继承/触发器/identity组合未取证前不开放，明确拒绝；默认ON_ERROR stop的失败原子性不能被这些选项悄悄放宽。
 
 ### 验收
 
@@ -5760,6 +5802,22 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 每例记录原始输入/输出帧及实际字节数、参数与结果格式、类型/元数据、关联族四方向ID、失败阶段、SQLSTATE与安全诊断、Sync/Z计数及I/T/E、B观察副作用、资源前后值、精确构建/客户端/设置、命令退出码和有效断言数。关闭不需要Sync；存活failed先Sync、T/E先ROLLBACK，再Close对象、断连、确认资源回收并DROP测试表。大结果内存与延迟另交资源域测量，本轮行为/兼容/性能均未验证。
 
+#### COPY IN 真实写入验收
+
+`WIRE-COPY-IN-*` 全为**待新增/待运行**。夹具及原始消息/客户端入口亦待新增：同Server同库两条真实授权连接A/B，UTF8/UTC/ISO，B每次新快照；事务外建 `public.wire_copy_in_probe(id integer PRIMARY KEY, v text, n integer NOT NULL DEFAULT 7)`，初始行(90,'base',7)，S0为这唯一行。O=`SELECT id,v,n FROM public.wire_copy_in_probe ORDER BY id`，逐值和第3章类型/OID核验。每轮恢复S0，分别用Q和Parse/Bind/Execute启动；不要用等待Z的普通simple_query助手收G，避免死锁。TLS/SCRAM/真实权限依赖未就绪则登记门槛，不把开发认证替代正式验收。
+
+| ID / 独立未来入口 | 输入、行为证据与恢复目标 |
+| --- | --- |
+| TEXT / CSV / BINARY；pg_dml_test.rs及pg_client_integration_test.rs | 同样逻辑数据(1,NULL,10)、(2,'',20)、(3,'é',30)分别按三格式导入，G列数3及格式逐字段相符，C精确COPY 3，O为三行加S0；二进制int4固定4字节及UTF8文本逐字节核对。另仅(id,v)输入(4,'default')，n=7。零行text/CSV直接c、binary合法头尾再c，各COPY 0且S0。A和B独立SELECT确认真实持久化，不能只验C。libpq输入API/psql脚本入口待新增，既有普通query封装不能冒称支持COPY。 |
+| FORMAT / CHUNK；独立消息夹具待新增 | text转义TAB/换行/反斜杠/字面量NULL串、含SQL样式文本须原样存值不执行、非法NUL拒绝；CSV逗号/双引号/引用多行/空与NULL；binary头/扩展/字段/尾标。在每个敏感字节及UTF8中间切d、把多行合成一个d、夹空d，结果与未分块流一致，包数不影响COPY n。分别追加定制NULL/分隔符、CSV HEADER/MATCH及编码选项独立轮；非法选项/编码无成功写入。`\.`另用单text列表对比原始协议与psql脚本，不能借int4转换错冒充结束规则验证。 |
+| COMMIT / ROLLBACK / SYNC；pg_dml_test.rs | BEGIN→COPY成功→Q路径Z(T)，或扩展c/C后新Sync→Z(T)；A看新增行、B仍S0，分别COMMIT后B新行、ROLLBACK后A/B S0。无BEGIN扩展轮c/C后、Sync前后用B采集真实提交时点；同同步段先有普通UPDATE再COPY失败，Sync后不得留下UPDATE或好行。另Q成功COPY后同Q的SELECT须实际执行，COPY失败后同Q的INSERT须跳过且无副作用。COPY活动中发Flush/Sync不回Z也不提交，随后继续d/c并发送新的Sync结束；不能因过早Sync把一份输入拆成两次事务。 |
+| BAD / CONSTRAINT / FAIL；pg_dml_test.rs | 各轮先送一条有效新行，再分别送整数bad、列数多/少、n为NULL、重复主键90、未闭CSV引号、独立CHECK夹具（同表形，n另有CHECK(n>0)，输入-1；待新增）的违约值或CopyFail('fixture failure')。默认stop，ErrorResponse无C，无好行部分提交；I/T两种起点各跑，Q最终Z(I/E)，扩展错误后发送带INSERT副作用的P/B/E及在途d/c/f，必须跳过，错误后新Sync才Z(I/E)。T轮ROLLBACK后A/B S0，新合法COPY及SELECT成功。精确错误阶段/安全诊断待参考端采集，CopyFail原因不作为SQL执行。 |
+| BINARY-BAD / BINARY-END / FRAME；pg_dml_test.rs的原始输入入口待新增 | 分别坏签名/关键flags/扩展越界、错列数、长度-2、int4短长/错误类型，c结束必须拒绝并撤销好行；完整行后省略尾标、部分列数结束、显式尾标后额外字节各独立轮，按上述固定源码区分可结束与错误并采集参考端结果，不能统一归为字段截断；外层L<4/超限/半包EOF与内部值错分开，不能把资源关闭算可恢复格式错。CopyDone非法非空体、CopyFail缺终止符、COPY中混入Q/P/B各独立轮，记录参考端实际关闭或同步轨迹，不预设所有坏帧可恢复。可恢复轮走新Sync/ROLLBACK，关闭轮A2查询正常、B S0及资源归零。 |
+| AUTHZ / REJECT；真实权限/副作用观测入口待新增 | owner、非owner有INSERT、仅指定列INSERT、撤权、无schema USAGE/无表权限分别启动；授权组导入真实值，拒绝组无G/无行。权限provider缺失记录能力门槛而非成功空导入。FROM/TO服务器路径、PROGRAM、START_REPLICATION与未开放选项各独立拒绝，确认无文件访问/进程/复制状态/意外W，无后续SQL副作用；失败后按实际Q/扩展阶段恢复。 |
+| CANCEL / EOF / STOP / SEND；pg_client_integration_test.rs及受控注入待新增 | 在G后已收有效行、等待后续输入的活动屏障上取消，不能用idle cancel替代；主连接ErrorResponse无C，Q/扩展同步、I/E与ROLLBACK后B S0。CopyDone前半字段/半帧断连、Terminate、停服、错误回复写失败分别验证无部分提交，回收输入缓存/写入句柄/事务/portal/context/socket/连接登记，B健康及新A2正常。CopyDone后取消/断连另采提交竞态，已提交结果不承诺撤销；取消键路由和预算细节交对应域，不在本域补代码。 |
+
+清理：错误扩展连接先新Sync，存活T/E先ROLLBACK，关闭对象/连接并确认资源回收，再事务外DROP夹具。记录能力/用例ID、双方完整SHA/版本、客户端/协议3.0与3.2/授权与会话设置、SQL及安全输入样本、G字段与原始d/c/f帧序、实际行/类型/值和COPY计数、C/Z/Sync时点及I/T/E、B可见性、错误阶段/SQLSTATE/安全诊断、资源前后值、命令退出码和有效断言数；敏感行/CopyFail原文不得无界写日志。精确18.6、真实导入、性能/峰值内存/背压/失败回收期限均未验证。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
@@ -5789,5 +5847,11 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 另立窄实施任务：①Bind格式/数量/长度边界及原始报文独立回归；②t/T字段与第3/6章真实身份及typmod的最小交接；③逐族已授权codec的四方向联测及D长度/NULL/空值；④重复Bind、混合portal格式、零行/全NULL/失效连续性；⑤编码失败、传输失败、取消和资源回收。复用 pg_extended/pg_result 和同目录独立 pg_extended_test.rs、pg_types_test.rs，新夹具/注入/客户端入口均待新增；不递归实现类型系统或流式执行器。
 
 需求映射：本任务步骤1→二进制证据表；步骤2→四消息字段表与BIND/PARAM/ROWDESC/FRAME；步骤3→第3章逐族链接与四方向、VALUE/UNSUPPORTED；步骤4→FORMAT/ROW/NULL/EMPTY及重复Bind/portal隔离；步骤5→ENCODE/METADATA/SEND/CANCEL/CLEANUP及Sync/事务恢复。对应来源步骤1的二进制现状目标、步骤2的长度/失败/资源边界。Ready文档检查为五节定位、需求/异常轨迹映射、官方规范与本地链接、前后章节契约及章节外字节不变；验证技能文件仍缺失，采用手工等效检查。正确性风险为静态推断及错误阶段遗漏，兼容性风险为与第3章身份/codec或第5/6章失效契约冲突、将18手册误当18.6实测，性能未测；文档完成不表示二进制功能已实现。下一批补COPY输入契约。
+
+#### COPY IN 后续实施切口
+
+另立窄任务顺序为：①COPY语法/列/选项门禁与真实对象授权依赖；②G/d/c/f状态及Simple/Extended恢复，复用连接生命周期；③text连续流到共享批量写入及原子性，先证明真实回读与失败回滚；④CSV/binary各自格式/类型与分块回归，不能把text完成当全格式完成；⑤真实客户端、活动取消/中断/资源回收。扩展同目录独立pg_dml_test.rs、pg_client_integration_test.rs，必要消息回归放pg_extended_test.rs；所有新夹具、共享导入接口与注入入口均**待新增**，不在本轮创建、不递归补建共享内核。
+
+需求映射：本任务步骤1→COPY证据表及共享职责；步骤2→消息/恢复表及COMMIT/SYNC/BAD；步骤3→三格式表及TEXT/CSV/BINARY/FORMAT/CHUNK/BINARY-BAD；步骤4→真实夹具、COMMIT/ROLLBACK/CONSTRAINT/FAIL/CANCEL/EOF/STOP/SEND；步骤5→AUTHZ/REJECT及资源交接。对应来源步骤1/2/4的COPY IN、失败恢复、真实身份和真实写入要求。Ready文档检查为五节/稳定子标题、需求/异常轨迹映射、官方规范/本地链接、前后章契约及章节外字节不变；验证技能路径再查仍缺失，采用人工等效检查。正确性风险为静态推断与输入/提交竞态遗漏，兼容性风险为CSV18结束规则、格式与第3/5/6章交接及误称18.6实测，性能尚未测量。本域完成只表示文档完成；下一批补COPY OUT契约。
 
 ## 8. 客户端与双方言共存验收
