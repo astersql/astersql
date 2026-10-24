@@ -5530,6 +5530,20 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 | 独立 [pg_conn_test.rs](../pkg/server/pg_conn_test.rs)::startup_server_version_parameter / startup_datagrip_date_style | 前者在 3.0/3.2 断言 R→五个指定 S→K→Z(I)，K 体长 8/36；后者断言 ISO 大小写/ISO, MDY、Asia/Shanghai、digits=1/2/3 的接收及 S，SQL, DMY/-1/注入串为 0A000、NoSuch/Zone 为 22023，成功后 SELECT 1 回复 T/D/C/Z。没有证明 SHOW、日期/浮点实际编码、两连接隔离或 SET 回退；只是断言意图，未运行。 |
 | 独立 [pg_protocol_test.rs](../pkg/server/pg_protocol_test.rs)::startup_packet_bounds / startup_reader_bounds；[pg_session_test.rs](../pkg/server/pg_session_test.rs)::pg_introspection_namespace_parser_boundaries | 前者有非法版本/长度/截断/重复键/UTF-8 及不多读下一包断言，允许缺 user 的结构包；后者只验 search_path 语法/多语句拒绝/不误认字符串，不覆盖启动交接或通用参数生命周期。连接测试 startup_auth_roundtrip / startup_protocol_30_roundtrip 另有 intruder 28P01 及关闭断言，不能代替认证失败不选库的调用/副作用证据。 |
 
+#### 查询消息证据与职责
+
+本域静态基线为 `a692d03226baae408bb75b09597fdf4f80694045`（2026-10-24）；前序 TLS/SCRAM/启动域正文及提交 d30bc34cd9、e7d9bcbb2d、a692d03226 已核验，满足文档依赖。以下均为源码/独立测试意图，当前有效运行用例数 **0**，查询协议行为与性能均**未验证**。复用连接私有 Extended 和共享 TiDBContext，不另建执行内核。
+
+| 来源与符号 | 静态事实、断言意图及缺口 |
+| --- | --- |
+| [pg_conn.rs](../pkg/server/pg_conn.rs)::PgService::negotiate 连接循环 | 合法空体 X 在 Extended 分派前退出；其余先 handle，Q 仅在返回 false 时执行并 reset_unnamed。Q 校验单一 UTF-8 零终止字符串，调用会话/目录/普通共享执行路径，最后写 Z；网络写失败向外返回并关闭 context，不是等待 Sync 的 SQL 错误。 |
+| [pg_result.rs](../pkg/server/pg_result.rs)::command；[pg_extended.rs](../pkg/server/pg_extended.rs)::Extended::process | 普通 SQL command 门禁只接受单条，空 SQL 返回 None，多条当前 0A000；Q 有 EmptyQueryResponse 路径，Parse 却在 command=None 时拒绝空准备语句。Q 多结果还会报 unsupported result multiplicity，不能视为多语句成功/原子性支持。 |
+| pg_extended.rs::handle / process / reset_unnamed | P/B/D/E/C/H/S 分派；failed 时除 S 外丢弃，包括 Q。process 错误设置 failed 并 record_error；空体 Sync 清协议 failed，仅在共享 in_transaction=false 时清 portals，再按 transaction_status 写 Z；这里未见隐式事务提交/回滚调用。H 校验空体且无专属回复；Close 不存在名称仍回 CloseComplete，Close statement 移除关联 portals。不能从这些局部代码推断完整恢复/事务结束清理已成立。 |
+| pg_extended.rs::Statement / Portal / Execute | 名称映射属于当前连接；Bind 保存参数/描述/格式，首次 Execute 取得完整结果并编码至 messages，offset 按 DataRow 切片，未完成回 PortalSuspended。耗尽后再 Execute 取缓存末尾完成消息；不是流式执行或重跑 SQL。Execute 未统一调用 check_transaction_command，故已有 portal 跨失败态重用的门禁仍需独立验证。 |
+| [pg_session.rs](../pkg/server/pg_session.rs)::transaction_status / record_error / check_transaction_command | failed_transaction 与 Extended.failed 独立，共享 in_transaction 决定是否在事务内；错误时若在事务中记失败。当前失败态仅允许 ROLLBACK，COMMIT 也 25P02；这是产品限制，第 5 章另列 PG 失败后 COMMIT 回滚退出目标。Sync 不清此失败状态。 |
+| 独立 [pg_extended_test.rs](../pkg/server/pg_extended_test.rs)::parse_bind_execute_sync | 断言 1/2、statement 参数描述、portal 描述、D/C 与 Sync Z(I)；两行结果 Execute(1) 得 D/s，再 D/C(SELECT 2)。关闭 statement 后 Bind 得 26000，错误中 Parse 被跳过；错误中 Q DELETE 被跳过，原表仍两行；缺失 statement/portal 的 Close 后 pipeline 仍成功。夹具为 InsecureRootOnly，未证明生产认证或运行通过。 |
+| 独立 [pg_transaction_test.rs](../pkg/server/pg_transaction_test.rs)::failed_transaction_requires_rollback / prepared_dml_commit_and_rollback | 断言重复键 Execute 后 Sync E、后续 Parse 25P02、ROLLBACK I；另断言显式事务 Sync T、第二连接提交前零行/提交后一行、未提交断连写入不保留。没有据此宣称隐式 Sync 原子性、所有旧 portal 门禁、异常清理计数或所有消息阶段已覆盖。 |
+
 ### 目标行为
 
 #### TLS 与安全传输
@@ -5584,6 +5598,27 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 规范依据于 **2026-10-24** 查阅，适用 **PostgreSQL 18**：[54.2.1 启动流程](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-START-UP)、[54.2.7 参数异步报告](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-ASYNC)、[54.7 StartupMessage / ParameterStatus / BackendKeyData / NegotiateProtocolVersion](https://www.postgresql.org/docs/18/protocol-message-formats.html)、[19.11 客户端配置](https://www.postgresql.org/docs/18/runtime-config-client.html)、[PG REL_18_STABLE 的 guc_tables.c](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/utils/misc/guc_tables.c) 中 extra_float_digits 的默认值/区间（1、-15..3）、[SET](https://www.postgresql.org/docs/18/sql-set.html)、[RESET](https://www.postgresql.org/docs/18/sql-reset.html)、[54.4 复制启动模式](https://www.postgresql.org/docs/18/protocol-replication.html)。未核实参考端 **18.6** 构建或执行，精确诊断文本/SQLSTATE/错误阶段及补丁版行为均未采集；18.0 (AsterSQL) 只作当前产品报告事实。
 
+#### 查询消息与同步恢复
+
+以下为目标契约，非当前支持结论。Query（Q）承载简单查询；Parse 建立 statement（SQL 与固定类型的准备对象），Bind 建立 portal（本次参数、输出格式与执行进度），Describe 查询描述，Execute 推进 portal，Close 释放对象，Flush 促使输出送达，Sync 定义扩展查询同步边界，Terminate 结束连接。下表按消息名区分方向，避免前端 Execute 的 E 与后端 ErrorResponse 的 E、前端 Close 的 C 与后端 CommandComplete 的 C 混淆。
+
+| 消息 | 成功与错误目标 |
+| --- | --- |
+| Q | 返回行的命令为 RowDescription→零或多 DataRow→CommandComplete；无结果命令只发完成标签，零行 SELECT 仍有描述与 SELECT 0。空/仅空白或注释 SQL 返回 EmptyQueryResponse→Z。每个完整简单查询周期最后一个 Z，不需 Sync；发生 SQL 错误发 ErrorResponse 后停止本 Q 剩余命令并发 Z，下一独立 Q 可按事务状态处理。 |
+| Parse / Bind | Parse 单条 SQL 成功回 ParseComplete；不得执行写副作用。Bind 数量/值/格式校验成功回 BindComplete，不执行语句副作用；失败无对应 Complete，不产生可执行的半注册对象。空 Parse 的最终目标是可绑定/执行并得 EmptyQueryResponse，当前拒绝单列缺口。参数类型推导与 codec 沿第 3 章，不用当前显式 OID 白名单替代目标。 |
+| Describe | statement 回 ParameterDescription 加 RowDescription/NoData；portal 回带 Bind 格式的 RowDescription/NoData，不再回参数描述。未知名称报错并进入同步恢复。列身份、零行/全 NULL/换值固定描述以及 DDL 失效沿第 3/5/6 章，不能静默改已描述类型。 |
+| Execute | 不额外发 RowDescription/Z；一次正常推进以 CommandComplete、EmptyQueryResponse、ErrorResponse 或 PortalSuspended 之一结束。maxRows=0 取剩余全部；正数限制本次结果行数，不是 SQL LIMIT，不截断副作用。暂停后续读不重发旧行或重新执行写入；无结果命令忽略行数限制并完成。 |
+| Close / Flush | Close statement 同时关闭其关联 portals；Close portal 不销毁可再 Bind 的 statement。缺失名称 Close 仍成功回 CloseComplete；非法目标种类须拒绝。Flush 无专属回复、不发 Z，不提交、不清 failed、不销毁 portal；输出应可在 Sync 前观察。 |
+| Sync / Terminate | 每个合法 Sync 对应一个 Z；Z 的 I=事务外、T=显式事务正常、E=失败事务。Sync 错误也需按规范维护同步计数，不盲目再丢弃到下一 Sync。Terminate 无完成/Z，正常或失败等待 Sync 时均可结束；EOF/网络写失败进入关闭清理，不能等待客户端发送 Sync 来修复传输。 |
+
+简单 Q 的最终多语句目标与当前限制分列：最终须按每条命令依次返回结果/标签、整条 Q 末尾一个 Z，并遵守第 5 章隐式事务与显式控制语句边界；语法分析错误可能在任何语句执行前发现，执行期错误则停止剩余语句，不能统一承诺已执行前缀。当前普通门禁 0A000 拒绝多语句应在副作用前明确报错，不能拆发后冒充同一 Q 兼容；扩展 Parse 始终至多一条 SQL，不能沿用 Q 多语句目标。完成标签必须与真实执行命令、受影响/返回行数一致，如 SELECT n、INSERT 0 n、UPDATE n、DELETE n；不能用第一条标签包装多个结果。标签不代替数据/副作用断言。
+
+协议 failed、PgSession.failed_transaction 与共享 in_transaction 分开记录。Parse 的语法/类型分析、Bind 的值/格式、Execute 的运行或结果编码错误分别采集实际失败阶段；合法完整扩展消息发生可恢复错误后发 ErrorResponse，跳过直至 Sync 的其余命令（含 Q、Flush、Close），不输出其成功消息、不注册其对象、不执行其副作用。后续段仅在该 Sync 后恢复；pipeline 以 Sync/Z 计数分段，不按 CommandComplete 数量判断结束。隐式段无显式 BEGIN 时，Sync 成功提交、出错回滚且 Z(I)，必须证明段内成功前缀未泄漏；显式事务中 Sync 成功 T、失败 E，不能以清协议 failed 代替 ROLLBACK。E 中旧 prepared/portal 也不能绕过事务门禁，ROLLBACK 到 I 后新请求才可正常工作；失败后 COMMIT 的 PG 目标与当前产品限制沿第 5 章分别记录。
+
+命名 statement 至 Close 或连接结束，重名 Parse 必须先 Close；未命名 statement 被下一未命名 Parse 或 Q 替换/销毁。命名 portal 至 Close 或事务结束，重名 Bind 必须先 Close；未命名 portal 被下一未命名 Bind、Q 或事务结束销毁。替换 statement 必须释放关联 portals，Q 保留无关命名 statement，命名 portal 仅在事务仍有效时可保留；显式事务结束也必须释放，不能只在共享状态为事务外的 Sync 才清理。隐式事务的暂停 portal 要在终结事务的 Sync 前续读；显式 T 内可在 Sync 后续读。对象关闭释放对应句柄/缓存，事务结束或错误中止释放相应 portal 与事务资源；命名 statement 不因普通事务结束而全部销毁，连接结束才释放所有连接对象，不跨连接继承；耗尽 portal 再 Execute 也不得重复 SQL 副作用，完成消息的精确重复行为需参考端采证。
+
+规范依据：2026-10-24 查阅 PostgreSQL **18** [§54.2.2–54.2.4 查询与 pipeline 消息流](https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY) 及 [§54.7 消息格式](https://www.postgresql.org/docs/18/protocol-message-formats.html)，约束以上消息顺序、对象生命期、Sync 与字段。它们是大版本目标来源；18.6 只是来源指定参考构建，未启动/确认该补丁版，精确错误文本、位置和未列诊断码均未采集。帧已无法可信定位、未知消息类型或网络写失败是否应关闭，交资源域明确，不把任意坏帧都归为可用 Sync 恢复。
+
 ### 范围外
 
 本域不实现 TLS 库/配置、认证插件、SCRAM、完整启动参数、COPY 或客户端平台。GSS 加密与 GSSAPI 身份认证分开：GSSENCRequest 目标回复 N，不发送 G；GSSAPI 身份认证不宣告 AuthenticationGSS/Continue，不接受其凭据走开发成功路径；若部署策略要求仅 GSS 而当前未开放，应在认证前拒绝并关闭。GSS 探测 N 后转 SSLRequest 是合法替代尝试，不能作为重复同机制攻击；成功 TLS 内再次请求加密应拒绝。OAuth、复制及其他通道的完整拒绝契约交后续域，本域不扩写它们。暂不开放直接 TLS、客户端证书登录/双向 TLS、证书热更新和连接池 TLS 终止信任模型。
@@ -5595,6 +5630,10 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 #### 启动参数范围与复制拒绝
 
 只定义启动到普通 SQL 会话的交接；不实现通用 GUC 框架、角色切换、完整时区/编码子系统、options 命令行兼容或连接池重用协议。未开放的普通参数/合法值须明确拒绝，不以忽略参数获得成功。逻辑复制与物理复制均不在首批应用 SQL 范围：replication=true/on/yes/1 请求物理 walsender，replication=database 请求绑定数据库的逻辑 walsender；两者都在进入复制模式前明确能力拒绝并关闭，不能删除该键后作为普通 SQL 登录。replication 缺省或显式 false/off/no/0 目标为普通 SQL 连接，仍完整认证/授权；非法布尔/其他值拒绝，不能因登录角色有复制权限就启用未实现模式。当前白名单拒绝所有 replication 键，包含 false，与该目标的差异明确保留。逻辑复制可发部分普通 SQL 不等于普通连接，也不等于 COPY IN/OUT 已实现；不在本域添加复制实现。
+
+#### 查询消息范围边界
+
+本域只定义 Q/扩展消息、对象生命周期和恢复轨迹；codec、固定类型/失效归第 3 章，事务原子性/失败态归第 5 章，目录快照/权限归第 6 章并交叉验收。COPY 有独立子协议，不能套用本域普通 Flush/Sync 规则；COPY、取消密钥路由、帧上限/背压/超时由后续域补齐。本轮不新增 SQL PREPARE/DECLARE CURSOR 子系统、流式执行器或完整驱动平台；仅传输能回复不证明 SQL 或事务已正确。大结果全量物化的峰值内存、首次行延迟和副作用早于发送的风险只记录，未测性能不作通过结论。
 
 ### 验收
 
@@ -5648,6 +5687,26 @@ Ready文档范围采用五节锚点、前置提交及正文、引用路径存在
 
 每例保存能力/用例 ID、两端真实构建/版本、客户端与安全策略、输入到状态源的映射、S 的初始/变化/恢复顺序、K 长度（不存密值）、I/T/E、失败阶段、关闭/资源前后计数及实际断言数。原始 observations 当前未采集，verdict 未验证。性能后续测初始化延迟、参数帧/内存上限与异常连接回收期限；不以文档检查代替实际行为通过。
 
+#### 查询消息与同步恢复验收
+
+以下 `WIRE-QUERY-*` 全为**待新增/待运行**，不是本轮行为证据。A/B 为同 Server、同库 D 的独立真实授权 PG 连接，UTF8、UTC、search_path=public，初始 I，协议 3.0/3.2 分别验证；TLS/SCRAM 尚未就绪记录门槛，开发连接单列。每组独立在事务外建 `public.wire_query_probe(id integer PRIMARY KEY, v integer NOT NULL)` 并写入 (1,10),(2,20)，B 每次新快照；O=`SELECT id,v FROM public.wire_query_probe ORDER BY id`，初态 S0=[(1,10),(2,20)]。非 owner 权限沿第 6 章。默认参数/OID=[]、文本结果；P(s,sql) / B(p,s) / X(p,n) 分别指 Parse/Bind/Execute，不隐含 Sync；等输出用 Flush。前端 Terminate 单独写全名，避免同记号 X 混淆。结果描述 integer/23 及 typmod、NULL/格式沿第 3 章；控制/无 RETURNING 写入无结果列，成功 SQLSTATE 不适用。参考端精确诊断与位置均待采集。
+
+| ID / 完整输入与分组 | 可观察目标、恢复与清理 |
+| --- | --- |
+| SIMPLE：A Q O；Q `SELECT id FROM public.wire_query_probe WHERE id=99`；分别 Q 空串、空白、`/* empty */`；Q `UPDATE public.wire_query_probe SET v=21 WHERE id=2` | 分别 T/D/D/C(SELECT 2)/Z(I)、T/C(SELECT 0)/Z(I)、EmptyQueryResponse/Z(I)、C(UPDATE 1)/Z(I)，B O=[(1,10),(2,21)]。每条只有一个 Z，Q 不回 Parse/Bind/CloseComplete。 |
+| EXTENDED：P(s,`SELECT id FROM public.wire_query_probe WHERE id=$1`)，OID=[23]；Describe statement；B(p,s)，参数文本1；Describe portal；X(p,0)；Flush；Sync | 1→参数[23]及描述→2→portal描述→一行1及 C(SELECT 1)→Z(I)，Execute 无 T/Z；Flush 无专属消息。另 P 空串→Bind→Describe→Execute→Sync，应 1/2/NoData/EmptyQueryResponse/Z，当前拒绝记缺口。每步错误另按 PHASE 测恢复，不能只验消息标签。 |
+| PHASE：四轮各先 Q BEGIN，再 P/Bind/Execute UPDATE id=1为11、Flush，无中间 Sync；①P(bad,`SELECT FROM`)；②P(typed,`SELECT id FROM public.wire_query_probe WHERE id=$1`)，OID=[23]，Bind文本bad；③P/Bind/Execute `INSERT INTO public.wire_query_probe VALUES (1,99)`；④P(typebad,`SELECT 1::wire_query_missing_type`)，夹具确认该类型不存在。每轮首错后继续发送 P(skipped,`INSERT INTO public.wire_query_probe VALUES (3,30)`)/Bind/Execute、Q DELETE 全表、Close/Flush、Sync | 每轮首错阶段分别语法分析、Bind值、Execute唯一键、Parse类型分析；后续命令跳过，无其 Complete/副作用，Z(E)，B S0。Sync 后 Describe skipped 必须未知名称；此错再 Sync 后 Q SELECT 1 仍失败/E，Q ROLLBACK→I，A/B S0、新 SELECT 1=1。未知名称的额外错误不能漏同步。未来扩展 pg_extended_test.rs 与 pg_transaction_test.rs。 |
+| IMPLICIT / PIPELINE：无 BEGIN，A P/Bind/X UPDATE id=1为11、Flush，B O；再 P/Bind/X 重复键 INSERT、随后 P/Bind/X INSERT id=3、Sync；紧接下一段 P/Bind/X SELECT 1、Sync，不等前段结果即发送 | 成功前缀 Sync 前 B S0；首段错误撤销前缀并跳过id=3，Z(I)，第二段一行1成功/Z(I)，恰两个 Z，最终 A/B S0。成功变体无首错，Sync 后前缀真实提交；复用第 5 章 session.txn.sync.*，若已提前提交不得仅凭 I 判通过。 |
+| PAGE / EFFECT：Q BEGIN；P(s,O)/B(p,s)，X(p,1)、Flush，X(p,0)、Flush，X(p,0)，Sync；另一轮 P(u,`UPDATE public.wire_query_probe SET v=v+1 WHERE id=1`)/B(w,u)，连续 X(w,1)、X(w,0)，Sync | 分页为首行(1,10)+PortalSuspended、剩余(2,20)+SELECT 2，耗尽重试无旧行；写命令一次完成且 A id=1仅11，不能12，B S0、Sync T。边界另用三行夹具/Execute(2)核对未耗尽再暂停，不假定正好行限必暂停；Q ROLLBACK后两者S0。待扩展独立测试与副作用计数。 |
+| NAMES / CLOSE：T 内 P(s,O)/B(p,s)，重复同名 Parse/Bind各独立轮；另未知 statement 的 Bind/Describe、未知 portal 的 Describe/Execute，以及 D/C 非 S/P 目标；每轮错误后先 Sync、ROLLBACK、新 BEGIN | 重名/未知/坏目标分阶段拒绝、无半对象，不猜全部错误码；Flush不能恢复，Sync后仍E直到回滚。独立成功轮 Close p→3、s 可重新Bind；Close s→3、关联p不可执行（错后Sync/ROLLBACK）；缺失 statement/portal Close→3、不吞随后合法pipeline。每轮最终I、新SELECT 1成功。 |
+| UNNAMED / END：T 内 P('',O)/B('', '')，再未命名 Parse替换；另轮未命名Bind替换；另轮先建命名s/p和未命名对象，再Q SELECT 1 | 替换不泄漏旧句柄；Q后未命名 statement/portal 消失、无关命名s仍可寻址，显式T内命名p按生命周期核对。未知对象探针各独立轮并Sync/ROLLBACK。成功独立轮T中绑定p，Sync→T仍可读，随后分别COMMIT/ROLLBACK→I，Describe p应不存在；s可新Bind。无BEGIN轮暂停后Sync→I，p亦不存在。 |
+| OLD / ISOLATE：A T内预绑定读O和写id=4两portal，另制造重复键错误并Sync；再逐一Execute旧portal/Sync；B同时使用与A同名s/p正常读，A失败等待Sync时另测Terminate | A旧portal若仍可寻址须拒绝失败态执行，不能返回缓存成功或写id=4；若错误已销毁则记录真实生命周期诊断、不能冒充门禁覆盖。B不读A参数/缓存/失败态。Terminate无需Sync即可关闭，无Z；B仍S0且SELECT 1=1。其余轮A ROLLBACK后新请求成功。 |
+| MULTI / SIMPLE-ERROR：独立 Q `UPDATE public.wire_query_probe SET v=11 WHERE id=1; SELECT id,v FROM public.wire_query_probe ORDER BY id`；另轮第二句为重复键INSERT、第三句DELETE全表；再另轮第二句语法错误 | 最终目标依第5章分别为两组结果/标签后一个Z(I)；执行错停止第三句且隐式前缀撤销；语法错须核对前缀是否根本未执行。当前多语句0A000须副作用前拒绝且B S0，不能记PG兼容通过；下一Q SELECT 1恢复。单条Q语法/执行错分别从I/T复验，Z I/E，T轮ROLLBACK后S0；多条Parse仍须拒绝。 |
+| CONTROL：分别对完整可定位帧的Flush/Sync发送非法非空体，另轮空体合法Sync时受控触发隐式提交失败 | 采集参考端错误阶段与是否关闭，不预设坏控制消息均可恢复；若连接仍可同步，Flush错误不重置failed，Sync处理错误仍维护每Sync一个Z、无额外跳过段。无法可信定位/需关闭的情况交资源域，断开回收且B健康；控制体/提交失败注入独立入口待新增，不伪造已覆盖。 |
+| DISCONNECT / TRANSPORT：T内未提交UPDATE后暂停读portal，分别Close、Terminate、直接断连；另在Execute输出中受控注入写失败/取消 | Close仅释放指定对象不偷提交；Terminate/断连/写失败回收所有portal缓存、prepared/context/socket/登记、未提交事务，B S0且新A2 I/SELECT 1成功。取消只在证明Execute活动后沿取消域屏障采证，错误后Sync及I/E沿第5章，不以idle cancel代替；资源计数/时限/取消注入入口待新增，坏帧关闭交资源域，不声称本域已验证。 |
+
+清理时仍处协议 failed 的连接先 Sync，随后对存活 T/E 连接 ROLLBACK，Close 可存活的对象、关闭连接并确认回收后，在事务外 DROP TABLE；缺失对象 Close 可幂等。每例保存第 1 章能力/用例 ID、双方完整构建 SHA/版本、客户端、授权/安全/会话夹具、原始消息顺序与 Sync/Z 数、I/T/E、描述/行值/标签/真实副作用、错误阶段及安全 S/V/C/M/适用D/H/P、资源前后值、命令/退出码和有效断言数。精确诊断未采不填猜值；性能另测物化峰值内存/首行延迟/暂停存活成本，本轮均未验证。
+
 ### 后续细分
 
 TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真实安全状态交接；安全要求/禁降级与证书客户端探针；有界握手期限/截断/重复请求；停服与资源所有权回归。扩展同目录独立 pg_conn_test.rs、pg_protocol_test.rs，测试不写入生产文件；新增 TLS 夹具/客户端入口均待新增，不在本轮创建。真实认证和第 6 章权限接线由认证域认领，其他消息、类型和事务分别遵循第 3/5 章，不递归补建子系统。
@@ -5665,5 +5724,11 @@ TLS 后续另建窄实施计划，顺序为：SSLRequest→TLS 流切换及真�
 另立窄实施任务：①启动结构与规范化参数校验/未知参数拒绝，补版本与 `_pq_.` 选项协商；②认证后身份/库/CONNECT 与连接私有设置交接，修正 database 缺省并覆盖认证失败不选库；③逐参数的真实状态、SHOW/SET/RESET 与 ParameterStatus，同第 3/5 章 codec/事务最小接线，先补 application_name 而不扩建 GUC 子系统；④两连接隔离、注入/畸形/中断/重连清理；⑤复制请求的明确拒绝及 false 普通模式。复用 pg_protocol/pg_conn/pg_session，回归放同目录独立测试文件；新客户端/安全观测入口均**待新增**，本轮不创建代码或运行器。
 
 需求映射：本任务步骤 1→启动证据表与 OK/FRAME；步骤 2→逐参数状态表与 EFFECT/ISOLATE/VALUE；步骤 3→版本/密钥契约与 VERSION/KEY；步骤 4→AUTH/DATABASE、INJECTION、INTERRUPT/RECONNECT；步骤 5→复制范围边界与 REPLICATION。对应来源步骤 1、2 的 startup/session parameter 与连接生命周期。Ready 文档检查覆盖五节/稳定子标题、官方来源与相对链接、需求与异常轨迹、章节外字节不变；验证技能 `.agents/skills/tidb-verify-profile/SKILL.md` 再查缺失，使用手工等效检查。正确性风险是只回显参数未实际生效或失败清理遗漏，兼容性风险是将当前白名单/产品报告版本当成 PG 18.6 或与第 3/5/6 章分责冲突；性能未验证。此域完成只表示文档交付，下一步另行授权实施与参考端采证。
+
+#### 查询消息后续实施切口
+
+后续另立窄任务：①单条Q/空查询及Parse/Bind/Describe/Execute/Close/Flush顺序与错误响应；②Parse/Bind/Execute失败至Sync丢弃、pipeline分段与旧portal失败态门禁；③命名/未命名替换、Close级联及显式/隐式事务结束释放；④maxRows续读、耗尽重试不重复副作用及物化资源回归；⑤Q多语句与隐式事务原子性，明确依赖第5章而不在协议层模拟提交。复用 pg_conn/pg_extended/pg_session/pg_result 与共享执行链，扩展同目录独立 pg_extended_test.rs、pg_transaction_test.rs；受控执行/写失败/资源计数、参考端和真实客户端探针均**待新增**，不在本轮实现。
+
+需求映射：本任务步骤1→查询证据表、SIMPLE/EXTENDED；步骤2→消息目标表与MULTI/UNNAMED；步骤3→三类状态与PHASE/IMPLICIT/OLD；步骤4→portal生命期与PAGE/EFFECT、NAMES/CLOSE、END；步骤5→PIPELINE/ISOLATE/CONTROL/DISCONNECT/TRANSPORT。共同对应来源步骤1的Simple/Extended现状目标、步骤2的portal/错误后Sync/关闭边界。Ready文档范围检查为五节/稳定子标题、逐消息成功/错误/恢复与生命周期映射、官方来源/相对链接、与第3/5/6章一致及章节外字节不变；验证技能路径再次核对仍缺失，采用手工等效检查。正确性风险为静态推断及失败态遗漏，兼容性风险为当前拒绝策略/物化行为被当PG18.6实测，性能与资源成本未测。本域完成仅指文档，下一步按批次5补二进制与类型交接。
 
 ## 8. 客户端与双方言共存验收
