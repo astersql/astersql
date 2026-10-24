@@ -194,6 +194,8 @@ struct Resolver<'a> {
     public: bool,
     edits: BTreeMap<usize, (usize, String)>,
     error_position: Option<usize>,
+    cte_statement: bool,
+    snapshot: Option<astersql_infoschema::SchemaRef>,
 }
 impl Resolver<'_> {
     fn word(&self, i: usize, name: &str) -> bool {
@@ -298,6 +300,22 @@ impl Resolver<'_> {
         };
         if self.database.is_empty() {
             return Err(error("3D000", "no current database selected"));
+        }
+        // In an ordinary WITH, only earlier CTEs took the return above.
+        // A remaining reference must resolve as a real table, even when a later
+        // definition has the same spelling. Diagnose it at the original token.
+        if self.cte_statement
+            && !allow_columns
+            && let Some(snapshot) = &self.snapshot
+            && snapshot
+                .ModelTableInfoByName(
+                    &astersql_infoschema::CiString::new(self.database),
+                    &astersql_infoschema::CiString::new(parts.last().unwrap()),
+                )
+                .is_err()
+        {
+            self.error_position = Some(self.sql[..self.tokens[start].start].chars().count() + 1);
+            return Err(error("42P01", "relation does not exist"));
         }
         let first = self.tokens[start].start;
         let last = self.tokens[i - 1].end;
@@ -442,6 +460,16 @@ fn rewrite_with_position(
     public: bool,
     position: &mut Option<usize>,
 ) -> ParseResult<String> {
+    rewrite_with_snapshot(sql, database, public, position, None)
+}
+
+fn rewrite_with_snapshot(
+    sql: &str,
+    database: &str,
+    public: bool,
+    position: &mut Option<usize>,
+    snapshot: Option<astersql_infoschema::SchemaRef>,
+) -> ParseResult<String> {
     *position = None;
     let allowed_aliases = alias_scope(sql, None, database, position)?;
     let parts: BTreeMap<_, _> = identifier_parts(sql, &allowed_aliases)?
@@ -459,6 +487,8 @@ fn rewrite_with_position(
         }
     }
     let mut resolver = Resolver {
+        cte_statement: tokens.first().is_some_and(|token| token.word("with")),
+        snapshot,
         tokens,
         sql,
         database,
@@ -791,7 +821,13 @@ pub(crate) fn adapt(
         database,
         &mut session.relation_error_position,
     )?;
-    let sql = rewrite_with_position(sql, database, public, &mut session.relation_error_position)?;
+    let sql = rewrite_with_snapshot(
+        sql,
+        database,
+        public,
+        &mut session.relation_error_position,
+        context.schema_snapshot(),
+    )?;
     validate_relations(&sql, database)?;
     Ok(sql)
 }

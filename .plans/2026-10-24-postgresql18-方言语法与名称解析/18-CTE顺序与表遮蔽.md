@@ -3,7 +3,7 @@
 
 批次：【批次 18】依赖：批次14（任务14）、批次16（任务16）。这是拆分批次2的子实施批次，不能等同于大计划编号。
 
-状态：未开始
+状态：已阻塞
 
 目的：交付“CTE顺序与表遮蔽”这一行为的生产保真或增量回归证据。
 
@@ -111,15 +111,15 @@ WIP：`cargo fmt --all` → `env -u LDFLAGS cargo test --locked -p astersql-serv
 ## Progress
 
 
-- [ ] 接口与消费者取证（尚未执行）
-- [ ] 独立失败验证或旧实现当前绿灯例外证据（尚未执行）
-- [ ] 最小实现及同输入通过验证（尚未执行）
-- [ ] Ready、真实观测、恢复清理与提交交接（尚未执行）
+- [x] 接口与消费者取证：HEAD 1746301d74，14/16已交付；scope先处理后插入，runtime/source.rs::execute_with_clause同序物化。
+- [x] 独立失败验证：AST当前绿灯32断言；共享会话红灯及libpq来源错误均取得当前证据。
+- [ ] 最小生产接线已实现，共享会话回归通过；同输入libpq剩裸整数默认类型差异，整体未通过。
+- [ ] Ready适用检查、6场景真实观测与清理已执行；完整行为验收受默认字面量定型阻塞，保留任务文件。
 
 ## Surprises & Discoveries
 
 
-本轮仅静态规划，未执行。当前发现：仅HashSet拼写保留不足以区分未来CTE与真实表，绑定身份或前向反例错误。 这是待验证假设，不是测试结果；执行时用实际输出替换/补充。
+已完成当前源码与真实参考取证：原scope先定义后登记的顺序正确；实际缺口在CTE结果描述来源和前向缺表诊断，已局部修复。剩余默认裸整数类型差异构成阻塞，详见最终证据。
 
 ## Decision Log
 
@@ -129,4 +129,64 @@ WIP：`cargo fmt --all` → `env -u LDFLAGS cargo test --locked -p astersql-serv
 ## Outcomes & Retrospective
 
 
-尚无实施结果。本轮有效运行数0、有效行为断言数0；不得引用历史94场景作为本任务完成证据。
+已取得本轮红绿测试、精确18.6/libpq18及MySQL当前观测。局部修复通过35项聚焦回归，但完整libpq验收仍失败，完整有效case为0；保留任务供默认字面量定型接口到位后回归。全部证据见最终记录，不复用历史94场景计数。
+
+## 2026-10-25 当前执行证据
+
+批次18严格串行；计划和来源plan均只读。RustCodeGraph status/node已核当前入口，server AGENTS已读；目标目录无doc.go。verify-profile技能缺失，按根规则手动选择WIP/Ready。
+
+首轮AST测试：`env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_dialect_18_behavior -- --nocapture`退出0，1测试、32断言。原行为并非仅HashSet不可用：relation会将定义体未见名称绑定到当前库真实表。
+
+真实夹具首次缺失task18的table_origins采集，该失败只属于夹具准备，不能充当行为红灯。补齐后本轮 `env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_dialect_18_libpq -- --nocapture`退出101，命中1测试；证据 `target/pg-dialect-18-evidence/39577-50889/`。shadow返回1，但AsterSQL Describe/Execute来源[[1073741852,1]]，精确PG18.6为[[0,0]]，说明metadata错误使用同名物理表。其他case尚未计入有效完成。
+
+最小接线依据：`pkg/session/runtime/query.rs::append_relational_source_fields/relational_query_node_result_fields`当前忽略WITH顺序名称环境，直接读取物理表；需在现有无执行元数据链按先定义后登记计算CTE字段，显式schema仍绕过CTE。只围绕顺序、遮蔽及来源/类型接线，不新增执行系统。`pkg/session/runtime_test/query.rs`补共享会话回归，与server独立AST及libpq断言分层。
+
+动态领取实际槽位1，CARGO_TARGET_DIR `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；前两次阶段均已释放锁保留缓存。参考二进制复用 `/tmp/astersql-pg-dialect01-ref/install/bin`，构建记录同目录reference-build.json；每轮独立initdb+临时端口，MySQL8.4独立Docker容器，阶段finally停止并删除本轮资源。完整命令/退出码在 `target/pg-dialect-18-validation/exit-codes.json`；后续补充最终证据。
+
+## 最终阻塞与局部交付（2026-10-25）
+
+仍为已阻塞，不删除本文件，不把局部绿灯算整体完成。真实参考契约没有降级为AsterSQL旧行为。当前唯一剩余失败是shadow/ordered中的裸整数1结果类型：AsterSQL `v/OID20/typlen8/typmod-1`，精确PG18.6 `v/OID23/typlen4/typmod-1`。Describe和Execute各两项差分失败。`pkg/session/runtime/relational_value.rs::relational_expression_type` 对Value使用既有AST Value.Type；`pkg/parser/ast/lib.rs` 的数值Value类型载体仍以TypeLonglong定型。修复通用PG默认字面量类型属于大计划3/6，不把该类型子系统吞入本名称绑定任务，也不改用`1::int4`绕过原断言。待其局部接口到位后重跑本编号全部聚焦命令。
+
+生产修改与本契约对应：
+
+- `pkg/session/runtime/query.rs`：现有结果字段推导链增加局部CTE字段环境，定义体计算后再登记；对应CTE遮蔽、按序引用、前向真实表和非递归自名真实表，显式schema绕过。字段类型与来源从既有消费者传递，不执行查询、不新增AST空字段、不新增依赖/执行器。物理来源错误已从红灯修复为0/0或正确映射物理表。
+- `pkg/server/pg_name.rs::Resolver::relation/rewrite_with_snapshot/adapt`：对普通WITH中未命中已见CTE的关系，使用所属连接已有schema_snapshot核实真实表，并使用原始token字符位置报告42P01。对应前向缺表的正式Simple/Extended诊断；未无条件拒绝未来同名有真实表或自名有真实表。最终两端PQprepare和Q均42P01/P32；事务内PQprepare均42P01/P26/E，随后原连接ROLLBACK和显式int4健康探针恢复I。
+
+测试修改：`pkg/server/pg_name_test.rs::pg_dialect_18_behavior`（1测试32断言）；`pkg/session/runtime_test/query.rs::pg_dialect_18_shared_cte_binding`（共享会话来源回归，1测试5断言）；`pkg/server/pg_client_integration_test.rs::pg_dialect_18_libpq`和同Server MySQL checkpoint；`pkg/server/testdata/pg_dialect_libpq.py`注册六主要case，分别归档Q/prepare/Describe/Bind/Execute、参数乱序/NULL、原始Unicode位置、事务恢复、观察连接、来源/比较负向自检。所有差分失败聚合后测试仍失败，绝不以日志行数或继续采样冒充成功。
+
+本轮红灯：共享会话同名CTE来源测试退出101（`/tmp/pg18-session-red.log`），实际命中1测试；libpq修复前来源错误退出101，1测试（`target/pg-dialect-18-evidence/39577-50889/`）。最终命令仍为同一输入和完整断言，libpq退出101，1测试。最后完整证据目录 `target/pg-dialect-18-evidence/48594-54521/`：cases.json、aster.jsonl/reference.jsonl/mysql.jsonl、mysql-local.jsonl/mysql-ctes.jsonl、provenance.json、summary.json、rust-cleanup.json与child-exit.json。六主要case完成采集；189项检查尝试，其中4失败、8项独立负向自检；完整有效case数0。MySQL本地前向缺表既有1105/HY000，与MySQL8.4.7参考1146/42S02独立记录，未冒称错误兼容。
+
+验证使用WIP定位，再执行Ready适用检查；verify-profile技能在仓库和个人路径仍缺失，按根AGENTS/testing-flow选择。最终命令及退出码/有效测试数：
+
+    cargo fmt --all
+    # 退出0；每次Rust修改后先运行，槽位1。
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_dialect_18_behavior -- --nocapture
+    # 退出0，1测试，32断言。
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_dialect_18_libpq -- --nocapture
+    # 退出101，1测试，六主要case采样，完整有效0；保留四项真实类型差分失败。
+    env -u LDFLAGS cargo test --locked -p astersql-session --lib pg_dialect_18_shared_cte_binding -- --nocapture
+    # 修复前101/1测试，修复后0/1测试。
+    env -u LDFLAGS cargo test --locked -p astersql-session --lib pg_dialect_16_shared_alias_binding -- --nocapture
+    # 退出0，1测试。
+    env -u LDFLAGS cargo test --locked -p astersql-session --lib cte_string_projection_uses_string_comparison_semantics -- --nocapture
+    # 退出0，1测试。
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_name_test:: -- --nocapture
+    # 退出0，6测试，含新增behavior，不能与单独运行重复累计。
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_query_test:: -- --nocapture
+    # 退出0，15测试。
+    env -u LDFLAGS cargo test --locked -p astersql-server --lib pg_extended_test:: -- --nocapture
+    # 退出0，11测试。
+    make lint
+    # 退出0。
+    git diff --check
+    # 退出0。
+    python3 -m py_compile pkg/server/testdata/pg_dialect_libpq.py
+    # 退出0。
+
+精确命令数组/退出码在 `target/pg-dialect-18-validation/ready-exit-codes.json`，原始测试/lint日志同目录；真实阶段run脚本 `/tmp/astersql-pg-dialect18-run.py`，Ready阶段 `bash /tmp/pg18-slot.sh python3 /tmp/pg18-ready.py`。三项session和6/15/11项server聚焦回归共35个独立测试通过（behavior在6项names中只计一次），libpq另1测试失败。未修改Go、imports、Bazel、Cargo依赖或grammar，非新工作区，无Bazel触发；未运行bazel_prepare/bazel_lint_changed或Go parser目标。
+
+参考和客户端：PostgreSQL18.6真实version()，server_version_num180006，aarch64-apple-darwin25.1.0 / Apple clang16.0.0；来源构建文件 `/tmp/astersql-pg-dialect01-ref/reference-build.json`，产物SHA256 `2526135cada27e7f0b80a9679faf8d66107e1ca12eda4edf6a4968e16dad8590` 已每轮核对。libpq180000，路径 `/opt/homebrew/Cellar/libpq/18.0/lib/libpq.5.dylib`，SHA256 `f5e2768d1403094d2cbcec6127e8290cb8f848a5ea08bfbb9a0268c386a205ab`。MySQL8.4.7独立Docker镜像与实际VERSION/平台采集见provenance与mysql.jsonl。构建HEAD `1746301d74a0b2e342c572ccc5ff93108e702f13`；实际工作区摘要 `1143083b439768fc3dbfdf02336193893f5e4c8beba9f8364ce0fe6fd1cfa283`；运行Rust测试二进制SHA256 `e5073f0b3a80b53e3cae53c8dc1ef04fe7120917c36335309c38a3e6a47bd1e4`。提交后HEAD变化不改写旧运行来源。
+
+清理：最终Rust记录database_dropped/postgres_port_closed/mysql_port_closed均true；Python cleanup_ok=true，prepared statements/连接/事务清理完成，独立观察表仍9。每轮自建PG临时数据目录移除，自建MySQL容器删除；用户参考服务未操作。所有Cargo阶段动态领取槽位1，绝对CARGO_TARGET_DIR `/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`，PID owner在锁内记录；验证及子进程结束后锁已释放，缓存保留。未增删外部Rust依赖，无本地patch/临时依赖副本。
+
+风险：已修复本行为来源及原始诊断；默认字面量类型仍不兼容，完整验收未通过。CTE字段环境会增加metadata阶段的局部HashMap/字段克隆，性能未测。未验证生产鉴权、RealTiKV、递归/写入CTE、完整大小写对象和本任务外类型。保留原始版权。仅提交本任务实际代码/测试及本任务记录；所有来源plan、其他编号任务改动/删除及未跟踪其他计划目录排除。

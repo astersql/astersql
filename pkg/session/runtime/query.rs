@@ -2025,15 +2025,16 @@ impl ConcreteSession {
         &self,
         source_node: &ast::ResultSetNode,
         fields: &mut Vec<ConcreteResultField>,
+        ctes: &HashMap<String, Vec<ConcreteResultField>>,
     ) -> SessionResult<()> {
         let source = match source_node {
             ast::ResultSetNode::TableSource(source) => source,
             ast::ResultSetNode::Join(join) => {
                 if let Some(left) = join.Left.as_deref() {
-                    self.append_relational_source_fields(left, fields)?;
+                    self.append_relational_source_fields(left, fields, ctes)?;
                 }
                 if let Some(right) = join.Right.as_deref() {
-                    self.append_relational_source_fields(right, fields)?;
+                    self.append_relational_source_fields(right, fields, ctes)?;
                 }
                 return Ok(());
             }
@@ -2041,7 +2042,9 @@ impl ConcreteSession {
 
         if let Some(query) = source.QuerySource.as_ref() {
             let mut derived_fields = query
-                .with_node(|node| self.relational_query_node_result_fields(node, &[]))
+                .with_node(|node| {
+                    self.relational_query_node_result_fields_with_ctes(node, &[], ctes)
+                })
                 .ok_or_else(|| SessionError::new("derived table query is unavailable"))??;
             if !source.AsName.L.is_empty() {
                 for field in &mut derived_fields {
@@ -2052,6 +2055,25 @@ impl ConcreteSession {
                 field.column_origin = None;
             }
             fields.extend(derived_fields);
+            return Ok(());
+        }
+
+        // Unqualified visible CTEs win over catalog tables. These fields were
+        // derived before registering the next definition, just like execution.
+        if source.Source.Schema.L.is_empty()
+            && let Some(cte_fields) = ctes.get(&source.Source.Name.L)
+        {
+            let alias = if source.AsName.L.is_empty() {
+                &source.Source.Name
+            } else {
+                &source.AsName
+            };
+            fields.extend(cte_fields.iter().cloned().map(|mut field| {
+                field.column.Name = field.column_as_name.clone();
+                field.table_name = source.Source.Name.clone();
+                field.table_as_name = alias.clone();
+                field
+            }));
             return Ok(());
         }
 
@@ -2104,13 +2126,21 @@ impl ConcreteSession {
         &self,
         select: &ast::SelectStmt,
     ) -> SessionResult<Vec<ConcreteResultField>> {
+        self.relational_select_source_fields_with_ctes(select, &HashMap::new())
+    }
+
+    fn relational_select_source_fields_with_ctes(
+        &self,
+        select: &ast::SelectStmt,
+        ctes: &HashMap<String, Vec<ConcreteResultField>>,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
         let mut fields = Vec::new();
         if let Some(from) = select.From.as_ref() {
             if let Some(left) = from.TableRefs.Left.as_deref() {
-                self.append_relational_source_fields(left, &mut fields)?;
+                self.append_relational_source_fields(left, &mut fields, ctes)?;
             }
             if let Some(right) = from.TableRefs.Right.as_deref() {
-                self.append_relational_source_fields(right, &mut fields)?;
+                self.append_relational_source_fields(right, &mut fields, ctes)?;
             }
             // Only the directly bound base-table case is admitted here.
             // Join/derived output lineage keeps its previous unknown origin;
@@ -2157,8 +2187,44 @@ impl ConcreteSession {
         node: &dyn ast::Node,
         output_columns: &[String],
     ) -> SessionResult<Vec<ConcreteResultField>> {
+        self.relational_query_node_result_fields_with_ctes(node, output_columns, &HashMap::new())
+    }
+
+    fn relational_query_node_result_fields_with_ctes(
+        &self,
+        node: &dyn ast::Node,
+        output_columns: &[String],
+        inherited: &HashMap<String, Vec<ConcreteResultField>>,
+    ) -> SessionResult<Vec<ConcreteResultField>> {
+        let mut ctes = inherited.clone();
         if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
-            let source_fields = self.relational_select_source_fields(select)?;
+            if let Some(with) = &select.With {
+                let with = with.borrow();
+                if !with.IsRecursive {
+                    for cte in &with.CTEs {
+                        if cte.IsRecursive {
+                            continue;
+                        }
+                        let mut fields = self.relational_query_node_result_fields_with_ctes(
+                            cte.Query.as_ref(),
+                            &[],
+                            &ctes,
+                        )?;
+                        if !cte.ColNameList.is_empty() {
+                            if fields.len() != cte.ColNameList.len() {
+                                return Err(SessionError::new(
+                                    "CTE column-name count does not match query",
+                                ));
+                            }
+                            for (field, name) in fields.iter_mut().zip(&cte.ColNameList) {
+                                field.column_as_name = name.clone();
+                            }
+                        }
+                        ctes.insert(cte.Name.L.clone(), fields);
+                    }
+                }
+            }
+            let source_fields = self.relational_select_source_fields_with_ctes(select, &ctes)?;
             let mut using_columns = HashSet::new();
             if let Some(from) = select.From.as_ref() {
                 collect_join_using_column_names(&from.TableRefs, &mut using_columns);
@@ -2351,7 +2417,11 @@ impl ConcreteSession {
                             .into_iter()
                             .flatten()
                             {
-                                self.append_relational_source_fields(source, &mut bound_fields)?;
+                                self.append_relational_source_fields(
+                                    source,
+                                    &mut bound_fields,
+                                    &ctes,
+                                )?;
                             }
                         }
                         result_field.column_origin = bound_fields
@@ -2398,7 +2468,7 @@ impl ConcreteSession {
             .selects
             .first()
             .ok_or_else(|| SessionError::new("set operation is empty"))?;
-        self.relational_query_node_result_fields(first.as_ref(), output_columns)
+        self.relational_query_node_result_fields_with_ctes(first.as_ref(), output_columns, &ctes)
             .map(|mut fields| {
                 for field in &mut fields {
                     field.column_origin = None;

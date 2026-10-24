@@ -681,3 +681,35 @@ fn pg_dialect_16_shared_alias_binding() {
     );
     session.execute("DROP DATABASE alias_scope_16").unwrap();
 }
+
+#[test]
+fn pg_dialect_18_shared_cte_binding() {
+    let (_domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    session.execute("CREATE DATABASE cte_scope_18").unwrap();
+    session.execute("USE cte_scope_18").unwrap();
+    session.execute("CREATE TABLE t(v INT)").unwrap();
+    session.execute("INSERT INTO t VALUES (9)").unwrap();
+    let base = session.describe_result_fields("SELECT v FROM t").unwrap();
+    let fields = session
+        .describe_result_fields("WITH t AS (SELECT 1 AS v) SELECT v FROM t")
+        .unwrap();
+    assert!(
+        fields[0].column_origin.is_none(),
+        "CTE literal must hide the real table origin"
+    );
+    for sql in [
+        "WITH t AS (SELECT 1 AS v) SELECT v FROM cte_scope_18.t",
+        "WITH a AS (SELECT v FROM t), t AS (SELECT 2 AS v) SELECT v FROM a",
+        "WITH t AS (SELECT v FROM t) SELECT v FROM t",
+    ] {
+        let fields = session.describe_result_fields(sql).unwrap();
+        assert_eq!(fields[0].column_origin, base[0].column_origin, "{sql}");
+    }
+    let fields = session
+        .describe_result_fields(
+            "WITH a AS (SELECT CAST(1 AS SIGNED) AS v), b AS (SELECT v FROM a) SELECT v FROM b",
+        )
+        .unwrap();
+    assert!(fields[0].column_origin.is_none());
+    session.execute("DROP DATABASE cte_scope_18").unwrap();
+}

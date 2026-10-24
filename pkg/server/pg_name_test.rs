@@ -304,3 +304,105 @@ fn pg_dialect_16_behavior() {
         "pg_dialect_16_behavior: assertions={assertions}; 5 primary shapes, visibility/case guards"
     );
 }
+
+#[test]
+fn pg_dialect_18_behavior() {
+    use astersql_parser_ast as ast;
+    let cases = [
+        (
+            "WITH t AS (SELECT 1 AS v) SELECT v FROM t",
+            "WITH t AS (SELECT 1 AS v) SELECT v FROM t",
+            vec!["t"],
+        ),
+        (
+            "WITH t AS (SELECT 1 AS v) SELECT v FROM public.t",
+            "WITH t AS (SELECT 1 AS v) SELECT v FROM `db`.t",
+            vec!["t"],
+        ),
+        (
+            "WITH a AS (SELECT 1 AS v), b AS (SELECT v FROM a) SELECT v FROM b",
+            "WITH a AS (SELECT 1 AS v), b AS (SELECT v FROM a) SELECT v FROM b",
+            vec!["a", "b"],
+        ),
+        (
+            "WITH a AS (SELECT v FROM b), b AS (SELECT 2 AS v) SELECT v FROM a",
+            "WITH a AS (SELECT v FROM `db`.b), b AS (SELECT 2 AS v) SELECT v FROM a",
+            vec!["a", "b"],
+        ),
+        (
+            "WITH t AS (SELECT v FROM t) SELECT v FROM t",
+            "WITH t AS (SELECT v FROM `db`.t) SELECT v FROM t",
+            vec!["t"],
+        ),
+        (
+            "/*中*/ WITH t AS (SELECT $2::int4 AS v) SELECT v FROM t /* public.t $1 */",
+            "/*中*/ WITH t AS (SELECT $2::int4 AS v) SELECT v FROM t /* public.t $1 */",
+            vec!["t"],
+        ),
+    ];
+    let mut assertions = 0;
+    for (sql, expected, names) in cases {
+        let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+            .ParseSQL(sql, &[])
+            .unwrap();
+        let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+        let with = select.With.as_ref().unwrap().borrow();
+        assert!(!with.IsRecursive);
+        assert_eq!(
+            with.CTEs
+                .iter()
+                .map(|cte| cte.Name.O.as_str())
+                .collect::<Vec<_>>(),
+            names
+        );
+        assert_eq!(rewrite(sql, "db", true).unwrap(), expected);
+        assertions += 3;
+        for cte in &with.CTEs {
+            assert!(cte.Query.as_any().is::<ast::SelectStmt>());
+            assertions += 1;
+        }
+    }
+    let sql = "/*中*/ WITH t AS (SELECT $2::int4 AS v) SELECT t.v FROM t /* public.t $1 */";
+    let (nodes, _) = astersql_parser::Parser::with_dialect(ast::SqlDialect::PostgreSQL)
+        .ParseSQL(sql, &[])
+        .unwrap();
+    let select = nodes[0].as_any().downcast_ref::<ast::SelectStmt>().unwrap();
+    let with = select.With.as_ref().unwrap().borrow();
+    let query = with.CTEs[0]
+        .Query
+        .as_any()
+        .downcast_ref::<ast::SelectStmt>()
+        .unwrap();
+    let ast::ExprKind::Cast { Expr, .. } = &query.Fields.Fields[0].Expr.as_ref().unwrap().Kind
+    else {
+        panic!("cast")
+    };
+    assert_eq!(Expr.PostgreSQLParameterIndex(), Some(2));
+    let ast::ExprKind::Column(column) = &select.Fields.Fields[0].Expr.as_ref().unwrap().Kind else {
+        panic!("column")
+    };
+    for part in &column.PostgreSQLParts {
+        assert_eq!(&sql[part.Span.0..part.Span.1], part.Original);
+        assertions += 1;
+    }
+    assert!(rewrite(sql, "db", false).is_ok());
+    assert_eq!(
+        rewrite(
+            "WITH a AS (SELECT v FROM b), b AS (SELECT 2 AS v) SELECT v FROM a",
+            "db",
+            false
+        )
+        .unwrap_err()
+        .0,
+        "42P01"
+    );
+    assert!(
+        astersql_parser::New()
+            .ParseOneStmt("WITH t AS (SELECT 1 AS v) SELECT v FROM t", "", "")
+            .is_ok()
+    );
+    assertions += 4;
+    println!(
+        "pg_dialect_18_behavior: primary_shapes=6 assertions={assertions}; binding values verified separately by libpq"
+    );
+}

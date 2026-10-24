@@ -1148,6 +1148,11 @@ fn pg_dialect_16_libpq() {
     pg_dialect_libpq(16);
 }
 
+#[test]
+fn pg_dialect_18_libpq() {
+    pg_dialect_libpq(18);
+}
+
 fn pg_dialect_libpq(task: u8) {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -1240,6 +1245,51 @@ fn pg_dialect_libpq(task: u8) {
         column[offset + 7]
     }
     let checkpoint = |socket: &mut TcpStream, phase: &str| {
+        if task == 18 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
+            let table = format!("t18_{}_{}", std::process::id(), address.port());
+            mysql_query(socket, &format!("USE {database}"));
+            for (sql, value) in [
+                (
+                    format!("WITH {table} AS (SELECT 1 AS v) SELECT v FROM {table}"),
+                    b"1".to_vec(),
+                ),
+                (
+                    format!("WITH {table} AS (SELECT 1 AS v) SELECT v FROM {database}.{table}"),
+                    b"9".to_vec(),
+                ),
+                (
+                    "WITH a AS (SELECT 1 AS v), b AS (SELECT v FROM a) SELECT v FROM b".to_string(),
+                    b"1".to_vec(),
+                ),
+                (
+                    format!(
+                        "WITH a AS (SELECT v FROM {table}), {table} AS (SELECT 2 AS v) SELECT v FROM a"
+                    ),
+                    b"9".to_vec(),
+                ),
+                (
+                    format!("WITH {table} AS (SELECT v FROM {table}) SELECT v FROM {table}"),
+                    b"9".to_vec(),
+                ),
+            ] {
+                assert_eq!(mysql_query(socket, &sql), vec![vec![Some(value)]]);
+            }
+            let sql =
+                "WITH a AS (SELECT v FROM absent18), absent18 AS (SELECT 2 AS v) SELECT v FROM a";
+            let mut request = vec![3];
+            request.extend_from_slice(sql.as_bytes());
+            mysql_packet(socket, 0, &request);
+            let response = mysql_read(socket);
+            assert_eq!(response[0], 0xff);
+            assert_eq!(u16::from_le_bytes(response[1..3].try_into().unwrap()), 1105);
+            assert_eq!(&response[4..9], b"HY000");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(evidence.join("mysql-ctes.jsonl"))
+                .unwrap();
+            writeln!(file, "{}", serde_json::json!({"phase":phase,"successful_cte_values":[1,9,1,9,9],"forward_missing_code":1105,"packet":response})).unwrap();
+        }
         if task == 16 && phase.starts_with("PG_DIALECT_CHECKPOINT ") {
             let table = format!("{database}.t16_{}_{}", std::process::id(), address.port());
             assert_eq!(
@@ -1557,6 +1607,16 @@ fn pg_dialect_libpq(task: u8) {
     assert_eq!(cleanup["postgres_port_closed"], true);
     assert_eq!(cleanup["mysql_port_closed"], true);
     assert!(status.success(), "dialect handoff failed; see evidence");
+    if task == 18 {
+        assert_eq!(checkpoints, 6);
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evidence.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["cleanup_ok"], true);
+        assert_eq!(summary["unique_effective"], 6);
+        assert_eq!(summary["failures"], serde_json::json!([]));
+        return;
+    }
     if task == 16 {
         assert_eq!(checkpoints, 5);
         let summary: serde_json::Value =
