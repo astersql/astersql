@@ -3878,6 +3878,171 @@
       "row_order": "multiset"
     },
     {
+      "case_id": "invalid_write_prepare",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "prepare",
+      "input": {
+        "phase": "prepare",
+        "sql": "INSERT INTO {run_table} VALUES ($1, 0, 'rejected')",
+        "statement": "invalid_write",
+        "parameter_oids": [
+          23
+        ],
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task6: invalid int4 write must preserve same-connection rows, recover and clean up.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ]
+    },
+    {
+      "case_id": "invalid_write_describe",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "describe",
+      "input": {
+        "phase": "describe",
+        "sql": "INSERT INTO {run_table} VALUES ($1, 0, 'rejected')",
+        "statement": "invalid_write",
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 1,
+        "state": "",
+        "params": [
+          23
+        ]
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task6: invalid int4 write must preserve same-connection rows, recover and clean up.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ]
+    },
+    {
+      "case_id": "invalid_int4_write",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "rejection_write",
+      "input": {
+        "phase": "execute",
+        "sql": "INSERT INTO {run_table} VALUES ($1, 0, 'rejected')",
+        "statement": "invalid_write",
+        "parameter_oids": null,
+        "arguments": [
+          "12x"
+        ],
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 7,
+        "state": "22P02"
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task6: invalid int4 write must preserve same-connection rows, recover and clean up.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ],
+      "rejection_contract": {
+        "classification": "expected_rejection",
+        "phase": "PQexecPrepared",
+        "sqlstate": "22P02",
+        "transaction_after_error": "I"
+      }
+    },
+    {
+      "case_id": "invalid_int4_write_recovery",
+      "kind": "business",
+      "capability_id": "integer.transaction",
+      "family": "recovery",
+      "input": {
+        "phase": "query",
+        "sql": "SELECT 1::int4 AS n",
+        "statement": null,
+        "parameter_oids": null,
+        "arguments": null,
+        "parameter_formats": null,
+        "result_format": 0
+      },
+      "expected": {
+        "status": 2,
+        "state": ""
+      },
+      "dialects": {
+        "postgresql": "Reference integer casts, typed parameters and error/recovery contract.",
+        "astersql": "Same explicit integer contract via PostgreSQL listener; MySQL health checked separately."
+      },
+      "bindings": {
+        "run_table": "unique table owned by this run"
+      },
+      "initial_state": "Independent fresh AsterSQL/reference connections; execute preceding registered steps in order. Immediately before write, each endpoint executes CREATE TABLE {run_table} (id INT PRIMARY KEY, n BIGINT, note TEXT). Prepared statement identities and source OIDs come from preceding prepare steps.",
+      "recovery": "Registered recovery/rollback steps; finally rollback and drop only run_table.",
+      "cleanup": "On each endpoint: PQclear every result; if run_table was created, ROLLBACK then DROP TABLE {run_table}; finally PQfinish.",
+      "expected_basis": "Task6: invalid int4 write must preserve same-connection rows, recover and clean up.",
+      "comparison_fields": [
+        "status",
+        "state",
+        "fields",
+        "rows",
+        "params",
+        "cells"
+      ]
+    },
+    {
       "case_id": "begin",
       "kind": "business",
       "capability_id": "integer.transaction",
@@ -3951,7 +4116,13 @@
         "rows",
         "params",
         "cells"
-      ]
+      ],
+      "rejection_contract": {
+        "classification": "expected_rejection",
+        "phase": "PQexec",
+        "sqlstate": "22P02",
+        "transaction_after_error": "E"
+      }
     },
     {
       "case_id": "transaction_failed",
@@ -3989,7 +4160,13 @@
         "rows",
         "params",
         "cells"
-      ]
+      ],
+      "rejection_contract": {
+        "classification": "expected_rejection",
+        "phase": "PQexec",
+        "sqlstate": "25P02",
+        "transaction_after_error": "E"
+      }
     },
     {
       "case_id": "rollback",

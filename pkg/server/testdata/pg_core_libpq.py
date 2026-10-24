@@ -52,7 +52,7 @@ def integer_differential(aster_dsn):
     import copy
     import signal
     import json
-    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata
+    from pg_core_evidence import CaseRegistry, load_cases, append_observation, compare_scalar_output, compare_rows, compare_metadata, compare_rejection
     from collections import Counter
 
     reference_dsn = os.environ.get("PG18_REFERENCE_DSN")
@@ -71,6 +71,9 @@ def integer_differential(aster_dsn):
     connections, observations = {}, {"aster": {}, "reference": {}}
     table = f"public.pg_core_diff_{os.getpid()}"
     created = set()
+    rejection_records = {"aster": {}, "reference": {}}
+    rejection_contracts = {}
+    pending_rejections = {"aster": [], "reference": []}
     counts = Counter()
     registry = CaseRegistry(load_cases(), table)
     statements = {}
@@ -153,6 +156,25 @@ def integer_differential(aster_dsn):
                                attempt=attempt, input=registered_input, observation=obs,
                                outcome='collected'))
             observations[side][case] = obs
+            contract = registry.cases['cases'][len(registry.seen) - 1].get('rejection_contract')
+            if contract is not None:
+                # Snapshot and recovery evidence are attached below, after actual probes.
+                rejection_contracts[case] = copy.deepcopy(contract)
+                rejection_records[side][case] = {
+                    'classification': 'expected_rejection',
+                    'phase': {'query': 'PQexec', 'prepare': 'PQprepare',
+                              'describe': 'PQdescribePrepared', 'execute': 'PQexecPrepared'}[registered_input['phase']],
+                    'backend_phase': None,
+                    'connection_ok': status(connection) == 0, 'error': copy.deepcopy(obs),
+                    'transaction_after_error': {0: 'I', 2: 'T', 3: 'E'}.get(transaction(connection), 'unknown')}
+                archive(case + '_rejection_error', side, registered_input, rejection_records[side][case])
+                pending_rejections[side].append(case)
+            elif family == 'recovery':
+                for rejected in pending_rejections[side]:
+                    rejection_records[side][rejected].update(
+                        recovery=copy.deepcopy(obs),
+                        transaction_after_recovery={0: 'I', 2: 'T', 3: 'E'}.get(transaction(connection), 'unknown'))
+                pending_rejections[side].clear()
             assert obs["status"] == expected_status, (side, case, obs)
             assert obs["state"] == expected_state, (side, case, obs)
             if expected_rows is not None:
@@ -326,6 +348,27 @@ def integer_differential(aster_dsn):
             expected_rows=[[None, None], ['0', ''], ['0', 'NULL'], ['0', ''], [None, None]])
         sql('multiset_unordered', 'multiset', f"SELECT n, note FROM {table} WHERE id >= 2")
 
+        # All effect probes use this connection and only this run's owned table.
+        snapshot_sql = f"SELECT id, n, note FROM {table} ORDER BY id"
+        def snapshot(label):
+            result = {}
+            for side, connection in connections.items():
+                result[side] = observe(execute(connection, snapshot_sql.encode()))
+                archive(label, side, {'command': snapshot_sql}, result[side])
+                assert result[side]['status'] == 2, (side, label)
+            return result
+
+        before = snapshot('rejection_before')
+        write_query = f"INSERT INTO {table} VALUES ($1, 0, 'rejected')"
+        check('invalid_write_prepare', 'prepare', prepare_input('invalid_write', write_query, [23]), expected_status=1)
+        check('invalid_write_describe', 'describe', describe_input('invalid_write'), expected_status=1, expected_params=[23])
+        check('invalid_int4_write', 'rejection_write', bind_values('invalid_write', ['12x']),
+              expected_status=7, expected_state='22P02')
+        sql('invalid_int4_write_recovery', 'recovery', 'SELECT 1::int4 AS n', expected_rows=[['1']])
+        after = snapshot('rejection_after')
+        for side in connections:
+            rejection_records[side]['invalid_int4_write'].update(before=before[side], after=after[side])
+
         sql("begin", "transaction", "BEGIN", expected_status=1)
         sql("transaction_error", "transaction", "SELECT 'x'::int4", expected_status=7, expected_state="22P02")
         assert all(transaction(conn) == 3 for conn in connections.values()), "expected E"
@@ -333,6 +376,11 @@ def integer_differential(aster_dsn):
         sql("rollback", "transaction", "ROLLBACK", expected_status=1)
         assert all(transaction(conn) == 0 for conn in connections.values()), "expected I"
         sql("rollback_recovery", "recovery", "SELECT 1::int4 AS n", expected_rows=[["1"]])
+
+        after_transaction = snapshot('transaction_rejection_after')
+        for side in connections:
+            for case in ['transaction_error', 'transaction_failed']:
+                rejection_records[side][case].update(before=after[side], after=after_transaction[side])
 
         # Mutate only copies of AsterSQL observations: the comparator must reject each corruption.
         for case, key, wrong in [("int4_suffix_min", "rows", [["0"]]),
@@ -432,12 +480,13 @@ def integer_differential(aster_dsn):
                          "value", "typed_null", "zero_rows", "overflow", "invalid",
                          "reexecute", "recovery", "write", "readback", "negative_self_check"]:
             assert counts[required] > 0, required
-        assert registry.finish() == 100
-        print("registered inputs: business=97 self_check=3 missing=0 duplicate=0", flush=True)
+        assert registry.finish() == 104
+        print("registered inputs: business=101 self_check=3 missing=0 duplicate=0", flush=True)
         print("differential effective scenarios:", sum(counts.values()), dict(sorted(counts.items())), flush=True)
     finally:
         business_failed = sys.exc_info()[0] is not None
         cleanup_errors = []
+        cleanup_results = {}
         try:
             for side in sorted(created):
                 management = None
@@ -455,7 +504,9 @@ def integer_differential(aster_dsn):
                     archive('cleanup_rollback', side, {'command': 'ROLLBACK'}, rollback)
                     obs = observe(execute(connection, f"DROP TABLE {table}".encode()))
                     archive('cleanup_drop', side, {'command': f'DROP TABLE {table}'}, obs)
+                    assert rollback['status'] == 1, (side, 'cleanup rollback failed')
                     assert obs["status"] == 1, (side, "table cleanup failed")
+                    cleanup_results[side] = {'rollback': True, 'drop': True}
                 except Exception as exc:
                     archive('cleanup_failed', side, None, None, 'cleanup_failed', type(exc).__name__)
                     cleanup_errors.append((side, type(exc).__name__))
@@ -470,6 +521,28 @@ def integer_differential(aster_dsn):
             for side, connection in connections.items():
                 finish(connection)
                 archive('connection_closed', side, None, None, 'closed')
+                if side in cleanup_results:
+                    cleanup_results[side]['connection_closed'] = True
+            if not business_failed and not cleanup_errors:
+                for case in ['invalid_int4_write', 'transaction_error', 'transaction_failed']:
+                    for side in connections:
+                        record = rejection_records[side][case]
+                        record['cleanup'] = cleanup_results.get(side)
+                        archive(case + '_rejection_contract', side, None, record)
+                    actual, reference = (rejection_records[side][case] for side in ['aster', 'reference'])
+                    assert compare_rejection(actual, reference, rejection_contracts[case]), case
+                    mutations = {
+                        'phase': None, 'connection_ok': False, 'recovery': None,
+                        'after': None, 'cleanup': None, 'classification': 'unimplemented',
+                        'error': dict(actual['error'], state='XX000')}
+                    baseline = copy.deepcopy(actual)
+                    for key, wrong in mutations.items():
+                        changed = copy.deepcopy(actual)
+                        changed[key] = wrong
+                        assert not compare_rejection(changed, reference, rejection_contracts[case]), (case, key)
+                        assert not compare_rejection(changed, changed, rejection_contracts[case]), (case, key)
+                    assert actual == baseline
+                print('rejection contracts: valid=3 illegal_writes=1 negative_mutations=21 cleanup_endpoints=2', flush=True)
 
 
 conninfo = (

@@ -81,6 +81,19 @@ def validate_cases(cases):
             raise ValueError(f'{case_id}: invalid row_order')
         if not isinstance(case.get('expected'), dict):
             raise ValueError(f'{case_id}: expected basis required')
+        contract = case.get('rejection_contract')
+        if contract is not None:
+            if (not isinstance(contract, dict) or set(contract) != {
+                    'classification', 'phase', 'sqlstate', 'transaction_after_error'}
+                    or contract['classification'] != 'expected_rejection'
+                    or case['kind'] != 'business' or case['expected'].get('status') != 7
+                    or contract['sqlstate'] != case['expected'].get('state')
+                    or contract['sqlstate'] not in {'22P02', '22003', '25P02'}
+                    or contract['transaction_after_error'] not in {'I', 'E'}
+                    or contract['phase'] != {'query': 'PQexec', 'prepare': 'PQprepare',
+                                             'describe': 'PQdescribePrepared',
+                                             'execute': 'PQexecPrepared'}.get(data['phase'])):
+                raise ValueError(f'{case_id}: invalid rejection contract')
         seen[case_id] = case
     return copy.deepcopy(cases)
 
@@ -225,3 +238,51 @@ def compare_metadata(actual, reference, phase='query'):
     keys = ('fields', 'formats', 'params', 'param_count')
     return (collected(actual) and collected(reference)
             and all(actual[k] == reference[k] for k in keys))
+
+
+def compare_rejection(actual, reference, contract):
+    """A SQL error is acceptable only with collected recovery/effect/cleanup evidence.
+
+    The phase is the libpq call, not a guessed backend parse/execute stage.
+    Required-success and unimplemented capabilities cannot become rejections.
+    """
+    if (not isinstance(contract, dict) or set(contract) != {
+            'classification', 'phase', 'sqlstate', 'transaction_after_error'}
+            or contract['classification'] != 'expected_rejection'
+            or contract['phase'] not in {'PQexec', 'PQprepare', 'PQdescribePrepared', 'PQexecPrepared'}
+            or contract['sqlstate'] not in {'22P02', '22003', '25P02'}
+            or contract['transaction_after_error'] not in {'I', 'E'}):
+        return False
+
+    def successful_probe(probe):
+        return (isinstance(probe, dict) and probe.get('status') == 2
+                and probe.get('state') == ''
+                and compare_scalar_output(probe, probe, {'result_format': 0})
+                and compare_metadata(probe, probe) and isinstance(probe.get('rows'), list)
+                and all(isinstance(row, list) and all(v is None or isinstance(v, str)
+                                                    for v in row) for row in probe['rows']))
+
+    def collected(record):
+        if not isinstance(record, dict) or not {
+                'classification', 'phase', 'backend_phase', 'connection_ok', 'error',
+                'transaction_after_error', 'recovery', 'transaction_after_recovery',
+                'before', 'after', 'cleanup'} <= set(record):
+            return False
+        return (record['classification'] == contract['classification']
+                and record['phase'] == contract['phase'] and record['backend_phase'] is None
+                and record['connection_ok'] is True
+                and isinstance(record['error'], dict)
+                and record['error'].get('status') == 7
+                and record['error'].get('state') == contract['sqlstate']
+                and record['transaction_after_error'] == contract['transaction_after_error']
+                and record['transaction_after_recovery'] == 'I'
+                and successful_probe(record['recovery']) and record['recovery']['rows'] == [['1']]
+                and successful_probe(record['before']) and successful_probe(record['after'])
+                and record['before']['rows'] == record['after']['rows']
+                and isinstance(record['cleanup'], dict)
+                and set(record['cleanup']) == {'rollback', 'drop', 'connection_closed'}
+                and all(value is True for value in record['cleanup'].values()))
+
+    return (collected(actual) and collected(reference)
+            and actual['before']['rows'] == reference['before']['rows']
+            and actual['after']['rows'] == reference['after']['rows'])

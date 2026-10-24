@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 import unittest
 
-from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output, compare_rows, compare_metadata
+from pg_core_evidence import CaseRegistry, load_cases, validate_cases, compare_scalar_output, compare_rows, compare_metadata, compare_rejection
 
 
 class CaseRegistryTests(unittest.TestCase):
@@ -33,11 +33,11 @@ class CaseRegistryTests(unittest.TestCase):
         expected.update(['write', 'readback', 'empty_prepare', 'empty_describe', 'empty_execute',
                          'scalar_null', 'scalar_empty', 'scalar_literal_null', 'scalar_zero_rows',
                          'multiset_ordered', 'multiset_unordered',
-                         'begin', 'transaction_error', 'transaction_failed', 'rollback', 'rollback_recovery'])
+                         'invalid_write_prepare', 'invalid_write_describe', 'invalid_int4_write', 'invalid_int4_write_recovery', 'begin', 'transaction_error', 'transaction_failed', 'rollback', 'rollback_recovery'])
         business = [x['case_id'] for x in self.manifest['cases'] if x['kind'] == 'business']
         checks = [x['case_id'] for x in self.manifest['cases'] if x['kind'] == 'self_check']
         self.assertEqual(set(business), expected)
-        self.assertEqual(len(business), 97)
+        self.assertEqual(len(business), 101)
         self.assertEqual(set(checks), {'negative_self_check_' + key for key in ['rows', 'fields', 'state']})
         registry = CaseRegistry(self.manifest, self.table)
         for case in self.manifest['cases']:
@@ -45,7 +45,7 @@ class CaseRegistryTests(unittest.TestCase):
             if 'sql' in actual:
                 actual['sql'] = actual['sql'].replace('{run_table}', self.table)
             self.assertEqual(registry.claim(case['case_id'], case['family'], actual), actual)
-        self.assertEqual(registry.finish(), 100)
+        self.assertEqual(registry.finish(), 104)
 
     def test_real_check_rejects_unregistered_before_send(self):
         # Execute the actual fixture gate with no connections: this tests rejection,
@@ -482,3 +482,144 @@ class MetadataComparisonTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RejectionComparisonTests(unittest.TestCase):
+    """Comparator fixtures describe evidence; only the real entry proves client success."""
+
+    def setUp(self):
+        self.contract = {'classification': 'expected_rejection', 'phase': 'PQexec',
+                         'sqlstate': '22P02', 'transaction_after_error': 'E'}
+        # Deep copy of task6 real AsterSQL transaction_error_rejection_contract;
+        # PostgreSQL18.4/libpq180000. No connection is made by this test.
+        snapshot = {'affected_rows': '6',
+         'cells': [[{'hex': '31', 'kind': 'value', 'length': 1},
+                    {'hex': '39303037313939323534373430393933', 'kind': 'value', 'length': 16},
+                    {'kind': 'sql_null', 'length': 0}],
+                   [{'hex': '32', 'kind': 'value', 'length': 1},
+                    {'kind': 'sql_null', 'length': 0},
+                    {'kind': 'sql_null', 'length': 0}],
+                   [{'hex': '33', 'kind': 'value', 'length': 1},
+                    {'hex': '30', 'kind': 'value', 'length': 1},
+                    {'hex': '', 'kind': 'value', 'length': 0}],
+                   [{'hex': '34', 'kind': 'value', 'length': 1},
+                    {'hex': '30', 'kind': 'value', 'length': 1},
+                    {'hex': '4e554c4c', 'kind': 'value', 'length': 4}],
+                   [{'hex': '35', 'kind': 'value', 'length': 1},
+                    {'hex': '30', 'kind': 'value', 'length': 1},
+                    {'hex': '', 'kind': 'value', 'length': 0}],
+                   [{'hex': '36', 'kind': 'value', 'length': 1},
+                    {'kind': 'sql_null', 'length': 0},
+                    {'kind': 'sql_null', 'length': 0}]],
+         'command_tag': 'SELECT 6',
+         'fields': [['id', 23, 4, -1], ['n', 20, 8, -1], ['note', 25, -1, -1]],
+         'formats': [0, 0, 0],
+         'param_count': 0,
+         'params': [],
+         'rows': [['1', '9007199254740993', None],
+                  ['2', None, None],
+                  ['3', '0', ''],
+                  ['4', '0', 'NULL'],
+                  ['5', '0', ''],
+                  ['6', None, None]],
+         'state': '',
+         'status': 2,
+         'table_origins': None}
+        self.sample = {'backend_phase': None,
+         'classification': 'expected_rejection',
+         'cleanup': {'connection_closed': True, 'drop': True, 'rollback': True},
+         'connection_ok': True,
+         'error': {'affected_rows': '',
+                   'cells': [],
+                   'command_tag': '',
+                   'fields': [],
+                   'formats': [],
+                   'param_count': 0,
+                   'params': [],
+                   'rows': [],
+                   'state': '22P02',
+                   'status': 7,
+                   'table_origins': None},
+         'phase': 'PQexec',
+         'recovery': {'affected_rows': '1',
+                      'cells': [[{'hex': '31', 'kind': 'value', 'length': 1}]],
+                      'command_tag': 'SELECT 1',
+                      'fields': [['n', 23, 4, -1]],
+                      'formats': [0],
+                      'param_count': 0,
+                      'params': [],
+                      'rows': [['1']],
+                      'state': '',
+                      'status': 2,
+                      'table_origins': None},
+         'transaction_after_error': 'E',
+         'transaction_after_recovery': 'I'}
+        self.sample.update(before=copy.deepcopy(snapshot), after=copy.deepcopy(snapshot))
+
+    def reject(self, key, value):
+        changed = copy.deepcopy(self.sample)
+        changed[key] = value
+        self.assertFalse(compare_rejection(changed, self.sample, self.contract))
+        self.assertFalse(compare_rejection(changed, changed, self.contract))
+
+    def test_complete(self):
+        self.assertTrue(compare_rejection(self.sample, copy.deepcopy(self.sample), self.contract))
+
+    def test_wrong_sqlstate(self):
+        self.reject('error', {'status': 7, 'state': '22003'})
+
+    def test_missing_phase(self):
+        self.reject('phase', None)
+
+    def test_network_error(self):
+        self.reject('connection_ok', False)
+
+    def test_recovery_failed(self):
+        self.reject('recovery', {'status': 7, 'state': '25P02', 'rows': []})
+
+    def test_side_effect(self):
+        after = copy.deepcopy(self.sample['after'])
+        after['rows'].pop()
+        after['cells'].pop()
+        self.reject('after', after)
+
+    def test_cleanup_failed(self):
+        self.reject('cleanup', {'rollback': True, 'drop': False, 'connection_closed': True})
+
+    def test_unimplemented_reclassified(self):
+        self.reject('classification', 'unimplemented')
+        contract = dict(self.contract, classification='required_success')
+        self.assertFalse(compare_rejection(self.sample, self.sample, contract))
+
+    def test_missing_evidence(self):
+        for key in self.sample:
+            changed = copy.deepcopy(self.sample)
+            del changed[key]
+            self.assertFalse(compare_rejection(changed, changed, self.contract), key)
+
+    def test_failed_transaction_not_recovered_by_sync(self):
+        self.reject('transaction_after_recovery', 'E')
+
+    def test_prepare_failure_is_not_execute_rejection(self):
+        self.reject('phase', 'PQprepare')
+
+    def test_raw_records_unchanged(self):
+        before = copy.deepcopy(self.sample)
+        self.assertTrue(compare_rejection(self.sample, self.sample, self.contract))
+        self.assertEqual(self.sample, before)
+
+    def test_unknown_internal_phase_is_not_inferred(self):
+        self.reject('backend_phase', 'parse')
+
+    def test_manifest_cannot_reclassify_success(self):
+        manifest = load_cases()
+        case = next(x for x in manifest['cases'] if x['case_id'] == 'invalid_int4_write')
+        case['expected']['status'] = 2
+        with self.assertRaises(ValueError):
+            validate_cases(manifest)
+
+    def test_equal_sql_error_alone_is_insufficient(self):
+        error = copy.deepcopy(self.sample['error'])
+        self.assertTrue(compare_rows(error, error, 'strict'))
+        self.assertTrue(compare_metadata(error, error))
+        self.assertFalse(compare_rejection({'error': error}, {'error': error}, self.contract))
